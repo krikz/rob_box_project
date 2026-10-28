@@ -273,14 +273,6 @@
       "how": "play",
       "run": "40473977959"
     },
-    "n210_grisha_no_name": {
-      "voice": "zahar",
-      "chars": 92,
-      "text_sha1": "b0999812e50e",
-      "eq_s": 7.5,
-      "how": "play",
-      "run": "40473977959"
-    },
     "n211_who_do_you_know": {
       "voice": "anton",
       "chars": 58,
@@ -550,14 +542,6 @@
       "chars": 47,
       "text_sha1": "4abaf3ad43f2",
       "eq_s": 7.37,
-      "how": "play",
-      "run": "40480199644"
-    },
-    "n507_wake_under_music": {
-      "voice": "zahar",
-      "chars": 32,
-      "text_sha1": "766636821e1e",
-      "eq_s": 3.49,
       "how": "play",
       "run": "40480199644"
     },

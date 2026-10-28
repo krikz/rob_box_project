@@ -11,7 +11,7 @@ PR-15 (#3711, часть 15p): чтение снимка плеера нодой
 
 from __future__ import annotations
 
-from rob_box_voice.core.dialogue_guards import MUSIC_STOP_TOOLS
+from rob_box_core.music_tools import MUSIC_STOP_TOOLS
 
 
 class TestStopToolSet:

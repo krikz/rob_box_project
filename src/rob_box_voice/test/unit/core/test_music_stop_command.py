@@ -1,34 +1,18 @@
-"""Unit tests for :mod:`rob_box_voice.core.dialogue_guards` (TD-1 extraction).
+"""Unit tests for the music stop-command grammar (:mod:`rob_box_voice.core.media_command_grammar`).
 
-Covers the Issue #992 guard heuristics that were extracted from
-``dialogue_node.py``:
-
-* music stop-command classification,
-* service-syntax detector for TTS (``<system>`` in SSML).
-
-ADR-0150 PR-7 ч.7d-4 (#3698): action-claim detectors (#992 Bug E, #2549, #2559) and
-their retry prompts / fallbacks were removed together with their tests.
-
-ADR-0150 PR-7 ч.7d-1 (#3698): babble (Bug D), planning-narration (#1882) and
-tool-skipped (#1777) guards were removed together with their tests.
-
-ADR-0149 PR-13a: music-guard detectors (``user_wants_music``,
-``is_vocal_request``, ``is_music_state_query``, music ``ActionClaimRule``-s,
-Renardo-code / unknown-melody detectors, music retry prompts) were removed
-together with their tests.
+Раньше жили в ``test_dialogue_guards.py``: ``dialogue_guards`` только реэкспортировал ``is_music_stop_command`` и
+``MUSIC_STOP_OVERRIDES`` из грамматики медиакоманд. PR-15 часть 15-core (#3711) удалила модуль-реэкспорт; тесты
+остались при настоящем владельце. Детектор отказа TTS на куске системного шаблона (#2175) — в
+``test_tts_text_clean.py``, разметка вызова тула (#2760) — ``rob_box_core/test/test_tool_call_markup.py``.
 
 These are pure-Python functions — no ROS2 node required.
 """
 
 from __future__ import annotations
 
-import pytest
-from typing import Optional
-
-from rob_box_voice.core.dialogue_guards import (
+from rob_box_voice.core.media_command_grammar import (
     MUSIC_STOP_OVERRIDES,
     is_music_stop_command,
-    is_system_template_regurgitated_in_ssml,
 )
 
 
@@ -106,12 +90,6 @@ def test_stop_overrides_are_caught_by_stop_detector() -> None:
         assert is_music_stop_command(stop) is True
 
 
-def test_stop_music_is_a_stop_tool() -> None:
-    from rob_box_voice.core.dialogue_guards import MUSIC_STOP_TOOLS
-
-    assert "stop_music" in MUSIC_STOP_TOOLS
-
-
 class TestWatchdogStopReachesTheDialogueLive3108:
     """Музыку останавливает не только диалог — он обязан это узнавать (живой лог 31.08: через 139 с после
     остановки по watchdog диалог считал, что трек играет). Источник «играет» — снимок плеера
@@ -139,48 +117,3 @@ class TestWatchdogStopReachesTheDialogueLive3108:
             "диалог не слушает /voice/music/state — про остановку по "
             "watchdog он не узнает"
         )
-
-
-class TestSystemTemplateRegurgitateInSsml:
-    """Defence-in-depth для tts_node — отдельный detector для SSML.
-
-    ``is_system_template_regurgitated_in_ssml`` ловит regurgitates
-    на СЫРОМ SSML (до strip'а тегов в ``_extract_text_from_ssml``).
-    Более узкий, чем для extracted spoken: только полный ``<speak>``
-    обрамлённый блок ИЛИ plain ``<system>...</system>``.
-    """
-
-    @pytest.mark.parametrize(
-        "ssml",
-        [
-            # SSML-обёртка с regurgitates внутри
-            "<speak><system>foo</system></speak>",
-            "<speak><system>\n[получатель ответа забыл указать антропоморфные "
-            "атрибуты]\n</system></speak>",
-            # Без SSML-обёртки (edge-case)
-            "<system>x</system>",
-            # Whitespace внутри тегов (после ``<speak>`` / перед ``</speak>``)
-            "<speak>\n  <system>foo</system>  \n</speak>",
-        ],
-    )
-    def test_ssml_regurgitate_is_detected(self, ssml: str) -> None:
-        assert is_system_template_regurgitated_in_ssml(ssml) is True
-
-    @pytest.mark.parametrize(
-        "ssml",
-        [
-            # Нормальная фраза с серединным тегом — НЕ regurgitates
-            "<speak>Согласно <system>инструкции</system>, отвечу.</speak>",
-            # Обычная русская речь
-            "<speak>Привет! Как дела?</speak>",
-            # Пустая строка / None
-            "",
-            None,  # type: ignore[list-item]
-            # Неполные теги
-            "<speak><system>foo</speak>",
-            "<speak>foo</system></speak>",
-        ],
-    )
-    def test_normal_ssml_passes(self, ssml: Optional[str]) -> None:
-        """Серединные ссылки, нормальная речь, неполные теги."""
-        assert is_system_template_regurgitated_in_ssml(ssml) is False

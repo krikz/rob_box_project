@@ -45,6 +45,13 @@ v1: ``🔊 TTS: speech_id=<8>`` открывает реплику, ``Публи�
 восстановления -- ``E2E_RECOVER <вид> <шаг|at_act_start> …``; виды -- :data:`RECOVERY` (шаг) и :data:`ACT_RECOVERY`
 (старт акта).
 
+Вейк у голоса с акцентом (решение Шифу 28.10, n210)
+===================================================
+Голос Гриши STT слышит как «ребят»/«привет», и «Робот!» одним словом -- так же. Шаг такого голоса просит в ``recover``
+ещё и ``wake_replay`` (:data:`WAKE_REPLAY`): вейк потерян, «Робот!» не помог -- фраза шага звучит ещё раз, один раз за
+шаг; итог шага -- ``OK recovered_wake_replay`` (не чистый OK). Ретрай именно на промах вейка: неверный ответ робота
+по-прежнему ретраит только ``retry_acceptance`` и только если шаг не менял состояние робота.
+
 Предусловие шага (#3971 R21)
 ============================
 Поле шага ``skip_when: {"reason": "KIE_QUOTA", "log": <regex>}`` -- без чего шаг теряет смысл: строка ``log`` в логе
@@ -377,6 +384,14 @@ RECOVERY: Mapping[str, Recovery] = MappingProxyType({
     SILENCED: Recovery("Робот, говори.", True),
 })
 RECOVERABLE: Tuple[str, ...] = tuple(RECOVERY)
+#: Восстановление ПО ВЫБОРУ шага (поле ``recover``: список; ``true`` его не включает): ``wake_replay`` -- вейк потерян, а
+#: голое «Робот!» тем же голосом не помогло (n210 28.10: у голоса с акцентом STT путает и его) -- фраза шага звучит ещё
+#: раз, ОДИН раз за шаг (решение Шифу 28.10: «пусть Гриша при отвале повторит»). Своей фразы у него нет: не строка
+#: :data:`RECOVERY`, а повтор фразы шага.
+WAKE_REPLAY = "wake_replay"
+OPT_IN_RECOVERY: Tuple[str, ...] = (WAKE_REPLAY,)
+#: Все виды, которые шаг может записать в ``recover`` и которые ставят маркер ``E2E_RECOVER <вид> <шаг>``.
+STEP_RECOVERY_KINDS: Tuple[str, ...] = RECOVERABLE + OPT_IN_RECOVERY
 #: Утечки прошлого акта, которые харнесс убирает на старте акта (#3989 п.5, #4027): тишина -- тем же видом и той же
 #: репликой, что у шага (:data:`RECOVERY`), играющая музыка -- стопом через ``/mcp/execute``.
 ACT_RECOVERY: Tuple[str, ...] = (SILENCED, "music")
@@ -388,7 +403,7 @@ AT_ACT_START = "at_act_start"
 def recover_marker(kind: str, where: str, detail: str = "") -> str:
     """Строка маркера восстановления (её печатает ``recover_mark`` харнесса). Вид -- из :data:`RECOVERY` у шага и из
     :data:`ACT_RECOVERY` на старте акта: «silence» вместо «silenced» -- ``ValueError``, а не второй словарь видов."""
-    known = ACT_RECOVERY if where == AT_ACT_START else RECOVERABLE
+    known = ACT_RECOVERY if where == AT_ACT_START else STEP_RECOVERY_KINDS
     if kind not in known:
         raise ValueError(f"{RECOVER_MARK} {kind} {where}: вид не из {list(known)}")
     if not re.fullmatch(r"\S+", where or ""):
@@ -402,14 +417,15 @@ def _norm(text: str) -> str:
 
 
 def _kinds(raw: Any) -> Tuple[str, ...]:
-    """Поле ``recover``: ``true`` -- все виды, ``false``/``[]`` -- никаких, список -- только эти."""
+    """Поле ``recover``: ``true`` -- все штатные виды (:data:`RECOVERABLE`), ``false``/``[]`` -- никаких, список --
+    только эти (в нём можно назвать и вид по выбору шага, :data:`OPT_IN_RECOVERY`)."""
     if raw is True:
         return RECOVERABLE
     if raw is False:
         return ()
-    if isinstance(raw, list) and all(isinstance(k, str) and k in RECOVERY for k in raw):
-        return tuple(k for k in RECOVERABLE if k in raw)
-    raise ValueError(f"recover: ожидается true|false|список из {list(RECOVERABLE)}, а не {raw!r}")
+    if isinstance(raw, list) and all(isinstance(k, str) and k in STEP_RECOVERY_KINDS for k in raw):
+        return tuple(k for k in STEP_RECOVERY_KINDS if k in raw)
+    raise ValueError(f"recover: ожидается true|false|список из {list(STEP_RECOVERY_KINDS)}, а не {raw!r}")
 
 
 def recover_kinds(scenario: Mapping[str, Any], step: Mapping[str, Any]) -> Tuple[str, ...]:
@@ -422,7 +438,7 @@ def recover_kinds(scenario: Mapping[str, Any], step: Mapping[str, Any]) -> Tuple
     if step.get("barge_in"):
         return ()
     own = _norm(step.get("text", ""))
-    return tuple(k for k in kinds if _norm(RECOVERY[k].phrase) != own)
+    return tuple(k for k in kinds if k not in RECOVERY or _norm(RECOVERY[k].phrase) != own)
 
 
 def recover_policy(scenario: Any) -> List[Tuple[str, Tuple[str, ...]]]:
