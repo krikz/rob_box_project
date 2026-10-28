@@ -1906,6 +1906,28 @@ check_patterns() {
     return $rc
 }
 
+# Issue #3971 — результат, видный только в сравнении с музыкой ДО шага (поле шага music_compare: «ускорь» — тот же трек
+# быстрее, «выключи» — играла и выключена). Решает e2e_events.py compare по строкам деки за акт (какие строки — решает
+# он, сюда — все строки [music v2]); итог — строкой паттерна. rc 0 — сверки у шага нет или она прошла; 1 — не прошла.
+check_music_compare() {  # $1 = label, $2 = файл сценария, $3 = начало окна шага (UTC робота)
+    local raw kind out
+    [ -n "$2" ] && [ -f "$2" ] || return 0
+    if ! raw="$(python3 "$(_events_py)" compare --scenario "$2" --label "$1" </dev/null 2>&1)"; then
+        echo "  PATTERN_MISS: music_compare не разобрано: ${raw}"
+        return 1
+    fi
+    kind="$(printf '%s\n' "$raw" | _ev_kv compare)"
+    case "$kind" in ''|-) return 0 ;; esac
+    out="$(_events_fetch "${E2E_RUN_BEFORE:-600s}" '\[music v2\] ' \
+        | python3 "$(_events_py)" compare --scenario "$2" --label "$1" --since "$3" 2>&1)"
+    if [ "$(printf '%s\n' "$out" | _ev_kv ok)" = "1" ]; then
+        echo "  PATTERN_OK: music_compare=${kind}: $(printf '%s\n' "$out" | _ev_kv detail)"
+        return 0
+    fi
+    echo "  PATTERN_MISS: music_compare=${kind}: $(printf '%s\n' "$out" | _ev_kv detail | grep . || printf '%s' "$out")"
+    return 1
+}
+
 # Проверка эха диалога в Telegram (issue #1196, L2).
 #
 # После голосового e2e проверяем, что telegram_node получил ответ
@@ -3222,6 +3244,11 @@ for p in json.load(sys.stdin):
                     pat_ok_any=1
                     log "STEP ${label}: ✅ паттерны найдены"
                 fi
+            fi
+            # issue #3971 — вид результата против музыки ДО шага (поле music_compare): провал — как у паттерна.
+            if ! check_music_compare "$label" "${SCENARIO_FILE:-}" "$STEP_BEFORE"; then
+                step_ok=0
+                last_fail_what="patterns"
             fi
             # Acceptance-чек (issue #1396): если в шаге задан блок acceptance,
             # пишем acceptance.json и (если ERROR) — FAIL (хотя цикл прошёл).

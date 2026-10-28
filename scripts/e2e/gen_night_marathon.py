@@ -43,7 +43,15 @@ OK, а ``OK recovered_<вид>`` (маркер ``E2E_RECOVER`` в логе ак�
 
 ``skip_when`` (шаг, R21 разбора 26.10): предусловие внешнего мира, без которого шаг теряет смысл, --
 ``{"reason": "NO_SONG", "log": <regex>}`` (одна таблица :data:`SKIP_WHEN`). Харнесс перед шагом ищет ``log`` в логе
-робота за акт (``e2e_events.skip_rule``/``skip_verdict``): нашёл -- шаг не играется, итог ``SKIP <reason>``.
+робота за акт (``e2e_events.skip_rule``/``skip_verdict``): нашёл -- шаг не играется, итог ``SKIP <reason>``. С
+``"absent": true`` -- наоборот, не нашёл (предусловие не наступило: n805b без тишины от n805).
+
+``music_compare`` (шаг, #3971): результат, видный только в сравнении с музыкой ДО шага («ускорь» -- тот же трек
+быстрее, правкой на такте #4029; «выключи» -- играла и выключена). Ставит :func:`action_step` по виду результата
+(:data:`RESULT_KINDS`); судит ``e2e_events.music_compare`` по строкам деки за акт.
+
+Заглушки (#3971): любой шаг краснеет на фразе-заглушке кода (:data:`STUB_SPEECH` из каталога фраз робота) и на ходе,
+закрытом заглушкой (:data:`TURN_FALLBACK` -- ``status=done`` вместо ``finished``).
 
 ``sleep_before_sec`` (шаг): пауза ПЕРЕД шагом (до проверки ``skip_when``), напр. пока пишется песня.
 
@@ -100,14 +108,18 @@ import json
 import os
 import re
 import sys
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, NamedTuple, Optional, Tuple
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-if HERE not in sys.path:
-    sys.path.insert(0, HERE)
+REPO = os.path.dirname(os.path.dirname(HERE))
+#: Судья харнесса (``e2e_events.py``): генератор пишет поля, которые он читает, и проверяет их его же таблицами.
+HARNESS_DIR = os.path.join(REPO, ".github", "workflows", "scripts")
+for _path in (HERE, HARNESS_DIR):
+    if _path not in sys.path:
+        sys.path.insert(0, _path)
+import e2e_events as eev  # noqa: E402  (сверки music_compare, #3971)
 import phrase_budget as pb  # noqa: E402  (бюджет реплики в окне VAD, #4077 П2)
 
-REPO = os.path.dirname(os.path.dirname(HERE))
 OUT_DIR = os.path.join(REPO, ".github", "e2e", "scenarios", "night")
 #: Замеры длительности реплик (``label -> eq_s`` для данного текста); обновляет ``--learn``.
 PHRASE_STORE_PATH = os.path.join(HERE, "phrase_eq_measured.json")
@@ -146,6 +158,59 @@ SPEECH_STARTED = r"SpeechEvent started speech_id"
 SPEECH_CANCELLED = r"SpeechEvent cancelled|🛑 \[interrupt\]"
 #: Тулы музыки, которыми v2 законно отвечает на «поставь что-нибудь»: ``📤 Отправлен запрос <id>: <tool>``.
 MUSIC_DISPATCH = r"📤 Отправлен запрос [0-9a-f]+: (request_music|generate_music|music_library|dj_set)"
+
+# --- фразы робота из каталога ``rob_box_dialog/phrases/ru.yaml`` (ADR-0150 §5.4) ---------------------------------
+#: Фразы исходов, которые судит марафон: ключ каталога -> его варианты, ровно как в каталоге (фразу об исходе строит
+#: код по ключу, ADR-0148). Не чтение YAML: генератор зовёт раннер марафона (``--check``) системным python хоста, где
+#: PyYAML может не быть. Совпадение с каталогом держит ``test_robot_phrases_are_the_catalog_phrases`` -- поменяли фразу
+#: в каталоге, тест краснеет раньше марафона (как сверка маркеров с f-строками кода робота).
+ROBOT_PHRASES: Dict[str, Tuple[str, ...]] = {
+    "query.fallback_generic": ("Нашёл ответ, но не смог сложить его в короткую фразу. Спроси ещё раз?",),
+    "command.invalid_generic": ("Не понял, как это сделать. Скажи ещё раз?",),
+    "command.too_long": ("Ответ вышел слишком длинным — спроси покороче, пожалуйста.",),
+    "local.rejected": ("Не вышло.",),
+    "understand.nothing_to_say": ("Хм… не знаю, что сказать.", "Не расслышал, повтори?",
+                                  "Эээ… даже не знаю, что ответить.", "Хм, я задумался и ничего не придумал. Повтори?"),
+    "understand.timeout": ("Что-то я долго думаю — повтори, пожалуйста.",),
+    "understand.ceiling": ("{provider} так и не ответил — я перестал ждать. Повтори, пожалуйста.",),
+    "understand.provider_failed": ("{provider} не ответил — повтори, пожалуйста.",),
+    "media.done": ("Включаю музыку.",),
+    "media.progress": ("Секунду, музыка запускается.",),
+    "media.rejected": ("Не получилось включить музыку.",),
+    "media.timeout": ("Музыка пока не заиграла.",),
+    "music.stop_ok": ("Выключил музыку.",),
+    "music.stop_idle": ("Сейчас ничего не играет — на всякий случай всё остановил.",),
+    "music.stop_fail": ("Не получилось выключить музыку.",),
+    "music.edit_fail": ("Не получилось поменять музыку — играет как было.",),
+    "music.edit_timeout": ("Не дождался такта — не знаю, поменялась ли музыка.",),
+}
+_SLOT_RE = re.compile(r"\{[^{}]*\}")
+
+
+def robot_said(*keys: str) -> str:
+    """Подстроки РЕЧИ робота для ``must_not_say`` (альтернативы через «|»): все варианты фраз ``keys`` каталога. Слот
+    ``{…}`` заполняет код, поэтому от варианта со слотом берётся самый длинный кусок без слота. Нет ключа -- ``KeyError``
+    (громко, при сборке)."""
+    parts: List[str] = []
+    for key in keys:
+        for variant in ROBOT_PHRASES[key]:
+            piece = max((p.strip() for p in _SLOT_RE.split(variant)), key=len)
+            if piece and piece not in parts:
+                parts.append(piece)
+    return "|".join(parts)
+
+
+#: Фразы-заглушки: ответа модели нет, говорит код (#3971, n707 27.10: «Нашёл ответ, но не смог сложить его в короткую
+#: фразу.» засчитан ответом о треке). Модель промолчала или застряла (``understand.*``), команда невалидна
+#: (``command.*``), ход по данным запроса закрыт без слов модели (``query.fallback_generic``), общий отказ без причины
+#: (``local.rejected`` «Не вышло.»). Никакой шаг марафона такую фразу не просит -- ставится всем шагам (:func:`step`).
+STUB_PHRASE_KEYS = ("query.fallback_generic", "command.invalid_generic", "command.too_long", "local.rejected",
+                    "understand.nothing_to_say", "understand.timeout", "understand.ceiling",
+                    "understand.provider_failed")
+STUB_SPEECH = robot_said(*STUB_PHRASE_KEYS)
+#: Ход закрыт заглушкой кода, а не ответом (``turn.py``: ``stage=done status=done`` у ``query_fallback:*`` и
+#: ``invalid_salvaged:*``; штатный конец -- ``status=finished``). Подстрока для ``must_not_call`` всех шагов.
+TURN_FALLBACK = "stage=done status=done"
 
 
 def spoken_by(provider: str) -> str:
@@ -273,9 +338,11 @@ LEAK_PROBE_WINDOW_PHRASES = ["по именам", "космос", "китайс�
 # Идут в ``patterns`` шага (grep -E по логам шага, AND) -- второго механизма acceptance нет.
 #: Музыкальный движок v2 реально поставил трек на деку.
 MUSIC_STARTED = r"🎵 \[music v2\] started track_id="
-#: Музыкальный движок v2 реально снял деку С ТРЕКОМ: id трека -- ``gen…``/``req…``/``set…`` (строчные), а
-#: ``track_id=None`` -- стоп вхолостую на пустой деке (n812 23.10: «Выключил музыку.» при ``was_playing=False``).
-MUSIC_STOPPED = r"🎵 \[music v2\] stop track_id=[a-z0-9]"
+#: Музыкальный движок v2 реально снял деку С ТРЕКОМ по просьбе человека: id трека -- ``gen…``/``req…``/``set…``
+#: (строчные), а ``track_id=None`` -- стоп вхолостую на пустой деке (n812 23.10: «Выключил музыку.» при
+#: ``was_playing=False``); причина ``user_stop`` -- стоп человека, а не ``new_set``/``request_music``/``music_library``
+#: (деку занял другой заказ: «хватит диджеить» с новым сетом -- не «выключил»).
+MUSIC_STOPPED = r"🎵 \[music v2\] stop track_id=[a-z0-9]\S* reason=" + eev.USER_STOP
 #: Тул остановки застал музыку играющей (``music.StopMusicTool``: ``[stop_music] was_playing=True`` или outro бита
 #: выступления ``{'was_playing': True, …}``).
 MUSIC_WAS_PLAYING = r"\[stop_music\] .*was_playing(=|': )True"
@@ -283,7 +350,7 @@ MUSIC_WAS_PLAYING = r"\[stop_music\] .*was_playing(=|': )True"
 MUSIC_STOP_ANY = "[music v2] stop"
 #: Фраза потолка действия музыки (``phrases/ru.yaml`` ``media.timeout``): там, где музыка обязана заиграть, это ложь
 #: (n809: «Музыка пока не заиграла.», трек стартовал через 1,4 с). Ищется в РЕЧИ робота (``must_not_say``).
-MUSIC_NOT_STARTED = "Музыка пока не заиграла"
+MUSIC_NOT_STARTED = robot_said("media.timeout")
 #: Tier-1 «хватит читать/говорить» (#4035): гасит речь и выступление, плеер музыки не трогает.
 TIER1_STOP_SPEECH = r"tier1 kind=stop_speech\b"
 #: Ход упал по дедлайну (``stage=timeout``: «долго думаю» поверх живой речи) -- подстрока для ``must_not_call``.
@@ -301,8 +368,24 @@ SONG_DECLINED_LOG = r"\[source\] asked=\[generated[^\]]*\] .*→ decline:"
 #: Песни этого прогона нет: любая из трёх улик выше. «Заказ не дошёл до робота» (фраза не влезла в окно VAD) сюда не
 #: входит -- строки-улики нет; такой отказ ловит гард длины фраз (``phrase_budget``) ещё до прогона.
 NO_SONG_LOG = "|".join((KIE_QUOTA_LOG, SONG_FAILED_LOG, SONG_DECLINED_LOG))
-#: Причина пропуска -> строка лога, при которой шаг не играется. Одна таблица; шаги ссылаются на ключ.
-SKIP_WHEN: Dict[str, str] = {"NO_SONG": NO_SONG_LOG}
+#: Тишину включил Tier-1 «замолчи» (``turn.py``: ``🧭 [turn-v2] tier1 kind=silence …``). Без неё «Робот, говори»
+#: (n805b) снимать нечего: ``grammar._unsilence`` вне тишины молчит, реплика уходит в LLM, и шаг краснел каскадом от
+#: потерянного вейка n805 (27.10: STT услышал одно «замолчи», ``[backlog] accumulated no_wake``).
+TIER1_SILENCE_LOG = r"tier1 kind=" + eev.SILENCE_TIER1 + r"\b"
+
+
+class SkipWhen(NamedTuple):
+    """Строка лога робота за акт, по которой шаг не играется (``absent`` -- не играется, если строки НЕТ)."""
+
+    log: str
+    absent: bool = False
+
+
+#: Причина пропуска -> правило. Одна таблица; шаги ссылаются на ключ.
+SKIP_WHEN: Dict[str, SkipWhen] = {
+    "NO_SONG": SkipWhen(NO_SONG_LOG),
+    "NOT_SILENCED": SkipWhen(TIER1_SILENCE_LOG, absent=True),
+}
 #: Путь заказа музыки: ``🎚️ [source] asked=[…] genre=… кандидаты=[…] → <id> (<кто выбрал>) gen=…`` (``engine/source_route.py``),
 #: ``<id>`` -- ``synth:<стиль>`` / ``cache:<трек>`` / ``generate:<вид>:<модель>`` / ``decline:<причина>``. Шаг, который
 #: просит КОНКРЕТНУЮ клетку вилки (ADR-0158, решение Шифу 27.10), ждёт свой путь, а не «тул музыки выполнен успешно».
@@ -312,10 +395,16 @@ ROUTE_SYNTH = SOURCE_ROUTE + r"synth:"
 #: Сгенерировать песню голосом робота: «сгенерируй песню своим голосом» (``SongStudio``: ``🎤 [song] … track=<id>``).
 ROUTE_GENERATE_ROBOT_SONG = SOURCE_ROUTE + r"generate:robot_song:"
 #: Новый трек библиотеки/кэша поставлен на деку (``player_owner``: ``🎵 [music v2] exec track_id=gen_…``). Там, где
-#: просили поправить ИГРАЮЩЕЕ (n504-n506, #4029) или играть на синтезаторе (n502), это не результат, а подмена.
+#: просили играть на синтезаторе (n502), это не результат, а подмена.
 LIBRARY_TRACK_EXEC = "[music v2] exec track_id=gen_"
-#: Тулы живой правки/сета музыки v2: любой из них -- честная попытка поменять играющее (n504-n506, n604, n607).
-MUSIC_EDIT_TOOLS = ("dj_set", "request_music", "generate_music")
+#: Любой НОВЫЙ трек поставлен на деку (``player_owner.play``: ``🎵 [music v2] exec track_id=…``). Там, где просили
+#: поправить ИГРАЮЩЕЕ (n504-n506), это подмена: правка -- на такте того же трека, без нового трека (#4029).
+TRACK_EXEC = "[music v2] exec track_id="
+#: Тул правки ИГРАЮЩЕЙ музыки (#4029, ``rob_box_dialog.knowledge.EDIT_TOOL``): темп, тембр, бас своего синт-трека.
+EDIT_TOOL = "edit_music"
+#: Правка встала на такте играющего трека (``engine/track_edit.py``: ``🎚️ [music v2] edit applied track_id=<тот же>
+#: at_beat=… bpm=…``): звук поменялся, трек тот же, нового ``started`` нет.
+EDIT_APPLIED = r"🎚️ \[music v2\] edit applied track_id="
 #: Тулы, которыми v2 законно запускает музыку (n310: «поставь что-нибудь»).
 MUSIC_START_TOOLS = ("request_music", "generate_music", "music_library", "dj_set")
 
@@ -324,6 +413,56 @@ def tool_done(*tools: str) -> str:
     """Паттерн «тул выполнен успешно» (``✅ Инструмент <tool> выполнен успешно``); несколько тулов -- любой из них."""
     name = tools[0] if len(tools) == 1 else "(" + "|".join(tools) + ")"
     return "✅ Инструмент " + name + " выполнен успешно"
+
+
+# --- вид результата, который просила реплика (#3971, сверка 27.10) ------------------------------------------------
+# «Что-то заиграло» -- не результат «сыграй на синтезаторе», «ускорь» и «выключи»: 27.10 n502 засчитан по треку
+# библиотеки, n504/n506 -- по новому треку того же bpm=60, n608 -- при фразе «Включаю музыку.» после ``dj_set stop``.
+#: Трек СИНТЕЗА встал на деку: заказ ``request_music`` по пути ``synth:<стиль>`` собирает трек сета ``req<сид>``
+#: (``engine/tools_v2.py``, ``_stage_club``: ``set_id=f"req{…}"``). Трек кэша -- ``gen_<id>_<время>``, сет диджея --
+#: ``set<сид>:``/``gen<сид>:``. «Выбран путь synth» без синт-трека на деке -- не результат.
+SYNTH_STARTED = MUSIC_STARTED + r"req[0-9]+:"
+#: Речь, противоречащая результату «музыка играет»: потолок, отказ запуска, стоп (каталог фраз робота).
+MUSIC_ON_CONTRADICTED = robot_said("media.timeout", "media.rejected", "music.stop_ok", "music.stop_idle")
+#: Речь, противоречащая результату «играющее поправлено»: фраза НОВОГО трека (``media.done`` «Включаю музыку.» -- 27.10
+#: на n504-n506), отказ и потолок правки (фраза успеха -- ``message`` результата, ``music.edit_said``), потолок и стоп.
+MUSIC_EDIT_CONTRADICTED = robot_said("media.done", "media.timeout", "media.rejected", "music.stop_ok",
+                                     "music.stop_idle", "music.edit_fail", "music.edit_timeout")
+#: Речь, противоречащая результату «выключил»: фразы ЗАПУСКА (``media.done`` «Включаю музыку.» -- 27.10 09:37:37 после
+#: ``dj_set {"action": "stop"}``), ожидания, потолка и стопа вхолостую.
+MUSIC_OFF_CONTRADICTED = robot_said("media.done", "media.progress", "media.timeout", "media.rejected",
+                                    "music.stop_idle", "music.stop_fail")
+
+
+class ResultKind(NamedTuple):
+    """Вид результата, который просила реплика: чем он доказан и что его подменяет. Шаг называет вид
+    (``action_step(result=…)``), а не собирает маркеры сам -- одна таблица :data:`RESULT_KINDS`."""
+
+    proof: Tuple[str, ...] = ()  # строки результата в логе шага (``patterns``: grep -E, все)
+    substitute: Tuple[str, ...] = ()  # строки подмены результата (``must_not_call``: подстрока по логу шага)
+    contradicted_by: str = ""  # речь, противоречащая результату (``must_not_say``: речь робота)
+    compare: str = ""  # сверка с музыкой ДО шага (поле ``music_compare``, судья ``e2e_events.COMPARES``)
+
+
+RESULT_KINDS: Dict[str, ResultKind] = {
+    # действие без деки: результат -- успех тула (n605: сет с объявлениями, ещё и речь)
+    "": ResultKind(),
+    # трек встал на деку, путь любой (n602, n708)
+    "started": ResultKind((MUSIC_STARTED,), (), MUSIC_ON_CONTRADICTED),
+    # «на синтезаторе / на Ренардо»: путь synth И синт-трек на деке, трек библиотеки -- подмена (n502, n711, n809)
+    "synth": ResultKind((ROUTE_SYNTH, SYNTH_STARTED), (LIBRARY_TRACK_EXEC,), MUSIC_ON_CONTRADICTED),
+    # смена стиля сета новым заказом (n604 «уводи в рок», n607 «помягче, поставь спокойное»): успех тула
+    "changed": ResultKind((), (), MUSIC_ON_CONTRADICTED),
+    # правка ИГРАЮЩЕГО (#4029): тот же трек переправлен на такте, нового трека нет (n504 «добавь баса», n505 «помрачнее»)
+    "edited": ResultKind((EDIT_APPLIED,), (TRACK_EXEC,), MUSIC_EDIT_CONTRADICTED),
+    # «ускорь темп»: правка играющего, и bpm того же трека выше игравшего (n506)
+    "faster": ResultKind((EDIT_APPLIED,), (TRACK_EXEC,), MUSIC_EDIT_CONTRADICTED, "faster"),
+    # «выключи»: играла, снята стопом человека с треком на деке, к концу шага тихо; фраза -- не о запуске
+    "stopped": ResultKind((MUSIC_STOPPED,), (), MUSIC_OFF_CONTRADICTED, "stopped"),
+}
+_UNKNOWN_COMPARES = {k: r.compare for k, r in RESULT_KINDS.items() if r.compare and r.compare not in eev.COMPARES}
+if _UNKNOWN_COMPARES:
+    raise ValueError(f"RESULT_KINDS: сверки не из e2e_events.COMPARES: {_UNKNOWN_COMPARES}")
 
 
 #: Вызов ``music_library delete`` в запросе к тулу (``mcp_server``: ``📥 Запрос выполнения: music_library с параметрами
@@ -398,6 +537,10 @@ def step(
     # #3971 R4: после старта выступления повтор фразы заказывает второе -- ретрай у такого шага запрещён структурой.
     if retry and any(p.startswith(PERFORM_STARTED_MARK) for p in s["patterns"]):
         raise ValueError(f"{label}: шаг ждёт выступление ({PERFORM_STARTED_MARK}…) -- retry запрещён (#3971 R4)")
+    # #3971: заглушка кода -- не ответ и не результат ни для какого шага (n707 27.10): фраза-заглушка в речи и ход,
+    # закрытый заглушкой (``status=done`` вместо ``finished``), краснят шаг всегда.
+    must_not = list(must_not or []) + [TURN_FALLBACK]
+    must_not_say = list(must_not_say or []) + [STUB_SPEECH]
     acc = _acceptance(
         expect_tools, discovery_tools, must_not, must_not_say, must_not_identify_as, keywords, voice_changed, why
     )
@@ -411,7 +554,8 @@ def step(
         s["_why"] = why
     # R21 разбора 26.10: предусловие внешнего мира (ключ SKIP_WHEN): нарушено -- харнесс шаг не играет, SKIP <ключ>.
     if skip_when:
-        s["skip_when"] = {"reason": skip_when, "log": SKIP_WHEN[skip_when]}
+        rule = SKIP_WHEN[skip_when]
+        s["skip_when"] = {"reason": skip_when, "log": rule.log, **({"absent": True} if rule.absent else {})}
     return s
 
 
@@ -457,7 +601,7 @@ def action_step(
     text: str,
     result_of: Optional[List[str]] = None,
     *,
-    music: str = "",
+    result: str = "",
     known_red: str = "",
     patterns: Optional[List[str]] = None,
     must_not: Optional[List[str]] = None,
@@ -466,22 +610,25 @@ def action_step(
     """Шаг-действие: PASS только при МАРКЕРЕ РЕЗУЛЬТАТА в логе робота (#3971), а не по речи или имени тула.
 
     ``result_of`` -- тулы, любой из которых обязан закончиться ``✅ Инструмент <tool> выполнен успешно``;
-    ``music`` -- ``"started"`` (``🎵 [music v2] started``: трек встал на деку), ``"changed"`` (играющую музыку
-    правят: трек может и не смениться, маркера деки не ждём) или ``"stopped"`` (``🎵 [music v2] stop`` с id трека:
-    дека снята); при ``started``/``changed`` робот не вправе сказать фразу потолка ``Музыка пока не заиграла``
-    (#3971 R22). Всегда: ход дошёл до ``stage=done status=finished`` и в шаге нет ``stage=timeout``.
+    ``result`` -- вид результата, который просила реплика (ключ :data:`RESULT_KINDS`): его доказательства идут в
+    ``patterns``, подмены -- в ``must_not_call``, противоречащая речь -- в ``must_not_say``, сверка с музыкой до шага --
+    в поле ``music_compare``. Всегда: ход дошёл до ``stage=done status=finished`` и в шаге нет ``stage=timeout``.
     ``known_red`` -- причина, по которой шаг сегодня красный по делу (поле ``_known_red`` для людей; харнесс его
     не читает, шаг остаётся красным честно).
     """
+    kind = RESULT_KINDS[result]
     pats = list(patterns or [])
     if result_of:
         pats.append(tool_done(*result_of))
-    pats.extend({"started": [MUSIC_STARTED], "stopped": [MUSIC_STOPPED]}.get(music, []))
+    pats.extend(kind.proof)
     pats.append(TURN_DONE)
-    if music in ("started", "changed"):
-        kwargs["must_not_say"] = list(kwargs.get("must_not_say") or []) + [MUSIC_NOT_STARTED]
-    s = step(label, text, patterns=pats, must_not=list(must_not or []) + [TURN_TIMEOUT], **kwargs)
-    s["_result_markers"] = {"tools": list(result_of or []), "music": music}
+    if kind.contradicted_by:
+        kwargs["must_not_say"] = list(kwargs.get("must_not_say") or []) + [kind.contradicted_by]
+    forbidden = list(must_not or []) + list(kind.substitute) + [TURN_TIMEOUT]
+    s = step(label, text, patterns=pats, must_not=forbidden, **kwargs)
+    if kind.compare:
+        s[eev.COMPARE_FIELD] = kind.compare
+    s["_result_markers"] = {"tools": list(result_of or []), "result": result}
     if known_red:
         s["_known_red"] = known_red
     return s
@@ -1303,7 +1450,7 @@ act(
             "n312_stop_music",
             "Робот, всё, спасибо, выключай музыку, курьерша уехала.",
             ["stop_music"],
-            music="stopped",
+            result="stopped",
             voice=SASHA,
             expect_tools=["stop_music"],
             why="Закрываем то, что открыли в n310. Никаких «выключи» вслепую: "
@@ -1480,12 +1627,6 @@ act(
     ],
 )
 
-#: n504-n506 («развивай», «помрачнее», «ускорь»): поправить ИГРАЮЩИЙ трек робот пока не умеет -- вместо правки он ставит
-#: другой трек библиотеки (run 40480199644: n504 и n506 зелёные ложно). Шаги честно красные, пока #4029 не сделана;
-#: в мерило их не прячем (probe-поля у харнесса нет). После #4029 добавить положительный маркер правки.
-EDIT_PLAYING_KNOWN_RED = ("#4029: правка играющего трека не сделана -- робот ставит ДРУГОЙ трек библиотеки "
-                          "(`[music v2] exec track_id=gen_…`); шаг красный по делу до #4029")
-
 # =============================================================================
 # АКТ 5 — «Живой музыкант». Полный жизненный цикл renardo.
 # Цепочка: тишина → старт → проверка что играет → развитие → вайб →
@@ -1523,10 +1664,9 @@ act(
             "n502_start_renardo",
             "Робот, сыграй на синтезаторе спокойный ночной бит под пайку.",
             ["request_music"],
-            patterns=[ROUTE_SYNTH],
-            music="started",
+            result="synth",
             expect_tools=["request_music"],
-            must_not=["generate_music", LIBRARY_TRACK_EXEC],
+            must_not=["generate_music"],
             retry=2,
             why="Живой синтез, НЕ нейрогенерация: generate_music здесь — "
             "выбор не того тула (коллизия имён, PR #1372). #3971: PASS только при "
@@ -1534,8 +1674,8 @@ act(
             "трек из кэша + «не понял» давал ложный PASS). #4077 (n502, run 40480199644): STT услышал «рем дарда» "
             "вместо «рендардо», и робот поставил трек библиотеки (`[music v2] exec track_id=gen_…`) -- шаг был "
             "зелёным. Вилка Шифу 27.10 (#4070): «сыграй <жанр> на синтезаторе» -- инструментал на синте; слово "
-            "«синтезатор» STT держит надёжно. Теперь результат -- путь заказа `[source] … → synth:<стиль>` и "
-            "никакого трека библиотеки на деке.",
+            "«синтезатор» STT держит надёжно. Результат вида `synth` (#3971, RESULT_KINDS): путь заказа "
+            "`[source] … → synth:<стиль>`, на деке СИНТ-трек (`started track_id=req…`), трека библиотеки нет.",
         ),
         step(
             "n503_confirm_playing",
@@ -1550,40 +1690,38 @@ act(
         action_step(
             "n504_add_bass",
             "Робот, продолжай развивать эту тему и добавь баса пожирнее.",
-            list(MUSIC_EDIT_TOOLS),
-            music="changed",
-            must_not=["stop_music", LIBRARY_TRACK_EXEC],
-            known_red=EDIT_PLAYING_KNOWN_RED,
-            why="Эволюция трека без перезапуска: stop_music здесь = робот "
-            "глушит и начинает заново вместо развития. #3971: в v2 тулов живой правки Renardo "
-            "нет -- честная попытка это dj_set|request_music|generate_music (run 132908: робот "
-            "звал dj_set, харнесс ждал request_music); успех тула обязателен. #4077 (run 40480199644, 09:25:14): "
-            "на «добавь баса» робот поставил ДРУГОЙ трек библиотеки (`[music v2] exec track_id=gen_e9756071…`) -- "
-            "тул успешен, а играющее не правилось, шаг был зелёным. Новый трек библиотеки на деке -- не результат "
-            "(`must_not` на `[music v2] exec track_id=gen_`); см. _known_red.",
+            [EDIT_TOOL],
+            result="edited",
+            must_not=["stop_music"],
+            why="Эволюция трека без перезапуска: stop_music здесь = робот глушит и начинает заново вместо развития. "
+            "#4077 (run 40480199644, 09:25:14): на «добавь баса» робот поставил ДРУГОЙ трек библиотеки "
+            "(`[music v2] exec track_id=gen_e9756071…`) -- тул успешен, а играющее не правилось, шаг был зелёным. "
+            "#4029 (PR #4116): правка играющего -- тул `edit_music` (форма хода `edit:*` закрывает "
+            "request_music/dj_set/generate_music), синт пересобирается на такте, трек тот же. Результат вида "
+            "`edited` (#3971): успех `edit_music` + `[music v2] edit applied` и никакого нового трека на деке "
+            "(`[music v2] exec`); «Включаю музыку.» -- фраза нового трека, не правки.",
         ),
         action_step(
             "n505_vibe_dark",
             "Робот, сделай атмосферу помрачнее, как в киберпанке.",
-            list(MUSIC_EDIT_TOOLS),
-            music="changed",
-            must_not=["stop_music", LIBRARY_TRACK_EXEC],
-            why="#3971: см. n504 -- любой из dj_set|request_music|generate_music, но с успехом тула; "
-            "#4077: и тот же запрет на подмену игравшего новым треком библиотеки (27.10 шаг краснел по другой "
-            "причине: робот поменял только лицо, музыку не тронул).",
+            [EDIT_TOOL],
+            result="edited",
+            must_not=["stop_music"],
+            why="#4077: 27.10 шаг краснел -- робот поменял только лицо, музыку не тронул. «Помрачнее» про «атмосферу» "
+            "-- правка играющего (#4029, `TRACK_EDITS` darker, тема `атмосфер`): результат вида `edited`, как n504.",
         ),
         action_step(
             "n506_faster",
             "Робот, и ускорь темп, а то мы тут засыпаем оба.",
-            list(MUSIC_EDIT_TOOLS),
-            music="changed",
-            must_not=["stop_music", "set_speed", "set_pitch", LIBRARY_TRACK_EXEC],
-            known_red=EDIT_PLAYING_KNOWN_RED,
+            [EDIT_TOOL],
+            result="faster",
+            must_not=["stop_music", "set_speed", "set_pitch"],
             why="#3976: «ускорь темп» под музыкой -- про музыку, а не про голос робота; set_speed/set_pitch "
-            "(стем «темп» открывает группу voice) -- реальный баг. Шаг остаётся красным, пока его не починят: "
-            "запрет и обязательный музыкальный тул держат это честно. #4077 (run 40480199644, 09:26:22): тот же "
-            "трек библиотеки заново (`exec track_id=gen_e9756071…`, bpm=60), не быстрее -- «recovered» PASS был "
-            "ложным; запрет на трек библиотеки вместо правки играющего (#4029).",
+            "(стем «темп» открывает группу voice) -- реальный баг. #4077 (run 40480199644, 09:26:22): тот же трек "
+            "библиотеки заново (`exec track_id=gen_e9756071…`, bpm=60), не быстрее -- «recovered» PASS был ложным; "
+            "23.10: новый случайный трек 123 -> 124 BPM другим сетом -- тоже не «ускорь». Результат вида `faster` "
+            "(#3971, #4029): `edit_music` поправил ИГРАЮЩИЙ трек на такте (`edit applied`), и сверка с музыкой до "
+            "шага (`music_compare=faster`, судья `e2e_events`) видит тот же `track_id` с bpm выше игравшего.",
         ),
         step(
             "n507_wake_under_music",
@@ -1599,7 +1737,7 @@ act(
             "n511_stop_music",
             "Робот, всё, глуши музыку, у меня уши в трубочку.",
             ["stop_music"],
-            music="stopped",
+            result="stopped",
             expect_tools=["stop_music"],
             why="#3971: стоп засчитывается по `Инструмент stop_music выполнен успешно` + "
             "`[music v2] stop`, а не по слову «выключаю».",
@@ -1646,7 +1784,7 @@ act(
             "n602_dj_on",
             "Робот, включай диджей-режим, у нас ночная дискотека.",
             ["dj_set"],
-            music="started",
+            result="started",
             expect_tools=["dj_set"],
             retry=1,
             why="#3971: v2-тул -- dj_set (action=start), прежний v1-тул режима диджея удалён. PASS только при "
@@ -1665,7 +1803,7 @@ act(
             "n604_dj_rock",
             "Робот, уводи в сторону рока, тётя Гриша под рок добреет.",
             ["dj_set", "request_music"],
-            music="changed",
+            result="changed",
             must_not=["stop_music"],
             why="#3971: смена стиля сета -- `dj_set` (start с новой темой) или request_music; успех тула обязателен.",
         ),
@@ -1696,7 +1834,7 @@ act(
             "n607_vibe_chill",
             "Робот, помягче, поставь спокойное, Валера уснёт за рулём.",
             ["dj_set", "request_music"],
-            music="changed",
+            result="changed",
             must_not=["stop_music"],
             why="#3971: см. n604. #4077 П2: 27.10 реплика в 76 символов звучала 12.38 с при бюджете 12.50 с "
             "(запас 0.12 с -- шаг-лотерея); теперь 57 символов.",
@@ -1705,7 +1843,7 @@ act(
             "n608_dj_off",
             "Робот, хватит диджеить, выключай.",
             ["dj_set", "stop_music"],
-            music="stopped",
+            result="stopped",
             retry=1,
             why="«Хватит диджеить» — двусмысленно (`dj_set` action=stop или `stop_music`). #3971: тул не "
             "фиксируем (v2 робот гасит сет через dj_set), но звук обязан прекратиться: успех любого из "
@@ -1822,7 +1960,7 @@ act(
             "n708_gen_play",
             "Робот, включи эту песню про енота с начала.",
             ["music_library"],
-            music="started",
+            result="started",
             expect_tools=["music_library"],
             retry=1,
             skip_when="NO_SONG",
@@ -1833,7 +1971,7 @@ act(
             "n709_stop_generated",
             "Робот, останови, Борис уже уснул под неё.",
             ["stop_music"],
-            music="stopped",
+            result="stopped",
             expect_tools=["stop_music"],
             skip_when="NO_SONG",
             why="Опять же: останавливаем ровно то, что сами включили в n708. #3971: по маркеру "
@@ -1844,23 +1982,22 @@ act(
             "n711_renardo_not_broken",
             "Робот, сыграй бит на синтезаторе, коротко.",
             ["request_music"],
-            patterns=[ROUTE_SYNTH],
-            music="started",
+            result="synth",
             expect_tools=["request_music"],
-            must_not=["generate_music", LIBRARY_TRACK_EXEC],
+            must_not=["generate_music"],
             retry=1,
             why="Контроль отсутствия регрессии коллизии имён: после серии "
             "gen_* робот обязан вернуться к живому синтезу. #3971: `Инструмент request_music "
             "выполнен успешно` + `[music v2] started` (run 132908: трек из кэша без Renardo давал ложный "
             "PASS). #4077: вилка Шифу 27.10 -- «сыграй <жанр> на синтезаторе» -- инструментал на синте "
             "(`[source] … → synth:<стиль>`, не трек кэша `exec track_id=gen_…`); реплика сокращена с 75 до 42 "
-            "символа (П2).",
+            "символа (П2). Результат вида `synth`: на деке синт-трек `req…` (см. n502).",
         ),
         action_step(
             "n712_stop_all",
             "Робот, всё, глуши.",
             ["stop_music"],
-            music="stopped",
+            result="stopped",
             expect_tools=["stop_music"],
         ),
     ],
@@ -1958,12 +2095,18 @@ act(
             "Робот, говори.",
             silent_ok=True,
             patterns=["tier1 kind=unsilence"],
+            skip_when="NOT_SILENCED",
             why="Решение Шифу 23.10: «всё, хватит, замолчи» (n805, `tier1 kind=silence`) включает тишину "
             "(`SILENCE_TTL_S` = 600 с), и снимает её только явное «говори» (`UNSILENCE_WORDS`) -- вейк-слово "
             "тишину НЕ снимает. Без этого шага n806 «посчитай» уходит в молчащего робота (run 132908: робот "
             "считал в тишине без тулов). Снятие -- Tier-1 без речи (`tier1_phrase` для unsilence пуст), "
             "поэтому `silent_ok` + обязательный маркер `tier1 kind=unsilence`; что робот снова отвечает, "
-            "доказывает следующий шаг (n806: `SpeechEvent started`).",
+            "доказывает следующий шаг (n806: `SpeechEvent started`). #3971 (27.10 09:56): n805 потерял вейк (STT "
+            "услышал одно «замолчи», ушло в бэклог), тишины не было, и «говори» вне тишины -- не Tier-1 "
+            "(`grammar._unsilence`), шаг краснел каскадом: теперь без `tier1 kind=silence` в логе акта он не "
+            "играется (`skip_when` NOT_SILENCED, absent). Свой потерянный вейк шаг лечит «Робот!» (no_wake): "
+            "подхват бэклога «говори» в тишине -- тот же Tier-1 unsilence (`address._woken` -> `tier1_of`); "
+            "восстановление `silenced` («Робот, говори.» = фраза шага) ему запрещено кодом (`recover_kinds`).",
         ),
         step(
             "n806_long_count_again",
@@ -1991,9 +2134,9 @@ act(
         ),
         action_step(
             "n809_music_bed",
-            "Робот, поставь фоном ровный ритм на рендардо, только негромко.",
+            "Робот, поставь фоном ровный ритм на синтезаторе, только негромко.",
             ["request_music"],
-            music="started",
+            result="synth",
             expect_tools=["request_music"],
             must_not=["generate_music"],
             silent_ok=True,
@@ -2004,7 +2147,9 @@ act(
             "допускает ход без речи, а факт действия держит `expect_tools=request_music` "
             "(`Запрос выполнения: request_music` в mcp_server) -- шаг по-прежнему "
             "краснеет, если музыку не запросили. #3971: «поставлю ритм» без тула больше не PASS -- "
-            "нужны `Инструмент request_music выполнен успешно` + `[music v2] started`.",
+            "нужны `Инструмент request_music выполнен успешно` + `[music v2] started`. Просили синт -- результат "
+            "вида `synth` (синт-трек `req…` на деке, не трек библиотеки, см. n502); «на рендардо» заменено на «на "
+            "синтезаторе» -- слово движка, которое STT держит (#4070, n502 27.10: «рем дарда»).",
         ),
         step(
             "n810_rap_over_music",
@@ -2034,7 +2179,7 @@ act(
             "n812_stop_music",
             "Робот, теперь и музыку выключай.",
             ["stop_music"],
-            music="stopped",
+            result="stopped",
             patterns=[MUSIC_WAS_PLAYING],
             expect_tools=["stop_music"],
             why="Разбор 26.10 (22:55:01): стоп вхолостую `track_id=None` + `was_playing=False` давал PASS и фразу "

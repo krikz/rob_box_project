@@ -48,7 +48,16 @@ v1: ``🔊 TTS: speech_id=<8>`` открывает реплику, ``Публи�
 Предусловие шага (#3971 R21)
 ============================
 Поле шага ``skip_when: {"reason": "KIE_QUOTA", "log": <regex>}`` -- без чего шаг теряет смысл: строка ``log`` в логе
-робота за акт значит, что шаг не играется, вердикт ``SKIP <reason>`` (:func:`skip_rule`, :func:`skip_verdict`).
+робота за акт значит, что шаг не играется, вердикт ``SKIP <reason>`` (:func:`skip_rule`, :func:`skip_verdict`). С
+``"absent": true`` наоборот: шаг не играется, если строки НЕТ -- предусловие так и не наступило (n805b «Робот, говори»
+без тишины, которую должен был включить n805).
+
+Вид результата музыки (#3971)
+=============================
+Поле шага ``music_compare`` (:data:`COMPARES`) -- результат, который виден только в сравнении с музыкой ДО шага:
+«ускорь» -- тот же трек быстрее (правка на такте, #4029), «выключи» -- играла и выключена человеком. Судья читает
+строки деки ``[music v2] started|edit applied|stop|finished`` за акт (:func:`music_compare`); паттерн шага (grep по
+окну шага) этого не может: «что-то заиграло» и «быстрее того, что играло» в окне шага неотличимы.
 """
 
 from __future__ import annotations
@@ -56,6 +65,7 @@ from __future__ import annotations
 import json
 import re
 import sys
+from datetime import datetime, timezone
 from types import MappingProxyType
 from typing import Any, Callable, Dict, List, Mapping, NamedTuple, Optional, Pattern, Tuple
 
@@ -466,10 +476,11 @@ def session_report(report: Any) -> Dict[str, object]:
 
 
 class SkipRule(NamedTuple):
-    """Шаг не играется, если в логе робота за акт есть строка ``log``: вердикт ``SKIP <reason>``."""
+    """Шаг не играется, если в логе робота за акт есть строка ``log`` (``absent`` -- если её НЕТ): ``SKIP <reason>``."""
 
     reason: str
     log: Pattern[str]
+    absent: bool = False
 
 
 #: Поле шага (пишет генератор марафона, таблица ``SKIP_WHEN``): ``{"reason": "KIE_QUOTA", "log": <regex>}``.
@@ -490,8 +501,11 @@ def skip_rule(step: Mapping[str, Any]) -> Optional[SkipRule]:
         raise ValueError(f"{label}: {SKIP_FIELD} -- {{reason: ИМЯ, log: regex}}, а не {raw!r}")
     if not _SKIP_REASON_RE.fullmatch(raw["reason"]) or not raw["log"]:
         raise ValueError(f"{label}: {SKIP_FIELD}: причина -- ИМЯ_ЗАГЛАВНЫМИ, regex -- не пустой: {raw!r}")
+    absent = raw.get("absent", False)
+    if not isinstance(absent, bool):
+        raise ValueError(f"{label}: {SKIP_FIELD}.absent -- true|false, а не {absent!r}")
     try:
-        return SkipRule(raw["reason"], re.compile(raw["log"]))
+        return SkipRule(raw["reason"], re.compile(raw["log"]), absent)
     except re.error as exc:
         raise ValueError(f"{label}: {SKIP_FIELD}.log -- не regex: {exc}") from exc
 
@@ -512,9 +526,136 @@ def skip_verdict(rule: SkipRule, text: str) -> Dict[str, object]:
     if now is None:
         return {"fetch": 0, "skip": "-", "evidence": "-"}
     hit = next((line for line in lines if rule.log.search(line)), None)
+    if rule.absent:
+        if hit is not None:
+            return {"fetch": 1, "skip": "-", "evidence": "-"}
+        return {"fetch": 1, "skip": rule.reason, "evidence": f"нет строки /{rule.log.pattern}/"}
     if hit is None:
         return {"fetch": 1, "skip": "-", "evidence": "-"}
     return {"fetch": 1, "skip": rule.reason, "evidence": " ".join(hit.split())[:EVIDENCE_CHARS]}
+
+
+# -- вид результата музыки: сверка с тем, что играло ДО шага (#3971) -----------------------------------------------
+
+
+class MusicEvent(NamedTuple):
+    """Событие деки v2: трек встал (``started``, с ``bpm``), играющий трек переправлен на такте (``edit``: тот же
+    ``track_id``, новый ``bpm``), дека снята (``stop``, с ``reason``) или трек доиграл сам (``finished``)."""
+
+    ts: float
+    kind: str
+    track_id: str
+    bpm: float = 0.0
+    reason: str = ""
+
+
+#: Строки деки: ``player_owner.py`` -- ``🎵 [music v2] started track_id=<id> … bpm=<число> …`` / ``… stop track_id=<id>
+#: reason=<причина>`` / ``… finished track_id=<id>``; ``engine/track_edit.py`` (#4029, правка играющего на такте без
+#: нового ``started``) -- ``🎚️ [music v2] edit applied track_id=<id> at_beat=<доля> bpm=<число>``. ``⚠️ … started
+#: track_id=<id> устарел`` (заменён до старта) -- без ``bpm``, это не событие деки.
+MUSIC_EVENT_RE = re.compile(r"\[music v2\] (started|edit applied|stop|finished) track_id=(\S+)(.*)")
+_BPM_RE = re.compile(r"\bbpm=([0-9.]+)")
+_REASON_RE = re.compile(r"\breason=(\S+)")
+#: Вид события по слову строки (``edit applied`` -> ``edit``).
+_EVENT_KIND = MappingProxyType({"started": "started", "edit applied": "edit", "stop": "stop", "finished": "finished"})
+#: Стоп по просьбе человека (``stop_music``, ``dj_set stop``). ``new_set`` / ``request_music`` / ``music_library`` --
+#: деку занял другой заказ: это не «выключи».
+USER_STOP = "user_stop"
+#: Поле шага (пишет генератор марафона, таблица ``RESULT_KINDS``): какой сверкой судить результат.
+COMPARE_FIELD = "music_compare"
+
+
+def music_event(line: str) -> Optional[MusicEvent]:
+    """Событие деки в строке лога или ``None`` (нет метки времени робота -- не событие: порядок не восстановить)."""
+    found, ts = MUSIC_EVENT_RE.search(line), _ts(line)
+    if found is None or ts is None:
+        return None
+    word, track_id, rest = found.groups()
+    kind = _EVENT_KIND[word]
+    if kind in ("stop", "finished"):
+        reason = _REASON_RE.search(rest)
+        return MusicEvent(ts, kind, track_id, reason=reason.group(1) if reason else "")
+    bpm = _BPM_RE.search(rest)
+    return MusicEvent(ts, kind, track_id, float(bpm.group(1))) if bpm else None
+
+
+def deck_after(events: List[MusicEvent], deck: Optional[MusicEvent] = None) -> Optional[MusicEvent]:
+    """Что играет после ``events`` (начиная с ``deck``): ``started`` ставит трек, ``edit`` того же трека меняет его
+    ``bpm``, ``stop``/``finished`` снимают деку."""
+    for event in events:
+        if event.kind == "edit":
+            deck = event if deck is not None and deck.track_id == event.track_id else deck
+        else:
+            deck = event if event.kind == "started" else None
+    return deck
+
+
+def _deck(event: Optional[MusicEvent]) -> str:
+    return f"{event.track_id} bpm={event.bpm:g}" if event is not None else "тишина"
+
+
+def _faster(before: MusicEvent, end: Optional[MusicEvent], _window: List[MusicEvent]) -> Tuple[bool, str]:
+    """«Ускорь»: ТОТ ЖЕ трек (правка на такте, #4029) с темпом выше игравшего, а не новый трек."""
+    if end is None:
+        return False, "к концу шага музыка не играет"
+    if end.track_id != before.track_id:
+        return False, "трек сменился -- новый трек, а не правка играющего"
+    if end.bpm <= before.bpm:
+        return False, "темп не вырос"
+    return True, ""
+
+
+def _stopped(_before: MusicEvent, end: Optional[MusicEvent], window: List[MusicEvent]) -> Tuple[bool, str]:
+    """«Выключи»: дека снята стопом человека с настоящим треком, и к концу шага ничего не играет."""
+    if end is not None:
+        return False, "к концу шага музыка играет"
+    if not any(e.kind == "stop" and e.reason == USER_STOP and e.track_id != "None" for e in window):
+        return False, f"нет стопа человека (reason={USER_STOP}) с треком на деке"
+    return True, ""
+
+
+#: Сверки результата с музыкой до шага: поле ``music_compare`` -> ``(до, в конце шага, события шага) -> (ok, почему)``.
+COMPARES: Mapping[str, Callable[[MusicEvent, Optional[MusicEvent], List[MusicEvent]], Tuple[bool, str]]] = \
+    MappingProxyType({"faster": _faster, "stopped": _stopped})
+
+
+def compare_kind(step: Mapping[str, Any]) -> str:
+    """Сверка шага (``""`` -- её нет); чужое имя -- ``ValueError``: молча засчитать шаг без сверки нельзя."""
+    raw = step.get(COMPARE_FIELD)
+    if raw is None:
+        return ""
+    if raw not in COMPARES:
+        raise ValueError(f"{step.get('label', '?')}: {COMPARE_FIELD} -- одно из {list(COMPARES)}, а не {raw!r}")
+    return str(raw)
+
+
+def epoch_of(stamp: str) -> Optional[float]:
+    """Начало окна шага: секунды epoch или ``STEP_BEFORE`` харнесса (``2026-10-27T23:24:30Z``, UTC робота)."""
+    try:
+        return float(stamp)
+    except ValueError:
+        pass
+    try:
+        return datetime.strptime(stamp, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc).timestamp()
+    except ValueError:
+        return None
+
+
+def music_compare(kind: str, text: str, since: float) -> Dict[str, object]:
+    """Лог робота за акт (первая строка -- часы робота) и начало окна шага -> ``fetch`` (0 -- лог не прочитан,
+    сверка не доказана), ``ok`` (1 -- результат того вида, который просили), ``detail`` (что играло до и в конце)."""
+    now, lines = split_input(text)
+    if now is None:
+        return {"fetch": 0, "ok": 0, "detail": "лог робота не прочитан -- сверка не доказана"}
+    events = [e for e in (music_event(line) for line in lines) if e is not None]
+    before = deck_after([e for e in events if e.ts < since])
+    window = [e for e in events if e.ts >= since]
+    end = deck_after(window, before)
+    seen = f"до шага {_deck(before)}, в конце шага {_deck(end)}"
+    if before is None:
+        return {"fetch": 1, "ok": 0, "detail": f"до шага музыка не играла -- сверять не с чем ({seen})"}
+    ok, why = COMPARES[kind](before, end, window)
+    return {"fetch": 1, "ok": int(ok), "detail": f"{why}: {seen}" if why else seen}
 
 
 # -- CLI ---------------------------------------------------------------------------------------------------
@@ -612,12 +753,16 @@ def _cmd_skips(opts: Dict[str, str], flags: List[str]) -> int:
     return 0
 
 
+def _step_of(opts: Dict[str, str]) -> Mapping[str, Any]:
+    """Шаг ``--label`` сценария ``--scenario`` (нет такого -- пустой: правил у него нет)."""
+    steps = _load_scenario(opts["--scenario"]).get("steps", [])
+    return next((s for s in steps if isinstance(s, Mapping) and s.get("label") == opts["--label"]), {})
+
+
 def _cmd_skip(opts: Dict[str, str], flags: List[str]) -> int:
     """``--scenario F --label L`` < лог акта -> ``fetch=`` / ``skip=`` / ``evidence=``; у шага нет правила -- ``skip=-``."""
     try:
-        steps = _load_scenario(opts["--scenario"]).get("steps", [])
-        step = next((s for s in steps if isinstance(s, Mapping) and s.get("label") == opts["--label"]), {})
-        rule = skip_rule(step)
+        rule = skip_rule(_step_of(opts))
     except (OSError, ValueError, AttributeError) as exc:
         sys.stderr.write(f"{opts['--scenario']}: {exc}\n")
         return 2
@@ -625,14 +770,34 @@ def _cmd_skip(opts: Dict[str, str], flags: List[str]) -> int:
     return 0
 
 
+def _cmd_compare(opts: Dict[str, str], flags: List[str]) -> int:
+    """``--scenario F --label L`` -> ``compare=<сверка|->``; с ``--since S`` (начало окна шага) и логом деки за акт на
+    stdin -- ещё ``fetch=`` / ``ok=`` / ``detail=``. Кривое поле или ``--since`` -- rc 2 и причина в stderr."""
+    try:
+        kind = compare_kind(_step_of(opts))
+    except (OSError, ValueError, AttributeError) as exc:
+        sys.stderr.write(f"{opts['--scenario']}: {exc}\n")
+        return 2
+    out: Dict[str, object] = {"compare": kind or "-"}
+    if kind and opts["--since"]:
+        since = epoch_of(opts["--since"])
+        if since is None:
+            sys.stderr.write(f"--since {opts['--since']!r}: ни epoch, ни YYYY-MM-DDTHH:MM:SSZ\n")
+            return 2
+        out.update(music_compare(kind, sys.stdin.read(), since))
+    _emit(out)
+    return 0
+
+
 COMMANDS: Mapping[str, Callable[[Dict[str, str], List[str]], int]] = MappingProxyType({
     "state": _cmd_state, "quiet": _cmd_quiet, "anchor": _cmd_anchor,
     "policy": _cmd_policy, "recovery": _cmd_recovery, "session": _cmd_session,
-    "mark": _cmd_mark, "skips": _cmd_skips, "skip": _cmd_skip,
+    "mark": _cmd_mark, "skips": _cmd_skips, "skip": _cmd_skip, "compare": _cmd_compare,
 })
 USAGE = ("usage: e2e_events.py state|quiet|anchor --engine v1|v2 [--silent-ok] [--barge] [--waited S --accept-window S]"
          " [--perform-ceiling S] [--after A --n N] | policy --scenario FILE | recovery [--kind K] | session < report.json"
-         " | mark --kind K --where W [--detail D] | skips --scenario FILE | skip --scenario FILE --label L < log\n")
+         " | mark --kind K --where W [--detail D] | skips --scenario FILE | skip --scenario FILE --label L < log"
+         " | compare --scenario FILE --label L [--since S < log]\n")
 
 
 def main(argv: List[str]) -> int:
@@ -645,7 +810,8 @@ def main(argv: List[str]) -> int:
         except (AttributeError, ValueError):
             pass
     opts = {"--engine": "v1", "--after": "speech_started", "--n": "1", "--waited": "0", "--accept-window": "0",
-            "--scenario": "", "--kind": "", "--perform-ceiling": "", "--where": "", "--detail": "", "--label": ""}
+            "--scenario": "", "--kind": "", "--perform-ceiling": "", "--where": "", "--detail": "", "--label": "",
+            "--since": ""}
     flags = argv[2:]
     for i, tok in enumerate(flags):
         if tok in opts and i + 1 < len(flags):
