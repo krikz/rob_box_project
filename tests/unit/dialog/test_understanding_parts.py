@@ -391,6 +391,16 @@ def test_paired_counts_wins_and_losses_on_the_same_run_and_step():
     assert ur.paired(variants)["C"] == {"won": 1, "lost": 1, "same": 1}
 
 
+@pytest.mark.parametrize("before, after, calls, spent", [
+    ({"USD": 6.46, "CNY": -1.02}, {"CNY": -1.02, "USD": 5.52}, 3823, "0.9400 USD"),  # порядок записей не важен
+    ({"CNY": -1.02}, {"CNY": -1.02}, 125, None),  # не сдвинулся при вызовах - «не измерено», а не 0
+    (None, {"USD": 1.0}, 10, None),
+])
+def test_deepseek_spend_by_currency(before, after, calls, spent):
+    out = um.deepseek_spend(before, after, calls)
+    assert out["spent"] == spent and ("не измерен" in out["note"]) == (spent is None)
+
+
 def test_jev_budget_is_shared_over_all_passes(monkeypatch):
     import rob_box_harness.decision as decision
 

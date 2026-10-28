@@ -365,29 +365,37 @@ def price_line(stats: Dict[str, Any]) -> Dict[str, Any]:
     return {"usd": usd, "price_per_mtok_in_out": [price_in, price_out], "note": "PRICE_PER_MTOK jev_eval.py, НЕ СВЕРЕНО с тарифом"}
 
 
-def deepseek_balance() -> Optional[Dict[str, Any]]:
-    """Баланс аккаунта DeepSeek (``/user/balance``): ключ из env, наружу - только валюта и сумма. Сбой - ``None``."""
+def deepseek_balance() -> Optional[Dict[str, float]]:
+    """Баланс аккаунта DeepSeek (``/user/balance``) по валютам: ``{валюта: сумма}``. Записей в ответе бывает несколько
+    (USD и CNY), порядок не постоянный - поэтому по валюте, а не первой записью. Ключ из env не печатается. Сбой - None."""
     key = os.environ.get("DEEPSEEK_API_KEY", "")
     if not key:
         return None
     request = urllib.request.Request(DEEPSEEK_BALANCE_URL, headers={"Authorization": f"Bearer {key}"})
     try:
         with urllib.request.urlopen(request, timeout=10) as resp:  # noqa: S310 — фиксированный https-адрес
-            info = json.loads(resp.read().decode("utf-8"))["balance_infos"][0]
+            infos = json.loads(resp.read().decode("utf-8"))["balance_infos"]
     except Exception:  # noqa: BLE001 — баланс справочный: нет ответа - так и пишем, прогон не роняем
         return None
-    return {"currency": str(info.get("currency")), "total": float(info.get("total_balance"))}
+    return {str(i.get("currency")): float(i.get("total_balance")) for i in infos}
 
 
-def deepseek_spend(before: Optional[Dict[str, Any]], after: Optional[Dict[str, Any]], calls: int) -> Dict[str, Any]:
-    """Цена прогона по балансу аккаунта. Баланс не получен или не сдвинулся при вызовах - цена «не измерена», а не 0."""
-    if before is None or after is None or before["currency"] != after["currency"]:
+def _money(balance: Dict[str, float]) -> str:
+    return ", ".join(f"{v:.4f} {k}" for k, v in sorted(balance.items()))
+
+
+def deepseek_spend(before: Optional[Dict[str, float]], after: Optional[Dict[str, float]], calls: int) -> Dict[str, Any]:
+    """Цена прогона по балансу аккаунта, по каждой валюте. Баланс не получен или не сдвинулся при вызовах - цена
+    «не измерена», а не 0."""
+    common = sorted(set(before or {}) & set(after or {}))
+    if not common:
         return {"before": before, "after": after, "spent": None, "note": "баланс не получен - цена не измерена"}
-    out = {"before": f"{before['total']:.4f} {before['currency']}", "after": f"{after['total']:.4f} {after['currency']}"}
-    if calls and before["total"] == after["total"]:
+    out = {"before": _money(before or {}), "after": _money(after or {})}
+    spent = {c: (before or {})[c] - (after or {})[c] for c in common}
+    if calls and not any(spent.values()):
         return {**out, "spent": None, "note": f"баланс не сдвинулся за {calls} вызовов (обновляется с задержкой или "
                                               f"аккаунт в минусе) - по балансу цена не измерена"}
-    return {**out, "spent": f"{before['total'] - after['total']:.4f} {before['currency']}",
+    return {**out, "spent": _money({c: v for c, v in spent.items() if v}),
             "note": "разница баланса аккаунта до и после прогона; ключ общий - в неё входят и чужие вызовы этого ключа"}
 
 
