@@ -51,8 +51,9 @@ from rob_box_music.theme import ThemeProfile, match_style_text, match_window_tex
 
 from ..base import MCPTool, MCPToolParameter, MCPToolResult, ToolExecutionType
 from rob_box_music.request_slots import RequestSlots
-from rob_box_music.source import (CACHE, GENERATE, SYNTH, Route, SourceAsk, ask_engine, blank_engine, cache_text,
-                                  decline_text, engine_route, gen_kind, route_note, settle_engine, source_ask)
+from rob_box_music.source import (CACHE, GEN_KINDS, GENERATE, SYNTH, Route, SourceAsk, ask_engine, blank_engine,
+                                  cache_text, decline_text, engine_route, gen_kind, route_note, settle_engine,
+                                  source_ask)
 from rob_box_music.works import RTTTL, SCORE, key_slot
 
 from .backing_deck import BACKING_INTENT, BackingDeck, backing_order
@@ -107,8 +108,8 @@ NOT_A_SET_REQUEST = "not_a_set_request"
 #: Код отказа ``request_music``/``generate_music``: путь музыки не нашёл, чем играть просьбу (ADR-0158 PR-3); фразу
 #: строит ``rob_box_music.source.decline_text`` (``media_phrases.SOURCE_DECLINED_REASON``, равенство держит тест).
 SOURCE_DECLINED = "music_source"
-#: ``generate_music``: что просили (``kind``) и в каком жанре (``style``, ключи ``knowledge.GEN_STYLES``).
-GEN_KINDS = ("instrumental", "song", "robot_song")
+#: ``generate_music``: что просили (``kind`` — ``source.GEN_KINDS``, одна таблица видов) и в каком жанре (``style``,
+#: ключи ``knowledge.GEN_STYLES``).
 GEN_STYLE_CHOICES = ("", *kn.GEN_STYLES)
 
 
@@ -765,8 +766,10 @@ class RequestMusicTool(MCPTool):
 
     def warm(self) -> threading.Thread:
         """Прогреть путь одиночной пьесы в фоне (#3577: первый заказ после рестарта — 4.6 с при бюджете 2.5 с):
-        индекс партитур, каталог RTTTL, история — до первого заказа, старт ноды не ждёт."""
-        thread = threading.Thread(target=self._pieces.warm, name="rbx-piece-warm", daemon=True)
+        индекс партитур, каталог RTTTL, история, указатель звучаний разбора на слух (#4016) — до первого заказа, старт
+        ноды не ждёт."""
+        thread = threading.Thread(target=warm_order, args=(self._pieces, self._slots), name="rbx-piece-warm",
+                                  daemon=True)
         thread.start()
         return thread
 
@@ -983,6 +986,17 @@ class RequestMusicTool(MCPTool):
                          f"{self._pieces.memory.recent()} → {_piece_line(pick, played)}; "
                          f"отказы: {'; '.join(reasons) or '—'}")
         return _classic_outcome(self._owner, work, (pick, played, reasons, count), slot_lead)
+
+
+def warm_order(pieces: PieceChain, slots: Optional[RequestSlotParser]) -> None:
+    """Прогрев заказа пьесы (в фоне, ``RequestMusicTool.warm``): цепочка пьес (#3577), затем указатель звучаний разбора
+    на слух (#4016). Упал — заказ построит указатель сам, нода не падает."""
+    pieces.warm()
+    try:
+        if slots is not None:
+            slots.warm()
+    except Exception as exc:  # noqa: BLE001 — прогрев не держит ноду
+        _LOG.warning(f"⚠️ [request-slots] прогрев указателя звучаний упал: {type(exc).__name__}: {exc}")
 
 
 def _classic_outcome(owner: Any, work: str, chosen: Tuple[Any, Dict[str, Any], List[str], int],

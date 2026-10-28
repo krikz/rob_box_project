@@ -5,6 +5,9 @@
 студия песни была подключена (тот же вечер — каверы KIE). Причина: ``SourceRouter._executable`` считал песню
 исполнимой только при ``route.work is None``. Теперь «не подключено» — только когда исполнителя нет, а песня на
 названное произведение — своя причина (``named_song``) до выбора, с фразой кода и строкой лога с ``work``.
+
+Ревью PR #4124: «названное» — это пьеса, чьё название несёт понятые слова заказа (``CoverWork.named``,
+``piece.named_pick``), а не любая собранная пьеса: «спой что-нибудь», «спой народную песню» — песня робота.
 """
 
 from __future__ import annotations
@@ -16,6 +19,7 @@ import pytest
 
 from rob_box_mcp_tools.base import MCPToolResult
 from rob_box_mcp_tools.engine.gen.library import GeneratedMusicLibrary
+from rob_box_mcp_tools.engine.search import ThemeHits, ThemeQuery, part_query
 from rob_box_mcp_tools.engine.song_order import SongOrder
 from rob_box_mcp_tools.engine.instrumental_order import InstrumentalOrder
 from rob_box_mcp_tools.engine.source_route import SourceRouter
@@ -32,7 +36,9 @@ from .test_piece_fail_open import Scores
 
 pytestmark = pytest.mark.unit
 
-HILL = CoverWork("Running Up That Hill", "runningu", "balalaika", "Running Up That Hill")
+HILL = CoverWork("Running Up That Hill", "runningu", "balalaika", "Running Up That Hill", named=True)
+#: Та же пьеса, но подобранная кодом (жанр, «что-нибудь»), а не названная человеком.
+PICKED = replace(HILL, named=False)
 SING = SourceAsk(vocal=True)
 
 
@@ -79,6 +85,8 @@ def test_sing_a_named_work_has_its_own_reason_before_the_choice():
     assert [o.id for o in options] == [f"decline:{NAMED_SONG}"] and reason == NAMED_SONG
     options, reason = source_candidates(SING, ctx, piece=True)  # пьеса не нашлась — песня на тему, как было
     assert [o.id for o in options] == ["generate:song:V6"] and reason == ""
+    options, reason = source_candidates(SING, ctx, piece=True, work=PICKED)  # пьесу подобрал код — песня робота
+    assert [o.id for o in options] == ["generate:song:V6"] and reason == ""
     options, _ = source_candidates(SourceAsk(), replace(ctx, cover_ready=True), piece=True, work=HILL)
     assert "generate:cover:V6" in [o.id for o in options]  # не поют — кавер, как было
 
@@ -90,6 +98,8 @@ def test_route_log_names_the_work_and_the_true_reason():
     line = log.lines[-1]
     assert "[source]" in line and "work=«Running Up That Hill»" in line
     assert f"→ decline:{NAMED_SONG}" in line and f"gen={NAMED_SONG}" in line and "not_wired" not in line
+    router.route(SING, piece=True, work=PICKED)  # пьесу подобрал код: лог не утверждает, что её назвали
+    assert "piece=«Running Up That Hill»" in log.lines[-1] and "work=" not in log.lines[-1]
 
 
 def test_decline_phrase_is_built_from_the_reason_and_offers_the_melody():
@@ -113,19 +123,23 @@ def test_song_and_instrumental_orders_take_their_kinds_only():
 
 # ── заказ целиком: «спой валькирии» при живых студии и кавере ───────────────────────────────────────────────────
 
-def _request(tmp_path, studio, maker, played):
+def _echo(word):
+    """Подставной поиск: находки фикстуры (валькирии), но слова заказа — свои, а не «валькирии» на любую просьбу:
+    пьеса без названия собирается, как у кода, по «ближайшему»."""
+    return ThemeHits(tuple(HITS), query=ThemeQuery(word, (part_query(None, word),)))
+
+
+def _request(tmp_path, studio, maker, played, words=lambda word: _both(HITS, False)):
     rig = _rig()
-    dj = DjSetTool(None, rig.owner, melodies=lambda ids: {}, finder=lambda theme: _both(HITS, False),
-                   seed=lambda: 4242, scores=Scores())
+    dj = DjSetTool(None, rig.owner, melodies=lambda ids: {}, finder=words, seed=lambda: 4242, scores=Scores())
 
     def play(track_id):
         played.append(track_id)
         return MCPToolResult(success=True, data={"ok": True, "track_id": f"gen_{track_id[:8]}_1"})
 
     return RequestMusicTool(None, rig.owner, dj, melodies=lambda ids: {}, seed=lambda: 5, records=_records,
-                            words=lambda word: _both(HITS, False),
-                            gen_library=lambda: GeneratedMusicLibrary(str(tmp_path / "lib")), play_cached=play,
-                            cover=maker, speak=lambda text: None, songs=studio), rig
+                            words=words, gen_library=lambda: GeneratedMusicLibrary(str(tmp_path / "lib")),
+                            play_cached=play, cover=maker, speak=lambda text: None, songs=studio), rig
 
 
 def test_sing_a_named_piece_declines_with_the_true_reason_and_starts_nothing(tmp_path):
@@ -138,6 +152,29 @@ def test_sing_a_named_piece_declines_with_the_true_reason_and_starts_nothing(tmp
     message = result.data["message"]
     assert message.startswith("Спеть «") and REASON_WORDS[NAMED_SONG] in message and "не подключена" not in message
     assert studio.requests == [] and maker.orders == [] and played == [] and not rig.owner.is_playing()
+
+
+@pytest.mark.parametrize("intent, genre, text", [("track", "folk", "спой народную песню"),
+                                                 ("melody", None, "спой что-нибудь")])
+def test_sing_with_a_piece_the_code_picked_orders_a_song_not_named_song(tmp_path, intent, genre, text):
+    """Ревью #4124: пьеса собралась, но человек её не называл (жанр, «что-нибудь») — не «чужие песни по названию я не
+    пою», а песня робота (студия подключена). Признак «назвал» — слова заказа в названии пьесы (``played["named"]``),
+    а не «пьеса собралась»."""
+    studio, maker, played = FakeStudio(), FakeMaker(), []
+    req, _rig_ = _request(tmp_path, studio, maker, played, words=_echo)
+    result = req.execute(intent=intent, genre=genre, text=text, heard_text=f"Робот, {text}")
+    assert result.data.get("route") != f"decline:{NAMED_SONG}", result.data
+    assert REASON_WORDS[NAMED_SONG] not in str(result.error or "") + str(result.data.get("message") or "")
+    assert len(studio.requests) == 1 and maker.orders == []
+
+
+def test_named_piece_is_marked_named_and_a_picked_one_is_not(tmp_path):
+    """``played["named"]`` (``piece.named_pick``) — слова названия заказа есть в названии собранной пьесы."""
+    studio, maker, played = FakeStudio(), FakeMaker(), []
+    named, _ = _request(tmp_path, studio, maker, played)
+    picked, _ = _request(tmp_path, studio, maker, played, words=_echo)
+    assert named._stage_piece("сыграй валькирии", None)["played"]["named"] is True  # noqa: SLF001
+    assert picked._stage_piece("сыграй что-нибудь", None)["played"]["named"] is False  # noqa: SLF001
 
 
 def test_play_the_same_piece_still_goes_the_cover_way(tmp_path):

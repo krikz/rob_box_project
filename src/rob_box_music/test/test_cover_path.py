@@ -5,6 +5,8 @@
 есть наш материал мелодии (RTTTL/партитура), а не «общественное достояние»: «главная тема Звёздных войн» — кавер.
 """
 
+from dataclasses import replace
+
 import pytest
 
 from rob_box_music import knowledge as kn
@@ -127,7 +129,18 @@ def test_vocal_ask_keeps_the_old_path():
     """«спой калинку» — не кавер (кавер инструментальный): поведение PR-3 — синтез-трека в пути тула нет (спеть вживую
     под синт — путь пения диалога, #4079), генерации песни нет. Причина — своя (#4015): песня робота — свой текст,
     чужую по названию он не поёт; не «генерация не подключена» (24.10 так отвечал и при живой студии)."""
-    assert ids("спой полёт валькирий", RICH, VALKYRIES) == {"decline:named_song"}
+    assert ids("спой полёт валькирий", RICH, replace(VALKYRIES, named=True)) == {"decline:named_song"}
+
+
+def test_sing_with_a_piece_the_code_picked_is_not_a_named_song():
+    """Пьесу подобрал код («спой что-нибудь», «спой народную песню»: жанр, а не название, #4015 ревью) — причина
+    ``named_song`` («чужие песни по названию я не пою») была бы неправдой: человек ничего не называл. Песня робота,
+    как без пьесы; генерации нет — честный отказ генерации, а не «по названию»."""
+    ctx = SourceContext(gen_ready=True, day_left=120.0)
+    assert {o.id for o in source_candidates(source_ask("спой что-нибудь"), ctx, True, VALKYRIES)[0]} == \
+        {"generate:song:V6"}
+    options, reason = source_candidates(source_ask("спой что-нибудь"), SourceContext(), True, VALKYRIES)
+    assert reason != "named_song" and all(o.id != "decline:named_song" for o in options)
 
 
 def test_phrases_are_built_by_code():

@@ -12,9 +12,9 @@
 живой прогон 14.10 — «сгенерируй рок» уходил в кэш с ``not_wired``).
 
 Одна строка лога на заказ: ``[source] <просьба> кандидаты=[…] → <путь> (<кто выбрал>) gen=<почему нет>
-[work=«<названное>»]`` (``work`` — что назвали, #4015; в конце строки: начало строки читает генератор марафона,
-``tests/unit/test_gen_night_marathon_results.py``); сет — по строке на каждый трек (:meth:`SourceRouter.route_slots`,
-решение Шифу 14.10: кэш → генерация → синтез на каждый трек).
+[work=«<названное>»|piece=«<подобранное кодом>»]`` (``work`` — что назвали, #4015; в конце строки: начало строки
+читает генератор марафона, ``tests/unit/test_gen_night_marathon_results.py``); сет — по строке на каждый трек
+(:meth:`SourceRouter.route_slots`, решение Шифу 14.10: кэш → генерация → синтез на каждый трек).
 """
 
 from __future__ import annotations
@@ -82,8 +82,9 @@ def day_left(library: Any) -> float:
 
 
 def _named(work: Optional[CoverWork]) -> str:
-    """Что назвали — в строку лога ``[source]`` (#4015: причину отказа видно без чтения кода): `` work=«…»`` или «»."""
-    return f" work=«{work.title}»" if work is not None else ""
+    """Пьеса заказа — в строку лога ``[source]`` (#4015: причину отказа видно без чтения кода): названная человеком —
+    `` work=«…»``, подобранная кодом (жанр, «что-нибудь», ``CoverWork.named``) — `` piece=«…»``; пьесы нет — «»."""
+    return f" {'work' if work.named else 'piece'}=«{work.title}»" if work is not None else ""
 
 
 def _set_attempt(_route: Route) -> str:

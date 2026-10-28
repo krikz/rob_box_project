@@ -218,6 +218,8 @@ def _collect_class_constants(tree: ast.Module) -> dict[str, dict[str, ast.AST]]:
 SHARED_CONSTANT_MODULES: tuple[tuple[pathlib.Path, tuple[str, ...] | None], ...] = (
     (TOOLS_DIR.parent / "animations.py", None),
     (REPO_ROOT / "src" / "rob_box_dialog" / "rob_box_dialog" / "knowledge.py", ("KNOWN_ANIMATIONS",)),
+    # виды генерации ``generate_music`` — одна таблица с путём музыки (#4015 ревью: не держать вторую в tools_v2)
+    (REPO_ROOT / "src" / "rob_box_music" / "rob_box_music" / "source.py", ("GEN_KINDS",)),
 )
 
 

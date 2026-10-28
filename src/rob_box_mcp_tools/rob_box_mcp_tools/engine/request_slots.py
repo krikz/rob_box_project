@@ -44,7 +44,7 @@ from rob_box_music.theme_queries import QueriesInvalid
 from rob_box_music.works import WorkRef, WorkWord, theme_phrase
 
 from .piece import work_word
-from .search import Heard, Term, heard_title, terms
+from .search import Heard, Term, heard_title, terms, warm_heard
 from .theme_links import Ask, in_time, tool_payload, verify
 
 _LOG = logging.getLogger(__name__)
@@ -81,10 +81,15 @@ class Catalog:
                 return word.capitalize()
         return ""
 
-    def heard(self, text: str) -> Heard:
-        """Название заказа на слух (``search.heard_title``, #4016): слова названия, сколько из них архив знает, и
-        запись, чьё название звучит ими, когда непонятых больше."""
-        return heard_title(self._library(), text)
+    def heard(self, text: str, said: str = "") -> Heard:
+        """Название заказа на слух (``search.heard_title``, #4016): слова названия ``text``, сколько из них архив
+        знает, и запись, чьё название звучит ими (с жанровым словом перед названием в словах человека ``said``), когда
+        непонятых больше."""
+        return heard_title(self._library(), text, said)
+
+    def warm(self) -> int:
+        """Указатель звучаний архива для разбора на слух — заранее (``search.warm_heard``)."""
+        return warm_heard(self._library())
 
     def work(self, title: str, composer: str) -> bool:
         """Произведение есть в каталоге: запись RTTTL со всеми словами названия или партитура с полным совпадением."""
@@ -118,13 +123,14 @@ class RequestSlotParser:
     def parse(self, text: str, work: str, command: Any = None) -> rs.RequestSlots:
         """Слоты заказа: ``work`` — название от грамматики (без глагола и тональности), ``text`` — слова человека,
         ``command`` — ``MediaCommand`` (инструмент, стиль, настроение грамматики). Непонятых слов названия больше
-        понятых (#4016) — сначала название по звучанию (``Catalog.heard``, без LLM); не нашлось, а LLM не подтвердила
-        ни произведение, ни автора — ``doubt``: слова, как услышаны, вместо поиска по одним понятым."""
+        понятых (#4016; пояснение после названия — «дарта вейдера», «только быстрее» — не в счёт) — сначала название по
+        звучанию (``Catalog.heard``, без LLM); не нашлось, а LLM не подтвердила ни произведение, ни автора — ``doubt``:
+        слова, как услышаны, вместо поиска по одним понятым."""
         started = self._clock()
         words = list(self._words(work))
         missing = unknown(words)
         code = self._code(work, words, missing, command)
-        heard = self._catalog.heard(work)
+        heard = self._catalog.heard(work, text)
         if heard.record is not None:
             slots, source = _sounded(code, heard), "sound"
         else:
@@ -134,6 +140,15 @@ class RequestSlotParser:
         slots = replace(slots, source=source, ms=(self._clock() - started) * 1000.0)
         self._note(work, slots, source)
         return slots
+
+    def warm(self) -> float:
+        """Прогрев разбора на слух (#4016): указатель звучаний архива строится при старте в фоне
+        (``RequestMusicTool.warm``), а не в первом заказе с непонятым названием (там 0.15–1 с); мс — в лог."""
+        started = self._clock()
+        count = self._catalog.warm()
+        ms = (self._clock() - started) * 1000.0
+        self._log().info(f"🧩 [request-slots] прогрев: указатель звучаний ({count}) {ms:.0f} мс")
+        return ms
 
     def _resolved(self, text: str, work: str, code: rs.RequestSlots, words: Sequence[Term],
                   missing: Sequence[Term]) -> Tuple[rs.RequestSlots, str]:

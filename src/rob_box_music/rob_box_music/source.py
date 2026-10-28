@@ -80,14 +80,19 @@ REASON_WORDS = {
     # чужих слов в ней нет; это не «не подключено» и не провал сервиса
     "named_song": "чужие песни по названию я не пою — только свои",
 }
-#: Причина «спеть названное произведение нельзя» (:data:`REASON_WORDS`): назван каталогом найденный ``CoverWork``,
-#: а петь просили — кандидата песни нет до выбора (:func:`source_candidates`), фраза — :func:`decline_text`.
+#: Причина «спеть названное произведение нельзя» (:data:`REASON_WORDS`): человек назвал произведение, каталог его
+#: нашёл (``CoverWork.named``), а петь просили — кандидата песни нет до выбора (:func:`source_candidates`), фраза —
+#: :func:`decline_text`.
 NAMED_SONG = "named_song"
 #: Что робот может с названным произведением вместо песни: мелодия нашлась в каталоге (``CoverWork`` строится только
 #: из собранной пьесы), её сыграет «сыграй <название>».
 NAMED_SONG_OFFER = "Могу сыграть её мелодию."
+#: Виды генерации, которые заказывает тул ``generate_music`` (одна таблица видов; кавер — только по пьесе заказа,
+#: ADR-0158 PR-4). Литерал: enum схемы тула читает генератор каталога (``tools/gen_tool_catalog.py``,
+#: ``SHARED_CONSTANT_MODULES``).
+GEN_KINDS: Tuple[str, ...] = ("instrumental", "song", "robot_song")
 #: Виды генерации с пением (``fork_gen_kind``): их исполняет студия песни (``engine.song_order``).
-SONG_GEN_KINDS: Tuple[str, ...] = ("song", "robot_song")
+SONG_GEN_KINDS: Tuple[str, ...] = tuple(kind for kind in GEN_KINDS if kind != "instrumental")
 INSTRUCTIONS = ("Выбери, откуда взять музыку роботу: своё (синтез, сразу и бесплатно), вживую (робот поёт сам под "
                 "синт: сразу и бесплатно, не сохранится), сгенерированное раньше (кэш) или новая генерация (кредиты и "
                 "ожидание 1-3 минуты, сохранится в библиотеке). Учитывай заказ и последние реплики: просили сохранить "
@@ -1070,12 +1075,14 @@ def set_genres(text: str) -> Tuple[Tuple[str, ...], Tuple[str, ...]]:
 class CoverWork:
     """Пьеса заказа для кавера (ADR-0158 §2.9, В14): каталожное название (``work_id`` кэша), наш материал мелодии
     (id мелодии RTTTL/партитуры, из которой собран лид; «» — мелодии нет, кавера нет), инструмент заказа (ключ
-    ``INSTRUMENTS``), название для фразы."""
+    ``INSTRUMENTS``), название для фразы; ``named`` — пьесу назвал человек (слова названия заказа — в её названии,
+    ``engine.piece.named_pick``), а не код подобрал её по жанру, автору или «ближайшему» («спой что-нибудь», #4015)."""
 
     title: str
     material: str
     instrument: str = ""
     spoken: str = ""
+    named: bool = False
 
 
 def cover_style_key(work: CoverWork, ask: SourceAsk) -> str:
@@ -1130,8 +1137,9 @@ def source_candidates(ask: SourceAsk, ctx: SourceContext, piece: bool = False,
     """``(кандидаты, почему генерации нет)``. Порядок — синтез, генерация, кэш; звучащих нет — ``decline:<причина>``
     (отказ — только когда генерации физически нет: ключ, деньги, сервис; фраза предлагает другую клетку вилки).
     Пьеса с ``work`` (петь не просили) — вместо генерации кандидаты кавера (:func:`_cover_options`, ADR-0158 PR-4).
-    Пьеса с ``work`` и просьба спеть («спой Running Up That Hill», #4015) — кандидата песни нет, причина
-    :data:`NAMED_SONG`: песня робота — свой текст, чужих слов у него нет (ADR-0158 §3.4); это не ``not_wired``.
+    Пьесу назвал человек (``work.named``) и просит спеть («спой Running Up That Hill», #4015) — кандидата песни нет,
+    причина :data:`NAMED_SONG`: песня робота — свой текст, чужих слов у него нет (ADR-0158 §3.4); это не ``not_wired``.
+    Пьесу подобрал код («спой что-нибудь», «спой народную песню») — песня робота, как без пьесы.
     Вилка Шифу 27.10 (2×2): синт назван и петь просят (``ask.live`` — #4079, или пение от тула генерации) — один
     ``live:<вид>``: поёт робот сам (``perform`` диалога); синт назван без пения — один синтез (жанр, который синт не
     играет, — ближайшим стилем, :func:`synth_key`)."""
@@ -1142,7 +1150,7 @@ def source_candidates(ask: SourceAsk, ctx: SourceContext, piece: bool = False,
     if piece and work is not None and not ask.vocal:
         covers, reason = _cover_options(ask, ctx, work)
         options = [o for o in [synth, *covers] if o is not None]
-    elif piece and work is not None:  # петь просили (синтез не поёт — его кандидата нет): песни на чужое нет
+    elif piece and work is not None and work.named:  # спеть названное (синтез не поёт): песни на чужое нет
         options, reason = [], NAMED_SONG
     else:
         gen, reason = _gen_option(ask, ctx)
@@ -1385,4 +1393,4 @@ __all__ = ["CACHE", "COVER_SLOT", "CacheTrack", "CoverWork", "DECLINE", "cover_f
 __all__ += ["BY_CODE", "LIVE", "LIVE_OFFER", "LIVE_OFFER_BY_REASON", "LIVE_TOOL_TEXT", "SingContext", "SingRoute", "choose_sing",
             "sing_candidates", "sing_kind", "sing_markers", "synth_key"]
 __all__ += ["fork_cell", "fork_gen_kind"]
-__all__ += ["NAMED_SONG", "NAMED_SONG_OFFER", "SONG_GEN_KINDS", "named_song_text"]
+__all__ += ["GEN_KINDS", "NAMED_SONG", "NAMED_SONG_OFFER", "SONG_GEN_KINDS", "named_song_text"]
