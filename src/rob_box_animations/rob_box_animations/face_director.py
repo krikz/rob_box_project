@@ -59,22 +59,30 @@ def blend(a: Frame, b: Frame, k: float) -> Frame:
 
 
 class MouthTrack:
-    """Mouth by the envelope of the real TTS audio (§5.5.4): window ``(now - t0) / frame``."""
+    """Mouth by the envelope of the real TTS audio (§5.5.4): window ``(now - t0) / frame``.
+
+    A streamed reply (#3930) sends its chunks faster than they sound, each with its own ``t0`` ahead of the clock.
+    So the track forgets a chunk by the playback clock ``now`` (it has sounded ``KEEP_S`` ago), never by the ``t0``
+    of the newest chunk or by a count: those would throw out the chunks that sound now (#4144)."""
 
     ATTACK, RELEASE = 0.6, 0.35   # share of the step to the target per 40 ms (as in the lab)
     GATE = 0.12                   # share of the chunk peak below which the mouth is shut
+    KEEP_S = 1.0                  # a chunk is kept this long after its end: a late tick still finds its window
+    MAX_AHEAD_S = 900.0           # memory guard: a chunk starting later than this ahead of now is no reply (bad t0)
 
     def __init__(self) -> None:
         self._chunks: List[tuple] = []
         self._o = 0.0
         self._last: Optional[float] = None
 
-    def add(self, speech_id: str, t0: float, frame_ms: int, levels: Iterable[float], vowels: Iterable[int]) -> None:
+    def add(self, speech_id: str, t0: float, frame_ms: int, levels: Iterable[float], vowels: Iterable[int],
+            now: float) -> None:
+        """A chunk of a reply sounding from ``t0``; ``now`` is the clock the chunks that have sounded are forgotten by."""
         lv = [float(v) for v in levels]
-        if not lv:
+        if not lv or t0 > now + self.MAX_AHEAD_S:
             return
         frame_s = max(1, int(frame_ms)) / 1000.0
-        self._chunks = [c for c in self._chunks if c[2] > t0 - 5.0][-7:]
+        self._chunks = [c for c in self._chunks if c[2] > now - self.KEEP_S]
         self._chunks.append((speech_id, t0, t0 + len(lv) * frame_s, frame_s, lv, max(max(lv), 1e-3), list(vowels)))
 
     def cancel(self, speech_id: str = '') -> None:
@@ -255,7 +263,7 @@ class FaceDirector:
 
     def on_envelope(self, speech_id: str, t0: float, frame_ms: int, levels, vowels, now: float) -> None:
         self.voice_seen(now)
-        self.mouth.add(speech_id, t0, frame_ms, levels, vowels)
+        self.mouth.add(speech_id, t0, frame_ms, levels, vowels, now)
 
     def on_music_state(self, raw: str, now: float) -> bool:
         return self.music.on_state(raw, now)
