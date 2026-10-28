@@ -7,7 +7,7 @@ LLM — фейковый провайдер за НАСТОЯЩИМ мостом
 
 Классы: срез тулов при музыке (#3870), память за собеседником (#3881), бэклог с авторством (#3892), passed → invalid
 (#3859), enum тулов среза (#3897), ``too_long`` у длинного ответа («перечисли голоса», #3883), фоновая фраза того же
-собеседника (#3894).
+собеседника (#3894), речь длиннее просьбы, но в пределах проверки (#4137: n907).
 """
 
 from __future__ import annotations
@@ -327,12 +327,16 @@ def test_3883_long_answer_is_retried_into_a_short_one(make_env):
     assert any("retry=1" in line and "too_long" in line for line in report.log.splitlines())
 
 
-def test_3883_long_answer_that_stays_long_is_a_red_step(make_env):
+def test_4137_long_answer_that_stays_long_is_trimmed_by_code_not_a_stub(make_env):
+    """Решение Шифу 28.10 (#4137): длинно и после хода компактнее - не падать и не заглушка, речь ужимает код
+    (обрыв по слову: у перечня одно предложение длиннее предела, хвостовая запятая не звучит)."""
     env = make_env(lambda env, msgs, tools: {"speech": LONG})
     report = env.run(VOICES)
-    assert report.verdict == dm.FAIL and "finished" in report.fail[0]  # слишком длинно дважды: шаг красный (фича не выполнена)
-    # ...но робот не молчит и не врёт «не понял»: честная фраза кода по причине too_long (#3953)
-    assert report.said == [phrases.text(kn.INVALID_COMMAND_PHRASES["too_long"])] and report.llm_calls == 2
+    assert report.llm_calls == 2  # ответ и один ход компактнее; общий повтор на длину не тратится
+    (said,) = report.said
+    assert len(said) <= kn.SPEECH_ACCEPT_MAX_CHARS and LONG.startswith(said) and not said.endswith(",")
+    assert said != phrases.text(kn.INVALID_COMMAND_PHRASES["too_long"])
+    assert "прошу компактнее" in report.log and "ужата кодом" in report.log
 
 
 # ── #3883 (23.10): «какими голосами умеешь» - запрос выполнен, речь длинная, повтор честный, молчать нельзя ─────────
@@ -384,11 +388,12 @@ def test_3883_long_speech_after_query_gets_honest_hint_and_turn_speaks(make_env)
     assert any("retry=1" in line and "too_long" in line for line in report.log.splitlines())
 
 
-def test_3883_still_long_after_retry_code_says_summary_not_silence(make_env):
-    """Страховка (c): речь не прошла и после повтора - говорит код: число голосов по провайдерам + «назвать?»."""
+def test_3883_no_words_after_retry_code_says_summary_not_silence(make_env):
+    """Страховка (c): ответ по данным не прошёл и после повтора - говорит код: число голосов по провайдерам +
+    «назвать?». Длинная речь сюда больше не доходит - её ужимает код (#4137); здесь модель слов не дала совсем."""
     def rule(env, msgs, tools):
         if command_bridge.query_done(msgs):
-            return {"speech": LONG}
+            return {"speech": ""}
         return {"actions": [{"tool": "list_tts_voices", "args": {}}]}
 
     env = make_env(rule)
@@ -400,6 +405,89 @@ def test_3883_still_long_after_retry_code_says_summary_not_silence(make_env):
         assert f"{PROVIDER_LABELS[provider]} — {len(PROVIDER_VOICES[provider])}" in spoken, (provider, spoken)
     assert "Назвать какие-нибудь?" in spoken
     assert not any("invalid_command" in str(s) for s in env.stand.ports.stages)
+
+
+# ── #4137 (28.10, n907): просим модель на 280 знаков, проверяем на 350; длиннее - ход компактнее, затем ужимает код ──
+
+
+#: Ответ n907 по данным запроса: длиннее просьбы (280), но звучит - не длиннее проверки (350).
+N907 = ("Свежих материалов за неделю поиск дал мало. Важное: Роскосмос по просьбе NASA законсервирует "
+        "переходную камеру модуля «Звезда» из-за утечек воздуха — их ищут с две тысячи девятнадцатого года. "
+        "Ещё на этой неделе к станции ушёл грузовой корабль, а китайский зонд прислал новые снимки Луны.")
+OVER = N907 + (" Учёные снова обсуждали пилотируемый полёт к Марсу: старт перенесли ещё на год. А новый телескоп нашёл "
+               "далёкую галактику.")
+SHORT = "За неделю: «Звезду» законсервируют из-за утечек, к станции ушёл грузовик, зонд прислал снимки Луны."
+NEWS = step("n907", "Робот, что нового в космосе за последнюю неделю?", expect_tools=["get_current_time"])
+
+
+def _after_query(*answers):
+    """Модель: сначала запрос (``get_current_time``), потом на каждый вызов с данными - следующий ответ из
+    ``answers`` (последний повторяется); ``rule.seen`` - последние сообщения этих вызовов (нарушения повтора)."""
+    seen = []
+
+    def rule(env, msgs, tools):
+        if not command_bridge.query_done(msgs):
+            return {"actions": [{"tool": "get_current_time", "args": {}}]}
+        seen.append(last(msgs)[1])
+        return answers[min(len(seen), len(answers)) - 1]
+
+    rule.seen = seen
+    return rule
+
+
+def test_4137_n907_answer_longer_than_asked_but_within_check_is_said_as_is(make_env):
+    assert kn.SPEECH_MAX_CHARS < len(N907) <= kn.SPEECH_ACCEPT_MAX_CHARS
+    env = make_env(_after_query({"speech": N907}))
+    report = env.run(NEWS)
+    assert report.said == [N907] and report.llm_calls == 2
+    assert phrases.text(kn.QUERY_FALLBACK_GENERIC) not in report.said and "компактнее" not in report.log
+
+
+def test_4137_regression_check_back_at_280_drops_the_n907_answer(make_env, monkeypatch):
+    """Откат: проверка снова по просьбе (280) - ответ n907 целиком не звучит (тот же шаг краснеет)."""
+    monkeypatch.setattr(kn, "SPEECH_ACCEPT_MAX_CHARS", kn.SPEECH_MAX_CHARS)
+    env = make_env(_after_query({"speech": N907}))
+    report = env.run(NEWS)
+    assert report.said != [N907] and "прошу компактнее" in report.log
+
+
+def test_4137_over_check_gets_a_compact_turn_and_the_compact_answer_is_said(make_env):
+    assert len(OVER) > kn.SPEECH_ACCEPT_MAX_CHARS and len(SHORT) <= kn.SPEECH_MAX_CHARS
+    rule = _after_query({"speech": OVER}, {"speech": SHORT})
+    env = make_env(rule)
+    report = env.run(NEWS)
+    assert report.said == [SHORT] and report.llm_calls == 3
+    assert f"speech {len(OVER)} > {kn.SPEECH_ACCEPT_MAX_CHARS} — прошу компактнее" in report.log
+    # ход компактнее - с данными запроса в окне и просьбой о длине, а не «ничего не сделано»
+    assert kn.VIOLATION_SPEECH_TOO_LONG in rule.seen[1] and str(kn.SPEECH_MAX_CHARS) in rule.seen[1]
+    assert "получены" in rule.seen[1]
+
+
+def test_4137_still_long_after_compact_turn_is_trimmed_by_whole_sentences(make_env):
+    env = make_env(_after_query({"speech": OVER}))
+    report = env.run(NEWS)
+    sentences = re.split(r"(?<=[.!?])\s+", OVER)
+    fit = max((" ".join(sentences[:k]) for k in range(1, len(sentences) + 1)
+               if len(" ".join(sentences[:k])) <= kn.SPEECH_ACCEPT_MAX_CHARS), key=len)
+    assert report.said == [fit] and fit.endswith(".") and report.llm_calls == 3
+    assert phrases.text(kn.QUERY_FALLBACK_GENERIC) not in report.said and "ужата кодом" in report.log
+
+
+def test_4137_no_speech_at_all_is_the_only_case_for_the_stub(make_env):
+    env = make_env(_after_query({"speech": ""}))
+    report = env.run(NEWS)
+    assert report.said == [phrases.text(kn.QUERY_FALLBACK_GENERIC)] and "компактнее" not in report.log
+
+
+def test_4137_compact_turn_happens_even_when_the_retry_went_to_another_violation(make_env):
+    """n907: повтор ушёл на ``tool_not_available``, следующий ответ длиннее проверки - ход компактнее всё равно есть."""
+    rule = _after_query({"actions": [{"tool": "no_such_tool", "args": {}}]}, {"speech": OVER}, {"speech": SHORT})
+    env = make_env(rule)
+    report = env.run(NEWS)
+    assert report.said == [SHORT] and report.llm_calls == 4
+    lines = report.log.splitlines()
+    assert any("retry=1 violations=['tool_not_available']" in line for line in lines)
+    assert any(f"retry=2 violations=['{kn.VIOLATION_SPEECH_TOO_LONG}'] → verdict=speech" in line for line in lines)
 
 
 # ── #3894: фоновая фраза того же собеседника в снимке адресованного хода ──────────────────────────────────────────
