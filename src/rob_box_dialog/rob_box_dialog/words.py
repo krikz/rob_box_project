@@ -112,8 +112,8 @@ def _is_cue(token: str, gate: SlipGate) -> bool:
 
 def _gate_cue(tail: Sequence[str], gate: SlipGate) -> bool:
     """Есть ли в ``tail`` (всё, что идёт за ведущим словом) знак ворот: слово целиком из ``forms`` или начинающееся с
-    основы из ``stems``. Ворота без знака пропускают всегда. ``gate.reach`` - где искать: в ближайших
-    ``WAKE_SLIP_CUE_WINDOW`` словах (по умолчанию) либо только сразу за ведущим, не считая вежливых слов
+    основы из ``stems``. Ворота без знака пропускают всегда. ``gate.reach`` - где искать: в ближайших ``gate.window``
+    словах (по умолчанию ``WAKE_SLIP_CUE_WINDOW``) либо только сразу за ведущим, не считая вежливых слов
     (``REACH_NEXT``); ``REACH_END_OR_NEXT`` пропускает и фразу, которая кончилась на ведущем."""
     if not (gate.forms or gate.stems):
         return True
@@ -132,16 +132,37 @@ def _gate_lead(token: str, gate: SlipGate) -> bool:
         token.startswith(stem) and token[len(stem):] in gate.lead_endings for stem in gate.lead_stems)
 
 
-def _gates_open(rest: str, music_playing: bool = False) -> bool:
-    """Открыты ли ворота за искажённым словом: первое слово остатка - ведущее ворот и знак есть в ближайших
-    ``WAKE_SLIP_CUE_WINDOW`` словах после него (ё → е, как в таблицах). Ворота правки музыки (``under_music``) в счёт
-    идут, только пока музыка играет. Единственное правило для «работа/рада/роботы»: таблицы в
-    :data:`rob_box_dialog.knowledge.WAKE_SLIP_GATES`."""
-    tokens = name_tokens(rest)
+def _gates_at(tokens: Sequence[str], music_playing: bool, music_only: bool = False) -> bool:
+    """Открыта ли хоть одна из ворот ``WAKE_SLIP_GATES`` на фразе ``tokens``. Ворота правки музыки (``under_music``) в
+    счёт идут, только пока музыка играет; ``music_only`` - смотрим одни они (за наречием-приставкой, :func:`_gate_prefix`).
+    """
     if not tokens:
         return False
-    return any(_gate_lead(tokens[0], gate) and _gate_cue(tokens[1:], gate)
-               for gate in WAKE_SLIP_GATES if music_playing or not gate.under_music)
+    for gate in WAKE_SLIP_GATES:
+        if (gate.under_music and not music_playing) or (music_only and not gate.under_music):
+            continue
+        if not _gate_lead(tokens[0], gate):
+            continue
+        if _gate_prefix(tokens[1:], gate, music_playing) if gate.prefix else _gate_cue(tokens[1:], gate):
+            return True
+    return False
+
+
+def _gate_prefix(tail: Sequence[str], gate: SlipGate, music_playing: bool) -> bool:
+    """Ворота наречия-приставки (``gate.prefix``: «ещё», «снова»): дальше ворота правки музыки проверяются заново с
+    того, что идёт после приставки и вежливых слов («ещё чуть быстрее» = «быстрее»). Приставка ничего не решает сама:
+    «ещё быстрее нас считают» и «ещё громче всех» закрыты, как «быстрее нас считают» и «громче всех»."""
+    rest = tuple(itertools.dropwhile(lambda t: t in WAKE_SLIP_POLITE, tail))
+    return _gates_at(rest, music_playing, music_only=True)
+
+
+def _gates_open(rest: str, music_playing: bool = False) -> bool:
+    """Открыты ли ворота за искажённым словом: первое слово остатка (ё → е, как в таблицах) - ведущее ворот и знак ворот
+    есть там, где велит ворота (``SlipGate.reach``: в ближайших ``window`` словах, сразу за ведущим, либо фраза
+    кончилась на нём); ведущим может быть любое слово (``open_lead``) или наречие-приставка (``prefix``), за которой
+    ворота правки проверяются заново. Ворота правки музыки и стопа (``under_music``) - только пока музыка играет.
+    Единственное правило для «работа/рада/роботы»: таблицы в :data:`rob_box_dialog.knowledge.WAKE_SLIP_GATES`."""
+    return _gates_at(name_tokens(rest), music_playing)
 
 
 def slipped_wake_rest(text: str, wake_words: Optional[Sequence[str]] = None, *,

@@ -3,12 +3,14 @@
 import pytest
 
 from rob_box_dialog.knowledge import (
-    DEFAULT_WAKE_WORDS, MUSIC_AMBIGUOUS_STEMS, MUSIC_AMBIGUOUS_WORDS, MUSIC_OFF_WORDS, SILENCE_WORDS, STOP_LEAD_WORDS,
-    STOP_WORDS, TIER1_POLICY, UNSILENCE_WORDS, VOLUME_LEVEL_WORDS, VOLUME_STEMS, WAKE_SLIP_ADDRESSEE,
-    WAKE_SLIP_AMBIGUOUS, WAKE_SLIP_COMMAND_LEADS, WAKE_SLIP_CUE_WINDOW, WAKE_SLIP_GATES, WAKE_SLIP_MORE_LEADS,
-    WAKE_SLIP_NEVER, WAKE_SLIP_PLURAL, WAKE_SLIP_POLITE, WAKE_SLIP_QUESTION_CUED_LEADS, WAKE_SLIP_QUESTION_LEADS,
-    WAKE_SLIP_STOP_FORMS, WAKE_SLIP_STOP_WINDOW, WAKE_SLIP_TWEAK_COMPARATIVE_ENDINGS, WAKE_SLIP_TWEAK_ENDINGS, WAKE_SLIP_TWEAK_FORMS, WAKE_SLIP_TWEAK_IMPERATIVE_ENDINGS, WAKE_SLIP_TWEAK_NOUN_STEMS,
-    WAKE_SLIP_TWEAK_REQUEST_STEMS, WAKE_SLIP_TWEAK_STEMS, WAKE_SLIP_VARIANTS,
+    DEFAULT_WAKE_WORDS, MUSIC_AMBIGUOUS_STEMS, MUSIC_AMBIGUOUS_WORDS, MUSIC_OFF_WORDS, REACH_NEXT, SILENCE_WORDS,
+    STOP_LEAD_WORDS, STOP_WORDS, TIER1_POLICY, UNSILENCE_WORDS, VOLUME_CHANNEL_STEMS, VOLUME_LEVEL_WORDS,
+    VOLUME_NOUN_STEMS, VOLUME_STEMS, WAKE_SLIP_ADDRESSEE, WAKE_SLIP_AMBIGUOUS, WAKE_SLIP_COMMAND_LEADS,
+    WAKE_SLIP_CUE_WINDOW, WAKE_SLIP_GATES, WAKE_SLIP_MORE_LEADS, WAKE_SLIP_NEVER, WAKE_SLIP_PLURAL, WAKE_SLIP_POLITE,
+    WAKE_SLIP_QUESTION_CUED_LEADS, WAKE_SLIP_QUESTION_LEADS, WAKE_SLIP_STOP_FORMS, WAKE_SLIP_STOP_WINDOW,
+    WAKE_SLIP_TWEAK_COMPARATIVE_ENDINGS, WAKE_SLIP_TWEAK_CUE_STEMS, WAKE_SLIP_TWEAK_ENDINGS, WAKE_SLIP_TWEAK_FORMS,
+    WAKE_SLIP_TWEAK_IMPERATIVE_ENDINGS, WAKE_SLIP_TWEAK_NOUN_STEMS, WAKE_SLIP_TWEAK_REQUEST_STEMS,
+    WAKE_SLIP_TWEAK_STEMS, WAKE_SLIP_VARIANTS,
 )
 from rob_box_dialog.words import (
     NO_SCOPE, STOP_CLEAR, STOP_DISPUTED, STOP_NONE, StopScope, asked_level, has_form, has_wake_word, has_word,
@@ -607,3 +609,88 @@ def test_stop_gate_words_are_the_stop_tables_not_a_copy():
 @pytest.mark.parametrize("word", ["выключи", "выключай", "отключи", "стоп", "хватит", "замолчи", "глуши"])
 def test_stop_word_first_opens_the_gate_by_itself_under_music(word):
     assert slipped_wake_rest(f"роботы {word}", music_playing=True) == word
+
+
+# --- хвосты ревью PR #4132 (#3975, пачка мелочи 9) ---------------------------------------------------------------
+
+#: Канал голоса робота после слова правки: основы ``VOLUME_CHANNEL_STEMS["tts"]`` - знак просьбы, как музыка и громкость.
+TTS_CHANNEL_UNDER_MUSIC = [
+    ("роботы потише говори", "потише говори"),
+    ("роботы громче говори", "громче говори"),
+    ("роботы тише голос", "тише голос"),
+    ("работа погромче говорить", "погромче говорить"),
+    ("рада тише разговаривай", "тише разговаривай"),
+    ("роботы громче голосом", "громче голосом"),
+]
+
+
+@pytest.mark.parametrize("text,rest", TTS_CHANNEL_UNDER_MUSIC)
+def test_tts_channel_after_a_tweak_word_wakes_under_music_and_only_under_music(text, rest):
+    assert slipped_wake_rest(text, music_playing=True) == rest
+    assert slipped_wake_rest(text) is None, text
+
+
+def test_tweak_cue_stems_take_the_tts_channel_from_the_volume_table_not_a_copy():
+    """Одна таблица знания (ADR-0148): основы канала голоса - те, которыми Tier-1 громкость узнаёт «говори тише»."""
+    assert set(VOLUME_CHANNEL_STEMS["tts"]) <= set(WAKE_SLIP_TWEAK_CUE_STEMS)
+    assert set(VOLUME_NOUN_STEMS) <= set(WAKE_SLIP_TWEAK_CUE_STEMS)
+
+
+#: «ещё/снова/опять» сами ничего не решают: дальше те же ворота правки, что и без них. Просьбы.
+MORE_TWEAK_WAKES = [
+    ("роботы ещё быстрее", "ещё быстрее"),
+    ("роботы ещё громче", "ещё громче"),
+    ("рада еще тише", "еще тише"),
+    ("роботы ещё чуть быстрее", "ещё чуть быстрее"),
+    ("роботы снова потише", "снова потише"),
+    ("роботы опять быстрее пожалуйста", "опять быстрее пожалуйста"),
+    ("роботы ещё ускорь темп", "ещё ускорь темп"),
+    ("роботы ещё бас потише", "ещё бас потише"),
+]
+#: Рассказ: «ещё» + слово правки + любое продолжение не из знаков (хвост ревью: REACH смотрел одно слово после «ещё»).
+MORE_TWEAK_STORIES = [
+    "роботы ещё быстрее нас считают", "роботы ещё громче всех", "роботы снова тише воды", "роботы ещё чуть громче всех",
+    "роботы опять быстрее людей", "роботы ещё быстро учатся", "роботы ещё не умеют быстрее", "роботы ещё", "роботы ещё чуть",
+    "роботы ещё темп", "роботы ещё скорость растёт",
+]
+
+
+@pytest.mark.parametrize("text,rest", MORE_TWEAK_WAKES)
+def test_more_before_a_tweak_request_wakes_under_music_only(text, rest):
+    assert slipped_wake_rest(text, music_playing=True) == rest
+    assert slipped_wake_rest(text) is None, f"{text}: без музыки ворота правки закрыты"
+
+
+@pytest.mark.parametrize("text", MORE_TWEAK_STORIES)
+def test_more_before_a_tweak_word_in_a_story_does_not_wake_even_under_music(text):
+    assert slipped_wake_rest(text, music_playing=True) is None, text
+
+
+@pytest.mark.parametrize("word", COMPARATIVES)
+def test_more_does_not_change_what_the_comparative_decides(word):
+    """«ещё» + сравнительная степень решается так же, как сама степень (кончилась фраза / знак дальше / рассказ)."""
+    for tail in ("", " пожалуйста", " музыку", " говори", " всех", " нас считают", " чем вчера"):
+        bare = slipped_wake_rest(f"роботы {word}{tail}", music_playing=True) is not None
+        more = slipped_wake_rest(f"роботы ещё {word}{tail}", music_playing=True) is not None
+        assert more is bare, f"{word}{tail}"
+
+
+def test_more_prefix_gate_is_the_only_music_gate_with_more_leads_and_is_a_prefix():
+    gates = [gate for gate in WAKE_SLIP_GATES if gate.under_music and set(WAKE_SLIP_MORE_LEADS) & set(gate.leads)]
+    assert len(gates) == 1 and gates[0].prefix and not gates[0].forms and not gates[0].stems
+    assert not any(gate.prefix for gate in WAKE_SLIP_GATES if not gate.under_music), "приставка - только про музыку"
+
+
+#: Хвост ревью: достижимость существительного («темп», «бас») - СРАЗУ за ним, а не где-то в окне; мутация reach=window
+#: не краснела: все прежние негативные фразы не содержали слова правки вообще.
+NOUN_REACH_NEXT_ONLY = ["роботы темп мы задаём потише", "роботы бас играет потише", "роботы скорость тут растёт быстрее"]
+
+
+@pytest.mark.parametrize("text", NOUN_REACH_NEXT_ONLY)
+def test_noun_lead_needs_the_tweak_word_right_after_it_not_anywhere_in_the_window(text):
+    assert slipped_wake_rest(text, music_playing=True) is None, text
+
+
+def test_noun_gate_reaches_only_the_next_word():
+    gates = [gate for gate in WAKE_SLIP_GATES if gate.under_music and gate.lead_stems == WAKE_SLIP_TWEAK_NOUN_STEMS]
+    assert len(gates) == 1 and gates[0].reach == REACH_NEXT and set(MUSIC_AMBIGUOUS_WORDS) <= set(gates[0].leads)
