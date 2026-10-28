@@ -116,7 +116,7 @@ def test_gen_set_orders_cover_tasks_through_the_same_cover_maker(tmp_path):
     gen.order_more()
     assert maker.made == [(track, A, "club", 0.0, False)] and gen.task_ids == ["T1"] and gen.spent == 12.0
     title = "Звёздные войны (кавер)"
-    ready = [(i.id, i.genre, i.title) for i in gen._ready]  # noqa: SLF001
+    ready = [(i.id, i.genre, i.title) for i in gen._pool.ready]  # noqa: SLF001
     assert ready == [("c1a", key, title), ("c1b", key, title)]
     assert gs.genre_name(key) == "клуб"
 
@@ -156,14 +156,15 @@ def test_theme_covers_one_cover_per_piece_main_theme_first(monkeypatch, caplog):
                        {"starwars_4": "Имперский марш", "starwars_8": "Star Wars", "starwars_6": "Star Wars - Start",
                         "the_x_files": "The X-files"})
 
-    def score(materials, ids, q, seed, references):  # партитура A — главная тема, марша в ней нет
+    def songs(materials, ranked, seed, references, limit):  # партитура A — главная тема, марша в ней нет
         ok = SW6 in references
-        return SimpleNamespace(found=ok, melody_id=A.material, track="T-score", reason="" if ok else "нет мотива")
+        return ([(A.material, "T-score")], []) if ok else ([], [f"{A.material}: HookError: нет мотива"])
 
-    monkeypatch.setattr(piece_cover, "pick_score", score)
+    # #4012: партитуры ранжируются по годности мотива эталона (``classic.rank_scores``), песни — ``score_songs``
+    monkeypatch.setattr(piece_cover, "rank_scores", lambda materials, ids, refs: [(A.material, 0.88)])
+    monkeypatch.setattr(piece_cover, "score_songs", songs)
     monkeypatch.setattr(piece_cover, "pick_record", lambda rec, title, q, seed: SimpleNamespace(
         found=True, track=f"T-{rec['name']}"))
-    monkeypatch.setattr(piece_cover, "theme_fit", lambda material, refs: 0.88)
     monkeypatch.setattr(piece_cover, "PlanMaterials", lambda lib, ids, log: {A.material: object()})
     with caplog.at_level(logging.INFO):
         got = piece_cover.theme_covers(dj, "звёздные войны", 7, records=records)

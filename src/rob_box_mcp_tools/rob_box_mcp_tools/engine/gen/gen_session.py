@@ -9,7 +9,9 @@
   ``started`` предыдущего (ADR §2.7 «заказ N+1 на started(N)»).
 * Первая задача — ``GEN_SET_FIRST_MODEL`` (V6_MINI), если кэш не закрыл первый трек (В2); остальные — ``GEN_SET_MODEL``.
 * Варианты одной задачи соседями не ставятся (§1.4: подряд — «вариация одного трека»); не готово ничего другого к
-  сроку — второй вариант той же задачи (§2.7), затем повтор сыгранного, но не тишина.
+  сроку — лестница :class:`SetPool` (#4009): второй вариант той же задачи (§2.7), готовый трек другого слота, запас
+  библиотеки (:func:`set_reserve`: другие варианты задач плана, каверы тех же произведений, кэш темы и стиля) и
+  только последним — повтор сыгранного: причина в строке ``[gen set]`` и фраза кода (:func:`repeat_text`), не молча.
 * Мост (В4): кэш пуст — первым треком сета играет синтез ближайшим сильным стилем (``GEN_BRIDGE_STYLES``), пока
   пишется первая генерация (сет продлевает мост проходами формы). Фразу моста строит код из фактов; LLM только
   окрашивает её подстановками с дедлайном (:func:`bridge_line`), опоздала или соврала — голая фраза кода.
@@ -249,6 +251,68 @@ def failed_text(genre: str, reason: str) -> str:
     return f"Дописать {genre_name(genre)} не вышло: {REASON_WORDS.get(reason, reason)} — доиграю из того, что есть."
 
 
+#: Почему сет повторяет сыгранное (#4009) — слова кода; причина провала генерации — её слова (``REASON_WORDS``).
+REPEAT_WORDS = {
+    "pending": "новый трек не успел дописаться",
+    "tasks_full": "заказов на этот сет больше нет",
+    "no_order": "новых треков на этот сет не заказано",
+    "theme_cache": "новых треков на этот сет не заказано",
+}
+
+
+def repeat_why(gen_reason: str, inflight: bool, ordered: int) -> str:
+    """Ключ причины повтора (#4009): генерация не вышла или нельзя — её причина; заказ ещё пишется — ``pending``;
+    задачи сета кончились (``GEN_SET_MAX_TASKS``) — ``tasks_full``; иначе ``no_order``."""
+    if gen_reason:
+        return gen_reason
+    if inflight:
+        return "pending"
+    return "tasks_full" if ordered >= kn.GEN_SET_MAX_TASKS else "no_order"
+
+
+def repeat_words(why: str) -> str:
+    """Слова причины повтора: свои (:data:`REPEAT_WORDS`), иначе слова причины генерации (``REASON_WORDS``)."""
+    return REPEAT_WORDS.get(why) or REASON_WORDS.get(why, why)
+
+
+def repeat_text(item: SetItem, why: str) -> str:
+    """Фраза повтора — от кода (#4009, ADR-0148): почему нового нет и что звучит второй раз."""
+    words = repeat_words(why)
+    return f"{words[:1].upper()}{words[1:]} — повторяю сыгранное: «{item.hook or item.title}»."
+
+
+def _reserve_rank(track: CacheTrack, groups: Set[str], works: Set[str], tags: str, styles: Set[str]) -> Optional[int]:
+    """Близость трека библиотеки к сету (меньше — ближе): вариант задачи плана, кавер произведения темы (любой стиль),
+    по теме сета, инструментал стиля сета; чужой — ``None``."""
+    if track.group in groups:
+        return 0
+    if track.kind == "cover" and track.work_id in works:
+        return 1
+    if tags and theme_fit(tags, track) >= kn.THEME_FIT_MIN:
+        return 2
+    return 3 if track.kind == "instrumental" and track.style_key in styles else None
+
+
+def set_reserve(library: Sequence[CacheTrack], taken: Sequence[CacheTrack], works: Sequence[str], tags: str,
+                styles: Sequence[str], limit: int) -> List[CacheTrack]:
+    """Запас сета (#4009): треки библиотеки вне плана (``taken``), которыми сет добирает, когда своего трека к сроку
+    нет, — раньше повтора сыгранного. Ближе — раньше (:func:`_reserve_rank`), при равной близости — не игранные
+    ``GEN_FRESH_HOURS``, затем порядок библиотеки (свежие первыми). Инструментал без «не нравится», не больше
+    ``limit``. Живой сет ``gen64903`` (24.10): трек 2 повторил вариант ``d2e8a33b``, а второй вариант той же задачи
+    ``337b8ffb`` лежал в библиотеке."""
+    ids = {t.id for t in taken}
+    groups, styles_set = {t.group for t in taken}, {slot_style(s) for s in styles}
+    ranked = []
+    for no, track in enumerate(library):
+        if track.id in ids or not track.instrumental or track.rating < 0:
+            continue
+        rank = _reserve_rank(track, groups, set(works), tags, styles_set)
+        if rank is not None:
+            recent = track.played_ago_h is not None and track.played_ago_h < kn.GEN_FRESH_HOURS
+            ranked.append(((rank, recent, no), track))
+    return [track for _key, track in sorted(ranked, key=lambda pair: pair[0])][:max(0, limit)]
+
+
 def slot_plan(keys: Sequence[str], genres: Sequence[str], unique: Sequence[str], slots: int) -> List[str]:
     """Ключ слота каждого трека-файла: ключи путей (стиль или кавер стиля, В14), иначе стили, иначе стили по кругу."""
     if keys and len(keys) == slots:
@@ -270,6 +334,16 @@ def respread(plan: Sequence[str], start: int, dead: Set[str], alive: Callable[[s
         pool = [k for k in keys if k not in near] or keys
         out[i] = min(pool, key=lambda k: (out.count(k), keys.index(k))) if pool else slot_style(out[i])
     return out
+
+
+def turn_sources(sources: Sequence[Tuple[str, Any]], turn: int) -> Tuple[Tuple[str, Any], ...]:
+    """Мелодии задачи ``turn`` (с 0) одного произведения в сете (#4012): задача начинает с мелодии ``turn`` по кругу
+    (партитуры по годности, затем RTTTL хуков — ``piece_cover._piece_cover``), остальные — запас попыток после отказа
+    Suno (В17). Живой сет 24.10: десять каверов «Stranger Things» — все из одной партитуры (барабанная партия)."""
+    if not sources:
+        return ()
+    k = turn % len(sources)
+    return tuple(sources[k:]) + tuple(sources[:k])
 
 
 class SetCovers:
@@ -360,11 +434,73 @@ class SetTalk:
         return self._lines.on_started(track_id) if self._lines is not None else ""
 
 
+@dataclass(frozen=True)
+class Take:
+    """Выбор трека слота (#4009): ``how`` — ``ok``/``sibling`` (свой слот), ``other`` (готовый трек другого слота),
+    ``reserve`` (запас библиотеки), ``repeat`` (повтор сыгранного); ``why`` — у повтора ключ причины
+    (:func:`repeat_why`)."""
+
+    item: Optional[SetItem]
+    how: str = ""
+    why: str = ""
+
+
+class SetPool:
+    """Треки сета и выбор следующего — кодом, по лестнице (#4009): свой слот (:func:`pick_item`) → готовый трек другого
+    слота → запас библиотеки (:func:`set_reserve`, сначала свой ключ слота) → повтор сыгранного — последним. ``ready``
+    — готовые (кэш плана и сгенерированные; взятый запас переходит сюда), ``used`` — сыгранные, ``prev`` — задача
+    предыдущего трека."""
+
+    def __init__(self, ready: Sequence[SetItem] = (), reserve: Sequence[SetItem] = ()) -> None:
+        self.ready: List[SetItem] = list(ready)
+        self._reserve: List[SetItem] = list(reserve)
+        self.used: Set[str] = set()
+        self.prev = ""
+        self._said = ""  # причина повтора, уже названная в этой серии повторов
+
+    def own(self, genre: str) -> Tuple[Optional[SetItem], str]:
+        """Свой трек слота ``genre``: ``ok``, вариант-сосед ``sibling``, нет — ``(None, "")``."""
+        return pick_item([i for i in self.ready if i.genre == genre], self.used, self.prev)
+
+    def spare(self, genre: str) -> Tuple[Optional[SetItem], str]:
+        """Своего трека к сроку нет: готовый трек другого слота (``other``), запас библиотеки (``reserve``), повтор
+        сыгранного (``repeat``); нечего — ``(None, "")``."""
+        item, _how = pick_item(self.ready, self.used, self.prev)
+        if item is not None:
+            return item, "other"
+        item, _how = pick_item([i for i in self._reserve if i.genre == genre], self.used, self.prev)
+        item = item or pick_item(self._reserve, self.used, self.prev)[0]
+        if item is not None:
+            self._reserve.remove(item)
+            self.ready.append(item)
+            return item, "reserve"
+        return self._repeat()
+
+    def _repeat(self) -> Tuple[Optional[SetItem], str]:
+        """Нового нет и не будет к сроку: давнее сыгранное (не сосед по задаче) — в конец очереди."""
+        played = [item for item in self.ready if item.group != self.prev] or list(self.ready)
+        if not played:
+            return None, ""
+        self.used.discard(played[0].id)
+        self.ready.append(self.ready.pop(self.ready.index(played[0])))
+        return played[0], "repeat"
+
+    def take(self, item: SetItem, how: str, why: str = "") -> bool:
+        """Трек взят: сыгран, сосед следующего. ``True`` — повтор с причиной, не названной в этой серии повторов:
+        фраза кода нужна (серия кончается любым не-повтором)."""
+        self.used.add(item.id)
+        self.prev = item.group
+        say = how == "repeat" and why != self._said
+        self._said = why if how == "repeat" else ""
+        return say
+
+
 class GenSet:
     """Источник треков одного сета из генерации. ``bridge`` — ``deck -> Track`` синтеза-моста (первый трек) или
-    None; ``gen_reason`` — почему генерировать нельзя («» — можно); ``speak`` — фраза провала генерации; ``lines`` —
-    реплики диджея на переходах и факты играющего трека (``engine.dj_lines.TransitionLines``, тот же объект, что у
-    сета синтезом; ``None`` — ни реплик, ни фактов)."""
+    None; ``gen_reason`` — почему генерировать нельзя («» — можно); ``speak`` — фразы провала генерации и повтора;
+    ``lines`` — реплики диджея на переходах и факты играющего трека (``engine.dj_lines.TransitionLines``, тот же
+    объект, что у сета синтезом; ``None`` — ни реплик, ни фактов); ``reserve`` — запас библиотеки (:func:`set_reserve`):
+    им сет добирает до повтора сыгранного (#4009)."""
 
     def __init__(self, *, provider: Any, library: Any, ask: SourceAsk, genre: str, theme: str, set_id: str, bpm: int,
                  tracks: int, cache: Sequence[CacheTrack], bridge: Optional[Callable[[str], Any]] = None,
@@ -373,7 +509,7 @@ class GenSet:
                  clock: Callable[[], float] = time.monotonic,
                  publish: Optional[Callable[[str, Dict[str, Any]], Any]] = None, genres: Sequence[str] = (),
                  theme_tags: str = "", keys: Sequence[str] = (), covers: Optional["SetCovers"] = None,
-                 lines: Any = None) -> None:
+                 lines: Any = None, reserve: Sequence[CacheTrack] = ()) -> None:
         self._provider, self._library, self._ask, self._theme = provider, library, ask, theme
         self.set_id, self.bpm, self.slots = set_id, int(bpm), int(tracks)
         self.genres = tuple(dict.fromkeys(genres)) or (genre,)
@@ -385,9 +521,9 @@ class GenSet:
         self._covers = covers or SetCovers()  # каверы материала темы (В14)
         self._bridge, self.gen_reason, self._speak, self._log = bridge, gen_reason, speak, log
         self._spawn, self._run, self._clock = spawn, run, clock
-        self._ready: List[SetItem] = [cache_item(t, self._genre_of(t)) for t in cache]
-        self._used: Set[str] = set()
-        self._prev, self._taken, self._inflight, self.ordered, self.spent = "", 0, 0, 0, 0.0
+        self._pool = SetPool([cache_item(t, self._genre_of(t)) for t in cache],
+                             [cache_item(t, self._genre_of(t)) for t in reserve])
+        self._taken, self._inflight, self.ordered, self.spent = 0, 0, 0, 0.0
         self._inflight_genre = ""
         self._playing_s: Optional[float] = None  # длина играющего файла; None — играет мост (продлевается)
         self._items: Dict[str, Tuple[SetItem, str]] = {}  # track_id деки → (трек, как выбран)
@@ -418,13 +554,13 @@ class GenSet:
         if track_no == 1 and self._bridge is not None:
             return self._bridge(deck)
         for _ in range(3):  # файл не декодировался — следующий трек, а не отказ сета
-            item, how = self._take(self._wait_s())
-            if item is None:
+            take = self._take(self._wait_s())
+            if take.item is None:
                 raise RuntimeError(f"сет {self.set_id}: нечего ставить треком {track_no}")
             try:
-                track = self._audio(item, how, track_no, deck)
+                track = self._audio(take.item, take.how, track_no, deck)
             except AudioUnavailable as exc:
-                self._log.warning(f"⚠️ [gen set] {self.set_id} трек {item.id} не звучит: {exc}")
+                self._log.warning(f"⚠️ [gen set] {self.set_id} трек {take.item.id} не звучит: {exc}")
                 continue
             self.order_more()
             return track
@@ -445,36 +581,30 @@ class GenSet:
         lead_s = NEARLY_LEAD_BEATS * 60.0 / self.bpm
         return max(1.0, self._playing_s - lead_s - WAIT_MARGIN_S)
 
-    def _take(self, wait_s: float) -> Tuple[Optional[SetItem], str]:
-        """Трек стиля этого слота; пишется его задача — ждать до срока; иначе вариант-сосед, трек другого стиля
-        сета (``other``), повтор сыгранного — но не тишина."""
+    def _take(self, wait_s: float) -> Take:
+        """Трек стиля этого слота; пишется его задача — ждать до срока; иначе лестница :meth:`SetPool.spare` (другой
+        слот, запас библиотеки, повтор — последним). Повтор — с причиной (:func:`repeat_why`) и фразой кода в начале
+        серии повторов или при новой причине (#4009: не молча)."""
         end = self._clock() + wait_s
         with self._cond:
             while True:
                 genre = self._slot_genre()  # план меняется, когда произведение выходит из сета (В17)
-                item, how = pick_item([i for i in self._ready if i.genre == genre], self._used, self._prev)
+                item, how = self._pool.own(genre)
                 left = end - self._clock()
                 if how == "ok" or not (self._inflight and self._inflight_genre == genre) or left <= 0:
                     break
                 self._cond.wait(left)
             if item is None:
-                item, how = pick_item(self._ready, self._used, self._prev)
-                how = "other" if item is not None else how
-            if item is None:
-                item, how = self._repeat()
-            if item is not None:
-                self._used.add(item.id)
-                self._prev, self._taken = item.group, self._taken + 1
-            return item, how
-
-    def _repeat(self) -> Tuple[Optional[SetItem], str]:
-        """Нового нет и не будет к сроку: повтор сыгранного (не сосед), но не тишина."""
-        played = [item for item in self._ready if item.group != self._prev] or list(self._ready)
-        if not played:
-            return None, ""
-        self._used.discard(played[0].id)
-        self._ready.append(self._ready.pop(self._ready.index(played[0])))  # повтор — в конец очереди
-        return played[0], "repeat"
+                item, how = self._pool.spare(genre)
+            why = repeat_why(self.gen_reason, bool(self._inflight), self.ordered) if how == "repeat" else ""
+            say = item is not None and self._pool.take(item, how, why)
+            self._taken += item is not None
+        if why:
+            self._log.warning(f"🔁 [gen set] {self.set_id} повтор {item.id} «{item.title}»: {repeat_words(why)} "
+                              f"({why}; своего трека, готовых других и запаса нет)")
+        if say:
+            _say(self._speak, repeat_text(item, why))
+        return Take(item, how, why)
 
     def _audio(self, item: SetItem, how: str, track_no: int, deck: str) -> Any:
         info = self._library.get_track_info(item.id)
@@ -493,10 +623,11 @@ class GenSet:
     def _short_genre(self) -> Optional[str]:
         """Стиль ближайшего трека, которому не хватает готового (одним стилем — с учётом вариантов-соседей)."""
         upcoming = self._plan[self._taken:]
+        used = self._pool.used
         for genre in dict.fromkeys(upcoming):
-            ready = [i for i in self._ready if i.genre == genre]
-            supply = (supply_of(ready, self._used, 0) if len(set(self._plan)) == 1
-                      else sum(i.id not in self._used for i in ready))
+            ready = [i for i in self._pool.ready if i.genre == genre]
+            supply = (supply_of(ready, used, 0) if len(set(self._plan)) == 1
+                      else sum(i.id not in used for i in ready))
             if tasks_needed(upcoming.count(genre), supply, self.ordered):
                 return genre
         return None
@@ -539,7 +670,7 @@ class GenSet:
             reason, spent = "provider_down", 0.0
             self._log.error(f"❌ [gen set] {self.set_id}: {type(exc).__name__}: {exc}")
         with self._cond:
-            self._ready.extend(items)
+            self._pool.ready.extend(items)
             self.spent, self._inflight = self.spent + spent, 0
             failed = self.gen_reason = reason or ("" if items else "provider_down")
             if failed == "rejected" and genre.startswith(COVER_SLOT):  # В17: без этой пьесы, сет заказывает дальше
@@ -782,12 +913,12 @@ class GenSetMaker:
         first = plan.routes[played[0]]
         logger = self._log()
         made, wait = self._waiting(plan, first.kind != CACHE and not reason, bridge, genres[0], set_id, logger)
-        keys = plan.keys()
+        keys, reserve = plan.keys(), self._reserve(plan, genres, len(played), logger)
         gen = GenSet(provider=self._provider, library=self._library(), ask=first.ask, genre=genres[0], theme=theme,
                      set_id=set_id, bpm=made[1] if made else kn.AUDIO_DEFAULT_BPM, tracks=len(played), cache=cache,
                      bridge=made[0] if made else None, gen_reason=reason, speak=speak, log=logger,
                      publish=getattr(owner, "update_dj", None), genres=genres, theme_tags=plan.theme_tags,
-                     keys=[keys[i] for i in played],
+                     keys=[keys[i] for i in played], reserve=reserve,
                      covers=SetCovers(plan.covers(), self._set_cover(plan), plan.pieces()), lines=lines)
         line = _LineBox(bridge_facts(genres[0], task_model(0, True)), line_ask, logger) if wait == "да" else None
         session = _gen_session(owner, gen, persona, logger)
@@ -798,12 +929,27 @@ class GenSetMaker:
             head = line.text() if line else launch_text(genres, gen.slots, min(len(cache), gen.slots), reason)
         message = start_message(head, plan)
         logger.info(f"🎛️ [gen set] {set_id} {[r.id for r in plan.routes]}: {genres} {gen.slots} "
-                    f"{tracks_word(gen.slots)}, кэш {len(cache)}, мост={wait} gen={reason or 'ok'} "
-                    f"→ {result.get('ok')}")
+                    f"{tracks_word(gen.slots)}, кэш {len(cache)}, запас {len(reserve)}, мост={wait} "
+                    f"gen={reason or 'ok'} → {result.get('ok')}")
         return {**result, "theme": theme, "style": genres[0], "styles": list(gen.genres), "source": "generated",
                 "tracks": gen.slots, "cached": min(len(cache), gen.slots), "route": first.id,
                 "routes": [r.id for r in plan.routes], "source_message": message,
                 "session": session if result.get("ok") else None}
+
+    def _reserve(self, plan: "SetRoutes", genres: Sequence[str], slots: int, log: Any) -> List[CacheTrack]:
+        """Запас сета из библиотеки (:func:`set_reserve`, #4009); библиотека не читается — без запаса (повтор
+        останется последним шагом, как и с запасом)."""
+        from ..source_route import cache_tracks
+
+        try:
+            tracks = cache_tracks(self._library())
+        except Exception as exc:  # noqa: BLE001 — запас не держит запуск сета
+            log.warning(f"⚠️ [gen set] запас сета не прочитан: {type(exc).__name__}: {exc}")
+            return []
+        works = [w.title for w in plan.pieces()] + [w.title for w in plan.covers().values()]
+        reserve = set_reserve(tracks, plan.cache(), works, plan.theme_tags, genres, slots)
+        log.info(f"🎛️ [gen set] запас сета из библиотеки: {[f'{t.id} «{t.title}»' for t in reserve]}")
+        return reserve
 
     def _background_track(self, asks: Sequence[SourceAsk], routes: Sequence[Any], tags: str, themed: int,
                           covers: bool) -> Optional[CacheTrack]:
@@ -841,15 +987,24 @@ class GenSetMaker:
         return (lambda deck: replace(quiet, track_id=f"{set_id}:00:{deck}")), bpm
 
     def _set_cover(self, plan: "SetRoutes") -> Optional[Callable[[CoverWork, SourceAsk, float], Any]]:
-        """Исполнитель кавера трека сета: тот же ``CoverMaker.make`` с мелодиями материала темы, оба варианта; отказ
-        Suno — следующая попытка ``COVER_TRIES`` (``cover.cover_tries``, В17)."""
+        """Исполнитель кавера трека сета: тот же ``CoverMaker.make`` с мелодиями материала темы, оба варианта; задача
+        N произведения начинает с его мелодии N по кругу (:func:`turn_sources`, #4012: разные аранжировки, а не десять
+        каверов одной партитуры); отказ Suno — следующая попытка ``COVER_TRIES`` (``cover.cover_tries``, В17)."""
         from .cover import cover_tries
 
         if self._cover is None:
             return None
         sources = {work: srcs for work, srcs in plan.theme_covers}  # у двух пьес может быть одна партитура
-        return lambda work, ask, spent: cover_tries(self._cover.make, sources[work], work, ask, set_spent=spent,
-                                                    early=False, log=self._log())
+        turns: Dict[CoverWork, int] = {}
+
+        def run(work: CoverWork, ask: SourceAsk, spent: float) -> Any:
+            turn = turns[work] = turns.get(work, -1) + 1
+            melodies = turn_sources(sources[work], turn)
+            self._log().info(f"🎼 [cover] «{work.title}» задача {turn + 1} в сете: мелодия "
+                             f"{melodies[0][0] if melodies else '—'} (по кругу из {len(melodies)})")
+            return cover_tries(self._cover.make, melodies, work, ask, set_spent=spent, early=False, log=self._log())
+
+        return run
 
 
 def slot_genres(heard_text: Optional[str], styles: Sequence[str], style: str) -> Tuple[Tuple[str, ...], Tuple[str, ...]]:
@@ -975,7 +1130,9 @@ class _LineBox:
         return self._line or bridge_template(self._facts)
 
 
-__all__ = ["BRIDGE_LINE_DEADLINE_S", "Bridge", "GenSet", "GenSetMaker", "SetCovers", "SetItem", "SetRoutes", "SetTalk",
+__all__ = ["BRIDGE_LINE_DEADLINE_S", "Bridge", "GenSet", "GenSetMaker", "SetCovers", "SetItem", "SetPool", "SetRoutes",
+           "SetTalk", "Take", "REPEAT_WORDS",
            "bridge_facts", "bridge_line", "cache_item", "set_label",
            "background_text", "theme_why", "bridge_style", "bridge_template", "failed_text", "genre_name", "launch_text", "pick_item", "respread", "set_head", "set_notes",
+           "repeat_text", "repeat_why", "repeat_words", "set_reserve", "turn_sources",
            "supply_of", "synth_set_note", "task_model", "tasks_needed", "validate_bridge"]

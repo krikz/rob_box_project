@@ -150,12 +150,16 @@ def test_empty_cache_bridge_first_mini_then_v6(tmp_path):
 
 
 def test_generation_failure_speaks_reason_and_set_plays_on(tmp_path):
+    """Провал генерации — фраза причины; новых треков нет и запаса нет — повтор сыгранного, но не тишина и не молча
+    (#4009: прежде этот тест закреплял тихий повтор — ``said`` был только фразой провала)."""
     lib, said = _lib(tmp_path, cached=2), []
     gen = _set(lib, Kie(fail=GenUnavailable("no_credits", "402")), tracks=4, speak=said.append)
     tracks = [gen.next_track(no, "AB"[(no - 1) % 2]) for no in range(1, 5)]
-    assert said == ["Дописать рок не вышло: на счёте генерации нет кредитов — доиграю из того, что есть."]
-    assert gen.gen_reason == "no_credits" and len(tracks) == 4  # повтор сыгранного, но не тишина
-    assert gen._items[tracks[-1].track_id][1] in ("repeat", "sibling", "ok")
+    assert gen.gen_reason == "no_credits" and len(tracks) == 4
+    assert [gen._items[t.track_id][1] for t in tracks] == ["ok", "sibling", "repeat", "repeat"]  # noqa: SLF001
+    first = gen._items[tracks[2].track_id][0]  # noqa: SLF001
+    assert said == ["Дописать рок не вышло: на счёте генерации нет кредитов — доиграю из того, что есть.",
+                    f"На счёте генерации нет кредитов — повторяю сыгранное: «{first.title}»."]  # серия — одной фразой
 
 
 def test_g5_simulation_no_gap_on_ten_tracks(tmp_path):
