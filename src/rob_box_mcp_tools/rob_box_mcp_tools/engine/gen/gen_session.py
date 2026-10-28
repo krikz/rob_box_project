@@ -46,11 +46,13 @@ from rob_box_music.dj_line import tracks_word
 from rob_box_music.render.audio import xfade_beats
 from rob_box_music.source import (CACHE, COVER_SLOT, GENERATE, REASON_WORDS, CacheTrack, CoverWork, SourceAsk,
                                   cover_rejected_text, cover_slot, gen_kind, slot_style, theme_fit, theme_title)
+from rob_box_music.works import norm
 
 from ..renardo_adapter import ALIGN_LEAD_BEATS
 from ..session import NEARLY_LEAD_BEATS
 from .audio import AudioUnavailable, audio_track
 from .budget import Budget
+from .cover import RTTTL_SOURCE
 from .pipeline import generate_into_cache
 from .provider import GEN_TIMEOUT_S, GenJob, GenUnavailable
 
@@ -290,10 +292,11 @@ def repeat_text(item: SetItem, why: str) -> str:
 
 def _reserve_rank(track: CacheTrack, groups: Set[str], works: Set[str], tags: str, styles: Set[str]) -> Optional[int]:
     """Близость трека библиотеки к сету (меньше — ближе): вариант задачи плана, кавер произведения темы (любой стиль),
-    по теме сета, инструментал стиля сета; чужой — ``None``."""
+    по теме сета, инструментал стиля сета; чужой — ``None``. ``works`` - произведения темы в нормализованном виде
+    (``works.norm``): название кавера в кэше и название пьесы темы пишут по-разному («Stranger Things: Intro Theme»)."""
     if track.group in groups:
         return 0
-    if track.kind == "cover" and track.work_id in works:
+    if track.kind == "cover" and norm(track.work_id) in works:
         return 1
     if tags and theme_fit(tags, track) >= kn.THEME_FIT_MIN:
         return 2
@@ -308,12 +311,12 @@ def set_reserve(library: Sequence[CacheTrack], taken: Sequence[CacheTrack], work
     ``limit``. Живой сет ``gen64903`` (24.10): трек 2 повторил вариант ``d2e8a33b``, а второй вариант той же задачи
     ``337b8ffb`` лежал в библиотеке."""
     ids = {t.id for t in taken}
-    groups, styles_set = {t.group for t in taken}, {slot_style(s) for s in styles}
+    groups, styles_set, titles = {t.group for t in taken}, {slot_style(s) for s in styles}, {norm(w) for w in works}
     ranked = []
     for no, track in enumerate(library):
         if track.id in ids or not track.instrumental or track.rating < 0:
             continue
-        rank = _reserve_rank(track, groups, set(works), tags, styles_set)
+        rank = _reserve_rank(track, groups, titles, tags, styles_set)
         if rank is not None:
             recent = track.played_ago_h is not None and track.played_ago_h < kn.GEN_FRESH_HOURS
             ranked.append(((rank, recent, no), track))
@@ -344,13 +347,19 @@ def respread(plan: Sequence[str], start: int, dead: Set[str], alive: Callable[[s
 
 
 def turn_sources(sources: Sequence[Tuple[str, Any]], turn: int) -> Tuple[Tuple[str, Any], ...]:
-    """Мелодии задачи ``turn`` (с 0) одного произведения в сете (#4012): задача начинает с мелодии ``turn`` по кругу
-    (партитуры по годности, затем RTTTL хуков — ``piece_cover._piece_cover``), остальные — запас попыток после отказа
-    Suno (В17). Живой сет 24.10: десять каверов «Stranger Things» — все из одной партитуры (барабанная партия)."""
-    if not sources:
+    """Мелодии задачи ``turn`` (с 0) одного произведения в сете (#4012): задача начинает с партитуры ``turn`` по кругу
+    (партитуры по годности — ``piece_cover._piece_cover``), остальные партитуры — запас попыток после отказа Suno (В17).
+    RTTTL хуков (``RTTTL_SOURCE``) не вращаются: это запас в хвосте каждой задачи, а не основной источник N-й
+    (ревью #4119: на круге из 3 партитур и хука четвёртая задача начинала бы с хука, то есть с запасного источника).
+    Партитур нет вовсе — вращаются сами хуки. Живой сет 24.10: десять каверов «Stranger Things» — все из одной
+    партитуры (барабанная партия)."""
+    scores = tuple(s for s in sources if not s[0].startswith(RTTTL_SOURCE))
+    hooks = tuple(s for s in sources if s[0].startswith(RTTTL_SOURCE))
+    lead, reserve = (scores, hooks) if scores else (hooks, ())
+    if not lead:
         return ()
-    k = turn % len(sources)
-    return tuple(sources[k:]) + tuple(sources[:k])
+    k = turn % len(lead)
+    return lead[k:] + lead[:k] + reserve
 
 
 class SetCovers:
@@ -471,16 +480,18 @@ class SetPool:
 
     def spare(self, genre: str) -> Tuple[Optional[SetItem], str]:
         """Своего трека к сроку нет: готовый трек другого слота (``other``), запас библиотеки (``reserve``), повтор
-        сыгранного (``repeat``); нечего — ``(None, "")``."""
-        item, _how = pick_item(self.ready, self.used, self.prev)
-        if item is not None:
-            return item, "other"
-        item, _how = pick_item([i for i in self._reserve if i.genre == genre], self.used, self.prev)
-        item = item or pick_item(self._reserve, self.used, self.prev)[0]
-        if item is not None:
-            self._reserve.remove(item)
-            self.ready.append(item)
-            return item, "reserve"
+        сыгранного (``repeat``); нечего — ``(None, "")``. Сначала треки ДРУГИХ задач (готовые, запас своего ключа слота,
+        весь запас), и только когда их нет — вариант-близнец только что сыгранной (§1.4: подряд — вариация одного
+        трека): раньше запас своего слота с одним близнецом перебивал запас другого слота с чужой задачей (ревью #4119)."""
+        mine = [i for i in self._reserve if i.genre == genre]
+        for neighbour in ("ok", "sibling"):
+            for pool, how in ((self.ready, "other"), (mine, "reserve"), (self._reserve, "reserve")):
+                item, kind = pick_item(pool, self.used, self.prev)
+                if kind == neighbour:
+                    if how == "reserve":
+                        self._reserve.remove(item)
+                        self.ready.append(item)
+                    return item, how
         return self._repeat()
 
     def _repeat(self) -> Tuple[Optional[SetItem], str]:

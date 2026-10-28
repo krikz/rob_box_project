@@ -117,10 +117,10 @@ class Maker:
 
 
 def test_two_pieces_six_slots_repeat_only_after_variants_other_slots_and_reserve(tmp_path, caplog):
-    """2 произведения на 6 слотов, второе не сгенерировалось: сет играет свой вариант, вариант-сосед на чужом слоте,
-    весь запас библиотеки (кавер того же произведения в другом стиле, инструментал стиля сета) — и только потом
-    повтор; фраза провала и одна фраза повтора на серию (не на каждый трек); в строке ``[gen set]`` — ``repeat``
-    только у последних треков."""
+    """2 произведения на 6 слотов, второе не сгенерировалось: сет играет свой вариант, запас библиотеки (кавер того же
+    произведения в другом стиле, инструментал стиля сета) и вариант-близнец — но близнец не сразу за своей парой, а
+    после трека другой задачи (ревью #4119); только потом повтор; фраза провала и одна фраза повтора на серию (не на
+    каждый трек); в строке ``[gen set]`` — ``repeat`` только у последних треков."""
     lib, said = _lib(tmp_path), []
     old_cover = _cover(lib, A, "jazz", "OLD1", 0)
     old_club = _instrumental(lib, "club", "OLD2")
@@ -136,8 +136,8 @@ def test_two_pieces_six_slots_repeat_only_after_variants_other_slots_and_reserve
     with caplog.at_level(logging.INFO):
         tracks = [gen.next_track(no, "AB"[(no - 1) % 2]) for no in range(1, 7)]
     hows, ids = _hows(gen, tracks), _ids(gen, tracks)
-    assert hows == ["ok", "other", "reserve", "reserve", "repeat", "repeat"]
-    assert len(set(ids[:4])) == 4 and ids[2:4] == [old_cover, old_club]  # до повтора — всё разное
+    assert hows == ["ok", "reserve", "ok", "reserve", "repeat", "repeat"]
+    assert len(set(ids[:4])) == 4 and [ids[1], ids[3]] == [old_cover, old_club]  # до повтора — всё разное
     assert set(ids[4:]) <= set(ids[:4]) and gen.gen_reason == "provider_down"
     first = gen._items[tracks[4].track_id][0]  # noqa: SLF001
     assert said == [gs.failed_text(keys[1], "provider_down"),

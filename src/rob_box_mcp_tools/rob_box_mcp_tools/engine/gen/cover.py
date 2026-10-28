@@ -215,6 +215,8 @@ class CoverMaker:
         return thread
 
 
+#: Метка источника мелодии из RTTTL хука: ``rtttl:<хук>`` (``piece_cover``); у партитуры метка - её id.
+RTTTL_SOURCE = "rtttl:"
 #: Мелодии произведения для попыток кавера (В17): ``(откуда, трек с мелодией)`` — ``rtttl:<хук>`` или id партитуры.
 Sources = Sequence[Tuple[str, Any]]
 
