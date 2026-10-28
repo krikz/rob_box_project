@@ -2146,6 +2146,30 @@ step_recover() {  # $1=label $2=text $3=voice $4=safe
     step_wait_after_play "$BEFORE" 0
 }
 
+# step_wake_replay LABEL SAFE — решение Шифу 28.10 (n210, Гриша): вейк потерян (no_wake), а «Робот!» тем же голосом STT
+# потерял так же (или восстановление no_wake шагу не разрешено) -- фраза шага звучит ещё раз, ОДИН раз за шаг, если шаг
+# просит ``wake_replay`` в ``recover`` (e2e_events.WAKE_REPLAY). Ретрай именно на промах вейка: хода по фразе не было
+# (судья e2e_events.py: no_wake), состояние робота не менялось -- не повтор неверного ответа (его ретраит
+# retry_acceptance, и только если шаг состояние не менял, #2902). В лог акта -- E2E_RECOVER wake_replay <шаг>, итог
+# шага -- «OK recovered_wake_replay», не чистый OK. Выход как у step_recover: E2E_WAIT_RC/E2E_REPLY_* последнего
+# ожидания, BEFORE -- начало его окна.
+step_wake_replay() {  # $1=label $2=safe
+    local label="$1" safe="$2"
+    recover_allowed wake_replay || return 0
+    if [ -n "${E2E_STEP_WAKE_REPLAYED:-}" ]; then
+        log "STEP ${label}: no_wake -- фраза шага уже повторялась (wake_replay), второго повтора нет"
+        return 0
+    fi
+    E2E_STEP_WAKE_REPLAYED=1
+    E2E_STEP_RECOVERED="wake_replay"
+    recover_mark wake_replay "$label" "replay=1 after=${E2E_REPLY_AFTER:-?}s"
+    BEFORE="$(${ROBOT_SSH} "date -u +%Y-%m-%dT%H:%M:%SZ" 2>/dev/null || date -u +%Y-%m-%dT%H:%M:%SZ)"
+    E2E_LAST_PLAY_SINCE="$BEFORE"
+    log "STEP ${label}: вейк потерян и «Робот!» не помог -- фраза шага ещё раз (wake_replay)"
+    play_eq_wav "$OUT_DIR/cmd_${safe}_eq.wav"
+    step_wait_after_play "$BEFORE" 0
+}
+
 # presynth_recovery_phrases ROWS — #3989: фразы восстановления голосами акта -- в кэш синтеза до первого PLAY:
 # «Робот!» обязано прозвучать, пока фраза шага свежая для подхвата бэклога (BACKLOG_PICKUP_S = 20 с), а сеть
 # билд-машины мигает (#3875). Не вышло -- не отказ акта: step_recover синтезирует сам.
@@ -2474,6 +2498,8 @@ run_step() {  # $1=text $2=voice $3=step_label $4=expect_kind(cycle|wake-gated|b
         step_wait_after_play "$BEFORE" "$_barge_mode"
         # #3989: до хода не дошло (вейк потерян / тишина) -- одно восстановление шага, если оно ему разрешено.
         [ "${E2E_WAIT_RC:-0}" = "4" ] && step_recover "$label" "$text" "$voice" "$safe"
+        # Решение Шифу 28.10 (n210): вейк так и не пробился -- шаг, которому разрешён wake_replay, повторяет свою фразу.
+        [ "${E2E_WAIT_RC:-0}" = "4" ] && [ "${E2E_REPLY_VERDICT:-}" = "no_wake" ] && step_wake_replay "$label" "$safe"
 
         if [ "$E2E_WAIT_MODE" = "event" ] && [ "${E2E_DIALOG_ENGINE:-v1}" = "v2" ]; then
             # #3954: v2 -- ОДИН судья, e2e_events.py (ПРИНЯТО + `📊 [turn]` + SpeechEvent). check_cycle с его
@@ -3131,6 +3157,7 @@ elif [ -n "$SCENARIO_FILE" ]; then
         # issue #3989 — какие восстановления разрешены шагу (load_recover_policy); одно на шаг, на все попытки.
         E2E_STEP_RECOVER_KINDS="$(step_recover_kinds "$label")"
         E2E_STEP_RECOVERED=""
+        E2E_STEP_WAKE_REPLAYED=""
         # retry_acceptance = доп. попытки при FAIL patterns/acceptance.
         # Нужно для dj01: LLM недетерминирован — если renardo не запустился
         # (request_music не вызван), повторяем команду (e2e run 32595628905).

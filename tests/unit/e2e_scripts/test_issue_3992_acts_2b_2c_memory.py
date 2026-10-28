@@ -361,18 +361,94 @@ def test_n721_taking_over_someone_elses_nameless_profile_is_red():
     assert missing == [step["patterns"][1]]
 
 
-def test_n721_conflict_with_known_voice_is_red():
-    """ADR-0127: голос похож на Сашу — отдельный профиль с флагом конфликта. Для «другого регистра» это провал."""
+#: Живой лог 28.10 10:06:09 (марафон night_20261028_092532, акт 2c, n721): биометрия сочла синтетическую Нину похожей на
+#: Бориса (0.765 >= 0.75 порога слияния) -- имя другое, и код завёл Нине ОТДЕЛЬНЫЙ профиль, чужой не тронут (ADR-0127).
+#: Идентификаторы условные, форматы строк -- f-строки ``speaker_embeddings.register_or_merge`` и
+#: ``speaker_id_node._do_register`` (сверка с исходниками -- ``test_conflict_lines_are_the_robot_f_strings``).
+NINA_CONFLICT_EMBEDDINGS = _l(
+    "speaker_embeddings",
+    "⚠️ register_or_merge: голос похож на 'Борис' (id=3c1d0a2e, score=0.765 >= 0.75), но регистрируют как 'Нина' — "
+    "конфликт имён, слияния НЕ делаю, завожу отдельный профиль (ADR-0127). Если это один человек — склеить вручную: "
+    "merge_speakers(src=<новый>, dst=3c1d0a2e)",
+    level="WARN",
+)
+NINA_CONFLICT_NODE = _l(
+    "speaker_id_node",
+    "⚠️ Speaker 'Нина' (id=6f2beba8) — голос похож на уже известного 'Борис' (id=3c1d0a2e, score=0.765 >= порога "
+    "слияния), но имя другое: завожу ОТДЕЛЬНЫЙ профиль и НЕ переименовываю чужой (ADR-0127).",
+    level="WARN",
+)
+NINA_PUBLISHED = _l(
+    "speaker_id_node", "📢 Publishing: is_known=true name='Нина' epithet='Соседка' conf=1.000 source='register'"
+)
+
+
+def test_n721_conflict_with_known_voice_is_green_when_nina_gets_her_own_profile():
+    """Решение Шифу 28.10 («шаг проверяет механизм, а не путь к ответу»): ADR-0127-конфликт с Борисом -- не провал.
+    Код завёл Нине отдельный профиль, Борис при своём имени, ответ «Запомнил тебя, Нина.» -- это и есть механизм.
+    Прежнее правило («конфликт = робот принял Нину за знакомого») устарело: на конфликте код профиль НЕ склеивает."""
     step = _steps(ACT2C)["n721_nina_own_profile"]
-    conflict = _l(
+    log = _register_call("Нина") + NINA_CONFLICT_EMBEDDINGS + NINA_CONFLICT_NODE + NINA_PUBLISHED
+    verdict, missing = _judge(step, log + _tts("Запомнил тебя, Нина."))
+    assert verdict["pass"], verdict["reason"]
+    assert missing == []
+
+
+@pytest.mark.parametrize("known", ["Борис", "Саша"])
+def test_n721_conflict_path_is_green_for_any_known_voice(known):
+    step = _steps(ACT2C)["n721_nina_own_profile"]
+    log = (_register_call("Нина") + NINA_CONFLICT_EMBEDDINGS.replace("'Борис'", f"'{known}'")
+           + NINA_CONFLICT_NODE.replace("'Борис'", f"'{known}'") + _tts("Запомнил тебя, Нина."))
+    verdict, missing = _judge(step, log)
+    assert verdict["pass"] and missing == [], (verdict["reason"], missing)
+
+
+def test_n721_half_of_the_conflict_evidence_is_not_enough():
+    """Одна из двух строк конфликта -- не доказательство: нужны и «заведён отдельный профиль» (speaker_embeddings), и
+    имя Нины в строке speaker_id_node."""
+    step = _steps(ACT2C)["n721_nina_own_profile"]
+    only_node = _judge(step, _register_call("Нина") + NINA_CONFLICT_NODE)[1]
+    assert only_node == [step["patterns"][1]]
+    only_embeddings = _judge(step, _register_call("Нина") + NINA_CONFLICT_EMBEDDINGS)[1]
+    assert only_embeddings == [step["patterns"][0]]
+
+
+@pytest.mark.parametrize("victim", ["Борис", "Саша"])
+def test_n721_renaming_a_known_profile_into_nina_is_red(victim):
+    """Провал -- Нина забрала чужое: голос уверенно узнан профилем Бориса/Саши, и #4054 переименовал ЕГО в «Нина»."""
+    step = _steps(ACT2C)["n721_nina_own_profile"]
+    rename = _l(
         "speaker_id_node",
-        "⚠️ Speaker 'Нина' (id=77aa88bb) — голос похож на уже известного 'Саша' "
-        "(id=429eae2c, score=0.781 >= порога слияния), но имя другое: завожу ОТДЕЛЬНЫЙ "
-        "профиль и НЕ переименовываю чужой (ADR-0127).",
-        level="WARN",
+        f"✏️ [#4054] один голос — одна личность: голос фразы уверенно '{victim}' (id=3c1d0a2e, score=0.912), назвался "
+        f"'Нина' — профиль переименован '{victim}' → 'Нина', второй профиль не заводится",
     )
-    _, missing = _judge(step, _register_call("Нина") + conflict)
-    assert step["patterns"][0] in missing
+    verdict, missing = _judge(step, _register_call("Нина") + rename + _tts("Мы знакомы — я тебя узнал по голосу."))
+    assert not verdict["pass"] and f"профиль переименован '{victim}'" in verdict["reason"], verdict["reason"]
+    assert missing == step["patterns"], "и доказательств своего профиля у Нины нет"
+
+
+def test_n721_conflict_alongside_a_rename_is_still_red():
+    """Даже при строках конфликта переименование чужого профиля краснит шаг: must_not_call не зависит от паттернов."""
+    step = _steps(ACT2C)["n721_nina_own_profile"]
+    rename = _l("speaker_id_node", "✏️ [#4054] один голос — одна личность: … профиль переименован 'Борис' → 'Нина', "
+                                   "второй профиль не заводится")
+    log = _register_call("Нина") + NINA_CONFLICT_EMBEDDINGS + NINA_CONFLICT_NODE + rename
+    assert not _judge(step, log)[0]["pass"]
+
+
+def test_conflict_lines_are_the_robot_f_strings():
+    """Строки конфликта в паттернах n721 -- подстроки f-строк кода робота: поменяли текст в коде, тест краснеет раньше
+    марафона (харнесс живёт на katana и кода робота не видит)."""
+    embeddings = (ROOT / "src" / "rob_box_voice" / "rob_box_voice" / "utils" / "speaker_embeddings.py").read_text(
+        encoding="utf-8")
+    node = SPEAKER_ID_NODE.read_text(encoding="utf-8")
+    assert "конфликт имён, слияния НЕ делаю, завожу отдельный профиль" in embeddings
+    assert "регистрируют как {name!r}" in embeddings
+    assert "голос похож на уже " in node and "известного '{outcome.conflict_name}'" in node
+    assert "профиль переименован {owner.name!r}" in node
+    step = _steps(ACT2C)["n721_nina_own_profile"]
+    assert "регистрируют как 'Нина' — конфликт имён, слияния НЕ делаю, завожу отдельный профиль" in step["patterns"][1]
+    assert etm.patterns_missing(NINA_CONFLICT_EMBEDDINGS + NINA_CONFLICT_NODE, step["patterns"]) == []
 
 
 #: Строка хозяина голосов (#4054, PR #4087, ``speaker_id_node``): профиль переименован, второго нет.
