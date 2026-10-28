@@ -72,6 +72,12 @@ def instrument_of(word: str) -> Optional[str]:
     return next(iter(keys)) if len(keys) == 1 else None
 
 
+def instrument_word(word: str) -> bool:
+    """Слово называет инструмент — из таблицы (:func:`instrument_of`) или известный без тембра («гуслях», «банджо»):
+    в заказе это слот, а не слово названия (#4016: «спой … на балалайке и гуслях»)."""
+    return instrument_of(word) is not None or word.lower() in _UNSUPPORTED
+
+
 def split_instrument(words: Sequence[str]) -> Tuple[str, List[str]]:
     """``(ключ инструмента, слова без слота)`` по «на <инструменте>» / «на инструменте <X>»; нет — ``("", слова)``."""
     for i, word in enumerate(words):
@@ -124,5 +130,5 @@ def shifted(pitches: Sequence[int], shift: int, corridor: Tuple[int, int]) -> in
     return shift if corridor[0] <= min(pitches) + shift and max(pitches) + shift <= corridor[1] else 0
 
 
-__all__ = ["LeadChoice", "instrument_of", "lead_choice", "near", "neighbors", "shifted",
+__all__ = ["LeadChoice", "instrument_of", "instrument_word", "lead_choice", "near", "neighbors", "shifted",
            "split_instrument", "within_one"]

@@ -1447,6 +1447,10 @@ CHOOSER_LLM_DEADLINE_MS = 2000
 REQUEST_SLOTS_WAIT_MS = 1500
 #: Дедлайн самого вызова LLM-разбора в фоне: после :data:`REQUEST_SLOTS_WAIT_MS` ответ идёт только в кэш.
 REQUEST_SLOTS_CALL_MS = 8000
+#: Код не понял, что названо (#4016: непонятых слов больше понятых, по звучанию в архиве не нашлось, LLM не
+#: подтвердила): фраза кода со словами, как услышаны, — вместо поиска по одним понятым словам («раннинг ап дэд хилл» →
+#: «хилл» → «King Of The Hill»). ``{heard}`` — слова названия из заказа.
+REQUEST_SLOTS_DOUBT_TEXT = "Не уверен, что это за песня — «{heard}»?"
 #: Совпадение названия кандидата со словами заказа: все слова (и тональность, если названа) / слова без тональности
 #: или не все / нет.
 TITLE_EXACT, TITLE_PARTIAL = 1.0, 0.5
@@ -2423,7 +2427,7 @@ __all__ += ["DEFAULT_GENRE", "DEFAULT_STYLE", "DUCK_ROLES", "FORM_NAMES", "GENRE
             "WORK_SCORE_CANDIDATES", "FORM_BARS_STEP", "TRACK_MAX_BARS",
             "SECTION_KINDS", "section_kind", "WINDOW_WORDS", "CHANGES", "TENSION_AVOID"]
 __all__ += ["CHOOSER_DICE_TEMPERATURE", "KNOWN_VIEWS_FLOOR", "KNOWN_VIEWS_FULL", "PIECE_LONG_BEATS",
-            "REQUEST_SLOTS_WAIT_MS", "REQUEST_SLOTS_CALL_MS"]
+            "REQUEST_SLOTS_WAIT_MS", "REQUEST_SLOTS_CALL_MS", "REQUEST_SLOTS_DOUBT_TEXT"]
 
 
 # ── Classic-форма «песня» (PR-11, ADR-0149 §3.3, §9): мелодия целиком по куплетам, аккомпанемент — harmonize ──

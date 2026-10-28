@@ -23,6 +23,7 @@ from dataclasses import dataclass, replace
 from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
 
 from rob_box_music import knowledge as kn
+from rob_box_music.instruments import instrument_word
 from rob_box_music.works import word_links
 from rob_box_music.rtttl import CONTOUR_NOTES, THEME_HOOKS, consensus_order, contour  # noqa: F401
 
@@ -82,6 +83,49 @@ def sound_key(latin: str) -> str:
     return re.sub(r"(.)\1+", r"\1", key)
 
 
+#: Английское слово, записанное STT кириллицей (#4016: «раннинг ап дэд хилл» — «Running Up That Hill»): правки
+#: латиницы до звукового ключа — «wh»/«gh» английского письма; «w» и «v» читаются гласной (кириллицей их пишут то «у»,
+#: то «в»: «вонт» — want, «свит» — sweet, «хайвэй» — highway).
+_HEARD_LATIN = (("wh", "w"), ("gh", ""), ("w", "u"), ("v", "u"))
+#: Звонкие — как глухие: STT и транскрипция путают пары («дэд» — that, «стоунз» — stones).
+_DEVOICE = str.maketrans({"b": "p", "d": "t", "g": "k", "z": "s", "j": "4"})
+_VOWELS = frozenset("aeiouy")
+
+
+def _heard_sound(word: str) -> str:
+    """Звуковой ключ слова по-английски: латиница (:func:`transliterate_ru` — одна функция транслита), правки
+    :data:`_HEARD_LATIN`, :func:`sound_key`."""
+    latin = transliterate_ru(word.lower().replace("ё", "е"))
+    for src, dst in _HEARD_LATIN:
+        latin = latin.replace(src, dst)
+    return sound_key(latin)
+
+
+def phonetic_key(word: str) -> str:
+    """Звучание слова для сверки с английским названием (#4016): звуковой ключ без гласных (гласная в начале — метка
+    «a»), звонкие оглушены, повторы схлопнуты. «раннинг» и «running» — ``rnk``, «ап» и «up» — ``ap``, «дэд» и «that» —
+    ``t``, «хилл» и «hill» — ``hl``. Ключ грубый: одно слово по нему не опознаётся, только название подряд
+    (:func:`heard_title`)."""
+    key = _heard_sound(word)
+    body = re.sub(r"(.)\1+", r"\1", "".join(ch for ch in key if ch not in _VOWELS).translate(_DEVOICE))
+    return ("a" if key[:1] in _VOWELS else "") + body
+
+
+def _strength(key: str) -> int:
+    """Сколько согласных в :func:`phonetic_key` — чем больше, тем реже совпадение случайно."""
+    return len(key) - key.startswith("a")
+
+
+def _edits(a: str, b: str) -> int:
+    """Расстояние правки (замена, вставка, удаление буквы)."""
+    row = list(range(len(b) + 1))
+    for i, ca in enumerate(a, 1):
+        prev, row[0] = row[0], i
+        for j, cb in enumerate(b, 1):
+            prev, row[j] = row[j], min(row[j] + 1, row[j - 1] + 1, prev + (ca != cb))
+    return row[-1]
+
+
 _STOP = frozenset(stem(w.replace("ё", "е")) for w in kn.SEARCH_STOPWORDS) | frozenset(kn.SEARCH_STOPWORDS)
 
 
@@ -114,6 +158,23 @@ class _Vocab:
         self.by_key: Dict[str, List[str]] = {}
         for word in sorted(words):
             self.by_key.setdefault(sound_key(word), []).append(word)
+        self._sounds: Optional[Dict[str, List[str]]] = None  # по :func:`phonetic_key` — только для разбора на слух
+
+    def sounding(self, word: str, limit: int) -> Tuple[str, ...]:
+        """Слова архива, звучащие как ``word`` (:func:`phonetic_key`) и близкие по звуковому ключу (правок не больше
+        трети его длины), ближе — первыми. Указатель строится при первом разборе на слух (#4016), а не со словарём:
+        нужен редко."""
+        if self._sounds is None:
+            sounds: Dict[str, List[str]] = {}
+            for words in self.by_key.values():
+                for w in words:
+                    if w.isalpha():
+                        sounds.setdefault(phonetic_key(w), []).append(w)
+            self._sounds = sounds
+        heard = _heard_sound(word)
+        near = sorted((_edits(heard, _heard_sound(w)), abs(len(w) - len(word)), w)
+                      for w in self._sounds.get(phonetic_key(word), ()))
+        return tuple(w for edits, _n, w in near if edits <= max(1, len(heard) // 3))[:limit]
 
     def exact(self, latin: str) -> Tuple[str, ...]:
         return tuple(self.by_key.get(sound_key(latin), ()))
@@ -269,6 +330,152 @@ def find_rare(library: Any, text: str) -> Found:
         return Found(False, 0.0, None)
     _confidence, record, query = full[0]
     return Found(True, round(len(known) / len(query_terms), 3), record, tuple(r for _c, r, _q in full[1:]), query)
+
+
+#: Слова просьбы, а не названия («спой», «исполни», «сочини», «сыграй») — таблицы знания пения.
+_ASK_WORDS = frozenset((*kn.SING_VERBS, *kn.SING_PERFORM_VERBS, *kn.SING_CREATE_VERBS, *kn.SING_PLAY_VERBS))
+#: Разбор на слух (:func:`heard_title`): слов архива на одно услышанное слово (ближайшие по звуку), строк поиска
+#: всего, согласных в ключе слова-опоры поиска («ты», «я» опорой не бывают: совпадений по звуку сотни), чужих слов
+#: между словами названия («кинг оф зе хилл»), доля слов названия, которая должна прозвучать (больше половины:
+#: «ин блэк» — не «Yenny From The Block»), с какого числа значимых слов одно может прозвучать иначе («раннинг ап
+#: зэт хилл»: «зэт» — that) и каким коротким должно быть услышанное на его месте слово (служебное английское: that,
+#: the, it; «брейк» вместо «be» — уже другое название).
+HEARD_ALTS = 2
+HEARD_QUERIES = 4
+HEARD_ANCHOR_MIN = 2
+HEARD_GAP = 2
+HEARD_COVER_MIN = 0.6
+HEARD_SLACK_FROM = 4
+HEARD_SLACK_WORD = 3
+
+
+@dataclass(frozen=True)
+class Heard:
+    """Название заказа на слух (#4016). ``words`` — слова названия так, как их записал STT (без служебных, слов просьбы
+    и инструмента: «раннинг ап дэд хилл»); ``known`` — сколько из них архив знает (у слова есть написание);
+    ``record`` — запись архива, чьё название (или исполнитель — ``field``) звучит этими словами подряд; ``None`` — не
+    нашлось или не искали (понятных не меньше непонятых); ``rare`` — понятые слова редкие: все вместе они есть не
+    больше чем в :data:`RARE_MAX` записях и сами называют мелодию («пиратов карибского моря» — Pirates Of The
+    Caribbean, как :func:`find_rare`)."""
+
+    words: Tuple[str, ...] = ()
+    known: int = 0
+    record: Optional[Dict[str, Any]] = None
+    field: str = ""
+    rare: bool = False
+
+    @property
+    def unclear(self) -> bool:
+        """Непонятых слов больше, чем понятых."""
+        return len(self.words) - self.known > self.known
+
+    @property
+    def truncated(self) -> bool:
+        """Поиск по одним понятым словам молча потерял бы название: «раннинг ап дэд хилл» → «хилл» (слово полусотни
+        записей). Понятных нет — ищется фраза целиком; понятые редкие (``rare``) — они и есть название; урезания нет."""
+        return self.unclear and self.known > 0 and not self.rare
+
+    @property
+    def name(self) -> str:
+        """Название (или исполнитель) записи, как в каталоге; не нашлось — «»."""
+        return str(self.record.get(self.field) or "") if self.record else ""
+
+    @property
+    def spoken(self) -> str:
+        """Слова названия, как услышаны, — для честной фразы «не уверен, что это за песня»."""
+        return " ".join(self.words)
+
+
+def _title_word(word: str) -> bool:
+    """Слово может быть словом названия: не служебное, не слово просьбы, не инструмент заказа («балалайке»,
+    «гуслях»)."""
+    return not (word in _STOP or stem(word) in _STOP or word in _ASK_WORDS or instrument_word(word))
+
+
+def heard_title(library: Any, text: str) -> Heard:
+    """Название заказа на слух (#4016, живой прогон 24.10: STT записал «Running Up That Hill» как «раннинг ап дэд
+    хилл», код оставил одно понятое «хилл» и сыграл «King Of The Hill»). Слова названия и сколько из них архив знает;
+    непонятых больше — запись архива, чьё название звучит этими словами подряд (:func:`phonetic_key`, без ожидания
+    LLM): слова названия — все значимые, по порядку, между ними не больше :data:`HEARD_GAP` чужих (в длинном названии
+    одно может прозвучать иначе, :data:`HEARD_SLACK_FROM`); прозвучать должна хотя бы :data:`HEARD_COVER_MIN` всех
+    слов названия; название из одного значимого слова не опознаётся."""
+    words = tuple(w for w in _WORD_RE.findall(_STYLE_RE.sub(" ", text.lower().replace("ё", "е"))) if _title_word(w))
+    spelled = [[t for t in terms(library, w) if t.alts] for w in words]
+    heard = Heard(words, sum(1 for found in spelled if found))
+    if library is None or not heard.unclear:
+        return heard
+    record, field = _sounding(library, words)
+    known = [t for found in spelled for t in found]
+    rare = record is None and bool(known) and 0 < sum(1 for hit in ranked(library, known) if hit[0] >= 1.0) <= RARE_MAX
+    return replace(heard, record=record, field=field, rare=rare)
+
+
+def _sounding(library: Any, words: Sequence[str]) -> Tuple[Optional[Dict[str, Any]], str]:
+    """Запись, чьё название (или исполнитель) звучит словами ``words``: по строкам :func:`_sound_queries` — лучшая
+    находка (доля названия, затем число значимых слов; при равных — первая), название целиком — без следующих
+    строк."""
+    keys = [phonetic_key(w) for w in words]
+    heard = [(key, len(word) <= HEARD_SLACK_WORD) for key, word in zip(keys, words)]
+    best: Tuple[Tuple[float, int], Optional[Dict[str, Any]], str] = ((0.0, 0), None, "")
+    for query in _sound_queries(_vocab(library), words, keys):
+        best = max([best, *_scored(library.search(query, limit=SEARCH_LIMIT), heard)], key=lambda hit: hit[0])
+        if best[0][0] >= 1.0:  # прозвучало всё название — лучше не будет
+            break
+    return best[1], best[2]
+
+
+def _sound_queries(vocab: _Vocab, words: Sequence[str], keys: Sequence[str]) -> List[str]:
+    """Строки поиска на слух: слова архива, звучащие как самое «согласное» услышанное слово (опора не слабее
+    :data:`HEARD_ANCHOR_MIN`), по одному, затем ближайшее из них в паре со словами второй опоры."""
+    order = sorted((i for i in range(len(words)) if _strength(keys[i]) >= HEARD_ANCHOR_MIN),
+                   key=lambda i: (-_strength(keys[i]), i))
+    anchors = [alts for alts in (vocab.sounding(words[i], HEARD_ALTS) for i in order) if alts][:2]
+    if not anchors:
+        return []
+    pairs = anchors[1] if len(anchors) > 1 else ()
+    return [*anchors[0], *(f"{anchors[0][0]} {alt}" for alt in pairs)][:HEARD_QUERIES]
+
+
+def _scored(records: Iterable[Dict[str, Any]],
+            heard: Sequence[Tuple[str, bool]]) -> List[Tuple[Tuple[float, int], Dict[str, Any], str]]:
+    """``(оценка, запись, поле)`` записей, чьё название или исполнитель звучит услышанными словами (:func:`_aligned`)."""
+    return [(score, record, field) for record in records for field in ("title", "artist")
+            if (score := _aligned(str(record.get(field) or ""), heard)) is not None]
+
+
+def _aligned(name: str, heard: Sequence[Tuple[str, bool]]) -> Optional[Tuple[float, int]]:
+    """``(доля прозвучавших слов названия, значимых слов)``, если название ``name`` звучит подряд идущими услышанными
+    словами ``heard`` (``(ключ, короткое ли)``; условия — :func:`heard_title`), иначе ``None``."""
+    title = title_key(strip_version_tail(name)).split()
+    significant = [i for i, w in enumerate(title) if w not in _STOP]
+    if len(significant) < 2:
+        return None
+    tkeys = [phonetic_key(w) for w in title]
+    slack = int(len(significant) >= HEARD_SLACK_FROM)
+    walks = (_walk(title, tkeys, heard, start, significant[0], slack) for start, (key, _short) in enumerate(heard)
+             if key == tkeys[significant[0]])
+    matched = max((m for m in walks if m is not None), default=0)
+    cover = matched / len(title)
+    return (cover, len(significant)) if matched and cover >= HEARD_COVER_MIN else None
+
+
+def _walk(title: Sequence[str], tkeys: Sequence[str], heard: Sequence[Tuple[str, bool]], start: int, first: int,
+          slack: int) -> Optional[int]:
+    """Сколько слов названия прозвучало, если его первое значимое слово — услышанное ``start``. Значимое не прозвучало
+    (или дальше :data:`HEARD_GAP` чужих слов) — ``None``, кроме ``slack`` слов, на месте которых услышано другое
+    короткое слово («зэт» вместо that); служебное («of», «the») может и не прозвучать."""
+    pos, matched = start + 1, 1
+    for i in range(first + 1, len(title)):
+        hit = next((p for p in range(pos, min(len(heard), pos + HEARD_GAP + 1)) if heard[p][0] == tkeys[i]), None)
+        if hit is not None:
+            pos, matched = hit + 1, matched + 1
+        elif title[i] in _STOP:
+            continue
+        elif slack and pos < len(heard) and heard[pos][1]:
+            pos, slack = pos + 1, slack - 1
+        else:
+            return None
+    return matched
 
 
 def _archive_words(query_terms: List[Term]) -> List[Term]:
@@ -585,7 +792,9 @@ def theme_hooks(library: Any, theme: str, limit: int = THEME_HOOKS) -> Tuple[str
     return theme_search(library, theme, limit).names
 
 
-__all__ = ["CONTOUR_NOTES", "FOUND_MIN", "Found", "PartQuery", "SEARCH_LIMIT", "THEME_HOOKS", "THEME_LIST_HOOKS",
+__all__ = ["CONTOUR_NOTES", "FOUND_MIN", "Found", "HEARD_ALTS", "HEARD_ANCHOR_MIN", "HEARD_COVER_MIN", "HEARD_GAP",
+           "HEARD_QUERIES", "HEARD_SLACK_FROM", "HEARD_SLACK_WORD", "Heard", "heard_title", "phonetic_key", "PartQuery",
+           "SEARCH_LIMIT", "THEME_HOOKS", "THEME_LIST_HOOKS",
            "Term", "ThemeHits", "ThemeQuery", "blank_style", "by_part", "consensus_order", "coverage", "find",
            "genre_hooks", "genre_of", "part_query", "ranked", "round_robin", "sound_key", "stem", "terms",
            "theme_hooks",

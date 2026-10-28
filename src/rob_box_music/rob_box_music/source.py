@@ -76,7 +76,18 @@ REASON_WORDS = {
     "timeout": "генерация не уложилась по времени",
     "no_material": "мелодии для живой версии у меня нет",
     "theme_cache": "под тему хватает сочинённого раньше",
+    # «спой <названное произведение>» (#4015): генерация подключена, но песня робота — свой текст (ADR-0158 §3.4),
+    # чужих слов в ней нет; это не «не подключено» и не провал сервиса
+    "named_song": "чужие песни по названию я не пою — только свои",
 }
+#: Причина «спеть названное произведение нельзя» (:data:`REASON_WORDS`): назван каталогом найденный ``CoverWork``,
+#: а петь просили — кандидата песни нет до выбора (:func:`source_candidates`), фраза — :func:`decline_text`.
+NAMED_SONG = "named_song"
+#: Что робот может с названным произведением вместо песни: мелодия нашлась в каталоге (``CoverWork`` строится только
+#: из собранной пьесы), её сыграет «сыграй <название>».
+NAMED_SONG_OFFER = "Могу сыграть её мелодию."
+#: Виды генерации с пением (``fork_gen_kind``): их исполняет студия песни (``engine.song_order``).
+SONG_GEN_KINDS: Tuple[str, ...] = ("song", "robot_song")
 INSTRUCTIONS = ("Выбери, откуда взять музыку роботу: своё (синтез, сразу и бесплатно), вживую (робот поёт сам под "
                 "синт: сразу и бесплатно, не сохранится), сгенерированное раньше (кэш) или новая генерация (кредиты и "
                 "ожидание 1-3 минуты, сохранится в библиотеке). Учитывай заказ и последние реплики: просили сохранить "
@@ -1119,6 +1130,8 @@ def source_candidates(ask: SourceAsk, ctx: SourceContext, piece: bool = False,
     """``(кандидаты, почему генерации нет)``. Порядок — синтез, генерация, кэш; звучащих нет — ``decline:<причина>``
     (отказ — только когда генерации физически нет: ключ, деньги, сервис; фраза предлагает другую клетку вилки).
     Пьеса с ``work`` (петь не просили) — вместо генерации кандидаты кавера (:func:`_cover_options`, ADR-0158 PR-4).
+    Пьеса с ``work`` и просьба спеть («спой Running Up That Hill», #4015) — кандидата песни нет, причина
+    :data:`NAMED_SONG`: песня робота — свой текст, чужих слов у него нет (ADR-0158 §3.4); это не ``not_wired``.
     Вилка Шифу 27.10 (2×2): синт назван и петь просят (``ask.live`` — #4079, или пение от тула генерации) — один
     ``live:<вид>``: поёт робот сам (``perform`` диалога); синт назван без пения — один синтез (жанр, который синт не
     играет, — ближайшим стилем, :func:`synth_key`)."""
@@ -1129,6 +1142,8 @@ def source_candidates(ask: SourceAsk, ctx: SourceContext, piece: bool = False,
     if piece and work is not None and not ask.vocal:
         covers, reason = _cover_options(ask, ctx, work)
         options = [o for o in [synth, *covers] if o is not None]
+    elif piece and work is not None:  # петь просили (синтез не поёт — его кандидата нет): песни на чужое нет
+        options, reason = [], NAMED_SONG
     else:
         gen, reason = _gen_option(ask, ctx)
         options = [o for o in (synth, gen) if o is not None] + ([] if piece else _cache_options(ask, ctx))
@@ -1335,13 +1350,21 @@ def cache_text(route: Route) -> str:
     return " ".join(p for p in (_excuse(route), f"Ставлю {what}: {title}.") if p)
 
 
+def named_song_text(work: CoverWork) -> str:
+    """«Спой <названное>» (#4015): что назвали, настоящая причина (:data:`NAMED_SONG`, не «не подключено») и что можно
+    вместо — мелодию этого же произведения (каталог её нашёл: ``CoverWork`` есть только у собранной пьесы)."""
+    return f"Спеть «{work.spoken or work.title}» не могу: {REASON_WORDS[NAMED_SONG]}. {NAMED_SONG_OFFER}"
+
+
 def decline_text(route: Route) -> str:
     """Честный отказ (звука нет; только когда генерации физически нет — ключ, деньги, сервис): что просили, почему
     нельзя и другая клетка вилки Шифу 27.10 — песню робот споёт сам вживую под синт (:data:`LIVE_OFFER`), инструментал
     сыграет своим (стили, которые синтез играет). Путь ``live:*`` (#4079) — поёт сам робот, не тул музыки: тулу —
-    :data:`LIVE_TOOL_TEXT` (генерацию не запускаю)."""
+    :data:`LIVE_TOOL_TEXT` (генерацию не запускаю). Спеть просили названное произведение — :func:`named_song_text`."""
     if route.kind == LIVE:
         return LIVE_TOOL_TEXT
+    if route.gen_reason == NAMED_SONG and route.work is not None:
+        return named_song_text(route.work)
     head = _excuse(route) or f"Сыграть это сейчас не могу: {REASON_WORDS.get(route.gen_reason, 'нечем')}."
     if route.ask.vocal:
         return f"{head} {LIVE_OFFER_BY_REASON.get(route.gen_reason, LIVE_OFFER)}"
@@ -1362,3 +1385,4 @@ __all__ = ["CACHE", "COVER_SLOT", "CacheTrack", "CoverWork", "DECLINE", "cover_f
 __all__ += ["BY_CODE", "LIVE", "LIVE_OFFER", "LIVE_OFFER_BY_REASON", "LIVE_TOOL_TEXT", "SingContext", "SingRoute", "choose_sing",
             "sing_candidates", "sing_kind", "sing_markers", "synth_key"]
 __all__ += ["fork_cell", "fork_gen_kind"]
+__all__ += ["NAMED_SONG", "NAMED_SONG_OFFER", "SONG_GEN_KINDS", "named_song_text"]
