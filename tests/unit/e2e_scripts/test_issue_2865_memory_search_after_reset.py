@@ -149,6 +149,10 @@ def _load_memory_tools() -> types.ModuleType:
     pkg_name = "_issue2865_mcp"
     if f"{pkg_name}.tools.memory" in sys.modules:
         return sys.modules[f"{pkg_name}.tools.memory"]
+    # tools/memory.py берёт причину отказа из rob_box_dialog.knowledge (#4023): модуль чистый (stdlib), пакет - из src
+    dialog_src = str(REPO_ROOT / "src" / "rob_box_dialog")
+    if dialog_src not in sys.path:
+        sys.path.insert(0, dialog_src)
     pkg = types.ModuleType(pkg_name)
     pkg.__path__ = [str(MCP_PKG)]
     sub = types.ModuleType(f"{pkg_name}.tools")
