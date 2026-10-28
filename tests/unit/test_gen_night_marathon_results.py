@@ -180,6 +180,20 @@ def test_dj_set_with_result_markers_passes_n602_n604_n608():
     assert _verdict("n608_dj_off", "\n".join(["📤 Отправлен запрос ab: dj_set", done, stopped, ended]))["pass"]
 
 
+def test_n607_set_vibe_is_the_edit_of_the_set_and_a_new_track_is_not_the_result():
+    """#4173 (марафон-4): «помягче» под сетом -- ``edit_music`` меняет настроение сета (или модель - ``dj_set`` start с
+    новым стилем); новый трек ``request_music`` снимал сет (марафоны 2-3) -- подмена, а не результат."""
+    ended = TURN_LINE % ("done", "finished")
+    edit = "\n".join(["📤 Отправлен запрос ab: edit_music", "✅ Инструмент edit_music выполнен успешно", ended])
+    assert _verdict("n607_vibe_chill", edit)["pass"]
+    new_track = "\n".join(["📤 Отправлен запрос ab: request_music", "✅ Инструмент request_music выполнен успешно",
+                           ended])
+    assert not _verdict("n607_vibe_chill", new_track)["pass"]
+    refused = "\n".join(["📤 Отправлен запрос ab: edit_music",
+                         "❌ Инструмент edit_music завершился с ошибкой: Это диджей-сет", ended])
+    assert not _verdict("n607_vibe_chill", refused)["pass"]
+
+
 def test_turn_timeout_blocks_the_pass():
     """Ход убит по дедлайну (``stage=timeout``): даже с речью и успехом тула шаг красный."""
     log = "\n".join([

@@ -3333,6 +3333,31 @@ EDIT_REFUSALS: Mapping[str, str] = {
     "unknown": "Не понял, что поменять: быстрее, медленнее, тяжелее, мрачнее, светлее, мягче или басов больше?",
     "backing_tempo": "Под выступление темп не меняю — куплеты собьются с такта.",
     "failed": "Не получилось поменять музыку — играет как было.",
+    # смена настроения сета (:data:`SET_VIBES`) не заиграла: новый сет мог снять идущий, «играет как было» — не факт
+    "set_vibe_failed": "Не получилось сменить настроение сета.",
+}
+
+
+@dataclass(frozen=True)
+class SetVibe:
+    """Настроение диджей-сета по правке (#4173): ``style`` — стиль сета (ключ :data:`STYLES`), в котором сет идёт
+    дальше; ``done`` — что сделано (фраза исхода, ``track_edit.edit_text``), ``limit`` — сет уже в этом стиле."""
+
+    style: str
+    done: str
+    limit: str
+
+
+#: Правка настроения под диджей-сетом (#4173, марафон-4 n607 «помягче, поставь спокойное» под сетом — честный отказ, а
+#: Шифу ждёт смену настроения). Треки сета на ходу не пересобираются, но сет меняет настроение сменой стиля: та же
+#: тема и персона, остаток длины — в стиле отсюда (``dj_set`` start посреди сета, #3400; решает код —
+#: ``track_edit.plan_edit``, а не модель). Вид правки не в таблице — честный отказ ``EDIT_REFUSALS["set"]``.
+#: Причина «генерации нет» у смены настроения сета (``source.gen_block``, ``source.REASON_WORDS``): платную генерацию
+#: она не заказывает (решение 29.10, иначе каждый прогон n607 марафона — деньги) — кэш стиля, иначе сет синтезом.
+SET_VIBE_NO_GEN = "set_vibe"
+SET_VIBES: Mapping[str, SetVibe] = {
+    "softer": SetVibe("lofi", "сделал сет спокойнее — дальше лоуфай", "сет и так спокойный — играет лоуфай"),
+    "heavier": SetVibe("rock", "сделал сет тяжелее — дальше рок", "сет и так тяжёлый — играет рок"),
 }
 
 #: Петь не просили — песня кэша ниже инструментала (добавка к ``asked``).
@@ -3415,4 +3440,4 @@ __all__ += ["ENGINE_AUTO", "ENGINE_NEGATIONS", "ENGINE_NEGATION_BRIDGES", "ENGIN
             "MusicEngine"]
 __all__ += ["EDIT_BASS_DB_RANGE", "EDIT_BASS_FORMS", "EDIT_NEGATIONS", "EDIT_NEW_ORDER_OBJECTS", "EDIT_NEW_ORDER_WORDS",
             "EDIT_NEXT_TIMBRE", "EDIT_PLAY_VERBS", "EDIT_OPPOSED_GROUPS", "EDIT_REFUSALS", "EDIT_TEMPO_STEP", "EDIT_TOPIC", "EditTopicWords", "TRACK_EDITS",
-            "TRACK_EDIT_GROUPS", "TrackEdit"]
+            "TRACK_EDIT_GROUPS", "TrackEdit", "SET_VIBES", "SET_VIBE_NO_GEN", "SetVibe"]
