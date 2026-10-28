@@ -184,7 +184,6 @@ def _ensure_optional_deps(monkeypatch):
 
     for cached in [
         "rob_box_voice.stt_node",
-        "rob_box_voice.dialogue_node",
     ]:
         sys.modules.pop(cached, None)
         # sys.modules.pop() НЕ очищает атрибут пакета (rob_box_voice.stt_node):

@@ -20,9 +20,9 @@
       "docker/sound/config/wake_words.yaml содержит personality с 'роб бокс' (ADR-0065 SSoT)"
     ],
     "runtime": [
-      "ros2 node info /dialogue_node показывает подписку на /vision/hailo/events",
+      "ros2 node info /dialog_node показывает подписку на /vision/hailo/events",
       "ros2 topic info /vision/hailo/events -v: Publisher count >= 1, тип rob_box_perception_msgs/VisionEvent",
-      ">= 5 минут от старта dialogue_node (cold-start VAD калибровка, ADR-0029)"
+      ">= 5 минут от старта dialog_node (cold-start VAD калибровка, ADR-0029)"
     ]
   },
   "steps": [

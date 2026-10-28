@@ -21,8 +21,8 @@ def generate_launch_description():
 
     Issue #1004 fix (ADR-0004): per-node YAML files вместо одного
     монолитного ``voice_assistant.yaml``. Раньше каждый Node грузил общий
-    YAML, и вложенные блоки ``dialogue_node:`` / ``tts_node:`` создавали
-    dotted-параметры ``dialogue_node.llm_provider``, которые нода
+    YAML, и вложенные блоки ``<node>:`` / ``tts_node:`` создавали
+    dotted-параметры ``<node>.llm_provider``, которые нода
     ``get_parameter("llm_provider")`` НЕ читала — параметр всегда был
     default. Теперь каждый Node грузит СВОЙ per-node файл
     (src/rob_box_voice/config/<node>.yaml), и ``get_parameter("foo")``
@@ -54,19 +54,6 @@ def generate_launch_description():
         description='TTS provider override for tts_node'
     )
 
-    # W5a: tool-provider backend selector. ``ros_mcp`` is the default
-    # production path (LLMToolCallAdapter → ROSMCPToolProvider with the
-    # 34-manifest ToolRegistry). ``fake`` swaps in FakeToolProvider for
-    # smoke tests; ``none`` disables tools entirely (chat-only deploy).
-    # The operator can also flip this in dialogue_node.yaml's
-    # ``tool_provider`` key without re-launching the stack.
-    tool_provider_arg = DeclareLaunchArgument(
-        'tool_provider',
-        default_value='ros_mcp',
-        choices=['ros_mcp', 'fake', 'none'],
-        description='Tool provider backend for dialogue_node (W5a)',
-    )
-
     # Конфигурация
     config_dir = LaunchConfiguration('config_dir')
     namespace = LaunchConfiguration('namespace')
@@ -75,7 +62,6 @@ def generate_launch_description():
     audio_node_yaml = PathJoinSubstitution([config_dir, 'audio_node.yaml'])
     stt_node_yaml = PathJoinSubstitution([config_dir, 'stt_node.yaml'])
     tts_node_yaml = PathJoinSubstitution([config_dir, 'tts_node.yaml'])
-    dialogue_node_yaml = PathJoinSubstitution([config_dir, 'dialogue_node.yaml'])
     sound_node_yaml = PathJoinSubstitution([config_dir, 'sound_node.yaml'])
     led_node_yaml = PathJoinSubstitution([config_dir, 'led_node.yaml'])
     command_node_yaml = PathJoinSubstitution([config_dir, 'command_node.yaml'])
@@ -108,23 +94,8 @@ def generate_launch_description():
 
     # Лицо LED-матрицы — face_node в контейнере led-matrix на Vision Pi (ADR-0150 PR-3a, #3689).
 
-    # === Dialogue Node (Phase 2: DeepSeek streaming + accent_replacer) ===
-    # Issue #1004: dialog_node.yaml грузится первым, потом launch-override
-    # tool_provider (W5a) — чтобы можно было переключать без правки YAML.
-    dialogue_node = Node(
-        package='rob_box_voice',
-        executable='dialogue_node',
-        name='dialogue_node',
-        namespace=namespace,
-        parameters=[
-            dialogue_node_yaml,
-            {'tool_provider': LaunchConfiguration('tool_provider')},
-        ],
-        output='screen',
-        respawn=True,
-        respawn_delay=5.0,
-        arguments=['--ros-args', '--log-level', 'info']
-    )
+    # Нода диалога — dialog_node (v2): её строит dialog_engine.launch_nodes (OpaqueFunction ниже) из
+    # config_dir/dialog_node.yaml. Нода v1 удалена в PR-15 (#3711, часть 15p).
 
     # === TTS Node (Yandex/Silero + opt-in MiniMax) ===
     # Issue #1004: tts_node.yaml первым, launch-override provider — чтобы
@@ -180,15 +151,14 @@ def generate_launch_description():
         arguments=['--ros-args', '--log-level', 'info']
     )
 
-    # === Startup Greeting: переехал в dialogue_node (issue #1003, 06.08) ===
+    # === Startup Greeting: в ноде диалога (issue #1003, 06.08; v2 — #3912) ===
     # Отдельная нода приветствия убрана — страдала гонкой с
-    # инициализацией tts_node (фраза терялась). dialogue_node сам
+    # инициализацией tts_node (фраза терялась). dialog_node сам
     # говорит приветствие через startup_greeting_sec / startup_greeting_text.
 
     # === Speaker ID Node (issue #1077 — голосовая биометрия resemblyzer) ===
     # Подписывается на /audio/speech_audio, вычисляет d-vector, идентифицирует
-    # говорящего, публикует /voice/speaker/result. dialogue_node использует
-    # результат для префикса [Говорит <имя>] / [Говорит: незнакомец].
+    # говорящего, публикует /voice/speaker/result (читает нода диалога).
     speaker_id_node = Node(
         package='rob_box_voice',
         executable='speaker_id_node',
@@ -240,11 +210,10 @@ def generate_launch_description():
         config_dir_arg,
         namespace_arg,
         provider_arg,
-        tool_provider_arg,
         audio_node,
         led_node,
-        # ✅ dialogue_node (v1) + tts_node (Silero/MiniMax opt-in) — по флагу dialog_engine (PR-8 #3702)
-        OpaqueFunction(function=dialog_engine.launch_nodes, args=[dialogue_node, tts_node_args]),
+        # ✅ dialog_node (v2) + tts_node (Silero/MiniMax opt-in); dialog_engine: v1 — ошибка (PR-15 #3711)
+        OpaqueFunction(function=dialog_engine.launch_nodes, args=[tts_node_args]),
         stt_node,       # ✅ Phase 3: Vosk STT
         sound_node,     # ✅ Phase 4: Sound Effects
         command_node,   # ✅ Phase 5: Command Recognition

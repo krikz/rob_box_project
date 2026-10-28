@@ -37,6 +37,9 @@ test_dialogue_retry_flag_wiring.py — статический детектор N
 а не NameError. Тест ловит только то, что реально падает.
 
 Не требует ROS2 и не импортирует ноду — чистый статический анализ.
+
+PR-15 (#3711, часть 15p): нода v1 удалена вместе с отдельной проверкой её файла;
+контракт держит проверка всего пакета (в том числе ``dialog_node.py`` v2).
 """
 
 import ast
@@ -48,7 +51,6 @@ import pytest
 
 
 _VOICE_PKG = Path(__file__).resolve().parents[3] / "rob_box_voice"
-DIALOGUE_NODE = _VOICE_PKG / "dialogue_node.py"
 
 #: Модульные dunder'ы, которые интерпретатор кладёт в globals сам.
 MODULE_DUNDERS = frozenset({
@@ -138,15 +140,6 @@ def _voice_sources() -> list:
     return sorted(
         p for p in _VOICE_PKG.rglob("*.py")
         if "__pycache__" not in p.parts
-    )
-
-
-def test_dialogue_node_has_no_unbound_names() -> None:
-    """``dialogue_node.py`` — оба инцидента 30.08 были здесь."""
-    found = unbound_global_reads(DIALOGUE_NODE)
-    assert not found, (
-        "имена читаются, но нигде не связаны — NameError в рантайме:\n"
-        + "\n".join(f"    {scope} -> {name}" for scope, name in found)
     )
 
 

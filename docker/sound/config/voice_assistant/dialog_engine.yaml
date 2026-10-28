@@ -4,10 +4,11 @@
 # Две копии: docker/sound/config/voice_assistant/ (живой, docker) и src/rob_box_voice/config/ — менять синхронно
 # (сверяет src/rob_box_core/test/test_dialog_engine.py).
 #
-# "v1" — прежний движок: стартует dialogue_node.
+# "v1" — движок v1 удалён в PR-15 (#3711, часть 15p): launch voice-assistant с "v1" падает понятной ошибкой
+#        (rob_box_core.dialog_engine.V1_REMOVED). Откат на v1 — только гитом (ADR-0150 §16).
 # "v2" — ДЕФОЛТ с 23.10.2026 (решение товарища Шифу: «можно уже переключить на В2 и не париться», не дожидаясь
-#        вердикта на слух PR-14 #3710). Откат — одна строка: dialog_engine: "v1" + рестарт.
-#        Стартует dialog_node (ADR-0150 §2.2), dialogue_node не стартует; tts_node не слушает
+#        вердикта на слух PR-14 #3710).
+#        Стартует dialog_node (ADR-0150 §2.2); tts_node не слушает
 # /voice/dialogue/response, telegram_node — тоже, supervisor_node не публикует /dialogue/control.
 # Переключение: правка этого файла + рестарт voice-assistant, telegram-bot и supervisor.
 /**:

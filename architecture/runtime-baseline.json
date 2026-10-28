@@ -479,11 +479,6 @@
       "debt": "PR-3b (#3690): stt_node («boop») и dialogue_node (thinking, приветствие) переведены на ExpressionRequest.earcon; остаются play_sound (mcp_server) и health_monitor (Main Pi, звук статуса здоровья) - второго писателя снимет перевод health_monitor на earcon (в образе perception нет rob_box_core), номер PR уточнит координатор"
     },
     {
-      "key": "multiple_writers|/voice/speaker/register|",
-      "scope": "repo",
-      "debt": "PR-5b (#3695): собеседник через SpeakerRef оставляет одного писателя (ADR-0150 §7.5)"
-    },
-    {
       "key": "multiple_writers|/voice/tts/control|",
       "scope": "repo",
       "debt": "PR-3 (#3688) и PR-5 (#3694): STOP заменён SpeechCancel и /dialog/interrupt_request"

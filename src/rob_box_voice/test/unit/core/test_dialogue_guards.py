@@ -116,23 +116,24 @@ class TestWatchdogStopReachesTheDialogueLive3108:
     """Музыку останавливает не только диалог — он обязан это узнавать (живой лог 31.08: через 139 с после
     остановки по watchdog диалог считал, что трек играет). Источник «играет» — снимок плеера
     ``/voice/music/state`` (#3133, ADR-0141); флаг TRACK-режима удалён в ADR-0150 PR-7c ч.4б (#3700).
+    PR-15 (#3711, часть 15p): нода диалога — ``dialog_node`` (v2), нода v1 удалена.
     """
 
-    def _dialogue_node_source(self) -> str:
+    def _dialog_node_source(self) -> str:
         from pathlib import Path
 
         here = Path(__file__).resolve()
         for parent in here.parents:
-            candidate = parent / "rob_box_voice" / "dialogue_node.py"
+            candidate = parent / "rob_box_voice" / "dialog_node.py"
             if candidate.is_file():
                 return candidate.read_text(encoding="utf-8")
-        raise AssertionError("dialogue_node.py not found")
+        raise AssertionError("dialog_node.py not found")
 
     def test_node_subscribes_to_the_server_music_state(self) -> None:
         # Issue #3133: имя топика — константа контракта (ADR-0141).
         from rob_box_voice.core.music_player_state import MUSIC_STATE_TOPIC
 
-        src = self._dialogue_node_source()
+        src = self._dialog_node_source()
         assert MUSIC_STATE_TOPIC == "/voice/music/state"
         assert "MUSIC_STATE_TOPIC, self._on_music_state" in src, (
             "диалог не слушает /voice/music/state — про остановку по "

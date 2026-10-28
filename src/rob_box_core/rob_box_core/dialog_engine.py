@@ -1,7 +1,8 @@
 """dialog_engine - флаг движка диалога ``v1 | v2`` (ADR-0150 §11, PR-8 #3702).
 
-Один файл ``dialog_engine.yaml`` (секция ``/**``) на все ноды, которым флаг что-то меняет: launch решает, какая нода
-диалога стартует (``v1`` - ``dialogue_node``, ``v2`` - ``dialog_node``), ``tts_node`` подключает вход
+Один файл ``dialog_engine.yaml`` (секция ``/**``) на все ноды, которым флаг что-то меняет: launch стартует ноду диалога
+``dialog_node`` (``v2``); нода ``v1`` удалена в PR-15 (#3711, часть 15p), и ``v1`` в launch - громкая ошибка, а не
+запуск несуществующего исполняемого файла (:func:`launch_nodes`). ``tts_node`` подключает вход
 ``/voice/dialogue/response`` адаптера ``speech_compat`` только при ``v1``, ``telegram_node`` и ``supervisor_node`` при
 ``v2`` не трогают топики ``dialogue_node`` (их замену дают PR-10/PR-12a/PR-13). Значения и чтение - только здесь
 (``rob_box_core`` есть во всех образах Sound Pi, ``rob_box_dialog`` - не во всех).
@@ -70,13 +71,17 @@ def shared_params(config_dir: Union[str, Path]) -> Dict[str, Any]:
     return out
 
 
-def launch_nodes(context: Any, dialogue_node: Any, tts_node_args: Mapping[str, Any]) -> List[Any]:
+#: Ошибка launch при ``v1``: нода движка v1 удалена (PR-15 #3711, часть 15p), откат на v1 — только гитом (ADR-0150 §16).
+V1_REMOVED = "движок v1 удалён в PR-15 (#3711): ноды v1 нет, откат на v1 — только гитом; поставьте"
+
+
+def launch_nodes(context: Any, tts_node_args: Mapping[str, Any]) -> List[Any]:
     """``OpaqueFunction`` обоих launch-файлов voice_assistant: ноды, которым важен флаг, в прежнем порядке.
 
-    Флаг читается из ``<config_dir>/dialog_engine.yaml``: ``v1`` — ``dialogue_node`` и ``tts_node``; ``v2`` —
-    ``dialog_node`` (свой ``dialog_node.yaml``) на месте ``dialogue_node``, тот не стартует. ``tts_node`` и
-    ``dialog_node`` получают значение флага параметром (файла может не быть в старом каталоге конфигов — тогда дефолт);
-    ``dialog_node`` — ещё и параметры, общие с другими нодами (:func:`shared_params`).
+    Флаг читается из ``<config_dir>/dialog_engine.yaml``: ``v2`` — ``dialog_node`` (свой ``dialog_node.yaml``) и
+    ``tts_node``; ``v1`` — ``ValueError`` (:data:`V1_REMOVED`): ноды v1 нет, молча стартовать v2 вместо заказанного v1
+    launch не будет. ``tts_node`` и ``dialog_node`` получают значение флага параметром (файла может не быть в старом
+    каталоге конфигов — тогда дефолт); ``dialog_node`` — ещё и параметры, общие с другими нодами (:func:`shared_params`).
     """
     from launch.substitutions import LaunchConfiguration  # noqa: PLC0415 — launch есть только в образе
     from launch_ros.actions import Node  # noqa: PLC0415
@@ -85,14 +90,14 @@ def launch_nodes(context: Any, dialogue_node: Any, tts_node_args: Mapping[str, A
     path = os.path.join(config_dir, FILE_NAME)
     value = from_yaml(path)
     print(f"[voice_assistant launch] {PARAM}={value} ({path})")
-    tts_node = Node(**{**tts_node_args, "parameters": [*tts_node_args["parameters"], {PARAM: value}]})
     if value == V1:
-        return [dialogue_node, tts_node]
+        raise ValueError(f"{path}: {PARAM}={V1} — {V1_REMOVED} {PARAM}: \"{V2}\"")
+    tts_node = Node(**{**tts_node_args, "parameters": [*tts_node_args["parameters"], {PARAM: value}]})
     dialog_node = Node(**{**tts_node_args, "executable": "dialog_node", "name": "dialog_node",
                           "parameters": [os.path.join(config_dir, "dialog_node.yaml"),
                                          {PARAM: value, **shared_params(config_dir)}]})
     return [dialog_node, tts_node]
 
 
-__all__ = ["DEFAULT", "ENGINES", "FILE_NAME", "PARAM", "SHARED_PARAMS", "V1", "V2", "declare", "engine",
+__all__ = ["DEFAULT", "ENGINES", "FILE_NAME", "PARAM", "SHARED_PARAMS", "V1", "V1_REMOVED", "V2", "declare", "engine",
            "from_yaml", "launch_nodes", "shared_params"]

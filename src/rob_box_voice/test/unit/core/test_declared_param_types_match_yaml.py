@@ -67,7 +67,7 @@ CONFIG_DIRS = [
 NODE_NAMES = [
     "audio_node",
     "command_node",
-    "dialogue_node",
+    "dialog_node",
     "led_node",
     "sound_node",
     "speaker_id_node",
@@ -97,9 +97,8 @@ def _type_name(value: object) -> str:
 def _declared_param_types(pyfile: Path) -> dict:
     """{param_name: (type_name, default, lineno)} для литеральных declare_parameter().
 
-    Пропускает объявления с нелитеральным именем (f-строки, например
-    ``f"{provider}.model"`` в dialogue_node.py — для них имя параметра
-    неизвестно статически) и с нелитеральным дефолтом (константы уровня
+    Пропускает объявления с нелитеральным именем (f-строки — для них имя
+    параметра неизвестно статически) и с нелитеральным дефолтом (константы уровня
     модуля вроде ``CHUNK_LIMITS["minimax"]`` — их пришлось бы импортировать
     модуль, а он тянет rclpy).
     """
