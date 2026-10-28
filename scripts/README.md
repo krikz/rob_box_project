@@ -12,11 +12,14 @@ Docker image building and CI/CD utilities
 - 📖 See [build/README_DOCKER_MANAGEMENT.md](build/README_DOCKER_MANAGEMENT.md) for detailed Docker documentation
 
 ### [dialogue/](dialogue/)
-Local text chat with the robot's dialogue system — no ROS2 required
-- `run.ps1` / `run.sh` - Start the chat (picks the repo `.venv`, forces UTF-8)
-- `chat.py` - REPL around the same `DialogCore` the robot runs
-- `local_tools.py` - Simulated tool provider (real catalog, faked hardware)
+Console for the robot's dialogue v2 turn — no ROS2, no robot required
+- `run.ps1` / `run.sh` - Start the console (picks the repo `.venv`, forces UTF-8)
+- `chat.py` - REPL around the dry stand `scripts/dialog/dry_stand.py` (real turn engine, fake tool owners)
 - 📖 See [dialogue/README.md](dialogue/README.md) — what matches the robot and what doesn't
+
+### [dialog/](dialog/)
+Dialogue v2 without the robot: dry marathon (`dry_marathon.py`), dry stand (`dry_stand.py`), log metrics
+- `understanding_measure.py` - code-vs-model understanding measurement (variants A/B/C, corpus in `understanding_corpus/`)
 
 ### [diagnostics/](diagnostics/)
 System diagnostic and troubleshooting tools

@@ -1,33 +1,21 @@
 #!/usr/bin/env python3
-"""Local text chat with the robot's dialogue system — no ROS2 required.
+"""Консоль диалога робота на ходе v2 - без ROS2, без железа (карточка #4163).
 
-The dialogue brain (``AgentCore`` + the LLM provider chain + the tool
-catalog + SQLite memory) lives in ``rob_box_harness``, which is
-deliberately ROS2-free: ``dialogue_node.py`` is only the shell that wires
-it to topics. This script is a second shell — a terminal REPL — around
-the *same* core, so what you talk to here is what the robot runs:
+Это тот же стенд, что гоняет марафон без робота (``scripts/dialog/dry_stand.py``): настоящие адресация, сессия, Tier-1,
+срез тулов, цепочка LLM с мостом команд (``dialog_v2_ports.assemble_llm``), системный промпт v2 и исполнитель действий.
+Тулы исполняют фейковые владельцы (речь, музыка, лицо, голос, статус робота отвечают событием сразу), память -
+настоящий ``VoiceMemory`` в e2e-БД. Цикла ``AgentCore`` v1 здесь нет: в v2 его нет (``dialog_v2_ports.py``).
 
-* the same system prompt (``src/rob_box_voice/prompts/master_prompt_compact.txt``),
-* the same provider chain and defaults (``llm_providers: "deepseek,minimax"``
-  → health-aware fallback),
-* the same 51-tool catalog the LLM sees on the robot,
-* the same DSM transitions per turn (WAKE_WORD → STT_RESULT → DIALOGUE_END),
-* the same SQLite memory schema.
+    scripts/dialogue/run.ps1                              # Windows
+    scripts/dialogue/run.sh                               # Linux / macOS / git-bash
+    python scripts/dialogue/chat.py --once "Сколько у тебя заряда?" --once "Робот, стоп"
 
-What is NOT the same: nothing is executed on hardware. Tool calls are
-simulated (see :mod:`local_tools`), so the model *thinks* it drove the
-motors — which is exactly what you want when testing prompts, tool
-choice and memory.
+На каждый ход печатается: что сказал робот (``said``), вызванные тулы и их исходы («вызван» ещё не «исполнен»),
+сработал ли Tier-1 без LLM, число вызовов LLM, время хода, токены и каких владельцев ход коснулся (``touched``).
+``--variant B`` - вариант «понимает модель» (Tier-1 только безопасность, срез тулов по состоянию, без слов фразы).
 
-Usage::
-
-    scripts/dialogue/run.ps1              # Windows
-    scripts/dialogue/run.sh               # Linux / macOS / git-bash
-    python scripts/dialogue/chat.py --help
-
-API keys are read from ``scripts/dialogue/.env`` (git-ignored; copy
-``.env.example``), then from the repo-root ``.env``, then from the real
-environment. Nothing already exported is overwritten.
+Ключи API читаются из ``scripts/dialogue/.env`` (в git не попадает), затем из корневого ``.env``; уже
+экспортированная переменная важнее файла. Значения нигде не печатаются.
 """
 
 from __future__ import annotations
@@ -36,135 +24,31 @@ import argparse
 import asyncio
 import logging
 import os
+import shutil
 import sys
-import time
 import traceback
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Callable, List, Optional, Sequence
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 REPO_ROOT = SCRIPT_DIR.parents[1]
+sys.path.insert(0, str(REPO_ROOT / "scripts" / "dialog"))
 
-#: ROS2-free packages the dialogue core is assembled from. Prepended to
-#: ``sys.path`` so the repo checkout always wins over an installed copy —
-#: you are testing the code in front of you, not last week's wheel.
-_SRC_PACKAGES = (
-    "rob_box_core",
-    "rob_box_dialog",  # knowledge table (wake words, silence) for dialogue_text and the harness DSM
-    "rob_box_llm",
-    "rob_box_harness",
-    "rob_box_voice",  # only pure helpers (dialogue_text); never the node
-    "rob_box_mcp_tools",  # only ROS-free core.* helpers; never the tools
-)
+import dry_marathon as dm  # noqa: E402
+import understanding_variants as uv  # noqa: E402
+from dry_stand import DryStand, FakeClock, HearResult, LiveClock, new_workdir  # noqa: E402
+from env_files import load_env_files  # noqa: E402
 
-
-# ---------------------------------------------------------------------------
-# Bootstrap: stdout encoding, sys.path, .env
-# ---------------------------------------------------------------------------
-
-
-def _force_utf8_stdout() -> None:
-    """Make Cyrillic printable on a cp1251/cp1252 Windows console."""
-    for stream in (sys.stdout, sys.stderr):
-        reconfigure = getattr(stream, "reconfigure", None)
-        if reconfigure is not None:
-            try:
-                reconfigure(encoding="utf-8", errors="replace")
-            except Exception:  # noqa: BLE001 — best effort, never fatal
-                pass
-
-
-def _enable_ansi_on_windows() -> None:
-    """Turn on VT sequences so the colours below are not literal escapes."""
-    if os.name != "nt":
-        return
-    try:
-        import ctypes
-
-        kernel32 = ctypes.windll.kernel32  # type: ignore[attr-defined]
-        # -11 = STD_OUTPUT_HANDLE, 0x0004 = ENABLE_VIRTUAL_TERMINAL_PROCESSING
-        kernel32.SetConsoleMode(kernel32.GetStdHandle(-11), 7)
-    except Exception:  # noqa: BLE001 — colours are cosmetic
-        pass
-
-
-def _add_src_to_path() -> None:
-    # local_tools.py sits next to this file; when chat.py is imported
-    # (tests) rather than run, sys.path[0] is not this directory.
-    if str(SCRIPT_DIR) not in sys.path:
-        sys.path.insert(0, str(SCRIPT_DIR))
-    for pkg in _SRC_PACKAGES:
-        path = REPO_ROOT / "src" / pkg
-        if path.is_dir():
-            entry = str(path)
-            if entry in sys.path:
-                sys.path.remove(entry)
-            sys.path.insert(0, entry)
-
-
-def parse_env_file(path: Path) -> dict[str, str]:
-    """Parse a ``KEY=VALUE`` .env file. Tolerant, no dependencies.
-
-    Ignores blank lines and ``#`` comments, strips an optional ``export``
-    prefix and one layer of matching quotes. Values are taken verbatim
-    otherwise — an API key may legitimately contain ``#`` or ``=``.
-    """
-    values: dict[str, str] = {}
-    try:
-        raw = path.read_text(encoding="utf-8-sig")
-    except OSError:
-        return values
-    for line in raw.splitlines():
-        stripped = line.strip()
-        if not stripped or stripped.startswith("#"):
-            continue
-        if stripped.startswith("export "):
-            stripped = stripped[len("export ") :].lstrip()
-        key, sep, value = stripped.partition("=")
-        if not sep:
-            continue
-        key = key.strip()
-        if not key:
-            continue
-        value = value.strip()
-        if len(value) >= 2 and value[0] == value[-1] and value[0] in "\"'":
-            value = value[1:-1]
-        values[key] = value
-    return values
-
-
-def load_env_files(paths: list[Path]) -> list[tuple[Path, int]]:
-    """Load .env files into ``os.environ`` without clobbering real env vars.
-
-    Earlier files win over later ones; anything already exported in the
-    shell wins over every file. Returns ``(path, keys_applied)`` for the
-    files that existed, for the startup banner.
-    """
-    loaded: list[tuple[Path, int]] = []
-    for path in paths:
-        if not path.is_file():
-            continue
-        applied = 0
-        for key, value in parse_env_file(path).items():
-            if value and not os.environ.get(key):
-                os.environ[key] = value
-                applied += 1
-        loaded.append((path, applied))
-    return loaded
-
-
-_force_utf8_stdout()
-_enable_ansi_on_windows()
-_add_src_to_path()
-
-
-# ---------------------------------------------------------------------------
-# Colours
-# ---------------------------------------------------------------------------
+#: Голос консоли для фейковой биометрии: «кто говорит» - один человек за клавиатурой.
+CONSOLE_VOICE = "console"
+#: Откуда реплика: ``operator`` адресован без вейка (как Telegram/оператор у робота), ``respeaker`` - с вейком (--wake-word).
+SOURCE_CONSOLE, SOURCE_VOICE = "operator", "respeaker"
+DEFAULT_PROVIDERS = "deepseek"
+VARIANTS = (uv.A, uv.B)
 
 
 class C:
-    """ANSI colours; every attribute is blanked by :func:`disable_colour`."""
+    """ANSI-цвета; :func:`disable_colour` обнуляет все."""
 
     DIM = "\033[2m"
     BOLD = "\033[1m"
@@ -178,594 +62,273 @@ class C:
 
 
 def disable_colour() -> None:
-    for attr in ("DIM", "BOLD", "RED", "GREEN", "YELLOW", "BLUE", "MAGENTA", "CYAN", "RESET"):
+    for attr in [a for a in vars(C) if a.isupper()]:
         setattr(C, attr, "")
 
 
-def say(text: str = "") -> None:
-    print(text, flush=True)
+def _force_utf8_stdout() -> None:
+    """Кириллица на консоли Windows с cp1251/cp1252 и включение ANSI-последовательностей."""
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if reconfigure is not None:
+            try:
+                reconfigure(encoding="utf-8", errors="replace")
+            except Exception:  # noqa: BLE001 — косметика, не падение
+                pass
+    if os.name == "nt":
+        try:
+            import ctypes
 
-
-# ---------------------------------------------------------------------------
-# CLI
-# ---------------------------------------------------------------------------
-
-
-DEFAULT_PROVIDERS = "deepseek,minimax"  # docker/vision/config/.../dialogue_node.yaml
-DEFAULT_PROMPT_FILE = "master_prompt_compact.txt"
-DEFAULT_DB = "~/.rob_box/local_chat.db"
-
-#: Маркеры завершения цикла из master_prompt («after the LAST speak_text
-#: → return "done"»). Совпадает со списком в ``dialogue_node``, который
-#: по ним глушит авто-TTS.
-_DONE_MARKERS = frozenset(
-    {"done", "task complete", "task_complete", "готово", "всё", "выполнено"}
-)
+            kernel32 = ctypes.windll.kernel32  # type: ignore[attr-defined]
+            kernel32.SetConsoleMode(kernel32.GetStdHandle(-11), 7)  # STD_OUTPUT_HANDLE, ENABLE_VIRTUAL_TERMINAL_PROCESSING
+        except Exception:  # noqa: BLE001 — цвета необязательны
+            pass
 
 
 def build_arg_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        prog="chat.py",
-        description="Локальный текстовый чат с диалоговой системой РОББОКСа (без ROS2).",
-        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
-    )
-    parser.add_argument(
-        "--providers",
-        default=os.environ.get("ROBBOX_LLM_PROVIDERS", DEFAULT_PROVIDERS),
-        help="Цепочка LLM-провайдеров через запятую; первый — primary, остальные — fallback.",
-    )
-    parser.add_argument("--model", default="", help="Переопределить модель primary-провайдера.")
-    parser.add_argument(
-        "--base-url", default="", help="Переопределить base_url primary-провайдера."
-    )
-    parser.add_argument(
-        "--timeout", type=float, default=90.0, help="Таймаут LLM-запроса, секунд."
-    )
-    parser.add_argument(
-        "--prompt-file",
-        default=DEFAULT_PROMPT_FILE,
-        help="Файл системного промпта из src/rob_box_voice/prompts/ (или абсолютный путь).",
-    )
-    parser.add_argument(
-        "--db",
-        default=os.environ.get("ROBBOX_LOCAL_DB", DEFAULT_DB),
-        help="SQLite-файл памяти. ':memory:' — не сохранять между запусками.",
-    )
-    parser.add_argument("--user-id", default="local", help="Scope памяти (кто говорит).")
-    parser.add_argument(
-        "--speaker-name",
-        default="",
-        help="Имя в <system_context><user_profile> — робот считает, что узнал вас по голосу.",
-    )
-    parser.add_argument(
-        "--history-max-turns", type=int, default=20, help="Сколько ходов истории уходит в LLM."
-    )
-    parser.add_argument(
-        "--no-tools",
-        action="store_true",
-        help="Не показывать LLM каталог инструментов (чистый чат без tool-calls).",
-    )
-    parser.add_argument(
-        "--no-stream",
-        action="store_true",
-        help="Отключить стриминг (на роботе llm_streaming: true).",
-    )
-    parser.add_argument(
-        "--wake-word",
-        action="store_true",
-        help="Требовать wake-word («роббокс, ...»), как на роботе через STT.",
-    )
-    parser.add_argument(
-        "--once",
-        action="append",
-        metavar="TEXT",
-        help="Отправить фразу и выйти. Можно повторять — получится сценарий.",
-    )
-    parser.add_argument(
-        "--all-tools",
-        action="store_true",
-        help=(
-            "Показывать LLM весь каталог, а не срез хода (на роботе срез ≤ 12 схем всегда: "
-            "rob_box_dialog.tools_view, ADR-0150 PR-6)."
-        ),
-    )
+        prog="chat.py", formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+        description="Консоль диалога РОББОКСа на ходе v2 (сухой стенд, без ROS2).")
+    parser.add_argument("--providers", default=os.environ.get("ROBBOX_LLM_PROVIDERS", DEFAULT_PROVIDERS),
+                        help="Цепочка LLM-провайдеров через запятую; первый - primary, остальные - fallback.")
+    parser.add_argument("--model", default="", help="Модель цепочки (одна на все провайдеры; по умолчанию - своя).")
+    parser.add_argument("--once", action="append", metavar="TEXT",
+                        help="Отправить фразу и выйти. Можно повторять - получится сценарий.")
+    parser.add_argument("--db", default=os.environ.get("ROBBOX_LOCAL_DB", ""),
+                        help="Файл e2e-памяти, который переживает запуск («запомни…» живёт до следующего раза). "
+                             "Пусто - временная память. Боевая /data запрещена.")
+    parser.add_argument("--variant", choices=VARIANTS, default=uv.A,
+                        help="A - как на роботе; B - понимает модель: Tier-1 только безопасность, срез тулов по "
+                             "состоянию без слов фразы (только стенд).")
+    parser.add_argument("--wake-word", action="store_true",
+                        help="Требовать вейк («Робот, …») как на роботе; без него реплика уходит в бэклог.")
+    parser.add_argument("--speaker-name", default="",
+                        help="Имя собеседника: робот считает, что узнал вас по голосу (фейковая биометрия).")
+    parser.add_argument("--night-clock", action="store_true",
+                        help="Фейковые часы марафона (24 октября, час сорок ночи) вместо настоящих: чтобы воспроизвести "
+                             "сценарий марафона; по умолчанию «который час?» отвечает настоящим временем.")
+    parser.add_argument("--deadline-s", type=float, default=None, help="Потолок хода, секунд.")
     parser.add_argument("--no-color", action="store_true", help="Без ANSI-цветов.")
-    parser.add_argument(
-        "--debug", action="store_true", help="DEBUG-логи провайдеров и полные traceback'и."
-    )
+    parser.add_argument("--debug", action="store_true",
+                        help="Показывать срез тулов хода, строки движка и traceback; оставить рабочий каталог.")
     return parser
 
 
-# ---------------------------------------------------------------------------
-# Wiring
-# ---------------------------------------------------------------------------
+# ── Один ход ──────────────────────────────────────────────────────────────────────────────────────────────────────
 
 
-def resolve_prompt_path(prompt_file: str) -> Path:
-    candidate = Path(prompt_file).expanduser()
-    if candidate.is_absolute():
-        return candidate
-    return REPO_ROOT / "src" / "rob_box_voice" / "prompts" / prompt_file
+def outcome_line(result: HearResult) -> str:
+    """Вызванные тулы и их исходы: «вызван» ещё не «исполнен» (``rejected{…}`` - отказ владельца)."""
+    if not result.tools:
+        return "тулы: нет"
+    outcomes = ", ".join(f"{tool}: {status}" + (f"({why})" if why else "") for tool, status, why in result.outcomes)
+    return f"тулы: {', '.join(result.tools)}  →  исходы: {outcomes or 'нет данных'}"
 
 
-def build_llm(args: argparse.Namespace) -> tuple[Any, list[str]]:
-    """Build the provider chain exactly the way ``dialogue_node`` does.
-
-    Providers that fail to build (missing key, bad config) are skipped
-    with a warning; a chain of two or more is wrapped in
-    :class:`HealthAwareFallbackLLM`, one is used directly.
-    """
-    from rob_box_harness.health import (
-        DEFAULT_HEALTH_TTL_S,
-        HealthAwareFallbackLLM,
-        HealthCache,
-        check_deepseek_balance,
-    )
-    from rob_box_harness.providers import (
-        DEEPSEEK_DEFAULT_BASE_URL,
-        LLM_PROVIDER_REGISTRY,
-        build_provider,
-        known_provider_names,
-    )
-
-    names = [n.strip().lower() for n in args.providers.split(",") if n.strip()]
-    if not names:
-        raise SystemExit("--providers пуст: укажи хотя бы одного провайдера")
-
-    built: list[Any] = []
-    chain: list[str] = []
-    for index, name in enumerate(names):
-        if name not in LLM_PROVIDER_REGISTRY:
-            say(
-                f"{C.YELLOW}⚠ неизвестный провайдер {name!r} — пропущен. "
-                f"Известные: {', '.join(known_provider_names())}{C.RESET}"
-            )
-            continue
-        # --model / --base-url переопределяют только primary: цепочка
-        # фолбеков состоит из разных API, общая модель им не подходит.
-        is_primary = index == 0
-        try:
-            provider = build_provider(
-                name,
-                base_url=args.base_url if is_primary else "",
-                model=args.model if is_primary else "",
-                timeout_s=args.timeout,
-            )
-        except Exception as exc:  # noqa: BLE001 — а вдруг соберётся следующий
-            entry = LLM_PROVIDER_REGISTRY[name]
-            say(
-                f"{C.YELLOW}⚠ {entry['display_name']} ({name}) не собран: "
-                f"{type(exc).__name__}: {exc}{C.RESET}"
-            )
-            say(f"{C.DIM}  ключ берётся из {entry['env_key_var']}{C.RESET}")
-            continue
-        built.append(provider)
-        chain.append(name)
-
-    if not built:
-        raise SystemExit(
-            "Ни один LLM-провайдер не собрался. Проверь ключи в "
-            f"{SCRIPT_DIR / '.env'} (см. .env.example)."
-        )
-    # Переопределения адресованы primary. Если primary не собрался, они
-    # НЕ переезжают на фолбек (у него своя модель и свой API) — но и
-    # молчать нельзя: именно так «--base-url на мок» уходит в живой API.
-    if (args.model or args.base_url) and chain[0] != names[0]:
-        say(
-            f"{C.YELLOW}⚠ --model/--base-url заданы для {names[0]!r}, "
-            f"но он не собрался — активен {chain[0]!r} со своими "
-            f"настройками{C.RESET}"
-        )
-    if len(built) == 1:
-        return built[0], chain
-
-    balance_checkers: dict[str, Any] = {}
-    if "deepseek" in chain and LLM_PROVIDER_REGISTRY["deepseek"]["has_balance_api"]:
-        def _deepseek_balance() -> Any:
-            return check_deepseek_balance(
-                DEEPSEEK_DEFAULT_BASE_URL,
-                os.environ.get("DEEPSEEK_API_KEY", ""),
-                timeout_s=5.0,
-            )
-
-        balance_checkers["deepseek"] = _deepseek_balance
-
-    llm = HealthAwareFallbackLLM(
-        built,
-        cache=HealthCache(ttl_s=DEFAULT_HEALTH_TTL_S),
-        balance_checkers=balance_checkers,
-        logger=logging.getLogger("local-chat.health"),
-    )
-    return llm, chain
+def tier1_line(result: HearResult) -> str:
+    return (f"Tier-1: {result.tier1} (код решил сам, без LLM)" if result.tier1
+            else "Tier-1: не сработал (ход к модели)" if result.llm_calls else "Tier-1: нет, LLM не звали")
 
 
-async def build_memory(db: str) -> Any:
-    """Open the SQLite voice memory, falling back to in-memory."""
-    from rob_box_harness.memory import InMemoryStore, SQLiteVoiceMemory
-
-    if db.strip().lower() in {"none", "off"}:
-        store: Any = InMemoryStore()
-        await store.init()
-        return store
-    try:
-        store = SQLiteVoiceMemory(db_path=db)
-        await store.init()
-        return store
-    except Exception as exc:  # noqa: BLE001
-        say(f"{C.YELLOW}⚠ SQLite ({db}) не открылся: {exc} — память только на сессию{C.RESET}")
-        store = InMemoryStore()
-        await store.init()
-        return store
+def stats_line(result: HearResult, number: int) -> str:
+    tokens = f" · токены {result.tokens}" if result.tokens else ""
+    touched = ",".join(sorted(result.touched)) or "-"
+    return (f"[ход {number} · вариант {result.variant} · {result.latency_ms / 1000:.1f} с · "
+            f"вызовов LLM {result.llm_calls}{tokens} · касался: {touched}]")
 
 
-def build_system_context(speaker_name: str) -> str:
-    """The second system message, shaped like ``dialogue_node`` builds it.
+class Console:
+    """Консоль поверх готового стенда: реплика → ``stand.hear`` → печать хода. Стенд приходит снаружи (тесты дают
+    стенд с фейковым провайдером), поэтому консоль не знает, откуда модель."""
 
-    Same tags in the same order as
-    ``DialogueNode._build_dynamic_system_context`` — the prompt's RULE
-    #SYSCTX teaches the model to read runtime facts from exactly these
-    fields, so a differently-shaped snapshot would test a different
-    prompt than the robot runs.
-    """
-    lines = ["<system_context>", "  <user_profile>"]
-    lines.append(f"    <name>{speaker_name or 'unknown'}</name>")
-    lines.append("  </user_profile>")
-    lines.append("  <hardware>")
-    lines.append("    <battery>unknown</battery>")
-    lines.append("    <tts_voice>local-text</tts_voice>")
-    lines.append("    <tts_provider>none</tts_provider>")
-    lines.append("  </hardware>")
-    lines.append("  <position>unknown</position>")
-    lines.append(
-        "  <tts_context>текстовый канал: реплики печатаются, "
-        "голос не синтезируется</tts_context>"
-    )
-    lines.append("</system_context>")
-    return "\n".join(lines)
-
-
-# ---------------------------------------------------------------------------
-# Session
-# ---------------------------------------------------------------------------
-
-
-class ChatSession:
-    """One REPL session over a live :class:`AgentCore`."""
-
-    def __init__(self, args: argparse.Namespace) -> None:
+    def __init__(self, stand: DryStand, args: argparse.Namespace, say: Callable[[str], None] = print) -> None:
+        self.stand = stand
         self.args = args
-        self.core: Any = None
-        self.dsm: Any = None
-        self.memory: Any = None
-        self.llm: Any = None
-        self.chain: list[str] = []
-        self.tools: Any = None
-        self.tool_count = 0
-        self.turn_index = 0
-        self._spoken: list[str] = []
+        self.say = say
+        self.turn_no = 0
+        self.last: Optional[HearResult] = None
 
-    # ── lifecycle ────────────────────────────────────────────────────
+    async def send(self, text: str) -> HearResult:
+        """Одна реплика человека; печатает ход и возвращает его итог."""
+        source = SOURCE_VOICE if self.args.wake_word else SOURCE_CONSOLE
+        result = await self.stand.hear(text, CONSOLE_VOICE, source=source)
+        self.last = result
+        if not result.addressed:
+            self.say(f"{C.YELLOW}… не адресовано ({result.reason}): без вейка робот не слушает, фраза ушла в бэклог{C.RESET}")
+            return result
+        self.turn_no += 1
+        self.show(result)
+        return result
 
-    async def start(self) -> None:
-        from rob_box_harness.core.agent_core import AgentCore
-        from rob_box_harness.core.dialogue_state_machine import DialogueStateMachine
-        from rob_box_harness.tools import FakeToolProvider
-
-        from local_tools import SimulatedToolProvider
-
-        prompt_path = resolve_prompt_path(self.args.prompt_file)
-        try:
-            system_prompt = prompt_path.read_text(encoding="utf-8")
-        except OSError as exc:
-            raise SystemExit(f"Не читается системный промпт {prompt_path}: {exc}") from exc
-
-        self.llm, self.chain = build_llm(self.args)
-        self.memory = await build_memory(self.args.db)
-
-        if self.args.no_tools:
-            self.tools = FakeToolProvider()
-        else:
-            self.tools = SimulatedToolProvider(
-                memory=self.memory,
-                user_id=self.args.user_id,
-                on_speak=self._on_speak,
-                on_tool=self._on_tool,
-            )
-        self.tool_count = len(await self.tools.discover())
-
-        self.dsm = DialogueStateMachine(silence_timeout=300.0)
-        self.core = AgentCore(
-            llm=self.llm,
-            tools=self.tools,
-            memory=self.memory,
-            dsm=self.dsm,
-            user_id=self.args.user_id,
-            history_trim_limit=self.args.history_max_turns,
-            system_prompt=system_prompt,
-            use_streaming=not self.args.no_stream,
-            on_prompt=self._on_prompt_stats,
-        )
-        self._prompt_sizes: list[tuple[int, bool, str]] = []
-        self._banner(prompt_path, system_prompt)
-
-    def _on_prompt_stats(self, stats) -> None:
-        """Собрать размеры промптов, чтобы REPL мог их показать.
-
-        На роботе это уходит в ``voice_llm_prompt_tokens``; здесь копится
-        в памяти и печатается по ``:tokens``.
-        """
-        self._prompt_sizes.append(
-            (stats.prompt_tokens, stats.estimated, stats.skill)
-        )
-        mark = "~" if stats.estimated else "="
-        print(f"   [промпт {mark}{stats.prompt_tokens} ток · срез={stats.skill}]")
-
-    def _apply_tools_view(self, text: str) -> None:
-        """Срез тулов хода — та же функция, что у dialogue_node (``rob_box_dialog.tools_view``)."""
-        if getattr(self.args, "all_tools", False):
-            return
-        from rob_box_dialog.session import SessionSnapshot
-        from rob_box_dialog.tools_view import available_tools, groups_for
-
-        snap = SessionSnapshot(agent="personality", session_id="repl", epoch=0, started_at=0.0)
-        names = [t.name for t in available_tools(snap, text=text)]
-        self.core.set_visible_tools(names, "+".join(groups_for(snap, text)))
-
-    async def close(self) -> None:
-        for port in (self.tools, self.memory, self.llm):
-            aclose = getattr(port, "aclose", None)
-            if aclose is None:
-                continue
-            try:
-                await aclose()
-            except Exception:  # noqa: BLE001 — teardown must not raise
-                pass
-
-    def _banner(self, prompt_path: Path, system_prompt: str) -> None:
-        say()
-        say(f"{C.BOLD}{C.CYAN}РОББОКС — локальный диалог{C.RESET} {C.DIM}(без ROS2){C.RESET}")
-        say(f"{C.DIM}{'─' * 62}{C.RESET}")
-        say(f"  LLM        : {C.BOLD}{' → '.join(self.chain)}{C.RESET}")
-        say(f"  промпт     : {prompt_path.name} ({len(system_prompt)} байт)")
-        tools_line = "выключены" if self.args.no_tools else f"{self.tool_count} (симуляция)"
-        say(f"  инструменты: {tools_line}")
-        say(f"  память     : {self.args.db}  scope={self.args.user_id}")
-        say(f"  стриминг   : {'нет' if self.args.no_stream else 'да'}")
-        if self.args.wake_word:
-            say(f"  wake-word  : {C.BOLD}нужен{C.RESET} — начинай фразу с «роббокс»")
-        say(f"{C.DIM}{'─' * 62}{C.RESET}")
-        say(f"{C.DIM}/help — команды, /exit — выход{C.RESET}")
-        say()
-
-    # ── tool callbacks ───────────────────────────────────────────────
-
-    def _on_speak(self, text: str, args: Mapping[str, Any]) -> None:
-        self._spoken.append(text)
-        extra = []
-        if args.get("voice"):
-            extra.append(str(args["voice"]))
-        if args.get("animation"):
-            extra.append(f"anim:{args['animation']}")
-        suffix = f"  {C.DIM}[{', '.join(extra)}]{C.RESET}" if extra else ""
-        say(f"{C.GREEN}🤖 {text}{C.RESET}{suffix}")
-
-    def _on_tool(self, name: str, args: Mapping[str, Any], result: str) -> None:
-        rendered = ", ".join(f"{k}={v!r}" for k, v in args.items())
-        say(f"{C.MAGENTA}🔧 {name}({rendered}){C.RESET}")
+    def show(self, result: HearResult) -> None:
+        for line in result.said:
+            self.say(f"{C.GREEN}🤖 {line}{C.RESET}")
+        if not result.said:
+            status = result.aggregate.status if result.aggregate is not None else "?"
+            self.say(f"{C.YELLOW}… робот промолчал (ход: {status}){C.RESET}")
+        self.say(f"{C.MAGENTA}🔧 {outcome_line(result)}{C.RESET}")
+        self.say(f"{C.CYAN}⚡ {tier1_line(result)}{C.RESET}")
         if self.args.debug:
-            say(f"{C.DIM}   → {result[:400]}{C.RESET}")
+            self.say(f"{C.DIM}   срез: {len(result.offered)} тулов: {', '.join(result.offered) or '-'}"
+                     + (f"; мост добавил: {', '.join(result.widened)}" if result.widened else "") + C.RESET)
+        self.say(f"{C.DIM}{stats_line(result, self.turn_no)}{C.RESET}")
 
-    # ── one turn ─────────────────────────────────────────────────────
-
-    async def send(self, text: str) -> None:
-        """Run one user turn through the core, mirroring ``_on_stt``."""
-        from rob_box_harness.core.dialogue_state_machine import (
-            DialogueEvent,
-            DialogueStateKind,
-        )
-        from rob_box_voice.core.dialogue_text import (
-            DEFAULT_WAKE_WORDS,
-            has_wake_word,
-            strip_wake_word,
-        )
-        from rob_box_voice.tts_text_clean import strip_markdown
-
-        if self.args.wake_word:
-            if not has_wake_word(text.lower(), DEFAULT_WAKE_WORDS):
-                say(f"{C.DIM}…(без wake-word робот не слушает){C.RESET}")
-                return
-            text = strip_wake_word(text, DEFAULT_WAKE_WORDS).strip() or text
-
-        # dialogue_node._on_stt: из IDLE переход делает сам wake-word,
-        # затем речь двигает LISTENING → DIALOGUE. Передаём готовый
-        # event, чтобы AgentCore не переклассифицировал текст (слово
-        # «робот» внутри фразы иначе вернёт WAKE_WORD и ход потеряется —
-        # issue #1101).
-        if self.dsm.current_state == DialogueStateKind.IDLE:
-            self.dsm.on_event(DialogueEvent.WAKE_WORD)
-        self.dsm.on_event(DialogueEvent.STT_RESULT)
-
-        self.turn_index += 1
-        self._spoken = []
-        # Срез тулов хода ДО обращения к LLM — как на роботе.
-        self._apply_tools_view(text)
-        started = time.monotonic()
-        result = await self.core.process_input(
-            text,
-            speaker_tag=self.args.user_id,
-            dynamic_system=build_system_context(self.args.speaker_name),
-            preclassified_event=DialogueEvent.STT_RESULT,
-        )
-        elapsed = time.monotonic() - started
-
-        if result.error is not None:
-            say(f"{C.RED}✖ {type(result.error).__name__}: {result.error}{C.RESET}")
-            if self.args.debug and result.error_traceback:
-                say(f"{C.DIM}{result.error_traceback}{C.RESET}")
-        else:
-            # На роботе речь идёт через speak_text, а текст самого ответа
-            # модели — это хвост цикла: маркер «done» и markdown, которые
-            # tts_node срезает перед синтезом (markdown — тем же ``strip_markdown``).
-            spoken = strip_markdown((result.spoken_text or "").strip())
-            if spoken.lower() in _DONE_MARKERS:
-                spoken = ""
-            if spoken and not self._spoken:
-                say(f"{C.GREEN}🤖 {spoken}{C.RESET}")
-            elif not spoken and not self._spoken:
-                reason = result.finish_reason or "пустой ответ"
-                say(f"{C.YELLOW}… робот промолчал (finish_reason={reason}){C.RESET}")
-
-        tools = ", ".join(result.tools_called) or "—"
-        say(
-            f"{C.DIM}[ход {self.turn_index} · {elapsed:.1f}s · state={result.new_state.name}"
-            f" · tools: {tools}]{C.RESET}"
-        )
-
-        if self.dsm.current_state == DialogueStateKind.DIALOGUE:
-            self.dsm.on_event(DialogueEvent.DIALOGUE_END)
-
-    # ── slash commands ───────────────────────────────────────────────
+    # ── команды ──────────────────────────────────────────────────────────────────────────────────────────────────
 
     async def command(self, line: str) -> bool:
-        """Handle a ``/command``. Returns ``False`` to stop the REPL."""
-        from rob_box_harness.core.dialogue_state_machine import DialogueStateKind
-
+        """``/команда``; ``False`` - выйти из консоли."""
         parts = line.split()
         cmd, rest = parts[0].lower(), parts[1:]
-
         if cmd in {"/exit", "/quit", "/q"}:
             return False
-        if cmd == "/help":
-            say(
-                f"{C.DIM}"
-                "/help            — эта справка\n"
-                "/exit /quit /q   — выход (Ctrl+C тоже)\n"
-                "/reset           — новая сессия: очистить историю диалога\n"
-                "/state           — состояние DSM, провайдер, память\n"
-                "/tools [фильтр]  — каталог инструментов, что видит LLM\n"
-                "/history [N]     — последние N ходов из памяти (по умолчанию 10)\n"
-                "/facts           — факты, которые робот о тебе запомнил"
-                f"{C.RESET}"
-            )
-            return True
-        if cmd == "/reset":
-            removed = await self.memory.clear_turns(self.args.user_id)
-            self.dsm.reset(DialogueStateKind.IDLE)
-            self.turn_index = 0
-            say(f"{C.DIM}история очищена ({removed} ходов), состояние → IDLE{C.RESET}")
-            return True
-        if cmd == "/state":
-            say(
-                f"{C.DIM}state={self.dsm.current_state.name}  "
-                f"llm={' → '.join(self.chain)}  "
-                f"db={self.args.db}  scope={self.args.user_id}{C.RESET}"
-            )
-            return True
-        if cmd == "/tools":
-            specs = await self.tools.discover()
-            needle = rest[0].lower() if rest else ""
-            shown = [s for s in specs if needle in s.name.lower()]
-            for spec in shown:
-                say(f"  {C.MAGENTA}{spec.name}{C.RESET} — {spec.description.splitlines()[0][:90]}")
-            say(f"{C.DIM}{len(shown)} из {len(specs)}{C.RESET}")
-            return True
-        if cmd == "/history":
-            limit = int(rest[0]) if rest and rest[0].isdigit() else 10
-            turns = await self.memory.load_recent(self.args.user_id, limit=limit)
-            for turn in turns:
-                say(f"  {C.DIM}{turn.role:>9}{C.RESET} {turn.content[:120]}")
-            say(f"{C.DIM}{len(turns)} ходов{C.RESET}")
-            return True
-        if cmd == "/facts":
-            facts = await self.memory.list_facts(self.args.user_id, limit=50)
-            for fact in facts:
-                say(f"  {C.CYAN}{fact.key}{C.RESET} = {fact.value}")
-            say(f"{C.DIM}{len(facts)} фактов{C.RESET}")
-            return True
-
-        say(f"{C.YELLOW}неизвестная команда {cmd} — /help{C.RESET}")
+        handler = getattr(self, "_cmd_" + cmd[1:], None)
+        if handler is None:
+            self.say(f"{C.YELLOW}неизвестная команда {cmd} - /help{C.RESET}")
+        else:
+            handler(rest)
         return True
 
+    def _cmd_help(self, _rest: Sequence[str]) -> None:
+        self.say(f"{C.DIM}/help           - эта справка\n/exit /quit /q  - выход (Ctrl+C тоже)\n"
+                 "/reset          - новая сессия: окно ходов и бэклог пусты (память остаётся)\n"
+                 "/state          - вариант, память, сессия, играет ли музыка\n"
+                 "/tools          - срез тулов последнего хода\n"
+                 "/variant A|B    - сменить вариант понимания (A как на роботе, B понимает модель)\n"
+                 f"/facts          - факты в e2e-памяти{C.RESET}")
 
-# ---------------------------------------------------------------------------
-# Entry point
-# ---------------------------------------------------------------------------
+    def _cmd_reset(self, _rest: Sequence[str]) -> None:
+        self.stand.reset_session()
+        self.turn_no = 0
+        self.say(f"{C.DIM}новая сессия: эпоха {self.stand.session.snapshot.epoch}, окно ходов пусто{C.RESET}")
+
+    def _cmd_state(self, _rest: Sequence[str]) -> None:
+        snap = self.stand.session.snapshot
+        silence = "да" if snap.top("Silence") is not None else "нет"
+        self.say(f"{C.DIM}вариант={self.stand.variant}  эпоха={snap.epoch}  музыка играет={snap.music_playing}  "
+                 f"тишина={silence}  память={self.stand.memory.db_path}  вызовов LLM за сессию={self.stand.counter.calls}"
+                 f"{C.RESET}")
+
+    def _cmd_tools(self, _rest: Sequence[str]) -> None:
+        if self.last is None or not self.last.offered:
+            self.say(f"{C.DIM}срез: у последнего хода тулов не было (Tier-1 или тишина){C.RESET}")
+            return
+        self.say(f"{C.DIM}срез последнего хода ({len(self.last.offered)}): {', '.join(self.last.offered)}{C.RESET}")
+
+    def _cmd_variant(self, rest: Sequence[str]) -> None:
+        if not rest or rest[0].upper() not in VARIANTS:
+            self.say(f"{C.YELLOW}/variant {'|'.join(VARIANTS)}{C.RESET}")
+            return
+        self.stand.variant = uv.check(rest[0].upper())
+        self.say(f"{C.DIM}вариант понимания: {self.stand.variant}{C.RESET}")
+
+    def _cmd_facts(self, _rest: Sequence[str]) -> None:
+        facts = self.stand.memory.get_facts(limit=50)
+        for fact in facts:
+            self.say(f"  {C.CYAN}{fact.get('category', '')}{C.RESET} = {fact.get('fact', '')}")
+        self.say(f"{C.DIM}{len(facts)} фактов{C.RESET}")
+
+    def banner(self) -> None:
+        a = self.args
+        self.say(f"\n{C.BOLD}{C.CYAN}РОББОКС - консоль диалога v2{C.RESET} {C.DIM}(сухой стенд, без ROS2){C.RESET}")
+        self.say(f"{C.DIM}{'─' * 62}{C.RESET}")
+        self.say(f"  LLM        : {C.BOLD}{a.providers}{C.RESET}" + (f"  модель={a.model}" if a.model else ""))
+        self.say(f"  вариант    : {self.stand.variant}"
+                 + ("  (Tier-1 только безопасность, срез тулов по состоянию)" if self.stand.variant != uv.A else ""))
+        self.say(f"  память     : {self.stand.memory.db_path}" + ("" if a.db else "  (временная)"))
+        self.say(f"  вейк       : {'нужен' if a.wake_word else 'не нужен (реплика с консоли адресована)'}")
+        self.say(f"  часы       : {'фейковые, ночь марафона (--night-clock)' if a.night_clock else 'настоящие'}")
+        self.say("  тулы       : исполняют фейковые владельцы (речь, музыка, лицо, голос, статус)")
+        self.say(f"{C.DIM}{'─' * 62}\n/help - команды, /exit - выход{C.RESET}\n")
+
+
+# ── Запуск ────────────────────────────────────────────────────────────────────────────────────────────────────────
+
+
+def console_clock(args: argparse.Namespace) -> FakeClock:
+    """Часы консоли: настоящее время суток; ``--night-clock`` - ночь мастерской, как в сухом марафоне."""
+    return FakeClock() if args.night_clock else LiveClock()
+
+
+def build_stand(args: argparse.Namespace, workdir: Path) -> DryStand:
+    """Стенд с настоящей цепочкой LLM; ``--db`` - постоянная e2e-память (вне боевой ``/data``)."""
+    memory = Path(args.db).expanduser().resolve() if args.db else None
+    providers = [p for p in args.providers.split(",") if p.strip()]
+    if not providers:
+        raise SystemExit("--providers пуст: укажи хотя бы одного провайдера")
+    if len(providers) > 1 and args.model:
+        print(f"{C.YELLOW}⚠ --model ставится на всю цепочку {providers}: у фолбека с другим API своя модель не задаётся"
+              f"{C.RESET}")
+    try:
+        stand = dm.build_real_stand(providers, workdir, args.deadline_s, variant=args.variant, memory_path=memory,
+                                    model=args.model, clock=console_clock(args))
+    except ValueError as exc:
+        raise SystemExit(str(exc)) from exc
+    except RuntimeError as exc:
+        raise SystemExit(f"{exc}\nПроверь ключи в {SCRIPT_DIR / '.env'} (см. .env.example).") from exc
+    if args.speaker_name:
+        stand.speakers.register(CONSOLE_VOICE, args.speaker_name)
+    return stand
+
+
+async def loop(console: Console, once: Optional[List[str]]) -> int:
+    if once:
+        for phrase in once:
+            if phrase.strip():
+                console.say(f"{C.BLUE}› {phrase}{C.RESET}")
+                await console.send(phrase)
+        return 0
+    console.banner()
+    while True:
+        try:
+            line = (await asyncio.to_thread(input, f"{C.BLUE}› {C.RESET}")).strip()
+        except (EOFError, KeyboardInterrupt):
+            console.say("")
+            return 0
+        if not line:
+            continue
+        if line.startswith("/"):
+            if not await console.command(line):
+                return 0
+            continue
+        await console.send(line)
 
 
 async def run(args: argparse.Namespace) -> int:
-    session = ChatSession(args)
-    await session.start()
+    workdir = new_workdir("console_")
+    stand = build_stand(args, workdir)
     try:
-        if args.once:
-            for phrase in args.once:
-                if not phrase.strip():
-                    continue
-                say(f"{C.BLUE}› {phrase}{C.RESET}")
-                await session.send(phrase)
-            return 0
-        while True:
-            try:
-                line = (await asyncio.to_thread(input, f"{C.BLUE}› {C.RESET}")).strip()
-            except (EOFError, KeyboardInterrupt):
-                say()
-                return 0
-            if not line:
-                continue
-            if line.startswith("/"):
-                if not await session.command(line):
-                    return 0
-                continue
-            await session.send(line)
+        return await loop(Console(stand, args), args.once)
     finally:
-        await session.close()
+        stand.close()
+        if not args.debug:
+            shutil.rmtree(workdir, ignore_errors=True)
 
 
-def main(argv: list[str] | None = None) -> int:
-    # .env читается ДО argparse: дефолты --providers / --db берутся из
-    # переменных окружения, а значит файл должен быть уже применён —
-    # иначе ROBBOX_LLM_PROVIDERS из .env молча не работал бы.
+def main(argv: Optional[Sequence[str]] = None) -> int:
+    # .env читается ДО argparse: дефолты --providers и --db берутся из окружения.
+    _force_utf8_stdout()
     loaded = load_env_files([SCRIPT_DIR / ".env", REPO_ROOT / ".env"])
-
     args = build_arg_parser().parse_args(argv)
     if args.no_color or not sys.stdout.isatty():
         disable_colour()
-
-    logging.basicConfig(
-        level=logging.DEBUG if args.debug else logging.WARNING,
-        format="%(levelname)s %(name)s: %(message)s",
-    )
-    # --debug должен показывать НАШИ логи, а не поток DEBUG'а из openai
-    # SDK и httpx: там каждый запрос печатается вместе с полным телом
-    # (25 КБ промпта), и всё остальное в этом тонет.
-    for noisy in ("openai", "httpx", "httpcore", "asyncio"):
+    logging.basicConfig(level=logging.DEBUG if args.debug else logging.WARNING,
+                        format="%(levelname)s %(name)s: %(message)s")
+    for noisy in ("openai", "httpx", "httpcore", "asyncio"):  # в DEBUG они печатают тело каждого запроса
         logging.getLogger(noisy).setLevel(logging.WARNING)
-
     for path, applied in loaded:
-        say(f"{C.DIM}env: {path} ({applied} перем.){C.RESET}")
+        print(f"{C.DIM}env: {path} ({applied} перем.){C.RESET}")
     if not loaded:
-        say(
-            f"{C.YELLOW}⚠ .env не найден — беру ключи из окружения. "
-            f"Шаблон: {SCRIPT_DIR / '.env.example'}{C.RESET}"
-        )
-
-    # rob_box_llm печатает в stderr полный контекст каждого запроса
-    # (ROBOT_LLM_VERBOSE, по умолчанию «1» — так его видно в docker logs
-    # на роботе). В интерактивном чате это 25 КБ промпта на каждый ход,
-    # поэтому включаем трассировку только под --debug.
-    if args.debug:
-        os.environ["ROBOT_LLM_VERBOSE"] = "1"
-    else:
-        os.environ.setdefault("ROBOT_LLM_VERBOSE", "0")
-
+        print(f"{C.YELLOW}⚠ .env не найден - беру ключи из окружения. Шаблон: {SCRIPT_DIR / '.env.example'}{C.RESET}")
+    os.environ["ROBOT_LLM_VERBOSE"] = "1" if args.debug else os.environ.get("ROBOT_LLM_VERBOSE", "0")
     try:
         return asyncio.run(run(args))
     except KeyboardInterrupt:
-        say()
+        print()
         return 0
     except SystemExit:
         raise
-    except Exception as exc:  # noqa: BLE001 — top-level guard
-        say(f"{C.RED}✖ {type(exc).__name__}: {exc}{C.RESET}")
+    except Exception as exc:  # noqa: BLE001 — верхний предохранитель
+        print(f"{C.RED}✖ {type(exc).__name__}: {exc}{C.RESET}")
         if args.debug:
             traceback.print_exc()
         return 1
