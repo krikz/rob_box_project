@@ -86,7 +86,8 @@ def _mcp(ts: float, msg: str) -> str:
 def started(ts: float, track_id: str, bpm: float) -> str:
     """``player_owner.track_started`` (va_marathon.log:6024, 23.10)."""
     return _mcp(ts, "🎵 [music v2] started track_id=%s clock_beat=9792.069 start_beat=9792.0 phase_in_form=0.0 "
-                    "late_beats=0.069 bpm=%s deck=A form_beats=192.0 players_aligned=True latency_s=0.5" % (track_id, bpm))
+                    "late_beats=0.069 bpm=%s deck=A form_beats=192.0 players_aligned=True latency_s=0.5"
+                % (track_id, bpm))
 
 
 def stopped(ts: float, track_id: str, reason: str = "user_stop") -> str:
@@ -416,7 +417,8 @@ def _harness(tmp_path: Path, log_lines, label: str, since: str):
         'E2E_RUN_BEFORE=600s; check_music_compare "%s" "%s" "%s"; echo "RC=$?"' % (label, ACT5.as_posix(), since),
     ])
     runner = tmp_path / "harness.sh"  # файлом: библиотека харнесса длиннее предела командной строки Windows
-    runner.write_text(script + "\n", encoding="utf-8", newline="\n")
+    with open(runner, "w", encoding="utf-8", newline="\n") as fh:
+        fh.write(script + "\n")
     p = subprocess.run([BASH, runner.as_posix()], capture_output=True, text=True, encoding="utf-8", timeout=60,
                        env=dict(__import__("os").environ, PYTHONUTF8="1"))
     return p.stdout, p.stderr

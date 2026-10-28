@@ -363,6 +363,7 @@ def test_scenario_loop_marks_recovered_step_and_summary_counts_it(tmp_path):
         extract_function("ensure_outdir"),
         extract_function("emit_step"),
         extract_function("mark_fail_kind"),
+        extract_function("check_music_compare"),  # #3971: сверка вида результата
         extract_function("write_summary"),
         # run_step: первый шаг восстановлен (как сделал бы step_recover), второй -- чистый
         'run_step() { case "$3" in n301*) E2E_STEP_RECOVERED=no_wake ;; esac; '

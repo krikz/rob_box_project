@@ -537,10 +537,6 @@ def step(
     # #3971 R4: после старта выступления повтор фразы заказывает второе -- ретрай у такого шага запрещён структурой.
     if retry and any(p.startswith(PERFORM_STARTED_MARK) for p in s["patterns"]):
         raise ValueError(f"{label}: шаг ждёт выступление ({PERFORM_STARTED_MARK}…) -- retry запрещён (#3971 R4)")
-    # #3971: заглушка кода -- не ответ и не результат ни для какого шага (n707 27.10): фраза-заглушка в речи и ход,
-    # закрытый заглушкой (``status=done`` вместо ``finished``), краснят шаг всегда.
-    must_not = list(must_not or []) + [TURN_FALLBACK]
-    must_not_say = list(must_not_say or []) + [STUB_SPEECH]
     acc = _acceptance(
         expect_tools, discovery_tools, must_not, must_not_say, must_not_identify_as, keywords, voice_changed, why
     )
@@ -554,9 +550,15 @@ def step(
         s["_why"] = why
     # R21 разбора 26.10: предусловие внешнего мира (ключ SKIP_WHEN): нарушено -- харнесс шаг не играет, SKIP <ключ>.
     if skip_when:
-        rule = SKIP_WHEN[skip_when]
-        s["skip_when"] = {"reason": skip_when, "log": rule.log, **({"absent": True} if rule.absent else {})}
+        s["skip_when"] = _skip_field(skip_when)
     return s
+
+
+def _skip_field(reason: str) -> Dict[str, Any]:
+    """Поле ``skip_when`` шага по ключу :data:`SKIP_WHEN` (читает ``e2e_events.skip_rule``); ``absent`` -- только при
+    правиле «строки нет»."""
+    rule = SKIP_WHEN[reason]
+    return {"reason": reason, "log": rule.log, **({"absent": True} if rule.absent else {})}
 
 
 def _acceptance(
@@ -580,8 +582,10 @@ def _acceptance(
     fields = (
         ("expected_tool_calls", expect_tools),
         ("discovery_tools", discovery_tools),
-        ("must_not_call", must_not),
-        ("must_not_say", must_not_say),
+        # #3971: заглушка кода -- не ответ и не результат ни для какого шага (n707 27.10): ход, закрытый заглушкой
+        # (``status=done`` вместо ``finished``), и фраза-заглушка в речи краснят шаг всегда.
+        ("must_not_call", [*(must_not or []), TURN_FALLBACK]),
+        ("must_not_say", [*(must_not_say or []), STUB_SPEECH]),
         ("must_not_identify_as", must_not_identify_as),
         ("expected_keywords", keywords),
         ("voice_changed", True if voice_changed else None),

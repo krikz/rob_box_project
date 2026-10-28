@@ -473,6 +473,7 @@ def run_scenario(tmp_path: Path, attempt_logs: list[str]) -> str:
             WAKE.read_text(encoding="utf-8"),
             extract_function("emit_step"),
             extract_function("mark_fail_kind"),
+            extract_function("check_music_compare"),  # #3971: сверка вида результата
             extract_function("check_acceptance"),
             # run_step: цикл прошёл; номер попытки → какой лог отдаст ssh.
             'run_step() { n="$(cat "$STUB/attempt" 2>/dev/null || echo 0)"; '
