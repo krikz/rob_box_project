@@ -1507,7 +1507,7 @@ PHRASE_KEYS: Tuple[str, ...] = (
     *(f"provider.subject.{kind}" for kind in PROVIDER_KINDS),
     "voice.applied", "voice.unavailable", "voice.rejected", "voice.timeout", "voice.already_default",
     *(f"perform.no_backing.{reason}" for reason in ("quota", "network", "timeout", "error")),
-    "perform.ask_replace_music", "perform.edit_rejected", "identity.ask_name", "identity.confirm",
+    "perform.ask_replace_music", "perform.edit_rejected", "perform.stalled", "identity.ask_name", "identity.confirm",
     # Tier-1 громкость по каналу (``grammar``): фраза после ответа тула владельца канала
     *(f"{channel}.volume.{intent}" for channel in ("music", "voice") for intent in VOLUME_INTENTS),
     "music.volume_fail", "voice.volume_fail",
@@ -2305,6 +2305,21 @@ SPEECH_RELEASE_TAIL_S = 0.45
 #: Реплика встала позже своего такта больше чем на столько (очередь, синтез в пути) — она не на такте:
 #: ``PlanEvent.synced=false`` честно (±40 мс — предварительный порог A19, §16).
 PERFORM_SYNC_TOLERANCE_S = 0.04
+#: Пред-синтез выступления вперёд: реплик, отданных владельцу речи (``commit=false``), но ещё не ушедших на звучание, —
+#: не больше стольких; следующая по порядку уходит, когда реплика отдана на звучание (#4151). Пачка «Поехали!» + 12
+#: сегментов (13 ``SpeechRequest`` за 44 мс, сказка n412 28.10) не влезала в очередь ``/voice/speech/request``
+#: (KEEP_LAST 10 у публикатора ``speech_client`` и подписки ``speech_owner``): до владельца дошли 11, сегмент 1 так и
+#: не синтезировался, выступление ждало его вечно. Пачка запросов (окно + «Поехали!») и пачка отмен «хватит» (окно +
+#: звучащая + отданная на звучание) — меньше глубины очереди; пул пред-синтеза tts_node — 2 потока
+#: (``speech_timing.PRESYNTH_MAX_WORKERS``), шесть реплик вперёд — ~45 с речи запаса. Выступление до стольких сегментов
+#: уходит в пред-синтез целиком сразу, как раньше.
+PERFORM_PRESYNTH_WINDOW = 6
+#: Сторож выступления (#4151): идёт чтение (подложка решилась), ничего не звучит, а реплики ещё остались — дольше
+#: стольких секунд без ``started``/``finished`` своих реплик выступление снимается честно: фраза ``perform.stalled``,
+#: подложка — сразу, ``block_end{reason=stalled}``. Без него подложка продлевалась без речи 4.5 мин, пока человек не
+#: сказал «останови музыку» (n412). Запас: пред-синтез MiniMax длинного сегмента до ~8 с, правка ждёт в пуле до двух
+#: снятых сегментов — оценка, не замер.
+PERFORM_SILENCE_MAX_S = 25.0
 
 # ---------------------------------------------------------------------------------------------------------------
 # Команда LLM (§4.1): пределы и перечисления; схема и промпт генерируются ниже

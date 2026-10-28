@@ -208,6 +208,8 @@ perform.no_backing.error: ["С битом ошибка — читаю без н�
 perform.ask_replace_music: ["Сейчас играет {title}, выключить и зачитать?"]
 # правка выступления опоздала: куплет, с которого просили менять, уже звучит (ADR §16, риск MERGE в PENDING)
 perform.edit_rejected: ["Этот куплет уже пошёл — дочитаю как было."]
+# сторож выступления (#4151): чтение не началось или встало, речи нет дольше knowledge.PERFORM_SILENCE_MAX_S — снято
+perform.stalled: ["Голос не завёлся — выступление снимаю."]
 
 # --- план (§5.6.4): «в очереди» по PlanEvent queued{after, eta} — фразу строит код (plan.plan_events) -----------
 plan.queued: ["{verb} после {after}."]
