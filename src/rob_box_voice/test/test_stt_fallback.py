@@ -25,7 +25,9 @@ from rob_box_voice.stt_fallback import (
     DEFAULT_MIN_TEXT_CHARS,
     DEFAULT_YANDEX_MAX_RETRIES,
     DEFAULT_YANDEX_TIMEOUT_S,
+    NOTE_SCRIPT_MISMATCH,
     STTAttempt,
+    is_latin_guess_on_cyrillic_noise,
     is_short_phrase,
     log_attempts,
     select_recognition,
@@ -823,3 +825,57 @@ def test_fallback_real_phrase_still_accepted():
     text, attempts = select_recognition([_Prov("yandex", "э"), _Prov("minimax", "Включи свет.")], b"\x00" * 3200,
                                         max_total_s=None)
     assert [a.reason for a in attempts] == ["low_confidence", "ok"] and text == "Включи свет."
+
+
+# ---------------------------------------------------------------------------
+# #3737: фолбек угадывает латиницу на кириллический обрывок
+# ---------------------------------------------------------------------------
+
+
+def test_fallback_latin_guess_on_cyrillic_noise_is_rejected_as_not_heard():
+    """Живой кейс 21.10: yandex:low_confidence('э') -> minimax:ok('Yeah.') принималось как реплика."""
+    text, attempts = select_recognition([_Prov("yandex", "э"), _Prov("minimax", "Yeah.")], b"\x00" * 3200,
+                                        max_total_s=None)
+    assert [a.reason for a in attempts] == ["low_confidence", "low_confidence"]
+    assert attempts[1].note == NOTE_SCRIPT_MISMATCH and attempts[1].text == "Yeah."
+    assert text == "э" and is_short_phrase(text)  # stt_node перепроверит текст гейтом: «Yeah.» там бы прошло
+
+
+def test_fallback_script_mismatch_visible_in_operator_log():
+    _, attempts = select_recognition([_Prov("yandex", "э"), _Prov("minimax", "Yeah.")], b"\x00" * 3200,
+                                     max_total_s=None)
+    assert "minimax:low_confidence" in summarize_attempts(attempts) and "script_mismatch" in summarize_attempts(attempts)
+
+
+def test_fallback_three_provider_chain_latin_guess_does_not_stop_chain():
+    text, attempts = select_recognition(
+        [_Prov("yandex", "э"), _Prov("minimax", "Yes."), _Prov("vosk", "включи свет")], b"\x00" * 3200,
+        max_total_s=None)
+    assert [a.reason for a in attempts] == ["low_confidence", "low_confidence", "ok"] and text == "включи свет"
+
+
+def test_fallback_latin_phrase_of_several_words_is_accepted():
+    text, attempts = select_recognition([_Prov("yandex", "э"), _Prov("minimax", "Turn the light on")], b"\x00" * 3200,
+                                        max_total_s=None)
+    assert [a.reason for a in attempts] == ["low_confidence", "ok"] and text == "Turn the light on"
+
+
+def test_fallback_cyrillic_answer_after_low_confidence_is_accepted():
+    text, attempts = select_recognition([_Prov("yandex", "э"), _Prov("minimax", "Привет.")], b"\x00" * 3200,
+                                        max_total_s=None)
+    assert [a.reason for a in attempts] == ["low_confidence", "ok"] and attempts[1].note is None and text == "Привет."
+
+
+def test_english_phrase_from_healthy_first_provider_is_accepted_untouched():
+    text, attempts = select_recognition([_Prov("yandex", "Hello"), _Prov("minimax", "x")], b"\x00" * 3200,
+                                        max_total_s=None)
+    assert [a.reason for a in attempts] == ["ok"] and text == "Hello"
+
+
+def test_latin_guess_predicate_needs_cyrillic_evidence_from_earlier_attempt():
+    assert is_latin_guess_on_cyrillic_noise("Yeah.", ["э"])
+    assert not is_latin_guess_on_cyrillic_noise("Yeah.", [])  # первый провайдер ничего не расслышал - не доказательство
+    assert not is_latin_guess_on_cyrillic_noise("Yeah.", ["uh"])  # первый тоже дал латиницу
+    assert not is_latin_guess_on_cyrillic_noise("Привет", ["э"])
+    assert not is_latin_guess_on_cyrillic_noise("Hello, how are you", ["э"])
+    assert not is_latin_guess_on_cyrillic_noise(None, ["э"])
