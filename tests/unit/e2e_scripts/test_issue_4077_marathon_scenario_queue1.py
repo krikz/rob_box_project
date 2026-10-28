@@ -292,7 +292,7 @@ def test_act7_chain_is_rebuilt_under_the_fork_and_has_no_destructive_step():
     ]
     manifest = gen.build()["night_marathon_manifest.json"]
     assert next(a for a in manifest["acts"] if a["act"] == 7)["steps"] == 9
-    assert manifest["total_steps"] == 131
+    assert manifest["total_steps"] == 132  # +n1010_five_facts (#4157)
     assert "n910_estimate_duration" not in _steps()
     for step in act7["steps"]:
         assert len(step["text"]) <= 66, step["label"]
