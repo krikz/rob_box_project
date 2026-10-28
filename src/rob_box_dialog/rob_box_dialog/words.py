@@ -37,7 +37,6 @@ from rob_box_dialog.knowledge import (
     VOLUME_LEVEL_WORDS,
     VOLUME_STEMS,
     WAKE_SLIP_AMBIGUOUS,
-    WAKE_SLIP_CUE_WINDOW,
     WAKE_SLIP_GATES,
     WAKE_SLIP_NEVER,
     WAKE_SLIP_PLURAL,
@@ -119,7 +118,7 @@ def _gate_cue(tail: Sequence[str], gate: SlipGate) -> bool:
     if not (gate.forms or gate.stems):
         return True
     if gate.reach not in (REACH_NEXT, REACH_END_OR_NEXT):
-        return any(_is_cue(t, gate) for t in tail[:WAKE_SLIP_CUE_WINDOW])
+        return any(_is_cue(t, gate) for t in tail[:gate.window])
     rest = tuple(itertools.dropwhile(lambda t: t in WAKE_SLIP_POLITE, tail))
     if not rest:
         return gate.reach == REACH_END_OR_NEXT
@@ -129,7 +128,7 @@ def _gate_cue(tail: Sequence[str], gate: SlipGate) -> bool:
 def _gate_lead(token: str, gate: SlipGate) -> bool:
     """Ведущее слово ворот: слово целиком из ``leads`` либо основа из ``lead_stems`` с окончанием из ``lead_endings``
     («ускор» + «ь», «быстр» + «ее»; «ускоряются» и «быстро» - не просьба)."""
-    return token in gate.leads or any(
+    return gate.open_lead or token in gate.leads or any(
         token.startswith(stem) and token[len(stem):] in gate.lead_endings for stem in gate.lead_stems)
 
 

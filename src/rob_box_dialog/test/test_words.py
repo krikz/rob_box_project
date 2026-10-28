@@ -3,11 +3,11 @@
 import pytest
 
 from rob_box_dialog.knowledge import (
-    DEFAULT_WAKE_WORDS, MUSIC_AMBIGUOUS_STEMS, MUSIC_AMBIGUOUS_WORDS, SILENCE_WORDS, STOP_LEAD_WORDS, STOP_WORDS,
-    TIER1_POLICY, UNSILENCE_WORDS, VOLUME_LEVEL_WORDS, VOLUME_STEMS, WAKE_SLIP_ADDRESSEE, WAKE_SLIP_AMBIGUOUS,
-    WAKE_SLIP_COMMAND_LEADS, WAKE_SLIP_GATES, WAKE_SLIP_MORE_LEADS, WAKE_SLIP_NEVER, WAKE_SLIP_PLURAL,
-    WAKE_SLIP_POLITE, WAKE_SLIP_QUESTION_CUED_LEADS, WAKE_SLIP_QUESTION_LEADS, WAKE_SLIP_TWEAK_COMPARATIVE_ENDINGS,
-    WAKE_SLIP_TWEAK_ENDINGS, WAKE_SLIP_TWEAK_FORMS, WAKE_SLIP_TWEAK_IMPERATIVE_ENDINGS, WAKE_SLIP_TWEAK_NOUN_STEMS,
+    DEFAULT_WAKE_WORDS, MUSIC_AMBIGUOUS_STEMS, MUSIC_AMBIGUOUS_WORDS, MUSIC_OFF_WORDS, SILENCE_WORDS, STOP_LEAD_WORDS,
+    STOP_WORDS, TIER1_POLICY, UNSILENCE_WORDS, VOLUME_LEVEL_WORDS, VOLUME_STEMS, WAKE_SLIP_ADDRESSEE,
+    WAKE_SLIP_AMBIGUOUS, WAKE_SLIP_COMMAND_LEADS, WAKE_SLIP_CUE_WINDOW, WAKE_SLIP_GATES, WAKE_SLIP_MORE_LEADS,
+    WAKE_SLIP_NEVER, WAKE_SLIP_PLURAL, WAKE_SLIP_POLITE, WAKE_SLIP_QUESTION_CUED_LEADS, WAKE_SLIP_QUESTION_LEADS,
+    WAKE_SLIP_STOP_FORMS, WAKE_SLIP_STOP_WINDOW, WAKE_SLIP_TWEAK_COMPARATIVE_ENDINGS, WAKE_SLIP_TWEAK_ENDINGS, WAKE_SLIP_TWEAK_FORMS, WAKE_SLIP_TWEAK_IMPERATIVE_ENDINGS, WAKE_SLIP_TWEAK_NOUN_STEMS,
     WAKE_SLIP_TWEAK_REQUEST_STEMS, WAKE_SLIP_TWEAK_STEMS, WAKE_SLIP_VARIANTS,
 )
 from rob_box_dialog.words import (
@@ -551,3 +551,59 @@ def test_4136_level_words_table_is_lowercase_whole_adverbs_not_stems():
             assert level_word(word) == intent
     assert not set(VOLUME_LEVEL_WORDS["louder"]) & set(VOLUME_LEVEL_WORDS["quieter"])
     assert level_word("громкость") == "" and level_word("тихий") == "" and level_word("") == ""
+
+
+# --- #4136 п.3 (n812): стоп-слово под музыкой будит искажённый вейк ----------------------------------------------
+
+#: Фраза и остаток после вейка: под играющей музыкой стоп-слово будит. Первая - живая n812 28.10 07:03:19 («Робот, теперь
+#: и музыку выключай.» → «роботы пере музыку выключай»), остальные - те же формы из таблиц.
+STOP_UNDER_MUSIC = [
+    ("роботы пере музыку выключай", "пере музыку выключай"),  # лог: n812 28.10
+    ("роботы музыку выключай", "музыку выключай"),
+    ("роботы выключай музыку", "выключай музыку"),
+    ("работа всю музыку отключи", "всю музыку отключи"),
+    ("рада музыка стоп", "музыка стоп"),
+    ("роботы замолчите", "замолчите"),
+    ("роботы останови музыку", "останови музыку"),
+    ("роботы музыку глуши", "музыку глуши"),
+    ("роботы бит помолчите", "бит помолчите"),
+]
+#: Те же слова вне просьбы: даже под музыкой не будят (формы не те, слово далеко от «роботы» или не к роботу).
+STOP_NOT_WAKE_UNDER_MUSIC = [
+    "роботы стоят", "роботы выключаются", "роботы всегда останавливаются", "роботы остановка", "роботы стоп-кран",
+    "роботы захватят мир", "роботы очень любят музыку",
+    # стоп-слово дальше окна WAKE_SLIP_STOP_WINDOW: речь о роботах, а не просьба
+    "роботы любят музыку а потом сразу выключай",
+]
+
+
+@pytest.mark.parametrize("text,rest", STOP_UNDER_MUSIC)
+def test_stop_word_wakes_under_music_and_only_under_music(text, rest):
+    """«Музыку выключай» под играющей музыкой - просьба к роботу; без музыки та же фраза - разговор о чём-то другом."""
+    assert slipped_wake_rest(text, music_playing=True) == rest
+    assert slipped_wake_rest(text) is None, text
+
+
+@pytest.mark.parametrize("text", STOP_NOT_WAKE_UNDER_MUSIC)
+def test_stop_gate_does_not_wake_ordinary_speech_under_music(text):
+    assert slipped_wake_rest(text, music_playing=True) is None, text
+
+
+def test_stop_gate_words_are_the_stop_tables_not_a_copy():
+    """Одна таблица знания (ADR-0148): формы стоп-ворот = точные стоп-слова Tier-1 плюс «выключи/отключи музыку»; своих
+    слов нет, ё нет (сверка после ё → е), «выключи свет» в стоп-слова Tier-1 не попал."""
+    assert set(WAKE_SLIP_STOP_FORMS) == set(STOP_WORDS) | set(MUSIC_OFF_WORDS)
+    assert set(TIER1_POLICY["stop"].words) <= set(WAKE_SLIP_STOP_FORMS)
+    assert not set(MUSIC_OFF_WORDS) & set(STOP_WORDS), "выключи - не стоп Tier-1: «выключи свет»"
+    for word in WAKE_SLIP_STOP_FORMS:
+        assert word == word.lower() and "ё" not in word and " " not in word, word
+    stop_gates = [gate for gate in WAKE_SLIP_GATES if set(gate.leads) == set(WAKE_SLIP_STOP_FORMS)
+                  or set(gate.forms) == set(WAKE_SLIP_STOP_FORMS)]
+    assert len(stop_gates) == 2 and all(gate.under_music for gate in stop_gates), "стоп-ворота - только под музыкой"
+    assert any(gate.open_lead and gate.window == WAKE_SLIP_STOP_WINDOW for gate in stop_gates)
+    assert WAKE_SLIP_STOP_WINDOW < WAKE_SLIP_CUE_WINDOW
+
+
+@pytest.mark.parametrize("word", ["выключи", "выключай", "отключи", "стоп", "хватит", "замолчи", "глуши"])
+def test_stop_word_first_opens_the_gate_by_itself_under_music(word):
+    assert slipped_wake_rest(f"роботы {word}", music_playing=True) == word

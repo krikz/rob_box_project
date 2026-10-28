@@ -541,6 +541,19 @@ def test_3975_music_does_not_change_a_real_wake_or_other_slips():
     assert _in_session("роботы еще куплет добавь", _session("idle")) == Addressed("еще куплет добавь", VOICE)
 
 
+#: n812, 28.10 07:03:19 (dev-7ec08dd): «Робот, теперь и музыку выключай.» → STT «роботы пере музыку выключай» под музыкой.
+#: Не разбудило, харнесс сказал «Робот!» (``recovered_no_wake``) - #4136 п.3.
+@pytest.mark.parametrize("session", [_session("playing"), _session("idle", dj=True)], ids=["player-playing", "dj-scene"])
+def test_4136_n812_stop_verb_after_a_slipped_wake_wakes_under_music_only(session):
+    assert _in_session("роботы пере музыку выключай", session) == Addressed("пере музыку выключай", VOICE)
+    assert _in_session("роботы пере музыку выключай", _session("idle")) == NotAddressed(NO_WAKE)
+
+
+@pytest.mark.parametrize("text", ["роботы стоят", "роботы выключаются", "роботы очень любят музыку"])
+def test_4136_n812_other_robot_talk_does_not_wake_under_music(text):
+    assert _in_session(text, _session("playing", dj=True)) == NotAddressed(NO_WAKE), text
+
+
 def test_3975_decide_takes_music_from_the_flag_and_defaults_to_silence():
     assert decide(_heard("роботы ускорь темп"), Backlog(), WAKES) == NotAddressed(NO_WAKE)
     assert decide(_heard("роботы ускорь темп"), Backlog(), WAKES, music_playing=True) == Addressed("ускорь темп", VOICE)
