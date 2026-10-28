@@ -196,7 +196,7 @@ def test_every_step_is_red_on_a_stub_phrase_or_a_turn_closed_by_a_stub():
         acc = step["acceptance"]
         assert gen.TURN_FALLBACK in acc["must_not_call"], label
         assert gen.STUB_SPEECH in acc["must_not_say"], label
-    for text in ("Нашёл ответ, но не смог сложить его в короткую фразу. Спроси ещё раз?", "Не вышло.",
+    for text in ("Данные получил, а ответ у меня не сложился. Спроси ещё раз?", "Не вышло.",
                  "Хм, я задумался и ничего не придумал. Повтори?", "DeepSeek так и не ответил — я перестал ждать. "
                  "Повтори, пожалуйста.", "Не понял, как это сделать. Скажи ещё раз?"):
         assert etm.keyword_hit(_tts(text), gen.STUB_SPEECH), text
@@ -208,7 +208,7 @@ def test_every_step_is_red_on_a_stub_phrase_or_a_turn_closed_by_a_stub():
 def test_n707_stub_answer_and_status_done_are_red_honest_answer_green():
     """27.10 09:46:05: n707 засчитан на заглушке при ``status=done`` -- теперь красный."""
     call = "📥 Запрос выполнения: music_library с параметрами {'action': 'info', 'track_id': 'gen_ab12'}"
-    stub = "\n".join([call, _tts("Нашёл ответ, но не смог сложить его в короткую фразу. Спроси ещё раз?"), FALLBACK])
+    stub = "\n".join([call, _tts("Данные получил, а ответ у меня не сложился. Спроси ещё раз?"), FALLBACK])
     verdict = _verdict("n707_gen_track_info", stub)
     assert not verdict["pass"]
     assert verdict["acc"]["forbidden_said"] and gen.TURN_FALLBACK in verdict["acc"]["forbidden_calls"]
