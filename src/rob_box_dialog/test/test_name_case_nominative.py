@@ -13,7 +13,8 @@ import pytest
 from rob_box_dialog import knowledge as kn
 from rob_box_dialog.reply_grammar import Rename, classify_rename, classify_reply
 from rob_box_dialog.speaker_adapter import named_self, rename_step
-from rob_box_dialog.words import name_key, nominative_name, same_name, self_intro_name
+from rob_box_dialog.words import (introduced_name, name_key, name_tokens, nominative_name, profile_name, same_name,
+                                  self_intro_name)
 
 TAMARA = {"is_known": True, "speaker_id": "e35517b2", "name": "Тамара", "confidence": 0.93}
 
@@ -44,6 +45,69 @@ def test_nominative_name_stays_as_it_is(word):
 def test_every_dictionary_name_survives_the_normalization():
     """Словарь имён - именительные: приведение к именительному ни одно из них не меняет."""
     assert all(nominative_name(name) == name for name in kn.KNOWN_FIRST_NAMES)
+
+
+# --- ревью PR #4118: винительный мужских имён, беглая гласная, женские имена, совпавшие с родительным ----------------
+
+
+@pytest.mark.parametrize("word, nominative", [
+    ("бориса", "борис"), ("сергея", "сергей"), ("игоря", "игорь"), ("андрея", "андрей"), ("дмитрия", "дмитрий"),
+    ("артема", "артем"), ("петра", "петр"), ("николая", "николай"), ("макара", "макар"), ("олега", "олег"),
+], ids=str)
+def test_masculine_accusative_goes_to_nominative(word, nominative):
+    """«Запиши меня как Бориса», «переименуй меня в Сергея»: винительный мужского одушевлённого = родительный (-а/-я)."""
+    assert nominative_name(word) == nominative
+
+
+@pytest.mark.parametrize("word, nominative", [
+    ("львом", "лев"), ("льва", "лев"), ("павлом", "павел"), ("павла", "павел"),
+], ids=str)
+def test_name_with_a_fleeting_vowel_goes_to_its_dictionary_form(word, nominative):
+    """«Львом» → «лев», а не «льв» (``NAME_CASE_STEMS``): основа косвенных падежей сверяется со словарём через таблицу."""
+    assert nominative_name(word) == nominative
+
+
+@pytest.mark.parametrize("word", [
+    "александра", "валерия", "виталия", "влада", "владислава", "вячеслава", "ярослава", "евгения", "валентина",
+], ids=str)
+def test_female_name_written_like_a_masculine_genitive_stays_female(word):
+    """«Меня зовут Валерия» - женское имя, не «Валерий»: такие имена стоят в словаре и как есть (именительный)."""
+    assert word in kn.KNOWN_FIRST_NAMES and nominative_name(word) == word
+    assert introduced_name(name_tokens(f"меня зовут {word}")) == word
+
+
+@pytest.mark.parametrize("word", ["кузьма", "фома", "шифа", "станислава", "эльдара", "кроватью", "льву"], ids=str)
+def test_unknown_word_with_an_ambiguous_ending_is_left_as_it_is(word):
+    """Слово, которого нет в словаре имён и которое не «-ой»/«-ом» (``_sure_form``), не трогается: гадать по «-а»/«-я»/
+    «-ью» код не должен. Дательный («льву») - не падеж просьбы «зови меня», его тоже нет."""
+    assert nominative_name(word) == word
+
+
+def test_same_name_in_nominative_and_accusative():
+    assert same_name("Борис", "Бориса") and same_name("Сергей", "сергея") and same_name("Лев", "Львом")
+    assert not same_name("Борис", "Борисов") and not same_name("Валерия", "Валерий")
+
+
+def test_the_profile_name_is_the_nominative_in_one_place():
+    """``profile_name`` - имя для профиля голоса: падеж приводится, заглавная, ё в именительном сохраняется."""
+    assert [profile_name(n) for n in ("Тамарой", " бориса ", "сергеем", "Львом", "Аскаром")] == [
+        "Тамара", "Борис", "Сергей", "Лев", "Аскар"]
+    assert [profile_name(n) for n in ("тамара", "Алёна", "Валерия", "Иван Петров", "ИВАН ПЕТРОВ", "", None)] == [
+        "Тамара", "Алёна", "Валерия", "Иван петров", "Иван петров", "", ""]
+
+
+@pytest.mark.parametrize("text, name", [
+    ("запиши меня как Бориса", "Борис"),
+    ("переименуй меня в Сергея", "Сергей"),
+    ("запомни меня как Игоря", "Игорь"),
+    ("Робот, переименуй меня в Льва", "Лев"),
+    ("зови меня Валерией", "Валерия"),
+    ("запиши меня как Валерия", "Валерия"),
+], ids=lambda value: str(value)[:40])
+def test_rename_in_accusative_names_the_person_in_nominative(text, name):
+    """Фраза переименования: и ``classify_rename``, и ``named_self`` (его читает гейт ``register_speaker``) - именительный."""
+    assert classify_rename(text) == Rename(name)
+    assert named_self(text) == name
 
 
 @pytest.mark.parametrize("text, name", [
