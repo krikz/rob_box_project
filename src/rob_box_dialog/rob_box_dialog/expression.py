@@ -131,12 +131,16 @@ def shows(emotion: Optional[str], gesture: Optional[str] = None, face: Optional[
     return bool(command_scene(emotion) or (gesture and gesture in kn.GESTURES) or face)
 
 
-def face_label(emotion: Optional[str], gesture: Optional[str] = None, face: Optional[object] = None) -> str:
+def face_label(emotion: Optional[str], gesture: Optional[str] = None, face: Optional[object] = None,
+               words: Optional[Mapping[str, str]] = None) -> str:
     """Лицо, которое покажет экспрессия команды, словами кода для окна LLM (``knowledge.WINDOW_FACE_REPLY``, #4073): сцена
     эмоции (:func:`command_scene`), жест из ``GESTURES``, «сцена лица» для сцены LLM - через запятую. Показывать нечего
-    (:func:`shows` ложно) - пусто."""
-    parts = [command_scene(emotion), gesture if gesture in kn.GESTURES else "", kn.WINDOW_FACE_SCENE if face else ""]
-    return ", ".join(dict.fromkeys(part for part in parts if part))  # «victory» бывает и эмоцией, и жестом
+    (:func:`shows` ложно) - пусто. ``words`` - слово для имени сцены (фраза чата, ``knowledge.SCENE_WORDS``, #4142);
+    имени нет в словаре - имя как есть."""
+    parts = [command_scene(emotion), gesture if gesture in kn.GESTURES else ""]
+    named = [(words or {}).get(part, part) for part in parts if part]
+    named += [kn.WINDOW_FACE_SCENE] if face else []
+    return ", ".join(dict.fromkeys(named))  # «victory» бывает и эмоцией, и жестом
 
 
 def merge(plan: Optional[ExpressionPlan], stage: str, emotion: Optional[str] = None, gesture: Optional[str] = None,

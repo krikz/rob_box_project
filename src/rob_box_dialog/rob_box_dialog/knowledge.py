@@ -1416,6 +1416,22 @@ VIOLATION_SILENT_ANSWER = "silent_answer"
 SILENT_ANSWER_HINT = (f"человек ждёт ответа словами, а {', '.join(INAUDIBLE_TOOLS)} и expression не слышно: ответь"
                       f" словами в speech; анимацию положи в actions рядом, эмоцию оставь в expression — speech с"
                       f" {', '.join(INAUDIBLE_TOOLS)} и expression звучит")
+#: Человек в чате просит сделать что-то РОБОТОМ (#4142 п.7, классы 1 и 3 #4040: «Покекай роботом» → текст в чат
+#: «глазами поводил, повертелся» без единого тула; «Именно через робота чтобы хороший кек» → текст в чат, а не
+#: ``say_aloud``): формы слов его реплики, целыми словами (``words.has_form``). Решает код по словам человека, а не по
+#: тексту ответа модели; кто их ждёт — агент с текстовым каналом (чат), ``turn.robot_owed``.
+CHAT_ROBOT_ASK_FORMS: Tuple[str, ...] = (
+    "роботом", "через робота", "вслух", "озвучь", "озвучи", "в колонки", "в динамики", "народ", "народу", "толпу",
+    "толпе", "всем вокруг", "людям вокруг", "людям рядом",
+)
+#: Нарушение «просили робота, а команда ничего на нём не делает» (только речь в чат): повтор с подсказкой
+#: :data:`REMOTE_OWED_HINT`, а повтора нет — речь модели в чат не идёт (о действии она без действия говорить не может),
+#: говорит код фразой :data:`REMOTE_OWED_PHRASE` (``INVALID_COMMAND_PHRASES``).
+VIOLATION_REMOTE_OWED = "remote_owed"
+REMOTE_OWED_HINT = ("человек просит сделать это РОБОТОМ, а текст speech роботом не звучит и не исполняется: положи"
+                    " действие робота — say_aloud (слова людям рядом), play_animation (лицо), perform (песня, рэп,"
+                    " сказка), музыку или движение; о сделанном скажет код по результату, сам «сделал» не пиши")
+REMOTE_OWED_PHRASE = "remote.nothing_done"
 #: Тулы, об исходе которых в v1 говорит не фраза исполнителя (``respond``), а другой код по тому же событию: голос -
 #: сам тул (``voice_request``, SpeechEvent ``voice_changed``), запуск музыки и библиотека - музыкальный ход ноды
 #: (``music_turn``, ADR-0157 R6). Режим команд v1 (PR-7 ч.7c) их фразу не дублирует; в v2 (PR-8) - фраза респонда.
@@ -1487,7 +1503,8 @@ VIOLATION_SPEECH_TOO_LONG = "speech_too_long"
 #: причина → ключ каталога; причины вне таблицы говорят ``INVALID_COMMAND_PHRASE``.
 INVALID_COMMAND_PHRASES: Mapping[str, str] = MappingProxyType({"too_long": "command.too_long",
                                                                VIOLATION_SPEECH_TOO_LONG: "command.too_long",
-                                                               VIOLATION_SILENT_ANSWER: SILENT_ANSWER_PHRASE})
+                                                               VIOLATION_SILENT_ANSWER: SILENT_ANSWER_PHRASE,
+                                                               VIOLATION_REMOTE_OWED: REMOTE_OWED_PHRASE})
 #: Нарушения, после которых фраза кода звучит без грусти: модель ответила, только не словами (лицом, анимацией, одним
 #: earcon) - ничего не провалилось (ревью #4041: «Угу, я тут.» звучало с ``sad``). Провал исполненного действия
 #: грустит по-прежнему: эмоцию фразы решает его исход.
@@ -2275,6 +2292,10 @@ PERFORM_NO_BACKING_REASONS: Tuple[str, ...] = ("quota", "network", "timeout", "b
 #: Причины, при которых вторая попытка подложки бессмысленна: ``busy`` — играет другая музыка (молча её не вытесняем,
 #: О9 (б)): выступление идёт без бита поверх неё.
 PERFORM_NO_RETRY_REASONS: Tuple[str, ...] = ("busy",)
+#: Тулы, чья музыка, запущенная ТОЙ ЖЕ командой, — подложка её выступления (#4142, решение Шифу 28.10: «агитируй толпу
+#: под Калинку-Малинку» → синт «Калинки» + выступление поверх): выступление идёт поверх неё (``backing=none``), без
+#: второго бита и без вопроса «выключить и зачитать?». Решает код по исходам команды (``turn.over_ordered_music``).
+PERFORM_OVER_TOOLS: Tuple[str, ...] = ("request_music",)
 #: outro подложки: музыка снимается на ближайшем такте после речи — запас на такт при 60 BPM; речь вышла длиннее
 #: подложки — она продлевается по ``nearly_finished``.
 PERFORM_OUTRO_S = 4.0
@@ -2360,19 +2381,13 @@ COMMAND_TOOL = "command"
 # людям рядом) исполняет РОБОТ от своего имени — голосом в колонки, лицом, музыкой; служебного текста агента там нет
 # («должно выглядеть, будто он сам решил»). Справку (время, поиск, ответ на вопрос) агент отвечает в чат, робот молчит.
 # Что робот сделал, чату говорит код из результата исполнения (ADR-0148), а не слова модели.
+#
+# Выходы команды агента чата (#4040; переключателя нет — у каждого поля один путь, его исполняет ``chats.ChatPorts``,
+# #4142 п.3): ``speech``/``ask`` — текст в чат; ``perform`` — хосту выступления Личности в её эпохе (пульт хоста
+# ``chats.Robot``); лицо — лицу робота, только когда это ответ лицом (сцены исполненных ``play_animation`` или команда
+# без текста в чат — ``chats.robot_face``); рядом с текстом в чат (и с фразой о выступлении) это настроение текста.
+# Тулы действий (``say_aloud``, ``play_animation``, музыка, движение) исполняют владельцы робота по классу тула.
 
-#: Куда идёт часть команды агента чата: ``robot`` — исполняет робот (``chats.ChatPorts`` → пульт хоста: выступление —
-#: хосту выступления Личности в её эпохе, лицо — лицу робота), ``chat`` — текст в чат. Тулы действий (``say_aloud``,
-#: ``play_animation``, музыка, движение) исполняют владельцы робота по классу тула (:data:`TOOL_CLASSES`).
-#: ``expression`` — лицо робота, когда это ответ лицом: сцены исполненных ``play_animation`` или команда без текста в
-#: чат; рядом с текстом в чат это настроение текста, и робот его не показывает (``chats.robot_face``).
-REMOTE_ROBOT, REMOTE_CHAT = "robot", "chat"
-CHAT_OUTLETS: Mapping[str, str] = MappingProxyType({
-    "speech": REMOTE_CHAT,
-    "ask": REMOTE_CHAT,
-    "perform": REMOTE_ROBOT,
-    "expression": REMOTE_ROBOT,
-})
 #: Фраза кода в чат об исполнении роботом (``phrases/ru.yaml``): старт выступления — по его виду со строкой-цитатой,
 #: правка идущего выступления (его хост влил куплеты, ``status=done``), бит к идущему («добавь бит» без куплетов),
 #: показ на лице. Отказ — фраза хода ``local.rejected``.
@@ -2384,14 +2399,57 @@ REMOTE_SHOW_PHRASE = "remote.show"
 REMOTE_QUOTE_MAX_CHARS = 60
 #: Причина отказа выступления, когда пульта робота у хоста нет (тест, хост без Личности): сегменты в чат не идут.
 REMOTE_NO_ROBOT = "no_robot"
-#: Оператор держит робота (кадр ``OperatorHold`` Личности, как отказ ``say_aloud`` §9.2.3): ни выступления, ни лица из
-#: чата; фраза кода об отказе — показ (``remote.operator_hold``) и выступление (``perform.rejected.<причина>``, её
-#: берёт ``turn.hand_perform``) — один текст.
-REMOTE_HOLD_PHRASE = "remote.operator_hold"
+#: Лицо из чата не показано (#4142 п.1, ADR-0148: «Показываю на роботе» — только по исходу показа): фраза кода
+#: ``remote.show.rejected.<причина>``. Причины: ``operator_hold`` — оператор держит робота (кадр ``OperatorHold``
+#: Личности, ``address.HELD``, как отказ ``say_aloud`` §9.2.3); ``silenced`` — у Личности тишина (кадр ``Silence``):
+#: рот заклеен, ``face_node`` ответил бы ``skipped{silenced}`` (#3984) — пульт хоста проверяет это ДО показа
+#: (``dialog_node.RobotRemote.show``). Отказ выступления из чата при ``operator_hold`` — тот же текст
+#: (``perform.rejected.<причина>``, его берёт ``turn.hand_perform``).
+REMOTE_SHOW_REJECTED_PHRASE = "remote.show.rejected"
+REMOTE_SILENCED = "silenced"
+REMOTE_SHOW_REFUSALS: Tuple[str, ...] = ("operator_hold", REMOTE_SILENCED)
 PERFORM_REJECTED_PHRASE = "perform.rejected"
 PHRASE_KEYS = PHRASE_KEYS + (*REMOTE_PERFORM_PHRASES.values(), REMOTE_PERFORM_EDIT_PHRASE,
-                             REMOTE_PERFORM_BACKING_PHRASE, REMOTE_SHOW_PHRASE, REMOTE_HOLD_PHRASE,
+                             REMOTE_PERFORM_BACKING_PHRASE, REMOTE_SHOW_PHRASE,
+                             *(f"{REMOTE_SHOW_REJECTED_PHRASE}.{reason}" for reason in REMOTE_SHOW_REFUSALS),
                              f"{PERFORM_REJECTED_PHRASE}.operator_hold")
+#: Слово сцены лица для фразы чата (#4142 п.6: «Показываю на роботе: радость, подмигивание», а не «happy, wink») —
+#: ОДИН словарь на все имена сцен: анимации тула (:data:`KNOWN_ANIMATIONS`), сцены лица (:data:`LAB_SCENES`), сцены
+#: эмоций команды (:data:`EMOTIONS`) и жесты (:data:`GESTURES`); полноту держит тест. Окно LLM пишет сцену именем.
+SCENE_WORDS: Mapping[str, str] = MappingProxyType({
+    "accelerating": "разгон",
+    "ambulance": "скорая помощь",
+    "angry": "злость",
+    "braking": "торможение",
+    "charging": "зарядка",
+    "error": "ошибка",
+    "fire_truck": "пожарная машина",
+    "happy": "радость",
+    "idle": "спокойное лицо",
+    "low_battery": "слабая батарея",
+    "police_lights": "полицейская мигалка",
+    "road_service": "дорожная служба",
+    "sad": "грусть",
+    "sleep": "сон",
+    "surprised": "удивление",
+    "talking": "разговор",
+    "thinking": "задумчивость",
+    "turn_left": "поворот налево",
+    "turn_right": "поворот направо",
+    "victory": "победа",
+    "wakeup": "пробуждение",
+    "idle_stare": "спокойный взгляд",
+    "idle_bored": "скука",
+    "listening": "внимание",
+    "thinking_teeth": "раздумье",
+    "thinking_orbit": "глубокое раздумье",
+    "wink": "подмигивание",
+    "music_groove": "танец под музыку",
+    "music_shades": "тёмные очки",
+    "music_vibe": "кайф от музыки",
+    "new_year_eve": "новогоднее лицо",
+    "taped_mouth": "заклеенный рот",
+})
 
 # ---------------------------------------------------------------------------------------------------------------
 # Путь пения (#4079, ADR-0158 §2.2; ADR-0148 п.2 — выбор сужает структура): решает код ДО основной модели
