@@ -72,7 +72,8 @@ def test_outcome_phrase_skips_queries_and_outcomes_spoken_elsewhere() -> None:
 def test_voice_outcome_is_said_from_the_result_because_the_voice_tools_are_silent() -> None:
     """Тулы голоса не говорят сами (одна фраза на ход): v1-цикл команд берёт ту же таблицу, что и v2 (``VOICE_DONE``)."""
     data = {"status": "applied", "voice_default": False, "voice_name": "Весельчак"}
-    assert outcome_phrase([_result("set_voice", "done", **data)]) == "Говорю голосом Весельчак."
+    voice = ActionResult("t/0", 0, "personality", "set_voice", kn.TOOL_CLASSES["set_voice"], "done", None, data)
+    assert outcome_phrase([voice]) == "Говорю голосом Весельчак."
 
 
 def test_missing_slot_falls_back_to_a_generic_failure_not_a_crash() -> None:
