@@ -35,3 +35,8 @@ joystick_control_node:
     
     # Voice feedback
     enable_voice_feedback: true
+
+    # ARM announcement debounce (issue #4003). Voice only: lock, brake and cmd_vel_joy
+    # still follow the raw ARM switch with no delay.
+    arm_announce_hold_s: 0.3          # a change must hold this long to be announced
+    arm_announce_min_interval_s: 5.0  # announcements at least this far apart

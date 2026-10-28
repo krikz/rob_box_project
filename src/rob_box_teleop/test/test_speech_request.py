@@ -37,6 +37,20 @@ def _joy(*, armed):
     return types.SimpleNamespace(axes=[0.0] * 16, buttons=buttons)
 
 
+class _Clock:
+    """Injectable monotonic clock: the ARM announcement is debounced by time (issue #4003)."""
+
+    def __init__(self, node):
+        self.t = 100.0
+        node._monotonic = lambda: self.t
+
+    def feed(self, node, callback, *, armed, for_s):
+        """Deliver ``armed`` samples every 50 ms (the SBUS timer is 20 Hz) for ``for_s`` seconds."""
+        for _ in range(max(1, round(for_s / 0.05))):
+            getattr(node, callback)(_joy(armed=armed))
+            self.t += 0.05
+
+
 def test_node_has_no_writer_on_the_legacy_tts_topics(node_params):
     node = JoystickControlNode()
     topics = [topic for topic, _ in node.publishers]
@@ -84,34 +98,67 @@ def test_speak_gives_every_phrase_its_own_speech_id(node_params):
     assert first.speech_id != second.speech_id
 
 
-def test_sbus_arm_and_disarm_are_spoken(node_params):
+@pytest.mark.parametrize("callback", ["joy_callback_sbus", "joy_callback"])
+def test_arm_and_disarm_are_spoken_once_each_after_the_hold(node_params, callback):
     node = JoystickControlNode()
+    clock = _Clock(node)
 
-    node.joy_callback_sbus(_joy(armed=True))
-    node.joy_callback_sbus(_joy(armed=True))  # still armed: no repeat
-    node.joy_callback_sbus(_joy(armed=False))
+    clock.feed(node, callback, armed=True, for_s=1.0)  # still armed: no repeat
+    clock.feed(node, callback, armed=False, for_s=6.0)
 
     assert [r.text for r in _speech(node)] == ARM_THEN_DISARM
 
 
-def test_hid_enable_button_press_and_release_are_spoken(node_params):
+@pytest.mark.parametrize("callback", ["joy_callback_sbus", "joy_callback"])
+def test_arm_chatter_is_not_spoken(node_params, callback):
+    """Robot log of 2026-10-24: LOW for ~50 ms, then HIGH again, every few seconds."""
     node = JoystickControlNode()
+    clock = _Clock(node)
+    clock.feed(node, callback, armed=True, for_s=1.0)
+    spoken_after_arming = len(_speech(node))
 
-    node.joy_callback(_joy(armed=True))
-    node.joy_callback(_joy(armed=False))
+    for _ in range(10):
+        clock.feed(node, callback, armed=False, for_s=0.05)
+        clock.feed(node, callback, armed=True, for_s=2.0)
 
-    assert [r.text for r in _speech(node)] == ARM_THEN_DISARM
+    assert len(_speech(node)) == spoken_after_arming == 1
+
+
+@pytest.mark.parametrize("callback", ["joy_callback_sbus", "joy_callback"])
+def test_driving_still_reacts_to_the_raw_switch_without_delay(node_params, callback):
+    """Debounce is for speech only: the brake goes out on the first LOW sample, the phrase much later."""
+    node = JoystickControlNode()
+    clock = _Clock(node)
+    cmd_vel = _publisher(node, "cmd_vel_joy").messages
+    clock.feed(node, callback, armed=True, for_s=1.0)
+    sent_before = len(cmd_vel)
+    spoken_before = len(_speech(node))
+
+    getattr(node, callback)(_joy(armed=False))  # one LOW sample
+
+    assert node.was_enabled is False
+    assert len(cmd_vel) == sent_before + 1
+    assert (cmd_vel[-1].linear.x, cmd_vel[-1].angular.z) == (0.0, 0.0)
+    assert len(_speech(node)) == spoken_before
 
 
 @pytest.mark.parametrize("callback", ["joy_callback_sbus", "joy_callback"])
 def test_voice_feedback_off_keeps_the_robot_silent(node_params, callback):
     node_params["enable_voice_feedback"] = False
     node = JoystickControlNode()
+    clock = _Clock(node)
 
-    getattr(node, callback)(_joy(armed=True))
-    getattr(node, callback)(_joy(armed=False))
+    clock.feed(node, callback, armed=True, for_s=1.0)
+    clock.feed(node, callback, armed=False, for_s=6.0)
 
     assert _speech(node) == []
+
+
+def test_announce_timing_comes_from_node_parameters(node_params):
+    node_params["arm_announce_hold_s"] = 2.0
+    node_params["arm_announce_min_interval_s"] = 9.0
+    node = JoystickControlNode()
+    assert (node.arm_announcer.hold_s, node.arm_announcer.min_interval_s) == (2.0, 9.0)
 
 
 # -- a failed phrase must not break driving -------------------------------------------------------
@@ -139,18 +186,23 @@ def test_speak_failure_is_logged_and_does_not_propagate(node_params, monkeypatch
 
 @pytest.mark.parametrize("callback", ["joy_callback_sbus", "joy_callback"])
 def test_disarm_still_sends_the_brake_when_the_phrase_fails(node_params, monkeypatch, callback):
-    """Disarm speaks first and brakes second: a speech failure must not swallow the stop message."""
+    """The brake goes out on the LOW sample, the phrase later: a speech failure must not touch the stop."""
     node = JoystickControlNode()
+    clock = _Clock(node)
     cmd_vel = _publisher(node, "cmd_vel_joy").messages
-    getattr(node, callback)(_joy(armed=True))
-    sent_before_disarm = len(cmd_vel)
+    clock.feed(node, callback, armed=True, for_s=1.0)
     _say_fails(monkeypatch)
+    sent_before_disarm = len(cmd_vel)
 
     getattr(node, callback)(_joy(armed=False))
+    clock.t += 0.05
+    clock.feed(node, callback, armed=False, for_s=6.0)  # the phrase fails when it is finally due
 
     assert node.was_enabled is False
     assert len(cmd_vel) == sent_before_disarm + 1
     assert (cmd_vel[-1].linear.x, cmd_vel[-1].angular.z) == (0.0, 0.0)
+    (call,) = node.get_logger().error.call_args_list  # the phrase was due, failed and was only logged
+    assert DISARMED in call.args[0]
 
 
 class _Stop(BaseException):
