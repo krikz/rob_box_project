@@ -121,11 +121,14 @@ def _held(heard: Heard, hold: Optional[SceneFrame]) -> bool:
 
 def decide(heard: Heard, backlog: Optional[Backlog], wake_words: Sequence[str],
            question: Optional[SceneFrame] = None, greeting: Optional[SceneFrame] = None,
-           ask: Optional[SceneFrame] = None, hold: Optional[SceneFrame] = None) -> Decision:
+           ask: Optional[SceneFrame] = None, hold: Optional[SceneFrame] = None, *,
+           music_playing: bool = False) -> Decision:
     """Адресована ли реплика роботу и какой у хода текст (§4.2, В12). ``question`` — живой кадр ``Identity``
     (робот спросил имя), `greeting` — окно после приветствия (#3776), ``ask`` — окно вопроса выступления
     ``PerformAsk`` (О9′): фраза без вейка, похожая на ответ, — ход. ``hold`` — кадр ``OperatorHold``: пока он
-    есть, голос с микрофона не адресован никому (Telegram и оператор — другие агенты, их кадр не касается)."""
+    есть, голос с микрофона не адресован никому (Telegram и оператор — другие агенты, их кадр не касается).
+    ``music_playing`` — играет ли музыка: под ней искажённый вейк пропускает и правку музыки («роботы ускорь темп»,
+    #3975; ворота ``under_music`` в ``knowledge.WAKE_SLIP_GATES``)."""
     text = (heard.text or "").strip()
     if _held(heard, hold):
         return NotAddressed(HELD)
@@ -135,7 +138,8 @@ def decide(heard: Heard, backlog: Optional[Backlog], wake_words: Sequence[str],
         rest = strip_wake_word(text, wake_words)
         return Addressed(rest, heard.source) if rest else NotAddressed(EMPTY)
     woken = has_wake_word(text, wake_words)
-    rest = strip_wake_word(text, wake_words) if woken else slipped_wake_rest(text, wake_words)
+    rest = (strip_wake_word(text, wake_words) if woken
+            else slipped_wake_rest(text, wake_words, music_playing=music_playing))
     if rest is None:
         return _wakeless_reply(text, heard, question, greeting, ask)
     if is_bare(rest) and _yes_no_in_window(ask, rest, heard.t):  # «Робот, да» — ответ на вопрос, не голый вейк
@@ -152,11 +156,12 @@ def _command(text: str, rest: str, wake_words: Sequence[str]) -> str:
 def decide_in_session(heard: Heard, backlog: Optional[Backlog], wake_words: Sequence[str], snap: Any,
                       greeting: Optional[SceneFrame] = None) -> Decision:
     """:func:`decide` для сессии Личности: окна ответа (``Identity``, ``PerformAsk``) и удержание оператором
-    (``OperatorHold``) — из кадров снимка; ``greeting`` — окно после приветствия (живёт у хоста, не в снимке).
+    (``OperatorHold``) и «музыка играет» (ворота правки музыки искажённого вейка, #3975) — из снимка; ``greeting`` —
+    окно после приветствия (живёт у хоста, не в снимке).
     Единственная точка, где ROS-хост ``dialog_node`` и сухой стенд (``scripts/dialog/dry_marathon.py``, #3906)
     решают «адресована ли реплика» одинаково."""
     return decide(heard, backlog, wake_words, question=snap.top("Identity"), greeting=greeting,
-                  ask=snap.top("PerformAsk"), hold=snap.top("OperatorHold"))
+                  ask=snap.top("PerformAsk"), hold=snap.top("OperatorHold"), music_playing=snap.music_playing)
 
 
 def _woken(rest: str, heard: Heard, backlog: Optional[Backlog], command: str = "") -> Addressed:

@@ -3,9 +3,10 @@
 import pytest
 
 from rob_box_dialog.knowledge import (
-    DEFAULT_WAKE_WORDS, SILENCE_WORDS, STOP_LEAD_WORDS, STOP_WORDS, TIER1_POLICY, UNSILENCE_WORDS, WAKE_SLIP_ADDRESSEE,
-    WAKE_SLIP_AMBIGUOUS, WAKE_SLIP_COMMAND_LEADS, WAKE_SLIP_GATES, WAKE_SLIP_MORE_LEADS, WAKE_SLIP_NEVER,
-    WAKE_SLIP_PLURAL, WAKE_SLIP_QUESTION_CUED_LEADS, WAKE_SLIP_QUESTION_LEADS, WAKE_SLIP_VARIANTS,
+    DEFAULT_WAKE_WORDS, MUSIC_AMBIGUOUS_STEMS, MUSIC_AMBIGUOUS_WORDS, SILENCE_WORDS, STOP_LEAD_WORDS, STOP_WORDS,
+    TIER1_POLICY, UNSILENCE_WORDS, VOLUME_STEMS, WAKE_SLIP_ADDRESSEE, WAKE_SLIP_AMBIGUOUS, WAKE_SLIP_COMMAND_LEADS,
+    WAKE_SLIP_GATES, WAKE_SLIP_MORE_LEADS, WAKE_SLIP_NEVER, WAKE_SLIP_PLURAL, WAKE_SLIP_QUESTION_CUED_LEADS,
+    WAKE_SLIP_QUESTION_LEADS, WAKE_SLIP_TWEAK_ENDINGS, WAKE_SLIP_TWEAK_STEMS, WAKE_SLIP_VARIANTS,
 )
 from rob_box_dialog.words import (
     NO_SCOPE, STOP_CLEAR, STOP_DISPUTED, STOP_NONE, StopScope, has_form, has_wake_word, has_word, introduces_self,
@@ -266,6 +267,83 @@ def test_slip_tables_do_not_contradict_each_other():
     assert not gated & set(WAKE_SLIP_NEVER), "слово либо за воротами, либо не будит никогда"
     assert not gated & set(WAKE_SLIP_VARIANTS), "слово либо за воротами, либо будит без условий"
     assert not set(WAKE_SLIP_AMBIGUOUS) & set(WAKE_SLIP_PLURAL)
+
+
+# --- #3975: правка играющей музыки после искажённого вейка («роботы ускорь темп») - ворота ``under_music`` ---------
+
+#: Фраза и остаток после вейка: под играющей музыкой будят. Первые три - живые фразы 27.10 (14:49 «роботы ускорь темп»
+#: под диджей-сетом; 09:26 n506 «роботы ускорь там потом мы тут засыпаем оба»), остальные - те же основы таблиц.
+TWEAK_UNDER_MUSIC = [
+    ("роботы ускорь темп", "ускорь темп"),                                                    # лог: 27.10 14:49
+    ("роботы ускорь там потом мы тут засыпаем оба", "ускорь там потом мы тут засыпаем оба"),  # лог: n506, 27.10 09:26
+    ("Роботы, ускорь темп!", "ускорь темп"),
+    ("работа замедли", "замедли"),
+    ("рада замедлите немного", "замедлите немного"),
+    ("роботы громче", "громче"),
+    ("работа погромче пожалуйста", "погромче пожалуйста"),
+    ("рада тише", "тише"),
+    ("роботы потише", "потише"),
+    ("роботы убавь", "убавь"),
+    ("работа прибавь громкости", "прибавь громкости"),
+    ("роботы быстрее", "быстрее"),
+    ("роботы помедленнее", "помедленнее"),
+    ("роботы жёстче", "жёстче"),
+    ("рады мягче", "мягче"),
+    ("роботы темп побыстрее", "темп побыстрее"),
+    ("роботы бас потяжелее", "бас потяжелее"),
+    ("роботы добавь бас", "добавь бас"),
+    ("работа добавь бит", "добавь бит"),
+    ("рада добавьте куплет про комара", "добавьте куплет про комара"),
+]
+#: Те же слова и обычная речь с теми же основами: даже под музыкой не будят (не просьба или не про музыку).
+TWEAK_NOT_WAKE_UNDER_MUSIC = [
+    "роботы захватят мир", "роботы ускоряются", "роботы быстро учатся", "роботы ускоряют производство",
+    "работа темпы растут", "рада тебя видеть", "роботы это сложно", "работа добавь соли", "рада добавь воды",
+    "роботы скоро будут", "роботы бассейн", "работа мягкий плед", "роботы громкие",
+]
+
+
+@pytest.mark.parametrize("text,rest", TWEAK_UNDER_MUSIC)
+def test_tweak_gate_wakes_under_music_and_only_under_music(text, rest):
+    """Поведение ворот: под играющей музыкой правка будит, без музыки слово остаётся за закрытыми воротами (прежнее
+    поведение: не вейк, фраза уходит в бэклог)."""
+    assert slipped_wake_rest(text, music_playing=True) == rest
+    assert slipped_wake_rest(text) is None
+    assert slipped_wake_rest(text, music_playing=False) is None
+
+
+@pytest.mark.parametrize("text", TWEAK_NOT_WAKE_UNDER_MUSIC)
+def test_tweak_gate_does_not_wake_ordinary_speech_under_music(text):
+    assert slipped_wake_rest(text, music_playing=True) is None, text
+
+
+@pytest.mark.parametrize("text", ["роботы ускорь темп", "работа замедли", "рада громче", "роботы добавь бит"])
+def test_tweak_gate_needs_a_robot_wake_word_in_the_table(text):
+    assert slipped_wake_rest(text, ["тарс"], music_playing=True) is None
+
+
+def test_music_does_not_change_the_unconditional_gates():
+    """Музыка открывает только свои ворота: остальные решают одинаково с ней и без неё."""
+    for text in ("роботы еще куплет добавь", "работа как меня зовут", "работа тишина", "роботы захватят мир",
+                 "работ много накопилось", "роботы ещё не умеют летать", "рада что пришли"):
+        assert slipped_wake_rest(text, music_playing=True) == slipped_wake_rest(text), text
+
+
+def test_tweak_gate_stems_come_from_the_existing_tables_not_a_copy():
+    """Одна таблица знания (ADR-0148): основы ведущих слов правки - объединение основ громкости и темпа, своих слов нет."""
+    known = {*VOLUME_STEMS["louder"], *VOLUME_STEMS["quieter"], *MUSIC_AMBIGUOUS_STEMS}
+    assert set(WAKE_SLIP_TWEAK_STEMS) == known
+    tweak_gates = [gate for gate in WAKE_SLIP_GATES if gate.under_music]
+    assert tweak_gates, "ворота правки музыки есть"
+    assert any(gate.lead_stems == WAKE_SLIP_TWEAK_STEMS and gate.lead_endings == WAKE_SLIP_TWEAK_ENDINGS
+               and set(MUSIC_AMBIGUOUS_WORDS) <= set(gate.leads) for gate in tweak_gates)
+    assert not any(gate.under_music for gate in WAKE_SLIP_GATES[:4]), "прежние ворота музыки не требуют"
+
+
+def test_tweak_endings_table_is_lowercase_and_unique():
+    assert len(WAKE_SLIP_TWEAK_ENDINGS) == len(set(WAKE_SLIP_TWEAK_ENDINGS))
+    for part in (*WAKE_SLIP_TWEAK_ENDINGS, *WAKE_SLIP_TWEAK_STEMS):
+        assert part == part.lower() and " " not in part, part
 
 
 # --- #3994: охват ясного стопа (STOP_SCOPE, words.stop_scope) ------------------------------------------------------

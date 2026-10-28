@@ -95,6 +95,12 @@ class SessionSnapshot:
         """Верхний кадр этого вида или ``None``."""
         return next((f for f in reversed(self.scenes) if f.kind == kind), None)
 
+    @property
+    def music_playing(self) -> bool:
+        """Музыка звучит: играющий трек в снимке плеера или кадр диджея. Единственная проверка «играет» диалога v2:
+        срез тулов, путь пения и ворота искажённого вейка (``address.decide_in_session``, #3975) читают её отсюда."""
+        return self.top("DJ") is not None or self.music.state == "playing"
+
 
 @dataclass(frozen=True)
 class SessionChanged:

@@ -108,22 +108,33 @@ def _gate_cue(tail: Sequence[str], gate: SlipGate) -> bool:
     return any(t in gate.forms or t.startswith(gate.stems) for t in tail)
 
 
-def _gates_open(rest: str) -> bool:
-    """Открыты ли ворота за искажённым словом: первое слово остатка — из ``leads`` ворот и знак есть в
-    ближайших ``WAKE_SLIP_CUE_WINDOW`` словах после него (ё → е, как в таблицах). Единственное правило
-    для «работа/рада/роботы»: таблицы в :data:`rob_box_dialog.knowledge.WAKE_SLIP_GATES`."""
+def _gate_lead(token: str, gate: SlipGate) -> bool:
+    """Ведущее слово ворот: слово целиком из ``leads`` либо основа из ``lead_stems`` с окончанием из ``lead_endings``
+    («ускор» + «ь», «быстр» + «ее»; «ускоряются» и «быстро» - не просьба)."""
+    return token in gate.leads or any(
+        token.startswith(stem) and token[len(stem):] in gate.lead_endings for stem in gate.lead_stems)
+
+
+def _gates_open(rest: str, music_playing: bool = False) -> bool:
+    """Открыты ли ворота за искажённым словом: первое слово остатка - ведущее ворот и знак есть в ближайших
+    ``WAKE_SLIP_CUE_WINDOW`` словах после него (ё → е, как в таблицах). Ворота правки музыки (``under_music``) в счёт
+    идут, только пока музыка играет. Единственное правило для «работа/рада/роботы»: таблицы в
+    :data:`rob_box_dialog.knowledge.WAKE_SLIP_GATES`."""
     tokens = name_tokens(rest)
     if not tokens:
         return False
     tail = tokens[1:1 + WAKE_SLIP_CUE_WINDOW]
-    return any(tokens[0] in gate.leads and _gate_cue(tail, gate) for gate in WAKE_SLIP_GATES)
+    return any(_gate_lead(tokens[0], gate) and _gate_cue(tail, gate)
+               for gate in WAKE_SLIP_GATES if music_playing or not gate.under_music)
 
 
-def slipped_wake_rest(text: str, wake_words: Optional[Sequence[str]] = None) -> Optional[str]:
+def slipped_wake_rest(text: str, wake_words: Optional[Sequence[str]] = None, *,
+                      music_playing: bool = False) -> Optional[str]:
     """Первое слово фразы — искажённый STT вейк («роботу дали», «работа тишина», «рада слушай дальше», «роботы еще
-    куплет добавь», «работа как меня зовут»): остаток фразы после него, иначе ``None``. Только первый токен; тишину
-    это не снимает (остаток идёт обычным путём). Вызывать, когда :func:`has_wake_word` не нашёл настоящего вейка.
-    Вейков нет в таблице — допуска нет."""
+    куплет добавь», «работа как меня зовут», под музыкой — «роботы ускорь темп»): остаток фразы после него, иначе
+    ``None``. Только первый токен; тишину это не снимает (остаток идёт обычным путём). Вызывать, когда
+    :func:`has_wake_word` не нашёл настоящего вейка. Вейков нет в таблице — допуска нет. ``music_playing`` - играет ли
+    музыка (``SessionSnapshot.music_playing``): открывает ворота правки музыки (#3975)."""
     words = DEFAULT_WAKE_WORDS if wake_words is None else tuple(wake_words)
     if not any(t in words for t in WAKE_SLIP_TARGETS):
         return None
@@ -132,7 +143,7 @@ def slipped_wake_rest(text: str, wake_words: Optional[Sequence[str]] = None) -> 
         return None
     kind = _slip_kind(match.group(0))
     rest = (text or "")[match.end():].strip(" ,.!?;:-–—")
-    if kind == "wake" or (kind == "gated" and _gates_open(rest)):
+    if kind == "wake" or (kind == "gated" and _gates_open(rest, music_playing)):
         return rest
     return None
 

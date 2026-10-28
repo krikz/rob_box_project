@@ -42,7 +42,7 @@ def groups_for(snapshot: SessionSnapshot, text: str, carry: Sequence[str] = (),
     не видел ``get_battery_level``, и LLM отвечала «заряд мне не виден» (#3857, run 39849541397).
     """
     named = _under_music(snapshot, text, _named(text, "stems")) | set(asked_groups(asked))
-    scene = ({"music"} if _music_playing(snapshot) else set()) - named
+    scene = ({"music"} if snapshot.music_playing else set()) - named
     weak = _named(text, "weak") - named - scene
     if not named | scene | weak:
         named = {g for g in carry if g in kn.TOOL_GROUPS and g not in kn.TOOL_GROUPS_EXPLICIT}
@@ -59,11 +59,6 @@ def asked_groups(tools: Sequence[str]) -> Tuple[str, ...]:
                      if g not in kn.TOOL_GROUPS_EXPLICIT and set(group.tools) & set(tools)})
 
 
-def _music_playing(snapshot: SessionSnapshot) -> bool:
-    """Музыка звучит: играющий трек в снимке плеера или кадр диджея."""
-    return snapshot.top("DJ") is not None or snapshot.music.state == "playing"
-
-
 def _under_music(snapshot: SessionSnapshot, text: str, named: set) -> set:
     """Неоднозначное слово («ускорь темп», «жёстче», «добавь бас») под играющей музыкой - про музыку, а не про голос.
 
@@ -71,7 +66,7 @@ def _under_music(snapshot: SessionSnapshot, text: str, named: set) -> set:
     речь робота человек не назвал («говори быстрее», «читай помедленнее» остаются за голосом - ``SPEECH_OWNER_STEMS``).
     Тогда music попадает в названные группы, а voice уходит, если его открыла только скорость (``VOICE_PACE_STEMS``):
     «ускорь темп и смени голос» оставляет обе. В тишине таблица не действует - как раньше (n506, 23.10)."""
-    if not _music_playing(snapshot) or has_word(text, kn.SPEECH_OWNER_STEMS):
+    if not snapshot.music_playing or has_word(text, kn.SPEECH_OWNER_STEMS):
         return named
     if not (has_word(text, kn.MUSIC_AMBIGUOUS_STEMS) or has_form(text, kn.MUSIC_AMBIGUOUS_WORDS)):
         return named
