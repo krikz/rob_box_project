@@ -1458,17 +1458,20 @@ class OwnerText:
 
     Фраза владельца — только там, где таблица диалога по данным (:data:`TOOL_PHRASES`) об исходе молчит: исход, о
     котором она говорит сама («песня пишется» — :data:`GEN_WAIT`), звучит одной её фразой, без ``whole`` и
-    ``note`` владельца (одна реализация фразы об одном факте)."""
+    ``note`` владельца (одна реализация фразы об одном факте). ``dj_set`` - только ``note`` (#3845: «Из промта не
+    использую: темп, тональность…», «играю своё» синтез-запаса): сет говорит фраза исхода, фраза запуска владельца
+    (``source_message`` со списком стилей) в v2 не нужна."""
 
-    whole: str
-    note: str
+    whole: str = ""
+    note: str = ""
 
 
 #: Тулы, чей успех говорит фраза кода владельца из данных исхода (:class:`OwnerText`). Живой прогон 27.10 18:58 UTC
 #:: «сыграй метал на Ренардо» — заиграл брейкбит, фраза кода лежала в ``source_note``, а прозвучало только
 #: «Включаю музыку.» — тихая подмена. Тул -> поля.
 OUTCOME_OWNER_TEXT: Mapping[str, OwnerText] = MappingProxyType({
-    tool: OwnerText(whole="source_message", note="source_note") for tool in ("request_music", "generate_music")})
+    **{tool: OwnerText(whole="source_message", note="source_note") for tool in ("request_music", "generate_music")},
+    "dj_set": OwnerText(note="source_note")})
 #: Действия, чей успех - сам себе доказательство: фразы об исходе done нет (§4.1; Шифу 21.10: «включил щелчок и ещё
 #: сказал, что он заиграл, бред же»). Неудача (rejected/timeout) говорится одной фразой кода. Исключение - звукоподражание
 #: (:data:`SOUND_IMITATIONS`).
