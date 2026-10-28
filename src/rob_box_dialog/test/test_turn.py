@@ -687,15 +687,17 @@ def test_3995_bare_animation_twice_runs_it_and_code_speaks_not_silence():
     assert ports.stages[-1] == ("done", "done", f"invalid_salvaged:{kn.VIOLATION_SILENT_ANSWER}")
 
 
-def test_3995_last_iteration_never_asks_again():
-    """Бюджет итераций (``LLM_QUERY_ITERATIONS_MAX``): после двух запросов голая анимация на последней итерации не
-    повторяется — говорит код (запрос в ходе был — по его данным), а не тишина."""
+def test_3995_last_iteration_pushes_only_for_words_then_the_code_speaks():
+    """Бюджет итераций (``LLM_QUERY_ITERATIONS_MAX``): после двух запросов голая анимация на последней итерации -
+    только повторы за словами (``SPEECH_PUSHES_MAX``, #4157: решение Шифу 28.10 - дожать модель), и без слов после них
+    говорит код (запрос в ходе был — по его данным), а не тишина."""
     search = [Answer(Command(actions=(ToolCall("memory_search", {"query": q}),)), "deepseek",
                      follow=lambda data: ({"role": "tool", "content": data},)) for q in ("Борис", "Спартак")]
-    ports = Ports(answers=[*search, _bare(HAPPY)], outcomes={"memory_search": ("done", {"results": []})})
+    silent = [_bare(HAPPY)] * (1 + kn.SPEECH_PUSHES_MAX)
+    ports = Ports(answers=[*search, *silent], outcomes={"memory_search": ("done", {"results": []})})
     # вопрос о фактах идёт модели; «а ты меня помнишь» - тоже модели (решение Шифу 28.10, #3993); код - только «узнал ли»
     agg = _run(_engine(ports), "а что ты про меня помнишь")
-    assert len(ports.asked) == kn.LLM_QUERY_ITERATIONS_MAX + 1 and agg.status == "done"
+    assert len(ports.asked) == kn.LLM_QUERY_ITERATIONS_MAX + 1 + kn.SPEECH_PUSHES_MAX and agg.status == "done"
     assert [t for t, _, _ in ports.said] == [phrases.text(kn.QUERY_FALLBACK_GENERIC)]
 
 
@@ -1238,13 +1240,14 @@ def test_3997_twice_without_words_and_the_animation_failed_shows_no_command_face
 
 def test_3997_only_expression_on_the_last_iteration_after_query_says_the_data_without_the_face():
     """После запросов одна ``expression`` на последней итерации: говорит код по данным запроса (#3883), а лицо
-    команды не показывается — её действия не исполнены, и лицо идёт вместе с ними."""
+    команды не показывается — её действия не исполнены, и лицо идёт вместе с ними. Одна ``expression`` и на повторах за
+    словами (#4157) - тот же итог."""
     search = [Answer(Command(actions=(ToolCall("memory_search", {"query": q}),)), "deepseek",
                      follow=lambda data: ({"role": "tool", "content": data},)) for q in ("Борис", "Спартак")]
-    ports = Ports(answers=[*search, Answer(Command(expression=SAD), "deepseek")],
-                  outcomes={"memory_search": ("done", {"results": []})})
+    faces = [Answer(Command(expression=SAD), "deepseek")] * (1 + kn.SPEECH_PUSHES_MAX)
+    ports = Ports(answers=[*search, *faces], outcomes={"memory_search": ("done", {"results": []})})
     agg = _run(_engine(ports), "а что ты про меня помнишь")
-    assert len(ports.asked) == kn.LLM_QUERY_ITERATIONS_MAX + 1 and agg.status == "done"
+    assert len(ports.asked) == kn.LLM_QUERY_ITERATIONS_MAX + 1 + kn.SPEECH_PUSHES_MAX and agg.status == "done"
     assert [t for t, _, _ in ports.said] == [phrases.text(kn.QUERY_FALLBACK_GENERIC)] and ports.faces == []
 
 
