@@ -116,9 +116,9 @@ phrases:
      notes: "#3269 (e2e mv03): 8 вызовов set_voice, реплики сказки в content, speak_text не вызван ни разу. Реконструкция реплики по описанию шага"}
   - {id: r30, text: "Робот, смени голос на Алёну", source: issue, expected: {actions: [set_voice]},
      must_not: ["claim_without_tool", "speech:Ничего не заиграло"], notes: "#3269 mv03: смена голоса (zahar/alena/ermil)"}
-  - {id: r31, text: "Робот, добавь бит", source: issue, expected: {actions: [dj_set]},
-     must_not: ["speech_cancelled", "ignored_during_tts"],
-     notes: "#993: команда во время рэпа/песни игнорировалась (VAD гейтился на всё время TTS). A22: речь не обрывается, подложка на границе такта. Проверять во время рэпа (r28)"}
+  - {id: r31, text: "Робот, добавь бит", source: issue, expected: {actions: [perform]},
+     must_not: ["speech_cancelled", "ignored_during_tts", "tool:request_music", "tool:stop_music"],
+     notes: "#993: команда во время рэпа/песни игнорировалась (VAD гейтился на всё время TTS). A22: речь не обрывается, подложка на границе такта. Проверять во время рэпа (r28). Поправка #4085 (28.10, ревью PR #4111): посреди выступления «добавь бит» — команда выступления perform{backing, segments: []} (бит заказывает код выступления, не LLM; ADR-0150 §5.6.4). Прежняя разметка dj_set была догадкой (карточка #993 ждала #3312). request_music(intent=track) от LLM заиграл бы отдельный трек без привязки речи к тактам: с #4085 код его больше не подменяет битом выступления — поэтому tool:request_music в must_not. Живой r31 не проверялся — на утверждение Шифу вместе с набором"}
   - {id: r32, text: "Робот, хватит", source: issue, expected: {tier1: stop},
      must_not: ["llm_call", "double_speech_request", "silenced_for_10min", "silenced"],
      notes: "A16: ровно 1 SpeechRequest/STOP (сейчас 2); #3700 (Шифу 22.10): «хватит» останавливает звуки (речь, выступление, музыку, сет), режим тишины не включает — тишину даёт «замолчи/помолчи» (A9: по TTL); следующая команда принимается; марафон 29→30.09"}

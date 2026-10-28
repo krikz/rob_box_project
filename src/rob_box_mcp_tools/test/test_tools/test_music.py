@@ -19,6 +19,7 @@ from .._ros_stubs import RosStubs
 _ros = RosStubs()
 with _ros:
     from rob_box_mcp_tools.tools.music import (
+        STOP_OTHER_TRACK_TEXT,
         StopMusicTool,
         GetMusicStateTool,
         LookupMelodyTool,
@@ -91,7 +92,8 @@ class TestStopMusicTool:
         tool = StopMusicTool(music_node)
         assert tool.name == "stop_music"
         # имени паттерна больше нет: паттернов LLM не пишет (#3614); boundary — outro бита выступления (PR-7c)
-        assert [(p.name, p.required, p.enum) for p in tool.parameters] == [("boundary", False, ["now", "bar"])]
+        assert [(p.name, p.required, p.enum) for p in tool.parameters] == [("boundary", False, ["now", "bar"]),
+                                                                           ("track_id", False, None)]
 
     def test_stops_the_playing_track_through_the_owner(self, music_node):
         owner = music_node._player_owner
@@ -115,6 +117,67 @@ class TestStopMusicTool:
         node = SimpleNamespace(get_logger=lambda: SimpleNamespace(info=lambda *a, **k: None))
         result = StopMusicTool(node).execute()
         assert result.success is True and result.data == {"was_playing": False}
+
+    # -- стоп по track_id: бит выступления снимается точечно (хвост ревью PR #4111, #4085) ---------------------------
+
+    def test_track_id_stops_exactly_that_track(self, music_node):
+        owner = music_node._player_owner
+        owner.play(_program("beat-1"))
+        result = StopMusicTool(music_node).execute(track_id="beat-1")
+        assert result.success is True
+        assert result.data == {"was_playing": True, "stopped": True, "track_id": "beat-1"}
+        assert result.message == "Музыка остановлена." and not owner.is_playing()
+
+    def test_track_id_of_another_track_leaves_the_persons_music_playing(self, music_node):
+        """Трек человека встал на деку, пока выступление просило бит: стоп по id бита его не трогает."""
+        owner = music_node._player_owner
+        owner.play(_program("person-track"))
+        result = StopMusicTool(music_node).execute(track_id="our-beat")
+        assert result.success is True
+        assert result.data == {"was_playing": False, "stopped": False, "track_id": "our-beat"}
+        assert result.message == STOP_OTHER_TRACK_TEXT
+        assert owner.is_playing() and music_node.adapter.stops == 0 and music_node.calls == []
+
+    def test_track_id_cancels_a_pending_track_that_has_not_started_yet(self):
+        """Бит поставлен владельцу, но ``started`` ещё нет (``pending``): стоп по id снимает ожидающий трек."""
+
+        class _SlowAdapter(_Adapter):
+            def start(self, program, on_started):
+                return {}  # started не придёт
+
+        adapter = _SlowAdapter()
+        owner = PlayerOwner(adapter, lambda _s: None, lambda _e: None, clock=_Clock())
+        node = SimpleNamespace(_player_owner=owner,
+                               get_logger=lambda: SimpleNamespace(info=lambda *a, **k: None))
+        owner.play(_program("pending-beat"))
+        assert owner.is_playing() and owner.now_playing()["pending"] == "pending-beat"
+        result = StopMusicTool(node).execute(track_id="pending-beat")
+        assert result.data == {"was_playing": True, "stopped": True, "track_id": "pending-beat"}
+        assert not owner.is_playing()
+
+    def test_track_id_in_silence_or_without_engine_stops_nothing(self, music_node):
+        assert StopMusicTool(music_node).execute(track_id="beat-1").data["stopped"] is False
+        assert music_node.adapter.stops == 0  # в отличие от стопа без id: группу «на всякий случай» не гасим
+        node = SimpleNamespace(get_logger=lambda: SimpleNamespace(info=lambda *a, **k: None))
+        assert StopMusicTool(node).execute(track_id="beat-1").data["stopped"] is False
+
+    def test_bar_outro_is_used_only_for_the_track_of_the_backing_deck(self, music_node):
+        outros = []
+        music_node._backing_deck = SimpleNamespace(
+            playing=True, track_id="beat-1",
+            outro=lambda: (outros.append(1), {"ok": True, "was_playing": True, "track_id": "beat-1", "end_beat": 8.0})[1])
+        ours = StopMusicTool(music_node).execute(boundary="bar", track_id="beat-1")
+        assert ours.data["end_beat"] == 8.0 and outros == [1]
+        music_node._player_owner.play(_program("person-track"))
+        other = StopMusicTool(music_node).execute(boundary="bar", track_id="our-old-beat")
+        assert other.data["stopped"] is False and outros == [1] and music_node._player_owner.is_playing()
+
+    def test_without_track_id_everything_is_still_stopped(self, music_node):
+        """«Выключи музыку» от человека - прежнее поведение: гасится всё, что играет."""
+        owner = music_node._player_owner
+        owner.play(_program("person-track"))
+        assert StopMusicTool(music_node).execute().data == {"was_playing": True}
+        assert not owner.is_playing()
 
 
 @pytest.mark.unit

@@ -66,7 +66,7 @@ def test_rap_with_beat_every_line_starts_on_a_bar_and_beat_outros():
     for a, b in zip(sim.heard, sim.heard[1:]):
         # не внахлёст и не дольше такта паузы сверх хвоста владельца речи (#3700: такт в хвосте пропускается)
         assert a.end - 1e-6 <= b.start < a.end + kn.SPEECH_RELEASE_TAIL_S + BAR_S
-    assert sim.music_stops() == [MusicStop("bar", "perform_end")]  # outro после речи
+    assert sim.music_stops() == [MusicStop("bar", "perform_end", "trk1")]  # outro после речи
     last_end = max(h.end for h in sim.heard)
     stop_t = next(t for t, e in sim.music_log if isinstance(e, MusicStop))
     assert stop_t >= last_end - LATENCY_MS / 1000.0
@@ -133,14 +133,16 @@ def test_first_attempt_rejected_second_mood_plays():
 
 
 def test_backing_silent_six_seconds_then_timeout_phrase_and_late_start_is_stopped():
+    """Бит не встал за срок: читаем без него, деку вслепую не гасим (на ней мог оказаться трек человека, хвост ревью
+    PR #4111); поздний исход запроса приходит с id и снимается по нему."""
     sim = Sim(rap(), music=("silent",))
     t0 = sim.t
     sim.start()
     sim.run(kn.PERFORM_BACKING_START_S + 0.05)
-    assert MusicStop("now", "backing_timeout") in sim.music_stops()  # поздний старт снимается заранее
+    assert sim.music_stops() == []  # вслепую не снимаем
     sim.run(2.0)
     sim.backing_outcome("started", "late", {"bpm": 120, "beat_at": sim.t, "bar_beats": 4})
-    assert sim.music_stops()[-1] == MusicStop("now", "backing_late")
+    assert sim.music_stops()[-1] == MusicStop("now", "backing_late", "late")
     sim.run(300)
     assert sim.heard[0].key == "perform.no_backing.timeout"
     assert sim.heard[0].start - t0 < kn.PERFORM_BACKING_START_S + 3
@@ -161,7 +163,7 @@ def test_x3_edit_pending_replaces_not_started_segments_and_keeps_the_beat():
     assert heard[1].outcome == "finished" and heard[1].spoken_chars == len(SEGS[1])  # сегмент 2 дочитан
     assert [e.segment_no for e in sim.events("segment_replaced")] == [3, 4, 5, 6]
     assert all(h.outcome == "finished" for h in sim.heard)
-    assert sim.music_stops() == [MusicStop("bar", "perform_end")]  # подложка не прерывалась
+    assert sim.music_stops() == [MusicStop("bar", "perform_end", "trk1")]  # подложка не прерывалась
     assert all(on_bar(sim, h.start) for h in sim.heard)
 
 
@@ -295,19 +297,21 @@ def test_x5_stop_finishes_the_sentence_drops_the_rest_and_outros():
     assert heard[1].outcome == "cancelled"
     assert heard[1].spoken_chars == SEGS[1].index(".") + 1  # граница первого предложения
     assert heard[1].end - t_stop <= 3.0
-    assert sim.music_stops() == [MusicStop("bar", "perform_end")]
+    assert sim.music_stops() == [MusicStop("bar", "perform_end", "trk1")]
     (end,) = sim.events("block_end")
     assert end.reason == "stopped" and sim.block.ended
 
 
 def test_stop_before_any_line_cancels_the_pending_backing():
+    """«Хватит» до старта бита: деку вслепую не гасим (хвост ревью PR #4111) - исход запроса придёт с id и снимется
+    по нему."""
     sim = Sim(rap(), music_delay_s=3.0)
     sim.start()
     sim.run(0.5)
     sim.apply(sim.block.stop(sim.t))
-    assert sim.block.ended and sim.music_stops() == [MusicStop("now", "perform_stop")]
-    sim.run(5.0)  # подложка встала поздно — снять
-    assert sim.music_stops()[-1] == MusicStop("now", "backing_late")
+    assert sim.block.ended and sim.music_stops() == []
+    sim.run(5.0)  # подложка встала поздно — снять по id
+    assert sim.music_stops() == [MusicStop("now", "backing_late", "trk1")]
     assert sim.heard == []
 
 
@@ -317,7 +321,7 @@ def test_halt_cuts_speech_and_music_now():
     sim.run(200, stop=lambda: sim.active_no() == 2)
     seg2 = sim.block.lines.first("active")
     effects = sim.block.halt(sim.t)
-    assert Cancel(seg2.speech_id, "none") in effects and MusicStop("now", "halt") in effects
+    assert Cancel(seg2.speech_id, "none") in effects and MusicStop("now", "halt", "trk1") in effects
     assert [e.reason for e in effects if getattr(e, "kind", "") == "block_end"] == ["halt"]
     sim.apply(effects)
     sim.run(30)
@@ -357,12 +361,14 @@ def test_3994_halt_keeping_backing_cuts_speech_now_and_leaves_the_beat():
 
 
 def test_3994_keep_backing_before_the_beat_started_still_cancels_the_request():
-    """Бит ещё не встал — оставлять нечего: заказ снимается, как у простого «хватит»."""
+    """Бит ещё не встал — оставлять нечего: заказ снимается, как у простого «хватит» (по id, когда встанет)."""
     sim = Sim(rap(), music_delay_s=3.0)
     sim.start()
     sim.run(0.5)
     sim.apply(sim.block.stop(sim.t, keep_backing=True))
-    assert sim.block.ended and sim.music_stops() == [MusicStop("now", "perform_stop")]
+    assert sim.block.ended and sim.music_stops() == []
+    sim.run(5.0)
+    assert sim.music_stops() == [MusicStop("now", "backing_late", "trk1")]
 
 
 def test_someone_elses_cancel_stops_the_performance_with_outro():
@@ -373,7 +379,7 @@ def test_someone_elses_cancel_stops_the_performance_with_outro():
     sim._cancel(Cancel(sim.block.lines.first("active").speech_id))
     sim.run(30)
     assert len(sim.segments_heard()) == 2 and sim.block.end_reason == "stopped"
-    assert sim.music_stops() == [MusicStop("bar", "perform_end")]
+    assert sim.music_stops() == [MusicStop("bar", "perform_end", "trk1")]
 
 
 # --- #993: «добавь бит» во время чтения -----------------------------------------------------------------------------
@@ -391,7 +397,7 @@ def test_993_add_beat_during_reading_next_segment_on_the_bar_speech_not_cut():
     synced = [e.synced for e in sim.events("segment_started")]
     assert synced == [False, True, True, True, True, True]
     assert all(on_bar(sim, h.start) for h in heard[1:])
-    assert sim.music_stops() == [MusicStop("bar", "perform_end")]
+    assert sim.music_stops() == [MusicStop("bar", "perform_end", "trk1")]
     assert sim.block.add_backing("beat", sim.t) == []  # выступления уже нет
 
 
@@ -434,20 +440,69 @@ def test_4085_foreign_track_while_the_beat_is_requested_is_not_adopted():
     assert sim.block.backing.state == "requested" and sim.block.backing.track_id == ""
     sim.run(300)
     assert sim.block.backing.track_id == "trk1"
-    assert sim.music_stops() == [MusicStop("bar", "perform_end")]
+    assert sim.music_stops() == [MusicStop("bar", "perform_end", "trk1")]
 
 
 def test_4085_foreign_track_after_the_beat_timed_out_is_not_stopped_as_late():
-    """После отказа бита по сроку недолго ждём его поздний ``started`` (снять). Чужой трек в это окно — событие
-    плеера, не исход нашего запроса: «поздним битом» он не считается и не снимается."""
+    """После отказа бита по сроку исход запроса ещё в пути: его поздний ``started`` — наш (снять по id). Чужой трек в
+    это окно — событие плеера, не исход нашего запроса: «поздним битом» он не считается и не снимается. Хвост ревью
+    PR #4111: таймаут сам деку не гасит — трек человека, заказанный в эти секунды, он не снимал бы."""
     sim = Sim(rap(), music=("silent",))
     sim.start()
     sim.run(kn.PERFORM_BACKING_START_S + 0.05)
-    stops = list(sim.music_stops())
+    assert sim.music_stops() == []
     sim.run(1.0)
     sim.music_event("started", "person", {"bpm": 120, "beat_at": sim.t, "bar_beats": 4})
     sim.run(300)
-    assert sim.music_stops() == stops == [MusicStop("now", "backing_timeout")]
+    assert sim.music_stops() == []
+
+
+def test_4111_person_track_in_the_wait_window_survives_while_our_late_beat_is_stopped_by_id():
+    """Человек поставил трек, пока бит просили; бит не встал за срок и встал позже. Снимается ровно наш бит по id,
+    трек человека - нет (``MusicStop`` без id больше не существует)."""
+    sim = Sim(rap(), music=("silent",))
+    sim.start()
+    sim.run(2.0)
+    sim.music_event("started", "person", {"bpm": 90.0, "beat_at": sim.t, "bar_beats": 4})
+    sim.run(kn.PERFORM_BACKING_START_S)
+    assert sim.music_stops() == [] and sim.block.backing.state == "failed"
+    sim.backing_outcome("started", "our-beat", {"bpm": 120, "beat_at": sim.t, "bar_beats": 4})
+    assert sim.music_stops() == [MusicStop("now", "backing_late", "our-beat")]
+    sim.music_event("started", "person-2", {"bpm": 100, "beat_at": sim.t, "bar_beats": 4})  # ещё один чужой
+    sim.run(300)
+    assert [s.track_id for s in sim.music_stops()] == ["our-beat"]
+
+
+def test_4111_not_started_beat_with_id_is_cancelled_by_id_after_the_performance_gave_up():
+    """Отказ ``not_started`` с id: трек поставлен владельцу, но не встал и может встать позже. Выступление сдалось
+    (срок) - отмена по этому id; отказ без id (нечего отменять) ничего не снимает."""
+    sim = Sim(rap(), music=("silent",))
+    sim.start()
+    sim.run(kn.PERFORM_BACKING_START_S + 0.05)
+    sim.backing_outcome("rejected", "pending-beat", {"reason": "not_started"})
+    assert sim.music_stops() == [MusicStop("now", "backing_late", "pending-beat")]
+
+    quiet = Sim(rap(), music=("silent",))
+    quiet.start()
+    quiet.run(kn.PERFORM_BACKING_START_S + 0.05)
+    quiet.backing_outcome("rejected", None, {"reason": "error"})
+    assert quiet.music_stops() == []
+
+
+def test_4111_only_the_outcome_of_our_own_request_is_ours():
+    """Исход запроса - один раз: второй ответ тула (чужой, поздний) после того, как исход принят, не наш."""
+    sim = Sim(rap(), music=("silent",))
+    sim.start()
+    sim.run(kn.PERFORM_BACKING_START_S + 0.05)
+    sim.backing_outcome("started", "late-1", {"bpm": 120, "beat_at": sim.t, "bar_beats": 4})
+    sim.backing_outcome("started", "someone-else", {"bpm": 120, "beat_at": sim.t, "bar_beats": 4})
+    assert [s.track_id for s in sim.music_stops()] == ["late-1"]
+
+
+def test_4111_music_stop_without_a_track_id_cannot_be_built():
+    """Структура, а не договорённость (ADR-0148): снять вслепую выступление не может - у ``MusicStop`` id обязателен."""
+    with pytest.raises(TypeError):
+        MusicStop("now", "halt")  # type: ignore[call-arg]
 
 
 def test_4085_person_track_replacing_the_beat_is_not_stopped_at_the_end():

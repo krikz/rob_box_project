@@ -214,7 +214,8 @@ def test_stop_finishes_the_sentence_halt_cuts_now(loop):
     assert host2.halt()
     assert node2.cancels()[0].boundary == M.SpeechCancel.BOUNDARY_NOW
     _settle(loop)
-    assert [c.arguments for c in tools2.calls if c.name == "stop_music"] == [{"boundary": "now"}]
+    # свой бит снимается по id (хвост ревью PR #4111): на деке чужая музыка - тул её не тронет
+    assert [c.arguments for c in tools2.calls if c.name == "stop_music"] == [{"boundary": "now", "track_id": "trk1"}]
     assert host2.active_segment is None and not host2.halt()  # выступления больше нет
 
 
@@ -453,6 +454,28 @@ def test_4085_own_beat_is_outroed_at_the_end_of_the_performance(loop):
     _settle(loop)
     assert host.block.ended and host.block.end_reason == "done"
     assert [(c.name, c.arguments.get("boundary")) for c in tools.calls][1:] == [("stop_music", "bar")]
+    assert tools.calls[-1].arguments == {"boundary": "bar", "track_id": "trk1"}  # outro именно своего бита
+
+
+def test_4111_beat_that_stood_after_the_halt_is_stopped_by_its_id_not_blindly(loop):
+    """«Стой» до старта бита: деку не гасим вслепую (на ней мог оказаться трек человека). Ответ тула придёт с id и
+    снимается по нему."""
+    host, node, tools, _ = _host(loop, {"ok": False, "reason": "not_started", "track_id": "pending-beat"})
+    host.start(RAP, "t1")
+    assert host.halt()
+    _settle(loop)
+    # ответ тула: бит поставлен, но не встал (``not_started``) и может встать позже - отменяем именно его
+    assert [(c.name, c.arguments) for c in tools.calls] == [
+        ("request_music", tools.calls[0].arguments), ("stop_music", {"boundary": "now", "track_id": "pending-beat"})]
+
+
+def test_4111_rejected_beat_without_id_stops_nothing(loop):
+    """Отказ без id (``busy``: играет чужая музыка) - снимать нечего: стопа в списке вызовов нет."""
+    host, node, tools, _ = _host(loop, {"ok": False, "reason": "busy"})
+    host.start(RAP, "t1")
+    assert host.halt()
+    _settle(loop)
+    assert [c.name for c in tools.calls] == ["request_music"]
 
 
 def test_4085_foreign_started_before_the_tool_answer_is_not_the_beat(loop):

@@ -95,7 +95,9 @@ class EffectRunner:
                              boundary="as_requested" if cancel.boundary == "sentence" else "now")
 
     def _music_stop(self, stop: MusicStop) -> None:
-        self._spawn(self._tool(STOP_MUSIC, {"boundary": "bar" if stop.boundary == "bar" else "now"}))
+        """Снять НАШ бит: ``track_id`` обязателен, на деке чужая музыка - тул её не трогает (хвост ревью PR #4111)."""
+        args = {"boundary": "bar" if stop.boundary == "bar" else "now", "track_id": stop.track_id}
+        self._spawn(self._tool(STOP_MUSIC, args))
 
     def _ask(self, ask: AskReplace) -> None:
         self._asks[ask.speech_id] = ask.title
@@ -111,8 +113,8 @@ class EffectRunner:
         data = dict((result.data if result is not None else None) or {})
         if data.get("ok") and data.get("started"):
             self._feed("started", data.get("track_id"), data)
-        else:
-            self._feed("rejected", None, {"reason": str(data.get("reason") or "error")})
+        else:  # id отказа - трек поставлен, но не встал (``not_started``): блок снимет его, если выступление уже сдалось
+            self._feed("rejected", data.get("track_id") or None, {"reason": str(data.get("reason") or "error")})
 
     async def _tool(self, name: str, args: Mapping[str, Any]) -> Optional[ToolResult]:
         call = ToolCall(id=f"perform-{next(self._ids)}", name=name, arguments=dict(args))
@@ -242,8 +244,12 @@ class PerformHost:
     # -- исполнение -----------------------------------------------------------------------------------------------------
 
     def _outcome(self, kind: str, track_id: Optional[str], fields: Mapping[str, Any]) -> None:
-        """Исход запуска нашей подложки из ответа тула (``started``/``rejected``)."""
-        self._command(lambda block, now: block.on_backing(kind, track_id, now, fields))
+        """Исход запуска нашей подложки из ответа тула (``started``/``rejected``). Приходит и после конца выступления
+        («хватит»/«стой» до старта бита): поздний бит снимается по своему id (``MusicStop``), вслепую деку никто не
+        гасит, поэтому этот путь не отсекается как остальные команды (``_command``) по ``block.ended``."""
+        with self._lock:
+            if self.block is not None:
+                self._run.apply(self.block.on_backing(kind, track_id, self._clock(), fields))
 
     def _command(self, step: Callable[[PerformBlock, float], List[Any]]) -> bool:
         with self._lock:
