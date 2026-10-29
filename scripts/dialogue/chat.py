@@ -35,6 +35,8 @@ REPO_ROOT = SCRIPT_DIR.parents[1]
 sys.path.insert(0, str(REPO_ROOT / "scripts" / "dialog"))
 
 import dry_marathon as dm  # noqa: E402
+import speech_format as sf  # noqa: E402
+import speech_text as st  # noqa: E402
 import understanding_variants as uv  # noqa: E402
 from dry_stand import DryStand, FakeClock, HearResult, LiveClock, new_workdir  # noqa: E402
 from env_files import load_env_files  # noqa: E402
@@ -45,6 +47,8 @@ CONSOLE_VOICE = "console"
 SOURCE_CONSOLE, SOURCE_VOICE = "operator", "respeaker"
 DEFAULT_PROVIDERS = "deepseek"
 VARIANTS = (uv.A, uv.B)
+#: Цвета реплик героев по порядку их голосов (имена атрибутов :class:`C`: ``disable_colour`` обнуляет значения).
+ROLE_COLOURS = ("CYAN", "YELLOW", "MAGENTA", "BLUE")
 
 
 class C:
@@ -100,6 +104,16 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--variant", choices=VARIANTS, default=uv.A,
                         help="A - как на роботе; B - понимает модель: Tier-1 только безопасность, срез тулов по "
                              "состоянию без слов фразы (только стенд).")
+    parser.add_argument("--speech-text", choices=st.VARIANTS, default=st.ROBOT,
+                        help="Правила текста речи в промпте: robot - как на роботе; plain - голый текст без кавычек, "
+                             "тире прямой речи и разметки (только стенд).")
+    parser.add_argument("--voice-preview", default="", metavar="PROVIDERS",
+                        help=f"Показать под каждой репликой, что ушло бы в синтез провайдерам через запятую "
+                             f"({','.join(sf.PROVIDERS)}); пусто - не показывать.")
+    parser.add_argument("--normalizer", choices=sf.NORMALIZERS, default="none",
+                        help="Нормализатор чисел и знаков для провайдеров, которые не читают их сами (Silero).")
+    parser.add_argument("--bar-s", type=float, default=0.0,
+                        help="Длина такта подложки, с (2.0 = 120 BPM, 4/4): паузы рэпа по строкам в превью голоса.")
     parser.add_argument("--wake-word", action="store_true",
                         help="Требовать вейк («Робот, …») как на роботе; без него реплика уходит в бэклог.")
     parser.add_argument("--speaker-name", default="",
@@ -147,6 +161,9 @@ class Console:
         self.say = say
         self.turn_no = 0
         self.last: Optional[HearResult] = None
+        names = [p.strip() for p in getattr(args, "voice_preview", "").split(",") if p.strip()]
+        self.voices: List[sf.Provider] = sf.providers(
+            sf.load_tools(getattr(args, "normalizer", "none")), names) if names else []
 
     async def send(self, text: str) -> HearResult:
         """Одна реплика человека; печатает ход и возвращает его итог."""
@@ -161,8 +178,16 @@ class Console:
         return result
 
     def show(self, result: HearResult) -> None:
-        for line in result.said:
-            self.say(f"{C.GREEN}🤖 {line}{C.RESET}")
+        roles: List[str] = []  # голоса ролей в порядке появления: у каждого свой цвет
+        for line, voice in zip(result.said, result.voices or [""] * len(result.said)):
+            if voice and voice not in roles:
+                roles.append(voice)
+            colour = ROLE_COLOURS[roles.index(voice) % len(ROLE_COLOURS)] if voice else "GREEN"
+            self.say(f"{getattr(C, colour)}🤖 {sf.screen(line, voice)}{C.RESET}")
+            for provider in self.voices:
+                voiced = provider.voice(line, getattr(self.args, "bar_s", 0.0))
+                self.say(f"{C.DIM}   {voiced.provider:7} {voiced.text}\n"
+                         f"           [{sf.steps_line(voiced.steps)}]{C.RESET}")
         if not result.said:
             status = result.aggregate.status if result.aggregate is not None else "?"
             self.say(f"{C.YELLOW}… робот промолчал (ход: {status}){C.RESET}")
@@ -260,7 +285,8 @@ def build_stand(args: argparse.Namespace, workdir: Path) -> DryStand:
               f"{C.RESET}")
     try:
         stand = dm.build_real_stand(providers, workdir, args.deadline_s, variant=args.variant, memory_path=memory,
-                                    model=args.model, clock=console_clock(args))
+                                    model=args.model, clock=console_clock(args),
+                                    system_patch=st.patch(args.speech_text), role_voices=True)
     except ValueError as exc:
         raise SystemExit(str(exc)) from exc
     except RuntimeError as exc:
