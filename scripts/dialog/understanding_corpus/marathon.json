@@ -5,7 +5,7 @@
  "generator": "scripts/dialog/understanding_corpus/build_marathon.py",
  "scenarios": {
   "dir": ".github/e2e/scenarios/night",
-  "last_commit": "9254047d76d3828ddda539526a6236309fbbd891",
+  "last_commit": "6f8681c99f9abbbfe5b3c75891d456ba7d719d53",
   "sha256": {
    "night_marathon_act10_finale_memory_v1.json": "2a4b5edc31a026900c50970bded8eaf90c0b64bd89c11765c394078c9c0f5f20",
    "night_marathon_act1_wakeup_v1.json": "f7c745898dbd5e1e2c864d8f7fd679fc052d2f6c0405e9bf0c0a39db6237db6b",
@@ -17,7 +17,7 @@
    "night_marathon_act5_renardo_live_v1.json": "a7b20b2413e5c6c7bba0c47215d0a7cd95c32f5730101db0dd9eab582e546d36",
    "night_marathon_act6_dj_booth_v1.json": "37fda24f9af61d974a99891c512a93a8ca4861fd3574a123f57010d194835228",
    "night_marathon_act7_neuro_composer_v1.json": "7d895189050b7281102d17c694294bacd486f318c44912d3a3ee31bd0e16952d",
-   "night_marathon_act8_barge_in_v1.json": "4b654fa41530e005d0ee5ecd454e4de86e010b7a83b51542188429f17da27485",
+   "night_marathon_act8_barge_in_v1.json": "0f401953984af7d9cbc97c971a8dae2ddf22b573c3f0c6c0fd337b0d6d33e320",
    "night_marathon_act9_world_outside_v1.json": "857317e264ae484030364ec2c460117c441233dad45de0c054bf90677b33adf0"
   }
  },
@@ -27,7 +27,7 @@
   "acoustic_context": 42,
   "unique_phrases": 130
  },
- "corpus_sha256": "9587c98caf6d3cbb4f55388c539bd1da40af9ec4164f1f360c5499eba56b17f6",
+ "corpus_sha256": "0640ef3e6cca178fb9e972701f16b268c1f64e7df72108995c228429c134e08e",
  "acts": [
   {
    "act": "1",
@@ -3063,6 +3063,7 @@
        "must_not_say": [
         "Данные получил, а ответ у меня не сложился. Спроси ещё раз?|Не понял, как это сделать. Скажи ещё раз?|Ответ вышел слишком длинным — спроси покороче, пожалуйста.|Не вышло.|Хм… не знаю, что сказать.|Не расслышал, повтори?|Эээ… даже не знаю, что ответить.|Хм, я задумался и ничего не придумал. Повтори?|Что-то я долго думаю — повтори, пожалуйста.|так и не ответил — я перестал ждать. Повтори, пожалуйста.|не ответил — повтори, пожалуйста."
        ],
+       "no_repeat_numbers": true,
        "expected_tool_calls": []
       }
      }
@@ -3203,7 +3204,7 @@
      "step": {
       "label": "n813_silence_final",
       "voice": "anton",
-      "text": "Робот, тишина?",
+      "text": "Робот, сейчас что-нибудь играет?",
       "patterns": [],
       "acceptance": {
        "must_not_call": [
@@ -3211,10 +3212,11 @@
        ],
        "must_not_say": [
         "не получилось выполнить",
+        "молчу",
         "Данные получил, а ответ у меня не сложился. Спроси ещё раз?|Не понял, как это сделать. Скажи ещё раз?|Ответ вышел слишком длинным — спроси покороче, пожалуйста.|Не вышло.|Хм… не знаю, что сказать.|Не расслышал, повтори?|Эээ… даже не знаю, что ответить.|Хм, я задумался и ничего не придумал. Повтори?|Что-то я долго думаю — повтори, пожалуйста.|так и не ответил — я перестал ждать. Повтори, пожалуйста.|не ответил — повтори, пожалуйста."
        ],
        "expected_keywords": [
-        "тишин|тихо|ничего не играет|не играет|не звучит|музыки нет"
+        "тишин|ничего не играет|не играет|не звучит|музыки нет"
        ],
        "expected_tool_calls": []
       }

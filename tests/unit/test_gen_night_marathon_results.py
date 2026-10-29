@@ -120,10 +120,26 @@ def test_state_questions_check_the_phrase_not_a_tool():
         assert acc["expected_tool_calls"] == [], label
         assert acc.get("expected_keywords") or acc.get("must_not_say"), label
     for label in ("n501_silence_check", "n512_silence_after_stop", "n601_silence_check", "n609_silence_after_dj",
-                  "n701_silence_check", "n813_silence_final"):
+                  "n701_silence_check"):
         assert steps[label]["acceptance"]["expected_keywords"] == [gen.SILENCE_ANSWER], label
     for label in ("n503_confirm_playing", "n603_confirm_dj_playing"):
         assert steps[label]["acceptance"]["must_not_say"][0] == gen.SILENCE_CLAIM, label
+
+
+def test_n813_asks_in_words_and_does_not_accept_the_silence_command():
+    """#4196: «Робот, тишина?» без интонации -- команда «молчу»; вопрос о музыке виден словами, «молчу» красит шаг."""
+    step = _steps()["n813_silence_final"]
+    acc = step["acceptance"]
+    assert "?" in step["text"] and "играет" in step["text"].lower()
+    assert acc["expected_keywords"] == [gen.SILENCE_STATE_ANSWER]
+    assert "тихо" not in gen.SILENCE_STATE_ANSWER.split("|")
+    assert gen.SILENCE_COMMAND_ACK in acc["must_not_say"]
+
+
+def test_n807_keeps_no_repeat_numbers_and_allows_unspoken_cancel_by_harness():
+    acc = _steps()["n807_merge_addition"]["acceptance"]
+    assert acc["no_repeat_numbers"] is True
+    assert "SpeechEvent cancelled" in acc["must_not_call"]
 
 
 def test_every_music_action_step_has_a_result_marker():

@@ -368,6 +368,12 @@ SILENCE_ANSWER = "тишин|тихо|ничего не играет|не игр
 #: Issue #3165 — «Не получилось выполнить» на вопрос, где ничего не
 #: исполнялось, — ложная фраза-отказ (fallback #2949).
 FALSE_FAILURE_PHRASE = "не получилось выполнить"
+#: #4196 (n813): ответ о состоянии музыки на вопрос «играет ли что-нибудь». Без «тихо»: оно совпадало и с командой
+#: «молчу, тихо» (марафоны 3-5: «робот тишина» -> «Молчу, Саша. Тихо.» было зелёным). Команду «молчу» ловит ещё
+#: ``must_not_say`` шага (:data:`SILENCE_COMMAND_ACK`).
+SILENCE_STATE_ANSWER = "тишин|ничего не играет|не играет|не звучит|музыки нет"
+#: Ответ на команду «замолчи» вместо ответа на вопрос о музыке (#4196, n813).
+SILENCE_COMMAND_ACK = "молчу"
 #: Ложное утверждение «тихо» на вопрос, когда музыка играет (n503, n603): запрещённая фраза в РЕЧИ робота.
 SILENCE_CLAIM = "тишин|ничего не играет|не играет|не звучит|музыки нет"
 #: Ответ «играет» (n503, n603): глагол состояния или факт трека (стиль, темп, ритм) -- по снимку ``<music_state>``.
@@ -665,6 +671,7 @@ def step(
     expect: str = "",
     retry: int = 0,
     why: str = "",
+    no_repeat_numbers: bool = False,
     discovery_tools: Optional[List[str]] = None,
     barge_in: Optional[Dict[str, Any]] = None,
     silent_ok: bool = False,
@@ -695,7 +702,8 @@ def step(
     if retry and any(p.startswith(PERFORM_STARTED_MARK) for p in s["patterns"]):
         raise ValueError(f"{label}: шаг ждёт выступление ({PERFORM_STARTED_MARK}…) -- retry запрещён (#3971 R4)")
     acc = _acceptance(
-        expect_tools, discovery_tools, must_not, must_not_say, must_not_identify_as, keywords, voice_changed, why
+        expect_tools, discovery_tools, must_not, must_not_say, must_not_identify_as, keywords, voice_changed, why,
+        no_repeat_numbers,
     )
     if acc:
         s["acceptance"] = acc
@@ -750,6 +758,7 @@ def _acceptance(
     keywords: Optional[List[str]],
     voice_changed: bool,
     why: str,
+    no_repeat_numbers: bool = False,
 ) -> Dict[str, Any]:
     """Блок ``acceptance`` шага (пустой -- шаг без него). Порядок ключей -- как в JSON актов (сверяет ``--check``).
 
@@ -769,6 +778,8 @@ def _acceptance(
         ("must_not_identify_as", must_not_identify_as),
         ("expected_keywords", keywords),
         ("voice_changed", True if voice_changed else None),
+        # #4196/#4207: числа 1..20 в звучавшей речи окна -- не больше раза (счёт после правки не идёт заново).
+        ("no_repeat_numbers", True if no_repeat_numbers else None),
     )
     acc: Dict[str, Any] = {key: value for key, value in fields if value}
     if not acc:
@@ -2387,6 +2398,7 @@ act(
             silent_ok=True,
             patterns=[TURN_DONE],
             must_not=["🛑 [interrupt]", "SpeechEvent cancelled"],
+            no_repeat_numbers=True,
             why="Зонд gp12: MERGE вне песни. Добавка к ИДУЩЕЙ задаче не должна "
             "её обрывать (ADR-0150 PR-5: не стоп — речь не рвётся, interrupt.py "
             "NO_INTERRUPT; «Cancel: new STT input» здесь законен — отменяется ход LLM, "
@@ -2395,7 +2407,12 @@ act(
             "Исход -- добавка отвечает после текущей речи (APPEND) либо молча "
             "(`silent_ok`): в run 39876993047 шаг краснел `cycle_unconfirmed_after_"
             "accept` при искажённом STT («пять робот и после каждого числа…»). "
-            "Это НЕ стоп-шаг: паттерн отмены речи здесь не ставим, наоборот.",
+            "Это НЕ стоп-шаг: паттерн отмены речи здесь не ставим, наоборот. #4196 (М5, run 40801693422): "
+            "`SpeechEvent cancelled` с `spoken_chars=0` у реплики без `started` -- выброшенный пред-синтез "
+            "заменённого сегмента, не обрыв речи: `must_not` его не считает (`e2e_tool_match.drop_unspoken_cancels`); "
+            "обрыв звучащей реплики (`started` в окне или `spoken_chars>0`) по-прежнему красный. Настоящий дефект "
+            "(#4207: после правки счёт пошёл заново, 9-19 прозвучали дважды) держит `no_repeat_numbers`: числа 1..20 "
+            "в звучавшей речи окна не повторяются -- шаг красен, пока #4207 не закрыт.",
         ),
         action_step(
             "n809_music_bed",
@@ -2453,10 +2470,14 @@ act(
         ),
         step(
             "n813_silence_final",
-            "Робот, тишина?",
-            keywords=[SILENCE_ANSWER],
-            must_not_say=[FALSE_FAILURE_PHRASE],
-            why="#3971: ответ из снимка `<music_state>` (ADR-0148), get_music_state не требуем.",
+            "Робот, сейчас что-нибудь играет?",
+            keywords=[SILENCE_STATE_ANSWER],
+            must_not_say=[FALSE_FAILURE_PHRASE, SILENCE_COMMAND_ACK],
+            why="#3971: ответ из снимка `<music_state>` (ADR-0148), get_music_state не требуем. #4196 (М3-М5): "
+            "«Робот, тишина?» -- вопрос жил в интонации, STT знак не отдаёт, робот слышал «робот тишина» и отвечал "
+            "командой («Молчу, Саша.»); шаг был зелёным лишь по совпадению слова («тишина», «тихо») -- на вопрос о "
+            "музыке робот не отвечал ни в одном из трёх прогонов. Теперь вопрос виден словами («играет ли что-нибудь»), "
+            "ключи -- ответ о музыке без «тихо» (оно совпадало и с «молчу, тихо»), а ответ-команда «молчу» красит шаг.",
         ),
     ],
     [
