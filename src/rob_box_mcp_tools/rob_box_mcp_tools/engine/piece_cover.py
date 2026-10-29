@@ -18,11 +18,11 @@ import logging
 from typing import Any, Callable, List, Mapping, Optional, Sequence, Tuple
 
 from rob_box_music import knowledge as kn
-from rob_box_music.arrange.hook import theme_fit, tune_groups
+from rob_box_music.arrange.hook import tune_groups
 from rob_box_music.source import CoverWork, Route, cover_failed_text, cover_ready_text
 
-from .classic import pick_record, pick_score
-from .gen.cover import CoverResult, Sources, melody_notes
+from .classic import pick_record, rank_scores, score_songs
+from .gen.cover import RTTTL_SOURCE, CoverResult, Sources, melody_notes
 from .score_library import PlanMaterials
 
 _LOG = logging.getLogger(__name__)
@@ -31,12 +31,13 @@ _LOG = logging.getLogger(__name__)
 def cover_work(staged: Optional[Mapping[str, Any]]) -> Optional[CoverWork]:
     """Собранная пьеса (``request_music._stage_classic``) → :class:`CoverWork`; пьеса не собралась — ``None``.
     Материал кавера — мелодия, из которой собран лид моста (В14: та же мелодия у моста и у кавера, без подмены);
-    лида и хука нет — ``material`` пуст, кавер-кандидата нет."""
+    лида и хука нет — ``material`` пуст, кавер-кандидата нет. ``named`` — пьесу назвал человек (``played["named"]``,
+    ``engine.piece.named_pick``, #4015)."""
     if not staged or "program" not in staged or not staged.get("work"):
         return None
     material = str(staged.get("melody_id") or staged["work"]) if melody_notes(staged.get("track")) else ""
     return CoverWork(str(staged["work"]), material, str(staged.get("instrument") or ""),
-                     str(staged.get("title") or ""))
+                     str(staged.get("title") or ""), bool((staged.get("played") or {}).get("named")))
 
 
 #: ``{id: (запись RTTTL, название для голоса)}`` по id хуков (``tools_v2.library_records``).
@@ -53,42 +54,55 @@ def theme_pieces(profile: Any, rtttls: Mapping[str, str]) -> List[Tuple[str, ...
     return [g for _r, _i, g in sorted(zip(rank, range(len(groups)), groups))][:kn.SET_COVER_PIECES]
 
 
+def scores_line(ranked: Sequence[Tuple[str, float]], built: int, tried: int) -> str:
+    """Часть строки лога ``[cover]``: годность ВСЕХ партитур темы (лучшая первой) и сколько собрано в мелодии кавера,
+    сколько не проверено из-за ``SET_COVER_MATERIALS`` (#4012: выбор проверяем по логу)."""
+    if not ranked:
+        return "партитур нет"
+    fits = ", ".join(f"{mid} {fit:.2f}" for mid, fit in ranked)
+    return f"партитуры по годности: {fits} — в мелодиях {built}, не сложились {tried - built}, вне лимита " \
+           f"{len(ranked) - tried}"
+
+
 def _piece_cover(piece: Tuple[str, ...], found: Mapping[str, Tuple[Mapping[str, Any], str]], loaded: Any,
                  ids: Sequence[str], theme: str, seed: int) -> Tuple[Optional[Tuple[CoverWork, Sources]], str]:
-    """Мелодии кавера произведения по порядку попыток (В17): первой — партитура темы с мотивом ЭТИХ эталонов
-    (``score_song``, порог ``CLASSIC_REF_MATCH_MIN``), затем сами RTTTL его хуков (путь пробы Валькирий 13.10) —
-    другой исходник после отказа Suno. ``(произведение, мелодии)`` и строка лога."""
+    """Мелодии кавера произведения (В17, #4012): партитуры темы с мотивом ЭТИХ эталонов — по годности
+    (``classic.rank_scores``: лучшая первой, а не первая по поиску), до ``SET_COVER_MATERIALS`` сложившихся
+    (``score_song``, порог ``CLASSIC_REF_MATCH_MIN``), затем сами RTTTL его хуков (путь пробы Валькирий 13.10). Задачи
+    сета берут их по кругу (``gen_session.turn_sources``: разные источники у разных задач), остальные — запас после
+    отказа Suno (RTTTL хука - только запас, по кругу берутся партитуры). ``(произведение, мелодии)`` и строка лога с
+    годностью всех партитур."""
     title = found[piece[0]][1]
     refs = [str(found[h][0].get("rtttl") or "") for h in piece]
-    pick = pick_score(loaded, ids, theme, seed=seed, references=refs) if ids else None
-    sources: List[Tuple[str, Any]] = []
-    said = ""
-    if pick is not None and pick.found:
-        fit = theme_fit(loaded[pick.melody_id], refs) or 0.0
-        sources.append((str(pick.melody_id), pick.track))
-        said = f"«{title}» ← {pick.melody_id} {fit:.2f}"
+    ranked = rank_scores(loaded, ids, refs) if ids else []
+    built, reasons = score_songs(loaded, [mid for mid, _fit in ranked], seed=seed, references=refs,
+                                 limit=kn.SET_COVER_MATERIALS)
+    sources: List[Tuple[str, Any]] = list(built)
     for hook in piece:
         record = pick_record(found[hook][0], title, theme, seed=seed)
         if record.found:
-            sources.append((f"rtttl:{hook}", record.track))
+            sources.append((f"{RTTTL_SOURCE}{hook}", record.track))
+    scores = scores_line(ranked, len(built), len(built) + len(reasons))
     if not sources:
-        return None, f"«{title}» — не собрался ({pick.reason if pick is not None else 'партитур нет'})"
-    said = said or f"«{title}» ← {sources[0][0]}"
-    material = sources[0][0].removeprefix("rtttl:")
-    return (CoverWork(title, material, "", title), tuple(sources)), f"{said} (запас {len(sources) - 1})"
+        return None, f"«{title}» — не собрался ({'; '.join(reasons) or 'партитур нет'}; {scores})"
+    fit = dict(ranked)
+    head = f"{sources[0][0]} {fit[sources[0][0]]:.2f}" if sources[0][0] in fit else sources[0][0]
+    material = sources[0][0].removeprefix(RTTTL_SOURCE)
+    return ((CoverWork(title, material, "", title), tuple(sources)),
+            f"«{title}» ← {head} (мелодий {len(sources)}: {', '.join(s for s, _t in sources)}; {scores})")
 
 
 def theme_covers(dj: Any, theme: str, seed: int, log: Any = _LOG,
                  records: Optional[Records] = None) -> List[Tuple[CoverWork, Sources]]:
     """Произведения темы сета для каверов (ADR-0158 В14, В16): хуки поиска по словам темы (нет — хуки строки)
-    по мелодии в произведения (:func:`theme_pieces`, главная тема первой); у каждого — свой эталон и своя мелодия
-    (:func:`_piece_cover`: партитура из первых ``SET_COVER_MATERIALS`` темы, где мотив этого эталона, иначе RTTTL).
-    Эталонов нет — узнаваемость не доказать, каверов нет. ``(произведение, мелодии по порядку попыток)``; строка лога
-    ``[cover] тема …`` — произведения и источник мелодии каждого."""
+    по мелодии в произведения (:func:`theme_pieces`, главная тема первой); у каждого — свой эталон и свои мелодии
+    (:func:`_piece_cover`: ВСЕ партитуры темы по годности мотива этого эталона — лимит ``SET_COVER_MATERIALS`` режет
+    уже ранжированное, #4012, — затем RTTTL). Эталонов нет — узнаваемость не доказать, каверов нет.
+    ``(произведение, мелодии)``; строка лога ``[cover] тема …`` — произведения, их мелодии и годность партитур."""
     profile = dj.theme_profile(theme, find=dj.quick_find)
     hooks = profile.found or profile.theme_hooks
     found = {h: r for h, r in (records(hooks) if records is not None else {}).items() if r[0].get("rtttl")}
-    ids = tuple(profile.materials)[:kn.SET_COVER_MATERIALS]
+    ids = tuple(dict.fromkeys(profile.materials))
     if not found:
         log.info(f"🎼 [cover] тема «{theme}»: каверов нет — эталонов RTTTL нет (материалов {len(ids)})")
         return []
@@ -136,4 +150,4 @@ class PieceCover:
             self._speak(text)
 
 
-__all__ = ["PieceCover", "Records", "cover_work", "theme_covers", "theme_pieces"]
+__all__ = ["PieceCover", "Records", "cover_work", "scores_line", "theme_covers", "theme_pieces"]

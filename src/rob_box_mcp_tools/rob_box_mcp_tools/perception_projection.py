@@ -34,33 +34,20 @@ from __future__ import annotations
 import json
 from typing import Any, Dict, List, Tuple
 
+from rob_box_core.battery import voltage_to_percent  # noqa: F401 (реэкспорт для потребителей модуля)
+
 
 # ---------------------------------------------------------------------------
 # Батарея: вольты → проценты
 # ---------------------------------------------------------------------------
 # ``PerceptionEvent.battery_voltage`` — напряжение бортовой шины в вольтах
-# (context_aggregator_node берёт его из /dynamic_joint_states, ключ
-# ``battery/voltage``). Границы — по docs/architecture/HARDWARE.md: 10S LiPo,
-# 42 В заряжена (10 × 4.2), 30 В cutoff (10 × 3.0).
+# (context_aggregator_node берёт его из /dynamic_joint_states: joint ``battery``,
+# интерфейс ``voltage``). Кривая «вольты -> проценты» и пороги (10S Li-ion,
+# 32..42 В) живут в одном месте — ``rob_box_core.battery``; здесь только импорт.
 #
 # Важно: агрегатор пишет 0.0, когда данных о батарее ещё не было
 # (``current_sensors.get('battery', 0.0)``). Ноль вольт на 10S — не «разряжена»,
-# а «нет данных», и трактуется именно так (см. ``voltage_to_percent``).
-BATTERY_VOLTAGE_FULL: float = 42.0
-BATTERY_VOLTAGE_EMPTY: float = 30.0
-
-
-def voltage_to_percent(volts: float) -> float | None:
-    """Вольты бортовой шины → проценты 0..100.
-
-    Возвращает ``None``, если данных нет (``volts <= 0``) — это отличается от
-    «разряжена в ноль». Значения вне диапазона зажимаются в 0..100.
-    """
-    if volts is None or volts <= 0.0:
-        return None
-    span = BATTERY_VOLTAGE_FULL - BATTERY_VOLTAGE_EMPTY
-    pct = (float(volts) - BATTERY_VOLTAGE_EMPTY) / span * 100.0
-    return max(0.0, min(100.0, pct))
+# а «нет данных», и трактуется именно так (``voltage_to_percent`` -> ``None``).
 
 
 # ---------------------------------------------------------------------------

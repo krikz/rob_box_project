@@ -4,7 +4,9 @@ Joystick Control Node for Rob Box.
 
 Provides direct joystick control with voice feedback:
 - Reads ExpressLRS SBUS receiver via serial port
-- ARM channel activates motors with voice confirmation
+- ARM channel activates motors with voice confirmation (the phrase goes out as a
+  SpeechRequest through rob_box_core.speech_client, author "system" - ADR-0150
+  section 6.1; the JSON /voice/tts/request is no longer written, PR-15 part 15-0d)
 - Publishes cmd_vel_joy for robot control
 - Publishes /joystick_lock (twist_mux lock): while ARMED the lock is active,
   which blocks lower-priority velocity sources (web/voice/nav2) so the robot
@@ -20,12 +22,16 @@ import rclpy
 from rclpy.node import Node
 from sensor_msgs.msg import Joy
 from geometry_msgs.msg import Twist
-from std_msgs.msg import Bool, String
+from std_msgs.msg import Bool
+
+from rob_box_core import speech_client
+from rob_box_core.utterance import Utterance
 
 from rob_box_teleop.joystick_logic import (
-    TTS_REQUEST_TOPIC,
+    ARM_ANNOUNCE_HOLD_S,
+    ARM_ANNOUNCE_MIN_INTERVAL_S,
+    ArmAnnouncer,
     apply_deadzone,
-    build_tts_request,
     compute_axes,
     compute_buttons,
     compute_twist,
@@ -72,6 +78,9 @@ class JoystickControlNode(Node):
         self.declare_parameter("max_angular_speed", 15.0)
         self.declare_parameter("deadzone", 0.1)
         self.declare_parameter("enable_voice_feedback", True)
+        # ARM announcement debounce (issue #4003): voice only, driving stays instant.
+        self.declare_parameter("arm_announce_hold_s", ARM_ANNOUNCE_HOLD_S)
+        self.declare_parameter("arm_announce_min_interval_s", ARM_ANNOUNCE_MIN_INTERVAL_S)
 
         self.use_sbus = self.get_parameter("use_sbus").value
         self.serial_port = self.get_parameter("serial_port").value
@@ -90,11 +99,16 @@ class JoystickControlNode(Node):
         self.max_angular = self.get_parameter("max_angular_speed").value
         self.deadzone = self.get_parameter("deadzone").value
         self.enable_voice = self.get_parameter("enable_voice_feedback").value
+        self.arm_announcer = ArmAnnouncer(
+            hold_s=self.get_parameter("arm_announce_hold_s").value,
+            min_interval_s=self.get_parameter("arm_announce_min_interval_s").value,
+        )
 
         # State
         self.device_connected = False
         self.last_joy_msg: Optional[Joy] = None
         self.was_enabled = False
+        self._monotonic = time.monotonic  # injectable clock (tests)
         self.serial_conn: Optional[serial.Serial] = None
         self.sbus_channels = [SBUS_CHANNEL_CENTER] * 16  # SBUS center value (172-1811 range)
         self.sbus_packet_count = 0
@@ -108,7 +122,11 @@ class JoystickControlNode(Node):
 
         # Publishers
         self.cmd_vel_pub = self.create_publisher(Twist, "cmd_vel_joy", 10)
-        self.tts_pub = self.create_publisher(String, TTS_REQUEST_TOPIC, 10)
+        # Speech goes through the single speech client (SpeechRequest on
+        # /voice/speech/request). The publisher is created up front: the first
+        # phrase ("joystick connected") must not be lost while Zenoh is still
+        # matching a writer created at the moment of publishing.
+        speech_client.prepare(self, "request")
         self.joy_pub = self.create_publisher(Joy, "joy", 10)
         # twist_mux lock (std_msgs/Bool): True while armed blocks lower-priority
         # sources (web/voice/nav2). twist_mux is configured with timeout=0.0
@@ -303,24 +321,33 @@ class JoystickControlNode(Node):
         # ARM channel is used as enable (>1500 = armed)
         button_pressed = is_armed(msg.buttons, self.ch_arm)
 
-        # Voice feedback on state change
-        if button_pressed and not self.was_enabled:
-            self.get_logger().info("🚀 ARM channel HIGH - Ready to drive!")
-            if self.enable_voice:
-                self.speak("Моторы активированы, готов к езде")
-            self.was_enabled = True
-        elif not button_pressed and self.was_enabled:
-            self.get_logger().info("🛑 ARM channel LOW")
-            if self.enable_voice:
-                self.speak("Моторы отключены")
-            self.was_enabled = False
-            # Send ONE stop message for immediate braking, then let twist_mux timeout
-            self.publish_stop()
+        self._track_arm(button_pressed, "🚀 ARM channel HIGH - Ready to drive!", "🛑 ARM channel LOW")
 
         # Publish cmd_vel only if armed; when disarmed, don't publish
         # so twist_mux times out cmd_vel_joy and uses lower-priority sources
         if button_pressed:
             self.publish_cmd_vel_sbus(msg)
+
+    def _track_arm(self, armed: bool, log_high: str, log_low: str):
+        """Shared ARM / enable handling of ``joy_callback_sbus`` and ``joy_callback``.
+
+        Driving follows the raw value with no delay (issue #4003): the brake
+        message goes out on the very sample that turns LOW, before any speech.
+        Voice goes through :class:`ArmAnnouncer`, which swallows chatter of the
+        ARM channel and announces only a settled, changed state.
+        """
+        if armed and not self.was_enabled:
+            self.get_logger().info(log_high)
+            self.was_enabled = True
+        elif not armed and self.was_enabled:
+            self.get_logger().info(log_low)
+            self.was_enabled = False
+            # Send ONE stop message for immediate braking, then let twist_mux timeout
+            self.publish_stop()
+
+        announce = self.arm_announcer.update(armed, self._monotonic())
+        if announce is not None and self.enable_voice:
+            self.speak("Моторы активированы, готов к езде" if announce else "Моторы отключены")
 
     def publish_cmd_vel_sbus(self, joy_msg: Joy):
         """Convert SBUS joystick to velocity commands."""
@@ -362,19 +389,7 @@ class JoystickControlNode(Node):
         lock_msg.data = button_pressed
         self.lock_pub.publish(lock_msg)
 
-        # Voice feedback on state change
-        if button_pressed and not self.was_enabled:
-            self.get_logger().info("🚀 Enable button pressed - Ready to drive!")
-            if self.enable_voice:
-                self.speak("Моторы активированы, готов к езде")
-            self.was_enabled = True
-        elif not button_pressed and self.was_enabled:
-            self.get_logger().info("🛑 Enable button released")
-            if self.enable_voice:
-                self.speak("Моторы отключены")
-            self.was_enabled = False
-            # Send ONE stop message for immediate braking, then let twist_mux timeout
-            self.publish_stop()
+        self._track_arm(button_pressed, "🚀 Enable button pressed - Ready to drive!", "🛑 Enable button released")
 
         # Publish cmd_vel only if button is held; when released, don't publish
         # so twist_mux times out cmd_vel_joy and uses lower-priority sources
@@ -416,10 +431,23 @@ class JoystickControlNode(Node):
         self.cmd_vel_pub.publish(twist)
 
     def speak(self, text: str):
-        """Publish a spoken reply to tts_node (/voice/tts/request JSON contract)."""
-        msg = String()
-        msg.data = build_tts_request(text)
-        self.tts_pub.publish(msg)
+        """Say ``text`` through the robot's speakers (SpeechRequest, author "system").
+
+        ``Utterance`` builds the SSML (escaping, markup sanitiser); sink, priority
+        and emotion are its defaults (speakers, normal, neutral) - the same values
+        the old JSON payload carried. The joystick does not lead a dialog
+        session, hence the "system" author and epoch 0.
+
+        The phrase is feedback, not control: a failure to send it is logged as an
+        error and never propagates. Callers sit next to driving code (the brake
+        message on disarm follows ``speak``; the SBUS reader thread speaks right
+        after opening the port), and the old ``String`` publish could not raise.
+        """
+        try:
+            speech_client.say(self, Utterance(text=text), agent=speech_client.SYSTEM_AGENT)
+        except Exception as exc:
+            self.get_logger().error(f"❌ TTS not sent ({text!r}): {exc!r}")
+            return
         self.get_logger().info(f"🗣️  TTS: {text}")
 
 

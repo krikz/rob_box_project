@@ -1,6 +1,11 @@
 #!/usr/bin/env python3
 """TTS chunk-to-chunk latency benchmark for issue #2003 / ADR-0056.
 
+ВАЖНО (ADR-0150 PR-7c ч.4а, #3700): спекулятивный pre-generate и параметр
+``pregenerate_enabled`` удалены из tts_node. Режимов baseline/speculative больше
+нет: скрипт меряет интервал между чанками текущего пайплайна, ``--mode`` — только
+метка в отчёте. Пред-синтез выступления — ``SpeechRequest commit=false``.
+
 Контракт DoD #2 (ADR-0056 §3.7): speculative pre-generate уменьшает
 латентность между последовательными чанками TTS. Этот скрипт измеряет
 разницу «на живом» роботе в двух режимах:
@@ -33,7 +38,7 @@
 
 Что НЕ делает скрипт
 --------------------
-* Не публикует в ``/voice/stt/result`` — это делает существующий
+* Не публикует в ``/voice/stt/utterance`` — это делает существующий
   ``scripts/voice_bench/speaker.py`` через rclpy. Здесь мы только
   *читаем* результат (двухпоточная архитектура).
 * Не дёргает LLM/инструменты — намеренно берётся та реплика, у
@@ -64,7 +69,7 @@ try:
     import rclpy
     from audio_common_msgs.msg import AudioData  # type: ignore
     from rclpy.qos import HistoryPolicy, QoSProfile, ReliabilityPolicy
-    from std_msgs.msg import String
+    from rob_box_dialog_msgs.msg import Utterance
 except ImportError as exc:  # noqa: BLE001
     sys.exit(
         f"❌ требует ROS2 окружения (rclpy + audio_common_msgs): {exc!r}\n"
@@ -77,7 +82,7 @@ except ImportError as exc:  # noqa: BLE001
 DEFAULT_AUDIO_TOPIC = "/voice/audio/speech"
 
 #: Топик, в который speaker пишет «распознанную речь» от лица STT.
-DEFAULT_STT_TOPIC = "/voice/stt/result"
+DEFAULT_STT_TOPIC = "/voice/stt/utterance"
 
 
 class ChunkLatencyRecorder:
@@ -123,7 +128,7 @@ class ChunkLatencyRecorder:
 
 
 class PhraseSpeaker:
-    """Публикует реплику в ``/voice/stt/result`` от лица STT.
+    """Публикует реплику в ``/voice/stt/utterance`` от лица STT.
 
     Аналог speaker из ``scripts/voice_bench/run_bench.py``,
     но в режиме «один раз на реплику» — без DJ-логики.
@@ -132,7 +137,7 @@ class PhraseSpeaker:
     def __init__(self, node: "rclpy.node.Node", stt_topic: str) -> None:
         self._node = node
         self.pub = node.create_publisher(
-            String,
+            Utterance,
             stt_topic,
             QoSProfile(
                 reliability=ReliabilityPolicy.RELIABLE,
@@ -150,7 +155,7 @@ class PhraseSpeaker:
         return False
 
     def say(self, text: str) -> None:
-        self.pub.publish(String(data=text))
+        self.pub.publish(Utterance(text=text, source=Utterance.SOURCE_RESPEAKER))
         for _ in range(6):
             rclpy.spin_once(self._node, timeout_sec=0.1)
 
@@ -229,10 +234,8 @@ def main(argv: list[str] | None = None) -> int:
                     help="пауза между репликами, сек")
     ap.add_argument(
         "--mode", default="speculative",
-        help=("метка в JSON-отчёте: speculative|baseline. "
-              "Переключение режима делается через "
-              "`ros2 param set /tts_node pregenerate_enabled {true|false}` "
-              "МЕЖДУ запусками скрипта. Сам скрипт не дёргает параметр."),
+        help=("метка в JSON-отчёте (произвольная). Параметра "
+              "pregenerate_enabled больше нет (ADR-0150 PR-7c ч.4а)."),
     )
     ap.add_argument("--stt-topic", default=DEFAULT_STT_TOPIC)
     ap.add_argument("--audio-topic", default=DEFAULT_AUDIO_TOPIC)

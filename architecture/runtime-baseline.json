@@ -1,14 +1,10 @@
 {
   "schema_version": 1,
   "source": "L: Architecture Audit run 36422274238 (2026-09-28, Main Pi nav2 container), re-parsed from raw ros2 topic info",
-  "note": "Known runtime findings. New ones are marked in runtime-findings.md; remove a key once it is fixed. Tracked in #3104-#3108.",
+  "note": "Known runtime findings. New ones are marked in runtime-findings.md; remove a key once it is fixed. Tracked in #3104-#3108. multiple_writers несут поле debt (PR, снимающий долг; гард scripts/lint/ownership_check.py). tools/architecture_runtime_findings.py --write-baseline пересобирает файл БЕЗ debt - после перезаписи верни поля. /voice/stt/result убран в PR-2 (#3687): топик заменён Utterance.",
   "known": [
     {
       "key": "dead_input|/avatar/tts/control|",
-      "scope": "repo"
-    },
-    {
-      "key": "dead_input|/battery_state|",
       "scope": "repo"
     },
     {
@@ -140,7 +136,7 @@
       "scope": "repo"
     },
     {
-      "key": "dead_output|/harness/task_events|",
+      "key": "dead_output|/dialog/plan_event|",
       "scope": "repo"
     },
     {
@@ -425,71 +421,73 @@
     },
     {
       "key": "multiple_writers|/avatar/command|",
-      "scope": "repo"
+      "scope": "repo",
+      "debt": "принят, не снимается: операторские команды режима остаются у супервизора (ADR-0150 §9.2); PR-12a (#3706) убирает только писателя-телеграм из диалога"
     },
     {
       "key": "multiple_writers|/avatar/preview_voice/audio|",
-      "scope": "repo"
+      "scope": "repo",
+      "debt": "вне эпика #3683: превью голоса ТАРС (ADR-0150 PR не назначает), отдельной карточки нет"
     },
     {
       "key": "multiple_writers|/avatar/preview_voice/error|",
-      "scope": "repo"
+      "scope": "repo",
+      "debt": "вне эпика #3683: превью голоса ТАРС (ADR-0150 PR не назначает), отдельной карточки нет"
     },
     {
       "key": "multiple_writers|/avatar/preview_voice/result|",
-      "scope": "repo"
+      "scope": "repo",
+      "debt": "вне эпика #3683: превью голоса ТАРС (ADR-0150 PR не назначает), отдельной карточки нет"
     },
     {
       "key": "multiple_writers|/avatar/tars/panel_request|",
-      "scope": "repo"
+      "scope": "repo",
+      "debt": "вне эпика #3683: панель ТАРС, отдельной карточки нет"
     },
     {
       "key": "multiple_writers|/vision/hailo/events|",
-      "scope": "repo"
+      "scope": "repo",
+      "debt": "вне эпика #3683: зрение (ADR-0130), отдельной карточки нет"
     },
     {
       "key": "multiple_writers|/voice/dialogue/response|",
-      "scope": "repo"
+      "scope": "repo",
+      "debt": "PR-3 (#3688) оставляет одного писателя речи; писатель-телеграм уходит в PR-12a (#3706)"
     },
     {
       "key": "multiple_writers|/voice/dj_mode|",
-      "scope": "repo"
+      "scope": "repo",
+      "debt": "ADR-0150 §2.3: писатель диалога удаляется вместе с DJState (кадр DJ); PR в §11.1 не назначен, номер уточнит координатор эпика #3683"
     },
     {
       "key": "multiple_writers|/voice/generated_music/state|",
-      "scope": "repo"
+      "scope": "repo",
+      "debt": "вне эпика #3683: генерация музыки (ADR-0158), отдельной карточки нет"
     },
     {
       "key": "multiple_writers|/voice/sound/stop|",
-      "scope": "repo"
+      "scope": "repo",
+      "debt": "PR-12a (#3706): телеграм перестаёт писать /voice/sound/stop (ADR-0150 §9.2)"
     },
     {
       "key": "multiple_writers|/voice/sound/trigger|",
-      "scope": "repo"
-    },
-    {
-      "key": "multiple_writers|/voice/speaker/register|",
-      "scope": "repo"
-    },
-    {
-      "key": "multiple_writers|/voice/stt/result|",
-      "scope": "repo"
-    },
-    {
-      "key": "multiple_writers|/voice/tts/batch_complete|",
-      "scope": "repo"
+      "scope": "repo",
+      "debt": "PR-3b (#3690): stt_node («boop») и dialogue_node (thinking, приветствие) переведены на ExpressionRequest.earcon; остаются play_sound (mcp_server) и health_monitor (Main Pi, звук статуса здоровья) - второго писателя снимет перевод health_monitor на earcon (в образе perception нет rob_box_core), номер PR уточнит координатор"
     },
     {
       "key": "multiple_writers|/voice/tts/control|",
-      "scope": "repo"
+      "scope": "repo",
+      "debt": "PR-3 (#3688) и PR-5 (#3694): STOP заменён SpeechCancel и /dialog/interrupt_request"
     },
     {
       "key": "multiple_writers|/voice/tts/request|",
-      "scope": "repo"
+      "scope": "repo",
+      "debt": "PR-3 (#3688): один клиент речи для всех писателей, topic удаляется"
     },
     {
       "key": "multiple_writers|/cmd_vel|",
-      "scope": "external"
+      "scope": "external",
+      "debt": "внешний долг (twist_mux/джойстик/Nav2 пишут по замыслу): вне эпика #3683"
     },
     {
       "key": "duplicate_publishers|/panel_image|/voice_animation_player",

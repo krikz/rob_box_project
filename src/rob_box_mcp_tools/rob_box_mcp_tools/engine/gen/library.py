@@ -35,12 +35,14 @@ import json
 import os
 import sqlite3
 import threading
+import time
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 from .keys import sha256_bytes, sha256_file
+from .last_generated import LastGenerated
 from .ledger import LEDGER_SQL, GenLedger
 from .meta import TrackMeta, row_to_dict
 
@@ -156,7 +158,7 @@ class GeneratedMusicLibrary:
                   По умолчанию ``$MUSIC_LIBRARY_PATH`` или ``/data/music_library``.
     """
 
-    def __init__(self, root_dir: Optional[str] = None) -> None:
+    def __init__(self, root_dir: Optional[str] = None, clock: Callable[[], float] = time.monotonic) -> None:
         self._root = Path(root_dir or _DEFAULT_ROOT)
         self._root.mkdir(parents=True, exist_ok=True)
 
@@ -170,6 +172,8 @@ class GeneratedMusicLibrary:
         self.ledger = GenLedger(self._conn, self._lock)
         #: Правка метаданных, оценка «нравится / не нравится», «что играло последним» (ADR-0158 PR-9).
         self.meta = TrackMeta(self._conn, self._lock, self._root)
+        #: Последний сочинённый трек (#4216): «эта песня» читает отсюда.
+        self.generated = LastGenerated(self.get_track_info, clock)
         self._migrate()
 
     # ── Migration ─────────────────────────────────────────────────────────

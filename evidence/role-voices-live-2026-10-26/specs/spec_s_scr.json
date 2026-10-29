@@ -1,0 +1,162 @@
+[
+{
+"id": "s-eugene_p01",
+"provider": "silero",
+"voice": "eugene",
+"pitch": 0,
+"speed": 1.0,
+"text": "Робот, который сейчас час, и сколько осталось до утра?"
+},
+{
+"id": "s-eugene_p02",
+"provider": "silero",
+"voice": "eugene",
+"pitch": 0,
+"speed": 1.0,
+"text": "Робот, сколько у тебя осталось заряда, до утра дотянешь?"
+},
+{
+"id": "s-eugene_p03",
+"provider": "silero",
+"voice": "eugene",
+"pitch": 0,
+"speed": 1.0,
+"text": "Робот, доложи статус: всё ли у тебя работает, ничего не отвалилось?"
+},
+{
+"id": "s-eugene_p04",
+"provider": "silero",
+"voice": "eugene",
+"pitch": 0,
+"speed": 1.0,
+"text": "Робот, где ты сейчас находишься?"
+},
+{
+"id": "s-aidar_p01",
+"provider": "silero",
+"voice": "aidar",
+"pitch": 0,
+"speed": 1.0,
+"text": "Робот, который сейчас час, и сколько осталось до утра?"
+},
+{
+"id": "s-aidar_p02",
+"provider": "silero",
+"voice": "aidar",
+"pitch": 0,
+"speed": 1.0,
+"text": "Робот, сколько у тебя осталось заряда, до утра дотянешь?"
+},
+{
+"id": "s-aidar_p03",
+"provider": "silero",
+"voice": "aidar",
+"pitch": 0,
+"speed": 1.0,
+"text": "Робот, доложи статус: всё ли у тебя работает, ничего не отвалилось?"
+},
+{
+"id": "s-aidar_p04",
+"provider": "silero",
+"voice": "aidar",
+"pitch": 0,
+"speed": 1.0,
+"text": "Робот, где ты сейчас находишься?"
+},
+{
+"id": "s-kseniya_p01",
+"provider": "silero",
+"voice": "kseniya",
+"pitch": 0,
+"speed": 1.0,
+"text": "Робот, который сейчас час, и сколько осталось до утра?"
+},
+{
+"id": "s-kseniya_p02",
+"provider": "silero",
+"voice": "kseniya",
+"pitch": 0,
+"speed": 1.0,
+"text": "Робот, сколько у тебя осталось заряда, до утра дотянешь?"
+},
+{
+"id": "s-kseniya_p03",
+"provider": "silero",
+"voice": "kseniya",
+"pitch": 0,
+"speed": 1.0,
+"text": "Робот, доложи статус: всё ли у тебя работает, ничего не отвалилось?"
+},
+{
+"id": "s-kseniya_p04",
+"provider": "silero",
+"voice": "kseniya",
+"pitch": 0,
+"speed": 1.0,
+"text": "Робот, где ты сейчас находишься?"
+},
+{
+"id": "s-xenia_p01",
+"provider": "silero",
+"voice": "xenia",
+"pitch": 0,
+"speed": 1.0,
+"text": "Робот, который сейчас час, и сколько осталось до утра?"
+},
+{
+"id": "s-xenia_p02",
+"provider": "silero",
+"voice": "xenia",
+"pitch": 0,
+"speed": 1.0,
+"text": "Робот, сколько у тебя осталось заряда, до утра дотянешь?"
+},
+{
+"id": "s-xenia_p03",
+"provider": "silero",
+"voice": "xenia",
+"pitch": 0,
+"speed": 1.0,
+"text": "Робот, доложи статус: всё ли у тебя работает, ничего не отвалилось?"
+},
+{
+"id": "s-xenia_p04",
+"provider": "silero",
+"voice": "xenia",
+"pitch": 0,
+"speed": 1.0,
+"text": "Робот, где ты сейчас находишься?"
+},
+{
+"id": "s-baya_p01",
+"provider": "silero",
+"voice": "baya",
+"pitch": 0,
+"speed": 1.0,
+"text": "Робот, который сейчас час, и сколько осталось до утра?"
+},
+{
+"id": "s-baya_p02",
+"provider": "silero",
+"voice": "baya",
+"pitch": 0,
+"speed": 1.0,
+"text": "Робот, сколько у тебя осталось заряда, до утра дотянешь?"
+},
+{
+"id": "s-baya_p03",
+"provider": "silero",
+"voice": "baya",
+"pitch": 0,
+"speed": 1.0,
+"text": "Робот, доложи статус: всё ли у тебя работает, ничего не отвалилось?"
+},
+{
+"id": "s-baya_p04",
+"provider": "silero",
+"voice": "baya",
+"pitch": 0,
+"speed": 1.0,
+"text": "Робот, где ты сейчас находишься?"
+}
+]

@@ -5,9 +5,12 @@ from pathlib import Path
 import numpy as np
 from PIL import Image, ImageDraw
 
-import rear as R
-import states as S
-from face import FPS, Frame
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / 'src' / 'rob_box_animations'))
+
+from rob_box_animations.face import rear as R  # noqa: E402
+from rob_box_animations.face import states as S  # noqa: E402
+from rob_box_animations.face.face import FPS, Frame  # noqa: E402
+from rob_box_animations.face.scene import clip  # noqa: E402
 
 OUT = Path(sys.argv[1]) if len(sys.argv) > 1 else Path('review')
 OUT.mkdir(exist_ok=True, parents=True)
@@ -78,7 +81,7 @@ def burst(name, frames, start, count, cols=6):
 
 
 if __name__ == '__main__':
-    which = sys.argv[2:] or list(S.CLIPS)
+    which = sys.argv[2:] or list(S.SCENES)
     for name in which:
         if name.startswith('theme:'):
             th = name.split(':', 1)[1]
@@ -91,10 +94,10 @@ if __name__ == '__main__':
             sheet(name.replace(':', '_'), fr)
             continue
         if name.startswith('burst:'):
-            _, clip, s, c = name.split(':')
-            fr = S.CLIPS[clip][0]()
-            burst(f'burst_{clip}_{s}', fr, int(s), int(c))
+            _, name_, s, c = name.split(':')
+            fr = clip(S.SCENES[name_])
+            burst(f'burst_{name_}_{s}', fr, int(s), int(c))
             continue
-        fr = S.CLIPS[name][0]()
+        fr = clip(S.SCENES[name])
         sheet(name, fr)
     print('ok')

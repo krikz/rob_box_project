@@ -77,46 +77,44 @@ _registry_set() {  # $1=node $2=param $3=value
     mv "$tmp" "$REGISTRY"
 }
 
-# robot_ros() — стаб вместо реального ssh+docker-exec+ros2. Разбирает те же
-# команды, что реальный apply_node_params/restore_node_params шлют:
+# robot_ros() — стаб вместо реального ssh+docker-exec+ros2. Строку команды
+# разбирает тот же eval, что и shell робота (реальный robot_ros отдаёт её eval'у
+# в контейнере), а ``ros2`` — фейк поверх реестра. Так покрыты и одиночные
+# команды apply_node_params, и пачка «echo '@узел параметр'; ros2 param get …; …»
+# одного чтения restore_node_params/remember_node_params (#4027):
 #   ros2 param get '<node>' '<param>' --no-daemon
 #   ros2 param set '<node>' '<param>' '<value>' --no-daemon
-robot_ros() {
-    local cmd="$1"
-    case "$cmd" in
-        "ros2 param get "*)
-            local rest node param val
-            rest="${cmd#ros2 param get \'}"
-            node="${rest%%\'*}"
-            rest="${rest#*\' \'}"
-            param="${rest%%\'*}"
-            if val="$(_registry_get "$node" "$param")"; then
+ROBOT_ROS_CALLS="$WORKDIR/robot_ros_calls"
+: > "$ROBOT_ROS_CALLS"
+ros2() {
+    [ "${1:-}" = "param" ] || return 1
+    local val
+    case "${2:-}" in
+        get)
+            if val="$(_registry_get "$3" "$4")"; then
                 printf "  Double value is: %s\n" "$val"
             else
                 printf "Parameter not set.\n"
                 return 1
             fi
             ;;
-        "ros2 param set "*)
-            local rest node param val
-            rest="${cmd#ros2 param set \'}"
-            node="${rest%%\'*}"
-            rest="${rest#*\' \'}"
-            param="${rest%%\'*}"
-            rest="${rest#*\' \'}"
-            val="${rest%%\'*}"
+        set)
             if [ "$REGISTRY_REJECT_SET" = "1" ]; then
                 # Симулирует parameters_callback, который отклонил значение
                 # (issue #2809: узел НЕ перехватывает этот параметр, либо
                 # валидация не прошла) — регистр остаётся со старым значением.
                 return 0
             fi
-            _registry_set "$node" "$param" "$val"
+            _registry_set "$3" "$4" "$5"
             ;;
         *)
             return 1
             ;;
     esac
+}
+robot_ros() {
+    printf '%s\n' "$1" >> "$ROBOT_ROS_CALLS"
+    eval "$1"
 }
 
 log() { :; }  # тихий stub — не засоряет вывод теста
@@ -221,6 +219,50 @@ if [ "$(_registry_get "/speaker_id_node" "some_uncaptured_param")" = "0.80" ]; t
     ok "реестр остался на исходном значении после провала (0.80, не 0.99)"
 else
     bad "реестр изменился, хотя apply_node_params должен был провалиться"
+fi
+
+# =============================================================================
+# CASE 4 (#4027, ревью #4034): скорость/тон /tts_node — тем же механизмом.
+# remember_node_params запоминает значения до акта ОДНИМ чтением в тот же файл;
+# restore_node_params читает всё одним вызовом, пишет только изменённое (тоже
+# одним вызовом) и проверяет чтением.
+# =============================================================================
+: > "$REGISTRY"
+_registry_set "/tts_node" "minimax_speed" "1.0"
+_registry_set "/tts_node" "yandex_speed" "1.0"
+_registry_set "/tts_node" "pitch_shift" "1.0"
+REGISTRY_REJECT_SET=0
+E2E_NODE_PARAM_ORIGINALS_FILE="$WORKDIR/originals_case4.tsv"
+: > "$E2E_NODE_PARAM_ORIGINALS_FILE"
+: > "$ROBOT_ROS_CALLS"
+remember_node_params /tts_node minimax_speed yandex_speed pitch_shift
+if [ "$(wc -l < "$ROBOT_ROS_CALLS")" -eq 1 ] && [ "$(grep -c . "$E2E_NODE_PARAM_ORIGINALS_FILE")" -eq 3 ]; then
+    ok "remember_node_params: три параметра одним чтением, все три в файле оригиналов"
+else
+    bad "remember_node_params: вызовов $(wc -l < "$ROBOT_ROS_CALLS"), строк в файле $(grep -c . "$E2E_NODE_PARAM_ORIGINALS_FILE")"
+fi
+: > "$ROBOT_ROS_CALLS"
+restore_node_params
+if [ "$(wc -l < "$ROBOT_ROS_CALLS")" -eq 1 ] && ! grep -q "param set" "$ROBOT_ROS_CALLS"; then
+    ok "restore_node_params: за акт ничего не менялось — одно чтение, ни одной записи"
+else
+    bad "restore_node_params без изменений: $(cat "$ROBOT_ROS_CALLS")"
+fi
+_registry_set "/tts_node" "yandex_speed" "1.2"   # n410 «тараторь»
+_registry_set "/tts_node" "pitch_shift" "0.8"    # n411 «басом»
+: > "$ROBOT_ROS_CALLS"
+restore_node_params
+if [ "$(_registry_get /tts_node yandex_speed)" = "1.0" ] && [ "$(_registry_get /tts_node pitch_shift)" = "1.0" ] \
+    && [ "$(_registry_get /tts_node minimax_speed)" = "1.0" ]; then
+    ok "restore_node_params вернул yandex_speed и pitch_shift к значениям до акта"
+else
+    bad "restore_node_params не вернул скорость/тон: $(cat "$REGISTRY")"
+fi
+if [ "$(wc -l < "$ROBOT_ROS_CALLS")" -eq 3 ] && [ "$(grep -o "param set" "$ROBOT_ROS_CALLS" | wc -l)" -eq 2 ] \
+    && ! grep -q "set '/tts_node' 'minimax_speed'" "$ROBOT_ROS_CALLS"; then
+    ok "restore_node_params: чтение + одна пачка записи (2 изменённых) + проверка чтением; minimax_speed не тронут"
+else
+    bad "restore_node_params с изменениями: $(cat "$ROBOT_ROS_CALLS")"
 fi
 
 printf '\n%d passed, %d failed\n' "$PASS" "$FAIL"

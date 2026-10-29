@@ -37,6 +37,9 @@ test_dialogue_retry_flag_wiring.py — статический детектор N
 а не NameError. Тест ловит только то, что реально падает.
 
 Не требует ROS2 и не импортирует ноду — чистый статический анализ.
+
+PR-15 (#3711, часть 15p): нода v1 удалена вместе с отдельной проверкой её файла;
+контракт держит проверка всего пакета (в том числе ``dialog_node.py`` v2).
 """
 
 import ast
@@ -48,7 +51,6 @@ import pytest
 
 
 _VOICE_PKG = Path(__file__).resolve().parents[3] / "rob_box_voice"
-DIALOGUE_NODE = _VOICE_PKG / "dialogue_node.py"
 
 #: Модульные dunder'ы, которые интерпретатор кладёт в globals сам.
 MODULE_DUNDERS = frozenset({
@@ -141,15 +143,6 @@ def _voice_sources() -> list:
     )
 
 
-def test_dialogue_node_has_no_unbound_names() -> None:
-    """``dialogue_node.py`` — оба инцидента 30.08 были здесь."""
-    found = unbound_global_reads(DIALOGUE_NODE)
-    assert not found, (
-        "имена читаются, но нигде не связаны — NameError в рантайме:\n"
-        + "\n".join(f"    {scope} -> {name}" for scope, name in found)
-    )
-
-
 @pytest.mark.parametrize(
     "source", _voice_sources(), ids=lambda p: p.name,
 )
@@ -159,166 +152,4 @@ def test_voice_package_has_no_unbound_names(source: Path) -> None:
     assert not found, (
         f"{source.name}: имена читаются, но нигде не связаны:\n"
         + "\n".join(f"    {scope} -> {name}" for scope, name in found)
-    )
-
-
-# ---------------------------------------------------------------------------
-# Водопровод retry-флагов — прицельная проверка поверх общей
-# ---------------------------------------------------------------------------
-
-
-def _methods() -> dict:
-    tree = ast.parse(DIALOGUE_NODE.read_text(encoding="utf-8-sig"))
-    cls = next(
-        node for node in tree.body
-        if isinstance(node, ast.ClassDef) and node.name == "DialogueNode"
-    )
-    return {
-        fn.name: fn for fn in cls.body
-        if isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef))
-    }
-
-
-def _params(fn) -> set:
-    a = fn.args
-    return {arg.arg for arg in a.posonlyargs + a.args + a.kwonlyargs}
-
-
-def _retry_flags(names) -> set:
-    """Флаги вида ``is_*_retry`` — те, что заводит каждый новый guard."""
-    return {n for n in names if n.startswith("is_") and n.endswith("_retry")}
-
-
-def test_every_retry_flag_is_forwarded_to_run_turn() -> None:
-    """``_dispatch_turn`` обязан пробросить в ``_run_turn`` все retry-флаги.
-
-    Флаг, объявленный в обеих сигнатурах, но не переданный в вызове, тихо
-    остаётся дефолтным — одноразовый бюджет ретрая сбрасывается на самом
-    ретрае, и guard уходит в бесконечный пинг-понг с LLM. NameError'а тут
-    нет, поэтому общая проверка выше такое не поймает.
-    """
-    methods = _methods()
-    dispatch, run_turn = methods["_dispatch_turn"], methods["_run_turn"]
-
-    call = next(
-        node for node in ast.walk(dispatch)
-        if isinstance(node, ast.Call)
-        and isinstance(node.func, ast.Attribute)
-        and node.func.attr == "_run_turn"
-    )
-    forwarded = {kw.arg for kw in call.keywords}
-    expected = _retry_flags(_params(run_turn))
-
-    assert expected, "в _run_turn не осталось ни одного retry-флага — тест устарел"
-    missing = sorted(expected - forwarded)
-    assert not missing, (
-        f"_dispatch_turn не пробрасывает {missing} в _run_turn — "
-        f"флаг всегда останется дефолтным"
-    )
-
-
-def test_known_retry_flags_are_all_present() -> None:
-    """Smoke: список флагов не должен молча сжаться.
-
-    ``is_code_retry`` (Bug C′, Renardo-код в реплике) удалён вместе с
-    гуардом в ADR-0149 PR-13a; остальные guard'ы флаги имеют.
-    """
-    params = _params(_methods()["_run_turn"])
-    for flag in ("is_babble_retry", "is_action_claim_retry"):
-        assert flag in params, f"{flag} исчез из _run_turn"
-
-
-def test_guard_call_sites_live_in_handle_result() -> None:
-    """Каждый ``_check_*_and_retry`` вызывается из ``_handle_result``.
-
-    Инцидент №2: блок вызова Bug C′ вставили в ``__init__`` — там нет ни
-    ``spoken``, ни ``tools_called``, и нода не поднялась. Проверка
-    прицельная: NameError общая проверка уже поймает, а вот вызов guard'а
-    из, скажем, ``_on_stt`` был бы синтаксически валиден и молча неверен.
-    """
-    methods = _methods()
-    handle_result = methods["_handle_result"]
-    # Issue #2760: guard может быть не вызван по имени, а положен в список
-    # и вызван в цикле (``for _pre_speech_guard in (self._check_a, …)``) —
-    # так два ранних guard'а не добавляют ветвлений в и без того тяжёлый
-    # ``_handle_result`` (cc_budget). Для инцидента №2 это ничего не
-    # ослабляет: проверка по-прежнему требует, чтобы имя guard'а
-    # упоминалось ИМЕННО внутри ``_handle_result``, а не в ``__init__``
-    # или ``_on_stt``. Поэтому собираем любые ``self.<guard>`` — и вызовы,
-    # и ссылки.
-    called_in_handle_result = {
-        node.attr
-        for node in ast.walk(handle_result)
-        if isinstance(node, ast.Attribute)
-    }
-    guards = {
-        name for name in methods
-        if name.startswith("_check_") and name.endswith("_and_retry")
-    }
-    assert guards, "guard-методы исчезли — тест устарел"
-    missing = sorted(guards - called_in_handle_result)
-    assert not missing, (
-        f"guard-методы {missing} не вызываются из _handle_result — "
-        f"проверь, куда попал блок вызова"
-    )
-
-def test_every_guard_marks_its_retry_as_dispatched() -> None:
-    """Каждый ``_check_*_and_retry`` обязан звать ``_mark_retry_dispatched``.
-
-    🔴 e2e 33251879328, шаги tc12_delete_track и tc16_delete_waypoint:
-    гуард отправлял ретрай, родительский ход тут же слал ``DIALOGUE_END``,
-    DSM падал в IDLE — и ``process_input`` ретрая коротил на закрытом
-    диалоге, возвращая пустоту за 1 мс без единого HTTP-запроса::
-
-        15:09:31.712  calling process_input: '[CRITICAL] Ты ответил ...'
-        15:09:31.713  process_input returned: spoken='' tools=[]
-        15:09:31.715  Empty assistant response (LLM вернул пустоту)
-
-    Юзер слышал «Принял.», e2e ставил llm_error. Условие отсрочки
-    ``DIALOGUE_END`` перечисляло гуарды поимённо, и оба новых в него не
-    попали. Теперь флаг общий — тест следит, чтобы его ставили все.
-    """
-    methods = _methods()
-    guards = {
-        name for name in methods
-        if name.startswith("_check_") and name.endswith("_and_retry")
-    }
-    assert guards, "guard-методы исчезли — тест устарел"
-
-    missing = []
-    for name in sorted(guards):
-        called = {
-            node.func.attr
-            for node in ast.walk(methods[name])
-            if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
-        }
-        if "_mark_retry_dispatched" not in called:
-            missing.append(name)
-    assert not missing, (
-        f"{missing} отправляют ретрай, не пометив его — "
-        f"DIALOGUE_END закроет диалог и ретрай вернётся пустым"
-    )
-
-
-def test_dialogue_end_defers_on_the_shared_flag() -> None:
-    """Отсрочка ``DIALOGUE_END`` смотрит на общий флаг, а не на имена гуардов.
-
-    Если условие снова начнёт перечислять ``_babble_retry_used`` и ему
-    подобные, следующий гуард опять окажется забыт.
-    """
-    run_turn = _methods()["_run_turn"]
-    reads = {
-        node.attr
-        for node in ast.walk(run_turn)
-        if isinstance(node, ast.Attribute) and isinstance(node.ctx, ast.Load)
-    }
-    assert "_retry_dispatched_in_turn" in reads, (
-        "_run_turn больше не читает общий флаг — отсрочка DIALOGUE_END сломана"
-    )
-    per_guard_flags = {"_babble_retry_used", "_code_speech_retry_used",
-                       "_action_claim_retry_used"}
-    leaked = sorted(per_guard_flags & reads)
-    assert not leaked, (
-        f"_run_turn снова читает поимённые флаги {leaked} — "
-        f"отсрочка DIALOGUE_END должна идти через _retry_dispatched_in_turn"
     )

@@ -1,5 +1,7 @@
 """track_start_guard.py — не больше одного запуска трека за ход (issue #2859).
 
+Удаляется вместе с v1, условие: режим команд по умолчанию (ADR-0150 PR-7c #3700, решение В3).
+
 Живой прогон 23.09.2026, DJ-переход #23: в ОДНОМ ходе LLM восемь раз
 подряд вызвала ``compose_music`` + ``set_dj_mode``. Каждый вызов вернул
 success, каждый начинал с ``Clock.clear()`` — музыка переключалась каждые
@@ -21,8 +23,8 @@ ADR-0149 PR-13a: DJ-часть (лимит реплик DJ-хода #2878, за�
 #3246/#3247, ``is_dj_turn``) удалена вместе со старым путём музыки — на
 переходе сета движка v2 хода LLM нет.
 
-Подключён в ``SchedulerToolExecutor``
-(:mod:`rob_box_voice.scheduler.tool_executor`)
+Подключён в ``PlanToolExecutor``
+(:mod:`rob_box_voice.core.plan_tools`)
 — это единственная точка, через которую проходят все вызовы тулов личности.
 """
 
@@ -31,12 +33,13 @@ from __future__ import annotations
 import json
 from typing import Optional
 
-from rob_box_voice.core.dialogue_guards import MUSIC_STARTING_TOOLS
+from rob_box_core.tool_catalog import TOOL_CATALOG
 
 #: Тулы, запускающие трек (каждый начинает с ``Clock.clear()`` / смены mp3).
-#: Набор выводится из capability-флага ``starts_music`` в ``TOOL_CATALOG``,
-#: отдельного рукописного списка здесь нет.
-TRACK_STARTING_TOOLS: frozenset = MUSIC_STARTING_TOOLS
+#: Единственный источник — capability-флаг ``starts_music`` на ``MCPTool``, проецируемый в ``TOOL_CATALOG``;
+#: рукописного списка нет: раньше он жил в двух frozenset'ах, и каждый новый музыкальный тул про него забывал
+#: (``compose_music`` авто-глушился через 1.5 с, ``lookup_melody`` играл мимо гарда).
+TRACK_STARTING_TOOLS: frozenset = frozenset(entry.name for entry in TOOL_CATALOG if entry.starts_music)
 
 #: Машиночитаемый код отказа в ответе тула.
 REFUSAL_ERROR_CODE = "track_already_started_this_turn"

@@ -1,9 +1,10 @@
 """LED animation vocabulary — one declaration for every tool that uses it.
 
-The robot's animations are defined by the manifests in
-``src/rob_box_animations/animations/manifests/*.yaml``; that directory is
-the source of truth, and ``test_animation_catalog_matches_manifests``
-fails the build when this list drifts from it.
+The robot's face draws procedural scenes (``face_node``, ADR-0150 §5.5):
+every name here resolves to a scene of ``rob_box_animations.face.states``
+(``SCENES`` / ``LEGACY``), and ``tests/unit/docker/test_animation_assets.py``
+fails the build when a name has nothing behind it. The scene catalogue is
+wider than this list; extending the tool vocabulary is PR-3c (#3691).
 
 Before this module the same vocabulary existed three times and disagreed:
 
@@ -22,9 +23,19 @@ reliably emit words from the general emotion vocabulary (``excited``,
 ``neutral``, ``confused``) and because Russian input reaches the tools
 directly; normalising them is friendlier than rejecting them. But they are
 not animations, so they must never be advertised as valid values.
+
+#4103: the dialogue needs the same vocabulary — it builds the queue of
+scenes for «покажи по очереди радость, грусть и удивление» from the
+person's words — and ``rob_box_dialog`` must not import this ROS package.
+So the table itself (``KNOWN_ANIMATIONS``, ``ANIMATION_ALIASES``,
+``animation_name``) lives in ``rob_box_dialog.knowledge``; this module
+re-exports it and keeps the tool-side rule (fallback). Show seconds is one rule for the tool and the
+dialogue: ``rob_box_dialog.expression.show_seconds`` (#4089).
 """
 
 from __future__ import annotations
+
+from rob_box_dialog.knowledge import ANIMATION_ALIASES, KNOWN_ANIMATIONS, animation_name
 
 __all__ = [
     "ANIMATION_ALIASES",
@@ -32,76 +43,13 @@ __all__ = [
     "normalize_animation",
 ]
 
-#: Every animation with a manifest, i.e. every name the player can render.
-KNOWN_ANIMATIONS: tuple[str, ...] = (
-    "accelerating",
-    "ambulance",
-    "angry",
-    "braking",
-    "charging",
-    "error",
-    "fire_truck",
-    "happy",
-    "idle",
-    "low_battery",
-    "police_lights",
-    "road_service",
-    "sad",
-    "sleep",
-    "surprised",
-    "talking",
-    "thinking",
-    "turn_left",
-    "turn_right",
-    "victory",
-    "wakeup",
-)
-
-#: Names that are *not* animations but are normalised to one. Russian labels
-#: come from direct speech; the English ones from the LLM's emotion
-#: vocabulary (MiniMax M3 emits ``excited`` constantly).
-ANIMATION_ALIASES: dict[str, str] = {
-    # Русские названия
-    "нейтрально": "idle",
-    "нейтральная": "idle",
-    "нейтральный": "idle",
-    "радость": "happy",
-    "радостный": "happy",
-    "счастливый": "happy",
-    "грустный": "sad",
-    "грусть": "sad",
-    "печаль": "sad",
-    "злой": "angry",
-    "злость": "angry",
-    "возбужденный": "happy",
-    "возбуждение": "happy",
-    "смущенный": "thinking",
-    "смущение": "thinking",
-    "растерянный": "thinking",
-    # Эмоции из общего словаря LLM, которых нет среди анимаций
-    "neutral": "idle",
-    "excited": "happy",
-    "confused": "thinking",
-    "laughing": "happy",
-    "smiling": "happy",
-    # ``dancing`` раньше маппился в "excited" — такой анимации не
-    # существует, поэтому нормализация всё равно скатывалась в fallback.
-    "dancing": "happy",
-    "singing": "happy",
-    # LLM часто пишет "talk" вместо "talking"
-    "talk": "talking",
-}
-
 
 def normalize_animation(animation: str | None, *, fallback: str = "idle") -> str:
     """Resolve *animation* to a name the player can actually render.
 
-    Applies the alias map case-insensitively; anything still unknown
-    becomes *fallback*. Callers that need to report the substitution should
-    compare the result against their input.
+    One rule with the dialogue (``rob_box_dialog.knowledge.animation_name``):
+    the alias map applies case-insensitively; anything still unknown becomes
+    *fallback*. Callers that need to report the substitution should compare
+    the result against their input.
     """
-    if not animation:
-        return fallback
-    candidate = str(animation).strip().lower()
-    candidate = ANIMATION_ALIASES.get(candidate, candidate)
-    return candidate if candidate in KNOWN_ANIMATIONS else fallback
+    return animation_name(animation) or fallback

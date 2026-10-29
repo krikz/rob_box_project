@@ -165,10 +165,7 @@ def _make_node(tts_node_cls):
     n._logger = logger
     n.get_logger = lambda: logger
     n.current_speech_id = None
-    n.current_dialogue_id = None
-    n.processing_dialogue_id = None
     n.finished_pub = _CapturingPublisher()
-    n.batch_complete_pub = _CapturingPublisher()
     n._submit_synthesis = MagicMock()
     # Issue #2553 — babble-retry / DJ-overlap guard. Для тестов
     # dialogue_callback (одиночный submit без активного batch'а)
@@ -176,6 +173,8 @@ def _make_node(tts_node_cls):
     n._pending_speech_queue = []
     n._play_active_seq = None
     n._active_batch_id = None
+    # #3728: гард решает по ВЫБРАННОМУ провайдеру. Yandex (первый в цепочке) иероглифы не читает -> чанк отбрасывается.
+    n.provider_chain = ["yandex", "silero"]
     return n
 
 
@@ -194,6 +193,26 @@ def _all_logs(node) -> str:
     return "\n".join(
         logger.info_msgs + logger.warn_msgs + logger.error_msgs
     )
+
+
+# ── Guard решает по возможностям выбранного провайдера (#3728) ───────────
+
+
+class TestGuardFollowsSelectedProvider:
+    def test_minimax_selected_reads_hieroglyphs_so_chunk_is_submitted(self, tts_node_cls):
+        n = _make_node(tts_node_cls)
+        n.provider_chain = ["minimax", "yandex", "silero"]
+        n.dialogue_callback(_msg({"ssml": "<speak>你好世界，今天天气很好</speak>", "speech_id": "sid-zh"}))
+        n._submit_synthesis.assert_called_once()
+        assert _finished_payloads(n) == []
+
+    def test_dead_minimax_falls_to_yandex_and_hieroglyphs_are_refused(self, tts_node_cls):
+        n = _make_node(tts_node_cls)
+        n.provider_chain = ["minimax", "yandex", "silero"]
+        n._provider_dead_until = {"minimax": float("inf")}  # квота: выбранный теперь Yandex
+        n.dialogue_callback(_msg({"ssml": "<speak>你好世界，今天天气很好</speak>", "speech_id": "sid-zh2"}))
+        n._submit_synthesis.assert_not_called()
+        assert _finished_payloads(n)[0]["error"] == "unsupported_script"
 
 
 # ── Guard блокирует чужие письменности ────────────────────────────────
@@ -221,8 +240,7 @@ class TestForeignScriptDropped:
         """MCP speak_text не должен висеть: приходит finished(success=False).
 
         Без этого ``pending_speeches`` в SpeakTextTool никогда не
-        закрывается, ``batch_complete`` не публикуется и dialogue_node
-        не делает music_cleanup (issue #980 контракт).
+        закрывается и ``batch_complete`` не публикуется (issue #980 контракт).
         """
         node = _make_node(tts_node_cls)
         node.dialogue_callback(
@@ -251,8 +269,8 @@ class TestForeignScriptDropped:
         assert payloads[0]["batch_id"] == "batch-1"
         assert payloads[0]["batch_index"] == 2
         assert payloads[0]["batch_total"] == 2
-        # Последний чанк батча → batch_complete тоже улетает.
-        assert node.batch_complete_pub.messages, (
+        # Последний чанк батча → маркер закрытия батча тоже улетает.
+        assert any(p.get("batch_complete") for p in payloads), (
             "последний чанк батча должен закрыть батч даже когда текст "
             "отброшен guard'ом"
         )

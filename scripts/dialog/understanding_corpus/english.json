@@ -1,0 +1,626 @@
+{
+ "name": "understanding_english_part4",
+ "schema": 1,
+ "part": 4,
+ "base": {
+  "name": "understanding_marathon_part1",
+  "corpus_sha256": "89c3cc8a503c99721204cdb1d091221256c770c2d90caa2ffc714a2f2929277b"
+ },
+ "generator": "scripts/dialog/understanding_corpus/build_english.py",
+ "method": {
+  "model": "deepseek-v4-flash",
+  "temperature": 0.3,
+  "prompt_sha256": "0786459f3ad611d935a87e7ce97650849e0551eda682461d3fdb244e1c1feb21",
+  "wake": "Robbox",
+  "generated_utc": "2026-10-28 19:21:07",
+  "rounds": 3,
+  "top_up": true,
+  "kept_from_previous": 46,
+  "rejected": [
+   {
+    "id": "1/n108_perception",
+    "en": "Robbox, what do you see around you right now, describe it in a couple of words.",
+    "problems": [
+     "числа: было [2], стало []"
+    ]
+   },
+   {
+    "id": "3/n304_bg_grisha_unknown",
+    "en": "Young people, are you going to sleep? It's past two in the morning, I'm doing my rounds, the light's on, the machine's talking.",
+    "problems": [
+     "числа: было ['3rd'], стало [2]"
+    ]
+   },
+   {
+    "id": "6/n605_dj_set_plan",
+    "en": "Robbox, put together a set of three tracks, announce each one.",
+    "problems": [
+     "числа: было [3], стало [1, 3]"
+    ]
+   },
+   {
+    "id": "1/n108_perception",
+    "en": "Robbox, describe what you see around you right now in a couple of words.",
+    "problems": [
+     "числа: было [2], стало []"
+    ]
+   },
+   {
+    "id": "3/n304_bg_grisha_unknown",
+    "en": "Young people, are you going to sleep? It's three in the morning, I'm doing my rounds, the light's on, the machine's talking.",
+    "problems": [
+     "числа: было ['3rd'], стало [3]"
+    ]
+   },
+   {
+    "id": "6/n605_dj_set_plan",
+    "en": "Robbox, put together a set of three tracks, announce each one.",
+    "problems": [
+     "числа: было [3], стало [1, 3]"
+    ]
+   },
+   {
+    "id": "1/n108_perception",
+    "en": "Robbox, describe what you see around you right now in a couple of words.",
+    "problems": [
+     "числа: было [2], стало []"
+    ]
+   },
+   {
+    "id": "6/n605_dj_set_plan",
+    "en": "Robbox, put together a set of three tracks, announce each one.",
+    "problems": [
+     "числа: было [3], стало [1, 3]"
+    ]
+   }
+  ],
+  "calls": 7,
+  "input_tokens": 5203,
+  "output_tokens": 1958,
+  "repointed": {
+   "measured_sha256": "118d1b348ed3a71086ef43224252aaa5eac420d21d90b7d42b03719153e5008e",
+   "from_base": "cf0a67043a479dbe8911875404707257b81edbdf7261293c3b4a9ba0cf5456da",
+   "to_base": "89c3cc8a503c99721204cdb1d091221256c770c2d90caa2ffc714a2f2929277b",
+   "dropped_steps": [
+    "3/n309_bg_command_valera",
+    "7/n707_gen_track_info"
+   ]
+  }
+ },
+ "counts": {
+  "steps": 46,
+  "alternatives": 46,
+  "excluded": 44
+ },
+ "excluded": [
+  {
+   "id": "1/n101_wake_cold_start",
+   "reason": "ожидание - только «ход завершён и робот что-то сказал»: на тулах и логе не держится"
+  },
+  {
+   "id": "1/n106_alt_wake_roboks",
+   "reason": "шаг про второе русское имя-вейк «Робокс»"
+  },
+  {
+   "id": "1/n107_command_intent_gate",
+   "reason": "ожидание - только «ход завершён и робот что-то сказал»: на тулах и логе не держится"
+  },
+  {
+   "id": "1/n109_sound_info",
+   "reason": "ожидание держится на русских словах ответа (expected_keywords)"
+  },
+  {
+   "id": "1/n110_silence_baseline",
+   "reason": "ожидание держится на русских словах ответа (expected_keywords)"
+  },
+  {
+   "id": "2/n207_recall_sasha",
+   "reason": "ожидание держится на русских словах ответа (expected_keywords)"
+  },
+  {
+   "id": "2/n209_recall_boris",
+   "reason": "ожидание держится на русских словах ответа (expected_keywords)"
+  },
+  {
+   "id": "2/n211_who_do_you_know",
+   "reason": "ожидание держится на русских словах ответа (expected_keywords)"
+  },
+  {
+   "id": "2/n213_memory_search_tea_after_reset",
+   "reason": "ожидание держится на русских словах ответа (expected_keywords)"
+  },
+  {
+   "id": "3/n301_wake_open",
+   "reason": "ожидание - только «ход завершён и робот что-то сказал»: на тулах и логе не держится"
+  },
+  {
+   "id": "3/n306_who_was_talking",
+   "reason": "ожидание держится на русских словах ответа (expected_keywords)"
+  },
+  {
+   "id": "3/n307_count_voices",
+   "reason": "ожидание - только «ход завершён и робот что-то сказал»: на тулах и логе не держится"
+  },
+  {
+   "id": "3/n311_who_asked",
+   "reason": "ожидание - только «ход завершён и робот что-то сказал»: на тулах и логе не держится"
+  },
+  {
+   "id": "3/n313_silence_restored",
+   "reason": "ожидание держится на русских словах ответа (expected_keywords)"
+  },
+  {
+   "id": "5/n501_silence_check",
+   "reason": "ожидание держится на русских словах ответа (expected_keywords)"
+  },
+  {
+   "id": "5/n503_confirm_playing",
+   "reason": "ожидание держится на русских словах ответа (expected_keywords)"
+  },
+  {
+   "id": "5/n512_silence_after_stop",
+   "reason": "ожидание держится на русских словах ответа (expected_keywords)"
+  },
+  {
+   "id": "6/n601_silence_check",
+   "reason": "ожидание держится на русских словах ответа (expected_keywords)"
+  },
+  {
+   "id": "6/n603_confirm_dj_playing",
+   "reason": "ожидание держится на русских словах ответа (expected_keywords)"
+  },
+  {
+   "id": "6/n609_silence_after_dj",
+   "reason": "ожидание держится на русских словах ответа (expected_keywords)"
+  },
+  {
+   "id": "6/n610_dj_state_honest",
+   "reason": "ожидание держится на русских словах ответа (expected_keywords)"
+  },
+  {
+   "id": "7/n701_silence_check",
+   "reason": "ожидание держится на русских словах ответа (expected_keywords)"
+  },
+  {
+   "id": "8/n801_wake_open",
+   "reason": "ожидание держится на русских словах ответа (expected_keywords)"
+  },
+  {
+   "id": "8/n802_long_count",
+   "reason": "ожидание - только «ход завершён и робот что-то сказал»: на тулах и логе не держится"
+  },
+  {
+   "id": "8/n808_repeat_last",
+   "reason": "ожидание держится на русских словах ответа (expected_keywords)"
+  },
+  {
+   "id": "8/n804_long_story",
+   "reason": "ожидание - только «ход завершён и робот что-то сказал»: на тулах и логе не держится"
+  },
+  {
+   "id": "8/n805b_unsilence",
+   "reason": "ожидание - строка Tier-1 «unsilence», её в обоих вариантах даёт только код по русскому «говори»; провал оставляет робота в тишине до конца марафона и валит шаги акта 9 этой части"
+  },
+  {
+   "id": "8/n806_long_count_again",
+   "reason": "ожидание - только «ход завершён и робот что-то сказал»: на тулах и логе не держится"
+  },
+  {
+   "id": "8/n810_rap_over_music",
+   "reason": "ожидание - только «ход завершён и робот что-то сказал»: на тулах и логе не держится"
+  },
+  {
+   "id": "8/n813_silence_final",
+   "reason": "ожидание держится на русских словах ответа (expected_keywords)"
+  },
+  {
+   "id": "9/n908_search_borsch_memory",
+   "reason": "ожидание держится на русских словах ответа (expected_keywords)"
+  },
+  {
+   "id": "9/n909_foreign_language",
+   "reason": "ожидание держится на русских словах ответа (expected_keywords)"
+  },
+  {
+   "id": "10/n1001_recall_night",
+   "reason": "ожидание держится на русских словах ответа (expected_keywords)"
+  },
+  {
+   "id": "10/n1002_unknown_still_unknown",
+   "reason": "ожидание держится на русских словах ответа (expected_keywords)"
+  },
+  {
+   "id": "10/n1003_memory_search_food",
+   "reason": "ожидание держится на русских словах ответа (expected_keywords)"
+  },
+  {
+   "id": "10/n1004_who_am_i_before_reset",
+   "reason": "ожидание держится на русских словах ответа (expected_keywords)"
+  },
+  {
+   "id": "10/n1005_music_state_final",
+   "reason": "ожидание держится на русских словах ответа (expected_keywords)"
+  },
+  {
+   "id": "10/n1007_no_leak",
+   "reason": "must_not_say - русские слова прошлых тем («по именам», «космос», «китайск»)"
+  },
+  {
+   "id": "10/n1008_memory_survives_reset",
+   "reason": "ожидание держится на русских словах ответа (expected_keywords)"
+  },
+  {
+   "id": "10/n1009_memory_context_after_reset",
+   "reason": "ожидание держится на русских словах ответа (expected_keywords)"
+  },
+  {
+   "id": "10/n1010_five_facts",
+   "reason": "ожидание держится на русских словах ответа (expected_keywords)"
+  },
+  {
+   "id": "10/n1011_goodnight",
+   "reason": "ожидание - только «ход завершён и робот что-то сказал»: на тулах и логе не держится"
+  },
+  {
+   "id": "3/n309_bg_command_valera",
+   "alternatives_dropped": 1,
+   "reason": "часть 1 пересобрана (cf0a67043a47 → a8c4cd58e3e1): текст шага сменился «Только не электронщину, поставь что-нибудь спокойное, мне ещё ехать.» → «Запусти диджей-сет на синтезаторе на две минуты, спокойный.», альтернативы старого текста к новому шагу не относятся"
+  },
+  {
+   "id": "7/n707_gen_track_info",
+   "alternatives_dropped": 1,
+   "reason": "часть 1 пересобрана (cf0a67043a47 → a8c4cd58e3e1): текст шага сменился «Робот, расскажи, что это за трек: кто, про что и сколько длится.» → «Робот, расскажи про песню про енота: кто, про что, сколько длится.», альтернативы старого текста к новому шагу не относятся"
+  }
+ ],
+ "corpus_sha256": "7017ed85802d25e769ab202f2a3520ae62033caf9157478a4f51ff5d05180d59",
+ "alternatives": {
+  "1/n102_session_reset": [
+   {
+    "text": "Robbox, reset everything and start a new session, we've got a night shift starting from scratch.",
+    "why": "паттерны лога (1)",
+    "code_phrases_forbidden": []
+   }
+  ],
+  "1/n103_time": [
+   {
+    "text": "Robbox, what time is it now?",
+    "why": "тулы ['get_current_time']",
+    "code_phrases_forbidden": []
+   }
+  ],
+  "1/n104_battery": [
+   {
+    "text": "Robbox, how much charge do you have left, will you make it till morning?",
+    "why": "тулы ['get_battery_level']",
+    "code_phrases_forbidden": []
+   }
+  ],
+  "1/n105_status": [
+   {
+    "text": "Robbox, report status: is everything working, has anything dropped off?",
+    "why": "тулы ['get_robot_status']",
+    "code_phrases_forbidden": []
+   }
+  ],
+  "1/n108_perception": [
+   {
+    "text": "Robbox, describe what you see around you right now in a couple of words.",
+    "why": "паттерны лога (1)",
+    "code_phrases_forbidden": []
+   }
+  ],
+  "2/n201b_sasha_backstory": [
+   {
+    "text": "I was putting together a power supply for you and reworking the left motor. Remember my voice properly.",
+    "why": "бэклог",
+    "code_phrases_forbidden": []
+   }
+  ],
+  "2/n201c_sasha_voice_note": [
+   {
+    "text": "Because at night I'll be talking to you more often than anyone else in this workshop.",
+    "why": "бэклог",
+    "code_phrases_forbidden": []
+   }
+  ],
+  "2/n203_sasha_memory_tea": [
+   {
+    "text": "Robbox, remember: I only drink green tea without sugar and I don't eat onions at all, not even fried.",
+    "why": "тулы ['memory_save']",
+    "code_phrases_forbidden": []
+   }
+  ],
+  "2/n204b_boris_voice_note": [
+   {
+    "text": "Remember my voice separately from Sasha's, we sound very different.",
+    "why": "бэклог",
+    "code_phrases_forbidden": []
+   }
+  ],
+  "2/n204c_boris_voice_reason": [
+   {
+    "text": "I don't want you to confuse us when we're both saying something to you.",
+    "why": "бэклог",
+    "code_phrases_forbidden": []
+   }
+  ],
+  "2/n206_boris_memory": [
+   {
+    "text": "Robbox, remember about me: Boris supports Spartak and always brings pizza.",
+    "why": "тулы ['memory_save']",
+    "code_phrases_forbidden": []
+   }
+  ],
+  "2/n212_session_reset_before_search": [
+   {
+    "text": "Robbox, new session, forget this conversation.",
+    "why": "паттерны лога (1)",
+    "code_phrases_forbidden": []
+   }
+  ],
+  "3/n302_bg_sasha": [
+   {
+    "text": "Boris, the power supply is humming because of the ground, I know that note by heart.",
+    "why": "паттерны лога (1), бэклог",
+    "code_phrases_forbidden": []
+   }
+  ],
+  "3/n303_bg_boris": [
+   {
+    "text": "Sasha, it's your wiring that's to blame, you should have wired it in a star, not a ribbon through the board.",
+    "why": "паттерны лога (1), бэклог",
+    "code_phrases_forbidden": []
+   }
+  ],
+  "3/n304_bg_grisha_unknown": [
+   {
+    "text": "Young people, are you going to sleep? It's the third hour of the night, I'm doing my rounds, the light's on, the machine's talking.",
+    "why": "паттерны лога (1), бэклог",
+    "code_phrases_forbidden": []
+   }
+  ],
+  "3/n305_bg_valera_unknown": [
+   {
+    "text": "I'm a courier, I just need to get a signature and go, I've been standing here for twenty minutes listening to your argument about the land.",
+    "why": "паттерны лога (1), бэклог",
+    "code_phrases_forbidden": []
+   }
+  ],
+  "3/n305b_bare_robot_pickup": [
+   {
+    "text": "Robbox.",
+    "why": "паттерны лога (1)",
+    "code_phrases_forbidden": []
+   }
+  ],
+  "3/n308_bg_command_boris": [
+   {
+    "text": "Listen, just put on some music already, the silence is pressing on my ears.",
+    "why": "паттерны лога (1), бэклог",
+    "code_phrases_forbidden": []
+   }
+  ],
+  "3/n310_execute_backlog_lru": [
+   {
+    "text": "Robbox.",
+    "why": "паттерны лога (3)",
+    "code_phrases_forbidden": [
+     "Музыка пока не заиграла."
+    ]
+   }
+  ],
+  "3/n312_stop_music": [
+   {
+    "text": "Robbox, that's it, thank you, turn off the music, the courier has left.",
+    "why": "тулы ['stop_music'], паттерны лога (2)",
+    "code_phrases_forbidden": [
+     "Включаю музыку.|Секунду, музыка запускается.|Музыка пока не заиграла.|Не получилось включить музыку.|Сейчас ничего не играет — на всякий случай всё остановил.|Не получилось выключить музыку."
+    ]
+   }
+  ],
+  "4/n401_list_voices": [
+   {
+    "text": "Robbox, what voices can you speak in? List what you have.",
+    "why": "тулы ['list_tts_voices']",
+    "code_phrases_forbidden": []
+   }
+  ],
+  "4/n405_set_voice_jane": [
+   {
+    "text": "Robbox, now switch to Jane's voice.",
+    "why": "тулы ['set_voice']",
+    "code_phrases_forbidden": []
+   }
+  ],
+  "4/n406_restore_default_voice": [
+   {
+    "text": "Robbox, that's enough, we've had our fun, bring back your default voice.",
+    "why": "тулы ['set_voice']",
+    "code_phrases_forbidden": []
+   }
+  ],
+  "4/n407_volume_up": [
+   {
+    "text": "Robbox, speak louder, Aunt Grisha is a bit hard of hearing and she's standing in the hallway.",
+    "why": "тулы ['set_volume']",
+    "code_phrases_forbidden": []
+   }
+  ],
+  "4/n408_volume_down": [
+   {
+    "text": "Robbox, no, quieter after all, or you'll wake up the whole floor.",
+    "why": "тулы ['set_volume']",
+    "code_phrases_forbidden": []
+   }
+  ],
+  "5/n504_add_bass": [
+   {
+    "text": "Robbox, keep developing this theme and add some fatter bass.",
+    "why": "паттерны лога (2)",
+    "code_phrases_forbidden": [
+     "Включаю музыку.|Музыка пока не заиграла.|Не получилось включить музыку.|Выключил музыку.|Сейчас ничего не играет — на всякий случай всё остановил.|Не получилось поменять музыку — играет как было.|Не дождался такта — не знаю, поменялась ли музыка."
+    ]
+   }
+  ],
+  "5/n505_vibe_dark": [
+   {
+    "text": "Robbox, make the atmosphere darker, like in cyberpunk.",
+    "why": "паттерны лога (2)",
+    "code_phrases_forbidden": [
+     "Включаю музыку.|Музыка пока не заиграла.|Не получилось включить музыку.|Выключил музыку.|Сейчас ничего не играет — на всякий случай всё остановил.|Не получилось поменять музыку — играет как было.|Не дождался такта — не знаю, поменялась ли музыка."
+    ]
+   }
+  ],
+  "5/n506_faster": [
+   {
+    "text": "Robbox, and speed up the tempo, or we'll both fall asleep here.",
+    "why": "паттерны лога (2)",
+    "code_phrases_forbidden": [
+     "Включаю музыку.|Музыка пока не заиграла.|Не получилось включить музыку.|Выключил музыку.|Сейчас ничего не играет — на всякий случай всё остановил.|Не получилось поменять музыку — играет как было.|Не дождался такта — не знаю, поменялась ли музыка."
+    ]
+   }
+  ],
+  "5/n507_wake_under_music": [
+   {
+    "text": "Robbox, what time is it, I'm asking, Robbox!",
+    "why": "тулы ['get_current_time']",
+    "code_phrases_forbidden": []
+   }
+  ],
+  "5/n511_stop_music": [
+   {
+    "text": "Robbox, that's it, kill the music, my ears are ringing.",
+    "why": "тулы ['stop_music'], паттерны лога (2)",
+    "code_phrases_forbidden": [
+     "Включаю музыку.|Секунду, музыка запускается.|Музыка пока не заиграла.|Не получилось включить музыку.|Сейчас ничего не играет — на всякий случай всё остановил.|Не получилось выключить музыку."
+    ]
+   }
+  ],
+  "6/n602_dj_on": [
+   {
+    "text": "Robbox, turn on DJ mode, we're having a night disco.",
+    "why": "тулы ['dj_set'], паттерны лога (2)",
+    "code_phrases_forbidden": [
+     "Музыка пока не заиграла.|Не получилось включить музыку.|Выключил музыку.|Сейчас ничего не играет — на всякий случай всё остановил."
+    ]
+   }
+  ],
+  "6/n604_dj_rock": [
+   {
+    "text": "Robbox, steer it toward rock, Aunt Grisha gets nicer with rock.",
+    "why": "паттерны лога (1)",
+    "code_phrases_forbidden": [
+     "Музыка пока не заиграла.|Не получилось включить музыку.|Выключил музыку.|Сейчас ничего не играет — на всякий случай всё остановил."
+    ]
+   }
+  ],
+  "6/n605_dj_set_plan": [
+   {
+    "text": "Robbox, put together a set of three tracks and announce each one.",
+    "why": "паттерны лога (1)",
+    "code_phrases_forbidden": []
+   }
+  ],
+  "6/n606_wake_under_dj": [
+   {
+    "text": "Robbox, how much charge do you have left?",
+    "why": "тулы ['get_battery_level']",
+    "code_phrases_forbidden": []
+   }
+  ],
+  "6/n607_vibe_chill": [
+   {
+    "text": "Robbox, softer, put on something calm, Valera will fall asleep at the wheel.",
+    "why": "паттерны лога (1)",
+    "code_phrases_forbidden": [
+     "Музыка пока не заиграла.|Не получилось включить музыку.|Выключил музыку.|Сейчас ничего не играет — на всякий случай всё остановил."
+    ]
+   }
+  ],
+  "6/n608_dj_off": [
+   {
+    "text": "Robbox, enough DJing, turn it off.",
+    "why": "паттерны лога (2)",
+    "code_phrases_forbidden": [
+     "Включаю музыку.|Секунду, музыка запускается.|Музыка пока не заиграла.|Не получилось включить музыку.|Сейчас ничего не играет — на всякий случай всё остановил.|Не получилось выключить музыку."
+    ]
+   }
+  ],
+  "7/n704_music_library": [
+   {
+    "text": "Robbox, what do you even have in your music library?",
+    "why": "тулы ['music_library']",
+    "code_phrases_forbidden": []
+   }
+  ],
+  "7/n705_gen_search_rain": [
+   {
+    "text": "Robbox, find something about rain in your library.",
+    "why": "тулы ['music_library']",
+    "code_phrases_forbidden": []
+   }
+  ],
+  "7/n708_gen_play": [
+   {
+    "text": "Robbox, play that song about the raccoon from the start.",
+    "why": "тулы ['music_library'], паттерны лога (2)",
+    "code_phrases_forbidden": [
+     "Музыка пока не заиграла.|Не получилось включить музыку.|Выключил музыку.|Сейчас ничего не играет — на всякий случай всё остановил."
+    ]
+   }
+  ],
+  "7/n709_stop_generated": [
+   {
+    "text": "Robbox, stop it, Boris already fell asleep to it.",
+    "why": "тулы ['stop_music'], паттерны лога (2)",
+    "code_phrases_forbidden": [
+     "Включаю музыку.|Секунду, музыка запускается.|Музыка пока не заиграла.|Не получилось включить музыку.|Сейчас ничего не играет — на всякий случай всё остановил.|Не получилось выключить музыку."
+    ]
+   }
+  ],
+  "7/n712_stop_all": [
+   {
+    "text": "Robbox, that's it, kill it.",
+    "why": "тулы ['stop_music'], паттерны лога (2)",
+    "code_phrases_forbidden": [
+     "Включаю музыку.|Секунду, музыка запускается.|Музыка пока не заиграла.|Не получилось включить музыку.|Сейчас ничего не играет — на всякий случай всё остановил.|Не получилось выключить музыку."
+    ]
+   }
+  ],
+  "9/n901_sound_catalog": [
+   {
+    "text": "Robbox, remind me what sounds you have in your set?",
+    "why": "тулы ['get_sound_info']",
+    "code_phrases_forbidden": []
+   }
+  ],
+  "9/n902_sound_doorbell": [
+   {
+    "text": "Robbox, play the doorbell sound, Aunt Grisha is doing her rounds again.",
+    "why": "паттерны лога (1)",
+    "code_phrases_forbidden": []
+   }
+  ],
+  "9/n903_sound_siren_anim": [
+   {
+    "text": "Robbox, now show the siren and the flashing light, let's scare Valera.",
+    "why": "паттерны лога (2)",
+    "code_phrases_forbidden": []
+   }
+  ],
+  "9/n907_search_space": [
+   {
+    "text": "Robbox, search the internet for what's new in space over the past week.",
+    "why": "тулы ['search_web']",
+    "code_phrases_forbidden": []
+   }
+  ],
+  "10/n1006_session_reset": [
+   {
+    "text": "Robbox, new session, forget this conversation.",
+    "why": "паттерны лога (1)",
+    "code_phrases_forbidden": []
+   }
+  ]
+ }
+}

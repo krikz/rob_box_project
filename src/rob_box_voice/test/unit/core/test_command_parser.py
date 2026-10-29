@@ -8,6 +8,7 @@ without ROS dependencies.
 
 import pytest
 from rob_box_voice.core.command_parser import CommandParser, Command, IntentType
+from rob_box_dialog.knowledge import DEFAULT_WAKE_WORDS
 
 
 class TestCommandParserInit:
@@ -17,7 +18,8 @@ class TestCommandParserInit:
         """Test default initialization."""
         parser = CommandParser()
 
-        assert parser.wake_words == ['робот', 'робокс', 'робобокс']
+        # Вейк-слова по умолчанию — одна таблица знания (ADR-0150 PR-1), не своя копия.
+        assert parser.wake_words == list(DEFAULT_WAKE_WORDS)
         assert parser.confidence_base == 0.8
         assert len(parser.patterns) > 0
 
@@ -57,6 +59,14 @@ class TestCommandParserWakeWords:
 
         result = parser.remove_wake_word('робот, иди к кухне')
         assert result == 'иди к кухне'
+
+    def test_remove_wake_word_respects_word_boundary(self):
+        """«роботы …» не начинается с вейка «робот»; голый вейк снимается целиком."""
+        parser = CommandParser()
+
+        assert parser.remove_wake_word('роботы едут') == 'роботы едут'
+        assert parser.remove_wake_word('робби, стоп') == 'стоп'
+        assert parser.remove_wake_word('робот') == ''
 
     def test_remove_wake_word_no_wake_word(self):
         """Test text without wake word."""

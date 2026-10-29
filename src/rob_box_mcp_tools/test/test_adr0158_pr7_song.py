@@ -1,7 +1,7 @@
 """ADR-0158 PR-7 — песня голосом робота: текст от LLM → проверка кода → вокал текущим голосом → Suno → кэш → дека.
 
 Всё на фейках (LLM, TTS-бэкенды, KIE, дека): без сети и денег. G7 (ADR §4): голос песни — тот, что дают
-``/voice/tts/provider_state`` и ``VoiceStateStore`` (3 голоса двух провайдеров), пресет пения идёт в TTS и в Suno.
+``/voice/tts/provider_state`` (3 голоса двух провайдеров), пресет пения идёт в TTS и в Suno.
 """
 
 import threading
@@ -15,7 +15,6 @@ from rob_box_mcp_tools.engine.gen.library import GeneratedMusicLibrary
 from rob_box_mcp_tools.engine.gen.provider import GenStatus, GenTicket, GenTrack, GenUnavailable
 from rob_box_mcp_tools.engine.search import ThemeHits
 from rob_box_mcp_tools.engine.tools_v2 import SOURCE_DECLINED, DjSetTool, RequestMusicTool
-from rob_box_mcp_tools.voice_state import VoiceStateStore
 from rob_box_music.source import CacheTrack, SourceAsk, SourceContext, source_ask, source_candidates
 from rob_box_voice.sing_synth import synth_vocal_to_file
 from rob_box_voice.tts_voice_registry import sing_preset_for
@@ -81,13 +80,11 @@ def test_suno_tags_come_from_the_table_not_from_the_llm():
 
 # ── текущий голос ─────────────────────────────────────────────────────────────
 
-def test_current_voice_is_the_provider_state_plus_voice_store():
-    store = VoiceStateStore()
-    assert sg.current_voice("yandex", store) == ("yandex", "anton")  # дефолт провайдера
-    store.set_voice("alena")
-    assert sg.current_voice("yandex", store) == ("yandex", "alena")  # set_voice
+def test_current_voice_is_the_provider_state():
+    assert sg.current_voice("yandex") == ("yandex", "anton")  # голос ещё не известен - дефолт провайдера
+    assert sg.current_voice("yandex", "alena") == ("yandex", "alena")  # то, что реально звучит (provider_state)
     with pytest.raises(sg.SongFailed) as err:
-        sg.current_voice(None, store)
+        sg.current_voice(None, "alena")
     assert err.value.reason == "no_voice"
 
 
@@ -375,7 +372,7 @@ def test_failure_phrase_is_built_by_code_from_the_reason(cache, empty):
     bare = _request(_rig(), studio2, empty)
     bare.execute(intent="track", text=PHRASE, heard_text=PHRASE)
     phrase = studio2.failed("lyrics")  # моста нет: выбор заново без generate → честный отказ с причиной
-    assert phrase.startswith("Сгенерировать не вышло: текст не сложился, а синтез не поёт.")
+    assert phrase == "Сгенерировать не вышло: текст не сложился. Могу спеть сам вживую под синт."  # другая клетка
 
 
 def test_busy_studio_declines_with_a_phrase_and_starts_nothing(cache):
@@ -451,7 +448,10 @@ def test_silero_voice_never_reaches_the_executor_and_the_chooser_declines_in_wor
     fake.block = "silero_voice"
     result = _request(_rig(), fake, library).execute(intent="track", text=PHRASE, heard_text=PHRASE)
     assert not result.success and result.data["reason"] == SOURCE_DECLINED and not fake.requests
-    assert "запасным голосом петь пока не умею" in result.data["message"]
+    message = result.data["message"]
+    assert "запасной голос для записи песен пока не годится" in message
+    assert "петь пока не умею" not in message, "#4090 G.1: «не умею петь» рядом с «могу спеть» - противоречие"
+    assert message.endswith("Могу спеть сам вживую под синт — этим же голосом, без записи.")
 
 
 # ── сбой вокала: причина кодом (живой сбой 13.10 20:55 UTC: «что-то пошло не так» при TTSTimeoutError без текста) ──

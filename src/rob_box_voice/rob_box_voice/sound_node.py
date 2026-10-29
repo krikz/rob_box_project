@@ -1,8 +1,11 @@
 #!/usr/bin/env python3
 """
 SoundNode - воспроизведение звуковых эффектов
-Подписывается: /voice/sound/trigger (String)
-Публикует: /voice/sound/state (String)
+Подписывается: /voice/sound/trigger (String JSON {sound, request_id}, тул play_sound), /voice/expression/request (earcon рефлексов)
+Публикует: /voice/sound/state (String), /voice/sound/event (SoundEvent), /voice/expression/event (ExpressionEvent)
+
+На каждый запрос звука - событие: started, затем finished, либо skipped{busy|voice_stream|not_found|error}.
+Молчаливого пропуска нет (ADR-0150 §5.5.2, V33, PR-3b #3690).
 """
 
 import rclpy
@@ -11,6 +14,8 @@ from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
 from std_msgs.msg import String
 
 from audio_common_msgs.msg import AudioData
+from rob_box_dialog import expression
+from rob_box_dialog_msgs.msg import ExpressionEvent, ExpressionRequest, SessionState, SoundEvent
 
 import os
 import json
@@ -23,6 +28,9 @@ from typing import Dict, List, Optional
 from pydub import AudioSegment
 from .utils.audio_utils import find_respeaker_device_sounddevice
 from .audio_playback_manager import AudioPlaybackManager
+from .core.sound_requests import (  # noqa: F401 - EARCON_SOUNDS читают тесты и скрипты
+    EARCON_SOUNDS, SKIP_BUSY, SKIP_ERROR, SoundRequestsMixin, parse_trigger,
+)
 
 
 # Рация (voice passthrough): тишина дольше этого порога (сек) закрывает
@@ -30,7 +38,7 @@ from .audio_playback_manager import AudioPlaybackManager
 VOICE_SILENCE_TIMEOUT = 0.3
 
 
-class SoundNode(Node):
+class SoundNode(SoundRequestsMixin, Node):
     """Нода для воспроизведения звуковых эффектов."""
 
     def __init__(self):
@@ -57,6 +65,15 @@ class SoundNode(Node):
 
         # Subscribers
         self.trigger_sub = self.create_subscription(String, "/voice/sound/trigger", self.trigger_callback, 10)
+        # Earcon рефлексов хода (ADR-0150 §5.5.3): «услышал», «готово», «не вышло».
+        self.expression_sub = self.create_subscription(
+            ExpressionRequest, "/voice/expression/request", self.expression_callback, 10
+        )
+        # Тишина (#3984): сцена Silence в снимке сессии - «услышал» становится тихим muffled, «готово» молчит.
+        self.session_sub = self.create_subscription(
+            SessionState, "/dialog/session", self.session_callback,
+            QoSProfile(depth=1, reliability=ReliabilityPolicy.RELIABLE, durability=DurabilityPolicy.TRANSIENT_LOCAL),
+        )
         # STOP закрывает голосовой стрим рации (PTT Quest/Telegram). mp3 из библиотеки генераций здесь больше не
         # играет — он на деке движка (ADR-0158 PR-2), стоп — stop_music → PlayerOwner.
         self.sound_stop_sub = self.create_subscription(String, "/voice/sound/stop", self.sound_stop_callback, 10)
@@ -80,6 +97,8 @@ class SoundNode(Node):
 
         # Publishers
         self.state_pub = self.create_publisher(String, "/voice/sound/state", 10)
+        self.sound_event_pub = self.create_publisher(SoundEvent, "/voice/sound/event", 10)
+        self.expression_event_pub = self.create_publisher(ExpressionEvent, "/voice/expression/event", 10)
 
         # Опционально: триггер анимаций
         if self.trigger_animations:
@@ -95,11 +114,6 @@ class SoundNode(Node):
         # Хранилище звуков
         self.sounds: Dict[str, AudioSegment] = {}  # filename (без .mp3) → AudioSegment
         self.trigger_map: Dict[str, str] = {}  # trigger → filename mapping из catalog.json
-        # Issue #1251 — ранний «бульк» (сигнал «услышал, wake word есть»).
-        # stt_node публикует триггер "boop" на /voice/sound/trigger, как
-        # только partial/final STT содержит wake word. Маппим его на короткий
-        # клик button_click (~0.23s) — не мешает речи и не перебивает TTS.
-        self.trigger_aliases: Dict[str, str] = {"boop": "button_click"}
         self.sound_groups: Dict[str, List[str]] = {
             # Random groups for variety
             "talk": ["talk_1", "talk_2", "talk_3", "talk_4"],
@@ -114,6 +128,10 @@ class SoundNode(Node):
         self.is_playing = False
         self.current_sound: Optional[str] = None
         self.play_thread: Optional[threading.Thread] = None
+        self._play_lock = threading.Lock()
+        # Очередь play_sound из одного места и конец текущего звука (core/sound_requests.py, #3698).
+        self._queued = None
+        self._busy_until: Optional[float] = None
 
         # Инициализация
         self.get_logger().info("SoundNode инициализирован")
@@ -205,32 +223,18 @@ class SoundNode(Node):
         else:
             self.publish_state("error_no_sounds")
 
+    def session_callback(self, msg: SessionState):
+        """Снимок сессии: есть ли сцена ``Silence`` у личности (чужой агент состояние не меняет)."""
+        silenced = expression.session_silence(msg)
+        if silenced is not None and silenced != self._silenced:
+            self._silenced = silenced
+            self.get_logger().info("🤫 Тишина: earcon'ы приглушены" if silenced else "🔔 Тишина снята: earcon'ы обычные")
+
     def trigger_callback(self, msg: String):
-        """Обработка триггера звукового эффекта."""
-        trigger = msg.data.strip()
-
-        self.get_logger().info(f"🔔 Триггер: {trigger}")
-
-        # Рация: голос оператора приоритетнее эффектов — не перебиваем стрим.
-        if self._voice_stream is not None:
-            self.get_logger().warn(f"⚠️ Голосовой стрим активен, пропускаю эффект {trigger}")
-            return
-
-        # Проверить, не играет ли уже звук
-        if self.is_playing:
-            self.get_logger().warn(f"⚠️ Звук уже играет ({self.current_sound}), пропускаю {trigger}")
-            return
-
-        # Выбрать звук
-        sound_name = self.select_sound(trigger)
-
-        if sound_name is None:
-            self.get_logger().warn(f'⚠️ Звук для триггера "{trigger}" не найден')
-            return
-
-        # Запустить воспроизведение в отдельном потоке
-        self.play_thread = threading.Thread(target=self.play_sound_thread, args=(sound_name, trigger), daemon=True)
-        self.play_thread.start()
+        """Триггер звукового эффекта: исход - ``SoundEvent`` с ``request_id`` запроса (его ждёт тул ``play_sound``)."""
+        trigger, request_id = parse_trigger(msg.data)
+        self.get_logger().info(f"🔔 Триггер: {trigger} (request {request_id[:8]})")
+        self.start_sound(trigger, request_id, queue=True)
 
     def sound_stop_callback(self, msg: String):
         """STOP на ``/voice/sound/stop`` закрывает голосовой стрим рации (barge-in)."""
@@ -340,12 +344,6 @@ class SoundNode(Node):
             if available:
                 return random.choice(available)
 
-        # 3.5. Issue #1251 — алиасы триггеров: "boop" → button_click (ранний «бульк»)
-        if trigger in self.trigger_aliases:
-            alias = self.trigger_aliases[trigger]
-            if alias in self.sounds:
-                return alias
-
         # 4. Попробовать найти похожий
         for sound_name in self.sounds.keys():
             if trigger.lower() in sound_name.lower():
@@ -353,11 +351,13 @@ class SoundNode(Node):
 
         return None
 
-    def play_sound_thread(self, sound_name: str, trigger: str):
-        """Воспроизведение звука в отдельном потоке."""
+    def play_sound_thread(self, sound_name: str, trigger: str, request_id: str = ""):
+        """Воспроизведение звука в отдельном потоке; ``started`` -> ``finished`` | ``skipped{busy|error}``."""
         self.is_playing = True
         self.current_sound = sound_name
         self.publish_state(f"playing_{sound_name}")
+        self.publish_sound_event(request_id, SoundEvent.KIND_STARTED, sound_name)
+        outcome, reason = SoundEvent.KIND_FINISHED, ""
 
         try:
             self.get_logger().info(f"▶️ Играю: {sound_name}")
@@ -399,6 +399,7 @@ class SoundNode(Node):
 
             if not success:
                 self.get_logger().warn(f"⚠️  Аудио устройство занято, пропуск {sound_name}")
+                outcome, reason = SoundEvent.KIND_SKIPPED, SKIP_BUSY
             else:
                 self.get_logger().info(f"✅ Завершено: {sound_name}")
 
@@ -407,11 +408,12 @@ class SoundNode(Node):
 
         except Exception as e:
             self.get_logger().error(f"❌ Ошибка воспроизведения {sound_name}: {e}")
+            outcome, reason = SoundEvent.KIND_SKIPPED, SKIP_ERROR
 
         finally:
-            self.is_playing = False
-            self.current_sound = None
+            self.publish_sound_event(request_id, outcome, sound_name, reason)
             self.publish_state("ready")
+            self.release_channel()
 
     def cleanup_playback_noise(self):
         """
@@ -496,9 +498,6 @@ class SoundNode(Node):
             "ui_radio_start": None,
             "ui_random": None,
             "ui_roger": None,
-
-            # Issue #1251 — ранний «бульк» (короткий клик) — без анимации
-            "boop": None,
 
             # Robot special effects
             "robot_glitch": "error",

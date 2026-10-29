@@ -1,22 +1,22 @@
 {
   "version": 1,
-  "created": "2026-10-14",
-  "base_sha": "ea5cdc0589aa7124a2a773f3c1545a050692867a",
+  "created": "2026-10-28",
+  "base_sha": "2719e5553d39719128495c779b90f55d967bd9d8",
   "limits": {
     "wmc": 80,
     "methods": 40
   },
   "classes": {
     "src/rob_box_harness/rob_box_harness/core/agent_core.py:AgentCore": {
-      "wmc": 172,
-      "methods": 29
+      "wmc": 152,
+      "methods": 24
     },
     "src/rob_box_llm/rob_box_llm/providers/deepseek.py:_OpenAICompatibleProvider": {
-      "wmc": 83,
+      "wmc": 82,
       "methods": 9
     },
     "src/rob_box_llm/rob_box_llm/providers/minimax_tts.py:MiniMaxTTSProvider": {
-      "wmc": 132,
+      "wmc": 131,
       "methods": 21
     },
     "src/rob_box_mcp_tools/rob_box_mcp_tools/core/rtttl_library.py:RtttlLibrary": {
@@ -24,12 +24,8 @@
       "methods": 15
     },
     "src/rob_box_mcp_tools/rob_box_mcp_tools/mcp_server.py:MCPServer": {
-      "wmc": 116,
-      "methods": 23
-    },
-    "src/rob_box_perception/rob_box_perception/context_aggregator_node.py:ContextAggregatorNode": {
-      "wmc": 81,
-      "methods": 18
+      "wmc": 96,
+      "methods": 20
     },
     "src/rob_box_perception/rob_box_perception/face_recognition.py:FaceRecognizer": {
       "wmc": 86,
@@ -44,7 +40,7 @@
       "methods": 59
     },
     "src/rob_box_quest/rob_box_quest/quest_node.py:QuestNode": {
-      "wmc": 171,
+      "wmc": 170,
       "methods": 36
     },
     "src/rob_box_quest/rob_box_quest/server/ws_server.py:WSSServer": {
@@ -52,8 +48,8 @@
       "methods": 54
     },
     "src/rob_box_supervisor/rob_box_supervisor/arbiter_node.py:AvatarArbiter": {
-      "wmc": 96,
-      "methods": 34
+      "wmc": 92,
+      "methods": 33
     },
     "src/rob_box_supervisor/rob_box_supervisor/supervisor_node.py:AvatarSupervisor": {
       "wmc": 321,
@@ -63,12 +59,8 @@
       "wmc": 133,
       "methods": 31
     },
-    "src/rob_box_telegram/rob_box_telegram/telegram_node.py:TelegramNode": {
-      "wmc": 81,
-      "methods": 20
-    },
     "src/rob_box_voice/rob_box_voice/audio_node.py:AudioNode": {
-      "wmc": 131,
+      "wmc": 125,
       "methods": 24
     },
     "src/rob_box_voice/rob_box_voice/core/faq_store.py:FAQStore": {
@@ -76,31 +68,23 @@
       "methods": 16
     },
     "src/rob_box_voice/rob_box_voice/core/voice_memory.py:VoiceMemory": {
-      "wmc": 153,
+      "wmc": 150,
       "methods": 31
     },
-    "src/rob_box_voice/rob_box_voice/dialogue_node.py:DialogueNode": {
-      "wmc": 894,
-      "methods": 176
-    },
-    "src/rob_box_voice/rob_box_voice/scheduler/task_scheduler.py:TaskScheduler": {
-      "wmc": 137,
-      "methods": 26
-    },
     "src/rob_box_voice/rob_box_voice/speaker_id_node.py:SpeakerIdNode": {
-      "wmc": 209,
+      "wmc": 195,
       "methods": 38
     },
     "src/rob_box_voice/rob_box_voice/stt_node.py:STTNode": {
-      "wmc": 228,
-      "methods": 42
+      "wmc": 201,
+      "methods": 39
     },
     "src/rob_box_voice/rob_box_voice/tts_node.py:TTSNode": {
-      "wmc": 717,
-      "methods": 112
+      "wmc": 599,
+      "methods": 98
     },
     "src/rob_box_voice/rob_box_voice/utils/speaker_embeddings.py:SpeakerDatabase": {
-      "wmc": 99,
+      "wmc": 97,
       "methods": 27
     }
   }

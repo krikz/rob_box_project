@@ -38,11 +38,13 @@ import logging
 import threading
 import time
 from dataclasses import replace
+from functools import partial
 from typing import Any, Callable, Dict, Iterable, List, Mapping, NamedTuple, Optional, Tuple
 
 from rob_box_music import knowledge as kn
 from rob_box_music.instruments import LeadChoice, lead_choice
-from rob_box_music.dj_line import now_playing_text, persona_title, set_not_found_text
+from rob_box_music.dj_line import now_playing_text, persona_title, set_not_found_text, tracks_word
+from rob_box_music.track_brief import BRIEF_FACTS
 from rob_box_music.arrange.compose import compose
 from rob_box_music.render.renardo import render
 from rob_box_music.set_plan import DEFAULT_TRACKS, MAX_TRACKS, seeded_plan, set_tracks
@@ -50,10 +52,13 @@ from rob_box_music.theme import ThemeProfile, match_style_text, match_window_tex
 
 from ..base import MCPTool, MCPToolParameter, MCPToolResult, ToolExecutionType
 from rob_box_music.request_slots import RequestSlots
-from rob_box_music.source import (CACHE, GENERATE, SYNTH, Route, SourceAsk, cache_text, decline_text, route_note,
+from rob_box_music.source import (CACHE, GEN_KINDS, GENERATE, SYNTH, Route, SourceAsk, ask_engine, blank_engine,
+                                  cache_text, decline_text, engine_route, gen_kind, route_note, settle_engine,
                                   source_ask)
 from rob_box_music.works import RTTTL, SCORE, key_slot
 
+from .brief import split_brief, unsupported, unsupported_note
+from .backing_deck import BACKING_INTENT, BackingDeck, backing_order
 from .chooser_model import DETERMINISTIC_MODE, chooser_from_env
 from .classic import ClassicPick, classic_picker
 from .gen.song import SongStudio
@@ -62,13 +67,16 @@ from .dj_lines import TransitionLines, Titles, latin_fold, library_titles
 from .piece import COMPOSER_MISSING, PieceChain, RecordLookup
 from .piece_cover import PieceCover, cover_work, theme_covers
 from .reasoner import SetPlanBox, SetReasoner
-from .request_slots import Catalog, RequestSlotParser
+from .request_slots import Catalog, RequestSlotParser, doubt_text
 from .score_library import ScoreLibrary, seed_plan, track_materials
 from .search import ThemeHits, part_query, ThemeQuery, terms, theme_search
 from .session import SetMemory, SetSession, plan_source, write_track_file
 from .instrumental_order import InstrumentalOrder
+from .order_level import LevelSetter, with_level
 from .source_route import SourceRouter
-from .theme_grounding import set_slots
+from .track_edit import LiveRecipe, TrackEditor, synth_title
+from .theme_choice import dj_set_slots
+from .theme_grounding import heard_theme
 from .theme_links import Ask, ThemeLinks
 
 _LOG = logging.getLogger(__name__)
@@ -95,14 +103,17 @@ NOT_FOUND = "not_found"
 #: Код отказа ``request_music``: просили «ещё <автор>», а всё подходящее уже играло (#3599); фразу строит код
 #: (``rob_box_voice.core.media_phrases.NO_MORE_REASON``, равенство держит тест).
 NO_MORE = "no_more"
+#: Поле отказа ``request_music`` (``reason=not_found``): слова названия, как услышаны, когда код не понял, что названо
+#: (#4016, ``RequestSlots.doubt``); фраза — ``request_slots.doubt_text``, ни пьеса, ни песня по обрывку не ставятся.
+DOUBT = "doubt"
 #: Код отказа ``dj_set(start)``: в реплике хода нет слова сета/диджея/вечеринки и стиля — человек просил одну пьесу
 #: (ADR-0157 §2.1, прогон 09.10: «сыграй баха на трамбоне» → LLM ``dj_set``). Решает код по ``heard_text``.
 NOT_A_SET_REQUEST = "not_a_set_request"
 #: Код отказа ``request_music``/``generate_music``: путь музыки не нашёл, чем играть просьбу (ADR-0158 PR-3); фразу
 #: строит ``rob_box_music.source.decline_text`` (``media_phrases.SOURCE_DECLINED_REASON``, равенство держит тест).
 SOURCE_DECLINED = "music_source"
-#: ``generate_music``: что просили (``kind``) и в каком жанре (``style``, ключи ``knowledge.GEN_STYLES``).
-GEN_KINDS = ("instrumental", "song", "robot_song")
+#: ``generate_music``: что просили (``kind`` — ``source.GEN_KINDS``, одна таблица видов) и в каком жанре (``style``,
+#: ключи ``knowledge.GEN_STYLES``).
 GEN_STYLE_CHOICES = ("", *kn.GEN_STYLES)
 
 
@@ -127,23 +138,15 @@ def lead_for(*texts: Optional[str]) -> Optional[LeadChoice]:
 
 def club_theme(text: str) -> str:
     """Тема одиночного трека: «сыграй (что-нибудь) на арфе» — заказ без названия, слова заказа и инструмента не тема
-    (грамматика разобрала их в ``REQUEST_MUSIC`` с инструментом, ADR-0157 §3.1); иначе — слова как есть."""
+    (грамматика разобрала их в ``REQUEST_MUSIC`` с инструментом, ADR-0157 §3.1). Иначе — слова реплики без глаголов
+    заказа и служебных слов (:func:`theme_grounding.heard_theme`, одно место, где тема выделяется из свободных слов)
+    и без названия движка («на синтезаторе», «на Ренардо» — путь, а не тема, #3960 п.2, #4070)."""
     from rob_box_voice.core.media_command_grammar import MediaIntent, parse_media_command
 
     command = parse_media_command(text)
-    return command.name if command.intent is MediaIntent.REQUEST_MUSIC and command.instrument else text
-
-
-def club_name(text: str, theme: str) -> str:
-    """Как назвать одиночный трек на «что играет» — так же, как фраза запуска роутера (``request_ok_text``): название
-    заказа по грамматике («поставь клубный трек» → «клубный трек»), иначе тема, иначе «клубный трек» (#3613: живой
-    прогон 13.10 — «Сейчас играет «поставь клубный трек»»)."""
-    from rob_box_voice.core.media_command_grammar import MediaIntent, parse_media_command
-
-    command = parse_media_command(text)
-    if command.intent is MediaIntent.REQUEST_MUSIC and command.name:
+    if command.intent is MediaIntent.REQUEST_MUSIC and command.instrument:
         return command.name
-    return theme or "клубный трек"
+    return heard_theme(blank_engine(text))
 
 
 def asks_more(heard_text: Optional[str]) -> bool:
@@ -158,6 +161,44 @@ def asks_more(heard_text: Optional[str]) -> bool:
 def lead_data(lead: Optional[LeadChoice]) -> Dict[str, Any]:
     """Поля результата об инструменте: по ним голосовая сторона строит фразу (``media_phrases.instrument_text``)."""
     return {"instrument": lead.asked, "instrument_played": lead.played} if lead else {}
+
+
+def brief_args(heard_text: Optional[str], heard_tracks: Optional[int], style: Optional[str],
+               styles: Optional[List[str]]) -> Tuple[Optional[str], Optional[int], Optional[str], Optional[List[str]], str]:
+    """Подробный промт (#3845, :mod:`brief`): ``(реплика, длина, стиль, стили, фраза о неиспользованном)`` для ``dj_set``.
+    Тема, длина, стиль и громкость - из просьбы (первый абзац), а не из роли/BPM/нот/таблицы; стили спецификации, что
+    движок знает (``source.set_genres``), заменяют ``auto`` и пустые ``styles``; темп, тональность и ноты называет
+    ``brief.unsupported`` - код скажет, что они не использованы. Короткая реплика - без изменений."""
+    brief = split_brief(heard_text)
+    if not brief.spec:
+        return heard_text, heard_tracks, style, styles, ""
+    from rob_box_music.source import set_genres
+    from rob_box_voice.core.set_length_words import heard_set_length
+
+    named = style if style not in (None, AUTO_STYLE) else (match_style_text(brief.spec) or style)
+    return (brief.head, heard_set_length(brief.head), named, styles or list(set_genres(brief.spec)[0]) or None,
+            unsupported_note(unsupported(brief.spec)))
+
+
+def set_opening(result: Dict[str, Any], lines: Optional[TransitionLines]) -> Dict[str, Any]:
+    """Сет заиграл и объявляет треки вслух: в данных исхода - название трека 1 (``opening``) и длина сета словами
+    (``tracks_text``). Фразу старта «Ставлю сет на N треков. Первый - «X».» строит диалог по ним
+    (``knowledge.DJ_DONE``) вместо общего «Включаю музыку.» (#4217, ADR-0148: названия берёт код, а не LLM). Названия
+    нет (трек 1 ещё не встал - мост ожидания генерации, или у него нет названия) - исход прежний."""
+    if not result.get("started") or lines is None:
+        return result
+    title = lines.opening.title()
+    tracks = result.get("tracks")
+    if not title or not isinstance(tracks, int):
+        return result
+    return {**result, "opening": title, "tracks_text": f"{tracks} {tracks_word(tracks)}"}
+
+
+def spec_noted(result: Dict[str, Any], note: str) -> Dict[str, Any]:
+    """Фраза о неиспользованной спецификации промта - после фразы пути (``source_note``), если сет заиграл."""
+    if not note or not result.get("ok"):
+        return result
+    return {**result, "source_note": " ".join(p for p in (result.get("source_note"), note) if p)}
 
 
 def set_style(style: Optional[str], theme: str, heard_text: Optional[str] = None) -> str:
@@ -212,10 +253,11 @@ def word_hooks(library_factory: Callable[[], Any]) -> WordHooks:
 
 
 def theme_finder(library_factory: Callable[[], Any], links: Optional[ThemeLinks] = None,
-                 ask: bool = True) -> ThemeFinder:
+                 ask: bool = True, wait_s: Optional[float] = None) -> ThemeFinder:
     """``тема -> ThemeHits`` по её словам (``engine.search.theme_search``); библиотека — при первой теме. Часть без
     находок — через связи реестра и проверенные каталогом строки поиска LLM (``engine.theme_links``, #3493); ``ask=False`` — без вопроса LLM (одиночная пьеса: ответ
-    не ждётся на пути звука, #3608), только хранилище связей."""
+    не ждётся на пути звука, #3608), только хранилище связей; ``wait_s`` — сколько ждать LLM (нет — как у сета, ``0`` —
+    только фоном, одиночный трек)."""
     box: Dict[str, Any] = {}
 
     def find(theme: str) -> ThemeHits:
@@ -228,12 +270,72 @@ def theme_finder(library_factory: Callable[[], Any], links: Optional[ThemeLinks]
         if links is None:
             return hits
         try:
-            return links.expand(box["lib"], theme, hits, ask=ask)
+            return links.expand(box["lib"], theme, hits, ask=ask, wait_s=wait_s)
         except Exception as exc:  # noqa: BLE001 — прямые находки не теряются из-за хранилища связей
             _LOG.warning(f"⚠️ [dj_set] связи темы «{theme}» упали: {type(exc).__name__}: {exc}")
             return hits
 
     return find
+
+
+def theme_finders(library_factory: Callable[[], Any], links: Optional[ThemeLinks],
+                  finder: Optional[ThemeFinder] = None) -> Tuple[ThemeFinder, ThemeFinder, ThemeFinder]:
+    """Поиски темы ``(сет, одиночная пьеса, одиночный трек)``: сет ждёт LLM (``THEME_ASK_WAIT_S``), пьеса её не
+    спрашивает (#3608), трек спрашивает только фоном (``THEME_ASK_WAIT_TRACK_S``, #3960 п.2). Подставной ``finder``
+    (тесты) заменяет все три."""
+    if finder is not None:
+        return finder, finder, finder
+    return (theme_finder(library_factory, links), theme_finder(library_factory, links, ask=False),
+            theme_finder(library_factory, links, wait_s=kn.THEME_ASK_WAIT_TRACK_S))
+
+
+def single_track_find(dj: Any, theme: str, mood: Optional[str], find: Optional[ThemeFinder] = None) -> ThemeFinder:
+    """Поиск темы одиночного трека — без ожидания LLM на пути звука (#3960 п.2): разбор темы 4–10 с упирался в потолок
+    действия музыки 10 с, ход закрывался «музыка пока не заиграла», хотя трек стартовал через 1.4 с. Поиск от вызывающего
+    (мост ожидания генерации) главнее. Пустая тема — искать нечего; заказ по настроению (слот ``mood``) называет не
+    произведение — каталог и хранилище связей, LLM не спрашивается совсем; иначе LLM только фоном."""
+    if find is not None:
+        return find
+    return dj.quick_find if mood or not theme else dj.track_find
+
+
+def track_label(profile: ThemeProfile) -> str:
+    """Тема трека для названия: тема, по которой нашлись хуки или материал, иначе пусто — слова просьбы без находок
+    («ровный ритм») названием трека не служат."""
+    return profile.theme if profile.source == "theme" else ""
+
+
+def playing_engine(owner: Any) -> str:
+    """Движок играющего трека из снимка плеера (``PlayerOwner.now_playing``, факт ``engine``); не играет — «». Факт
+    живёт в снимке и тогда, когда старт упал (``PlayerOwner.play`` кладёт факты до ``adapter.start``): движок
+    принимается, только пока дека занята — трек звучит (``playing``) или поставлен и ждёт ``started`` (``pending``)."""
+    now = getattr(owner, "now_playing", None)
+    snap = now() if callable(now) else {}
+    return str(snap.get("engine") or "") if snap.get("playing") or snap.get("pending") else ""
+
+
+def brief_facts(owner: Any) -> Dict[str, Any]:
+    """Факты описания играющего трека из снимка плеера (``PlayerOwner.now_playing``: название, стиль, темп, источник —
+    ``rob_box_music.track_brief.BRIEF_FACTS``, #4060); не играет или владельца нет - пусто."""
+    now = getattr(owner, "now_playing", None)
+    snap = now() if callable(now) else {}
+    return {k: snap[k] for k in BRIEF_FACTS if snap.get(k) not in (None, "")}
+
+
+def settled_ask(ask: SourceAsk, slot: Optional[str], texts: Tuple[Optional[str], ...], classic: bool,
+                owner: Any, log: Any) -> SourceAsk:
+    """Просьба с движком, который решил код по словам человека и снимку плеера (:func:`settle_engine`, #4013): слот
+    ``engine`` от LLM без опоры в словах отброшен, играющий движок унаследован («ускорь», «добавь баса»); пьеса по
+    названию и инструмент реплики — свой предмет заказа, наследования нет. Решение — строкой в лог."""
+    settled, note = settle_engine(ask, slot, playing_engine(owner), classic or lead_for(*texts) is not None)
+    if note:
+        log.info(f"🎚️ [engine] {note}")
+    return settled
+
+
+def engine_facts(ask: SourceAsk) -> Dict[str, str]:
+    """Движок заказа для снимка плеера (``TRACK_FACTS``): назван или унаследован — «ускорь» под ним наследует его."""
+    return {"engine": ask.engine} if engine_route(ask.engine) == SYNTH else {}
 
 
 def _shared(factory: Callable[[], Any]) -> Callable[[], Any]:
@@ -315,8 +417,11 @@ def music_busy(owner: Any, dj: Any) -> bool:
 #: intent=track, треки сета), пьеса по нотам партитуры, мелодия из архива RTTTL. Слова — ``media_phrases.SOURCE_WORDS``.
 SOURCE_SYNTH, SOURCE_PIECE, SOURCE_MELODY = "synth", "piece", "melody"
 _PIECE_SOURCES = {SCORE: SOURCE_PIECE, RTTTL: SOURCE_MELODY}
-#: Факты заказа, которые владелец плеера кладёт в снимок (поле ``dj``) — по ним код отвечает «что играет».
-TRACK_FACTS = ("title", "name", "source", "style", "bpm", "key", "instrument_played")
+#: Что не заиграло — во фразе отказа заказа: мелодия (пьеса по названию) или музыка.
+_NOT_PLAYING = {True: "мелодия не заиграла", False: "музыка не заиграла"}
+#: Факты заказа, которые владелец плеера кладёт в снимок (поле ``dj``) — по ним код отвечает «что играет». ``engine``
+#: — названный движок трека (``knowledge.MUSIC_ENGINES``): «ускорь» под ним наследует его (``source.settle_engine``).
+TRACK_FACTS = ("title", "name", "source", "style", "bpm", "key", "instrument_played", "engine")
 
 
 def track_facts(staged: Mapping[str, Any]) -> Dict[str, Any]:
@@ -354,6 +459,8 @@ def tool_result(data: Dict[str, Any], what: str) -> MCPToolResult:
 class DjSetTool(MCPTool):
     """«Ты диджей» v2: сет без LLM на пути звука; один сет за раз."""
 
+    event_source = "/voice/music/event"
+
     def __init__(self, node: Any, owner: Any, melodies: Optional[MelodyLookup] = None, *,
                  seed: Callable[[], int] = lambda: int(time.time()), confirm: Optional[Confirm] = None,
                  reasoner: Optional[SetReasoner] = None, speak: Optional[Callable[[str], None]] = None,
@@ -367,8 +474,9 @@ class DjSetTool(MCPTool):
         library = self.library = _shared(_rtttl_library)  # одна библиотека RTTTL на сет и одиночную пьесу
         self._melodies = melodies or library_melodies(library)
         links = theme_links(node, self._reasoner)
-        self._find = finder or theme_finder(library, links)
-        self._find_work = finder or theme_finder(library, links, ask=False)  # одиночная пьеса: LLM не на пути звука
+        #: ``_find_work``: одиночная пьеса — LLM не на пути звука; ``track_find``: одиночный трек (``request_music``
+        #: intent=track) — LLM-разбор темы только фоном, заказ его не ждёт (#3960 п.2, ``THEME_ASK_WAIT_TRACK_S``)
+        self._find, self._find_work, self.track_find = theme_finders(library, links, finder)
         #: Поиск темы без вопроса LLM (связи — только хранилище): мост ожидания генерации (песня, кавер, сет) берётся
         #: кодом мгновенно — 13.10 мост песни 8 с ждал theme-links, ``request_music`` 10.6 с > таймаута хода 10 с.
         self.quick_find = self._find_work
@@ -394,6 +502,8 @@ class DjSetTool(MCPTool):
         #: Сет из кэша и генерации (ADR-0158 PR-8, ``engine.gen.gen_session.GenSetMaker``): любой сет (тема, стиль,
         #: auto) — путь каждого трека чойсером: кэш → генерация → синтез-запас (В13, 14.10); ``None`` — только синтез.
         self.gen_sets: Any = None
+        #: Громкость музыки по словам заказа («сет потише»): шаг мастер-фейдера ставит ``mcp_server`` (``order_level``).
+        self.level: Optional[LevelSetter] = None
 
     @property
     def name(self) -> str:
@@ -448,12 +558,14 @@ class DjSetTool(MCPTool):
         ADR-0148), ход, запустивший сет (:meth:`started_in_turn`), и реплика хода: тема LLM не из неё (взята из
         истории диалога, 06.10 18:04) — тема реплики (``theme_grounding``). ``styles``/``minutes`` LLM — подсказка:
         стили и время из слов человека решает код (``GenSetMaker.plan``)."""
-        tracks = heard_tracks or tracks
         refusal = set_refusal(heard_text, self.running) if action == "start" else None
         if refusal is not None:
             return tool_result(refusal, "сет не начался")
+        heard_text, heard_tracks, style, styles, spec_note = brief_args(heard_text, heard_tracks, style, styles)
+        tracks = heard_tracks or tracks
+        free, theme_named = False, True
         if action == "start":  # «диджей X» одним видом: и от роутера, и от LLM
-            theme, persona = self._set_slots(theme, persona_title(persona) or None, heard_text)
+            theme, persona, free, theme_named = self._set_slots(theme, persona_title(persona) or None, heard_text)
         with self._lock:
             if action == "stop":
                 return self._stop()
@@ -466,18 +578,22 @@ class DjSetTool(MCPTool):
                 # окно стиля словами человека («гранж» → rock/grunge, ADR-0153 S5); нет слов — окно выбирает план
                 window = match_window_text(key, heard_text, theme)
                 result = self._start(theme or "", persona, key, named, window, heard_text,
-                                     hints=(styles, minutes))
+                                     hints=(styles, minutes), free=free, theme_named=theme_named)
             else:
                 return MCPToolResult(success=False, error=f"action={action!r}: есть только start и stop")
-        result = confirmed(result, self._confirm)  # ждём started вне замка
+        result = confirmed(spec_noted(result, spec_note), self._confirm)  # ждём started вне замка
+        result = set_opening(result, self._facts)
         self._session_turn = turn_id if result.get("ok") else None
-        return tool_result(result, "сет не начался")
+        return with_level(tool_result(result, "сет не начался"), heard_text, self.level,
+                          self.node.get_logger() if self.node is not None else _LOG)
 
     def _set_slots(self, theme: Optional[str], persona: Optional[str],
-                   heard_text: Optional[str]) -> Tuple[str, Optional[str]]:
-        """``(тема, персона)`` сета по реплике хода и последнему сету (``theme_grounding.set_slots``, #3581)."""
-        return set_slots(theme, persona, heard_text, self._last_dj,
-                         self.node.get_logger() if self.node is not None else _LOG)
+                   heard_text: Optional[str]) -> Tuple[str, Optional[str], bool, bool]:
+        """``(тема, персона, без платной генерации, тему назвал человек)`` сета по реплике хода и последнему сету: тема
+        — выбор чойсера из известных тем и слов реплики (``theme_choice.dj_set_slots``, решение Шифу 29.10); слова
+        реплики - догадка кода из голого слова (n605 М6: «сайт» вместо «сет») - сет только из кэша или синтезом,
+        платный заказ не уходит."""
+        return dj_set_slots(self, theme, persona, heard_text)
 
     @property
     def running(self) -> bool:
@@ -542,11 +658,15 @@ class DjSetTool(MCPTool):
     def _start(self, theme: str, persona: Optional[str], style: str = kn.DEFAULT_STYLE,
                tracks: Optional[int] = None, window: Optional[str] = None,
                heard_text: Optional[str] = None,
-               hints: Tuple[Optional[List[str]], Optional[int]] = (None, None)) -> Dict[str, Any]:
+               hints: Tuple[Optional[List[str]], Optional[int]] = (None, None), free: bool = False,
+               theme_named: bool = True) -> Dict[str, Any]:
         """Сет: путь каждого трека — кэш, генерация (:func:`generated_set`); синтез-сет (ADR-0149) — только запас
-        (В13), тогда фраза кода ``source_note`` говорит почему."""
+        (В13), тогда фраза кода ``source_note`` говорит почему. ``free`` — без платной генерации (смена настроения
+        сета, :func:`restyle_set`); ``theme_named`` — тему назвал человек (по ней в кэше ничего — заказ темы; иначе
+        сначала кэш стиля, решение Шифу 29.10 «давай В»)."""
         length, why = self.set_length(tracks)
-        generated, fallback = generated_set(self, theme, (style, window), persona, (length, why), heard_text, hints)
+        generated, fallback = generated_set(self, theme, (style, window), persona, (length, why), heard_text, hints,
+                                            free, theme_named)
         if generated is not None:
             return generated
         style, window = fallback.style, fallback.window
@@ -563,12 +683,14 @@ class DjSetTool(MCPTool):
         (logger or _LOG).info(f"🎛️ [dj_set] {set_id} длина сета: {length} ({why}), "
                               f"энергия={[t.energy for t in plan.tracks]}")
         materials = self.plan_materials(plan, logger)
-        box = SetPlanBox(plan, self._melodies, lines=self._transition_lines(persona, logger), logger=logger)
+        self._facts = self._transition_lines(persona, logger, self._missing)
+        box = SetPlanBox(plan, self._melodies, lines=self._facts, logger=logger)
         base = plan_source(box.current, self._memory, materials)
         self._facts.forecast = getattr(base, "upcoming", None)  # «дальше будет» — из той же очереди, что компоновка
         session = SetSession(self._owner, lambda no, deck: box.compose_mark(base(no, deck), no), set_id=set_id,
-                             bpm=plan.bpm, dj={"theme": theme, "persona": persona}, logger=logger,
-                             on_track_started=box.on_started, tracks_dir=self._tracks_dir, tracks=length)
+                             bpm=plan.bpm, logger=logger, on_track_started=box.on_started,
+                             dj={"theme": theme, "persona": persona, "style": plan.style, "source": SOURCE_SYNTH},
+                             tracks_dir=self._tracks_dir, tracks=length)
         result = session.start()
         self._session = session if result.get("ok") else None
         self._last = self._session or self._last
@@ -586,9 +708,11 @@ class DjSetTool(MCPTool):
         if self._session is not None:
             self._session.stop("new_set")
 
-    def adopt(self, session: SetSession, theme: str, persona: Optional[str]) -> None:
-        """Сет из генерации заиграл (ADR-0158 PR-8): он — идущий сет (стоп, «что играет», «продолжай»)."""
-        self._session, self._last, self._facts, self._last_dj = session, session, None, (theme, persona)
+    def adopt(self, session: SetSession, theme: str, persona: Optional[str],
+              lines: Optional[TransitionLines] = None) -> None:
+        """Сет из генерации заиграл (ADR-0158 PR-8): он — идущий сет (стоп, «что играет», «продолжай»); ``lines`` —
+        его факты играющего трека (``status`` отвечает по ним, как у сета синтезом; #4006)."""
+        self._session, self._last, self._facts, self._last_dj = session, session, lines, (theme, persona)
 
     def status(self) -> Dict[str, Any]:
         """Сет для ``get_music_state``: идёт (трек N из M), окончен сам или его нет; фразу строит код (ADR-0148)."""
@@ -597,8 +721,9 @@ class DjSetTool(MCPTool):
             return {"active": False, "message": "Диджей-сета не было."}
         info = {"set_id": session.set_id, "tracks": session.tracks, "track_no": session.track_no}
         now = self._facts.now() if self._facts is not None else {}
-        if session.active and now:
-            return {**info, **now, "active": True, "message": f"Идёт диджей-сет. {now_playing_text(now)}"}
+        if session.active and now:  # описание трека - из фактов деки (название, стиль, темп) и сета (мелодия, план)
+            text = now_playing_text({**brief_facts(self._owner), **now})
+            return {**info, **now, "active": True, "message": f"Идёт диджей-сет. {text}"}
         if session.active:
             return {**info, "active": True, "message": f"Идёт диджей-сет: трек {session.track_no} из {session.tracks}."}
         if session.ended:
@@ -606,15 +731,14 @@ class DjSetTool(MCPTool):
                     "message": f"Диджей-сет закончился сам: сыграны все {session.tracks} из {session.tracks}."}
         return {**info, "active": False, "ended": False, "message": "Диджей-сет остановлен."}
 
-    def _transition_lines(self, persona: Optional[str], logger: Any) -> TransitionLines:
-        """Факты и реплики сета: факты (мелодия трека, план дальше, не найденное) — всегда, в снимок и ``status``;
-        реплика — если включена параметром и есть чем говорить; раскраска — LLM ризонера (его breaker)."""
+    def _transition_lines(self, persona: Optional[str], logger: Any, missing: Tuple[str, ...] = ()) -> TransitionLines:
+        """Факты и реплики сета — одни правила для сета синтезом и сета из генерации (#4006): факты (мелодия трека,
+        план дальше, ``missing`` — не найденное) — всегда, в снимок и ``status``; реплика — если включена параметром
+        (``music_v2_dj_lines``) и есть чем говорить (``speak_text`` робота); раскраска — LLM ризонера (его breaker)."""
         speak = self._speak if self._lines else None
         ask = self._reasoner.ask if self._reasoner.enabled and speak is not None else None
-        lines = TransitionLines(speak, titles=self._titles, ask=ask, persona=persona, missing=self._missing,
-                                publish=getattr(self._owner, "update_dj", None), fold=latin_fold, logger=logger)
-        self._facts = lines
-        return lines
+        return TransitionLines(speak, titles=self._titles, ask=ask, persona=persona, missing=missing,
+                               publish=getattr(self._owner, "update_dj", None), fold=latin_fold, logger=logger)
 
     def close_set(self, reason: str) -> None:
         """Закрыть идущий сет: деку занимает другой запрос (``request_music``)."""
@@ -632,8 +756,27 @@ class DjSetTool(MCPTool):
         return MCPToolResult(success=True, data={**session.stop("user_stop"), "was_playing": True})
 
 
+def restyle_set(dj: DjSetTool, style: str) -> Dict[str, Any]:
+    """Идущий сет — дальше в стиле ``style`` (#4173: «помягче» под сетом меняет настроение сета): тема и персона
+    идущего сета, остаток его длины (``DjSetTool.set_length``) — тот же путь, что смена темы посреди сета (#3400).
+    Решает правка (``track_edit.plan_edit``, ``knowledge.SET_VIBES``), а не модель; реплики хода нет — её слова не
+    становятся темой. Платной генерации смена настроения не заказывает (решение 29.10: иначе каждый прогон n607 —
+    деньги): путь трека — кэш стиля, кэш не закрывает остаток — сет синтезом (``free``, :func:`synth_instead`).
+    Сета нет — ``ok: false``."""
+    last = dj._last_dj  # noqa: SLF001 — тема и персона идущего сета
+    if not dj.running or last is None:
+        return {"ok": False, "reason": "no_set"}
+    with dj._lock:  # noqa: SLF001 — как ``execute``: один сет за раз
+        result = dj._start(last[0], last[1], style, free=True)  # noqa: SLF001
+    result = confirmed(result, dj._confirm)  # noqa: SLF001 — ждём started вне замка
+    dj._session_turn = None  # noqa: SLF001
+    return {**result, "ok": bool(result.get("ok"))}
+
+
 class RequestMusicTool(MCPTool):
     """«Поставь клубный трек» v2: один club-трек из ``compose``/``render``, без LLM на пути звука."""
+
+    event_source = "/voice/music/event"
 
     def __init__(self, node: Any, owner: Any, dj: DjSetTool, melodies: Optional[MelodyLookup] = None, *,
                  seed: Callable[[], int] = lambda: int(time.time()), confirm: Optional[Confirm] = None,
@@ -667,6 +810,12 @@ class RequestMusicTool(MCPTool):
         self._instrumental = (InstrumentalOrder(instrumental, play_cached, speak, hold=lambda: self.hold, log=self._log)
                               if instrumental is not None else None)
         self._play_cached = play_cached  # трек кэша — play_library_track: дека владельца (ADR-0158 PR-2)
+        #: Подложка выступления (``intent=backing``, ADR-0150 PR-7c): ставит ``mcp_server`` — ей нужен клок адаптера.
+        self.backing: Optional[BackingDeck] = None
+        #: Громкость музыки по словам заказа («только негромко»): шаг мастер-фейдера ставит ``mcp_server`` (``order_level``).
+        self.level: Optional[LevelSetter] = None
+        #: Правка играющего (#4029): рецепты своих синт-треков (трек и подложка) — тул ``edit_music``.
+        self.editor = TrackEditor(owner, log=self._log, restyle=partial(restyle_set, dj))  # «помягче» под сетом
         # кавер пьесы (ADR-0158 PR-4): ``cover`` — gen.cover.CoverMaker; нет — кавер-кандидатов нет
         self._cover = PieceCover(cover, speak, self._log) if cover is not None else None
         self._tracks_dir = tracks_dir or None  # модели сыгранных пьес, как у треков сета (I24)
@@ -678,8 +827,10 @@ class RequestMusicTool(MCPTool):
 
     def warm(self) -> threading.Thread:
         """Прогреть путь одиночной пьесы в фоне (#3577: первый заказ после рестарта — 4.6 с при бюджете 2.5 с):
-        индекс партитур, каталог RTTTL, история — до первого заказа, старт ноды не ждёт."""
-        thread = threading.Thread(target=self._pieces.warm, name="rbx-piece-warm", daemon=True)
+        индекс партитур, каталог RTTTL, история, указатель звучаний разбора на слух (#4016) — до первого заказа, старт
+        ноды не ждёт."""
+        thread = threading.Thread(target=warm_order, args=(self._pieces, self._slots), name="rbx-piece-warm",
+                                  daemon=True)
         thread.start()
         return thread
 
@@ -691,19 +842,30 @@ class RequestMusicTool(MCPTool):
     def description(self) -> str:
         return ("Поставить музыку по просьбе человека: intent=track — клубный трек (темп, тональность и "
                 "аранжировку решает код), intent=melody — известная мелодия по названию из text. text — слова "
-                "человека дословно. Об успехе робот скажет сам, когда музыка реально заиграет; ok=false — "
-                "музыка не заиграла.")
+                "человека дословно. engine=synth — только если человек сам назвал синтез («на синтезаторе», "
+                "«на синте», «вживую», «на Ренардо», искажённо «на индардо»): играет живой синтез, не готовый "
+                "трек и не генерация; не называл — engine не заполняй. "
+                "Об успехе робот скажет сам, когда музыка реально заиграет; ok=false — музыка не заиграла.")
 
     @property
     def parameters(self) -> List[MCPToolParameter]:
         return [
-            MCPToolParameter(name="intent", type="string", description="track — трек, melody — мелодия по названию",
-                             enum=["track", "melody"]),
+            # Схема для LLM — только track/melody. ``backing`` (BACKING_INTENT) заказывает код выступления; enum не
+            # строгий, чтобы тул принял его от кода, а LLM-путь отказывает в ``PlanToolExecutor.execute`` (#3700).
+            MCPToolParameter(name="intent", type="string",
+                             description="track — трек, melody — мелодия по названию",
+                             enum=["track", "melody"], enum_strict=False),
             MCPToolParameter(name="text", type="string", description="Слова человека дословно, без пересказа"),
             MCPToolParameter(name="mood", type="string", description="Настроение трека", required=False,
                              enum=sorted(kn.MOOD_ENERGY)),
             MCPToolParameter(name="genre", type="string", description="Жанр; auto — решает код", required=False,
-                             enum=["auto", "club", "classical", "folk"]),
+                             enum=["auto", "club", "classical", "folk", "rock"]),
+            MCPToolParameter(name="engine", type="string", required=False,
+                             description="Движок: synth — только если человек назвал синтез (синтезатор, синт, "
+                                         "вживую, Ренардо); иначе auto",
+                             enum=[kn.ENGINE_AUTO, *kn.MUSIC_ENGINES]),
+            MCPToolParameter(name="min_seconds", type="number", required=False,
+                             description="Служебный аргумент кода выступления, не заполняй"),
         ]
 
     @property
@@ -720,14 +882,19 @@ class RequestMusicTool(MCPTool):
 
     def execute(self, intent: str = "track", text: str = "", mood: Optional[str] = None,
                 genre: Optional[str] = None, turn_id: Optional[str] = None,
-                heard_text: Optional[str] = None) -> MCPToolResult:
+                heard_text: Optional[str] = None, min_seconds: Optional[float] = None,
+                engine: Optional[str] = None) -> MCPToolResult:
         """``turn_id`` и ``heard_text`` — скрытые аргументы хода (``llm_adapter.TURN_CONTEXT_ARGS``): сет этого хода не
-        снимается; инструмент («на балалайке») — из реплики хода (:func:`lead_for`), LLM его не выбирает."""
-        return self.order(intent, text, mood, genre, turn_id, heard_text)
+        снимается; инструмент («на балалайке») — из реплики хода (:func:`lead_for`), LLM его не выбирает.
+        ``backing`` — подложка выступления (:mod:`.backing_deck`, ADR-0150 PR-7c)."""
+        if intent == BACKING_INTENT:
+            return tool_result(backing_order(self.backing, mood, min_seconds), "бит не заиграл")
+        result = self.order(intent, text, mood, genre, turn_id, heard_text, engine=engine)
+        return with_level(result, heard_text or text, self.level, self._log())  # «негромко» в заказе - код, #4136
 
     def order(self, intent: str = "track", text: str = "", mood: Optional[str] = None, genre: Optional[str] = None,
               turn_id: Optional[str] = None, heard_text: Optional[str] = None,
-              ask: Optional[SourceAsk] = None, gen_failed: str = "") -> MCPToolResult:
+              ask: Optional[SourceAsk] = None, gen_failed: str = "", engine: Optional[str] = None) -> MCPToolResult:
         """Заказ: путь музыки решает код (ADR-0158 PR-3) по просьбе ``ask`` (нет — слова реплики хода), затем
         синтез/пьеса как раньше, трек кэша (:meth:`_play_cache`) или честный отказ с фразой кода."""
         set_id = self._dj.started_in_turn(turn_id)
@@ -736,10 +903,13 @@ class RequestMusicTool(MCPTool):
                                 "detail": "сет запущен в этом ходе и играет — заказ его не заменяет"},
                                "музыка не заменена")
         classic = intent == "melody" or genre in CLASSIC_GENRES
-        what = "мелодия не заиграла" if classic else "музыка не заиграла"
+        what = _NOT_PLAYING[classic]
         # пьеса собирается до выбора пути: кавер (ADR-0158 PR-4) — по её произведению, мост и фолбэк — она сама
-        ask = ask or source_ask(heard_text or text)
+        ask = settled_ask(ask or source_ask(heard_text or text), engine, (text, heard_text), classic, self._owner,
+                          self._log())
         piece = self._stage_piece(text, heard_text) if classic else None
+        if _asked_back(piece):  # непонятно, что названо (#4016): переспрос, а не песня или пьеса по обрывку
+            return tool_result(piece, what)
         work = cover_work(piece) if self._cover is not None else None  # исполнителя кавера нет — кавер-пути нет
         route = self._source.route(ask, piece=classic, work=work, gen_failed=gen_failed)
         bridge = is_bridge(route, self._cover)
@@ -749,6 +919,7 @@ class RequestMusicTool(MCPTool):
         staged = self._stage(route, piece, text, mood, heard_text, bridge_find(self._dj, gen_failed))
         if "program" not in staged:  # не нашлось / не собралось: идущий сет играет дальше
             return tool_result(staged, what)
+        staged.update(engine_facts(ask))  # движок трека — в снимок плеера: «ускорь» под ним наследует его (#4013)
         program, once, row, model = unstage(staged)
         self._dj.close_set("request_music")  # деку снимаем только под собранный заказ
         # мост ожидания генерации (кавер — PR-4, песня — PR-7) держит звук до результата (BridgeHold, PR-8)
@@ -767,10 +938,14 @@ class RequestMusicTool(MCPTool):
             self._write_model(model)
 
     def _stage_piece(self, text: str, heard_text: Optional[str]) -> Dict[str, Any]:
-        """Пьеса по названию с инструментом реплики — собрана, не запущена (мост/фолбэк кавера и сам синтез)."""
+        """Пьеса по названию с инструментом реплики — собрана, не запущена (мост/фолбэк кавера и сам синтез).
+        Просили сочинить песню (:func:`song_asked`), а пьеса собралась по словам темы — она не названа (#4015)."""
         lead = lead_for(heard_text, text)
         staged = self._stage_classic(text, lead, asks_more(heard_text))
         staged.update(lead_data(lead))
+        played = staged.get("played") or {}
+        if played.get("named") and song_asked(heard_text or text):
+            staged["played"] = {**played, "named": False}
         return staged
 
     def _stage(self, route: Route, piece: Optional[Dict[str, Any]], text: str, mood: Optional[str],
@@ -798,6 +973,8 @@ class RequestMusicTool(MCPTool):
             return self._song_order.start(ask, args, self.order, tool_result)
         if route.kind == CACHE and route.track is not None and self._play_cached is not None:
             return play_cache(self._play_cached, route, what, hold_start(self) if held else None)
+        # путь live:* (#4079: петь вживую назвали словами) — тоже сюда: поёт сам робот (perform диалога v2, форма хода
+        # закрывает этот тул), агенту без формы пения (чат, v1) — фраза кода ``decline_text``, не генерация
         return tool_result({"ok": False, "reason": SOURCE_DECLINED, "route": route.id,
                             "message": decline_text(route)}, what)
 
@@ -812,22 +989,26 @@ class RequestMusicTool(MCPTool):
         """Трек плана с энергией настроения: ``compose`` → ``render`` (дека A) — собран, но не запущен; ``lead`` —
         синт инструмента заказа; ``style`` — стиль синтеза, который выбрал путь (ADR-0158)."""
         theme = club_theme(text)
+        find = single_track_find(self._dj, theme, mood, find)
         profile = (self._dj.theme_profile(theme, style, find) if style in kn.STYLES and style != kn.DEFAULT_STYLE
                    else self._dj.theme_profile(theme, find=find))
+        label = track_label(profile)  # тема без находок — не название трека
         seed = self._seed()
         plan = seeded_plan(profile, seed, set_id=f"req{seed % 100000:05d}")
         energy = kn.MOOD_ENERGY.get(mood or "", kn.ENERGY_WAVE[0])
         track_no = kn.ENERGY_WAVE.index(energy) + 1
         try:
-            model = compose(plan, track_no, melodies=self._melodies(profile.hook_ids), deck="A",
-                            materials=self._dj.plan_materials(plan), lead_synth=lead and lead.synth)
+            recipe = LiveRecipe(plan, track_no, self._melodies(profile.hook_ids), self._dj.plan_materials(plan),
+                                lead and lead.synth, "A", label)
+            model = compose(plan, track_no, melodies=recipe.melodies, deck="A", materials=recipe.materials,
+                            lead_synth=recipe.lead_synth)
             program = render(model, "A")
         except Exception as exc:  # noqa: BLE001 — отказ громкий (I25), звука нет
             return self._owner.reject(f"{plan.set_id}:{track_no:02d}:A", "compose_error",
                                       f"{type(exc).__name__}: {exc}")
-        title = f"{profile.theme or 'клубный трек'} · {plan.bpm} BPM"
+        self.editor.remember(program.track_id, replace(recipe, code=program.code))  # «потяжелее» — правка (#4029)
+        title = synth_title(label, plan.bpm)
         return {"program": program, "once": False, "bridge_model": model, "title": title,
-                "name": club_name(text, profile.theme),
                 "source": SOURCE_SYNTH, "style": plan.style, "bpm": plan.bpm, "energy": energy,
                 "theme_source": profile.source}
 
@@ -857,6 +1038,8 @@ class RequestMusicTool(MCPTool):
         query = command.name if command.intent is MediaIntent.PLAY_NAMED else text
         work, key = key_slot(query)
         slots, slot_lead = self._request_slots(text, work, command, lead)
+        if slots.doubt:  # непонятых слов больше понятых, на слух не нашлось (#4016): не играть по обрывку «хилл»
+            return _doubt_refusal(slots.doubt)
         work, lead = slots.query, lead or slot_lead
         seed = self._seed()
         try:
@@ -867,28 +1050,72 @@ class RequestMusicTool(MCPTool):
         self._log().info(f"🎼 [classic] «{work}» тональность={key or '—'}: кандидатов {count}, недавние "
                          f"{self._pieces.memory.recent()} → {_piece_line(pick, played)}; "
                          f"отказы: {'; '.join(reasons) or '—'}")
-        if pick is None and played.get("repeats"):  # просили «ещё», а всё подходящее уже играло
-            from rob_box_voice.core.media_phrases import no_more_text
-            return {"ok": False, "found": True, "reason": NO_MORE, "query": work,
-                    "message": no_more_text(work, played["repeats"][0])}
-        if pick is None and played.get(COMPOSER_MISSING):  # композитор назван, его пьес нет: фраза кода (#3604)
-            from rob_box_voice.core.media_phrases import composer_missing_text
-            return {"ok": False, "found": False, "reason": NOT_FOUND, "detail": "; ".join(reasons), "query": work,
-                    "composer_missing": True,
-                    "message": composer_missing_text(str(played.get("composer") or ""))}
-        if pick is None and not count:
-            return {"ok": False, "found": False, "reason": NOT_FOUND, "detail": "; ".join(reasons), "query": work}
-        if pick is None:
-            return self._owner.reject(f"classic:{work}", "compose_error", "; ".join(reasons))
-        return {"program": pick.program, "once": True, "found": True, "title": pick.title, "melody_id": pick.melody_id,
-                "bpm": pick.bpm, "key": pick.key, "played": played, "history": dict(pick.history), "track": pick.track,
-                "work": pick.work, **lead_data(slot_lead)}
+        return _classic_outcome(self._owner, work, (pick, played, reasons, count), slot_lead, slots.by_sound)
+
+
+def warm_order(pieces: PieceChain, slots: Optional[RequestSlotParser]) -> None:
+    """Прогрев заказа пьесы (в фоне, ``RequestMusicTool.warm``): цепочка пьес (#3577), затем указатель звучаний разбора
+    на слух (#4016). Упал — заказ построит указатель сам, нода не падает."""
+    pieces.warm()
+    try:
+        if slots is not None:
+            slots.warm()
+    except Exception as exc:  # noqa: BLE001 — прогрев не держит ноду
+        _LOG.warning(f"⚠️ [request-slots] прогрев указателя звучаний упал: {type(exc).__name__}: {exc}")
+
+
+def _classic_outcome(owner: Any, work: str, chosen: Tuple[Any, Dict[str, Any], List[str], int],
+                     slot_lead: Optional[LeadChoice], heard: bool = False) -> Dict[str, Any]:
+    """Исход заказа пьесы по выбору ``PieceChain.play`` (``chosen`` — ``(pick, played, reasons, count)``): собранная
+    пьеса или отказ с фразой кода (вынесено из ``RequestMusicTool._stage_classic``: бюджет класса, ADR-0145).
+    ``heard`` — название узнано на слух (``RequestSlots.by_sound``): пьесу назвал человек (``played["named"]``), хотя
+    каталог её не подтвердил («спой раннинг ап дэд хилл» — чужая песня по названию, #4015)."""
+    pick, played, reasons, count = chosen
+    if pick is None and played.get("repeats"):  # просили «ещё», а всё подходящее уже играло
+        from rob_box_voice.core.media_phrases import no_more_text
+        return {"ok": False, "found": True, "reason": NO_MORE, "query": work,
+                "message": no_more_text(work, played["repeats"][0])}
+    if pick is None and played.get(COMPOSER_MISSING):  # композитор назван, его пьес нет: фраза кода (#3604)
+        from rob_box_voice.core.media_phrases import composer_missing_text
+        return {"ok": False, "found": False, "reason": NOT_FOUND, "detail": "; ".join(reasons), "query": work,
+                "composer_missing": True,
+                "message": composer_missing_text(str(played.get("composer") or ""))}
+    if pick is None and not count:
+        return {"ok": False, "found": False, "reason": NOT_FOUND, "detail": "; ".join(reasons), "query": work}
+    if pick is None:
+        return owner.reject(f"classic:{work}", "compose_error", "; ".join(reasons))
+    return {"program": pick.program, "once": True, "found": True, "title": pick.title, "melody_id": pick.melody_id,
+            "bpm": pick.bpm, "key": pick.key, "played": {**played, "named": bool(played.get("named")) or heard},
+            "history": dict(pick.history), "track": pick.track, "work": pick.work, **lead_data(slot_lead)}
+
+
+def _doubt_refusal(heard: str) -> Dict[str, Any]:
+    """Отказ заказа пьесы, когда непонятно, что названо (#4016, ``RequestSlots.doubt``): ``not_found`` со словами, как
+    услышаны, и фразой кода «не уверен, что это за песня — «…»?» (её скажет голос, :func:`tool_result`)."""
+    return {"ok": False, "found": False, "reason": NOT_FOUND, "query": heard, DOUBT: heard,
+            "message": doubt_text(heard)}
+
+
+def song_asked(said: str) -> bool:
+    """Человек просил сочинить или спеть песню (про что-то, «что-нибудь», «народную»), а не назвал пьесу (#4015 ревью):
+    грамматика узнала в его словах ``GENERATE``. «Спой о море» — песня о море, а не «Baby One More Time» по слову
+    «море»; «спой валькирии» — не ``GENERATE`` (название решают слова названия, ``piece.named_pick``)."""
+    from rob_box_voice.core.media_command_grammar import MediaIntent, parse_media_command
+
+    return parse_media_command(said or "").intent is MediaIntent.GENERATE
+
+
+def _asked_back(piece: Optional[Mapping[str, Any]]) -> bool:
+    """Заказ пьесы кончился переспросом (:func:`_doubt_refusal`): ни мост, ни песня, ни кавер по обрывку не нужны."""
+    return bool(piece and piece.get(DOUBT))
 
 
 class GenerateMusicTool(MCPTool):
     """«Сгенерируй …» (ADR-0158 §3.3, PR-3): узкий тул-просьба. Становится слотами ``asked_generated`` (+ петь /
     своим голосом по ``kind``, жанр по ``style``) и идёт тем же путём, что ``request_music``: денег, лимита или
     исполнителя генерации нет — кандидатов генерации нет, играет своё или сочинённое раньше, либо честный отказ."""
+
+    event_source = "/voice/music/event"
 
     def __init__(self, node: Any, request: RequestMusicTool) -> None:
         super().__init__(node)
@@ -903,7 +1130,8 @@ class GenerateMusicTool(MCPTool):
         return ("Просьба сгенерировать музыку (Suno): kind=instrumental — без слов, song — песня, robot_song — песня "
                 "голосом робота; style — жанр, если назван. Это просьба, а не приказ: что играть (новую генерацию, "
                 "сочинённое раньше или своё) и что сказать — решает робот сам по словам человека; ok=false — "
-                "честный отказ, его фразу робот скажет сам.")
+                "честный отказ, его фразу робот скажет сам. Песня про X — kind=robot_song, "
+                "theme=слова человека (не music_library); слов песни не сочиняй и не читай через speak_text.")
 
     @property
     def parameters(self) -> List[MCPToolParameter]:
@@ -938,10 +1166,66 @@ class GenerateMusicTool(MCPTool):
             allowed = f"есть {list(GEN_KINDS)} и {list(GEN_STYLE_CHOICES)}"
             return MCPToolResult(success=False, error=f"kind={kind!r}/style={style!r}: {allowed}")
         heard = source_ask(heard_text or theme or "")
+        # тул «сгенерируй» сам просит иной путь, чем «играй сам»: движок здесь — названный по имени («Ренардо») или
+        # словом движка («на синтезаторе» = «на Ренардо», решение Шифу 27.10, #4090 D: синт играет бесплатно, без
+        # KIE), а «вживую» (слово по смыслу) в генерации и песне — не просьба к синтезу (#4070)
         ask = replace(heard, generated=True, vocal=heard.vocal or kind != "instrumental",
-                      robot_voice=heard.robot_voice or kind == "robot_song", genre=heard.genre or style or "")
+                      robot_voice=heard.robot_voice or kind == "robot_song", genre=heard.genre or style or "",
+                      engine=ask_engine(heard_text or theme or "", by_meaning=False))
         return self._request.order("track", theme or heard_text or "", turn_id=turn_id, heard_text=heard_text,
                                    ask=ask)
+
+
+class EditMusicTool(MCPTool):
+    """«Сделай бит потяжелее», «ускорь», «добавь баса» (#4029): правка ИГРАЮЩЕЙ музыки, а не заказ новой. Виды правки
+    решает код по словам реплики хода (``knowledge.TRACK_EDITS``), слот ``change`` — только когда слова их не
+    называют; свой синт-трек и бит выступления меняются на ближайшем такте (``engine.track_edit``), готовая запись,
+    пьеса и сет — честный отказ кодом с предложением. Фраза исхода — ``message`` результата."""
+
+    event_source = "inproc:player_owner"
+
+    def __init__(self, node: Any, request: RequestMusicTool) -> None:
+        super().__init__(node)
+        self._request = request
+
+    @property
+    def name(self) -> str:
+        return "edit_music"
+
+    @property
+    def description(self) -> str:
+        return ("Поменять ИГРАЮЩУЮ музыку на ходу, не заказывая новую: быстрее/медленнее, тяжелее (металличнее), "
+                "мрачнее, светлее, мягче, больше или меньше баса, «играй дальше в том же духе». Свой бит и бит "
+                "выступления меняются на ближайшем такте, выступление не прерывается; готовую запись так не "
+                "изменить — тул честно скажет, что может. Что сказать, вернёт тул.")
+
+    @property
+    def parameters(self) -> List[MCPToolParameter]:
+        return [
+            MCPToolParameter(name="change", type="string", required=False, enum=list(kn.TRACK_EDITS),
+                             description="Что поменять, если человек сказал это не прямыми словами"),
+        ]
+
+    @property
+    def slice(self) -> str:
+        return "personality"
+
+    @property
+    def execution_type(self) -> ToolExecutionType:
+        return ToolExecutionType.FAST
+
+    @property
+    def destructive(self) -> bool:
+        return False
+
+    def execute(self, change: Optional[str] = None, turn_id: Optional[str] = None,
+                heard_text: Optional[str] = None) -> MCPToolResult:
+        """``heard_text`` — скрытый аргумент хода (``llm_adapter.TURN_CONTEXT_ARGS``): виды правки — из него."""
+        slot = (change,) if change in kn.TRACK_EDITS else ()
+        data = self._request.editor.edit(slot, heard_text)
+        if data.get("ok"):
+            return MCPToolResult(success=True, data=data)
+        return MCPToolResult(success=False, data=data, error=str(data.get("message") or "музыка не изменилась"))
 
 
 def bridge_source(dj: DjSetTool, theme: str, set_id: str,
@@ -969,17 +1253,32 @@ def noted(result: Dict[str, Any], note: str) -> Dict[str, Any]:
     return {**result, "source_note": note} if note and result.get("ok") else result
 
 
+def synth_instead(plan: Any, key: str, window: Optional[str], free: bool) -> Optional[SynthFallback]:
+    """Синтез-сет вместо сета из кэша: ни у одного трека нет пути кэша/генерации — запас первым стилем, который синтез
+    играет, с фразой почему (В13); такого нет — ``None`` (отказ сета). Смена настроения (``free``, #4173: без платной
+    генерации): кэш стиля закрывает весь остаток — сет из кэша (``None``), иначе сет синтезом в самом стиле
+    настроения (``key`` — ключ ``STYLES``: синт его играет) на весь остаток, молча (почему не генерация — не
+    новость)."""
+    from .gen.gen_session import synth_set_note
+
+    if free:
+        return None if plan.routes and len(plan.played()) == len(plan.routes) else SynthFallback(key, window)
+    fallback = plan.synth_style()
+    if fallback is None or plan.played():
+        return None
+    return SynthFallback(fallback, window if fallback == key else None, synth_set_note(plan.gen_reason(), fallback))
+
+
 def generated_set(dj: DjSetTool, theme: str, style: Tuple[str, Optional[str]], persona: Optional[str],
                   length: Tuple[int, str], heard_text: Optional[str],
-                  hints: Tuple[Optional[List[str]], Optional[int]] = (None, None),
-                  ) -> Tuple[Optional[Dict[str, Any]], SynthFallback]:
+                  hints: Tuple[Optional[List[str]], Optional[int]] = (None, None), free: bool = False,
+                  theme_named: bool = True) -> Tuple[Optional[Dict[str, Any]], SynthFallback]:
     """Сет из кэша и генерации (ADR-0158 PR-8, решение Шифу 14.10 — любой сет: тема, стиль, auto) →
     ``(результат, …)``; ни у одного трека нет пути кэша/генерации — ``(None, запас)``: синтез-сет первым стилем,
     который синтез играет, с фразой почему; исполнителя нет — ``(None, запас)`` стилем сета без фразы, как раньше.
     Синтез стили сета не играет (джаз, рок без денег и кэша) — отказ с фразой кода, идущий сет не снят.
-    ``style`` — ``(стиль сета, окно)``, ``length`` — ``(длина, откуда)``."""
-    from .gen.gen_session import synth_set_note
-
+    ``style`` — ``(стиль сета, окно)``, ``length`` — ``(длина, откуда)``; ``free`` — без платной генерации
+    (смена настроения сета, #4173: путь трека — только кэш, иначе синтез, :func:`synth_instead`)."""
     key, window = style
     makers = dj.gen_sets
     if makers is None:
@@ -989,20 +1288,22 @@ def generated_set(dj: DjSetTool, theme: str, style: Tuple[str, Optional[str]], p
     covers = (theme_covers(dj, theme, dj._seed(), log,  # noqa: SLF001 — В14/В16: каверы произведений темы
                            library_records(dj.library)) if theme and makers.cover_ready() else [])
     plan = makers.plan(theme, genre, heard_text, length[0], named=length[1] == "названо", styles=hints[0] or (),
-                       minutes=hints[1], covers=covers)
-    fallback = plan.synth_style()
-    if not plan.played() and fallback is not None:  # окно — у стиля сета, не у стиля запаса
-        return None, SynthFallback(fallback, window if fallback == key else None,
-                                   synth_set_note(plan.gen_reason(), fallback))
+                       minutes=hints[1], covers=covers, gen_failed=kn.SET_VIBE_NO_GEN if free else "",
+                       theme_named=theme_named)
+    instead = synth_instead(plan, key, window, free)  # окно — у стиля сета, не у стиля запаса
+    if instead is not None:
+        return None, instead
     seed = dj._seed()  # noqa: SLF001 — тот же сид, что у сета синтезом
     set_id = f"gen{seed % 100000:05d}"
     reasoner = dj._reasoner  # noqa: SLF001
+    lines = dj._transition_lines(persona, log)  # noqa: SLF001 — реплика на каждом переходе, как у сета синтезом
     result = makers.start(plan, dj._owner, theme=theme, persona=persona, set_id=set_id,  # noqa: SLF001
                           bridge=bridge_source(dj, theme, set_id, seed), speak=dj._speak,  # noqa: SLF001
-                          line_ask=reasoner.ask if reasoner.enabled else None, replace_set=dj._drop_session)  # noqa: SLF001
+                          line_ask=reasoner.ask if reasoner.enabled else None, replace_set=dj._drop_session,  # noqa: SLF001
+                          lines=lines)
     session = result.pop("session", None)
     if session is not None:
-        dj.adopt(session, theme, persona)
+        dj.adopt(session, theme, persona, lines)
     return {**result, "seed": seed}, SynthFallback(key, window)
 
 
@@ -1057,7 +1358,7 @@ def play_cache(play: Callable[..., MCPToolResult], route: Route, what: str,
 
 def is_bridge(route: Route, cover: Any) -> bool:
     """Путь — кавер пьесы, и исполнитель кавера есть: синтез пьесы играет мостом (ADR-0158 PR-4)."""
-    return route.kind == GENERATE and route.work is not None and cover is not None
+    return route.kind == GENERATE and gen_kind(route.id) == "cover" and route.work is not None and cover is not None
 
 
 def unstage(staged: Dict[str, Any]) -> Tuple[Any, bool, Dict[str, Any], Any]:

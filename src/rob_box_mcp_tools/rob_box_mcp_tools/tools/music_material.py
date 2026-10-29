@@ -19,6 +19,8 @@ __all__ = ["AddMusicMaterialTool"]
 class AddMusicMaterialTool(MCPTool):
     """Принять музыкальный материал из сообщения человека и сохранить в библиотеку."""
 
+    event_source = "inproc:melody_library"
+
     def __init__(self, node, library) -> None:
         super().__init__(node)
         self._library = library

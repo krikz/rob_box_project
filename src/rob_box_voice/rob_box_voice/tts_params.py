@@ -98,11 +98,10 @@ def _parse_pronunciation_dict(value: object) -> dict | None:
 # Issue #1996 / operator-agent step 7a — allowed values for the top-level
 # ``priority`` field of ``/voice/tts/request``.
 #
-# Набор ВЫРОВНЕН с ADR-0056: те же три значения, что валидирует
-# ``scheduler/pregen/pre_gen.py`` для вложенного ``pregenerate.priority``.
-# Раньше здесь был двухзначный набор, и top-level ``priority="personality"``
-# молча превращался в ``"normal"`` — молчаливая потеря значения на границе
-# двух контрактов. Решение владельца: держать полный набор.
+# Три значения (исторически — те же, что у вложенного приоритета пред-генерации ADR-0056;
+# спекулятивный пред-синтез удалён в ADR-0150 PR-7c ч.4а, #3700). Раньше здесь
+# был двухзначный набор, и top-level ``priority="personality"`` молча
+# превращался в ``"normal"``. Решение владельца: держать полный набор.
 #
 # Прецеденция в FIFO-gate (см. ``TTSNode._assign_priority_play_seq``):
 #
@@ -113,8 +112,8 @@ def _parse_pronunciation_dict(value: object) -> dict | None:
 #   normal       — немаркированный / legacy-трафик, хвост очереди.
 #
 # ``personality`` и ``normal`` сегодня по порядку НЕ различаются — обоих
-# кладём в хвост. Значение сохраняется отдельно намеренно: оно доезжает до
-# планировщика предгенерации и метрик, которым важно, чья это реплика.
+# кладём в хвост. Значение сохраняется отдельно намеренно: метрикам и логам
+# важно, чья это реплика.
 # Если появится своя прецеденция у личности — менять здесь, тесты на
 # порядок уже есть.
 _TTS_PRIORITY_VALUES = frozenset({"operator", "personality", "normal"})
@@ -131,7 +130,7 @@ _TTS_PRIORITY_PREEMPTS = frozenset({"operator"})
 #
 # ``"speakers"`` — значение ``Sink.SPEAKERS`` из SoT-сборщика
 # ``rob_box_core.utterance`` (ADR-0080 §2.3). Продюсеры (dialogue_node,
-# telegram_node, stt_node, startup_greeting_node, core.speak_helpers)
+# telegram_node, stt_node и др.; нода приветствия удалена в #3684)
 # перешли на него в voice-vr 12 (#2197), а consumer в voice-vr 13 (#2198)
 # остался на единственном числе ``"speaker"`` — рассинхрон контракта,
 # из-за которого КАЖДАЯ реплика в динамики уходила в DROP (deploy #2318:
@@ -159,8 +158,7 @@ def _normalize_tts_priority(raw: object) -> str:
     payload must never raise or drop the request; it just loses the
     priority bump.
 
-    Whitelist — ``{"operator", "personality", "normal"}``, тот же, что у
-    вложенного ``pregenerate.priority`` в ADR-0056. Значение возвращается
+    Whitelist — ``{"operator", "personality", "normal"}``. Значение возвращается
     как есть, без схлопывания ``personality`` в ``normal``.
     """
     if raw in _TTS_PRIORITY_VALUES:

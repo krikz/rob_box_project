@@ -2,7 +2,8 @@
 
 ``replay.py``: план контейнеров проходит проверку изоляции, а КАЖДЫЙ из
 барьеров §5.1, будучи сломан поодиночке, ловится ``check_isolation``.
-``conductor.py``: сценарии, SSML-заявка к TTS, пустой кадр, сборка
+``conductor.py``: сценарии, реплика роботом с ожиданием конца СВОЕЙ реплики
+(``speech_client`` + ``SpeechEvent`` по ``speech_id``), пустой кадр, сборка
 ``scene.yaml``; все 13 сценариев набора проигрываются настоящим
 ``Conductor`` на поддельном рантайме (без ROS, без сна) и дают валидную
 разметку.
@@ -19,6 +20,7 @@ import copy
 import json
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 import yaml
@@ -50,6 +52,13 @@ def test_speech_audio_is_an_input():
     # stt_node/speaker_id_node слушают /audio/speech_audio, не /audio/audio (ADR-0144 §2.2).
     assert "/audio/speech_audio" in replay.INPUT_TOPICS
     assert "/voice/speaker/register" in replay.INPUT_TOPICS
+
+
+def test_robot_speech_is_recorded_as_speech_event():
+    # «когда робот говорит» (ADR-0144 §2.2) — SpeechEvent владельца речи; String-топик состояния TTS читателей
+    # больше не имеет и уходит в PR-15 15t (#3711).
+    assert "/voice/speech/event" in replay.INPUT_TOPICS
+    assert "/voice/tts/state" not in replay.RECORD_TOPICS
 
 
 def test_outputs_include_camera_info_for_clock_offset():
@@ -194,11 +203,84 @@ def test_parse_script_rejects(steps, msg):
         conductor.parse_script({"scene": "x", "participants": [OWNER], "steps": steps})
 
 
-def test_tts_request_is_ssml_operator_json():
-    payload = json.loads(conductor.tts_request('Войдите в кадр & встаньте на метку <1.5>'))
-    assert payload == {"ssml": "<speak>Войдите в кадр &amp; встаньте на метку &lt;1.5&gt;</speak>",
-                       "source": "operator"}
-    assert "text" not in payload  # tts_node молча выкидывает text без ssml
+# ── conductor: реплика роботом и конец СВОЕЙ реплики (PR-15 15-0c #3711) ──────
+
+
+class FakeSpeechNode:
+    """Нода без ROS: подписки и публикаторы — словари; владелец речи отвечает на каждый ``SpeechRequest``
+    событиями ``reply(req) -> [(вид, speech_id)]`` синхронно, как только запрос опубликован."""
+
+    def __init__(self, reply):
+        self.subs = {}
+        self.requests = []
+        self._reply = reply
+
+    def create_subscription(self, msg_type, topic, callback, depth):
+        self.subs[topic] = (msg_type, callback)
+
+    def create_publisher(self, msg_type, topic, depth):
+        node = self
+
+        class _Pub:
+            def publish(self, msg):
+                node.requests.append((topic, msg))
+                node.answer(msg)
+
+        return _Pub()
+
+    def get_clock(self):
+        stamp = SimpleNamespace(sec=0, nanosec=0)
+        return SimpleNamespace(now=lambda: SimpleNamespace(to_msg=lambda: stamp))
+
+    def answer(self, req):
+        from rob_box_core.speech_client import SPEECH_EVENT_TOPIC
+
+        event_type, callback = self.subs[SPEECH_EVENT_TOPIC]
+        for kind, speech_id in self._reply(req):
+            callback(event_type(kind=getattr(event_type, f"KIND_{kind}"), speech_id=speech_id, agent=req.agent))
+
+
+@pytest.fixture()
+def speech(monkeypatch):
+    """Помощники речи v2 из src (без ROS): клиент речи, ожидание событий владельца, заглушка сообщений из .msg."""
+    for package in ("rob_box_core", "rob_box_mcp_tools"):
+        monkeypatch.syspath_prepend(str(REPO_ROOT / "src" / package))
+    from rob_box_core.msg_stub import install_dialog_msgs_stub
+
+    install_dialog_msgs_stub()
+    from rob_box_core import speech_client
+
+    return speech_client
+
+
+def _say(node, text, timeout_s=1.0):
+    return conductor.say_and_wait(node, conductor.speech_ends(node), text, timeout_s)
+
+
+def test_say_waits_for_end_of_its_own_line(speech):
+    """Чужая реплика закончилась раньше, своя началась — ещё не конец; конец своей — будит дирижёра."""
+    node = FakeSpeechNode(lambda req: [("FINISHED", "чужая"), ("STARTED", req.speech_id),
+                                       ("FINISHED", req.speech_id)])
+    assert _say(node, "Войдите в кадр & встаньте на метку <1.5>") is True
+    [(topic, req)] = node.requests
+    assert topic == speech.SPEECH_REQUEST_TOPIC
+    assert req.agent == speech.SYSTEM_AGENT
+    # tts_node без SSML молчит (память speak-through-robot): экранированный SSML строит Utterance.
+    assert req.text == "<speak>Войдите в кадр &amp; встаньте на метку &lt;1.5&gt;</speak>"
+
+
+def test_say_is_not_woken_by_foreign_line_end(speech):
+    """Конец чужой реплики (общий топик событий) — не конец своей: без своего финала ``say`` честно говорит «нет»."""
+    node = FakeSpeechNode(lambda req: [("FINISHED", "чужая"), ("STARTED", req.speech_id),
+                                       ("PROGRESS", req.speech_id)])
+    assert _say(node, "Кадр пуст.", timeout_s=0.05) is False
+
+
+@pytest.mark.parametrize("kind", ["CANCELLED", "REJECTED"])
+def test_say_ends_when_its_line_is_cancelled_or_rejected(speech, kind):
+    """Отменённая или отклонённая реплика тоже закончилась: дирижёр не ждёт её 25 с."""
+    node = FakeSpeechNode(lambda req: [(kind, req.speech_id)])
+    assert _say(node, "Выйдите из кадра.") is True
 
 
 # ── conductor: пустой кадр ───────────────────────────────────────────────────

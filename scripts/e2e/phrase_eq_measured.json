@@ -1,0 +1,917 @@
+{
+  "_comment": [
+    "Замеры длительности реплик (eq-файл, секунды) для scripts/e2e/phrase_budget.py -- гард длины фраз до прогона (#4077 П2).",
+    "Замер действует, пока text_sha1 и voice шага те же; правка текста обнуляет его, и шаг идёт по оценке (символы * темп).",
+    "Обновление: py -3 scripts/e2e/gen_night_marathon.py --learn <actN_<run>.log ...> (логи акта из артефакта прогона).",
+    "how: harness -- строка «реплика X s» харнесса, play -- интервал PLAY -> PLAY_DONE (на n607 12.39 с против 12.379 с)."
+  ],
+  "vad_budget_s": 12.5,
+  "error_s": 12.0,
+  "tight_s": 11.5,
+  "steps": {
+    "n1003_memory_search_food": {
+      "voice": "anton",
+      "chars": 35,
+      "text_sha1": "fed9b11fcac7",
+      "eq_s": 5.69,
+      "how": "play",
+      "run": "40487496420"
+    },
+    "n1004_who_am_i_before_reset": {
+      "voice": "anton",
+      "chars": 22,
+      "text_sha1": "a3b97211f260",
+      "eq_s": 3.91,
+      "how": "play",
+      "run": "40487496420"
+    },
+    "n1005_music_state_final": {
+      "voice": "anton",
+      "chars": 44,
+      "text_sha1": "7d1530ad4bc5",
+      "eq_s": 6.72,
+      "how": "play",
+      "run": "40487496420"
+    },
+    "n1006_session_reset": {
+      "voice": "anton",
+      "chars": 42,
+      "text_sha1": "8c9c1715fce7",
+      "eq_s": 6.69,
+      "how": "play",
+      "run": "40487496420"
+    },
+    "n1007_no_leak": {
+      "voice": "anton",
+      "chars": 44,
+      "text_sha1": "8867904b208f",
+      "eq_s": 5.49,
+      "how": "play",
+      "run": "40487496420"
+    },
+    "n1009_memory_context_after_reset": {
+      "voice": "anton",
+      "chars": 39,
+      "text_sha1": "d0cb614940b1",
+      "eq_s": 6.81,
+      "how": "play",
+      "run": "40487496420"
+    },
+    "n1011_goodnight": {
+      "voice": "anton",
+      "chars": 59,
+      "text_sha1": "077670fdf22e",
+      "eq_s": 7.37,
+      "how": "play",
+      "run": "40487496420"
+    },
+    "n101_wake_cold_start": {
+      "voice": "anton",
+      "chars": 72,
+      "text_sha1": "b0c163b7b7b8",
+      "eq_s": 10.78,
+      "how": "play",
+      "run": "40472993363"
+    },
+    "n102_session_reset": {
+      "voice": "anton",
+      "chars": 75,
+      "text_sha1": "55c563232e00",
+      "eq_s": 11.21,
+      "how": "play",
+      "run": "40472993363"
+    },
+    "n103_time": {
+      "voice": "anton",
+      "chars": 26,
+      "text_sha1": "cd3a13795d7c",
+      "eq_s": 4.8,
+      "how": "play",
+      "run": "40472993363"
+    },
+    "n104_battery": {
+      "voice": "anton",
+      "chars": 56,
+      "text_sha1": "95f022932000",
+      "eq_s": 7.4,
+      "how": "play",
+      "run": "40472993363"
+    },
+    "n105_status": {
+      "voice": "anton",
+      "chars": 67,
+      "text_sha1": "23a6906e2545",
+      "eq_s": 8.78,
+      "how": "play",
+      "run": "40472993363"
+    },
+    "n106_alt_wake_roboks": {
+      "voice": "anton",
+      "chars": 44,
+      "text_sha1": "74d1c19173d6",
+      "eq_s": 6.16,
+      "how": "play",
+      "run": "40472993363"
+    },
+    "n107_command_intent_gate": {
+      "voice": "anton",
+      "chars": 13,
+      "text_sha1": "fc69ef1dac35",
+      "eq_s": 3.57,
+      "how": "play",
+      "run": "40472993363"
+    },
+    "n108_perception": {
+      "voice": "anton",
+      "chars": 61,
+      "text_sha1": "53f37d6abf8a",
+      "eq_s": 8.56,
+      "how": "play",
+      "run": "40472993363"
+    },
+    "n109_sound_info": {
+      "voice": "anton",
+      "chars": 45,
+      "text_sha1": "75e8208d8f31",
+      "eq_s": 6.78,
+      "how": "play",
+      "run": "40472993363"
+    },
+    "n110_silence_baseline": {
+      "voice": "anton",
+      "chars": 48,
+      "text_sha1": "79386af1a1de",
+      "eq_s": 7.91,
+      "how": "play",
+      "run": "40472993363"
+    },
+    "n201_sasha_intro_long": {
+      "voice": "anton",
+      "chars": 95,
+      "text_sha1": "fd8ef19c2649",
+      "eq_s": 11.21,
+      "how": "play",
+      "run": "40473977959"
+    },
+    "n201b_sasha_backstory": {
+      "voice": "anton",
+      "chars": 85,
+      "text_sha1": "66fd9574d621",
+      "eq_s": 11.57,
+      "how": "harness",
+      "run": "40473977959"
+    },
+    "n201c_sasha_voice_note": {
+      "voice": "anton",
+      "chars": 79,
+      "text_sha1": "908ad8e0837c",
+      "eq_s": 9.92,
+      "how": "play",
+      "run": "40473977959"
+    },
+    "n202a_sasha_warmup": {
+      "voice": "anton",
+      "chars": 46,
+      "text_sha1": "e57dd9b4c435",
+      "eq_s": 6.26,
+      "how": "play",
+      "run": "40473977959"
+    },
+    "n202b_sasha_warmup_hum": {
+      "voice": "anton",
+      "chars": 91,
+      "text_sha1": "6eaf849eafb5",
+      "eq_s": 9.46,
+      "how": "play",
+      "run": "40473977959"
+    },
+    "n202c_sasha_warmup_guess": {
+      "voice": "anton",
+      "chars": 48,
+      "text_sha1": "70d9680c6a33",
+      "eq_s": 6.17,
+      "how": "play",
+      "run": "40473977959"
+    },
+    "n203_sasha_memory_tea": {
+      "voice": "anton",
+      "chars": 85,
+      "text_sha1": "65f473045f35",
+      "eq_s": 9.89,
+      "how": "play",
+      "run": "40473977959"
+    },
+    "n204_boris_intro_long": {
+      "voice": "ermil",
+      "chars": 96,
+      "text_sha1": "969f444e89ed",
+      "eq_s": 8.9,
+      "how": "play",
+      "run": "40473977959"
+    },
+    "n204b_boris_voice_note": {
+      "voice": "ermil",
+      "chars": 67,
+      "text_sha1": "69954ccd1e05",
+      "eq_s": 6.51,
+      "how": "play",
+      "run": "40473977959"
+    },
+    "n204c_boris_voice_reason": {
+      "voice": "ermil",
+      "chars": 71,
+      "text_sha1": "9eac17ce61cf",
+      "eq_s": 5.77,
+      "how": "play",
+      "run": "40473977959"
+    },
+    "n205a_boris_warmup": {
+      "voice": "ermil",
+      "chars": 58,
+      "text_sha1": "a19b16c56757",
+      "eq_s": 5.66,
+      "how": "play",
+      "run": "40473977959"
+    },
+    "n205b_boris_warmup_spartak": {
+      "voice": "ermil",
+      "chars": 82,
+      "text_sha1": "f1a72c7e2d2d",
+      "eq_s": 7.07,
+      "how": "play",
+      "run": "40473977959"
+    },
+    "n205c_boris_warmup_tease": {
+      "voice": "ermil",
+      "chars": 64,
+      "text_sha1": "69cb876be16f",
+      "eq_s": 6.42,
+      "how": "play",
+      "run": "40473977959"
+    },
+    "n206_boris_memory": {
+      "voice": "ermil",
+      "chars": 73,
+      "text_sha1": "4112cd96f88c",
+      "eq_s": 7.14,
+      "how": "play",
+      "run": "40473977959"
+    },
+    "n207_recall_sasha": {
+      "voice": "anton",
+      "chars": 51,
+      "text_sha1": "0103a5cea33e",
+      "eq_s": 6.91,
+      "how": "play",
+      "run": "40473977959"
+    },
+    "n209_recall_boris": {
+      "voice": "ermil",
+      "chars": 30,
+      "text_sha1": "6e776cdb97d5",
+      "eq_s": 4.11,
+      "how": "play",
+      "run": "40473977959"
+    },
+    "n211_who_do_you_know": {
+      "voice": "anton",
+      "chars": 58,
+      "text_sha1": "3045142410d5",
+      "eq_s": 7.8,
+      "how": "play",
+      "run": "40473977959"
+    },
+    "n212_session_reset_before_search": {
+      "voice": "anton",
+      "chars": 42,
+      "text_sha1": "8c9c1715fce7",
+      "eq_s": 6.68,
+      "how": "play",
+      "run": "40473977959"
+    },
+    "n213_memory_search_tea_after_reset": {
+      "voice": "anton",
+      "chars": 52,
+      "text_sha1": "dfa2596a67ef",
+      "eq_s": 6.51,
+      "how": "play",
+      "run": "40473977959"
+    },
+    "n301_wake_open": {
+      "voice": "anton",
+      "chars": 67,
+      "text_sha1": "87a686558625",
+      "eq_s": 8.85,
+      "how": "play",
+      "run": "40477457939"
+    },
+    "n303_bg_boris": {
+      "voice": "ermil",
+      "chars": 86,
+      "text_sha1": "f10efc377e41",
+      "eq_s": 7.45,
+      "how": "play",
+      "run": "40477457939"
+    },
+    "n304_bg_grisha_unknown": {
+      "voice": "zahar",
+      "chars": 92,
+      "text_sha1": "eeaeff0d2ad7",
+      "eq_s": 7.83,
+      "how": "play",
+      "run": "40477457939"
+    },
+    "n305_bg_valera_unknown": {
+      "voice": "filipp",
+      "chars": 95,
+      "text_sha1": "a4292294ed14",
+      "eq_s": 11.95,
+      "how": "harness",
+      "run": "40477457939"
+    },
+    "n305b_bare_robot_pickup": {
+      "voice": "anton",
+      "chars": 6,
+      "text_sha1": "7283860208b5",
+      "eq_s": 2.8,
+      "how": "play",
+      "run": "40477457939"
+    },
+    "n306_who_was_talking": {
+      "voice": "anton",
+      "chars": 78,
+      "text_sha1": "3957cfb117be",
+      "eq_s": 8.82,
+      "how": "play",
+      "run": "40477457939"
+    },
+    "n307_count_voices": {
+      "voice": "anton",
+      "chars": 74,
+      "text_sha1": "f1ff7c7b82d3",
+      "eq_s": 8.39,
+      "how": "play",
+      "run": "40477457939"
+    },
+    "n308_bg_command_boris": {
+      "voice": "ermil",
+      "chars": 68,
+      "text_sha1": "0d2018a07964",
+      "eq_s": 5.62,
+      "how": "play",
+      "run": "40477457939"
+    },
+    "n310_execute_backlog_lru": {
+      "voice": "anton",
+      "chars": 6,
+      "text_sha1": "7283860208b5",
+      "eq_s": 2.81,
+      "how": "play",
+      "run": "40477457939"
+    },
+    "n311_who_asked": {
+      "voice": "anton",
+      "chars": 43,
+      "text_sha1": "f75803481813",
+      "eq_s": 6.26,
+      "how": "play",
+      "run": "40477457939"
+    },
+    "n312_stop_music": {
+      "voice": "anton",
+      "chars": 54,
+      "text_sha1": "1fa25a34f08a",
+      "eq_s": 8.89,
+      "how": "play",
+      "run": "40477457939"
+    },
+    "n313_silence_restored": {
+      "voice": "anton",
+      "chars": 19,
+      "text_sha1": "8289b97327d5",
+      "eq_s": 3.45,
+      "how": "play",
+      "run": "40477457939"
+    },
+    "n401_list_voices": {
+      "voice": "anton",
+      "chars": 70,
+      "text_sha1": "5a2afab538f7",
+      "eq_s": 9.06,
+      "how": "play",
+      "run": "40478630310"
+    },
+    "n402_current_voice": {
+      "voice": "anton",
+      "chars": 48,
+      "text_sha1": "05c65c6b736d",
+      "eq_s": 7.4,
+      "how": "play",
+      "run": "40478630310"
+    },
+    "n403_set_voice_alena": {
+      "voice": "anton",
+      "chars": 28,
+      "text_sha1": "3c6f4740fd7c",
+      "eq_s": 5.39,
+      "how": "play",
+      "run": "40478630310"
+    },
+    "n404_speak_after_set": {
+      "voice": "anton",
+      "chars": 69,
+      "text_sha1": "2df7fe44b0b6",
+      "eq_s": 9.58,
+      "how": "play",
+      "run": "40478630310"
+    },
+    "n405_set_voice_jane": {
+      "voice": "anton",
+      "chars": 43,
+      "text_sha1": "d08af05146f6",
+      "eq_s": 6.22,
+      "how": "play",
+      "run": "40478630310"
+    },
+    "n406_restore_default_voice": {
+      "voice": "anton",
+      "chars": 54,
+      "text_sha1": "a605b12a6af7",
+      "eq_s": 7.53,
+      "how": "play",
+      "run": "40478630310"
+    },
+    "n407_volume_up": {
+      "voice": "anton",
+      "chars": 64,
+      "text_sha1": "117396bbf14b",
+      "eq_s": 8.24,
+      "how": "play",
+      "run": "40478630310"
+    },
+    "n408_volume_down": {
+      "voice": "anton",
+      "chars": 54,
+      "text_sha1": "5d35c67c298d",
+      "eq_s": 9.12,
+      "how": "play",
+      "run": "40478630310"
+    },
+    "n409_speed_down": {
+      "voice": "anton",
+      "chars": 48,
+      "text_sha1": "16c008d8888c",
+      "eq_s": 9.38,
+      "how": "play",
+      "run": "40478630310"
+    },
+    "n410_speed_up": {
+      "voice": "anton",
+      "chars": 56,
+      "text_sha1": "2262a9074e32",
+      "eq_s": 6.97,
+      "how": "play",
+      "run": "40478630310"
+    },
+    "n411_pitch_bass": {
+      "voice": "anton",
+      "chars": 46,
+      "text_sha1": "c74d7c59bc27",
+      "eq_s": 6.48,
+      "how": "play",
+      "run": "40478630310"
+    },
+    "n411b_prosody_normal": {
+      "voice": "anton",
+      "chars": 54,
+      "text_sha1": "17d8c64843e3",
+      "eq_s": 8.78,
+      "how": "play",
+      "run": "40478630310"
+    },
+    "n412_skazka_multivoice": {
+      "voice": "anton",
+      "chars": 95,
+      "text_sha1": "4ff5d6e26d89",
+      "eq_s": 11.6,
+      "how": "harness",
+      "run": "40478630310"
+    },
+    "n501_silence_check": {
+      "voice": "anton",
+      "chars": 41,
+      "text_sha1": "e63017ec2c92",
+      "eq_s": 5.95,
+      "how": "play",
+      "run": "40480199644"
+    },
+    "n503_confirm_playing": {
+      "voice": "anton",
+      "chars": 25,
+      "text_sha1": "27efa99608e4",
+      "eq_s": 4.8,
+      "how": "play",
+      "run": "40480199644"
+    },
+    "n504_add_bass": {
+      "voice": "anton",
+      "chars": 59,
+      "text_sha1": "cf0cd62e9b78",
+      "eq_s": 8.9,
+      "how": "play",
+      "run": "40480199644"
+    },
+    "n505_vibe_dark": {
+      "voice": "anton",
+      "chars": 52,
+      "text_sha1": "51d2e03c81bb",
+      "eq_s": 7.58,
+      "how": "play",
+      "run": "40480199644"
+    },
+    "n506_faster": {
+      "voice": "anton",
+      "chars": 47,
+      "text_sha1": "4abaf3ad43f2",
+      "eq_s": 7.37,
+      "how": "play",
+      "run": "40480199644"
+    },
+    "n511_stop_music": {
+      "voice": "anton",
+      "chars": 48,
+      "text_sha1": "bccccb9ecc0a",
+      "eq_s": 6.78,
+      "how": "play",
+      "run": "40480199644"
+    },
+    "n601_silence_check": {
+      "voice": "anton",
+      "chars": 37,
+      "text_sha1": "94819a543a41",
+      "eq_s": 6.54,
+      "how": "play",
+      "run": "40481144618"
+    },
+    "n603_confirm_dj_playing": {
+      "voice": "anton",
+      "chars": 27,
+      "text_sha1": "29d161db99c6",
+      "eq_s": 4.6,
+      "how": "play",
+      "run": "40481144618"
+    },
+    "n604_dj_rock": {
+      "voice": "anton",
+      "chars": 56,
+      "text_sha1": "c7c2b703c1c0",
+      "eq_s": 8.25,
+      "how": "play",
+      "run": "40481144618"
+    },
+    "n606_wake_under_dj": {
+      "voice": "ermil",
+      "chars": 40,
+      "text_sha1": "c341d204d7ef",
+      "eq_s": 3.51,
+      "how": "play",
+      "run": "40481144618"
+    },
+    "n608_dj_off": {
+      "voice": "anton",
+      "chars": 33,
+      "text_sha1": "c64f6faced25",
+      "eq_s": 6.48,
+      "how": "play",
+      "run": "40481144618"
+    },
+    "n609_silence_after_dj": {
+      "voice": "anton",
+      "chars": 22,
+      "text_sha1": "135d83fc7bc7",
+      "eq_s": 4.29,
+      "how": "play",
+      "run": "40481144618"
+    },
+    "n610_dj_state_honest": {
+      "voice": "anton",
+      "chars": 55,
+      "text_sha1": "b99addbcbcde",
+      "eq_s": 7.07,
+      "how": "play",
+      "run": "40481144618"
+    },
+    "n701_silence_check": {
+      "voice": "anton",
+      "chars": 25,
+      "text_sha1": "dc341f7b1ad7",
+      "eq_s": 4.29,
+      "how": "play",
+      "run": "40482613938"
+    },
+    "n702_sasha_recognized_no_question": {
+      "voice": "anton",
+      "chars": 62,
+      "text_sha1": "653d92733d77",
+      "eq_s": 9.57,
+      "how": "play",
+      "run": "40475565313"
+    },
+    "n703_sasha_memory_from_act2": {
+      "voice": "anton",
+      "chars": 73,
+      "text_sha1": "d9f85ac67839",
+      "eq_s": 7.84,
+      "how": "play",
+      "run": "40475565313"
+    },
+    "n704_music_library": {
+      "voice": "anton",
+      "chars": 56,
+      "text_sha1": "ba9137f29da3",
+      "eq_s": 6.56,
+      "how": "play",
+      "run": "40482613938"
+    },
+    "n704_sasha_after_gap_no_question": {
+      "voice": "anton",
+      "chars": 59,
+      "text_sha1": "61aa95379f76",
+      "eq_s": 8.31,
+      "how": "play",
+      "run": "40475565313"
+    },
+    "n705_boris_back_recognized": {
+      "voice": "ermil",
+      "chars": 94,
+      "text_sha1": "04f6e0020eab",
+      "eq_s": 8.54,
+      "how": "play",
+      "run": "40475565313"
+    },
+    "n705_gen_search_rain": {
+      "voice": "anton",
+      "chars": 54,
+      "text_sha1": "c52f7efc9f7b",
+      "eq_s": 8.09,
+      "how": "play",
+      "run": "40482613938"
+    },
+    "n706_boris_recognized_no_question": {
+      "voice": "ermil",
+      "chars": 79,
+      "text_sha1": "8ae68c4ec641",
+      "eq_s": 9.29,
+      "how": "play",
+      "run": "40475565313"
+    },
+    "n707_boris_memory_from_act2": {
+      "voice": "ermil",
+      "chars": 70,
+      "text_sha1": "58648da0b414",
+      "eq_s": 5.09,
+      "how": "play",
+      "run": "40475565313"
+    },
+    "n708_gen_play": {
+      "voice": "anton",
+      "chars": 43,
+      "text_sha1": "71eaf2e86840",
+      "eq_s": 6.73,
+      "how": "play",
+      "run": "40482613938"
+    },
+    "n708_sasha_not_boris": {
+      "voice": "anton",
+      "chars": 67,
+      "text_sha1": "3c088d4b96c1",
+      "eq_s": 9.57,
+      "how": "play",
+      "run": "40475565313"
+    },
+    "n709_grisha_drop_in": {
+      "voice": "zahar",
+      "chars": 59,
+      "text_sha1": "f88e97b54a07",
+      "eq_s": 5.53,
+      "how": "play",
+      "run": "40475565313"
+    },
+    "n709_stop_generated": {
+      "voice": "anton",
+      "chars": 41,
+      "text_sha1": "31fc0f55bf5c",
+      "eq_s": 6.47,
+      "how": "play",
+      "run": "40482613938"
+    },
+    "n710_grisha_not_named_by_voice": {
+      "voice": "zahar",
+      "chars": 61,
+      "text_sha1": "21fb2553e0cb",
+      "eq_s": 5.18,
+      "how": "play",
+      "run": "40475565313"
+    },
+    "n712_stop_all": {
+      "voice": "anton",
+      "chars": 18,
+      "text_sha1": "d9123ff8a526",
+      "eq_s": 3.68,
+      "how": "play",
+      "run": "40482613938"
+    },
+    "n721_nina_own_profile": {
+      "voice": "arina",
+      "chars": 88,
+      "text_sha1": "8f489c7f1f9d",
+      "eq_s": 11.21,
+      "how": "play",
+      "run": "40476941395"
+    },
+    "n722_nina_second_name_no_duplicate": {
+      "voice": "arina",
+      "chars": 82,
+      "text_sha1": "ea83748d9388",
+      "eq_s": 9.52,
+      "how": "play",
+      "run": "40476941395"
+    },
+    "n723_nina_one_name": {
+      "voice": "arina",
+      "chars": 65,
+      "text_sha1": "b23300b5f50b",
+      "eq_s": 6.86,
+      "how": "play",
+      "run": "40476941395"
+    },
+    "n801_wake_open": {
+      "voice": "anton",
+      "chars": 49,
+      "text_sha1": "f7f02fd2228a",
+      "eq_s": 7.01,
+      "how": "play",
+      "run": "40484087795"
+    },
+    "n802_long_count": {
+      "voice": "anton",
+      "chars": 70,
+      "text_sha1": "85d759dbddc0",
+      "eq_s": 7.97,
+      "how": "play",
+      "run": "40484087795"
+    },
+    "n803_barge_in_new_topic": {
+      "voice": "anton",
+      "chars": 53,
+      "text_sha1": "ec9f0b96ed1d",
+      "eq_s": 6.46,
+      "how": "play",
+      "run": "40484087795"
+    },
+    "n804_long_story": {
+      "voice": "anton",
+      "chars": 83,
+      "text_sha1": "12240ee9af0a",
+      "eq_s": 8.9,
+      "how": "play",
+      "run": "40484087795"
+    },
+    "n805_hard_stop": {
+      "voice": "anton",
+      "chars": 28,
+      "text_sha1": "53707a45bd00",
+      "eq_s": 4.8,
+      "how": "play",
+      "run": "40484087795"
+    },
+    "n805b_unsilence": {
+      "voice": "anton",
+      "chars": 14,
+      "text_sha1": "4c8bf69db9af",
+      "eq_s": 3.14,
+      "how": "play",
+      "run": "40484087795"
+    },
+    "n806_long_count_again": {
+      "voice": "anton",
+      "chars": 54,
+      "text_sha1": "ba7bfa162501",
+      "eq_s": 7.37,
+      "how": "play",
+      "run": "40484087795"
+    },
+    "n807_merge_addition": {
+      "voice": "anton",
+      "chars": 48,
+      "text_sha1": "04b498b7bc93",
+      "eq_s": 7.88,
+      "how": "play",
+      "run": "40484087795"
+    },
+    "n808_repeat_last": {
+      "voice": "anton",
+      "chars": 49,
+      "text_sha1": "07f0a6c512b0",
+      "eq_s": 7.32,
+      "how": "play",
+      "run": "40484087795"
+    },
+    "n810_rap_over_music": {
+      "voice": "anton",
+      "chars": 62,
+      "text_sha1": "614b13686839",
+      "eq_s": 8.61,
+      "how": "play",
+      "run": "40484087795"
+    },
+    "n811_stop_speech_keep_music": {
+      "voice": "anton",
+      "chars": 38,
+      "text_sha1": "3c2b18ea5c8f",
+      "eq_s": 5.9,
+      "how": "play",
+      "run": "40484087795"
+    },
+    "n812_stop_music": {
+      "voice": "anton",
+      "chars": 32,
+      "text_sha1": "61ce2babfa3a",
+      "eq_s": 5.71,
+      "how": "play",
+      "run": "40484087795"
+    },
+    "n901_sound_catalog": {
+      "voice": "anton",
+      "chars": 49,
+      "text_sha1": "5d1ebbae3278",
+      "eq_s": 6.71,
+      "how": "play",
+      "run": "40485969934"
+    },
+    "n902_sound_doorbell": {
+      "voice": "anton",
+      "chars": 68,
+      "text_sha1": "efcc676433bb",
+      "eq_s": 8.18,
+      "how": "play",
+      "run": "40485969934"
+    },
+    "n903_sound_siren_anim": {
+      "voice": "anton",
+      "chars": 57,
+      "text_sha1": "a3b67450dbdc",
+      "eq_s": 9.16,
+      "how": "play",
+      "run": "40485969934"
+    },
+    "n904_anim_sad": {
+      "voice": "anton",
+      "chars": 57,
+      "text_sha1": "ac44fa90ff24",
+      "eq_s": 8.61,
+      "how": "play",
+      "run": "40485969934"
+    },
+    "n905_anim_victory": {
+      "voice": "anton",
+      "chars": 66,
+      "text_sha1": "857c7a75f439",
+      "eq_s": 8.57,
+      "how": "play",
+      "run": "40485969934"
+    },
+    "n906_anekdot_anim": {
+      "voice": "anton",
+      "chars": 59,
+      "text_sha1": "a62fc0b23ba9",
+      "eq_s": 8.22,
+      "how": "play",
+      "run": "40485969934"
+    },
+    "n907_search_space": {
+      "voice": "anton",
+      "chars": 67,
+      "text_sha1": "8abfac6f163c",
+      "eq_s": 8.01,
+      "how": "play",
+      "run": "40485969934"
+    },
+    "n908_search_borsch_memory": {
+      "voice": "anton",
+      "chars": 79,
+      "text_sha1": "367e2910ac16",
+      "eq_s": 8.69,
+      "how": "play",
+      "run": "40485969934"
+    },
+    "n909_foreign_language": {
+      "voice": "anton",
+      "chars": 47,
+      "text_sha1": "2dbe576c1f81",
+      "eq_s": 7.43,
+      "how": "play",
+      "run": "40485969934"
+    }
+  }
+}

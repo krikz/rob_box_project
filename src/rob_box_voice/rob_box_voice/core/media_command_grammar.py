@@ -3,8 +3,7 @@
 Одна грамматика для команд, которые исполняет КОД, а не LLM
 (``docs/design/2026-09-28-music-dj-systemic-analysis.md`` §6 Ш2):
 
-* громкость музыки — «громче / тише / потише / погромче / на максимум»,
-  в том числе с названием играющего трека («горный король погромче»);
+* громкость — НЕ здесь: канал (музыка/голос) решает ``rob_box_dialog.grammar`` по снимку (ADR-0150 PR-6);
 * стоп — «выключи музыку», «стоп диджей», «хватит диджеить»;
 * DJ — «ты диджей X», «запусти диджей-сет»; длина сета — «сет на 3 трека», «на полчаса» (``tracks``, разбор —
   :mod:`.set_length_words`), тема-перечисление после двоеточия — «сет на 3 трека: Марио, Тетрис, Зельда»;
@@ -32,6 +31,7 @@ from dataclasses import dataclass, replace
 from enum import Enum
 from typing import FrozenSet, List, Mapping, Optional, Sequence, Tuple
 
+from rob_box_dialog.knowledge import GRAMMAR_FILLER, VOLUME_STEMS
 from rob_box_music import knowledge as kn
 from rob_box_music.dj_line import persona_title
 from rob_box_music.instruments import near, split_instrument
@@ -44,14 +44,15 @@ class MediaIntent(str, Enum):
     """Закрытый набор интентов роутера (варианты ``ChoiceQuestion``)."""
 
     NONE = "none"
-    VOLUME_UP = "volume_up"
-    VOLUME_DOWN = "volume_down"
-    VOLUME_MAX = "volume_max"
     STOP = "stop"
     DJ = "dj"
     PLAY_NAMED = "play_named"
     REQUEST_MUSIC = "request_music"
     NOW_PLAYING = "now_playing"
+    #: «спой / сочини / сгенерируй песню про X» → ``generate_music(kind, theme)`` (ADR-0150 §9.1 ревизия 5, #3696).
+    GENERATE = "generate"
+    #: «включи что-нибудь из библиотеки», «что у тебя в библиотеке» → ``music_library`` кодом (#3696).
+    LIBRARY = "library"
 
 
 #: Порядок вариантов для ``ChoiceQuestion`` (DecisionProvider).
@@ -92,6 +93,9 @@ class MediaCommand:
             (ADR-0157 §3.1) или ``""``. Слово инструмента в ``name`` не попадает.
         more: для ``PLAY_NAMED`` — «продолжай играть Вагнера», «ещё Баха» (#3599): не эта же пьеса, а следующая того же
             автора; сыгранное недавно не повторяется (``request_music`` читает флаг из реплики хода).
+        kind: для ``GENERATE`` — ``robot_song`` (петь: «спой», «песню», «своим голосом»), ``set`` (не петь, много:
+            «сочини новые треки / сет под тему X», #3775) или ``instrumental``; для ``LIBRARY`` — ``play`` или
+            ``list``. Тема генерации и запрос к библиотеке — в ``name``.
     """
 
     intent: MediaIntent
@@ -106,6 +110,7 @@ class MediaCommand:
     tracks: int = 0
     instrument: str = ""
     more: bool = False
+    kind: str = ""
 
 
 NO_COMMAND = MediaCommand(intent=MediaIntent.NONE, closed=False)
@@ -115,7 +120,7 @@ NO_COMMAND = MediaCommand(intent=MediaIntent.NONE, closed=False)
 # Токенизация (перенесено из music_volume_request.py, #3125)
 # ---------------------------------------------------------------------------
 
-#: Ведущие теги источника/контекста: ``[TG]``, ``[Speaker:unknown]``,
+#: Ведущие теги источника/контекста: ``[TG]``,
 #: ``[🎧 …]``. Слова внутри тегов — не слова юзера.
 _LEADING_TAGS_RE = re.compile(r"^\s*(?:\[[^\]\n]*\]\s*)+")
 
@@ -194,7 +199,7 @@ def is_music_stop_command(user_input: str) -> bool:
     """В реплике есть стоп музыки/DJ («хватит диджеить», «выключи музыку»).
 
     Широкий детектор (подстрока/поиск): им пользуются силенс-гейт,
-    command-гейт и пост-гуард Bug F. Роутер исполняет стоп сам только для
+    command-гейт и пост-гуард «стоп не исполнен». Роутер исполняет стоп сам только для
     ЗАКРЫТОЙ реплики (:func:`parse_media_command`).
     """
     if not user_input:
@@ -206,118 +211,35 @@ def is_music_stop_command(user_input: str) -> bool:
 
 
 # ---------------------------------------------------------------------------
-# Классы слов. Один регекс вместо ``_VOLUME_CORE_RE`` из #3125: он же
-# раскладывает стоп-глаголы и музыкальные существительные.
+# Классы слов: стоп-глаголы и музыкальные существительные.
 # ---------------------------------------------------------------------------
 
 _WORD_CLASS_RE = re.compile(
-    r"^(?:(?P<up>(?:по)?[гк]ромче|прибав\w*|подкрут\w*|выкрут\w*)"
-    r"|(?P<down>(?:по)?тише|убав\w*|приглуш\w*)"
-    r"|(?P<max>максимум\w*|максимальн\w*|полную)"
-    r"|(?P<topic>громк\w*)"
-    rf"|(?P<stop>{_MUSIC_STOP_VERBS})"
+    rf"^(?:(?P<stop>{_MUSIC_STOP_VERBS})"
     r"|(?P<noun>музык\w*|музон\w*|дидж\w*|трек\w*|трей|с[еэ]т|бит|бита|звук\w*|dj))$"
 )
 
-_DIRECTIONS: FrozenSet[str] = frozenset({"up", "down", "max"})
+
+#: Слова громкости — основы ``rob_box_dialog.knowledge.VOLUME_STEMS`` (команду громкости разбирает Tier-1
+#: ``rob_box_dialog.grammar``): здесь они только не дают слову стать названием или темой («сыграй X погромче»).
+_VOLUME_STEMS: Tuple[str, ...] = tuple(stem for stems in VOLUME_STEMS.values() for stem in stems) + ("громк",)
 
 
 def _word_class(word: str) -> Optional[str]:
+    """``stop`` / ``noun`` / ``volume`` или ``None``."""
     m = _WORD_CLASS_RE.match(word)
-    return m.lastgroup if m else None
+    if m:
+        return m.lastgroup
+    return "volume" if word.startswith(_VOLUME_STEMS) else None
 
 
-#: Служебные слова, не меняющие смысла команды.
-_COMMON_FILLER: FrozenSet[str] = frozenset({
-    "ну", "а", "и", "но", "же", "ка", "эй", "йо", "пожалуйста", "плиз",
-    "можно", "давай", "сделай", "сделайте", "это", "так", "вот", "уже",
-    "ещё", "еще", "сейчас", "там", "тут", "мне", "нам", "её", "ее", "его",
-    "эту", "этот", "всё", "все", "всю", "ты", "вы", "чуть", "чуточку",
-    "немного", "очень", "на", "в", "по", "раз", "два", "раза", "чтобы",
-    "чтоб", "режим", "режима", "совсем",
-})
+#: Служебные слова, не меняющие смысла команды — одна таблица с Tier-1 грамматикой диалога.
+_COMMON_FILLER: FrozenSet[str] = frozenset(GRAMMAR_FILLER)
 
-#: Сверх общих — слова просьбы о громкости («играй громче», #3125).
-_VOLUME_FILLER: FrozenSet[str] = _COMMON_FILLER | frozenset({
-    "играй", "сыграй", "играйте", "включи", "поставь", "сильнее", "больше",
-    "меньше", "побольше", "поменьше", "тихо", "слишком",
-})
-
-#: Глаголы заказа трека: «сыграй <название> погромче» — это заказ, не громкость.
-_PLAY_VERBS: FrozenSet[str] = frozenset({
-    "играй", "сыграй", "играйте", "включи", "поставь", "запусти", "вруби",
-    "врубай",
-})
-
-#: Просьба о ГОЛОСЕ робота («говори громче») — это ``set_volume``, решает LLM.
+#: Слова о ГОЛОСЕ робота: в тему сета/заказа не попадают.
 _VOICE_WORDS: FrozenSet[str] = frozenset({
     "говори", "говорить", "голос", "голоса", "голосом", "разговаривай",
 })
-
-#: Сколько слов может занимать название трека в «<трек> погромче».
-_MAX_TRACK_NAME_WORDS = 5
-
-
-def _drop_voice_negation(words: Sequence[str]) -> List[str]:
-    """«играй кромче а НЕ ГОВОРИ громче» (живой лог #3125): «не говори» —
-    отказ от голоса, а не просьба о нём."""
-    out: List[str] = []
-    skip = False
-    for i, word in enumerate(words):
-        if skip:
-            skip = False
-            continue
-        if word == "не" and i + 1 < len(words) and words[i + 1] in _VOICE_WORDS:
-            skip = True
-            continue
-        out.append(word)
-    return out
-
-
-def _volume_direction(classes: Sequence[Optional[str]]) -> Optional[MediaIntent]:
-    dirs = {c for c in classes if c in _DIRECTIONS}
-    if "max" in dirs and "down" not in dirs:
-        return MediaIntent.VOLUME_MAX
-    if dirs == {"up"}:
-        return MediaIntent.VOLUME_UP
-    if dirs == {"down"}:
-        return MediaIntent.VOLUME_DOWN
-    return None
-
-
-def _names_current_track(extras: Sequence[str], track_name: Optional[str]) -> bool:
-    """Лишние слова — это название играющего трека («горный король» ↔
-    «В пещере горного короля»): каждое слово совпадает по основе (первые
-    4 буквы) с каким-то словом названия."""
-    if not track_name or len(extras) > _MAX_TRACK_NAME_WORDS:
-        return False
-    title = _words(track_name)
-    return all(any(t.startswith(w[:4]) for t in title) for w in extras)
-
-
-def _volume_command(
-    words: Sequence[str], track_name: Optional[str]
-) -> MediaCommand:
-    words = _drop_voice_negation(words)
-    if "не" in words or any(w in _VOICE_WORDS for w in words):
-        return NO_COMMAND
-    classes = [_word_class(w) for w in words]
-    if "stop" in classes:
-        return NO_COMMAND
-    intent = _volume_direction(classes)
-    if intent is None:
-        return NO_COMMAND
-    extras = [
-        w for w, c in zip(words, classes) if c is None and w not in _VOLUME_FILLER
-    ]
-    if extras and (
-        any(w in _PLAY_VERBS for w in words)
-        or not _names_current_track(extras, track_name)
-    ):
-        # «сыграй в пещере горного короля погромче» — заказ трека;
-        # «расскажи анекдот погромче» — не про музыку. Решает LLM.
-        return NO_COMMAND
-    return MediaCommand(intent=intent)
 
 
 def _stop_command(words: Sequence[str]) -> MediaCommand:
@@ -446,6 +368,8 @@ def _cut(text: str, spans: Sequence[Optional[Tuple[int, int]]]) -> str:
 _THEME_LEADS: FrozenSet[str] = frozenset({
     "тему", "тема", "темой", "тематику", "тематика", "тематикой", "про",
 })
+#: Они же - публично: тему после такого слова человек назвал сам (``theme_grounding.names_theme``, n605 М6).
+THEME_LEADS: FrozenSet[str] = _THEME_LEADS
 
 
 def _theme_split(text: str) -> Tuple[str, str]:
@@ -809,6 +733,8 @@ def _style_set_command(words: Sequence[str]) -> Optional[MediaCommand]:
 _SET_WORDS: FrozenSet[str] = frozenset({
     "сет", "сэт", "сета", "сэта", "сетик", "сэтик", "сетика", "сэтика", "set",
 })
+#: Они же - публично: слово сета названо - слова после него человек назвал темой (``theme_grounding.names_theme``).
+SET_WORDS: FrozenSet[str] = _SET_WORDS
 
 #: Глаголы в начале заказа сета: глаголы заказа по имени и запуска сета.
 _SET_VERBS: FrozenSet[str] = _PLAY_NAMED_VERBS | frozenset({
@@ -858,7 +784,7 @@ def _named_set_command(words: Sequence[str]) -> Optional[MediaCommand]:
 # Заказ сета, тема которого — слова человека (живой замер 06.10 19:08 UTC)
 # ---------------------------------------------------------------------------
 # «Ты диджей 8битный и нас сегодня вечеринка любителей денди и классической музыки замути сэт на 30 минут»:
-# STT записал «и нас» вместо «у нас», тема не выделилась, реплика ушла в LLM — load_skill + dj_set, 14 с тишины
+# STT записал «и нас» вместо «у нас», тема не выделилась, реплика ушла в LLM — подгрузка скилла + dj_set, 14 с тишины
 # до первого трека. Просьба одна — «замути сэт», остальное — тема. Тему из слов реплики выделяет dj_set
 # (``engine.theme_grounding.heard_theme`` по скрытому ``heard_text``) — той же функцией, что на пути LLM.
 
@@ -869,7 +795,7 @@ _ORDER_VERBS: FrozenSet[str] = (_SET_VERBS | _PLAY_NAMED_VERBS) - {"давай",
 #: голос робота.
 _NOT_THEME: FrozenSet[str] = (_NOT_A_TITLE - _THEME_LEADS) | _VOICE_WORDS
 #: Классы слов громкости и стопа: «замути сэт погромче» — не только заказ сета.
-_NOT_THEME_CLASSES: FrozenSet[str] = frozenset({"up", "down", "max", "topic", "stop"})
+_NOT_THEME_CLASSES: FrozenSet[str] = frozenset({"volume", "stop"})
 
 
 #: Просьба продолжить сет (#3581, живой сет 12.10: «продолжай сэт» стал темой «продолжай» → хуки «Carry On»,
@@ -902,10 +828,19 @@ _THEME_AND_STYLE_NOUNS: FrozenSet[str] = frozenset({
     "стиль", "стили", "стиля", "стилю", "тема", "тему", "темы", "темой", "только", "но",
 })
 
+#: Просьба объявлять/комментировать треки сета («поставь сет из трёх треков, объявляй каждый», марафон-4 n605): это
+#: способ подачи, а не тема - иначе «объявляй каждый» подменяла тему LLM «ночная дискотека» (#3845). Часть
+#: :data:`SET_REQUEST_WORDS`.
+SET_ANNOUNCE_WORDS: FrozenSet[str] = frozenset({
+    "объявляй", "объявляйте", "объяви", "объявите", "объявлять", "анонсируй", "анонсируйте", "анонсировать",
+    "комментируй", "комментируйте", "комментировать", "каждый", "каждого", "каждому", "каждым", "каждом", "каждая",
+    "каждую", "каждое", "каждые", "каждых",
+})
+
 #: Слова просьбы о сете — не тема: глаголы заказа и запуска, «сет», обращение и назначение персоны, длина сета,
 #: служебные. Одна таблица для грамматики и для темы из слов реплики (``theme_grounding.heard_theme``, 07.10).
 SET_REQUEST_WORDS: FrozenSet[str] = (
-    _ORDER_VERBS | _SET_WORDS | _DJ_FILLER | LENGTH_WORDS | SET_CONTINUE_WORDS | SET_SWITCH_WORDS
+    _ORDER_VERBS | _SET_WORDS | _DJ_FILLER | LENGTH_WORDS | SET_CONTINUE_WORDS | SET_SWITCH_WORDS | SET_ANNOUNCE_WORDS
 ) | {
     "давай", "давайте", "робот", "робби", "будешь", "станешь", "побудь", "диджеем", "диджея", "сэту", "сету",
     "сеты", "замутим", "замутить", "замутишь", "сделаешь", "организуй", "забабахай", "дай", "пусть",
@@ -988,23 +923,16 @@ def _spoken_set_command(text: str) -> Optional[MediaCommand]:
 # ---------------------------------------------------------------------------
 
 
-def parse_media_command(
-    user_input: str, *, track_name: Optional[str] = None
-) -> MediaCommand:
-    """Разобрать реплику юзера (после wake-word) в медиакоманду.
-
-    ``track_name`` — название играющего трека или ``None`` (ничего не
-    играет / название неизвестно): с ним «горный король погромче» —
-    громкость, без него — вопрос к LLM.
-    """
+def parse_media_command(user_input: str) -> MediaCommand:
+    """Разобрать реплику юзера (после wake-word) в медиакоманду."""
     text = extract_user_utterance(user_input)
     if not text:
         return NO_COMMAND
     tracks, rest = split_set_length(text)  # «сет на 3 трека»: длину решает код, грамматика видит реплику без неё
-    command = (_listed_set(rest) or _parse_text(rest, track_name)) if tracks else NO_COMMAND
+    command = (_listed_set(rest) or _parse_text(rest)) if tracks else NO_COMMAND
     if command.intent is MediaIntent.DJ:
         return replace(command, tracks=tracks)
-    return _listed_set(text) or _parse_text(text, track_name)
+    return _listed_set(text) or _parse_text(text)
 
 
 def _listed_set(text: str) -> Optional[MediaCommand]:
@@ -1014,7 +942,7 @@ def _listed_set(text: str) -> Optional[MediaCommand]:
     listed = listed.strip(" .!?…")
     if not sep or not listed or all(w in _DJ_FILLER or w in _PLAY_NAMED_FILLER for w in _words(listed)):
         return None
-    command = _parse_text(head, None)
+    command = _parse_text(head)
     if command.intent is not MediaIntent.DJ or not command.closed or command.set_theme or _THEME_RE.search(head):
         return None
     return replace(command, set_theme=listed, set_persona=command.persona)
@@ -1096,18 +1024,114 @@ def _now_playing_command(words: Sequence[str]) -> Optional[MediaCommand]:
     return None
 
 
-def _generate_command(words: Sequence[str]) -> Optional[MediaCommand]:
-    """«сгенерируй (пиздатый) музон (своим голосом)» → ``REQUEST_MUSIC`` без названия (ADR-0158 PR-3, живой прогон
-    13.10: такая реплика уходила в LLM, та ставила синтез и говорила «Включаю музыку»). Путь — синтез, кэш, генерация
-    или честный отказ — решает чойсер ``request_music`` по словам реплики (``rob_box_music.source``), не LLM. Глагол
-    генерации — основы ``knowledge.SOURCE_ASK_STEMS["generated"]`` первым словом после вступления; иначе ``None``."""
-    body = list(itertools.dropwhile(lambda w: w in _PLAY_NAMED_LEAD_IN, words))  # «давай сгенерируй»
-    if not body or not body[0].startswith(kn.SOURCE_ASK_STEMS["generated"]):
+#: Слова музыки в просьбе сочинить: без них «сочини сказку», «придумай имя» — не музыка (решает LLM).
+_GEN_MUSIC_STEMS: Tuple[str, ...] = kn.SONG_STEMS + ("музык", "музон", "мелод", "трек", "бит", "инструментал",
+                                                     "композиц", "вокал")
+#: Ввод темы генерации: «про X», «о X», «на тему X».
+_GEN_THEME_LEADS: FrozenSet[str] = _THEME_LEADS | frozenset({"о", "об", "обо"})
+#: «своим / твоим голосом» — петь голосом робота; в тему не идут.
+_ROBOT_VOICE_WORDS: FrozenSet[str] = frozenset({"своим", "твоим", "голосом"})
+#: Голова «спой …» без слова музыки: родовые, служебные, «своим голосом», вторая просьба петь/сыграть.
+_SING_HEAD: FrozenSet[str] = _GENERIC_WORDS | _PLAY_NAMED_FILLER | _COMMON_FILLER | _ROBOT_VOICE_WORDS | frozenset({
+    "сыграй", "сыграть", "что", "нибудь", "мне", "нам"})
+#: Много треков в голове просьбы сочинить («сочини новые треки / сет под тему X») — сет генерации, не один трек (#3775).
+_GEN_SET_WORDS: FrozenSet[str] = frozenset({
+    "треки", "треков", "сет", "сэт", "сета", "сэта", "мелодии", "мелодий", "композиции", "композиций", "инструменталы",
+    "инструменталов"})
+#: Тема со ссылкой на контекст («спой об этом») — не тема, решает LLM.
+_GEN_CONTEXT_REFS: FrozenSet[str] = frozenset({"это", "этом", "этого", "том", "нем", "нём", "ней", "них", "него"})
+_GEN_MAX_HEAD = 6
+_GEN_MAX_THEME = 12
+
+
+def _sing_command(words: Sequence[str]) -> Optional[MediaCommand]:
+    """«спой / сочини / сгенерируй (песню) (про X)» → ``GENERATE`` (ADR-0150 §9.1 ревизия 5, #3696): класс действия по
+    словам человека решает код — эпизод Б 20.10 «спой песенку про стрижей и ежей» LLM отдала ``music_library`` ×8.
+
+    Глагол — основы ``knowledge.SOURCE_ASK_STEMS`` (``vocal``, ``own``, ``generated``) первым словом после вступления.
+    «Сочини/придумай» — только со словом музыки; «спой» без слова музыки — голова из :data:`_SING_HEAD` («спой
+    калинку», «спой со мной» — ``None``, решает LLM). «Сгенерируй …» — как раньше (ADR-0158 PR-3), любая голова.
+    ``kind``: петь (глагол «спой», слово «песня», «своим голосом») — ``robot_song``, много треков
+    (:data:`_GEN_SET_WORDS`) — ``set``, иначе ``instrumental``;
+    тема — слова после :data:`_GEN_THEME_LEADS`. Путь (кэш, генерация, синтез, отказ) решает ``generate_music``."""
+    body = list(itertools.dropwhile(lambda w: w in _PLAY_NAMED_LEAD_IN, words))  # «давай спой»
+    verb = _gen_verb(body[0]) if body else ""
+    if not verb:
         return None
-    return MediaCommand(intent=MediaIntent.REQUEST_MUSIC, closed=True)
+    head, theme = _gen_split(body[1:])
+    if theme is None or not _gen_head_ok(verb, head):
+        return None
+    vocal = verb == "vocal" or _ROBOT_VOICE_WORDS.intersection(head) or any(w.startswith(kn.SONG_STEMS) for w in head)
+    kind = "robot_song" if vocal else "set" if _GEN_SET_WORDS.intersection(head) else "instrumental"
+    return MediaCommand(intent=MediaIntent.GENERATE, closed=True, kind=kind, name=" ".join(theme))
 
 
-def _parse_text(text: str, track_name: Optional[str]) -> MediaCommand:
+def _gen_verb(word: str) -> str:
+    """Вид глагола генерации — ключ ``knowledge.SOURCE_ASK_STEMS`` (``vocal``/``generated``/``own``) или «». Записи
+    таблицы без «ё» («споешь»): слово сверяется так же. Глаголы пения (``vocal`` = ``SING_VERBS``) — точные слова, не
+    начало слова: «спойлер», «пойдём» — не пение (ревью #4071 круг 2 NIT-4); остальные — основы."""
+    word = word.replace("ё", "е")
+    if word in kn.SOURCE_ASK_STEMS["vocal"]:
+        return "vocal"
+    return next((key for key in ("generated", "own") if word.startswith(kn.SOURCE_ASK_STEMS[key])), "")
+
+
+def _gen_split(tail: Sequence[str]) -> Tuple[List[str], Optional[List[str]]]:
+    """``(голова, тема)`` после глагола: тема — после ввода темы, без «своим голосом» и служебных в конце; ``None``
+    — тема пустая при вводе («спой про»), длинная или ссылается на контекст («спой об этом»)."""
+    lead = next((i for i, w in enumerate(tail) if w in _GEN_THEME_LEADS), len(tail))
+    theme = [w for w in tail[lead + 1:] if w not in _ROBOT_VOICE_WORDS]
+    while theme and theme[-1] in _PLAY_NAMED_FILLER:
+        theme.pop()
+    if (lead < len(tail) and not theme) or len(theme) > _GEN_MAX_THEME or _GEN_CONTEXT_REFS.intersection(theme):
+        return list(tail[:lead]), None
+    return list(tail[:lead]), theme
+
+
+def _gen_head_ok(verb: str, head: Sequence[str]) -> bool:
+    """Голова просьбы: «сгенерируй» — любая; со словом музыки — любая; «спой» — из :data:`_SING_HEAD`."""
+    if len(head) > _GEN_MAX_HEAD:
+        return False
+    if verb == "generated" or any(w.startswith(_GEN_MUSIC_STEMS) or w in _GEN_SET_WORDS for w in head):
+        return True
+    return verb == "vocal" and set(head) <= _SING_HEAD
+
+
+_LIBRARY_STEM = "библиотек"
+#: Глаголы «включи из библиотеки»: заказа по имени и поиска.
+_LIBRARY_PLAY_VERBS: FrozenSet[str] = _PLAY_NAMED_VERBS | frozenset({"найди", "найдите", "поищи", "отыщи"})
+#: «что у тебя в библиотеке», «покажи библиотеку» — список.
+_LIBRARY_LIST_WORDS: FrozenSet[str] = _COMMON_FILLER | frozenset({
+    "что", "какие", "какая", "какой", "какое", "есть", "лежит", "лежат", "хранится", "хранятся", "покажи",
+    "перечисли", "расскажи", "скажи", "у", "тебя", "твоей", "твоя", "моей", "нашей", "из", "в", "во", "там", "трек", "треки", "треков",
+    "песни", "песен", "музыка", "музыки"})
+#: Служебные слова заказа из библиотеки: в запрос поиска не идут.
+_LIBRARY_FILLER: FrozenSet[str] = _PLAY_NAMED_FILLER | _COMMON_FILLER | _GENERIC_WORDS | frozenset({
+    "из", "в", "во", "у", "тебя", "твоей", "моей", "нашей", "своей", "про", "о", "об", "под", "названием"})
+
+
+def _library_command(words: Sequence[str]) -> Optional[MediaCommand]:
+    """Реплика со словом «библиотека» (#3696): «включи (X) из библиотеки» → ``LIBRARY(kind=play, name=X)``; «что у
+    тебя в библиотеке» → ``LIBRARY(kind=list)``. Трек выбирает код (``library_command``), не LLM."""
+    if not any(w.startswith(_LIBRARY_STEM) for w in words):
+        return None
+    body = list(itertools.dropwhile(lambda w: w in _PLAY_NAMED_LEAD_IN, words))
+    if body and body[0] in _LIBRARY_PLAY_VERBS:
+        return _library_play([w for w in body[1:] if not w.startswith(_LIBRARY_STEM)])
+    if body and all(w in _LIBRARY_LIST_WORDS or w.startswith(_LIBRARY_STEM) for w in body):
+        return MediaCommand(intent=MediaIntent.LIBRARY, closed=True, kind="list")
+    return None
+
+
+def _library_play(rest: Sequence[str]) -> Optional[MediaCommand]:
+    """Запрос поиска — слова вне служебных; условие/ссылка на контекст, громкость/стоп, длинный — ``None`` (LLM)."""
+    query = [w for w in rest if w not in _LIBRARY_FILLER]
+    if len(query) > _MAX_TITLE_WORDS or any(w in _NOT_A_TITLE or _word_class(w) is not None for w in query):
+        return None
+    return MediaCommand(intent=MediaIntent.LIBRARY, closed=True, kind="play", name=" ".join(query))
+
+
+def _parse_text(text: str) -> MediaCommand:
     """Разбор реплики без длины сета и перечисления (:func:`parse_media_command`)."""
     if is_dj_request(text):
         return _dj_command(text)
@@ -1115,15 +1139,12 @@ def _parse_text(text: str, track_name: Optional[str]) -> MediaCommand:
     stop = _stop_command(words)
     if stop.intent is not MediaIntent.NONE:
         return stop
-    volume = _volume_command(words, track_name)
-    if volume.intent is not MediaIntent.NONE:
-        return volume
-    now = _now_playing_command(words)
+    now = _library_command(words) or _now_playing_command(words)
     if now is not None:
         return now
     theme_words = _fixed_verb(_theme_words(text))  # заказ сета: цифры темы остаются словами (mambo nr 5, #3460)
     # заказ по имени — тоже с цифрами: «сыграй 1812 Overture» искал «overture» (06.10)
-    return (_generate_command(theme_words) or _style_set_command(theme_words) or _named_set_command(theme_words)
+    return (_sing_command(theme_words) or _style_set_command(theme_words) or _named_set_command(theme_words)
             or _spoken_set_command(text)
             or _instrument_command(theme_words) or _more_command(theme_words)
             or _play_named_command(theme_words))

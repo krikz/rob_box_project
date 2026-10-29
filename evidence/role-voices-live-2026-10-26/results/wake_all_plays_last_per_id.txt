@@ -1,0 +1,458 @@
+﻿y-anton_p01                  HIT     first | робот который сейчас час и сколько осталось до утра
+y-anton_p02                  HIT     first | робот сколько у тебя осталось заряда до утра дотянешь
+y-anton_p03                  MISS          | скажи статус все ли у тебя работает ничего не отвалилось
+y-anton_p04                  HIT     first | робот где ты сейчас находишься
+y-ermil_p01                  HIT     first | робот который сейчас час и сколько осталось до утра
+y-ermil_p02                  HIT     first | робот сколько у тебя осталось заряда до утра дотянешь
+y-ermil_p03                  HIT     first | робот доложи статус все ли у тебя работает ничего не отвалилось
+y-ermil_p04                  HIT     first | робот где ты сейчас находишься
+y-zahar_p01                  HIT     first | робот который сейчас час и сколько осталось до утра
+y-zahar_p02                  MISS          | сколько у тебя осталось заряда до утра дотянешь
+y-zahar_p03                  HIT     first | робот доложи статус все ли у тебя работает ничего не отвалилось
+y-zahar_p04                  HIT     first | робот где ты сейчас находишься
+y-filipp_p01                 HIT     first | робот который сейчас час и сколько осталось до утра
+y-filipp_p02                 HIT     first | робот сколько у тебя осталось заряда до утра дотянешь
+m-en_ManWithDeepVoice_p21    MISS          | который сейчас час и сколько осталось до утра
+m-en_ManWithDeepVoice_p22    MISS          | сколько у тебя осталось заряда до утра дотянешь
+m-en_DeepGentleman_p21       MISS          | которые сейчас час и сколько осталось до утра
+m-en_DeepGentleman_p22       MISS          | сколько у тебя осталось заряда до утра дотянешь
+m-es_DeepTonedMan_p21        MISS          | который сейчас час и сколько осталось до утра
+m-es_DeepTonedMan_p22        MISS          | сколько у тебя осталось заряда до утра дотянешь
+m-es_Arnold_p21              MISS          | который сейчас час и сколько осталось до утра
+m-es_Arnold_p22              MISS          | сколько у тебя осталось заряда до утра дотянешь
+m-es_Ghost_p21               MISS          | который сейчас час и сколько осталось до утра
+m-es_Ghost_p22               MISS          | сколько у тебя осталось заряда до утра дотянешь
+m-es_SantaClaus_p21          MISS          | который сейчас час и сколько осталось до утра
+m-es_SantaClaus_p22          MISS          | сколько у тебя осталось заряда до утра дотянешь
+m-ko_ConfidentBoss_p21       MISS          | который сейчас час и сколько осталось до утра
+m-ko_ConfidentBoss_p22       MISS          | сколько у тебя осталось заряда до утра дотянешь
+m-zh_HumorousElder_p21       MISS          | который сейчас час и сколько осталось до утра
+m-zh_HumorousElder_p22       MISS          | сколько у тебя осталось заряда до утра дотянешь
+m-en_Storyteller_p21         MISS          | который сейчас час и сколько осталось до утра
+m-en_Storyteller_p22         MISS          | сколько у тебя осталось заряда до утра дотянешь
+m-en_Comedian_p21            MISS          | который сейчас час и сколько осталось до утра
+m-en_Comedian_p22            MISS          | сколько у тебя осталось заряда до утра дотянешь
+m-en_PassionateWarrior_p21   MISS          | который сейчас час и сколько осталось до утра
+m-en_PassionateWarrior_p22   MISS          | сколько у тебя осталось заряда до утра дотянешь
+m-en_TeenBoy_p21             MISS          | который сейчас час и сколько осталось до утра
+m-en_TeenBoy_p22             MISS          | сколько у тебя осталось заряда до утра дотянешь
+m-ko_ColdYoungMan_p21        MISS          | который сейчас час и сколько осталось до утра
+m-ko_ColdYoungMan_p22        MISS          | сколько у тебя осталось заряда до утра дотянешь
+m-fi_FriendlyBoy_p21         MISS          | который сейчас час и сколько осталось до утра
+m-fi_FriendlyBoy_p22         MISS          | сколько у тебя осталось заряда до утра дотянешь
+m-en_AussieBloke_p21         MISS          | которая сейчас час и сколько осталось до утра
+m-en_AussieBloke_p22         MISS          | сколько у тебя осталось заряда до утра дотянешь
+m-en_Narrator_p21            MISS          | который сейчас час и сколько осталось до утра
+m-en_Narrator_p22            MISS          | сколько у тебя осталось заряда до утра дотянешь
+m-uk_WiseScholar_p21         MISS          | который сейчас час и сколько осталось до утра
+m-uk_WiseScholar_p22         MISS          | сколько у тебя осталось заряда до утра дотянешь
+m-pl_MaleNarrator_p21        MISS          | который сейчас час и сколько осталось до утра
+m-pl_MaleNarrator_p22        MISS          | сколько у тебя осталось заряда до утра дотянешь
+m-nl_BossyLeader_p21         MISS          | который сейчас час и сколько осталось до утра
+m-nl_BossyLeader_p22         MISS          | сколько у тебя осталось заряда до утра дотянешь
+m-ro_EnergeticYouth_p21      MISS          | который сейчас час и сколько осталось до утра
+m-ro_EnergeticYouth_p22      MISS          | сколько у тебя осталось заряда до утра дотянешь
+m-de_PlayfulMan_p21          MISS          | который сейчас час и сколько осталось до утра
+m-de_PlayfulMan_p22          MISS          | сколько у тебя осталось заряда до утра дотянешь
+m-en_WhisperingGirl_p21      MISS          | час и сколько осталось до утра
+m-en_WhisperingGirl_p22      MISS          | сколько у тебя осталось заряда до утра дотянешь
+m-en_PlayfulGirl_p21         MISS          | который сейчас час и сколько осталось до утра
+m-en_PlayfulGirl_p22         MISS          | сколько у тебя осталось заряда до утра дотянешь
+m-en_GracefulLady_p21        MISS          | который сейчас час и сколько осталось до утра
+m-en_GracefulLady_p22        MISS          | сколько у тебя осталось заряда до утра дотянешь
+m-en_MatureBoss_p21          MISS          | который сейчас час и сколько осталось до утра
+m-en_MatureBoss_p22          MISS          | сколько у тебя осталось заряда до утра дотянешь
+m-zh_KindElder_p21           MISS          | который сейчас час и сколько осталось до утра
+m-zh_KindElder_p22           MISS          | сколько у тебя осталось заряда до утра дотянешь
+m-zh_GentleSenior_p21        MISS          | который сейчас час и сколько осталось до утра
+m-zh_GentleSenior_p22        MISS          | сколько у тебя осталось заряда до утра дотянешь
+m-ko_HaughtyLady_p21         MISS          | который сейчас час и сколько осталось до утра
+m-ko_HaughtyLady_p22         MISS          | сколько у тебя осталось заряда до утра дотянешь
+m-pt_StrictBoss_p21          MISS          | который сейчас час и сколько осталось до утра
+m-pt_StrictBoss_p22          MISS          | сколько у тебя осталось заряда до утра дотянешь
+m-en_StressedLady_p21        MISS          | который сейчас час и сколько осталось до утра
+m-en_StressedLady_p22        MISS          | сколько у тебя осталось заряда до утра дотянешь
+m-uk_CalmWoman_p21           MISS          | который сейчас час и сколько осталось до утра
+m-uk_CalmWoman_p22           MISS          | сколько у тебя осталось заряда до утра дотянешь
+m-zh_ArrogantMiss_p21        MISS          | который сейчас час и сколько осталось до утра
+m-zh_ArrogantMiss_p22        MISS          | сколько у тебя осталось заряда до утра дотянешь
+m-en_ImposingQueen_p21       MISS          | который сейчас час и сколько осталось до утра
+m-en_ImposingQueen_p22       MISS          | сколько у тебя осталось заряда до утра дотянешь
+m-fr_NewsAnchor_p21          MISS          | который сейчас час и сколько осталось до утра
+m-fr_NewsAnchor_p22          MISS          | сколько у тебя осталось заряда до утра дотянешь
+m-robot_p21                  MISS          | который сейчас час и сколько осталось до утра
+m-robot_p22                  MISS          | сколько у тебя осталось заряда до утра дотянешь
+y-filipp_p21                 MISS          | который сейчас час и сколько осталось до утра
+y-filipp_p22                 MISS          | сколько у тебя осталось заряда до утра дотянешь
+y-filipp_p23                 MISS          | доложи статус все ли у тебя работает ничего не отвалилось
+y-madirus_p21                MISS          | который сейчас час и сколько осталось до утра
+y-madirus_p22                MISS          | сколько у тебя осталось заряда до утра дотянешь
+y-madirus_p23                MISS          | доложи статус все ли у тебя работает ничего не отвалилось
+y-kirill_p21                 MISS          | который сейчас час и сколько осталось до утра
+y-kirill_p22                 MISS          | сколько у тебя осталось заряда до утра дотянешь
+y-kirill_p23                 MISS          | доложи статус все ли у тебя работает ничего не отвалилось
+y-alexander_p21              MISS          | который сейчас час и сколько осталось до утра
+y-alexander_p22              MISS          | сколько у тебя осталось заряда до утра дотянешь
+y-alexander_p23              MISS          | доложи статус все ли у тебя работает ничего не отвалилось
+y-dasha_p21                  MISS          | который сейчас час и сколько осталось до утра
+y-dasha_p22                  MISS          | сколько у тебя осталось заряда до утра дотянешь
+y-dasha_p23                  MISS          | доложи статус все ли у тебя работает ничего не отвалилось
+y-julia_p21                  MISS          | который сейчас час и сколько осталось до утра
+y-julia_p22                  MISS          | сколько у тебя осталось заряда до утра дотянешь
+y-julia_p23                  MISS          | доложи статус все ли у тебя работает ничего не отвалилось
+y-lera_p21                   MISS          | который сейчас час и сколько осталось до утра
+y-lera_p22                   MISS          | сколько у тебя осталось заряда до утра дотянешь
+y-lera_p23                   MISS          | доложи статус все ли у тебя работает ничего не отвалилось
+y-masha_p21                  MISS          | который сейчас час и сколько осталось до утра
+y-masha_p22                  MISS          | сколько у тебя осталось заряда до утра дотянешь
+y-masha_p23                  MISS          | доложи статус все ли у тебя работает ничего не отвалилось
+y-marina_p21                 MISS          | который сейчас час и сколько осталось до утра
+y-marina_p22                 MISS          | сколько у тебя осталось заряда до утра дотянешь
+y-marina_p23                 MISS          | доложи статус все ли у тебя работает ничего не отвалилось
+y-madi_ru_p21                MISS          | который сейчас час и сколько осталось до утра
+y-madi_ru_p22                MISS          | сколько у тебя осталось заряда до утра дотянешь
+y-madi_ru_p23                MISS          | доложи статус все ли у тебя работает ничего не отвалилось
+y-saule_ru_p21               MISS          | который сейчас час и сколько осталось до утра
+y-saule_ru_p22               MISS          | сколько у тебя осталось заряда до утра дотянешь
+y-saule_ru_p23               MISS          | доложи статус все ли у тебя работает ничего не отвалилось
+y-zhanar_ru_p21              MISS          | который сейчас час и сколько осталось до утра
+y-zhanar_ru_p22              MISS          | сколько у тебя осталось заряда до утра дотянешь
+y-zhanar_ru_p23              MISS          | доложи статус все ли у тебя работает ничего не отвалилось
+y-yulduz_ru_p21              MISS          | который сейчас час и сколько осталось до утра
+y-yulduz_ru_p22              MISS          | сколько у тебя осталось заряда до утра дотянешь
+y-yulduz_ru_p23              MISS          | доложи статус все ли у тебя работает ничего не отвалилось
+s-eugene_p21                 MISS          | который сейчас час и сколько осталось до утра
+s-eugene_p22                 MISS          | сколько у тебя осталось зарядок до утра дотянешь
+s-eugene_p23                 MISS          | доложи статус все ли у тебя работает ничего не отвалилось
+s-aidar_p21                  MISS          | который сейчас час и сколько осталось до утра
+s-aidar_p22                  MISS          | сколько у тебя осталось заряда до утра дотянешь
+s-aidar_p23                  MISS          | доложи статус все ли у тебя работает ничего не отвалилось
+s-kseniya_p21                MISS          | который сейчас час и сколько осталось до утра
+s-kseniya_p22                MISS          | сколько у тебя осталось заряда до утра дотянешь
+s-kseniya_p23                MISS          | доложи статус все ли у тебя работает ничего не отвалилось
+s-xenia_p21                  MISS          | который сейчас час и сколько осталось до утра
+s-xenia_p22                  MISS          | сколько у тебя осталось заряда до утра дотянешь
+s-xenia_p23                  MISS          | доложи статус все ли у тебя работает ничего не отвалилось
+s-baya_p21                   MISS          | который сейчас час и сколько осталось до утра
+s-baya_p22                   MISS          | сколько у тебя осталось заряда до утра дотянешь
+s-baya_p23                   MISS          | доложи статус все ли у тебя работает ничего не отвалилось
+m-en_WhisperingGirl_p23      MISS          | доложи статус все ли у тебя работает ничего не отвалилось
+m-en_WhisperingGirl_p24      MISS          | где ты сейчас находишься
+m-en_WhisperingGirl_p25      MISS          | что ты видишь вокруг себя опиши в двух словах
+m-en_WhisperingGirl_p26      MISS          | какие звуки ты вообще умеешь издавать
+m-en_WhisperingGirl_p27      MISS          | тебя сейчас играет какая нибудь музыка
+m-en_WhisperingGirl_p28      MISS          | ты меня слышишь ответь коротко
+m-en_WhisperingGirl_p29      MISS          | пожалуйста не горит ли лампочка на зарядке
+m-en_WhisperingGirl_p30      MISS          | расскажи какая завтра погода за окном в мастерской
+m-en_Storyteller_p23         MISS          | доложи статус все ли у тебя работает ничего не отвалилось
+m-en_Storyteller_p24         MISS          | где ты сейчас находишься
+m-en_Storyteller_p25         MISS          | что ты видишь вокруг себя опиши в двух словах
+m-en_Storyteller_p26         MISS          | какие звуки ты вообще умеешь издавать
+m-en_Storyteller_p27         MISS          | у тебя сейчас играет какая нибудь музыка
+m-en_Storyteller_p28         MISS          | ты меня слышишь ответь коротко
+m-en_Storyteller_p29         MISS          | посмотри пожалуйста не горит ли лампочка на зарядке
+m-en_Storyteller_p30         MISS          | расскажи а какая завтра погода за окном мастерской
+m-zh_GentleSenior_p23        MISS          | доложи статус все ли у тебя работает ничего не отвалилось
+m-zh_GentleSenior_p24        MISS          | где ты сейчас находишься
+m-zh_GentleSenior_p25        MISS          | что ты видишь вокруг себя опиши в двух словах
+m-zh_GentleSenior_p26        MISS          | какие звуки ты вообще умеешь издавать
+m-zh_GentleSenior_p27        MISS          | у тебя сейчас играет какая нибудь музыка
+m-zh_GentleSenior_p28        MISS          | ты меня слышишь ответь коротко
+m-zh_GentleSenior_p29        MISS          | посмотри пожалуйста не горит ли лампочка на зарядке
+m-zh_GentleSenior_p30        MISS          | расскажи какая завтра погода за окном в мастерской
+m-en_AussieBloke_p23         MISS          | доложи статус все ли у тебя работает ничего не отвалилось
+m-en_AussieBloke_p24         MISS          | где ты сейчас находишься
+m-en_AussieBloke_p25         MISS          | что ты видишь вокруг себя опиши в двух словах
+m-en_AussieBloke_p26         MISS          | какие звуки ты вообще умеешь издавать
+m-en_AussieBloke_p27         MISS          | у тебя сейчас играет какая нибудь музыка
+m-en_AussieBloke_p28         MISS          | ты меня слышишь ответь коротко
+m-en_AussieBloke_p29         MISS          | посмотри пожалуйста не горит ли лампочка на зарядке
+m-en_AussieBloke_p30         MISS          | расскажи какая завтра погода за окном мастерской
+m-cute_boy_p23               MISS          | доложи статус все ли у тебя работает ничего не отвалилось
+m-cute_boy_p24               MISS          | где ты сейчас находишься
+m-cute_boy_p25               MISS          | что ты видишь вокруг себя опиши в двух словах
+m-cute_boy_p26               MISS          | какие звуки ты вообще умеешь издавать
+m-cute_boy_p27               MISS          | у тебя сейчас играет какая нибудь музыка
+m-cute_boy_p28               MISS          | ты меня слышишь ответь коротко
+m-cute_boy_p29               MISS          | посмотри пожалуйста не горит ли лампочка на зарядке
+m-cute_boy_p30               MISS          | расскажи какая завтра погода за окном мастерской
+m-es_Arnold_p23              MISS          | доложу статус все ли у тебя работает ничего не отвалилось
+m-es_Arnold_p24              MISS          | где ты сейчас находишься
+m-es_Arnold_p25              MISS          | что ты видишь вокруг себя опиши в двух словах
+m-es_Arnold_p26              MISS          | какие звуки ты вообще умеешь издавать
+m-es_Arnold_p27              MISS          | у тебя сейчас играет какая нибудь музыка
+m-es_Arnold_p28              MISS          | ты меня слышишь ответь коротко
+m-es_Arnold_p29              MISS          | посмотри пожалуйста не горит ли лампочка на зарядке
+m-es_Arnold_p30              MISS          | расскажи какая завтра погода за окном мастерской
+m-en_Comedian_p23            MISS          | доложи статус все ли у тебя работает ничего не отвалилось
+m-en_Comedian_p24            MISS          | где ты сейчас находишься
+m-en_Comedian_p25            MISS          | что ты видишь вокруг себя опиши в двух словах
+m-en_Comedian_p26            MISS          | какие звуки ты вообще умеешь издавать
+m-en_Comedian_p27            MISS          | у тебя сейчас играет какая нибудь музыка
+m-en_Comedian_p28            MISS          | ты меня слышишь ответь коротко
+m-en_Comedian_p29            MISS          | посмотри пожалуйста не горит ли лампочка на зарядке
+m-en_Comedian_p30            MISS          | расскажи какая завтра погода за окном мастерской
+m-zh_ArrogantMiss_p23        MISS          | доложи статус все ли у тебя работает ничего не отвалилось
+m-zh_ArrogantMiss_p24        MISS          | где ты сейчас находишься
+m-zh_ArrogantMiss_p25        MISS          | что ты видишь вокруг себя опиши в двух словах
+m-zh_ArrogantMiss_p26        MISS          | какие звуки ты вообще умеешь издавать
+m-zh_ArrogantMiss_p27        MISS          | у тебя сейчас играет какая нибудь музыка
+m-zh_ArrogantMiss_p28        MISS          | ты меня слышишь ответь коротко
+m-zh_ArrogantMiss_p29        MISS          | посмотри пожалуйста не горит ли лампочка на зарядке
+m-zh_ArrogantMiss_p30        MISS          | расскажи какая завтра погода за окном мастерской
+m-uk_WiseScholar_p23         MISS          | доложи статус все ли у тебя работает ничего не отвалилось
+m-uk_WiseScholar_p24         MISS          | где ты сейчас находишься
+m-uk_WiseScholar_p25         MISS          | что ты видишь вокруг себя опиши в двух словах
+m-uk_WiseScholar_p26         MISS          | какие звуки ты вообще умеешь издавать
+m-uk_WiseScholar_p27         MISS          | у тебя сейчас играет какая нибудь музыка
+m-uk_WiseScholar_p28         MISS          | ты меня слышишь ответь коротко
+m-uk_WiseScholar_p29         MISS          | посмотри пожалуйста не горит ли лампочка на зарядке
+m-uk_WiseScholar_p30         MISS          | расскажи какая завтра погода за окном мастерской
+m-ko_ConfidentBoss_p23       MISS          | доложи статус все ли у тебя работает ничего не отвалилось
+m-ko_ConfidentBoss_p24       MISS          | где ты сейчас находишься
+m-ko_ConfidentBoss_p25       MISS          | то ты видишь вокруг себя опиши в двух словах
+m-ko_ConfidentBoss_p26       MISS          | какие звуки ты вообще умеешь издавать
+m-ko_ConfidentBoss_p27       MISS          | у тебя сейчас играет какая нибудь музыка
+m-ko_ConfidentBoss_p28       MISS          | ты меня слышишь ответь коротко
+m-ko_ConfidentBoss_p29       MISS          | посмотри пожалуйста не горит ли лампочка на зарядке
+m-ko_ConfidentBoss_p30       MISS          | расскажи какая завтра погода за окном мастерской
+m-pl_MaleNarrator_p23        MISS          | доложи статус все ли у тебя работает ничего не отвалилось
+m-pl_MaleNarrator_p24        MISS          | где ты сейчас находишься
+m-pl_MaleNarrator_p25        MISS          | что ты видишь вокруг себя опишу в двух словах
+m-pl_MaleNarrator_p26        MISS          | какие звуки ты вообще умеешь издавать
+m-pl_MaleNarrator_p27        MISS          | у тебя сейчас играет какая нибудь музыка
+m-pl_MaleNarrator_p28        MISS          | ты меня слышишь ответь коротко
+m-pl_MaleNarrator_p29        MISS          | посмотри пожалуйста не горит ли лампочка на зарядке
+m-pl_MaleNarrator_p30        MISS          | расскажи какая завтра погода за окном мастерской
+y-julia_p24                  MISS          | где ты сейчас находишься
+y-julia_p25                  MISS          | что ты видишь вокруг себя опиши в двух словах
+y-julia_p26                  MISS          | какие звуки ты вообще умеешь издавать
+y-julia_p27                  MISS          | у тебя сейчас играет какая нибудь музыка
+y-julia_p28                  MISS          | ты меня слышишь ответь коротко
+y-madirus_p24                MISS          | где ты сейчас находишься
+y-madirus_p25                MISS          | что ты видишь вокруг себя опиши в двух словах
+y-madirus_p26                MISS          | какие звуки ты вообще умеешь издавать
+y-madirus_p27                MISS          | у тебя сейчас играет какая нибудь музыка
+y-madirus_p28                MISS          | ты меня слышишь ответь коротко
+y-madi_ru_p24                MISS          | где ты сейчас находишься
+y-madi_ru_p25                MISS          | что ты видишь вокруг себя опиши в двух словах
+y-madi_ru_p26                MISS          | какие звуки ты вообще умеешь издавать
+y-madi_ru_p27                MISS          | у тебя сейчас играет какая нибудь музыка
+y-madi_ru_p28                MISS          | ты меня слышишь ответь коротко
+s-baya_p24                   MISS          | где ты сейчас находишься
+s-baya_p25                   MISS          | что ты видишь вокруг себя опиши в двух словах
+s-baya_p26                   MISS          | какие звуки ты вообще умеешь издавать
+s-baya_p27                   MISS          | у тебя сейчас играет какая нибудь музыка
+s-baya_p28                   MISS          | ты меня слышишь ответь коротко
+s-aidar_p24                  MISS          | где ты сейчас находишься
+s-aidar_p25                  MISS          | что ты видишь вокруг себя опиши в двух словах
+s-aidar_p26                  MISS          | какие звуки ты вообще умеешь издавать
+s-aidar_p27                  MISS          | у тебя сейчас играет какая нибудь музыка
+s-aidar_p28                  MISS          | ты меня слышишь ответь коротко
+m-en_ReservedYoungMan_p21    MISS          | который сейчас час и сколько осталось до утра
+m-en_ReservedYoungMan_p22    MISS          | сколько у тебя осталось заряда до утра дотянешь
+m-en_DecentYoungMan_p21      MISS          | которая сейчас час и сколько осталось до утра
+m-en_DecentYoungMan_p22      MISS          | сколько у тебя осталось заряда до утра дотянешь
+m-en_StrongWilledBoy_p21     MISS          | который сейчас час и сколько осталось до утра
+m-en_StrongWilledBoy_p22     MISS          | сколько у тебя осталось заряда до утра дотянешь
+m-en_WiseScholar_p21         MISS          | который сейчас час и сколько осталось до утра
+m-en_WiseScholar_p22         MISS          | сколько у тебя осталось заряда до утра дотянешь
+m-en_PatientMan_p21          MISS          | который сейчас час и сколько осталось до утра
+m-en_PatientMan_p22          MISS          | сколько у тебя осталось заряда до утра дотянешь
+m-en_Jovialman_p21           MISS          | который сейчас час и сколько осталось до утра
+m-en_Jovialman_p22           MISS          | сколько у тебя осталось заряда до утра дотянешь
+m-en_Debator_p21             MISS          | который сейчас час и сколько осталось до утра
+m-en_Debator_p22             MISS          | сколько у тебя осталось заряда до утра дотянешь
+m-en_BossyLeader_p21         MISS          | который сейчас час и сколько осталось до утра
+m-en_BossyLeader_p22         MISS          | сколько у тебя осталось заряда до утра дотянешь
+m-ko_IntellectualSenior_p21  MISS          | который сейчас час и сколько осталось до утра
+m-ko_IntellectualSenior_p22  MISS          | сколько у тебя осталось заряда до утра дотянешь
+m-ko_ConsiderateSenior_p21   MISS          | который сейчас час и сколько осталось до утра
+m-ko_ConsiderateSenior_p22   MISS          | сколько у тебя осталось заряда до утра дотянешь
+m-es_PowerfulSoldier_p21     MISS          | который сейчас час и сколько осталось до утра
+m-es_PowerfulSoldier_p22     MISS          | сколько у тебя осталось заряда до утра дотянешь
+m-pt_ReservedYoungMan_p21    MISS          | который сейчас час и сколько осталось до утра
+m-pt_ReservedYoungMan_p22    MISS          | сколько у тебя осталось заряда до утра дотянешь
+m-ja_IntellectualSenior_p21  MISS          | который сейчас час и сколько осталось до утра
+m-ja_IntellectualSenior_p22  MISS          | сколько у тебя осталось заряда до утра дотянешь
+m-es_HumorousElder_p21       MISS          | который сейчас час и сколько осталось до утра
+m-es_HumorousElder_p22       MISS          | сколько у тебя осталось зарядок до утра до темы
+m-es_SereneElder_p21         MISS          | который сейчас час и сколько осталось до утра
+m-es_SereneElder_p22         NO_CAP        | 
+m-en_TrustworthMan_p21       MISS          | который сейчас час и сколько осталось до утра
+m-en_TrustworthMan_p22       MISS          | сколько у тебя осталось заряда до утра дотянешь
+m-ko_CheerfulLittleSister_p21 MISS          | который сейчас час и сколько осталось до утра
+m-ko_CheerfulLittleSister_p22 MISS          | сколько у тебя осталось заряда до утра дотянешь
+m-en_SoftSpokenGirl_p21      MISS          | который сейчас час и сколько осталось до утра
+m-en_SoftSpokenGirl_p22      MISS          | сколько у тебя осталось заряда до утра дотянешь
+m-it_WanderingSorcerer_p21   MISS          | который сейчас час и сколько осталось до утра
+m-it_WanderingSorcerer_p22   MISS          | сколько у тебя осталось заряда до утра дотянешь
+m-en_Wiselady_p21            MISS          | который сейчас час и сколько осталось до утра
+m-en_Wiselady_p22            MISS          | сколько у тебя осталось заряда до утра дотянешь
+m-en_WiseScholar_p23         MISS          | доложи статус все ли у тебя работает ничего не отвалилось
+m-en_WiseScholar_p24         MISS          | где ты сейчас находишься
+m-en_WiseScholar_p25         MISS          | что ты видишь вокруг себя опиши в двух словах
+m-en_WiseScholar_p26         MISS          | какие звуки ты вообще умеешь издавать
+m-en_WiseScholar_p27         MISS          | у тебя сейчас играет какая нибудь музыка
+m-en_WiseScholar_p28         MISS          | ты меня слышишь ответь коротко
+m-en_Jovialman_p23           MISS          | доложи статус все ли у тебя работает ничего не отвалилось
+m-en_Jovialman_p24           MISS          | где ты сейчас находишься
+m-en_Jovialman_p25           MISS          | что ты видишь вокруг себя опиши в двух словах
+m-en_Jovialman_p26           MISS          | какие звуки ты вообще умеешь издавать
+m-en_Jovialman_p27           MISS          | у тебя сейчас играет какая нибудь музыка
+m-en_Jovialman_p28           MISS          | ты меня слышишь ответь коротко
+m-es_HumorousElder_p23       MISS          | доложи статус все ли у тебя работает ничего не отвалилось
+m-es_HumorousElder_p24       MISS          | где ты сейчас находишься
+m-es_HumorousElder_p25       MISS          | что ты видишь вокруг себя опиши в двух словах
+m-es_HumorousElder_p26       MISS          | какие звуки ты вообще умеешь издала
+m-es_HumorousElder_p27       MISS          | у тебя сейчас играет какая нибудь музыка
+m-es_HumorousElder_p28       MISS          | ты меня слышишь ответь короб
+m-ko_ColdYoungMan_p23        MISS          | доложи статус все ли у тебя работает ничего не отвалилось
+m-ko_ColdYoungMan_p24        MISS          | где ты сейчас находишься
+m-ko_ColdYoungMan_p25        MISS          | что ты видишь вокруг себя опиши в двух словах
+m-ko_ColdYoungMan_p26        MISS          | какие звуки ты вообще умеешь издавать
+m-ko_ColdYoungMan_p27        MISS          | у тебя сейчас играет какая нибудь музыка
+m-ko_ColdYoungMan_p28        MISS          | ты меня слышишь ответь коротко
+m-en_WhisperingGirl_p08      HIT     first | робот ты меня слышишь ответь коротко
+m-zh_GentleSenior_p08        HIT     first | робот ты меня слышишь ответь коротко
+m-en_WiseScholar_p08         HIT     first | робот ты меня слышишь ответь коротко
+m-en_Jovialman_p08           HIT     first | робот ты меня слышишь ответь коротко
+m-en_WhisperingGirl_p09      HIT     first | робот посмотри пожалуйста не горит ли лампочка на зарядке
+m-zh_GentleSenior_p09        HIT     first | робот посмотри пожалуйста и уберет ли лампочка на зарядке
+m-en_WiseScholar_p09         HIT     first | робот посмотри пожалуйста не горит ли лампочка на зарядке
+m-en_Jovialman_p09           HIT     first | робот посмотри пожалуйста не горит ли лампочка на зарядке
+m-en_WhisperingGirl_p10      HIT     first | робот расскажи какая завтра погода за окном мастерской
+m-zh_GentleSenior_p10        NO_STT        | 
+m-en_WiseScholar_p10         NO_STT        | 
+m-en_Jovialman_p10           HIT     first | робот расскажи какая завтра погода за окном мастерской
+m-en_WhisperingGirl_p11      HIT     first | робот повтори пожалуйста что ты говорил про колеса
+m-zh_GentleSenior_p11        HIT     first | робот повтори пожалуйста что ты говорил про колеса
+m-en_WiseScholar_p11         HIT     first | робот повтори пожалуйста что ты говорил про колеса
+m-en_Jovialman_p11           HIT     first | робот повтори пожалуйста что ты говорил про колеса
+m-en_WhisperingGirl_p12      HIT     first | робот подскажи сколько будет семью восемь только без шуток
+m-zh_GentleSenior_p12        HIT     first | робот подскажи сколько будет семью восемь только без шуток
+m-en_WiseScholar_p12         HIT     first | робот подскажи сколько будет семью восемь только без шуток
+m-en_Jovialman_p12           HIT     first | робот подскажи сколько будет семью восемь только без шуток
+m-en_WhisperingGirl_p13      HIT     first | робот а какой сегодня день недели
+m-zh_GentleSenior_p13        HIT     first | робот а какой сегодня день недели
+m-en_WiseScholar_p13         HIT     first | робот а какой сегодня день недели
+m-en_Jovialman_p13           HIT     first | робот а какой сегодня день недели
+m-en_WhisperingGirl_p14      MISS          | назови три цвета которые ты лучше всего различаешь
+m-zh_GentleSenior_p14        HIT     first | робот назови три цвета которые ты лучше всего размечаешь
+m-en_WiseScholar_p14         HIT     first | робот назови три цвета которые ты лучше всего различаешь
+m-en_Jovialman_p14           HIT     first | робот назови три цвета которые ты лучше всего различаешь
+m-pt_StrictBoss_p23          MISS          | доложи статус все ли у тебя работает ничего не отвалилось
+m-pt_StrictBoss_p24          MISS          | где ты сейчас находишься
+m-pt_StrictBoss_p25          MISS          | что ты видишь вокруг себя опиши в двух словах
+m-pt_StrictBoss_p26          MISS          | какие звуки ты вообще умеешь издавать
+m-ko_ConsiderateSenior_p23   MISS          | доложи статус все ли у тебя работает ничего не отвалилось
+m-ko_ConsiderateSenior_p24   MISS          | где ты сейчас находишься
+m-ko_ConsiderateSenior_p25   MISS          | что ты видишь вокруг себя опиши в двух словах
+m-ko_ConsiderateSenior_p26   MISS          | какие звуки ты вообще умеешь издавать
+m-en_Jovialman_p01           HIT     first | робот который сейчас час и сколько осталось до утра
+m-en_WiseScholar_p01         HIT     first | робот который сейчас час и сколько осталось до утра
+m-zh_GentleSenior_p01        HIT     first | робот который сейчас час и сколько осталось до утра
+m-en_WhisperingGirl_p01      HIT     first | робот который сейчас час и сколько осталось до утра
+m-en_Jovialman_p02           HIT     first | робот сколько у тебя осталось заряда до утра дотянешь
+m-en_WiseScholar_p02         HIT     first | робот сколько у тебя осталось заряда до утра дотянешь
+m-zh_GentleSenior_p02        HIT     first | робот сколько у тебя осталось заряда до утра дотянешь
+m-en_WhisperingGirl_p02      HIT     first | робот сколько у тебя осталось заряда до утра дотянешь
+m-en_Jovialman_p03           HIT     first | робот доложи статус все ли у тебя работает ничего не отвалилось
+m-en_WiseScholar_p03         HIT     first | робот доложи статус все ли у тебя работает ничего не отвалилось
+m-zh_GentleSenior_p03        HIT     first | робот доложи статус все ли у тебя работает ничего не отвалилось
+m-en_WhisperingGirl_p03      HIT     first | робот доложи статус все ли у тебя работает ничего не отвалилось
+m-en_Jovialman_p04           HIT     first | робот где ты сейчас находишься
+m-en_WiseScholar_p04         HIT     first | робот где ты сейчас находишься
+m-zh_GentleSenior_p04        HIT     first | робот где ты сейчас находишься
+m-en_WhisperingGirl_p04      HIT     first | робот где ты сейчас находишься
+m-en_Jovialman_p05           HIT     first | робот что ты видишь вокруг себя опишу в двух словах
+m-en_WiseScholar_p05         MISS          | что ты видишь вокруг себя опиши в двух словах
+m-zh_GentleSenior_p05        HIT     first | робот что ты видишь вокруг себя опиши в двух словах
+m-en_WhisperingGirl_p05      HIT     first | робот что ты видишь вокруг себя опиши в двух словах
+m-en_Jovialman_p06           HIT     first | робот какие звуки ты вообще умеешь издавать
+m-en_WiseScholar_p06         HIT     first | робот какие звуки ты вообще умеешь издавать
+m-zh_GentleSenior_p06        HIT     first | робот какие звуки ты вообще не умеешь издавать
+m-en_WhisperingGirl_p06      MISS          | могу только свои электронные сигналы эмоции
+m-en_Jovialman_p07           HIT     first | робот у тебя сейчас играет какая нибудь музыка
+m-en_WiseScholar_p07         HIT     first | робот у тебя сейчас играет какая нибудь музыка
+m-zh_GentleSenior_p07        HIT     first | робот у тебя сейчас играет какая нибудь музыка
+m-en_WhisperingGirl_p07      HIT     first | робот у тебя сейчас играет какаянибудь музыка
+
+CONFIG y-anton                      wake 3/4  (робот первым словом: 3; MISS=1 NO_STT=0 NO_CAP=0)
+CONFIG y-ermil                      wake 4/4  (робот первым словом: 4; MISS=0 NO_STT=0 NO_CAP=0)
+CONFIG y-zahar                      wake 3/4  (робот первым словом: 3; MISS=1 NO_STT=0 NO_CAP=0)
+CONFIG y-filipp                     wake 2/2  (робот первым словом: 2; MISS=0 NO_STT=0 NO_CAP=0)
+CONFIG m-en_ManWithDeepVoice        (без вейка: 2 проигрышей, NO_CAP=0 NO_STT=0)
+CONFIG m-en_DeepGentleman           (без вейка: 2 проигрышей, NO_CAP=0 NO_STT=0)
+CONFIG m-es_DeepTonedMan            (без вейка: 2 проигрышей, NO_CAP=0 NO_STT=0)
+CONFIG m-es_Arnold                  (без вейка: 10 проигрышей, NO_CAP=0 NO_STT=0)
+CONFIG m-es_Ghost                   (без вейка: 2 проигрышей, NO_CAP=0 NO_STT=0)
+CONFIG m-es_SantaClaus              (без вейка: 2 проигрышей, NO_CAP=0 NO_STT=0)
+CONFIG m-ko_ConfidentBoss           (без вейка: 10 проигрышей, NO_CAP=0 NO_STT=0)
+CONFIG m-zh_HumorousElder           (без вейка: 2 проигрышей, NO_CAP=0 NO_STT=0)
+CONFIG m-en_Storyteller             (без вейка: 10 проигрышей, NO_CAP=0 NO_STT=0)
+CONFIG m-en_Comedian                (без вейка: 10 проигрышей, NO_CAP=0 NO_STT=0)
+CONFIG m-en_PassionateWarrior       (без вейка: 2 проигрышей, NO_CAP=0 NO_STT=0)
+CONFIG m-en_TeenBoy                 (без вейка: 2 проигрышей, NO_CAP=0 NO_STT=0)
+CONFIG m-ko_ColdYoungMan            (без вейка: 8 проигрышей, NO_CAP=0 NO_STT=0)
+CONFIG m-fi_FriendlyBoy             (без вейка: 2 проигрышей, NO_CAP=0 NO_STT=0)
+CONFIG m-en_AussieBloke             (без вейка: 10 проигрышей, NO_CAP=0 NO_STT=0)
+CONFIG m-en_Narrator                (без вейка: 2 проигрышей, NO_CAP=0 NO_STT=0)
+CONFIG m-uk_WiseScholar             (без вейка: 10 проигрышей, NO_CAP=0 NO_STT=0)
+CONFIG m-pl_MaleNarrator            (без вейка: 10 проигрышей, NO_CAP=0 NO_STT=0)
+CONFIG m-nl_BossyLeader             (без вейка: 2 проигрышей, NO_CAP=0 NO_STT=0)
+CONFIG m-ro_EnergeticYouth          (без вейка: 2 проигрышей, NO_CAP=0 NO_STT=0)
+CONFIG m-de_PlayfulMan              (без вейка: 2 проигрышей, NO_CAP=0 NO_STT=0)
+CONFIG m-en_WhisperingGirl          wake 12/14  (робот первым словом: 12; MISS=2 NO_STT=0 NO_CAP=0)
+CONFIG m-en_PlayfulGirl             (без вейка: 2 проигрышей, NO_CAP=0 NO_STT=0)
+CONFIG m-en_GracefulLady            (без вейка: 2 проигрышей, NO_CAP=0 NO_STT=0)
+CONFIG m-en_MatureBoss              (без вейка: 2 проигрышей, NO_CAP=0 NO_STT=0)
+CONFIG m-zh_KindElder               (без вейка: 2 проигрышей, NO_CAP=0 NO_STT=0)
+CONFIG m-zh_GentleSenior            wake 13/14  (робот первым словом: 13; MISS=0 NO_STT=1 NO_CAP=0)
+CONFIG m-ko_HaughtyLady             (без вейка: 2 проигрышей, NO_CAP=0 NO_STT=0)
+CONFIG m-pt_StrictBoss              (без вейка: 6 проигрышей, NO_CAP=0 NO_STT=0)
+CONFIG m-en_StressedLady            (без вейка: 2 проигрышей, NO_CAP=0 NO_STT=0)
+CONFIG m-uk_CalmWoman               (без вейка: 2 проигрышей, NO_CAP=0 NO_STT=0)
+CONFIG m-zh_ArrogantMiss            (без вейка: 10 проигрышей, NO_CAP=0 NO_STT=0)
+CONFIG m-en_ImposingQueen           (без вейка: 2 проигрышей, NO_CAP=0 NO_STT=0)
+CONFIG m-fr_NewsAnchor              (без вейка: 2 проигрышей, NO_CAP=0 NO_STT=0)
+CONFIG m-robot                      (без вейка: 2 проигрышей, NO_CAP=0 NO_STT=0)
+CONFIG y-madirus                    (без вейка: 8 проигрышей, NO_CAP=0 NO_STT=0)
+CONFIG y-kirill                     (без вейка: 3 проигрышей, NO_CAP=0 NO_STT=0)
+CONFIG y-alexander                  (без вейка: 3 проигрышей, NO_CAP=0 NO_STT=0)
+CONFIG y-dasha                      (без вейка: 3 проигрышей, NO_CAP=0 NO_STT=0)
+CONFIG y-julia                      (без вейка: 8 проигрышей, NO_CAP=0 NO_STT=0)
+CONFIG y-lera                       (без вейка: 3 проигрышей, NO_CAP=0 NO_STT=0)
+CONFIG y-masha                      (без вейка: 3 проигрышей, NO_CAP=0 NO_STT=0)
+CONFIG y-marina                     (без вейка: 3 проигрышей, NO_CAP=0 NO_STT=0)
+CONFIG y-madi_ru                    (без вейка: 8 проигрышей, NO_CAP=0 NO_STT=0)
+CONFIG y-saule_ru                   (без вейка: 3 проигрышей, NO_CAP=0 NO_STT=0)
+CONFIG y-zhanar_ru                  (без вейка: 3 проигрышей, NO_CAP=0 NO_STT=0)
+CONFIG y-yulduz_ru                  (без вейка: 3 проигрышей, NO_CAP=0 NO_STT=0)
+CONFIG s-eugene                     (без вейка: 3 проигрышей, NO_CAP=0 NO_STT=0)
+CONFIG s-aidar                      (без вейка: 8 проигрышей, NO_CAP=0 NO_STT=0)
+CONFIG s-kseniya                    (без вейка: 3 проигрышей, NO_CAP=0 NO_STT=0)
+CONFIG s-xenia                      (без вейка: 3 проигрышей, NO_CAP=0 NO_STT=0)
+CONFIG s-baya                       (без вейка: 8 проигрышей, NO_CAP=0 NO_STT=0)
+CONFIG m-cute_boy                   (без вейка: 8 проигрышей, NO_CAP=0 NO_STT=0)
+CONFIG m-en_ReservedYoungMan        (без вейка: 2 проигрышей, NO_CAP=0 NO_STT=0)
+CONFIG m-en_DecentYoungMan          (без вейка: 2 проигрышей, NO_CAP=0 NO_STT=0)
+CONFIG m-en_StrongWilledBoy         (без вейка: 2 проигрышей, NO_CAP=0 NO_STT=0)
+CONFIG m-en_WiseScholar             wake 12/14  (робот первым словом: 12; MISS=1 NO_STT=1 NO_CAP=0)
+CONFIG m-en_PatientMan              (без вейка: 2 проигрышей, NO_CAP=0 NO_STT=0)
+CONFIG m-en_Jovialman               wake 14/14  (робот первым словом: 14; MISS=0 NO_STT=0 NO_CAP=0)
+CONFIG m-en_Debator                 (без вейка: 2 проигрышей, NO_CAP=0 NO_STT=0)
+CONFIG m-en_BossyLeader             (без вейка: 2 проигрышей, NO_CAP=0 NO_STT=0)
+CONFIG m-ko_IntellectualSenior      (без вейка: 2 проигрышей, NO_CAP=0 NO_STT=0)
+CONFIG m-ko_ConsiderateSenior       (без вейка: 6 проигрышей, NO_CAP=0 NO_STT=0)
+CONFIG m-es_PowerfulSoldier         (без вейка: 2 проигрышей, NO_CAP=0 NO_STT=0)
+CONFIG m-pt_ReservedYoungMan        (без вейка: 2 проигрышей, NO_CAP=0 NO_STT=0)
+CONFIG m-ja_IntellectualSenior      (без вейка: 2 проигрышей, NO_CAP=0 NO_STT=0)
+CONFIG m-es_HumorousElder           (без вейка: 8 проигрышей, NO_CAP=0 NO_STT=0)
+CONFIG m-es_SereneElder             (без вейка: 2 проигрышей, NO_CAP=1 NO_STT=0)
+CONFIG m-en_TrustworthMan           (без вейка: 2 проигрышей, NO_CAP=0 NO_STT=0)
+CONFIG m-ko_CheerfulLittleSister    (без вейка: 2 проигрышей, NO_CAP=0 NO_STT=0)
+CONFIG m-en_SoftSpokenGirl          (без вейка: 2 проигрышей, NO_CAP=0 NO_STT=0)
+CONFIG m-it_WanderingSorcerer       (без вейка: 2 проигрышей, NO_CAP=0 NO_STT=0)
+CONFIG m-en_Wiselady                (без вейка: 2 проигрышей, NO_CAP=0 NO_STT=0)
+ВСЕГО вейк 63/70

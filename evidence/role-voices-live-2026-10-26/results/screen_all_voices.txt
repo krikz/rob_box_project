@@ -1,0 +1,314 @@
+﻿записей: старых 206, новых 377, несвязанных проигрышей 26.10: ['m-es_SereneElder_p22'] ; исключено чисткой (cos к своему центроиду < 0.6): [('m-en_WhisperingGirl', 'm-en_WhisperingGirl_p06', 0.499)]
+конфиги: 95  новых: 77
+
+СВОЯ К СВОЕЙ (все пары записей одного голоса): мин / медиана
+  m-cute_boy                 n=12  min=0.814 med=0.899
+  s-eugene                   n= 7  min=0.813 med=0.889
+  s-aidar                    n=12  min=0.735 med=0.858
+  s-kseniya                  n= 7  min=0.778 med=0.860
+  s-xenia                    n= 7  min=0.791 med=0.851
+  s-baya                     n=12  min=0.779 med=0.859
+  y-anton                    n= 4  min=0.877 med=0.894
+  y-ermil                    n= 4  min=0.845 med=0.888
+  y-zahar                    n= 4  min=0.819 med=0.889
+  y-filipp                   n= 5  min=0.883 med=0.899
+  m-en_ManWithDeepVoice      n= 2  min=0.868 med=0.868
+  m-en_DeepGentleman         n= 2  min=0.865 med=0.865
+  m-es_DeepTonedMan          n= 2  min=0.859 med=0.859
+  m-es_Arnold                n=10  min=0.812 med=0.889
+  m-es_Ghost                 n= 2  min=0.868 med=0.868
+  m-es_SantaClaus            n= 2  min=0.885 med=0.885
+  m-ko_ConfidentBoss         n=10  min=0.796 med=0.878
+  m-zh_HumorousElder         n= 2  min=0.896 med=0.896
+  m-en_Storyteller           n=10  min=0.785 med=0.848
+  m-en_Comedian              n=10  min=0.802 med=0.885
+  m-en_PassionateWarrior     n= 2  min=0.874 med=0.874
+  m-en_TeenBoy               n= 2  min=0.879 med=0.879
+  m-ko_ColdYoungMan          n= 8  min=0.746 med=0.855
+  m-fi_FriendlyBoy           n= 2  min=0.777 med=0.777
+  m-en_AussieBloke           n=10  min=0.742 med=0.816
+  m-en_Narrator              n= 2  min=0.814 med=0.814
+  m-uk_WiseScholar           n=10  min=0.624 med=0.808
+  m-pl_MaleNarrator          n=10  min=0.783 med=0.889
+  m-nl_BossyLeader           n= 2  min=0.860 med=0.860
+  m-ro_EnergeticYouth        n= 2  min=0.859 med=0.859
+  m-de_PlayfulMan            n= 2  min=0.838 med=0.838
+  m-en_WhisperingGirl        n=23  min=0.786 med=0.899
+  m-en_PlayfulGirl           n= 2  min=0.801 med=0.801
+  m-en_GracefulLady          n= 2  min=0.786 med=0.786
+  m-en_MatureBoss            n= 2  min=0.886 med=0.886
+  m-zh_KindElder             n= 2  min=0.877 med=0.877
+  m-zh_GentleSenior          n=24  min=0.632 med=0.838
+  m-ko_HaughtyLady           n= 2  min=0.830 med=0.830
+  m-pt_StrictBoss            n= 6  min=0.779 med=0.862
+  m-en_StressedLady          n= 2  min=0.823 med=0.823
+  m-uk_CalmWoman             n= 2  min=0.865 med=0.865
+  m-zh_ArrogantMiss          n=10  min=0.702 med=0.853
+  m-en_ImposingQueen         n= 2  min=0.818 med=0.818
+  m-fr_NewsAnchor            n= 2  min=0.894 med=0.894
+  m-robot                    n= 2  min=0.850 med=0.850
+  y-madirus                  n= 8  min=0.787 med=0.881
+  y-kirill                   n= 3  min=0.785 med=0.839
+  y-alexander                n= 3  min=0.885 med=0.886
+  y-dasha                    n= 3  min=0.842 med=0.871
+  y-julia                    n= 8  min=0.774 med=0.852
+  y-lera                     n= 3  min=0.836 med=0.887
+  y-masha                    n= 3  min=0.863 med=0.885
+  y-marina                   n= 3  min=0.856 med=0.883
+  y-madi_ru                  n= 8  min=0.793 med=0.886
+  y-saule_ru                 n= 3  min=0.881 med=0.886
+  y-zhanar_ru                n= 3  min=0.417 med=0.430
+  y-yulduz_ru                n= 3  min=0.799 med=0.838
+  m-en_ReservedYoungMan      n= 2  min=0.824 med=0.824
+  m-en_DecentYoungMan        n= 2  min=0.890 med=0.890
+  m-en_StrongWilledBoy       n= 2  min=0.844 med=0.844
+  m-en_WiseScholar           n=22  min=0.668 med=0.828
+  m-en_PatientMan            n= 2  min=0.856 med=0.856
+  m-en_Jovialman             n=22  min=0.851 med=0.936
+  m-en_Debator               n= 2  min=0.824 med=0.824
+  m-en_BossyLeader           n= 2  min=0.779 med=0.779
+  m-ko_IntellectualSenior    n= 2  min=0.883 med=0.883
+  m-ko_ConsiderateSenior     n= 6  min=0.707 med=0.793
+  m-es_PowerfulSoldier       n= 2  min=0.863 med=0.863
+  m-pt_ReservedYoungMan      n= 2  min=0.845 med=0.845
+  m-ja_IntellectualSenior    n= 2  min=0.859 med=0.859
+  m-es_HumorousElder         n= 8  min=0.770 med=0.863
+  m-es_SereneElder           n= 1  min=nan med=nan
+  m-en_TrustworthMan         n= 2  min=0.851 med=0.851
+  m-ko_CheerfulLittleSister  n= 2  min=0.882 med=0.882
+  m-en_SoftSpokenGirl        n= 2  min=0.832 med=0.832
+  m-it_WanderingSorcerer     n= 2  min=0.866 med=0.866
+  m-en_Wiselady              n= 2  min=0.928 med=0.928
+
+К ЧУЖИМ для каждого нового: 6 самых далёких конфигов (макс / медиана по всем парам записей) и 3 самых близких
+  m-cute_boy (n=12)
+     дальние : y-madi_ru 0.52/0.44  y-madirus 0.54/0.45  m-de_PlayfulMan 0.57/0.50  m-ko_ConfidentBoss 0.57/0.50  y-ermil 0.57/0.49  y-anton 0.58/0.49
+     близкие : m-zh_ArrogantMiss 0.89/0.79  m-Bad-temperedBoy+2 0.89/0.74  m-Bad-temperedBoy+4 0.90/0.74
+  s-eugene (n=7)
+     дальние : m-en_SoftSpokenGirl 0.53/0.49  m-ko_HaughtyLady 0.56/0.53  m-female-yujie 0.59/0.52  m-en_PlayfulGirl 0.59/0.53  y-masha 0.59/0.56  m-es_HumorousElder 0.61/0.55
+     близкие : y-madi_ru 0.89/0.79  y-madirus 0.89/0.79  y-anton 0.90/0.84
+  s-aidar (n=12)
+     дальние : m-en_SoftSpokenGirl 0.54/0.49  m-ko_HaughtyLady 0.57/0.53  m-en_PlayfulGirl 0.58/0.49  m-ko_CheerfulLittleSister 0.59/0.51  m-pt_StrictBoss 0.59/0.54  m-cute_boy 0.60/0.48
+     близкие : y-ermil 0.88/0.79  y-anton 0.89/0.79  m-ko_ConfidentBoss 0.89/0.78
+  s-kseniya (n=7)
+     дальние : m-nl_BossyLeader 0.61/0.55  m-en_Storyteller 0.62/0.53  s-eugene 0.63/0.59  m-audiobook_male_2 0.64/0.57  y-madirus 0.65/0.57  y-madi_ru 0.65/0.56
+     близкие : m-PessimisticGirl 0.89/0.80  y-masha 0.90/0.80  s-baya 0.91/0.80
+  s-xenia (n=7)
+     дальние : m-nl_BossyLeader 0.64/0.60  m-en_Storyteller 0.67/0.59  m-en_TeenBoy 0.67/0.64  m-es_DeepTonedMan 0.67/0.62  y-madi_ru 0.68/0.60  y-madirus 0.68/0.61
+     близкие : s-baya 0.87/0.80  s-kseniya 0.88/0.82  y-marina 0.89/0.81
+  s-baya (n=12)
+     дальние : m-nl_BossyLeader 0.57/0.49  m-en_TeenBoy 0.58/0.54  m-audiobook_male_2 0.59/0.50  m-es_SantaClaus 0.59/0.52  y-madi_ru 0.60/0.51  y-madirus 0.61/0.53
+     близкие : m-zh_GentleSenior 0.87/0.76  y-marina 0.87/0.81  s-kseniya 0.91/0.80
+  y-anton (n=4)
+     дальние : m-en_SoftSpokenGirl 0.55/0.52  m-cute_boy 0.58/0.49  m-ko_HaughtyLady 0.60/0.57  m-ko_CheerfulLittleSister 0.60/0.55  m-zh_ArrogantMiss 0.60/0.57  m-pt_StrictBoss 0.61/0.58
+     близкие : y-alexander 0.90/0.83  m-pl_MaleNarrator 0.90/0.81  y-ermil 0.92/0.86
+  y-ermil (n=4)
+     дальние : m-cute_boy 0.57/0.49  m-en_WhisperingGirl 0.61/0.56  m-ko_HaughtyLady 0.61/0.57  m-en_SoftSpokenGirl 0.61/0.54  m-pt_StrictBoss 0.62/0.55  m-ko_CheerfulLittleSister 0.62/0.55
+     близкие : m-ReliableMan 0.91/0.82  m-pl_MaleNarrator 0.91/0.81  y-anton 0.92/0.86
+  y-zahar (n=4)
+     дальние : m-en_SoftSpokenGirl 0.62/0.54  m-en_WhisperingGirl 0.63/0.55  m-en_PlayfulGirl 0.65/0.58  m-cute_boy 0.65/0.56  m-ko_HaughtyLady 0.66/0.60  m-female-yujie 0.69/0.58
+     близкие : y-filipp 0.89/0.82  m-en_Comedian 0.89/0.81  y-alexander 0.90/0.83
+  y-filipp (n=5)
+     дальние : m-en_WhisperingGirl 0.59/0.51  m-ko_CheerfulLittleSister 0.61/0.56  m-female-yujie 0.61/0.55  m-en_SoftSpokenGirl 0.62/0.55  m-en_PlayfulGirl 0.62/0.54  m-cute_boy 0.63/0.54
+     близкие : m-male-qn-qingse 0.90/0.80  m-en_BossyLeader 0.91/0.85  m-pt_ReservedYoungMan 0.91/0.84
+  m-en_ManWithDeepVoice (n=2)
+     дальние : m-en_PlayfulGirl 0.56/0.53  m-en_SoftSpokenGirl 0.57/0.53  m-cute_boy 0.59/0.53  m-female-yujie 0.60/0.57  m-ko_HaughtyLady 0.61/0.58  m-zh_GentleSenior 0.61/0.55
+     близкие : y-ermil 0.88/0.82  y-filipp 0.88/0.81  m-ReliableMan 0.89/0.83
+  m-en_DeepGentleman (n=2)
+     дальние : m-clever_boy 0.56/0.52  m-female-yujie 0.58/0.55  m-ko_HaughtyLady 0.58/0.57  m-en_SoftSpokenGirl 0.58/0.55  m-cute_boy 0.60/0.51  m-zh_GentleSenior 0.60/0.52
+     близкие : m-pl_MaleNarrator 0.87/0.79  y-kirill 0.87/0.79  m-nl_BossyLeader 0.89/0.81
+  m-es_DeepTonedMan (n=2)
+     дальние : m-en_SoftSpokenGirl 0.58/0.54  m-clever_boy 0.58/0.53  m-female-yujie 0.59/0.54  m-en_PlayfulGirl 0.62/0.58  m-ko_HaughtyLady 0.62/0.58  m-cute_boy 0.62/0.55
+     близкие : y-madirus 0.85/0.76  m-en_DeepGentleman 0.86/0.80  s-eugene 0.88/0.76
+  m-es_Arnold (n=10)
+     дальние : m-clever_boy 0.60/0.54  m-uk_CalmWoman 0.61/0.57  m-ko_HaughtyLady 0.61/0.57  m-en_PlayfulGirl 0.62/0.56  m-cute_boy 0.62/0.54  m-zh_ArrogantMiss 0.63/0.55
+     близкие : m-ko_ConfidentBoss 0.89/0.82  m-pl_MaleNarrator 0.90/0.79  y-anton 0.90/0.79
+  m-es_Ghost (n=2)
+     дальние : m-zh_GentleSenior 0.61/0.51  m-en_SoftSpokenGirl 0.62/0.56  m-female-yujie 0.64/0.56  y-lera 0.65/0.59  m-it_WanderingSorcerer 0.65/0.62  m-ko_HaughtyLady 0.65/0.59
+     близкие : m-Bad-temperedBoy+0 0.81/0.68  m-zh_HumorousElder 0.82/0.77  m-es_SantaClaus 0.85/0.79
+  m-es_SantaClaus (n=2)
+     дальние : m-en_SoftSpokenGirl 0.53/0.50  m-en_WhisperingGirl 0.59/0.54  s-baya 0.59/0.52  m-en_PlayfulGirl 0.59/0.57  m-zh_GentleSenior 0.61/0.54  m-ko_ConsiderateSenior 0.61/0.56
+     близкие : y-zahar 0.83/0.75  m-es_Ghost 0.85/0.79  m-en_Comedian 0.85/0.81
+  m-ko_ConfidentBoss (n=10)
+     дальние : m-en_SoftSpokenGirl 0.56/0.49  m-en_PlayfulGirl 0.57/0.50  m-cute_boy 0.57/0.50  m-ko_HaughtyLady 0.57/0.50  m-zh_ArrogantMiss 0.58/0.53  m-female-yujie 0.60/0.55
+     близкие : m-es_Arnold 0.89/0.82  s-aidar 0.89/0.78  y-kirill 0.89/0.75
+  m-zh_HumorousElder (n=2)
+     дальние : m-cute_boy 0.63/0.56  m-en_SoftSpokenGirl 0.63/0.59  m-female-yujie 0.64/0.62  m-en_PlayfulGirl 0.66/0.63  m-clever_boy 0.67/0.60  m-en_WhisperingGirl 0.67/0.58
+     близкие : m-ro_EnergeticYouth 0.90/0.88  m-es_PowerfulSoldier 0.91/0.87  m-pt_ReservedYoungMan 0.92/0.84
+  m-en_Storyteller (n=10)
+     дальние : m-en_SoftSpokenGirl 0.55/0.51  m-ko_CheerfulLittleSister 0.60/0.56  m-cute_boy 0.60/0.52  m-zh_GentleSenior 0.61/0.49  m-ko_HaughtyLady 0.61/0.53  m-clever_boy 0.62/0.53
+     близкие : m-en_BossyLeader 0.81/0.74  m-fi_FriendlyBoy 0.82/0.70  m-nl_BossyLeader 0.87/0.78
+  m-en_Comedian (n=10)
+     дальние : m-en_WhisperingGirl 0.62/0.54  m-en_SoftSpokenGirl 0.62/0.54  s-baya 0.65/0.56  m-ko_HaughtyLady 0.66/0.59  m-es_SereneElder 0.66/0.64  m-zh_GentleSenior 0.67/0.57
+     близкие : m-es_PowerfulSoldier 0.88/0.80  m-en_TeenBoy 0.88/0.81  y-zahar 0.89/0.81
+  m-en_PassionateWarrior (n=2)
+     дальние : m-en_WhisperingGirl 0.59/0.53  m-ko_ConfidentBoss 0.65/0.61  m-cute_boy 0.67/0.58  m-es_Arnold 0.67/0.63  m-ko_HaughtyLady 0.68/0.65  s-baya 0.68/0.61
+     близкие : m-en_Wiselady 0.88/0.81  m-uk_WiseScholar 0.88/0.77  m-es_PowerfulSoldier 0.90/0.85
+  m-en_TeenBoy (n=2)
+     дальние : s-baya 0.58/0.54  m-en_SoftSpokenGirl 0.59/0.55  m-zh_GentleSenior 0.60/0.55  m-en_WhisperingGirl 0.61/0.56  m-ko_HaughtyLady 0.63/0.62  m-female-yujie 0.65/0.62
+     близкие : m-es_PowerfulSoldier 0.86/0.84  m-en_Debator 0.87/0.81  m-en_Comedian 0.88/0.81
+  m-ko_ColdYoungMan (n=8)
+     дальние : m-en_WhisperingGirl 0.60/0.52  s-baya 0.63/0.55  m-en_SoftSpokenGirl 0.64/0.53  m-ko_HaughtyLady 0.66/0.59  m-ko_CheerfulLittleSister 0.66/0.61  m-zh_GentleSenior 0.68/0.57
+     близкие : m-en_PassionateWarrior 0.85/0.78  m-en_Comedian 0.87/0.80  y-zahar 0.87/0.78
+  m-fi_FriendlyBoy (n=2)
+     дальние : m-en_PlayfulGirl 0.61/0.53  m-zh_GentleSenior 0.61/0.51  m-clever_boy 0.61/0.56  m-female-yujie 0.62/0.54  m-en_SoftSpokenGirl 0.62/0.56  m-ko_HaughtyLady 0.62/0.58
+     близкие : m-HandsomeChildhoodFriend 0.84/0.74  s-eugene 0.85/0.78  m-pl_MaleNarrator 0.87/0.77
+  m-en_AussieBloke (n=10)
+     дальние : m-cute_boy 0.70/0.52  m-es_SantaClaus 0.70/0.61  m-en_PlayfulGirl 0.71/0.59  m-female-yujie 0.72/0.62  m-nl_BossyLeader 0.72/0.67  m-clever_boy 0.72/0.58
+     близкие : m-ja_IntellectualSenior 0.86/0.78  m-pl_MaleNarrator 0.86/0.74  m-en_DecentYoungMan 0.86/0.79
+  m-en_Narrator (n=2)
+     дальние : m-cute_boy 0.60/0.53  m-en_SoftSpokenGirl 0.62/0.59  m-clever_boy 0.64/0.57  m-pt_StrictBoss 0.64/0.59  m-female-yujie 0.65/0.62  m-en_PlayfulGirl 0.66/0.61
+     близкие : m-ro_EnergeticYouth 0.88/0.85  m-en_Jovialman 0.89/0.80  m-pl_MaleNarrator 0.90/0.83
+  m-uk_WiseScholar (n=10)
+     дальние : m-en_SoftSpokenGirl 0.65/0.61  m-cute_boy 0.65/0.56  m-ko_HaughtyLady 0.67/0.60  m-es_Ghost 0.67/0.63  m-ko_CheerfulLittleSister 0.67/0.62  m-en_PlayfulGirl 0.68/0.60
+     близкие : m-es_PowerfulSoldier 0.86/0.79  m-en_PassionateWarrior 0.88/0.77  m-en_WiseScholar 0.92/0.82
+  m-pl_MaleNarrator (n=10)
+     дальние : m-cute_boy 0.58/0.49  m-en_PlayfulGirl 0.62/0.57  m-en_SoftSpokenGirl 0.63/0.58  m-pt_StrictBoss 0.64/0.57  m-clever_boy 0.64/0.53  m-zh_ArrogantMiss 0.64/0.55
+     близкие : y-anton 0.90/0.81  m-en_Narrator 0.90/0.83  y-ermil 0.91/0.81
+  m-nl_BossyLeader (n=2)
+     дальние : m-en_SoftSpokenGirl 0.51/0.49  m-zh_GentleSenior 0.55/0.49  m-female-yujie 0.57/0.51  m-ko_HaughtyLady 0.57/0.56  m-en_WhisperingGirl 0.57/0.50  s-baya 0.57/0.49
+     близкие : m-en_TrustworthMan 0.89/0.84  y-filipp 0.89/0.84  m-en_BossyLeader 0.92/0.85
+  m-ro_EnergeticYouth (n=2)
+     дальние : m-en_WhisperingGirl 0.65/0.59  m-cute_boy 0.66/0.55  m-en_PlayfulGirl 0.67/0.61  m-en_SoftSpokenGirl 0.68/0.60  m-female-yujie 0.68/0.61  m-ko_HaughtyLady 0.68/0.66
+     близкие : m-es_PowerfulSoldier 0.89/0.80  m-pl_MaleNarrator 0.90/0.85  m-zh_HumorousElder 0.90/0.88
+  m-de_PlayfulMan (n=2)
+     дальние : m-cute_boy 0.57/0.50  m-ko_HaughtyLady 0.57/0.56  m-female-yujie 0.58/0.54  m-en_PlayfulGirl 0.58/0.54  m-en_SoftSpokenGirl 0.58/0.51  m-en_WhisperingGirl 0.58/0.54
+     близкие : m-es_PowerfulSoldier 0.85/0.78  m-pl_MaleNarrator 0.86/0.80  m-zh_HumorousElder 0.88/0.84
+  m-en_WhisperingGirl (n=23)
+     дальние : m-audiobook_male_2 0.54/0.46  y-alexander 0.56/0.49  m-male-qn-jingying 0.56/0.47  m-en_TrustworthMan 0.56/0.50  m-nl_BossyLeader 0.57/0.50  y-madi_ru 0.58/0.47
+     близкие : y-masha 0.77/0.70  s-baya 0.78/0.66  m-zh_KindElder 0.80/0.71
+  m-en_PlayfulGirl (n=2)
+     дальние : m-AttractiveGuy 0.54/0.48  m-en_ManWithDeepVoice 0.56/0.53  m-ko_ConfidentBoss 0.57/0.50  m-es_SereneElder 0.57/0.56  y-madi_ru 0.58/0.49  m-en_StrongWilledBoy 0.58/0.55
+     близкие : m-ko_CheerfulLittleSister 0.86/0.82  m-en_SoftSpokenGirl 0.86/0.83  m-zh_GentleSenior 0.88/0.77
+  m-en_GracefulLady (n=2)
+     дальние : m-en_Storyteller 0.66/0.58  m-en_Debator 0.69/0.65  m-es_SantaClaus 0.69/0.62  m-cute_boy 0.69/0.62  m-audiobook_male_2 0.70/0.58  y-madi_ru 0.71/0.59
+     близкие : m-zh_HumorousElder 0.86/0.73  y-lera 0.88/0.80  m-female-chengshu 0.89/0.78
+  m-en_MatureBoss (n=2)
+     дальние : m-en_WhisperingGirl 0.64/0.56  m-es_SereneElder 0.64/0.60  m-robot 0.65/0.62  m-es_Arnold 0.66/0.59  m-ko_ConfidentBoss 0.66/0.59  m-es_Ghost 0.67/0.65
+     близкие : m-en_PassionateWarrior 0.87/0.81  m-es_PowerfulSoldier 0.88/0.83  m-en_Wiselady 0.91/0.85
+  m-zh_KindElder (n=2)
+     дальние : y-kirill 0.64/0.59  y-madi_ru 0.65/0.56  m-en_Storyteller 0.65/0.60  m-en_BossyLeader 0.66/0.63  s-aidar 0.66/0.56  y-madirus 0.66/0.56
+     близкие : m-en_Wiselady 0.88/0.80  m-en_StressedLady 0.90/0.81  m-Bad-temperedBoy+0 0.92/0.78
+  m-zh_GentleSenior (n=24)
+     дальние : m-nl_BossyLeader 0.55/0.49  y-kirill 0.59/0.49  m-en_Debator 0.60/0.54  m-en_TeenBoy 0.60/0.55  m-en_DeepGentleman 0.60/0.52  m-en_Storyteller 0.61/0.49
+     близкие : m-en_PlayfulGirl 0.88/0.77  y-masha 0.88/0.76  y-marina 0.89/0.83
+  m-ko_HaughtyLady (n=2)
+     дальние : y-madi_ru 0.55/0.50  y-madirus 0.55/0.50  m-male-qn-jingying 0.56/0.54  y-kirill 0.56/0.53  y-alexander 0.56/0.52  s-eugene 0.56/0.53
+     близкие : m-PessimisticGirl 0.86/0.78  y-masha 0.86/0.82  m-en_SoftSpokenGirl 0.88/0.80
+  m-pt_StrictBoss (n=6)
+     дальние : m-AttractiveGuy 0.59/0.53  s-aidar 0.59/0.54  m-ReliableMan 0.61/0.54  y-anton 0.61/0.58  y-ermil 0.62/0.55  y-madi_ru 0.62/0.56
+     близкие : m-cute_boy 0.87/0.76  m-zh_ArrogantMiss 0.88/0.80  y-saule_ru 0.89/0.81
+  m-en_StressedLady (n=2)
+     дальние : m-en_Storyteller 0.64/0.58  y-madi_ru 0.68/0.57  y-kirill 0.69/0.60  m-HandsomeChildhoodFriend 0.69/0.60  m-audiobook_male_1 0.69/0.63  m-en_WhisperingGirl 0.69/0.62
+     близкие : m-ko_CheerfulLittleSister 0.88/0.80  y-marina 0.90/0.80  m-zh_KindElder 0.90/0.81
+  m-uk_CalmWoman (n=2)
+     дальние : m-es_SereneElder 0.60/0.58  m-es_Arnold 0.61/0.57  m-ko_ConfidentBoss 0.61/0.56  m-robot 0.61/0.61  m-en_Jovialman 0.61/0.57  m-fi_FriendlyBoy 0.63/0.57
+     близкие : y-yulduz_ru 0.87/0.84  m-Bad-temperedBoy+0 0.88/0.78  m-en_Wiselady 0.92/0.88
+  m-zh_ArrogantMiss (n=10)
+     дальние : m-ko_ConfidentBoss 0.58/0.53  y-madi_ru 0.58/0.50  y-madirus 0.58/0.51  y-anton 0.60/0.57  y-kirill 0.61/0.57  s-eugene 0.62/0.57
+     близкие : y-saule_ru 0.88/0.83  m-pt_StrictBoss 0.88/0.80  m-cute_boy 0.89/0.79
+  m-en_ImposingQueen (n=2)
+     дальние : y-madi_ru 0.60/0.55  y-madirus 0.61/0.56  m-male-qn-jingying 0.63/0.60  m-es_SereneElder 0.63/0.63  m-de_PlayfulMan 0.63/0.60  m-en_Jovialman 0.64/0.57
+     близкие : y-saule_ru 0.85/0.81  y-julia 0.88/0.80  y-lera 0.88/0.82
+  m-fr_NewsAnchor (n=2)
+     дальние : m-en_WhisperingGirl 0.63/0.54  m-en_SoftSpokenGirl 0.64/0.58  m-ko_CheerfulLittleSister 0.64/0.60  m-ko_ConsiderateSenior 0.65/0.60  m-en_PlayfulGirl 0.65/0.62  m-ko_HaughtyLady 0.66/0.63
+     близкие : y-dasha 0.86/0.81  m-uk_CalmWoman 0.86/0.83  m-female-chengshu 0.86/0.85
+  m-robot (n=2)
+     дальние : m-en_SoftSpokenGirl 0.57/0.56  m-cute_boy 0.60/0.55  m-uk_CalmWoman 0.61/0.61  m-en_PlayfulGirl 0.61/0.58  m-pt_StrictBoss 0.62/0.58  m-clever_boy 0.64/0.59
+     близкие : m-es_Arnold 0.85/0.78  y-ermil 0.86/0.79  m-en_Jovialman 0.87/0.81
+  y-madirus (n=8)
+     дальние : m-en_SoftSpokenGirl 0.53/0.46  m-cute_boy 0.54/0.45  m-ko_HaughtyLady 0.55/0.50  m-female-yujie 0.56/0.49  m-clever_boy 0.57/0.46  m-es_HumorousElder 0.57/0.53
+     близкие : y-alexander 0.90/0.79  y-kirill 0.90/0.82  y-madi_ru 0.99/0.89
+  y-kirill (n=3)
+     дальние : m-en_SoftSpokenGirl 0.55/0.49  m-ko_HaughtyLady 0.56/0.53  m-zh_GentleSenior 0.59/0.49  m-female-yujie 0.59/0.52  m-cute_boy 0.59/0.52  m-en_WhisperingGirl 0.59/0.51
+     близкие : y-anton 0.90/0.81  y-madirus 0.90/0.82  m-ReliableMan 0.90/0.77
+  y-alexander (n=3)
+     дальние : m-en_SoftSpokenGirl 0.55/0.49  m-en_WhisperingGirl 0.56/0.49  m-ko_HaughtyLady 0.56/0.52  m-cute_boy 0.60/0.52  m-ko_CheerfulLittleSister 0.61/0.57  m-PessimisticGirl 0.61/0.56
+     близкие : y-zahar 0.90/0.83  y-madirus 0.90/0.79  y-anton 0.90/0.83
+  y-dasha (n=3)
+     дальние : m-en_WhisperingGirl 0.66/0.59  m-es_Ghost 0.70/0.68  m-en_Debator 0.70/0.69  m-robot 0.70/0.65  m-de_PlayfulMan 0.70/0.64  y-kirill 0.70/0.65
+     близкие : m-en_Wiselady 0.89/0.83  m-Bad-temperedBoy+0 0.89/0.79  y-yulduz_ru 0.90/0.77
+  y-julia (n=8)
+     дальние : m-es_SereneElder 0.63/0.56  m-en_WhisperingGirl 0.65/0.55  m-ReliableMan 0.66/0.55  m-de_PlayfulMan 0.66/0.59  m-es_Arnold 0.66/0.59  m-en_Storyteller 0.67/0.58
+     близкие : m-en_ImposingQueen 0.88/0.80  m-Bad-temperedBoy+0 0.89/0.77  y-saule_ru 0.92/0.84
+  y-lera (n=3)
+     дальние : m-en_Storyteller 0.63/0.55  m-es_SantaClaus 0.63/0.61  m-en_Debator 0.63/0.59  m-es_Ghost 0.65/0.59  m-es_DeepTonedMan 0.66/0.59  y-madirus 0.66/0.55
+     близкие : m-en_ImposingQueen 0.88/0.82  y-yulduz_ru 0.88/0.84  m-female-chengshu 0.90/0.82
+  y-masha (n=3)
+     дальние : y-madirus 0.59/0.53  y-madi_ru 0.59/0.51  s-eugene 0.59/0.56  m-ko_ConfidentBoss 0.61/0.58  m-male-qn-jingying 0.61/0.58  m-audiobook_male_2 0.61/0.58
+     близкие : m-zh_GentleSenior 0.88/0.76  m-zh_KindElder 0.88/0.87  s-kseniya 0.90/0.80
+  y-marina (n=3)
+     дальние : m-en_Storyteller 0.62/0.57  m-nl_BossyLeader 0.64/0.58  y-madi_ru 0.65/0.52  m-en_Debator 0.65/0.62  y-madirus 0.65/0.55  m-fi_FriendlyBoy 0.66/0.60
+     близкие : m-Bad-temperedBoy+0 0.90/0.81  m-en_StressedLady 0.90/0.80  y-yulduz_ru 0.91/0.78
+  y-madi_ru (n=8)
+     дальние : m-cute_boy 0.52/0.44  m-en_SoftSpokenGirl 0.53/0.46  m-ko_HaughtyLady 0.55/0.50  m-female-yujie 0.55/0.47  m-es_HumorousElder 0.57/0.52  m-en_WhisperingGirl 0.58/0.47
+     близкие : y-kirill 0.89/0.81  s-eugene 0.89/0.79  y-madirus 0.99/0.89
+  y-saule_ru (n=3)
+     дальние : m-ko_ConfidentBoss 0.61/0.55  m-es_SereneElder 0.63/0.61  m-en_Storyteller 0.64/0.58  m-de_PlayfulMan 0.64/0.61  m-fi_FriendlyBoy 0.64/0.61  s-eugene 0.65/0.61
+     близкие : m-pt_StrictBoss 0.89/0.81  y-zhanar_ru 0.90/0.80  y-julia 0.92/0.84
+  y-zhanar_ru (n=3)
+     дальние : m-ko_ConfidentBoss 0.63/0.55  m-AttractiveGuy 0.64/0.56  s-aidar 0.65/0.55  m-en_Storyteller 0.65/0.58  m-en_WhisperingGirl 0.66/0.56  m-ReliableMan 0.66/0.57
+     близкие : y-julia 0.87/0.78  m-en_Wiselady 0.89/0.85  y-saule_ru 0.90/0.80
+  y-yulduz_ru (n=3)
+     дальние : m-en_Storyteller 0.63/0.56  m-en_WhisperingGirl 0.65/0.57  s-eugene 0.66/0.61  m-fi_FriendlyBoy 0.66/0.59  y-kirill 0.66/0.59  m-audiobook_male_2 0.67/0.61
+     близкие : m-it_WanderingSorcerer 0.89/0.82  y-dasha 0.90/0.77  y-marina 0.91/0.78
+  m-en_ReservedYoungMan (n=2)
+     дальние : m-en_WhisperingGirl 0.62/0.56  m-ko_CheerfulLittleSister 0.63/0.61  m-cute_boy 0.64/0.55  m-en_PlayfulGirl 0.64/0.61  m-en_SoftSpokenGirl 0.65/0.61  m-es_Ghost 0.66/0.65
+     близкие : m-zh_HumorousElder 0.87/0.82  m-en_WiseScholar 0.87/0.78  m-pt_ReservedYoungMan 0.88/0.87
+  m-en_DecentYoungMan (n=2)
+     дальние : m-es_SantaClaus 0.65/0.61  y-alexander 0.65/0.64  m-nl_BossyLeader 0.65/0.64  m-clever_boy 0.65/0.63  m-male-qn-jingying 0.66/0.60  y-madi_ru 0.66/0.64
+     близкие : m-en_AussieBloke 0.86/0.79  m-ko_IntellectualSenior 0.87/0.78  m-ja_IntellectualSenior 0.88/0.83
+  m-en_StrongWilledBoy (n=2)
+     дальние : m-en_PlayfulGirl 0.58/0.55  m-cute_boy 0.60/0.51  m-ko_CheerfulLittleSister 0.62/0.57  m-en_WhisperingGirl 0.63/0.58  m-clever_boy 0.63/0.57  m-zh_GentleSenior 0.63/0.56
+     близкие : m-en_WiseScholar 0.84/0.73  m-pt_ReservedYoungMan 0.85/0.81  m-en_ReservedYoungMan 0.86/0.82
+  m-en_WiseScholar (n=22)
+     дальние : m-en_WhisperingGirl 0.66/0.57  m-en_PlayfulGirl 0.68/0.60  m-cute_boy 0.68/0.55  m-robot 0.69/0.63  m-ko_HaughtyLady 0.69/0.61  m-en_SoftSpokenGirl 0.70/0.60
+     близкие : m-en_ReservedYoungMan 0.87/0.78  m-es_PowerfulSoldier 0.89/0.80  m-uk_WiseScholar 0.92/0.82
+  m-en_PatientMan (n=2)
+     дальние : m-en_WhisperingGirl 0.58/0.53  m-ko_CheerfulLittleSister 0.59/0.57  m-ko_HaughtyLady 0.63/0.61  m-clever_boy 0.63/0.60  m-en_SoftSpokenGirl 0.64/0.58  m-en_PlayfulGirl 0.64/0.58
+     близкие : m-zh_HumorousElder 0.86/0.79  m-en_BossyLeader 0.86/0.81  y-filipp 0.87/0.82
+  m-en_Jovialman (n=22)
+     дальние : m-en_SoftSpokenGirl 0.57/0.50  m-uk_CalmWoman 0.61/0.57  m-ko_HaughtyLady 0.62/0.57  m-cute_boy 0.62/0.53  m-clever_boy 0.63/0.52  m-en_ImposingQueen 0.64/0.57
+     близкие : m-ko_ConfidentBoss 0.88/0.82  y-anton 0.89/0.80  m-en_Narrator 0.89/0.80
+  m-en_Debator (n=2)
+     дальние : m-zh_GentleSenior 0.60/0.54  m-en_SoftSpokenGirl 0.61/0.60  s-baya 0.62/0.56  m-en_WhisperingGirl 0.62/0.55  m-ko_HaughtyLady 0.63/0.62  y-lera 0.63/0.59
+     близкие : m-zh_HumorousElder 0.82/0.79  m-en_PassionateWarrior 0.82/0.77  m-en_TeenBoy 0.87/0.81
+  m-en_BossyLeader (n=2)
+     дальние : m-ko_CheerfulLittleSister 0.58/0.57  m-cute_boy 0.60/0.52  m-en_WhisperingGirl 0.60/0.54  m-es_HumorousElder 0.61/0.57  m-en_SoftSpokenGirl 0.62/0.52  m-clever_boy 0.63/0.56
+     близкие : y-filipp 0.91/0.85  m-nl_BossyLeader 0.92/0.85  m-es_PowerfulSoldier 0.92/0.80
+  m-ko_IntellectualSenior (n=2)
+     дальние : m-es_SantaClaus 0.61/0.59  m-ko_CheerfulLittleSister 0.63/0.60  m-cute_boy 0.64/0.56  m-en_PlayfulGirl 0.64/0.60  m-pt_StrictBoss 0.65/0.61  m-es_DeepTonedMan 0.66/0.61
+     близкие : m-en_StrongWilledBoy 0.84/0.81  m-ro_EnergeticYouth 0.84/0.82  m-en_DecentYoungMan 0.87/0.78
+  m-ko_ConsiderateSenior (n=6)
+     дальние : m-clever_boy 0.60/0.52  m-es_SantaClaus 0.61/0.56  m-cute_boy 0.62/0.53  m-es_HumorousElder 0.65/0.53  m-fr_NewsAnchor 0.65/0.60  m-robot 0.66/0.60
+     близкие : m-en_WiseScholar 0.83/0.67  m-pl_MaleNarrator 0.85/0.71  m-en_GracefulLady 0.85/0.72
+  m-es_PowerfulSoldier (n=2)
+     дальние : m-en_WhisperingGirl 0.64/0.58  m-en_SoftSpokenGirl 0.65/0.61  m-cute_boy 0.66/0.58  m-ko_CheerfulLittleSister 0.67/0.64  m-ko_HaughtyLady 0.67/0.65  s-baya 0.68/0.61
+     близкие : m-zh_HumorousElder 0.91/0.87  m-pt_ReservedYoungMan 0.92/0.82  m-en_BossyLeader 0.92/0.80
+  m-pt_ReservedYoungMan (n=2)
+     дальние : m-ko_CheerfulLittleSister 0.60/0.56  m-en_WhisperingGirl 0.60/0.54  m-es_HumorousElder 0.61/0.57  m-cute_boy 0.61/0.50  m-en_SoftSpokenGirl 0.62/0.58  m-ko_HaughtyLady 0.63/0.61
+     близкие : y-filipp 0.91/0.84  m-es_PowerfulSoldier 0.92/0.82  m-zh_HumorousElder 0.92/0.84
+  m-ja_IntellectualSenior (n=2)
+     дальние : m-robot 0.64/0.62  m-ko_ConfidentBoss 0.64/0.58  m-es_SantaClaus 0.66/0.64  m-cute_boy 0.67/0.60  m-en_WhisperingGirl 0.68/0.61  m-en_PlayfulGirl 0.68/0.67
+     близкие : m-en_WiseScholar 0.86/0.73  m-en_AussieBloke 0.86/0.78  m-en_DecentYoungMan 0.88/0.83
+  m-es_HumorousElder (n=8)
+     дальние : y-madi_ru 0.57/0.52  y-madirus 0.57/0.53  m-en_TrustworthMan 0.59/0.55  m-nl_BossyLeader 0.59/0.56  s-eugene 0.61/0.55  m-pt_ReservedYoungMan 0.61/0.57
+     близкие : m-Bad-temperedBoy+0 0.87/0.78  m-Bad-temperedBoy+2 0.87/0.79  m-Bad-temperedBoy+4 0.87/0.79
+  m-es_SereneElder (n=1)
+     дальние : m-clever_boy 0.56/0.54  m-en_SoftSpokenGirl 0.57/0.56  m-en_PlayfulGirl 0.57/0.56  m-uk_CalmWoman 0.60/0.58  m-ko_CheerfulLittleSister 0.61/0.59  m-cute_boy 0.61/0.56
+     близкие : m-en_Narrator 0.83/0.77  m-en_Jovialman 0.84/0.82  m-es_Arnold 0.86/0.80
+  m-en_TrustworthMan (n=2)
+     дальние : m-en_WhisperingGirl 0.56/0.50  m-es_HumorousElder 0.59/0.55  m-cute_boy 0.59/0.52  m-en_SoftSpokenGirl 0.62/0.53  y-masha 0.62/0.60  m-ko_HaughtyLady 0.63/0.59
+     близкие : m-nl_BossyLeader 0.89/0.84  m-pt_ReservedYoungMan 0.90/0.83  m-es_PowerfulSoldier 0.90/0.86
+  m-ko_CheerfulLittleSister (n=2)
+     дальние : y-madi_ru 0.58/0.53  m-en_BossyLeader 0.58/0.57  m-en_PatientMan 0.59/0.57  s-aidar 0.59/0.51  m-AttractiveGuy 0.59/0.51  m-de_PlayfulMan 0.60/0.55
+     близкие : m-en_PlayfulGirl 0.86/0.82  m-Bad-temperedBoy+4 0.88/0.77  m-en_StressedLady 0.88/0.80
+  m-en_SoftSpokenGirl (n=2)
+     дальние : m-audiobook_male_2 0.51/0.48  m-nl_BossyLeader 0.51/0.49  y-madirus 0.53/0.46  s-eugene 0.53/0.49  m-es_SantaClaus 0.53/0.50  m-male-qn-jingying 0.53/0.51
+     близкие : y-marina 0.85/0.73  m-en_PlayfulGirl 0.86/0.83  m-ko_HaughtyLady 0.88/0.80
+  m-it_WanderingSorcerer (n=2)
+     дальние : m-en_Storyteller 0.65/0.60  m-es_Ghost 0.65/0.62  m-es_Arnold 0.65/0.60  m-es_SantaClaus 0.66/0.64  m-en_WhisperingGirl 0.67/0.57  m-robot 0.67/0.65
+     близкие : y-dasha 0.87/0.84  m-en_PassionateWarrior 0.87/0.80  y-yulduz_ru 0.89/0.82
+  m-en_Wiselady (n=2)
+     дальние : m-en_Storyteller 0.63/0.60  m-es_SereneElder 0.66/0.65  m-en_WhisperingGirl 0.66/0.58  m-es_Arnold 0.67/0.63  m-fi_FriendlyBoy 0.67/0.60  y-anton 0.67/0.65
+     близкие : y-dasha 0.89/0.83  m-en_MatureBoss 0.91/0.85  m-uk_CalmWoman 0.92/0.88

@@ -4,7 +4,7 @@ These tests focus on the work covered by kanban task ``t_257dbfb9``:
 
 * transcode of MiniMax audio containers (PCM/WAV/MP3/OGG) into int16 LE PCM
 * retry classification per ADR-0003 §2.6
-* per-chunk publication when ``minimax_streaming=true``
+* per-chunk publication + playback buffer of the MiniMax stream (#3930)
 * mono→stereo for ReSpeaker (implicit, via shared downstream path)
 * the format / retry / streaming ROS-параметры
 
@@ -57,6 +57,7 @@ AudioTranscodeError = _mod.AudioTranscodeError
 
 # Import tts_node AFTER mocks are installed by conftest.
 from rob_box_voice import tts_node  # noqa: E402
+from rob_box_voice.core import tts_stream  # noqa: E402
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Helpers
@@ -116,6 +117,9 @@ def _make_fake_node():
     node.minimax_pitch_raw = ""
     node.minimax_volume_raw = ""
     node.minimax_pronunciation_dict_raw = ""
+    # #4022 — живой тон (set_pitch) складывается со статическим minimax_pitch в _minimax_settings.
+    node.pitch_shift = 1.0
+    node.chipmunk_mode = False
     node.audio_output_sample_rate = 16000
     node.audio_pub = MagicMock()
     node.get_logger = MagicMock()
@@ -235,8 +239,6 @@ class TestDefaultProviderPath:
         node.provider = "yandex"
         node.normalize_text = False
         node.stop_requested = False
-        node.processing_dialogue_id = None
-        node.current_dialogue_id = None
         node.yandex_stub = object()
         node.yandex_speed = 1.0
         node._synthesize_yandex = MagicMock(
@@ -398,145 +400,60 @@ class TestStreamingHook:
         samples = np.frombuffer(bytes(msg.data), dtype="<i2")
         assert samples.tolist() == [32767, -32767, 16383]
 
-    def test_streaming_publishes_one_msg_per_chunk(self):
-        """Streaming: per chunk we publish a separate AudioData msg."""
+    def _stream_node(self, chunks):
+        """Нода с провайдером, чей ``stream()`` отдаёт ``chunks`` (#3930)."""
         node = self._make_node()
-        pcm = _make_pcm_bytes([100, -100, 50, -50, 25])
+        node.minimax_timeout = 2.0
 
-        # Build a fake _stream_minimax_chunks that yields 3 chunks.
-        chunks = [
-            TTSChunk(samples=pcm[:4], sample_rate=32000, format=TTSFormat.PCM),
-            TTSChunk(samples=pcm[4:8], sample_rate=32000, format=TTSFormat.PCM),
-            TTSChunk(
-                samples=pcm[8:],
-                sample_rate=32000,
-                format=TTSFormat.PCM,
-                finish_reason="stop",
-            ),
-        ]
+        class _Provider:
+            async def stream(self, text, *, settings=None):
+                for chunk in chunks:
+                    if isinstance(chunk, Exception):
+                        raise chunk
+                    yield chunk
 
-        async def fake_stream(text, ssml_attrs, voice=None, language=None):
-            for c in chunks:
-                yield c
+        node._ensure_minimax_provider = lambda: _Provider()
+        return node
 
-        async def collect():
-            node._stream_minimax_chunks = fake_stream
-            return await asyncio.to_thread(
-                lambda: tts_node.TTSNode._synthesize_minimax_streaming_publish(node, "hello", {})
-            )
+    def test_stream_publishes_each_chunk_and_buffers_it_for_playback(self):
+        """#3930: каждый кусок — свой AudioData в топике и в буфере реплики."""
+        loud = _make_pcm_bytes([8000, -8000] * 8000)  # 1 с громкого PCM @ 16 кГц
+        node = self._stream_node([
+            TTSChunk(samples=loud, sample_rate=16000, format=TTSFormat.PCM),
+            TTSChunk(samples=loud, sample_rate=16000, format=TTSFormat.PCM),
+            TTSChunk(samples=b"", sample_rate=16000, format=TTSFormat.PCM, finish_reason="stop"),
+        ])
+        result = tts_stream.open_for_playback(node, "привет", object(), None)
+        stream = result["audio_np"]
+        assert result["already_published"] and result["stream"] is stream
+        stream.future.result(timeout=5)
+        assert stream.done and stream.error is None
+        assert len(stream) == 32000 and node.audio_pub.publish.call_count == 2
 
-        result = asyncio.run(collect())
-        # 3 AudioData msgs published (one per chunk).
-        assert node.audio_pub.publish.call_count == 3
-        # Final concatenated buffer has the same number of float32 samples as input.
-        assert len(result["audio_np"]) == 5
+    def test_stream_resamples_chunks_to_output_rate(self):
+        node = self._stream_node([
+            TTSChunk(samples=_make_pcm_bytes([9000] * 32000), sample_rate=32000, format=TTSFormat.PCM),
+        ])
+        stream = tts_stream.open_for_playback(node, "привет", object(), None)["audio_np"]
+        stream.future.result(timeout=5)
+        assert stream.sample_rate == 16000 and len(stream) == 16000
 
-    def test_streaming_publishes_each_chunk_before_requesting_the_next(self):
-        """The first AudioData message must be visible before the next chunk is pulled."""
-        node = self._make_node()
-        pcm = _make_pcm_bytes([100, -100, 50, -50])
-
-        async def fake_stream(text, ssml_attrs, voice=None, language=None):
-            yield TTSChunk(samples=pcm[:4], sample_rate=16000, format=TTSFormat.PCM)
-            assert node.audio_pub.publish.call_count == 1
-            yield TTSChunk(
-                samples=pcm[4:],
-                sample_rate=16000,
-                format=TTSFormat.PCM,
-                finish_reason="stop",
-            )
-
-        node._stream_minimax_chunks = fake_stream
-        result = tts_node.TTSNode._synthesize_minimax_streaming_publish(node, "hello", {})
-
-        assert node.audio_pub.publish.call_count == 2
-        assert len(result["audio_np"]) == 4
-
-    def test_streaming_resamples_chunk_to_declared_topic_rate(self):
-        node = self._make_node()
-        pcm = _make_pcm_bytes([100, -100, 50, -50])
-
-        async def fake_stream(text, ssml_attrs, voice=None, language=None):
-            yield TTSChunk(
-                samples=pcm,
-                sample_rate=32000,
-                format=TTSFormat.PCM,
-                finish_reason="stop",
-            )
-
-        node._stream_minimax_chunks = fake_stream
-        result = tts_node.TTSNode._synthesize_minimax_streaming_publish(
-            node,
-            "hello",
-            {},
-        )
-
-        assert result["sample_rate"] == 32000
-        msg = node.audio_pub.publish.call_args.args[0]
-        assert len(msg.data) == 4  # 4 samples @ 32 kHz -> 2 samples @ 16 kHz
-
-    def test_streaming_handles_finish_reason_error(self):
-        """Stream reports finish_reason='error' → exception propagated up."""
-        node = self._make_node()
-        bound_publish = tts_node.TTSNode._publish_audio.__get__(node, type(node))
-        node._publish_audio = bound_publish
-
-        async def fake_stream(text, ssml_attrs, voice=None, language=None):
-            yield TTSChunk(
-                samples=b"",
-                sample_rate=32000,
-                format=TTSFormat.PCM,
-                finish_reason="error",
-            )
-
-        async def collect():
-            node._stream_minimax_chunks = fake_stream
-            return await asyncio.to_thread(
-                lambda: tts_node.TTSNode._synthesize_minimax_streaming_publish(node, "hello", {})
-            )
-
-        with pytest.raises(Exception, match="error"):
-            asyncio.run(collect())
-
-    def test_streaming_handles_empty_chunks(self):
-        """Zero chunks → typed error (no AudioData publication)."""
-        node = self._make_node()
-        bound_publish = tts_node.TTSNode._publish_audio.__get__(node, type(node))
-        node._publish_audio = bound_publish
-
-        async def fake_stream(text, ssml_attrs, voice=None, language=None):
-            if False:
-                yield
-
-        async def collect():
-            node._stream_minimax_chunks = fake_stream
-            return await asyncio.to_thread(
-                lambda: tts_node.TTSNode._synthesize_minimax_streaming_publish(node, "hello", {})
-            )
-
-        with pytest.raises(Exception, match="no audio chunks"):
-            asyncio.run(collect())
+    def test_stream_error_before_audio_raises_for_fallback(self):
+        """Отказ до первого звука — исключение: цепочка уходит на Yandex/Silero, как у HTTP."""
+        node = self._stream_node([TTSRateLimitError("quota", provider="minimax")])
+        with pytest.raises(Exception, match="нет звука.*quota"):
+            tts_stream.open_for_playback(node, "привет", object(), None)
         assert node.audio_pub.publish.call_count == 0
 
-    def test_streaming_error_after_audio_is_not_published_as_silence(self):
-        """A mid-stream error must not make the bridge replay a partial buffer."""
-        node = self._make_node()
-        pcm = _make_pcm_bytes([100, -100])
-
-        async def fake_stream(text, ssml_attrs, voice=None, language=None):
-            yield TTSChunk(samples=pcm, sample_rate=16000, format=TTSFormat.PCM)
-            yield TTSChunk(
-                samples=b"",
-                sample_rate=16000,
-                format=TTSFormat.PCM,
-                finish_reason="error",
-            )
-
-        node._stream_minimax_chunks = fake_stream
-        with pytest.raises(Exception, match="finish_reason=error"):
-            tts_node.TTSNode._synthesize_minimax_streaming_publish(node, "hello", {})
-
-        assert node.audio_pub.publish.call_count == 1
+    def test_stream_error_after_audio_marks_stream_broken(self):
+        """Обрыв после звука — не «finished»: ``error`` = ``minimax_stream_broken``."""
+        node = self._stream_node([
+            TTSChunk(samples=_make_pcm_bytes([8000, -8000] * 8000), sample_rate=16000, format=TTSFormat.PCM),
+            TTSChunk(samples=b"", sample_rate=16000, format=TTSFormat.PCM, finish_reason="error"),
+        ])
+        stream = tts_stream.open_for_playback(node, "привет", object(), None)["audio_np"]
+        stream.future.result(timeout=5)
+        assert stream.done and stream.error == tts_stream.BROKEN and len(stream) == 16000
 
 
 # ─────────────────────────────────────────────────────────────────────────────

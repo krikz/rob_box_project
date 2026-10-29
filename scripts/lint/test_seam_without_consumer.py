@@ -381,6 +381,52 @@ class ScanFilesIntegrationTests(unittest.TestCase):
         self.assertIn("/avatar/command", scan.pubs)
         self.assertIn("/avatar/command", scan.subs)
 
+    def test_module_attribute_constant_resolves_for_absolute_and_relative_imports(self):
+        # PR-15 #3711 (15p): dialog_node publishes /dialog/session as
+        # ``identity_question.SESSION_TOPIC`` after ``from .core import identity_question``;
+        # led_node subscribes ``voice_state.SESSION_TOPIC`` after an absolute module import.
+        scan, _ = self._scan(
+            {
+                "src/rob_box_voice/rob_box_voice/core/identity_question.py": (
+                    "SESSION_TOPIC = '/dialog/session'\n"
+                ),
+                "src/rob_box_core/rob_box_core/voice_state.py": (
+                    "SESSION_TOPIC = '/dialog/session'\n"
+                ),
+                "src/rob_box_voice/rob_box_voice/dialog_node.py": (
+                    "from .core import identity_question\n"
+                    "class DialogNode:\n"
+                    "    def __init__(self):\n"
+                    "        self.create_publisher(SessionState, identity_question.SESSION_TOPIC, 1)\n"
+                ),
+                "src/rob_box_voice/rob_box_voice/led_node.py": (
+                    "from rob_box_core import voice_state\n"
+                    "class LedNode:\n"
+                    "    def __init__(self):\n"
+                    "        self.create_subscription(SessionState, voice_state.SESSION_TOPIC, self.cb, 1)\n"
+                ),
+            }
+        )
+        self.assertIn("/dialog/session", scan.pubs)
+        self.assertIn("/dialog/session", scan.subs)
+        self.assertEqual(scan.unresolved, [])
+
+    def test_relative_import_of_a_constant_is_not_guessed(self):
+        # Only whole modules are bound by relative imports; ``from .x import NAME`` of a
+        # constant stays unresolved (reported) rather than silently guessed.
+        scan, _ = self._scan(
+            {
+                "src/rob_box_voice/rob_box_voice/core/topics.py": "TOPIC = '/voice/x'\n",
+                "src/rob_box_voice/rob_box_voice/node.py": (
+                    "from .core.topics import TOPIC\n"
+                    "class Node:\n"
+                    "    def __init__(self):\n"
+                    "        self.create_publisher(String, TOPIC, 1)\n"
+                ),
+            }
+        )
+        self.assertNotIn("/voice/x", scan.pubs)
+
     def test_test_files_do_not_feed_the_topic_graph(self):
         # A fake node in a test file publishing/subscribing must not count
         # as a real ROS wiring — only the production graph matters.
@@ -504,6 +550,38 @@ class AllowlistTests(unittest.TestCase):
         finally:
             swc.ALLOWLIST_FILE = original
         self.assertEqual(data["publishers_without_local_subscriber"], {})
+
+
+class ActionEventSourceTests(unittest.TestCase):
+    """Инвариант 3 (ADR-0150 §5.2, #3698): тул action.* без источника события владельца — FAIL."""
+
+    CLASSES = {"play_sound": "action.media", "set_music_volume": "action.local", "search_web": "query"}
+
+    def _check(self, sources, allowed):
+        catalog = [{"name": name, "event_source": src} for name, src in sources.items()]
+        return swc.action_tools_without_event_source(self.CLASSES, catalog, allowed)
+
+    def test_every_action_with_a_source_or_reasoned_exception_is_clean(self):
+        sources = {"play_sound": "/voice/sound/event", "set_music_volume": "", "search_web": ""}
+        self.assertEqual(self._check(sources, {"set_music_volume": "OSC без ответа"}), [])
+
+    def test_action_without_source_fails(self):
+        problems = self._check({"play_sound": "", "set_music_volume": "", "search_web": ""}, {"set_music_volume": "x"})
+        self.assertEqual(len(problems), 1)
+        self.assertIn("play_sound", problems[0])
+
+    def test_source_must_have_a_known_form(self):
+        for bad in ("sound_node", "srv:", "inproc:", "voice/sound/event"):
+            problems = self._check({"play_sound": bad, "set_music_volume": "inproc:x"}, {})
+            self.assertEqual([p.split(" ")[0] for p in problems], ["play_sound"], bad)
+
+    def test_stale_exception_fails(self):
+        problems = self._check({"play_sound": "/voice/sound/event", "set_music_volume": "inproc:runtime"},
+                               {"set_music_volume": "было без источника", "search_web": "не действие"})
+        self.assertEqual(len(problems), 2)
+
+    def test_repo_catalog_passes(self):
+        self.assertEqual(swc.cmd_check_action_event_sources(swc._load_allowlist()), 0)
 
 
 class BaselineRoundTripTests(unittest.TestCase):

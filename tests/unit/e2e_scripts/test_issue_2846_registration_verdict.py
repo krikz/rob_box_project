@@ -187,7 +187,25 @@ MERGED = _l(
     "matched an already-known speaker, no duplicate created",
 )
 
+# #3858 (unnamed_profiles_enabled=true): первая фраза незнакомого голоса >= 3 с заводит профиль без имени, а
+# представление присваивает имя ЕМУ -- строки «✅ … registered» тогда нет. Копии f-строк speaker_id_node
+# (_do_register, ветка outcome.claimed_unnamed) и core/unnamed_voice.py (создание профиля); сверка с исходником --
+# test_issue_3992_acts_2b_2c_memory.py::test_claimed_unnamed_fixture_is_the_line_speaker_id_node_logs.
+UNNAMED_CREATED = _l(
+    "speaker_id_node", "INFO",
+    "🆕 [issue #3858] незнакомый голос -> профиль без имени id=a1b2c3d4 "
+    "кличка='Ворчунья' (речь 4.20с, безымянных 1/20, вытеснено 0)",
+)
+CLAIMED_UNNAMED = _l(
+    "speaker_id_node", "INFO",
+    "🏷️ [issue #3858] 'Саша' представился — имя присвоено профилю без имени "
+    "(id=a1b2c3d4), дубля нет, кличка и накопленное остались",
+)
+
 LOG_REJECTED = TOOLS_CATALOG + TOOL_CALLED + VOICE_ANSWER + REJECT_NO_CONTEXT
+LOG_CLAIMED_UNNAMED = (
+    TOOLS_CATALOG + UNNAMED_CREATED + TOOL_CALLED + CLAIMED_UNNAMED + VOICE_ANSWER
+)
 LOG_ACCEPTED = TOOLS_CATALOG + TOOL_CALLED + ACCEPTED + VOICE_ANSWER
 LOG_NO_OUTCOME = TOOLS_CATALOG + TOOL_CALLED + VOICE_ANSWER
 # Попытка 1 прогона 35875477264: голос ДО тула (discovery #2406 FAIL).
@@ -331,6 +349,16 @@ class TestRegistrationVerdictInCheckAcceptance:
         lines = acceptance_lines(out)
         assert len(lines) == 1 and "✅ all checks passed" in lines[0], lines
 
+    def test_issue_3858_name_given_to_nameless_profile_passes(self, tmp_path):
+        """Включён unnamed_profiles_enabled: имя присвоено безымянному профилю этого же голоса. «✅ registered»
+        нет, но профиль с именем есть и дубля нет -- принятая регистрация (раньше харнесс: «NOT confirmed»)."""
+        rc, out, acc = run_check_acceptance(tmp_path, ACC_N201, LOG_CLAIMED_UNNAMED)
+        assert rc == 0, out
+        assert acc["pass"] is True
+        assert acc["registration"]["accepted"] == ["Саша"]
+        lines = acceptance_lines(out)
+        assert len(lines) == 1 and "✅ all checks passed" in lines[0], lines
+
     def test_adr_0127_separate_profile_counts_as_accepted(self, tmp_path):
         """n722: голос похож на Сашу, имя другое — заведён ОТДЕЛЬНЫЙ профиль.
         Это принятая регистрация, не отказ."""
@@ -445,6 +473,7 @@ def run_scenario(tmp_path: Path, attempt_logs: list[str]) -> str:
             WAKE.read_text(encoding="utf-8"),
             extract_function("emit_step"),
             extract_function("mark_fail_kind"),
+            extract_function("check_music_compare"),  # #3971: сверка вида результата
             extract_function("check_acceptance"),
             # run_step: цикл прошёл; номер попытки → какой лог отдаст ssh.
             'run_step() { n="$(cat "$STUB/attempt" 2>/dev/null || echo 0)"; '
@@ -535,6 +564,34 @@ class TestRegistrationHelpers:
         assert tm.registration_expected({"discovery_tools": ["register_speaker"]})
         assert tm.registration_expected({"must_not_call": ["register_speaker"]}) is False
         assert tm.registration_expected({}) is False
+
+    def test_issue_3858_name_given_to_nameless_profile_is_accepted(self):
+        """Строка присвоения имени безымянному профилю -- принятый исход; склейкой с чужим профилем она не является."""
+        tm = _tm()
+        assert tm.registration_outcome(LOG_CLAIMED_UNNAMED) == {
+            "accepted": ["Саша"], "merged": [], "rejected": [],
+        }
+        assert tm.registration_pending(ACC_N201, LOG_CLAIMED_UNNAMED) is False
+        verdict = tm.step_verdict(ACC_N201, LOG_CLAIMED_UNNAMED)
+        assert verdict["pass"], verdict["reason"]
+
+    def test_issue_3858_creating_nameless_profile_is_not_a_registration(self):
+        """«🆕 незнакомый голос -> профиль без имени» -- имя ещё никому не присвоено: регистрация не доказана."""
+        tm = _tm()
+        logs = TOOLS_CATALOG + UNNAMED_CREATED + TOOL_CALLED + VOICE_ANSWER
+        assert tm.registration_outcome(logs)["accepted"] == []
+        verdict = tm.step_verdict(ACC_N201, logs)
+        assert not verdict["pass"] and "NOT confirmed" in verdict["reason"]
+
+    def test_issue_3858_rejection_stays_a_fail_next_to_nameless_profile(self):
+        """Отказ speaker_id_node красит шаг и при безымянном профиле: принятием его строка не становится."""
+        tm = _tm()
+        logs = TOOLS_CATALOG + UNNAMED_CREATED + TOOL_CALLED + REJECT_NO_CONTEXT + VOICE_ANSWER
+        out = tm.registration_outcome(logs)
+        assert out["accepted"] == []
+        assert out["rejected"] == [{"name": "Саша", "reason": "no_utterance_context"}]
+        verdict = tm.step_verdict(ACC_N201, logs)
+        assert not verdict["pass"] and "no_utterance_context" in verdict["reason"]
 
     def test_dialogue_ack_alone_is_not_speaker_id_proof(self):
         """Маркер успеха — строка speaker_id_node, а не только ack в

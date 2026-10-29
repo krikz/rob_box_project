@@ -13,6 +13,9 @@
 #   * параметр узла лежит файлом $FAKE_ROBOT_STATE/param_<node><name>;
 #   * ``ros2 param set <node> e2e_mode true`` при прежнем false пишет в
 #     $FAKE_ROBOT_STATE/events строку ``WIPE <node>`` (узел стирает e2e-базу);
+#   * #3904: режим e2e один — ``e2e_mode_applied`` последователя (/mcp_server)
+#     повторяет ``e2e_mode`` владельца /speaker_id_node; таймер снятия
+#     ``e2e_release_after_s`` хранится как Double;
 #   * ``ros2 param set /dialogue_node e2e_session_reset_token <t>`` пишет
 #     ``RESET <node> <t>`` и сохраняет токен; при FAKE_DIALOGUE_REJECT=1
 #     значение ОТКЛОНЯЕТСЯ, как отклонил бы parameters_callback при
@@ -33,10 +36,27 @@
 #   FAKE_ROBOT_STATE     — каталог состояния (обязателен)
 #   FAKE_ROBOT_LOG       — файл «docker logs voice-assistant» (необязателен)
 #   FAKE_DIALOGUE_REJECT — 1: dialogue_node отклоняет e2e_session_reset_token
+#   FAKE_ENGINE          — значение dialog_engine у /dialog_node (пусто = v1, ноды нет)
+#
+# Музыка (issue #3871): ``docker exec voice-assistant ... python3`` идёт с фейковым
+# rclpy из ros_stubs/ (см. там docstring): файл $FAKE_ROBOT_STATE/music_state.json —
+# latched /voice/music/state (нет файла — плеер молчал), mcp_calls — журнал /mcp/execute.
+#   FAKE_MUSIC_STUCK=1       — стоп-тул отвечает ok, а музыка продолжает играть
+#   FAKE_MUSIC_STOP_DELAY=N  — секунд до idle после стоп-тула
+#   FAKE_NO_SIGN=1           — у харнесса нет секрета /mcp/execute
+# Сессия (issue #3989): $FAKE_ROBOT_STATE/session_state.json — latched /dialog/session, utterances — журнал
+# /voice/stt/utterance; FAKE_UNSILENCE_STUCK=1 — «говори» тишину не снимает. Параметры /tts_node yandex_speed,
+# minimax_speed, pitch_shift (#4027) — файлы, как у остальных параметров.
 set -u
 : "${FAKE_ROBOT_STATE:?fake_robot_ssh.sh: FAKE_ROBOT_STATE не задан}"
 mkdir -p "$FAKE_ROBOT_STATE"
 printf '%s\n' "$*" >> "$FAKE_ROBOT_STATE/ssh_calls"
+
+_HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+_STUBS="$_HERE/ros_stubs"
+_SRC="$(cd "$_HERE/../../.." && pwd)/src"
+# rob_box_voice.core.__init__ тянет rob_box_dialog / rob_box_core (в контейнере они установлены).
+_VOICE_SRC="$_SRC/rob_box_voice:$_SRC/rob_box_dialog:$_SRC/rob_box_core"
 
 _unsupported() {
     echo "fake_robot_ssh: не поддержано: $*" >&2
@@ -77,8 +97,40 @@ ros2() {  # ros2 param set|get <node> <name> [value] [--no-daemon]
                 echo "Boolean value is: False"
             fi
             ;;
-        get:e2e_session_reset_token)
+        get:e2e_session_reset_token | get:e2e_db_path)
             echo "String value is: $(cat "$f" 2>/dev/null)"
+            ;;
+        set:e2e_db_path | set:e2e_release_after_s)
+            echo "$value" > "$f"
+            echo "Set parameter successful"
+            ;;
+        get:e2e_release_after_s)
+            echo "Double value is: $(cat "$f" 2>/dev/null || echo 0.0)"
+            ;;
+        set:yandex_speed | set:minimax_speed | set:pitch_shift)
+            # #4027: скорость/тон /tts_node (Double, по умолчанию 1.0 -- tts_node.yaml)
+            echo "$value" > "$f"
+            echo "Set parameter successful"
+            ;;
+        get:yandex_speed | get:minimax_speed | get:pitch_shift)
+            echo "Double value is: $(cat "$f" 2>/dev/null || echo 1.0)"
+            ;;
+        get:e2e_mode_applied)
+            if [ "$(cat "$(_pfile /speaker_id_node e2e_mode)" 2>/dev/null || echo false)" = "true" ]; then
+                echo "Boolean value is: True"
+            else
+                echo "Boolean value is: False"
+            fi
+            ;;
+        get:dialog_engine)
+            # ADR-0150 PR-8 (#3702): /dialog_node есть только при v2. Фейк —
+            # робот v1 (ros2cli печатает «Node not found»), если не задан
+            # FAKE_ENGINE.
+            if [ "$node" = /dialog_node ] && [ -n "${FAKE_ENGINE:-}" ]; then
+                echo "String value is: $FAKE_ENGINE"
+            else
+                echo "Node not found"
+            fi
             ;;
         *)
             _unsupported "ros2 $*"
@@ -90,18 +142,35 @@ docker() {
     local sub="${1:-}" container="${2:-}"
     case "$sub:$container" in
         logs:voice-assistant)
-            [ -n "${FAKE_ROBOT_LOG:-}" ] && cat "$FAKE_ROBOT_LOG"
+            # #3857: события v2 (``📊 [turn] ... stage=done``, ``🗣️ SpeechEvent started|finished
+            # speech_id=...``). Метка ``{NOW-3.5}`` в логе -- «3.5 с назад» по часам фейк-робота:
+            # харнесс сравнивает ROS-время строки с ``date +%s.%N`` робота.
+            [ -n "${FAKE_ROBOT_LOG:-}" ] && awk -v now="$(date +%s.%N)" '
+                { while (match($0, /\{NOW-[0-9.]+\}/)) {
+                      d = substr($0, RSTART + 5, RLENGTH - 6)
+                      $0 = substr($0, 1, RSTART - 1) sprintf("%.2f", now - d) substr($0, RSTART + RLENGTH) }
+                  print }' "$FAKE_ROBOT_LOG"
             return 0
             ;;
         exec:voice-assistant)
-            # docker exec voice-assistant bash -lc|-c <cmd>
-            [ "${3:-}" = "bash" ] || { _unsupported "docker $*"; return; }
+            # docker exec voice-assistant bash -lc|-c <cmd> | sh -c <cmd> (#3710: копия e2e-БД дикторов tar'ом)
+            case "${3:-}" in bash | sh) ;; *) _unsupported "docker $*"; return ;; esac
             local cmd="${5:-}"
             cmd="${cmd//\/proc\/1\/fd\/1/$FAKE_ROBOT_STATE/pid1_stdout}"
             # source ROS-окружения на роботе — в фейке no-op (вызывается
             # из $cmd через eval, shellcheck этого не видит).
             # shellcheck disable=SC2329
-            ( source() { :; }; eval "$cmd" )
+            (
+                source() { :; }
+                # python3 внутри «контейнера» (подписанный /mcp/execute, снимок /voice/music/state --
+                # issue #3871): ROS нет, поэтому rclpy/std_msgs/rob_box_mcp_tools -- фейки из
+                # ros_stubs/, а чистый парсер снимка -- НАСТОЯЩИЙ rob_box_voice.core.music_player_state.
+                # shellcheck disable=SC2329
+                python3() {
+                    PYTHONIOENCODING=utf-8 PYTHONPATH="$_STUBS:$_VOICE_SRC${PYTHONPATH:+:$PYTHONPATH}" command python3 "$@"
+                }
+                eval "$cmd"
+            )
             ;;
         logs:* | exec:* | ps:*)
             # Других контейнеров (telegram-bot и т.п.) на фейк-роботе нет.

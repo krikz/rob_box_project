@@ -17,11 +17,7 @@ telegram_node:
     camera_wait_s: 5.0        # сколько ждать первый кадр после подписки
     camera_linger_s: 10.0     # держать подписку после последнего запроса
 
-    # LLM settings
-    llm_provider: "deepseek"   # deepseek | mimo
-    llm_model: "deepseek-v4-flash"  # deepseek-chat is deprecated
-    llm_max_history: 20        # messages per user session
-    llm_temperature: 0.7
+    # LLM чата — не здесь: телеграм-агент живёт в dialog_node (telegram_* в dialog_node.yaml, ADR-0150 PR-12a).
 
     # Voice message STT
     voice_stt_method: "yandex"  # yandex | whisper

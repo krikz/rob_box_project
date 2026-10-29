@@ -14,6 +14,20 @@ gen_library.py — один узкий тул ``music_library`` над кэше�
   update  — title / tags / mood / genre / notes
   delete  — удалить трек (SQLite + каталог с mp3 и wav)
 
+``track_ref="last_generated"`` (#4216) - «эта песня» сразу после генерации: тул сам берёт id только что сочинённого
+трека (``GeneratedMusicLibrary.generated``) и им заменяет ``track_id`` модели; свежего нет - ссылка пуста, ``track_id``
+работает как прежде. Тот же выбор делает код и без ссылки: ``info`` / ``play`` на другой трек с ТЕМ ЖЕ названием, что у
+свежесочинённого (вчерашняя версия из списка), получают свежесочинённый (:meth:`MusicLibraryTool.bind_arguments`:
+сервер зовёт его до записи вызова в лог, лог и исполнение показывают один id). Другая версия - та же песня и по теме:
+``search`` по теме свежесочинённой (слова запроса есть в её названии/тексте) ставит её первой с ``just_generated`` и
+запоминает тему; ``info`` / ``play`` старой версии, где есть та же тема, получают свежесочинённую (n707 живьём:
+``search «енота»`` → ``search «Енот»`` → ``info`` вчерашней).
+
+``info`` / ``update`` / ``delete`` принимают только ``track_id``, который сам тул назвал в ответе ``list`` / ``search``
+(:class:`NamedTracks`, #4025: n710 23.10 стёр посторонний трек по id, которого в ходе не было). ``delete`` необратим
+(кредиты на перегенерацию стоят денег) и идёт в два вызова: без ``confirm`` тул отвечает ``needs_confirmation`` с
+названием трека, ``confirm=true`` принимается только после такого вопроса (:class:`DeleteConfirmation`).
+
 Внутренние исполнители (кавер, песня, сет, путь) тул не зовут — они вызывают
 ``engine.gen.library_play.play_library_track`` напрямую.
 Модуль держит ROS-импорты ленивыми — тул тестируется без демона.
@@ -22,22 +36,113 @@ gen_library.py — один узкий тул ``music_library`` над кэше�
 from __future__ import annotations
 
 import subprocess
+import threading
 import time
-from typing import Any, Callable, Dict, List, Optional
+from collections import OrderedDict
+from typing import Any, Callable, Dict, Iterable, List, Optional, Tuple
 
 from rob_box_music import knowledge as kn
 
 from ..base import MCPTool, MCPToolParameter, MCPToolResult, ToolExecutionType
+from ..engine.gen.last_generated import topic_stems
 from ..engine.gen.library import GeneratedMusicLibrary
 from ..engine.gen.library_play import play_library_track
 
 #: Действия, которым нужен ``track_id`` (rate берёт играющий / последний, если id не назван).
 _NEEDS_TRACK = ("info", "play", "update", "delete")
 _VERDICT_RATING = {"like": kn.RATING_LIKE, "dislike": kn.RATING_DISLIKE}
+#: Действия, где ``track_id`` обязан быть из ответа самого тула (``list`` / ``search``), а не из памяти модели (#4025).
+_NAMED_ONLY = ("info", "update", "delete")
+#: ``track_ref`` тула: «эта / только что сочинённая песня» (#4216). Не id, а ссылка: id подставляет код из
+#: ``GeneratedMusicLibrary.generated``, а не модель по названию из списка (в библиотеке бывает несколько версий с
+#: одним названием; n707/n708 29.10: взята вчерашняя, а не сочинённая минуту назад).
+LAST_GENERATED_REF = "last_generated"
+#: Действия, где id той же песни с названием свежесочинённой (вчерашняя версия) заменяется свежим: рассказать и включить.
+#: ``update`` / ``delete`` / ``rate`` с явным id правят то, что назвала модель: стереть или переименовать старую версию
+#: - законное желание, а не промах выбора.
+_SAME_TITLE_ACTIONS = ("info", "play")
+#: Причины отказа (поле ``reason`` результата): по ним диалог выбирает фразу (ключ ``music.library_fail.<причина>``
+#: каталога ``ru.yaml``), а не по тексту ошибки. ``NEEDS_CONFIRMATION`` - не провал, а вопрос человеку: диалог v2 ждёт
+#: ответа окном (``rob_box_dialog.knowledge.TOOL_QUESTIONS``, #4062) и сам шлёт ``confirm=true`` на «да, удаляй».
+#: Сверку с каталогом и таблицей диалога держит ``test/test_tools/test_gen_library.py``.
+UNKNOWN_TRACK = "unknown_track"
+NEEDS_CONFIRMATION = "needs_confirmation"
+REFUSAL_REASONS: Tuple[str, ...] = (UNKNOWN_TRACK, NEEDS_CONFIRMATION)
+#: Сколько названных id помнит окно: до 100 строк на вызов ``list`` / ``search``, последние вызовы разговора.
+NAMED_WINDOW_MAX = 200
+#: Вопрос «удалить?» ждёт ответа человека не дольше этого (с, по часам тула); дальше спрашиваем заново.
+CONFIRM_TTL_S = 120.0
+#: Подтверждение в ту же секунду, что и вопрос, - не ответ человека (робот ещё говорит вопрос, человек отвечает, речь
+#: распознаётся): так выглядит цепочка «удали, удали с confirm» одной командой модели. Раньше этого срока - снова вопрос.
+CONFIRM_MIN_WAIT_S = 2.0
+
+
+class NamedTracks:
+    """Окно ``track_id``, которые тул назвал в ответах ``list`` / ``search`` (#4025, ADR-0148: допустимость id решает код).
+
+    Модель подставляла id из пересказа, а не из ответа тула (n707/n710 23.10: ``info`` и ``delete`` по id, которого в
+    ходе не было, - стёрт посторонний трек). Окно - последние ``limit`` названных id по давности обращения; тул один
+    на процесс, поэтому окно общее для всех ходов и разговоров, пока жив сервер (перезапуск обнуляет - модель вызовет
+    ``list``). Что оно защищает: от выдуманного id; чего НЕ защищает: от настоящего id из давнего ``list`` (один
+    ``list`` на 100 строк называет всю небольшую библиотеку). От ошибочного ``delete`` настоящего трека оберегает
+    только подтверждение (:class:`DeleteConfirmation`).
+    """
+
+    def __init__(self, limit: int = NAMED_WINDOW_MAX) -> None:
+        self._limit = limit
+        self._ids: "OrderedDict[str, None]" = OrderedDict()
+        self._lock = threading.Lock()
+
+    def name(self, track_ids: Iterable[Any]) -> None:
+        """Тул назвал эти id в своём ответе."""
+        with self._lock:
+            for track_id in (str(t) for t in track_ids if t):
+                self._ids[track_id] = None
+                self._ids.move_to_end(track_id)
+            while len(self._ids) > self._limit:
+                self._ids.popitem(last=False)
+
+    def __contains__(self, track_id: object) -> bool:
+        key = str(track_id)  # нехешируемое (список, словарь) от небрежной модели - просто не названный id
+        with self._lock:
+            named = key in self._ids
+            if named:
+                self._ids.move_to_end(key)
+            return named
+
+
+class DeleteConfirmation:
+    """Удаление трека в два вызова: вопрос - слово человека - подтверждённый вызов (#4025).
+
+    Тул не слышит человека, но не даёт модели удалить трек одним вызовом: ``confirm=true`` засчитывается, только если
+    этот же тул для этого же трека уже задал вопрос (:meth:`settle` вернул ``False``) не раньше ``CONFIRM_MIN_WAIT_S``
+    и не позже ``CONFIRM_TTL_S`` назад. Подтверждение без вопроса, на другой трек, просроченное или слишком раннее -
+    снова вопрос (слишком раннее срок вопроса не продлевает). Вопрос расходуется подтверждением.
+    """
+
+    def __init__(self, clock: Callable[[], float]) -> None:
+        self._clock = clock
+        self._asked: Optional[Tuple[str, float]] = None
+        self._lock = threading.Lock()
+
+    def settle(self, track_id: str, confirm: bool) -> bool:
+        """``True`` - удалять; ``False`` - человека надо спросить (вопрос зафиксирован)."""
+        now = self._clock()
+        with self._lock:
+            asked_id, asked_at = self._asked or ("", 0.0)
+            waited = now - asked_at if asked_id == track_id else None
+            if confirm and waited is not None and CONFIRM_MIN_WAIT_S <= waited <= CONFIRM_TTL_S:
+                self._asked = None
+                return True
+            if not (confirm and waited is not None and waited < CONFIRM_MIN_WAIT_S):
+                self._asked = (track_id, now)
+            return False
 
 
 class MusicLibraryTool(MCPTool):
     """Библиотека сгенерированной музыки: список, поиск, воспроизведение, оценка, правка, удаление."""
+
+    event_source = "/voice/music/event"
 
     def __init__(self, node: Any, library: GeneratedMusicLibrary, clock: Callable[[], float] = time.time,
                  run: Callable[..., Any] = subprocess.run) -> None:
@@ -45,6 +150,8 @@ class MusicLibraryTool(MCPTool):
         self._library = library
         self._clock = clock
         self._run = run  # запуск ffmpeg (декод mp3 → wav сервера); тесты подставляют свой
+        self._named = NamedTracks()  # id из ответов list / search: только их принимают info / update / delete (#4025)
+        self._delete_question = DeleteConfirmation(clock)
 
     @property
     def name(self) -> str:
@@ -57,8 +164,12 @@ class MusicLibraryTool(MCPTool):
             "сгенерированного»; search — найти трек по слову (query); info — подробности одного трека; "
             "play — включить трек по track_id (стоп — stop_music); rate — «этот трек нравится / не нравится» "
             "(verdict like / dislike; трек, который не нравится, больше не включается, но не удаляется); "
-            "update — переименовать, теги, настроение, жанр, заметка; delete — удалить трек насовсем. "
-            "track_id бери из list / search, не выдумывай. Ответ содержит фразу, которую надо сказать."
+            "update — переименовать, теги, настроение, жанр, заметка; delete — удалить трек насовсем: "
+            "без confirm тул только спрашивает (needs_confirmation), confirm=true — после «да» человека. "
+            "track_id для info / update / delete — только из ответа list / search, не выдумывай "
+            "(иначе unknown_track). «Эта песня» / «только что сочинённая» — track_ref=last_generated "
+            "(track_id не нужен: тул сам берёт трек, сочинённый только что). "
+            "Ответ содержит фразу, которую надо сказать."
         )
 
     @property
@@ -71,8 +182,14 @@ class MusicLibraryTool(MCPTool):
             ),
             MCPToolParameter(
                 name="track_id", type="string", required=False, default="",
-                description="UUID трека из list / search (info, play, update, delete; у rate — по умолчанию "
+                description="UUID трека из ответа list / search (info, play, update, delete; у rate — по умолчанию "
                             "играющий сейчас или последний игравший).",
+            ),
+            MCPToolParameter(
+                name="track_ref", type="string", required=False, default="",
+                description="last_generated — «эта / только что сочинённая песня» (info, play, update, delete, rate): "
+                            "трек, сочинённый последним, вместо track_id. Свежего нет — работает track_id.",
+                enum=["", "last_generated"],
             ),
             MCPToolParameter(
                 name="query", type="string", required=False, default="",
@@ -112,6 +229,11 @@ class MusicLibraryTool(MCPTool):
                 name="notes", type="string", required=False, default="",
                 description="Для update: заметка.",
             ),
+            MCPToolParameter(
+                name="confirm", type="boolean", required=False, default=False,
+                description="Для delete: true — только после того, как человек ответил «да» на вопрос «Удалить "
+                            "…?» (его задаёт сам тул ответом needs_confirmation). Без вопроса не засчитывается.",
+            ),
         ]
 
     @property
@@ -121,7 +243,12 @@ class MusicLibraryTool(MCPTool):
     # starts_music=False намеренно: флаг на уровне тула, а музыку запускает только action=play. С True
     # ``TrackStartGuard`` («один запуск трека за ход») отказал бы ``play`` после ``list`` в том же ходе.
 
-    def execute(self, action: str = "", track_id: str = "", **kwargs: Any) -> MCPToolResult:
+    def execute(self, action: str = "", track_id: Any = "", track_ref: Any = "", **kwargs: Any) -> MCPToolResult:
+        track_id = str(track_id) if track_id else ""  # список / словарь от небрежной модели - не TypeError, а неизвестный id
+        bound = self._bound_track(str(action), track_id, track_ref)
+        if bound != track_id:
+            self._named.name([bound])  # назван кодом, а не выдуман моделью: вопрос ``list`` для него не нужен
+        track_id = bound
         handler = {
             "list": self._list, "search": self._search, "info": self._info, "play": self._play,
             "rate": self._rate, "update": self._update, "delete": self._delete,
@@ -130,7 +257,30 @@ class MusicLibraryTool(MCPTool):
             return MCPToolResult(success=False, error=f"неизвестное действие '{action}'")
         if action in _NEEDS_TRACK and not track_id:
             return MCPToolResult(success=False, error=f"для '{action}' нужен track_id (из list / search)")
+        if action in _NAMED_ONLY and track_id not in self._named:
+            return _refused(UNKNOWN_TRACK, f"Трек {track_id!r} я не называл: track_id берётся только из ответа "
+                            "list / search этого разговора.", track_id=track_id,
+                            hint="сначала action=list или search, track_id — из их ответа")
         return handler(track_id=track_id, **kwargs)
+
+    def bind_arguments(self, parameters: Dict[str, Any]) -> Dict[str, Any]:
+        """Параметры вызова с ``track_id`` свежесочинённой песни там, где модель выбрала старую (#4216, n707/n708)."""
+        track_id = parameters.get("track_id")
+        bound = self._bound_track(str(parameters.get("action", "")), str(track_id) if track_id else "",
+                                  parameters.get("track_ref", ""))
+        return parameters if bound == (str(track_id) if track_id else "") else {**parameters, "track_id": bound}
+
+    def _bound_track(self, action: str, track_id: str, track_ref: Any) -> str:
+        """``track_id`` с учётом свежесочинённого трека: ссылка ``last_generated`` - он; ``info`` / ``play`` на другую
+        версию той же песни (то же название либо тема, что совпала со свежим в недавнем ``search``:
+        ``LastGenerated.twin``) - тоже он; иначе ``track_id`` как был."""
+        generated = self._library.generated
+        fresh = generated.fresh()
+        if not fresh or track_id == fresh:
+            return track_id
+        if track_ref == LAST_GENERATED_REF or (action in _SAME_TITLE_ACTIONS and track_id and generated.twin(track_id)):
+            return fresh
+        return track_id
 
     # ── Действия ──────────────────────────────────────────────────────────
 
@@ -141,6 +291,7 @@ class MusicLibraryTool(MCPTool):
         if not result.get("success"):
             return MCPToolResult(success=False, error=result.get("error"))
         tracks = result["tracks"]
+        self._named.name(t.get("id") for t in tracks)
         total = self._library.count  # в библиотеке всего, а не в выборке по limit
         data = {"tracks": [_brief(t) for t in tracks], "total": total, "shown": len(tracks), "sort_by": sort_by}
         titles = [str(t.get("title") or "") for t in tracks]
@@ -150,10 +301,17 @@ class MusicLibraryTool(MCPTool):
         result = self._library.search_tracks(query, limit=_clamp(limit, 5, 20))
         if not result.get("success"):
             return MCPToolResult(success=False, error=result.get("error"))
-        found = result["total"]
+        tracks = result["tracks"]
+        fresh = self._library.generated.about(topic_stems(query))
+        if fresh:  # тема запроса - только что сочинённая песня: она первой, а не среди версий прошлых прогонов (#4216)
+            tracks = [self._library.get_track_info(fresh), *(t for t in tracks if t.get("id") != fresh)]
+        found = len(tracks)
+        self._named.name(t.get("id") for t in tracks)
         message = f"По запросу «{query}» найдено {found}." if found else f"По запросу «{query}» ничего не найдено."
-        data = {"query": query, "tracks": [_brief(t) for t in result["tracks"]], "total": found}
-        return MCPToolResult(success=True, data=data, message=message)
+        briefs = [_brief(t) for t in tracks]
+        if fresh:
+            briefs[0]["just_generated"] = True
+        return MCPToolResult(success=True, data={"query": query, "tracks": briefs, "total": found}, message=message)
 
     def _info(self, track_id: str, **_: Any) -> MCPToolResult:
         info = self._library.get_track_info(track_id)
@@ -204,14 +362,31 @@ class MusicLibraryTool(MCPTool):
             return MCPToolResult(success=False, error=saved.get("error"))
         return MCPToolResult(success=True, data=_brief(saved), message=f"Метаданные трека обновлены: {', '.join(fields)}.")
 
-    def _delete(self, track_id: str, **_: Any) -> MCPToolResult:
-        from rob_box_voice.core.media_phrases import library_delete_text
+    def _delete(self, track_id: str, confirm: Any = False, **_: Any) -> MCPToolResult:
+        """Необратимо: без вопроса человеку не удаляем (:class:`DeleteConfirmation`). Отказ - причина и данные вопроса
+        (``track_id``, ``title``); текст вопроса - из каталога фраз (``media_phrases``), диалог v2 строит его сам по
+        причине (#4062)."""
+        from rob_box_voice.core.media_phrases import library_delete_question_text, library_delete_text
 
-        title = str(self._library.get_track_info(track_id).get("title") or "")
+        info = self._library.get_track_info(track_id)
+        if not info.get("success"):
+            return MCPToolResult(success=False, error=info.get("error"))
+        title = str(info.get("title") or "")
+        if not self._delete_question.settle(track_id, confirm is True or str(confirm).lower() == "true"):
+            return _refused(NEEDS_CONFIRMATION, library_delete_question_text(title), track_id=track_id, title=title)
         result = self._library.delete_track(track_id)
         if not result.get("success"):
             return MCPToolResult(success=False, error=result.get("error"))
-        return MCPToolResult(success=True, message=library_delete_text(title))
+        return MCPToolResult(success=True, message=library_delete_text(title), data={"track_id": track_id, "title": title})
+
+
+def _refused(reason: str, error: str, **data: Any) -> MCPToolResult:
+    """Честный отказ: статус ``rejected`` и причина - в данных, фразу об исходе строит код по ``reason`` (ADR-0148).
+    Причина вне :data:`REFUSAL_REASONS` - ошибка кода (``ValueError``), а не тихий откат диалога на общее «С библиотекой
+    музыки не вышло.»: сверку причин с каталогом фраз держит ``test_gen_library`` (ревью PR #4100)."""
+    if reason not in REFUSAL_REASONS:
+        raise ValueError(f"music_library: причина отказа {reason!r} не в REFUSAL_REASONS {REFUSAL_REASONS}")
+    return MCPToolResult(success=False, error=error, message=error, data={"status": "rejected", "reason": reason, **data})
 
 
 def _clamp(value: Any, default: int, high: int) -> int:

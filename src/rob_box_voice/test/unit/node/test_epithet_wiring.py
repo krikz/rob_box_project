@@ -29,6 +29,8 @@ from unittest.mock import MagicMock
 import numpy as np
 import pytest
 
+from rob_box_core.speaker_wire import speaker_result_to_payload
+
 # ``audio_common_msgs`` не покрыт общим conftest (его тянет только
 # speaker_id_node) — доставляем заглушку до импорта ноды.
 _audio_common = types.ModuleType("audio_common_msgs")
@@ -187,9 +189,8 @@ def test_ensure_epithet_does_not_overwrite_existing(node):
 def test_publish_result_includes_epithet(node):
     published = []
     node._result_pub = types.SimpleNamespace(
-        publish=lambda msg: published.append(msg.data)
+        publish=lambda msg: published.append(speaker_result_to_payload(msg))
     )
-    sid_node.String = lambda: types.SimpleNamespace(data="")
 
     node._publish_result(
         SpeakerMatch(
@@ -200,7 +201,7 @@ def test_publish_result_includes_epithet(node):
         )
     )
 
-    payload = json.loads(published[0])
+    payload = published[0]
     assert payload["is_known"] is True
     assert payload["epithet"] == "Гроссмейстер"
 

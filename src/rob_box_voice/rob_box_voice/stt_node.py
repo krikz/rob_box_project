@@ -6,7 +6,7 @@ STTNode - Speech-to-Text с Yandex STT gRPC v3 (primary) + Vosk (fallback)
 
 | вход | выход |
 |---|---|
-| ``/audio/speech_audio`` (ReSpeaker, люди рядом) | ``/voice/stt/result`` → личность |
+| ``/audio/speech_audio`` (ReSpeaker, люди рядом) | ``/voice/stt/utterance`` (``Utterance``) → личность |
 | ``/audio/quest_in`` (левый грип, PTT robot-voice) | ``/avatar/ptt/result`` → пайплайн грипа |
 | ``/audio/quest_wake`` (wake-поток шлема, вейк «ТАРС») | ``/avatar/stt/result`` → агент оператора |
 
@@ -26,7 +26,14 @@ import rclpy
 from audio_common_msgs.msg import AudioData
 from rclpy.node import Node
 from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
-from std_msgs.msg import String
+from rob_box_dialog_msgs.msg import InterruptRequest, Utterance
+from rob_box_dialog.doa import DoaTrack
+from rob_box_core import speech_client
+from rob_box_core.provider_publisher import ProviderStatePublisher
+from .core.provider_health import stt_provider_states
+from .core.interrupt_request import InterruptOffer
+from .stt_hang_guard import HangGuard
+from std_msgs.msg import Bool, Int32, String
 from vosk import KaldiRecognizer, Model
 
 # Pure-Python fallback/retry/short-phrase логика (issue #979).
@@ -43,11 +50,16 @@ try:
         ProviderDeadCache,
         ProviderPolicy,
         STTAuthError,
+        STTDeadlineFinal,
         STTQuotaError,
         STTTimeoutError,
+        effective_provider,
+        http_call_limit_s,
+        hung_providers,
         is_short_phrase,
         log_attempts,
         select_recognition,
+        yandex_call_limit_s,
     )
 
     _STT_FALLBACK_AVAILABLE = True
@@ -64,6 +76,11 @@ except ImportError:  # pragma: no cover — модуль всегда есть �
 
     class STTTimeoutError(TimeoutError):  # type: ignore[no-redef]
         pass
+
+    class STTDeadlineFinal(STTTimeoutError):  # type: ignore[no-redef]
+        def __init__(self, text, message=""):
+            super().__init__(message or text)
+            self.text = text
 
     class STTAuthError(Exception):  # type: ignore[no-redef]
         pass
@@ -128,21 +145,48 @@ class _NodeSTTAdapter:
         return self._recognize(data)
 
 
-def _map_grpc_error(exc: "grpc.RpcError", timeout_s: float) -> BaseException:
+def _map_grpc_error(exc: "grpc.RpcError", timeout_s: float, segments=None) -> BaseException:
     """gRPC-код Yandex → типизированная ошибка ``stt_fallback``.
 
     Нужно кэшу «мёртвых»: по строке ошибки нельзя отличить «кончились
     деньги» (RESOURCE_EXHAUSTED — лежит надолго) от «моргнула сеть»
     (UNAVAILABLE — лежит секунды).
+
+    #4175: ``DEADLINE_EXCEEDED`` при уже закрытой сервером фразе (непустой final + EOU, решает
+    :func:`text_kept_on_deadline` по ``segments``) - :class:`STTDeadlineFinal` с её текстом, а не голый таймаут:
+    готовый результат не выбрасываем. Остальные коды и неполные стримы - как раньше.
     """
     code = exc.code()
     if code == grpc.StatusCode.DEADLINE_EXCEEDED:
+        kept = text_kept_on_deadline(segments, deadline_exceeded=True) if segments is not None else None
+        if kept:
+            return STTDeadlineFinal(kept)
         return STTTimeoutError(f"Yandex STT deadline exceeded ({timeout_s}s)")
     if code in (grpc.StatusCode.UNAUTHENTICATED, grpc.StatusCode.PERMISSION_DENIED):
         return STTAuthError(f"Yandex STT auth failure: {code} {exc.details()}")
     if code == grpc.StatusCode.RESOURCE_EXHAUSTED:
         return STTQuotaError(f"Yandex STT quota exhausted: {code} {exc.details()}")
     return exc
+
+
+def _minimax_http_timeout():
+    """HTTP-таймауты вызова MiniMax STT по стадиям - один источник и для клиента, и для предела сторожа.
+
+    ``minimax_stt_timeout_s`` - мягкий срок ответа (позже - ``timeout``, текст отброшен); сами вызовы ограничены этими
+    стадиями (pool + connect + write + read), поэтому предел сторожа считается от них (``STTNode._provider_policies``,
+    ревью PR #4140): живой MiniMax отвечает ошибкой/таймаутом за 7-20 с и не «завис».
+    """
+    from rob_box_voice.stt_providers.minimax_provider import DEFAULT_TIMEOUT  # noqa: PLC0415 - httpx лениво
+
+    return DEFAULT_TIMEOUT
+
+
+def _minimax_call_limit_s(node) -> Optional[float]:
+    """Худший случай вызова MiniMax STT по его HTTP-стадиям; ``None`` - провайдер не настроен (httpx не тянем)."""
+    if not getattr(node, "minimax_stt_enabled", False) or not getattr(node, "minimax_stt_api_key", ""):
+        return None
+    return http_call_limit_s(_minimax_http_timeout())
+
 
 # Issue #2158, ADR-0076 — сбор STT-семплов с wake-сегментов шлема для
 # эмпирического пополнения wake-листа ТАРС. Kill-switch через переменную
@@ -205,71 +249,23 @@ from rob_box_voice.core.occasion import (
     OccasionGate,
     VerdictKind,
 )
+from rob_box_voice.core import echo_window  # noqa: E402 — как соседние импорты после блока try/except
+from rob_box_voice.core.stt_utterance import fill_respeaker_utterance, final_provider
 from rob_box_voice.core.utterance_id import compute_utterance_id
-from rob_box_voice.core.yandex_stt_segments import YandexSegmentCollector
+from rob_box_voice.core.yandex_stt_segments import YandexSegmentCollector, text_kept_on_deadline
 
 # #1990 (оператор-agent 05) — источники аудио для wake-роутера (_process_audio).
 # Namespace вейк-слов привязан к источнику, а не только к тексту (целевая §7.1).
-_SRC_RESPEAKER = "respeaker"  # /audio/speech_audio → /voice/stt/result (личность)
+_SRC_RESPEAKER = "respeaker"  # /audio/speech_audio → /voice/stt/utterance (личность)
 _SRC_PTT = "ptt"  # /audio/quest_in (левый грип) → /avatar/ptt/result (пайплайн грипа)
 _SRC_WAKE = "wake"  # /audio/quest_wake → /avatar/stt/result (агент оператора)
 
-try:
-    from rob_box_voice.core.dialogue_text import (
-        DEFAULT_OPERATOR_WAKE_WORDS,
-        DEFAULT_WAKE_WORDS,
-        has_wake_word,
-        resolve_wake_word_namespaces,
-        strip_wake_word,
-    )
+# Вейк-слова — одна таблица rob_box_dialog (ADR-0150 PR-1/PR-5): адресация решает address, своих копий нет.
+from rob_box_dialog import address  # noqa: E402 — как соседние импорты после констант
+from rob_box_dialog import knowledge as kn  # noqa: E402
+from rob_box_voice.core.dialogue_text import has_wake_word, strip_wake_word  # noqa: E402
 
-    _HAS_WAKE_WORD_AVAILABLE = True
-except ImportError:  # pragma: no cover — защита для standalone-запуска
-    _HAS_WAKE_WORD_AVAILABLE = False
-    DEFAULT_WAKE_WORDS = ()
-    DEFAULT_OPERATOR_WAKE_WORDS = ()
-
-    def has_wake_word(text_lower: str, wake_words: list) -> bool:  # type: ignore[no-redef]
-        if not wake_words:
-            return True
-        return any(w in text_lower for w in wake_words)
-
-    def strip_wake_word(text: str, wake_words: list | None = None) -> str:  # type: ignore[no-redef]
-        if not wake_words:
-            return text.strip()
-        text_lower = text.lower()
-        for word in sorted(wake_words, key=len, reverse=True):
-            if word in text_lower:
-                idx = text_lower.find(word)
-                return (text[:idx] + text[idx + len(word) :]).strip()
-        return text.strip()
-
-    def resolve_wake_word_namespaces(  # type: ignore[no-redef]
-        path=None, personality_fallback=DEFAULT_WAKE_WORDS, operator_fallback=DEFAULT_OPERATOR_WAKE_WORDS
-    ):
-        return list(personality_fallback), list(operator_fallback)
-
-try:
-    from rob_box_voice.core.speak_helpers import build_ssml_payload
-
-    _BUILD_SSML_AVAILABLE = True
-except ImportError:  # pragma: no cover — защита для standalone-запуска
-    _BUILD_SSML_AVAILABLE = False
-
-    def build_ssml_payload(text: str, animation: str = "neutral") -> str:  # type: ignore[no-redef]
-        # voice-vr 12 (issue #2197): единый сборщик SSML — ``Utterance``.
-        # Раньше было ``f"<speak>{text}</speak>"`` без экранирования.
-        from rob_box_core.utterance import Sink, Utterance
-
-        return json.dumps(
-            Utterance(
-                text=text,
-                sink=Sink.SPEAKERS,
-                emotion=animation,
-                extra={"speech_id": "stt-unclear"},
-            ).to_request(),
-            ensure_ascii=False,
-        )
+from rob_box_core.utterance import Utterance as SpokenUtterance
 
 # Yandex Cloud STT API v3 (gRPC)
 try:
@@ -283,6 +279,9 @@ except ImportError:
 
 class STTNode(Node):
     """Нода для распознавания речи: Yandex STT gRPC v3 (primary) + Vosk (fallback)."""
+
+    #: Решение эхо-окна по фразе, которую распознаём сейчас (``_process_audio``). Вне распознавания и у шлема — открыто.
+    _admission: echo_window.Admission = echo_window.OPEN
 
     def __init__(self, *, occasion_gate: OccasionGate | None = None) -> None:
         # ADR-0101 §3.3.5 / Issue #2536 / PR-E: «unclear cooldown» идёт
@@ -325,7 +324,7 @@ class STTNode(Node):
         # With 'hardware' mode the robot can be interrupted mid-speech.
         self.declare_parameter("aec_mode", "hardware")
 
-        # Wake words для немедленного STOP TTS (barge-in). Должны совпадать с dialogue_node!
+        # Wake words: адресация и перебивание (/dialog/interrupt_request). Должны совпадать с dialogue_node!
         # Один список на весь проект — rob_box_voice.core.dialogue_text.
         # Он же фолбек strip_wake_word, и его порядок неслучаен (длинные
         # варианты первыми, иначе «роб» съедает «роб бокс»). Копий было
@@ -333,7 +332,7 @@ class STTNode(Node):
         # dialogue_node.py лежало 13 вариантов, в четырёх YAML — 21, в
         # e2e-конфиге — те же 13. Тот самый класс ошибки, из-за которого
         # завели #1252 и заплатили #1734.
-        self.declare_parameter("wake_words", list(DEFAULT_WAKE_WORDS))
+        self.declare_parameter("wake_words", address.wake_words()[0])
         # #1990 (оператор-agent 05) — SSoT wake-слов: config/wake_words.yaml
         # (docker, монтируется в /config). Ключ wake_words остаётся фолбеком
         # для dev-env/юнит-тестов без файла; wake_words_file при наличии
@@ -407,21 +406,10 @@ class STTNode(Node):
         # собственного TTS снова триггерит VAD → бесконечный цикл).
         self.declare_parameter("unclear_cooldown_s", 5.0)
 
-        # Grace period после окончания TTS (issue 989 Fix B): 2-3 секунды
-        # игнорируем ВСЕ фразы от audio_node — робот должен «дослушать» эхо
-        # собственного голоса, а не триггериться на него. Раньше было 0.3s
-        # и только для коротких фраз (<0.8s), из-за чего эхо TTS длиной
-        # >0.8s снова попадало в STT и замыкало петлю «не расслышал».
-        self.declare_parameter("tts_grace_s", 2.5)
-
-        # Issue #1251 — ранний «бульк» (сигнал «услышал, wake word есть»).
-        # Как только Yandex partial/final содержит wake word — публикуем
-        # звуковой триггер на /voice/sound/trigger, чтобы sound_node сыграл
-        # короткий «бульк» ЧЕРЕЗ ~2-3с после конца фразы (а не через ~8с,
-        # когда LLM+TTS закончат). Полный акцепт/ответ — как раньше.
-        # wake word gate: тот же список wake_words, что у dialogue_node.
-        self.declare_parameter("early_boop_enabled", True)
-        self.declare_parameter("early_boop_trigger", "boop")
+        # Эхо-окно после речи робота (issue 989 Fix B, #4072): фраза, чей голос звучал ТОЛЬКО в нём, — эхо
+        # собственного голоса; проходит лишь ясный стоп с вейком (core/echo_window.py). Окно одно на микрофон
+        # (audio_node больше не глохнет), значение — одна константа знания, YAML его не дублирует.
+        self.declare_parameter("tts_grace_s", kn.IDENTITY_MIC_GRACE_S)
 
         self.yandex_api_key = self.get_parameter("yandex_api_key").value or os.environ.get("YANDEX_API_KEY", "")
         self.yandex_language = self.get_parameter("yandex_language").value
@@ -432,34 +420,18 @@ class STTNode(Node):
             self.get_logger().warning(f"⚠️ Неизвестный aec_mode '{self.aec_mode}', используется 'software'")
             self.aec_mode = "software"
         self.wake_words: list = list(self.get_parameter("wake_words").value)
-        # #1990 — разделяем namespace: personality (ReSpeaker, /voice/stt/result)
+        # #1990 — разделяем namespace: personality (ReSpeaker, /voice/stt/utterance)
         # и operator (wake-поток шлема, /avatar/stt/result). Источник — файл
         # wake_words_file (SSoT); без файла — кодовые фолбеки (тот же список).
         _wake_file = str(self.get_parameter("wake_words_file").value or "")
-        self.wake_words, self.operator_wake_words = resolve_wake_word_namespaces(
-            _wake_file,
-            personality_fallback=self.wake_words or list(DEFAULT_WAKE_WORDS),
-            operator_fallback=DEFAULT_OPERATOR_WAKE_WORDS,
-        )
+        self.wake_words, self.operator_wake_words = address.wake_words(_wake_file, self.wake_words)
         self.wake_words = list(self.wake_words)
         self.operator_wake_words = list(self.operator_wake_words)
-        # #1990 — источник текущей обрабатываемой фразы (для boop/barge-гейтов).
+        # #1990 — источник текущей обрабатываемой фразы (для barge-гейтов).
         self._active_source: str = _SRC_RESPEAKER
         # ADR-0076: последние STT-попытки (используется side-channel-сборщиком
         # wake-семплов; см. _route_wake_result / _log_wake_rejection).
         self._last_attempts: list = []
-        # Issue #1734 — barge_in_policy НЕ читаем как свой параметр (это
-        # был бы второй YAML-источник для того же значения — ровно класс
-        # ошибки, который уже случился с wake_words выше, issue #1252, и
-        # который и породил #1734: stt_node не знал про
-        # dialogue_node.barge_in_policy=classify). Единственный источник
-        # истины — dialogue_node, публикующий latched-топик
-        # /voice/dialogue/barge_in_policy (см. create_subscription ниже и
-        # barge_in_policy_callback). "replace" — fail-safe дефолт ДО
-        # первого сообщения (или если dialogue_node ещё не стартовал/не
-        # публиковал): сохраняет поведение issue #993 (немедленный STOP
-        # TTS на wake-word), а не молча его выключает.
-        self._barge_in_policy: str = "replace"
         self.yandex_timeout_s: float = float(self.get_parameter("yandex_timeout_s").value)
         self.yandex_max_retries: int = int(self.get_parameter("yandex_max_retries").value)
         self.retry_backoff_s: float = float(self.get_parameter("retry_backoff_s").value)
@@ -487,13 +459,7 @@ class STTNode(Node):
                     "unclear_acknowledgement": self.unclear_cooldown_s,
                 },
             )
-        # Issue #1251 — ранний «бульк».
-        self.early_boop_enabled: bool = bool(self.get_parameter("early_boop_enabled").value)
-        self.early_boop_trigger: str = str(self.get_parameter("early_boop_trigger").value)
-        # «Бульк» играем ОДИН раз за фразу: Yandex шлёт несколько partials,
-        # каждый с тем же wake word — без флага продублировали бы звук N раз.
-        self._boop_fired: bool = False
-        # Момент начала обработки фразы (для телеметрии boop_latency_ms).
+        # Момент начала обработки фразы (для окна «замолчал → акцепт» ниже).
         self._phrase_started_at: float = 0.0
 
         # EOU profiles configuration
@@ -552,30 +518,29 @@ class STTNode(Node):
             AudioData, "/audio/quest_wake", self.quest_wake_audio_callback, audio_qos
         )
 
-        # Подписка на состояние TTS (чтобы не слышать себя)
-        self.tts_state_sub = self.create_subscription(String, "/voice/tts/state", self.tts_state_callback, 10)
-
-        # Issue #1734 — подписка на действующую barge_in_policy от
-        # dialogue_node (единый источник истины, см. self._barge_in_policy
-        # выше). TRANSIENT_LOCAL: поздний subscriber (STT стартовал позже
-        # ИЛИ раньше dialogue_node) всё равно получает последний
-        # опубликованный семпл — durability закрывает и «порядок старта
-        # нод», и «потерю сообщения» (пока жив publisher на стороне
-        # dialogue_node).
-        barge_in_policy_qos = QoSProfile(
-            reliability=ReliabilityPolicy.RELIABLE,
-            durability=DurabilityPolicy.TRANSIENT_LOCAL,
-            depth=1,
-        )
-        self.barge_in_policy_sub = self.create_subscription(
-            String,
-            "/voice/dialogue/barge_in_policy",
-            self.barge_in_policy_callback,
-            barge_in_policy_qos,
+        # Речь робота (чтобы не слышать себя): SpeechEvent реплики любого агента, «звучит» решает SpeakingWatch
+        # (PR-15 15-0b #3711). Эхо-окно после неё (#989, #4072) — по фронтам /audio/vad: фраза, чей голос звучал
+        # только в окне, — эхо, из неё проходит лишь ясный стоп с вейком (core/echo_window.py). Журнал речи
+        # (SpeechRequest — текст по speech_id) даёт фразе рядом с речью слова робота: их повтор — эхо (#4145).
+        self._echo = echo_window.watch(self, grace_s=self.tts_grace_s, aec_mode=self.aec_mode, vad_type=Bool)
+        # ADR-0150 PR-5 (#3694) — речь stt_node больше не глушит: на сегмент с вейком публикует
+        # /dialog/interrupt_request, решает диалог (ясная стоп-команда — SpeechCancel по эпохе).
+        # Направление на говорящего — DOA ReSpeaker, снятый во время речи (VAD), по окну фразы.
+        self._doa = DoaTrack()
+        self.create_subscription(Bool, "/audio/vad", lambda m: self._doa.on_vad(m.data, time.time()), 10)
+        self.create_subscription(Int32, "/audio/direction", lambda m: self._doa.on_direction(m.data, time.time()), 10)
+        self._phrase_window = (0.0, 0.0)
+        self._active_utterance_id = ""
+        self.interrupt_pub = self.create_publisher(InterruptRequest, "/dialog/interrupt_request", 10)
+        self._interrupts = InterruptOffer(
+            self.interrupt_pub.publish, InterruptRequest, lambda: self.wake_words,
+            lambda: self._doa.during(*self._phrase_window),
         )
 
         # Publishers
-        self.result_pub = self.create_publisher(String, "/voice/stt/result", 10)
+        # ADR-0150 PR-2: единственный выход реплики личности - типизированный
+        # Utterance (id фразы, текст, источник); String-топик результата ушёл.
+        self.utterance_pub = self.create_publisher(Utterance, "/voice/stt/utterance", 10)
         # #1990 (оператор-agent 05) — wake-роутер. /voice/stt/quest удалён:
         # маршрут оператора уезжает в /avatar/* (см. docstring модуля).
         # /avatar/ptt/result — пайплайн грипа (супервизор, #1989), plain text;
@@ -584,28 +549,16 @@ class STTNode(Node):
         self.avatar_ptt_result_pub = self.create_publisher(String, "/avatar/ptt/result", 10)
         self.avatar_stt_result_pub = self.create_publisher(String, "/avatar/stt/result", 10)
         self.state_pub = self.create_publisher(String, "/voice/stt/state", 10)
-        self.tts_control_pub = self.create_publisher(String, "/voice/tts/control", 10)  # Для прерывания TTS
         # Issue #1077 — speaker_analysis (speaker_tag) от Yandex SpeechKit v3.
-        # Публикуем отдельным топиком (String, JSON: {"speaker_tag", "text"}),
-        # чтобы НЕ ломать контракт /voice/stt/result (plain text — его читают
-        # telegram/perception/transport). dialogue_node подписывается и создаёт
-        # профиль спикера (scope=speaker:<tag>).
+        # Публикуем отдельным топиком (String, JSON: {"speaker_tag", "text"}).
+        # dialogue_node подписывается и создаёт профиль спикера
+        # (scope=speaker:<tag>). Поле Utterance.speaker_tag дублирует метку:
+        # отдельный топик уйдёт в PR, который переведёт читателя на Utterance.
         self.speaker_pub = self.create_publisher(String, "/voice/stt/speaker", 10)
-        # Issue #2829 (ADR-0131) — utterance_id для ЭТОЙ фразы, publish'ится
-        # ПЕРЕД /voice/stt/result (тот же порядок гарантий, что и у
-        # speaker_pub выше: dialogue_node._on_stt читает pending id,
-        # выставленный этим сообщением, до того как читает сам текст).
-        # Отдельный топик, а не поле в /voice/stt/result — контракт
-        # (plain text) там не трогаем, его читают
-        # telegram/perception/GUI/harness-бенчи (см. stt_node.py:585).
-        self.utterance_pub = self.create_publisher(String, "/voice/stt/utterance", 10)
-        # Прямой запрос TTS для фразы «не расслышал» (issue #979). tts_node
-        # слушает /voice/tts/request тем же JSON-SSML контрактом, что и
-        # /voice/dialogue/response — build_ssml_payload даёт ровно это.
-        self.tts_request_pub = self.create_publisher(String, "/voice/tts/request", 10)
-        # Issue #1251 — ранний «бульк»: публикуем триггер на /voice/sound/trigger
-        # (sound_node воспроизведёт короткий звук «услышал, wake word есть»).
-        self.boop_pub = self.create_publisher(String, "/voice/sound/trigger", 10)
+        # Фраза «не расслышал» (issue #979) — клиентом речи (ADR-0150 PR-3).
+        speech_client.prepare(self, "request")
+        # Ранний сигнал «услышал» больше не звук stt_node: сегмент с вейком уходит в /dialog/interrupt_request,
+        # диалог по нему включает рефлекс addressed (лицо, кольцо, earcon) - ADR-0150 PR-3b (#3690).
 
         # Vosk модель и распознаватель
         self.model: Optional[Model] = None
@@ -615,9 +568,7 @@ class STTNode(Node):
         self._vosk_available = False
         self._vosk_load_lock = threading.Lock()
 
-        # Состояние
-        self.is_robot_speaking = False  # Флаг: робот говорит (только для aec_mode=software)
-        self._tts_ended_at: float = 0.0  # Время окончания TTS (для grace period)
+        # Состояние (речь робота и эхо-окно — в self._echo)
         # Issue #1077 — speaker_tag последней распознанной фразы (Yandex
         # speaker_analysis). None для Vosk fallback. Сбрасывается на старте
         # каждой фразы в speech_audio_callback.
@@ -650,6 +601,8 @@ class STTNode(Node):
         self.initialize_vosk()
         self._load_persisted_provider_state()
         self._log_provider_state("startup")
+        # ADR-0150 §8 (PR-4 ч.2): состояния провайдеров STT (kind=stt) - переиздание раз в 2 с.
+        self._providers_publisher = ProviderStatePublisher(self, lambda: stt_provider_states(self))
 
     def initialize_yandex(self):
         """Инициализация Yandex STT gRPC v3."""
@@ -670,7 +623,7 @@ class STTNode(Node):
             self.get_logger().error(f"❌ Ошибка инициализации Yandex STT: {e}")
             self.yandex_stub = None
 
-    def _on_yandex_stream_error(self, exc, context: str) -> BaseException:
+    def _on_yandex_stream_error(self, exc, context: str, segments=None) -> BaseException:
         """gRPC-ошибка стрима Yandex STT → лог + типизированное исключение.
 
         Issue #2924: 23.09 с 23:22 по 23:39 каждый вызов стоял до дедлайна
@@ -681,24 +634,30 @@ class STTNode(Node):
         рвёт только через ~15 мин ретрансмиссий. Поэтому после
         DEADLINE_EXCEEDED канал пересоздаём: следующая фраза пойдёт по
         свежему соединению, а не по тому, что висит. Цена — один TLS-хендшейк.
+        Старый канал закрывается в фоне (#4135, :meth:`_reset_yandex_channel`).
+
+        #4175: если по дедлайну сервер уже закрыл фразу (непустой final + EOU, :func:`text_kept_on_deadline`),
+        возвращается :class:`STTDeadlineFinal` с её текстом, а не голый таймаут - готовый результат не выбрасываем.
         """
         self.get_logger().warning(
             f"⚠️ [issue 1477] stream error: {exc.code()} {exc.details()} [#2924 {context}]"
         )
         if exc.code() == grpc.StatusCode.DEADLINE_EXCEEDED:
             self._reset_yandex_channel()
-        return _map_grpc_error(exc, self.yandex_timeout_s)
+        return _map_grpc_error(exc, self.yandex_timeout_s, segments)
 
     def _reset_yandex_channel(self) -> None:
-        """Закрыть канал Yandex STT и открыть новый (issue #2924)."""
+        """Открыть новый канал Yandex STT сразу, старый отпустить в фоне (issue #2924, #4135).
+
+        28.10 07:08 UTC ``old.close()`` здесь, в потоке стрима, повис навсегда: строки «пересоздаю канал» в логе
+        не было, попытка не вернулась, робот 5 минут не слышал ни одной фразы. Теперь поток фразы закрытия не
+        ждёт: новый канал — до него, ``close()`` старого — в фоне под сторожем (``HangGuard.release``).
+        """
         old = getattr(self, "yandex_channel", None)
-        if old is not None:
-            try:
-                old.close()
-            except Exception as e:  # noqa: BLE001 — закрытие не должно ронять STT
-                self.get_logger().warning(f"⚠️ [#2924] close старого канала Yandex STT: {e}")
-        self.get_logger().warning("🔌 [#2924] DEADLINE_EXCEEDED → пересоздаю канал Yandex STT")
+        self.get_logger().warning("🔌 [#2924] DEADLINE_EXCEEDED → пересоздаю канал Yandex STT (старый — в фоне, #4135)")
         self.initialize_yandex()
+        if old is not None:
+            self._hang_guard.release("yandex.channel.close", old.close)
 
     def initialize_vosk(self):
         """Load Vosk model (fallback provider).
@@ -790,37 +749,8 @@ class STTNode(Node):
             self.publish_state("error")
             return False
 
-    def tts_state_callback(self, msg: String):
-        """Отслеживание состояния TTS.
-
-        software mode: выключаем STT пока робот говорит.
-        hardware mode: только логируем; AEC на чипе XVF-3000 фильтрует эхо.
-        """
-        import time
-
-        if msg.data in ["synthesizing", "playing"]:
-            if not self.is_robot_speaking:
-                if self.aec_mode == "software":
-                    self.get_logger().info("🔇 [software AEC] Робот говорит - распознавание отключено")
-                else:
-                    self.get_logger().debug("🎤 [hardware AEC] Робот говорит - XVF-3000 фильтрует эхо")
-                self.is_robot_speaking = True
-        # ``stopped`` — STOP/barge-in (``tts_node._handle_stop_command``),
-        # ``tts_silero_warming`` — чанк пропущен и озвучен не будет.
-        # Оба означают «робот молчит». Без них ``is_robot_speaking``
-        # залипал в ``True``, и ниже (hardware-AEC, конфиг робота) фразы
-        # короче 0.8 с молча отбрасывались — «робот», «стоп», «да».
-        elif msg.data in ["ready", "idle", "stopped", "tts_silero_warming"]:
-            if self.is_robot_speaking:
-                self._tts_ended_at = time.monotonic()
-                if self.aec_mode == "software":
-                    self.get_logger().info("🎙️ [software AEC] Робот замолчал - распознавание включено")
-                else:
-                    self.get_logger().debug("🎙️ [hardware AEC] Робот замолчал")
-                self.is_robot_speaking = False
-
     def speech_audio_callback(self, msg: AudioData) -> None:
-        """Фраза от audio_node (ReSpeaker) → /voice/stt/result (личность)."""
+        """Фраза от audio_node (ReSpeaker) → /voice/stt/utterance (личность)."""
         self._process_audio(msg, source=_SRC_RESPEAKER)
 
     def quest_audio_callback(self, msg: AudioData) -> None:
@@ -850,7 +780,7 @@ class STTNode(Node):
         маршрутизации речи (целевая §7, #1990). От источника зависит:
 
           * ``respeaker`` — AEC/grace-фильтры, speaker-профиль, ранний «бульк»,
-            wake-word barge-in; результат → ``/voice/stt/result`` (личность).
+            запрос перебивания по вейку (/dialog/interrupt_request); результат → ``/voice/stt/utterance`` (личность).
           * ``ptt`` — фильтры/бульк/barge не нужны (оператор зажал грип, barge
             уже сделан quest-сервером); результат → ``/avatar/ptt/result``.
           * ``wake`` — фильтры не нужны; публикуем в ``/avatar/stt/result``
@@ -862,37 +792,15 @@ class STTNode(Node):
         audio_bytes = bytes(msg.data)
         duration = len(audio_bytes) / (self.sample_rate * 2)  # 16-bit = 2 bytes
 
-        if source != _SRC_RESPEAKER:
-            # Источник шлема: AEC/grace не нужны (см. docstring выше).
-            pass
-        elif self.aec_mode == "software":
-            # Программная подавление эха: дропаем всё пока робот говорит
-            if self.is_robot_speaking:
-                self.get_logger().info(f"🔇 [software AEC] Игнор фразы {duration:.2f}с: робот говорит")
-                return
-        else:
-            # Аппаратное AEC: XVF-3000 фильтрует эхо в чипе, но не справляется
-            # с громкой музыкой/собственным TTS (issue 989). Grace period после
-            # окончания TTS: игнорируем ВСЕ фразы (не только короткие <0.8s),
-            # чтобы эхо собственного голоса не замкнуло петлю «не расслышал».
-            time_since_tts = time.monotonic() - self._tts_ended_at
-            if time_since_tts < self.tts_grace_s:
-                self.get_logger().info(
-                    f"🔇 [issue 989] Игнор фразы {duration:.2f}с — grace "
-                    f"{time_since_tts:.2f}с/{self.tts_grace_s}с после TTS "
-                    "(эхо собственного голоса)"
-                )
-                return
-            if self.is_robot_speaking:
-                if duration < 0.8:
-                    self.get_logger().info(
-                        f"🔇 [hardware AEC] Игнор короткой фразы {duration:.2f}с — TTS активен"
-                    )
-                    return
-                self.get_logger().info(
-                    f"🎤 [hardware AEC] Фраза {duration:.2f}с во время TTS — "
-                    "обрабатываем (возможно прерывание)"
-                )
+        # AEC и эхо-окно — только ReSpeaker (шлему не нужны, см. docstring выше): решает core/echo_window.py
+        # по тому, где звучал голос фразы (речь робота / эхо-окно / тишина), а не по моменту доставки (#4072).
+        admission = self._echo.admit(duration) if source == _SRC_RESPEAKER else echo_window.OPEN
+        if admission.note:
+            self.get_logger().info(admission.note)
+        if admission.dropped:  # речь робота (software-AEC): не человек и для биометрии — эхо (#4145)
+            self._echo.publish_echo(compute_utterance_id(audio_bytes), "")
+            return
+        self._admission = admission  # промежуточные результаты STT идут в диалог только через него (_offer_interrupt)
 
         self.get_logger().info(f"🎤 Получена фраза: {duration:.2f}с ({len(audio_bytes)} bytes)")
         # Issue 1076 (телеметрия): фиксируем момент получения фразы, чтобы
@@ -900,8 +808,12 @@ class STTNode(Node):
         # silence_to_phrase_s (audio_node, включает speech_continuation)
         # + phrase_to_accept_ms (здесь).
         _phrase_received_at = time.monotonic()
-        # #1990 — источник активной фразы (boop/barge гейтятся по respeaker).
+        # #1990 — источник активной фразы (перебивание гейтится по respeaker).
         self._active_source = source
+        # ADR-0150 PR-5: id фразы (хеш PCM) и окно её звучания известны до STT — partial с вейком уже
+        # несёт их в /dialog/interrupt_request. Окно с запасом на хвост VAD audio_node.
+        self._active_utterance_id = compute_utterance_id(audio_bytes)
+        self._phrase_window = (time.time() - duration - address.VAD_TAIL_S, time.time())
         # wake-поток — фоновый слушатель: стейт /voice/stt/state не дёргаем
         # (иначе спамили бы recognizing/ready на каждый VAD-сегмент).
         if source != _SRC_WAKE:
@@ -911,9 +823,7 @@ class STTNode(Node):
         # _recognize_yandex заполнит его из speaker_analysis; Vosk fallback
         # (без speaker-анализа) оставит None — профиль не создаётся.
         self._last_speaker_tag = None
-        # Issue #1251 — сбрасываем флаг «булька» и фиксируем старт фразы
-        # для телеметрии задержки (boop_latency_ms).
-        self._boop_fired = False
+        # Фиксируем старт фразы (окно «замолчал → акцепт»).
         self._phrase_started_at = time.monotonic()
 
         # Идём через единый select_recognition: primary=Yandex, fallback=Vosk,
@@ -975,6 +885,17 @@ class STTNode(Node):
             # ADR-0076: фиксируем пустые попытки для wake-сборщика.
             self._last_attempts = []
 
+        # Эхо собственной речи робота (core/echo_window.py): голос звучал только в эхо-окне (#4072), короткий обрывок
+        # при речи (ревью #4122) или слова фразы повторяют звучавшую рядом реплику робота (#4145). Ясный стоп с вейком
+        # идёт всегда; эхо — молча, без «не расслышал» (петля #989), не в диалог (ни бэклога, ни модели) и в
+        # /voice/stt/echo: биометрия не заводит и не растит из него профиль.
+        echo = admission.echo(text, self.wake_words, duration)
+        if echo is not None:
+            self.get_logger().info(echo.note)
+            self._echo.publish_echo(self._active_utterance_id, text)
+            self.publish_state("ready")
+            return
+
         # Публикация результата по источнику (wake-роутер, #1990)
         if text and not is_short_phrase(text, min_chars=self.min_text_chars):
             # Issue 1076 (телеметрия): честный «фраза → ПРИНЯТО» (STT-часть).
@@ -985,19 +906,22 @@ class STTNode(Node):
             )
             self.get_logger().info(f"✅ ПРИНЯТО ({source}): {text}")
             if source == _SRC_RESPEAKER:
-                # Issue #2829 (ADR-0131) — utterance_id фразы. speaker_id_node
-                # считает его тем же способом от тех же PCM-байт
-                # /audio/speech_audio — id совпадёт без координации нод.
-                # Issue #2862 — id едет ВМЕСТЕ с текстом: dialogue_node
-                # связывает его с /voice/stt/result по тексту, порядок
-                # доставки двух топиков не важен.
-                self._publish_utterance_id(audio_bytes, text)
                 # Issue #1077 — speaker публикуем ПЕРЕД результатом: dialogue_node
                 # хранит tag по тексту и забирает его в _on_stt. Если бы speaker
                 # шёл после result, гонка топиков могла бы потерять корреляцию.
                 # Для источника шлема speaker-профиль не нужен (это оператор).
                 self._publish_speaker(text, duration)
-                self.publish_result(text)
+                # Issue #2829 (ADR-0131) — utterance_id фразы: speaker_id_node
+                # считает его тем же способом от тех же PCM-байт
+                # /audio/speech_audio — id совпадёт без координации нод.
+                # ADR-0150 PR-2: id едет в том же Utterance, что и текст, гонки
+                # двух топиков (#2862) больше нет.
+                self.publish_result(
+                    text,
+                    utterance_id=self._active_utterance_id,
+                    duration_s=duration,
+                    provider=final_provider(attempts),
+                )
                 self.publish_state("ready")
             elif source == _SRC_PTT:
                 # PTT-поток: вейк не нужен (грип сам вейк), текст «как есть»
@@ -1027,7 +951,7 @@ class STTNode(Node):
         (ADR-0021 R1, ``scripts/lint/cc_budget_baseline.json``).
         """
         if text:
-            self.get_logger().warning(f'❌ ОТКЛОНЕНО (короткое, <{self.min_text_chars} chars): "{text}"')
+            self.get_logger().warning(f'❌ ОТКЛОНЕНО (короткое <{self.min_text_chars} букв или не по-русски): "{text}"')
         else:
             self.get_logger().warning("❌ ОТКЛОНЕНО (пустое)")
         if source == _SRC_WAKE:
@@ -1171,10 +1095,9 @@ class STTNode(Node):
         now = time.monotonic()
         self._last_unclear_at = now  # метрика (PR-F выпилит)
         self._occasion_gate.mark_consumed(occasion)
-        payload = build_ssml_payload(self.unclear_phrase, animation="confused")
-        msg = String()
-        msg.data = payload
-        self.tts_request_pub.publish(msg)
+        speech_client.say(
+            self, SpokenUtterance(text=self.unclear_phrase, emotion="confused"), agent="personality"
+        )
         self.get_logger().info(
             f"🗣️ Неясный результат → говорю: {self.unclear_phrase!r}"
         )
@@ -1194,7 +1117,7 @@ class STTNode(Node):
         return budget if budget > 0 else None
 
     def _init_provider_chain_params(self) -> None:
-        """Прочитать параметры цепочки и собрать кэш «мёртвых».
+        """Прочитать параметры цепочки и собрать кэш «мёртвых» и сторож зависаний.
 
         Отдельный метод, а не кусок ``__init__``: ADR-0021 держит
         ``__init__`` в CC-бюджете 20, а дефолты цепочки и MiniMax сами по
@@ -1253,6 +1176,8 @@ class STTNode(Node):
             if ProviderDeadCache is not None
             else None
         )
+        # #4135: сторож зависаний — один на ноду, помнит брошенные вызовы провайдеров между фразами.
+        self._hang_guard = HangGuard(log=lambda message: self.get_logger().warning(message))
         # MiniMax-клиент создаётся лениво — при первом обращении к
         # провайдеру, а не на старте (httpx.Client держит сокеты, а
         # нода может вообще не дойти до MiniMax: Vosk-only режим).
@@ -1324,6 +1249,7 @@ class STTNode(Node):
                     model=self.minimax_stt_model,
                     language=self.minimax_stt_language or None,
                     sample_rate=self.sample_rate,
+                    timeout=_minimax_http_timeout(),
                 )
                 self.get_logger().info(
                     f"✅ MiniMax STT инициализирован "
@@ -1424,15 +1350,20 @@ class STTNode(Node):
         if ProviderPolicy is None:  # pragma: no cover — без stt_fallback
             return {}
         return {
+            # Предел сторожа попытки (#4135, ревью PR #4140) - худший случай вызова по СВОИМ таймаутам провайдера
+            # (``call_limit_s``) + запас: MiniMax ограничен HTTP-стадиями, Yandex делает две фазы (REAL_TIME и
+            # FULL_DATA) по дедлайну ``yandex_timeout_s`` каждая, Vosk - один проход в ``timeout_s``.
             "minimax": ProviderPolicy(
                 timeout_s=self.minimax_stt_timeout_s,
                 max_retries=self.minimax_stt_max_retries,
                 retry_backoff_s=self.retry_backoff_s,
+                call_limit_s=_minimax_call_limit_s(self),
             ),
             "yandex": ProviderPolicy(
                 timeout_s=self.yandex_timeout_s,
                 max_retries=self.yandex_max_retries,
                 retry_backoff_s=self.retry_backoff_s,
+                call_limit_s=yandex_call_limit_s(self.yandex_timeout_s),
             ),
             # Vosk: повтор мусора даст тот же мусор. Таймаут берём
             # с запасом — на Pi холодный прогон бывает ~2-4с.
@@ -1471,6 +1402,7 @@ class STTNode(Node):
             policies=self._provider_policies(),
             dead_cache=self._provider_dead_cache,
             max_total_s=self.stt_phrase_budget_s,
+            guard=self._hang_guard,
         )
         self._log_provider_state("recognize", attempts=attempts)
         return text, attempts
@@ -1487,13 +1419,11 @@ class STTNode(Node):
         chain = getattr(self, "provider_chain", None) or list(
             DEFAULT_STT_PROVIDER_CHAIN
         )
-        cache = getattr(self, "_provider_dead_cache", None)
-        if cache is None:
-            return chain[0] if chain else None
-        for name in chain:
-            if not cache.is_dead(name):
-                return name
-        return chain[-1] if chain else None
+        # Провайдер, чей брошенный вызов ещё висит, цепочка не зовёт (``_skip_hung``) - слушает не он, даже когда
+        # TTL его отметки в кэше «мёртвых» истёк (ревью PR #4140, #4135).
+        return effective_provider(
+            chain, getattr(self, "_provider_dead_cache", None), getattr(self, "_hang_guard", None)
+        )
 
     def _load_persisted_provider_state(self) -> None:
         """Восстановить кэш «мёртвых» из файла (аналог tts_node, issue #1229).
@@ -1562,9 +1492,10 @@ class STTNode(Node):
             for name in self.provider_chain
             if cache is not None and cache.is_dead(name)
         }
+        hung = hung_providers(self.provider_chain, getattr(self, "_hang_guard", None))
         self.get_logger().info(
             f"🎧 STT provider → '{effective}' "
-            f"(chain={self.provider_chain}, dead={dead}, reason={reason}, "
+            f"(chain={self.provider_chain}, dead={dead}, hung={hung}, reason={reason}, "
             f"last_attempt={attempts[-1].provider if attempts else None})"
         )
         self._persist_provider_state(
@@ -1591,46 +1522,6 @@ class STTNode(Node):
             if text:
                 self.get_logger().info(f'✅ Vosk (fallback): "{text}"')
         return text
-
-    def _maybe_fire_early_boop(self, text: str) -> None:
-        """Issue #1251 — ранний «бульк»: сигнал «услышал, wake word есть».
-
-        Вызывается из _recognize_yandex (на partial И final) и из
-        _recognize_vosk (на final). Как только в распознанном тексте появился
-        wake word — публикуем триггер на /voice/sound/trigger, sound_node
-        сыграет короткий «бульк» ЧЕРЕЗ ~2-3с после конца фразы (а не через
-        ~8с, когда закончатся LLM+TTS). Один раз за фразу: Yandex шлёт
-        несколько partials с тем же wake word — _boop_fired глушит повторы.
-
-        Булек НЕ блокирует barge-in: sound_node сам решает, когда играть
-        (у него свой is_playing guard и AudioPlaybackManager); если юзер
-        начал говорить — звук просто пропустится или прервётся.
-        """
-        # #1990: бульк — сигнал личности (ReSpeaker). На потоках шлема
-        # (ptt/wake) не играем: оператор и так слышит себя, а wake-поток —
-        # фоновый слушатель.
-        if getattr(self, "_active_source", _SRC_RESPEAKER) != _SRC_RESPEAKER:
-            return
-        if not self.early_boop_enabled or self._boop_fired:
-            return
-        if not text or not text.strip():
-            return
-        text_lower = text.lower()
-        if not has_wake_word(text_lower, self.wake_words):
-            return
-        self._boop_fired = True
-        try:
-            msg = String()
-            msg.data = self.early_boop_trigger
-            self.boop_pub.publish(msg)
-        except Exception as e:  # noqa: BLE001 — звук не критичен для STT
-            self.get_logger().warning(f"⚠️ [boop] Ошибка публикации триггера: {e}")
-            return
-        _boop_ms = int((time.monotonic() - self._phrase_started_at) * 1000)
-        self.get_logger().info(
-            f"🔔 [boop] Ранний сигнал: wake word в тексте {text[:40]!r} "
-            f"(boop_latency_ms={_boop_ms})"
-        )
 
     def _recognize_yandex(self, audio_bytes: bytes) -> Optional[str]:
         """
@@ -1846,7 +1737,7 @@ class STTNode(Node):
                         _pt = response.partial.alternatives[0].text
                         if _pt and _pt.strip():
                             last_partial = _pt
-                            self._maybe_fire_early_boop(_pt)
+                            self._offer_interrupt(_pt)
                     continue
 
                 elif event_type == "speaker_analysis":
@@ -1871,6 +1762,7 @@ class STTNode(Node):
                 f"partials={partial_count} eou={eou_events} "
                 f"segments={segments.segment_count} "
                 f"stream=[{segments.trace()}]",
+                segments,
             )
 
         final_text = segments.text()
@@ -1896,7 +1788,6 @@ class STTNode(Node):
             self._last_speaker_tag = speaker_tag
 
         if result_text:
-            self._maybe_fire_early_boop(result_text)
             return result_text
         return None
 
@@ -1919,43 +1810,16 @@ class STTNode(Node):
         result = json.loads(self.recognizer.FinalResult())
         text = result.get("text", "").strip()
 
-        # Issue #1251 — Vosk fallback тоже даёт ранний «бульк» (Vosk локальный,
-        # распознаёт за ~0.5-1с, поэтому сигнал всё равно успевает в 2-3с).
-        self._maybe_fire_early_boop(text)
-
         # Сбросить распознаватель для следующей фразы
         self.recognizer = KaldiRecognizer(self.model, self.sample_rate)
         self.recognizer.SetWords(True)
 
         return text
 
-    def _publish_utterance_id(self, audio_bytes: bytes, text: str) -> None:
-        """Issue #2829 (ADR-0131) — publish this phrase's ``utterance_id``.
-
-        Deterministic hash of the raw PCM bytes this node just recognised
-        (see ``core/utterance_id.py``). speaker_id_node computes the same
-        hash from the same ``/audio/speech_audio`` bytes independently —
-        no coordination needed, both land on the same id. Published
-        unconditionally for every accepted ReSpeaker phrase (unlike
-        ``_publish_speaker``, which skips when there is no Yandex speaker
-        tag) so dialogue_node ALWAYS has an id to correlate against, even
-        on the Vosk-fallback path.
-
-        Issue #2862 — ``text`` is the exact string that goes to
-        ``/voice/stt/result`` next: dialogue_node joins the two topics by
-        text, because DDS does not order delivery across topics.
-        """
-        utterance_id = compute_utterance_id(audio_bytes)
-        msg = String()
-        msg.data = json.dumps(
-            {"utterance_id": utterance_id, "text": text}, ensure_ascii=False
-        )
-        self.utterance_pub.publish(msg)
-
     def _publish_speaker(self, text: str, duration_s: float = 0.0) -> None:
         """Публикация speaker_tag (issue #1077) на /voice/stt/speaker.
 
-        Отдельный топик: контракт /voice/stt/result (plain text) НЕ меняем.
+        Отдельный топик (контракт /voice/stt/speaker, ADR-0150 PR-2 его не трогает).
         JSON: ``{"speaker_tag": "0", "text": "...", "duration_s": 1.2}``.
         Если tag=None (Vosk fallback / Yandex без speaker_analysis) — не
         публикуем, dialogue_node не создаст профиль. ``duration_s`` — длина
@@ -1981,72 +1845,48 @@ class STTNode(Node):
             f"text={text[:40]!r}"
         )
 
-    def barge_in_policy_callback(self, msg: String):
-        """Приём действующей ``barge_in_policy`` от dialogue_node (issue #1734).
+    def _offer_interrupt(self, text: str) -> None:
+        """Сегмент фразы ReSpeaker с вейком → ``/dialog/interrupt_request`` (ADR-0150 §6.2, PR-5).
 
-        dialogue_node — единственный владелец этого параметра (см.
-        комментарий у ``self._barge_in_policy`` в ``__init__`` — почему
-        stt_node НЕ дублирует его в своём YAML). Публикует latched
-        (TRANSIENT_LOCAL) на ``/voice/dialogue/barge_in_policy`` при
-        старте и на каждое runtime-изменение (``ros2 param set
-        /dialogue_node barge_in_policy ...`` → ``parameters_callback`` →
-        ``_publish_barge_in_policy``).
-
-        Неизвестное/пустое значение игнорируем и остаёмся на текущем —
-        dialogue_node уже сам провалидировал ввод и залогировал warning
-        при опечатке; здесь незачем повторять эту проверку строже.
+        Зовётся на каждом partial Yandex и на финале любого провайдера; одинаковый текст фразы второй раз не
+        шлётся. Решает диалог: ясная стоп-команда рвёт речь, остальное — нет. Потоки шлема (ptt/wake) речь
+        личности не перебивают: barge грипа делает quest-сервер. Фраза, которую эхо-окно пускает только как стоп
+        (голос звучал в окне после речи робота, короткий обрывок при речи — ``Admission.keeps``), до диалога не
+        доходит, пока её текст не стал ясным стопом с вейком: эхо с «робот» внутри не рвёт речь (ревью #4122).
         """
-        value = str(getattr(msg, "data", "") or "").strip().lower()
-        if value not in ("replace", "classify"):
+        if self._active_source != _SRC_RESPEAKER:
             return
-        if value != self._barge_in_policy:
+        if self._interrupts.offer(text, self._active_utterance_id, self._admission):
             self.get_logger().info(
-                f"🔄 [issue 1734] barge_in_policy → {value!r} "
-                f"(было {self._barge_in_policy!r})"
+                f"⚡ [interrupt] request utterance={self._active_utterance_id or '-'} text={text[:60]!r}"
             )
-        self._barge_in_policy = value
 
-    def publish_result(self, text: str) -> None:
+    def publish_result(
+        self,
+        text: str,
+        utterance_id: str = "",
+        duration_s: float = 0.0,
+        provider: str = "",
+    ) -> None:
         """Публикация финального результата распознавания (ReSpeaker-путь).
 
-        Публикуем в ``/voice/stt/result`` (личность). Wake-word barge-in
-        (немедленный STOP TTS) делаем ТОЛЬКО здесь: на потоках шлема
-        (ptt/wake) barge уже выполнен quest-сервером при PTT start / его
-        решает агент оператора.
-
-        Issue #1734 — немедленный STOP на wake-word публикуется ТОЛЬКО
-        при ``barge_in_policy="replace"`` (дефолт, issue #993 — робот
-        должен реагировать на wake-word, даже пока сам говорит). При
-        ``"classify"`` STOP здесь НЕ публикуется: dialogue_node._on_stt
-        сам прогонит фразу через ``quick_decide`` и решит
-        ``_cancel_run(stop_tts=...)`` — REPLACE (явный императив) шлёт
-        STOP, MERGE/PENDING_LLM/IGNORE дают текущему сегменту доиграть
-        (§2.5 SCHEDULER_DESIGN.md, «правка на лету без замолкания»).
-        Раньше этот код публиковал STOP безусловно и обгонял решение
-        dialogue_node — см. raw evidence issue #1734 (куплет про комара
-        обрывался на «и ещё про енота», хотя quick_decide должен был
-        смёржить сегменты).
+        Публикуем ``Utterance`` в ``/voice/stt/utterance`` (личность). Речь здесь не глушим (ADR-0150 §6.2,
+        PR-5): перед репликой уходит ``/dialog/interrupt_request`` по финальному тексту, решает диалог.
         """
-        pub = self.result_pub
-        text_lower = text.lower()
+        pub = self.utterance_pub
+        self._offer_interrupt(text)
 
-        # Если фраза начинается с wake word — сработал wake-word barge-in.
-        if any(text_lower.startswith(word) for word in self.wake_words):
-            if self._barge_in_policy == "classify":
-                self.get_logger().info(
-                    f'🎯 [issue 1734] Wake word detected: "{text[:30]}" → '
-                    f"STOP TTS отложен (barge_in_policy=classify, решает "
-                    f"dialogue_node/quick_decide)"
-                )
-            else:
-                self.get_logger().info(f'🎯 Wake word detected: "{text[:30]}" → STOP TTS')
-                stop_msg = String()
-                stop_msg.data = "STOP"
-                self.tts_control_pub.publish(stop_msg)
-
-        msg = String()
-        msg.data = text
-        pub.publish(msg)
+        pub.publish(
+            fill_respeaker_utterance(
+                Utterance(),
+                text=text,
+                utterance_id=utterance_id,
+                duration_s=duration_s,
+                now_s=time.time(),
+                speaker_tag=self._last_speaker_tag or "",
+                provider=provider,
+            )
+        )
         self.get_logger().info(f"📤 Опубликовал результат: {text}")
 
     def publish_state(self, state: str):

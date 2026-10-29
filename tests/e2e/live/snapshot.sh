@@ -5,7 +5,7 @@
 # v2 добавляет (см. acceptance A42, A43):
 #   1. docker ps -a (не только running) — упавшие контейнеры видны
 #   2. clock_drift_ms (docker exec voice-assistant date vs host)
-#   3. voice-action-server crash count → DEGRADED если >5 рестартов за час
+#   3. (voice-action-server crash count — снят: сайдкар удалён в ADR-0150 PR-7c ч.4в, #3700)
 #   4. multi-model provenance: читает tests/e2e/_artifacts/<run_id>/model.json
 #
 # Использование:
@@ -17,8 +17,6 @@
 #   uptime.txt                  # v1
 #   git_rev.txt                 # v1
 #   clock_drift_ms.txt          # v2 — drift внутри voice-assistant vs host
-#   voice_action_server_crashes.txt   # v2 — ModuleNotFoundError aiohttp count
-#   voice_action_server_restarts.txt  # v2 — restart count за последний час
 #   build_wav_list.txt          # v2 — последние 20 wav на билдовой
 #   build_clock.txt             # v1
 #   build_git_rev.txt           # v2 — git rev на recorder
@@ -28,7 +26,7 @@
 #   pytest_version.txt          # v1
 #   python_version.txt          # v1
 #   state_snapshot.json         # v1 — сводный json
-#   verdict_helper.txt          # v2 — DEGRADED если crashes > 5
+#   verdict_helper.txt          # v2 — DEGRADED-маркер (сейчас источников нет)
 set -u
 
 ARTIFACTS="${1:-tests/e2e/_artifacts/$(date -u +%Y%m%d_%H%M%S)}"
@@ -60,36 +58,6 @@ $SSH ros2@$ROBOT 'uptime' > "$ARTIFACTS/uptime.txt" 2>&1 || true
 $SSH ros2@$ROBOT \
   'docker exec voice-assistant bash -c "cd /ws && git rev-parse HEAD 2>/dev/null || echo unknown"' \
   > "$ARTIFACTS/git_rev.txt" 2>&1 || true
-
-# ---------------------------------------------------------------------------
-# 3. ROBOT — voice-action-server crash count (v2, A43)
-#    Считаем:
-#      a) ModuleNotFoundError строки в последних 50 строках лога
-#         (текущий hot indicator aiohttp-бага, см. recovery t_4f546ead finding)
-#      b) restart count за последний час (docker inspect)
-# ---------------------------------------------------------------------------
-$SSH ros2@$ROBOT \
-  'docker logs --tail 50 voice-action-server 2>&1 | grep -c "ModuleNotFoundError" || echo 0' \
-  > "$ARTIFACTS/voice_action_server_crashes.txt" 2>&1 || echo 0 > "$ARTIFACTS/voice_action_server_crashes.txt"
-
-# restart count за последний час
-RESTARTS_1H="$($SSH ros2@$ROBOT \
-  'docker inspect --format="{{.State.RestartCount}}" voice-action-server 2>/dev/null || echo 0')"
-echo "$RESTARTS_1H" > "$ARTIFACTS/voice_action_server_restarts.txt"
-
-CRASHES=$(cat "$ARTIFACTS/voice_action_server_crashes.txt" 2>/dev/null | tr -dc '0-9' || echo 0)
-DEGRADED_REASON=""
-if [ "${CRASHES:-0}" -gt 5 ]; then
-  DEGRADED_REASON="voice-action-server crashes=${CRASHES} (>5)"
-fi
-# доп. сигнал — Restarting loop (recovery t_4f546ead наблюдал такое)
-VAS_STATUS="$($SSH ros2@$ROBOT 'docker inspect --format="{{.State.Status}}" voice-action-server 2>/dev/null || echo unknown')"
-if echo "$VAS_STATUS" | grep -qi "restarting"; then
-  DEGRADED_REASON="${DEGRADED_REASON:+$DEGRADED_REASON; }voice-action-server status=$VAS_STATUS"
-fi
-if [ -n "$DEGRADED_REASON" ]; then
-  echo "DEGRADED $DEGRADED_REASON" > "$ARTIFACTS/verdict_helper.txt"
-fi
 
 # ---------------------------------------------------------------------------
 # 4. ROBOT — clock drift (v2)
@@ -139,9 +107,6 @@ python3 --version > "$ARTIFACTS/python_version.txt" 2>&1 || echo "python3 missin
 # 9. Сводный state_snapshot.json + snapshot.json (для acceptance A43)
 # ---------------------------------------------------------------------------
 CLOCK_DRIFT=$(cat "$ARTIFACTS/clock_drift_ms.txt" 2>/dev/null || echo N/A)
-RESTARTS=$(cat "$ARTIFACTS/voice_action_server_restarts.txt" 2>/dev/null || echo 0)
-VAS_CRASHES=$(cat "$ARTIFACTS/voice_action_server_crashes.txt" 2>/dev/null | tr -dc '0-9')
-VAS_CRASHES=${VAS_CRASHES:-0}
 DEGRADED_FLAG="false"
 [ -s "$ARTIFACTS/verdict_helper.txt" ] && DEGRADED_FLAG="true"
 
@@ -151,9 +116,9 @@ UNHEALTHY=$(awk -F'\t' 'NR>0 && $2 !~ /^Up/ && $2 !~ /^Exited \(0\)/ {n++} END {
 MODEL_JSON_CONTENT="{}"
 [ -s "$ARTIFACTS/model.json" ] && MODEL_JSON_CONTENT=$(cat "$ARTIFACTS/model.json")
 
-python3 - "$ARTIFACTS" "$ROBOT" "$CLOCK_DRIFT" "$RESTARTS" "$VAS_CRASHES" "$DEGRADED_FLAG" "$UNHEALTHY" "$MODEL_JSON_CONTENT" <<'PY'
+python3 - "$ARTIFACTS" "$ROBOT" "$CLOCK_DRIFT" "$DEGRADED_FLAG" "$UNHEALTHY" "$MODEL_JSON_CONTENT" <<'PY'
 import json, sys, os, datetime
-artifacts, robot, drift, restarts, crashes, degraded, unhealthy, model_raw = sys.argv[1:9]
+artifacts, robot, drift, degraded, unhealthy, model_raw = sys.argv[1:7]
 try:
     model = json.loads(model_raw) if model_raw.strip().startswith("{") else {}
 except Exception:
@@ -163,11 +128,7 @@ state = {
   "schema": "v2",
   "robot": robot,
   "clock_drift_ms": drift,
-  "voice_action_server": {
-    "module_not_found_crashes": int(crashes or 0),
-    "restart_count_total": int(restarts or 0),
-    "degraded": degraded == "true",
-  },
+  "degraded": degraded == "true",
   "unhealthy_container_count": int(unhealthy or 0),
   "model": model,
 }
@@ -177,8 +138,6 @@ with open(os.path.join(artifacts, "state_snapshot.json"), "w", encoding="utf-8")
 with open(os.path.join(artifacts, "snapshot.json"), "w", encoding="utf-8") as fh:
     json.dump({
         "clock_drift_ms": drift,
-        "voice_action_server_crashes": int(crashes or 0),
-        "voice_action_server_restarts": int(restarts or 0),
         "unhealthy_container_count": int(unhealthy or 0),
         "degraded": degraded == "true",
         "model": model,

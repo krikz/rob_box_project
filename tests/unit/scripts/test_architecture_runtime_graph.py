@@ -31,6 +31,11 @@ sys.modules["architecture_runtime_graph"] = graph
 spec.loader.exec_module(graph)
 
 # Node list captured by run 36339397150 (`ros2 node list`, Main Pi / nav2).
+#: Nodes of that run removed from the code later (reason, PR).
+REMOVED_SINCE_RUN = {
+    "voice_animation_player",  # PNG player -> face_node in led-matrix, ADR-0150 PR-3a #3689
+    "dialogue_node",  # dialog v1 -> dialog_node (v2), ADR-0150 PR-15 part 15p #3711
+}
 RUN_36339397150_NODES = """
 /apriltag /audio_node /avatar_arbiter /avatar_supervisor /behavior_server /bt_navigator
 /bt_navigator_navigate_through_poses_rclcpp_node /bt_navigator_navigate_to_pose_rclcpp_node
@@ -207,6 +212,8 @@ def test_real_repo_places_every_node_from_run_36339397150(tmp_path):
     nodes = [graph.canonical_node(n) for n in RUN_36339397150_NODES]
     visible = [n for n in nodes if not graph.is_helper_node(n)]
     assert len(nodes) == 52 and len(visible) == 43
+    # Snapshot of a past run: nodes deleted from the repo since then have no evidence left.
+    visible = [n for n in visible if n not in REMOVED_SINCE_RUN]
     placement = graph.resolve_placement(visible, inventory, REPO)
     unplaced = [n for n in visible if n not in placement]
     assert unplaced == []

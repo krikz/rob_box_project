@@ -5,7 +5,7 @@
 
     /avatar/ptt/result + /avatar/voice_pipeline
         → transform(text, preset, language)
-        → /voice/tts/request
+        → SpeechRequest (rob_box_core.speech_client.say, агент operator; ADR-0150 PR-3)
 
 Владелец — ``avatar_supervisor``, но НЕ его агентский цикл: здесь нет ни
 ``AgentCore``, ни ``ToolProvider``, ни памяти, ни истории (инвариант 6c).

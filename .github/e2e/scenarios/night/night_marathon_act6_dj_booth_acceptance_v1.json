@@ -2,19 +2,19 @@
   "name": "night_marathon_act6_dj_booth_acceptance_v1",
   "schema_version": 1,
   "_comment": [
-    "Акт 6 — DJ. GATE-1 держит вход (set_dj_mode), выход (stop_music) и",
-    "измерение состояния (get_music_state). Сам «сет с объявлениями»",
+    "Акт 6 — DJ. GATE-1 держит вызов dj_set (вход; робот v2 гасит сет тем же dj_set",
+    "action=stop, поэтому stop_music в gate акта не ставим -- выход держит n608 по",
+    "маркеру `[music v2] stop`). Состояние музыки берётся из снимка `<music_state>`,",
+    "get_music_state не требуется (#3971). Сам «сет с объявлениями»",
     "(n605) вне gate: тулы под него в коде нет, красный там — находка."
   ],
   "expected_tool_calls": [
-    "get_music_state",
-    "set_dj_mode",
-    "stop_music"
+    "dj_set"
   ],
   "must_not_call": [],
   "voice_provenance": {
     "voice": "anton",
-    "tts": "yandex",
+    "tts": "minimax",
     "volume": 100,
     "llm": "minimax-m3"
   }

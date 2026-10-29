@@ -346,9 +346,6 @@ class AvatarArbiter(Node):
 
     ODOM_TOPIC = "/odom"
     DEVICE_SNAPSHOT_TOPIC = "/device/snapshot"
-    VOICE_DIALOGUE_STATE_TOPIC = (
-        "/voice/dialogue/state"  # НЕ /voice/state (ADR-0027 #2)
-    )
 
     # Сервисы объявляются с АБСОЛЮТНЫМИ именами под префиксом
     # ``/avatar_arbiter/`` (ADR-0051 §2.2, issue #1987): клиенты
@@ -487,9 +484,9 @@ class AvatarArbiter(Node):
         self.create_subscription(
             RosString, self.DEVICE_SNAPSHOT_TOPIC, self._on_device_snapshot_msg, 10
         )
-        self.create_subscription(
-            RosString, self.VOICE_DIALOGUE_STATE_TOPIC, self._on_voice_state_msg, 10
-        )
+        # Голос арбитру не нужен: ``snapshot().voice_state`` не читал никто, схема ``/avatar/state`` его не несёт
+        # (ADR-0028 §4.3, AV-14) - вход удалён (#3711, решение координатора). Состояние голоса для шлема и кольца
+        # собирает ``rob_box_core.voice_state`` в их узлах.
 
         # AV-13: подписка на /teleop_heartbeat (ADR-0028 §4.4 S10).
         # QoS best-effort, depth=10 (heartbeat терпит потери — важна
@@ -838,8 +835,8 @@ class AvatarArbiter(Node):
           - ``last_event`` ← last dead-man trip recorded on the local
             :class:`StateAggregator` (Phase 1 metric) — None if no trip yet.
 
-        This deliberately does NOT pull ``pose_xy`` / ``battery_pct`` /
-        ``voice_state`` from :class:`StateAggregator`: those inputs are
+        This deliberately does NOT pull ``pose_xy`` / ``battery_pct``
+        from :class:`StateAggregator`: those inputs are
         Phase 1 telemetry (and remain in the aggregator for the local
         metric path), but they do not belong in the ``/avatar/state``
         schema (ADR-0028 §4.3). Including them would either force a
@@ -993,16 +990,6 @@ class AvatarArbiter(Node):
         if not isinstance(data, dict):
             return
         self._aggregator.update_device_snapshot(battery_pct=data.get("battery_pct"))
-
-    def _on_voice_state_msg(self, msg: RosString) -> None:
-        """Обработать ``/voice/dialogue/state`` (НЕ /voice/state — ADR-0027 #2)."""
-        data = self._try_parse_json(msg.data)
-        if isinstance(data, dict):
-            self._aggregator.update_voice_state(data.get("state"))
-        elif isinstance(data, str):
-            self._aggregator.update_voice_state(data)
-        else:
-            self._aggregator.update_voice_state(msg.data or None)
 
     @staticmethod
     def _try_parse_json(text: Optional[str]) -> Any:

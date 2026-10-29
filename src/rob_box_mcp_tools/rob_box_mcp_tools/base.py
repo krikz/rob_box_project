@@ -49,6 +49,10 @@ def wait_future(future, timeout_sec: float) -> bool:
     return event.wait(timeout=timeout_sec)
 
 
+#: Срезы оператора (ТАРС) в ``slice_policy.yaml``: ``operator.speech``, ``operator.admin``. Тул такого среза виден
+#: оператору (:attr:`MCPTool.operator_visible`) — ADR-0150 §9.3.
+OPERATOR_SLICE_PREFIX = "operator."
+
 # ---------------------------------------------------------------------------
 # Общий publisher на (нода, тип, топик, QoS)
 # ---------------------------------------------------------------------------
@@ -241,6 +245,11 @@ class MCPTool(ABC):
     5. Реализовать метод execute() для выполнения
     """
 
+    #: Откуда приходит событие владельца об исходе действия (ADR-0150 §5.2): топик ``/…``, сервис ``srv:/…``,
+    #: действие ``action:/…`` или владелец в процессе mcp_server ``inproc:<владелец>`` (ответ - результат вызова).
+    #: Тул класса ``action.*`` без источника не проходит гард ``seam_without_consumer.py``; попадает в каталог.
+    event_source: str = ""
+
     def __init__(self, node: Optional[Any] = None):
         """
         Инициализация инструмента
@@ -275,8 +284,7 @@ class MCPTool(ABC):
         Дефолт — ``"core"`` (узкий read-only срез: батарея, поза, время,
         статус). Подклассы, доступные LLM-личности, обязаны переопределить
         на ``"personality"`` (музыка, память, навигация, mapping). Тулы
-        оператора (ТАРС) — ``"operator.speech"`` / ``"operator.control"`` /
-        ``"operator.admin"``.
+        оператора (ТАРС) — ``"operator.speech"`` / ``"operator.admin"``.
 
         Проверяется на регистрации (``mcp_server._register_tools`` ловит
         пустой/неизвестный ``slice`` и отказывает старту) и на каждом
@@ -357,10 +365,21 @@ class MCPTool(ABC):
 
         Реестр оператора = ``llm_visible`` ∪ ``operator_visible``. Нужен
         инструментам «ТАРС-только» (``llm_visible=False``, но оператору
-        они нужны), например ``say``. Дефолт ``False``: без явного
-        решения инструмент оператору не предъявляется. Каждый
-        ``operator_visible`` инструмент обязан быть зарегистрирован в
+        они нужны), например ``say``. Решает срез: тул среза
+        ``operator.*`` (``slice``) — оператору виден, иначе нет (ADR-0150
+        §9.3, PR-13b: одно знание — срез, а не второй флаг рядом с ним).
+        Каждый ``operator_visible`` инструмент обязан быть зарегистрирован в
         ``mcp_server`` — иначе вызов вернёт «unknown tool».
+        """
+        return self.slice.startswith(OPERATOR_SLICE_PREFIX)
+
+    @property
+    def telegram_visible(self) -> bool:
+        """Показывать ли инструмент агенту чата Telegram сверх llm-видимых (ADR-0150 §9.2).
+
+        Нужен инструментам «чат-только» (``llm_visible=False``): ``say_aloud`` — озвучка из чата динамиками;
+        Личность и оператор его не видят. Тул обязан быть зарегистрирован в ``mcp_server`` и лежать в срезе
+        ``telegram`` (``slice_policy.yaml``).
         """
         return False
 
@@ -387,6 +406,12 @@ class MCPTool(ABC):
         Актуально только для LONG execution_type.
         """
         return self.execution_type == ToolExecutionType.LONG
+
+    def bind_arguments(self, parameters: Dict[str, Any]) -> Dict[str, Any]:
+        """Параметры вызова, какими тул их исполнит: код подставляет то, что модель угадывает (``music_library``:
+        ``track_id`` только что сочинённой песни, #4216). Чистая функция, без побочных эффектов: сервер зовёт её до
+        записи «Запрос выполнения» в лог, чтобы лог и исполнение показывали одни и те же аргументы. По умолчанию - как есть."""
+        return parameters
 
     @abstractmethod
     def execute(self, **kwargs) -> MCPToolResult:

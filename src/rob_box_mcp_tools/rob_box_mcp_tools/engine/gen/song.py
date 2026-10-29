@@ -219,13 +219,14 @@ def failed_words(reason: str) -> str:
     return REASON_WORDS.get(reason, reason)
 
 
-def current_voice(provider: Optional[str], store: Any = None) -> Tuple[str, str]:
-    """``(провайдер, голос)`` сейчас: провайдер — из ``/voice/tts/provider_state`` (``node.actual_tts_provider``), голос —
-    ``VoiceStateStore.resolve`` (установленный ``set_voice`` или дефолт провайдера). Нет провайдера — ``no_voice``."""
+def current_voice(provider: Optional[str], actual_voice: Optional[str] = None) -> Tuple[str, str]:
+    """``(провайдер, голос)`` сейчас: оба — из ``/voice/tts/provider_state`` (``node.actual_tts_provider`` /
+    ``actual_tts_voice``: то, что реально звучит; выбор хранит ``tts_node``), нет голоса — дефолт провайдера.
+    Нет провайдера — ``no_voice``."""
     if not provider:
         raise SongFailed("no_voice", "провайдер TTS ещё не известен")
-    if store is not None:
-        return provider, store.resolve(provider)[0]
+    if actual_voice:
+        return provider, actual_voice
     from rob_box_voice.tts_voice_registry import default_voice_for
 
     return provider, default_voice_for(provider)
@@ -359,6 +360,7 @@ class SongStudio:
             raise SongFailed("no_track", f"задача {made.task_id} без сохранённых треков")
         self._log().info(f"🎤 [song] «{song.title}» {provider}:{voice} жанр={genre} task={made.task_id} "
                          f"credits={made.credits:g} track={saved['id']} за {self._clock() - started:.0f} с")
+        library.generated.note(str(saved["id"]))  # «эта песня» (#4216): сочинённая сейчас, а не старая с тем же названием
         return SongResult(str(saved["id"]), song.title, float(saved.get("duration_ms") or 0) / 1000.0, provider, voice,
                           made.task_id, made.credits)
 

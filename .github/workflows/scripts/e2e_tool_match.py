@@ -70,12 +70,13 @@ from __future__ import annotations
 
 import re
 
-__all__ = ["TOOL_NAME_RE", "invocation_markers", "tool_invoked",
+__all__ = ["TOOL_NAME_RE", "invocation_markers", "tool_invoked", "strip_llm_request_dump",
            "first_invocation_position", "VOICE_CYCLE_MARKERS",
            "registration_outcome", "registration_expected",
            "registration_failures", "registration_pending",
-           "identify_failures", "robot_speech", "keyword_hit",
-           "retry_block_reason"]
+           "identify_failures", "robot_speech", "keyword_hit", "REGEX_PREFIX",
+           "drop_unspoken_cancels", "repeated_numerals",
+           "retry_block_reason", "step_verdict", "patterns_missing"]
 
 # Маркеры голосового ответа (любой из них обозначает «робот начал говорить»).
 # Используются для assertion «discovery tool был вызван ДО голосового ответа»
@@ -91,6 +92,24 @@ VOICE_CYCLE_MARKERS = (
     # TTS ack от yandex_tts / minimax_tts.
     "tts finished",
 )
+
+# Issue #3860: дамп LLM-запроса (``deepseek.py::_dump_llm_request``) печатает промпт, историю и
+# ``recent_actions`` прошлых ходов -- там имена тулов в кавычках, то есть маркеры вызова.
+# В выводе launch у строки дампа есть префикс ``[dialog_node-3]``. Зеркало bash-функции
+# ``strip_llm_request_dump`` из e2e_voice_lib.sh (одна форма строки в обоих местах).
+_DUMP_PREFIX = r"^(?:\[[A-Za-z0-9_]+-[0-9]+\])?\s*"
+_DUMP_LINE_RE = re.compile(
+    r"LLM REQUEST (?:START|END)"
+    r"|" + _DUMP_PREFIX + r"\[[0-9]+\] [A-Za-z_]+: "
+    r"|" + _DUMP_PREFIX + r"tools\([0-9]+\): "
+)
+
+
+def strip_llm_request_dump(logs: str) -> str:
+    """Лог без строк дампа LLM-запроса. Режем по форме строки, не блоком START..END: при обрезке
+    ``--since`` END может отсутствовать, и блочный фильтр съел бы остаток лога."""
+    return "\n".join(line for line in logs.split("\n") if not _DUMP_LINE_RE.search(line))
+
 
 #: Как выглядит имя тула. Все 56 зарегистрированных тулов —
 #: snake_case из ``def name(self) -> str`` в rob_box_mcp_tools/tools/*.py.
@@ -324,15 +343,29 @@ def robot_speech(logs: str) -> str:
     return "\n".join(voiced + fallback)
 
 
+#: Строка ``expected_keywords`` / ``must_not_say`` с этим префиксом -- регэксп по речи робота, а не подстроки.
+REGEX_PREFIX = "re:"
+
+
 def keyword_hit(logs: str, kw: str) -> bool:
     """``kw`` (алтернативы через ``|``) найден в РЕЧИ робота.
 
     Контракт совпадает со старым ``_keyword_hit``: регистронезависимо,
     ``|`` — это ИЛИ, пустые альтернативы игнорируются.
+
+    Префикс ``re:`` (:data:`REGEX_PREFIX`) -- вся строка после него регэксп (``|`` внутри -- альтернация регэкспа, а не
+    разбор на подстроки; ``re.IGNORECASE | re.MULTILINE``, фразы речи разделены переводом строки). Нужен запретам на
+    ОБРАЩЕНИЕ по имени (``must_not_say``): подстрока «Нина.» краснит и честный пересказ истории, регэксп -- нет (#4218).
+    Битый регэксп не совпал (как ``patterns_missing``).
     """
     speech = robot_speech(logs).lower()
     if not speech:
         return False
+    if kw.startswith(REGEX_PREFIX):
+        try:
+            return re.search(kw[len(REGEX_PREFIX):], speech, re.IGNORECASE | re.MULTILINE) is not None
+        except re.error:
+            return False
     return any(v.strip() and v.strip() in speech for v in kw.lower().split("|"))
 
 
@@ -356,6 +389,7 @@ def keyword_hit(logs: str, kw: str) -> bool:
 #   _do_register:            ✅ Speaker '{name}' registered (id=…)
 #   _do_register (ADR-0127): ⚠️ Speaker '{name}' (id=…) — голос похож на уже известного …
 #   _do_register:            🔗 Speaker '{name}' merged into existing profile (id=…)
+#   _do_register (#3858):    🏷️ [issue #3858] '{name}' представился — имя присвоено профилю без имени (id=…)
 #   _on_register_request:    register_request for '{name}' has no utterance_id
 #   _register_after_wait:    register_request for '{name}': no embedding for utterance=…
 #   _do_register (#2769):    Registration of '{name}' rejected — audio too short
@@ -373,6 +407,10 @@ _REG_ACCEPTED_RES = (
     # ADR-0127: голос похож на чужой, имя другое — заведён ОТДЕЛЬНЫЙ профиль.
     # Это принятая регистрация (данные целы); переспрос проверяют n722/n723.
     re.compile(r"Speaker '([^']*)' \(id=[0-9a-f]*\) — голос похож на уже известного"),
+    # #3858 (unnamed_profiles_enabled=true): первая фраза незнакомого голоса >= 3 с уже завела безымянный профиль,
+    # представление присваивает имя ЕМУ. Строки «✅ … registered» тогда нет, а профиль с именем есть и дубля нет --
+    # это принятая регистрация (не склейка с чужим профилем: _REG_MERGED_RE её не видит).
+    re.compile(r"\[issue #3858\] '([^']*)' представился — имя присвоено профилю без имени \(id=[0-9a-f]*\)"),
 )
 _REG_MERGED_RE = re.compile(
     r"Speaker '([^']*)' merged into existing profile \(id=[0-9a-f]*\)"
@@ -669,3 +707,236 @@ def retry_block_reason(logs: str, next_when_robot_asked: str = "") -> str:
                 f"(when_robot_asked={pattern!r})"
             )
     return "; ".join(reasons)
+
+
+# ── Вердикт acceptance шага: ОДНА функция для живого харнесса и сухого стенда ──
+#
+# Раньше это был python-heredoc внутри ``check_acceptance`` (e2e_voice_test.sh): сухой прогон марафона
+# (``scripts/dialog/dry_marathon.py``, #3906) не мог звать те же правила и писал бы вторую реализацию. Теперь
+# heredoc — несколько строк, а правила живут здесь; в этот же файл, потому что harness копирует на билд-машину
+# фиксированный список файлов (``L-E2E Voice Test.yml``), и новый файл туда бы не доехал.
+
+_VOICE_CHANGED_RE = re.compile(r"\[set_voice\] voice='([^']*)'\s+provider=(\S+)\s+default=(\S+)")
+
+
+def patterns_missing(logs: str, patterns: list) -> list:
+    """Какие из ``patterns`` шага (``grep -E``, регистр важен, как ``check_patterns`` харнесса) в логе не найдены.
+    Битый регэксп считается ненайденным, а не падением проверки."""
+    missing: list = []
+    for pat in patterns or []:
+        try:
+            found = re.search(pat, logs) is not None
+        except re.error:
+            found = False
+        if not found:
+            missing.append(pat)
+    return missing
+
+
+# ── #4196 / #4207: отмена несказанного и повтор счёта в одном шаге ───────────────
+#
+# ``must_not_call: ["SpeechEvent cancelled"]`` (n807, добавка к идущей речи не должна её рвать) краснел и за
+# ``cancelled spoken_chars=0`` -- выброшенный пред-синтез заменённого при правке сегмента, который ещё не звучал
+# (марафон-5, run 40801693422): красный не про речь. Рвётся ЗВУЧАЩАЯ речь: ``started`` был, или прозвучали символы.
+
+_UNSPOKEN_CANCEL_RE = re.compile(r"SpeechEvent cancelled speech_id=(\w+)\b[^\n]*?\bspoken_chars=0\b")
+_STARTED_RE = re.compile(r"SpeechEvent started speech_id=(\w+)")
+
+
+def drop_unspoken_cancels(logs: str) -> str:
+    """Лог без строк ``SpeechEvent cancelled ... spoken_chars=0`` реплик, у которых в окне нет ``started``.
+
+    Такая реплика не звучала: её отмена -- правка плана, а не обрыв речи. Отмена реплики со ``started`` в окне (в том
+    числе до первых символов) и любая отмена с ``spoken_chars>0`` остаются в логе и по-прежнему ловятся. Граница:
+    реплика, начавшаяся ДО окна шага и отменённая с ``spoken_chars=0``, неотличима от несказанной -- её отмену харнесс
+    не вменяет (``progress`` приходит раньше любой заметной речи)."""
+    started = set(_STARTED_RE.findall(logs))
+
+    def keep(line: str) -> bool:
+        found = _UNSPOKEN_CANCEL_RE.search(line)
+        return not (found and found.group(1) not in started)
+
+    return "\n".join(line for line in logs.split("\n") if keep(line))
+
+
+_TTS_LINE_RE = re.compile(r"🔊 TTS: speech_id=(\w+),.*?\btext=(?:'(.*?)'|\"(.*?)\")\s*$")
+_NUMERALS = (
+    "один", "два", "три", "четыре", "пять", "шесть", "семь", "восемь", "девять", "десять", "одиннадцать",
+    "двенадцать", "тринадцать", "четырнадцать", "пятнадцать", "шестнадцать", "семнадцать", "восемнадцать",
+    "девятнадцать", "двадцать",
+)
+_NUMERAL_RE = re.compile(r"(?<![а-яё])(%s)(?![а-яё])" % "|".join(sorted(_NUMERALS, key=len, reverse=True)))
+
+
+def _sounded_speech(logs: str) -> str:
+    """Речь, которая ЗВУЧАЛА: тексты ``🔊 TTS`` реплик со ``SpeechEvent started`` (строка TTS ложится при приёме
+    реплики, и отменённый до старта пред-синтез попал бы в неё). Нет ни одного ``started`` (v1, сухой лог) --
+    :func:`robot_speech`."""
+    started = set(_STARTED_RE.findall(logs))
+    if not started:
+        return robot_speech(logs)
+    out: list = []
+    for line in logs.split("\n"):
+        found = _TTS_LINE_RE.search(line)
+        if found and found.group(1) in started:
+            out.append(found.group(2) if found.group(2) is not None else found.group(3))
+    return "\n".join(out)
+
+
+def repeated_numerals(logs: str) -> list:
+    """Числительные 1..20, прозвучавшие в окне больше одного раза (счёт не должен идти по кругу после правки).
+
+    Считается звучавшая речь (:func:`_sounded_speech`), регистр не важен. Возвращает ``["девять x2", ...]``."""
+    counts: dict = {}
+    for word in _NUMERAL_RE.findall(_sounded_speech(logs).lower()):
+        counts[word] = counts.get(word, 0) + 1
+    return ["%s x%d" % (w, n) for w, n in counts.items() if n > 1]
+
+
+def step_verdict(acc: dict, logs: str, *, label: str = "", timing_path: str = "") -> dict:
+    """Вердикт ``acceptance`` шага по логу шага: те же правила, что исполняет ``check_acceptance`` на роботе.
+
+    ``acc`` — блок ``acceptance`` шага сценария, ``logs`` — лог шага (дамп LLM-запроса режется здесь, #3860),
+    ``timing_path`` — ``timing.json`` харнесса для ``response_max_ms`` (пусто — не проверяется). Результат — словарь
+    ``acceptance.json`` (``pass``, ``reason``, поля диагностики).
+    """
+    import json  # noqa: PLC0415
+    import os  # noqa: PLC0415
+
+    logs = strip_llm_request_dump(logs)
+    expected_call = acc.get("expected_tool_calls", []) or []
+    must_not = acc.get("must_not_call", []) or []
+    expected_kw = acc.get("expected_keywords", []) or []
+    must_not_say = acc.get("must_not_say", []) or []
+    identification_failures = identify_failures(acc, logs)
+    discovery_tools_raw = acc.get("discovery_tools", []) or []
+    discovery_tools: list = []
+    discovery_tool_errors: list = []
+    for _dt in discovery_tools_raw:
+        if not isinstance(_dt, str) or not TOOL_NAME_RE.match(_dt.lower()):
+            discovery_tool_errors.append(
+                f"discovery_tools entry {repr(_dt)} is not a tool name "
+                f"(must match ^[a-z][a-z0-9_]*$)"
+            )
+            continue
+        discovery_tools.append(_dt)
+    voice_changed_req = bool(acc.get("voice_changed", False))
+    response_max_ms = acc.get("response_max_ms", 0) or 0
+
+    recognized = ""
+    m = re.search(r"✅ ПРИНЯТО(?: \([^)]*\))?:\s*(.+)", logs)
+    if m:
+        recognized = m.group(1).strip()
+
+    # #4196: отмена несказанного (пред-синтез при правке) -- не обрыв речи; запрет must_not смотрит остальной лог.
+    kept_logs = drop_unspoken_cancels(logs)
+    actual_calls: list = []
+    for c in (expected_call + must_not):
+        if tool_invoked(kept_logs, c) and c not in actual_calls:
+            actual_calls.append(c)
+    missing_expected = [c for c in expected_call if not tool_invoked(logs, c)]
+    forbidden_called = [c for c in must_not if tool_invoked(kept_logs, c)]
+    repeated_numbers = repeated_numerals(logs) if acc.get("no_repeat_numbers") else []
+    found_keywords = [k for k in expected_kw if keyword_hit(logs, k)]
+    missing_keywords = [k for k in expected_kw if not keyword_hit(logs, k)]
+    forbidden_said = [k for k in must_not_say if keyword_hit(logs, k)]
+    robot_said = robot_speech(logs)
+
+    discovery_failures: list = []
+    discovery_records: list = []
+    voice_pos = first_voice_cycle_position(logs) if discovery_tools else None
+    for _dt in discovery_tools:
+        tool_pos = first_invocation_position(logs, _dt)
+        discovery_records.append({"tool": _dt, "first_invocation_pos": tool_pos, "first_voice_pos": voice_pos})
+        if tool_pos is None:
+            discovery_failures.append(
+                f"discovery tool {_dt!r} was NOT invoked at all "
+                f"(issue #2406: LLM bypassed the required tool call)"
+            )
+        elif voice_pos is not None and tool_pos > voice_pos:
+            discovery_failures.append(
+                f"discovery tool {_dt!r} invoked at pos {tool_pos}, "
+                f"AFTER verbal answer at pos {voice_pos} "
+                f"(issue #2406: verbal-only LLM answer before required tool)"
+            )
+
+    voice_change_ok = True
+    voice_change_detail = ""
+    if voice_changed_req:
+        set_voice_matches = _VOICE_CHANGED_RE.findall(logs)
+        if not set_voice_matches:
+            voice_change_ok = False
+            voice_change_detail = (
+                "voice did not change: no successful [set_voice] log "
+                "(set_voice not called or returned voice_unavailable)"
+            )
+        elif not any(v.strip().lower() != d.strip().lower() for v, _p, d in set_voice_matches):
+            voice_change_ok = False
+            voice_change_detail = (
+                "voice did not change from default: "
+                + ", ".join(f"{v}->{d}" for v, _p, d in set_voice_matches)
+            )
+
+    measured_ms = None
+    if timing_path and os.path.exists(timing_path):
+        try:
+            with open(timing_path, encoding="utf-8") as fh:
+                measured_ms = json.load(fh).get("metrics_ms", {}).get("total_latency_ms")
+        except Exception:  # noqa: BLE001 — нет timing.json: response_max_ms не проверяется
+            pass
+
+    failures: list = []
+    if missing_expected:
+        failures.append(f"expected tool calls not invoked: {missing_expected}")
+    if forbidden_called:
+        failures.append(f"forbidden tool calls invoked: {forbidden_called}")
+    if expected_kw and missing_keywords:
+        failures.append(f"expected keywords missing in logs: {missing_keywords}")
+    if forbidden_said:
+        failures.append(f"forbidden phrases spoken by robot: {forbidden_said}")
+    if repeated_numbers:
+        failures.append(f"numbers spoken more than once (#4207: count restarted after edit): {repeated_numbers}")
+    if identification_failures:
+        failures.extend(identification_failures)
+    if discovery_tool_errors:
+        failures.extend(discovery_tool_errors)
+    if discovery_failures:
+        failures.extend(discovery_failures)
+    registration = registration_outcome(logs)
+    registration_fail = registration_failures(acc, logs)
+    failures.extend(registration_fail)
+    if not voice_change_ok:
+        failures.append(voice_change_detail)
+    if response_max_ms and measured_ms and measured_ms > response_max_ms:
+        failures.append(f"response time {measured_ms}ms > max {response_max_ms}ms")
+    return {
+        "label": label,
+        "expected_tool_calls": expected_call,
+        "actual_tool_calls": actual_calls,
+        "missing_expected_calls": missing_expected,
+        "forbidden_calls": forbidden_called,
+        "expected_keywords": expected_kw,
+        "robot_speech": robot_said,
+        "recognized": recognized,
+        "found_keywords": found_keywords,
+        "missing_keywords": missing_keywords,
+        "must_not_say": must_not_say,
+        "forbidden_said": forbidden_said,
+        "no_repeat_numbers": bool(acc.get("no_repeat_numbers")),
+        "repeated_numbers": repeated_numbers,
+        "must_not_identify_as": acc.get("must_not_identify_as", []) or [],
+        "identify_failures": identification_failures,
+        "discovery_tools": discovery_tools,
+        "discovery_records": discovery_records,
+        "discovery_first_voice_pos": voice_pos,
+        "registration_expected": registration_expected(acc),
+        "registration": registration,
+        "registration_failures": registration_fail,
+        "voice_changed": voice_changed_req,
+        "voice_change_ok": voice_change_ok,
+        "voice_change_detail": voice_change_detail,
+        "response_max_ms": response_max_ms,
+        "measured_total_ms": measured_ms,
+        "pass": not failures,
+        "reason": "; ".join(failures) if failures else "all checks passed",
+    }

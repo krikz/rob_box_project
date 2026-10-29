@@ -9,7 +9,7 @@ Owns several families of helpers:
 * :func:`map_emotion_to_animation` — emotion label → LED animation key.
 * :func:`generate_fallback_response` — static offline replies when the
   LLM is unavailable.
-* :func:`detect_volume_intent` / :func:`detect_pitch_intent` — keyword
+* :func:`detect_pitch_intent` — keyword
   intent detection for volume/pitch adjustment commands.
 * :func:`sanitize_speaker_name` — guard against junk speaker names
   (issue #1077 / #1101: resemblyzer may store "Null"/"null"/"None").
@@ -74,24 +74,6 @@ def generate_fallback_response(text: str) -> str:
     if any(w in low for w in farewells):
         return "До свидания!"
     return "Интернет сейчас недоступен, я не могу ответить на этот вопрос."
-
-
-def detect_volume_intent(text: str):
-    """Detect volume adjustment intent from user text."""
-    if not text:
-        return None
-    low = text.lower()
-    if any(w in low for w in ("максимальная громкость", "максимум громк")):
-        return "max"
-    if any(w in low for w in ("нормальная громкость", "стандартная громкость", "обычная громкость")):
-        return "normal"
-    if "говори громко" in low:
-        return "max"
-    if any(w in low for w in ("громче", "громко")):
-        return "louder"
-    if any(w in low for w in ("тише", "потише")):
-        return "quieter"
-    return None
 
 
 def detect_pitch_intent(text: str):

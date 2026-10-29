@@ -18,10 +18,16 @@
 #     пофайлово на одном и том же коммите);
 #   * exit 5 (ничего не собрано) — тоже провал: файл, из которого не
 #     собрался ни один тест, в CI выглядел бы зелёным, а это ровно та
-#     «декорация», из-за которой задача и появилась.
+#     «декорация», из-за которой задача и появилась;
+#   * MCP_TOOLS_JOBS файлов одновременно (по умолчанию 4 — столько vCPU у
+#     раннера; локально можно 1) через xargs -P, #3937. Изоляция та же:
+#     процесс на файл, не xdist --dist loadfile (воркер xdist гоняет много
+#     файлов в одном интерпретаторе, и загрязнение вернулось бы). Вывод
+#     файла идёт в его лог и печатается целиком после прогона, в
+#     алфавитном порядке, — параллельные логи не перемешиваются.
 #
 # Использование:
-#   scripts/testing/run_mcp_tools_unit_tests.sh [каталог-для-junitxml]
+#   [MCP_TOOLS_JOBS=N] scripts/testing/run_mcp_tools_unit_tests.sh [каталог-для-junitxml]
 #
 # Нужно: python3 с pytest (>=8), pyyaml, httpx, openai, msgpack, aiohttp.
 # ROS-пакеты не обязательны, кроме nav2_msgs/action_msgs — без них
@@ -37,8 +43,9 @@ PER_FILE_TIMEOUT="${MCP_TOOLS_PER_FILE_TIMEOUT:-300}"
 
 # Соседние пакеты, которые импортируют тесты и сам rob_box_mcp_tools:
 # rob_box_harness (slice_authority, mcp_server), rob_box_voice (music,
-# dialogue), rob_box_core (utterance), rob_box_llm (harness).
-export PYTHONPATH="$PKG_DIR:$REPO_ROOT/src/rob_box_harness:$REPO_ROOT/src/rob_box_llm:$REPO_ROOT/src/rob_box_core:$REPO_ROOT/src/rob_box_music:$REPO_ROOT/src/rob_box_voice${PYTHONPATH:+:$PYTHONPATH}"
+# dialogue), rob_box_core (utterance), rob_box_llm (harness), rob_box_dialog
+# (знание диалога: его импортируют rob_box_voice.core и DSM харнесса).
+export PYTHONPATH="$PKG_DIR:$REPO_ROOT/src/rob_box_harness:$REPO_ROOT/src/rob_box_llm:$REPO_ROOT/src/rob_box_core:$REPO_ROOT/src/rob_box_music:$REPO_ROOT/src/rob_box_voice:$REPO_ROOT/src/rob_box_dialog${PYTHONPATH:+:$PYTHONPATH}"
 
 if [ -n "$JUNIT_DIR" ]; then
   mkdir -p "$JUNIT_DIR"
@@ -50,16 +57,23 @@ if [ "${#TEST_FILES[@]}" -eq 0 ]; then
   echo "❌ rob_box_mcp_tools: не найдено ни одного test_*.py в $PKG_DIR/test"
   exit 1
 fi
-echo "=== pytest: rob_box_mcp_tools (${#TEST_FILES[@]} файлов, per-file, timeout ${PER_FILE_TIMEOUT}s) ==="
+echo "=== pytest: rob_box_mcp_tools (${#TEST_FILES[@]} файлов, per-file, ${MCP_TOOLS_JOBS:-4} параллельно, timeout ${PER_FILE_TIMEOUT}s) ==="
 
-FAILED=()
-for f in "${TEST_FILES[@]}"; do
-  junit_args=()
+JOBS="${MCP_TOOLS_JOBS:-4}"
+LOG_DIR="$(mktemp -d)"
+trap 'rm -rf "$LOG_DIR"' EXIT
+export PKG_DIR JUNIT_DIR PER_FILE_TIMEOUT LOG_DIR
+
+# run_one <test/файл.py>: гонит один файл отдельным pytest-процессом, лог — в
+# $LOG_DIR/<ключ>.log, код выхода — в $LOG_DIR/<ключ>.rc. Всегда возвращает 0,
+# чтобы xargs не прерывал остальные файлы: решение по коду принимается ниже.
+run_one() {
+  local f="$1" key rc=0
+  key="$(echo "$f" | tr '/' '_' | sed 's/\.py$//')"
+  local junit_args=()
   if [ -n "$JUNIT_DIR" ]; then
-    junit_args=(--junitxml "$JUNIT_DIR/$(echo "$f" | tr '/' '_' | sed 's/\.py$//').xml")
+    junit_args=(--junitxml "$JUNIT_DIR/$key.xml")
   fi
-  echo "::group::rob_box_mcp_tools: $f"
-  rc=0
   # -o addopts="" — pytest.ini пакета включает --cov, а pytest-cov в
   # раннере не гарантирован; -p no:* — apt-плагины ROS, собранные под
   # pytest 6, роняют pytest 9. Глушим по ИМЕНАМ entry point'ов
@@ -76,8 +90,21 @@ for f in "${TEST_FILES[@]}"; do
       -o addopts="" \
       --tb=short -ra -v --no-header \
       "${junit_args[@]}" \
-      "$f" ) || rc=$?
+      "$f" ) > "$LOG_DIR/$key.log" 2>&1 || rc=$?
+  echo "$rc" > "$LOG_DIR/$key.rc"
+  return 0
+}
+export -f run_one
+
+printf '%s\0' "${TEST_FILES[@]}" | xargs -r -0 -n 1 -P "$JOBS" bash -c 'run_one "$1"' _
+
+FAILED=()
+for f in "${TEST_FILES[@]}"; do
+  key="$(echo "$f" | tr '/' '_' | sed 's/\.py$//')"
+  echo "::group::rob_box_mcp_tools: $f"
+  cat "$LOG_DIR/$key.log"
   echo "::endgroup::"
+  rc="$(cat "$LOG_DIR/$key.rc" 2>/dev/null || echo missing)"
   case "$rc" in
     0) echo "✅ $f" ;;
     5) echo "❌ $f — ни одного теста не собрано (exit 5)"; FAILED+=("$f (exit 5: no tests collected)") ;;

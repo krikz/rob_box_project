@@ -8,7 +8,7 @@ ROS-окружение):
       "source /ws/install/setup.bash && python3 /config/voice_bench/run_bench.py \\
        --cases /config/voice_bench/cases.yaml --out /tmp/bench_on.json --repeat 3"
 
-Как устроено. Реплика публикуется в ``/voice/stt/result`` — тот же топик,
+Как устроено. Реплика публикуется в ``/voice/stt/utterance`` — тот же топик,
 в который пишет ``stt_node``, поэтому робот обрабатывает её как обычную
 речь (wake-word в тексте обязателен, иначе сработает gate). Результат
 берётся из лог-файла ноды: там лежит и ``spoken``, и список вызванных
@@ -106,20 +106,20 @@ def _key_of(phrase: str) -> str:
 
 
 class Speaker:
-    """Публикует реплики в ``/voice/stt/result`` от лица «распознанной речи»."""
+    """Публикует реплики в ``/voice/stt/utterance`` от лица «распознанной речи»."""
 
     def __init__(self) -> None:
         import rclpy
         from rclpy.qos import HistoryPolicy, QoSProfile, ReliabilityPolicy
-        from std_msgs.msg import String
+        from rob_box_dialog_msgs.msg import Utterance
 
         self._rclpy = rclpy
-        self._String = String
+        self._Utterance = Utterance
         rclpy.init()
         self.node = rclpy.create_node("voice_bench_speaker")
         self.pub = self.node.create_publisher(
-            String,
-            "/voice/stt/result",
+            Utterance,
+            "/voice/stt/utterance",
             QoSProfile(
                 reliability=ReliabilityPolicy.RELIABLE,
                 history=HistoryPolicy.KEEP_LAST,
@@ -136,7 +136,7 @@ class Speaker:
         return False
 
     def say(self, text: str) -> None:
-        self.pub.publish(self._String(data=text))
+        self.pub.publish(self._Utterance(text=text, source=self._Utterance.SOURCE_RESPEAKER))
         for _ in range(6):
             self._rclpy.spin_once(self.node, timeout_sec=0.1)
 
@@ -267,7 +267,7 @@ def main(argv: list[str] | None = None) -> int:
 
     speaker = Speaker()
     if not speaker.wait_ready():
-        print("⚠️  подписчика на /voice/stt/result нет — dialogue_node жив?", flush=True)
+        print("⚠️  подписчика на /voice/stt/utterance нет — dialogue_node жив?", flush=True)
 
     turns: list[dict[str, Any]] = []
     for rep in range(1, args.repeat + 1):

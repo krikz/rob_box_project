@@ -27,6 +27,13 @@
 ARG ROS_DISTRO=humble
 ARG BASE_IMAGE=ghcr.io/krikz/rob_box_base:ros2-zenoh
 
+# Общий образ ROS-сообщений (docker/msgs/Dockerfile): src/rob_box_*_msgs
+# компилируются ОДИН раз за прогон, а не в каждом образе (rosidl под qemu —
+# 4-14 минут на пакет). Тег по хэшу пакетов вычисляет gen_build_matrix.py и
+# передаёт build-arg'ом; без него сборка падает сразу на имени образа.
+ARG MSGS_IMAGE=MSGS_IMAGE-build-arg-is-required
+FROM ${MSGS_IMAGE} AS msgs
+
 # ============================================================
 # Stage 1: builder — тулчейн кодогенерации + colcon build
 # ============================================================
@@ -92,6 +99,14 @@ RUN mkdir -p src
 
 # 1. Копируем package.xml (метаданные зависимостей) - изменяются редко
 COPY src/rob_box_perception_msgs/package.xml /ws/src/rob_box_perception_msgs/
+# ADR-0150 PR-2 (#3687): rob_box_perception зависит от rob_box_dialog_msgs
+# (context_aggregator_node читает Utterance); package.xml нужен rosdep, чтобы
+# ключ резолвился из workspace, а не искался в apt.
+COPY src/rob_box_dialog_msgs/package.xml /ws/src/rob_box_dialog_msgs/
+# #4001/#4002: battery_state_node и context_aggregator берут кривую заряда из
+# rob_box_core.battery (единственное место знания, его же использует
+# rob_box_mcp_tools); package.xml нужен rosdep по той же причине, что выше.
+COPY src/rob_box_core/package.xml /ws/src/rob_box_core/
 COPY src/rob_box_perception/package.xml /ws/src/rob_box_perception/
 
 # 2. Устанавливаем ROS зависимости через rosdep (кэшируется если package.xml не изменился)
@@ -128,14 +143,22 @@ RUN --mount=type=cache,target=/root/.cache/pip,sharing=locked \
         exit 1; \
     fi
 
+# IDL-пакеты rob_box_perception_msgs и rob_box_dialog_msgs — готовые из общего
+# образа msgs (stage `msgs` в шапке), а не компиляцией здесь. Их package.xml
+# уже в src (для rosdep выше): colcon видит зависимость, но не собирает её
+# (нет в --packages-select) и берёт из /ws/install.
+COPY --from=msgs /ws/install /ws/install
+
 # 5. Копируем ресурсы (prompts) - изменяются иногда
 COPY src/rob_box_perception/prompts /ws/src/rob_box_perception/prompts
 
 # 6. Только ТЕПЕРЬ копируем весь исходный код (изменяется часто)
-COPY src/rob_box_perception_msgs /ws/src/rob_box_perception_msgs
+# rob_box_core - ВЕСЬ пакет, не отдельные файлы: setup.py тащит data_files
+# (config/, resource/), выборочный COPY ломает сборку (образец - docker/main/teleop).
+COPY src/rob_box_core /ws/src/rob_box_core
 COPY src/rob_box_perception /ws/src/rob_box_perception
 
-# 7. Сборка пакетов (сначала msgs, потом nodes)
+# 7. Сборка ноды (msgs уже собраны слоем выше)
 #
 # --symlink-install УБРАН (урок пилота led_matrix, план §2.2 уточнён коммитом
 # 037d982bf): с этим флагом colcon кладёт в /ws/install не копии, а symlink'и
@@ -146,7 +169,7 @@ COPY src/rob_box_perception /ws/src/rob_box_perception
 # лежали в том же слое.
 RUN . /opt/ros/${ROS_DISTRO}/setup.sh && \
     colcon build \
-    --packages-select rob_box_perception_msgs rob_box_perception \
+    --packages-select rob_box_core rob_box_perception \
     --cmake-args \
     -DCMAKE_BUILD_TYPE=Release
 

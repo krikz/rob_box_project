@@ -388,7 +388,7 @@ class TestDialogueControlSwapTryFinally(unittest.TestCase):
         original_publish = self.node._publish_dialogue_control
         published_actions: list[str] = []
 
-        def spy_publish(action: str, reason: str = "") -> bool:
+        def spy_publish(action: str, reason: str = "", ttl_s: float = 0.0) -> bool:
             published_actions.append(action)
             return True
 
@@ -890,10 +890,11 @@ class TestBuildAgentSpecOperator(unittest.TestCase):
         """
         captured: dict = {}
 
-        def fake_build_agent(spec, *, tools, memory):  # type: ignore[no-untyped-def]
+        def fake_build_agent(spec, *, tools, memory, system_prompt=None):  # type: ignore[no-untyped-def]
             captured["spec"] = spec
             captured["tools"] = tools
             captured["memory"] = memory
+            captured["system_prompt"] = system_prompt
             return object()
 
         # Подменяем build_agent в модуле, чтобы lazy import внутри
@@ -912,19 +913,14 @@ class TestBuildAgentSpecOperator(unittest.TestCase):
         self.assertIsNotNone(core, "build_agent не вызван — supervisor не собрался")
         spec = captured.get("spec")
         self.assertIsNotNone(spec, "AgentSpec не передан в build_agent")
+        # PR-13b #3708: промпт — правила файла + инструменты из реестра (operator_prompt), а не голый файл
+        from rob_box_supervisor.operator_prompt import TOOLS_HEADER
+        self.assertIn(TOOLS_HEADER, captured["system_prompt"] or "")
         # ADR-0083 §2.3 / §2.4
         self.assertEqual(spec.name, "operator")
         self.assertEqual(spec.memory_namespace, "operator")
-        # ADR-0083 §2.2 #J
-        self.assertFalse(
-            spec.narrow_tools_to_skill,
-            "ТАРС должен видеть все инструменты (ADR-0083 §2.2 #J)",
-        )
-        # ADR-0083 §2.2 #F
-        self.assertFalse(
-            spec.use_scheduler,
-            "W7b планировщик живёт только на стороне личности (ADR-0083 §2.2 #F)",
-        )
+        # ADR-0083 §2.2 #J — ТАРС видит все инструменты: среза в спеке нет (срез хода задаёт только личность).
+        self.assertFalse(hasattr(spec, "narrow_tools_to_skill"))
         # ADR-0083 §1.2 #B
         self.assertEqual(
             dict(spec.per_provider_settings), {},
@@ -945,12 +941,8 @@ class TestBuildAgentSpecOperator(unittest.TestCase):
             f"persist_path должен указывать на общий llm_health.json, "
             f"got {spec.health_cache_persist_path!r}",
         )
-        # ADR-0083 §1.3 #3 — supervisor больше НЕ лезет в voice/skills.
-        self.assertEqual(
-            tuple(spec.skill_slice),
-            ("operator.speech", "operator.control"),
-            "skill_slice должен быть только operator-срезы (ADR-0083 §1.3 #3)",
-        )
+        # ADR-0083 §1.3 #3 / ADR-0150 PR-6 — срезов скиллов нет, в voice/skills supervisor не лезет.
+        self.assertFalse(hasattr(spec, "skill_slice"))
         # ADR-0083 §G — on_prompt observer.
         self.assertIsNotNone(
             spec.on_prompt,

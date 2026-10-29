@@ -39,10 +39,12 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 NODE="$REPO_ROOT/src/rob_box_voice/rob_box_voice/stt_node.py"
 HARNESS="$REPO_ROOT/.github/workflows/scripts/e2e_voice_test.sh"
+# Вердикт acceptance (#3906) живёт в e2e_tool_match.step_verdict: heredoc харнесса его только зовёт.
+VERDICT="$REPO_ROOT/.github/workflows/scripts/e2e_tool_match.py"
 WAKE="$REPO_ROOT/.github/workflows/scripts/e2e_voice_wake_gate.sh"
 TIMING="$REPO_ROOT/.github/workflows/scripts/e2e_timing.py"
 
-for f in "$NODE" "$HARNESS" "$WAKE" "$TIMING"; do
+for f in "$NODE" "$HARNESS" "$VERDICT" "$WAKE" "$TIMING"; do
     [ -f "$f" ] || { printf '❌ отсутствует: %s\n' "$f"; exit 1; }
 done
 
@@ -122,7 +124,7 @@ fi
 # CHECK 4. Питоновские паттерны (acceptance-чекер в харнессе + e2e_timing.py).
 # ---------------------------------------------------------------------------
 printf 'CHECK 4: питоновские паттерны извлекают фразу\n'
-python3 - "$HARNESS" "$TIMING" "$LINE" "$LEGACY" "$SAMPLE_TEXT" <<'PY' || fails=$((fails + 1))
+python3 - "$VERDICT" "$TIMING" "$LINE" "$LEGACY" "$SAMPLE_TEXT" <<'PY' || fails=$((fails + 1))
 import pathlib, re, sys
 
 for stream in (sys.stdout, sys.stderr):
@@ -133,7 +135,7 @@ for stream in (sys.stdout, sys.stderr):
 
 harness, timing, line, legacy, sample = sys.argv[1:6]
 bad = 0
-for label, path in (("e2e_voice_test.sh acceptance", harness), ("e2e_timing.py", timing)):
+for label, path in (("e2e_tool_match.step_verdict (acceptance)", harness), ("e2e_timing.py", timing)):
     src = pathlib.Path(path).read_text(encoding="utf-8")
     m = re.search(r're\.search\(r"(✅ ПРИНЯТО[^"]*)"', src)
     if not m:

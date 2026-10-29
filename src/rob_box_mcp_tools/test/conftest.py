@@ -24,12 +24,18 @@ import pytest
 # том, что в каталоге worktree тул есть). На colcon/CI рядом этих каталогов
 # может не быть — тогда ничего не трогаем.
 _SRC_DIR = Path(__file__).resolve().parents[2]
-_SIBLINGS = ("rob_box_llm", "rob_box_harness", "rob_box_voice", "rob_box_core")
+_SIBLINGS = ("rob_box_llm", "rob_box_harness", "rob_box_voice", "rob_box_core", "rob_box_dialog")
 for _pkg in _SIBLINGS:
     _pkg_root = str(_SRC_DIR / _pkg)
     _present = Path(_pkg_root, _pkg, "__init__.py").is_file()
     if _present and _pkg_root not in sys.path:
         sys.path.insert(0, _pkg_root)
+
+# ADR-0150 PR-2: mcp_server импортирует rob_box_dialog_msgs (rosidl, в unit-CI
+# не собран). Заглушка строится из настоящих .msg одним общим механизмом.
+from rob_box_core.msg_stub import install_dialog_msgs_stub  # noqa: E402
+
+install_dialog_msgs_stub()
 
 
 # ============================================================
@@ -123,6 +129,11 @@ class MockNode:
 
     def get_logger(self) -> MockLogger:
         return self._logger
+
+    def get_clock(self):
+        """stamp ``SpeechRequest`` (rob_box_core.speech_client.say, ADR-0150 PR-3)."""
+        stamp_cls = type(install_dialog_msgs_stub().SpeechRequest().stamp)
+        return Mock(now=lambda: Mock(to_msg=lambda: stamp_cls()))
 
     def create_publisher(self, msg_type, topic: str, qos: int = 10) -> MockPublisher:
         pub = MockPublisher(msg_type, topic, qos)

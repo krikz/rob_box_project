@@ -35,8 +35,7 @@ from rob_box_voice.core.music_turn import (
     turn_reply,
 )
 from rob_box_voice.core.set_length_words import heard_set_length
-from rob_box_voice.scheduler.task_scheduler import TaskScheduler
-from rob_box_voice.scheduler.tool_executor import SchedulerToolExecutor
+from rob_box_voice.core.plan_tools import PlanToolExecutor
 
 DJ_ARGS = {"action": "start", "theme": "ретро 8-бит"}
 DJ_OK = "{'ok': True, 'track_id': 'set98207:01:A:aa', 'set_id': 'set98207', 'started': True}"
@@ -106,7 +105,7 @@ def test_piece_launch_is_voiced_by_code_not_by_the_model():
 
 def test_executor_refuses_speak_text_after_a_piece_with_the_piece_message():
     underlying = _Underlying({"request_music": (False, PIECE_OK)})
-    executor = SchedulerToolExecutor(underlying, scheduler=None)
+    executor = PlanToolExecutor(underlying)
 
     async def _turn_calls():
         executor.begin_turn()
@@ -193,7 +192,7 @@ def _run(coro):
 def test_executor_refuses_speak_text_after_set_vs_request_refusal():
     """14:50 set98207 целиком на исполнителе: ``speak_text('Сет запустил…')`` не доходит до TTS."""
     underlying = _Underlying({"dj_set": (False, DJ_OK), "request_music": (True, SET_PLAYING_ERR)})
-    executor = SchedulerToolExecutor(underlying, scheduler=None)
+    executor = PlanToolExecutor(underlying)
 
     async def _turn_calls():
         executor.begin_turn()
@@ -213,22 +212,60 @@ def test_executor_lets_speech_through_after_a_started_launch_and_forgets_at_turn
     underlying = _Underlying({"request_music": (False, "{'ok': True}")})
 
     async def _turns():
-        sched = TaskScheduler()
-        sched.start()
-        executor = SchedulerToolExecutor(underlying, scheduler=sched)
-        try:
-            executor.begin_turn()
-            await executor.execute(ToolCall(id="1", name="request_music", arguments={"intent": "track"}))
-            rap = await executor.execute(ToolCall(id="2", name="speak_text", arguments={"text": "йо"}))
-            assert json.loads(rap.content)["status"] == "queued"
-            await asyncio.wait_for(sched.wait_all(), timeout=2.0)
-            executor.begin_turn()
-            return executor.music_turn.launches
-        finally:
-            sched.shutdown()
+        executor = PlanToolExecutor(underlying)
+        executor.begin_turn()
+        await executor.execute(ToolCall(id="1", name="request_music", arguments={"intent": "track"}))
+        rap = await executor.execute(ToolCall(id="2", name="speak_text", arguments={"text": "йо"}))
+        assert rap.is_error is False  # исход владельца, а не обещание очереди
+        executor.begin_turn()
+        return executor.music_turn.launches
 
     assert _run(_turns()) == []
     assert underlying.executed == ["request_music", "speak_text"]
+
+
+# ── звуковой эффект в ходе «включи звук X» (#3794, PR-7b #3698) ─────────────────
+
+SOUND_ARGS = {"sound": "robot_happy"}
+
+
+def test_sound_that_played_is_not_called_nothing_played():
+    """Живой прогон 21.10 15:39Z: «Робот, включи звук радостный» → play_sound done (SoundEvent started), звук
+    играл, а код music turn сказал «Ничего не заиграло — я мелодию не запускал». Грамматика читает «включи звук
+    радостный» как пьесу; исполненный звуковой эффект — не повод для фразы о музыке."""
+    from rob_box_voice.core.music_turn import piece_requested
+
+    assert piece_requested("Робот, включи звук радостный") is True  # причина ложной фразы
+    played = _turn(("play_sound", SOUND_ARGS, False, "Звук robot_happy заиграл."))
+    assert played.sounds == [True]
+    assert turn_reply(played, requested=False, voiced=1, piece=True) is None
+
+
+def test_sound_refused_busy_gives_one_phrase_the_sound_tools_not_nothing_played():
+    """Отказ ``skipped{busy}``: об исходе — фраза тула play_sound (её видит модель), второй фразы о музыке нет."""
+    refused = _turn(("play_sound", SOUND_ARGS, True, "Звук robot_happy не сыграл: другой звук ещё играет."))
+    assert refused.sounds == [False]
+    assert turn_reply(refused, requested=False, voiced=1, piece=True) is None
+
+
+def test_piece_asked_and_nothing_executed_is_still_nothing_played():
+    from rob_box_voice.core.media_phrases import NOT_PLAYED_TEXT
+
+    assert turn_reply(MusicTurn(), requested=False, voiced=0, piece=True) == NOT_PLAYED_TEXT
+
+
+def test_executor_records_the_sound_outcome_and_forgets_it_at_turn_boundary():
+    underlying = _Underlying({"play_sound": (False, "Звук robot_happy заиграл.")})
+    executor = PlanToolExecutor(underlying)
+
+    async def _turn_calls():
+        executor.begin_turn()
+        await executor.execute(ToolCall(id="1", name="play_sound", arguments=SOUND_ARGS))
+        recorded = list(executor.music_turn.sounds)
+        executor.begin_turn()
+        return recorded, list(executor.music_turn.sounds)
+
+    assert _run(_turn_calls()) == ([True], [])
 
 
 def test_turn_heard_text_is_the_human_phrase_and_retry_keeps_it():

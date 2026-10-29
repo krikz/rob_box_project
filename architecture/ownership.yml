@@ -1,7 +1,332 @@
 schema_version: 1
 # Human-reviewed ownership map.
 # Do not infer canonical ownership from names alone.
-nodes: {}
-topics: {}
+#
+# ADR-0150 PR-2 (#3687) заполняет карту владельцев диалога: топики с префиксами
+#   /dialog/*  /voice/speech/*  /voice/expression/*  /voice/providers/*
+#   /voice/stt/*  /voice/speaker/*  /voice/music/*  /telegram/*  /avatar/session
+# Гард scripts/lint/ownership_check.py (G-Lint Code):
+#   (а) каждый топик этих префиксов, который код публикует через create_publisher,
+#       объявлен здесь и имеет owner;
+#   (б) писателей в коде не больше writers_allowed (узел определяется по
+#       nodes.<имя>.source), а запись runtime-baseline.json multiple_writers для
+#       такого топика несёт номер PR-долга (поле debt).
+#
+# Поля топика:
+#   owner            узел-владелец состояния (единственный, кто вправе менять смысл топика)
+#   type             тип сообщения
+#   status           live - публикуется кодом сегодня; planned - вводится в PR introduced_by
+#   writers_allowed  полный список узлов-писателей; шире списка писать нельзя
+#   readers          реальные читатели на 20.10.2026 (planned - ожидаемые по ADR-0150)
+#   introduced_by    PR эпика #3683, вводящий топик (planned); списки writers_allowed/readers
+#                    у planned-топиков - ожидаемые по ADR-0150, их уточняет этот PR
+#   debt             что ещё держит лишнего читателя/писателя и какой PR снимает
+
+nodes:
+  stt_node:
+    owner: voice
+    package: rob_box_voice
+    # #4145: эхо-окно и решение «эхо речи робота» (core/echo_window.py, watch) публикуют /voice/stt/echo из stt_node
+    source: [src/rob_box_voice/rob_box_voice/stt_node.py, src/rob_box_voice/rob_box_voice/core/echo_window.py]
+  speaker_id_node:
+    owner: voice
+    package: rob_box_voice
+    source: [src/rob_box_voice/rob_box_voice/speaker_id_node.py]
+  command_node:
+    owner: voice
+    package: rob_box_voice
+    source: [src/rob_box_voice/rob_box_voice/command_node.py]
+  telegram_node:
+    owner: telegram
+    package: rob_box_telegram
+    source: ["src/rob_box_telegram/rob_box_telegram/*.py"]
+  mcp_server:
+    owner: tools
+    package: rob_box_mcp_tools
+    # тулы исполняются внутри процесса mcp_server (tools/dialogue.py публикует register_speaker)
+    source:
+      - src/rob_box_mcp_tools/rob_box_mcp_tools/mcp_server.py
+      - "src/rob_box_mcp_tools/rob_box_mcp_tools/tools/*.py"
+      - "src/rob_box_mcp_tools/rob_box_mcp_tools/engine/*.py"
+      - "src/rob_box_mcp_tools/rob_box_mcp_tools/core/*.py"
+  context_aggregator_node:
+    owner: perception
+    package: rob_box_perception
+    source: [src/rob_box_perception/rob_box_perception/context_aggregator_node.py]
+  vision_face_node:
+    owner: perception
+    package: rob_box_perception
+    source: [src/rob_box_perception/rob_box_perception/vision_face_node.py]
+  quest_node:
+    owner: quest
+    package: rob_box_quest
+    source: ["src/rob_box_quest/rob_box_quest/quest_node.py", "src/rob_box_quest/rob_box_quest/core/*.py"]
+  supervisor_node:
+    owner: supervisor
+    package: rob_box_supervisor
+    source: [src/rob_box_supervisor/rob_box_supervisor/supervisor_node.py,
+             src/rob_box_supervisor/rob_box_supervisor/operator_turns.py]
+  # Узлы ниже вводятся эпиком #3683 (status planned у их топиков).
+  dialog_node:
+    owner: dialog-v2
+    package: rob_box_dialog
+    # ADR-0150 PR-8 (#3702): ROS-хост v2 — rob_box_voice/dialog_node.py (dialog_engine: v2), транспорт хода —
+    # core/dialog_v2_ports.py; /dialog/plan_event публикует core/plan_host.py (планировщик ресурсов, PR-7b #3699;
+    # до PR-15 15p #3711 файл числился за нодой v1)
+    source: ["src/rob_box_dialog/rob_box_dialog/*.py", src/rob_box_voice/rob_box_voice/dialog_node.py,
+             src/rob_box_voice/rob_box_voice/core/dialog_v2_ports.py, src/rob_box_voice/rob_box_voice/core/plan_host.py]
+  tts_node:
+    owner: voice
+    package: rob_box_voice
+    # PR-3 (#3688): владелец речи - журнал/события/огибающая. Адаптер старых JSON-входов (speech_compat) удалён в
+    # PR-15 части 15-core (#3711): речь приходит только как SpeechRequest.
+    source:
+      - src/rob_box_voice/rob_box_voice/tts_node.py
+      - src/rob_box_voice/rob_box_voice/core/speech_owner.py
+  speech_client:
+    owner: voice
+    package: rob_box_core
+    # PR-3 (#3688): единственный клиент речи (say/cancel), один публикатор на ноду.
+    # say: mcp_server (speak_text, say), stt_node («не расслышал»), telegram_node,
+    # supervisor_node (грип), joystick_control_node (rob_box_teleop, автор system; PR-15 часть 15-0d:
+    # образ teleop собирает rob_box_dialog_msgs); cancel: dialog_node, quest_node (stt_node речь не глушит с PR-5 #3694).
+    source: [src/rob_box_core/rob_box_core/speech_client.py]
+  provider_publisher:
+    owner: voice
+    package: rob_box_core
+    # PR-4 ч.2 (#3693): писатель /voice/providers/state своего вида; ставят tts_node (tts), stt_node (stt),
+    # mcp_server (music_gen); вид llm пишет dialog_node. Переиздаёт раз в 2 с.
+    source: [src/rob_box_core/rob_box_core/provider_publisher.py]
+  face_node:
+    owner: dialog-v2
+    package: rob_box_animations
+    # PR-3a (#3689): лицо в контейнере led-matrix на Vision Pi; решает FaceDirector.
+    source:
+      - src/rob_box_animations/rob_box_animations/face_node.py
+      - src/rob_box_animations/rob_box_animations/face_director.py
+  led_node:
+    owner: voice
+    package: rob_box_voice
+    # PR-3b (#3690): кольцо LED ReSpeaker - исполнитель рефлексов хода (core/ring_reflex.py), Sound Pi.
+    source: [src/rob_box_voice/rob_box_voice/led_node.py]
+  sound_node:
+    owner: voice
+    package: rob_box_voice
+    # PR-3b (#3690): earcon'ы рефлексов и play_sound; на каждый запрос - SoundEvent (вместо молчаливого return).
+    source: [src/rob_box_voice/rob_box_voice/sound_node.py]
+  expression_client:
+    owner: dialog-v2
+    package: rob_box_core
+    # PR-3b (#3690): единственный писатель ExpressionRequest и TurnEvent (один публикатор каждого вида на ноду);
+    # зовёт его dialog_node (v2).
+    source: [src/rob_box_core/rob_box_core/expression_client.py]
+
+topics:
+  # -- Вход речи и собеседник (PR-2: оба топика типизированы) ------------------
+  /voice/stt/utterance:
+    owner: stt_node
+    type: rob_box_dialog_msgs/Utterance
+    status: live
+    # telegram_node пишет сообщения чата и кнопки меню (source=telegram|operator);
+    # различает писателей поле Utterance.source, не имя топика.
+    writers_allowed: [stt_node, telegram_node]
+    # v2 (PR-12a #3706): source=telegram читает dialog_node как вход телеграм-агента, не Личности;
+    # speaker_id_node (#4145): фраза ReSpeaker ушла в диалог - вердикт «не эхо» для профилей (core/echo_window.listen)
+    readers: [dialog_node, context_aggregator_node, speaker_id_node]
+    debt: "context_aggregator_node - мёртвый контур internal_dialogue, решение о удалении за координатором (command_node с PR-5 #3694 получает /dialog/intent)"
+  /voice/stt/echo:
+    owner: stt_node
+    type: rob_box_dialog_msgs/Utterance
+    status: live
+    introduced_by: "#4145"
+    # фраза ReSpeaker, признанная эхом речи робота (core/echo_window.Admission.echo): в диалог не идёт;
+    # speaker_id_node по ней профиль не заводит и не растит (core/echo_window.EchoVerdicts)
+    writers_allowed: [stt_node]
+    readers: [speaker_id_node]
+  /voice/stt/speaker:
+    owner: stt_node
+    type: std_msgs/String
+    status: live
+    writers_allowed: [stt_node]
+    readers: []
+    debt: "читатель был только у ноды v1 (удалена в PR-15 15p #3711); писатель stt_node уходит в части 15t карты docs/dialog/pr15_removal_map.md"
+  /voice/stt/state:
+    owner: stt_node
+    type: std_msgs/String
+    status: live
+    writers_allowed: [stt_node]
+    readers: []
+  /voice/speaker/result:
+    owner: speaker_id_node
+    type: rob_box_dialog_msgs/SpeakerResult
+    status: live
+    writers_allowed: [speaker_id_node]
+    # ADR-0150 §2.3 называет единственным читателем dialog_node; в коде 20.10 читают ещё четверо
+    # (память, лицо, шлем): они берут тот же типизированный снимок, а не свой парсер JSON.
+    readers: [dialog_node, mcp_server, vision_face_node, quest_node]
+    debt: "лишние читатели оставляем: идентичность для памяти/лица/ТАРС до ADR-0130 этапа 3 (реестр Знакомых); PR-5b (#3695) переводит диалог на SpeakerRef"
+  /voice/speaker/register:
+    owner: mcp_server
+    type: std_msgs/String
+    status: live
+    # тул register_speaker (mcp_server) просит зарегистрировать голос; второй писатель (переспрос ноды v1) удалён в
+    # PR-15 15p (#3711)
+    writers_allowed: [mcp_server]
+    readers: [speaker_id_node]
+  /voice/speaker/rename:
+    owner: mcp_server
+    type: std_msgs/String
+    status: live
+    # тул register_speaker с old_name (mcp_server) переименовывает профиль; второй писатель (нода v1, #3801) удалён в
+    # PR-15 15p (#3711)
+    writers_allowed: [mcp_server]
+    readers: [speaker_id_node]
+  # /voice/speaker/{merge,observe,epithet}: единственный писатель — нода v1, удалена в PR-15 15p (#3711); записи сняты.
+  # Мёртвые подписки speaker_id_node на них (и писатель epithet_request) удаляются по Q6 карты PR-15.
+  /voice/speaker/epithet_request:
+    owner: speaker_id_node
+    type: std_msgs/String
+    status: live
+    writers_allowed: [speaker_id_node]
+    readers: []
+    debt: "читатель был только у ноды v1 (удалена в PR-15 15p #3711); писатель speaker_id_node удаляется по Q6 карты PR-15"
+  # -- Музыка: владелец плеера v2 (ADR-0149 §2.3) ------------------------------
+  /voice/music/state:
+    owner: mcp_server
+    type: std_msgs/String
+    status: live
+    writers_allowed: [mcp_server]
+    readers: [dialog_node, quest_node]
+  /voice/music/event:
+    owner: mcp_server
+    type: std_msgs/String
+    status: live
+    writers_allowed: [mcp_server]
+    readers: [dialog_node]
+  # -- Эпик #3683: топики вводятся вместе с потребителем в своём PR ------------
+  /voice/speech/request:
+    owner: tts_node
+    type: rob_box_dialog_msgs/SpeechRequest
+    status: live
+    # публикует только клиент rob_box_core.speech_client.say (вызывающие - в nodes.speech_client)
+    writers_allowed: [speech_client]
+    # stt_node (#4145): журнал речи эхо-окна - текст реплики робота по speech_id (core/echo_window.SpeechJournal)
+    readers: [tts_node, stt_node]
+  /voice/speech/cancel:
+    owner: tts_node
+    type: rob_box_dialog_msgs/SpeechCancel
+    status: live
+    # speech_client.cancel: dialog_node (ясная стоп-команда, /dialog/interrupt_request), quest_node (PTT)
+    writers_allowed: [speech_client]
+    readers: [tts_node]
+  /voice/speech/event:
+    owner: tts_node
+    type: rob_box_dialog_msgs/SpeechEvent
+    status: live
+    writers_allowed: [tts_node]
+    # audio_node, stt_node - эхо-гейты микрофона (PR-15 15-0b #3711, вместо String-топика состояния TTS);
+    # speaker_id_node - якорь роста галереи ждёт конца своей речи по финалу SpeechEvent (PR-15 15-0c #3711)
+    readers: [mcp_server, face_node, telegram_node, audio_node, stt_node, speaker_id_node]
+  /voice/speech/envelope:
+    owner: tts_node
+    type: rob_box_dialog_msgs/SpeechEnvelope
+    status: live
+    writers_allowed: [tts_node]
+    readers: [face_node]
+  /voice/expression/request:
+    owner: dialog_node
+    type: rob_box_dialog_msgs/ExpressionRequest
+    status: live
+    introduced_by: "PR-3b (#3690)"
+    # писатель один - клиент expression_client; решение об экспрессии принимает агент-владелец хода (expression.py)
+    writers_allowed: [expression_client]
+    readers: [face_node, sound_node]
+  /voice/expression/event:
+    owner: dialog_node
+    type: rob_box_dialog_msgs/ExpressionEvent
+    status: live
+    introduced_by: "PR-3b (#3690)"
+    # три исполнителя by-design (ADR-0150 §5.5.2): каждый отвечает событием со своим executor (face|ring|sound)
+    writers_allowed: [face_node, led_node, sound_node]
+    readers: [expression_client]
+  /voice/providers/state:
+    owner: tts_node
+    type: rob_box_dialog_msgs/ProviderStateArray
+    status: live
+    introduced_by: "PR-4 (#3693)"
+    # писатели по видам (by-design, ADR-0150 §2.3/§8): tts_node - kind=tts, stt_node - kind=stt, dialog_node -
+    # kind=llm, mcp_server - kind=music_gen; каждый публикует только свои ProviderState[], подписчик сливает по (kind, name).
+    # Почему переиздание раз в 2 с: поздний подписчик по transient_local получает не всех писателей (rmw_zenoh, PR #3729) -
+    # корректность от переиздания, запись без обновлений 10 с = unknown.
+    writers_allowed: [provider_publisher, dialog_node]
+    readers: [dialog_node]
+  /dialog/session:
+    owner: dialog_node
+    type: rob_box_dialog_msgs/SessionState
+    status: live
+    introduced_by: "PR-5b (#3695)"
+    # собеседник (SpeakerRef с азимутом фразы) и кадр Identity; пишет dialog_node (писатель v1 удалён в PR-15 15p #3711)
+    writers_allowed: [dialog_node]
+    readers: [face_node]
+  /dialog/turn_event:
+    owner: dialog_node
+    type: rob_box_dialog_msgs/TurnEvent
+    status: live
+    introduced_by: "PR-3b (#3690)"
+    # стадии хода addressed|thinking|executing|speaking|done|failed|timeout; пишет dialog_node через клиент
+    writers_allowed: [expression_client]
+    readers: [led_node]
+  /dialog/plan_event:
+    owner: dialog_node
+    type: rob_box_dialog_msgs/PlanEvent
+    status: live
+    introduced_by: "PR-7b (#3699)"
+    # queued{after, eta}/rejected/block_start планировщика ресурсов; пишет dialog_node (core/plan_host.py),
+    # читатель — агент v2 (PR-8); до него наблюдатель — лог «🗓️ [plan] PlanEvent» и ros2 topic echo
+    writers_allowed: [dialog_node]
+    readers: []
+  /dialog/interrupt_request:
+    owner: stt_node
+    type: rob_box_dialog_msgs/InterruptRequest
+    status: live
+    introduced_by: "PR-5 (#3694)"
+    # сегмент фразы с вейком (partial/final); решает диалог: ясная стоп-команда - SpeechCancel по эпохе
+    writers_allowed: [stt_node]
+    readers: [dialog_node]
+  /dialog/intent:
+    owner: dialog_node
+    type: rob_box_dialog_msgs/Intent
+    status: live
+    introduced_by: "PR-5 (#3694)"
+    # пишет dialog_node (писатель v1 удалён в PR-15 15p #3711); supervisor_node - «стой» ТАРС v2
+    # (Tier-1 стоп оператора гасит движение, PR-13b #3708)
+    writers_allowed: [dialog_node, supervisor_node]
+    readers: [command_node]
+  /dialog/output:
+    owner: dialog_node
+    type: rob_box_dialog_msgs/DialogOutput
+    status: live
+    introduced_by: "PR-12a (#3706)"
+    # v2: ответ и фразы об исходе телеграм-агента своему чату (channel_ref telegram:<chat_id>); при v1 - эхо
+    # /voice/dialogue/response, его удалит PR-15
+    writers_allowed: [dialog_node]
+    readers: [telegram_node]
+  /telegram/session:
+    # сессии чатов живут в dialog_node (rob_box_dialog.chats, PR-12a); снимок наружу пока не публикуется
+    owner: dialog_node
+    type: rob_box_dialog_msgs/SessionState
+    status: planned
+    introduced_by: "PR-12a (#3706)"
+    writers_allowed: [dialog_node]
+    readers: []
+  /avatar/session:
+    # сессию ТАРС ведёт агент оператора в avatar-supervisor (ADR-0150 §2.3), не dialog_node
+    owner: supervisor_node
+    type: rob_box_dialog_msgs/SessionState
+    status: planned
+    introduced_by: "PR-S1 (#3709)"
+    writers_allowed: [supervisor_node]
+    readers: [dialog_node]
+
 capabilities: {}
 features: {}

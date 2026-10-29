@@ -139,9 +139,83 @@ def test_users_import_the_shared_helper() -> None:
     ``sound_node`` в списке нет намеренно: его копия была мёртвой, и
     вместе с ней ушёл и импорт. Появится вызов — появится и импорт,
     предыдущий тест не даст объявить копию.
+
+    ``tts_node`` берёт ``silence_alsa_errors`` (один раз при старте), а не
+    ``ignore_stderr`` (#3730: подмена fd 2 вокруг ``play_audio`` съедала
+    ``SpeechEvent``-строки соседних потоков).
     """
-    for name in ("audio_node.py", "tts_node.py"):
+    expected = {
+        "audio_node.py": "from .utils.stderr_silence import ignore_stderr",
+        "tts_node.py": "from .utils.stderr_silence import silence_alsa_errors",
+    }
+    for name, import_line in expected.items():
         source = (_VOICE / name).read_text(encoding="utf-8")
-        assert "from .utils.stderr_silence import ignore_stderr" in source, (
-            f"{name} вызывает ignore_stderr, но не импортирует общий хелпер"
-        )
+        assert import_line in source, f"{name} вызывает хелпер, но не импортирует его из общего модуля"
+
+
+# ── silence_alsa_errors (#3730): один раз на процесс, fd 2 не трогаем ─────────
+
+
+class _FakeAsound:
+    """``libasound``: запоминает, какой обработчик ему поставили."""
+
+    def __init__(self) -> None:
+        self.handlers: list = []
+
+    def snd_lib_error_set_handler(self, handler) -> None:
+        self.handlers.append(handler)
+
+
+def _install_fake_asound(monkeypatch, asound) -> None:
+    monkeypatch.setattr(_stderr_silence, "_alsa_handler", None)
+    monkeypatch.setattr(_stderr_silence.ctypes.util, "find_library", lambda _name: "libasound-fake")
+    monkeypatch.setattr(_stderr_silence.ctypes.cdll, "LoadLibrary", lambda _name: asound, raising=False)
+
+
+def test_silence_alsa_errors_installs_a_noop_handler_once(monkeypatch) -> None:
+    """Повторные вызовы ничего не переустанавливают; обработчик молчит и не падает."""
+    asound = _FakeAsound()
+    _install_fake_asound(monkeypatch, asound)
+
+    assert _stderr_silence.silence_alsa_errors() is True
+    assert _stderr_silence.silence_alsa_errors() is True
+
+    assert len(asound.handlers) == 1
+    # ALSA вызывает обработчик как (file, line, function, err, fmt, ...): он обязан проглотить вызов.
+    assert asound.handlers[0](b"pcm.c", 1, b"snd_pcm_open", 2, b"Unknown PCM %s") is None
+
+
+def test_silence_alsa_errors_without_libasound_is_a_noop(monkeypatch) -> None:
+    """Windows / CI без ``libasound``: ``False``, ничего не падает, следующий вызов пробует снова."""
+    monkeypatch.setattr(_stderr_silence, "_alsa_handler", None)
+    monkeypatch.setattr(_stderr_silence.ctypes.util, "find_library", lambda _name: None)
+
+    def _missing(_name):
+        raise OSError("libasound.so.2: cannot open shared object file")
+
+    monkeypatch.setattr(_stderr_silence.ctypes.cdll, "LoadLibrary", _missing, raising=False)
+
+    assert _stderr_silence.silence_alsa_errors() is False
+    assert _stderr_silence.silence_alsa_errors() is False
+    assert _stderr_silence._alsa_handler is None
+
+
+def test_silence_alsa_errors_leaves_fd2_alone(monkeypatch, tmp_path) -> None:
+    """Глушилка ALSA не подменяет fd 2: строка лога из любого потока доходит до stderr."""
+    _install_fake_asound(monkeypatch, _FakeAsound())
+    sink = tmp_path / "stderr.log"
+    saved = os.dup(2)
+    try:
+        fd = os.open(str(sink), os.O_WRONLY | os.O_CREAT | os.O_TRUNC | _O_BINARY)
+        try:
+            os.dup2(fd, 2)
+        finally:
+            os.close(fd)
+
+        assert _stderr_silence.silence_alsa_errors() is True
+        _write_to_fd2(b"SpeechEvent synthesized\n")
+    finally:
+        os.dup2(saved, 2)
+        os.close(saved)
+
+    assert sink.read_bytes() == b"SpeechEvent synthesized\n"

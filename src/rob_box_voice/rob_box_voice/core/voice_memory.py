@@ -20,14 +20,12 @@ Usage in DialogueNode:
     from rob_box_voice.core.voice_memory import VoiceMemory
 
     # Init once at node startup
-    self.voice_memory = VoiceMemory(db_path="/data/voice_memory.db")
+    self.voice_memory = VoiceMemory(db_path=tools_db_path())  # rob_box_core.tools_db
 
-    # Reload context from previous sessions
+    # Reload context from previous sessions (turns go into the caller's own history;
+    # the old ConversationHistory class was removed in PR-15 15a1, #3711)
     for turn in self.voice_memory.load_recent_turns(limit=15, exclude_current_session=True):
-        if turn["role"] == "user":
-            self.conversation_history.add_user_message(turn["content"])
-        else:
-            self.conversation_history.add_assistant_message(turn["content"])
+        restored.append((turn["role"], turn["content"]))
 
     # After every user message:
     self.voice_memory.save_turn("user", text)
@@ -41,6 +39,7 @@ Usage in DialogueNode:
 
 import logging
 import os
+import re
 import sqlite3
 import struct
 import threading
@@ -64,6 +63,16 @@ except ImportError:
 # ---------------------------------------------------------------------------
 # Ollama embeddings (lazy, gracefully degrades)
 # ---------------------------------------------------------------------------
+
+def query_words(query: str) -> List[str]:
+    """Слова запроса: casefold + только буквы/цифры (#3890).
+
+    Знаки препинания не часть слова: ``«чай,»`` раньше искалось как
+    подстрока ``чай,`` и не находило ни факт, ни реплику. Одно общее
+    правило токенизации для поиска по фактам и по FTS5-репликам.
+    """
+    return re.findall(r"\w+", query.casefold())
+
 
 class OllamaEmbedder:
     """
@@ -203,7 +212,7 @@ class VoiceMemory:
         # instead was tried and reverted: that directory is a single
         # numbered stream covering SEVERAL unrelated databases (waypoints,
         # music library, github presets...), and running it wholesale
-        # against ``voice_memory.db`` hit a non-idempotent ``ALTER TABLE
+        # against the tools DB hit a non-idempotent ``ALTER TABLE
         # ... ADD COLUMN type`` in ``006_music_github_presets.sql`` —
         # "duplicate column name: type" — because an earlier migration in
         # that SAME stream had already added it via a different table.
@@ -564,7 +573,7 @@ class VoiceMemory:
         """
         Return recent turns in chronological order (oldest first).
 
-        Intended for startup context restoration into ConversationHistory.
+        Intended for startup context restoration: the caller puts the turns into its own history.
 
         Args:
             limit:                    Max number of turns.
@@ -705,7 +714,7 @@ class VoiceMemory:
         """
         if limit <= 0:
             return []
-        tokens = [t for t in query.casefold().split() if t]
+        tokens = query_words(query)
         if not tokens:
             return []
 
@@ -770,8 +779,7 @@ class VoiceMemory:
         speaker_id: Optional[str] = None,
     ) -> List[Dict]:
         """FTS5 BM25 search using a normalized prefix-OR query."""
-        normalized = query.casefold()
-        tokens = [f'"{w}"*' for w in normalized.split() if w]
+        tokens = [f'"{w}"*' for w in query_words(query)]
         if not tokens:
             return []
         fts_query = " OR ".join(tokens)

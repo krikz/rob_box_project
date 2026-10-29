@@ -3,22 +3,30 @@
 test_audio_node_echo.py — Unit-тесты анти-эхо гейтов audio_node (issue 989).
 
 Проверяет:
-- Fix B: grace period после TTS — VAD не считается речью (tts_active,
-  _tts_ended_at, tts_grace_s).
+- Fix B после #4072: своего эхо-окна у audio_node нет — VAD не гейтится ни
+  во время речи робота (barge-in #993), ни после неё; начатая фраза на
+  фронте речи не сбрасывается, чистится только pre-roll. Эхо после реплики
+  режет stt_node (core/echo_window.py).
 - Fix C: при активной музыке (music_active=True) программный гейт по RMS
   (music_vad_min_db) подавляет VAD, порог поднимается на ReSpeaker.
 
 Тест НЕ требует rclpy/железа: AudioNode.__init__ замокан через MagicMock,
-тестируем именно чистую логику _vad_gated / _on_tts_state / _on_music_state.
+тестируем именно чистую логику _vad_gated / _on_robot_speech (SpeechEvent) / _on_music_state.
 """
 
 from __future__ import annotations
 
 import sys
-import time
 from unittest.mock import MagicMock
 
 import pytest
+from rob_box_dialog_msgs.msg import SpeechEvent  # заглушка из .msg (test/conftest.py) или rosidl
+
+
+def _speech(node, kind: int, sid: str = "s1", agent: str = "personality") -> None:
+    """SpeechEvent владельца речи через подписку ноды на /voice/speech/event — вход эхо-гейта (PR-15 15-0b)."""
+    node.subscriptions_by_topic["/voice/speech/event"](SpeechEvent(kind=kind, speech_id=sid, agent=agent))
+
 
 _OPTIONAL_DEPS = {
     "rclpy": True,
@@ -157,7 +165,6 @@ def _make_audio_node_stub(**param_overrides):
         speech_prefetch=0.5,
         speech_min_duration=0.3,
         speech_max_duration=10.0,
-        tts_grace_s=2.5,
         music_vad_threshold=6.0,
         music_vad_min_db=-35.0,
         # Issue #1764: по умолчанию barge-in с музыкой ВКЛЮЧЁН (AEC ReSpeaker
@@ -190,7 +197,14 @@ def _make_audio_node_stub(**param_overrides):
         debug=lambda *a, **kw: None,
     )
     node.create_publisher = lambda *a, **kw: MagicMock()
-    node.create_subscription = lambda *a, **kw: MagicMock()
+    # подписки по топику: SpeechEvent доставляется через настоящую подписку ноды (watch_speaking)
+    node.subscriptions_by_topic = {}
+
+    def _subscribe(msg_type, topic, callback, *a, **kw):
+        node.subscriptions_by_topic[topic] = callback
+        return MagicMock()
+
+    node.create_subscription = _subscribe
     node.create_timer = lambda *a, **kw: MagicMock()
     node.get_clock = lambda: MagicMock(now=MagicMock(return_value=MagicMock(nanoseconds=0)))
 
@@ -206,7 +220,6 @@ def _make_audio_node_stub(**param_overrides):
     node.vad_pub = MagicMock()
     node.direction_pub = MagicMock()
     node.state_pub = MagicMock()
-    node.tts_control_pub = MagicMock()
     return node
 
 
@@ -216,16 +229,25 @@ def audio_node():
 
 
 class TestTTSGraceGate:
-    """Fix B (989) + Fix 993 barge-in:
+    """Fix B (989) + Fix 993 barge-in + #4072:
 
-    - После окончания TTS в течение tts_grace_s — VAD не речь (эхо).
     - Во время самого TTS VAD НЕ гейтится (issue 993): barge-in должен
       работать. Wake-word gate в dialogue_node отсекает эхо без
       помощи VAD-гейта.
+    - После TTS VAD тоже не гейтится (#4072): глухой микрофон в паузе
+      между сегментами выступления съедал «Робот, хватит». Эхо после
+      реплики режет stt_node по месту голоса (core/echo_window.py).
     """
 
-    def test_default_grace_2_5s(self, audio_node):
-        assert audio_node.tts_grace_s == 2.5
+    def test_audio_node_has_no_echo_window_of_its_own(self, audio_node):
+        """#4072: эхо-окно одно — у stt_node; параметра и метки конца речи здесь нет."""
+        assert not hasattr(audio_node, "tts_grace_s")
+        assert not hasattr(audio_node, "_tts_ended_at")
+
+    def test_gate_listens_to_speech_event_not_the_old_string_topic(self, audio_node):
+        """PR-15 15-0b (#3711): речь робота — SpeechEvent; старого String-топика состояния TTS нода не слушает."""
+        assert "/voice/speech/event" in audio_node.subscriptions_by_topic
+        assert "/voice/tts/state" not in audio_node.subscriptions_by_topic
 
     def test_vad_true_during_tts_active_for_barge_in(self, audio_node):
         """Issue 993: во время TTS VAD пропускает речь — barge-in работает.
@@ -233,52 +255,72 @@ class TestTTSGraceGate:
         Раньше (Fix B из 989) VAD гейтился пока робот говорит, поэтому
         пользователь не мог перебить рэп командой. Теперь гейт снят —
         wake-word в dialogue_node сам отсекает эхо собственного голоса.
-        Симулируем «TTS сейчас играет» через _on_tts_state(playing):
+        Симулируем «TTS сейчас играет» через SpeechEvent started:
         он выставляет tts_active=True, и _vad_gated пропускает VAD
         (issue 993 barge-in).
         """
         audio_node.music_active = False
-        playing = MagicMock()
-        playing.data = "playing"
-        audio_node._on_tts_state(playing)
+        _speech(audio_node, SpeechEvent.KIND_STARTED)
         assert audio_node.tts_active is True
         assert audio_node._vad_gated(True) is True  # barge-in!
 
-    def test_vad_false_inside_grace_after_tts(self, audio_node):
-        audio_node.tts_active = False
-        audio_node.tts_grace_s = 2.5
-        audio_node._tts_ended_at = time.monotonic() - 1.0  # 1с назад — внутри grace
-        assert audio_node._vad_gated(True) is False
-
-    def test_vad_true_outside_grace(self, audio_node):
-        audio_node.tts_active = False
-        audio_node.tts_grace_s = 2.5
-        audio_node._tts_ended_at = time.monotonic() - 10.0  # вне grace
+    def test_vad_true_right_after_tts(self, audio_node):
+        """#4072: сразу после реплики (пауза между сегментами) микрофон слышит."""
         audio_node.music_active = False
+        _speech(audio_node, SpeechEvent.KIND_STARTED)
+        _speech(audio_node, SpeechEvent.KIND_FINISHED)
+        assert audio_node.tts_active is False
         assert audio_node._vad_gated(True) is True
 
     def test_vad_false_when_hardware_silence(self, audio_node):
         audio_node.tts_active = False
-        audio_node._tts_ended_at = 0.0  # «давно, не в grace»
         assert audio_node._vad_gated(False) is False
 
-    def test_tts_state_transitions(self, audio_node):
-        """_on_tts_state: playing → reset буфера, ready → grace с timestamp."""
-        audio_node.speech_audio_buffer = b"some-echo-data"
+    def test_speech_event_transitions(self, audio_node):
+        """SpeechEvent: фронты чистят pre-roll, а начатую фразу не трогают (#4072).
+
+        Фраза, начатая в паузе между сегментами («Робот, хв…»), идёт дальше
+        через старт следующего сегмента — раньше её сброс оставлял STT
+        хвост без вейка («замолчи», марафон 27.10 n805)."""
+        audio_node.speech_audio_buffer = b"robot, hva"
+        audio_node.speech_prefetch_buffer = b"pre-roll"
         audio_node.is_speeching = True
 
-        playing = MagicMock()
-        playing.data = "playing"
-        audio_node._on_tts_state(playing)
+        _speech(audio_node, SpeechEvent.KIND_STARTED)
         assert audio_node.tts_active is True
-        assert audio_node.speech_audio_buffer == b""  # эхо сброшено
-        assert audio_node.is_speeching is False
+        assert audio_node.speech_audio_buffer == b"robot, hva"  # фраза человека цела
+        assert audio_node.is_speeching is True
+        assert audio_node.speech_prefetch_buffer == b""
 
-        ready = MagicMock()
-        ready.data = "ready"
-        audio_node._on_tts_state(ready)
+        audio_node.speech_prefetch_buffer = b"robot voice"
+        _speech(audio_node, SpeechEvent.KIND_FINISHED)
         assert audio_node.tts_active is False
-        assert audio_node._tts_ended_at > 0.0  # момент окончания зафиксирован
+        assert audio_node.speech_prefetch_buffer == b""  # хвост собственного голоса — не pre-roll
+        assert audio_node._vad_gated(True) is True  # эхо-окно — у stt_node
+
+    @pytest.mark.parametrize("end", ["KIND_CANCELLED", "KIND_REJECTED"])
+    def test_cancel_and_reject_end_speech_too(self, audio_node, end):
+        """STOP/barge-in (cancelled) и отказ (rejected) — тоже конец: tts_active не залипает."""
+        _speech(audio_node, SpeechEvent.KIND_STARTED)
+        _speech(audio_node, getattr(SpeechEvent, end))
+        assert audio_node.tts_active is False
+
+    def test_overlapping_speech_keeps_gate_until_the_last_ends(self, audio_node):
+        """Оператор поверх личности: конец одной реплики, пока звучит другая, — не конец речи."""
+        _speech(audio_node, SpeechEvent.KIND_STARTED, "a")
+        _speech(audio_node, SpeechEvent.KIND_STARTED, "op", agent="operator")
+        _speech(audio_node, SpeechEvent.KIND_FINISHED, "a")
+        assert audio_node.tts_active is True
+        _speech(audio_node, SpeechEvent.KIND_FINISHED, "op", agent="operator")
+        assert audio_node.tts_active is False
+
+    def test_queued_and_synthesized_are_not_speech(self, audio_node):
+        """Синтез без звука (queued/synthesized, пред-синтез выступления) — не речь: буфер фразы не трогаем."""
+        audio_node.speech_audio_buffer = b"user-speech"
+        for kind in (SpeechEvent.KIND_QUEUED, SpeechEvent.KIND_SYNTHESIZED):
+            _speech(audio_node, kind)
+        assert audio_node.tts_active is False
+        assert audio_node.speech_audio_buffer == b"user-speech"
 
 
 class TestMusicStrictGate:
@@ -357,7 +399,6 @@ class TestMusicStrictGate:
         уровень сигнала ниже music_vad_min_db → VAD подавлен."""
         self._disable_barge_in_with_music(audio_node)
         audio_node.tts_active = False
-        audio_node._tts_ended_at = 0.0  # «давно, не в grace»
         audio_node.music_active = True
         audio_node.music_vad_min_db = -35.0
         audio_node._current_db = -50.0  # тихо — это музыка/шум
@@ -369,7 +410,6 @@ class TestMusicStrictGate:
         но уровень сигнала высокий (голос поверх) → VAD проходит."""
         self._disable_barge_in_with_music(audio_node)
         audio_node.tts_active = False
-        audio_node._tts_ended_at = 0.0
         audio_node.music_active = True
         audio_node.music_vad_min_db = -35.0
         audio_node._current_db = -20.0  # громко — голос поверх музыки
@@ -413,7 +453,6 @@ class TestBargeInWithMusic:
         # barge_in_with_music=True — дефолт в _make_audio_node_stub.
         assert audio_node.barge_in_with_music is True
         audio_node.tts_active = False
-        audio_node._tts_ended_at = 0.0  # вне grace
         audio_node.music_active = True
         # _current_db = -100.0 (тишина) — в legacy-режиме VAD подавлен;
         # в новом режиме RMS вообще не проверяется.
@@ -425,7 +464,6 @@ class TestBargeInWithMusic:
         """Issue #1764: даже громкая музыка не давит VAD."""
         assert audio_node.barge_in_with_music is True
         audio_node.tts_active = False
-        audio_node._tts_ended_at = 0.0
         audio_node.music_active = True
         audio_node._current_db = -10.0  # очень громко
 
@@ -435,7 +473,6 @@ class TestBargeInWithMusic:
         """Issue #1764: barge_in_with_music=True не ломает базовый гейт —
         если аппаратный VAD=False, VAD остаётся False."""
         audio_node.tts_active = False
-        audio_node._tts_ended_at = 0.0
         audio_node.music_active = True
 
         assert audio_node._vad_gated(False) is False
@@ -473,7 +510,6 @@ class TestBargeInWithMusic:
         Если RMS ниже music_vad_min_db, VAD подавлен (защита без AEC)."""
         audio_node.barge_in_with_music = False
         audio_node.tts_active = False
-        audio_node._tts_ended_at = 0.0
         audio_node.music_active = True
         audio_node.music_vad_min_db = -35.0
         audio_node._current_db = -50.0  # тихо
@@ -489,16 +525,16 @@ class TestBargeInWithMusic:
 
         assert audio_node._vad_gated(True) is True
 
-    def test_tts_grace_still_suppresses_after_tts(self, audio_node):
-        """TTS grace (issue 989 Fix B) активен — VAD подавлен даже во время
-        музыки: эхо собственного голоса режется первым."""
-        audio_node.tts_active = False
-        audio_node.tts_grace_s = 2.5
-        audio_node._tts_ended_at = time.monotonic() - 1.0  # 1с назад — в grace
+    def test_right_after_tts_with_music_vad_passes(self, audio_node):
+        """#4072: сразу после реплики поверх трека VAD проходит — «робот,
+        выключи музыку» в паузе между сегментами слышен; эхо собственного
+        голоса режет stt_node по месту голоса (core/echo_window.py)."""
+        _speech(audio_node, SpeechEvent.KIND_STARTED)
+        _speech(audio_node, SpeechEvent.KIND_FINISHED)
         audio_node.music_active = True
         audio_node.barge_in_with_music = True
 
-        assert audio_node._vad_gated(True) is False
+        assert audio_node._vad_gated(True) is True
 
 
 class TestInputOverflowHandling:
@@ -975,7 +1011,6 @@ class TestTelemetrySilenceToPhrase:
         audio_node.speech_audio_pub = MagicMock()
         audio_node.prev_vad = False
         audio_node.tts_active = False
-        audio_node._tts_ended_at = 0.0
         audio_node.music_active = False
         audio_node.respeaker = MagicMock()
         audio_node.respeaker.is_connected = MagicMock(return_value=True)

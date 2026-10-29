@@ -9,6 +9,7 @@ from rclpy.node import Node
 from rclpy.qos import QoSProfile, ReliabilityPolicy, DurabilityPolicy
 from std_msgs.msg import Bool, Int32, String
 from audio_common_msgs.msg import AudioData
+from rob_box_core.speech_client import watch_speaking
 import pyaudio
 import usb.core
 import threading
@@ -16,6 +17,7 @@ import time
 from typing import Optional
 
 from .core.music_player_state import MUSIC_STATE_TOPIC, parse_music_state
+from .core.speech_split import publish_speech_chunks
 from .utils.audio_utils import find_respeaker_device, list_audio_devices, calculate_rms, calculate_db
 from .utils.respeaker_interface import ReSpeakerInterface
 from .utils.stderr_silence import ignore_stderr
@@ -76,11 +78,9 @@ class AudioNode(Node):
         self.declare_parameter('audio_heartbeat_file', '/tmp/rob_box_audio_heartbeat')
         self.declare_parameter('device_name', 'ReSpeaker 4 Mic Array')
 
-        # Issue 989 Fix B: grace period после окончания TTS — не начинать
-        # накопление речи (и не публиковать VAD=True) пока робот говорит
-        # или в течение tts_grace_s секунд после. Иначе эхо собственного
-        # голоса/музыки захватывается как «речь» и замыкает петлю.
-        self.declare_parameter('tts_grace_s', 2.5)
+        # Issue 989 Fix B (эхо-окно после речи робота) здесь больше не живёт (#4072): микрофон слышит всегда,
+        # а что звучало только в окне после реплики, решает stt_node (core/echo_window.py). Глухой VAD в паузе
+        # между сегментами выступления съедал «Робот, хватит».
         # Issue 989 Fix C: при активной музыке поднимаем порог VAD на
         # ReSpeaker (GAMMAVAD_SR) и дополнительно гейтим по уровню RMS —
         # музыка не должна триггерить VAD как речь.
@@ -126,8 +126,7 @@ class AudioNode(Node):
         self.audio_heartbeat_file = str(
             self.get_parameter('audio_heartbeat_file').value or ''
         )
-        # Issue 989: параметры анти-эхо.
-        self.tts_grace_s = float(self.get_parameter('tts_grace_s').value)
+        # Issue 989: параметры анти-эхо (музыка; эхо-окно речи — у stt_node, #4072).
         self.music_vad_threshold = float(self.get_parameter('music_vad_threshold').value)
         self.music_vad_min_db = float(self.get_parameter('music_vad_min_db').value)
         # Issue #1764: см. declare_parameter ниже.
@@ -149,12 +148,13 @@ class AudioNode(Node):
         self.vad_pub = self.create_publisher(Bool, '/audio/vad', 10)
         self.direction_pub = self.create_publisher(Int32, '/audio/direction', 10)
         self.state_pub = self.create_publisher(String, '/audio/state', 10)
-        self.tts_control_pub = self.create_publisher(String, '/voice/tts/control', 10)  # Для прерывания TTS
 
-        # Issue 989: подписки на состояние TTS и музыки для анти-эхо гейтов.
-        # /voice/tts/state — "synthesizing"/"playing" пока робот говорит,
-        # "ready"/"idle" после. Используем для grace period (Fix B).
-        self.create_subscription(String, '/voice/tts/state', self._on_tts_state, 10)
+        # Issue 989: подписки на речь робота и музыку для анти-эхо гейтов.
+        # /voice/speech/event — речь робота (PR-15 15-0b #3711, раньше старый
+        # String-топик состояния TTS): «говорит», пока звучит реплика любого агента
+        # (SpeakingWatch: started ... finished|cancelled|rejected). На фронтах
+        # чистится pre-roll; эхо-окно после речи — у stt_node (#4072).
+        self._robot_speech = watch_speaking(self, self._on_robot_speech)
         # /voice/music/state — снимок плеера от mcp_server (Fix C, с #3133 —
         # JSON, ADR-0141): при активной музыке поднимаем порог VAD, чтобы бит
         # не триггерил речь. Latched (TRANSIENT_LOCAL, depth 1) как у
@@ -213,7 +213,7 @@ class AudioNode(Node):
         # Yandex empty, на -26 dB OK — но VAD на ReSpeaker порогом 3.5dB режет
         # первые 100-200ms тихой речи). 1.5s = 2.5x запас к 600ms и покрывает
         # даже сценарий «пользователь говорит "робот" ровно в момент окончания
-        # TTS» (1.5s после tts_state=ready ещё не наполнилось тишиной).
+        # TTS» (1.5s после конца речи робота ещё не наполнилось тишиной).
         self.declare_parameter('speech_prefetch', 1.5)      # Буфер перед началом речи (issue #1117: 1.0 → 1.5s)
         self.declare_parameter('speech_min_duration', 0.3)  # Минимальная длительность
         self.declare_parameter('speech_max_duration', 15.0) # Максимальная длительность (секунды)
@@ -261,10 +261,8 @@ class AudioNode(Node):
         self._vad_doa_warn_period_ns: int = int(60.0 * 1e9)  # 60 секунд
 
         # Issue 989: анти-эхо состояние.
-        # TTS: True пока робот говорит (synthesizing/playing); после перехода
-        # в ready/idle запоминаем момент окончания для grace period.
+        # TTS: True пока звучит речь робота (SpeechEvent started ... finished/cancelled/rejected).
         self.tts_active: bool = False
-        self._tts_ended_at: float = 0.0  # монотонное время окончания TTS
         # Музыка: True когда mcp_server сообщил "playing" на /voice/music/state.
         self.music_active: bool = False
         # Текущий уровень сигнала (dB) для программного гейта VAD (Fix C).
@@ -830,48 +828,40 @@ class AudioNode(Node):
         )
 
     # ------------------------------------------------------------------
-    # Issue 989: анти-эхо гейты (Fix B — grace после TTS, Fix C — музыка)
+    # Issue 989: анти-эхо гейты (Fix C — музыка; эхо-окно речи — stt_node, #4072)
     # ------------------------------------------------------------------
-    def _on_tts_state(self, msg: String) -> None:
-        """Следим за состоянием TTS: пока робот говорит — не трогаем VAD.
+    def _on_robot_speech(self, speaking: bool) -> None:
+        """Фронт речи робота (``SpeechEvent``): VAD не трогаем ни во время речи, ни после неё.
 
-        Issue 989 Fix B: при переходе в speaking-состояние сбрасываем
-        накопленный буфер (это почти наверняка эхо предыдущей фразы) и
-        запоминаем момент окончания TTS для grace period (tts_grace_s).
+        «Звучит» решает ``SpeakingWatch`` (реплика любого агента от
+        ``started`` до ``finished|cancelled|rejected``, ``watch_speaking``);
+        здесь — только реакция на фронты: чистим pre-roll, чтобы хвост
+        прошлого звука не встал в начало следующего захвата (иначе STT
+        склеит «…роберт» из обрывка).
 
         Issue 993 barge-in: НЕ гейтим VAD пока робот говорит — wake-word
-        gate в dialogue_node отсекает эхо собственного голоса, а
-        пользователь может перебить рэп/ответ командой «робот, добавь
-        музыку».
+        gate в диалоге отсекает эхо собственного голоса, а пользователь
+        может перебить рэп/ответ командой «робот, добавь музыку».
+
+        #4072: после речи VAD тоже не гейтится, и начатая фраза на фронте
+        не сбрасывается. Выступление звучит сегментами с паузой 1–2 с:
+        глухой микрофон в паузе и сброс буфера на старте следующего
+        сегмента съедали «Робот, хватит» (до STT доезжало «замолчи»).
+        Эхо собственного голоса после реплики режет stt_node: фраза,
+        чей голос звучал только в эхо-окне, проходит лишь ясным стопом
+        с вейком (core/echo_window.py).
         """
-        state = (msg.data or "").strip()
-        if state in ("synthesizing", "playing"):
-            if not self.tts_active:
-                self.get_logger().info(
-                    "🔇 [issue 993] TTS активен — VAD пропускает речь "
-                    "(barge-in через wake-word gate)"
-                )
-                # Сбрасываем незавершённое накопление — это эхо, не речь.
-                self.speech_audio_buffer = b""
-                self.is_speeching = False
-                # Pre-roll тоже чистим: старый буфер мог содержать хвост
-                # предыдущей фразы, который не должен попасть в начало
-                # следующего захвата (иначе STT склеит «…роберт» из обрывка).
-                self.speech_prefetch_buffer = b""
-            self.tts_active = True
-        # ``tts_silero_warming`` — чанк пропущен и озвучен не будет,
-        # то есть речь кончилась. Без него ``tts_active`` залипал.
-        elif state in ("ready", "idle", "stopped", "tts_silero_warming"):
-            if self.tts_active:
-                self._tts_ended_at = time.monotonic()
-                self.get_logger().info(
-                    f"🔇 [issue 989] TTS закончился — grace {self.tts_grace_s}s"
-                )
-                # Pre-roll очищаем ПОСЛЕ TTS: если этого не сделать, первый
-                # захват после ответа робота получит pre-roll с хвостом
-                # собственного голоса → STT слышит «…роберт» вместо «робот».
-                self.speech_prefetch_buffer = b""
-            self.tts_active = False
+        if speaking:
+            self.get_logger().info(
+                "🔇 [issue 993] TTS активен — VAD пропускает речь "
+                "(barge-in через wake-word gate)"
+            )
+        else:
+            self.get_logger().info(
+                "🔇 [issue 989/#4072] TTS закончился — VAD слушает, эхо-окно решает stt_node"
+            )
+        self.speech_prefetch_buffer = b""
+        self.tts_active = bool(speaking)
 
     def _on_music_state(self, msg: String) -> None:
         """Состояние музыки от mcp_server (Fix C).
@@ -942,15 +932,14 @@ class AudioNode(Node):
     def _vad_gated(self, vad: bool) -> bool:
         """Применить анти-эхо гейты к аппаратному VAD.
 
-        Возвращает эффективное значение VAD с учётом:
-        - TTS grace period (issue 989 Fix B): в течение tts_grace_s после
-          окончания TTS — False (эхо собственного голоса).
-          НЕ гейтим VAD пока робот говорит (issue 993 barge-in): эхо
-          отсекается wake-word gate в dialogue_node._on_stt_result
-          (строка ~411 «has_wake_word»), поэтому во время рэпа/ответа
-          пользователь может перебить робот командой «робот, …» —
-          barge-in работает.
-        - активной музыки (Fix C): требуем программный порог по RMS
+        Возвращает эффективное значение VAD с учётом активной музыки
+        (Fix C): программный порог по RMS.
+
+        Речь робота VAD не гейтит — ни во время неё (issue 993 barge-in:
+        пользователь перебивает рэп/ответ командой «робот, …»), ни после
+        (#4072: в паузе между сегментами выступления микрофон был глух).
+        Эхо собственного голоса после реплики режет stt_node по тому, где
+        звучал голос фразы (core/echo_window.py), а не глухота здесь.
 
         Issue #1764 (TRACK/Renardo barge-in): если barge_in_with_music=True
         И музыка активна — НЕ гейтим VAD по RMS. AEC на ReSpeaker Ch1
@@ -961,15 +950,6 @@ class AudioNode(Node):
         Legacy-поведение (barge_in_with_music=False) сохранено для
         сценариев без AEC (микрофон сырой, e2e через стену).
         """
-        # Issue 993 barge-in: пока TTS активен — НЕ гейтим. Эхо
-        # отсекается wake-word gate в dialogue_node.
-        if self.tts_active:
-            # VAD дальше пройдёт проверки (если vad=True и музыка не
-            # слишком громкая). Это разрешает пользователю перебить рэп.
-            pass
-        elif time.monotonic() - self._tts_ended_at < self.tts_grace_s:
-            # После TTS в течение tts_grace_s — это эхо.
-            return False
         if not vad:
             return False
         if self.music_active:
@@ -1009,7 +989,7 @@ class AudioNode(Node):
             if vad is None:
                 return  # Ошибка чтения, пропускаем
 
-            # Issue 989: анти-эхо гейты (TTS grace + музыка strict mode).
+            # Issue 989: анти-эхо гейт музыки (strict mode); эхо-окно речи — у stt_node (#4072).
             vad_eff = self._vad_gated(bool(vad))
 
             if vad_eff != self.prev_vad:
@@ -1063,7 +1043,7 @@ class AudioNode(Node):
                 # Вычисляем длительность
                 duration = len(buf) / (self.sample_rate * 2)  # 16-bit = 2 bytes
 
-                if self.speech_min_duration <= duration <= self.speech_max_duration:
+                if duration >= self.speech_min_duration:
                     self.get_logger().info(f'✅ Речь распознана: {duration:.2f}с')
                     # Issue 1076 (телеметрия): честный «замолчал → фраза готова»
                     # = time_since_stop (>= speech_continuation), а НЕ 0. Раньше
@@ -1074,10 +1054,11 @@ class AudioNode(Node):
                         f"📊 [telemetry] silence_to_phrase_s={time_since_stop:.2f} "
                         f"(speech_continuation={self.speech_continuation})"
                     )
-                    # Публикуем speech_audio
-                    msg = AudioData()
-                    msg.data = list(buf)
-                    self.speech_audio_pub.publish(msg)
+                    # Публикуем speech_audio; речь длиннее speech_max_duration
+                    # режется на куски, а не выбрасывается (issue #3762).
+                    publish_speech_chunks(
+                        buf, self.speech_audio_pub, AudioData, self.get_logger(),
+                        self.sample_rate, self.speech_max_duration, self.speech_min_duration)
                     # Issue #2701: первая успешная фраза сбрасывает счётчик
                     # empty-speech детектора — захват точно живой. Вынесено
                     # в отдельный метод (ADR-0021 R1 CC-budget guard, см.

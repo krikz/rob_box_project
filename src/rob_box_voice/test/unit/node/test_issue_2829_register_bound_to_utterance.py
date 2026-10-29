@@ -67,6 +67,7 @@ from rob_box_voice.utils.speaker_embeddings import (  # noqa: E402
     SpeakerDatabase,
     SpeakerMatch,
 )
+from rob_box_core.speaker_wire import speaker_result_to_payload  # noqa: E402
 
 
 class _Embed:
@@ -97,7 +98,7 @@ class _FakePublisher:
         self.messages: list[dict] = []
 
     def publish(self, msg) -> None:
-        self.messages.append(json.loads(msg.data))
+        self.messages.append(speaker_result_to_payload(msg))
 
 
 def _msg(payload):
@@ -152,6 +153,18 @@ def _wait_until(predicate, timeout=1.0, interval=0.01):
     return predicate()
 
 
+def _wait_registered(node, timeout=2.0):
+    """Ждать ack ``registered`` (#4093): профиль и его эмбеддинг записаны, транзакция закоммичена.
+
+    Не ``list_speakers() != []``: ``SpeakerDatabase.register`` в одной транзакции сначала вставляет строку профиля, потом
+    её эмбеддинг, а соединение общее на все потоки (``check_same_thread=False``) - читатель из другого потока видит
+    промежуточное состояние («Борис», 0 эмбеддингов), и ``identify`` в этом окне возвращает ``None``. Ack публикуется
+    после ``commit`` в том же потоке, поэтому после него состояние БД окончательное."""
+    assert _wait_until(
+        lambda: any(m.get("event") == "registered" for m in node._result_pub.messages), timeout=timeout
+    ), f"ack registered не пришёл за {timeout} с: {node._result_pub.messages}"
+
+
 # ---------------------------------------------------------------------------
 # 1. utterance_id present, embedding already there -- happy path
 # ---------------------------------------------------------------------------
@@ -169,11 +182,7 @@ def test_register_with_matching_embedding_registers_immediately(node):
     # publish(ack) оба происходят в ТОМ ЖЕ потоке, но GIL может
     # переключиться на этот (главный) поток между ними, и polling по
     # одной лишь БД -- гонка.
-    _wait_until(
-        lambda: any(
-            m.get("event") == "registered" for m in node._result_pub.messages
-        )
-    )
+    _wait_registered(node)
 
     speakers = node._db.list_speakers()
     assert len(speakers) == 1
@@ -194,7 +203,8 @@ def test_register_does_not_pick_a_different_utterance_embedding(node):
     node._recent_embeddings.append((time.time(), emb2, 4.0, "utt-2"))
 
     node._on_register_request(_msg({"name": "Борис", "utterance_id": "utt-2"}))
-    _wait_until(lambda: node._db.list_speakers() != [])
+    # #4093: ack, а не первое появление профиля в list_speakers() (строка профиля видна раньше его эмбеддинга).
+    _wait_registered(node)
 
     stored = node._db.identify(emb2, threshold=0.99)
     assert stored is not None and stored.name == "Борис"
@@ -204,6 +214,29 @@ def test_register_does_not_pick_a_different_utterance_embedding(node):
     assert other is not None
     same = node._db.identify(emb2, threshold=0.0)
     assert same.confidence > other.confidence
+
+
+def test_register_ack_comes_after_the_embedding_is_stored(node, monkeypatch):
+    """#4093: окно между вставкой профиля и вставкой его эмбеддинга сделано широким (запись эмбеддинга тормозится) -
+    ack ``registered`` приходит всё равно после обеих и коммита: профиль с одним эмбеддингом, ``identify`` его находит.
+    Опрос ``list_speakers() != []`` в этом окне вернул бы ``("Ольга", 0)`` и ``identify`` -> ``None`` (детерминированное
+    воспроизведение флака)."""
+    emb = _embedding(40)
+    real_blob = node._db._ndarray_to_blob
+
+    def slow_blob(arr):
+        time.sleep(0.15)
+        return real_blob(arr)
+
+    monkeypatch.setattr(node._db, "_ndarray_to_blob", slow_blob)
+    node._recent_embeddings.append((time.time(), emb, 4.0, "utt-slow"))
+
+    node._on_register_request(_msg({"name": "Ольга", "utterance_id": "utt-slow"}))
+    _wait_registered(node)
+
+    assert [(s["name"], s["embeddings"]) for s in node._db.list_speakers()] == [("Ольга", 1)]
+    match = node._db.identify(emb, threshold=0.99)
+    assert match is not None and match.name == "Ольга"
 
 
 # ---------------------------------------------------------------------------
@@ -218,10 +251,11 @@ def test_register_waits_briefly_for_late_embedding(node):
     emb = _embedding(30)
     node._recent_embeddings.append((time.time(), emb, 4.0, "utt-late"))
 
-    _wait_until(lambda: node._db.list_speakers() != [], timeout=1.0)
+    _wait_registered(node)
 
     speakers = node._db.list_speakers()
     assert len(speakers) == 1 and speakers[0]["name"] == "Аня"
+    assert speakers[0]["embeddings"] == 1
 
 
 def test_register_gives_up_honestly_after_wait_window(node):

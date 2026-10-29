@@ -1,0 +1,9 @@
+2026-10-26T15:52:02Z spec_y_probe.json CALLS yandex=20 minimax=0
+2026-10-26T15:52:50Z spec_y_scr.json CALLS yandex=48 minimax=0
+2026-10-26T16:11:49Z spec_m_scr.json CALLS yandex=0 minimax=70
+2026-10-26T16:13:09Z spec_y_nw.json CALLS yandex=39 minimax=0
+2026-10-26T16:45:36Z spec_b1.json CALLS yandex=15 minimax=88
+2026-10-26T17:13:30Z spec_b2.json CALLS yandex=0 minimax=40
+2026-10-26T17:26:53Z spec_b3.json CALLS yandex=0 minimax=24
+2026-10-26T17:36:03Z spec_c1.json CALLS yandex=0 minimax=56
+2026-10-26T18:01:46Z spec_d1.json CALLS yandex=0 minimax=8

@@ -47,7 +47,8 @@ from rob_box_mcp_tools.tools.dialogue import (  # noqa: E402
     _normalise_provider_name,
     _validate_provider,
 )
-from rob_box_mcp_tools.voice_state import VoiceStateStore  # noqa: E402
+from rob_box_mcp_tools.voice_request import VoiceOutcome  # noqa: E402
+from rob_box_voice.tts_voice_registry import PROVIDER_VOICES  # noqa: E402
 
 
 def _published_payloads(tool, topic: str) -> list[dict]:
@@ -104,252 +105,161 @@ class TestProviderValidationHelpers:
             assert name is None
 
 
-# ── SetVoiceTool(provider=...) — issue #1765 ────────────────────────────
+# ── set_voice / set_tts_provider: просьба владельцу голоса + фраза по событию (PR-4 ч.3, #3693) ──────────
+
+
+class _FakeRequests:
+    """Подмена ``voice_requests(node)``: запоминает просьбы, отвечает заранее заданным исходом."""
+
+    def __init__(self, outcome=None) -> None:
+        self.calls: list[tuple[str, str]] = []
+        self.outcome = outcome
+
+    def request(self, voice: str, provider: str = "", wait_s: float = 0.0) -> VoiceOutcome:
+        self.calls.append((voice, provider))
+        return self.outcome or VoiceOutcome("applied", voice, voice or "anton", provider or "minimax")
+
+
+@pytest.fixture
+def fake_requests(monkeypatch):
+    fake = _FakeRequests()
+    monkeypatch.setattr("rob_box_mcp_tools.tools.dialogue.voice_requests", lambda node: fake)
+    return fake
+
+
+def _active(mock_node, provider: str) -> None:
+    mock_node._declared_params = {"tts_provider": provider}
+    mock_node.get_parameter = lambda n: type("P", (), {"value": mock_node._declared_params.get(n, provider)})()
 
 
 class TestSetVoiceToolWithProvider:
-    """Optional provider param switches TTS provider BEFORE voice validation."""
+    """Тул ничего не хранит, не публикует голос и не говорит: просит владельца и отдаёт исход данными (фразу строит диалог)."""
 
     def test_schema_includes_provider_param(self, mock_node) -> None:
         tool = SetVoiceTool(mock_node)
         params = {p.name: p for p in tool.parameters}
-        assert "voice" in params
         assert params["voice"].required is True
-        assert "provider" in params
         assert params["provider"].required is False
-        # enum must restrict to known providers
         assert set(params["provider"].enum) == set(SUPPORTED_TTS_PROVIDERS)
 
-    def test_voice_only_keeps_active_provider(self, mock_node) -> None:
-        """No provider= → behaves like before #1765 (active provider)."""
-        mock_node._declared_params = {"tts_provider": "minimax"}
-        mock_node.get_parameter = lambda n: type(
-            "P", (), {"value": mock_node._declared_params.get(n, "minimax")}
-        )()
-        tool = SetVoiceTool(mock_node)
-        result = tool.execute(voice="female-shaonv")
+    def test_voice_only_asks_owner_without_provider(self, mock_node, fake_requests) -> None:
+        _active(mock_node, "minimax")
+        result = SetVoiceTool(mock_node).execute(voice="female-shaonv")
+        assert fake_requests.calls == [("female-shaonv", "")]
         assert result.success is True
-        assert result.data["provider"] == "minimax"
+        assert result.data["voice_applied"] == "female-shaonv"
         assert result.data["provider_switched"] is False
-        # No set_provider publish on no-switch.
-        pub_payloads = _published_payloads(tool, "/voice/tts/set_provider")
-        assert pub_payloads == [], (
-            "without provider= there must be NO /voice/tts/set_provider publish"
-        )
+        assert result.data["status"] == "applied" and result.data["voice_default"] is False
 
-    def test_cross_provider_voice_succeeds(self, mock_node) -> None:
-        """Issue #1765 — «Яндекс Захар» на minimax переключает на yandex.
+    def test_voice_tools_stay_silent_the_dialog_speaks_the_outcome(self, mock_node, fake_requests) -> None:
+        """Живое 28.10: тул озвучивал исход сам (``speak_text``), а код диалога - свою фразу рядом: две реплики на ход."""
+        mock_node.registry = Mock()
+        _active(mock_node, "minimax")
+        SetVoiceTool(mock_node).execute(voice="female-shaonv")
+        SetVoiceTool(mock_node).execute(voice="default")
+        SetTtsProviderTool(mock_node).execute(provider="yandex")
+        SetTtsProviderTool(mock_node).execute(provider="minimax")
+        mock_node.registry.execute.assert_not_called()
 
-        «zahar» — реальный yandex-голос (PROVIDER_VOICES['yandex']),
-        не существует у minimax. Без provider= вернулось бы
-        voice_unavailable. С provider='yandex' — успех.
-        """
-        mock_node._declared_params = {"tts_provider": "minimax"}
-        mock_node.get_parameter = lambda n: type(
-            "P", (), {"value": mock_node._declared_params.get(n, "minimax")}
-        )()
-        tool = SetVoiceTool(mock_node)
-        result = tool.execute(voice="zahar", provider="yandex")
-        assert result.success is True, (
-            f"expected success for cross-provider voice switch, got: "
-            f"{result.error} / {result.message}"
-        )
-        assert result.data["voice_set"] == "zahar"
+    def test_cross_provider_asks_owner_with_provider(self, mock_node, fake_requests) -> None:
+        _active(mock_node, "minimax")
+        fake_requests.outcome = VoiceOutcome("applied", "zahar", "zahar", "yandex")
+        result = SetVoiceTool(mock_node).execute(voice="zahar", provider="yandex")
+        assert fake_requests.calls == [("zahar", "yandex")]
+        assert result.success is True
         assert result.data["provider"] == "yandex"
         assert result.data["previous_provider"] == "minimax"
         assert result.data["provider_switched"] is True
-        # Publish в /voice/tts/set_provider — tts_node должен пересобрать chain.
-        # NB: MockNode uses unittest.mock.Mock which returns the SAME
-        # mock object for repeated std_msgs.msg.String() calls — so we
-        # can only assert that AT LEAST ONE message was published on
-        # the set_provider topic. The actual JSON content is verified
-        # via the live integration (e2e harness).
-        pub_payloads = _published_payloads(tool, "/voice/tts/set_provider")
-        assert len(pub_payloads) >= 1, (
-            "expected at least one /voice/tts/set_provider publish on "
-            "cross-provider switch"
-        )
 
-    def test_same_provider_no_switch_publish(self, mock_node) -> None:
-        """provider='minimax' при активном minimax — no-op, без publish."""
-        mock_node._declared_params = {"tts_provider": "minimax"}
-        mock_node.get_parameter = lambda n: type(
-            "P", (), {"value": mock_node._declared_params.get(n, "minimax")}
-        )()
-        tool = SetVoiceTool(mock_node)
-        result = tool.execute(voice="male-qn-qingse", provider="minimax")
-        assert result.success is True
-        assert result.data["provider_switched"] is False
-        assert result.data["previous_provider"] is None
-        # Same provider → no set_provider publish (no chain rebuild needed).
-        assert _published_payloads(tool, "/voice/tts/set_provider") == []
+    def test_unavailable_voice_is_reported_by_code_not_success(self, mock_node, fake_requests) -> None:
+        _active(mock_node, "yandex")
+        fake_requests.outcome = VoiceOutcome("fallback", "female-shaonv", "anton", "yandex", "voice_unavailable")
+        result = SetVoiceTool(mock_node).execute(voice="female-shaonv", provider="yandex")
+        assert result.success is False
+        assert result.data["voice_applied"] == "anton"
+        assert (result.data["status"], result.data["reason"]) == ("fallback", "voice_unavailable")
+        assert (result.data["requested_name"], result.data["voice_name"]) == ("female-shaonv", "Антон")
+        assert "zahar" in result.data["available"]
 
-    def test_unknown_provider_returns_error(self, mock_node) -> None:
-        """Опечатка в имени провайдера → provider_unknown, голос не сохранён."""
-        tool = SetVoiceTool(mock_node)
-        result = tool.execute(voice="zahar", provider="yandeх")  # 'х' cyrillic
+    def test_no_confirmation_from_owner_is_honest(self, mock_node, fake_requests) -> None:
+        _active(mock_node, "minimax")
+        fake_requests.outcome = VoiceOutcome("timeout", "zahar", "", "yandex")
+        result = SetVoiceTool(mock_node).execute(voice="zahar", provider="yandex")
+        assert result.success is False
+        assert (result.data["status"], result.data["reason"]) == ("timeout", "timeout")
+        assert "voice_default" not in result.data  # применённого голоса нет - «обычный» не утверждаем
+        assert "установлен" not in result.message
+
+    def test_unknown_provider_returns_error_without_request(self, mock_node, fake_requests) -> None:
+        result = SetVoiceTool(mock_node).execute(voice="zahar", provider="yandeх")  # 'х' cyrillic
         assert result.success is False
         assert result.data["error"] == "provider_unknown"
-        assert "yandeх" in result.data["requested"]
-        assert set(result.data["supported"]) == set(SUPPORTED_TTS_PROVIDERS)
-        # Voice НЕ сохраняется в store.
-        assert tool._voice_store.get_voice() is None
+        assert fake_requests.calls == []
 
-    def test_provider_normalises_case_and_whitespace(self, mock_node) -> None:
-        """'  YANDEX  ' → 'yandex' (валидно), chain rebuild работает."""
-        mock_node._declared_params = {"tts_provider": "minimax"}
-        mock_node.get_parameter = lambda n: type(
-            "P", (), {"value": mock_node._declared_params.get(n, "minimax")}
-        )()
-        tool = SetVoiceTool(mock_node)
-        result = tool.execute(voice="zahar", provider="  YANDEX  ")
-        assert result.success is True
-        assert result.data["provider"] == "yandex"
-        assert result.data["provider_switched"] is True
+    def test_provider_normalises_case_and_whitespace(self, mock_node, fake_requests) -> None:
+        _active(mock_node, "minimax")
+        SetVoiceTool(mock_node).execute(voice="zahar", provider="  YANDEX  ")
+        assert fake_requests.calls == [("zahar", "yandex")]
 
-    def test_cross_provider_voice_unavailable_after_switch(
-        self, mock_node
-    ) -> None:
-        """Голос «female-shaonv» (minimax-only) с provider='yandex' → fail."""
-        mock_node._declared_params = {"tts_provider": "minimax"}
-        mock_node.get_parameter = lambda n: type(
-            "P", (), {"value": mock_node._declared_params.get(n, "minimax")}
-        )()
-        tool = SetVoiceTool(mock_node)
-        result = tool.execute(voice="female-shaonv", provider="yandex")
-        assert result.success is False
-        assert result.data["error"] == "voice_unavailable"
-        # Валидация идёт по target_provider (yandex), а не по active (minimax).
-        assert result.data["provider"] == "yandex"
-        # female-shaonv нет в yandex-списке, но zahar есть.
-        assert "zahar" in result.data["available"]
-        assert "female-shaonv" not in result.data["available"]
-
-    def test_empty_voice_still_rejected(self, mock_node) -> None:
-        tool = SetVoiceTool(mock_node)
-        result = tool.execute(voice="   ", provider="yandex")
-        assert result.success is False
-        assert result.error == "voice_empty"
-
-    def test_voice_store_persists_cross_provider(self, mock_node) -> None:
-        """После успешного cross-provider set_voice — voice_store помнит голос."""
-        mock_node._declared_params = {"tts_provider": "minimax"}
-        mock_node.get_parameter = lambda n: type(
-            "P", (), {"value": mock_node._declared_params.get(n, "minimax")}
-        )()
-        store = VoiceStateStore()
-        tool = SetVoiceTool(mock_node, voice_store=store)
-        tool.execute(voice="zahar", provider="yandex")
-        # Voice state хранит голос ИМЕННО от yandex (не от старого minimax).
-        assert store.get_voice() == "zahar"
-
-    def test_voice_state_published_with_target_provider(self, mock_node) -> None:
-        """current_voice публикуется с target_provider (после возможного switch).
-
-        NB: MockNode использует ``unittest.mock.Mock`` для ``std_msgs.msg.String``,
-        который возвращает ОДИН И ТОТ ЖЕ объект на каждый вызов ``String()`` —
-        поэтому в MockPublisher.published_messages остаётся только последний
-        msg. Проверяем, что публикация вообще произошла; точный payload
-        проверяется через live e2e harness.
-        """
-        mock_node._declared_params = {"tts_provider": "minimax"}
-        mock_node.get_parameter = lambda n: type(
-            "P", (), {"value": mock_node._declared_params.get(n, "minimax")}
-        )()
-        tool = SetVoiceTool(mock_node)
-        tool.execute(voice="zahar", provider="yandex")
-        payloads = _published_payloads(tool, "/voice/tts/current_voice")
-        assert len(payloads) >= 1, (
-            "expected at least one /voice/tts/current_voice publish after "
-            "cross-provider set_voice"
-        )
-
-
-# ── SetTtsProviderTool — issue #1765 ────────────────────────────────────
+    def test_empty_voice_still_rejected(self, mock_node, fake_requests) -> None:
+        result = SetVoiceTool(mock_node).execute(voice="   ", provider="yandex")
+        assert result.success is False and result.error == "voice_empty"
+        assert fake_requests.calls == []
 
 
 class TestSetTtsProviderTool:
-    """Dedicated TTS provider switcher; sets default voice of new provider."""
+    """Переключение провайдера целиком: пустой голос = дефолт нового провайдера (его выбирает владелец)."""
 
     def test_schema_includes_provider_required(self, mock_node) -> None:
-        tool = SetTtsProviderTool(mock_node)
-        params = {p.name: p for p in tool.parameters}
-        assert "provider" in params
+        params = {p.name: p for p in SetTtsProviderTool(mock_node).parameters}
         assert params["provider"].required is True
         assert set(params["provider"].enum) == set(SUPPORTED_TTS_PROVIDERS)
 
-    def test_switch_publishes_set_provider(self, mock_node) -> None:
-        """set_tts_provider('yandex') на активном minimax публикует set_provider."""
-        mock_node._declared_params = {"tts_provider": "minimax"}
-        mock_node.get_parameter = lambda n: type(
-            "P", (), {"value": mock_node._declared_params.get(n, "minimax")}
-        )()
-        tool = SetTtsProviderTool(mock_node)
-        result = tool.execute(provider="yandex")
+    def test_switch_asks_owner_for_default_voice(self, mock_node, fake_requests) -> None:
+        _active(mock_node, "minimax")
+        result = SetTtsProviderTool(mock_node).execute(provider="yandex")
+        assert fake_requests.calls == [("", "yandex")]
         assert result.success is True
-        assert result.data["provider"] == "yandex"
         assert result.data["previous_provider"] == "minimax"
         assert result.data["provider_switched"] is True
-        # Дефолтный голос yandex — anton.
-        assert result.data["default_voice"] == "anton"
-        # Publish в /voice/tts/set_provider (проверяем только факт;
-        # точный payload — через live e2e harness).
-        pub_payloads = _published_payloads(tool, "/voice/tts/set_provider")
-        assert len(pub_payloads) >= 1, (
-            "expected at least one /voice/tts/set_provider publish on switch"
-        )
 
-    def test_switch_to_same_provider_is_noop(self, mock_node) -> None:
-        """Активный уже yandex → set_tts_provider('yandex') — no-op."""
-        mock_node._declared_params = {"tts_provider": "yandex"}
-        mock_node.get_parameter = lambda n: type(
-            "P", (), {"value": mock_node._declared_params.get(n, "minimax")}
-        )()
-        tool = SetTtsProviderTool(mock_node)
-        result = tool.execute(provider="yandex")
-        assert result.success is True
-        assert result.data["provider_switched"] is False
-        assert result.data["noop"] is True
-        # No publish в set_provider — chain уже правильный.
-        assert _published_payloads(tool, "/voice/tts/set_provider") == []
+    def test_switch_to_same_provider_is_noop_without_request(self, mock_node, fake_requests) -> None:
+        _active(mock_node, "yandex")
+        result = SetTtsProviderTool(mock_node).execute(provider="yandex")
+        assert result.success is True and result.data["noop"] is True and result.data["status"] == "noop"
+        assert fake_requests.calls == []
 
-    def test_switch_updates_voice_store_to_default(self, mock_node) -> None:
-        """После switch — voice_store помнит дефолт нового провайдера."""
-        mock_node._declared_params = {"tts_provider": "minimax"}
-        mock_node.get_parameter = lambda n: type(
-            "P", (), {"value": mock_node._declared_params.get(n, "minimax")}
-        )()
-        store = VoiceStateStore()
-        store.set_voice("old_minimax_voice")
-        tool = SetTtsProviderTool(mock_node, voice_store=store)
-        tool.execute(provider="yandex")
-        # voice_store теперь anton (yandex default), а не old_minimax_voice.
-        assert store.get_voice() == "anton"
+    @pytest.mark.parametrize("provider, spoken", [("yandex", "Яндекс"), ("minimax", "MiniMax"), ("silero", "Silero")])
+    def test_same_provider_is_said_by_its_catalog_name_not_by_id(self, mock_node, fake_requests, provider, spoken) -> None:
+        """Данные НАСТОЯЩЕГО тула (ветка ``noop``) -> событие хода -> фраза диалога (``knowledge.VOICE_DONE``): провайдер
+        звучит названием каталога («Яндекс»), а не id латиницей («yandex»); слот строит тот же ``outcome_data``, что и
+        у остальных исходов (ревью #4133)."""
+        from types import SimpleNamespace
 
-    def test_unknown_provider_returns_error(self, mock_node) -> None:
-        tool = SetTtsProviderTool(mock_node)
-        result = tool.execute(provider="elevenlabs")
-        assert result.success is False
-        assert result.data["error"] == "provider_unknown"
-        assert "elevenlabs" in result.data["requested"]
+        from rob_box_dialog import knowledge as kn
+        from rob_box_dialog.respond import ActionResult, phrase_from_result
+        from rob_box_harness.core.tool_loop.command_turn import owner_event
 
-    def test_empty_provider_returns_error(self, mock_node) -> None:
-        tool = SetTtsProviderTool(mock_node)
-        result = tool.execute(provider="")
-        assert result.success is False
-        assert result.error == "provider_empty"
+        _active(mock_node, provider)
+        result = SetTtsProviderTool(mock_node).execute(provider=provider)
+        assert result.data["provider_label"] == spoken and fake_requests.calls == []
+        event = owner_event(SimpleNamespace(turn_id="t", args={"provider": provider}),
+                            SimpleNamespace(data=result.data, is_error=not result.success, content=result.message or ""))
+        action = ActionResult("t/0", 0, "personality", "set_tts_provider", kn.TOOL_CLASSES["set_tts_provider"],
+                              event.status, event.reason, event.data)
+        assert phrase_from_result(action).text == f"Я уже говорю через {spoken}."
 
-    def test_provider_normalises_case(self, mock_node) -> None:
-        """'  SILERO  ' работает, ставит silero-default."""
-        mock_node._declared_params = {"tts_provider": "minimax"}
-        mock_node.get_parameter = lambda n: type(
-            "P", (), {"value": mock_node._declared_params.get(n, "minimax")}
-        )()
-        tool = SetTtsProviderTool(mock_node)
-        result = tool.execute(provider="  SILERO  ")
-        assert result.success is True
-        assert result.data["provider"] == "silero"
-        assert result.data["default_voice"] == "aidar"
+    def test_unknown_and_empty_provider(self, mock_node, fake_requests) -> None:
+        bad = SetTtsProviderTool(mock_node).execute(provider="elevenlabs")
+        assert bad.success is False and bad.data["error"] == "provider_unknown"
+        empty = SetTtsProviderTool(mock_node).execute(provider="")
+        assert empty.success is False and empty.error == "provider_empty"
+        assert fake_requests.calls == []
+
+    def test_provider_normalises_case(self, mock_node, fake_requests) -> None:
+        _active(mock_node, "minimax")
+        SetTtsProviderTool(mock_node).execute(provider="  SILERO  ")
+        assert fake_requests.calls == [("", "silero")]
 
 
 # ── ListTtsVoicesTool — issue #1765 ─────────────────────────────────────
@@ -375,8 +285,25 @@ class TestListTtsVoicesTool:
         result = tool.execute()
         assert result.success is True
         assert result.data["provider"] == "minimax"
-        assert "Russian_ReliableMan" in result.data["voices"]
         assert result.data["default_voice"] == "male-qn-qingse"
+        assert "voices" not in result.data  # полный список ids — только по provider (#3883)
+
+    def test_no_provider_gives_brief_overview_by_providers(self, mock_node) -> None:
+        """#3883: без аргумента — провайдеры → сколько голосов → по паре характерных (м/ж), активный помечен."""
+        mock_node._declared_params = {"tts_provider": "minimax"}
+        mock_node.get_parameter = lambda n: type(
+            "P", (), {"value": mock_node._declared_params.get(n, "minimax")}
+        )()
+        data = ListTtsVoicesTool(mock_node).execute().data
+        by_name = {p["provider"]: p for p in data["providers"]}
+        assert set(by_name) == set(SUPPORTED_TTS_PROVIDERS)
+        assert [p["provider"] for p in data["providers"] if p["active"]] == ["minimax"]
+        # число голосов - из реестра, не вписано руками: новый голос каталога (#4086) не ломает тест
+        assert {n: p["voices_count"] for n, p in by_name.items()} == {n: len(v) for n, v in PROVIDER_VOICES.items()}
+        for p in data["providers"]:
+            assert {s["gender"] for s in p["samples"]} == {"male", "female"}
+            assert p["label"] and all(s["name"] and "legacy" not in s["name"] for s in p["samples"])
+        assert len(str(data)) < 1500  # краткая структура, а не список ids
 
     def test_explicit_provider_yandex(self, mock_node) -> None:
         """provider='yandex' → голоса yandex (даже при активном minimax)."""
@@ -392,6 +319,13 @@ class TestListTtsVoicesTool:
         assert "zahar" in result.data["voices"]
         assert "artem" not in result.data["voices"]  # artem нет в списке
         assert result.data["default_voice"] == "anton"
+
+    def test_provider_listing_names_voices_for_the_human(self, mock_node) -> None:
+        """#4086: у голосов каста MiniMax в ответе есть русские имена - ими модель назовёт голос человеку."""
+        result = ListTtsVoicesTool(mock_node).execute(provider="minimax")
+        assert "English_Jovialman" in result.data["voices"]
+        assert result.data["names"]["English_Jovialman"] == "Весельчак"
+        assert set(result.data["names"]) == set(result.data["voices"])  # имя есть у каждого голоса списка
 
     def test_unknown_provider_returns_error(self, mock_node) -> None:
         tool = ListTtsVoicesTool(mock_node)
@@ -419,4 +353,4 @@ class TestListTtsVoicesTool:
         tool = ListTtsVoicesTool(mock_node)
         result = tool.execute()  # no provider → active (= actual = yandex)
         assert result.data["provider"] == "yandex"
-        assert "anton" in result.data["voices"]
+        assert [p["provider"] for p in result.data["providers"] if p["active"]] == ["yandex"]

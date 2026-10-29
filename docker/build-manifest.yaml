@@ -57,6 +57,28 @@ base_images:
       dockerfile: docker/base/Dockerfile.pcl
       depends_on: [ros2-zenoh]
 
+# ---------------------------------------------------------------------------
+# Общий образ ROS-сообщений (".github/workflows/L-Build Msgs Image.yml",
+# docker/msgs/Dockerfile). Собирается ОДИН раз за прогон до сервисов: раньше
+# каждый из 6 образов компилировал те же IDL-пакеты сам, rosidl под qemu —
+# 4-14 минут на пакет (run 39939981591). Сервисы с `msgs_image: true`
+# получают build-arg MSGS_IMAGE=<local>:msgs-<ros_distro>-<хэш> и берут готовый
+# /ws/install через COPY --from. Хэш (gen_build_matrix.msgs_image_ref) — по
+# Dockerfile, ссылке на базу и всем файлам src/<пакет>: правка .msg даёт новый
+# тег, без правки образ уже лежит в registry и сборка пропускается.
+# packages — ровно те пакеты, что копирует и собирает docker/msgs/Dockerfile
+# (guard scripts/ci/tests/test_gen_build_matrix.py).
+# ---------------------------------------------------------------------------
+msgs_image:
+  dockerfile: docker/msgs/Dockerfile
+  build_context: "."
+  base:
+    family: ros2-zenoh
+  packages:
+    - rob_box_dialog_msgs
+    - rob_box_perception_msgs
+    - rob_box_supervisor_msgs
+
 pis:
   # ---------------------------------------------------------------------
   # Vision Pi
@@ -74,6 +96,7 @@ pis:
 
       led-matrix:
         dockerfile: docker/vision/led_matrix/Dockerfile
+        msgs_image: true
         build_context: "."
         base:
           family: ros2-zenoh
@@ -93,6 +116,7 @@ pis:
 
       vision-hailo:
         dockerfile: docker/vision/vision-hailo/Dockerfile
+        msgs_image: true
         build_context: "."
         base:
           family: ros2-zenoh
@@ -101,8 +125,14 @@ pis:
           groups:
             - paths: [src/rob_box_perception/rob_box_perception]
               extensions: [".py"]
+            # #4167: rob_box_core собирается в этом образе (exec_depend perception).
+            - paths: [src/rob_box_core]
+              extensions: [".py"]
             - paths: [src/rob_box_perception_msgs]
               extensions: [".msg", "CMakeLists.txt", "package.xml"]
+            # ADR-0150 PR-2 (#3687): vision_face_node читает SpeakerResult.
+            - paths: [src/rob_box_dialog_msgs]
+              extensions: [".msg", ".srv", "CMakeLists.txt", "package.xml"]
         build_args:
           HAILO_INSTALL_BINDING: whl
         # Императивный pre-build хук (копирование HailoRT wheel/lib из
@@ -149,6 +179,7 @@ pis:
 
       voice-assistant:
         dockerfile: docker/sound/voice_assistant/Dockerfile
+        msgs_image: true
         build_context: "."
         base:
           service: voice-base
@@ -158,10 +189,15 @@ pis:
           groups:
             - paths:
                 - src/rob_box_voice/rob_box_voice
-                - src/rob_box_animations/rob_box_animations
                 - src/rob_box_core
                 - src/rob_box_music/rob_box_music
               extensions: [".py"]
+            # ADR-0150: ядро диалога v2 (знание; каталог фраз — YAML рядом с кодом)
+            - paths: [src/rob_box_dialog/rob_box_dialog]
+              extensions: [".py", ".yaml"]
+            # ADR-0150 PR-2 (#3687): типы диалога v2 собираются в этом образе.
+            - paths: [src/rob_box_dialog_msgs]
+              extensions: [".msg", ".srv", "CMakeLists.txt", "package.xml"]
         tag:
           ros_distro: true
         image_versions: VOICE_ASSISTANT_TAG
@@ -183,6 +219,7 @@ pis:
 
       telegram-bot:
         dockerfile: docker/sound/telegram_bot/Dockerfile
+        msgs_image: true
         build_context: "."
         base:
           family: ros2-zenoh
@@ -193,12 +230,16 @@ pis:
                 - src/rob_box_telegram/rob_box_telegram
                 - src/rob_box_core
               extensions: [".py"]
+            # ADR-0150 PR-2 (#3687): telegram_node публикует Utterance.
+            - paths: [src/rob_box_dialog_msgs]
+              extensions: [".msg", ".srv", "CMakeLists.txt", "package.xml"]
         tag:
           ros_distro: true
         image_versions: TELEGRAM_BOT_TAG
 
       quest:
         dockerfile: docker/sound/quest/Dockerfile
+        msgs_image: true
         build_context: "."
         base:
           family: ros2-zenoh
@@ -211,6 +252,9 @@ pis:
               extensions: [".ts", ".json", ".html"]
             - paths: [src/rob_box_core]
               extensions: [".py"]
+            # ADR-0150 PR-2 (#3687): quest_node читает SpeakerResult.
+            - paths: [src/rob_box_dialog_msgs]
+              extensions: [".msg", ".srv", "CMakeLists.txt", "package.xml"]
         tag:
           ros_distro: true
         # НЕ в tag_and_push/verify_in_registry/.image-versions.dev сегодня.
@@ -231,6 +275,9 @@ pis:
                 - src/rob_box_supervisor/rob_box_supervisor
                 - src/rob_box_core
               extensions: [".py"]
+            # ADR-0150 PR-2 (#3687): база voice-assistant несёт типы диалога v2.
+            - paths: [src/rob_box_dialog_msgs]
+              extensions: [".msg", ".srv", "CMakeLists.txt", "package.xml"]
         tag:
           ros_distro: true
         # SHA-тег пишется в docker/sound/.image-versions.*: образ запускают
@@ -283,6 +330,9 @@ pis:
 
       teleop:
         dockerfile: docker/main/teleop/Dockerfile
+        # PR-15 часть 15-0d (D8): джойстик говорит через speech_client -> SpeechRequest,
+        # типы rob_box_dialog_msgs приходят из общего образа msgs.
+        msgs_image: true
         build_context: "."
         base:
           family: ros2-zenoh
@@ -325,6 +375,7 @@ pis:
 
       perception:
         dockerfile: docker/main/perception/Dockerfile
+        msgs_image: true
         build_context: "."
         base:
           family: ros2-zenoh

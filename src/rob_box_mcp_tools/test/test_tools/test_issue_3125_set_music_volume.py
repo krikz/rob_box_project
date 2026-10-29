@@ -21,7 +21,7 @@ from .._ros_stubs import RosStubs
 
 _ros = RosStubs()
 with _ros:
-    from rob_box_mcp_tools.engine.renardo_runtime import RenardoRuntime
+    from rob_box_mcp_tools.engine.renardo_runtime import RenardoRuntime, osc_message
     from rob_box_mcp_tools.tools.music import SetMusicVolumeTool
     from rob_box_mcp_tools.tools.system import SetVolumeTool
 _ros_stubs = _ros.fixture()
@@ -36,14 +36,55 @@ def _tool(gain: float = 0.5):
     return SetMusicVolumeTool(None, mgr), mgr
 
 
-def _sent_gains(send: MagicMock) -> list:
-    return [c.args[3] for c in send.call_args_list]
+class FakeScsynth:
+    """Транспорт ``RenardoRuntime._osc_exchange``: живой scsynth с узлом 999 - отвечает на ``/s_get`` тем, что ему
+    выставил ``/n_set`` (#3790: успех тула - только по ответу сервера). Фиксирует ``/n_set``."""
+
+    def __init__(self) -> None:
+        self.n_sets: list = []
+
+    def __call__(self, calls, timeout, is_final):
+        sets = [c for c in calls if c[0] == "/n_set"]
+        self.n_sets.extend(sets)
+        return [osc_message("/n_set", sets[-1][1], "gain", sets[-1][3])] if sets else []
+
+    @property
+    def call_args(self):
+        return MagicMock(args=self.n_sets[-1])
+
+    def assert_called_once(self) -> None:
+        assert len(self.n_sets) == 1, self.n_sets
+
+    def assert_not_called(self) -> None:
+        assert not self.n_sets, self.n_sets
+
+
+class _Patched:
+    def __init__(self, fake: FakeScsynth) -> None:
+        self._fake = fake
+        self._patch = patch.object(RenardoRuntime, "_osc_exchange", new=fake)
+
+    def __enter__(self) -> FakeScsynth:
+        self._patch.start()
+        return self._fake
+
+    def __exit__(self, *exc) -> None:
+        self._patch.stop()
+
+
+def _scsynth() -> _Patched:
+    """``with _scsynth() as send:`` - runtime ходит к фейковому scsynth, ``send`` показывает отправленные ``/n_set``."""
+    return _Patched(FakeScsynth())
+
+
+def _sent_gains(send: FakeScsynth) -> list:
+    return [c[3] for c in send.n_sets]
 
 
 class TestRelativeSteps:
     def test_louder_is_plus_3db_on_master_fader(self) -> None:
         tool, mgr = _tool(0.5)
-        with patch.object(RenardoRuntime, "send_osc") as send:
+        with _scsynth() as send:
             res = tool.execute(action="louder")
         assert res.success, res.error
         assert mgr.master_gain == pytest.approx(0.5 * 10 ** (3 / 20), rel=1e-6)
@@ -56,13 +97,13 @@ class TestRelativeSteps:
 
     def test_quieter_is_minus_3db(self) -> None:
         tool, mgr = _tool(0.5)
-        with patch.object(RenardoRuntime, "send_osc"):
+        with _scsynth():
             assert tool.execute(action="quieter").success
         assert mgr.master_gain == pytest.approx(0.5 / 10 ** (3 / 20), rel=1e-6)
 
     def test_louder_clamps_at_one(self) -> None:
         tool, mgr = _tool(0.9)
-        with patch.object(RenardoRuntime, "send_osc") as send:
+        with _scsynth() as send:
             first = tool.execute(action="louder")
             second = tool.execute(action="louder")
         assert mgr.master_gain == 1.0
@@ -72,7 +113,7 @@ class TestRelativeSteps:
 
     def test_quieter_steps_never_mute(self) -> None:
         tool, mgr = _tool(0.06)
-        with patch.object(RenardoRuntime, "send_osc"):
+        with _scsynth():
             for _ in range(5):
                 tool.execute(action="quieter")
         assert mgr.master_gain == pytest.approx(SetMusicVolumeTool.MIN_STEP_GAIN)
@@ -81,14 +122,14 @@ class TestRelativeSteps:
 class TestAbsoluteLevels:
     def test_max(self) -> None:
         tool, mgr = _tool(0.5)
-        with patch.object(RenardoRuntime, "send_osc"):
+        with _scsynth():
             assert tool.execute(action="max").success
         assert mgr.master_gain == 1.0
 
     def test_normal_returns_to_startup_gain(self) -> None:
         # normal = значение ROS-параметра music_master_gain при старте (0.5).
         tool, mgr = _tool(0.5)
-        with patch.object(RenardoRuntime, "send_osc"):
+        with _scsynth():
             tool.execute(action="max")
             assert tool.execute(action="normal").success
         assert mgr.master_gain == 0.5
@@ -99,7 +140,7 @@ class TestAbsoluteLevels:
     )
     def test_set_percent_clamped(self, level, expected) -> None:
         tool, mgr = _tool(0.5)
-        with patch.object(RenardoRuntime, "send_osc"):
+        with _scsynth():
             res = tool.execute(action="set", level=level)
         assert res.success
         assert mgr.master_gain == pytest.approx(expected)
@@ -107,7 +148,7 @@ class TestAbsoluteLevels:
 
     def test_set_without_level_fails_honestly(self) -> None:
         tool, mgr = _tool(0.5)
-        with patch.object(RenardoRuntime, "send_osc") as send:
+        with _scsynth() as send:
             res = tool.execute(action="set")
         assert not res.success
         assert "level" in res.error
@@ -116,7 +157,7 @@ class TestAbsoluteLevels:
 
     def test_unknown_action_fails(self) -> None:
         tool, _ = _tool(0.5)
-        with patch.object(RenardoRuntime, "send_osc") as send:
+        with _scsynth() as send:
             res = tool.execute(action="boost")
         assert not res.success
         send.assert_not_called()

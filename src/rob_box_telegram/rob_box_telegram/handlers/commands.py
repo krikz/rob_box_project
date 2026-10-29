@@ -8,7 +8,7 @@ After Phase 6 v2 / W7 this module is a *thin transport*:
   here because they are direct ROS callbacks — no LLM, no tool bridge.
 * Status / navigation / volume / music / mapping handlers used to call the
   ToolProvider through ``_invoke_tool``. They now forward the command
-  intent to ``/voice/stt/result`` so the unified AgentCore/harness
+  intent to ``/voice/stt/utterance`` so the unified AgentCore/harness
   pipeline (``dialogue_node``) can decide what to do with it.
 
 All handlers receive ``context.bot_data["node"]`` — our TelegramNode
@@ -56,8 +56,8 @@ def _node(context: ContextTypes.DEFAULT_TYPE):
 def _forward(node, text: str, chat_id=None) -> None:
     """Forward a command intent to the unified dialogue pipeline.
 
-    ``chat_id`` is passed through to ``forward_to_stt`` which adds the
-    ``[TG:chat_id]`` source marker (issue #1195) — commands are explicit
+    ``chat_id`` is passed through to ``forward_to_stt`` which puts it into the
+    ``Utterance.chat_id`` source field (issue #1195) — commands are explicit
     intents, so the dialogue_node wake-word gate must not drop them.
     """
     node.forward_to_stt(text, chat_id=chat_id)
@@ -436,6 +436,10 @@ async def say_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     AcquireFloor(voice). Если супервизор отказывает (другой клиент
     держит voice) — пользователь видит уведомление, а не молчаливый
     «произношу».
+
+    Правило Шифу (#3727): вслух звучит ТОЛЬКО введённый текст - ровно один SpeechRequest, без LLM, префиксов и
+    подтверждений голосом. Итог («Озвучил» / «Не озвучил: причина» / «не знаю, прозвучало ли») приходит в чат
+    ТЕКСТОМ по ``SpeechEvent`` той же реплики (``telegram_node`` -> ``SpeechReceipts``), а не «Озвучиваю» до итога.
     """
     text = " ".join(context.args) if context.args else ""
     if not text:
@@ -446,14 +450,12 @@ async def say_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     # Issue #1195 — echo path: remember the chat so the TTS output of
     # /say is also echoed into the right chat.
     node.set_active_chat(update.effective_chat.id)
-    result = node.publish_tts_with_floor(text)
+    result = node.publish_tts_with_floor(text, receipt_chat_id=update.effective_chat.id)
     if not result.granted:
         held = result.held_by or "другим оператором"
         await update.message.reply_text(
             f"🚫 Голос удерживает {held}. " "Дождитесь окончания текущего ответа или используйте текст."
         )
-        return
-    await update.message.reply_text(f"🗣 Озвучиваю: _{text}_", parse_mode="Markdown")
 
 
 # ─── /playvoice ──────────────────────────────────────────────────────────
@@ -530,11 +532,11 @@ async def radio_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         await update.message.reply_text("Использование: /radio on | off | status")
 
 
-# ─── Tool-bridged commands (W7: forward intents to /voice/stt/result) ──
+# ─── Tool-bridged commands (W7: forward intents to /voice/stt/utterance) ──
 #
 # These handlers used to invoke the ToolProvider (status, waypoints, goto,
 # pose, volume, etc.). After W7 the Telegram node is a thin transport, so
-# the slash-command text is forwarded to /voice/stt/result and the unified
+# the slash-command text is forwarded to /voice/stt/utterance and the unified
 # dialogue pipeline picks it up. The user gets an immediate ACK so the
 # conversation does not feel broken while the harness reacts.
 
@@ -543,7 +545,7 @@ async def _forward_and_ack(update: Update, node, intent: str, ack: str) -> None:
     """Forward ``intent`` to the dialogue pipeline and reply with ``ack``.
 
     The ACK keeps the operator informed while the harness reacts on the
-    other side of ``/voice/stt/result``.
+    other side of ``/voice/stt/utterance``.
     """
     _forward(node, intent, chat_id=update.effective_chat.id)
     await update.message.reply_text(ack)
@@ -764,7 +766,7 @@ async def clear_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     dialogue manager can drop the session.
     """
     node = _node(context)
-    # Issue #1195 — pass chat_id so /clear carries the [TG:] source marker
+    # Issue #1195 — pass chat_id so /clear carries source=telegram + chat_id
     # (command intents must not be dropped by the wake-word gate).
     _forward(node, "/clear", chat_id=update.effective_chat.id)
     await update.message.reply_text("🧹 Запрос на очистку истории отправлен.")

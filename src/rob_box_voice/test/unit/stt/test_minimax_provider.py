@@ -35,6 +35,7 @@ from rob_box_voice.stt_providers.minimax_provider import (
     MiniMaxSTTError,
     MiniMaxSTTInvalidResponseError,
     MiniMaxSTTProvider,
+    MiniMaxSTTQuotaError,
     MiniMaxSTTRateLimitError,
     MiniMaxSTTUnavailableError,
     _extract_text,
@@ -536,8 +537,6 @@ class TestRecognizeErrorCases:
     @pytest.mark.parametrize(
         "status, payload",
         [
-            (401, {"error": "unauthorized"}),
-            (403, {"error": "forbidden"}),
             (429, {"error": "rate limit exceeded"}),
             (500, {"error": "internal"}),
             (502, {"error": "bad gateway"}),
@@ -551,6 +550,24 @@ class TestRecognizeErrorCases:
         # recognize() must NOT raise — it degrades to None so the chain
         # can fall back to Vosk (issue #979 contract).
         assert provider.recognize(SILENCE_AUDIO) is None
+
+    @pytest.mark.parametrize("status", [401, 403])
+    def test_auth_status_raises_typed_error_for_the_chain(self, status):
+        """PR-4 ч.2 (#3693): ключ не подошёл - цепочка получает ``STTAuthError`` (мёртв надолго, класс auth)."""
+        from rob_box_voice.stt_fallback import STTAuthError
+
+        provider = _make_provider(_StubHTTPClient(status=status, payload={"error": "x"}))
+        with pytest.raises(STTAuthError):
+            provider.recognize(SILENCE_AUDIO)
+
+    def test_quota_body_raises_typed_error_for_the_chain(self):
+        """PR-4 ч.2 (#3693): квота/план - ``STTQuotaError`` вместо «empty» на каждой фразе."""
+        from rob_box_voice.stt_fallback import STTQuotaError
+
+        payload = {"base_resp": {"status_code": 2056, "status_msg": "Token Plan usage limit reached"}}
+        provider = _make_provider(_StubHTTPClient(status=200, payload=payload))
+        with pytest.raises(STTQuotaError):
+            provider.recognize(SILENCE_AUDIO)
 
     def test_400_with_unexpected_payload_returns_none(self):
         transport = _StubHTTPClient(status=400, payload={"error": "bad request"})
@@ -854,7 +871,7 @@ class TestQuotaInResponseBody:
         transport = _StubHTTPClient(status=500, payload=self.PLAN_500)
         provider = _make_provider(transport)
 
-        with pytest.raises(MiniMaxSTTRateLimitError) as exc:
+        with pytest.raises(MiniMaxSTTQuotaError) as exc:
             provider.transcribe(SILENCE_AUDIO)
 
         assert "2061" in str(exc.value)
@@ -863,7 +880,7 @@ class TestQuotaInResponseBody:
         transport = _StubHTTPClient(status=200, payload=self.QUOTA_200)
         provider = _make_provider(transport)
 
-        with pytest.raises(MiniMaxSTTRateLimitError) as exc:
+        with pytest.raises(MiniMaxSTTQuotaError) as exc:
             provider.transcribe(SILENCE_AUDIO)
 
         assert "2056" in str(exc.value)

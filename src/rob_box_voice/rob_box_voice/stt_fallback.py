@@ -36,6 +36,7 @@ import threading
 import time
 from dataclasses import dataclass
 from typing import (
+    Any,
     Callable,
     List,
     Literal,
@@ -44,6 +45,8 @@ from typing import (
     Protocol,
     Sequence,
 )
+
+from .stt_hang_guard import HangGuard, Watched
 
 # Тонкая типизация для метрик/логирования. Эти значения попадают
 # в логи оператора и должны быть стабильными (Prometheus/dashboard парсинг).
@@ -57,6 +60,7 @@ FallbackReason = Literal[
     "no_provider",  # нет ни одного доступного провайдера
     "dead",  # провайдер в кэше «мёртвых» (квота/ключ/сеть), пропущен
     "budget_exceeded",  # общий бюджет фразы исчерпан, провайдер пропущен
+    "hung",  # прошлая попытка провайдера брошена сторожем и ещё не вернулась — не зовём (#4135)
 ]
 
 # Минимальная разумная длина итоговой фразы. Vosk 0.42 возвращает
@@ -130,6 +134,34 @@ DEFAULT_DEAD_TTL_PERMANENT_LADDER = (1.0, 3.0, 6.0)
 # останется вовсе без текста).
 DEFAULT_MAX_TOTAL_BUDGET_S = 20.0
 
+# Issue #4135 — запас сторожа попытки поверх ``timeout_s`` провайдера. gRPC-дедлайн Yandex срабатывает ровно на
+# ``timeout_s``; запас даёт ему всплыть своей ошибкой (с пересозданием канала, #2924). Вызов, не вернувшийся и за
+# ``timeout_s`` + запас, брошен (:class:`HangGuard`): 28.10 07:08 UTC попытка Yandex повисла в ``close()`` канала
+# навсегда, и цепочка 5 минут не получала управления. Ответ позже ``timeout_s`` и раньше отбрасывался как
+# ``timeout`` (см. :func:`_measure`) — запас меняет только то, КОГДА цепочка идёт дальше, а не ЧТО принимается.
+DEFAULT_HANG_GRACE_S = 2.0
+
+# Ревью PR #4140 (#4135, п.1 и п.6). Предел сторожа — не ``timeout_s`` + плоский запас для всех, а ПОЛИТИКА провайдера
+# (:attr:`ProviderPolicy.hang_limit_s`): сколько один его вызов идёт в худшем случае по СВОИМ таймаутам + запас.
+# Живые логи: minimax:timeout 7.4-13.2 с, minimax:error 10-20 с (его HTTP-таймауты по стадиям, а не ``timeout_s``) -
+# сторож на 5+2 с называл их «завис», превращал ``down`` в ``timeout`` и терял поздний отказ по квоте. Yandex делает в
+# одном вызове до двух фаз (REAL_TIME, затем FULL_DATA - ``stt_node._recognize_yandex``), каждая со своим дедлайном
+# ``timeout_s``: два прохода до 2 × ``timeout_s``, а не один.
+YANDEX_STT_PHASES = 2
+
+
+def yandex_call_limit_s(timeout_s: float) -> float:
+    """Худший случай одного вызова Yandex STT: ``YANDEX_STT_PHASES`` фаз по дедлайну ``timeout_s`` каждая."""
+    return YANDEX_STT_PHASES * float(timeout_s)
+
+
+def http_call_limit_s(timeout: Any) -> float:
+    """Худший случай одного HTTP-вызова по его таймаутам: стадии идут друг за другом (ожидание соединения в пуле,
+    connect, write, read). ``timeout`` - ``httpx.Timeout`` (или любой объект с этими полями); ``None`` у стадии - без
+    предела, в сумму не входит."""
+    stages = (getattr(timeout, name, None) for name in ("pool", "connect", "write", "read"))
+    return sum(float(stage) for stage in stages if stage is not None)
+
 
 class STTProvider(Protocol):
     """Минимальный интерфейс провайдера для select_recognition().
@@ -160,6 +192,37 @@ class STTTimeoutError(TimeoutError):
     """
 
 
+class STTDeadlineFinal(STTTimeoutError):
+    """Дедлайн gRPC истёк, но сервер успел закрыть фразу (final + EOU) - ``text`` готов (#4175).
+
+    Подкласс :class:`STTTimeoutError`: любой код, не знающий про него, видит обычный ``timeout``. Знает :func:`_measure`:
+    попытка принимается как ``ok`` с пометкой :data:`NOTE_DEADLINE_FINAL`, а не отбрасывается по таймауту.
+    """
+
+    def __init__(self, text: str, message: str = "") -> None:
+        super().__init__(message or f"deadline exceeded, but utterance closed by EOU: {text!r}")
+        self.text = text
+
+
+# Пометка попытки в ``[stt_attempt]``: ``ok`` получен по дедлайну из уже закрытой фразы (#4175).
+NOTE_DEADLINE_FINAL = "deadline_final"
+
+# Пометка попытки: ответ фолбека - короткая латиница на кириллический обрывок первого провайдера (#3737).
+NOTE_SCRIPT_MISMATCH = "script_mismatch"
+
+# Латинский ответ фолбека короче этого числа слов, если первый провайдер дал кириллицу того же звука, - угаданное
+# междометие («Yeah.», «Yes.», «Thank you.»), а не английская фраза. Три слова и больше принимаются.
+SCRIPT_MISMATCH_MAX_WORDS = 2
+
+
+class STTHungError(STTTimeoutError):
+    """Попытка не вернулась за предел сторожа своей политики (худший случай вызова + запас) — брошена (#4135).
+
+    Подкласс :class:`STTTimeoutError`: для цепочки это тот же транзиентный ``timeout`` (короткий TTL кэша
+    «мёртвых», фраза уходит следующему), отличие только в логе — вызов не вернулся вовсе.
+    """
+
+
 class STTAuthError(Exception):
     """Провайдер отказал по ключу: HTTP 401/403, gRPC UNAUTHENTICATED.
 
@@ -181,9 +244,62 @@ class STTQuotaError(Exception):
     """
 
 
+def failure_class(error: Optional[str], exc: Optional[BaseException]) -> str:
+    """Класс здоровья отказа для ``ProviderState`` (ADR-0150 §8): quota / auth / timeout / down."""
+    if isinstance(exc, STTQuotaError):
+        return "quota"
+    if isinstance(exc, STTAuthError):
+        return "auth"
+    if isinstance(exc, STTTimeoutError) or (error or "").startswith("timeout"):
+        return "timeout"
+    return "down"
+
+
 def is_permanent_failure(exc: Optional[BaseException]) -> bool:
     """True, если отказ не «рассосётся» сам (квота/ключ) — длинный TTL."""
     return isinstance(exc, (STTAuthError, STTQuotaError))
+
+
+#: Класс здоровья провайдера, чей вызов сторож бросил и который ещё не вернулся (ревью PR #4140, #4135 п.3): тот же
+#: ``timeout``, что у ``STTHungError`` (:func:`failure_class`).
+HUNG_HEALTH_CLASS = "timeout"
+
+
+def provider_unavailable(
+    name: str, dead_cache: Optional["ProviderDeadCache"], guard: Optional[HangGuard]
+) -> bool:
+    """Провайдера сейчас не зовут: он в кэше «мёртвых» или его брошенный вызов ещё висит (цепочка пропускает такого,
+    ``_skip_hung``). Висящий вызов не гаснет вместе с TTL кэша - состояние провайдера не врёт «жив» (#4135)."""
+    if guard is not None and guard.hung_for_s(name) is not None:
+        return True
+    return dead_cache is not None and dead_cache.is_dead(name)
+
+
+def effective_provider(
+    chain: Sequence[str], dead_cache: Optional["ProviderDeadCache"], guard: Optional[HangGuard]
+) -> Optional[str]:
+    """Первый провайдер цепочки, которого она сейчас зовёт (:func:`provider_unavailable`); недоступны все -
+    последний (глухой робот хуже медленного, ``_live_providers`` игнорирует кэш в этом случае). Пустая цепочка - ``None``."""
+    for name in chain:
+        if not provider_unavailable(name, dead_cache, guard):
+            return name
+    return chain[-1] if chain else None
+
+
+def hung_providers(chain: Sequence[str], guard: Optional[HangGuard]) -> dict:
+    """``{имя: секунд}`` провайдеров цепочки с висящим брошенным вызовом (для строки лога смены провайдера)."""
+    hung = {name: guard.hung_for_s(name) for name in chain} if guard is not None else {}
+    return {name: round(seconds, 1) for name, seconds in hung.items() if seconds is not None}
+
+
+def provider_health_class(
+    name: str, dead_cache: Optional["ProviderDeadCache"], guard: Optional[HangGuard]
+) -> str:
+    """Класс здоровья провайдера для ``/voice/providers/state``: висящий вызов - :data:`HUNG_HEALTH_CLASS` (он
+    не шум и не ждёт N отказов на речи), иначе класс из кэша «мёртвых» (``ok``, пока тот чист)."""
+    if guard is not None and guard.hung_for_s(name) is not None:
+        return HUNG_HEALTH_CLASS
+    return dead_cache.health_class(name) if dead_cache is not None else "ok"
 
 
 @dataclass(frozen=True)
@@ -200,11 +316,26 @@ class ProviderPolicy:
         timeout_s: soft-timeout одного вызова ``recognize()``.
         max_retries: сколько ПОВТОРОВ (0 = одна попытка).
         retry_backoff_s: пауза между повторами.
+        hang_grace_s: запас сторожа поверх худшего случая вызова (#4135).
+        call_limit_s: сколько один вызов ``recognize()`` идёт в худшем случае по СВОИМ таймаутам провайдера
+            (стадии HTTP у MiniMax - :func:`http_call_limit_s`; две фазы Yandex - :func:`yandex_call_limit_s`).
+            ``None`` - вызов один и укладывается в ``timeout_s`` (Vosk). Меньше ``timeout_s`` не бывает.
     """
 
     timeout_s: float = DEFAULT_YANDEX_TIMEOUT_S
     max_retries: int = 0
     retry_backoff_s: float = DEFAULT_RETRY_BACKOFF_S
+    hang_grace_s: float = DEFAULT_HANG_GRACE_S
+    call_limit_s: Optional[float] = None
+
+    @property
+    def hang_limit_s(self) -> float:
+        """Предел сторожа попытки (#4135, ревью PR #4140): худший случай вызова этого провайдера + запас.
+
+        Не вернулся и за него - «завис», брошен. Вернулся раньше - не «завис», как бы медленно ни шёл: поздний
+        ответ - ``timeout`` (текст отброшен), поздняя ошибка - ``error`` со своим классом (квота/ключ не теряются).
+        """
+        return max(self.timeout_s, self.call_limit_s or 0.0) + max(0.0, self.hang_grace_s)
 
 
 class ProviderDeadCache:
@@ -241,12 +372,15 @@ class ProviderDeadCache:
         self._lock = threading.Lock()
         self._dead_until: dict[str, float] = {}
         self._reason: dict[str, str] = {}
+        self._health_class: dict[str, str] = {}
         # Issue #2767 — счётчик подряд-идущих PERMANENT-отказов (auth/quota)
         # на провайдера, для лестницы эскалации TTL.
         self._permanent_streak: dict[str, int] = {}
         # Issue #2924 — отдельный счётчик подряд-идущих ТРАНЗИЕНТНЫХ отказов
         # (сеть/таймаут): плоские 30с не спасали серию фраз от таймаута.
         self._transient_streak: dict[str, int] = {}
+        # #3755: транзиентные отказы НА РЕЧИ (фразу приняли другие). Отказ на шуме сюда не попадает.
+        self._speech_strikes: dict[str, int] = {}
 
     # -- запросы ---------------------------------------------------------
 
@@ -265,6 +399,29 @@ class ProviderDeadCache:
         with self._lock:
             return self._reason.get(provider)
 
+    def health_class(self, provider: str) -> str:
+        """Класс отказа для ``ProviderState``; ``ok``, пока провайдер не мёртв.
+
+        ``quota``/``auth`` - сразу. Транзиентный (``timeout``/``down``) - лишь после
+        ``STT_TRANSIENT_STRIKES_TO_DOWN`` отказов подряд на речи (#3755): иначе таймаут фолбека на шуме
+        (фраза всё равно ``rejected``) озвучивался бы как «провайдер не отвечает». Пропуск провайдера в цепочке
+        (``is_dead``) от этого не зависит - он по-прежнему экономит время.
+        """
+        from rob_box_dialog.knowledge import STT_TRANSIENT_STRIKES_TO_DOWN  # noqa: PLC0415 - единая таблица
+
+        with self._lock:
+            if self._clock() >= self._dead_until.get(provider, 0.0):
+                return "ok"
+            cls = self._health_class.get(provider, "down")
+            if cls in ("quota", "auth") or self._speech_strikes.get(provider, 0) >= STT_TRANSIENT_STRIKES_TO_DOWN:
+                return cls
+            return "ok"
+
+    def note_speech_failure(self, provider: str) -> None:
+        """Провайдер отказал на фразе, которую приняли другие (то есть это была речь): +1 к счёту подряд."""
+        with self._lock:
+            self._speech_strikes[provider] = self._speech_strikes.get(provider, 0) + 1
+
     # -- мутации ---------------------------------------------------------
 
     def mark_alive(self, provider: str) -> None:
@@ -272,8 +429,10 @@ class ProviderDeadCache:
         with self._lock:
             self._dead_until.pop(provider, None)
             self._reason.pop(provider, None)
+            self._health_class.pop(provider, None)
             self._permanent_streak.pop(provider, None)
             self._transient_streak.pop(provider, None)
+            self._speech_strikes.pop(provider, None)
 
     def _transient_ttl_for_streak(self, provider: str) -> float:
         """TTL для ОЧЕРЕДНОГО подряд-идущего транзиентного отказа (issue #2924).
@@ -316,8 +475,14 @@ class ProviderDeadCache:
         *,
         transient: bool = True,
         ttl_s: Optional[float] = None,
+        health_class: str = "down",
+        replaces_transient: bool = False,
     ) -> float:
         """Пометить провайдера мёртвым. Возвращает применённый TTL.
+
+        ``replaces_transient`` - отметка поправляет прошлую транзиентную той же попытки (поздний отказ по
+        квоте/ключу брошенного сторожем вызова, #4135): её шаг лестницы транзиентных отказов возвращается, иначе
+        один отказ считался бы дважды (и транзиентным, и постоянным).
 
         ``transient=True`` (сеть/5xx/таймаут) → короткий TTL, эскалирующий
         при повторных подряд-идущих транзиентных отказах
@@ -332,6 +497,8 @@ class ProviderDeadCache:
         отключает и классификацию, и эскалацию — используется как есть.
         """
         with self._lock:
+            if replaces_transient:
+                self._transient_streak[provider] = max(0, self._transient_streak.get(provider, 0) - 1)
             if ttl_s is None:
                 if transient:
                     ttl_s = self._transient_ttl_for_streak(provider)
@@ -339,6 +506,7 @@ class ProviderDeadCache:
                     ttl_s = self._permanent_ttl_for_streak(provider)
             self._dead_until[provider] = self._clock() + float(ttl_s)
             self._reason[provider] = str(reason)[:300]
+            self._health_class[provider] = health_class
         return float(ttl_s)
 
     # -- персистентность (wall-clock, как в tts_node) ---------------------
@@ -396,6 +564,8 @@ class STTAttempt:
     text: Optional[str] = None
     error: Optional[str] = None
     attempt_index: int = 0  # 0..max_retries
+    hung: bool = False  # #4135: вызов не вернулся (брошен сторожем) или пропущен, пока висит прошлый
+    note: Optional[str] = None  # #4175: пометка к ok (NOTE_DEADLINE_FINAL) - в [stt_attempt] и метрике
 
     @property
     def ok(self) -> bool:
@@ -413,52 +583,125 @@ class STTAttempt:
             out["text"] = self.text
         if self.error is not None:
             out["error"] = self.error
+        if self.note is not None:
+            out["note"] = self.note
         return out
 
 
 def is_short_phrase(text: Optional[str], min_chars: int = DEFAULT_MIN_TEXT_CHARS) -> bool:
-    """Слишком короткая фраза — отклонить.
+    """Фраза непригодна как реплика человека - отклонить («не расслышал»). Единый гейт для ВСЕХ провайдеров.
 
-    ``min_chars`` — порог после ``strip()``. Принимаем None как короткую фразу.
+    1. Короткая: ``min_chars`` считается по буквам и цифрам, а не по длине строки. Пунктуацию добавляет сам
+       провайдер (MiniMax возвращает «Да.» на «да»): с ней двухбуквенный мусор проходил порог 3 (#3724). Ответы
+       из ``knowledge.SHORT_ANSWERS`` («да», «нет», «ага», «ок»...) порог не касается - робот сам задаёт вопросы
+       да/нет, и на develop голое «да» отклонялось (2 символа < 3), проходило лишь «Да.» из-за точки.
+    2. Не по-русски: больше 10% букв вне кириллицы и латиницы (иероглифы, деванагари) - мусор распознавания, а
+       не речь (MiniMax на односложный звук вернул «係啊。», и stt_node отдал его личности, #3724).
+
+    Принимаем None как короткую фразу.
     """
     if text is None:
         return True
-    return len(text.strip()) < min_chars
+    from rob_box_dialog.knowledge import SHORT_ANSWERS  # noqa: PLC0415 - единственная таблица ответов да/нет
+    from .tts_text_guard import should_skip  # noqa: PLC0415 - модуль чистый, ленивый импорт не тянет граф
+
+    if should_skip(text):
+        return True
+    normalized = " ".join("".join(ch for ch in text.lower() if ch.isalnum() or ch.isspace()).split())
+    if normalized in SHORT_ANSWERS:
+        return False
+    letters = normalized.replace(" ", "")
+    return len(letters) < min_chars or len(set(letters)) == 1  # «э», «ммм», «ааа» - междометия, не речь
+
+
+def _has_script(text: str, letter_range: Callable[[str], bool]) -> bool:
+    return any(letter_range(ch) for ch in text if ch.isalpha())
+
+
+def _is_cyrillic(ch: str) -> bool:
+    return "Ѐ" <= ch <= "ӿ"
+
+
+def _is_latin(ch: str) -> bool:
+    return ch.isascii() or "À" <= ch <= "ɏ"
+
+
+def is_latin_guess_on_cyrillic_noise(text: Optional[str], earlier_texts: Sequence[str]) -> bool:
+    """Ответ фолбека - короткая латиница на звук, который первый провайдер расслышал кириллицей (#3737).
+
+    Живой кейс 21.10: ``yandex:low_confidence('э') -> minimax:ok('Yeah.')``. Язык MiniMax уже ``ru``, но на
+    односложный звук без речи он всё равно угадывает английское слово; письменность гейта фразы
+    (:func:`is_short_phrase`) латиницу разрешает, и «Yeah.» уходило личности как реплика. Признак угадывания: у
+    предыдущей отклонённой попытки того же сегмента (``earlier_texts``) есть кириллица, а в ответе её нет и
+    слов не больше :data:`SCRIPT_MISMATCH_MAX_WORDS`. Английская фраза от человека не задевается: Yandex
+    ru-RU даёт на неё кириллицу достаточной длины и принимает сам (фолбек не зовётся), а длинная латиница
+    фолбека (3+ слов) проходит.
+    """
+    if not text or not _has_script(text, _is_latin) or _has_script(text, _is_cyrillic):
+        return False
+    if not any(_has_script(earlier, _is_cyrillic) for earlier in earlier_texts):
+        return False
+    return len(text.split()) <= SCRIPT_MISMATCH_MAX_WORDS
+
+
+def _screen_fallback_text(
+    reason: FallbackReason, text: Optional[str], attempts: Sequence[STTAttempt]
+) -> tuple[FallbackReason, Optional[str]]:
+    """``ok`` от фолбека, угадавшего латиницу на кириллический обрыв, становится ``low_confidence`` + пометка."""
+    if reason != "ok":
+        return reason, None
+    earlier = [a.text for a in attempts if a.reason == "low_confidence" and a.text]
+    if is_latin_guess_on_cyrillic_noise(text, earlier):
+        return "low_confidence", NOTE_SCRIPT_MISMATCH
+    return reason, None
 
 
 def _measure(
-    call: Callable[[], Optional[str]], timeout_s: float
+    call: Callable[[], Optional[str]],
+    timeout_s: float,
+    *,
+    guard: HangGuard,
+    name: str,
+    limit_s: Optional[float] = None,
+    on_late: Optional[Callable[[Watched], None]] = None,
 ) -> tuple[Optional[str], int, Optional[str], Optional[BaseException]]:
-    """Запустить ``call`` с жёстким soft-timeout.
+    """Запустить ``call`` под сторожем: soft-timeout ``timeout_s`` и жёсткий предел ``limit_s``.
+
+    ``limit_s`` - предел сторожа из политики провайдера (:attr:`ProviderPolicy.hang_limit_s`); не задан -
+    ``timeout_s`` + :data:`DEFAULT_HANG_GRACE_S`. ``on_late`` получает исход брошенного вызова, если он всё-таки
+    вернулся (:meth:`HangGuard.run`).
 
     Возвращает ``(text, latency_ms, error_message, exc)``. ``exc`` нужен
     вызывающему, чтобы отличить «кончилась квота» (:class:`STTQuotaError`,
     длинный TTL в :class:`ProviderDeadCache`) от «моргнула сеть» (короткий
     TTL) — по одной только строке ошибки это решать нельзя.
-    Timeout НЕ прерывает сам call (gRPC stub не прерываем), но даёт сигнал
-    retry/timeout-reason.
 
-    Для настоящей отмены нужен был бы отдельный поток с cancel-token —
-    Yandex gRPC v3 сам по себе не поддерживает cancellation в середине
-    streaming-recognition. Поэтому 5s timeout — это допустимое окно:
-    даже если запрос "висит", новый он не блокирует (gRPC channel
-    async).
+    Вызов идёт в потоке сторожа (:meth:`HangGuard.run`). Вернулся позже ``timeout_s`` — ``timeout`` (текст
+    отброшен, как и до #4135). Не вернулся и за ``limit_s`` — брошен: :class:`STTHungError`,
+    тот же ``timeout`` для цепочки, фраза уходит следующему провайдеру. Сам вызов не отменяется (gRPC
+    streaming Yandex v3 не отменить посреди стрима) — он досиживает в фоне, его никто не ждёт (#4135:
+    28.10 вызов Yandex висел в ``close()`` канала, и без сторожа цепочка стояла 5 минут).
     """
     started = time.monotonic()
-    try:
-        result = call()
-    except STTTimeoutError as exc:
-        # Провайдер сам сообщил о превышении deadline (gRPC DEADLINE_EXCEEDED).
-        elapsed_ms = int((time.monotonic() - started) * 1000)
-        return None, elapsed_ms, f"timeout>{timeout_s}s", exc
-    except Exception as exc:  # noqa: BLE001 — мы хотим все ошибки здесь
-        elapsed_ms = int((time.monotonic() - started) * 1000)
-        return None, elapsed_ms, repr(exc)[:200], exc
+    if limit_s is None:
+        limit_s = timeout_s + DEFAULT_HANG_GRACE_S
+    watched = guard.run(name, call, limit_s, on_late=on_late)
     elapsed_ms = int((time.monotonic() - started) * 1000)
+    if watched.hung:
+        return None, elapsed_ms, f"timeout>{timeout_s}s hung: не вернулся за {limit_s:.1f}s", STTHungError(name)
+    if isinstance(watched.exc, STTDeadlineFinal):
+        # #4175: стрим не закрылся до дедлайна, но фразу сервер закрыл (final + EOU) - принимаем, не отбрасываем
+        # по ``elapsed_ms > timeout_s`` ниже: дедлайн gRPC срабатывает ровно на ``timeout_s``.
+        return watched.exc.text, elapsed_ms, None, watched.exc
+    if isinstance(watched.exc, STTTimeoutError):
+        # Провайдер сам сообщил о превышении deadline (gRPC DEADLINE_EXCEEDED).
+        return None, elapsed_ms, f"timeout>{timeout_s}s", watched.exc
+    if watched.exc is not None:
+        return None, elapsed_ms, repr(watched.exc)[:200], watched.exc
     if elapsed_ms > timeout_s * 1000:
         # Возможно вернулся какой-то текст, но поздно — фиксируем timeout.
         return None, elapsed_ms, f"timeout>{timeout_s}s", None
-    return result, elapsed_ms, None, None
+    return watched.value, elapsed_ms, None, None
 
 
 def _prepare_provider(provider: STTProvider) -> None:
@@ -567,6 +810,7 @@ def _run_provider(
     attempts: List[STTAttempt],
     dead_cache: Optional[ProviderDeadCache],
     *,
+    guard: HangGuard,
     deadline: Optional[float] = None,
     clock: Callable[[], float] = time.monotonic,
 ) -> Optional[str]:
@@ -590,7 +834,8 @@ def _run_provider(
 
     ``deadline`` (issue #2767 п.3, общий бюджет фразы) останавливает
     RETRY этого провайдера, если бюджет уже исчерпан — но не прерывает
-    уже начавшийся вызов (см. ``_measure``, gRPC/HTTP не отменяем).
+    уже начавшийся вызов (см. ``_measure``, gRPC/HTTP не отменяем). Зависший
+    вызов бросает сторож ``guard`` (#4135) — это ``timeout``, повтора нет.
     """
     failure: Optional[tuple[str, Optional[BaseException]]] = None
     for attempt_idx in range(max(0, policy.max_retries) + 1):
@@ -605,8 +850,13 @@ def _run_provider(
         text, latency_ms, error, exc = _measure(
             lambda p=provider: p.recognize(audio_bytes),
             timeout_s=policy.timeout_s,
+            guard=guard,
+            name=provider.name,
+            limit_s=policy.hang_limit_s,
+            on_late=lambda outcome, name=provider.name: _note_late_outcome(dead_cache, guard, name, outcome),
         )
         reason, text = _classify_attempt(text, error, min_text_chars)
+        reason, screen_note = _screen_fallback_text(reason, text, attempts)
         attempts.append(
             STTAttempt(
                 provider=provider.name,
@@ -615,6 +865,8 @@ def _run_provider(
                 text=text,
                 error=error,
                 attempt_index=attempt_idx,
+                hung=isinstance(exc, STTHungError),
+                note=screen_note or (NOTE_DEADLINE_FINAL if isinstance(exc, STTDeadlineFinal) else None),
             )
         )
 
@@ -656,7 +908,42 @@ def _mark_failed(
             provider_name,
             error,
             transient=not is_permanent_failure(exc),
+            health_class=failure_class(error, exc),
         )
+
+
+def _note_late_outcome(
+    dead_cache: Optional[ProviderDeadCache], guard: HangGuard, provider_name: str, outcome: Watched
+) -> None:
+    """Брошенный сторожем вызов провайдера всё-таки вернулся: постоянный отказ (квота/ключ) не теряем (#4135).
+
+    Отметку «завис» поставили, как только вызов бросили, - транзиентную (30 с): вызов тогда ничего не сказал.
+    Теперь сказал. Квота/ключ за секунды не рассосутся: отметка поправляется на постоянную (длинный TTL и её
+    лестница, класс ``quota``/``auth``) - иначе провайдер, у которого кончились деньги, каждые 30 с снова
+    платил бы фразой. Остальные поздние исходы (текст, таймаут, сетевая ошибка) отметку «завис» не меняют.
+    """
+    exc = outcome.exc
+    if dead_cache is None or not is_permanent_failure(exc):
+        return
+    health_class = failure_class(None, exc)
+    ttl = dead_cache.mark_dead(
+        provider_name, repr(exc)[:200], transient=False, health_class=health_class, replaces_transient=True
+    )
+    guard.warn(
+        f"🔑 [#4135] STT '{provider_name}': поздний отказ ({health_class}) после предела сторожа — "
+        f"мёртв на {ttl:.0f} с, не на транзиентные секунды"
+    )
+
+
+def _note_speech_failures(dead_cache: Optional[ProviderDeadCache], attempts: Sequence[STTAttempt]) -> None:
+    """Фразу приняли: все, кто на ней упал по таймауту/ошибке, отказали на РЕЧИ - засчитать (#3755).
+
+    Фраза с итогом ``rejected`` сюда не доходит: отказ на шуме/эхе провайдеру в счёт не идёт.
+    """
+    if dead_cache is None:
+        return
+    for name in dict.fromkeys(a.provider for a in attempts if a.reason in ("timeout", "error")):
+        dead_cache.note_speech_failure(name)
 
 
 def _skip_for_budget(
@@ -679,6 +966,35 @@ def _skip_for_budget(
     )
 
 
+def _skip_hung(provider: STTProvider, guard: HangGuard, attempts: List[STTAttempt]) -> bool:
+    """Прошлая попытка провайдера брошена и ещё не вернулась — не зовём его снова (#4135).
+
+    Параллельный второй вызов того же провайдера небезопасен (у Vosk один ``KaldiRecognizer`` на ноду) и копил
+    бы потоки на мёртвом провайдере. Пропуск — отдельная попытка ``reason="hung"``: в ``stt_attempt`` видно, почему
+    фраза пошла дальше. Кэш «мёртвых» не трогаем — провайдер уже отмечен, когда его попытку бросили.
+    """
+    hung_s = guard.hung_for_s(provider.name)
+    if hung_s is None:
+        return False
+    attempts.append(
+        STTAttempt(
+            provider=provider.name,
+            reason="hung",
+            latency_ms=0,
+            error=f"previous call hung {hung_s:.0f}s, skipped",
+            hung=True,
+        )
+    )
+    guard.warn(f"⏳ [#4135] STT '{provider.name}': прошлая попытка висит {hung_s:.0f} с — не зову, фраза дальше")
+    return True
+
+
+def _log_handoff(attempts: Sequence[STTAttempt], provider: STTProvider, guard: HangGuard) -> None:
+    """Предыдущий провайдер завис — строка оператору, кому ушла фраза (#4135). Пишется, когда переход случился."""
+    if attempts and attempts[-1].hung:
+        guard.warn(f"↪️ [#4135] STT: '{attempts[-1].provider}' завис → фраза уходит '{provider.name}'")
+
+
 def select_recognition(
     providers: Sequence[STTProvider],
     audio_bytes: bytes,
@@ -691,6 +1007,7 @@ def select_recognition(
     dead_cache: Optional[ProviderDeadCache] = None,
     max_total_s: Optional[float] = DEFAULT_MAX_TOTAL_BUDGET_S,
     clock: Callable[[], float] = time.monotonic,
+    guard: Optional[HangGuard] = None,
 ) -> tuple[Optional[str], List[STTAttempt]]:
     """Прогнать цепочку провайдеров по приоритету, с retry и фолбеком.
 
@@ -700,6 +1017,12 @@ def select_recognition(
           число повторов, backoff.
         * Первый ``reason == "ok"`` завершает цепочку.
         * Отказ (timeout/error) помечает провайдера мёртвым в кэше.
+        * Вызов, не вернувшийся за предел своей политики
+          (``ProviderPolicy.hang_limit_s``: худший случай вызова + запас),
+          брошен сторожем ``guard`` — это ``timeout``, фраза идёт следующему;
+          пока брошенный вызов не вернулся, провайдер пропускается (``hung``,
+          #4135). Вернувшийся позже отказ по квоте/ключу поправляет отметку
+          «мёртв» на постоянную (``_note_late_outcome``).
 
     Args:
         providers: Непустая последовательность В ПОРЯДКЕ ПРИОРИТЕТА.
@@ -722,6 +1045,9 @@ def select_recognition(
             распознали».
         clock: Источник времени для бюджета (по умолчанию
             ``time.monotonic``; подменяется в тестах на управляемые часы).
+        guard: Сторож зависаний (#4135). Нода держит один на всё время жизни —
+            он помнит брошенные вызовы между фразами; ``None`` — свежий на
+            этот вызов (брошенное не помнится).
 
     Returns:
         ``(text, attempts)``. ``text`` — первый непустой НЕ-короткий результат
@@ -734,6 +1060,7 @@ def select_recognition(
     if not providers:
         raise ValueError("providers sequence must be non-empty")
 
+    guard = guard if guard is not None else HangGuard()
     attempts: List[STTAttempt] = []
     live = _live_providers(providers, dead_cache, attempts)
     last_index = len(live) - 1
@@ -752,6 +1079,9 @@ def select_recognition(
             # локальный фолбэк, без него фраза осталась бы вовсе без текста.
             _skip_for_budget(provider, attempts, max_total_s)
             continue
+        if _skip_hung(provider, guard, attempts):
+            continue
+        _log_handoff(attempts, provider, guard)
         policy = _policy_for(
             provider, index, policies, timeout_s, max_retries, retry_backoff_s
         )
@@ -763,10 +1093,12 @@ def select_recognition(
             min_text_chars,
             attempts,
             dead_cache,
+            guard=guard,
             deadline=deadline,
             clock=clock,
         )
         if text is not None:
+            _note_speech_failures(dead_cache, attempts)
             return text, attempts
 
     # Сюда дошли, если ни один провайдер не дал "ok".
@@ -779,7 +1111,9 @@ def select_recognition(
     # почти наверняка эхо собственного TTS/музыки — issue 989: молчим).
     last_text: Optional[str] = None
     for _a in attempts:
-        if _a.text:
+        # Отклонённая по письменности догадка фолбека (#3737) не итог: stt_node перепроверяет текст гейтом фразы,
+        # и «Yeah.» там прошло бы. Итогом остаётся кириллический обрывок первого провайдера -> rejected(short).
+        if _a.text and _a.note != NOTE_SCRIPT_MISMATCH:
             last_text = _a.text
     return last_text, attempts
 
@@ -797,7 +1131,8 @@ def summarize_attempts(attempts: Sequence[STTAttempt]) -> str:
         text_suffix = ""
         if a.text:
             text_suffix = f" '{a.text[:20]}'"
-        parts.append(f"{a.provider}:{a.reason}({a.latency_ms}ms{text_suffix})")
+        note_suffix = f" {a.note}" if a.note else ""
+        parts.append(f"{a.provider}:{a.reason}({a.latency_ms}ms{note_suffix}{text_suffix})")
     return "->".join(parts)
 
 
@@ -829,8 +1164,9 @@ def log_attempts(
         # пришлось лезть на робота двумя пробниками. Строка уже лежала в
         # STTAttempt.error — её просто выбрасывали.
         a_error = f" error='{a.error[:120]}'" if a.error else ""
+        a_note = f" note={a.note}" if a.note else ""
         logger.info(
             f"[stt_attempt_metric] provider={a.provider} reason={a.reason} "
             f"latency_ms={a.latency_ms} attempt={a.attempt_index} "
-            f"text={a_text}{a_error}"
+            f"text={a_text}{a_error}{a_note}"
         )

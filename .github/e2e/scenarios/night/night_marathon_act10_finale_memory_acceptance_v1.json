@@ -4,17 +4,17 @@
   "_comment": [
     "Акт 10 — expected-partially-red: gp14 (утечка контекста после сброса)",
     "живьём не проверялась, а спека §2.4 обещает «старые тёрны не",
-    "протекают». GATE-1 держит только memory_search и speak_text —",
+    "протекают». GATE-1 держит только memory_search и речь (`SpeechEvent started`) —",
     "то, что обязано работать независимо от исхода зондов."
   ],
   "expected_tool_calls": [
     "memory_search",
-    "speak_text"
+    "SpeechEvent started speech_id"
   ],
   "must_not_call": [],
   "voice_provenance": {
     "voice": "anton",
-    "tts": "yandex",
+    "tts": "minimax",
     "volume": 100,
     "llm": "minimax-m3"
   }

@@ -536,4 +536,11 @@ def render(track: Track, deck: str) -> Program:
     )
 
 
-__all__ = ["FORM_START", "ROLE_SLOT", "RenderError", "render"]
+def at_form_start(code: str, start_beat: float) -> str:
+    """Программа для правки ИГРАЮЩЕГО трека на ходу (#4029): секции ``var`` считаются от доли старта формы, на которой
+    трек уже встал (``start_beat``), а не от :data:`FORM_START` — иначе форма пошла бы заново с такта правки (интро
+    посреди дропа). Плееры деки на ``>>`` меняют атрибуты и играют дальше с текущей доли."""
+    return code.replace(FORM_START, _num(float(start_beat)))
+
+
+__all__ = ["FORM_START", "ROLE_SLOT", "RenderError", "at_form_start", "render"]

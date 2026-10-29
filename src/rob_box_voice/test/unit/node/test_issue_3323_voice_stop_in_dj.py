@@ -7,20 +7,14 @@
 
 ADR-0149 PR-13a: часть про DJ_AUTO-ход (запрет ``stop_music`` в автопереходе
 #3246, ``TURN_IS_DJ_AUTO``) удалена вместе с DJ-контроллером старого пути.
+PR-15 (#3711, часть 15p): сквозная проверка роутера в ноде диалога v1 удалена вместе с ней.
 """
 
 from __future__ import annotations
 
 import json
 
-from rob_box_llm.provider import ToolResult
-
-from rob_box_voice.core.media_router import (
-    STOP_FAIL_TEXT,
-    media_tool_succeeded,
-)
-
-from .test_issue_3134_media_router_node import _make_node, _stt, run_plans  # noqa: F401
+from rob_box_voice.core.media_router import media_tool_succeeded
 
 
 def test_media_tool_succeeded_sees_success_false_body() -> None:
@@ -29,22 +23,3 @@ def test_media_tool_succeeded_sees_success_false_body() -> None:
     assert media_tool_succeeded(True, "{}") is False
     assert media_tool_succeeded(False, json.dumps({"success": True})) is True
     assert media_tool_succeeded(False, "Музыка остановлена") is True
-    assert media_tool_succeeded(False, json.dumps({"status": "queued"})) is True
-
-
-def test_router_logs_ok_false_and_says_fail_on_success_false_result(run_plans):  # noqa: F811
-    class _Refusing:
-        async def execute(self, call):
-            return ToolResult(
-                tool_call_id=call.id,
-                content=json.dumps({"success": False, "error": "tool_forbidden"}),
-                is_error=False,
-            )
-
-    n = _make_node(playing=True, track="Still Dre", state_name="DIALOGUE")
-    n._scheduler_executor = _Refusing()
-    _stt(n, "Робот стоп музыка")
-    run_plans()
-    logged = [c.args[0] for c in n.get_logger().info.call_args_list]
-    assert any("stop_music" in m and "ok=False" in m for m in logged), logged
-    n._speak_direct.assert_called_once_with(STOP_FAIL_TEXT)

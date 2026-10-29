@@ -167,20 +167,34 @@ def test_reply_listener_ignores_other_renardo_object_graphs(rt):
 # --------------------------------------------------------------------------- мастер-фейдер (#986, #3125)
 
 
+def _echo_scsynth(calls_log):
+    """Живой scsynth с узлом 999: на ``/s_get`` отвечает уровнем, выставленным ``/n_set`` (#3790)."""
+    def exchange(calls, timeout, is_final):
+        calls_log.append(list(calls))
+        return [rr.osc_message("/n_set", 999, "gain", calls[0][3])]
+    return exchange
+
+
 def test_master_gain_targets_node_999_and_clamps():
     runtime, _ = _runtime(master_gain=0.5)
-    with patch.object(RenardoRuntime, "send_osc") as send:
-        assert runtime.set_master_gain(0.35) == 0.35
-        send.assert_called_once_with("/n_set", 999, "gain", 0.35)
+    log: list = []
+    with patch.object(RenardoRuntime, "_osc_exchange", new=staticmethod(_echo_scsynth(log))):
+        assert runtime.set_master_gain(0.35) == pytest.approx(0.35)
+        assert log[0][0] == ("/n_set", 999, "gain", pytest.approx(0.35))
+        assert log[0][1] == ("/s_get", 999, "gain")  # уровень проверяется у сервера, а не «отправлено»
         assert runtime.set_master_gain(3.0) == 1.0 and runtime.set_master_gain(-1.0) == 0.0
     assert RenardoRuntime.MASTER_NODE < 1000  # renardo раздаёт id с 1001: узел мастер-шины без коллизий
 
 
 def test_master_gain_survives_a_dead_socket():
-    runtime, warnings = _runtime()
-    with patch.object(RenardoRuntime, "send_osc", side_effect=OSError("no route")):
-        assert runtime.set_master_gain(0.4) == 0.4
-    assert "master gain" in warnings[0]
+    """Сокет мёртв: уровень НЕ считается применённым - возвращается прежний, в лог - предупреждение (#3790)."""
+    runtime, warnings = _runtime(master_gain=0.5)
+    with patch.object(RenardoRuntime, "_osc_exchange", side_effect=OSError("no route")):
+        assert runtime.set_master_gain(0.4) == 0.5
+        outcome = runtime.apply_master_gain(0.4)
+    assert (outcome.status, outcome.reason) == ("rejected", "osc_error")
+    assert runtime.master_gain == 0.5
+    assert "master gain" in warnings[0] and "osc_error" in warnings[0]
 
 
 # --------------------------------------------------------------------------- подъём Renardo (795d5447)

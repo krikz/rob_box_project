@@ -1,0 +1,290 @@
+"""Выступление в ноде диалога v2 (``dialog_node``; ADR-0150 §5.6.3, PR-7c ч.3 #3700): автомат ``PerformBlock`` ↔ владельцы
+речи и музыки.
+
+Решает ``rob_box_dialog.plan.perform``, хост только исполняет его эффекты и кормит его событиями:
+
+* ``Say`` → ``SpeechRequest`` (``speech_client.say``: пред-синтез ``commit=false`` или звучание в ``at``;
+  ``boundary=sentence`` — «хватит» дочитывает предложение, X5);
+* ``Cancel`` → ``SpeechCancel`` реплики по ``speech_id``;
+* ``Backing`` → ``request_music(intent=backing)``, ``MusicStop`` → ``stop_music(boundary, track_id)`` — исполнителем
+  тулов напрямую (:meth:`PlanToolExecutor.execute_owned`): это код выступления, а не ход LLM — без допуска плана и без
+  речи «музыки хода»; исход запуска подложки (``started``/``rejected``/``busy``) — из ответа тула
+  (``PerformBlock.on_backing``: только он делает трек своей подложкой, #4085), остальное (``nearly_finished``,
+  ``finished``, ``idle``, чужой ``started``) — из ``/voice/music/event`` (``PerformBlock.on_music``);
+* ``PlanEvent`` → планировщик хода (``/dialog/plan_event`` и строка лога).
+
+Один блок на ноду. Колбэки ROS, таймер и loop ноды — разные потоки: блок трогается только под замком.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import itertools
+import logging
+import threading
+import time
+from dataclasses import replace
+from typing import Any, Callable, Dict, List, Mapping, Optional
+
+from rob_box_core import speech_client
+from rob_box_core.utterance import Utterance
+from rob_box_dialog import knowledge as kn
+from rob_box_dialog.command import Performance
+from rob_box_dialog.plan.backing import Backing, MusicStop
+from rob_box_dialog.plan.perform import AskReplace, Cancel, PerformBlock, Say, context_block, edit_asks_backing
+from rob_box_dialog.plan.plan_events import PlanEvent
+from rob_box_llm.provider import ToolCall, ToolResult
+
+_LOG = logging.getLogger(__name__)
+AGENT = "personality"
+#: Шаг таймера выступления: граница сегмента (за 2 с до конца) и срок подложки.
+TICK_S = 0.1
+REQUEST_MUSIC, STOP_MUSIC = "request_music", "stop_music"
+#: События плеера, которые блок узнаёт из топика. ``rejected`` подложки — только из ответа тула: второй экземпляр
+#: того же отказа «съел» бы вторую попытку. ``started`` из топика своей подложкой трек не делает (это — только ответ
+#: тула, #4085): повтор своего блок игнорирует, чужой при играющем бите значит «деку заняла другая музыка» — тактов
+#: бита больше нет, чужой до исхода запроса — не наш.
+_TOPIC_EVENTS = ("started", "nearly_finished", "finished", "idle")
+
+RunTool = Callable[[ToolCall], Any]  # корутина → ToolResult
+#: Исход запуска подложки обратно в блок: ``feed(kind, track_id, fields)`` — ``PerformBlock.on_backing``.
+Feed = Callable[[str, Optional[str], Mapping[str, Any]], None]
+
+
+class EffectRunner:
+    """Исполнитель эффектов блока: речь — ``speech_client``, музыка — тулы в loop ноды, ``PlanEvent`` — в ``emit``.
+    Решений не принимает; исход запуска подложки отдаёт обратно через ``feed``."""
+
+    def __init__(self, node: Any, run_tool: RunTool, loop: Callable[[], Optional[asyncio.AbstractEventLoop]],
+                 emit: Callable[[PlanEvent], None], feed: Feed) -> None:
+        self._node = node
+        self._run_tool = run_tool
+        self._loop = loop
+        self._emit = emit
+        self._feed = feed
+        self._ids = itertools.count(1)
+        self.epoch = 0
+        self.turn_id = ""
+        self._asks: Dict[str, str] = {}  # speech_id вопроса «выключить и зачитать?» → название музыки
+        self._handlers: Dict[type, Callable[[Any], None]] = {
+            Say: self._say, Cancel: self._cancel, Backing: lambda b: self._spawn(self._backing(b)),
+            MusicStop: self._music_stop, PlanEvent: self._emit, AskReplace: self._ask,
+        }
+
+    def apply(self, effects: List[Any]) -> None:
+        for effect in effects:
+            self._handlers[type(effect)](effect)
+
+    def asked(self, kind: str, speech_id: str) -> Optional[str]:
+        """Конец реплики-вопроса (О9′): название музыки, если вопрос прозвучал целиком (``finished``), иначе ``None``.
+        Вопрос забывается на любом конце реплики."""
+        title = self._asks.pop(speech_id, None) if kind in ("finished", "cancelled", "rejected") else None
+        return title if kind == "finished" else None
+
+    def log(self, text: str) -> None:
+        self._node.get_logger().info(text)
+
+    def _say(self, say: Say) -> None:
+        utterance = Utterance(text=say.text, voice=say.voice or None, emotion=say.emotion or None,
+                              speech_id=say.speech_id)
+        speech_client.say(self._node, utterance, agent=AGENT, epoch=self.epoch, turn_id=self.turn_id,
+                          at=say.at, commit=say.commit, boundary="sentence")
+
+    def _cancel(self, cancel: Cancel) -> None:
+        """Сегменты просят границу предложения; «стой» (``boundary=none``) — сразу."""
+        speech_client.cancel(self._node, agent=AGENT, speech_id=cancel.speech_id, reason="perform",
+                             boundary="as_requested" if cancel.boundary == "sentence" else "now")
+
+    def _music_stop(self, stop: MusicStop) -> None:
+        """Снять НАШ бит: ``track_id`` обязателен, на деке чужая музыка - тул её не трогает (хвост ревью PR #4111)."""
+        args = {"boundary": "bar" if stop.boundary == "bar" else "now", "track_id": stop.track_id}
+        self._spawn(self._tool(STOP_MUSIC, args))
+
+    def _ask(self, ask: AskReplace) -> None:
+        self._asks[ask.speech_id] = ask.title
+
+    async def _backing(self, backing: Backing) -> None:
+        """Запуск/продление подложки; исход запуска — в блок (``started`` с сеткой или ``rejected`` с причиной)."""
+        if backing.replace:  # «да» на «выключить и зачитать?»: сначала снять играющую музыку (сет — тоже)
+            await self._tool(STOP_MUSIC, {"boundary": "now"})
+        args = {"intent": kn.BACKING_INTENT, "text": "", "mood": backing.mood, "min_seconds": backing.min_s}
+        result = await self._tool(REQUEST_MUSIC, args)
+        if backing.extend:
+            return
+        data = dict((result.data if result is not None else None) or {})
+        if data.get("ok") and data.get("started"):
+            self._feed("started", data.get("track_id"), data)
+        else:  # id отказа - трек поставлен, но не встал (``not_started``): блок снимет его, если выступление уже сдалось
+            self._feed("rejected", data.get("track_id") or None, {"reason": str(data.get("reason") or "error")})
+
+    async def _tool(self, name: str, args: Mapping[str, Any]) -> Optional[ToolResult]:
+        call = ToolCall(id=f"perform-{next(self._ids)}", name=name, arguments=dict(args))
+        try:
+            return await self._run_tool(call)
+        except Exception as exc:  # noqa: BLE001 — сбой транспорта: честный отказ подложки, а не падение ноды
+            self.log(f"⚠️ [perform] {name} не исполнен: {type(exc).__name__}: {exc}")
+            return None
+
+    def _spawn(self, coro: Any) -> None:
+        loop = self._loop()
+        if loop is None or loop.is_closed():
+            coro.close()
+            self.log("⚠️ [perform] loop ноды не готов — тул выступления не исполнен")
+            return
+        asyncio.run_coroutine_threadsafe(coro, loop)
+
+
+class PerformHost:
+    """Одно выступление ноды диалога v2: старт по команде модели (``Command.perform``), правка, «хватит»/«стой», события
+    владельцев, таймер."""
+
+    def __init__(self, node: Any, run_tool: RunTool, loop: Callable[[], Optional[asyncio.AbstractEventLoop]],
+                 emit: Callable[[PlanEvent], None], output_latency_ms: int,
+                 clock: Callable[[], float] = time.time, playing: Callable[[], str] = str,
+                 on_ask: Callable[[str], None] = lambda title: None, tts_provider: Callable[[], str] = str,
+                 speaking: Callable[[], bool] = lambda: False) -> None:
+        self._latency_ms = int(output_latency_ms)
+        #: Голос занят чужой речью (столбец ``speech`` снимка планировщика): сторож выступления её не считает сбоем.
+        self._speaking = speaking
+        self._clock = clock
+        self._lock = threading.RLock()
+        self._ids = itertools.count(1)
+        self.block: Optional[PerformBlock] = None
+        #: Что играет чужое (название; ``""`` — тишина или наш бит) и как открыть окно ответа да/нет (О9′).
+        self._playing = playing
+        self._on_ask = on_ask
+        #: Фактический провайдер TTS: паузы MiniMax по сетке строк — только у него (О11, #3901).
+        self._tts_provider = tts_provider
+        self._run = EffectRunner(node, run_tool, loop, emit, self._outcome)
+
+    # -- что видят валидатор, LLM и планировщик ---------------------------------------------------------------------
+
+    @property
+    def active_segment(self) -> Optional[int]:
+        """``Busy.active_segment`` валидатора команды (``None`` — выступления нет)."""
+        with self._lock:
+            return None if self.block is None else self.block.active_segment
+
+    @property
+    def cast(self) -> Dict[str, str]:
+        """``Busy.cast`` валидатора: роли идущего выступления и их голоса — правка их не перекрашивает (#4084)."""
+        with self._lock:
+            block = self.block
+            return {} if block is None or block.ended else dict(block.cast)
+
+    @property
+    def owns_backing(self) -> bool:
+        """Музыка — бит идущего выступления (снимет его outro само), а не трек человека."""
+        with self._lock:
+            block = self.block
+            return block is not None and not block.ended and block.backing.sounding
+
+    def owns(self, speech_id: str) -> bool:
+        """Реплика выступления — для колонки ``perform`` планировщика ресурсов."""
+        with self._lock:
+            return self.block is not None and self.block.lines.find(speech_id) is not None
+
+    def context(self) -> Optional[Dict[str, Any]]:
+        """Блок контекста LLM «что звучит / осталось N с» (риск §16); выступления нет — ``None``."""
+        with self._lock:
+            if self.block is None or self.block.ended:
+                return None
+            return context_block(self.block, self._clock())
+
+    # -- команды -------------------------------------------------------------------------------------------------------
+
+    def start(self, perf: Performance, turn_id: str, epoch: int = 0) -> Dict[str, Any]:
+        """Новое выступление; идёт другое — правка его не начатых сегментов (MERGE, COMPOSITION perform×perform)."""
+        with self._lock:
+            if self.block is not None and not self.block.ended:
+                return self._edit_locked(perf)
+            self._run.turn_id, self._run.epoch = turn_id, epoch
+            self.block = PerformBlock(perf, f"perform-{turn_id or next(self._ids)}", turn_id=turn_id, epoch=epoch,
+                                      output_latency_ms=self._latency_ms, log=self._run.log,
+                                      tts_provider=self._tts_provider(), voice_busy=self._speaking)
+            playing = self._playing() if perf.backing in kn.PERFORM_BACKING_MOODS else ""
+            self._run.apply(self.block.start(self._clock(), playing))
+            return {"status": "pending", "block_id": self.block.block_id}
+
+    def edit(self, perf: Performance) -> Dict[str, Any]:
+        """``edit_pending``: правка не начатых сегментов идущего выступления (с какого — :meth:`_edit_locked`)."""
+        with self._lock:
+            return self._edit_locked(perf)
+
+    def stop(self, keep_backing: bool = False) -> bool:
+        """«Хватит»: дочитать предложение, outro бита. Выступления нет — ``False`` (стоп решает общий путь).
+        ``keep_backing`` («хватит читать, а музыку оставь», #3994) — играющий бит доигрывает без outro."""
+        return self._command(lambda block, now: block.stop(now, keep_backing=keep_backing))
+
+    def halt(self, keep_backing: bool = False) -> bool:
+        """«Стой»: речь и бит — сразу; ``keep_backing`` — играющий бит остаётся."""
+        return self._command(lambda block, now: block.halt(now, keep_backing=keep_backing))
+
+    # -- события владельцев ---------------------------------------------------------------------------------------------
+
+    def on_speech(self, kind: str, speech_id: str, duration_ms: int = 0, spoken_chars: int = 0) -> None:
+        title = self._run.asked(kind, speech_id)
+        if title is not None:
+            self._on_ask(title)  # вопрос прозвучал — окно ответа да/нет (молчание — «нет» по сроку блока)
+        self._command(lambda block, now: block.on_speech(kind, speech_id, now, duration_ms=duration_ms,
+                                                         spoken_chars=spoken_chars))
+
+    def answer(self, yes: bool) -> bool:
+        """Ответ человека на «выключить и зачитать?»: ``True`` — выступление его ждало."""
+        with self._lock:
+            block = self.block
+            if block is None or block.ended or block.backing.state != "asking":
+                return False
+            self._run.apply(block.answer(yes, self._clock()))
+            return True
+
+    def on_music_event(self, kind: str, track_id: Optional[str], fields: Mapping[str, Any]) -> None:
+        """Событие плеера из ``/voice/music/event``: о любой музыке — блок сам решает, его ли это подложка."""
+        if kind in _TOPIC_EVENTS:
+            self._command(lambda block, now: block.on_music(kind, track_id, now, fields))
+
+    def tick(self) -> None:
+        self._command(lambda block, now: block.tick(now))
+
+    # -- исполнение -----------------------------------------------------------------------------------------------------
+
+    def _outcome(self, kind: str, track_id: Optional[str], fields: Mapping[str, Any]) -> None:
+        """Исход запуска нашей подложки из ответа тула (``started``/``rejected``). Приходит и после конца выступления
+        («хватит»/«стой» до старта бита): поздний бит снимается по своему id (``MusicStop``), вслепую деку никто не
+        гасит, поэтому этот путь не отсекается как остальные команды (``_command``) по ``block.ended``."""
+        with self._lock:
+            if self.block is not None:
+                self._run.apply(self.block.on_backing(kind, track_id, self._clock(), fields))
+
+    def _command(self, step: Callable[[PerformBlock, float], List[Any]]) -> bool:
+        with self._lock:
+            block = self.block
+            if block is None or block.ended:
+                return False
+            self._run.apply(step(block, self._clock()))
+            return True
+
+    def _edit_locked(self, perf: Performance) -> Dict[str, Any]:
+        """Правка — и ``edit_pending``, и новое выступление поверх идущего (MERGE): с какого сегмента, решает код —
+        с первого ещё не отданного на звучание (ACTIVE+1; ``active_segment`` — последний отданный), #3700."""
+        block = self.block
+        if block is None or block.ended:
+            return {"status": "rejected", "reason": "edit_without_active_perform"}
+        foreign = bool(self._playing()) and not block.backing.sounding  # играет чужое, а не бит этого выступления
+        added = edit_asks_backing(perf, foreign) and self._add_backing_locked(block, perf.backing)
+        if not perf.segments:  # «добавь бит» командой выступления (#993, A22 #3700): только бит, куплеты прежние
+            return {"status": "done", "backing": True} if added else {"status": "rejected", "reason": "no_backing"}
+        perf = replace(perf, from_segment=(block.active_segment or 0) + 1)  # роли и их голоса — как решил код (#4084)
+        effects = block.edit(perf, self._clock())
+        self._run.apply(effects)
+        rejected = [e for e in effects if isinstance(e, PlanEvent) and e.kind == "rejected"]
+        return {"status": "rejected", "reason": rejected[0].reason} if rejected else {"status": "done"}
+
+    def _add_backing_locked(self, block: PerformBlock, backing: str) -> bool:
+        """Бит выступлению, у которого его нет (#993): ``True`` — заказан; уже есть или решается — ``False``."""
+        effects = block.add_backing(backing, self._clock())
+        self._run.apply(effects)
+        return bool(effects)
+
+
+__all__ = ["AGENT", "EffectRunner", "PerformHost", "TICK_S"]

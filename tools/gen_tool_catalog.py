@@ -46,6 +46,9 @@ OUT_FILE = REPO_ROOT / "src" / "rob_box_core" / "rob_box_core" / "_tool_catalog_
 ENGINE_TOOL_SOURCES = (TOOLS_DIR.parent / "engine" / "tools_v2.py",)
 
 DYNAMIC = object()
+#: То же, что ``rob_box_mcp_tools.base.OPERATOR_SLICE_PREFIX`` (генератор не импортирует пакет с ROS; равенство держит
+#: ``test_tool_catalog_is_current``): тул среза ``operator.*`` виден оператору.
+OPERATOR_SLICE_PREFIX = "operator."
 
 
 class ToolSourceError(RuntimeError):
@@ -206,24 +209,35 @@ def _collect_class_constants(tree: ast.Module) -> dict[str, dict[str, ast.AST]]:
     return out
 
 
-#: Package-level modules whose literal constants tool schemas may reference.
+#: Package-level modules whose literal constants tool schemas may reference,
+#: with the names taken from each (``None`` — every literal constant).
 #: Kept as an explicit list rather than "resolve any import" so the generator
-#: never silently guesses at a value it cannot actually see.
-SHARED_CONSTANT_MODULES = (TOOLS_DIR.parent / "animations.py",)
+#: never silently guesses at a value it cannot actually see. The dialogue's
+#: knowledge module is read for the animation vocabulary only: its hundreds
+#: of other constants must not leak into tool schemas by name.
+SHARED_CONSTANT_MODULES: tuple[tuple[pathlib.Path, tuple[str, ...] | None], ...] = (
+    (TOOLS_DIR.parent / "animations.py", None),
+    (REPO_ROOT / "src" / "rob_box_dialog" / "rob_box_dialog" / "knowledge.py", ("KNOWN_ANIMATIONS",)),
+    # виды генерации ``generate_music`` — одна таблица с путём музыки (#4015 ревью: не держать вторую в tools_v2)
+    (REPO_ROOT / "src" / "rob_box_music" / "rob_box_music" / "source.py", ("GEN_KINDS",)),
+)
 
 
 def _collect_shared_constants() -> dict[str, Any]:
     """Constants that tools in different files legitimately share.
 
-    ``KNOWN_ANIMATIONS`` lives in ``rob_box_mcp_tools.animations`` precisely
-    so ``speak_text`` and ``play_animation`` cannot disagree; the generator
-    has to follow that import to render either enum.
+    ``KNOWN_ANIMATIONS`` is declared once, in ``rob_box_dialog.knowledge``
+    (#4103: the dialogue builds the show queue from it too), and re-exported
+    by ``rob_box_mcp_tools.animations`` so ``speak_text`` and
+    ``play_animation`` cannot disagree; the generator has to follow that
+    import to render either enum.
     """
     shared: dict[str, Any] = {}
-    for module in SHARED_CONSTANT_MODULES:
+    for module, names in SHARED_CONSTANT_MODULES:
         if not module.exists():
             continue
-        shared.update(_collect_module_constants(ast.parse(module.read_text(encoding="utf-8"))))
+        constants = _collect_module_constants(ast.parse(module.read_text(encoding="utf-8")))
+        shared.update(constants if names is None else {n: constants[n] for n in names if n in constants})
     return shared
 
 
@@ -327,6 +341,16 @@ def _mood_values() -> list[str]:
     return sorted(_knowledge().MOOD_ENERGY)
 
 
+def _engine_values() -> list[str]:
+    """``request_music.engine`` enum — ``auto`` и ключи ``knowledge.MUSIC_ENGINES`` (одна таблица движков)."""
+    return [_knowledge().ENGINE_AUTO, *_knowledge().MUSIC_ENGINES]
+
+
+def _edit_values() -> list[str]:
+    """``edit_music.change`` enum — ключи ``knowledge.TRACK_EDITS`` (одна таблица правок играющего, #4029)."""
+    return list(_knowledge().TRACK_EDITS)
+
+
 def _style_values() -> list[str]:
     """``dj_set.style`` enum — ``auto`` и ключи ``knowledge.STYLES`` (ADR-0153 S1; ``tools_v2.STYLE_CHOICES``)."""
     return ["auto", *_knowledge().STYLES]
@@ -340,6 +364,51 @@ def _gen_style_values() -> list[str]:
 def _set_styles_values() -> list[str]:
     """``dj_set.styles[]`` enum — ключи ``knowledge.GEN_STYLES`` (стили по трекам сета, ADR-0158 В13)."""
     return list(_knowledge().GEN_STYLES)
+
+
+def _dialog_knowledge() -> Any:
+    """``rob_box_dialog.knowledge`` из дерева репо (одна таблица знания диалога), без установки пакета."""
+    import importlib.util
+
+    path = REPO_ROOT / "src" / "rob_box_dialog" / "rob_box_dialog" / "knowledge.py"
+    spec = importlib.util.spec_from_file_location("_dialog_knowledge_for_catalog", path)
+    if spec is None or spec.loader is None:
+        raise ToolSourceError(f"cannot load {path}")
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+def _duration_param() -> dict[str, Any]:
+    """``play_animation.duration`` — описание из ``knowledge.FACE_SHOW_DURATION_HINT`` (#4089: одно правило времени)."""
+    return {"name": "duration", "type": "number", "description": _dialog_knowledge().FACE_SHOW_DURATION_HINT,
+            "required": False}
+
+
+def _face_param() -> dict[str, Any]:
+    """``play_animation.face`` — объект-сцена лица из ``rob_box_dialog.knowledge.face_schema()`` (ADR-0150 §5.5.9).
+
+    Та же схема, что у ``Command.expression.face``; зеркалит ``tools/animation.py::_face_parameter``.
+    """
+    schema = _dialog_knowledge().face_schema()
+    props: dict[str, Any] = {
+        name: {"name": name, "type": "string", "description": f"Слот лица «{name}»", "required": False,
+               "enum": list(sub["enum"])}
+        for name, sub in schema["properties"].items() if "enum" in sub
+    }
+    duration = schema["properties"]["duration_s"]
+    props["duration_s"] = {"name": "duration_s", "type": "number", "description": "Сколько держать сцену, секунды",
+                           "required": False, "minimum": duration["minimum"], "maximum": duration["maximum"]}
+    return {"name": "face", "type": "object", "description": schema["description"], "required": False,
+            "properties": props}
+
+
+#: ``(tool_name, param_name)`` → resolver целого параметра-объекта, схема которого строится из таблицы знания.
+DYNAMIC_PARAMS = {
+    ("play_animation", "face"): _face_param,
+    ("play_animation", "duration"): _duration_param,
+}
 
 
 def _set_max_tracks() -> int:
@@ -358,8 +427,10 @@ DYNAMIC_BOUNDS = {
 DYNAMIC_ENUMS = {
     ("play_sound", "sound"): _sound_pack_triggers,
     ("request_music", "mood"): _mood_values,
+    ("request_music", "engine"): _engine_values,
     ("dj_set", "style"): _style_values,
     ("generate_music", "style"): _gen_style_values,
+    ("edit_music", "change"): _edit_values,
     ("dj_set", "styles[]"): _set_styles_values,  # ``items`` массива: ключ — имя параметра + «[]»
 }
 
@@ -437,6 +508,7 @@ SKILL_TOOLS: dict[str, tuple[str, ...]] = {
         "get_music_state",
         "stop_music",
         "set_music_volume",
+        "edit_music",
     ),
     "dj": (
         # ADR-0149: движок v2 (с PR-13b — единственный музыкальный путь)
@@ -446,6 +518,7 @@ SKILL_TOOLS: dict[str, tuple[str, ...]] = {
         "get_music_state",
         "stop_music",
         "set_music_volume",
+        "edit_music",
     ),
     "player": (
         "generate_music",
@@ -498,7 +571,6 @@ SKILL_TOOLS: dict[str, tuple[str, ...]] = {
         "search_web",
         "faq_search",
     ),
-    "scheduler": ("task_delta",),
 }
 
 
@@ -546,6 +618,17 @@ def _assign_skills(entries: list[dict[str, Any]]) -> None:
         )
 
 
+def _event_source(cls: ast.ClassDef) -> str:
+    """``event_source = "…"`` в теле класса тула (ADR-0150 §5.2): строка или константа модуля; нет — ``""``."""
+    node = _CLASS_CONSTANTS.get(cls.name, {}).get("event_source")
+    if node is None:
+        return ""
+    value = _resolve_constant(node)
+    if not isinstance(value, str):
+        raise ToolSourceError(f"{cls.name}.event_source must be a string literal or a module constant")
+    return value
+
+
 def extract_tools() -> list[dict[str, Any]]:
     """Read every ``MCPTool`` subclass under ``tools/`` into catalog entries."""
     global _MODULE_CONSTANTS, _MODULE_LIST_CONSTANTS, _CLASS_CONSTANTS, _CURRENT_CLASS, _PARAM_FACTORIES
@@ -575,9 +658,11 @@ def extract_tools() -> list[dict[str, Any]]:
                 "idempotent": False,
                 "starts_music": False,
                 "execution_type": "medium",
+                "event_source": _event_source(cls),
             }
             params: list[dict[str, Any]] | None = None
             signature: dict[str, Any] | None = None
+            explicit: set[str] = set()
 
             for fn in [n for n in cls.body if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))]:
                 if fn.name == "name":
@@ -592,6 +677,7 @@ def extract_tools() -> list[dict[str, Any]]:
                     "idempotent",
                     "llm_visible",
                     "operator_visible",
+                    "telegram_visible",
                     "starts_music",
                 ):
                     value = _returned_literal(fn)
@@ -603,6 +689,13 @@ def extract_tools() -> list[dict[str, Any]]:
                             entry["execution_type"] = n.attr.lower()
                 elif fn.name == "execute":
                     signature = _signature(fn)
+                elif fn.name == "slice":
+                    tool_slice = _returned_literal(fn)
+                    if isinstance(tool_slice, str) and "operator_visible" not in explicit:
+                        # MCPTool.operator_visible: тул среза operator.* виден оператору (ADR-0150 §9.3, PR-13b)
+                        entry["operator_visible"] = tool_slice.startswith(OPERATOR_SLICE_PREFIX)
+                if fn.name == "operator_visible":
+                    explicit.add(fn.name)
 
             name = entry.get("name")
             if not isinstance(name, str) or not name:
@@ -624,6 +717,10 @@ def extract_tools() -> list[dict[str, Any]]:
             entry["description"] = description.strip()
 
             for param in params:
+                param_resolver = DYNAMIC_PARAMS.get((name, param.get("name")))
+                if param_resolver is not None:
+                    param.clear()
+                    param.update(param_resolver())
                 if param.get("enum") is DYNAMIC:
                     resolver = DYNAMIC_ENUMS.get((name, param.get("name")))
                     if resolver is None:

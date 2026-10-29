@@ -16,8 +16,10 @@
     "  любой тул смены TTS-провайдера — его в коде нет вообще (§4.4 спека)",
     "must_not_call: маркеры REPLACE-пути. Их появление означает, что barge-in снова",
     "глушит TTS — то есть регресс issue #1734 / фазы S1-S7 issue #968.",
-    "ТРЕБОВАНИЕ К ПРОГОНУ: barge_in_policy=classify (ros2 param set /dialogue_node",
-    "barge_in_policy classify). При replace шаги gp11/gp12 бессмысленны.",
+    "ADR-0150 PR-5 (#3694): политика перебивания одна, параметра нет — речь рвёт только ясная",
+    "стоп-команда. Маркеры старого REPLACE-пути сняты с уровня акта: в зонде есть законный стоп",
+    "(«хватит диджеить»), а 'Cancel: new STT input' теперь отменяет ход LLM, не речь;",
+    "запрет на обрыв речи остаётся у шага gp12 (must_not_call: ясный стоп / SpeechEvent cancelled).",
     "Расшифровка каждого зонда — docs/e2e/dialogue-coverage-map-2026-08-29.md"
   ],
   "expected_tool_calls": [
@@ -28,10 +30,7 @@
     "register_speaker",
     "speak_text"
   ],
-  "must_not_call": [
-    "STOP command received",
-    "Cancel: new STT input"
-  ],
+  "must_not_call": [],
   "voice_provenance": {
     "voice": "anton",
     "tts": "yandex",

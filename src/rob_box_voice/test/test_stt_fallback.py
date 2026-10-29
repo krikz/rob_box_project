@@ -25,7 +25,9 @@ from rob_box_voice.stt_fallback import (
     DEFAULT_MIN_TEXT_CHARS,
     DEFAULT_YANDEX_MAX_RETRIES,
     DEFAULT_YANDEX_TIMEOUT_S,
+    NOTE_SCRIPT_MISMATCH,
     STTAttempt,
+    is_latin_guess_on_cyrillic_noise,
     is_short_phrase,
     log_attempts,
     select_recognition,
@@ -100,7 +102,8 @@ class TestIsShortPhrase:
         assert is_short_phrase("а") is True
 
     def test_two_chars_is_short(self):
-        assert is_short_phrase("да") is True
+        assert is_short_phrase("ау") is True
+        assert is_short_phrase("да") is False  # ответ на вопрос робота (knowledge.SHORT_ANSWERS)
 
     def test_three_chars_at_threshold_is_not_short(self):
         # DEFAULT_MIN_TEXT_CHARS=3, 'abc' has 3 chars: не < 3
@@ -757,3 +760,122 @@ class TestProviderPrepare:
         assert text is None
         assert vosk.prepare_calls == 1
         assert [a.provider for a in attempts] == ["yandex", "vosk"]
+
+
+# ---------------------------------------------------------------------------
+# #3724: фолбек-ответ проверяется тем же гейтом (пунктуация провайдера, чужая письменность)
+# ---------------------------------------------------------------------------
+
+
+class TestPhraseGateIgnoresProviderPunctuationAndScript:
+    def test_punctuation_added_by_provider_does_not_make_garbage_long(self):
+        assert is_short_phrase("э.") is True and is_short_phrase("мм.") is True
+
+    def test_answers_to_robot_questions_pass_with_or_without_punctuation(self):
+        for text in ("Да.", "да", "Нет!", "нет", "Не.", "ага", "Угу.", "ок", "ладно", "Стоп!"):
+            assert is_short_phrase(text) is False, text
+
+    def test_garbage_is_still_rejected(self):
+        for text in ("э", "ммм", "Ммм.", "аааа", "а", "ы", "係啊。", ""):
+            assert is_short_phrase(text) is True, text
+
+    def test_hieroglyphs_are_garbage_not_a_phrase(self):
+        assert is_short_phrase("係啊。") is True
+        assert is_short_phrase("你好世界，今天天气很好") is True
+
+    def test_one_stray_foreign_char_in_long_russian_phrase_is_fine(self):
+        assert is_short_phrase("идиома звучит как 好 в китайском языке") is False
+
+    def test_latin_phrase_is_fine(self):
+        assert is_short_phrase("hello robot") is False
+
+
+class _Prov:
+    def __init__(self, name, answer):
+        self.name = name
+        self._answer = answer
+
+    def recognize(self, audio_bytes):
+        return self._answer
+
+
+def test_fallback_garbage_after_low_confidence_is_not_accepted_as_phrase():
+    """Живой кейс 20.10: yandex:low_confidence('э') -> minimax:'係啊。' - принять нельзя, фраза отклоняется."""
+    text, attempts = select_recognition([_Prov("yandex", "э"), _Prov("minimax", "係啊。")], b"\x00" * 3200,
+                                        max_total_s=None)
+    assert [a.reason for a in attempts] == ["low_confidence", "low_confidence"]
+    assert is_short_phrase(text)  # итог для stt_node - rejected(short), «не расслышал», а не реплика личности
+
+
+def test_fallback_punctuated_short_garbage_is_not_accepted():
+    text, attempts = select_recognition([_Prov("yandex", "э"), _Prov("minimax", "Э.")], b"\x00" * 3200,
+                                        max_total_s=None)
+    assert [a.reason for a in attempts] == ["low_confidence", "low_confidence"]
+    assert is_short_phrase(text)
+
+
+def test_yes_from_the_first_provider_is_accepted_without_fallback():
+    """Ответ на вопрос робота проходит сразу у Yandex: на develop «да» уходило в MiniMax и принималось лишь как «Да.»."""
+    text, attempts = select_recognition([_Prov("yandex", "да"), _Prov("minimax", "Да.")], b"\x00" * 3200,
+                                        max_total_s=None)
+    assert [a.reason for a in attempts] == ["ok"] and text == "да"
+
+
+def test_fallback_real_phrase_still_accepted():
+    text, attempts = select_recognition([_Prov("yandex", "э"), _Prov("minimax", "Включи свет.")], b"\x00" * 3200,
+                                        max_total_s=None)
+    assert [a.reason for a in attempts] == ["low_confidence", "ok"] and text == "Включи свет."
+
+
+# ---------------------------------------------------------------------------
+# #3737: фолбек угадывает латиницу на кириллический обрывок
+# ---------------------------------------------------------------------------
+
+
+def test_fallback_latin_guess_on_cyrillic_noise_is_rejected_as_not_heard():
+    """Живой кейс 21.10: yandex:low_confidence('э') -> minimax:ok('Yeah.') принималось как реплика."""
+    text, attempts = select_recognition([_Prov("yandex", "э"), _Prov("minimax", "Yeah.")], b"\x00" * 3200,
+                                        max_total_s=None)
+    assert [a.reason for a in attempts] == ["low_confidence", "low_confidence"]
+    assert attempts[1].note == NOTE_SCRIPT_MISMATCH and attempts[1].text == "Yeah."
+    assert text == "э" and is_short_phrase(text)  # stt_node перепроверит текст гейтом: «Yeah.» там бы прошло
+
+
+def test_fallback_script_mismatch_visible_in_operator_log():
+    _, attempts = select_recognition([_Prov("yandex", "э"), _Prov("minimax", "Yeah.")], b"\x00" * 3200,
+                                     max_total_s=None)
+    assert "minimax:low_confidence" in summarize_attempts(attempts) and "script_mismatch" in summarize_attempts(attempts)
+
+
+def test_fallback_three_provider_chain_latin_guess_does_not_stop_chain():
+    text, attempts = select_recognition(
+        [_Prov("yandex", "э"), _Prov("minimax", "Yes."), _Prov("vosk", "включи свет")], b"\x00" * 3200,
+        max_total_s=None)
+    assert [a.reason for a in attempts] == ["low_confidence", "low_confidence", "ok"] and text == "включи свет"
+
+
+def test_fallback_latin_phrase_of_several_words_is_accepted():
+    text, attempts = select_recognition([_Prov("yandex", "э"), _Prov("minimax", "Turn the light on")], b"\x00" * 3200,
+                                        max_total_s=None)
+    assert [a.reason for a in attempts] == ["low_confidence", "ok"] and text == "Turn the light on"
+
+
+def test_fallback_cyrillic_answer_after_low_confidence_is_accepted():
+    text, attempts = select_recognition([_Prov("yandex", "э"), _Prov("minimax", "Привет.")], b"\x00" * 3200,
+                                        max_total_s=None)
+    assert [a.reason for a in attempts] == ["low_confidence", "ok"] and attempts[1].note is None and text == "Привет."
+
+
+def test_english_phrase_from_healthy_first_provider_is_accepted_untouched():
+    text, attempts = select_recognition([_Prov("yandex", "Hello"), _Prov("minimax", "x")], b"\x00" * 3200,
+                                        max_total_s=None)
+    assert [a.reason for a in attempts] == ["ok"] and text == "Hello"
+
+
+def test_latin_guess_predicate_needs_cyrillic_evidence_from_earlier_attempt():
+    assert is_latin_guess_on_cyrillic_noise("Yeah.", ["э"])
+    assert not is_latin_guess_on_cyrillic_noise("Yeah.", [])  # первый провайдер ничего не расслышал - не доказательство
+    assert not is_latin_guess_on_cyrillic_noise("Yeah.", ["uh"])  # первый тоже дал латиницу
+    assert not is_latin_guess_on_cyrillic_noise("Привет", ["э"])
+    assert not is_latin_guess_on_cyrillic_noise("Hello, how are you", ["э"])
+    assert not is_latin_guess_on_cyrillic_noise(None, ["э"])

@@ -13,8 +13,8 @@ chat_id, голос комнаты к ней не применяется. Это
 
 Владельцы — ``TELEGRAM_OWNER_CHAT_IDS`` (через запятую, env контейнера
 voice-assistant); без неё — :data:`DEFAULT_OWNER_CHAT_IDS`. Остальные
-разрешённые чаты — гости (``RULE #SRC`` промпта: «The operator (Шифу) is
-the DIRECTOR … Other chat users are guests»).
+разрешённые чаты — гости (правило ``owner`` из ``knowledge.PROMPT_RULES`` агента чата: Шифу
+направляет робота).
 
 Модуль без ROS2 — тестируется напрямую.
 """
@@ -30,7 +30,7 @@ OWNER_CHAT_IDS_ENV: str = "TELEGRAM_OWNER_CHAT_IDS"
 #: chat_id товарища Шифу (он же в ``scripts/music/live_dj/s7_styles.sh``).
 DEFAULT_OWNER_CHAT_IDS: frozenset = frozenset({495039871})
 
-#: Имя владельца — как его называет ``RULE #SRC`` в промпте.
+#: Имя владельца — как его называет правило ``owner`` из ``knowledge.PROMPT_RULES``.
 OWNER_NAME: str = "Шифу"
 
 # Issue #2779 — незнакомец получил факты и имя Бориса: биометрия верно
@@ -107,6 +107,9 @@ def voice_profile_lines(name: str, speaker: Mapping[str, Any]) -> list:
     использует для бэклога). Issue #2440 — ``speaker_id`` полный, без
     усечения: LLM и MCP-тулы должны видеть тот же id, что в voice_memory.
     """
+    introduced = str(speaker.get("introduced_name") or "")
+    if introduced:  # #3765: назвался сам, голос похож на другого — выясняет робот; LLM — только имя, без биометрии
+        return [f"    <name>{introduced}</name>", "    <name_source>назвался сам в этой реплике</name_source>"]
     lines = [f"    <name>{name or 'unknown'}</name>"]
     if not name:
         lines.append(_UNKNOWN_VOICE_NOTE)

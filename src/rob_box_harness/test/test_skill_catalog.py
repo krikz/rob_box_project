@@ -179,14 +179,14 @@ def test_generator_rejects_a_skill_naming_an_unknown_tool() -> None:
     """
     gen = _load_generator()
     gen.SKILL_TOOLS = dict(gen.SKILL_TOOLS)
-    gen.SKILL_TOOLS["scheduler"] = ("task_delta", "нет_такого_инструмента")
+    gen.SKILL_TOOLS["knowledge"] = ("search_web", "faq_search", "нет_такого_инструмента")
 
     with pytest.raises(SystemExit) as excinfo:
         gen._assign_skills(_catalog_entries())
 
     message = str(excinfo.value)
     assert "нет_такого_инструмента" in message
-    assert "scheduler" in message, "сообщение должно называть скилл"
+    assert "knowledge" in message, "сообщение должно называть скилл"
 
 
 @pytest.mark.skipif(not _GENERATOR.exists(), reason="генератор не найден")
@@ -198,12 +198,12 @@ def test_generator_rejects_an_orphan_tool() -> None:
     """
     gen = _load_generator()
     gen.SKILL_TOOLS = dict(gen.SKILL_TOOLS)
-    gen.SKILL_TOOLS["scheduler"] = ()
+    gen.SKILL_TOOLS["knowledge"] = ("search_web",)
 
     with pytest.raises(SystemExit) as excinfo:
         gen._assign_skills(_catalog_entries())
 
-    assert "task_delta" in str(excinfo.value)
+    assert "faq_search" in str(excinfo.value)
 
 
 @pytest.mark.skipif(not _GENERATOR.exists(), reason="генератор не найден")

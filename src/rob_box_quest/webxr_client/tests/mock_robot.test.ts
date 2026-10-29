@@ -143,6 +143,19 @@ describe("MockRobot over the real Connection", () => {
     expect(topics).toEqual(expect.arrayContaining(["camera_rear", "camera_ceiling", "lidar_2d", "map_2d"]));
   });
 
+  it("stream_list: voice_state собирается из контрактов диалога v2, а не из /voice/dialogue/state", async () => {
+    const h = connect();
+    await until(() => conn!.getState() === "connected");
+    conn!.requestStreamList();
+    await until(() => h.events.some((e) => e.type === "stream_list"));
+    const ev = h.events.find((e) => e.type === "stream_list")!;
+    const items = ev.items as Array<{ topic: string; topic_id: number; source: string }>;
+    const voice = items.find((i) => i.topic === "voice_state")!;
+    expect(voice.topic_id).toBe(0x1202);
+    expect(voice.source.split(", ").sort()).toEqual(["/dialog/session", "/dialog/turn_event", "/voice/speech/event"]);
+    expect(items.map((i) => i.source)).not.toContain("/voice/dialogue/state");
+  });
+
   it("teleop_twist with deadman drives the robot; deadman=false stops it", async () => {
     connect();
     await until(() => conn!.getState() === "connected");

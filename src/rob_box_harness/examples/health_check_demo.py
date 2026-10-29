@@ -2,7 +2,7 @@
 
 Воспроизводит acceptance-сценарий из issue #1082:
 
-* MiniMax с исчерпанной квотой (429 Token Plan usage limit 2056) —
+* MiniMax с исчерпанной квотой (429 usage limit) —
   провайдер помечается ``unavailable`` и ПЕРВЫЙ же запрос идёт на
   deepseek (без retry-цикла, без 15-19с потерь).
 * DeepSeek balance API (/user/balance) с ФЕЙКОВЫМ балансом через
@@ -158,18 +158,18 @@ def make_deepseek_balance_checker(balance: float, *, fail: bool = False):
 
 
 async def demo_dead_minimax_first_request_goes_to_deepseek() -> None:
-    """Acceptance: мёртвый MiniMax (quota 2056) — первый запрос на deepseek.
+    """Acceptance: мёртвый MiniMax (quota) — первый запрос на deepseek.
 
     До фичи: minimax retry 1/3 → 2/3 (RateLimitError, ~15-19с потерь) →
     потом fallback. После фичи: единственная попытка minimax, сразу
     помечается unavailable, следующий запрос вообще его не трогает.
     """
     print("\n" + "=" * 78)
-    print("СЦЕНАРИЙ 1: MiniMax мёртв (429 Token Plan usage limit 2056)")
+    print("СЦЕНАРИЙ 1: MiniMax мёртв (429 usage limit)")
     print("=" * 78)
 
     quota_error = RateLimitError(
-        "429: rate_limit_error Token Plan usage limit reached (2056)",
+        "429: rate_limit_error usage limit reached",
         provider="minimax",
     )
     minimax = FakeProvider("minimax", fail=quota_error)
@@ -283,7 +283,7 @@ async def demo_ttl_expiry_puts_provider_back_first() -> None:
     minimax = FakeProvider("minimax")
     deepseek = FakeProvider("deepseek")
     cache = HealthCache(clock=clock)
-    cache.mark_unavailable("minimax", reason="quota 2056")
+    cache.mark_unavailable("minimax", reason="quota")
 
     wrapper = HealthAwareFallbackLLM([deepseek, minimax], cache=cache)
 
@@ -330,7 +330,7 @@ async def main() -> None:
     print("rob_box_harness.health — демо (issue #1082)")
     print(f"  DEFAULT_HEALTH_TTL_S={DEFAULT_HEALTH_TTL_S}, TRANSIENT_TTL_S={TRANSIENT_TTL_S}")
     print(f"  QUOTA_EXHAUSTED_HINTS={tuple(h for h in __import__('rob_box_harness.health', fromlist=['QUOTA_EXHAUSTED_HINTS']).QUOTA_EXHAUSTED_HINTS)}")
-    print(f"  is_quota_exhausted('429 ... 2056') = {is_quota_exhausted(RateLimitError('429: rate_limit_error Token Plan usage limit reached (2056)'))}")
+    print(f"  is_quota_exhausted('429 ... usage limit') = {is_quota_exhausted(RateLimitError('429: rate_limit_error usage limit reached'))}")
 
     await demo_dead_minimax_first_request_goes_to_deepseek()
     await demo_fake_balance_zero_blocks_deepseek_before_first_call()

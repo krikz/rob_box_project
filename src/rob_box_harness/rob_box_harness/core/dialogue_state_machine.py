@@ -22,6 +22,9 @@ from dataclasses import dataclass, field
 from enum import Enum, auto
 from typing import Any
 
+from rob_box_dialog.knowledge import DEFAULT_WAKE_WORDS, SILENCE_WORDS
+from rob_box_dialog.words import has_wake_word, has_word
+
 
 def _now() -> float:
     """Return the current unix timestamp.
@@ -420,35 +423,14 @@ class DialogueStateMachine:
         if not text_lower:
             return DialogueEvent.TIMEOUT
 
-        # Silence commands — check FIRST so "роббокс замолчи" is
-        # treated as SILENCE_COMMAND, not WAKE_WORD.
-        # 🔴 FIX (live 09:32): «молчи» — ТОЛЬКО как отдельная команда
-        # (точное совпадение). Подстрока «молчи» в составе фразы
-        # («сыграй баха и молчи просто играй» = играй без комментариев)
-        # НЕ должна уводить DSM в SILENCED — иначе LLM не вызывается
-        # и робот отвечает «Что-то я задумался».
-        silence_triggers = (
-            "тихо", "замолчи", "хватит", "стоп",
-            "помолчи", "заткнись", "умолкни",
-        )
-        # Точные команды (вся фраза = команда замолчать)
-        exact_silence = ("молчи", "молчать", "тишина", "тише")
-        if any(trigger in text_lower for trigger in silence_triggers):
+        # Тишина — раньше вейка: «роббокс замолчи» — команда тишины, не вейк.
+        # Слова и вейки — одна таблица rob_box_dialog.knowledge, матч по
+        # границам слов (ADR-0150 PR-1): «работает» не будит, «захватит» не
+        # глушит. Прод-путь сюда не ходит — dialogue_node и supervisor
+        # передают ``preclassified_event``.
+        if has_word(text_lower, SILENCE_WORDS):
             return DialogueEvent.SILENCE_COMMAND
-        if text_lower.strip() in exact_silence:
-            return DialogueEvent.SILENCE_COMMAND
-
-        # Wake words
-        # 🔴 fix(voice #1252): синхронизировано с dialogue_node.yaml — 12 вариантов
-        # + исторический «робик» (потерян при 9ca7fb29, 21.02). STT реально выдаёт
-        # кривые варианты («робок», «роберт», «рыбок») — все покрываем.
-        wake_triggers = (
-            "роббокс", "роб бокс", "робокс", "робок", "робот",
-            "робокос", "роббос", "роберт", "рыбок", "рома",
-            "бот", "робо", "роб", "робик",
-            "robbox", "rob box",
-        )
-        if any(trigger in text_lower for trigger in wake_triggers):
+        if has_wake_word(text_lower, DEFAULT_WAKE_WORDS):
             return DialogueEvent.WAKE_WORD
 
         return DialogueEvent.STT_RESULT

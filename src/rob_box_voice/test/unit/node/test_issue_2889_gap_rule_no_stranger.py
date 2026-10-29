@@ -53,6 +53,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
 
 from rob_box_voice import speaker_id_node as sid_node  # noqa: E402
 from rob_box_voice.utils.speaker_embeddings import SpeakerMatch  # noqa: E402
+from rob_box_core.speaker_wire import speaker_result_to_payload  # noqa: E402
 
 DEFAULT_BAND_HIGH = 0.80  # declare_parameter name_confidence_band_high
 ACT_2B_BAND_HIGH = 0.99  # node_params акта 2b
@@ -143,7 +144,7 @@ def test_process_utterance_publishes_no_name_for_gena(node):
     node._process_utterance(b"\x00\x00" * 16000, utterance_id="utt-n709")
 
     assert node._result_pub.publish.call_count == 1
-    payload = json.loads(node._result_pub.publish.call_args.args[0].data)
+    payload = speaker_result_to_payload(node._result_pub.publish.call_args.args[0])
     assert payload["is_known"] is True
     assert payload["name"] is None
     assert payload["tentative_kind"] == sid_node.NAME_TENTATIVE_CONTESTED

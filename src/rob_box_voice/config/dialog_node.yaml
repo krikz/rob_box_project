@@ -1,0 +1,30 @@
+# dialog_node.yaml — хост диалога v2 (ADR-0150 PR-8 #3702), стартует только при dialog_engine: v2
+# (dialog_engine.yaml). Две копии: docker/sound/config/voice_assistant/ (живой) и src/rob_box_voice/config/ —
+# менять синхронно (сверяет src/rob_box_voice/test/test_yaml_param_consistency.py).
+#
+# Ключи API провайдеров — из окружения (как у dialogue_node), в yaml их нет.
+dialog_node:
+  ros__parameters:
+    # Цепочка LLM: первый — основной, дальше — фолбеки; все в режиме команд (command_bridge).
+    llm_providers: "deepseek,minimax"
+    system_prompt_file: "master_prompt_compact.txt"
+    wake_words_path: "/config/wake_words.yaml"
+    temperature: 0.0
+    max_tokens: 0
+    # Телеграм-агент (ADR-0150 §9.2, PR-12a #3706): своя цепочка и персона чата; бывшие мёртвые llm_* из
+    # telegram_bot.yaml (V27): llm_provider=deepseek, llm_temperature=0.7. История — окно ходов knowledge.
+    telegram_llm_providers: "deepseek,minimax"
+    telegram_system_prompt_file: "telegram_chat_prompt.txt"
+    telegram_temperature: 0.7
+    telegram_max_tokens: 0
+    # «Робот помнит собеседника» (#3919): профиль (счётчик диалогов) - harness_voice.db, как вёл v1; факты - voice_facts
+    # БД инструментов, куда пишет memory_save, в e2e - e2e-БД MCP. Пути фактов здесь не задаются: их знает
+    # rob_box_core.tools_db, тот же модуль, что у mcp_server (#4082); voice_facts_db_path - только для стенда.
+    sqlite_db_path: /data/harness_voice.db
+    # Стартовая фраза (#1003, перенос v1 #3912): через N с после старта, если робот не занят; 0 — выключено.
+    # Пустой startup_greeting_text — случайная из phrases/ru.yaml startup.greeting.
+    startup_greeting_sec: 12.0
+    startup_greeting_text: ""
+    # e2e: текст ходов пишется только при непустом пути ВНЕ /data (ставит харнесс через ros2 param set; #3904 —
+    # отдельного e2e_mode у dialog_node нет, режим e2e робота один: /speaker_id_node e2e_mode).
+    e2e_db_path: ""

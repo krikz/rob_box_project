@@ -25,12 +25,20 @@ class LLMSkipReason(str, Enum):
     MUSIC_STOP = "music_stop"
     COMMAND_INTENT = "command_intent"
     NEW_SESSION = "new_session"
-    QUICK_DECIDE_IGNORE = "quick_decide_ignore"
-    PENDING_LLM = "pending_llm"
     BACKLOG_ACCUMULATED = "backlog_accumulated"
+    #: ADR-0150 PR-5 (В12): голое «робот» без свежей фразы — рефлекс, LLM не нужна.
+    BARE_WAKE = "bare_wake"
+    #: ADR-0150 PR-5 (#3518): «Клод …» из Telegram — координатору, не роботу.
+    COORDINATOR = "NotAddressed(coordinator)"
     UNSILENCE = "unsilence"
     #: Issue #3134 — медиакоманду исполнил роутер кодом, LLM не нужна.
     MEDIA_COMMAND = "media_command"
+    #: ADR-0150 PR-6 — Tier-1 команда (стоп, громкость, голос) исполнена кодом, 0 вызовов LLM.
+    TIER1 = "tier1"
+    #: ADR-0150 PR-6 (В19) — стоп-слово внутри другой команды: решает Chooser, не LLM хода.
+    STOP_DISPUTED = "stop_disputed"
+    #: ADR-0150 PR-6 (#3696) — стоп музыки в SILENCED: исполнен Tier-1 молча, медиароутер туда не доходит.
+    MUSIC_STOP_SILENCED = "music_stop_silenced"
 
 
 def new_llm_skip_counter() -> dict[str, int]:

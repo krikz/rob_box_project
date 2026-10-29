@@ -104,3 +104,33 @@ class TestKeywordHit:
     def test_blank_alternatives_ignored(self):
         assert keyword_hit(LIVE_LOG, "|Денис|") is True
         assert keyword_hit(LIVE_LOG, "||") is False
+
+
+# ── #4218: префикс «re:» -- регэксп по речи робота (запрет обращения по имени) ─────────────────────────────────────
+
+
+def _said(text: str) -> str:
+    return ("[tts_node-5] [INFO] [1790073470.711094079] [tts_node]: 🔊 TTS: "
+            f"speech_id=3f15b0f0, dialogue_id=None, batch=None None/None, voice=default, lang=default, text='{text}'\n")
+
+
+ADDRESS = "re:(?:^|[.!?…]\\s*)нина\\s*[,!]|,\\s*нина\\s*(?:[.!?…,;]|$)|\\b(?:ты|это|зовут)\\s+нина\\b"
+
+
+@pytest.mark.parametrize("text,hit", [
+    ("Понял, Тамара. Сначала я услышал „Нина“.", False),
+    ("Нина, привет!", True),
+    ("Понял, Нина.", True),
+    ("Тебя зовут Нина.", True),
+])
+def test_regex_keyword_matches_speech_case_insensitively(text, hit):
+    assert keyword_hit(_said(text), ADDRESS) is hit
+
+
+def test_regex_keyword_in_the_log_but_not_in_the_speech_is_no_hit():
+    logs = "dialogue_node: user_input='[Spkr:Нина] Нина, привет!'\n" + _said("Привет.")
+    assert keyword_hit(logs, ADDRESS) is False
+
+
+def test_broken_regex_keyword_is_no_hit_not_a_crash():
+    assert keyword_hit(_said("Нина, привет!"), "re:(нина") is False

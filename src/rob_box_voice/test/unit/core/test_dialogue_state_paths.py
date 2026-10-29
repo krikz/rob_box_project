@@ -29,10 +29,11 @@ REPO_ROOT = _repo_root(Path(__file__).resolve())
 COMPOSE = REPO_ROOT / "docker" / "sound" / "docker-compose.yaml"
 
 # Every config that sets the parameter — a fix in one and not the others is
-# how it drifted in the first place.
+# how it drifted in the first place. PR-15 (#3711, part 15p): the dialogue
+# node is `dialog_node` (v2); the v1 node and its two YAML copies are gone.
 CONFIGS = (
-    REPO_ROOT / "docker" / "sound" / "config" / "voice_assistant" / "dialogue_node.yaml",
-    REPO_ROOT / "src" / "rob_box_voice" / "config" / "dialogue_node.yaml",
+    REPO_ROOT / "docker" / "sound" / "config" / "voice_assistant" / "dialog_node.yaml",
+    REPO_ROOT / "src" / "rob_box_voice" / "config" / "dialog_node.yaml",
 )
 
 # Per ADR-0004 (issue #1004) every node reads its own `<node>.yaml`.
@@ -55,7 +56,7 @@ VOICE_MEMORY_DB = "/data/voice_memory.db"
 def _param(config: Path, name: str):
     with config.open(encoding="utf-8") as fh:
         loaded = yaml.safe_load(fh)
-    return loaded["dialogue_node"]["ros__parameters"][name]
+    return loaded["dialog_node"]["ros__parameters"][name]
 
 
 @pytest.mark.parametrize("config", CONFIGS, ids=lambda p: p.name)
@@ -76,26 +77,6 @@ def test_dialogue_db_is_not_the_voice_memory_file(config: Path) -> None:
         "with VoiceMemory — `waypoints` and `faq_items` have incompatible "
         "schemas in the two, and CREATE TABLE IF NOT EXISTS hides it until "
         "the first insert fails"
-    )
-
-
-@pytest.mark.parametrize("config", CONFIGS, ids=lambda p: p.name)
-def test_history_excluded_tools_names_a_live_tool(config: Path) -> None:
-    """The filter must name tools that still exist.
-
-    It defaulted to `handle_navigation` / `handle_music` — Compositor skill
-    facades deleted after the party regression — so it excluded nothing at
-    all while looking configured.
-    """
-    from rob_box_core.tool_catalog import tool_names
-
-    known = set(tool_names())
-    excluded = _param(config, "history_excluded_tools")
-    assert excluded, f"{config.name}: empty history_excluded_tools"
-    unknown = [name for name in excluded if name not in known]
-    assert not unknown, (
-        f"{config.name}: history_excluded_tools names tools that do not "
-        f"exist: {unknown}. The filter silently excludes nothing."
     )
 
 
@@ -226,15 +207,20 @@ def test_wake_words_are_declared_exactly_once() -> None:
 
 
 def test_node_defaults_use_the_canonical_wake_words() -> None:
-    """Both nodes must default to the shared list, not a copy of it."""
+    """The node must default to the shared list, not a copy of it.
+
+    PR-15 (#3711, part 15p): the v1 dialogue node is gone; `dialog_node` (v2)
+    reads the wake words from `wake_words.yaml` through `rob_box_dialog.address`.
+    """
     from rob_box_voice.core.dialogue_text import DEFAULT_WAKE_WORDS
 
     assert DEFAULT_WAKE_WORDS, "the canonical list is empty"
-    for module in ("dialogue_node.py", "stt_node.py"):
+    # ADR-0150 PR-5: stt_node берёт таблицу у rob_box_dialog.address (своего имени списка нет).
+    for module, decl in (("stt_node.py", 'declare_parameter("wake_words", address.wake_words()[0])'),):
         source = (
             REPO_ROOT / "src" / "rob_box_voice" / "rob_box_voice" / module
         ).read_text(encoding="utf-8")
-        assert 'declare_parameter("wake_words", list(DEFAULT_WAKE_WORDS))' in source, (
+        assert decl in source, (
             f"{module} declares wake_words with its own literal instead of "
-            "DEFAULT_WAKE_WORDS"
+            "the shared table"
         )

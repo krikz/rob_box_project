@@ -72,7 +72,6 @@ def _make_node():
     """Uninitialized TTSNode with capturing publishers (no ROS)."""
     node = object.__new__(TTSNode)
     node.finished_pub = _CapturingPublisher()
-    node.batch_complete_pub = _CapturingPublisher()
     node._logger = Mock()
     node.get_logger = lambda: node._logger
     # Issue #2553 — ``_publish_tts_finished`` теперь зовёт
@@ -118,13 +117,8 @@ def test_finished_event_duration_sec_with_batch_metadata() -> None:
         batch_total=2,
     )
 
-    # Last chunk → batch_complete side-channel fires + finished republished
-    # with the batch_complete marker, keeping duration_sec intact.
-    assert len(node.batch_complete_pub.messages) == 1
-    bc_payload = json.loads(node.batch_complete_pub.messages[0].data)
-    assert bc_payload["batch_id"] == "b-1"
-    assert bc_payload["chunks_total"] == 2
-
+    # Last chunk → finished republished with the batch_complete marker,
+    # keeping duration_sec intact (separate batch topic removed, PR-7c ч.4б).
     finished_payloads = [
         json.loads(m.data) for m in node.finished_pub.messages
     ]

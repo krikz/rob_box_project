@@ -10,7 +10,7 @@ requests
 omegaconf==2.4.0
 
 # =============================================================================
-# Async HTTP server (voice-action-server sidecar, action_server/http_server.py)
+# Async HTTP server (rob_box_quest ws-server; раньше и voice-action-server — удалён в ADR-0150 PR-7c ч.4в)
 # The package.xml declares <exec_depend>aiohttp</exec_depend> but rosdep
 # resolution on ARM64 (Raspberry Pi 5, Ubuntu 24.04 noble) is unreliable.
 # Until 5d3df7e2 the package wasn't pinned, which left the voice-action-server

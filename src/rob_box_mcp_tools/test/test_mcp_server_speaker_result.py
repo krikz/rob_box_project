@@ -101,6 +101,10 @@ def _install_rclpy_stub() -> None:
         std_msgs, std_msgs_msg,
     ]:
         sys.modules[mod.__name__] = mod
+    # ADR-0150 PR-2: /voice/speaker/result типизирован; класс строится из .msg.
+    from rob_box_core.msg_stub import install_dialog_msgs_stub
+
+    install_dialog_msgs_stub()
     sys.modules["std_msgs.msg"] = std_msgs_msg
     sys.modules["rcl_interfaces.msg"] = rcl_interfaces_msg
 
@@ -174,7 +178,6 @@ def _load_mcp_server_module():
         (f"{_PKG_NAME}.mcp_auth", {"RequestAuthenticator": _Auth}),
         (f"{_PKG_NAME}.waypoint_store", {"WaypointStore": type("WaypointStore", (), {})}),
         (f"{_PKG_NAME}.mapping_state", {"MappingState": _MappingState}),
-        (f"{_PKG_NAME}.voice_state", {"VoiceStateStore": type("VoiceStateStore", (), {})}),
         ("rob_box_voice.core.voice_memory", {"VoiceMemory": type("VoiceMemory", (), {})}),
         ("rob_box_voice.core.faq_store", {"FAQStore": type("FAQStore", (), {})}),
         ("rob_box_voice.core.event_profile", {"load_event_profile": lambda *a, **kw: None}),
@@ -230,7 +233,6 @@ _SYS_MODULES_KEYS_TOUCHED_BY_BOOTSTRAP = (
     f"{_PKG_NAME}.mcp_auth",
     f"{_PKG_NAME}.waypoint_store",
     f"{_PKG_NAME}.mapping_state",
-    f"{_PKG_NAME}.voice_state",
     f"{_PKG_NAME}.mcp_server",
     "rob_box_voice.core.voice_memory",
     "rob_box_voice.core.faq_store",
@@ -331,14 +333,11 @@ def _bind_handler(node: _StubNode):
 
 
 def _msg(data: str):
-    """Build a stub std_msgs.msg.String with ``.data``."""
+    """``SpeakerResult`` из JSON-словаря писателя (формат speaker_id_node)."""
+    from rob_box_core.msg_stub import install_dialog_msgs_stub
+    from rob_box_core.speaker_wire import fill_speaker_result
 
-    class _Msg:
-        pass
-
-    m = _Msg()
-    m.data = data
-    return m
+    return fill_speaker_result(install_dialog_msgs_stub().SpeakerResult(), json.loads(data))
 
 
 # ---------------------------------------------------------------------------
@@ -392,21 +391,19 @@ class TestOnSpeakerResult:
         handler(_msg(json.dumps({"event": "registered", "speaker_id": "uuid-new", "name": "Саша"})))
         assert node._current_encounter_speaker_id() == "uuid-new"
 
-    def test_malformed_json_does_not_raise(self) -> None:
-        node = _StubNode()
-        handler = _bind_handler(node)
-        # Bad JSON: silently drop, do not change cache.
-        handler(_msg("not-json-at-all"))
-        assert node._current_encounter_speaker_id() is None
-        # Handler must not log an error (just return): JSON parse failures
-        # from a noisy speaker_id_node would otherwise spam the operator.
-        assert node.logger.errors == []
+    def test_default_message_does_not_raise(self) -> None:
+        """Пустой ``SpeakerResult`` (все поля по умолчанию) - «не знаю», кэш не меняется.
 
-    def test_empty_msg_does_not_raise(self) -> None:
+        Битого JSON у типизированного сообщения нет (ADR-0150 PR-2), остаётся
+        крайний случай - сообщение со значениями по умолчанию.
+        """
+        from rob_box_core.msg_stub import install_dialog_msgs_stub
+
         node = _StubNode()
         handler = _bind_handler(node)
-        handler(_msg(""))
+        handler(install_dialog_msgs_stub().SpeakerResult())
         assert node._current_encounter_speaker_id() is None
+        assert node.logger.errors == []
 
     def test_repeat_same_id_does_not_re_log(self) -> None:
         """Identical speaker_id → silent return (avoid log spam)."""
@@ -503,3 +500,67 @@ class TestIssue2863KeepKnownSpeaker:
         handler(_msg(json.dumps({"is_known": False, "utterance_id": "u-2"})))
 
         assert node._current_encounter_speaker_id() is None
+
+
+class TestIssue4023OnlyConfirmedNameBindsSpeaker:
+    """Issue #4023 — «кто сейчас» для memory-тулов становится профилем только при опубликованном имени.
+
+    Марафон 23.10 (акт 2b): ``current_speaker_id: ∅ → 429eae2c… (name=None)`` в «спорной» полосе (#2809), затем
+    ``memory_search{query:'Саша'}`` с id Саши при снимке ``speaker unknown``; 21:35:44 n709 — посторонний голос
+    привязан к профилю Саши. Спорный голос — как незнакомец: «кто сейчас» сбрасывается в ∅.
+    """
+
+    #: 21:31:04 — «Саша» 0.892, имя скрыто: contested (band_high 0.99).
+    CONTESTED = {"is_known": True, "speaker_id": "429eae2c-738a", "name": None, "confidence": 0.892,
+                 "epithet": "Спутник", "tentative_conf": 0.892, "tentative_kind": "contested",
+                 "utterance_id": "4be70727a7b1"}
+
+    def _prime_sasha(self, handler) -> None:
+        handler(_msg(json.dumps({"is_known": True, "speaker_id": "429eae2c-738a", "name": "Саша",
+                                 "confidence": 0.95})))
+
+    def test_contested_from_empty_does_not_bind_the_candidate(self) -> None:
+        node = _StubNode()
+        handler = _bind_handler(node)
+
+        handler(_msg(json.dumps(self.CONTESTED)))
+
+        assert node._current_encounter_speaker_id() is None
+        assert not any("429eae2c" in m for m in node.logger.infos)
+
+    def test_contested_after_confirmed_sasha_resets_to_nobody(self) -> None:
+        """n709: посторонний голос в спорной полосе больше не продолжает «Сашу» — факты Саши ему не достаются."""
+        node = _StubNode()
+        handler = _bind_handler(node)
+        self._prime_sasha(handler)
+        assert node._current_encounter_speaker_id() == "429eae2c-738a"
+
+        handler(_msg(json.dumps(self.CONTESTED)))
+
+        assert node._current_encounter_speaker_id() is None
+        assert any("→ ∅" in m and "name_state=contested" in m for m in node.logger.infos)
+
+    @pytest.mark.parametrize("payload", [
+        {"is_known": True, "speaker_id": "p-guess", "name": None, "confidence": 0.76, "tentative_conf": 0.76,
+         "tentative_kind": "single", "tentative_name": "Дэнчик"},
+        {"is_known": True, "speaker_id": "p-nameless", "name": None, "confidence": 0.81, "epithet": "Гость"},
+    ])
+    def test_known_voice_without_published_name_binds_nobody(self, payload) -> None:
+        """Гипотеза имени и профиль без имени — тоже не опубликованное имя: memory-тулы без speaker_id чужой профиль
+        не получают (в диалоге v2 собеседника им даёт снимок хода, а не этот запасной путь)."""
+        node = _StubNode()
+        handler = _bind_handler(node)
+        self._prime_sasha(handler)
+
+        handler(_msg(json.dumps(payload)))
+
+        assert node._current_encounter_speaker_id() is None
+
+    def test_confirmed_after_contested_binds_again(self) -> None:
+        node = _StubNode()
+        handler = _bind_handler(node)
+        handler(_msg(json.dumps(self.CONTESTED)))
+
+        self._prime_sasha(handler)
+
+        assert node._current_encounter_speaker_id() == "429eae2c-738a"

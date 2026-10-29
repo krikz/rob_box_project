@@ -60,7 +60,8 @@ INPUT_TOPICS = (
     "/audio/vad",
     "/audio/direction",
     "/voice/speaker/register",
-    "/voice/tts/state",
+    # когда робот говорит (ADR-0144 §2.2): SpeechEvent вместо String-топика состояния TTS (PR-15 15-0b, #3711)
+    "/voice/speech/event",
     "/voice/tts/finished",
 )
 #: Решения живой 1.1 и метки: не проигрываются НИКОГДА (смешались бы с выходами).
@@ -68,7 +69,7 @@ CONTROL_TOPICS = (
     "/voice/speaker/result",
     "/vision/hailo/events",
     "/perception/observations",
-    "/voice/stt/result",
+    "/voice/stt/utterance",
     "/voice/stt/speaker",
 )
 #: Что пишется в бэг сцены (conductor.py): входы + сырой звук + контроль.

@@ -52,10 +52,6 @@ SCRIPTS_DIR = REPO_ROOT / ".github" / "workflows" / "scripts"
 E2E_SCRIPT = SCRIPTS_DIR / "e2e_voice_test.sh"
 LIB = SCRIPTS_DIR / "e2e_voice_lib.sh"
 WAKE = SCRIPTS_DIR / "e2e_voice_wake_gate.sh"
-ACT_2C = (
-    REPO_ROOT / ".github" / "e2e" / "scenarios" / "night"
-    / "night_marathon_act2c_voice_conflict_question_v1.json"
-)
 
 needs_bash = pytest.mark.skipif(
     shutil.which("bash") is None or shutil.which("python3") is None,
@@ -162,12 +158,40 @@ LOG_N723_ANSWER = (
     + _tts("Понял, вы разные люди — так и запомню.")
 )
 
-ACT = json.loads(ACT_2C.read_text(encoding="utf-8"))
-STEPS = {s["label"]: s for s in ACT["steps"]}
-N721 = STEPS["n721_sasha_intro"]
-N722 = STEPS["n722_boris_intro_conflict"]
-N723 = STEPS["n723_boris_answer_different"]
-FORBIDDEN = N722["acceptance"]["must_not_say"]
+# Шаги акта 2c в редакции вопроса «вы разные люди?» (#2828), по ним записан run 35912751803. С #3992 акт 2c другой:
+# вопроса личности в dialog v2 нет (решение Шифу 26.10), и сценарий его не ждёт. Механику харнесса (речь — только
+# озвученное, запрет ретрая после смены состояния) эти тесты проверяют на той исторической записи, поэтому шаги —
+# фикстура здесь, а не чтение живого сценария.
+N721 = {
+    "label": "n721_sasha_intro",
+    "voice": "anton",
+    "text": "Робот, здравствуй, я Саша, чиню тут технику по вечерам, сегодня перебираю колёса и зарядку.",
+    "patterns": [],
+    "acceptance": {"expected_tool_calls": ["register_speaker"], "discovery_tools": ["register_speaker"],
+                   "must_not_call": []},
+    "retry_acceptance": 1,
+}
+#: Шаг n722 в редакции run 35912751803 (до #3765): тогда приветствие было запрещено (вопрос ЗАМЕНЯЛ ответ хода).
+FORBIDDEN = ["Привет, Борис", "Приятно познакомиться"]
+N722 = {
+    "label": "n722_boris_intro_conflict",
+    "voice": "ermil",
+    "text": "Робот, добрый вечер, меня зовут Борис, я друг Саши, захожу по пятницам и помогаю с проводкой.",
+    "patterns": [],
+    "acceptance": {"expected_tool_calls": ["register_speaker"], "discovery_tools": ["register_speaker"],
+                   "must_not_call": [], "must_not_say": FORBIDDEN},
+    "retry_acceptance": 1,
+}
+N723 = {
+    "label": "n723_boris_answer_different",
+    "voice": "ermil",
+    "text": "Робот, мы разные люди, я Борис, а Саша мой друг.",
+    "when_robot_asked": "разные люди|под другим именем",
+    "required_question": True,
+    "patterns": [],
+    "acceptance": {"must_not_call": ["register_speaker"], "must_not_say": ["под другим именем", "Объединил записи"],
+                   "expected_tool_calls": []},
+}
 
 
 # ── 1. robot_speech(): речь — только озвученное ──────────────────────────
@@ -421,6 +445,7 @@ def run_scenario(tmp_path: Path, steps: list, logs: list) -> str:
             WAKE.read_text(encoding="utf-8"),
             extract_function("emit_step"),
             extract_function("mark_fail_kind"),
+            extract_function("check_music_compare"),  # #3971: сверка вида результата
             extract_function("check_acceptance"),
             'run_step() { n="$(cat "$STUB/attempt" 2>/dev/null || echo 0)"; '
             'echo $((n + 1)) > "$STUB/attempt"; return 0; }',

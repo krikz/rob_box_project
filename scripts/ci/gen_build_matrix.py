@@ -24,6 +24,9 @@ docker/build-manifest.yaml.
                                         ros_distro, apt_proxy, docker_tag)
     matrix_entry(name, svc, ...)    -> один элемент matrix: полностью
                                         разрешённые tags/build-args
+    msgs_image_ref(manifest, ...)   -> `<local>:msgs-<distro>-<хэш>` общего
+                                        образа ROS-сообщений (читает файлы
+                                        пакетов — единственное чтение с диска)
 
 CLI:
 
@@ -31,6 +34,7 @@ CLI:
     gen_build_matrix.py --pi vision --mode tags [--format shell --docker-tag dev]
     gen_build_matrix.py --pi vision --mode services [--format shell]
     gen_build_matrix.py --mode base
+    gen_build_matrix.py --mode msgs
 
 Каждый режим печатает JSON в stdout (план §4.2); `--format shell` — построчный
 текст для `while read` в bash-шагах workflow.
@@ -39,6 +43,7 @@ CLI:
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import re
 import sys
@@ -50,6 +55,9 @@ import yaml
 # Валидное имя переменной *_TAG в docker/{main,vision,sound}/.image-versions.* —
 # заглавные буквы/цифры/подчёркивания, обязательно оканчивается на _TAG.
 _IMAGE_VERSIONS_VAR_RE = re.compile(r"^[A-Z][A-Z0-9_]*_TAG$")
+
+# Корень репо: относительно него лежат src/<пакет> общего образа сообщений.
+REPO_ROOT = Path(__file__).resolve().parents[2]
 
 
 class ManifestError(ValueError):
@@ -77,6 +85,7 @@ def load_manifest(path: str | Path) -> dict[str, Any]:
         raise ManifestError(f"{p}: manifest must be a mapping with a 'pis' key")
 
     _check_unique_service_names(manifest)
+    _validate_msgs_image(manifest)
     for pi_name, pi_data in manifest["pis"].items():
         services = (pi_data or {}).get("services") or {}
         _validate_services(pi_name, services)
@@ -100,6 +109,31 @@ def _check_unique_service_names(manifest: dict[str, Any]) -> None:
                     f"pis.{pi_name}.services.{name}: имя сервиса уже занято другим Pi"
                 )
             seen.add(name)
+
+
+def _validate_msgs_image(manifest: dict[str, Any]) -> None:
+    """`msgs_image: true` у сервиса требует секцию msgs_image манифеста."""
+    users = []
+    for pi_name, pi_data in manifest["pis"].items():
+        for name, svc in ((pi_data or {}).get("services") or {}).items():
+            flag = svc.get("msgs_image", False)
+            if not isinstance(flag, bool):
+                raise ManifestError(
+                    f"pis.{pi_name}.services.{name}: msgs_image={flag!r} — ожидался true/false"
+                )
+            if flag:
+                users.append(f"pis.{pi_name}.services.{name}")
+    section = manifest.get("msgs_image")
+    if users and not section:
+        raise ManifestError(
+            f"{', '.join(users)}: msgs_image: true, но секции msgs_image в манифесте нет"
+        )
+    if section and not (
+        section.get("dockerfile")
+        and (section.get("base") or {}).get("family")
+        and section.get("packages")
+    ):
+        raise ManifestError("msgs_image: нужны dockerfile, base.family и непустой packages")
 
 
 def _validate_services(pi_name: str, services: dict[str, Any]) -> None:
@@ -215,6 +249,7 @@ class BuildContext(NamedTuple):
     ros_distro: str  # env.ROS_DISTRO     (humble)
     apt_proxy: str  # http://host.docker.internal:3142
     docker_tag: str  # needs.prepare.outputs.docker_tag (dev|test|latest|local)
+    msgs_image: str = ""  # msgs_image_ref(): общий образ ROS-сообщений
 
 
 def build_context(
@@ -224,6 +259,7 @@ def build_context(
     image_prefix: str | None = None,
     local_prefix: str | None = None,
     ros_distro: str | None = None,
+    repo_root: str | Path = REPO_ROOT,
 ) -> BuildContext:
     """Собирает BuildContext из defaults манифеста, с переопределением из CLI.
 
@@ -235,14 +271,94 @@ def build_context(
     """
     defaults = manifest.get("defaults") or {}
     registry = defaults.get("registry") or {}
+    local = local_prefix or registry["local"]
+    distro = ros_distro or defaults["ros_distro"]
     return BuildContext(
         image_prefix=image_prefix or registry["ghcr"],
-        local_prefix=local_prefix or registry["local"],
+        local_prefix=local,
         base_registry=defaults["base_registry"],
-        ros_distro=ros_distro or defaults["ros_distro"],
+        ros_distro=distro,
         apt_proxy=defaults["apt_proxy"],
         docker_tag=docker_tag,
+        msgs_image=msgs_image_ref(
+            manifest, local_prefix=local, ros_distro=distro, repo_root=repo_root
+        ),
     )
+
+
+# --- общий образ ROS-сообщений --------------------------------------------
+#
+# src/rob_box_*_msgs компилируются ОДИН раз за прогон (docker/msgs/Dockerfile,
+# ".github/workflows/L-Build Msgs Image.yml"), сервисы берут готовый
+# /ws/install через COPY --from=${MSGS_IMAGE}. Тег зависит только от того, что
+# реально входит в образ, поэтому одинаков во всех job'ах прогона и между
+# прогонами без правок .msg — по нему сборка и решает, нужна ли она.
+
+
+def _msgs_base_image(manifest: dict[str, Any], ros_distro: str) -> str:
+    defaults = manifest.get("defaults") or {}
+    family = manifest["msgs_image"]["base"]["family"]
+    return f"{defaults['base_registry']}:{family}-{ros_distro}"
+
+
+def msgs_image_ref(
+    manifest: dict[str, Any],
+    *,
+    local_prefix: str,
+    ros_distro: str,
+    repo_root: str | Path = REPO_ROOT,
+) -> str:
+    """`<local_prefix>:msgs-<ros_distro>-<хэш12>`; "" — секции msgs_image нет.
+
+    Хэш sha256 — по ссылке на базу, Dockerfile и всем файлам src/<пакет>:
+    относительный путь + содержимое, CRLF → LF (чекаут на Windows и в CI
+    обязан давать один и тот же тег). Пересборка самой базы тег не меняет:
+    ABI ROS humble внутри дистрибутива стабилен.
+    """
+    section = manifest.get("msgs_image")
+    if not section:
+        return ""
+    root = Path(repo_root)
+    files = [root / section["dockerfile"]]
+    for pkg in section["packages"]:
+        pkg_dir = root / "src" / pkg
+        if not pkg_dir.is_dir():
+            raise ManifestError(f"msgs_image.packages: нет каталога {pkg_dir}")
+        files += [
+            f
+            for f in pkg_dir.rglob("*")
+            if f.is_file() and "__pycache__" not in f.parts
+        ]
+    digest = hashlib.sha256(_msgs_base_image(manifest, ros_distro).encode() + b"\0")
+    for rel, f in sorted((f.relative_to(root).as_posix(), f) for f in files):
+        digest.update(rel.encode() + b"\0")
+        digest.update(f.read_bytes().replace(b"\r\n", b"\n") + b"\0")
+    return f"{local_prefix}:msgs-{ros_distro}-{digest.hexdigest()[:12]}"
+
+
+def msgs_image_entry(manifest: dict[str, Any], ctx: BuildContext) -> dict[str, str]:
+    """Элемент сборки общего образа — набор ключей как у `matrix_entry`
+    (+ `image`), чтобы композит и scripts/build/build.py звали его так же."""
+    section = manifest.get("msgs_image")
+    if not section:
+        raise ManifestError("manifest has no msgs_image")
+    build_args = [
+        f"BASE_IMAGE={_msgs_base_image(manifest, ctx.ros_distro)}",
+        f"APT_PROXY={ctx.apt_proxy}",
+    ]
+    return {
+        "name": "msgs",
+        "image": ctx.msgs_image,
+        "dockerfile": section["dockerfile"],
+        "build_context": section.get("build_context", "."),
+        "tags": ctx.msgs_image,
+        "build_args": "\n".join(build_args),
+        "submodule_sha": "",
+        "source_hash_arg": "",
+        "source_hash_spec": "",
+        "pre_build": "",
+        "depends_on": "",
+    }
 
 
 def tag_basename(name: str, svc: dict[str, Any], ctx: BuildContext) -> str:
@@ -304,6 +420,8 @@ def matrix_entry(name: str, services: dict[str, Any], ctx: BuildContext) -> dict
     build_args.append(f"APT_PROXY={ctx.apt_proxy}")
     for key in sorted(svc.get("build_args") or {}):
         build_args.append(f"{key}={svc['build_args'][key]}")
+    if svc.get("msgs_image"):
+        build_args.append(f"MSGS_IMAGE={ctx.msgs_image}")
 
     return {
         "name": name,
@@ -316,6 +434,8 @@ def matrix_entry(name: str, services: dict[str, Any], ctx: BuildContext) -> dict
         "source_hash_spec": _source_hash_spec(svc),
         "pre_build": svc.get("pre_build", "") or "",
         "depends_on": " ".join(svc.get("depends_on") or []),
+        # Образ, который сервис ждёт в registry перед сборкой ("" — не ждёт).
+        "msgs_image": ctx.msgs_image if svc.get("msgs_image") else "",
     }
 
 
@@ -438,7 +558,7 @@ def _build_cli() -> argparse.ArgumentParser:
     parser.add_argument(
         "--mode",
         required=True,
-        choices=["waves", "tags", "services", "base"],
+        choices=["waves", "tags", "services", "base", "msgs"],
         help=(
             "waves — [[элемент, ...], ...] по волнам сборки Pi: волна k — "
             "strategy.matrix.include wave-job'а k; "
@@ -446,7 +566,9 @@ def _build_cli() -> argparse.ArgumentParser:
             "(с --format shell — строки `ПЕРЕМЕННАЯ <tag>`); "
             "services — все сервисы Pi (для сводки в summary-job'е); "
             "base — {имя: [элемент]} базовых образов (секция base_images, "
-            "--pi не нужен)"
+            "--pi не нужен); "
+            "msgs — элемент сборки общего образа ROS-сообщений (секция "
+            "msgs_image, --pi не нужен)"
         ),
     )
     parser.add_argument(
@@ -490,10 +612,23 @@ def main(argv: list[str] | None = None) -> int:
     args = _build_cli().parse_args(argv)
     try:
         manifest = load_manifest(args.manifest)
+        # docker/build-manifest.yaml → корень репо, от него src/<пакет> msgs.
+        repo_root = Path(args.manifest).resolve().parents[1]
         if args.mode == "base":
             # Базовые образы не привязаны к Pi и не несут docker_tag.
             bases = base_image_entries(manifest, ros_distro=args.ros_distro)
             print(json.dumps(bases, ensure_ascii=False))
+            return 0
+        if args.mode == "msgs":
+            # Общий образ сообщений тоже вне Pi; тег — хэш, не docker_tag.
+            ctx = build_context(
+                manifest,
+                docker_tag="",
+                local_prefix=args.local_prefix,
+                ros_distro=args.ros_distro,
+                repo_root=repo_root,
+            )
+            print(json.dumps(msgs_image_entry(manifest, ctx), ensure_ascii=False))
             return 0
         if not args.pi:
             raise ManifestError(f"--mode {args.mode} requires --pi")
@@ -512,6 +647,7 @@ def main(argv: list[str] | None = None) -> int:
                 image_prefix=args.image_prefix,
                 local_prefix=args.local_prefix,
                 ros_distro=args.ros_distro,
+                repo_root=repo_root,
             )
 
         if args.mode == "waves":

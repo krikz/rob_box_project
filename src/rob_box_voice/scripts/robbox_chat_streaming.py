@@ -147,7 +147,7 @@ class StreamingChatBot:
         # Используем упрощённый промпт без ударений
         prompt_path = os.path.join(
             os.path.dirname(__file__),
-            '../prompts/master_prompt_simple.txt'
+            '../prompts/master_prompt_compact.txt'
         )
 
         try:

@@ -6,19 +6,20 @@
 
 import rclpy
 from rclpy.node import Node
-from std_msgs.msg import String
+from rob_box_dialog_msgs.msg import Utterance
 import sys
 
 
 class CommandTester(Node):
     def __init__(self):
         super().__init__('command_tester')
-        self.publisher = self.create_publisher(String, '/voice/stt/result', 10)
+        self.publisher = self.create_publisher(Utterance, '/voice/stt/utterance', 10)
         self.get_logger().info('Command Tester готов!')
     
     def send_command(self, text: str):
-        msg = String()
-        msg.data = text
+        msg = Utterance()
+        msg.text = text
+        msg.source = Utterance.SOURCE_RESPEAKER
         self.publisher.publish(msg)
         self.get_logger().info(f'🎤 STT: {text}')
 

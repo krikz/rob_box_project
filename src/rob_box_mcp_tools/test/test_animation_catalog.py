@@ -1,17 +1,13 @@
-"""The animation vocabulary must match what the player can actually render.
+"""The animation vocabulary of the tools is self-consistent.
 
-``rob_box_animations`` renders one animation per manifest in
-``animations/manifests/*.yaml``. Any name a tool advertises without a
-manifest behind it is a tool the LLM will happily call and a matrix that
-shows nothing — which is how ``excited`` ended up hard-coded as a special
-case in ``play_animation``.
+That every name resolves to a scene of the procedural face is checked next
+to the face itself (``tests/unit/docker/test_animation_assets.py``): a name
+the LLM is offered with nothing behind it is a matrix that shows nothing —
+which is how ``excited`` ended up hard-coded as a special case in
+``play_animation``.
 """
 
 from __future__ import annotations
-
-import pathlib
-
-import pytest
 
 from rob_box_mcp_tools.animations import (
     ANIMATION_ALIASES,
@@ -19,41 +15,7 @@ from rob_box_mcp_tools.animations import (
     normalize_animation,
 )
 
-MANIFEST_DIR = (
-    pathlib.Path(__file__).resolve().parents[2]
-    / "rob_box_animations"
-    / "animations"
-    / "manifests"
-)
 
-
-def _manifest_names() -> set[str]:
-    return {p.stem for p in MANIFEST_DIR.glob("*.yaml")}
-
-
-@pytest.mark.skipif(
-    not MANIFEST_DIR.is_dir(),
-    reason="rob_box_animations sources unavailable (installed package layout)",
-)
-def test_animation_catalog_matches_manifests() -> None:
-    """Every advertised animation exists, and every animation is advertised."""
-    manifests = _manifest_names()
-    assert manifests, f"no manifests found under {MANIFEST_DIR}"
-    advertised = set(KNOWN_ANIMATIONS)
-    assert not advertised - manifests, (
-        "animations advertised to the LLM with no manifest behind them: "
-        f"{sorted(advertised - manifests)}"
-    )
-    assert not manifests - advertised, (
-        "animations the robot can play but no tool offers: "
-        f"{sorted(manifests - advertised)}"
-    )
-
-
-@pytest.mark.skipif(
-    not MANIFEST_DIR.is_dir(),
-    reason="rob_box_animations sources unavailable (installed package layout)",
-)
 def test_aliases_never_shadow_a_real_animation() -> None:
     """An alias must not share a name with an animation, and must resolve to one.
 
@@ -65,7 +27,7 @@ def test_aliases_never_shadow_a_real_animation() -> None:
             f"{alias!r} is both an alias and a real animation"
         )
         assert target in KNOWN_ANIMATIONS, (
-            f"alias {alias!r} resolves to {target!r}, which has no manifest"
+            f"alias {alias!r} resolves to {target!r}, which is not an animation"
         )
 
 
@@ -81,3 +43,15 @@ def test_normalize_animation_handles_the_cases_that_reach_it() -> None:
     assert normalize_animation(None) == "idle"
     assert normalize_animation("no_such_animation") == "idle"
     assert normalize_animation("no_such_animation", fallback="talking") == "talking"
+
+
+def test_vocabulary_is_the_one_table_of_the_dialogue() -> None:
+    """#4103: the dialogue builds the show queue from the same table — one source, re-exported here, not a copy."""
+    from rob_box_dialog import knowledge as kn
+
+    assert KNOWN_ANIMATIONS is kn.KNOWN_ANIMATIONS
+    assert ANIMATION_ALIASES is kn.ANIMATION_ALIASES
+    # Russian words a person uses for the show queue normalise for the tool as well.
+    assert normalize_animation("удивление") == "surprised"
+    assert normalize_animation("Нейтральное") == "idle"
+    assert normalize_animation("удивлённое") == "surprised"

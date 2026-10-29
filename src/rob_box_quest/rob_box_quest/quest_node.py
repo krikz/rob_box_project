@@ -30,7 +30,7 @@ import logging
 import math
 import threading
 import time
-from typing import Any, Optional
+from typing import Any, Callable, Optional
 
 # Phase 2 (issue #2002, ADR-0051 §2.1): kind-значения для
 # ``Command.msg`` (должны совпадать с
@@ -52,9 +52,11 @@ from rclpy.qos import (
     ReliabilityPolicy,
 )
 from sensor_msgs.msg import CompressedImage, LaserScan
+from rob_box_dialog_msgs.msg import SpeakerResult
 from std_msgs.msg import String
 
 # issue #1988 — константа топика ответа ТАРС (единый источник правды).
+from rob_box_core import speech_client, voice_state
 from rob_box_core.avatar_command import AVATAR_COMMAND_RESULT_TOPIC
 from rob_box_core.speech_segmentation import (
     DEFAULT_ROBOT_VOICE_CONFIG,
@@ -86,11 +88,10 @@ from .streams.provider import CameraFrame, CameraProvider
 from .streams.registry import STREAM_CATALOG
 from .streams.ros_demand import DemandDrivenSubscriptions
 from .streams.status import StatusAggregator
-from .streams.voice_state import normalize_voice_state
+from .streams.voice_state import send_voice_state
 from .streams.voice_picker import pick_voice
 from .streams.wifi import read_wifi_rssi
 from .tars_stage_relay import TarsStageRelay  # noqa: E402
-from .protocol.topics import encode_voice_state
 
 log = logging.getLogger(__name__)
 
@@ -303,7 +304,7 @@ class QuestBridge:
         cmd_vel_emergency_pub,
         ws_server: Optional[WSSServer] = None,
         voice_in_pub=None,
-        tts_control_pub=None,
+        stop_speech: Optional[Callable[[], None]] = None,
         sound_stop_pub=None,
         stt_in_pub=None,
         quest_wake_pub=None,  # issue #1992: /audio/quest_wake (wake-канал → stt_node)
@@ -327,7 +328,8 @@ class QuestBridge:
         self._pub_emergency = cmd_vel_emergency_pub
         # Рация (P3): голос оператора + STOP-каналы. None в unit-тестах моста.
         self._voice_in_pub = voice_in_pub
-        self._tts_control_pub = tts_control_pub
+        # ADR-0150 PR-3: отмена речи робота одним клиентом (SpeechCancel).
+        self._stop_speech = stop_speech
         self._sound_stop_pub = sound_stop_pub
         # Робот-голос (P7): буфер PCM → /audio/quest_in (STT).
         self._stt_in_pub = stt_in_pub
@@ -526,14 +528,14 @@ class QuestBridge:
     # --- Voice passthrough (рация, P3) ---------------------------------
 
     def publish_voice_barge_in(self) -> None:
-        """PTT start: STOP в /voice/tts/control + /voice/sound/stop (barge-in)."""
+        """PTT start: SpeechCancel всей речи робота + /voice/sound/stop (barge-in)."""
         # issue #3253 (Ш2): клиент на PTT уже оборвал реплику ТАРС в шлеме —
         # закрываем её стадию и на сервере (tars_state idle), иначе экран
         # ждёт конца звука, которого не будет.
         _notify_tars_barge_in(self._node)
-        if self._tts_control_pub is None or self._sound_stop_pub is None:
+        if self._stop_speech is None or self._sound_stop_pub is None:
             return
-        self._tts_control_pub.publish(_stop_msg())
+        self._stop_speech()
         self._sound_stop_pub.publish(_stop_msg())
 
     def publish_voice_audio(self, payload: bytes) -> None:
@@ -1749,8 +1751,8 @@ class QuestNode(Node):
         self._voice_in_pub = self.create_publisher(
             AudioData, "/avatar/voice_in", _VOICE_QOS
         )
-        self._tts_control_pub = self.create_publisher(String, "/voice/tts/control", _RE)
         self._sound_stop_pub = self.create_publisher(String, "/voice/sound/stop", _RE)
+        speech_client.prepare(self, "cancel")  # ADR-0150 PR-3: PTT -> SpeechCancel
         # Робот-голос (P7): буфер операторского PCM → STT через /audio/quest_in.
         self._stt_in_pub = self.create_publisher(
             AudioData, "/audio/quest_in", _VOICE_QOS
@@ -1932,7 +1934,7 @@ class QuestNode(Node):
             lambda text: self.get_logger().debug(text),
         )
         self._speaker_result_sub = self.create_subscription(
-            String, "/voice/speaker/result", self._tars_status.on_speaker_result, 10
+            SpeakerResult, "/voice/speaker/result", self._tars_status.on_speaker_result, 10
         )
         # #3253 Ш3б: llm/wake-слова — latched-топики dialogue_node.
         _tars_latched = QoSProfile(
@@ -2138,16 +2140,17 @@ class QuestNode(Node):
         self._map_sub = self.create_subscription(
             OccupancyGrid, "/rtabmap/map", self._on_map, _MAP_QOS
         )
-        # voice_state (0x1202): /voice/dialogue/state (std_msgs/String) →
-        # нормализованный msgpack-фрейм → WS-подписчикам. Подписка
-        # RELIABLE — dialogue_node публикует так же (см.
-        # docs/recon/voice-dialogue-state-payload.md §1.1).
+        # voice_state (0x1202): состояние голоса → нормализованный msgpack-фрейм → WS-подписчикам. Источник
+        # одной таблицей — rob_box_core.voice_state (issue #3911): при dialog_engine=v2 это TurnEvent/SpeechEvent/
+        # SessionState (watch), при v1 — строка /voice/dialogue/state (on_legacy; уходит с dialogue_node, PR-15).
+        self._voice = voice_state.VoiceStateTracker()
         self._dialogue_state_sub = self.create_subscription(
             String,
             "/voice/dialogue/state",
             self._on_dialogue_state,
             _RE,
         )
+        voice_state.watch(self, self._voice, lambda state: send_voice_state(self, state))
         # Эх последнего state — для тестов моста без полного ROS-стека.
         self._last_voice_state: dict[str, Any] = {
             "state": "idle",
@@ -2196,7 +2199,9 @@ class QuestNode(Node):
             cmd_vel_emergency_pub=self._pub_emergency,
             ws_server=self.ws_server,
             voice_in_pub=self._voice_in_pub,
-            tts_control_pub=self._tts_control_pub,
+            stop_speech=lambda: speech_client.cancel(
+                self, agent=speech_client.ANY_AGENT, reason="ptt"
+            ),
             sound_stop_pub=self._sound_stop_pub,
             stt_in_pub=self._stt_in_pub,
             quest_wake_pub=self._quest_wake_pub,
@@ -2465,29 +2470,8 @@ class QuestNode(Node):
         self.bridge.publish_map_pose(self._map_pose())
 
     def _on_dialogue_state(self, msg: String) -> None:
-        """ROS /voice/dialogue/state → msgpack voice_state (0x1202) → WS.
-
-        Шлём каждый переход FSM (event-driven, drop-newest — см.
-        meta-quest-api.md §4 frequency policy). Тело — простое:
-        нормализация (таблица DialogueStateKind → bridge state),
-        stamp server time, encode_voice_state, broadcast_frame.
-
-        Никаких проверок «не повторять тот же state» — ROS уже сам
-        не публикует дублей при неизменном состоянии, а если
-        upstream пришлёт — безопасно переслать (клиент сам
-        дедуплицирует по ts_ms+state).
-        """
-        normalized = normalize_voice_state(msg)
-        self._last_voice_state = normalized
-        payload = encode_voice_state(
-            state=normalized["state"],
-            ts_ms=int(time.time() * 1000),
-            detail=normalized["detail"],
-        )
-        try:
-            self.bridge.publish_frame("voice_state", payload)
-        except Exception as e:  # noqa: BLE001
-            self.get_logger().debug(f"voice_state publish failed: {e}")
+        """Удалит PR-15 #3711: ROS /voice/dialogue/state (только dialogue_node v1) → адаптер → шлем."""
+        send_voice_state(self, self._voice.on_legacy(msg.data))
 
     def _on_tts_voices(self, msg: String) -> None:
         """ROS /voice/tts/voices (TRANSIENT_LOCAL, latched) → bridge кэш.

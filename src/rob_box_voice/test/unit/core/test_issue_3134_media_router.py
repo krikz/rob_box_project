@@ -26,7 +26,6 @@ from rob_box_voice.core.media_command_grammar import (
     parse_media_command,
 )
 from rob_box_voice.core.media_router import (
-    NOTHING_PLAYING_TEXT,
     MediaRouter,
     MediaState,
     default_media_provider,
@@ -50,17 +49,6 @@ def _calls(plan):
 @pytest.mark.parametrize(
     ("text", "intent"),
     [
-        ("играй громче", MediaIntent.VOLUME_UP),
-        ("погромче", MediaIntent.VOLUME_UP),
-        ("[TG] сделай музыку громче", MediaIntent.VOLUME_UP),
-        ("прибавь звук", MediaIntent.VOLUME_UP),
-        ("ты диджей, сделай громче", MediaIntent.VOLUME_UP),
-        ("потише", MediaIntent.VOLUME_DOWN),
-        ("сделай музыку потише пожалуйста", MediaIntent.VOLUME_DOWN),
-        ("убавь музыку", MediaIntent.VOLUME_DOWN),
-        ("на максимум", MediaIntent.VOLUME_MAX),
-        ("громкость на максимум", MediaIntent.VOLUME_MAX),
-        ("выкрути музыку на полную", MediaIntent.VOLUME_MAX),
         ("выключи музыку", MediaIntent.STOP),
         ("стоп диджей", MediaIntent.STOP),
         ("хватит диджеить", MediaIntent.STOP),
@@ -106,20 +94,10 @@ def test_generic_music_request_goes_to_request_music(text: str) -> None:
     assert [c.name for c in MediaRouter().route(text, QUIET).tool_calls] == ["request_music"]
 
 
-def test_track_name_tail_needs_current_track() -> None:
-    text = "горный король погромче"
-    assert parse_media_command(text).intent is MediaIntent.NONE
-    assert (
-        parse_media_command(text, track_name="Still Dre").intent is MediaIntent.NONE
-    )
-    cmd = parse_media_command(text, track_name="В пещере горного короля")
-    assert cmd.intent is MediaIntent.VOLUME_UP and cmd.closed
-
-
-def test_live_3125_voice_negation_is_music_volume() -> None:
-    # «играй трей кромче а не говори громче» — отказ от голоса, трек громче.
-    cmd = parse_media_command("играй трей кромче а не говори громче")
-    assert cmd.intent is MediaIntent.VOLUME_UP
+def test_volume_is_not_media_grammar_any_more() -> None:
+    """ADR-0150 PR-6: громкость (и её канал по снимку) — Tier-1 ``rob_box_dialog.grammar``, медиа-грамматика её не
+    разбирает: одна реализация (корпус — ``src/rob_box_dialog/test/test_grammar.py``)."""
+    assert not any(i.value.startswith("volume") for i in MediaIntent)
 
 
 @pytest.mark.parametrize(
@@ -141,42 +119,13 @@ def test_dj_grammar(text: str, persona: str, closed: bool) -> None:
 
 
 def test_wide_stop_detector_still_catches_mixed_phrases() -> None:
-    # Силенс-гейт, command-гейт и Bug F пользуются широким детектором.
+    # Силенс-гейт, command-гейт и пост-гуард стопа пользуются широким детектором.
     assert is_music_stop_command("выключи музыку и включи Oakenfold")
     assert is_music_stop_command("стоп диджей блядь")
     assert not is_music_stop_command("для робота-диджея")
 
 
 # ── 2. План: каждая команда × (играет / тишина / DJ) ────────────────────
-
-
-@pytest.mark.parametrize(
-    ("text", "action"),
-    [
-        ("играй громче", "louder"),
-        ("потише", "quieter"),
-        ("на максимум", "max"),
-    ],
-)
-@pytest.mark.parametrize("state", ["playing", "quiet", "dj"])
-def test_volume_plan(text: str, action: str, state: str) -> None:
-    plan = MediaRouter().route(text, STATES[state])
-    assert plan is not None
-    if state == "quiet":
-        assert plan.tool_calls == ()
-        assert plan.say_ok == NOTHING_PLAYING_TEXT
-    else:
-        assert _calls(plan) == [("set_music_volume", {"action": action})]
-        assert plan.say_ok and plan.say_fail
-    assert not plan.cancel_inflight  # громкость не рвёт идущий ответ
-
-
-def test_track_name_volume_plan_only_while_that_track_plays() -> None:
-    router = MediaRouter()
-    plan = router.route("горный король погромче", PLAYING)
-    assert _calls(plan) == [("set_music_volume", {"action": "louder"})]
-    assert router.route("горный король погромче", QUIET) is None
-    assert router.route("горный король погромче", DJ_SET) is None
 
 
 @pytest.mark.parametrize("state", ["playing", "quiet", "dj"])
@@ -225,10 +174,10 @@ def test_default_provider_is_deterministic_decision_provider() -> None:
 
 
 def test_rules_answer_closed_choice() -> None:
-    answers = media_intent_rules({"utterance": "потише"}, {"media_intent": object()})
+    answers = media_intent_rules({"utterance": "выключи музыку"}, {"media_intent": object()})
     answer = answers["media_intent"]
     assert isinstance(answer, ChoiceAnswer)
-    assert answer.answer == MediaIntent.VOLUME_DOWN.value
+    assert answer.answer == MediaIntent.STOP.value
     assert answer.confidence == 1.0
 
 
@@ -236,23 +185,21 @@ def test_provider_decides_intent() -> None:
     # Провайдер говорит «не медиакоманда» — роутер уважает решение.
     none = ChoiceAnswer(answer="none", probabilities={"none": 1.0}, confidence=1.0)
     router = MediaRouter(FakeDecisionProvider("fake", answers={"media_intent": none}))
-    assert router.route("играй громче", PLAYING) is None
+    assert router.route("выключи музыку", PLAYING) is None
 
 
-def test_provider_found_volume_grammar_did_not() -> None:
-    up = ChoiceAnswer(
-        answer="volume_up", probabilities={"volume_up": 1.0}, confidence=1.0
-    )
-    router = MediaRouter(FakeDecisionProvider("fake", answers={"media_intent": up}))
-    plan = router.route("чуть бодрее звук", PLAYING)
-    assert _calls(plan) == [("set_music_volume", {"action": "louder"})]
+def test_provider_found_stop_grammar_did_not() -> None:
+    stop = ChoiceAnswer(answer="stop", probabilities={"stop": 1.0}, confidence=1.0)
+    router = MediaRouter(FakeDecisionProvider("fake", answers={"media_intent": stop}))
+    plan = router.route("тормозни шарманку", PLAYING)
+    assert _calls(plan) == [("dj_set", {"action": "stop"}), ("stop_music", {})]
 
 
 def test_awaiting_provider_falls_back_to_grammar() -> None:
     # Сетевой провайдер в синхронном колбэке STT не ждём.
     slow = FakeDecisionProvider("jev", answers={}, delay_s=0.5)
-    plan = MediaRouter(slow).route("потише", PLAYING)
-    assert _calls(plan) == [("set_music_volume", {"action": "quieter"})]
+    plan = MediaRouter(slow).route("выключи музыку", PLAYING)
+    assert _calls(plan) == [("dj_set", {"action": "stop"}), ("stop_music", {})]
     assert slow.calls == 1
 
 

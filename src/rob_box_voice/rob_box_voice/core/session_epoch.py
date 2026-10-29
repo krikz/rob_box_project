@@ -6,7 +6,7 @@ in-flight turn, но у отменённого хода остаются хво�
 
 * синхронные ретраи music-/tool-гуардов из ``finally`` ``_run_turn``:
   отменённый ход приходит туда с ``result=None`` → ``tools_called=()`` →
-  Bug C видит «музыку просили, тула нет» и шлёт ``[CRITICAL]``-ретрай
+  музыкальный гуард видит «музыку просили, тула нет» и шлёт ``[CRITICAL]``-ретрай
   (живой лог 23.09 14:18:08 — ретрай стартует в ту же секунду, что и
   ``session reset``);
 * ретраи, уже поставленные в loop (``run_coroutine_threadsafe``), но ещё
@@ -60,13 +60,3 @@ class SessionEpoch:
         изнутри хода (ретрай/дренаж очереди), иначе текущее."""
         parent = TURN_EPOCH.get()
         return self._value if parent is None else parent
-
-    def retries_allowed(
-        self, *, turn_epoch: Optional[int], cancelled: bool
-    ) -> bool:
-        """Можно ли ходу диспатчить post-turn ретраи (tool-гуард).
-
-        Нельзя, если ход отменён (barge-in / сброс — результата нет, «тула
-        не вызвали» тут ложь) или если за время хода сессию сбросили.
-        """
-        return not cancelled and not self.is_stale(turn_epoch)

@@ -31,7 +31,7 @@ from .async_executor import AsyncToolExecutor
 # импортировался из async_executor, где лежала вторая, более бедная
 # копия того же класса (без get_count()/has_tool_calls()).
 from .core.tool_call_accumulator import ToolCallAccumulator
-from .base import ToolExecutionType
+from .base import ToolExecutionType, shared_publisher
 from .mcp_auth import RequestAuthenticator
 
 
@@ -62,6 +62,8 @@ TURN_CONTEXT_ARGS: Mapping[str, Tuple[str, ...]] = {
     "request_music": ("turn_id", "heard_text"),
     # ADR-0158 PR-3: путь (синтез / кэш / генерация / отказ) решает код по словам реплики, не по пересказу LLM.
     "generate_music": ("turn_id", "heard_text"),
+    # #4029: виды правки играющего («потяжелее», «ускорь») решает код по словам реплики, слот LLM — запасной.
+    "edit_music": ("turn_id", "heard_text"),
 }
 
 TurnContextProvider = Callable[[], Mapping[str, Any]]
@@ -147,8 +149,10 @@ class LLMToolCallAdapter:
             depth=10
         )
 
-        # Publisher для запросов выполнения инструментов
-        self.execute_pub = node.create_publisher(String, "/mcp/execute", qos_profile)
+        # Publisher для запросов выполнения инструментов - один на ноду, общий у всех её адаптеров (#4081): тот же
+        # ``base.shared_publisher`` (#3108), на который рассчитан tools/architecture_audit.py (ROS_HELPER_CALLS); своего
+        # кэша издателя у адаптера нет. Подпись (``sender``), срез тулов и ожидание ответов остаются за адаптером.
+        self.execute_pub = shared_publisher(node, String, "/mcp/execute", qos_profile)
 
         # Подпись запросов общим секретом — mcp_server отклоняет
         # неподписанные tool-call-ы (см. mcp_auth.py). ``sender`` берём
@@ -200,19 +204,26 @@ class LLMToolCallAdapter:
             result = json.loads(msg.data)
             request_id = result.get("request_id", "")
 
-            self.node.get_logger().info(f"📩 on_result вызван для request_id: {request_id[:8] if request_id else 'empty'}")
-
             if not request_id:
                 self.node.get_logger().warn("⚠️ Получен результат без request_id")
                 return
 
-            # Сохраняем результат в кэш
-            self.results_cache[request_id] = result
-            self.node.get_logger().info(f"💾 Результат сохранён в кэш для {request_id[:8]}")
+            # /mcp/result слышат все адаптеры ноды и другие ноды (#4081): в ответе нет отправителя, хозяин запроса -
+            # тот, кто его выпустил и ждёт (событие, колбэк или async-исполнитель). Чужой ответ молча пропускаем:
+            # иначе он оседал бы в кэшах навсегда, а строки лога шли бы дважды.
+            if not (request_id in self.result_events or request_id in self.pending_requests
+                    or self.async_executor.expects(request_id)):
+                return
 
-            # Уведомляем ждущий поток через Event
-            if request_id in self.result_events:
-                self.result_events[request_id].set()
+            self.node.get_logger().info(f"📩 on_result вызван для request_id: {request_id[:8]}")
+
+            # Синхронный вызов забирает ответ из кэша и ждёт Event (``execute_tool_call_sync``); запросу с колбэком кэш
+            # не нужен: его никто не заберёт
+            event = self.result_events.get(request_id)
+            if event is not None:
+                self.results_cache[request_id] = result
+                self.node.get_logger().info(f"💾 Результат сохранён в кэш для {request_id[:8]}")
+                event.set()
                 self.node.get_logger().info(f"✅ Event установлен для {request_id[:8]}")
 
             # Уведомляем async executor

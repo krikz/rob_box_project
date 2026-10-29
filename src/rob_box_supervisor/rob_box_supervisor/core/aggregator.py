@@ -8,8 +8,8 @@
 ``std_msgs/String`` (см. ADR-0028 §4.3 и AV-5 — там будет полный IDL).
 
 Источники истины:
-- ADR-0028 §4.3 (подписки: ``/odom``, ``/device/snapshot``,
-  ``/voice/dialogue/state`` — НЕ ``/voice/state``, расхождение ADR-0027 #2).
+- ADR-0028 §4.3 (подписки: ``/odom``, ``/device/snapshot``). Вход состояния голоса удалён: поле
+  ``voice_state`` снимка не читал никто (#3711, PR-15).
 - SYSTEM_OVERVIEW.md §5.4 (контракт ``/avatar/state``).
 """
 
@@ -33,7 +33,6 @@ class AvatarState:
     ts_ms: int
     pose_xy: Optional[tuple] = None  # (x, y) из /odom
     battery_pct: Optional[float] = None  # из /device/snapshot
-    voice_state: Optional[str] = None  # из /voice/dialogue/state
     last_event: Dict[str, Any] = field(default_factory=dict)
     dead_man_trips_total: Dict[str, int] = field(default_factory=dict)
 
@@ -43,7 +42,6 @@ class AvatarState:
             "ts_ms": self.ts_ms,
             "pose_xy": list(self.pose_xy) if self.pose_xy is not None else None,
             "battery_pct": self.battery_pct,
-            "voice_state": self.voice_state,
             "last_event": self.last_event,
             "dead_man_trips_total": dict(self.dead_man_trips_total),
         }
@@ -57,7 +55,6 @@ class StateAggregator:
         agg = StateAggregator()
         agg.update_odom(x=1.0, y=2.0)
         agg.update_device_snapshot(battery_pct=87.5)
-        agg.update_voice_state("listening")
         snapshot = agg.snapshot()
         publisher.publish(String(data=msgpack.packb(snapshot.to_msgpack_dict())))
 
@@ -72,7 +69,6 @@ class StateAggregator:
     def __init__(self) -> None:
         self._pose_xy: Optional[tuple] = None
         self._battery_pct: Optional[float] = None
-        self._voice_state: Optional[str] = None
         self._last_event: Dict[str, Any] = {}
         self._dead_man: Dict[str, int] = {}
 
@@ -85,10 +81,6 @@ class StateAggregator:
         """Обработать ``/device/snapshot`` (только battery_pct — Phase 1)."""
         if battery_pct is not None:
             self._battery_pct = float(battery_pct)
-
-    def update_voice_state(self, voice_state: Optional[str]) -> None:
-        """Обработать ``/voice/dialogue/state`` (см. ADR-0027 #2)."""
-        self._voice_state = voice_state
 
     # ── dead-man / events ─────────────────────────────────────────────
     def record_dead_man_trip(self, client_id: str) -> int:
@@ -112,7 +104,7 @@ class StateAggregator:
         """Return the last meaningful event as a wire-format ``AvatarEvent``.
 
         AV-14 (issue #1906) — aggregator stays a Phase-1 metric holder
-        (``pose_xy`` / ``battery_pct`` / ``voice_state`` /
+        (``pose_xy`` / ``battery_pct`` /
         ``dead_man_trips_total``), but it no longer drives the
         ``/avatar/state`` schema — ``encode_for_ros_string`` builds that
         from ``core.state.AvatarState``. This helper bridges the two
@@ -179,7 +171,6 @@ class StateAggregator:
             ts_ms=int(time.time() * 1000),
             pose_xy=self._pose_xy,
             battery_pct=self._battery_pct,
-            voice_state=self._voice_state,
             last_event=dict(self._last_event),
             dead_man_trips_total=dict(self._dead_man),
         )

@@ -6,6 +6,8 @@ adapter below keeps P0/P1.1 harness code working while migration proceeds.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
+
 from rob_box_core.ports import (
     ToolContext,
     ToolProvider as CoreToolProvider,
@@ -58,6 +60,8 @@ class LegacyToolProviderAdapter(LegacyToolProvider):
             tool_call_id=call.id,
             content=_result_content(result),
             is_error=result.is_error,
+            # Тело результата (status/reason события владельца) — коду, а не модели (ADR-0150 PR-7 ч.7c).
+            data=result.value if isinstance(result.value, Mapping) else None,
         )
 
     async def aclose(self) -> None:

@@ -33,6 +33,48 @@ JobKind = Literal["instrumental", "song", "robot_song", "cover"]
 Stage = Literal["queued", "text", "first", "complete", "failed"]
 
 
+#: Причина недоступности -> класс здоровья ``ProviderState`` (ADR-0150 §8). Остальные причины (rejected, budget_exhausted,
+#: timeout одного заказа) - про заказ, а не про провайдера: здоровье не меняют.
+HEALTH_BY_REASON = {"no_credits": "quota", "no_key": "auth", "rate_limited": "degraded", "provider_down": "network"}
+#: Состояние без новых ответов старше этого срока не публикуем (подписчик покажет unknown): успех не подтверждён.
+HEALTH_TTL_S = 1800.0
+
+
+class GenHealth:
+    """Здоровье провайдера генерации на весь процесс (четыре ``KieSunoProvider`` пишут сюда): последний ответ API."""
+
+    def __init__(self, clock: Callable[[], float] = time.time) -> None:
+        self._clock = clock
+        self._state: Optional[Tuple[str, float, str]] = None  # (health, с какого времени, причина)
+
+    def note_ok(self) -> None:
+        if self._state is None or self._state[0] != "ok":
+            self._state = ("ok", self._clock(), "")
+
+    def note_failure(self, reason: str) -> None:
+        health = HEALTH_BY_REASON.get(reason)
+        if health is not None and (self._state is None or self._state[0] != health):
+            self._state = (health, self._clock(), reason)
+
+    def snapshot(self) -> Optional[Tuple[str, float, str]]:
+        """``(health, since, причина)`` или ``None``: ответов API не было / они давно устарели."""
+        if self._state is None or self._clock() - self._state[1] > HEALTH_TTL_S:
+            return None
+        return self._state
+
+
+#: Единственный экземпляр: читает mcp_server (публикация ``kind=music_gen``), пишут провайдеры.
+GEN_HEALTH = GenHealth()
+
+
+def gen_provider_states(health: "GenHealth" = GEN_HEALTH) -> list:
+    """``ProviderState`` вида ``music_gen`` для ``/voice/providers/state`` (пусто, пока ответов API не было)."""
+    from rob_box_dialog.degrade import ProviderState  # noqa: PLC0415 - пакет диалога нужен только публикации
+
+    snap = health.snapshot()
+    return [] if snap is None else [ProviderState("kie", "music_gen", snap[0], snap[1], snap[2] or None)]
+
+
 class GenUnavailable(Exception):
     """Генерация не состоялась по одной из ``REASONS``. Звука нет."""
 

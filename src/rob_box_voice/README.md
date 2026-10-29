@@ -380,6 +380,20 @@ ros2 run rob_box_voice led_node
 Робот: "Нормальный голос" [pitch_shift устанавливается в 2.0 - оригинальный ROBBOX]
 ```
 
+**Скорость и высота — параметром того провайдера, который звучит (#4022):** тулы `set_speed` / `set_pitch`
+выставляют параметр АКТИВНОГО провайдера, читают его назад и отвечают по прочитанному значению. Таблица одна —
+`rob_box_voice/tts_prosody.py`, её читают и тулы, и `tts_node`:
+
+| Провайдер | Скорость (`set_speed`) | Тон (`set_pitch`) |
+|---|---|---|
+| MiniMax | `minimax_speed` (`voice_setting.speed`, 0.5–2.0) | `pitch_shift` → `voice_setting.pitch` в полутонах (`12·log2`, ±12), к статическому `minimax_pitch` |
+| Yandex | `yandex_speed` | только при `chipmunk_mode: true` (передискретизация) |
+| Silero | нет — тул отвечает отказом | только при `chipmunk_mode: true` |
+
+При `chipmunk_mode: true` `pitch_shift` съедает передискретизация проигрыша (любой провайдер), в MiniMax он второй раз
+не добавляется. Провайдер без регулировки — отказ (`rejected`, причина `speed_unsupported` / `pitch_unsupported`),
+а не «Готово».
+
 **Query Queue System (пакетная обработка запросов):**
 ```
 Пользователь: "Роббокс, сколько времени?"

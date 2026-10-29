@@ -25,21 +25,6 @@ class TestStaleness:
         assert not e.is_stale(None)
 
 
-class TestRetriesAllowed:
-    def test_normal_turn_may_retry(self) -> None:
-        e = SessionEpoch()
-        assert e.retries_allowed(turn_epoch=0, cancelled=False)
-
-    def test_cancelled_turn_may_not_retry(self) -> None:
-        e = SessionEpoch()
-        assert not e.retries_allowed(turn_epoch=0, cancelled=True)
-
-    def test_turn_that_outlived_reset_may_not_retry(self) -> None:
-        e = SessionEpoch()
-        e.advance()
-        assert not e.retries_allowed(turn_epoch=0, cancelled=False)
-
-
 class TestEpochForDispatch:
     def test_outside_turn_uses_current(self) -> None:
         e = SessionEpoch()

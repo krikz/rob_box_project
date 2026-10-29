@@ -34,15 +34,17 @@ from rob_box_voice.tts_node import TTSNode  # noqa: E402
 
 
 def _make_node() -> TTSNode:
-    """Bare-stub: callback доходит до проверки SSML и дальше до dialogue_id."""
+    """Bare-stub: callback доходит до проверки SSML и дальше до журнала речи."""
     logger = MagicMock()
     n = object.__new__(TTSNode)
     n.get_logger = lambda: logger
     n._test_logger = logger
     n.current_speech_id = None
-    # Всё после проверки SSML нам не важно: helper dialogue_id — точка,
-    # по которой видно «запрос принят».
-    n._handle_dialogue_id_change = MagicMock(return_value=True)
+    # Всё после проверки SSML нам не важно: запись в журнал владельца речи
+    # (ADR-0150 PR-3) — точка, по которой видно «запрос принят»; дальше
+    # заглушка роняет конвейер, его ловит общий except колбэка.
+    n._speech = MagicMock()
+    n._speech.admit.side_effect = RuntimeError("stop here")
     return n
 
 
@@ -73,7 +75,7 @@ def test_callback_drops_payload_rejected_by_contract(payload):
     node.dialogue_callback(_msg(payload))
 
     assert _dropped_as_no_ssml(node)
-    node._handle_dialogue_id_change.assert_not_called()
+    node._speech.admit.assert_not_called()
 
 
 @pytest.mark.parametrize(
@@ -90,7 +92,7 @@ def test_callback_accepts_payload_accepted_by_contract(payload):
     node.dialogue_callback(_msg(payload))
 
     assert not _dropped_as_no_ssml(node)
-    node._handle_dialogue_id_change.assert_called_once()
+    node._speech.admit.assert_called_once()
 
 
 def test_callback_uses_shared_contract_function(monkeypatch):

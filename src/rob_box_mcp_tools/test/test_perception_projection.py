@@ -50,8 +50,6 @@ _PERCEPTION_EVENT_MSG = (
 )
 
 from rob_box_mcp_tools.perception_projection import (  # noqa: E402
-    BATTERY_VOLTAGE_EMPTY,
-    BATTERY_VOLTAGE_FULL,
     EXCLUDED_FIELDS,
     PROJECTED_FIELDS,
     project_perception_event,
@@ -172,7 +170,8 @@ def test_battery_voltage_reaches_context():
     ctx = project_perception_event(_FakePerceptionEvent(battery_voltage=38.4))
     assert ctx['battery_voltage'] == pytest.approx(38.4)
     assert ctx['battery_percent'] is not None
-    assert ctx['battery_percent'] == pytest.approx(70.0)
+    # кривая Li-ion 10S (rob_box_core.battery): 3.84 В на банку между 3.79 (50 %) и 3.85 (60 %)
+    assert ctx['battery_percent'] == pytest.approx(58.3333, abs=1e-3)
 
 
 def test_timestamp_comes_from_stamp_not_zero():
@@ -334,9 +333,14 @@ def test_zero_volts_means_no_data_not_empty_battery():
     assert voltage_to_percent(-1.0) is None
 
 
-def test_voltage_to_percent_endpoints_and_clamp():
-    assert voltage_to_percent(BATTERY_VOLTAGE_FULL) == pytest.approx(100.0)
-    assert voltage_to_percent(BATTERY_VOLTAGE_EMPTY) == pytest.approx(0.0)
-    assert voltage_to_percent(36.0) == pytest.approx(50.0)
+def test_voltage_to_percent_is_the_core_curve():
+    """Кривая живёт в rob_box_core.battery (10S Li-ion); проекция только импортирует."""
+    from rob_box_core import battery
+
+    assert voltage_to_percent is battery.voltage_to_percent
+    assert voltage_to_percent(42.0) == pytest.approx(100.0)
+    assert voltage_to_percent(41.0) == pytest.approx(90.0)
+    assert voltage_to_percent(36.0) == pytest.approx(15.0)
+    assert voltage_to_percent(32.0) == pytest.approx(0.0)
     assert voltage_to_percent(45.0) == pytest.approx(100.0)
     assert voltage_to_percent(29.0) == pytest.approx(0.0)

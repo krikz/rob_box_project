@@ -104,6 +104,16 @@ on:
         required: false
         default: 'false'
         type: boolean
+      e2e_hold_for_next_act:
+        description: 'Issue #3904 — следующий акт марафона наследует этот (inherits_previous_act): режим e2e на роботе не снимать в конце, владелец снимет его сам по таймеру, если следующий акт не придёт. Ставит только run_night_marathon.sh.'
+        required: false
+        default: false
+        type: boolean
+      e2e_marathon_phase:
+        description: 'Issue #3972 — режим e2e держит раннер марафона: first (включить, стереть e2e-БД один раз) | middle (подхватить без стирания) | last (подхватить и выключить). Пусто — одиночный акт, как раньше. Ставит только run_night_marathon.sh.'
+        required: false
+        default: ''
+        type: string
       # Issue #1527: трейсинг «кто дёрнул workflow». Все скрипты/воркеры
       # используют твой GH_TOKEN, поэтому triggering_actor.login всегда = krikz.
       # Эти опциональные поля заполняются самими скриптами (agent-flow-*),
@@ -274,7 +284,8 @@ jobs:
           sshpass -e scp -o StrictHostKeyChecking=no .github/workflows/scripts/e2e_tool_match.py ros2@10.1.1.249:/tmp/e2e_tool_match.py
           sshpass -e scp -o StrictHostKeyChecking=no .github/workflows/scripts/e2e_audio_metrics.py ros2@10.1.1.249:/tmp/e2e_audio_metrics.py
           sshpass -e scp -o StrictHostKeyChecking=no .github/workflows/scripts/e2e_baseline_diff.py ros2@10.1.1.249:/tmp/e2e_baseline_diff.py
-          sshpass -e ssh -o StrictHostKeyChecking=no ros2@10.1.1.249 "ls -la /tmp/e2e_voice_test.sh /tmp/e2e_voice_lib.sh /tmp/e2e_voice_wake_gate.sh /tmp/e2e_tool_match.py /tmp/e2e_audio_metrics.py /tmp/e2e_baseline_diff.py && echo HARNESS_PUSHED"
+          sshpass -e scp -o StrictHostKeyChecking=no .github/workflows/scripts/e2e_events.py ros2@10.1.1.249:/tmp/e2e_events.py
+          sshpass -e ssh -o StrictHostKeyChecking=no ros2@10.1.1.249 "ls -la /tmp/e2e_voice_test.sh /tmp/e2e_voice_lib.sh /tmp/e2e_voice_wake_gate.sh /tmp/e2e_tool_match.py /tmp/e2e_audio_metrics.py /tmp/e2e_baseline_diff.py /tmp/e2e_events.py && echo HARNESS_PUSHED"
           # CRLF sanitization (single-line): отрезаем \r и \n от начала/конца.
           # Внутри значения CR/LF недопустимы для имён файлов/путей.
           SCENARIO_FILE_CLEAN=$(printf '%s' "$SCENARIO_FILE" | tr -d '\r\n')
@@ -315,6 +326,8 @@ jobs:
           REACT_WINDOW: ${{ inputs.react_window }}
           CHECK_TG_ECHO: ${{ inputs.check_tg_echo }}
           TTS_PROVIDER: ${{ inputs.tts_provider }}
+          E2E_HOLD_FOR_NEXT_ACT: ${{ inputs.e2e_hold_for_next_act }}
+          E2E_MARATHON_PHASE: ${{ inputs.e2e_marathon_phase }}
         run: |
           RID="${{ github.run_id }}"
           YKEY="$(cat "$YKEY_LOCAL" 2>/dev/null || true)"
@@ -364,6 +377,18 @@ jobs:
           if [ "$CHECK_TG_ECHO_CLEAN" = "true" ]; then
             CMD="$CMD --check-tg-echo"
           fi
+          # Issue #3904 — режим e2e живёт весь марафон: следующий акт наследует этот.
+          E2E_HOLD_CLEAN=$(printf '%s' "$E2E_HOLD_FOR_NEXT_ACT" | tr -d '\r\n')
+          if [ "$E2E_HOLD_CLEAN" = "true" ]; then
+            CMD="$CMD --hold-e2e-for-next-act"
+          fi
+          # Issue #3972 — режим e2e держит раннер: одно включение на марафон (значение проверяет харнесс).
+          E2E_PHASE_CLEAN=$(printf '%s' "$E2E_MARATHON_PHASE" | tr -d '\r\n ')
+          case "$E2E_PHASE_CLEAN" in
+            "") ;;
+            first|middle|last) CMD="$CMD --e2e-marathon-phase $E2E_PHASE_CLEAN" ;;
+            *) echo "E2E_FATAL: e2e_marathon_phase='$E2E_PHASE_CLEAN' — ожидается first|middle|last" >&2; exit 2 ;;
+          esac
 
           echo "RUN_CMD: $CMD"
           # Запускаем через SSH: ключ передаём env-переменной (не в cmdline — чтобы не светить в ps).
@@ -965,6 +990,10 @@ jobs:
       - name: Upload recording
         if: ${{ always() }}
         uses: actions/upload-artifact@v7
+        # Сетевой сбой загрузки артефакта (28.10, run 40646896010: `Failed to CreateArtifact: Unable to make request:
+        # ECONNRESET`) красил акт при `E2E_VERDICT PASS` (#4136): вердикт акта решает шаг «Verdict from atomic harness»,
+        # а не доставка артефактов.
+        continue-on-error: true
         with:
           name: e2e-voice-recording-${{ github.run_id }}
           # Берём любой .wav из собранных артефактов. Если .wav файлов нет
@@ -977,6 +1006,7 @@ jobs:
       - name: Upload logs
         if: ${{ always() }}
         uses: actions/upload-artifact@v7
+        continue-on-error: true
         with:
           name: e2e-voice-logs-${{ github.run_id }}
           # Лог docker voice-assistant (runner-side) + логи харнесса только
@@ -1000,6 +1030,7 @@ jobs:
       - name: Upload model.json
         if: ${{ always() }}
         uses: actions/upload-artifact@v7
+        continue-on-error: true
         with:
           name: e2e-voice-model-${{ github.run_id }}
           # model.json пишется двумя местами:
@@ -1014,6 +1045,7 @@ jobs:
       - name: Upload e2e artifacts archive (full debug bundle)
         if: ${{ always() }}
         uses: actions/upload-artifact@v7
+        continue-on-error: true
         with:
           name: e2e-voice-artifacts-${{ github.run_id }}
           # Полный архив всего что собрали: verdict.txt, scenario, step_N.log,
@@ -1044,6 +1076,7 @@ jobs:
       - name: Upload acceptance evidence (issue #1077)
         if: ${{ always() && inputs.acceptance_feature == 'speaker_profile' }}
         uses: actions/upload-artifact@v7
+        continue-on-error: true
         with:
           name: e2e-acceptance-${{ github.run_id }}
           path: /tmp/e2e_acceptance_${{ github.run_id }}.txt
@@ -1057,6 +1090,7 @@ jobs:
       - name: Upload timing breakdown (JSON — issue #1396)
         if: ${{ always() }}
         uses: actions/upload-artifact@v7
+        continue-on-error: true
         with:
           name: e2e-voice-timing-${{ github.run_id }}
           path: /tmp/e2e_timing.json
@@ -1072,6 +1106,7 @@ jobs:
         #     несуществующий путь с if-no-files-found=ignore (не валим job).
         if: ${{ always() }}
         uses: actions/upload-artifact@v7
+        continue-on-error: true
         with:
           name: e2e-voice-diff-${{ github.run_id }}
           path: ${{ env.DIFF_FILE || format('/tmp/e2e_pr_diff_{0}.patch', github.run_id) }}

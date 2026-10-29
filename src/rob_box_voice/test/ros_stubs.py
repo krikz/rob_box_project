@@ -27,7 +27,10 @@ import sys
 import types
 from unittest.mock import MagicMock
 
-__all__ = ["FakeNode", "FakeQoSProfile", "install_ros_stubs", "qos_stub"]
+__all__ = [
+    "FakeNode", "FakeQoSProfile", "install_ros_stubs", "make_speaker_result",
+    "make_utterance", "qos_stub",
+]
 
 
 class FakeNode:
@@ -142,7 +145,7 @@ class FakeNode:
     def create_client(self, *args, **kwargs):
         return MagicMock()
 
-    # ── introspection (startup_greeting_node waits on real subscribers) ──
+    # ── introspection (the removed greeting node waited on real subscribers) ──
     def get_publisher_names_and_types_by_node(self, name, namespace):
         return [(topic, ["std_msgs/String"]) for topic, _ in self._publishers]
 
@@ -200,7 +203,7 @@ def _qos_module() -> types.SimpleNamespace:
     """``rclpy.qos`` — every policy the voice nodes actually import.
 
     ``DurabilityPolicy`` is required by ``dialogue_node`` (latched
-    ``barge_in_policy`` topic, issue #1734), ``sound_node`` and the latched
+    ``/voice/providers/state``), ``sound_node`` and the latched
     ``/mcp/tools`` catalog. Missing it is an ImportError at module scope, so
     it takes out every test in the directory rather than one assertion.
     """
@@ -307,6 +310,36 @@ def install_ros_stubs(
                 except (AttributeError, TypeError):
                     # Real modules can be read-only; nothing to do.
                     pass
+
+
+def make_utterance(text: str, *, utterance_id: str = "", source: str = "") -> object:
+    """``Utterance`` из настоящего ``.msg`` для тестов ``DialogueNode._on_stt``.
+
+    Тесты исторически пишут реплику строкой с маркером ``[TG:42] привет``;
+    маркер разбирается здесь (``parse_tg_prefix`` остаётся ТОЛЬКО ради этих
+    тестов, ADR-0150 PR-2 / PR-12a) и ложится в поля ``source`` и ``chat_id``,
+    как это делает ``telegram_node``.
+    """
+    from rob_box_core.msg_stub import install_dialog_msgs_stub
+    from rob_box_voice.core.stt_admission import parse_tg_prefix
+
+    utterance_cls = install_dialog_msgs_stub().Utterance
+    clean, chat_id = parse_tg_prefix(text)
+    msg = utterance_cls(text=clean, utterance_id=utterance_id)
+    if chat_id is not None:
+        msg.source = utterance_cls.SOURCE_TELEGRAM
+        msg.chat_id = chat_id
+    else:
+        msg.source = source or utterance_cls.SOURCE_RESPEAKER
+    return msg
+
+
+def make_speaker_result(payload: dict) -> object:
+    """``SpeakerResult`` из словаря писателя (старый JSON-формат) для тестов."""
+    from rob_box_core.msg_stub import install_dialog_msgs_stub
+    from rob_box_core.speaker_wire import fill_speaker_result
+
+    return fill_speaker_result(install_dialog_msgs_stub().SpeakerResult(), payload)
 
 
 def qos_stub() -> types.SimpleNamespace:

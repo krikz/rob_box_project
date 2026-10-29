@@ -62,12 +62,12 @@ sudo apt install python3-tk
 
 ### Publishers (отправляет)
 - `/voice/tts/request` - TTS команды
-- `/voice/stt/result` - Имитация STT
+- `/voice/stt/utterance` - Имитация STT
 - `/voice/animation/request` - Переключение анимаций
 - `/voice/sound/trigger` - Воспроизведение звуков
 
 ### Subscribers (получает)
-- `/voice/stt/result` - Сообщения от пользователя
+- `/voice/stt/utterance` - Сообщения от пользователя
 - `/voice/dialogue/response` - Ответы DeepSeek
 - `/voice/tts/request` - Мониторинг TTS
 

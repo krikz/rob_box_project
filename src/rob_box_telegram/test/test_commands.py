@@ -2,7 +2,7 @@
 """Tests for Telegram command handlers (Phase 6 v2 / W7).
 
 After W7 the Telegram node is a *thin transport*: every slash-command
-that used to invoke a tool now forwards its intent to ``/voice/stt/result``
+that used to invoke a tool now forwards its intent to ``/voice/stt/utterance``
 through ``TelegramNode.forward_to_stt``. These tests assert that the
 forwarding happens and the user receives an acknowledgement.
 """
@@ -62,7 +62,7 @@ def _load_commands_module():
 
 
 class TestTelegramCommandForwarding(unittest.IsolatedAsyncioTestCase):
-    """Verify that W7 handlers forward intents to /voice/stt/result."""
+    """Verify that W7 handlers forward intents to /voice/stt/utterance."""
 
     def setUp(self):
         self.commands = _load_commands_module()
@@ -84,6 +84,25 @@ class TestTelegramCommandForwarding(unittest.IsolatedAsyncioTestCase):
         context.bot_data = {"node": node}
         context.user_data = {}
         return update, context, node
+
+    async def test_say_handler_gives_no_premature_success_and_asks_for_a_receipt(self):
+        """#3727: /say не пишет «Озвучиваю» до итога; чат получит квитанцию по SpeechEvent."""
+        update, context, node = self._make_update_and_context("/say привет", args=["привет", "мир"])
+        node.publish_tts_with_floor.return_value = MagicMock(granted=True)
+
+        await self.commands.say_handler(update, context)
+
+        node.publish_tts_with_floor.assert_called_once_with("привет мир", receipt_chat_id=42)
+        update.message.reply_text.assert_not_awaited()
+
+    async def test_say_handler_floor_denied_is_reported(self):
+        update, context, node = self._make_update_and_context("/say привет", args=["привет"])
+        node.publish_tts_with_floor.return_value = MagicMock(granted=False, held_by="Quest")
+
+        await self.commands.say_handler(update, context)
+
+        update.message.reply_text.assert_awaited_once()
+        self.assertIn("Голос удерживает Quest", update.message.reply_text.await_args.args[0])
 
     async def test_repl_handler_requires_code(self):
         update, context, node = self._make_update_and_context("/repl")

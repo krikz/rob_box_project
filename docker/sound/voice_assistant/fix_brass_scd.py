@@ -7,10 +7,22 @@ import sys
 from pathlib import Path
 
 
+def package_roots(workspace: Path) -> list[str]:
+    """Каталоги ``src/<pkg>`` - корни python-пакетов до ``colcon build``.
+
+    rob_box_voice.core импортирует rob_box_dialog (-> rob_box_core): одного
+    rob_box_voice в sys.path мало (#3683).
+    """
+    src = workspace / "src"
+    if not src.is_dir():
+        return []
+    return [str(p) for p in sorted(src.iterdir()) if p.is_dir() and p.name.startswith("rob_box_")]
+
+
 def main() -> int:
-    workspace = Path("/ws")
-    if str(workspace / "src" / "rob_box_voice") not in sys.path:
-        sys.path.insert(0, str(workspace / "src" / "rob_box_voice"))
+    for root in reversed(package_roots(Path("/ws"))):
+        if root not in sys.path:
+            sys.path.insert(0, root)
 
     import renardo_lib
 

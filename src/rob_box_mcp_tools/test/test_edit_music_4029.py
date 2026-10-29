@@ -1,0 +1,445 @@
+"""#4029 — тул ``edit_music``: правка ИГРАЮЩЕГО трека на такте, а не заказ нового (ADR-0148: решает код).
+
+Кейс Шифу 27.10 (живой робот, hotpatch PR #4071): рэп про енотика под бит → «и про комарика» (правка выступления) →
+«сделай бит потяжелее, более металлический!» → ``request_music(intent=track)`` → платная генерация KIE, мост
+``synth:breaks``, «подложка кончилась — дальше без тактов (synced=false)», «Включаю музыку.» посреди рэпа, через 40 с
+сгенерированный трек сам. Марафон 27.10: n504/n506 — новый трек 60 BPM вместо правки, n505 — музыка не тронута.
+
+Здесь настоящие ``PlayerOwner`` + ``RenardoAdapter`` + ``compose``/``render`` на симуляторе клока Renardo (как
+``test_backing_deck``), хост пути хода и форма хода диалога v2 — без LLM и без звука.
+"""
+
+import asyncio
+from types import SimpleNamespace
+
+import pytest
+
+from rob_box_core.tool_catalog import get_tool
+from rob_box_dialog import knowledge as dkn
+from rob_box_dialog.address import VOICE, Addressed
+from rob_box_dialog.command import Command, parse, validate
+from rob_box_dialog.respond import ActionResult, audible, phrase_from_result, phrase_key, quiet_in_performance
+from rob_box_dialog.session import MusicStateRef, Session
+from rob_box_dialog.turn import Answer, TurnEngine
+from rob_box_mcp_tools.engine.backing_deck import BackingDeck
+from rob_box_mcp_tools.engine.renardo_adapter import RETUNE_LEAD_BEATS
+from rob_box_mcp_tools.engine.search import ThemeHits
+from rob_box_mcp_tools.engine.sing_route import SingRouteHost
+from rob_box_mcp_tools.engine.tools_v2 import DjSetTool, EditMusicTool, RequestMusicTool, music_busy
+from rob_box_mcp_tools.engine.track_edit import TrackEditor
+from rob_box_music import knowledge as kn
+from rob_box_music.choice import DeterministicChooser
+from rob_box_music.model import BEATS_PER_BAR
+
+from ._ros_stubs import RosStubs
+from .test_backing_deck import _confirm
+from .test_engine_session import V2_SYNTHS, Player, _rig
+from .test_sing_route_host_4079 import NoModel, Ports
+
+_ros = RosStubs()
+with _ros:  # llm_adapter тянет rclpy — без ROS нужны заглушки
+    from rob_box_mcp_tools.llm_adapter import TURN_CONTEXT_ARGS
+_ros_stubs = _ros.fixture()
+
+pytestmark = pytest.mark.unit
+
+SHIFU = "Робот, сделай бит потяжелее, более металлический!"
+
+
+class LivePlayer(Player):
+    """Плеер Renardo: играющий на ``>>`` меняет атрибуты и играет дальше с текущей доли (фаза та же); каждый ``>>`` —
+    в журнал ``(слот, доля клока, синт)``."""
+
+    def __init__(self, clock, name, journal):
+        super().__init__(clock, name)
+        self.journal = journal
+
+    def __rshift__(self, synth):
+        self.journal.append((self.name, self.clock.beat, synth))
+        if self.playing:
+            return self
+        return super().__rshift__(synth)
+
+
+def _live_rig():
+    """Рига ``test_engine_session`` с живыми плеерами и синтами, которые называют себя (видно, что встало)."""
+    rig = _rig()
+    rig.journal, rig.starts = [], []
+    for slot in [s for deck in kn.DECK_SLOTS.values() for s in deck]:
+        rig.ns[slot] = LivePlayer(rig.clock, slot, rig.journal)
+    rig.ns.update({synth: (lambda *a, _s=synth, **k: _s) for synth in V2_SYNTHS})
+    rig.ns["play"] = lambda *a, **k: "play"
+    rig.ns["var"] = lambda *a, **k: rig.starts.append((rig.clock.beat, k.get("start")))
+    return rig
+
+
+def _clock_wait(rig):
+    """``TrackEditor`` ждёт такта правки: на симуляторе — крутить клок, пока событие не встанет."""
+
+    def wait(done, _seconds):
+        for _ in range(64):
+            if done.is_set():
+                return True
+            rig.clock.run_until(rig.clock.beat + 0.5)
+        return done.is_set()
+
+    return wait
+
+
+def _tools(rig):
+    dj = DjSetTool(None, rig.owner, melodies=lambda ids: {}, finder=lambda theme: ThemeHits(), seed=lambda: 4242)
+    req = RequestMusicTool(
+        None,
+        rig.owner,
+        dj,
+        melodies=lambda ids: {},
+        seed=lambda: 777,
+        records=lambda ids: {},
+        words=lambda word: ThemeHits(),
+    )
+    req.editor = TrackEditor(rig.owner, rig.adapter, wait=_clock_wait(rig))
+    req.backing = BackingDeck(
+        rig.owner,
+        rig.adapter,
+        lambda mood: req._stage_club("", mood),
+        _confirm(rig),
+        lambda: music_busy(rig.owner, dj),
+        log=rig.log,
+    )
+    return req, EditMusicTool(None, req)
+
+
+def _no_new_order(*_args, **_kwargs):
+    raise AssertionError("правка заказала новый трек (request_music/generate_music)")
+
+
+def _events(rig, kind):
+    return [e for e in rig.events if e["event"] == kind]
+
+
+# --- кейс Шифу: бит выступления правится на такте, выступление держит сетку -----------------------------------------
+
+
+def test_shifu_case_heavier_beat_under_the_rap_is_an_edit_on_the_bar_not_a_new_track():
+    rig = _live_rig()
+    req, tool = _tools(rig)
+    backing = req.execute(intent="backing", text="", mood="groove", min_seconds=60.0).data
+    track_id, start, end = backing["track_id"], backing["start_beat"], backing["end_beat"]
+    rig.clock.run_until(start + 6.3)  # рэп идёт: середина второго такта
+    req.order = _no_new_order  # ни request_music, ни generate_music: заказа нового нет
+    said_at = rig.clock.beat
+
+    result = tool.execute(heard_text=SHIFU)
+
+    assert result.success, result
+    data = result.data
+    assert data["changes"] == ["heavier"] and data["backing"] is True and data["heard"] is True
+    assert data["message"] == "Сделал звук тяжелее." and data["bpm"] == backing["bpm"]
+    # трек тот же: нового started нет, сетка (bpm, доля старта) — прежняя
+    assert [e["track_id"] for e in _events(rig, "started")] == [track_id]
+    assert not _events(rig, "rejected")
+    assert rig.owner.now_playing()["track_id"] == track_id
+    # правка встала на границе такта формы, после просьбы, в те же слоты деки
+    edit = [(slot, beat, synth) for slot, beat, synth in rig.journal if beat > start]
+    beats = {beat for _slot, beat, _synth in edit}
+    assert len(beats) == 1
+    at = beats.pop() + RETUNE_LEAD_BEATS
+    assert at > said_at and (at - start) % BEATS_PER_BAR == 0
+    assert {slot for slot, _b, _s in edit} <= set(kn.DECK_SLOTS[backing.get("deck", "A")])
+    # секции считаются от доли старта играющей формы, а не заново с такта правки
+    assert {s for beat, s in rig.starts if beat > start} == {start}
+    # тяжелее: тональные роли — из семьи hard клуба
+    hard = {synth for synths in kn.STYLES["club"].timbres["hard"].values() for synth in synths}
+    tonal = {synth for _slot, _b, synth in edit if synth not in ("play", None) and synth in V2_SYNTHS}
+    assert tonal and tonal <= hard | {"loop"}
+    # конец подложки (проходы формы по длине речи) не сдвинулся: выступление и бит кончаются как договорились
+    rig.clock.run_until(end + 0.01)
+    assert [e["track_id"] for e in _events(rig, "finished")] == [track_id]
+
+
+def test_faster_on_our_synth_track_changes_the_tempo_on_the_bar_and_says_it():
+    rig = _live_rig()
+    req, tool = _tools(rig)
+    assert req.execute(intent="track", text="поставь трек").success
+    rig.clock.run_until(rig.clock.beat + 9)
+    (started,) = _events(rig, "started")
+    old = started["bpm"]
+    req.order = _no_new_order
+
+    result = tool.execute(heard_text="Робот, ускорь темп")
+
+    assert result.success, result
+    new = round(old * kn.EDIT_TEMPO_STEP)
+    assert result.data["changes"] == ["faster"] and result.data["bpm"] == new
+    assert result.data["message"] == f"Ускорил до {new} BPM." and result.data["heard"] is True
+    assert ("tempo", float(new)) in rig.clock.calls
+    assert rig.owner.now_playing()["bpm"] == new and len(_events(rig, "started")) == 1
+
+
+def _as_result(data, status="done"):
+    """Результат тула глазами диалога (как ``to_result`` хоста): класс ``action.media``, ключ фразы по данным."""
+    return ActionResult("turn-1", 0, "personality", "edit_music", dkn.TOOL_CLASSES["edit_music"], status, None, data)
+
+
+def test_edit_of_the_persons_track_under_the_rap_is_heard_not_said_but_the_limit_is_said():
+    """Живой 28.10 01:20 (хвост #4029): «включи бит на Ренардо» → «под этот бит зачитай рэп» → «сделай бит потяжелее» -
+    правка трека человека (не подложки выступления), рэп идёт, а «Сделал звук тяжелее.» звучала посреди него. Пока идёт
+    выступление, успех правки молчит всегда (слышна сама); вне выступления говорится; предел и отказ говорятся и в нём."""
+    rig = _live_rig()
+    req, tool = _tools(rig)
+    assert req.execute(intent="track", text="поставь трек").success  # трек человека, подложки выступления нет
+    rig.clock.run_until(rig.clock.beat + 9)
+    req.order = _no_new_order
+
+    done = tool.execute(heard_text=SHIFU).data
+
+    assert done["changes"] == ["heavier"] and done["backing"] is False and done["heard"] is True
+    heard = _as_result(done)
+    assert phrase_key(heard) == "music.edit_heard" and quiet_in_performance(heard)
+    assert audible([heard], speaks=False, performing=True) == []
+    assert phrase_from_result(heard).text == done["message"] == "Сделал звук тяжелее."
+    assert audible([heard], speaks=False, performing=False) == [heard]  # вне выступления - говорится
+    # дальше тяжелее некуда - честный предел: его слышно не само, он говорится и посреди рэпа
+    rig.clock.run_until(rig.clock.beat + 9)
+    for _ in range(4):
+        again = tool.execute(heard_text=SHIFU).data
+        if again["limited"]:
+            break
+        rig.clock.run_until(rig.clock.beat + 9)
+    assert again["limited"] == ["heavier"] and again["heard"] is False
+    limit = _as_result(again)
+    assert phrase_key(limit) == "music.edit_said" and not quiet_in_performance(limit)
+    assert audible([limit], speaks=False, performing=True) == [limit]
+
+
+def test_slot_counts_only_when_the_words_name_nothing():
+    rig = _live_rig()
+    req, tool = _tools(rig)
+    assert req.execute(intent="track", text="поставь трек").success
+    rig.clock.run_until(rig.clock.beat + 9)
+    assert tool.execute(change="darker", heard_text="Робот, как в киберпанке").data["changes"] == ["darker"]
+    # слова человека решают: слот LLM («быстрее») при «помрачнее» в реплике не берётся
+    words = tool.execute(change="faster", heard_text="Робот, сделай атмосферу помрачнее").data
+    assert words["changes"] == [] and words["limited"] == ["darker"]  # уже мрачно — честный предел, не темп
+
+
+# --- не свой синт-трек: честный отказ кодом, без генерации ----------------------------------------------------------
+
+
+class Owner:
+    """Снимок плеера без своего синт-трека; правка звука или фактов здесь — ошибка теста."""
+
+    def __init__(self, **snap):
+        self.snap = snap
+
+    def now_playing(self):
+        return dict(self.snap)
+
+    def position(self, *args, **kwargs):
+        raise AssertionError("правка полезла в деку, которую так не меняют")
+
+    update_dj = position
+
+
+class Deck:
+    """Клок и деки Renardo: любая правка звука — ошибка теста."""
+
+    def check(self, *args, **kwargs):
+        raise AssertionError("правка тронула звук, который так не меняется")
+
+    retune = check
+
+
+@pytest.mark.parametrize(
+    "snap,kind",
+    [
+        ({"playing": True, "track_id": "gen:42", "source": "generated"}, "file"),  # трек кэша/генерации
+        ({"playing": True, "track_id": "classic:x", "source": "piece"}, "piece"),
+        ({"playing": True, "track_id": "s7:03:B", "source": "synth", "enabled": True}, "set"),
+        ({"playing": False}, "none"),
+    ],
+)
+def test_speed_up_of_a_cached_track_is_an_honest_refusal_with_an_offer(snap, kind):
+    editor = TrackEditor(Owner(**snap), Deck())
+    tool = EditMusicTool(None, SimpleNamespace(editor=editor))
+    result = tool.execute(heard_text="Робот, ускорь")
+    assert not result.success
+    assert result.data["message"] == kn.EDIT_REFUSALS[kind] and result.data["reason"] == f"edit_{kind}"
+    assert result.error == kn.EDIT_REFUSALS[kind]
+
+
+def test_edit_music_is_one_narrow_tool_of_the_catalog():
+    entry = get_tool("edit_music")
+    assert entry.parameters["properties"]["change"]["enum"] == list(kn.TRACK_EDITS)
+    assert entry.parameters["required"] == [] and not entry.starts_music
+    assert TURN_CONTEXT_ARGS["edit_music"] == ("turn_id", "heard_text")
+    assert dkn.TOOL_CLASSES["edit_music"] == "action.media"
+
+
+# --- путь хода: хост решает до модели, форма закрывает заказ нового -------------------------------------------------
+
+
+N607 = "робот помягче поставь спокойно валера уснет за рулем"  # живой лог 28.10 16:43:38, акт 6
+
+
+def _host():
+    lines = []
+    return SingRouteHost(DeterministicChooser(NoModel()), lambda: [], lines.append), lines
+
+
+@pytest.mark.parametrize(
+    "text,route",
+    [
+        (SHIFU, "edit:heavier"),
+        ("Робот, сделай атмосферу помрачнее, как в киберпанке", "edit:darker"),  # n505
+        ("Робот, продолжай развивать эту тему и добавь баса", "edit:develop+more_bass"),  # n504
+        ("Робот, ускорь темп", "edit:faster"),  # n506
+        ("Робот, читай быстрее", ""),  # речь робота названа: скорость голоса, не бит
+        ("Робот, поставь что-нибудь помрачнее", ""),  # заказ другого трека
+        (N607, "edit:softer"),  # #4173: «помягче поставь…» под идущим сетом - правка, а не новый трек
+        ("Робот, поставь джаз помягче", ""),  # назван свой джаз: заказ
+        # ревью PR #4116: слова правки не про музыку — пути нет (раньше edit:faster/develop/darker и обязательный
+        # edit_music: робот не мог ответить словами)
+        ("Робот, иди быстрее к двери", ""),
+        ("Робот, иди быстрее под этот бит", ""),  # тема названа, но «быстрее» — у движения
+        ("подъезжай побыстрее", ""),
+        ("Робот, продолжай рассказывать", ""),
+        ("Это тот же трек?", ""),
+        ("Ты тот же самый робот?", ""),
+        ("Робот, расскажи сказку побыстрее", ""),
+        ("Робот, сделай лицо мрачнее", ""),
+        ("Робот, расскажи, как развивается ситуация", ""),
+        ("в комнате стало темнее", ""),
+        ("мощнее поворачивай", ""),
+        ("Робот, сделай басы потише", "edit:less_bass"),  # ревью PR #4116: направление баса — из слов
+        # #4172, n506 28.10 (живой лог): хвост после «ускорь» темы не называет — путь правки всё равно
+        ("ускорь там потом мы тут засыпаем оба", "edit:faster"),
+        ("роботы ускорь там потом мы тут засыпаем оба", "edit:faster"),
+        ("Робот, ускорь речь, а то мы засыпаем", ""),  # речь названа: скорость голоса
+        ("стоп музыка, мы засыпаем", ""),
+        ("выключай музыку", ""),
+    ],
+)
+def test_host_decides_the_edit_route_under_playing_music(text, route):
+    host, lines = _host()
+    assert host(text, (), True) == route
+    assert host(text, (), False) == ""  # в тишине править нечего
+    assert bool(lines) is bool(route)
+
+
+def test_singing_over_the_beat_stays_singing():
+    host, _lines = _host()
+    assert host("Робот, зачитай рэп под этот бит", (), True).startswith("live:")
+
+
+def _form_under_music(text):
+    host, _lines = _host()
+    ports = Ports(Answer(Command(speech="…")))
+    session = Session("personality")
+    session.set_music(MusicStateRef("playing", track_id="req00777:03:A:abc", bpm=136.0, title="клубный трек · 136"))
+    engine = TurnEngine(session, ports, system_prompt="Ты робот.", sing=host)
+    asyncio.run(engine.run(Addressed(text, VOICE)))
+    return ports.forms[-1], ports.asked[-1]
+
+
+def test_shifu_case_turn_form_closes_new_music_and_requires_the_edit():
+    form, tools = _form_under_music(SHIFU)
+    assert form.sing == "edit:heavier"
+    assert "edit_music" in tools and not {"request_music", "generate_music", "dj_set"} & set(tools)
+    track = parse(
+        {
+            "actions": [
+                {
+                    "tool": "request_music",
+                    "args": {"intent": "track", "text": "металл", "genre": "rock", "mood": "dark"},
+                }
+            ]
+        }
+    )
+    assert validate(track, tools, form=form).reason == dkn.VIOLATION_SING_ROUTE  # живой лог 15:16:56 — закрыт
+    gen = parse({"actions": [{"tool": "generate_music", "args": {"kind": "instrumental", "style": "metal"}}]})
+    assert validate(gen, tools, form=form).reason == dkn.VIOLATION_SING_ROUTE
+    talk = parse({"speech": "Сейчас сделаю потяжелее!"})
+    assert validate(talk, tools, form=form).reason == dkn.VIOLATION_SING_ROUTE  # слова без правки — не исход
+    edit = validate(parse({"actions": [{"tool": "edit_music", "args": {"change": "heavier"}}]}), tools, form=form)
+    assert isinstance(edit, Command) and edit.actions[0].tool == "edit_music"
+
+
+def test_n506_speedup_with_a_tail_cannot_end_in_stop_music():
+    """#4172: «ускорь там потом мы тут засыпаем оба» под музыкой — форма хода требует ``edit_music``; выключение
+    музыки (живой лог: ``stop_music``) для этого хода — нарушение формы, а не исход."""
+    form, tools = _form_under_music("ускорь там потом мы тут засыпаем оба")
+    assert form.sing == "edit:faster" and "edit_music" in tools
+    stop = parse({"actions": [{"tool": "stop_music", "args": {"boundary": "bar"}}]})
+    assert validate(stop, tools, form=form).reason == dkn.VIOLATION_SING_ROUTE
+    edit = validate(parse({"actions": [{"tool": "edit_music", "args": {"change": "faster"}}]}), tools, form=form)
+    assert isinstance(edit, Command) and edit.actions[0].tool == "edit_music"
+    form, _tools = _form_under_music("выключай музыку")  # явный стоп - как раньше, без пути правки
+    assert form.sing == ""
+
+
+def test_n505_darker_turn_is_an_edit_and_n502_order_in_silence_is_untouched():
+    form, tools = _form_under_music("Робот, сделай атмосферу помрачнее, как в киберпанке")
+    assert form.sing == "edit:darker" and "edit_music" in tools
+    form, tools = _form_under_music("Робот, поставь что-нибудь помрачнее")
+    assert form.sing == "" and "request_music" in tools
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "Робот, иди быстрее к двери",
+        "Робот, продолжай рассказывать",
+        "Это тот же трек?",
+        "Ты тот же самый робот?",
+        "Робот, расскажи сказку побыстрее",
+        "Робот, сделай лицо мрачнее",
+        "Робот, расскажи, как развивается ситуация",
+    ],
+)
+def test_turn_not_about_the_music_keeps_its_words_under_playing_music(text):
+    """Ревью PR #4116: под играющей музыкой реплика со словом правки не про музыку — ход как обычно: формы правки нет,
+    ``edit_music`` не обязателен, ответ словами — не нарушение (раньше sing_route → повтор → «не понял»)."""
+    form, tools = _form_under_music(text)
+    assert form.sing == "" and "edit_music" not in tools
+    talk = validate(parse({"speech": "Отвечаю словами."}), tools, form=form)
+    assert isinstance(talk, Command), talk
+
+
+def test_edit_route_head_is_the_same_in_dialog_and_music():
+    """Голова id пути правки живёт в двух пакетах (диалог от ``rob_box_music`` не зависит) — пин на равенство."""
+    from rob_box_music.track_edit import EDIT_ROUTE  # noqa: PLC0415
+
+    assert dkn.EDIT_ROUTE == EDIT_ROUTE
+    assert dkn.sing_family(f"{EDIT_ROUTE}:faster") == "edit"
+
+
+def test_less_bass_on_our_synth_track_turns_the_bass_down_not_up():
+    """Ревью PR #4116: «сделай басы потише» — бас тише (−3 дБ), а не «Добавил баса.» (+3 дБ)."""
+    rig = _live_rig()
+    req, tool = _tools(rig)
+    assert req.execute(intent="track", text="поставь трек").success
+    rig.clock.run_until(rig.clock.beat + 9)
+    req.order = _no_new_order
+
+    result = tool.execute(heard_text="Робот, сделай басы потише")
+
+    assert result.success, result
+    assert result.data["changes"] == ["less_bass"] and result.data["message"] == "Убавил бас."
+    assert len(_events(rig, "started")) == 1  # трек тот же
+
+
+def test_n607_softer_under_a_running_set_closes_the_new_order_and_requires_the_edit():
+    """#4173: «помягче поставь…» под диджей-сетом - форма хода закрывает ``request_music``/``dj_set`` (новый трек убил
+    бы сет и стоил денег), требует ``edit_music``; что сделать с сетом, решает тул (``test_set_vibe_4173``)."""
+    form, tools = _form_under_music(N607)
+    assert form.sing == "edit:softer" and "edit_music" in tools
+    assert not {"request_music", "generate_music", "dj_set"} & set(tools)
+
+
+def test_softer_under_a_set_without_a_restyle_owner_is_an_honest_failure_not_a_claim():
+    """Сменить стиль сета нечем (владельца сета нет) - честный отказ кодом, звук не тронут, «сделал» не говорим."""
+    snap = {"playing": True, "track_id": "s7:03:B", "source": "synth", "enabled": True}
+    tool = EditMusicTool(None, SimpleNamespace(editor=TrackEditor(Owner(**snap), Deck())))
+    result = tool.execute(heard_text=N607)
+    assert not result.success and result.data["message"] == kn.EDIT_REFUSALS["set_vibe_failed"]

@@ -93,6 +93,13 @@ _FOREIGN_RANGES: Tuple[Tuple[int, int, str], ...] = (
     (0x20000, 0x2FA1F, "cjk"),
 )
 
+#: Письменности, которые провайдер читает сам (#3728, ADR-0150 §8): решение гарда - по возможностям ВЫБРАННОГО
+#: провайдера, а не «для всех сразу». MiniMax T2A произносит китайский/японский/корейский; Yandex и Silero -
+#: только кириллицу и латиницу (остальное бормочут). Нет записи - провайдер читает только разрешённые диапазоны.
+PROVIDER_SCRIPTS = {
+    "minimax": frozenset({"cjk", "hiragana", "katakana", "hangul"}),
+}
+
 #: Сколько чужих символов показывать в диагностике (лог не должен пухнуть).
 _SAMPLE_LIMIT: int = 12
 
@@ -150,12 +157,14 @@ def script_of(ch: str) -> str:
     return "other"
 
 
-def analyze(text: str) -> ForeignScriptReport:
-    """Посчитать долю букв чужих письменностей в ``text``.
+def analyze(text: str, provider: "str | None" = None) -> ForeignScriptReport:
+    """Посчитать долю букв чужих письменностей в ``text`` для провайдера ``provider``.
 
     Не-строка и пустая строка дают нулевой отчёт (guard никогда не
-    блокирует то, что и так не текст).
+    блокирует то, что и так не текст). Письменности, которые ``provider`` читает
+    (``PROVIDER_SCRIPTS``), «чужими» не считаются; ``provider=None`` - строго кириллица и латиница.
     """
+    readable = PROVIDER_SCRIPTS.get(provider or "", frozenset())
     if not isinstance(text, str) or not text:
         return ForeignScriptReport(0, 0, 0.0, (), "")
 
@@ -168,7 +177,7 @@ def analyze(text: str) -> ForeignScriptReport:
             continue
         total += 1
         name = script_of(ch)
-        if not name:
+        if not name or name in readable:
             continue
         foreign += 1
         if name not in scripts:
@@ -189,13 +198,34 @@ def analyze(text: str) -> ForeignScriptReport:
 def should_skip(
     text: str,
     threshold: float = DEFAULT_FOREIGN_SCRIPT_THRESHOLD,
+    provider: "str | None" = None,
 ) -> bool:
-    """True, если чанк не следует произносить (доля чужих букв > порога).
+    """True, если чанк не следует произносить (доля чужих для ``provider`` букв > порога).
 
     Порог сравнивается СТРОГО (``>``): ровно 10% чужих символов ещё
     произносятся, всё что выше — блокируется.
     """
-    return analyze(text).ratio > threshold
+    return analyze(text, provider).ratio > threshold
+
+
+def provider_reads(text: str, provider: str) -> bool:
+    """True, если ``provider`` способен произнести ``text`` (гард письменности по его возможностям, #3728)."""
+    return not should_skip(text, provider=provider)
+
+
+def readable_chain(chain, text: str) -> list:
+    """Цепочка провайдеров без тех, кто текст не читает: фолбек не должен бормотать то, что отказал читать гард."""
+    return [name for name in chain if provider_reads(text, name)]
+
+
+class UnsupportedScriptError(Exception):
+    """Ни один провайдер цепочки не читает письменность текста: честный отказ ``unsupported_script``."""
+
+
+def ensure_readable(text: str, provider: str) -> None:
+    """Для последнего рубежа цепочки (Silero): не читает - ``UnsupportedScriptError`` вместо бормотания."""
+    if not provider_reads(text, provider):
+        raise UnsupportedScriptError("unsupported_script")
 
 
 def describe(report: ForeignScriptReport) -> str:
@@ -213,7 +243,12 @@ __all__ = [
     "ForeignScriptReport",
     "analyze",
     "describe",
+    "PROVIDER_SCRIPTS",
+    "UnsupportedScriptError",
+    "ensure_readable",
     "is_allowed_letter",
+    "provider_reads",
+    "readable_chain",
     "script_of",
     "should_skip",
 ]

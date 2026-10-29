@@ -6,32 +6,48 @@ animation.py - Инструменты для управления LED анима
 - PlayAnimationTool: Запустить анимацию по имени с указанной длительностью
 """
 
-from typing import List, Optional, TYPE_CHECKING
+from typing import Dict, List, Optional
 
-# Ленивый импорт ROS 2 модулей для поддержки unit тестов
-if TYPE_CHECKING:
-    from std_msgs.msg import String
+from rob_box_dialog import face_scene
+from rob_box_dialog import knowledge as kn
+from rob_box_dialog.expression import show_seconds
 
-from ..base import MCPTool, MCPToolParameter, MCPToolResult, ToolExecutionType, shared_publisher
+from ..base import MCPTool, MCPToolParameter, MCPToolResult, ToolExecutionType
 from ..animations import KNOWN_ANIMATIONS, normalize_animation
+
+
+def _face_properties() -> Dict[str, MCPToolParameter]:
+    """Слоты параметра ``face``: enum из ``knowledge.FACE_SCENE_SLOTS`` - та же схема, что у ``Command.expression.face``.
+
+    Каталог тулов собирает эту схему сам (``tools/gen_tool_catalog.py::_face_param``) из той же таблицы.
+    """
+    schema = face_scene.schema()
+    slots = {
+        name: MCPToolParameter(name=name, type="string", description=f"Слот лица «{name}»", required=False,
+                               enum=list(prop["enum"]))
+        for name, prop in schema["properties"].items() if "enum" in prop
+    }
+    slots["duration_s"] = MCPToolParameter(
+        name="duration_s", type="number", description="Сколько держать сцену, секунды", required=False,
+        minimum=0, maximum=kn.FACE_SCENE_MAX_S)
+    return slots
 
 
 class PlayAnimationTool(MCPTool):
     """Инструмент для запуска LED анимации."""
 
-    #: Kept as a class attribute for backwards compatibility; the list
-    #: itself lives in :mod:`rob_box_mcp_tools.animations` so ``speak_text``
-    #: and ``play_animation`` cannot disagree about what the matrix can show.
+    #: ExpressionEvent исполнителей (показ - по ExpressionRequest диалога)
+    event_source = "/voice/expression/event"
+
+    #: Kept as a class attribute for backwards compatibility; the vocabulary
+    #: itself lives in ``rob_box_dialog.knowledge.KNOWN_ANIMATIONS`` (#4103;
+    #: :mod:`rob_box_mcp_tools.animations` only re-exports it) so ``speak_text``,
+    #: ``play_animation`` and the dialogue cannot disagree about what the
+    #: matrix can show.
     AVAILABLE_ANIMATIONS = list(KNOWN_ANIMATIONS)
 
-    def __init__(self, node):
-        super().__init__(node)
-        # Динамический импорт во время выполнения
-        from std_msgs.msg import String
-
-        # Publisher для запроса анимаций
-        # (issue #3108: общий с SpeakTextTool publisher на этой ноде)
-        self.animation_pub = shared_publisher(node, String, "/voice/animation/request", 10)
+    # ADR-0150 PR-3b (#3690): тул лицо не трогает. Сцену и время показывает диалог: он видит вызов
+    # (стадия executing хода) и шлёт ExpressionRequest через expression_client, лицо отвечает ExpressionEvent.
 
     @property
     def name(self) -> str:
@@ -55,16 +71,23 @@ class PlayAnimationTool(MCPTool):
             MCPToolParameter(
                 name="animation",
                 type="string",
-                description="Название анимации для воспроизведения",
-                required=True,
+                description="Название анимации для воспроизведения (можно вместе с face)",
+                required=False,
                 enum=self.AVAILABLE_ANIMATIONS,
             ),
             MCPToolParameter(
                 name="duration",
                 type="number",
-                description="Длительность анимации в секундах (рекомендуется от 2 до 30, значения вне диапазона будут установлены в 2)",
+                description=kn.FACE_SHOW_DURATION_HINT,
                 required=False,
-            )
+            ),
+            MCPToolParameter(
+                name="face",
+                type="object",
+                description=face_scene.schema()["description"],
+                required=False,
+                properties=_face_properties(),
+            ),
         ]
 
     @property
@@ -82,45 +105,45 @@ class PlayAnimationTool(MCPTool):
         """Анимации не блокируют диалог."""
         return False
 
-    def execute(self, animation: str, duration: Optional[float] = None) -> MCPToolResult:
-        """Запустить анимацию."""
-        self.log_info(f"Запуск анимации: {animation}, длительность: {duration}s")
+    def execute(self, animation: Optional[str] = None, duration: Optional[float] = None,
+                face: Optional[dict] = None) -> MCPToolResult:
+        """Запустить анимацию и/или сцену лица из слотов (нужно хотя бы одно)."""
+        self.log_info(f"Запуск анимации: {animation}, face={face}, длительность: {duration}s")
 
-        # Псевдонимы (``excited`` от MiniMax M3, русские названия) приводятся
-        # к реальному имени манифеста общей картой — раньше здесь был
-        # одиночный ``if animation == "excited"``, из-за чего каждое новое
-        # слово из эмоционального словаря модели приходилось добавлять сюда
-        # руками, отдельно от такой же карты в ``speak_text``.
-        resolved = normalize_animation(animation, fallback="")
-        if not resolved:
+        scene, face_why = (None, "") if face is None else face_scene.validate(face)
+        if face is not None and scene is None:
+            self.log_info(f"face отброшен: {face_why}")
+        if not animation and scene is None:
             return MCPToolResult(
                 success=False,
-                error=f"Неизвестная анимация: {animation}",
-                message=f"Доступные: {', '.join(KNOWN_ANIMATIONS)}",
+                error=f"Нужна анимация или корректный face ({face_why or 'ничего не задано'})",
+                message=f"Слоты face: {', '.join(kn.FACE_SCENE_SLOTS)}",
             )
-        animation = resolved
 
-        # Валидация длительности - если вне диапазона, устанавливаем минимальную
+        data = {}
+        if animation:
+            # Псевдонимы (``excited`` от MiniMax M3, русские названия) приводятся к реальному имени манифеста общей
+            # картой - той же, что у ``speak_text``.
+            resolved = normalize_animation(animation, fallback="")
+            if not resolved:
+                return MCPToolResult(
+                    success=False,
+                    error=f"Неизвестная анимация: {animation}",
+                    message=f"Доступные: {', '.join(KNOWN_ANIMATIONS)}",
+                )
+            data["animation"] = resolved
+
+        # Время показа - то же правило, что у диалога (``rob_box_dialog.expression.show_seconds``, #4089): пределы
+        # ``[FACE_SHOW_MIN_S, FACE_SCENE_MAX_S]``. Не задано - в данных его нет, умолчание ставит то же правило у диалога.
         if duration is not None:
-            if duration < 2 or duration > 30:
-                original_duration = duration
-                duration = 2.0
-                self.log_info(f"Длительность {original_duration}s вне диапазона, установлена минимальная: {duration}s")
+            original_duration, duration = duration, show_seconds(duration)
+            if duration != original_duration:
+                self.log_info(f"Длительность {original_duration}s приведена к правилу показа: {duration}s")
+            data["duration"] = duration
+        if scene is not None:
+            data["face"] = scene.to_dict()
 
-        # Публикуем запрос анимации
-        from std_msgs.msg import String
-        msg = String()
-        # Если указана длительность, добавляем её в формате animation:duration
-        if duration is not None:
-            msg.data = f"{animation}:{duration}"
-        else:
-            msg.data = animation
-        self.animation_pub.publish(msg)
-
-        self.log_info(f"Анимация '{animation}' отправлена")
-
-        result_data = {"animation": animation}
-        if duration is not None:
-            result_data["duration"] = duration
-
-        return MCPToolResult(success=True, data=result_data, message=f"Показываю анимацию: {animation}")
+        self.log_info(f"Принято {data} (показывает диалог по ExpressionRequest)")
+        dropped = f" (face отброшен: {face_why})" if face is not None and scene is None else ""
+        what = data.get("animation") or "сцена лица"
+        return MCPToolResult(success=True, data=data, message=f"Показываю анимацию: {what}{dropped}")

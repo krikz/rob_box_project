@@ -56,9 +56,10 @@ import sqlite3
 import struct
 import time
 import uuid
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import List, Optional, Tuple
+from typing import Any, Iterator, List, NamedTuple, Optional, Tuple
 
 import numpy as np
 
@@ -126,6 +127,13 @@ MIN_AUDIO_DURATION_SEC: float = 0.3
 MIN_REGISTER_AUDIO_DURATION_SEC: float = 3.0
 TARGET_REGISTER_AUDIO_DURATION_SEC: float = 5.0
 SAMPLE_RATE: int = 16000            # resemblyzer expects 16 kHz mono float32
+# Issue #3858 (решение Шифу 22.10, «режим мастерской» для голоса) — имя безымянного профиля: пустая строка.
+# Колонка ``speakers.name`` NOT NULL, а ``""`` ни с одним настоящим именем не совпадёт (_validate_speaker_name
+# отбрасывает пустое), поэтому ни слияние, ни поиск тёзки такой профиль не примут за чьё-то имя. Имя появится, когда
+# человек представится: ``register_or_merge`` присвоит его ЭТОМУ же профилю (без дубля).
+UNNAMED: str = ""
+# Сколько безымянных профилей держим в БД (#2779: не засорять speakers.db). Старейший по ``created_at`` вытесняется.
+UNNAMED_PROFILES_MAX: int = 20
 
 # ── Растущая галерея (issue #2747) — БЕЗ адаптивного порога ─────────────────
 #
@@ -199,6 +207,11 @@ class SpeakerMatch:
     # у GALLERY_WARMUP_SIZE): один и тот же score означает разную степень
     # доверия при пуле из 1 и из 5, полезно видеть в логах при разборе.
     gallery_size: int = 0
+
+    @property
+    def named(self) -> bool:
+        """``False`` для профиля без имени (кличка есть, имени нет — #3858)."""
+        return bool(self.name)
 
 
 # ── Lazy import of resemblyzer (not available at build time on CI) ────────────
@@ -388,6 +401,7 @@ class RegisterOutcome(tuple):
         twin_name: Optional[str] = None,
         twin_speaker_id: Optional[str] = None,
         twin_score: Optional[float] = None,
+        claimed_unnamed: bool = False,
     ) -> "RegisterOutcome":
         """Собрать кортеж ``(speaker_id, reused)`` и навесить причину."""
         obj = super().__new__(cls, (speaker_id, reused))
@@ -399,6 +413,7 @@ class RegisterOutcome(tuple):
         obj.twin_name = twin_name
         obj.twin_speaker_id = twin_speaker_id
         obj.twin_score = twin_score
+        obj.claimed_unnamed = claimed_unnamed
         return obj
 
     @property
@@ -436,6 +451,118 @@ class RegisterOutcome(tuple):
         return self.twin_speaker_id is not None
 
 
+class UnnamedOutcome(NamedTuple):
+    """Исход ``UnnamedProfiles.register()`` (#3858): новый безымянный профиль и кого пришлось вытеснить по лимиту."""
+
+    speaker_id: str
+    evicted: Tuple[str, ...] = ()
+
+
+def _twin_score(db: "SpeakerDatabase", embedding: np.ndarray, twin: Optional[Tuple[str, str]]) -> Optional[float]:
+    """Косинус эмбеддинга против галереи тёзки (``twin`` = ``(speaker_id, name)``); нет тёзки -- ``None``."""
+    return db._score_for(embedding, twin[0]) if twin is not None else None
+
+
+class UnnamedProfiles:
+    """Профили без имени (#3858, решение Шифу 22.10, «режим мастерской» для голоса).
+
+    Отдельный класс, а не методы ``SpeakerDatabase`` (ADR-0145: класс БД не растёт). Живёт на ``db.unnamed`` и
+    работает через публичные операции БД (``identify``, ``register``, ``delete_speaker``) и её соединение.
+    """
+
+    def __init__(self, db: "SpeakerDatabase") -> None:
+        self._db = db
+
+    def register(
+        self,
+        embedding: np.ndarray,
+        duration_sec: float,
+        max_unnamed: int = UNNAMED_PROFILES_MAX,
+    ) -> UnnamedOutcome:
+        """Завести профиль без имени для незнакомого голоса.
+
+        Гейт длительности -- тот же ``MIN_REGISTER_AUDIO_DURATION_SEC``, что у регистрации по имени: короткая фраза
+        эталоном быть не может (:class:`AudioTooShortError` ДО записи). ``duration_sec`` обязателен -- «не знаю,
+        сколько речи» не повод заводить профиль. Дедупликации здесь нет: вызывающий код уже убедился, что голос
+        никого не опознал. После вставки безымянных больше ``max_unnamed`` -- самые старые по ``created_at``
+        удаляются вместе с эмбеддингами (каскад); новый профиль не вытесняется никогда.
+        """
+        if duration_sec < MIN_REGISTER_AUDIO_DURATION_SEC:
+            raise AudioTooShortError(duration_sec, MIN_REGISTER_AUDIO_DURATION_SEC)
+        now = time.time()
+        speaker_id = str(uuid.uuid4())
+        with _isolated_write(self._db._conn) as tx:  # #4115: профиль виден читателям только вместе с эмбеддингом
+            tx.execute(
+                "INSERT INTO speakers (speaker_id, name, created_at) VALUES (?, ?, ?)", (speaker_id, UNNAMED, now)
+            )
+            tx.execute(
+                "INSERT INTO embeddings (speaker_id, embedding, created_at) VALUES (?, ?, ?)",
+                (speaker_id, self._db._ndarray_to_blob(embedding), now),
+            )
+        evicted = self._evict_over(max_unnamed, keep=speaker_id)
+        logger.info(f"🆕 безымянный профиль id={speaker_id[:8]} (речь {duration_sec:.2f}с), вытеснено: {len(evicted)}")
+        return UnnamedOutcome(speaker_id, tuple(evicted))
+
+    def count(self) -> int:
+        """Сколько профилей сейчас без имени."""
+        row = self._db._conn.execute("SELECT COUNT(*) FROM speakers WHERE name=?", (UNNAMED,)).fetchone()
+        return int(row[0]) if row else 0
+
+    def _evict_over(self, limit: int, keep: str) -> List[str]:
+        """Удалить самые старые безымянные профили сверх ``limit`` (``keep`` не трогаем); id удалённых."""
+        rows = self._db._conn.execute(
+            "SELECT speaker_id FROM speakers WHERE name=? ORDER BY created_at ASC, rowid ASC", (UNNAMED,)
+        ).fetchall()
+        excess = max(0, len(rows) - max(1, int(limit)))
+        victims = [r[0] for r in rows if r[0] != keep][:excess]
+        for victim in victims:
+            self._db.delete_speaker(victim)
+        if victims:
+            logger.info(f"🧹 вытеснено безымянных профилей: {len(victims)} (лимит {limit}), старейшие по created_at")
+        return victims
+
+    def claim(
+        self,
+        match: Optional[SpeakerMatch],
+        name: str,
+        embedding: np.ndarray,
+        duration_sec: Optional[float],
+    ) -> Optional["RegisterOutcome"]:
+        """Человек представился: если его голос опознаётся профилем без имени, имя достаётся ЭТОМУ профилю.
+
+        ``match`` -- результат ``identify(threshold=REGISTER_MATCH_THRESHOLD)`` из ``register_or_merge``. Не
+        нашёлся -- смотрим обычный порог (0.72): «голос только что опознавался безымянным по 0.72» и «представился»
+        -- одно событие, дубль безымянного + именованного профиля как раз и есть то, что чинить нечем. Слияние с
+        ИМЕНОВАННЫМ профилем по-прежнему от 0.75 (``claim`` его не трогает: вернёт ``None``). Тот же ``speaker_id``,
+        кличка и накопленное остаются; эмбеддинг представления дописывается в галерею. Имя, которое уже есть у
+        ДРУГОГО профиля (тёзка), присвоению не мешает -- наружу уезжает ``name_twin`` (повод переспросить).
+        """
+        if match is None:
+            match = self._db.identify(embedding)
+        if match is None or match.named:
+            return None
+        clean = _validate_speaker_name(name)
+        if not clean:
+            raise ValueError(f"speaker_embeddings.register: invalid speaker name {name!r}")
+        twin = self._db._find_by_name(clean)
+        twin_score = _twin_score(self._db, embedding, twin)
+        self._db._conn.execute("UPDATE speakers SET name=? WHERE speaker_id=?", (clean, match.speaker_id))
+        self._db._conn.commit()  # #4115: register пишет на своём соединении, неподтверждённое имя держало бы ему замок
+        self._db.register(clean, embedding, speaker_id=match.speaker_id, duration_sec=duration_sec)
+        logger.info(
+            f"🏷️ register_or_merge: безымянный профиль id={match.speaker_id[:8]} (кличка={match.epithet!r}, "
+            f"score={match.confidence:.3f}) получил имя {clean!r} -- тот же профиль, без дубля (#3858)"
+        )
+        return RegisterOutcome(
+            match.speaker_id,
+            True,
+            twin_name=twin[1] if twin else None,
+            twin_speaker_id=twin[0] if twin else None,
+            twin_score=twin_score,
+            claimed_unnamed=True,
+        )
+
+
 class SpeakerDatabase:
     """SQLite-backed speaker embedding store."""
 
@@ -464,6 +591,7 @@ class SpeakerDatabase:
         self._conn.executescript(_CREATE_SQL)
         self._conn.commit()
         self._migrate_epithet_columns()
+        self.unnamed = UnnamedProfiles(self)  # #3858: профили без имени
         logger.info(f"SpeakerDatabase opened: {db_path}")
 
     # ── Migrations ────────────────────────────────────────────────────────────
@@ -724,7 +852,10 @@ class SpeakerDatabase:
         """
         if self.gallery_size(speaker_id) >= GALLERY_WARMUP_SIZE:
             return False
-        self.register(name, embedding, speaker_id=speaker_id)
+        # #3801: рост галереи профиль не переименовывает — имя берётся из БД, а ``name`` (снимок сессии роста,
+        # открытой до переименования) — только для профиля, которого ещё нет. Живой робот 21.10: «зови меня
+        # Денчик» → Renamed, следующая реплика дописала эмбеддинг под старым именем и вернула «Энджик».
+        self.register(_stored_name(self._conn, speaker_id, name), embedding, speaker_id=speaker_id)
         return True
 
     def register(
@@ -773,55 +904,16 @@ class SpeakerDatabase:
         if duration_sec is not None and duration_sec < MIN_REGISTER_AUDIO_DURATION_SEC:
             raise AudioTooShortError(duration_sec, MIN_REGISTER_AUDIO_DURATION_SEC)
         now = time.time()
-        if speaker_id is None:
-            speaker_id = str(uuid.uuid4())
-            self._conn.execute(
-                "INSERT INTO speakers (speaker_id, name, created_at) VALUES (?, ?, ?) "
-                "ON CONFLICT(speaker_id) DO NOTHING",
-                (speaker_id, clean_name, now),
+        # Issue #4115: профиль и его эмбеддинг пишутся ОДНОЙ транзакцией на отдельном соединении. На общем соединении
+        # (``check_same_thread=False``) читатель другого потока видел профиль уже после первого ``INSERT`` -- «Борис, 0
+        # эмбеддингов», и ``identify`` давал ``None``: соединение видит свои неподтверждённые записи. Теперь читатели
+        # общего соединения видят профиль целиком после ``commit`` или не видят вовсе (``_isolated_write``).
+        with _isolated_write(self._conn) as tx:
+            speaker_id = _write_profile_row(tx, speaker_id, clean_name, now)
+            tx.execute(
+                "INSERT INTO embeddings (speaker_id, embedding, created_at) VALUES (?, ?, ?)",
+                (speaker_id, self._ndarray_to_blob(embedding), now),
             )
-        else:
-            # ADR-0097 / issue #2469 — НЕ ``INSERT OR REPLACE``. В SQLite
-            # REPLACE — это DELETE + INSERT: все колонки, не перечисленные
-            # в запросе, возвращаются к дефолту. Здесь это молча стирало
-            # ``epithet`` / ``epithet_history`` / ``tags`` /
-            # ``sentiment_score`` / ``last_epithet_review`` (issue #1787,
-            # добавлены миграцией) и переписывало ``created_at`` на «сейчас»,
-            # то есть КАЖДАЯ повторная регистрация уже известного голоса
-            # обнуляла накопленный профиль. UPDATE трогает ровно одну
-            # колонку; ``created_at`` — «когда профиль создан», а не
-            # «когда его последний раз трогали», поэтому не обновляется.
-            prev = self._conn.execute(
-                "SELECT name FROM speakers WHERE speaker_id=?", (speaker_id,)
-            ).fetchone()
-            if prev is None:
-                # Явный id, которого ещё нет в БД (тест / миграция /
-                # восстановление): создаём строку, иначе FK-ссылка из
-                # embeddings повиснет на несуществующего спикера.
-                self._conn.execute(
-                    "INSERT INTO speakers (speaker_id, name, created_at) VALUES (?, ?, ?) "
-                    "ON CONFLICT(speaker_id) DO NOTHING",
-                    (speaker_id, clean_name, now),
-                )
-            elif prev[0] != clean_name:
-                # Переименование по ЯВНО переданному id — вызывающий код
-                # утверждает, что это тот же человек (rename-поток). Логируем
-                # на WARNING: имя профиля — единственное, что связывает
-                # биометрию с человеком, и его потеря необратима (ADR-0127).
-                logger.warning(
-                    f"register(speaker_id={speaker_id[:8]}): имя профиля "
-                    f"{prev[0]!r} → {clean_name!r} (явный id, переименование "
-                    f"по требованию вызывающего кода)"
-                )
-                self._conn.execute(
-                    "UPDATE speakers SET name=? WHERE speaker_id=?",
-                    (clean_name, speaker_id),
-                )
-        self._conn.execute(
-            "INSERT INTO embeddings (speaker_id, embedding, created_at) VALUES (?, ?, ?)",
-            (speaker_id, self._ndarray_to_blob(embedding), now),
-        )
-        self._conn.commit()
         logger.info(f"Registered speaker '{clean_name}' id={speaker_id[:8]}")
         return speaker_id
 
@@ -847,6 +939,9 @@ class SpeakerDatabase:
         * имя ДРУГОЕ → конфликт. Слияния НЕ происходит: заводится
           отдельный профиль (``reused=False``, заполнены поля
           ``conflict_*``), а прежнее имя остаётся при прежнем профиле.
+          Голос, который биометрия узнаёт УВЕРЕННО, сюда с другим именем
+          не доходит: ``speaker_id_node`` переименовывает его профиль
+          (ADR-0127 §8, #4054) — конфликт остаётся полосе сомнения.
 
         Почему так — night-marathon 22.09.2026, run 35667281570, акт 2:
         Саша (TTS anton) и Борис (TTS ermil) звучат для resemblyzer на
@@ -885,6 +980,9 @@ class SpeakerDatabase:
             )
 
         match = self.identify(embedding, threshold=REGISTER_MATCH_THRESHOLD)
+        claimed = self.unnamed.claim(match, name, embedding, duration_sec)
+        if claimed is not None:
+            return claimed
         if match is not None and _same_speaker_name(match.name, name):
             logger.info(
                 f"🔗 register_or_merge: голос похож на уже известного "
@@ -943,9 +1041,7 @@ class SpeakerDatabase:
         # Поэтому: профиль создаём (данные целы — инвариант ADR-0127),
         # но на исход вешаем повод переспросить. Решает человек.
         twin = self._find_by_name(name)
-        twin_score = None
-        if twin is not None:
-            twin_score = self._score_for(embedding, twin[0])
+        twin_score = _twin_score(self, embedding, twin)
         new_id = self.register(
             name, embedding, speaker_id=None, duration_sec=duration_sec
         )
@@ -1269,6 +1365,94 @@ class SpeakerDatabase:
 
 
 # ── Хелперы сериализации профиля (issue #1787) ───────────────────────────────
+
+
+def _write_profile_row(tx: sqlite3.Connection, speaker_id: Optional[str], name: str, now: float) -> str:
+    """Строка профиля в транзакции записи ``tx`` (:func:`_isolated_write`): новый профиль (``speaker_id`` не задан),
+    явный id, которого ещё нет, или существующий (при другом имени -- переименование); id профиля. Эмбеддинг дописывает
+    вызывающий код в той же транзакции."""
+    if speaker_id is None:
+        speaker_id = str(uuid.uuid4())
+        tx.execute(
+            "INSERT INTO speakers (speaker_id, name, created_at) VALUES (?, ?, ?) "
+            "ON CONFLICT(speaker_id) DO NOTHING",
+            (speaker_id, name, now),
+        )
+    else:
+        # ADR-0097 / issue #2469 — НЕ ``INSERT OR REPLACE``. В SQLite
+        # REPLACE — это DELETE + INSERT: все колонки, не перечисленные
+        # в запросе, возвращаются к дефолту. Здесь это молча стирало
+        # ``epithet`` / ``epithet_history`` / ``tags`` /
+        # ``sentiment_score`` / ``last_epithet_review`` (issue #1787,
+        # добавлены миграцией) и переписывало ``created_at`` на «сейчас»,
+        # то есть КАЖДАЯ повторная регистрация уже известного голоса
+        # обнуляла накопленный профиль. UPDATE трогает ровно одну
+        # колонку; ``created_at`` — «когда профиль создан», а не
+        # «когда его последний раз трогали», поэтому не обновляется.
+        prev = tx.execute(
+            "SELECT name FROM speakers WHERE speaker_id=?", (speaker_id,)
+        ).fetchone()
+        if prev is None:
+            # Явный id, которого ещё нет в БД (тест / миграция /
+            # восстановление): создаём строку, иначе FK-ссылка из
+            # embeddings повиснет на несуществующего спикера.
+            tx.execute(
+                "INSERT INTO speakers (speaker_id, name, created_at) VALUES (?, ?, ?) "
+                "ON CONFLICT(speaker_id) DO NOTHING",
+                (speaker_id, name, now),
+            )
+        elif prev[0] != name:
+            # Переименование по ЯВНО переданному id — вызывающий код
+            # утверждает, что это тот же человек (rename-поток). Логируем
+            # на WARNING: имя профиля — единственное, что связывает
+            # биометрию с человеком, и его потеря необратима (ADR-0127).
+            logger.warning(
+                f"register(speaker_id={speaker_id[:8]}): имя профиля "
+                f"{prev[0]!r} → {name!r} (явный id, переименование "
+                f"по требованию вызывающего кода)"
+            )
+            tx.execute(
+                "UPDATE speakers SET name=? WHERE speaker_id=?",
+                (name, speaker_id),
+            )
+    return speaker_id
+
+
+@contextmanager
+def _isolated_write(shared: sqlite3.Connection) -> Iterator[sqlite3.Connection]:
+    """Транзакция записи, невидимая читателям общего соединения ``shared`` до ``commit`` (issue #4115).
+
+    Соединение ``SpeakerDatabase`` общее для потоков (``check_same_thread=False``) и видит собственные неподтверждённые
+    записи, поэтому профиль, вставленный раньше своего эмбеддинга, читатель другого потока находил с 0 эмбеддингов.
+    Здесь запись идёт на отдельном соединении к тому же файлу: другое соединение чужих неподтверждённых строк не видит
+    (изоляция SQLite), ``commit`` публикует профиль и эмбеддинг сразу вместе, ошибка откатывает обе вставки и не оставляет
+    «хвоста», который закоммитил бы чужой ``commit`` на общем соединении. Выбрано вместо замка на читателях: читателей
+    десятки (``identify``, ``list_speakers``, ...), а писатель один.
+
+    Пока на общем соединении висит неподтверждённая запись, этой транзакции придётся ждать её ``commit`` (до 5 с,
+    ``sqlite3``): вызывающий код подтверждает записи сразу. БД без файла (``:memory:``) изолировать нечем -- запись идёт
+    на общем соединении, как раньше."""
+    path = shared.execute("PRAGMA database_list").fetchone()[2]
+    if not path:
+        yield shared
+        shared.commit()
+        return
+    tx = sqlite3.connect(path)
+    try:
+        tx.execute("PRAGMA foreign_keys = ON")  # на каждое соединение отдельно (issue #2794)
+        yield tx
+        tx.commit()
+    except BaseException:
+        tx.rollback()
+        raise
+    finally:
+        tx.close()
+
+
+def _stored_name(conn: Any, speaker_id: str, fallback: str) -> str:
+    """Имя профиля в БД; профиля ещё нет — ``fallback`` (#3801: рост галереи не переименовывает)."""
+    row = conn.execute("SELECT name FROM speakers WHERE speaker_id=?", (speaker_id,)).fetchone()
+    return row[0] if row else fallback
 
 
 def _split_tags(raw: Optional[str]) -> List[str]:

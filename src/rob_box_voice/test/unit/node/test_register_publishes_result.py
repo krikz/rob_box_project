@@ -48,7 +48,7 @@ docstring test_gallery_warmup.py). Теперь галерея растёт по
 from __future__ import annotations
 
 import collections
-import json
+import math
 import sys
 import threading
 import types
@@ -74,6 +74,8 @@ for _hw in ("pyaudio", "usb", "usb.core", "usb.util", "sounddevice"):
 sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
 
 from rob_box_voice import speaker_id_node as sid_node  # noqa: E402
+from rob_box_core.speaker_wire import speaker_result_to_payload  # noqa: E402
+from rob_box_dialog_msgs.msg import SpeechEvent  # noqa: E402
 
 
 class _Embed:
@@ -119,7 +121,7 @@ class _FakePublisher:
         self.messages: list[dict] = []
 
     def publish(self, msg) -> None:
-        self.messages.append(json.loads(msg.data))
+        self.messages.append(speaker_result_to_payload(msg))
 
 
 @pytest.fixture()
@@ -216,11 +218,24 @@ def test_do_register_opens_growth_session(node):
     assert session["speaker_id"] == match_msgs[0]["speaker_id"]
 
 
+def _at_cosine(base: np.ndarray, cos: float, seed: int) -> np.ndarray:
+    """Вектор с ТОЧНЫМ косинусом ``cos`` к ``base`` (шум ортогонализован к ``base``)."""
+    noise = _embedding(seed)
+    noise = noise - float(np.dot(noise, base)) * base
+    noise = noise / np.linalg.norm(noise)
+    return (cos * base + math.sqrt(1.0 - cos * cos) * noise).astype(np.float32)
+
+
 def test_do_register_on_name_conflict_still_publishes_own_match(node):
     """ADR-0127: конфликт имён заводит ОТДЕЛЬНЫЙ профиль — is_known=true
-    обязан указывать на НОВЫЙ профиль (Борис), а не на чужой (Саша)."""
+    обязан указывать на НОВЫЙ профиль (Борис), а не на чужой (Саша).
+
+    #4054: конфликт остался полосе сомнения — голос не ниже порога слияния
+    (0.75), но ниже уверенного (0.80). Уверенно узнанный голос под другим
+    именем переименовывает профиль (test_issue_4054_one_voice_renames_profile.py).
+    """
     base = _embedding(700)
-    similar = _degraded(base, alpha=0.6, noise_seed=701)  # cos ~0.86 > REGISTER_MATCH_THRESHOLD
+    similar = _at_cosine(base, 0.77, seed=701)  # 0.75 <= cos < 0.80: полоса сомнения
 
     node._do_register("Саша", base, speaker_id=None)
     node._result_pub.messages.clear()
@@ -374,7 +389,10 @@ def test_growth_session_grows_gallery_even_when_identify_fails(node):
     )
     # identify() на калиброванном пороге реплику не узнал -- is_known=false,
     # рост галереи никак не подделывает результат обычной идентификации.
-    assert node._result_pub.messages == [{"is_known": False}]
+    # #3767: лучший кандидат уходит гипотезой, не именем.
+    (msg,) = node._result_pub.messages
+    assert msg["is_known"] is False and "name" not in msg
+    assert msg["candidate_name"] == "Деньчик" and msg["candidate_score"] < 0.8
     assert node._growth_session["count"] == 1
 
 
@@ -411,13 +429,24 @@ def test_growth_session_closes_after_gap_timeout(node, monkeypatch):
     assert node._growth_session is None, "сессия обязана закрыться по таймауту"
 
 
-def test_tts_finished_resets_gap_so_robot_monologue_is_not_idle(node):
+def _deliver_speech_event(node, kind_name: str, speech_id: str = "чужая-реплика") -> None:
+    """``SpeechEvent`` владельца речи вида ``KIND_<kind_name>`` (заглушка из настоящего ``.msg``, conftest) — в тот же
+    подписчик, что вешает ``SpeakerIdNode.__init__``: ``on_speech_end(node._on_speech_end)``."""
+    event = SpeechEvent(kind=getattr(SpeechEvent, f"KIND_{kind_name}"), speech_id=speech_id, agent="personality")
+    sid_node.on_speech_end(node._on_speech_end)(event)
+
+
+@pytest.mark.parametrize("kind_name", ["FINISHED", "CANCELLED", "REJECTED"])
+def test_speech_end_resets_gap_so_robot_monologue_is_not_idle(node, kind_name):
     """Речь робота НЕ должна засчитываться человеку в простой (issue #2747).
 
     Регрессия на прогон 35781881888: галереи Саши и Бориса остались по
     одному вектору при потолке 5, потому что разрыв мерился от прошлой
     реплики ЧЕЛОВЕКА и включал время, пока робот произносил ответ
     («закрыта по таймауту 33.7s > 30.0s» и «61.7s > 30.0s»).
+
+    Конец речи — любой финал реплики у владельца речи (``SpeechEvent`` finished/cancelled/rejected, PR-15 15-0c
+    #3711): чья реплика (``speech_id``) — неважно, очередь снова за человеком.
     """
     base = _embedding(26)
     node._do_register("Деньчик", base, speaker_id=None)
@@ -425,7 +454,7 @@ def test_tts_finished_resets_gap_so_robot_monologue_is_not_idle(node):
 
     # Робот говорил дольше, чем всё окно разрыва, и только потом договорил.
     node._growth_session["last_utterance_at"] -= node._growth_session_gap_sec + 1.0
-    node._on_tts_finished(types.SimpleNamespace(data="speech-id-не-важен"))
+    _deliver_speech_event(node, kind_name)
 
     node._db.embed_audio_ex = MagicMock(return_value=_Embed(_degraded(base, 0.1, 2500)))
     node._process_utterance(b"\x00\x00" * 1000)
@@ -434,11 +463,26 @@ def test_tts_finished_resets_gap_so_robot_monologue_is_not_idle(node):
     assert node._db.gallery_size(sid) == 2, "после ответа робота реплика обязана дописаться"
 
 
-def test_tts_finished_without_session_is_noop(node):
+@pytest.mark.parametrize("kind_name", ["QUEUED", "SYNTHESIZED", "STARTED", "PROGRESS", "VOICE_CHANGED"])
+def test_speech_not_ended_does_not_reset_gap(node, kind_name):
+    """Реплика ещё в очереди или звучит — робот не договорил: отсчёт паузы не сдвигается, сессия закрывается по
+    таймауту, как без речи робота."""
+    base = _embedding(27)
+    node._do_register("Деньчик", base, speaker_id=None)
+    node._growth_session["last_utterance_at"] -= node._growth_session_gap_sec + 1.0
+    _deliver_speech_event(node, kind_name)
+
+    node._db.embed_audio_ex = MagicMock(return_value=_Embed(_degraded(base, 0.1, 2500)))
+    node._process_utterance(b"\x00\x00" * 1000)
+
+    assert node._growth_session is None, f"{kind_name} — не конец речи, разрыв больше окна закрывает сессию"
+
+
+def test_speech_end_without_session_is_noop(node):
     """Речь робота сама по себе не открывает growth-сессию: она ничего не
     говорит о том, КТО стоит у микрофона."""
     assert node._growth_session is None
-    node._on_tts_finished(types.SimpleNamespace(data="speech-id"))
+    _deliver_speech_event(node, "FINISHED")
     assert node._growth_session is None
 
 
@@ -478,7 +522,10 @@ def test_process_utterance_publishes_unknown_for_unmatched_voice(node):
 
     node._process_utterance(b"\x00\x00" * 1000)
 
-    assert node._result_pub.messages == [{"is_known": False}]
+    # #3767: неузнанный голос несёт лучшего кандидата галереи как гипотезу со score, имени нет.
+    (msg,) = node._result_pub.messages
+    assert msg["is_known"] is False and "name" not in msg
+    assert msg["candidate_name"] == "Саша" and msg["candidate_score"] < 0.5
 
 
 def test_no_growth_without_active_session(node):

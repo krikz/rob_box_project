@@ -48,9 +48,9 @@ ACT2 = (
     / "night"
     / "night_marathon_act2_acquaintance_v1.json"
 )
-DIALOGUE_NODE = (
-    REPO_ROOT / "src" / "rob_box_voice" / "rob_box_voice" / "dialogue_node.py"
-)
+#: Фразы «новая сессия» — одна таблица ``rob_box_dialog.knowledge.NEW_SESSION_PHRASES`` (ADR-0150 PR-6, #3696;
+#: раньше ``DialogueNode._DEFAULT_NEW_SESSION_PHRASES``). Читается без импорта, как и раньше.
+KNOWLEDGE = REPO_ROOT / "src" / "rob_box_dialog" / "rob_box_dialog" / "knowledge.py"
 MCP_PKG = REPO_ROOT / "src" / "rob_box_mcp_tools" / "rob_box_mcp_tools"
 
 #: Строка, которую dialogue_node.reset_session пишет в лог при сбросе.
@@ -66,9 +66,8 @@ def _tools(step: dict) -> list[str]:
 
 
 def _new_session_phrases() -> tuple[str, ...]:
-    """_DEFAULT_NEW_SESSION_PHRASES из исходника dialogue_node (без импорта:
-    нода тянет rclpy)."""
-    tree = ast.parse(DIALOGUE_NODE.read_text(encoding="utf-8"))
+    """``NEW_SESSION_PHRASES`` из исходника ``rob_box_dialog.knowledge`` (без импорта пакетов робота)."""
+    tree = ast.parse(KNOWLEDGE.read_text(encoding="utf-8"))
     for node in ast.walk(tree):
         target = None
         if isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name):
@@ -79,9 +78,9 @@ def _new_session_phrases() -> tuple[str, ...]:
             and isinstance(node.targets[0], ast.Name)
         ):
             target = node.targets[0].id
-        if target == "_DEFAULT_NEW_SESSION_PHRASES":
+        if target == "NEW_SESSION_PHRASES":
             return tuple(ast.literal_eval(node.value))
-    raise AssertionError("_DEFAULT_NEW_SESSION_PHRASES не найден в dialogue_node.py")
+    raise AssertionError("NEW_SESSION_PHRASES не найден в rob_box_dialog/knowledge.py")
 
 
 def _is_reset_step(step: dict) -> bool:
@@ -150,6 +149,10 @@ def _load_memory_tools() -> types.ModuleType:
     pkg_name = "_issue2865_mcp"
     if f"{pkg_name}.tools.memory" in sys.modules:
         return sys.modules[f"{pkg_name}.tools.memory"]
+    # tools/memory.py берёт причину отказа из rob_box_dialog.knowledge (#4023): модуль чистый (stdlib), пакет - из src
+    dialog_src = str(REPO_ROOT / "src" / "rob_box_dialog")
+    if dialog_src not in sys.path:
+        sys.path.insert(0, dialog_src)
     pkg = types.ModuleType(pkg_name)
     pkg.__path__ = [str(MCP_PKG)]
     sub = types.ModuleType(f"{pkg_name}.tools")
@@ -206,7 +209,8 @@ def _search_log(hits: list[dict]) -> str:
     memory_mod = _load_memory_tools()
     node = _Node(_Memory(hits))
     tool = memory_mod.MemorySearchTool(node)
-    result = tool.execute(query="чай")
+    # собеседник есть всегда: без него поиск не идёт (#4023), а v2 кладёт его из снимка
+    result = tool.execute(query="чай", speaker_id="spk-sasha")
     assert result.success, result.message
     return "\n".join(
         f"[INFO] [1790180960.1] [mcp_server]: {line}" for line in node._logger.lines

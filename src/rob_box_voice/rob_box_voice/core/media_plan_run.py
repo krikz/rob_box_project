@@ -19,7 +19,8 @@ from typing import Any, Awaitable, Callable, Dict, List, Optional, Tuple
 
 from rob_box_music.dj_line import SET_NOT_FOUND
 
-from .media_phrases import dj_started_text, launch_text, source_phrase
+from .library_command import run_library_command
+from .media_phrases import dj_started_text, launch_text, source_phrase, theme_text
 from .media_router import DJ_SET_TOOL, NOT_STARTED_TEXT, MediaPlan
 from .music_player_state import MusicEventLog
 from .music_turn import next_turn_id
@@ -64,11 +65,13 @@ async def run_media_plan(
 ) -> Tuple[bool, str, List[str]]:
     """Тулы плана по порядку → ``(успех, фраза, исполненные тулы)``.
 
-    ``begin_turn`` — граница хода исполнителя тулов (``SchedulerToolExecutor.begin_turn``: ``MusicTurn`` и лимит
+    ``begin_turn`` — граница хода исполнителя тулов (``PlanToolExecutor.begin_turn``: ``MusicTurn`` и лимит
     трека): зовётся, только если команда заменила ход LLM (:func:`command_turn_context`).
     """
     if plan.cancel_inflight and callable(begin_turn):
         begin_turn()
+    if plan.library:  # #3696: поиск/список → трек выбирает код → play
+        return await run_library_command(plan, call_tool)
     ok, phrase, done, contents = True, "", [], {}
     for call in plan.tool_calls:
         call_ok, content = await call_tool(call)
@@ -91,6 +94,10 @@ async def _confirm_started(
     first = plan.tool_calls[0].name
     data = tool_data(contents.get(first, "")) or {}
     track_id = data.get("track_id")
+    if not track_id and data.get("ok") and data.get("pending"):
+        # песня пишется, моста нет (#3696): фраза ожидания — ``source_message`` тула, о запуске скажет сама песня
+        log(f"🎛️ [media-router v2] {first} pending={data['pending']} без моста — фраза ожидания тула")
+        return True, launch_text(plan.say_ok, data)
     begin = time.monotonic()
     event = await asyncio.to_thread(events.wait, track_id, STARTED_WAIT_S) if events and track_id else None
     waited = time.monotonic() - begin
@@ -106,12 +113,16 @@ async def _confirm_started(
 def _started_text(plan: MediaPlan, data: Dict[str, Any]) -> str:
     """Фраза после ``started``: у ``dj_set`` без темы в команде тему назовёт результат тула — её выделил ``dj_set``
     из слов реплики (``theme_grounding.heard_theme``, 07.10), фразу строит код из результата (ADR-0148); сет из
-    генерации (ADR-0158 PR-8) — вся фраза кода ``source_message`` результата; об
-    инструменте заказа («на арфе») — тоже из результата (``media_phrases.instrument_text``, ADR-0157 §2.4)."""
+    генерации (ADR-0158 PR-8) — фраза кода ``source_message`` результата и тема сета, если фраза её не назвала
+    (#3775); об инструменте заказа («на арфе») — тоже из результата (``media_phrases.instrument_text``,
+    ADR-0157 §2.4)."""
     call = plan.tool_calls[0]
-    if call.name != DJ_SET_TOOL or call.arguments.get("theme") or not data.get("theme") or data.get("source_message"):
+    theme, message = str(data.get("theme") or ""), str(data.get("source_message") or "")
+    if call.name == DJ_SET_TOOL and theme and message:
+        return message if theme.lower() in message.lower() else f"{message} {theme_text(theme)}"
+    if call.name != DJ_SET_TOOL or call.arguments.get("theme") or not theme or message:
         return launch_text(plan.say_ok, data)
-    return dj_started_text(str(call.arguments.get("persona") or ""), str(data["theme"]))
+    return dj_started_text(str(call.arguments.get("persona") or ""), theme)
 
 
 __all__ = ["STARTED_WAIT_S", "command_turn_context", "run_media_plan"]

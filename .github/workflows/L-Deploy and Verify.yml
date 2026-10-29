@@ -563,7 +563,7 @@ jobs:
              exit \$rc"
 
       # ==================== SOUND PI DEPLOYMENT (ADR-0159) ====================
-      # Третий узел: voice-assistant, supercollider, voice-action-server,
+      # Третий узел: voice-assistant, supercollider,
       # avatar-supervisor, zenoh-router-sound и (волна 2, PR-7, В9) avatar-arbiter,
       # rob-box-quest, telegram-bot (+ cadvisor/promtail, profile
       # monitoring; sensor-bridge, profile sensors, по умолчанию выключен).
@@ -791,8 +791,7 @@ jobs:
           # снимаем на случай, если daemon держит её после неудачного recreate.
           # container_name'ы (zenoh-router-sound, supercollider, voice-assistant,
           # ...) в списке не хардкодим — фильтр по compose-label.
-          sshpass -p 'open' ssh $SSH_OPTS ros2@${{ env.sound_pi_ip }} \
-            "cd ~/rob_box_project/docker/sound && \
+          START_CMD="cd ~/rob_box_project/docker/sound && \
              export IMAGE_TAG=${{ env.IMAGE_TAG }} && \
              export SERVICE_IMAGE_PREFIX=${{ env.SERVICE_IMAGE_PREFIX }} && \
              if [ '${{ inputs.registry_source }}' != 'local' ] && [ -f .image-versions.${{ env.IMAGE_TAG }} ]; then set -a && . .image-versions.${{ env.IMAGE_TAG }} && set +a; fi && \
@@ -806,6 +805,38 @@ jobs:
              echo '📈 #3300: агенты мониторинга (profile monitoring) — best-effort, образы cadvisor/promtail тянутся из сети'; \
              docker compose --profile monitoring up -d cadvisor promtail || echo '::warning::monitoring agents не поднялись (нет сети/образов?)'; \
              exit \$rc"
+
+          # Issue #4102 (деплой 27.10, run 40563273615): шаг упал ДО `compose up` на самом SSH —
+          # `kex_exchange_identification: Connection closed by remote host`, exit 255 (sshd Sound Pi режет
+          # неаутентифицированные подключения: MaxStartups по умолчанию 10:30:100, на хосте десятки сессий).
+          # Stop Containers к этому моменту уже снял стек, и робот остался без голоса. Поэтому повтор SSH:
+          # 255 — это отказ самого ssh (команда на хосте не стартовала либо оборвалась), а не код `compose up`;
+          # весь START_CMD идемпотентен (rm -f по label + up --force-recreate), повторять его безопасно.
+          # Код любой другой — это уже ответ хоста (compose up упал), его не повторяем: смотри вывод выше.
+          # Конфиг sshd хоста не трогаем (правка MaxStartups — только с «да» товарища Шифу).
+          SSH_ATTEMPTS=3
+          SSH_RETRY_PAUSE_S=10
+          start_rc=1
+          attempt=0
+          while [ "$attempt" -lt "$SSH_ATTEMPTS" ]; do
+            attempt=$((attempt + 1))
+            start_rc=0
+            sshpass -p 'open' ssh $SSH_OPTS ros2@${{ env.sound_pi_ip }} "$START_CMD" || start_rc=$?
+            if [ "$start_rc" -ne 255 ]; then
+              break
+            fi
+            echo "⚠️  Sound Pi: SSH не прошёл (exit 255, попытка $attempt из $SSH_ATTEMPTS)"
+            if [ "$attempt" -lt "$SSH_ATTEMPTS" ]; then
+              echo "   повтор через ${SSH_RETRY_PAUSE_S} с"
+              sleep "$SSH_RETRY_PAUSE_S"
+            fi
+          done
+
+          if [ "$start_rc" -ne 0 ]; then
+            # Контейнеры уже сняты шагом «[Sound Pi] Stop Containers»; не поднялись — голоса у робота нет.
+            echo "::error::Sound Pi без контейнеров: старт стека не прошёл (exit=$start_rc, SSH-попыток: $attempt из $SSH_ATTEMPTS) после снятия контейнеров, робот без голоса. Поднять вручную на Sound Pi: cd ~/rob_box_project/docker/sound && IMAGE_TAG=${{ env.IMAGE_TAG }} SERVICE_IMAGE_PREFIX=${{ env.SERVICE_IMAGE_PREFIX }} docker compose up -d --force-recreate --pull never --remove-orphans"
+            exit "$start_rc"
+          fi
 
       # ==================== MAIN PI DEPLOYMENT ====================
 
@@ -1074,7 +1105,7 @@ jobs:
           FINDINGS_FILE="$SOUND_FINDINGS_FILE" \
           ENVIRONMENT="${{ inputs.environment }}" \
           SCOPE=sound \
-          EXPECTED_CONTAINERS="zenoh-router-sound supercollider voice-assistant voice-action-server avatar-supervisor avatar-arbiter rob-box-quest telegram-bot" \
+          EXPECTED_CONTAINERS="zenoh-router-sound supercollider voice-assistant avatar-supervisor avatar-arbiter rob-box-quest telegram-bot" \
             bash .github/scripts/check_container_status.sh > /tmp/sound_status.json
 
           touch sound_status_summary.txt
@@ -1270,7 +1301,7 @@ jobs:
           echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 
           # Топики голосового стека видны из контейнера voice-assistant.
-          # /voice/stt/result публикует stt_node — его присутствие говорит, что
+          # /voice/stt/utterance публикует stt_node — его присутствие говорит, что
           # voice-assistant дошёл до Zenoh-графа (ADR-0159: сквозной путь Sound→Main→Vision).
           # Статус topics_healthy НЕ влияет на deploy_status (как на Vision/Main):
           # это finding, не провал деплоя.
@@ -1295,7 +1326,7 @@ jobs:
             echo "Topics found:"
             echo "$TOPICS" | grep -E "^/voice" || echo "  (no /voice topics)"
 
-            EXPECTED_TOPICS="/voice/stt/result"
+            EXPECTED_TOPICS="/voice/stt/utterance"
             MISSING_TOPICS=""
             for topic in $EXPECTED_TOPICS; do
               if ! echo "$TOPICS" | grep -qx "$topic"; then

@@ -104,7 +104,7 @@
 // Renardo играет в группе 1 и чистит только её, поэтому фильтр переживает
 // Clock.clear(), stop_music() и DJ-переходы. На шине только музыка: TTS и
 // системные звуки идут мимо scsynth (tts_node → sounddevice), поэтому
-// динамика речь не трогает.
+// динамика речь не трогает, а `duck` (ниже) приглушает только музыку.
 
 SynthDef.new(\masterfilter, {
     // gain=0.5 — тот же мастер-фейдер, что стоял у снятого лимитера. Уровень
@@ -117,8 +117,9 @@ SynthDef.new(\masterfilter, {
      lvlDetect = 1.5, lvlUp = 3.0, lvlDown = 1.0,
      cmpThresh = -20, cmpRatio = 4, cmpAttack = 0.005, cmpRelease = 0.2, makeup = 9,
      ceiling = -1, limLook = 0.002, limRelease = 0.06,
-     trim = 0, trimLag = 0.5|
-    var sig, bad, nyquist, cutoff, safe, trimDb;
+     trim = 0, trimLag = 0.5,
+     duck = 0, duckDb = -9, duckAttack = 0.08, duckRelease = 0.4|
+    var sig, bad, nyquist, cutoff, safe, trimDb, duckOn, duckAmp;
     var pow, lvlDb, want, x, peak, cmpDb, ceilAmp, delayed, limGain, wet, wetBad, out;
     // Вход каждого элемента С СОСТОЯНИЕМ (Gate/LagUD/Amplitude) — через
     // clean: NaN/Inf → 0. Так порча (например, NaN в /n_set параметра)
@@ -189,6 +190,19 @@ SynthDef.new(\masterfilter, {
     // Энергия трека в сете — после динамики (см. шапку). NaN → 0 dB, только вниз.
     trimDb = Select.kr(CheckBadValues.kr(trim, 0, 0).min(1), [trim, DC.kr(0)]).clip(-40, 0);
     out = out * Lag.kr(trimDb.dbamp, trimLag);
+
+    // ── Приглушение под речь робота (ADR-0150 О8 (а), В16, PR-7d #3701) ──
+    // Отдельный множитель ПОСЛЕ лимитера, gain и trim: их не трогает и не
+    // перезаписывает (gain пользователя 0.5, trim сета, amp фона в треке —
+    // всё умножается на него). Ручку duck 0/1 держит один писатель —
+    // engine/speech_duck.py по SpeechEvent started/finished. Slew — линейный
+    // ход в дБ ровно за duckAttack вниз и duckRelease вверх; на аудио-частоте,
+    // чтобы ступени блока не давали «молнию». Порча (NaN в /n_set) → 0 дБ.
+    duckOn = Select.kr(CheckBadValues.kr(duck, 0, 0).min(1), [duck, DC.kr(0)]).clip(0, 1);
+    duckAmp = Slew.ar(K2A.ar(duckOn),
+        Select.kr(CheckBadValues.kr(duckAttack, 0, 0).min(1), [duckAttack, DC.kr(0.08)]).max(0.001).reciprocal,
+        Select.kr(CheckBadValues.kr(duckRelease, 0, 0).min(1), [duckRelease, DC.kr(0.4)]).max(0.001).reciprocal);
+    out = out * (duckAmp * Select.kr(CheckBadValues.kr(duckDb, 0, 0).min(1), [duckDb, DC.kr(0)]).clip(-40, 0)).dbamp;
 
     ReplaceOut.ar(bus, out);
 }).add;

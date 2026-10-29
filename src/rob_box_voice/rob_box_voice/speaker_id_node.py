@@ -16,24 +16,37 @@ Subscribes:
     /voice/speaker/epithet  (String)  — JSON {"speaker_id","epithet"} — кличка,
                                          придуманная LLM (слой 2 гибрида);
                                          принимается после валидации
+    /voice/stt/utterance, /voice/stt/echo (Utterance) — вердикт stt_node по
+                                         фразе рядом с речью робота (#4145,
+                                         core/echo_window.listen): опознание
+                                         уходит сразу; человек — профили как
+                                         раньше, эхо или нет вердикта — не трогать
 
 Publishes:
-    /voice/speaker/result (String) — JSON SpeakerMatch or {"is_known":false};
-                                     у известного спикера есть поле "epithet"
+    /voice/speaker/result (rob_box_dialog_msgs/SpeakerResult) — результат
+                                     биометрии (is_known/speaker_id/name/...);
+                                     у известного спикера есть поле epithet
                                      (внутренняя кличка, issue #1787). Тем же
-                                     топиком уходит ack на merge.
+                                     топиком уходят ack на register/merge/rename
+                                     (поле event). Ключи словаря <-> поля -
+                                     rob_box_core.speaker_wire.
     /voice/speaker/epithet_request (String) — JSON {"speaker_id","fallback",
                                      "cluster","hints","messages"} — просьба к
                                      dialogue_node придумать кличку через LLM
 
 Runtime-параметр (``ros2 param set``, НЕ топик — issue #2750, см. §"Seam
 guard" в ADR-0128):
-    e2e_mode (bool) — переключить активную БД дикторов db_path ↔
-        e2e_db_path. Владелец — только E2E-харнесс
-        (``ros2 param set /speaker_id_node e2e_mode true|false``, по
-        образцу ``ros2 param set /dialogue_node barge_in_policy classify``
-        из ``scripts/e2e/run_night_marathon.sh``). См. ``parameters_callback``
-        / ``_apply_e2e_mode``.
+    e2e_mode (bool) — ЕДИНСТВЕННЫЙ переключатель режима e2e на роботе
+        (#3904, ``rob_box_core.e2e_mode``): активная БД дикторов db_path ↔
+        e2e_db_path здесь, а последователи (``mcp_server`` — память фактов)
+        получают режим из latched ``/e2e/mode``, который публикует эта нода.
+        Ставит только E2E-харнесс (``ros2 param set /speaker_id_node
+        e2e_mode true|false``). См. ``parameters_callback`` / ``_apply_e2e_mode``.
+    e2e_release_after_s (float) — снять режим через N с, если следующий акт
+        марафона его не подхватит (``rob_box_core.e2e_mode.E2EModeOwner``).
+
+Publishes (#3904):
+    /e2e/mode (std_msgs/Bool, latched, переиздание 2 с) — режим e2e владельца.
 
 Parameters:
     db_path                    (str)   — path to SQLite DB       [/data/speakers.db]
@@ -62,25 +75,28 @@ Parameters:
                                         разрыв внутри growth-сессии — больше
                                         этого считаем, что человек мог уйти и
                                         сессия прервана. Отсчёт идёт от конца
-                                        речи РОБОТА (``/voice/tts/finished``,
-                                        см. _on_tts_finished), а не от прошлой
+                                        речи РОБОТА (``SpeechEvent`` конца реплики,
+                                        см. _on_speech_end), а не от прошлой
                                         реплики человека: пока робот говорит,
                                         человек молчит по очереди, а не из-за
                                         ухода [30.0]
     memory_db_path              (str)   — harness_voice.db, факты через шов
                                         идентичности (issue #2440) [/data/harness_voice.db]
-    voice_facts_db_path         (str)   — voice_memory.db, второй писатель
-                                        фактов (issue #2751) [/data/voice_memory.db]
+    voice_facts_db_path         (str)   — БД инструментов, второй писатель
+                                        фактов (issue #2751)
+                                        [rob_box_core.tools_db.tools_db_path(), #4082]
     sample_rate                (int)   — PCM sample rate         [16000]
     enabled                    (bool)  — enable/disable node     [true]
 """
 
 import collections
+import functools
 import json
 import math
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
+from dataclasses import replace
 from typing import Deque, Dict, Optional, Sequence, Tuple
 
 import numpy as np
@@ -89,9 +105,14 @@ from audio_common_msgs.msg import AudioData
 from rclpy.node import Node
 from rcl_interfaces.msg import SetParametersResult
 from rclpy.qos import DurabilityPolicy, HistoryPolicy, QoSProfile, ReliabilityPolicy
+from rob_box_dialog_msgs.msg import SpeakerResult, SpeechEvent
 from std_msgs.msg import String
+from rob_box_core import speech_client
+from rob_box_core.e2e_mode import E2EModeOwner
+from rob_box_core.speaker_wire import SOURCE_ENROLL, TENTATIVE_CONTESTED, TENTATIVE_SINGLE, fill_speaker_result
+from rob_box_core.tools_db import tools_db_path
 
-from .core import epithets
+from .core import echo_window, epithets, unnamed_voice
 from .core.utterance_id import compute_utterance_id
 from .utils import speaker_embeddings as _se_mod
 from .utils.speaker_embeddings import SpeakerDatabase, SpeakerMatch
@@ -136,8 +157,8 @@ def _gap_to_other_name(
     """
     best_name = (best.name or "").strip().casefold()
     for cand in candidates:
-        if cand.speaker_id == best.speaker_id:
-            continue
+        if cand.speaker_id == best.speaker_id or not cand.named:
+            continue  # безымянный профиль (#3858) — не человек «с другим именем»: имени у него нет
         cand_name = (cand.name or "").strip().casefold()
         if cand_name != best_name:
             return best.confidence - cand.confidence
@@ -151,9 +172,11 @@ def _gap_to_other_name(
 # с РАЗНЫМИ именами, малый разрыв — n210: Борис vs Саша) не может нести
 # ни одного имени кандидата дальше — даже в подсказку-гипотезу, не то
 # что вслух (must_not_say в n210 запрещает само слово "Борис").
+# Строки tentative_kind — из контракта сообщения (rob_box_core.speaker_wire):
+# по ним потребители решают, приписан ли голос профилю (#4023).
 NAME_CONFIDENT = "confident"
-NAME_TENTATIVE_SINGLE = "single"
-NAME_TENTATIVE_CONTESTED = "contested"
+NAME_TENTATIVE_SINGLE = TENTATIVE_SINGLE
+NAME_TENTATIVE_CONTESTED = TENTATIVE_CONTESTED
 
 
 def classify_name_confidence(
@@ -235,8 +258,357 @@ def is_name_confident(
     )
 
 
+def _candidate_fields(candidate: Optional[SpeakerMatch]) -> dict:
+    """Issue #3767 — лучший кандидат неузнанной фразы для ``SpeakerResult``:
+    гипотеза со score для метки фразы бэклога, не имя. Нет — ``{}``."""
+    if candidate is None or not candidate.name:
+        return {}
+    return {"candidate_name": candidate.name, "candidate_score": round(candidate.confidence, 4)}
+
+
+def _name_decision(node: "SpeakerIdNode", embedding: np.ndarray, match: Optional[SpeakerMatch]) -> Optional[str]:
+    """Issue #2809 — «зона сомнения + разрыв до другого человека» (см. classify_name_confidence/
+    declare_parameter name_confidence_band_high). top_n=5 — с запасом, чтобы найти конкурента с ДРУГИМ именем,
+    даже если в топ-2 попали два дубля-профиля одной и той же личности (issue #2747, "Дэнчик" x2). У безымянного
+    профиля (#3858) решать нечего: имени нет, ``None``."""
+    if match is None or not match.named:
+        return None
+    return classify_name_confidence(
+        match,
+        node._db.identify_candidates(embedding, top_n=5),
+        band_high=getattr(node, "_name_confidence_band_high", 0.80),
+        min_gap=getattr(node, "_name_confidence_min_gap", 0.15),
+    )
+
+
+def _label(match: SpeakerMatch) -> str:
+    """Имя профиля для лога; безымянный (#3858) -- ``∅``."""
+    return match.name or "∅"
+
+
+def on_speech_end(callback):
+    """Подписчик ``SpeechEvent``, зовущий ``callback()`` только на финал реплики робота (PR-15 15-0c #3711).
+
+    Финал — ``finished``, ``cancelled`` или ``rejected``: ``speech_client.is_speech_end``;
+    ``queued``/``synthesized``/``started``/``progress``/``voice_changed`` — реплика ещё ждёт или звучит.
+    """
+
+    def on_event(event: SpeechEvent) -> None:
+        if speech_client.is_speech_end(event):
+            callback()
+
+    return on_event
+
+
+def _settle_phrase(
+    node: "SpeakerIdNode",
+    embedding: np.ndarray,
+    match: Optional[SpeakerMatch],
+    best: Optional[SpeakerMatch],
+    duration_sec: float,
+    utterance_id: Optional[str],
+    elapsed: float,
+) -> None:
+    """Что фраза меняет в профилях и что о ней публикуется.
+
+    Фраза в тишине — как раньше: рост галереи, профиль без имени, вердикт в лог и результат (профиль из этой фразы —
+    ``enroll``, иначе опознание). Фраза рядом с речью робота (#4145): опознание публикуется сразу — профилей оно не
+    меняет и доходит до диалога раньше её ``Utterance``, по нему диалог считает автора фразы и собеседника хода (ревью
+    #4161, приёмка A31); изменения профилей ждут вердикта ``stt_node`` (``echo_window.settle``) — эхо собственного
+    голоса профиль не заводит и галерею не растит."""
+    # Issue #1160 — Prometheus metrics: known/unknown.
+    record_speaker_recognize(known=bool(match), confidence=match.confidence if match else None)
+    identified = functools.partial(_publish_identified, node, embedding, match, best, duration_sec, utterance_id, elapsed)
+    changes = functools.partial(_change_profiles, node, embedding, match, duration_sec, utterance_id, elapsed)
+    if echo_window.waits(node, utterance_id or ""):
+        identified()
+        echo_window.settle(node, utterance_id or "", changes)
+    elif changes() is None:
+        identified()
+
+
+def _change_profiles(
+    node: "SpeakerIdNode",
+    embedding: np.ndarray,
+    match: Optional[SpeakerMatch],
+    duration_sec: float,
+    utterance_id: Optional[str],
+    elapsed: float,
+) -> Optional[SpeakerMatch]:
+    """Что фраза меняет в профилях: рост галереи growth-сессии и профиль без имени незнакомому голосу; профиль заведён
+    — его результат ``enroll`` (диалог знает, что голос слышен впервые, #3993). Вернуть заведённый профиль или ``None``.
+    """
+    # Issue #2747 — рост галереи НЕ зависит от исхода identify() (см. большой комментарий у
+    # speaker_embeddings.GALLERY_WARMUP_SIZE: акустический гейт для этого решения отклонён — same/cross-voice
+    # распределения пересекаются целиком на реальных данных робота). Якорь — непрерывность growth-сессии,
+    # открытой в _do_register().
+    node._apply_growth_session(embedding, match)
+    enrolled = unnamed_voice.enroll(node, embedding, match, duration_sec)  # узнанному (и спорному) — нет
+    if enrolled is not None:
+        node.get_logger().info(_verdict_line(match, None, elapsed, enrolled))
+        node._publish_result(enrolled, source=SOURCE_ENROLL, utterance_id=utterance_id)
+    return enrolled
+
+
+def _publish_identified(
+    node: "SpeakerIdNode",
+    embedding: np.ndarray,
+    match: Optional[SpeakerMatch],
+    best: Optional[SpeakerMatch],
+    duration_sec: float,
+    utterance_id: Optional[str],
+    elapsed: float,
+) -> None:
+    """Результат опознания фразы (кто говорит; профилей не меняет) и вердикт в лог."""
+    name_decision = _name_decision(node, embedding, match)
+    # Issue #3858 -- вердикт в логе строится ПОСЛЕ решения об имени и совпадает с опубликованным: харнесс
+    # (must_not_identify_as, ADR-0134) читает эту строку как «кого робот опознал». Раньше строка печатала лучшего
+    # кандидата до решения, и незнакомец в полосе сомнения значился «Борисом» в логе при name=None в результате.
+    node.get_logger().info(_verdict_line(match, name_decision, elapsed))
+    node._publish_result(
+        match,
+        name_decision=name_decision,
+        utterance_id=utterance_id,
+        inconclusive=node._inconclusive_reason(match, duration_sec),
+        candidate=best,
+    )
+
+
+def _verdict_line(
+    match: Optional[SpeakerMatch],
+    name_decision: Optional[str],
+    elapsed: float,
+    enrolled: Optional[SpeakerMatch] = None,
+) -> str:
+    """Строка-вердикт ``👤 Speaker: ...`` -- ровно то, что опубликовано, а не лучший кандидат биометрии.
+
+    ``👤 Speaker: 'Имя'`` -- имя названо вслух-безопасно (уверенное). Имя в полосе сомнения не публикуется
+    (ADR-0123 §6, #2809), поэтому вердикт -- ``unknown`` с именем кандидата ПОСЛЕ слов (регэксп харнесса его не
+    берёт). Профиль без имени (#3858) -- без кавычек: это не чьё-то имя.
+    """
+    if enrolled is not None:
+        return f"👤 Speaker: безымянный профиль id={enrolled.speaker_id[:8]} (новый, кличка {enrolled.epithet!r}) ({elapsed:.0f} ms)"
+    if match is None:
+        return f"👤 Speaker: unknown ({elapsed:.0f} ms)"
+    if not match.named:
+        return (
+            f"👤 Speaker: безымянный профиль id={match.speaker_id[:8]} (кличка {match.epithet!r}) "
+            f"confidence={match.confidence:.3f} ({elapsed:.0f} ms)"
+        )
+    if name_decision not in (None, NAME_CONFIDENT):
+        return (
+            f"👤 Speaker: unknown ({elapsed:.0f} ms) -- имя не подтверждено ({name_decision}), "
+            f"ближайший кандидат {match.name!r} confidence={match.confidence:.3f}"
+        )
+    return (
+        f"👤 Speaker: '{match.name}' confidence={match.confidence:.3f} "
+        f"({elapsed:.0f} ms)"
+    )
+
+
+def _unnamed_payload(
+    match: SpeakerMatch, utterance_id: Optional[str], source: Optional[str]
+) -> Tuple[dict, str]:
+    """#3858: результат «голос известен, имени нет» -- ``name=None``, кличка и ``speaker_id`` профиля.
+
+    Гипотез имени (``tentative_*``) нет: безымянному профилю предлагать нечего. Диалог видит собеседника с
+    ``speaker_id`` и без имени -- состояние «знаком, не представлялся». Возвращает ``(payload, строка лога)``.
+    """
+    payload = {
+        "is_known": True,
+        "speaker_id": match.speaker_id,
+        "name": None,
+        "confidence": round(match.confidence, 4),
+        "epithet": match.epithet,
+    }
+    if utterance_id:
+        payload["utterance_id"] = utterance_id
+    if source:
+        payload["source"] = source
+    line = (
+        f"📢 Publishing: is_known=true name=None (профиль без имени, #3858) "
+        f"epithet={match.epithet!r} conf={match.confidence:.3f} source={source!r}"
+    )
+    return payload, line
+
+
+def _unknown_payload(
+    utterance_id: Optional[str], inconclusive: Optional[str], candidate: Optional[SpeakerMatch]
+) -> Tuple[dict, str]:
+    """Результат «не узнал» (``is_known=false``) + строка лога; ``inconclusive`` -- «не смог оценить» (#2863)."""
+    payload = {"is_known": False}
+    if utterance_id:
+        payload["utterance_id"] = utterance_id
+    if inconclusive:
+        payload["inconclusive"] = True
+        payload["reason"] = inconclusive
+    payload.update(_candidate_fields(candidate))
+    line = "📢 Publishing: is_known=false" + (
+        f" (inconclusive: {inconclusive}, issue #2863)" if inconclusive else ""
+    )
+    return payload, line
+
+
+def _named_payload(
+    match: SpeakerMatch,
+    source: Optional[str],
+    name_decision: Optional[str],
+    utterance_id: Optional[str],
+    *,
+    band_high: float,
+) -> Tuple[dict, str]:
+    """Результат узнанного профиля С именем + строка лога (решение об имени -- см. ``SpeakerIdNode._publish_result``)."""
+    if source:
+        confident = True
+        decision = NAME_CONFIDENT
+    else:
+        decision = name_decision or (
+            NAME_CONFIDENT if match.confidence >= band_high else NAME_TENTATIVE_SINGLE
+        )
+        confident = decision == NAME_CONFIDENT
+    published_name = match.name if confident else None
+    payload = {
+        "is_known": True,
+        "speaker_id": match.speaker_id,
+        "name": published_name,
+        "confidence": round(match.confidence, 4),
+        # Issue #1787 — внутренняя кличка. None до первой реплики
+        # (профиль из старой БД) — потребитель обязан это терпеть.
+        "epithet": match.epithet,
+    }
+    # Issue #2829 (ADR-0131) — id фразы, для которой это результат
+    # биометрии. Добавляем только когда он есть — старые/тестовые
+    # пути без utterance_id получают payload байт-в-байт как
+    # раньше (см. test_issue_2809_low_confidence_speaker_does_not_leak_name.py).
+    if utterance_id:
+        payload["utterance_id"] = utterance_id
+    if source:
+        payload["source"] = source
+    if not confident:
+        payload["tentative_conf"] = round(match.confidence, 4)
+        payload["tentative_kind"] = decision
+        if decision == NAME_TENTATIVE_SINGLE:
+            payload["tentative_name"] = match.name
+    line = (
+        f"📢 Publishing: is_known=true name={published_name!r} "
+        f"epithet={match.epithet!r} conf={match.confidence:.3f}"
+        + ("" if confident else f" (name suppressed: {decision}, issue #2809)")
+        + (f" source={source!r}" if source else "")
+    )
+    return payload, line
+
+
+def _publish_speaker_result(pub, payload: dict) -> None:
+    """Типизированная публикация ``SpeakerResult`` (ADR-0150 PR-2).
+
+    Словарь собирает вызывающий, соответствие ключ <-> поле знает один
+    модуль - ``rob_box_core.speaker_wire``. Функция модуля, а не метод:
+    класс под бюджетом размера (ADR-0145).
+    """
+    pub.publish(fill_speaker_result(SpeakerResult(), payload))
+
+
+# ── #4054 (решение Шифу 27.10, порт #3801 в v2): один голос — одна личность ──────────────────────────────────────
+# Голос фразы регистрации уверенно узнан как профиль P под именем Y, а человек называет себя X («я Тамара, мы не
+# знакомы, запомни мой голос», «меня зовут Денчик» при профиле «Эйджик») — это поправка имени, а не второй человек:
+# P переименовывается Y → X, второго профиля нет. Биометрия — источник правды; похожие голоса разных людей пока
+# терпим (Шифу 27.10). Решает код здесь, у владельца голосов, а не LLM и не диалог: правило одно для v1 и v2.
+def _voice_owner(node: "SpeakerIdNode", name: str, embedding: np.ndarray) -> Optional[SpeakerMatch]:
+    """Профиль, который биометрия УВЕРЕННО узнаёт в фразе регистрации под ДРУГИМ именем, — его и переименовывать.
+
+    «Уверенно» — тот же исход :func:`classify_name_confidence` (``confident``, порог ``name_confidence_band_high``),
+    с которым имя этой фразы публикуется вслух; нового порога нет. ``None`` — голос не узнан или узнан в полосе
+    сомнения (single/contested: регистрация как раньше, ADR-0127; решения 26.10 #3993/#3858 — без вопросов), профиль
+    безымянный (#3858: имя ему присвоит ``register_or_merge``) или имя то же (#2863 «уже знаю» / дописать в профиль).
+    """
+    match = node._db.identify(embedding)
+    if match is None or _se_mod._same_speaker_name(match.name, name):
+        return None
+    return match if _name_decision(node, embedding, match) == NAME_CONFIDENT else None
+
+
+def _rename_by_voice(node: "SpeakerIdNode", owner: SpeakerMatch, name: str, utterance_id: Optional[str]) -> bool:
+    """Переименовать уверенно узнанный профиль ``owner`` в ``name`` вместо второго профиля (:func:`_voice_owner`).
+
+    ``speaker_id`` тот же — эмбеддинги, кличка и факты памяти остаются у профиля. Ack — обычный ``registered`` этого
+    профиля с ``new_name`` («регистрация переименовала профиль голоса»): по нему фразу «мы знакомы» строит код
+    (``register_speaker`` → ``identity.done.renamed``), а не LLM. Дальше — как после регистрации: результат фразы с
+    ``source="register"`` (новое имя доезжает до диалога; ``FaceStore`` берёт его, только если в кадре ровно одно лицо
+    этого голоса — ``FaceRecognizer.note_voice_identification``, иначе лицо остаётся под старым именем, как и при
+    ``/voice/speaker/rename``) и growth-сессия владельца под новым именем. Имя уже носит ДРУГОЙ профиль — переименование
+    всё равно идёт (голос фразы — этот профиль), а тёзки видны в логе предупреждением с подсказкой склейки
+    (:func:`_namesake`): склеивать молча нельзя — слияние необратимо (ADR-0127). ``False`` — имя мусорное или профиля
+    уже нет: решает обычный путь регистрации.
+    """
+    clean = _se_mod._validate_speaker_name(name)
+    twin = _namesake(node, owner.speaker_id, clean) if clean else None
+    if not clean or not node._db.rename(owner.speaker_id, clean):
+        return False
+    node.get_logger().info(
+        f"✏️ [#4054] один голос — одна личность: голос фразы уверенно {owner.name!r} (id={owner.speaker_id[:8]}, "
+        f"score={owner.confidence:.3f}), назвался {clean!r} — профиль переименован {owner.name!r} → {clean!r}, "
+        "второй профиль не заводится")
+    if twin is not None:
+        node.get_logger().warning(
+            f"👥 [#4054] имя {clean!r} уже было у профиля id={twin[:8]} — теперь два профиля {clean!r} (тёзки); голос "
+            f"фразы уверенно id={owner.speaker_id[:8]}. Если это один человек — склеить вручную: "
+            f"merge_speakers(src={twin}, dst={owner.speaker_id})")
+    _publish_speaker_result(node._result_pub, {
+        "event": "registered", "name": clean, "speaker_id": owner.speaker_id, "reused_profile": True,
+        "new_name": clean, "utterance_id": utterance_id,
+    })
+    node._publish_result(replace(owner, name=clean), source="register", utterance_id=utterance_id)
+    node._open_growth_session(owner.speaker_id, clean)
+    node._growth_session["name"] = clean  # сессия могла быть открыта под старым именем
+    return True
+
+
+def _namesake(node: "SpeakerIdNode", speaker_id: str, name: str) -> Optional[str]:
+    """``speaker_id`` другого профиля с именем ``name`` (сравнение как у ``register_or_merge``: без регистра и
+    пробелов) или ``None``: переименование в это имя сделает тёзок (ревью PR #4087)."""
+    return next((p["id"] for p in node._db.list_speakers()
+                 if p["id"] != speaker_id and _se_mod._same_speaker_name(p["name"], name)), None)
+
+
+def _settled_by_voice(
+    node: "SpeakerIdNode", name: str, embedding: np.ndarray, duration_sec: Optional[float], utterance_id: Optional[str]
+) -> bool:
+    """Регистрацию решил голос самой фразы, нового профиля нет (``True``, ack уже отправлен): фраза уже узнана под
+    этим именем (#2863, «уже знаю») или уверенно узнана под другим — переименование (#4054)."""
+    known = node._already_known_as(name, embedding, duration_sec)
+    if known is not None:
+        node._ack_already_known(known, utterance_id)
+        return True
+    owner = _voice_owner(node, name, embedding)
+    return owner is not None and _rename_by_voice(node, owner, name, utterance_id)
+
+
+class _E2EStampedPublisher:
+    """Издатель ``SpeakerResult``, ставящий метку ``e2e_db`` на КАЖДОЕ сообщение (#3876).
+
+    Профили e2e-БД синтетические («Саша», «Борис»); потребители, пишущие имя в
+    постоянное хранилище (галерея лиц), не должны принимать их за живых людей.
+    Метку ставит единственная точка выхода, а не семь мест публикации.
+    """
+
+    def __init__(self, pub, is_e2e) -> None:
+        self._pub = pub
+        self._is_e2e = is_e2e
+
+    def publish(self, msg) -> None:
+        msg.e2e_db = bool(self._is_e2e())
+        self._pub.publish(msg)
+
+    def __getattr__(self, name):
+        return getattr(self._pub, name)
+
+
 class SpeakerIdNode(Node):
     """Voice-based speaker identification node."""
+
+    # #3858: узлы, собранные без __init__ (тесты через object.__new__), безымянных профилей не заводят.
+    _unnamed_profiles_enabled: bool = False
+    _unnamed_profiles_max: int = _se_mod.UNNAMED_PROFILES_MAX
 
     def __init__(self) -> None:
         super().__init__("speaker_id_node")
@@ -360,6 +732,13 @@ class SpeakerIdNode(Node):
         # — переиспользуем существующую калибровку, а не придумываем новое
         # число.
         self.declare_parameter("gallery_growth_session_gap_sec", 30.0)
+        # Issue #3858 (решение Шифу 22.10, «режим мастерской» для голоса) — незнакомому голосу заводим профиль БЕЗ
+        # имени, с кличкой: следующая встреча узнаёт его, а когда человек представится, имя достаётся этому же
+        # профилю. Пороги опознания (0.72) и слияния (0.75) не трогаются. Гейт — речь не короче
+        # MIN_REGISTER_AUDIO_DURATION_SEC (как у регистрации по имени), лимит — старейший безымянный вытесняется
+        # (#2779: не засорять speakers.db). 20 — запас на «день гостей» в мастерской, а не замеренное число.
+        self.declare_parameter("unnamed_profiles_enabled", True)
+        self.declare_parameter("unnamed_profiles_max", _se_mod.UNNAMED_PROFILES_MAX)
         self.declare_parameter("sample_rate", 16000)
         self.declare_parameter("enabled", True)
         # Issue #1160 — Prometheus metrics endpoint. 9112 — speaker_id_node.
@@ -374,9 +753,9 @@ class SpeakerIdNode(Node):
         # MCP-инструмент memory_save пишет в voice_facts этого файла (не в
         # harness_voice.db выше). Пока обе БД живы (миграция #2000 не
         # доведена до конца, см. ADR-0128), merge() без этого пути молча
-        # терял бы живые факты при склейке профилей. Тот же дефолт, что у
-        # VOICE_MEMORY_DB_PATH в mcp_server.py.
-        self.declare_parameter("voice_facts_db_path", "/data/voice_memory.db")
+        # терял бы живые факты при склейке профилей. Умолчание — тот же файл,
+        # что у mcp_server (rob_box_core.tools_db, #4082); задают только реплей/стенд.
+        self.declare_parameter("voice_facts_db_path", tools_db_path())
         # Issue #2750 — изолированная БД дикторов для E2E-актов знакомства.
         # По умолчанию не используется: узел открывает db_path (боевую) при
         # старте и остаётся на ней, пока ``ros2 param set ... e2e_mode true``
@@ -386,9 +765,9 @@ class SpeakerIdNode(Node):
         # единого прикосновения к боевому файлу.
         self.declare_parameter("e2e_db_path", "/data/speakers.e2e.db")
         # Runtime-переключатель (см. докстринг модуля). Bool, а не топик —
-        # семейный шаблон уже есть в репозитории (``barge_in_policy`` у
-        # dialogue_node, ``ros2 param set`` в докстринге
-        # run_night_marathon.sh): синхронный ответ вызывающему (успех/провал
+        # семейный шаблон уже есть в репозитории (``e2e_session_reset_token``
+        # у dialogue_node, ``ros2 param set`` из E2E-харнесса): синхронный
+        # ответ вызывающему (успех/провал
         # виден тут же в exit-коде ``ros2 param set``), не требует своего
         # ROS-типа сообщения и не всплывает в seam_without_consumer как
         # «топик без потребителя», потому что consumer — сам параметр, а не
@@ -427,6 +806,9 @@ class SpeakerIdNode(Node):
         self._identify_min_voiced_sec: float = float(
             self.get_parameter("identify_min_voiced_sec").value
         )
+        # Issue #3858 -- см. declare_parameter выше.
+        self._unnamed_profiles_enabled: bool = bool(self.get_parameter("unnamed_profiles_enabled").value)
+        self._unnamed_profiles_max: int = int(self.get_parameter("unnamed_profiles_max").value)
         gallery_warmup_size: int = int(self.get_parameter("gallery_warmup_size").value)
         self._growth_session_gap_sec: float = float(
             self.get_parameter("gallery_growth_session_gap_sec").value
@@ -464,7 +846,7 @@ class SpeakerIdNode(Node):
             f"gallery_warmup_size={gallery_warmup_size} "
             f"gallery_growth_session_gap_sec={self._growth_session_gap_sec}"
         )
-        # Issue #2750 — тот же шаблон, что dialogue_node (barge_in_policy)
+        # Issue #2750 — тот же шаблон, что dialogue_node (e2e_session_reset_token)
         # и tts_node (volume_db и др.): валидирующий Humble-колбэк, тело
         # которого делает синхронный побочный эффект (там — перечитать
         # громкость/скорость, здесь — переоткрыть БД). Не топик: топик с
@@ -569,7 +951,13 @@ class SpeakerIdNode(Node):
         )
 
         # ── Publishers ────────────────────────────────────────────────────────
-        self._result_pub = self.create_publisher(String, "/voice/speaker/result", reliable_qos)
+        self._result_pub = _E2EStampedPublisher(
+            self.create_publisher(SpeakerResult, "/voice/speaker/result", reliable_qos),
+            lambda: self._e2e_mode_active,
+        )
+        # #3904 — эта нода владеет режимом e2e всего робота: последователи
+        # (mcp_server) читают его из /e2e/mode, своих переключателей у них нет.
+        self._e2e_owner = E2EModeOwner(self, lambda: self._e2e_mode_active)
         # Issue #1787, слой 2 — просьба к dialogue_node придумать кличку
         # через LLM. Сам узел LLM не знает (и не должен: биометрия обязана
         # работать офлайн), поэтому запрос уходит топиком, а ответ
@@ -623,7 +1011,7 @@ class SpeakerIdNode(Node):
         )
         # Issue #1787 — реплики известного спикера для выбора эпитета.
         # Текст живёт в dialogue_node (STT), голос — здесь; связывает их
-        # speaker_id. Отдельный топик, а не расширение /voice/stt/result:
+        # speaker_id. Отдельный топик, а не расширение /voice/stt/utterance:
         # эпитет нужен ТОЛЬКО когда биометрия уже опознала говорящего,
         # иначе теми чужой речи испортили бы чужой профиль.
         self.create_subscription(
@@ -646,14 +1034,19 @@ class SpeakerIdNode(Node):
         # диалога закрывалась по таймауту раньше, чем успевала дописать хоть
         # один эмбеддинг (прогон 35781881888: «закрыта по таймауту 33.7s» и
         # «61.7s», галереи Саши и Бориса остались по 1 вектору при потолке 5).
-        # Топик общий для всех говорилок (issue #776), speech_id нам не важен:
-        # любое окончание речи робота означает, что очередь снова за человеком.
+        # Конец речи — событие владельца речи SpeechEvent (ADR-0150 §10.1; String-топик v1 снят в PR-15 15-0c #3711).
+        # Топик общий для всех агентов, speech_id нам не важен: любая
+        # закончившаяся реплика робота означает, что очередь снова за человеком.
         self.create_subscription(
-            String,
-            "/voice/tts/finished",
-            self._on_tts_finished,
+            SpeechEvent,
+            speech_client.SPEECH_EVENT_TOPIC,
+            on_speech_end(self._on_speech_end),
             reliable_qos,
         )
+        # #4145 — эхо собственной речи робота не человек: фраза, звучавшая рядом с речью, опознаётся сразу, а профили
+        # меняет только после вердикта stt_node «человек» (/voice/stt/utterance; /voice/stt/echo — эхо, нет вердикта
+        # за срок — тоже не меняет), решение одно у stt_node.
+        self._echo_verdicts = echo_window.listen(self, submit=self._executor.submit)
         self.get_logger().info("🎙️ speaker_id_node ready")
 
     # ── Callbacks ─────────────────────────────────────────────────────────────
@@ -705,6 +1098,8 @@ class SpeakerIdNode(Node):
             f"🎤 Received speech audio: {len(pcm_bytes)} bytes ({len(pcm_bytes)/self._sample_rate/2:.1f}s) "
             f"utterance_id={utterance_id}"
         )
+        # #4145 — фраза звучала рядом с речью робота: изменения профилей по ней ждут вердикта stt_node об эхе.
+        echo_window.heard(self, utterance_id, len(pcm_bytes) / self._sample_rate / 2)
         self._executor.submit(self._process_utterance, pcm_bytes, utterance_id)
 
     def _on_register_request(self, msg: String) -> None:
@@ -942,17 +1337,15 @@ class SpeakerIdNode(Node):
         asks the person to repeat on ANY register_error reason (see
         PR-2's dialogue_node.py diff) -- no new UX branch needed there.
         """
-        ack = String()
-        ack.data = json.dumps(
+        _publish_speaker_result(
+            self._result_pub,
             {
                 "event": "register_error",
                 "error": error,
                 "name": name,
                 "utterance_id": utterance_id,
-            },
-            ensure_ascii=False,
+            }
         )
-        self._result_pub.publish(ack)
 
     # ── Processing ────────────────────────────────────────────────────────────
 
@@ -997,6 +1390,7 @@ class SpeakerIdNode(Node):
             self._publish_result(
                 None, utterance_id=utterance_id, inconclusive="no_embedding"
             )
+            echo_window.forget(self, utterance_id)  # #4145: менять в профилях нечего — вердикт не ждём
             return
 
         elapsed = (time.monotonic() - t0) * 1000
@@ -1023,6 +1417,7 @@ class SpeakerIdNode(Node):
             # (например, is_known=false из-за шумной первой фразы сразу
             # после регистрации), перезаписав только что опубликованный
             # источник истины «человек сам назвал своё имя».
+            echo_window.forget(self, utterance_id)  # #4145: фраза ушла в регистрацию — вердикт не ждём
             registered = self._do_register(
                 pending_name,
                 embedding,
@@ -1055,46 +1450,10 @@ class SpeakerIdNode(Node):
             return
 
         match = self._db.identify(embedding)
-        self._log_identify_candidates(embedding, voiced_sec=duration_sec)
-        # Issue #2747 — рост галереи НЕ зависит от исхода identify() выше
-        # (см. большой комментарий у speaker_embeddings.GALLERY_WARMUP_SIZE:
-        # акустический гейт для этого решения отклонён — same/cross-voice
-        # распределения пересекаются целиком на реальных данных робота).
-        # Якорь — непрерывность growth-сессии, открытой в _do_register().
-        self._apply_growth_session(embedding, match)
-        if match:
-            self.get_logger().info(
-                f"👤 Speaker: '{match.name}' confidence={match.confidence:.3f} "
-                f"({elapsed:.0f} ms)"
-            )
-        else:
-            self.get_logger().info(f"👤 Speaker: unknown ({elapsed:.0f} ms)")
-
-        # Issue #1160 — Prometheus metrics: known/unknown.
-        record_speaker_recognize(
-            known=bool(match),
-            confidence=match.confidence if match else None,
-        )
-        # Issue #2809 — «зона сомнения + разрыв до другого человека» (см.
-        # classify_name_confidence/declare_parameter
-        # name_confidence_band_high). top_n=5 — с запасом, чтобы найти
-        # конкурента с ДРУГИМ именем, даже если в топ-2 попали два
-        # дубля-профиля одной и той же личности (issue #2747, "Дэнчик" x2).
-        name_decision: Optional[str] = None
-        if match:
-            candidates = self._db.identify_candidates(embedding, top_n=5)
-            name_decision = classify_name_confidence(
-                match,
-                candidates,
-                band_high=getattr(self, "_name_confidence_band_high", 0.80),
-                min_gap=getattr(self, "_name_confidence_min_gap", 0.15),
-            )
-        self._publish_result(
-            match,
-            name_decision=name_decision,
-            utterance_id=utterance_id,
-            inconclusive=self._inconclusive_reason(match, duration_sec),
-        )
+        best = self._log_identify_candidates(embedding, voiced_sec=duration_sec)
+        # #4145 — опознание фразы публикуется сразу; профили фраза, звучавшая рядом с речью робота, меняет только после
+        # вердикта stt_node «человек» (одно решение, core/echo_window.py): эхо профиля не заводит и не растит.
+        _settle_phrase(self, embedding, match, best, duration_sec, utterance_id, elapsed)
 
     def _inconclusive_reason(
         self, match: Optional[SpeakerMatch], voiced_sec: Optional[float]
@@ -1116,8 +1475,10 @@ class SpeakerIdNode(Node):
             return "too_short_for_biometry"
         return None
 
-    def _on_tts_finished(self, msg: String) -> None:
+    def _on_speech_end(self) -> None:
         """Issue #2747 — робот договорил: отсчёт паузы человека начинается ЗДЕСЬ.
+
+        «Договорил» — финал реплики у владельца речи (``SpeechEvent``, отбор — :func:`on_speech_end`).
 
         ``_apply_growth_session`` меряет разрыв до предыдущей реплики, и без
         этого сдвига в разрыв попадало время, пока робот сам произносил
@@ -1160,7 +1521,7 @@ class SpeakerIdNode(Node):
         просто НЕ дописываем эмбеддинг, профиль не портится):
           * разрыв с прошлой отметкой сессии > ``_growth_session_gap_sec``
             — человек мог уйти, сессия прервана. Отметку двигает и реплика
-            человека, и окончание речи робота (``_on_tts_finished``), иначе
+            человека, и окончание речи робота (``_on_speech_end``), иначе
             монолог робота засчитывался бы человеку в простой;
           * галерея уже доросла до ``GALLERY_WARMUP_SIZE`` — потолок;
           * ЭТА реплика уверенно (обычный ``identify()``, калиброванный
@@ -1269,7 +1630,7 @@ class SpeakerIdNode(Node):
         )
         if not best_is_owner_or_twin:
             return (
-                f"реплика ближе к '{best.name}' score={best.confidence:.3f}, "
+                f"реплика ближе к '{_label(best)}' score={best.confidence:.3f}, "
                 "чем к владельцу сессии"
                 if best
                 else "БД пуста"
@@ -1291,7 +1652,7 @@ class SpeakerIdNode(Node):
 
     def _log_identify_candidates(
         self, embedding: np.ndarray, voiced_sec: Optional[float] = None
-    ) -> None:
+    ) -> Optional[SpeakerMatch]:
         """Issue W5-4 п.4 — диагностика: best_score И второй кандидат.
 
         Без этого лога в проде виден только булев результат identify()
@@ -1308,10 +1669,14 @@ class SpeakerIdNode(Node):
         паре (score, речь) считается порог в
         ``scripts/maintenance/voice_threshold_sweep.py`` — там же замер
         r(duration, score) = 0.88 на этом пайплайне.
+
+        Issue #3767 — возвращает лучшего кандидата (``None`` — галерея пуста):
+        у неузнанной фразы он уходит в ``SpeakerResult.candidate_*`` как
+        гипотеза для метки фразы бэклога (не имя).
         """
         candidates = self._db.identify_candidates(embedding, top_n=2)
         if not candidates:
-            return
+            return None
         # Суффикс пустой, когда длительность неизвестна (старые вызовы,
         # тесты): молча не врём числом, которого не измеряли.
         voiced = f" | речь={voiced_sec:.2f}s" if voiced_sec is not None else ""
@@ -1320,17 +1685,18 @@ class SpeakerIdNode(Node):
             second = candidates[1]
             gap = best.confidence - second.confidence
             self.get_logger().info(
-                f"🔍 identify candidates: best='{best.name}'({best.speaker_id[:8]}) "
-                f"score={best.confidence:.3f} | second='{second.name}'"
+                f"🔍 identify candidates: best='{_label(best)}'({best.speaker_id[:8]}) "
+                f"score={best.confidence:.3f} | second='{_label(second)}'"
                 f"({second.speaker_id[:8]}) score={second.confidence:.3f} | "
                 f"gap={gap:.3f}{voiced}"
             )
         else:
             self.get_logger().info(
-                f"🔍 identify candidates: best='{best.name}'({best.speaker_id[:8]}) "
+                f"🔍 identify candidates: best='{_label(best)}'({best.speaker_id[:8]}) "
                 f"score={best.confidence:.3f} | "
                 f"(единственный известный спикер в БД){voiced}"
             )
+        return best
 
     def _on_rename_request(self, msg: String) -> None:
         """Rename an existing speaker entry.
@@ -1376,12 +1742,10 @@ class SpeakerIdNode(Node):
                 f"not found in DB"
             )
 
-        ack = String()
-        ack.data = json.dumps(
-            {"event": "renamed", "ok": ok, "speaker_id": speaker_id, "new_name": new_name},
-            ensure_ascii=False,
+        _publish_speaker_result(
+            self._result_pub,
+            {"event": "renamed", "ok": ok, "speaker_id": speaker_id, "new_name": new_name}
         )
-        self._result_pub.publish(ack)
 
     def _on_merge_request(self, msg: String) -> None:
         """Issue W5-4 + #2440 — склеить два профиля одного голоса.
@@ -1426,8 +1790,8 @@ class SpeakerIdNode(Node):
                 "(src==dst, src not found, or dst not found in DB)"
             )
 
-        ack = String()
-        ack.data = json.dumps(
+        _publish_speaker_result(
+            self._result_pub,
             {
                 "event": "merged",
                 "ok": ok,
@@ -1435,10 +1799,8 @@ class SpeakerIdNode(Node):
                 "dst_speaker_id": dst_id,
                 "embeddings_moved": embeddings_moved,
                 "facts_moved": facts_moved,
-            },
-            ensure_ascii=False,
+            }
         )
-        self._result_pub.publish(ack)
 
     def _wipe_e2e_db_file(self) -> None:
         """Issue #2750 — стереть файл ``e2e_db_path`` перед каждым включением.
@@ -1480,8 +1842,8 @@ class SpeakerIdNode(Node):
         колбэк, вызываемый ДО применения значения, обязан вернуть
         ``SetParametersResult``. Побочный эффект (переключение активной БД)
         прямо внутри валидатора — тот же компромисс, что уже живёт в
-        ``dialogue_node.parameters_callback`` (``barge_in_policy`` тут же
-        переоткрывает состояние ноды) и ``tts_node.parameters_callback``
+        ``dialogue_node.parameters_callback`` (``e2e_session_reset_token``
+        тут же сбрасывает сессию) и ``tts_node.parameters_callback``
         (``volume_db``/``pitch_shift``/voice-параметры применяются
         синхронно) — один и тот же ROS2-паттерн этого репозитория, не
         отдельное изобретение под эту задачу.
@@ -1495,10 +1857,8 @@ class SpeakerIdNode(Node):
         не видит), заслуженно падал как «шов без потребителя». Параметр
         сильнее и по существу: ``ros2 param set`` синхронный и возвращает
         успех/провал вызывающему в exit-коде, а ``e2e_mode`` объявлен
-        (``declare_parameter``) — тот же приём, что ``barge_in_policy`` у
-        dialogue_node (см. докстринг ``run_night_marathon.sh``:
-        ``ssh <robot> 'ros2 param set /dialogue_node barge_in_policy
-        classify'``).
+        (``declare_parameter``) — тот же приём, что ``e2e_session_reset_token``
+        у dialogue_node (``ros2 param set`` из E2E-харнесса).
 
         Только ``e2e_mode``, ``name_confidence_band_high`` и
         ``name_confidence_min_gap`` имеют побочный эффект; остальные
@@ -1626,6 +1986,9 @@ class SpeakerIdNode(Node):
             )
             return False
 
+        # #3904 — режим владельца сразу в /e2e/mode (последователи переключают
+        # свои БД), взведённый таймер снятия больше не действует.
+        self._e2e_owner.mode_changed()
         # WARNING, не info: смена активной БД дикторов — событие, которое
         # обязано быть видно в `docker logs voice-assistant` без фильтров —
         # ровно то, чего не хватало в issue #2750, когда обнуление
@@ -1657,10 +2020,10 @@ class SpeakerIdNode(Node):
         db_path = str(
             self.get_parameter("memory_db_path").value or "/data/harness_voice.db"
         )
-        # Issue #2751 — второй писатель фактов (voice_facts в
-        # voice_memory.db), см. docstring VoiceIdentitySeam.__init__.
+        # Issue #2751 — второй писатель фактов (voice_facts в БД
+        # инструментов), см. docstring VoiceIdentitySeam.__init__.
         legacy_facts_db_path = str(
-            self.get_parameter("voice_facts_db_path").value or "/data/voice_memory.db"
+            self.get_parameter("voice_facts_db_path").value or tools_db_path()
         )
         store = SQLiteVoiceMemory(db_path=db_path)
         try:
@@ -1721,10 +2084,14 @@ class SpeakerIdNode(Node):
         Issue #2863 — повторный register_speaker того, кого фраза УЖЕ
         узнала под этим же именем, — не регистрация, а «уже знаю»
         (см. :meth:`_already_known_as`).
+
+        #4054 (решение Шифу 27.10) — фраза УВЕРЕННО узнана под ДРУГИМ
+        именем: один голос — одна личность, профиль переименовывается,
+        второго нет (:func:`_rename_by_voice`). Конфликт ADR-0127 ниже
+        остаётся только для полосы сомнения: голос не ниже порога слияния,
+        но не уверенный (single/contested).
         """
-        known = self._already_known_as(name, embedding, duration_sec) if speaker_id is None else None
-        if known is not None:
-            self._ack_already_known(known, utterance_id)
+        if speaker_id is None and _settled_by_voice(self, name, embedding, duration_sec, utterance_id):
             return True
         try:
             outcome = self._db.register_or_merge(
@@ -1737,8 +2104,8 @@ class SpeakerIdNode(Node):
                 f"{exc.duration_sec:.2f}s < {exc.min_required_sec:.1f}s "
                 "required. Профиль НЕ создан — прошу повторить фразу."
             )
-            ack = String()
-            ack.data = json.dumps(
+            _publish_speaker_result(
+                self._result_pub,
                 {
                     "event": "register_error",
                     "error": "too_short",
@@ -1746,13 +2113,16 @@ class SpeakerIdNode(Node):
                     "duration_s": round(exc.duration_sec, 2),
                     "min_required_s": exc.min_required_sec,
                     "utterance_id": utterance_id,
-                },
-                ensure_ascii=False,
+                }
             )
-            self._result_pub.publish(ack)
             return False
         sid, reused = outcome
-        if reused:
+        if outcome.claimed_unnamed:
+            self.get_logger().info(
+                f"🏷️ [issue #3858] '{name}' представился — имя присвоено профилю без имени (id={sid[:8]}), "
+                "дубля нет, кличка и накопленное остались"
+            )
+        elif reused:
             self.get_logger().info(
                 f"🔗 Speaker '{name}' merged into existing profile (id={sid[:8]}) "
                 "— voice matched an already-known speaker, no duplicate created"
@@ -1773,7 +2143,6 @@ class SpeakerIdNode(Node):
         # Issue #1787 — новый профиль сразу получает внутреннюю кличку.
         self._ensure_epithet(sid)
         # Publish a registration-ack so dialogue_node can confirm verbally
-        ack = String()
         ack_payload = {
             "event": "registered",
             "name": name,
@@ -1813,8 +2182,7 @@ class SpeakerIdNode(Node):
                     else round(float(outcome.twin_score), 4)
                 ),
             }
-        ack.data = json.dumps(ack_payload, ensure_ascii=False)
-        self._result_pub.publish(ack)
+        _publish_speaker_result(self._result_pub, ack_payload)
 
         # Issue #2748 — до этой правки нода НИЧЕГО не публиковала в момент
         # регистрации, КРОМЕ служебного ack выше (``event: "registered"``),
@@ -1912,8 +2280,8 @@ class SpeakerIdNode(Node):
             f"узнана как '{known.name}' (id={known.speaker_id[:8]}, "
             f"score={known.confidence:.3f}) — новый эталон не нужен, «уже знаю»"
         )
-        ack = String()
-        ack.data = json.dumps(
+        _publish_speaker_result(
+            self._result_pub,
             {
                 "event": "registered",
                 "name": known.name,
@@ -1921,10 +2289,8 @@ class SpeakerIdNode(Node):
                 "reused_profile": True,
                 "already_known": True,
                 "utterance_id": utterance_id,
-            },
-            ensure_ascii=False,
+            }
         )
-        self._result_pub.publish(ack)
         self._open_growth_session(known.speaker_id, known.name)
 
     def _open_growth_session(self, speaker_id: str, name: str) -> None:
@@ -2212,8 +2578,13 @@ class SpeakerIdNode(Node):
         name_decision: Optional[str] = None,
         utterance_id: Optional[str] = None,
         inconclusive: Optional[str] = None,
+        candidate: Optional[SpeakerMatch] = None,
     ) -> None:
         """Serialise and publish the speaker identification result.
+
+        Issue #3767 — ``candidate`` (лучший кандидат без порога): у неузнанной
+        фразы (``match=None``) уходит как ``candidate_name``/``candidate_score``
+        — гипотеза для метки фразы бэклога, не имя.
 
         Issue #2863 — ``inconclusive`` (причина, только для ``match=None``):
         биометрия фразу не оценила (нет эмбеддинга / мало речи). Payload
@@ -2256,67 +2627,17 @@ class SpeakerIdNode(Node):
         * ``tentative_kind`` — "single" | "contested", см.
           ``classify_name_confidence``.
         """
-        if match:
-            if source:
-                confident = True
-                decision = NAME_CONFIDENT
-            else:
-                decision = name_decision or (
-                    NAME_CONFIDENT
-                    if match.confidence >= getattr(
-                        self, "_name_confidence_band_high", 0.80
-                    )
-                    else NAME_TENTATIVE_SINGLE
-                )
-                confident = decision == NAME_CONFIDENT
-            published_name = match.name if confident else None
-            payload = {
-                "is_known": True,
-                "speaker_id": match.speaker_id,
-                "name": published_name,
-                "confidence": round(match.confidence, 4),
-                # Issue #1787 — внутренняя кличка. None до первой реплики
-                # (профиль из старой БД) — потребитель обязан это терпеть.
-                "epithet": match.epithet,
-            }
-            # Issue #2829 (ADR-0131) — id фразы, для которой это результат
-            # биометрии. Добавляем только когда он есть — старые/тестовые
-            # пути без utterance_id получают payload байт-в-байт как
-            # раньше (см. test_issue_2809_low_confidence_speaker_does_not_leak_name.py).
-            if utterance_id:
-                payload["utterance_id"] = utterance_id
-            if source:
-                payload["source"] = source
-            if not confident:
-                payload["tentative_conf"] = round(match.confidence, 4)
-                payload["tentative_kind"] = decision
-                if decision == NAME_TENTATIVE_SINGLE:
-                    payload["tentative_name"] = match.name
-            self.get_logger().info(
-                f"📢 Publishing: is_known=true name={published_name!r} "
-                f"epithet={match.epithet!r} conf={match.confidence:.3f}"
-                + (
-                    ""
-                    if confident
-                    else f" (name suppressed: {decision}, issue #2809)"
-                )
-                + (f" source={source!r}" if source else "")
-            )
+        if match is None:
+            payload, line = _unknown_payload(utterance_id, inconclusive, candidate)
+        elif not match.named:
+            payload, line = _unnamed_payload(match, utterance_id, source)
         else:
-            payload = {"is_known": False}
-            if utterance_id:
-                payload["utterance_id"] = utterance_id
-            if inconclusive:
-                payload["inconclusive"] = True
-                payload["reason"] = inconclusive
-            self.get_logger().info(
-                "📢 Publishing: is_known=false"
-                + (f" (inconclusive: {inconclusive}, issue #2863)" if inconclusive else "")
+            payload, line = _named_payload(
+                match, source, name_decision, utterance_id,
+                band_high=getattr(self, "_name_confidence_band_high", 0.80),
             )
-
-        msg = String()
-        msg.data = json.dumps(payload, ensure_ascii=False)
-        self._result_pub.publish(msg)
+        self.get_logger().info(line)
+        _publish_speaker_result(self._result_pub, payload)
 
     # ── Lifecycle ─────────────────────────────────────────────────────────────
 

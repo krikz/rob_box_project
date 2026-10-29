@@ -20,17 +20,27 @@ _TYPO_MIN_LEN = 5
 _SLOT_PREP = "на"
 
 
+def edit_distance(a: str, b: str) -> int:
+    """Расстояние правки (Левенштейн: замена, вставка, удаление буквы) — одно на пакет: опечатка слова инструмента
+    (:func:`within_one`) и близость звучания слова названия (``engine.search``, #4016)."""
+    row = list(range(len(b) + 1))
+    for i, ca in enumerate(a, 1):
+        prev, row[0] = row[0], i
+        for j, cb in enumerate(b, 1):
+            prev, row[j] = row[j], min(row[j] + 1, row[j - 1] + 1, prev + (ca != cb))
+    return row[-1]
+
+
 def within_one(word: str, form: str) -> bool:
-    """Слова различаются не больше чем одной правкой (замена, вставка, удаление буквы)."""
-    if word == form:
-        return True
+    """Слова различаются не больше чем одной правкой (замена, вставка, удаление буквы); до счёта отсекаются длины,
+    разные больше чем на букву, и непустые слова (не оба из одной буквы), у которых не совпадает ни первая, ни
+    последняя буква: одна правка оставляет на месте хотя бы одну из них (ревью #4124: перебор форм инструментов на
+    каждое слово заказа — до 25 мс)."""
     if abs(len(word) - len(form)) > 1:
         return False
-    short, long_ = sorted((word, form), key=len)
-    i = next((k for k, (a, b) in enumerate(zip(short, long_)) if a != b), len(short))
-    if len(short) == len(long_):
-        return short[i + 1:] == long_[i + 1:]
-    return short[i:] == long_[i + 1:]
+    if word and form and len(word) + len(form) > 2 and word[0] != form[0] and word[-1] != form[-1]:
+        return False
+    return edit_distance(word, form) <= 1
 
 
 def near(word: str, vocab: Iterable[str]) -> Optional[str]:
@@ -70,6 +80,12 @@ def instrument_of(word: str) -> Optional[str]:
         return None
     keys = {key for form, key in _FORMS if len(form) >= _TYPO_MIN_LEN and within_one(w, form)}
     return next(iter(keys)) if len(keys) == 1 else None
+
+
+def instrument_word(word: str) -> bool:
+    """Слово называет инструмент — из таблицы (:func:`instrument_of`) или известный без тембра («гуслях», «банджо»):
+    в заказе это слот, а не слово названия (#4016: «спой … на балалайке и гуслях»)."""
+    return instrument_of(word) is not None or word.lower() in _UNSUPPORTED
 
 
 def split_instrument(words: Sequence[str]) -> Tuple[str, List[str]]:
@@ -124,5 +140,5 @@ def shifted(pitches: Sequence[int], shift: int, corridor: Tuple[int, int]) -> in
     return shift if corridor[0] <= min(pitches) + shift and max(pitches) + shift <= corridor[1] else 0
 
 
-__all__ = ["LeadChoice", "instrument_of", "lead_choice", "near", "neighbors", "shifted",
-           "split_instrument", "within_one"]
+__all__ = ["LeadChoice", "edit_distance", "instrument_of", "instrument_word", "lead_choice", "near", "neighbors",
+           "shifted", "split_instrument", "within_one"]

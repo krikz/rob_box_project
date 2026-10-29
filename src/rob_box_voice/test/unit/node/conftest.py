@@ -126,7 +126,6 @@ def _install_ros_mocks():
         "nav_msgs.msg": mock_nav_msgs_msg,
         "std_srvs": mock_std_srvs,
         "std_srvs.srv": mock_std_srvs_srv,
-        "rob_box_mcp_tools": mock_mcp,
         "rob_box_mcp_tools.llm_adapter": mock_mcp_adapter,
         "agents": fake_agents,
         "agents.exceptions": fake_agents_exceptions,
@@ -136,6 +135,12 @@ def _install_ros_mocks():
         "httpx": fake_httpx,
         "openai": fake_openai,
     }
+    # rob_box_mcp_tools — объявленная зависимость rob_box_voice (ADR-0150 PR-6: ModelChooser спорного стопа):
+    # настоящий пакет, если он есть; заглушка-MagicMock (не пакет) ломала импорт его подмодулей в том же процессе.
+    try:
+        import rob_box_mcp_tools  # noqa: F401
+    except ImportError:
+        mocks["rob_box_mcp_tools"] = mock_mcp
     for name, mock in mocks.items():
         sys.modules.setdefault(name, mock)
 

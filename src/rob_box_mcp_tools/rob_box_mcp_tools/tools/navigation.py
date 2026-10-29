@@ -27,15 +27,47 @@ if TYPE_CHECKING:
     from ..waypoint_store import WaypointStore
 
 from ..base import MCPTool, MCPToolParameter, MCPToolResult, ToolExecutionType, wait_future
+from ..core.action_outcome import (
+    NAV_NO_RESPONSE,
+    NAV_REJECTED,
+    NAV_SERVER_UNAVAILABLE,
+    NAV_TIMEOUT,
+    classify_cancel_response,
+    classify_nav_status,
+    classify_service_call,
+    nav_outcome,
+)
+
+_CANCEL_ALL_LABEL = "Nav2 cancel_goal"
+_CANCEL_ALL_TIMEOUT_SEC = 5.0
+
+
+def _nav_failure(kind: str, status: Optional[int] = None) -> MCPToolResult:
+    """Неуспех навигации: ошибку и фразу строит код (ADR-0148), не LLM."""
+    outcome = nav_outcome(kind, status)
+    return MCPToolResult(
+        success=False, error=outcome.error, message=outcome.message, data={"outcome": outcome.kind}
+    )
+
+
+def _cancel_goal_best_effort(goal_handle, logger) -> None:
+    """Таймаут не должен оставлять робота ехать дальше, пока мы говорим «не доехал»."""
+    try:
+        goal_handle.cancel_goal_async()
+    except Exception as exc:  # noqa: BLE001 - отмена вторична, ответ об исходе важнее
+        logger.warning(f"Не удалось отменить цель Nav2 после таймаута: {exc}")
 
 
 def _send_nav_goal(nav_client, node, x: float, y: float, theta: float, frame_id: str = "map", timeout: float = 120.0):
     """Shared helper: send a NavigateToPose goal and block until completion.
 
+    Успех — только если Nav2 вернул ``GoalStatus.STATUS_SUCCEEDED`` (#3789):
+    ``ABORTED``/``CANCELED``/таймаут/отказ в приёме цели — честный неуспех.
+
     Returns ``MCPToolResult``.
     """
     if not nav_client.wait_for_server(timeout_sec=1.0):
-        return MCPToolResult(success=False, error="Nav2 action server недоступен", message="Навигация недоступна")
+        return _nav_failure(NAV_SERVER_UNAVAILABLE)
 
     goal = NavigateToPose.Goal()
     goal.pose.header.frame_id = frame_id
@@ -48,17 +80,32 @@ def _send_nav_goal(nav_client, node, x: float, y: float, theta: float, frame_id:
 
     send_future = nav_client.send_goal_async(goal)
     if not wait_future(send_future, timeout_sec=10.0) or send_future.result() is None:
-        return MCPToolResult(success=False, error="Nav2 не ответил на цель", message="Навигация недоступна")
+        return _nav_failure(NAV_NO_RESPONSE)
 
     goal_handle = send_future.result()
     if not goal_handle.accepted:
-        return MCPToolResult(success=False, error="Nav2 отклонил цель", message="Цель недостижима")
+        return _nav_failure(NAV_REJECTED)
 
     result_future = goal_handle.get_result_async()
     if not wait_future(result_future, timeout_sec=timeout) or result_future.result() is None:
-        return MCPToolResult(success=False, error="Навигация превысила таймаут", message="Не доехал до точки")
+        _cancel_goal_best_effort(goal_handle, node.get_logger())
+        return _nav_failure(NAV_TIMEOUT)
 
+    status = getattr(result_future.result(), "status", None)
+    outcome = classify_nav_status(status)
+    if not outcome.success:
+        return _nav_failure(outcome.kind, status)
     return MCPToolResult(success=True)
+
+
+def _future_response(future, completed: bool):
+    """``(ответ, текст ошибки)`` будущего вызова сервиса; ``result()`` rclpy может бросить."""
+    if not completed:
+        return None, None
+    try:
+        return future.result(), None
+    except Exception as exc:  # noqa: BLE001 - исключение будущего = вызов не удался
+        return None, str(exc) or type(exc).__name__
 
 
 def _lookup_pose(pose_getter, logger) -> Optional[Dict[str, float]]:
@@ -83,6 +130,8 @@ def _lookup_pose(pose_getter, logger) -> Optional[Dict[str, float]]:
 
 class NavigateToWaypointTool(MCPTool):
     """Навигация к именованной точке из базы данных вейпоинтов."""
+
+    event_source = "action:/navigate_to_pose"
 
     def __init__(self, node, waypoint_store: "WaypointAdapter"):
         super().__init__(node)
@@ -154,6 +203,8 @@ class NavigateToWaypointTool(MCPTool):
 class NavigateToCoordinatesTool(MCPTool):
     """Навигация к произвольным координатам в map frame."""
 
+    event_source = "action:/navigate_to_pose"
+
     def __init__(self, node):
         super().__init__(node)
         self.nav_client = ActionClient(node, NavigateToPose, "navigate_to_pose")
@@ -210,6 +261,8 @@ class NavigateToCoordinatesTool(MCPTool):
 
 class MoveDirectionTool(MCPTool):
     """Инструмент для движения в направлении."""
+
+    event_source = "action:/navigate_to_pose"
 
     DIRECTIONS = {
         "вперёд": {"x": 1.0, "y": 0.0, "theta": 0.0},
@@ -287,6 +340,8 @@ class MoveDirectionTool(MCPTool):
 class StopNavigationTool(MCPTool):
     """Инструмент для остановки навигации."""
 
+    event_source = "srv:/navigate_to_pose/_action/cancel_goal"
+
     def __init__(self, node):
         super().__init__(node)
         self.cancel_client = node.create_client(CancelGoal, "/navigate_to_pose/_action/cancel_goal")
@@ -315,15 +370,36 @@ class StopNavigationTool(MCPTool):
     def execute(self) -> MCPToolResult:
         self.log_info("Остановка навигации")
 
-        if not self.cancel_client.wait_for_service(timeout_sec=0.5):
-            return MCPToolResult(success=False, error="Cancel service недоступен")
+        ready = self.cancel_client.wait_for_service(timeout_sec=0.5)
+        response, completed, error = None, False, None
+        if ready:
+            request = CancelGoal.Request()
+            request.goal_info = GoalInfo()  # нулевые uuid и время — отменить все цели
+            future = self.cancel_client.call_async(request)
+            completed = wait_future(future, timeout_sec=_CANCEL_ALL_TIMEOUT_SEC)
+            response, error = _future_response(future, completed)
 
-        request = CancelGoal.Request()
-        request.goal_info = GoalInfo()
-        self.cancel_client.call_async(request)
+        # Успех — только по ответу сервера отмены (#3789, ADR-0148): фразу строит код.
+        call = classify_service_call(
+            ready=ready, completed=completed, response=response, label=_CANCEL_ALL_LABEL, error=error
+        )
+        if not call.success:
+            self.log_warning(f"⚠️ {call.error}")
+            return MCPToolResult(
+                success=False,
+                error=call.error,
+                message="Не уверен, что остановился: отмена навигации не подтверждена",
+                data={"outcome": call.kind},
+            )
 
-        self.log_info("Команда отмены отправлена")
-        return MCPToolResult(success=True, message="Останавливаюсь")
+        outcome = classify_cancel_response(response)
+        if not outcome.success:
+            self.log_warning(f"⚠️ {outcome.error}")
+            return MCPToolResult(
+                success=False, error=outcome.error, message=outcome.message, data={"outcome": outcome.kind}
+            )
+        self.log_info(f"Отмена подтверждена: {outcome.kind}")
+        return MCPToolResult(success=True, message=outcome.message, data={"outcome": outcome.kind})
 
 
 # ============================================================
@@ -380,6 +456,8 @@ class ListWaypointsTool(MCPTool):
 
 class SaveWaypointTool(MCPTool):
     """Сохранить текущую позицию робота как именованную точку."""
+
+    event_source = "inproc:waypoint_store"
 
     def __init__(self, node, waypoint_store: "WaypointAdapter", pose_getter, mapping_state=None):
         super().__init__(node)
@@ -456,6 +534,8 @@ class SaveWaypointTool(MCPTool):
 class DeleteWaypointTool(MCPTool):
     """Удалить именованную точку."""
 
+    event_source = "inproc:waypoint_store"
+
     def __init__(self, node, waypoint_store: "WaypointAdapter"):
         super().__init__(node)
         self.waypoint_store = waypoint_store
@@ -511,6 +591,8 @@ class DeleteWaypointTool(MCPTool):
 
 class ClearWaypointsTool(MCPTool):
     """Удалить все точки текущей карты."""
+
+    event_source = "inproc:waypoint_store"
 
     def __init__(self, node, waypoint_store: "WaypointAdapter"):
         super().__init__(node)

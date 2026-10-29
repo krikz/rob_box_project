@@ -230,21 +230,10 @@ class TestRawUserUtterance:
             "[TG] вот это кайф, огонь! сохрани этот вариант"
         ) == "вот это кайф, огонь! сохрани этот вариант"
 
-    def test_strips_spkr_name_prefix(self) -> None:
-        # dialogue_node: tag = f"[Spkr:{name}]" (issue #1077).
-        assert agent_core._raw_user_utterance(
-            "[Spkr:Антон] сыграй ещё раз"
-        ) == "сыграй ещё раз"
-
-    def test_strips_speaker_unknown_prefix(self) -> None:
-        assert agent_core._raw_user_utterance(
-            "[Speaker:unknown] сыграй ещё раз"
-        ) == "сыграй ещё раз"
-
-    def test_strips_speaker_tentative_prefix(self) -> None:
-        assert agent_core._raw_user_utterance(
-            "[Speaker:tentative] сыграй ещё раз"
-        ) == "сыграй ещё раз"
+    def test_only_the_tg_tag_is_a_source_prefix(self) -> None:
+        # #3695: dialogue_node больше не ставит префиксов собеседника — кто говорит, идёт разделом ``speaker``
+        # снимка хода. Ведущий тег, кроме [TG], — уже не служебный префикс, а текст.
+        assert agent_core._raw_user_utterance("[TG] [TG] сыграй ещё раз") == "сыграй ещё раз"
 
     def test_empty_and_none_safe(self) -> None:
         assert agent_core._raw_user_utterance("") == ""

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 Headless Voice Assistant Launch для Vision Pi
-Включает animation_player_node для LED анимаций
+Лицо LED-матрицы здесь не запускается: face_node живёт в led-matrix на Vision Pi (ADR-0150 PR-3a)
 
 Issue #1004 fix (ADR-0004): каждый Node грузит СВОЙ per-node YAML
 (audio_node.yaml / tts_node.yaml / ...) из config_dir (по умолчанию —
@@ -15,10 +15,11 @@ dotted-имена, которые ноды не читали (issue #1004).
 """
 
 from launch import LaunchDescription
-from launch.actions import DeclareLaunchArgument
+from launch.actions import DeclareLaunchArgument, OpaqueFunction
 from launch.substitutions import LaunchConfiguration, PathJoinSubstitution
 from launch_ros.actions import Node
 from launch_ros.substitutions import FindPackageShare
+from rob_box_core import dialog_engine
 
 
 def generate_launch_description():
@@ -47,7 +48,6 @@ def generate_launch_description():
     # Per-node config paths (issue #1004 fix).
     audio_node_yaml = PathJoinSubstitution([config_dir, 'audio_node.yaml'])
     led_node_yaml = PathJoinSubstitution([config_dir, 'led_node.yaml'])
-    dialogue_node_yaml = PathJoinSubstitution([config_dir, 'dialogue_node.yaml'])
     tts_node_yaml = PathJoinSubstitution([config_dir, 'tts_node.yaml'])
     stt_node_yaml = PathJoinSubstitution([config_dir, 'stt_node.yaml'])
     sound_node_yaml = PathJoinSubstitution([config_dir, 'sound_node.yaml'])
@@ -81,38 +81,13 @@ def generate_launch_description():
         arguments=['--ros-args', '--log-level', 'info']
     )
 
-    # === Animation Player Node ===
-    # Интегрирован с голосовым ассистентом для LED анимаций
-    animation_node = Node(
-        package='rob_box_animations',
-        executable='animation_player_node.py',
-        name='voice_animation_player',
-        namespace=namespace,
-        parameters=[{
-            'animations_dir': '/ws/install/rob_box_animations/share/rob_box_animations/animations',
-            'autostart_animation': 'idle',
-            'loop': True
-        }],
-        output='screen',
-        respawn=True,
-        respawn_delay=3.0
-    )
+    # Лицо LED-матрицы — face_node в контейнере led-matrix на Vision Pi (ADR-0150 PR-3a, #3689).
 
-    # === Dialogue Node (Phase 2: DeepSeek streaming + accent_replacer) ===
-    dialogue_node = Node(
-        package='rob_box_voice',
-        executable='dialogue_node',
-        name='dialogue_node',
-        namespace=namespace,
-        parameters=[dialogue_node_yaml],
-        output='screen',
-        respawn=True,
-        respawn_delay=5.0,
-        arguments=['--ros-args', '--log-level', 'info']
-    )
+    # Нода диалога — dialog_node (v2): её строит dialog_engine.launch_nodes (OpaqueFunction ниже) из
+    # config_dir/dialog_node.yaml. Нода v1 удалена в PR-15 (#3711, часть 15p).
 
     # === TTS Node (Phase 2: Silero TTS v4 с бурундуком) ===
-    tts_node = Node(
+    tts_node_args = dict(
         package='rob_box_voice',
         executable='tts_node',
         name='tts_node',
@@ -176,9 +151,9 @@ def generate_launch_description():
         arguments=['--ros-args', '--log-level', 'info']
     )
 
-    # === Startup Greeting: переехал в dialogue_node (issue #1003, 06.08) ===
-    # Отдельная startup_greeting_node убрана — страдала гонкой с
-    # инициализацией tts_node (фраза терялась). dialogue_node сам
+    # === Startup Greeting: в ноде диалога (issue #1003, 06.08; v2 — #3912) ===
+    # Отдельная нода приветствия убрана — страдала гонкой с
+    # инициализацией tts_node (фраза терялась). dialog_node сам
     # говорит приветствие через startup_greeting_sec / startup_greeting_text.
 
     # === Speaker ID Node (issue #1077 — голосовая биометрия resemblyzer) ===
@@ -199,9 +174,8 @@ def generate_launch_description():
         namespace_arg,
         audio_node,
         led_node,
-        animation_node,
-        dialogue_node,
-        tts_node,
+        # dialog_node (v2) + tts_node; dialog_engine: v1 — ошибка (PR-15 #3711)
+        OpaqueFunction(function=dialog_engine.launch_nodes, args=[tts_node_args]),
         stt_node,
         sound_node,
         command_node,

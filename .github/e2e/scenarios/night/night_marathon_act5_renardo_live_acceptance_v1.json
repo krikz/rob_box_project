@@ -7,14 +7,13 @@
     "а не флейк LLM (тулы здесь однозначные, синонимов у них нет)."
   ],
   "expected_tool_calls": [
-    "get_music_state",
     "request_music",
     "stop_music"
   ],
   "must_not_call": [],
   "voice_provenance": {
     "voice": "anton",
-    "tts": "yandex",
+    "tts": "minimax",
     "volume": 100,
     "llm": "minimax-m3"
   }

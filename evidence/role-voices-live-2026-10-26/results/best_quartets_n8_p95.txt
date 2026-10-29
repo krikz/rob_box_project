@@ -1,0 +1,23 @@
+﻿конфигов n>=8: 28
+TOP по худшему p95 пары:
+  p95=0.671 max=0.709 med=0.602  m-ko_ColdYoungMan  m-pl_MaleNarrator  m-en_WhisperingGirl  m-es_HumorousElder
+  p95=0.674 max=0.718 med=0.599  m-cute_boy  s-baya  m-es_Arnold  m-ko_ColdYoungMan
+  p95=0.676 max=0.741 med=0.622  m-presenter_female  s-aidar  m-en_Storyteller  m-en_WhisperingGirl
+  p95=0.676 max=0.741 med=0.622  s-aidar  m-en_Storyteller  m-en_WhisperingGirl  y-julia
+  p95=0.676 max=0.744 med=0.622  m-Bad-temperedBoy+4  s-aidar  m-en_Storyteller  m-en_WhisperingGirl
+  p95=0.678 max=0.741 med=0.622  m-Bad-temperedBoy+2  s-aidar  m-en_Storyteller  m-en_WhisperingGirl
+  p95=0.684 max=0.741 med=0.626  s-aidar  m-en_Storyteller  m-en_WhisperingGirl  m-es_HumorousElder
+  p95=0.686 max=0.738 med=0.596  m-en_Comedian  m-pl_MaleNarrator  m-en_WhisperingGirl  m-zh_GentleSenior
+  p95=0.686 max=0.738 med=0.596  m-es_Arnold  m-ko_ColdYoungMan  m-en_WhisperingGirl  m-zh_GentleSenior
+  p95=0.686 max=0.738 med=0.596  m-ko_ColdYoungMan  m-pl_MaleNarrator  m-en_WhisperingGirl  m-zh_GentleSenior
+  p95=0.686 max=0.738 med=0.614  m-es_Arnold  m-en_Comedian  m-en_WhisperingGirl  m-zh_GentleSenior
+  p95=0.686 max=0.741 med=0.622  s-aidar  m-en_Storyteller  m-en_WhisperingGirl  m-zh_GentleSenior
+TOP по худшему max пары:
+  max=0.709 p95=0.671 med=0.602  m-ko_ColdYoungMan  m-pl_MaleNarrator  m-en_WhisperingGirl  m-es_HumorousElder
+  max=0.718 p95=0.674 med=0.599  m-cute_boy  s-baya  m-es_Arnold  m-ko_ColdYoungMan
+  max=0.719 p95=0.702 med=0.626  s-aidar  m-ko_ColdYoungMan  m-en_WhisperingGirl  m-es_HumorousElder
+  max=0.724 p95=0.698 med=0.652  m-es_Arnold  m-ko_ColdYoungMan  m-en_WhisperingGirl  m-es_HumorousElder
+  max=0.730 p95=0.705 med=0.634  m-uk_WiseScholar  m-en_WhisperingGirl  y-madirus  m-es_HumorousElder
+  max=0.731 p95=0.704 med=0.624  m-ReliableMan  m-cute_boy  s-baya  m-ko_ColdYoungMan
+  max=0.731 p95=0.704 med=0.624  m-ReliableMan  m-ko_ColdYoungMan  m-en_WhisperingGirl  m-es_HumorousElder
+  max=0.732 p95=0.702 med=0.601  m-cute_boy  s-aidar  s-baya  m-ko_ColdYoungMan

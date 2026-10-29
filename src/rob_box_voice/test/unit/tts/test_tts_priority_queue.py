@@ -9,8 +9,7 @@ callback'е) и вставляет ``operator``-запрос СРАЗУ ЗА т�
 Эти тесты НЕ поднимают ROS-стек: используется та же conftest, что и
 ``test_speech_id_arg_chain`` / ``test_silero_pitch_normalization``, и
 обходится тяжёлый конструктор ``TTSNode.__init__`` через подкласс
-``_BareNode``, который инициализирует только FIFO-gate-атрибуты (плюс
-``_prefetch``/``_pregenerate_enabled`` для ADR-0056-стыковки).
+``_BareNode``, который инициализирует только FIFO-gate-атрибуты.
 
 В отличие от первой версии этого файла (WIP-ветка, коммит ``9654b585``),
 тесты здесь зовут РЕАЛЬНЫЙ ``TTSNode._submit_synthesis`` (через
@@ -19,7 +18,7 @@ callback'е) и вставляет ``operator``-запрос СРАЗУ ЗА т�
 ручной копии cond-lock-арифметики. Это устраняет риск дрейфа теста от
 прод-кода, на который явно указывал докстринг оригинальной версии.
 
-Покрытие (verbatim из DoD issue #1996 + стыковка с ADR-0056):
+Покрытие (verbatim из DoD issue #1996):
 1. operator во время ACTIVE-чанка встаёт сразу за ним, без рестарта.
 2. Без поля ``priority`` — старое поведение (normal FIFO).
 3. Очередь пуста + operator → operator становится первым.
@@ -28,8 +27,9 @@ callback'е) и вставляет ``operator``-запрос СРАЗУ ЗА т�
 5. Неизвестное / отсутствующее / не-строковое значение поля — ``normal``.
 6. AST-страховка: priority не позиционный параметр
    ``_run_synthesis_worker`` (канонический arity, test_speech_id_arg_chain).
-7. operator-приоритет триггерит ``cancel_pregen(reason="REPLACE-priority")``
-   (ADR-0056 §3.5 п.4) — normal-приоритет его НЕ трогает.
+
+Спекулятивный пред-синтез ADR-0056 (и его отмена при врезке оператора) удалён
+в ADR-0150 PR-7c ч.4а (#3700); сама очередь — до ухода v1.
 """
 from __future__ import annotations
 
@@ -55,9 +55,7 @@ class _BareNode(TTSNode):
 
     Инициализирует ровно те атрибуты, которые трогает
     ``_submit_synthesis`` (FIFO-gate + ``_pending_seqs``/
-    ``_play_active_seq`` для issue #1996 + ``_prefetch``/
-    ``_pregenerate_enabled`` так, чтобы унаследованный
-    ``cancel_pregen`` мог быть вызван без rclpy — см. ADR-0056).
+    ``_play_active_seq`` для issue #1996).
 
     ``_synthesis_executor`` — ``MagicMock``: ``_submit_synthesis``
     зовёт ``executor.submit(...)`` по-настоящему, но т.к. это мок,
@@ -77,11 +75,6 @@ class _BareNode(TTSNode):
         self._synthesis_executor.submit.return_value = MagicMock()
         self._synthesis_slots = MagicMock()
         self._synthesis_slots.acquire.return_value = True
-        # Issue #2003 / ADR-0056 — pregen engine off by default; keeps
-        # the inherited ``cancel_pregen`` a safe no-op (returns 0)
-        # unless a test explicitly wires it up.
-        self._prefetch = None
-        self._pregenerate_enabled = False
         # Logger — noop.
         self._logger = MagicMock()
         self.get_logger = MagicMock(return_value=self._logger)
@@ -225,10 +218,8 @@ def test_priority_field_default_normal(node):
 def test_normalize_tts_priority_whitelist():
     """Прямая проверка whitelist-хелпера (issue #1996).
 
-    Набор выровнен с ADR-0056: те же три значения, что валидирует
-    ``scheduler/pregen/pre_gen.py`` для вложенного
-    ``pregenerate.priority``. Мусор по-прежнему схлопывается в
-    ``"normal"`` — запрос не должен падать из-за кривого payload.
+    Три значения; мусор схлопывается в ``"normal"`` — запрос не должен
+    падать из-за кривого payload.
     """
     assert _normalize_tts_priority("operator") == "operator"
     assert _normalize_tts_priority("personality") == "personality"
@@ -239,15 +230,9 @@ def test_normalize_tts_priority_whitelist():
     assert _normalize_tts_priority(123) == "normal"
 
 
-def test_normalize_whitelist_matches_adr_0056_pregen():
-    """Регрессия: два контракта не должны снова разъехаться.
-
-    ``priority`` (верхнеуровневое поле ``/voice/tts/request``, issue
-    #1996) и ``pregenerate.priority`` (вложенное, ADR-0056) — разные
-    поля, но набор значений у них общий. Пока он общий, продюсеру не
-    нужно помнить, какое из двух полей что принимает; разъедутся —
-    вернётся молчаливая потеря значения, из-за которой этот тест и
-    заведён.
+def test_priority_whitelist_is_three_values():
+    """Регрессия: ``personality`` не схлопывается в ``normal`` молча
+    (раньше набор был двухзначным — молчаливая потеря значения).
     """
     from rob_box_voice.tts_node import _TTS_PRIORITY_VALUES
 
@@ -260,7 +245,7 @@ def test_personality_does_not_preempt_and_keeps_its_value():
     Прецеденция по целевой архитектуре §8а.3: врезку («сразу за
     текущим чанком») даёт только ``operator``; речь личности — обычный
     хвост очереди. Важно, что при этом значение НЕ схлопывается в
-    ``"normal"``: его читает планировщик предгенерации и метрики.
+    ``"normal"``: его читают метрики и логи.
     """
     assert _normalize_tts_priority("personality") == "personality"
 
@@ -334,40 +319,3 @@ def test_priority_not_positional_in_run_synthesis_worker():
         f"kwonly={[a.arg for a in fn.args.kwonlyargs]}, "
         f"vararg={fn.args.kwarg.arg if fn.args.kwarg else None}"
     )
-
-
-# ── 7. стыковка с ADR-0056: operator триггерит cancel_pregen ─────────────
-
-
-def test_operator_priority_triggers_pregen_cancellation(node):
-    """ADR-0056 §3.5 п.4 — REPLACE-семантика через priority-флаг 7a.
-
-    Operator-приоритет переупорядочивает FIFO-gate (может сдвинуть уже
-    запущенный спекулятивный pre-gen на другой слот), поэтому
-    ``_submit_synthesis`` должен инвалидировать in-flight pre-gen через
-    ``cancel_pregen(reason="REPLACE-priority")``. Проверяем спаем поверх
-    унаследованного ``cancel_pregen`` (не трогаем его реальную async-
-    машинерию — это уже покрыто ``test/unit/pregen/``).
-    """
-    node.cancel_pregen = MagicMock(return_value=0)
-
-    _submit(node, "N1", priority="normal")
-    node.cancel_pregen.assert_not_called()
-
-    _submit(node, "O", priority="operator")
-    node.cancel_pregen.assert_called_once_with(reason="REPLACE-priority")
-
-
-def test_cancel_pregen_failure_does_not_block_operator_submit(node):
-    """Best-effort: если cancel_pregen падает, operator всё равно встаёт в очередь.
-
-    Инвариант из докстринга ``_cancel_pregen_for_priority_replace``:
-    ошибка pre-gen-инвалидации не должна блокировать саму цель
-    priority-очереди — вставку operator-реплики.
-    """
-    node.cancel_pregen = MagicMock(side_effect=RuntimeError("boom"))
-
-    seq_op = _submit(node, "O", priority="operator")
-
-    assert seq_op == 1
-    assert node._pending_seqs == {"O": 1}

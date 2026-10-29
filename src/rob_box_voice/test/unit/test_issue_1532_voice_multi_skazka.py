@@ -10,20 +10,20 @@ Issue #1532 — LLM did NOT call ``set_voice`` for a multi-voice skazka
 
 Root cause: ``master_prompt_compact.txt`` had no rule teaching the LLM
 when/how to interleave ``set_voice`` between ``speak_text`` fragments for
-different characters. ``RULE #VOICE`` (issue #1219) only described global
+different characters. The voice rule (issue #1219) only described global
 voice-change, not per-character switching in a single narrative.
 
-Fix: explicit ``RULE #VOICE-MULTI`` block in ``master_prompt_compact.txt``
+Fix: an explicit multi-voice block in ``master_prompt_compact.txt``
 with:
 - per-character switching contract (example with 3 voices + 4 fragments)
 - 7 mandatory rules (full skazka 5-7 fragments, ≥2 different voices,
   gender-based mapping, do NOT invent names, return to default at end)
 - ✅/❌ examples anchored to e2e #1532 mv03
 
-These tests pin the *wording* so future prompt refactors (e.g. issue
-#1219 next iteration) cannot silently drop the multi-voice block again.
-Same lesson as ``test_issue_1219_set_voice_rule.py``: the prompt wording
-is the source of truth.
+#3696 (ADR-0148, ADR-0150 A5): the prompt-wording tests were removed with the
+hand-written multi-voice block; per-reply voices are the ``voice``
+parameter of ``speak_text`` (its schema) and the ``perform`` rule of ``knowledge.PROMPT_RULES``.
+What stays here is the e2e scenario contract (mv03) and the voice command file.
 
 Run with::
 
@@ -33,205 +33,8 @@ Run with::
 from __future__ import annotations
 
 from pathlib import Path
-import re
 
 import pytest
-
-MASTER_PROMPT = (
-    Path(__file__).resolve().parents[2]
-    / "prompts"
-    / "master_prompt_compact.txt"
-)
-
-
-def _read(prompt_path: Path) -> str:
-    return prompt_path.read_text(encoding="utf-8")
-
-
-def _multi_block(content: str) -> str:
-    """Extract the RULE #VOICE-MULTI block (anchor up to next 🚨 RULE or end)."""
-    match = re.search(
-        r"RULE #VOICE-MULTI.*?(?=🚨 \*\*RULE #|\Z)",
-        content,
-        re.DOTALL,
-    )
-    assert match, (
-        "RULE #VOICE-MULTI block not delimited properly in "
-        "master_prompt_compact.txt"
-    )
-    return match.group(0)
-
-
-# ── master_prompt_compact.txt ─────────────────────────────────────────
-
-
-def test_master_prompt_contains_voice_multi_rule() -> None:
-    """The RULE #VOICE-MULTI anchor must be present (regression guard)."""
-    content = _read(MASTER_PROMPT)
-    assert "RULE #VOICE-MULTI" in content, (
-        "master_prompt_compact.txt lost RULE #VOICE-MULTI — LLM will not "
-        "switch voices between skazka characters on MiniMax-M3 (live "
-        "18.08.2026 / e2e #1532 mv03). Without this block, LLM answers "
-        "with tools=[] and the user hears one voice for all characters."
-    )
-
-
-def test_voice_multi_rule_directs_set_voice_between_speak_text() -> None:
-    """The rule must instruct LLM to call set_voice BETWEEN speak_text.
-
-    Live 22.08.2026: LLM вызывал speak_text 1 раз → set_voice не вызывался.
-    Без set_voice между фрагментами все персонажи звучат одинаковым голосом.
-    """
-    content = _read(MASTER_PROMPT)
-    block = _multi_block(content)
-    # Must mention set_voice tool explicitly in the multi-voice block.
-    assert "set_voice" in block, (
-        "RULE #VOICE-MULTI must mention set_voice tool — otherwise LLM "
-        "has no way to learn it exists for multi-voice skazkas."
-    )
-    # Must mention speak_text in the multi-voice block.
-    assert "speak_text" in block, (
-        "RULE #VOICE-MULTI must mention speak_text — the narration IS "
-        "spoken via speak_text (just with voice switching between "
-        "fragments)."
-    )
-    # Must say "between" or "МЕЖДУ" — explicit ordering matters.
-    assert re.search(r"МЕЖДУ|between", block, re.IGNORECASE), (
-        "RULE #VOICE-MULTI must say set_voice is called МЕЖДУ (between) "
-        "speak_text fragments — otherwise LLM may call all set_voice "
-        "before any speak_text, defeating the purpose."
-    )
-
-
-def test_voice_multi_rule_requires_min_two_voices() -> None:
-    """The rule must require MINIMUM 2 different voices for multi-voice.
-
-    Live 22.08.2026: «разными голосами» — юзер ожидает минимум 2 разных
-    голоса. Если правило разрешит один голос — фича сломана.
-    """
-    content = _read(MASTER_PROMPT)
-    block = _multi_block(content)
-    # Russian pattern: «Минимум 2» или «минимум 2-х»
-    assert re.search(r"[Мм]инимум\s*2", block), (
-        "RULE #VOICE-MULTI must require minimum 2 different voices — "
-        "the user's request 'разными голосами' literally means "
-        "'different voices' (plural)."
-    )
-    # Must mention the Голоса plural — not just singular voice.
-    assert re.search(r"голос\w*", block, re.IGNORECASE), (
-        "RULE #VOICE-MULTI must reference 'голоса' / 'голос' to anchor "
-        "the concept of multiple distinct voices."
-    )
-
-
-def test_voice_multi_rule_requires_full_skazka_5_7_fragments() -> None:
-    """The rule must require 5-7 speak_text fragments for a complete skazka.
-
-    Live 22.08.2026: LLM ограничился 1 предложением — обрезка. Без явного
-    требования «минимум 5-7» LLM повторит обрезку.
-    """
-    content = _read(MASTER_PROMPT)
-    block = _multi_block(content)
-    assert re.search(r"5-7|5–7", block), (
-        "RULE #VOICE-MULTI must require '5-7' speak_text fragments for "
-        "a skazka — same as IMPORTANT CONSTRAINTS §2 'Fairy tale/story — "
-        "minimum 5-7 speak_text'. Without this, LLM answers with 1 "
-        "sentence and the user hears only the intro."
-    )
-    assert "полной" in block.lower() or "полн" in block.lower(), (
-        "RULE #VOICE-MULTI must say the skazka must be 'полной' "
-        "(complete) — otherwise LLM might answer 'жила-была девочка' "
-        "(just an opening, no plot)."
-    )
-
-
-def test_voice_multi_rule_prohibits_inventing_voice_names() -> None:
-    """The rule must say: voice names only from [TTS] voices: list.
-
-    Live 20.08.2026: LLM говорит «татьяна» для MiniMax (нет в каталоге).
-    Без запрета LLM будет hallucinate имена.
-    """
-    content = _read(MASTER_PROMPT)
-    block = _multi_block(content)
-    assert "[TTS] voices" in block, (
-        "RULE #VOICE-MULTI must anchor voice names to '[TTS] voices:' "
-        "context — otherwise LLM invents names like 'татьяна' or "
-        "'алена' that don't exist in the active provider."
-    )
-    assert re.search(r"НЕ\s*выдумывай|не выдумывай|NEVER invent", block), (
-        "RULE #VOICE-MULTI must forbid inventing voice names from "
-        "memory (same lesson as RULE #VOICE for issue #1219)."
-    )
-
-
-def test_voice_multi_rule_documents_gender_mapping() -> None:
-    """The rule must map character genders to specific voice ids.
-
-    Without explicit gender hints LLM defaults to one voice for everyone.
-    """
-    content = _read(MASTER_PROMPT)
-    block = _multi_block(content)
-    # Must mention at least one current minimax female voice id.
-    assert "Russian_BrightHeroine" in block, (
-        "RULE #VOICE-MULTI must list at least one current minimax "
-        "female voice id (e.g. Russian_BrightHeroine) so LLM picks a "
-        "valid name for Красная Шапочка / бабушка."
-    )
-    # Must mention at least one current minimax male voice id.
-    assert "Russian_ReliableMan" in block, (
-        "RULE #VOICE-MULTI must list at least one current minimax male "
-        "voice id (e.g. Russian_ReliableMan) so LLM picks a valid name "
-        "for дед / волк / охотник."
-    )
-
-
-def test_voice_multi_rule_anchors_to_krasnaya_shapochka() -> None:
-    """The rule must explicitly mention 'Красная Шапочка' (the failing case).
-
-    Без явного примера с этой сказкой LLM не догадается, что нужно
-    выбирать разные голоса для разных персонажей.
-    """
-    content = _read(MASTER_PROMPT)
-    block = _multi_block(content)
-    assert "Красная Шапочка" in block or "Красную Шапочку" in block, (
-        "RULE #VOICE-MULTI must explicitly mention Красная Шапочка "
-        "(the e2e #1532 mv03 failing case) — otherwise the rule is too "
-        "abstract and LLM won't connect 'разными голосами' to "
-        "switching voices between her and the wolf."
-    )
-
-
-def test_voice_multi_rule_voice_ids_exist_in_registry() -> None:
-    """All voice ids mentioned in RULE #VOICE-MULTI must exist in registry.
-
-    Same lesson as test_issue_1219_set_voice_rule.py — stale voice id in
-    prompt → LLM tries it → voice_unavailable → falls back to default.
-    """
-    from rob_box_voice.tts_voice_registry import voices_for
-
-    content = _read(MASTER_PROMPT)
-    block = _multi_block(content)
-
-    mentioned = set(
-        re.findall(
-            # Legacy: female-shaonv / male-qn-qingse (compound slug).
-            # Современные: Russian_ReliableMan / Russian_BrightHeroine.
-            # НЕ ловим «female-voice» / «male-voice» — это категории, а не id.
-            r"\b(?:female|male)-(?:\w+-){1,}\w+\b|\bRussian_[A-Za-z]+(?:-[A-Za-z]+)*\b",
-            block,
-        )
-    )
-
-    registry_voices = set(voices_for("minimax"))
-    missing_in_registry = mentioned - registry_voices
-    assert not missing_in_registry, (
-        f"RULE #VOICE-MULTI lists voice ids not in "
-        f"tts_voice_registry.PROVIDER_VOICES['minimax']: "
-        f"{sorted(missing_in_registry)}. Either add them to the registry "
-        f"or remove from the prompt. Current registry voices: "
-        f"{sorted(registry_voices)}."
-    )
-
 
 # ── scenario.json: voice_core_suite_v1.json mv03 step ────────────────
 
@@ -326,7 +129,7 @@ def test_scenario_mv03_acceptance_requires_keyword_krasnaya() -> None:
 def test_scenario_mv03_text_mentions_skazka_and_multi_voice() -> None:
     """The mv03 step text must mention 'сказку' and 'разными голосами'.
 
-    Это ключевые маркеры для LLM-маршрутизации (RULE #VOICE-MULTI) — без
+    Это ключевые маркеры для LLM-маршрутизации (мульти-голос) — без
     них LLM может не понять, что нужен multi-voice режим.
     """
     scenario = _read_scenario()
@@ -335,7 +138,7 @@ def test_scenario_mv03_text_mentions_skazka_and_multi_voice() -> None:
     text = step.get("text", "").lower()
     assert "сказку" in text or "сказк" in text, (
         f"mv03 step text must mention 'сказку' (a fairy tale) — that's "
-        f"the trigger for RULE #VOICE-MULTI. Current text: {step.get('text')!r}"
+        f"the trigger for the multi-voice route. Current text: {step.get('text')!r}"
     )
     assert "разными голосами" in text or "разные голоса" in text, (
         f"mv03 step text must mention 'разными голосами' — that's the "

@@ -41,7 +41,7 @@ def test_default_registry_matches_the_llm_visible_catalog() -> None:
 
     Both directions matter. A *missing* tool is the original bug — 13 tools
     that ``mcp_server`` registered were absent here, so the LLM could not
-    call them at all (``task_delta``, ``stop_navigation``, the whole mapping
+    call them at all (``stop_navigation``, the whole mapping
     FSM, the volume/pitch/speed controls). An *extra* tool is the mirror
     failure: the LLM picks a tool the MCP server cannot execute and the user
     hears «инструмент не найден» (this happened with the ``handle_*`` skill

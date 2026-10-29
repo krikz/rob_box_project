@@ -25,6 +25,9 @@
 
 from __future__ import annotations
 
+import re
+from pathlib import Path
+
 import pytest
 
 from rob_box_core.bridge_protocol import (
@@ -714,3 +717,41 @@ class TestCatalogDrivenChecks:
         ]
         # sanity: должно быть много v1-команд (голос/твист/стоп/списки)
         assert len(v1_only_names) >= 10
+
+
+# --- 8. Мок-робот шлема зеркалит каталог стримов (#3711, 15-0a') -------------
+#
+# ``webxr_client/src/dev/mock_robot.ts`` (симулятор шлема) держит свою копию списка стримов; сервер отдаёт каталог в
+# ``stream_list``. Копия, разошедшаяся с каталогом, показывала бы в симуляторе то, чего на роботе нет.
+
+
+class TestMockRobotMirrorsStreamCatalog:
+    MOCK_ROBOT = (
+        Path(__file__).resolve().parents[2]
+        / "rob_box_quest" / "webxr_client" / "src" / "dev" / "mock_robot.ts"
+    )
+    MOCK_STREAM = re.compile(
+        r'\n  (?P<name>\w+): \{\s*\n\s*topicId: (?P<topic_id>0x[0-9a-fA-F]+),\s*\n\s*kind: "(?P<kind>\w+)",\s*\n'
+        r'(?:\s*//[^\n]*\n)*\s*source: "(?P<source>[^"]*)"'
+    )
+
+    def _mock_streams(self):
+        if not self.MOCK_ROBOT.is_file():
+            pytest.skip(f"{self.MOCK_ROBOT} не найден")
+        text = self.MOCK_ROBOT.read_text(encoding="utf-8").replace("\r\n", "\n")
+        return {m["name"]: m for m in self.MOCK_STREAM.finditer(text[text.index("DEFAULT_STREAMS"):])}
+
+    def test_mock_streams_are_parsed(self):
+        assert {"lidar_2d", "map_2d", "robot_status", "nav_path", "voice_state"} <= set(self._mock_streams())
+
+    def test_mock_stream_matches_catalog(self):
+        for name, m in self._mock_streams().items():
+            spec = get_stream(name)
+            assert spec is not None, f"{name}: нет в каталоге STREAMS"
+            assert (int(m["topic_id"], 16), m["kind"], m["source"]) == (
+                spec.topic_id, spec.kind.value, spec.source
+            ), f"{name}: мок шлема разошёлся с каталогом"
+
+    def test_voice_state_is_not_read_from_the_v1_topic(self):
+        assert "/voice/dialogue/state" not in get_stream("voice_state").source
+        assert "/voice/dialogue/state" not in self._mock_streams()["voice_state"]["source"]

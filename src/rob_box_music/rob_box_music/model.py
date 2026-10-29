@@ -672,7 +672,7 @@ class AudioTrack:
     ``path`` — wav на частоте сервера (``knowledge.SC_SERVER_RATE_HZ``, декодирован из mp3 кэша один раз), путь,
     который видят и Renardo, и scsynth. Длительность — в секундах: нот и тактов у файла нет, бит-сетка Suno не
     гарантирована (``bpm_nominal`` — только номинал стиля/запроса, ``None`` — неизвестен). ``loudness_lufs`` —
-    замер кэша, ``None`` — не мерян (уровень выравнивает мастер-шина).
+    замер кэша, ``None`` — не мерян (уровень выравнивает мастер-шина). ``gain`` — множитель ``amp`` ноты (0..1].
     """
 
     track_id: str
@@ -681,12 +681,15 @@ class AudioTrack:
     bpm_nominal: Optional[int] = None
     loudness_lufs: Optional[float] = None
     source: Literal["generated"] = "generated"
+    gain: float = 1.0  # громкость ноты файла (``amp``): фон сета, пока пишется трек темы, — ``SET_BACKGROUND_GAIN``
 
     def __post_init__(self) -> None:
         if not os.path.isabs(self.path):
             raise TrackError("path", f"нужен абсолютный путь, а не {self.path!r}")
         if not self.duration_s > 0:
             raise TrackError("duration_s", f"длительность {self.duration_s} — не положительная")
+        if not 0.0 < self.gain <= 1.0:
+            raise TrackError("gain", f"громкость {self.gain} — вне (0, 1]")
 
 
 __all__ = [

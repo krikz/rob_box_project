@@ -16,6 +16,7 @@ from typing import Any, Dict, List, Optional, Tuple
 from ..base import MCPTool, MCPToolParameter, MCPToolResult, ToolExecutionType
 from rob_box_music.works import key_slot
 
+from ..engine import master_gain as mg
 from ..engine.search import find, find_rare
 from ..core.rtttl_library import RtttlLibrary, display_title, match_info
 
@@ -124,8 +125,15 @@ def stop_text(was_playing: bool) -> str:
     return "Музыка остановлена." if was_playing else "Музыка и так не играла — на всякий случай всё остановил."
 
 
+#: Стоп по ``track_id``, а на деке уже другая музыка (трек человека): тул её не трогает и говорит об этом.
+STOP_OTHER_TRACK_TEXT = "Этот трек уже не играет — другую музыку не трогал."
+
+
 class StopMusicTool(MCPTool):
     """Выключить всю музыку: сет и деку движка v2 (через их владельцев) и mp3 из библиотеки в ``sound_node``."""
+
+    #: PlayerOwner в процессе mcp_server: was_playing до стопа
+    event_source = "inproc:player_owner"
 
     @property
     def name(self) -> str:
@@ -140,7 +148,11 @@ class StopMusicTool(MCPTool):
 
     @property
     def parameters(self) -> List[MCPToolParameter]:
-        return []
+        return [MCPToolParameter(name="boundary", type="string", required=False, enum=["now", "bar"],
+                                 description="now — сразу (по умолчанию); bar — бит выступления на ближайшем такте"),
+                MCPToolParameter(name="track_id", type="string", required=False,
+                                 description="только для кода выступления: снять именно этот трек (его бит); играет "
+                                             "другая музыка — не трогать. Не указывай: «выключи музыку» гасит всё")]
 
     @property
     def execution_type(self) -> ToolExecutionType:
@@ -150,8 +162,17 @@ class StopMusicTool(MCPTool):
     def destructive(self) -> bool:
         return False
 
-    def execute(self) -> MCPToolResult:
-        """Сет закрывает ``DjSetTool``, деку — ``PlayerOwner`` (``MCPServer._stop_deck``); трек кэша тоже на деке (ADR-0158 PR-2)."""
+    def execute(self, boundary: str = "now", track_id: str = "") -> MCPToolResult:
+        """Сет закрывает ``DjSetTool``, деку — ``PlayerOwner`` (``MCPServer._stop_deck``); трек кэша тоже на деке (ADR-0158 PR-2).
+        ``boundary=bar`` при звучащем бите выступления — outro на ближайшем такте (``BackingDeck``, ADR-0150 PR-7c).
+        ``track_id`` — снять только его (бит выступления, хвост ревью PR #4111): :meth:`_stop_track`."""
+        if track_id:
+            return self._stop_track(track_id, boundary)
+        deck = getattr(self.node, "_backing_deck", None)
+        if boundary == "bar" and deck is not None and deck.playing:
+            outro = deck.outro()
+            self.log_info(f"[stop_music] outro бита выступления: {outro}")
+            return MCPToolResult(success=True, data={"was_playing": True, **outro}, message=stop_text(True))
         owner = getattr(self.node, "_player_owner", None)
         dj_set = getattr(self.node, "_dj_set_tool", None)
         was_playing = bool(owner is not None and owner.is_playing()) or bool(getattr(dj_set, "running", False))
@@ -162,6 +183,25 @@ class StopMusicTool(MCPTool):
             owner.stop("user_stop")  # явный стоп в «тишине»: снять деку и погасить группу всё равно
         self.log_info(f"[stop_music] was_playing={was_playing}")
         return MCPToolResult(success=True, data={"was_playing": was_playing}, message=stop_text(was_playing))
+
+    def _stop_track(self, track_id: str, boundary: str) -> MCPToolResult:
+        """Снять ОДИН трек, а не всю музыку: код выступления снимает свой бит по id (ADR-0148). На деке этого id нет
+        (трек уже кончился, или человек поставил другой) — ничего не трогаем: чужую музыку выступление не гасит."""
+        deck = getattr(self.node, "_backing_deck", None)
+        if boundary == "bar" and deck is not None and deck.playing and deck.track_id == track_id:
+            outro = deck.outro()
+            self.log_info(f"[stop_music] outro бита выступления: {outro}")
+            return MCPToolResult(success=True, data={"was_playing": True, **outro}, message=stop_text(True))
+        owner = getattr(self.node, "_player_owner", None)
+        state = owner.now_playing() if owner is not None else {}
+        if track_id not in (state.get("track_id"), state.get("pending")):
+            self.log_info(f"[stop_music] track_id={track_id} на деке нет — другую музыку не трогаю")
+            return MCPToolResult(success=True, data={"was_playing": False, "stopped": False, "track_id": track_id},
+                                 message=STOP_OTHER_TRACK_TEXT)
+        owner.stop("user_stop")
+        self.log_info(f"[stop_music] снят track_id={track_id}")
+        return MCPToolResult(success=True, data={"was_playing": True, "stopped": True, "track_id": track_id},
+                             message=stop_text(True))
 
 
 class GetMusicStateTool(MCPTool):
@@ -224,6 +264,47 @@ class GetMusicStateTool(MCPTool):
         return MCPToolResult(success=True, data=data, message=message)
 
 
+# ---------------------------------------------------------------------------
+# Громкость музыки: фраза и результат строит код из исхода scsynth (#3790, ADR-0148)
+# ---------------------------------------------------------------------------
+
+#: Почему не вышло (``GainOutcome.reason``) - хвост фразы «не получилось»; без выдуманного процента.
+VOLUME_FAIL_WHY: Dict[str, str] = {
+    mg.NO_MASTER_NODE: "в звуковом сервере нет мастер-фейдера",
+    mg.OSC_ERROR: "звуковой сервер не отвечает",
+    mg.TIMEOUT: "звуковой сервер не подтвердил новый уровень",
+    mg.MISMATCH: "сервер держит другой уровень",
+    mg.SERVER_FAIL: "сервер отказал",
+}
+
+
+def volume_fail_text(outcome: "mg.GainOutcome") -> str:
+    """Честная фраза отказа: «Не получилось поменять громкость музыки (причина).» - ни старого, ни нового процента."""
+    why = VOLUME_FAIL_WHY.get(outcome.reason, outcome.reason or outcome.status)
+    return f"Не получилось поменять громкость музыки ({why})."
+
+
+def volume_ok_text(before: float, after: float, max_gain: float) -> str:
+    """Фраза подтверждённого уровня: «X% → Y%» или «не изменилась» (предел фейдера / уже такая)."""
+    pct = round(after / max_gain * 100)
+    if abs(after - before) < 1e-3:
+        edge = "максимальная" if after >= max_gain else "уже такая"
+        return f"Громкость музыки не изменилась ({edge}, {pct}%)"
+    return f"Громкость музыки: {round(before / max_gain * 100)}% → {pct}%"
+
+
+def volume_result(outcome: "mg.GainOutcome", before: float, max_gain: float) -> MCPToolResult:
+    """Результат тула из исхода: ``success`` - только ``applied`` (сервер вернул заказанный уровень)."""
+    base: Dict[str, Any] = {"outcome": outcome.status, "old_gain": round(before, 3)}
+    if not outcome.applied:
+        text = volume_fail_text(outcome)
+        data = {**base, "applied": False, "reason": outcome.reason, "detail": outcome.detail}
+        return MCPToolResult(success=False, data=data, error=text, message=text)
+    after = float(outcome.confirmed)  # type: ignore[arg-type]
+    data = {**base, "applied": True, "new_gain": round(after, 3), "percent": round(after / max_gain * 100)}
+    return MCPToolResult(success=True, data=data, message=volume_ok_text(before, after, max_gain))
+
+
 class SetMusicVolumeTool(MCPTool):
     """Issue #3125 — громкость МУЗЫКИ (мастер-фейдер scsynth), не голоса.
 
@@ -251,6 +332,9 @@ class SetMusicVolumeTool(MCPTool):
     #: в ноль (для тишины есть ``stop_music``); явный ``level=0`` разрешён.
     MIN_STEP_GAIN: float = 0.05
     MAX_GAIN: float = 1.0
+    #: Исход - ответ scsynth (``/s_get``) владельцу фейдера ``RenardoRuntime`` в процессе mcp_server; результат вызова -
+    #: подтверждённый уровень или отказ (``engine.master_gain``), а не «отправлено» (ADR-0150 §5.2).
+    event_source = "inproc:renardo_runtime"
 
     def __init__(self, node, runtime: Any) -> None:
         super().__init__(node)
@@ -335,27 +419,17 @@ class SetMusicVolumeTool(MCPTool):
         return None, f"Неизвестное действие: {action}"
 
     def execute(self, action: str, level: Optional[float] = None) -> MCPToolResult:
-        """Изменить уровень мастер-фейдера музыки."""
+        """Изменить уровень мастер-фейдера музыки; успех - только по подтверждению scsynth (#3790)."""
         current = float(self._runtime.master_gain)
         target, error = self._target_gain(action, level, current)
         if error is not None:
             return MCPToolResult(success=False, error=error)
-        applied = self._runtime.set_master_gain(target)
+        outcome = self._runtime.apply_master_gain(target)
         self.log_info(
-            f"[set_music_volume] action={action} level={level} "
-            f"master_gain {current:.2f} → {applied:.2f}"
+            f"[set_music_volume] action={action} level={level} master_gain {current:.2f} → "
+            f"{outcome.status}/{outcome.reason or '-'} confirmed={outcome.confirmed}"
         )
-        pct = round(applied / self.MAX_GAIN * 100)
-        if abs(applied - current) < 1e-3:
-            edge = "максимальная" if applied >= self.MAX_GAIN else "уже такая"
-            message = f"Громкость музыки не изменилась ({edge}, {pct}%)"
-        else:
-            message = f"Громкость музыки: {round(current / self.MAX_GAIN * 100)}% → {pct}%"
-        return MCPToolResult(
-            success=True,
-            data={"old_gain": round(current, 3), "new_gain": round(applied, 3), "percent": pct},
-            message=message,
-        )
+        return volume_result(outcome, current, self.MAX_GAIN)
 
 
 class LookupMelodyTool(MCPTool):

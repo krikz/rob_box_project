@@ -103,18 +103,29 @@ class TestMapTtsVoice:
 
     # Тоже измерено 22.09.2026: старая пара anton/ermil
     # (ReliableMan/HandsomeChildhoodFriend) = 0.739, а на живом роботе 0.846 —
-    # акт 2 склеил двух дикторов в один профиль (run 35667281570).
+    # акт 2 склеил двух дикторов в один профиль (run 35667281570). 23.10 низкие мужские
+    # Russian_* для робота остались одним человеком (0.9). Каст 26.10 (#3992) подобран по
+    # эмбеддингам живого канала среди 332 голосов MiniMax: docs/dialog/role_voices_biometrics_2026-10-26.md
     @pytest.mark.parametrize(
         "voice,expected",
         [
-            ("anton", "Russian_ReliableMan"),
-            ("ermil", "Russian_PessimisticGirl"),
-            ("zahar", "Russian_CrazyQueen"),
-            ("filipp", "Russian_AttractiveGuy"),
+            ("anton", "English_Jovialman:0:1.0"),
+            ("ermil", "English_WiseScholar:0:1.0"),
+            ("zahar", "Chinese (Mandarin)_Gentle_Senior:0:1.0"),
+            ("filipp", "English_Whispering_girl:0:1.0"),
         ],
     )
     def test_minimax_mapping(self, voice, expected):
         assert map_voice("minimax", voice) == expected
+
+    def test_minimax_roles_are_four_voices_with_mild_prosody(self):
+        """#3931: четыре разных голоса; просодия малая (замер на живом канале 23.10:
+        питч +5/темп 1.2 ронял вейк «Робот» в 62% фраз, питч +2 и 0 - в 10-15%)."""
+        specs = [map_voice("minimax", v).split(":") for v in ("anton", "ermil", "zahar", "filipp")]
+        assert all(len(s) == 3 for s in specs), specs
+        assert len({s[0] for s in specs}) == 4
+        assert all(abs(int(s[1])) <= 2 for s in specs), specs
+        assert all(0.9 <= float(s[2]) <= 1.1 for s in specs), specs
 
     @pytest.mark.parametrize("provider", ["silero", "minimax"])
     def test_scenario_voices_stay_distinct(self, provider):
@@ -143,13 +154,13 @@ class TestMapTtsVoice:
 
     @pytest.mark.parametrize(
         "provider,default",
-        [("yandex", "anton"), ("silero", "aidar"), ("minimax", "Russian_ReliableMan")],
+        [("yandex", "anton"), ("silero", "aidar"), ("minimax", "English_Jovialman:0:1.0")],
     )
     def test_empty_voice_falls_back_to_default(self, provider, default):
         assert map_voice(provider, "") == default
 
     def test_mapped_voices_exist_in_registry(self):
-        """Целевые голоса обязаны быть в PROVIDER_VOICES, иначе провайдер
+        """Silero: целевые голоса обязаны быть в PROVIDER_VOICES, иначе провайдер
         молча возьмёт свой дефолт и все шаги зазвучат одинаково."""
         registry = (
             REPO_ROOT
@@ -158,10 +169,19 @@ class TestMapTtsVoice:
             / "rob_box_voice"
             / "tts_voice_registry.py"
         ).read_text(encoding="utf-8")
-        for provider in ("silero", "minimax"):
-            for voice in SCENARIO_VOICES:
-                mapped = map_voice(provider, voice)
-                assert '"%s"' % mapped in registry, (provider, voice, mapped)
+        for voice in SCENARIO_VOICES:
+            mapped = map_voice("silero", voice)
+            assert '"%s"' % mapped.split(":")[0] in registry, ("silero", voice, mapped)
+
+    def test_minimax_cast_never_gets_the_robot_own_voice(self):
+        """Каст 26.10 (#3992) -- голоса ТЕСТОВЫХ людей. С #4086 (Шифу 27.10: «говори голосом Jovialman») они есть и в
+        каталоге робота (PROVIDER_VOICES): сверку «каст из харнесса -- в каталоге» держит test_issue_4086_cast_in_catalog.py.
+        Остаётся другое: роль не может получить голос самого робота (alena/jane/omazh -- Russian_*), иначе
+        speaker_id_node примет речь робота за человека марафона."""
+        robot_voices = {map_voice("minimax", v).split(":")[0] for v in ("alena", "jane", "omazh")}
+        for voice in SCENARIO_VOICES:
+            cast = map_voice("minimax", voice).split(":")[0]
+            assert cast not in robot_voices, (voice, cast)
 
 
 # --- resolve_tts_provider ---------------------------------------------------

@@ -17,11 +17,12 @@ Perception Context Aggregator node.
 - /device/snapshot (ESP32 sensors)
 - /apriltag/detections (AprilTags)
 - /rosout (system logs)
-- /voice/stt/result (входящая речь)
-- /voice/dialogue/response (ответы робота)
+- /voice/stt/utterance (входящая речь, rob_box_dialog_msgs/Utterance)
+- /voice/speech/request (ответы робота: реплики агента personality, dialog v2)
+- /voice/dialogue/response (ответы робота, только dialogue_node v1; TEMP до PR-15 #3711)
 - /voice/command/intent (intent команд)
 - /voice/command/feedback (feedback команд)
-- /dynamic_joint_states (battery/voltage)
+- /dynamic_joint_states (joint battery, интерфейс voltage)
 
 Публикует:
 - /perception/context_update (PerceptionEvent) - агрегированный контекст
@@ -44,6 +45,8 @@ from rcl_interfaces.msg import Log
 import rclpy
 from rclpy.node import Node
 
+from rob_box_perception.battery_state import extract_battery_voltage
+from rob_box_perception.core.robot_speech import SPEECH_REQUEST_TOPIC, robot_said
 from rob_box_perception.utils.internet_monitor import (
     InternetConnectivityMonitor,
 )
@@ -54,6 +57,7 @@ from rob_box_perception.vision_hailo_loader import (
     is_stub_event,
 )
 
+from rob_box_dialog_msgs.msg import SpeechRequest, Utterance
 from std_msgs.msg import String
 
 # Custom messages
@@ -200,13 +204,21 @@ class ContextAggregatorNode(Node):
 
         # STT (входящая речь пользователя)
         self.stt_sub = self.create_subscription(
-            String,
-            '/voice/stt/result',
+            Utterance,
+            '/voice/stt/utterance',
             self.on_user_speech,
             10
         )
 
-        # Dialogue responses (ответы робота)
+        # Ответы робота (issue #3911). dialog_engine=v2: реплика агента personality = SpeechRequest в
+        # /voice/speech/request (у v2 нет топика «ответа», только запрос речи и события её жизни).
+        self.speech_request_sub = self.create_subscription(
+            SpeechRequest,
+            SPEECH_REQUEST_TOPIC,
+            self.on_robot_response,
+            10
+        )
+        # Удалит PR-15 #3711: dialogue_node v1 пишет JSON с SSML в /voice/dialogue/response; уходит с ним.
         self.dialogue_response_sub = self.create_subscription(
             String,
             '/voice/dialogue/response',
@@ -388,17 +400,14 @@ class ContextAggregatorNode(Node):
                 self.recent_warnings.pop(0)
 
     def on_joint_states(self, msg: DynamicJointState):
-        """Обновление данных ros2_control."""
-        for interface_values in msg.interface_values:
-            for name, value in zip(interface_values.interface_names,
-                                   interface_values.values):
-                if name == 'battery/voltage':
-                    self.current_sensors['battery'] = value
-                    break
+        """Напряжение батареи: joint ``battery``, интерфейс ``voltage`` (#4001)."""
+        volts = extract_battery_voltage(msg.joint_names, msg.interface_values)
+        if volts is not None:
+            self.current_sensors['battery'] = volts
 
-    def on_user_speech(self, msg: String):
-        """Получена речь пользователя (STT)."""
-        text = msg.data.strip()
+    def on_user_speech(self, msg: Utterance):
+        """Получена речь пользователя (STT, ``Utterance`` - ADR-0150 PR-2)."""
+        text = msg.text.strip()
         if text:
             # Команды движения (вперед, назад, налево, направо, стой)
             # НЕ добавляем в память. Они обрабатываются CommandNode и не
@@ -425,21 +434,9 @@ class ContextAggregatorNode(Node):
             self.get_logger().info(f'👤 Пользователь: "{text}"')
             self.add_to_memory('user_speech', text, important=True)
 
-    def on_robot_response(self, msg: String):
-        """Получен ответ робота (dialogue_node)."""
-        # Парсим JSON (может содержать SSML)
-        try:
-            import json
-            data = json.loads(msg.data)
-            text = (
-                data.get('ssml', '')
-                .replace('<speak>', '')
-                .replace('</speak>', '')
-                .strip()
-            )
-        except Exception:
-            text = msg.data.strip()
-
+    def on_robot_response(self, msg):
+        """Ответ робота: ``SpeechRequest`` агента personality (dialog v2) или JSON dialogue_node v1 (TEMP, PR-15)."""
+        text = robot_said(msg)
         if text:
             self.get_logger().info(f'🤖 Робот: "{text[:50]}..."')
             self.add_to_memory('robot_response', text, important=True)

@@ -28,7 +28,7 @@ ALL_VOICES = [(p, v) for p, vs in PROVIDER_VOICES.items() for v in vs]
 
 
 def test_catalog_size_is_what_adr_says() -> None:
-    assert {p: len(v) for p, v in PROVIDER_VOICES.items()} == {"yandex": 13, "minimax": 10, "silero": 5}
+    assert {p: len(v) for p, v in PROVIDER_VOICES.items()} == {"yandex": 13, "minimax": 15, "silero": 5}
 
 
 def test_table_covers_exactly_the_catalog() -> None:
@@ -115,7 +115,11 @@ def test_missing_minimax_key_is_loud(monkeypatch, tmp_path) -> None:
 
 
 def test_missing_yandex_key_is_loud(monkeypatch, tmp_path) -> None:
-    pytest.importorskip("yandex.cloud.ai.tts.v3")
+    v3 = pytest.importorskip("yandex.cloud.ai.tts.v3")
+    if not hasattr(getattr(v3, "tts_pb2", None), "RawAudio"):
+        # Рукописная заглушка соседнего теста (test_yandex_ssml_pitch_volume)
+        # без RawAudio - это не SDK; раньше тест выживал на чужой MagicMock.
+        pytest.skip("нет yandex SDK с RawAudio")
     monkeypatch.delenv("YANDEX_API_KEY", raising=False)
     with pytest.raises(SingSynthError) as e:
         synth_vocal_to_file("yandex", "anton", "да", tmp_path / "v")

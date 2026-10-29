@@ -25,6 +25,7 @@ if TYPE_CHECKING:
     from ..mapping_state import MappingState
 
 from ..base import MCPTool, MCPToolParameter, MCPToolResult, ToolExecutionType, wait_future
+from ..core.action_outcome import Outcome, classify_service_call
 
 
 def _create_service_client(node, srv_type, srv_name, callback_group):
@@ -33,8 +34,31 @@ def _create_service_client(node, srv_type, srv_name, callback_group):
     return node.create_client(srv_type, srv_name)
 
 
+def _call_service(client, request, timeout_sec: float, label: str) -> Outcome:
+    """Вызвать сервис и дождаться ответа; исход разбирает ``classify_service_call`` (#3789)."""
+    if client is None or request is None or not client.service_is_ready():
+        return classify_service_call(ready=False, completed=False, response=None, label=label)
+    future = client.call_async(request)
+    completed = wait_future(future, timeout_sec=timeout_sec)
+    response, error = None, None
+    if completed:
+        try:
+            response = future.result()  # rclpy.Future.result() бросает исключение сервиса
+        except Exception as exc:  # noqa: BLE001 - исключение будущего = вызов не удался
+            error = str(exc) or type(exc).__name__
+    return classify_service_call(ready=True, completed=completed, response=response, label=label, error=error)
+
+
+def _failed_call(tool, outcome: Outcome, message: str) -> MCPToolResult:
+    """Неуспех вызова сервиса: причину и фразу строит код, LLM их не переписывает."""
+    tool.log_warning(f"⚠️ {outcome.error}")
+    return MCPToolResult(success=False, error=outcome.error, message=message, data={"outcome": outcome.kind})
+
+
 class StartMappingTool(MCPTool):
     """Инструмент для начала нового картографирования."""
+
+    event_source = "srv:/rtabmap/rtabmap/set_mode_mapping"
 
     def __init__(self, node, waypoint_store: Optional["WaypointAdapter"] = None, mapping_state=None):
         super().__init__(node)
@@ -114,30 +138,26 @@ class StartMappingTool(MCPTool):
         # 2. Переключить в режим mapping СНАЧАЛА (до LoadDatabase!)
         # LoadDatabase(clear=True) в localization режиме вызывает краш rtabmap
         # (pure virtual method called / SIGABRT)
-        if not self.set_mode_mapping_client.service_is_ready():
-            return MCPToolResult(success=False, error="RTABMap set_mode_mapping service не готов")
-
         from std_srvs.srv import Empty
-        request = Empty.Request()
-        future = self.set_mode_mapping_client.call_async(request)
-        if not wait_future(future, timeout_sec=10.0):
-            return MCPToolResult(success=False, error="Таймаут ожидания set_mode_mapping")
+
+        # Успех шага — только по ответу сервиса (#3789): без ответа карту не создаём, FSM не трогаем.
+        switched = _call_service(self.set_mode_mapping_client, Empty.Request(), 10.0, "RTABMap set_mode_mapping")
+        if not switched.success:
+            return _failed_call(self, switched, "Не удалось начать картографирование: режим не включился")
         self.log_info("Режим mapping активирован")
 
         # 3. Загрузить базу данных (clear=True если новая локация, иначе только reload)
         # Вызывается ПОСЛЕ set_mode_mapping чтобы избежать краша в localization mode
         if self.load_database_client is None:
             return MCPToolResult(success=False, error="RTABMap load_database service недоступен")
-        if not self.load_database_client.service_is_ready():
-            return MCPToolResult(success=False, error="RTABMap load_database service не готов")
 
         from rtabmap_msgs.srv import LoadDatabase  # type: ignore
         req = LoadDatabase.Request()
         req.database_path = "/maps/rtabmap.db"
         req.clear = bool(new_location)
-        future = self.load_database_client.call_async(req)
-        if not wait_future(future, timeout_sec=20.0):
-            return MCPToolResult(success=False, error="Таймаут ожидания load_database")
+        loaded = _call_service(self.load_database_client, req, 20.0, "RTABMap load_database")
+        if not loaded.success:
+            return _failed_call(self, loaded, "Не удалось начать картографирование: база не загрузилась")
         action = "очищена и перезагружена" if new_location else "перезагружена"
         self.log_info(f"База данных {action}")
 
@@ -186,6 +206,8 @@ class StartMappingTool(MCPTool):
 class ContinueMappingTool(MCPTool):
     """Инструмент для продолжения картографирования."""
 
+    event_source = "srv:/rtabmap/rtabmap/set_mode_mapping"
+
     def __init__(self, node):
         super().__init__(node)
         self._service_cb_group = ReentrantCallbackGroup() if ReentrantCallbackGroup is not None else None
@@ -221,12 +243,12 @@ class ContinueMappingTool(MCPTool):
         """Продолжить картографирование."""
         self.log_info("Продолжение картографирования")
 
-        if not self.set_mode_mapping_client.service_is_ready():
-            return MCPToolResult(success=False, error="RTABMap set_mode service не готов")
-
         from std_srvs.srv import Empty
-        request = Empty.Request()
-        self.set_mode_mapping_client.call_async(request)
+
+        # Успех — только по ответу сервиса переключения режима (#3789).
+        switched = _call_service(self.set_mode_mapping_client, Empty.Request(), 10.0, "RTABMap set_mode_mapping")
+        if not switched.success:
+            return _failed_call(self, switched, "Не удалось продолжить картографирование: режим не включился")
 
         self.log_info("Режим mapping активирован")
 
@@ -235,6 +257,8 @@ class ContinueMappingTool(MCPTool):
 
 class FinishMappingTool(MCPTool):
     """Инструмент для завершения картографирования."""
+
+    event_source = "srv:/rtabmap/rtabmap/set_mode_localization"
 
     def __init__(self, node, waypoint_store: Optional["WaypointAdapter"] = None, mapping_state=None):
         super().__init__(node)
@@ -304,25 +328,22 @@ class FinishMappingTool(MCPTool):
             except Exception as e:
                 self.log_warning(f"⚠️ Не удалось назвать карту: {e}")
 
-        if self.set_mode_localization_client.service_is_ready():
-            from std_srvs.srv import Empty
-            request = Empty.Request()
-            future = self.set_mode_localization_client.call_async(request)
-            if wait_future(future, timeout_sec=10.0):
-                self.log_info("Режим localization активирован")
-            else:
-                self.log_warning("⚠️ Таймаут ожидания переключения в localization mode")
-        else:
-            self.log_warning("⚠️ RTABMap localization service не готов")
+        from std_srvs.srv import Empty
 
-        if self.publish_map_client is not None and self.publish_map_client.service_is_ready():
-            future = self.publish_map_client.call_async(self._publish_map_request)
-            if wait_future(future, timeout_sec=15.0):
-                self.log_info("Опубликована occupancy grid карта")
-            else:
-                self.log_warning("⚠️ Таймаут ожидания publish_map")
+        # Успех — только по ответу сервиса переключения режима (#3789).
+        switch = _call_service(self.set_mode_localization_client, Empty.Request(), 10.0, "RTABMap set_mode_localization")
+        if not switch.success:
+            return _failed_call(
+                self, switch, "Не удалось завершить картографирование: режим локализации не включился"
+            )
+        self.log_info("Режим localization активирован")
+
+        # Публикация карты вторична: режим уже переключён, но о провале говорим честно.
+        publish = _call_service(self.publish_map_client, self._publish_map_request, 15.0, "RTABMap publish_map")
+        if publish.success:
+            self.log_info("Опубликована occupancy grid карта")
         else:
-            self.log_warning("⚠️ RTABMap publish_map service не готов")
+            self.log_warning(f"⚠️ {publish.error}")
 
         # Обновить FSM состояние → localization
         if self.mapping_state is not None:
@@ -333,14 +354,17 @@ class FinishMappingTool(MCPTool):
             self.log_info(f"🗺️  MappingState → localization (map='{map_name}')")
 
         suffix = f" Карта: '{map_name}'." if map_name else ""
+        note = "" if publish.success else " Но карту на экран опубликовать не удалось."
         return MCPToolResult(
             success=True,
-            message=f"Заканчиваю исследование. Переключаюсь в режим навигации.{suffix}"
+            message=f"Заканчиваю исследование. Переключаюсь в режим навигации.{suffix}{note}",
         )
 
 
 class OptimizeMapTool(MCPTool):
     """Постобработка карты: loop closures + bundle adjustment + cleanup + backup."""
+
+    event_source = "srv:/rtabmap/rtabmap/detect_more_loop_closures"
 
     def __init__(self, node):
         super().__init__(node)
@@ -490,6 +514,8 @@ class OptimizeMapTool(MCPTool):
 class LoadMapTool(MCPTool):
     """Загрузить существующую карту и перейти в режим локализации."""
 
+    event_source = "srv:/rtabmap/rtabmap/load_database"
+
     def __init__(self, node, waypoint_store: Optional["WaypointAdapter"] = None, mapping_state=None):
         super().__init__(node)
         self.waypoint_store = waypoint_store
@@ -535,41 +561,66 @@ class LoadMapTool(MCPTool):
     def execution_type(self) -> ToolExecutionType:
         return ToolExecutionType.LONG
 
+    def _activate_named_map(self, wanted: str) -> Optional[MCPToolResult]:
+        """Сделать карту ``wanted`` активной; ``None`` — всё хорошо, иначе готовый честный неуспех."""
+        try:
+            found = self.waypoint_store.set_active_map_by_name(wanted)
+        except Exception as exc:  # noqa: BLE001 - нельзя подтвердить имя = нельзя говорить «загружена»
+            self.log_warning(f"⚠️ Ошибка WaypointStore при поиске карты '{wanted}': {exc}")
+            return MCPToolResult(
+                success=False,
+                error=f"Не удалось проверить карту '{wanted}' в WaypointStore: {exc}",
+                message=f"Не удалось проверить карту «{wanted}», ничего не загружал",
+                data={"outcome": "map_lookup_failed"},
+            )
+        if not found:
+            self.log_warning(f"⚠️ Карта '{wanted}' не найдена в WaypointStore")
+            return MCPToolResult(
+                success=False,
+                error=f"Карта '{wanted}' не найдена в WaypointStore",
+                message=f"Карта «{wanted}» не найдена, ничего не загружал",
+                data={"outcome": "map_not_found"},
+            )
+        self.log_info(f"📍 Активная карта: '{wanted}'")
+        return None
+
     def execute(self, map_name: str = "") -> MCPToolResult:
         """Загрузить карту и переключиться в режим локализации."""
+        # Нет клиента (rtabmap_msgs не собран на этой Pi) — понятная ошибка, не исключение (#3789).
+        if self.load_database_client is None:
+            return MCPToolResult(
+                success=False,
+                error="RTABMap load_database service недоступен (нет rtabmap_msgs)",
+                message="Сервис карт недоступен",
+                data={"outcome": "unavailable"},
+            )
+
         from rtabmap_msgs.srv import LoadDatabase  # type: ignore
         from std_srvs.srv import Empty
 
-        # Найти карту в WaypointStore и сделать её активной
-        if map_name.strip() and self.waypoint_store:
-            try:
-                found = self.waypoint_store.set_active_map_by_name(map_name.strip())
-                if found:
-                    self.log_info(f"📍 Активная карта: '{map_name}'")
-                else:
-                    self.log_warning(f"⚠️ Карта '{map_name}' не найдена в WaypointStore")
-            except AttributeError:
-                # Метод set_active_map_by_name может отсутствовать в старой версии
-                self.log_warning("⚠️ WaypointStore не поддерживает set_active_map_by_name, пропускаем")
-            except Exception as e:
-                self.log_warning(f"⚠️ Ошибка WaypointStore: {e}")
+        # Найти карту в WaypointStore и сделать её активной. Не нашли — ничего не перезагружаем (#3789).
+        wanted = map_name.strip()
+        if wanted and self.waypoint_store:
+            failure = self._activate_named_map(wanted)
+            if failure is not None:
+                return failure
 
         # Перезагрузить базу данных (clear=False — не стирать, просто reload)
-        if self.load_database_client.service_is_ready():
-            req = LoadDatabase.Request()
-            req.database_path = "/maps/rtabmap.db"
-            req.clear = False
-            self.load_database_client.call_async(req)
-            self.log_info("🗺️ База данных перезагружена")
-        else:
-            self.log_warning("⚠️ RTABMap load_database service не готов")
+        req = LoadDatabase.Request()
+        req.database_path = "/maps/rtabmap.db"
+        req.clear = False
+        loaded = _call_service(self.load_database_client, req, 20.0, "RTABMap load_database")
+        if not loaded.success:
+            return _failed_call(self, loaded, "Не удалось загрузить карту")
+        self.log_info("🗺️ База данных перезагружена")
 
         # Переключить в режим локализации
-        if self.set_mode_localization_client.service_is_ready():
-            self.set_mode_localization_client.call_async(Empty.Request())
-            self.log_info("🧭 Режим локализации активирован")
-        else:
-            self.log_warning("⚠️ RTABMap localization service не готов")
+        switched = _call_service(
+            self.set_mode_localization_client, Empty.Request(), 10.0, "RTABMap set_mode_localization"
+        )
+        if not switched.success:
+            return _failed_call(self, switched, "Карта загружена, но режим навигации не включился")
+        self.log_info("🧭 Режим локализации активирован")
 
         # Обновить FSM состояние → localization
         if self.mapping_state is not None:

@@ -2,7 +2,12 @@
   "name": "night_marathon_act7_neuro_composer_acceptance_v1",
   "schema_version": 1,
   "_comment": [
-    "Акт 7 — flaky-known: MiniMax Music API падает независимо от нас.",
+    "Акт 7 — flaky-known: Music API (KIE/Suno) падает независимо от нас.",
+    "Песня этого прогона (n702, клетка вилки generate:robot_song): шаги n707-n709 не играются, если песни нет",
+    "(`skip_when` NO_SONG: баланс KIE 0, `[song] не вышло|сбой|не заиграла`, отказ пути `→ decline:`) -- SKIP, не FAIL.",
+    "Удаление трека (n710/n710b) убрано из марафона до привязки к track_id песни этого прогона (#4063, П5 #4077):",
+    "без привязки робот удаляет «последний» трек живой библиотеки. n703 (MERGE песни) убран: добавка к идущей",
+    "задаче проверяется в акте 8 (n807), а в акте 7 песня -- фоновый заказ, дописывать куплет некуда.",
     "generate_music и music_library ВНЕ GATE-1 намеренно —",
     "их отсутствие чаще всего означает недоступность внешнего API.",
     "В gate только каталожные gen_*-тулы (работают локально) и stop_music."
@@ -14,7 +19,7 @@
   "must_not_call": [],
   "voice_provenance": {
     "voice": "anton",
-    "tts": "yandex",
+    "tts": "minimax",
     "volume": 100,
     "llm": "minimax-m3"
   }

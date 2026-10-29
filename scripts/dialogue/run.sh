@@ -1,13 +1,13 @@
 #!/usr/bin/env bash
-# Локальный текстовый чат с диалоговой системой РОББОКСа (без ROS2).
+# Консоль диалога РОББОКСа на ходе v2 (сухой стенд, без ROS2 и без робота).
 #
 #   ./scripts/dialogue/run.sh
 #   ./scripts/dialogue/run.sh --providers deepseek --debug
-#   ./scripts/dialogue/run.sh --once "роббокс, привет" --wake-word
+#   ./scripts/dialogue/run.sh --once "Сколько у тебя заряда?" --once "Робот, стоп"
+#   ./scripts/dialogue/run.sh --db ~/.rob_box/console_memory.e2e.db --variant B
 #
 # Выбирает интерпретатор: .venv в корне репозитория → python3.12+ →
-# python3. Ниже 3.12 не поедет: rob_box_core объявляет dataclass-поле со
-# значением mappingproxy, что разрешено только с 3.12.
+# python3. Нужны пакеты `openai`, `httpx`, `pyyaml` (зависимости rob_box_llm).
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"

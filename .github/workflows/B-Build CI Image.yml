@@ -1,8 +1,27 @@
 name: "B: Build CI Image"
 
-# Периодическая сборка CI-образа (weekly) + ручной запуск.
-# Образ ghcr.io/krikz/rob-box-ci:humble содержит ROS2 Humble
-# и все зависимости для тестов — экономит ~10 мин на каждом PR.
+# Сборка CI-образа ghcr.io/krikz/rob-box-ci:humble (ROS2 Humble и все зависимости
+# тестов — экономит ~10 мин на каждом PR) по cron раз в неделю, по пушу в develop
+# и вручную. Образ ОДИН (тег :humble), его берёт G: Run Tests на PR в develop.
+#
+# #4078, решение Шифу 27.10: ИСТОЧНИК СБОРКИ — ТОЛЬКО develop.
+# Что было: 27.10 cron (schedule) собрал :humble из docker/ci/Dockerfile ветки main,
+# где нет audio_common_msgs / nav2_msgs, и все G: Run Tests на PR в develop упали
+# до тестов. Теперь:
+#   * push — как и раньше только ветка develop; собирается запустивший коммит;
+#   * schedule и workflow_dispatch — checkout `ref: develop` ЯВНО. Без `ref` они
+#     собрали бы «ветку запуска»: у schedule это всегда ветка по умолчанию (main),
+#     у dispatch — ветка, выбранная в «Use workflow from»;
+#   * теги humble-<sha> / develop и label revision берутся от собранного коммита, а
+#     не от github.sha (у schedule он указывает на main и соврал бы про источник).
+# Тег :humble остаётся один — тега по ветке (humble-develop) нет.
+#
+# ОГОВОРКА про cron. GitHub берёт cron из файла workflow на ветке по умолчанию
+# (main): «Scheduled workflows run on the latest commit on the default branch»,
+# https://docs.github.com/en/actions/reference/workflows-and-actions/events-that-trigger-workflows#schedule
+# Поэтому правка этого файла в develop меняет вторничный cron (04:00 UTC) только
+# после релиза develop→main. До релиза cron работает по старому файлу main и снова
+# соберёт :humble с main — варианты на этот срок разбираются в #4078.
 
 on:
   schedule:
@@ -26,8 +45,27 @@ jobs:
     runs-on: ubuntu-22.04
 
     steps:
-      - name: Checkout
+      # Источник — всегда develop (шапка файла). push: тот самый коммит develop, что
+      # запустил сборку (фильтр branches выше пускает только develop); остальное —
+      # кончик develop. `github.ref` / `github.sha` источником НЕ считаются.
+      - name: Checkout develop
         uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event_name == 'push' && github.sha || 'develop' }}
+
+      # Что именно собираем: коммит из checkout, не github.sha. Теги и label ниже
+      # берут его отсюда; в логе остаётся след, откуда собран образ.
+      - name: Source commit
+        id: src
+        env:
+          TRIGGER_EVENT: ${{ github.event_name }}
+          TRIGGER_REF: ${{ github.ref }}
+        run: |
+          set -euo pipefail
+          sha="$(git rev-parse HEAD)"
+          echo "sha=${sha}" >> "$GITHUB_OUTPUT"
+          echo "short=${sha:0:7}" >> "$GITHUB_OUTPUT"
+          echo "Источник сборки: develop @ ${sha} (триггер ${TRIGGER_EVENT}, workflow из ${TRIGGER_REF})"
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v4
@@ -40,6 +78,9 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
 
       # ── Metadata ──────────────────────────────────────────────────
+      # Тег ветки — константа develop: образ всегда с develop (раньше
+      # `type=ref,event=branch` у cron давал тег `main`). Label revision задаём явно:
+      # авто-label у schedule — sha main, а не собранного коммита.
       - name: Image metadata
         id: meta
         uses: docker/metadata-action@v6
@@ -47,8 +88,10 @@ jobs:
           images: ghcr.io/${{ github.repository_owner }}/rob-box-ci
           tags: |
             type=raw,value=humble
-            type=sha,prefix=humble-,format=short
-            type=ref,event=branch
+            type=raw,value=humble-${{ steps.src.outputs.short }}
+            type=raw,value=develop
+          labels: |
+            org.opencontainers.image.revision=${{ steps.src.outputs.sha }}
 
       # ── Build & push ───────────────────────────────────────────────
       - name: Build and push
@@ -76,6 +119,10 @@ jobs:
               set +u; source /opt/ros/humble/setup.bash; set -u
               python3 -c 'import pytest; assert pytest.__version__ >= \"8\"'
               python3 -c 'import openai, httpx; print(\"OK\")'
+              python3 -c 'import cv2, msgpack, aiohttp, telegram, pytz, numpy; print(cv2.__version__, numpy.__version__)'
+              python3 -c 'import pytest, xdist; print(pytest.__version__, xdist.__version__)'
               ros2 pkg prefix rclpy
+              ros2 pkg prefix audio_common_msgs
+              ros2 pkg prefix nav2_msgs
               echo '=== SMOKE TEST PASSED ==='
             "

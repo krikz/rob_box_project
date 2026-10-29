@@ -53,7 +53,7 @@ from __future__ import annotations
 import json
 from typing import Any, Iterable, Mapping
 
-__all__ = ["estimate_tokens", "estimate_prompt_tokens"]
+__all__ = ["estimate_tokens", "estimate_message_tokens", "estimate_tool_tokens", "estimate_prompt_tokens"]
 
 
 #: Токенов на символ кириллицы. Русский текст cl100k режет примерно по
@@ -142,6 +142,19 @@ def _content_of(message: Any) -> str:
     return " ".join(parts)
 
 
+def estimate_message_tokens(message: Any) -> int:
+    """Одно сообщение чата: текст, вызовы тулов и служебные токены роли."""
+    return estimate_tokens(_content_of(message)) + _PER_MESSAGE_OVERHEAD
+
+
+def estimate_tool_tokens(tool: Mapping[str, Any]) -> int:
+    """Одна схема тула в OpenAI-формате — так, как она уходит провайдеру."""
+    try:
+        return estimate_tokens(json.dumps(tool, ensure_ascii=False))
+    except (TypeError, ValueError):
+        return estimate_tokens(str(tool))
+
+
 def estimate_prompt_tokens(
     messages: Iterable[Any],
     tools: Iterable[Mapping[str, Any]] = (),
@@ -153,12 +166,4 @@ def estimate_prompt_tokens(
     сообщениями и в нашем случае составляют большую часть промпта, поэтому
     считать их обязательно.
     """
-    total = 0
-    for message in messages:
-        total += estimate_tokens(_content_of(message)) + _PER_MESSAGE_OVERHEAD
-    for tool in tools:
-        try:
-            total += estimate_tokens(json.dumps(tool, ensure_ascii=False))
-        except (TypeError, ValueError):
-            total += estimate_tokens(str(tool))
-    return total
+    return sum(estimate_message_tokens(m) for m in messages) + sum(estimate_tool_tokens(t) for t in tools)

@@ -8,13 +8,10 @@ on CI builders that don't have rclpy installed.
 """
 import asyncio
 import importlib.util
-import os
 import sys
 import types
 from pathlib import Path
 from unittest.mock import MagicMock
-
-import pytest
 
 from rob_box_harness.encounter import EncounterChannel, EncounterSeam
 from rob_box_harness.identity import Acquaintance, MemoryIdentitySeam
@@ -330,13 +327,13 @@ class TestMemorySaveSpeakerScope:
         assert result.data["speaker_id"] == "denchik-uuid"
         assert node.voice_memory._facts[0]["speaker_id"] == "denchik-uuid"
 
-    def test_save_without_any_speaker_stays_global(self):
+    def test_save_without_any_speaker_is_refused_not_global(self):
+        """#4023: «кто сейчас» пуст (незнакомец, спорный голос) и id нет - факт никому не пишется (раньше - общий)."""
         node = _FakeNode()
-        tool = MemorySaveTool(node)
-        result = tool.execute(fact="глобальный факт")
-        assert result.success
-        assert result.data["speaker_id"] is None
-        assert node.voice_memory._facts[0]["speaker_id"] is None
+        result = MemorySaveTool(node).execute(fact="глобальный факт")
+        assert not result.success
+        assert result.data == {"status": "rejected", "reason": "no_person"}
+        assert node.voice_memory._facts == []
 
 
 class TestMemorySearchSpeakerScope:
@@ -386,3 +383,116 @@ class TestMemoryContextSpeakerScope:
         assert result.data["speaker_id"] == "denchik"
         fact_texts = [f["fact"] for f in result.data["facts"]]
         assert not any("Саша" in t for t in fact_texts)
+
+
+class TestNoPersonNoWholeMemory:
+    """#4023: без ``speaker_id`` и без «кто сейчас» (``mcp_server`` при contested/tentative/незнакомце ставит ∅)
+    память о людях не читается и не пишется: ни поиска, ни контекста по памяти ВСЕХ людей."""
+
+    @staticmethod
+    def _filled(node):
+        node.voice_memory.save_turn("user", "Саша пьёт зелёный чай", speaker_id="sasha")
+        node.voice_memory.save_fact("Саша пьёт только зелёный чай", speaker_id="sasha")
+        node.voice_memory.save_fact("общий факт без хозяина", speaker_id=None)
+        return node
+
+    def test_search_without_person_does_not_search_everyone(self):
+        node = self._filled(_FakeNode())
+        node.voice_memory.search = MagicMock(side_effect=AssertionError("поиск по всей памяти"))
+        result = MemorySearchTool(node).execute(query="чай")
+        assert not result.success
+        assert result.data == {"status": "rejected", "reason": "no_person"}
+        assert "Саша" not in (result.message or "")
+
+    def test_context_without_person_gives_nobodys_turns_or_facts(self):
+        node = self._filled(_FakeNode())
+        node.voice_memory.get_context = MagicMock(side_effect=AssertionError("контекст всех"))
+        node.voice_memory.format_facts_for_prompt = MagicMock(side_effect=AssertionError("факты всех"))
+        result = MemoryContextTool(node).execute()
+        assert not result.success
+        assert result.data == {"status": "rejected", "reason": "no_person"}
+
+    def test_node_without_encounter_seam_is_nobody_too(self):
+        node = _node_with()  # узел без шва Встречи (speaker_id_enabled=false)
+        for tool, args in ((MemorySaveTool, {"fact": "x"}), (MemorySearchTool, {"query": "x"}),
+                           (MemoryContextTool, {})):
+            result = tool(node).execute(**args)
+            assert not result.success and result.data["reason"] == "no_person", tool.__name__
+        assert node.voice_memory._facts == []
+
+    def test_explicit_speaker_id_still_scopes_without_current_speaker(self):
+        """Диалог v2 кладёт собеседника снимка сам (#3705): «кто сейчас» узла ему не нужен."""
+        node = self._filled(_FakeNode())
+        found = MemorySearchTool(node).execute(query="чай", speaker_id="sasha")
+        assert found.success and found.data["speaker_id"] == "sasha" and found.data["total"] >= 1
+
+    def test_reason_is_the_dialog_knowledge_key(self):
+        from rob_box_dialog import knowledge as kn
+
+        assert memory_mod._no_person().data["reason"] == kn.NO_PERSON_REASON
+
+
+class TestSavedEventAndOneTable:
+    """PR-11 #3705: ``remember`` отвечает ``saved{fact_id}``; запись и чтение — одна таблица ``voice_facts``."""
+
+    @staticmethod
+    def _node(tmp_path):
+        from rob_box_voice.core.voice_memory import VoiceMemory
+
+        node = _FakeNode()
+        node.voice_memory = VoiceMemory(db_path=str(tmp_path / "e2e_voice_memory.db"))  # отдельная БД, не /data
+        return node
+
+    def test_fact_saved_for_one_person_is_found_only_for_that_person(self, tmp_path):
+        node = self._node(tmp_path)
+        saved = MemorySaveTool(node).execute(fact="Саша любит зелёный чай", speaker_id="spk-sasha")
+        assert saved.success and saved.data["event"] == "saved" and saved.data["fact_id"] >= 1
+        found = MemorySearchTool(node).execute(query="чай", speaker_id="spk-sasha")
+        other = MemorySearchTool(node).execute(query="чай", speaker_id="spk-boris")
+        assert [r["content"] for r in found.data["results"] if r["kind"] == "fact"] == ["Саша любит зелёный чай"]
+        assert [r for r in other.data["results"] if r["kind"] == "fact"] == []
+
+    def test_save_without_row_id_is_not_saved(self):
+        node = _FakeNode()
+        node.voice_memory.save_fact = lambda *a, **k: 0
+        result = MemorySaveTool(node).execute(fact="x", speaker_id="spk-sasha")
+        assert not result.success and result.data is None
+
+
+# ---------------------------------------------------------------------------
+# #3890 — hint при пустой выдаче на многословный запрос
+# ---------------------------------------------------------------------------
+
+
+def _node_with(turn=None):
+    node = MagicMock()
+    node.voice_memory = _FakeMemory()
+    node._encounter_seam = None
+    if turn:
+        node.voice_memory.save_turn("user", turn, speaker_id="s1")
+    return node
+
+
+def _search(query, turn=None):
+    return MemorySearchTool(_node_with(turn)).execute(query=query, speaker_id="s1")
+
+
+def test_empty_multiword_query_gets_hint():
+    res = _search("первое второе третье")
+    assert res.success and res.data["total"] == 0
+    assert "1–2 ключевыми" in res.data["hint"]
+
+
+def test_empty_single_word_query_has_no_hint():
+    res = _search("отсутствует")
+    assert res.data["total"] == 0 and "hint" not in res.data
+
+
+def test_short_words_are_not_significant():
+    assert "hint" not in _search("и в на").data
+    assert "hint" not in _search("и отсутствует").data
+
+
+def test_nonempty_result_has_no_hint():
+    res = _search("альфа бета", turn="альфа бета")
+    assert res.data["total"] == 1 and "hint" not in res.data

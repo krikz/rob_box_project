@@ -57,6 +57,13 @@
 ARG ROS_DISTRO=humble
 ARG BASE_IMAGE=ghcr.io/krikz/rob_box_base:ros2-zenoh-${ROS_DISTRO}
 
+# Общий образ ROS-сообщений (docker/msgs/Dockerfile): src/rob_box_*_msgs
+# компилируются ОДИН раз за прогон, а не в каждом образе (rosidl под qemu —
+# 4-14 минут на пакет). Тег по хэшу пакетов вычисляет gen_build_matrix.py и
+# передаёт build-arg'ом; без него сборка падает сразу на имени образа.
+ARG MSGS_IMAGE=MSGS_IMAGE-build-arg-is-required
+FROM ${MSGS_IMAGE} AS msgs
+
 # ============================================================
 # Stage 1: builder — тулчейн rosidl-кодогенерации + colcon build
 # ============================================================
@@ -138,6 +145,13 @@ RUN mkdir -p src
 
 # 1. package.xml (метаданные) — кэшируются отдельно
 COPY src/rob_box_perception_msgs/package.xml /ws/src/rob_box_perception_msgs/
+# ADR-0150 PR-2 (#3687): rob_box_perception зависит от rob_box_dialog_msgs
+# (vision_face_node читает SpeakerResult для слияния голос -> лицо).
+COPY src/rob_box_dialog_msgs/package.xml /ws/src/rob_box_dialog_msgs/
+# #4001/#4002: rob_box_perception объявляет exec_depend на rob_box_core (кривая
+# заряда). Узлы батареи в этом образе не запускаются, но rosdep должен
+# резолвить ключ из workspace, а не искать его в apt.
+COPY src/rob_box_core/package.xml /ws/src/rob_box_core/
 COPY src/rob_box_perception/package.xml /ws/src/rob_box_perception/
 
 # 2. rosdep (best-effort — apt-зависимости явно установлены выше)
@@ -171,19 +185,30 @@ RUN pip3 install --retries 5 --timeout 120 --no-cache-dir --prefix=/pyinstall -r
         exit 1; \
     fi
 
+# IDL-пакеты rob_box_perception_msgs и rob_box_dialog_msgs — готовые из общего
+# образа msgs (stage `msgs` в шапке), а не компиляцией здесь. Их package.xml
+# уже в src (для rosdep выше): colcon видит зависимость, но не собирает её
+# (нет в --packages-select) и берёт из /ws/install.
+COPY --from=msgs /ws/install /ws/install
+
 # 4. data_files (resource / prompts / launch из setup.py) — изменяются иногда
 COPY src/rob_box_perception/resource /ws/src/rob_box_perception/resource
 COPY src/rob_box_perception/prompts /ws/src/rob_box_perception/prompts
 COPY src/rob_box_perception/launch /ws/src/rob_box_perception/launch
 
 # 5. весь исходный код (горячий слой). SOURCE_HASH инвалидирует кэш
-# при изменении src/rob_box_perception* (issue #2314 pattern).
+# при изменении src/rob_box_perception* и src/rob_box_core (issue #2314 pattern).
 ARG SOURCE_HASH=unknown
 RUN echo "Source hash: ${SOURCE_HASH}" > /tmp/.source_hash
-COPY src/rob_box_perception_msgs /ws/src/rob_box_perception_msgs
+# #4167 (#4001/#4002): rob_box_perception зависит от rob_box_core (кривая заряда).
+# Копируем ВЕСЬ пакет, не выборочные файлы: setup.py тащит data_files
+# (config/, resource/) — образец docker/main/perception и docker/main/teleop.
+# Одного package.xml (шаг 1) мало: без собранного rob_box_core в /ws/install
+# colcon падает на ament_python-хуке (package.sh не найден).
+COPY src/rob_box_core /ws/src/rob_box_core
 COPY src/rob_box_perception /ws/src/rob_box_perception
 
-# 6. сборка (сначала msgs, потом nodes)
+# 6. сборка ноды (msgs уже собраны слоем выше)
 #
 # --symlink-install УБРАН (урок пилота led_matrix, коммит 037d982bf, уточнение
 # к плану §2.2): с этим флагом colcon кладёт в /ws/install не копии, а
@@ -193,7 +218,7 @@ COPY src/rob_box_perception /ws/src/rob_box_perception
 # В одностадийном образе это не проявлялось: /ws/src и /ws/build лежали рядом.
 RUN . /opt/ros/${ROS_DISTRO}/setup.sh && \
     colcon build \
-    --packages-select rob_box_perception_msgs rob_box_perception \
+    --packages-select rob_box_core rob_box_perception \
     --cmake-args -DCMAKE_BUILD_TYPE=Release
 
 # ============================================================

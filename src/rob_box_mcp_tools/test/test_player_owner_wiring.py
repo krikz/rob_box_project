@@ -60,7 +60,7 @@ def test_owner_is_attached_unconditionally(monkeypatch):
     module = _load_mcp_server_module(monkeypatch)
     node, manager = _Node(), _manager()
     assert module._attach_player_owner_v2(node, manager) is not None
-    assert [t.name for t in node.registry.tools] == ["dj_set", "request_music", "generate_music"]  # ADR-0158 PR-3
+    assert [t.name for t in node.registry.tools] == ["dj_set", "request_music", "generate_music", "edit_music"]  # #4029
 
 
 def test_no_manager_attaches_nothing_loudly(monkeypatch):
@@ -79,7 +79,7 @@ def test_v2_owner_is_the_only_state_writer(monkeypatch):
     assert owner is not None and node.created == ["/voice/music/event"]
     assert manager.osc_fail_listener == owner.on_server_fail
     # PR-5: сет v2 поверх владельца; PR-6: одиночный club-трек v2
-    assert [t.name for t in node.registry.tools] == ["dj_set", "request_music", "generate_music"]  # ADR-0158 PR-3
+    assert [t.name for t in node.registry.tools] == ["dj_set", "request_music", "generate_music", "edit_music"]  # #4029
     first = json.loads(state_pub.published[0])
     assert first["state"] == "idle" and first["dj"] == {"enabled": False}
     assert node.music_state_pub is None  # публикатор снимка — только у владельца
@@ -98,7 +98,8 @@ def test_yaml_copies_match_and_are_declared_with_the_same_types():
     assert _load("mcp_server.yaml") == {"mcp_server": {"ros__parameters": {
         "music_v2_clock_latency": 0.5, "music_v2_reasoner": True, "music_v2_reasoner_deadline_s": 45.0,
         "music_v2_dj_lines": True, "music_v2_tracks_dir": "/data/music_v2/tracks",
-        "music_chooser": "chain"}}}
+        "music_chooser": "chain",
+        "music_duck_db": -9.0, "music_duck_attack_ms": 80.0, "music_duck_release_ms": 400.0}}}  # PR-7d
     src = (REPO / "src/rob_box_mcp_tools/rob_box_mcp_tools/mcp_server.py").read_text(encoding="utf-8")
     assert re.search(r'declare_parameter\("music_v2_clock_latency", V2_CLOCK_LATENCY_S\)', src)
     assert re.search(r'declare_parameter\("music_v2_reasoner", True\)', src)
@@ -111,7 +112,7 @@ def test_music_engine_flag_is_gone():
     """PR-15: флага выбора движка нет ни в нодах, ни в launch-файлах, ни в конфигах."""
     paths = [
         "src/rob_box_mcp_tools/rob_box_mcp_tools/mcp_server.py",
-        "src/rob_box_voice/rob_box_voice/dialogue_node.py",
+        "src/rob_box_voice/rob_box_voice/dialog_node.py",  # PR-15 15p: нода v1 удалена, диалог — v2
         "docker/sound/config/voice_assistant/voice_assistant_headless.launch.py",
         "src/rob_box_voice/launch/voice_assistant.launch.py",
     ]

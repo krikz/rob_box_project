@@ -296,8 +296,10 @@ class StreamSpec:
         topic_id: 4-байтовый little-endian uint32 в payload
             ``BINARY_FRAME`` (для клиентского парсера, см. §4).
         kind: источник данных (``ros_topic`` или ``camera_direct``).
-        source: для ``ros_topic`` — имя ROS-топика; для ``camera_direct``
-            — device-id (``"oak:color"``, ``"oak:depth"``, ``"ceiling"``).
+        source: для ``ros_topic`` — имя ROS-топика (стрим из нескольких
+            топиков, как ``voice_state`` — имена через запятую); для
+            ``camera_direct`` — device-id (``"oak:color"``, ``"oak:depth"``,
+            ``"ceiling"``).
         default_quality: human-hint для UI (``"low"|"med"|"high"``).
         description: человеко-описание.
     """
@@ -1083,9 +1085,12 @@ STREAMS: tuple[StreamSpec, ...] = (
         ui_name="voice_state",
         topic_id=0x1202,
         kind=StreamKind.ROS_TOPIC,
-        source="/voice/dialogue/state",
+        source="/dialog/turn_event, /voice/speech/event, /dialog/session",
         default_quality="med",
-        description="Dialogue FSM state (event-driven).",
+        description=(
+            "Состояние голоса idle|listening|thinking|speaking (+ detail=silenced), по событию: "
+            "rob_box_core.voice_state складывает его из TurnEvent, SpeechEvent и SessionState."
+        ),
     ),
     StreamSpec(
         ui_name="person_detections",

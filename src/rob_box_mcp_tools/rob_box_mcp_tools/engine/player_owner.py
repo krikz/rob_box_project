@@ -31,9 +31,23 @@ import threading
 import time
 from typing import Any, Callable, Dict, Mapping, Optional, Tuple
 
+from rob_box_dialog.plan.sync import beat_heard_at
+from rob_box_music.model import BEATS_PER_BAR
+from rob_box_music.track_brief import track_brief
 from rob_box_voice.core.music_player_state import build_music_event_payload, build_music_state_payload
 
 _LOG = logging.getLogger(__name__)
+
+
+def beat_fields(snap: Mapping[str, Any], ts: float) -> Dict[str, Any]:
+    """Сетка тактов для ``started`` (ADR-0150 §5.6.3, PR-7c ч.2): когда доля старта трека **звучит** (``beat_at``,
+    одна формула — :func:`rob_box_dialog.plan.sync.beat_heard_at`) и длина такта в долях. Темпа нет — пусто:
+    выступление честно читает без тактов."""
+    bpm = float(snap.get("bpm") or 0.0)
+    if bpm <= 0:
+        return {}
+    heard = beat_heard_at(ts, float(snap.get("late_beats") or 0.0), bpm, float(snap.get("latency_s") or 0.0))
+    return {"beat_at": round(heard, 4), "bar_beats": float(BEATS_PER_BAR)}
 
 
 def _missing_synth_fail(detail: str) -> bool:
@@ -50,6 +64,13 @@ def _with_timing(facts: Dict[str, Any], current: Optional[Mapping[str, Any]], on
         if current.get("track_id") == once:
             facts["length_s"] = round(current["form_beats"] * 60.0 / current["bpm"], 1)
     return facts
+
+
+def _with_brief(facts: Dict[str, Any]) -> Dict[str, Any]:
+    """Факты снимка + ``brief`` - короткое описание трека из них (#4060, ``rob_box_music.track_brief``); описывать
+    нечем - поля нет."""
+    brief = track_brief(facts)
+    return {**facts, "brief": brief} if brief else facts
 
 
 def _log_started(log: Any, snap: Mapping[str, Any], line: str) -> None:
@@ -135,20 +156,23 @@ class PlayerOwner:
         if stale:
             self._log.warning(f"⚠️ [music v2] started track_id={track_id} устарел — заменён до старта")
             return
+        now = self._clock()
         fields = {k: snap.get(k) for k in ("clock_beat", "start_beat", "phase_in_form", "late_beats",
                                            "bpm", "deck", "form_beats", "players_aligned", "latency_s")}
+        fields.update(beat_fields(snap, now))
         _log_started(self._log, snap, f"🎵 [music v2] started track_id={track_id} "
                      + " ".join(f"{k}={v}" for k, v in fields.items()))
-        self._publish_event(build_music_event_payload("started", track_id, ts=self._clock(), **fields))
+        self._publish_event(build_music_event_payload("started", track_id, ts=now, **fields))
         self.publish_state()
         listener = self.on_started
         if listener is not None:
             listener(dict(snap))
         if track_id == self._once:
-            self._adapter.at(float(snap["start_beat"]) + float(snap["form_beats"]), lambda: self._finish(track_id))
+            self._adapter.at(float(snap["start_beat"]) + float(snap["form_beats"]), lambda: self.finish(track_id))
 
-    def _finish(self, track_id: str) -> None:
-        """Поток клока: конечный трек доиграл форму — дека свободна, ``finished`` и ``idle``."""
+    def finish(self, track_id: str) -> None:
+        """Трек доиграл (поток клока): конечный — свою форму, подложка выступления — свои проходы или outro на такте
+        (``BackingDeck``). Дека свободна, ``finished`` и ``idle``; играет уже другой трек — ничего."""
         with self._lock:
             if (self._current or {}).get("track_id") != track_id:
                 return
@@ -255,24 +279,30 @@ class PlayerOwner:
         self.publish_state()
         return {"ok": True, "track_id": last}
 
-    def update_dj(self, track_id: str, fields: Mapping[str, Any]) -> bool:
-        """Факты играющего трека сета (мелодия, план дальше) — в поле ``dj`` снимка. Трек уже сменился или сета
-        нет — ничего: снимок не получает факты чужого трека."""
+    def update_dj(self, track_id: str, fields: Mapping[str, Any], *, set_only: bool = True) -> bool:
+        """Факты играющего трека сета (мелодия, план дальше) — в поле ``dj`` снимка; ``set_only=False`` — и своего
+        трека вне сета (правка на ходу, #4029: темп и название после ``edit_music``). Трек уже сменился (или сета нет,
+        а ждут факты сета) — ничего: снимок не получает факты чужого трека. ``bpm`` фактов — и темп звучащего трека
+        (проход формы в снимке)."""
         with self._lock:
-            if (self._current or {}).get("track_id") != track_id or not self._dj.get("enabled"):
+            current = self._current or {}
+            if current.get("track_id") != track_id or (set_only and not self._dj.get("enabled")):
                 return False
             self._dj = {**self._dj, **fields}
+            current["bpm"] = fields.get("bpm", current.get("bpm"))
         self.publish_state()
         return True
 
     def _facts(self) -> Tuple[Optional[Dict[str, Any]], Dict[str, Any]]:
         """``(играющий трек, факты для снимка)``: поля ``dj`` (сет или факты заказа — название, источник, стиль, bpm,
-        инструмент) и время звучания трека: ``started_at``, у конечного — ``length_s`` (один проход формы)."""
+        инструмент), время звучания трека: ``started_at``, у конечного — ``length_s`` (один проход формы), и ``brief`` -
+        короткое описание трека из этих фактов (#4060, ``rob_box_music.track_brief``): его читает ``<music_state>`` хода
+        вместо номера и id; описывать нечем - поля нет."""
         with self._lock:
             current = dict(self._current) if self._current else None
             facts = dict(self._dj)
             once = self._once
-        return current, _with_timing(facts, current, once)
+        return current, _with_brief(_with_timing(facts, current, once))
 
     def position(self, track_id: str) -> Optional[Tuple[float, float, float]]:
         """``(доля клока, доля старта, форма)`` играющего ``track_id`` — вход результата по такту поверх моста

@@ -25,6 +25,14 @@ from .audio import AudioUnavailable, audio_track
 HoldStart = Callable[[Any, Any, Mapping[str, Any]], Dict[str, Any]]
 
 
+def description_facts(info: Mapping[str, Any]) -> Dict[str, str]:
+    """Факты описания трека кэша для снимка плеера (``rob_box_music.track_brief``, #4060): название, стиль и у кавера
+    его оригинал (``work_id``); чего в записи нет — ключа нет."""
+    facts = {"name": str(info.get("title") or ""), "style": str(info.get("style_key") or ""),
+             "cover": str(info.get("work_id") or "") if info.get("kind") == "cover" else ""}
+    return {k: v for k, v in facts.items() if v}
+
+
 def play_library_track(node: Any, library: Any, track_id: str, clock: Callable[[], float] = time.time,
                        run: Callable[..., Any] = subprocess.run, hold: Optional[HoldStart] = None) -> MCPToolResult:
     """Сыграть трек ``track_id`` кэша на деке владельца. ``node`` даёт ``_player_owner``, ``_dj_set_tool``
@@ -50,7 +58,7 @@ def play_library_track(node: Any, library: Any, track_id: str, clock: Callable[[
         return MCPToolResult(success=False, data={"reason": exc.reason}, error=f"трек не заиграл: {exc.reason}")
     title = str(info.get("title") or "")
     facts = {"enabled": False, "title": title, "source": "generated", "library_id": track_id,
-             "bpm": info.get("bpm_nominal") or None}
+             "bpm": info.get("bpm_nominal") or None, **description_facts(info)}
     dj_set = getattr(node, "_dj_set_tool", None)
     if dj_set is not None:
         dj_set.close_set("music_library")

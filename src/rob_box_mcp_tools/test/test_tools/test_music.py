@@ -19,6 +19,7 @@ from .._ros_stubs import RosStubs
 _ros = RosStubs()
 with _ros:
     from rob_box_mcp_tools.tools.music import (
+        STOP_OTHER_TRACK_TEXT,
         StopMusicTool,
         GetMusicStateTool,
         LookupMelodyTool,
@@ -90,7 +91,9 @@ class TestStopMusicTool:
     def test_tool_name_and_narrow_schema(self, music_node):
         tool = StopMusicTool(music_node)
         assert tool.name == "stop_music"
-        assert tool.parameters == []  # имени паттерна больше нет: паттернов LLM не пишет (#3614)
+        # имени паттерна больше нет: паттернов LLM не пишет (#3614); boundary — outro бита выступления (PR-7c)
+        assert [(p.name, p.required, p.enum) for p in tool.parameters] == [("boundary", False, ["now", "bar"]),
+                                                                           ("track_id", False, None)]
 
     def test_stops_the_playing_track_through_the_owner(self, music_node):
         owner = music_node._player_owner
@@ -114,6 +117,67 @@ class TestStopMusicTool:
         node = SimpleNamespace(get_logger=lambda: SimpleNamespace(info=lambda *a, **k: None))
         result = StopMusicTool(node).execute()
         assert result.success is True and result.data == {"was_playing": False}
+
+    # -- стоп по track_id: бит выступления снимается точечно (хвост ревью PR #4111, #4085) ---------------------------
+
+    def test_track_id_stops_exactly_that_track(self, music_node):
+        owner = music_node._player_owner
+        owner.play(_program("beat-1"))
+        result = StopMusicTool(music_node).execute(track_id="beat-1")
+        assert result.success is True
+        assert result.data == {"was_playing": True, "stopped": True, "track_id": "beat-1"}
+        assert result.message == "Музыка остановлена." and not owner.is_playing()
+
+    def test_track_id_of_another_track_leaves_the_persons_music_playing(self, music_node):
+        """Трек человека встал на деку, пока выступление просило бит: стоп по id бита его не трогает."""
+        owner = music_node._player_owner
+        owner.play(_program("person-track"))
+        result = StopMusicTool(music_node).execute(track_id="our-beat")
+        assert result.success is True
+        assert result.data == {"was_playing": False, "stopped": False, "track_id": "our-beat"}
+        assert result.message == STOP_OTHER_TRACK_TEXT
+        assert owner.is_playing() and music_node.adapter.stops == 0 and music_node.calls == []
+
+    def test_track_id_cancels_a_pending_track_that_has_not_started_yet(self):
+        """Бит поставлен владельцу, но ``started`` ещё нет (``pending``): стоп по id снимает ожидающий трек."""
+
+        class _SlowAdapter(_Adapter):
+            def start(self, program, on_started):
+                return {}  # started не придёт
+
+        adapter = _SlowAdapter()
+        owner = PlayerOwner(adapter, lambda _s: None, lambda _e: None, clock=_Clock())
+        node = SimpleNamespace(_player_owner=owner,
+                               get_logger=lambda: SimpleNamespace(info=lambda *a, **k: None))
+        owner.play(_program("pending-beat"))
+        assert owner.is_playing() and owner.now_playing()["pending"] == "pending-beat"
+        result = StopMusicTool(node).execute(track_id="pending-beat")
+        assert result.data == {"was_playing": True, "stopped": True, "track_id": "pending-beat"}
+        assert not owner.is_playing()
+
+    def test_track_id_in_silence_or_without_engine_stops_nothing(self, music_node):
+        assert StopMusicTool(music_node).execute(track_id="beat-1").data["stopped"] is False
+        assert music_node.adapter.stops == 0  # в отличие от стопа без id: группу «на всякий случай» не гасим
+        node = SimpleNamespace(get_logger=lambda: SimpleNamespace(info=lambda *a, **k: None))
+        assert StopMusicTool(node).execute(track_id="beat-1").data["stopped"] is False
+
+    def test_bar_outro_is_used_only_for_the_track_of_the_backing_deck(self, music_node):
+        outros = []
+        music_node._backing_deck = SimpleNamespace(
+            playing=True, track_id="beat-1",
+            outro=lambda: (outros.append(1), {"ok": True, "was_playing": True, "track_id": "beat-1", "end_beat": 8.0})[1])
+        ours = StopMusicTool(music_node).execute(boundary="bar", track_id="beat-1")
+        assert ours.data["end_beat"] == 8.0 and outros == [1]
+        music_node._player_owner.play(_program("person-track"))
+        other = StopMusicTool(music_node).execute(boundary="bar", track_id="our-old-beat")
+        assert other.data["stopped"] is False and outros == [1] and music_node._player_owner.is_playing()
+
+    def test_without_track_id_everything_is_still_stopped(self, music_node):
+        """«Выключи музыку» от человека - прежнее поведение: гасится всё, что играет."""
+        owner = music_node._player_owner
+        owner.play(_program("person-track"))
+        assert StopMusicTool(music_node).execute().data == {"was_playing": True}
+        assert not owner.is_playing()
 
 
 @pytest.mark.unit
@@ -139,16 +203,53 @@ class TestGetMusicStateTool:
         """Живой лог #3613: ``[music v2] started req99682…`` — а ответ «Диджей-сета не было. Renardo: доступен…»."""
         owner = music_node._player_owner
         owner.play(_program("req99682:03:A", bpm=124.0),
-                   dj={"enabled": False, "title": "космос · 124 BPM", "name": "космос", "source": "synth",
+                   dj={"enabled": False, "title": "космос · 124 BPM", "source": "synth",
                        "style": "club", "bpm": 124})
         music_node.clock.now += 65
         result = self._tool(music_node).execute()
         assert result.data["playing"] is True
         assert result.data["deck"]["track_id"] == "req99682:03:A"
         assert result.data["deck"]["source"] == "synth"
-        assert result.message.startswith("Сейчас играет «космос» — трек из синтов, его собрал код, 124 удара в минуту.")
+        # #4060: у своего синт-трека названия нет - ни слов заказа, ни метки деки «космос · 124 BPM» в кавычках
+        assert result.message.startswith("Сейчас играет музыка — клуб, синтез Ренардо, 124 удара в минуту.")
+        assert "BPM" not in result.message and "космос" not in result.message
         assert "Играет уже 1 минуту 5 секунд" in result.message and "повторяется" in result.message
         assert "Диджей-сета не было" not in result.message and "паттерн" not in result.message
+
+    def test_4060_order_words_of_an_old_server_are_not_told_as_the_title_of_a_synth_track(self, music_node):
+        """Живой 28.10 06:13: «Сейчас играет «какую нибудь спокойную музыку»» - слова заказа не название."""
+        music_node._player_owner.play(
+            _program("req99682:03:A", bpm=120.0),
+            dj={"enabled": False, "title": "клубный трек · 120 BPM", "name": "какую нибудь спокойную музыку",
+                "source": "synth", "style": "club", "bpm": 120})
+        music_node.clock.now += 5
+        message = self._tool(music_node).execute().message
+        assert message.startswith("Сейчас играет музыка — клуб, синтез Ренардо, 120 ударов в минуту.")
+        assert "спокойную" not in message
+
+    def test_4060_generated_track_is_told_by_title_and_style_not_by_id_or_a_tempo_the_deck_invented(self, music_node):
+        """Шифу 27.10: «что именно сейчас играет, а не номер трека»; темп деки файла (130) - не темп файла."""
+        owner = music_node._player_owner
+        owner.play(_program("gen48211:00:A", bpm=130.0),
+                   dj={"enabled": False, "name": "Ночной город", "source": "generated", "style": "synthwave",
+                       "title": "Очень странные дела · трек 3 из 10", "library_id": "a1b2c3", "bpm": 130.0})
+        music_node.clock.now += 5
+        result = self._tool(music_node).execute()
+        assert result.message.startswith("Сейчас играет «Ночной город» — сгенерированный трек из библиотеки, синтвейв.")
+        for key_of_code in ("gen48211", "00:A", "a1b2c3", "трек 3", "130", "удар"):
+            assert key_of_code not in result.message, key_of_code
+        assert result.data["deck"]["brief"] == "«Ночной город», синтвейв"
+
+    def test_4060_running_set_answers_with_the_track_description(self, music_node):
+        from rob_box_mcp_tools.engine.tools_v2 import brief_facts
+        from rob_box_music.dj_line import now_playing_text
+
+        owner = music_node._player_owner
+        owner.play(_program("gen48211:01:B", bpm=130.0),
+                   dj={"enabled": True, "name": "Ночной город", "source": "generated", "style": "synthwave"})
+        facts = {**brief_facts(owner), "track_no": 3, "tracks": 10, "melody": ""}
+        assert facts["name"] == "Ночной город" and "track_id" not in facts and "title" not in facts
+        assert now_playing_text(facts) == "Сейчас играет «Ночной город», синтвейв."
 
     def test_piece_tells_remaining_time(self, music_node):
         owner = music_node._player_owner

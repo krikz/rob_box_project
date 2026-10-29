@@ -1,97 +1,103 @@
-"""test_voice_db_path_consistency.py — ADR-0055 Phase 2 blocker regression guard.
+"""Один источник пути БД инструментов (#4082): хранилища ``mcp_server`` открывают ``rob_box_core.tools_db``.
 
-Issue #2000 Phase 2 asked to point every SQLite-backed store MCP tools own
-(``WaypointStore``, the legacy ``VoiceMemory`` fallback, ``FAQStore``) at the same file the dialogue node uses
-(``/data/harness_voice.db``). That merge was investigated for this card and
-rejected: ``SQLiteVoiceMemory`` (harness, ``rob_box_harness/memory/sqlite_voice.py``)
-already defines its own ``waypoints`` (``name`` TEXT PRIMARY KEY) and
-``faq_items`` (``created_at``, no FTS5) tables in ``harness_voice.db`` — see
-the ``sqlite_db_path`` comment in
-``docker/sound/config/voice_assistant/dialogue_node.yaml`` and
-``docs/adr/0055-voice-memory-db-unify-with-harness.md`` (§1.3, §3). Those
-schemas are incompatible with ``WaypointStore``'s ``waypoints`` (``id`` PK,
-``map_id`` NOT NULL FK -> ``maps``) and the legacy ``FAQStore``'s
-``faq_items`` (``indexed_at``, FTS5 triggers). ``CREATE TABLE IF NOT EXISTS``
-would silently keep whichever schema got created first, and every
-INSERT/SELECT issued by the other store would then fail with "no such
-column".
+Раньше умолчание ``/data/...db`` было вписано в каждом хранилище (``WaypointStore``, ``FAQStore``, ``VoiceMemory``
+у ``mcp_server``, ``RtttlLibrary``, ``MusicHistory``, параметры ``speaker_id_node``/``dialog_node``), а этот тест
+сверял литералы регулярным выражением. Теперь путь знает один модуль. Тест проверяет поведение: хранилища без
+явного пути пишут в файл, который даёт ``tools_db_path()``; и что в коде пакетов не появилось второго места с
+именем файла или чтения env в обход модуля (критерий карточки #4082).
 
-Until that reconciliation happens (a real schema-mapping adapter, not a
-path swap), ``WaypointStore`` / ``FAQStore`` / the legacy
-``VoiceMemory`` fallback in ``mcp_server.py`` must all keep pointing at the
-SAME default file — today that is still ``/data/voice_memory.db`` — so a
-future well-intentioned edit does not quietly fork the "one file" invariant
-into three.
-
-This test does not instantiate the stores: ``WaypointStore``
-needs real filesystem access under ``/data``, and ``mcp_server.py``'s inits
-need the optional ``rob_box_voice`` package which may not be installed in
-CI. Instead it reads the literal fallback argument passed to
-``os.getenv("VOICE_MEMORY_DB_PATH", <default>)`` at each call site and
-asserts they agree — a plain, source-level characterization test that fails
-loudly the moment one call site drifts from the others.
+Почему не ``harness_voice.db`` - докстринг ``rob_box_core.tools_db`` (схемы ``waypoints``/``faq_items`` там
+другие); это проверяет ``rob_box_core/test/test_tools_db.py``.
 """
+
 from __future__ import annotations
 
-import re
+import gzip
+import json
+import sqlite3
 from pathlib import Path
 
-_PKG_ROOT = Path(__file__).resolve().parents[1] / "rob_box_mcp_tools"
-_MCP_SERVER = _PKG_ROOT / "mcp_server.py"
-_WAYPOINT_STORE = _PKG_ROOT / "waypoint_store.py"
+import pytest
 
-_PATTERN = re.compile(r'os\.getenv\(\s*"VOICE_MEMORY_DB_PATH"\s*,\s*"([^"]+)"\s*\)')
+from rob_box_core import tools_db
+from rob_box_mcp_tools.core.rtttl_library import RtttlLibrary
+from rob_box_mcp_tools.waypoint_store import WaypointStore
 
-
-def _defaults(path: Path) -> list[str]:
-    assert path.exists(), f"expected file not found: {path}"
-    return _PATTERN.findall(path.read_text(encoding="utf-8"))
+REPO = Path(__file__).resolve().parents[3]
+MODULE = REPO / "src" / "rob_box_core" / "rob_box_core" / "tools_db.py"
 
 
-def test_all_voice_memory_db_path_call_sites_agree_on_one_default():
-    """WaypointStore and mcp_server.py's legacy call sites
-    must all fall back to the exact same literal path.
-
-    mcp_server.py has three ``VOICE_MEMORY_DB_PATH`` reads (the legacy
-    VoiceMemory fact-store fallback, and FAQStore); waypoint_store.py
-    has one. All of them must resolve to the same string.
-    """
-    mcp_server_defaults = _defaults(_MCP_SERVER)
-    waypoint_defaults = _defaults(_WAYPOINT_STORE)
-
-    assert len(mcp_server_defaults) >= 2, (
-        "expected at least 2 VOICE_MEMORY_DB_PATH call sites in mcp_server.py "
-        f"(legacy VoiceMemory fallback + FAQStore), found {mcp_server_defaults!r} "
-        "— did a call site get renamed or removed?"
-    )
-    assert waypoint_defaults, "waypoint_store.py: no VOICE_MEMORY_DB_PATH default found"
-
-    all_defaults = set(mcp_server_defaults) | set(waypoint_defaults)
-    assert len(all_defaults) == 1, (
-        "VOICE_MEMORY_DB_PATH default literal has forked across call sites: "
-        f"{sorted(all_defaults)!r}. WaypointStore / FAQStore / "
-        "the legacy VoiceMemory fallback in mcp_server.py must keep sharing "
-        "one default file until the waypoints/faq_items schema collision "
-        "with harness_voice.db (ADR-0055) is resolved by an actual adapter, "
-        "not by editing one os.getenv default in isolation."
-    )
+@pytest.fixture()
+def tools_file(monkeypatch, tmp_path):
+    path = tmp_path / "tools.db"
+    monkeypatch.setenv(tools_db.TOOLS_DB_ENV, str(path))
+    return path
 
 
-def test_default_is_not_silently_repointed_at_harness_voice_db():
-    """Guard against a well-intentioned but unsafe drive-by path swap.
+def _rows(path: Path, sql: str) -> list:
+    conn = sqlite3.connect(path)
+    try:
+        return conn.execute(sql).fetchall()
+    finally:
+        conn.close()
 
-    Repointing any of these defaults at ``/data/harness_voice.db`` without
-    first landing a schema-reconciling adapter would make WaypointStore's
-    or FAQStore's inserts fail at runtime against SQLiteVoiceMemory's
-    pre-existing ``waypoints``/``faq_items`` tables there.
-    """
-    for path in (_MCP_SERVER, _WAYPOINT_STORE):
-        for default in _defaults(path):
-            assert "harness_voice.db" not in default, (
-                f"{path.name} now defaults VOICE_MEMORY_DB_PATH to "
-                f"{default!r} — this collides with SQLiteVoiceMemory's "
-                "waypoints/faq_items schema in harness_voice.db (see "
-                "ADR-0055 and docker/sound/config/voice_assistant/"
-                "dialogue_node.yaml). Do not flip this default without a "
-                "real reconciliation adapter for waypoints/faq_items."
+
+def test_waypoint_store_without_path_writes_to_the_tools_db(tools_file):
+    store = WaypointStore()
+    try:
+        assert store.save_waypoint("кухня", 1.0, 2.0, 0.0)
+    finally:
+        store.close()
+    assert _rows(tools_file, "SELECT name FROM waypoints") == [("кухня",)]
+
+
+def test_rtttl_library_without_path_lands_in_the_tools_db(tools_file, tmp_path):
+    archive = tmp_path / "melodies.jsonl.gz"
+    with gzip.open(archive, "wt", encoding="utf-8") as fh:
+        fh.write(
+            json.dumps(
+                {
+                    "name": "nokiatun",
+                    "title": "Nokia Tune",
+                    "artist": "",
+                    "source": "t",
+                    "tags": [],
+                    "rtttl": "NokiaTun:d=4,o=5,b=225:8e6,8d6",
+                }
             )
+            + "\n"
+        )
+    RtttlLibrary(archive_path=str(archive))
+    assert _rows(tools_file, "SELECT name FROM rtttl_melodies") == [("nokiatun",)]
+
+
+def _package_sources():
+    for path in sorted((REPO / "src").rglob("*.py")):
+        rel = path.relative_to(REPO).as_posix()
+        if "/test/" in rel or "/tests/" in rel or path == MODULE:
+            continue
+        yield rel, path.read_text(encoding="utf-8", errors="replace")
+
+
+def _leaks(sources):
+    """Файлы, что знают имя файла БД или читают её env мимо ``tools_db``: имя env в двойных или в одинарных кавычках
+    (``os.environ["…"]`` и ``os.environ.get('…')`` - одно и то же, хвост ревью #4131)."""
+    file_name = tools_db.TOOLS_DB_DEFAULT.rsplit("/", 1)[1]
+    e2e_name = tools_db.TOOLS_E2E_DB_DEFAULT.rsplit("/", 1)[1]
+    quoted_env = (f'"{tools_db.TOOLS_DB_ENV}"', f"'{tools_db.TOOLS_DB_ENV}'")
+    return [
+        rel
+        for rel, text in sources
+        if file_name in text or e2e_name in text or any(quoted in text for quoted in quoted_env)
+    ]
+
+
+def test_no_second_place_knows_the_file_name_or_reads_the_env():
+    """Имя файла и чтение env - только в ``rob_box_core/tools_db.py``; остальные зовут ``tools_db_path()``."""
+    assert _leaks(_package_sources()) == []
+
+
+def test_the_guard_sees_the_env_name_in_either_kind_of_quotes():
+    env = tools_db.TOOLS_DB_ENV
+    assert _leaks([("a.py", f"os.environ.get('{env}')"), ("b.py", f'os.getenv("{env}", "")')]) == ["a.py", "b.py"]
+    assert _leaks([("c.py", f"# {env} в комментарии без кавычек")]) == []
