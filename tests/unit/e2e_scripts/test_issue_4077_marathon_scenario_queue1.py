@@ -327,6 +327,7 @@ def test_song_followups_wait_for_the_song_and_skip_without_it():
         "n312_stop_music": "NO_MUSIC_N310",  # #4176/#4196: дека пуста -- «выключи» нечего выключать (каскад от n310)
         "n507_wake_under_music": "NO_MUSIC_N506",  # #4196: «вейк под музыкой» без музыки -- не PASS
         "n511_stop_music": "NO_MUSIC_N506",  # #4196: «глуши» без музыки -- не FAIL каскадом
+        "n512_silence_after_stop": "NO_STOP_N511",  # #4196: n511 музыку не снял -- вопрос о тишине не судит чужой сбой
     }
 
 
