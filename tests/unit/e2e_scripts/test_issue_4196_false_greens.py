@@ -21,6 +21,7 @@ from typing import Any, Dict
 
 import pytest
 
+from tests.unit.e2e_scripts.test_issue_3857_event_waits import _l
 from tests.unit.e2e_scripts.test_issue_3989_recover import (
     REPLY,
     SCRIPTS_DIR,
@@ -295,6 +296,16 @@ def test_stt_verdict_n506_lost_tempo():
     assert eev.stt_verdict(step, "робот и ускорь темп а то мы тут засыпаем оба")["stt_ok"] == 1
 
 
+def test_stt_verdict_executed_command_is_not_replayed_n506_29_10():
+    """n506 марафона-6: «темп» -> «там», но «ускорь» уже исполнено (134 -> 145 BPM): второй раз команда упирается в потолок."""
+    step = _steps()["n506_faster"]
+    heard_text = "робот и ускорь там потом мы тут засыпаем оба"
+    assert eev.stt_verdict(step, heard_text) == {"keys": 2, "stt_ok": 0, "missing": "темп"}
+    assert eev.stt_verdict(step, heard_text, executed=True) == {"keys": 2, "stt_ok": 1, "missing": "темп", "kept": "executed"}
+    # слова на месте -- «исполнено» ничего не меняет: kept только там, где повтор был бы нужен
+    assert eev.stt_verdict(step, "робот и ускорь темп", executed=True) == {"keys": 2, "stt_ok": 1, "missing": "-"}
+
+
 def test_stt_verdict_judges_nothing_without_keys_or_without_a_heard_phrase():
     assert eev.stt_verdict({"label": "x"}, "что угодно")["stt_ok"] == 1
     assert eev.stt_verdict({"label": "x", "stt_keys": ["темп"]}, "")["stt_ok"] == 1
@@ -354,6 +365,18 @@ def test_cli_stt_reads_the_keys_from_the_scenario_file_not_from_its_name(tmp_pat
     assert run("робот говори басом") == ["keys=2", "stt_ok=1", "missing=-"]
 
 
+def test_cli_stt_executed_flag_keeps_the_first_execution(tmp_path):
+    copy = tmp_path / "e2e_scenario.json"
+    copy.write_text((NIGHT / "night_marathon_act5_renardo_live_v1.json").read_text(encoding="utf-8"), encoding="utf-8")
+    base = [sys.executable, str(EVENTS), "stt", "--scenario", str(copy), "--label", "n506_faster",
+            "--heard", "робот и ускорь там потом"]
+    plain = subprocess.run(base, capture_output=True, text=True, encoding="utf-8", check=True).stdout.splitlines()
+    kept = subprocess.run([*base, "--executed", "1"], capture_output=True, text=True, encoding="utf-8",
+                          check=True).stdout.splitlines()
+    assert plain == ["keys=2", "stt_ok=0", "missing=темп"]
+    assert kept == ["keys=2", "stt_ok=1", "missing=темп", "kept=executed"]
+
+
 def test_json_on_disk_carries_the_fields():
     disk = {}
     for path in NIGHT.glob("night_marathon_act*_v1.json"):
@@ -395,6 +418,49 @@ def test_n709_the_outcome_phrase_or_a_harmless_remark_is_green(said):
     assert _n709(said)["pass"], said
 
 
+CODE_CLOSED = ("📊 [turn] turn_id=t1 epoch=1 agent=main stage=done status=done latency_ms=3822 llm_calls=2 "
+               "llm_provider=x tokens=10")
+
+
+def _n709_closed_by_code(said: str) -> Dict[str, Any]:
+    return _verdict(
+        "n709_stop_generated",
+        _mcp(T0, "📥 Запрос выполнения: stop_music с параметрами {}"),
+        stopped(T0 + 0.5, "gen_ab12_1"),
+        _mcp(T0 + 1, "✅ Инструмент stop_music выполнен успешно"),
+        _tts(said),
+        CODE_CLOSED,
+    )
+
+
+def test_n709_turn_closed_by_the_code_phrase_after_a_rejected_promise_is_green_29_10():
+    """Марафон-6, run 40814536797, 03:58:43: `music_promise` отбит дважды, «Музыку я уже выключил.», `status=done`."""
+    got = _n709_closed_by_code("Музыку я уже выключил.")
+    assert got["pass"], got
+
+
+@pytest.mark.parametrize("said", [
+    "Данные получил, а ответ у меня не сложился. Спроси ещё раз?",  # заглушка каталога query.fallback_generic
+    "Не вышло.",
+    "Раз Борис уснул — сделаю потише.",  # ложь о другом действии с музыкой: проверка фразы не ослаблена
+    "Хорошо, убавлю громкость.",
+])
+def test_n709_status_done_does_not_excuse_a_stub_or_a_false_music_claim(said):
+    got = _n709_closed_by_code(said)
+    assert not got["pass"] and got["acc"]["forbidden_said"], said
+
+
+def test_n709_is_the_only_step_that_allows_status_done():
+    allowing = {label for label, s in _steps().items()
+                if gen.TURN_FALLBACK not in s["acceptance"]["must_not_call"]}
+    assert allowing == {"n709_stop_generated"}
+    assert gen.TURN_CLOSED_BY_CODE in _steps()["n709_stop_generated"]["patterns"]
+    assert gen.TURN_DONE not in _steps()["n709_stop_generated"]["patterns"]
+    assert etm.patterns_missing(CODE_CLOSED, [gen.TURN_CLOSED_BY_CODE]) == []
+    assert etm.patterns_missing(DONE, [gen.TURN_CLOSED_BY_CODE]) == []
+    assert etm.patterns_missing(CODE_CLOSED.replace("status=done", "status=failed"), [gen.TURN_CLOSED_BY_CODE])
+
+
 def test_n709_without_the_stop_it_is_still_red_whatever_is_said():
     got = _verdict("n709_stop_generated", _tts("Выключил музыку."), DONE)
     assert not got["pass"]
@@ -419,6 +485,9 @@ def _scenario(tmp_path: Path) -> str:
                                            "recover": ["no_wake", "silenced", "stt_replay"]}]}, ensure_ascii=False),
                     encoding="utf-8")
     return 'SCENARIO_FILE="%s"; STEP_BEFORE=initial;' % path.as_posix()
+
+
+PATTERNS_N506 = """; patterns_json='["✅ Инструмент edit_music выполнен успешно"]'"""
 
 
 def _names(played):
@@ -450,6 +519,27 @@ class TestRunStepSttReplay:
         out, err, _, _ = _run_step(tmp_path, bad, [bad], STEP, _scenario(tmp_path) + KINDS, replace=True)
         assert "PLAY_COUNT=2" in out, (out, err)
         assert out.count("E2E_RECOVER stt_replay a ") == 1
+
+    def test_command_already_executed_is_not_replayed_n506_29_10(self, tmp_path):
+        """Марафон-6: «темп» -> «там», но `edit_music` уже исполнен (134 -> 145 BPM): повтор упёрся бы в потолок. Повтора
+        нет, окно шага остаётся с первой попытки (паттерны судят первое исполнение)."""
+        first = (heard("робот и ускорь там потом мы тут засыпаем оба", "{NOW-30}")
+                 + _l("mcp_server", "{NOW-25}", "✅ Инструмент edit_music выполнен успешно") + REPLY)
+        out, err, _, played = _run_step(tmp_path, first, [], STEP, _scenario(tmp_path) + KINDS + PATTERNS_N506)
+        assert "RC=0" in out and "PLAY_COUNT=1" in out, (out, err)
+        assert "E2E_RECOVER" not in out and "RECOVERED=stt_replay" not in out, out
+        assert "STEP_BEFORE=initial" in out, "окно шага не сдвигается: судим первое исполнение"
+        assert "команда исполнена, повтора нет" in out, out
+        assert _names(played) == ["cmd_a_eq.wav"]
+
+    def test_command_not_executed_is_still_replayed_when_the_step_has_patterns(self, tmp_path):
+        """Исхода шага в окне нет (n411: «гарри» -- pitch_shift не менялся): повтор, как раньше."""
+        first = heard("робот гарри басом как диктор", "{NOW-30}") + REPLY
+        again = heard("робот говори басом как диктор", "{NOW-11}") + REPLY
+        out, err, _, played = _run_step(tmp_path, first, [again], STEP, _scenario(tmp_path) + KINDS + PATTERNS_N506,
+                                        replace=True)
+        assert "PLAY_COUNT=2" in out and out.count("E2E_RECOVER stt_replay a ") == 1, (out, err)
+        assert "повтора нет" not in out
 
     def test_step_without_the_kind_is_never_replayed(self, tmp_path):
         bad = heard("робот гарри басом", "{NOW-30}") + REPLY

@@ -194,7 +194,8 @@ def test_every_step_is_red_on_a_stub_phrase_or_a_turn_closed_by_a_stub():
     """Заглушка -- не ответ ни для одного шага: все шаги марафона несут обе проверки."""
     for label, step in _steps().items():
         acc = step["acceptance"]
-        assert gen.TURN_FALLBACK in acc["must_not_call"], label
+        if label != "n709_stop_generated":  # #4020: `code_closes` -- `status=done` у него законный итог (фраза кода)
+            assert gen.TURN_FALLBACK in acc["must_not_call"], label
         assert gen.STUB_SPEECH in acc["must_not_say"], label
     for text in ("Данные получил, а ответ у меня не сложился. Спроси ещё раз?", "Не вышло.",
                  "Хм, я задумался и ничего не придумал. Повтори?", "DeepSeek так и не ответил — я перестал ждать. "
