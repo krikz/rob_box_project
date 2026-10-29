@@ -88,10 +88,12 @@ def test_n109_unasked_voice_is_dropped_not_spoken_and_not_a_violation():
     assert asked.voice == "female-shaonv" and "voice" not in asked.dropped
 
 
-def test_asked_voice_outside_the_sounding_catalogue_is_a_violation_with_the_list():
+def test_asked_voice_outside_the_sounding_catalogue_is_dropped_not_a_violation():
+    """#4225 (марафон-7 n404): голос не из каталога - лишнее поле, реплика звучит голосом робота; раньше ``bad_enum``
+    с перечнем, и повтор модели брал из него чужой голос."""
     busy = Busy(voices=("alena", "zahar"))
     res = validate(parse({"speech": "Привет", "voice": "female-shaonv"}), ALL, busy=busy, form=Form())
-    assert isinstance(res, Invalid) and res.reason == "bad_enum" and res.all[0].allowed == busy.voices
+    assert isinstance(res, Command) and res.voice is None and "voice" in res.dropped and res.speech == "Привет"
     assert validate(parse({"speech": "Привет", "voice": "alena"}), ALL, busy=busy, form=Form()).voice == "alena"
     unasked = validate(parse({"speech": "Привет", "voice": "female-shaonv"}), ALL, busy=busy, form=ADDRESSED)
     assert isinstance(unasked, Command) and unasked.voice is None, "не просили — отброшен, а не нарушение"

@@ -601,7 +601,8 @@ def validate(cmd: Result, available_tools: Collection[str], session: Any = None,
     ``session`` — снимок сессии агента (берётся ``agent``: ``say_aloud`` — только оператору и телеграму);
     ``busy`` — что занято сейчас; ``form`` — форма команды хода (``None`` — текущая, :func:`current_form`):
     голый ``passed`` на адресованную реплику — нарушение ``VIOLATION_PASSED_ADDRESSED``, ``passed`` рядом с ответом там
-    же и голос реплики без просьбы о голосе отбрасываются (``dropped``); форма последней итерации после запроса
+    же и голос реплики без просьбы о голосе или не из каталога ролей (текущий голос робота, чужое имя, #4225)
+    отбрасываются (``dropped``); форма последней итерации после запроса
     (``Form.speech_required``): ответ без слов (одно лицо, анимация) - нарушение ``VIOLATION_SPEECH_REQUIRED``
     (:func:`_check_answered`). Невалидная сцена лица и earcon не из перечня
     отбрасываются (``dropped``), а не валят команду (§5.5.9); так же лишние поля ВЛОЖЕННЫХ объектов аргументов
@@ -613,7 +614,7 @@ def validate(cmd: Result, available_tools: Collection[str], session: Any = None,
     if isinstance(cmd, Invalid):
         return cmd
     form = form or current_form()
-    cmd = _drop_closed_passed(_drop_unasked_voice(_fit_soft_args(_drop_nested_extras(cmd)), form), form)
+    cmd = _drop_closed_passed(_drop_cosmetic_voice(_fit_soft_args(_drop_nested_extras(cmd)), form, busy), form)
     # подложка: сначала вид без просьбы о музыке теряет её, потом путь пения подгоняет остальное;
     # число лиц по сегментам правит другое поле выступления и идёт последним, порядок с подложкой не важен
     cmd = _fit_sing_backing(_drop_default_backing(cmd, form), form)
@@ -627,7 +628,7 @@ def validate(cmd: Result, available_tools: Collection[str], session: Any = None,
         lambda: _check_passed(cmd, form),
         lambda: _check_answered(cmd, form),
         lambda: _check_spoken(cmd.speech, "speech"),
-        lambda: _check_voice(cmd.voice, busy),
+        lambda: _check_speech(cmd.voice, kn.VOICE_MAX_CHARS, "voice"),
         lambda: _check_ask(cmd.ask),
         lambda: _check_actions(open_actions, available, agent),
         lambda: _check_speech_with_actions(cmd, agent),
@@ -785,10 +786,15 @@ def _drop_closed_passed(cmd: Command, form: Form) -> Command:
     return replace(cmd, passed=None, dropped=cmd.dropped + ("passed",))
 
 
-def _drop_unasked_voice(cmd: Command, form: Form) -> Command:
-    """Голос реплики без просьбы о голосе (форма хода закрыла ``voice`` n109) — не нарушение, а лишнее поле:
-    реплика звучит текущим голосом робота, поле — в ``dropped`` (лог ``fields_dropped``)."""
-    if cmd.voice is None or form.voice:
+def _drop_cosmetic_voice(cmd: Command, form: Form, busy: Busy) -> Command:
+    """Голос реплики, который ничего не меняет, — не нарушение, а лишнее поле: реплика звучит текущим голосом робота
+    (голос сессии после ``set_voice``), поле — в ``dropped`` (лог ``fields_dropped``). Это голос без просьбы о голосе
+    (форма хода закрыла ``voice``, n109) и голос не из каталога ролей звучащего провайдера (``busy.voices``; пусто —
+    не сверяется): в каталоге нет текущего голоса робота (``plan_host.perform_busy``: рассказчик), и «скажи этим
+    голосом» с ``voice`` = текущий голос было ``bad_enum`` → повтор → модель брала другой голос из списка нарушения
+    (#4225, марафон-7 n404: после ``set_voice alena`` прозвучал ``arina`` через MiniMax мужским голосом). Чужое имя
+    тоже не уходит в TTS: подменил бы молча."""
+    if cmd.voice is None or (form.voice and (not busy.voices or cmd.voice in busy.voices)):
         return cmd
     return replace(cmd, voice=None, dropped=cmd.dropped + ("voice",))
 
@@ -858,14 +864,6 @@ def _check_sing(cmd: Command, form: Form) -> None:
         raise _Bad(kn.VIOLATION_SING_ROUTE, f"путь {form.sing}: perform.kind={cmd.perform.kind}", kinds)
     if sing.needs_tool and sing.needs_tool not in {a.tool for a in cmd.actions}:
         raise _Bad(kn.VIOLATION_SING_ROUTE, f"путь {form.sing}: нужен {sing.needs_tool}", (sing.needs_tool,))
-
-
-def _check_voice(voice: Optional[str], busy: Busy) -> None:
-    """Голос реплики — из каталога звучащего провайдера (``Busy.voices``; пусто — не сверяется), как и голоса
-    сегментов (:func:`_check_voices`): чужое имя TTS подменил бы молча."""
-    _check_speech(voice, kn.VOICE_MAX_CHARS, "voice")
-    if voice and busy.voices and voice not in busy.voices:
-        raise _Bad("bad_enum", f"voice={voice}", busy.voices)
 
 
 def is_empty(cmd: Command) -> bool:
