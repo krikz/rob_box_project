@@ -43,7 +43,7 @@ from typing import Any, Callable, Dict, Iterable, List, Mapping, NamedTuple, Opt
 
 from rob_box_music import knowledge as kn
 from rob_box_music.instruments import LeadChoice, lead_choice
-from rob_box_music.dj_line import now_playing_text, persona_title, set_not_found_text
+from rob_box_music.dj_line import now_playing_text, persona_title, set_not_found_text, tracks_word
 from rob_box_music.track_brief import BRIEF_FACTS
 from rob_box_music.arrange.compose import compose
 from rob_box_music.render.renardo import render
@@ -177,6 +177,20 @@ def brief_args(heard_text: Optional[str], heard_tracks: Optional[int], style: Op
     named = style if style not in (None, AUTO_STYLE) else (match_style_text(brief.spec) or style)
     return (brief.head, heard_set_length(brief.head), named, styles or list(set_genres(brief.spec)[0]) or None,
             unsupported_note(unsupported(brief.spec)))
+
+
+def set_opening(result: Dict[str, Any], lines: Optional[TransitionLines]) -> Dict[str, Any]:
+    """Сет заиграл и объявляет треки вслух: в данных исхода - название трека 1 (``opening``) и длина сета словами
+    (``tracks_text``). Фразу старта «Ставлю сет на N треков. Первый - «X».» строит диалог по ним
+    (``knowledge.DJ_DONE``) вместо общего «Включаю музыку.» (#4217, ADR-0148: названия берёт код, а не LLM). Названия
+    нет (трек 1 ещё не встал - мост ожидания генерации, или у него нет названия) - исход прежний."""
+    if not result.get("started") or lines is None:
+        return result
+    title = lines.opening.title()
+    tracks = result.get("tracks")
+    if not title or not isinstance(tracks, int):
+        return result
+    return {**result, "opening": title, "tracks_text": f"{tracks} {tracks_word(tracks)}"}
 
 
 def spec_noted(result: Dict[str, Any], note: str) -> Dict[str, Any]:
@@ -566,6 +580,7 @@ class DjSetTool(MCPTool):
             else:
                 return MCPToolResult(success=False, error=f"action={action!r}: есть только start и stop")
         result = confirmed(spec_noted(result, spec_note), self._confirm)  # ждём started вне замка
+        result = set_opening(result, self._facts)
         self._session_turn = turn_id if result.get("ok") else None
         return with_level(tool_result(result, "сет не начался"), heard_text, self.level,
                           self.node.get_logger() if self.node is not None else _LOG)

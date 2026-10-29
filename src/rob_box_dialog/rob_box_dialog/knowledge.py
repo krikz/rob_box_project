@@ -1334,10 +1334,16 @@ STOPPED_EARLIER_FIELD = "stopped_earlier"
 #: стопа - ``turn._tier1_then_rest``: «хватит, борис уже уснул под неё», n709): модель видит, что музыку уже
 #: остановил код, а не думает, что она ещё играет и её можно «сделать потише».
 THIS_TURN_FIELD = "this_turn"
-DJ_STOP = ByData(("action", "was_playing", STOPPED_EARLIER_FIELD), {
-    ("stop", False, None): "music.stop_idle", ("stop", False, True): "music.stop_ok",
-    ("stop", True, None): "music.stop_ok", ("stop", None, None): "music.stop_ok",
-})
+#: Старт сета с объявлением (#4217, n605 «поставь сет из трёх треков, объявляй каждый»): сет объявляет треки вслух, и
+#: первый - тоже: ``dj_set`` кладёт в данные исхода название трека 1 (``opening``) и длину сета словами (``tracks_text``),
+#: фразу строит код по ним («Ставлю сет на 3 трека. Первый - «X».»), а не общее «Включаю музыку.» класса. Названия нет
+#: (мост ожидания генерации, трек без названия, реплики диджея выключены) - ключ класса, как было.
+DJ_OPENING_FIELD = "opening"
+DJ_DONE = ByData(("action", DJ_OPENING_FIELD, "was_playing", STOPPED_EARLIER_FIELD), {
+    ("start", True, None, None): "music.set_opening",
+    ("stop", False, False, None): "music.stop_idle", ("stop", False, False, True): "music.stop_ok",
+    ("stop", False, True, None): "music.stop_ok", ("stop", False, None, None): "music.stop_ok",
+}, present=(DJ_OPENING_FIELD,))
 DJ_STOP_FAIL = ByData(("action",), {("stop",): "music.stop_fail"})
 #: Фраза «обычный голос» целиком: голос робота по умолчанию звучит, а режим тона («басом»), снятый вместе с ним,
 #: этой фразой и сказан - отдельное «Тон голоса обычный.» рядом не нужно (``turn.voice_phrase``). Ключ живёт здесь один:
@@ -1372,7 +1378,7 @@ TOOL_PHRASES: Mapping[str, Mapping[str, Any]] = MappingProxyType({
         "rejected": "music.stop_fail",
     }),
     # стоп сета - то же, что стоп музыки, а не «Включаю музыку.» старта; платная генерация - фраза ожидания
-    "dj_set": MappingProxyType({"done": DJ_STOP, "rejected": DJ_STOP_FAIL}),
+    "dj_set": MappingProxyType({"done": DJ_DONE, "rejected": DJ_STOP_FAIL}),
     "request_music": MappingProxyType({"done": GEN_WAIT}),
     "generate_music": MappingProxyType({"done": GEN_WAIT}),
     # библиотека (CLASS_BY_ARG): правка - фраза о ней, не «Включаю музыку»; list/search/info - query, фразы кода нет
