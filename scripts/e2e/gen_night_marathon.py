@@ -368,6 +368,12 @@ SILENCE_ANSWER = "тишин|тихо|ничего не играет|не игр
 #: Issue #3165 — «Не получилось выполнить» на вопрос, где ничего не
 #: исполнялось, — ложная фраза-отказ (fallback #2949).
 FALSE_FAILURE_PHRASE = "не получилось выполнить"
+#: #4196 (n813): ответ о состоянии музыки на вопрос «играет ли что-нибудь». Без «тихо»: оно совпадало и с командой
+#: «молчу, тихо» (марафоны 3-5: «робот тишина» -> «Молчу, Саша. Тихо.» было зелёным). Команду «молчу» ловит ещё
+#: ``must_not_say`` шага (:data:`SILENCE_COMMAND_ACK`).
+SILENCE_STATE_ANSWER = "тишин|ничего не играет|не играет|не звучит|музыки нет"
+#: Ответ на команду «замолчи» вместо ответа на вопрос о музыке (#4196, n813).
+SILENCE_COMMAND_ACK = "молчу"
 #: Ложное утверждение «тихо» на вопрос, когда музыка играет (n503, n603): запрещённая фраза в РЕЧИ робота.
 SILENCE_CLAIM = "тишин|ничего не играет|не играет|не звучит|музыки нет"
 #: Ответ «играет» (n503, n603): глагол состояния или факт трека (стиль, темп, ритм) -- по снимку ``<music_state>``.
@@ -379,7 +385,10 @@ COUNT_FOUR = "четыр|четвер|4"
 #: узнал» краснел, ключ знал только «незнакомец/неопознанный»). Подстрока РЕЧИ без регистра: метка неузнанного у кода не одна --
 #: «незнаком…», «неопознан…», «не узнал/не узнала/не узнали» (подстрока «не узнал»), «не узнаю», «не узнан…», «не знаю, кто/кого».
 #: Ответ «всех узнал» (без отрицания) ключ не пропускает: красный по делу, когда в бэклоге был незнакомый.
-UNKNOWN_VOICE_ANSWER = ("незнаком|неопознан|не узнал|не узнаю|не узнан|не знаю, кто|не знаю кто|не знаю, кого|не знаю кого")
+# #4196 (М5, n306): «третий голос я не опознал» -- честное признание неопознанного; формы «не опознал/опознан/опознаю»
+# (и «не опознала») -- словами. Утверждение «всех узнал/опознал» этих подстрок не содержит -- красное.
+UNKNOWN_VOICE_ANSWER = ("незнаком|неопознан|не опознал|не опознан|не опознаю|не узнал|не узнаю|не узнан|не знаю, кто|не знаю кто|"
+                        "не знаю, кого|не знаю кого")
 #: Другое число людей, названное ответом на n307: «пять/шесть/семь» только с существительным или формой «-еро» (голое «пять» --
 #: подстрока «опять»), цифрами -- с существительным. «Двое/трое» не запрещены: «из них трое незнакомых» -- верная часть ответа.
 COUNT_NOT_FOUR = "|".join(
@@ -489,7 +498,7 @@ class SkipWhen(NamedTuple):
 
     log: str
     absent: bool = False
-    deck: str = ""  # ``idle``: судит последнее событие деки за акт (``e2e_events.DECK_IDLE``), а не любая строка лога
+    deck: str = ""  # ``idle``/``playing``: судит последнее событие деки за акт (``e2e_events.DECK_*``), а не любая строка
 
 
 #: Id песни этого акта: заказ песни пишет его сам по готовности (``engine/gen/song.py``: ``🎤 [song] «<название>»
@@ -520,6 +529,8 @@ SKIP_WHEN: Dict[str, SkipWhen] = {
     "NO_MUSIC_N310": SkipWhen(MUSIC_DECK_EVENT, deck=eev.DECK_IDLE),
     # То же в акте 5: музыку завёл n502, правили n504-n506 -- «вейк под музыкой» (n507) и «глуши» (n511) без неё каскад.
     "NO_MUSIC_N506": SkipWhen(MUSIC_DECK_EVENT, deck=eev.DECK_IDLE),
+    # Наоборот: n511 («глуши») музыку не снял (#4199) -- дека всё ещё играет, и вопрос о тишине n512 судил бы чужой сбой.
+    "NO_STOP_N511": SkipWhen(MUSIC_DECK_EVENT, deck=eev.DECK_PLAYING),
 }
 #: Путь заказа музыки: ``🎚️ [source] asked=[…] genre=… кандидаты=[…] → <id> (<кто выбрал>) gen=…`` (``engine/source_route.py``),
 #: ``<id>`` -- ``synth:<стиль>`` / ``cache:<трек>`` / ``generate:<вид>:<модель>`` / ``decline:<причина>``. Шаг, который
@@ -665,6 +676,7 @@ def step(
     expect: str = "",
     retry: int = 0,
     why: str = "",
+    no_repeat_numbers: bool = False,
     discovery_tools: Optional[List[str]] = None,
     barge_in: Optional[Dict[str, Any]] = None,
     silent_ok: bool = False,
@@ -695,7 +707,8 @@ def step(
     if retry and any(p.startswith(PERFORM_STARTED_MARK) for p in s["patterns"]):
         raise ValueError(f"{label}: шаг ждёт выступление ({PERFORM_STARTED_MARK}…) -- retry запрещён (#3971 R4)")
     acc = _acceptance(
-        expect_tools, discovery_tools, must_not, must_not_say, must_not_identify_as, keywords, voice_changed, why
+        expect_tools, discovery_tools, must_not, must_not_say, must_not_identify_as, keywords, voice_changed, why,
+        no_repeat_numbers,
     )
     if acc:
         s["acceptance"] = acc
@@ -750,6 +763,7 @@ def _acceptance(
     keywords: Optional[List[str]],
     voice_changed: bool,
     why: str,
+    no_repeat_numbers: bool = False,
 ) -> Dict[str, Any]:
     """Блок ``acceptance`` шага (пустой -- шаг без него). Порядок ключей -- как в JSON актов (сверяет ``--check``).
 
@@ -769,6 +783,8 @@ def _acceptance(
         ("must_not_identify_as", must_not_identify_as),
         ("expected_keywords", keywords),
         ("voice_changed", True if voice_changed else None),
+        # #4196/#4207: числа 1..20 в звучавшей речи окна -- не больше раза (счёт после правки не идёт заново).
+        ("no_repeat_numbers", True if no_repeat_numbers else None),
     )
     acc: Dict[str, Any] = {key: value for key, value in fields if value}
     if not acc:
@@ -1984,11 +2000,16 @@ act(
         ),
         step(
             "n512_silence_after_stop",
-            "Робот, теперь тишина?",
-            keywords=[SILENCE_ANSWER],
+            "Робот, теперь что-нибудь играет?",
+            keywords=[SILENCE_STATE_ANSWER],
             must_not=["stop_music"],
-            must_not_say=[FALSE_FAILURE_PHRASE],
-            why="#3971: ответ из снимка `<music_state>` (ADR-0148), get_music_state не требуем.",
+            must_not_say=[FALSE_FAILURE_PHRASE, SILENCE_COMMAND_ACK],
+            skip_when="NO_STOP_N511",
+            why="#3971: ответ из снимка `<music_state>` (ADR-0148), get_music_state не требуем. #4196 (М5, 29.10): "
+            "n511 музыку не снял (#4199), «Робот, теперь тишина?» без «?» услышано как команда -- робот выключил музыку "
+            "сам («Выключил музыку.»): красный каскадом и по неоднозначной фразе. Теперь (1) вопрос виден словами, как в "
+            "n813 (ключи без «тихо», «молчу» красит); (2) музыка ещё играет (последнее событие деки за акт `started`, "
+            "`skip_when` NO_STOP_N511, `deck: playing`) -- SKIP «каскад n511», а не FAIL. Корень (n511) краснеет сам.",
         ),
     ],
     [
@@ -2387,6 +2408,7 @@ act(
             silent_ok=True,
             patterns=[TURN_DONE],
             must_not=["🛑 [interrupt]", "SpeechEvent cancelled"],
+            no_repeat_numbers=True,
             why="Зонд gp12: MERGE вне песни. Добавка к ИДУЩЕЙ задаче не должна "
             "её обрывать (ADR-0150 PR-5: не стоп — речь не рвётся, interrupt.py "
             "NO_INTERRUPT; «Cancel: new STT input» здесь законен — отменяется ход LLM, "
@@ -2395,7 +2417,12 @@ act(
             "Исход -- добавка отвечает после текущей речи (APPEND) либо молча "
             "(`silent_ok`): в run 39876993047 шаг краснел `cycle_unconfirmed_after_"
             "accept` при искажённом STT («пять робот и после каждого числа…»). "
-            "Это НЕ стоп-шаг: паттерн отмены речи здесь не ставим, наоборот.",
+            "Это НЕ стоп-шаг: паттерн отмены речи здесь не ставим, наоборот. #4196 (М5, run 40801693422): "
+            "`SpeechEvent cancelled` с `spoken_chars=0` у реплики без `started` -- выброшенный пред-синтез "
+            "заменённого сегмента, не обрыв речи: `must_not` его не считает (`e2e_tool_match.drop_unspoken_cancels`); "
+            "обрыв звучащей реплики (`started` в окне или `spoken_chars>0`) по-прежнему красный. Настоящий дефект "
+            "(#4207: после правки счёт пошёл заново, 9-19 прозвучали дважды) держит `no_repeat_numbers`: числа 1..20 "
+            "в звучавшей речи окна не повторяются -- шаг красен, пока #4207 не закрыт.",
         ),
         action_step(
             "n809_music_bed",
@@ -2453,10 +2480,14 @@ act(
         ),
         step(
             "n813_silence_final",
-            "Робот, тишина?",
-            keywords=[SILENCE_ANSWER],
-            must_not_say=[FALSE_FAILURE_PHRASE],
-            why="#3971: ответ из снимка `<music_state>` (ADR-0148), get_music_state не требуем.",
+            "Робот, сейчас что-нибудь играет?",
+            keywords=[SILENCE_STATE_ANSWER],
+            must_not_say=[FALSE_FAILURE_PHRASE, SILENCE_COMMAND_ACK],
+            why="#3971: ответ из снимка `<music_state>` (ADR-0148), get_music_state не требуем. #4196 (М3-М5): "
+            "«Робот, тишина?» -- вопрос жил в интонации, STT знак не отдаёт, робот слышал «робот тишина» и отвечал "
+            "командой («Молчу, Саша.»); шаг был зелёным лишь по совпадению слова («тишина», «тихо») -- на вопрос о "
+            "музыке робот не отвечал ни в одном из трёх прогонов. Теперь вопрос виден словами («играет ли что-нибудь»), "
+            "ключи -- ответ о музыке без «тихо» (оно совпадало и с «молчу, тихо»), а ответ-команда «молчу» красит шаг.",
         ),
     ],
     [

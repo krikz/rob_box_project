@@ -156,6 +156,7 @@ def test_n306_claiming_to_know_everyone_stays_red(said):
 def test_n306_key_is_the_one_constant():
     assert _steps()["n306_who_was_talking"]["acceptance"]["expected_keywords"] == ["Борис", gen.UNKNOWN_VOICE_ANSWER]
     assert "незнаком" in gen.UNKNOWN_VOICE_ANSWER and "неопознан" in gen.UNKNOWN_VOICE_ANSWER
+    assert "не опознал" in gen.UNKNOWN_VOICE_ANSWER and "не опознаю" in gen.UNKNOWN_VOICE_ANSWER
 
 
 # ── n1002: «тех, кто не представился, по именам знаешь?» (марафон-4, 22:55:38) ─────────────────────────────
@@ -185,8 +186,8 @@ def test_the_precondition_is_one_mechanism_with_two_cascade_reasons():
     assert steps["n312_stop_music"]["skip_when"] == {"reason": "NO_MUSIC_N310", "log": gen.MUSIC_DECK_EVENT, "deck": "idle"}
     for label in ("n507_wake_under_music", "n511_stop_music"):
         assert steps[label]["skip_when"] == {"reason": "NO_MUSIC_N506", "log": gen.MUSIC_DECK_EVENT, "deck": "idle"}, label
-    assert eev.SKIP_DECKS == (eev.DECK_IDLE,), "второго вида деки нет: `ended` поглощён `idle`"
-    assert {r.deck for r in gen.SKIP_WHEN.values() if r.deck} == {eev.DECK_IDLE}
+    assert eev.SKIP_DECKS == (eev.DECK_IDLE, eev.DECK_PLAYING), "`ended` поглощён `idle`; `playing` -- обратное (n512)"
+    assert {r.deck for r in gen.SKIP_WHEN.values() if r.deck} == {eev.DECK_IDLE, eev.DECK_PLAYING}
 
 
 @pytest.mark.parametrize("label", ["n507_wake_under_music", "n511_stop_music", "n312_stop_music"])
@@ -456,3 +457,43 @@ class TestRunStepSttReplay:
             tmp_path, bad, [], STEP,
             _scenario(tmp_path) + "E2E_STEP_RECOVER_KINDS=no_wake,silenced; E2E_STEP_RECOVERED=''; E2E_STEP_STT_REPLAYED=''")
         assert "PLAY_COUNT=1" in out and "E2E_RECOVER" not in out, (out, err)
+
+
+# ── М5 (29.10): n512 -- каскад от n511 и вопрос словами; n306 -- «не опознал» ──────────────────────────────
+
+
+@pytest.mark.parametrize("lines, why", [
+    ((started(T0 + 10),), "n511 не снял музыку: трек всё ещё играет"),
+    ((started(T0 + 10), edited(T0 + 20)), "правка играющего трек не снимает"),
+])
+def test_n512_is_skipped_while_music_still_plays(lines, why):
+    got = _skip("n512_silence_after_stop", *lines)
+    assert got["skip"] == "NO_STOP_N511" and got["evidence"] != "-", (why, got)
+
+
+@pytest.mark.parametrize("lines, why", [
+    ((), "музыка не заигрывала"),
+    ((started(T0 + 10), stopped(T0 + 50)), "n511 стоп исполнил"),
+    ((started(T0 + 10), finished(T0 + 50)), "трек доиграл сам"),
+])
+def test_n512_is_played_when_the_deck_is_empty(lines, why):
+    assert _skip("n512_silence_after_stop", *lines) == {"fetch": 1, "skip": "-", "evidence": "-"}, why
+
+
+def test_n512_asks_in_words_and_does_not_accept_the_command():
+    step = _steps()["n512_silence_after_stop"]
+    assert "играет" in step["text"].lower() and "?" in step["text"]
+    assert step["acceptance"]["expected_keywords"] == [gen.SILENCE_STATE_ANSWER]
+    assert gen.SILENCE_COMMAND_ACK in step["acceptance"]["must_not_say"]
+    assert not _verdict("n512_silence_after_stop", _tts("Выключил музыку. Молчу, Саша."), DONE)["pass"]
+    assert _verdict("n512_silence_after_stop", _tts("Нет, Саша, сейчас ничего не играет."), DONE)["pass"]
+
+
+@pytest.mark.parametrize("said, green", [
+    ("На фоне говорили трое. Саша - его я узнал, Борис - тоже узнал. А третий голос я не опознал.", True),
+    ("Борис - узнал. Один голос остался неопознан.", True),
+    ("Борис - знакомый. Третья не опознала голос.", True),
+    ("Борис - узнал, и всех остальных я тоже опознал.", False),
+])
+def test_n306_not_identified_forms_are_green_and_claims_to_know_everyone_are_red(said, green):
+    assert _verdict("n306_who_was_talking", _tts(said), DONE)["pass"] is green, said

@@ -75,6 +75,7 @@ __all__ = ["TOOL_NAME_RE", "invocation_markers", "tool_invoked", "strip_llm_requ
            "registration_outcome", "registration_expected",
            "registration_failures", "registration_pending",
            "identify_failures", "robot_speech", "keyword_hit",
+           "drop_unspoken_cancels", "repeated_numerals",
            "retry_block_reason", "step_verdict", "patterns_missing"]
 
 # Маркеры голосового ответа (любой из них обозначает «робот начал говорить»).
@@ -718,6 +719,66 @@ def patterns_missing(logs: str, patterns: list) -> list:
     return missing
 
 
+# ── #4196 / #4207: отмена несказанного и повтор счёта в одном шаге ───────────────
+#
+# ``must_not_call: ["SpeechEvent cancelled"]`` (n807, добавка к идущей речи не должна её рвать) краснел и за
+# ``cancelled spoken_chars=0`` -- выброшенный пред-синтез заменённого при правке сегмента, который ещё не звучал
+# (марафон-5, run 40801693422): красный не про речь. Рвётся ЗВУЧАЩАЯ речь: ``started`` был, или прозвучали символы.
+
+_UNSPOKEN_CANCEL_RE = re.compile(r"SpeechEvent cancelled speech_id=(\w+)\b[^\n]*?\bspoken_chars=0\b")
+_STARTED_RE = re.compile(r"SpeechEvent started speech_id=(\w+)")
+
+
+def drop_unspoken_cancels(logs: str) -> str:
+    """Лог без строк ``SpeechEvent cancelled ... spoken_chars=0`` реплик, у которых в окне нет ``started``.
+
+    Такая реплика не звучала: её отмена -- правка плана, а не обрыв речи. Отмена реплики со ``started`` в окне (в том
+    числе до первых символов) и любая отмена с ``spoken_chars>0`` остаются в логе и по-прежнему ловятся. Граница:
+    реплика, начавшаяся ДО окна шага и отменённая с ``spoken_chars=0``, неотличима от несказанной -- её отмену харнесс
+    не вменяет (``progress`` приходит раньше любой заметной речи)."""
+    started = set(_STARTED_RE.findall(logs))
+
+    def keep(line: str) -> bool:
+        found = _UNSPOKEN_CANCEL_RE.search(line)
+        return not (found and found.group(1) not in started)
+
+    return "\n".join(line for line in logs.split("\n") if keep(line))
+
+
+_TTS_LINE_RE = re.compile(r"🔊 TTS: speech_id=(\w+),.*?\btext=(?:'(.*?)'|\"(.*?)\")\s*$")
+_NUMERALS = (
+    "один", "два", "три", "четыре", "пять", "шесть", "семь", "восемь", "девять", "десять", "одиннадцать",
+    "двенадцать", "тринадцать", "четырнадцать", "пятнадцать", "шестнадцать", "семнадцать", "восемнадцать",
+    "девятнадцать", "двадцать",
+)
+_NUMERAL_RE = re.compile(r"(?<![а-яё])(%s)(?![а-яё])" % "|".join(sorted(_NUMERALS, key=len, reverse=True)))
+
+
+def _sounded_speech(logs: str) -> str:
+    """Речь, которая ЗВУЧАЛА: тексты ``🔊 TTS`` реплик со ``SpeechEvent started`` (строка TTS ложится при приёме
+    реплики, и отменённый до старта пред-синтез попал бы в неё). Нет ни одного ``started`` (v1, сухой лог) --
+    :func:`robot_speech`."""
+    started = set(_STARTED_RE.findall(logs))
+    if not started:
+        return robot_speech(logs)
+    out: list = []
+    for line in logs.split("\n"):
+        found = _TTS_LINE_RE.search(line)
+        if found and found.group(1) in started:
+            out.append(found.group(2) if found.group(2) is not None else found.group(3))
+    return "\n".join(out)
+
+
+def repeated_numerals(logs: str) -> list:
+    """Числительные 1..20, прозвучавшие в окне больше одного раза (счёт не должен идти по кругу после правки).
+
+    Считается звучавшая речь (:func:`_sounded_speech`), регистр не важен. Возвращает ``["девять x2", ...]``."""
+    counts: dict = {}
+    for word in _NUMERAL_RE.findall(_sounded_speech(logs).lower()):
+        counts[word] = counts.get(word, 0) + 1
+    return ["%s x%d" % (w, n) for w, n in counts.items() if n > 1]
+
+
 def step_verdict(acc: dict, logs: str, *, label: str = "", timing_path: str = "") -> dict:
     """Вердикт ``acceptance`` шага по логу шага: те же правила, что исполняет ``check_acceptance`` на роботе.
 
@@ -753,12 +814,15 @@ def step_verdict(acc: dict, logs: str, *, label: str = "", timing_path: str = ""
     if m:
         recognized = m.group(1).strip()
 
+    # #4196: отмена несказанного (пред-синтез при правке) -- не обрыв речи; запрет must_not смотрит остальной лог.
+    kept_logs = drop_unspoken_cancels(logs)
     actual_calls: list = []
     for c in (expected_call + must_not):
-        if tool_invoked(logs, c) and c not in actual_calls:
+        if tool_invoked(kept_logs, c) and c not in actual_calls:
             actual_calls.append(c)
     missing_expected = [c for c in expected_call if not tool_invoked(logs, c)]
-    forbidden_called = [c for c in must_not if tool_invoked(logs, c)]
+    forbidden_called = [c for c in must_not if tool_invoked(kept_logs, c)]
+    repeated_numbers = repeated_numerals(logs) if acc.get("no_repeat_numbers") else []
     found_keywords = [k for k in expected_kw if keyword_hit(logs, k)]
     missing_keywords = [k for k in expected_kw if not keyword_hit(logs, k)]
     forbidden_said = [k for k in must_not_say if keyword_hit(logs, k)]
@@ -816,6 +880,8 @@ def step_verdict(acc: dict, logs: str, *, label: str = "", timing_path: str = ""
         failures.append(f"expected keywords missing in logs: {missing_keywords}")
     if forbidden_said:
         failures.append(f"forbidden phrases spoken by robot: {forbidden_said}")
+    if repeated_numbers:
+        failures.append(f"numbers spoken more than once (#4207: count restarted after edit): {repeated_numbers}")
     if identification_failures:
         failures.extend(identification_failures)
     if discovery_tool_errors:
@@ -842,6 +908,8 @@ def step_verdict(acc: dict, logs: str, *, label: str = "", timing_path: str = ""
         "missing_keywords": missing_keywords,
         "must_not_say": must_not_say,
         "forbidden_said": forbidden_said,
+        "no_repeat_numbers": bool(acc.get("no_repeat_numbers")),
+        "repeated_numbers": repeated_numbers,
         "must_not_identify_as": acc.get("must_not_identify_as", []) or [],
         "identify_failures": identification_failures,
         "discovery_tools": discovery_tools,

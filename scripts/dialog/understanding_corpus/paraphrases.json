@@ -4,7 +4,7 @@
  "part": 2,
  "base": {
   "name": "understanding_marathon_part1",
-  "corpus_sha256": "9587c98caf6d3cbb4f55388c539bd1da40af9ec4164f1f360c5499eba56b17f6"
+  "corpus_sha256": "d7b7adbec4dd042e843ea124092a4266c91306f73c66317d62e9461354984e28"
  },
  "generator": "scripts/dialog/understanding_corpus/build_paraphrases.py",
  "method": {
@@ -96,10 +96,12 @@
   "repointed": {
    "measured_sha256": "56f5836f701cd79180e804d451088a386735984b5f85eb621758389265416601",
    "from_base": "cf0a67043a479dbe8911875404707257b81edbdf7261293c3b4a9ba0cf5456da",
-   "to_base": "9587c98caf6d3cbb4f55388c539bd1da40af9ec4164f1f360c5499eba56b17f6",
+   "to_base": "d7b7adbec4dd042e843ea124092a4266c91306f73c66317d62e9461354984e28",
    "dropped_steps": [
     "3/n309_bg_command_valera",
-    "7/n707_gen_track_info"
+    "7/n707_gen_track_info",
+    "8/n813_silence_final",
+    "5/n512_silence_after_stop"
    ]
   },
   "dropped_rows": [
@@ -113,10 +115,10 @@
   ]
  },
  "counts": {
-  "steps": 86,
-  "alternatives": 257,
-  "excluded": 4,
-  "steps_with_3": 85,
+  "steps": 84,
+  "alternatives": 251,
+  "excluded": 6,
+  "steps_with_3": 83,
   "steps_with_2": 1,
   "steps_with_1": 0,
   "steps_below_min": 0
@@ -141,9 +143,19 @@
    "id": "7/n707_gen_track_info",
    "alternatives_dropped": 3,
    "reason": "часть 1 пересобрана (cf0a67043a47 → a8c4cd58e3e1): текст шага сменился «Робот, расскажи, что это за трек: кто, про что и сколько длится.» → «Робот, расскажи про песню про енота: кто, про что, сколько длится.», альтернативы старого текста к новому шагу не относятся"
+  },
+  {
+   "id": "8/n813_silence_final",
+   "alternatives_dropped": 3,
+   "reason": "часть 1 пересобрана (9587c98caf6d → 0640ef3e6cca): текст шага сменился «Робот, тишина?» → «Робот, сейчас что-нибудь играет?», альтернативы старого текста к новому шагу не относятся"
+  },
+  {
+   "id": "5/n512_silence_after_stop",
+   "alternatives_dropped": 3,
+   "reason": "часть 1 пересобрана (0640ef3e6cca → d7b7adbec4dd): текст шага сменился «Робот, теперь тишина?» → «Робот, теперь что-нибудь играет?», альтернативы старого текста к новому шагу не относятся"
   }
  ],
- "corpus_sha256": "a2ccef2356b3bcf73f36aa8f94dc6e2ca6a589af5acaa66e82ce0902f62d3273",
+ "corpus_sha256": "6d777b3c0a9b3a8cd252a8acbd6e3080496b84fe7e836125e324956442aa15e7",
  "alternatives": {
   "1/n101_wake_cold_start": [
    {
@@ -626,17 +638,6 @@
     "text": "Робот, всё, выключай музыку, у меня уже уши в трубочку."
    }
   ],
-  "5/n512_silence_after_stop": [
-   {
-    "text": "Робот, сейчас тишина?"
-   },
-   {
-    "text": "Робот, теперь ничего не играет?"
-   },
-   {
-    "text": "Робот, а сейчас тишина?"
-   }
-  ],
   "6/n601_silence_check": [
    {
     "text": "Робот, сейчас тихо, ничего не звучит?"
@@ -888,17 +889,6 @@
    },
    {
     "text": "Робот, под этот бит зачитай теперь коротенький рэп про енотика."
-   }
-  ],
-  "8/n813_silence_final": [
-   {
-    "text": "Робот, тихо?"
-   },
-   {
-    "text": "Робот, ничего не играет?"
-   },
-   {
-    "text": "Робот, музыки нет?"
    }
   ],
   "9/n901_sound_catalog": [
