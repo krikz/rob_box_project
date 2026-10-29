@@ -50,6 +50,7 @@ from rob_box_dialog.plan.backing import Backing, BackingTrack, MusicStop
 from rob_box_dialog.plan.estimate import SpeechRate
 from rob_box_dialog.plan.plan_events import PlanEvent
 from rob_box_dialog.plan.rap_pauses import PAUSE_PROVIDERS, markup
+from rob_box_dialog.plan.repeats import drop_said
 from rob_box_dialog.plan.segments import FIXED, HEARD, Line, SegmentList, segment_rows
 from rob_box_dialog.plan.sync import BeatGrid, beat_offset_ms, next_bar
 
@@ -137,9 +138,17 @@ def edit_asks_backing(perf: Performance, foreign_playing: bool) -> bool:
     return perf.backing in kn.PERFORM_BACKING_MOODS and not (perf.segments and foreign_playing)
 
 
+def _last_said(segments: List[Line]) -> Optional[Dict[str, Any]]:
+    """Последний сегмент, отданный на звучание (``FIXED``): ``{no, text}``; ни одного — ``None``."""
+    fixed = [line for line in segments if line.state in FIXED]
+    return {"no": fixed[-1].no, "text": fixed[-1].text} if fixed else None
+
+
 def context_block(block: "PerformBlock", now: float) -> Dict[str, Any]:
     """Блок контекста LLM (риск §16): спетое и звучащее — дословно, номер первого не начатого сегмента, сколько
-    осталось звучать, подложка. По нему LLM правит «с того места» (``edit_pending``)."""
+    осталось звучать, подложка. По нему LLM правит «с того места» (``edit_pending``). ``last_said`` — последний сегмент,
+    уже отданный на звучание (правка встанет за ним: «досчитано до сюда»), ``pending`` — ещё не отданные дословно
+    (#4207: без них модель переписывала выступление с начала)."""
     segments = block.lines.segments()
     active = next((line for line in segments if line.state == "active"), None)
     pending = next((line for line in segments if line.state == "pending"), None)
@@ -148,6 +157,8 @@ def context_block(block: "PerformBlock", now: float) -> Dict[str, Any]:
         "done": [line.text for line in segments if line.state == "done"],
         "active": None if active is None else {"no": active.no, "text": active.text},
         "next_fixed": [line.text for line in segments if line.state == "committed"],
+        "last_said": _last_said(segments),
+        "pending": [line.text for line in segments if line.state == "pending"],
         "first_pending": None if pending is None else pending.no,
         "segments_total": len(segments),
         "remaining_s": round(max(0.0, block.predicted_end(now) - now), 1),
@@ -272,6 +283,13 @@ class SpeechSide:
         """MERGE в PENDING (:func:`edit_range`): ``(эффекты, причина отказа или "")``."""
         reason, skip, first_no = edit_range(self.lines, perf.from_segment)
         rows = [] if reason else segment_rows(perf, skip)
+        fresh = drop_said(rows, self.lines.said())  # модель прислала выступление с начала: сказанное не повторяется (#4207)
+        if rows and not fresh:
+            self._log(f"{LOG_MARK} правка повторяет уже сказанное ({len(rows)} сегм.) — отклонена")
+            return [], "edit_repeats_said"
+        if fresh != rows:
+            self._log(f"{LOG_MARK} правка: сказанное не повторяю — из {len(rows)} сегм. осталось {len(fresh)}")
+        rows = fresh
         if not rows:
             return [], reason or "edit_late"
         _, numbers = self.lines.replace_tail(first_no, rows)
