@@ -11,9 +11,12 @@ from pathlib import Path
 import pytest
 
 REPO = Path(__file__).resolve().parents[3]
-sys.path.insert(0, str(REPO / "scripts" / "dialog"))
+# Только то, что нужно speech_format: сам скрипт и пакет rob_box_dialog (rap_pauses — чистая stdlib).
+# Не через dry_stand: он тянет мост команд и клиент openai, которого нет в job Offline Unit Tests.
+for _p in (REPO / "scripts" / "dialog", REPO / "src" / "rob_box_dialog"):
+    if str(_p) not in sys.path:
+        sys.path.insert(0, str(_p))
 
-import dry_stand  # noqa: E402,F401 — пакеты репозитория в sys.path
 import speech_format as sf  # noqa: E402
 
 VERSE = "Еду в 2024 году\nУ меня семьдесят восемь процентов заряда\nКод мой чистый и быстрый"
