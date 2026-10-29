@@ -82,7 +82,6 @@ from dataclasses import dataclass, field, fields, replace
 from typing import (Any, Awaitable, Callable, Collection, FrozenSet, Iterable, List, Mapping, Optional, Protocol,
                     Sequence, Tuple)
 
-from rob_box_core.speaker_wire import NAME_CONFIRMED
 from rob_box_core.tool_catalog import get_tool
 from rob_box_core.utterance import Sink, Utterance
 from rob_box_dialog import face_scene
@@ -111,8 +110,8 @@ from rob_box_dialog.speaker_adapter import asks_recognized, recognition_reply, s
 from rob_box_dialog.words import asks_to_listen
 from rob_box_dialog.tools_view import (available_tools, music_asked, needs_words, robot_asked, show_asked,
                                        voice_asked, voice_named)
-from rob_box_dialog.turn_log import (PERFORM_STARTED, TOOL, USER, TurnAggregate, TurnLog, forget_old_name,
-                                     phrase_label, results_of, speaker_label)
+from rob_box_dialog.turn_log import (PERFORM_STARTED, TOOL, USER, TurnAggregate, TurnLog, phrase_label, results_of,
+                                     speaker_label)
 
 _LOG = logging.getLogger(__name__)
 #: Строка лога хода v2 (вход, решение, итог).
@@ -729,17 +728,6 @@ async def understand(engine: "TurnEngine", turn: "_Turn", snap: SessionSnapshot)
                      f"{kinds} turn={turn.turn_id}")
     with turn_form(form):
         await engine._understand(turn, snap)
-
-
-def note_renamed(log: TurnLog, snap: SessionSnapshot, result: ActionResult) -> None:
-    """Исход ``register_speaker`` ``done{renamed}`` (#4054): прежнее имя профиля уходит из окна модели
-    (``turn_log.forget_old_name``) - снимок хода называет собеседника только текущим именем. Прежнее имя - имя
-    собеседника в снимке хода, если оно подтверждено голосом (догадку за имя не берём)."""
-    if result.tool != kn.NAME_OWNER_TOOL or result.status != "done" or result.reason != kn.RENAMED_REASON:
-        return
-    speaker = getattr(snap, "speaker", None)
-    old = getattr(speaker, "name", None) if getattr(speaker, "name_state", None) == NAME_CONFIRMED else None
-    forget_old_name(log, old, (result.data or {}).get("name"))
 
 
 def outcome_phrase(results: Sequence[ActionResult]) -> Optional[str]:
@@ -1727,7 +1715,6 @@ class TurnEngine:
         owner = memory.memory_owner(snap)  # чья память у хода при исполнении: исход - только ей в окне
         for result in results:
             self.log.result(turn.turn_id, result, owner)
-            note_renamed(self.log, snap, result)
             self._event("action", turn, data={"tool": result.tool, "status": result.status, "reason": result.reason,
                                               "cls": result.cls})
         self._note_asked(turn, actions, results)
