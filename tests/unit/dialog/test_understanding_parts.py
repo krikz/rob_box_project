@@ -474,3 +474,9 @@ def test_jev_budget_is_shared_over_all_passes(monkeypatch):
     assert second.max_calls == 3
     second.calls = 3
     assert make().max_calls == 0
+
+
+def test_regex_must_not_say_is_never_an_anchor(base):
+    """#4218: ``re:`` -- регэксп обращения по имени, не слова фразы; якорем (в т.ч. шагов до него) не бывает."""
+    step = {"acceptance": {"expected_keywords": ["Тамар"], "must_not_say": ["re:нина\\s*[,!]", "Нин"]}}
+    assert alt._groups_of(step, [], forbidden=True) == ["Тамар", "Нин"]

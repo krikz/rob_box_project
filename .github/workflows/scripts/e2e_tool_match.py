@@ -74,7 +74,7 @@ __all__ = ["TOOL_NAME_RE", "invocation_markers", "tool_invoked", "strip_llm_requ
            "first_invocation_position", "VOICE_CYCLE_MARKERS",
            "registration_outcome", "registration_expected",
            "registration_failures", "registration_pending",
-           "identify_failures", "robot_speech", "keyword_hit",
+           "identify_failures", "robot_speech", "keyword_hit", "REGEX_PREFIX",
            "drop_unspoken_cancels", "repeated_numerals",
            "retry_block_reason", "step_verdict", "patterns_missing"]
 
@@ -343,15 +343,29 @@ def robot_speech(logs: str) -> str:
     return "\n".join(voiced + fallback)
 
 
+#: Строка ``expected_keywords`` / ``must_not_say`` с этим префиксом -- регэксп по речи робота, а не подстроки.
+REGEX_PREFIX = "re:"
+
+
 def keyword_hit(logs: str, kw: str) -> bool:
     """``kw`` (алтернативы через ``|``) найден в РЕЧИ робота.
 
     Контракт совпадает со старым ``_keyword_hit``: регистронезависимо,
     ``|`` — это ИЛИ, пустые альтернативы игнорируются.
+
+    Префикс ``re:`` (:data:`REGEX_PREFIX`) -- вся строка после него регэксп (``|`` внутри -- альтернация регэкспа, а не
+    разбор на подстроки; ``re.IGNORECASE | re.MULTILINE``, фразы речи разделены переводом строки). Нужен запретам на
+    ОБРАЩЕНИЕ по имени (``must_not_say``): подстрока «Нина.» краснит и честный пересказ истории, регэксп -- нет (#4218).
+    Битый регэксп не совпал (как ``patterns_missing``).
     """
     speech = robot_speech(logs).lower()
     if not speech:
         return False
+    if kw.startswith(REGEX_PREFIX):
+        try:
+            return re.search(kw[len(REGEX_PREFIX):], speech, re.IGNORECASE | re.MULTILINE) is not None
+        except re.error:
+            return False
     return any(v.strip() and v.strip() in speech for v in kw.lower().split("|"))
 
 

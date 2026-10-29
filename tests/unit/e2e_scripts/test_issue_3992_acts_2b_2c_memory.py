@@ -559,16 +559,42 @@ def test_act2_introduction_claiming_nameless_profile_is_confirmed(label, name):
 
 
 def test_n723_one_name_per_voice():
-    """После n722 голос — одна запись «Тамара»; старое имя вслух не звучит (#4054: чужой голос — утечка имени)."""
+    """После n722 голос — одна запись «Тамара» (механизм: вердикт и имя в речи). Старое имя в РАССКАЗЕ об истории — не
+    ошибка (решение Шифу 29.10, #4218); ошибка — обратиться к человеку им или назвать его так."""
     step = _steps(ACT2C)["n723_nina_one_name"]
     verdict, missing = _judge(step, _verdict("Тамара", 0.91) + _tts("Тебя зовут Тамара, соседка снизу."))
     assert verdict["pass"] and missing == []
     verdict, missing = _judge(step, _verdict("Нина", 0.93) + _tts("Тебя зовут Нина."))
     assert not verdict["pass"] and missing == step["patterns"], "запись не переименована"
-    said_old = _judge(step, _verdict("Тамара", 0.91) + _tts("Тамара, а раньше ты была Ниной."))[0]
-    assert not said_old["pass"] and "Нин" in said_old["reason"]
     low = _judge(step, _verdict("Тамара", 0.76) + _tts("Тебя зовут Тамара."))
     assert low[1] == step["patterns"], "уверенность < 0.8 — имя не подтверждено"
+
+
+@pytest.mark.parametrize("said", [
+    "Понял, Тамара. Сначала я услышал „Нина“.",  # n723 29.10: правдивый пересказ истории
+    "Тамара, а раньше ты была Ниной.",
+    "Тебя зовут Тамара. Раньше я звал тебя Ниной, пока ты не поправила.",
+    "Тамара, сначала я услышал Нина, потом ты назвалась Тамарой.",
+])
+def test_n723_old_name_in_history_is_not_a_failure(said):
+    step = _steps(ACT2C)["n723_nina_one_name"]
+    verdict, missing = _judge(step, _verdict("Тамара", 0.91) + _tts(said))
+    assert verdict["pass"] and missing == [], verdict["reason"]
+
+
+@pytest.mark.parametrize("said", [
+    "Нина, привет!",
+    "Привет, Нина!",
+    "Понял, Нина.",
+    "Тамара. Нина, ты же так назвалась?",
+    "Привет Нина!",
+    "Ты Нина, а не Тамара.",
+    "Тебя зовут Нина.",
+])
+def test_n723_addressing_by_old_name_is_a_failure(said):
+    step = _steps(ACT2C)["n723_nina_one_name"]
+    verdict, _missing = _judge(step, _verdict("Тамара", 0.91) + _tts(said))
+    assert not verdict["pass"] and verdict["forbidden_said"], said
 
 
 # ── строки лога, на которые опираются паттерны, есть в коде робота ───────────

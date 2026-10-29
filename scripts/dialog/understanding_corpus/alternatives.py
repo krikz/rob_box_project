@@ -271,12 +271,16 @@ def _has_any(text: str, group: str) -> bool:
 # ── Якоря из ожиданий ─────────────────────────────────────────────────────────────────────────────────────────────
 
 
+#: Строка ожидания с этим префиксом - регэксп по речи робота (``e2e_tool_match.REGEX_PREFIX``), не слова: не якорь.
+REGEX_PREFIX = "re:"
+
+
 def _groups_of(step: Dict[str, Any], generic: Iterable[str], forbidden: bool) -> List[str]:
     """Группы слов ожиданий шага: ``expected_keywords`` и (``forbidden``) ``must_not_say`` без общих фраз отказа."""
     acc = step.get("acceptance") or {}
     skip = set(generic)
     groups = [*(acc.get("expected_keywords") or []), *((acc.get("must_not_say") or []) if forbidden else [])]
-    return [g for g in groups if g not in skip]
+    return [g for g in groups if g not in skip and not g.startswith(REGEX_PREFIX)]
 
 
 def generic_groups(base: Dict[str, Any]) -> List[str]:
