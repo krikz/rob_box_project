@@ -145,6 +145,13 @@ class Backlog:
         return [{**self.label(e, heard), "text": e.text[:BACKGROUND_PHRASE_MAX_CHARS]}
                 for e in since[-BACKGROUND_MAX_PHRASES:]]
 
+    def background_summary(self, heard: Heard) -> Dict[str, Any]:
+        """Сводка фона за то же окно, что :meth:`background_since_reply`, но по ВСЕМ фразам окна, а не по последним
+        ``BACKGROUND_MAX_PHRASES``: :func:`voices_summary` (#4212). Пусто, если фоновых фраз нет."""
+        self._prune(heard.t)
+        window = [e for e in self._entries if 0.0 <= heard.t - e.t <= BACKGROUND_WINDOW_S]
+        return voices_summary([self.label(e, heard) for e in window], caller=heard.person_ref)
+
     @staticmethod
     def label(entry: Heard, heard: Heard) -> Dict[str, Any]:
         """Фраза для LLM структурой: что сказано, когда, сколько звучала, откуда и кто сказал. ``speaker_id`` —
@@ -164,6 +171,43 @@ class Backlog:
 def _continues(prev: Heard, nxt: Heard) -> bool:
     """``prev`` — более ранний кусок того же рассказа: кончился не раньше чем за паузу до начала ``nxt``."""
     return prev.t >= nxt.t - nxt.voice_s - BACKLOG_STORY_GAP_S
+
+
+def _voice_key(phrase: Mapping[str, Any]) -> tuple:
+    """``(ключ голоса, имя)`` фразы: профиль (``speaker_id``), иначе узнанное имя; ``("", "")`` - автор не доказан."""
+    speaker = phrase.get("speaker") or {}
+    name = str(speaker.get("name") or "").strip() if speaker.get("identified") else ""
+    sid = phrase.get("speaker_id")
+    return (sid if sid and sid != NAME_UNKNOWN else (f"name:{name.lower()}" if name else "")), name
+
+
+def voices_summary(phrases: Sequence[Mapping[str, Any]], caller: str = "") -> Dict[str, Any]:
+    """Сводка голосов фона, построенная кодом, а не пересчётом модели (ADR-0148, #4212): ``voices`` - сколько разных
+    собеседников говорило (по ``speaker_id`` профиля; безымянные профили - каждый отдельно, один человек с десятью
+    репликами - один), ``known`` - имена узнанных (по порядку появления), ``unknown`` - сколько безымянных профилей.
+    Собеседник хода (``caller`` - его профиль, ``Heard.person_ref``) и его реплики в бэклоге - один и тот же человек
+    («ты» и «Саша» не два голоса): он входит в ``voices`` один раз, ``caller_included`` говорит, говорил ли он на фоне,
+    а ``known``/``unknown`` перечисляют остальных (марафон-6 n307: «ты, Саша, Борис + один» дало «четверо» ложно).
+    Фразы без профиля (``speaker_id`` = ``unknown``, голос не опознан) профиль не доказывают: считаются отдельно в
+    ``unattributed`` (число фраз), а не как отдельные люди и не как один. Эхо робота в бэклог не попадает
+    (:mod:`rob_box_voice.core.echo_window`), здесь его нет по построению. Пусто - ``{}`` (раздел пропускается)."""
+    names: Dict[str, str] = {}
+    unattributed = 0
+    for p in phrases:
+        key, name = _voice_key(p)
+        if not key:
+            unattributed += 1
+            continue
+        names[key] = names.get(key) or name
+    caller_in = bool(caller) and caller in names
+    others = {k: n for k, n in names.items() if not (caller_in and k == caller)}
+    out: Dict[str, Any] = {}
+    if names:
+        out.update(voices=len(names), caller_included=caller_in, known=[n for n in others.values() if n],
+                   unknown=sum(1 for n in others.values() if not n))
+    if unattributed:
+        out["unattributed"] = unattributed
+    return out
 
 
 def pickup_summary(picked: Sequence[Mapping[str, Any]]) -> str:

@@ -808,12 +808,15 @@ CONTEXT_BUDGET_TOKENS: Mapping[str, int] = MappingProxyType({
 #: причина), а не текстом в репликах (§7.3, PR-8).
 #: ``background_since_reply`` — все фоновые фразы всех авторов за ``BACKGROUND_WINDOW_S``, каждая с ``who`` и
 #: ``age_s`` (В23, 23.10; ``Backlog.background_since_reply``): чужие реплики, не просьбы к роботу.
+#: ``background_summary`` — сводка фона кодом (``backlog.voices_summary``, #4212): ``voices`` (разных собеседников по
+#: ``speaker_id``), ``known`` (имена узнанных), ``unknown`` (безымянных профилей), ``unattributed`` (фраз без профиля,
+#: если есть). Числа и состав голосов в ответе берутся отсюда, а не пересчётом ``background_since_reply``.
 #: ``shift_log`` — журнал смены (``shift_log.ShiftLog.section``): кто приходил, что звучало, что робот сделал,
 #: с фразой-итогом кода; только когда человек спрашивает о смене (``shift_log.shift_asked``: ``SHIFT_ASK_*``).
 #: ``operator_journal`` — журнал ТАРС (§7.4): записи моложе своего ``ttl`` и сводка за сутки с датой.
 CONTEXT_SECTIONS: Tuple[str, ...] = (
     "user_profile", "speaker", "speaker_memory", "tts_context", "speech_gender", "position", "providers", "music_state",
-    "performance", "recent_unaddressed", "background_since_reply", "recent_actions", "shift_log", "operator_journal",
+    "performance", "recent_unaddressed", "background_since_reply", "background_summary", "recent_actions", "shift_log", "operator_journal",
 )
 
 
