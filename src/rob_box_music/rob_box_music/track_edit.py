@@ -12,8 +12,9 @@
   не правка. «Иди быстрее к двери», «сделай лицо мрачнее», «продолжай рассказывать» — не правка музыки;
 * :func:`edit_route` — путь хода «правка играющего» для формы команды диалога v2: музыка играет, в реплике правка
   играющего (:func:`music_edits`), а не заказ другой музыки (``knowledge.EDIT_NEW_ORDER_WORDS``);
-* :func:`plan_edit` — что правка сделает с тем, что играет (:class:`EditTarget`): темп, семья тембров, бас — или
-  честный отказ (готовая запись, пьеса, сет, темп под выступлением: ``knowledge.EDIT_REFUSALS``);
+* :func:`plan_edit` — что правка сделает с тем, что играет (:class:`EditTarget`): темп, семья тембров, бас; под
+  диджей-сетом — смена настроения сета стилем (``knowledge.SET_VIBES``, #4173) — или честный отказ (готовая запись,
+  пьеса, сет без такой правки, темп под выступлением: ``knowledge.EDIT_REFUSALS``);
 * :func:`edit_text` — фраза исхода из исхода, а не из слов модели.
 
 Исполняет решение ``rob_box_mcp_tools.engine.track_edit`` (пересборка своего синт-трека и замена на такте).
@@ -54,7 +55,9 @@ class EditTarget:
 class EditPlan:
     """Решение правки: параметры трека после неё и исход по видам. ``applied`` — виды, что меняют звук; ``limited`` —
     упёрлись в предел (звук тот же); ``kept`` — «развивай»: играет дальше как есть; ``refused`` — ключ
-    ``knowledge.EDIT_REFUSALS``: что не сделано и почему."""
+    ``knowledge.EDIT_REFUSALS``: что не сделано и почему; ``restyle`` — стиль, в котором продолжится идущий диджей-сет
+    (``knowledge.SET_VIBES``, #4173): правка сета — не пересборка трека, а смена его настроения; ``on_set`` — правка
+    под сетом (фразы исхода — из ``SET_VIBES``)."""
 
     kinds: Tuple[str, ...]
     bpm: float = 0.0
@@ -64,11 +67,13 @@ class EditPlan:
     limited: Tuple[str, ...] = ()
     kept: Tuple[str, ...] = ()
     refused: str = ""
+    restyle: str = ""
+    on_set: bool = False
 
     @property
     def changes_sound(self) -> bool:
         """Правка меняет звучащее (пересобрать трек и заменить на такте)."""
-        return bool(self.applied)
+        return bool(self.applied) and not self.on_set
 
     def limit_all(self) -> "EditPlan":
         """Пересобранный трек звучит так же, как играющий (бас уже на потолке ``amp``): всё сделанное — предел."""
@@ -273,6 +278,8 @@ def plan_edit(kinds: Sequence[str], target: EditTarget) -> EditPlan:
     честный отказ (``refused``), звук не трогаем; видов нет — «не понял, что поменять». Темп бита выступления не
     меняется: сетка куплетов стоит на тактах этого темпа (``backing_tempo``), остальные виды правки — делаются."""
     kinds = tuple(k for k in dict.fromkeys(kinds) if k in kn.TRACK_EDITS)
+    if target.kind == SET:
+        return _plan_set(kinds, target)
     if target.kind != SYNTH:
         return EditPlan(kinds, refused=target.kind if target.kind in kn.EDIT_REFUSALS else OTHER)
     if not kinds:
@@ -297,6 +304,17 @@ def plan_edit(kinds: Sequence[str], target: EditTarget) -> EditPlan:
         tuple(outcome["kept"]),
         next(iter(outcome["refused"]), ""),
     )
+
+
+def _plan_set(kinds: Tuple[str, ...], target: EditTarget) -> EditPlan:
+    """Правка под диджей-сетом (#4173): первая правка настроения (``knowledge.SET_VIBES``) — сет продолжится в её стиле
+    (``restyle``); сет уже в нём — предел. Остальное (темп, бас) треки сета на ходу не меняет — честный отказ."""
+    kind = next((k for k in kinds if k in kn.SET_VIBES), "")
+    if not kind:
+        return EditPlan(kinds, refused=SET, on_set=True)
+    if target.style == kn.SET_VIBES[kind].style:
+        return EditPlan(kinds, limited=(kind,), on_set=True)
+    return EditPlan(kinds, applied=(kind,), restyle=kn.SET_VIBES[kind].style, on_set=True)
 
 
 def _bass_room_db(track: Track) -> float:
@@ -332,6 +350,8 @@ def _sentence(parts: Sequence[str]) -> str:
 
 def edit_text(plan: EditPlan) -> str:
     """Фраза исхода правки (ADR-0148: из исхода, а не из слов модели): сделанное, предел, отказ — по порядку."""
+    if plan.on_set and not plan.refused:
+        return _sentence([kn.SET_VIBES[k].done for k in plan.applied] + [kn.SET_VIBES[k].limit for k in plan.limited])
     bpm = f"{plan.bpm:g}"
     done = [kn.TRACK_EDITS[k].done.format(bpm=bpm) for k in (*plan.applied, *plan.kept)]
     limits = [(kn.TRACK_EDITS[k].limit or kn.TRACK_EDITS[k].done).format(bpm=bpm) for k in plan.limited]

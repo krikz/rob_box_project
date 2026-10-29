@@ -205,24 +205,36 @@ def _skip(*lines: str, label: str = "n312_stop_music") -> Dict[str, object]:
 
 def test_n312_is_skipped_when_the_track_played_out_by_itself():
     got = _skip(started(T0 + 10), finished(T0 + 102))
-    assert got["fetch"] == 1 and got["skip"] == "TRACK_ENDED" and "finished track_id=gen_ab12_1" in got["evidence"], got
+    assert got["fetch"] == 1 and got["skip"] == "NO_MUSIC_N310" and "finished track_id=gen_ab12_1" in got["evidence"], got
 
 
 def test_n312_is_skipped_when_an_earlier_track_was_stopped_and_the_last_one_ended():
     got = _skip(started(T0), stopped(T0 + 5), started(T0 + 20, "gen_2"), edited(T0 + 30, "gen_2"), finished(T0 + 100, "gen_2"))
-    assert got["skip"] == "TRACK_ENDED", got
+    assert got["skip"] == "NO_MUSIC_N310", got
+
+
+@pytest.mark.parametrize("lines, why", [
+    ((started(T0 + 10), stopped(T0 + 50)), "дека снята чужим стопом -- музыки нет, каскад (#4196, раньше #4176 играл шаг)"),
+    ((started(T0 + 10), finished(T0 + 50), stopped(T0 + 51, "None", "user_stop")), "последнее событие -- стоп"),
+])
+def test_n312_is_skipped_when_the_deck_was_emptied_by_a_stop(lines, why):
+    got = _skip(*lines)
+    assert got["fetch"] == 1 and got["skip"] == "NO_MUSIC_N310" and "stop track_id=" in got["evidence"], why
+
+
+def test_n312_is_skipped_when_music_never_started_and_says_so():
+    """n310 не заиграл -- «выключи» нечего выключать (#4196); корень краснеет сам (n310), n312 -- SKIP, не FAIL."""
+    got = _skip()
+    assert got == {"fetch": 1, "skip": "NO_MUSIC_N310", "evidence": "в логе акта нет событий деки: музыка не заигрывала"}, got
 
 
 @pytest.mark.parametrize("lines, why", [
     ((started(T0 + 10),), "трек играет -- стоп проверяется"),
     ((started(T0 + 10), edited(T0 + 20)), "правка играющего трек не снимает"),
     ((started(T0 + 10), finished(T0 + 50), started(T0 + 60, "gen_2")), "после конца заиграл новый -- играет"),
-    ((started(T0 + 10), stopped(T0 + 50)), "дека снята чужим стопом -- красный честный, не «доиграл сам»"),
-    ((started(T0 + 10), finished(T0 + 50), stopped(T0 + 51, "None", "user_stop")), "последнее событие -- стоп"),
-    ((), "музыка не заигрывала вовсе -- n310 красный сам, n312 не прячем"),
     ((finished(T0 + 5, "gen_old"), started(T0 + 10)), "конец ЧУЖОГО трека до старта текущего"),
 ])
-def test_n312_is_played_when_the_deck_did_not_end_by_itself(lines, why):
+def test_n312_is_played_while_the_deck_is_busy(lines, why):
     got = _skip(*lines)
     assert got == {"fetch": 1, "skip": "-", "evidence": "-"}, why
 
@@ -234,9 +246,9 @@ def test_n312_unreadable_log_does_not_skip():
 
 def test_n312_field_comes_from_one_table_and_the_judge_parses_it():
     step = _steps()["n312_stop_music"]
-    assert step["skip_when"] == {"reason": "TRACK_ENDED", "log": gen.MUSIC_FINISHED, "deck": "ended"}
-    assert gen.SKIP_WHEN["TRACK_ENDED"].deck == eev.DECK_ENDED
-    assert eev.skip_rule(step).deck == "ended"
+    assert step["skip_when"] == {"reason": "NO_MUSIC_N310", "log": gen.MUSIC_DECK_EVENT, "deck": "idle"}
+    assert gen.SKIP_WHEN["NO_MUSIC_N310"].deck == eev.DECK_IDLE
+    assert eev.skip_rule(step).deck == "idle"
     # n312 по-прежнему action_step «выключил»: result=stopped, music_compare, стоп человека в логе шага
     assert step["music_compare"] == "stopped"
     assert gen.tool_done("stop_music") in step["patterns"]
@@ -244,8 +256,9 @@ def test_n312_field_comes_from_one_table_and_the_judge_parses_it():
 
 
 @pytest.mark.parametrize("raw", [
-    {"reason": "TRACK_ENDED", "log": "x", "deck": "playing"},
-    {"reason": "TRACK_ENDED", "log": "x", "deck": 1},
+    {"reason": "NO_MUSIC_N310", "log": "x", "deck": "playing"},
+    {"reason": "NO_MUSIC_N310", "log": "x", "deck": "ended"},  # #4196: «ended» поглощён «idle», второго вида нет
+    {"reason": "NO_MUSIC_N310", "log": "x", "deck": 1},
 ])
 def test_unknown_deck_rule_is_an_error_not_a_silent_play(raw):
     with pytest.raises(ValueError):
@@ -264,7 +277,7 @@ def test_cli_skip_reads_the_rule_from_the_scenario_file_not_from_its_name(tmp_pa
             input="%.3f\n%s" % (T0 + 500, "\n".join(lines)), capture_output=True, text=True, encoding="utf-8", check=True,
         ).stdout.splitlines()
 
-    assert "skip=TRACK_ENDED" in run(started(T0), finished(T0 + 92))
+    assert "skip=NO_MUSIC_N310" in run(started(T0), finished(T0 + 92))
     assert "skip=-" in run(started(T0))
 
 
@@ -383,4 +396,4 @@ def test_json_on_disk_matches_the_generator_for_every_step_this_card_touches():
 
 
 def test_skip_when_table_has_exactly_the_known_reasons():
-    assert set(gen.SKIP_WHEN) == {"NO_SONG", "NOT_SILENCED", "TRACK_ENDED"}
+    assert set(gen.SKIP_WHEN) == {"NO_SONG", "NOT_SILENCED", "NO_MUSIC_N310", "NO_MUSIC_N506"}

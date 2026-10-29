@@ -891,10 +891,12 @@ class GenSetMaker:
 
     def plan(self, theme: str, style: str, heard_text: Optional[str], length: int, *, named: bool = False,
              styles: Sequence[str] = (), minutes: Optional[int] = None,
-             covers: Sequence[Tuple[CoverWork, Any]] = ()) -> "SetRoutes":
+             covers: Sequence[Tuple[CoverWork, Any]] = (), gen_failed: str = "") -> "SetRoutes":
         """Стили по трекам, длина и путь каждого трека — кодом (ADR-0148, решение Шифу 14.10): :func:`slot_genres`,
         :func:`slot_count`, путь — ``SourceRouter.route_slots``; ``covers`` — наш узнаваемый материал темы
-        ``(произведение, трек с мелодией)`` для каверов (В14, ``DjSetTool.theme_covers``)."""
+        ``(произведение, трек с мелодией)`` для каверов (В14, ``DjSetTool.theme_covers``); ``gen_failed`` — причина,
+        по которой генерация в этом сете не заказывается (смена настроения сета, #4173): кандидатов ``generate:*``
+        нет."""
         from rob_box_music.source import source_ask, theme_tags
         from rob_box_voice.core.set_length_words import heard_set_seconds
 
@@ -904,7 +906,8 @@ class GenSetMaker:
         ask = source_ask(heard_text or theme)
         asks = [replace(ask, genre=g, vocal=False, robot_voice=False) for g in slots]
         tags = theme_tags(theme)
-        routes = self.router.route_slots(asks, tags, [w for w, _t in covers], seconds=seconds, minimum=len(genres))
+        routes = self.router.route_slots(asks, tags, [w for w, _t in covers], seconds=seconds, minimum=len(genres),
+                                         gen_failed=gen_failed)
         slots, asks = slots[:len(routes)], asks[:len(routes)]
         themed = themed_count(tags, routes)
         background = self._background_track(asks, routes, tags, themed, bool(covers))

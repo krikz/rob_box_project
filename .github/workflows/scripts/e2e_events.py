@@ -52,6 +52,13 @@ v1: ``🔊 TTS: speech_id=<8>`` открывает реплику, ``Публи�
 шаг; итог шага -- ``OK recovered_wake_replay`` (не чистый OK). Ретрай именно на промах вейка: неверный ответ робота
 по-прежнему ретраит только ``retry_acceptance`` и только если шаг не менял состояние робота.
 
+ПРИНЯТО против ключевых слов шага (#4196)
+=========================================
+Вейк услышан и ход был, но STT исказил слово, от которого зависит ответ («говори» -> «гарри», «темп» -> другое слово): судить
+робота по входу, которого человек не говорил, нельзя. Шаг с полем ``stt_keys`` и ``stt_replay`` в ``recover``
+(:data:`STT_REPLAY`) сверяет ПРИНЯТО со словами (:func:`stt_verdict`): не нашлись -- фраза звучит ещё раз, ОДИН раз за
+шаг, окно шага начинается с повтора; итог ``OK recovered_stt_replay`` (маркер ``E2E_RECOVER stt_replay <шаг>``).
+
 Предусловие шага (#3971 R21)
 ============================
 Поле шага ``skip_when: {"reason": "KIE_QUOTA", "log": <regex>}`` -- без чего шаг теряет смысл: строка ``log`` в логе
@@ -59,7 +66,9 @@ v1: ``🔊 TTS: speech_id=<8>`` открывает реплику, ``Публи�
 ``"absent": true`` наоборот: шаг не играется, если строки НЕТ -- предусловие так и не наступило (n805b «Робот, говори»
 без тишины, которую должен был включить n805). С ``"deck": "ended"`` предусловие -- состояние деки: шаг не
 играется, если последним событием деки за акт было ``finished`` (трек доиграл сам: «выключи» нечего выключать,
-n312 28.10); снятая стопом или не заигравшая дека шаг не гасит -- красный там честный.
+n312 28.10). С ``"deck": "idle"`` (#4196) -- дека пуста (последнее событие ``stop``/``finished`` либо событий нет):
+музыки, которую должен был включить предыдущий шаг, нет -- шаг «выключи»/«вейк под музыкой» не играется, SKIP «каскад от
+него» (n507, n511, n312 марафона-3: без музыки PASS/FAIL ничего не доказывали).
 
 Ссылка шага на трек песни акта (#3710, #4077)
 =============================================
@@ -402,7 +411,11 @@ RECOVERABLE: Tuple[str, ...] = tuple(RECOVERY)
 #: раз, ОДИН раз за шаг (решение Шифу 28.10: «пусть Гриша при отвале повторит»). Своей фразы у него нет: не строка
 #: :data:`RECOVERY`, а повтор фразы шага.
 WAKE_REPLAY = "wake_replay"
-OPT_IN_RECOVERY: Tuple[str, ...] = (WAKE_REPLAY,)
+#: ``stt_replay`` (#4196) -- ход БЫЛ, но STT исказил ключевое слово фразы шага («говори» -> «гарри», n411 28.10; «темп» ->
+#: n506): робота судили бы по входу, которого человек не говорил. Шаг называет ключевые слова полем :data:`STT_KEYS_FIELD`;
+#: слова не нашлись в ПРИНЯТО -- фраза звучит ещё раз, ОДИН раз за шаг, окно шага начинается с повтора (:func:`stt_verdict`).
+STT_REPLAY = "stt_replay"
+OPT_IN_RECOVERY: Tuple[str, ...] = (WAKE_REPLAY, STT_REPLAY)
 #: Все виды, которые шаг может записать в ``recover`` и которые ставят маркер ``E2E_RECOVER <вид> <шаг>``.
 STEP_RECOVERY_KINDS: Tuple[str, ...] = RECOVERABLE + OPT_IN_RECOVERY
 #: Утечки прошлого акта, которые харнесс убирает на старте акта (#3989 п.5, #4027): тишина -- тем же видом и той же
@@ -460,7 +473,45 @@ def recover_policy(scenario: Any) -> List[Tuple[str, Tuple[str, ...]]]:
         raise ValueError("сценарий -- не JSON-объект")
     _kinds(scenario.get("recover", True))
     steps = [s for s in scenario.get("steps", []) if isinstance(s, Mapping)]
-    return [(str(s.get("label", f"s{i + 1}")), recover_kinds(scenario, s)) for i, s in enumerate(steps)]
+    policy = [(str(s.get("label", f"s{i + 1}")), recover_kinds(scenario, s)) for i, s in enumerate(steps)]
+    for step, (label, kinds) in zip(steps, policy):
+        if STT_REPLAY in kinds and not stt_keys(step):
+            raise ValueError(f"{label}: recover {STT_REPLAY} без поля {STT_KEYS_FIELD} -- сверять с ПРИНЯТО нечем")
+    return policy
+
+
+# -- ключевые слова фразы шага в ПРИНЯТО (#4196) -------------------------------------------------------------
+
+
+#: Поле шага (пишет генератор марафона): ключевые слова фразы, без которых STT услышал не то, что сказал человек. Элемент --
+#: слово или альтернативы через ``|`` (подстрока слова без регистра и без ё: «ускор» ловит «ускорь»); найдены должны
+#: быть ВСЕ элементы. Нет поля -- шаг ПРИНЯТО не сверяет.
+STT_KEYS_FIELD = "stt_keys"
+
+
+def stt_keys(step: Mapping[str, Any]) -> Tuple[str, ...]:
+    """Ключевые слова шага или ``()``; кривое поле -- ``ValueError`` (молча не сверять нельзя: шаг думал бы, что сверяется)."""
+    raw = step.get(STT_KEYS_FIELD)
+    if raw is None:
+        return ()
+    label = step.get("label", "?")
+    if not isinstance(raw, list) or not raw or not all(isinstance(k, str) and _fold_ru(k.replace("|", " ")) for k in raw):
+        raise ValueError(f"{label}: {STT_KEYS_FIELD} -- непустой список слов (альтернативы через |), а не {raw!r}")
+    return tuple(raw)
+
+
+def _fold_ru(text: str) -> str:
+    return _norm(text).replace("ё", "е")
+
+
+def stt_verdict(step: Mapping[str, Any], heard: str) -> Dict[str, object]:
+    """Фраза, которую STT принял (``✅ ПРИНЯТО``), против ключевых слов шага -> ``keys`` (сколько слов), ``stt_ok`` (0 --
+    хоть одно слово не услышано: фразу надо сыграть ещё раз), ``missing`` (какие). Нет слов у шага или ПРИНЯТО пусто
+    (нечего судить: ход без принятой фразы -- вердикт другого судьи) -- ``stt_ok=1``."""
+    keys, folded = stt_keys(step), _fold_ru(heard)
+    missing = [k for k in keys if not any(_fold_ru(alt) and _fold_ru(alt) in folded for alt in k.split("|"))]
+    judged = bool(keys and folded)
+    return {"keys": len(keys), "stt_ok": int(not (judged and missing)), "missing": (",".join(missing) if judged else "") or "-"}
 
 
 # -- тишина в снимке сессии (#3989 п.5) -------------------------------------------------------------------
@@ -516,10 +567,13 @@ class SkipRule(NamedTuple):
 #: Поле шага (пишет генератор марафона, таблица ``SKIP_WHEN``): ``{"reason": "KIE_QUOTA", "log": <regex>}``.
 SKIP_FIELD = "skip_when"
 _SKIP_REASON_RE = re.compile(r"[A-Z][A-Z0-9_]*")
-#: ``deck`` правила: состояние деки, а не строка лога. ``ended`` -- последнее событие деки за акт ``finished``: трек
-#: доиграл сам, и стопить уже нечего (n312 28.10: кавер на 92 с кончился в 16:05:11, команда пришла в 16:05:12).
-DECK_ENDED = "ended"
-SKIP_DECKS = (DECK_ENDED,)
+#: ``deck`` правила: состояние деки, а не строка лога. ``idle`` (#4196) -- дека пуста: последним событием деки за акт было
+#: ``stop`` или ``finished`` (трек доиграл сам -- n312 28.10: кавер на 92 с кончился в 16:05:11, команда пришла в 16:05:12;
+#: снят чужим стопом -- n507/n511 марафона-3 после n506), либо событий деки за акт нет вовсе (музыка не заигрывала).
+#: Предусловие шагов «выключи»/«вейк под музыкой»: музыка, которую должен был включить предыдущий шаг, не играет (каскад от
+#: него) -- шаг не играется, SKIP, а не PASS без музыки и не красный по гонке. Корень каскада красен своими проверками.
+DECK_IDLE = "idle"
+SKIP_DECKS = (DECK_IDLE,)
 #: Сколько символов строки-улики выводить в лог шага.
 EVIDENCE_CHARS = 200
 
@@ -576,14 +630,21 @@ def skip_verdict(rule: SkipRule, text: str) -> Dict[str, object]:
 
 def _deck_verdict(rule: SkipRule, lines: List[str]) -> Dict[str, object]:
     """Правило с ``deck``: судит ПОСЛЕДНЕЕ событие деки за акт (``started``/``stop``/``finished``; правка ``edit``
-    трек не меняет). ``ended`` -- пропуск только если последним было ``finished`` (трек доиграл сам). Деку снял
-    стоп или она не заигрывала -- шаг играется: красный там честный, а не «трек кончился сам»."""
+    трек не меняет). Вид один -- ``idle`` (:func:`_idle_verdict`)."""
     last: Optional[Tuple[MusicEvent, str]] = None
     for line in lines:
         event = music_event(line)
         if event is not None and event.kind != "edit":
             last = (event, line)
-    if last is None or last[0].kind != "finished" or not rule.log.search(last[1]):
+    return _idle_verdict(rule, last)
+
+
+def _idle_verdict(rule: SkipRule, last: Optional[Tuple[MusicEvent, str]]) -> Dict[str, object]:
+    """``deck: idle``: пропуск, если дека пуста -- событий деки за акт нет или последнее не ``started``. Улика -- строка
+    последнего события (кто и как снял деку) либо «событий деки нет»."""
+    if last is None:
+        return {"fetch": 1, "skip": rule.reason, "evidence": "в логе акта нет событий деки: музыка не заигрывала"}
+    if last[0].kind == "started":
         return {"fetch": 1, "skip": "-", "evidence": "-"}
     return {"fetch": 1, "skip": rule.reason, "evidence": " ".join(last[1].split())[:EVIDENCE_CHARS]}
 
@@ -934,6 +995,17 @@ def _cmd_skip(opts: Dict[str, str], flags: List[str]) -> int:
     return 0
 
 
+def _cmd_stt(opts: Dict[str, str], flags: List[str]) -> int:
+    """``--scenario F --label L --heard TEXT`` -> ``keys=`` / ``stt_ok=`` / ``missing=``; кривое поле -- rc 2."""
+    try:
+        verdict = stt_verdict(_step_of(opts), opts["--heard"])
+    except (OSError, ValueError, AttributeError) as exc:
+        sys.stderr.write(f"{opts['--scenario']}: {exc}\n")
+        return 2
+    _emit(verdict)
+    return 0
+
+
 def _cmd_compare(opts: Dict[str, str], flags: List[str]) -> int:
     """``--scenario F --label L`` -> ``compare=<сверка|->``; с ``--since S`` (начало окна шага) и логом деки за акт на
     stdin -- ещё ``fetch=`` / ``ok=`` / ``detail=``. Кривое поле или ``--since`` -- rc 2 и причина в stderr."""
@@ -993,14 +1065,15 @@ def _cmd_trackcheck(opts: Dict[str, str], flags: List[str]) -> int:
 COMMANDS: Mapping[str, Callable[[Dict[str, str], List[str]], int]] = MappingProxyType({
     "state": _cmd_state, "quiet": _cmd_quiet, "anchor": _cmd_anchor,
     "policy": _cmd_policy, "recovery": _cmd_recovery, "session": _cmd_session,
-    "mark": _cmd_mark, "skips": _cmd_skips, "skip": _cmd_skip, "compare": _cmd_compare,
+    "mark": _cmd_mark, "skips": _cmd_skips, "skip": _cmd_skip, "compare": _cmd_compare, "stt": _cmd_stt,
     "trackrefs": _cmd_trackrefs, "trackbind": _cmd_trackbind, "trackcheck": _cmd_trackcheck,
 })
 USAGE = ("usage: e2e_events.py state|quiet|anchor --engine v1|v2 [--silent-ok] [--barge] [--waited S --accept-window S]"
          " [--perform-ceiling S] [--after A --n N] | policy --scenario FILE | recovery [--kind K] | session < report.json"
          " | mark --kind K --where W [--detail D] | skips --scenario FILE | skip --scenario FILE --label L < log"
-         " | compare --scenario FILE --label L [--since S < log] | trackrefs --scenario FILE"
-         " | trackbind --scenario FILE --label L < log | trackcheck --scenario FILE --label L --track ID < log\n")
+         " | compare --scenario FILE --label L [--since S < log] | stt --scenario FILE --label L --heard TEXT"
+         " | trackrefs --scenario FILE | trackbind --scenario FILE --label L < log"
+         " | trackcheck --scenario FILE --label L --track ID < log\n")
 
 
 def main(argv: List[str]) -> int:
@@ -1014,7 +1087,7 @@ def main(argv: List[str]) -> int:
             pass
     opts = {"--engine": "v1", "--after": "speech_started", "--n": "1", "--waited": "0", "--accept-window": "0",
             "--scenario": "", "--kind": "", "--perform-ceiling": "", "--where": "", "--detail": "", "--label": "",
-            "--since": "", "--track": ""}
+            "--since": "", "--heard": "", "--track": ""}
     flags = argv[2:]
     for i, tok in enumerate(flags):
         if tok in opts and i + 1 < len(flags):

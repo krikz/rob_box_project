@@ -324,7 +324,9 @@ def test_song_followups_wait_for_the_song_and_skip_without_it():
         "n708_gen_play": "NO_SONG",
         "n709_stop_generated": "NO_SONG",
         "n805b_unsilence": "NOT_SILENCED",  # #3971: «говори» без тишины от n805 не играется
-        "n312_stop_music": "TRACK_ENDED",  # #4176: трек доиграл сам -- «выключи» нечего выключать
+        "n312_stop_music": "NO_MUSIC_N310",  # #4176/#4196: дека пуста -- «выключи» нечего выключать (каскад от n310)
+        "n507_wake_under_music": "NO_MUSIC_N506",  # #4196: «вейк под музыкой» без музыки -- не PASS
+        "n511_stop_music": "NO_MUSIC_N506",  # #4196: «глуши» без музыки -- не FAIL каскадом
     }
 
 

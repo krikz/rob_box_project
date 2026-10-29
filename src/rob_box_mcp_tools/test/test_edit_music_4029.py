@@ -429,13 +429,17 @@ def test_less_bass_on_our_synth_track_turns_the_bass_down_not_up():
     assert len(_events(rig, "started")) == 1  # трек тот же
 
 
-def test_n607_softer_under_a_running_set_closes_the_new_order_and_ends_in_an_honest_refusal():
+def test_n607_softer_under_a_running_set_closes_the_new_order_and_requires_the_edit():
     """#4173: «помягче поставь…» под диджей-сетом - форма хода закрывает ``request_music``/``dj_set`` (новый трек убил
-    бы сет и стоил денег), требует ``edit_music``; тул на сете - честный отказ кодом с предложением, звук не тронут."""
+    бы сет и стоил денег), требует ``edit_music``; что сделать с сетом, решает тул (``test_set_vibe_4173``)."""
     form, tools = _form_under_music(N607)
     assert form.sing == "edit:softer" and "edit_music" in tools
     assert not {"request_music", "generate_music", "dj_set"} & set(tools)
+
+
+def test_softer_under_a_set_without_a_restyle_owner_is_an_honest_failure_not_a_claim():
+    """Сменить стиль сета нечем (владельца сета нет) - честный отказ кодом, звук не тронут, «сделал» не говорим."""
     snap = {"playing": True, "track_id": "s7:03:B", "source": "synth", "enabled": True}
     tool = EditMusicTool(None, SimpleNamespace(editor=TrackEditor(Owner(**snap), Deck())))
     result = tool.execute(heard_text=N607)
-    assert not result.success and result.data["message"] == kn.EDIT_REFUSALS["set"]
+    assert not result.success and result.data["message"] == kn.EDIT_REFUSALS["set_vibe_failed"]

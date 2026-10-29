@@ -262,7 +262,7 @@ def _run_step(tmp_path, log_text, plays, body, env="", replace=False):
         *(extract_function(name) for name in (
             "ensure_outdir", "emit_step", "mark_fail_kind", "vad_reject_reason", "emit_step_fail_or_vad",
             "check_cycle", "eq_command_wav", "play_eq_wav", "phrase_eq_wav", "step_recover", "step_wake_replay",
-            "run_step")),
+            "step_stt_replay", "run_step")),
         # синтез: фраза восстановления -- файл с её текстом (по нему видно, ЧТО сыграно)
         'synth_command() { printf "%s" "$1" > "$3"; }',
         env,

@@ -156,13 +156,16 @@ def test_speech_without_result_is_not_a_pass():
 
 
 def test_n605_needs_both_announcement_and_result():
-    """n605 просит и сет, и объявления вслух: ``SpeechEvent started`` (#3880) И успех тула; одно из двух -- красный."""
+    """n605 просит сет, речь и объявленный сет (#4196): ``SpeechEvent started`` (#3880) И успех тула И реплика диджея либо сет
+    ровно из трёх треков; нет любого из трёх -- красный. Подробно -- ``test_issue_4196_false_greens.py``."""
     ended = TURN_LINE % ("done", "finished")
     speech = "🗣️ SpeechEvent started speech_id=ab12cd34 agent=main epoch=1 text_len=20"
     done = "✅ Инструмент dj_set выполнен успешно"
-    assert _verdict("n605_dj_set_plan", "\n".join([speech, done, ended]))["pass"]
-    assert not _verdict("n605_dj_set_plan", "\n".join([done, ended]))["pass"]
-    assert not _verdict("n605_dj_set_plan", "\n".join([speech, ended]))["pass"]
+    planned = "🎛️ [dj_set] set04217 длина сета: 3 (названо), энергия=[0.4, 0.7, 0.9]"
+    assert _verdict("n605_dj_set_plan", "\n".join([speech, done, planned, ended]))["pass"]
+    assert not _verdict("n605_dj_set_plan", "\n".join([speech, done, ended]))["pass"], "сет не объявлен"
+    assert not _verdict("n605_dj_set_plan", "\n".join([done, planned, ended]))["pass"]
+    assert not _verdict("n605_dj_set_plan", "\n".join([speech, planned, ended]))["pass"]
 
 
 def test_dj_set_with_result_markers_passes_n602_n604_n608():
@@ -175,6 +178,20 @@ def test_dj_set_with_result_markers_passes_n602_n604_n608():
     assert _verdict("n604_dj_rock", "\n".join(["📤 Отправлен запрос ab: dj_set", done, ended]))["pass"]
     assert _verdict("n607_vibe_chill", "\n".join(["📤 Отправлен запрос ab: dj_set", done, ended]))["pass"]
     assert _verdict("n608_dj_off", "\n".join(["📤 Отправлен запрос ab: dj_set", done, stopped, ended]))["pass"]
+
+
+def test_n607_set_vibe_is_the_edit_of_the_set_and_a_new_track_is_not_the_result():
+    """#4173 (марафон-4): «помягче» под сетом -- ``edit_music`` меняет настроение сета (или модель - ``dj_set`` start с
+    новым стилем); новый трек ``request_music`` снимал сет (марафоны 2-3) -- подмена, а не результат."""
+    ended = TURN_LINE % ("done", "finished")
+    edit = "\n".join(["📤 Отправлен запрос ab: edit_music", "✅ Инструмент edit_music выполнен успешно", ended])
+    assert _verdict("n607_vibe_chill", edit)["pass"]
+    new_track = "\n".join(["📤 Отправлен запрос ab: request_music", "✅ Инструмент request_music выполнен успешно",
+                           ended])
+    assert not _verdict("n607_vibe_chill", new_track)["pass"]
+    refused = "\n".join(["📤 Отправлен запрос ab: edit_music",
+                         "❌ Инструмент edit_music завершился с ошибкой: Это диджей-сет", ended])
+    assert not _verdict("n607_vibe_chill", refused)["pass"]
 
 
 def test_turn_timeout_blocks_the_pass():
@@ -311,7 +328,7 @@ def test_cast_steps_are_not_marked_voice_limit_red():
     for label in ("n210_grisha_no_name", "n304_bg_grisha_unknown", "n305_bg_valera_unknown", "n306_who_was_talking",
                   "n307_count_voices", "n309_bg_command_valera", "n311_who_asked"):
         assert "_known_red" not in steps[label], label
-    assert _acc("n306_who_was_talking")["expected_keywords"] == ["Борис", "незнаком|неопознан"]
+    assert _acc("n306_who_was_talking")["expected_keywords"] == ["Борис", gen.UNKNOWN_VOICE_ANSWER]
     honest = "\n".join([_tts("Борис -- знакомый, а двое других голосов неопознанные."), DONE])
     assert _verdict("n306_who_was_talking", honest)["pass"]
 
@@ -564,7 +581,7 @@ def test_no_song_rule_marks_the_steps_about_this_runs_song_and_nothing_destructi
         assert "skip_when" not in steps[label], label
     assert not any("_skip_when" in s for s in steps.values())
     # KIE_QUOTA влит в NO_SONG: одна таблица, без второго ключа на ту же беду; NOT_SILENCED (#3971, n805b) -- другая беда
-    assert set(gen.SKIP_WHEN) == {"NO_SONG", "NOT_SILENCED", "TRACK_ENDED"}  # TRACK_ENDED (#4176, n312): трек доиграл сам
+    assert set(gen.SKIP_WHEN) == {"NO_SONG", "NOT_SILENCED", "NO_MUSIC_N310", "NO_MUSIC_N506"}  # #4196: дека пуста (каскад)
     assert [label for label, s in steps.items() if s.get("skip_when", {}).get("reason") == "NO_SONG"] == [
         "n707_gen_track_info", "n708_gen_play", "n709_stop_generated"]
     for label in ("n703_merge_komar", "n706_gen_save_for_boris", "n710_gen_delete", "n710b_gen_delete_confirm"):
