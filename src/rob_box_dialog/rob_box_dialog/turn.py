@@ -864,6 +864,14 @@ def unrepeated(log: Any, turn: "_Turn", cmd: Command) -> Command:
     return replace(cmd, actions=tuple(a for a in cmd.actions if a not in repeats))
 
 
+def settled(cmd: Command, fresh: Command) -> bool:
+    """Модель повторила только исполненное в этом ходе (:func:`unrepeated` убрал все её действия) и слов не дала: ответа
+    сверх сделанного нет. Ход закрывается сразу фразой кода по исходу (:func:`_close_unread`), модель не зовётся снова
+    и нарушения ``silent_answer`` ей не возвращают: повтор с лицом остаётся «одним лицом без слов» (``bare_answer``), и
+    ход крутил повтор по кругу, пока не звучала заглушка «Ага, я на связи.» (n608 марафон-6, #4173)."""
+    return bool(cmd.actions) and not fresh.actions and not fresh.speech and fresh.ask is None and fresh.perform is None
+
+
 def unanswered(cmd: Command, fresh: Command, runnable: Sequence[ToolCall]) -> bool:
     """Модель не дала ответа сверх уже сделанного: на последней итерации ещё просит ``query`` (он не исполняется,
     :func:`_runnable`) или все её действия - повтор исполненного в этом ходе (:func:`unrepeated`). Слов её при этом не
@@ -1667,7 +1675,7 @@ class TurnEngine:
         fresh = unrepeated(self._log, turn, cmd)
         names = foreign_keys(self.log.window(exclude=turn.turn_id), turn, fresh, self.session.snapshot)
         fresh = unnamed_without_retry(self._log, turn, fresh, names, last)
-        owed = owed_reason(self.session.snapshot, turn, fresh, names)
+        owed = "" if settled(cmd, fresh) else owed_reason(self.session.snapshot, turn, fresh, names)
         if owed:
             return await _answer_owed(self, turn, fresh, snap, last, owed)
         runnable = _runnable(fresh.actions, last)
