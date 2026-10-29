@@ -2178,8 +2178,26 @@ step_wake_replay() {  # $1=label $2=safe
 # снова искажён -- второго нет, шаг судится как есть. Восстановленный другим видом шаг не сверяется: первый ПРИНЯТО окна --
 # уже «Робот!» подхвата или реплика тишины, а не фраза шага. Выход как у step_wake_replay: E2E_WAIT_RC/E2E_REPLY_*
 # последнего ожидания, BEFORE -- начало его окна.
+#
+# #4196 (n506 марафона-6): повтор допустим, только если первое исполнение НЕ состоялось. Исход шага (его паттерны и
+# сверка music_compare) в окне первой попытки уже есть -- «ускорь» 134 -> 145 BPM исполнено; второй раз команда даёт
+# другой исход («потолок»), и шаг краснеет за харнесс, а не за робота. Тогда повтора нет, шаг судится по первому
+# исполнению (``stt --executed 1`` -> ``kept=executed``). Паттернов у шага нет -- исход не определён, повтор как раньше.
+_stt_step_executed() {  # $1=label $2=начало окна первой попытки; rc 0 -- исход шага в окне уже есть
+    local -a pats=()
+    [ -n "${patterns_json:-}" ] && [ "$patterns_json" != "[]" ] || return 1
+    mapfile -t pats < <(printf '%s' "$patterns_json" \
+        | python3 -c 'import json,sys
+for p in json.load(sys.stdin):
+    print(p.replace("\n", " "))' | tr -d '\015')
+    [ "${#pats[@]}" -gt 0 ] || return 1
+    check_patterns "$2" "${pats[@]}" > /dev/null || return 1
+    check_music_compare "$1" "${SCENARIO_FILE:-}" "$2" > /dev/null || return 1
+    return 0
+}
+
 step_stt_replay() {  # $1=label $2=safe
-    local label="$1" safe="$2" heard out
+    local label="$1" safe="$2" heard out kept
     recover_allowed stt_replay || return 0
     [ -z "${E2E_STEP_STT_REPLAYED:-}" ] || return 0
     [ -z "${E2E_STEP_RECOVERED:-}" ] || return 0
@@ -2193,6 +2211,12 @@ step_stt_replay() {  # $1=label $2=safe
         return 0
     }
     [ "$(printf '%s\n' "$out" | _ev_kv stt_ok)" = "0" ] || return 0
+    if _stt_step_executed "$label" "${STEP_BEFORE:-$BEFORE}" \
+        && kept="$(python3 "$(_events_py)" stt --scenario "$SCENARIO_FILE" --label "$label" --heard "$heard" --executed 1 2>&1)" \
+        && [ "$(printf '%s\n' "$kept" | _ev_kv kept)" = "executed" ]; then
+        log "STEP ${label}: STT исказил фразу (услышано «${heard}», нет слов: $(printf '%s\n' "$kept" | _ev_kv missing)), но исход шага в окне уже есть -- команда исполнена, повтора нет (stt_replay не нужен), шаг судится по первому исполнению"
+        return 0
+    fi
     E2E_STEP_STT_REPLAYED=1
     E2E_STEP_RECOVERED="stt_replay"
     recover_mark stt_replay "$label" "heard=«${heard}» missing=$(printf '%s\n' "$out" | _ev_kv missing)"

@@ -150,7 +150,8 @@ def test_every_music_action_step_has_a_result_marker():
         step = steps[label]
         pats = step["patterns"]
         assert any(p.startswith("✅ Инструмент ") and p.endswith(" выполнен успешно") for p in pats), label
-        assert gen.TURN_DONE in pats or gen.TURN_WITH_LLM in pats, label
+        # n709 (#4020, марафон-6): ход законно закрыт фразой кода (`code_closes`) -- конец хода `finished|done`
+        assert gen.TURN_DONE in pats or gen.TURN_WITH_LLM in pats or gen.TURN_CLOSED_BY_CODE in pats, label
         assert gen.TURN_TIMEOUT in step["acceptance"]["must_not_call"], label
     assert gen.MUSIC_STARTED in _patterns("n602_dj_on")
     # #3971 (сверка 27.10): «на синтезаторе» -- не любой трек на деке, а синт-трек (вид результата ``synth``)

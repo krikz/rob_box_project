@@ -273,6 +273,11 @@ STUB_SPEECH = robot_said(*STUB_PHRASE_KEYS)
 #: Ход закрыт заглушкой кода, а не ответом (``turn.py``: ``stage=done status=done`` у ``query_fallback:*`` и
 #: ``invalid_salvaged:*``; штатный конец -- ``status=finished``). Подстрока для ``must_not_call`` всех шагов.
 TURN_FALLBACK = "stage=done status=done"
+#: Конец хода, закрытого ФРАЗОЙ КОДА по исходу (``code_closes``, #4020 n709 марафона-6): модель дважды нарушила правило
+#: (``music_promise``: «сделаю потише» после стопа), и ход закрыт ``status=done`` с фразой кода по состоянию музыки
+#: («Музыку я уже выключил.», ``command.music_promise.stopped``). Для такого шага ``done`` -- законный итог; заглушка
+#: каталога (:data:`STUB_SPEECH`) и ложь о другом действии с музыкой (``MUSIC_FALSE_ACTION``) краснят его по-прежнему.
+TURN_CLOSED_BY_CODE = r"📊 \[turn\] .*stage=done status=(finished|done)"
 
 
 def spoken_by(provider: str) -> str:
@@ -689,6 +694,7 @@ def step(
     sleep_before_sec: int = 0,
     stt_keys: Optional[List[str]] = None,
     track_ref: Optional[TrackCall] = None,
+    code_closes: bool = False,
 ) -> Dict[str, Any]:
     # Хрупкий вейк (решение Шифу 28.10, n210): вейк и в начале, и в конце фразы -- ДО проверки длины, она судит итог.
     text = wake_at_both_ends(text, voice)
@@ -713,7 +719,7 @@ def step(
         raise ValueError(f"{label}: шаг ждёт выступление ({PERFORM_STARTED_MARK}…) -- retry запрещён (#3971 R4)")
     acc = _acceptance(
         expect_tools, discovery_tools, must_not, must_not_say, must_not_identify_as, keywords, voice_changed, why,
-        no_repeat_numbers,
+        no_repeat_numbers, code_closes,
     )
     if acc:
         s["acceptance"] = acc
@@ -769,6 +775,7 @@ def _acceptance(
     voice_changed: bool,
     why: str,
     no_repeat_numbers: bool = False,
+    code_closes: bool = False,
 ) -> Dict[str, Any]:
     """Блок ``acceptance`` шага (пустой -- шаг без него). Порядок ключей -- как в JSON актов (сверяет ``--check``).
 
@@ -783,7 +790,8 @@ def _acceptance(
         ("discovery_tools", discovery_tools),
         # #3971: заглушка кода -- не ответ и не результат ни для какого шага (n707 27.10): ход, закрытый заглушкой
         # (``status=done`` вместо ``finished``), и фраза-заглушка в речи краснят шаг всегда.
-        ("must_not_call", [*(must_not or []), TURN_FALLBACK]),
+        # ``code_closes`` -- шаг, итог хода которого законно ``status=done`` (фраза кода по исходу, :data:`TURN_CLOSED_BY_CODE`).
+        ("must_not_call", [*(must_not or []), *(() if code_closes else (TURN_FALLBACK,))]),
         ("must_not_say", [*(must_not_say or []), STUB_SPEECH]),
         ("must_not_identify_as", must_not_identify_as),
         ("expected_keywords", keywords),
@@ -810,6 +818,7 @@ def action_step(
     known_red: str = "",
     patterns: Optional[List[str]] = None,
     must_not: Optional[List[str]] = None,
+    code_closes: bool = False,
     **kwargs: Any,
 ) -> Dict[str, Any]:
     """Шаг-действие: PASS только при МАРКЕРЕ РЕЗУЛЬТАТА в логе робота (#3971), а не по речи или имени тула.
@@ -818,6 +827,8 @@ def action_step(
     ``result`` -- вид результата, который просила реплика (ключ :data:`RESULT_KINDS`): его доказательства идут в
     ``patterns``, подмены -- в ``must_not_call``, противоречащая речь -- в ``must_not_say``, сверка с музыкой до шага --
     в поле ``music_compare``. Всегда: ход дошёл до ``stage=done status=finished`` и в шаге нет ``stage=timeout``.
+    ``code_closes`` -- шаг, ход которого законно закрыт фразой кода по исходу (``status=done``, n709): конец хода --
+    :data:`TURN_CLOSED_BY_CODE`, а запрет ``status=done`` с шага снят; заглушки в речи он по-прежнему не прощает.
     ``known_red`` -- причина, по которой шаг сегодня красный по делу (поле ``_known_red`` для людей; харнесс его
     не читает, шаг остаётся красным честно).
     """
@@ -826,11 +837,11 @@ def action_step(
     if result_of:
         pats.append(tool_done(*result_of))
     pats.extend(kind.proof)
-    pats.append(TURN_DONE)
+    pats.append(TURN_CLOSED_BY_CODE if code_closes else TURN_DONE)
     if kind.contradicted_by:
         kwargs["must_not_say"] = list(kwargs.get("must_not_say") or []) + [kind.contradicted_by]
     forbidden = list(must_not or []) + list(kind.substitute) + [TURN_TIMEOUT]
-    s = step(label, text, patterns=pats, must_not=forbidden, **kwargs)
+    s = step(label, text, patterns=pats, must_not=forbidden, code_closes=code_closes, **kwargs)
     if kind.compare:
         s[eev.COMPARE_FIELD] = kind.compare
     s["_result_markers"] = {"tools": list(result_of or []), "result": result}
@@ -2259,13 +2270,18 @@ act(
             result="stopped",
             expect_tools=["stop_music"],
             skip_when="NO_SONG",
+            code_closes=True,
             why="Опять же: останавливаем ровно то, что сами включили в n708. #3971: по маркеру "
             "`[music v2] stop` с id трека (не `track_id=None`), а не по слову «остановил». Песни нет -- SKIP "
             "NO_SONG (см. n707). #4196 (марафон-3, run 40758476879, 20:00:04): Tier-1 снял деку, остаток «Борис уже уснул "
             "под неё» ушёл модели, и она сказала «Раз Борис уснул -- сделаю потише… дослушивает шёпотом» без тула "
             "(`verdict=speech actions=[]`) -- ложь о состоянии музыки, шаг был зелёным. Вид результата `stopped` теперь "
             "запрещает в РЕЧИ заявления о другом действии с музыкой (`MUSIC_FALSE_ACTION`: потише/громче/включу/поставлю…): "
-            "после стопа допустима фраза исхода кода («Выключил музыку.») или тишина.",
+            "после стопа допустима фраза исхода кода («Выключил музыку.») или тишина. #4020 (марафон-6 29.10, run 40814536797, "
+            "03:58:43): модель дважды нарушила `music_promise` («убавлю громкость» без тула), код отбил обещание и сказал "
+            "«Музыку я уже выключил.» (`command.music_promise.stopped`), ход закрыт `stage=done status=done` -- для этого "
+            "шага (`code_closes`) `done` законный итог: ход закрыт фразой кода по исходу стопа, а не заглушкой. Фраза-заглушка "
+            "(`STUB_SPEECH`) и ложь о другом действии с музыкой по-прежнему краснят шаг, проверка фразы не ослаблена.",
         ),
         action_step(
             "n711_renardo_not_broken",

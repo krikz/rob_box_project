@@ -58,6 +58,9 @@ v1: ``🔊 TTS: speech_id=<8>`` открывает реплику, ``Публи�
 робота по входу, которого человек не говорил, нельзя. Шаг с полем ``stt_keys`` и ``stt_replay`` в ``recover``
 (:data:`STT_REPLAY`) сверяет ПРИНЯТО со словами (:func:`stt_verdict`): не нашлись -- фраза звучит ещё раз, ОДИН раз за
 шаг, окно шага начинается с повтора; итог ``OK recovered_stt_replay`` (маркер ``E2E_RECOVER stt_replay <шаг>``).
+Повтор допустим, только если первое исполнение НЕ состоялось: исход шага (его паттерны и сверка ``music_compare``) в окне
+первой попытки уже есть -- команда исполнена, повторять нельзя (n506 марафона-6: «ускорь» 134 -> 145 BPM исполнено,
+повтор упёрся в потолок и покраснел шаг), и шаг судится по первому исполнению (``stt --executed 1`` -> ``kept=executed``).
 
 Предусловие шага (#3971 R21)
 ============================
@@ -506,14 +509,23 @@ def _fold_ru(text: str) -> str:
     return _norm(text).replace("ё", "е")
 
 
-def stt_verdict(step: Mapping[str, Any], heard: str) -> Dict[str, object]:
+def stt_verdict(step: Mapping[str, Any], heard: str, executed: bool = False) -> Dict[str, object]:
     """Фраза, которую STT принял (``✅ ПРИНЯТО``), против ключевых слов шага -> ``keys`` (сколько слов), ``stt_ok`` (0 --
     хоть одно слово не услышано: фразу надо сыграть ещё раз), ``missing`` (какие). Нет слов у шага или ПРИНЯТО пусто
-    (нечего судить: ход без принятой фразы -- вердикт другого судьи) -- ``stt_ok=1``."""
+    (нечего судить: ход без принятой фразы -- вердикт другого судьи) -- ``stt_ok=1``.
+
+    ``executed`` (#4196 n506 марафона-6): исход шага в окне первой попытки УЖЕ есть (паттерны и сверка шага выполнены --
+    действие состоялось). Тогда повтор нельзя: команда, меняющая состояние (темп 134 -> 145 BPM), второй раз даёт другой
+    исход («потолок»), и шаг краснел за харнесс, а не за робота. Слово потеряно, но действие исполнено -- ``stt_ok=1``,
+    ``kept=executed`` (шаг судится по первому исполнению, потерянные слова остаются в ``missing``)."""
     keys, folded = stt_keys(step), _fold_ru(heard)
     missing = [k for k in keys if not any(_fold_ru(alt) and _fold_ru(alt) in folded for alt in k.split("|"))]
     judged = bool(keys and folded)
-    return {"keys": len(keys), "stt_ok": int(not (judged and missing)), "missing": (",".join(missing) if judged else "") or "-"}
+    verdict: Dict[str, object] = {"keys": len(keys), "stt_ok": int(not (judged and missing)),
+                                  "missing": (",".join(missing) if judged else "") or "-"}
+    if executed and judged and missing:
+        verdict.update(stt_ok=1, kept="executed")
+    return verdict
 
 
 # -- тишина в снимке сессии (#3989 п.5) -------------------------------------------------------------------
@@ -1010,9 +1022,10 @@ def _cmd_skip(opts: Dict[str, str], flags: List[str]) -> int:
 
 
 def _cmd_stt(opts: Dict[str, str], flags: List[str]) -> int:
-    """``--scenario F --label L --heard TEXT`` -> ``keys=`` / ``stt_ok=`` / ``missing=``; кривое поле -- rc 2."""
+    """``--scenario F --label L --heard TEXT [--executed 1]`` -> ``keys=`` / ``stt_ok=`` / ``missing=`` (и ``kept=executed``,
+    если слово потеряно, а действие шага уже исполнено); кривое поле -- rc 2."""
     try:
-        verdict = stt_verdict(_step_of(opts), opts["--heard"])
+        verdict = stt_verdict(_step_of(opts), opts["--heard"], executed=opts["--executed"] == "1")
     except (OSError, ValueError, AttributeError) as exc:
         sys.stderr.write(f"{opts['--scenario']}: {exc}\n")
         return 2
@@ -1085,7 +1098,7 @@ COMMANDS: Mapping[str, Callable[[Dict[str, str], List[str]], int]] = MappingProx
 USAGE = ("usage: e2e_events.py state|quiet|anchor --engine v1|v2 [--silent-ok] [--barge] [--waited S --accept-window S]"
          " [--perform-ceiling S] [--after A --n N] | policy --scenario FILE | recovery [--kind K] | session < report.json"
          " | mark --kind K --where W [--detail D] | skips --scenario FILE | skip --scenario FILE --label L < log"
-         " | compare --scenario FILE --label L [--since S < log] | stt --scenario FILE --label L --heard TEXT"
+         " | compare --scenario FILE --label L [--since S < log] | stt --scenario FILE --label L --heard TEXT [--executed 0|1]"
          " | trackrefs --scenario FILE | trackbind --scenario FILE --label L < log"
          " | trackcheck --scenario FILE --label L --track ID < log\n")
 
@@ -1101,7 +1114,7 @@ def main(argv: List[str]) -> int:
             pass
     opts = {"--engine": "v1", "--after": "speech_started", "--n": "1", "--waited": "0", "--accept-window": "0",
             "--scenario": "", "--kind": "", "--perform-ceiling": "", "--where": "", "--detail": "", "--label": "",
-            "--since": "", "--heard": "", "--track": ""}
+            "--since": "", "--heard": "", "--track": "", "--executed": "0"}
     flags = argv[2:]
     for i, tok in enumerate(flags):
         if tok in opts and i + 1 < len(flags):
