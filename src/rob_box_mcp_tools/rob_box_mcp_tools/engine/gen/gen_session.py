@@ -438,7 +438,7 @@ class SetTalk:
         no = self._numbers[track_id] = track_no - self._bridge
         if self._lines is not None:
             self._lines.prepare_item(track_id, no, tracks=self._slots, theme=self.label, hook=item.hook or None,
-                                     seed=self._seed)
+                                     seed=self._seed, title=item.title)
 
     def started(self, track_id: str, item: SetItem) -> str:
         """``started`` трека: название и номер — в снимок; реплика — ``lines`` (в потоке). Пометка для лога."""

@@ -36,6 +36,9 @@ GRACE_S = 3.0
 LINE_DEADLINE_S = 20.0
 #: Сколько ждать фактов трека к его ``started`` (локальный расчёт; без них снимок не получает мелодию).
 KNOWN_WAIT_S = 30.0
+#: Сколько ответ ``dj_set`` ждёт название трека 1 после его ``started`` (гонка ответа тула с колбэком ``started``:
+#: оба в миг старта); трека нет — старт сета идёт фразой без названия (мост ожидания: трек 1 встанет позже).
+OPENING_WAIT_S = 0.5
 
 #: ``(system, user, tool, deadline_s) -> (outcome, response, detail)`` — ``SetReasoner.ask``.
 Ask = Callable[[str, str, Dict[str, Any], float], Tuple[str, Any, str]]
@@ -53,10 +56,36 @@ class _Entry:
     seed: int
     tracks: int  # длина сета: треков плана или слотов сета из генерации
     hook_id: Optional[str]
+    title: str = ""  # название трека для голоса (трек из генерации/кэша — его title), иначе название мелодии из фактов
     facts: Optional[dl.LineFacts] = None
     llm: Optional[str] = None
     known: threading.Event = field(default_factory=threading.Event)  # факты собраны
     ready: threading.Event = field(default_factory=threading.Event)  # и LLM ответила (или нет)
+
+
+class Opening:
+    """Трек 1 сета для фразы старта (#4217, ADR-0148): реплики трека 1 диджей не говорит — старт сета озвучивает ответ
+    ``dj_set``, а в нём название трека берёт код из данных сета (файл кэша), не LLM. ``announces`` - сет объявляет
+    треки вслух (реплики диджея включены и есть чем говорить): иначе названия в ответе нет, старт сета как был."""
+
+    def __init__(self, announces: bool) -> None:
+        self.announces = announces
+        self._entry: Optional[_Entry] = None
+        self._started = threading.Event()
+
+    def started(self, entry: _Entry) -> None:
+        """Трек 1 встал (``TransitionLines.on_started``)."""
+        self._entry = entry
+        self._started.set()
+
+    def title(self, wait_s: float = OPENING_WAIT_S) -> str:
+        """Название трека 1 (его ``title``, иначе название мелодии из фактов); пусто - трек 1 ещё не встал (мост
+        ожидания генерации) или у него нет названия."""
+        entry = self._entry if self.announces and self._started.wait(wait_s) else None
+        if entry is None:
+            return ""
+        entry.known.wait(wait_s)
+        return entry.title or (entry.facts.hook if entry.facts is not None else None) or ""
 
 
 def line_payload(response: Any) -> Any:
@@ -95,6 +124,8 @@ class TransitionLines:
         self._played: List[Tuple[int, Optional[str], str]] = []  # (номер, хук, название) сыгранных треков
         self._now: Dict[str, Any] = {}
         self._now_id: Optional[str] = None
+        #: Название трека 1 для фразы старта сета (``dj_set`` кладёт его в исход, #4217)
+        self.opening = Opening(announces=speak is not None)
         #: ``(первый_номер, сколько) -> мелодии треков`` — источник «дальше будет»; задаёт владелец сета (``plan_source``)
         self.forecast: Optional[Callable[[int, int], List[Optional[str]]]] = None
 
@@ -104,11 +135,12 @@ class TransitionLines:
         self._add(track_id, entry, lambda: self._plan_facts(entry, plan, hook_id))
 
     def prepare_item(self, track_id: str, no: int, *, tracks: int, theme: str, hook: Optional[str],
-                     seed: int = 0) -> None:
+                     seed: int = 0, title: str = "") -> None:
         """Трек ``no`` из ``tracks`` сета без плана (сет из генерации, ADR-0158 PR-8): ``hook`` — название мелодии
         трека для голоса (``None`` — названной мелодии у трека нет). Энергий плана нет — фаза по месту трека: первый,
-        ровно, финал (``dl.facts_for`` без энергий). Остальное — как у :meth:`prepare` (#4006)."""
-        entry = _Entry(no, seed + no, int(tracks), hook)
+        ровно, финал (``dl.facts_for`` без энергий). ``title`` — название трека (файл кэша: его ``title``) для фразы
+        старта сета (:class:`Opening`). Остальное — как у :meth:`prepare` (#4006)."""
+        entry = _Entry(no, seed + no, int(tracks), hook, title)
         self._add(track_id, entry, lambda: self._item_facts(entry, theme, hook))
 
     def _add(self, track_id: str, entry: _Entry, facts: Callable[[], dl.LineFacts]) -> None:
@@ -177,14 +209,16 @@ class TransitionLines:
 
     def on_started(self, track_id: str) -> str:
         """``started`` трека: факты — в снимок; реплика — одна (I23), в потоке, переход её не ждёт. Трек 1 реплики
-        не получает: старт сета уже озвучивает фраза запуска (роутер или ответ на ``dj_set``) — 06.10 две реплики
-        подряд за 6 с. Пометка для лога ``started``."""
+        не получает: старт сета уже озвучивает фраза запуска (ответ на ``dj_set`` с названием трека 1 из
+        :class:`Opening`, #4217) — 06.10 две реплики подряд за 6 с. Пометка для лога ``started``."""
         with self._lock:
             entry = self._entries.get(track_id)
             if entry is None or track_id in self._spoken:
                 return ""
             self._spoken.add(track_id)
             self._entries = {k: e for k, e in self._entries.items() if e.no >= entry.no}  # сыгранное не нужно
+        if entry.no == 1:
+            self.opening.started(entry)
         self._spawn(lambda: self._say(track_id, entry))
         if self._speak is None:
             return ""
@@ -296,5 +330,5 @@ def library_titles(library_factory: Callable[[], Any]) -> Titles:
     return titles
 
 
-__all__ = ["Ask", "GRACE_S", "LINE_DEADLINE_S", "Titles", "TransitionLines", "latin_fold", "library_titles",
+__all__ = ["Ask", "GRACE_S", "LINE_DEADLINE_S", "Opening", "Titles", "TransitionLines", "latin_fold", "library_titles",
            "line_payload"]

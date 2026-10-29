@@ -5,7 +5,7 @@
  "generator": "scripts/dialog/understanding_corpus/build_marathon.py",
  "scenarios": {
   "dir": ".github/e2e/scenarios/night",
-  "last_commit": "3ecf6f943f32a0a194cf45c0ced865517a84e320",
+  "last_commit": "34a4920f45ab21416d2f457fccd2cacd0b04af18",
   "sha256": {
    "night_marathon_act10_finale_memory_v1.json": "2a4b5edc31a026900c50970bded8eaf90c0b64bd89c11765c394078c9c0f5f20",
    "night_marathon_act1_wakeup_v1.json": "f7c745898dbd5e1e2c864d8f7fd679fc052d2f6c0405e9bf0c0a39db6237db6b",
@@ -15,7 +15,7 @@
    "night_marathon_act3_backlog_diarization_v1.json": "bdb56b3892c672863ded22d22b6f11b5af3a84f42d624ee276d75f1b021f0c4b",
    "night_marathon_act4_voice_prosody_v1.json": "a8b3b36af5a71a5eb02a66c47113f420e174f74031892667e0a522bea69840b1",
    "night_marathon_act5_renardo_live_v1.json": "121f576b5673bd4aafbd7e377badf1974a8a1b5d113e23dd916616cc6530d408",
-   "night_marathon_act6_dj_booth_v1.json": "37fda24f9af61d974a99891c512a93a8ca4861fd3574a123f57010d194835228",
+   "night_marathon_act6_dj_booth_v1.json": "5fc6d066e7db6da03ba695ca92d0ff7ed0593de95a12fccd94ee82bb2a299939",
    "night_marathon_act7_neuro_composer_v1.json": "7d895189050b7281102d17c694294bacd486f318c44912d3a3ee31bd0e16952d",
    "night_marathon_act8_barge_in_v1.json": "0f401953984af7d9cbc97c971a8dae2ddf22b573c3f0c6c0fd337b0d6d33e320",
    "night_marathon_act9_world_outside_v1.json": "857317e264ae484030364ec2c460117c441233dad45de0c054bf90677b33adf0"
@@ -27,7 +27,7 @@
   "acoustic_context": 42,
   "unique_phrases": 130
  },
- "corpus_sha256": "d7b7adbec4dd042e843ea124092a4266c91306f73c66317d62e9461354984e28",
+ "corpus_sha256": "07766d02fe2ec21a3a3ab18807d6cdbef30d21049c5f80024055b3371e770cbd",
  "acts": [
   {
    "act": "1",
@@ -2384,6 +2384,7 @@
       "patterns": [
        "SpeechEvent started speech_id",
        "\\[dj line\\] \\S+ трек [0-9]+/[0-9]+ .*text=|\\[dj_set\\] set[0-9]+ длина сета: 3 \\(названо\\)|\\[gen set\\] .*[^0-9]3 трека, кэш",
+       "🔊 TTS:.*text=.*(Ставлю сет на|Поехали: сет на|Сет на) [0-9]+ .*«[^»]+»",
        "✅ Инструмент (dj_set|request_music) выполнен успешно",
        "📊 \\[turn\\] .*stage=done status=finished"
       ],

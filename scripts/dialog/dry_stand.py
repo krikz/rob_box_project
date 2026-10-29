@@ -439,7 +439,7 @@ class FakeTools:
 
     def _t_dj_set(self, args: Dict[str, Any]) -> Tuple[bool, Dict[str, Any]]:
         """``DjSetTool``: ``stop`` - сет, а без сета - дека (``was_playing`` - была ли музыка, по нему фраза
-        ``knowledge.DJ_STOP``); ``start`` - новый сет снимает идущий."""
+        ``knowledge.DJ_DONE``); ``start`` - новый сет снимает идущий."""
         player, action = self._stand.player, str(args.get("action") or "start")
         if action == "stop":
             if not player.set_running:
