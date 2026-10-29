@@ -30,7 +30,7 @@ import re
 import sys
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Sequence, Tuple
+from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
 _HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(_HERE))
@@ -322,11 +322,13 @@ class LogRelay:
 
 def build_real_stand(providers: Sequence[str], workdir: Path, deadline_s: Optional[float], *,
                      variant: str = "A", router: Any = None, memory_path: Optional[Path] = None,
-                     model: str = "", clock: Any = None) -> DryStand:
+                     model: str = "", clock: Any = None,
+                     system_patch: Optional[Callable[[str], str]] = None) -> DryStand:
     """Стенд с настоящей цепочкой LLM (ключи из окружения; нет ключа — ``RuntimeError`` от сборки цепочки).
 
     ``variant``/``router`` - кто понимает фразу (``understanding_variants``), ``memory_path`` - постоянная e2e-память
-    консоли, ``model`` - модель цепочки (одна на все её провайдеры: у фолбека с другим API свою не задать)."""
+    консоли, ``model`` - модель цепочки (одна на все её провайдеры: у фолбека с другим API свою не задать),
+    ``system_patch`` - правка системного промпта только для стенда (консоль ``--speech-text``)."""
     from rob_box_llm.provider import LLMSettings  # noqa: PLC0415
     from rob_box_voice.core.dialog_v2_ports import CallCounter, assemble_llm  # noqa: PLC0415
 
@@ -334,6 +336,8 @@ def build_real_stand(providers: Sequence[str], workdir: Path, deadline_s: Option
     llm, system = assemble_llm(providers, counter, prompt_dir=PROMPT_DIR,
                                system_prompt_file="master_prompt_compact.txt",
                                settings=LLMSettings(model=model) if model else None, log=relay)
+    if system_patch:
+        system = system_patch(system)
     stand = DryStand(llm, counter, system, workdir, variant=variant, router=router, memory_path=memory_path,
                      clock=clock)
     relay.target = stand

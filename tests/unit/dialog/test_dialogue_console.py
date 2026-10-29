@@ -223,3 +223,18 @@ def test_the_old_core_is_gone():
     assert not [m for m in imported if "agent_core" in m or "dialogue_state_machine" in m or "local_tools" in m]
     assert not hasattr(chat, "ChatSession")
     assert chat.dm.__name__ == "dry_marathon"
+
+
+def test_plain_speech_text_replaces_only_the_speech_section():
+    """``--speech-text plain`` меняет в настоящем промпте робота только раздел «# 2. SPEECH TEXT»; ``robot`` - без правки."""
+    import speech_text as st  # noqa: PLC0415
+
+    system = (REPO / "src" / "rob_box_voice" / "prompts" / "master_prompt_compact.txt").read_text(encoding="utf-8")
+    plain = st.patch(st.PLAIN)(system)
+    assert "<break" not in plain and "No quotation marks" in plain
+    assert plain.split("# 2. SPEECH TEXT")[0] == system.split("# 2. SPEECH TEXT")[0]
+    assert plain.split("# 3.")[1] == system.split("# 3.")[1]
+    assert st.patch(st.ROBOT) is None
+    assert args_of("--speech-text", "plain").speech_text == "plain" and args_of().speech_text == "robot"
+    with pytest.raises(ValueError):
+        st.patch(st.PLAIN)("нет раздела")

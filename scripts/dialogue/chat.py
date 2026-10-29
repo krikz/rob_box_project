@@ -35,6 +35,7 @@ REPO_ROOT = SCRIPT_DIR.parents[1]
 sys.path.insert(0, str(REPO_ROOT / "scripts" / "dialog"))
 
 import dry_marathon as dm  # noqa: E402
+import speech_text as st  # noqa: E402
 import understanding_variants as uv  # noqa: E402
 from dry_stand import DryStand, FakeClock, HearResult, LiveClock, new_workdir  # noqa: E402
 from env_files import load_env_files  # noqa: E402
@@ -100,6 +101,9 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--variant", choices=VARIANTS, default=uv.A,
                         help="A - как на роботе; B - понимает модель: Tier-1 только безопасность, срез тулов по "
                              "состоянию без слов фразы (только стенд).")
+    parser.add_argument("--speech-text", choices=st.VARIANTS, default=st.ROBOT,
+                        help="Правила текста речи в промпте: robot - как на роботе; plain - голый текст без кавычек, "
+                             "тире прямой речи и разметки (только стенд).")
     parser.add_argument("--wake-word", action="store_true",
                         help="Требовать вейк («Робот, …») как на роботе; без него реплика уходит в бэклог.")
     parser.add_argument("--speaker-name", default="",
@@ -260,7 +264,8 @@ def build_stand(args: argparse.Namespace, workdir: Path) -> DryStand:
               f"{C.RESET}")
     try:
         stand = dm.build_real_stand(providers, workdir, args.deadline_s, variant=args.variant, memory_path=memory,
-                                    model=args.model, clock=console_clock(args))
+                                    model=args.model, clock=console_clock(args),
+                                    system_patch=st.patch(args.speech_text))
     except ValueError as exc:
         raise SystemExit(str(exc)) from exc
     except RuntimeError as exc:
