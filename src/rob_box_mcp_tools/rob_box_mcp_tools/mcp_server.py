@@ -1298,6 +1298,7 @@ class MCPServer(Node):
             parameters = request.get("parameters", {})
             request_id = request.get("request_id", "")
 
+            parameters = self.registry.bind_arguments(tool_name, parameters)
             self.get_logger().info(f"📥 Запрос выполнения: {tool_name} с параметрами {parameters}")
 
             # ── Auth Guard: запрос должен быть подписан общим секретом ──

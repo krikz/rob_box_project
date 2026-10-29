@@ -407,6 +407,12 @@ class MCPTool(ABC):
         """
         return self.execution_type == ToolExecutionType.LONG
 
+    def bind_arguments(self, parameters: Dict[str, Any]) -> Dict[str, Any]:
+        """Параметры вызова, какими тул их исполнит: код подставляет то, что модель угадывает (``music_library``:
+        ``track_id`` только что сочинённой песни, #4216). Чистая функция, без побочных эффектов: сервер зовёт её до
+        записи «Запрос выполнения» в лог, чтобы лог и исполнение показывали одни и те же аргументы. По умолчанию - как есть."""
+        return parameters
+
     @abstractmethod
     def execute(self, **kwargs) -> MCPToolResult:
         """

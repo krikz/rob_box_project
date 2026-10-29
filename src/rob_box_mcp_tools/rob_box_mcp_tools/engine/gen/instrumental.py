@@ -136,6 +136,7 @@ class InstrumentalMaker:
                          f"кредиты={made.credits:g} track={saved['id'] if saved else '—'} за {seconds:.0f} с")
         if saved is None:
             return InstrumentalResult(task_id=made.task_id, credits=made.credits, reason="no_track", theme=theme)
+        library.generated.note(str(saved["id"]))  # «этот трек» (#4216): сочинённый сейчас
         info = library.get_track_info(str(saved["id"]))
         title = str(info.get("title") or saved.get("title") or "")
         return InstrumentalResult(str(saved["id"]), title, float(info.get("duration_ms") or 0) / 1000.0,
