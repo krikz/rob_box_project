@@ -133,14 +133,29 @@ def names_theme(heard: str, heard_text: Optional[str]) -> bool:
     («про X», «на тему X»: ``THEME_LEADS``), или в реплике названо слово сета («сет X»: ``SET_WORDS``; без него «сайт»
     - слово сета, распознанное зря). Голое незнакомое слово на месте слова сета - не тема: у него нет опоры, кроме
     звучания. Одно знание - те же таблицы, что у поиска и слотов темы."""
-    from rob_box_voice.core.media_command_grammar import SET_WORDS, THEME_LEADS
-
-    words = [w for w, _s, _e in words_of(heard) if w not in _AND and w != _NOT and content_stems(w)]
+    words = _content_words(heard)
     if len(words) != 1:
         return len(words) > 1
+    return theme_support(heard, heard_text)
+
+
+def _content_words(heard: str) -> List[str]:
+    return [w for w, _s, _e in words_of(heard) if w not in _AND and w != _NOT and content_stems(w)]
+
+
+def theme_support(heard: str, heard_text: Optional[str]) -> bool:
+    """У слов темы ``heard`` есть опора, кроме звучания: хоть одно слово опорное (:func:`_known_word`), человек ввёл
+    тему сам («про X», «на тему X»: ``THEME_LEADS`` перед первым словом темы) или назвал слово сета (``SET_WORDS``).
+    Без опоры — огрызок распознавания, даже из нескольких слов («уводи сторону тётя гриша подруг добреет», n605):
+    чойсер темы (``engine.theme_choice``) штрафует такой вариант (``THEME_CHOICE_WEIGHTS['bare']``)."""
+    from rob_box_voice.core.media_command_grammar import SET_WORDS, THEME_LEADS
+
+    words = _content_words(heard)
+    if not words:
+        return False
     said = [w for w, _s, _e in words_of(heard_text or "")]
     led = words[0] in said and any(w in THEME_LEADS for w in said[:said.index(words[0])])
-    return _known_word(words[0]) or led or bool(SET_WORDS.intersection(said))
+    return any(_known_word(w) for w in words) or led or bool(SET_WORDS.intersection(said))
 
 
 def grounded_theme(theme: Optional[str], heard_text: Optional[str]) -> Tuple[str, bool]:
@@ -266,4 +281,4 @@ def set_slots(theme: Optional[str], persona: Optional[str], heard_text: Optional
 
 
 __all__ = ["SetTheme", "continued", "grounded_theme", "guessed_theme", "heard_theme", "names_theme", "order_theme",
-           "set_slots", "set_theme"]
+           "set_slots", "set_theme", "theme_support"]

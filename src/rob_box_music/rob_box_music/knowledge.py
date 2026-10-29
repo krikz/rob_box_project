@@ -2780,6 +2780,23 @@ THEME_FIT_STOP: Tuple[str, ...] = ("музык", "трек", "песн", "мел
 #: (первая задача V6_MINI — типично 30 с, ``GEN_MODELS``; не готова — сет продлевает фон ещё проходом).
 SET_BACKGROUND_GAIN = 0.35
 SET_BACKGROUND_S = 60.0
+#: По теме сета в кэше нет ничего (K = 0) — сначала треки кэша того же стиля, заказ только того, что они не закрыли
+#: (решение 29.10 по вопросу Шифу «почему кэш пустой»: в библиотеке 266+ треков, а сет темы заказывал всё). ``False`` —
+#: как решение 21.10 (#3775): K = 0 — тихий фон из кэша стиля и заказ всех треков темы.
+SET_THEME_MISS_STYLE_CACHE = True
+# ── Тема сета — выбором чойсера из известных тем (решение Шифу 29.10: «мусорной темы не должно быть … в чойсере пусть
+# будут все слова из запроса плюс все известные темы»; ``rob_box_music.known_themes``, ``engine.theme_choice``) ──────
+#: Известные темы знания словами человека: у каждой — строка таблицы тем (``THEMES``) или тегов заказа
+#: (``GEN_THEME_TAGS``); вселенные (``UNIVERSES``) добавляет ``known_themes`` сам. Тест держит опору каждой.
+KNOWN_THEMES: Tuple[str, ...] = ("космос", "киберпанк", "детский", "праздник", "новогодний", "патриотический",
+                                 "славянский")
+#: Сколько тем из кэша библиотеки показывать чойсеру (больше треков — раньше): список не раздувает промпт модели.
+KNOWN_THEMES_CACHE_MAX = 30
+#: Очки вариантов темы (``rob_box_music.choice.score``): ``asked`` — тему называют слова реплики, ``whole`` — вариант
+#: покрывает все слова темы реплики, ``llm`` — её называет тема LLM, ``cached`` — у темы есть треки в кэше,
+#: ``bare`` — слова реплики без опоры (не жанр/вселенная/таблица/латиница, без «про», без слова «сет»): огрызок
+#: распознавания («уводи сторону тётя гриша подруг добреет», n605) проигрывает «без темы» и известной теме.
+THEME_CHOICE_WEIGHTS: Mapping[str, float] = {"asked": 2.0, "whole": 1.0, "llm": 1.0, "cached": 0.5, "bare": -2.0}
 #: Стили генерации (ADR-0158 §3.2). Правит Шифу; на слух проверены только теги «synthwave» и «grunge» (§1.3).
 GEN_STYLES: Mapping[str, GenStyle] = {
     "club": GenStyle("club house, four on the floor, punchy kick, warm bass", "клуб", "club"),
@@ -3420,6 +3437,7 @@ __all__ += ["SET_FILL_SLACK_S", "GEN_BRIDGE_STYLES", "GEN_SET_DURATION_S", "GEN_
 __all__ += ["GEN_LIBRARY_QUOTA_MB", "RATING_DISLIKE", "RATING_LIKE"]
 __all__ += ["GEN_THEME_MAX_CHARS", "SET_BACKGROUND_GAIN", "SET_BACKGROUND_S", "THEME_FIT_MIN", "THEME_FIT_STOP",
             "THEME_STEM_LEN", "THEME_WORD_MIN"]
+__all__ += ["KNOWN_THEMES", "KNOWN_THEMES_CACHE_MAX", "SET_THEME_MISS_STYLE_CACHE", "THEME_CHOICE_WEIGHTS"]
 __all__ += ["GEN_THEME_TAGS", "SET_STYLE_EXACT", "SET_STYLE_LIST_JOIN", "SET_STYLE_LIST_STEMS", "SET_STYLE_LIST_STOP"]
 
 __all__ += ["DEFAULT_GEN_MODEL", "GEN_FRESH_HOURS", "GEN_GENRE_WORDS", "GEN_MODELS", "GEN_STYLES", "GenModel",

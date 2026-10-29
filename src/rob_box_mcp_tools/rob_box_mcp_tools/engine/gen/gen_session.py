@@ -235,14 +235,20 @@ def themed_count(tags: str, routes: Sequence[Any]) -> int:
 
 
 def theme_note(tags: str, routes: Sequence[Any], themed: int, background: Optional[CacheTrack]) -> str:
-    """Часть строки ``[gen set] слоты``: K по теме из кэша, заказано треков (задач), фон, почему (#3775)."""
+    """Часть строки ``[gen set] слоты``: K по теме из кэша, заказано треков (задач), фон, почему (#3775); у темы —
+    ещё сколько взято из кэша стиля без темы (по теме ничего, 29.10: ``SET_THEME_MISS_STYLE_CACHE``)."""
     ordered = sum(r.kind == GENERATE for r in routes)
     head = (f"по теме из кэша={themed if tags else '—'} заказ={ordered} (задач ≈{math.ceil(ordered / 2)}) "
             f"фон={f'да {background.id}' if background else 'нет'}")
     if not tags:
         return head
+    styled = sum(r.kind == CACHE and r.track is not None for r in routes) - themed
+    if styled and not themed:
+        rest = "заказ только недостающих" if ordered else "без заказа"
+        return f"{head} — по теме в кэше ничего: из кэша стиля={styled}, {rest}"
     reason = next((r.gen_reason for r in routes if r.gen_reason), "")
-    return f"{head} — {theme_why(len(routes), themed, ordered, reason)}"
+    tail = f"; из кэша стиля={styled}" if styled else ""
+    return f"{head} — {theme_why(len(routes), themed, ordered, reason)}{tail}"
 
 
 def launch_text(genre: Any, tracks: int, cached: int, gen_reason: str) -> str:
@@ -266,6 +272,7 @@ REPEAT_WORDS = {
     "tasks_full": "заказов на этот сет больше нет",
     "no_order": "новых треков на этот сет не заказано",
     "theme_cache": "новых треков на этот сет не заказано",
+    "style_cache": "новых треков на этот сет не заказано",
 }
 
 
@@ -877,6 +884,7 @@ class GenSetMaker:
         from ..source_route import SourceRouter
 
         self._provider, self._library, self._balance, self._log, self._cover = provider, library, balance, log, cover
+        self.chooser = chooser  # и путь трека, и тема сета (``engine.theme_choice``, решение Шифу 29.10)
         self.router = SourceRouter(chooser, library, log=log, sets=self)
 
     def ready(self) -> bool:
@@ -888,6 +896,16 @@ class GenSetMaker:
 
     def balance(self) -> Optional[float]:
         return self._balance()
+
+    def cached(self) -> Tuple[CacheTrack, ...]:
+        """Треки кэша библиотеки — известные темы сета (``rob_box_music.known_themes``); не читается — пусто."""
+        from ..source_route import cache_tracks
+
+        try:
+            return cache_tracks(self._library())
+        except Exception as exc:  # noqa: BLE001 — известные темы не держат запуск сета: остаются темы знания
+            self._log().warning(f"⚠️ [gen set] кэш для известных тем не прочитан: {type(exc).__name__}: {exc}")
+            return ()
 
     def plan(self, theme: str, style: str, heard_text: Optional[str], length: int, *, named: bool = False,
              styles: Sequence[str] = (), minutes: Optional[int] = None,
