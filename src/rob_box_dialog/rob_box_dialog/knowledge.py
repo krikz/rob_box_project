@@ -803,17 +803,21 @@ CONTEXT_BUDGET_TOKENS: Mapping[str, int] = MappingProxyType({
 #: ``speaker_memory`` — «робот помнит собеседника» (решение Шифу 23.10): ``dialog_count`` (какой это ход с ним,
 #: профиль ведёт код при уверенном ``SpeakerRef``) и ``facts`` — его факты из той памяти, куда пишут ``memory_save``.
 #: ``performance`` — идущее выступление (``plan.perform.context_block``): спетое и звучащее дословно, номер первого не
-#: начатого сегмента — по нему LLM правит «с того места» (``edit_pending``, риск §16).
+#: начатого сегмента — по нему LLM правит «с того места» (``edit_pending``, риск §16); ``last_said`` (досчитано до
+#: сюда) и ``pending`` (что ещё не отдано) — #4207: сказанное правка не повторяет, это снимает код (``plan.repeats``).
 #: ``recent_actions`` — исходы действий прошлых ходов окна v2 структурой (``turn_log``, ``ActionResult``: тул, статус,
 #: причина), а не текстом в репликах (§7.3, PR-8).
 #: ``background_since_reply`` — все фоновые фразы всех авторов за ``BACKGROUND_WINDOW_S``, каждая с ``who`` и
 #: ``age_s`` (В23, 23.10; ``Backlog.background_since_reply``): чужие реплики, не просьбы к роботу.
+#: ``background_summary`` — сводка фона кодом (``backlog.voices_summary``, #4212): ``voices`` (разных собеседников по
+#: ``speaker_id``), ``known`` (имена узнанных), ``unknown`` (безымянных профилей), ``unattributed`` (фраз без профиля,
+#: если есть). Числа и состав голосов в ответе берутся отсюда, а не пересчётом ``background_since_reply``.
 #: ``shift_log`` — журнал смены (``shift_log.ShiftLog.section``): кто приходил, что звучало, что робот сделал,
 #: с фразой-итогом кода; только когда человек спрашивает о смене (``shift_log.shift_asked``: ``SHIFT_ASK_*``).
 #: ``operator_journal`` — журнал ТАРС (§7.4): записи моложе своего ``ttl`` и сводка за сутки с датой.
 CONTEXT_SECTIONS: Tuple[str, ...] = (
     "user_profile", "speaker", "speaker_memory", "tts_context", "speech_gender", "position", "providers", "music_state",
-    "performance", "recent_unaddressed", "background_since_reply", "recent_actions", "shift_log", "operator_journal",
+    "performance", "recent_unaddressed", "background_since_reply", "background_summary", "recent_actions", "shift_log", "operator_journal",
 )
 
 
@@ -1265,6 +1269,8 @@ NO_EVIDENCE_REASON = "no_evidence"
 #: («Сестру пользователя зовут Оля», «Тамара любит чай»), «Пользователь не представился» - обычный факт. Слова - как у
 #: ``words.name_tokens`` (нижний регистр, ё → е).
 NAME_OWNER_TOOL = "register_speaker"
+#: Причина ``done`` регистрации: голос уверенно узнан под другим именем, профиль переименован (#4054, ``dialogue.register_outcome``).
+RENAMED_REASON = "renamed"
 NAME_FACT_WORDS: Mapping[str, FrozenSet[str]] = MappingProxyType({
     "marker": frozenset({"зовут", "звать", "имя", "представился", "представилась"}),
     "subject": frozenset({"пользователя", "пользователь", "собеседника", "собеседник", "собеседницы", "собеседница",
@@ -1334,10 +1340,16 @@ STOPPED_EARLIER_FIELD = "stopped_earlier"
 #: стопа - ``turn._tier1_then_rest``: «хватит, борис уже уснул под неё», n709): модель видит, что музыку уже
 #: остановил код, а не думает, что она ещё играет и её можно «сделать потише».
 THIS_TURN_FIELD = "this_turn"
-DJ_STOP = ByData(("action", "was_playing", STOPPED_EARLIER_FIELD), {
-    ("stop", False, None): "music.stop_idle", ("stop", False, True): "music.stop_ok",
-    ("stop", True, None): "music.stop_ok", ("stop", None, None): "music.stop_ok",
-})
+#: Старт сета с объявлением (#4217, n605 «поставь сет из трёх треков, объявляй каждый»): сет объявляет треки вслух, и
+#: первый - тоже: ``dj_set`` кладёт в данные исхода название трека 1 (``opening``) и длину сета словами (``tracks_text``),
+#: фразу строит код по ним («Ставлю сет на 3 трека. Первый - «X».»), а не общее «Включаю музыку.» класса. Названия нет
+#: (мост ожидания генерации, трек без названия, реплики диджея выключены) - ключ класса, как было.
+DJ_OPENING_FIELD = "opening"
+DJ_DONE = ByData(("action", DJ_OPENING_FIELD, "was_playing", STOPPED_EARLIER_FIELD), {
+    ("start", True, None, None): "music.set_opening",
+    ("stop", False, False, None): "music.stop_idle", ("stop", False, False, True): "music.stop_ok",
+    ("stop", False, True, None): "music.stop_ok", ("stop", False, None, None): "music.stop_ok",
+}, present=(DJ_OPENING_FIELD,))
 DJ_STOP_FAIL = ByData(("action",), {("stop",): "music.stop_fail"})
 #: Фраза «обычный голос» целиком: голос робота по умолчанию звучит, а режим тона («басом»), снятый вместе с ним,
 #: этой фразой и сказан - отдельное «Тон голоса обычный.» рядом не нужно (``turn.voice_phrase``). Ключ живёт здесь один:
@@ -1372,7 +1384,7 @@ TOOL_PHRASES: Mapping[str, Mapping[str, Any]] = MappingProxyType({
         "rejected": "music.stop_fail",
     }),
     # стоп сета - то же, что стоп музыки, а не «Включаю музыку.» старта; платная генерация - фраза ожидания
-    "dj_set": MappingProxyType({"done": DJ_STOP, "rejected": DJ_STOP_FAIL}),
+    "dj_set": MappingProxyType({"done": DJ_DONE, "rejected": DJ_STOP_FAIL}),
     "request_music": MappingProxyType({"done": GEN_WAIT}),
     "generate_music": MappingProxyType({"done": GEN_WAIT}),
     # библиотека (CLASS_BY_ARG): правка - фраза о ней, не «Включаю музыку»; list/search/info - query, фразы кода нет

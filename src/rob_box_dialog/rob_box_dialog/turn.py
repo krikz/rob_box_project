@@ -82,6 +82,7 @@ from dataclasses import dataclass, field, fields, replace
 from typing import (Any, Awaitable, Callable, Collection, FrozenSet, Iterable, List, Mapping, Optional, Protocol,
                     Sequence, Tuple)
 
+from rob_box_core.speaker_wire import NAME_CONFIRMED
 from rob_box_core.tool_catalog import get_tool
 from rob_box_core.utterance import Sink, Utterance
 from rob_box_dialog import face_scene
@@ -110,8 +111,8 @@ from rob_box_dialog.speaker_adapter import asks_recognized, recognition_reply, s
 from rob_box_dialog.words import asks_to_listen
 from rob_box_dialog.tools_view import (available_tools, music_asked, needs_words, robot_asked, show_asked,
                                        voice_asked, voice_named)
-from rob_box_dialog.turn_log import (PERFORM_STARTED, TOOL, USER, TurnAggregate, TurnLog, phrase_label, results_of,
-                                     speaker_label)
+from rob_box_dialog.turn_log import (PERFORM_STARTED, TOOL, USER, TurnAggregate, TurnLog, forget_old_name,
+                                     phrase_label, results_of, speaker_label)
 
 _LOG = logging.getLogger(__name__)
 #: Строка лога хода v2 (вход, решение, итог).
@@ -128,6 +129,8 @@ RECENT_ACTIONS = "recent_actions"
 RECENT_UNADDRESSED = "recent_unaddressed"
 #: Раздел снимка хода с фразой: все фоновые фразы всех авторов за последние ``BACKGROUND_WINDOW_S`` (В23, 23.10).
 BACKGROUND_SINCE_REPLY = "background_since_reply"
+#: Раздел снимка: сводка фона кодом - число голосов, кто узнан, сколько безымянных (``backlog.voices_summary``, #4212).
+BACKGROUND_SUMMARY = "background_summary"
 
 
 def host_sections(snap: SessionSnapshot, music: Any, providers: Sequence[Any] = (),
@@ -228,6 +231,7 @@ class _Turn:
     heard: Tuple[Tuple[str, str], ...] = ()  # подхват бэклога: (кто сказал, фраза) по порядку
     recent: Tuple[Mapping[str, Any], ...] = ()  # фоновая фраза того же собеседника для снимка
     background: Tuple[Mapping[str, Any], ...] = ()  # фоновые фразы всех с последнего ответа робота (В23)
+    background_summary: Mapping[str, Any] = field(default_factory=dict)  # сводка голосов фона кодом (#4212)
     said: List[str] = field(default_factory=list)
     queried: Tuple[ActionResult, ...] = ()  # исходы выполненного в этом ходе query (для страховки от молчания)
     waiting: str = "llm"  # чего ждёт ход: ответа LLM или события владельца (класс действия) — фразы В31
@@ -727,6 +731,17 @@ async def understand(engine: "TurnEngine", turn: "_Turn", snap: SessionSnapshot)
         await engine._understand(turn, snap)
 
 
+def note_renamed(log: TurnLog, snap: SessionSnapshot, result: ActionResult) -> None:
+    """Исход ``register_speaker`` ``done{renamed}`` (#4054): прежнее имя профиля уходит из окна модели
+    (``turn_log.forget_old_name``) - снимок хода называет собеседника только текущим именем. Прежнее имя - имя
+    собеседника в снимке хода, если оно подтверждено голосом (догадку за имя не берём)."""
+    if result.tool != kn.NAME_OWNER_TOOL or result.status != "done" or result.reason != kn.RENAMED_REASON:
+        return
+    speaker = getattr(snap, "speaker", None)
+    old = getattr(speaker, "name", None) if getattr(speaker, "name_state", None) == NAME_CONFIRMED else None
+    forget_old_name(log, old, (result.data or {}).get("name"))
+
+
 def outcome_phrase(results: Sequence[ActionResult]) -> Optional[str]:
     """Фраза кода об исходе действий хода (``respond.join``): без ``query`` (его данные уходят модели). Голос тоже
     здесь: тулы ``set_voice``/``set_tts_provider`` молчат, фраза — по их результату (``knowledge.VOICE_DONE``). Слота нет
@@ -847,6 +862,14 @@ def unrepeated(log: Any, turn: "_Turn", cmd: Command) -> Command:
     log.info(f"{LOG_MARK} повтор исполненного в этом ходе не исполняется: {[a.tool for a in repeats]} "
              f"turn={turn.turn_id}")
     return replace(cmd, actions=tuple(a for a in cmd.actions if a not in repeats))
+
+
+def settled(cmd: Command, fresh: Command) -> bool:
+    """Модель повторила только исполненное в этом ходе (:func:`unrepeated` убрал все её действия) и слов не дала: ответа
+    сверх сделанного нет. Ход закрывается сразу фразой кода по исходу (:func:`_close_unread`), модель не зовётся снова
+    и нарушения ``silent_answer`` ей не возвращают: повтор с лицом остаётся «одним лицом без слов» (``bare_answer``), и
+    ход крутил повтор по кругу, пока не звучала заглушка «Ага, я на связи.» (n608 марафон-6, #4173)."""
+    return bool(cmd.actions) and not fresh.actions and not fresh.speech and fresh.ask is None and fresh.perform is None
 
 
 def unanswered(cmd: Command, fresh: Command, runnable: Sequence[ToolCall]) -> bool:
@@ -1528,7 +1551,8 @@ class TurnEngine:
         turn = _Turn(self._new_id(), snap.epoch, addressed.text.strip(), addressed.source,
                      TurnDeadline(self._deadline_s, clock=self._clock), pickup=addressed.pickup,
                      heard=picked_heard(addressed), recent=recent_section(addressed),
-                     background=background_section(addressed), command=addressed.command,
+                     background=background_section(addressed), background_summary=addressed.background_summary,
+                     command=addressed.command,
                      utterance_id=addressed.utterance_id)
         self.log.begin(turn.turn_id, turn.epoch, turn.text, speaker_label(snap.speaker), turn.heard)
         log_pickup(self._log, addressed, turn)
@@ -1651,7 +1675,7 @@ class TurnEngine:
         fresh = unrepeated(self._log, turn, cmd)
         names = foreign_keys(self.log.window(exclude=turn.turn_id), turn, fresh, self.session.snapshot)
         fresh = unnamed_without_retry(self._log, turn, fresh, names, last)
-        owed = owed_reason(self.session.snapshot, turn, fresh, names)
+        owed = "" if settled(cmd, fresh) else owed_reason(self.session.snapshot, turn, fresh, names)
         if owed:
             return await _answer_owed(self, turn, fresh, snap, last, owed)
         runnable = _runnable(fresh.actions, last)
@@ -1703,6 +1727,7 @@ class TurnEngine:
         owner = memory.memory_owner(snap)  # чья память у хода при исполнении: исход - только ей в окне
         for result in results:
             self.log.result(turn.turn_id, result, owner)
+            note_renamed(self.log, snap, result)
             self._event("action", turn, data={"tool": result.tool, "status": result.status, "reason": result.reason,
                                               "cls": result.cls})
         self._note_asked(turn, actions, results)
@@ -1731,6 +1756,7 @@ class TurnEngine:
         recent = recent_results(past, results_of(self.log, turn.turn_id), memory.memory_owner(snap))
         context = build_context({**sections, RECENT_UNADDRESSED: list(turn.recent),
                                  BACKGROUND_SINCE_REPLY: list(turn.background),
+                                 BACKGROUND_SUMMARY: dict(turn.background_summary),
                                  RECENT_ACTIONS: recent[-kn.TURN_WINDOW_MAX_TURNS:]})
         messages: List[Any] = [{"role": "system", "content": self._system}] if self._system else []
         messages += [{"role": e.role, "content": e.for_llm()} for e in history]
@@ -1777,7 +1803,7 @@ class TurnEngine:
 
 
 __all__ = ["ASK_MARK", "Answer", "LOG_MARK", "Ports", "RECENT_ACTIONS", "RECENT_UNADDRESSED", "BACKGROUND_SINCE_REPLY",
-           "SAD_FACE", "Shown", "TurnEngine", "answer_recognized", "command_face", "command_form", "done_expression",
+           "BACKGROUND_SUMMARY", "SAD_FACE", "Shown", "TurnEngine", "answer_recognized", "command_face", "command_form", "done_expression",
            "asked_voice", "finish_stage", "hand_perform", "held_expression", "host_sections", "shown_face",
            "foreign_keys", "invalid_emotion", "outcome_phrase", "over_ordered_music", "owed_reason", "query_answer",
            "music_promise_key", "query_fallback", "recent_results", "unnamed_without_retry", "robot_owed", "show_queue_phrase", "stop_performance", "tier1_actions", "tier1_face", "tier1_for",

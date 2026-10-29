@@ -243,6 +243,8 @@ def test_cli_skip_reads_the_deck_rule_from_the_scenario_file(tmp_path):
 
 SET_TOOL = _mcp(T0 + 3, "✅ Инструмент dj_set выполнен успешно")
 PROGRESS = _tts("Секунду, музыка запускается.")
+OPENING = _tts("Ставлю сет на 3 трека. Первый трек — «Рок дискотека у тёти Гриши».")
+GENERIC_START = _tts("Включаю музыку.")
 SET_OF_THREE_SYNTH = _mcp(T0 + 2, "🎛️ [dj_set] set04217 длина сета: 3 (названо), энергия=[0.4, 0.7, 0.9]")
 SET_OF_THREE_GEN = _mcp(T0 + 2, "🎛️ [gen set] set18211 ['cache:a', 'cache:b', 'cache:c']: ['rock', 'rock', 'rock'] 3 трека, кэш 3, "
                                 "запас 0, мост=нет gen=ok → True")
@@ -252,12 +254,28 @@ SPEECH = "🗣️ SpeechEvent started speech_id=s1 agent=main epoch=1 text_len=2
 
 def test_n605_any_speech_is_no_longer_enough():
     got = _verdict("n605_dj_set_plan", SPEECH, PROGRESS, SET_TOOL, DONE)
-    assert not got["pass"] and got["missing"] == [gen.DJ_SET_ANNOUNCED], got
+    assert not got["pass"] and got["missing"] == [gen.DJ_SET_ANNOUNCED, gen.SET_OPENING_SPOKEN], got
+
+
+def test_n605_generic_start_phrase_is_not_the_first_track_announced():
+    """#4217: сет собран и заиграл, а вслух только «Включаю музыку.» -- трек 1 не назван, шаг красный."""
+    got = _verdict("n605_dj_set_plan", SPEECH, GENERIC_START, SET_TOOL, SET_OF_THREE_GEN, DONE)
+    assert not got["pass"] and got["missing"] == [gen.SET_OPENING_SPOKEN], got
+
+
+@pytest.mark.parametrize("variant", range(3))
+def test_n605_every_catalog_variant_of_the_opening_is_recognised(variant):
+    yaml = pytest.importorskip("yaml")
+    catalog = yaml.safe_load((ROOT / "src/rob_box_dialog/rob_box_dialog/phrases/ru.yaml").read_text(
+        encoding="utf-8"))
+    said = catalog["music.set_opening"][variant].format(tracks_text="3 трека", opening="Рок дискотека у тёти Гриши")
+    got = _verdict("n605_dj_set_plan", SPEECH, _tts(said), SET_TOOL, SET_OF_THREE_GEN, DONE)
+    assert got["pass"], got
 
 
 @pytest.mark.parametrize("plan", [SET_OF_THREE_SYNTH, SET_OF_THREE_GEN, DJ_LINE])
 def test_n605_speech_tool_and_an_announced_set_is_green(plan):
-    got = _verdict("n605_dj_set_plan", SPEECH, SET_TOOL, plan, DONE)
+    got = _verdict("n605_dj_set_plan", SPEECH, OPENING, SET_TOOL, plan, DONE)
     assert got["pass"], got
 
 
@@ -268,7 +286,7 @@ def test_n605_speech_tool_and_an_announced_set_is_green(plan):
     _mcp(T0 + 2, "🗣️ [dj line] set04217:02:B не озвучена"),
 ])
 def test_n605_a_set_of_another_length_or_a_silent_line_is_not_an_announcement(plan):
-    got = _verdict("n605_dj_set_plan", SPEECH, SET_TOOL, plan, DONE)
+    got = _verdict("n605_dj_set_plan", SPEECH, OPENING, SET_TOOL, plan, DONE)
     assert not got["pass"], got
 
 

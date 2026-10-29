@@ -174,15 +174,19 @@ def test_speech_without_result_is_not_a_pass():
 
 def test_n605_needs_both_announcement_and_result():
     """n605 просит сет, речь и объявленный сет (#4196): ``SpeechEvent started`` (#3880) И успех тула И реплика диджея либо сет
-    ровно из трёх треков; нет любого из трёх -- красный. Подробно -- ``test_issue_4196_false_greens.py``."""
+    ровно из трёх треков И название трека 1 в речи старта (#4217); нет любого из четырёх -- красный. Подробно -- ``test_issue_4196_false_greens.py``."""
     ended = TURN_LINE % ("done", "finished")
     speech = "🗣️ SpeechEvent started speech_id=ab12cd34 agent=main epoch=1 text_len=20"
     done = "✅ Инструмент dj_set выполнен успешно"
     planned = "🎛️ [dj_set] set04217 длина сета: 3 (названо), энергия=[0.4, 0.7, 0.9]"
-    assert _verdict("n605_dj_set_plan", "\n".join([speech, done, planned, ended]))["pass"]
-    assert not _verdict("n605_dj_set_plan", "\n".join([speech, done, ended]))["pass"], "сет не объявлен"
-    assert not _verdict("n605_dj_set_plan", "\n".join([done, planned, ended]))["pass"]
-    assert not _verdict("n605_dj_set_plan", "\n".join([speech, planned, ended]))["pass"]
+    opening = _tts("Ставлю сет на 3 трека. Первый трек — «Рок дискотека у тёти Гриши».")  # #4217: трек 1 назван
+    assert _verdict("n605_dj_set_plan", "\n".join([speech, opening, done, planned, ended]))["pass"]
+    assert not _verdict("n605_dj_set_plan", "\n".join([speech, done, planned, ended]))["pass"], "трек 1 не назван"
+    generic = _tts("Включаю музыку.")
+    assert not _verdict("n605_dj_set_plan", "\n".join([speech, generic, done, planned, ended]))["pass"], "общая фраза"
+    assert not _verdict("n605_dj_set_plan", "\n".join([speech, opening, done, ended]))["pass"], "сет не объявлен"
+    assert not _verdict("n605_dj_set_plan", "\n".join([opening, done, planned, ended]))["pass"]
+    assert not _verdict("n605_dj_set_plan", "\n".join([speech, opening, planned, ended]))["pass"]
 
 
 def test_dj_set_with_result_markers_passes_n602_n604_n608():

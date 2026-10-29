@@ -18,8 +18,8 @@
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass, replace
-from typing import Any, Dict, List, Optional, Sequence, Tuple, Union
+from dataclasses import dataclass, field, replace
+from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple, Union
 
 from rob_box_dialog.backlog import Backlog, Heard
 from rob_box_dialog.heard import repair
@@ -67,6 +67,8 @@ class Addressed:
     recent: Tuple[Dict[str, Any], ...] = ()
     #: Адресованный ход с фразой: все фоновые фразы всех авторов за последние ``BACKGROUND_WINDOW_S`` (В23, 23.10).
     background: Tuple[Dict[str, Any], ...] = ()
+    #: Сводка фона кодом (``backlog.voices_summary``): сколько голосов, кто узнан, сколько безымянных (#4212).
+    background_summary: Mapping[str, Any] = field(default_factory=dict)
     #: Запасной разбор Tier-1 (``turn.tier1_of``): слова после вейка (``words.wake_command``), если они короче ``text``.
     #: Tier-1 разбирает сначала ``text`` целиком (команда до вейка — «Стоп, Робот, пожалуйста»), а это — только когда
     #: целое не Tier-1 или спорно: перед вейком эхо речи робота (n811 27.10: «четыре недели робот хватит читать…» —
@@ -199,6 +201,7 @@ def _woken(rest: str, heard: Heard, backlog: Optional[Backlog], command: str = "
         if backlog is not None:
             backlog.note_addressed(heard.t)  # фоновое до этой фразы модель видит в снимке хода: издалека не подхватывать
         return Addressed(said.text, VOICE, recent=(recent,) if recent else (), background=tuple(since),
+                         background_summary=backlog.background_summary(heard) if backlog is not None else {},
                          command=after_wake.text, stt_fixes=said.fixes + after_wake.fixes)
     taken = backlog.pickup(heard) if backlog is not None else []
     if not taken:
@@ -207,7 +210,8 @@ def _woken(rest: str, heard: Heard, backlog: Optional[Backlog], command: str = "
     # часть могла уйти в бэклог» модель видит данными, не правилом
     return Addressed(" ".join(e.text for e in taken), BACKLOG_PICKUP, True,
                      tuple(Backlog.label(e, heard) for e in taken),
-                     background=tuple(backlog.background_since_reply(heard)))
+                     background=tuple(backlog.background_since_reply(heard)),
+                     background_summary=backlog.background_summary(heard))
 
 
 def _seconds(stamp: Any) -> float:
