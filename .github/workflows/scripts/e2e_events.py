@@ -70,6 +70,16 @@ n312 28.10). С ``"deck": "idle"`` (#4196) -- дека пуста (послед�
 музыки, которую должен был включить предыдущий шаг, нет -- шаг «выключи»/«вейк под музыкой» не играется, SKIP «каскад от
 него» (n507, n511, n312 марафона-3: без музыки PASS/FAIL ничего не доказывали).
 
+Ссылка шага на трек песни акта (#3710, #4077)
+=============================================
+Поле шага ``track_ref`` -- шаг про «эту песню» (n707 «расскажи», n708 «включи»), а не про любой трек библиотеки:
+``{"reason": "CASCADE_N702", "log": <regex с одной группой -- id>, "tool": "music_library", "action": "info",
+"wait_sec": N}``. Id берётся из лога робота за акт, где его пишет сам заказ песни (``🎤 [song] … track=<id>``,
+:func:`track_ref_bind`; последняя такая строка); строки нет за ``wait_sec`` -- заказ n702 песни не дал, шаг не
+играется: ``SKIP <reason>``, а не PASS. Шаг сыгран -- его вызов тула в окне шага (``📥 Запрос выполнения: <tool> с
+параметрами {…}``) обязан нести ЭТОТ id при этом ``action`` (:func:`track_ref_verdict`): вызов на чужой трек или
+выдуманный id шаг краснит. «Тул вызван» без id (ложный PASS n707/n708 27.10) шагу не засчитывается.
+
 Вид результата музыки (#3971)
 =============================
 Поле шага ``music_compare`` (:data:`COMPARES`) -- результат, который виден только в сравнении с музыкой ДО шага:
@@ -80,6 +90,7 @@ n312 28.10). С ``"deck": "idle"`` (#4196) -- дека пуста (послед�
 
 from __future__ import annotations
 
+import ast
 import json
 import re
 import sys
@@ -638,6 +649,117 @@ def _idle_verdict(rule: SkipRule, last: Optional[Tuple[MusicEvent, str]]) -> Dic
     return {"fetch": 1, "skip": rule.reason, "evidence": " ".join(last[1].split())[:EVIDENCE_CHARS]}
 
 
+# -- ссылка шага на трек песни акта: track_ref (#3710, #4077) -----------------------------------------------------
+
+
+class TrackRef(NamedTuple):
+    """Шаг про трек, названный логом акта: ``log`` -- где робот называет id (группа 1), ``tool``/``action`` -- каким
+    вызовом шаг обязан к нему обратиться, ``wait_sec`` -- сколько харнесс ждёт строку (песня пишется ~90-150 с)."""
+
+    reason: str
+    log: Pattern[str]
+    tool: str
+    action: str
+    wait_sec: int = 0
+
+
+TRACK_REF_FIELD = "track_ref"
+#: Потолок ожидания id трека: дольше ждать песню шаг не станет, нет строки -- ``SKIP <reason>``.
+TRACK_REF_MAX_WAIT_S = 600
+_TOOL_NAME_RE = re.compile(r"[a-z][a-z0-9_]*")
+#: Вызов тула в логе (``mcp_server``: ``📥 Запрос выполнения: <tool> с параметрами {'action': 'info', …}``).
+TOOL_CALL_RE = re.compile(r"Запрос выполнения: (\w+) с параметрами (\{.*\})\s*$")
+
+
+def track_ref(step: Mapping[str, Any]) -> Optional[TrackRef]:
+    """Ссылка шага на трек или ``None``; кривое поле -- ``ValueError`` (молча сыграть шаг без сверки id нельзя: так
+    n707/n708 27.10 были зелёными на любой вызов ``music_library``)."""
+    raw = step.get(TRACK_REF_FIELD)
+    if raw is None:
+        return None
+    where = f"{step.get('label', '?')}: {TRACK_REF_FIELD}"
+    if not isinstance(raw, Mapping):
+        raise ValueError(f"{where} -- объект {{reason, log, tool, action}}, а не {raw!r}")
+    reason, log, tool, action = (raw.get(k) for k in ("reason", "log", "tool", "action"))
+    if not isinstance(reason, str) or not _SKIP_REASON_RE.fullmatch(reason):
+        raise ValueError(f"{where}.reason -- ИМЯ_ЗАГЛАВНЫМИ, а не {reason!r}")
+    if not isinstance(tool, str) or not _TOOL_NAME_RE.fullmatch(tool):
+        raise ValueError(f"{where}.tool -- имя тула, а не {tool!r}")
+    if not isinstance(action, str) or not action:
+        raise ValueError(f"{where}.action -- непустая строка, а не {action!r}")
+    wait = raw.get("wait_sec", 0)
+    if isinstance(wait, bool) or not isinstance(wait, int) or not 0 <= wait <= TRACK_REF_MAX_WAIT_S:
+        raise ValueError(f"{where}.wait_sec -- целое 0..{TRACK_REF_MAX_WAIT_S}, а не {wait!r}")
+    if not isinstance(log, str) or not log:
+        raise ValueError(f"{where}.log -- regex с одной группой (id трека), а не {log!r}")
+    try:
+        pattern = re.compile(log)
+    except re.error as exc:
+        raise ValueError(f"{where}.log -- не regex: {exc}") from exc
+    if pattern.groups != 1:
+        raise ValueError(f"{where}.log -- ровно одна группа (id трека), а их {pattern.groups}: {log!r}")
+    return TrackRef(reason, pattern, tool, action, wait)
+
+
+def track_ref_rules(scenario: Any) -> List[Tuple[str, TrackRef]]:
+    """``[(label, ссылка)]`` шагов с ``track_ref``; ошибка схемы любого шага -- ``ValueError`` до первого шага."""
+    if not isinstance(scenario, Mapping):
+        raise ValueError("сценарий -- не JSON-объект")
+    steps = [s for s in scenario.get("steps", []) if isinstance(s, Mapping)]
+    rules = [(str(s.get("label", f"s{i + 1}")), track_ref(s)) for i, s in enumerate(steps)]
+    return [(label, rule) for label, rule in rules if rule is not None]
+
+
+def track_ref_bind(rule: TrackRef, text: str) -> Dict[str, object]:
+    """Лог робота за акт (первая строка -- часы робота) -> ``fetch`` (0 -- лог не прочитан), ``track`` (id из ПОСЛЕДНЕЙ
+    строки-улики или ``-``), ``evidence`` (эта строка). Нет id -- харнесс ждёт ``wait_sec`` и спрашивает снова."""
+    now, lines = split_input(text)
+    if now is None:
+        return {"fetch": 0, "track": "-", "evidence": "-"}
+    hits = [(found, line) for line in lines for found in [rule.log.search(line)] if found]
+    if not hits:
+        return {"fetch": 1, "track": "-", "evidence": "-"}
+    found, line = hits[-1]
+    return {"fetch": 1, "track": found.group(1), "evidence": " ".join(line.split())[:EVIDENCE_CHARS]}
+
+
+def tool_calls(lines: List[str], tool: str) -> List[Mapping[str, Any]]:
+    """Параметры вызовов ``tool`` в строках лога (по порядку); строка с нечитаемым словарём вызовом не считается."""
+    calls: List[Mapping[str, Any]] = []
+    for line in lines:
+        found = TOOL_CALL_RE.search(line)
+        if found is None or found.group(1) != tool:
+            continue
+        try:
+            params = ast.literal_eval(found.group(2))
+        except (ValueError, SyntaxError):
+            continue
+        if isinstance(params, Mapping):
+            calls.append(params)
+    return calls
+
+
+def track_ref_verdict(rule: TrackRef, expected: str, text: str) -> Dict[str, object]:
+    """Лог окна шага (первая строка -- часы робота) и id песни акта -> ``fetch``, ``ok`` (1 -- есть вызов ``tool`` с
+    ``action`` и ТЕМ ЖЕ ``track_id``), ``detail`` (что вызывал на деле)."""
+    now, lines = split_input(text)
+    if now is None:
+        return {"fetch": 0, "ok": 0, "detail": "лог шага не прочитан"}
+    calls = tool_calls(lines, rule.tool)
+    same_action = [c for c in calls if c.get("action") == rule.action]
+    if any(str(c.get("track_id", "")) == expected for c in same_action):
+        return {"fetch": 1, "ok": 1, "detail": f"{rule.tool} {rule.action} track_id={expected}"}
+    if not calls:
+        detail = f"в окне шага нет вызова {rule.tool}; ждали {rule.action} track_id={expected}"
+    elif not same_action:
+        seen = sorted({str(c.get("action", "?")) for c in calls})
+        detail = f"{rule.tool} вызван с action={seen}, ждали {rule.action} track_id={expected}"
+    else:
+        ids = sorted({str(c.get("track_id", "")) or "(пусто)" for c in same_action})
+        detail = f"{rule.tool} {rule.action} на track_id={ids}, а песня акта -- {expected}"
+    return {"fetch": 1, "ok": 0, "detail": detail}
+
+
 # -- вид результата музыки: сверка с тем, что играло ДО шага (#3971) -----------------------------------------------
 
 
@@ -903,15 +1025,55 @@ def _cmd_compare(opts: Dict[str, str], flags: List[str]) -> int:
     return 0
 
 
+def _cmd_trackrefs(opts: Dict[str, str], flags: List[str]) -> int:
+    """``label<TAB>причина<TAB>wait_sec`` шагов с ``track_ref``; ошибка схемы -- rc 2 и причина в stderr."""
+    try:
+        rules = track_ref_rules(_load_scenario(opts["--scenario"]))
+    except (OSError, ValueError) as exc:
+        sys.stderr.write(f"{opts['--scenario']}: {exc}\n")
+        return 2
+    for label, rule in rules:
+        sys.stdout.write(f"{label}\t{rule.reason}\t{rule.wait_sec}\n")
+    return 0
+
+
+def _cmd_trackbind(opts: Dict[str, str], flags: List[str]) -> int:
+    """``--scenario F --label L`` < лог акта -> ``fetch=`` / ``track=`` / ``evidence=``."""
+    try:
+        rule = track_ref(_step_of(opts))
+    except (OSError, ValueError, AttributeError) as exc:
+        sys.stderr.write(f"{opts['--scenario']}: {exc}\n")
+        return 2
+    _emit(track_ref_bind(rule, sys.stdin.read()) if rule else {"fetch": 1, "track": "-", "evidence": "-"})
+    return 0
+
+
+def _cmd_trackcheck(opts: Dict[str, str], flags: List[str]) -> int:
+    """``--scenario F --label L --track ID`` < лог окна шага -> ``fetch=`` / ``ok=`` / ``detail=``."""
+    try:
+        rule = track_ref(_step_of(opts))
+    except (OSError, ValueError, AttributeError) as exc:
+        sys.stderr.write(f"{opts['--scenario']}: {exc}\n")
+        return 2
+    if rule is None or not opts["--track"]:
+        sys.stderr.write(f"{opts['--label']}: нет track_ref или не назван --track\n")
+        return 2
+    _emit(track_ref_verdict(rule, opts["--track"], sys.stdin.read()))
+    return 0
+
+
 COMMANDS: Mapping[str, Callable[[Dict[str, str], List[str]], int]] = MappingProxyType({
     "state": _cmd_state, "quiet": _cmd_quiet, "anchor": _cmd_anchor,
     "policy": _cmd_policy, "recovery": _cmd_recovery, "session": _cmd_session,
     "mark": _cmd_mark, "skips": _cmd_skips, "skip": _cmd_skip, "compare": _cmd_compare, "stt": _cmd_stt,
+    "trackrefs": _cmd_trackrefs, "trackbind": _cmd_trackbind, "trackcheck": _cmd_trackcheck,
 })
 USAGE = ("usage: e2e_events.py state|quiet|anchor --engine v1|v2 [--silent-ok] [--barge] [--waited S --accept-window S]"
          " [--perform-ceiling S] [--after A --n N] | policy --scenario FILE | recovery [--kind K] | session < report.json"
          " | mark --kind K --where W [--detail D] | skips --scenario FILE | skip --scenario FILE --label L < log"
-         " | compare --scenario FILE --label L [--since S < log] | stt --scenario FILE --label L --heard TEXT\n")
+         " | compare --scenario FILE --label L [--since S < log] | stt --scenario FILE --label L --heard TEXT"
+         " | trackrefs --scenario FILE | trackbind --scenario FILE --label L < log"
+         " | trackcheck --scenario FILE --label L --track ID < log\n")
 
 
 def main(argv: List[str]) -> int:
@@ -925,7 +1087,7 @@ def main(argv: List[str]) -> int:
             pass
     opts = {"--engine": "v1", "--after": "speech_started", "--n": "1", "--waited": "0", "--accept-window": "0",
             "--scenario": "", "--kind": "", "--perform-ceiling": "", "--where": "", "--detail": "", "--label": "",
-            "--since": "", "--heard": ""}
+            "--since": "", "--heard": "", "--track": ""}
     flags = argv[2:]
     for i, tok in enumerate(flags):
         if tok in opts and i + 1 < len(flags):

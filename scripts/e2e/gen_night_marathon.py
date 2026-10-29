@@ -55,6 +55,12 @@
 («говори» -> «гарри», n411 28.10). Шаг с ними просит в ``recover`` ещё и ``stt_replay``: принятая фраза (``✅ ПРИНЯТО``) без
 слова -- фраза шага звучит ещё раз, один раз за шаг, окно шага начинается с повтора (``e2e_events.stt_verdict``).
 
+``track_ref`` (шаг, #3710): шаг про «эту песню» акта, а не про любой трек библиотеки (n707 «расскажи», n708 «включи»):
+``{"reason": "CASCADE_N702", "log": <regex id>, "tool": "music_library", "action": "info", "wait_sec": N}``
+(:class:`TrackCall`, таблица :data:`TRACK_REFS`). Id называет сам заказ песни в логе акта (``🎤 [song] … track=<id>``); его
+нет за ``wait_sec`` -- ``SKIP CASCADE_N702`` (песни n702 нет: не PASS), он есть -- вызов тула в окне шага обязан нести ЭТОТ
+``track_id`` при этом ``action`` (``e2e_events.track_ref_bind``/``track_ref_verdict``).
+
 ``music_compare`` (шаг, #3971): результат, видный только в сравнении с музыкой ДО шага («ускорь» -- тот же трек
 быстрее, правкой на такте #4029; «выключи» -- играла и выключена). Ставит :func:`action_step` по виду результата
 (:data:`RESULT_KINDS`); судит ``e2e_events.music_compare`` по строкам деки за акт.
@@ -486,6 +492,26 @@ class SkipWhen(NamedTuple):
     deck: str = ""  # ``idle``: судит последнее событие деки за акт (``e2e_events.DECK_IDLE``), а не любая строка лога
 
 
+#: Id песни этого акта: заказ песни пишет его сам по готовности (``engine/gen/song.py``: ``🎤 [song] «<название>»
+#: <провайдер>:<голос> жанр=… task=… credits=… track=<id> за N с``); группа 1 -- id (``e2e_events.track_ref_bind``).
+SONG_TRACK_LOG = r"\[song\] .*\btrack=(\S+) за \d+ с"
+#: Ключ -> регекс с одной группой (id трека), которым харнесс достаёт id из лога акта. Шаг ссылается на ключ.
+TRACK_REFS: Dict[str, str] = {
+    # Песня n702 не дала `[song] … track=`: шаги про «эту песню» (n707, n708) не играются, а не проходят на любом треке.
+    "CASCADE_N702": SONG_TRACK_LOG,
+}
+
+
+class TrackCall(NamedTuple):
+    """Шаг про трек из лога акта: каким тулом и с каким ``action`` он обязан обратиться к id по ключу ``ref``
+    (:data:`TRACK_REFS`); ``wait_sec`` -- сколько харнесс ждёт, пока заказ назовёт id (песня пишется ~90-150 с)."""
+
+    ref: str
+    tool: str
+    action: str
+    wait_sec: int = 0
+
+
 #: Причина пропуска -> правило. Одна таблица; шаги ссылаются на ключ.
 SKIP_WHEN: Dict[str, SkipWhen] = {
     "NO_SONG": SkipWhen(NO_SONG_LOG),
@@ -645,6 +671,7 @@ def step(
     skip_when: str = "",
     sleep_before_sec: int = 0,
     stt_keys: Optional[List[str]] = None,
+    track_ref: Optional[TrackCall] = None,
 ) -> Dict[str, Any]:
     # Хрупкий вейк (решение Шифу 28.10, n210): вейк и в начале, и в конце фразы -- ДО проверки длины, она судит итог.
     text = wake_at_both_ends(text, voice)
@@ -692,7 +719,18 @@ def step(
     # R21 разбора 26.10: предусловие внешнего мира (ключ SKIP_WHEN): нарушено -- харнесс шаг не играет, SKIP <ключ>.
     if skip_when:
         s["skip_when"] = _skip_field(skip_when)
+    # #3710: шаг про трек песни акта -- id из лога заказа, вызов тула обязан нести его (``e2e_events.track_ref``).
+    if track_ref:
+        s["track_ref"] = _track_ref_field(label, track_ref)
     return s
+
+
+def _track_ref_field(label: str, call: TrackCall) -> Dict[str, Any]:
+    """Поле ``track_ref`` шага по :class:`TrackCall`; схема сверяется судьёй харнесса -- до записи файла."""
+    field = {"reason": call.ref, "log": TRACK_REFS[call.ref], "tool": call.tool, "action": call.action,
+             **({"wait_sec": call.wait_sec} if call.wait_sec else {})}
+    eev.track_ref({"label": label, "track_ref": field})
+    return field
 
 
 def _skip_field(reason: str) -> Dict[str, Any]:
@@ -2158,6 +2196,7 @@ act(
             "Робот, расскажи про песню про енота: кто, про что, сколько длится.",
             expect_tools=["music_library"],
             skip_when="NO_SONG",
+            track_ref=TrackCall("CASCADE_N702", "music_library", "info", wait_sec=240),
             sleep_before_sec=60,
             why="#4176 (марафон-2 28.10, 16:52:15): прежняя фраза «что это за трек» стояла ДО n708 (play) -- песня "
             "ещё не играет, «этот трек» неоднозначен, робот честно ответил «Сейчас ничего не играет, так что „этот“ -- "
@@ -2168,7 +2207,9 @@ act(
             "(`skip_when`), а не каскад красных. `sleep_before_sec`: песня пишется ~90-150 с, к n707 без паузы "
             "проходит около 2 минут -- минимум до П5 (await_log, #4077); пауза идёт ДО проверки `skip_when`, "
             "строка провала успевает попасть в лог. 27.10 шаг был зелёным БЕЗ песни (любой вызов music_library) -- "
-            "ложный PASS; ужесточение до `action=info` + track_id песни -- П5.",
+            "ложный PASS (#3710). Теперь `track_ref`: id песни берётся из `[song] … track=<id>` заказа n702 (ждём до "
+            "240 с; нет строки -- SKIP CASCADE_N702, не PASS), а вызов `music_library action=info` в окне шага обязан "
+            "нести ЭТОТ `track_id` (другой трек или вызов без id -- красный).",
         ),
         action_step(
             "n708_gen_play",
@@ -2178,8 +2219,10 @@ act(
             expect_tools=["music_library"],
             retry=1,
             skip_when="NO_SONG",
+            track_ref=TrackCall("CASCADE_N702", "music_library", "play"),
             why="#3971: воспроизведение засчитывается по `Инструмент music_library выполнен успешно` + "
-            "`[music v2] started`. Песни нет -- SKIP NO_SONG (см. n707).",
+            "`[music v2] started`. Песни нет -- SKIP NO_SONG (см. n707). #3710: вызов `music_library action=play` "
+            "обязан нести `track_id` песни n702 (`track_ref`, как в n707); id песни не назван -- SKIP CASCADE_N702.",
         ),
         action_step(
             "n709_stop_generated",
