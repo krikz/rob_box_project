@@ -238,3 +238,11 @@ def test_plain_speech_text_replaces_only_the_speech_section():
     assert args_of("--speech-text", "plain").speech_text == "plain" and args_of().speech_text == "robot"
     with pytest.raises(ValueError):
         st.patch(st.PLAIN)("нет раздела")
+
+
+def test_voice_preview_flags():
+    args = args_of("--voice-preview", "minimax,silero", "--normalizer", "rutextnorm", "--bar-s", "2.0")
+    assert (args.voice_preview, args.normalizer, args.bar_s) == ("minimax,silero", "rutextnorm", 2.0)
+    assert (args_of().voice_preview, args_of().normalizer, args_of().bar_s) == ("", "none", 0.0)
+    with pytest.raises(SystemExit):
+        args_of("--normalizer", "num2words")

@@ -29,7 +29,9 @@ voice and screen (pauses, stress, quotes, dashes). Write PLAIN TEXT:
   a chunk in CJK / Devanagari / Arabic / Greek is not spoken (`unsupported_script`) — rewrite it.
 - Direct speech in `perform`: one segment = the words of one speaker, who speaks is `role_per_segment`. Don't
   quote the words and don't put the speaker's name with a colon in front of them.
-- A pause is the end of a sentence or a new segment; no pause tags. Pitch, speed and volume — the dedicated tools.
+- Rap and poems: every line of a verse on its own row (a newline, not `<br/>`); the code times each line to the beat.
+- A pause is the end of a sentence, a new line or a new segment; no pause tags. Pitch, speed and volume — the
+  dedicated tools.
 
 """
 

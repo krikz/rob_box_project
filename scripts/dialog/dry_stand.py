@@ -709,6 +709,8 @@ class HearResult:
     source: str = ""
     aggregate: Any = None
     said: List[str] = field(default_factory=list)
+    #: Голос каждой реплики ``said`` (``""`` - голос робота/рассказчика; иначе голос роли, его дал код).
+    voices: List[str] = field(default_factory=list)
     tools: List[str] = field(default_factory=list)
     llm_calls: int = 0
     log: str = ""
@@ -946,7 +948,8 @@ class DryStand:
         self.clock.advance(spoken_s)
         log = self._log.text
         return HearResult(text, True, source=decision.source, aggregate=agg,
-                          said=[s.text for s in self.speech.all], tools=[name for name, _ in self.tools.calls],
+                          said=[s.text for s in self.speech.all], voices=[s.voice for s in self.speech.all],
+                          tools=[name for name, _ in self.tools.calls],
                           llm_calls=self.counter.calls - calls_before, log=log,
                           touched=set(self.touched), outcomes=self._outcomes(agg.turn_id), tier1=tier1_kind(log),
                           latency_ms=agg.latency_ms + int(getattr(route, "latency_ms", 0) or 0), tokens=agg.tokens,
