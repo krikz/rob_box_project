@@ -66,7 +66,9 @@ v1: ``🔊 TTS: speech_id=<8>`` открывает реплику, ``Публи�
 ``"absent": true`` наоборот: шаг не играется, если строки НЕТ -- предусловие так и не наступило (n805b «Робот, говори»
 без тишины, которую должен был включить n805). С ``"deck": "ended"`` предусловие -- состояние деки: шаг не
 играется, если последним событием деки за акт было ``finished`` (трек доиграл сам: «выключи» нечего выключать,
-n312 28.10). С ``"deck": "idle"`` (#4196) -- дека пуста (последнее событие ``stop``/``finished`` либо событий нет):
+n312 28.10). С ``"deck": "playing"`` (#4196, n512) -- наоборот: музыка ещё играет (последнее событие деки ``started``),
+стоп предыдущего шага не исполнен -- вопрос о тишине не играется, SKIP «каскад от него». С ``"deck": "idle"`` (#4196) --
+дека пуста (последнее событие ``stop``/``finished`` либо событий нет):
 музыки, которую должен был включить предыдущий шаг, нет -- шаг «выключи»/«вейк под музыкой» не играется, SKIP «каскад от
 него» (n507, n511, n312 марафона-3: без музыки PASS/FAIL ничего не доказывали).
 
@@ -573,7 +575,11 @@ _SKIP_REASON_RE = re.compile(r"[A-Z][A-Z0-9_]*")
 #: Предусловие шагов «выключи»/«вейк под музыкой»: музыка, которую должен был включить предыдущий шаг, не играет (каскад от
 #: него) -- шаг не играется, SKIP, а не PASS без музыки и не красный по гонке. Корень каскада красен своими проверками.
 DECK_IDLE = "idle"
-SKIP_DECKS = (DECK_IDLE,)
+#: ``playing`` (#4196, n512 марафона-5) -- обратное: последним событием деки за акт было ``started``, музыка ЕЩЁ играет.
+#: Предусловие шага «после стопа спрашиваем про тишину» (n512): стоп предыдущего шага (n511) не исполнен -- вопрос о тишине
+#: судил бы чужой сбой, SKIP «каскад от него», а не красный. Корень (n511) краснеет своими проверками.
+DECK_PLAYING = "playing"
+SKIP_DECKS = (DECK_IDLE, DECK_PLAYING)
 #: Сколько символов строки-улики выводить в лог шага.
 EVIDENCE_CHARS = 200
 
@@ -630,13 +636,13 @@ def skip_verdict(rule: SkipRule, text: str) -> Dict[str, object]:
 
 def _deck_verdict(rule: SkipRule, lines: List[str]) -> Dict[str, object]:
     """Правило с ``deck``: судит ПОСЛЕДНЕЕ событие деки за акт (``started``/``stop``/``finished``; правка ``edit``
-    трек не меняет). Вид один -- ``idle`` (:func:`_idle_verdict`)."""
+    трек не меняет). Вид: ``idle`` (:func:`_idle_verdict`) или ``playing`` (:func:`_playing_verdict`)."""
     last: Optional[Tuple[MusicEvent, str]] = None
     for line in lines:
         event = music_event(line)
         if event is not None and event.kind != "edit":
             last = (event, line)
-    return _idle_verdict(rule, last)
+    return _playing_verdict(rule, last) if rule.deck == DECK_PLAYING else _idle_verdict(rule, last)
 
 
 def _idle_verdict(rule: SkipRule, last: Optional[Tuple[MusicEvent, str]]) -> Dict[str, object]:
@@ -647,6 +653,14 @@ def _idle_verdict(rule: SkipRule, last: Optional[Tuple[MusicEvent, str]]) -> Dic
     if last[0].kind == "started":
         return {"fetch": 1, "skip": "-", "evidence": "-"}
     return {"fetch": 1, "skip": rule.reason, "evidence": " ".join(last[1].split())[:EVIDENCE_CHARS]}
+
+
+def _playing_verdict(rule: SkipRule, last: Optional[Tuple[MusicEvent, str]]) -> Dict[str, object]:
+    """``deck: playing``: пропуск, если музыка ещё играет -- последнее событие деки за акт ``started``. Событий нет или
+    последнее ``stop``/``finished`` -- дека пуста, шаг играется. Улика -- строка этого ``started``."""
+    if last is not None and last[0].kind == "started":
+        return {"fetch": 1, "skip": rule.reason, "evidence": " ".join(last[1].split())[:EVIDENCE_CHARS]}
+    return {"fetch": 1, "skip": "-", "evidence": "-"}
 
 
 # -- ссылка шага на трек песни акта: track_ref (#3710, #4077) -----------------------------------------------------

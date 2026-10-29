@@ -545,14 +545,6 @@
       "how": "play",
       "run": "40480199644"
     },
-    "n512_silence_after_stop": {
-      "voice": "anton",
-      "chars": 21,
-      "text_sha1": "73a0ae7355ff",
-      "eq_s": 4.72,
-      "how": "play",
-      "run": "40480199644"
-    },
     "n601_silence_check": {
       "voice": "anton",
       "chars": 37,

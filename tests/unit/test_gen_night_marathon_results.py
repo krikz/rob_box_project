@@ -119,7 +119,7 @@ def test_state_questions_check_the_phrase_not_a_tool():
         acc = steps[label]["acceptance"]
         assert acc["expected_tool_calls"] == [], label
         assert acc.get("expected_keywords") or acc.get("must_not_say"), label
-    for label in ("n501_silence_check", "n512_silence_after_stop", "n601_silence_check", "n609_silence_after_dj",
+    for label in ("n501_silence_check", "n601_silence_check", "n609_silence_after_dj",
                   "n701_silence_check"):
         assert steps[label]["acceptance"]["expected_keywords"] == [gen.SILENCE_ANSWER], label
     for label in ("n503_confirm_playing", "n603_confirm_dj_playing"):
@@ -597,7 +597,7 @@ def test_no_song_rule_marks_the_steps_about_this_runs_song_and_nothing_destructi
         assert "skip_when" not in steps[label], label
     assert not any("_skip_when" in s for s in steps.values())
     # KIE_QUOTA влит в NO_SONG: одна таблица, без второго ключа на ту же беду; NOT_SILENCED (#3971, n805b) -- другая беда
-    assert set(gen.SKIP_WHEN) == {"NO_SONG", "NOT_SILENCED", "NO_MUSIC_N310", "NO_MUSIC_N506"}  # #4196: дека пуста (каскад)
+    assert set(gen.SKIP_WHEN) == {"NO_SONG", "NOT_SILENCED", "NO_MUSIC_N310", "NO_MUSIC_N506", "NO_STOP_N511"}  # #4196: дека пуста (каскад)
     assert [label for label, s in steps.items() if s.get("skip_when", {}).get("reason") == "NO_SONG"] == [
         "n707_gen_track_info", "n708_gen_play", "n709_stop_generated"]
     for label in ("n703_merge_komar", "n706_gen_save_for_boris", "n710_gen_delete", "n710b_gen_delete_confirm"):
