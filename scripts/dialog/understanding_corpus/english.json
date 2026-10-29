@@ -4,7 +4,7 @@
  "part": 4,
  "base": {
   "name": "understanding_marathon_part1",
-  "corpus_sha256": "9587c98caf6d3cbb4f55388c539bd1da40af9ec4164f1f360c5499eba56b17f6"
+  "corpus_sha256": "d5182c6f771074650e24dbd8e5312ffc74a940304fd8d6afa109b4885110b828"
  },
  "generator": "scripts/dialog/understanding_corpus/build_english.py",
  "method": {
@@ -80,7 +80,7 @@
   "repointed": {
    "measured_sha256": "118d1b348ed3a71086ef43224252aaa5eac420d21d90b7d42b03719153e5008e",
    "from_base": "cf0a67043a479dbe8911875404707257b81edbdf7261293c3b4a9ba0cf5456da",
-   "to_base": "9587c98caf6d3cbb4f55388c539bd1da40af9ec4164f1f360c5499eba56b17f6",
+   "to_base": "d5182c6f771074650e24dbd8e5312ffc74a940304fd8d6afa109b4885110b828",
    "dropped_steps": [
     "3/n309_bg_command_valera",
     "7/n707_gen_track_info"
