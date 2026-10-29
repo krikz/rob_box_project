@@ -2780,10 +2780,6 @@ THEME_FIT_STOP: Tuple[str, ...] = ("музык", "трек", "песн", "мел
 #: (первая задача V6_MINI — типично 30 с, ``GEN_MODELS``; не готова — сет продлевает фон ещё проходом).
 SET_BACKGROUND_GAIN = 0.35
 SET_BACKGROUND_S = 60.0
-#: По теме сета в кэше нет ничего (K = 0) — сначала треки кэша того же стиля, заказ только того, что они не закрыли
-#: (решение 29.10 по вопросу Шифу «почему кэш пустой»: в библиотеке 266+ треков, а сет темы заказывал всё). ``False`` —
-#: как решение 21.10 (#3775): K = 0 — тихий фон из кэша стиля и заказ всех треков темы.
-SET_THEME_MISS_STYLE_CACHE = True
 # ── Тема сета — выбором чойсера из известных тем (решение Шифу 29.10: «мусорной темы не должно быть … в чойсере пусть
 # будут все слова из запроса плюс все известные темы»; ``rob_box_music.known_themes``, ``engine.theme_choice``) ──────
 #: Известные темы знания словами человека: у каждой — строка таблицы тем (``THEMES``) или тегов заказа
@@ -3437,7 +3433,7 @@ __all__ += ["SET_FILL_SLACK_S", "GEN_BRIDGE_STYLES", "GEN_SET_DURATION_S", "GEN_
 __all__ += ["GEN_LIBRARY_QUOTA_MB", "RATING_DISLIKE", "RATING_LIKE"]
 __all__ += ["GEN_THEME_MAX_CHARS", "SET_BACKGROUND_GAIN", "SET_BACKGROUND_S", "THEME_FIT_MIN", "THEME_FIT_STOP",
             "THEME_STEM_LEN", "THEME_WORD_MIN"]
-__all__ += ["KNOWN_THEMES", "KNOWN_THEMES_CACHE_MAX", "SET_THEME_MISS_STYLE_CACHE", "THEME_CHOICE_WEIGHTS"]
+__all__ += ["KNOWN_THEMES", "KNOWN_THEMES_CACHE_MAX", "THEME_CHOICE_WEIGHTS"]
 __all__ += ["GEN_THEME_TAGS", "SET_STYLE_EXACT", "SET_STYLE_LIST_JOIN", "SET_STYLE_LIST_STEMS", "SET_STYLE_LIST_STOP"]
 
 __all__ += ["DEFAULT_GEN_MODEL", "GEN_FRESH_HOURS", "GEN_GENRE_WORDS", "GEN_MODELS", "GEN_STYLES", "GenModel",

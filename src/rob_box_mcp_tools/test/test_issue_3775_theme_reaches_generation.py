@@ -51,15 +51,7 @@ def test_free_theme_is_its_words_table_theme_is_en_tags():
     assert len(theme_tags(long)) <= kn.GEN_THEME_MAX_CHARS and len(theme_title(long)) <= kn.GEN_THEME_MAX_CHARS
 
 
-@pytest.fixture
-def decision_2110(monkeypatch):
-    """Ручка решения 21.10: по теме в кэше ничего — фон и заказ всех треков темы, кэш стиля не берётся
-    (``SET_THEME_MISS_STYLE_CACHE=False``; по умолчанию 29.10 — сначала кэш стиля,
-    ``test_theme_chooser_known_themes``)."""
-    monkeypatch.setattr(kn, "SET_THEME_MISS_STYLE_CACHE", False)
-
-
-def test_dj_phrase_theme_goes_to_set_plan_and_off_theme_cache_is_not_taken(tmp_path, caplog, decision_2110):
+def test_dj_phrase_theme_goes_to_set_plan_and_off_theme_cache_is_not_taken(tmp_path, caplog):
     """Деньги есть, в кэше club без темы: каждый трек — генерация, теги темы — слова темы; строка лога с темой."""
     lib = _lib(tmp_path)
     _club_cache(lib)
@@ -205,7 +197,7 @@ def test_two_of_ten_on_theme_order_eight_and_play_two_at_once(tmp_path, caplog, 
     assert out.data["source_message"].endswith("2 из сочинённого раньше, остальные допишу по ходу.")
 
 
-def test_nothing_on_theme_quiet_background_phrase_and_ten_orders(tmp_path, caplog, monkeypatch, decision_2110):
+def test_nothing_on_theme_quiet_background_phrase_and_ten_orders(tmp_path, caplog, monkeypatch):
     """K = 0: тихий фон из кэша стиля, фраза кода «Готовлю сет на тему …», все 10 треков — заказ."""
     monkeypatch.setattr("rob_box_mcp_tools.engine.gen.gen_session.audio_track", _fake_audio_track)
     lib = _lib(tmp_path)

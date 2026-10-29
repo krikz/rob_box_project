@@ -158,6 +158,23 @@ def theme_support(heard: str, heard_text: Optional[str]) -> bool:
     return any(_known_word(w) for w in words) or led or bool(SET_WORDS.intersection(said))
 
 
+def request_theme(heard_text: Optional[str]) -> str:
+    """Слова темы реплики для сета: :func:`heard_theme` без названия движка («на синтезаторе» — путь, не тема)."""
+    from rob_box_music.source import blank_engine
+
+    return heard_theme(blank_engine(heard_text or ""))
+
+
+def named_by_human(heard_text: Optional[str]) -> bool:
+    """Тему сета человек назвал сам (решение Шифу 29.10 «давай В», PR #4231): в реплике есть слова темы
+    (:func:`request_theme`), они называют тему (:func:`names_theme`) и у них есть опора (:func:`theme_support`: «про X»,
+    «на тему X», «сет X», опорное слово). Такой теме при пустом кэше — заказ треков темы (решение 21.10, #3775);
+    тема-догадка кода или модели, жанр, «без темы», тема LLM без опоры в реплике — сначала кэш стиля
+    (``SourceRouter.route_slots(theme_named=False)``). Одно место этого признака."""
+    heard = request_theme(heard_text)
+    return bool(heard) and names_theme(heard, heard_text) and theme_support(heard, heard_text)
+
+
 def grounded_theme(theme: Optional[str], heard_text: Optional[str]) -> Tuple[str, bool]:
     """``(тема, заменена ли)``: тема LLM, если она делит значимую основу с репликой хода, иначе тема реплики.
     Смена стиля без новой темы («переходим на рок, тема та же») тему LLM не заменяет (#3593), как и огрызок
@@ -280,5 +297,5 @@ def set_slots(theme: Optional[str], persona: Optional[str], heard_text: Optional
     return slots.theme, persona
 
 
-__all__ = ["SetTheme", "continued", "grounded_theme", "guessed_theme", "heard_theme", "names_theme", "order_theme",
-           "set_slots", "set_theme", "theme_support"]
+__all__ = ["SetTheme", "continued", "grounded_theme", "guessed_theme", "heard_theme", "named_by_human", "names_theme",
+           "order_theme", "request_theme", "set_slots", "set_theme", "theme_support"]

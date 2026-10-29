@@ -28,17 +28,17 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
-from typing import Any, Dict, List, Optional, Sequence, Tuple
+from typing import Any, Dict, List, NamedTuple, Optional, Sequence, Tuple
 
 from rob_box_music import knowledge as kn
 from rob_box_music.choice import DICE, Choice, ChoiceQuestion, Chooser, DeterministicChooser, Option, score
 from rob_box_music.known_themes import KnownTheme, covers_all, known_themes, names_known
-from rob_box_music.source import blank_engine, set_genres
+from rob_box_music.source import set_genres
 from rob_box_music.theme import match_style_text
 
 from .search import _PART_RE, content_stems
-from .theme_grounding import (continued, grounded_theme, guessed_theme, heard_theme, names_theme, set_slots, set_theme,
-                              theme_support)
+from .theme_grounding import (continued, grounded_theme, guessed_theme, heard_theme, named_by_human, names_theme,
+                              request_theme, set_slots, set_theme, theme_support)
 
 _LOG = logging.getLogger(__name__)
 NONE_ID = "none"
@@ -68,8 +68,8 @@ class ThemePick:
 
 
 def request_words(heard_text: Optional[str]) -> str:
-    """Слова темы реплики: без просьбы, стиля, длины и названия движка («на синтезаторе» — путь, не тема)."""
-    return heard_theme(blank_engine(heard_text or ""))
+    """Слова темы реплики: без просьбы, стиля, длины и названия движка (``theme_grounding.request_theme``)."""
+    return request_theme(heard_text)
 
 
 def _stems(text: str) -> frozenset:
@@ -203,36 +203,51 @@ def choose_theme(llm_theme: Optional[str], heard_text: Optional[str], known: Seq
 
 def chosen_slots(theme: Optional[str], persona: Optional[str], heard_text: Optional[str],
                  last: Optional[Tuple[str, Optional[str]]], known: Sequence[KnownTheme], chooser: Chooser,
-                 log: Any = _LOG) -> Tuple[str, Optional[str]]:
-    """``(тема, персона)`` нового сета: «продолжай сэт» или вызов без реплики — как раньше (``set_slots``); иначе тема —
-    выбор чойсера (:func:`choose_theme`), затем слоты темы (``set_theme``: вселенная, настроение — не тема)."""
+                 log: Any = _LOG) -> Tuple[str, Optional[str], bool]:
+    """``(тема, персона, тему назвал человек)`` нового сета: «продолжай сэт» или вызов без реплики — как раньше
+    (``set_slots``; тема считается названной: заказ темы, как 21.10); иначе тема — выбор чойсера (:func:`choose_theme`),
+    затем слоты темы (``set_theme``: вселенная, настроение — не тема), а «названа ли» — ``named_by_human`` реплики
+    (решение Шифу 29.10 «давай В»)."""
     if heard_text is None or continued(heard_text, last) is not None:
-        return set_slots(theme, persona, heard_text, last, log)
+        slots, persona = set_slots(theme, persona, heard_text, last, log)
+        return slots, persona, True
     picked = choose_theme(theme, heard_text, known, chooser, log).theme
     slots = set_theme(picked, persona)
     if slots.theme != picked:
         log.info(f"🎛️ [dj_set] слоты темы: {picked!r} → тема={slots.theme!r} вселенная={slots.universe or '—'} "
                  f"настроение={slots.mood or '—'} персона={persona!r}")
-    return slots.theme, persona
+    return slots.theme, persona, bool(slots.theme) and named_by_human(heard_text)
 
 
-def dj_set_slots(dj: Any, theme: Optional[str], persona: Optional[str],
-                 heard_text: Optional[str]) -> Tuple[str, Optional[str], bool]:
-    """``(тема, персона, без платной генерации)`` для ``DjSetTool``: известные темы — из кэша его сета из генерации
-    (``GenSetMaker.cached``) и знания, чойсер — тот же, что у пути музыки (``music_chooser``). Слова реплики — догадка
-    кода из голого слова (``guessed_theme``, n605 М6: «сайт» вместо «сет»): платный заказ не уходит, как в #4226."""
+class SetSlots(NamedTuple):
+    """Слоты нового сета для ``DjSetTool``: тема, персона, ``free`` — без платной генерации (#4226), ``named`` — тему
+    назвал человек (при пустом кэше темы — заказ темы; иначе сначала кэш стиля, решение Шифу 29.10 «давай В»)."""
+
+    theme: str
+    persona: Optional[str]
+    free: bool
+    named: bool
+
+
+def dj_set_slots(dj: Any, theme: Optional[str], persona: Optional[str], heard_text: Optional[str]) -> SetSlots:
+    """Слоты сета для ``DjSetTool``: известные темы — из кэша его сета из генерации (``GenSetMaker.cached``) и знания,
+    чойсер — тот же, что у пути музыки (``music_chooser``). Слова реплики — догадка кода из голого слова
+    (``guessed_theme``, n605 М6: «сайт» вместо «сет»): платный заказ не уходит, как в #4226."""
     log = dj.node.get_logger() if dj.node is not None else _LOG
     maker = dj.gen_sets
     known = known_themes(maker.cached() if maker is not None else ())
     chooser = getattr(maker, "chooser", None) or DeterministicChooser()
-    slots, persona = chosen_slots(theme, persona, heard_text, dj._last_dj, known, chooser, log)  # noqa: SLF001
+    slots, persona, named = chosen_slots(theme, persona, heard_text, dj._last_dj, known, chooser, log)  # noqa: SLF001
     free = guessed_theme(grounded_theme(theme, heard_text)[0], theme, heard_text)
     if free:
-        log.warning(f"🎛️ [dj_set] слова реплики {request_words(heard_text)!r} - догадка кода, не названы: без платной "
+        log.warning(f"🎛️ [dj_set] слова реплики {request_theme(heard_text)!r} - догадка кода, не названы: без платной "
                     f"генерации")
-    return slots, persona, free
+    if slots:
+        log.info(f"🎛️ [dj_set] тема {slots!r}: {'названа человеком' if named else 'не названа человеком'} — если по "
+                 f"ней в кэше ничего: {'заказ темы' if named else 'сначала кэш стиля'}")
+    return SetSlots(slots, persona, free, named)
 
 
-__all__ = ["CHECK", "KNOWN_PREFIX", "LLM_ID", "NEW_PREFIX", "NONE_ID", "THEME_INSTRUCTIONS", "ThemePick",
+__all__ = ["CHECK", "KNOWN_PREFIX", "LLM_ID", "NEW_PREFIX", "NONE_ID", "THEME_INSTRUCTIONS", "SetSlots", "ThemePick",
            "choose_theme", "chosen_slots", "dj_set_slots", "open_question", "request_words", "theme_question",
            "valid_theme"]

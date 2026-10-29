@@ -162,7 +162,7 @@ class SourceRouter:
 
     def route_slots(self, asks: Sequence[SourceAsk], theme_tags: str = "",
                     works: Sequence[CoverWork] = (), seconds: Optional[float] = None,
-                    minimum: int = 1, gen_failed: str = "") -> List[Route]:
+                    minimum: int = 1, gen_failed: str = "", theme_named: bool = True) -> List[Route]:
         """Путь каждого трека сета (ADR-0158 §2.7, В13, В14, В16): у темы есть произведения с нашим материалом
         (``works``, главная тема первой) — кавер произведения трека в его стиле (кэш того же кавера, затем
         ``generate:cover``; произведение — :meth:`SetLedger.work_for`); иначе кэш стиля и темы трека (инструментал,
@@ -173,9 +173,10 @@ class SourceRouter:
         (``source.route_seconds``: треки за вычетом кроссфейдов + весь последний) не дойдёт до ``seconds`` минус
         ``SET_FILL_SLACK_S`` (не меньше ``minimum`` треков); лимит задач сета ``GEN_SET_MAX_TASKS`` и отказ пути тоже
         останавливают набор. ``gen_failed`` — генерацию в этом сете не заказывать (причина — в ``gen_block``):
-        смена настроения сета (#4173) берёт только кэш и синтез."""
+        смена настроения сета (#4173) берёт только кэш и синтез. ``theme_named`` — тему назвал человек: по ней в кэше
+        ничего — заказ темы; не назвал (догадка кода/модели, тема LLM без опоры) — сначала кэш стиля (:class:`SetLedger`)."""
         base = self.context(asks[0] if asks else None, for_set=True)
-        ledger = SetLedger(base.without_generate(gen_failed) if gen_failed else base, theme_tags, works)
+        ledger = SetLedger(base.without_generate(gen_failed) if gen_failed else base, theme_tags, works, theme_named)
         out = []
         body = end = 0.0  # секунды сета: треки до этого (без кроссфейда) и конец, если этот трек последний
         for no, ask in enumerate(asks, 1):
@@ -218,8 +219,10 @@ class SetLedger:
     Каверы темы (В16, Шифу 14.10 «одни и те же треки ставит»): у каждого произведения свой ключ ``cover|стиль|пьеса``,
     произведение трека — наименее игранное в сете и не то же, что у соседа; первый проход — по порядку темы."""
 
-    def __init__(self, base: SourceContext, theme_tags: str = "", works: Sequence[CoverWork] = ()) -> None:
+    def __init__(self, base: SourceContext, theme_tags: str = "", works: Sequence[CoverWork] = (),
+                 theme_named: bool = True) -> None:
         self._base, self._tags, self._works = base, theme_tags, tuple(dict.fromkeys(works))
+        self._named = theme_named  # тему назвал человек: по ней в кэше ничего — заказ темы, а не кэш стиля
         self._cost = kn.GEN_MODELS[kn.GEN_SET_MODEL].credits_per_task
         self._used: Set[str] = set()
         self._spare: Dict[str, int] = {}
@@ -263,9 +266,9 @@ class SetLedger:
     def _cache(self, ask: SourceAsk, pool: SourceContext, ctx: SourceContext,
                work: Optional[CoverWork]) -> Tuple[List[CacheTrack], SourceContext]:
         """Кэш трека: у темы без каверов — треки по теме, и тогда без заказа (что есть по теме — сразу, заказ —
-        только недостающим, Шифу 21.10, #3775); иначе кэш стиля с меткой темы, как было. По теме в кэше нет ничего
-        во всём кэше (K = 0, :meth:`_theme_miss`) — сначала треки кэша того же стиля, заказ — только когда их не хватило
-        (``knowledge.SET_THEME_MISS_STYLE_CACHE``, 29.10: «почему кэш пустой»)."""
+        только недостающим, Шифу 21.10, #3775); иначе кэш стиля с меткой темы, как было. По теме во всём кэше нет
+        ничего (K = 0, :meth:`_theme_miss`): тему назвал человек — заказ треков темы (21.10); тему угадал код или
+        модель — сначала треки кэша того же стиля, заказ — только когда их не хватило (решение Шифу 29.10 «давай В»)."""
         if not self._tags or work is not None:
             return set_cache(ask, pool, self._tags), ctx
         cache = theme_cache(ask, pool, self._tags)
@@ -277,9 +280,9 @@ class SetLedger:
         return cache, (ctx.without_generate(STYLE_CACHE) if cache else ctx)
 
     def _theme_miss(self) -> bool:
-        """По теме сета во всём кэше нет ни одного инструментала (любого стиля; по всему кэшу, а не по оставшемуся:
-        взятые сетом треки темы — не «нет ничего», дальше дозаказ, как 21.10)."""
-        return kn.SET_THEME_MISS_STYLE_CACHE and not any(
+        """Тему не назвал человек, и по ней во всём кэше нет ни одного инструментала (любого стиля; по всему кэшу, а не
+        по оставшемуся: взятые сетом треки темы — не «нет ничего», дальше дозаказ, как 21.10)."""
+        return not self._named and not any(
             t.kind == "instrumental" and t.rating >= 0 and theme_fit(self._tags, t) >= kn.THEME_FIT_MIN
             for t in self._base.cache)
 

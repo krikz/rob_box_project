@@ -563,9 +563,9 @@ class DjSetTool(MCPTool):
             return tool_result(refusal, "сет не начался")
         heard_text, heard_tracks, style, styles, spec_note = brief_args(heard_text, heard_tracks, style, styles)
         tracks = heard_tracks or tracks
-        free = False
+        free, theme_named = False, True
         if action == "start":  # «диджей X» одним видом: и от роутера, и от LLM
-            theme, persona, free = self._set_slots(theme, persona_title(persona) or None, heard_text)
+            theme, persona, free, theme_named = self._set_slots(theme, persona_title(persona) or None, heard_text)
         with self._lock:
             if action == "stop":
                 return self._stop()
@@ -578,7 +578,7 @@ class DjSetTool(MCPTool):
                 # окно стиля словами человека («гранж» → rock/grunge, ADR-0153 S5); нет слов — окно выбирает план
                 window = match_window_text(key, heard_text, theme)
                 result = self._start(theme or "", persona, key, named, window, heard_text,
-                                     hints=(styles, minutes), free=free)
+                                     hints=(styles, minutes), free=free, theme_named=theme_named)
             else:
                 return MCPToolResult(success=False, error=f"action={action!r}: есть только start и stop")
         result = confirmed(spec_noted(result, spec_note), self._confirm)  # ждём started вне замка
@@ -588,11 +588,11 @@ class DjSetTool(MCPTool):
                           self.node.get_logger() if self.node is not None else _LOG)
 
     def _set_slots(self, theme: Optional[str], persona: Optional[str],
-                   heard_text: Optional[str]) -> Tuple[str, Optional[str], bool]:
-        """``(тема, персона, без платной генерации)`` сета по реплике хода и последнему сету: тема — выбор чойсера из
-        известных тем и слов реплики (``theme_choice.dj_set_slots``, решение Шифу 29.10); слова реплики - догадка
-        кода из голого слова (n605 М6: «сайт» вместо «сет») - сет только из кэша или синтезом, платный заказ не
-        уходит."""
+                   heard_text: Optional[str]) -> Tuple[str, Optional[str], bool, bool]:
+        """``(тема, персона, без платной генерации, тему назвал человек)`` сета по реплике хода и последнему сету: тема
+        — выбор чойсера из известных тем и слов реплики (``theme_choice.dj_set_slots``, решение Шифу 29.10); слова
+        реплики - догадка кода из голого слова (n605 М6: «сайт» вместо «сет») - сет только из кэша или синтезом,
+        платный заказ не уходит."""
         return dj_set_slots(self, theme, persona, heard_text)
 
     @property
@@ -658,13 +658,15 @@ class DjSetTool(MCPTool):
     def _start(self, theme: str, persona: Optional[str], style: str = kn.DEFAULT_STYLE,
                tracks: Optional[int] = None, window: Optional[str] = None,
                heard_text: Optional[str] = None,
-               hints: Tuple[Optional[List[str]], Optional[int]] = (None, None), free: bool = False) -> Dict[str, Any]:
+               hints: Tuple[Optional[List[str]], Optional[int]] = (None, None), free: bool = False,
+               theme_named: bool = True) -> Dict[str, Any]:
         """Сет: путь каждого трека — кэш, генерация (:func:`generated_set`); синтез-сет (ADR-0149) — только запас
         (В13), тогда фраза кода ``source_note`` говорит почему. ``free`` — без платной генерации (смена настроения
-        сета, :func:`restyle_set`)."""
+        сета, :func:`restyle_set`); ``theme_named`` — тему назвал человек (по ней в кэше ничего — заказ темы; иначе
+        сначала кэш стиля, решение Шифу 29.10 «давай В»)."""
         length, why = self.set_length(tracks)
         generated, fallback = generated_set(self, theme, (style, window), persona, (length, why), heard_text, hints,
-                                            free)
+                                            free, theme_named)
         if generated is not None:
             return generated
         style, window = fallback.style, fallback.window
@@ -1270,7 +1272,7 @@ def synth_instead(plan: Any, key: str, window: Optional[str], free: bool) -> Opt
 def generated_set(dj: DjSetTool, theme: str, style: Tuple[str, Optional[str]], persona: Optional[str],
                   length: Tuple[int, str], heard_text: Optional[str],
                   hints: Tuple[Optional[List[str]], Optional[int]] = (None, None), free: bool = False,
-                  ) -> Tuple[Optional[Dict[str, Any]], SynthFallback]:
+                  theme_named: bool = True) -> Tuple[Optional[Dict[str, Any]], SynthFallback]:
     """Сет из кэша и генерации (ADR-0158 PR-8, решение Шифу 14.10 — любой сет: тема, стиль, auto) →
     ``(результат, …)``; ни у одного трека нет пути кэша/генерации — ``(None, запас)``: синтез-сет первым стилем,
     который синтез играет, с фразой почему; исполнителя нет — ``(None, запас)`` стилем сета без фразы, как раньше.
@@ -1286,7 +1288,8 @@ def generated_set(dj: DjSetTool, theme: str, style: Tuple[str, Optional[str]], p
     covers = (theme_covers(dj, theme, dj._seed(), log,  # noqa: SLF001 — В14/В16: каверы произведений темы
                            library_records(dj.library)) if theme and makers.cover_ready() else [])
     plan = makers.plan(theme, genre, heard_text, length[0], named=length[1] == "названо", styles=hints[0] or (),
-                       minutes=hints[1], covers=covers, gen_failed=kn.SET_VIBE_NO_GEN if free else "")
+                       minutes=hints[1], covers=covers, gen_failed=kn.SET_VIBE_NO_GEN if free else "",
+                       theme_named=theme_named)
     instead = synth_instead(plan, key, window, free)  # окно — у стиля сета, не у стиля запаса
     if instead is not None:
         return None, instead

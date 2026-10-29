@@ -236,29 +236,72 @@ def test_stranger_things_in_cache_plays_from_cache(tmp_path, monkeypatch, caplog
     assert f"→ {KNOWN_PREFIX}stranger things" in _line(caplog, "[theme]")
 
 
-def test_new_theme_without_theme_cache_takes_style_cache_first(tmp_path, monkeypatch, caplog):
-    """Тема новая, кэша по ней нет, рок-треки есть: сначала они, заказ — только того, что не закрыли (29.10)."""
+# ── Решение Шифу 29.10 «давай В»: тему назвал человек — заказ темы; угадал код/модель — сначала кэш стиля ──────────
+
+ESCOBAR = "Ты диджей Воландеморт и у нас сегодня сэт для пленников прибывших в Эскобар"
+
+
+@pytest.mark.parametrize("heard,named", [
+    (ESCOBAR, True),                                   # «сэт X»
+    ("поставь сет про динозавров", True),              # «про X»
+    ("включи сет на тему очень странные дела", True),  # «на тему X»
+    ("поставь сет в стиле Stranger Things", True),     # латиница, слово сета
+    ("сет про космос", True),                          # известная тема, названная человеком
+    (ROCK_JUNK, False),                                # огрызок без опоры
+    (SITE, False),                                     # «сайт» — не тема
+    ("включи рок-сет на 3 трека", False),              # жанр без темы
+    ("давай", False),                                  # тема только у LLM (контекст)
+])
+def test_named_by_human_is_one_predicate(heard, named):
+    from rob_box_mcp_tools.engine.theme_grounding import named_by_human
+
+    assert named_by_human(heard) is named
+
+
+def test_named_theme_without_theme_cache_orders_the_theme_not_the_style_cache(tmp_path, monkeypatch, caplog):
+    """«сэт для пленников прибывших в Эскобар» — тему назвал человек, по ней в кэше ничего, club-треки есть: заказ
+    треков темы (решение 21.10, #3775), кэш стиля не берётся."""
+    monkeypatch.setattr("rob_box_mcp_tools.engine.gen.gen_session.audio_track", _fake_audio_track)
+    lib, kie = _lib(tmp_path), Kie()
+    _save(lib, 4, "club")
+    dj = _dj(lib, kie)
+    with caplog.at_level(logging.INFO):
+        out = dj.execute(action="start", style="club", tracks=3, heard_text=ESCOBAR)
+    assert out.success, out.error
+    assert "эскобар" in out.data["theme"]
+    assert set(out.data["routes"]) == {"generate:instrumental:V6"}, out.data["routes"]
+    assert "по теме из кэша=0 заказ=3" in _line(caplog, "[gen set] слоты")
+    assert "названа человеком" in _line(caplog, "[dj_set] тема")
+
+
+def test_guessed_theme_without_theme_cache_takes_style_cache_first(tmp_path, monkeypatch, caplog):
+    """Тема не названа человеком (план с ``theme_named=False``), кэша по ней нет, рок-треки есть: сначала они, заказ —
+    только того, что не закрыли."""
     monkeypatch.setattr("rob_box_mcp_tools.engine.gen.gen_session.audio_track", _fake_audio_track)
     lib, kie = _lib(tmp_path), Kie()
     _save(lib, 2, "rock")
     dj = _dj(lib, kie)
     with caplog.at_level(logging.INFO):
-        plan = dj.gen_sets.plan("динозавров", "rock", "поставь рок-сет про динозавров", 4, named=True)
+        plan = dj.gen_sets.plan("динозавры", "rock", "поставь рок-сет", 4, named=True, theme_named=False)
     assert [r.kind for r in plan.routes] == ["cache", "cache", "generate", "generate"]
     line = _line(caplog, "[gen set] слоты")
     assert "по теме из кэша=0 заказ=2" in line and "из кэша стиля=2, заказ только недостающих" in line
+    named = dj.gen_sets.plan("динозавры", "rock", "поставь рок-сет про динозавров", 4, named=True)
+    assert [r.kind for r in named.routes] == ["generate"] * 4  # названа человеком — заказ темы
 
 
-def test_new_theme_style_cache_covers_whole_set_without_orders(tmp_path, monkeypatch, caplog):
+def test_llm_context_theme_takes_style_cache_without_orders(tmp_path, monkeypatch, caplog):
+    """Тема только у LLM (в реплике слов темы нет: «поставь сет»), по ней в кэше ничего: рок из кэша, 0 заказов."""
     monkeypatch.setattr("rob_box_mcp_tools.engine.gen.gen_session.audio_track", _fake_audio_track)
     lib, kie = _lib(tmp_path), Kie()
     _save(lib, 4, "rock")
     dj = _dj(lib, kie)
     with caplog.at_level(logging.INFO):
-        out = dj.execute(action="start", tracks=3, heard_text="поставь рок-сет про динозавров")
+        out = dj.execute(action="start", theme="динозавры", style="rock", tracks=3, heard_text="поставь сет на 3 трека")
     assert out.success, out.error
-    assert out.data["theme"] == "динозавров" and kie.jobs == []
+    assert out.data["theme"] == "динозавры" and kie.jobs == []
     assert "из кэша стиля=3, без заказа" in _line(caplog, "[gen set] слоты")
+    assert "не названа человеком" in _line(caplog, "[dj_set] тема")
 
 
 def test_new_theme_without_any_cache_orders_generation_as_before(tmp_path, monkeypatch, caplog):
