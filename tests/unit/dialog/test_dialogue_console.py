@@ -226,7 +226,7 @@ def test_the_old_core_is_gone():
 
 
 def test_plain_speech_text_replaces_only_the_speech_section():
-    """``--speech-text plain`` меняет в настоящем промпте робота только раздел «# 2. SPEECH TEXT»; ``robot`` - без правки."""
+    """``--speech-text plain`` меняет в промпте робота только раздел «# 2. SPEECH TEXT»; ``robot`` - без правки."""
     import speech_text as st  # noqa: PLC0415
 
     system = (REPO / "src" / "rob_box_voice" / "prompts" / "master_prompt_compact.txt").read_text(encoding="utf-8")
