@@ -211,7 +211,10 @@ def _without_speech_tool(cmd: Command) -> Command:
 
 def to_legacy(result: Result) -> Tuple[str, Tuple[ToolCall, ...], str]:
     """Команда → ``(текст речи, вызовы, вердикт для лога)`` в форме v1-цикла: голая реплика — текстом (авто-TTS ноды),
-    команда с действиями, выступлением или голосом реплики — одним вызовом ``command`` исполнителю команды.
+    команда с действиями, выступлением, голосом реплики или лицом (``expression``) — одним вызовом ``command``
+    исполнителю команды. Реплика с лицом — вызов с вердиктом ``speech``: текст терял ``expression`` (#4225,
+    марафон-6: 58 ходов «речь + эмоция», на лице всегда рефлекс ``done`` happy 3 с, а речь говорила «глаза опустил,
+    свечусь синим»).
     Невалидная — тоже вызов ``command``, но с причиной в ``COMMAND_INVALID_FIELD``: речи нет, ход закроет провал.
     «Промолчать» (``passed``) — вызов ``command`` с одним полем ``passed``: пустой ответ без вызова потребитель не отличил бы
     от пустого (``Invalid(empty)``, #3859), а так исход доходит до хода как есть."""
@@ -226,11 +229,11 @@ def to_legacy(result: Result) -> Tuple[str, Tuple[ToolCall, ...], str]:
                         arguments={"passed": result.passed})
         return "", (call,), f"passed:{result.passed}"
     cmd = _without_speech_tool(result)
-    face_only = not _spoken(cmd) and cmd.expression != Expression()  # #3974: лицо без слов - тоже команда
-    if cmd.actions or cmd.perform is not None or (cmd.voice and _spoken(cmd)) or face_only:
-        call = ToolCall(id=f"{CALL_ID_PREFIX}{uuid.uuid4().hex[:12]}", name=kn.COMMAND_TOOL, arguments=to_args(cmd))
-        return "", (call,), "command"
     text = _spoken(cmd)
+    acted = bool(cmd.actions) or cmd.perform is not None or bool(cmd.voice and text)
+    if acted or cmd.expression != Expression():  # #3974 лицо без слов, #4225 лицо при речи - тоже команда
+        call = ToolCall(id=f"{CALL_ID_PREFIX}{uuid.uuid4().hex[:12]}", name=kn.COMMAND_TOOL, arguments=to_args(cmd))
+        return "", (call,), "speech" if text and not acted else "command"
     return text, (), "speech" if text else "empty"
 
 
