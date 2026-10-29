@@ -30,7 +30,7 @@ import re
 import sys
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Sequence, Tuple
+from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
 _HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(_HERE))
@@ -320,22 +320,43 @@ class LogRelay:
             self.target.emit(line)
 
 
+def role_busy(stand: DryStand) -> Any:
+    """Каталог голосов ролей стенда, как ``plan_host.perform_busy`` у робота: русские голоса провайдера стенда без
+    голоса робота (рассказчика), с полом; выступлений-хостов у стенда нет - ``cast`` и активного сегмента нет."""
+    from rob_box_dialog.command import Busy  # noqa: PLC0415
+    from rob_box_voice.tts_voice_registry import default_voice_for, gender_of, role_voices_for  # noqa: PLC0415
+
+    provider = stand.voice_provider
+    robot = stand.session.snapshot.voice.applied or default_voice_for(provider)
+    voices = tuple(role_voices_for(provider, robot))
+    return Busy(voices=voices, voice_genders=tuple((voice, gender_of(provider, voice)) for voice in voices))
+
+
 def build_real_stand(providers: Sequence[str], workdir: Path, deadline_s: Optional[float], *,
                      variant: str = "A", router: Any = None, memory_path: Optional[Path] = None,
-                     model: str = "", clock: Any = None) -> DryStand:
+                     model: str = "", clock: Any = None,
+                     system_patch: Optional[Callable[[str], str]] = None, role_voices: bool = False) -> DryStand:
     """Стенд с настоящей цепочкой LLM (ключи из окружения; нет ключа — ``RuntimeError`` от сборки цепочки).
 
     ``variant``/``router`` - кто понимает фразу (``understanding_variants``), ``memory_path`` - постоянная e2e-память
-    консоли, ``model`` - модель цепочки (одна на все её провайдеры: у фолбека с другим API свою не задать)."""
+    консоли, ``model`` - модель цепочки (одна на все её провайдеры: у фолбека с другим API свою не задать),
+    ``system_patch`` - правка системного промпта только для стенда (консоль ``--speech-text``), ``role_voices`` -
+    каталог голосов ролей, как у робота (``plan_host.perform_busy``): код даёт героям выступления голоса, и
+    валидатор сверяет число героев с каталогом; без него голоса сегментов не решаются (марафон - как было)."""
     from rob_box_llm.provider import LLMSettings  # noqa: PLC0415
     from rob_box_voice.core.dialog_v2_ports import CallCounter, assemble_llm  # noqa: PLC0415
 
     relay, counter = LogRelay(), CallCounter()
+    holder: List[DryStand] = []
+    busy = (lambda: role_busy(holder[0])) if role_voices else None  # зовётся в ходе - стенд уже собран
     llm, system = assemble_llm(providers, counter, prompt_dir=PROMPT_DIR,
                                system_prompt_file="master_prompt_compact.txt",
-                               settings=LLMSettings(model=model) if model else None, log=relay)
+                               settings=LLMSettings(model=model) if model else None, log=relay, busy=busy)
+    if system_patch:
+        system = system_patch(system)
     stand = DryStand(llm, counter, system, workdir, variant=variant, router=router, memory_path=memory_path,
                      clock=clock)
+    holder.append(stand)
     relay.target = stand
     if deadline_s:
         stand.engine._deadline_s = deadline_s  # noqa: SLF001 — бюджет хода сети песочницы, не знание робота
