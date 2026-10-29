@@ -18,7 +18,10 @@ gen_library.py — один узкий тул ``music_library`` над кэше�
 трека (``GeneratedMusicLibrary.generated``) и им заменяет ``track_id`` модели; свежего нет - ссылка пуста, ``track_id``
 работает как прежде. Тот же выбор делает код и без ссылки: ``info`` / ``play`` на другой трек с ТЕМ ЖЕ названием, что у
 свежесочинённого (вчерашняя версия из списка), получают свежесочинённый (:meth:`MusicLibraryTool.bind_arguments`:
-сервер зовёт его до записи вызова в лог, лог и исполнение показывают один id).
+сервер зовёт его до записи вызова в лог, лог и исполнение показывают один id). Другая версия - та же песня и по теме:
+``search`` по теме свежесочинённой (слова запроса есть в её названии/тексте) ставит её первой с ``just_generated`` и
+запоминает тему; ``info`` / ``play`` старой версии, где есть та же тема, получают свежесочинённую (n707 живьём:
+``search «енота»`` → ``search «Енот»`` → ``info`` вчерашней).
 
 ``info`` / ``update`` / ``delete`` принимают только ``track_id``, который сам тул назвал в ответе ``list`` / ``search``
 (:class:`NamedTracks`, #4025: n710 23.10 стёр посторонний трек по id, которого в ходе не было). ``delete`` необратим
@@ -41,6 +44,7 @@ from typing import Any, Callable, Dict, Iterable, List, Optional, Tuple
 from rob_box_music import knowledge as kn
 
 from ..base import MCPTool, MCPToolParameter, MCPToolResult, ToolExecutionType
+from ..engine.gen.last_generated import topic_stems
 from ..engine.gen.library import GeneratedMusicLibrary
 from ..engine.gen.library_play import play_library_track
 
@@ -267,21 +271,16 @@ class MusicLibraryTool(MCPTool):
         return parameters if bound == (str(track_id) if track_id else "") else {**parameters, "track_id": bound}
 
     def _bound_track(self, action: str, track_id: str, track_ref: Any) -> str:
-        """``track_id`` с учётом свежесочинённого трека: ссылка ``last_generated`` - он; ``info`` / ``play`` на другой
-        трек с тем же названием (версия из прошлых прогонов) - тоже он; иначе ``track_id`` как был."""
-        fresh = self._library.generated.fresh()
+        """``track_id`` с учётом свежесочинённого трека: ссылка ``last_generated`` - он; ``info`` / ``play`` на другую
+        версию той же песни (то же название либо тема, что совпала со свежим в недавнем ``search``:
+        ``LastGenerated.twin``) - тоже он; иначе ``track_id`` как был."""
+        generated = self._library.generated
+        fresh = generated.fresh()
         if not fresh or track_id == fresh:
             return track_id
-        if track_ref == LAST_GENERATED_REF:
-            return fresh
-        if action in _SAME_TITLE_ACTIONS and track_id and self._same_title(track_id, fresh):
+        if track_ref == LAST_GENERATED_REF or (action in _SAME_TITLE_ACTIONS and track_id and generated.twin(track_id)):
             return fresh
         return track_id
-
-    def _same_title(self, left: str, right: str) -> bool:
-        titles = (str(self._library.get_track_info(t).get("title") or "").strip().casefold() for t in (left, right))
-        first, second = titles
-        return bool(first) and first == second
 
     # ── Действия ──────────────────────────────────────────────────────────
 
@@ -302,11 +301,17 @@ class MusicLibraryTool(MCPTool):
         result = self._library.search_tracks(query, limit=_clamp(limit, 5, 20))
         if not result.get("success"):
             return MCPToolResult(success=False, error=result.get("error"))
-        found = result["total"]
-        self._named.name(t.get("id") for t in result["tracks"])
+        tracks = result["tracks"]
+        fresh = self._library.generated.about(topic_stems(query))
+        if fresh:  # тема запроса - только что сочинённая песня: она первой, а не среди версий прошлых прогонов (#4216)
+            tracks = [self._library.get_track_info(fresh), *(t for t in tracks if t.get("id") != fresh)]
+        found = len(tracks)
+        self._named.name(t.get("id") for t in tracks)
         message = f"По запросу «{query}» найдено {found}." if found else f"По запросу «{query}» ничего не найдено."
-        data = {"query": query, "tracks": [_brief(t) for t in result["tracks"]], "total": found}
-        return MCPToolResult(success=True, data=data, message=message)
+        briefs = [_brief(t) for t in tracks]
+        if fresh:
+            briefs[0]["just_generated"] = True
+        return MCPToolResult(success=True, data={"query": query, "tracks": briefs, "total": found}, message=message)
 
     def _info(self, track_id: str, **_: Any) -> MCPToolResult:
         info = self._library.get_track_info(track_id)
