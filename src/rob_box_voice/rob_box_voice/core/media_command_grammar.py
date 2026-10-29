@@ -368,6 +368,8 @@ def _cut(text: str, spans: Sequence[Optional[Tuple[int, int]]]) -> str:
 _THEME_LEADS: FrozenSet[str] = frozenset({
     "тему", "тема", "темой", "тематику", "тематика", "тематикой", "про",
 })
+#: Они же - публично: тему после такого слова человек назвал сам (``theme_grounding.names_theme``, n605 М6).
+THEME_LEADS: FrozenSet[str] = _THEME_LEADS
 
 
 def _theme_split(text: str) -> Tuple[str, str]:
@@ -731,6 +733,8 @@ def _style_set_command(words: Sequence[str]) -> Optional[MediaCommand]:
 _SET_WORDS: FrozenSet[str] = frozenset({
     "сет", "сэт", "сета", "сэта", "сетик", "сэтик", "сетика", "сэтика", "set",
 })
+#: Они же - публично: слово сета названо - слова после него человек назвал темой (``theme_grounding.names_theme``).
+SET_WORDS: FrozenSet[str] = _SET_WORDS
 
 #: Глаголы в начале заказа сета: глаголы заказа по имени и запуска сета.
 _SET_VERBS: FrozenSet[str] = _PLAY_NAMED_VERBS | frozenset({

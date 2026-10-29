@@ -75,7 +75,7 @@ from .instrumental_order import InstrumentalOrder
 from .order_level import LevelSetter, with_level
 from .source_route import SourceRouter
 from .track_edit import LiveRecipe, TrackEditor, synth_title
-from .theme_grounding import heard_theme, set_slots
+from .theme_grounding import guessed_theme, heard_theme, set_slots
 from .theme_links import Ask, ThemeLinks
 
 _LOG = logging.getLogger(__name__)
@@ -562,8 +562,9 @@ class DjSetTool(MCPTool):
             return tool_result(refusal, "сет не начался")
         heard_text, heard_tracks, style, styles, spec_note = brief_args(heard_text, heard_tracks, style, styles)
         tracks = heard_tracks or tracks
+        free = False
         if action == "start":  # «диджей X» одним видом: и от роутера, и от LLM
-            theme, persona = self._set_slots(theme, persona_title(persona) or None, heard_text)
+            theme, persona, free = self._set_slots(theme, persona_title(persona) or None, heard_text)
         with self._lock:
             if action == "stop":
                 return self._stop()
@@ -576,7 +577,7 @@ class DjSetTool(MCPTool):
                 # окно стиля словами человека («гранж» → rock/grunge, ADR-0153 S5); нет слов — окно выбирает план
                 window = match_window_text(key, heard_text, theme)
                 result = self._start(theme or "", persona, key, named, window, heard_text,
-                                     hints=(styles, minutes))
+                                     hints=(styles, minutes), free=free)
             else:
                 return MCPToolResult(success=False, error=f"action={action!r}: есть только start и stop")
         result = confirmed(spec_noted(result, spec_note), self._confirm)  # ждём started вне замка
@@ -586,10 +587,16 @@ class DjSetTool(MCPTool):
                           self.node.get_logger() if self.node is not None else _LOG)
 
     def _set_slots(self, theme: Optional[str], persona: Optional[str],
-                   heard_text: Optional[str]) -> Tuple[str, Optional[str]]:
-        """``(тема, персона)`` сета по реплике хода и последнему сету (``theme_grounding.set_slots``, #3581)."""
-        return set_slots(theme, persona, heard_text, self._last_dj,
-                         self.node.get_logger() if self.node is not None else _LOG)
+                   heard_text: Optional[str]) -> Tuple[str, Optional[str], bool]:
+        """``(тема, персона, без платной генерации)`` сета по реплике хода и последнему сету
+        (``theme_grounding.set_slots``, #3581). Тема - догадка кода из голого слова реплики (``guessed_theme``, n605 М6:
+        «сайт» вместо «сет») - сет только из кэша или синтезом, платный заказ не уходит."""
+        log = self.node.get_logger() if self.node is not None else _LOG
+        slots, persona = set_slots(theme, persona, heard_text, self._last_dj, log)
+        free = guessed_theme(slots, theme, heard_text)
+        if free:
+            log.warning(f"🎛️ [dj_set] тема {slots!r} - догадка кода из слов реплики, не названа: без платной генерации")
+        return slots, persona, free
 
     @property
     def running(self) -> bool:
