@@ -303,3 +303,46 @@ def test_after_stop_leaves_a_silent_or_unknown_section_as_it_is():
     assert after_stop(silent) == silent
     assert after_stop({"playing": "unknown", "dj": "unknown"}) == {"playing": "unknown", "dj": "unknown"}
     assert after_stop(None) == {}
+
+
+# ---------------------------------------------------------------------------------------------------------------
+# n511 марафона-5 29.10: речь, что не прозвучит, не обещание (регрессия #4199)
+# ---------------------------------------------------------------------------------------------------------------
+
+N511 = "Тише и глуше — убавляю высокие и звук."
+
+
+def test_n511_speech_that_will_be_dropped_is_not_judged_as_a_promise():
+    """Дословно n511: speech «убавляю…» + ``dj_set stop``. Речь при громком действии не звучит (``speech_with_actions``), её
+    обещание никого не вводит в заблуждение: нарушение одно, подсказка одна - «убери speech»; второе («вызови тул или не
+    обещай») противоречило бы ей, и повтор на двух подсказках вернул битый JSON."""
+    cmd = parse({"speech": N511, "actions": [{"tool": "dj_set", "args": {"action": "stop"}}],
+                 "expression": {"emotion": "neutral", "earcon": "heard"}})
+    assert unkept_promises(cmd) == ("volume",)                      # по словам обещание есть, но речь выбрасывается
+    result = validate(cmd, TOOLS)
+    assert isinstance(result, Invalid)
+    assert [v.reason for v in result.all] == [kn.VIOLATION_SPEECH_WITH_ACTIONS]
+    hint = explain(result)
+    assert "speech_with_actions" in hint and "music_promise" not in hint
+
+
+def test_n511_after_the_speech_is_removed_the_stop_command_is_valid():
+    cmd = validate(parse({"actions": [{"tool": "stop_music", "args": {"boundary": "now"}}],
+                          "expression": {"emotion": "neutral", "earcon": "heard"}}), TOOLS)
+    assert isinstance(cmd, Command) and [a.tool for a in cmd.actions] == ["stop_music"]
+
+
+def test_the_promise_next_to_a_quiet_action_is_still_judged():
+    """Речь рядом с тихим действием звучит (``QUIET_WITH_SPEECH_TOOLS``): её обещание без тула - по-прежнему ложь."""
+    quiet = next(iter(kn.QUIET_WITH_SPEECH_TOOLS))
+    cmd = Command(speech="Сделаю потише.", actions=(ToolCall(quiet, {}),))
+    assert unkept_promises(cmd) == ("volume",)
+    assert kn.VIOLATION_MUSIC_PROMISE in {v.reason for v in getattr(validate(cmd, (*TOOLS, quiet)), "all", ())}
+
+
+def test_the_promise_in_the_text_channel_is_still_judged():
+    """Телеграм-агент: ``speech`` - текст в чат и законен рядом с действиями, он не выбрасывается - обещание судится."""
+    session = Session(kn.TEXT_CHANNEL_AGENT).snapshot
+    cmd = parse({"speech": N511, "actions": [{"tool": "dj_set", "args": {"action": "stop"}}]})
+    result = validate(cmd, TOOLS, session)
+    assert isinstance(result, Invalid) and [v.reason for v in result.all] == [kn.VIOLATION_MUSIC_PROMISE]
