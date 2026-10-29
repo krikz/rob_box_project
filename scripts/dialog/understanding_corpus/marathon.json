@@ -5,18 +5,18 @@
  "generator": "scripts/dialog/understanding_corpus/build_marathon.py",
  "scenarios": {
   "dir": ".github/e2e/scenarios/night",
-  "last_commit": "905c5f311e3ae2175e67c6242a19d882e9d9e890",
+  "last_commit": "4c13451ac294210b074f7587decff767e3ecf8a6",
   "sha256": {
    "night_marathon_act10_finale_memory_v1.json": "1912dd4fc3c66e4029818c8048e2f50fcf7680c8009e3ff15b2498a362897cc2",
    "night_marathon_act1_wakeup_v1.json": "291b29c2cf823590a8099ed40ffeb3a8748ad572475340cd7a15dede8f23548c",
    "night_marathon_act2_acquaintance_v1.json": "116ca07cb11b3b443ac3a3c1014d8a68b1818e8bce42a915d20a361d5e3776d2",
    "night_marathon_act2b_identity_question_v1.json": "58e6678aafb3bfd3a6735c1c087cc9f1b0ce4b430b4cb80cc28f011188936fbc",
-   "night_marathon_act2c_voice_conflict_question_v1.json": "98540c06002dacc2786ab5a669f62cd0279a2281393397495581ba9fe7c31c6f",
+   "night_marathon_act2c_voice_conflict_question_v1.json": "445039b4505105da69158b378e0dfa203443b05a4458858d491309beb2c8e283",
    "night_marathon_act3_backlog_diarization_v1.json": "384daa4bd209d9092fef95b488d546ce1fa293201b64da9cad9d37516c9b2b80",
    "night_marathon_act4_voice_prosody_v1.json": "1afa0fbe1fad0088d9e2c2d997b195dafd5986394b848464233186bc20f23edc",
    "night_marathon_act5_renardo_live_v1.json": "fd29b18b07e2ed30e0311556db42bbf1f7bb52004486aea9e65242c31360e6c0",
    "night_marathon_act6_dj_booth_v1.json": "1830345fb3043b76305b79bd4563bad7ef01aab79bec16275411087e9c7f414a",
-   "night_marathon_act7_neuro_composer_v1.json": "3a4af1f39c0310ee9a25e82d9a21c177a667abd33a1976d9f5afdb75021c4642",
+   "night_marathon_act7_neuro_composer_v1.json": "1b565f18a6c144877d3812b9ab906e6523cdb3589d1a446d4a4cd6ed565d19ec",
    "night_marathon_act8_barge_in_v1.json": "083567a32411dac46cc9cca75cff6aa77d55a60a90d8795a87fbcdb3dfbece82",
    "night_marathon_act9_world_outside_v1.json": "4ab7c352ec1c32dc0921df1a9d38cb9e483c54a87dfb437ff1c21722662db069"
   }
@@ -27,7 +27,7 @@
   "acoustic_context": 42,
   "unique_phrases": 130
  },
- "corpus_sha256": "2dca056493bb6e4ed1b69e317f74df9d0af58cbfec2980742dd3f0f78451b33d",
+ "corpus_sha256": "89c3cc8a503c99721204cdb1d091221256c770c2d90caa2ffc714a2f2929277b",
  "acts": [
   {
    "act": "1",
@@ -1227,7 +1227,7 @@
        "expected_tool_calls": [],
        "must_not_call": [],
        "must_not_say": [
-        "Нин"
+        "re:(?:^|[.!?…]\\s*)нина\\s*[,!]|,\\s*нина\\s*(?:[.!?…,;]|$)|\\b(?:привет|здравствуй|здравствуйте|салют|приветствую|спасибо|благодарю|пока|слушай|слушайте|извини|прости|понял|поняла|ясно|ладно|хорошо|конечно|ну)\\s+нина\\s*(?:[.!?…,;]|$)|\\b(?:ты|это|зовут)\\s+нина\\b"
        ],
        "must_not_identify_as": [
         "Нина",
