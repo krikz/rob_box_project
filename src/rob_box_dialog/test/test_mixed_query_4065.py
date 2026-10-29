@@ -191,7 +191,7 @@ def test_4065_mixed_on_the_last_iteration_without_words_is_said_by_code_from_the
     agg = _run(ports)
     assert len(ports.asked) == kn.LLM_QUERY_ITERATIONS_MAX + 1
     assert ports.executed == [[("play_animation", {"animation": "sad"}), ("music_library", dict(LIST_CALL.args))],
-                              [("music_library", dict(LIST_CALL.args))]], \
+                              *[[("music_library", dict(LIST_CALL.args))]] * (kn.LLM_QUERY_ITERATIONS_MAX - 1)], \
         "анимация не повторена; query на последней итерации не исполнен"
     assert ports.said == [(phrases.text(kn.QUERY_FALLBACK_GENERIC), None, "sad")]
     assert (agg.stage, agg.status) == ("done", "done") and ports.stages[-1] == ("done", "done", "query_fallback:ceiling")

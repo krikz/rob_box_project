@@ -687,12 +687,18 @@ def test_3995_bare_animation_twice_runs_it_and_code_speaks_not_silence():
     assert ports.stages[-1] == ("done", "done", f"invalid_salvaged:{kn.VIOLATION_SILENT_ANSWER}")
 
 
+def _memory_searches():
+    """Query-итерации хода до потолка ``LLM_QUERY_ITERATIONS_MAX``: у каждой свой ``memory_search`` (не повтор)."""
+    names = ("Борис", "Спартак", "Нина", "Саша", "Игорь", "Лена")[:kn.LLM_QUERY_ITERATIONS_MAX]
+    return [Answer(Command(actions=(ToolCall("memory_search", {"query": q}),)), "deepseek",
+                   follow=lambda data: ({"role": "tool", "content": data},)) for q in names]
+
+
 def test_3995_last_iteration_pushes_only_for_words_then_the_code_speaks():
-    """Бюджет итераций (``LLM_QUERY_ITERATIONS_MAX``): после двух запросов голая анимация на последней итерации -
+    """Бюджет итераций (``LLM_QUERY_ITERATIONS_MAX``): после исчерпанных запросов голая анимация на последней итерации -
     только повторы за словами (``SPEECH_PUSHES_MAX``, #4157: решение Шифу 28.10 - дожать модель), и без слов после них
     говорит код (запрос в ходе был — по его данным), а не тишина."""
-    search = [Answer(Command(actions=(ToolCall("memory_search", {"query": q}),)), "deepseek",
-                     follow=lambda data: ({"role": "tool", "content": data},)) for q in ("Борис", "Спартак")]
+    search = _memory_searches()
     silent = [_bare(HAPPY)] * (1 + kn.SPEECH_PUSHES_MAX)
     ports = Ports(answers=[*search, *silent], outcomes={"memory_search": ("done", {"results": []})})
     # вопрос о фактах идёт модели; «а ты меня помнишь» - тоже модели (решение Шифу 28.10, #3993); код - только «узнал ли»
@@ -780,8 +786,7 @@ def test_query_beyond_limit_is_not_run_and_code_speaks_instead_of_silence():
 
 def test_last_llm_call_has_no_query_tools_and_turn_ends_with_speech():
     """#3953 (марафон 23.10, n209): цепочка memory_search до потолка — последний вызов без query-тулов, ход говорит."""
-    search = [Answer(Command(actions=(ToolCall("memory_search", {"query": q}),)), "deepseek",
-                     follow=lambda data: ({"role": "tool", "content": data},)) for q in ("Борис", "Спартак")]
+    search = _memory_searches()
     final = Answer(Command(speech="Помню: болеешь за Спартак и по пятницам ешь пиццу."), "deepseek")
     ports = Ports(answers=[*search, final], outcomes={"memory_search": ("done", {"results": []})})
     agg = _run(_engine(ports), "а про меня что помнишь")
@@ -790,7 +795,7 @@ def test_last_llm_call_has_no_query_tools_and_turn_ends_with_speech():
     assert all("memory_search" in tools for tools in offered[:-1])
     assert offered[-1] and all(kn.TOOL_CLASSES.get(t) != "query" for t in offered[-1])
     assert ports.said == [("Помню: болеешь за Спартак и по пятницам ешь пиццу.", None, "neutral")]
-    assert (agg.stage, agg.status, agg.llm_calls) == ("done", "finished", 3)
+    assert (agg.stage, agg.status, agg.llm_calls) == ("done", "finished", kn.LLM_QUERY_ITERATIONS_MAX + 1)
 
 
 def test_first_call_keeps_query_tools():
@@ -1244,8 +1249,7 @@ def test_3997_only_expression_on_the_last_iteration_after_query_says_the_data_wi
     """После запросов одна ``expression`` на последней итерации: говорит код по данным запроса (#3883), а лицо
     команды не показывается — её действия не исполнены, и лицо идёт вместе с ними. Одна ``expression`` и на повторах за
     словами (#4157) - тот же итог."""
-    search = [Answer(Command(actions=(ToolCall("memory_search", {"query": q}),)), "deepseek",
-                     follow=lambda data: ({"role": "tool", "content": data},)) for q in ("Борис", "Спартак")]
+    search = _memory_searches()
     faces = [Answer(Command(expression=SAD), "deepseek")] * (1 + kn.SPEECH_PUSHES_MAX)
     ports = Ports(answers=[*search, *faces], outcomes={"memory_search": ("done", {"results": []})})
     agg = _run(_engine(ports), "а что ты про меня помнишь")
