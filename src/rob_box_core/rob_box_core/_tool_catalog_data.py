@@ -1013,7 +1013,10 @@ TOOL_CATALOG_DATA: tuple[dict[str, Any], ...] = (   {   'llm_visible': True,
                        'confirm тул только спрашивает (needs_confirmation), '
                        'confirm=true — после «да» человека. track_id для info / update '
                        '/ delete — только из ответа list / search, не выдумывай (иначе '
-                       'unknown_track). Ответ содержит фразу, которую надо сказать.',
+                       'unknown_track). «Эта песня» / «только что сочинённая» — '
+                       'track_ref=last_generated (track_id не нужен: тул сам берёт '
+                       'трек, сочинённый только что). Ответ содержит фразу, которую '
+                       'надо сказать.',
         'parameters': {   'type': 'object',
                           'properties': {   'action': {   'type': 'string',
                                                           'description': 'Что сделать '
@@ -1042,6 +1045,30 @@ TOOL_CATALOG_DATA: tuple[dict[str, Any], ...] = (   {   'llm_visible': True,
                                                                            'последний '
                                                                            'игравший).',
                                                             'default': ''},
+                                            'track_ref': {   'type': 'string',
+                                                             'description': 'last_generated '
+                                                                            '— «эта / '
+                                                                            'только '
+                                                                            'что '
+                                                                            'сочинённая '
+                                                                            'песня» '
+                                                                            '(info, '
+                                                                            'play, '
+                                                                            'update, '
+                                                                            'delete, '
+                                                                            'rate): '
+                                                                            'трек, '
+                                                                            'сочинённый '
+                                                                            'последним, '
+                                                                            'вместо '
+                                                                            'track_id. '
+                                                                            'Свежего '
+                                                                            'нет — '
+                                                                            'работает '
+                                                                            'track_id.',
+                                                             'enum': [   '',
+                                                                         'last_generated'],
+                                                             'default': ''},
                                             'query': {   'type': 'string',
                                                          'description': 'Слово поиска '
                                                                         'для search '
@@ -1125,7 +1152,7 @@ TOOL_CATALOG_DATA: tuple[dict[str, Any], ...] = (   {   'llm_visible': True,
                                                            'default': False}},
                           'required': ['action'],
                           'additionalProperties': False},
-        'signature': {   'params': ['action', 'track_id'],
+        'signature': {   'params': ['action', 'track_id', 'track_ref'],
                          'required': [],
                          'accepts_kwargs': True},
         'skill': ('player',)},

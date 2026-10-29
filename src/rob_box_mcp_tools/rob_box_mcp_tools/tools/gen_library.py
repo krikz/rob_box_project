@@ -14,6 +14,12 @@ gen_library.py — один узкий тул ``music_library`` над кэше�
   update  — title / tags / mood / genre / notes
   delete  — удалить трек (SQLite + каталог с mp3 и wav)
 
+``track_ref="last_generated"`` (#4216) - «эта песня» сразу после генерации: тул сам берёт id только что сочинённого
+трека (``GeneratedMusicLibrary.generated``) и им заменяет ``track_id`` модели; свежего нет - ссылка пуста, ``track_id``
+работает как прежде. Тот же выбор делает код и без ссылки: ``info`` / ``play`` на другой трек с ТЕМ ЖЕ названием, что у
+свежесочинённого (вчерашняя версия из списка), получают свежесочинённый (:meth:`MusicLibraryTool.bind_arguments`:
+сервер зовёт его до записи вызова в лог, лог и исполнение показывают один id).
+
 ``info`` / ``update`` / ``delete`` принимают только ``track_id``, который сам тул назвал в ответе ``list`` / ``search``
 (:class:`NamedTracks`, #4025: n710 23.10 стёр посторонний трек по id, которого в ходе не было). ``delete`` необратим
 (кредиты на перегенерацию стоят денег) и идёт в два вызова: без ``confirm`` тул отвечает ``needs_confirmation`` с
@@ -43,6 +49,14 @@ _NEEDS_TRACK = ("info", "play", "update", "delete")
 _VERDICT_RATING = {"like": kn.RATING_LIKE, "dislike": kn.RATING_DISLIKE}
 #: Действия, где ``track_id`` обязан быть из ответа самого тула (``list`` / ``search``), а не из памяти модели (#4025).
 _NAMED_ONLY = ("info", "update", "delete")
+#: ``track_ref`` тула: «эта / только что сочинённая песня» (#4216). Не id, а ссылка: id подставляет код из
+#: ``GeneratedMusicLibrary.generated``, а не модель по названию из списка (в библиотеке бывает несколько версий с
+#: одним названием; n707/n708 29.10: взята вчерашняя, а не сочинённая минуту назад).
+LAST_GENERATED_REF = "last_generated"
+#: Действия, где id той же песни с названием свежесочинённой (вчерашняя версия) заменяется свежим: рассказать и включить.
+#: ``update`` / ``delete`` / ``rate`` с явным id правят то, что назвала модель: стереть или переименовать старую версию
+#: - законное желание, а не промах выбора.
+_SAME_TITLE_ACTIONS = ("info", "play")
 #: Причины отказа (поле ``reason`` результата): по ним диалог выбирает фразу (ключ ``music.library_fail.<причина>``
 #: каталога ``ru.yaml``), а не по тексту ошибки. ``NEEDS_CONFIRMATION`` - не провал, а вопрос человеку: диалог v2 ждёт
 #: ответа окном (``rob_box_dialog.knowledge.TOOL_QUESTIONS``, #4062) и сам шлёт ``confirm=true`` на «да, удаляй».
@@ -149,7 +163,9 @@ class MusicLibraryTool(MCPTool):
             "update — переименовать, теги, настроение, жанр, заметка; delete — удалить трек насовсем: "
             "без confirm тул только спрашивает (needs_confirmation), confirm=true — после «да» человека. "
             "track_id для info / update / delete — только из ответа list / search, не выдумывай "
-            "(иначе unknown_track). Ответ содержит фразу, которую надо сказать."
+            "(иначе unknown_track). «Эта песня» / «только что сочинённая» — track_ref=last_generated "
+            "(track_id не нужен: тул сам берёт трек, сочинённый только что). "
+            "Ответ содержит фразу, которую надо сказать."
         )
 
     @property
@@ -164,6 +180,12 @@ class MusicLibraryTool(MCPTool):
                 name="track_id", type="string", required=False, default="",
                 description="UUID трека из ответа list / search (info, play, update, delete; у rate — по умолчанию "
                             "играющий сейчас или последний игравший).",
+            ),
+            MCPToolParameter(
+                name="track_ref", type="string", required=False, default="",
+                description="last_generated — «эта / только что сочинённая песня» (info, play, update, delete, rate): "
+                            "трек, сочинённый последним, вместо track_id. Свежего нет — работает track_id.",
+                enum=["", "last_generated"],
             ),
             MCPToolParameter(
                 name="query", type="string", required=False, default="",
@@ -217,8 +239,12 @@ class MusicLibraryTool(MCPTool):
     # starts_music=False намеренно: флаг на уровне тула, а музыку запускает только action=play. С True
     # ``TrackStartGuard`` («один запуск трека за ход») отказал бы ``play`` после ``list`` в том же ходе.
 
-    def execute(self, action: str = "", track_id: Any = "", **kwargs: Any) -> MCPToolResult:
+    def execute(self, action: str = "", track_id: Any = "", track_ref: Any = "", **kwargs: Any) -> MCPToolResult:
         track_id = str(track_id) if track_id else ""  # список / словарь от небрежной модели - не TypeError, а неизвестный id
+        bound = self._bound_track(str(action), track_id, track_ref)
+        if bound != track_id:
+            self._named.name([bound])  # назван кодом, а не выдуман моделью: вопрос ``list`` для него не нужен
+        track_id = bound
         handler = {
             "list": self._list, "search": self._search, "info": self._info, "play": self._play,
             "rate": self._rate, "update": self._update, "delete": self._delete,
@@ -232,6 +258,30 @@ class MusicLibraryTool(MCPTool):
                             "list / search этого разговора.", track_id=track_id,
                             hint="сначала action=list или search, track_id — из их ответа")
         return handler(track_id=track_id, **kwargs)
+
+    def bind_arguments(self, parameters: Dict[str, Any]) -> Dict[str, Any]:
+        """Параметры вызова с ``track_id`` свежесочинённой песни там, где модель выбрала старую (#4216, n707/n708)."""
+        track_id = parameters.get("track_id")
+        bound = self._bound_track(str(parameters.get("action", "")), str(track_id) if track_id else "",
+                                  parameters.get("track_ref", ""))
+        return parameters if bound == (str(track_id) if track_id else "") else {**parameters, "track_id": bound}
+
+    def _bound_track(self, action: str, track_id: str, track_ref: Any) -> str:
+        """``track_id`` с учётом свежесочинённого трека: ссылка ``last_generated`` - он; ``info`` / ``play`` на другой
+        трек с тем же названием (версия из прошлых прогонов) - тоже он; иначе ``track_id`` как был."""
+        fresh = self._library.generated.fresh()
+        if not fresh or track_id == fresh:
+            return track_id
+        if track_ref == LAST_GENERATED_REF:
+            return fresh
+        if action in _SAME_TITLE_ACTIONS and track_id and self._same_title(track_id, fresh):
+            return fresh
+        return track_id
+
+    def _same_title(self, left: str, right: str) -> bool:
+        titles = (str(self._library.get_track_info(t).get("title") or "").strip().casefold() for t in (left, right))
+        first, second = titles
+        return bool(first) and first == second
 
     # ── Действия ──────────────────────────────────────────────────────────
 

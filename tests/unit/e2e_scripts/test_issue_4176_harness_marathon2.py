@@ -256,7 +256,7 @@ def test_n312_field_comes_from_one_table_and_the_judge_parses_it():
 
 
 @pytest.mark.parametrize("raw", [
-    {"reason": "NO_MUSIC_N310", "log": "x", "deck": "playing"},
+    {"reason": "NO_MUSIC_N310", "log": "x", "deck": "paused"},
     {"reason": "NO_MUSIC_N310", "log": "x", "deck": "ended"},  # #4196: «ended» поглощён «idle», второго вида нет
     {"reason": "NO_MUSIC_N310", "log": "x", "deck": 1},
 ])
@@ -396,4 +396,4 @@ def test_json_on_disk_matches_the_generator_for_every_step_this_card_touches():
 
 
 def test_skip_when_table_has_exactly_the_known_reasons():
-    assert set(gen.SKIP_WHEN) == {"NO_SONG", "NOT_SILENCED", "NO_MUSIC_N310", "NO_MUSIC_N506"}
+    assert set(gen.SKIP_WHEN) == {"NO_SONG", "NOT_SILENCED", "NO_MUSIC_N310", "NO_MUSIC_N506", "NO_STOP_N511"}

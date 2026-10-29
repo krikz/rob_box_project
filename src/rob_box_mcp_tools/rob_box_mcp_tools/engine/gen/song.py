@@ -360,6 +360,7 @@ class SongStudio:
             raise SongFailed("no_track", f"задача {made.task_id} без сохранённых треков")
         self._log().info(f"🎤 [song] «{song.title}» {provider}:{voice} жанр={genre} task={made.task_id} "
                          f"credits={made.credits:g} track={saved['id']} за {self._clock() - started:.0f} с")
+        library.generated.note(str(saved["id"]))  # «эта песня» (#4216): сочинённая сейчас, а не старая с тем же названием
         return SongResult(str(saved["id"]), song.title, float(saved.get("duration_ms") or 0) / 1000.0, provider, voice,
                           made.task_id, made.credits)
 

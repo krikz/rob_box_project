@@ -111,6 +111,11 @@ class MCPToolRegistry:
         """
         return self._tools.get(name)
 
+    def bind_arguments(self, name: Any, parameters: Any) -> Any:
+        """Параметры вызова после подстановки кода тула (``MCPTool.bind_arguments``); неизвестный тул и не словарь - как есть."""
+        tool = self._tools.get(name) if isinstance(name, str) else None
+        return tool.bind_arguments(parameters) if tool is not None and isinstance(parameters, dict) else parameters
+
     def list_tools(self) -> List[str]:
         """
         Получить список имен всех зарегистрированных инструментов

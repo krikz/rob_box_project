@@ -90,6 +90,7 @@ from rob_box_dialog import knowledge as kn
 from rob_box_dialog import memory
 from rob_box_dialog import phrases
 from rob_box_dialog import tool_ask
+from rob_box_dialog import track_ref
 from rob_box_dialog.address import BARE_WAKE, Addressed
 from rob_box_dialog.agents import agent_spec, allows_tier1, tools_for
 from rob_box_dialog.command import (Command, Expression, Form, Invalid, Performance, Result, ToolCall, current_form,
@@ -1689,6 +1690,7 @@ class TurnEngine:
     async def _execute(self, turn: _Turn, actions: Sequence[ToolCall], snap: SessionSnapshot) -> List[ActionResult]:
         if not actions:
             return []
+        actions = track_ref.bind_last_generated(actions, turn.text)  # «эта песня» - сочинённая только что (#4216)
         cls = kn.call_class(actions[0].tool, actions[0].args)
         turn.waiting = cls
         self._ports.stage(turn.turn_id, turn.epoch, "executing", "started", cls=cls)
