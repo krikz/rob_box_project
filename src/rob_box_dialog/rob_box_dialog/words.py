@@ -276,7 +276,7 @@ def _promises(tokens: Sequence[str], promise: MusicPromise) -> bool:
     for i, token in enumerate(tokens):
         if token in promise.alone:
             return True
-        if token in promise.with_near:
+        if token in promise.with_near and not set(tokens[max(0, i - 2):i]) & set(promise.unless_before):
             around = (*tokens[max(0, i - MUSIC_PROMISE_WINDOW):i], *tokens[i + 1:i + 1 + MUSIC_PROMISE_WINDOW])
             if any(word.startswith(promise.near) for word in around):
                 return True
@@ -284,8 +284,8 @@ def _promises(tokens: Sequence[str], promise: MusicPromise) -> bool:
 
 
 def music_promises(text: str) -> Tuple[str, ...]:
-    """Виды обещаний действия с музыкой в речи робота (ключи ``knowledge.MUSIC_PROMISES``: ``volume``, ``stop``,
-    ``start``) - по словам, не по подстроке: «сделаю потише», «включу музыку», «выключу трек». Прошедшее («музыку
+    """Виды обещаний действия с музыкой в речи робота (ключи ``knowledge.MUSIC_PROMISES``: ``volume``, ``whisper``,
+    ``stop``, ``start``, ``switch``) - по словам, не по подстроке: «сделаю потише», «включу музыку», «выключу трек». Прошедшее («музыку
     выключил»), инфинитив и вопрос («включить музыку?») не обещание. Решает код по словам фразы (ADR-0148): есть ли
     тул, что обещание исполняет, судит валидатор команды (``command._check_music_promise``)."""
     tokens = name_tokens(text)

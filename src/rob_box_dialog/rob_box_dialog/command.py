@@ -631,7 +631,7 @@ def validate(cmd: Result, available_tools: Collection[str], session: Any = None,
         lambda: _check_ask(cmd.ask),
         lambda: _check_actions(open_actions, available, agent),
         lambda: _check_speech_with_actions(cmd, agent),
-        lambda: _check_music_promise(cmd),
+        lambda: _check_music_promise(cmd, agent),
         lambda: _check_args_without_action(cmd),
         lambda: _check_perform(cmd, busy),
         lambda: _check_sing(cmd, form),
@@ -965,8 +965,13 @@ def fit_speech(cmd: Command) -> Command:
 def _check_speech_with_actions(cmd: Command, agent: str) -> None:
     """``speech`` рядом с действиями не звучит (§4.1): нарушение, а не молчаливая потеря ответа. Вместе с ``perform``
     его уже ловит ``perform_with_speech``; у телеграм-агента ``speech`` - текст в чат, он законен."""
-    if cmd.speech and loud_actions(cmd) and cmd.perform is None and agent != kn.TEXT_CHANNEL_AGENT:
+    if _speech_is_dropped(cmd, agent):
         raise _Bad(kn.VIOLATION_SPEECH_WITH_ACTIONS)
+
+
+def _speech_is_dropped(cmd: Command, agent: str) -> bool:
+    """``speech`` команды не прозвучит: рядом громкие действия без ``perform`` (:func:`_check_speech_with_actions`)."""
+    return bool(cmd.speech and loud_actions(cmd) and cmd.perform is None and agent != kn.TEXT_CHANNEL_AGENT)
 
 
 def unkept_promises(cmd: Command) -> Tuple[str, ...]:
@@ -979,11 +984,15 @@ def unkept_promises(cmd: Command) -> Tuple[str, ...]:
                  and not (kn.MUSIC_PROMISES[kind].perform and cmd.perform is not None))
 
 
-def _check_music_promise(cmd: Command) -> None:
+def _check_music_promise(cmd: Command, agent: str) -> None:
     """Речь обещает действие с музыкой или громкостью («сделаю потише», «включу музыку»), а тула, что его исполняет, в
     команде нет (ADR-0148): слова без действия - ложь о состоянии (n709: музыку уже остановил код, а модель
     «сделаю потише»). Нарушение ``VIOLATION_MUSIC_PROMISE`` - повтор с подсказкой; прошедшее («музыку выключил») не
-    обещание."""
+    обещание. Речь, что не прозвучит (:func:`_speech_is_dropped`, её судит ``speech_with_actions``), никого не обещает:
+    n511 марафона-5 29.10 («Тише и глуше — убавляю…» + ``dj_set stop``) - второе нарушение рядом с первым только
+    противоречило бы подсказке «убери speech»."""
+    if _speech_is_dropped(cmd, agent):
+        return
     broken = unkept_promises(cmd)
     if broken:
         raise _Bad(kn.VIOLATION_MUSIC_PROMISE, f"speech обещает {', '.join(broken)} без тула")
