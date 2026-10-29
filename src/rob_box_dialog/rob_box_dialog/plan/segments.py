@@ -126,6 +126,12 @@ class SegmentList:
     def first(self, state: str) -> Optional[Line]:
         return next((line for line in self.lines if line.state == state), None)
 
+    def said(self) -> List[str]:
+        """Тексты сегментов, что уже прозвучали или отданы на звучание (``FIXED``), по порядку; оборванный - сколько
+        успел прозвучать. Правка не повторяет их (:func:`.repeats.drop_said`)."""
+        return [line.text[:line.spoken_chars] if line.state == "cancelled" else line.text
+                for line in self.lines if line.no and line.state in FIXED]
+
     def live(self) -> bool:
         return any(line.state in LIVE for line in self.lines)
 
