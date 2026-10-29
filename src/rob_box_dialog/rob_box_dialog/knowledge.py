@@ -1266,6 +1266,8 @@ NO_EVIDENCE_REASON = "no_evidence"
 #: («Сестру пользователя зовут Оля», «Тамара любит чай»), «Пользователь не представился» - обычный факт. Слова - как у
 #: ``words.name_tokens`` (нижний регистр, ё → е).
 NAME_OWNER_TOOL = "register_speaker"
+#: Причина ``done`` регистрации: голос уверенно узнан под другим именем, профиль переименован (#4054, ``dialogue.register_outcome``).
+RENAMED_REASON = "renamed"
 NAME_FACT_WORDS: Mapping[str, FrozenSet[str]] = MappingProxyType({
     "marker": frozenset({"зовут", "звать", "имя", "представился", "представилась"}),
     "subject": frozenset({"пользователя", "пользователь", "собеседника", "собеседник", "собеседницы", "собеседница",

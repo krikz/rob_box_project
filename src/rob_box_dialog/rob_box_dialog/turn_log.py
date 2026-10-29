@@ -45,6 +45,7 @@ from typing import Any, Callable, Dict, List, Mapping, Optional, Sequence, Set, 
 from rob_box_core.token_estimate import estimate_tokens
 from rob_box_dialog import knowledge as kn
 from rob_box_dialog.respond import ActionResult, phrase_key
+from rob_box_dialog.words import same_name
 
 #: Строка лога агрегата хода (читает ``scripts/dialog`` для метрик §14 без текста турнов).
 AGGREGATE_MARK = "📊 [turn]"
@@ -461,6 +462,28 @@ def results_of(log: TurnLog, turn_id: str) -> Tuple[WindowEntry, ...]:
     return tuple(e for e in turn.entries if e.role == TOOL) if turn is not None else ()
 
 
+def forget_old_name(log: TurnLog, old_name: Optional[str], new_name: Any) -> int:
+    """Профиль голоса переименован (``register_speaker`` ``done{renamed}``, #4054): записи ``register_speaker`` прошлых
+    ходов окна под ПРЕЖНИМ именем из окна уходят - в ``recent_actions`` остаётся одна, с текущим именем (n723 29.10:
+    модель пересказала «сначала я услышал „Нина“» - по #4054 прежнее имя вслух утечка: похожий голос может принадлежать
+    другому). ``old_name`` - имя собеседника в снимке хода (до переименования); его нет - уходят регистрации под любым
+    именем, кроме нового: утечка прежнего имени хуже потерянной справки об чужой регистрации. Свободная функция модуля
+    журнала, а не метод: класс на пороге бюджета (``class_budget``). Возвращает число убранных записей."""
+    def stale(entry: WindowEntry) -> bool:
+        content = entry.content
+        if entry.role != TOOL or not isinstance(content, Mapping) or content.get("tool") != kn.NAME_OWNER_TOOL:
+            return False
+        name = (content.get("data") or {}).get("name")
+        return not same_name(name, new_name) and (not old_name or same_name(name, old_name))
+
+    dropped = 0
+    for turn in log._turns.values():
+        kept = [e for e in turn.entries if not stale(e)]
+        dropped += len(turn.entries) - len(kept)
+        turn.entries = kept
+    return dropped
+
+
 __all__ = ["AGGREGATE_MARK", "ASSISTANT", "OnOutcome", "PERFORM_CLASS", "PERFORM_DONE", "PERFORM_INTERRUPTED",
            "PERFORM_STARTED", "PERFORM_STOPPED", "PERFORM_TOOL", "TOOL", "TurnAggregate", "TurnLog", "USER",
-           "WindowEntry", "perform_status", "phrase_label", "results_of", "speaker_label"]
+           "WindowEntry", "forget_old_name", "perform_status", "phrase_label", "results_of", "speaker_label"]
