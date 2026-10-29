@@ -184,13 +184,20 @@ def _said(node: _Node) -> List[str]:
     return [s.text for s in node.pubs["/voice/speech/request"].sent]
 
 
+_MORE = "ещё {}"
+MORE_QUERIES = [_MORE.format(n) for n in range(kn.LLM_QUERY_ITERATIONS_MAX - 2)]
+
+
 def _live_trace(last: List[LLMResponse]) -> tuple:
     """Живой 28.10 13:40: итерация 1 - ``memory_search``, итерация 2 - два поиска в одной команде, дальше - ``last``."""
     first = LLMResponse(tool_calls=(ToolCall(id="m1", name="memory_search",
                                              arguments={"query": "факт", "limit": 10}),))
     second = LLMResponse(tool_calls=(_call(actions=[{"tool": "memory_search", "args": {"query": "Денчик"}},
                                                     {"tool": "memory_search", "args": {"query": "любить"}}]),))
-    ports, node, inner, tools = _v2([first, second, *last])
+    # потолок хода шире живых двух итераций - дальше ещё чтения памяти
+    more = [LLMResponse(tool_calls=(ToolCall(id=f"m{n + 3}", name="memory_search", arguments={"query": q}),))
+            for n, q in enumerate(MORE_QUERIES)]
+    ports, node, inner, tools = _v2([first, second, *more, *last])
     session = Session("personality")
     session.set_speaker(SpeakerRef(person_ref="fcdbb976", name="Шифу", name_state="confirmed"))  # память — его
     engine = TurnEngine(session, ports, system_prompt="Ты робот.")
@@ -207,7 +214,7 @@ def test_five_facts_trace_face_without_words_every_time_the_insurance_names_the_
     результатов, а не «не смог сложить в короткую фразу»."""
     silent = [LLMResponse(tool_calls=(_call(expression=FACE),))] * (1 + kn.SPEECH_PUSHES_MAX)
     agg, node, inner, tools = _live_trace(silent)
-    assert [c[1].get("query") for c in tools.calls] == ["факт", "Денчик", "любить"]
+    assert [c[1].get("query") for c in tools.calls] == ["факт", "Денчик", "любить", *MORE_QUERIES]
     assert len(inner.requests) == kn.LLM_QUERY_ITERATIONS_MAX + 1 + kn.SPEECH_PUSHES_MAX, "последняя + повторы хода"
     assert [_pushed(r) for r in inner.requests] == [False] * (kn.LLM_QUERY_ITERATIONS_MAX + 1) + [True] * 2
     said = _said(node)

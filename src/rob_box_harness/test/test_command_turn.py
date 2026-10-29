@@ -215,10 +215,10 @@ def test_query_data_go_back_to_llm_then_its_speech_is_spoken() -> None:
     assert tools.said() == []
 
 
-def test_queries_beyond_two_iterations_are_refused() -> None:
+def test_queries_beyond_the_iteration_ceiling_are_refused() -> None:
     ask = _command(actions=[{"tool": "get_current_time", "args": {}}])
     tools = _Tools({"get_current_time": ToolResult("x", "12:00")})
-    result, llm = _turn(tools, ask, ask, ask)
+    result, llm = _turn(tools, *[ask] * (kn.LLM_QUERY_ITERATIONS_MAX + 1))
     assert len(llm.requests) == kn.LLM_QUERY_ITERATIONS_MAX + 1
     assert tools.acted() == ["get_current_time"] * kn.LLM_QUERY_ITERATIONS_MAX
     assert tools.said() == [] and result.turn_failure == "nothing_to_do"

@@ -97,6 +97,13 @@ def _query(*calls):
     return Answer(Command(actions=calls), "deepseek", follow=lambda data: ({"role": "tool", "content": data},))
 
 
+def _iters(*queries):
+    """Query-итерации хода до потолка ``MAX``: заданные ответы теста, остальные - новые чтения памяти (другие
+    запросы: повтором исполненного не считаются)."""
+    extra = [_query(ToolCall("memory_search", {"query": f"ещё {n}"})) for n in range(MAX - len(queries))]
+    return [*queries, *extra]
+
+
 def _bare(expression=FACE):
     return Answer(Command(expression=expression), "deepseek")
 
@@ -125,10 +132,10 @@ def _snap(agent="personality", silence=False):
 
 
 def test_only_the_last_iteration_after_a_query_owes_words():
-    """Зонд формы: две итерации чтения памяти - слова не обязательны; последняя (query-тулов в ней уже нет) - форма
+    """Зонд формы: итерации чтения памяти - слова не обязательны; последняя (query-тулов в ней уже нет) - форма
     требует слов, валидатор моста видит это. После хода форма не течёт в чужие вызовы."""
     final = Answer(Command(speech="Помню, что ты зовёшь меня Шифу."), "deepseek")
-    ports = Ports([_query(SEARCH), _query(SEARCH_2), final], {"memory_search": ("done", {"results": HITS})})
+    ports = Ports([*_iters(_query(SEARCH), _query(SEARCH_2)), final], {"memory_search": ("done", {"results": HITS})})
     agg = _run(ports, N_FACTS)
     assert len(ports.probes) == MAX + 1
     assert [form.speech_required for form, _ in ports.probes] == [False] * MAX + [True]
@@ -140,7 +147,7 @@ def test_the_schema_does_not_require_speech_it_would_contradict_speech_with_acti
     """Схему форма не меняет: после запроса звук без слов - законный ответ («какие звуки» → ``play_sound``), а слова
     рядом со звуком - ``speech_with_actions``. ``required: [speech]`` толкал бы модель в это нарушение."""
     final = Answer(Command(speech="Звуков много."), "deepseek")
-    ports = Ports([_query(SOUNDS), _query(SOUNDS), final], {"get_sound_info": ("done", SOUND_DATA)})
+    ports = Ports([*[_query(SOUNDS)] * MAX, final], {"get_sound_info": ("done", SOUND_DATA)})
     _run(ports, N_SOUNDS)
     assert [schema for _, schema in ports.probes] == [ports.probes[0][1]] * (MAX + 1)
     assert "speech" not in ports.probes[-1][1]["required"]
@@ -234,7 +241,7 @@ def test_model_silent_on_the_first_push_and_speaking_on_the_second_is_heard():
     """Решение Шифу 28.10 (PR #4190): дожать модель. Последняя итерация - лицо, первый повтор - лицо, второй - слова:
     звучат слова модели, а не фраза кода; ход ``finished``."""
     words = Answer(Command(speech="Ты просил звать тебя Шифу и болеешь за Спартак."), "deepseek")
-    ports = Ports([_query(SEARCH), _query(SEARCH_2), _bare(), _bare(), words],
+    ports = Ports([*_iters(_query(SEARCH), _query(SEARCH_2)), _bare(), _bare(), words],
                   {"memory_search": ("done", {"results": HITS})})
     agg = _run(ports, N_FACTS)
     assert len(ports.asked) == MAX + 1 + kn.SPEECH_PUSHES_MAX
@@ -251,7 +258,7 @@ def test_model_without_words_after_memory_search_code_names_the_facts_of_the_res
     """Живой 28.10 13:40: два чтения памяти, на последней итерации - одно лицо, и на обоих повторах - лицо. Страховка:
     код называет факты из результата (kind=fact, по score, без дублей, без реплик прошлых разговоров), не «не смог
     сложить в короткую фразу»; в логе - строка нарушения (видна в марафоне)."""
-    ports = Ports([_query(SEARCH), _query(SEARCH_2), *SILENT], {"memory_search": ("done", {"results": HITS})})
+    ports = Ports([*_iters(_query(SEARCH), _query(SEARCH_2)), *SILENT], {"memory_search": ("done", {"results": HITS})})
     with caplog.at_level("WARNING"):
         agg = _run(ports, N_FACTS)
     assert len(ports.asked) == MAX + 1 + kn.SPEECH_PUSHES_MAX and (agg.stage, agg.status) == ("done", "done")
@@ -265,14 +272,14 @@ def test_model_without_words_after_memory_search_code_names_the_facts_of_the_res
 def test_no_push_when_the_turn_ceiling_is_near(monkeypatch):
     """Потолок хода не превышаем: до него меньше ``SPEECH_PUSH_MIN_LEFT_S`` - повтора нет, сразу страховка по данным."""
     monkeypatch.setattr(kn, "SPEECH_PUSH_MIN_LEFT_S", kn.TURN_CEILING_S + 1)
-    ports = Ports([_query(SEARCH), _query(SEARCH_2), _bare()], {"memory_search": ("done", {"results": HITS})})
+    ports = Ports([*_iters(_query(SEARCH), _query(SEARCH_2)), _bare()], {"memory_search": ("done", {"results": HITS})})
     _run(ports, N_FACTS)
     assert len(ports.asked) == MAX + 1 and ports.said == [(FACTS_PHRASE, None, None)]
 
 
 def test_facts_read_on_an_earlier_iteration_survive_an_empty_last_search():
     """Факты прочитаны на первой итерации, а последний поиск вернул пусто: код называет то, что модель прочла за ход."""
-    ports = Ports([_query(SEARCH), _query(SEARCH_3), *SILENT],
+    ports = Ports([*_iters(_query(SEARCH), _query(SEARCH_3)), *SILENT],
                   {("memory_search", "факт"): ("done", {"results": HITS}),
                    ("memory_search", "любить"): ("done", {"results": []})})
     _run(ports, N_FACTS)
@@ -281,7 +288,7 @@ def test_facts_read_on_an_earlier_iteration_survive_an_empty_last_search():
 
 def test_model_without_words_after_get_sound_info_code_names_the_categories():
     """Живой 28.10 15:22, n109: три итерации и та же заглушка на «какие звуки ты умеешь издавать»."""
-    ports = Ports([_query(SOUNDS), _query(SOUNDS), *SILENT], {"get_sound_info": ("done", SOUND_DATA)})
+    ports = Ports([*[_query(SOUNDS)] * MAX, *SILENT], {"get_sound_info": ("done", SOUND_DATA)})
     agg = _run(ports, N_SOUNDS)
     assert ports.said == [(SOUNDS_PHRASE, None, None)] and (agg.stage, agg.status) == ("done", "done")
 
@@ -297,7 +304,7 @@ def test_n908_borscht_the_model_is_pushed_and_its_recipe_is_heard():
     ``search_web``, затем ``memory_search 'лук'``, на последней - одно лицо; повтор за словами - и модель отвечает."""
     first = _query(ToolCall("memory_search", {"query": "еда"}), ToolCall("search_web", {"query": WEB["query"]}))
     recipe = Answer(Command(speech="Сварите бульон, добавьте свёклу и капусту, лук не кладём."), "deepseek")
-    ports = Ports([first, _query(ToolCall("memory_search", {"query": "лук"})), _bare(), recipe],
+    ports = Ports([*_iters(first, _query(ToolCall("memory_search", {"query": "лук"}))), _bare(), recipe],
                   {"memory_search": ("done", {"results": FOOD}), "search_web": ("done", WEB)})
     agg = _run(ports, N_BORSCHT)
     assert ports.said == [("Сварите бульон, добавьте свёклу и капусту, лук не кладём.", None, "neutral")]
@@ -308,7 +315,7 @@ def test_n908_silent_all_the_time_the_insurance_reads_the_search_not_the_food_fa
     """n908, модель молчит и на повторах: страховка - выдача поиска; факты о еде рядом с ней - контекст, не ответ на
     «рецепт борща». Не общая заглушка."""
     first = _query(ToolCall("memory_search", {"query": "еда"}), ToolCall("search_web", {"query": WEB["query"]}))
-    ports = Ports([first, _query(ToolCall("memory_search", {"query": "лук"})), *SILENT],
+    ports = Ports([*_iters(first, _query(ToolCall("memory_search", {"query": "лук"}))), *SILENT],
                   {"memory_search": ("done", {"results": FOOD}), "search_web": ("done", WEB)})
     agg = _run(ports, N_BORSCHT)
     assert ports.said == [("Вот что нашёл в сети: Сварите бульон, добавьте свёклу и капусту.", None, None)]
@@ -333,7 +340,8 @@ def test_memory_facts_are_the_answer_only_when_the_turn_read_nothing_else():
 
 def test_model_without_words_after_a_search_without_facts_says_the_honest_generic_phrase():
     turns_only = [h for h in HITS if h["kind"] == "turn"]
-    ports = Ports([_query(SEARCH), _query(SEARCH_2), *SILENT], {"memory_search": ("done", {"results": turns_only})})
+    ports = Ports([*_iters(_query(SEARCH), _query(SEARCH_2)), *SILENT],
+                  {"memory_search": ("done", {"results": turns_only})})
     agg = _run(ports, N_FACTS)
     assert ports.said == [(phrases.text(kn.QUERY_FALLBACK_GENERIC), None, None)] and agg.status == "done"
 
