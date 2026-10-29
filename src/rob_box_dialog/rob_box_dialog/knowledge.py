@@ -1752,7 +1752,6 @@ PHRASE_KEYS: Tuple[str, ...] = (
     "music.volume_fail", "voice.volume_fail",
     # встреча лицом и стартовая фраза (перенос v1)
     "meeting.long_absence", *(f"meeting.tod.{part}" for part in ("morning", "day", "evening", "night")),
-    "startup.greeting",
     # исход по результату тула: «говори нормально», отказ без регулировки (причина тула
     # ``speed_unsupported``/``pitch_unsupported``), звукоподражание
     PROSODY_NORMAL_PHRASE, "local.rejected.speed_unsupported", "local.rejected.pitch_unsupported",
@@ -2152,8 +2151,29 @@ MEETING_LONG_ABSENCE_S = 20 * 3600.0
 UNPROMPTED_QUIET_SCENES: Tuple[str, ...] = ("Silence", "OperatorHold")
 #: Стартовая фраза (перенос v1): через столько секунд после старта ноды (``startup_greeting_sec``)…
 STARTUP_GREETING_DELAY_S = 12.0
-#: …earcon ``heard`` → пауза → earcon ``done`` → пауза → фраза ``startup.greeting`` (паузы v1: 2 с и 1,5 с).
+#: …earcon ``heard`` → пауза → earcon ``done`` → пауза → фраза ``startup.<вердикт готовности>`` (паузы v1: 2 с и 1,5 с).
 STARTUP_GREETING_STEPS_S: Tuple[float, float] = (2.0, 1.5)
+#: Стартовая фраза по готовности узлов (#3913): источник - ``/perception/context_update`` (``active_nodes``/
+#: ``failed_nodes``/``missing_nodes`` монитора контекстного агрегатора) и здоровье цепочки LLM. Фраза ждёт, пока всё
+#: поднимется, не дольше стольких секунд от старта ноды; потом говорит, что есть (или честно «не знаю»).
+STARTUP_READY_TIMEOUT_S = 90.0
+#: Как часто (с) проверять готовность в ожидании.
+STARTUP_READY_POLL_S = 1.0
+#: Отчёт агрегатора старше стольких секунд - не факт: агрегатор мог упасть, и «все ноды живы» перестало быть правдой.
+STARTUP_REPORT_STALE_S = 15.0
+#: Узлы голоса: без них робот не слышит или не говорит. Остальные узлы отчёта - «остальное» (камеры, карта, ...).
+STARTUP_VOICE_NODES: Tuple[str, ...] = ("/audio_node", "/stt_node", "/tts_node")
+#: Узел -> часть робота словами ``startup.part.<ключ>`` каталога фраз; узел вне таблицы зовётся ``other``.
+#: Нода диалога (``DIALOG_NODES`` монитора) в отчёте пропускается: фразу говорит она сама.
+STARTUP_NODE_PARTS: Dict[str, str] = {
+    "/audio_node": "audio", "/stt_node": "stt", "/tts_node": "tts", "/context_aggregator": "context",
+    "/camera/camera": "camera", "/lslidar_driver_node": "lidar", "/rtabmap/rtabmap": "slam",
+}
+STARTUP_DIALOG_NODES: Tuple[str, ...] = ("/dialog_node", "/dialogue_node", "/dialog_node|/dialogue_node")
+PHRASE_KEYS = PHRASE_KEYS + (
+    *(f"startup.{kind}" for kind in ("ready", "voice_only", "partial", "unknown", "and")),
+    *(f"startup.part.{part}" for part in (*sorted(set(STARTUP_NODE_PARTS.values())), "llm", "other")),
+)
 #: Кадр ``Identity`` с таким ``kind`` спрашивает ИМЯ (голое имя в ответ — представление); иначе ответ — да/нет.
 IDENTITY_ASKS_NAME: Tuple[str, ...] = ("unknown", "contested")
 #: Отказ называться (закрывает кадр без регистрации и без повторного вопроса): фраза начинается с одной из этих.
