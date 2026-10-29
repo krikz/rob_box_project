@@ -173,7 +173,7 @@ class GeneratedMusicLibrary:
         #: Правка метаданных, оценка «нравится / не нравится», «что играло последним» (ADR-0158 PR-9).
         self.meta = TrackMeta(self._conn, self._lock, self._root)
         #: Последний сочинённый трек (#4216): «эта песня» читает отсюда.
-        self.generated = LastGenerated(lambda track_id: bool(self.get_track_info(track_id).get("success")), clock)
+        self.generated = LastGenerated(self.get_track_info, clock)
         self._migrate()
 
     # ── Migration ─────────────────────────────────────────────────────────

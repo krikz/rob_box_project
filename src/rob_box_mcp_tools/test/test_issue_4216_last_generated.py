@@ -42,8 +42,9 @@ def library(tmp_path, clock):
     return GeneratedMusicLibrary(str(tmp_path / "music_library"), clock=clock)
 
 
-def _save(library, title, task, variant=0):
-    return library.save_track(b"MP3", prompt="rock", title=title, task_id=task, variant=variant, duration_ms=44000)["id"]
+def _save(library, title, task, variant=0, lyrics=""):
+    return library.save_track(b"MP3", prompt="rock", title=title, task_id=task, variant=variant, duration_ms=44000,
+                              lyrics=lyrics)["id"]
 
 
 def _two_versions(library):
@@ -228,3 +229,74 @@ def test_invented_id_is_still_refused_and_not_rewritten(library):
     args = {"action": "info", "track_id": "f" * 32}
     assert tool.bind_arguments(args) is args
     assert tool.execute(**args).data["reason"] == "unknown_track"
+
+
+# ---------------------------------------------------------------------------------------------------------------
+# n707 живьём 29.10 (dev-2c69859): другое название у вчерашней версии, модель ищет и берёт её
+# ---------------------------------------------------------------------------------------------------------------
+
+def _raccoon_library(library):
+    """Вчерашняя «Песня про енота» (другое название!) и сочинённая сейчас «Енот-механик»; плюс посторонний трек."""
+    yesterday = _save(library, "Песня про енота", "OLD", lyrics="Мой друг, енота знаешь ты? Енота в гараже ночном.")
+    other = _save(library, "Дождь за окном", "RAIN", lyrics="Капли и ветер")
+    fresh = _save(library, "Енот-механик", "NEW", lyrics="Енот чинит провода в гараже")
+    library.generated.note(fresh)
+    return yesterday, other, fresh
+
+
+def test_n707_verbatim_search_search_then_info_of_the_old_version_gives_the_new_song(library):
+    yesterday, _, fresh = _raccoon_library(library)
+    tool = _tool(library)
+    first = tool.execute(action="search", query="енота", limit=30)
+    second = tool.execute(action="search", query="Енот", limit=30)
+    assert first.data["tracks"][0]["id"] == fresh and second.data["tracks"][0]["id"] == fresh
+    assert first.data["tracks"][0]["just_generated"] is True
+    assert yesterday in [t["id"] for t in first.data["tracks"]], "старые версии остаются в выдаче"
+    args = {"action": "info", "track_id": yesterday}
+    assert tool.bind_arguments(args)["track_id"] == fresh, "сервер пишет в лог id свежей"
+    info = tool.execute(**args)
+    assert info.success and (info.data["id"], info.data["title"]) == (fresh, "Енот-механик")
+    assert info.data["duration_ms"] == 44000, "ответ модели строится из данных свежей песни"
+
+
+def test_search_by_the_topic_of_the_new_song_puts_it_first_even_when_sql_does_not_match(library):
+    _, _, fresh = _raccoon_library(library)
+    result = _tool(library).execute(action="search", query="механика")  # «механика» не подстрока «Енот-механик»
+    assert [t["id"] for t in result.data["tracks"]][:1] == [fresh] and result.data["total"] == len(result.data["tracks"])
+
+
+def test_search_of_another_topic_does_not_promote_the_new_song(library):
+    yesterday, other, fresh = _raccoon_library(library)
+    result = _tool(library).execute(action="search", query="Дождь")
+    assert [t["id"] for t in result.data["tracks"]] == [other]
+    assert not any(t.get("just_generated") for t in result.data["tracks"])
+
+
+def test_info_of_an_old_version_without_a_topic_search_is_left_alone(library):
+    yesterday, _, fresh = _raccoon_library(library)
+    tool = _tool(library)
+    tool.execute(action="list")
+    assert tool.execute(action="info", track_id=yesterday).data["id"] == yesterday  # другое название, темы не было
+
+
+def test_topic_is_forgotten_after_its_ttl_and_for_a_newer_song(library, clock):
+    from rob_box_mcp_tools.engine.gen.last_generated import TOPIC_TTL_S
+
+    yesterday, _, _ = _raccoon_library(library)
+    tool = _tool(library)
+    tool.execute(action="search", query="енота")
+    clock.now += TOPIC_TTL_S + 1
+    assert tool.bind_arguments({"action": "info", "track_id": yesterday})["track_id"] == yesterday
+    tool.execute(action="search", query="енота")  # свежая жива (900 с), тема снова
+    assert tool.bind_arguments({"action": "info", "track_id": yesterday})["track_id"] != yesterday
+    newer = _save(library, "Совсем другая", "N2", lyrics="про кота")
+    library.generated.note(newer)  # новая песня - прежняя тема к ней не относится
+    assert tool.bind_arguments({"action": "info", "track_id": yesterday})["track_id"] == yesterday
+
+
+def test_topic_words_are_stems_without_words_about_the_song():
+    from rob_box_mcp_tools.engine.gen.last_generated import topic_stems
+
+    assert topic_stems("енота") == topic_stems("Енот") == ("енот",)
+    assert topic_stems("песню про енота-механика") == ("енот", "механи")
+    assert topic_stems("песня трек") == () and topic_stems("") == ()
