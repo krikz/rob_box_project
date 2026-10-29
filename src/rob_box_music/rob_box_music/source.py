@@ -76,6 +76,8 @@ REASON_WORDS = {
     "timeout": "генерация не уложилась по времени",
     "no_material": "мелодии для живой версии у меня нет",
     "theme_cache": "под тему хватает сочинённого раньше",
+    # тему не назвал человек и по ней в кэше ничего — сначала сочинённое раньше в том же стиле (Шифу 29.10 «давай В»)
+    "style_cache": "по теме сочинённого нет — беру сочинённое раньше в том же стиле",
     # смена настроения идущего сета (``knowledge.SET_VIBE_NO_GEN``, #4173): только кэш и синтез, без новых заказов
     "set_vibe": "настроение сета меняю без новых заказов",
     # «спой <названное произведение>» (#4015): генерация подключена, но песня робота — свой текст (ADR-0158 §3.4),
@@ -1000,6 +1002,11 @@ def _theme_stems(text: str) -> Set[str]:
             if len(w) >= kn.THEME_WORD_MIN and not w.startswith(kn.THEME_FIT_STOP)}
 
 
+def theme_stems(text: str) -> Set[str]:
+    """Основы слов темы, по которым кэш сверяет трек с темой (:func:`theme_fit`): без коротких и служебных."""
+    return _theme_stems(text)
+
+
 def theme_fit(theme_tags: str, track: CacheTrack) -> float:
     """Насколько трек кэша по теме сета (#3775, решение Шифу 21.10 «подогнать под тему что есть»): метка темы целиком
     в ``prompt`` — 1; иначе доля основ слов темы (``theme_tags``), которые есть в ``prompt``, названии и имени стиля
@@ -1396,7 +1403,7 @@ __all__ = ["CACHE", "COVER_SLOT", "CacheTrack", "CoverWork", "DECLINE", "cover_f
            "decline_text", "engine_route", "engine_words", "fallback_note", "gen_block", "gen_kind", "QUIET_REASONS", "route_note", "route_seconds",
            "set_cache",
            "set_candidates", "set_genres", "settle_engine", "source_ask", "source_candidates", "synth_fit", "synth_style", "theme_tags",
-           "theme_cache", "theme_fit", "theme_title"]
+           "theme_cache", "theme_fit", "theme_stems", "theme_title"]
 __all__ += ["BY_CODE", "LIVE", "LIVE_OFFER", "LIVE_OFFER_BY_REASON", "LIVE_TOOL_TEXT", "SingContext", "SingRoute", "choose_sing",
             "sing_candidates", "sing_kind", "sing_markers", "synth_key"]
 __all__ += ["fork_cell", "fork_gen_kind"]

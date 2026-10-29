@@ -17,6 +17,7 @@
 from __future__ import annotations
 
 import logging
+import time
 
 import pytest
 
@@ -82,11 +83,14 @@ def _routes(caplog):
 
 
 def test_n605_m6_verbatim_keeps_the_llm_theme_and_never_logs_the_substitution(tmp_path, monkeypatch, caplog):
+    """Тема LLM «рок» — стиль, а не тема (решение Шифу 29.10, ``engine.theme_choice``): сет без темы, рок-стилем;
+    огрызок «сайт» темой не становится."""
     dj, _kie = _running_set(tmp_path, monkeypatch)
     caplog.clear()
     with caplog.at_level(logging.INFO):
         data = dj.execute(action="start", theme="рок", style="rock", tracks=3, heard_text=N605_M6).data
-    assert data["ok"] is True and data["theme"] == "рок" and data["theme"] != "сайт"
+    assert data["ok"] is True and data["theme"] == "" and data["style"] == "rock"
+    assert any("[theme]" in r.getMessage() and "→ none" in r.getMessage() for r in caplog.records)
     assert not any("тема LLM не из текущей реплики" in r.getMessage() for r in caplog.records)
     assert not any("догадка кода" in r.getMessage() for r in caplog.records), "тема LLM - не догадка кода"
 
@@ -94,11 +98,14 @@ def test_n605_m6_verbatim_keeps_the_llm_theme_and_never_logs_the_substitution(tm
 def test_n605_m6_without_an_llm_theme_the_scrap_orders_nothing_paid(tmp_path, monkeypatch, caplog):
     """Роутер медиакоманд шлёт ``dj_set`` без темы: тему выделяет код, и это огрызок «сайт» - сет из кэша/синтезом."""
     dj, kie = _running_set(tmp_path, monkeypatch, cached=0)
+    deadline = time.monotonic() + 5.0  # первый сет (кэш пуст) заказывает трек 1 в своём потоке - дождаться его заказа,
+    while not kie.jobs and time.monotonic() < deadline:  # иначе под нагрузкой (-n 8) заказ первого сета прилетал
+        time.sleep(0.01)  # после снимка и считался заказом по огрызку
     ordered = len(kie.jobs)
     caplog.clear()
     with caplog.at_level(logging.INFO):
         data = dj.execute(action="start", tracks=3, heard_text=N605_M6).data
-    assert data["ok"] is True and data["theme"] == "сайт"
+    assert data["ok"] is True and data["theme"] == "", "огрызок «сайт» стал темой сета (решение Шифу 29.10)"
     assert len(kie.jobs) == ordered, "по огрызку распознавания заказана платная генерация"
     lines = _routes(caplog)
     assert not any("generate:" in line for line in lines), lines

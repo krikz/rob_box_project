@@ -151,13 +151,16 @@ class DeterministicChooser:
         return sorted(((round(score(o.features, question.weights), 6), o) for o in question.options),
                       key=lambda so: -so[0])
 
-    def choose(self, question: ChoiceQuestion, *, deadline_ms: int = CHOOSER_DEADLINE_MS) -> Choice:
+    def choose(self, question: ChoiceQuestion, *, deadline_ms: int = CHOOSER_DEADLINE_MS,
+               ask_model: bool = False) -> Choice:
+        """``ask_model`` — спросить модель и при ясном разрыве: вопрос, который код по очкам не видит (тема сета словами
+        человека против известных тем — перефраз и перевод сверяет только модель, решение Шифу 29.10)."""
         ranked = self.rank(question)
         if not ranked:
             raise ValueError("ChoiceQuestion без вариантов")
         gap = ranked[0][0] - ranked[1][0] if len(ranked) > 1 else CHOOSER_CLEAR_GAP
         own = Choice(ranked[0][1].id, min(1.0, 0.5 + gap / (2 * CHOOSER_CLEAR_GAP)), DETERMINISTIC)
-        if gap >= CHOOSER_CLEAR_GAP or self._model is None:
+        if (gap >= CHOOSER_CLEAR_GAP and not ask_model) or self._model is None:
             return own
         try:
             answer = self._model.choose(question, deadline_ms=deadline_ms)

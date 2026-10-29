@@ -235,14 +235,20 @@ def themed_count(tags: str, routes: Sequence[Any]) -> int:
 
 
 def theme_note(tags: str, routes: Sequence[Any], themed: int, background: Optional[CacheTrack]) -> str:
-    """Часть строки ``[gen set] слоты``: K по теме из кэша, заказано треков (задач), фон, почему (#3775)."""
+    """Часть строки ``[gen set] слоты``: K по теме из кэша, заказано треков (задач), фон, почему (#3775); у темы —
+    ещё сколько взято из кэша стиля без темы (тема не названа человеком и по ней ничего, 29.10 «давай В»)."""
     ordered = sum(r.kind == GENERATE for r in routes)
     head = (f"по теме из кэша={themed if tags else '—'} заказ={ordered} (задач ≈{math.ceil(ordered / 2)}) "
             f"фон={f'да {background.id}' if background else 'нет'}")
     if not tags:
         return head
+    styled = sum(r.kind == CACHE and r.track is not None for r in routes) - themed
+    if styled and not themed:
+        rest = "заказ только недостающих" if ordered else "без заказа"
+        return f"{head} — по теме в кэше ничего: из кэша стиля={styled}, {rest}"
     reason = next((r.gen_reason for r in routes if r.gen_reason), "")
-    return f"{head} — {theme_why(len(routes), themed, ordered, reason)}"
+    tail = f"; из кэша стиля={styled}" if styled else ""
+    return f"{head} — {theme_why(len(routes), themed, ordered, reason)}{tail}"
 
 
 def launch_text(genre: Any, tracks: int, cached: int, gen_reason: str) -> str:
@@ -266,6 +272,7 @@ REPEAT_WORDS = {
     "tasks_full": "заказов на этот сет больше нет",
     "no_order": "новых треков на этот сет не заказано",
     "theme_cache": "новых треков на этот сет не заказано",
+    "style_cache": "новых треков на этот сет не заказано",
 }
 
 
@@ -877,6 +884,7 @@ class GenSetMaker:
         from ..source_route import SourceRouter
 
         self._provider, self._library, self._balance, self._log, self._cover = provider, library, balance, log, cover
+        self.chooser = chooser  # и путь трека, и тема сета (``engine.theme_choice``, решение Шифу 29.10)
         self.router = SourceRouter(chooser, library, log=log, sets=self)
 
     def ready(self) -> bool:
@@ -889,14 +897,26 @@ class GenSetMaker:
     def balance(self) -> Optional[float]:
         return self._balance()
 
+    def cached(self) -> Tuple[CacheTrack, ...]:
+        """Треки кэша библиотеки — известные темы сета (``rob_box_music.known_themes``); не читается — пусто."""
+        from ..source_route import cache_tracks
+
+        try:
+            return cache_tracks(self._library())
+        except Exception as exc:  # noqa: BLE001 — известные темы не держат запуск сета: остаются темы знания
+            self._log().warning(f"⚠️ [gen set] кэш для известных тем не прочитан: {type(exc).__name__}: {exc}")
+            return ()
+
     def plan(self, theme: str, style: str, heard_text: Optional[str], length: int, *, named: bool = False,
              styles: Sequence[str] = (), minutes: Optional[int] = None,
-             covers: Sequence[Tuple[CoverWork, Any]] = (), gen_failed: str = "") -> "SetRoutes":
+             covers: Sequence[Tuple[CoverWork, Any]] = (), gen_failed: str = "",
+             theme_named: bool = True) -> "SetRoutes":
         """Стили по трекам, длина и путь каждого трека — кодом (ADR-0148, решение Шифу 14.10): :func:`slot_genres`,
         :func:`slot_count`, путь — ``SourceRouter.route_slots``; ``covers`` — наш узнаваемый материал темы
         ``(произведение, трек с мелодией)`` для каверов (В14, ``DjSetTool.theme_covers``); ``gen_failed`` — причина,
         по которой генерация в этом сете не заказывается (смена настроения сета, #4173): кандидатов ``generate:*``
-        нет."""
+        нет; ``theme_named`` — тему назвал человек (``theme_grounding.named_by_human``): по ней в кэше ничего — заказ
+        треков темы (21.10, #3775), иначе сначала кэш стиля (решение Шифу 29.10 «давай В»)."""
         from rob_box_music.source import source_ask, theme_tags
         from rob_box_voice.core.set_length_words import heard_set_seconds
 
@@ -907,7 +927,7 @@ class GenSetMaker:
         asks = [replace(ask, genre=g, vocal=False, robot_voice=False) for g in slots]
         tags = theme_tags(theme)
         routes = self.router.route_slots(asks, tags, [w for w, _t in covers], seconds=seconds, minimum=len(genres),
-                                         gen_failed=gen_failed)
+                                         gen_failed=gen_failed, theme_named=theme_named)
         slots, asks = slots[:len(routes)], asks[:len(routes)]
         themed = themed_count(tags, routes)
         background = self._background_track(asks, routes, tags, themed, bool(covers))

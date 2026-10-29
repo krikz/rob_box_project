@@ -133,14 +133,46 @@ def names_theme(heard: str, heard_text: Optional[str]) -> bool:
     («про X», «на тему X»: ``THEME_LEADS``), или в реплике названо слово сета («сет X»: ``SET_WORDS``; без него «сайт»
     - слово сета, распознанное зря). Голое незнакомое слово на месте слова сета - не тема: у него нет опоры, кроме
     звучания. Одно знание - те же таблицы, что у поиска и слотов темы."""
-    from rob_box_voice.core.media_command_grammar import SET_WORDS, THEME_LEADS
-
-    words = [w for w, _s, _e in words_of(heard) if w not in _AND and w != _NOT and content_stems(w)]
+    words = _content_words(heard)
     if len(words) != 1:
         return len(words) > 1
+    return theme_support(heard, heard_text)
+
+
+def _content_words(heard: str) -> List[str]:
+    return [w for w, _s, _e in words_of(heard) if w not in _AND and w != _NOT and content_stems(w)]
+
+
+def theme_support(heard: str, heard_text: Optional[str]) -> bool:
+    """У слов темы ``heard`` есть опора, кроме звучания: хоть одно слово опорное (:func:`_known_word`), человек ввёл
+    тему сам («про X», «на тему X»: ``THEME_LEADS`` перед первым словом темы) или назвал слово сета (``SET_WORDS``).
+    Без опоры — огрызок распознавания, даже из нескольких слов («уводи сторону тётя гриша подруг добреет», n605):
+    чойсер темы (``engine.theme_choice``) штрафует такой вариант (``THEME_CHOICE_WEIGHTS['bare']``)."""
+    from rob_box_voice.core.media_command_grammar import SET_WORDS, THEME_LEADS
+
+    words = _content_words(heard)
+    if not words:
+        return False
     said = [w for w, _s, _e in words_of(heard_text or "")]
     led = words[0] in said and any(w in THEME_LEADS for w in said[:said.index(words[0])])
-    return _known_word(words[0]) or led or bool(SET_WORDS.intersection(said))
+    return any(_known_word(w) for w in words) or led or bool(SET_WORDS.intersection(said))
+
+
+def request_theme(heard_text: Optional[str]) -> str:
+    """Слова темы реплики для сета: :func:`heard_theme` без названия движка («на синтезаторе» — путь, не тема)."""
+    from rob_box_music.source import blank_engine
+
+    return heard_theme(blank_engine(heard_text or ""))
+
+
+def named_by_human(heard_text: Optional[str]) -> bool:
+    """Тему сета человек назвал сам (решение Шифу 29.10 «давай В», PR #4231): в реплике есть слова темы
+    (:func:`request_theme`), они называют тему (:func:`names_theme`) и у них есть опора (:func:`theme_support`: «про X»,
+    «на тему X», «сет X», опорное слово). Такой теме при пустом кэше — заказ треков темы (решение 21.10, #3775);
+    тема-догадка кода или модели, жанр, «без темы», тема LLM без опоры в реплике — сначала кэш стиля
+    (``SourceRouter.route_slots(theme_named=False)``). Одно место этого признака."""
+    heard = request_theme(heard_text)
+    return bool(heard) and names_theme(heard, heard_text) and theme_support(heard, heard_text)
 
 
 def grounded_theme(theme: Optional[str], heard_text: Optional[str]) -> Tuple[str, bool]:
@@ -265,5 +297,5 @@ def set_slots(theme: Optional[str], persona: Optional[str], heard_text: Optional
     return slots.theme, persona
 
 
-__all__ = ["SetTheme", "continued", "grounded_theme", "guessed_theme", "heard_theme", "names_theme", "order_theme",
-           "set_slots", "set_theme"]
+__all__ = ["SetTheme", "continued", "grounded_theme", "guessed_theme", "heard_theme", "named_by_human", "names_theme",
+           "order_theme", "request_theme", "set_slots", "set_theme", "theme_support"]
