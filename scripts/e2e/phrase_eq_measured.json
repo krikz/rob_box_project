@@ -849,14 +849,6 @@
       "how": "play",
       "run": "40484087795"
     },
-    "n813_silence_final": {
-      "voice": "anton",
-      "chars": 14,
-      "text_sha1": "63920b6a98af",
-      "eq_s": 3.53,
-      "how": "play",
-      "run": "40484087795"
-    },
     "n901_sound_catalog": {
       "voice": "anton",
       "chars": 49,
