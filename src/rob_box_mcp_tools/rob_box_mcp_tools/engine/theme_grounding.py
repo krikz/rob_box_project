@@ -27,7 +27,7 @@ from typing import Any, List, Optional, Tuple
 
 from rob_box_dialog.words import level_phrases, level_word
 from rob_box_music import knowledge as kn
-from rob_box_music.theme import match_style
+from rob_box_music.theme import match_row, match_style
 from rob_box_music.universes import is_mood, universe_of, universe_spans, words_of
 
 from .brief import split_brief
@@ -119,16 +119,51 @@ def _names_new_theme(heard_text: Optional[str]) -> bool:
     return any(content_stems(w) and not genre_of(w) and w not in SET_SAME_WORDS for w, _s, _e in words_of(heard))
 
 
+def _known_word(word: str) -> bool:
+    """Слово темы с опорой в знании: латиница/цифра (название, STT пишет кириллицей), жанр, вселенная, настроение,
+    стиль-алиас, строка таблицы тем (``knowledge.THEMES``)."""
+    return (word.isascii() or bool(genre_of(word) or universe_of(word) or is_mood(word))
+            or match_style([word]) is not None or match_row(word) is not None)
+
+
+def names_theme(heard: str, heard_text: Optional[str]) -> bool:
+    """Слова реплики НАЗЫВАЮТ тему (марафон-6 n605: «поставь сайт из трёх треков» - «сайт» это огрызок STT от «сет», и
+    guard подменил им тему LLM «рок»; сет заказал платную генерацию «по теме сайт»). Называют, если значимых слов
+    два и больше (описание, а не огрызок), или слово одно, но опорное (:func:`_known_word`), или человек ввёл его сам
+    («про X», «на тему X»: ``THEME_LEADS``), или в реплике названо слово сета («сет X»: ``SET_WORDS``; без него «сайт»
+    - слово сета, распознанное зря). Голое незнакомое слово на месте слова сета - не тема: у него нет опоры, кроме
+    звучания. Одно знание - те же таблицы, что у поиска и слотов темы."""
+    from rob_box_voice.core.media_command_grammar import SET_WORDS, THEME_LEADS
+
+    words = [w for w, _s, _e in words_of(heard) if w not in _AND and w != _NOT and content_stems(w)]
+    if len(words) != 1:
+        return len(words) > 1
+    said = [w for w, _s, _e in words_of(heard_text or "")]
+    led = words[0] in said and any(w in THEME_LEADS for w in said[:said.index(words[0])])
+    return _known_word(words[0]) or led or bool(SET_WORDS.intersection(said))
+
+
 def grounded_theme(theme: Optional[str], heard_text: Optional[str]) -> Tuple[str, bool]:
     """``(тема, заменена ли)``: тема LLM, если она делит значимую основу с репликой хода, иначе тема реплики.
-    Смена стиля без новой темы («переходим на рок, тема та же») тему LLM не заменяет (#3593)."""
+    Смена стиля без новой темы («переходим на рок, тема та же») тему LLM не заменяет (#3593), как и огрызок
+    распознавания вместо слова темы (:func:`names_theme`, n605 М6)."""
     theme = theme or ""
     heard = heard_theme(heard_text or "")
     if not heard or content_stems(theme) & content_stems(heard):
         return theme, False
-    if theme and not _names_new_theme(heard_text):
+    if theme and (not _names_new_theme(heard_text) or not names_theme(heard, heard_text)):
         return theme, False
     return heard, True
+
+
+def guessed_theme(theme: str, llm_theme: Optional[str], heard_text: Optional[str]) -> bool:
+    """Тема сета - догадка кода: не тема LLM и не названа словами человека (:func:`names_theme`: голое слово реплики
+    без опоры). Платной генерации по такой теме нет (``DjSetTool._start(free=True)``: кэш или синтез) - деньги не
+    уходят на огрызок распознавания (n605 М6: две задачи Suno по 12 кредитов по теме «сайт»)."""
+    heard = heard_theme(heard_text or "")
+    if not theme or theme == (llm_theme or "") or not heard or not content_stems(theme) & content_stems(heard):
+        return False
+    return not names_theme(heard, heard_text)
 
 
 @dataclass(frozen=True)
@@ -230,4 +265,5 @@ def set_slots(theme: Optional[str], persona: Optional[str], heard_text: Optional
     return slots.theme, persona
 
 
-__all__ = ["SetTheme", "continued", "grounded_theme", "heard_theme", "order_theme", "set_slots", "set_theme"]
+__all__ = ["SetTheme", "continued", "grounded_theme", "guessed_theme", "heard_theme", "names_theme", "order_theme",
+           "set_slots", "set_theme"]
