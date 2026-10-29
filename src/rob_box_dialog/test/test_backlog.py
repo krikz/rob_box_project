@@ -251,3 +251,99 @@ def test_two_nameless_voices_in_the_background_differ_by_author_id_4161():
     section = background_section(decide(wake, backlog, list(DEFAULT_WAKE_WORDS)))
     assert [(p["who"], p["speaker_id"]) for p in section] == [("незнакомый голос", "spk-a"),
                                                               ("незнакомый голос", "spk-b")]
+
+
+def _voice_phrase(backlog, uid, t, payload):
+    backlog.add(Heard(text=f"фраза {uid}", t=t, voice_s=3.0, utterance_id=uid))
+    if payload is not None:
+        backlog.note_voice(uid, voice_tag(payload))
+
+
+def test_background_summary_counts_four_voices_two_known_two_nameless_4212():
+    """Марафон-6 n306/n307: модель насчитала «трое»/«одного незнакомого» при четверых. Сводку строит код: 4 разных
+    профиля (двое с именем, двое безымянных) = voices 4, у каждого по нескольку реплик."""
+    backlog = Backlog()
+    voices = (("sasha", {"is_known": True, "speaker_id": "spk-sasha", "name": "Саша", "confidence": 0.9}),
+              ("boris", {"is_known": True, "speaker_id": "spk-boris", "name": "Борис", "confidence": 0.9}),
+              ("grisha", {"is_known": True, "speaker_id": "spk-a", "epithet": "Гость", "confidence": 0.8}),
+              ("valera", {"is_known": True, "speaker_id": "spk-b", "epithet": "Гость", "confidence": 0.8}))
+    for i, (uid, payload) in enumerate(voices * 2):
+        _voice_phrase(backlog, f"{uid}-{i}", 20.0 + i, payload)
+    assert backlog.background_summary(_h("робот кто говорил", t=100.0)) == {
+        "voices": 4, "caller_included": False, "known": ["Саша", "Борис"], "unknown": 2}
+
+
+def test_background_summary_one_person_many_phrases_is_one_voice_4212():
+    backlog = Backlog()
+    for i in range(5):
+        _voice_phrase(backlog, f"u{i}", 90.0 + i,
+                      {"is_known": True, "speaker_id": "spk-boris", "name": "Борис", "confidence": 0.9})
+    assert backlog.background_summary(_h("робот", t=100.0)) == {
+        "voices": 1, "caller_included": False, "known": ["Борис"], "unknown": 0}
+
+
+def test_background_summary_counts_all_window_not_only_last_phrases_4212():
+    """В снимок идут последние BACKGROUND_MAX_PHRASES фраз, а голосов сводка считает по всему окну."""
+    backlog = Backlog()
+    for i in range(BACKGROUND_MAX_PHRASES + 3):
+        _voice_phrase(backlog, f"u{i}", 10.0 + i,
+                      {"is_known": True, "speaker_id": f"spk-{i}", "epithet": "Гость", "confidence": 0.8})
+    heard = _h("робот", t=100.0)
+    assert len(backlog.background_since_reply(heard)) == BACKGROUND_MAX_PHRASES
+    assert backlog.background_summary(heard)["voices"] == BACKGROUND_MAX_PHRASES + 3
+
+
+def test_background_summary_unattributed_phrases_are_not_voices_and_empty_is_empty_4212():
+    backlog = Backlog()
+    assert backlog.background_summary(_h("робот", t=100.0)) == {}
+    _voice_phrase(backlog, "u1", 90.0, None)
+    _voice_phrase(backlog, "u2", 91.0, {"is_known": False})
+    assert backlog.background_summary(_h("робот", t=100.0)) == {"unattributed": 2}
+
+
+def test_background_summary_ignores_phrases_outside_the_window_4212():
+    backlog = Backlog()
+    _voice_phrase(backlog, "old", 10.0, {"is_known": True, "speaker_id": "spk-a", "name": "Старый", "confidence": 0.9})
+    _voice_phrase(backlog, "new", 250.0, {"is_known": True, "speaker_id": "spk-b", "name": "Новый", "confidence": 0.9})
+    assert backlog.background_summary(_h("робот", t=250.0 + BACKGROUND_WINDOW_S - 1)) == {
+        "voices": 1, "caller_included": False, "known": ["Новый"], "unknown": 0}
+
+
+def test_background_summary_reaches_the_turn_snapshot_as_data_4212():
+    """Сводка идёт в Addressed адресованного хода и в снимок отдельным разделом рядом с репликами."""
+    from rob_box_dialog.context import build_context
+    backlog = Backlog()
+    _voice_phrase(backlog, "u1", 90.0, {"is_known": True, "speaker_id": "spk-a", "name": "Саша", "confidence": 0.9})
+    _voice_phrase(backlog, "u2", 92.0, {"is_known": True, "speaker_id": "spk-b", "epithet": "Гость", "confidence": 0.8})
+    out = decide(Heard(text="Робот, сколько вас было", t=100.0, voice_s=3.0), backlog, list(DEFAULT_WAKE_WORDS))
+    assert out.background_summary == {
+        "voices": 2, "caller_included": False, "known": ["Саша"], "unknown": 1}
+    ctx = build_context({"background_since_reply": list(background_section(out)),
+                         "background_summary": dict(out.background_summary)})
+    assert '<background_summary>{"voices":2,"caller_included":false,"known":["Саша"],"unknown":1}</background_summary>' in ctx
+    assert ctx.index("<background_since_reply>") < ctx.index("<background_summary>")
+
+
+def test_robot_echo_is_not_in_the_backlog_so_never_counted_4212():
+    """Эхо речи робота в диалог не приходит (stt_node/echo_window): в сводке только то, что добавил add()."""
+    backlog = Backlog()
+    backlog.add(Heard(text="   ", t=95.0))  # пустое (эхо/шум после чистки) в бэклог не попадает
+    assert backlog.background_summary(_h("робот", t=100.0)) == {}
+
+
+def test_background_summary_caller_and_his_backlog_phrases_are_one_voice_4212():
+    """Марафон-6 n307: «ты» (собеседник хода) и «Саша» (его же реплики в бэклоге) посчитаны за двоих. По speaker_id
+    это один профиль: Саша-собеседник + Борис + два безымянных = 4 голоса, Саша не в known (он собеседник)."""
+    backlog = Backlog()
+    voices = (("sasha", {"is_known": True, "speaker_id": "spk-sasha", "name": "Саша", "confidence": 0.9}),
+              ("boris", {"is_known": True, "speaker_id": "spk-boris", "name": "Борис", "confidence": 0.9}),
+              ("grisha", {"is_known": True, "speaker_id": "spk-a", "epithet": "Гость", "confidence": 0.8}),
+              ("valera", {"is_known": True, "speaker_id": "spk-b", "epithet": "Гость", "confidence": 0.8}),
+              ("sasha2", {"is_known": True, "speaker_id": "spk-sasha", "name": "Саша", "confidence": 0.9}))
+    for i, (uid, payload) in enumerate(voices):
+        _voice_phrase(backlog, uid, 20.0 + i, payload)
+    caller = _h("робот сколько нас было", t=100.0, person="spk-sasha")
+    assert backlog.background_summary(caller) == {"voices": 4, "caller_included": True, "known": ["Борис"],
+                                                  "unknown": 2}
+    stranger = _h("робот сколько нас было", t=100.0, person="spk-new")
+    assert backlog.background_summary(stranger)["caller_included"] is False

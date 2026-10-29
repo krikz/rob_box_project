@@ -129,6 +129,8 @@ RECENT_ACTIONS = "recent_actions"
 RECENT_UNADDRESSED = "recent_unaddressed"
 #: Раздел снимка хода с фразой: все фоновые фразы всех авторов за последние ``BACKGROUND_WINDOW_S`` (В23, 23.10).
 BACKGROUND_SINCE_REPLY = "background_since_reply"
+#: Раздел снимка: сводка фона кодом - число голосов, кто узнан, сколько безымянных (``backlog.voices_summary``, #4212).
+BACKGROUND_SUMMARY = "background_summary"
 
 
 def host_sections(snap: SessionSnapshot, music: Any, providers: Sequence[Any] = (),
@@ -229,6 +231,7 @@ class _Turn:
     heard: Tuple[Tuple[str, str], ...] = ()  # подхват бэклога: (кто сказал, фраза) по порядку
     recent: Tuple[Mapping[str, Any], ...] = ()  # фоновая фраза того же собеседника для снимка
     background: Tuple[Mapping[str, Any], ...] = ()  # фоновые фразы всех с последнего ответа робота (В23)
+    background_summary: Mapping[str, Any] = field(default_factory=dict)  # сводка голосов фона кодом (#4212)
     said: List[str] = field(default_factory=list)
     queried: Tuple[ActionResult, ...] = ()  # исходы выполненного в этом ходе query (для страховки от молчания)
     waiting: str = "llm"  # чего ждёт ход: ответа LLM или события владельца (класс действия) — фразы В31
@@ -1540,7 +1543,8 @@ class TurnEngine:
         turn = _Turn(self._new_id(), snap.epoch, addressed.text.strip(), addressed.source,
                      TurnDeadline(self._deadline_s, clock=self._clock), pickup=addressed.pickup,
                      heard=picked_heard(addressed), recent=recent_section(addressed),
-                     background=background_section(addressed), command=addressed.command,
+                     background=background_section(addressed), background_summary=addressed.background_summary,
+                     command=addressed.command,
                      utterance_id=addressed.utterance_id)
         self.log.begin(turn.turn_id, turn.epoch, turn.text, speaker_label(snap.speaker), turn.heard)
         log_pickup(self._log, addressed, turn)
@@ -1744,6 +1748,7 @@ class TurnEngine:
         recent = recent_results(past, results_of(self.log, turn.turn_id), memory.memory_owner(snap))
         context = build_context({**sections, RECENT_UNADDRESSED: list(turn.recent),
                                  BACKGROUND_SINCE_REPLY: list(turn.background),
+                                 BACKGROUND_SUMMARY: dict(turn.background_summary),
                                  RECENT_ACTIONS: recent[-kn.TURN_WINDOW_MAX_TURNS:]})
         messages: List[Any] = [{"role": "system", "content": self._system}] if self._system else []
         messages += [{"role": e.role, "content": e.for_llm()} for e in history]
@@ -1790,7 +1795,7 @@ class TurnEngine:
 
 
 __all__ = ["ASK_MARK", "Answer", "LOG_MARK", "Ports", "RECENT_ACTIONS", "RECENT_UNADDRESSED", "BACKGROUND_SINCE_REPLY",
-           "SAD_FACE", "Shown", "TurnEngine", "answer_recognized", "command_face", "command_form", "done_expression",
+           "BACKGROUND_SUMMARY", "SAD_FACE", "Shown", "TurnEngine", "answer_recognized", "command_face", "command_form", "done_expression",
            "asked_voice", "finish_stage", "hand_perform", "held_expression", "host_sections", "shown_face",
            "foreign_keys", "invalid_emotion", "outcome_phrase", "over_ordered_music", "owed_reason", "query_answer",
            "music_promise_key", "query_fallback", "recent_results", "unnamed_without_retry", "robot_owed", "show_queue_phrase", "stop_performance", "tier1_actions", "tier1_face", "tier1_for",
