@@ -80,9 +80,14 @@ def test_twenty_cases_stay_in_the_cpu_and_current_budget():
     assert worst_ma < SCENE_LIT_LIMIT_MA, worst_ma
 
 
-def test_unset_mouth_follows_the_envelope_while_speaking_and_an_explicit_mouth_does_not():
+def test_any_mouth_follows_the_envelope_while_speaking_and_keeps_its_slot_in_silence():
+    """#4225: сцена команды держится поверх речи - рот по огибающей при любом слоте (а не застывший ``grin``/``frown``,
+    пока робот говорит); речь кончилась - рот слота."""
     assert clip({'eyes': 'wide'}, speaking=True) != clip({'eyes': 'wide'})
-    assert clip({'eyes': 'wide', 'mouth': 'grin'}, speaking=True) == clip({'eyes': 'wide', 'mouth': 'grin'})
+    assert clip({'eyes': 'wide', 'mouth': 'grin'}, speaking=True) != clip({'eyes': 'wide', 'mouth': 'grin'})
+    talk = clip({'eyes': 'wide', 'mouth': 'talk'}, speaking=True)
+    assert clip({'eyes': 'wide', 'mouth': 'grin'}, speaking=True) == talk
+    assert clip({'eyes': 'wide', 'mouth': 'grin'}) != clip({'eyes': 'wide', 'mouth': 'talk'})
 
 
 def test_talk_slot_is_closed_in_silence_and_open_by_the_envelope():

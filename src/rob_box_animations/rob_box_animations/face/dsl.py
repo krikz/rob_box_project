@@ -2,7 +2,8 @@
 
 Слоты приходят в ``ctx.face`` (уже проверены ``rob_box_dialog.face_scene``), оттенок и тема фар - в ``ctx.tint`` /
 ``ctx.rear_theme`` (их кладёт ``FaceDirector``). Не заданное в слоте берётся как у покоя: глаза открыты, моргание
-обычное, взгляд на говорящего или осмотр, рот - по огибающей, пока робот говорит, иначе закрыт. Глаза, рот и очки
+обычное, взгляд на говорящего или осмотр, рот закрыт. Пока робот говорит, рот - по огибающей речи при любом слоте
+``mouth`` (#4225). Глаза, рот и очки
 рисуют те же функции, что и обычные сцены (``draw_eye``/``draw_mouth``, ``SHADES_L`` в ``face.py``, ``eq_mouth``
 в ``states.py``), копий нет. ``left``/``right`` - со стороны человека напротив робота.
 """
@@ -72,8 +73,13 @@ def _gaze(slot, ctx, t, sac):
 
 
 def _mouth(f, slot, ctx, u, bpm):
-    if slot is None:
-        slot = 'talk' if ctx.mouth_level is not None else 'flat'
+    """Рот по слоту ``mouth``; пока робот говорит (``ctx.mouth_level`` есть) - по огибающей речи, какой бы слот ни
+    был: сцена команды держится поверх речи (#4225: «Глаза опустил, свечусь синим…» с ``mouth: frown`` - рот
+    стоял, а робот говорил), глаза, взгляд и оттенок остаются её, а рот её - после речи."""
+    if ctx.mouth_level is not None:
+        slot = 'talk'
+    elif slot is None:
+        slot = 'flat'
     if slot == 'talk':
         TK.mouth_jaw(f.mouth, ctx.mouth_level or 0.0, ctx.vowel)
     elif slot == 'eq':
