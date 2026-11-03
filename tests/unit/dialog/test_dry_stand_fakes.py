@@ -318,3 +318,27 @@ def test_regression_wiping_the_cast_per_act_loses_the_voice_by_act_10(make_env):
     reports = [env.act(a, dm.NO_PHASE) for a in three_acts()]
     final = reports[-1][0]
     assert "👤 Speaker: unknown" in final.log and "Саша" not in user_text(env.seen[-1])
+
+
+# ── Срок давности окна диалога: #4258 ────────────────────────────────────────────────────────────────────────────
+
+
+def _hear_and_window(env, text: str) -> str:
+    """Реплика на сухом стенде; что ушло модели - одной строкой (окно истории + реплика)."""
+    env.seen.clear()
+    asyncio.run(env.stand.hear(text, gap_s=1.0, source="operator"))
+    return "\n".join(str(m.content) for m in env.seen[-1])
+
+
+def test_4258_window_is_empty_after_a_long_pause_and_after_an_e2e_switch(make_env):
+    """Ход, сказанный в «вечер», не доживает до «утра» (пауза по модельному времени) и не переживает смену e2e."""
+    from rob_box_dialog import knowledge as kn  # noqa: PLC0415
+
+    env = make_env(lambda env, msgs, tools: say("Ок."))
+    _hear_and_window(env, "Робот, меня зовут Саша")
+    assert "Саша" in _hear_and_window(env, "Робот, как дела")  # внутри порога окно цело
+    env.stand.clock.advance(kn.DIALOG_WINDOW_IDLE_RESET_S + 60)  # ночь
+    assert "Саша" not in _hear_and_window(env, "Робот, расскажи анекдот")
+    _hear_and_window(env, "Робот, я Дэнчик")
+    env.stand.engine.reset_window("e2e_off")
+    assert "Дэнчик" not in _hear_and_window(env, "Робот, расскажи анекдот")
