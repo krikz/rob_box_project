@@ -2101,7 +2101,7 @@ class TTSNode(Node):
                 voice=voice,
                 language=language,
                 prebaked_audio=prebaked_audio,
-                beat_s=float(chunk_data.get("beat_s") or 0.0),  # такт рэпа (#4241): паузы ставит адаптер
+                beat_s=chunk_data.get("beat_s", 0.0),  # такт рэпа (#4241): паузы ставит адаптер
                 # Issue #1996 — forwarded via kwargs so the canonical
                 # positional arity of ``_run_synthesis_worker`` stays
                 # intact (see test_speech_id_arg_chain.py).
