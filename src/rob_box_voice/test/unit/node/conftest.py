@@ -64,7 +64,11 @@ def _install_ros_mocks():
 
     # ── rob_box_mcp_tools (опциональный) ───────────────────────────────────
     mock_mcp = MagicMock()
-    mock_mcp_adapter = MagicMock()
+    # Именно модуль, не MagicMock: pytest >= 9 (#10644) возвращает при ``monkeypatch.undo`` атрибут через
+    # ``target.__dict__``; у MagicMock автосозданный потомок в __dict__ не лежит, undo делает delattr, и
+    # следующий ``monkeypatch.setattr(adapter, "LLMToolCallAdapter", ...)`` падает «has no attribute».
+    mock_mcp_adapter = types.ModuleType("rob_box_mcp_tools.llm_adapter")
+    mock_mcp_adapter.LLMToolCallAdapter = MagicMock()
 
     # ── OpenAI Agents SDK / HTTP clients (опциональные для unit tests) ─────
     def _function_tool(func=None, **kwargs):
