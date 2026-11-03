@@ -80,7 +80,7 @@ jobs:
         restore-keys: |
           msdo-${{ runner.os }}-${{ runner.arch }}-${{ env.DEFENDER_CLI_VERSION }}-
     - name: Run Microsoft Security DevOps (trivy + checkov + bandit)
-      uses: microsoft/security-devops-action@v1.12.0
+      uses: microsoft/security-devops-action@v1.12.1
       id: msdo
       with:
         tools: trivy,checkov
