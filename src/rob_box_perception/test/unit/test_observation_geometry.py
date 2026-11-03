@@ -177,7 +177,7 @@ def test_build_observation_person_with_depth():
         _person_event(), source='oak_d', image_width=W, image_height=H,
         depth_mm=_depth(2500), intrinsics=K, depth_status=geo.STATUS_OK,
     )
-    assert set(obs) == set(geo.OBSERVATION_FIELDS)
+    assert set(obs) == set(geo.GEOMETRY_FIELDS)
     assert obs['source'] == 'oak_d'
     assert obs['class_name'] == 'person'
     assert obs['confidence'] == pytest.approx(0.87)

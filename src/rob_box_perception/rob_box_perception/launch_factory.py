@@ -69,6 +69,8 @@ _DEFAULTS: Dict[str, Any] = {
     'observation_topic': '/perception/observations',
     'depth_enabled': 'true',
     'depth_sync_tolerance_sec': '0.15',
+    # ADR-0130 §7 этап 1: точка наблюдения в base_link / map через tf2.
+    'tf_enabled': 'true',
     'publish_when_no_input': 'true',
     # issue #2703/#2704: пустая строка = нода сама вычисляет
     # /tmp/{executable}_heartbeat (см. utils.heartbeat.default_heartbeat_path).
@@ -258,6 +260,14 @@ def make_hailo_node_launch(
             description='Допуск |stamp_rgb - stamp_depth|, с (ADR-0138).',
         ),
         DeclareLaunchArgument(
+            'tf_enabled',
+            default_value=_DEFAULTS['tf_enabled'],
+            description=(
+                'Точка наблюдения в base_link / map через tf2 (ADR-0130 §7 '
+                'этап 1). false = base_link_status/map_status=tf_disabled.'
+            ),
+        ),
+        DeclareLaunchArgument(
             'publish_when_no_input',
             default_value=_DEFAULTS['publish_when_no_input'],
             description='В stub-режиме публиковать события даже без входящих '
@@ -290,6 +300,7 @@ def make_hailo_node_launch(
         'depth_sync_tolerance_sec': LaunchConfiguration(
             'depth_sync_tolerance_sec'
         ),
+        'tf_enabled': LaunchConfiguration('tf_enabled'),
         'publish_when_no_input': LaunchConfiguration('publish_when_no_input'),
         'heartbeat_path': LaunchConfiguration('heartbeat_path'),
     }

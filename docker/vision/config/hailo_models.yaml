@@ -69,6 +69,11 @@ vision_hailo_node:
   observation_topic: /perception/observations
   depth_enabled: true
   depth_sync_tolerance_sec: 0.15
+  # ADR-0130 §7 этап 1: та же точка в base_link / map через tf2 (TF
+  # base_link → camera_* публикует robot_state_publisher Main Pi, map —
+  # rtabmap). Нет трансформа — честный base_link_status/map_status, а не
+  # нули. false = статус tf_disabled — рычаг, если /tf съест CPU.
+  tf_enabled: true
 
 # Лицевая нода (ADR-0089 Phase 2, issue #2599 PR-A). Отдельный процесс
 # с retinaface_mobilenet_v1.hef. Публикует VisionEvent event_type="face"
@@ -115,6 +120,11 @@ vision_face_node:
   observation_topic: /perception/observations
   depth_enabled: true
   depth_sync_tolerance_sec: 0.15
+  # ADR-0130 §7 этап 1: та же точка в base_link / map через tf2 (TF
+  # base_link → camera_* публикует robot_state_publisher Main Pi, map —
+  # rtabmap). Нет трансформа — честный base_link_status/map_status, а не
+  # нули. false = статус tf_disabled — рычаг, если /tf съест CPU.
+  tf_enabled: true
 
   # ---- ArcFace-узнавание (ADR-0123, issue #2599 PR-B) ----
   # Отдельный HEF от детекции: RetinaFace (hef_path выше) находит лицо на
