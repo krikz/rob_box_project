@@ -48,6 +48,7 @@ for key in ('hailo_enabled', 'hef_path', 'stub_period_sec',
             'first_frame_timeout_sec', 'output_topic',
             # ADR-0138: Observation + глубина OAK-D.
             'observation_topic', 'depth_enabled', 'depth_sync_tolerance_sec',
+            'tf_enabled',
             # ArcFace-узнавание + FaceStore (ADR-0123, issue #2599 PR-B).
             # Тот же приём "ENV override wins", ключи YAML совпадают с
             # именами контейнерных ENV после .upper() — см. compose (ARCFACE_*,
@@ -91,6 +92,8 @@ OUTPUT_TOPIC="${OUTPUT_TOPIC:-/vision/hailo/events}"
 OBSERVATION_TOPIC="${OBSERVATION_TOPIC:-/perception/observations}"
 DEPTH_ENABLED="${DEPTH_ENABLED:-true}"
 DEPTH_SYNC_TOLERANCE_SEC="${DEPTH_SYNC_TOLERANCE_SEC:-0.15}"
+# ADR-0130 §7 этап 1: точка наблюдения в base_link / map через tf2.
+TF_ENABLED="${TF_ENABLED:-true}"
 
 # ArcFace-узнавание + FaceStore (ADR-0123, issue #2599 PR-B). Дефолты те же,
 # что в docker/vision/config/hailo_models.yaml — держим на случай, если ни
@@ -187,6 +190,7 @@ LAUNCH_ARGS=(
     observation_topic:=${OBSERVATION_TOPIC}
     depth_enabled:=${DEPTH_ENABLED}
     depth_sync_tolerance_sec:=${DEPTH_SYNC_TOLERANCE_SEC}
+    tf_enabled:=${TF_ENABLED}
     # ADR-0104 acceptance #5 (issue #2703): в проде обязан быть false —
     # см. тот же комментарий в start_vision_hailo.sh. launch_factory
     # default остаётся 'true' (CI/smoke), сюда не трогать.

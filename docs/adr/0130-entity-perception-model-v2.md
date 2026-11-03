@@ -343,7 +343,7 @@ string[] channels             # какими модальностями подт
 2. **Потолочная камера**: куда смотрит физически. Если вверх — в распознавании людей не участвует. Если вперёд — второй «Взгляд», но только после калибровки intrinsics и не раньше, чем после 2.0.
 3. **Форма агрегата «обычные места»** после 30 дней: сетка / комнаты / кластеры — решается в дочернем ADR этапа 6.
 4. **DOA хуже 15°**: возможен ли уточняющий приём (поворот головы-камеры на звук) — решается по итогам этапа 0.
-5. **Межпайный TF**: трансформ `base_link → camera_*` публикует Main Pi, наблюдения — с Vision Pi; проверить задержку TF через Zenoh на этапе 1.
+5. **Межпайный TF**: трансформ `base_link → camera_*` публикует Main Pi, наблюдения — с Vision Pi; проверить задержку TF через Zenoh на этапе 1. *03.11.2026: TF `base_link → camera_color_optical_frame` и `map → base_link` с Vision Pi видны (ADR-0138 §9); задержка не измерена.*
 6. **Что LLM получает при двух `tentative` одновременно** — правило обращения в дочернем ADR этапа 2/5.
 7. **Голосовые облики** — вводить ли в v2, если появится случай-заказчик.
 
@@ -390,6 +390,7 @@ string[] channels             # какими модальностями подт
 | 0 | Замер загрузки NPU / CPU (Q13, Q18) | инструмент `scripts/maintenance/measure_load.sh` | отчёта нет. Решение «трекер на Main Pi» и «re-ID при свободном NPU» по-прежнему без цифр | ❌ замера нет |
 | 1 | `Observation.msg` + глубина OAK-D | `/perception/observations` публикуют `vision_hailo` (`person`, YOLOv8n) и `vision_face` (`face`); 3D-точка, `distance_m`, `position_status`, `candidate_id` | PR #3124, ADR-0138. Живьём: за 12 с — 21 `person` и 22 `face`; пример: `frame_id: camera_color_optical_frame`, `distance_m: 1.1249`, `position_status: ok`, `position_stddev_m: 0.0079` | ✅ источник |
 | 1 | …в `base_link` / `map` | нет: координаты только в optical frame камеры, перевода через TF в коде нет | `observation_geometry.py`, `vision_hailo_node.py` — нет `tf2`/`lookup_transform` | ❌ |
+| 1 | …в `base_link` / `map` (03.11.2026) | `observation_frames.py`: та же точка в `base_link` и `map` через tf2 на stamp кадра, статус на каждый фрейм (`ok` / `no_position` / `tf_disabled` / `no_transform` / `transform_stale`) | живьём 03.11 ~22:02 UTC на Vision Pi: `tf2_echo base_link camera_color_optical_frame` → статический `[-0.116, 0, 0.460]`, `tf2_echo map base_link` → динамический; ADR-0138 §9. Код в PR, на роботе не запущен | 🟡 код, не на роботе |
 | 1 | Потребители | **нет ни одного**. Safety stop ADR-0089 Phase 1 по `distance_m` не сделан | живьём: `ros2 topic info /perception/observations -v` → `Publisher count: 2`, `Subscription count: 0` | ❌ |
 | 2 | Камерный трекер на Main Pi, «Встреча» из треков | нет `Track.msg`, нет `/perception/tracks`. Единственный трекер — 2D `face_tracker.py` внутри `vision_face` (ADR-0123 §3): только лица, без тела и глубины, живёт в пределах кадра | grep по `src/`, `docker/`: `Track.msg`, `/perception/tracks` — 0 совпадений | не начат |
 | 3 | Реестр Знакомых `entities.db` | нет. Лицо (`FaceStore`, свой `uuid4`) и голос (`speakers.db`, `speaker_id`) по-прежнему с собственными id | grep: `entities.db`, `acquaintance_id`, `appearance_id` — 0 совпадений вне тестов. Шов со стороны диалога готов: `SpeakerRef{person_ref, name_state}` (ADR-0150 §7.5, PR-5b #3695), `person_ref` сегодня = `speaker_id` | не начат |
