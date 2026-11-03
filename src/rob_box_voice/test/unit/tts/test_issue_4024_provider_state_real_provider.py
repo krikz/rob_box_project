@@ -73,8 +73,6 @@ def _presynth(
 ) -> dict:
     """Готовый пред-синтез настоящим ``Presynth``: цепочка провайдеров подставлена, пул - синхронный."""
     node = SimpleNamespace(
-        _extract_text_from_ssml=lambda ssml: "Куда идёшь?",
-        _parse_ssml_attributes=lambda ssml: {},
         _publish_tts_finished=MagicMock(),
     )
 
@@ -93,7 +91,7 @@ def _presynth(
         node,
         {
             "speech_id": speech_id,
-            "ssml": "<speak>Куда идёшь?</speak>",
+            "text": "Куда идёшь?",
             "voice": requested,
         },
         lambda *args: None,

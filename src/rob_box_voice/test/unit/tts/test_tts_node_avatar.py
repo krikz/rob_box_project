@@ -159,7 +159,7 @@ def test_avatar_tts_request_empty_ssml_dropped_with_empty_text_error():
 def test_avatar_tts_request_whitespace_only_ssml_dropped():
     """Issue #2096 — SSML из одних пробелов/переносов → DROP.
 
-    ``_extract_text_from_ssml`` нормализует текст через ``strip_markdown().strip()``,
+    ``speech_text`` нормализует текст через ``strip_markdown().strip()``,
     поэтому ``"   \n  "`` после извлечения даёт пустую строку → тот же
     guard. Это покрывает кейс, когда LLM или grip-pipeline мог прислать
     «пустой по сути» SSML с whitespace.
