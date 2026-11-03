@@ -108,14 +108,22 @@ git check-ignore -v scripts/dialogue/.env
 
 ## Требования
 
-* Python 3.12+ (лаунчеры сами берут `.venv` из корня репозитория, если он есть); на 3.11 стенд тоже собирается.
+* Python 3.10+ (лаунчеры сами берут `.venv` из корня репозитория, если он есть). Замер #4245: тесты ядра из пакета
+  зелёные на 3.11.0 и 3.12.6; робот - 3.10 (ROS Humble).
 * Пакеты: `openai`, `httpx`, `pyyaml` (зависимости `rob_box_llm`). ROS2 **не нужен** - `rclpy` не импортируется.
 
+Два способа взять ядро:
+
 ```bash
-# если .venv в корне ещё нет
-python3.12 -m venv .venv
-.venv/Scripts/pip install -e src/rob_box_core -e src/rob_box_llm -e src/rob_box_harness
+# 1. ядро одним пакетом (ADR-0160 §8 К1, #4245) - стенд и консоль берут его, а не src/
+python3 -m venv .venv
+.venv/Scripts/pip install ./packaging/dialog-core
+# или без чекаута: pip install "git+https://github.com/krikz/rob_box_project@develop#subdirectory=packaging/dialog-core"
+
+# 2. без пакета - ничего ставить, кроме openai/httpx/pyyaml, не нужно
 ```
 
-Пакеты `src/<пакет>/<пакет>` стенд ставит первыми в `sys.path` сам (`dry_stand.ensure_paths`): в worktree берётся код
-перед глазами, а не editable-установка основного чекаута.
+Без поставленного пакета `rob-box-dialog-core` стенд сам кладёт `src/<пакет>/<пакет>` первыми в `sys.path`
+(`dry_stand.ensure_paths`): в worktree берётся код перед глазами, а не editable-установка основного чекаута. Пакет
+поставлен - `sys.path` не трогается. Пакет собирается из `src/` в момент `pip install`: после правки ядра поставь его
+заново (иначе стенд гоняет старый код).

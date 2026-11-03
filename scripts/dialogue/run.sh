@@ -6,8 +6,8 @@
 #   ./scripts/dialogue/run.sh --once "Сколько у тебя заряда?" --once "Робот, стоп"
 #   ./scripts/dialogue/run.sh --db ~/.rob_box/console_memory.e2e.db --variant B
 #
-# Выбирает интерпретатор: .venv в корне репозитория → python3.12+ →
-# python3. Нужны пакеты `openai`, `httpx`, `pyyaml` (зависимости rob_box_llm).
+# Выбирает интерпретатор: .venv в корне репозитория → python3.13/3.12 →
+# python3 (ядру нужен Python 3.10+, #4245). Нужны пакеты `openai`, `httpx`, `pyyaml` (зависимости rob_box_llm).
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -32,7 +32,7 @@ pick_python() {
 }
 
 PYTHON="$(pick_python)" || {
-    echo "Python не найден. Нужен Python 3.12+." >&2
+    echo "Python не найден. Нужен Python 3.10+." >&2
     exit 1
 }
 

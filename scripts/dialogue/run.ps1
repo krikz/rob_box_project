@@ -3,8 +3,8 @@
     Консоль диалога РОББОКСа на ходе v2 (сухой стенд, без ROS2 и без робота).
 
 .DESCRIPTION
-    Выбирает интерпретатор (.venv в корне репозитория → python3.12+ →
-    системный python), переключает консоль в UTF-8 и запускает
+    Выбирает интерпретатор (.venv в корне репозитория → новейший python3
+    через py-лаунчер → системный python), переключает консоль в UTF-8 и запускает
     scripts/dialogue/chat.py. Все аргументы прокидываются в скрипт.
 
 .EXAMPLE
@@ -25,8 +25,8 @@ $env:PYTHONUTF8 = "1"
 $env:PYTHONIOENCODING = "utf-8"
 try { [Console]::OutputEncoding = [System.Text.Encoding]::UTF8 } catch {}
 
-# Интерпретатор: rob_box_core использует mappingproxy как dataclass-default,
-# что разрешено только с Python 3.12.
+# Интерпретатор: ядру нужен Python 3.10+ (packaging/dialog-core, requires-python).
+# Замер #4245: тесты ядра из пакета зелёные на 3.11.0 и 3.12.6, робот - 3.10.
 $Python = $null
 $VenvPython = Join-Path $RepoRoot ".venv\Scripts\python.exe"
 if (Test-Path $VenvPython) {
@@ -35,11 +35,11 @@ if (Test-Path $VenvPython) {
     $PyLauncher = Get-Command py -ErrorAction SilentlyContinue
     if ($PyLauncher) {
         $Python = "py"
-        $PyArgs = @("-3.12")
+        $PyArgs = @("-3")
     } else {
         $Fallback = Get-Command python -ErrorAction SilentlyContinue
         if (-not $Fallback) {
-            Write-Error "Python не найден. Поставь Python 3.12+ или создай .venv в корне репозитория."
+            Write-Error "Python не найден. Поставь Python 3.10+ или создай .venv в корне репозитория."
             exit 1
         }
         $Python = $Fallback.Source
