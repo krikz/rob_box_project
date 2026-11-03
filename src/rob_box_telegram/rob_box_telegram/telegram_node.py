@@ -45,7 +45,7 @@ from .camera_cache import CameraCache
 from .camera_on_demand import OnDemandCameraSubscriptions
 from .handlers import commands as _cmds
 from .handlers.callbacks import callback_handler
-from .handlers.messages import text_message_handler, voice_message_handler
+from .handlers.messages import attachment_message_handler, text_message_handler, voice_message_handler
 
 # AV-23 (issue #1915, P8): per-chat /radio mode — голосовые из Telegram
 # как рация → /avatar/voice_in. См. radio.py + voice_transcode.py.
@@ -677,6 +677,7 @@ class TelegramNode(Node):
                 app.add_handler(CommandHandler(name[:-8], getattr(_cmds, name)))
         app.add_handler(CallbackQueryHandler(callback_handler))
         app.add_handler(MessageHandler(filters.VOICE, voice_message_handler))
+        app.add_handler(MessageHandler(filters.PHOTO | filters.Document.ALL, attachment_message_handler))
         app.add_handler(
             MessageHandler(filters.TEXT & ~filters.COMMAND, text_message_handler)
         )

@@ -134,9 +134,13 @@ flowchart LR
 (`rob_box_telegram/inbox.py`, формат сверяет тест):
 
 ```
-📨 [tg-in] chat_id=<id> coordinator=<true|false> text=<текст>
+📨 [tg-in] chat_id=<id> coordinator=<true|false> [file=<путь>] [reply_to=<цитата>] text=<текст>
 ```
 
+`text=` всегда последний (в нём бывают пробелы), необязательные поля стоят перед ним и есть только когда есть что
+передать: `reply_to` — текст сообщения, на которое человек ответил реплаем (до 200 знаков), `file` — вложение
+(фото, документ, голосовое) от chat 495039871, сохранённое в контейнере `telegram-bot`:
+`docker cp telegram-bot:/tmp/tg_inbox/<ts>_<id>.<ext> .` (в контейнере держится 50 последних, токена в пути нет).
 Переводы строк в тексте заменены на ` ⏎ `. Слушать:
 `docker logs -f telegram-bot | grep 'tg-in'` (только «Клод» —
 `grep 'coordinator=true'`). Строка не зависит от движка диалога: при

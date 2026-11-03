@@ -19,8 +19,9 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
-from dataclasses import dataclass
-from typing import Any, Awaitable, Callable, Dict, Optional
+import os
+from dataclasses import dataclass, field
+from typing import Any, Awaitable, Callable, Dict, List, Optional
 
 from . import chat_render
 
@@ -34,6 +35,8 @@ TYPING_EVERY_S = 4.0
 PROGRESS_AFTER_S = 3.0
 #: Как часто обновлять индикатор (счётчик секунд); правка одного сообщения чаще раза в 3 с - риск лимита Bot API.
 PROGRESS_EVERY_S = 3.0
+#: Новый шаг хода показываем не позже чем через столько после прошлого обновления (лимит правок Bot API).
+PROGRESS_STEP_EVERY_S = 1.0
 #: Потолок хода: дольше индикатор не держим.
 TURN_MAX_S = 120.0
 #: Шаг цикла индикатора.
@@ -44,13 +47,17 @@ DRAFT_ID = 1
 #: ``kind`` исходящего элемента очереди сверх ``DialogOutput.kind``: «ход начался» (внутренний, не с провода).
 KIND_BEGIN = "begin"
 
+#: Переменная окружения: ``1`` - ответы уходят «богатыми сообщениями» (Bot API 10.1 ``sendRichMessage``), при отказе - HTML.
+RICH_ENV = "TELEGRAM_RICH_MESSAGES"
+
 Sleep = Callable[[float], Awaitable[Any]]
 
 
 @dataclass
 class _Turn:
     started: float
-    label: str = ""
+    steps: List[str] = field(default_factory=list)
+    changed: bool = False
     msg_id: Optional[int] = None
     shown: str = ""
     last_typing: float = -1e9
@@ -73,8 +80,10 @@ class ChatSender:
     """Ответы и ход процесса по чатам; один ход на чат."""
 
     def __init__(self, bot: Any, clock: Callable[[], float] = time.monotonic, sleep: Sleep = asyncio.sleep,
-                 log: logging.Logger = _LOG) -> None:
+                 log: logging.Logger = _LOG, rich: Optional[bool] = None) -> None:
         self.bot = bot
+        # Rich messages - за флагом: PTB 21.11.1 метода не знает, шлём сырым do_api_request; отказ - откат на HTML навсегда
+        self._rich_ok = os.environ.get(RICH_ENV, "") == "1" if rich is None else rich
         self._clock = clock
         self._sleep = sleep
         self._log = log
@@ -93,7 +102,10 @@ class ChatSender:
     def set_progress(self, chat_id: int, label: str) -> None:
         if chat_id not in self._turns or self._turns[chat_id].done:
             self.begin(chat_id)
-        self._turns[chat_id].label = label
+        steps = self._turns[chat_id].steps
+        if not steps or steps[-1] != label:  # тот же шаг подряд - не новая строка
+            steps.append(label)
+            self._turns[chat_id].changed = True
 
     async def deliver(self, chat_id: int, text: str, role: str = "") -> None:
         """Ответ в чат: индикатор хода снят, реплика оформлена."""
@@ -122,9 +134,10 @@ class ChatSender:
             turn.last_typing = now
             await self._typing(chat_id)
         elapsed = now - turn.started
-        if turn.label and elapsed >= PROGRESS_AFTER_S and now - turn.last_progress >= PROGRESS_EVERY_S:
-            turn.last_progress = now
-            await self._show_progress(chat_id, turn, chat_render.progress(turn.label, elapsed))
+        due = PROGRESS_STEP_EVERY_S if turn.changed else PROGRESS_EVERY_S  # новый шаг видно раньше счётчика секунд
+        if turn.steps and elapsed >= PROGRESS_AFTER_S and now - turn.last_progress >= due:
+            turn.last_progress, turn.changed = now, False
+            await self._show_progress(chat_id, turn, chat_render.progress(turn.steps, elapsed))
 
     async def _typing(self, chat_id: int) -> None:
         try:
@@ -179,7 +192,21 @@ class ChatSender:
             except Exception as exc:  # noqa: BLE001
                 self._log.debug("delete_message chat=%s: %r", chat_id, exc)
 
+    async def _send_rich(self, chat_id: int, item: chat_render.Rendered) -> bool:
+        """Реплика богатым сообщением (``rich_message.html`` - тот же HTML, что у :func:`chat_render.render`); ``False`` -
+        Telegram отказал, дальше идёт обычный HTML (и до перезапуска rich больше не пробуем)."""
+        try:
+            await self.bot.do_api_request("sendRichMessage", api_kwargs={
+                "chat_id": chat_id, "rich_message": {"html": item.text}})
+            return True
+        except Exception as exc:  # noqa: BLE001
+            self._rich_ok = False
+            self._log.warning("sendRichMessage отвергнут (%r): ответы идут обычным HTML, chat=%s", exc, chat_id)
+            return False
+
     async def _send(self, chat_id: int, item: chat_render.Rendered) -> None:
+        if self._rich_ok and await self._send_rich(chat_id, item):
+            return
         options = {"link_preview_options": {"is_disabled": True}}  # у робота ссылка - не карточка сайта
         try:
             await self.bot.send_message(chat_id=chat_id, text=item.text, parse_mode=item.parse_mode, **options)
@@ -190,4 +217,4 @@ class ChatSender:
             await self.bot.send_message(chat_id=chat_id, text=item.plain, **options)
 
 
-__all__ = ["ACTION_TYPING", "ChatSender", "DRAFT_ID", "KIND_BEGIN", "PROGRESS_AFTER_S", "TURN_MAX_S"]
+__all__ = ["ACTION_TYPING", "ChatSender", "DRAFT_ID", "KIND_BEGIN", "PROGRESS_AFTER_S", "RICH_ENV", "TURN_MAX_S"]

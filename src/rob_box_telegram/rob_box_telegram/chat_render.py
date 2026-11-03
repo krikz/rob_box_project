@@ -21,7 +21,7 @@ MarkdownV2 требует экранировать 18 знаков и ломае
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import List, Tuple
+from typing import List, Sequence, Tuple
 
 #: Лимит текста сообщения после разбора разметки (Bot API, sendMessage: 1-4096 символов).
 MESSAGE_LIMIT = 4096
@@ -108,11 +108,18 @@ def render(text: str, role: str = "") -> List[Rendered]:
     return out
 
 
-def progress(label: str, elapsed_s: float) -> Rendered:
-    """Подпись шага хода («Думаю…») со временем; правится одним сообщением, пока ход идёт."""
-    line = f"⏳ {label} {int(elapsed_s)} с"
-    return Rendered(f"<i>{escape(line)}</i>", line)
+#: Сколько последних шагов хода видно в индикаторе (длинный ход не раздувает сообщение).
+PROGRESS_STEPS_SHOWN = 6
+
+
+def progress(steps: "Sequence[str] | str", elapsed_s: float) -> Rendered:
+    """Шаги хода («Думаю…», «Ищу в сети…», «Ищу в сети - готово») и время; правится одним сообщением, пока ход идёт.
+    Прошлые шаги - точкой, текущий (последний) - песочными часами со счётчиком секунд."""
+    shown = [steps] if isinstance(steps, str) else list(steps)[-PROGRESS_STEPS_SHOWN:]
+    lines = [f"• {step}" for step in shown[:-1]] + [f"⏳ {shown[-1]} {int(elapsed_s)} с"]
+    text = "\n".join(lines)
+    return Rendered(f"<i>{escape(text)}</i>", text)
 
 
 __all__ = ["CAPTION_LIMIT", "MESSAGE_LIMIT", "PARSE_MODE", "PLAIN_MAX_CHARS", "PLAIN_MAX_LINES", "Rendered", "escape",
-           "progress", "render", "split"]
+           "PROGRESS_STEPS_SHOWN", "progress", "render", "split"]
