@@ -11,6 +11,8 @@
   <!-- ros2_control Hardware Interface - VESC Nexus                    -->
   <!-- ═══════════════════════════════════════════════════════════════ -->
   
+  <xacro:arg name="controllers_yaml" default="/config/controllers/controller_manager.yaml"/>
+  <xacro:unless value="${is_sim}">
   <ros2_control name="VescSystem" type="system">
     <hardware>
       <plugin>vesc_nexus/VescSystemHardwareInterface</plugin>
@@ -113,5 +115,56 @@
       <param name="max_rps">12.2</param>            <!-- Калибровка 2026-02-28: ratio=1.22@0.2m/s×5s -->
     </joint>
   </ros2_control>
+  </xacro:unless>
+
+  <xacro:if value="${is_sim}">
+  <!-- ═══════════════════════════════════════════════════════════════ -->
+  <!-- Сим (sim:=true): те же 4 сустава и интерфейсы, железо — Gazebo.  -->
+  <!-- Контроллеры — ТОТ ЖЕ controller_manager.yaml, что на роботе      -->
+  <!-- (docker/main/config/controllers/), путь — аргумент controllers_yaml. -->
+  <!-- ═══════════════════════════════════════════════════════════════ -->
+  <ros2_control name="GazeboSimSystem" type="system">
+    <hardware>
+      <plugin>gz_ros2_control/GazeboSimSystem</plugin>
+    </hardware>
+    <joint name="left_front_wheel_joint">
+      <command_interface name="velocity">
+        <param name="min">-10</param>
+        <param name="max">10</param>
+      </command_interface>
+      <state_interface name="velocity"/>
+      <state_interface name="position"/>
+    </joint>
+    <joint name="right_front_wheel_joint">
+      <command_interface name="velocity">
+        <param name="min">-10</param>
+        <param name="max">10</param>
+      </command_interface>
+      <state_interface name="velocity"/>
+      <state_interface name="position"/>
+    </joint>
+    <joint name="left_rear_wheel_joint">
+      <command_interface name="velocity">
+        <param name="min">-10</param>
+        <param name="max">10</param>
+      </command_interface>
+      <state_interface name="velocity"/>
+      <state_interface name="position"/>
+    </joint>
+    <joint name="right_rear_wheel_joint">
+      <command_interface name="velocity">
+        <param name="min">-10</param>
+        <param name="max">10</param>
+      </command_interface>
+      <state_interface name="velocity"/>
+      <state_interface name="position"/>
+    </joint>
+  </ros2_control>
+  <gazebo>
+    <plugin filename="gz_ros2_control-system" name="gz_ros2_control::GazeboSimROS2ControlPlugin">
+      <parameters>$(arg controllers_yaml)</parameters>
+    </plugin>
+  </gazebo>
+  </xacro:if>
 
 </robot>
