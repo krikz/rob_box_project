@@ -141,6 +141,15 @@ if [ "${HAILO_ENABLED}" = "true" ]; then
     bash "$(dirname "${BASH_SOURCE[0]}")/hailo_device_smoke.sh" || exit 1
 fi
 
+# ---------- уборка /dev/shm от прошлых запусков (#4277) ----------
+# Буферы HailoRT прошлого процесса остаются в /dev/shm хоста после любого
+# рестарта; когда tmpfs забит, нода падает SIGBUS (exit code -7) на первом
+# кадре. Удаляем только файлы своей модели — см. hailo_shm_reap.py.
+if [ "${HAILO_ENABLED}" = "true" ] && [ -n "${HEF_PATH}" ]; then
+    python3 "$(dirname "${BASH_SOURCE[0]}")/hailo_shm_reap.py" \
+        --tag "[start_vision_hailo]" "${HEF_PATH}" || true
+fi
+
 # ---------- launch ROS 2 node (ADR-0110) ----------
 # ADR-0110: vision_hailo стартует декларативно через launch-файл
 # (vision_hailo.launch.py), а не через захардкоженный `ros2 run` с
