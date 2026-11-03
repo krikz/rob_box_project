@@ -115,7 +115,8 @@ def test_resolve_cross_provider_voice_falls_back() -> None:
 
 def test_format_context_default_current() -> None:
     line = format_tts_context("yandex")
-    assert line.startswith("[TTS] provider: yandex | default_voice: anton | current_voice: anton | voices: ")
+    assert line.startswith("[TTS] provider: yandex | default_voice: anton | current_voice: anton | current_voice_name: ")
+    assert " | voices: " in line
     assert "alena" in line
     assert "zahar" in line
 
@@ -132,6 +133,16 @@ def test_format_context_minimax() -> None:
     assert "default_voice: male-qn-qingse" in line
     assert "current_voice: female-shaonv" in line
     assert "male-qn-qingse" in line
+
+
+def test_format_context_names_current_voice_from_registry_not_from_id() -> None:
+    """#4020 n402 М8: звучал ``male-qn-qingse``, модель назвала «Надёжный мужчина» (это Russian_ReliableMan) - имя
+    звучащего голоса в строке даёт реестр."""
+    line = format_tts_context("minimax", current_voice="male-qn-qingse")
+    assert "current_voice_name: Qingse (legacy)" in line
+    assert "Надёжный мужчина" not in line.split("| voices:")[0]
+    assert "current_voice_name: Надёжный мужчина" in format_tts_context("minimax", current_voice="Russian_ReliableMan")
+    assert "current_voice_name: no-such-voice" in format_tts_context("minimax", current_voice="no-such-voice")
 
 
 # ── effective_provider (issue #1229) ──────────────────────────────────────────

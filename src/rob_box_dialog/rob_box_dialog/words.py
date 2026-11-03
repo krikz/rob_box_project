@@ -44,6 +44,7 @@ from rob_box_dialog.knowledge import (
     STOP_SCOPE,
     STOP_WORDS,
     TIER1_POLICY,
+    VOICE_PROMISES,
     VOICE_STEP,
     VOLUME_DEGREE_WORDS,
     VOLUME_LEVEL_WORDS,
@@ -290,6 +291,15 @@ def music_promises(text: str) -> Tuple[str, ...]:
     тул, что обещание исполняет, судит валидатор команды (``command._check_music_promise``)."""
     tokens = name_tokens(text)
     return tuple(kind for kind, promise in MUSIC_PROMISES.items() if _promises(tokens, promise))
+
+
+def voice_promises(text: str) -> Tuple[str, ...]:
+    """Виды обещаний сменить собственную речь в речи робота (ключи ``knowledge.VOICE_PROMISES``: ``speed``, ``pitch``,
+    ``voice``) - по словам, как :func:`music_promises`: «заговорю помедленнее», «переключусь на голос Алёны». Настоящее
+    время («говорю медленнее») и «скажу голосом Алёны» не обещание. Тул, что обещание исполняет, судит валидатор команды
+    (``command._check_voice_promise``)."""
+    tokens = name_tokens(text)
+    return tuple(kind for kind, promise in VOICE_PROMISES.items() if _promises(tokens, promise))
 
 
 def words_in_order(heard: str, said: str) -> int:

@@ -1187,6 +1187,8 @@ def _salvaged_phrase(engine: "TurnEngine", turn: _Turn, invalid: Invalid, result
         return said or ""
     if invalid.reason == kn.VIOLATION_MUSIC_PROMISE:
         return engine._pick(music_promise_key(turn.music_stopped, snap.music_playing))
+    if invalid.reason == kn.VIOLATION_VOICE_PROMISE:
+        return engine._pick(kn.VOICE_PROMISE_PHRASE)
     return engine._pick(kn.INVALID_COMMAND_PHRASES.get(invalid.reason, kn.INVALID_COMMAND_PHRASE))
 
 
