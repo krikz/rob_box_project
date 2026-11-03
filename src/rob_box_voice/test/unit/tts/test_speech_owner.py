@@ -365,7 +365,7 @@ def _presynth_node(node, submit=lambda fn, *a: fn(*a)):
     node.owner.presynth = Presynth(executor=types.SimpleNamespace(submit=submit))
     node.synth_calls = []
 
-    def chain(voice, language, attrs, text, sink, ctx):
+    def chain(voice, language, text, sink, ctx):
         node.synth_calls.append(text)
         ctx.update(audio_np=np.zeros(8000, dtype=np.float32), sample_rate=16000, used_provider="minimax")
 
@@ -452,9 +452,9 @@ def test_presynth_in_streaming_mode_synthesizes_whole_without_stream(setup):
     seen = []
     chain = node._sap_run_provider_chain
 
-    def chain_spy(voice, language, attrs, text, sink, ctx):
+    def chain_spy(voice, language, text, sink, ctx):
         seen.append(ctx.get("stream_ok"))
-        chain(voice, language, attrs, text, sink, ctx)
+        chain(voice, language, text, sink, ctx)
 
     node._sap_run_provider_chain = chain_spy
     node.subs["/voice/speech/request"](_request(commit=False))
@@ -535,7 +535,7 @@ def test_tts_worker_skips_synthesis_of_cancelled_speech(setup):
     node.subs["/voice/speech/cancel"](M.SpeechCancel(speech_id="s", agent="personality"))
     n = _bare_tts(owner)
     n._synthesize_and_play = MagicMock()
-    n._run_synthesis_worker("<speak>x</speak>", "x", None, {}, "s", None, None, None, play_seq=None)
+    n._run_synthesis_worker("x", None, "s", None, None, None, play_seq=None)
     n._synthesize_and_play.assert_not_called()
     assert _kinds(node)[-1] == "cancelled"
 
@@ -554,7 +554,7 @@ def test_epoch_watch_feeds_barge_in_cancel(setup):
 
 
 def _presynth_chain_applying(node, provider, applied_voice):
-    def chain(voice, language, attrs, text, sink, ctx):
+    def chain(voice, language, text, sink, ctx):
         ctx.update(audio_np=np.zeros(8000, dtype=np.float32), sample_rate=16000, used_provider=provider,
                    used_voice=applied_voice)
 

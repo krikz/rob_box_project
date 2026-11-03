@@ -41,7 +41,6 @@ def build_yandex_request(
     speed: float,
     *,
     pitch_hz: Optional[float] = None,
-    volume_lufs: Optional[float] = None,
     role: Optional[str] = None,
     raw_sample_rate: Optional[int] = None,
 ) -> Any:
@@ -57,8 +56,6 @@ def build_yandex_request(
         hints.append(tts_pb2.Hints(role=role))
     if pitch_hz is not None:
         hints.append(tts_pb2.Hints(pitch_shift=pitch_hz))
-    if volume_lufs is not None:
-        hints.append(tts_pb2.Hints(volume=volume_lufs))
     if raw_sample_rate is None:
         spec = tts_pb2.AudioFormatOptions(
             container_audio=tts_pb2.ContainerAudio(

@@ -7,7 +7,7 @@ callback'е) и вставляет ``operator``-запрос СРАЗУ ЗА т�
 прерывается — это явный инвариант 8a / DoD карточки.
 
 Эти тесты НЕ поднимают ROS-стек: используется та же conftest, что и
-``test_speech_id_arg_chain`` / ``test_silero_pitch_normalization``, и
+``test_speech_id_arg_chain`` / ``test_silero_envelope_pitch``, и
 обходится тяжёлый конструктор ``TTSNode.__init__`` через подкласс
 ``_BareNode``, который инициализирует только FIFO-gate-атрибуты.
 

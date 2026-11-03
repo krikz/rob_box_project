@@ -101,9 +101,10 @@ class TTSConfig:
 
     Mirrors the shape of :class:`LLMConfig` so the harness can compose
     LLM + TTS the same way (YAML + env, env-only secrets, frozen
-    dataclass). Used by the harness-side TTS providers (e.g.
-    :mod:`rob_box_harness.tts.minimax_tts`) and by the future
-    Dialog/Persistent harnesses that publish replies through TTS.
+    dataclass). Harness-side TTS wrapper ``rob_box_harness.tts`` was
+    removed in #4240 (second copy of ``minimax_tts``, no consumers): the
+    one MiniMax TTS implementation is
+    :mod:`rob_box_llm.providers.minimax_tts`.
 
     ``provider`` is mandatory; everything else has sensible defaults.
     ``api_key`` is the *name* of an env var (``"${MINIMAX_API_KEY}"``),
