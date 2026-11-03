@@ -118,6 +118,47 @@ def test_otel_self_telemetry_prometheus_target_consistency(project_root):
     print(f"  ✓ otel self-telemetry {addr} == prometheus target {actual_target}")
 
 
+# Единственный источник правды «какой хост какие IP занимает» для scrape-целей (ADR-0159).
+# Какой сервис на каком хосте — определяет compose-каталог docker/<host>/ (сервис объявлен
+# в docker-compose.yaml именно этого каталога); тест сверяет с ним scrape-конфиг (#4285).
+HOST_IPS = {
+    "main-pi": {"10.1.1.10", "localhost"},
+    "vision-pi": {"10.1.1.11"},
+    "sound-pi": {"10.1.1.12", "10.1.1.22"},
+}
+HOST_COMPOSE_DIR = {"main-pi": "main", "vision-pi": "vision", "sound-pi": "sound"}
+
+
+def test_prometheus_service_targets_match_host_layout(project_root):
+    """Регресс #4285: цель сервиса скрейпится по адресу хоста, где сервис живёт.
+
+    После ADR-0159 voice-assistant/telegram-bot/supercollider живут на Sound Pi, но живой
+    Prometheus ходил на Vision (.11) → ТАРС говорил «лежат» про здоровые контейнеры.
+    """
+    prom = yaml.safe_load(
+        (project_root / "docker/monitoring/config/prometheus.yml").read_text(encoding="utf-8"))
+    checked = 0
+    for job in prom.get("scrape_configs", []):
+        for sc in job.get("static_configs", []):
+            labels = sc.get("labels", {})
+            service, host = labels.get("service"), labels.get("host")
+            if not service or host not in HOST_COMPOSE_DIR:
+                continue
+            compose = yaml.safe_load((project_root / "docker" / HOST_COMPOSE_DIR[host]
+                                      / "docker-compose.yaml").read_text(encoding="utf-8"))
+            assert service in (compose.get("services") or {}), (
+                f"job {job['job_name']!r}: service={service!r} не объявлен в "
+                f"docker/{HOST_COMPOSE_DIR[host]}/docker-compose.yaml, но помечен host={host!r}")
+            for target in sc.get("targets", []):
+                ip = target.rsplit(":", 1)[0]
+                assert ip in HOST_IPS[host], (
+                    f"job {job['job_name']!r}: цель {target!r} не принадлежит host={host!r} "
+                    f"(адреса {sorted(HOST_IPS[host])}) — #4285")
+                checked += 1
+    assert checked, "не нашлось ни одной цели с labels service+host — тест ничего не проверил"
+    print(f"  ✓ {checked} scrape-целей сервисов соответствуют раскладке по хостам")
+
+
 def test_monitoring_agents_deployed_and_loki_host_real(project_root):
     """Issue #3300: cadvisor/promtail сидят в profile 'monitoring', а деплой
     делал `compose up` без профиля и `docker rm -f` всего проекта — агенты
@@ -249,6 +290,13 @@ def main():
         results.append(False)
     except Exception as e:
         print(f"  ❌ Unexpected error: {e}")
+        results.append(False)
+
+    try:
+        test_prometheus_service_targets_match_host_layout(project_root)
+        results.append(True)
+    except AssertionError as e:
+        print(f"  ❌ {e}")
         results.append(False)
 
     try:

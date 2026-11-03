@@ -433,3 +433,22 @@ def test_summary_error_is_not_a_success_phrase() -> None:
     text = summarize_for_speech({"status": "error", "error": "connection refused"})
     assert "connection refused" in text
     assert "TARS 2" not in text
+
+
+def test_summary_up_zero_is_not_container_down() -> None:
+    """#4285: up == 0 — скрейп не удался, а не «контейнер лежит»."""
+    text = summarize_for_speech(
+        {"status": "ok", "query": "up",
+         "series": [{"name": "voice-assistant:9100", "points": [[1.0, 0.0]]}]}
+    )
+    assert "не ответила" in text
+    assert "не доказывает" in text
+    assert "лежит" not in text and "лежат" not in text
+
+
+def test_summary_up_one_has_no_warning() -> None:
+    text = summarize_for_speech(
+        {"status": "ok", "query": "up",
+         "series": [{"name": "voice-assistant:9100", "points": [[1.0, 1.0]]}]}
+    )
+    assert "не ответила" not in text
