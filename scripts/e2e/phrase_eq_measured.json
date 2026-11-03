@@ -793,6 +793,14 @@
       "how": "play",
       "run": "40484087795"
     },
+    "n806_long_count_again": {
+      "voice": "anton",
+      "chars": 54,
+      "text_sha1": "ba7bfa162501",
+      "eq_s": 7.37,
+      "how": "play",
+      "run": "40484087795"
+    },
     "n807_merge_addition": {
       "voice": "anton",
       "chars": 48,
