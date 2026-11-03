@@ -34,7 +34,6 @@ from rob_box_dialog.reply_grammar import NAME, classify_rename, classify_reply
 from rob_box_dialog.session import Session, SessionChanged, SessionSnapshot, SpeakerRef
 from rob_box_dialog.speaker_adapter import (
     VOICE_STRANGER,
-    AskCandidate,
     IdentityStep,
     merge_answer,
     merge_step,
@@ -70,14 +69,6 @@ def session(node: Any) -> Session:
 
 def set_speaker(node: Any, ref: SpeakerRef) -> None:
     session(node).set_speaker(ref)
-
-
-def open_question(node: Any, cand: AskCandidate, speech_id: str) -> None:
-    """Вопрос отдан в речь — кадр ``Identity`` с азимутом фразы собеседника, пока ЖДЁТ конца речи ``speech_id``.
-
-    Окно ответа открывает :func:`on_speech_event` (``SpeechEvent finished`` этого вопроса): ход мог отвечать 12 с,
-    вопрос звучит после, и 15 с от конца хода истекли бы до вопроса (#3771)."""
-    _push(node, question_frame(cand.key, cand.kind, cand.name, _azimuth(node), None, speech_id))
 
 
 def open_merge_question(node: Any, plan: Mapping[str, Any], speech_id: str) -> None:
@@ -471,6 +462,6 @@ def _time(msg: Any, t: float) -> Any:
 
 
 __all__ = ["SESSION_TOPIC", "answer_name", "code_decides", "identity_reply", "introduced_name", "on_speech_event",
-           "open_merge_question", "open_question", "question", "refuse_second_profile", "session", "session_state",
+           "open_merge_question", "question", "refuse_second_profile", "session", "session_state",
            "set_speaker", "settle_identity", "settled_by_voice", "take_answer", "ask_after_turn", "deliver_turn_result",
            "start_after_turn_question", "ANY_SPEECH"]

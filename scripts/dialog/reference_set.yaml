@@ -104,7 +104,7 @@ phrases:
      notes: "#2949: тул вернул отказ, модель сказала «Записала пресет». Реконструкция реплики по названию issue; успех фразы — по результату тула"}
   - {id: r26, text: "Робот, включи диджей сет с Калинкой", source: issue, expected: {actions: [dj_set]},
      must_not: ["silence_after_success", "retry_turn_after_success"],
-     notes: "#3266: compose_music ошибка + set_dj_mode успех -> Bug C ретраит ход и отзывает реплики, тишина. Реконструкция реплики"}
+     notes: "#3266: compose_music ошибка + set_dj_mode успех -> гард ретрая v1 повторяет ход и отзывает реплики, тишина. Реконструкция реплики"}
   - {id: r27, text: "ТАРС, как камера?", source: issue, expected: {actions: [get_robot_status]},
      must_not: ["claim_without_tool", "stale_journal_failure_as_current"],
      notes: "#3297: ТАРС выдумывает отказ без вызова инструмента по журналу многочасовой давности. Реконструкция реплики; канал avatar-supervisor"}
@@ -126,7 +126,7 @@ phrases:
      must_not: ["llm_call"], notes: "A21: «стой» — тишина ≤ 300 мс"}
   - {id: r34, text: "Робот, играй громче", source: marathon, expected: {actions: [music_master_gain]},
      must_not: ["tool:set_volume", "llm_calls>2"],
-     notes: "память music-volume-has-no-tool: set_volume крутит громкость TTS -> Bug C; уровень музыки только music_master_gain"}
+     notes: "память music-volume-has-no-tool: set_volume крутит громкость TTS -> гард v1 врал об успехе; уровень музыки только music_master_gain"}
 
   # ---- корпус ложных вейков (A15: 0 пробуждений) ----
   - {id: r35, text: "Нормально всё работает", source: issue, expected: {silence: true},

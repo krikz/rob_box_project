@@ -30,9 +30,6 @@
   ``SpeakerRef.first_heard``: голос слышен впервые), результат фразы не пришёл — «не уверен».
 * Короткая фраза без оценки биометрии (``inconclusive``) собеседника не сбрасывает: :func:`speaker_ref` оставляет
   прежнего.
-* :class:`AskPolicy` — когда можно спросить имя (В17): не на команду, не на пустой ход, не раньше N-й фразы/T с,
-  один раз на собеседника. Команда — по ЗАПРОСУ человека (:func:`~rob_box_dialog.tools_view.command_groups`),
-  а не по тому, какие тулы выбрала LLM.
 
 Когда ADR-0130 этапы 2/3/5 дадут треки и реестр Знакомых, меняется только этот модуль. Чистый: время передают
 вызывающие, сообщения читаются утиной типизацией.
@@ -60,13 +57,7 @@ from rob_box_dialog.doa import angle_diff_deg
 from rob_box_dialog.greeting_reply import is_greeting_reply
 from rob_box_dialog.reply_grammar import NAME, NO, YES, Rename, Reply, classify_rename, classify_reply, classify_same
 from rob_box_dialog.session import SceneFrame, SpeakerRef
-from rob_box_dialog.tools_view import command_groups
 from rob_box_dialog.words import name_tokens, same_name, self_intro_name
-
-#: Ключ :class:`AskPolicy` для незнакомца без ``person_ref``.
-STRANGER = "stranger"
-#: Вердикты :meth:`AskPolicy.verdict`.
-ASK, COMMAND, NO_SPEECH, ASKED, ACCUMULATING = "ask", "command", "no_speech", "asked_already", "accumulating"
 
 
 @dataclass(frozen=True)
@@ -562,126 +553,3 @@ def same_interlocutor(entry: Any, heard: Any) -> Tuple[str, ...]:
                 and (bool(faces_now) or not kn.PICKUP_DOA_NEEDS_FACE)),
     }
     return tuple(ch for ch in kn.PICKUP_CHANNELS if votes.get(ch))
-
-
-class AskPolicy:
-    """Когда робот может спросить имя (В17): копит фразы собеседника и помнит, кого уже спрашивал."""
-
-    def __init__(self, min_phrases: int = kn.IDENTITY_ASK_MIN_PHRASES, min_s: float = kn.IDENTITY_ASK_MIN_S,
-                 stranger_gap_s: float = kn.IDENTITY_ASK_STRANGER_GAP_S) -> None:
-        self.min_phrases, self.min_s, self.stranger_gap_s = min_phrases, min_s, stranger_gap_s
-        self._heard: Dict[str, Tuple[float, int]] = {}
-        self._asked: Dict[str, float] = {}
-
-    def note(self, key: str, t: float) -> int:
-        """Ещё одна фраза собеседника ``key``; возвращает, сколько их накоплено."""
-        first, count = self._heard.get(key, (t, 0))
-        self._heard[key] = (first, count + 1)
-        return count + 1
-
-    def verdict(self, key: str, t: float, *, has_actions: bool, spoken: bool) -> str:
-        """``ASK`` — спросить сейчас; иначе причина, почему нет (для лога)."""
-        if has_actions:
-            return COMMAND
-        if not spoken:
-            return NO_SPEECH
-        asked_at = self._asked.get(key)
-        if asked_at is not None and (key != STRANGER or t - asked_at < self.stranger_gap_s):
-            return ASKED
-        first, count = self._heard.get(key, (t, 0))
-        enough = count >= self.min_phrases or (
-            t - first >= self.min_s and count >= kn.IDENTITY_ASK_MIN_PHRASES_BY_TIME)
-        return ASK if enough else ACCUMULATING
-
-    def progress(self, key: str, t: float) -> Tuple[int, float, Optional[float]]:
-        """Накоплено у ``key``: фраз, секунд с первой фразы, когда спрашивали (``None`` — не спрашивали)."""
-        first, count = self._heard.get(key, (t, 0))
-        return count, t - first, self._asked.get(key)
-
-    def mark_asked(self, key: str, t: float) -> None:
-        self._asked[key] = t
-        self._heard.pop(key, None)
-
-
-class TentativeStates:
-    """Гипотеза имени по собеседнику («<Имя>, это ты?»; ADR-0150 §7.5): спрашивали ли, что он ответил,
-    подтверждено ли имя и рос ли профиль. Ключ — ``person_ref``.
-
-    Состояние переживает паузу ``answer_window_s``, пока ответа нет (ответ бывает через 84 с — run 35857257981), и
-    ``session_gap_s`` после решения; дольше — новый разговор, состояние с нуля. Время передаёт вызывающий.
-    """
-
-    def __init__(self, answer_window_s: float = 180.0, session_gap_s: float = 120.0) -> None:
-        self.answer_window_s, self.session_gap_s = answer_window_s, session_gap_s
-        self._states: Dict[str, Dict[str, Any]] = {}
-
-    def get(self, person_ref: str) -> Optional[Dict[str, Any]]:
-        return self._states.get(person_ref)
-
-    def fresh(self, person_ref: str, now: float) -> Dict[str, Any]:
-        """Состояние собеседника на эту фразу: прежнее, если пауза не дольше окна, иначе новое."""
-        state = self._states.get(person_ref)
-        if state is None or now - state.get("last_seen_at", 0.0) > self._window(state):
-            state = self._states[person_ref] = {"asked": False, "confirmed": None, "name": None,
-                                                "growth_registered": False}
-        state["last_seen_at"] = now
-        return state
-
-    def _window(self, state: Mapping[str, Any]) -> float:
-        waiting = state.get("asked") and state.get("confirmed") is None
-        return self.answer_window_s if waiting else self.session_gap_s
-
-
-@dataclass(frozen=True)
-class AskCandidate:
-    """Кого можно спросить после хода: ``single`` с именем-гипотезой — «<Имя>, это ты?», иначе — «Как тебя зовут?»."""
-
-    key: str
-    kind: str
-    name: Optional[str] = None
-    utterance_id: Optional[str] = None
-    #: реплика человека этого хода — по ней (а не по тулам LLM) решается, была ли это команда
-    request: str = ""
-
-    def question(self) -> str:
-        if self.kind == "single" and self.name:
-            return phrases.text("identity.confirm", name=self.name)
-        return phrases.text("identity.ask_name")
-
-
-@dataclass(frozen=True)
-class AskVerdict:
-    """Вердикт В17 с причиной — одна строка лога объясняет, почему спросили или нет.
-
-    ``command_by`` — группы ``knowledge.TOOL_GROUPS`` с действием, названные человеком (``()`` — не команда);
-    ``phrases``/``min_phrases``, ``since_first_s`` — накопление до хода; ``asked_at`` — когда спрашивали раньше.
-    """
-
-    verdict: str
-    command_by: Tuple[str, ...]
-    phrases: int
-    min_phrases: int
-    since_first_s: float
-    asked_at: Optional[float]
-
-    def describe(self, t: float) -> str:
-        asked = "no" if self.asked_at is None else f"yes({t - self.asked_at:.0f}s ago)"
-        return (f"{self.verdict} command_by={'+'.join(self.command_by) or 'none'} "
-                f"phrases={self.phrases}/{self.min_phrases} since_first={self.since_first_s:.0f}s asked_before={asked}")
-
-
-def ask_after_turn(policy: AskPolicy, cand: AskCandidate, *, t: float, tools: Sequence[str] = (),
-                   spoken_text: Optional[str] = None) -> AskVerdict:
-    """Вердикт В17 по итогам хода. Команда — исполненная просьба человека (:func:`command_groups`: группа названа
-    словами ``cand.request`` и её действие вызвано): без вопроса. Тулы, о которых человек не просил, командой ход не
-    делают (живой робот 21.10: «как у тебя дела» → ``get_robot_status``, «расскажи про луну» → LLM добавила
-    ``play_animation`` — это не команды). Ход без речи — без вопроса (пустой ответ — не повод, эпизод Б 20.10).
-    ``ASK`` сразу помечает собеседника спрошенным."""
-    tools = tuple(tools or ())
-    spoken = bool((spoken_text or "").strip()) or any(name in kn.SPEECH_CHANNEL_TOOLS for name in tools)
-    command_by = command_groups(cand.request, tools)
-    count, since_first, asked_at = policy.progress(cand.key, t)
-    verdict = policy.verdict(cand.key, t, has_actions=bool(command_by), spoken=spoken)
-    if verdict == ASK:
-        policy.mark_asked(cand.key, t)
-    return AskVerdict(verdict, command_by, count, policy.min_phrases, since_first, asked_at)

@@ -147,7 +147,7 @@ class Backlog:
 
     def background_summary(self, heard: Heard) -> Dict[str, Any]:
         """Сводка фона за то же окно, что :meth:`background_since_reply`, но по ВСЕМ фразам окна, а не по последним
-        ``BACKGROUND_MAX_PHRASES``: :func:`voices_summary` (#4212). Пусто, если фоновых фраз нет."""
+        ``BACKGROUND_MAX_PHRASES``: :func:`voices_summary`. Пусто, если фоновых фраз нет."""
         self._prune(heard.t)
         window = [e for e in self._entries if 0.0 <= heard.t - e.t <= BACKGROUND_WINDOW_S]
         return voices_summary([self.label(e, heard) for e in window], caller=heard.person_ref)
@@ -182,7 +182,7 @@ def _voice_key(phrase: Mapping[str, Any]) -> tuple:
 
 
 def voices_summary(phrases: Sequence[Mapping[str, Any]], caller: str = "") -> Dict[str, Any]:
-    """Сводка голосов фона, построенная кодом, а не пересчётом модели (ADR-0148, #4212): ``voices`` - сколько разных
+    """Сводка голосов фона, построенная кодом, а не пересчётом модели (ADR-0148): ``voices`` - сколько разных
     собеседников говорило (по ``speaker_id`` профиля; безымянные профили - каждый отдельно, один человек с десятью
     репликами - один), ``known`` - имена узнанных (по порядку появления), ``unknown`` - сколько безымянных профилей.
     Собеседник хода (``caller`` - его профиль, ``Heard.person_ref``) и его реплики в бэклоге - один и тот же человек

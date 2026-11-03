@@ -87,11 +87,11 @@ from rob_box_mcp_tools.voice_request import REQUEST_TOPIC as VOICE_REQUEST_TOPIC
 from .core import greeting_window, identity_question
 from .core import dialog_v2_parity as parity
 from .core import plan_host
+from .core.backlog_voice import note_backlog_voice
 from .core.dialog_v2_ports import CallCounter, V2Ports, assemble_llm
 from .core.music_player_state import MUSIC_EVENT_TOPIC, MUSIC_STATE_TOPIC, parse_music_state
 from .core.provider_reporter import ProviderStateReporter, on_provider_states, reporter_context
 from .core.speaker_memory import SpeakerMemory
-from .core.speaker_turn import note_backlog_voice
 from .core.turn_context import tts_voices
 from .core.utterance_speaker import UtteranceSpeakerRegistry
 from .tts_voice_registry import robot_default_voice

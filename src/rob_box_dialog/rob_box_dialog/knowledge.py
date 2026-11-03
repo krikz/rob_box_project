@@ -809,7 +809,7 @@ CONTEXT_BUDGET_TOKENS: Mapping[str, int] = MappingProxyType({
 #: причина), а не текстом в репликах (§7.3, PR-8).
 #: ``background_since_reply`` — все фоновые фразы всех авторов за ``BACKGROUND_WINDOW_S``, каждая с ``who`` и
 #: ``age_s`` (В23, 23.10; ``Backlog.background_since_reply``): чужие реплики, не просьбы к роботу.
-#: ``background_summary`` — сводка фона кодом (``backlog.voices_summary``, #4212): ``voices`` (разных собеседников по
+#: ``background_summary`` — сводка фона кодом (``backlog.voices_summary``): ``voices`` (разных собеседников по
 #: ``speaker_id``), ``known`` (имена узнанных), ``unknown`` (безымянных профилей), ``unattributed`` (фраз без профиля,
 #: если есть). Числа и состав голосов в ответе берутся отсюда, а не пересчётом ``background_since_reply``.
 #: ``shift_log`` — журнал смены (``shift_log.ShiftLog.section``): кто приходил, что звучало, что робот сделал,
@@ -1338,7 +1338,7 @@ STOPPED_EARLIER_FIELD = "stopped_earlier"
 #: стопа - ``turn._tier1_then_rest``: «хватит, борис уже уснул под неё», n709): модель видит, что музыку уже
 #: остановил код, а не думает, что она ещё играет и её можно «сделать потише».
 THIS_TURN_FIELD = "this_turn"
-#: Старт сета с объявлением (#4217, n605 «поставь сет из трёх треков, объявляй каждый»): сет объявляет треки вслух, и
+#: Старт сета с объявлением (n605 «поставь сет из трёх треков, объявляй каждый»): сет объявляет треки вслух, и
 #: первый - тоже: ``dj_set`` кладёт в данные исхода название трека 1 (``opening``) и длину сета словами (``tracks_text``),
 #: фразу строит код по ним («Ставлю сет на 3 трека. Первый - «X».»), а не общее «Включаю музыку.» класса. Названия нет
 #: (мост ожидания генерации, трек без названия, реплики диджея выключены) - ключ класса, как было.
@@ -1755,7 +1755,7 @@ PHRASE_KEYS: Tuple[str, ...] = (
     "voice.applied", "voice.unavailable", "voice.rejected", "voice.timeout", "voice.already_default",
     "voice.applied_default", "voice.unavailable_default", "voice.provider_same",
     *(f"perform.no_backing.{reason}" for reason in ("quota", "network", "timeout", "error")),
-    "perform.ask_replace_music", "perform.edit_rejected", "perform.stalled", "identity.ask_name", "identity.confirm",
+    "perform.ask_replace_music", "perform.edit_rejected", "perform.stalled",
     # Tier-1 громкость по каналу (``grammar``): фраза после ответа тула владельца канала
     *(f"{channel}.volume.{intent}" for channel in ("music", "voice") for intent in VOLUME_INTENTS),
     "music.volume_fail", "voice.volume_fail",
@@ -1970,13 +1970,13 @@ FACE_SCENE_MAX_S = 30.0
 #: секунд»): сцена ``play_animation`` и лицо команды, когда лицо просили (``tools_view.show_asked``) или модель задала
 #: ``expression.duration_s``, держится не меньше ``FACE_SHOW_MIN_S`` и не больше ``FACE_SCENE_MAX_S`` (ADR §5.5.9);
 #: без заказанного времени - ``FACE_SHOW_DEFAULT_S`` (то же, что по умолчанию у ``face_director`` для запроса без
-#: ``ttl_ms``). Одно правило - ``expression.show_seconds`` (#4089): его читают диалог (``turn.command_face``), тул
+#: ``ttl_ms``). Одно правило - ``expression.show_seconds``: его читают диалог (``turn.command_face``), тул
 #: ``play_animation`` (``data.duration``) и ``face_node`` (сцена без времени); пачка сцен одной команды идёт по очереди,
 #: каждая своё время (``expression.queued``), а не перезаписью. Рефлекс ``done`` сцену вызова не обрезает: время итога -
 #: её время.
 FACE_SHOW_MIN_S = 5.0
 FACE_SHOW_DEFAULT_S = 8.0
-#: Описание параметра ``duration`` тула ``play_animation`` (#4089): пределы и умолчание - из тех же чисел, а не словами
+#: Описание параметра ``duration`` тула ``play_animation``: пределы и умолчание - из тех же чисел, а не словами
 #: в коде тула.
 FACE_SHOW_DURATION_HINT = (f"Сколько секунд держать анимацию: от {FACE_SHOW_MIN_S:g} до {FACE_SCENE_MAX_S:g}; меньше"
                            f" - {FACE_SHOW_MIN_S:g}, больше - {FACE_SCENE_MAX_S:g}; не задано - {FACE_SHOW_DEFAULT_S:g}")
@@ -2162,7 +2162,7 @@ UNPROMPTED_QUIET_SCENES: Tuple[str, ...] = ("Silence", "OperatorHold")
 STARTUP_GREETING_DELAY_S = 12.0
 #: …earcon ``heard`` → пауза → earcon ``done`` → пауза → фраза ``startup.<вердикт готовности>`` (паузы v1: 2 с и 1,5 с).
 STARTUP_GREETING_STEPS_S: Tuple[float, float] = (2.0, 1.5)
-#: Стартовая фраза по готовности узлов (#3913): источник - ``/perception/context_update`` (``active_nodes``/
+#: Стартовая фраза по готовности узлов: источник - ``/perception/context_update`` (``active_nodes``/
 #: ``failed_nodes``/``missing_nodes`` монитора контекстного агрегатора) и здоровье цепочки LLM. Фраза ждёт, пока всё
 #: поднимется, не дольше стольких секунд от старта ноды; потом говорит, что есть (или честно «не знаю»).
 STARTUP_READY_TIMEOUT_S = 90.0
@@ -2312,15 +2312,6 @@ NAME_CASE_STEMS: Mapping[str, str] = MappingProxyType({"льв": "лев", "па
 NAME_CASE_SURE_TAILS: Mapping[str, str] = MappingProxyType({"ой": "а", "ом": ""})
 NAME_CASE_MIN_STEM = 3
 
-#: Вопрос об имени (В17, уточнение Шифу 21.10): не сразу — копить признаки; спрашивать не раньше N-й фразы
-#: собеседника или T секунд разговора с ним (и не меньше двух фраз), один раз на ``person_ref``.
-IDENTITY_ASK_MIN_PHRASES = 3
-IDENTITY_ASK_MIN_S = 60.0
-IDENTITY_ASK_MIN_PHRASES_BY_TIME = 2
-#: Незнакомец без ``person_ref``: не чаще раза в 10 мин (§7.5 п.2).
-IDENTITY_ASK_STRANGER_GAP_S = 600.0
-#: Лицо с именем в кадре за эти секунды — собеседник опознан лицом, «Как тебя зовут?» не нужен.
-IDENTITY_FACE_RECENT_S = 10.0
 #: Потолок хода (В31, решение Шифу 23.10: «вести запрос до конца, пока провайдер жив, промежуточная фраза на ~6 с,
 #: потолок 60–90 с, стоп всегда»). Пока провайдер жив, ход ждёт: вызов LLM в полёте, транспорт не оборвал его своим
 #: таймаутом, цепочка провайдеров не исчерпана (отказ цепочки закрывает ход сразу - ``deadline.ProviderFailed``).
@@ -2404,11 +2395,11 @@ PHRASE_KEYS = PHRASE_KEYS + (SHIFT_EMPTY_PHRASE, SHIFT_SUMMARY_PHRASE, *SHIFT_PA
 #: старые ходы выпадают целиком, ход не режется посередине.
 TURN_WINDOW_MAX_TURNS = 12
 TURN_WINDOW_MAX_TOKENS = 3000
-#: Срок давности окна (#4258): пауза между адресованными ходами дольше - окно и сессия сбрасываются кодом
+#: Срок давности окна: пауза между адресованными ходами дольше - окно и сессия сбрасываются кодом
 #: (``window_reset``). 30 мин - предложение карточки, не замерено: дольше паузы внутри разговора, короче ночи.
 DIALOG_WINDOW_IDLE_RESET_S = 1800.0
 #: Query-цикл (§4.1): не больше четырёх итераций данных → LLM на ход (≤ 5 вызовов модели). Решение Шифу 29.10: 2 → 4:
-#: живой n707 (#4216) - модель сделала search, search, а info не влез, прозвучала заглушка «Данные получил…».
+#: живой n707 - модель сделала search, search, а info не влез, прозвучала заглушка «Данные получил…».
 LLM_QUERY_ITERATIONS_MAX = 4
 #: Невалидная команда LLM возвращается модели перечнем нарушений (tool-результат на её вызов ``command``) — столько
 #: повторов на ответ; дальше невалидна — допустимые действия исполняются, об исходе (или о том, что не вышло) говорит
@@ -2505,7 +2496,7 @@ MUSIC_PROMISES: Mapping[str, MusicPromise] = MappingProxyType({
         near=(*MUSIC_PROMISE_NOUNS, *MUSIC_STYLE_STEMS),
         tools=("dj_set", "request_music", "edit_music", "generate_music", "music_library")),
 })
-#: Обещание сменить собственную речь без тула (#4020 К1, ADR-0148): «заговорю помедленнее», «переключусь на голос
+#: Обещание сменить собственную речь без тула (ADR-0148): «заговорю помедленнее», «переключусь на голос
 #: Алёны», «понижу тон». Та же форма, что :data:`MUSIC_PROMISES` (слова целые, строчные, без «ё»; основа ``near`` - начало
 #: слова), валидатор команды (``command._check_voice_promise``) сверяет по словам (``words.voice_promises``). Настоящее
 #: время («говорю медленнее») не обещание: после Tier-1 шага голоса (``voice_step``) оно правда, а фразу о результате
