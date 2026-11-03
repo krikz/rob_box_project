@@ -42,6 +42,11 @@ updates:
       # ("No matching distribution found for torch==2.15.0+cpu"). Сверяем руками.
       - dependency-name: "torch"
       - dependency-name: "torchaudio"
+      # numpy/scipy: пара должна быть совместима по ABI (scipy.signal падает с
+      # "_ARRAY_API not found" при несовпадении, Silero не грузится). Пины точные,
+      # сверяем руками вместе с torch; сторож импорта - в Dockerfile voice_base/voice_assistant.
+      - dependency-name: "numpy"
+      - dependency-name: "scipy"
     groups:
       python-deps:
         patterns: ["*"]

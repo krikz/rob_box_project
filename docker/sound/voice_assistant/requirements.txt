@@ -28,7 +28,7 @@ pyaudio
 sounddevice
 soundfile
 pydub
-numpy<3.0.0
+numpy==2.2.6
 
 # =============================================================================
 # Image processing (for LED matrix animations)
@@ -81,7 +81,12 @@ pyusb
 --extra-index-url https://download.pytorch.org/whl/cpu
 torch==2.14.1+cpu
 torchaudio==2.11.0+cpu
-scipy
+# Silero (офлайн-голос): scipy.signal и numpy ОБЯЗАНЫ быть парой. Голый `scipy` удовлетворялся
+# apt-пакетом python3-scipy 1.8.0 (собран под numpy 1.x), а pip ставил numpy 2.x ->
+# `_ARRAY_API not found` при импорте scipy.signal, Silero не грузится (03.11.2026).
+# scipy 1.15.3 - последняя ветка с колесом cp310 aarch64 и поддержкой numpy 2.
+# Не бампать вслепую (dependabot игнорирует numpy/scipy); сторож - в Dockerfile.
+scipy==1.15.3
 
 # =============================================================================
 # Speech-to-Text: Vosk (offline, lightweight Russian STT)
