@@ -8,8 +8,8 @@
 ``VoiceMemory`` во временной e2e-БД), раздел ``speaker_memory`` хода (настоящий ``SpeakerMemory`` хоста, #3919).
 
 Фейковые владельцы, которые отвечают событием сразу (:class:`FakeTools`, :class:`FakeSpeech`, :class:`FakeSpeakers`,
-:class:`FakePlayer`, :class:`FakeLibrary`): речь, музыка (дека, сет, библиотека), голос/темп/громкость, лицо,
-биометрия диктора, статус робота. Что они знают о мире — таблицей здесь; в
+:class:`FakePlayer`, :class:`FakeLibrary`, :meth:`DryPorts.perform`): речь, музыка (дека, сет, библиотека),
+выступление, голос/темп/громкость, лицо, биометрия диктора, статус робота. Что они знают о мире — таблицей здесь; в
 отчёт каждого шага попадает, каких владельцев ход коснулся (``DryStand.touched``). Лог шага (:class:`StepLog`) — в
 форматах строк живого робота (источники указаны у каждой строки): по нему работает та же
 ``e2e_tool_match.step_verdict``, что у ``check_acceptance`` на стенде.
@@ -708,6 +708,20 @@ class DryPorts(V2Ports):
     def stop_perform(self, how: str) -> bool:
         return False
 
+    def perform(self, turn_id: str, epoch: int, perf: Any, edit: bool) -> Optional[Mapping[str, Any]]:
+        """Владелец выступлений (на роботе - ``PerformHost``, ``dialog_v2_ports.V2Ports.perform``): сегменты звучат
+        у него, ход пишет ``выступление старт kind=…`` по исходу ``pending`` - строку, по которой марафон судит
+        «выступление взял владелец» (n412, n810). Без владельца ``V2Ports`` отдавал ``None``: сегменты звучали
+        репликами хода, строки старта не было ни при каком ответе модели (n810 красный с #4268). Такты, подложку и
+        паузы стенд не исполняет; сегменты «отзвучивают» сразу (:class:`FakeSpeech`), конец (``block_end`` → журнал
+        ходов) - после хода (:meth:`DryStand.end_performances`). Строк ``[perform]``/``PlanEvent`` стенд не пишет:
+        такие паттерны акустические (``dry_marathon._ACOUSTIC_PATTERN``)."""
+        voices = perf.voice_per_segment or ("",) * len(perf.segments)
+        for segment, voice in zip(perf.segments, voices):
+            self._stand.speech.say(turn_id, epoch, segment, voice or None)
+        self._stand.performed.append((turn_id, len(perf.segments)))
+        return {"status": "pending"}
+
     def intent(self, turn_id: str, epoch: int, kind: str) -> None:
         self.intents.append(kind)
 
@@ -806,6 +820,8 @@ class DryStand:
         self._turn_memory: Tuple[Optional[str], Optional[Mapping[str, Any]]] = (None, None)
         self.ros_node = _FakeRosNode(self.emit, self.memory)
         self.speech = FakeSpeech(self.emit)
+        #: Выступления хода, взятые фейковым владельцем (:meth:`DryPorts.perform`): ``(turn_id, сегментов)``.
+        self.performed: List[Tuple[str, int]] = []
         self.session = Session(kn.AGENTS[0], clock=self.clock.now)
         self.backlog = Backlog()
         self.music_mem = MusicStateMemory()
@@ -962,6 +978,7 @@ class DryStand:
             agg = await self.engine.run(decision)
         spoken_s = self.speech.settle(self.engine, kn.AGENTS[0])
         self.clock.advance(spoken_s)
+        self.end_performances()
         log = self._log.text
         return HearResult(text, True, source=decision.source, aggregate=agg,
                           said=[s.text for s in self.speech.all], voices=[s.voice for s in self.speech.all],
@@ -972,6 +989,13 @@ class DryStand:
                           offered=list(offered[0]) if offered else [], widened=widened_tools(log),
                           variant=self.variant, route=route, calls=[(n, dict(a)) for n, a in self.tools.calls],
                           asked_yes=_ASKED_YES_LINE.search(log) is not None)
+
+    def end_performances(self) -> None:
+        """Сегменты отзвучали - конец выступления в журнал ходов, как ``plan_host.note_perform_end`` по ``block_end``
+        владельца (``done``): просьба в окне LLM закрыта исходом, а не висит «идёт» на следующих шагах."""
+        for turn_id, segments in self.performed:
+            self.engine.log.performance_ended(turn_id, "done", segments)
+        self.performed.clear()
 
     def _outcomes(self, turn_id: str) -> List[Tuple[str, str, Optional[str]]]:
         """Исходы действий хода — читателем e2e-БД, которым пользуются ``turn_metrics`` и ``honesty_audit``."""
