@@ -268,6 +268,8 @@ else
 fi
 
 overall=0
+# #4077 П4: итоги шагов прошлых актов (метка=СТАТУС,…) -- поле шага requires, связь между актами.
+PRIOR_STEPS=""
 while IFS=$'\t' read -r a_n a_title a_stab a_steps a_scn a_acc a_phase a_hold; do
     [ -z "$a_n" ] && continue
 
@@ -305,6 +307,7 @@ while IFS=$'\t' read -r a_n a_title a_stab a_steps a_scn a_acc a_phase a_hold; d
             -f acceptance_file="$a_acc" \
             -f triggered_by_script="run_night_marathon.sh" \
             -f triggered_by_reason="night marathon act $a_n: $a_title" \
+            ${PRIOR_STEPS:+-f prior_steps="$PRIOR_STEPS"} \
             ${TTS_ARGS[@]+"${TTS_ARGS[@]}"} \
             ${HOLD_ARGS[@]+"${HOLD_ARGS[@]}"} \
             >/dev/null 2>&1; then
@@ -362,6 +365,8 @@ while IFS=$'\t' read -r a_n a_title a_stab a_steps a_scn a_acc a_phase a_hold; d
     gh run view "$run_id" --repo "$REPO_SLUG" --log > "$act_log" 2>/dev/null || true
     recovered="$(marathon_summary_value "$act_log" recovered)"
     act_recover="$(marathon_summary_value "$act_log" act_recover)"
+    _act_steps="$(marathon_step_statuses "$act_log")"
+    [ -n "$_act_steps" ] && PRIOR_STEPS="${PRIOR_STEPS:+$PRIOR_STEPS,}$_act_steps"
     [ "$recovered" != "-" ] && [ "$recovered" != "0" ] \
         && log "  восстановлено харнессом шагов: $recovered (OK recovered_*, не чистый PASS)"
     [ "$act_recover" != "-" ] && log "  на старте акта харнесс чинил утечку прошлого акта: $act_recover"

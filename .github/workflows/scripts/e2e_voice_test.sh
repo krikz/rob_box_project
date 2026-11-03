@@ -298,6 +298,7 @@ VOICE=""
 PATTERNS=""
 CHECK_TG_ECHO=0
 E2E_MARATHON_PHASE="${E2E_MARATHON_PHASE:-}"
+E2E_PRIOR_STEPS="${E2E_PRIOR_STEPS:-}"
 while [ $# -gt 0 ]; do
     case "$1" in
         --text)     TEXT="$2"; shift 2 ;;
@@ -315,6 +316,8 @@ while [ $# -gt 0 ]; do
         # #3972 — раннер марафона держит режим e2e на ВСЕ акты: first включает (стирает e2e-БД один раз),
         # middle/last подхватывают без стирания, last выключает. Без флага акт одиночный (как раньше).
         --e2e-marathon-phase) E2E_MARATHON_PHASE="$2"; shift 2 ;;
+        # #4077 П4 -- итоги шагов прошлых актов марафона (label=СТАТУС,…) для поля requires.
+        --prior-steps) E2E_PRIOR_STEPS="$2"; shift 2 ;;
         *) echo "unknown arg: $1" >&2; exit 2 ;;
     esac
 done
@@ -3055,6 +3058,7 @@ if [ -n "$SCENARIO_FILE" ] && [ "$E2E_PRESYNTH_FAILED" != "1" ]; then
     load_recover_policy "$SCENARIO_FILE"
     # Issue #3971 R21 — предусловия шагов (поле skip_when): разбор до первого шага, кривое поле — E2E_FATAL.
     load_skip_rules "$SCENARIO_FILE"
+    load_requires "$SCENARIO_FILE"
     # Issue #3710 — шаг про трек песни акта (поле track_ref): разбор до первого шага, кривое поле — E2E_FATAL.
     load_track_refs "$SCENARIO_FILE"
     [ "$E2E_PRESYNTH" = "1" ] && presynth_recovery_phrases "$OUT_DIR/scenario_presynth.txt"
@@ -3181,6 +3185,10 @@ elif [ -n "$SCENARIO_FILE" ]; then
         fi
         # issue #3971 R21 — предусловие внешнего мира (поле skip_when, напр. квота KIE в акте 7): нарушено — шаг
         # не играется (SKIP <причина>, не PASS и не FAIL); речь предыдущего шага для when_robot_asked не трогаем.
+        # issue #4077 П4 -- шаг зависит от итога другого шага (поле requires): источник не OK -- SKIP requires:<метка>.
+        if step_requires_skip "$label"; then
+            continue
+        fi
         if step_precondition_skip "$label" "${SCENARIO_FILE:-}"; then
             continue
         fi

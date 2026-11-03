@@ -1080,6 +1080,45 @@ step_precondition_skip() {
     return 0
 }
 
+# --- issue #4077 П4 — шаг зависит от итога другого шага (поле requires) ----------------------------------------------
+# ``requires: [n602_dj_on]``: итог источника -- последняя запись на метку в $OUT_DIR/steps.jsonl (emit_step), для связей
+# между актами -- E2E_PRIOR_STEPS (``label=СТАТУС,…`` прошлых актов; собирает run_night_marathon.sh из логов актов).
+# Источник не OK (FAIL/SKIP) -- шаг не играется: ``E2E_STEP <шаг> SKIP requires:<метка>`` (не PASS, не FAIL, в знаменатель
+# не входит). Итога источника нет нигде (одиночный запуск акта) -- зависимость не доказана, шаг играется, громко в лог.
+E2E_REQUIRES_FILE="${E2E_REQUIRES_FILE:-}"
+E2E_PRIOR_STEPS="${E2E_PRIOR_STEPS:-}"
+load_requires() {  # $1 = файл сценария
+    local err n
+    E2E_REQUIRES_FILE="${OUT_DIR:-/tmp}/requires.tsv"
+    if ! err="$(python3 "$(_events_py)" requires --scenario "$1" 2>&1 >"$E2E_REQUIRES_FILE")"; then
+        echo "E2E_FATAL: поле requires сценария не разобрано: ${err:-нет ответа} (issue #4077)" >&2
+        exit 2
+    fi
+    n="$(grep -c . "$E2E_REQUIRES_FILE" 2>/dev/null)"
+    [ "${n:-0}" -gt 0 ] && log "🔗 зависимости шагов (#4077): ${n} шагов с requires — ${E2E_REQUIRES_FILE}"
+    return 0
+}
+# step_requires_skip LABEL -- rc 0: источник не OK, шаг пропущен (E2E_STEP уже выведен); rc 1 -- играть шаг.
+step_requires_skip() {
+    local label="$1" labels out skip unknown
+    [ -n "${E2E_REQUIRES_FILE:-}" ] && [ -s "$E2E_REQUIRES_FILE" ] || return 1
+    labels="$(awk -F'\t' -v l="$label" '$1 == l { sub(/\r$/, "", $2); print $2; exit }' "$E2E_REQUIRES_FILE")"
+    [ -n "$labels" ] || return 1
+    out="$(python3 "$(_events_py)" require --label "$label" --labels "$labels" --steps "${OUT_DIR:-/tmp}/steps.jsonl" \
+        --prior "${E2E_PRIOR_STEPS:-}")"
+    skip="$(printf '%s\n' "$out" | _ev_kv skip)"
+    unknown="$(printf '%s\n' "$out" | _ev_kv unknown)"
+    if [ -n "$unknown" ] && [ "$unknown" != "-" ]; then
+        log "STEP ${label}: ⚠️ итог ${unknown} неизвестен (нет ни в этом акте, ни в прошлых) — зависимость не доказана, шаг играется"
+    fi
+    if [ -z "$skip" ] || [ "$skip" = "-" ]; then
+        return 1
+    fi
+    log "STEP ${label}: ⏭ SKIP ${skip} — $(printf '%s\n' "$out" | _ev_kv evidence). Шаг НЕ играется (не PASS и не FAIL)"
+    emit_step "${label} SKIP ${skip}"
+    return 0
+}
+
 # --- issue #3710 / #4077 — шаг про трек песни этого акта (поле track_ref) ---------------------------------------
 # n707 «расскажи про песню» и n708 «включи её» были зелёными на ЛЮБОЙ вызов music_library (27.10). Поле шага
 # ``track_ref`` (e2e_events.py track_ref*) привязывает шаг к id, который назвал сам заказ песни в логе акта
