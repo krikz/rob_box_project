@@ -124,3 +124,9 @@ def test_a_theme_named_by_the_human_still_orders_the_generation_as_before(tmp_pa
     assert kie.jobs, "названная человеком тема перестала заказывать генерацию"
     assert any("generate:" in line for line in _routes(caplog))
     assert not any("догадка кода" in r.getMessage() for r in caplog.records)
+
+
+def test_n604_long_junk_without_support_does_not_replace_the_llm_theme_in_the_guard():
+    """#4217: «2+ значимых слова» - не опора; гард не подменяет тему LLM огрызком (n604 М8)."""
+    heard = "уводи в сторону рока тетя гриша подруг добреет"
+    assert grounded_theme("ночная дискотека с уклоном в рок", heard) == ("ночная дискотека с уклоном в рок", False)

@@ -183,7 +183,8 @@ def grounded_theme(theme: Optional[str], heard_text: Optional[str]) -> Tuple[str
     heard = heard_theme(heard_text or "")
     if not heard or content_stems(theme) & content_stems(heard):
         return theme, False
-    if theme and (not _names_new_theme(heard_text) or not names_theme(heard, heard_text)):
+    if theme and (not _names_new_theme(heard_text) or not names_theme(heard, heard_text)
+                  or not theme_support(heard, heard_text)):  # огрызок без опоры, даже длинный: n604 М8 (#4217)
         return theme, False
     return heard, True
 

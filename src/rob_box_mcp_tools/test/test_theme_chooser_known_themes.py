@@ -332,3 +332,36 @@ def test_continue_set_keeps_the_last_theme_without_the_chooser(tmp_path, monkeyp
         out = dj.execute(action="start", tracks=2, heard_text="продолжай сэт")
     assert out.success and out.data["theme"] == "динозавров"
     assert not any("[theme]" in r.getMessage() for r in caplog.records)
+
+
+# ── n604 М8 (#4217): огрызок реплики не подменяет осмысленную тему LLM ────────────────────────────────────────────
+
+#: Дословно из лога М8 (акт 6, n604): STT и тема LLM.
+N604_HEARD = "уводи в сторону рока тетя гриша подруг добреет"
+N604_LLM = "ночная дискотека с уклоном в рок"
+
+
+def test_n604_junk_heard_words_are_not_an_option_when_the_llm_has_a_theme():
+    question, themes = theme_question(N604_HEARD, N604_LLM, known_themes())
+    assert not any(i.startswith(NEW_PREFIX) for i in themes), themes
+    assert themes[LLM_ID] == N604_LLM
+
+
+def test_n604_the_model_cannot_pick_the_junk_and_the_code_keeps_the_llm_theme():
+    """Модель выбрала бы огрызок (``new:0``) - такого варианта нет, ответ вне перечня: код берёт лучший по очкам."""
+    model = FakeModel(lambda q: f"{NEW_PREFIX}0")
+    pick = choose_theme(N604_LLM, N604_HEARD, known_themes(), DeterministicChooser(model))
+    assert "гриша" not in pick.theme and "уводи" not in pick.theme
+    assert pick.id in (LLM_ID, NONE_ID)
+
+
+def test_n604_a_model_choosing_the_llm_option_keeps_the_llm_theme_verbatim():
+    model = FakeModel(lambda q: LLM_ID)
+    pick = choose_theme(N604_LLM, N604_HEARD, known_themes(), DeterministicChooser(model))
+    assert pick.theme == N604_LLM and pick.id == LLM_ID
+
+
+def test_supported_heard_words_still_replace_a_stale_llm_theme():
+    """Регресс: слова реплики с опорой («сет про космос») - по-прежнему другая тема, а не огрызок."""
+    question, themes = theme_question("поставь сет про космос", "Увертюра 1812, мегасет для геймеров", known_themes())
+    assert LLM_ID not in themes and any(i.startswith(NEW_PREFIX) for i in themes)

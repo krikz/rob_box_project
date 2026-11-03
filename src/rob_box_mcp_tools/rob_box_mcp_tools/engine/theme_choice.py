@@ -76,11 +76,15 @@ def _stems(text: str) -> frozenset:
     return frozenset(content_stems(text or ""))
 
 
-def _new_options(heard: str, heard_text: str) -> Dict[str, Dict[str, float]]:
-    """Варианты из слов реплики: вся тема и части перечня; слова без опоры (``theme_support``) — ``bare``."""
+def _new_options(heard: str, heard_text: str, llm_theme: str = "") -> Dict[str, Dict[str, float]]:
+    """Варианты из слов реплики: вся тема и части перечня; слова без опоры (``theme_support``) — ``bare``. Слова без
+    опоры при теме LLM со словами темы вариантом не бывают: огрызок распознавания («уводи сторону тетя гриша подруг
+    добреет», n604 М8) не подменяет осмысленную тему модели — ни выбором модели чойсера, ни очками (#4217)."""
     if not heard or not names_theme(heard, heard_text):
         return {}
     bare = 0.0 if theme_support(heard, heard_text) else 1.0
+    if bare and heard_theme(llm_theme):
+        return {}
     out = {heard: {"asked": 1.0, "whole": 1.0, "bare": bare}}
     parts = [" ".join(p.split()) for p in _PART_RE.split(heard) if p and content_stems(p)]
     for part in parts[:NEW_MAX - 1] if len(parts) > 1 else ():
@@ -94,8 +98,8 @@ def _llm_option(texts: Dict[str, Dict[str, float]], heard: str, heard_text: str,
     LLM, повторившая огрызок реплики, опоры ему не даёт: слова без опоры — ``bare`` и у неё. Текст варианта — тема LLM
     как есть («Очень странные дела»: «очень» — не степень громкости, а название), если в ней есть слова темы."""
     words = heard_theme(llm_theme)
-    if not words or (heard and not _stems(words) & _stems(heard)):
-        return None
+    if not words or (heard and not _stems(words) & _stems(heard) and theme_support(heard, heard_text)):
+        return None  # слова реплики с опорой — другая тема; без опоры (огрызок) они тему LLM не опровергают
     llm = " ".join(llm_theme.split())
     if llm in texts:
         texts[llm]["llm"] = 1.0
@@ -129,7 +133,7 @@ def theme_question(heard_text: Optional[str], llm_theme: Optional[str],
     тема LLM, известные темы."""
     said, llm_theme = heard_text or "", llm_theme or ""
     heard = request_words(said)
-    texts = _new_options(heard, said)
+    texts = _new_options(heard, said, llm_theme)
     llm = _llm_option(texts, heard, said, llm_theme)
     options = [_none_option(heard, said, llm_theme)]
     themes = {NONE_ID: ""}
