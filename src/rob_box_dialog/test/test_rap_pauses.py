@@ -1,5 +1,6 @@
-"""Рэп в такт паузами MiniMax по сетке строк (О11, #3901): формула и лимиты :mod:`rap_pauses`, и как выступление
-их применяет — разметка из сетки подложки; без подложки и не у MiniMax — как раньше, с причиной в логе."""
+"""Рэп в такт паузами MiniMax по сетке строк (О11, #3901): формула и лимиты :mod:`rap_pauses`, и что выступление
+отдаёт владельцу речи — голые строки и такт подложки ``beat_s`` (#4241, ADR-0160 §2.2); провайдера оно не знает,
+паузы ставит адаптер голоса (``rob_box_voice/test/unit/tts/test_beat_in_adapter_4241.py``)."""
 
 import re
 
@@ -81,10 +82,8 @@ def test_br_is_a_line_break_in_any_case_and_spacing():
         assert got is not None and "<br" not in got.text.lower() and len(got.pauses) == 1
 
 
-def test_br_never_reaches_synthesis_on_any_provider():
+def test_br_never_reaches_synthesis():
     text = "Енот — ночной король помойки,<br/>в полосатой шубе по двору."
-    for provider in ("minimax", "yandex", "silero", ""):
-        assert "<br" not in rp.text_for(provider, text).lower()
     assert "<br" not in Line(1, text, "s1").tts_text.lower()
 
 
@@ -107,44 +106,36 @@ def test_every_line_gets_its_own_bars_and_a_short_line_pauses_at_most_a_bar():
         assert rp.estimate_span(line) + pause + rp.PAUSE_OVERHEAD_S <= k * bar + 1e-6 or pause == rp.MIN_PAUSE_S
 
 
-def test_fallback_provider_gets_the_text_without_pause_marks():
-    marked = rp.markup(VERSES[1], 2.0).text
-    assert rp.text_for("minimax", marked) == marked
-    for provider in ("yandex", "silero"):
-        plain = rp.text_for(provider, marked)
-        assert "<#" not in plain and "#>" not in plain
-        assert plain == "А вот и енот, полосатый хвост, Он моет печенье и лезет на мост."
-
-
 # --- выступление ----------------------------------------------------------------------------------------------------
 
-def test_minimax_with_beat_marks_every_verse_from_the_backing_grid():
-    sim = Sim(rap(), tts_provider="minimax", bpm=120.0)
+def test_with_beat_every_verse_goes_as_plain_lines_with_the_backing_bar():
+    """Диалог отдаёт данные: строки как есть и такт подложки ``beat_s`` (2.0 с при 120 BPM) — меток в тексте нет."""
+    sim = Sim(rap(), bpm=120.0)
     sim.start()
     assert presynths(sim) == []  # сетка ещё неизвестна — пред-синтез ждёт подложку
     sim.run(300)
     sent = presynths(sim)
-    assert [rp.strip_pauses(s.text) for s in sent] == [rp.strip_pauses(rp.markup(v, 2.0).text) for v in VERSES]
-    assert [s.text for s in sent] == [rp.markup(v, 2.0).text for v in VERSES]  # такт 2.0 с — из started{bpm}
-    commits = {e.speech_id: e.text for _, e in sim.effects if isinstance(e, Say) and e.commit and not e.key}
-    assert [commits[s.speech_id] for s in sent] == [s.text for s in sent]  # звучит то, что синтезировано
+    assert [s.text for s in sent] == list(VERSES) and all("<#" not in s.text for s in sent)
+    assert [s.beat_s for s in sent] == [2.0, 2.0]  # такт 2.0 с — из started{bpm}
+    commits = {e.speech_id: e for _, e in sim.effects if isinstance(e, Say) and e.commit and not e.key}
+    assert [(commits[s.speech_id].text, commits[s.speech_id].beat_s) for s in sent] == [(s.text, s.beat_s)
+                                                                                        for s in sent]
+    lead = [e for _, e in sim.effects if isinstance(e, Say) and e.key]
+    assert lead and all(e.beat_s == 0.0 for e in lead)  # фразы кода («Поехали!») — без такта
     assert sim.block.end_reason == "done" and all(e.synced for e in sim.events("segment_started"))
-    assert any("perform: разметка пауз MiniMax по сетке строк, такт 2.00 с" in line for line in sim.logs)
+    assert any("perform: такт подложки 2.00 с — в реплике" in line for line in sim.logs)
 
 
-def test_pauses_follow_the_backing_tempo():
-    slow, fast = Sim(rap(), tts_provider="minimax", bpm=90.0), Sim(rap(), tts_provider="minimax", bpm=131.0)
+def test_beat_follows_the_backing_tempo():
+    slow, fast = Sim(rap(), bpm=90.0), Sim(rap(), bpm=131.0)
     for sim in (slow, fast):
         sim.start()
         sim.run(300)
-    first = [pauses(presynths(sim)[0].text) for sim in (slow, fast)]
-    assert first[0] == pauses(rp.markup(VERSES[0], 240.0 / 90).text)
-    assert first[1] == pauses(rp.markup(VERSES[0], 240.0 / 131).text)
-    assert first[0] != first[1]
+    assert [presynths(sim)[0].beat_s for sim in (slow, fast)] == [240.0 / 90, 240.0 / 131]
 
 
 def test_context_for_the_llm_keeps_the_plain_verse():
-    sim = Sim(rap(), tts_provider="minimax")
+    sim = Sim(rap())
     sim.start()
     sim.run(5)
     ctx = context_block(sim.block, sim.t)
@@ -152,23 +143,31 @@ def test_context_for_the_llm_keeps_the_plain_verse():
     assert sim.block.lines.segments()[0].text == VERSES[0]
 
 
-@pytest.mark.parametrize("provider, backing, music, reason", [
-    ("minimax", "none", ("ok",), "нет подложки"),
-    ("yandex", "beat", ("ok",), "синтез yandex, не MiniMax"),
-    ("", "beat", ("ok",), "синтез неизвестен, не MiniMax"),
-    ("minimax", "beat", ("rejected:quota",), "подложки нет: quota"),
+@pytest.mark.parametrize("backing, music, reason", [
+    ("none", ("ok",), "нет подложки"),
+    ("beat", ("rejected:quota",), "подложки нет: quota"),
 ])
-def test_no_markup_without_backing_or_minimax_and_the_log_says_why(provider, backing, music, reason):
-    sim = Sim(rap(backing), tts_provider=provider, music=music)
+def test_no_beat_without_backing_and_the_log_says_why(backing, music, reason):
+    sim = Sim(rap(backing), music=music)
     sim.start()
     sim.run(300)
-    assert [s.text for s in presynths(sim)] == list(VERSES)  # как раньше: текст сегмента без меток
+    assert [(s.text, s.beat_s) for s in presynths(sim)] == [(v, 0.0) for v in VERSES]
     assert [h.text for h in sim.segments_heard()] == list(VERSES)
-    assert sum(f"perform: разметка пауз выключена ({reason})" in line for line in sim.logs) == 1
+    assert sum(f"perform: без такта ({reason})" in line for line in sim.logs) == 1
+
+
+def test_dialog_does_not_know_the_tts_provider():
+    """#4241: ветки по провайдеру в выступлении нет — ни параметра, ни списка понимающих паузы."""
+    import inspect  # noqa: PLC0415
+
+    from rob_box_dialog.plan import perform  # noqa: PLC0415
+
+    assert "tts_provider" not in inspect.signature(perform.PerformBlock).parameters
+    assert not [name for module in (rp, perform) for name in vars(module) if "PROVIDER" in name.upper()]
 
 
 def test_stop_while_waiting_for_the_backing_cancels_nothing_never_sent():
-    sim = Sim(rap(), tts_provider="minimax", music=("silent",))
+    sim = Sim(rap(), music=("silent",))
     sim.start()
     effects = sim.block.stop(sim.t)
     assert not [e for e in effects if type(e).__name__ == "Cancel"]

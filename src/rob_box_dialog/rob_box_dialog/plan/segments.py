@@ -85,8 +85,10 @@ class Line:
     heard_at: Optional[float] = None
     spoken_chars: int = 0
     fallback: Optional["Line"] = None
-    #: Текст, ушедший владельцу речи (с паузами MiniMax по сетке, :mod:`.rap_pauses`); ``""`` — ещё не отдан.
+    #: Текст, ушедший владельцу речи (голые строки, ADR-0160 §2.3); ``""`` — ещё не отдан.
     speak: str = ""
+    #: Такт подложки (с), с которым реплика ушла владельцу речи: паузы строк по нему ставит адаптер голоса; 0 — нет.
+    beat_s: float = 0.0
 
     @property
     def tts_text(self) -> str:

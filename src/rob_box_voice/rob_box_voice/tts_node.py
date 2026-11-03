@@ -87,6 +87,7 @@ from typing import Any, Dict, List, Optional
 from .audio_playback_manager import AudioPlaybackManager
 # ADR-0160 §2.5 (#4240) — синтез Yandex и Silero живёт в адаптерах на BaseTTSProvider, нода их только зовёт.
 from .tts_providers import SileroTTSProvider, YandexTTSProvider
+from .tts_providers.beat import minimax_text
 from .utils.stderr_silence import silence_alsa_errors
 
 # Очистка текста перед синтезом (issue #988, #3598) и отказ на куске системного шаблона (issue #2175) — один модуль
@@ -2100,6 +2101,7 @@ class TTSNode(Node):
                 voice=voice,
                 language=language,
                 prebaked_audio=prebaked_audio,
+                beat_s=chunk_data.get("beat_s", 0.0),  # такт рэпа (#4241): паузы ставит адаптер
                 # Issue #1996 — forwarded via kwargs so the canonical
                 # positional arity of ``_run_synthesis_worker`` stays
                 # intact (see test_speech_id_arg_chain.py).
@@ -2720,6 +2722,7 @@ class TTSNode(Node):
             language=language,
             sink=sink,
             prebaked_audio=prebaked_audio,
+            beat_s=kwargs.get("beat_s", 0.0),
         )
 
     def _release_play_seq(
@@ -3242,6 +3245,7 @@ class TTSNode(Node):
         language: str = None,  # AV-28 — язык произношения этой реплики
         sink: str = "speaker",  # ADR-0055 / issue #1993 — "speaker"|"headset"
         prebaked_audio: Optional[Dict[str, Any]] = None,  # ADR-0150 PR-3 — пред-синтез commit=false
+        beat_s: float = 0.0,  # #4241 — такт рэпа из реплики: паузы строк ставит адаптер провайдера
     ):
         """Синтез речи и воспроизведение.
 
@@ -3332,6 +3336,7 @@ class TTSNode(Node):
             "result": {},  # последний result от MiniMax (already_published etc.)
             # #3930 — в динамик можно потоком (пред-синтез, шлем, бурундук — целиком).
             "stream_ok": tts_stream.allowed(self, sink),
+            "beat_s": beat_s,  # #4241 — такт рэпа: ``prepare`` адаптера ставит паузы (MiniMax) или пишет «без такта»
         }
         try:
             # Issue #2096 — единый choke-point: ЛЮБОЙ TTS-путь (dialogue_
@@ -3618,7 +3623,7 @@ class TTSNode(Node):
                     budget_deadline=cloud_deadline,
                 )
             elif provider_name == "yandex":
-                # Текст под сервис (паузы MiniMax ``<#x#>`` сняты, #3901) готовит адаптер: ``prepare``.
+                # Текст под сервис (такт рэпа — без пауз, строка лога, #4241) готовит адаптер: ``prepare``.
                 self._sap_synthesize_yandex(voice, language, text, ctx)
             elif provider_name == "silero":
                 # Silero — последний рубеж: обработка ниже
@@ -3686,6 +3691,8 @@ class TTSNode(Node):
                 f"использую дефолтный '{_mm_voice}'"
             )
         try:
+            # #4241 — паузы такта рэпа MiniMax ``<#x#>`` ставит адаптер по ``beat_s`` реплики (ADR-0160 §2.5).
+            text = minimax_text(text, ctx.get("beat_s", 0.0), self.get_logger().info)
             if ctx.get("stream_ok") and self.minimax_streaming:
                 # #3930 — звук с первых кусков; в ctx["audio_np"] — PcmStream.
                 self.get_logger().info("🔊 Синтез через MiniMax T2A v2 (поток)...")
@@ -3831,7 +3838,8 @@ class TTSNode(Node):
             )
             # Скорость — ROS-параметр ``yandex_speed``; просодии на проводе нет (ADR-0160 §2.3).
             ctx["audio_np"] = yandex_tts.synthesize_np(
-                yandex_tts.prepare(_yandex_text), voice=_yandex_voice, speed=getattr(self, "yandex_speed", 1.0)
+                yandex_tts.prepare(_yandex_text, ctx.get("beat_s", 0.0)), voice=_yandex_voice,
+                speed=getattr(self, "yandex_speed", 1.0),
             )
             ctx["sample_rate"] = yandex_tts.sample_rate
             ctx["used_provider"] = "yandex"
@@ -3885,7 +3893,7 @@ class TTSNode(Node):
         #   → событие не set → timeout → skip chunk
         _tts_guard_ensure_readable(text, "silero")  # #3728: не читает письменность - честный unsupported_script
         silero_tts = self._silero_tts
-        text = silero_tts.prepare(text)  # адаптер: паузы MiniMax ``<#x#>`` сняты (#3901)
+        text = silero_tts.prepare(text, ctx.get("beat_s", 0.0))  # адаптер: числа словами, рэп без такта (#4241)
         _warm_wait_s = 1.5
         # getattr-fallback: стабы (bare ``_Stub`` / ``_playback_node``)
         # не проходят через __init__ и не несут атрибут — считаем

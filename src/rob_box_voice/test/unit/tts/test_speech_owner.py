@@ -131,7 +131,7 @@ def test_4053_voice_owner_event_carries_the_one_owner_agent_constant(setup):
 
 
 def test_plain_text_and_sentence_ends():
-    assert plain_text("x < y  <#0.5#> z") == "x < y z"  # голый текст: метка паузы рэпа не считается
+    assert plain_text("x < y  \n z") == "x < y z"  # голый текст: меток пауз на проводе нет (#4241), пробелы сжаты
     assert sentence_ends("Раз два. Три четыре!") == (8, 20)
     assert sentence_ends("без точки") == (9,)
 

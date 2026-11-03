@@ -12,9 +12,10 @@
 
 * сегменты по порядку уходят в пред-синтез (``commit=false``) окном ``PERFORM_PRESYNTH_WINDOW`` (пачка
   больше очереди ``/voice/speech/request`` теряла сегменты), подложка запрашивается параллельно (решение
-  координатора 22.10: длина — по оценке речи); ``synthesized{duration_ms}`` дают длительности; голос MiniMax и бит —
-  пред-синтез ждёт исхода подложки: куплет размечается паузами ``<#x#>`` по её такту (О11, :mod:`.rap_pauses`),
-  без сетки или не у MiniMax — как есть, причина в логе ``perform: разметка пауз выключена (…)``;
+  координатора 22.10: длина — по оценке речи); ``synthesized{duration_ms}`` дают длительности; с битом пред-синтез
+  ждёт исхода подложки: сегмент уходит со строками и тактом ``beat_s`` (данные, ADR-0160 §2.2, #4241), паузы по
+  ним ставит адаптер голоса (у MiniMax — ``<#x#>``, О11); без сетки — ``beat_s=0``, причина в логе
+  ``perform: без такта (…)``. Провайдера голоса выступление не знает;
 * первая реплика ждёт исхода подложки: ``started`` — вступление «Поехали!» и сегменты на тактах (:mod:`.sync`);
   отказ — вторая попытка другим настроением (О10), затем фраза по причине ``perform.no_backing.{reason}`` и чтение
   без бита: рэп в тишину молча не начинается;
@@ -49,7 +50,6 @@ from rob_box_dialog.command import Performance
 from rob_box_dialog.plan.backing import Backing, BackingTrack, MusicStop
 from rob_box_dialog.plan.estimate import SpeechRate
 from rob_box_dialog.plan.plan_events import PlanEvent
-from rob_box_dialog.plan.rap_pauses import PAUSE_PROVIDERS, markup
 from rob_box_dialog.plan.repeats import drop_said
 from rob_box_dialog.plan.segments import FIXED, HEARD, Line, SegmentList, segment_rows
 from rob_box_dialog.plan.sync import BeatGrid, beat_offset_ms, next_bar
@@ -61,7 +61,8 @@ LOG_MARK = "🎤 [perform]"
 @dataclass(frozen=True)
 class Say:
     """Эффект ``SpeechRequest``: пред-синтез (``commit=False``) или звучание в момент ``at`` (0 — сразу за
-    предыдущей). ``key`` — ключ фразы кода (``""`` — сегмент выступления)."""
+    предыдущей). ``key`` — ключ фразы кода (``""`` — сегмент выступления). ``beat_s`` — такт подложки (с), по
+    которому адаптер голоса расставит паузы строк; 0 — без такта."""
 
     speech_id: str
     text: str
@@ -70,6 +71,7 @@ class Say:
     voice: str = ""
     emotion: str = ""
     key: str = ""
+    beat_s: float = 0.0
 
 
 @dataclass(frozen=True)
@@ -100,7 +102,7 @@ def _new_id() -> str:
 def presynth(line: Line) -> Say:
     """Пред-синтез реплики: звука нет, владелец речи ответит ``synthesized{duration_ms}``."""
     line.speak = line.tts_text
-    return Say(line.speech_id, line.speak, False, 0.0, line.voice, line.emotion, line.key)
+    return Say(line.speech_id, line.speak, False, 0.0, line.voice, line.emotion, line.key, line.beat_s)
 
 
 def withdraw(lines: SegmentList, active_boundary: str) -> List[Cancel]:
@@ -179,10 +181,11 @@ class SpeechSide:
         self._log = log
         self._grid = grid
         self._released = 0
-        #: Пред-синтез сегментов ждёт исхода подложки: от её сетки зависит разметка пауз MiniMax (О11).
+        #: Пред-синтез сегментов ждёт исхода подложки: её такт едет в реплике (``beat_s``), по нему паузы ставит
+        #: адаптер голоса (О11).
         self.hold = False
-        #: Такт подложки (с), по которому сегменты размечаются паузами; ``None`` — разметка выключена.
-        self.pause_bar_s: Optional[float] = None
+        #: Такт подложки (с) для сегментов; 0 — без такта.
+        self.beat_s = 0.0
 
     def commit(self, now: float) -> List[Effect]:
         """На границе — следующую реплику на звучание: на ближайшем такте подложки (без неё — сразу за предыдущей)."""
@@ -193,29 +196,25 @@ class SpeechSide:
         slot = next_bar(self._grid(), now, self._latency_ms, after)
         line.state, line.at, line.synced = "committed", slot.at, slot.synced
         return [*self.release(), Say(line.speech_id, line.tts_text, True, slot.at, line.voice, line.emotion,
-                                     line.key)]
+                                     line.key, line.beat_s)]
 
     def feed(self) -> List[Say]:
         """Пред-синтез следующих реплик по порядку звучания, пока отданных владельцу речи, но ещё не ушедших на
-        звучание меньше ``PERFORM_PRESYNTH_WINDOW``: место освобождает реплика, отданная на звучание. Разметка
-        включена — с паузами MiniMax по сетке строк. Пока ``hold`` — ничего: сегменты уйдут по исходу подложки
-        (:meth:`unhold`)."""
+        звучание меньше ``PERFORM_PRESYNTH_WINDOW``: место освобождает реплика, отданная на звучание. Такт известен —
+        сегмент несёт его (``beat_s``). Пока ``hold`` — ничего: сегменты уйдут по исходу подложки (:meth:`unhold`)."""
         if self.hold:
             return []
         pending = [line for line in self.lines.lines if line.state == "pending"]
         room = kn.PERFORM_PRESYNTH_WINDOW - sum(1 for line in pending if line.speak)
         out = []
         for line in [line for line in pending if not line.speak][:max(0, room)]:
-            mark = markup(line.text, self.pause_bar_s) if line.no and self.pause_bar_s else None
-            if mark is not None:
-                line.speak = mark.text
-                self._log(f"{LOG_MARK} сегмент {line.no}: такты {mark.bars_per_line}, паузы {mark.pauses}")
+            line.beat_s = self.beat_s if line.no else 0.0
             out.append(presynth(line))
         return out
 
-    def unhold(self, bar_s: Optional[float]) -> List[Say]:
-        """Исход подложки известен: пред-синтез отложенных сегментов (с разметкой по такту ``bar_s`` или без)."""
-        self.hold, self.pause_bar_s = False, bar_s
+    def unhold(self, beat_s: float) -> List[Say]:
+        """Исход подложки известен: пред-синтез отложенных сегментов (с тактом ``beat_s`` или без него — 0)."""
+        self.hold, self.beat_s = False, beat_s
         return self.feed()
 
     def release(self) -> List[Cancel]:
@@ -429,7 +428,7 @@ class PerformBlock:
     def __init__(self, perf: Performance, block_id: str, *, turn_id: str = "", epoch: int = 0,
                  agent: str = kn.AGENTS[0], output_latency_ms: int = 0, rate: Optional[SpeechRate] = None,
                  new_id: Callable[[], str] = _new_id, log: Callable[[str], None] = _LOG.info,
-                 tts_provider: str = "", voice_busy: Callable[[], bool] = lambda: False) -> None:
+                 voice_busy: Callable[[], bool] = lambda: False) -> None:
         self.block_id = block_id
         #: Голос занят чужой речью (снимок владельцев у хоста): наша реплика ждёт в очереди владельца — это не сбой.
         self._voice_busy = voice_busy
@@ -444,8 +443,6 @@ class PerformBlock:
         self._last_event = 0.0
         #: Последний ход речи выступления: старт чтения, ``started``/конец своей реплики — от него считает сторож.
         self._spoke_at = 0.0
-        #: Провайдер TTS (фактический у хоста): паузы по сетке строк — только у понимающих ``<#x#>`` (О11).
-        self.tts_provider = tts_provider
         #: Роли выступления и их голоса (``ключ роли → голос``): правка не перекрашивает их — это ``Busy.cast``.
         self.cast: Dict[str, str] = voiced(perf.role_per_segment, perf.voice_per_segment)
 
@@ -487,11 +484,10 @@ class PerformBlock:
             return []
         self.phase, self._last_event = "starting", now
         out: List[Effect] = [self._event("block_start", reason=self.kind)]
-        if self.backing.wanted and self.tts_provider in PAUSE_PROVIDERS:
-            self.speech.hold = True  # разметка пауз — по сетке подложки: пред-синтез ждёт её исхода
+        if self.backing.wanted:
+            self.speech.hold = True  # такт сегментов — от сетки подложки: пред-синтез ждёт её исхода
         else:
-            self.pauses_off("нет подложки" if not self.backing.wanted
-                            else f"синтез {self.tts_provider or 'неизвестен'}, не MiniMax")
+            self.pauses_off("нет подложки")
         out += self.speech.feed()
         out += self.music.begin(now, playing)
         self.log(f"{self.kind}: сегментов {len(self.lines.lines)}, подложка {self.backing.mood or 'нет'}")
@@ -597,18 +593,18 @@ class PerformBlock:
         self._log(f"{LOG_MARK} {self.block_id[:8]}: {text}")
 
     def pauses_on(self, grid: Optional[BeatGrid]) -> List[Say]:
-        """Подложка встала: отложенные сегменты — в пред-синтез, с паузами по её такту (сетки нет — без них)."""
+        """Подложка встала: отложенные сегменты — в пред-синтез с её тактом (сетки нет — без такта)."""
         if not self.speech.hold:
             return []
         if grid is None:
             return self.pauses_off("подложка без сетки тактов")
-        self.log(f"perform: разметка пауз MiniMax по сетке строк, такт {grid.bar_s:.2f} с")
+        self.log(f"perform: такт подложки {grid.bar_s:.2f} с — в реплике, паузы строк ставит адаптер голоса")
         return self.speech.unhold(grid.bar_s)
 
     def pauses_off(self, reason: str) -> List[Say]:
-        """Разметки пауз не будет — честно в логе; отложенные сегменты — в пред-синтез как есть."""
-        self.log(f"perform: разметка пауз выключена ({reason})")
-        return self.speech.unhold(None) if self.speech.hold else []
+        """Такта у сегментов не будет — честно в логе; отложенные сегменты — в пред-синтез без него."""
+        self.log(f"perform: без такта ({reason})")
+        return self.speech.unhold(0.0) if self.speech.hold else []
 
     def silent_s(self, now: float) -> float:
         """Сколько секунд чтение стоит без речи (сторож): идёт чтение, ничего своего не звучит, а реплики ещё

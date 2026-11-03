@@ -3,7 +3,7 @@
 * Синтез Yandex и Silero живёт в ``rob_box_voice.tts_providers`` (одна реализация); методов синтеза в ``TTSNode``
   больше нет — нода зовёт ``prepare`` и ``synthesize_np`` адаптера.
 * Флаги сервиса (``reads_digits``, ``sets_stress``, ``pause_markup``) — честные: то, что адаптер делает сейчас.
-* ``prepare`` каждого адаптера сам снимает метки пауз MiniMax ``<#x#>``; у MiniMax — текст как есть.
+* ``prepare`` без такта отдаёт голые строки как есть (паузы такта рэпа — ``test_beat_in_adapter_4241.py``).
 * Лог Silero говорит «основной», когда Silero выбран сам, и «запасной» на откате (раньше всегда «fallback»).
 """
 from __future__ import annotations
@@ -25,7 +25,6 @@ from test.unit.tts.conftest import _install_all_mocks  # noqa: E402
 
 _install_all_mocks()
 
-from rob_box_dialog.plan.rap_pauses import markup  # noqa: E402
 from rob_box_llm.providers.minimax_tts import MiniMaxTTSProvider  # noqa: E402
 from rob_box_llm.tts import TTSFormat, TTSSettings  # noqa: E402
 from rob_box_llm.tts_provider_base import BaseTTSProvider, TTSCapabilities  # noqa: E402
@@ -33,7 +32,7 @@ from rob_box_voice import tts_node  # noqa: E402
 from rob_box_voice.tts_node import TTSNode  # noqa: E402
 from rob_box_voice.tts_providers import SileroTTSProvider, YandexTTSProvider  # noqa: E402
 
-MARKED = markup("Я робот Робби, я читаю под бит,\nКолёса крутятся, мотор не молчит.", 240.0 / 131).text
+VERSE = "Я робот Робби, я читаю под бит,\nКолёса крутятся, мотор не молчит."
 
 
 def _yandex() -> YandexTTSProvider:
@@ -102,15 +101,12 @@ def test_only_silero_claims_ssml():
 
 
 def test_base_prepare_keeps_text():
-    assert MiniMaxTTSProvider(api_key="k", group_id="g", client=MagicMock()).prepare(MARKED) == MARKED
+    assert MiniMaxTTSProvider(api_key="k", group_id="g", client=MagicMock()).prepare(VERSE, 2.0) == VERSE
 
 
 @pytest.mark.parametrize("adapter", [_yandex, _silero])
-def test_prepare_strips_minimax_pause_marks(adapter):
-    assert "<#" in MARKED
-    prepared = adapter().prepare(MARKED)
-    assert "<#" not in prepared
-    assert prepared.startswith("Я робот Робби, я читаю под бит,")
+def test_prepare_without_beat_keeps_the_lines(adapter):
+    assert adapter().prepare(VERSE) == VERSE
 
 
 def test_yandex_prepare_keeps_digits_the_service_reads_itself():
@@ -161,8 +157,8 @@ def test_async_synthesize_prepares_and_returns_pcm():
         return np.array([0.0, 0.5, -0.5], dtype=np.float32)
 
     adapter.synthesize_np = fake
-    audio = asyncio.run(adapter.synthesize(MARKED, settings=TTSSettings(voice="aidar")))
-    assert "<#" not in seen["text"] and seen["speaker"] == "aidar"
+    audio = asyncio.run(adapter.synthesize("Батарея 20%.", settings=TTSSettings(voice="aidar")))
+    assert seen["text"] == "Батарея двадцать процентов." and seen["speaker"] == "aidar"
     assert audio.format == TTSFormat.PCM and audio.sample_rate == 48000
     assert len(audio.samples) == 3 * 2
 

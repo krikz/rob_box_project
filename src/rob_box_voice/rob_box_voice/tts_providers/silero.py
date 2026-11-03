@@ -7,8 +7,8 @@ torch.hub), нарезка под лимит, retry-halve, конверт ``<spe
 Фоновый прогрев (поток, событие готовности) остаётся у ноды: это жизненный цикл ROS-процесса, а не сервиса.
 
 Флаги сервиса (``capabilities``): SSML понимает; ударения ставит сам (``put_accent``); цифры НЕ читает
-(``prepare`` читает числа и знаки словами, ``tts_normalizer``, PR-5); паузы такта ``<break>`` адаптер пока не ставит (PR-4) — метки
-MiniMax ``<#x#>`` снимаются, ``pause_markup=False`` честно.
+(``prepare`` читает числа и знаки словами, ``tts_normalizer``, PR-5); паузы такта ``<break>`` адаптер не ставит: рэп на
+Silero — без такта, строкой в логе (решение Шифу 30.10, В3; ``pause_markup=False`` честно, :mod:`.beat`).
 """
 
 from __future__ import annotations
@@ -19,7 +19,6 @@ from typing import Any, AsyncIterator, Optional, Sequence
 
 import numpy as np
 
-from rob_box_dialog.plan.rap_pauses import text_for as _pause_text_for
 from rob_box_llm.tts import TTSAudio, TTSChunk, TTSFormat, TTSSettings
 from rob_box_llm.tts_provider_base import BaseTTSProvider, TTSCapabilities, TTSVoice
 
@@ -27,6 +26,7 @@ from ..tts_chunking import CHUNK_LIMITS, DEFAULT_MAX_RETRIES, MIN_CHUNK_CHARS, s
 from ..tts_engines import SILERO_MODEL_PATHS, find_silero_model_path, load_silero_package, silero_apply_tts
 from ..tts_normalizer import spell_out
 from ..tts_ssml import silero_ssml
+from .beat import without_beat
 
 
 class SileroTTSProvider(BaseTTSProvider):
@@ -122,14 +122,14 @@ class SileroTTSProvider(BaseTTSProvider):
     # ---- флаги и подготовка текста ----
 
     def capabilities(self) -> TTSCapabilities:
-        """SSML и ударения — да; цифры — нет (их читает ``prepare``, PR-5); метки пауз — пока нет (PR-4)."""
+        """SSML и ударения — да; цифры — нет (их читает ``prepare``, PR-5); паузы такта — нет (рэп без такта)."""
         return TTSCapabilities(ssml=True, audio_format_pcm=True, custom_endpoint=True, sets_stress=True)
 
-    def prepare(self, text: str) -> str:
-        """Метки пауз MiniMax ``<#x#>`` сняты, числа и знаки — словами (сервис цифр не читает, флаг
-        ``reads_digits``). Конверт ``<speak>`` ставится на каждый чанк в :meth:`synthesize_np`: чанкер режет текст,
-        а не XML."""
-        text = _pause_text_for(self.name, text)
+    def prepare(self, text: str, beat_s: float = 0.0) -> str:
+        """Числа и знаки — словами (сервис цифр не читает, флаг ``reads_digits``); такт рэпа ``beat_s`` не
+        размечается (строка лога). Конверт ``<speak>`` ставится на каждый чанк в :meth:`synthesize_np`: чанкер режет
+        текст, а не XML."""
+        text = without_beat(self.name, text, beat_s, self._logger.info)
         return text if self.capabilities().reads_digits else spell_out(text)
 
     def _build_request_payload(

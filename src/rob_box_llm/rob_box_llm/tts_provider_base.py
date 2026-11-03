@@ -241,11 +241,13 @@ class BaseTTSProvider(TTSProvider):
         """
         return TTSHealth(ok=True, provider=self.name)
 
-    def prepare(self, text: str) -> str:
+    def prepare(self, text: str, beat_s: float = 0.0) -> str:
         """Голый текст реплики → текст для API этого сервиса (ADR-0160 §2.5).
 
         Шаги — по флагам :meth:`capabilities`: нормализация, паузы такта своей
-        меткой, ударения, конверт. Чистая функция: без сети и логов секретов.
+        меткой, ударения, конверт. ``beat_s`` — такт подложки рэпа (с) или 0:
+        данные из реплики, паузы строк по нему ставит адаптер с ``pause_markup``.
+        Чистая функция: без сети и логов секретов.
         Default: текст как есть (сервису ничего доделывать не нужно).
         """
         return text

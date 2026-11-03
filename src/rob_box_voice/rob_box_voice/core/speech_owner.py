@@ -52,16 +52,14 @@ SPEAKER_SINKS = ("", "speaker", "speakers")
 #: по доставленным чанкам). Пред-синтеза (``commit=false``) и ``at`` у шлема нет — такой запрос ``rejected``.
 HEADSET_SINK = "headset"
 _KINDS = ("queued", "synthesized", "started", "progress", "finished", "cancelled", "voice_changed", "rejected")
-#: Метка паузы рэпа MiniMax ``<#x#>`` (``rap_pauses``) — не звучит, символом реплики не считается.
-_PAUSE_MARK_RE = re.compile(r"<#\d+(?:\.\d+)?#>")
 _SENTENCE_END_RE = re.compile(r"[.!?…]+(?=\s|$)")
 _CANCEL_ERRORS = ("stopped", "cancelled")
 
 
 def plain_text(text: str) -> str:
-    """Голый текст реплики без меток пауз рэпа ``<#x#>`` и лишних пробелов - по нему считаются символы. ``<`` и
-    ``>`` в тексте - обычные символы (ADR-0160 §2.3)."""
-    return " ".join(_PAUSE_MARK_RE.sub(" ", text or "").split())
+    """Голый текст реплики без лишних пробелов - по нему считаются символы. Меток пауз на проводе нет: такт едет полем
+    ``beat_s``, паузы ставит адаптер голоса (#4241); ``<`` и ``>`` в тексте - обычные символы (ADR-0160 §2.3)."""
+    return " ".join((text or "").split())
 
 
 def sentence_ends(text: str) -> Tuple[int, ...]:
@@ -130,6 +128,9 @@ def chunk_from_request(msg: Any) -> Dict[str, Any]:
     for key in ("voice", "language"):
         if getattr(msg, key):
             chunk[key] = getattr(msg, key)
+    beat_s = float(getattr(msg, "beat_s", 0.0) or 0.0)  # такт рэпа (#4241); у запросов без поля - 0
+    if beat_s > 0:
+        chunk["beat_s"] = beat_s
     if chunk["sink"] == HEADSET_SINK:
         # Ключ реплики у шлема (``/avatar/tts/audio_meta``, ``/tars1/text``) — тот же speech_id, что в SpeechEvent:
         # quest_node связывает чанки, панель и конец реплики одним ключом.

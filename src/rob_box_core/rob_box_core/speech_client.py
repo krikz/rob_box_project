@@ -124,6 +124,7 @@ def build_request(
     req.text = utterance.text or ""
     req.voice = utterance.voice or ""
     req.role = utterance.role or ""
+    req.beat_s = float(utterance.beat_s or 0.0)
     req.language = utterance.language or ""
     req.emotion = utterance.emotion or ""
     req.at = float(at)

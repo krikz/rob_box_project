@@ -128,13 +128,11 @@ def loop():
     thread.join(timeout=2)
 
 
-def _turn(loop: Any, reply: LLMResponse, tts: str = "minimax") -> tuple:
+def _turn(loop: Any, reply: LLMResponse) -> tuple:
     node, music, logs = _Node(), _Music(), []
     node._tool_executor = _Tools()
     node._tool_executor.performer = PerformHost(node, music.run, lambda: loop, lambda event: None,
-                                                kn.SPEECH_OUTPUT_LATENCY_MS, clock=lambda: node.now_s,
-                                                tts_provider=lambda: plan_host._tts_provider(node))
-    plan_host.on_tts_provider_state(node, types.SimpleNamespace(data='{"provider": "%s"}' % tts))
+                                                kn.SPEECH_OUTPUT_LATENCY_MS, clock=lambda: node.now_s)
     counter = CallCounter()
     llm = CommandModeLLM(_Deepseek(reply), log=logs.append)
     ports = V2Ports(node, llm, counter, node._tool_executor, performer=lambda: plan_host.performer(node))
@@ -151,27 +149,22 @@ def _rap_reply() -> LLMResponse:
 
 def test_3901_rap_with_beat_goes_to_performer_not_to_turn_speech(loop):
     """Живой ответ DeepSeek: мост — ``verdict=command`` с переносом слотов лица; ход отдаёт выступление хосту —
-    бит заказан подложкой, куплеты MiniMax размечены паузами по такту сетки, репликами хода они не звучат."""
+    бит заказан подложкой, куплеты уходят с тактом сетки ``beat_s`` (паузы — адаптеру голоса, #4241), репликами хода
+    они не звучат."""
     agg, node, music, logs = _turn(loop, _rap_reply())
     bridge = [line for line in logs if "verdict=command" in line]
     assert bridge and "fields_moved=" in bridge[0] and "perform.expression_per_segment[0].mouth" in bridge[0]
     assert (agg.stage, agg.status) == ("done", "finished")
     (order,) = music.calls
     assert order.name == "request_music" and order.arguments["intent"] == kn.BACKING_INTENT
-    assert any("разметка пауз MiniMax по сетке строк, такт 2.00 с" in line for line in node.logs)
+    assert any("perform: такт подложки 2.00 с" in line for line in node.logs)
     host = plan_host.performer(node)
     requests = node.pubs[SPEECH].sent
     verses = [r for r in requests if host.owns(r.speech_id)]
     assert len(verses) >= len(SEGMENTS), "куплеты — реплики выступления (пред-синтез хоста)"
     assert all(r.commit is False for r in verses), "куплеты ждут тактов бита, а не звучат сразу"
+    assert {r.beat_s for r in verses if r.text in SEGMENTS} == {2.0}, "куплеты несут такт сетки"
     assert not [r for r in requests if not host.owns(r.speech_id)], "ход не читает сегменты сам"
-
-
-def test_3901_without_minimax_performer_still_owns_the_rap_and_says_why_no_pauses(loop):
-    """Синтез не MiniMax — выступление то же (бит, такты), только без пауз — с причиной в логе."""
-    _, node, music, _ = _turn(loop, _rap_reply(), tts="yandex")
-    assert [c.name for c in music.calls] == ["request_music"]
-    assert any("разметка пауз выключена" in line for line in node.logs)
 
 
 class _CountingDeepseek(_Deepseek):
@@ -254,7 +247,7 @@ def test_tts_provider_state_sets_actual_provider_and_ignores_garbage():
     plan_host.on_tts_provider_state(node, types.SimpleNamespace(data="не json"))
     assert node._actual_tts_provider is None
     plan_host.on_tts_provider_state(node, types.SimpleNamespace(data='{"provider": "minimax", "voice": "x"}'))
-    assert node._actual_tts_provider == "minimax" and plan_host._tts_provider(node) == "minimax"
+    assert node._actual_tts_provider == "minimax"
 
 
 def test_3973_block_end_of_owner_closes_the_request_in_the_engine_window(loop):

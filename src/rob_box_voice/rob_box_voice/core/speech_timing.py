@@ -97,7 +97,8 @@ class Presynth:
         speech_id = chunk["speech_id"]
         # без ``stream_ok``: пред-синтез - HTTP целиком, поток MiniMax звучит сразу (#3930)
         ctx: Dict[str, Any] = {"audio_np": None, "sample_rate": 16000, "used_provider": None,
-                               "used_voice": None, "result": {}}
+                               "used_voice": None, "result": {},
+                               "beat_s": chunk.get("beat_s", 0.0)}  # такт рэпа: паузы - адаптеру (#4241)
         if cancelled(speech_id):  # отменили, пока ждал пула: не платим за синтез
             done(speech_id, 0.0, ctx)
             return
