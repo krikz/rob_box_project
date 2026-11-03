@@ -81,3 +81,40 @@ def test_memory_claim_without_memory_save_is_flagged():
 
 def test_chatter_is_not_flagged():
     assert honesty_audit.audit_turn(_turn("Как тебя зовут?")) == []
+
+
+# -- #4286: лог avatar-supervisor (ТАРС v2) -----------------------------------------------------------------------------
+
+#: Кусок живого лога #4253 (03.11, ``4253_sup_full.log`` строки 26-67, 293-348, 961-1102): №1 «какой у тебя сейчас
+#: статус», №9 «покажи последние события» (``get_perception_context`` с ``internet_available``), №13 «как сеть, есть
+#: связь» - «Wi-Fi и роутер живы» без единого тула о сети.
+TARS_FIXTURE = Path(__file__).resolve().parent / "fixtures" / "tars_supervisor_2026-11-03.log"
+
+
+@pytest.fixture(scope="module")
+def tars_turns():
+    return logparse.load_any_turns(TARS_FIXTURE)
+
+
+def test_supervisor_log_is_split_into_tars_turns(tars_turns):
+    """До #4286 аудит искал 🚀/🎤 voice-assistant и по логу супервизора проверял 0 ходов."""
+    assert logparse.load_turns(TARS_FIXTURE) == []
+    assert [t.tools_executed for t in tars_turns] == [
+        ["get_robot_status", "get_robot_status"], ["get_perception_context"], ["get_current_time", "show_metrics"]]
+    # реплику №9 лог обрезал внутри снимка, а её ход в куске лога следующий - №13, где она в истории: найдена по ответу;
+    # реплика №13 - в истории хода №14, которого в куске нет: пусто, не выдумка
+    assert [t.stt_text for t in tars_turns] == ["какой у тебя сейчас статус", "покажи последние события", ""]
+    assert all(t.agent == "operator" and t.speeches for t in tars_turns)
+    assert tars_turns[2].speeches[0].text.startswith("Связь с интернетом есть, Wi-Fi и роутер живы.")
+
+
+def test_wifi_claim_without_tool_is_the_only_finding(tars_turns):
+    """Интернет - из ``get_perception_context`` прошлого хода (``recent_actions``), батарея - ``get_robot_status``,
+    Wi-Fi и роутер - ниоткуда."""
+    found = honesty_audit.audit(tars_turns)
+    assert [(f.turn, f.rule, f.verdict) for f in found] == [(3, "state:wifi", "claim_without_tool")]
+
+
+def test_voice_assistant_turns_are_not_judged_by_state_claims():
+    """Таблица агентов одна (``knowledge.STATE_CLAIM_AGENTS``): ход Личности правилом состояния не судится."""
+    assert honesty_audit.audit_turn(_turn("Wi-Fi и роутер живы.")) == []

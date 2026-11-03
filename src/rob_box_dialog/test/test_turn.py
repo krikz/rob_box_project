@@ -773,9 +773,11 @@ def test_query_data_goes_back_to_llm_once_then_answer():
 
 
 def test_query_beyond_limit_is_not_run_and_code_speaks_instead_of_silence():
-    """#3953: модель и на последнем вызове просит query (мост не отсёк) — он не исполняется, ход ``done`` с фразой кода."""
-    q = Command(actions=(ToolCall("get_current_time", {}),))
-    ports = Ports(answers=[Answer(q, "deepseek") for _ in range(kn.LLM_QUERY_ITERATIONS_MAX + 1)])
+    """#3953: модель и на последнем вызове просит query (мост не отсёк) — он не исполняется, ход ``done`` с фразой кода.
+    Запросы разные: тот же второй раз в ходе не исполняется вовсе (#4286, ``turn.unreread``)."""
+    qs = [Command(actions=(ToolCall("memory_search", {"query": f"час {n}"}),))
+          for n in range(kn.LLM_QUERY_ITERATIONS_MAX + 1)]
+    ports = Ports(answers=[Answer(q, "deepseek") for q in qs])
     agg = _run(_engine(ports), "который час")
     assert len(ports.asked) == kn.LLM_QUERY_ITERATIONS_MAX + 1
     assert len(ports.executed) == kn.LLM_QUERY_ITERATIONS_MAX

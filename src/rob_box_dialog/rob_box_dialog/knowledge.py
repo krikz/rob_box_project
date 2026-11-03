@@ -1084,16 +1084,23 @@ TOOL_GROUPS: Mapping[str, ToolGroup] = MappingProxyType({
     # «покажи» + что показать (``FACE_SHOW_*``) группу открывает ``tools_view.face_asked``
     "animation": ToolGroup(FACE_ASK_STEMS, ("play_animation",)),
     "event": ToolGroup(("мероприят", "фестивал", "расписан", "программ", "умеешь"), ("faq_search",)),
+    # тулы оператора (срез ``operator.admin``, ADR-0150 §9.3, PR-13b): у Личности их нет в срезе — группа ей ничего
+    # не открывает; без группы ТАРС v2 не видел ``show_metrics`` вовсе («покажи CPU» — без тула)
+    # #4286 (живой 03.11 №11 #4253): «статус контейнеров» - группа статуса (4) и всегда-видимые заполняли срез
+    # (``TOOLS_VISIBLE_MAX``), из телеметрии влезал один ``show_metrics``: ``container_status`` модель не видела и
+    # крутила ``show_metrics`` up→cpu→memory до потолка запросов. Узкий срез: предмет человека - его тул, и
+    # группы оператора по приоритету раньше статуса
+    "telemetry": ToolGroup(
+        ("метрик", "телеметр", "график", "панел", "процессор", "cpu", "нагрузк", "задержк", "латенс"),
+        ("show_metrics",),
+    ),
+    "logs": ToolGroup(("лог",), ("read_logs",)),
+    "nodes": ToolGroup(("нод", "ros"), ("ros2_node_status",)),
+    "containers": ToolGroup(("контейнер", "сервис", "докер", "docker"), ("container_status",)),
+    # статус - после групп оператора (#4286): слово «статус» общее, предмет («контейнеров», «нод») важнее
     "status": ToolGroup(
         ("батар", "заряд", "статус", "видишь", "перед тобой", "слышишь", "как ты", "самочувств", "подожди"),
         ("get_robot_status", "get_battery_level", "get_perception_context", "listen_for_response"),
-    ),
-    # тулы оператора (срез ``operator.admin``, ADR-0150 §9.3, PR-13b): у Личности их нет в срезе — группа ей ничего
-    # не открывает; без группы ТАРС v2 не видел ``show_metrics`` вовсе («покажи CPU» — без тула)
-    "telemetry": ToolGroup(
-        ("метрик", "телеметр", "график", "панел", "процессор", "cpu", "нагрузк", "задержк", "латенс", "лог",
-         "нод", "контейнер", "сервис"),
-        ("show_metrics", "read_logs", "ros2_node_status", "container_status"),
     ),
 })
 #: Ни одна группа не совпала со словами — тулы статуса (как раньше «core»-скилл каталога).
@@ -1640,6 +1647,71 @@ VIOLATION_FOREIGN_NAME = "foreign_name"
 FOREIGN_NAME_HINT = ("имя собеседника не подтверждено (name_state не confirmed): не обращайся к нему по имени — ни по"
                      " чужому из истории разговора (Саша, Борис…), ни по угаданному; говори без обращения. Имя другого"
                      " человека можно назвать, только когда речь О нём")
+
+
+@dataclass(frozen=True)
+class StateClaim:
+    """Утверждение о состоянии подсистемы робота в речи («Wi-Fi и роутер живы», «батарея в норме»): ``subjects`` -
+    основы слов подсистемы (начало слова, строчные, без «ё»); ``label`` - как её назвать во фразе кода
+    (:data:`STATE_CLAIM_PHRASE`, слот ``subjects``); опора - исход ``done`` тула из ``tools`` или в данных исхода ключ,
+    содержащий одну из подстрок ``keys`` (``internet_available``, ``battery_level``). Пустые ``tools`` - у подсистемы
+    нет тула, о ней знает только ключ данных (Wi-Fi: ни один тул робота о нём не говорит)."""
+
+    subjects: Tuple[str, ...]
+    label: str
+    keys: Tuple[str, ...] = ()
+    tools: Tuple[str, ...] = ()
+
+
+#: Утверждение о состоянии подсистемы без данных о ней (#4286, класс К1 #4020; живой 03.11 №13 #4253: «Wi-Fi и роутер
+#: живы» - ни тула, ни поля о сети в ходе): слова о состоянии - только из данных, которые модель видела (исходы
+#: ``query`` этого хода и ``recent_actions``). Повтор с подсказкой :data:`STATE_CLAIM_HINT`; повтора нет - код вырезает
+#: утверждение из речи и говорит рядом, о чём данных нет (:data:`STATE_CLAIM_PHRASE`). Единственная таблица: ход
+#: (``state_claim``) и аудит логов (``scripts/dialog/honesty_audit.py``) читают её.
+VIOLATION_STATE_CLAIM = "state_claim"
+STATE_CLAIMS: Mapping[str, StateClaim] = MappingProxyType({
+    "wifi": StateClaim(("wi-fi", "wifi", "вайфа", "вай-фа", "роутер", "маршрутизатор", "wlan"), "Wi-Fi и роутер",
+                       keys=("wifi", "wi_fi", "wlan", "rssi", "ssid", "router")),
+    # ``internet_available`` отдаёт ``get_perception_context`` (поле снимка восприятия)
+    "internet": StateClaim(("интернет",), "интернет", keys=("internet",), tools=("get_perception_context",)),
+    "network": StateClaim(("сеть", "сети", "сетью", "сетев", "связь", "связью"), "сеть",
+                          keys=("internet", "network", "wifi", "ping"), tools=("get_perception_context",)),
+    "battery": StateClaim(("батаре", "заряд", "аккумулятор", "акб"), "батарею",
+                          keys=("battery", "voltage"), tools=("get_battery_level", "get_robot_status")),
+    "containers": StateClaim(("контейнер", "сервис", "докер", "docker"), "контейнеры",
+                             keys=("container",), tools=("container_status", "show_metrics", "read_logs")),
+    "nodes": StateClaim(("нод", "ros"), "ноды",
+                        keys=("nodes",), tools=("ros2_node_status", "get_perception_context", "show_metrics")),
+    "motors": StateClaim(("мотор", "двигател", "колес", "привод", "энкодер"), "моторы",
+                         keys=("motor", "wheel", "encoder")),
+    "sensors": StateClaim(("лидар", "камер", "датчик", "сенсор"), "датчики",
+                          keys=("lidar", "camera", "sensor", "vision"), tools=("get_perception_context",)),
+})
+#: Слова состояния: в предложении с подсистемой они делают его утверждением о ней. Основы (начало слова) и формы
+#: целиком (короткие: «ок» - не «около»); число («Батарея 90%») - тоже состояние.
+STATE_CLAIM_STEMS: Tuple[str, ...] = (
+    "жив", "работа", "работоспособ", "норм", "исправ", "доступ", "недоступ", "лежит", "лежат", "упал", "отвал",
+    "подключ", "отключ", "онлайн", "офлайн", "оффлайн", "стабил", "порядк", "здоров", "заряжен", "разряж", "мертв",
+    "умер", "сдох", "запущен", "отвеча", "крутят", "крутит", "в строю")
+STATE_CLAIM_FORMS: Tuple[str, ...] = ("есть", "нет", "ок", "сел", "села", "сели", "цел", "целы", "up", "down")
+#: Слова, с которыми упоминание подсистемы не утверждение: о данных («данных о Wi-Fi нет»), отказ и предложение
+#: проверить («гляну контейнеры»). Основы; сверка - в той же части предложения (между запятыми), что подсистема.
+STATE_CLAIM_UNLESS: Tuple[str, ...] = (
+    "данн", "информац", "неизвест", "не знаю", "провер", "гляну", "глянуть", "посмотр", "узна", "спрос", "покаж",
+    "показа", "могу", "можно", "нужн", "хочешь", "если")
+STATE_CLAIM_HINT = ("в speech утверждение о состоянии подсистемы робота, а данных о ней в этом ходе нет (ни исхода тула,"
+                    " ни поля в recent_actions): слова о состоянии - только из данных. Позови тул, что её читает, если"
+                    " он есть в перечне хода, или скажи прямо, что данных о ней нет; не угадывай")
+STATE_CLAIM_PHRASE = "command.state_claim"
+#: Агенты, чью речь судит :data:`VIOLATION_STATE_CLAIM`: ТАРС (оператор, текст в чат и шлем). Личность и чат Telegram -
+#: не включены: их снимок несёт данные мимо ``recent_actions`` (``host_sections``), без замера ложных срабатываний.
+STATE_CLAIM_AGENTS: Tuple[str, ...] = ("operator",)
+#: Повтор чтения в ходе (#4286; живой 03.11 №1 #4253: ``get_robot_status`` дважды подряд): тот же ``query`` (тул и
+#: аргументы) второй раз не исполняется - модели уходит подсказка, что данные уже выше; снова повтор - ход закрывает
+#: код фразой по данным (``turn._close_unread``).
+VIOLATION_QUERY_REPEAT = "query_repeat"
+QUERY_REPEAT_HINT = ("этот запрос (тот же тул и аргументы) в этом ходе уже выполнен, его данные выше в окне - второй раз"
+                     " он не исполняется: ответь по ним словами в speech или возьми другой тул")
 #: Слова перед именем без запятой, после которых оно — обращение, а не рассказ о человеке: «Привет Борис!», «Спасибо
 #: Саша». С запятой («Понял, Саша.») и в начале фразы перед запятой («Саша, понял.») лид не нужен.
 ADDRESS_LEAD_WORDS: Tuple[str, ...] = (
@@ -1784,6 +1856,7 @@ PHRASE_KEYS: Tuple[str, ...] = (
     "understand.timeout", PASSED_ADDRESSED_PHRASE, NEW_SESSION_PHRASE, QUERY_FALLBACK_GENERIC, INVALID_COMMAND_PHRASE,
     LISTEN_ONLY_PHRASE,
     SPEECH_CUT_PHRASE, *INVALID_COMMAND_PHRASES.values(), *MUSIC_PROMISE_PHRASES.values(), VOICE_PROMISE_PHRASE,
+    STATE_CLAIM_PHRASE,
     *(question.declined for question in TOOL_QUESTIONS.values()),
     *(key for entry in QUERY_FALLBACK_PHRASES.values() for key in phrase_keys(entry)), QUERY_NAMES_PHRASE,
     REPEAT_NOTHING_PHRASE,

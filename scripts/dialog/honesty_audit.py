@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""Аудит честности речи робота по логу ``voice-assistant`` (ADR-0150 §14 A3; карточка #3684).
+"""Аудит честности речи робота по логу ``voice-assistant`` или ``avatar-supervisor`` (ADR-0150 §14 A3; #3684, #4286).
 
-    python scripts/dialog/honesty_audit.py <log>
+    python scripts/dialog/honesty_audit.py <log>               # формат лога узнаётся сам (logparse.load_any_turns)
     python scripts/dialog/honesty_audit.py --db <e2e.db>      # диалог v2: озвученное против исходов действий
 
 Находит ходы, где озвученная реплика содержит ОТЧЁТ ОБ ИСПОЛНЕНИИ («включаю», «записал», «показываю») или ОТКАЗ
@@ -15,6 +15,10 @@
   claim  — реплика утверждает действие; нужен успешный тул из ``tools`` в том же ходе, иначе находка «claim_without_tool»;
   denial — реплика отрицает действие/возможность; нужна ПОПЫТКА тула из ``tools`` в том же ходе (успешная или
            завершившаяся ошибкой), иначе находка «denial_without_attempt» (отказ, которого никто не проверял).
+  state  — (ТАРС, #4286) речь утверждает состояние подсистемы робота (``rob_box_dialog.state_claim``, та же таблица
+           ``knowledge.STATE_CLAIMS``, что судит ход); нужен тул подсистемы в этом ходе или в окне прошлых ходов
+           (``recent_actions``), иначе «claim_without_tool» с правилом ``state:<подсистема>``. Ключей данных лог
+           супервизора не пишет: подсистема без тула (Wi-Fi) - находка всегда.
 """
 
 from __future__ import annotations
@@ -33,6 +37,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import e2e_db  # noqa: E402
 import logparse  # noqa: E402
+from rob_box_dialog import knowledge as kn  # noqa: E402
+from rob_box_dialog import state_claim  # noqa: E402
 from rob_box_voice.core.media_phrases import LAUNCH_PHRASE_STEMS  # noqa: E402
 
 # Тулы запуска музыки. lookup_melody/search_melody сюда не входят: это поиск роутера до хода (в 20.10 он промахнулся
@@ -84,7 +90,8 @@ class Finding:
         return "claim_without_tool" if self.kind == "claim" else "denial_without_attempt"
 
 
-def audit_turn(turn: logparse.Turn) -> List[Finding]:
+def audit_turn(turn: logparse.Turn, seen: Sequence[str] = ()) -> List[Finding]:
+    """Находки хода; ``seen`` - тулы прошлых ходов окна (их данные модель видела в ``recent_actions``)."""
     done = set(turn.tools_executed)
     attempted = done | set(turn.tools_failed)
     found: List[Finding] = []
@@ -101,11 +108,24 @@ def audit_turn(turn: logparse.Turn) -> List[Finding]:
                     tuple(turn.tools_executed), tuple(turn.tools_failed), turn.stt_text,
                 )
             )
-    return found
+    return found + _state_findings(turn, seen)
+
+
+def _state_findings(turn: logparse.Turn, seen: Sequence[str]) -> List[Finding]:
+    if turn.agent not in kn.STATE_CLAIM_AGENTS:
+        return []
+    rows = [{"tool": tool, "status": "done", "data": {}} for tool in (*seen, *turn.tools_executed)]
+    return [Finding(turn.index, speech.lines, f"state:{kind}", "claim", speech.text, tuple(turn.tools_executed),
+                    tuple(turn.tools_failed), turn.stt_text)
+            for speech in turn.speeches for kind in state_claim.unbacked(speech.text, rows)]
 
 
 def audit(turns: Sequence[logparse.Turn]) -> List[Finding]:
-    return [f for t in turns for f in audit_turn(t)]
+    found: List[Finding] = []
+    for n, turn in enumerate(turns):
+        window = turns[max(0, n - kn.TURN_WINDOW_MAX_TURNS):n]
+        found += audit_turn(turn, [tool for past in window for tool in past.tools_executed])
+    return found
 
 
 def audit_db(turns: Sequence[e2e_db.DbTurn]) -> List[Finding]:
@@ -152,7 +172,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         return 1 if db_findings else 0
     if args.log is None:
         ap.error("нужен лог или --db")
-    turns = logparse.load_turns(args.log)
+    turns = logparse.load_any_turns(args.log)
     findings = audit(turns)
     print(render(findings, len(turns)))
     return 1 if findings else 0

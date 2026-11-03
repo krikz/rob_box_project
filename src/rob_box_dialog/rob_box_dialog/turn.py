@@ -88,6 +88,7 @@ from rob_box_dialog import face_scene
 from rob_box_dialog import foreign_name
 from rob_box_dialog import knowledge as kn
 from rob_box_dialog import memory
+from rob_box_dialog import state_claim
 from rob_box_dialog import phrases
 from rob_box_dialog import tool_ask
 from rob_box_dialog import track_ref
@@ -244,6 +245,8 @@ class _Turn:
     utterance_id: str = ""  # фраза STT хода (``Addressed.utterance_id``): по ней - её SpeakerResult
     music_stopped: bool = False  # ход уже выключил музыку (стоп-тул ``done``): второй стоп не «ничего не играет»
     unvoiced: Tuple[ActionResult, ...] = ()  # исходы действий хода, о которых код ещё не сказал (Tier-1 стоп молчит)
+    seen: Tuple[Mapping[str, Any], ...] = ()  # ``recent_actions`` снимка хода: данные, что модель видела до хода
+    read: Tuple[ToolCall, ...] = ()  # исполненные в ходе вызовы ``query``: повтор не исполняется (:func:`unreread`)
 
 
 def picked_heard(addressed: Addressed) -> Tuple[Tuple[str, str], ...]:
@@ -853,6 +856,58 @@ def unrepeated(log: Any, turn: "_Turn", cmd: Command) -> Command:
     return replace(cmd, actions=tuple(a for a in cmd.actions if a not in repeats))
 
 
+def _reread(turn: "_Turn", call: ToolCall) -> bool:
+    return any(call.tool == b.tool and dict(call.args) == dict(b.args) for b in turn.read)
+
+
+def unreread(log: Any, turn: "_Turn", cmd: Command) -> Command:
+    """Команда без чтений, уже исполненных в этом ходе (#4286; живой 03.11 №1 #4253: ``get_robot_status`` дважды
+    подряд): тот же ``query`` (тул и аргументы) второй раз не исполняется - его данные уже у модели в окне хода. Что
+    сказать модели или закрыть ход кодом, решает :func:`reread_hint`."""
+    repeats = tuple(a for a in cmd.actions if _reread(turn, a))
+    if not repeats:
+        return cmd
+    log.info(f"{LOG_MARK} {kn.VIOLATION_QUERY_REPEAT}: повтор чтения в этом ходе не исполняется: "
+             f"{[a.tool for a in repeats]} turn={turn.turn_id}")
+    return replace(cmd, actions=tuple(a for a in cmd.actions if a not in repeats))
+
+
+def reread_reason(turn: "_Turn", cmd: Command, fresh: Command, last: bool) -> str:
+    """Модель только повторила исполненное, среди него - прочитанное в ходе (:func:`unreread`), и слов не дала:
+    ``VIOLATION_QUERY_REPEAT`` - модели подсказка, что данные уже выше (``QUERY_REPEAT_HINT``, :func:`_answer_owed`),
+    пока повтор есть; повтора нет - «», ход закрывает код по данным (:func:`settled` → :func:`_close_unread`)."""
+    if not retry_left(turn, last) or not settled(cmd, fresh) or not any(_reread(turn, a) for a in cmd.actions):
+        return ""
+    return kn.VIOLATION_QUERY_REPEAT
+
+
+def considered(engine: "TurnEngine", turn: "_Turn", cmd: Command, last: bool) -> Tuple[Command, FrozenSet[str]]:
+    """Команда к исполнению и имена, которыми нельзя звать собеседника (:func:`foreign_keys`): без повторов
+    исполненного (:func:`unrepeated`) и прочитанного (:func:`unreread`) в ходе; без чужого имени и без утверждения о
+    состоянии без данных, когда вернуть команду модели уже нельзя (:func:`unnamed_without_retry`,
+    :func:`unclaimed_without_retry`)."""
+    log, snapshot = engine._log, engine.session.snapshot
+    fresh = unreread(log, turn, unrepeated(log, turn, cmd))
+    names = foreign_keys(engine.log.window(exclude=turn.turn_id), turn, fresh, snapshot)
+    fresh = unnamed_without_retry(log, turn, fresh, names, last)
+    return unclaimed_without_retry(log, turn, fresh, snapshot.agent, last), names
+
+
+def owed_now(snapshot: SessionSnapshot, turn: "_Turn", cmd: Command, fresh: Command, names: Collection[str],
+             last: bool) -> str:
+    """Причина вернуть ответ модели (:data:`_OWED`) или «»: повтор прочитанного (:func:`reread_reason`), иначе - ответ
+    не тот, что ждут (:func:`owed_reason`); модель только повторила исполненное (:func:`settled`) - говорит код."""
+    reread = reread_reason(turn, cmd, fresh, last)
+    if reread or settled(cmd, fresh):
+        return reread
+    return owed_reason(snapshot, turn, fresh, names)
+
+
+def read_calls(actions: Sequence[ToolCall], results: Sequence[ActionResult]) -> Tuple[ToolCall, ...]:
+    """Вызовы, исполненные чтением (``query``): повтор в том же ходе не исполняется (:func:`unreread`)."""
+    return tuple(call for call, result in zip(actions, results) if result.cls == _QUERY)
+
+
 def settled(cmd: Command, fresh: Command) -> bool:
     """Модель повторила только исполненное в этом ходе (:func:`unrepeated` убрал все её действия) и слов не дала: ответа
     сверх сделанного нет. Ход закрывается сразу фразой кода по исходу (:func:`_close_unread`), модель не зовётся снова
@@ -1287,13 +1342,21 @@ def robot_owed(snapshot: SessionSnapshot, turn: "_Turn", cmd: Command) -> bool:
 def owed_reason(snapshot: SessionSnapshot, turn: "_Turn", cmd: Command, names: Collection[str] = ()) -> str:
     """Ответ модели не тот, что ждёт человек, — причина нарушения (:data:`_OWED`), иначе «»: голый неслышимый ответ на
     адресованную реплику (:func:`words_owed`; и подхват бэклога), только текст в чат на просьбу сделать
-    роботом (:func:`robot_owed`) или обращение к неподтверждённому собеседнику чужим именем (``names`` - ключи
-    из :func:`foreign_keys`)."""
+    роботом (:func:`robot_owed`), обращение к неподтверждённому собеседнику чужим именем (``names`` - ключи
+    из :func:`foreign_keys`) или утверждение о состоянии подсистемы робота без данных о ней (:func:`unbacked_claims`)."""
     if words_owed(snapshot, turn.text, cmd):
         return kn.VIOLATION_SILENT_ANSWER
     if robot_owed(snapshot, turn, cmd):
         return kn.VIOLATION_REMOTE_OWED
-    return kn.VIOLATION_FOREIGN_NAME if foreign_name.offending(cmd, names) else ""
+    if foreign_name.offending(cmd, names):
+        return kn.VIOLATION_FOREIGN_NAME
+    return kn.VIOLATION_STATE_CLAIM if unbacked_claims(snapshot.agent, turn, cmd) else ""
+
+
+def unbacked_claims(agent: str, turn: "_Turn", cmd: Command) -> Tuple[str, ...]:
+    """Подсистемы, о состоянии которых речь команды утверждает без данных (``state_claim``): опора - то, что модель
+    видела, - ``recent_actions`` снимка хода (``_Turn.seen``) и исходы ``query`` этого хода (``_Turn.queried``)."""
+    return state_claim.offending(agent, cmd, state_claim.evidence((*turn.seen, *turn.queried)))
 
 
 def foreign_keys(window: Sequence[Any], turn: "_Turn", cmd: Command, snapshot: SessionSnapshot) -> FrozenSet[str]:
@@ -1328,6 +1391,8 @@ _OWED: Mapping[str, _Owed] = {
     kn.VIOLATION_REMOTE_OWED: _Owed(kn.REMOTE_OWED_HINT, "только текст в чат на просьбу сделать роботом",
                                     keeps_words=True),
     kn.VIOLATION_FOREIGN_NAME: _Owed(kn.FOREIGN_NAME_HINT, "обращение к неподтверждённому собеседнику чужим именем"),
+    kn.VIOLATION_STATE_CLAIM: _Owed(kn.STATE_CLAIM_HINT, "утверждение о состоянии подсистемы без данных о ней"),
+    kn.VIOLATION_QUERY_REPEAT: _Owed(kn.QUERY_REPEAT_HINT, "повтор чтения, уже исполненного в этом ходе"),
 }
 
 
@@ -1341,6 +1406,19 @@ def unnamed_without_retry(log: Any, turn: _Turn, cmd: Command, names: Collection
     log.warning(f"{LOG_MARK} {kn.VIOLATION_FOREIGN_NAME}: обращение {list(called)} к неподтверждённому собеседнику и "
                 f"после повтора → имя вычищено из речи turn={turn.turn_id}")
     return foreign_name.unnamed(cmd, names)
+
+
+def unclaimed_without_retry(log: Any, turn: _Turn, cmd: Command, agent: str, last: bool) -> Command:
+    """Утверждение о состоянии подсистемы без данных (``VIOLATION_STATE_CLAIM``), а вернуть команду модели нельзя
+    (последняя итерация, повтор исчерпан): код вырезает утверждение из речи и говорит рядом, о чём данных нет
+    (``state_claim.unclaimed``, ADR-0148: фразу о состоянии строит код). Повтор есть - команда как есть: нарушение
+    вернёт её модели (:func:`_answer_owed`)."""
+    kinds = unbacked_claims(agent, turn, cmd)
+    if not kinds or retry_left(turn, last):
+        return cmd
+    log.warning(f"{LOG_MARK} {kn.VIOLATION_STATE_CLAIM}: {list(kinds)} без данных и после повтора → утверждение "
+                f"вырезано, говорит код turn={turn.turn_id}")
+    return state_claim.unclaimed(cmd, kinds)
 
 
 def retry_left(turn: _Turn, last: bool) -> bool:
@@ -1735,10 +1813,8 @@ class TurnEngine:
             if voices_passed(turn.pickup, self.session.snapshot):
                 self._say(turn, self._pick(kn.PASSED_ADDRESSED_PHRASE))
             return None
-        fresh = unrepeated(self._log, turn, cmd)
-        names = foreign_keys(self.log.window(exclude=turn.turn_id), turn, fresh, self.session.snapshot)
-        fresh = unnamed_without_retry(self._log, turn, fresh, names, last)
-        owed = "" if settled(cmd, fresh) else owed_reason(self.session.snapshot, turn, fresh, names)
+        fresh, names = considered(self, turn, cmd, last)
+        owed = owed_now(self.session.snapshot, turn, cmd, fresh, names, last)
         if owed:
             return await _answer_owed(self, turn, fresh, snap, last, owed)
         runnable = _runnable(fresh.actions, last)
@@ -1787,6 +1863,7 @@ class TurnEngine:
         results = await turn.deadline.wait(run, "actions")
         turn.music_stopped, results = reconcile_stops(turn.music_stopped, results)  # фраза стопа - правда о ходе
         turn.acted += acted_calls(actions, results)  # повтор в этом ходе не исполняется
+        turn.read += read_calls(actions, results)  # повтор чтения в этом ходе не исполняется
         owner = memory.memory_owner(snap)  # чья память у хода при исполнении: исход - только ей в окне
         for result in results:
             self.log.result(turn.turn_id, result, owner)
@@ -1816,6 +1893,7 @@ class TurnEngine:
         if turn.music_stopped:  # стоп этого хода: снимок плеера придёт позже, а модель не должна читать «играет»
             sections["music_state"] = after_stop(sections.get("music_state"))
         recent = recent_results(past, results_of(self.log, turn.turn_id), memory.memory_owner(snap))
+        turn.seen = tuple(recent[-kn.TURN_WINDOW_MAX_TURNS:])  # опора слов о состоянии (``state_claim``)
         context = build_context({**sections, RECENT_UNADDRESSED: list(turn.recent),
                                  BACKGROUND_SINCE_REPLY: list(turn.background),
                                  BACKGROUND_SUMMARY: dict(turn.background_summary),
@@ -1869,5 +1947,6 @@ __all__ = ["ASK_MARK", "Answer", "LOG_MARK", "Ports", "RECENT_ACTIONS", "RECENT_
            "BACKGROUND_SUMMARY", "SAD_FACE", "Shown", "TurnEngine", "answer_recognized", "command_face", "command_form", "done_expression",
            "asked_voice", "finish_stage", "hand_perform", "held_expression", "host_sections", "shown_face",
            "foreign_keys", "invalid_emotion", "outcome_phrase", "over_ordered_music", "owed_reason", "query_answer",
-           "music_promise_key", "query_fallback", "recent_results", "unnamed_without_retry", "robot_owed", "show_queue_phrase", "stop_performance", "tier1_actions", "tier1_face", "tier1_for",
+           "music_promise_key", "query_fallback", "recent_results", "considered", "owed_now", "read_calls", "reread_reason", "unbacked_claims", "unclaimed_without_retry",
+           "unnamed_without_retry", "unreread", "robot_owed", "show_queue_phrase", "stop_performance", "tier1_actions", "tier1_face", "tier1_for",
            "tier1_phrase", "turn_work", "answer_tool", "unrepeated", "voices_passed", "words_owed"]
