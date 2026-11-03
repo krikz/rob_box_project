@@ -1,4 +1,4 @@
-"""Адаптер собеседника (ADR-0150 §7.5, ADR-0130 §2.6; #3695): SpeakerRef, «тот же собеседник», правило вопроса В17."""
+"""Адаптер собеседника (ADR-0150 §7.5, ADR-0130 §2.6; #3695): SpeakerRef, «тот же собеседник»."""
 
 import pytest
 
@@ -6,17 +6,8 @@ from rob_box_dialog import knowledge as kn
 from rob_box_dialog import phrases
 from rob_box_dialog.backlog import Heard
 from rob_box_dialog.speaker_adapter import (
-    ACCUMULATING,
-    ASK,
-    ASKED,
-    COMMAND,
-    NO_SPEECH,
-    STRANGER,
-    AskCandidate,
-    AskPolicy,
     FaceSightings,
     VoiceTag,
-    ask_after_turn,
     merge_answer,
     merge_phrase,
     merge_plan,
@@ -25,6 +16,7 @@ from rob_box_dialog.speaker_adapter import (
     same_interlocutor,
     speaker_block,
     speaker_ref,
+    voice_registration,
     voice_tag,
 )
 from rob_box_dialog.session import SpeakerRef
@@ -219,121 +211,6 @@ def test_inconclusive_voice_keeps_its_best_candidate():
                    "candidate_score": 0.33}
 
 
-# -- В17: когда спрашивать имя ------------------------------------------------------------------------------
-
-
-def test_never_on_a_command_turn_even_when_accumulated():
-    policy = AskPolicy()
-    for i in range(5):
-        policy.note("p1", float(i))
-    command = AskCandidate("p1", "single", "Саша", request="робот покажи анимацию сон")
-    verdict = ask_after_turn(policy, command, t=5.0, tools=["play_animation", "speak_text"])
-    assert (verdict.verdict, verdict.command_by) == (COMMAND, ("animation",))
-    chat = AskCandidate("p1", "single", "Саша", request="робот как у тебя дела")
-    assert ask_after_turn(policy, chat, t=5.0, tools=["speak_text"]).verdict == ASK
-
-
-@pytest.mark.parametrize("request_text, tools", [
-    ("робот как у тебя дела", ["get_robot_status", "speak_text"]),
-    ("робот расскажи что нибудь интересное про луну", ["speak_text", "play_animation"]),
-    ("который час и сколько заряда", ["get_current_time", "get_battery_level", "speak_text"]),
-    ("найди в интернете что такое квазар", ["search_web", "speak_text"]),
-    ("что ты видишь перед собой", ["get_perception_context", "speak_text"]),
-])
-def test_reads_and_llm_own_animation_are_not_a_command(request_text, tools):
-    """Живой робот 21.10: тулы чтения и анимация, которую LLM добавила к болтовне, командой не делают."""
-    policy = AskPolicy(min_phrases=1)
-    policy.note("p1", 0.0)
-    verdict = ask_after_turn(policy, AskCandidate("p1", "unknown", request=request_text), t=1.0, tools=tools)
-    assert (verdict.verdict, verdict.command_by) == (ASK, ())
-
-
-@pytest.mark.parametrize("request_text, tool, group", [
-    ("робот покажи анимацию сон", "play_animation", "animation"),
-    ("робот включи музыку", "request_music", "music"),
-    ("поезжай на кухню", "navigate_to_waypoint", "navigation"),
-    ("сделай погромче", "set_volume", "volume"),
-    ("меня зовут Гриша", "register_speaker", "people"),
-])
-def test_executed_request_is_a_command(request_text, tool, group):
-    policy = AskPolicy(min_phrases=1)
-    policy.note("p1", 0.0)
-    cand = AskCandidate("p1", "unknown", request=request_text)
-    verdict = ask_after_turn(policy, cand, t=1.0, tools=[tool, "speak_text"])
-    assert verdict.verdict == COMMAND and group in verdict.command_by
-
-
-@pytest.mark.parametrize("request_text, tools", [
-    ("ты меня узнал по голосу", ["speak_text"]),  # слово группы в болтовне, ничего не исполнено
-    ("что ты обо мне помнишь", ["memory_search", "speak_text"]),  # группа названа, тул — чтение
-])
-def test_group_word_without_executed_action_is_not_a_command(request_text, tools):
-    policy = AskPolicy(min_phrases=1)
-    policy.note("p1", 0.0)
-    verdict = ask_after_turn(policy, AskCandidate("p1", "unknown", request=request_text), t=1.0, tools=tools)
-    assert (verdict.verdict, verdict.command_by) == (ASK, ())
-
-
-def test_verdict_carries_its_reason():
-    policy = AskPolicy()
-    cand = AskCandidate(STRANGER, "unknown", request="расскажи анекдот")
-    policy.note(STRANGER, 0.0)
-    policy.note(STRANGER, 10.0)
-    first = ask_after_turn(policy, cand, t=10.0, spoken_text="ок")
-    assert (first.verdict, first.phrases, first.min_phrases, first.since_first_s, first.asked_at) == (
-        ACCUMULATING, 2, kn.IDENTITY_ASK_MIN_PHRASES, 10.0, None)
-    policy.note(STRANGER, 20.0)
-    assert ask_after_turn(policy, cand, t=20.0, spoken_text="ок").verdict == ASK
-    policy.note(STRANGER, 30.0)
-    again = ask_after_turn(policy, cand, t=30.0, spoken_text="ок")
-    assert (again.verdict, again.asked_at) == (ASKED, 20.0)
-    assert "command_by=none" in again.describe(30.0) and "asked_before=yes(10s ago)" in again.describe(30.0)
-
-
-def test_empty_turn_is_not_a_reason_to_ask():
-    """Эпизод Б 20.10: ``spoken=''`` → «Как тебя зовут?» — больше нет."""
-    policy = AskPolicy(min_phrases=1)
-    policy.note(STRANGER, 0.0)
-    assert ask_after_turn(policy, AskCandidate(STRANGER, "unknown"), t=1.0, spoken_text="").verdict == NO_SPEECH
-
-
-def test_accumulates_three_phrases_then_asks_once():
-    policy = AskPolicy()
-    cand = AskCandidate("p1", "unknown")
-    verdicts = []
-    for i in range(5):
-        policy.note("p1", float(i))
-        verdicts.append(ask_after_turn(policy, cand, t=float(i), spoken_text="ок").verdict)
-    assert verdicts == [ACCUMULATING, ACCUMULATING, ASK, ASKED, ASKED]
-
-
-def test_sixty_seconds_with_two_phrases_is_enough():
-    policy = AskPolicy()
-    policy.note("p1", 0.0)
-    policy.note("p1", kn.IDENTITY_ASK_MIN_S - 1.0)
-    assert policy.verdict("p1", kn.IDENTITY_ASK_MIN_S - 1.0, has_actions=False, spoken=True) == ACCUMULATING
-    assert policy.verdict("p1", kn.IDENTITY_ASK_MIN_S, has_actions=False, spoken=True) == ASK
-    single = AskPolicy()
-    single.note("p2", 0.0)
-    assert single.verdict("p2", 300.0, has_actions=False, spoken=True) == ACCUMULATING
-
-
-def test_stranger_again_only_after_ten_minutes():
-    policy = AskPolicy(min_phrases=1)
-    policy.note(STRANGER, 0.0)
-    assert ask_after_turn(policy, AskCandidate(STRANGER, "unknown"), t=0.0, spoken_text="ок").verdict == ASK
-    policy.note(STRANGER, 10.0)
-    assert policy.verdict(STRANGER, 10.0, has_actions=False, spoken=True) == ASKED
-    policy.note(STRANGER, kn.IDENTITY_ASK_STRANGER_GAP_S + 1.0)
-    assert policy.verdict(STRANGER, kn.IDENTITY_ASK_STRANGER_GAP_S + 1.0, has_actions=False, spoken=True) == ASK
-
-
-def test_question_texts_come_from_phrases():
-    assert AskCandidate("p1", "single", "Саша").question() == "Саша, это ты?"
-    assert AskCandidate("p1", "contested").question() == "Как тебя зовут?"
-    assert AskCandidate(STRANGER, "unknown").question() == "Как тебя зовут?"
-
-
 # -- раздел speaker снимка хода (§7.3, A30) ------------------------------------------------------------------
 
 
@@ -347,24 +224,6 @@ def test_question_texts_come_from_phrases():
 def test_speaker_block_names_only_confirmed(ref, block):
     """Эпизод Б 20.10: гипотеза «Литвин» в снимок не попадает — обращаться по ней нельзя."""
     assert speaker_block(ref) == block
-
-
-# -- состояние гипотезы имени (#2809 -> speaker_adapter, #3695 ч.2d) ------------------------------------------
-
-
-def test_tentative_state_survives_answer_window_while_waiting_then_session_gap():
-    from rob_box_dialog.speaker_adapter import TentativeStates
-
-    states = TentativeStates(answer_window_s=180.0, session_gap_s=120.0)
-    state = states.fresh("p1", 0.0)
-    state["asked"] = True                                   # вопрос задан, ответа ждём
-    assert states.fresh("p1", 170.0) is state               # 84 с и даже 170 с — ответ ещё засчитывается
-    state["confirmed"] = True                               # ответ получен — окно сессии
-    assert states.fresh("p1", 289.0) is state
-    fresh = states.fresh("p1", 410.0)                       # пауза 121 с > 120 с — новый разговор
-    assert fresh is not state and fresh == {"asked": False, "confirmed": None, "name": None,
-                                            "growth_registered": False, "last_seen_at": 410.0}
-    assert states.get("p1") is fresh and states.get("p2") is None
 
 
 # -- вопрос склейки после регистрации (#2828, #2829; #3765) ----------------------------------------------------
@@ -413,3 +272,14 @@ def test_merge_phrase_is_built_by_code_from_phrases(same, key):
 def test_question_reply_grammar_depends_on_question_kind(kind, text, reply):
     got = question_reply(kind, text)
     assert (got.kind if got else None) == reply
+
+
+@pytest.mark.parametrize("outcome, expected", [
+    ({"event": "register_error", "error": "too_short"}, {"registered": False, "reason": "too_short"}),
+    ({"event": "register_error"}, {"registered": False, "reason": "error"}),
+    ({"event": "registered", "already_known": True}, {"registered": True}),
+    (None, {"registered": None, "reason": "no_answer"}),
+])
+def test_voice_registration_outcomes(outcome, expected):
+    assert voice_registration(True, outcome) == expected
+    assert voice_registration(False, outcome) is None

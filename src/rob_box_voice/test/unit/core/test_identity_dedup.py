@@ -156,20 +156,6 @@ def test_wait_constant_lives_in_knowledge():
     assert kn.REGISTER_OUTCOME_WAIT_S == 2.5 and kn.IDENTITY_DEDUP_AFTER_SPEECH_S <= 1.5
 
 
-def test_context_of_identity_turn_has_only_the_introduced_name():
-    """Живой робот 21.10: «unknown» + privacy_note → LLM говорила «голосом я тебя пока не опознал». В ходе, где личность
-    выясняет робот, в контексте только имя из представления — ни биометрии, ни слова о голосе."""
-    from rob_box_voice.core.speaker_turn import speaker_section
-    from rob_box_voice.core.turn_identity import voice_profile_lines
-
-    node = _intro_node(PLAN)
-    asyncio.run(iq.settle_identity(node, timeout_s=0.1))
-    text = "\n".join(voice_profile_lines("", node._current_speaker)) + str(speaker_section(node))
-    assert "Матвей" in text
-    for word in ("опознан", "голос", "unknown", "privacy_note", "confidence"):
-        assert word not in text.lower(), (word, text)
-
-
 # -- Chooser параллельно с речью хода (замечание координатора по живому прогону 2) --------------------------
 
 

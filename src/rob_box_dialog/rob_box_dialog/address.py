@@ -67,7 +67,7 @@ class Addressed:
     recent: Tuple[Dict[str, Any], ...] = ()
     #: Адресованный ход с фразой: все фоновые фразы всех авторов за последние ``BACKGROUND_WINDOW_S`` (В23, 23.10).
     background: Tuple[Dict[str, Any], ...] = ()
-    #: Сводка фона кодом (``backlog.voices_summary``): сколько голосов, кто узнан, сколько безымянных (#4212).
+    #: Сводка фона кодом (``backlog.voices_summary``): сколько голосов, кто узнан, сколько безымянных.
     background_summary: Mapping[str, Any] = field(default_factory=dict)
     #: Запасной разбор Tier-1 (``turn.tier1_of``): слова после вейка (``words.wake_command``), если они короче ``text``.
     #: Tier-1 разбирает сначала ``text`` целиком (команда до вейка — «Стоп, Робот, пожалуйста»), а это — только когда

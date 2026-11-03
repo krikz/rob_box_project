@@ -283,7 +283,7 @@ class SpeechSide:
         """MERGE в PENDING (:func:`edit_range`): ``(эффекты, причина отказа или "")``."""
         reason, skip, first_no = edit_range(self.lines, perf.from_segment)
         rows = [] if reason else segment_rows(perf, skip)
-        fresh = drop_said(rows, self.lines.said())  # модель прислала выступление с начала: сказанное не повторяется (#4207)
+        fresh = drop_said(rows, self.lines.said())  # модель прислала выступление с начала: сказанное не повторяется
         if rows and not fresh:
             self._log(f"{LOG_MARK} правка повторяет уже сказанное ({len(rows)} сегм.) — отклонена")
             return [], "edit_repeats_said"
