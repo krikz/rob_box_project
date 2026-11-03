@@ -35,6 +35,13 @@ updates:
     schedule:
       interval: "weekly"
       day: "monday"
+    ignore:
+      # torch/torchaudio: пины точные и с суффиксом +cpu (issue #2609). Колёса
+      # +cpu для linux/aarch64 выходят в download.pytorch.org/whl/cpu позже,
+      # чем на PyPI, - бамп dependabot ломает Build All Services
+      # ("No matching distribution found for torch==2.15.0+cpu"). Сверяем руками.
+      - dependency-name: "torch"
+      - dependency-name: "torchaudio"
     groups:
       python-deps:
         patterns: ["*"]

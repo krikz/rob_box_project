@@ -29,8 +29,8 @@ protobuf>=7.36.2
 piper-tts>=1.8.0
 
 # Silero - Alternative offline TTS with multiple voices
-torch>=2.15.0  # CPU only for ARM64
-torchaudio>=2.11.1
+torch>=2.14.1  # CPU only for ARM64
+torchaudio>=2.0.0
 omegaconf>=2.4.0
 
 # Yandex Cloud TTS (fallback, online)
