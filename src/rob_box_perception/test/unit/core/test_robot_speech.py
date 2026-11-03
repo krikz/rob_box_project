@@ -16,7 +16,7 @@ def v1(data):
 
 
 def test_robot_voice_request_is_said_text_without_speak_tags():
-    assert robot_said(request(text='<speak>Привет, я Робби!</speak>')) == 'Привет, я Робби!'
+    assert robot_said(request(text='Привет, я Робби!')) == 'Привет, я Робби!'
     assert robot_said(request(text='Просто текст')) == 'Просто текст'
 
 

@@ -195,11 +195,11 @@ class TestRegurgitatedSystemTemplateDropped:
         node = _make_node(tts_node_cls)
         node.dialogue_callback(
             _msg({
-                "ssml": (
-                    "<speak><system>\n"
+                "text": (
+                    "<system>\n"
                     "[получатель ответа забыл указать антропоморфные "
                     "атрибуты]\n"
-                    "</system></speak>"
+                    "</system>"
                 ),
                 "speech_id": "sid-2175-0001",
             })
@@ -211,7 +211,7 @@ class TestRegurgitatedSystemTemplateDropped:
         node = _make_node(tts_node_cls)
         node.dialogue_callback(
             _msg({
-                "ssml": "<speak><system>x</system></speak>",
+                "text": "<system>x</system>",
                 "speech_id": "sid-2175-0002",
             })
         )
@@ -224,8 +224,8 @@ class TestRegurgitatedSystemTemplateDropped:
         node = _make_node(tts_node_cls)
         node.dialogue_callback(
             _msg({
-                "ssml": (
-                    "<speak><system>\n[foo bar]\n</system></speak>"
+                "text": (
+                    "<system>\n[foo bar]\n</system>"
                 ),
                 "speech_id": "sid-2175-0003",
             })
@@ -241,7 +241,7 @@ class TestRegurgitatedSystemTemplateDropped:
         node = _make_node(tts_node_cls)
         node.dialogue_callback(
             _msg({
-                "ssml": "<speak><system>foo</system></speak>",
+                "text": "<system>foo</system>",
                 "speech_id": "sid-2175-0004",
                 "batch_id": "batch-1",
                 "batch_index": 2,
@@ -259,11 +259,11 @@ class TestRegurgitatedSystemTemplateDropped:
         node = _make_node(tts_node_cls)
         node.dialogue_callback(
             _msg({
-                "ssml": (
-                    "<speak><system>\n"
+                "text": (
+                    "<system>\n"
                     "[получатель ответа забыл указать антропоморфные "
                     "атрибуты]\n"
-                    "</system></speak>"
+                    "</system>"
                 ),
                 "speech_id": "sid-2175-0005",
                 "voice": "Russian_ReliableMan",
@@ -289,7 +289,7 @@ class TestNormalSpeechUnaffected:
         node = _make_node(tts_node_cls)
         node.dialogue_callback(
             _msg({
-                "ssml": "<speak>Привет! Я РОББОКС, поехали.</speak>",
+                "text": "Привет! Я РОББОКС, поехали.",
                 "speech_id": "sid-2175-back-0001",
             })
         )
@@ -303,7 +303,7 @@ class TestNormalSpeechUnaffected:
         node = _make_node(tts_node_cls)
         node.dialogue_callback(
             _msg({
-                "ssml": "<speak>Согласно <system>инструкции</system>, отвечу.</speak>",
+                "text": "Согласно <system>инструкции</system>, отвечу.",
                 "speech_id": "sid-2175-back-0002",
             })
         )
@@ -319,7 +319,7 @@ class TestNormalSpeechUnaffected:
         node = _make_node(tts_node_cls)
         node.dialogue_callback(
             _msg({
-                "ssml": "<speak>Пишу <system>размышление вслух</speak>",
+                "text": "Пишу <system>размышление вслух",
                 "speech_id": "sid-2175-back-0003",
             })
         )
@@ -351,7 +351,7 @@ def test_regurgitate_is_blocked(ssml_inner: str, tts_node_cls):
     node = _make_node(tts_node_cls)
     node.dialogue_callback(
         _msg({
-            "ssml": f"<speak>{ssml_inner}</speak>",
+            "text": ssml_inner,
             "speech_id": f"sid-2175-param-{abs(hash(ssml_inner))}",
         })
     )

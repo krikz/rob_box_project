@@ -98,7 +98,7 @@ def test_voice_tts_request_without_sink_defaults_to_speaker_path():
     и ``_on_avatar_tts_request_preview`` не вызывались.
     """
     node = _make_voice_node()
-    node.dialogue_callback(_msg({"ssml": "<speak>привет</speak>", "text": "привет"}))
+    node.dialogue_callback(_msg({"text": "привет", "text": "привет"}))
 
     node._dispatch_avatar_tts_sink.assert_not_called()
     node._on_avatar_tts_request_preview.assert_not_called()
@@ -110,7 +110,7 @@ def test_voice_tts_request_with_speaker_routes_to_speakers():
     node.dialogue_callback(
         _msg(
             {
-                "ssml": "<speak>привет</speak>",
+                "text": "привет",
                 "text": "привет",
                 "sink": "speaker",
             }
@@ -137,7 +137,7 @@ def test_voice_tts_request_with_headset_delegates_to_avatar_handler():
     node.dialogue_callback(
         _msg(
             {
-                "ssml": "<speak>привет</speak>",
+                "text": "привет",
                 "text": "привет",
                 "sink": "headset",
                 "request_id": "req-from-voice-with-sink-headset",
@@ -162,8 +162,6 @@ def test_voice_tts_request_with_preview_delegates_to_preview_path():
     node = _make_voice_node()
     # Чтобы preview-путь дошёл до _on_avatar_tts_request_preview без
     # падения на guard'ах — делаем заглушки:
-    node._extract_text_from_ssml = lambda ssml: "привет"  # type: ignore[assignment]
-    node._parse_ssml_attributes = lambda ssml: {}  # type: ignore[assignment]
     node._publish_tars1_text = MagicMock()  # type: ignore[assignment]
     node._avatar_tts_error_pub = _CapturingPublisher()
 
@@ -184,7 +182,7 @@ def test_voice_tts_request_with_preview_delegates_to_preview_path():
         _msg(
             {
                 "request_id": "req-from-voice-with-sink-preview",
-                "ssml": "<speak>привет</speak>",
+                "text": "привет",
                 "sink": "preview",
                 "voice": "male-qn-qingse",
             }
@@ -206,7 +204,7 @@ def test_voice_tts_request_unknown_sink_drops_with_warning():
     node.dialogue_callback(
         _msg(
             {
-                "ssml": "<speak>привет</speak>",
+                "text": "привет",
                 "text": "привет",
                 "sink": "matrix",  # неизвестный приёмник
             }
@@ -244,8 +242,6 @@ def test_avatar_tts_request_logs_deprecated_warning():
     # Чтобы тест не падал на guard'ах (sink must be valid), прокинем
     # sink='headset' + подменяем _submit_synthesis.
     node._submit_synthesis = MagicMock()  # type: ignore[assignment]
-    node._parse_ssml_attributes = lambda ssml: {}  # type: ignore[assignment]
-    node._extract_text_from_ssml = lambda ssml: "Готово"  # type: ignore[assignment]
     node._publish_tars1_text = MagicMock()  # type: ignore[assignment]
     node._dispatch_avatar_tts_sink = MagicMock(return_value=True)  # type: ignore[assignment]
 
@@ -254,7 +250,7 @@ def test_avatar_tts_request_logs_deprecated_warning():
         _msg(
             {
                 "request_id": "req-avatar-deprecated",
-                "ssml": "<speak>Готово</speak>",
+                "text": "Готово",
                 "sink": "headset",
             }
         )
@@ -519,7 +515,7 @@ def test_voice_tts_request_legacy_payload_without_sink_still_works():
         node.dialogue_callback(
             _msg(
                 {
-                    "ssml": "<speak>привет, робот</speak>",
+                    "text": "привет, робот",
                     "text": "привет, робот",
                     "speech_id": "legacy-1",
                     # sink отсутствует
@@ -592,7 +588,7 @@ def test_voice_tts_request_with_speakers_routes_to_speaker_path():
     node.dialogue_callback(
         _msg(
             {
-                "ssml": "<speak>привет</speak>",
+                "text": "привет",
                 "text": "привет",
                 "sink": "speakers",
             }

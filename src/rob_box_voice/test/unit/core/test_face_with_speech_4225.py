@@ -102,7 +102,7 @@ def _done(node):
 def test_n904_speech_with_sad_face_reaches_the_face_on_done_not_the_happy_reflex():
     agg, node, lines = _turn(N904_ARGS)
     assert (agg.stage, agg.status) == ("done", "finished") and agg.llm_calls == 1
-    assert [s.text for s in node.pubs["/voice/speech/request"].sent] == [f"<speak>{SPEECH}</speak>"]
+    assert [s.text for s in node.pubs["/voice/speech/request"].sent] == [f"{SPEECH}"]
     done = _done(node)
     assert done.emotion == "sad" != reflex("done").emotion, "рефлекс done (happy) не перетирает лицо команды"
     assert done.ttl_ms == 15000 > reflex("done").ttl_ms, "время показа - duration_s команды, а не 3 с рефлекса"

@@ -390,38 +390,6 @@ class SpeakTextTool(MCPTool):
                     f"использую 'talking', текст будет произнесён"
                 )
 
-        # Определяем pitch для голоса на основе анимации (только для эмоциональных)
-        pitch_map = {
-            "happy": "high",
-            "sad": "low",
-            "angry": "high",
-            "excited": "x-high",
-            "surprised": "high"
-        }
-        pitch = pitch_map.get(animation, None)
-
-        def _make_ssml(chunk: str) -> str:
-            # voice-vr 12 (issue #2197): единый сборщик SSML — ``Utterance``.
-            # XML-экранирование &, <, > делает сам сборщик; ``pitch``
-            # приходит из локальной таблицы (high/low/x-high) и в SSML
-            # не нуждается в экранировании.
-            from rob_box_core.utterance import escape_xml_text, strip_markup_tags
-
-            if pitch:
-                # Prosody-обёртка нужна только для эмоциональных анимаций.
-                # ``escape_xml_text`` — публичный алиас того же escape,
-                # что внутри ``Utterance.ssml``.
-                return (
-                    f"<speak><prosody pitch='{pitch}'>"
-                    f"{escape_xml_text(strip_markup_tags(chunk))}"
-                    f"</prosody></speak>"
-                )
-            # Без prosody — пользуемся готовым ``Utterance.ssml`` (один
-            # источник правды для всей сборки SSML).
-            from rob_box_core.utterance import Utterance
-
-            return Utterance(text=chunk).ssml
-
         # Разбиваем текст на чанки ≤ _MAX_CHUNK_CHARS (лимит Yandex TTS)
         chunks = self._split_sentences(text, self._MAX_CHUNK_CHARS)
         if len(chunks) > 1:
@@ -443,7 +411,6 @@ class SpeakTextTool(MCPTool):
                 self.node,
                 Utterance(text=chunk, voice=voice_used, speech_id=speech_id),
                 agent="personality",
-                ssml=_make_ssml(chunk),
             )
             self.log_info(
                 f"📤 TTS чанк {i+1}/{len(chunks)}: speech_id={speech_id[:8]} "

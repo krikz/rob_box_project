@@ -8,8 +8,8 @@ Silero v5 ``apply_tts`` принимает в ``<prosody pitch="...">`` толь
 - ``normalize_silero_pitch`` приводит любой вход к валидному уровню;
 - ``_synthesize_silero`` с числовым/процентным/мусорным pitch возвращает
   аудио, а не exception (стаб имитирует строгую валидацию Silero v5);
-- Yandex-путь не затронут: ``_parse_ssml_attributes`` по-прежнему отдаёт
-  pitch как float, нормализация вызывается только для Silero.
+- разбор ``<prosody>`` из SSML удалён (ADR-0160 §2.3, #4239): на проводе голый
+  текст, нормализация вызывается только для Silero.
 """
 from __future__ import annotations
 
@@ -158,22 +158,3 @@ def test_synthesize_silero_no_attributes_defaults_to_medium():
 # ─────────────────────────────────────────────────────────────────────────────
 #  Yandex-путь не сломан: pitch остаётся float
 # ─────────────────────────────────────────────────────────────────────────────
-
-def test_parse_ssml_attributes_pitch_is_float():
-    """Yandex-путь получает pitch как float (как и до фикса)."""
-    node = TTSNode.__new__(TTSNode)
-    attrs = TTSNode._parse_ssml_attributes(
-        node, '<speak><prosody pitch="1.2" rate="1.1">текст</prosody></speak>'
-    )
-    assert attrs["pitch"] == 1.2
-    assert isinstance(attrs["pitch"], float)
-    assert attrs["rate"] == 1.1
-
-
-def test_parse_ssml_attributes_percent_is_float():
-    node = TTSNode.__new__(TTSNode)
-    attrs = TTSNode._parse_ssml_attributes(
-        node, '<speak><prosody pitch="+10%">текст</prosody></speak>'
-    )
-    assert attrs["pitch"] == pytest.approx(1.1)
-    assert isinstance(attrs["pitch"], float)

@@ -228,12 +228,12 @@ def test_five_facts_trace_silent_on_the_first_push_speaks_on_the_second():
     agg, node, inner, _ = _live_trace([LLMResponse(tool_calls=(_call(expression=FACE),)),
                                        LLMResponse(tool_calls=(_call(expression=FACE),)),
                                        LLMResponse(tool_calls=(_call(speech="Ты болеешь за Спартак."),))])
-    assert _said(node) == ["<speak>Ты болеешь за Спартак.</speak>"]
+    assert _said(node) == ["Ты болеешь за Спартак."]
     assert (agg.stage, agg.status) == ("done", "finished")
 
 
 def test_five_facts_trace_the_retry_gets_words_and_the_model_speaks_for_itself():
     agg, node, inner, _ = _live_trace([LLMResponse(tool_calls=(_call(expression=FACE),)),
                                        LLMResponse(tool_calls=(_call(speech="Ты просил называть тебя Шифу."),))])
-    assert _said(node) == ["<speak>Ты просил называть тебя Шифу.</speak>"]
+    assert _said(node) == ["Ты просил называть тебя Шифу."]
     assert (agg.stage, agg.status) == ("done", "finished") and cm.current_form() == Form()

@@ -11,7 +11,7 @@
 После фикса:
     * ``_ssml_pitch_to_hz``      — float/процент/имя → Hz-offset;
     * ``_ssml_volume_to_lufs_target`` — dB/процент/имя → LUFS-цель;
-    * ``_parse_ssml_attributes`` — извлекает ``pitch`` и ``volume`` из SSML;
+    * разбор ``<prosody>`` удалён (ADR-0160 §2.3, #4239): атрибуты подаются словарём;
     * ``_synthesize_yandex``     — пробрасывает ``pitch_hz``/``volume_lufs``
       в ``_synthesize_yandex_single``;
     * ``_synthesize_yandex_single`` — кладёт их в ``Hints(pitch_shift, volume)``.
@@ -204,47 +204,6 @@ def test_ssml_volume_clamps_to_yandex_range():
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-#  _parse_ssml_attributes — end-to-end SSML → dict
-# ─────────────────────────────────────────────────────────────────────────────
-
-
-@pytest.mark.parametrize(
-    ("ssml", "expected"),
-    [
-        # Без prosody — пустой dict.
-        ("<speak>Просто текст</speak>", {}),
-        # Только pitch.
-        (
-            '<speak><prosody pitch="+10%">текст</prosody></speak>',
-            {"pitch": pytest.approx(1.1)},
-        ),
-        # Pitch + rate.
-        (
-            '<speak><prosody pitch="1.2" rate="1.1">текст</prosody></speak>',
-            {"pitch": pytest.approx(1.2), "rate": pytest.approx(1.1)},
-        ),
-        # Pitch + volume (числовой dB-offset).
-        (
-            '<speak><prosody pitch="high" volume="loud">текст</prosody></speak>',
-            {
-                "pitch": pytest.approx(1.2),
-                "volume": pytest.approx(YANDEX_BASELINE_VOLUME_LUFS + 6.0),
-            },
-        ),
-        # Volume как именованный SSML-уровень → LUFS-цель.
-        (
-            '<speak><prosody volume="soft">текст</prosody></speak>',
-            {"volume": pytest.approx(YANDEX_BASELINE_VOLUME_LUFS - 6.0)},
-        ),
-    ],
-)
-def test_parse_ssml_attributes_extracts_pitch_volume(ssml, expected):
-    node = TTSNode.__new__(TTSNode)
-    attrs = TTSNode._parse_ssml_attributes(node, ssml)
-    assert attrs == expected
-
-
-# ─────────────────────────────────────────────────────────────────────────────
 #  _synthesize_yandex_single — Hints конструируется с pitch_shift/volume
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -334,13 +293,7 @@ def test_synthesize_yandex_applies_ssml_pitch_and_volume():
     pitch_shift=+26 Hz и volume=-13 LUFS."""
     stub = _CapturingYandexStub()
     node = _build_node(stub)
-    ssml = (
-        '<speak><prosody pitch="high" volume="loud">'
-        "Привет, робот"
-        "</prosody></speak>"
-    )
-    # Парсим атрибуты через штатный метод (так делает _synthesize_yandex).
-    attrs = TTSNode._parse_ssml_attributes(node, ssml)
+    attrs = {"pitch": 1.2, "volume": _ssml_volume_to_lufs_target("loud")}
     audio = TTSNode._synthesize_yandex(node, "Привет, робот", attrs)  # type: ignore[arg-type]
 
     assert isinstance(audio, type(audio))  # np.ndarray duck-check
@@ -372,9 +325,7 @@ def test_synthesize_yandex_partial_ssml_only_pitch():
     """Только pitch в SSML — только pitch_shift в Hints, без volume."""
     stub = _CapturingYandexStub()
     node = _build_node(stub)
-    attrs = TTSNode._parse_ssml_attributes(
-        node, '<speak><prosody pitch="low">тихо</prosody></speak>'
-    )
+    attrs = {"pitch": 0.8}
     TTSNode._synthesize_yandex(node, "тихо", attrs)  # type: ignore[arg-type]
 
     kwargs = _hints_to_kwargs(stub.calls[0][1])
@@ -387,9 +338,7 @@ def test_synthesize_yandex_partial_ssml_only_volume():
     """Только volume в SSML — только volume в Hints, без pitch_shift."""
     stub = _CapturingYandexStub()
     node = _build_node(stub)
-    attrs = TTSNode._parse_ssml_attributes(
-        node, '<speak><prosody volume="x-loud">громко</prosody></speak>'
-    )
+    attrs = {"volume": _ssml_volume_to_lufs_target("x-loud")}
     TTSNode._synthesize_yandex(node, "громко", attrs)  # type: ignore[arg-type]
 
     kwargs = _hints_to_kwargs(stub.calls[0][1])
@@ -409,9 +358,7 @@ def test_synthesize_yandex_logs_application():
     stub = _CapturingYandexStub()
     node = _build_node(stub)
     node.get_logger = lambda: _CapturingLogger()
-    attrs = TTSNode._parse_ssml_attributes(
-        node, '<speak><prosody pitch="+5%" volume="loud">x</prosody></speak>'
-    )
+    attrs = {"pitch": 1.05, "volume": _ssml_volume_to_lufs_target("loud")}
     TTSNode._synthesize_yandex(node, "x", attrs)  # type: ignore[arg-type]
 
     applied_logs = [m for m in captured if "применяется в Yandex TTS" in m]

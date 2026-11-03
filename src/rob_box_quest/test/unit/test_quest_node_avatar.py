@@ -142,7 +142,7 @@ class TestOnAvatarTtsRequestMeta(unittest.TestCase):
         host = _make_host(active_sessions_count=1)
         msg = _make_msg({
             "request_id": "r-1",
-            "ssml": "<speak>готово</speak>",
+            "text": "готово",
             "sink": "headset",
         })
         QuestNode._on_avatar_tts_request_meta(host, msg)

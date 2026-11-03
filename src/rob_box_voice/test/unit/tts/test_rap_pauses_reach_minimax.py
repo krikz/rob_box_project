@@ -1,8 +1,8 @@
 """Паузы MiniMax ``<#x#>`` выступления (#3901, О11) доходят до MiniMax как есть, а фолбеку — сняты.
 
-Путь реплики: ``SpeechRequest.text`` → ``chunk_from_request`` (``Utterance.ssml``: экранирование ``<``/``>``) →
-``_extract_text_from_ssml`` (теги прочь, entity назад) → цепочка провайдеров. Метка ``<#1.06#>`` — не тег (имя не с
-буквы), поэтому переживает и сборку SSML, и разбор; Yandex и Silero её не понимают — им текст без меток.
+Путь реплики: ``SpeechRequest.text`` (голый текст, ADR-0160 §2.3) → ``chunk_from_request`` → ``speech_text``
+(теги модели прочь) → цепочка провайдеров. Метка ``<#1.06#>`` — не тег (имя не с буквы), поэтому переживает очистку;
+Yandex и Silero её не понимают — им текст без меток.
 """
 
 from __future__ import annotations
@@ -23,6 +23,7 @@ _install_all_mocks()
 from rob_box_dialog.plan.rap_pauses import markup  # noqa: E402
 from rob_box_voice.core.speech_owner import chunk_from_request  # noqa: E402
 from rob_box_voice.tts_node import TTSNode  # noqa: E402
+from rob_box_voice.tts_text_clean import speech_text  # noqa: E402
 
 VERSE = "Я робот Робби, я читаю под бит,\nКолёса крутятся, мотор не молчит.\nКаждая строчка в такт звучит."
 MARKED = markup(VERSE, 240.0 / 131).text
@@ -34,11 +35,11 @@ def _request(text: str) -> SimpleNamespace:
                            language="")
 
 
-def test_pause_marks_survive_ssml_and_its_parsing():
+def test_pause_marks_survive_plain_text_and_its_cleaning():
     assert "<#" in MARKED
-    ssml = chunk_from_request(_request(MARKED))["ssml"]
-    assert "&lt;#" in ssml  # экранированы в SSML, а не выброшены как тег
-    assert TTSNode.__new__(TTSNode)._extract_text_from_ssml(ssml) == MARKED
+    text = chunk_from_request(_request(MARKED))["text"]
+    assert text == MARKED  # голый текст как есть: ни SSML, ни экранирования
+    assert speech_text(text) == MARKED
 
 
 def _chain_node(chain):

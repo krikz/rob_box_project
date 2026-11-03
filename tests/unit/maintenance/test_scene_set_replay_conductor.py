@@ -265,8 +265,8 @@ def test_say_waits_for_end_of_its_own_line(speech):
     [(topic, req)] = node.requests
     assert topic == speech.SPEECH_REQUEST_TOPIC
     assert req.agent == speech.SYSTEM_AGENT
-    # tts_node без SSML молчит (память speak-through-robot): экранированный SSML строит Utterance.
-    assert req.text == "<speak>Войдите в кадр &amp; встаньте на метку &lt;1.5&gt;</speak>"
+    # Реплика на проводе - голый текст (ADR-0160 §2.3): ни <speak>, ни экранирования.
+    assert req.text == "Войдите в кадр & встаньте на метку <1.5>"  # голый текст, ADR-0160 §2.3
 
 
 def test_say_is_not_woken_by_foreign_line_end(speech):

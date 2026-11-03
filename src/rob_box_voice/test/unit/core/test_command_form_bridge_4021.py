@@ -171,7 +171,7 @@ def test_n813_whole_v2_turn_answers_in_words_not_with_the_mumble():
     engine = TurnEngine(Session("personality"), ports, system_prompt="Ты робот.")
     asyncio.run(engine.run(Addressed("тишина", VOICE)))
     said = [s.text for s in node.pubs["/voice/speech/request"].sent]
-    assert said == ["<speak>Тихо так тихо.</speak>"]
+    assert said == ["Тихо так тихо."]
     assert not any(v in said[0] for v in phrases.catalog()[kn.PASSED_ADDRESSED_PHRASE])
     assert "passed" not in _command_schema(inner.requests[0])["properties"]
     assert cm.current_form() == Form()

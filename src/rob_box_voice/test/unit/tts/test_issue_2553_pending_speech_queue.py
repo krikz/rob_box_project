@@ -147,7 +147,7 @@ def test_new_chunk_from_different_batch_is_queued():
     node.dialogue_callback(
         _msg(
             {
-                "ssml": "<speak>Новый бит в стиле фанк</speak>",
+                "text": "Новый бит в стиле фанк",
                 "speech_id": "babble-retry-001",
                 "batch_id": "babble-retry-M",
                 "batch_index": 1,
@@ -196,7 +196,7 @@ def test_new_chunk_same_batch_is_not_queued():
     node.dialogue_callback(
         _msg(
             {
-                "ssml": "<speak>И ещё куплет</speak>",
+                "text": "И ещё куплет",
                 "speech_id": "turn-N-chunk-2",
                 "batch_id": "turn-N",
                 "batch_index": 2,
@@ -223,7 +223,7 @@ def test_no_active_chunk_means_normal_submit():
     node.dialogue_callback(
         _msg(
             {
-                "ssml": "<speak>Сет запущен</speak>",
+                "text": "Сет запущен",
                 "speech_id": "first-001",
                 "batch_id": "first-batch",
                 "batch_index": 1,
@@ -253,7 +253,7 @@ def test_legacy_no_batch_id_passes_through():
     node.dialogue_callback(
         _msg(
             {
-                "ssml": "<speak>Хорошо</speak>",
+                "text": "Хорошо",
                 "speech_id": "legacy-001",
                 # batch_id отсутствует — back-compat
             }
@@ -283,7 +283,7 @@ def test_operator_priority_is_not_queued():
     node.dialogue_callback(
         _msg(
             {
-                "ssml": "<speak>Стоп, оператор здесь</speak>",
+                "text": "Стоп, оператор здесь",
                 "speech_id": "op-001",
                 "batch_id": "operator-batch",
                 "batch_index": 1,
@@ -313,7 +313,7 @@ def test_drain_submits_queued_chunks_in_fifo():
             "batch_id": "babble-batch",
             "batch_index": 1,
             "batch_total": 1,
-            "ssml": "<speak>Первый</speak>",
+            "ssml": "Первый",
             "text": "Первый",
             "dialogue_id": None,
             "ssml_attributes": None,
@@ -326,7 +326,7 @@ def test_drain_submits_queued_chunks_in_fifo():
             "batch_id": "babble-batch",
             "batch_index": 1,
             "batch_total": 1,
-            "ssml": "<speak>Второй</speak>",
+            "ssml": "Второй",
             "text": "Второй",
             "dialogue_id": None,
             "ssml_attributes": None,
@@ -502,7 +502,7 @@ def test_pending_queue_overflow_drops_with_warning():
     node.dialogue_callback(
         _msg(
             {
-                "ssml": "<speak>overflow</speak>",
+                "text": "overflow",
                 "speech_id": "overflow-9",
                 "batch_id": "spam",
                 "batch_index": 1,

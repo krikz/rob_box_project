@@ -121,7 +121,7 @@ def test_addressed_utterance_runs_turn_and_speaks(node):
     node._on_utterance(_utterance("Робот, как дела"))
     node.last_turn.result(timeout=10)
     said = _published(node, "/voice/speech/request")
-    assert [s.text for s in said] == ["<speak>Привет, я робот.</speak>"]
+    assert [s.text for s in said] == ["Привет, я робот."]
     assert node.test_llm.calls == 1
 
 
@@ -1024,7 +1024,7 @@ def test_music_started_after_the_class_deadline_is_said_late_and_fixes_the_windo
             time.sleep(0.05)
         asyncio.run_coroutine_threadsafe(asyncio.sleep(0.05), made._loop).result(5)  # say_late дописал журнал
         said = _said_texts(made)
-        assert [t for t, _ in said] == ["<speak>Музыка пока не заиграла.</speak>", "<speak>Включаю музыку.</speak>"]
+        assert [t for t, _ in said] == ["Музыка пока не заиграла.", "Включаю музыку."]
         for _, speech_id in said:  # обе фразы отзвучали целиком
             made._engine.speech_ended(speech_id, 100)
         window = made._engine.log.window()
@@ -1054,7 +1054,7 @@ def test_short_question_keeps_the_recognized_speaker_and_is_answered_by_code_414
     assert node._session.snapshot.speaker.person_ref == "spk-sasha"
     node._on_utterance(_said("Робот, ты меня узнал?", "u-q"))
     node.last_turn.result(timeout=10)
-    assert _speech_texts(node) == ["<speak>Узнал — ты Саша.</speak>"] and node.test_llm.calls == 0
+    assert _speech_texts(node) == ["Узнал — ты Саша."] and node.test_llm.calls == 0
 
 
 def test_new_voice_whose_biometry_is_late_hears_not_sure_4141(node, monkeypatch):
@@ -1063,7 +1063,7 @@ def test_new_voice_whose_biometry_is_late_hears_not_sure_4141(node, monkeypatch)
     node._on_speaker(_voice({**SASHA_4141, "utterance_id": "u-s"}))
     node._on_utterance(_said("Робот, ты меня узнал?", "u-new"))
     node.last_turn.result(timeout=10)
-    assert _speech_texts(node) == ["<speak>Пока не уверен, кто ты: голос этой фразы не успел разобрать.</speak>"]
+    assert _speech_texts(node) == ["Пока не уверен, кто ты: голос этой фразы не успел разобрать."]
     assert node.test_llm.calls == 0
 
 
@@ -1075,4 +1075,4 @@ def test_biometry_of_this_phrase_after_stt_decides_the_answer_4141(node):
     node._on_speaker(_voice({"is_known": True, "speaker_id": "spk-boris", "name": "Борис", "confidence": 0.91,
                              "utterance_id": "u-b"}))
     node.last_turn.result(timeout=10)
-    assert _speech_texts(node) == ["<speak>Узнал — ты Борис.</speak>"]
+    assert _speech_texts(node) == ["Узнал — ты Борис."]

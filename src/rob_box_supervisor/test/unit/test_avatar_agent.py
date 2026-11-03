@@ -807,7 +807,7 @@ class TestAgentReplyIsSpoken(unittest.TestCase):
         spoken = _published_avatar_tts(self.node)
         self.assertEqual(len(spoken), 1, "ответ агента не был озвучен")
         self.assertEqual(spoken[0]["sink"], "headset")
-        self.assertIn("ТАРС, агент оператора.", spoken[0]["ssml"])
+        self.assertIn("ТАРС, агент оператора.", spoken[0]["text"])
 
     def test_text_result_is_still_published(self) -> None:
         """Озвучка НЕ заменяет /avatar/command_result — текст нужен UI шлема."""
@@ -848,7 +848,7 @@ class TestAgentReplyIsSpoken(unittest.TestCase):
         self._run("quest", summary=full)
         spoken = _published_avatar_tts(self.node)
         self.assertEqual(len(spoken), 1)
-        ssml = spoken[0]["ssml"]
+        ssml = spoken[0]["text"]
         for bad in ("`", "**", "rate(", "[5m]"):
             self.assertNotIn(bad, ssml)
         self.assertIn("Доступные запросы к Prometheus и Loki.", ssml)

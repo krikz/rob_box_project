@@ -136,7 +136,7 @@ def say_and_wait(node: Any, ends: Any, text: str, timeout_s: float) -> bool:
     """Сказать ``text`` роботом и ждать конца ЭТОЙ реплики; ``False`` — конца нет за ``timeout_s``.
 
     Реплику отдаёт единственный клиент речи ``speech_client.say`` (агент ``system`` — служебные фразы, сессию не
-    ведёт); SSML с экранированием строит ``Utterance`` (без SSML ``tts_node`` молчит, память speak-through-robot)."""
+    ведёт); реплику (голый текст, ADR-0160 §2.3) строит ``Utterance``."""
     from rob_box_core import speech_client
     from rob_box_core.utterance import Utterance
 

@@ -517,7 +517,7 @@ class TestTelegramBridge(unittest.IsolatedAsyncioTestCase):
         req = pub.publish.call_args.args[0]
         self.assertEqual(req.speech_id, speech_id)
         self.assertEqual(req.agent, "telegram")
-        self.assertEqual(req.text, "<speak>Всем привет &amp; пока</speak>")
+        self.assertEqual(req.text, "Всем привет & пока")
 
     def test_say_speaks_exactly_the_typed_text_once_and_receipt_follows_the_event(self) -> None:
         """#3727: /say - ровно один SpeechRequest с введённым текстом (agent=telegram), никаких других реплик и
@@ -536,7 +536,7 @@ class TestTelegramBridge(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(pub.publish.call_count, 1)
         req = pub.publish.call_args.args[0]
         self.assertEqual(req.agent, "telegram")
-        self.assertEqual(req.text, "<speak>Привет, мир &amp; пока</speak>")
+        self.assertEqual(req.text, "Привет, мир & пока")
         self.assertEqual([p.publish.call_count for p in others], before)
         loop.call_soon_threadsafe.assert_not_called()  # до итога чату ничего не говорим
 
@@ -592,7 +592,7 @@ class TestTelegramBridge(unittest.IsolatedAsyncioTestCase):
         stt = next(p for p in node._created_publishers if p.topic == "/voice/stt/utterance")
         node.publish_tts_with_floor("Ровно этот текст", receipt_chat_id=7)
         self.assertEqual(speech.publish.call_count, 1)
-        self.assertEqual(speech.publish.call_args.args[0].text, "<speak>Ровно этот текст</speak>")
+        self.assertEqual(speech.publish.call_args.args[0].text, "Ровно этот текст")
         stt.publish.assert_not_called()
 
     def test_v1_does_not_subscribe_dialog_output(self) -> None:

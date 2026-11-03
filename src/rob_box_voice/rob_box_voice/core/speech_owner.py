@@ -23,7 +23,6 @@
 
 from __future__ import annotations
 
-import html
 import json
 import re
 import threading
@@ -36,7 +35,6 @@ import numpy as np
 
 from rob_box_core.speech_client import ANY_AGENT, PRIORITY_OPERATOR_U8, VOICE_OWNER_AGENT
 from rob_box_dialog import knowledge as kn
-from rob_box_core.utterance import Utterance
 
 from .speech_timing import PREFETCH_PROVIDER, Presynth, at_delay_s
 
@@ -49,14 +47,16 @@ TICK_S = 0.1
 STALE_RECORD_S = 300.0
 SPEAKER_SINKS = ("", "speaker", "speakers")
 _KINDS = ("queued", "synthesized", "started", "progress", "finished", "cancelled", "voice_changed", "rejected")
-_TAG_RE = re.compile(r"<[^>]+>")
+#: Метка паузы рэпа MiniMax ``<#x#>`` (``rap_pauses``) — не звучит, символом реплики не считается.
+_PAUSE_MARK_RE = re.compile(r"<#\d+(?:\.\d+)?#>")
 _SENTENCE_END_RE = re.compile(r"[.!?…]+(?=\s|$)")
 _CANCEL_ERRORS = ("stopped", "cancelled")
 
 
-def plain_text(ssml: str) -> str:
-    """Текст реплики без тегов SSML и XML-сущностей - по нему считаются символы."""
-    return " ".join(html.unescape(_TAG_RE.sub(" ", ssml or "")).split())
+def plain_text(text: str) -> str:
+    """Голый текст реплики без меток пауз рэпа ``<#x#>`` и лишних пробелов - по нему считаются символы. ``<`` и
+    ``>`` в тексте - обычные символы (ADR-0160 §2.3)."""
+    return " ".join(_PAUSE_MARK_RE.sub(" ", text or "").split())
 
 
 def sentence_ends(text: str) -> Tuple[int, ...]:
@@ -108,13 +108,12 @@ def unsupported_field(msg: Any) -> str:
 
 
 def chunk_from_request(msg: Any) -> Dict[str, Any]:
-    """Словарь-чанк конвейера ``tts_node`` из ``SpeechRequest``."""
-    text = msg.text or ""
+    """Словарь-чанк конвейера ``tts_node`` из ``SpeechRequest``: голый текст реплики (ADR-0160 §2.3)."""
     meta = SpeechMeta(agent=msg.agent or "personality", epoch=int(msg.epoch),
                       turn_id=msg.turn_id, interruptible=bool(msg.interruptible),
                       at=float(msg.at), boundary=int(msg.boundary), commit=bool(msg.commit))
     chunk: Dict[str, Any] = {
-        "ssml": text if text.lstrip().startswith("<speak") else Utterance(text=text).ssml,
+        "text": msg.text or "",
         "speech_id": msg.speech_id or str(uuid.uuid4()),
         "sink": "speaker",
         "priority": "operator" if msg.priority >= PRIORITY_OPERATOR_U8 else "normal",
@@ -318,7 +317,7 @@ class SpeechOwner:
 
     def admit(self, chunk: Dict[str, Any], speech_id: str) -> None:
         meta = SpeechMeta.from_chunk(chunk)
-        self._emit("queued", self.ledger.admit(speech_id, meta, plain_text(chunk.get("ssml", ""))))
+        self._emit("queued", self.ledger.admit(speech_id, meta, plain_text(chunk.get("text", ""))))
 
     def synthesized(
         self, speech_id: Optional[str], duration_s: float, ctx: Dict[str, Any], voice: Optional[str]
