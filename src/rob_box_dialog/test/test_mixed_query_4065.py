@@ -191,12 +191,13 @@ def test_4065_mixed_on_the_last_iteration_without_words_is_said_by_code_from_the
     """Модель до потолка просит ``[play_animation, list]`` без слов: на последней итерации list не исполняется
     (читать некому), анимация исполнена один раз (#4069 п.1: повтор в том же ходе не исполняется) и красит итог, а
     говорит код по данным хода - не тишина."""
+    # #4286: и тот же ``list`` второй раз не исполняется (``turn.unreread``): на первый повтор модели - подсказка
+    # «уже выполнено», на второй ход закрывает код по данным
     ports = Ports([_mixed()] * (kn.LLM_QUERY_ITERATIONS_MAX + 1), LIBRARY_DONE)
     agg = _run(ports)
-    assert len(ports.asked) == kn.LLM_QUERY_ITERATIONS_MAX + 1
-    assert ports.executed == [[("play_animation", {"animation": "sad"}), ("music_library", dict(LIST_CALL.args))],
-                              *[[("music_library", dict(LIST_CALL.args))]] * (kn.LLM_QUERY_ITERATIONS_MAX - 1)], \
-        "анимация не повторена; query на последней итерации не исполнен"
+    assert len(ports.asked) == 3
+    assert ports.executed == [[("play_animation", {"animation": "sad"}), ("music_library", dict(LIST_CALL.args))]], \
+        "анимация и чтение не повторены"
     assert ports.said == [(NAMES, None, None)], "ответ по данным - без грусти (#4157 К2)"
     assert (agg.stage, agg.status) == ("done", "done") and ports.stages[-1] == ("done", "done", "query_fallback:ceiling")
     assert ports.faces == [("done", Shown(emotion="sad", duration_s=kn.FACE_SHOW_DEFAULT_S))], \

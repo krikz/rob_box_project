@@ -80,10 +80,11 @@ def test_operator_sees_say_and_the_personality_does_not():
 
 
 def test_reply_is_built_by_code_from_the_turn(stop_hosts):
-    host, _base, _late = _host([Command(speech="Батарея в норме.")])
+    # речь без утверждения о подсистеме: «Батарея в норме.» без тула - ложь, её судит ``state_claim`` (#4286)
+    host, _base, _late = _host([Command(speech="Принял, оператор.")])
     stop_hosts.append(host)
-    out = host.run_payload({"text": "как батарея", "source": "telegram", "client_id": "c", "request_id": "r1"})
-    assert out == {"ok": True, "summary": "Батарея в норме.", "tool_calls": [], "source": "telegram", "client_id": "c"}
+    out = host.run_payload({"text": "привет", "source": "telegram", "client_id": "c", "request_id": "r1"})
+    assert out == {"ok": True, "summary": "Принял, оператор.", "tool_calls": [], "source": "telegram", "client_id": "c"}
 
 
 def test_say_is_a_promise_then_late_result_by_speech_event(stop_hosts):
