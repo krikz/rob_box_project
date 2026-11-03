@@ -8,11 +8,13 @@ Yandex и фолбэку на Silero (с 7-сек задержкой lazy-load �
 
 This test enforces:
 
-1. ``TTSNode._chunk_text`` splits text по границам предложений
+Синтез Yandex живёт в адаптере ``rob_box_voice.tts_providers.yandex`` (#4240, ADR-0160 §2.5).
+
+1. ``yandex.chunk_text`` splits text по границам предложений
    (``.``, ``!``, ``?``, ``\\n``), гарантируя, что каждый чанк ≤
    :data:`YANDEX_MAX_CHUNK_CHARS` (default 2400).
 2. Если одно предложение длиннее лимита — split по whitespace.
-3. ``_synthesize_yandex`` для длинного текста делает несколько gRPC
+3. ``YandexTTSProvider.synthesize_np`` для длинного текста делает несколько gRPC
    вызовов (по одному на чанк) и склеивает аудио. Один ``speech_id``
    обслуживает все чанки.
 4. Если chunk-вызов падает, исключение пробрасывается наверх — caller
@@ -43,6 +45,8 @@ import pytest
 
 _PACKAGE_ROOT = Path(__file__).resolve().parents[3]  # rob_box_voice/
 _TTS_NODE = _PACKAGE_ROOT / "rob_box_voice" / "tts_node.py"
+_YANDEX = _PACKAGE_ROOT / "rob_box_voice" / "tts_providers" / "yandex.py"
+_SILERO = _PACKAGE_ROOT / "rob_box_voice" / "tts_providers" / "silero.py"
 
 
 def _parse_module(path: Path) -> str:
@@ -83,26 +87,26 @@ def test_yandex_max_chunk_chars_constant_exists() -> None:
     assert isinstance(node, (ast.AnnAssign, ast.Assign))
 
 
-def test_chunk_text_is_static_method() -> None:
-    """``_chunk_text`` must be a @staticmethod on TTSNode (so it can be unit-tested
-    without instantiating the ROS node)."""
-    fn = _find_class_member(_parse_module(_TTS_NODE), "TTSNode", "_chunk_text")
-    decos = [ast.unparse(d) for d in fn.decorator_list]
-    assert "staticmethod" in decos, f"_chunk_text must be @staticmethod, got {decos}"
+def test_chunk_text_is_module_function_of_the_adapter() -> None:
+    """``chunk_text`` — функция модуля адаптера (тестируется без ROS-ноды); в ``tts_node`` копии нет (#4240)."""
+    tree = ast.parse(_parse_module(_YANDEX))
+    assert any(isinstance(n, ast.FunctionDef) and n.name == "chunk_text" for n in tree.body)
+    with pytest.raises(LookupError):
+        _find_class_member(_parse_module(_TTS_NODE), "TTSNode", "_chunk_text")
 
 
 def test_synthesize_yandex_uses_retry_helper() -> None:
     """Yandex hot-path must use retry-halving around its single-RPC helper."""
-    src = _parse_module(_TTS_NODE)
-    yandex = _find_class_member(src, "TTSNode", "_synthesize_yandex")
+    src = _parse_module(_YANDEX)
+    yandex = _find_class_member(src, "YandexTTSProvider", "synthesize_np")
     yandex_src = ast.unparse(yandex)
 
     assert "synthesize_with_retry(" in yandex_src
-    assert "_synthesize_yandex_single" in yandex_src
-    assert "chunk_max_chars_yandex" in yandex_src
+    assert "_synthesize_one" in yandex_src
+    assert "_chunk_max_chars" in yandex_src
     assert "np.concatenate" in yandex_src or "concatenate" in yandex_src
 
-    single = _find_class_member(src, "TTSNode", "_synthesize_yandex_single")
+    single = _find_class_member(src, "YandexTTSProvider", "_synthesize_one")
     single_src = ast.unparse(single)
     assert "synthesize_with_retry" not in single_src
     # ADR-0158 PR-6: сам RPC вынесен в tts_engines.yandex_collect_audio (общий с sing_synth)
@@ -112,25 +116,23 @@ def test_synthesize_yandex_uses_retry_helper() -> None:
 def test_synthesize_yandex_logs_per_chunk_latency() -> None:
     """Issue #931 acceptance: latency per chunk must be logged.
 
-    ``_synthesize_yandex`` (multi-chunk path) and
-    ``_synthesize_yandex_single_with_latency`` (retry-halve path) both
+    ``YandexTTSProvider.synthesize_np`` (multi-chunk path) and
+    ``_synthesize_one_logged`` (retry-halve path) both
     measure synthesis time and log it, so operators can see per-chunk
     latency without instrumenting gRPC.
     """
-    src = _parse_module(_TTS_NODE)
-    yandex = _find_class_member(src, "TTSNode", "_synthesize_yandex")
+    src = _parse_module(_YANDEX)
+    yandex = _find_class_member(src, "YandexTTSProvider", "synthesize_np")
     yandex_src = ast.unparse(yandex)
     assert "time.monotonic()" in yandex_src
     assert "Yandex chunk" in yandex_src
     assert "ms" in yandex_src
 
-    latency_wrapper = _find_class_member(
-        src, "TTSNode", "_synthesize_yandex_single_with_latency"
-    )
+    latency_wrapper = _find_class_member(src, "YandexTTSProvider", "_synthesize_one_logged")
     latency_src = ast.unparse(latency_wrapper)
     assert "time.monotonic()" in latency_src
     assert "Yandex synth" in latency_src
-    assert "_synthesize_yandex_single(" in latency_src
+    assert "_synthesize_one(" in latency_src
     assert "ms" in latency_src
 
 
@@ -145,8 +147,9 @@ def test_fallback_to_silero_preserved() -> None:
     # Search across the whole module so the contract survives extraction.
     module_src = _TTS_NODE.read_text(encoding="utf-8")
     # ADR-0158 PR-6: сам вызов apply_tts вынесен в ``tts_engines.silero_apply_tts``
-    # (общий с sing_synth), tts_node зовёт его со своей моделью.
-    assert "silero_apply_tts(" in module_src and "self.silero_model" in module_src, (
+    # (общий с sing_synth); #4240 — его зовёт адаптер Silero, нода зовёт адаптер.
+    silero_src = _SILERO.read_text(encoding="utf-8")
+    assert "silero_apply_tts(" in silero_src and "silero_tts.synthesize_np(" in module_src, (
         "Silero fallback path must be intact (search across module after "
         "issue #2078 decomposition)"
     )
@@ -165,7 +168,7 @@ def test_fallback_to_silero_preserved() -> None:
 
 @pytest.fixture(autouse=True)
 def _import_chunk_text():
-    """Import ``_chunk_text`` without instantiating TTSNode (no rclpy)."""
+    """Import ``chunk_text`` адаптера Yandex (no rclpy)."""
     sys_modules_backup = {}
     try:
         from test.unit.tts import conftest as _cf
@@ -268,25 +271,26 @@ def _import_chunk_text():
     # Force re-import in case test order matters
     if "rob_box_voice.tts_node" in sys.modules:
         del sys.modules["rob_box_voice.tts_node"]
-    from rob_box_voice.tts_node import TTSNode, YANDEX_MAX_CHUNK_CHARS
+    from rob_box_voice.tts_node import YANDEX_MAX_CHUNK_CHARS
+    from rob_box_voice.tts_providers.yandex import chunk_text
 
-    yield TTSNode, YANDEX_MAX_CHUNK_CHARS
+    yield chunk_text, YANDEX_MAX_CHUNK_CHARS
 
     sys.modules.pop("rob_box_voice.tts_node", None)
 
 
 def test_short_text_no_split(_import_chunk_text):
-    TTSNode, MAX = _import_chunk_text
+    chunk_text, MAX = _import_chunk_text
     text = "Hello world. " * 5  # ~65 chars
-    chunks = TTSNode._chunk_text(text, max_chars=MAX)
+    chunks = chunk_text(text, max_chars=MAX)
     assert len(chunks) == 1
     assert chunks[0] == text.strip()
 
 
 def test_empty_text_returns_empty_list(_import_chunk_text):
-    TTSNode, MAX = _import_chunk_text
-    assert TTSNode._chunk_text("", max_chars=MAX) == []
-    assert TTSNode._chunk_text("   ", max_chars=MAX) == []
+    chunk_text, MAX = _import_chunk_text
+    assert chunk_text("", max_chars=MAX) == []
+    assert chunk_text("   ", max_chars=MAX) == []
 
 
 @pytest.mark.parametrize(
@@ -294,10 +298,10 @@ def test_empty_text_returns_empty_list(_import_chunk_text):
     [300, 500, 800, 1200],
 )
 def test_sentence_split_stays_within_limit(_import_chunk_text, repeat):
-    TTSNode, MAX = _import_chunk_text
+    chunk_text, MAX = _import_chunk_text
     text = ("Sentence. " * repeat).strip()
     assert len(text) > MAX, f"need text > {MAX}, got {len(text)}"  # pre-condition
-    chunks = TTSNode._chunk_text(text, max_chars=MAX)
+    chunks = chunk_text(text, max_chars=MAX)
     # Each chunk ≤ limit
     assert all(len(c) <= MAX for c in chunks), [len(c) for c in chunks]
     # Content round-trips (modulo whitespace)
@@ -307,32 +311,32 @@ def test_sentence_split_stays_within_limit(_import_chunk_text, repeat):
 
 
 def test_word_split_when_single_sentence_exceeds_limit(_import_chunk_text):
-    TTSNode, MAX = _import_chunk_text
+    chunk_text, MAX = _import_chunk_text
     text = " ".join(["word"] * 1000) + "."  # ~6001 chars, one giant sentence
-    chunks = TTSNode._chunk_text(text, max_chars=MAX)
+    chunks = chunk_text(text, max_chars=MAX)
     assert all(len(c) <= MAX for c in chunks), max(len(c) for c in chunks)
     assert len(chunks) >= 2
 
 
 def test_exactly_at_limit_no_split(_import_chunk_text):
-    TTSNode, MAX = _import_chunk_text
+    chunk_text, MAX = _import_chunk_text
     text = "a" * MAX
-    chunks = TTSNode._chunk_text(text, max_chars=MAX)
+    chunks = chunk_text(text, max_chars=MAX)
     assert chunks == [text]
 
 
 def test_over_by_one(_import_chunk_text):
-    TTSNode, MAX = _import_chunk_text
+    chunk_text, MAX = _import_chunk_text
     text = "a" * (MAX + 1)
-    chunks = TTSNode._chunk_text(text, max_chars=MAX)
+    chunks = chunk_text(text, max_chars=MAX)
     assert all(len(c) <= MAX for c in chunks)
     assert len(chunks) >= 2
 
 
 def test_paragraph_break_used_as_separator(_import_chunk_text):
-    TTSNode, MAX = _import_chunk_text
+    chunk_text, MAX = _import_chunk_text
     text = ("Hello.\nWorld!\nHow are you?\n" * 200).strip()
-    chunks = TTSNode._chunk_text(text, max_chars=MAX)
+    chunks = chunk_text(text, max_chars=MAX)
     assert all(len(c) <= MAX for c in chunks)
     # Round-trip preserves content
     assert "".join(text.split()) == "".join("".join(chunks).split())
@@ -340,24 +344,24 @@ def test_paragraph_break_used_as_separator(_import_chunk_text):
 
 def test_long_anecdote_realistic(_import_chunk_text):
     """Realistic LLM anecdote ~5k chars."""
-    TTSNode, MAX = _import_chunk_text
+    chunk_text, MAX = _import_chunk_text
     text = (
         "Once upon a time in a small village, there lived a brave robot. "
         "It helped everyone in need. "
     ) * 100
     assert len(text) > 5000
-    chunks = TTSNode._chunk_text(text, max_chars=MAX)
+    chunks = chunk_text(text, max_chars=MAX)
     assert all(len(c) <= MAX for c in chunks)
     assert len(chunks) >= 2
 
 
 def test_small_custom_limit(_import_chunk_text):
-    TTSNode, _ = _import_chunk_text
-    chunks = TTSNode._chunk_text("a. b. c. d. e. f.", max_chars=5)
+    chunk_text, _ = _import_chunk_text
+    chunks = chunk_text("a. b. c. d. e. f.", max_chars=5)
     assert all(len(c) <= 5 for c in chunks), chunks
 
 
-# ── Multi-chunk _synthesize_yandex behavioural test ──────────────────────────
+# ── Multi-chunk YandexTTSProvider.synthesize_np behavioural test ──────────────────────────
 
 
 def _make_wav_bytes(num_samples: int = 2205, sample_rate: int = 22050) -> bytes:
@@ -392,23 +396,9 @@ class _FakeYandexStub:
         return iter([_FakeResponse(_make_wav_bytes(num_samples=2205))])
 
 
-def _build_node(stub):
-    """Build a TTSNode instance bypassing __init__ (no rclpy available)."""
-    from rob_box_voice.tts_node import (
-        DEFAULT_MAX_RETRIES,
-        MIN_CHUNK_CHARS,
-        TTSNode,
-        YANDEX_MAX_CHUNK_CHARS,
-    )
-
-    node = TTSNode.__new__(TTSNode)
-    node.yandex_stub = stub
-    node.yandex_voice = "anton"
-    node.yandex_speed = 1.0
-    node.yandex_api_key = "test-key"
-    node.chunk_max_chars_yandex = YANDEX_MAX_CHUNK_CHARS
-    node.chunk_max_retries = DEFAULT_MAX_RETRIES
-    node.chunk_min_chars = MIN_CHUNK_CHARS
+def _build_node(stub, **limits):
+    """Адаптер Yandex с фейковым gRPC-стабом (no rclpy available)."""
+    from rob_box_voice.tts_providers.yandex import YandexTTSProvider
 
     class _Logger:
         def info(self, *a, **kw):
@@ -423,18 +413,15 @@ def _build_node(stub):
         def debug(self, *a, **kw):
             pass
 
-    node.get_logger = lambda: _Logger()
-    return node
+    return YandexTTSProvider("test-key", stub, logger=_Logger(), **limits)
 
 
 def test_short_text_one_grpc_call(_import_chunk_text):
     """Текст ≤ лимита → 1 gRPC-вызов, 1 np.ndarray, dtype float32."""
     _, MAX = _import_chunk_text
-    from rob_box_voice.tts_node import TTSNode
-
     stub = _FakeYandexStub()
     node = _build_node(stub)
-    audio = TTSNode._synthesize_yandex(node, "Short text.")  # type: ignore[arg-type]
+    audio = node.synthesize_np("Short text.")
     assert len(stub.calls) == 1
     assert isinstance(audio, np.ndarray)
     assert audio.dtype == np.float32
@@ -444,15 +431,13 @@ def test_short_text_one_grpc_call(_import_chunk_text):
 def test_long_text_multi_chunk_concatenated(_import_chunk_text):
     """Текст >2400 chars → N gRPC-вызовов, склеенный аудио-массив."""
     _, MAX = _import_chunk_text
-    from rob_box_voice.tts_node import TTSNode
-
     stub = _FakeYandexStub()
     node = _build_node(stub)
 
     text = ("This is a sentence about robots. " * 220).strip()
     assert len(text) > MAX
 
-    audio = TTSNode._synthesize_yandex(node, text)  # type: ignore[arg-type]
+    audio = node.synthesize_np(text)
 
     assert len(stub.calls) >= 2, f"expected ≥2 chunks, got {len(stub.calls)}"
     # Every chunk ≤ MAX
@@ -467,8 +452,6 @@ def test_long_text_multi_chunk_concatenated(_import_chunk_text):
 
 def test_synthesize_yandex_retries_too_long_chunk(_import_chunk_text):
     """Yandex INVALID_ARGUMENT must halve the rejected chunk before fallback."""
-    from rob_box_voice.tts_node import TTSNode
-
     class ThresholdStub(_FakeYandexStub):
         def __init__(self, max_chars: int):
             super().__init__()
@@ -484,14 +467,11 @@ def test_synthesize_yandex_retries_too_long_chunk(_import_chunk_text):
             return super().UtteranceSynthesis(request, metadata)
 
     stub = ThresholdStub(max_chars=180)
-    node = _build_node(stub)
-    node.chunk_max_chars_yandex = 700
-    node.chunk_max_retries = 3
-    node.chunk_min_chars = 50
+    node = _build_node(stub, chunk_max_chars=700, chunk_max_retries=3, chunk_min_chars=50)
     text = ("Retry this phrase. " * 15).strip()
-    assert 180 < len(text) < node.chunk_max_chars_yandex
+    assert 180 < len(text) < 700
 
-    audio = TTSNode._synthesize_yandex(node, text)  # type: ignore[arg-type]
+    audio = node.synthesize_np(text)
 
     assert len(stub.attempts) == 3
     assert stub.attempts[0] == text
@@ -504,8 +484,6 @@ def test_chunk_failure_propagates_for_silero_fallback(_import_chunk_text):
     """Если chunk gRPC падает, исключение пробрасывается — caller фолбэчит
     на Silero для всего текста."""
     _, MAX = _import_chunk_text
-    from rob_box_voice.tts_node import TTSNode
-
     stub = _FakeYandexStub()
     call_count = {"n": 0}
     original = stub.UtteranceSynthesis
@@ -524,9 +502,9 @@ def test_chunk_failure_propagates_for_silero_fallback(_import_chunk_text):
     assert len(text) > MAX
 
     with pytest.raises(Exception, match=r"(Too long text|Yandex (gRPC|synthesis) error)"):
-        TTSNode._synthesize_yandex(node, text)  # type: ignore[arg-type]
+        node.synthesize_np(text)
 
-# ── _chunk_text не должен быть копией split_text ────────────────────────────
+# ── chunk_text не должен быть копией split_text ────────────────────────────
 
 
 @pytest.mark.parametrize(
@@ -542,7 +520,7 @@ def test_chunk_failure_propagates_for_silero_fallback(_import_chunk_text):
 def test_chunk_text_agrees_with_shared_chunker(
     _import_chunk_text, text: str, max_chars: int
 ) -> None:
-    """``TTSNode._chunk_text`` обязан резать так же, как общий ``split_text``.
+    """``yandex.chunk_text`` (бывший ``TTSNode._chunk_text``) обязан резать так же, как общий ``split_text``.
 
     Тело ``_chunk_text`` было построчной копией
     ``rob_box_voice.tts_chunking.split_text`` (сходство нормализованного
@@ -557,7 +535,7 @@ def test_chunk_text_agrees_with_shared_chunker(
     """
     from rob_box_voice.tts_chunking import split_text
 
-    TTSNode, _ = _import_chunk_text
-    assert TTSNode._chunk_text(text, max_chars=max_chars) == split_text(
+    chunk_text, _ = _import_chunk_text
+    assert chunk_text(text, max_chars=max_chars) == split_text(
         text, max_chars=max_chars
     )

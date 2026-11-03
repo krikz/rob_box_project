@@ -49,7 +49,7 @@ tts_node:
     #   happy | neutral | sad | angry | fearful | disgusted | surprised
     # Прокидывание значений в ``TTSSettings`` — в карточке t_4e98182a.
     # Единственный канонический блок параметров MiniMax-emotion — ниже
-    # (после yandex_ssml_aware), комментарий описывает семантику ``""``.
+    # (после yandex_speed), комментарий описывает семантику ``""``.
     chipmunk_mode: false
     pitch_shift: 1.0
     volume_db: -3.0
@@ -60,14 +60,6 @@ tts_node:
     yandex_api_key: ''
     yandex_voice: anton
     yandex_speed: 1.0
-    # Issue #1780 / issue #1004 — флаг «ssml-aware» режима для Yandex.
-    # При True — Yandex-провайдер должен передавать вход как SSML
-    # (``<speak>...<emotion>happy</emotion>...</speak>``) и использовать
-    # ``<emotion>`` / ``<prosody pitch=...>`` теги, поддерживаемые
-    # Yandex gRPC v3. Сейчас False (legacy: текст → Hints(voice, speed)).
-    # Полная интеграция — в карточке t_c401ecaa; флаг уже здесь, чтобы
-    # YAML был валиден и можно было безопасно переключать.
-    yandex_ssml_aware: false
     chunk_max_chars_yandex: 250
     chunk_max_chars_silero: 800
     chunk_max_chars_minimax: 5000

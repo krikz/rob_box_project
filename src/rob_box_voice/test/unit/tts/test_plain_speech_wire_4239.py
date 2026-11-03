@@ -2,7 +2,7 @@
 
 Путь: ``Utterance`` → ``speech_client.build_request`` (``SpeechRequest.text`` — голый текст) →
 ``speech_owner.chunk_from_request`` (чанк ``{"text": …}``) → ``tts_text_clean.speech_text`` (теги модели, ``[…]``,
-Markdown) → провайдер. ``<speak>`` с экранированием — только ``tts_ssml.silero_ssml`` внутри ``_synthesize_silero``.
+Markdown) → провайдер. ``<speak>`` с экранированием — только ``tts_ssml.silero_ssml`` в адаптере ``SileroTTSProvider``.
 """
 
 from __future__ import annotations
@@ -25,7 +25,7 @@ _install_all_mocks()
 from rob_box_core import speech_client  # noqa: E402
 from rob_box_core.utterance import Utterance  # noqa: E402
 from rob_box_voice.core.speech_owner import chunk_from_request  # noqa: E402
-from rob_box_voice.tts_node import TTSNode  # noqa: E402
+from rob_box_voice.tts_providers.silero import SileroTTSProvider  # noqa: E402
 from rob_box_voice.tts_ssml import silero_ssml  # noqa: E402
 from rob_box_voice.tts_text_clean import speech_text, strip_markup_tags  # noqa: E402
 
@@ -123,12 +123,9 @@ class _Silero:
 
 def test_synthesize_silero_wraps_plain_text_with_escaping():
     model = _Silero()
-    node = TTSNode.__new__(TTSNode)
-    node.silero_model, node.silero_speaker, node.silero_sample_rate = model, "baya", 48000
-    node.silero_put_accent = node.silero_put_yo = node.silero_put_stress_homo = node.silero_put_yo_homo = True
-    node.chunk_max_chars_silero, node.chunk_max_retries, node.chunk_min_chars = 800, 3, 50
-    node.get_logger = lambda: SimpleNamespace(info=lambda *a, **k: None, warn=lambda *a, **k: None)
+    node = SileroTTSProvider(logger=SimpleNamespace(info=lambda *a, **k: None, warn=lambda *a, **k: None))
+    node.model = model
 
-    TTSNode._synthesize_silero(node, TRICKY)
+    node.synthesize_np(TRICKY)
 
     assert model.ssml == ['<speak><prosody pitch="medium">Батарея &lt; 20% &amp; сигнал &gt; нормы</prosody></speak>']

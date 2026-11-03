@@ -1,4 +1,4 @@
-"""Запрос Yandex SpeechKit v3 из ``tts_node``: в ``Hints`` только голос и скорость (#4240).
+"""Запрос Yandex SpeechKit v3 из адаптера ``tts_providers.yandex``: в ``Hints`` только голос и скорость (#4240).
 
 Цепочка SSML-просодии (``<prosody pitch/volume>`` → ``Hints(pitch_shift, volume)``, issue #1780)
 удалена: с провода (ADR-0160 §2.3, #4239) атрибуты больше не приходят, скорость — ROS-параметр
@@ -83,7 +83,7 @@ if _yandex_v3 is None or not hasattr(_yandex_v3, "tts_pb2"):
 if "rob_box_voice.tts_node" in sys.modules:
     del sys.modules["rob_box_voice.tts_node"]
 
-from rob_box_voice.tts_node import TTSNode  # noqa: E402
+from rob_box_voice.tts_providers.yandex import YandexTTSProvider  # noqa: E402
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -123,37 +123,16 @@ class _CapturingYandexStub:
         return iter([_FakeResponse(_make_wav_bytes())])
 
 
-def _build_node(stub) -> TTSNode:
-    from rob_box_voice.tts_node import (
-        DEFAULT_MAX_RETRIES,
-        MIN_CHUNK_CHARS,
-        YANDEX_MAX_CHUNK_CHARS,
-    )
-
-    node = TTSNode.__new__(TTSNode)
-    node.yandex_stub = stub
-    node.yandex_voice = "anton"
-    node.yandex_speed = 1.0
-    node.yandex_api_key = "test-key"
-    node.chunk_max_chars_yandex = YANDEX_MAX_CHUNK_CHARS
-    node.chunk_max_retries = DEFAULT_MAX_RETRIES
-    node.chunk_min_chars = MIN_CHUNK_CHARS
+def _build_node(stub):
+    """Адаптер Yandex (#4240) с захватывающим gRPC-стабом."""
 
     class _Logger:
         def info(self, *a, **kw):
             pass
 
-        def warn(self, *a, **kw):
-            pass
+        warn = error = debug = info
 
-        def error(self, *a, **kw):
-            pass
-
-        def debug(self, *a, **kw):
-            pass
-
-    node.get_logger = lambda: _Logger()
-    return node
+    return YandexTTSProvider("test-key", stub, logger=_Logger())
 
 
 def _hints_to_kwargs(hints: list) -> dict:
@@ -172,10 +151,10 @@ def _hints_to_kwargs(hints: list) -> dict:
 
 
 def test_synthesize_yandex_hints_are_voice_and_speed_only():
-    """Hints — голос и скорость из параметров ноды; pitch_shift/volume нет (Yandex берёт свои дефолты)."""
+    """Hints — голос и скорость (нода передаёт ``yandex_speed``); pitch_shift/volume нет (Yandex берёт свои дефолты)."""
     stub = _CapturingYandexStub()
     node = _build_node(stub)
-    TTSNode._synthesize_yandex(node, "Просто текст.")  # type: ignore[arg-type]
+    node.synthesize_np("Просто текст.", voice="anton", speed=1.0)
 
     assert len(stub.calls) == 1
     kwargs = _hints_to_kwargs(stub.calls[0][1])

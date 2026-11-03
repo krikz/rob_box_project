@@ -30,6 +30,7 @@ _install_all_mocks()
 
 from rob_box_voice import tts_node  # noqa: E402
 from rob_box_voice.tts_node import TTSNode  # noqa: E402
+from rob_box_voice.tts_providers import SileroTTSProvider, YandexTTSProvider  # noqa: E402
 
 
 class _Bare:
@@ -65,12 +66,13 @@ def _playback_node() -> _Bare:
     # Silero fallback prerequisites
     node._silero_loaded = __import__("threading").Event()
     node._silero_loaded.set()
-    node.silero_model = MagicMock(name="FakeSileroModel")
+    node._silero_tts = SileroTTSProvider(logger=MagicMock())
+    node._silero_tts.model = MagicMock(name="FakeSileroModel")
     node.silero_sample_rate = 48000
     node.silero_put_stress_homo = True
     node.silero_speaker = "aidar"
-    node._synthesize_silero = MagicMock(return_value=np.zeros(4800, dtype=np.float32))
-    node.yandex_stub = object()
+    node._silero_tts.synthesize_np = MagicMock(return_value=np.zeros(4800, dtype=np.float32))
+    node._yandex_tts = YandexTTSProvider("fake-key", object(), logger=MagicMock())
     node.yandex_voice = "anton"
     node.chunk_max_chars_yandex = 250
     node.chunk_max_chars_silero = 800
@@ -139,11 +141,11 @@ def test_yandex_known_voice_passed_through() -> None:
     node = _playback_node()
     node.provider = "yandex"
     node.provider_chain = ["yandex", "silero"]
-    node._synthesize_yandex = MagicMock(return_value=np.zeros(2205, dtype=np.float32))
+    node._yandex_tts.synthesize_np = MagicMock(return_value=np.zeros(2205, dtype=np.float32))
     node._synthesize_minimax = MagicMock()  # not called for yandex chain
     _run_with_voice(node, voice="zahar")
-    node._synthesize_yandex.assert_called_once()
-    _, kwargs = node._synthesize_yandex.call_args
+    node._yandex_tts.synthesize_np.assert_called_once()
+    _, kwargs = node._yandex_tts.synthesize_np.call_args
     assert kwargs.get("voice") == "zahar"
 
 
@@ -151,10 +153,10 @@ def test_yandex_unknown_voice_falls_back_to_anton() -> None:
     node = _playback_node()
     node.provider = "yandex"
     node.provider_chain = ["yandex", "silero"]
-    node._synthesize_yandex = MagicMock(return_value=np.zeros(2205, dtype=np.float32))
+    node._yandex_tts.synthesize_np = MagicMock(return_value=np.zeros(2205, dtype=np.float32))
     node._synthesize_minimax = MagicMock()
     _run_with_voice(node, voice="terminator")
-    _, kwargs = node._synthesize_yandex.call_args
+    _, kwargs = node._yandex_tts.synthesize_np.call_args
     assert kwargs.get("voice") == "anton"
     warn_msgs = " ".join(str(c) for c in node.logger.warn.call_args_list)
     assert "недоступен у Yandex" in warn_msgs
@@ -168,11 +170,11 @@ def test_silero_known_voice_passed_through() -> None:
     node._synthesize_minimax = MagicMock(
         side_effect=RuntimeError("MiniMax dead")
     )
-    node._synthesize_yandex = MagicMock(side_effect=RuntimeError("Yandex dead"))
+    node._yandex_tts.synthesize_np = MagicMock(side_effect=RuntimeError("Yandex dead"))
     _run_with_voice(node, voice="baya")
-    node._synthesize_silero.assert_called_once()
-    _, kwargs = node._synthesize_silero.call_args
-    assert kwargs.get("voice") == "baya"
+    node._silero_tts.synthesize_np.assert_called_once()
+    _, kwargs = node._silero_tts.synthesize_np.call_args
+    assert kwargs.get("speaker") == "baya"
 
 
 def test_silero_unknown_voice_falls_back_to_default() -> None:
@@ -180,10 +182,10 @@ def test_silero_unknown_voice_falls_back_to_default() -> None:
     node.provider = "minimax"
     node.provider_chain = ["minimax", "yandex", "silero"]
     node._synthesize_minimax = MagicMock(side_effect=RuntimeError("MiniMax dead"))
-    node._synthesize_yandex = MagicMock(side_effect=RuntimeError("Yandex dead"))
+    node._yandex_tts.synthesize_np = MagicMock(side_effect=RuntimeError("Yandex dead"))
     _run_with_voice(node, voice="alena")  # yandex voice — not a silero speaker
-    _, kwargs = node._synthesize_silero.call_args
-    assert kwargs.get("voice") == "aidar"  # default silero
+    _, kwargs = node._silero_tts.synthesize_np.call_args
+    assert kwargs.get("speaker") == "aidar"  # default silero
 
 
 # ── dialogue_callback → submit chain (voice as keyword) ───────────────────────
@@ -235,7 +237,7 @@ def test_provider_state_published_after_yandex_synthesis() -> None:
     node = _node_with_provider_state()
     node.provider = "yandex"
     node.provider_chain = ["yandex", "silero"]
-    node._synthesize_yandex = MagicMock(return_value=np.zeros(2205, dtype=np.float32))
+    node._yandex_tts.synthesize_np = MagicMock(return_value=np.zeros(2205, dtype=np.float32))
     _run_with_voice(node, voice="zahar")
     assert node.provider_state_pub.publish.call_count >= 1
     last_payload = node.provider_state_pub.publish.call_args_list[-1][0][0].data
