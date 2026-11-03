@@ -85,7 +85,7 @@ def test_capability_flags_default_to_false():
     [
         (lambda: MiniMaxTTSProvider(api_key="k", group_id="g", client=MagicMock()), True, True, True),
         (_yandex, True, False, False),  # sil<[мс]> — PR-4, «+» — PR-7
-        (_silero, False, True, False),  # нормализатор — PR-5, <break> — PR-4
+        (_silero, False, True, False),  # <break> — PR-4
     ],
 )
 def test_capability_flags_are_honest(provider, reads_digits, sets_stress, pause_markup):
@@ -113,10 +113,16 @@ def test_prepare_strips_minimax_pause_marks(adapter):
     assert prepared.startswith("Я робот Робби, я читаю под бит,")
 
 
-@pytest.mark.parametrize("adapter", [_yandex, _silero])
-def test_prepare_keeps_plain_text(adapter):
+def test_yandex_prepare_keeps_digits_the_service_reads_itself():
     text = "Батарея 20% & сигнал в норме.\nВторая строка."
-    assert adapter().prepare(text) == text
+    assert _yandex().prepare(text) == text
+
+
+def test_silero_prepare_spells_digits_the_service_does_not_read():
+    """#4242: цифры Silero не читает - ``prepare`` отдаёт слова, остальное (``&``, строки) не трогает."""
+    assert _silero().prepare("Батарея 20% & сигнал в норме.\nВторая строка.") == (
+        "Батарея двадцать процентов & сигнал в норме.\nВторая строка."
+    )
 
 
 # ── Silero: конверт на чанк и честный отказ без модели ─────────────────────

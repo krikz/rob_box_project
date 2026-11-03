@@ -27,7 +27,7 @@ from xml.sax.saxutils import escape
 
 from rob_box_dialog.plan import rap_pauses as rp
 
-NORMALIZERS = ("none", "rutextnorm", "ru-normalizr")
+NORMALIZERS = ("none", "rob_box", "rutextnorm", "ru-normalizr")
 DASH = "—"
 
 _PAUSE_TAG_RE = re.compile(r"\s*<#(\d+(?:\.\d+)?)#>\s*")
@@ -187,6 +187,12 @@ def load_tools(normalizer: str = "none", stress: bool = True) -> Tools:
     return tools
 
 
+def _rob_box() -> Fn:
+    from rob_box_voice.tts_normalizer import spell_out  # noqa: PLC0415 — тот, что звучит у Silero на роботе (PR-5)
+
+    return spell_out
+
+
 def _rutextnorm() -> Fn:
     from rutextnorm import normalize_russian  # noqa: PLC0415 — один файл, правила-регулярки, MIT
 
@@ -199,7 +205,7 @@ def _ru_normalizr() -> Fn:
     return Normalizer().normalize
 
 
-_NORMALIZER_LOADERS: Dict[str, Callable[[], Fn]] = {"rutextnorm": _rutextnorm, "ru-normalizr": _ru_normalizr}
+_NORMALIZER_LOADERS: Dict[str, Callable[[], Fn]] = {"rob_box": _rob_box, "rutextnorm": _rutextnorm, "ru-normalizr": _ru_normalizr}
 
 
 def providers(tools: Tools, names: Sequence[str] = PROVIDERS) -> List[Provider]:

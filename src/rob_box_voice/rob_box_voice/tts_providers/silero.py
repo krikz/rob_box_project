@@ -7,7 +7,7 @@ torch.hub), нарезка под лимит, retry-halve, конверт ``<spe
 Фоновый прогрев (поток, событие готовности) остаётся у ноды: это жизненный цикл ROS-процесса, а не сервиса.
 
 Флаги сервиса (``capabilities``): SSML понимает; ударения ставит сам (``put_accent``); цифры НЕ читает
-(нормализатор — PR-5, пока текст уходит как есть); паузы такта ``<break>`` адаптер пока не ставит (PR-4) — метки
+(``prepare`` читает числа и знаки словами, ``tts_normalizer``, PR-5); паузы такта ``<break>`` адаптер пока не ставит (PR-4) — метки
 MiniMax ``<#x#>`` снимаются, ``pause_markup=False`` честно.
 """
 
@@ -25,6 +25,7 @@ from rob_box_llm.tts_provider_base import BaseTTSProvider, TTSCapabilities, TTSV
 
 from ..tts_chunking import CHUNK_LIMITS, DEFAULT_MAX_RETRIES, MIN_CHUNK_CHARS, synthesize_with_retry
 from ..tts_engines import SILERO_MODEL_PATHS, find_silero_model_path, load_silero_package, silero_apply_tts
+from ..tts_normalizer import spell_out
 from ..tts_ssml import silero_ssml
 
 
@@ -121,13 +122,15 @@ class SileroTTSProvider(BaseTTSProvider):
     # ---- флаги и подготовка текста ----
 
     def capabilities(self) -> TTSCapabilities:
-        """SSML и ударения — да; цифры — нет (нормализатор PR-5); метки пауз — пока нет (PR-4)."""
+        """SSML и ударения — да; цифры — нет (их читает ``prepare``, PR-5); метки пауз — пока нет (PR-4)."""
         return TTSCapabilities(ssml=True, audio_format_pcm=True, custom_endpoint=True, sets_stress=True)
 
     def prepare(self, text: str) -> str:
-        """Метки пауз MiniMax ``<#x#>`` сняты. Конверт ``<speak>`` ставится на каждый чанк в :meth:`synthesize_np`:
-        чанкер режет текст, а не XML."""
-        return _pause_text_for(self.name, text)
+        """Метки пауз MiniMax ``<#x#>`` сняты, числа и знаки — словами (сервис цифр не читает, флаг
+        ``reads_digits``). Конверт ``<speak>`` ставится на каждый чанк в :meth:`synthesize_np`: чанкер режет текст,
+        а не XML."""
+        text = _pause_text_for(self.name, text)
+        return text if self.capabilities().reads_digits else spell_out(text)
 
     def _build_request_payload(
         self, text: str, settings: TTSSettings, voice_meta: Optional[TTSVoice]
