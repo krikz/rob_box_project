@@ -96,6 +96,7 @@ from .core.turn_context import tts_voices
 from .core.utterance_speaker import UtteranceSpeakerRegistry
 from .tts_voice_registry import robot_default_voice
 from rob_box_dialog.music_state import MusicStateMemory
+from rob_box_dialog.window_reset import REASON_E2E_OFF, REASON_E2E_ON
 
 #: ``DialogControl.Request.ACTION_*`` -> действие :func:`rob_box_dialog.scenes.apply_control`.
 _CONTROL_ACTIONS = {DialogControl.Request.ACTION_HOLD: HOLD, DialogControl.Request.ACTION_RESUME: RESUME,
@@ -463,9 +464,11 @@ class DialogNode(Node):
                 self.get_logger().error(f"🧭 [turn-v2] ход упал: {type(exc).__name__}: {exc}")
 
     def _apply_e2e_mode(self, enabled: bool) -> bool:
-        """Режим владельца применён: на входе в e2e профиль e2e-собеседников начинается с нуля (счёт диалогов акта)."""
+        """Режим владельца применён: на входе в e2e профиль e2e-собеседников начинается с нуля (счёт диалогов акта).
+        Окно диалога сбрасывается в обе стороны (#4258): ходы e2e-ролей в боевой разговор не переходят и наоборот."""
         if enabled:
             self._speaker_memory.reset_e2e()
+        self._loop.call_soon_threadsafe(self._engine.reset_window, REASON_E2E_ON if enabled else REASON_E2E_OFF)
         return True
 
     async def _note_speaker(self, decision: Addressed) -> None:

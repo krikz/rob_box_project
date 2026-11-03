@@ -800,7 +800,7 @@ class DryStand:
         self.ports = DryPorts(self, llm, counter, self.tools)
         self.events = open_events(str(self.workdir / "e2e_dialog.db"), "dry-marathon")
         self.engine = TurnEngine(self.session, self.ports, system_prompt=system_prompt, sections=self._sections,
-                                 events=self.events, log=_EngineLog(self.emit), phrase_voice=self._phrase_voice)
+                                 clock=self.clock.now, events=self.events, log=_EngineLog(self.emit), phrase_voice=self._phrase_voice)
 
     # -- служебное ------------------------------------------------------------------------------------------------
 

@@ -107,6 +107,7 @@ from rob_box_dialog.respond import (ActionResult, asks, audible, classed, failed
                                     reconcile_stops)
 from rob_box_dialog.session import Session, SessionSnapshot
 from rob_box_dialog.speaker_adapter import asks_recognized, recognition_reply, speaker_block
+from rob_box_dialog.window_reset import WindowGuard, reset_if_idle, reset_window
 from rob_box_dialog.words import asks_to_listen
 from rob_box_dialog.tools_view import (available_tools, music_asked, needs_words, robot_asked, show_asked,
                                        voice_asked, voice_named)
@@ -1529,12 +1530,19 @@ class TurnEngine:
         self._clock = clock
         self._deadline_s = deadline_s
         self._log = log or _LOG
+        self._window = WindowGuard()
+
+    def reset_window(self, reason: str) -> None:
+        """Сброс окна по смене режима e2e (#4258); хост зовёт в потоке цикла ходов."""
+        reset_window(self.session, self.log, self._window, reason, self._clock(), self._log)
 
     async def run(self, addressed: Addressed) -> TurnAggregate:
         """Один адресованный ход до конца; итог — агрегат без текста (строка лога ``📊 [turn]``). Отмена задачи хода
         (перебивание стопом) — итог ``cancelled`` и ``CancelledError`` дальше, как положено задаче asyncio."""
         import asyncio  # noqa: PLC0415 — asyncio тянет socket: импорт пакета чистый (test_purity)
 
+        reset_if_idle(self.session, self.log, self._window, self._clock(), self._log)  # окно без срока давности (#4258)
+        self._window.touch(self._clock())
         snap = self.session.snapshot
         turn = _Turn(self._new_id(), snap.epoch, addressed.text.strip(), addressed.source,
                      TurnDeadline(self._deadline_s, clock=self._clock), pickup=addressed.pickup,
@@ -1772,6 +1780,7 @@ class TurnEngine:
         self._log.info(agg.log_line())
         self._event("turn", turn, data={**{k: v for k, v in vars(agg).items() if k != "turn_id"},
                                         "reason": turn.reason, "source": turn.source})
+        self._window.touch(self._clock())  # долгий ход (выступление) пауза не считается
         return agg
 
     def _event(self, kind: str, turn: _Turn, text: str = "", data: Optional[Mapping[str, Any]] = None) -> None:
