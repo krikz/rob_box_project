@@ -81,3 +81,11 @@ def test_unknown_provider_and_normalizer_are_refused():
         sf.providers(tools(), ["elevenlabs"])
     with pytest.raises(ValueError):
         sf.load_tools("num2words", stress=False)
+
+
+def test_screen_wraps_by_width_keeping_verse_lines_and_hanging_the_hero_dash():
+    """#4243: длинная реплика героя - колонкой под текст после тире; строки стиха и пустые строки остаются."""
+    hero = sf.screen("Раз два три четыре пять шесть семь восемь девять десять", "role", width=24)
+    assert hero.split("\n") == ["— Раз два три четыре", "  пять шесть семь восемь", "  девять десять"]
+    assert sf.screen("строка один\n\nстрока два", "", width=40) == "строка один\n\nстрока два"
+    assert sf.screen("не слипается", "role", width=0) == "— не слипается"

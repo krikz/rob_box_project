@@ -19,6 +19,7 @@
 from __future__ import annotations
 
 import re
+import textwrap
 import time
 from dataclasses import dataclass, field
 from typing import Callable, Dict, List, Optional, Sequence
@@ -57,9 +58,19 @@ class Voiced:
     steps: List[Step] = field(default_factory=list)
 
 
-def screen(text: str, voice: str) -> str:
-    """Реплика на экран: у героя (голос роли) - тире прямой речи; модель тире не пишет, его ставит код по голосу."""
-    return f"{DASH} {text}" if voice else text
+def screen(text: str, voice: str, width: int = 0) -> str:
+    """Реплика на экран: у героя (голос роли) - тире прямой речи; модель тире не пишет, его ставит код по голосу.
+    ``width`` > 0 - перенос строк по ширине терминала (#4243): абзацы и строки стиха сохраняются, продолжение героя
+    сдвинуто под текст после тире (чтобы длинная реплика читалась колонкой, а не лентой)."""
+    lead = f"{DASH} " if voice else ""
+    if width <= 0:
+        return f"{lead}{text}"
+    wrapped = []
+    for number, line in enumerate(text.split("\n")):
+        first = lead if number == 0 else " " * len(lead)
+        wrapped.append(textwrap.fill(line, width=width, initial_indent=first, subsequent_indent=" " * len(lead),
+                                     break_long_words=False, break_on_hyphens=False) if line.strip() else "")
+    return "\n".join(wrapped)
 
 
 @dataclass

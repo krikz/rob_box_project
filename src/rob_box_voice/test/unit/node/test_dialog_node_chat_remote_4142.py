@@ -166,7 +166,7 @@ def test_face_from_telegram_in_personality_silence_is_refused_by_code_not_claime
     _chat(made, "покажи победу")
 
     assert _published(made, "/voice/expression/request") == []
-    out = [o.text for o in _published(made, "/dialog/output")]
+    out = [o.text for o in _published(made, "/dialog/output") if not o.kind]
     assert out == [phrases.text(f"{kn.REMOTE_SHOW_REJECTED_PHRASE}.{kn.REMOTE_SILENCED}")]
 
 
@@ -176,7 +176,7 @@ def test_face_from_telegram_outside_silence_is_named_in_russian(made):
 
     faces = _published(made, "/voice/expression/request")
     assert [(f.agent, f.emotion) for f in faces] == [("personality", "victory")]
-    assert [o.text for o in _published(made, "/dialog/output")] == ["Показываю на роботе: победа."]
+    assert [o.text for o in _published(made, "/dialog/output") if not o.kind] == ["Показываю на роботе: победа."]
 
 
 @pytest.mark.parametrize("made", [SING], indirect=True)

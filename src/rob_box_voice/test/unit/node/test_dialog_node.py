@@ -137,7 +137,9 @@ def test_telegram_utterance_is_a_chat_agent_turn_answered_as_dialog_output(node)
     node._on_utterance(_chat_utterance("который час"))
     node.last_chat_turn.result(timeout=10)
     out = _published(node, "/dialog/output")
-    assert [(o.agent, o.channel_ref, o.text) for o in out] == [("telegram", "telegram:42", "Привет из чата.")]
+    replies = [(o.agent, o.channel_ref, o.text) for o in out if not o.kind]
+    assert replies == [("telegram", "telegram:42", "Привет из чата.")]
+    assert [o.text for o in out if o.kind == "progress"] == ["Думаю…"]  # #4243: ход пошёл - подпись шага
     assert node.test_chat_llm.calls == 1 and node.test_llm.calls == 0
     assert _published(node, "/voice/speech/request") == [] and node.last_turn is None
     assert node._chats.engine(42).session.snapshot.session_id == "telegram:42"
@@ -185,12 +187,12 @@ def test_say_aloud_from_chat_confirms_by_the_finished_speech_event_not_by_the_re
         made._on_utterance(_chat_utterance("сочини историю про робота и расскажи"))
         made.last_chat_turn.result(timeout=10)
         assert made.test_chat_tools.calls == [("say_aloud", {"text": "Жил-был робот."})]
-        assert [o.text for o in _published(made, "/dialog/output")] == ["Жил-был робот."]
+        assert [o.text for o in _published(made, "/dialog/output") if not o.kind] == ["Жил-был робот."]
         made._on_speech_event(_speech_event(M.SpeechEvent.KIND_STARTED, "sp-77"))
-        assert [o.text for o in _published(made, "/dialog/output")] == ["Жил-был робот."]
+        assert [o.text for o in _published(made, "/dialog/output") if not o.kind] == ["Жил-был робот."]
         made._on_speech_event(_speech_event(M.SpeechEvent.KIND_FINISHED, "sp-77", seconds=11.6))
         asyncio.run_coroutine_threadsafe(asyncio.sleep(0.1), made._loop).result(5)
-        assert [(o.channel_ref, o.text) for o in _published(made, "/dialog/output")][1:] == [
+        assert [(o.channel_ref, o.text) for o in _published(made, "/dialog/output") if not o.kind][1:] == [
             ("telegram:42", "Озвучил (12 с).")]
         assert _published(made, "/voice/speech/request") == []
     finally:
@@ -219,7 +221,7 @@ def test_say_aloud_is_refused_while_the_operator_holds_the_robot(monkeypatch):
         made._on_utterance(_chat_utterance("расскажи историю"))
         made.last_chat_turn.result(timeout=10)
         assert made.test_chat_tools.calls == []
-        assert "Не озвучил: оператор занял робота." in [o.text for o in _published(made, "/dialog/output")]
+        assert "Не озвучил: оператор занял робота." in [o.text for o in _published(made, "/dialog/output") if not o.kind]
     finally:
         made.shutdown()
 

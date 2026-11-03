@@ -98,6 +98,8 @@ class Utterance:
             ``"neutral"``.
         speech_id: Идентификатор реплики. ``None`` — producer сгенерирует
             свой (``uuid4``).
+        role: Герой реплики (ADR-0160 §2.3) или ``""`` для рассказчика. Голос роль не читает:
+            она нужна приёмникам текста (экран, чат).
     """
 
     text: str
@@ -107,6 +109,7 @@ class Utterance:
     language: Optional[str] = None
     emotion: Optional[str] = None
     speech_id: Optional[str] = None
+    role: str = ""
     # Доп. поля, которые producer хочет протащить в dict, но не считает
     # частью ``Utterance`` (``chunk``, ``commands``, ``batch_id``,
     # ``tg_chat_id`` и т. п.). Поля ``Utterance`` их перекрывают.
@@ -153,6 +156,8 @@ class Utterance:
             payload["language"] = self.language
         if self.speech_id is not None:
             payload["speech_id"] = self.speech_id
+        if self.role:
+            payload["role"] = self.role
         if self.extra:
             # Utterance-поля выигрывают — защита от случайного
             # переопределения ``text``/``sink`` через ``extra``.
