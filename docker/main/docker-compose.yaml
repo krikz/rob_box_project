@@ -159,7 +159,14 @@ services:
       - frame_id:=base_footprint
       - odom_frame_id:=icp_odom
       - odom_topic:=/odom
-      - imu_topic:=/camera/imu/data
+      # IMU: по умолчанию ВЫКЛЮЧЕН (топик /camera/imu/data никто не публикует —
+      # исторически мёртвое имя, см. docs/research/2026-11-04-stereo-lidar-nav-history.md).
+      # OAK-D публикует СЫРОЙ IMU в /camera/camera/imu (~248 Гц, frame camera_imu_frame),
+      # orientation = единичный кватернион с нулевой ковариацией (то есть «валидная», но
+      # фиктивная ориентация, не -1) — подавать её в rtabmap без imu_filter_madgwick нельзя.
+      # Включать только осознанно: RTABMAP_IMU_TOPIC=/camera/camera/imu в .env Main Pi
+      # после проверки одометрии на роботе (#3106).
+      - imu_topic:=${RTABMAP_IMU_TOPIC:-/camera/imu/data}
       - wait_imu_to_init:=false
       # AprilTag детекции: launch-аргумент rtabmap.launch.py называется tag_topic
       # (apriltag_topic не существует в текущем launch — молча игнорировался).
