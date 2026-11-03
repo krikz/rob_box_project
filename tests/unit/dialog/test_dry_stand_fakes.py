@@ -342,3 +342,56 @@ def test_4258_window_is_empty_after_a_long_pause_and_after_an_e2e_switch(make_en
     _hear_and_window(env, "Робот, я Дэнчик")
     env.stand.engine.reset_window("e2e_off")
     assert "Дэнчик" not in _hear_and_window(env, "Робот, расскажи анекдот")
+
+
+# ── Выступление: n810 / n412 (владелец выступлений стенда) ─────────────────────────────────────────────────────────
+
+
+RAP = ["Енот по крыше, лапы в саже,\nФонарь в глазах, он ночью стражник.",
+       "Бак открыл, и снова тихо,\nХвост трубой, уходит лихо.",
+       "Утром спит в листве у речки,\nНочь придёт, зажгутся свечки."]
+
+
+def rap_rule(env, msgs, tools):
+    return {"perform": {"kind": "rap", "backing": "beat", "segments": RAP}}
+
+
+def test_n810_rap_is_taken_by_the_performer_and_its_segments_sound_once(make_env):
+    """Сухой марафон 03.11: на n810 модель давала ``perform`` kind=rap (пробник: 2 из 2), а шаг краснел - у стенда
+    не было владельца выступлений, ``V2Ports.perform`` отдавал ``None``, строки ``выступление старт kind=rap`` не
+    было ни при каком ответе. Фейковый владелец берёт выступление: строка старта, сегменты звучат по разу."""
+    env = make_env(rap_rule)
+    env.stand.player.request("ночной бит")
+    report = env.run(marathon_step("8", "n810_rap_over_music"))
+    assert report.verdict == dm.PASS, report.fail
+    assert re.search(r"выступление старт kind=rap backing=\S+ segments=3 → \{'status': 'pending'\}", report.log)
+    assert report.said == RAP
+    assert not env.stand.engine.log.performing(), "конец выступления не записан - просьба висит «идёт»"
+
+
+def test_n810_regression_stand_without_performer_makes_the_step_red(make_env, monkeypatch):
+    """Регресс: без владельца (как до фикса) та же команда модели - шаг красный по паттерну старта."""
+    monkeypatch.setattr(dry_stand.DryPorts, "perform", dry_stand.V2Ports.perform)
+    env = make_env(rap_rule)
+    env.stand.player.request("ночной бит")
+    report = env.run(marathon_step("8", "n810_rap_over_music"))
+    assert report.verdict == dm.FAIL
+    assert any("выступление старт kind=rap" in f for f in report.fail), report.fail
+
+
+def test_n810_plain_speech_rap_without_perform_stays_red(make_env):
+    """Рэп обычной речью (без ``perform``) - не выступление: шаг красный, фейк ничего не дорисовывает."""
+    env = make_env(lambda env, msgs, tools: say("\n".join(RAP)))
+    env.stand.player.request("ночной бит")
+    report = env.run(marathon_step("8", "n810_rap_over_music"))
+    assert report.verdict == dm.FAIL
+    assert "выступление старт" not in report.log
+
+
+def test_performer_speaks_role_voices_of_a_tale(make_env):
+    """Сказка с ролями (n412): голос каждого сегмента - из ``voice_per_segment``, как у владельца на роботе."""
+    env = make_env(lambda env, msgs, tools: say("Ок."))
+    perf = type("P", (), {"segments": ("Жил-был кот.", "Мяу!"), "voice_per_segment": ("", "cat-voice"),
+                          "kind": "tale"})()
+    assert env.stand.ports.perform("t1", 0, perf, False) == {"status": "pending"}
+    assert [(s.text, s.voice) for s in env.stand.speech.pending] == [("Жил-был кот.", ""), ("Мяу!", "cat-voice")]
