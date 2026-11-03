@@ -399,7 +399,10 @@ def test_performance_question_is_not_the_requested_speech():
     for label in ("n804_long_story", "n806_long_count_again", "n810_rap_over_music"):
         assert gen.PERFORM_ASKS_TO_REPLACE in _acc(label)["must_not_say"], label
         assert not _verdict(label, "\n".join([asked, started, DONE]))["pass"], label
-    assert _verdict("n810_rap_over_music", "\n".join([rap, started, DONE]))["pass"]
+    # #4077 П6: рэп -- выступление владельца (`выступление старт kind=rap`), одной речи мало
+    perform = "🎤 выступление старт kind=rap id=1"
+    assert not _verdict("n810_rap_over_music", "\n".join([rap, started, DONE]))["pass"]
+    assert _verdict("n810_rap_over_music", "\n".join([rap, started, perform, DONE]))["pass"]
 
 
 def test_n902_n903_silent_sound_is_judged_by_tool_result():
@@ -410,8 +413,11 @@ def test_n902_n903_silent_sound_is_judged_by_tool_result():
     anim = "✅ Инструмент play_animation выполнен успешно"
     assert _verdict("n902_sound_doorbell", "\n".join([sound, DONE]))["pass"]
     assert not _verdict("n902_sound_doorbell", "\n".join(["📤 Отправлен запрос ab: play_sound", DONE]))["pass"]
-    assert _verdict("n903_sound_siren_anim", "\n".join([sound, anim, DONE]))["pass"]
-    assert _verdict("n903_sound_siren_anim", "\n".join([sound, anim, _tts("Виу-виу!"), DONE]))["pass"]
+    # #4077 П6: анимация -- именно police_lights (параметр в строке запроса тула)
+    req = "📥 Запрос выполнения: play_animation с параметрами {'animation': 'police_lights', 'duration': 4}"
+    assert _verdict("n903_sound_siren_anim", "\n".join([sound, req, anim, DONE]))["pass"]
+    assert _verdict("n903_sound_siren_anim", "\n".join([sound, req, anim, _tts("Виу-виу!"), DONE]))["pass"]
+    assert not _verdict("n903_sound_siren_anim", "\n".join([sound, anim, DONE]))["pass"], "не police_lights"
     assert not _verdict("n903_sound_siren_anim", "\n".join([sound, DONE]))["pass"], "мигалку просили тоже"
 
 
