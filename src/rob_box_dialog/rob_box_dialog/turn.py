@@ -948,13 +948,28 @@ def _close_unread(turn: _Turn, results: Sequence[ActionResult]) -> Tuple[str, Op
     Исполнять было нечего - провал без речи."""
     if turn.queried:
         turn.stage, turn.status, turn.reason = "done", "done", "query_fallback:ceiling"
-        return query_fallback(turn.queried), query_emotion(turn.queried, "sad")
+        return data_close(turn, "sad")
     if not results and not turn.acted:
         turn.stage, turn.status, turn.reason = "failed", "failed", "nothing_to_do"
         return "", None
     unvoiced, turn.unvoiced = turn.unvoiced, ()
     said = join(unvoiced)
     return (said.text, said.emotion) if said is not None else ("", None)
+
+
+def data_close(turn: _Turn, emotion: Optional[str]) -> Tuple[str, Optional[str]]:
+    """Фраза кода, которой закрывается ход с выполненным ``query``, когда слов модели нет (#4157, класс К2):
+    ``(фраза, эмоция)``. Сначала исход действий хода, о котором ещё никто не сказал (``_Turn.unvoiced``: Tier-1 стоп
+    молчит; М7 n608 - стоп сета, потом ``get_music_state``, потом повтор стопа: звучала заглушка «ответ не сложился»
+    вместо «Выключил музыку.»), затем ответ по данным запроса (:func:`query_fallback`). Исход сказан, а в данных
+    прочитанного слов нет - звучит только исход: общая заглушка рядом с ним не нужна. ``emotion`` - эмоция, если
+    нет ни исхода, ни ответа по данным."""
+    unvoiced, turn.unvoiced = turn.unvoiced, ()
+    said = join(unvoiced)
+    read = any(r.status == "done" for r in turn.queried)
+    tail = "" if said is not None and read and query_answer(turn.queried) is None else query_fallback(turn.queried)
+    text = " ".join(part for part in (said.text if said is not None else "", tail) if part)
+    return text, said.emotion if said is not None else query_emotion(turn.queried, emotion)
 
 
 def read_refusal(refused: Sequence[ActionResult]) -> Optional[Utterance]:
@@ -1025,17 +1040,51 @@ def _voices_slots(data: Mapping[str, Any]) -> Optional[Mapping[str, Any]]:
     return {"summary": summary} if summary else None
 
 
+def _quoted_names(rows: Any, field: str = "title") -> List[str]:
+    """Первые ``LIBRARY_SUMMARY_NAMES`` разных значений ``field`` строк в кавычках (варианты одного заказа - одно
+    имя)."""
+    values = (" ".join(str(row.get(field) or "").split()) for row in rows or () if isinstance(row, Mapping))
+    return [f"«{value}»" for value in dict.fromkeys(values) if value][:kn.LIBRARY_SUMMARY_NAMES]
+
+
 def _library_slots(data: Mapping[str, Any]) -> Optional[Mapping[str, Any]]:
-    """Слоты фразы списка библиотеки из данных ``music_library list``: всего треков (``total`` тула - вся
-    библиотека, а не выборка) и первые ``LIBRARY_SUMMARY_NAMES`` названий в кавычках (варианты одного заказа - одно
-    имя). Пустая библиотека - слоты есть (её фраза - о пустой, ``QUERY_FALLBACK_PHRASES``). Не ``list``, нет числа
-    или треки без названий - ``None``: фразы по данным нет."""
-    total, tracks = data.get("total"), data.get("tracks")
-    if data.get("action") != "list" or isinstance(total, bool) or not isinstance(total, int):
+    """Слоты фразы ``music_library`` по действию вызова (``knowledge.QUERY_FALLBACK_PHRASES``): ``list``/``search`` -
+    сколько треков (``total`` тула: у ``list`` - вся библиотека, а не выборка) и первые ``LIBRARY_SUMMARY_NAMES``
+    названий; пусто - слоты есть (фраза - о пустом); ``info`` - название и известные поля карточки
+    (:func:`_info_slots`). Нет числа или треки без названий - ``None``: фразы по данным нет."""
+    action, total = data.get("action"), data.get("total")
+    if action == "info":
+        return _info_slots(data)
+    if action not in ("list", "search") or not _is_count(total):
         return None
-    titles = dict.fromkeys(str(t.get("title") or "").strip() for t in tracks or () if isinstance(t, Mapping))
-    names = [f"«{title}»" for title in titles if title][:kn.LIBRARY_SUMMARY_NAMES]
-    return {"total": total, "names": ", ".join(names)} if names or total <= 0 else None
+    names = _quoted_names(data.get("tracks"))
+    if not names and total > 0:
+        return None
+    return {"total": total, "names": ", ".join(names), "query": str(data.get("query") or "").strip()}
+
+
+def _info_slots(data: Mapping[str, Any]) -> Optional[Mapping[str, Any]]:
+    """Карточка трека (``music_library info``, n707): название и непустые поля ``LIBRARY_INFO_FIELDS`` (теги - списком
+    или строкой). Без названия или без полей - ``None``: говорит общий разбор данных (:func:`_names_slots`)."""
+    title = " ".join(str(data.get("title") or "").split())
+    parts: List[str] = []
+    for name in kn.LIBRARY_INFO_FIELDS:
+        value = data.get(name)
+        items = value if isinstance(value, (list, tuple)) else [value]
+        parts += [text for text in (" ".join(str(v or "").split()) for v in items) if text and text not in parts]
+    return {"title": title, "details": ", ".join(parts)} if title and parts else None
+
+
+def _names_slots(data: Mapping[str, Any]) -> Optional[Mapping[str, Any]]:
+    """Общий разбор данных любого ``query`` без своей фразы и без фразы тула: названия (``QUERY_NAME_FIELDS``) из
+    первого списка строк данных, иначе название самого результата. Названий нет - ``None``."""
+    for name_field in kn.QUERY_NAME_FIELDS:
+        for value in data.values():
+            names = _quoted_names(value, name_field) if isinstance(value, (list, tuple)) else []
+            if names:
+                return {"names": ", ".join(names)}
+    names = _quoted_names([data], next((f for f in kn.QUERY_NAME_FIELDS if data.get(f)), ""))
+    return {"names": names[0]} if names else None
 
 
 def _is_count(value: Any) -> bool:
@@ -1103,18 +1152,33 @@ def _answer_sources(results: Sequence[ActionResult]) -> List[ActionResult]:
     return others or done
 
 
+def _data_phrase(r: ActionResult) -> Optional[str]:
+    """Фраза кода по данным одного результата: своя фраза тула из таблицы (``knowledge.QUERY_FALLBACK_PHRASES``,
+    ключ - по данным вызова), иначе фраза, которую построил сам тул (``knowledge.TOOL_MESSAGE_FIELD``), иначе
+    названия из данных (``knowledge.QUERY_NAMES_PHRASE``). Слов в данных нет - ``None``."""
+    entry = kn.QUERY_FALLBACK_PHRASES.get(r.tool)
+    key = (entry.key(r.data) if isinstance(entry, (kn.ByData, kn.ByAction)) else entry) if entry is not None else None
+    slots = _QUERY_SLOTS[r.tool](r.data) if key is not None else None
+    if slots is not None:
+        return phrases.text(key, **slots)
+    said = " ".join(str(r.data.get(kn.TOOL_MESSAGE_FIELD) or "").split())
+    if said:
+        return said
+    names = _names_slots(r.data)
+    return phrases.text(kn.QUERY_NAMES_PHRASE, **names) if names is not None else None
+
+
 def query_answer(results: Sequence[ActionResult]) -> Optional[str]:
-    """Ответ кода по данным выполненного ``query``: фраза тула
-    (``knowledge.QUERY_FALLBACK_PHRASES``, ключ - по данным вызова) со слотами из данных результата: голоса - сводка по
-    провайдерам, список библиотеки - число треков и 2–3 названия, память - 2–3 факта (только если ход читал одну её,
-    :func:`_answer_sources`), каталог звуков - сколько и каких категорий, поиск в сети - текст первой строки выдачи.
+    """Ответ кода по данным выполненного ``query`` (:func:`_data_phrase`), начиная с ПОСЛЕДНЕГО результата хода
+    (решение Шифу 28.10, #4157: «код отвечает по данным последнего результата»; n707 - три поиска подряд, ответ - по
+    последнему): голоса - сводка по провайдерам, библиотека - число треков и 2–3 названия или карточка трека, память -
+    2–3 факта (только если ход читал одну её, :func:`_answer_sources`), каталог звуков - сколько и каких категорий,
+    поиск в сети - текст первой строки выдачи; у тула без своей фразы - фраза самого тула, иначе названия из данных.
     Одно место слотов: что модель прочла и не сказала, называет код. Ответ не длиннее речи, которую слышат
-    (``command.fit_speech``). Фразы по данным нет - ``None``."""
-    for r in _answer_sources(results):
-        entry = kn.QUERY_FALLBACK_PHRASES.get(r.tool)
-        slots = _QUERY_SLOTS[r.tool](r.data) if entry is not None else None
-        if slots is not None:
-            text = phrases.text(entry.key(r.data) if isinstance(entry, kn.ByData) else entry, **slots)
+    (``command.fit_speech``). Слов в данных нет - ``None``."""
+    for r in reversed(_answer_sources(results)):
+        text = _data_phrase(r)
+        if text:
             return fit_speech(Command(speech=text)).speech
     return None
 
@@ -1143,7 +1207,8 @@ async def _close_invalid(engine: "TurnEngine", turn: _Turn, invalid: Invalid, sn
     if turn.queried:
         log.warning(f"{LOG_MARK} невалидная команда {why} после query → фраза кода по данным запроса")
         turn.stage, turn.status, turn.reason = "done", "done", f"query_fallback:{why}"[:60]
-        engine._say(turn, query_fallback(turn.queried), None, query_emotion(turn.queried, invalid_emotion(invalid, ())))
+        said, emotion = data_close(turn, invalid_emotion(invalid, ()))
+        engine._say(turn, said, None, emotion)
         return None
     log.warning(f"{LOG_MARK} невалидная команда {why} → допустимых действий {len(invalid.salvage)}, итог скажет код")
     results = await engine._execute(turn, invalid.salvage, snap)

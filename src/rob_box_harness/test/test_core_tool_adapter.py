@@ -13,7 +13,7 @@ from rob_box_core.ports import (
     ValidationResult,
 )
 from rob_box_harness.executors import LegacyToolProviderAdapter, adapt_tool_provider
-from rob_box_harness.executors.core_adapter import _result_content
+from rob_box_harness.executors.core_adapter import _result_content, _tool_message
 from rob_box_harness.tools import ToolProvider as LegacyToolProvider
 from rob_box_llm.provider import ToolCall
 
@@ -100,6 +100,15 @@ def test_result_content_shows_message_then_data_when_both_present() -> None:
     text = _result_content(result)
 
     assert text == "next_transition_sec: 8.0\n{'bpm': 120}"
+
+
+def test_tool_message_is_kept_apart_from_content_for_code() -> None:
+    """#4157 К2: фраза тула - отдельным полем результата (код ответит ею, если модель промолчит)."""
+    state = ToolResult(value={"playing": False}, metadata={"message": " Сейчас  ничего не играет. "})
+    assert _tool_message(state) == "Сейчас ничего не играет."
+    assert _tool_message(ToolResult(value="ok, done")) == "ok, done"
+    assert _tool_message(ToolResult(value={"bpm": 120})) is None
+    assert _tool_message(ToolResult(value=None, error="нет", metadata={"message": "нет"})) is None
 
 
 def test_result_content_data_only_is_unchanged() -> None:

@@ -1311,6 +1311,30 @@ class ByData:
         return (*self.keys.values(), *((self.default,) if self.default else ()))
 
 
+@dataclass(frozen=True)
+class ByAction:
+    """Ключ фразы по действию вызова (``action`` в данных результата: аргументы лежат поверх ответа тула): у
+    ``music_library`` ``list``/``search``/``info`` - разные фразы. Значение - ключ каталога или :class:`ByData`;
+    действия нет в таблице - ``None`` (фразы по данным у вызова нет)."""
+
+    table: Mapping[str, Any]
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "table", MappingProxyType(dict(self.table)))
+
+    def key(self, data: Mapping[str, Any]) -> Optional[str]:
+        entry = self.table.get(data.get("action"))
+        return entry.key(data) if isinstance(entry, ByData) else entry
+
+    def all_keys(self) -> Tuple[str, ...]:
+        return tuple(key for entry in self.table.values() for key in phrase_keys(entry))
+
+
+def phrase_keys(entry: Any) -> Tuple[str, ...]:
+    """Все ключи каталога записи таблицы фраз: строка, :class:`ByData` или :class:`ByAction`."""
+    return entry.all_keys() if isinstance(entry, (ByData, ByAction)) else (entry,)
+
+
 #: Платная генерация началась, трек ещё пишется (Шифу 27.10: «надо было сказать: подожди, скоро будет, а пока
 #: послушай»). Тул музыки сообщает это в данных результата: ``pending`` - что пишется (``song`` - песня, в т.ч. голосом
 #: робота, ``instrumental`` - трек без слов) и ``track_id`` - играет мост ожидания (своё или сочинённое раньше), пока трек
@@ -1684,14 +1708,17 @@ SOUND_OTHER_NAME = "другие"
 #: говорит фразу по данным результата. Тул → ключ каталога (или :class:`ByData` - ключ по данным вызова); слоты строит
 #: код (``turn.query_answer``). ``music_library`` ``list`` (живой 27.10: на последней итерации звучала общая
 #: «Нашёл ответ, но не смог сложить…») - число треков и :data:`LIBRARY_SUMMARY_NAMES` названий, пустая библиотека -
-#: фраза о пустой; ``search``/``info`` своей фразы нет - общая. Память - 2–3 факта как есть
+#: фраза о пустой; ``search`` - сколько нашлось и названия, ``info`` - карточка трека (n707, #4157). Память - 2–3 факта как есть
 #: (:data:`MEMORY_SUMMARY_FACTS`), когда ход читал только её (:data:`MEMORY_FACTS_TOOLS`); каталог звуков без
 #: аргументов (живой 28.10 15:22, «какие звуки ты умеешь издавать») - сколько звуков и по каким категориям
 #: (:data:`SOUND_CATEGORY_NAMES`); поиск в сети (марафон-2 n908, «рецепт борща без лука») - текст первой строки
 #: выдачи как есть, речь ужимает ``command.fit_speech``.
 QUERY_FALLBACK_PHRASES: Mapping[str, Any] = MappingProxyType({
     "list_tts_voices": "query.voices_summary",
-    LIBRARY_TOOL: ByData(("action", "total"), {("list", 0): "music.library_empty"}, "query.library_summary"),
+    LIBRARY_TOOL: ByAction({
+        "list": ByData(("total",), {(0,): "music.library_empty"}, "query.library_summary"),
+        "search": ByData(("total",), {(0,): "query.library_none"}, "query.library_found"),
+        "info": "query.library_info"}),
     "memory_search": MEMORY_FACTS_PHRASE,
     "memory_context": MEMORY_FACTS_PHRASE,
     "get_sound_info": "query.sounds_summary",
@@ -1699,9 +1726,23 @@ QUERY_FALLBACK_PHRASES: Mapping[str, Any] = MappingProxyType({
 })
 #: Сколько названий называет фраза списка библиотеки: 2–3, не весь список (варианты одного заказа - одно имя).
 LIBRARY_SUMMARY_NAMES = 3
-#: Тулов с фразой нет (или данные не дают слов) — общая честная фраза: данные получены, ответ не сложился. Причины
-#: она не называет: «слишком длинно» говорит только ``VIOLATION_SPEECH_TOO_LONG``, а бывает, что слов
-#: просто нет.
+#: Поля карточки трека (``music_library info``), которые фраза кода по данным называет после названия, - в этом
+#: порядке (n707 29.10: три поиска по названию, итерации кончились - звучала общая заглушка вместо слов о треке).
+LIBRARY_INFO_FIELDS: Tuple[str, ...] = ("genre", "mood", "tags")
+#: Поле данных ``query``-результата с фразой, которую построил САМ тул из своего результата (``MCPToolResult.message``,
+#: ADR-0148: «фразу об успехе строит код»): мост кладёт её в данные события владельца (``command_turn.owner_event``),
+#: когда она есть. У тула нет своей фразы в :data:`QUERY_FALLBACK_PHRASES` (``get_music_state``: «Сейчас ничего не
+#: играет.», марафон М7 n608) - код по данным говорит её, а не общую заглушку (#4157, класс К2).
+TOOL_MESSAGE_FIELD = "tool_message"
+#: Поля строк данных, которые называют найденное (``title`` трека, ``name`` голоса/звука): нет ни фразы тула, ни своей
+#: фразы - код называет до :data:`LIBRARY_SUMMARY_NAMES` значений из первого списка строк данных
+#: (``query.data_names``), а не заглушку.
+QUERY_NAME_FIELDS: Tuple[str, ...] = ("title", "name")
+QUERY_NAMES_PHRASE = "query.data_names"
+#: Последняя страховка (#4157 К2): данные получены, но в них нет ни одного слова для человека - ни фразы таблицы, ни
+#: фразы тула, ни названий. Звучать не должна (решение Шифу 28.10: «главное что ответ не был шаблоном»); марафон
+#: красит её заглушкой (``gen_night_marathon.STUB_PHRASE_KEYS``). Причины она не называет: «слишком длинно» говорит
+#: только ``VIOLATION_SPEECH_TOO_LONG``.
 QUERY_FALLBACK_GENERIC = "query.fallback_generic"
 #: Последняя итерация хода после выполненного запроса (ADR-0148 п.2: валидатор с понятной ошибкой): данные у
 #: модели, читать больше нечем - ответ без слов (одно лицо или анимация, ``command.bare_answer``) нарушает это
@@ -1744,8 +1785,7 @@ PHRASE_KEYS: Tuple[str, ...] = (
     LISTEN_ONLY_PHRASE,
     SPEECH_CUT_PHRASE, *INVALID_COMMAND_PHRASES.values(), *MUSIC_PROMISE_PHRASES.values(), VOICE_PROMISE_PHRASE,
     *(question.declined for question in TOOL_QUESTIONS.values()),
-    *(key for entry in QUERY_FALLBACK_PHRASES.values()
-      for key in (entry.all_keys() if isinstance(entry, ByData) else (entry,))),
+    *(key for entry in QUERY_FALLBACK_PHRASES.values() for key in phrase_keys(entry)), QUERY_NAMES_PHRASE,
     REPEAT_NOTHING_PHRASE,
     *(f"provider.exhausted.{reason}" for reason in ("quota", "network", "timeout", "auth", "error")),
     "speak_aloud.rejected.unsupported_script", "speak_aloud.rejected.operator_hold", "speak_aloud.timeout",

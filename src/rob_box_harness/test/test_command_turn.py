@@ -54,6 +54,18 @@ def test_plan_outcome_and_missing_status_follows_is_error() -> None:
     assert owner_event(_request("set_voice", {"voice": "alena"}), applied).status == "done"
 
 
+def test_owner_event_of_a_done_query_carries_the_tool_phrase() -> None:
+    """#4157 К2: фраза, которую построил тул (``ToolResult.message``), у выполненного ``query`` - в данных события:
+    по ней код ответит, если модель промолчит (``turn.query_answer``). У действий и отказов её нет."""
+    state = ToolResult("c", "Сейчас ничего не играет.", data={"playing": False},
+                       message="Сейчас ничего не играет.")
+    assert owner_event(_request("get_music_state"), state).data[kn.TOOL_MESSAGE_FIELD] == "Сейчас ничего не играет."
+    refused = ToolResult("c", "нет", is_error=True, message="нет")
+    assert kn.TOOL_MESSAGE_FIELD not in owner_event(_request("get_music_state"), refused).data
+    sound = ToolResult("c", "ok", data={"status": "done"}, message="Сыграл.")
+    assert kn.TOOL_MESSAGE_FIELD not in owner_event(_request("play_sound", HAPPY), sound).data
+
+
 # ── фраза кода об исходе ───────────────────────────────────────────────────────────────────────────────────
 
 
