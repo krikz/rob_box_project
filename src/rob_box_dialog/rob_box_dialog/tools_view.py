@@ -150,7 +150,8 @@ def music_asked(text: str) -> bool:
     тексту ЧЕЛОВЕКА, не по ответу модели и не по сцене снимка: играющая музыка слов не заменяет (её выступление и так не
     трогает). Читает ``command_form``: у сказки, анекдота и стиха подложка - только по этой просьбе
     (``knowledge.PERFORM_BACKING_BY_KIND``)."""
-    return has_word(text or "", kn.TOOL_GROUPS["music"].stems)
+    music = kn.TOOL_GROUPS["music"]
+    return has_word(text or "", music.stems) or has_form(text or "", music.forms)
 
 
 def voice_named(text: str, voices: Sequence[str] = ()) -> bool:
@@ -214,7 +215,8 @@ def _group_of(tool: str, allowed: set) -> List[str]:
 
 def _named(text: str, field: str) -> set:
     said, own_voice = without_forms(text, kn.PERSON_VOICE_FORMS)  # «запомни мой голос» - не голос робота
-    names = {name for name, group in kn.TOOL_GROUPS.items() if has_word(said, getattr(group, field))}
+    names = {name for name, group in kn.TOOL_GROUPS.items() if has_word(said, getattr(group, field))
+             or (field == "stems" and has_form(said, group.forms))}
     if field == "stems" and (own_voice or introduces_self(text)):  # «здравствуй, я Саша»: основой это не поймать
         names.add(kn.SELF_INTRO_GROUP)
     if field == "stems" and face_asked(text):  # «покажи победу»: «покажи» без «победы» лицо не просит
