@@ -157,6 +157,15 @@ if [ "${HAILO_ENABLED}" = "true" ]; then
     fi
 fi
 
+# ---------- уборка /dev/shm от прошлых запусков (#4277) ----------
+# Буферы HailoRT прошлого процесса остаются в /dev/shm хоста после любого
+# рестарта; когда tmpfs забит, нода падает SIGBUS (exit code -7) на первом
+# кадре. Удаляем только файлы своих моделей — см. hailo_shm_reap.py.
+if [ "${HAILO_ENABLED}" = "true" ]; then
+    python3 "$(dirname "${BASH_SOURCE[0]}")/hailo_shm_reap.py" \
+        --tag "[start_vision_face]" "${HEF_PATH}" "${ARCFACE_HEF_PATH}" || true
+fi
+
 # ---------- launch ROS 2 node ----------
 # hef_path/arcface_hef_path передаём только когда непустые (см. issue #2527
 # — пустой ``hef_path:=`` ломает ros2 launch: без значения после `:=` токен
