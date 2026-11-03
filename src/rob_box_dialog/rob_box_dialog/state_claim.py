@@ -24,8 +24,9 @@ if TYPE_CHECKING:  # аудит логов (scripts/dialog) зовёт :func:`cl
 
 #: Предложение: до знака конца включительно (последнее - и без знака).
 _SENTENCE = re.compile(r"[^.!?…]+[.!?…]*")
-#: Части предложения, в которых сверяются оговорки (``STATE_CLAIM_UNLESS``): «данных о Wi-Fi нет, но роутер жив».
-_PART = re.compile(r"[^,;:—–()]+")
+#: Части предложения (подсистема и её состояние - в одной; оговорки ``STATE_CLAIM_UNLESS`` - там же): «данных о Wi-Fi
+#: нет, но роутер жив». Двоеточие не делит: «ROS2-ноды: упавших нет» - одно утверждение.
+_PART = re.compile(r"[^,;—–()]+")
 _WORD = re.compile(r"[\w-]+")
 
 
@@ -34,7 +35,8 @@ def _words(text: str) -> Tuple[str, ...]:
 
 
 def _names(words: Sequence[str], stems: Sequence[str]) -> bool:
-    return any(w.startswith(tuple(stems)) for w in words if w)
+    """Слово начинается с основы - само или частью через дефис («ROS2-ноды» - «ноды»; «ros2-control» - не «нод»)."""
+    return any(part.startswith(tuple(stems)) for w in words if w for part in (w, *w.split("-")) if part)
 
 
 def _unless(part: str) -> bool:
@@ -47,12 +49,16 @@ def _states(words: Sequence[str]) -> bool:
     return any(w.startswith(kn.STATE_CLAIM_STEMS) or w in kn.STATE_CLAIM_FORMS or w[:1].isdigit() for w in words)
 
 
+def _part_claims(part: str, claim: kn.StateClaim) -> bool:
+    """Часть предложения (между запятыми, двоеточием, тире) утверждает состояние подсистемы: она названа, слово
+    состояния рядом с ней, оговорки нет. В разных частях - не утверждение о ней: «cadvisor отвечают по сети, значит
+    канал работает» (живой 03.11, #4286) - «сеть» не подлежащее."""
+    return any(_names(_words(p), claim.subjects) and _states(_words(p)) and not _unless(p) for p in _PART.findall(part))
+
+
 def _claimed(sentence: str, claim: kn.StateClaim) -> bool:
-    """Предложение утверждает состояние подсистемы: она названа в части без оговорки, а в предложении есть слово
-    состояния. Вопрос («роутер жив?») - не утверждение."""
-    if sentence.rstrip().endswith("?") or not _states(_words(sentence)):
-        return False
-    return any(_names(_words(part), claim.subjects) and not _unless(part) for part in _PART.findall(sentence))
+    """Предложение утверждает состояние подсистемы (:func:`_part_claims`). Вопрос («роутер жив?») - не утверждение."""
+    return not sentence.rstrip().endswith("?") and _part_claims(sentence, claim)
 
 
 def claims(text: str) -> Tuple[str, ...]:
@@ -108,17 +114,14 @@ def _join(parts: Sequence[str]) -> str:
 
 
 def _cut(sentence: str, kinds: Collection[str]) -> str:
-    """Предложение без утверждения: часть, где подсистема и её состояние вместе («Wi-Fi и роутер живы»), уходит одна;
-    иначе (подсистема и состояние в разных частях) - всё предложение."""
+    """Предложение без частей-утверждений (:func:`_part_claims`): «Связь с интернетом есть, Wi-Fi и роутер живы.» без
+    ``wifi`` - «Связь с интернетом есть.»."""
     claimed = [kn.STATE_CLAIMS[k] for k in kinds if _claimed(sentence, kn.STATE_CLAIMS[k])]
     if not claimed:
         return sentence
-    parts = re.split(r"(,)", sentence)
     kept: List[str] = []
-    for part in parts:
-        if any(_names(_words(part), c.subjects) and not _unless(part) for c in claimed):
-            if not _states(_words(part)):
-                return ""
+    for part in re.split(r"(,)", sentence):
+        if any(_part_claims(part, c) for c in claimed):
             if kept and kept[-1] == ",":
                 kept.pop()
             continue

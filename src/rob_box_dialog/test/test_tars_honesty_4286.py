@@ -101,7 +101,8 @@ def _net_turn(*answers):
     (WIFI_SPEECH, ("wifi", "internet", "network", "containers")),
     ("ROS2-ноды: отказавших и отсутствующих нет, система здорова.", ("nodes",)),
     ("Батарея 90%, стою почти в нулевой точке.", ("battery",)),
-    ("Wi-Fi, судя по всему, жив.", ("wifi",)),
+    ("Роутер жив, Wi-Fi ловит.", ("wifi",)),
+    ("Все 11 контейнеров подняты: lslidar, nav2, ros2-control.", ("containers",)),  # «ros2-control» - не нода
     ("Моторы в норме, колёса крутятся.", ("motors",)),
 ])
 def test_claims_are_found_by_words(text, kinds):
@@ -127,11 +128,14 @@ def test_claim_is_backed_by_tool_or_data_key():
     assert state_claim.unbacked("Батарея 90%.", [{"tool": "get_robot_status", "status": "done", "data": {}}]) == ()
     assert state_claim.unbacked("Батарея 90%.", [{"tool": "get_robot_status", "status": "rejected", "data": {}}]) \
         == ("battery",), "провал тула - не данные"
+    # живой 03.11 (#4286, прогон заливки): «отвечают по сети» - по данным опроса Prometheus (``show_metrics``)
+    assert state_claim.unbacked("Косвенно: Prometheus и cadvisor отвечают по сети, значит канал до робота работает.",
+                                [{"tool": "show_metrics", "status": "done", "data": METRICS_UP}]) == ()
 
 
 def test_cut_keeps_the_backed_part_of_the_sentence():
     assert state_claim.without_claims(WIFI_SPEECH, ("wifi",)) == HONEST
-    assert state_claim.without_claims("Wi-Fi, судя по всему, жив. Время 20:47.", ("wifi",)) == "Время 20:47."
+    assert state_claim.without_claims("Роутер жив, интернет есть. Время 20:47.", ("wifi",)) == "Интернет есть. Время 20:47."
 
 
 def test_live_13_wifi_claim_gets_a_retry_with_hint():

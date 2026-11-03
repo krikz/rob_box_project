@@ -1672,10 +1672,12 @@ VIOLATION_STATE_CLAIM = "state_claim"
 STATE_CLAIMS: Mapping[str, StateClaim] = MappingProxyType({
     "wifi": StateClaim(("wi-fi", "wifi", "вайфа", "вай-фа", "роутер", "маршрутизатор", "wlan"), "Wi-Fi и роутер",
                        keys=("wifi", "wi_fi", "wlan", "rssi", "ssid", "router")),
-    # ``internet_available`` отдаёт ``get_perception_context`` (поле снимка восприятия)
+    # ``internet_available`` отдаёт ``get_perception_context`` (поле снимка восприятия); сеть до целей - и опрос
+    # Prometheus (``show_metrics``: «cadvisor отвечают по сети», живой прогон 03.11 #4286)
     "internet": StateClaim(("интернет",), "интернет", keys=("internet",), tools=("get_perception_context",)),
     "network": StateClaim(("сеть", "сети", "сетью", "сетев", "связь", "связью"), "сеть",
-                          keys=("internet", "network", "wifi", "ping"), tools=("get_perception_context",)),
+                          keys=("internet", "network", "wifi", "ping"),
+                          tools=("get_perception_context", "show_metrics")),
     "battery": StateClaim(("батаре", "заряд", "аккумулятор", "акб"), "батарею",
                           keys=("battery", "voltage"), tools=("get_battery_level", "get_robot_status")),
     "containers": StateClaim(("контейнер", "сервис", "докер", "docker"), "контейнеры",
