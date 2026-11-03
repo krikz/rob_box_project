@@ -53,23 +53,20 @@ import asyncio
 import atexit
 import concurrent.futures
 import functools
-import io
 import json
 import os
 import threading
 import time
-import wave
 from dataclasses import dataclass
 from pathlib import Path
 
-import grpc
 import numpy as np
 import rclpy
 import sounddevice as sd
 # Issue #2609 — torch is NOT imported at module load. The voice-assistant
 # container runs 9 nodes; tts_node only uses torch for Silero TTS (offline
 # fallback). At startup the primary provider is `minimax` or `yandex` —
-# torch is dead weight. Defer the import to ``_load_silero_model`` so that
+# torch is dead weight. Defer the import to ``SileroTTSProvider.load`` so that
 # minimax/yandex nodes don't pay the ~700 MB RSS cost (CPU-only wheel; the
 # old `+cu130` build was ~1.6 GiB across both tts_node and speaker_id_node).
 # The CPU-only wheel itself is pinned in ``docker/vision/voice_*/requirements.txt``
@@ -87,15 +84,8 @@ from std_msgs.msg import String
 from typing import Any, Dict, List, Optional
 
 from .audio_playback_manager import AudioPlaybackManager
-from .tts_engines import (
-    SILERO_MODEL_PATHS,
-    build_yandex_request,
-    find_silero_model_path,
-    load_silero_package,
-    make_yandex_stub,
-    silero_apply_tts,
-    yandex_collect_audio,
-)
+# ADR-0160 §2.5 (#4240) — синтез Yandex и Silero живёт в адаптерах на BaseTTSProvider, нода их только зовёт.
+from .tts_providers import SileroTTSProvider, YandexTTSProvider
 from .utils.stderr_silence import silence_alsa_errors
 
 # Очистка текста перед синтезом (issue #988, #3598) и отказ на куске системного шаблона (issue #2175) — один модуль
@@ -107,7 +97,6 @@ from .tts_text_clean import (
 from rob_box_core.provider_publisher import ProviderStatePublisher
 from rob_box_core.utterance import missing_tts_request_fields
 from rob_box_dialog.knowledge import SPEECH_OUTPUT_LATENCY_MS
-from rob_box_dialog.plan.rap_pauses import text_for as _pause_text_for
 from .core.provider_health import record_tts_death, tts_provider_states
 from .core.voice_owner import attach_voice_owner
 
@@ -127,9 +116,6 @@ from .core import tts_stream
 # for backward compatibility with existing imports (``from
 # rob_box_voice.tts_node import resample_audio``).
 from .utils.resample import resample_audio  # noqa: F401 re-export
-
-# ADR-0160 §2.3 — конверт ``<speak>`` собирает только Silero (``tts_ssml.silero_ssml``).
-from .tts_ssml import silero_ssml
 
 # ADR-0145 §4 TTSNode step 1 — ROS-parameter / request-payload parsing
 # helpers moved verbatim to ``tts_params.py`` (no behaviour change).
@@ -247,9 +233,9 @@ def _yandex_is_permanent_failure(provider_name: str, error: BaseException) -> bo
     ``PERMISSION_DENIED``/``UNAUTHENTICATED`` (права на папку/протухший
     ключ, ADR-0124) — это ровно тот же класс отказа, что и MiniMax
     auth/quota: нужен длинный TTL (``provider_dead_ttl_s``), а не
-    транзиентная лестница. ``_synthesize_yandex_single`` оборачивает
+    транзиентная лестница. Адаптер ``tts_providers.yandex`` оборачивает
     ``grpc.RpcError`` в обычный ``Exception`` с кодом в тексте
-    (см. модульный docstring ``_synthesize_yandex_single``).
+    (см. ``YandexTTSProvider._synthesize_one``).
 
     Классификация в ДВА слоя:
     1. ``rob_box_harness.health.is_auth_failure`` — общий классификатор,
@@ -419,15 +405,13 @@ except ImportError:
 # Модуль pure-Python, без зависимостей (ROS, numpy, grpc) — чтобы его
 # можно было тестировать ``pytest`` без тяжелых dev-deps (torch, grpc,
 # rclpy). Сам ``tts_node.py`` его импортирует.
+# Нарезка и retry-halve Yandex/Silero — в адаптерах ``tts_providers`` (#4240); здесь — лимиты для ROS-параметров.
 from .tts_chunking import (
     CHUNK_LIMITS,
-    SENTENCE_SENTINELS,
     DEFAULT_MAX_RETRIES,
     MIN_CHUNK_CHARS,
     TooLongError,
     get_chunk_limit,
-    split_text,
-    synthesize_with_retry,
 )
 
 # Backward-compat alias для существующих тестов / внешних вызовов.
@@ -630,6 +614,15 @@ _LIVE_VOICE_PARAMS = {
 }
 
 
+def _silero_role(node) -> str:
+    """Silero в логах: «основной», если выбран сам (цепочка начинается с него), иначе «запасной» (#4240).
+
+    Раньше лог всегда писал «Silero v5 (fallback)», даже когда голос Silero выбран явно и цепочка ``["silero"]``.
+    """
+    chain = getattr(node, "provider_chain", None) or [getattr(node, "provider", "")]
+    return "основной" if chain and chain[0] == "silero" else "запасной"
+
+
 def chain_for_requested(provider: str, current_chain: list[str]) -> list[str]:
     """Цепочка провайдеров после явного выбора (set_provider, выбор голоса) — #4240.
 
@@ -705,15 +698,6 @@ class TTSNode(Node):
         self.declare_parameter(
             "yandex_speed", 1.0
         )  # 0.1-3.0 (1.0 = нормальная скорость речи)
-        # Issue #1780 / issue #1004: флаг «ssml-aware» режима для Yandex.
-        # При True — Yandex-провайдер должен пропускать вход как SSML
-        # (``<speak>...<emotion>happy</emotion>...</speak>``), используя
-        # ``<emotion>`` и ``<prosody pitch=...>`` теги, поддерживаемые
-        # Yandex gRPC v3. Сейчас (False) текст идёт в ``Hints(voice, speed)``
-        # как раньше — fallback совместимости. Полная интеграция — в карточке
-        # t_c401ecaa; этот параметр объявлен здесь, чтобы YAML был
-        # валиден с самого начала.
-        self.declare_parameter("yandex_ssml_aware", False)
 
         # Silero TTS (fallback)
         self.declare_parameter(
@@ -1051,11 +1035,6 @@ class TTSNode(Node):
             self.minimax_pronunciation_dict_raw
         )
 
-        # Issue #1780 / issue #1004: «ssml-aware» режим для Yandex. Полная
-        # интеграция — в t_c401ecaa; параметр уже читается здесь, чтобы
-        # YAML был валиден и можно было безопасно переключать.
-        self.yandex_ssml_aware = bool(self.get_parameter("yandex_ssml_aware").value)
-
         self.audio_topic = str(self.get_parameter("audio_topic").value)
         self.audio_output_sample_rate = int(
             self.get_parameter("audio_output_sample_rate").value
@@ -1091,18 +1070,20 @@ class TTSNode(Node):
         # Callback для изменения параметров во время работы
         self.add_on_set_parameters_callback(self.parameters_callback)
 
-        # Silero TTS модель (lazy loading - загружается только при первом использовании)
-        self.silero_model = None
-        self.silero_loading = False
-        # Issue #2609 — defer ``torch.device`` creation until the Silero
-        # fallback actually runs. At node startup we don't know yet whether
-        # torch will be needed (provider=yandex/minimax ⇒ no), and the
-        # device object is only used inside ``_load_silero_model`` /
-        # ``self.silero_model.to(self.device)``. Keep a placeholder so that
-        # ``self.device is not None`` ⇒ torch has been imported at least
-        # once, and ``_load_silero_model`` can lazily create the real
-        # ``torch.device("cpu")`` on first use.
-        self.device = None  # type: ignore[assignment]
+        # Silero v5 — адаптер (ADR-0160 §2.5, #4240): модель грузится лениво (``load``), torch импортируется
+        # только там (#2609). Прогрев в фоне и событие готовности — ниже, у ноды.
+        self._silero_tts = SileroTTSProvider(
+            logger=self.get_logger(),
+            sample_rate=self.silero_sample_rate,
+            default_speaker=self.silero_speaker,
+            put_accent=self.silero_put_accent,
+            put_yo=self.silero_put_yo,
+            put_stress_homo=self.silero_put_stress_homo,
+            put_yo_homo=self.silero_put_yo_homo,
+            chunk_max_chars=self.chunk_max_chars_silero,
+            chunk_max_retries=self.chunk_max_retries,
+            chunk_min_chars=self.chunk_min_chars,
+        )
 
         # Warm-load coordination (gap G-933-B): when Yandex is the primary
         # provider, Silero is just a fallback. Cold-loading the ~10 MB
@@ -1131,7 +1112,7 @@ class TTSNode(Node):
         # * ``_silero_loaded`` is initialised to a CLEARED ``Event`` —
         #   the wait returns False if the executor never had a chance
         #   to run (e.g. unit-test subclass override).
-        # * Set in the worker once ``_load_silero_model`` finishes
+        # * Set in the worker once ``SileroTTSProvider.load`` finishes
         #   (success OR failure — failure is signalled so the hot-path
         #   doesn't busy-loop waiting for a model that will never load).
         # * The hot-path wait timeout is intentionally short (< typical
@@ -1193,12 +1174,9 @@ class TTSNode(Node):
         if self.provider == "silero":
             self.get_logger().info("🔄 Provider=silero → загрузка Silero TTS...")
             self._silero_warm_requested = False  # explicit reset
-            self._load_silero_model()
             # Mark as loaded regardless of outcome so the hot-path wait
             # doesn't hang on a never-completed background job.
-            self._silero_load_outcome = (
-                "ok" if self.silero_model is not None else "fail"
-            )
+            self._silero_load_outcome = "ok" if self._silero_tts.load() else "fail"
             self._silero_loaded.set()
         else:
             # provider=yandex (or minimax) — Silero is a *fallback*.
@@ -1216,12 +1194,18 @@ class TTSNode(Node):
                     "lazy-load on first fallback (issue #929)"
                 )
 
-        # Yandex Cloud TTS gRPC v3 (оригинальный ROBBOX голос anton!)
-        self.yandex_channel = None
-        self.yandex_stub = None
+        # Yandex Cloud TTS gRPC v3 (оригинальный ROBBOX голос anton!) — адаптер, None без ключа/SDK (#4240).
+        self._yandex_tts: YandexTTSProvider | None = None
         if YANDEX_GRPC_AVAILABLE and self.yandex_api_key:
             try:
-                self.yandex_channel, self.yandex_stub = make_yandex_stub()
+                self._yandex_tts = YandexTTSProvider.connect(
+                    self.yandex_api_key,
+                    logger=self.get_logger(),
+                    default_voice=self.yandex_voice,
+                    chunk_max_chars=self.chunk_max_chars_yandex,
+                    chunk_max_retries=self.chunk_max_retries,
+                    chunk_min_chars=self.chunk_min_chars,
+                )
                 self.get_logger().info("✅ Yandex Cloud TTS gRPC v3 подключен")
             except Exception as e:
                 self.get_logger().warn(
@@ -1509,7 +1493,7 @@ class TTSNode(Node):
                 f"(эмуляция оригинального ROBBOX: медленный синтез + быстрое воспроизведение)"
             )
 
-        if not self.yandex_stub and self.provider == "yandex":
+        if self._yandex_tts is None and self.provider == "yandex":
             self.get_logger().warn(
                 "⚠️  Yandex gRPC не подключен - будет использован только Silero fallback"
             )
@@ -1540,129 +1524,12 @@ class TTSNode(Node):
                 f"⚠️ Не удалось получить info об ALSA default device: {e}"
             )
 
-    def _load_silero_model(self):
-        """Загрузить Silero TTS модель (lazy loading).
-
-        Этот метод безопасно вызывать одновременно из нескольких потоков —
-        внутренний ``silero_loading`` флаг отсекает параллельные попытки.
-        После завершения (успех или ошибка) **вызывающий обязан**
-        проставить ``self._silero_loaded.set()`` — иначе hot-path
-        ``_synthesize_and_play`` будет ждать вечно.  Когда метод вызывается
-        из синхронного пути (``provider=silero`` в ``__init__``), это
-        делает ``__init__``; когда из background warm-load — обёртка
-        ``_silero_warm_loader``.
-
-        Issue #2609 — torch is imported HERE, not at module scope. The
-        node's primary provider is `minimax` (or `yandex`); torch is only
-        pulled in when a real Silero fallback actually runs. The CPU-only
-        wheel (pinned in docker/vision/voice_*/requirements.txt via
-        `--index-url https://download.pytorch.org/whl/cpu`) keeps RSS in
-        check: ~70 MB for torch itself vs the old ~700 MB (CUDA build on
-        ARM64 Pi). Without this guard, tts_node would pay ~700 MB RSS at
-        every boot even though Silero is the offline-only fallback.
-        """
-        if self.silero_model is not None:
-            return  # Уже загружена
-
-        if self.silero_loading:
-            self.get_logger().warn("⏳ Silero модель уже загружается...")
-            return
-
-        self.silero_loading = True
-        self.get_logger().info("🔄 Загрузка Silero TTS v5...")
-
-        # Issue #2609 — lazy torch import. CPU-only wheel is pinned via
-        # `--index-url https://download.pytorch.org/whl/cpu` in
-        # docker/vision/voice_{base,assistant}/requirements.txt — at this
-        # point in the node's lifetime the operator has either chosen
-        # provider=silero (in which case we ARE in the fallback path and
-        # torch is required) or hit a Yandex/MiniMax→Silero fallback.
-        try:
-            import torch  # noqa: PLC0415 — lazy import by design
-        except ImportError as exc:
-            # The CPU-only wheel should always be available in the
-            # voice-assistant image; if it isn't, surface the error loudly
-            # rather than silently turning the fallback into silence.
-            self.silero_loading = False
-            self.get_logger().error(
-                f"❌ Issue #2609: torch import failed (Silero fallback "
-                f"unavailable): {exc}. Verify that the voice_assistant image "
-                f"installed the CPU-only wheel from "
-                f"https://download.pytorch.org/whl/cpu."
-            )
-            raise
-        # CPU device — Silero is CPU-only on ARM64 Pi; lazy because
-        # ``self.device`` was a ``None`` placeholder in ``__init__`` to
-        # avoid creating a torch.device object before the import.
-        if self.device is None:
-            self.device = torch.device("cpu")
-
-        # ⚡ КРИТИЧНЫЕ НАСТРОЙКИ ДЛЯ ARM64! ⚡
-        torch.set_num_threads(4)
-        torch._C._jit_set_profiling_mode(False)
-        torch.set_grad_enabled(False)
-
-        try:
-            # Приоритет путей для модели Silero v5:
-            # 1. /models/silero/v5_ru.pt — приезжает Ресурсным паком на ХОСТ
-            #    (/opt/rob_box/models) и виден bind-mount'ом. НЕ запечён в
-            #    образ: ступень скачивания удалена из voice_base/Dockerfile,
-            #    см. ADR-0125 и resource-pack §6.1/§7 Этап 3.
-            # 2. /cache/tts/silero_v5_ru.pt - персистентный volume (fallback/legacy)
-            model_paths = list(SILERO_MODEL_PATHS)
-
-            model_loaded = False
-            model_path = find_silero_model_path(model_paths)
-            if model_path:
-                self.get_logger().info(f"📦 Загрузка Silero v5: {model_path}")
-                # Silero v5 использует torch.package (не torch.jit!)
-                # https://github.com/snakers4/silero-models#standalone-use
-                self.silero_model = load_silero_package(model_path, self.device)
-                self.get_logger().info(
-                    "✅ Silero TTS v5 загружен (ARM64 оптимизация)"
-                )
-                model_loaded = True
-
-            if not model_loaded:
-                # ADR-0018 (честный FAIL лучше красивого PASS): раньше здесь
-                # стоял `torch.hub.load('snakers4/silero-models')` — третий,
-                # СЕТЕВОЙ уровень fallback'а. Удалён осознанно, три причины:
-                #
-                # 1. Он не мог сработать штатно. В manifest.yaml silero-tts-v5-ru
-                #    объявлен `required: hard` / `on_missing: fail-deploy` —
-                #    деплой ПАДАЕТ, если модели нет на хосте. То есть ветка
-                #    достижима только в состоянии, которое деплой не выпускает.
-                # 2. Ref не закреплён: `repo_or_dir` тянул HEAD чужого
-                #    GitHub-репозитория и ИСПОЛНЯЛ его код в рантайме на живом
-                #    роботе. Невоспроизводимо и небезопасно (resource-pack §1.1,
-                #    открытый вопрос §5 — закрыт здесь в пользу «убрать вовсе»).
-                # 3. Молчаливая деградация: нода тянулась в сеть вместо того,
-                #    чтобы сказать, что ресурсный пак не доехал.
-                #
-                # Теперь — громкий отказ с указанием, что чинить. Silero это
-                # fallback-провайдер TTS, поэтому нода продолжает жить на
-                # Yandex/MiniMax; молча уйти в сеть она больше не может.
-                raise FileNotFoundError(
-                    f"Silero v5 не найден ни в одном из путей: {model_paths}. "
-                    "Модель доставляет Ресурсный пак (ADR-0125) в "
-                    "/opt/rob_box/models/silero/v5_ru.pt на хосте Vision Pi, "
-                    "откуда она приходит в контейнер bind-mount'ом /models. "
-                    "Проверь шаг деплоя «Ensure STT/TTS models» и вывод "
-                    "apply_resource_pack.sh --only silero-tts-v5-ru. "
-                    "Сетевой fallback (torch.hub) удалён намеренно."
-                )
-        except Exception as e:
-            self.get_logger().error(f"❌ Ошибка загрузки Silero: {e}")
-            self.silero_model = None
-        finally:
-            self.silero_loading = False
-
     # ── Warm-load (gap G-933-B) ──────────────────────────────────────────────
     #
     # Эти методы оркестрируют фоновую предзагрузку Silero в ``__init__``,
     # когда Silero — только fallback.  Цель: первый Yandex→Silero fallback
-    # не должен платить 2-3 с за загрузку torch.package (silero_model
-    # применяется apply_tts сразу).
+    # не должен платить 2-3 с за загрузку torch.package (модель адаптера
+    # ``SileroTTSProvider`` применяется apply_tts сразу).
     #
     # Используем ``ThreadPoolExecutor(max_workers=1)`` вместо bare
     # ``daemon=True`` thread чтобы не нарушать BLK-9
@@ -1723,10 +1590,9 @@ class TTSNode(Node):
         ``"ok"``/``"fail"`` для диагностики.
         """
         try:
-            self._load_silero_model()
-            outcome = "ok" if self.silero_model is not None else "fail"
+            outcome = "ok" if self._silero_tts.load() else "fail"
         except Exception as e:  # noqa: BLE001 — last-resort safety net
-            # ``_load_silero_model`` уже логирует и ловит свои ошибки,
+            # ``SileroTTSProvider.load`` уже логирует и ловит свои ошибки,
             # но защитимся от неожиданного (например, KeyboardInterrupt
             # не проскочит, но SystemExit или import-time fault — может).
             self.get_logger().error(
@@ -3906,13 +3772,8 @@ class TTSNode(Node):
                     budget_deadline=cloud_deadline,
                 )
             elif provider_name == "yandex":
-                # #3901 — паузы MiniMax ``<#x#>`` (рэп по сетке строк) Yandex не понимает: метки сняты.
-                self._sap_synthesize_yandex(
-                    voice,
-                    language,
-                    _pause_text_for("yandex", text),
-                    ctx,
-                )
+                # Текст под сервис (паузы MiniMax ``<#x#>`` сняты, #3901) готовит адаптер: ``prepare``.
+                self._sap_synthesize_yandex(voice, language, text, ctx)
             elif provider_name == "silero":
                 # Silero — последний рубеж: обработка ниже
                 # (warm-load, lazy-load, синтез) в :meth:`_sap_silero_fallback`.
@@ -4051,7 +3912,8 @@ class TTSNode(Node):
         """Синтез через Yandex gRPC.  При ошибке помечает провайдера
         «мёртвым», при успехе заполняет ``ctx``.
         """
-        if not self.yandex_stub:  # Проверяем что gRPC канал инициализирован
+        yandex_tts = getattr(self, "_yandex_tts", None)
+        if yandex_tts is None:  # gRPC канал не поднят (нет ключа/SDK)
             self.get_logger().warn("⚠️  Yandex gRPC не подключен — пропускаю")
             return
         # Issue #1160 — Prometheus metrics: замер Yandex-synthesis.
@@ -4123,8 +3985,11 @@ class TTSNode(Node):
             self.get_logger().info(
                 f"🔊 Синтез через Yandex Cloud TTS gRPC v3 ({_yandex_voice})..."
             )
-            ctx["audio_np"] = self._synthesize_yandex(_yandex_text, voice=_yandex_voice)
-            ctx["sample_rate"] = 22050  # Yandex обычно 22050 Hz или 48000 Hz
+            # Скорость — ROS-параметр ``yandex_speed``; просодии на проводе нет (ADR-0160 §2.3).
+            ctx["audio_np"] = yandex_tts.synthesize_np(
+                yandex_tts.prepare(_yandex_text), voice=_yandex_voice, speed=getattr(self, "yandex_speed", 1.0)
+            )
+            ctx["sample_rate"] = yandex_tts.sample_rate
             ctx["used_provider"] = "yandex"
             ctx["used_voice"] = _yandex_voice
             _yandex_succeeded = True
@@ -4155,7 +4020,7 @@ class TTSNode(Node):
         ctx: Dict[str, Any],
     ) -> None:
         """Silero v5 — последний рубеж (gap G-933-B): warm-load event,
-        legacy lazy-load, синтез через ``_synthesize_silero``.  При успехе
+        legacy lazy-load, синтез адаптером ``SileroTTSProvider``.  При успехе
         заполняет ``ctx``; если модель не прогрелась вовремя — skip chunk
         (publishes ``silero_warming`` finished marker и возвращается).
         Вызывающий код должен проверить ``ctx["audio_np"]`` после.
@@ -4171,11 +4036,12 @@ class TTSNode(Node):
         # * warm-load OK + событие ещё не set → ждём до 1.5 с (обычно
         #   < 0.1 с, т.к. мы стартовали warm-load в __init__)
         # * warm-load FAIL → событие всё равно set, проверяем
-        #   silero_model is None ниже и делаем skip с warn
+        #   модель адаптера None ниже — честная ошибка
         # * warm-load ещё не запущен (тест / нестандартный init)
         #   → событие не set → timeout → skip chunk
         _tts_guard_ensure_readable(text, "silero")  # #3728: не читает письменность - честный unsupported_script
-        text = _pause_text_for("silero", text)  # #3901 — паузы MiniMax ``<#x#>`` Silero не понимает: метки сняты
+        silero_tts = self._silero_tts
+        text = silero_tts.prepare(text)  # адаптер: паузы MiniMax ``<#x#>`` сняты (#3901)
         _warm_wait_s = 1.5
         # getattr-fallback: стабы (bare ``_Stub`` / ``_playback_node``)
         # не проходят через __init__ и не несут атрибут — считаем
@@ -4197,18 +4063,15 @@ class TTSNode(Node):
             self._sap_publish_silero_warming(text, dialogue_id)
             return
         # Загружаем Silero при первом использовании (legacy lazy path).
-        if self.silero_model is None:
+        if silero_tts.model is None:
             self.get_logger().warn("⚠️  Silero модель не загружена, загружаю сейчас...")
-            self._load_silero_model()
-            if self.silero_model is None:
-                self._silero_load_outcome = "fail"
-            else:
-                self._silero_load_outcome = "ok"
+            self._silero_load_outcome = "ok" if silero_tts.load() else "fail"
             self._silero_loaded.set()
-        if self.silero_model is None:
-            raise Exception("Silero fallback недоступен - не удалось загрузить модель!")
+        _role = _silero_role(self)
+        if silero_tts.model is None:
+            raise Exception(f"Silero ({_role}) недоступен - не удалось загрузить модель!")
         self.publish_state("synthesizing")
-        self.get_logger().info("🔊 Синтез через Silero v5 (fallback)...")
+        self.get_logger().info(f"🔊 Синтез через Silero v5 ({_role})...")
         # Issue #1160 — Prometheus metrics: замер Silero-synthesis.
         _silero_metric_start = time.monotonic()
         _silero_succeeded = False
@@ -4235,16 +4098,11 @@ class TTSNode(Node):
             self.get_logger(), "silero", text, language
         )
         try:
-            ctx["audio_np"] = self._synthesize_silero(_silero_text, voice=_silero_voice)
-            ctx["sample_rate"] = self.silero_sample_rate  # 48000 Hz (v5)
+            ctx["audio_np"] = silero_tts.synthesize_np(_silero_text, speaker=_silero_voice)
+            ctx["sample_rate"] = silero_tts.sample_rate  # 48000 Hz (v5)
             ctx["used_provider"] = "silero"
             ctx["used_voice"] = _silero_voice
             _silero_succeeded = True
-            # ``silero_model.apply_tts`` упоминается явно, чтобы
-            # ``test_fallback_to_silero_preserved`` AST-контракт видел
-            # fallback-путь в высшей функции (вызов ниже в
-            # ``_synthesize_silero``).
-            _silero_anchor = self.silero_model.apply_tts  # noqa: F841
         finally:
             if is_metrics_enabled():
                 record_tts_synthesize(
@@ -4253,8 +4111,8 @@ class TTSNode(Node):
                     duration_s=time.monotonic() - _silero_metric_start,
                 )
         self.get_logger().info(
-            f"✅ Silero v5 fallback успешен: {len(ctx['audio_np'])} samples @ {ctx['sample_rate']} Hz "
-            f"(homograph_stress={self.silero_put_stress_homo})"
+            f"✅ Silero v5 ({_role}) успешен: {len(ctx['audio_np'])} samples @ {ctx['sample_rate']} Hz "
+            f"(homograph_stress={silero_tts.put_stress_homo})"
         )
 
     def _sap_publish_silero_warming(
@@ -4716,260 +4574,6 @@ class TTSNode(Node):
                 batch_started_at=batch_started_at,
                 dialogue_id=dialogue_id,
             )
-
-    def _synthesize_silero(self, text: str, voice: str | None = None) -> np.ndarray:
-        """Synthesize Silero chunks with provider-specific retry-halving.
-
-        Args:
-            text: текст для синтеза.
-            voice: голос (issue #1219); None → self.silero_speaker.
-        """
-        if self.silero_model is None:
-            raise Exception("Silero TTS model не инициализирована")
-
-        def synthesize_chunk(chunk_text: str) -> np.ndarray:
-            # ADR-0160 §2.3 — единственный конверт SSML: здесь, с экранированием.
-            ssml_text = silero_ssml(chunk_text)
-            return silero_apply_tts(
-                self.silero_model,
-                voice or self.silero_speaker,
-                self.silero_sample_rate,
-                ssml_text=ssml_text,
-                put_accent=self.silero_put_accent,
-                put_yo=self.silero_put_yo,
-                put_stress_homo=self.silero_put_stress_homo,
-                put_yo_homo=self.silero_put_yo_homo,
-            )
-
-        audio_segments = synthesize_with_retry(
-            text,
-            "silero_v5",
-            synthesize_chunk,
-            max_chars=self.chunk_max_chars_silero,
-            max_retries=self.chunk_max_retries,
-            min_chunk_chars=self.chunk_min_chars,
-            is_too_long=lambda exc: (
-                "length" in str(exc).lower()
-                or "generate" in str(exc).lower()
-                or "too long" in str(exc).lower()
-            ),
-        )
-        if not audio_segments:
-            raise Exception("Silero TTS: ни один chunk не вернул аудио")
-        return (
-            np.concatenate(audio_segments)
-            if len(audio_segments) > 1
-            else audio_segments[0]
-        )
-
-    @staticmethod
-    def _chunk_text(
-        text: str,
-        max_chars: int = YANDEX_MAX_CHUNK_CHARS,
-        sentence_separators: str = SENTENCE_SENTINELS,
-    ) -> list[str]:
-        """Разбить длинный текст на чанки для Yandex gRPC ``UtteranceSynthesis``.
-
-        Тонкая обёртка над :func:`rob_box_voice.tts_chunking.split_text` —
-        подставляет Yandex-лимит по умолчанию. Yandex API v3 принимает
-        ≤2500 символов на запрос (см.
-        https://cloud.yandex.ru/docs/speechkit/tts/limits), поэтому рассказы
-        и длинные анекдоты нарезаются, иначе запрос падает с
-        ``INVALID_ARGUMENT - Too long text``.
-
-        Здесь лежала построчная копия ``split_text`` — тот же жадный
-        алгоритм, ничего Yandex-специфичного в теле не было. Копия
-        отличалась двумя вещами, обе в минус: разделители без «…»
-        (многоточие не считалось границей предложения, и русская речь с
-        «…» резалась по словам посреди фразы) и отсутствие проверки
-        ``max_chars <= 0``. Совпадение с общим чанкером держит
-        ``test_chunk_text_agrees_with_shared_chunker``.
-
-        Args:
-            text: Текст реплики (после ``speech_text``).
-            max_chars: Лимит на длину чанка (по умолчанию
-                :data:`YANDEX_MAX_CHUNK_CHARS`).
-            sentence_separators: Символы-границы предложений.
-
-        Returns:
-            Список чанков, каждый ``<= max_chars``.
-
-        Examples:
-            >>> TTSNode._chunk_text("Короткий текст.")
-            ['Короткий текст.']
-            >>> chunks = TTSNode._chunk_text("А. " * 2000, max_chars=100)
-            >>> all(len(c) <= 100 for c in chunks)
-            True
-        """
-        return split_text(text, max_chars, sentence_separators=sentence_separators)
-
-    def _synthesize_yandex(self, text: str, voice: str = None) -> np.ndarray:
-        """Синтез через Yandex Cloud TTS gRPC API v3 (anton voice!).
-
-        Если текст длиннее :data:`YANDEX_MAX_CHUNK_CHARS`, разбивает его
-        на чанки (:meth:`_chunk_text`) и отправляет каждый чанк
-        отдельным gRPC ``UtteranceSynthesis`` RPC. Аудио склеивается
-        без пауз (см. issue #931). Один ``speech_id`` обслуживает все
-        чанки — вызывающий код публикует ``finished`` event ровно
-        один раз после возврата.
-
-        Args:
-            text: Текст для синтеза.
-            voice: Голос (issue #1219); None → self.yandex_voice (anton).
-
-        Returns:
-            np.ndarray: float32 mono samples в диапазоне -1..1,
-            объединение аудио всех чанков.
-
-        Raises:
-            Exception: при любой gRPC-ошибке. Если ошибка случилась на
-            *любом* чанке, пробрасываем наверх — caller решает, падать
-            ли в Silero fallback для всего текста.
-        """
-        if not self.yandex_stub:
-            raise Exception("Yandex gRPC stub не инициализирован")
-
-        # Скорость — ROS-параметр ``yandex_speed``; просодии на проводе нет (ADR-0160 §2.3).
-        speech_rate = self.yandex_speed
-
-        # Decide chunking strategy:
-        # - If text is long (≥ 2 * max_chars), use ``_chunk_text`` to
-        #   split into many chunks and call each WITHOUT retry. If any
-        #   chunk fails, propagate the gRPC error — caller falls back
-        #   to Silero for the whole text (issue #929).
-        # - If text is short (< 2 * max_chars), use ``synthesize_with_retry``
-        #   so a single mid-chunk ``TooLongError`` retries halve the
-        #   chunk before bubbling up (issue #937). This avoids
-        #   unnecessarily handing the user over to Silero when Yandex
-        #   could still serve the just-slightly-too-long text.
-        if len(text) >= max(1, 2 * self.chunk_max_chars_yandex):
-            chunks = self._chunk_text(text, max_chars=self.chunk_max_chars_yandex)
-            audio_segments: list = []
-            per_chunk_rates: list = []
-            n_chunks = len(chunks)
-            for idx, chunk_text in enumerate(chunks, start=1):
-                _chunk_t0 = time.monotonic()
-                segment, sample_rate = self._synthesize_yandex_single(
-                    chunk_text, speech_rate, voice=voice
-                )
-                _chunk_ms = (time.monotonic() - _chunk_t0) * 1000.0
-                self.get_logger().info(
-                    f"⏱️ Yandex chunk {idx}/{n_chunks}: {len(chunk_text)} chars → "
-                    f"{_chunk_ms:.0f} ms ({len(segment)} samples)"
-                )
-                audio_segments.append(segment)
-                per_chunk_rates.append(sample_rate)
-            audio_results = list(zip(audio_segments, per_chunk_rates))
-        else:
-            try:
-                audio_results = synthesize_with_retry(
-                    text,
-                    "yandex_grpc_v3",
-                    lambda chunk_text: self._synthesize_yandex_single_with_latency(
-                        chunk_text, speech_rate, voice=voice
-                    ),
-                    max_chars=self.chunk_max_chars_yandex,
-                    max_retries=self.chunk_max_retries,
-                    min_chunk_chars=self.chunk_min_chars,
-                    is_too_long=lambda exc: (
-                        "invalid_argument" in str(exc).lower()
-                        and "too long" in str(exc).lower()
-                    ),
-                )
-            except Exception as exc:
-                err = str(exc)
-                if "too long" in err.lower() or "yandex" in err.lower():
-                    raise
-                raise Exception(f"Yandex gRPC error: {exc}") from exc
-            if not audio_results:
-                raise Exception("Yandex gRPC error: ни один chunk не вернул аудио")
-
-        audio_segments = [segment for segment, _ in audio_results]
-        per_chunk_rates = [sample_rate for _, sample_rate in audio_results]
-
-        audio_np = (
-            np.concatenate(audio_segments)
-            if len(audio_segments) > 1
-            else audio_segments[0]
-        )
-        actual_sample_rate = per_chunk_rates[-1] if per_chunk_rates else 22050
-
-        self.get_logger().info(
-            f"✅ Yandex gRPC v3 (ROBBOX original!): {len(audio_np)} samples, "
-            f"source {actual_sample_rate} Hz, speed={speech_rate}, "
-            f"{len(audio_segments)} chunk(s)"
-        )
-
-        return audio_np
-
-    def _synthesize_yandex_single(
-        self,
-        text: str,
-        speech_rate: float,
-        voice: Optional[str] = None,
-    ) -> tuple[np.ndarray, int]:
-        """Один gRPC ``UtteranceSynthesis`` → ``(audio_np, sample_rate)``.
-
-        Helper для :meth:`_synthesize_yandex` (multi-chunk loop). Не
-        предполагается вызывать напрямую извне — публичный контракт
-        остаётся через ``_synthesize_yandex``.
-
-        Args:
-            text: текст для синтеза.
-            speech_rate: множитель скорости (1.0 = норма).
-            voice: голос Yandex (None → ``self.yandex_voice``).
-        """
-        request = build_yandex_request(text, voice or self.yandex_voice, speech_rate)
-
-        try:
-            audio_data = yandex_collect_audio(
-                self.yandex_stub, self.yandex_api_key, request
-            )
-
-            if not audio_data:
-                raise Exception("Пустой ответ от Yandex TTS")
-
-            # ВАЖНО! Для оригинального звука ROBBOX:
-            # читаем сырые байты (включая WAV заголовок!) как PCM
-            audio_np = (
-                np.frombuffer(audio_data, dtype=np.int16).astype(np.float32) / 32768.0
-            )
-
-            try:
-                with io.BytesIO(audio_data) as wav_file:
-                    with wave.open(wav_file, "rb") as wav:
-                        actual_sample_rate = wav.getframerate()
-            except Exception:  # noqa: E722
-                actual_sample_rate = 22050  # fallback
-
-            return audio_np, actual_sample_rate
-
-        except grpc.RpcError as e:
-            raise Exception(f"Yandex gRPC error: {e.code()} - {e.details()}")
-        except Exception as e:
-            raise Exception(f"Yandex synthesis error: {e}")
-
-    def _synthesize_yandex_single_with_latency(
-        self,
-        text: str,
-        speech_rate: float,
-        voice: Optional[str] = None,
-    ) -> tuple[np.ndarray, int]:
-        """``_synthesize_yandex_single`` + лог латентности (issue #931 acceptance).
-
-        Обёртка для retry-halve пути в :meth:`_synthesize_yandex`: замеряет
-        время одного gRPC ``UtteranceSynthesis`` и пишет его в лог, чтобы
-        latency каждого чанка была видна (требование #931:
-        «Latency добавлена в логи (время синтеза каждого чанка)»).
-        """
-        _t0 = time.monotonic()
-        segment, sample_rate = self._synthesize_yandex_single(text, speech_rate, voice=voice)
-        _elapsed_ms = (time.monotonic() - _t0) * 1000.0
-        self.get_logger().info(
-            f"⏱️ Yandex synth: {len(text)} chars → {_elapsed_ms:.0f} ms "
-            f"({len(segment)} samples)"
-        )
-        return segment, sample_rate
 
     @staticmethod
     def _decoded_audio_to_float32(decoded: DecodedAudio) -> np.ndarray:

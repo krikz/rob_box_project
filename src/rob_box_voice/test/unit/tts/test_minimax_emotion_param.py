@@ -1,11 +1,12 @@
 """Регресс-тест для новых ROS-параметров emotion/pitch/volume/
-pronunciation_dict (MiniMax) и ``yandex_ssml_aware`` (issue #1780 / #1004).
+pronunciation_dict (MiniMax) (issue #1780 / #1004). ``yandex_ssml_aware`` удалён в #4240: был объявлен и
+читался, но нигде не использовался (адаптер Yandex готовит текст сам, ADR-0160 §2.5).
 
 Статический AST-тест (без импорта rclpy / tts_node.py), чтобы работал
 на developer-host и в CI так же, как ``test_no_duplicate_declare_parameter``.
 
 Проверяет:
-1. Каждый из 5 новых параметров объявлен через ``declare_parameter``
+1. Каждый из 4 новых параметров объявлен через ``declare_parameter``
    ровно один раз (нет дубликатов).
 2. Каждый параметр имеет корректный default (нейтральный, сохраняющий
    текущее поведение).
@@ -46,7 +47,6 @@ NEW_KEYS = [
     ("minimax_pitch", "minimax_pitch", int),
     ("minimax_volume", "minimax_volume", float),
     ("minimax_pronunciation_dict", "minimax_pronunciation_dict", str),
-    ("yandex_ssml_aware", "yandex_ssml_aware", bool),
 ]
 
 
@@ -127,7 +127,6 @@ def test_new_keys_have_neutral_defaults():
       pitch = ""               → не задан (int semitones → str, fallback на API)
       volume = ""              → не задан (float 0.0..10.0 → str)
       pronunciation_dict = ""  → JSON-словарь MiniMax; "" = «не передавать»
-      yandex_ssml_aware = False → legacy Yandex (Hints(voice, speed))
     """
     declares, _ = _parse_declares_and_helpers()
     expected = {
@@ -135,7 +134,6 @@ def test_new_keys_have_neutral_defaults():
         "minimax_pitch": "",
         "minimax_volume": "",
         "minimax_pronunciation_dict": "",
-        "yandex_ssml_aware": False,
     }
     for name, want in expected.items():
         _, default = declares[name]
@@ -264,3 +262,9 @@ def test_yaml_docker_contains_all_new_keys():
             f"YAML-ключ {yaml_key!r} отсутствует в docker/vision/.../tts_node.yaml "
             f"— production-конфиг не примет параметр, даже если код объявит."
         )
+
+
+def test_dead_yandex_ssml_aware_param_is_gone():
+    """#4240: мёртвый ``yandex_ssml_aware`` нет ни в коде ноды, ни в обоих YAML."""
+    for path in (TTS_NODE_SRC, SRC_YAML, DOCKER_YAML):
+        assert "yandex_ssml_aware" not in path.read_text(encoding="utf-8"), path

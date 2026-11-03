@@ -181,7 +181,7 @@ _log = logging.getLogger("run_bench")
 
 # ---------------------------------------------------------------------------
 # Test node — bypasses TTSNode.__init__ (which calls create_subscription,
-# load_silero_model, etc.) so we can exercise the audio pipeline on a
+# Silero adapter load, etc.) so we can exercise the audio pipeline on a
 # minimal host without ROS2 / torch / sounddevice installed.
 # ---------------------------------------------------------------------------
 
@@ -254,15 +254,13 @@ def _make_test_node(
     node.yandex_voice = "anton"
     node.yandex_speed = 1.0
     # Silero attrs that the parent class touches; set defaults so attribute
-    # access doesn't blow up if a code path consults them.
-    node.silero_model = None
+    # access doesn't blow up if a code path consults them. Since #4240 the
+    # Silero model lives in the adapter (``node._silero_tts``), not on the node.
     node.silero_speaker = "baya"
     node.silero_sample_rate = 48000
-    node.silero_put_accent = True
-    node.silero_put_yo = True
     node.silero_put_stress_homo = True
-    node.silero_put_yo_homo = True
-    node.device = _FakeTorchDevice()
+    node._silero_tts = None
+    node._yandex_tts = None
 
     # Audio publisher stub (carries the QoS profile for downstream checks).
     audio_qos = ros_stub.QoSProfile(
@@ -279,10 +277,6 @@ def _make_test_node(
         msg_type=ros_stub.AudioData, topic=node.audio_topic, qos=audio_qos
     )
     return node
-
-
-class _FakeTorchDevice:
-    type = "cpu"
 
 
 # ---------------------------------------------------------------------------

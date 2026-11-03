@@ -23,6 +23,7 @@ _install_all_mocks()
 from rob_box_dialog.plan.rap_pauses import markup  # noqa: E402
 from rob_box_voice.core.speech_owner import chunk_from_request  # noqa: E402
 from rob_box_voice.tts_node import TTSNode  # noqa: E402
+from rob_box_voice.tts_providers import YandexTTSProvider  # noqa: E402
 from rob_box_voice.tts_text_clean import speech_text  # noqa: E402
 
 VERSE = "Я робот Робби, я читаю под бит,\nКолёса крутятся, мотор не молчит.\nКаждая строчка в такт звучит."
@@ -48,17 +49,21 @@ def _chain_node(chain):
     node.cloud_tts_budget_s = 8.0
     node._provider_is_dead = lambda name: False
     node.get_logger = MagicMock
+    node.publish_state = MagicMock()
+    node._sap_reset_provider_fail_streak = MagicMock()
     got = {}
 
     def minimax(voice, language, text, sink, provider_chain, ctx, budget_deadline=None):
         got["minimax"] = text  # квота: аудио нет — дальше Yandex
 
-    def yandex(voice, language, text, ctx):
-        got["yandex"] = text
-        ctx["audio_np"] = [0.0]
+    def yandex_synth(text, *, voice=None, speed=1.0):
+        got["yandex"] = text  # что адаптер Yandex реально отдал сервису (после своего ``prepare``)
+        return [0.0]
 
     node._sap_synthesize_minimax = minimax
-    node._sap_synthesize_yandex = yandex
+    # Настоящие ``_sap_synthesize_yandex`` и ``YandexTTSProvider.prepare`` (#4240): метки снимает адаптер.
+    node._yandex_tts = YandexTTSProvider("fake-key", object(), logger=MagicMock())
+    node._yandex_tts.synthesize_np = yandex_synth
     return node, got
 
 

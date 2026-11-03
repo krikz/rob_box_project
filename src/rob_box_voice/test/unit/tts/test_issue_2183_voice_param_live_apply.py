@@ -138,10 +138,10 @@ class TestSynthesisHonoursConfiguredVoice:
         node.provider = "yandex"
         node.provider_chain = ["yandex", "silero"]
         node.yandex_voice = "alena"  # operator set this live
-        node._synthesize_yandex = MagicMock(return_value=np.zeros(2205, dtype=np.float32))
+        node._yandex_tts.synthesize_np = MagicMock(return_value=np.zeros(2205, dtype=np.float32))
         node._synthesize_minimax = MagicMock()
         _run_with_voice(node, voice=None)
-        _, kwargs = node._synthesize_yandex.call_args
+        _, kwargs = node._yandex_tts.synthesize_np.call_args
         assert kwargs.get("voice") == "alena"
 
     def test_yandex_explicit_voice_overrides_configured_param(self) -> None:
@@ -153,10 +153,10 @@ class TestSynthesisHonoursConfiguredVoice:
         node.provider = "yandex"
         node.provider_chain = ["yandex", "silero"]
         node.yandex_voice = "alena"  # configured by operator
-        node._synthesize_yandex = MagicMock(return_value=np.zeros(2205, dtype=np.float32))
+        node._yandex_tts.synthesize_np = MagicMock(return_value=np.zeros(2205, dtype=np.float32))
         node._synthesize_minimax = MagicMock()
         _run_with_voice(node, voice="zahar")  # explicit LLM override
-        _, kwargs = node._synthesize_yandex.call_args
+        _, kwargs = node._yandex_tts.synthesize_np.call_args
         assert kwargs.get("voice") == "zahar"
 
     def test_minimax_uses_configured_voice_when_none_requested(self) -> None:
@@ -181,10 +181,10 @@ class TestSynthesisHonoursConfiguredVoice:
         node.provider_chain = ["minimax", "yandex", "silero"]
         node.silero_speaker = "baya"  # operator set this live
         node._synthesize_minimax = MagicMock(side_effect=RuntimeError("MiniMax dead"))
-        node._synthesize_yandex = MagicMock(side_effect=RuntimeError("Yandex dead"))
+        node._yandex_tts.synthesize_np = MagicMock(side_effect=RuntimeError("Yandex dead"))
         _run_with_voice(node, voice=None)
-        _, kwargs = node._synthesize_silero.call_args
-        assert kwargs.get("voice") == "baya"
+        _, kwargs = node._silero_tts.synthesize_np.call_args
+        assert kwargs.get("speaker") == "baya"
 
     def test_silero_explicit_voice_overrides_configured_param(self) -> None:
         node = _playback_node()
@@ -192,10 +192,10 @@ class TestSynthesisHonoursConfiguredVoice:
         node.provider_chain = ["minimax", "yandex", "silero"]
         node.silero_speaker = "baya"
         node._synthesize_minimax = MagicMock(side_effect=RuntimeError("MiniMax dead"))
-        node._synthesize_yandex = MagicMock(side_effect=RuntimeError("Yandex dead"))
+        node._yandex_tts.synthesize_np = MagicMock(side_effect=RuntimeError("Yandex dead"))
         _run_with_voice(node, voice="xenia")
-        _, kwargs = node._synthesize_silero.call_args
-        assert kwargs.get("voice") == "xenia"
+        _, kwargs = node._silero_tts.synthesize_np.call_args
+        assert kwargs.get("speaker") == "xenia"
 
 
 # ── Cause 3: fallback warning fires on REAL degradation, always ───────────────
@@ -218,7 +218,7 @@ class TestSilentDegradationFixed:
         node.provider = "yandex"
         node.provider_chain = ["yandex", "silero"]
         node.yandex_voice = "alena"  # valid, operator-configured
-        node._synthesize_yandex = MagicMock(return_value=np.zeros(2205, dtype=np.float32))
+        node._yandex_tts.synthesize_np = MagicMock(return_value=np.zeros(2205, dtype=np.float32))
         node._synthesize_minimax = MagicMock()
         _run_with_voice(node, voice=None)
         warn_msgs = " ".join(str(c) for c in node.logger.warn.call_args_list)
@@ -237,10 +237,10 @@ class TestSilentDegradationFixed:
         node.provider = "yandex"
         node.provider_chain = ["yandex", "silero"]
         node.yandex_voice = "not_a_real_voice"  # misconfigured
-        node._synthesize_yandex = MagicMock(return_value=np.zeros(2205, dtype=np.float32))
+        node._yandex_tts.synthesize_np = MagicMock(return_value=np.zeros(2205, dtype=np.float32))
         node._synthesize_minimax = MagicMock()
         _run_with_voice(node, voice=None)
-        _, kwargs = node._synthesize_yandex.call_args
+        _, kwargs = node._yandex_tts.synthesize_np.call_args
         assert kwargs.get("voice") == "anton"  # registry default, last resort
         warn_msgs = " ".join(str(c) for c in node.logger.warn.call_args_list)
         assert "недоступен у Yandex" in warn_msgs

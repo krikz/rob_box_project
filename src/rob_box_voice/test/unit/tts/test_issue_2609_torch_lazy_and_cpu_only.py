@@ -79,6 +79,8 @@ _DOCKER_REQUIREMENTS_FILES = [
 ]
 
 _TTS_NODE_SRC = _PACKAGE_ROOT / "rob_box_voice" / "tts_node.py"
+# #4240: загрузка Silero (ленивый torch) переехала в адаптер.
+_SILERO_SRC = _PACKAGE_ROOT / "rob_box_voice" / "tts_providers" / "silero.py"
 _SPEAKER_ID_SRC = _PACKAGE_ROOT / "rob_box_voice" / "speaker_id_node.py"
 _SPEAKER_ID_YAML = _PACKAGE_ROOT / "config" / "speaker_id_node.yaml"
 
@@ -191,31 +193,31 @@ def test_tts_node_has_no_top_level_torch_import() -> None:
     torch_imports = [name for level, name in imports if name == "torch"]
     assert torch_imports == [], (
         "tts_node.py must not import torch at module scope — defer to "
-        "_load_silero_model. Issue #2609 acceptance. "
+        "SileroTTSProvider.load. Issue #2609 acceptance. "
         f"Found: {torch_imports}"
     )
+    adapter_torch = [name for level, name in _all_top_level_imports(_parse_module(_SILERO_SRC)) if name == "torch"]
+    assert adapter_torch == [], f"tts_providers/silero.py must not import torch at module scope: {adapter_torch}"
 
 
 def test_tts_node_load_silero_model_does_import_torch() -> None:
-    """Lazy import contract — torch IS imported inside _load_silero_model,
-    but only when Silero fallback actually runs.
+    """Lazy import contract — torch IS imported inside ``SileroTTSProvider.load``
+    (#4240: был ``TTSNode._load_silero_model``), but only when Silero actually runs.
     """
-    tree = _parse_module(_TTS_NODE_SRC)
-    # Find TTSNode class
+    tree = _parse_module(_SILERO_SRC)
     cls = None
     for node in tree.body:
-        if isinstance(node, ast.ClassDef) and node.name == "TTSNode":
+        if isinstance(node, ast.ClassDef) and node.name == "SileroTTSProvider":
             cls = node
             break
-    assert cls is not None, "TTSNode class not found"
+    assert cls is not None, "SileroTTSProvider class not found"
 
-    # Find _load_silero_model method
     method = None
     for node in cls.body:
-        if isinstance(node, ast.FunctionDef) and node.name == "_load_silero_model":
+        if isinstance(node, ast.FunctionDef) and node.name == "load":
             method = node
             break
-    assert method is not None, "_load_silero_model method not found"
+    assert method is not None, "SileroTTSProvider.load method not found"
 
     # Walk the method body and find ``import torch`` statements.
     found_torch_import = False
@@ -225,7 +227,7 @@ def test_tts_node_load_silero_model_does_import_torch() -> None:
                 if alias.name == "torch":
                     found_torch_import = True
     assert found_torch_import, (
-        "_load_silero_model must import torch locally — this is the "
+        "SileroTTSProvider.load must import torch locally — this is the "
         "lazy import contract from #2609. Top-level torch import was "
         "removed, the local one is the only path that brings the module "
         "in (and only when Silero fallback actually runs)."
@@ -535,9 +537,8 @@ def test_tts_node_has_no_torch_hub_network_fallback() -> None:
     # ``torch.hub.load`` живӑт рядом в комментарии-объяснении, и греп по тексту
     # ловил бы его же — гвард, падающий на собственной документации,
     # быстро отключают.
-    tree = _parse_module(_TTS_NODE_SRC)
     calls = []
-    for node in ast.walk(tree):
+    for node in [n for src in (_TTS_NODE_SRC, _SILERO_SRC) for n in ast.walk(_parse_module(src))]:
         if not isinstance(node, ast.Call):
             continue
         func = node.func
@@ -562,7 +563,7 @@ def test_tts_node_has_no_torch_hub_network_fallback() -> None:
 def test_tts_node_raises_actionable_error_when_silero_missing() -> None:
     """Отсутствие модели должно быть громким и объяснять, что чинить."""
 
-    text = _TTS_NODE_SRC.read_text(encoding="utf-8")
+    text = _SILERO_SRC.read_text(encoding="utf-8")  # #4240: загрузка модели — в адаптере
     assert "raise FileNotFoundError(" in text, (
         "Пропажа Silero обязана приводить к явному исключению, а не к "
         "молчаливой деградации (ADR-0018)."

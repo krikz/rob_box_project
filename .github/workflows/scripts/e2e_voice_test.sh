@@ -1225,7 +1225,7 @@ PY
     fi
 }
 # Синтез Yandex TTS gRPC v3: text + voice → /tmp/e2e_v2_<run>/cmd.wav
-# Тот же контракт что tts_node._synthesize_yandex (tts.api.cloud.yandex.net:443)
+# Тот же контракт что адаптер tts_providers.yandex (tts.api.cloud.yandex.net:443)
 # Ретро 22.08 t_c7761956 (A2): synth failure теперь печатает JSON-строку с
 # diagnostic (provider, error_class, http_code, latency_ms). Это позволяет
 # сразу отличать network/quota/auth ошибки без grep stacktrace.

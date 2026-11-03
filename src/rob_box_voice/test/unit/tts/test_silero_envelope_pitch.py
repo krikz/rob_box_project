@@ -21,7 +21,7 @@ from test.unit.tts.conftest import _install_all_mocks
 
 _install_all_mocks()
 
-from rob_box_voice.tts_node import TTSNode
+from rob_box_voice.tts_providers.silero import SileroTTSProvider
 
 
 class _Logger:
@@ -68,27 +68,18 @@ class _StrictPitchSilero:
         return _FakeTensor([float(len(ssml_text))])
 
 
-def _build_silero_node(model: _StrictPitchSilero) -> TTSNode:
-    node = TTSNode.__new__(TTSNode)
-    node.silero_model = model
-    node.silero_speaker = "baya"
-    node.silero_sample_rate = 48000
-    node.silero_put_accent = True
-    node.silero_put_yo = True
-    node.silero_put_stress_homo = True
-    node.silero_put_yo_homo = True
-    node.chunk_max_chars_silero = 800
-    node.chunk_max_retries = 3
-    node.chunk_min_chars = 50
-    node.get_logger = lambda: _Logger()
-    return node
+def _build_silero_node(model: _StrictPitchSilero) -> SileroTTSProvider:
+    """Адаптер Silero (#4240) с фейковой моделью."""
+    adapter = SileroTTSProvider(logger=_Logger(), default_speaker="baya")
+    adapter.model = model
+    return adapter
 
 
 def test_synthesize_silero_envelope_pitch_is_medium():
     model = _StrictPitchSilero()
     node = _build_silero_node(model)
 
-    audio = TTSNode._synthesize_silero(node, "Просто текст.")
+    audio = node.synthesize_np("Просто текст.")
 
     assert audio.dtype == np.float32
     assert model.pitches == ["medium"]

@@ -57,6 +57,7 @@ AudioTranscodeError = _mod.AudioTranscodeError
 
 # Import tts_node AFTER mocks are installed by conftest.
 from rob_box_voice import tts_node  # noqa: E402
+from rob_box_voice.tts_providers import YandexTTSProvider  # noqa: E402
 from rob_box_voice.core import tts_stream  # noqa: E402
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -238,9 +239,9 @@ class TestDefaultProviderPath:
         node = _make_fake_node()
         node.provider = "yandex"
         node.stop_requested = False
-        node.yandex_stub = object()
+        node._yandex_tts = YandexTTSProvider("fake-key", object(), logger=MagicMock())
         node.yandex_speed = 1.0
-        node._synthesize_yandex = MagicMock(
+        node._yandex_tts.synthesize_np = MagicMock(
             return_value=np.zeros(2205, dtype=np.float32)
         )
         node.publish_state = MagicMock()
