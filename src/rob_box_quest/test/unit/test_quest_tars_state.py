@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import json
 import unittest
+from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 
@@ -221,14 +222,20 @@ def _stage_seq(host: MagicMock) -> list[str]:
     return [e["stage"] for e in _tars_events(host)]
 
 
+#: ``SpeechEvent.kind`` (``rob_box_dialog_msgs/msg/SpeechEvent.msg``).
+QUEUED, SYNTHESIZED, FINISHED, CANCELLED, REJECTED = 0, 1, 4, 5, 7
+
+
+def _speech_event(kind: int, speech_id: str = "abcd1234", reason: str = "") -> SimpleNamespace:
+    """``SpeechEvent`` владельца речи (поля, которые читает реле, #4252)."""
+    return SimpleNamespace(kind=kind, speech_id=speech_id, reason=reason, agent="operator")
+
+
 def _speak_reply(qn, host, clock, *, n_chunks: int = 2, chunk_bytes: int = 32000) -> None:
-    """supervisor → /avatar/tts/request (speech_id) → чанки в шлем по 1 с звука."""
-    qn._on_avatar_tts_request_meta(host, _string_msg({
-        "request_id": "abcd1234",
-        "speech_id": "tars-abcd1234",
-        "ssml": "<speak>готово</speak>",
-        "sink": "headset",
-    }))
+    """supervisor → SpeechRequest(sink=headset, speech_id) → чанки в шлем по 1 с звука (#4252)."""
+    qn._on_headset_speech_request(host, SimpleNamespace(
+        speech_id="abcd1234", sink="headset", agent="operator", text="готово",
+    ))
     host._avatar_request_sample_rate["abcd1234"] = 16000
     for _ in range(n_chunks):
         clock.now += 0.1
@@ -250,10 +257,8 @@ def test_server_emits_accepted_thinking_speaking_idle_and_done(quest_node_mod):
     ))
     # 3. Ответ ушёл в синтез, 2 чанка по 1 с звука.
     _speak_reply(qn, host, clock)
-    # 4. tts_node: синтез закончен — звук в шлеме ещё играет, idle рано.
-    host._tars_relay.on_tts_finished(_string_msg(
-        {"speech_id": "tars-abcd1234", "success": True, "duration_sec": 2.0}
-    ))
+    # 4. Владелец речи: реплика закончена — звук в шлеме ещё играет, idle рано.
+    host._tars_relay.on_speech_event(_speech_event(FINISHED))
     host._tars_relay.tick()
     assert _stage_seq(host) == ["accepted", "thinking", "speaking"]
     host.ws_server.deliver_operator_tts_done.assert_not_called()
@@ -304,9 +309,7 @@ def test_synthesis_error_sends_idle_and_operator_tts_error(quest_node_mod):
     qn = quest_node_mod.QuestNode
     host, clock = _wired_host(quest_node_mod)
     _speak_reply(qn, host, clock, n_chunks=0)
-    host._tars_relay.on_tts_finished(_string_msg(
-        {"speech_id": "tars-abcd1234", "success": False, "error": "all_providers_failed"}
-    ))
+    host._tars_relay.on_speech_event(_speech_event(REJECTED, reason="all_providers_failed"))
     assert _stage_seq(host) == ["idle"]
     assert _tars_events(host)[-1]["reason"] == "all_providers_failed"
     host.ws_server.deliver_operator_tts_error.assert_called_once_with(
@@ -315,18 +318,26 @@ def test_synthesis_error_sends_idle_and_operator_tts_error(quest_node_mod):
     host.ws_server.deliver_operator_tts_done.assert_not_called()
 
 
-def test_tts_finished_noise_is_ignored(quest_node_mod):
-    """Общий /voice/tts/finished: не-JSON, queued и чужие speech_id — мимо."""
+def test_speech_event_noise_is_ignored(quest_node_mod):
+    """Общий /voice/speech/event: промежуточные события и чужие speech_id — мимо (#4252)."""
     qn = quest_node_mod.QuestNode
     host, clock = _wired_host(quest_node_mod)
     _speak_reply(qn, host, clock, n_chunks=0)
-    host._tars_relay.on_tts_finished(_string_msg("silero_warming:d1"))
-    host._tars_relay.on_tts_finished(_string_msg(
-        {"speech_id": "tars-abcd1234", "success": True, "queued": True}
-    ))
-    host._tars_relay.on_tts_finished(_string_msg({"speech_id": "other", "success": True}))
+    host._tars_relay.on_speech_event(_speech_event(QUEUED))
+    host._tars_relay.on_speech_event(_speech_event(SYNTHESIZED))
+    host._tars_relay.on_speech_event(_speech_event(FINISHED, speech_id="other"))
     assert _stage_seq(host) == []
     host.ws_server.deliver_operator_tts_done.assert_not_called()
+
+
+def test_cancelled_reply_closes_the_stage_with_the_reason(quest_node_mod):
+    """SpeechCancel (PTT, «стой») — конец реплики ``cancelled``: idle + operator_tts_error с причиной."""
+    qn = quest_node_mod.QuestNode
+    host, clock = _wired_host(quest_node_mod)
+    _speak_reply(qn, host, clock, n_chunks=0)
+    host._tars_relay.on_speech_event(_speech_event(CANCELLED, reason="cancelled"))
+    assert _stage_seq(host) == ["idle"]
+    host.ws_server.deliver_operator_tts_error.assert_called_once_with("abcd1234", "cancelled")
 
 
 def test_supervisor_idle_without_speech_is_relayed(quest_node_mod):

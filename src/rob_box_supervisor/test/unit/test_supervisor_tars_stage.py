@@ -33,7 +33,9 @@ def _stages(node: AvatarSupervisor) -> list[dict]:
 
 
 def _avatar_tts(node: AvatarSupervisor) -> list[dict]:
-    return [json.loads(m.data) for m in node._avatar_tts_request_pub.published]
+    """Реплики в шлем: ``SpeechRequest`` с ``sink=headset`` (#4252)."""
+    return [{"text": r.text, "agent": r.agent, "speech_id": r.speech_id}
+            for r in node._speech_client_pubs["request"].published if r.sink == "headset"]
 
 
 def _command(source: str) -> MagicMock:
@@ -66,10 +68,11 @@ class TestTarsStagePublisher(unittest.TestCase):
         self.assertEqual([s["stage"] for s in stages], ["thinking"])
         self.assertEqual(stages[0]["request_id"], "c1:7")
         self.assertIsInstance(stages[0]["ts_ms"], int)
-        # Реплика ушла в шлем со speech_id для корреляции с finished.
+        # Реплика ушла в шлем со speech_id: по нему quest_node сводит SpeechEvent с репликой (#4252).
         tts = _avatar_tts(self.node)
         self.assertEqual(len(tts), 1)
-        self.assertEqual(tts[0]["speech_id"], f"tars-{tts[0]['request_id']}")
+        self.assertEqual(tts[0]["agent"], "operator")
+        self.assertTrue(tts[0]["speech_id"])
 
     def test_thinking_is_published_before_llm_runs(self) -> None:
         seen: list[list[str]] = []

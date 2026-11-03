@@ -1,22 +1,11 @@
-"""ADR-0055 / issue #1993 — тесты supervisor'а на публикацию в /avatar/tts/request.
+"""ADR-0055 / issue #1993, #4252 — реплики ТАРС в шлем: ``SpeechRequest`` владельцу речи с ``sink=headset``.
 
-Шаг 5б: avatar_supervisor должен публиковать собственные реплики ТАРС
-(«принял», «не умею», «камера повёрнута», «не понял») в новый обратный
-канал шлема, а не в /voice/speech/request (там остался только say).
+До #4252 собственные реплики супервизора шли String JSON в ``/avatar/tts/request`` мимо владельца речи
+(``speech_owner`` отвечал ``sink_unsupported``), и конец реплики знал только старый ``/voice/tts/finished``.
+Теперь ``headset_speech.say_in_headset`` публикует ``SpeechRequest(agent=operator, sink=headset)``; итог — ``SpeechEvent``
+с тем же ``speech_id``. ``/avatar/tts/request`` остался только для образца голоса (``sink=preview``).
 
-Используем mock-rclpy из conftest.py. Тесты:
-
-1. ``test_publish_avatar_tts_writes_headset_request`` — прямой вызов
-   ``_publish_avatar_tts`` шлёт JSON ``{request_id, text, sink:\"headset\"}`` (голый текст, ADR-0160 §2.3)
-   в /avatar/tts/request.
-2. ``test_publish_avatar_tts_returns_request_id`` — возвращается uuid hex8
-   (>= 8 chars), caller может его логировать.
-3. ``test_publish_avatar_tts_optional_voice_language_forwarded`` —
-   язык/голос пробрасываются в payload только когда заданы.
-4. ``test_avatar_publisher_declared_on_init`` — паблишер заведён в __init__.
-5. ``test_supervisor_does_not_use_voice_tts_request_for_own_lines`` —
-   ADR-0055 §C4: для собственных реплик supervisor НЕ идёт в
-   /voice/speech/request (это канал для инструмента say).
+Используем mock-rclpy из conftest.py.
 """
 from __future__ import annotations
 
@@ -24,181 +13,78 @@ import json
 import unittest
 
 from rob_box_core.speech_client import SPEECH_REQUEST_TOPIC
+from rob_box_supervisor import headset_speech
 from rob_box_supervisor.supervisor_node import (
     AVATAR_TTS_REQUEST_TOPIC,
     AvatarSupervisor,
 )
 
 
-def _published_avatar_tts(node: AvatarSupervisor) -> list[dict]:
-    """Опубликованные в /avatar/tts/request payloads (parsed JSON)."""
-    pub = node._avatar_tts_request_pub
-    return [json.loads(m.data) for m in pub.published]
+def _say(node: AvatarSupervisor, text: str) -> str:
+    return headset_speech.say_in_headset(node, text, node._log)
 
 
-def _speech_payload(req) -> dict:
-    """``SpeechRequest`` → поля, которые раньше лежали в JSON ``/voice/tts/request``."""
-    out = {"text": req.text, "priority": "operator" if req.priority >= 10 else "normal", "agent": req.agent}
-    if req.language:
-        out["language"] = req.language
-    return out
+def _speech_requests(node: AvatarSupervisor) -> list:
+    """Все ``SpeechRequest``, опубликованные клиентом речи."""
+    return list(node._speech_client_pubs["request"].published)
 
 
-def _published_voice_tts(node: AvatarSupervisor) -> list[dict]:
-    """Опубликованные в /voice/speech/request payloads (parsed JSON)."""
-    pub = node._speech_client_pubs["request"]
-    return [_speech_payload(m) for m in pub.published]
+def _headset(node: AvatarSupervisor) -> list:
+    return [r for r in _speech_requests(node) if r.sink == "headset"]
 
 
-class TestAvatarTtsPublisherDeclared(unittest.TestCase):
-    """ADR-0055 #1993: паблишер /avatar/tts/request обязан быть заведён в __init__."""
+def _speakers(node: AvatarSupervisor) -> list:
+    return [r for r in _speech_requests(node) if r.sink != "headset"]
 
+
+def _avatar_channel(node: AvatarSupervisor) -> list[dict]:
+    return [json.loads(m.data) for m in node._avatar_tts_request_pub.published]
+
+
+class TestPublishersDeclared(unittest.TestCase):
     def setUp(self) -> None:
         self.node = AvatarSupervisor()
 
     def tearDown(self) -> None:
         self.node.destroy_node()
 
-    def test_avatar_tts_request_publisher_declared(self) -> None:
-        self.assertIn(AVATAR_TTS_REQUEST_TOPIC, self.node._publishers)
-        self.assertEqual(AVATAR_TTS_REQUEST_TOPIC, "/avatar/tts/request")
-
-    def test_old_voice_tts_request_publisher_still_declared_for_say(self) -> None:
-        # /voice/speech/request оставлен ТОЛЬКО для инструмента say.
-        # Грип больше туда не ходит; supervisor для собственных реплик — тоже.
+    def test_speech_request_publisher_declared(self) -> None:
         self.assertIn(SPEECH_REQUEST_TOPIC, self.node._publishers)
-        self.assertEqual(SPEECH_REQUEST_TOPIC, "/voice/speech/request")
+
+    def test_preview_channel_still_declared(self) -> None:
+        self.assertIn(AVATAR_TTS_REQUEST_TOPIC, self.node._publishers)
 
 
-class TestPublishAvatarTtsWithDefaults(unittest.TestCase):
-    """``_publish_avatar_tts(text)`` — минимальный контракт."""
-
+class TestSayInHeadset(unittest.TestCase):
     def setUp(self) -> None:
         self.node = AvatarSupervisor()
 
     def tearDown(self) -> None:
         self.node.destroy_node()
 
-    def test_publish_avatar_tts_writes_headset_request(self) -> None:
-        rid = self.node._publish_avatar_tts("готово")
-        pub = _published_avatar_tts(self.node)
-        self.assertEqual(len(pub), 1)
-        self.assertEqual(pub[0]["text"], "готово")
-        self.assertEqual(pub[0]["sink"], "headset")
-        self.assertEqual(pub[0]["request_id"], rid)
+    def test_reply_goes_to_speech_owner_with_headset_sink(self) -> None:
+        sid = _say(self.node, "готово")
+        (req,) = _headset(self.node)
+        self.assertEqual((req.text, req.agent, req.speech_id), ("готово", "operator", sid))
+        self.assertTrue(req.commit)
+        self.assertEqual(req.at, 0.0)
 
-    def test_publish_avatar_tts_returns_request_id(self) -> None:
-        rid = self.node._publish_avatar_tts("не умею")
-        # uuid4().hex[:8] — 8 hex chars.
-        self.assertEqual(len(rid), 8)
-        self.assertTrue(all(c in "0123456789abcdef" for c in rid))
+    def test_speech_ids_are_unique(self) -> None:
+        self.assertNotEqual(_say(self.node, "раз"), _say(self.node, "два"))
 
-    def test_publish_avatar_tts_unique_request_ids(self) -> None:
-        rid1 = self.node._publish_avatar_tts("раз")
-        rid2 = self.node._publish_avatar_tts("два")
-        self.assertNotEqual(rid1, rid2)
+    def test_headset_reply_is_not_on_the_old_string_channel_nor_speakers(self) -> None:
+        _say(self.node, "принял")
+        self.assertEqual(_avatar_channel(self.node), [])
+        self.assertEqual(_speakers(self.node), [])
 
-
-class TestPublishAvatarTtsOptionalArgs(unittest.TestCase):
-    """Прокидывание опциональных voice/language в payload."""
-
-    def setUp(self) -> None:
-        self.node = AvatarSupervisor()
-
-    def tearDown(self) -> None:
-        self.node.destroy_node()
-
-    def test_optional_language_forwarded(self) -> None:
-        self.node._publish_avatar_tts("hello", language="en")
-        pub = _published_avatar_tts(self.node)
-        self.assertEqual(pub[0]["language"], "en")
-        self.assertNotIn("voice", pub[0])
-
-    def test_optional_voice_forwarded(self) -> None:
-        self.node._publish_avatar_tts("bonjour", voice="fr-f1")
-        pub = _published_avatar_tts(self.node)
-        self.assertEqual(pub[0]["voice"], "fr-f1")
-        self.assertNotIn("language", pub[0])
-
-    def test_no_optional_args_omits_keys(self) -> None:
-        self.node._publish_avatar_tts("чисто")
-        pub = _published_avatar_tts(self.node)
-        self.assertNotIn("language", pub[0])
-        self.assertNotIn("voice", pub[0])
-
-
-class TestSupervisorOwnLinesUseAvatarChannel(unittest.TestCase):
-    """ADR-0055 §C4: собственные реплики supervisor'а идут в /avatar/tts/request,
-    не в /voice/speech/request.
-
-    «Собственные реплики» — это прямой вызов ``_publish_avatar_tts``. Тест
-    проверяет, что эта функция НЕ трогает ``_tts_request_pub`` (say-канал).
-    """
-
-    def setUp(self) -> None:
-        self.node = AvatarSupervisor()
-
-    def tearDown(self) -> None:
-        self.node.destroy_node()
-
-    def test_avatar_tts_does_not_publish_to_voice_tts_request(self) -> None:
-        self.node._publish_avatar_tts("принял")
-        self.assertEqual(len(_published_avatar_tts(self.node)), 1)
-        # /voice/speech/request НЕ должен был получить ничего (say-канал).
-        self.assertEqual(_published_voice_tts(self.node), [])
-
-
-class TestPublishAvatarTtsEmptyTextDrop(unittest.TestCase):
-    """Issue #2096 — guard пустого text в ``_publish_avatar_tts``.
-
-    До фикса ``_publish_avatar_tts("")`` слал ``<speak></speak>`` в
-    /avatar/tts/request → tts_node ловил MiniMax bad-request "text is empty"
-    → CRITICAL в deploy-логе (run #34144712828). Теперь:
-    * пустой/whitespace text → DROP (ничего в /avatar/tts/request)
-    * возвращается пустой request_id (caller знает, что синтеза не будет).
-    """
-
-    def setUp(self) -> None:
-        self.node = AvatarSupervisor()
-
-    def tearDown(self) -> None:
-        self.node.destroy_node()
-
-    def test_empty_string_drops_request(self) -> None:
-        rid = self.node._publish_avatar_tts("")
-        self.assertEqual(rid, "")
-        self.assertEqual(_published_avatar_tts(self.node), [])
-
-    def test_whitespace_only_drops_request(self) -> None:
-        rid = self.node._publish_avatar_tts("   \n\t  ")
-        self.assertEqual(rid, "")
-        self.assertEqual(_published_avatar_tts(self.node), [])
-
-    def test_empty_text_does_not_touch_voice_tts_request(self) -> None:
-        # Дополнительно: drop не должен «утекать» в /voice/speech/request
-        # (say-канал) — ни при каких условиях.
-        self.node._publish_avatar_tts("")
-        self.assertEqual(_published_voice_tts(self.node), [])
-
-    def test_non_empty_text_still_publishes(self) -> None:
-        # Sanity: guard не должен сломать happy-path. Тест идёт после
-        # test_empty_*, чтобы при падении guard'а видеть, что контракт
-        # для непустого text по-прежнему работает.
-        rid = self.node._publish_avatar_tts("готово")
-        self.assertNotEqual(rid, "")
-        self.assertEqual(len(_published_avatar_tts(self.node)), 1)
+    def test_empty_text_is_dropped(self) -> None:
+        for text in ("", "   \n\t  "):
+            self.assertEqual(_say(self.node, text), "")
+        self.assertEqual(_speech_requests(self.node), [])
 
 
 class TestPublishGripTtsEmptyTextDrop(unittest.TestCase):
-    """Issue #2096 + #2137 — guard пустого text в ``_publish_grip_tts``.
-
-    Зеркальная защита к ``_publish_avatar_tts``: пустой text из грип-пайплайна
-    (после LLM-transform мог вернуть ``""``) тоже не должен уходить в
-    /voice/speech/request. Также проверяем, что happy-path пишет в
-    ``/voice/speech/request`` (динамики робота, §7.5) с ``priority="operator"``
-    и без sink=headset (шлем остаётся только для собственных реплик ТАРС,
-    инвариант 6b §7.4).
-    """
+    """Issue #2096 + #2137 — грип говорит динамиками робота, не в шлем (инвариант 6b §7.4)."""
 
     def setUp(self) -> None:
         self.node = AvatarSupervisor()
@@ -208,21 +94,16 @@ class TestPublishGripTtsEmptyTextDrop(unittest.TestCase):
 
     def test_empty_string_drops_request(self) -> None:
         self.node._publish_grip_tts("")
-        self.assertEqual(_published_voice_tts(self.node), [])
-
-    def test_whitespace_only_drops_request(self) -> None:
         self.node._publish_grip_tts("   \n\t  ")
-        self.assertEqual(_published_voice_tts(self.node), [])
+        self.assertEqual(_speech_requests(self.node), [])
 
-    def test_non_empty_text_still_publishes(self) -> None:
-        """Happy-path → /voice/speech/request с priority="operator" (§7.5)."""
+    def test_non_empty_text_goes_to_speakers_with_operator_priority(self) -> None:
         self.node._publish_grip_tts("мы начинаем")
-        voice_pub = _published_voice_tts(self.node)
-        self.assertEqual(len(voice_pub), 1)
-        self.assertEqual(voice_pub[0]["text"], "мы начинаем")
-        self.assertEqual(voice_pub[0]["priority"], "operator")
-        # Не должен ничего утечь в /avatar/tts/request (шлем только для ТАРС).
-        self.assertEqual(_published_avatar_tts(self.node), [])
+        (req,) = _speakers(self.node)
+        self.assertEqual((req.text, req.agent), ("мы начинаем", "operator"))
+        self.assertGreaterEqual(req.priority, 10)
+        self.assertEqual(_headset(self.node), [])
+        self.assertEqual(_avatar_channel(self.node), [])
 
 
 if __name__ == "__main__":

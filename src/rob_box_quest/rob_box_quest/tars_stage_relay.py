@@ -7,11 +7,11 @@
 2. ``thinking`` — ``/avatar/tars/stage`` от supervisor'а: ход LLM начался
    (``AvatarSupervisor._on_avatar_command`` перед ``_run_agent_sync``).
    Оттуда же ``idle``, если ход кончился без реплики в шлем.
-3. Ответ LLM → ``/avatar/tts/request`` (sink=headset, ``speech_id``) →
-   :meth:`TarsStageRelay.on_request`.
+3. Ответ LLM → ``SpeechRequest`` (sink=headset, ``speech_id``) владельцу речи
+   → :meth:`TarsStageRelay.on_request` (#4252).
 4. ``speaking`` — первый ``/avatar/tts/audio``, доставленный в шлем
    (:meth:`on_chunk`).
-5. ``idle`` + ``operator_tts_done`` — после ``/voice/tts/finished`` с тем же
+5. ``idle`` + ``operator_tts_done`` — после конца реплики в ``SpeechEvent`` с тем же
    ``speech_id`` И оценки конца звука в шлеме (:meth:`tick`); при ошибке
    синтеза — ``idle`` + ``operator_tts_error``; на барж-ине (PTT) — сразу.
 
@@ -29,6 +29,8 @@ from __future__ import annotations
 import json
 import time
 from typing import Any, Callable, Optional
+
+from rob_box_core import speech_client
 
 from .core.tars_stages import Event, TarsStageTracker
 
@@ -75,25 +77,25 @@ class TarsStageRelay:
             str(payload.get("reason", "") or ""),
         )
 
-    def on_tts_finished(self, msg: Any) -> None:
-        """ROS ``/voice/tts/finished`` → конец синтеза реплики (по speech_id).
+    def on_speech_event(self, event: Any) -> None:
+        """ROS ``SpeechEvent`` владельца речи → конец реплики (по speech_id, #4252).
 
         Топик общий с голосом личности: чужие speech_id трекер отбросит.
-        ``queued=True`` — чанк лишь поставлен в очередь tts_node. Не-JSON
-        (``silero_warming:...``) пропускаем.
+        Промежуточные события (``queued``, ``synthesized``) пропускаем; конец —
+        ``finished`` / ``cancelled`` / ``rejected`` (``speech_client.KIND_STATUS``).
         """
-        payload = _json_dict(msg)
-        if payload is None or payload.get("queued"):
+        if not speech_client.is_speech_end(event):
             return
+        status = speech_client.KIND_STATUS[int(event.kind)]
         self.emit(self.tracker.on_finished(
-            str(payload.get("speech_id", "") or ""),
-            bool(payload.get("success", False)),
-            str(payload.get("error", "") or ""),
+            str(getattr(event, "speech_id", "") or ""),
+            status == "done",
+            str(getattr(event, "reason", "") or status),
             self._clock(),
         ))
 
     def on_request(self, request_id: str, speech_id: Any) -> None:
-        """Реплика ТАРС зарегистрирована на шлем (``/avatar/tts/request``)."""
+        """Реплика ТАРС зарегистрирована на шлем (``SpeechRequest`` sink=headset)."""
         self.emit(self.tracker.on_request(request_id, speech_id, self._clock()))
 
     def on_chunk(self, delivered: Any, request_id: str, n_bytes: int, sample_rate: int) -> None:

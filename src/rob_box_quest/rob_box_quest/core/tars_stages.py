@@ -6,12 +6,12 @@
 
 Откуда берутся факты (весь путь реплики — в ADR-0078 §3.6):
 
-* ``on_request`` — ``/avatar/tts/request`` (sink=headset) от supervisor'а:
-  ответ LLM готов и ушёл в синтез. ``speech_id`` из payload'а связывает
-  реплику с ``/voice/tts/finished`` от tts_node.
+* ``on_request`` — ``SpeechRequest(sink=headset)`` от supervisor'а (#4252):
+  ответ LLM готов и ушёл в синтез. Его ``speech_id`` связывает
+  реплику с ``SpeechEvent`` владельца речи (tts_node).
 * ``on_chunk`` — очередной ``/avatar/tts/audio`` доставлен в шлем. Первый
   чанк реплики → ``speaking``.
-* ``on_finished`` — ``/voice/tts/finished`` с тем же ``speech_id``: синтез
+* ``on_finished`` — конец реплики в ``SpeechEvent`` с тем же ``speech_id``: синтез
   закончен (успех или ошибка).
 * ``on_cancel`` — оператор зажал PTT (барж-ин): клиент уже оборвал звук.
 * ``tick`` — периодически: выдаёт отложенный ``idle``.

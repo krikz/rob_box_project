@@ -19,6 +19,7 @@
 Старых JSON-входов речи (``/voice/tts/request``, ``/voice/dialogue/response``, STOP в ``/voice/tts/control``) у ноды
 нет (PR-15 часть 15-core, #3711): речь приходит только как ``SpeechRequest``.
 ``at`` / ``boundary=sentence`` / ``commit=false`` - :mod:`.speech_timing`.
+``sink=headset`` - наушники шлема оператора (ТАРС, #4252): тот же журнал и те же события, звук - в ``/avatar/tts/audio``.
 """
 
 from __future__ import annotations
@@ -46,6 +47,10 @@ TICK_S = 0.1
 #: Запись без перехода дольше этого - потерянная (воркер упал до финала).
 STALE_RECORD_S = 300.0
 SPEAKER_SINKS = ("", "speaker", "speakers")
+#: Наушники шлема оператора (ТАРС, ADR-0055): звук уходит в ``/avatar/tts/audio``, динамики молчат. События — те же,
+#: кроме ``started``/``progress``/огибающей: звучит не здесь, а в шлеме (стадию ``speaking`` видит ``quest_node``
+#: по доставленным чанкам). Пред-синтеза (``commit=false``) и ``at`` у шлема нет — такой запрос ``rejected``.
+HEADSET_SINK = "headset"
 _KINDS = ("queued", "synthesized", "started", "progress", "finished", "cancelled", "voice_changed", "rejected")
 #: Метка паузы рэпа MiniMax ``<#x#>`` (``rap_pauses``) — не звучит, символом реплики не считается.
 _PAUSE_MARK_RE = re.compile(r"<#\d+(?:\.\d+)?#>")
@@ -102,9 +107,10 @@ class SpeechMeta:
 
 def unsupported_field(msg: Any) -> str:
     """Поле ``SpeechRequest``, которое владелец не исполняет (``""`` - всё в порядке)."""
-    if (msg.sink or "") not in SPEAKER_SINKS:
-        return "sink_unsupported"
-    return ""
+    sink = msg.sink or ""
+    if sink == HEADSET_SINK:
+        return "" if msg.commit and not msg.at else "headset_timing_unsupported"
+    return "" if sink in SPEAKER_SINKS else "sink_unsupported"
 
 
 def chunk_from_request(msg: Any) -> Dict[str, Any]:
@@ -112,10 +118,11 @@ def chunk_from_request(msg: Any) -> Dict[str, Any]:
     meta = SpeechMeta(agent=msg.agent or "personality", epoch=int(msg.epoch),
                       turn_id=msg.turn_id, interruptible=bool(msg.interruptible),
                       at=float(msg.at), boundary=int(msg.boundary), commit=bool(msg.commit))
+    speech_id = msg.speech_id or str(uuid.uuid4())
     chunk: Dict[str, Any] = {
         "text": msg.text or "",
-        "speech_id": msg.speech_id or str(uuid.uuid4()),
-        "sink": "speaker",
+        "speech_id": speech_id,
+        "sink": HEADSET_SINK if msg.sink == HEADSET_SINK else "speaker",
         "priority": "operator" if msg.priority >= PRIORITY_OPERATOR_U8 else "normal",
         "emotion": msg.emotion or "neutral",
         "_speech": asdict(meta),
@@ -123,6 +130,10 @@ def chunk_from_request(msg: Any) -> Dict[str, Any]:
     for key in ("voice", "language"):
         if getattr(msg, key):
             chunk[key] = getattr(msg, key)
+    if chunk["sink"] == HEADSET_SINK:
+        # Ключ реплики у шлема (``/avatar/tts/audio_meta``, ``/tars1/text``) — тот же speech_id, что в SpeechEvent:
+        # quest_node связывает чанки, панель и конец реплики одним ключом.
+        chunk["request_id"] = speech_id
     return chunk
 
 
@@ -278,8 +289,10 @@ class SpeechOwner:
             rec = SpeechRecord(chunk["speech_id"], SpeechMeta.from_chunk(chunk), 0, (0,))
             self._emit("rejected", rec, reason=reason)
             return
-        if not msg.commit:
+        if not msg.commit or chunk["sink"] == HEADSET_SINK:
+            # Ветка шлема конвейера tts_node реплику в журнал не заводит — заводим здесь, иначе финал не даст события.
             self.admit(chunk, chunk["speech_id"])
+        if not msg.commit:
             self.presynth.run(self._node, chunk, self._presynth_done, self.ledger.is_cancelled)
             return
         self._node.dialogue_callback(_JsonMsg(json.dumps(chunk, ensure_ascii=False)))

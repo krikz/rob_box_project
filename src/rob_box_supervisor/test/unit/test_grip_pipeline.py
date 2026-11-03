@@ -72,13 +72,14 @@ def _published_voice_tts(node: AvatarSupervisor) -> list[dict]:
 
 
 def _published_avatar_tts(node: AvatarSupervisor) -> list[dict]:
-    """Только собственные реплики ТАРС идут в ``/avatar/tts/request`` (sink=headset).
+    """Всё, что ушло в шлем: ``SpeechRequest`` с sink=headset (#4252) и старый канал ``/avatar/tts/request``.
 
-    Грип НЕ должен сюда ничего слать (инвариант 6b §7.4, issue #2137).
+    Грип НЕ должен слать в шлем ничего (инвариант 6b §7.4, issue #2137).
     Возвращаем payload'ы для ассертов «ничего не ушло в шлем».
     """
-    pub = node._avatar_tts_request_pub
-    return [json.loads(m.data) for m in pub.published]
+    headset = [{"text": r.text, "sink": r.sink}
+               for r in node._speech_client_pubs["request"].published if r.sink == "headset"]
+    return headset + [json.loads(m.data) for m in node._avatar_tts_request_pub.published]
 
 
 class _FakeResponse:
