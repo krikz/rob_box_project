@@ -62,7 +62,6 @@ INPUT_TOPICS = (
     "/voice/speaker/register",
     # когда робот говорит (ADR-0144 §2.2): SpeechEvent вместо String-топика состояния TTS (PR-15 15-0b, #3711)
     "/voice/speech/event",
-    "/voice/tts/finished",
 )
 #: Решения живой 1.1 и метки: не проигрываются НИКОГДА (смешались бы с выходами).
 CONTROL_TOPICS = (

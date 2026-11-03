@@ -1,13 +1,13 @@
 """#4252: ``SpeechRequest(sink=headset)`` проходит владельца речи и настоящий вход ``tts_node`` до синтеза в шлем.
 
 Связка, которую не видят тесты по отдельности: владелец кладёт в чанк ``sink=headset`` и ``request_id=speech_id``,
-``TTSNode.dialogue_callback`` отдаёт его ветке шлема (``_on_avatar_tts_request``), та запускает синтез с
-``sink="headset"`` и помнит ``request_id`` для ``/avatar/tts/audio_meta``. Финал этой реплики даёт ``SpeechEvent``.
+``TTSNode.dialogue_callback`` отдаёт его ветке шлема (``_on_headset_chunk``), та запускает синтез с
+``sink="headset"`` и помнит ``request_id`` для ``/avatar/tts/audio_meta``. Финал этой реплики даёт только ``SpeechEvent``
+(String-топика ``/voice/tts/finished`` нет с #4252 ч.2).
 """
 
 from __future__ import annotations
 
-import json
 import sys
 import types
 from pathlib import Path
@@ -39,7 +39,6 @@ def _node():
     n = object.__new__(TTSNode)
     logger = MagicMock()
     n.get_logger = lambda: logger
-    n.finished_pub = _Pub()
     n._avatar_tts_error_pub = _Pub()
     n._avatar_tts_request_id = None
     n.current_speech_id = None
@@ -83,7 +82,15 @@ def test_headset_finish_from_the_pipeline_closes_the_speech_with_an_event():
     owner.on_request(_request())
     node._publish_tts_finished("sid-h", success=True, duration_sec=0.7)
     assert _kinds(owner) == ["queued", "finished"]
-    assert json.loads(node.finished_pub.sent[0].data)["speech_id"] == "sid-h"
+    assert not hasattr(node, "finished_pub")
+
+
+def test_headset_path_does_not_log_the_old_deprecated_topic_warning():
+    """Ложный «/avatar/tts/request DEPRECATED» печатался и на новом пути SpeechRequest(sink=headset)."""
+    node, owner = _node()
+    owner.on_request(_request())
+    logged = " ".join(str(c.args[0]) for c in node.get_logger().warn.call_args_list)
+    assert "DEPRECATED" not in logged
 
 
 def test_headset_empty_text_is_rejected_by_the_pipeline_with_an_event():

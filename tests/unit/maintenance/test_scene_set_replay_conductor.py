@@ -55,10 +55,11 @@ def test_speech_audio_is_an_input():
 
 
 def test_robot_speech_is_recorded_as_speech_event():
-    # «когда робот говорит» (ADR-0144 §2.2) — SpeechEvent владельца речи; String-топик состояния TTS читателей
-    # больше не имеет и уходит в PR-15 15t (#3711).
+    # «когда робот говорит» (ADR-0144 §2.2) — SpeechEvent владельца речи; String-топиков состояния и конца TTS
+    # нет с #4252 ч.2 — в старых бэгах они лежат, но в граф прогона не проигрываются.
     assert "/voice/speech/event" in replay.INPUT_TOPICS
     assert "/voice/tts/state" not in replay.RECORD_TOPICS
+    assert "/voice/tts/finished" not in replay.RECORD_TOPICS
 
 
 def test_outputs_include_camera_info_for_clock_offset():

@@ -196,3 +196,39 @@ def _install_all_mocks():
 
 
 _install_all_mocks()
+
+
+class FinalsSpy:
+    """Владелец речи для заглушек ``TTSNode`` без ``__init__``: записывает финалы реплик.
+
+    #4252 ч.2: String-топика ``/voice/tts/finished`` нет — финал реплики виден только владельцу речи
+    (``_publish_tts_finished`` → ``owner_of(node).terminal``). Тест ставит ``node._speech = FinalsSpy()``
+    и читает ``spy.finals`` — словари ``{speech_id, success, error, queued}`` в порядке вызовов.
+    """
+
+    def __init__(self) -> None:
+        self.finals: list = []
+
+    def terminal(self, speech_id, success, error, queued) -> None:
+        self.finals.append({"speech_id": speech_id, "success": success, "error": error, "queued": queued})
+
+    def admit(self, *args) -> None:
+        return None
+
+    def synthesized(self, *args) -> None:
+        return None
+
+    def is_cancelled(self, speech_id) -> bool:
+        return False
+
+    def started(self, *args) -> bool:
+        return True
+
+    def streamed(self, *args) -> None:
+        return None
+
+    def claim_presynth(self, speech_id):
+        return None
+
+    def shutdown(self) -> None:
+        return None

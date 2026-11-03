@@ -15,7 +15,7 @@ dialogue_node, и ``/voice/tts/request`` от MCP ``speak_text``) — тот ж�
 
 * текст с >10% чужих букв НЕ уходит в синтез (``_submit_synthesis``
   не вызывается) — робот молчит, а не бормочет;
-* публикуется ``/voice/tts/finished`` с ``success=False`` и
+* финал реплики ``success=False`` (SpeechEvent ``rejected``) с
   ``error="unsupported_script"``, чтобы MCP ``speak_text`` /
   dialogue_node не висели в ожидании навсегда (батч закрывается);
 * нормальная русская речь проходит без изменений (back-compat);
@@ -34,6 +34,9 @@ from pathlib import Path
 from unittest.mock import MagicMock
 
 import pytest
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[3]))  # rob_box_voice/ — для test.unit.tts
+from test.unit.tts.conftest import FinalsSpy  # noqa: E402
 
 
 def _load_tts_node_class():
@@ -165,7 +168,7 @@ def _make_node(tts_node_cls):
     n._logger = logger
     n.get_logger = lambda: logger
     n.current_speech_id = None
-    n.finished_pub = _CapturingPublisher()
+    n._speech = FinalsSpy()  # #4252 ч.2: финал реплики — у владельца речи
     n._submit_synthesis = MagicMock()
     # Issue #2553 — babble-retry / DJ-overlap guard. Для тестов
     # dialogue_callback (одиночный submit без активного batch'а)
@@ -185,7 +188,7 @@ def _msg(payload: dict):
 
 
 def _finished_payloads(node) -> list:
-    return [json.loads(m.data) for m in node.finished_pub.messages]
+    return list(node._speech.finals)
 
 
 def _all_logs(node) -> str:
@@ -254,7 +257,7 @@ class TestForeignScriptDropped:
         assert payloads[0]["error"] == "unsupported_script"
 
     def test_dropped_chunk_preserves_batch_metadata(self, tts_node_cls):
-        """batch_id/index/total пробрасываются — батч закрывается корректно."""
+        """Отброшенный последний чанк батча всё равно закрывает батч."""
         node = _make_node(tts_node_cls)
         node.dialogue_callback(
             _msg({
@@ -265,15 +268,9 @@ class TestForeignScriptDropped:
                 "batch_total": 2,
             })
         )
-        payloads = _finished_payloads(node)
-        assert payloads[0]["batch_id"] == "batch-1"
-        assert payloads[0]["batch_index"] == 2
-        assert payloads[0]["batch_total"] == 2
-        # Последний чанк батча → маркер закрытия батча тоже улетает.
-        assert any(p.get("batch_complete") for p in payloads), (
-            "последний чанк батча должен закрыть батч даже когда текст "
-            "отброшен guard'ом"
-        )
+        assert _finished_payloads(node)[0]["success"] is False
+        # Последний чанк батча закрывает батч (drain отложенной очереди) даже когда текст отброшен.
+        assert any("batch closed" in m for m in node._logger.info_msgs)
 
     def test_dropped_chunk_logs_full_text_and_diagnostics(self, tts_node_cls):
         """Acceptance: полный текст + доля/письменности в WARNING."""

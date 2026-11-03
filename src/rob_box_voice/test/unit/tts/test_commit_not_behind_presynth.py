@@ -93,7 +93,6 @@ class _Node(TTSNode):
         self._synthesis_executor_max_workers = SYNTHESIS_MAX_WORKERS_DEFAULT
         self._synthesis_slots = threading.Semaphore(16 + SYNTHESIS_MAX_WORKERS_DEFAULT)
         self._synthesis_executor = concurrent.futures.ThreadPoolExecutor(max_workers=SYNTHESIS_MAX_WORKERS_DEFAULT)
-        self.finished_pub = MagicMock()
         self.minimax_streaming, self.stop_requested = False, False
         self.provider_chain, self.minimax_voice = ["minimax"], "male-qn-qingse"
         self.synthesized_texts = []
@@ -110,9 +109,6 @@ class _Node(TTSNode):
 
     def get_clock(self):
         return _Clock()
-
-    def publish_state(self, state):
-        pass
 
     # -- фейки: провайдер и динамик ------------------------------------------------
 

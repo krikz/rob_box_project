@@ -49,9 +49,9 @@ class Sink(str, Enum):
     """Адресат реплики (инвариант 6b: «Два выхода звука не смешиваются»).
 
     * ``SPEAKERS`` — реплика личности / пайплайна грипа, играется динамиками
-      робота (``/voice/tts/request``).
+      робота (``SpeechRequest`` в ``/voice/speech/request``).
     * ``HEADSET`` — собственная реплика ТАРС, играется только в наушники
-      шлема оператора (``/avatar/tts/request``).
+      шлема оператора (``SpeechRequest(sink=headset)``, #4252).
     * ``PREVIEW`` — не идёт ни в TTS-очередь, ни в шлем: уходит в
       ``/avatar/preview_voice`` (operator preview panel).
     """

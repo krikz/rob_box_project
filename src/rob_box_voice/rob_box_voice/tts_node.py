@@ -2,8 +2,9 @@
 """
 TTSNode - Text-to-Speech с Yandex Cloud TTS API v3 (gRPC) + Silero fallback + MiniMax (HTTP)
 
-Подписывается на: /voice/speech/request, /voice/speech/cancel (SpeechRequest/SpeechCancel), /avatar/tts/request (ТАРС в шлем)
-Публикует: /voice/audio/speech (AudioData), /voice/speech/event, /voice/speech/envelope
+Подписывается на: /voice/speech/request, /voice/speech/cancel (SpeechRequest/SpeechCancel; sink=headset - ТАРС в шлем),
+/avatar/tts/request (только образец голоса, sink=preview)
+Публикует: /voice/audio/speech, /avatar/tts/audio (AudioData), /voice/speech/event, /voice/speech/envelope
 Использует:
   - Yandex Cloud TTS API v3 (gRPC, primary, anton voice)
   - Silero TTS v4 (fallback, офлайн, всегда работает)
@@ -1234,11 +1235,9 @@ class TTSNode(Node):
         )
         self._speech.attach()
 
-        # ADR-0055 / issue #1993 — подписка на запросы ТАРС в шлем.
-        # Контракт — String JSON с ``text`` (см. dialogue_callback)
-        # плюс обязательное поле ``sink=="headset"``. Невалидный sink →
-        # self._avatar_tts_error_pub.publish({request_id, error:"invalid_sink"})
-        # и DROP (ADR-0055 §tts_node).
+        # ADR-0079 — образец голоса для picker'а: String JSON с ``sink=="preview"``.
+        # Реплики в шлем (ТАРС) сюда больше не ходят — SpeechRequest(sink=headset), #4252.
+        # Любой другой sink → /avatar/tts/error {request_id, error:"invalid_sink"} и DROP.
         self._avatar_tts_request_sub = self.create_subscription(
             String, self.avatar_request_topic, self._on_avatar_tts_request, 10
         )
@@ -1324,10 +1323,8 @@ class TTSNode(Node):
         self._avatar_audio_meta_pub = self.create_publisher(
             String, self.headset_audio_meta_topic, 10
         )
-        self.state_pub = self.create_publisher(String, "/voice/tts/state", 10)
-        self.finished_pub = self.create_publisher(
-            String, "/voice/tts/finished", 10
-        )  # Публикация завершения произношения
+        # #4252 ч.2: String-топиков /voice/tts/state и /voice/tts/finished нет - начало и конец
+        # реплики знает только SpeechEvent владельца речи (core/speech_owner.py).
         # Issue #1229 — фактический провайдер TTS (после фолбека). mcp_server
         # и dialogue_node подписываются на этот топик, чтобы валидация голосов
         # и LLM-контекст [TTS] отражали РЕАЛЬНОГО провайдера, а не номинального
@@ -1443,8 +1440,6 @@ class TTSNode(Node):
         # смены - SpeechEvent voice_changed, выбор переживает рестарт (файл рядом с tts_provider_state.json).
         self._voice_owner = attach_voice_owner(self)
 
-        # Публикуем начальное состояние
-        self.publish_state("ready")
         # Issue #1229 — публикуем фактического провайдера сразу при старте
         # (значение из персистентного файла, если он есть). dialogue_node /
         # mcp_server получают корректный контекст ДО первого диалога.
@@ -1872,7 +1867,7 @@ class TTSNode(Node):
         ``speech_text`` теги исчезают и содержимое выглядит обычным
         текстом — отличить его тогда уже не от чего.
 
-        ``/voice/tts/finished(success=False)`` обязателен: без него
+        Финал ``success=False`` (SpeechEvent ``rejected``) обязателен: без него
         вызывающий ждёт конца речи, которой не будет.
         """
         self.get_logger().warning(
@@ -1894,40 +1889,17 @@ class TTSNode(Node):
         )
 
     def dialogue_callback(self, msg: String):
-        """Обработка JSON chunks от ``/voice/tts/request`` — ЕДИНЫЙ вход синтезатора.
+        """Чанк реплики от владельца речи (``SpeechOwner.on_request``) — ЕДИНЫЙ вход синтезатора.
 
-        Issue #2198 / voice-vr 13: приёмник реплики (динамики / шлем / preview)
-        теперь задаётся **полем** ``sink`` в payload, а не отдельным
-        ROS-топиком. Допустимые значения:
-
-        * ``"speaker"`` (default, backward-compat) — реплика в динамики робота
-          через ``/voice/audio/speech``, синтез через ``_synthesize_and_play``.
-          Это поведение dialogue_node и ``speak_text`` MCP tool'а до этого
-          рефакторинга — НЕ меняется для уже работающих интеграций.
-        * ``"headset"`` — реплика в шлем оператора через ``/avatar/tts/audio``
-          (PCM, ALSA-skip), см. ADR-0055. Делегирует в ``_on_avatar_tts_request``,
-          который остаётся deprecated-обёрткой для backward-compat с прямыми
-          публикаторами в ``/avatar/tts/request``.
-        * ``"preview"`` — «прослушиваемый образец» голоса для picker'а
-          оператора, см. ADR-0079 / issue #2138.A.3. Делегирует в
-          ``_on_avatar_tts_request_preview``.
-
-        Любой другой ``sink`` — warning + DROP (как в ``_on_avatar_tts_request``
-        для невалидного sink).
+        Приёмник задаёт поле ``sink``: ``"speaker"`` (по умолчанию) — динамики робота через
+        ``_synthesize_and_play``; ``"headset"`` — шлем оператора, :meth:`_on_headset_chunk` (ADR-0055, #4252);
+        ``"preview"`` — образец голоса (ADR-0079), :meth:`_on_avatar_tts_request_preview`.
+        Любой другой ``sink`` — warning + DROP.
         """
         try:
             chunk_data = json.loads(msg.data)
-            # Issue #2198 — единый вход через поле sink. Switch живёт
-            # в ``_resolve_voice_tts_sink`` (primary chokepoint). helper
-            # возвращает ``(canonical, raw)``: canonical ∈ {speaker, headset,
-            # preview, None}, raw = исходное значение из payload.
             sink, raw = self._resolve_voice_tts_sink(chunk_data)
-            # Делегируем dispatch в helper (ADR-0021: удержать CC
-            # dialogue_callback). helper возвращает ``True`` если
-            # запрос обработан (delegate в avatar/preview или DROP
-            # невалидного sink) → caller выходит; ``False`` если это
-            # legacy ``sink='speaker'`` → caller продолжает обработку.
-            if self._dispatch_voice_tts_sink(msg, sink, raw):
+            if self._dispatch_voice_tts_sink(chunk_data, sink, raw):
                 return
 
             # Контракт общий с продюсерами (rob_box_core.utterance): тест
@@ -2032,9 +2004,9 @@ class TTSNode(Node):
                 return
 
             # Issue #980 — carry batch_id/batch_index/batch_total from the
-            # dialogue_node publish through to ``/voice/tts/finished`` so
-            # consumers see the end of the turn only after the *last*
-            # chunk of a multi-chunk assistant turn. Missing fields default
+            # chunk through to the finals funnel so the batch closes (and the
+            # pending queue drains) only after the *last* chunk of a
+            # multi-chunk assistant turn. Missing fields default
             # to None and treated as a single-chunk (legacy) batch.
             batch_id = chunk_data.get("batch_id")
             batch_index = chunk_data.get("batch_index")
@@ -2080,7 +2052,7 @@ class TTSNode(Node):
             # batch_index, batch_total); dropping the
             # in-*args copy would shift every following argument one slot
             # left (speech_id <- batch_id, batch_id <- batch_index, ...),
-            # which breaks /voice/tts/finished correlation in mcp_server
+            # which breaks speech_id correlation of the SpeechEvent final
             # and the batch end at the wrong time (issue #980).
             # ADR-0150 PR-3 — готовое аудио пред-синтеза ``commit=false`` того же
             # speech_id: воркер отдаст его в ``_synthesize_and_play`` мимо цепочки
@@ -2140,91 +2112,36 @@ class TTSNode(Node):
             self.get_logger().error(f"❌ TTS error: {e}")
 
     def _on_avatar_tts_request(self, msg: String) -> None:
-        """ADR-0055 / issue #1993 — обработка запроса ТАРС в шлем.
+        """ADR-0079 — ``/avatar/tts/request``: только образец голоса (``sink="preview"``) для picker'а.
 
-        .. deprecated::
-            Issue #2198 / voice-vr 13: ``/avatar/tts/request`` теперь
-            DEPRECATED. Новый контракт — единый топик ``/voice/tts/request``
-            с полем ``sink`` в payload (см. ADR-0078 / ADR-0079):
-              * ``sink="speaker"`` (default) — реплика в динамики робота
-              * ``sink="headset"`` — реплика в шлем (ТАРС, синтез через
-                ``/avatar/tts/audio``, ALSA-skip)
-              * ``sink="preview"`` — «прослушиваемый образец» для picker'а
-
-            Этот callback остаётся до следующего релиза как backward-compat
-            обёртка для прямых публикаторов в ``/avatar/tts/request``
-            (supervisor_node.grip_pipeline, ``_publish_grip_tts`` /
-            ``_publish_avatar_tts``, quest_node). Прямой сюда вызов теперь
-            логирует WARNING и делегирует в тот же dispatch-путь, что и
-            ``/voice/tts/request`` с ``sink="headset"``/``"preview"``
-            (см. ``dialogue_callback``). Удалить в release, следующем
-            за этим.
-
-        Контракт сообщения — копия ``/voice/tts/request`` плюс обязательное
-        ``sink`` поле. Допустимые значения:
-        * ``"headset"`` — реплика в шлем через ``/avatar/tts/audio`` (PCM,
-          ALSA-skip), см. ADR-0055.
-        * ``"preview"`` — «прослушиваемый образец» голоса для picker'а
-          оператора, см. ADR-0079 / issue #2138.A.3. Чистый синтез БЕЗ
-          _synthesize_and_play: НЕ идёт в FIFO/ALSA/metrics, байты
-          возвращаются в mp3/wav контейнере в ``/avatar/preview_voice/audio``.
-
-        Любой другой sink → ``_avatar_tts_error_pub`` с
-        ``error="invalid_sink"`` и DROP.
-
-        Дальше — почти полная копия ``dialogue_callback``: защита от
-        устаревшего dialogue_id (barge-in), Unicode-script guard (issue 1709),
-        генерация speech_id если не задан, передача в тот же bounded
-        ThreadPoolExecutor с дополнительным kwarg ``sink="headset"``.
-
-        Для ``sink="preview"`` путь отдельный — НЕ идёт через
-        ThreadPoolExecutor (preview короткий, sync-friendly, не прерывает
-        текущую реплику), а через прямой вызов ``_on_avatar_tts_request_preview``
-        ниже.
-
-        Различия от ``dialogue_callback``:
-        * ``_avatar_tts_request_id`` обновляется при старте (диагностика; отмена — SpeechCancel).
-        * Нет ``_on_set_provider`` / state-паблиша — это НЕ ``/voice/tts/*``,
-          для контроля провайдера есть существующий /voice/tts/set_provider.
-        * ``/voice/tts/finished`` всё равно публикуется (тот же топик) —
-          те же ``speech_id/dialogue_id/batch_*`` и метрики.
-        Поведение остаётся backward-compat: WARNING в лог (на каждый вызов,
-        удалить вместе с подпиской в следующем релизе), затем старая
-        логика как раньше.
+        Реплика ТАРС в шлем сюда не ходит: ``SpeechRequest(sink=headset)`` → владелец речи →
+        :meth:`dialogue_callback` → :meth:`_on_headset_chunk` (#4252). Любой другой sink —
+        ``/avatar/tts/error{error:"invalid_sink"}`` и DROP.
         """
-        # Issue #2198 — DEPRECATED вход /avatar/tts/request. WARNING один раз
-        # на вызов: при нормальной эксплуатации supervisor_node переключится
-        # на /voice/tts/request, и эти логи исчезнут. Не блокируем обработку
-        # (backward-compat с прямыми публикаторами).
         try:
             chunk_data = json.loads(msg.data)
         except (json.JSONDecodeError, TypeError) as exc:
-            self.get_logger().warn(
-                f"⚠️ [ADR-0055] /avatar/tts/request: bad JSON: {exc}"
-            )
+            self.get_logger().warn(f"⚠️ [ADR-0079] /avatar/tts/request: bad JSON: {exc}")
             return
-
-        # ADR-0055 / ADR-0079 — switch по sink. Вынесен в helper чтобы не
-        # раздувать CC _on_avatar_tts_request (ADR-0021).
         sink = chunk_data.get("sink", "")
-        if not self._dispatch_avatar_tts_sink(chunk_data, sink):
-            # invalid sink (или неизвестный) — _dispatch уже залогировал
-            # и опубликовал _avatar_tts_error; нам тут делать нечего.
+        if sink == "preview":
+            self._on_avatar_tts_request_preview(chunk_data)
             return
+        self.get_logger().warn(
+            f"⚠️ [ADR-0079] /avatar/tts/request: invalid sink={sink!r} (expected 'preview'), DROP"
+        )
+        self._publish_avatar_tts_error(request_id=chunk_data.get("request_id", ""), error="invalid_sink")
 
+    def _on_headset_chunk(self, chunk_data: dict) -> None:
+        """ADR-0055 / #4252 — реплика ТАРС в шлем оператора (чанк ``sink="headset"`` от владельца речи).
+
+        Синтез в тот же пул слотов, что и динамики, но звук — в ``/avatar/tts/audio`` (ALSA-skip),
+        текст — зеркалом в ``/tars1/text``. Пустой текст и неподдерживаемая письменность — честный
+        финал (``rejected`` в SpeechEvent) плюс ``/avatar/tts/error``, чтобы шлем не ждал реплику.
+        """
         if "text" not in chunk_data:
             self.get_logger().warn("⚠️ [ADR-0055] avatar chunk без текста")
             return
-
-        # Issue #2198 — DEPRECATED warning для /avatar/tts/request. Один раз
-        # на вызов: при нормальной эксплуатации supervisor_node переключится
-        # на /voice/tts/request с sink="headset", и эти логи исчезнут. Не
-        # блокируем обработку (backward-compat с прямыми публикаторами).
-        self.get_logger().warn(
-            "⚠️ [issue 2198] /avatar/tts/request DEPRECATED, use "
-            "/voice/tts/request with sink='headset' or sink='preview' "
-            "field instead. Этот топик удалится в следующем релизе."
-        )
 
         import uuid as _uuid
 
@@ -2330,9 +2247,8 @@ class TTSNode(Node):
     def _publish_avatar_tts_error(self, request_id: str, error: str) -> None:
         """ADR-0055 / issue #1993 — публикация ошибки в ``/avatar/tts/error``.
 
-        Вызывается из ``_on_avatar_tts_request`` при DROP'е (invalid_sink,
-        unsupported_script и т.п.). Формат — тот же String JSON, что и
-        ``/voice/tts/finished`` для корреляции с request_id'ом.
+        Вызывается из ``_on_avatar_tts_request`` / ``_on_headset_chunk`` при DROP'е (invalid_sink,
+        empty_text, unsupported_script). Формат — String JSON ``{request_id, error}``.
         """
         try:
             err_msg = String()
@@ -2351,99 +2267,30 @@ class TTSNode(Node):
     # ``/avatar/tts/request`` (sink="preview") → ``synthesize_preview``
     # → ``/avatar/preview_voice/{audio,result,error}``. см. ADR-0079.
 
-    def _dispatch_avatar_tts_sink(self, chunk_data: dict, sink: str) -> bool:
-        # Вынесено из ``_on_avatar_tts_request`` чтобы не раздувать CC
-        # (ADR-0021). Возвращает True если sink распознан и запрос надо
-        # обработать дальше (headset/preview); False если DROP.
-        if sink == "preview":
-            # ADR-0079 / issue #2138.A.3 — picker'у нужен «прослушиваемый
-            # образец» голоса. Отдельный путь: без dialogue_id/barge-in
-            # защиты (preview НЕ прерывает текущую реплику личности), без
-            # Unicode-guard (preview-фраза короткая и контролируемая), без
-            # ThreadPoolExecutor (синхронный сетевой запрос). Результат
-            # уходит в /avatar/preview_voice/audio (JSON+base64) +
-            # /avatar/preview_voice/result (done) или /avatar/preview_voice/error.
-            self._on_avatar_tts_request_preview(chunk_data)
-            return False  # preview уже обработан — caller должен return
-        if sink == "headset":
-            return True  # caller продолжит обработку headset-пути
-        # invalid / unknown
-        self.get_logger().warn(
-            f"⚠️ [ADR-0055] /avatar/tts/request: invalid sink={sink!r} "
-            "(expected 'headset' or 'preview'), DROP"
-        )
-        self._publish_avatar_tts_error(
-            request_id=chunk_data.get("request_id", ""),
-            error="invalid_sink",
-        )
-        return False
-
     def _resolve_voice_tts_sink(self, chunk_data: dict) -> tuple[str | None, str]:
-        """Issue #2198 / voice-vr 13 — pure-helper маршрутизации по ``sink``
-        для ``/voice/tts/request``.
+        """Канонический ``sink`` чанка от владельца речи: ``(canonical, raw)``.
 
-        Возвращает ``(canonical, raw)``:
-          * ``canonical = "headset"`` / ``"preview"`` / ``"speaker"`` —
-            каноническое значение ``sink`` для маршрутизации;
-          * ``canonical = None`` — поле невалидно (любой не-известный sink);
-          * ``raw`` — исходное значение поля из payload (для WARN
-            caller'у и diagnostics), включая пустую строку если поле
-            отсутствует.
-
-        Семантика:
-          * ``"headset"`` / ``"preview"`` — делегировать в
-            ``_on_avatar_tts_request`` (тот же chokepoint, что и для
-            deprecated ``/avatar/tts/request`` подписки).
-          * ``"speaker"`` (default, отсутствие поля = backward-compat) —
-            старый путь в динамики через ``_synthesize_and_play``.
-          * ``"speakers"`` (issue #2318) — то же самое, что ``"speaker"``.
-            Это значение ``Sink.SPEAKERS`` из SoT-сборщика
-            ``rob_box_core.utterance`` (ADR-0080 §2.3), которым публикуют
-            ВСЕ продюсеры (dialogue_node, telegram_node, stt_node и др.;
-            нода приветствия удалена в #3684). До фикса оно не было в
-            whitelist → каждая реплика в динамики уходила в DROP.
-            Канонизируем в ``"speaker"``, чтобы ниже по стеку
-            (``_submit_synthesis(sink=...)`` → ``_sap_publish_for_sink``)
-            остался ровно один вариант написания.
-          * Любой другой ``sink`` (включая ``""`` если явно задан) →
-            ``canonical = None`` → caller логирует WARN + DROP.
-
-        Этот helper — pure-функция маршрутизации (НЕ делает side-effect'ов):
-        не логирует, не публикует, не дёргает синтез.
+        ``canonical`` ∈ {``"speaker"``, ``"headset"``, ``"preview"``, ``None``}: отсутствие поля, ``""`` и ``"speakers"``
+        (``Sink.SPEAKERS`` из ``rob_box_core.utterance``, #2318) → ``"speaker"``; неизвестное → ``None``
+        (вызывающий логирует WARN и DROP). ``raw`` — исходное значение для лога. Без побочных эффектов.
         """
         raw = chunk_data.get("sink", "speaker")
         if raw in _VOICE_TTS_SINK_ALIASES:
-            # Нормализуем: отсутствие поля / "" → "speaker" (default),
-            # "speakers" (Sink.SPEAKERS из SoT) → "speaker".
             return (_VOICE_TTS_SINK_ALIASES[raw], raw)
         return (None, raw)
 
-    def _dispatch_voice_tts_sink(self, msg: String, sink: str | None, raw: str) -> bool:
-        """Issue #2198 / voice-vr 13 — dispatch по ``sink`` для нового
-        канала ``/voice/tts/request``. Вынесен из ``dialogue_callback``
-        (ADR-0021: удержать CC dialogue_callback в бюджете).
-
-        Возвращает ``True`` если запрос обработан (delegate в
-        avatar/preview-путь или DROP невалидного sink), ``False`` если
-        это legacy ``sink="speaker"`` (default) и caller продолжает
-        обработку сам.
-
-        Семантика:
-          * ``"headset"`` / ``"preview"`` — делегирует в
-            ``_on_avatar_tts_request`` (тот же chokepoint, что и для
-            deprecated ``/avatar/tts/request`` подписки);
-          * ``None`` (невалидный sink) — логирует WARN + DROP;
-          * ``"speaker"`` (default) — возвращает ``False``, caller
-            продолжает обработку legacy-пути (динамики).
-        """
-        if sink in ("headset", "preview"):
-            self._on_avatar_tts_request(msg)
+    def _dispatch_voice_tts_sink(self, chunk_data: dict, sink: str | None, raw: str) -> bool:
+        """``True`` — чанк обработан здесь (шлем → :meth:`_on_headset_chunk`, образец голоса →
+        :meth:`_on_avatar_tts_request_preview`, неизвестный sink → DROP);
+        ``False`` — динамики, ``dialogue_callback`` продолжает сам (вынесено ради CC, ADR-0021)."""
+        if sink == "headset":
+            self._on_headset_chunk(chunk_data)
+            return True
+        if sink == "preview":
+            self._on_avatar_tts_request_preview(chunk_data)
             return True
         if sink is None:
-            self.get_logger().warn(
-                f"⚠ /voice/tts/request: unknown sink={raw!r} "
-                f"(expected 'speaker'/'headset'/'preview'), DROP"
-            )
+            self.get_logger().warn(f"⚠ speech chunk: unknown sink={raw!r} (expected speaker/headset/preview), DROP")
             return True
         return False
 
@@ -3629,7 +3476,6 @@ class TTSNode(Node):
         "_sap_synthesize_minimax",
         "_sap_synthesize_yandex",
         "_sap_silero_fallback",
-        "_sap_publish_silero_warming",
         "_sap_publish_for_sink",
         "_sap_wait_fifo_and_dialogue",
         "_sap_finish_headset",
@@ -3802,7 +3648,6 @@ class TTSNode(Node):
         после исчерпания бюджета. Streaming-режим не ретраит внутри себя
         (единственная попытка), поэтому дедлайн ему не нужен.
         """
-        self.publish_state("synthesizing")
         # Issue #1160 — Prometheus metrics: замер MiniMax-synthesis.
         _minimax_metric_start = time.monotonic()
         _minimax_succeeded = False
@@ -3981,7 +3826,6 @@ class TTSNode(Node):
             self.get_logger(), "yandex", text, language
         )
         try:
-            self.publish_state("synthesizing")
             self.get_logger().info(
                 f"🔊 Синтез через Yandex Cloud TTS gRPC v3 ({_yandex_voice})..."
             )
@@ -4022,7 +3866,7 @@ class TTSNode(Node):
         """Silero v5 — последний рубеж (gap G-933-B): warm-load event,
         legacy lazy-load, синтез адаптером ``SileroTTSProvider``.  При успехе
         заполняет ``ctx``; если модель не прогрелась вовремя — skip chunk
-        (publishes ``silero_warming`` finished marker и возвращается).
+        (``RuntimeError("silero_warming")`` → финал rejected у вызывающего).
         Вызывающий код должен проверить ``ctx["audio_np"]`` после.
         """
         # Warm-load (gap G-933-B): ждём пока background warm-load
@@ -4060,8 +3904,8 @@ class TTSNode(Node):
                 f"skipping playback for this chunk to avoid UX hang. "
                 f"Subsequent fallbacks should hit the warm model."
             )
-            self._sap_publish_silero_warming(text, dialogue_id)
-            return
+            # #4252 ч.2: вместо маркера в /voice/tts/finished — честный финал rejected{silero_warming}.
+            raise RuntimeError("silero_warming")
         # Загружаем Silero при первом использовании (legacy lazy path).
         if silero_tts.model is None:
             self.get_logger().warn("⚠️  Silero модель не загружена, загружаю сейчас...")
@@ -4070,7 +3914,6 @@ class TTSNode(Node):
         _role = _silero_role(self)
         if silero_tts.model is None:
             raise Exception(f"Silero ({_role}) недоступен - не удалось загрузить модель!")
-        self.publish_state("synthesizing")
         self.get_logger().info(f"🔊 Синтез через Silero v5 ({_role})...")
         # Issue #1160 — Prometheus metrics: замер Silero-synthesis.
         _silero_metric_start = time.monotonic()
@@ -4114,21 +3957,6 @@ class TTSNode(Node):
             f"✅ Silero v5 ({_role}) успешен: {len(ctx['audio_np'])} samples @ {ctx['sample_rate']} Hz "
             f"(homograph_stress={silero_tts.put_stress_homo})"
         )
-
-    def _sap_publish_silero_warming(
-        self, text: str, dialogue_id: Optional[str]
-    ) -> None:
-        """Опубликовать ``silero_warming`` finished-маркер (skipped chunk).
-        Используется, когда warm-load Silero не успел к 1.5-секундному
-        таймауту — чтобы downstream знал, что чанк пропущен, а не потерян.
-        """
-        try:
-            self.publish_state("tts_silero_warming")
-            _fin = String()
-            _fin.data = f"silero_warming:{dialogue_id or 'unknown'}"
-            self.finished_pub.publish(_fin)
-        except Exception:  # noqa: BLE001 — diagnostics only
-            pass
 
     def _sap_publish_for_sink(
         self,
@@ -4219,8 +4047,8 @@ class TTSNode(Node):
     ) -> None:
         """ADR-0055 / issue #1993 — sink="headset" пропускает локальное
         ALSA-воспроизведение: оператор слышит аудио через шлем по
-        ``/avatar/tts/audio``.  ``/voice/tts/finished`` всё равно
-        публикуем (метрики/корреляция, тот же speech_id/dialogue_id/batch_*).
+        ``/avatar/tts/audio``.  Финал реплики (SpeechEvent ``finished``) всё равно
+        закрываем: тот же speech_id, закрытие батча.
         """
         self.get_logger().info(
             f"🎧 [ADR-0055] headset: TTS chunk готов "
@@ -4267,7 +4095,6 @@ class TTSNode(Node):
         if isinstance(audio_np, tts_stream.PcmStream):
             return self._sap_stream_playback(audio_np, text, voice, play_seq, speech_id, dialogue_id,
                                              batch_id, batch_index, batch_total, batch_started_at)
-        self.publish_state("playing")
         target_rate = 16000  # ReSpeaker: только 16 kHz стерео.
         audio_stereo = self._sap_prepare_audio_for_playback(
             audio_np, sample_rate, target_rate
@@ -4275,7 +4102,6 @@ class TTSNode(Node):
         # Проверка STOP ДО воспроизведения
         if self.stop_requested:
             self.get_logger().warn("🔇 STOP: отменено ДО воспроизведения")
-            self.publish_state("stopped")
             # 🔴 FIX (12:28): без release следующий seq ждал бы вечно
             self._release_play_seq(play_seq, speech_id=speech_id)
             return
@@ -4291,7 +4117,6 @@ class TTSNode(Node):
                 self._active_batch_id = batch_id
         # ADR-0150 PR-3 — ждём ``at``, публикуем огибающую и ``started``.
         if not owner_of(self).started(speech_id, audio_stereo, target_rate):
-            self.publish_state("stopped")
             self._release_play_seq(play_seq, speech_id=speech_id)
             self._publish_tts_finished(speech_id, success=False, error="cancelled")
             return
@@ -4353,10 +4178,8 @@ class TTSNode(Node):
     ) -> None:
         """#3930 — та же дорожка, что ``_sap_local_playback``, но кадры идут из
         потока MiniMax по мере синтеза (``tts_stream.play_local``)."""
-        self.publish_state("playing")
         if self.stop_requested:
             self.get_logger().warn("🔇 STOP: отменено ДО воспроизведения")
-            self.publish_state("stopped")
             stream.cancel()
             self._release_play_seq(play_seq, speech_id=speech_id)
             return
@@ -4376,11 +4199,9 @@ class TTSNode(Node):
                                                batch_id, batch_index, batch_total, batch_started_at)
             return
         if outcome == "cancelled":
-            self.publish_state("stopped")
             self._publish_tts_finished(speech_id, success=False, error="cancelled")
             return
         if outcome == tts_stream.BROKEN:  # хвост не прозвучал — не «finished» (capability-honest)
-            self.publish_state("ready")
             self._publish_tts_finished(speech_id, success=False, error=outcome, batch_id=batch_id,
                                        batch_index=batch_index, batch_total=batch_total,
                                        batch_started_at=batch_started_at, dialogue_id=dialogue_id)
@@ -4449,11 +4270,10 @@ class TTSNode(Node):
         batch_total,
         batch_started_at,
     ) -> None:
-        """Публикуем ``/voice/tts/finished`` с ``success=False`` + лог ПОЛНОГО
+        """Финал реплики ``success=False`` (SpeechEvent ``rejected``) + лог ПОЛНОГО
         текста failed-чанка (issue #1709: иероглифы/хвосты фраз терялись)."""
         self.get_logger().warn("⚠️  Аудио устройство занято, пропуск воспроизведения")
         self.current_stream = None
-        self.publish_state("ready")
         self.get_logger().warn(
             "❌ [issue 1709] TTS чанк НЕ произнесён "
             "(device unavailable): "
@@ -4488,11 +4308,10 @@ class TTSNode(Node):
         batch_started_at,
         raw_duration_sec: float,
     ) -> None:
-        """После успешного play_audio: чистим white noise, публикуем
-        ``/voice/tts/finished`` (success=True или success=False+stopped).
+        """После успешного play_audio: чистим white noise, закрываем финал реплики
+        (SpeechEvent ``finished`` или ``cancelled`` при STOP).
         """
         if self.stop_requested or owner_of(self).is_cancelled(speech_id):
-            self.publish_state("stopped")
             self.get_logger().warn("🔇 Воспроизведение прервано")
             # Issue #1709 — ПОЛНЫЙ текст прерванного чанка.
             self.get_logger().warn(
@@ -4515,7 +4334,6 @@ class TTSNode(Node):
                     dialogue_id=dialogue_id,
                 )
             return
-        self.publish_state("ready")
         self.get_logger().info("✅ Воспроизведение завершено")
         self.get_logger().info(
             f"📢 Публикую TTS finished event: speech_id={(speech_id or getattr(self, 'current_speech_id', None) or '')[:8]}..., "
@@ -4556,7 +4374,6 @@ class TTSNode(Node):
             f"batch={batch_index}/{batch_total}, "
             f"text={text!r}"
         )
-        self.publish_state("ready")
         # 🔴 FIX (12:28): ошибка ПОСЛЕ gate (resample/play) тоже должна
         # освободить FIFO-очередь — иначе следующие фразы ждут вечно.
         release = getattr(self, "_release_play_seq", None)
@@ -5274,12 +5091,6 @@ class TTSNode(Node):
         except Exception as e:
             self.get_logger().warn(f"⚠️ TTS noise cleanup failed: {e}")
 
-    def publish_state(self, state: str):
-        """Публикация состояния TTS."""
-        msg = String()
-        msg.data = state
-        self.state_pub.publish(msg)
-
     def _publish_tts_finished(
         self,
         speech_id: Optional[str],
@@ -5294,130 +5105,43 @@ class TTSNode(Node):
         dialogue_id: Optional[str] = None,
         queued: bool = False,
     ) -> None:
-        """Publish ``/voice/tts/finished`` (the last chunk of a batch carries ``batch_complete``).
+        """Единая воронка финалов реплики: журнал владельца речи → ``SpeechEvent`` finished/cancelled/rejected.
 
-        Issue #980 — single source of truth for finished-event publishing so
-        that batch metadata stays consistent across the success/stopped/error
-        branches and the batch_complete fire rule (``batch_index == batch_total``)
-        doesn't drift between code paths.
+        #4252 ч.2: String-топика ``/voice/tts/finished`` больше нет — читателей не осталось (лицо, эхо-гейты,
+        quest_node, реле ТАРС слушают ``SpeechEvent``). ``duration_sec`` и ``dialogue_id`` остались в сигнатуре
+        у вызывающих ради логов и не публикуются.
 
-        Issue #2553 — ``queued=True`` отмечает finished как «chunk принят в
-        ``_pending_speech_queue``, но НЕ проигран и НЕ завершён». В этом
-        режиме НЕ закрываем батч (маркер ``batch_complete``) и
-        НЕ дреним очередь — реальное завершение придёт ПОСЛЕ drain +
-        submit + playback, когда ``_publish_tts_finished`` вызовется от
-        имени дренированного chunk'а без ``queued=True``. Это разрывает
-        порочный круг «babble-retry publish finished → batch_complete →
-        drain → submit babble-retry → ещё один finished → ...».
+        Issue #2553 — ``queued=True``: чанк принят в ``_pending_speech_queue``, но не проигран — батч не
+        закрываем и очередь не дреним; настоящий финал придёт после drain + playback (без ``queued``).
+        Последний чанк батча (``batch_index == batch_total``) закрывает батч и дренит очередь (#980/#2553).
         """
         if not speech_id:
             return
         # ADR-0150 PR-3 — финал реплики: finished / cancelled / rejected.
         owner_of(self).terminal(speech_id, success, error, queued)
-        payload: Dict[str, Any] = {"speech_id": speech_id, "success": success}
-        if queued:
-            # Маркер, который dialogue_node / mcp_server может
-            # использовать, чтобы отличить «в очереди» от «произнесено».
-            payload["queued"] = True
-        if error is not None:
-            payload["error"] = error
-        if duration_sec is not None:
-            payload["duration_sec"] = duration_sec
-        if batch_id is not None:
-            payload["batch_id"] = batch_id
-        if batch_index is not None:
-            payload["batch_index"] = int(batch_index)
-        if batch_total is not None:
-            payload["batch_total"] = int(batch_total)
-        finished_msg = String()
-        finished_msg.data = json.dumps(payload, ensure_ascii=False)
-        self.finished_pub.publish(finished_msg)
-
-        # Issue #2553 — queued finished НЕ триггерит batch_complete:
-        # иначе конец батча приходит раньше времени и
-        # следующий turn услышит обрыв активного chunk'а. Реальное
-        # закрытие batch'а придёт ПОСЛЕ drain + реального playback
-        # дренированного chunk'а (где ``queued=False``).
         if queued:
             return
-
-        # Issue #980 — batch-complete side-channel + issue #2553 — drain.
-        # Inline-логика (НЕ helper) чтобы сохранить mutation-контракт
-        # ``payload``: ``republish finished_msg`` с добавленными
-        # ``batch_complete=True`` / ``batch_duration_ms`` ПОЛУЧАЕТ все
-        # поля предыдущего finished (включая ``duration_sec``) — это
-        # back-compat поведение, на которое полагаются подписчики
-        # ``/voice/tts/finished`` (issue #980) и
-        # ``test_finished_event_duration_sec_with_batch_metadata``.
         if (
             batch_id is not None
             and batch_index is not None
             and batch_total is not None
             and int(batch_index) == int(batch_total)
         ):
-            self._maybe_publish_batch_complete(
-                batch_id=batch_id,
-                batch_index=batch_index,
-                batch_total=batch_total,
-                batch_started_at=batch_started_at,
-                payload=payload,
-                finished_msg=finished_msg,
-            )
+            self._close_batch(batch_id=batch_id, batch_total=batch_total, batch_started_at=batch_started_at)
 
-    # ── Issue #980 batch_complete side-channel + issue #2553 drain ───────
+    def _close_batch(self, *, batch_id: str, batch_total: int, batch_started_at: Optional[float]) -> None:
+        """Конец последнего чанка батча: лог длительности и drain ``_pending_speech_queue`` (issue #2553).
 
-    def _maybe_publish_batch_complete(
-        self,
-        *,
-        batch_id: str,
-        batch_index: int,
-        batch_total: int,
-        batch_started_at: Optional[float],
-        payload: Dict[str, Any],
-        finished_msg: "String",
-    ) -> None:
-        """Republish finished с маркером closure (``batch_complete=True``) + дренить
-        pending queue после завершения последнего chunk'а batch'а. Отдельный топик
-        ``/voice/tts/batch_complete`` удалён в ADR-0150 PR-7c ч.4б (#3700): его
-        единственный потребитель — уборка музыки dialogue_node — удалён.
-
-        Вынесено из ``_publish_tts_finished`` чтобы удержать CC в ADR-0021
-        лимите (=15). Принимает мутируемые ``payload`` / ``finished_msg`` —
-        мутирует ``payload`` (добавляет ``batch_complete=True`` и
-        ``batch_duration_ms``) и re-publish'ит ``finished_msg``. Это
-        back-compat контракт issue #980 — подписчики ``finished_pub``
-        видят closure-маркер в ТОМ ЖЕ payload (с сохранёнными
-        ``success``, ``duration_sec``, ``error``, etc.).
+        К этому моменту ``_play_active_seq`` уже сброшен (``_release_play_seq``), поэтому отложенные чанки
+        (babble-retry, DJ auto-transition) сразу встают в голову FIFO.
         """
-        import time as _time
-
         duration_ms: Optional[int] = None
         if batch_started_at is not None:
-            duration_ms = int((_time.monotonic() - batch_started_at) * 1000)
+            duration_ms = int((time.monotonic() - batch_started_at) * 1000)
         self.get_logger().info(
             f"📦 [tts_node] batch closed (batch_id={batch_id[:8]}..., "
             f"chunks_total={batch_total}, batch_duration_ms={duration_ms})"
         )
-        # The closure marker rides on ``/voice/tts/finished`` of the last chunk.
-        # Kept behind the ``last_chunk`` branch to avoid spamming every
-        # chunk's finished event with the closure marker.
-        payload["batch_complete"] = True
-        if duration_ms is not None:
-            payload["batch_duration_ms"] = duration_ms
-        finished_msg.data = json.dumps(payload, ensure_ascii=False)
-        # Republish to keep the marker attached to the same logical event.
-        # (Bounded QoS depth=10 means the second publish can briefly bump
-        # the depth; downstream subscribers are designed to be idempotent
-        # on ``batch_complete``.)
-        self.finished_pub.publish(finished_msg)
-
-        # Issue #2553 — после закрытия batch'а достаём из
-        # ``_pending_speech_queue`` отложенные chunk'и (babble-retry,
-        # DJ auto-transition, etc.) и переотправляем их в обычный
-        # FIFO-gate. К моменту ``batch_complete`` активного batch
-        # ``_play_active_seq`` уже сброшен в ``None`` (см.
-        # ``_synthesize_and_play`` / ``_release_play_seq``), поэтому
-        # следующий submit сразу станет head'ом FIFO.
         self._drain_pending_speech_queue(reason=f"batch_complete:{batch_id[:8]}")
 
     # ── Issue #2553 — pending speech queue (babble-retry / DJ overlap) ────

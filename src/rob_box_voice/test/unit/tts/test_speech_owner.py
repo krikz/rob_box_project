@@ -52,7 +52,7 @@ class _Node:
 
     def __init__(self):
         self.pubs, self.subs, self.timers = {}, {}, []
-        self.chunks, self.finished, self.states = [], [], []
+        self.chunks, self.finished = [], []
         self.interrupts = 0
         self.ros_now_s = 1_000.0
         self.owner = None
@@ -81,11 +81,8 @@ class _Node:
     def _interrupt_playback(self):
         self.interrupts += 1
 
-    def publish_state(self, state):
-        self.states.append(state)
-
     def _publish_tts_finished(self, speech_id, *, success, error=None, queued=False, **_):
-        """Как в tts_node: финал идёт в журнал владельца и в /voice/tts/finished."""
+        """Как в tts_node: финал идёт в журнал владельца (String-топика /voice/tts/finished нет, #4252)."""
         self.owner.terminal(speech_id, success, error, queued)
         self.finished.append((speech_id, success, error))
 
@@ -540,18 +537,18 @@ def _bare_tts(owner):
 
     n = object.__new__(TTSNode)
     n._speech = owner
-    n.finished_pub = MagicMock()
     n.get_logger = lambda: MagicMock()
     return n
 
 
-def test_tts_finished_projection_and_event_come_from_one_call(setup):
+def test_tts_finished_is_only_a_speech_event(setup):
+    """#4252 ч.2: финал реплики — только SpeechEvent владельца, String-топика /voice/tts/finished нет."""
     node, owner, _ = setup
     owner.admit(_chunk(), "s")
     n = _bare_tts(owner)
     n._publish_tts_finished("s", success=True, duration_sec=1.0)
-    assert json.loads(n.finished_pub.publish.call_args.args[0].data)["success"] is True
     assert _kinds(node)[-1] == "finished"
+    assert not hasattr(n, "finished_pub")
 
 
 def test_tts_fifo_gate_drops_cancelled_speech_without_sound(setup):
@@ -560,7 +557,6 @@ def test_tts_fifo_gate_drops_cancelled_speech_without_sound(setup):
     node.subs["/voice/speech/cancel"](M.SpeechCancel(speech_id="s", agent="personality"))
     n = _bare_tts(owner)
     assert n._sap_wait_fifo_and_dialogue(None, "s", None) is False
-    assert json.loads(n.finished_pub.publish.call_args.args[0].data)["error"] == "cancelled"
     assert _kinds(node)[-1] == "cancelled"
 
 

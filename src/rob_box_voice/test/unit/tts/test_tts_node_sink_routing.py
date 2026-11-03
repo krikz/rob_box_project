@@ -1,16 +1,13 @@
-"""Issue #2198 / voice-vr 13 — единый вход ``/voice/tts/request`` с полем ``sink``.
+"""Issue #2198 / #4252 — единый вход синтезатора ``dialogue_callback`` с полем ``sink``.
 
-Тесты покрывают инвариант задачи: **приёмник реплики (динамики / шлем /
-preview) задаётся полем ``sink`` в payload, а не отдельным ROS-топиком**.
+Тесты покрывают инвариант: **приёмник реплики (динамики / шлем / preview) задаётся полем ``sink`` чанка**.
 
-* ``/voice/tts/request`` (subscribed в ``dialogue_callback``) — единственный
-  канал для синтеза. Поле ``sink`` ∈ {``"speaker"`` (default), ``"headset"``,
-  ``"preview"``} маршрутизирует в соответствующий путь.
-* ``/avatar/tts/request`` (subscribed в ``_on_avatar_tts_request``) —
-  DEPRECATED алиас на этот релиз (см. задачу, удалить в следующем
-  релизе). Логирует WARNING на каждый вызов.
-* Любой не-валидный ``sink`` → DROP + WARN (как для ``/avatar/tts/request``
-  с ``sink="bogus"``, так и для ``/voice/tts/request``).
+* ``dialogue_callback`` (чанк от владельца речи, ``SpeechRequest``) — единственный вход синтеза.
+  ``sink`` ∈ {``"speaker"`` (default), ``"headset"`` → ``_on_headset_chunk``, ``"preview"`` →
+  ``_on_avatar_tts_request_preview``}.
+* ``/avatar/tts/request`` (``_on_avatar_tts_request``) — только образец голоса (``sink="preview"``); реплики в шлем
+  туда не ходят с #4252 ч.2, ложного WARNING «DEPRECATED» больше нет.
+* Любой не-валидный ``sink`` → DROP + WARN.
 
 Запуск:
     PYTHONPATH=src/rob_box_voice:src/rob_box_core:src/rob_box_harness:src/rob_box_llm \\
@@ -29,7 +26,7 @@ import pytest
 _PACKAGE_ROOT = Path(__file__).resolve().parents[3]  # rob_box_voice/
 sys.path.insert(0, str(_PACKAGE_ROOT))
 
-from test.unit.tts.conftest import _install_all_mocks  # noqa: E402
+from test.unit.tts.conftest import FinalsSpy, _install_all_mocks  # noqa: E402
 
 _install_all_mocks()
 
@@ -57,9 +54,9 @@ def _make_voice_node() -> TTSNode:
 
     Достаточно для проверки маршрутизации по ``sink``:
       - ``get_logger`` (MagicMock) — для WARN/INFO;
-      - ``finished_pub`` / ``_avatar_tts_error_pub`` — для _on_avatar_tts_request;
+      - ``_speech`` (владелец-шпион финалов) / ``_avatar_tts_error_pub`` — для _on_avatar_tts_request;
       - ``_submit_synthesis`` (MagicMock) — для проверки «пошёл ли синтез»;
-      - ``_dispatch_avatar_tts_sink`` (MagicMock) — для делегации в headset-путь;
+      - ``_on_headset_chunk`` (MagicMock) — для делегации в headset-путь;
       - ``_on_avatar_tts_request_preview`` (MagicMock) — для делегации в preview-путь.
 
     ``logger`` — ОДИН MagicMock на ноду: иначе каждый вызов ``self.get_logger()``
@@ -70,10 +67,10 @@ def _make_voice_node() -> TTSNode:
     n = object.__new__(TTSNode)
     n.get_logger = lambda: logger
     n._test_logger = logger  # для тестовых assert'ов
-    n.finished_pub = _CapturingPublisher()
+    n._speech = FinalsSpy()
     n._avatar_tts_error_pub = _CapturingPublisher()
     n._submit_synthesis = MagicMock()
-    n._dispatch_avatar_tts_sink = MagicMock(return_value=False)
+    n._on_headset_chunk = MagicMock()
     n._on_avatar_tts_request_preview = MagicMock()
     n.current_speech_id = None
     n._interrupt_playback = MagicMock()
@@ -93,14 +90,13 @@ def test_voice_tts_request_without_sink_defaults_to_speaker_path():
     """Без поля sink — старый путь в динамики (backward-compat).
 
     Проверяем, что ``_submit_synthesis`` НЕ вызван (bare-stub без
-    полной инициализации), и НЕ дёрнут ``_on_avatar_tts_request``
-    delegation-цепочка. Достаточно assert'нуть, что ``_dispatch_avatar_tts_sink``
+    полной инициализации), и НЕ дёрнуты пути шлема и образца: ``_on_headset_chunk``
     и ``_on_avatar_tts_request_preview`` не вызывались.
     """
     node = _make_voice_node()
     node.dialogue_callback(_msg({"text": "привет", "text": "привет"}))
 
-    node._dispatch_avatar_tts_sink.assert_not_called()
+    node._on_headset_chunk.assert_not_called()
     node._on_avatar_tts_request_preview.assert_not_called()
 
 
@@ -117,84 +113,36 @@ def test_voice_tts_request_with_speaker_routes_to_speakers():
         )
     )
 
-    node._dispatch_avatar_tts_sink.assert_not_called()
+    node._on_headset_chunk.assert_not_called()
     node._on_avatar_tts_request_preview.assert_not_called()
 
 
-def test_voice_tts_request_with_headset_delegates_to_avatar_handler():
-    """``sink='headset'`` в ``/voice/tts/request`` → делегация в headset-путь.
-
-    Семантика: ``dialogue_callback`` теперь знает про поле sink и для
-    ``headset`` маршрутизирует в ``_on_avatar_tts_request`` (тот же
-    набор гвардов, что и для deprecated ``/avatar/tts/request`` —
-    backward-compat с прямыми публикаторами).
-    """
+def test_voice_tts_request_with_headset_delegates_to_headset_chunk():
+    """``sink='headset'`` → ``_on_headset_chunk`` с разобранным чанком (#4252); ``/avatar/tts/request`` не участвует."""
     node = _make_voice_node()
-    # Подменяем _on_avatar_tts_request на mock, чтобы убедиться, что
-    # dialogue_callback его дёрнул (не проверяя внутренности headset-пути —
-    # это уже покрыто test_tts_node_avatar.py).
     node._on_avatar_tts_request = MagicMock()  # type: ignore[assignment]
     node.dialogue_callback(
-        _msg(
-            {
-                "text": "привет",
-                "text": "привет",
-                "sink": "headset",
-                "request_id": "req-from-voice-with-sink-headset",
-            }
-        )
+        _msg({"text": "привет", "sink": "headset", "request_id": "req-from-voice-with-sink-headset"})
     )
 
-    node._on_avatar_tts_request.assert_called_once()
-    # Убедимся, что message передан «как есть» — callback распарсит JSON
-    # сам (как в существующей реализации для backward-compat).
-    call_msg = node._on_avatar_tts_request.call_args.args[0]
-    assert json.loads(call_msg.data)["sink"] == "headset"
+    node._on_headset_chunk.assert_called_once()
+    assert node._on_headset_chunk.call_args.args[0]["request_id"] == "req-from-voice-with-sink-headset"
+    node._on_avatar_tts_request.assert_not_called()
+    node._submit_synthesis.assert_not_called()
 
 
 def test_voice_tts_request_with_preview_delegates_to_preview_path():
-    """``sink='preview'`` в ``/voice/tts/request`` → ``_on_avatar_tts_request_preview``.
-
-    Это синхронный preview-путь (НЕ ThreadPoolExecutor, НЕ barge-in,
-    НЕ dialogues), см. ADR-0079. Маршрутизация должна обходить
-    headset-путь, который публикует в ``/avatar/tts/audio``.
-    """
+    """``sink='preview'`` → ``_on_avatar_tts_request_preview`` (синхронный путь ADR-0079), не шлем."""
     node = _make_voice_node()
-    # Чтобы preview-путь дошёл до _on_avatar_tts_request_preview без
-    # падения на guard'ах — делаем заглушки:
-    node._publish_tars1_text = MagicMock()  # type: ignore[assignment]
-    node._avatar_tts_error_pub = _CapturingPublisher()
-
-    # preview-путь идёт напрямую через _on_avatar_tts_request_preview,
-    # а не через полный _on_avatar_tts_request (который логирует
-    # deprecated-WARNING и делает JSON-парсинг заново). Чтобы избежать
-    # side-effect-ов от deprecated-WARNING, отдельный callback:
-    original_on_avatar = node._on_avatar_tts_request
-    call_count = {"avatar": 0}
-
-    def _counting_on_avatar(msg):
-        call_count["avatar"] += 1
-        # Делегируем в preview через оригинальный код — но мы bare-stub,
-        # поэтому простой no-op.
-
-    node._on_avatar_tts_request = _counting_on_avatar  # type: ignore[assignment]
     node.dialogue_callback(
-        _msg(
-            {
-                "request_id": "req-from-voice-with-sink-preview",
-                "text": "привет",
-                "sink": "preview",
-                "voice": "male-qn-qingse",
-            }
-        )
+        _msg({"request_id": "req-from-voice-with-sink-preview", "text": "привет", "sink": "preview",
+              "voice": "male-qn-qingse"})
     )
 
-    # _on_avatar_tts_request_preview вызывается ИЗ _on_avatar_tts_request.
-    # Подтверждаем, что мы зашли в avatar-цепочку (deprecated callback),
-    # но не в headset-путь (``_submit_synthesis`` не вызван).
-    assert call_count["avatar"] == 1
+    node._on_avatar_tts_request_preview.assert_called_once()
+    assert node._on_avatar_tts_request_preview.call_args.args[0]["voice"] == "male-qn-qingse"
+    node._on_headset_chunk.assert_not_called()
     node._submit_synthesis.assert_not_called()
-    del original_on_avatar
 
 
 def test_voice_tts_request_unknown_sink_drops_with_warning():
@@ -210,9 +158,9 @@ def test_voice_tts_request_unknown_sink_drops_with_warning():
             }
         )
     )
-    # DROP → _submit_synthesis, _dispatch_avatar_tts_sink не вызваны.
+    # DROP → _submit_synthesis, _on_headset_chunk не вызваны.
     node._submit_synthesis.assert_not_called()
-    node._dispatch_avatar_tts_sink.assert_not_called()
+    node._on_headset_chunk.assert_not_called()
     # WARN залогирован.
     assert logger.warn.called, (
         f"expected WARN для unknown sink, got calls: "
@@ -230,41 +178,17 @@ def test_voice_tts_request_bad_json_does_not_crash():
     node._submit_synthesis.assert_not_called()
 
 
-# ── 2. ``/avatar/tts/request`` deprecated — WARNING на каждый вызов ────
+# ── 2. ``/avatar/tts/request`` — только образец голоса (#4252 ч.2) ────
 
 
-def test_avatar_tts_request_logs_deprecated_warning():
-    """Прямой вызов ``_on_avatar_tts_request`` (через ``/avatar/tts/request``)
-    логирует WARNING про deprecated и переход на ``/voice/tts/request`` с
-    полем ``sink``.
-    """
+def test_avatar_tts_request_preview_goes_to_preview_without_deprecated_warning():
+    """``/avatar/tts/request`` с ``sink='preview'`` — штатный путь образца: без WARNING «DEPRECATED»."""
     node = _make_voice_node()
-    # Чтобы тест не падал на guard'ах (sink must be valid), прокинем
-    # sink='headset' + подменяем _submit_synthesis.
-    node._submit_synthesis = MagicMock()  # type: ignore[assignment]
-    node._publish_tars1_text = MagicMock()  # type: ignore[assignment]
-    node._dispatch_avatar_tts_sink = MagicMock(return_value=True)  # type: ignore[assignment]
+    node._on_avatar_tts_request(_msg({"request_id": "req-preview", "text": "Привет", "sink": "preview"}))
 
-    logger = node._test_logger
-    node._on_avatar_tts_request(
-        _msg(
-            {
-                "request_id": "req-avatar-deprecated",
-                "text": "Готово",
-                "sink": "headset",
-            }
-        )
-    )
-
-    # WARN с упоминанием issue #2198 и /voice/tts/request.
-    warn_calls = [
-        str(call_args)
-        for call_args, _ in logger.warn.call_args_list
-    ]
-    assert any("2198" in str(c) and "deprecated" in str(c).lower() for c in warn_calls), (
-        f"ожидался WARNING про deprecated /avatar/tts/request, "
-        f"got: {warn_calls}"
-    )
+    node._on_avatar_tts_request_preview.assert_called_once()
+    warn_calls = [str(c) for c in node._test_logger.warn.call_args_list]
+    assert not any("deprecated" in c.lower() for c in warn_calls), warn_calls
 
 
 # ── 3. AST-инвариант: ``sink`` switch живёт ровно в одном месте ────────
@@ -352,67 +276,28 @@ def test_dialogue_callback_delegates_to_resolve_helper():
     )
 
 
-def test_sink_dispatch_via_voice_or_avatar_topics_route_through_consistent_helpers():
-    """``/voice/tts/request`` с sink ∈ {headset, preview} маршрутизирует в
-    ТЕ ЖЕ helper'ы, что и ``/avatar/tts/request`` (backward-compat).
+def test_sink_dispatch_routes_headset_and_preview_through_one_helper():
+    """``dialogue_callback`` → ``_dispatch_voice_tts_sink`` → ``_on_headset_chunk`` / ``_on_avatar_tts_request_preview``.
 
-    После рефакторинга step 2/2: dialogue_callback делегирует dispatch в
-    ``_dispatch_voice_tts_sink`` (ADR-0021 CC-budget helper), который уже
-    вызывает ``_on_avatar_tts_request`` для headset/preview-путей.
-    Проверяем через AST, что цепочка «dialogue_callback → dispatch →
-    _on_avatar_tts_request» сохранена (либо напрямую, либо через helper).
-    Это гарантирует, что инвариант 6b (одинаковый набор гвардов для
-    ТАРС-в-шлем, независимо от топика-источника) сохраняется.
+    #4252 ч.2: обёртка ``/avatar/tts/request`` в цепочке шлема не участвует — тот же набор гвардов
+    у реплики ТАРС гарантирует единственный путь ``_on_headset_chunk`` (инвариант 6b).
     """
     import ast
     import inspect
     import textwrap
 
-    src_dlg = textwrap.dedent(inspect.getsource(TTSNode.dialogue_callback))
-    tree_dlg = ast.parse(src_dlg)
-    called_in_dialogue: set[str] = set()
-    for ast_node in ast.walk(tree_dlg):
-        if isinstance(ast_node, ast.Call) and isinstance(
-            ast_node.func, ast.Attribute
-        ):
-            if (
-                isinstance(ast_node.func.value, ast.Name)
-                and ast_node.func.value.id == "self"
-            ):
-                called_in_dialogue.add(ast_node.func.attr)
+    def _self_calls(fn) -> set:
+        tree = ast.parse(textwrap.dedent(inspect.getsource(fn)))
+        return {
+            n.func.attr for n in ast.walk(tree)
+            if isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute)
+            and isinstance(n.func.value, ast.Name) and n.func.value.id == "self"
+        }
 
-    # Ищем цепочку: dialogue_callback → (напрямую или через helper) →
-    # _on_avatar_tts_request. Допустимы обе формы после рефакторинга.
-    if "_on_avatar_tts_request" in called_in_dialogue:
-        # Старая форма (step 1/2): прямой вызов.
-        assert True
-        return
-    assert "_dispatch_voice_tts_sink" in called_in_dialogue, (
-        "dialogue_callback обязан делегировать dispatch (либо напрямую в "
-        "_on_avatar_tts_request, либо через _dispatch_voice_tts_sink) для "
-        "консистентности гвардов. "
-        f"Найденные self-методы: {sorted(called_in_dialogue)}"
-    )
-
-    # Проверяем, что _dispatch_voice_tts_sink вызывает _on_avatar_tts_request.
-    src_disp = textwrap.dedent(inspect.getsource(TTSNode._dispatch_voice_tts_sink))
-    tree_disp = ast.parse(src_disp)
-    called_in_dispatch: set[str] = set()
-    for ast_node in ast.walk(tree_disp):
-        if isinstance(ast_node, ast.Call) and isinstance(
-            ast_node.func, ast.Attribute
-        ):
-            if (
-                isinstance(ast_node.func.value, ast.Name)
-                and ast_node.func.value.id == "self"
-            ):
-                called_in_dispatch.add(ast_node.func.attr)
-
-    assert "_on_avatar_tts_request" in called_in_dispatch, (
-        "_dispatch_voice_tts_sink обязан делегировать в "
-        "_on_avatar_tts_request для headset/preview-путей (invariant 6b). "
-        f"Найденные self-методы в helper: {sorted(called_in_dispatch)}"
-    )
+    assert "_dispatch_voice_tts_sink" in _self_calls(TTSNode.dialogue_callback)
+    dispatch = _self_calls(TTSNode._dispatch_voice_tts_sink)
+    assert {"_on_headset_chunk", "_on_avatar_tts_request_preview"} <= dispatch, dispatch
+    assert "_on_avatar_tts_request" not in dispatch, dispatch
 
 
 def test_sink_field_is_dispatched_in_exactly_one_primary_place():
@@ -422,16 +307,14 @@ def test_sink_field_is_dispatched_in_exactly_one_primary_place():
     месте — ``_resolve_voice_tts_sink`` (pure-helper маршрутизации для
     нового канала ``/voice/tts/request``). ``dialogue_callback``
     делегирует в этот helper и не принимает решений сам.
-    ``_on_avatar_tts_request`` (deprecated backward-compat для прямых
-    публикаторов в ``/avatar/tts/request``) имеет свой локальный switch
-    через ``_dispatch_avatar_tts_sink`` — он уйдёт вместе с удалением
-    deprecated-подписки в следующем релизе.
+    ``_on_avatar_tts_request`` (топик ``/avatar/tts/request``, только образец
+    голоса) проверяет свой ``sink == "preview"`` сам.
 
     Что проверяет AST-тест: в исходнике ``tts_node.py`` (по всему файлу)
     методов, читающих поле ``sink`` из payload (``chunk_data``/``msg``)
     как **первичный** switch — ровно два:
       * ``_resolve_voice_tts_sink`` — новый primary chokepoint;
-      * ``_on_avatar_tts_request`` — deprecated wrapper, уйдёт.
+      * ``_on_avatar_tts_request`` — вход образца голоса (preview-only).
     ``dialogue_callback`` НЕ читает sink напрямую (делегирует в helper).
     """
     import ast
@@ -484,16 +367,14 @@ def test_sink_field_is_dispatched_in_exactly_one_primary_place():
         "_resolve_voice_tts_sink (primary chokepoint) обязан читать sink "
         f"из payload, got primary_switch_methods={primary_switch_methods}"
     )
-    # Deprecated wrapper для backward-compat: тоже читает sink из
-    # payload (через _dispatch_avatar_tts_sink). Уйдёт вместе с
-    # удалением /avatar/tts/request подписки в следующем релизе.
+    # Вход образца голоса /avatar/tts/request тоже читает sink (только "preview").
     assert set(primary_switch_methods) <= {
         "_resolve_voice_tts_sink",
         "_on_avatar_tts_request",
     }, (
         f"Найден неизвестный primary-switch (обход chokepoint'а!): "
         f"{primary_switch_methods}. Допустимы только _resolve_voice_tts_sink "
-        f"(новый канал) и _on_avatar_tts_request (deprecated backward-compat)."
+        f"(вход синтеза) и _on_avatar_tts_request (образец голоса)."
     )
 
 
@@ -525,7 +406,7 @@ def test_voice_tts_request_legacy_payload_without_sink_still_works():
     except Exception as exc:  # noqa: BLE001
         pytest.fail(f"legacy payload упал в dialogue_callback: {exc!r}")
 
-    node._dispatch_avatar_tts_sink.assert_not_called()
+    node._on_headset_chunk.assert_not_called()
     node._on_avatar_tts_request_preview.assert_not_called()
 
 
@@ -595,7 +476,7 @@ def test_voice_tts_request_with_speakers_routes_to_speaker_path():
         )
     )
 
-    node._dispatch_avatar_tts_sink.assert_not_called()
+    node._on_headset_chunk.assert_not_called()
     node._on_avatar_tts_request_preview.assert_not_called()
     warn_calls = [str(c) for c, _ in logger.warn.call_args_list]
     assert not any("unknown sink" in c for c in warn_calls), (
@@ -620,7 +501,7 @@ def test_utterance_to_request_payload_is_not_dropped_end_to_end():
 
     node.dialogue_callback(_msg(payload))
 
-    node._dispatch_avatar_tts_sink.assert_not_called()
+    node._on_headset_chunk.assert_not_called()
     node._on_avatar_tts_request_preview.assert_not_called()
     warn_calls = [str(c) for c, _ in logger.warn.call_args_list]
     assert not any(
