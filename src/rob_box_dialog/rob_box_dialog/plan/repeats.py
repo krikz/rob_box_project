@@ -34,6 +34,8 @@ _NUMERAL_FORMS: Dict[int, Tuple[str, ...]] = {
 }
 NUMERAL_WORDS: Dict[str, int] = {form: value for value, forms in _NUMERAL_FORMS.items() for form in forms}
 SENTENCE_END = ".!?…"
+#: Слов, кроме чисел, в предложении счёта, которое всё ещё считается единицей счёта (когда счёт уже шёл): «и … шаг — пришли».
+COUNT_FILLER_WORDS = 3
 
 
 def words(text: str) -> Tuple[str, ...]:
@@ -88,6 +90,14 @@ def _sentences(text: str) -> List[str]:
     return out
 
 
+def _count_unit(sentence: str, nums: Sequence[int], counting: bool) -> bool:
+    """Предложение - единица счёта: числа - не меньше половины слов («Девятнадцать — шаг.»); счёт уже шёл в снятых
+    ведущих сегментах (``counting``) - допустимы ещё до ``COUNT_FILLER_WORDS`` слов-приправ («и двадцать шаг — пришли.»
+    после звучащего «И двадцать.»: М8 29.10, n807). Длиннее - рассказ с числом, он остаётся."""
+    extra = len(words(sentence)) - len(nums)
+    return len(nums) * 2 >= len(words(sentence)) or (counting and extra <= COUNT_FILLER_WORDS)
+
+
 def _unsaid_part(text: str, said_nums: FrozenSet[int], counting: bool) -> str:
     """Счёт, где есть и новые числа: ведущие предложения из уже названных чисел отрезаются («Двадцать — шаг. Все
     дошли.» после «двадцать» → «Все дошли.»); концовка счёт не отменяет. Счёт уже шёл в снятых ведущих сегментах
@@ -99,7 +109,7 @@ def _unsaid_part(text: str, said_nums: FrozenSet[int], counting: bool) -> str:
     skip = 0
     for sentence in sentences:
         nums = numerals(sentence)
-        if not (nums and all(n in said_nums for n in nums) and len(nums) * 2 >= len(words(sentence))):
+        if not (nums and all(n in said_nums for n in nums) and _count_unit(sentence, nums, counting)):
             break
         skip += 1
     return " ".join(sentences[skip:]) if skip else text

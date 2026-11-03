@@ -246,7 +246,7 @@ class MusicLibraryTool(MCPTool):
     def execute(self, action: str = "", track_id: Any = "", track_ref: Any = "", **kwargs: Any) -> MCPToolResult:
         track_id = str(track_id) if track_id else ""  # список / словарь от небрежной модели - не TypeError, а неизвестный id
         bound = self._bound_track(str(action), track_id, track_ref)
-        if bound != track_id:
+        if bound != track_id or self._substituted(track_id, track_ref, action):
             self._named.name([bound])  # назван кодом, а не выдуман моделью: вопрос ``list`` для него не нужен
         track_id = bound
         handler = {
@@ -262,6 +262,14 @@ class MusicLibraryTool(MCPTool):
                             "list / search этого разговора.", track_id=track_id,
                             hint="сначала action=list или search, track_id — из их ответа")
         return handler(track_id=track_id, **kwargs)
+
+    def _substituted(self, track_id: str, track_ref: Any, action: str) -> bool:
+        """``track_id`` уже подставлен кодом: сервер зовёт :meth:`bind_arguments` ДО ``execute`` (М8 29.10, n707:
+        ``info`` с ``track_ref=last_generated`` пришёл со свежим id, ``bound == track_id``, гард #4025 его отверг).
+        Признак - ссылка ``last_generated`` либо ``info`` / ``play`` с id, равным свежесочинённому: свежий id код
+        знает сам, выдуманный id так не проходит."""
+        fresh = self._library.generated.fresh()
+        return bool(fresh) and track_id == fresh and (track_ref == LAST_GENERATED_REF or action in _SAME_TITLE_ACTIONS)
 
     def bind_arguments(self, parameters: Dict[str, Any]) -> Dict[str, Any]:
         """Параметры вызова с ``track_id`` свежесочинённой песни там, где модель выбрала старую (#4216, n707/n708)."""

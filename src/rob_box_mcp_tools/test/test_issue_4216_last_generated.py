@@ -300,3 +300,34 @@ def test_topic_words_are_stems_without_words_about_the_song():
     assert topic_stems("енота") == topic_stems("Енот") == ("енот",)
     assert topic_stems("песню про енота-механика") == ("енот", "механи")
     assert topic_stems("песня трек") == () and topic_stems("") == ()
+
+
+# ---------------------------------------------------------------------------------------------------------------
+# М8 29.10 (n707): сервер сначала подставляет id (bind_arguments), потом исполняет - гард #4025 не должен отвергать
+# id, который назвал сам код
+# ---------------------------------------------------------------------------------------------------------------
+
+def _as_server(tool, **params):
+    """Путь вызова сервера (mcp_server): ``bind_arguments`` переписывает параметры, и уже они уходят в ``execute``."""
+    return tool.execute(**tool.bind_arguments(params))
+
+
+def test_m8_n707_info_by_reference_through_the_server_path_is_not_rejected_as_unknown_track(library):
+    _, new = _two_versions(library)
+    result = _as_server(_tool(library), action="info", track_ref=REF)
+    assert result.success and result.data["id"] == new
+
+
+def test_m8_n707_twin_substituted_by_the_server_path_is_not_rejected_either(library):
+    old, new = _two_versions(library)
+    tool = _tool(library)
+    tool.execute(action="list")
+    assert _as_server(tool, action="info", track_id=old).data["id"] == new
+
+
+def test_m8_code_named_id_does_not_open_the_guard_for_a_made_up_one(library):
+    _two_versions(library)
+    tool = _tool(library)
+    _as_server(tool, action="info", track_ref=REF)
+    refused = _as_server(tool, action="info", track_id="f" * 32)
+    assert refused.data["reason"] == "unknown_track"
