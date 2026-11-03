@@ -171,7 +171,6 @@ def _playback_node() -> _Bare:
     """Node stub with everything _synthesize_and_play touches after synth."""
     node = _bare_node()
     node.provider = "minimax"
-    node.normalize_text = False
     node.stop_requested = False
     node.minimax_streaming = False
     node.minimax_model = "speech-02-hd"
@@ -213,10 +212,8 @@ def _playback_node() -> _Bare:
 def _run_and_play(node) -> None:
     TTSNode._synthesize_and_play(
         node,
-        "<speak>hello</speak>",
         "hello",
         None,
-        {},
         None,
     )
 
@@ -390,7 +387,7 @@ def test_chain_empty_text_never_calls_a_provider_or_marks_dead() -> None:
     node._publish_tts_finished = TTSNode._publish_tts_finished.__get__(node, type(node))  # type: ignore[attr-defined]
 
     TTSNode._synthesize_and_play(
-        node, "<speak></speak>", "", None, {}, "sid-empty-1"
+        node, "", None, "sid-empty-1"
     )
 
     node._synthesize_minimax.assert_not_called()
@@ -420,7 +417,7 @@ def test_chain_whitespace_only_text_never_calls_a_provider_or_marks_dead() -> No
     )
 
     TTSNode._synthesize_and_play(
-        node, "<speak>   \n\t  </speak>", "   \n\t  ", None, {}, None
+        node, "   \n\t  ", None, None
     )
 
     node._synthesize_minimax.assert_not_called()
@@ -505,6 +502,6 @@ def test_stream_failure_before_sound_falls_back_to_yandex(monkeypatch) -> None:
 def test_headset_sink_never_streams(monkeypatch) -> None:
     node, opened = _stream_node(monkeypatch)
     node._publish_headset_audio = MagicMock()
-    TTSNode._synthesize_and_play(node, "<speak>hello</speak>", "hello", None, {}, None, sink="headset")
+    TTSNode._synthesize_and_play(node, "hello", None, None, sink="headset")
     opened.assert_not_called()
     node._synthesize_minimax.assert_called_once()

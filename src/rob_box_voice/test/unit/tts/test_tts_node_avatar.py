@@ -417,11 +417,13 @@ def test_sink_kwarg_in_synthesize_and_play_signature():
     sink_param = sig.parameters.get("sink")
     assert sink_param is not None
     assert sink_param.default == "speaker"
-    # sink должен идти ПОСЛЕ всех 8 канонических позиционных параметров.
+    # sink должен идти ПОСЛЕ всех 6 канонических позиционных параметров
+    # (#4240: ``ssml`` и ``ssml_attributes`` убраны из конвейера).
     canonical = [
-        "ssml", "text", "dialogue_id", "ssml_attributes", "speech_id",
-        "batch_id", "batch_index", "batch_total",
+        "text", "dialogue_id", "speech_id", "batch_id", "batch_index", "batch_total",
     ]
+    assert "ssml" not in [p.name for p in params]
+    assert "ssml_attributes" not in [p.name for p in params]
     names = [p.name for p in params]
     sink_idx = names.index("sink")
     for cname in canonical:
@@ -444,12 +446,12 @@ def _submitted_text(node) -> str:
     """Extract the ``text`` positional arg passed to ``_submit_synthesis``.
 
     Call shape (see ``_on_avatar_tts_request``):
-    ``_submit_synthesis(self._run_synthesis_worker, speech_id, ssml, text,
-    dialogue_id, ssml_attributes, speech_id, batch_id, batch_index,
-    batch_total, voice=..., language=..., sink="headset")``
+    ``_submit_synthesis(self._run_synthesis_worker, speech_id, text,
+    dialogue_id, speech_id, batch_id, batch_index, batch_total,
+    voice=..., language=..., sink="headset")``
     """
     args = node._submit_synthesis.call_args.args
-    return args[3]
+    return args[2]
 
 
 def test_avatar_tts_request_supervisor_payload_end_to_end():

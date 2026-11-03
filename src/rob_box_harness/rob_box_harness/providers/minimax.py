@@ -63,7 +63,7 @@ from rob_box_harness.providers.reasoning import (
 # Ретрай-политика — одна на харнес (providers/retry.py). Раньше здесь
 # лежала своя копия класса, дословно совпадавшая с копией в deepseek.py,
 # но БУДУЧИ другим объектом (карточка W6-1). Имя оставлено в модуле:
-# по нему ходят tts/minimax_tts.py и тесты.
+# по нему ходят тесты.
 from rob_box_harness.providers.retry import RetryPolicy
 
 # Re-export the upstream provider + helpers so callers can ``from

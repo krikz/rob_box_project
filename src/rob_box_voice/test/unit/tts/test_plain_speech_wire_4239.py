@@ -104,7 +104,7 @@ def test_speech_text_keeps_special_chars_and_lines():
 
 @pytest.mark.parametrize("text", [TRICKY, "AT&T и Tom & Jerry", "ёлка × ÷ ∞", ""])
 def test_silero_ssml_is_valid_xml_and_keeps_every_char(text):
-    root = ET.fromstring(silero_ssml(text, "medium"))
+    root = ET.fromstring(silero_ssml(text))
     assert root.tag == "speak"
     (prosody,) = list(root)
     assert prosody.get("pitch") == "medium"

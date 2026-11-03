@@ -31,7 +31,6 @@ tts_node:
     # Допустимые значения emotion (MiniMax T2A v2 voice_setting.emotion):
     #   happy | neutral | sad | angry | fearful | disgusted | surprised
     # Прокидывание значений в ``TTSSettings`` — в карточке t_4e98182a.
-    normalize_text: true
     # #4022 — set_pitch двигает pitch_shift (1.0 = норма) и читает его назад. Без chipmunk_mode тон слышен только у
     # MiniMax: pitch_shift -> voice_setting.pitch полутонами (12*log2, +-12) к minimax_pitch; у Yandex/Silero тона
     # нет, тул отвечает отказом. С chipmunk_mode: true коэффициент съедает передискретизация (любой провайдер).

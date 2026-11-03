@@ -429,7 +429,7 @@ def _run_format_scenario(
 
     try:
         # Mimic dialogue_callback — bypass ROS dispatch entirely.
-        result = node._synthesize_minimax("hello", ssml_attributes=None)
+        result = node._synthesize_minimax("hello")
         audio_np = result["audio_np"]
         sample_rate = result["sample_rate"]
         topic_audio = node._prepare_audio_for_topic(audio_np, sample_rate)
@@ -767,7 +767,7 @@ def _run_error_scenario(
             minimax_max_retries=max_retries,
         )
         try:
-            node._synthesize_minimax("hello", ssml_attributes=None)
+            node._synthesize_minimax("hello")
             return ScenarioResult(
                 name=name,
                 ok=False,
