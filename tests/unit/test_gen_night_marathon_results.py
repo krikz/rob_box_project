@@ -749,3 +749,32 @@ def test_prosody_and_emotion_tables_match_robot_knowledge():
     knowledge = _src("src/rob_box_dialog/rob_box_dialog/knowledge.py")
     for scene in ('"sad": "sad"', '"happy": "happy"', '"victory": "victory"'):
         assert scene in knowledge, scene
+
+
+def test_n402_names_the_voice_not_the_provider_4077():
+    """#4077/М8: «MiniMax» (провайдер) без названия голоса -- не PASS; голос Qingse назван -- PASS."""
+    synth = "🗣️ SpeechEvent synthesized speech_id=e492c4cd agent=personality epoch=8 text_len=134 provider=minimax"
+    wrong = "\n".join([_tts("Сейчас я говорю на MiniMax, голос Надёжный мужчина."), synth, DONE])
+    assert not _verdict("n402_current_voice", wrong)["pass"]
+    for said in ("Я на MiniMax, мой голос Qingse.", "Сейчас голос male-qn-qingse.", "Это голос Цинсе."):
+        assert _verdict("n402_current_voice", "\n".join([_tts(said), synth, DONE]))["pass"], said
+
+
+def test_n709_conditional_offer_after_stop_is_not_a_false_action_4077():
+    """#4077/М8 n709: «если хочешь, включу его потише» после стопа -- условное предложение, не ложь о действии."""
+    stop = "🎵 [music v2] stop track_id=gen_b12d4ab5_1793298706 reason=user_stop"
+    ok = "✅ Инструмент stop_music выполнен успешно"
+    cond = _tts("Трек остановился. Если хочешь, включу его потише ещё раз.")
+    assert gen.MUSIC_FALSE_ACTION and "сейчас включу" in gen.MUSIC_FALSE_ACTION
+    lie = _tts("Раз Борис уснул -- сделаю потише, дослушивает шёпотом.")
+    from tests.unit.e2e_scripts.test_issue_4196_false_greens import CODE_CLOSED as _cc  # noqa: F401
+    assert _verdict("n709_stop_generated", "\n".join([stop, ok, cond, _cc]))["pass"]
+    assert not _verdict("n709_stop_generated", "\n".join([stop, ok, lie, _cc]))["pass"]
+
+
+def test_n807_requires_the_perform_edit_line_4077():
+    """#4077/#4207: без `PlanEvent segment_replaced` (правка не встала) шаг красный, с ней -- зелёный."""
+    edit = "🗓️ [plan] PlanEvent segment_replaced block=perform-ab12 seg=9 reason=edit"
+    base = _tts("Десять шаг, одиннадцать шаг.")
+    assert not _verdict("n807_merge_addition", "\n".join([base, DONE]))["pass"]
+    assert _verdict("n807_merge_addition", "\n".join([base, edit, DONE]))["pass"]
