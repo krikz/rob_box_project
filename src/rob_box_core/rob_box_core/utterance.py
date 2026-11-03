@@ -100,6 +100,8 @@ class Utterance:
             свой (``uuid4``).
         role: Герой реплики (ADR-0160 §2.3) или ``""`` для рассказчика. Голос роль не читает:
             она нужна приёмникам текста (экран, чат).
+        beat_s: Такт подложки выступления (с) или 0 (ADR-0160 §2.3): данные, а не метка — паузы строк по нему
+            ставит адаптер провайдера голоса (#4241).
     """
 
     text: str
@@ -110,6 +112,7 @@ class Utterance:
     emotion: Optional[str] = None
     speech_id: Optional[str] = None
     role: str = ""
+    beat_s: float = 0.0
     # Доп. поля, которые producer хочет протащить в dict, но не считает
     # частью ``Utterance`` (``chunk``, ``commands``, ``batch_id``,
     # ``tg_chat_id`` и т. п.). Поля ``Utterance`` их перекрывают.
@@ -158,6 +161,8 @@ class Utterance:
             payload["speech_id"] = self.speech_id
         if self.role:
             payload["role"] = self.role
+        if self.beat_s > 0:
+            payload["beat_s"] = float(self.beat_s)
         if self.extra:
             # Utterance-поля выигрывают — защита от случайного
             # переопределения ``text``/``sink`` через ``extra``.

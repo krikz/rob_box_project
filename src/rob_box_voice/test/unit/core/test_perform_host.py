@@ -16,7 +16,6 @@ from rob_box_core.msg_stub import install_dialog_msgs_stub
 from rob_box_dialog import knowledge as kn
 from rob_box_dialog import phrases
 from rob_box_dialog.command import Performance
-from rob_box_dialog.plan.rap_pauses import markup
 from rob_box_llm.provider import ToolResult
 from rob_box_voice.core.perform_host import PerformHost
 
@@ -105,6 +104,11 @@ def _host(loop: Any, backing: Dict[str, Any], hold: bool = False) -> tuple:
     return host, node, tools, events
 
 
+def _lead(node: "_Node") -> Any:
+    """Запрос вступления «Поехали!» (пред-синтез): уходит первым по исходу бита, следом — сегменты с тактом."""
+    return next(r for r in node.requests() if plain_text(r.text) == phrases.text("perform.backing_started"))
+
+
 def _settle(loop: Any) -> None:
     asyncio.run_coroutine_threadsafe(asyncio.sleep(0.05), loop).result(timeout=2)
 
@@ -125,16 +129,17 @@ STARTED = {"ok": True, "started": True, "track_id": "trk1", "bpm": 120.0, "beat_
 def test_start_presynthesizes_segments_and_orders_the_backing(loop):
     host, node, tools, events = _host(loop, STARTED)
     assert host.start(RAP, "t1")["status"] == "pending"
-    presynth = node.requests()
-    assert [(plain_text(r.text), r.commit, r.boundary) for r in presynth[:2]] == [
-        (RAP.segments[0], False, 1), (RAP.segments[1], False, 1)]  # граница предложения — для «хватит»
-    assert all(host.owns(r.speech_id) for r in presynth)
+    assert node.requests() == []  # пред-синтез ждёт бит: его такт едет в реплике (#4241)
     _settle(loop)
     (order,) = tools.calls
     assert order.name == "request_music" and order.arguments["intent"] == "backing"
     assert order.arguments["mood"] == kn.PERFORM_BACKING_MOODS["beat"][0] and order.arguments["min_seconds"] > 0
-    lead = node.requests()[-1]  # бит встал — «Поехали!» уходит в пред-синтез
+    lead, *presynth = node.requests()  # бит встал — «Поехали!» и сегменты уходят в пред-синтез
     assert plain_text(lead.text) == phrases.text("perform.backing_started") and lead.commit is False
+    assert lead.beat_s == 0.0  # фраза кода — без такта
+    assert [(plain_text(r.text), r.commit, r.boundary, r.beat_s) for r in presynth] == [
+        (RAP.segments[0], False, 1, 2.0), (RAP.segments[1], False, 1, 2.0)]  # граница предложения — для «хватит»
+    assert all(host.owns(r.speech_id) for r in presynth)
     assert events[0].kind == "block_start" and host.owns_backing
 
 
@@ -142,7 +147,7 @@ def test_segment_goes_on_the_bar_after_synthesis(loop):
     host, node, _, _ = _host(loop, STARTED)
     host.start(RAP, "t1")
     _settle(loop)
-    lead = node.requests()[-1]
+    lead = _lead(node)
     host.on_speech("synthesized", lead.speech_id, duration_ms=700)
     commit = node.requests()[-1]
     assert commit.speech_id == lead.speech_id and commit.commit is True
@@ -216,7 +221,7 @@ def test_stop_finishes_the_sentence_halt_cuts_now(loop):
     host, node, _, _ = _host(loop, STARTED)
     host.start(RAP, "t1")
     _settle(loop)
-    lead = node.requests()[-1]
+    lead = _lead(node)
     host.on_speech("synthesized", lead.speech_id, duration_ms=700)
     host.on_speech("started", lead.speech_id, duration_ms=700)
     assert host.stop()
@@ -225,7 +230,7 @@ def test_stop_finishes_the_sentence_halt_cuts_now(loop):
     host2, node2, tools2, _ = _host(loop, STARTED)
     host2.start(RAP, "t2")
     _settle(loop)
-    lead2 = node2.requests()[-1]
+    lead2 = _lead(node2)
     host2.on_speech("synthesized", lead2.speech_id, duration_ms=700)
     host2.on_speech("started", lead2.speech_id, duration_ms=700)
     assert host2.halt()
@@ -374,27 +379,24 @@ LINED_RAP = Performance(kind="rap", segments=("Я комар, звеню всю 
                                               "Прячусь за шторой,\nЖду темноты."), backing="beat")
 
 
-def test_3901_minimax_verses_go_to_presynth_with_pauses_on_the_beat_grid(loop):
-    """Провайдер TTS MiniMax и бит: куплеты уходят в пред-синтез после ``started`` — с паузами ``<#x#>`` по такту
-    сетки (120 BPM — 2 с), голым текстом (ADR-0160 §2.3: SSML на проводе нет)."""
-    node, tools, events = _Node(), _Tools(STARTED), []
-    host = PerformHost(node, tools.run, lambda: loop, events.append, kn.SPEECH_OUTPUT_LATENCY_MS,
-                       clock=lambda: node.now_s, tts_provider=lambda: "minimax")
+def test_3901_verses_go_to_presynth_as_plain_lines_with_the_beat_grid_bar(loop):
+    """Бит: куплеты уходят в пред-синтез после ``started`` — голыми строками (ADR-0160 §2.3) и с тактом сетки
+    ``beat_s`` (120 BPM — 2 с); паузы по нему ставит адаптер голоса, провайдера хост не знает (#4241)."""
+    host, node, _, _ = _host(loop, STARTED)
     host.start(LINED_RAP, "t1")
     assert node.requests() == []  # сетки ещё нет — пред-синтез ждёт бит
     _settle(loop)
-    texts = [plain_text(r.text) for r in node.requests() if r.commit is False]
-    assert texts[0] == phrases.text("perform.backing_started")
-    assert texts[1:] == [markup(seg, 2.0).text for seg in LINED_RAP.segments]
-    assert all("<#" in r.text for r in node.requests()[1:])
-    assert any("разметка пауз MiniMax по сетке строк, такт 2.00 с" in line for line in node.logs)
+    sent = [r for r in node.requests() if r.commit is False]
+    assert plain_text(sent[0].text) == phrases.text("perform.backing_started")
+    assert [(r.text, r.beat_s) for r in sent[1:]] == [(seg, 2.0) for seg in LINED_RAP.segments]
+    assert any("perform: такт подложки 2.00 с" in line for line in node.logs)
 
 
-def test_3901_not_minimax_reads_as_before_and_says_why(loop):
+def test_3901_without_backing_reads_at_once_without_beat_and_says_why(loop):
     host, node, _, _ = _host(loop, STARTED)
-    host.start(LINED_RAP, "t1")
-    assert [plain_text(r.text) for r in node.requests()] == list(LINED_RAP.segments)  # сразу и без пауз
-    assert any("разметка пауз выключена (синтез неизвестен, не MiniMax)" in line for line in node.logs)
+    host.start(Performance(kind="rap", segments=LINED_RAP.segments, backing="none"), "t1")
+    assert [(r.text, r.beat_s) for r in node.requests()] == [(seg, 0.0) for seg in LINED_RAP.segments]
+    assert any("perform: без такта (нет подложки)" in line for line in node.logs)
 
 
 # --- #4085: выступление снимает только свою подложку ---------------------------------------------------------------

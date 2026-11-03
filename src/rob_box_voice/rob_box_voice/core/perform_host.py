@@ -86,7 +86,7 @@ class EffectRunner:
 
     def _say(self, say: Say) -> None:
         utterance = Utterance(text=say.text, voice=say.voice or None, emotion=say.emotion or None,
-                              speech_id=say.speech_id)
+                              speech_id=say.speech_id, beat_s=say.beat_s)
         speech_client.say(self._node, utterance, agent=AGENT, epoch=self.epoch, turn_id=self.turn_id,
                           at=say.at, commit=say.commit, boundary="sentence")
 
@@ -141,7 +141,7 @@ class PerformHost:
     def __init__(self, node: Any, run_tool: RunTool, loop: Callable[[], Optional[asyncio.AbstractEventLoop]],
                  emit: Callable[[PlanEvent], None], output_latency_ms: int,
                  clock: Callable[[], float] = time.time, playing: Callable[[], str] = str,
-                 on_ask: Callable[[str], None] = lambda title: None, tts_provider: Callable[[], str] = str,
+                 on_ask: Callable[[str], None] = lambda title: None,
                  speaking: Callable[[], bool] = lambda: False) -> None:
         self._latency_ms = int(output_latency_ms)
         #: Голос занят чужой речью (столбец ``speech`` снимка планировщика): сторож выступления её не считает сбоем.
@@ -153,8 +153,6 @@ class PerformHost:
         #: Что играет чужое (название; ``""`` — тишина или наш бит) и как открыть окно ответа да/нет (О9′).
         self._playing = playing
         self._on_ask = on_ask
-        #: Фактический провайдер TTS: паузы MiniMax по сетке строк — только у него (О11, #3901).
-        self._tts_provider = tts_provider
         self._run = EffectRunner(node, run_tool, loop, emit, self._outcome)
 
     # -- что видят валидатор, LLM и планировщик ---------------------------------------------------------------------
@@ -201,7 +199,7 @@ class PerformHost:
             self._run.turn_id, self._run.epoch = turn_id, epoch
             self.block = PerformBlock(perf, f"perform-{turn_id or next(self._ids)}", turn_id=turn_id, epoch=epoch,
                                       output_latency_ms=self._latency_ms, log=self._run.log,
-                                      tts_provider=self._tts_provider(), voice_busy=self._speaking)
+                                      voice_busy=self._speaking)
             playing = self._playing() if perf.backing in kn.PERFORM_BACKING_MOODS else ""
             self._run.apply(self.block.start(self._clock(), playing))
             return {"status": "pending", "block_id": self.block.block_id}

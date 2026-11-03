@@ -175,6 +175,10 @@ Yandex и Silero выезжают из `tts_node` в адаптеры. Втор�
 3. **PR-3. Адаптеры Yandex и Silero на `BaseTTSProvider` с `prepare()`.** Удаление второй копии `minimax_tts` и
    мёртвого `normalize_for_tts`.
 4. **PR-4. Паузы такта из `perform.py` в адаптер.** Замер темпа Yandex и Silero записью с робота.
+   *Сделано (#4241):* поле `beat_s` в `SpeechRequest.msg` и `Utterance` (длина такта подложки, с — то, что в §2.2
+   названо `bar_s`); выступление отдаёт строки и `beat_s`, провайдера не знает (`PAUSE_PROVIDERS` и `text_for` удалены);
+   паузы ставит `rob_box_voice/tts_providers/beat.py`: MiniMax — нормализатор, затем `rap_pauses.markup`; Yandex и
+   Silero — без такта, строка лога. Замер темпа запасных не делаем (решение Шифу 30.10, В3).
 5. **PR-5. Нормализатор.** Выбор пакета замером на фразах из логов робота; прогон на Sound Pi.
    *Сделано (#4242):* свой модуль `rob_box_voice/tts_normalizer.py` на стандартной библиотеке (пакетов в образе нет, ради
    одной функции `pymorphy3`/`num2words` не тянем); зовёт его `prepare()` адаптера, если `reads_digits` ложь (Silero).

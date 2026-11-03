@@ -67,7 +67,6 @@ def make_tool_executor(node: Any, provider_adapter: Any, on_tool: Any) -> PlanTo
                                      perform_event, kn.SPEECH_OUTPUT_LATENCY_MS, clock=lambda: _now(node),
                                      playing=lambda: _foreign_music(node),
                                      on_ask=lambda title: perform_ask.open_window(node, title),
-                                     tts_provider=lambda: _tts_provider(node),
                                      speaking=lambda: "speech" in planner.state.busy())
     node.create_timer(TICK_S, executor.performer.tick)
     return executor
@@ -98,22 +97,10 @@ def _foreign_music(node: Any) -> str:
     return str(info.get("brief") or info.get("title") or "музыка")
 
 
-def _tts_provider(node: Any) -> str:
-    """Провайдер TTS сейчас: фактический из ``/voice/tts/provider_state`` (после фолбека), иначе номинальный
-    параметр ``tts_provider``; неизвестен — ``""`` (выступление тогда без пауз MiniMax, с причиной в логе).
-    Метка не из каталога реестра (``prefetch`` и т.п.) — не провайдер (:func:`known_provider`)."""
-    actual = known_provider(getattr(node, "_actual_tts_provider", None))
-    if actual:
-        return actual
-    try:
-        return str(node.get_parameter("tts_provider").value or "")
-    except Exception:  # noqa: BLE001 — параметр не объявлен (тестовая нода): провайдер неизвестен
-        return ""
-
-
 def on_tts_provider_state(node: Any, msg: Any) -> None:
-    """``/voice/tts/provider_state`` (JSON ``{"provider": …}`` от tts_node) → фактический провайдер TTS для
-    :func:`_tts_provider`: без него хост v2 не знал провайдера, и паузы MiniMax по сетке строк не включались (#3901).
+    """``/voice/tts/provider_state`` (JSON ``{"provider": …}`` от tts_node) → фактический провайдер TTS для каталога
+    голосов (``turn_context.tts_state``). Выступлению провайдер не нужен: такт едет в реплике, паузы ставит адаптер
+    голоса (ADR-0160 §2.2, #4241).
     Принимается только провайдер из каталога реестра: ``prefetch`` (#4024) факт не затирает — иначе каталог голосов
     пуст и голоса сегментов сказки не сверяются."""
     try:

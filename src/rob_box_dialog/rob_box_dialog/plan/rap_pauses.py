@@ -9,23 +9,19 @@
 строк и ``<br/>``; без них — конец предложения, обрывки короче ``MIN_LINE_SYLLABLES`` слогов клеятся к
 соседу; запятая строку не режет. Последняя строка сегмента — без паузы: следующий сегмент ставит на такт :mod:`.sync`.
 
-Единственное место знания о паузах: формула, лимиты, формат метки, кто её понимает (``PAUSE_PROVIDERS``) и как её
-снять для остальных (:func:`text_for` — tts_node на фолбеке Yandex/Silero). Скрипт спайка
-(``scripts/dialog/rap_sync/approaches.py``) импортирует отсюда же. Чистый Python, без часов и ROS.
+Единственное место знания о паузах: формула, лимиты, темп MiniMax и формат его метки. Диалог провайдера не знает
+(ADR-0160 §2.2, #4241): выступление отдаёт в реплике строки и такт подложки ``beat_s``, а разметку по ним ставит
+адаптер голоса (``rob_box_voice.tts_providers.beat``) — у MiniMax паузами ``<#x#>``, у остальных такта нет (решение
+Шифу 30.10, В3). Скрипт спайка (``scripts/dialog/rap_sync/approaches.py``) импортирует отсюда же. Чистый Python, без
+часов и ROS.
 """
 
 from __future__ import annotations
 
-import logging
 import re
 from dataclasses import dataclass
 from typing import List, Optional, Sequence, Tuple
 
-_LOG = logging.getLogger(__name__)
-
-#: Провайдеры TTS, которые понимают метку паузы ``<#x#>`` (MiniMax T2A v2, platform.minimax.io/docs/api-reference/
-#: speech-t2a-http). У Yandex (``sil<[мс]>``) и Silero (``<break>``) — своя разметка; им метка снимается.
-PAUSE_PROVIDERS: Tuple[str, ...] = ("minimax",)
 #: Строка занимает не больше этой доли своих тактов: запас на разброс темпа речи (спайк PR-S1, ``markup_text``).
 BAR_FILL = 0.92
 #: Строка длиннее ``BAR_FILL·MAX_BARS_PER_LINE`` тактов всё равно получает столько тактов — дальше не растягиваем.
@@ -47,7 +43,6 @@ PAUSE_OVERHEAD_S = 0.36
 VOWELS = frozenset("аеёиоуыэюяАЕЁИОУЫЭЮЯ")
 
 _BR_RE = re.compile(r"<\s*br\s*/?\s*>", re.IGNORECASE)
-_PAUSE_RE = re.compile(r"([,.;:!?…]?)\s*<#\d+(?:\.\d+)?#>\s*")
 _LINE_END = ",.;:!?"
 #: Сегмент без переводов строк — строки по концу предложения (запятая строку не режет).
 _PHRASE_SPLIT_RE = re.compile(r"(?<=[.!?…])\s+")
@@ -74,7 +69,7 @@ def pause_tag(seconds: float) -> str:
 
 def breaks_to_newlines(text: str) -> str:
     """``<br/>`` / ``<br>`` (любой регистр и пробелы) — перевод строки; единственное место: в синтез
-    ``<br/>`` не уходит ни одним путём (``Line.tts_text``, :func:`text_for`)."""
+    ``<br/>`` не уходит ни одним путём (``Line.tts_text``)."""
     return _BR_RE.sub("\n", text)
 
 
@@ -146,21 +141,7 @@ def markup(text: str, bar_s: float) -> Optional[Markup]:
     return Markup(mark(lines, pauses), bars, tuple(round(min(MAX_PAUSE_S, max(MIN_PAUSE_S, p)), 2) for p in pauses))
 
 
-def strip_pauses(text: str) -> str:
-    """Снять метки пауз: на их месте — знак конца строки (свой или запятая), чтобы фолбек не читал «решётку»."""
-    return _PAUSE_RE.sub(lambda m: (m.group(1) or ",") + " ", text).strip()
-
-
-def text_for(provider: str, text: str) -> str:
-    """Текст для провайдера ``provider``: понимает паузы — как есть; нет — метки сняты (честно в логе)."""
-    text = breaks_to_newlines(text)
-    if provider in PAUSE_PROVIDERS or "<#" not in text:
-        return text
-    _LOG.info(f"разметка пауз снята: синтез {provider} не понимает <#x#>")
-    return strip_pauses(text)
-
-
 __all__ = ["BAR_FILL", "MAX_BARS_PER_LINE", "MAX_PAUSE_S", "MIN_PAUSE_S", "Markup", "PAUSE_OVERHEAD_S",
-           "MIN_LINE_SYLLABLES", "PAUSE_PROVIDERS", "SYLLABLES_PER_S", "VOWELS", "breaks_to_newlines",
+           "MIN_LINE_SYLLABLES", "SYLLABLES_PER_S", "VOWELS", "breaks_to_newlines",
            "estimate_span", "layout", "mark", "markup", "pause_tag",
-           "split_lines", "strip_pauses", "syllables", "text_for"]
+           "split_lines", "syllables"]

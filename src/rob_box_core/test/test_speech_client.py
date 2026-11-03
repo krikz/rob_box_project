@@ -234,3 +234,14 @@ def test_role_goes_to_the_request_and_defaults_to_narrator():
     assert (first.role, second.role) == ("Ермил", "")
     assert Utterance(text="x", role="Ермил").to_request()["role"] == "Ермил"
     assert "role" not in Utterance(text="x").to_request()
+
+
+def test_beat_goes_to_the_request_and_defaults_to_none():
+    """#4241: такт рэпа (ADR-0160 §2.3) — поле ``SpeechRequest.beat_s``, а не метка в тексте; без такта - 0."""
+    node = _Node()
+    speech_client.say(node, Utterance(text="Йо,\nенот", beat_s=1.83), agent="personality")
+    speech_client.say(node, Utterance(text="Привет"), agent="personality")
+    first, second = node.pubs[0].sent
+    assert (first.beat_s, second.beat_s, first.text) == (1.83, 0.0, "Йо,\nенот")
+    assert Utterance(text="x", beat_s=2.0).to_request()["beat_s"] == 2.0
+    assert "beat_s" not in Utterance(text="x").to_request()

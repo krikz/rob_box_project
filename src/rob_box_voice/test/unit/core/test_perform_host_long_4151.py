@@ -98,7 +98,7 @@ def _perform(loop: Any, n: int) -> tuple:
     """Сказка на ``n`` сегментов под calm, синтез MiniMax: что дошло до владельца речи и что прозвучало."""
     node, events = _Node(), []
     host = PerformHost(node, _Tools().run, lambda: loop, events.append, kn.SPEECH_OUTPUT_LATENCY_MS,
-                       clock=lambda: node.now_s, tts_provider=lambda: "minimax")
+                       clock=lambda: node.now_s)
     host.start(Performance(kind="tale", segments=_segments(n), backing="calm"), "t1")
     _settle(loop)  # подложка встала — «Поехали!» и сегменты уходят в пред-синтез
     delivered, heard = [], []

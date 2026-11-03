@@ -5,8 +5,8 @@
 v3, retry-halve на «Too long text», gRPC-вызов, склейка аудио.
 
 Флаги сервиса (``capabilities``): цифры читает сам; ударения не ставит надёжно (разметка «+» — PR-7 по замеру);
-паузы такта метка ``sil<[мс]>`` умеет, но адаптер её пока не ставит (PR-4) — метки MiniMax ``<#x#>`` снимаются,
-``pause_markup=False`` честно.
+паузы такта метка ``sil<[мс]>`` умеет, но адаптер их не ставит: рэп на Yandex — без такта, строкой в логе (решение
+Шифу 30.10, В3; ``pause_markup=False`` честно, :mod:`.beat`).
 """
 
 from __future__ import annotations
@@ -20,7 +20,6 @@ from typing import Any, AsyncIterator, Optional
 import grpc
 import numpy as np
 
-from rob_box_dialog.plan.rap_pauses import text_for as _pause_text_for
 from rob_box_llm.tts import TTSAudio, TTSChunk, TTSFormat, TTSSettings
 from rob_box_llm.tts_provider_base import BaseTTSProvider, TTSCapabilities, TTSVoice
 
@@ -33,6 +32,7 @@ from ..tts_chunking import (
     synthesize_with_retry,
 )
 from ..tts_engines import build_yandex_request, make_yandex_stub, yandex_collect_audio
+from .beat import without_beat
 
 #: Частота, с которой нода играет ответ Yandex (контейнер WAV v3; так было в ``tts_node``).
 YANDEX_SAMPLE_RATE: int = 22050
@@ -90,9 +90,9 @@ class YandexTTSProvider(BaseTTSProvider):
         """Контейнер WAV, без SSML; цифры читает сам (ADR-0160 §2.5)."""
         return TTSCapabilities(audio_format_pcm=True, reads_digits=True)
 
-    def prepare(self, text: str) -> str:
-        """Метки пауз MiniMax ``<#x#>`` сняты (``sil<[мс]>`` — PR-4); цифры и ударения оставлены сервису."""
-        return _pause_text_for(self.name, text)
+    def prepare(self, text: str, beat_s: float = 0.0) -> str:
+        """Текст как есть: цифры и ударения — сервису; такт рэпа ``beat_s`` не размечается (строка лога)."""
+        return without_beat(self.name, text, beat_s, self._logger.info)
 
     def _build_request_payload(
         self, text: str, settings: TTSSettings, voice_meta: Optional[TTSVoice]
