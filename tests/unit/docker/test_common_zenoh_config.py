@@ -275,3 +275,59 @@ def test_no_router_config_under_docker_declares_storage_manager() -> None:
 def test_no_per_node_copies_left(rel: str) -> None:
     """Одна реализация в docker/common, не копия на узел (ADR-0159 В4)."""
     assert not (REPO_ROOT / "docker" / rel).exists()
+
+
+def _render_session(tmp_path: Path, **extra: str) -> tuple[subprocess.CompletedProcess, Path]:
+    out = tmp_path / "session.json5"
+    env = {
+        "PATH": os.environ.get("PATH", ""),
+        "ROBOT_ID": "RBXU100001",
+        "ZENOH_LISTEN_IP": "10.1.1.11",
+        "ZENOH_SESSION_TEMPLATE": SESSION_TEMPLATE.as_posix(),
+        "ZENOH_SESSION_CONFIG_OUT": out.as_posix(),
+        **extra,
+    }
+    res = subprocess.run([BASH, NS_SCRIPT.as_posix(), "echo", "NODE-STARTED"], env=env,
+                         capture_output=True, text=True, encoding="utf-8", check=False)
+    return res, out
+
+
+def _rx_buffer_size(text: str) -> int:
+    m = re.search(r"\n      rx: \{.*?\n        buffer_size: (\d+),", _strip_comments(text), re.S)
+    assert m, "не нашёл transport.link.rx.buffer_size"
+    return int(m.group(1))
+
+
+@needs_bash
+def test_session_rx_buffer_defaults_to_16mb(tmp_path: Path) -> None:
+    """#4307: без переменной поведение прежнее — 16 МБ (rtabmap и прочие тяжёлые ноды)."""
+    res, out = _render_session(tmp_path)
+    assert res.returncode == 0, res.stdout + res.stderr
+    assert _rx_buffer_size(out.read_text(encoding="utf-8")) == 16777216
+
+
+@needs_bash
+def test_led_matrix_gets_small_rx_buffer_from_compose(tmp_path: Path) -> None:
+    """#4307: пул приёма zenoh = buffer_size на КАЖДЫЙ линк, и сессия его не отдаёт.
+
+    Замер на песочнице (rmw_zenoh 0.1.11, zenoh 1.10.1; на роботе 0.1.8 / 1.6.2 с тем же пулом):
+    rclpy-нода при подключениях-отключениях соседей выросла 34 -> 141 МБ anon за 160 с при
+    16 МБ и 23 -> 35 МБ при 65535. В led-matrix три такие ноды при лимите 512 МБ.
+    """
+    led = _compose("vision")["services"]["led-matrix"]
+    size = _env(led).get("ZENOH_RX_BUFFER_SIZE")
+    assert size == "65535", f"led-matrix: ZENOH_RX_BUFFER_SIZE={size!r}"
+    res, out = _render_session(tmp_path, ZENOH_RX_BUFFER_SIZE=size)
+    assert res.returncode == 0, res.stdout + res.stderr
+    text = out.read_text(encoding="utf-8")
+    assert _rx_buffer_size(text) == 65535
+    assert "${" not in text
+
+
+@needs_bash
+@pytest.mark.parametrize("bad", ["16M", "-1", "1e6", "65535;"])
+def test_session_wrapper_rejects_bad_rx_buffer(bad: str, tmp_path: Path) -> None:
+    res, _ = _render_session(tmp_path, ZENOH_RX_BUFFER_SIZE=bad)
+    assert res.returncode != 0
+    assert "NODE-STARTED" not in res.stdout
+    assert "ZENOH_RX_BUFFER_SIZE" in res.stdout

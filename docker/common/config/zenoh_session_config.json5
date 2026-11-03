@@ -708,7 +708,12 @@
         /// E.g. for 16MiB rx_buffer_size set the value to: 16777216.
         /// Увеличен до 16MB чтобы соответствовать TCP so_rcvbuf=16MB и принимать
         /// большие сообщения (rtabmap cloud_map после loop closure до 200MB фрагментами).
-        buffer_size: 16777216,
+        /// ${ZENOH_RX_BUFFER_SIZE} подставляет ros_with_namespace.sh: дефолт 16777216,
+        /// сервис с мелким трафиком задаёт 65535 в compose (#4307). Это не потолок
+        /// сообщения (тот — max_message_size), а пул буферов приёма НА КАЖДЫЙ линк:
+        /// zenoh держит до buffer_size/batch_size буферов по 64 КБ и не отдаёт их,
+        /// а линков у ноды-пира столько, сколько соседей на хосте (8 и больше).
+        buffer_size: ${ZENOH_RX_BUFFER_SIZE},
         /// Maximum size of the defragmentation buffer at receiver end.
         /// Fragmented messages that are larger than the configured size will be dropped.
         /// The default value is 1GiB. This would work in most scenarios.
