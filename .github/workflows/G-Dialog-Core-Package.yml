@@ -1,0 +1,122 @@
+name: "G: Dialog Core Package"
+
+# Ядро диалога одним пакетом без ROS (ADR-0160 §8 К1, карточка #4245).
+#
+# Ставит packaging/dialog-core в ЧИСТЫЙ venv (ни ROS, ни src/ в sys.path) на трёх версиях Python и гоняет:
+#   * тесты пакетов ядра (rob_box_dialog, rob_box_core, rob_box_llm, rob_box_harness) против поставленного пакета;
+#   * test_core_package_4245: состав пакета, ни одного ROS-импорта на верхнем уровне, импорт каждого модуля без ROS,
+#     ядро в прогоне взято из пакета (ROB_BOX_CORE_FROM_PACKAGE=1);
+#   * сухой стенд и консоль (tests/unit/dialog: фейковая LLM за настоящим мостом команд) и dry_marathon.py --list.
+# 3.10 - Python робота (ROS Humble), 3.11/3.12 - критерий П4 эпика #4236 (колонка, консоль на Windows).
+#
+# Локально (из корня чекаута):
+#   python -m venv /tmp/core && /tmp/core/bin/pip install "./packaging/dialog-core[test]"
+#   cd src/rob_box_dialog && ROB_BOX_CORE_FROM_PACKAGE=1 /tmp/core/bin/pytest test
+
+on:
+  push:
+    branches:
+      - develop
+    paths:
+      - 'packaging/dialog-core/**'
+      - 'src/rob_box_core/**'
+      - 'src/rob_box_llm/**'
+      - 'src/rob_box_harness/**'
+      - 'src/rob_box_dialog/**'
+      - 'src/rob_box_music/rob_box_music/**'
+      - 'src/rob_box_voice/rob_box_voice/core/**'
+      - 'src/rob_box_voice/rob_box_voice/tts_voice_registry.py'
+      - 'src/rob_box_mcp_tools/rob_box_mcp_tools/*.py'
+      - 'src/rob_box_dialog_msgs/msg/**'
+      - 'scripts/dialog/**'
+      - 'scripts/dialogue/**'
+      - 'tests/unit/dialog/**'
+      - '.github/workflows/G-Dialog-Core-Package.yml'
+  pull_request:
+    # Как у остальных G-: PR-триггер только на develop (#3922).
+    branches:
+      - develop
+    paths:
+      - 'packaging/dialog-core/**'
+      - 'src/rob_box_core/**'
+      - 'src/rob_box_llm/**'
+      - 'src/rob_box_harness/**'
+      - 'src/rob_box_dialog/**'
+      - 'src/rob_box_music/rob_box_music/**'
+      - 'src/rob_box_voice/rob_box_voice/core/**'
+      - 'src/rob_box_voice/rob_box_voice/tts_voice_registry.py'
+      - 'src/rob_box_mcp_tools/rob_box_mcp_tools/*.py'
+      - 'src/rob_box_dialog_msgs/msg/**'
+      - 'scripts/dialog/**'
+      - 'scripts/dialogue/**'
+      - 'tests/unit/dialog/**'
+      - '.github/workflows/G-Dialog-Core-Package.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  core-package:
+    name: Dialog core package (Python ${{ matrix.python }})
+    runs-on: ubuntu-22.04
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ['3.10', '3.11', '3.12']
+    env:
+      VENV: ${{ github.workspace }}/../core-venv
+      ROB_BOX_CORE_FROM_PACKAGE: '1'
+      PYTHONUTF8: '1'
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+
+      - name: Set up Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: ${{ matrix.python }}
+
+      - name: Install core package into a clean venv
+        run: |
+          python -m venv "$VENV"
+          "$VENV/bin/python" -m pip install --upgrade pip
+          "$VENV/bin/python" -m pip install "./packaging/dialog-core[test]"
+          "$VENV/bin/python" -m pip check
+          "$VENV/bin/python" -m pip show -f rob-box-dialog-core | head -20
+          # ROS в окружении нет: импорт rclpy обязан упасть
+          if "$VENV/bin/python" -I -c "import rclpy" 2>/dev/null; then echo "rclpy нашёлся в чистом venv"; exit 1; fi
+
+      - name: Core tests from the installed package
+        run: |
+          set -o pipefail
+          for pkg in rob_box_dialog rob_box_core rob_box_llm; do
+            echo "::group::$pkg"
+            # тестовые каталоги без __init__.py: в sys.path попадает только test/, ядро - из venv
+            ( cd "src/$pkg" && "$VENV/bin/pytest" -v -p no:cacheprovider test )
+            echo "::endgroup::"
+          done
+          echo "::group::rob_box_harness"
+          # у harness test/ - пакет: importlib-режим, чтобы pytest не положил src/rob_box_harness в sys.path.
+          # test_speaker_memory тянет rob_box_voice.speaker_profiles (трекер дикторов ноды, не ядро) - его гоняет
+          # G-Run Tests в colcon-окружении. asyncio_mode=auto - как у корневого pytest.ini (им harness гоняют всегда).
+          ( cd src/rob_box_harness && "$VENV/bin/pytest" -v -p no:cacheprovider --import-mode=importlib \
+              -o asyncio_mode=auto test \
+              --ignore=test/test_speaker_memory.py )
+          echo "::endgroup::"
+
+      - name: Dry stand and console from the installed package
+        run: |
+          "$VENV/bin/python" - <<'EOF'
+          import sys
+          sys.path.insert(0, "scripts/dialog")
+          import dry_stand, rob_box_dialog, rob_box_voice.core.dialog_v2_ports as ports
+          assert dry_stand.core_installed()
+          for m in (rob_box_dialog, ports):
+              assert "/src/" not in m.__file__, m.__file__
+              print(m.__name__, "->", m.__file__)
+          EOF
+          "$VENV/bin/pytest" -v -p no:cacheprovider -o addopts= tests/unit/dialog
+          "$VENV/bin/python" scripts/dialog/dry_marathon.py --acts 1 --list

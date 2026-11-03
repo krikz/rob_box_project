@@ -24,6 +24,7 @@
 from __future__ import annotations
 
 import importlib
+import importlib.metadata
 import json
 import re
 import sys
@@ -38,10 +39,25 @@ from typing import Any, Callable, Dict, List, Mapping, Optional, Sequence, Set, 
 REPO = Path(__file__).resolve().parents[2]
 #: Пакеты ``src/<пакет>/<пакет>``: свои, а не editable-установка основного чекаута (в worktree она старая).
 _SRC = REPO / "src"
+#: Ядро диалога одним пакетом (``packaging/dialog-core``, ADR-0160 §8 К1, #4245).
+CORE_DIST = "rob-box-dialog-core"
+
+
+def core_installed() -> bool:
+    """Ядро поставлено пакетом ``pip install packaging/dialog-core``: стенд и консоль берут его, а не ``src/``."""
+    try:
+        importlib.metadata.distribution(CORE_DIST)
+    except importlib.metadata.PackageNotFoundError:
+        return False
+    return True
 
 
 def ensure_paths() -> None:
-    """Положить пакеты репозитория первыми в ``sys.path`` (без ROS: сообщения ``rob_box_dialog_msgs`` не нужны)."""
+    """Без поставленного ядра - положить пакеты репозитория первыми в ``sys.path`` (без ROS: сообщения
+    ``rob_box_dialog_msgs`` не нужны). Ядро поставлено - путь не трогаем: импорт идёт из пакета. Тулы MCP
+    (:func:`load_tool_module`) - хост робота, не ядро: их стенд всегда читает из ``src/``."""
+    if core_installed():
+        return
     for pkg in sorted(_SRC.iterdir()) if _SRC.is_dir() else ():
         if (pkg / pkg.name).is_dir() and str(pkg) not in sys.path:
             sys.path.insert(0, str(pkg))
