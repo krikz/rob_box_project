@@ -514,19 +514,25 @@ def format_tts_context(
 
     Формат::
 
-        [TTS] provider: yandex | default_voice: anton | current_voice: zahar | voices: anton, alena, jane, ...
+        [TTS] provider: yandex | default_voice: anton | current_voice: zahar | current_voice_name: Захар | voices: ...
 
     ``current_voice`` — установленный через set_voice голос (если был);
-    None → показываем дефолтный (current == default).
+    None → показываем дефолтный (current == default). ``current_voice_name`` — имя этого голоса из каталога:
+    людям голос называют им, а не id и не по памяти (#4020, n402).
     """
     voices = voices_for(provider)
     default = default_voice or default_voice_for(provider)
     current = current_voice or default
     voices_str = ", ".join(voices) if voices else "-"
+    # Имя звучащего голоса даёт реестр, а не память модели (n402 М8 29.10: звучал male-qn-qingse, а модель по id
+    # «угадала» «Надёжный мужчина» - это Russian_ReliableMan). Голос вне каталога называется своим id.
+    info = voice_info_for(provider, current) if current else None
+    current_name = info["display_name"] if info else current
     return (
         f"[TTS] provider: {provider} | "
         f"default_voice: {default} | "
         f"current_voice: {current} | "
+        f"current_voice_name: {current_name} | "
         f"voices: {voices_str}"
     )
 

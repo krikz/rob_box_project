@@ -1599,6 +1599,15 @@ MUSIC_PROMISE_HINT = ("в speech обещано действие с музыко
 MUSIC_PROMISE_PHRASES: Mapping[str, str] = MappingProxyType({
     "stopped": "command.music_promise.stopped", "silent": "command.music_promise.silent",
     "playing": "command.music_promise.playing"})
+#: Нарушение «обещал сменить голос, темп или тон речи, а тула нет» (:data:`VOICE_PROMISES`, #4020 К1: слова без
+#: действия - ложь о собственной речи). Повтор с подсказкой :data:`VOICE_PROMISE_HINT`; повтора нет - говорит код
+#: (:data:`VOICE_PROMISE_PHRASE`): что с голосом и темпом ничего не сделано, звучит прежний.
+VIOLATION_VOICE_PROMISE = "voice_promise"
+VOICE_PROMISE_HINT = ("в speech обещано сменить голос, темп или тон речи, а в actions нет тула, что это исполняет: слова"
+                      " без действия - неправда о твоей речи. Голос меняет только set_voice, темп - set_speed, тон -"
+                      " set_pitch; тула нет в перечне хода - не обещай. Звучащий голос назови по current_voice_name из"
+                      " tts_context, не по памяти и не по id")
+VOICE_PROMISE_PHRASE = "command.voice_promise"
 #: Нарушение «неизвестного собеседника назвали чужим именем» (n210: «Понял, Саша.» Грише при ``name_state``
 #: ``unknown``, а Саша — из истории разговора): обращение по имени к человеку, чьё имя не ``confirmed``, - выдумка, как
 #: бы ни звали других (``foreign_name``). Повтор с подсказкой :data:`FOREIGN_NAME_HINT`; повтора нет - имя из речи
@@ -1733,7 +1742,7 @@ CALM_VIOLATIONS: Tuple[str, ...] = (VIOLATION_SILENT_ANSWER, VIOLATION_SPEECH_RE
 PHRASE_KEYS: Tuple[str, ...] = (
     "understand.timeout", PASSED_ADDRESSED_PHRASE, NEW_SESSION_PHRASE, QUERY_FALLBACK_GENERIC, INVALID_COMMAND_PHRASE,
     LISTEN_ONLY_PHRASE,
-    SPEECH_CUT_PHRASE, *INVALID_COMMAND_PHRASES.values(), *MUSIC_PROMISE_PHRASES.values(),
+    SPEECH_CUT_PHRASE, *INVALID_COMMAND_PHRASES.values(), *MUSIC_PROMISE_PHRASES.values(), VOICE_PROMISE_PHRASE,
     *(question.declined for question in TOOL_QUESTIONS.values()),
     *(key for entry in QUERY_FALLBACK_PHRASES.values()
       for key in (entry.all_keys() if isinstance(entry, ByData) else (entry,))),
@@ -2495,6 +2504,31 @@ MUSIC_PROMISES: Mapping[str, MusicPromise] = MappingProxyType({
                    "сменим", "поменяю"),
         near=(*MUSIC_PROMISE_NOUNS, *MUSIC_STYLE_STEMS),
         tools=("dj_set", "request_music", "edit_music", "generate_music", "music_library")),
+})
+#: Обещание сменить собственную речь без тула (#4020 К1, ADR-0148): «заговорю помедленнее», «переключусь на голос
+#: Алёны», «понижу тон». Та же форма, что :data:`MUSIC_PROMISES` (слова целые, строчные, без «ё»; основа ``near`` - начало
+#: слова), валидатор команды (``command._check_voice_promise``) сверяет по словам (``words.voice_promises``). Настоящее
+#: время («говорю медленнее») не обещание: после Tier-1 шага голоса (``voice_step``) оно правда, а фразу о результате
+#: говорит код по исходу тула (``VOICE_DONE``). Ключ - вид; тулы - те, что исполняют.
+VOICE_PROMISE_SPEECH_VERBS: Tuple[str, ...] = (
+    "заговорю", "заговорим", "буду", "будем", "стану", "начну", "скажу", "произнесу", "прочитаю", "продолжу")
+VOICE_PROMISES: Mapping[str, MusicPromise] = MappingProxyType({
+    "speed": MusicPromise(
+        alone=("замедлюсь", "замедляюсь", "замедлимся", "ускорюсь", "ускоряюсь", "ускоримся", "затараторю", "притормозю"),
+        with_near=VOICE_PROMISE_SPEECH_VERBS,
+        near=("помедленн", "медленнее", "побыстр", "быстрее", "тараторить"),
+        tools=("set_speed",)),
+    "pitch": MusicPromise(
+        alone=("понижу", "понижаю", "повышу", "повышаю"),
+        with_near=VOICE_PROMISE_SPEECH_VERBS,
+        near=("басом", "баском", "тоньше", "пискл", "тембр", "потолще"),
+        tools=("set_pitch",)),
+    "voice": MusicPromise(
+        with_near=("переключусь", "переключаюсь", "переключимся", "сменю", "меняю", "поменяю", "включу", "включаю",
+                   "поставлю", "ставлю", "заговорю", "перейду", "перехожу", "возьму", "беру"),
+        near=("голос", "голосом", "голоса", "голосу"),
+        unless_before=("скажу", "прочитаю", "расскажу", "спою", "отвечу"),
+        tools=("set_voice", "set_tts_provider")),
 })
 #: Причина нарушения «пустая команда»: ни речи, ни вопроса, ни действий, ни выступления, и не ``passed``. Это нарушение
 #: (тот же один повтор с объяснением → ``failed``), а не «тихий первый ответ» v1: иначе ход звал LLM второй раз через
