@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import unittest
+from unittest import mock
 from types import SimpleNamespace
 
 import pytest
@@ -51,14 +53,14 @@ class Bot:
         self.calls.append(("delete", kw["chat_id"], kw["message_id"]))
 
 
-def make(bot=None):
+def make(bot=None, rich=False):
     clock = Clock()
 
     async def sleep(seconds):
         clock.now += seconds
         await asyncio.sleep(0)
 
-    return cs.ChatSender(bot or Bot(), clock=clock, sleep=sleep, log=logging.getLogger("t")), clock
+    return cs.ChatSender(bot or Bot(), clock=clock, sleep=sleep, log=logging.getLogger("t"), rich=rich), clock
 
 
 async def spin(n=60):
@@ -195,10 +197,21 @@ class ChatSenderTest(unittest.IsolatedAsyncioTestCase):
         await sender.deliver(PRIVATE, "Ответ")
         assert [c[0] for c in sender.bot.calls] == ["send"] and sender._rich_ok is True
 
-    async def test_rich_is_off_by_default(self):
-        sender, _ = make()
+    async def test_rich_is_on_by_default(self):
+        with mock.patch.dict(os.environ):
+            os.environ.pop(cs.RICH_ENV, None)
+            sender, _ = make(rich=None)
+        assert sender._rich_ok is True
         await sender.deliver(PRIVATE, "Раз")
-        assert [c[0] for c in sender.bot.calls] == ["send"]
+        assert [c[0] for c in sender.bot.calls] == ["api"]
+
+    async def test_rich_can_be_switched_off_by_env(self):
+        for value in ("0", "false", "No", "OFF"):
+            with mock.patch.dict(os.environ, {cs.RICH_ENV: value}):
+                sender, _ = make(rich=None)
+            assert sender._rich_ok is False, value
+            await sender.deliver(PRIVATE, "Раз")
+            assert [c[0] for c in sender.bot.calls] == ["send"], value
 
     async def test_rejected_draft_falls_back_to_one_editable_message_once(self):
         sender, _ = make(Bot(draft_error=RuntimeError("method not found")))
