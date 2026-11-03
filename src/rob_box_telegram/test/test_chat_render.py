@@ -96,3 +96,14 @@ def test_markup_is_always_balanced_in_every_part():
 def test_progress_line_is_italic_with_seconds():
     item = cr.progress("Думаю…", 7.9)
     assert item.text == "<i>⏳ Думаю… 7 с</i>" and item.plain == "⏳ Думаю… 7 с"
+
+
+def test_progress_steps_past_ones_are_dots_current_one_has_the_counter_and_html_is_escaped():
+    item = cr.progress(["Думаю…", "Ищу <в сети>…", "Ищу <в сети> - готово"], 12.2)
+    assert item.plain == "• Думаю…\n• Ищу <в сети>…\n⏳ Ищу <в сети> - готово 12 с"
+    assert item.text == "<i>• Думаю…\n• Ищу &lt;в сети&gt;…\n⏳ Ищу &lt;в сети&gt; - готово 12 с</i>"
+
+
+def test_progress_shows_only_the_last_steps():
+    item = cr.progress([f"шаг {n}" for n in range(20)], 1)
+    assert item.plain.count("\n") + 1 == cr.PROGRESS_STEPS_SHOWN and item.plain.startswith("• шаг 14")

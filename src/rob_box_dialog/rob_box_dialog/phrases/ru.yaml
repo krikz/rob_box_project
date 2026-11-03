@@ -221,6 +221,23 @@ speak_aloud.timeout: ["Не знаю, прозвучало ли: итога от
 # --- ход процесса в чате Telegram: подпись шага, чат правит одно сообщение (chats.ChatPorts, #4243) --------------
 chat.progress.thinking: ["Думаю…"]
 chat.progress.executing: ["Делаю…"]
+# Шаги хода по тулу (стрим в индикатор чата, #4243): подпись тула, иначе подпись его класса; параметры тула сюда не идут.
+chat.tool.search_web: ["Ищу в интернете…"]
+chat.tool.faq_search: ["Ищу в справке…"]
+chat.tool.memory_search: ["Вспоминаю…"]
+chat.tool.memory_save: ["Запоминаю…"]
+chat.tool.get_battery_level: ["Смотрю заряд…"]
+chat.tool.get_current_time: ["Смотрю время…"]
+chat.tool.read_logs: ["Читаю журнал…"]
+chat.tool.play_animation: ["Показываю лицом…"]
+chat.step.query: ["Смотрю данные…"]
+chat.step.action.local: ["Настраиваю…"]
+chat.step.action.media: ["Занимаюсь музыкой…"]
+chat.step.action.motion: ["Еду…"]
+chat.step.action.identity: ["Запоминаю человека…"]
+chat.step.action.speak_aloud: ["Говорю вслух…"]
+chat.step.outcome.done: ["{step} - готово"]
+chat.step.outcome.failed: ["{step} - не вышло"]
 
 # --- пульт робота из чата Telegram (chats.ChatPorts): что робот сделал — фраза кода в чат ---------------
 remote.perform.song: ["Пою на роботе: «{line}»"]

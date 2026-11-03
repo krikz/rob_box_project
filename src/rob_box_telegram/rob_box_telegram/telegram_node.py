@@ -43,9 +43,10 @@ from rob_box_core.utterance import Sink, Utterance
 
 from .camera_cache import CameraCache
 from .camera_on_demand import OnDemandCameraSubscriptions
+from .command_menu import publish_menu
 from .handlers import commands as _cmds
 from .handlers.callbacks import callback_handler
-from .handlers.messages import text_message_handler, voice_message_handler
+from .handlers.messages import attachment_message_handler, text_message_handler, voice_message_handler
 
 # AV-23 (issue #1915, P8): per-chat /radio mode — голосовые из Telegram
 # как рация → /avatar/voice_in. См. radio.py + voice_transcode.py.
@@ -677,10 +678,12 @@ class TelegramNode(Node):
                 app.add_handler(CommandHandler(name[:-8], getattr(_cmds, name)))
         app.add_handler(CallbackQueryHandler(callback_handler))
         app.add_handler(MessageHandler(filters.VOICE, voice_message_handler))
+        app.add_handler(MessageHandler(filters.PHOTO | filters.Document.ALL, attachment_message_handler))
         app.add_handler(
             MessageHandler(filters.TEXT & ~filters.COMMAND, text_message_handler)
         )
         await app.initialize()
+        await publish_menu(app.bot, self.get_logger())  # меню команд в клиенте - из той же таблицы, что обработчики
         await app.start()
         try:
             await app.updater.start_polling(poll_interval=1.0, timeout=30)

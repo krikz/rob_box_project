@@ -114,6 +114,92 @@ class ChatSenderTest(unittest.IsolatedAsyncioTestCase):
         await sender.deliver(GROUP, "Готово.")
         assert sender.bot.calls[-2:] == [("delete", GROUP, 101), ("send", GROUP, "Готово.", "HTML", None)]
 
+    async def test_steps_pile_up_in_one_indicator_and_repeat_is_not_a_new_step(self):
+        sender, _ = make()
+        sender.begin(GROUP)
+        for label in ("Думаю…", "Думаю…", "Ищу в сети…", "Ищу в сети - готово"):
+            sender.set_progress(GROUP, label)
+        await spin(30)
+        shown = [c for c in sender.bot.calls if c[0] == "send"][0][2]
+        assert shown == "<i>• Думаю…\n• Ищу в сети…\n⏳ Ищу в сети - готово 3 с</i>"
+        await sender.close()
+
+    async def test_rich_messages_go_by_raw_call_when_enabled(self):
+        sender, _ = make()
+        sender._rich_ok = True
+        await sender.deliver(PRIVATE, "Ток 5 < 7", "Ермил")
+        assert sender.bot.calls == [("api", "sendRichMessage", {
+            "chat_id": PRIVATE, "rich_message": {"html": "<b>Ермил</b>\n<blockquote>Ток 5 &lt; 7</blockquote>"}})]
+
+    async def test_rich_refused_falls_back_to_html_and_is_not_retried(self):
+        sender, _ = make(Bot(draft_error=RuntimeError("method not found")))
+        sender._rich_ok = True
+        await sender.deliver(PRIVATE, "Раз")
+        await sender.deliver(PRIVATE, "Два")
+        assert [c[0] for c in sender.bot.calls] == ["api", "send", "send"] and sender._rich_ok is False
+
+    async def test_timeout_on_send_is_retried_and_the_reply_is_not_lost(self):
+        class TimedOut(Exception):  # имя как у telegram.error.TimedOut
+            pass
+
+        class Flaky(Bot):
+            fails = 1
+
+            async def send_message(self, **kw):
+                if self.fails:
+                    self.fails -= 1
+                    raise TimedOut("Timed out")
+                return await super().send_message(**kw)
+
+        sender, clock = make(Flaky())
+        await sender.deliver(PRIVATE, "Ответ")
+        assert [c[0] for c in sender.bot.calls] == ["send"] and clock.now >= cs.RETRY_PAUSE_S
+
+    async def test_network_error_gives_up_after_the_attempts_but_bad_request_is_not_retried(self):
+        class NetworkError(Exception):
+            pass
+
+        class BadRequest(NetworkError):  # как в python-telegram-bot: BadRequest - потомок NetworkError
+            pass
+
+        class Down(Bot):
+            tries = 0
+
+            async def send_message(self, **kw):
+                Down.tries += 1
+                raise self.err
+
+        down = Down()
+        down.err = NetworkError("no route")
+        sender, _ = make(down)
+        with pytest.raises(NetworkError):
+            await sender.deliver(PRIVATE, "Ответ")
+        assert Down.tries == cs.RETRY_ATTEMPTS
+
+        Down.tries = 0
+        down.err = BadRequest("Chat not found")
+        with pytest.raises(BadRequest):
+            await sender.deliver(PRIVATE, "Ответ")
+        assert Down.tries == 1
+
+    async def test_rich_timeout_keeps_rich_on_and_the_reply_still_goes_as_html(self):
+        class TimedOut(Exception):
+            pass
+
+        class Flaky(Bot):
+            async def do_api_request(self, endpoint, api_kwargs=None):
+                raise TimedOut("Timed out")
+
+        sender, _ = make(Flaky())
+        sender._rich_ok = True
+        await sender.deliver(PRIVATE, "Ответ")
+        assert [c[0] for c in sender.bot.calls] == ["send"] and sender._rich_ok is True
+
+    async def test_rich_is_off_by_default(self):
+        sender, _ = make()
+        await sender.deliver(PRIVATE, "Раз")
+        assert [c[0] for c in sender.bot.calls] == ["send"]
+
     async def test_rejected_draft_falls_back_to_one_editable_message_once(self):
         sender, _ = make(Bot(draft_error=RuntimeError("method not found")))
         sender.begin(PRIVATE)

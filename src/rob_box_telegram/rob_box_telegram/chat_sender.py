@@ -19,8 +19,9 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
-from dataclasses import dataclass
-from typing import Any, Awaitable, Callable, Dict, Optional
+import os
+from dataclasses import dataclass, field
+from typing import Any, Awaitable, Callable, Dict, List, Optional
 
 from . import chat_render
 
@@ -34,15 +35,25 @@ TYPING_EVERY_S = 4.0
 PROGRESS_AFTER_S = 3.0
 #: Как часто обновлять индикатор (счётчик секунд); правка одного сообщения чаще раза в 3 с - риск лимита Bot API.
 PROGRESS_EVERY_S = 3.0
+#: Новый шаг хода показываем не позже чем через столько после прошлого обновления (лимит правок Bot API).
+PROGRESS_STEP_EVERY_S = 1.0
 #: Потолок хода: дольше индикатор не держим.
 TURN_MAX_S = 120.0
 #: Шаг цикла индикатора.
 TICK_S = 1.0
+#: Повтор при сетевом сбое (``TimedOut``/``NetworkError``; не ``BadRequest``): всего попыток и пауза перед n-й (n * пауза).
+#: Политика «дубль лучше потери»: ``TimedOut`` у ``sendMessage`` может значить «доставлено, но ответ не дошёл», и повтор
+#: тогда даст второе такое же сообщение; потерянный ответ робота хуже (ответ Шифу 17:26 UTC пропал целиком).
+RETRY_ATTEMPTS = 3
+RETRY_PAUSE_S = 1.0
 #: Идентификатор черновика: один и тот же - Telegram анимирует изменения вместо замены.
 DRAFT_ID = 1
 
 #: ``kind`` исходящего элемента очереди сверх ``DialogOutput.kind``: «ход начался» (внутренний, не с провода).
 KIND_BEGIN = "begin"
+
+#: Переменная окружения: ``1`` - ответы уходят «богатыми сообщениями» (Bot API 10.1 ``sendRichMessage``), при отказе - HTML.
+RICH_ENV = "TELEGRAM_RICH_MESSAGES"
 
 Sleep = Callable[[float], Awaitable[Any]]
 
@@ -50,7 +61,8 @@ Sleep = Callable[[float], Awaitable[Any]]
 @dataclass
 class _Turn:
     started: float
-    label: str = ""
+    steps: List[str] = field(default_factory=list)
+    changed: bool = False
     msg_id: Optional[int] = None
     shown: str = ""
     last_typing: float = -1e9
@@ -65,6 +77,16 @@ def _is_private(chat_id: int) -> bool:
     return chat_id > 0
 
 
+def _is_transient(exc: Exception) -> bool:
+    """Сетевой сбой (таймаут, обрыв связи), а не отказ Telegram по существу: повтор имеет смысл. ``telegram.error``
+    не импортируем (тесты идут без библиотеки): смотрим имена в MRO - ``BadRequest`` наследует ``NetworkError`` в
+    python-telegram-bot, но это отказ сервера (битая разметка, чужое сообщение), его повторять нечего."""
+    names = {cls.__name__ for cls in type(exc).__mro__}
+    if "BadRequest" in names:
+        return False
+    return bool(names & {"TimedOut", "NetworkError", "TimeoutError", "ConnectionError"})
+
+
 def _is_markup_error(exc: Exception) -> bool:
     return "parse entities" in str(exc).lower() or "can't parse" in str(exc).lower()
 
@@ -73,8 +95,10 @@ class ChatSender:
     """Ответы и ход процесса по чатам; один ход на чат."""
 
     def __init__(self, bot: Any, clock: Callable[[], float] = time.monotonic, sleep: Sleep = asyncio.sleep,
-                 log: logging.Logger = _LOG) -> None:
+                 log: logging.Logger = _LOG, rich: Optional[bool] = None) -> None:
         self.bot = bot
+        # Rich messages - за флагом: PTB 21.11.1 метода не знает, шлём сырым do_api_request; отказ - откат на HTML навсегда
+        self._rich_ok = os.environ.get(RICH_ENV, "") == "1" if rich is None else rich
         self._clock = clock
         self._sleep = sleep
         self._log = log
@@ -93,7 +117,10 @@ class ChatSender:
     def set_progress(self, chat_id: int, label: str) -> None:
         if chat_id not in self._turns or self._turns[chat_id].done:
             self.begin(chat_id)
-        self._turns[chat_id].label = label
+        steps = self._turns[chat_id].steps
+        if not steps or steps[-1] != label:  # тот же шаг подряд - не новая строка
+            steps.append(label)
+            self._turns[chat_id].changed = True
 
     async def deliver(self, chat_id: int, text: str, role: str = "") -> None:
         """Ответ в чат: индикатор хода снят, реплика оформлена."""
@@ -122,9 +149,22 @@ class ChatSender:
             turn.last_typing = now
             await self._typing(chat_id)
         elapsed = now - turn.started
-        if turn.label and elapsed >= PROGRESS_AFTER_S and now - turn.last_progress >= PROGRESS_EVERY_S:
-            turn.last_progress = now
-            await self._show_progress(chat_id, turn, chat_render.progress(turn.label, elapsed))
+        due = PROGRESS_STEP_EVERY_S if turn.changed else PROGRESS_EVERY_S  # новый шаг видно раньше счётчика секунд
+        if turn.steps and elapsed >= PROGRESS_AFTER_S and now - turn.last_progress >= due:
+            turn.last_progress, turn.changed = now, False
+            await self._show_progress(chat_id, turn, chat_render.progress(turn.steps, elapsed))
+
+    async def _retry(self, what: str, call: Callable[[], Awaitable[Any]]) -> Any:
+        """Вызов Bot API с повтором при сетевом сбое; отказ по существу и последняя неудача уходят наверх."""
+        for attempt in range(1, RETRY_ATTEMPTS + 1):
+            try:
+                return await call()
+            except Exception as exc:  # noqa: BLE001
+                if attempt == RETRY_ATTEMPTS or not _is_transient(exc):
+                    raise
+                self._log.warning("%s: сеть (%s), повтор %s из %s", what, type(exc).__name__, attempt + 1,
+                                  RETRY_ATTEMPTS)
+                await self._sleep(RETRY_PAUSE_S * attempt)
 
     async def _typing(self, chat_id: int) -> None:
         try:
@@ -134,13 +174,14 @@ class ChatSender:
 
     async def _show_progress(self, chat_id: int, turn: _Turn, item: chat_render.Rendered) -> None:
         if _is_private(chat_id) and turn.draft_ok and turn.msg_id is None:
+            kwargs = {"chat_id": chat_id, "draft_id": DRAFT_ID, "text": item.text, "parse_mode": item.parse_mode}
             try:
-                await self.bot.do_api_request(
-                    "sendMessageDraft",
-                    api_kwargs={"chat_id": chat_id, "draft_id": DRAFT_ID, "text": item.text,
-                                "parse_mode": item.parse_mode})
+                await self._retry("sendMessageDraft",
+                                  lambda: self.bot.do_api_request("sendMessageDraft", api_kwargs=kwargs))
                 return
             except Exception as exc:  # noqa: BLE001 - черновик недоступен: один правимый индикатор сообщением
+                if _is_transient(exc):  # сеть моргнула: этот шаг пропущен, на следующем тике попробуем снова
+                    return
                 turn.draft_ok = False
                 self._log.info("sendMessageDraft chat=%s отвергнут (%r): индикатор - правимое сообщение", chat_id, exc)
         await self._edit_progress_message(chat_id, turn, item)
@@ -150,12 +191,13 @@ class ChatSender:
             return
         turn.shown = item.text
         if turn.msg_id is None:
-            sent = await self.bot.send_message(chat_id=chat_id, text=item.text, parse_mode=item.parse_mode,
-                                               disable_notification=True)
+            sent = await self._retry("send_message(индикатор)", lambda: self.bot.send_message(
+                chat_id=chat_id, text=item.text, parse_mode=item.parse_mode, disable_notification=True))
             turn.msg_id = int(sent.message_id)
         else:
-            await self.bot.edit_message_text(chat_id=chat_id, message_id=turn.msg_id, text=item.text,
-                                             parse_mode=item.parse_mode)
+            msg_id = turn.msg_id
+            await self._retry("edit_message_text", lambda: self.bot.edit_message_text(
+                chat_id=chat_id, message_id=msg_id, text=item.text, parse_mode=item.parse_mode))
 
     async def _end(self, chat_id: int) -> None:
         turn = self._turns.get(chat_id)
@@ -175,19 +217,35 @@ class ChatSender:
         if turn.msg_id is not None:
             msg_id, turn.msg_id = turn.msg_id, None
             try:
-                await self.bot.delete_message(chat_id=chat_id, message_id=msg_id)
+                await self._retry("delete_message", lambda: self.bot.delete_message(chat_id=chat_id, message_id=msg_id))
             except Exception as exc:  # noqa: BLE001
                 self._log.debug("delete_message chat=%s: %r", chat_id, exc)
 
+    async def _send_rich(self, chat_id: int, item: chat_render.Rendered) -> bool:
+        """Реплика богатым сообщением (``rich_message.html`` - тот же HTML, что у :func:`chat_render.render`); ``False`` -
+        Telegram отказал, дальше идёт обычный HTML (и до перезапуска rich больше не пробуем)."""
+        kwargs = {"chat_id": chat_id, "rich_message": {"html": item.text}}
+        try:
+            await self._retry("sendRichMessage", lambda: self.bot.do_api_request("sendRichMessage", api_kwargs=kwargs))
+            return True
+        except Exception as exc:  # noqa: BLE001
+            self._rich_ok = _is_transient(exc)  # сеть моргнула - rich остаётся; отказ сервера - выключаем
+            self._log.warning("sendRichMessage отвергнут (%r): ответы идут обычным HTML, chat=%s", exc, chat_id)
+            return False
+
     async def _send(self, chat_id: int, item: chat_render.Rendered) -> None:
+        if self._rich_ok and await self._send_rich(chat_id, item):
+            return
         options = {"link_preview_options": {"is_disabled": True}}  # у робота ссылка - не карточка сайта
         try:
-            await self.bot.send_message(chat_id=chat_id, text=item.text, parse_mode=item.parse_mode, **options)
+            await self._retry("send_message", lambda: self.bot.send_message(
+                chat_id=chat_id, text=item.text, parse_mode=item.parse_mode, **options))
         except Exception as exc:  # noqa: BLE001
             if not _is_markup_error(exc):
                 raise
             self._log.warning("разметка отвергнута (%r): реплика уходит голым текстом, chat=%s", exc, chat_id)
-            await self.bot.send_message(chat_id=chat_id, text=item.plain, **options)
+            await self._retry("send_message(plain)", lambda: self.bot.send_message(
+                chat_id=chat_id, text=item.plain, **options))
 
 
-__all__ = ["ACTION_TYPING", "ChatSender", "DRAFT_ID", "KIND_BEGIN", "PROGRESS_AFTER_S", "TURN_MAX_S"]
+__all__ = ["ACTION_TYPING", "ChatSender", "DRAFT_ID", "KIND_BEGIN", "PROGRESS_AFTER_S", "RETRY_ATTEMPTS", "RICH_ENV", "TURN_MAX_S"]

@@ -140,6 +140,27 @@ def _result_term_s(duration_ms: Any) -> float:
     return min(kn.SPEECH_RESULT_CEILING_S, seconds + kn.SPEECH_RESULT_SLACK_S)
 
 
+def step_label(tool: str) -> str:
+    """Подпись шага «тул вызван» человеческими словами: свой текст тула, иначе текст его класса (``phrases/ru.yaml``).
+    Параметры вызова в подпись не попадают (ни секретов, ни сырого JSON)."""
+    catalog = phrases.catalog()
+    own = f"chat.tool.{tool}"
+    return phrases.text(own if own in catalog else f"chat.step.{kn.TOOL_CLASSES.get(tool, 'query')}")
+
+
+#: Исходы тула, после которых шаг закрыт как «не вышло»; ``done`` - «готово»; остальное (``pending``) - итога ещё нет.
+STEP_FAILED_STATUSES = frozenset({"rejected", "timeout", "cancelled", "lost", "failed"})
+
+
+def step_outcome(tool: str, status: str) -> Optional[str]:
+    """Подпись шага «тул исполнен»: ``done`` - готово, провал - не вышло (причину строит фраза хода); итога ещё нет -
+    ``None``."""
+    key = "chat.step.outcome.done" if status == "done" else "chat.step.outcome.failed"
+    if status != "done" and status not in STEP_FAILED_STATUSES:
+        return None
+    return phrases.text(key, step=step_label(tool).rstrip("…").rstrip())
+
+
 class ChatPorts:
     """Порты хода одного чата: LLM и исполнение — общие порты хоста (``base``), речь — текст в чат, действия на роботе
     — пульт хоста (``robot``): выступление и ответ лицом исполняет робот, в чат — фраза кода об исполнении.
@@ -162,7 +183,28 @@ class ChatPorts:
     def ask(self, messages: Sequence[Any], tools: Sequence[Any], timeout_s: float) -> Any:
         return self._base.ask(messages, tools, timeout_s)
 
+    def _step(self, label: str) -> None:
+        if self._progress is not None:
+            self._progress(self._ref, label)
+
+    def _steps_started(self, actions: Sequence[Any]) -> None:
+        for call in actions:
+            self._step(step_label(call.tool))
+
+    def _steps_finished(self, results: Any) -> None:
+        for result in results if isinstance(results, (list, tuple)) else ():
+            said = step_outcome(result.tool, result.status) if isinstance(result, ActionResult) else None
+            if said:
+                self._step(said)
+
     async def execute(self, actions: Sequence[Any], snapshot: Any, turn_id: str) -> Any:
+        """Действия владельцам, шаг за шагом в индикатор чата: «Ищу в интернете…», затем «… - готово» / «… - не вышло»."""
+        self._steps_started(actions)
+        results = await self._execute(actions, snapshot, turn_id)
+        self._steps_finished(results)
+        return results
+
+    async def _execute(self, actions: Sequence[Any], snapshot: Any, turn_id: str) -> Any:
         """Действия владельцам. ``say_aloud`` при ``OperatorHold`` — ``rejected{operator_hold}`` без запроса (§9.2.3);
         пользовательская тишина Личности сюда не входит: её кадр в сессии Личности, не чата (О2)."""
         held = {i for i, a in enumerate(actions) if a.tool == kn.ALOUD_TOOL} if self._hold() else set()
@@ -349,5 +391,5 @@ class ChatTurns:
                 return None
 
 
-__all__ = ["CHANNEL_PREFIX", "ChatPorts", "ChatTurns", "LOG_MARK", "Robot", "channel_ref", "chat_of", "face_words",
+__all__ = ["CHANNEL_PREFIX", "ChatPorts", "ChatTurns", "LOG_MARK", "Robot", "channel_ref", "chat_of", "face_words", "step_label", "step_outcome",
            "perform_phrase", "quote", "robot_face", "show_phrase"]

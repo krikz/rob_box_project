@@ -20,7 +20,7 @@ from telegram.error import TimedOut, NetworkError
 from telegram.ext import ContextTypes
 
 from ..auth import authorized
-from ..inbox import log_incoming
+from ..inbox import SAVE_ATTACHMENTS_FOR, log_incoming, quote_of, save_attachment, stash_attachment
 from ..radio import get_radio_mode
 from ..voice_processor import transcribe_voice
 
@@ -41,6 +41,19 @@ async def _react_eyes(update: Update) -> None:
         await update.message.set_reaction("👀")
     except Exception as e:
         logger.debug("set_reaction(👀) not available or failed: %s", e)
+
+
+# ─── Photos / documents → строка [tg-in] с файлом для координатора ─────────────
+
+
+@authorized
+async def attachment_message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Фото и документы: файл владельца сохраняется в контейнере, в лог идёт строка ``[tg-in]`` с ``file=`` и цитатой
+    реплая. Диалогу робота вложение не уходит (картинок он не читает): это канал координатора."""
+    chat_id = update.effective_chat.id
+    file = await stash_attachment(context.bot, update.message, chat_id)
+    caption = (update.message.caption or "").strip()
+    log_incoming(_node(context), chat_id, caption or "[вложение]", reply_to=quote_of(update.message), file=file)
 
 
 # ─── Text messages → forward to /voice/stt/utterance ─────────────────────────
@@ -71,7 +84,7 @@ async def text_message_handler(update: Update, context: ContextTypes.DEFAULT_TYP
         return
 
     # PR-12a (#3706): каждое сообщение — строкой [tg-in] в лог (канал координатора «Клод …»).
-    log_incoming(_node(context), chat_id, user_text)
+    log_incoming(_node(context), chat_id, user_text, reply_to=quote_of(update.message))
 
     # React with 👀 to indicate we received the message
     await _react_eyes(update)
@@ -239,7 +252,8 @@ async def voice_message_handler(update: Update, context: ContextTypes.DEFAULT_TY
         # source marker (issue #1195) — same as text messages, so the
         # LLM reply is routed back into this chat.
         await update.message.reply_text(f"🎤 Распознано: _{text}_", parse_mode="Markdown")
-        log_incoming(node, chat_id, text)
+        saved = save_attachment(ogg_bytes, update.message.message_id, "ogg") if chat_id in SAVE_ATTACHMENTS_FOR else ""
+        log_incoming(node, chat_id, text, reply_to=quote_of(update.message), file=saved or "")
         node.forward_to_stt(text, chat_id=chat_id)
 
 
