@@ -163,7 +163,7 @@ def test_dialog_does_not_know_the_tts_provider():
     from rob_box_dialog.plan import perform  # noqa: PLC0415
 
     assert "tts_provider" not in inspect.signature(perform.PerformBlock).parameters
-    assert not hasattr(rp, "PAUSE_PROVIDERS") and not hasattr(perform, "PAUSE_PROVIDERS")
+    assert not [name for module in (rp, perform) for name in vars(module) if "PROVIDER" in name.upper()]
 
 
 def test_stop_while_waiting_for_the_backing_cancels_nothing_never_sent():
