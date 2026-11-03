@@ -20,8 +20,8 @@ openai-whisper>=20250625
 faster-whisper>=1.2.1  # Faster inference via CTranslate2
 
 # Yandex Cloud STT (fallback, online)
-grpcio>=1.84.1
-grpcio-tools>=1.84.1
+grpcio>=1.85.1
+grpcio-tools>=1.85.1
 protobuf>=7.36.2
 
 # === TTS (Text-to-Speech) ===
@@ -29,8 +29,8 @@ protobuf>=7.36.2
 piper-tts>=1.8.0
 
 # Silero - Alternative offline TTS with multiple voices
-torch>=2.14.1  # CPU only for ARM64
-torchaudio>=2.0.0
+torch>=2.15.0  # CPU only for ARM64
+torchaudio>=2.11.1
 omegaconf>=2.4.0
 
 # Yandex Cloud TTS (fallback, online)
@@ -38,7 +38,7 @@ omegaconf>=2.4.0
 
 # === Dialogue & LLM ===
 # DeepSeek / OpenAI compatible API
-openai>=3.37.0
+openai>=3.41.0
 
 # === Утилиты ===
 pyyaml>=6.0.3
@@ -60,6 +60,6 @@ prometheus_client>=0.26.0
 # пакетов нет, rob_box_voice.observability.tracing превращается в no-op.
 # Endpoint задаётся через OTEL_EXPORTER_OTLP_ENDPOINT (default
 # http://10.1.1.249:4317 — otel-collector на мониторинг-машине).
-opentelemetry-sdk>=1.45.1
-opentelemetry-exporter-otlp>=1.45.1
-opentelemetry-instrumentation-httpx>=0.66b1
+opentelemetry-sdk>=1.45.2
+opentelemetry-exporter-otlp>=1.45.2
+opentelemetry-instrumentation-httpx>=0.66b2

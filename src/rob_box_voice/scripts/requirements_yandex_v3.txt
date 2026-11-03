@@ -2,8 +2,8 @@
 # Установка: pip install -r requirements_yandex_v3.txt
 
 # gRPC для работы с Yandex Cloud API
-grpcio>=1.84.1
-grpcio-tools>=1.84.1
+grpcio>=1.85.1
+grpcio-tools>=1.85.1
 
 # Yandex Cloud ML SDK - содержит tts_pb2, tts_service_pb2_grpc
 # https://pypi.org/project/yandex-cloud-ml-sdk/
