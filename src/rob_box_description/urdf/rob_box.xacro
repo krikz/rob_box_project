@@ -11,6 +11,23 @@
 	<xacro:property name="rocker_mass" value="3"/>
 	<xacro:property name="base_mass" value="62.64527022934752"/>  <!-- От Fusion 360: 62.65 кг -->
 
+	<xacro:arg name="sim" default="false"/>
+	<xacro:property name="is_sim" value="${'$(arg sim)'.lower() in ('true', '1')}"/>
+	<xacro:if value="${is_sim}">
+		<!-- ═══ Режим симуляции (sim:=true), Gazebo Fortress + gz_ros2_control ═══ -->
+		<!-- План: docs/research/2026-11-04-gazebo-sim-navigation.md §6 шаг 1.      -->
+		<!-- При sim:=false (робот) сгенерированный URDF побайтно тот же, что и     -->
+		<!-- до появления аргумента: все сим-добавки живут внутри xacro:if, тест    -->
+		<!-- src/rob_box_description/test/test_xacro_sim_arg.py сверяет с эталоном. -->
+		<!-- Масса: Шифу 03.11 — робот весит ~20 кг (Fusion-масса 149 кг неверна).  -->
+		<!-- Пока правим ТОЛЬКО для сима: шасси 14 кг + 4 колеса по 1.5 кг.         -->
+		<!-- Инерция шасси — Fusion-тензор, умноженный на 14/62.65 (форма та же).   -->
+	</xacro:if>
+	<xacro:property name="sim_base_mass" value="14.0"/>
+	<xacro:property name="sim_wheel_mass" value="1.5"/>
+	<xacro:property name="sim_base_inertia_scale" value="${sim_base_mass / base_mass}"/>
+	<xacro:property name="sim_wheel_width" value="0.075"/>
+
 	<!-- Микрофонный массив ReSpeaker USB Mic Array v2.0 (ADR-0130 §2.9, ADR-0137 §2.2). -->
 	<!-- Положение со слов владельца (28.09.2026): на высоте лидара (z=0.4765), в той же  -->
 	<!-- плоскости x, что лидар и потолочная камера (x≈-0.1707), на ТОМ ЖЕ борту, что и   -->
@@ -35,6 +52,7 @@
 	<!-- Основное шасси - обновлено из Fusion 360 Export -->
 	<!-- base_link в системе ROS (X вперед, Y влево) - исправленный экспорт из Fusion -->
 	<link name="base_link">
+		<xacro:unless value="${is_sim}">
 		<!-- Меш base_link.stl из Fusion 360 - нормализован относительно base_link (0,0,0) -->
 		<inertial>
 			<!-- Инерциальные параметры из Fusion 360 (исправленный экспорт 2e0e5f8) -->
@@ -42,6 +60,14 @@
 			<mass value="${base_mass}"/>
 			<inertia ixx="1.926172" iyy="2.829827" izz="3.653023" ixy="0.001791" iyz="-0.001655" ixz="0.302171"/>
 		</inertial>
+		</xacro:unless>
+		<xacro:if value="${is_sim}">
+		<inertial>
+			<origin xyz="-0.025488169162561854 -2.4090750285970683e-05 0.14529190576177384" rpy="0 0 0"/>
+			<mass value="${sim_base_mass}"/>
+			<inertia ixx="${1.926172 * sim_base_inertia_scale}" iyy="${2.829827 * sim_base_inertia_scale}" izz="${3.653023 * sim_base_inertia_scale}" ixy="${0.001791 * sim_base_inertia_scale}" iyz="${-0.001655 * sim_base_inertia_scale}" ixz="${0.302171 * sim_base_inertia_scale}"/>
+		</inertial>
+		</xacro:if>
 		<visual>
 			<!-- Меш БЕЗ ПОВОРОТА - frame base_link уже повернут через base_footprint_joint -->
 			<origin xyz="0 0 0" rpy="0 0 0"/>
@@ -52,6 +78,7 @@
 				<color rgba="0.75 0.75 0.75 1"/>
 			</material>
 		</visual>
+		<xacro:unless value="${is_sim}">
 		<collision>
 			<!-- Collision также БЕЗ ПОВОРОТА -->
 			<origin xyz="0 0 0" rpy="0 0 0"/>
@@ -59,6 +86,17 @@
 				<mesh filename="package://rob_box_description/meshes/base_link.stl" scale="0.001 0.001 0.001"/>
 			</geometry>
 		</collision>
+		</xacro:unless>
+		<xacro:if value="${is_sim}">
+		<collision>
+			<!-- Сим: коробка по габаритам base_link.stl (x -0.30..0.31, z -0.005..0.49), -->
+			<!-- по Y — между колёсами. Меш-коллизия для физики тяжела.             -->
+			<origin xyz="0.0014 0 0.243" rpy="0 0 0"/>
+			<geometry>
+				<box size="0.61 0.38 0.496"/>
+			</geometry>
+		</collision>
+		</xacro:if>
 	</link>
 
 	<!-- Джойнт base_footprint -> base_link БЕЗ ПОВОРОТА -->
@@ -72,8 +110,9 @@
 
 	<!-- Макросы -->
 	<!-- Wheel Macro - обновлено из Fusion 360 Export (исправленный экспорт 2e0e5f8) -->
-	<xacro:macro name="wheel" params="name origin_xyz axis_xyz visual_origin_xyz">
+	<xacro:macro name="wheel" params="name origin_xyz axis_xyz visual_origin_xyz sim_center_y:=0.0375">
 		<link name="${name}">
+			<xacro:unless value="${is_sim}">
 			<!-- Инерциальные параметры из Fusion 360 (исправленный экспорт) -->
 			<inertial>
 				<mass value="${wheel_mass}"/>
@@ -81,6 +120,15 @@
 				<origin xyz="0 0.0375 0"/>
 				<inertia ixx="0.073667" iyy="0.129466" izz="0.073667" ixy="0" iyz="0" ixz="0"/>
 			</inertial>
+			</xacro:unless>
+			<xacro:if value="${is_sim}">
+			<!-- Сим: сплошной цилиндр r=wheel_radius, ширина 0.075 (по мешу), ось — Y -->
+			<inertial>
+				<mass value="${sim_wheel_mass}"/>
+				<origin xyz="0 ${sim_center_y} 0"/>
+				<inertia ixx="${sim_wheel_mass * (3 * wheel_radius * wheel_radius + sim_wheel_width * sim_wheel_width) / 12}" iyy="${sim_wheel_mass * wheel_radius * wheel_radius / 2}" izz="${sim_wheel_mass * (3 * wheel_radius * wheel_radius + sim_wheel_width * sim_wheel_width) / 12}" ixy="0" iyz="0" ixz="0"/>
+			</inertial>
+			</xacro:if>
 			<visual>
 				<!-- Visual origin: offset меша относительно линка БЕЗ ПОВОРОТА -->
 				<!-- Frame base_link уже повернут через base_footprint_joint -->
@@ -92,6 +140,7 @@
 					<color rgba="0.1 0.1 0.1 1"/>
 				</material>
 			</visual>
+			<xacro:unless value="${is_sim}">
 			<collision>
 				<!-- Collision также БЕЗ ПОВОРОТА -->
 				<origin xyz="${visual_origin_xyz}" rpy="0 0 0"/>
@@ -99,13 +148,37 @@
 					<mesh filename="package://rob_box_description/meshes/${name}.stl" scale="0.001 0.001 0.001"/>
 				</geometry>
 			</collision>
+			</xacro:unless>
+			<xacro:if value="${is_sim}">
+			<collision>
+				<!-- Сим: цилиндр вместо меша — ровный контакт колесо–пол -->
+				<origin xyz="0 ${sim_center_y} 0" rpy="${pi / 2} 0 0"/>
+				<geometry>
+					<cylinder radius="${wheel_radius}" length="${sim_wheel_width}"/>
+				</geometry>
+			</collision>
+			</xacro:if>
 		</link>
 		<joint name="${name}_joint" type="continuous">
 			<parent link="base_link"/>
 			<child link="${name}"/>
 			<origin xyz="${origin_xyz}" rpy="0 0 0"/>
-			<axis xyz="${axis_xyz}"/>
+			<axis xyz="${'0 1 0' if is_sim else axis_xyz}"/>
 		</joint>
+		<xacro:if value="${is_sim}">
+		<!-- Сим: у всех колёс ось +Y. В боевом URDF правые колёса — ось -Y, и     -->
+		<!-- diff_drive_controller в Gazebo крутил их назад: команда «вперёд»       -->
+		<!-- разворачивала робота на месте (замер на песочнице 04.11). На роботе    -->
+		<!-- знак, видимо, учитывает железо VESC — там ось не трогаем.             -->
+		<!-- Трение колёс: стартовые значения, подбор под «эффективную колею 1.11» — шаг 5 плана -->
+		<gazebo reference="${name}">
+			<mu1>1.0</mu1>
+			<mu2>1.0</mu2>
+			<kp>1000000.0</kp>
+			<kd>100.0</kd>
+			<minDepth>0.001</minDepth>
+		</gazebo>
+		</xacro:if>
 	</xacro:macro>
 
 	<!-- Сенсоры -->
@@ -137,6 +210,50 @@
 			<child link="${name}"/>
 			<origin xyz="${origin_xyz}" rpy="${origin_rpy}"/>
 		</joint>
+		<xacro:if value="${is_sim}">
+		<!-- Сим: как настоящий LSLIDAR N10 — полный круг без обрезки                 -->
+		<!-- (angle_disable_min/max 0.0), 0.15–10 м (docker/main/config/lslidar/       -->
+		<!-- lsx10_custom.yaml:14-17), 10 Гц. 360 лучей = 1°. Плоскость скана поднята  -->
+		<!-- на 0.025 м — над верхом меша base_link (z 0.4915), иначе gpu_lidar видит  -->
+		<!-- собственный корпус. Плагин Sensors — в мире (rob_box_sim/worlds).          -->
+		<gazebo reference="${name}">
+			<sensor name="${name}_sensor" type="gpu_lidar">
+				<pose>0 0 0.025 0 0 0</pose>
+				<topic>scan</topic>
+				<ignition_frame_id>${name}</ignition_frame_id>
+				<update_rate>10</update_rate>
+				<ray>
+					<scan>
+						<horizontal>
+							<samples>360</samples>
+							<resolution>1</resolution>
+							<min_angle>-3.14159265</min_angle>
+							<max_angle>3.12413936</max_angle>
+						</horizontal>
+						<vertical>
+							<samples>1</samples>
+							<resolution>1</resolution>
+							<min_angle>0</min_angle>
+							<max_angle>0</max_angle>
+						</vertical>
+					</scan>
+					<range>
+						<min>0.15</min>
+						<max>10.0</max>
+						<resolution>0.01</resolution>
+					</range>
+					<noise>
+						<type>gaussian</type>
+						<mean>0.0</mean>
+						<stddev>0.01</stddev>
+					</noise>
+				</ray>
+				<always_on>1</always_on>
+				<visualize>false</visualize>
+			</sensor>
+		</gazebo>
+		</xacro:if>
+		<xacro:unless value="${is_sim}">
 		<gazebo reference="${name}">
 			<sensor name="${name}_sensor" type="gpu_lidar">
 				<pose>0 0 0 0 0 0</pose>
@@ -170,6 +287,7 @@
 				<render_engine>ogre2</render_engine>
 			</plugin>
 		</gazebo>
+		</xacro:unless>
 	</xacro:macro>
 
 	<!-- OAK-D Camera Macro - соответствует реальной структуре фреймов depthai_ros_driver -->
@@ -333,12 +451,12 @@
 	
 	<!-- Right wheels -->
 	<!-- Right Front: Fusion 360 исправленный экспорт origin="0.144669 -0.195967 0.0289" -->
-	<xacro:wheel name="right_front_wheel" 
+	<xacro:wheel name="right_front_wheel" sim_center_y="-0.0375" 
 	             origin_xyz="0.144669 -0.195967 0.0289" 
 	             axis_xyz="0.0 -1.0 0.0"
 	             visual_origin_xyz="-0.144669 0.195967 -0.0289"/>
 	<!-- Right Rear: Fusion 360 исправленный экспорт origin="-0.143797 -0.195 0.028767" -->
-	<xacro:wheel name="right_rear_wheel" 
+	<xacro:wheel name="right_rear_wheel" sim_center_y="-0.0375" 
 	             origin_xyz="-0.143797 -0.195 0.028767" 
 	             axis_xyz="0.0 -1.0 0.0"
 	             visual_origin_xyz="0.143797 0.195 -0.028767"/>
@@ -360,6 +478,30 @@
 		<child link="mic_array_link"/>
 		<origin xyz="${mic_array_xyz}" rpy="${mic_array_rpy}"/>
 	</joint>
+
+	<xacro:if value="${is_sim}">
+	<!-- Сим: IMU. rtabmap ждёт /camera/imu/data (docker/main/docker-compose.yaml:162); -->
+	<!-- gz-топик imu → ROS /camera/imu/data делает ros_gz_bridge (rob_box_sim).        -->
+	<gazebo reference="camera_imu_frame">
+		<sensor name="imu_sensor" type="imu">
+			<always_on>1</always_on>
+			<update_rate>100</update_rate>
+			<topic>imu</topic>
+			<ignition_frame_id>camera_imu_frame</ignition_frame_id>
+		</sensor>
+	</gazebo>
+	<!-- Сим: истинная поза робота (для проверки, что робот реально едет:           -->
+	<!-- /odom у diff_drive_controller open_loop и считается из команд, а не из физики). -->
+	<gazebo>
+		<plugin filename="ignition-gazebo-odometry-publisher-system" name="ignition::gazebo::systems::OdometryPublisher">
+			<odom_frame>sim_world</odom_frame>
+			<robot_base_frame>base_footprint</robot_base_frame>
+			<odom_topic>/model/rob_box/ground_truth/odom</odom_topic>
+			<odom_publish_frequency>20</odom_publish_frequency>
+			<dimensions>3</dimensions>
+		</plugin>
+	</gazebo>
+	</xacro:if>
 
 	<!-- ros2_control Hardware Interface - VESC Nexus -->
 	<xacro:include filename="rob_box_ros2_control.xacro"/>

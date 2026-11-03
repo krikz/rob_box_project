@@ -10,6 +10,8 @@ on:
       - 'src/*/**.py'
       - 'src/*/test/**.py'
       - 'src/*/package.xml'
+      - 'src/rob_box_description/urdf/**'
+      - 'src/rob_box_description/test/**'
       # '.github/workflows/test.yml' — файла с таким именем в репозитории нет
       # (этот workflow называется 'G-Run Tests.yml'), то есть правка самого
       # workflow'а его не триггерила. Заодно добавлены пути, от которых
@@ -513,6 +515,23 @@ jobs:
             --return-code-on-test-failure \
             --pytest-args ' -m' 'not linter' \
             || { echo "❌ rob_box_perception FAILED (rc=$?)"; exit 1; }
+
+      # Шаг 1 сима (docs/research/2026-11-04-gazebo-sim-navigation.md §6):
+      # rob_box.xacro получил аргумент sim. Тест сверяет URDF робота (sim:=false)
+      # с эталоном src/rob_box_description/test/golden/rob_box_real.urdf и
+      # проверяет сим-ветку. В образе rob-box-ci нет xacro — ставим здесь;
+      # без xacro тест молча скипнулся бы (skipif), отсюда проверка which.
+      - name: URDF sim-arg test (rob_box_description)
+        run: |
+          set -eo pipefail
+          apt-get update -qq
+          apt-get install -y -qq --no-install-recommends ros-humble-xacro
+          source /opt/ros/humble/setup.bash
+          command -v xacro
+          export PYTHONPATH="/usr/local/lib/python3.10/dist-packages:$PYTHONPATH"
+          echo "=== pytest: rob_box_description (xacro sim arg) ==="
+          timeout 120 python3 -m pytest -v -p no:cacheprovider -p no:launch_testing -o addopts= \
+            src/rob_box_description/test/
 
       - name: Display test results
         if: always()
