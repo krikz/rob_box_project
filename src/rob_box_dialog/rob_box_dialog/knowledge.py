@@ -3071,6 +3071,11 @@ def _roles_line(perform: Mapping[str, Any]) -> str:
 JOKE_SEGMENTS_MIN = 4
 TALE_SEGMENTS: Tuple[int, int] = (5, 7)
 
+#: Знаки, которые модель пишет в тексте речи (``speech``, ``perform.segments``) — ADR-0160 §2.1, PR-1 (#4238). Модель
+#: пишет голый текст: паузы, ударения, кавычки, тире прямой речи под голос или экран делает код (приёмник и адаптер
+#: провайдера). Кавычка внутри реплики героя ломала JSON команды (29.10, ``bad_json`` → «Не понял, как это сделать»).
+PLAIN_SPEECH_PUNCTUATION: Tuple[str, ...] = (".", ",", "!", "?", ":", ";")
+
 
 @dataclass(frozen=True)
 class PromptRule:
@@ -3124,6 +3129,14 @@ PROMPT_RULES: Tuple[PromptRule, ...] = (
                f" {JOKE_SEGMENTS_MIN} segments, story {TALE_SEGMENTS[0]}–{TALE_SEGMENTS[1]}, poem one segment per"
                " stanza). No meta-talk instead of the performance: no «Зачитаю рэпчик!», «Погнали!», «Хочешь ещё?»,"
                " no headers like «[Примечание]»."),
+    PromptRule("plain_speech", (AGENTS[0],),
+               "Text in `speech` and `perform.segments` is plain: the robot's code formats it for each voice and"
+               " screen (pauses, stress, quotes, dashes). Write only words and the punctuation"
+               f" {' '.join(PLAIN_SPEECH_PUNCTUATION)} (a hyphen inside a word is fine): no quotation marks of any"
+               " kind, no dash before direct speech, no brackets, no markup (SSML, tags, Markdown), no emoji. A pause"
+               " is the end of a sentence, a new line or a new segment. A hero's words in `perform` are a segment of"
+               " their own, without the hero's name and a colon in front: who speaks is `role_per_segment`. Rap and"
+               " poems: every line of a verse on its own row (a newline)."),
     PromptRule("remote", (TEXT_CHANNEL_AGENT,),
                "A request to act ON the robot («спой», «покажи анимацию», «покекай роботом», «через робота»,"
                " «развлекай народ», «скажи всем, какой прекрасный день») is done through the ROBOT outlets in this"
@@ -3206,7 +3219,7 @@ def prompt_fragment(schema: Optional[Mapping[str, Any]] = None) -> str:
         ("edit_pending", "- edit_pending: true — правка идущего выступления: в perform.segments только новые куплеты,"
                          " они заменят ещё не начатые (с какого — решает код). Пример — «и про енота» посреди рэпа:"
                          " {\"edit_pending\": true, \"perform\": {\"kind\": \"rap\", \"backing\": \"beat\","
-                         " \"segments\": [\"А вот и енот — ночной бандит…\", \"Комар и енот — два ночных бойца…\"]}}."),
+                         " \"segments\": [\"А вот и енот, ночной бандит!\", \"Комар и енот, два ночных бойца!\"]}}."),
         ("expression", f"- expression: emotion ∈ {_set(EMOTIONS)}; gesture ∈ {_set(GESTURES)}; earcon ∈"
                        f" {_set(EARCONS)}; face: {face}; duration_s — сколько секунд держать лицо,"
                        f" {FACE_SHOW_MIN_S:g}–{FACE_SCENE_MAX_S:g}."),

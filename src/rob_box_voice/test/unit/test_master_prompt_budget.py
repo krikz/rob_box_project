@@ -39,6 +39,12 @@ def test_system_prompt_carries_every_rule_of_the_agent_from_knowledge(agent):
     assert [system.index(text) for text in rules] == sorted(system.index(text) for text in rules)
 
 
+@pytest.mark.parametrize("agent", sorted(FILES))
+def test_system_prompt_teaches_no_pause_tags(agent):
+    """Модель пишет голый текст, паузы ставит код (ADR-0160 §2.1, #4238): тега паузы в системном промпте нет."""
+    assert "<break" not in _system(agent)
+
+
 def test_prompt_names_only_snapshot_sections_that_exist():
     """Промпт ссылается на разделы снимка по именам — каждое имя есть в таблице ``CONTEXT_SECTIONS``."""
     system = _system("personality")
