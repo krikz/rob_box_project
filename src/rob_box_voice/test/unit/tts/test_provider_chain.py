@@ -19,7 +19,6 @@ just the attributes the hot path reads (same contract as
 """
 from __future__ import annotations
 
-import json
 import sys
 import threading
 import time
@@ -32,7 +31,7 @@ import pytest
 _PACKAGE_ROOT = Path(__file__).resolve().parents[3]  # rob_box_voice/
 sys.path.insert(0, str(_PACKAGE_ROOT))
 
-from test.unit.tts.conftest import _install_all_mocks  # noqa: E402
+from test.unit.tts.conftest import FinalsSpy, _install_all_mocks  # noqa: E402
 
 _install_all_mocks()
 
@@ -193,7 +192,7 @@ def _playback_node() -> _Bare:
     node.playback_manager = MagicMock()
     node.playback_manager.play_audio.return_value = True
     node.cleanup_playback_noise = MagicMock()
-    node.finished_pub = MagicMock()
+    node._speech = FinalsSpy()  # #4252 ч.2: финал реплики — у владельца речи
     node.audio_output_sample_rate = 16000
     node._prepare_audio_for_topic = TTSNode._prepare_audio_for_topic.__get__(node, type(node))  # type: ignore[attr-defined]
 
@@ -369,7 +368,7 @@ def test_chain_ttl_expiry_retries_minimax_first() -> None:
 # so the NEXT (non-empty!) TTS request from ANY caller — including TARS's
 # own personality voice — went silent for 30 seconds. These tests pin the
 # fix at the single choke-point ``_synthesize_and_play`` uses for every
-# caller (dialogue_callback / /avatar/tts/request / /voice/tts/request):
+# caller (dialogue_callback, speaker and headset alike):
 # an empty/whitespace ``text`` must short-circuit BEFORE any provider is
 # touched, and must never populate ``_provider_dead_until``.
 
@@ -399,12 +398,8 @@ def test_chain_empty_text_never_calls_a_provider_or_marks_dead() -> None:
         f"empty text must not mark any provider dead: {node._provider_dead_until}"
     )
     # Caller still gets a finished(success=False) — it must not hang.
-    node.finished_pub.publish.assert_called_once()
-    finished_msg = node.finished_pub.publish.call_args[0][0]
-    finished_payload = json.loads(finished_msg.data)
-    assert finished_payload["speech_id"] == "sid-empty-1"
-    assert finished_payload["success"] is False
-    assert finished_payload["error"] == "empty_text"
+    (final,) = node._speech.finals
+    assert (final["speech_id"], final["success"], final["error"]) == ("sid-empty-1", False, "empty_text")
 
 
 def test_chain_whitespace_only_text_never_calls_a_provider_or_marks_dead() -> None:

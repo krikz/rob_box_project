@@ -255,7 +255,6 @@ class TestDefaultProviderPath:
         node.playback_manager = MagicMock()
         node.playback_manager.play_audio.return_value = True
         node.cleanup_playback_noise = MagicMock()
-        node.finished_pub = MagicMock()
 
         tts_node.TTSNode._synthesize_and_play(
             node,

@@ -45,7 +45,7 @@ from unittest.mock import MagicMock
 _PACKAGE_ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(_PACKAGE_ROOT))
 
-from test.unit.tts.conftest import _install_all_mocks  # noqa: E402
+from test.unit.tts.conftest import FinalsSpy, _install_all_mocks  # noqa: E402
 
 _install_all_mocks()
 
@@ -98,7 +98,7 @@ def _make_node() -> TTSNode:
     logger = _CapturingLogger()
     n._logger = logger
     n.get_logger = lambda: logger
-    n.finished_pub = _CapturingPublisher()
+    n._speech = FinalsSpy()  # #4252 ч.2: финал реплики — у владельца речи
     n._submit_synthesis = MagicMock()
 
     # FIFO-gate state (issue #1996) + новая очередь (issue #2553).
@@ -121,7 +121,7 @@ def _msg(payload: dict):
 
 
 def _finished_payloads(node) -> list:
-    return [json.loads(m.data) for m in node.finished_pub.messages]
+    return list(node._speech.finals)
 
 
 # ── 1. active batch другой batch_id → chunk в очередь, _submit_synthesis НЕ зовётся
@@ -138,8 +138,8 @@ def test_new_chunk_from_different_batch_is_queued():
     Expect:
       - ``_submit_synthesis`` НЕ зовётся.
       - ``_pending_speech_queue`` имеет 1 элемент с правильными полями.
-      - ``finished_pub`` получает finished с success=True и queued=True
-        (НЕ batch_complete — реальное завершение придёт после drain).
+      - владелец речи получает финал success=True с queued=True
+        (батч НЕ закрыт — реальное завершение придёт после drain).
     """
     node = _make_node()
     node._play_active_seq = 1
@@ -175,9 +175,8 @@ def test_new_chunk_from_different_batch_is_queued():
     assert finished[0]["speech_id"] == "babble-retry-001"
     assert finished[0]["success"] is True
     assert finished[0]["queued"] is True
-    assert finished[0]["batch_id"] == "babble-retry-M"
     # батч НЕ закрыт — иначе конец батча пришёл бы раньше времени.
-    assert not any(p.get("batch_complete") for p in finished)
+    assert not any("batch closed" in m for m in node._logger.info_msgs)
 
 
 # ── 2. active batch тот же batch_id → submit идёт по-старому (FIFO внутри batch)
@@ -514,7 +513,7 @@ def test_pending_queue_overflow_drops_with_warning():
     assert finished[0]["error"] == "pending_queue_overflow"
     assert finished[0]["queued"] is True
     # батч НЕ закрыт (queued=True подавляет).
-    assert not any(p.get("batch_complete") for p in finished)
+    assert not any("batch closed" in m for m in node._logger.info_msgs)
 
 
 # ── 9. AST-страховка: новые методы живут в TTSNode (no orphan import)

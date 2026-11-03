@@ -14,8 +14,8 @@ The fix moves the cold-load into a daemon ``Thread`` started from
 ``TTSNode.__init__`` whenever Silero is *only* a fallback (i.e. the
 primary provider is yandex or minimax).  The synchronous synth path
 waits up to 1.5 s on a ``threading.Event`` (``self._silero_loaded``);
-on timeout it skips playback for that one chunk (publishing a
-``silero_warming`` marker on ``/voice/tts/finished``) so the user
+on timeout it skips playback for that one chunk (the chunk ends with
+an honest failure final, SpeechEvent ``rejected``) so the user
 hears the *next* fallback at full speed instead of a hang.
 
 This module proves the runtime + structural invariants of the fix:
@@ -35,9 +35,8 @@ This module proves the runtime + structural invariants of the fix:
   6. On a successful warm-load the hot-path ``_synthesize_and_play``
      fallback branch doesn't pay the cold-load latency (the model
      attribute is already populated when we enter the branch).
-  7. The hot-path skip-on-timeout publishes ``silero_warming:<id>``
-     on ``/voice/tts/finished``
-     so barge-in state stays consistent.
+  7. The hot-path skip-on-timeout ends the chunk with a failure final
+     (no audio) so the speech owner's journal stays consistent.
 
 The tests use ``conftest.py``'s rclpy/grpc/torch stubs so
 ``rob_box_voice.tts_node`` is importable in a developer environment
@@ -108,7 +107,7 @@ def _destroy_node(node) -> None:
     # explicit join needed (and unsafe — the thread is intentionally
     # daemon=True so it never blocks shutdown).
     for attr in (
-        "_synthesis_executor", "audio_pub", "state_pub", "finished_pub",
+        "_synthesis_executor", "audio_pub",
         "dialogue_sub", "tts_request_sub", "control_sub",
         "_new_dialogue_id_sub", "playback_manager", "_yandex_tts",
     ):
@@ -479,11 +478,14 @@ def test_warm_load_disabled_hot_path_lazy_loads(tts_node_module) -> None:
             synth_mock = MagicMock(
                 side_effect=RuntimeError("simulated Yandex gRPC fail")
             )
+            finals = MagicMock(wraps=node._publish_tts_finished)
+            node._publish_tts_finished = finals
             with patch.object(node._yandex_tts, "synthesize_np", synth_mock):
                 t0 = time.monotonic()
                 node._synthesize_and_play(
                     text="test",
                     dialogue_id="dlg-lazy-load",
+                    speech_id="sid-lazy-load",
                 )
                 elapsed = time.monotonic() - t0
 
@@ -499,16 +501,10 @@ def test_warm_load_disabled_hot_path_lazy_loads(tts_node_module) -> None:
                 f"lazy-load path must be synchronous and fast with stubbed model; "
                 f"got {elapsed:.2f}s"
             )
-            # No silero_warming skip marker — the chunk actually played.
-            published = []
-            for call in node.finished_pub.publish.call_args_list:
-                try:
-                    published.append(call.args[0].data)
-                except Exception:  # noqa: BLE001
-                    pass
-            assert not any("silero_warming" in p for p in published), (
-                f"warm-load-disabled path must NOT publish silero_warming skip "
-                f"marker; got publishes: {published}"
+            # No skip — the chunk was synthesized by Silero, not failed for warming.
+            assert node._silero_tts.model is not None
+            assert not any(c.kwargs.get("error") == "silero_warming" for c in finals.call_args_list), (
+                f"warm-load-disabled path must not skip the chunk; finals: {finals.call_args_list}"
             )
             # NOTE: dialogue bookkeeping is intentionally NOT asserted
             # here — it is cleared at the very end of _synthesize_and_play
@@ -554,7 +550,7 @@ def test_warm_load_failure_still_sets_event(tts_node_module) -> None:
         _destroy_node(node)
 
 
-def test_hot_path_skips_on_timeout_and_publishes_marker(tts_node_module) -> None:
+def test_hot_path_skips_on_timeout_with_failure_final(tts_node_module) -> None:
     """If warm-load is slow (>1.5 s), hot-path skips playback for that chunk.
 
     Acceptance criterion: "TTSNode init не блокирует основной поток >0.5 с"
@@ -594,10 +590,13 @@ def test_hot_path_skips_on_timeout_and_publishes_marker(tts_node_module) -> None
             node._yandex_tts, "synthesize_np",
             side_effect=RuntimeError("simulated Yandex gRPC fail"),
         ):
+            finals = MagicMock(wraps=node._publish_tts_finished)
+            node._publish_tts_finished = finals
             t0 = time.monotonic()
             node._synthesize_and_play(
                 text="test",
                 dialogue_id="dlg-skip-test",
+                speech_id="sid-skip-test",
             )
             elapsed = time.monotonic() - t0
 
@@ -607,19 +606,11 @@ def test_hot_path_skips_on_timeout_and_publishes_marker(tts_node_module) -> None
             f"got {elapsed:.2f}s — either timeout missing or not bounded"
         )
 
-        # finished_pub should have published 'silero_warming:<id>'.
-        # The conftest's create_publisher returns a MagicMock, so
-        # finished_pub.publish is a MagicMock we can inspect.
-        published = []
-        for call in node.finished_pub.publish.call_args_list:
-            try:
-                published.append(call.args[0].data)
-            except Exception:  # noqa: BLE001
-                pass
-        assert any("silero_warming:dlg-skip-test" in p for p in published), (
-            f"hot-path skip-on-timeout must publish "
-            f"'silero_warming:<dialogue_id>' on /voice/tts/finished; "
-            f"got publishes: {published}"
+        # #4252 ч.2: маркера ``silero_warming`` в /voice/tts/finished нет — пропущенный чанк
+        # закрывается честным финалом-провалом (SpeechEvent ``rejected``), звук не публикуется.
+        skipped = [c for c in finals.call_args_list if c.args and c.args[0] == "sid-skip-test"]
+        assert skipped and (skipped[-1].kwargs["success"], skipped[-1].kwargs["error"]) == (False, "silero_warming"), (
+            f"hot-path skip-on-timeout must end the chunk with a failure final; got {finals.call_args_list}"
         )
 
     finally:
