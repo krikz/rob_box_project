@@ -218,6 +218,10 @@ speak_aloud.rejected.operator_hold: ["Не озвучил: оператор за
 speak_aloud.lost: ["Не знаю, договорил ли: нет события от динамиков."]
 speak_aloud.timeout: ["Не знаю, прозвучало ли: итога от динамиков нет."]
 
+# --- ход процесса в чате Telegram: подпись шага, чат правит одно сообщение (chats.ChatPorts, #4243) --------------
+chat.progress.thinking: ["Думаю…"]
+chat.progress.executing: ["Делаю…"]
+
 # --- пульт робота из чата Telegram (chats.ChatPorts): что робот сделал — фраза кода в чат ---------------
 remote.perform.song: ["Пою на роботе: «{line}»"]
 remote.perform.rap: ["Читаю рэп на роботе: «{line}»"]

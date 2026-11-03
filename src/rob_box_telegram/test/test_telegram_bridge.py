@@ -697,8 +697,58 @@ class TestTelegramBridge(unittest.IsolatedAsyncioTestCase):
         except asyncio.CancelledError:
             pass
 
+        # #4243: ответ идёт через оформитель чата (HTML, ссылки без карточек), текст короткий - как есть.
         self.node._telegram_app.bot.send_message.assert_awaited_once_with(
-            chat_id=42, text="Привет!"
+            chat_id=42, text="Привет!", parse_mode="HTML", link_preview_options={"is_disabled": True}
+        )
+
+    async def test_dialog_output_with_role_and_kind_reaches_the_queue_as_four_items(self) -> None:
+        """#4243: реплика героя и подпись шага идут в чат с ``role``/``kind``; обычный ответ - прежней парой."""
+        from rob_box_core import dialog_engine
+
+        with patch.object(dialog_engine, "declare", return_value=dialog_engine.V2):
+            node = self._node_mod.TelegramNode()
+        node._telegram_loop, node._response_queue = asyncio.get_running_loop(), asyncio.Queue()
+        sub = next(s for s in node._created_subscriptions if s.topic == "/dialog/output")
+        out = types.SimpleNamespace
+        sub.callback(out(agent="telegram", channel_ref="telegram:7", text="Ты делал бэкап?", speech_id="s", role="Ермил", kind=""))
+        sub.callback(out(agent="telegram", channel_ref="telegram:7", text="Думаю…", speech_id="", role="", kind="progress"))
+        sub.callback(out(agent="telegram", channel_ref="telegram:7", text="Привет", speech_id="s", role="", kind=""))
+        await asyncio.sleep(0)
+        got = [node._response_queue.get_nowait() for _ in range(3)]
+        self.assertEqual(got, [(7, "Ты делал бэкап?", "Ермил", ""), (7, "Думаю…", "", "progress"), (7, "Привет")])
+
+    async def test_worker_routes_begin_and_progress_to_the_indicator_and_hero_to_a_quote(self) -> None:
+        from rob_box_telegram import chat_sender
+
+        node = self.node
+        node._telegram_loop = asyncio.get_running_loop()
+        queue = asyncio.Queue()
+        node._response_queue = queue
+        node._telegram_app = MagicMock(name="Application")
+        bot = node._telegram_app.bot = MagicMock(name="Application.bot")
+        bot.send_message, bot.send_chat_action = AsyncMock(), AsyncMock()
+        done = asyncio.Event()
+
+        async def _sent(**kwargs) -> None:
+            done.set()
+
+        bot.send_message.side_effect = _sent
+        worker = asyncio.create_task(node._chat_echo_worker())
+        queue.put_nowait((42, "", "", chat_sender.KIND_BEGIN))
+        await asyncio.sleep(0.05)  # индикатор успел сказать «печатает» до ответа
+        queue.put_nowait((42, "Думаю…", "", "progress"))
+        queue.put_nowait((42, "Ты делал бэкап?", "Ермил", ""))
+        await asyncio.wait_for(done.wait(), timeout=2.0)
+        worker.cancel()
+        try:
+            await worker
+        except asyncio.CancelledError:
+            pass
+        bot.send_chat_action.assert_awaited()
+        bot.send_message.assert_awaited_once_with(
+            chat_id=42, text="<b>Ермил</b>\n<blockquote>Ты делал бэкап?</blockquote>", parse_mode="HTML",
+            link_preview_options={"is_disabled": True}
         )
 
     # ── Test 2: Camera image → forwarded to appropriate topic ─────────

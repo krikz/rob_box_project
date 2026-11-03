@@ -2098,6 +2098,8 @@ EXECUTING_FACE: Mapping[str, Tuple[str, ...]] = MappingProxyType({
 })
 #: Стадии хода (``TurnEvent.stage``, §2.3), на которые есть рефлекс.
 TURN_STAGES: Tuple[str, ...] = ("addressed", "thinking", "executing", "speaking", "done", "failed", "timeout")
+#: Стадии, подпись которых видит чат пока ход идёт (``chat.progress.<стадия>`` в ``phrases/ru.yaml``).
+CHAT_PROGRESS_STAGES: Tuple[str, ...] = ("thinking", "executing")
 
 
 @dataclass(frozen=True)

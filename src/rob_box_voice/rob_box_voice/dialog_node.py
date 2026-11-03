@@ -63,7 +63,7 @@ from rob_box_dialog.address import log_label
 from rob_box_dialog.address import person_ref_from
 from rob_box_dialog.address import wake_words as load_wake_words
 from rob_box_dialog.backlog import Backlog
-from rob_box_dialog.chats import LOG_MARK as CHAT_LOG_MARK, ChatPorts, ChatTurns, channel_ref
+from rob_box_dialog.chats import LOG_MARK as CHAT_LOG_MARK, PROGRESS_KIND, ChatPorts, ChatTurns, channel_ref
 from rob_box_dialog.e2e_events import open_events
 from rob_box_dialog.execute import transport_timeouts
 from rob_box_dialog.interrupt import TurnsInFlight, on_interrupt
@@ -311,10 +311,14 @@ def build_chats(node: Any, tools: Any, intent_pub: Any, wake: Any, hold: Any = l
     pub = node.create_publisher(DialogOutput, "/dialog/output", 10)
     log = node.get_logger().info
 
-    def send(ref: str, text: str, speech_id: str) -> None:
+    def send(ref: str, text: str, speech_id: str, role: str = "", kind: str = "") -> None:
         msg = DialogOutput()
         msg.agent, msg.channel_ref, msg.text, msg.speech_id = kn.TEXT_CHANNEL_AGENT, ref, text, speech_id
+        msg.role, msg.kind = role, kind
         pub.publish(msg)
+
+    def progress(ref: str, label: str) -> None:
+        send(ref, label, "", kind=PROGRESS_KIND)
 
     chat_tools = build_chat_tools(node, tools)
 
@@ -322,7 +326,7 @@ def build_chats(node: Any, tools: Any, intent_pub: Any, wake: Any, hold: Any = l
         session = Session(kn.TEXT_CHANNEL_AGENT, clock=time.time, session_id=channel_ref(chat_id))
         base = V2Ports(node, llm, counter, chat_tools, agent=kn.TEXT_CHANNEL_AGENT, intent_pub=intent_pub, log=log,
                        epoch=lambda: session.snapshot.epoch)
-        ports = ChatPorts(base, chat_id, send, log, hold, robot)
+        ports = ChatPorts(base, chat_id, send, log, hold, robot, progress)
         chats.adopt(base.executor)
         engine = TurnEngine(session, ports, system_prompt=system, log=_RosLog(node.get_logger()),  # потолок хода (В31)
                             sing=sing, voices=voices)

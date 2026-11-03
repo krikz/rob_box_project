@@ -248,7 +248,7 @@ class V2Ports:
 
     def say(self, turn_id: str, epoch: int, text: str, voice: Optional[str] = None,
             emotion: Optional[str] = None) -> str:
-        utterance = Utterance(text=text, sink=Sink.SPEAKERS, voice=voice or None, emotion=emotion or None,
+        utterance = Utterance(text=text, sink=Sink.SPEAKERS, voice=voice or None, role=voice or "", emotion=emotion or None,
                               speech_id=str(uuid.uuid4()))
         return speech_client.say(self._node, utterance, agent=self._agent, epoch=epoch, turn_id=turn_id)
 

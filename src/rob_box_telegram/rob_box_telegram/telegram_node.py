@@ -8,7 +8,7 @@ from rclpy.node import Node
 from rclpy.qos import DurabilityPolicy, HistoryPolicy, QoSProfile, ReliabilityPolicy
 from sensor_msgs.msg import CompressedImage
 from nav_msgs.msg import OccupancyGrid
-from rob_box_dialog.chats import chat_of
+from rob_box_dialog.chats import PROGRESS_KIND, chat_of
 from rob_box_dialog_msgs.msg import DialogOutput, SpeechEvent
 from rob_box_dialog_msgs.msg import Utterance as UtteranceMsg
 from std_msgs.msg import String
@@ -49,6 +49,7 @@ from .handlers.messages import text_message_handler, voice_message_handler
 
 # AV-23 (issue #1915, P8): per-chat /radio mode — голосовые из Telegram
 # как рация → /avatar/voice_in. См. radio.py + voice_transcode.py.
+from .chat_sender import KIND_BEGIN, ChatSender
 from .radio import RadioPublisher
 from .speech_receipts import SpeechReceipts
 
@@ -98,14 +99,16 @@ def _say_with_receipt(node, text: str, chat_id: Optional[int]) -> str:
     return node.publish_tts(text, speech_id=speech_id)
 
 
-def _send_chat_text(node, chat_id: int, text: str) -> None:
-    """Текст в чат с ROS-потока: через очередь telegram-loop, как эхо диалога (без run_coroutine_threadsafe)."""
+def _send_chat_text(node, chat_id: int, text: str, role: str = "", kind: str = "") -> None:
+    """Текст в чат с ROS-потока: через очередь telegram-loop, как эхо диалога (без run_coroutine_threadsafe).
+    Элемент очереди - ``(chat_id, text)`` или, у героя/хода процесса, ``(chat_id, text, role, kind)``."""
     loop, queue = node._telegram_loop, node._response_queue
+    item = (int(chat_id), text, role, kind) if role or kind else (int(chat_id), text)
     if not (loop and queue and chat_id):
         node.get_logger().warning(f"Квитанция не доставлена: бот не готов (chat_id={chat_id!r}): {text!r}")
         return
     try:
-        loop.call_soon_threadsafe(queue.put_nowait, (int(chat_id), text))
+        loop.call_soon_threadsafe(queue.put_nowait, item)
     except RuntimeError as exc:
         node.get_logger().error(f"Не удалось отправить квитанцию (loop закрыт?): {exc!r}")
 
@@ -121,7 +124,11 @@ def _on_dialog_output(send, msg) -> None:
     """``/dialog/output`` (v2): ответ телеграм-агента своему чату (ADR-0150 §9.2, PR-12a); чужой канал — мимо."""
     chat_id = chat_of(msg.channel_ref)
     if msg.agent == "telegram" and chat_id is not None and msg.text:
-        send(chat_id, msg.text)
+        role, kind = str(getattr(msg, "role", "") or ""), str(getattr(msg, "kind", "") or "")
+        if role or kind:  # реплика героя / подпись шага: оформитель чата (chat_render, chat_sender)
+            send(chat_id, msg.text, role=role, kind=kind)
+        else:
+            send(chat_id, msg.text)
 
 
 def _subscribe_replies(node, group):
@@ -133,6 +140,30 @@ def _subscribe_replies(node, group):
                                         callback_group=group), None
     send = functools.partial(_on_dialog_output, functools.partial(_send_chat_text, node))
     return None, node.create_subscription(DialogOutput, "/dialog/output", send, _RE, callback_group=group)
+
+
+def _unpack(item):
+    """Элемент очереди чата -> ``(chat_id, text, role, kind)``: у квитанций и эха v1 только ``(chat_id, text)``."""
+    chat_id, text, *rest = item
+    role, kind = (rest + ["", ""])[:2]
+    return chat_id, text, role, kind
+
+
+def _sender_of(app, sender):
+    """Отправщик чата на текущем боте приложения; приложения ещё нет - ``None``."""
+    if app is None:
+        return None
+    return sender if sender is not None and sender.bot is app.bot else ChatSender(app.bot)
+
+
+async def _dispatch(sender, chat_id: int, text: str, role: str, kind: str) -> None:
+    """Подпись шага и начало хода - в индикатор процесса, остальное - ответ в чат с оформлением."""
+    if kind == KIND_BEGIN:
+        sender.begin(chat_id)
+    elif kind == PROGRESS_KIND:
+        sender.set_progress(chat_id, text)
+    else:
+        await sender.deliver(chat_id, text, role)
 
 
 def _flush_expired(receipts, send) -> None:
@@ -374,6 +405,7 @@ class TelegramNode(Node):
             self.set_active_chat(chat_id)
             m.source = UtteranceMsg.SOURCE_TELEGRAM
             m.chat_id = int(chat_id)
+            _send_chat_text(self, chat_id, "", kind=KIND_BEGIN)  # ход пошёл: «печатает» сразу (chat_sender)
         else:
             m.source = UtteranceMsg.SOURCE_OPERATOR
         # Issue #1160 — Prometheus metrics: входящее сообщение (текст/команда).
@@ -588,18 +620,20 @@ class TelegramNode(Node):
         queue = self._response_queue
         if queue is None:
             return
+        sender = None
         try:
             while True:
-                chat_id, text = await queue.get()
-                app = self._telegram_app
-                if app is None:
+                chat_id, text, role, kind = _unpack(await queue.get())
+                sender = _sender_of(self._telegram_app, sender)
+                if sender is None:
                     continue
                 try:
-                    await app.bot.send_message(chat_id=chat_id, text=text)
+                    await _dispatch(sender, chat_id, text, role, kind)
                 except Exception as exc:  # noqa: BLE001
                     self.get_logger().warning(f"Failed to echo LLM reply to chat {chat_id}: {exc!r}")
         except asyncio.CancelledError:
-            pass
+            if sender is not None:
+                await sender.close()
 
     def _start_telegram_bot(self, token: str) -> None:
         threading.Thread(

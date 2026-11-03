@@ -183,7 +183,8 @@ class Console:
             if voice and voice not in roles:
                 roles.append(voice)
             colour = ROLE_COLOURS[roles.index(voice) % len(ROLE_COLOURS)] if voice else "GREEN"
-            self.say(f"{getattr(C, colour)}🤖 {sf.screen(line, voice)}{C.RESET}")
+            shown = sf.screen(line, voice, width=max(40, shutil.get_terminal_size((100, 24)).columns - 4))
+            self.say(f"{getattr(C, colour)}🤖 {shown.replace(chr(10), chr(10) + '   ')}{C.RESET}")
             for provider in self.voices:
                 voiced = provider.voice(line, getattr(self.args, "bar_s", 0.0))
                 self.say(f"{C.DIM}   {voiced.provider:7} {voiced.text}\n"

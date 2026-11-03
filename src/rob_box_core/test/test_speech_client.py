@@ -223,3 +223,14 @@ def test_is_speech_end_tolerates_events_without_a_kind():
 def test_event_outcome_maps_speech_event_to_action_status(kind, reason, seconds, expected):
     event = types.SimpleNamespace(kind=kind, reason=reason, seconds=seconds)
     assert speech_client.event_outcome(event) == expected
+
+
+def test_role_goes_to_the_request_and_defaults_to_narrator():
+    """#4243: герой реплики (ADR-0160 §2.3) доходит до ``SpeechRequest.role``; без роли - рассказчик (``""``)."""
+    node = _Node()
+    speech_client.say(node, Utterance(text="Ты делал бэкап?", voice="ermil", role="Ермил"), agent="personality")
+    speech_client.say(node, Utterance(text="Привет"), agent="personality")
+    first, second = node.pubs[0].sent
+    assert (first.role, second.role) == ("Ермил", "")
+    assert Utterance(text="x", role="Ермил").to_request()["role"] == "Ермил"
+    assert "role" not in Utterance(text="x").to_request()

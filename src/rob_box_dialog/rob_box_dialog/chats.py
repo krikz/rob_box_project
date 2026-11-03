@@ -42,10 +42,15 @@ from rob_box_dialog.turn import Shown
 _LOG = logging.getLogger(__name__)
 #: Строка лога телеграм-агента.
 LOG_MARK = "💬 [tg-agent]"
+#: ``DialogOutput.kind`` подписи шага хода (пустой ``kind`` — реплика).
+PROGRESS_KIND = "progress"
 #: ``DialogOutput.channel_ref`` чата: ``telegram:<chat_id>``.
 CHANNEL_PREFIX = "telegram:"
-#: ``Send(channel_ref, text, speech_id)`` — публикация ``DialogOutput`` хостом.
-Send = Callable[[str, str, str], None]
+#: ``Send(channel_ref, text, speech_id)`` — публикация ``DialogOutput`` хостом; реплика героя (ADR-0160 §2.3) — с
+#: ключом ``role=<герой>``: оформитель чата ставит его в заголовок (рассказчику роль не передаётся).
+Send = Callable[..., None]
+#: ``Progress(channel_ref, label)`` — подпись шага хода («Думаю…»): чат правит ею одно сообщение, а не шлёт новые.
+Progress = Callable[[str, str], None]
 
 
 def channel_ref(chat_id: int) -> str:
@@ -143,8 +148,10 @@ class ChatPorts:
     личности стоп из чата не рвёт; стоп движения — тот же интент, что у голоса."""
 
     def __init__(self, base: Any, chat_id: int, send: Send, log: Callable[[str], None] = _LOG.info,
-                 hold: Callable[[], bool] = lambda: False, robot: Optional[Robot] = None) -> None:
+                 hold: Callable[[], bool] = lambda: False, robot: Optional[Robot] = None,
+                 progress: Optional[Progress] = None) -> None:
         self._base = base
+        self._progress = progress
         self._ref = channel_ref(chat_id)
         self._send = send
         self._log = log
@@ -184,7 +191,10 @@ class ChatPorts:
         """Реплика хода (слова модели, фраза кода об исходе) — текстом в чат; в динамики робота она не идёт."""
         speech_id = uuid.uuid4().hex
         self._said = turn_id
-        self._send(self._ref, text, speech_id)
+        if voice:
+            self._send(self._ref, text, speech_id, role=voice)
+        else:
+            self._send(self._ref, text, speech_id)
         self._log(f"{LOG_MARK} → {self._ref} turn={turn_id} epoch={epoch} chars={len(text)}")
         return speech_id
 
@@ -197,6 +207,8 @@ class ChatPorts:
         if status != "started":
             self._log(f"{LOG_MARK} {self._ref} turn={turn_id} stage={stage} status={status} reason={reason or '-'} "
                       f"llm_calls={llm_calls} provider={provider or '-'}")
+        elif self._progress is not None and stage in kn.CHAT_PROGRESS_STAGES:  # ход идёт: подпись шага, а не молчание
+            self._progress(self._ref, phrases.text(f"chat.progress.{stage}"))
         face = robot_face(expression, said=self._said == turn_id)
         if face is None or self._robot is None:
             return False

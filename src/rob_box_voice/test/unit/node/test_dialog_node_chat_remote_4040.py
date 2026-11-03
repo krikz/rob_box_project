@@ -118,7 +118,7 @@ def test_sing_from_telegram_is_performed_by_the_robot_in_the_personality_epoch(m
 
     started = made._tool_executor.performer.started
     assert [(list(p.segments), e) for p, _, e in started] == [(BOAR, epoch)]
-    out = [(o.agent, o.channel_ref, o.text) for o in _published(made, "/dialog/output")]
+    out = [(o.agent, o.channel_ref, o.text) for o in _published(made, "/dialog/output") if not o.kind]
     assert out == [("telegram", "telegram:42", "Пою на роботе: «Вот идёт кабан по грязи, хрюкает на всю округу»")]
     assert not any(BOAR[1] in text for _, _, text in out), "текст песни в чат не идёт"
     assert _published(made, "/voice/speech/request") == [], "служебной речи агента чата в динамиках нет"
@@ -131,6 +131,6 @@ def test_show_from_telegram_lands_on_the_robot_face_without_a_turn_event(made):
     assert made.test_tools.calls == [("play_animation", {"animation": "rainbow"})]
     faces = _published(made, "/voice/expression/request")
     assert [(f.agent, f.emotion, f.earcon) for f in faces] == [("personality", "rainbow", "")]
-    assert [o.text for o in _published(made, "/dialog/output")] == ["Показываю на роботе: rainbow."]
+    assert [o.text for o in _published(made, "/dialog/output") if not o.kind] == ["Показываю на роботе: rainbow."]
     assert _published(made, "/dialog/turn_event") == [], "хода у робота нет: кольцо и метрики хода не трогаются"
     assert _published(made, "/voice/speech/request") == []
