@@ -1797,6 +1797,7 @@ QUERY_FALLBACK_PHRASES: Mapping[str, Any] = MappingProxyType({
     "memory_context": MEMORY_FACTS_PHRASE,
     "get_sound_info": "query.sounds_summary",
     "search_web": "query.web_found",
+    "container_status": "query.containers_summary",
 })
 #: Сколько названий называет фраза списка библиотеки: 2–3, не весь список (варианты одного заказа - одно имя).
 LIBRARY_SUMMARY_NAMES = 3

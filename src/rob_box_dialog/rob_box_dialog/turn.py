@@ -455,6 +455,15 @@ def words_owed(snapshot: SessionSnapshot, text: str, cmd: Command) -> bool:
     return speaks_aloud(snapshot) and needs_words(text, cmd)
 
 
+def read_owed(snapshot: SessionSnapshot, turn: "_Turn", cmd: Command) -> bool:
+    """Ход прочитал данные (``_Turn.queried``), а ответ - одно лицо без слов, и лица человек не просил (#4295, класс
+    К2 #4157; живой 03.11: ТАРС на «статус контейнеров» прочитал ``container_status`` и показал ``thinking`` - в Telegram
+    ничего). Слов после чтения ждут от КАЖДОГО агента: у Личности это :func:`words_owed` (динамики), у оператора (шлем,
+    чат) ``speaks_aloud`` ложно - без этого ход закрывался молча. Решает код по структуре хода и реплике человека
+    (``tools_view.needs_words``), а не по тексту ответа."""
+    return bool(turn.queried) and not speaks_aloud(snapshot) and needs_words(turn.text, cmd)
+
+
 def done_expression(turn: "_Turn", snapshot: SessionSnapshot) -> Optional[Expression]:
     """Экспрессия команды для рефлекса итога (ADR-0148: решает код): лицо команды красит ``done``. ``None`` —
     рефлекс как есть: ход не ``done`` или отменён (перебивание, ``stale_epoch``), в кадре ``Silence`` (лицо там —
@@ -1192,10 +1201,31 @@ def _web_slots(data: Mapping[str, Any]) -> Optional[Mapping[str, Any]]:
     return {"text": text} if text else None
 
 
+def _uptime(seconds: float) -> str:
+    """Время работы словами: «45 с», «17 мин», «3 ч»."""
+    if seconds < 60:
+        return f"{round(seconds)} с"
+    if seconds < 3600:
+        return f"{round(seconds / 60)} мин"
+    return f"{round(seconds / 3600)} ч"
+
+
+def _containers_slots(data: Mapping[str, Any]) -> Optional[Mapping[str, Any]]:
+    """``container_status`` (#4295): сколько контейнеров в отчёте и разброс ``uptime_sec`` (рестарты и нагрузка
+    бывают пустыми - не называются). Контейнеров или времени работы в данных нет - ``None``: говорит общий разбор."""
+    rows = [r for r in data.get("containers") or () if isinstance(r, Mapping)]
+    ups = [float(r["uptime_sec"]) for r in rows
+           if isinstance(r.get("uptime_sec"), (int, float)) and not isinstance(r.get("uptime_sec"), bool)]
+    if not rows or not ups:
+        return None
+    return {"total": len(rows), "shortest": _uptime(min(ups)), "longest": _uptime(max(ups))}
+
+
 #: Слоты фразы кода по данным ``query`` - по тулу таблицы ``knowledge.QUERY_FALLBACK_PHRASES`` (ключи совпадают).
 _QUERY_SLOTS: Mapping[str, Callable[[Mapping[str, Any]], Optional[Mapping[str, Any]]]] = {
     "list_tts_voices": _voices_slots, kn.LIBRARY_TOOL: _library_slots, "memory_search": _search_slots,
-    "memory_context": _context_slots, "get_sound_info": _sounds_slots, "search_web": _web_slots}
+    "memory_context": _context_slots, "get_sound_info": _sounds_slots, "search_web": _web_slots,
+    "container_status": _containers_slots}
 
 
 def _answer_sources(results: Sequence[ActionResult]) -> List[ActionResult]:
@@ -1344,7 +1374,7 @@ def owed_reason(snapshot: SessionSnapshot, turn: "_Turn", cmd: Command, names: C
     адресованную реплику (:func:`words_owed`; и подхват бэклога), только текст в чат на просьбу сделать
     роботом (:func:`robot_owed`), обращение к неподтверждённому собеседнику чужим именем (``names`` - ключи
     из :func:`foreign_keys`) или утверждение о состоянии подсистемы робота без данных о ней (:func:`unbacked_claims`)."""
-    if words_owed(snapshot, turn.text, cmd):
+    if words_owed(snapshot, turn.text, cmd) or read_owed(snapshot, turn, cmd):
         return kn.VIOLATION_SILENT_ANSWER
     if robot_owed(snapshot, turn, cmd):
         return kn.VIOLATION_REMOTE_OWED
