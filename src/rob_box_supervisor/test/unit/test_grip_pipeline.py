@@ -15,7 +15,7 @@
 
 Issue #2137 (регресс против §7.5) — грип говорит голосом робота ИЗ ДИНАМИКОВ,
 ``/voice/speech/request`` с ``priority="operator"``. Шлем (sink="headset") — это
-только собственные реплики ТАРС через ``_publish_avatar_tts`` (инвариант 6b §7.4).
+только собственные реплики ТАРС через ``headset_speech.say_in_headset`` (инвариант 6b §7.4).
 
 Используем mock-rclpy из conftest.py. Реального LLM в тестах НЕТ: подменяем
 ``node._grip_llm`` заглушкой с async ``complete``. Загрузка пресетов идёт из
