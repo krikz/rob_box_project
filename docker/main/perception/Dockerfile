@@ -17,12 +17,14 @@
 # /ws/src, /ws/build, /ws/log и промежуточные артефакты pip. Писать здесь
 # "рантайм без компилятора" было бы неправдой (ADR-0018).
 #
-# Про pip и --prefix (урок пилота led_matrix): на Debian/Ubuntu
-# `pip3 install --prefix=/pyinstall` кладёт файлы НЕ в /pyinstall/lib/...,
-# а в /pyinstall/local/lib/pythonX.Y/dist-packages — патч Debian в
-# sysconfig добавляет уровень "local" независимо от заданного --prefix
-# (проверено локально на ubuntu:22.04 + python3-pip 22.0.2). Поэтому в рантайм
-# копируется /pyinstall/local → /usr/local, а не /pyinstall → /usr/local.
+# Про pip и --prefix: раскладка зависит от версии pip. Debian-патч sysconfig
+# (python3-pip 22.0.2) кладёт файлы в /pyinstall/local/lib/pythonX.Y/dist-packages,
+# новый pip (после `pip install --upgrade pip` или пересборки базы) — в
+# /pyinstall/lib/pythonX.Y/site-packages. Рантайм-интерпретатор Debian видит только
+# /usr/local/lib/pythonX.Y/dist-packages. Поэтому builder после pip install
+# нормализует всё в /pyinstall/lib/pythonX.Y/dist-packages (local/ вливается,
+# site-packages переименовывается), проверяет import, а в рантайм идёт
+# `COPY --from=builder /pyinstall /usr/local` — независимо от поведения pip.
 
 ARG ROS_DISTRO=humble
 ARG BASE_IMAGE=ghcr.io/krikz/rob_box_base:ros2-zenoh
@@ -129,19 +131,28 @@ COPY docker/main/perception/requirements.txt /tmp/perception_requirements.txt
 
 # 4. Устанавливаем Python зависимости (кэшируется отдельно от кода).
 # --prefix=/pyinstall: в рантайм уезжает только готовый результат (.py/.so),
-# без pip-кеша и промежуточных артефактов сборки. test -d ловит ситуацию,
-# когда будущая версия pip перестанет добавлять уровень "local" — тогда
-# COPY --from=builder /pyinstall/local скопировал бы пустоту, а openai/pytz
-# не нашлись бы уже на роботе, а не в CI (ровно тот класс регрессии, который
-# план §10 требует ловить здесь).
+# без pip-кеша и промежуточных артефактов сборки. Нормализация раскладки
+# (см. шапку) + import-сторож: openai/pytz не должны пропасть уже на роботе,
+# а не в CI (класс регрессии из плана §10).
 RUN --mount=type=cache,target=/root/.cache/pip,sharing=locked \
     pip3 install --retries 5 --timeout 120 --prefix=/pyinstall -r /tmp/perception_requirements.txt && \
     rm /tmp/perception_requirements.txt && \
-    if [ ! -d /pyinstall/local/lib ]; then \
-        echo "FATAL: pip --prefix layout изменился, ожидался /pyinstall/local/lib"; \
-        find /pyinstall -maxdepth 3 -type d; \
+    if [ -d /pyinstall/local ]; then \
+        cp -a /pyinstall/local/. /pyinstall/ && rm -r /pyinstall/local; \
+    fi && \
+    for d in /pyinstall/lib/python3*; do \
+        if [ -d "$d/site-packages" ]; then \
+            mkdir -p "$d/dist-packages" && \
+            cp -a "$d/site-packages/." "$d/dist-packages/" && \
+            rm -r "$d/site-packages"; \
+        fi; \
+    done && \
+    if [ -z "$(find /pyinstall/lib -maxdepth 2 -type d -name dist-packages 2>/dev/null)" ]; then \
+        echo "FATAL: после нормализации нет /pyinstall/lib/pythonX.Y/dist-packages"; \
+        find /pyinstall -maxdepth 4 -type d; \
         exit 1; \
-    fi
+    fi && \
+    PYTHONPATH="$(echo /pyinstall/lib/python3*/dist-packages)" python3 -c "import openai, pytz"
 
 # IDL-пакеты rob_box_perception_msgs и rob_box_dialog_msgs — готовые из общего
 # образа msgs (stage `msgs` в шапке), а не компиляцией здесь. Их package.xml
@@ -220,8 +231,8 @@ RUN apt-get update && apt-get install -y \
 
 # pip site-packages из builder-стадии (openai, pytz и их транзитивные зависимости).
 # ABI совпадает — обе стадии стоят на одном BASE_IMAGE, значит одна версия
-# Python/glibc. Копируем /pyinstall/local, а не /pyinstall — см. шапку файла.
-COPY --from=builder /pyinstall/local /usr/local
+# Python/glibc. Копируем нормализованный /pyinstall — см. шапку файла.
+COPY --from=builder /pyinstall /usr/local
 
 # colcon workspace — единственный продукт сборки, который обязан пересечь шов.
 # Здесь же лежит python-часть сообщений

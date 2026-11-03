@@ -28,17 +28,14 @@
 # python3-dev, libffi-dev, pip build-артефакты). Полное устранение тулчейна
 # требует отдельной облегчённой runtime-базы — вне скоупа этого пилота.
 #
-# ОТКЛОНЕНИЕ ОТ ЧЕРНОВИКА ПЛАНА (§5.2): план предлагал
-# `COPY --from=builder /pyinstall /usr/local`. Проверено локально
-# (generic Ubuntu 22.04 — та же ОС, что и BASE_IMAGE, python3-pip 22.0.2):
-# `pip3 install --prefix=/pyinstall ...` на Debian/Ubuntu не кладёт файлы в
-# /pyinstall/lib/..., а добавляет ЕЩЁ ОДИН уровень — /pyinstall/local/lib/...
-# (патч Debian в sysconfig, добавляющий "local" в install-scheme независимо от
-# заданного --prefix). При копировании /pyinstall → /usr/local пакеты попадали
-# бы в несуществующий для интерпретатора путь /usr/local/local/lib/... и
-# `import spidev`/`import pi5neo` падали бы в рантайме на роботе, а не в CI —
-# ровно тот класс регрессии, который план требует ловить (§10). Исправлено:
-# копируем /pyinstall/local → /usr/local (см. Stage 2).
+# Про pip и --prefix: раскладка зависит от версии pip. Debian-патч sysconfig
+# (python3-pip 22.0.2) кладёт файлы в /pyinstall/local/lib/pythonX.Y/dist-packages,
+# новый pip (после `pip install --upgrade pip` или пересборки базы) — в
+# /pyinstall/lib/pythonX.Y/site-packages. Рантайм-интерпретатор Debian видит только
+# /usr/local/lib/pythonX.Y/dist-packages. Поэтому builder после pip install
+# нормализует всё в /pyinstall/lib/pythonX.Y/dist-packages (local/ вливается,
+# site-packages переименовывается), проверяет import, а в рантайм идёт
+# `COPY --from=builder /pyinstall /usr/local` — независимо от поведения pip.
 
 ARG ROS_DISTRO=humble
 ARG BASE_IMAGE=ghcr.io/krikz/rob_box_base:ros2-zenoh
@@ -103,12 +100,28 @@ RUN apt-get update && apt-get install -y \
 # SPI на Raspberry Pi 5. Ставим с --prefix=/pyinstall, чтобы потом скопировать
 # только готовый результат в runtime-стадию (без компилятора, без pip-кеша,
 # без промежуточных .c/.o файлов сборки spidev). См. предупреждение о layout
-# в шапке файла — pip кладёт файлы в /pyinstall/local/..., не /pyinstall/....
+# в шапке файла — после pip ниже раскладка нормализуется в /pyinstall/lib/....
 RUN pip3 install --no-cache-dir --upgrade pip && \
     pip3 install --no-cache-dir --prefix=/pyinstall \
     pi5neo \
     spidev \
-    numpy
+    numpy && \
+    if [ -d /pyinstall/local ]; then \
+        cp -a /pyinstall/local/. /pyinstall/ && rm -r /pyinstall/local; \
+    fi && \
+    for d in /pyinstall/lib/python3*; do \
+        if [ -d "$d/site-packages" ]; then \
+            mkdir -p "$d/dist-packages" && \
+            cp -a "$d/site-packages/." "$d/dist-packages/" && \
+            rm -r "$d/site-packages"; \
+        fi; \
+    done && \
+    if [ -z "$(find /pyinstall/lib -maxdepth 2 -type d -name dist-packages 2>/dev/null)" ]; then \
+        echo "FATAL: после нормализации нет /pyinstall/lib/pythonX.Y/dist-packages"; \
+        find /pyinstall -maxdepth 4 -type d; \
+        exit 1; \
+    fi && \
+    PYTHONPATH="$(echo /pyinstall/lib/python3*/dist-packages)" python3 -c "import pi5neo, spidev, numpy"
 
 # Рабочая директория
 WORKDIR /ws
@@ -248,9 +261,9 @@ RUN apt-get update && apt-get install -y \
 
 # pip site-packages из builder-стадии — уже собранные .so/.py (pi5neo, spidev,
 # numpy), ABI совпадает (обе стадии — один и тот же BASE_IMAGE, одна версия
-# Python/glibc). Копируем /pyinstall/local, а не /pyinstall — см. предупреждение
-# в шапке файла про Debian install-scheme, добавляющий "local" в путь.
-COPY --from=builder /pyinstall/local /usr/local
+# Python/glibc). Копируем нормализованный /pyinstall — см. предупреждение
+# в шапке файла про раскладку pip.
+COPY --from=builder /pyinstall /usr/local
 
 # colcon workspace из builder-стадии — единственный продукт сборки, который
 # обязан пересечь шов (план §2.2).
