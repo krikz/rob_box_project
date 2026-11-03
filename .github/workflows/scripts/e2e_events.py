@@ -675,6 +675,84 @@ def _playing_verdict(rule: SkipRule, last: Optional[Tuple[MusicEvent, str]]) -> 
     return {"fetch": 1, "skip": "-", "evidence": "-"}
 
 
+# -- зависимость шага от итога другого шага: requires (#4077 П4) --------------------------------------------------
+
+REQUIRES_FIELD = "requires"
+_LABEL_RE = re.compile(r"[A-Za-z][A-Za-z0-9_]*")
+#: Итог шага, при котором зависимый шаг играется (``OK`` и ``OK recovered_*``: шаг прошёл, пусть и после восстановления).
+REQUIRES_OK = "OK"
+
+
+def requires(step: Mapping[str, Any]) -> Tuple[str, ...]:
+    """Метки шагов, итог которых нужен шагу (``requires: [n602_dj_on]``); кривое поле -- ``ValueError``."""
+    raw = step.get(REQUIRES_FIELD)
+    if raw is None:
+        return ()
+    label = str(step.get("label", "?"))
+    if not isinstance(raw, list) or not raw or not all(isinstance(x, str) and _LABEL_RE.fullmatch(x) for x in raw):
+        raise ValueError(f"{label}: {REQUIRES_FIELD} -- непустой список меток шагов, а не {raw!r}")
+    if label in raw:
+        raise ValueError(f"{label}: {REQUIRES_FIELD} ссылается на сам шаг")
+    return tuple(dict.fromkeys(raw))
+
+
+def requires_rules(scenario: Any) -> List[Tuple[str, Tuple[str, ...]]]:
+    """``[(label, метки)]`` шагов с ``requires``; ошибка схемы -- ``ValueError`` до первого шага. Метка шага этого же
+    сценария обязана стоять РАНЬШЕ зависимого (зависимость от того, чего ещё не было, -- ошибка); метки прошлых актов
+    в сценарии не ищутся."""
+    if not isinstance(scenario, Mapping):
+        raise ValueError("сценарий -- не JSON-объект")
+    steps = [s for s in scenario.get("steps", []) if isinstance(s, Mapping)]
+    order = [str(s.get("label", f"s{i + 1}")) for i, s in enumerate(steps)]
+    out = []
+    for i, s in enumerate(steps):
+        wanted = requires(s)
+        later = [x for x in wanted if x in order[i:]]
+        if later:
+            raise ValueError(f"{order[i]}: {REQUIRES_FIELD} {later} -- шаги не раньше этого")
+        if wanted:
+            out.append((order[i], wanted))
+    return out
+
+
+def step_statuses(jsonl: str) -> Dict[str, str]:
+    """``steps.jsonl`` (по строке на запись, ``emit_step``) -> ``{label: статус}``; итог шага -- ПОСЛЕДНЯЯ запись на метку
+    (``run_step`` печатает промежуточный FAIL, цикл сценария -- финальный вердикт)."""
+    found: Dict[str, str] = {}
+    for line in jsonl.splitlines():
+        try:
+            rec = json.loads(line)
+        except ValueError:
+            continue
+        if isinstance(rec, dict) and rec.get("label") and rec.get("status"):
+            found[str(rec["label"])] = str(rec["status"]).upper()
+    return found
+
+
+def prior_statuses(text: str) -> Dict[str, str]:
+    """Итоги шагов прошлых актов, ``label=СТАТУС`` через запятую (вход ``prior_steps`` workflow; собирает раннер марафона)."""
+    found: Dict[str, str] = {}
+    for item in re.split(r"[,\s]+", text.strip()):
+        name, _, status = item.partition("=")
+        if _LABEL_RE.fullmatch(name) and status.isalpha():
+            found[name] = status.upper()
+    return found
+
+
+def requires_verdict(labels: Tuple[str, ...], current: Mapping[str, str], prior: Mapping[str, str]) -> Dict[str, object]:
+    """``skip`` -- ``requires:<label>`` первого шага, чей итог не ``OK`` (``FAIL``, ``SKIP``: каскад от корня красит один
+    шаг, зависимые SKIP и в знаменатель не входят); ``unknown`` -- метки, итога которых нет ни в этом акте, ни в
+    прошлых (одиночный запуск акта): зависимость не доказана, шаг играется, но громко. Итог этого акта важнее прошлых."""
+    unknown = []
+    for label in labels:
+        status = current.get(label) or prior.get(label)
+        if status is None:
+            unknown.append(label)
+        elif status != REQUIRES_OK:
+            return {"skip": f"requires:{label}", "evidence": f"итог {label} -- {status}", "unknown": ",".join(unknown) or "-"}
+    return {"skip": "-", "evidence": "-", "unknown": ",".join(unknown) or "-"}
+
+
 # -- ссылка шага на трек песни акта: track_ref (#3710, #4077) -----------------------------------------------------
 
 
@@ -1089,16 +1167,47 @@ def _cmd_trackcheck(opts: Dict[str, str], flags: List[str]) -> int:
     return 0
 
 
+def _cmd_requires(opts: Dict[str, str], flags: List[str]) -> int:
+    """``--scenario F`` -> ``label<TAB>метки,через,запятую`` шагов с ``requires``; ошибка схемы -- rc 2."""
+    try:
+        rules = requires_rules(_load_scenario(opts["--scenario"]))
+    except (OSError, ValueError) as exc:
+        sys.stderr.write(f"{opts['--scenario']}: {exc}\n")
+        return 2
+    for label, wanted in rules:
+        sys.stdout.write(f"{label}\t{','.join(wanted)}\n")
+    return 0
+
+
+def _cmd_require(opts: Dict[str, str], flags: List[str]) -> int:
+    """``--labels a,b [--steps steps.jsonl] [--prior label=СТАТУС,…]`` -> ``skip=`` / ``evidence=`` / ``unknown=``.
+    Нет файла шагов (акт ещё ничего не записал) -- итогов этого акта нет, судят прошлые."""
+    try:
+        labels = requires({"label": opts["--label"] or "?", REQUIRES_FIELD: [x for x in opts["--labels"].split(",") if x]})
+    except ValueError as exc:
+        sys.stderr.write(f"require: {exc}\n")
+        return 2
+    try:
+        with open(opts["--steps"], encoding="utf-8") as fh:
+            current = step_statuses(fh.read())
+    except OSError:
+        current = {}
+    _emit(requires_verdict(labels, current, prior_statuses(opts["--prior"])))
+    return 0
+
+
 COMMANDS: Mapping[str, Callable[[Dict[str, str], List[str]], int]] = MappingProxyType({
     "state": _cmd_state, "quiet": _cmd_quiet, "anchor": _cmd_anchor,
     "policy": _cmd_policy, "recovery": _cmd_recovery, "session": _cmd_session,
     "mark": _cmd_mark, "skips": _cmd_skips, "skip": _cmd_skip, "compare": _cmd_compare, "stt": _cmd_stt,
+    "requires": _cmd_requires, "require": _cmd_require,
     "trackrefs": _cmd_trackrefs, "trackbind": _cmd_trackbind, "trackcheck": _cmd_trackcheck,
 })
 USAGE = ("usage: e2e_events.py state|quiet|anchor --engine v1|v2 [--silent-ok] [--barge] [--waited S --accept-window S]"
          " [--perform-ceiling S] [--after A --n N] | policy --scenario FILE | recovery [--kind K] | session < report.json"
          " | mark --kind K --where W [--detail D] | skips --scenario FILE | skip --scenario FILE --label L < log"
          " | compare --scenario FILE --label L [--since S < log] | stt --scenario FILE --label L --heard TEXT [--executed 0|1]"
+         " | requires --scenario FILE | require --labels A,B [--steps FILE] [--prior L=S,…]"
          " | trackrefs --scenario FILE | trackbind --scenario FILE --label L < log"
          " | trackcheck --scenario FILE --label L --track ID < log\n")
 
@@ -1114,7 +1223,8 @@ def main(argv: List[str]) -> int:
             pass
     opts = {"--engine": "v1", "--after": "speech_started", "--n": "1", "--waited": "0", "--accept-window": "0",
             "--scenario": "", "--kind": "", "--perform-ceiling": "", "--where": "", "--detail": "", "--label": "",
-            "--since": "", "--heard": "", "--track": "", "--executed": "0"}
+            "--since": "", "--heard": "", "--track": "", "--executed": "0", "--labels": "", "--steps": "",
+            "--prior": ""}
     flags = argv[2:]
     for i, tok in enumerate(flags):
         if tok in opts and i + 1 < len(flags):

@@ -114,6 +114,11 @@ on:
         required: false
         default: ''
         type: string
+      prior_steps:
+        description: 'Issue #4077 П4 — итоги шагов прошлых актов марафона (label=СТАТУС через запятую) для поля шага requires. Ставит только run_night_marathon.sh.'
+        required: false
+        default: ''
+        type: string
       # Issue #1527: трейсинг «кто дёрнул workflow». Все скрипты/воркеры
       # используют твой GH_TOKEN, поэтому triggering_actor.login всегда = krikz.
       # Эти опциональные поля заполняются самими скриптами (agent-flow-*),
@@ -328,6 +333,7 @@ jobs:
           TTS_PROVIDER: ${{ inputs.tts_provider }}
           E2E_HOLD_FOR_NEXT_ACT: ${{ inputs.e2e_hold_for_next_act }}
           E2E_MARATHON_PHASE: ${{ inputs.e2e_marathon_phase }}
+          E2E_PRIOR_STEPS_IN: ${{ inputs.prior_steps }}
         run: |
           RID="${{ github.run_id }}"
           YKEY="$(cat "$YKEY_LOCAL" 2>/dev/null || true)"
@@ -389,6 +395,12 @@ jobs:
             first|middle|last) CMD="$CMD --e2e-marathon-phase $E2E_PHASE_CLEAN" ;;
             *) echo "E2E_FATAL: e2e_marathon_phase='$E2E_PHASE_CLEAN' — ожидается first|middle|last" >&2; exit 2 ;;
           esac
+
+          # Issue #4077 П4 — итоги шагов прошлых актов (только label=СТАТУС,…).
+          PRIOR_CLEAN=$(printf '%s' "$E2E_PRIOR_STEPS_IN" | tr -cd 'A-Za-z0-9_=,')
+          if [ -n "$PRIOR_CLEAN" ]; then
+            CMD="$CMD --prior-steps $PRIOR_CLEAN"
+          fi
 
           echo "RUN_CMD: $CMD"
           # Запускаем через SSH: ключ передаём env-переменной (не в cmdline — чтобы не светить в ps).
