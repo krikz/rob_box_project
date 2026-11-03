@@ -41,6 +41,11 @@ PROGRESS_STEP_EVERY_S = 1.0
 TURN_MAX_S = 120.0
 #: Шаг цикла индикатора.
 TICK_S = 1.0
+#: Повтор при сетевом сбое (``TimedOut``/``NetworkError``; не ``BadRequest``): всего попыток и пауза перед n-й (n * пауза).
+#: Политика «дубль лучше потери»: ``TimedOut`` у ``sendMessage`` может значить «доставлено, но ответ не дошёл», и повтор
+#: тогда даст второе такое же сообщение; потерянный ответ робота хуже (ответ Шифу 17:26 UTC пропал целиком).
+RETRY_ATTEMPTS = 3
+RETRY_PAUSE_S = 1.0
 #: Идентификатор черновика: один и тот же - Telegram анимирует изменения вместо замены.
 DRAFT_ID = 1
 
@@ -70,6 +75,16 @@ class _Turn:
 def _is_private(chat_id: int) -> bool:
     """Личный чат - положительный id; у групп и каналов он отрицательный. Черновик Bot API - только для личного."""
     return chat_id > 0
+
+
+def _is_transient(exc: Exception) -> bool:
+    """Сетевой сбой (таймаут, обрыв связи), а не отказ Telegram по существу: повтор имеет смысл. ``telegram.error``
+    не импортируем (тесты идут без библиотеки): смотрим имена в MRO - ``BadRequest`` наследует ``NetworkError`` в
+    python-telegram-bot, но это отказ сервера (битая разметка, чужое сообщение), его повторять нечего."""
+    names = {cls.__name__ for cls in type(exc).__mro__}
+    if "BadRequest" in names:
+        return False
+    return bool(names & {"TimedOut", "NetworkError", "TimeoutError", "ConnectionError"})
 
 
 def _is_markup_error(exc: Exception) -> bool:
@@ -139,6 +154,18 @@ class ChatSender:
             turn.last_progress, turn.changed = now, False
             await self._show_progress(chat_id, turn, chat_render.progress(turn.steps, elapsed))
 
+    async def _retry(self, what: str, call: Callable[[], Awaitable[Any]]) -> Any:
+        """Вызов Bot API с повтором при сетевом сбое; отказ по существу и последняя неудача уходят наверх."""
+        for attempt in range(1, RETRY_ATTEMPTS + 1):
+            try:
+                return await call()
+            except Exception as exc:  # noqa: BLE001
+                if attempt == RETRY_ATTEMPTS or not _is_transient(exc):
+                    raise
+                self._log.warning("%s: сеть (%s), повтор %s из %s", what, type(exc).__name__, attempt + 1,
+                                  RETRY_ATTEMPTS)
+                await self._sleep(RETRY_PAUSE_S * attempt)
+
     async def _typing(self, chat_id: int) -> None:
         try:
             await self.bot.send_chat_action(chat_id=chat_id, action=ACTION_TYPING)
@@ -147,13 +174,14 @@ class ChatSender:
 
     async def _show_progress(self, chat_id: int, turn: _Turn, item: chat_render.Rendered) -> None:
         if _is_private(chat_id) and turn.draft_ok and turn.msg_id is None:
+            kwargs = {"chat_id": chat_id, "draft_id": DRAFT_ID, "text": item.text, "parse_mode": item.parse_mode}
             try:
-                await self.bot.do_api_request(
-                    "sendMessageDraft",
-                    api_kwargs={"chat_id": chat_id, "draft_id": DRAFT_ID, "text": item.text,
-                                "parse_mode": item.parse_mode})
+                await self._retry("sendMessageDraft",
+                                  lambda: self.bot.do_api_request("sendMessageDraft", api_kwargs=kwargs))
                 return
             except Exception as exc:  # noqa: BLE001 - черновик недоступен: один правимый индикатор сообщением
+                if _is_transient(exc):  # сеть моргнула: этот шаг пропущен, на следующем тике попробуем снова
+                    return
                 turn.draft_ok = False
                 self._log.info("sendMessageDraft chat=%s отвергнут (%r): индикатор - правимое сообщение", chat_id, exc)
         await self._edit_progress_message(chat_id, turn, item)
@@ -163,12 +191,13 @@ class ChatSender:
             return
         turn.shown = item.text
         if turn.msg_id is None:
-            sent = await self.bot.send_message(chat_id=chat_id, text=item.text, parse_mode=item.parse_mode,
-                                               disable_notification=True)
+            sent = await self._retry("send_message(индикатор)", lambda: self.bot.send_message(
+                chat_id=chat_id, text=item.text, parse_mode=item.parse_mode, disable_notification=True))
             turn.msg_id = int(sent.message_id)
         else:
-            await self.bot.edit_message_text(chat_id=chat_id, message_id=turn.msg_id, text=item.text,
-                                             parse_mode=item.parse_mode)
+            msg_id = turn.msg_id
+            await self._retry("edit_message_text", lambda: self.bot.edit_message_text(
+                chat_id=chat_id, message_id=msg_id, text=item.text, parse_mode=item.parse_mode))
 
     async def _end(self, chat_id: int) -> None:
         turn = self._turns.get(chat_id)
@@ -188,19 +217,19 @@ class ChatSender:
         if turn.msg_id is not None:
             msg_id, turn.msg_id = turn.msg_id, None
             try:
-                await self.bot.delete_message(chat_id=chat_id, message_id=msg_id)
+                await self._retry("delete_message", lambda: self.bot.delete_message(chat_id=chat_id, message_id=msg_id))
             except Exception as exc:  # noqa: BLE001
                 self._log.debug("delete_message chat=%s: %r", chat_id, exc)
 
     async def _send_rich(self, chat_id: int, item: chat_render.Rendered) -> bool:
         """Реплика богатым сообщением (``rich_message.html`` - тот же HTML, что у :func:`chat_render.render`); ``False`` -
         Telegram отказал, дальше идёт обычный HTML (и до перезапуска rich больше не пробуем)."""
+        kwargs = {"chat_id": chat_id, "rich_message": {"html": item.text}}
         try:
-            await self.bot.do_api_request("sendRichMessage", api_kwargs={
-                "chat_id": chat_id, "rich_message": {"html": item.text}})
+            await self._retry("sendRichMessage", lambda: self.bot.do_api_request("sendRichMessage", api_kwargs=kwargs))
             return True
         except Exception as exc:  # noqa: BLE001
-            self._rich_ok = False
+            self._rich_ok = _is_transient(exc)  # сеть моргнула - rich остаётся; отказ сервера - выключаем
             self._log.warning("sendRichMessage отвергнут (%r): ответы идут обычным HTML, chat=%s", exc, chat_id)
             return False
 
@@ -209,12 +238,14 @@ class ChatSender:
             return
         options = {"link_preview_options": {"is_disabled": True}}  # у робота ссылка - не карточка сайта
         try:
-            await self.bot.send_message(chat_id=chat_id, text=item.text, parse_mode=item.parse_mode, **options)
+            await self._retry("send_message", lambda: self.bot.send_message(
+                chat_id=chat_id, text=item.text, parse_mode=item.parse_mode, **options))
         except Exception as exc:  # noqa: BLE001
             if not _is_markup_error(exc):
                 raise
             self._log.warning("разметка отвергнута (%r): реплика уходит голым текстом, chat=%s", exc, chat_id)
-            await self.bot.send_message(chat_id=chat_id, text=item.plain, **options)
+            await self._retry("send_message(plain)", lambda: self.bot.send_message(
+                chat_id=chat_id, text=item.plain, **options))
 
 
-__all__ = ["ACTION_TYPING", "ChatSender", "DRAFT_ID", "KIND_BEGIN", "PROGRESS_AFTER_S", "RICH_ENV", "TURN_MAX_S"]
+__all__ = ["ACTION_TYPING", "ChatSender", "DRAFT_ID", "KIND_BEGIN", "PROGRESS_AFTER_S", "RETRY_ATTEMPTS", "RICH_ENV", "TURN_MAX_S"]

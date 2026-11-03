@@ -43,7 +43,7 @@ from rob_box_core.utterance import Sink, Utterance
 
 from .camera_cache import CameraCache
 from .camera_on_demand import OnDemandCameraSubscriptions
-from .command_menu import menu_commands
+from .command_menu import publish_menu
 from .handlers import commands as _cmds
 from .handlers.callbacks import callback_handler
 from .handlers.messages import attachment_message_handler, text_message_handler, voice_message_handler
@@ -683,10 +683,7 @@ class TelegramNode(Node):
             MessageHandler(filters.TEXT & ~filters.COMMAND, text_message_handler)
         )
         await app.initialize()
-        try:  # меню команд в клиенте - из той же таблицы, что обработчики (command_menu); не вышло - бот работает и так
-            await app.bot.set_my_commands(menu_commands())
-        except Exception as exc:  # noqa: BLE001
-            self.get_logger().warning(f"set_my_commands не вышло: {type(exc).__name__}")
+        await publish_menu(app.bot, self.get_logger())  # меню команд в клиенте - из той же таблицы, что обработчики
         await app.start()
         try:
             await app.updater.start_polling(poll_interval=1.0, timeout=30)

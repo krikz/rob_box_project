@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import re
 from types import MappingProxyType
-from typing import List, Mapping, NamedTuple, Tuple
+from typing import Any, List, Mapping, NamedTuple, Tuple
 
 
 class Entry(NamedTuple):
@@ -63,4 +63,14 @@ def menu_commands() -> List[Tuple[str, str]]:
     return [(name, entry.description) for name, entry in MENU.items() if entry.in_menu]
 
 
-__all__ = ["DESCRIPTION_MAX", "Entry", "MENU", "NAME_RE", "menu_commands"]
+async def publish_menu(bot: Any, log: Any) -> bool:
+    """Опубликовать меню при старте бота (``setMyCommands``); не вышло - предупреждение в лог, бот работает и так."""
+    try:
+        await bot.set_my_commands(menu_commands())
+        return True
+    except Exception as exc:  # noqa: BLE001
+        log.warning(f"set_my_commands не вышло: {type(exc).__name__}")
+        return False
+
+
+__all__ = ["DESCRIPTION_MAX", "Entry", "MENU", "NAME_RE", "menu_commands", "publish_menu"]

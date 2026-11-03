@@ -30,3 +30,23 @@ def test_menu_lists_public_commands_and_hides_operator_and_service_ones():
     for hidden in ("repl", "cmd", "operator", "myid"):
         assert hidden not in names and hidden in cm.MENU
     assert len(names) <= 100  # потолок Bot API на меню
+
+
+def test_menu_is_published_from_the_table_and_a_failure_only_warns():
+    import asyncio
+    from unittest.mock import MagicMock
+
+    class Bot:
+        def __init__(self, error=None):
+            self.sent, self.error = None, error
+
+        async def set_my_commands(self, commands):
+            if self.error:
+                raise self.error
+            self.sent = commands
+
+    ok = Bot()
+    assert asyncio.run(cm.publish_menu(ok, MagicMock())) is True and ok.sent == cm.menu_commands()
+    log = MagicMock()
+    assert asyncio.run(cm.publish_menu(Bot(RuntimeError("x")), log)) is False
+    assert "RuntimeError" in log.warning.call_args.args[0]
