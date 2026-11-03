@@ -15,7 +15,7 @@
 
 Issue #2137 (регресс против §7.5) — грип говорит голосом робота ИЗ ДИНАМИКОВ,
 ``/voice/speech/request`` с ``priority="operator"``. Шлем (sink="headset") — это
-только собственные реплики ТАРС через ``_publish_avatar_tts`` (инвариант 6b §7.4).
+только собственные реплики ТАРС через ``headset_speech.say_in_headset`` (инвариант 6b §7.4).
 
 Используем mock-rclpy из conftest.py. Реального LLM в тестах НЕТ: подменяем
 ``node._grip_llm`` заглушкой с async ``complete``. Загрузка пресетов идёт из
@@ -72,13 +72,14 @@ def _published_voice_tts(node: AvatarSupervisor) -> list[dict]:
 
 
 def _published_avatar_tts(node: AvatarSupervisor) -> list[dict]:
-    """Только собственные реплики ТАРС идут в ``/avatar/tts/request`` (sink=headset).
+    """Всё, что ушло в шлем: ``SpeechRequest`` с sink=headset (#4252) и старый канал ``/avatar/tts/request``.
 
-    Грип НЕ должен сюда ничего слать (инвариант 6b §7.4, issue #2137).
+    Грип НЕ должен слать в шлем ничего (инвариант 6b §7.4, issue #2137).
     Возвращаем payload'ы для ассертов «ничего не ушло в шлем».
     """
-    pub = node._avatar_tts_request_pub
-    return [json.loads(m.data) for m in pub.published]
+    headset = [{"text": r.text, "sink": r.sink}
+               for r in node._speech_client_pubs["request"].published if r.sink == "headset"]
+    return headset + [json.loads(m.data) for m in node._avatar_tts_request_pub.published]
 
 
 class _FakeResponse:

@@ -78,6 +78,7 @@ from rob_box_core.bridge_protocol import (  # noqa: E402,F401
     VOICE_PRESET_IDS,  # re-export для обратной совместимости
 )
 # issue #3253 (Ш2) — стадии ТАРС-в-шлем (thinking/idle) в /avatar/tars/stage.
+from rob_box_supervisor import headset_speech  # noqa: E402
 from rob_box_supervisor.spoken_text import to_spoken  # noqa: E402
 from rob_box_supervisor.tars_stage import TarsStagePublisher  # noqa: E402
 # ADR-0150 PR-13 (#3708) — ТАРС на общем движке при dialog_engine=v2.
@@ -427,8 +428,8 @@ AGENT_STT_RESULT_TOPIC: str = "/avatar/stt/result"
 # issue #3253 (Ш2, ADR-0078 §3.6) — стадии ТАРС-в-шлем от супервизора:
 # ``thinking`` — ход LLM начался; ``idle`` — ход закончился БЕЗ реплики в
 # шлем (агент выключен/недоступен, текстовый вход, пустой ответ). Если
-# реплика ушла в /avatar/tts/request, speaking/idle выводит quest_node
-# по чанкам и /voice/tts/finished. String JSON ``{stage, request_id,
+# реплика ушла в шлем (SpeechRequest sink=headset), speaking/idle выводит quest_node
+# по чанкам и SpeechEvent (#4252). String JSON ``{stage, request_id,
 # reason?, ts_ms}``; потребитель — quest_node → WS ``tars_state``.
 AVATAR_TARS_STAGE_TOPIC: str = "/avatar/tars/stage"
 
@@ -443,9 +444,10 @@ GRIP_VOICE_PIPELINE_TOPIC: str = "/avatar/voice_pipeline"
 # Выход пайплайна — динамики робота: SpeechRequest клиентом речи ``speech_client`` (ADR-0150 PR-3), агент
 # ``operator`` — как у инструмента say. Своего имени топика у супервизора нет (PR-13).
 # ADR-0055 / issue #1993 — обратный канал ТАРС в шлем: собственные реплики
-# avatar_supervisor'а идут в /avatar/tts/request (sink="headset"), tts_node
+# avatar_supervisor'а идут владельцу речи SpeechRequest-ом с sink="headset" (#4252), tts_node
 # шлёт синтез в /avatar/tts/audio, quest_node доставляет в шлем. Грип и
 # инструмент ``say`` говорят в динамики робота SpeechRequest-ом (ADR-0150 PR-3).
+# /avatar/tts/request остался только для образца голоса (sink="preview", ADR-0079).
 AVATAR_TTS_REQUEST_TOPIC: str = "/avatar/tts/request"
 # priority реплики грипа в SpeechRequest (врезка за играющим чанком).
 GRIP_TTS_SOURCE: str = "operator"
@@ -711,11 +713,9 @@ class AvatarSupervisor(Node):
         # Грип НЕ строит AgentCore / ToolProvider / Memory.
         self._grip_llm: Any = None
         speech_client.prepare(self, "request")
-        # ADR-0055 / issue #1993 — обратный канал ТАРС в шлем. Publisher
-        # /avatar/tts/request для СОБСТВЕННЫХ реплик supervisor'а и пайплайна
-        # грипа. Контракт String JSON (см. ADR-0055 §tts_node):
-        # ``{request_id, text, sink:\"headset\", voice?, language?}`` (голый текст, ADR-0160 §2.3).
-        # Динамики робота (грип, say) — SpeechRequest клиентом речи, НЕ шлем.
+        # ADR-0079 — образец голоса для picker'а: /avatar/tts/request, String JSON
+        # ``{request_id, text, sink:\"preview\", voice?}`` (голый текст, ADR-0160 §2.3).
+        # Реплики ТАРС в шлем и динамики робота (грип, say) — SpeechRequest клиентом речи (#4252).
         self._avatar_tts_request_pub = self.create_publisher(
             RosString, AVATAR_TTS_REQUEST_TOPIC, 10
         )
@@ -1655,14 +1655,11 @@ class AvatarSupervisor(Node):
         # с sink="preview". request_id протаскиваем до tts_node — он его
         # проставит в preview_voice_audio/result/error, чтобы ws_server
         # коррелировал с picker'ом.
-        sent_rid = self._publish_avatar_tts(
-            text=text,
-            voice=voice_id,
-            sink="preview",
-            request_id=request_id,
+        sent_rid = headset_speech.publish_preview(
+            self._avatar_tts_request_pub, RosString, text, voice_id, request_id, self._log
         )
         if not sent_rid:
-            # На случай если _publish_avatar_tts вернул пустую строку
+            # На случай если publish_preview вернул пустую строку
             # (text drop). request_id сохранён, ошибка уже отлогирована
             # внутри. Дополнительно шлём preview_error с той же причиной
             # для ws_server, чтобы picker не завис на «слушаю…».
@@ -2562,9 +2559,9 @@ class AvatarSupervisor(Node):
         # issue #2116 — ТАРС обязан ОТВЕЧАТЬ ГОЛОСОМ В ШЛЕМ, а не только
         # класть текст в /avatar/command_result. Это решение владельца №12
         # хендоффа и ADR-0055: «все supervisor-ответы строго в
-        # /avatar/tts/request с sink=headset».
+        # шлем, sink=headset» (с #4252 — SpeechRequest владельцу речи).
         #
-        # ``_publish_avatar_tts`` существовал, был покрыт целым файлом тестов
+        # Публикатор в шлем тогда существовал, был покрыт целым файлом тестов
         # (test_supervisor_avatar_tts.py) — и НЕ ИМЕЛ НИ ОДНОГО вызова в
         # проде. Замер на роботе 2026-09-08: агент отвечал
         # `content='ТАРС, агент оператора.'`, а /avatar/tts/request оставался
@@ -2857,9 +2854,9 @@ class AvatarSupervisor(Node):
         звучать на выбранном языке (AV-28); дословный текст остаётся на
         языке оператора без override.
 
-        Шлем (sink="headset", ``/avatar/tts/request``) сюда НЕ идёт —
+        Шлем (sink="headset") сюда НЕ идёт —
         инвариант 6b §7.4: «Два выхода звука не смешиваются».
-        Собственные реплики ТАРС остаются в шлеме через ``_publish_avatar_tts``.
+        Собственные реплики ТАРС остаются в шлеме через ``headset_speech.say_in_headset``.
 
         Issue #2096 — drop при пустом text (раньше публиковали
         ``<speak></speak>``, tts_node получал пустой SSML и райзил
@@ -2882,7 +2879,7 @@ class AvatarSupervisor(Node):
 
         # voice-vr 12 (issue #2197): единый сборщик реплики — ``Utterance``
         # (голый текст, ADR-0160 §2.3). Канал — динамики робота;
-        # шлем (sink=headset) — отдельный ``_publish_avatar_tts`` (инвариант 6b).
+        # шлем (sink=headset) — отдельный ``headset_speech.say_in_headset`` (инвариант 6b).
         utterance = Utterance(
             text=text,
             sink=Sink.SPEAKERS,
@@ -2905,10 +2902,10 @@ class AvatarSupervisor(Node):
 
         Озвучиваем только голосовой вход: на текстовую команду из Telegram
         оператор ждёт текст, а не речь в наушниках. Пустой ``summary``
-        отсекает сам ``_publish_avatar_tts`` (#2096).
+        отсекает сам ``headset_speech.say_in_headset`` (#2096).
 
         Returns:
-            True, если реплика ушла в /avatar/tts/request (issue #3253:
+            True, если реплика ушла владельцу речи (issue #3253:
             иначе ``TarsStagePublisher.finish_turn`` шлёт шлему ``idle``).
         """
         if source != "quest":
@@ -2916,90 +2913,7 @@ class AvatarSupervisor(Node):
         if not self._param_bool("speak_agent_replies", True):
             return False
         # issue #3296: вслух — речевая версия, полный текст остаётся на экране.
-        return bool(self._publish_avatar_tts(to_spoken(summary)))
-
-    def _publish_avatar_tts(
-        self,
-        text: str,
-        language: Optional[str] = None,
-        voice: Optional[str] = None,
-        sink: str = "headset",
-        request_id: Optional[str] = None,
-    ) -> str:
-        """ADR-0055 / issue #1993 — публикация собственной реплики ТАРС в шлем.
-
-        Используется для всех supervisor-ответов вида «принял», «не умею»,
-        «камера повёрнута», «не понял» и т.п. — раньше они ходили в
-        ``/voice/tts/request`` (если вообще ходили), теперь строго в
-        ``/avatar/tts/request`` с ``sink="headset"``, чтобы попасть в шлем
-        оператора через новый обратный канал (ADR-0055).
-
-        ADR-0079 / issue #2138.A.3 — preview-канал для picker'а голосов.
-        ``sink="preview"`` уходит на тот же ``/avatar/tts/request``, но
-        tts_node его ловит в ``_on_avatar_tts_request`` отдельной веткой и
-        делает pure-synth БЕЗ _synthesize_and_play (НЕ идёт в FIFO/ALSA,
-        НЕ публикует /avatar/tts/audio, НЕ публикует /voice/audio/speech).
-        Результат — bytes в mp3/wav контейнере — публикуется в
-        ``/avatar/preview_voice/audio`` (см. preview_audio_sink.ts §1).
-
-        request_id: для sink="preview" caller ЗНАЕТ request_id (он пришёл
-        от quest_node через /avatar/preview_voice), и его надо протащить
-        до tts_node для корреляции preview_voice_audio/done/error с ws_server.
-        Для sink="headset" — генерируем свой uuid4().hex[:8] (старое поведение).
-
-        Returns:
-            request_id (uuid hex8), чтобы caller мог логировать/коррелировать
-            с /avatar/tts/error и /voice/tts/finished от tts_node.
-
-        Issue #2096 — drop при пустом text. Возвращает пустую строку
-        request_id, чтобы caller не пытался коррелировать несуществующий
-        запрос.
-        """
-        import uuid as _uuid
-
-        # Issue #2096 — пустой text → DROP (warning) + возврат пустого
-        # request_id. Зеркальная защита к _on_avatar_tts_request в tts_node:
-        # upstream не должен слать в /avatar/tts/request нечего синтезировать.
-        if not text or not text.strip():
-            self._log.warning(
-                f"avatar_supervisor: avatar_tts_request skipped — empty text "
-                f"(language={language!r}, voice={voice!r}, sink={sink!r})"
-            )
-            return ""
-
-        if request_id is not None:
-            # Caller-provided (preview). Не регенерим.
-            rid = request_id
-        else:
-            rid = _uuid.uuid4().hex[:8]
-        # voice-vr 12 (issue #2197): единый сборщик реплики — ``Utterance``
-        # (голый текст, ADR-0160 §2.3); sink приходит как
-        # строка от вызывающего (headset|preview) — нормализуем через Sink.
-        # speech_id задаём сами (issue #3253): без него tts_node генерит
-        # случайный uuid4, и конец синтеза (/voice/tts/finished несёт только
-        # speech_id) не связать с request_id реплики.
-        # issue #3253 (Ш2): speech_id = f"tars-{rid}" — quest_node по нему
-        # сопоставляет /voice/tts/finished с репликой и отдаёт шлему idle.
-        utterance = Utterance(
-            text=text,
-            sink=sink,
-            voice=voice,
-            language=language,
-            speech_id=f"tars-{rid}",
-        )
-        payload = {
-            "request_id": rid,
-            **utterance.to_request(),
-        }
-        try:
-            msg = RosString()
-            msg.data = json.dumps(payload, ensure_ascii=False)
-            self._avatar_tts_request_pub.publish(msg)
-        except Exception as exc:  # noqa: BLE001
-            self._log.warning(
-                f"avatar_supervisor: avatar_tts_request publish failed: {exc}"
-            )
-        return rid
+        return bool(headset_speech.say_in_headset(self, to_spoken(summary), self._log))
 
 
 class _NoopLabelCounter:

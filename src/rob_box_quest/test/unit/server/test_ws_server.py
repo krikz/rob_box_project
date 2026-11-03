@@ -685,7 +685,7 @@ async def test_operator_tts_audio_survives_unrelated_crashing_cmd(
 
     Прямой сквозной регресс-тест на связку #2099→#2100: регистрируем
     ``operator_tts`` request_id → ws (как это делает
-    ``quest_node._on_avatar_tts_request_meta``), затем ломаем сессию
+    ``quest_node._on_headset_speech_request``), затем ломаем сессию
     падающим ``set_voice`` (issue #2099), и проверяем, что
     ``deliver_audio(stream="operator_tts", ...)`` для РАНЕЕ
     зарегистрированного request_id всё ещё долетает клиенту — сессия и

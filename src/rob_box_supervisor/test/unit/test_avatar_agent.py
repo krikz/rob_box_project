@@ -757,8 +757,9 @@ if __name__ == "__main__":
 
 
 def _published_avatar_tts(node: AvatarSupervisor) -> list[dict]:
-    """Достать всё опубликованное в /avatar/tts/request (parsed JSON)."""
-    return [json.loads(m.data) for m in node._avatar_tts_request_pub.published]
+    """Реплики в шлем: ``SpeechRequest`` с ``sink=headset`` (#4252)."""
+    return [{"text": r.text, "sink": r.sink, "speech_id": r.speech_id}
+            for r in node._speech_client_pubs["request"].published if r.sink == "headset"]
 
 
 class TestAgentReplyIsSpoken(unittest.TestCase):
@@ -802,7 +803,7 @@ class TestAgentReplyIsSpoken(unittest.TestCase):
             self.node._run_agent_sync = original
 
     def test_quest_reply_goes_to_headset_tts(self) -> None:
-        """Голосовой вход → ответ уходит в /avatar/tts/request, sink=headset."""
+        """Голосовой вход → ответ уходит владельцу речи, sink=headset."""
         self._run("quest")
         spoken = _published_avatar_tts(self.node)
         self.assertEqual(len(spoken), 1, "ответ агента не был озвучен")

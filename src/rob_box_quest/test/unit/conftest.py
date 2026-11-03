@@ -166,7 +166,8 @@ _STUB_ATTRS = {
     "sensor_msgs.msg": {"CompressedImage": _StubMsg, "LaserScan": _StubMsg},
     "std_msgs.msg": {"String": _StubString},
     # ADR-0150 PR-2: /voice/speaker/result типизирован (SpeakerResult).
-    "rob_box_dialog_msgs.msg": {"SpeakerResult": _StubMsg},
+    # #4252: реплика ТАРС в шлем — SpeechRequest(sink=headset), её конец — SpeechEvent.
+    "rob_box_dialog_msgs.msg": {"SpeakerResult": _StubMsg, "SpeechEvent": _StubMsg, "SpeechRequest": _StubMsg},
     "rob_box_core.avatar_command": {
         "AVATAR_COMMAND_RESULT_TOPIC": "/avatar/command/result"
     },

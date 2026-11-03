@@ -126,13 +126,16 @@ request_id). Иначе в очереди останется «накопило�
 | `accepted` | `/avatar/stt/result` — wake принят | `QuestNode._on_avatar_stt_result` |
 | `thinking` | supervisor начал ход LLM → `/avatar/tars/stage` | `AvatarSupervisor._on_avatar_command` → `TarsStagePublisher.thinking` → `TarsStageRelay.on_supervisor_stage` |
 | `speaking` | первый `/avatar/tts/audio`, доставленный в шлем (`deliver_audio` = True) | `QuestNode._on_avatar_tts_audio` → `TarsStageRelay.on_chunk` |
-| `idle` + `operator_tts_done` | `/voice/tts/finished` с `speech_id` реплики **и** оценка конца звука в шлеме (байты / 2 / sample_rate) + 0,5 с | `TarsStageRelay.on_tts_finished` + `tick` (таймер 10 Гц) |
-| `idle` + `operator_tts_error` | `/voice/tts/finished success=false` | то же |
+| `idle` + `operator_tts_done` | `SpeechEvent finished` с `speech_id` реплики **и** оценка конца звука в шлеме (байты / 2 / sample_rate) + 0,5 с | `TarsStageRelay.on_speech_event` + `tick` (таймер 10 Гц) |
+| `idle` + `operator_tts_error` | `SpeechEvent cancelled` / `rejected` (причина — `reason`) | то же |
 | `idle` (reason=`barge_in`) + `operator_tts_done` | PTT оператора (`QuestBridge.publish_voice_barge_in`) | `TarsStageRelay.on_barge_in` |
 | `idle` (reason=`agent_disabled`/`agent_unavailable`/`malformed_input`/`no_speech`) | ход без реплики в шлем | supervisor → `/avatar/tars/stage` |
 
-* Связь реплики с `/voice/tts/finished`: supervisor кладёт в
-  `/avatar/tts/request` `speech_id = "tars-<request_id>"`.
+* Связь реплики с её концом (#4252): supervisor шлёт владельцу речи
+  `SpeechRequest(agent=operator, sink=headset)`; quest_node слушает тот же
+  запрос, регистрирует его `speech_id` на ws шлема и ждёт `SpeechEvent` с
+  этим `speech_id`. До #4252 — String JSON `/avatar/tts/request` и
+  `/voice/tts/finished` (`speech_id = "tars-<request_id>"`).
 * Почему `done` отложен до конца звука: клиент на `operator_tts_done`
   зовёт `operatorAudioSink.stop()` и обрывает очередь, а MiniMax-стрим
   синтезирует быстрее реального времени — `finished` приходит, когда в

@@ -166,13 +166,49 @@ def test_request_without_speech_id_gets_one(setup):
     assert len(node.chunks[0]["speech_id"]) == 36
 
 
-def test_request_to_headset_is_rejected_loudly(setup):
+def test_request_to_unknown_sink_is_rejected_loudly(setup):
     """Чего владелец не исполняет - честный rejected, а не тихое «сыграл как смог»."""
     node, _, _ = setup
-    node.subs["/voice/speech/request"](_request(sink="headset"))
+    node.subs["/voice/speech/request"](_request(sink="telegram"))
     assert node.chunks == []
     ((kind, ev),) = _events(node)
     assert (kind, ev.reason, ev.speech_id) == ("rejected", "sink_unsupported", "sid-1")
+
+
+def test_4252_headset_request_goes_to_headset_branch_with_speech_id_as_key(setup):
+    """#4252: ``sink=headset`` - в ветку шлема конвейера; ключ реплики у шлема (``request_id``) = ``speech_id``."""
+    node, _, _ = setup
+    node.subs["/voice/speech/request"](_request(sink="headset", agent="operator"))
+    (chunk,) = node.chunks
+    assert (chunk["sink"], chunk["request_id"], chunk["speech_id"]) == ("headset", "sid-1", "sid-1")
+    assert _kinds(node) == ["queued"]
+
+
+def test_4252_headset_speech_ends_with_the_same_events_as_speakers(setup):
+    """Ветка шлема не заводит реплику в журнал сама - владелец заводит её на входе, финал даёт событие."""
+    node, owner, _ = setup
+    node.subs["/voice/speech/request"](_request(sink="headset", agent="operator", text="Готово."))
+    owner.synthesized("sid-1", 0.8, {"used_provider": "minimax", "used_voice": "v"}, None)
+    node._publish_tts_finished("sid-1", success=True)
+    assert _kinds(node) == ["queued", "synthesized", "finished"]
+    assert [e.agent for _, e in _events(node)] == ["operator"] * 3
+
+
+def test_4252_headset_failure_is_rejected_with_the_reason(setup):
+    node, _, _ = setup
+    node.subs["/voice/speech/request"](_request(sink="headset"))
+    node._publish_tts_finished("sid-1", success=False, error="empty_text")
+    assert [(k, e.reason) for k, e in _events(node)] == [("queued", ""), ("rejected", "empty_text")]
+
+
+@pytest.mark.parametrize("fields", [{"commit": False}, {"at": 1234.5}])
+def test_4252_headset_has_no_presynth_and_no_at(setup, fields):
+    """Пред-синтеза и старта по часам у шлема нет - честный rejected, а не «сыграл сразу»."""
+    node, _, _ = setup
+    node.subs["/voice/speech/request"](_request(sink="headset", **fields))
+    assert node.chunks == []
+    ((kind, ev),) = _events(node)
+    assert (kind, ev.reason) == ("rejected", "headset_timing_unsupported")
 
 
 def test_timing_fields_travel_with_the_chunk(setup):

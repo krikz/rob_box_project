@@ -1,7 +1,7 @@
 {
   "version": 1,
   "created": "2026-11-03",
-  "base_sha": "9b63e58d693775087e4730dfed0b2016aa8fd004",
+  "base_sha": "dba6d3541e226d7ea6394cb20ee306d0030381a8",
   "limits": {
     "wmc": 80,
     "methods": 40
@@ -40,7 +40,7 @@
       "methods": 59
     },
     "src/rob_box_quest/rob_box_quest/quest_node.py:QuestNode": {
-      "wmc": 170,
+      "wmc": 166,
       "methods": 36
     },
     "src/rob_box_quest/rob_box_quest/server/ws_server.py:WSSServer": {
@@ -52,8 +52,8 @@
       "methods": 33
     },
     "src/rob_box_supervisor/rob_box_supervisor/supervisor_node.py:AvatarSupervisor": {
-      "wmc": 321,
-      "methods": 63
+      "wmc": 316,
+      "methods": 62
     },
     "src/rob_box_telegram/rob_box_telegram/supervisor_client.py:SupervisorClient": {
       "wmc": 133,

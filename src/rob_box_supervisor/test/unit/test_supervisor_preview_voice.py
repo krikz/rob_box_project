@@ -20,7 +20,12 @@ from __future__ import annotations
 import json
 import unittest
 
-from rob_box_supervisor.supervisor_node import AvatarSupervisor
+from rob_box_supervisor import headset_speech
+from rob_box_supervisor.supervisor_node import AvatarSupervisor, RosString
+
+
+def _preview(node: AvatarSupervisor, text: str, voice: str, request_id: str) -> str:
+    return headset_speech.publish_preview(node._avatar_tts_request_pub, RosString, text, voice, request_id, node._log)
 
 
 def _published_avatar_tts(node: AvatarSupervisor) -> list[dict]:
@@ -159,10 +164,9 @@ class TestOnPreviewVoiceValidation(unittest.TestCase):
         self.assertEqual(_published_preview_error(self.node), [])
 
 
-class TestPublishAvatarTtsPreviewSink(unittest.TestCase):
-    """``_publish_avatar_tts(sink='preview', request_id=...)`` — прямой
-    контракт для других caller'ов (на случай если они хотят опубликовать
-    preview-запрос напрямую, без ``_on_preview_voice`` валидации).
+class TestPublishPreviewTts(unittest.TestCase):
+    """``headset_speech.publish_preview(...)`` — прямой контракт
+    preview-запроса без ``_on_preview_voice`` валидации.
     """
 
     def setUp(self) -> None:
@@ -172,21 +176,19 @@ class TestPublishAvatarTtsPreviewSink(unittest.TestCase):
         self.node.destroy_node()
 
     def test_sink_preview_with_caller_request_id_preserved(self) -> None:
-        rid = self.node._publish_avatar_tts(
-            text="привет",
-            sink="preview",
-            request_id="caller-provided-rid",
-        )
+        rid = _preview(self.node, "привет", "fr-f1", "caller-provided-rid")
         self.assertEqual(rid, "caller-provided-rid")
         pub = _published_avatar_tts(self.node)
         self.assertEqual(len(pub), 1)
         self.assertEqual(pub[0]["sink"], "preview")
         self.assertEqual(pub[0]["request_id"], "caller-provided-rid")
+        self.assertEqual(pub[0]["voice"], "fr-f1")
 
-    def test_default_sink_remains_headset(self) -> None:
-        """Backward-compat: sink='headset' по умолчанию, request_id
-        генерируется (не caller-provided)."""
-        rid = self.node._publish_avatar_tts(text="привет")
-        self.assertEqual(len(rid), 8)  # uuid4().hex[:8]
-        pub = _published_avatar_tts(self.node)
-        self.assertEqual(pub[0]["sink"], "headset")
+    def test_4252_headset_is_not_on_this_channel(self) -> None:
+        """#4252: /avatar/tts/request несёт только preview; реплики в шлем — SpeechRequest."""
+        headset_speech.say_in_headset(self.node, "привет", self.node._log)
+        self.assertEqual(_published_avatar_tts(self.node), [])
+
+    def test_empty_text_dropped(self) -> None:
+        self.assertEqual(_preview(self.node, "  ", "fr-f1", "rid"), "")
+        self.assertEqual(_published_avatar_tts(self.node), [])
