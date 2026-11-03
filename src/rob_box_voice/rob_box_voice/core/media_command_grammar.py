@@ -799,7 +799,7 @@ _NOT_THEME_CLASSES: FrozenSet[str] = frozenset({"volume", "stop"})
 
 
 #: Просьба продолжить сет (#3581, живой сет 12.10: «продолжай сэт» стал темой «продолжай» → хуки «Carry On»,
-#: «Keep It Up»). Слово — не тема; без новой темы в реплике тема — тема последнего сета (``tools_v2.DjSetTool``).
+#: «Keep It Up»). Слово — не тема; без новой темы в реплике тема — тема последнего сета (``engine_tools.DjSetTool``).
 SET_CONTINUE_WORDS: FrozenSet[str] = frozenset({
     "продолжай", "продолжайте", "продолжи", "продолжим", "продолжаем", "продолжить", "продолжение", "дальше",
     "ещё", "еще", "снова", "опять", "повтори",
@@ -860,7 +860,7 @@ _SET_NEGATION: FrozenSet[str] = frozenset({
 def asks_for_set(text: str) -> bool:
     """Человек просит сет: слово сета/диджея/вечеринки без отрицания перед ним или явный стиль («включи рейв»).
     Иначе заказ — одна пьеса (``mode=piece``, ADR-0157 §2.1): ``dj_set(start)`` по такой реплике отказывает
-    (``tools_v2.NOT_A_SET_REQUEST``)."""
+    (``engine_tools.NOT_A_SET_REQUEST``)."""
     words = _theme_words(extract_user_utterance(text))
     for i, word in enumerate(words):
         named = word in _SET_WORDS or word in _SET_NOUNS or word.startswith(_SET_MODE_STEMS)

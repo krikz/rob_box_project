@@ -25,7 +25,7 @@ from rob_box_mcp_tools.engine.backing_deck import BackingDeck
 from rob_box_mcp_tools.engine.renardo_adapter import RETUNE_LEAD_BEATS
 from rob_box_mcp_tools.engine.search import ThemeHits
 from rob_box_mcp_tools.engine.sing_route import SingRouteHost
-from rob_box_mcp_tools.engine.tools_v2 import DjSetTool, EditMusicTool, RequestMusicTool, music_busy
+from rob_box_mcp_tools.engine.engine_tools import DjSetTool, EditMusicTool, RequestMusicTool, music_busy
 from rob_box_mcp_tools.engine.track_edit import TrackEditor
 from rob_box_music import knowledge as kn
 from rob_box_music.choice import DeterministicChooser

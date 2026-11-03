@@ -1551,7 +1551,7 @@
       "text": "Робот, всё, спасибо, выключай музыку, курьерша уехала.",
       "patterns": [
        "✅ Инструмент stop_music выполнен успешно",
-       "🎵 \\[music v2\\] stop track_id=[a-z0-9]\\S* reason=user_stop",
+       "🎵 \\[music\\] stop track_id=[a-z0-9]\\S* reason=user_stop",
        "📊 \\[turn\\] .*stage=done status=finished"
       ],
       "acceptance": {
@@ -1569,7 +1569,7 @@
       },
       "skip_when": {
        "reason": "NO_MUSIC_N310",
-       "log": "\\[music v2\\] (started|stop|finished) track_id=",
+       "log": "\\[music\\] (started|stop|finished) track_id=",
        "deck": "idle"
       },
       "music_compare": "stopped"
@@ -2002,7 +2002,7 @@
       "patterns": [
        "✅ Инструмент request_music выполнен успешно",
        "\\[source\\] .*→ synth:",
-       "🎵 \\[music v2\\] started track_id=req[0-9]+:",
+       "🎵 \\[music\\] started track_id=req[0-9]+:",
        "📊 \\[turn\\] .*stage=done status=finished"
       ],
       "acceptance": {
@@ -2011,7 +2011,7 @@
        ],
        "must_not_call": [
         "generate_music",
-        "[music v2] exec track_id=gen_",
+        "[music] exec track_id=gen_",
         "stage=timeout",
         "stage=done status=done"
        ],
@@ -2061,13 +2061,13 @@
       "text": "Робот, продолжай развивать эту тему и добавь баса пожирнее.",
       "patterns": [
        "✅ Инструмент edit_music выполнен успешно",
-       "🎚️ \\[music v2\\] edit applied track_id=",
+       "🎚️ \\[music\\] edit applied track_id=",
        "📊 \\[turn\\] .*stage=done status=finished"
       ],
       "acceptance": {
        "must_not_call": [
         "stop_music",
-        "[music v2] exec track_id=",
+        "[music] exec track_id=",
         "stage=timeout",
         "stage=done status=done"
        ],
@@ -2090,13 +2090,13 @@
       "text": "Робот, сделай атмосферу помрачнее, как в киберпанке.",
       "patterns": [
        "✅ Инструмент edit_music выполнен успешно",
-       "🎚️ \\[music v2\\] edit applied track_id=",
+       "🎚️ \\[music\\] edit applied track_id=",
        "📊 \\[turn\\] .*stage=done status=finished"
       ],
       "acceptance": {
        "must_not_call": [
         "stop_music",
-        "[music v2] exec track_id=",
+        "[music] exec track_id=",
         "stage=timeout",
         "stage=done status=done"
        ],
@@ -2119,7 +2119,7 @@
       "text": "Робот, и ускорь темп, а то мы тут засыпаем оба.",
       "patterns": [
        "✅ Инструмент edit_music выполнен успешно",
-       "🎚️ \\[music v2\\] edit applied track_id=",
+       "🎚️ \\[music\\] edit applied track_id=",
        "📊 \\[turn\\] .*stage=done status=finished"
       ],
       "acceptance": {
@@ -2127,7 +2127,7 @@
         "stop_music",
         "set_speed",
         "set_pitch",
-        "[music v2] exec track_id=",
+        "[music] exec track_id=",
         "stage=timeout",
         "stage=done status=done"
        ],
@@ -2180,7 +2180,7 @@
       ],
       "skip_when": {
        "reason": "NO_MUSIC_N506",
-       "log": "\\[music v2\\] (started|stop|finished) track_id=",
+       "log": "\\[music\\] (started|stop|finished) track_id=",
        "deck": "idle"
       }
      }
@@ -2196,7 +2196,7 @@
       "text": "Робот, всё, глуши музыку, у меня уши в трубочку.",
       "patterns": [
        "✅ Инструмент stop_music выполнен успешно",
-       "🎵 \\[music v2\\] stop track_id=[a-z0-9]\\S* reason=user_stop",
+       "🎵 \\[music\\] stop track_id=[a-z0-9]\\S* reason=user_stop",
        "📊 \\[turn\\] .*stage=done status=finished"
       ],
       "acceptance": {
@@ -2214,7 +2214,7 @@
       },
       "skip_when": {
        "reason": "NO_MUSIC_N506",
-       "log": "\\[music v2\\] (started|stop|finished) track_id=",
+       "log": "\\[music\\] (started|stop|finished) track_id=",
        "deck": "idle"
       },
       "music_compare": "stopped"
@@ -2247,7 +2247,7 @@
       },
       "skip_when": {
        "reason": "NO_STOP_N511",
-       "log": "\\[music v2\\] (started|stop|finished) track_id=",
+       "log": "\\[music\\] (started|stop|finished) track_id=",
        "deck": "playing"
       }
      }
@@ -2299,7 +2299,7 @@
       "text": "Робот, включай диджей-режим, у нас ночная дискотека.",
       "patterns": [
        "✅ Инструмент dj_set выполнен успешно",
-       "🎵 \\[music v2\\] started track_id=",
+       "🎵 \\[music\\] started track_id=",
        "📊 \\[turn\\] .*stage=done status=finished"
       ],
       "acceptance": {
@@ -2465,7 +2465,7 @@
       "text": "Робот, хватит диджеить, выключай.",
       "patterns": [
        "✅ Инструмент (dj_set|stop_music) выполнен успешно",
-       "🎵 \\[music v2\\] stop track_id=[a-z0-9]\\S* reason=user_stop",
+       "🎵 \\[music\\] stop track_id=[a-z0-9]\\S* reason=user_stop",
        "📊 \\[turn\\] .*stage=done status=finished"
       ],
       "acceptance": {
@@ -2694,7 +2694,7 @@
       "text": "Робот, включи эту песню про енота с начала.",
       "patterns": [
        "✅ Инструмент music_library выполнен успешно",
-       "🎵 \\[music v2\\] started track_id=",
+       "🎵 \\[music\\] started track_id=",
        "📊 \\[turn\\] .*stage=done status=finished"
       ],
       "acceptance": {
@@ -2734,7 +2734,7 @@
       "text": "Робот, останови, Борис уже уснул под неё.",
       "patterns": [
        "✅ Инструмент stop_music выполнен успешно",
-       "🎵 \\[music v2\\] stop track_id=[a-z0-9]\\S* reason=user_stop",
+       "🎵 \\[music\\] stop track_id=[a-z0-9]\\S* reason=user_stop",
        "📊 \\[turn\\] .*stage=done status=(finished|done)"
       ],
       "acceptance": {
@@ -2770,7 +2770,7 @@
       "patterns": [
        "✅ Инструмент request_music выполнен успешно",
        "\\[source\\] .*→ synth:",
-       "🎵 \\[music v2\\] started track_id=req[0-9]+:",
+       "🎵 \\[music\\] started track_id=req[0-9]+:",
        "📊 \\[turn\\] .*stage=done status=finished"
       ],
       "acceptance": {
@@ -2779,7 +2779,7 @@
        ],
        "must_not_call": [
         "generate_music",
-        "[music v2] exec track_id=gen_",
+        "[music] exec track_id=gen_",
         "stage=timeout",
         "stage=done status=done"
        ],
@@ -2802,7 +2802,7 @@
       "text": "Робот, всё, глуши.",
       "patterns": [
        "✅ Инструмент stop_music выполнен успешно",
-       "🎵 \\[music v2\\] stop track_id=[a-z0-9]\\S* reason=user_stop",
+       "🎵 \\[music\\] stop track_id=[a-z0-9]\\S* reason=user_stop",
        "📊 \\[turn\\] .*stage=done status=finished"
       ],
       "acceptance": {
@@ -3089,7 +3089,7 @@
       "patterns": [
        "✅ Инструмент request_music выполнен успешно",
        "\\[source\\] .*→ synth:",
-       "🎵 \\[music v2\\] started track_id=req[0-9]+:",
+       "🎵 \\[music\\] started track_id=req[0-9]+:",
        "📊 \\[turn\\] .*stage=done status=finished"
       ],
       "acceptance": {
@@ -3098,7 +3098,7 @@
        ],
        "must_not_call": [
         "generate_music",
-        "[music v2] exec track_id=gen_",
+        "[music] exec track_id=gen_",
         "stage=timeout",
         "stage=done status=done"
        ],
@@ -3159,7 +3159,7 @@
       "acceptance": {
        "must_not_call": [
         "stop_music",
-        "[music v2] stop",
+        "[music] stop",
         "stage=done status=done"
        ],
        "must_not_say": [
@@ -3183,7 +3183,7 @@
       "patterns": [
        "\\[stop_music\\] .*was_playing(=|': )True",
        "✅ Инструмент stop_music выполнен успешно",
-       "🎵 \\[music v2\\] stop track_id=[a-z0-9]\\S* reason=user_stop",
+       "🎵 \\[music\\] stop track_id=[a-z0-9]\\S* reason=user_stop",
        "📊 \\[turn\\] .*stage=done status=finished"
       ],
       "acceptance": {

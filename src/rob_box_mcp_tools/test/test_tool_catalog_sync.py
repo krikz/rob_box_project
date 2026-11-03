@@ -34,7 +34,7 @@ MCP_SERVER = (
 )
 TOOLS_DIR = REPO_ROOT / "src" / "rob_box_mcp_tools" / "rob_box_mcp_tools" / "tools"
 #: ADR-0149 PR-6: узкие тулы движка v2 (каталог читает их так же, как ``tools/``).
-ENGINE_TOOLS = TOOLS_DIR.parent / "engine" / "tools_v2.py"
+ENGINE_TOOLS = TOOLS_DIR.parent / "engine" / "engine_tools.py"
 
 #: ТАРС-только тулы, зарегистрированные на mcp_server для исполнения по
 #: /mcp/execute (их зовёт второй агент — avatar_supervisor), но скрытые из

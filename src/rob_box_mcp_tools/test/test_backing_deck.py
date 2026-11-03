@@ -12,7 +12,7 @@ from rob_box_dialog.plan.sync import beat_heard_at
 from rob_box_mcp_tools.engine.backing_deck import BACKING_LEAD_BEATS, BackingDeck, backing_order
 from rob_box_mcp_tools.engine.player_owner import beat_fields
 from rob_box_mcp_tools.engine.search import ThemeHits
-from rob_box_mcp_tools.engine.tools_v2 import DjSetTool, RequestMusicTool, music_busy
+from rob_box_mcp_tools.engine.engine_tools import DjSetTool, RequestMusicTool, music_busy
 from rob_box_music import knowledge as kn
 from rob_box_music.model import BEATS_PER_BAR
 

@@ -43,7 +43,7 @@ wait $REC
 rec silence_after 3
 echo "silence_after_dbfs $(rms "$OUT/silence_after.wav")" | tee -a "$OUT/summary.txt"
 
-docker logs -t voice-assistant --since "$T0" 2>&1 | grep -E "\[music v2\]|\[set v2\]" > "$OUT/engine.log"
+docker logs -t voice-assistant --since "$T0" 2>&1 | grep -E "\[music\]|\[set\]" > "$OUT/engine.log"
 {
   echo "started $(grep -c '\] started track_id' "$OUT/engine.log")"
   echo "started_phase_not_0 $(grep '\] started track_id' "$OUT/engine.log" | grep -vc 'phase_in_form=0.0 ')"

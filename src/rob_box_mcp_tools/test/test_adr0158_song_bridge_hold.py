@@ -17,7 +17,7 @@ from rob_box_mcp_tools.engine.gen.library_play import play_library_track
 from rob_box_mcp_tools.engine.session import NEARLY_LEAD_BEATS, compose_source
 from rob_box_mcp_tools.engine.source_route import cache_tracks
 from rob_box_mcp_tools.engine.search import ThemeHits
-from rob_box_mcp_tools.engine.tools_v2 import DjSetTool, RequestMusicTool
+from rob_box_mcp_tools.engine.engine_tools import DjSetTool, RequestMusicTool
 from rob_box_music import knowledge as kn
 from rob_box_music.model import AudioTrack
 from rob_box_music.render.renardo import render

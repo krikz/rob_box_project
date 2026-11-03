@@ -11,7 +11,7 @@ import pytest
 
 from rob_box_mcp_tools.engine.gen import gen_session as gs
 from rob_box_mcp_tools.engine.gen.library import GeneratedMusicLibrary
-from rob_box_mcp_tools.engine.tools_v2 import DjSetTool, set_opening
+from rob_box_mcp_tools.engine.engine_tools import DjSetTool, set_opening
 from rob_box_music.choice import DeterministicChooser
 
 from .test_adr0158_pr8_gen_set import Kie, _fake_audio_track

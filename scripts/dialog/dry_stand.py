@@ -562,8 +562,8 @@ class FakePlayer:
         """``PlayerOwner.play`` и его ``started``: трек на деке, строка старта, снимок."""
         self._track, self._title = track_id, title
         self._dj = {**(dj or {}), "enabled": bool((dj or {}).get("enabled"))}
-        # player_owner.py: f"🎵 [music v2] started track_id={track_id} " + поля старта ``k=v`` через пробел
-        self._stand.emit(f"🎵 [music v2] started track_id={track_id} clock_beat=0.0 start_beat=0.0 phase_in_form=0 "
+        # player_owner.py: f"🎵 [music] started track_id={track_id} " + поля старта ``k=v`` через пробел
+        self._stand.emit(f"🎵 [music] started track_id={track_id} clock_beat=0.0 start_beat=0.0 phase_in_form=0 "
                          f"late_beats=0.0 bpm={STAND_BPM} deck=A form_beats={STAND_FORM_BEATS} players_aligned=True "
                          f"latency_s=0.0")
         self.publish()
@@ -599,8 +599,8 @@ class FakePlayer:
         if self._set_id is None:
             return None
         set_id, self._set_id = self._set_id, None
-        # session.py: f"🎧 [set v2] {self.set_id} stop reason={reason}"
-        self._stand.emit(f"🎧 [set v2] {set_id} stop reason={reason}")
+        # session.py: f"🎧 [set] {self.set_id} stop reason={reason}"
+        self._stand.emit(f"🎧 [set] {set_id} stop reason={reason}")
         return {**self.stop(reason), "set_id": set_id}
 
     def stop(self, reason: str = "user_stop") -> Dict[str, Any]:
@@ -608,8 +608,8 @@ class FakePlayer:
         last = self._track
         self._track = self._title = None
         self._dj = {"enabled": False}
-        # player_owner.py: f"🎵 [music v2] stop track_id={last} reason={reason}"
-        self._stand.emit(f"🎵 [music v2] stop track_id={last} reason={reason}")
+        # player_owner.py: f"🎵 [music] stop track_id={last} reason={reason}"
+        self._stand.emit(f"🎵 [music] stop track_id={last} reason={reason}")
         self.publish()
         return {"ok": True, "track_id": last}
 

@@ -18,7 +18,7 @@ from rob_box_music import works
 from rob_box_mcp_tools.core.rtttl_library import RtttlLibrary
 from rob_box_mcp_tools.engine.score_library import ScoreIndex
 from rob_box_mcp_tools.engine.search import ThemeHits, ThemeQuery, part_query, theme_search
-from rob_box_mcp_tools.engine.tools_v2 import DjSetTool
+from rob_box_mcp_tools.engine.engine_tools import DjSetTool
 
 from .test_engine_session import _rig
 

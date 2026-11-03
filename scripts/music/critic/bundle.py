@@ -3,7 +3,7 @@
 и mp3 (рендер), с промтом критику.
 
 Вход — каталог прогона ``s7_styles.sh``, снятый с робота (index.txt, <key>.full.log,
-s7_<key>.wav) плюс модели треков ``tracks/<track_id>.json`` (``music_v2_tracks_dir``,
+s7_<key>.wav) плюс модели треков ``tracks/<track_id>.json`` (``music_tracks_dir``,
 ADR-0152 §2.3). Код аранжировщика получается ``render(track, deck).code`` — тем же
 рендером, что играл на роботе; ``load_track`` до печати кода доказывает, что
 модель собрана обратно без потерь (round-trip ``track_json``).
@@ -49,7 +49,7 @@ SET_HEAD = re.compile(r"^=== SET (\S+) '([^']*)' '([^']*)' start (\S+)$")
 SET_DONE = re.compile(r"^=== SET (\S+) done \S+ started=(\d+) late=(\d+)")
 INJECT = re.compile(r"^inject (\S+)$")
 DOCKER_TS = re.compile(r"^(\S+Z) ")
-STARTED = re.compile(r"\[music v2\] started track_id=(\S+)")
+STARTED = re.compile(r"\[music\] started track_id=(\S+)")
 SILENCE = re.compile(r"silence_end: ([\d.]+)")
 
 CRITIC_PROMPT = """Ты — профессиональный музыкальный критик и звукорежиссёр. Прослушай приложенный аудиофайл `{mp3}`,
@@ -90,7 +90,7 @@ def parse_index(path: Path) -> dict[str, dict]:
 
 
 def track_starts(log: Path) -> list[tuple[str, float]]:
-    """``[(track_id, docker-штамп в секундах)]`` по строкам ``[music v2] started`` — в порядке игры."""
+    """``[(track_id, docker-штамп в секундах)]`` по строкам ``[music] started`` — в порядке игры."""
     out = []
     for line in log.read_text(encoding="utf-8", errors="replace").splitlines():
         ts = DOCKER_TS.match(line)
@@ -203,7 +203,7 @@ def md_for(style: dict, mp3_name: str, entries: list[dict], facts: dict) -> str:
         f"{'да' if facts.get('seen_in_log') else 'НЕТ (см. _raw/' + style['key'] + '.full.log)'}",
         f"- старт записи `jack_rec` (jack:out_1/2 суперколлайдера): {facts['record_start']}",
         f"- первый трек встал на плеер: +{facts['music_offset']:.2f} с от старта записи "
-        f"(±0.2 с — задержка старта `jack_rec`; момент ловится строкой `[music v2] started` в логе робота)",
+        f"(±0.2 с — задержка старта `jack_rec`; момент ловится строкой `[music] started` в логе робота)",
         "",
         "## Рендер",
         "",
@@ -223,7 +223,7 @@ def md_for(style: dict, mp3_name: str, entries: list[dict], facts: dict) -> str:
         "| | |",
         "|---|---|",
         f"| темп сета | {facts['bpm']} BPM |",
-        f"| треков в окне записи | {facts['started']} (строк `[music v2] started`) |",
+        f"| треков в окне записи | {facts['started']} (строк `[music] started`) |",
         f"| late-бандлов за окно | {facts['late']} (во всём прогоне 10 стилей: {facts['late_all']}) |",
         "",
     ]
@@ -239,7 +239,7 @@ def md_for(style: dict, mp3_name: str, entries: list[dict], facts: dict) -> str:
             entry["code"].rstrip("\n"),
             "```",
             "",
-            f"Источник кода: модель трека `{entry['model']}` (`music_v2_tracks_dir`, ADR-0152 §2.3), собранная"
+            f"Источник кода: модель трека `{entry['model']}` (`music_tracks_dir`, ADR-0152 §2.3), собранная"
             f" обратно в `Track` и отрендеренная тем же `render()`, что играл на роботе: "
             f"{entry['proof'].lstrip('✅ ')}.",
             "",
@@ -277,12 +277,12 @@ def index_md(rows: list[dict], run: Path, index: dict[str, dict]) -> str:
         "## Как получен код",
         "",
         "Код аранжировщика — не пересказ и не реконструкция по логам: робот на каждый трек сета пишет полную "
-        "модель (`music_v2_tracks_dir`, ADR-0152 §2.3), а `scripts/music/critic/bundle.py` собирает её обратно в "
+        "модель (`music_tracks_dir`, ADR-0152 §2.3), а `scripts/music/critic/bundle.py` собирает её обратно в "
         "`Track` и рендерит тем же `render()`, что играл на роботе. Перед печатью кода скрипт требует "
         "round-trip: `track_json(собранная модель)` обязан совпасть с исходным JSON символ в символ — иначе код "
         "не печатается (выход 2). Строка проверки приведена в конце каждого блока кода в per-жанровых md.",
         "",
-        "Смещение старта музыки взято из строки `[music v2] started` лога робота (это ошибка ±0.2 с на старт "
+        "Смещение старта музыки взято из строки `[music] started` лога робота (это ошибка ±0.2 с на старт "
         "`jack_rec`); независимая проверка — замер тишины `ffmpeg silencedetect` в тех же md.",
         "",
         "## Что проверить за критиком",
@@ -295,7 +295,7 @@ def index_md(rows: list[dict], run: Path, index: dict[str, dict]) -> str:
         "",
         "- `scripts/music/critic/bundle.py` — сборка бандла и модель трека → код (round-trip).",
         "- `_raw/index.txt` — журнал прогона (времена, счётчики late), `_raw/<жанр>.full.log` — полный лог "
-        "`voice-assistant` по стилю (запрос, план сета, `[music v2] started`).",
+        "`voice-assistant` по стилю (запрос, план сета, `[music] started`).",
         "",
         "В `club/club.md` после промта дописан разбор товарища Шифу (разделы «Ответ без кода» и «Ответ после того, "
         "как дали посмотреть на код») — он к бандлу приложен как образец, в остальных жанрах кода ещё нет ответа.",

@@ -193,8 +193,8 @@ def test_dj_set_with_result_markers_passes_n602_n604_n608():
     """Робот v2 включил сет, сменил стиль и выключил через ``dj_set`` -- шаги зелёные (run 132908 их краснил)."""
     done = "✅ Инструмент dj_set выполнен успешно"
     ended = TURN_LINE % ("done", "finished")
-    started = "🎵 [music v2] started track_id=set1:01:A clock_beat=4"
-    stopped = "🎵 [music v2] stop track_id=set1:01:A reason=user_stop"
+    started = "🎵 [music] started track_id=set1:01:A clock_beat=4"
+    stopped = "🎵 [music] stop track_id=set1:01:A reason=user_stop"
     assert _verdict("n602_dj_on", "\n".join(["📤 Отправлен запрос ab: dj_set", done, started, ended]))["pass"]
     assert _verdict("n604_dj_rock", "\n".join(["📤 Отправлен запрос ab: dj_set", done, ended]))["pass"]
     assert _verdict("n607_vibe_chill", "\n".join(["📤 Отправлен запрос ab: dj_set", done, ended]))["pass"]
@@ -237,7 +237,7 @@ def test_live_music_edit_is_the_edit_tool_on_the_playing_track_and_n506_forbids_
     """n504-n506 (#4029, PR #4116): правка играющего -- ``edit_music`` и ``edit applied`` того же трека; новый заказ
     (dj_set|request_music|generate_music) -- не правка; «ускорь темп» не крутит голос робота (#3976)."""
     ended = TURN_LINE % ("done", "finished")
-    applied = "🎚️ [music v2] edit applied track_id=req93513:01:A:bce191fa at_beat=9856 bpm=147"
+    applied = "🎚️ [music] edit applied track_id=req93513:01:A:bce191fa at_beat=9856 bpm=147"
     edit = "\n".join(["✅ Инструмент edit_music выполнен успешно", applied, ended])
     for label in ("n504_add_bass", "n505_vibe_dark", "n506_faster"):
         assert _verdict(label, edit)["pass"], label
@@ -468,21 +468,21 @@ def test_music_must_start_steps_forbid_the_timeout_phrase():
     assert not etm.step_verdict(_acc("n605_dj_set_plan"), lie)["forbidden_said"], "#4006 ещё не влит"
     # #3971: n809 просит синт («на синтезаторе») -- путь synth и синт-трек req… на деке
     route = "🎚️ [source] asked=[] genre=— кандидаты=['synth:club'] → synth:club (code) gen=ok"
-    ok = "\n".join([route, "✅ Инструмент request_music выполнен успешно", "🎵 [music v2] started track_id=req1:01:A",
+    ok = "\n".join([route, "✅ Инструмент request_music выполнен успешно", "🎵 [music] started track_id=req1:01:A",
                     DONE])
     assert _verdict("n809_music_bed", ok)["pass"]
     lie = "\n".join([_tts("Музыка пока не заиграла."), route, "✅ Инструмент request_music выполнен успешно",
-                     "🎵 [music v2] started track_id=req1:01:A", DONE])
+                     "🎵 [music] started track_id=req1:01:A", DONE])
     assert not _verdict("n809_music_bed", lie)["pass"]
 
 
 def test_music_stop_on_empty_deck_is_not_a_result():
     """n812 23.10: ``stop track_id=None`` + ``was_playing=False`` давал PASS -- теперь красный; нужен трек на деке."""
     idle = "\n".join(["✅ Инструмент stop_music выполнен успешно",
-                      "🎵 [music v2] stop track_id=None reason=user_stop",
+                      "🎵 [music] stop track_id=None reason=user_stop",
                       "[mcp_server]: [stop_music] [stop_music] was_playing=False", DONE])
     real = "\n".join(["✅ Инструмент stop_music выполнен успешно",
-                      "🎵 [music v2] stop track_id=req95964:01:A:f7de93b5 reason=user_stop",
+                      "🎵 [music] stop track_id=req95964:01:A:f7de93b5 reason=user_stop",
                       "[mcp_server]: [stop_music] [stop_music] was_playing=True", DONE])
     for label in ("n312_stop_music", "n511_stop_music", "n709_stop_generated", "n712_stop_all", "n812_stop_music"):
         assert not _verdict(label, idle)["pass"], label
@@ -498,7 +498,7 @@ def test_n811_stops_speech_and_keeps_music():
     assert _verdict("n811_stop_speech_keep_music", "\n".join([cancel, tier1]))["pass"]
     stop_all = tier1.replace("stop_speech", "stop_all")
     assert not _verdict("n811_stop_speech_keep_music", "\n".join([cancel, stop_all]))["pass"]
-    killed = "🎵 [music v2] stop track_id=req1:01:A reason=user_stop"
+    killed = "🎵 [music] stop track_id=req1:01:A reason=user_stop"
     assert not _verdict("n811_stop_speech_keep_music", "\n".join([cancel, tier1, killed]))["pass"]
     outro = "📥 Запрос выполнения: stop_music с параметрами {'boundary': 'bar'}"
     assert not _verdict("n811_stop_speech_keep_music", "\n".join([cancel, tier1, outro]))["pass"]
@@ -702,7 +702,7 @@ def _src(rel: str) -> str:
      'self.log_info(f"Принято {data} (показывает диалог по ExpressionRequest)")'),
     ("src/rob_box_mcp_tools/rob_box_mcp_tools/tools/animation.py", 'data["animation"] = resolved'),
     ("src/rob_box_mcp_tools/rob_box_mcp_tools/tools/music.py", 'self.log_info(f"[stop_music] was_playing={was_playing}")'),
-    ("src/rob_box_mcp_tools/rob_box_mcp_tools/engine/player_owner.py", 'f"🎵 [music v2] stop track_id={last} reason={reason}"'),
+    ("src/rob_box_mcp_tools/rob_box_mcp_tools/engine/player_owner.py", 'f"🎵 [music] stop track_id={last} reason={reason}"'),
     ("src/rob_box_mcp_tools/rob_box_mcp_tools/engine/gen/cover.py", 'f"🎼 [cover] баланс KIE: {value if value is not None'),
     ("src/rob_box_mcp_tools/rob_box_mcp_tools/base.py", 'self.node.get_logger().info(f"[{self.name}] {message}")'),
     ("src/rob_box_mcp_tools/rob_box_mcp_tools/mcp_server.py",
@@ -730,7 +730,7 @@ def _src(rel: str) -> str:
     ("src/rob_box_mcp_tools/rob_box_mcp_tools/engine/gen/song.py", 'f"🎤 [song] не вышло: {exc}"'),
     ("src/rob_box_mcp_tools/rob_box_mcp_tools/engine/gen/song.py", 'f"🎤 [song] сбой: {type(exc).__name__}: {exc}"'),
     ("src/rob_box_mcp_tools/rob_box_mcp_tools/engine/gen/song.py", 'f"🎤 [song] не заиграла: '),
-    ("src/rob_box_mcp_tools/rob_box_mcp_tools/engine/player_owner.py", 'f"🎵 [music v2] exec track_id={program.track_id} deck='),
+    ("src/rob_box_mcp_tools/rob_box_mcp_tools/engine/player_owner.py", 'f"🎵 [music] exec track_id={program.track_id} deck='),
 ])
 def test_marker_sources_exist_in_robot_code(rel, fragment):
     """Паттерны генератора собраны из f-строк кода робота: поменяли строку -- этот тест краснеет раньше марафона."""
@@ -768,7 +768,7 @@ def test_n402_names_the_voice_not_the_provider_4077():
 
 def test_n709_conditional_offer_after_stop_is_not_a_false_action_4077():
     """#4077/М8 n709: «если хочешь, включу его потише» после стопа -- условное предложение, не ложь о действии."""
-    stop = "🎵 [music v2] stop track_id=gen_b12d4ab5_1793298706 reason=user_stop"
+    stop = "🎵 [music] stop track_id=gen_b12d4ab5_1793298706 reason=user_stop"
     ok = "✅ Инструмент stop_music выполнен успешно"
     cond = _tts("Трек остановился. Если хочешь, включу его потише ещё раз.")
     assert gen.MUSIC_FALSE_ACTION and "сейчас включу" in gen.MUSIC_FALSE_ACTION

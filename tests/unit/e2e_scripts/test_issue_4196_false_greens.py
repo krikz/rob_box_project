@@ -72,20 +72,20 @@ def _mcp(ts: float, msg: str) -> str:
 
 
 def started(ts: float, track: str = "req77:01") -> str:
-    return _mcp(ts, "🎵 [music v2] started track_id=%s clock_beat=9792.069 start_beat=9792.0 phase_in_form=0.0 "
+    return _mcp(ts, "🎵 [music] started track_id=%s clock_beat=9792.069 start_beat=9792.0 phase_in_form=0.0 "
                     "late_beats=0.069 bpm=90 deck=A form_beats=192.0 players_aligned=True latency_s=0.5" % track)
 
 
 def stopped(ts: float, track: str = "req77:01", reason: str = "user_stop") -> str:
-    return _mcp(ts, "🎵 [music v2] stop track_id=%s reason=%s" % (track, reason))
+    return _mcp(ts, "🎵 [music] stop track_id=%s reason=%s" % (track, reason))
 
 
 def finished(ts: float, track: str = "req77:01") -> str:
-    return _mcp(ts, "🎵 [music v2] finished track_id=%s" % track)
+    return _mcp(ts, "🎵 [music] finished track_id=%s" % track)
 
 
 def edited(ts: float, track: str = "req77:01") -> str:
-    return _mcp(ts, "🎚️ [music v2] edit applied track_id=%s at_beat=9856 bpm=100" % track)
+    return _mcp(ts, "🎚️ [music] edit applied track_id=%s at_beat=9856 bpm=100" % track)
 
 
 def _skip(label: str, *lines: str) -> Dict[str, object]:

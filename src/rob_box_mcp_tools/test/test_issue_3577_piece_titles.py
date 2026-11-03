@@ -236,7 +236,7 @@ def test_dataset_known_rows_choose_recognizable_scores(tmp_path):
 def test_request_tool_warms_the_piece_path_in_background(tmp_path, caplog):
     from rob_box_mcp_tools.engine.score_library import ScoreLibrary
     from rob_box_mcp_tools.engine.search import ThemeHits
-    from rob_box_mcp_tools.engine.tools_v2 import DjSetTool, RequestMusicTool
+    from rob_box_mcp_tools.engine.engine_tools import DjSetTool, RequestMusicTool
 
     from .test_engine_session import _rig
 

@@ -98,7 +98,7 @@ def line_payload(response: Any) -> Any:
 
 class TransitionLines:
     """Реплики и факты одного сета. ``ask=None`` — LLM не спрашивается, звучат шаблоны; ``speak=None`` — переходы
-    молчат (``music_v2_dj_lines: false``), но факты трека всё равно уходят в снимок (``publish``) и в :meth:`now`."""
+    молчат (``music_dj_lines: false``), но факты трека всё равно уходят в снимок (``publish``) и в :meth:`now`."""
 
     def __init__(self, speak: Optional[Callable[[str], None]], *, titles: Titles, ask: Optional[Ask] = None,
                  missing: Iterable[str] = (), persona: Optional[str] = None,

@@ -18,7 +18,7 @@ from rob_box_mcp_tools.engine.gen.instrumental import InstrumentalMaker
 from rob_box_mcp_tools.engine.gen.library_play import play_library_track
 from rob_box_mcp_tools.engine.gen.provider import GenUnavailable
 from rob_box_mcp_tools.engine.search import ThemeHits
-from rob_box_mcp_tools.engine.tools_v2 import SOURCE_DECLINED, DjSetTool, GenerateMusicTool, RequestMusicTool
+from rob_box_mcp_tools.engine.engine_tools import SOURCE_DECLINED, DjSetTool, GenerateMusicTool, RequestMusicTool
 
 from .test_adr0158_pr7_song import FakeStudio
 from .test_adr0158_pr8_gen_set import Kie, _lib, fake_ffmpeg

@@ -137,7 +137,7 @@ class PlayerOwner:
             self._adapter.start(program, self.track_started)
         except Exception as exc:  # noqa: BLE001 — отказ громкий, а не тишина
             return self._reject(program.track_id, "exec_error", f"{type(exc).__name__}: {exc}")
-        self._log.info(f"🎵 [music v2] exec track_id={program.track_id} deck={program.deck} "
+        self._log.info(f"🎵 [music] exec track_id={program.track_id} deck={program.deck} "
                        f"bpm={program.bpm} — ждём started")
         return {"ok": True, "track_id": program.track_id}
 
@@ -154,13 +154,13 @@ class PlayerOwner:
                 if self._pending_dj is not None:
                     self._dj, self._pending_dj = self._pending_dj, None
         if stale:
-            self._log.warning(f"⚠️ [music v2] started track_id={track_id} устарел — заменён до старта")
+            self._log.warning(f"⚠️ [music] started track_id={track_id} устарел — заменён до старта")
             return
         now = self._clock()
         fields = {k: snap.get(k) for k in ("clock_beat", "start_beat", "phase_in_form", "late_beats",
                                            "bpm", "deck", "form_beats", "players_aligned", "latency_s")}
         fields.update(beat_fields(snap, now))
-        _log_started(self._log, snap, f"🎵 [music v2] started track_id={track_id} "
+        _log_started(self._log, snap, f"🎵 [music] started track_id={track_id} "
                      + " ".join(f"{k}={v}" for k, v in fields.items()))
         self._publish_event(build_music_event_payload("started", track_id, ts=now, **fields))
         self.publish_state()
@@ -179,7 +179,7 @@ class PlayerOwner:
             self._current, self._once, self._dj = None, None, {"enabled": False}
             self.last_finished = track_id
         self._adapter.stop()
-        self._log.info(f"🎵 [music v2] finished track_id={track_id}")
+        self._log.info(f"🎵 [music] finished track_id={track_id}")
         self._publish_event(build_music_event_payload("finished", track_id, ts=self._clock()))
         self.publish_state(finished_track_id=track_id)
         listener = self.on_finished
@@ -190,7 +190,7 @@ class PlayerOwner:
         """Трек N+1 отрендерен и проверен — в очередь (одно место), событие ``queued``."""
         with self._lock:
             self._queued = (program, expected_previous)
-        self._log.info(f"🎵 [music v2] queued track_id={program.track_id} expected_previous={expected_previous}")
+        self._log.info(f"🎵 [music] queued track_id={program.track_id} expected_previous={expected_previous}")
         self._publish_event(build_music_event_payload(
             "queued", program.track_id, ts=self._clock(), expected_previous=expected_previous))
 
@@ -214,7 +214,7 @@ class PlayerOwner:
             return False
         program, expected = prepared
         if expected != current:
-            self._log.warning(f"⚠️ [music v2] artifact_stale track_id={program.track_id} "
+            self._log.warning(f"⚠️ [music] artifact_stale track_id={program.track_id} "
                               f"expected_previous={expected} играет={current}")
             return False
         problem = self._adapter.check(program)
@@ -228,9 +228,9 @@ class PlayerOwner:
                 self._once = program.track_id
         self._adapter.cue(program, at_beat, self.track_started,
                           lambda reason, detail: self._reject(program.track_id, reason, detail), leave_at=leave_at,
-                          on_left=lambda: self._log.info(f"🎵 [music v2] deck {leaving_deck} free track_id={current}"),
+                          on_left=lambda: self._log.info(f"🎵 [music] deck {leaving_deck} free track_id={current}"),
                           fade=(leaving_deck, fade_beats))
-        self._log.info(f"🎵 [music v2] cue track_id={program.track_id} deck={program.deck} at_beat={at_beat} "
+        self._log.info(f"🎵 [music] cue track_id={program.track_id} deck={program.deck} at_beat={at_beat} "
                        f"leave_at={leave_at} fade={fade_beats:g}" + (" once" if once else ""))
         return True
 
@@ -257,7 +257,7 @@ class PlayerOwner:
         with self._lock:
             track_id = self._pending or (self._current or {}).get("track_id")
             first = track_id is not None and track_id not in self._rejected
-        self._log.warning(f"🔴 [music v2] /fail track_id={track_id}: {detail}")
+        self._log.warning(f"🔴 [music] /fail track_id={track_id}: {detail}")
         if first and _missing_synth_fail(detail):
             self._reject(track_id, "server_fail", detail)
 
@@ -275,7 +275,7 @@ class PlayerOwner:
             self._pending = None
             self._dj, self._once = {"enabled": False}, None
             self._queued, self._pending_dj = None, None
-        self._log.info(f"🎵 [music v2] stop track_id={last} reason={reason}")
+        self._log.info(f"🎵 [music] stop track_id={last} reason={reason}")
         self.publish_state()
         return {"ok": True, "track_id": last}
 
@@ -346,7 +346,7 @@ class PlayerOwner:
             self._rejected.add(track_id)
             if self._pending == track_id:
                 self._pending = None
-        self._log.warning(f"⛔ [music v2] rejected track_id={track_id} reason={reason}: {detail}")
+        self._log.warning(f"⛔ [music] rejected track_id={track_id} reason={reason}: {detail}")
         self._publish_event(build_music_event_payload(
             "rejected", track_id, ts=self._clock(), reason=reason, detail=detail))
         return {"ok": False, "track_id": track_id, "reason": reason, "detail": detail}

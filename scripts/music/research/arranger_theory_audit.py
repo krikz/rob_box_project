@@ -505,7 +505,7 @@ MATERIAL_REFS = {"mountain": "mountain king", "canon": "canon", "mario": "mario"
 
 
 class _Refusals(logging.Handler):
-    """Отказы материала в ``compose`` (лог ``🎵 [music v2] material=… отказ: …``) — причина по материалу."""
+    """Отказы материала в ``compose`` (лог ``🎵 [music] material=… отказ: …``) — причина по материалу."""
 
     def __init__(self) -> None:
         super().__init__()

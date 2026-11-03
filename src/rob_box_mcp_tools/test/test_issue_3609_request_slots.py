@@ -250,7 +250,7 @@ def test_confirmed_work_keeps_only_the_exact_title_in_the_first_level():
 def _request(archive, llm, history):
     """``request_music`` на настоящем владельце плеера: находки — поиск по строке слотов на настоящем архиве."""
     from rob_box_mcp_tools.engine.search import ThemeHits, ThemeQuery, part_query
-    from rob_box_mcp_tools.engine.tools_v2 import DjSetTool, RequestMusicTool
+    from rob_box_mcp_tools.engine.engine_tools import DjSetTool, RequestMusicTool
 
     from .test_engine_session import _rig
     from .test_piece_fail_open import Scores, _records

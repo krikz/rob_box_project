@@ -5,7 +5,7 @@
 пересобирает тот же трек с другим темпом, семьёй тембров или уровнем баса — форма та же — и владелец плеера
 (``PlayerOwner.retune``) ставит программу в те же слоты на ближайшей границе такта: без остановки, без нового
 ``started`` и без генерации, выступление поверх бита держит сетку. Диджей-сет правка настроения («помягче», #4173)
-продолжает в другом стиле (``knowledge.SET_VIBES``, ``tools_v2.restyle_set``). Готовая запись, пьеса, прочие правки
+продолжает в другом стиле (``knowledge.SET_VIBES``, ``engine_tools.restyle_set``). Готовая запись, пьеса, прочие правки
 сета, тишина — честный отказ кодом (``knowledge.EDIT_REFUSALS``). Фраза исхода — из исхода (``track_edit.edit_text``).
 """
 
@@ -45,7 +45,7 @@ _SOURCE_KIND = {"generated": FILE, "piece": PIECE, "melody": PIECE}
 #: ``(событие «встала», срок) -> встала ли``: настоящий поток ждёт ``threading.Event``, тест крутит клок симулятора.
 Wait = Callable[[threading.Event, float], bool]
 #: ``стиль -> результат dj_set`` (``ok``, ``track_id``…): идущий сет продолжается в этом стиле
-#: (``tools_v2.restyle_set``).
+#: (``engine_tools.restyle_set``).
 Restyle = Callable[[str], Mapping[str, Any]]
 
 
@@ -107,7 +107,7 @@ class TrackEditor:
         restyle: Optional[Restyle] = None,
     ) -> None:
         self._owner = owner
-        #: Смена настроения идущего сета (``tools_v2.restyle_set``, #4173); нет — правка сета честно не встаёт.
+        #: Смена настроения идущего сета (``engine_tools.restyle_set``, #4173); нет — правка сета честно не встаёт.
         self.restyle = restyle
         #: Клок и деки Renardo (``RenardoAdapter``): ставит ``mcp_server``; нет — правка звука честно недоступна.
         self.adapter = adapter
@@ -151,7 +151,7 @@ class TrackEditor:
 
     def _restyle(self, plan: EditPlan, track_id: str) -> Tuple[EditPlan, str]:
         """Сет продолжается в стиле ``plan.restyle`` (#4173: «помягче» под сетом меняет его настроение, а не отказ и не
-        новый трек): ``(исход, играющий трек)``. Платной генерации смена не заказывает (``tools_v2.restyle_set``: кэш
+        новый трек): ``(исход, играющий трек)``. Платной генерации смена не заказывает (``engine_tools.restyle_set``: кэш
         или синтез); фраза исхода — одна, из ``SET_VIBES``, фраза запуска нового сета к ней не добавляется. Не
         заиграл — честный отказ ``set_vibe_failed`` (новый сет мог снять идущий: «играет как было» не говорим)."""
         result: Mapping[str, Any] = {"ok": False, "reason": "unavailable"}
@@ -212,7 +212,7 @@ class TrackEditor:
             return "not_playing" if where is None else "unavailable"
         problem = self.adapter.check(program)
         if problem is not None:
-            self._log().warning(f"⚠️ [music v2] edit track_id={track_id} отказ {problem[0]}: {problem[1]}")
+            self._log().warning(f"⚠️ [music] edit track_id={track_id} отказ {problem[0]}: {problem[1]}")
             return str(problem[0])
         done = threading.Event()
         outcome: Dict[str, Any] = {}
@@ -222,12 +222,12 @@ class TrackEditor:
             done.set()
 
         at = self.adapter.retune(program, where[1], tempo, lambda: self._owner.position(track_id) is not None, on_done)
-        self._log().info(f"🎚️ [music v2] edit track_id={track_id} at_beat={at:g} bpm→{tempo or 'тот же'} — ждём такта")
+        self._log().info(f"🎚️ [music] edit track_id={track_id} at_beat={at:g} bpm→{tempo or 'тот же'} — ждём такта")
         if not self._wait(done, self._wait_s) or not outcome.get("ok"):
-            self._log().warning(f"⚠️ [music v2] edit track_id={track_id} не встала: {outcome or 'нет такта в срок'}")
+            self._log().warning(f"⚠️ [music] edit track_id={track_id} не встала: {outcome or 'нет такта в срок'}")
             return str(outcome.get("reason") or "not_applied")
         self._log().info(
-            f"🎚️ [music v2] edit applied track_id={track_id} at_beat={outcome.get('at_beat'):g} "
+            f"🎚️ [music] edit applied track_id={track_id} at_beat={outcome.get('at_beat'):g} "
             f"bpm={outcome.get('bpm'):g}"
         )
         return ""

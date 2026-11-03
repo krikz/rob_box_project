@@ -201,7 +201,7 @@ def fix_octaves(rtttl: str, label: str = "") -> str:
     fixes = _octave_fixes([m for m in tokens if m is not None and m.group("note").lower() != "p"], default_oct)
     if not fixes:
         return rtttl
-    _LOG.info("🎵 [music v2] hook melody=%s исправил октаву %d нот", label or name, len(fixes))
+    _LOG.info("🎵 [music] hook melody=%s исправил октаву %d нот", label or name, len(fixes))
     return f"{name}:{settings}:" + ",".join(_with_octave(m, fixes) for m in tokens if m is not None)
 
 

@@ -19,7 +19,7 @@ from rob_box_mcp_tools.engine.gen.library import GeneratedMusicLibrary
 from rob_box_mcp_tools.engine.gen.provider import GenStatus, GenTicket, GenTrack, GenUnavailable
 from rob_box_mcp_tools.engine.session import NEARLY_LEAD_BEATS, deck_program
 from rob_box_mcp_tools.engine.source_route import cache_tracks
-from rob_box_mcp_tools.engine.tools_v2 import SOURCE_DECLINED, DjSetTool
+from rob_box_mcp_tools.engine.engine_tools import SOURCE_DECLINED, DjSetTool
 from rob_box_music import knowledge as kn
 from rob_box_music.choice import DeterministicChooser
 from rob_box_music.model import AudioTrack
@@ -229,7 +229,7 @@ def test_set_session_crossfades_files_on_two_decks(tmp_path, monkeypatch):
 def test_song_bridge_takes_theme_without_llm(tmp_path):
     """Мост ожидания генерации берётся кодом: поиск темы без theme-links LLM (13.10: мост песни ждал LLM 8 с,
     ``request_music`` 10.6 с при таймауте хода 10 с)."""
-    from rob_box_mcp_tools.engine.tools_v2 import bridge_find
+    from rob_box_mcp_tools.engine.engine_tools import bridge_find
 
     dj = _dj(_lib(tmp_path), Kie())
     assert bridge_find(dj, "pending") is dj.quick_find and bridge_find(dj, "") is None

@@ -251,7 +251,7 @@ def test_cache_played_an_hour_ago_loses_to_a_new_order_with_money(tmp_path, hour
 
 def test_star_wars_set_through_dj_set_routes_covers(tmp_path, monkeypatch):
     """«сет на тему звёздных войн» при деньгах: путь каждого трека — кавер материала темы, мост — наш синтез."""
-    monkeypatch.setattr("rob_box_mcp_tools.engine.tools_v2.theme_covers",
+    monkeypatch.setattr("rob_box_mcp_tools.engine.engine_tools.theme_covers",
                         lambda dj, theme, seed, log, records: [(A, object())])
     lib, maker = _lib(tmp_path), Maker()
     dj = _dj(lib, Kie())

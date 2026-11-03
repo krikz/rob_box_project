@@ -62,7 +62,7 @@ _LOG = logging.getLogger(__name__)
 BRIDGE_LINE_DEADLINE_S = 4.0
 #: Запас до ``nearly_finished`` играющего файла: ждать генерацию дольше — стык не успеет встать.
 WAIT_MARGIN_S = 8.0
-#: Код отказа пути (``tools_v2.SOURCE_DECLINED``; равенство держит тест).
+#: Код отказа пути (``engine_tools.SOURCE_DECLINED``; равенство держит тест).
 DECLINED = "music_source"
 SUBMIT_BRIDGE = "submit_bridge_line"
 BRIDGE_FIELDS = ("next", "bridge", "eta")

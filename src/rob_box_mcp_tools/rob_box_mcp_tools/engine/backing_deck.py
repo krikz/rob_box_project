@@ -85,7 +85,7 @@ class BackingDeck:
         return {"ok": True, "was_playing": True, "track_id": self.track_id, "end_beat": end}
 
     def _start(self, mood: str, need: float) -> Dict[str, Any]:
-        from .tools_v2 import track_facts  # noqa: PLC0415 — tools_v2 зовёт этот модуль
+        from .engine_tools import track_facts  # noqa: PLC0415 — engine_tools зовёт этот модуль
 
         staged = self._stage(mood)
         if "program" not in staged:  # не собралось: отказ владельца уже опубликован

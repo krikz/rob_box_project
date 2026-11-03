@@ -14,7 +14,7 @@ from rob_box_mcp_tools.engine.gen import song as sg
 from rob_box_mcp_tools.engine.gen.library import GeneratedMusicLibrary
 from rob_box_mcp_tools.engine.gen.provider import GenStatus, GenTicket, GenTrack, GenUnavailable
 from rob_box_mcp_tools.engine.search import ThemeHits
-from rob_box_mcp_tools.engine.tools_v2 import SOURCE_DECLINED, DjSetTool, RequestMusicTool
+from rob_box_mcp_tools.engine.engine_tools import SOURCE_DECLINED, DjSetTool, RequestMusicTool
 from rob_box_music.source import CacheTrack, SourceAsk, SourceContext, source_ask, source_candidates
 from rob_box_voice.sing_synth import synth_vocal_to_file
 from rob_box_voice.tts_voice_registry import sing_preset_for

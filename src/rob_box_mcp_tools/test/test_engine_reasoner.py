@@ -12,7 +12,7 @@ import pytest
 from rob_box_llm.provider import LLMResponse, ToolCall
 from rob_box_mcp_tools.engine.reasoner import SetReasoner, payload_of
 from rob_box_mcp_tools.engine.search import ThemeHits
-from rob_box_mcp_tools.engine.tools_v2 import DjSetTool
+from rob_box_mcp_tools.engine.engine_tools import DjSetTool
 from rob_box_music import reasoner as rz
 from rob_box_music.set_plan import seeded_plan
 from rob_box_music.theme import seeded_profile
@@ -171,7 +171,7 @@ def _wait(cond, timeout=5.0):
 
 
 def _notes(rig):
-    return [m for _lvl, m in rig.log.lines if "[set v2]" in m and "started track_id=" in m]
+    return [m for _lvl, m in rig.log.lines if "[set]" in m and "started track_id=" in m]
 
 
 def test_plan_from_llm_replaces_the_queued_next_track_and_keeps_one_tempo():
