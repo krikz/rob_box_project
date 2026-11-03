@@ -280,6 +280,17 @@ TURN_FALLBACK = "stage=done status=done"
 TURN_CLOSED_BY_CODE = r"📊 \[turn\] .*stage=done status=(finished|done)"
 
 
+#: Название ГОЛОСА по умолчанию в речи (n402, #4077/М8 29.10): голос звучал Qingse, а робот назвал «Надёжный мужчина» -- шаг
+#: был зелёным по слову «MiniMax» (это провайдер, а не голос). Провайдер в ключи не входит: голос называет `qingse`/`цинсе`.
+NAMES_DEFAULT_VOICE = "qingse|цинсе|цин се|цзинсэ|male-qn"
+
+
+#: Правка идущего выступления встала (``perform.py``: ``PlanEvent segment_replaced``, ``plan_events.event_line``). n807 29.10
+#: (#4207): модель ответила обычной речью и начала счёт заново, шаг зеленел по ``stage=done status=finished`` -- без этой строки
+#: правки не было, шаг честно красный (#4077).
+PERFORM_EDIT_APPLIED = r"PlanEvent segment_replaced block="
+
+
 def spoken_by(provider: str) -> str:
     """Реплика синтезирована провайдером ``provider`` (``speech_owner``: ``SpeechEvent synthesized … provider=<имя>``).
 
@@ -603,7 +614,9 @@ MUSIC_EDIT_CONTRADICTED = robot_said("media.done", "media.timeout", "media.rejec
 #: ранних фраз (n407 «погромче», n408 «потише» -- шаги громкости голоса), и замороженные перефразы корпуса замера понимания
 #: (#4163) потеряли бы якорь. Ложь n709 ловят формы действия: «сделаю потише/тише/громче», «убавлю», «включу»…
 MUSIC_FALSE_ACTION = ("сделаю потише|сделаю тише|сделаю громче|сделаю погромче|убавлю|прибавлю|шёпотом|шепотом|дослушива|"
-                      "включу|поставлю|сыграю|продолжу играть")
+                      "включаю|сейчас включу|включу что|поставлю|сыграю|продолжу играть")
+#: #4077 (М8, n709 29.10 18:32:16): «если хочешь, включу его потише ещё раз» -- УСЛОВНОЕ предложение после честного стопа, а не
+#: обещание без тула; голое «включу» краснило шаг по работающему роботу (красный от харнесса). «Включу» ловится только как заявление о действии СЕЙЧАС («включаю», «сейчас включу», «включу что-нибудь»): явная ложь n709 марафона-3 («сделаю потише…») осталась в списке.
 MUSIC_OFF_CONTRADICTED = robot_said("media.done", "media.progress", "media.timeout", "media.rejected",
                                     "music.stop_idle", "music.stop_fail") + "|" + MUSIC_FALSE_ACTION
 
@@ -1774,7 +1787,7 @@ act(
             "n402_current_voice",
             "Робот, а каким голосом ты говоришь прямо сейчас?",
             patterns=[spoken_by("minimax")],
-            keywords=["minimax|минимакс|мини макс|мини-макс|qingse|цинсе"],
+            keywords=[NAMES_DEFAULT_VOICE],
             why="R6 разбора 26.10: прежний `SpeechEvent synthesized … provider=<любой>` совпадал с каждым ходом. "
             "Результат теперь: ответ ЗВУЧИТ голосом по умолчанию (MiniMax, `tts_node.yaml` minimax_voice "
             "male-qn-qingse; харнесс возвращает голос и параметры до акта) и НАЗЫВАЕТ его -- провайдер или голос "
@@ -2429,7 +2442,7 @@ act(
             "Робот, и после каждого числа добавляй слово шаг.",
             barge_in=BARGE_3S,
             silent_ok=True,
-            patterns=[TURN_DONE],
+            patterns=[TURN_DONE, PERFORM_EDIT_APPLIED],
             must_not=["🛑 [interrupt]", "SpeechEvent cancelled"],
             no_repeat_numbers=True,
             why="Зонд gp12: MERGE вне песни. Добавка к ИДУЩЕЙ задаче не должна "
