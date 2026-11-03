@@ -118,6 +118,7 @@ COPY requirements.txt /tmp/requirements.txt
 
 RUN --mount=type=cache,target=/root/.cache,sharing=locked \
     pip3 install --retries 5 --timeout 120 -r /tmp/requirements.txt && \
+    python3 -c "import numpy, scipy.signal; print('numpy', numpy.__version__, 'scipy', scipy.__version__)" && \
     rm /tmp/requirements.txt
 
 # ============================================================================
