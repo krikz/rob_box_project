@@ -50,7 +50,6 @@ tts_node:
     # Прокидывание значений в ``TTSSettings`` — в карточке t_4e98182a.
     # Единственный канонический блок параметров MiniMax-emotion — ниже
     # (после yandex_ssml_aware), комментарий описывает семантику ``""``.
-    normalize_text: true
     chipmunk_mode: false
     pitch_shift: 1.0
     volume_db: -3.0

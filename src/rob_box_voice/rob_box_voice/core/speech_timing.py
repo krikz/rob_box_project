@@ -104,11 +104,10 @@ class Presynth:
         voice, language = chunk.get("voice"), chunk.get("language")
         ctx["requested_voice"] = voice  # какой голос просили: подмена голоса при синтезе - событие, не тишина (#4024)
         text = speech_text(chunk.get("text", ""))  # голый текст реплики, ADR-0160 §2.3
-        attrs: Dict[str, Any] = {}  # просодии на проводе нет
         try:
-            node._sap_run_provider_chain(voice, language, attrs, text, "speaker", ctx)
+            node._sap_run_provider_chain(voice, language, text, "speaker", ctx)
             if ctx["audio_np"] is None:
-                node._sap_silero_fallback(text, voice, language, attrs, None, ctx)
+                node._sap_silero_fallback(text, voice, language, None, ctx)
         except Exception as exc:  # noqa: BLE001 - честный rejected вместо тишины
             node._publish_tts_finished(speech_id, success=False, error=f"presynth: {exc}")
             return

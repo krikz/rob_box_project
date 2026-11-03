@@ -109,7 +109,6 @@ def _playback_node() -> _Bare:
     """
     node = _bare_node()
     node.provider = "minimax"
-    node.normalize_text = False
     node.stop_requested = False
     node.minimax_streaming = False
     node.minimax_model = "speech-02-hd"
@@ -145,10 +144,8 @@ def _playback_node() -> _Bare:
 def _run_and_play(node) -> None:
     TTSNode._synthesize_and_play(
         node,
-        "<speak>hello</speak>",
         "hello",
         None,
-        {},
         None,
     )
 
@@ -494,7 +491,7 @@ class TestCloudTtsBudgetRetryLoopLevel:
         MiniMax) — но раз дедлайн уже в прошлом, retry ОТМЕНЯЮТСЯ."""
         call_count = [0]
 
-        async def fake_async(text, ssml_attributes, voice=None, language=None):
+        async def fake_async(text, voice=None, language=None):
             call_count[0] += 1
             raise TTSTimeoutError("net down")
 
@@ -520,7 +517,7 @@ class TestCloudTtsBudgetRetryLoopLevel:
         существующих вызовов ``_synthesize_minimax_with_retry``)."""
         call_count = [0]
 
-        async def fake_async(text, ssml_attributes, voice=None, language=None):
+        async def fake_async(text, voice=None, language=None):
             call_count[0] += 1
             if call_count[0] < 2:
                 raise TTSTimeoutError("net down")
@@ -546,7 +543,7 @@ class TestCloudTtsBudgetRetryLoopLevel:
         ограничиваются бюджетом (только своим ``minimax_max_retries``)."""
         call_count = [0]
 
-        async def fake_async(text, ssml_attributes, voice=None, language=None):
+        async def fake_async(text, voice=None, language=None):
             call_count[0] += 1
             raise TTSTimeoutError("net down")
 

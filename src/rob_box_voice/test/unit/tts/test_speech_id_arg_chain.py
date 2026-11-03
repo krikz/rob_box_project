@@ -127,9 +127,9 @@ def test_dialogue_callback_passes_speech_id_once() -> None:
         "speech_id's slot — that's the issue #980 arg-chain bug)"
     )
     # The trailing *args for the worker must match the worker signature.
+    # #4240: позиционные ``ssml`` и ``ssml_attributes`` убраны (на проводе голый текст, просодии нет).
     expected_tail = [
-        "ssml", "text", "dialogue_id", "ssml_attributes",
-        "speech_id", "batch_id", "batch_index", "batch_total",
+        "text", "dialogue_id", "speech_id", "batch_id", "batch_index", "batch_total",
     ]
     assert positional_names[2:] == expected_tail, (
         f"Trailing positional args must be {expected_tail} "
@@ -204,9 +204,9 @@ def test_submit_and_worker_arg_arities_agree() -> None:
 
     # _submit_synthesis(self, fn, speech_id, *args) — only the first two
     # are mandatory positional; *args is variadic.  The dialogue_callback
-    # call site must hand it (fn, speech_id, ssml, text, dialogue_id,
-    # ssml_attributes, speech_id, batch_id, batch_index, batch_total) —
-    # exactly 10 positional values (the first two being the function and
+    # call site must hand it (fn, speech_id, text, dialogue_id,
+    # speech_id, batch_id, batch_index, batch_total) —
+    # exactly 8 positional values (the first two being the function and
     # the speech_id kwarg; the rest become *args, with speech_id repeated
     # at the worker's expected position).
     submit_call = next(
@@ -217,22 +217,21 @@ def test_submit_and_worker_arg_arities_agree() -> None:
         and node.func.attr == "_submit_synthesis"
     )
     n_call_positional = len(submit_call.args)
-    assert n_call_positional == 10, (
-        f"dialogue_callback -> _submit_synthesis must pass exactly 10 "
-        f"positional args (fn, speech_id, ssml, text, dialogue_id, "
-        f"ssml_attributes, speech_id, batch_id, batch_index, "
-        f"batch_total); got {n_call_positional}"
+    assert n_call_positional == 8, (
+        f"dialogue_callback -> _submit_synthesis must pass exactly 8 "
+        f"positional args (fn, speech_id, text, dialogue_id, "
+        f"speech_id, batch_id, batch_index, batch_total); "
+        f"got {n_call_positional}"
     )
 
     # _run_synthesis_worker is a method — first positional is ``self``.
     worker_positional_names = [a.arg for a in worker.args.args if a.arg != "self"]
     assert worker_positional_names == [
-        "ssml", "text", "dialogue_id", "ssml_attributes",
-        "speech_id", "batch_id", "batch_index", "batch_total",
+        "text", "dialogue_id", "speech_id", "batch_id", "batch_index", "batch_total",
     ], (
         f"_run_synthesis_worker signature drifted from canonical "
-        f"(ssml, text, dialogue_id, ssml_attributes, speech_id, "
-        f"batch_id, batch_index, batch_total); got {worker_positional_names}"
+        f"(text, dialogue_id, speech_id, batch_id, batch_index, "
+        f"batch_total); got {worker_positional_names}"
     )
 
     # _submit_synthesis's own signature must accept at minimum (fn,

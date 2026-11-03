@@ -50,10 +50,10 @@ def _chain_node(chain):
     node.get_logger = MagicMock
     got = {}
 
-    def minimax(voice, language, attrs, text, sink, provider_chain, ctx, budget_deadline=None):
+    def minimax(voice, language, text, sink, provider_chain, ctx, budget_deadline=None):
         got["minimax"] = text  # квота: аудио нет — дальше Yandex
 
-    def yandex(voice, language, attrs, text, ctx):
+    def yandex(voice, language, text, ctx):
         got["yandex"] = text
         ctx["audio_np"] = [0.0]
 
@@ -66,7 +66,7 @@ def test_minimax_gets_the_marks_and_yandex_fallback_gets_them_stripped():
     node, got = _chain_node(["minimax", "yandex", "silero"])
     ctx = {"audio_np": None, "sample_rate": 16000, "used_provider": None, "used_voice": None, "result": {}}
     t0 = time.monotonic()
-    node._sap_run_provider_chain(None, None, {}, MARKED, "speaker", ctx)
+    node._sap_run_provider_chain(None, None, MARKED, "speaker", ctx)
     assert time.monotonic() - t0 < 1.0
     assert got["minimax"] == MARKED
     assert "<#" not in got["yandex"] and got["yandex"].startswith("Я робот Робби, я читаю под бит, Колёса")

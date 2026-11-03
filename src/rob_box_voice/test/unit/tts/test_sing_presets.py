@@ -117,7 +117,7 @@ def test_missing_minimax_key_is_loud(monkeypatch, tmp_path) -> None:
 def test_missing_yandex_key_is_loud(monkeypatch, tmp_path) -> None:
     v3 = pytest.importorskip("yandex.cloud.ai.tts.v3")
     if not hasattr(getattr(v3, "tts_pb2", None), "RawAudio"):
-        # Рукописная заглушка соседнего теста (test_yandex_ssml_pitch_volume)
+        # Рукописная заглушка соседнего теста (test_yandex_request_hints)
         # без RawAudio - это не SDK; раньше тест выживал на чужой MagicMock.
         pytest.skip("нет yandex SDK с RawAudio")
     monkeypatch.delenv("YANDEX_API_KEY", raising=False)
@@ -189,9 +189,9 @@ def test_yandex_request_is_built_by_shared_engine(monkeypatch) -> None:
     sing = build_yandex_request("т", "anton", 1.0, role="good", raw_sample_rate=48000)
     assert [vars(h) for h in sing.hints] == [{"voice": "anton"}, {"speed": 1.0}, {"role": "good"}]
     assert sing.output_audio_spec.raw_audio.sample_rate_hertz == 48000
-    node = build_yandex_request("т", "anton", 1.2, pitch_hz=5.0, volume_lufs=-19.0)
+    node = build_yandex_request("т", "anton", 1.2, pitch_hz=5.0)
     assert [vars(h) for h in node.hints] == [
-        {"voice": "anton"}, {"speed": 1.2}, {"pitch_shift": 5.0}, {"volume": -19.0}]
+        {"voice": "anton"}, {"speed": 1.2}, {"pitch_shift": 5.0}]
     assert node.output_audio_spec.container_audio.container_audio_type == 0
 
 

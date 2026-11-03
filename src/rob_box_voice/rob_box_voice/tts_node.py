@@ -56,7 +56,6 @@ import functools
 import io
 import json
 import os
-import sys
 import threading
 import time
 import wave
@@ -129,22 +128,8 @@ from .core import tts_stream
 # rob_box_voice.tts_node import resample_audio``).
 from .utils.resample import resample_audio  # noqa: F401 re-export
 
-# ADR-0145 §4 TTSNode step 1 — SSML prosody (pitch/volume) conversion
-# helpers moved verbatim to ``tts_ssml.py`` (no behaviour change).
-# Re-exported here for backward compatibility with existing imports
-# (tests import ``_ssml_pitch_to_hz``, ``YANDEX_BASELINE_PITCH_HZ``,
-# ``normalize_silero_pitch``, etc. directly from ``tts_node``).
-from .tts_ssml import (  # noqa: F401 re-export
-    _SSML_NAMED_VOLUME_TO_DB,
-    _YANDEX_PITCH_SHIFT_MAX_HZ,
-    _YANDEX_VOLUME_MIN_LUFS,
-    YANDEX_BASELINE_PITCH_HZ,
-    YANDEX_BASELINE_VOLUME_LUFS,
-    _ssml_pitch_to_hz,
-    _ssml_volume_to_lufs_target,
-    normalize_silero_pitch,
-    silero_ssml,
-)
+# ADR-0160 §2.3 — конверт ``<speak>`` собирает только Silero (``tts_ssml.silero_ssml``).
+from .tts_ssml import silero_ssml
 
 # ADR-0145 §4 TTSNode step 1 — ROS-parameter / request-payload parsing
 # helpers moved verbatim to ``tts_params.py`` (no behaviour change).
@@ -410,19 +395,6 @@ from rob_box_voice.observability import (
 )
 
 
-# Импортируем text_normalizer и Yandex gRPC
-scripts_path = Path(__file__).parent.parent / "scripts"
-sys.path.insert(0, str(scripts_path))
-
-try:
-    from text_normalizer import normalize_for_tts
-except ImportError:
-
-    def normalize_for_tts(text):
-        """Fallback если нет normalizer."""
-        return text
-
-
 # Yandex Cloud TTS API v3 (gRPC)
 try:
     from yandex.cloud.ai.tts.v3 import tts_pb2, tts_service_pb2_grpc  # noqa: F401 — проба наличия SDK; запросы строит tts_engines
@@ -656,6 +628,24 @@ _LIVE_VOICE_PARAMS = {
     "minimax_voice": ("MiniMax", "minimax"),
     "silero_speaker": ("Silero", "silero"),
 }
+
+
+def chain_for_requested(provider: str, current_chain: list[str]) -> list[str]:
+    """Цепочка провайдеров после явного выбора (set_provider, выбор голоса) — #4240.
+
+    * ``silero`` → ``["silero"]``: выбран офлайн-голос, он и звучит (как ``provider=silero`` в
+      ``TTSNode._chain_from_provider``). Раньше Silero ставился первым, а ``_normalize_provider_chain`` тут же
+      переносил его в конец, и синтезировал облачный провайдер: голос «aidar» выбран, звучит Yandex, а событие
+      ``voice_changed`` говорило ``provider=silero``.
+    * облачный → он первым, затем остальные из текущей цепочки, затем недостающие из дефолтной (после офлайн-режима
+      ``["silero"]`` облачные запасные возвращаются), Silero последний.
+
+    Функция модуля, а не метод: ``TTSNode`` не растёт (class_budget, ADR-0145).
+    """
+    if provider == "silero":
+        return ["silero"]
+    rest = [p for p in list(current_chain) + TTSNode._default_provider_chain() if p != provider]
+    return TTSNode._normalize_provider_chain([provider] + rest)
 
 
 class TTSNode(Node):
@@ -901,7 +891,6 @@ class TTSNode(Node):
         self.declare_parameter(
             "pitch_shift", 1.0
         )  # Множитель для playback rate (1.0 = нормальная скорость)
-        self.declare_parameter("normalize_text", True)
         self.declare_parameter("volume_db", -3.0)  # Громкость в dB (-3dB = 70%)
 
         # Issue #929 (OOM kill tts_node): фоновый warm-load Silero держит
@@ -1094,7 +1083,6 @@ class TTSNode(Node):
         # Общие
         self.chipmunk_mode = self.get_parameter("chipmunk_mode").value
         self.pitch_shift = self.get_parameter("pitch_shift").value
-        self.normalize_text = self.get_parameter("normalize_text").value
         self.volume_db = self.get_parameter("volume_db").value
 
         # Конвертируем dB в линейный множитель
@@ -1263,7 +1251,7 @@ class TTSNode(Node):
         self._speech.attach()
 
         # ADR-0055 / issue #1993 — подписка на запросы ТАРС в шлем.
-        # Контракт — String JSON с ``ssml`` (см. dialogue_callback)
+        # Контракт — String JSON с ``text`` (см. dialogue_callback)
         # плюс обязательное поле ``sink=="headset"``. Невалидный sink →
         # self._avatar_tts_error_pub.publish({request_id, error:"invalid_sink"})
         # и DROP (ADR-0055 §tts_node).
@@ -1846,15 +1834,7 @@ class TTSNode(Node):
             self._publish_provider_state("set_provider_noop")
             return
 
-        # Пересобираем chain: новый провайдер первым, остальные — в
-        # исходном порядке (но без дубликатов и без нового). _normalize
-        # позаботится о silero-последний инварианте.
-        new_chain: list[str] = [new_provider]
-        for p in current_chain:
-            if p != new_provider:
-                new_chain.append(p)
-        new_chain = self._normalize_provider_chain(new_chain)
-        self.provider_chain = new_chain
+        self.provider_chain = chain_for_requested(new_provider, current_chain)
 
         # Чистим dead_until для нового провайдера — юзер явно попросил,
         # даём ему шанс (даже если quota-сеть недавно фолбечили).
@@ -2017,7 +1997,7 @@ class TTSNode(Node):
         dialogue_id,
         error: str,
         why: str,
-        ssml: str,
+        raw_text: str,
     ) -> None:
         """Отказаться синтезировать чанк и честно закрыть речь (issue #2760).
 
@@ -2032,7 +2012,7 @@ class TTSNode(Node):
         self.get_logger().warning(
             f"🚫 {why}: speech_id={speech_id[:8]}, "
             f"voice={chunk_data.get('voice') or 'default'}, "
-            f"ssml={ssml[:200]!r}"
+            f"text={raw_text[:200]!r}"
         )
         _publish_finished = getattr(self, "_publish_tts_finished", None)
         if _publish_finished is None:
@@ -2102,9 +2082,8 @@ class TTSNode(Node):
             owner_of(self).admit(chunk_data, speech_id)
 
             # ADR-0160 §2.3 — реплика несёт голый текст; SSML собирает только
-            # адаптер Silero. ``ssml`` ниже — сырой текст запроса до очистки
-            # (имя позиции в конвейере синтеза, см. _run_synthesis_worker).
-            ssml = chunk_data["text"]
+            # адаптер Silero. ``raw_text`` — текст запроса до очистки.
+            raw_text = chunk_data["text"]
 
             # Issue #2175 — defense-in-depth для MiniMax-M3 regurgitates:
             # проверяем на СЫРОМ тексте (до снятия тегов в speech_text).
@@ -2135,19 +2114,19 @@ class TTSNode(Node):
                     "[issue 2760] LLM написала вызов тула текстом",
                 ),
             ):
-                if _predicate(ssml):
+                if _predicate(raw_text):
                     self._refuse_ssml_chunk(
                         speech_id=speech_id,
                         chunk_data=chunk_data,
                         dialogue_id=dialogue_id,
                         error=_error,
                         why=_why,
-                        ssml=ssml,
+                        raw_text=raw_text,
                     )
                     return
 
             # Голый текст -> текст для синтеза (теги модели, [вставки], Markdown).
-            text = speech_text(ssml)
+            text = speech_text(raw_text)
 
             if not text.strip():
                 # Честный финал вместо молчаливого return: ждущий не висит.
@@ -2185,10 +2164,6 @@ class TTSNode(Node):
                         dialogue_id=dialogue_id,
                     )
                 return
-
-            # Просодии на проводе нет (ADR-0160 §2.3): атрибуты пустые, у
-            # провайдеров — свои параметры (rate/pitch из ROS-параметров).
-            ssml_attributes: dict = {}
 
             # Issue #980 — carry batch_id/batch_index/batch_total from the
             # dialogue_node publish through to ``/voice/tts/finished`` so
@@ -2235,8 +2210,8 @@ class TTSNode(Node):
             # explicit second positional to ``_submit_synthesis`` (used for
             # drop/shutdown diagnostics), and once inside ``*args`` at the
             # position ``_run_synthesis_worker`` expects it.  The worker's
-            # signature is (ssml, text, dialogue_id, ssml_attributes,
-            # speech_id, batch_id, batch_index, batch_total); dropping the
+            # signature is (text, dialogue_id, speech_id, batch_id,
+            # batch_index, batch_total); dropping the
             # in-*args copy would shift every following argument one slot
             # left (speech_id <- batch_id, batch_id <- batch_index, ...),
             # which breaks /voice/tts/finished correlation in mcp_server
@@ -2267,10 +2242,8 @@ class TTSNode(Node):
                     batch_id=batch_id,
                     batch_index=batch_index,
                     batch_total=batch_total,
-                    ssml=ssml,
                     text=text,
                     dialogue_id=dialogue_id,
-                    ssml_attributes=ssml_attributes,
                     voice=voice,
                     language=language,
                     priority=priority,
@@ -2280,10 +2253,8 @@ class TTSNode(Node):
             self._submit_synthesis(
                 self._run_synthesis_worker,
                 speech_id,
-                ssml,
                 text,
                 dialogue_id,
-                ssml_attributes,
                 speech_id,
                 batch_id,
                 batch_index,
@@ -2404,8 +2375,7 @@ class TTSNode(Node):
         # для основного канала), при пустом — DROP + finished(error=empty_text)
         # + avatar_error(error=empty_text), чтобы caller (operator-agent / grip
         # pipeline) не зависал в ожидании speech_id.
-        ssml = chunk_data.get("text", "")
-        avatar_text = speech_text(ssml)
+        avatar_text = speech_text(chunk_data.get("text", ""))
         if not avatar_text.strip():
             self.get_logger().warn(
                 f"⚠️ [ADR-0055] /avatar/tts/request: empty text/ssml, "
@@ -2449,7 +2419,6 @@ class TTSNode(Node):
             )
             return
 
-        ssml_attributes: dict = {}  # просодии на проводе нет (ADR-0160 §2.3)
         batch_id = chunk_data.get("batch_id")
         batch_index = chunk_data.get("batch_index")
         batch_total = chunk_data.get("batch_total")
@@ -2481,10 +2450,8 @@ class TTSNode(Node):
         self._submit_synthesis(
             self._run_synthesis_worker,
             speech_id,
-            ssml,
             avatar_text,
             dialogue_id,
-            ssml_attributes,
             speech_id,
             batch_id,
             batch_index,
@@ -2975,10 +2942,8 @@ class TTSNode(Node):
 
     def _run_synthesis_worker(
         self,
-        ssml: str,
         text: str,
         dialogue_id: str = None,
-        ssml_attributes: dict = None,
         speech_id: str = None,
         batch_id: str = None,
         batch_index: int = None,
@@ -2993,8 +2958,8 @@ class TTSNode(Node):
         _synthesize_and_play (play_seq выдан в порядке приёма запросов).
 
         Signature contract: the positional arity is exactly
-        ``(ssml, text, dialogue_id, ssml_attributes, speech_id,
-        batch_id, batch_index, batch_total)`` — the test
+        ``(text, dialogue_id, speech_id, batch_id, batch_index,
+        batch_total)`` — the test
         ``test_submit_and_worker_arg_arities_agree`` walks the AST
         and asserts this canonical order. ``batch_total`` is the
         terminal parameter (test_run_synthesis_worker_signature_terminates_in_batch_total).
@@ -3031,10 +2996,8 @@ class TTSNode(Node):
         # ``_submit_synthesis``); ``None`` — обычный синтез.
         prebaked_audio = kwargs.get("prebaked_audio", None)
         self._synthesize_and_play(
-            ssml,
             text,
             dialogue_id,
-            ssml_attributes,
             speech_id,
             batch_id,
             batch_index,
@@ -3555,10 +3518,8 @@ class TTSNode(Node):
 
     def _synthesize_and_play(
         self,
-        ssml: str,
         text: str,
         dialogue_id: str = None,
-        ssml_attributes: dict = None,
         speech_id: str = None,
         batch_id: str = None,
         batch_index: int = None,
@@ -3630,11 +3591,7 @@ class TTSNode(Node):
         # :meth:`TTSNode._bind_sap_helpers_for_stub`.
         TTSNode._bind_sap_helpers_for_stub(self)
 
-        self._sap_setup_request(dialogue_id, ssml_attributes, text)
-        if ssml_attributes is None:
-            ssml_attributes = {}
-        if self.normalize_text:
-            text = normalize_for_tts(text)
+        self._sap_setup_request()
 
         # Issue #1234 — OpenTelemetry span ``tts.synthesize`` (этап 2).
         # Открываем ДО try и закрываем в finally: покрывает всю цепочку
@@ -3694,14 +3651,10 @@ class TTSNode(Node):
                 pass
             else:
                 # 2) Canonical provider chain walk.
-                self._sap_run_provider_chain(
-                    voice, language, ssml_attributes, text, sink, ctx
-                )
+                self._sap_run_provider_chain(voice, language, text, sink, ctx)
                 # 3) Silero last-resort fallback если ничего не сработало.
                 if ctx["audio_np"] is None:
-                    self._sap_silero_fallback(
-                        text, voice, language, ssml_attributes, dialogue_id, ctx
-                    )
+                    self._sap_silero_fallback(text, voice, language, dialogue_id, ctx)
 
             # 4) Publish audio on /voice/audio/speech (или /avatar/tts/audio
             #    для sink="headset") + provider_state.
@@ -3843,12 +3796,7 @@ class TTSNode(Node):
                     _cls_method.__get__(self, type(self)),
                 )
 
-    def _sap_setup_request(
-        self,
-        dialogue_id: Optional[str],
-        ssml_attributes: Optional[dict],
-        text: str,
-    ) -> None:
+    def _sap_setup_request(self) -> None:
         """Сбросить stop-флаг нового запроса (отмену ведёт журнал владельца речи)."""
         self.stop_requested = False
 
@@ -3900,7 +3848,6 @@ class TTSNode(Node):
         self,
         voice: Optional[str],
         language: Optional[str],
-        ssml_attributes: dict,
         text: str,
         sink: str,
         ctx: Dict[str, Any],
@@ -3952,7 +3899,6 @@ class TTSNode(Node):
                 self._sap_synthesize_minimax(
                     voice,
                     language,
-                    ssml_attributes,
                     text,
                     sink,
                     provider_chain,
@@ -3964,7 +3910,6 @@ class TTSNode(Node):
                 self._sap_synthesize_yandex(
                     voice,
                     language,
-                    ssml_attributes,
                     _pause_text_for("yandex", text),
                     ctx,
                 )
@@ -3980,7 +3925,6 @@ class TTSNode(Node):
         self,
         voice: Optional[str],
         language: Optional[str],
-        ssml_attributes: dict,
         text: str,
         sink: str,
         provider_chain: list,
@@ -4043,7 +3987,7 @@ class TTSNode(Node):
                     self,
                     text,
                     TTSNode._minimax_settings(
-                        self, ssml_attributes, _mm_voice, language,
+                        self, _mm_voice, language,
                         sample_rate=self.audio_output_sample_rate,
                     ),
                     budget_deadline,
@@ -4052,7 +3996,6 @@ class TTSNode(Node):
                 self.get_logger().info("🔊 Синтез через MiniMax T2A v2 (HTTP)...")
                 result = self._synthesize_minimax(
                     text,
-                    ssml_attributes,
                     voice=_mm_voice,
                     language=language,
                     budget_deadline=budget_deadline,
@@ -4102,7 +4045,6 @@ class TTSNode(Node):
         self,
         voice: Optional[str],
         language: Optional[str],
-        ssml_attributes: dict,
         text: str,
         ctx: Dict[str, Any],
     ) -> None:
@@ -4181,9 +4123,7 @@ class TTSNode(Node):
             self.get_logger().info(
                 f"🔊 Синтез через Yandex Cloud TTS gRPC v3 ({_yandex_voice})..."
             )
-            ctx["audio_np"] = self._synthesize_yandex(
-                _yandex_text, ssml_attributes, voice=_yandex_voice
-            )
+            ctx["audio_np"] = self._synthesize_yandex(_yandex_text, voice=_yandex_voice)
             ctx["sample_rate"] = 22050  # Yandex обычно 22050 Hz или 48000 Hz
             ctx["used_provider"] = "yandex"
             ctx["used_voice"] = _yandex_voice
@@ -4211,7 +4151,6 @@ class TTSNode(Node):
         text: str,
         voice: Optional[str],
         language: Optional[str],
-        ssml_attributes: dict,
         dialogue_id: Optional[str],
         ctx: Dict[str, Any],
     ) -> None:
@@ -4270,8 +4209,6 @@ class TTSNode(Node):
             raise Exception("Silero fallback недоступен - не удалось загрузить модель!")
         self.publish_state("synthesizing")
         self.get_logger().info("🔊 Синтез через Silero v5 (fallback)...")
-        if ssml_attributes:
-            self.get_logger().info(f"🔧 SSML атрибуты для Silero: {ssml_attributes}")
         # Issue #1160 — Prometheus metrics: замер Silero-synthesis.
         _silero_metric_start = time.monotonic()
         _silero_succeeded = False
@@ -4298,9 +4235,7 @@ class TTSNode(Node):
             self.get_logger(), "silero", text, language
         )
         try:
-            ctx["audio_np"] = self._synthesize_silero(
-                _silero_text, ssml_attributes, voice=_silero_voice
-            )
+            ctx["audio_np"] = self._synthesize_silero(_silero_text, voice=_silero_voice)
             ctx["sample_rate"] = self.silero_sample_rate  # 48000 Hz (v5)
             ctx["used_provider"] = "silero"
             ctx["used_voice"] = _silero_voice
@@ -4782,75 +4717,19 @@ class TTSNode(Node):
                 dialogue_id=dialogue_id,
             )
 
-    def _synthesize_silero(
-        self, text: str, ssml_attributes: dict | None = None, voice: str | None = None
-    ) -> np.ndarray:
+    def _synthesize_silero(self, text: str, voice: str | None = None) -> np.ndarray:
         """Synthesize Silero chunks with provider-specific retry-halving.
 
         Args:
             text: текст для синтеза.
-            ssml_attributes: словарь с SSML-атрибутами (rate/pitch).
             voice: голос (issue #1219); None → self.silero_speaker.
         """
         if self.silero_model is None:
             raise Exception("Silero TTS model не инициализирована")
 
-        ssml_attributes = ssml_attributes or {}
-        # Нормализуем pitch в Silero-совместимый уровень (x-low|low|medium|high|x-high|robot).
-        # LLM/MiniMax-стиль SSML даёт числовые множители (1.2, +10%) — Silero v5
-        # падает с "Invalid <prosody> tag", если передать их как есть (issue #1064).
-        pitch = normalize_silero_pitch(ssml_attributes.get("pitch"))
-
-        # 🔴 FIX (live 08.08 «робот не ответил»): LLM/MiniMax-стиль SSML может
-        # дать числовой pitch ("1.2", "+10%", float 1.2) — Silero v5 принимает
-        # ТОЛЬКО x-low/low/medium/high/x-high/robot. Числовой pitch валил fallback:
-        #   ❌ Synthesis error: Invalid <prosody> tag, pitch should be in x-low...
-        # parse_ssml_attributes возвращает pitch КАК FLOAT (1.2/1.0/0.8), поэтому
-        # нормализуем и float, и str — в ближайший Silero-совместимый уровень.
-        _SILERO_PITCH_LEVELS = {"x-low", "low", "medium", "high", "x-high", "robot"}
-        pitch_orig = pitch
-        if isinstance(pitch, (int, float)):
-            # float от parse_ssml_attributes: 1.0 = medium, 1.2 = выше, 0.8 = ниже
-            pct = float(pitch) - 1.0
-            if pct <= -0.15:
-                pitch = "low"
-            elif pct < -0.05:
-                pitch = "low"
-            elif pct < 0.05:
-                pitch = "medium"
-            elif pct < 0.15:
-                pitch = "high"
-            else:
-                pitch = "x-high"
-        elif isinstance(pitch, str) and pitch not in _SILERO_PITCH_LEVELS:
-            # Числовой/процентный pitch в строке → маппим в Silero-уровень.
-            try:
-                pct = 0.0
-                pitch_str = pitch.strip().lower()
-                if pitch_str.endswith("%"):
-                    pct = float(pitch_str.rstrip("%")) / 100.0 - 1.0  # "+10%" → 0.1
-                else:
-                    pct = float(pitch_str) - 1.0  # "1.2" → 0.2 (выше нормы)
-                if pct <= -0.15:
-                    pitch = "low"
-                elif pct <= -0.05:
-                    pitch = "x-low" if pct < -0.1 else "low"
-                elif pct < 0.05:
-                    pitch = "medium"
-                elif pct < 0.15:
-                    pitch = "high"
-                else:
-                    pitch = "x-high"
-            except (ValueError, TypeError):
-                pitch = "medium"
-        if pitch != pitch_orig:
-            self.get_logger().info(
-                f"🎚️  Silero: pitch {pitch_orig!r} нормализован → '{pitch}'"
-            )
-
         def synthesize_chunk(chunk_text: str) -> np.ndarray:
             # ADR-0160 §2.3 — единственный конверт SSML: здесь, с экранированием.
-            ssml_text = silero_ssml(chunk_text, pitch)
+            ssml_text = silero_ssml(chunk_text)
             return silero_apply_tts(
                 self.silero_model,
                 voice or self.silero_speaker,
@@ -4907,7 +4786,7 @@ class TTSNode(Node):
         ``test_chunk_text_agrees_with_shared_chunker``.
 
         Args:
-            text: Исходный текст (после ``normalize_for_tts``).
+            text: Текст реплики (после ``speech_text``).
             max_chars: Лимит на длину чанка (по умолчанию
                 :data:`YANDEX_MAX_CHUNK_CHARS`).
             sentence_separators: Символы-границы предложений.
@@ -4924,9 +4803,7 @@ class TTSNode(Node):
         """
         return split_text(text, max_chars, sentence_separators=sentence_separators)
 
-    def _synthesize_yandex(
-        self, text: str, ssml_attributes: dict = None, voice: str = None
-    ) -> np.ndarray:
+    def _synthesize_yandex(self, text: str, voice: str = None) -> np.ndarray:
         """Синтез через Yandex Cloud TTS gRPC API v3 (anton voice!).
 
         Если текст длиннее :data:`YANDEX_MAX_CHUNK_CHARS`, разбивает его
@@ -4938,7 +4815,6 @@ class TTSNode(Node):
 
         Args:
             text: Текст для синтеза.
-            ssml_attributes: Словарь с атрибутами SSML (pitch, rate).
             voice: Голос (issue #1219); None → self.yandex_voice (anton).
 
         Returns:
@@ -4953,28 +4829,8 @@ class TTSNode(Node):
         if not self.yandex_stub:
             raise Exception("Yandex gRPC stub не инициализирован")
 
-        if ssml_attributes is None:
-            ssml_attributes = {}
-
-        speech_rate = ssml_attributes.get("rate", self.yandex_speed)
-        # Issue #1780: pitch/volume теперь применяются — пробрасываем
-        # через ``_synthesize_yandex_single`` → ``Hints(pitch_shift, volume)``.
-        # ``pitch_hz`` конвертится из float-множителя (``1.2``, ``"+10%"``)
-        # в Hz-offset для Yandex API (``pitch_shift``).
-        pitch_hz = _ssml_pitch_to_hz(ssml_attributes.get("pitch"))
-        # ``volume`` — абсолютная LUFS-цель; на проводе просодии нет (ADR-0160
-        # §2.3), поэтому обычно None — Yandex применит свой дефолт.
-        volume_lufs = ssml_attributes.get("volume")
-
-        if pitch_hz is not None or volume_lufs is not None:
-            applied_parts = []
-            if pitch_hz is not None:
-                applied_parts.append(f"pitch_shift={pitch_hz:+.1f} Hz")
-            if volume_lufs is not None:
-                applied_parts.append(f"volume={volume_lufs:.1f} LUFS")
-            self.get_logger().info(
-                f"🎵 SSML применяется в Yandex TTS: {', '.join(applied_parts)}"
-            )
+        # Скорость — ROS-параметр ``yandex_speed``; просодии на проводе нет (ADR-0160 §2.3).
+        speech_rate = self.yandex_speed
 
         # Decide chunking strategy:
         # - If text is long (≥ 2 * max_chars), use ``_chunk_text`` to
@@ -4994,11 +4850,7 @@ class TTSNode(Node):
             for idx, chunk_text in enumerate(chunks, start=1):
                 _chunk_t0 = time.monotonic()
                 segment, sample_rate = self._synthesize_yandex_single(
-                    chunk_text,
-                    speech_rate,
-                    voice=voice,
-                    pitch_hz=pitch_hz,
-                    volume_lufs=volume_lufs,
+                    chunk_text, speech_rate, voice=voice
                 )
                 _chunk_ms = (time.monotonic() - _chunk_t0) * 1000.0
                 self.get_logger().info(
@@ -5014,11 +4866,7 @@ class TTSNode(Node):
                     text,
                     "yandex_grpc_v3",
                     lambda chunk_text: self._synthesize_yandex_single_with_latency(
-                        chunk_text,
-                        speech_rate,
-                        voice=voice,
-                        pitch_hz=pitch_hz,
-                        volume_lufs=volume_lufs,
+                        chunk_text, speech_rate, voice=voice
                     ),
                     max_chars=self.chunk_max_chars_yandex,
                     max_retries=self.chunk_max_retries,
@@ -5059,8 +4907,6 @@ class TTSNode(Node):
         text: str,
         speech_rate: float,
         voice: Optional[str] = None,
-        pitch_hz: Optional[float] = None,
-        volume_lufs: Optional[float] = None,
     ) -> tuple[np.ndarray, int]:
         """Один gRPC ``UtteranceSynthesis`` → ``(audio_np, sample_rate)``.
 
@@ -5072,20 +4918,8 @@ class TTSNode(Node):
             text: текст для синтеза.
             speech_rate: множитель скорости (1.0 = норма).
             voice: голос Yandex (None → ``self.yandex_voice``).
-            pitch_hz: SSML ``<prosody pitch="...">`` в Hz-offset для
-                Yandex ``Hints.pitch_shift`` (range [-1000; 1000]).
-                None → Yandex применит свой дефолт (0 Hz).
-            volume_lufs: SSML ``<prosody volume="...">`` в виде абсолютной
-                LUFS-цели для Yandex ``Hints.volume`` (range [-145; 0)).
-                None → Yandex применит свой дефолт (-19 LUFS).
         """
-        request = build_yandex_request(
-            text,
-            voice or self.yandex_voice,
-            speech_rate,
-            pitch_hz=pitch_hz,
-            volume_lufs=volume_lufs,
-        )
+        request = build_yandex_request(text, voice or self.yandex_voice, speech_rate)
 
         try:
             audio_data = yandex_collect_audio(
@@ -5120,8 +4954,6 @@ class TTSNode(Node):
         text: str,
         speech_rate: float,
         voice: Optional[str] = None,
-        pitch_hz: Optional[float] = None,
-        volume_lufs: Optional[float] = None,
     ) -> tuple[np.ndarray, int]:
         """``_synthesize_yandex_single`` + лог латентности (issue #931 acceptance).
 
@@ -5131,13 +4963,7 @@ class TTSNode(Node):
         «Latency добавлена в логи (время синтеза каждого чанка)»).
         """
         _t0 = time.monotonic()
-        segment, sample_rate = self._synthesize_yandex_single(
-            text,
-            speech_rate,
-            voice=voice,
-            pitch_hz=pitch_hz,
-            volume_lufs=volume_lufs,
-        )
+        segment, sample_rate = self._synthesize_yandex_single(text, speech_rate, voice=voice)
         _elapsed_ms = (time.monotonic() - _t0) * 1000.0
         self.get_logger().info(
             f"⏱️ Yandex synth: {len(text)} chars → {_elapsed_ms:.0f} ms "
@@ -5239,7 +5065,6 @@ class TTSNode(Node):
 
     def _minimax_settings(
         self,
-        ssml_attributes: Optional[dict],
         voice: Optional[str],
         language: Optional[str],
         sample_rate: Optional[int] = None,
@@ -5249,12 +5074,6 @@ class TTSNode(Node):
         ``sample_rate`` — поток просит частоту вывода (16 кГц ReSpeaker, без
         ресэмпла кусков) и PCM (куски декодируются по отдельности).
         """
-        # Скорость речи: берём из SSML или параметр ноды.
-        speed = (
-            float(ssml_attributes.get("rate", self.minimax_speed))
-            if ssml_attributes
-            else self.minimax_speed
-        )
         return TTSSettings(
             voice=voice or self.minimax_voice,
             model=self.minimax_model,
@@ -5262,7 +5081,7 @@ class TTSNode(Node):
             # статического ROS-параметра — иначе французский текст
             # синтезировался бы с language_boost=Russian.
             language=language or self.minimax_language,
-            speed=speed,
+            speed=self.minimax_speed,
             sample_rate=sample_rate or self.minimax_sample_rate,
             # PCM — default (ADR-0003 §2.3), WAV/MP3 тоже через transcode.
             format=TTSFormat.PCM if sample_rate else self.minimax_format,
@@ -5285,7 +5104,6 @@ class TTSNode(Node):
     async def _synthesize_minimax_async(
         self,
         text: str,
-        ssml_attributes: dict = None,
         voice: str = None,
         language: str = None,
     ) -> dict:
@@ -5322,7 +5140,7 @@ class TTSNode(Node):
         provider = self._ensure_minimax_provider()
 
         # unbound: тестовые заглушки ноды несут только атрибуты minimax_*
-        settings = TTSNode._minimax_settings(self, ssml_attributes, voice, language)
+        settings = TTSNode._minimax_settings(self, voice, language)
 
         try:
             tts_audio = await provider.synthesize(text, settings=settings)
@@ -5356,7 +5174,6 @@ class TTSNode(Node):
     async def _synthesize_minimax_with_retry(
         self,
         text: str,
-        ssml_attributes: dict = None,
         voice: str = None,
         language: str = None,
         budget_deadline: float | None = None,
@@ -5372,7 +5189,6 @@ class TTSNode(Node):
 
         Args:
             text: текст для синтеза.
-            ssml_attributes: словарь с SSML-атрибутами (rate/pitch).
             budget_deadline: issue #2702 п.4 — ``time.monotonic()``-дедлайн
                 облачного TTS-бюджета (``cloud_tts_budget_s``). Проверяется
                 ПЕРЕД каждым retry (не перед первой попыткой — та должна
@@ -5398,7 +5214,7 @@ class TTSNode(Node):
         for attempt in range(max_attempts):
             try:
                 return await self._synthesize_minimax_async(
-                    text, ssml_attributes, voice=voice, language=language
+                    text, voice=voice, language=language
                 )
             except Exception as exc:
                 # Классифицируем — некоторые ошибки ретраить нельзя.
@@ -5449,7 +5265,6 @@ class TTSNode(Node):
     def _synthesize_minimax(
         self,
         text: str,
-        ssml_attributes: dict = None,
         voice: str = None,
         language: str = None,
         budget_deadline: float | None = None,
@@ -5468,7 +5283,6 @@ class TTSNode(Node):
         """
         coro = self._synthesize_minimax_with_retry(
             text,
-            ssml_attributes,
             voice=voice,
             language=language,
             budget_deadline=budget_deadline,
@@ -6056,10 +5870,8 @@ class TTSNode(Node):
         batch_id: Optional[str],
         batch_index: Optional[int],
         batch_total: Optional[int],
-        ssml: str,
         text: str,
         dialogue_id: Optional[str],
-        ssml_attributes: Optional[Dict[str, Any]],
         voice: Optional[str],
         language: Optional[str],
         priority: str,
@@ -6084,10 +5896,8 @@ class TTSNode(Node):
             batch_id=batch_id,
             batch_index=batch_index,
             batch_total=batch_total,
-            ssml=ssml,
             text=text,
             dialogue_id=dialogue_id,
-            ssml_attributes=ssml_attributes,
             voice=voice,
             language=language,
             priority=priority,
@@ -6120,10 +5930,8 @@ class TTSNode(Node):
         batch_id: Optional[str],
         batch_index: Optional[int],
         batch_total: Optional[int],
-        ssml: str,
         text: str,
         dialogue_id: Optional[str],
-        ssml_attributes: Optional[Dict[str, Any]],
         voice: Optional[str],
         language: Optional[str],
         priority: str,
@@ -6152,10 +5960,8 @@ class TTSNode(Node):
                 "batch_id": batch_id,
                 "batch_index": batch_index,
                 "batch_total": batch_total,
-                "ssml": ssml,
                 "text": text,
                 "dialogue_id": dialogue_id,
-                "ssml_attributes": ssml_attributes,
                 "voice": voice,
                 "language": language,
                 "priority": priority,
@@ -6203,10 +6009,8 @@ class TTSNode(Node):
                 self._submit_synthesis(
                     self._run_synthesis_worker,
                     entry["speech_id"],
-                    entry["ssml"],
                     entry["text"],
                     entry["dialogue_id"],
-                    entry["ssml_attributes"],
                     entry["speech_id"],
                     entry["batch_id"],
                     entry["batch_index"],

@@ -478,7 +478,6 @@ def test_warm_load_disabled_hot_path_lazy_loads(tts_node_module) -> None:
             with patch.object(node, "_synthesize_yandex", synth_mock):
                 t0 = time.monotonic()
                 node._synthesize_and_play(
-                    ssml="<speak>test</speak>",
                     text="test",
                     dialogue_id="dlg-lazy-load",
                 )
@@ -592,7 +591,6 @@ def test_hot_path_skips_on_timeout_and_publishes_marker(tts_node_module) -> None
         ):
             t0 = time.monotonic()
             node._synthesize_and_play(
-                ssml="<speak>test</speak>",
                 text="test",
                 dialogue_id="dlg-skip-test",
             )

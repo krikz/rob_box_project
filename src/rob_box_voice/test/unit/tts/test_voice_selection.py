@@ -40,7 +40,6 @@ def _playback_node() -> _Bare:
     """Node stub with everything _synthesize_and_play touches after synth."""
     node = _Bare()
     node.provider = "minimax"
-    node.normalize_text = False
     node.stop_requested = False
     node.minimax_streaming = False
     node.minimax_model = "speech-02-hd"
@@ -83,10 +82,8 @@ def _playback_node() -> _Bare:
 def _run_with_voice(node, voice=None) -> None:
     TTSNode._synthesize_and_play(
         node,
-        "<speak>hello</speak>",
         "hello",
         None,
-        {},
         None,
         None,
         None,
@@ -202,7 +199,7 @@ def test_voice_forwarded_via_kwargs_not_positional() -> None:
     worker_kwargs = {"play_seq": 1, "voice": "zahar"}
     node._synthesize_and_play = MagicMock()
     TTSNode._run_synthesis_worker.__get__(node, type(node))(
-        "<speak>x</speak>", "x", None, {}, "sid1", "bid1", 1, 1, **worker_kwargs
+        "x", None, "sid1", "bid1", 1, 1, **worker_kwargs
     )
     node._synthesize_and_play.assert_called_once()
     _, kwargs = node._synthesize_and_play.call_args

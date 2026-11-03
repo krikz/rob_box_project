@@ -94,7 +94,7 @@ class _Node(TTSNode):
         self._synthesis_slots = threading.Semaphore(16 + SYNTHESIS_MAX_WORKERS_DEFAULT)
         self._synthesis_executor = concurrent.futures.ThreadPoolExecutor(max_workers=SYNTHESIS_MAX_WORKERS_DEFAULT)
         self.finished_pub = MagicMock()
-        self.normalize_text, self.minimax_streaming, self.stop_requested = False, False, False
+        self.minimax_streaming, self.stop_requested = False, False
         self.provider_chain, self.minimax_voice = ["minimax"], "male-qn-qingse"
         self.synthesized_texts = []
         self.synth_s = SYNTH_S
@@ -116,7 +116,7 @@ class _Node(TTSNode):
 
     # -- фейки: провайдер и динамик ------------------------------------------------
 
-    def _sap_run_provider_chain(self, voice, language, attrs, text, sink, ctx):
+    def _sap_run_provider_chain(self, voice, language, text, sink, ctx):
         self.synth_gate.wait(5.0)
         time.sleep(self.synth_s)
         self.synthesized_texts.append(text)

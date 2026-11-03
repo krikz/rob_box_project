@@ -43,10 +43,8 @@ from test.unit.tts.test_voice_selection import _playback_node  # noqa: E402
 def _run(node, *, voice=None, language=None, text="hello") -> None:
     TTSNode._synthesize_and_play(
         node,
-        f"<speak>{text}</speak>",
         text,
         None,
-        {},
         None,
         None,
         None,
@@ -247,7 +245,7 @@ def test_worker_forwards_language_via_kwargs() -> None:
     node = _playback_node()
     node._synthesize_and_play = MagicMock()
     TTSNode._run_synthesis_worker.__get__(node, type(node))(
-        "<speak>x</speak>", "x", None, {}, "sid1", "bid1", 1, 1,
+        "x", None, "sid1", "bid1", 1, 1,
         play_seq=1, voice="zahar", language="fr",
     )
     node._synthesize_and_play.assert_called_once()
@@ -260,7 +258,7 @@ def test_worker_without_language_passes_none() -> None:
     node = _playback_node()
     node._synthesize_and_play = MagicMock()
     TTSNode._run_synthesis_worker.__get__(node, type(node))(
-        "<speak>x</speak>", "x", None, {}, "sid1", "bid1", 1, 1, play_seq=1,
+        "x", None, "sid1", "bid1", 1, 1, play_seq=1,
     )
     _, kwargs = node._synthesize_and_play.call_args
     assert kwargs.get("language") is None

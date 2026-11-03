@@ -17,6 +17,9 @@
 ``isinstance``-чек или сравнение классов между LLM- и TTS-половиной
 молча давал бы False. ``test_minimax_tts.py::…retry_policy_is_shared``
 проверял идентичность только внутри minimax-ветки и поэтому был зелёным.
+
+TTS-половину харнеса (``tts/minimax_tts.py`` — вторая копия MiniMax TTS)
+удалил #4240; одна реализация — ``rob_box_llm.providers.minimax_tts``.
 """
 
 from __future__ import annotations
@@ -30,7 +33,6 @@ from rob_box_harness.providers import RetryPolicy as PackageRetryPolicy
 from rob_box_harness.providers.deepseek import RetryPolicy as DeepSeekRetryPolicy
 from rob_box_harness.providers.minimax import RetryPolicy as MiniMaxRetryPolicy
 from rob_box_harness.providers.retry import RetryPolicy
-from rob_box_harness.tts import RetryPolicy as TTSRetryPolicy
 
 _PROVIDERS = Path(__file__).resolve().parents[1] / "rob_box_harness" / "providers"
 
@@ -44,7 +46,6 @@ def test_every_import_path_yields_the_same_class() -> None:
     assert DeepSeekRetryPolicy is RetryPolicy
     assert MiniMaxRetryPolicy is RetryPolicy
     assert PackageRetryPolicy is RetryPolicy
-    assert TTSRetryPolicy is RetryPolicy
 
 
 def test_defaults_are_unchanged() -> None:

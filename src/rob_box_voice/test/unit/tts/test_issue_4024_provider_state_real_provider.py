@@ -76,7 +76,7 @@ def _presynth(
         _publish_tts_finished=MagicMock(),
     )
 
-    def chain(voice_, language, attrs, text, sink, ctx):
+    def chain(voice_, language, text, sink, ctx):
         ctx.update(
             audio_np=np.zeros(1600, dtype=np.float32),
             sample_rate=16000,
