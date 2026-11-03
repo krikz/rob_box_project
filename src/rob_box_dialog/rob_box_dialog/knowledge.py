@@ -280,6 +280,8 @@ class VolumeChannel:
 MUSIC_STEMS: Tuple[str, ...] = (
     "музык", "музон", "трек", "трей", "бит", "песн", "мелоди", "сет", "дидж", "играй", "сыграй", "поиграй",
     "ритм", "подложк")
+#: «Сет» (диджей-сет) группа музыки берёт словом целиком: основа «сет» цепляла «сеть», «сетевой» (#4297).
+MUSIC_SET_FORMS: Tuple[str, ...] = ("сет", "сета", "сету", "сеты", "сетом", "сете", "сетов")
 #: Только для группы тулов (на громкость они канал не называют): остальные музыкальные слова и «фоном».
 MUSIC_GROUP_EXTRA_STEMS: Tuple[str, ...] = (
     "песен", "сыгра", "игра", "спой", "спеть", "споёшь", "споешь", "сочини", "сгенер", "сэт", "библиотек", "композ",
@@ -826,12 +828,13 @@ class ToolGroup:
     """Группа тулов среза: ``stems`` — основы слов человека (матч по левой границе слова), ``tools`` — ≤ 6 схем.
 
     ``weak`` — общие глаголы («включи», «поставь»): группа по ним одним уступает группам, названным прямо
-    («включи голос …» — голос, а не музыка).
+    («включи голос …» — голос, а не музыка). ``forms`` — слова РОВНО этих форм (не основы): «сет» — музыка, «сеть» — нет.
     """
 
     stems: Tuple[str, ...]
     tools: Tuple[str, ...]
     weak: Tuple[str, ...] = ()
+    forms: Tuple[str, ...] = ()
 
 
 #: Глаголы восприятия: «посмотри налево», «глянь что справа», «посмотри на меня» — взгляд лица
@@ -1041,15 +1044,22 @@ INTRO_NOT_A_NAME: FrozenSet[str] = frozenset({
 #: Окончания прилагательных: «я голодный», «я уставшая» - не имя (словарные имена на «-ий» проверка не касается).
 INTRO_ADJECTIVE_ENDINGS: Tuple[str, ...] = ("ый", "ий", "ой", "ая", "яя", "ое", "ее", "ые", "ие", "ная", "ший")
 
+#: Слова о связи: ОДНА таблица для среза (группа ``network``) и для проверки утверждений (``STATE_CLAIMS``).
+WIFI_STEMS: Tuple[str, ...] = ("wi-fi", "wifi", "вайфа", "вай-фа", "роутер", "маршрутизатор", "wlan")
+INTERNET_STEMS: Tuple[str, ...] = ("интернет",)
+NETWORK_STEMS: Tuple[str, ...] = ("сеть", "сети", "сетью", "сетев", "связь", "связью")
+
 #: Группы по приоритету: при пересечении групп срез режется по этому порядку (``TOOLS_VISIBLE_MAX``). Голос —
 #: только по явной голосовой просьбе (LLM сама меняла голос посреди сказки, а голос персистентный, PR-4).
 TOOL_GROUPS: Mapping[str, ToolGroup] = MappingProxyType({
     "music": ToolGroup(
-        MUSIC_STEMS + MUSIC_GROUP_EXTRA_STEMS,
+        # «сет» основой цепляет «сеть» (#4297: «как сеть» открывало музыку, она вытесняла тулы сети) - только формами
+        tuple(s for s in MUSIC_STEMS if s != "сет") + MUSIC_GROUP_EXTRA_STEMS,
         # порядок — приоритет при обрезке среза: под играющую музыку рядом с названной группой первыми
         # остаются «стоп» и «что играет»
         ("stop_music", "get_music_state", "request_music", "dj_set", "music_library", "generate_music"),
         weak=("включи", "поставь"),
+        forms=MUSIC_SET_FORMS,
     ),
     "volume": ToolGroup(("громк", "громче", "погромче", "тише", "потише"), ("set_volume", "set_music_volume")),
     "voice": ToolGroup(
@@ -1097,9 +1107,14 @@ TOOL_GROUPS: Mapping[str, ToolGroup] = MappingProxyType({
     "logs": ToolGroup(("лог",), ("read_logs",)),
     "nodes": ToolGroup(("нод", "ros"), ("ros2_node_status",)),
     "containers": ToolGroup(("контейнер", "сервис", "докер", "docker"), ("container_status",)),
+    # #4297 (живой 03.11 «как сеть»): слов сети в таблице не было, срез оставался без данных, модель трижды звала тул
+    # вне среза (``tool_not_available``). Данные о сети есть у двух тулов: ``internet_available`` в
+    # ``get_perception_context`` и опрос целей Prometheus (``show_metrics``: ``services_up``, задержки LLM/STT/TTS).
+    # Wi-Fi и роутера нет ни в одном (``STATE_CLAIMS["wifi"]``): утверждение о них код вырезает (``state_claim``)
+    "network": ToolGroup(WIFI_STEMS + INTERNET_STEMS + NETWORK_STEMS, ("get_perception_context", "show_metrics")),
     # статус - после групп оператора (#4286): слово «статус» общее, предмет («контейнеров», «нод») важнее
     "status": ToolGroup(
-        ("батар", "заряд", "статус", "видишь", "перед тобой", "слышишь", "как ты", "самочувств", "подожди"),
+        ("батар", "заряд", "статус", "видишь", "перед тобой", "слышишь", "как ты", "самочувств", "здоровье", "здоровья", "подожди"),
         ("get_robot_status", "get_battery_level", "get_perception_context", "listen_for_response"),
     ),
 })
@@ -1670,12 +1685,12 @@ class StateClaim:
 #: (``state_claim``) и аудит логов (``scripts/dialog/honesty_audit.py``) читают её.
 VIOLATION_STATE_CLAIM = "state_claim"
 STATE_CLAIMS: Mapping[str, StateClaim] = MappingProxyType({
-    "wifi": StateClaim(("wi-fi", "wifi", "вайфа", "вай-фа", "роутер", "маршрутизатор", "wlan"), "Wi-Fi и роутер",
+    "wifi": StateClaim(WIFI_STEMS, "Wi-Fi и роутер",
                        keys=("wifi", "wi_fi", "wlan", "rssi", "ssid", "router")),
     # ``internet_available`` отдаёт ``get_perception_context`` (поле снимка восприятия); сеть до целей - и опрос
     # Prometheus (``show_metrics``: «cadvisor отвечают по сети», живой прогон 03.11 #4286)
-    "internet": StateClaim(("интернет",), "интернет", keys=("internet",), tools=("get_perception_context",)),
-    "network": StateClaim(("сеть", "сети", "сетью", "сетев", "связь", "связью"), "сеть",
+    "internet": StateClaim(INTERNET_STEMS, "интернет", keys=("internet",), tools=("get_perception_context",)),
+    "network": StateClaim(NETWORK_STEMS, "сеть",
                           keys=("internet", "network", "wifi", "ping"),
                           tools=("get_perception_context", "show_metrics")),
     "battery": StateClaim(("батаре", "заряд", "аккумулятор", "акб"), "батарею",
