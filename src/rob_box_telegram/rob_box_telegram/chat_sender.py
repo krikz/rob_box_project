@@ -52,8 +52,16 @@ DRAFT_ID = 1
 #: ``kind`` исходящего элемента очереди сверх ``DialogOutput.kind``: «ход начался» (внутренний, не с провода).
 KIND_BEGIN = "begin"
 
-#: Переменная окружения: ``1`` - ответы уходят «богатыми сообщениями» (Bot API 10.1 ``sendRichMessage``), при отказе - HTML.
+#: Переменная окружения: по умолчанию ответы уходят «богатыми сообщениями» (Bot API 10.1 ``sendRichMessage``), при отказе - HTML.
+#: Выключить: ``0`` / ``false`` / ``no`` / ``off`` (решение Шифу 03.11, #4243).
 RICH_ENV = "TELEGRAM_RICH_MESSAGES"
+_RICH_OFF = frozenset({"0", "false", "no", "off"})
+
+
+def rich_enabled_from_env() -> bool:
+    """Rich включены, если переменная не задана или не из списка «выключено»."""
+    return os.environ.get(RICH_ENV, "").strip().lower() not in _RICH_OFF
+
 
 Sleep = Callable[[float], Awaitable[Any]]
 
@@ -97,8 +105,8 @@ class ChatSender:
     def __init__(self, bot: Any, clock: Callable[[], float] = time.monotonic, sleep: Sleep = asyncio.sleep,
                  log: logging.Logger = _LOG, rich: Optional[bool] = None) -> None:
         self.bot = bot
-        # Rich messages - за флагом: PTB 21.11.1 метода не знает, шлём сырым do_api_request; отказ - откат на HTML навсегда
-        self._rich_ok = os.environ.get(RICH_ENV, "") == "1" if rich is None else rich
+        # Rich messages - по умолчанию вкл.: PTB 21.11.1 метода не знает, шлём сырым do_api_request; отказ - откат на HTML навсегда
+        self._rich_ok = rich_enabled_from_env() if rich is None else rich
         self._clock = clock
         self._sleep = sleep
         self._log = log
