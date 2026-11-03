@@ -77,7 +77,6 @@ class ChatSenderTest(unittest.IsolatedAsyncioTestCase):
         assert actions and actions[0] == ("action", PRIVATE, "typing") and len(actions) >= 2
         await sender.close()
 
-
     async def test_fast_answer_shows_no_progress_and_clears_the_turn(self):
         sender, _ = make()
         sender.begin(PRIVATE)
@@ -87,7 +86,6 @@ class ChatSenderTest(unittest.IsolatedAsyncioTestCase):
         assert "api" not in kinds and "edit" not in kinds
         assert sender.bot.calls[-1] == ("send", PRIVATE, "Привет!", "HTML", None)
         assert PRIVATE not in sender._turns
-
 
     async def test_slow_private_turn_streams_a_draft_not_messages(self):
         sender, _ = make()
@@ -100,7 +98,6 @@ class ChatSenderTest(unittest.IsolatedAsyncioTestCase):
         assert "Думаю…" in drafts[0][2]["text"]
         assert not [c for c in sender.bot.calls if c[0] == "send"]  # ни одного нового сообщения
         await sender.close()
-
 
     async def test_group_turn_edits_one_progress_message_and_deletes_it_before_the_answer(self):
         sender, _ = make()
@@ -117,7 +114,6 @@ class ChatSenderTest(unittest.IsolatedAsyncioTestCase):
         await sender.deliver(GROUP, "Готово.")
         assert sender.bot.calls[-2:] == [("delete", GROUP, 101), ("send", GROUP, "Готово.", "HTML", None)]
 
-
     async def test_rejected_draft_falls_back_to_one_editable_message_once(self):
         sender, _ = make(Bot(draft_error=RuntimeError("method not found")))
         sender.begin(PRIVATE)
@@ -127,7 +123,6 @@ class ChatSenderTest(unittest.IsolatedAsyncioTestCase):
         assert len([c for c in sender.bot.calls if c[0] == "send"]) == 1
         assert [c for c in sender.bot.calls if c[0] == "edit"]
         await sender.close()
-
 
     async def test_turn_without_an_answer_expires_and_removes_the_progress_message(self):
         sender, clock = make()
@@ -140,12 +135,10 @@ class ChatSenderTest(unittest.IsolatedAsyncioTestCase):
         assert GROUP not in sender._turns and clock.now >= cs.TURN_MAX_S
         assert sender.bot.calls[-1][0] == "delete"
 
-
     async def test_markup_rejected_by_telegram_resends_the_same_reply_as_plain_text(self):
         sender, _ = make(Bot(markup_error=True))
         await sender.deliver(PRIVATE, "Ток < 5", "Ермил")
         assert sender.bot.calls == [("send", PRIVATE, "Ермил\nТок < 5", None, None)]
-
 
     async def test_other_send_errors_are_not_swallowed(self):
         class Down(Bot):
@@ -155,7 +148,6 @@ class ChatSenderTest(unittest.IsolatedAsyncioTestCase):
         sender, _ = make(Down())
         with pytest.raises(ConnectionError):
             await sender.deliver(PRIVATE, "x")
-
 
     async def test_long_reply_goes_as_several_messages_with_link_previews_off(self):
         sent = []
