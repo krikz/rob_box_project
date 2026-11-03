@@ -427,7 +427,7 @@ services:
   # non-ROS service: Loki log shipper (profile: monitoring).
   # Не использует ROS/Zenoh, depends_on: zenoh-router не требуется.
   promtail:
-    image: grafana/promtail:2.9.2
+    image: grafana/promtail:3.6.11  # #3659: клиент Docker API согласуется с демоном (2.9.2 жёстко 1.42 < min 1.44 на Docker 29)
     container_name: promtail
     profiles: ["monitoring"]
     network_mode: host
