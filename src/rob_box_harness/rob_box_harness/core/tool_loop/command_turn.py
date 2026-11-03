@@ -74,8 +74,8 @@ def owner_event(request: ActionRequest, result: ToolResult) -> OwnerEvent:
     status = data.get("status")
     if status not in kn.ACTION_STATUSES:
         status = "rejected" if result.is_error else "done"
-    message = result.message
-    if message and status == "done" and request.cls == _QUERY:
+    message = getattr(result, "message", None)  # тулы и тесты отдают и утиные результаты без поля
+    if message and status == "done" and getattr(request, "cls", None) == _QUERY:
         data.setdefault(kn.TOOL_MESSAGE_FIELD, message)
     reason = data.get("reason") if isinstance(data.get("reason"), str) else None
     if reason is None and result.is_error:  # отказ MCP до тула (подпись, срез): причина — в тексте ошибки (#3853)
