@@ -168,7 +168,7 @@ def test_full_turn_through_ports_speaks_outcome_and_publishes_turn_events():
     agg = asyncio.run(engine.run(Addressed("выключи музыку пожалуйста сейчас же", VOICE)))
     assert tools.calls == [("stop_music", {})] and tools.turns == 1
     speech = node.pubs["/voice/speech/request"].sent
-    assert [s.text for s in speech] == ["<speak>Выключил музыку.</speak>"]
+    assert [s.text for s in speech] == ["Выключил музыку."]
     assert speech[0].agent == "personality" and speech[0].turn_id == agg.turn_id
     events = [(e.stage, e.status) for e in node.pubs["/dialog/turn_event"].sent]
     assert events == [("addressed", "started"), ("thinking", "started"), ("executing", "started"),
@@ -184,7 +184,7 @@ def test_owner_rejection_reaches_phrase():
     engine = TurnEngine(Session("personality"), ports)
     asyncio.run(engine.run(Addressed("выключи музыку пожалуйста сейчас же", VOICE)))
     said = [s.text for s in node.pubs["/voice/speech/request"].sent]
-    assert said == ["<speak>Не получилось выключить музыку.</speak>"]
+    assert said == ["Не получилось выключить музыку."]
 
 
 class _DeadLLM(_LLM):
@@ -213,7 +213,7 @@ def test_dead_provider_chain_is_provider_failed_and_turn_says_it_at_once():
     ports = V2Ports(node, _DeadLLM(ProviderError("chain exhausted"), counter), counter, _Tools())
     agg = asyncio.run(TurnEngine(Session("personality"), ports).run(Addressed("расскажи что-нибудь", VOICE)))
     said = [s.text for s in node.pubs["/voice/speech/request"].sent]
-    assert said == [f"<speak>{phrases.text('understand.provider_failed', provider='deepseek')}</speak>"]
+    assert said == [f"{phrases.text('understand.provider_failed', provider='deepseek')}"]
     assert agg.status == "failed"
 
     bug = V2Ports(_Node(), _DeadLLM(IndexError("pop from empty list"), counter), counter, _Tools())
@@ -279,7 +279,7 @@ def test_question_with_only_expression_gets_words_and_the_emotion_still_colours_
     ports, node, _ = _ports([first, second])
     agg = asyncio.run(TurnEngine(Session("personality"), ports).run(Addressed("ты меня слышишь", VOICE)))
     assert agg.llm_calls == 2
-    assert [s.text for s in node.pubs["/voice/speech/request"].sent] == ["<speak>Слышу тебя!</speak>"]
+    assert [s.text for s in node.pubs["/voice/speech/request"].sent] == ["Слышу тебя!"]
     assert _done_request(node).emotion == "happy"
 
 
@@ -357,7 +357,7 @@ def test_4049_siren_animation_without_duration_holds_by_the_show_default():
                           "actions": [{"tool": "play_animation", "args": {"animation": "police_lights"}}]})
     ports, node, _ = _ports([LLMResponse(tool_calls=(call,))])
     asyncio.run(TurnEngine(Session("personality"), ports).run(Addressed("включи сирену", VOICE)))
-    assert [s.text for s in node.pubs["/voice/speech/request"].sent] == ["<speak>Сирена — включаю!</speak>"]
+    assert [s.text for s in node.pubs["/voice/speech/request"].sent] == ["Сирена — включаю!"]
     done = _done_request(node)
     assert (done.emotion, done.ttl_ms) == ("police_lights", int(kn.FACE_SHOW_DEFAULT_S * 1000))
 
@@ -586,7 +586,7 @@ def test_4050_salvaged_library_list_goes_back_to_the_model_and_the_answer_is_spo
     agg = asyncio.run(TurnEngine(Session("personality"), ports).run(
         Addressed("что у тебя в музыкальной библиотеке", VOICE)))
     assert tools.calls == [("music_library", {"action": "list"})]
-    assert [s.text for s in node.pubs["/voice/speech/request"].sent] == [f"<speak>{answer.content}</speak>"]
+    assert [s.text for s in node.pubs["/voice/speech/request"].sent] == [f"{answer.content}"]
     second = ports._llm.calls[1][0]
     data = json.loads(second[-1].content)[kn.QUERY_RESULTS_FIELD]
     assert second[-1].role == "tool" and data[0]["data"]["tracks"] == tracks["tracks"]

@@ -64,7 +64,8 @@ from rob_box_core.avatar_command import (
     AVATAR_COMMAND_RESULT_TOPIC,
     AVATAR_COMMAND_TOPIC,
 )
-# voice-vr 12 (issue #2197, ADR-0080 §1.3 / §2.3): единый сборщик SSML. Фолбек #2233 удалён (ADR-0150 D2, PR-13):
+# voice-vr 12 (issue #2197, ADR-0080 §1.3 / §2.3): единый сборщик реплики (голый текст, ADR-0160 §2.3). Фолбек #2233
+# удалён (ADR-0150 D2, PR-13):
 # образ супервизора собирается на базе voice-assistant с тем же rob_box_core.
 from rob_box_core.utterance import Sink, Utterance  # noqa: E402
 # Issue #2240 — ws_server и supervisor больше НЕ держат свои копии
@@ -713,7 +714,7 @@ class AvatarSupervisor(Node):
         # ADR-0055 / issue #1993 — обратный канал ТАРС в шлем. Publisher
         # /avatar/tts/request для СОБСТВЕННЫХ реплик supervisor'а и пайплайна
         # грипа. Контракт String JSON (см. ADR-0055 §tts_node):
-        # ``{request_id, ssml, sink:\"headset\", voice?, language?}``.
+        # ``{request_id, text, sink:\"headset\", voice?, language?}`` (голый текст, ADR-0160 §2.3).
         # Динамики робота (грип, say) — SpeechRequest клиентом речи, НЕ шлем.
         self._avatar_tts_request_pub = self.create_publisher(
             RosString, AVATAR_TTS_REQUEST_TOPIC, 10
@@ -2847,7 +2848,7 @@ class AvatarSupervisor(Node):
         люди рядом с роботом, поэтому грип говорит голосом робота из
         динамиков (тот же канал, что и инструмент ``say``).
 
-        ``SpeechRequest`` (ADR-0150 PR-3): SSML строит ``Utterance``,
+        ``SpeechRequest`` (ADR-0150 PR-3): реплику (голый текст) строит ``Utterance``,
         ``priority="operator"`` (ADR-0056 §3.5, _TTS_PRIORITY_PREEMPTS)
         чтобы voice-планировщик вставил реплику сразу за текущей
         озвучкой и положил её поверх очереди динамика — иначе грип
@@ -2879,8 +2880,8 @@ class AvatarSupervisor(Node):
             )
             return
 
-        # voice-vr 12 (issue #2197): единый сборщик SSML — ``Utterance``.
-        # XML-экранирование &, <, > делает сам сборщик. Канал — динамики робота;
+        # voice-vr 12 (issue #2197): единый сборщик реплики — ``Utterance``
+        # (голый текст, ADR-0160 §2.3). Канал — динамики робота;
         # шлем (sink=headset) — отдельный ``_publish_avatar_tts`` (инвариант 6b).
         utterance = Utterance(
             text=text,
@@ -2971,8 +2972,8 @@ class AvatarSupervisor(Node):
             rid = request_id
         else:
             rid = _uuid.uuid4().hex[:8]
-        # voice-vr 12 (issue #2197): единый сборщик SSML — ``Utterance``.
-        # XML-экранирование &, <, > делает сам сборщик; sink приходит как
+        # voice-vr 12 (issue #2197): единый сборщик реплики — ``Utterance``
+        # (голый текст, ADR-0160 §2.3); sink приходит как
         # строка от вызывающего (headset|preview) — нормализуем через Sink.
         # speech_id задаём сами (issue #3253): без него tts_node генерит
         # случайный uuid4, и конец синтеза (/voice/tts/finished несёт только

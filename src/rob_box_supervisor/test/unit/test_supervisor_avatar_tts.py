@@ -7,7 +7,7 @@
 Используем mock-rclpy из conftest.py. Тесты:
 
 1. ``test_publish_avatar_tts_writes_headset_request`` — прямой вызов
-   ``_publish_avatar_tts`` шлёт JSON ``{request_id, ssml, sink:\"headset\"}``
+   ``_publish_avatar_tts`` шлёт JSON ``{request_id, text, sink:\"headset\"}`` (голый текст, ADR-0160 §2.3)
    в /avatar/tts/request.
 2. ``test_publish_avatar_tts_returns_request_id`` — возвращается uuid hex8
    (>= 8 chars), caller может его логировать.
@@ -38,7 +38,7 @@ def _published_avatar_tts(node: AvatarSupervisor) -> list[dict]:
 
 def _speech_payload(req) -> dict:
     """``SpeechRequest`` → поля, которые раньше лежали в JSON ``/voice/tts/request``."""
-    out = {"ssml": req.text, "priority": "operator" if req.priority >= 10 else "normal", "agent": req.agent}
+    out = {"text": req.text, "priority": "operator" if req.priority >= 10 else "normal", "agent": req.agent}
     if req.language:
         out["language"] = req.language
     return out
@@ -83,7 +83,7 @@ class TestPublishAvatarTtsWithDefaults(unittest.TestCase):
         rid = self.node._publish_avatar_tts("готово")
         pub = _published_avatar_tts(self.node)
         self.assertEqual(len(pub), 1)
-        self.assertEqual(pub[0]["ssml"], "<speak>готово</speak>")
+        self.assertEqual(pub[0]["text"], "готово")
         self.assertEqual(pub[0]["sink"], "headset")
         self.assertEqual(pub[0]["request_id"], rid)
 
@@ -219,7 +219,7 @@ class TestPublishGripTtsEmptyTextDrop(unittest.TestCase):
         self.node._publish_grip_tts("мы начинаем")
         voice_pub = _published_voice_tts(self.node)
         self.assertEqual(len(voice_pub), 1)
-        self.assertEqual(voice_pub[0]["ssml"], "<speak>мы начинаем</speak>")
+        self.assertEqual(voice_pub[0]["text"], "мы начинаем")
         self.assertEqual(voice_pub[0]["priority"], "operator")
         # Не должен ничего утечь в /avatar/tts/request (шлем только для ТАРС).
         self.assertEqual(_published_avatar_tts(self.node), [])

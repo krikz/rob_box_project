@@ -109,7 +109,7 @@ def _kinds(node):
 
 
 def _chunk(text="Раз два. Три четыре.", **meta):
-    return {"ssml": f"<speak>{text}</speak>", "_speech": dict(meta)}
+    return {"text": text, "_speech": dict(meta)}
 
 
 def _request(**fields):
@@ -134,7 +134,7 @@ def test_4053_voice_owner_event_carries_the_one_owner_agent_constant(setup):
 
 
 def test_plain_text_and_sentence_ends():
-    assert plain_text("<speak>x &lt; y  <break/> z</speak>") == "x < y z"
+    assert plain_text("x < y  <#0.5#> z") == "x < y z"  # голый текст: метка паузы рэпа не считается
     assert sentence_ends("Раз два. Три четыре!") == (8, 20)
     assert sentence_ends("без точки") == (9,)
 
@@ -155,7 +155,7 @@ def test_request_goes_into_tts_pipeline_with_meta(setup):
     node, owner, _ = setup
     node.subs["/voice/speech/request"](_request(epoch=4, turn_id="t", voice="ermil", priority=10))
     (chunk,) = node.chunks
-    assert chunk["ssml"] == "<speak>Привет</speak>" and chunk["speech_id"] == "sid-1"
+    assert chunk["text"] == "Привет" and "ssml" not in chunk and chunk["speech_id"] == "sid-1"
     assert (chunk["sink"], chunk["priority"], chunk["voice"]) == ("speaker", "operator", "ermil")
     assert chunk["_speech"]["epoch"] == 4 and chunk["_speech"]["turn_id"] == "t"
 
@@ -363,8 +363,6 @@ def test_at_in_the_past_plays_at_once(setup):
 
 def _presynth_node(node, submit=lambda fn, *a: fn(*a)):
     node.owner.presynth = Presynth(executor=types.SimpleNamespace(submit=submit))
-    node._extract_text_from_ssml = plain_text
-    node._parse_ssml_attributes = lambda ssml: {}
     node.synth_calls = []
 
     def chain(voice, language, attrs, text, sink, ctx):
@@ -490,7 +488,7 @@ def test_streamed_envelope_follows_first_sound_and_duration_arrives_late(setup):
 def test_chunk_without_speech_meta_gets_the_defaults():
     """Чанк не из ``SpeechRequest`` (метаданных ``_speech`` нет) — агент «personality», эпоха 0. Старых JSON-входов,
     которые выводили агента из ``priority``/``epoch``, у ноды больше нет (PR-15 часть 15-core, #3711)."""
-    assert SpeechMeta.from_chunk({"ssml": "x", "epoch": 7, "priority": "operator"}) == SpeechMeta()
+    assert SpeechMeta.from_chunk({"text": "x", "epoch": 7, "priority": "operator"}) == SpeechMeta()
 
 
 def test_chunk_meta_is_taken_from_the_speech_field():

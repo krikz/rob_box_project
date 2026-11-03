@@ -29,7 +29,8 @@ def robot_said(msg: Any) -> str:
     """
     agent = getattr(msg, 'agent', None)
     if agent is not None:
-        return _plain(msg.text) if agent == ROBOT_VOICE_AGENT and msg.commit else ''
+        # ADR-0160 §2.3: SpeechRequest.text - голый текст реплики, SSML на проводе нет.
+        return (msg.text or '').strip() if agent == ROBOT_VOICE_AGENT and msg.commit else ''
     try:
         return _plain(json.loads(msg.data).get('ssml', ''))
     except Exception:

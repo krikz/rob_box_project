@@ -18,6 +18,9 @@ Covers two independent conversions:
   emits numeric multipliers that crash Silero with ``Invalid <prosody>
   tag``. :func:`normalize_silero_pitch` maps arbitrary input to the
   nearest allowed level.
+* ADR-0160 §2.3 (#4239) — :func:`silero_ssml`: the only place a reply's
+  plain text is wrapped into ``<speak>`` (with XML escaping). The wire
+  carries plain text; Silero is the only provider fed SSML.
 
 ``tts_node.py`` re-exports every name here for backward compatibility with
 existing imports/tests (``from rob_box_voice.tts_node import
@@ -208,3 +211,20 @@ def normalize_silero_pitch(pitch) -> str:
     if factor <= 1.4:
         return "high"
     return "x-high"
+
+
+#: XML-экранирование текстового узла SSML: ``&`` первым, иначе съест entity.
+_XML_ESCAPE_TABLE = str.maketrans({"&": "&amp;", "<": "&lt;", ">": "&gt;"})
+
+
+def silero_ssml(text: str, pitch: str) -> str:
+    """Конверт Silero: голый текст реплики в ``<speak><prosody pitch>`` с экранированием ``&``, ``<``, ``>``.
+
+    Единственное место, где текст реплики обрамляется в SSML (ADR-0160 §2.3, глоссарий «Реплика»): на проводе голый
+    текст, а Silero ``apply_tts(ssml_text=…)`` разбирает XML, и сырой ``&`` или ``<`` в тексте его роняет.
+    ``pitch`` - уровень из :func:`normalize_silero_pitch`.
+
+    >>> silero_ssml("x<y & z", "medium")
+    '<speak><prosody pitch="medium">x&lt;y &amp; z</prosody></speak>'
+    """
+    return f'<speak><prosody pitch="{pitch}">{(text or "").translate(_XML_ESCAPE_TABLE)}</prosody></speak>'

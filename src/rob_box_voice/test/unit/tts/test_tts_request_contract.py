@@ -40,7 +40,7 @@ def _make_node() -> TTSNode:
     n.get_logger = lambda: logger
     n._test_logger = logger
     n.current_speech_id = None
-    # Всё после проверки SSML нам не важно: запись в журнал владельца речи
+    # Всё после проверки текста нам не важно: запись в журнал владельца речи
     # (ADR-0150 PR-3) — точка, по которой видно «запрос принят»; дальше
     # заглушка роняет конвейер, его ловит общий except колбэка.
     n._speech = MagicMock()
@@ -54,17 +54,17 @@ def _msg(payload: dict):
     return m
 
 
-def _dropped_as_no_ssml(node) -> bool:
+def _dropped_as_no_text(node) -> bool:
     return any(
-        "без SSML" in str(c.args[0]) for c in node._test_logger.warn.call_args_list
+        "без текста" in str(c.args[0]) for c in node._test_logger.warn.call_args_list
     )
 
 
 @pytest.mark.parametrize(
     "payload",
     [
-        {"text": "привет", "source": "operator"},  # старый формат say (29.09)
-        {"text": "привет"},
+        {"ssml": "<speak>привет</speak>"},  # SSML на проводе больше нет (ADR-0160 §2.3)
+        {"source": "operator"},
         {},
     ],
 )
@@ -74,7 +74,7 @@ def test_callback_drops_payload_rejected_by_contract(payload):
 
     node.dialogue_callback(_msg(payload))
 
-    assert _dropped_as_no_ssml(node)
+    assert _dropped_as_no_text(node)
     node._speech.admit.assert_not_called()
 
 
@@ -82,7 +82,7 @@ def test_callback_drops_payload_rejected_by_contract(payload):
     "payload",
     [
         Utterance(text="x<y & z", extra={"source": "operator"}).to_request(),
-        {"ssml": "<speak>привет</speak>"},
+        {"text": "привет"},
     ],
 )
 def test_callback_accepts_payload_accepted_by_contract(payload):
@@ -91,7 +91,7 @@ def test_callback_accepts_payload_accepted_by_contract(payload):
 
     node.dialogue_callback(_msg(payload))
 
-    assert not _dropped_as_no_ssml(node)
+    assert not _dropped_as_no_text(node)
     node._speech.admit.assert_called_once()
 
 
@@ -101,12 +101,12 @@ def test_callback_uses_shared_contract_function(monkeypatch):
 
     def _spy(payload):
         calls.append(payload)
-        return ["ssml"]
+        return ["text"]
 
     monkeypatch.setattr(tts_node_mod, "missing_tts_request_fields", _spy)
     node = _make_node()
 
-    node.dialogue_callback(_msg({"ssml": "<speak>a</speak>"}))
+    node.dialogue_callback(_msg({"ssml": "a"}))
 
-    assert calls == [{"ssml": "<speak>a</speak>"}]
-    assert _dropped_as_no_ssml(node)
+    assert calls == [{"ssml": "a"}]
+    assert _dropped_as_no_text(node)

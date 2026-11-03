@@ -6,9 +6,9 @@
 каналом ``/voice/speech/cancel`` (``cancel()``): по ``speech_id`` или по эпохе
 агента; реплики другой эпохи и другого агента не трогаются.
 
-JSON-тело ``/voice/tts/request`` вызывающие больше не собирают: SSML
-по-прежнему строит :class:`rob_box_core.utterance.Utterance` (экранирование и
-санитайзер разметки - в одном месте), клиент кладёт его в ``text``.
+JSON-тело запроса вызывающие не собирают: реплику строит
+:class:`rob_box_core.utterance.Utterance`, клиент кладёт её голый текст в
+``text`` (ADR-0160 §2.3: SSML на проводе нет, конверт собирает адаптер Silero).
 
 Эпоха (``epoch``): номер поколения сессии агента. ``cancel(epoch=E)`` отменяет
 реплики агента с эпохой не новее ``E``; реплика с эпохой новее ``E``
@@ -108,13 +108,8 @@ def build_request(
     at: float = 0.0,
     boundary: str = "none",
     commit: bool = True,
-    ssml: Optional[str] = None,
 ) -> Any:
-    """``SpeechRequest`` из реплики; ``speech_id`` - из реплики или новый uuid4.
-
-    ``ssml`` - готовый SSML вместо ``utterance.ssml`` (prosody эмоции у
-    ``speak_text``); экранирует его тот, кто собрал.
-    """
+    """``SpeechRequest`` из реплики; ``speech_id`` - из реплики или новый uuid4; ``text`` - голый текст реплики."""
     _check_agent(agent)
     if boundary not in BOUNDARIES:
         raise ValueError(f"boundary {boundary!r} не из {sorted(BOUNDARIES)}")
@@ -126,7 +121,7 @@ def build_request(
     req.sink = utterance.sink.value
     req.priority = PRIORITY_OPERATOR_U8 if utterance.priority == PRIORITY_OPERATOR else PRIORITY_NORMAL
     req.interruptible = bool(interruptible)
-    req.text = ssml or utterance.ssml
+    req.text = utterance.text or ""
     req.voice = utterance.voice or ""
     req.language = utterance.language or ""
     req.emotion = utterance.emotion or ""

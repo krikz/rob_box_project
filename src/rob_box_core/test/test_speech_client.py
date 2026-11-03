@@ -53,7 +53,7 @@ def test_say_builds_request_from_utterance_and_returns_speech_id():
     (req,) = pub.sent
     assert pub.topic == "/voice/speech/request" and pub.msg_type is M.SpeechRequest
     assert req.speech_id == sid and len(sid) == 36
-    assert req.text == "<speak>x&lt;y &amp; z</speak>"  # SSML собирает Utterance
+    assert req.text == "x<y & z"  # голый текст реплики, SSML на проводе нет (ADR-0160 §2.3)
     assert (req.agent, req.epoch, req.turn_id) == ("operator", 3, "t1")
     assert (req.voice, req.language, req.sink) == ("ermil", "ru-RU", "speakers")
     assert req.priority == speech_client.PRIORITY_OPERATOR_U8

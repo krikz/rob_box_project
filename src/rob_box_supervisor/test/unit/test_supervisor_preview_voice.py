@@ -65,7 +65,7 @@ class TestOnPreviewVoiceDelegatesToAvatarTts(unittest.TestCase):
         payload = pub[0]
         self.assertEqual(payload["sink"], "preview")
         self.assertEqual(payload["request_id"], "picker-uuid-1234")
-        self.assertIn("привет", payload["ssml"])
+        self.assertIn("привет", payload["text"])
         # Не должно быть ошибок.
         self.assertEqual(_published_preview_error(self.node), [])
 

@@ -662,8 +662,8 @@ class TestCallbacks(unittest.TestCase):
         )
 
     def test_on_speech_request_robot_voice_becomes_robot_response(self):
-        """issue #3911: на dialog_engine=v2 ответ робота - SpeechRequest агента personality (SSML снимается)."""
-        self.node.on_robot_response(_SpeechRequest('personality', '<speak>Привет, я Робби!</speak>'))
+        """issue #3911: на dialog_engine=v2 ответ робота - SpeechRequest агента personality (голый текст, ADR-0160)."""
+        self.node.on_robot_response(_SpeechRequest('personality', 'Привет, я Робби!'))
 
         last = self.node.robot_response_events[-1]
         self.assertEqual(last['type'], 'robot_response')

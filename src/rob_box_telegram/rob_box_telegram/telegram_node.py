@@ -37,7 +37,7 @@ from rob_box_core.avatar_command import (
     encode_command,
     make_telegram_client_id,
 )
-# voice-vr 12 (issue #2197, ADR-0080 §1.3 / §2.3): единый сборщик SSML.
+# voice-vr 12 (issue #2197, ADR-0080 §1.3 / §2.3): единый сборщик реплики (голый текст, ADR-0160 §2.3).
 from rob_box_core import dialog_engine, speech_client
 from rob_box_core.utterance import Sink, Utterance
 

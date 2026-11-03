@@ -70,7 +70,7 @@ def test_started_means_pending_with_event_ref_not_done():
     assert result.data["status"] == "pending"
     assert result.data["event_ref"] == req.speech_id
     assert req.agent == "telegram" and req.interruptible is False
-    assert req.text == "<speak>Жил-был робот</speak>"
+    assert req.text == "Жил-был робот"
 
 
 def test_rejected_by_owner_is_a_failure_with_the_owner_reason():

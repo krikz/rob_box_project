@@ -56,7 +56,6 @@ import functools
 import io
 import json
 import os
-import re
 import sys
 import threading
 import time
@@ -100,12 +99,11 @@ from .tts_engines import (
 )
 from .utils.stderr_silence import silence_alsa_errors
 
-# Очистка текста перед синтезом (issue #988) и отказ на куске системного шаблона (issue #2175) — один модуль
-# знания «что не озвучивается»; ответ из <system>…</system> проверяется на сыром SSML (теги ещё на месте).
+# Очистка текста перед синтезом (issue #988, #3598) и отказ на куске системного шаблона (issue #2175) — один модуль
+# знания «что не озвучивается»; ответ из <system>…</system> проверяется на сыром тексте (до очистки).
 from .tts_text_clean import (
     is_system_template_regurgitated_in_ssml as _is_system_template_regurgitated_ssml,
-    strip_bracket_asides,
-    strip_markdown,
+    speech_text,
 )
 from rob_box_core.provider_publisher import ProviderStatePublisher
 from rob_box_core.utterance import missing_tts_request_fields
@@ -145,6 +143,7 @@ from .tts_ssml import (  # noqa: F401 re-export
     _ssml_pitch_to_hz,
     _ssml_volume_to_lufs_target,
     normalize_silero_pitch,
+    silero_ssml,
 )
 
 # ADR-0145 §4 TTSNode step 1 — ROS-parameter / request-payload parsing
@@ -2023,9 +2022,9 @@ class TTSNode(Node):
         """Отказаться синтезировать чанк и честно закрыть речь (issue #2760).
 
         Общий хвост для проверок «это вообще не речь» в
-        :meth:`dialogue_callback`. Проверки смотрят на СЫРОЙ SSML: после
-        ``_extract_text_from_ssml`` теги исчезают и содержимое выглядит
-        обычным текстом — отличить его тогда уже не от чего.
+        :meth:`dialogue_callback`. Проверки смотрят на СЫРОЙ текст: после
+        ``speech_text`` теги исчезают и содержимое выглядит обычным
+        текстом — отличить его тогда уже не от чего.
 
         ``/voice/tts/finished(success=False)`` обязателен: без него
         вызывающий ждёт конца речи, которой не будет.
@@ -2088,7 +2087,7 @@ class TTSNode(Node):
             # Контракт общий с продюсерами (rob_box_core.utterance): тест
             # каждого публикатора прогоняет свой payload через ту же функцию.
             if missing_tts_request_fields(chunk_data):
-                self.get_logger().warn("⚠ Chunk без SSML")
+                self.get_logger().warn("⚠ Chunk без текста")
                 return
 
             # Генерируем speech_id для отслеживания
@@ -2102,10 +2101,13 @@ class TTSNode(Node):
             dialogue_id = chunk_data.get("dialogue_id", None)
             owner_of(self).admit(chunk_data, speech_id)
 
-            ssml = chunk_data["ssml"]
+            # ADR-0160 §2.3 — реплика несёт голый текст; SSML собирает только
+            # адаптер Silero. ``ssml`` ниже — сырой текст запроса до очистки
+            # (имя позиции в конвейере синтеза, см. _run_synthesis_worker).
+            ssml = chunk_data["text"]
 
             # Issue #2175 — defense-in-depth для MiniMax-M3 regurgitates:
-            # проверяем на СЫРОМ SSML (до strip'а тегов в _extract_text_from_ssml).
+            # проверяем на СЫРОМ тексте (до снятия тегов в speech_text).
             # После strip'а ``<system>...</system>`` исчезает и содержимое
             # блока выглядит как обычный текст — guard тогда не отличит
             # regurgitates от легитимного ответа. Поэтому смотрим оригинал.
@@ -2144,8 +2146,8 @@ class TTSNode(Node):
                     )
                     return
 
-            # Извлекаем текст из SSML
-            text = self._extract_text_from_ssml(ssml)
+            # Голый текст -> текст для синтеза (теги модели, [вставки], Markdown).
+            text = speech_text(ssml)
 
             if not text.strip():
                 # Честный финал вместо молчаливого return: ждущий не висит.
@@ -2184,8 +2186,9 @@ class TTSNode(Node):
                     )
                 return
 
-            # Извлекаем атрибуты SSML (pitch, rate)
-            ssml_attributes = self._parse_ssml_attributes(ssml)
+            # Просодии на проводе нет (ADR-0160 §2.3): атрибуты пустые, у
+            # провайдеров — свои параметры (rate/pitch из ROS-параметров).
+            ssml_attributes: dict = {}
 
             # Issue #980 — carry batch_id/batch_index/batch_total from the
             # dialogue_node publish through to ``/voice/tts/finished`` so
@@ -2218,8 +2221,6 @@ class TTSNode(Node):
                 # позволять восстановить любую произнесённую фразу.
                 f"text={text!r}"
             )
-            if ssml_attributes:
-                self.get_logger().info(f"🎵 SSML атрибуты: {ssml_attributes}")
 
             # Синтез/воспроизведение блокируют сетью и ALSA. Не держим ROS
             # executor callback: control/new-dialogue callbacks должны оставаться
@@ -2301,35 +2302,6 @@ class TTSNode(Node):
         except Exception as e:
             self.get_logger().error(f"❌ TTS error: {e}")
 
-    def _extract_text_from_ssml(self, ssml: str) -> str:
-        """Извлекает текст из SSML тегов и чистит markdown (issue #988).
-
-        The LLM often wraps poems / rap in Markdown (``*Жил да был енот
-        весёлый,*``); TTS would read the literal ``*`` as «звёздочка».
-        Strip the markers here — this is the single chokepoint through
-        which *all* TTS requests pass (``/voice/dialogue/response`` from
-        dialogue_node, ``/voice/tts/request`` from the ``speak_text`` MCP
-        tool, AND ``/avatar/tts/request`` — issue #2096 — from
-        ``supervisor_node``), so all voice paths get the same sanitisation.
-
-        Issue #2096 — also unescapes XML entities (``&amp;``, ``&lt;``,
-        ``&gt;``, ``&quot;``, ``&apos;``, numeric ``&#160;`` etc.) left in
-        the text after tag-stripping: an SSML producer that escapes ``&``/
-        ``<`` when building ``<speak>...</speak>`` (e.g. text containing a
-        literal ``&``) would otherwise make TTS read the literal entity
-        name instead of the character.
-        """
-        import html
-        import re
-
-        # Убираем все XML теги (включая вложенные <prosody>/<break> и их
-        # атрибуты — вместе с тегом уходят и entity внутри атрибутов).
-        text = re.sub(r"<[^>]+>", "", ssml)
-        # Раскрываем entity, оставшиеся в текстовом содержимом.
-        text = html.unescape(text)
-        text = strip_bracket_asides(text)
-        return strip_markdown(text).strip()
-
     def _on_avatar_tts_request(self, msg: String) -> None:
         """ADR-0055 / issue #1993 — обработка запроса ТАРС в шлем.
 
@@ -2403,8 +2375,8 @@ class TTSNode(Node):
             # и опубликовал _avatar_tts_error; нам тут делать нечего.
             return
 
-        if "ssml" not in chunk_data:
-            self.get_logger().warn("⚠️ [ADR-0055] avatar chunk без SSML")
+        if "text" not in chunk_data:
+            self.get_logger().warn("⚠️ [ADR-0055] avatar chunk без текста")
             return
 
         # Issue #2198 — DEPRECATED warning для /avatar/tts/request. Один раз
@@ -2428,12 +2400,12 @@ class TTSNode(Node):
         # _on_avatar_tts_request НЕ имел защиты, и пустой SSML/text уходил в
         # _synthesize_minimax_with_retry → MiniMax райзил TTSBadRequestError
         # "text is empty" → CRITICAL в deploy-логе. Защищаемся:
-        # извлекаем text через _extract_text_from_ssml (та же нормализация, что
+        # чистим text через speech_text (та же нормализация, что
         # для основного канала), при пустом — DROP + finished(error=empty_text)
         # + avatar_error(error=empty_text), чтобы caller (operator-agent / grip
         # pipeline) не зависал в ожидании speech_id.
-        ssml = chunk_data.get("ssml", "")
-        avatar_text = self._extract_text_from_ssml(ssml)
+        ssml = chunk_data.get("text", "")
+        avatar_text = speech_text(ssml)
         if not avatar_text.strip():
             self.get_logger().warn(
                 f"⚠️ [ADR-0055] /avatar/tts/request: empty text/ssml, "
@@ -2455,8 +2427,8 @@ class TTSNode(Node):
             return
 
         # Unicode-script guard (issue 1709) — общий с dialogue_callback.
-        if _tts_guard_should_skip(chunk_data.get("ssml", ""), provider=self._effective_provider()):
-            _report = _tts_guard_analyze(chunk_data.get("ssml", ""), self._effective_provider())
+        if _tts_guard_should_skip(avatar_text, provider=self._effective_provider()):
+            _report = _tts_guard_analyze(avatar_text, self._effective_provider())
             self.get_logger().warn(
                 f"🚫 [ADR-0055] avatar TTS пропущен — неподдерж. письменность: "
                 f"{_tts_guard_describe(_report)}, request_id="
@@ -2477,30 +2449,12 @@ class TTSNode(Node):
             )
             return
 
-        ssml = chunk_data.get("ssml", "")
-        ssml_attributes = self._parse_ssml_attributes(ssml)
+        ssml_attributes: dict = {}  # просодии на проводе нет (ADR-0160 §2.3)
         batch_id = chunk_data.get("batch_id")
         batch_index = chunk_data.get("batch_index")
         batch_total = chunk_data.get("batch_total")
         voice = chunk_data.get("voice")
         language = chunk_data.get("language")
-
-        # Issue #2096 — ADR-0055 / supervisor_node докстринг (``_publish_grip_tts``,
-        # ``_publish_avatar_tts``) объявляют ``ssml`` ОБЯЗАТЕЛЬНЫМ, а ``text`` —
-        # НЕТ: оба публикатора шлют payload {request_id, ssml, sink, ...} БЕЗ
-        # поля ``text`` вовсе. До этого фикса ``chunk_data.get("text", "")``
-        # был пустым для КАЖДОГО запроса от этих публикаторов (весь голос ТАРС
-        # в шлем + grip-пайплайн), а на синтез уходил именно этот пустой text
-        # (``ssml`` использовался только для ``_parse_ssml_attributes`` —
-        # просодия), что давало MiniMax bad-request "text is empty" на
-        # НЕПУСТОЙ реплике (см. live-лог voice-assistant, 2026-09-07).
-        # Делаем ``ssml`` самодостаточным, как обещано в контракте: если
-        # ``text`` отсутствует/пуст — извлекаем его из ``ssml`` тем же
-        # чокпоинтом, что и ``dialogue_callback`` (issue #988) — снимает XML
-        # теги, чистит markdown.
-        avatar_text = chunk_data.get("text", "")
-        if not avatar_text or not avatar_text.strip():
-            avatar_text = self._extract_text_from_ssml(ssml)
 
         self.get_logger().info(
             f"🎧 [ADR-0055] avatar TTS request: request_id="
@@ -2668,14 +2622,9 @@ class TTSNode(Node):
         # прерывает текущую реплику и НЕ публикует /avatar/tts/audio.
         request_id = chunk_data.get("request_id", "")
         voice = chunk_data.get("voice")
-        # ssml обязателен для совместимости с headset-контрактом (тот же
-        # канал /avatar/tts/request). Извлекаем plain-text тем же
-        # _extract_text_from_ssml, что и headset — picker шлёт ту же
-        # структуру что и say.
-        ssml = chunk_data.get("ssml", "")
-        text = (
-            self._extract_text_from_ssml(ssml) if ssml else chunk_data.get("text", "")
-        )
+        # Тот же контракт, что у headset (канал /avatar/tts/request): голый
+        # text, чистится тем же speech_text (ADR-0160 §2.3).
+        text = speech_text(chunk_data.get("text", ""))
         # Тот же guard, что и headset (issue #2096): пустой text → DROP
         # + preview_error, picker не должен «висеть» в ожидании.
         if not text or not text.strip():
@@ -2867,98 +2816,6 @@ class TTSNode(Node):
             self.get_logger().warn(
                 f"⚠️ [issue #2113] /tars1/text publish failed: {exc}"
             )
-
-    def _parse_ssml_attributes(self, ssml: str) -> dict:
-        """
-        Извлекает атрибуты из SSML тегов (pitch, rate/speed, volume)
-
-        Returns:
-            dict: ``{'pitch': float, 'rate': float, 'volume': float}`` или
-            пустой dict.
-
-            * ``pitch`` хранится как float-множитель (для Silero-фолбэка);
-              для Yandex gRPC v3 ``_synthesize_yandex_single`` конвертирует
-              его в Hz-offset через ``_ssml_pitch_to_hz``.
-            * ``volume`` хранится как АБСОЛЮТНАЯ LUFS-цель для Yandex
-              ``Hints.volume`` (range [-145; 0)); для SSML-именованных
-              уровней (``loud``/``soft``/…) вычисляется через
-              ``_ssml_volume_to_lufs_target`` относительно baseline -19 LUFS.
-        """
-        attributes = {}
-
-        # Ищем <prosody> теги с атрибутами
-        # Примеры: <prosody pitch="+10%" rate="1.2">, <prosody pitch="high" rate="slow" volume="loud">
-        prosody_pattern = r"<prosody\s+([^>]+)>"
-        matches = re.finditer(prosody_pattern, ssml, re.IGNORECASE)
-
-        for match in matches:
-            attrs_str = match.group(1)
-
-            # Парсим pitch
-            pitch_match = re.search(
-                r'pitch\s*=\s*["\']?([^"\'>\s]+)["\']?', attrs_str, re.IGNORECASE
-            )
-            if pitch_match:
-                pitch_value = pitch_match.group(1)
-                # Конвертируем в множитель для Yandex
-                # "+10%" -> 1.1, "-10%" -> 0.9, "high" -> 1.2, "low" -> 0.8
-                if "%" in pitch_value:
-                    try:
-                        percent = float(pitch_value.replace("%", ""))
-                        attributes["pitch"] = 1.0 + (percent / 100.0)
-                    except ValueError:
-                        pass
-                elif pitch_value == "high":
-                    attributes["pitch"] = 1.2
-                elif pitch_value == "low":
-                    attributes["pitch"] = 0.8
-                elif pitch_value == "medium":
-                    attributes["pitch"] = 1.0
-                else:
-                    try:
-                        attributes["pitch"] = float(pitch_value)
-                    except ValueError:
-                        pass
-
-            # Парсим rate (скорость речи)
-            rate_match = re.search(
-                r'rate\s*=\s*["\']?([^"\'>\s]+)["\']?', attrs_str, re.IGNORECASE
-            )
-            if rate_match:
-                rate_value = rate_match.group(1)
-                # "1.5" -> 1.5, "fast" -> 1.5, "slow" -> 0.7
-                if "%" in rate_value:
-                    try:
-                        percent = float(rate_value.replace("%", ""))
-                        attributes["rate"] = percent / 100.0
-                    except ValueError:
-                        pass
-                elif rate_value == "fast":
-                    attributes["rate"] = 1.5
-                elif rate_value == "slow":
-                    attributes["rate"] = 0.7
-                elif rate_value == "medium":
-                    attributes["rate"] = 1.0
-                else:
-                    try:
-                        attributes["rate"] = float(rate_value)
-                    except ValueError:
-                        pass
-
-            # Парсим volume (громкость в LUFS для Yandex gRPC v3).
-            # Допускаем как числовые dB-формы ("+5dB", "-5dB", "5dB"),
-            # так и SSML-именованные уровни (silent/x-soft/soft/medium/loud/x-loud).
-            volume_match = re.search(
-                r'volume\s*=\s*["\']?([^"\'>\s]+)["\']?',
-                attrs_str,
-                re.IGNORECASE,
-            )
-            if volume_match:
-                attributes["volume"] = _ssml_volume_to_lufs_target(
-                    volume_match.group(1)
-                )
-
-        return attributes
 
     def _submit_synthesis(
         self,
@@ -4992,9 +4849,8 @@ class TTSNode(Node):
             )
 
         def synthesize_chunk(chunk_text: str) -> np.ndarray:
-            ssml_text = (
-                f'<speak><prosody pitch="{pitch}">' f"{chunk_text}</prosody></speak>"
-            )
+            # ADR-0160 §2.3 — единственный конверт SSML: здесь, с экранированием.
+            ssml_text = silero_ssml(chunk_text, pitch)
             return silero_apply_tts(
                 self.silero_model,
                 voice or self.silero_speaker,
@@ -5106,8 +4962,8 @@ class TTSNode(Node):
         # ``pitch_hz`` конвертится из float-множителя (``1.2``, ``"+10%"``)
         # в Hz-offset для Yandex API (``pitch_shift``).
         pitch_hz = _ssml_pitch_to_hz(ssml_attributes.get("pitch"))
-        # ``volume`` уже абсолютная LUFS-цель из ``_parse_ssml_attributes``;
-        # если None — Yandex применит свой дефолт.
+        # ``volume`` — абсолютная LUFS-цель; на проводе просодии нет (ADR-0160
+        # §2.3), поэтому обычно None — Yandex применит свой дефолт.
         volume_lufs = ssml_attributes.get("volume")
 
         if pitch_hz is not None or volume_lufs is not None:
