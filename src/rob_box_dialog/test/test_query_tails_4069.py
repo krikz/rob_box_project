@@ -198,7 +198,8 @@ def test_library_list_answer_is_the_count_and_a_few_titles():
     assert query_answer([_list_result(tracks=[{"title": ""}], total=4)]) is None, "без названий - фразы по данным нет"
     search = ActionResult("t/0", 0, "personality", "music_library", "query", "done", None,
                           {"action": "search", "query": "ритм", **LIST_DATA})
-    assert query_answer([search]) is None, "своей фразы у search нет - «Треков в библиотеке» о поиске было бы неправдой"
+    # #4157 К2 (n707): у search своя фраза - о поиске, а не «Треков в библиотеке» (было бы неправдой)
+    assert query_answer([search]) == "По запросу «ритм» нашёл треков: 213. Например: «Ровный ритм», «Ночной дозор», «Рассвет»."
 
 
 def test_library_list_on_the_ceiling_is_said_from_the_data_without_sadness():

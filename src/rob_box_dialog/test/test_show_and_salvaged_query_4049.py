@@ -42,6 +42,8 @@ SIREN_CALL = ToolCall("play_animation", {"animation": "police_lights"})
 N_LIBRARY = "что у тебя в музыкальной библиотеке"
 LIST_CALL = ToolCall("music_library", {"action": "list"})
 TRACKS = {"tracks": [{"title": "Ночной дозор"}, {"title": "Рассвет"}], "count": 2}
+#: Фраза кода по данным ``TRACKS`` (#4157 К2): названия из данных, а не общая заглушка «ответ не сложился».
+NAMES = "Вот что нашлось: «Ночной дозор», «Рассвет»."
 ALL_TOOLS = ("play_animation", "music_library", "memory_search", "memory_context", "memory_save", "play_sound")
 
 
@@ -204,7 +206,7 @@ def test_4050_salvaged_query_without_iterations_left_is_said_by_code_from_the_da
     monkeypatch.setattr(kn, "LLM_QUERY_ITERATIONS_MAX", 0)
     ports = Ports([_invalid_list()], outcomes={"music_library": ("done", TRACKS, None)})
     _run(ports, N_LIBRARY)
-    assert len(ports.asked) == 1 and ports.said == [(phrases.text(kn.QUERY_FALLBACK_GENERIC), None, None)]
+    assert len(ports.asked) == 1 and ports.said == [(NAMES, None, None)]
     assert ports.stages[-1] == ("done", "done", "invalid_salvaged:speech_with_actions")
 
 
@@ -212,7 +214,7 @@ def test_4050_model_invalid_again_after_the_salvaged_data_still_speaks():
     """И после данных модель ответила невалидно — код говорит по данным запроса (#3883), не молчит."""
     ports = Ports([_invalid_list(), _invalid_list(kn.VIOLATION_SPEECH_TOO_LONG)], outcomes={"music_library": ("done", TRACKS, None)})
     _run(ports, N_LIBRARY)
-    assert [t for t, _, _ in ports.said] == [phrases.text(kn.QUERY_FALLBACK_GENERIC)]
+    assert [t for t, _, _ in ports.said] == [NAMES]
     assert ports.executed == [[("music_library", {"action": "list"})]], "повторный list не исполняется"
 
 
@@ -390,7 +392,7 @@ def test_pr4055_query_fallback_says_found_only_when_something_was_found():
     done = ActionResult("t/0", 0, "personality", "music_library", "query", "done", None, {"action": "list", **TRACKS})
     refused = ActionResult("t/1", 0, "personality", "music_library", "query", "rejected", None, {"action": "list"})
     assert query_fallback([refused]) == phrases.text("query.rejected")
-    assert query_fallback([refused, done]) == phrases.text(kn.QUERY_FALLBACK_GENERIC), "что-то найдено — «нашёл»"
+    assert query_fallback([refused, done]) == NAMES, "что-то найдено — по найденному (#4157 К2)"
 
 
 # -- ревью #4053: passed рядом с ответом на адресованной реплике --------------------------------------------------

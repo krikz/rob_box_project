@@ -67,11 +67,16 @@ class CommandStep:
 def owner_event(request: ActionRequest, result: ToolResult) -> OwnerEvent:
     """Исход тула как событие владельца. Статус и причина — из данных результата (их кладёт тул по событию владельца:
     ``play_sound`` — ``SoundEvent``, ``register_speaker`` — ``pending``; план — ``timeout``/``rejected``); статуса
-    нет — ошибка тула ``rejected``, иначе ``done``. Слоты фразы — аргументы вызова, данные результата поверх них."""
+    нет — ошибка тула ``rejected``, иначе ``done``. Слоты фразы — аргументы вызова, данные результата поверх них.
+    Фраза, которую построил сам тул (``ToolResult.message``), у выполненного ``query`` ложится в данные полем
+    ``knowledge.TOOL_MESSAGE_FIELD``: по ней код ответит, если модель промолчит (#4157, ``turn.query_answer``)."""
     data = dict(result.data or {})
     status = data.get("status")
     if status not in kn.ACTION_STATUSES:
         status = "rejected" if result.is_error else "done"
+    message = result.message
+    if message and status == "done" and request.cls == _QUERY:
+        data.setdefault(kn.TOOL_MESSAGE_FIELD, message)
     reason = data.get("reason") if isinstance(data.get("reason"), str) else None
     if reason is None and result.is_error:  # отказ MCP до тула (подпись, срез): причина — в тексте ошибки (#3853)
         reason = result.content[:200] or None
