@@ -34,8 +34,9 @@
 #   SIM_WORLD          мир из src/rob_box_sim/worlds без .sdf (polygon):
 #                      polygon | turn90 | corridor | low_obstacle | local/<мир из карты робота>
 #
-# rtabmap, как на роботе, стартует в localization (start_rtabmap.sh). Чтобы
-# построить карту мира, переключить его тем же сервисом, что на роботе:
+# rtabmap, как на роботе, стартует в localization (start_rtabmap.sh).
+# SIM_RTABMAP_MODE=mapping — старт сразу в картографии с пустой базой (видео
+# картографии, docker/sim/record_mapping.sh). Или переключить тем же сервисом, что на роботе:
 #   docker exec <SIM_PREFIX>-rtabmap /ros_scripts/ros_with_namespace.sh \
 #     bash -c 'source /opt/ros/humble/setup.bash &&
 #              ros2 service call /rtabmap/rtabmap/set_mode_mapping std_srvs/srv/Empty'
@@ -128,7 +129,12 @@ services:
       service: rtabmap
     <<: *sim_service
     container_name: ${SIM_PREFIX:-rob-box-sim}-rtabmap
-    environment: *sim_env
+    environment:
+      <<: *sim_env
+      #   SIM_RTABMAP_MODE  localization | mapping   (localization, как на роботе)
+      # mapping — start_rtabmap.sh стартует с localization:=false и пустой базой
+      # (--delete_db_on_start), как StartMapping с new_location; только при USE_SIM_TIME=true.
+      RTABMAP_START_MODE: ${SIM_RTABMAP_MODE:-localization}
     volumes:
       - sim-maps:/maps
 

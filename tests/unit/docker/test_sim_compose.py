@@ -221,3 +221,29 @@ def test_sim_smoother_chain_on_by_default_robot_has_no_switch():
     assert _env(SIM_COMPOSE["nav2"])["NAV2_SMOOTH_CMD_VEL"] == "${SIM_SMOOTH_CMD_VEL:-true}"
     env = _env(MAIN_COMPOSE["nav2"])
     assert "NAV2_SMOOTH_CMD_VEL" not in env and "NAV2_PARAMS_OVERLAYS" not in env
+
+
+# ── Видео картографии: rtabmap в mapping только в симе ───────────────────────
+
+
+def test_rtabmap_start_mode_is_localization_by_default_and_absent_on_robot():
+    assert _env(SIM_COMPOSE["rtabmap"])["RTABMAP_START_MODE"] == "${SIM_RTABMAP_MODE:-localization}"
+    assert _env(SIM_COMPOSE["rtabmap"])["USE_SIM_TIME"] == "true"  # mapping скрипт пускает только с ним
+    assert "RTABMAP_START_MODE" not in _env(MAIN_COMPOSE["rtabmap"])
+    # Команда та же, что у робота: режим добавляет start_rtabmap.sh, а не compose.
+    assert "command" not in SIM_COMPOSE["rtabmap"]
+
+
+def test_mapping_overlay_changes_only_bench_route_and_adds_recorder():
+    mapping = _load(SIM / "compose.mapping.yaml")["services"]
+    assert set(mapping) == {"bench", "maprec"}
+    assert set(mapping["bench"]) == {"command"}
+    assert "/ws/install/rob_box_sim/share/rob_box_sim/scenarios/mapping.yaml" in mapping["bench"]["command"]
+    assert (REPO_ROOT / "src" / "rob_box_sim" / "scenarios" / "mapping.yaml").is_file()
+    rec = mapping["maprec"]
+    # Сеть, образ, тома и sim time — от стенда; рекордер не стартует с `up` без профиля.
+    assert rec["extends"] == {"file": "compose.yaml", "service": "bench"}
+    assert rec["profiles"] == ["bench"]
+    assert "rob_box_sim.map_recorder" in rec["command"]
+    script = (SIM / "record_mapping.sh").read_text(encoding="utf-8")
+    assert "SIM_RTABMAP_MODE=mapping" in script and "compose.mapping.yaml" in script
