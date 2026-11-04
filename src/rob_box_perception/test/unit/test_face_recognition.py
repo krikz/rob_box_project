@@ -314,6 +314,8 @@ def test_encounter_promotion_records_once_and_marks_one_detection():
     last_out: List[Dict[str, Any]] = []
     for t in (0.0, 0.5, 1.0):
         dets = [make_detection(w=0.5, h=0.5)]
+        # Анфас: незнакомца по нефронтальной Встрече не пишут (ADR-0130 §10.4).
+        dets[0]['landmarks'] = _landmarks()
         last_out = rec.process(dets, frame, now=t)
 
     assert len(store.record_encounter_calls) == 1
@@ -339,9 +341,11 @@ def test_holding_face_longer_does_not_produce_second_encounter_or_marker():
     rec = FaceRecognizer(embedder=embedder, store=store, tracker=tracker)
     frame = make_frame()
 
-    # Доводим трек до Встречи.
+    # Доводим трек до Встречи (анфас — иначе незнакомца не пишут, ADR-0130 §10.4).
     for t in (0.0, 0.5, 1.0):
-        rec.process([make_detection(w=0.5, h=0.5)], frame, now=t)
+        det = make_detection(w=0.5, h=0.5)
+        det['landmarks'] = _landmarks()
+        rec.process([det], frame, now=t)
     assert len(store.record_encounter_calls) == 1
 
     # Держим лицо в кадре ещё много кадров.
@@ -994,7 +998,7 @@ def test_landmarks_present_embedder_gets_aligned_crop_store_gets_plain_crop(monk
     aligned_sentinel = np.full((112, 112, 3), 42, dtype=np.uint8)
 
     def fake_align_face(frame_rgb, landmarks, *, output_size=112):
-        assert landmarks == [0.1] * 10
+        assert landmarks == _landmarks()
         return aligned_sentinel
 
     monkeypatch.setattr(face_recognition_mod, 'align_face', fake_align_face)
@@ -1024,7 +1028,8 @@ def test_landmarks_present_embedder_gets_aligned_crop_store_gets_plain_crop(monk
 
     for t in (0.0, 0.5, 1.0):
         dets = [make_detection(w=0.5, h=0.5)]
-        dets[0]['landmarks'] = [0.1] * 10
+        # Анфас: незнакомца по нефронтальной Встрече не пишут (ADR-0130 §10.4).
+        dets[0]['landmarks'] = _landmarks()
         rec.process(dets, frame, now=t)
 
     # Эмбеддер видел ИМЕННО выровненный кроп — не обычный crop_face.
@@ -1138,3 +1143,97 @@ def test_align_face_exception_is_swallowed_and_falls_back(monkeypatch):
     assert embedder.embed_calls == [1], 'после сбоя align_face фолбек всё равно доезжает до ArcFace'
     assert rec.stats()['align_fallback_total'] == 1
     assert log.has('warn')
+
+
+# ============================================================================
+# ADR-0130 §10.4 п.2: новую запись не заводить по нефронтальной Встрече
+# или по кадрам без лица; узнавание известных — как раньше
+# ============================================================================
+
+#: Шаблон ArcFace 112x112 (анфас), вписанный в bbox make_detection().
+_FRONTAL_112 = (
+    (38.2946, 51.6963), (73.5318, 51.5014), (56.0252, 71.7366),
+    (41.5493, 92.3655), (70.7299, 92.2041),
+)
+
+
+def _landmarks(nose_dx: float = 0.0) -> List[float]:
+    """5 точек в normalized координатах кадра; nose_dx — сдвиг носа (px шаблона)."""
+    out: List[float] = []
+    for k, (x, y) in enumerate(_FRONTAL_112):
+        if k == 2:
+            x += nose_dx
+        out += [0.25 + 0.5 * x / 112.0, 0.25 + 0.5 * y / 112.0]
+    return out
+
+
+def _run_to_encounter(rec, landmarks) -> List[Dict[str, Any]]:
+    frame = make_frame()
+    out: List[Dict[str, Any]] = []
+    for t in (0.0, 0.5, 1.0):
+        det = make_detection(w=0.5, h=0.5)
+        det['landmarks'] = landmarks
+        out = rec.process([det], frame, now=t)
+    return out
+
+
+@pytest.mark.parametrize(
+    'landmarks, known, recorded',
+    [
+        (_landmarks(), False, True),              # анфас незнакомца — заводим
+        (_landmarks(nose_dx=20.0), False, False),  # поворот головы, незнакомец
+        (None, False, False),                     # точек нет — лицо не подтверждено
+        (_landmarks(nose_dx=20.0), True, True),   # поворот, но человек известен
+        (None, True, True),
+    ],
+)
+def test_encounter_reaches_store_only_if_frontal_or_known(landmarks, known, recorded):
+    tracker = FaceTracker(min_track_sec=1.0, min_face_px=48.0, max_gap_sec=5.0)
+    store = FakeStore()
+    store.identify_return = make_match(person_id='p1') if known else None
+    store.record_encounter_return = make_match(person_id='p1', is_new=not known)
+    rec = FaceRecognizer(embedder=FakeEmbedder(), store=store, tracker=tracker)
+
+    _run_to_encounter(rec, landmarks)
+
+    assert len(store.record_encounter_calls) == (1 if recorded else 0)
+    assert rec.stats()['new_record_suppressed_total'] == (0 if recorded else 1)
+
+
+def test_nonfrontal_stranger_creates_no_record(tmp_path):
+    """Живой FaceStore: профиль незнакомца — ни записи, ни маркера Встречи."""
+    tracker = FaceTracker(min_track_sec=1.0, min_face_px=48.0, max_gap_sec=5.0)
+    store = face_store_mod.FaceStore(root=str(tmp_path), mode=face_store_mod.MODE_WORKSHOP)
+    rec = FaceRecognizer(embedder=FakeEmbedder(), store=store, tracker=tracker)
+
+    out = _run_to_encounter(rec, _landmarks(nose_dx=20.0))
+
+    assert store.people() == []
+    assert all('attributes_json' not in d for d in out)
+    assert rec.stats()['new_record_suppressed_total'] == 1
+    assert rec.stats()['new_people_total'] == 0
+
+
+def test_frontal_stranger_still_creates_record(tmp_path):
+    tracker = FaceTracker(min_track_sec=1.0, min_face_px=48.0, max_gap_sec=5.0)
+    store = face_store_mod.FaceStore(root=str(tmp_path), mode=face_store_mod.MODE_WORKSHOP)
+    rec = FaceRecognizer(embedder=FakeEmbedder(), store=store, tracker=tracker)
+
+    _run_to_encounter(rec, _landmarks())
+
+    assert len(store.people()) == 1
+    assert rec.stats()['new_people_total'] == 1
+
+
+def test_nonfrontal_known_person_still_recognized(tmp_path):
+    """Отсекается только рождение: известного узнаём и в профиль."""
+    store = face_store_mod.FaceStore(root=str(tmp_path), mode=face_store_mod.MODE_WORKSHOP)
+    known = store.record_encounter(np.array([1.0, 0.0, 0.0], dtype=np.float32))
+    tracker = FaceTracker(min_track_sec=1.0, min_face_px=48.0, max_gap_sec=5.0)
+    rec = FaceRecognizer(embedder=FakeEmbedder(), store=store, tracker=tracker)
+
+    _run_to_encounter(rec, _landmarks(nose_dx=20.0))
+
+    assert [p['person_id'] for p in store.people()] == [known.person_id]
+    assert rec.stats()['recognized_total'] == 1
+    assert rec.stats()['new_record_suppressed_total'] == 0
