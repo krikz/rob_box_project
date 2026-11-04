@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import asyncio
 import threading
+import time
 import uuid
 from dataclasses import replace
 from typing import Any, AsyncIterator, Callable, Iterable, List, Mapping, Optional, Sequence, Tuple
@@ -42,6 +43,7 @@ from rob_box_llm.errors import ProviderError
 from rob_box_llm.provider import LLMMessage, LLMResponse, LLMSettings, ToolCall, ToolResult
 
 from .command_intent import fill_intent
+from .dialog_metrics import record_llm_ask
 from .command_parser import Command as MotionCommand, IntentType
 
 #: Ответ модели пуст (ни речи, ни команды) — невалиден (A14: пустой ответ по провайдеру).
@@ -210,11 +212,14 @@ class V2Ports:
         msgs = [to_message(m) for m in messages]
         schemas = [tool_schema(t) for t in tools]
         before = self._counter.calls
+        started = time.monotonic()
         try:
             response = await self._llm.complete(msgs, tools=schemas, settings=self._settings)
         except (ProviderError, OSError, asyncio.TimeoutError) as exc:
+            record_llm_ask(self._llm, self.provider(), ok=False, duration_s=time.monotonic() - started)
             raise ProviderFailed(self.provider(), exc) from exc
         provider = answering_provider(self._llm)
+        record_llm_ask(self._llm, provider, ok=True, duration_s=time.monotonic() - started)
         usage = dict(response.usage or {})
         tokens = int(usage.get("prompt_tokens") or measure(msgs, schemas).total)
         self._log(f"🧮 [prompt] tokens={tokens} estimated={'prompt_tokens' not in usage} provider={provider} "
