@@ -119,6 +119,7 @@ def use_fake_robot(monkeypatch, tmp_path: Path, log_content: str = "") -> Path:
     monkeypatch.setenv("FAKE_ROBOT_STATE", str(state))
     monkeypatch.setenv("FAKE_ROBOT_LOG", str(log_file))
     monkeypatch.delenv("FAKE_V2_RESET_REJECT", raising=False)
+    monkeypatch.setenv("E2E_ACT_WARMUP_SEC", "0")  # прогрев sink перед актом (15 с) тестам не нужен
     return state
 
 
