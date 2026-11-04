@@ -1,7 +1,7 @@
 {
   "version": 1,
   "created": "2026-11-04",
-  "base_sha": "41660f9858a27433b1130cb45284ca80d95aef37",
+  "base_sha": "21f8b0d7caa085e68023aaa24e7ef42b8eba13d6",
   "limits": {
     "method": 15,
     "init": 20
@@ -30,9 +30,6 @@
     },
     "src/rob_box_harness/rob_box_harness/config.py": {
       "_parse_tts": 17
-    },
-    "src/rob_box_harness/rob_box_harness/core/agent_core.py": {
-      "AgentCore.process_input": 19
     },
     "src/rob_box_harness/rob_box_harness/core/confirmation_policy.py": {
       "ToolConfirmationPolicy.from_mapping": 16
@@ -158,12 +155,6 @@
       "path": "src/rob_box_harness/rob_box_harness/config.py",
       "method": "_parse_tts",
       "cc": 17,
-      "since": "cc_budget_baseline.json created 2026-09-08; legacy grandfather — parent gate #1984 / #2077 covers decomp backlog"
-    },
-    {
-      "path": "src/rob_box_harness/rob_box_harness/core/agent_core.py",
-      "method": "AgentCore.process_input",
-      "cc": 19,
       "since": "cc_budget_baseline.json created 2026-09-08; legacy grandfather — parent gate #1984 / #2077 covers decomp backlog"
     },
     {

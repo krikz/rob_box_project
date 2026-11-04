@@ -17,7 +17,7 @@ import pytest
 from rob_box_dialog import knowledge as kn
 from rob_box_dialog.execute import ActionRequest
 from rob_box_dialog.respond import ActionResult, phrase_from_result
-from rob_box_harness.core.tool_loop.command_turn import owner_event
+from rob_box_dialog.execute import owner_event
 from rob_box_llm.provider import ToolResult
 from rob_box_mcp_tools.core import action_outcome as ao
 

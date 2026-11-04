@@ -7,14 +7,4 @@ component here immediately testable with plain ``pytest``.
 
 from __future__ import annotations
 
-from rob_box_harness.core.dialogue_state_machine import (
-    DialogueEvent,
-    DialogueStateKind,
-    DialogueStateMachine,
-)
-
-__all__ = [
-    "DialogueEvent",
-    "DialogueStateKind",
-    "DialogueStateMachine",
-]
+__all__: list[str] = []

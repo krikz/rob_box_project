@@ -51,7 +51,7 @@ from rob_box_dialog.execute import ActionRequest, Executor  # noqa: E402
 from rob_box_dialog.respond import audible, join  # noqa: E402
 from rob_box_dialog.session import SessionSnapshot, SpeakerRef  # noqa: E402
 from rob_box_dialog.speaker_adapter import confident_name, named_self  # noqa: E402
-from rob_box_harness.core.tool_loop.command_turn import owner_event  # noqa: E402
+from rob_box_dialog.execute import owner_event  # noqa: E402
 from rob_box_harness.executors import ROSMCPToolProvider, adapt_tool_provider  # noqa: E402
 from rob_box_llm.provider import ToolCall as LLMToolCall  # noqa: E402
 from rob_box_mcp_tools.llm_adapter import LLMToolCallAdapter  # noqa: E402

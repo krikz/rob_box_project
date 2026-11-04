@@ -4,8 +4,8 @@ The Harness Framework scaffolding (``Harness``, ``HarnessRegistry``/
 ``HarnessFactory``, ``run_harness``/``run_harness_sync``, the
 ``Transport`` port and the concrete Dialog/Persistent/Telegram/Echo/
 Upper harnesses) was removed as dead code — ADR-0051 §3.2 (closes
-ADR-0001 §2.7.1); see issue #1985. Production code runs on
-:class:`~rob_box_harness.core.agent_core.AgentCore` instead.
+ADR-0001 §2.7.1); see issue #1985. The v1 loop ``AgentCore`` was removed too
+(#4354 A3b): dialog v2 (``rob_box_dialog.turn``) uses only ``core.assembly.build_llm_chain``.
 
 What remains here:
 

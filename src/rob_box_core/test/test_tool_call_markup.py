@@ -6,19 +6,17 @@ MiniMax-M3 вернула вызов тулов ТЕКСТОМ при ``tools=[]
     [dialogue_node] 📤 LLM OUTPUT: '<functioncalls>\\n<invoke name="registerspeaker">…'
     [tts_node] 🔊 TTS: batch=9b15b85e 1/2, text='<functioncalls>…'
 
-Штатный путь лечения — восстановление намерения внутри цикла тулов
-(``rob_box_harness.core.tool_loop.markup_recovery``). Предикат ниже — последний рубеж: если разметка всё-таки доехала
-до выхода в TTS (например, имя тула не опознано), её не озвучивает ``tts_node``.
+Восстановление намерения в цикле тулов v1 (``tool_loop.markup_recovery``) удалено вместе с циклом (#4354 A3b).
+Предикат ниже — последний рубеж: если разметка доехала до выхода в TTS, её не озвучивает ``tts_node``.
 
-Регекс одна копия (PR-15 часть 15-core, #3711): ``tts_node`` и harness (``text_classify``) импортируют его из
-``rob_box_core``; до этого он дублировался через границу пакетов, и расхождение ловил одинаковый корпус двух тестов.
+Регекс одна копия (PR-15 часть 15-core, #3711) — ``rob_box_core``.
 """
 
 from __future__ import annotations
 
 import pytest
 
-from rob_box_core.tool_call_markup import TOOL_CALL_MARKUP_RE, is_tool_call_markup
+from rob_box_core.tool_call_markup import is_tool_call_markup
 
 
 LIVE_N206 = (
@@ -69,11 +67,3 @@ class TestDetector:
     )
     def test_speech_is_not_markup(self, text) -> None:
         assert is_tool_call_markup(text) is False
-
-
-def test_harness_and_tts_node_share_the_one_regex() -> None:
-    """Второй копии нет: harness реэкспортирует тот же объект, а не свой компилированный регекс."""
-    from rob_box_harness.core.tool_loop import text_classify
-
-    assert text_classify.TOOL_CALL_MARKUP_RE is TOOL_CALL_MARKUP_RE
-    assert text_classify.is_tool_call_markup is is_tool_call_markup
