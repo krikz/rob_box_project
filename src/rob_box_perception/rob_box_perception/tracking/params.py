@@ -6,7 +6,8 @@
 трека, не имени.
 
 Единицы: метры, секунды. Координаты — плоскость пола (x, y) того фрейма,
-в котором трекер ведёт треки (``map`` по ADR-0130 §2.14 ``Track.header``).
+в котором трекер ведёт треки: ``map``, если он есть, иначе ``base_link``
+(ADR-0161 §1, решение Шифу 04.11: «следить относительно себя»).
 """
 
 from __future__ import annotations
@@ -18,10 +19,16 @@ from typing import Dict, Tuple
 #: (ADR-0130 §2.1: лицо и person-bbox сходятся в трек ``class=person``).
 DEFAULT_CLASS_MAP: Dict[str, str] = {'person': 'person', 'face': 'person'}
 
-#: Какие классы детекций рождают трек. Лицо без тела трек не рождает:
-#: иначе каждое лицо, пришедшее отдельным пакетом, плодило бы дубль
-#: трека рядом с person-bbox того же человека.
-DEFAULT_BIRTH_CLASSES: Tuple[str, ...] = ('person',)
+#: Какие классы детекций рождают трек. Лицо без тела трек РОЖДАЕТ
+#: (ADR-0161 §2, Шифу 04.11: «можно хитро зайти так, что будет одно
+#: лицо — заводить»); у такого трека нет тела (``has_body=False``) и,
+#: значит, нет примет одежды, пока человек не отойдёт.
+DEFAULT_BIRTH_CLASSES: Tuple[str, ...] = ('person', 'face')
+
+#: Классы-«прилипалы»: детекция такого класса сначала ищет трек тела
+#: того же момента рядом (``attach_m``, ``attach_window_sec``) и
+#: прикрепляется к нему, а не рождает дубль (ADR-0161 §2).
+DEFAULT_ATTACH_CLASSES: Tuple[str, ...] = ('face',)
 
 
 def _require(condition: bool, message: str) -> None:
@@ -59,11 +66,22 @@ class TrackerParams:
     candidate_match_bonus_m: float = 0.2
     #: Штраф к стоимости при разных непустых ``candidate_id``, м.
     candidate_mismatch_penalty_m: float = 0.5
+    #: Лицо дальше ворот, но не дальше этого от трека с телом того же
+    #: момента — прикрепляется к нему, а не рождает трек, м.
+    attach_m: float = 1.2
+    #: «Тот же момент» для прикрепления: |stamp лица − stamp тела| ≤, с.
+    attach_window_sec: float = 0.2
+    #: Фрейм ``base_link`` → ``map``: столько пакетов подряд с ``map``
+    #: ``ok``, прежде чем переключиться (ADR-0161 §1, без дребезга).
+    map_confirm_batches: int = 3
+    #: Фрейм ``map`` → ``base_link``: ``map`` не ``ok`` дольше этого, с.
+    map_loss_sec: float = 2.0
     #: Префикс ``track_id``. Узел добавляет к нему метку запуска (план, PR-2).
     id_prefix: str = 'trk-'
     class_map: Dict[str, str] = field(
         default_factory=lambda: dict(DEFAULT_CLASS_MAP))
     birth_classes: Tuple[str, ...] = DEFAULT_BIRTH_CLASSES
+    attach_classes: Tuple[str, ...] = DEFAULT_ATTACH_CLASSES
 
     def __post_init__(self) -> None:
         """Проверить согласованность параметров."""
@@ -82,6 +100,11 @@ class TrackerParams:
         _require(self.candidate_match_bonus_m >= 0
                  and self.candidate_mismatch_penalty_m >= 0,
                  'бонус и штраф candidate_id >= 0')
-        unknown = [c for c in self.birth_classes if c not in self.class_map]
+        _require(self.attach_m >= 0 and self.attach_window_sec >= 0,
+                 'attach_m и attach_window_sec >= 0')
+        _require(self.map_confirm_batches >= 1 and self.map_loss_sec > 0,
+                 'map_confirm_batches >= 1, map_loss_sec > 0')
+        unknown = [c for c in self.birth_classes + self.attach_classes
+                   if c not in self.class_map]
         _require(not unknown,
-                 f'birth_classes вне class_map: {unknown}')
+                 f'birth_classes/attach_classes вне class_map: {unknown}')

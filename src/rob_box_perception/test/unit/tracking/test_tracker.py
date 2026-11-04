@@ -9,10 +9,12 @@
   3. Выход и вход в кадр: lost → reacquired с тем же id рядом с местом
      ухода; после ``delete_after_sec`` или далеко — новый id.
   4. Жизненный цикл: одиночная вспышка не становится confirmed и
-     удаляется; лицо трек не рождает, но обновляет и несёт candidate_id.
+     удаляется. Лицо без тела рождает трек без тела (ADR-0161 §2);
+     лицо и тело одного момента — один трек, в любом порядке пакетов.
   5. Сближение ближе ``resolution_m`` — событие close_encounter (ADR-0130 §6).
   6. Пакет старше предыдущего отбрасывается со счётчиком; детерминизм —
      два прогона дают одно и то же.
+  7. ``reset`` (смена фрейма, ADR-0161 §1) удаляет все треки, id новые.
 
 Запуск:
     python -m pytest src/rob_box_perception/test/unit/tracking -v --no-cov
@@ -267,20 +269,119 @@ def test_confirms_after_confirm_hits():
     assert states == [TENTATIVE, TENTATIVE, CONFIRMED]
 
 
-def test_face_does_not_birth_but_updates_person_track():
+def face(x: float, y: float, **kw) -> Detection:
+    return Detection('face', x, y, source='oak_d_face', **kw)
+
+
+def test_face_without_body_births_track_without_body():
+    """Шифу 04.11: человек зашёл так, что видно одно лицо, — трек есть."""
     tracker = Tracker()
-    alone = tracker.step(0.0, [Detection('face', 1.0, 1.0,
-                                         candidate_id='f-42')])
-    assert alone.tracks == ()
-    tracker.step(0.1, [person(2.0, 2.0)])
-    result = tracker.step(0.1, [Detection('face', 2.05, 2.0,
-                                          candidate_id='f-42',
-                                          source='oak_d_face')])
-    (track,) = result.tracks
+    alone = tracker.step(0.0, [face(1.0, 1.0, candidate_id='f-42')])
+    (track,) = alone.tracks
     assert track.class_name == 'person'
     assert track.candidate_id == 'f-42'
+    assert track.has_body is False
+    assert track.sources == ('oak_d_face',)
+    assert [e.kind for e in alone.events] == ['born']
+
+
+def test_face_only_track_gains_body_when_person_steps_back():
+    tracker = Tracker()
+    tracker.step(0.0, [face(1.0, 1.0)])
+    result = tracker.step(DT, [person(1.05, 1.0)])
+    (track,) = result.tracks
+    assert track.has_body is True
     assert track.sources == ('oak_d', 'oak_d_face')
-    assert track.hits == 2
+
+
+@pytest.mark.parametrize('order', ['body_first', 'face_first'])
+def test_face_and_body_same_stamp_separate_batches_one_track(order):
+    """Лицо и тело одного кадра приходят разными пакетами — один трек."""
+    tracker = Tracker()
+    for k in range(5):
+        t = k * DT
+        batches = [[person(2.0, 2.0)],
+                   [face(2.05, 2.0, candidate_id='f-42')]]
+        if order == 'face_first':
+            batches.reverse()
+        for batch in batches:
+            result = tracker.step(t, batch)
+        assert len(result.tracks) == 1
+    (track,) = tracker.tracks()
+    assert track.candidate_id == 'f-42'
+    assert track.has_body is True
+    assert track.sources == ('oak_d', 'oak_d_face')
+
+
+def test_face_and_body_in_one_batch_one_track():
+    tracker = Tracker()
+    result = tracker.step(0.0, [face(2.05, 2.0, candidate_id='f-42'),
+                                person(2.0, 2.0)])
+    (track,) = result.tracks
+    assert track.candidate_id == 'f-42'
+    assert track.has_body is True
+
+
+def test_face_beyond_gate_but_near_body_attaches_not_duplicates():
+    """Точка лица за воротами (глубина лица ≠ глубина тела) — не дубль."""
+    tracker = Tracker(TrackerParams(gate_m=0.5, attach_m=1.0))
+    tracker.step(0.0, [person(2.0, 2.0)])
+    body = tracker.tracks()[0]
+    result = tracker.step(0.05, [face(2.8, 2.0, candidate_id='f-42')])
+    (track,) = result.tracks
+    assert track.track_id == body.track_id
+    assert track.candidate_id == 'f-42'
+    assert (track.x, track.y, track.hits) == (body.x, body.y, body.hits)
+    assert tracker.stats['faces_attached'] == 1
+
+
+def test_one_batch_body_goes_first_so_far_face_attaches():
+    """В одном пакете сперва тело, потом лицо: лицо за воротами — к телу."""
+    tracker = Tracker(TrackerParams(gate_m=0.5, attach_m=1.0))
+    result = tracker.step(0.0, [face(2.8, 2.0, candidate_id='f-42'),
+                                person(2.0, 2.0)])
+    (track,) = result.tracks
+    assert track.candidate_id == 'f-42'
+    assert track.has_body is True
+
+
+def test_second_face_near_one_body_is_a_second_person():
+    """Двое: у одного видно тело и лицо, у второго только лицо рядом."""
+    tracker = Tracker()
+    tracker.step(0.0, [person(2.0, 2.0)])
+    result = tracker.step(0.0, [face(2.0, 2.0, candidate_id='f-a'),
+                                face(2.6, 2.0, candidate_id='f-b')])
+    assert sorted(s.candidate_id for s in result.tracks) == ['f-a', 'f-b']
+    assert sorted(s.has_body for s in result.tracks) == [False, True]
+
+
+def test_face_with_other_candidate_does_not_attach():
+    tracker = Tracker(TrackerParams(gate_m=0.5, attach_m=1.0))
+    tracker.step(0.0, [person(2.0, 2.0, candidate_id='f-a')])
+    result = tracker.step(0.05, [face(2.8, 2.0, candidate_id='f-b')])
+    assert len(result.tracks) == 2
+
+
+def test_late_face_outside_attach_window_births():
+    tracker = Tracker(TrackerParams(gate_m=0.5, attach_m=1.0,
+                                    attach_window_sec=0.2))
+    tracker.step(0.0, [person(2.0, 2.0)])
+    result = tracker.step(0.3, [face(2.8, 2.0)])
+    assert len(result.tracks) == 2
+
+
+def test_reset_deletes_all_tracks_and_never_reuses_ids():
+    """Смена фрейма (ADR-0161 §1): треки рвутся, id новые."""
+    tracker = Tracker(TrackerParams(confirm_hits=1))
+    tracker.step(0.0, [person(1.0, 1.0), person(3.0, 1.0)])
+    old = [s.track_id for s in tracker.tracks()]
+    events = tracker.reset(0.1)
+    assert [(e.kind, e.track_id) for e in events] == [
+        (EVENT_DELETED, i) for i in old]
+    assert tracker.tracks() == ()
+    assert tracker.stats['frame_resets'] == 1
+    (new,) = tracker.step(0.2, [person(1.0, 1.0)]).tracks
+    assert new.track_id not in old
 
 
 def test_candidate_id_breaks_geometric_tie():

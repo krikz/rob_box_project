@@ -14,14 +14,25 @@
 одного датчика):
 
 1. предсказать все треки на момент пакета;
-2. сопоставить активные (tentative/confirmed) треки и детекции —
-   венгерский алгоритм, ворота ``gate_m``, класс трека должен совпасть;
-3. оставшиеся детекции — с потерянными треками (ворота
-   ``reacquire_gate_m``): человек вышел из кадра и вернулся рядом;
-4. из остатка ``birth_classes`` рождают tentative-треки;
-5. по времени без обновления — переходы жизненного цикла;
-6. сближение треков ближе ``resolution_m`` отмечается (ADR-0130 §6:
+2. две фазы: сперва детекции тела (не ``attach_classes``), затем лица —
+   так лицо того же пакета находит трек, только что заведённый телом.
+   В каждой фазе:
+
+   a. сопоставить активные (tentative/confirmed) треки и детекции —
+      венгерский алгоритм, ворота ``gate_m``, класс трека должен совпасть;
+   b. оставшиеся детекции — с потерянными треками (ворота
+      ``reacquire_gate_m``): человек вышел из кадра и вернулся рядом;
+   c. лицо из остатка прикрепляется к треку с телом того же момента
+      рядом (``attach_m``, ``attach_window_sec``) — без дубля (ADR-0161 §2);
+   d. из остатка ``birth_classes`` рождают tentative-треки; трек,
+      рождённый лицом, — без тела (``has_body=False``), пока тело не придёт;
+3. по времени без обновления — переходы жизненного цикла;
+4. сближение треков ближе ``resolution_m`` отмечается (ADR-0130 §6:
    потребитель имени сбрасывает ``confirmed → tentative`` у обоих).
+
+Смена фрейма трекера (``base_link`` ↔ ``map``, ADR-0161 §1) — явный
+:meth:`Tracker.reset`: все треки удаляются с событием ``deleted``, новые
+рождаются в новом фрейме с новыми id. Пересчёта треков между фреймами нет.
 
 Пакеты обязаны идти по неубыванию момента: пакет старше последнего
 отбрасывается и считается в ``stats['late_batches_dropped']``. Переупорядочить
@@ -33,13 +44,17 @@
 
 from __future__ import annotations
 
-import math
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Sequence, Tuple
 
 from rob_box_perception.tracking.assignment import assign
 from rob_box_perception.tracking.motion import ConstantVelocity2D
 from rob_box_perception.tracking.params import TrackerParams
+from rob_box_perception.tracking.proximity import (
+    attach_target,
+    close_neighbours,
+    match_cost,
+)
 
 TENTATIVE = 'tentative'
 CONFIRMED = 'confirmed'
@@ -88,6 +103,9 @@ class TrackSnapshot:
     candidate_id: str
     sources: Tuple[str, ...]
     close_encounter_at: Optional[float]
+    #: Было ли у трека тело (не только лицо). ``False`` — трек рождён лицом
+    #: и примет одежды у него нет (ADR-0161 §2).
+    has_body: bool = False
 
 
 @dataclass(frozen=True)
@@ -123,6 +141,10 @@ class _Track:
     sources: Tuple[str, ...] = ()
     close_encounter_at: Optional[float] = None
     close_to: Tuple[str, ...] = field(default_factory=tuple)
+    #: Момент последнего обновления детекцией тела; ``None`` — тела не было.
+    last_body: Optional[float] = None
+    #: Момент последнего лица (сопоставлено или прикреплено).
+    last_attached: Optional[float] = None
 
     def snapshot(self) -> TrackSnapshot:
         """Неизменяемая копия для потребителя."""
@@ -132,7 +154,8 @@ class _Track:
         return TrackSnapshot(
             self.track_id, self.class_name, self.state, x, y, vx, vy,
             var_x, var_y, self.first_seen, self.last_seen, self.hits,
-            self.candidate_id, self.sources, self.close_encounter_at)
+            self.candidate_id, self.sources, self.close_encounter_at,
+            self.last_body is not None)
 
 
 class Tracker:
@@ -148,6 +171,8 @@ class Tracker:
             'late_batches_dropped': 0,
             'unknown_class_dropped': 0,
             'births_refused_cap': 0,
+            'faces_attached': 0,
+            'frame_resets': 0,
         }
 
     # -- публичное ---------------------------------------------------------
@@ -166,19 +191,42 @@ class Tracker:
         self._last_stamp = stamp
         events: List[TrackEvent] = []
         dets = self._known_classes(detections)
+        attach = self.params.attach_classes
+        updated: List[_Track] = []
+        for phase in ([d for d in dets if d.class_name not in attach],
+                      [d for d in dets if d.class_name in attach]):
+            updated += self._phase(phase, stamp, updated, events)
+        self._age(stamp, updated, events)
+        self._mark_close(stamp, events)
+        return StepResult(self.tracks(), tuple(events))
+
+    def reset(self, stamp: float) -> Tuple[TrackEvent, ...]:
+        """Удалить все треки (смена фрейма, ADR-0161 §1); вернуть события.
+
+        Счётчик id не сбрасывается: новые треки нового фрейма получают
+        новые ``track_id``, старые id не переиспользуются.
+        """
+        events = tuple(TrackEvent(EVENT_DELETED, t.track_id, stamp)
+                       for t in self._tracks)
+        self._tracks = []
+        self._last_stamp = stamp
+        self.stats['frame_resets'] += 1
+        return events
+
+    # -- шаги --------------------------------------------------------------
+
+    def _phase(self, dets: List[Detection], stamp: float,
+               updated: List[_Track],
+               events: List[TrackEvent]) -> List[_Track]:
+        """Сопоставить, прикрепить, родить; вернуть рождённые треки."""
         active = [t for t in self._tracks if t.state != LOST]
         lost = [t for t in self._tracks if t.state == LOST]
-        updated: List[_Track] = []
         dets = self._match(active, dets, self.params.gate_m, stamp,
                            updated, events)
         dets = self._match(lost, dets, self.params.reacquire_gate_m, stamp,
                            updated, events)
-        self._age(stamp, updated, events)
-        self._birth(dets, stamp, events)
-        self._mark_close(stamp, events)
-        return StepResult(self.tracks(), tuple(events))
-
-    # -- шаги --------------------------------------------------------------
+        dets = [d for d in dets if not self._attach(d, stamp)]
+        return self._birth(dets, stamp, events)
 
     def _known_classes(self, detections: Sequence[Detection]
                        ) -> List[Detection]:
@@ -195,26 +243,12 @@ class Tracker:
         for track in self._tracks:
             track.filt.predict(dt, self.params.accel_noise)
 
-    def _cost(self, track: _Track, det: Detection,
-              gate: float) -> Optional[float]:
-        """Стоимость пары, м; ``None`` — пара запрещена."""
-        if self.params.class_map[det.class_name] != track.class_name:
-            return None
-        x, y = track.filt.position
-        dist = math.hypot(det.x - x, det.y - y)
-        if dist > gate:
-            return None
-        if track.candidate_id and det.candidate_id:
-            if track.candidate_id == det.candidate_id:
-                return max(0.0, dist - self.params.candidate_match_bonus_m)
-            return dist + self.params.candidate_mismatch_penalty_m
-        return dist
-
     def _match(self, tracks: List[_Track], dets: List[Detection],
                gate: float, stamp: float, updated: List[_Track],
                events: List[TrackEvent]) -> List[Detection]:
         """Сопоставить и обновить; вернуть детекции, оставшиеся без пары."""
-        costs = [[self._cost(t, d, gate) for d in dets] for t in tracks]
+        costs = [[match_cost(t, d, gate, self.params) for d in dets]
+                 for t in tracks]
         used = set()
         for ti, di in assign(costs):
             self._apply(tracks[ti], dets[di], stamp, events)
@@ -237,8 +271,7 @@ class Tracker:
         track.hits += 1
         if det.candidate_id:
             track.candidate_id = det.candidate_id
-        if det.source and det.source not in track.sources:
-            track.sources = tuple(sorted(track.sources + (det.source,)))
+        self._note_source(track, det, stamp)
         if track.state == LOST:
             track.state = CONFIRMED
             events.append(TrackEvent(EVENT_REACQUIRED, track.track_id, stamp))
@@ -246,6 +279,35 @@ class Tracker:
               and track.hits >= self.params.confirm_hits):
             track.state = CONFIRMED
             events.append(TrackEvent(EVENT_CONFIRMED, track.track_id, stamp))
+
+    def _note_source(self, track: _Track, det: Detection,
+                     stamp: float) -> None:
+        """Запомнить источник и вид детекции (тело или лицо)."""
+        if det.source and det.source not in track.sources:
+            track.sources = tuple(sorted(track.sources + (det.source,)))
+        if det.class_name in self.params.attach_classes:
+            track.last_attached = stamp
+        else:
+            track.last_body = stamp
+
+    def _attach(self, det: Detection, stamp: float) -> bool:
+        """Прикрепить лицо к треку тела того же момента; True — прикреплено.
+
+        Какой трек годится — :func:`.proximity.attach_target`.
+        Фильтр не обновляется: точка лица за воротами — не
+        измерение положения тела, а улика «это лицо этого тела».
+        """
+        if det.class_name not in self.params.attach_classes:
+            return False
+        active = [t for t in self._tracks if t.state != LOST]
+        track = attach_target(active, det, stamp, self.params)
+        if track is None:
+            return False
+        if det.candidate_id:
+            track.candidate_id = det.candidate_id
+        self._note_source(track, det, stamp)
+        self.stats['faces_attached'] += 1
+        return True
 
     def _age(self, stamp: float, updated: List[_Track],
              events: List[TrackEvent]) -> None:
@@ -275,9 +337,10 @@ class Tracker:
         return False
 
     def _birth(self, dets: List[Detection], stamp: float,
-               events: List[TrackEvent]) -> None:
+               events: List[TrackEvent]) -> List[_Track]:
         """Родить tentative-треки из оставшихся детекций ``birth_classes``."""
         p = self.params
+        born: List[_Track] = []
         for det in dets:
             if det.class_name not in p.birth_classes:
                 continue
@@ -291,27 +354,24 @@ class Tracker:
                                         p.init_vel_std ** 2),
                 first_seen=stamp, last_seen=stamp,
                 candidate_id=det.candidate_id,
-                sources=(det.source,) if det.source else ())
+                sources=())
+            self._note_source(track, det, stamp)
             self._next_id += 1
             self._tracks.append(track)
+            born.append(track)
             events.append(TrackEvent(EVENT_BORN, track.track_id, stamp))
             if p.confirm_hits <= 1:
                 track.state = CONFIRMED
                 events.append(
                     TrackEvent(EVENT_CONFIRMED, track.track_id, stamp))
+        return born
 
     def _mark_close(self, stamp: float, events: List[TrackEvent]) -> None:
         """Отметить пары треков ближе ``resolution_m`` (ADR-0130 §6)."""
         active = [t for t in self._tracks if t.state != LOST]
-        close: Dict[str, List[str]] = {t.track_id: [] for t in active}
-        for i, a in enumerate(active):
-            for b in active[i + 1:]:
-                if a.class_name == b.class_name and self._dist(a, b) < \
-                        self.params.resolution_m:
-                    close[a.track_id].append(b.track_id)
-                    close[b.track_id].append(a.track_id)
+        close = close_neighbours(active, self.params.resolution_m)
         for track in active:
-            now = tuple(close[track.track_id])
+            now = close[track.track_id]
             for other in now:
                 if other not in track.close_to and track.track_id < other:
                     events.append(TrackEvent(EVENT_CLOSE_ENCOUNTER,
@@ -319,10 +379,3 @@ class Tracker:
             if now:
                 track.close_encounter_at = stamp
             track.close_to = now
-
-    @staticmethod
-    def _dist(a: _Track, b: _Track) -> float:
-        """Расстояние между оценками положения двух треков, м."""
-        ax, ay = a.filt.position
-        bx, by = b.filt.position
-        return math.hypot(ax - bx, ay - by)
