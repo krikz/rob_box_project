@@ -43,7 +43,6 @@ from rob_box_llm.errors import ProviderError
 from rob_box_llm.provider import LLMMessage, LLMResponse, LLMSettings, ToolCall, ToolResult
 
 from .command_intent import fill_intent
-from .dialog_metrics import record_llm_ask
 from .command_parser import Command as MotionCommand, IntentType
 
 #: Ответ модели пуст (ни речи, ни команды) — невалиден (A14: пустой ответ по провайдеру).
@@ -182,10 +181,13 @@ class V2Ports:
                  settings: Optional[LLMSettings] = None, intent_pub: Any = None,
                  log: Callable[[str], None] = lambda line: None, epoch: Optional[Callable[[], int]] = None,
                  performer: Callable[[], Any] = lambda: None,
-                 later: Callable[[float, Callable[[], None]], Any] = _call_later) -> None:
+                 later: Callable[[float, Callable[[], None]], Any] = _call_later,
+                 on_ask: Callable[..., None] = lambda provider, *, ok, duration_s: None) -> None:
         self._node = node
         #: Таймер очереди лица (#4083): ``later(через_с, fire) -> handle.cancel()``; тест подменяет его своим.
         self._later = later
+        #: Итог вызова цепочки LLM (провайдер, ok, задержка) - хост ставит метрики (#4328); ядро без prometheus.
+        self._on_ask = on_ask
         self._queue: List[Any] = []
         self._llm = llm
         self._counter = counter
@@ -216,10 +218,10 @@ class V2Ports:
         try:
             response = await self._llm.complete(msgs, tools=schemas, settings=self._settings)
         except (ProviderError, OSError, asyncio.TimeoutError) as exc:
-            record_llm_ask(self._llm, self.provider(), ok=False, duration_s=time.monotonic() - started)
+            self._on_ask(self.provider(), ok=False, duration_s=time.monotonic() - started)
             raise ProviderFailed(self.provider(), exc) from exc
         provider = answering_provider(self._llm)
-        record_llm_ask(self._llm, provider, ok=True, duration_s=time.monotonic() - started)
+        self._on_ask(provider, ok=True, duration_s=time.monotonic() - started)
         usage = dict(response.usage or {})
         tokens = int(usage.get("prompt_tokens") or measure(msgs, schemas).total)
         self._log(f"🧮 [prompt] tokens={tokens} estimated={'prompt_tokens' not in usage} provider={provider} "

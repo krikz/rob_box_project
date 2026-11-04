@@ -88,7 +88,7 @@ from rob_box_mcp_tools.voice_request import REQUEST_TOPIC as VOICE_REQUEST_TOPIC
 from .core import greeting_window, identity_question
 from .core import dialog_v2_parity as parity
 from .core import plan_host
-from .core.dialog_metrics import record_interrupt
+from .core.dialog_metrics import llm_metrics, record_interrupt
 from .core.backlog_voice import note_backlog_voice
 from .core.dialog_v2_ports import CallCounter, V2Ports, assemble_llm
 from .core.music_player_state import MUSIC_EVENT_TOPIC, MUSIC_STATE_TOPIC, parse_music_state
@@ -341,7 +341,7 @@ def build_chats(node: Any, tools: Any, intent_pub: Any, wake: Any, hold: Any = l
     def make_engine(chat_id: int) -> TurnEngine:
         session = Session(kn.TEXT_CHANNEL_AGENT, clock=time.time, session_id=channel_ref(chat_id))
         base = V2Ports(node, llm, counter, chat_tools, agent=kn.TEXT_CHANNEL_AGENT, intent_pub=intent_pub, log=log,
-                       epoch=lambda: session.snapshot.epoch)
+                       epoch=lambda: session.snapshot.epoch, on_ask=llm_metrics(llm))
         ports = ChatPorts(base, chat_id, send, log, hold, robot, progress)
         chats.adopt(base.executor)
         engine = TurnEngine(session, ports, system_prompt=system, log=_RosLog(node.get_logger()),  # потолок хода (В31)
@@ -401,7 +401,7 @@ class DialogNode(Node):
                                   sing=chat_sing, voices=voices)
         self._ports = V2Ports(self, llm, counter, self._tool_executor, intent_pub=intent_pub,
                               log=self.get_logger().info, epoch=lambda: self._session.snapshot.epoch,
-                              performer=functools.partial(plan_host.performer, self))
+                              performer=functools.partial(plan_host.performer, self), on_ask=llm_metrics(llm))
         self._reporter = ProviderStateReporter(llm, functools.partial(publish_provider_states, make_publisher(self)),
                                                self._speak_direct)
         self._engine = TurnEngine(self._session, self._ports, system_prompt=system, sections=self._sections,

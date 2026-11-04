@@ -8,7 +8,8 @@
 
 from __future__ import annotations
 
-from typing import Any
+import functools
+from typing import Any, Callable
 
 from rob_box_voice.observability import record_barge_in, record_fallback, record_voice_llm_request
 
@@ -34,6 +35,15 @@ def record_llm_ask(llm: Any, provider: str, *, ok: bool, duration_s: float) -> N
     record_voice_llm_request(provider, success=ok, fallback=fallback, duration_s=duration_s)
     if fallback:
         record_fallback(primary, provider, reason="primary_failed")
+
+
+def llm_metrics(llm: Any) -> Callable[..., None]:
+    """Колбэк ``V2Ports(on_ask=...)`` для цепочки ``llm``: ядро диалога не знает про prometheus (#4328)."""
+    return functools.partial(_ask_of, llm)
+
+
+def _ask_of(llm: Any, provider: str, *, ok: bool, duration_s: float) -> None:
+    record_llm_ask(llm, provider, ok=ok, duration_s=duration_s)
 
 
 def record_interrupt() -> None:

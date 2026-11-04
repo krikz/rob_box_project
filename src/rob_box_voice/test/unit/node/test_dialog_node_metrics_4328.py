@@ -30,7 +30,7 @@ from rob_box_dialog.deadline import ProviderFailed  # noqa: E402
 from rob_box_llm.errors import ProviderError  # noqa: E402
 from rob_box_llm.provider import LLMResponse  # noqa: E402
 from rob_box_voice import dialog_node as dn  # noqa: E402
-from rob_box_voice.core.dialog_metrics import record_interrupt  # noqa: E402
+from rob_box_voice.core.dialog_metrics import llm_metrics, record_interrupt  # noqa: E402
 from rob_box_voice.core.dialog_v2_ports import CallCounter, V2Ports  # noqa: E402
 
 
@@ -54,7 +54,8 @@ class _Chain:
 
 
 def _ask(chain):
-    ports = V2Ports(types.SimpleNamespace(), chain, CallCounter(), types.SimpleNamespace())
+    ports = V2Ports(types.SimpleNamespace(), chain, CallCounter(), types.SimpleNamespace(),
+                    on_ask=llm_metrics(chain))
     return asyncio.run(ports.ask([{"role": "user", "content": "x"}], [], 60.0))
 
 
