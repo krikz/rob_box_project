@@ -1,10 +1,14 @@
-# Габарит — как на роботе: круг robot_radius 0.45 (nav2_params.yaml). Оверлей
-# только называет его явно: SIM_FOOTPRINT=radius|urdf в docker/sim/compose.yaml.
+# Габарит «было»: круг robot_radius 0.45 — так было на роботе до замера 04.11.
+# Боевой nav2_params.yaml теперь задаёт footprint-прямоугольник, а непустой
+# footprint в Nav2 главнее robot_radius, поэтому здесь он сброшен в "[]".
+# Контроль для сравнения: SIM_FOOTPRINT=radius в docker/sim/compose.yaml.
 local_costmap:
   local_costmap:
     ros__parameters:
+      footprint: "[]"
       robot_radius: 0.45
 global_costmap:
   global_costmap:
     ros__parameters:
+      footprint: "[]"
       robot_radius: 0.45
