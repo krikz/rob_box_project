@@ -222,11 +222,14 @@ RUN if [ -n "$APT_PROXY" ]; then \
 # шов этот побочный эффект не проходит.
 # rosidl-default-generators / ament-cmake / ament-cmake-python СОЗНАТЕЛЬНО
 # отсутствуют — это build-only инструменты.
+# apriltag-msgs (issue #4352): context_aggregator слушает /detections
+# (apriltag_msgs/AprilTagDetectionArray); без пакета подписки нет, теги не доходят до диалога.
 RUN apt-get update && apt-get install -y \
     python3-pip \
     ros-${ROS_DISTRO}-rosidl-default-runtime \
     ros-${ROS_DISTRO}-control-msgs \
     ros-${ROS_DISTRO}-nav-msgs \
+    ros-${ROS_DISTRO}-apriltag-msgs \
     && rm -rf /var/lib/apt/lists/*
 
 # pip site-packages из builder-стадии (openai, pytz и их транзитивные зависимости).
