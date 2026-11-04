@@ -294,7 +294,8 @@ def three_acts():
     return [act("2", [("anton", "Робот, привет, меня зовут Саша."), ("anton", "Робот, запомни: я пью зелёный чай.")],
                 False, True, True),
             act("2b", [("ermil", "Робот, привет, меня зовут Борис.")], False, True, False),
-            act("10", [("anton", "Робот, как меня зовут?")], True, False, False)]
+            # вопрос к памяти, а не «как меня зовут?»: на него с М10 n723 отвечает код по голосу, модель не зовётся
+            act("10", [("anton", "Робот, что ты обо мне помнишь?")], True, False, False)]
 
 
 def test_voice_registered_in_an_earlier_act_is_recognized_with_its_facts_in_act_10(make_env):
