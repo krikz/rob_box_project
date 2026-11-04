@@ -1,20 +1,22 @@
-"""РОББОКС в Gazebo Fortress: мир, робот, мост ros_gz, контроллеры ros2_control.
+"""РОББОКС в Gazebo Fortress: мир, spawn робота, мост ros_gz, контроллеры ros2_control.
 
-Шаг 1 плана docs/research/2026-11-04-gazebo-sim-navigation.md §6.
+План: docs/research/2026-11-04-gazebo-sim-navigation.md §6 (шаги 1–2).
 
 Что поднимается:
   * ``ign gazebo`` без окна (``-s``), с ``--headless-rendering`` для gpu_lidar;
-  * robot_state_publisher с URDF ``rob_box.xacro sim:=true`` и use_sim_time;
   * spawn робота (``ros_gz_sim create``) из топика /robot_description;
   * ros_gz_bridge: /clock, /scan, /camera/imu/data, /sim/ground_truth/odom;
   * спаунеры joint_state_broadcaster и diff_drive_controller — controller_manager
     живёт внутри плагина gz_ros2_control и читает ТОТ ЖЕ controller_manager.yaml,
-    что контейнер ros2-control на роботе;
-  * relay /cmd_vel → /diff_drive_controller/cmd_vel_unstamped. На роботе это
-    делает twist_mux (docker/main/scripts/twist_mux/start_twist_mux.sh:72);
-    в сим twist_mux с боевым конфигом приходит на шаге 2, тогда relay уходит.
+    что контейнер ros2-control на роботе.
 
-Пример:
+Чего здесь нет (шаг 2): robot_state_publisher и twist_mux запускаются отдельными
+сервисами docker/sim/docker-compose.yaml БОЕВЫМИ скриптами docker/main/scripts/**
+(``URDF_SIM=true``, ``USE_SIM_TIME=true``). Поэтому /robot_description публикует
+сервис robot-state-publisher, а /cmd_vel → /diff_drive_controller/cmd_vel_unstamped
+ведёт боевой twist_mux. Временный relay шага 1 удалён.
+
+Пример (внутри compose-профиля):
   ros2 launch rob_box_sim sim.launch.py
   ros2 launch rob_box_sim sim.launch.py headless_rendering:=false   # программный рендер
 """
@@ -31,9 +33,8 @@ from launch.actions import (
 )
 from launch.conditions import IfCondition, UnlessCondition
 from launch.event_handlers import OnProcessExit
-from launch.substitutions import Command, LaunchConfiguration, PathJoinSubstitution
+from launch.substitutions import LaunchConfiguration, PathJoinSubstitution
 from launch_ros.actions import Node
-from launch_ros.parameter_descriptions import ParameterValue
 
 
 def generate_launch_description():
@@ -41,7 +42,6 @@ def generate_launch_description():
     sim_share = get_package_share_directory("rob_box_sim")
 
     world = LaunchConfiguration("world")
-    controllers_yaml = LaunchConfiguration("controllers_yaml")
     headless_rendering = LaunchConfiguration("headless_rendering")
 
     # package://rob_box_description/meshes/... в URDF: Gazebo ищет модель
@@ -67,18 +67,6 @@ def generate_launch_description():
         if p
     )
 
-    robot_description = ParameterValue(
-        Command(
-            [
-                "xacro ",
-                os.path.join(description_share, "urdf", "rob_box.xacro"),
-                " sim:=true controllers_yaml:=",
-                controllers_yaml,
-            ]
-        ),
-        value_type=str,
-    )
-
     gz_headless_rendering = ExecuteProcess(
         cmd=["ign", "gazebo", "-r", "-s", "--headless-rendering", "-v", "3", world],
         output="screen",
@@ -88,13 +76,6 @@ def generate_launch_description():
         cmd=["ign", "gazebo", "-r", "-s", "-v", "3", world],
         output="screen",
         condition=UnlessCondition(headless_rendering),
-    )
-
-    robot_state_publisher = Node(
-        package="robot_state_publisher",
-        executable="robot_state_publisher",
-        output="screen",
-        parameters=[{"robot_description": robot_description, "use_sim_time": True}],
     )
 
     spawn = Node(
@@ -136,25 +117,11 @@ def generate_launch_description():
     jsb = spawner("joint_state_broadcaster")
     ddc = spawner("diff_drive_controller")
 
-    cmd_vel_relay = Node(
-        package="topic_tools",
-        executable="relay",
-        name="sim_cmd_vel_relay",
-        output="screen",
-        arguments=["/cmd_vel", "/diff_drive_controller/cmd_vel_unstamped"],
-        parameters=[{"use_sim_time": True}],
-    )
-
     return LaunchDescription([
         DeclareLaunchArgument(
             "world",
             default_value=PathJoinSubstitution([sim_share, "worlds", "polygon.sdf"]),
             description="SDF-мир",
-        ),
-        DeclareLaunchArgument(
-            "controllers_yaml",
-            default_value="/config/controllers/controller_manager.yaml",
-            description="controller_manager.yaml робота (docker/main/config/controllers/)",
         ),
         DeclareLaunchArgument(
             "headless_rendering",
@@ -168,10 +135,8 @@ def generate_launch_description():
         SetEnvironmentVariable("IGN_GAZEBO_SYSTEM_PLUGIN_PATH", plugin_path),
         gz_headless_rendering,
         gz_plain,
-        robot_state_publisher,
         bridge,
         spawn,
         RegisterEventHandler(OnProcessExit(target_action=spawn, on_exit=[jsb])),
         RegisterEventHandler(OnProcessExit(target_action=jsb, on_exit=[ddc])),
-        cmd_vel_relay,
     ])
