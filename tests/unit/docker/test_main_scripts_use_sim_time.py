@@ -65,7 +65,9 @@ wait() { :; }
 . "$SCRIPT" "$@"
 """
 
-SIM_SWITCHES = ("USE_SIM_TIME", "URDF_SIM", "NAV2_PARAMS_OVERLAYS", "NAV2_SMOOTH_CMD_VEL")
+SIM_SWITCHES = (
+    "USE_SIM_TIME", "URDF_SIM", "NAV2_PARAMS_OVERLAYS", "NAV2_SMOOTH_CMD_VEL", "RTABMAP_START_MODE",
+)
 
 RTABMAP_ARGS = ["ros2", "launch", "rtabmap_launch", "rtabmap.launch.py", "use_sim_time:=false"]
 
@@ -321,3 +323,48 @@ def test_nav2_bad_smoother_switch_fails_loudly():
     r = run_script("nav2/start_nav2_direct.sh", {"NAV2_SMOOTH_CMD_VEL": "yes"})
     assert r.returncode != 0
     assert "NAV2_SMOOTH_CMD_VEL='yes'" in r.stdout
+
+
+# ── Режим старта rtabmap: mapping только в симе (видео картографии) ─────────
+# RTABMAP_START_MODE ставит только docker/sim/compose.yaml (SIM_RTABMAP_MODE).
+# Без переменной и с localization — ровно команда робота (RTABMAP_EXPECTED).
+
+
+def test_rtabmap_explicit_localization_is_robot_command():
+    r = run_script("rtabmap/start_rtabmap.sh", {"RTABMAP_START_MODE": "localization"}, RTABMAP_ARGS)
+    assert r.returncode == 0, r.stdout
+    assert commands(r.stdout) == RTABMAP_EXPECTED
+
+
+def test_rtabmap_mapping_in_sim_starts_fresh_incremental_map():
+    r = run_script(
+        "rtabmap/start_rtabmap.sh", {"USE_SIM_TIME": "true", "RTABMAP_START_MODE": "mapping"}, RTABMAP_ARGS
+    )
+    assert r.returncode == 0, r.stdout
+    assert commands(r.stdout) == sorted(
+        [
+            "RUN: python3 /scripts/patch_rtabmap_launch.py",
+            "EXEC: ros2 launch rtabmap_launch rtabmap.launch.py use_sim_time:=false "
+            "localization:=false args:=--delete_db_on_start use_sim_time:=true",
+        ]
+    )
+
+
+@pytest.mark.parametrize(
+    "env", [{"RTABMAP_START_MODE": "mapping"}, {"USE_SIM_TIME": "false", "RTABMAP_START_MODE": "mapping"}]
+)
+def test_rtabmap_mapping_refused_on_robot(env):
+    # Стереть боевую базу перезапуском контейнера нельзя: mapping без сима — отказ.
+    r = run_script("rtabmap/start_rtabmap.sh", env, RTABMAP_ARGS)
+    assert r.returncode != 0
+    assert "RTABMAP_START_MODE=mapping" in r.stdout
+    assert not any(line.startswith("EXEC: ") for line in r.stdout.splitlines())
+
+
+def test_rtabmap_bad_start_mode_fails_loudly():
+    r = run_script(
+        "rtabmap/start_rtabmap.sh", {"USE_SIM_TIME": "true", "RTABMAP_START_MODE": "slam"}, RTABMAP_ARGS
+    )
+    assert r.returncode != 0
+    assert "RTABMAP_START_MODE='slam'" in r.stdout
+    assert not any(line.startswith("EXEC: ") for line in r.stdout.splitlines())

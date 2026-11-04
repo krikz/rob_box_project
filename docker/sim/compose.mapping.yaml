@@ -1,0 +1,39 @@
+# Оверлей docker/sim/compose.yaml для видео картографии (docker/sim/record_mapping.sh).
+#
+# Отличия от стенда:
+#   * rtabmap стартует в mapping с пустой базой (SIM_RTABMAP_MODE=mapping задаёт скрипт);
+#   * bench едет по scenarios/mapping.yaml (объезд мира);
+#   * maprec — рекордер карты /rtabmap/map и поз (rob_box_sim.map_recorder),
+#     он же потом рендерит видео (rob_box_sim.map_video: PIL + ffmpeg из образа).
+# Навигация, конфиги и сеть — те же, что у стенда (наследуются из compose.yaml).
+#
+#   docker compose -f docker/sim/compose.yaml -f docker/sim/compose.mapping.yaml ...
+
+services:
+  bench:
+    command:
+      - /ros_scripts/ros_with_namespace.sh
+      - python3
+      - -m
+      - rob_box_sim.nav_bench
+      - --world
+      - ${SIM_WORLD:-polygon}
+      - --scenarios
+      - /ws/install/rob_box_sim/share/rob_box_sim/scenarios/mapping.yaml
+      - --label
+      - ${SIM_BENCH_LABEL:-mapping}
+
+  maprec:
+    # Образ, сеть, sim time, тома /results и /sim_worlds — как у стенда.
+    extends:
+      file: compose.yaml
+      service: bench
+    container_name: ${SIM_PREFIX:-rob-box-sim}-maprec
+    profiles: ["bench"]
+    command:
+      - /ros_scripts/ros_with_namespace.sh
+      - python3
+      - -m
+      - rob_box_sim.map_recorder
+      - --out
+      - /results/maprec
