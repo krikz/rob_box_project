@@ -298,7 +298,7 @@ def test_finish_mapping_fails_when_service_missing(monkeypatch):
     result = tool.execute()
     assert result.success is False
     assert "set_mode_localization" in result.error
-    assert result.data == {"outcome": "unavailable"}
+    assert result.data == {"outcome": "unavailable", "reason": "unavailable"}
     assert state.localization_calls == []  # FSM не переключаем, пока режим не включился
     assert node.clients["/rtabmap/rtabmap/publish_map"].call_count == 0
 
@@ -312,7 +312,7 @@ def test_finish_mapping_fails_on_service_timeout(monkeypatch):
     monkeypatch.setattr(sys.modules["rob_box_mcp_tools.tools.mapping"], "wait_future", lambda future, timeout_sec: False)
     result = tool.execute()
     assert result.success is False
-    assert result.data == {"outcome": "timeout"}
+    assert result.data == {"outcome": "timeout", "reason": "timeout"}
     assert state.localization_calls == []
 
 
@@ -321,7 +321,7 @@ def test_finish_mapping_fails_on_service_refusal(monkeypatch):
     tool, _ = _finish(monkeypatch, mode=_Resp(success=False, message="нет базы"))
     result = tool.execute()
     assert result.success is False
-    assert result.data == {"outcome": "service_error"}
+    assert result.data == {"outcome": "service_error", "reason": "service_error"}
     assert "нет базы" in result.error
 
 
@@ -330,7 +330,7 @@ def test_finish_mapping_fails_on_empty_reply(monkeypatch):
     tool, _ = _finish(monkeypatch, mode=None)
     result = tool.execute()
     assert result.success is False
-    assert result.data == {"outcome": "no_response"}
+    assert result.data == {"outcome": "no_response", "reason": "no_response"}
 
 
 @pytest.mark.unit
@@ -370,7 +370,7 @@ def test_load_map_fails_when_load_database_not_ready(monkeypatch):
     state = _FakeMappingState()
     tool, node = _load_tool(monkeypatch, db_ready=False, state=state)
     result = tool.execute()
-    assert result.success is False and result.data == {"outcome": "unavailable"}
+    assert result.success is False and result.data == {"outcome": "unavailable", "reason": "unavailable"}
     assert state.localization_calls == []
     assert node.clients["/rtabmap/rtabmap/set_mode_localization"].call_count == 0
 
@@ -453,7 +453,7 @@ def test_continue_mapping_ok_only_on_service_reply(monkeypatch):
 def test_continue_mapping_fails_when_service_missing(monkeypatch):
     tool, client = _continue(monkeypatch, ready=False)
     result = tool.execute()
-    assert result.success is False and result.data == {"outcome": "unavailable"}
+    assert result.success is False and result.data == {"outcome": "unavailable", "reason": "unavailable"}
     assert client.call_count == 0 and "Продолжаю" not in (result.message or "")
 
 
@@ -463,7 +463,7 @@ def test_continue_mapping_fails_on_timeout(monkeypatch):
     client.call_async = lambda request: _NeverDoneFuture()
     monkeypatch.setattr(sys.modules["rob_box_mcp_tools.tools.mapping"], "wait_future", lambda future, timeout_sec: False)
     result = tool.execute()
-    assert result.success is False and result.data == {"outcome": "timeout"}
+    assert result.success is False and result.data == {"outcome": "timeout", "reason": "timeout"}
     assert "Продолжаю" not in (result.message or "")
 
 
@@ -471,11 +471,11 @@ def test_continue_mapping_fails_on_timeout(monkeypatch):
 def test_continue_mapping_fails_on_empty_reply_and_refusal(monkeypatch):
     tool, _ = _continue(monkeypatch, result=None)
     empty = tool.execute()
-    assert empty.success is False and empty.data == {"outcome": "no_response"}
+    assert empty.success is False and empty.data == {"outcome": "no_response", "reason": "no_response"}
 
     tool, _ = _continue(monkeypatch, result=_Resp(success=False, message="занято"))
     refused = tool.execute()
-    assert refused.success is False and refused.data == {"outcome": "service_error"}
+    assert refused.success is False and refused.data == {"outcome": "service_error", "reason": "service_error"}
     assert "занято" in refused.error
 
 
@@ -484,7 +484,7 @@ def test_continue_mapping_fails_when_future_raises(monkeypatch):
     tool, client = _continue(monkeypatch)
     client.call_async = lambda request: _RaisingFuture()
     result = tool.execute()
-    assert result.success is False and result.data == {"outcome": "no_response"}
+    assert result.success is False and result.data == {"outcome": "no_response", "reason": "no_response"}
     assert "сервис упал" in result.error
 
 
@@ -524,7 +524,7 @@ def test_start_mapping_ok_creates_map_and_switches_state(monkeypatch):
 def test_start_mapping_without_service_reply_creates_nothing(monkeypatch, kwargs, outcome):
     tool, node, store, state = _start(monkeypatch, **kwargs)
     result = tool.execute(map_name="кухня", new_location=True)
-    assert result.success is False and result.data == {"outcome": outcome}
+    assert result.success is False and result.data == {"outcome": outcome, "reason": outcome}
     assert store.created_maps == [] and state.mapping_calls == []
     assert "Начинаю" not in (result.message or "")
 
@@ -536,7 +536,7 @@ def test_load_map_unknown_name_fails_and_reloads_nothing(monkeypatch):
     tool, node = _load_tool(monkeypatch, state=state)
     tool.waypoint_store = store
     result = tool.execute(map_name="дача")
-    assert result.success is False and result.data == {"outcome": "map_not_found"}
+    assert result.success is False and result.data == {"outcome": "map_not_found", "reason": "map_not_found"}
     assert result.message == "Карта «дача» не найдена, ничего не загружал"
     assert node.clients["/rtabmap/rtabmap/load_database"].call_count == 0
     assert node.clients["/rtabmap/rtabmap/set_mode_localization"].call_count == 0
@@ -562,7 +562,7 @@ def test_load_map_store_error_fails_and_reloads_nothing(monkeypatch):
     tool, node = _load_tool(monkeypatch)
     tool.waypoint_store = store
     result = tool.execute(map_name="офис")
-    assert result.success is False and result.data == {"outcome": "map_lookup_failed"}
+    assert result.success is False and result.data == {"outcome": "map_lookup_failed", "reason": "map_lookup_failed"}
     assert "база повреждена" in result.error
     assert node.clients["/rtabmap/rtabmap/load_database"].call_count == 0
 

@@ -1463,8 +1463,49 @@ NAV_DONE = ByData((NAV_ARRIVAL_FIELD,), {
 })
 NAV_FAILED = ByData((NAV_OUTCOME_FIELD,), {(kind,): f"motion.not_reached.{kind}" for kind in NAV_FAILURE_OUTCOMES})
 NAV_TOOL_PHRASES: Mapping[str, Any] = MappingProxyType({"done": NAV_DONE, "rejected": NAV_FAILED})
+#: Картография (#4363): тулы ``start_mapping``/``continue_mapping``/``finish_mapping``/``optimize_map``/``load_map`` в
+#: классе ``action.motion``, но «Приехал.»/«Не могу поехать.» о карте - ложь (живой 04.11 14:51: старт карты - «Приехал.»,
+#: отказ «уже идёт картографирование» - «Не могу поехать.»). Фразу строит код по данным исхода тула. Поля данных:
+#: :data:`MAP_NAME_FIELD` - имя карты (аргумент вызова, у ``finish_mapping``/``load_map`` ещё и имя активной карты),
+#: :data:`MAP_NEW_FIELD` - старт на чистой базе (``start_mapping``), :data:`MAP_PARTIAL_FIELD` - часть шагов
+#: оптимизации не удалась (``optimize_map``), :data:`MAP_ACTIVE_FIELD` - имя карты, что пишется сейчас (отказ FSM,
+#: :data:`MAP_ACTIVE_REASON`), ``reason`` - структурная причина отказа (:data:`MAP_FAILURE_REASONS`).
+MAP_NAME_FIELD = "map_name"
+MAP_NEW_FIELD = "new_location"
+MAP_PARTIAL_FIELD = "partial"
+MAP_ACTIVE_FIELD = "active_map"
+MAP_ACTIVE_REASON = "mapping_active"
+MAP_FAILURE_REASONS: Tuple[str, ...] = (
+    "service_error", "unavailable", "timeout", "no_response", "map_not_found", "map_lookup_failed",
+)
+MAP_FAILED = ByData(("reason", MAP_ACTIVE_FIELD), {
+    **{(MAP_ACTIVE_REASON, named): f"mapping.failed.{MAP_ACTIVE_REASON}{'' if named else '_unnamed'}"
+       for named in (True, False)},
+    **{(reason, named): f"mapping.failed.{reason}" for reason in MAP_FAILURE_REASONS for named in (True, False)},
+}, "mapping.failed", present=(MAP_ACTIVE_FIELD,))
+MAP_START_DONE = ByData((MAP_NEW_FIELD, MAP_NAME_FIELD), {
+    (True, True): "mapping.start", (True, False): "mapping.start_unnamed",
+    (False, True): "mapping.start_existing", (False, False): "mapping.start_existing",
+}, "mapping.start", present=(MAP_NAME_FIELD,))
+MAP_NAMED_DONE = {
+    "finish": ByData((MAP_NAME_FIELD,), {(True,): "mapping.finished", (False,): "mapping.finished_unnamed"},
+                     present=(MAP_NAME_FIELD,)),
+    "load": ByData((MAP_NAME_FIELD,), {(True,): "mapping.loaded", (False,): "mapping.loaded_unnamed"},
+                   present=(MAP_NAME_FIELD,)),
+}
+MAP_TOOL_PHRASES: Mapping[str, Mapping[str, Any]] = MappingProxyType({
+    "start_mapping": MappingProxyType({"done": MAP_START_DONE, "rejected": MAP_FAILED}),
+    "continue_mapping": MappingProxyType({"done": "mapping.continued", "rejected": MAP_FAILED}),
+    "finish_mapping": MappingProxyType({"done": MAP_NAMED_DONE["finish"], "rejected": MAP_FAILED}),
+    "load_map": MappingProxyType({"done": MAP_NAMED_DONE["load"], "rejected": MAP_FAILED}),
+    "optimize_map": MappingProxyType({
+        "done": ByData((MAP_PARTIAL_FIELD,), {(True,): "mapping.optimize_partial"}, "mapping.optimized"),
+        "rejected": MAP_FAILED,
+    }),
+})
 #: Ключи фраз, особые для тула (поверх ключа класса): «Запомнил: …» строится по событию saved владельца памяти.
 TOOL_PHRASES: Mapping[str, Mapping[str, Any]] = MappingProxyType({
+    **MAP_TOOL_PHRASES,
     # поездка к точке (#4344): «Я уже на точке а.» / «Приехал на точку а.» / «Не доехал до точки а: …» по данным
     # исхода; данных нет (отказ плана, моторы) - ключ класса ``motion.*``
     "navigate_to_waypoint": NAV_TOOL_PHRASES,

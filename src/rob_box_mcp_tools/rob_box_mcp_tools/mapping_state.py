@@ -112,3 +112,10 @@ class MappingState:
         if not self.is_mapping():
             return True  # localization mode — everything allowed
         return tool_name in MAPPING_WHITELIST
+
+    def block_data(self) -> dict:
+        """Данные отказа FSM-гарда (#4363): структурная причина и имя пишущейся карты - фразу строит диалог
+        (``knowledge.MAP_FAILED``), а не парсинг текста ошибки."""
+        from rob_box_dialog import knowledge as kn
+
+        return {"reason": kn.MAP_ACTIVE_REASON, kn.MAP_ACTIVE_FIELD: self.get().get("map_name")}
