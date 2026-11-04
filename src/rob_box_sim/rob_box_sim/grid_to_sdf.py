@@ -12,10 +12,11 @@
   * соседние занятые клетки сливаются в прямоугольники (сначала отрезки по
     строкам, потом одинаковые отрезки соседних строк) — коробок в разы меньше,
     чем клеток;
-  * весь мир сдвигается так, чтобы первая поза робота из экспорта стала (0, 0, 0):
-    робот спавнится в начале координат, а ``map`` rtabmap в симе совпадает с миром;
-  * цели — позы, где реальный робот проехал: из файла поз берутся точки не ближе
-    ``goal_step`` друг к другу, у которых габарит робота не задевает стен.
+  * весь мир сдвигается так, чтобы первая «свободная для Nav2» поза робота из
+    экспорта (центр дальше NAV_CENTER_CLEARANCE от стен) стала (0, 0, 0): робот
+    спавнится в начале координат, а ``map`` rtabmap в симе совпадает с миром;
+  * цели — позы, где реальный робот проехал после спавна: точки не ближе
+    ``goal_step`` друг к другу, по тому же правилу свободы.
 
 Карта дома/мастерской Шифу в публичный репозиторий не кладётся: результат пишется
 в ``src/rob_box_sim/worlds/local/`` (каталог в .gitignore).
@@ -34,7 +35,7 @@ from pathlib import Path
 
 import yaml
 
-from rob_box_sim.geometry2d import Box, Pose2D, clearance
+from rob_box_sim.geometry2d import Box, Footprint, Pose2D, clearance
 from rob_box_sim.world_sdf import render_world
 
 WALL_H = 1.0
@@ -160,10 +161,22 @@ def read_poses(path: str | Path) -> list[Pose2D]:
     return poses
 
 
+# Центр робота ближе robot_radius 0.45 (docker/main/config/nav2/nav2_params.yaml,
+# круглый габарит) к препятствию — для планировщика Nav2 робот уже «в стене» и
+# никуда не едет. Спавн и цели выбираются дальше: 0.45 + 0.1 м запаса.
+NAV_CENTER_CLEARANCE = 0.55
+_POINT = Footprint(0.0, 0.0, 0.0, 0.0)
+
+
+def center_clearance(pose: Pose2D, boxes: list[Box]) -> float:
+    """Расстояние от центра робота (base_footprint) до ближайшей коробки."""
+    return clearance(pose, boxes, _POINT)
+
+
 def pick_goals(
-    poses: list[Pose2D], boxes: list[Box], step: float, max_goals: int, min_clearance: float
+    poses: list[Pose2D], boxes: list[Box], step: float, max_goals: int, min_center: float
 ) -> list[Pose2D]:
-    """Точки маршрута реального робота через ``step`` метров, где габарит не задевает стен."""
+    """Точки маршрута реального робота через ``step`` метров, свободные для Nav2 (см. выше)."""
     goals: list[Pose2D] = []
     last = poses[0] if poses else None
     for p in poses[1:]:
@@ -171,7 +184,7 @@ def pick_goals(
             break
         if p.distance_to(last) < step:
             continue
-        if clearance(p, boxes) < min_clearance:
+        if center_clearance(p, boxes) < min_center or clearance(p, boxes) <= 0:
             continue
         goals.append(p)
         last = p
@@ -185,27 +198,38 @@ def build(
     name: str,
     goal_step: float = 2.5,
     max_goals: int = 5,
-    min_goal_clearance: float = 0.15,
+    min_center: float = NAV_CENTER_CLEARANCE,
 ) -> dict:
     grid = load_grid(yaml_path)
     poses = read_poses(poses_path)
     if not poses:
         raise ValueError(f"{poses_path}: нет поз")
-    spawn_in_map = poses[0]
+    map_boxes = grid_boxes(grid, Pose2D(0.0, 0.0, 0.0))
+    # Спавн — первая поза маршрута, где Nav2 считает робота свободным. Первая поза
+    # реального робота может стоять вплотную к мебели (в карте 04.09 — 0.10 м).
+    first_free = next(
+        (
+            i
+            for i, p in enumerate(poses)
+            if center_clearance(p, map_boxes) >= min_center and clearance(p, map_boxes) > 0
+        ),
+        None,
+    )
+    if first_free is None:
+        raise ValueError(f"нет позы спавна: центр робота везде ближе {min_center} м к стене")
+    spawn_in_map = poses[first_free]
     to_world = spawn_in_map.inverse()
-    boxes = grid_boxes(grid, to_world)
+    boxes = [b.transformed(to_world) for b in map_boxes]
     spawn_clear = clearance(Pose2D(0.0, 0.0, 0.0), boxes)
-    if spawn_clear <= 0:
-        raise ValueError(f"точка спавна задевает стену (зазор {spawn_clear:.3f} м)")
-    world_poses = [to_world.compose(p) for p in poses]
-    goals = pick_goals(world_poses, boxes, goal_step, max_goals, min_goal_clearance)
+    world_poses = [to_world.compose(p) for p in poses[first_free:]]
+    goals = pick_goals(world_poses, boxes, goal_step, max_goals, min_center)
 
     out_dir.mkdir(parents=True, exist_ok=True)
     description = (
         f"  Мир из карты rtabmap робота: {yaml_path.name}, {grid.width}×{grid.height} клеток "
         f"по {grid.resolution} м.\n"
         f"  Занятые клетки ({grid.occupied_count()}) слиты в {len(boxes)} коробок высотой {WALL_H} м.\n"
-        f"  Мир сдвинут: первая поза робота из экспорта ({spawn_in_map.x:.3f}, {spawn_in_map.y:.3f}, "
+        f"  Мир сдвинут: поза робота №{first_free + 1} из экспорта ({spawn_in_map.x:.3f}, {spawn_in_map.y:.3f}, "
         f"yaw {spawn_in_map.yaw:.3f}) — это (0, 0, 0).\n"
         "  Генератор: python3 -m rob_box_sim.grid_to_sdf. В git не кладётся (карта дома)."
     )
@@ -218,7 +242,9 @@ def build(
         "occupied_cells": grid.occupied_count(),
         "boxes": len(boxes),
         "spawn_in_map": [round(spawn_in_map.x, 4), round(spawn_in_map.y, 4), round(spawn_in_map.yaw, 4)],
+        "spawn_pose_index": first_free,
         "spawn_clearance_m": round(spawn_clear, 3),
+        "spawn_center_clearance_m": round(center_clearance(Pose2D(0.0, 0.0, 0.0), boxes), 3),
         "goals": [
             {"name": f"pose_{i + 1}", "x": round(g.x, 3), "y": round(g.y, 3), "yaw": round(g.yaw, 3)}
             for i, g in enumerate(goals)

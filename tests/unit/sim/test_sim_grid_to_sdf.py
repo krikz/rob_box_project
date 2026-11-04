@@ -74,7 +74,7 @@ def test_build_moves_first_robot_pose_to_origin(tmp_path):
     y = _write_map(tmp_path, rows, origin=(-1.0, 0.0))
     # робот стартовал в (1, 1) лицом на +Y (к верхней стене), потом поехал к правой
     poses = _write_poses(tmp_path, [(1.0, 1.0, math.pi / 2), (1.5, 1.0, 0.0), (2.0, 1.5, 0.0)])
-    meta = build(y, poses, tmp_path / "out", "t", goal_step=0.5, max_goals=5, min_goal_clearance=0.1)
+    meta = build(y, poses, tmp_path / "out", "t", goal_step=0.5, max_goals=5)
     boxes = load_world_boxes(tmp_path / "out" / "t.sdf")
     assert meta["spawn_in_map"] == pytest.approx([1.0, 1.0, math.pi / 2], abs=1e-4)
     # верхняя стена в мире — прямо по курсу робота: её ближняя грань на 1.9 м впереди
@@ -94,3 +94,15 @@ def test_spawn_inside_wall_fails_loudly(tmp_path):
     poses = _write_poses(tmp_path, [(0.25, 0.25, 0.0)])
     with pytest.raises(ValueError, match="спавна"):
         build(y, poses, tmp_path / "out", "t")
+
+
+def test_spawn_skips_poses_too_close_for_nav2(tmp_path):
+    """Первая поза вплотную к стене (Nav2 с robot_radius 0.45 там «в стене») — спавн со следующей."""
+    rows = ["#" * 40] + ["." * 40] * 29  # стена по верху, y ∈ [2.9, 3.0]
+    y = _write_map(tmp_path, rows)
+    poses = _write_poses(tmp_path, [(1.0, 2.5, 0.0), (1.0, 1.0, 0.0), (3.5, 1.0, 0.0)])
+    meta = build(y, poses, tmp_path / "out", "t", goal_step=1.0)
+    assert meta["spawn_pose_index"] == 1
+    assert meta["spawn_in_map"] == pytest.approx([1.0, 1.0, 0.0], abs=1e-4)
+    assert meta["spawn_center_clearance_m"] == pytest.approx(1.9, abs=1e-3)
+    assert [(g["x"], g["y"]) for g in meta["goals"]] == [pytest.approx((2.5, 0.0), abs=1e-3)]
