@@ -2460,11 +2460,20 @@ PROGRESS_AFTER_S = 6.0
 #: ``PROGRESS_LLM_PHRASE``.
 PROGRESS_LLM_PHRASE = "understand.progress"
 PROGRESS_PHRASES: Mapping[str, str] = MappingProxyType({"llm": PROGRESS_LLM_PHRASE, "action.media": "media.progress"})
+#: Смена музыки под играющую (#4313, М9 n604 «уводи в сторону рока»: сбор нового сета ~23 с при окне хода 10 с, а
+#: старый сет всё это время играл; робот говорил «музыка запускается», потом «Музыка пока не заиграла»). Ход заказывает
+#: музыку (:data:`MUSIC_STARTING_TOOLS`), пока музыка играет (``SessionSnapshot.music_playing``, один источник «играет»)
+#: — промежуточная фраза и фраза потолка по факту: прежняя музыка звучит, новая собирается. Ключи класса действия.
+MUSIC_REPLACE_PHRASES: Mapping[str, str] = MappingProxyType({"progress": "media.progress_replace",
+                                                            "timeout": "media.timeout_replace"})
+#: Тулы, что заказывают новую музыку (``dj_set`` — кроме стопа; стоп и правка текущего трека ничего не собирают).
+MUSIC_STARTING_TOOLS: Tuple[str, ...] = ("dj_set", "request_music", "generate_music")
 #: Потолок истёк в ожидании LLM - фраза с именем провайдера; провайдер неизвестен - ``understand.timeout``.
 CEILING_PHRASE = "understand.ceiling"
 #: Цепочка провайдеров отказала (провайдер не жив) - фраза с его именем сразу, а не ожидание потолка.
 PROVIDER_FAILED_PHRASE = "understand.provider_failed"
-PHRASE_KEYS = PHRASE_KEYS + (CEILING_PHRASE, PROVIDER_FAILED_PHRASE, *PROGRESS_PHRASES.values())
+PHRASE_KEYS = PHRASE_KEYS + (CEILING_PHRASE, PROVIDER_FAILED_PHRASE, *PROGRESS_PHRASES.values(),
+                             *MUSIC_REPLACE_PHRASES.values())
 #: Журнал смены (решение Шифу 27.10 «можно просто вести лог событий и туда смотреть»; ``shift_log``): в памяти
 #: процесса, не дольше окна и не больше записей кольца; новая сессия разговора его не чистит, рестарт процесса - да.
 SHIFT_LOG_WINDOW_S = 12 * 3600.0

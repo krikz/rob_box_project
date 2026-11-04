@@ -235,6 +235,7 @@ class _Turn:
     background_summary: Mapping[str, Any] = field(default_factory=dict)  # сводка голосов фона кодом (#4212)
     said: List[str] = field(default_factory=list)
     queried: Tuple[ActionResult, ...] = ()  # исходы выполненного в этом ходе query (для страховки от молчания)
+    replacing: bool = False  # ход заказал новую музыку, пока играла прежняя (#4313): фразы ожидания - по этому факту
     waiting: str = "llm"  # чего ждёт ход: ответа LLM или события владельца (класс действия) — фразы В31
     retried: int = 0  # повторы модели за ответ не тот (``VIOLATION_SILENT_ANSWER``, ``…_REMOTE_OWED``)
     pushed: int = 0  # повторы за словами на последней итерации (``SPEECH_PUSHES_MAX``)
@@ -1619,12 +1620,28 @@ def provider_in_flight(ports: Any) -> str:
     return str(current() or "") if callable(current) else ""
 
 
+def orders_over_music(snap: SessionSnapshot, actions: Sequence[ToolCall]) -> bool:
+    """Ход заказывает новую музыку (``MUSIC_STARTING_TOOLS``, не стоп), пока музыка играет (#4313)."""
+    return snap.music_playing and any(a.tool in kn.MUSIC_STARTING_TOOLS and a.args.get("action") != "stop"
+                                      for a in actions)
+
+
+def replacing_music(engine: "TurnEngine", turn: Any) -> bool:
+    """Ход ждёт новую музыку, а прежняя ещё звучит (#4313): заказ сделан под играющую музыку и она играет сейчас.
+    Факт - из снимка плеера (``SessionSnapshot.music_playing``), не из слов модели; прежняя замолчала, а новая не
+    встала - честно «не заиграла»."""
+    return (getattr(turn, "replacing", False) and turn.waiting == "action.media"
+            and engine.session.snapshot.music_playing)
+
+
 def progress_due(engine: "TurnEngine", turn: _Turn) -> Optional[str]:
     """Промежуточная фраза хода (В31) или ``None``: ход ещё молчит, речь идёт в динамики, не тишина. Ключ — по тому,
     чего ход ждёт (``knowledge.PROGRESS_PHRASES``: ответ LLM, старт музыки)."""
     snap = engine.session.snapshot
     if turn.said or agent_spec(snap.agent).sink != Sink.SPEAKERS or snap.top("Silence") is not None:
         return None
+    if replacing_music(engine, turn):
+        return engine._pick(kn.MUSIC_REPLACE_PHRASES["progress"])
     return engine._pick(kn.PROGRESS_PHRASES.get(turn.waiting, kn.PROGRESS_LLM_PHRASE))
 
 
@@ -1639,10 +1656,12 @@ async def _progress(engine: "TurnEngine", turn: _Turn) -> None:
         engine._say(turn, text, filler=True)  # заглушка: в окне есть, «повтори» её не повторяет (n808)
 
 
-def ceiling_phrase(turn: _Turn, provider: str) -> str:
+def ceiling_phrase(turn: _Turn, provider: str, replacing: bool = False) -> str:
     """Фраза потолка (В31): ждали действие — фраза его класса о таймауте («Музыка пока не заиграла.»), а не «не
     понял»; ждали LLM — с именем провайдера; провайдер неизвестен — ``understand.timeout``."""
     action = kn.ACTION_CLASSES.get(turn.waiting)
+    if replacing:
+        return phrases.text(kn.MUSIC_REPLACE_PHRASES["timeout"])
     if action is not None:
         return phrases.text(action.phrases.get("timeout") or TIMEOUT_PHRASE)
     return phrases.text(kn.CEILING_PHRASE, provider=provider) if provider else phrases.text(TIMEOUT_PHRASE)
@@ -1651,7 +1670,7 @@ def ceiling_phrase(turn: _Turn, provider: str) -> str:
 def _close_ceiling(engine: "TurnEngine", turn: _Turn, expired: DeadlineExpired) -> None:
     provider = turn.provider or provider_in_flight(engine._ports)
     engine._log.warning(latency_line(provider, expired.what.split(":")[0], expired.waited_s * 1000, "timeout"))
-    engine._say(turn, ceiling_phrase(turn, provider))
+    engine._say(turn, ceiling_phrase(turn, provider, replacing_music(engine, turn)))
     turn.stage, turn.status, turn.reason = "timeout", "failed", "deadline"
 
 
@@ -1886,6 +1905,7 @@ class TurnEngine:
         actions = track_ref.bind_last_generated(actions, turn.text)  # «эта песня» - сочинённая только что (#4216)
         cls = kn.call_class(actions[0].tool, actions[0].args)
         turn.waiting = cls
+        turn.replacing = orders_over_music(self.session.snapshot, actions)
         self._ports.stage(turn.turn_id, turn.epoch, "executing", "started", cls=cls)
         # свой срок класса целиком (исполнитель закроет честным timeout), а не остаток хода после LLM и его повтора
         turn.deadline.grant(action_term(actions))
