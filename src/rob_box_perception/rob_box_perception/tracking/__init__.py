@@ -12,12 +12,16 @@
 * :mod:`.motion` — фильтр Калмана с постоянной скоростью на плоскости;
 * :mod:`.assignment` — оптимальное сопоставление (венгерский алгоритм);
 * :mod:`.tracker` — жизненный цикл и шаг трекера;
+* :mod:`.proximity` — лицо к телу того же момента, сближение треков;
+* :mod:`.frame_policy` — фрейм трекера: ``map`` или ``base_link`` (ADR-0161);
 * :mod:`.observation_adapter` — ``Observation`` → :class:`Detection`.
 
 ROS-нода (тонкий слой над ядром) — следующий PR, см.
-``docs/plans/2026-11-04-adr-0130-stage2-tracker-plan.md``.
+``docs/plans/2026-11-04-adr-0130-stage2-tracker-plan.md``; решения
+этапа — ADR-0161.
 """
 
+from rob_box_perception.tracking.frame_policy import FramePolicy
 from rob_box_perception.tracking.params import TrackerParams
 from rob_box_perception.tracking.tracker import (
     Detection,
@@ -29,6 +33,7 @@ from rob_box_perception.tracking.tracker import (
 
 __all__ = [
     'Detection',
+    'FramePolicy',
     'StepResult',
     'TrackEvent',
     'TrackSnapshot',
