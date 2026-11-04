@@ -1,0 +1,6 @@
+# SIM_GLOBAL_MAP=none — глобальная карта как на роботе: без static_layer,
+# только скан (nav2_params.yaml). Контрольный прогон «до» для шага 6.
+global_costmap:
+  global_costmap:
+    ros__parameters:
+      plugins: ["obstacle_layer", "inflation_layer"]

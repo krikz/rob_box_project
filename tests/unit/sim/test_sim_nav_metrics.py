@@ -136,3 +136,20 @@ def test_tilt_reported_in_degrees_and_none_without_pose():
     assert goal_metrics(rec, [WALL])["tilt_max_deg"] == pytest.approx(11.0)
     empty = GoalRecord("g", Pose2D(1.0, 0.0, 0.0), "SKIPPED", 0.0, 0.0)
     assert goal_metrics(empty, [WALL])["tilt_max_deg"] is None
+
+
+def test_trajectory_csv_truth_and_estimate_skip_missing_tf(tmp_path):
+    import csv
+
+    from rob_box_sim.nav_bench import write_trajectories
+
+    rec = _straight_run(2.0, n=3)
+    rec.estimate[1] = None  # в этот миг TF не было
+    paths = write_trajectories(rec, tmp_path, "polygon_gap_1.2")
+    assert [p.name for p in paths] == ["polygon_gap_1.2_truth.csv", "polygon_gap_1.2_estimate.csv"]
+    truth = list(csv.reader(paths[0].open(encoding="utf-8")))
+    est = list(csv.reader(paths[1].open(encoding="utf-8")))
+    assert truth[0] == est[0] == ["t", "x", "y", "yaw"]
+    assert len(truth) == 4 and len(est) == 3
+    assert [float(v) for v in truth[-1]] == pytest.approx([25.0, 2.0, 0.0, 0.0])
+    assert write_trajectories(GoalRecord("g", Pose2D(0, 0, 0), "SKIPPED", 0, 0), tmp_path, "x") == []

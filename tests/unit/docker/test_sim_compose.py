@@ -140,8 +140,9 @@ SIM_NAV2 = REPO_ROOT / "src" / "rob_box_sim" / "config" / "nav2"
 OVERLAY_SECTIONS = {"controller_server", "planner_server", "global_costmap", "local_costmap"}
 
 
-def _overlay_paths(controller: str, planner: str, footprint: str) -> list[Path]:
+def _overlay_paths(controller: str, planner: str, footprint: str, global_map: str = "static") -> list[Path]:
     raw = _env(SIM_COMPOSE["nav2"])["NAV2_PARAMS_OVERLAYS"]
+    raw = raw.replace("${SIM_GLOBAL_MAP:-static}", global_map)
     raw = raw.replace("${SIM_CONTROLLER:-dwb}", controller).replace("${SIM_PLANNER:-navfn}", planner)
     raw = raw.replace("${SIM_FOOTPRINT:-radius}", footprint)
     assert "$" not in raw, raw
@@ -157,10 +158,11 @@ def test_nav2_overlays_mounted_and_exist_for_every_choice():
     for controller in ("dwb", "rpp", "mppi"):
         for planner in ("navfn", "smac"):
             for footprint in ("radius", "urdf"):
-                paths = _overlay_paths(controller, planner, footprint)
-                assert paths[0].name == "sim.yaml" and len(paths) == 4
-                for p in paths:
-                    assert p.is_file(), p
+                for global_map in ("static", "none"):
+                    paths = _overlay_paths(controller, planner, footprint, global_map)
+                    assert paths[0].name == f"global_{global_map}.yaml" and len(paths) == 4
+                    for p in paths:
+                        assert p.is_file(), p
 
 
 def test_footprint_radius_overlay_is_robot_value():
@@ -189,12 +191,16 @@ def test_nav2_overlays_touch_only_compared_sections_and_name_plugin():
 
 
 def test_sim_global_costmap_takes_rtabmap_map_and_robot_does_not():
-    doc = yaml.safe_load((SIM_NAV2 / "sim.yaml").read_text(encoding="utf-8"))
+    doc = yaml.safe_load((SIM_NAV2 / "global_static.yaml").read_text(encoding="utf-8"))
     gc = doc["global_costmap"]["global_costmap"]["ros__parameters"]
     assert gc["plugins"][0] == "static_layer"
     assert gc["static_layer"]["map_topic"] == "/rtabmap/map"
     robot = yaml.safe_load((MAIN / "config" / "nav2" / "nav2_params.yaml").read_text(encoding="utf-8"))
-    assert "static_layer" not in robot["global_costmap"]["global_costmap"]["ros__parameters"]["plugins"]
+    robot_plugins = robot["global_costmap"]["global_costmap"]["ros__parameters"]["plugins"]
+    assert "static_layer" not in robot_plugins
+    # «none» — контроль «как на роботе»: тот же список слоёв, что в боевом файле
+    none = yaml.safe_load((SIM_NAV2 / "global_none.yaml").read_text(encoding="utf-8"))
+    assert none["global_costmap"]["global_costmap"]["ros__parameters"]["plugins"] == robot_plugins
 
 
 def test_sim_smoother_chain_on_by_default_robot_has_no_switch():

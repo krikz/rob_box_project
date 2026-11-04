@@ -14,6 +14,9 @@
 #   SIM_RESULTS_DIR  каталог результатов      (docker/sim/results)
 #   SIM_BENCH_LABEL  метка прогона в JSON     (baseline)
 #   SIM_UP_TIMEOUT   сколько ждать nav2, с    (240)
+# Шаг 6 (сравнение контроллеров, оверлеи src/rob_box_sim/config/nav2/): SIM_CONTROLLER,
+#   SIM_PLANNER, SIM_FOOTPRINT, SIM_GLOBAL_MAP, SIM_SMOOTH_CMD_VEL — см. compose.yaml;
+#   повторы одной конфигурации — метка вида dwb-navfn@3 (rob_box_sim.bench_report).
 set -euo pipefail
 
 if [ "$#" -eq 0 ]; then

@@ -287,7 +287,7 @@ def _nav2_cmd(out: str, exe: str) -> str:
 
 
 def test_nav2_overlays_go_after_robot_params_on_every_node():
-    a, b = (SIM_NAV2 / "sim.yaml").as_posix(), (SIM_NAV2 / "controller_rpp.yaml").as_posix()
+    a, b = (SIM_NAV2 / "global_static.yaml").as_posix(), (SIM_NAV2 / "controller_rpp.yaml").as_posix()
     r = run_script("nav2/start_nav2_direct.sh", {"NAV2_PARAMS_OVERLAYS": f"{a} {b}"})
     assert r.returncode == 0, r.stdout
     lines = commands(r.stdout)

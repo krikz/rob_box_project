@@ -16,7 +16,8 @@
      число recovery; по таймауту — отмена и статус TIMEOUT;
   4. после провала при ``stop_on_failure`` остальные цели — SKIPPED;
   5. в конце снимает ``/rtabmap/map`` и сверяет с миром (map_check);
-  6. пишет ``<out>/<мир>.json``, ``.csv``, ``.md`` и ``<мир>_map.pgm``.
+  6. пишет ``<out>/<мир>.json``, ``.csv``, ``.md`` и ``<мир>_map.pgm``; после каждой цели —
+     позы ``<мир>_<цель>_truth.csv`` / ``_estimate.csv`` (t, x, y, yaw) для анимации.
 
 Сравнение контроллеров и правка параметров — шаг 6; здесь только замер.
 """
@@ -211,6 +212,27 @@ def dump_costmap(nav, recorder: Recorder, out: Path, stem: str) -> int | None:
     return under
 
 
+def write_trajectories(rec: GoalRecord, out: Path, stem: str) -> list[Path]:
+    """Позы цели для анимации: ``<stem>_truth.csv`` и ``<stem>_estimate.csv`` (t, x, y, yaw).
+
+    truth — истинная поза Gazebo, estimate — TF ``map → base_footprint`` в те же моменты
+    (момент без TF пропускается). Цель без поз (SKIPPED) файлов не даёт.
+    """
+    if not rec.truth:
+        return []
+    out.mkdir(parents=True, exist_ok=True)
+    est = [(t, *e) for (t, *_), e in zip(rec.truth, rec.estimate) if e is not None]
+    paths = []
+    for kind, samples in (("truth", rec.truth), ("estimate", est)):
+        path = out / f"{stem}_{kind}.csv"
+        with open(path, "w", newline="", encoding="utf-8") as f:
+            w = csv.writer(f)
+            w.writerow(["t", "x", "y", "yaw"])
+            w.writerows([[f"{v:.4f}" for v in row] for row in samples])
+        paths.append(path)
+    return paths
+
+
 def write_outputs(out: Path, world: str, rows: list[dict], extra: dict) -> None:
     out.mkdir(parents=True, exist_ok=True)
     stem = world.replace("/", "_")
@@ -274,6 +296,7 @@ def main(argv: list[str] | None = None) -> int:
         row = {"world": args.world, "label": args.label, **goal_metrics(rec, boxes), "fail_cost_under_robot": under}
         print("[bench] " + json.dumps(row, ensure_ascii=False), flush=True)
         rows.append(row)
+        write_trajectories(rec, args.out, f"{args.world.replace('/', '_')}_{g['name']}")
 
     grid = map_check.grab_map(nav)
     map_stats = None
