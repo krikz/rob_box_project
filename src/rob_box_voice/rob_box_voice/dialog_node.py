@@ -246,7 +246,8 @@ def late_outcome(engine: TurnEngine, say: Callable[[ActionResult], Any], result:
 
 def _mcp_provider(node: Any, sender: str, for_telegram: bool = False) -> Any:
     """Провайдер MCP-тулов под подписью ``sender`` (``LLMToolCallAdapter`` → ``ROSMCPToolProvider``). Итог тула с
-    поздним итогом транспорт ждёт дольше срока класса (``execute.transport_timeouts``, #3960)."""
+    сроком класса транспорт ждёт не меньше срока (поездка 120 с, #4344), с поздним итогом - дольше срока класса
+    (``execute.transport_timeouts``, #3960)."""
     from rob_box_harness.core.tool_registry import ToolRegistry  # noqa: PLC0415
     from rob_box_harness.executors import ROSMCPToolProvider, adapt_tool_provider  # noqa: PLC0415
     from rob_box_mcp_tools.llm_adapter import LLMToolCallAdapter  # noqa: PLC0415

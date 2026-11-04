@@ -343,8 +343,10 @@ def test_transport_waits_for_late_outcome_past_the_class_deadline(tool):
     assert waits[tool] >= max(deadline_s(cls) + kn.ACTION_GRACE_S, kn.TURN_CEILING_S)
 
 
-def test_transport_keeps_its_own_wait_for_tools_without_late_outcome():
-    """Остальные классы транспорт ждёт как раньше: поздний итог исполнитель держит только у ``LATE_SPOKEN_CLASSES``."""
+def test_transport_keeps_its_own_wait_for_tools_without_class_deadline():
+    """Классы без своего срока (речь, выступление: срок задаёт владелец) транспорт ждёт как раньше; остальным -
+    не меньше срока класса (#4344, ``test_motion_outcome_4344``), поздним итогам - дольше."""
     from rob_box_dialog.execute import transport_timeouts
 
-    assert set(transport_timeouts()) == {t for t, c in kn.TOOL_CLASSES.items() if c in kn.LATE_SPOKEN_CLASSES}
+    assert set(transport_timeouts()) == {t for t, c in kn.TOOL_CLASSES.items()
+                                         if kn.ACTION_CLASSES[c].timeout_s is not None}

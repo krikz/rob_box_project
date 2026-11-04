@@ -47,9 +47,10 @@ CANCEL_ERROR_REJECTED = 1
 CANCEL_ERROR_UNKNOWN_GOAL_ID = 2
 CANCEL_ERROR_GOAL_TERMINATING = 3
 
-# Виды исхода отмены цели (дополняют SVC_* — те же значения для сбоя вызова).
-CANCEL_CONFIRMED = "cancel_confirmed"
-CANCEL_NO_ACTIVE_GOAL = "no_active_goal"
+# Виды исхода отмены цели (дополняют SVC_* — те же значения для сбоя вызова). Успехи — контракт с фразой кода диалога
+# (``kn.STOP_TOOL_PHRASES``, #3789): значения оттуда.
+CANCEL_CONFIRMED = kn.STOP_CONFIRMED
+CANCEL_NO_ACTIVE_GOAL = kn.STOP_IDLE
 CANCEL_REFUSED = "cancel_refused"
 
 

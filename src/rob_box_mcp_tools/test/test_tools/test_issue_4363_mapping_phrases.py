@@ -130,6 +130,7 @@ def test_continue_mapping_says_continued(monkeypatch):
 
 @pytest.mark.unit
 def test_no_mapping_phrase_is_a_motion_phrase():
-    """Без фикса тулы картографии брали «Приехал.»/«Не могу поехать.» класса motion."""
+    """Без фикса тулы картографии брали «Приехал.»/«Не могу поехать.» класса motion; ``timeout`` (#4344: транспорт ждёт
+    тул весь срок класса) - «Не доехал — время вышло.» класса."""
     for tool, entries in kn.MAP_TOOL_PHRASES.items():
-        assert set(entries) == {"done", "rejected"}, tool
+        assert set(entries) == {"done", "rejected", "timeout"}, tool
