@@ -1,24 +1,10 @@
-"""Static regression guard for issue #1377.
+"""Длина реплики — одна цифра, из ``knowledge`` (issue #1377, перевод на dialog v2 — #4354 B1).
 
-Issue #1377: the LLM prompt (master_prompt_compact.txt)
-told the model "no more than 150 characters" per speak_text call. This is a
-legacy hint that pre-dates the runtime contract:
-
-* Runtime chunker (`src/rob_box_voice/rob_box_voice/tts_chunking.py`)
-  - ``CHUNK_LIMITS["yandex_grpc_v3"] = 250`` (real API hard limit, ~250 chars
-    SSML; >250 → INVALID_ARGUMENT).
-  - All other providers are at least as generous (silero_v5=800, MiniMax=5000).
-* Runtime LLM budget (`src/rob_box_mcp_tools/.../tools/dialogue.py`)
-  - ``_MAX_CHUNK_CHARS = 200`` is the hard cap the agentic LLM is being fed
-    through the MCP tool description.
-
-LLM was reading the prompt-internal "150" and micro-splitting answers into
-fragments that re-triggered TTS batching unnecessarily. The prompt must
-agree with the runtime — we use **200** as the single source of truth
-(matches ``_MAX_CHUNK_CHARS`` and stays well below the Yandex 250 ceiling).
-
-These tests pin the wording so a future merge can never silently roll the
-prompts back to the old "150 characters" model again.
+#1377: промпт учил «не больше 150 символов» на вызов ``speak_text``, а рантайм резал по другой цифре — модель
+дробила ответ. В v2 тула ``speak_text`` нет: речь — поле ``speech`` команды, потолок — ``knowledge.SPEECH_MAX_CHARS``,
+и модели его называет фрагмент формы команды (``knowledge.prompt_fragment``), который мост дописывает к системному
+промпту (``command_bridge.mode_note``). Файл промпта Личности своей цифры не держит — второй цифре негде разойтись
+с первой (ADR-0148: знание живёт в одном модуле).
 
 Run with::
 
@@ -30,59 +16,24 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
+from rob_box_dialog import knowledge as kn
+from rob_box_dialog.speech_channel import ModeRequest
+from rob_box_voice.core import command_bridge as cb
 
-MASTER_PROMPT = (
-    Path(__file__).resolve().parents[2]
-    / "prompts"
-    / "master_prompt_compact.txt"
-)
+MASTER_PROMPT = Path(__file__).resolve().parents[2] / "prompts" / "master_prompt_compact.txt"
 
-
-# Pattern of the legacy "150 characters" hint that previously confused the LLM.
-# We accept "150ms" (SSML break time) and other 150 occurrences — only the
-# character-limit phrasing is the regression we're guarding.
-_LEGACY_150_CHAR_LIMIT = re.compile(
-    r"150\s*(characters?|символов?|знаков)",
-    flags=re.IGNORECASE,
-)
+#: Цифра-потолок символов в тексте («150 characters», «max 200 символов»): паузы вида «150ms» не считаются.
+_CHAR_CAP = re.compile(r"\b\d{2,4}\s*(characters?|chars?|символ\w*|знак\w*)", flags=re.IGNORECASE)
 
 
-def _read(prompt_path: Path) -> str:
-    return prompt_path.read_text(encoding="utf-8")
+def test_personality_prompt_file_states_no_character_cap_of_its_own() -> None:
+    """Потолок длины реплики модели называет только фрагмент knowledge, не файл промпта."""
+    hits = _CHAR_CAP.findall(MASTER_PROMPT.read_text(encoding="utf-8"))
+    assert hits == [], f"master_prompt_compact.txt держит свою цифру длины: {hits!r}"
 
 
-def _legacy_150_hits(content: str) -> list[str]:
-    """Return the matched substrings (for diagnostics) so a future failure
-    is debuggable without re-reading the file."""
-    return _LEGACY_150_CHAR_LIMIT.findall(content)
-
-
-# ── master_prompt_compact.txt ─────────────────────────────────────────
-
-
-def test_master_prompt_has_no_legacy_150_character_limit() -> None:
-    """The pre-#1377 wording "150 characters" must be gone from the master prompt."""
-    content = _read(MASTER_PROMPT)
-    hits = _legacy_150_hits(content)
-    assert hits == [], (
-        f"master_prompt_compact.txt still contains legacy '150 characters' "
-        f"hint(s): {hits!r}. Runtime contract is _MAX_CHUNK_CHARS=200 "
-        f"(tts_chunking.py CHUNK_LIMITS['yandex_grpc_v3']=250). "
-        f"Use 200 to match the runtime cap."
-    )
-
-
-def test_master_prompt_documents_200_character_limit() -> None:
-    """The prompt must explicitly tell the LLM to use 200 chars as the limit."""
-    content = _read(MASTER_PROMPT)
-    # #3696: the prompt states the cap once, in the turn protocol (tool cards moved to schemas).
-    assert "max 200 characters" in content, (
-        "master_prompt_compact.txt must state the speak_text cap 'max 200 characters' (see issue #1377)."
-    )
-
-
-# ── compositor_prompt.txt удалён (change skill-scoped-dialogue-context,
-#    задача 6.3): он маршрутизировал на фасады handle_music /
-#    handle_navigation, которых нет с e96b912d. Проверки не потеряны —
-#    у каждой есть близнец выше, на master_prompt_compact.txt. ──────
-
+def test_request_note_names_the_speech_cap_from_knowledge() -> None:
+    """Добавка моста к системному промпту называет ``SPEECH_MAX_CHARS`` — ту же цифру, что проверяет валидатор."""
+    note = cb.mode_note("tool_offered", ModeRequest(mode="tool_offered"))
+    speech = next(line for line in note.splitlines() if line.startswith("- speech:"))
+    assert f"≤ {kn.SPEECH_MAX_CHARS} символов" in speech

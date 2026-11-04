@@ -64,13 +64,6 @@ COMPACT_LOG_MARK = "✂️ [command]"
 CALL_ID_PREFIX = "cmd-"
 #: Режимы, где схема команды идёт текстом в промпте (в остальных её несёт тул или ``response_format``).
 _SCHEMA_IN_PROMPT: Tuple[CommandMode, ...] = ("json_mode", "json_in_text")
-#: Поправка к правилам v1-промпта о транспорте речи: мастер-промпт учит ``speak_text`` и ``done`` (до PR-8).
-V1_TRANSPORT_NOTE = (
-    "Форма ответа в этом режиме важнее правил о speak_text и done выше: тула speak_text нет — всё, что человек должен "
-    "услышать, клади в поле speech; сказку, стих, рэп, анекдот — в perform.segments (куплет или абзац на сегмент), "
-    "героев с репликами — в perform.cast и role_per_segment (голоса им даёт код); о результате действий не говори — его "
-    "скажет код; done не пиши."
-)
 
 Log = Callable[[str], None]
 Ask = Callable[[List[LLMMessage]], Awaitable[LLMResponse]]
@@ -97,9 +90,9 @@ def _schemas(names: Iterable[str]) -> List[Mapping[str, Any]]:
 
 
 def mode_note(mode: CommandMode, request: ModeRequest, schema: Mapping[str, Any] | None = None) -> str:
-    """Добавка к системному промпту: форма команды из ``knowledge`` (строки только о полях схемы хода, #4021) +
-    поправка v1 + схема для JSON-режимов."""
-    parts = [kn.prompt_fragment(schema), V1_TRANSPORT_NOTE]
+    """Добавка к системному промпту: форма команды из ``knowledge`` (строки только о полях схемы хода, #4021) + схема
+    для JSON-режимов. Промпт Личности о транспорте речи не говорит — форму ответа несёт только эта добавка (#4354 B1)."""
+    parts = [kn.prompt_fragment(schema)]
     if request.instruction:
         parts.append(request.instruction)
     if mode in _SCHEMA_IN_PROMPT:
@@ -447,7 +440,7 @@ def wrapper_for(value: Union[str, Iterable[str], None], log: Log = _no_log,
 
 
 __all__ = [
-    "CALL_ID_PREFIX", "COMMAND_LOG_MARK", "COMPACT_LOG_MARK", "CommandModeLLM", "V1_TRANSPORT_NOTE",
+    "CALL_ID_PREFIX", "COMMAND_LOG_MARK", "COMPACT_LOG_MARK", "CommandModeLLM",
     "command_providers", "judge", "log_line", "mode_note", "query_done", "reply_command", "retry_messages",
     "to_legacy", "wrapper_for",
 ]

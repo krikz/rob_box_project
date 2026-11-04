@@ -3538,13 +3538,13 @@ def prompt_fragment(schema: Optional[Mapping[str, Any]] = None) -> str:
                    " невалидна): о результате действий скажет код по событию исполнителя; ответ по сути (шутка, стих) —"
                    f" в perform. Исключение — тихие действия {', '.join(QUIET_WITH_SPEECH_TOOLS)}: speech с ними"
                    " звучит."),
-        ("voice", "- voice: голос этой реплики (имя голоса, как у speak_text); голос робота не меняет."),
+        ("voice", "- voice: голос этой реплики (имя голоса); голос робота не меняет."),
         ("ask", f"- ask: вопрос с ожиданием ответа, expects ∈ {_set(ASK_EXPECTS)}."),
         ("actions", f"- actions: ≤ {ACTIONS_MAX} вызовов тулов {{tool, args}}; не больше одного на класс"
                     f" {' и '.join(SINGLE_ACTION_CLASSES)}."),
         ("perform", f"- perform: выступление kind ∈ {_set(kinds)}, {SEGMENTS_MIN}–{SEGMENTS_MAX} сегментов"
-                    f" по ≤ {SEGMENT_MAX_CHARS} символов, backing ∈ {_set(backings)}; вместо speech (speech при"
-                    " нём не пиши, даже с actions). Звучит и при actions: ответ по сути (сказка, стих, анекдот), не"
+                    f" по ≤ {SEGMENT_MAX_CHARS} символов (куплет или абзац на сегмент), backing ∈ {_set(backings)};"
+                    " вместо speech (speech при нём не пиши, даже с actions). Звучит и при actions: ответ по сути (сказка, стих, анекдот), не"
                     " отчёт о действиях." + _roles_line(perform) + " set_voice меняет голос робота насовсем — только"
                     " когда об этом просят."),
         ("when", f"- when ∈ {_set(WHEN)}: after_current — после текущего (по умолчанию), now — сейчас."),
