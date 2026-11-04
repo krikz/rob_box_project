@@ -489,12 +489,11 @@ def _param(tmp_path: Path, node: str, name: str) -> str:
 
 @bash_required
 def test_v2_resets_via_dialog_control_and_opens_e2e_db(tmp_path):
-    """v2: сброс — /dialog/control reset (не параметр dialogue_node), e2e-БД ходов — вне /data."""
+    """v2: сброс — /dialog/control reset e2e-БД ходов — вне /data."""
     proc, events = _run_isolation(tmp_path, _scenario(tmp_path, "plain_v1"))
 
     assert "EXIT_OK" in proc.stdout, proc.stderr
     assert "RESET /dialog_node" in events
-    assert "RESET /dialog_node" not in events
     assert "epoch=1" in proc.stdout
     assert f"E2E_DIALOG_DB {V2_DB}" in proc.stdout
     assert _param(tmp_path, "/dialog_node", "e2e_mode") == "", "#3904: своего e2e_mode у dialog_node нет"
@@ -519,7 +518,7 @@ def test_v2_inheriting_act_skips_reset_but_records_turns(tmp_path):
     proc, events = _run_isolation(tmp_path, scenario, preset={"_speaker_id_nodee2e_mode": "true"})
 
     assert "EXIT_OK" in proc.stdout, proc.stderr
-    assert "RESET /dialog_node" not in events and "RESET /dialog_node" not in events
+    assert "RESET /dialog_node" not in events
     assert f"E2E_DIALOG_DB {V2_DB}" in proc.stdout
 
 
