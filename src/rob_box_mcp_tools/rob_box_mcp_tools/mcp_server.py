@@ -1359,7 +1359,7 @@ class MCPServer(Node):
                 )
                 self.get_logger().warning(f"🚫 FSM blocked '{tool_name}' during mapping")
                 from .base import MCPToolResult
-                _result = MCPToolResult(success=False, error=_block_msg)
+                _result = MCPToolResult(success=False, error=_block_msg, data=self.mapping_state.block_data())
                 _resp = {"tool_name": tool_name, "request_id": request_id, "result": _result.to_dict()}
                 _msg_out = String()
                 _msg_out.data = json.dumps(_resp, ensure_ascii=False)

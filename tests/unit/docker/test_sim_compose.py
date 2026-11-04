@@ -175,7 +175,7 @@ def _overlay_paths(controller: str, planner: str, footprint: str, global_map: st
     raw = _env(SIM_COMPOSE["nav2"])["NAV2_PARAMS_OVERLAYS"]
     raw = raw.replace("${SIM_GLOBAL_MAP:-static}", global_map)
     raw = raw.replace("${SIM_CONTROLLER:-dwb}", controller).replace("${SIM_PLANNER:-navfn}", planner)
-    raw = raw.replace("${SIM_FOOTPRINT:-radius}", footprint)
+    raw = raw.replace("${SIM_FOOTPRINT:-urdf}", footprint)
     assert "$" not in raw, raw
     out = []
     for p in raw.split():
@@ -210,11 +210,23 @@ def test_mppi_checks_footprint_only_with_polygon_footprint():
     assert mppi_flag("controller_mppi.yaml", "footprint_urdf.yaml") is True
 
 
-def test_footprint_radius_overlay_is_robot_value():
+def test_footprint_urdf_overlay_is_robot_value_and_default():
+    """SIM_FOOTPRINT по умолчанию — габарит робота (замер 04.11), а не опытный."""
+    assert "/sim_nav2/footprint_${SIM_FOOTPRINT:-urdf}.yaml" in _env(SIM_COMPOSE["nav2"])["NAV2_PARAMS_OVERLAYS"]
     robot = yaml.safe_load((MAIN / "config" / "nav2" / "nav2_params.yaml").read_text(encoding="utf-8"))
+    doc = yaml.safe_load((SIM_NAV2 / "footprint_urdf.yaml").read_text(encoding="utf-8"))
+    for cm in ("local_costmap", "global_costmap"):
+        sim, real = doc[cm][cm]["ros__parameters"], robot[cm][cm]["ros__parameters"]
+        assert sim["footprint"] == real["footprint"]
+        assert sim["footprint_padding"] == real["footprint_padding"]
+
+
+def test_footprint_radius_overlay_resets_polygon():
+    # Непустой footprint в Nav2 главнее robot_radius: без "[]" оверлей «было» — no-op.
     doc = yaml.safe_load((SIM_NAV2 / "footprint_radius.yaml").read_text(encoding="utf-8"))
     for cm in ("local_costmap", "global_costmap"):
-        assert doc[cm][cm]["ros__parameters"]["robot_radius"] == robot[cm][cm]["ros__parameters"]["robot_radius"]
+        p = doc[cm][cm]["ros__parameters"]
+        assert p["footprint"] == "[]" and p["robot_radius"] == 0.45
 
 
 def test_nav2_overlays_touch_only_compared_sections_and_name_plugin():

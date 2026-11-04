@@ -25,6 +25,8 @@ if TYPE_CHECKING:
     from ..mapping_state import MappingState
 
 from ..base import MCPTool, MCPToolParameter, MCPToolResult, ToolExecutionType, wait_future
+from rob_box_dialog import knowledge as kn
+
 from ..core.action_outcome import Outcome, classify_service_call
 
 
@@ -52,7 +54,24 @@ def _call_service(client, request, timeout_sec: float, label: str) -> Outcome:
 def _failed_call(tool, outcome: Outcome, message: str) -> MCPToolResult:
     """Неуспех вызова сервиса: причину и фразу строит код, LLM их не переписывает."""
     tool.log_warning(f"⚠️ {outcome.error}")
-    return MCPToolResult(success=False, error=outcome.error, message=message, data={"outcome": outcome.kind})
+    return MCPToolResult(success=False, error=outcome.error, message=message, data={"outcome": outcome.kind, "reason": outcome.kind})
+
+
+def _start_data(map_id, new_location, map_name: str) -> dict:
+    """Данные исхода старта для фразы кода (``kn.MAP_START_DONE``): чистая ли база и под каким именем."""
+    return {
+        **({"map_id": map_id} if map_id else {}),
+        kn.MAP_NEW_FIELD: bool(new_location),
+        kn.MAP_NAME_FIELD: map_name.strip() or None,
+    }
+
+
+def _saved_map_name(map_name: str, mapping_state) -> str:
+    """Имя сохранённой карты: названное в вызове, иначе имя активной карты FSM (``""`` - безымянная)."""
+    named = (map_name or "").strip()
+    if named or mapping_state is None:
+        return named
+    return mapping_state.get().get("map_name") or ""
 
 
 class StartMappingTool(MCPTool):
@@ -149,7 +168,11 @@ class StartMappingTool(MCPTool):
         # 3. Загрузить базу данных (clear=True если новая локация, иначе только reload)
         # Вызывается ПОСЛЕ set_mode_mapping чтобы избежать краша в localization mode
         if self.load_database_client is None:
-            return MCPToolResult(success=False, error="RTABMap load_database service недоступен")
+            return MCPToolResult(
+                success=False,
+                error="RTABMap load_database service недоступен",
+                data={"outcome": "unavailable", "reason": "unavailable"},
+            )
 
         from rtabmap_msgs.srv import LoadDatabase  # type: ignore
         req = LoadDatabase.Request()
@@ -182,7 +205,7 @@ class StartMappingTool(MCPTool):
         mode_msg = "чистой базе" if new_location else "существующей карте"
         return MCPToolResult(
             success=True,
-            data={"map_id": map_id} if map_id else None,
+            data=_start_data(map_id, new_location, map_name),
             message=f"Начинаю картографирование на {mode_msg}. Старая карта сохранена в резервной копии.{suffix}"
         )
 
@@ -252,7 +275,7 @@ class ContinueMappingTool(MCPTool):
 
         self.log_info("Режим mapping активирован")
 
-        return MCPToolResult(success=True, message="Продолжаю исследование территории")
+        return MCPToolResult(success=True, message="Продолжаю исследование территории", data={"outcome": "continued"})
 
 
 class FinishMappingTool(MCPTool):
@@ -353,11 +376,13 @@ class FinishMappingTool(MCPTool):
             )
             self.log_info(f"🗺️  MappingState → localization (map='{map_name}')")
 
+        saved_name = _saved_map_name(map_name, self.mapping_state)
         suffix = f" Карта: '{map_name}'." if map_name else ""
         note = "" if publish.success else " Но карту на экран опубликовать не удалось."
         return MCPToolResult(
             success=True,
             message=f"Заканчиваю исследование. Переключаюсь в режим навигации.{suffix}{note}",
+            data={kn.MAP_NAME_FIELD: saved_name or None},
         )
 
 
@@ -502,13 +527,16 @@ class OptimizeMapTool(MCPTool):
         if not completed:
             return MCPToolResult(
                 success=False,
-                error=f"RTABMap оптимизация не выполнена. Проблемные сервисы: {', '.join(failed)}."
+                error=f"RTABMap оптимизация не выполнена. Проблемные сервисы: {', '.join(failed)}.",
+                data={"reason": "unavailable", "failed": failed},
             )
 
         result_msg = f"Оптимизация карты завершена: {', '.join(completed)}."
         if failed:
             result_msg += f" Не удалось: {', '.join(failed)}."
-        return MCPToolResult(success=True, message=result_msg)
+        return MCPToolResult(
+            success=True, message=result_msg, data={kn.MAP_PARTIAL_FIELD: bool(failed), "failed": failed}
+        )
 
 
 class LoadMapTool(MCPTool):
@@ -571,7 +599,7 @@ class LoadMapTool(MCPTool):
                 success=False,
                 error=f"Не удалось проверить карту '{wanted}' в WaypointStore: {exc}",
                 message=f"Не удалось проверить карту «{wanted}», ничего не загружал",
-                data={"outcome": "map_lookup_failed"},
+                data={"outcome": "map_lookup_failed", "reason": "map_lookup_failed"},
             )
         if not found:
             self.log_warning(f"⚠️ Карта '{wanted}' не найдена в WaypointStore")
@@ -579,7 +607,7 @@ class LoadMapTool(MCPTool):
                 success=False,
                 error=f"Карта '{wanted}' не найдена в WaypointStore",
                 message=f"Карта «{wanted}» не найдена, ничего не загружал",
-                data={"outcome": "map_not_found"},
+                data={"outcome": "map_not_found", "reason": "map_not_found"},
             )
         self.log_info(f"📍 Активная карта: '{wanted}'")
         return None
@@ -592,7 +620,7 @@ class LoadMapTool(MCPTool):
                 success=False,
                 error="RTABMap load_database service недоступен (нет rtabmap_msgs)",
                 message="Сервис карт недоступен",
-                data={"outcome": "unavailable"},
+                data={"outcome": "unavailable", "reason": "unavailable"},
             )
 
         from rtabmap_msgs.srv import LoadDatabase  # type: ignore
@@ -639,5 +667,6 @@ class LoadMapTool(MCPTool):
         suffix = f" Карта: '{map_name}'." if map_name.strip() else ""
         return MCPToolResult(
             success=True,
-            message=f"Карта загружена, переключаюсь в режим навигации.{suffix}"
+            message=f"Карта загружена, переключаюсь в режим навигации.{suffix}",
+            data={kn.MAP_NAME_FIELD: wanted or None},
         )

@@ -288,10 +288,11 @@ graph TB
 #### Технические характеристики
 | Параметр | Значение |
 |----------|----------|
-| **Модель** | Generic USB UVC Camera |
-| **Разрешение** | 1280×720 (720p) |
+| **Модель** | USB UVC «HD USB Camera» (32e4:9310) |
+| **Разрешение** | 640×480 в работе (камера умеет до 1280×720) |
 | **Формат** | YUY2 (YUYV 4:2:2) |
-| **Частота** | 30 FPS |
+| **Частота** | 15 FPS в работе (`camera_params.yaml`) |
+| **Калибровка** | [docs/guides/ceiling-camera-calibration.md](../guides/ceiling-camera-calibration.md) |
 | **Интерфейс** | USB 2.0 (UVC - USB Video Class) |
 | **Назначение** | Потолочная навигация (visual odometry, маркеры на потолке) |
 
@@ -303,7 +304,8 @@ graph TB
 #### ROS 2 топик
 | Топик | Тип | Частота | Назначение |
 |-------|-----|---------|------------|
-| `/ceiling_camera/image_raw` | `sensor_msgs/Image` | 30 Hz | Потолочное изображение |
+| `/ceiling_camera/image_raw` | `sensor_msgs/Image` | 15 Hz | Потолочное изображение |
+| `/ceiling_camera/apriltag/detections` | `apriltag_msgs/AprilTagDetectionArray` | ≤ 5 Hz | Метки потолка (`CEILING_APRILTAG_ENABLED=true`) |
 
 ---
 
