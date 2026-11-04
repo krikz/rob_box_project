@@ -27,6 +27,7 @@
 
 from __future__ import annotations
 
+import json
 import re
 import sys
 from pathlib import Path
@@ -158,8 +159,8 @@ def test_field_counts_are_pinned():
         f'PerceptionEvent.msg должен содержать 27 полей, сейчас {len(msg_fields)}. '
         f'Если IDL расширили — обнови PROJECTED_FIELDS/EXCLUDED_FIELDS и это число.'
     )
-    assert len(PROJECTED_FIELDS) == 17, f'PROJECTED_FIELDS: {len(PROJECTED_FIELDS)}'
-    assert len(EXCLUDED_FIELDS) == 10, f'EXCLUDED_FIELDS: {len(EXCLUDED_FIELDS)}'
+    assert len(PROJECTED_FIELDS) == 16, f'PROJECTED_FIELDS: {len(PROJECTED_FIELDS)}'
+    assert len(EXCLUDED_FIELDS) == 11, f'EXCLUDED_FIELDS: {len(EXCLUDED_FIELDS)}'
 
 
 # ---------- 2/3. регрессии на два живых бага -------------------------------
@@ -219,6 +220,8 @@ def test_real_vision_event_reaches_context():
     assert ctx['vision_events'] == [
         {
             'label': 'person',
+            'kind': 'person',
+            'name': None,
             'confidence': pytest.approx(0.87),
             'distance_m': pytest.approx(1.4),
             'age_s': None,
@@ -344,3 +347,66 @@ def test_voltage_to_percent_is_the_core_curve():
     assert voltage_to_percent(32.0) == pytest.approx(0.0)
     assert voltage_to_percent(45.0) == pytest.approx(100.0)
     assert voltage_to_percent(29.0) == pytest.approx(0.0)
+
+
+# ---------- 6. что в кадре: issue #4352 --------------------------------------
+# Живой PerceptionEvent 04.11.2026 (ros2 topic echo --once /perception/context_update на Main Pi):
+# vision_context='' (у /perception/vision_context нет издателя), vision_event_count=134 - одно лицо
+# «Дэнчик» и один силуэт, повторённые за окно памяти. Тул отдавал модели пустую строку.
+
+def _live_event(event_type, sec, display_name='', embedding_id='', distance=1.02):
+    return {
+        'stamp': {'sec': sec, 'nanosec': 0}, 'source_camera': 'camera_color_optical_frame',
+        'event_type': event_type, 'class_name': event_type, 'class_id': 0, 'confidence': 0.99,
+        'distance_m': distance, 'embedding_id': embedding_id, 'display_name': display_name,
+        'attributes_json': '',
+    }
+
+
+def _live_payload(now_sec=1_700_000_000):
+    events = []
+    for k in range(60):
+        events.append(_live_event('face', now_sec - 59 + k, 'Литвин', '566331d3'))
+        events.append(_live_event('person', now_sec - 59 + k, distance=1.04))
+    return json.dumps(events, ensure_ascii=False)
+
+
+def test_known_face_in_view_is_named_in_vision_context():
+    ctx = project_perception_event(_FakePerceptionEvent(
+        vision_events_json=_live_payload(), apriltag_ids=[21],
+    ))
+    assert ctx['vision_context'] == (
+        'в кадре: лицо «Литвин» ~1.0 м; силуэт человека ~1.0 м; метки AprilTag: 21'
+    )
+    assert ctx['faces'] == [{'name': 'Литвин', 'distance_m': pytest.approx(1.02), 'age_s': 0.5}]
+
+
+def test_repeated_detections_collapse_to_one_entry_per_object():
+    ctx = project_perception_event(_FakePerceptionEvent(vision_events_json=_live_payload()))
+    assert ctx['vision_event_count'] == 2
+    assert [e['kind'] for e in ctx['vision_events']] == ['face', 'person']
+
+
+def test_unknown_face_is_said_as_unknown():
+    payload = json.dumps([_live_event('face', 1_700_000_000, embedding_id='abc')])
+    ctx = project_perception_event(_FakePerceptionEvent(vision_events_json=payload, apriltag_ids=[]))
+    assert ctx['vision_context'] == 'в кадре: незнакомое лицо ~1.0 м'
+    assert ctx['faces'][0]['name'] is None
+
+
+def test_no_detections_is_honest_no_data_not_empty_string():
+    ctx = project_perception_event(_FakePerceptionEvent(vision_events_json='[]', apriltag_ids=[]))
+    assert ctx['vision_context'] == 'камера: нет данных о лицах и людях'
+    assert ctx['faces'] == []
+
+
+def test_only_tag_in_view():
+    ctx = project_perception_event(_FakePerceptionEvent(vision_events_json='[]', apriltag_ids=[21]))
+    assert ctx['vision_context'] == 'в кадре: метки AprilTag: 21'
+
+
+def test_person_who_left_is_not_in_view():
+    payload = json.dumps([_live_event('face', 1_699_999_988, 'Литвин', '566331d3')], ensure_ascii=False)
+    ctx = project_perception_event(_FakePerceptionEvent(vision_events_json=payload, apriltag_ids=[]))
+    assert ctx['faces'] == []
+    assert ctx['vision_context'] == 'сейчас в кадре никого; последним было: лицо «Литвин» ~1.0 м 12 с назад'

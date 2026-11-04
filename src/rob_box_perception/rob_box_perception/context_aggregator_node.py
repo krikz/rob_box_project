@@ -11,11 +11,11 @@ Perception Context Aggregator node.
 НЕ думает, НЕ принимает решений - только сбор и публикация.
 
 Подписывается на:
-- /perception/vision_context (vision processing)
+- /vision/hailo/events (лица и люди в кадре от vision-face/vision-hailo, VisionEvent)
 - /rtabmap/localization_pose (позиция)
-- /odom (одометрия)
-- /device/snapshot (ESP32 sensors)
-- /apriltag/detections (AprilTags)
+- /odom (одометрия; is_moving - motion_state.MotionEstimator)
+- /detections (AprilTags, apriltag_msgs/AprilTagDetectionArray)
+- /rtabmap/rtabmap/get_parameters (режим rtabmap; mapping_mode - rtabmap_mode)
 - /rosout (system logs)
 - /voice/stt/utterance (входящая речь, rob_box_dialog_msgs/Utterance)
 - /voice/speech/request (ответы робота: реплики агента personality, dialog v2)
@@ -30,7 +30,6 @@ Perception Context Aggregator node.
 """
 
 import json
-import os
 import time
 from typing import Dict, List, Optional
 
@@ -46,7 +45,10 @@ import rclpy
 from rclpy.node import Node
 
 from rob_box_perception.battery_state import extract_battery_voltage
+from rob_box_perception.apriltag_view import VisibleTags
 from rob_box_perception.core.robot_speech import SPEECH_REQUEST_TOPIC, robot_said
+from rob_box_perception.motion_state import MotionEstimator
+from rob_box_perception.rtabmap_mode import RtabmapModeProbe
 from rob_box_perception.utils.internet_monitor import (
     InternetConnectivityMonitor,
 )
@@ -75,6 +77,25 @@ try:
 except ImportError:
     VisionEvent = None  # Fallback if not built yet
 
+# Issue #4352: теги публикует apriltag_node (контейнер oak-d) в /detections. Без apriltag_msgs в образе
+# подписки нет, и это честно уходит в health_issues, а не тихо становится «тегов нет».
+try:
+    from apriltag_msgs.msg import AprilTagDetectionArray
+except ImportError:
+    AprilTagDetectionArray = None
+
+try:
+    from rcl_interfaces.srv import GetParameters
+except ImportError:
+    GetParameters = None
+
+#: Топик тегов: apriltag_node remap ('detections', '/detections') в oakd_with_apriltag.launch.py.
+APRILTAG_TOPIC = '/detections'
+#: Сервис параметров ноды rtabmap.
+RTABMAP_PARAMS_SERVICE = '/rtabmap/rtabmap/get_parameters'
+#: Как часто спрашивать режим rtabmap, секунды.
+RTABMAP_MODE_POLL_S = 5.0
+
 
 class ContextAggregatorNode(Node):
     """Агрегатор контекста восприятия (MPC lite)."""
@@ -95,15 +116,15 @@ class ContextAggregatorNode(Node):
         self.timezone = self.get_parameter('timezone').value
 
         # ============ Текущее состояние (кэш) ============
-        self.current_vision: Optional[Dict] = None
         # Issue #2826: rtabmap публикует PoseWithCovarianceStamped;
         # current_pose хранит нормализованный geometry_msgs/Pose
         # (берётся из msg.pose.pose в on_robot_pose), чтобы PerceptionEvent.pose
         # оставался типом Pose.
         self.current_pose: Optional[Pose] = None
         self.current_odom: Optional[Odometry] = None
+        self.motion = MotionEstimator()
         self.current_sensors: Dict = {}
-        self.last_apriltags: List[int] = []
+        self.tags = VisibleTags()
 
         # ============ ADR-0089 Phase 1: AI HAT+ events ============
         # Кольцевой буфер последних VisionEvent. Окна = memory_window (сек).
@@ -141,13 +162,8 @@ class ContextAggregatorNode(Node):
 
         # ============ Подписки ============
 
-        # Vision
-        self.vision_sub = self.create_subscription(
-            String,
-            '/perception/vision_context',
-            self.on_vision_context,
-            10
-        )
+        # Issue #4352: /perception/vision_context больше не слушаем - издателя у него нет (замер
+        # 04.11.2026: Publisher count 0). Что в кадре, говорит /vision/hailo/events ниже.
 
         # Pose
         # Issue #2826: rtabmap публикует ``/rtabmap/localization_pose`` как
@@ -186,13 +202,24 @@ class ContextAggregatorNode(Node):
             10
         )
 
-        # AprilTags
-        # self.apriltag_sub = self.create_subscription(
-        #     AprilTagDetectionArray,
-        #     '/apriltag/detections',
-        #     self.on_apriltags,
-        #     10
-        # )
+        # AprilTags (issue #4352: подписка была закомментирована, apriltag_ids всегда []).
+        self.apriltag_sub = None
+        if AprilTagDetectionArray is not None:
+            self.apriltag_sub = self.create_subscription(
+                AprilTagDetectionArray, APRILTAG_TOPIC, self.on_apriltags, 10
+            )
+
+        # Режим rtabmap (issue #4352): спрашиваем параметр Mem/IncrementalMemory у самой ноды.
+        client, make_request = None, None
+        if GetParameters is not None:
+            client = self.create_client(GetParameters, RTABMAP_PARAMS_SERVICE)
+            make_request = GetParameters.Request
+        self.rtabmap = RtabmapModeProbe(
+            client, make_request, time.time, self.get_logger()
+        )
+        self._rtabmap_timer = self.create_timer(
+            RTABMAP_MODE_POLL_S, self.rtabmap.poll
+        )
 
         # System logs (/rosout)
         self.rosout_sub = self.create_subscription(
@@ -290,15 +317,6 @@ class ContextAggregatorNode(Node):
     # Callbacks - Сбор данных
     # ============================================================
 
-    def on_vision_context(self, msg: String):
-        """Обновление vision context."""
-        try:
-            self.current_vision = json.loads(msg.data)
-            description = self.current_vision.get('description', 'N/A')
-            self.get_logger().debug(f'👁️  Vision: {description}')
-        except json.JSONDecodeError:
-            self.get_logger().error('❌ Ошибка парсинга vision_context')
-
     def on_hailo_vision_event(self, msg) -> None:
         """Callback VisionEvent от vision_hailo_node (ADR-0089 Phase 1).
 
@@ -356,8 +374,12 @@ class ContextAggregatorNode(Node):
         self.get_logger().debug(f'📍 Pose: ({x:.2f}, {y:.2f})')
 
     def on_odometry(self, msg: Odometry):
-        """Обновление одометрии."""
+        """Обновление одометрии: скорость идёт в окно MotionEstimator (issue #4352)."""
         self.current_odom = msg
+        twist = msg.twist.twist
+        self.motion.add(
+            time.time(), twist.linear.x, twist.linear.y, twist.angular.z
+        )
 
     def on_device_snapshot(self, msg):
         """Обновление сенсоров ESP32."""
@@ -367,11 +389,12 @@ class ContextAggregatorNode(Node):
         }
 
     def on_apriltags(self, msg):
-        """Обнаружены AprilTags."""
-        self.last_apriltags = [det.id for det in msg.detections]
-        self.add_to_memory(
-            'apriltag', f'Обнаружены маркеры: {self.last_apriltags}'
-        )
+        """Кадр детектора AprilTag; в память - только при смене набора видимых меток."""
+        ids = [det.id for det in msg.detections]
+        if self.tags.see(ids, time.time()):
+            self.add_to_memory(
+                'apriltag', f'Обнаружены маркеры: {sorted(set(ids))}'
+            )
 
     def on_rosout(self, msg: Log):
         """Мониторинг системных логов."""
@@ -545,13 +568,9 @@ class ContextAggregatorNode(Node):
         event = PerceptionEvent()
         event.stamp = self.get_clock().now().to_msg()
 
-        # Vision
-        if self.current_vision:
-            event.vision_context = json.dumps(
-                self.current_vision, ensure_ascii=False
-            )
-        else:
-            event.vision_context = ''
+        now = time.time()
+        # vision_context не заполняется (issue #4352): его источник /perception/vision_context мёртв.
+        # Что в кадре, строит из vision_events_json perception_projection в rob_box_mcp_tools.
 
         # ============ ADR-0089 Phase 1: AI HAT+ structured events ============
         # Публикуем последние VisionEvent в JSON. vision_event_count
@@ -586,21 +605,18 @@ class ContextAggregatorNode(Node):
         if self.current_pose:
             event.pose = self.current_pose
 
-        # Velocity & Moving
+        # Velocity & Moving (issue #4352): среднее окна скорости, а не последний шумный сэмпл.
         if self.current_odom:
             event.velocity = self.current_odom.twist.twist
-            vx = abs(self.current_odom.twist.twist.linear.x)
-            wz = abs(self.current_odom.twist.twist.angular.z)
-            event.is_moving = vx > 0.01 or wz > 0.01
-        else:
-            event.is_moving = False
+        # None (одометрии за окно нет) уходит в health_issues, см. check_system_health.
+        event.is_moving = bool(self.motion.is_moving(now))
 
         # Sensors
         event.battery_voltage = self.current_sensors.get('battery', 0.0)
         event.temperature = self.current_sensors.get('temperature', 0.0)
 
         # AprilTags
-        event.apriltag_ids = self.last_apriltags
+        event.apriltag_ids = self.tags.visible(now)
 
         # System health
         event.system_health_status = health_status
@@ -628,17 +644,8 @@ class ContextAggregatorNode(Node):
         # Equipment summary (placeholder for Stage 2)
         event.equipment_summary_json = '{}'
 
-        # Mapping mode — читаем /maps/mapping_state.json (volume :ro)
-        try:
-            _state_path = '/maps/mapping_state.json'
-            if os.path.exists(_state_path):
-                with open(_state_path, 'r') as _f:
-                    _state = json.load(_f)
-                event.mapping_mode = _state.get('mode', 'unknown')
-            else:
-                event.mapping_mode = 'unknown'
-        except Exception:
-            event.mapping_mode = 'unknown'
+        # Mapping mode (issue #4352): последний свежий ответ rtabmap, иначе честное 'unknown'.
+        event.mapping_mode = self.rtabmap.mode(now)
 
         # Memory
         event.memory_summary = self.get_memory_summary()
@@ -676,6 +683,12 @@ class ContextAggregatorNode(Node):
             issues.append(f'Упавшие ноды: {failed_nodes}')
         if node_summary['missing'] > 2:
             issues.append(f"Отсутствуют {node_summary['missing']} нод")
+
+        # Issue #4352: нет данных - это проблема, а не «стоим» и не «тегов нет».
+        if self.motion.is_moving(time.time()) is None:
+            issues.append('Одометрия: нет данных, движение неизвестно')
+        if self.apriltag_sub is None:
+            issues.append('AprilTag: нет apriltag_msgs, метки не видны')
 
         # Проверка интернета (добавлено)
         if not self.internet_monitor.get_status()['is_online']:

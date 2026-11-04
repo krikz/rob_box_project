@@ -82,6 +82,14 @@ class _FakeNode:
         self._subs[topic] = callback
         return sub
 
+    def create_client(self, srv_type, name, **kwargs) -> MagicMock:
+        client = MagicMock()
+        client.srv_type = srv_type
+        client.name = name
+        self._clients = getattr(self, '_clients', {})
+        self._clients[name] = client
+        return client
+
     def create_timer(self, period, callback, callback_group=None) -> MagicMock:
         timer = MagicMock()
         timer.period = period
@@ -127,6 +135,34 @@ _interfaces_msg = _types.ModuleType('rcl_interfaces.msg')
 _interfaces_msg.Log = _Log
 sys.modules['rcl_interfaces'] = _interfaces
 sys.modules['rcl_interfaces.msg'] = _interfaces_msg
+
+
+class _GetParameters:
+
+    class Request:
+
+        def __init__(self):
+            self.names: List[str] = []
+
+
+_interfaces_srv = _types.ModuleType('rcl_interfaces.srv')
+_interfaces_srv.GetParameters = _GetParameters
+sys.modules['rcl_interfaces.srv'] = _interfaces_srv
+
+# ── apriltag_msgs shim (issue #4352) ─────────────────────────────────────
+_apriltag = _types.ModuleType('apriltag_msgs')
+_apriltag_msg = _types.ModuleType('apriltag_msgs.msg')
+
+
+class _AprilTagDetectionArray:
+
+    def __init__(self, ids=()):
+        self.detections = [_types.SimpleNamespace(family='tag36h11', id=i) for i in ids]
+
+
+_apriltag_msg.AprilTagDetectionArray = _AprilTagDetectionArray
+sys.modules['apriltag_msgs'] = _apriltag
+sys.modules['apriltag_msgs.msg'] = _apriltag_msg
 
 _cb_mod = _types.ModuleType('rclpy.callback_groups')
 _cb_mod.ReentrantCallbackGroup = type('ReentrantCallbackGroup', (), {})
@@ -386,7 +422,6 @@ class TestContextAggregator(unittest.TestCase):
         self.assertTrue(self.node.has_parameter('timezone'))
 
         # Проверяем начальное состояние
-        self.assertIsNone(self.node.current_vision)
         self.assertIsNone(self.node.current_pose)
 
     def test_parameters(self):
@@ -399,20 +434,79 @@ class TestContextAggregator(unittest.TestCase):
         # Подтверждаем что LLM-параметр действительно отсутствует
         self.assertFalse(self.node.has_parameter('enable_summarization'))
 
-    def test_vision_context_subscription(self):
-        """Тест: Подписка на vision context."""
-        # Создаём vision сообщение
-        vision_msg = String()
-        vision_msg.data = '{"objects": ["table", "chair"], "scene": "kitchen"}'
+    def test_dead_vision_context_topic_is_not_subscribed(self):
+        """Issue #4352: у /perception/vision_context нет издателя - подписки нет."""
+        self.assertNotIn('/perception/vision_context', self.node._subs)
 
-        # Проверяем что есть callback для vision
-        self.assertTrue(hasattr(self.node, 'on_vision_context'))
+    def test_apriltags_subscribed_on_detections(self):
+        """Issue #4352: теги приходят в /detections (apriltag_node), подписка жива."""
+        self.assertIn('/detections', self.node._subs)
 
-        # Вызываем callback
-        self.node.on_vision_context(vision_msg)
+    def test_visible_apriltag_reaches_event(self):
+        """Issue #4352: тег 21 в кадре -> apriltag_ids == [21]."""
+        self.node.on_apriltags(_AprilTagDetectionArray(ids=[21]))
+        event = self._publish()
+        self.assertEqual(event.apriltag_ids, [21])
 
-        # Проверяем что vision сохранен
-        self.assertIsNotNone(self.node.current_vision)
+    def test_apriltag_expires_when_out_of_view(self):
+        """Тег ушёл из кадра: через APRILTAG_FRESH_S он не виден."""
+        self.node.on_apriltags(_AprilTagDetectionArray(ids=[21]))
+        self.assertEqual(self.node.tags.visible(time.time() + 10.0), [])
+
+    def test_standing_robot_with_odom_noise_is_not_moving(self):
+        """Issue #4352: шум icp_odometry стоящего робота (замер 04.11) - не движение."""
+        for vx, vy, wz in ((-0.044, -0.015, 0.006), (0.020, 0.002, 0.019), (-0.006, 0.000, -0.007),
+                           (0.039, 0.005, -0.021)):
+            self.node.on_odometry(self._odom(vx, vy, wz))
+        event = self._publish()
+        self.assertFalse(event.is_moving)
+
+    def test_driving_robot_is_moving(self):
+        """Езда 0.2 м/с - движение."""
+        for _ in range(4):
+            self.node.on_odometry(self._odom(0.2, 0.0, 0.0))
+        self.assertTrue(self._publish().is_moving)
+
+    def test_no_odometry_is_a_health_issue(self):
+        """Одометрии нет - is_moving False, но в health_issues честное «нет данных»."""
+        event = self._publish()
+        self.assertFalse(event.is_moving)
+        self.assertTrue(any('Одометрия' in i for i in event.health_issues))
+
+    def test_mapping_mode_from_rtabmap_parameter(self):
+        """Issue #4352: Mem/IncrementalMemory=false у rtabmap -> localization."""
+        self.assertIn('/rtabmap/rtabmap/get_parameters', self.node._clients)
+        value = _types.SimpleNamespace(type=4, string_value='false', bool_value=False)
+        future = MagicMock()
+        future.result.return_value = _types.SimpleNamespace(values=[value])
+        self.node.rtabmap.on_response(future)
+        self.assertEqual(self._publish().mapping_mode, 'localization')
+
+    def test_mapping_mode_unknown_without_rtabmap_answer(self):
+        """rtabmap не ответил - честное unknown."""
+        self.assertEqual(self._publish().mapping_mode, 'unknown')
+
+    def test_poll_rtabmap_mode_asks_incremental_memory(self):
+        """Опрос шлёт GetParameters с именем Mem/IncrementalMemory."""
+        client = self.node._clients['/rtabmap/rtabmap/get_parameters']
+        client.service_is_ready.return_value = True
+        self.node.rtabmap.poll()
+        request = client.call_async.call_args[0][0]
+        self.assertEqual(request.names, ['Mem/IncrementalMemory'])
+
+    def _odom(self, vx, vy, wz):
+        msg = Odometry()
+        msg.twist.twist.linear.x = vx
+        msg.twist.twist.linear.y = vy
+        msg.twist.twist.angular.z = wz
+        return msg
+
+    def _publish(self):
+        pub = self.node.event_pub
+        before = len(pub.published)
+        self.node.publish_event()
+        self.assertEqual(len(pub.published), before + 1)
+        return pub.published[-1]
 
     def test_pose_subscription(self):
         """Тест: Подписка на позицию (localization_pose).
@@ -587,11 +681,6 @@ class TestContextAggregator(unittest.TestCase):
         """Тест: Агрегация данных из нескольких источников."""
         # Посылаем данные из разных источников
 
-        # Vision
-        vision_msg = String()
-        vision_msg.data = '{"objects": ["cup"]}'
-        self.node.on_vision_context(vision_msg)
-
         # Pose
         # Issue #2826: подписка на PoseWithCovarianceStamped.
         pose_msg = PoseWithCovarianceStamped()
@@ -599,7 +688,6 @@ class TestContextAggregator(unittest.TestCase):
         self.node.on_robot_pose(pose_msg)
 
         # Проверяем что все данные сохранены
-        self.assertIsNotNone(self.node.current_vision)
         self.assertIsNotNone(self.node.current_pose)
         self.assertIsNotNone(self.node.current_sensors)
 
@@ -829,6 +917,7 @@ class TestPublishEvent(unittest.TestCase):
         """Тест: здоровье системы healthy."""
         self.node.current_sensors = {'battery': 40.0}
         self.node.recent_errors = []
+        self.node.motion.add(time.time(), 0.0, 0.0, 0.0)  # одометрия есть (issue #4352)
 
         status, issues = self.node.check_system_health()
 
