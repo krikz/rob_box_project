@@ -42,10 +42,10 @@ fi
 CALLS=""; E2E_ACT_WARMUP_SEC=abc warm_act_audio_path "$tmp" >/dev/null
 case "$CALLS" in *sleep:15*) ok "мусор в E2E_ACT_WARMUP_SEC -> 15" ;; *) bad "garbage: [$CALLS]" ;; esac
 
-# 5. харнесс реально вызывает прогрев после остановки музыки, только для v2
+# 5. харнесс реально вызывает прогрев после остановки музыки
 if grep -A3 'ensure_music_stopped_for_act "\$_music_inherits"' "$HARNESS" \
-    | grep -q 'E2E_DIALOG_ENGINE:-v1}" = "v2" \] && warm_act_audio_path'; then
-    ok "харнесс зовёт прогрев после музыки для v2"
+    | grep -q 'warm_act_audio_path'; then
+    ok "харнесс зовёт прогрев после музыки"
 else
     bad "вызов прогрева в харнессе не найден"
 fi

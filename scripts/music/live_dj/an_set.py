@@ -34,7 +34,7 @@ def main():
                 t0 = t
                 print(f"  +0.0  STT {line.split('STT:')[1].strip()[:80]}")
                 continue
-            if t0 is None or "tools(61)" in line or re.match(r"^\[dialogue_node-\d+\]\s+\[\d+\]", line):
+            if t0 is None or "tools(61)" in line or re.match(r"^\[dialog_node-\d+\]\s+\[\d+\]", line):
                 continue
             rel = f"{(last_ts or t0) - t0:+6.1f}"
             v2 = V.parse_started(line)

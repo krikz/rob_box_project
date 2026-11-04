@@ -256,7 +256,7 @@ def _run_step(tmp_path, log_text, plays, body, env="", replace=False):
         'ROBOT_SSH="bash %s"' % FAKE.as_posix(),
         'SCRIPT_DIR_E2E="%s"' % SCRIPTS_DIR.as_posix(),
         "E2E_MAX_ATTEMPTS=1; E2E_REACTION_WINDOW=40; E2E_RETRY_PAUSE=0; E2E_EVENT_POLL=1; E2E_BARGE_POLL=1",
-        "E2E_DIALOG_ENGINE=v2; E2E_SILENCE_WAIT_MAX=30; E2E_FAIL_KIND=''",
+        "E2E_SILENCE_WAIT_MAX=30; E2E_FAIL_KIND=''",
         'log() { echo ">>> $*"; }',
         LIB.read_text(encoding="utf-8").replace("\r\n", "\n"),
         *(extract_function(name) for name in (
@@ -407,7 +407,7 @@ def _act_start(tmp_path, body, *, session=None, music=None, env=None):
         *("export %s='%s'" % kv for kv in (env or {}).items()),
         'ROBOT_SSH="bash %s"' % FAKE.as_posix(),
         'SCRIPT_DIR_E2E="%s"' % SCRIPTS_DIR.as_posix(),
-        "E2E_MUSIC_IDLE_WAIT=3; E2E_UNSILENCE_WAIT=3; E2E_DIALOG_ENGINE=v2; E2E_ACT_RECOVERED=''",
+        "E2E_MUSIC_IDLE_WAIT=3; E2E_UNSILENCE_WAIT=3; E2E_ACT_RECOVERED=''",
         'log() { echo ">>> $*"; }',
         LIB.read_text(encoding="utf-8").replace("\r\n", "\n"),
         extract_function("robot_ros"),
@@ -455,12 +455,6 @@ class TestActStartSilence:
         rc, out, err, _ = _act_start(tmp_path, 'robot_ros() { echo "Traceback: ImportError"; }; '
                                                "ensure_not_silenced_for_act", session=SESSION_SILENCED)
         assert rc == 0 and "E2E_PRECONDITION silence=unknown" in out, (out, err)
-
-    def test_v1_engine_has_no_scene(self, tmp_path):
-        rc, out, err, state = _act_start(tmp_path, "E2E_DIALOG_ENGINE=v1; ensure_not_silenced_for_act",
-                                         session=SESSION_SILENCED)
-        assert rc == 0 and "silence" not in out.replace("ACT_RECOVERED", ""), (out, err)
-        assert _utterances(state) == []
 
 
 PLAYING = json.dumps({"state": "playing", "track_id": "set1:3:abc", "form_ends_at": None, "stops_at": None,

@@ -1,6 +1,5 @@
 name: "L: Build Pi Services"
-# run-name виден только у прямого запуска (workflow_dispatch); по нему
-# "L: Integration Tests" (workflow_run) отличает сборку Sound Pi от прочих.
+# run-name виден только у прямого запуска (workflow_dispatch): «L: Build Pi Services (<pi>)».
 run-name: "L: Build Pi Services (${{ inputs.pi }})"
 
 # Локальная сборка сервисов ОДНОГО Pi на self-hosted runner (ADR-0159 PR-3,

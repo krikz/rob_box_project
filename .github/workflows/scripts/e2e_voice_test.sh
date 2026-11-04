@@ -636,17 +636,15 @@ leave_e2e_mode() {
 
 # --- issue #2890: изоляция АКТА, а не только БД дикторов --------------------
 # До этой правки акт был изолирован только по speakers.e2e.db. Окно ходов
-# LLM в dialogue_node переживало переход между актами, а e2e-память фактов
+# LLM в dialog_node переживало переход между актами, а e2e-память фактов
 # включалась лишь сценариям с memory_save. Прогон акта 2b 35903232434 сразу
 # после акта 2 35900007906: в контексте LLM стоял ход акта 2 «[Spkr:Саша]
 # поищи … про чай», и новой Саше (профиль 5baad325; старая 243092d7 стёрта)
 # робот сказал факт старой — «зелёный чай без сахара и лук ни в каком виде».
 #
 # Теперь в начале КАЖДОГО прогона сценария (isolate_act_start):
-#   1. окно диалога сбрасывается тем же _reset_dialogue_session, что у фразы
-#      «новая сессия», но молча — ros2 param set /dialogue_node
-#      e2e_session_reset_token <уникальный токен>, токен читается ОБРАТНО
-#      (отказ сброса = колбэк отклоняет значение = токен не совпал = FATAL);
+#   1. окно диалога сбрасывается молча — сервисом /dialog/control (reset,
+#      set_by=tars); без ok=True в ответе — FATAL (reset_dialog_v2_session_for_act);
 #   2. сценарий, который стирает каст дикторов (register_speaker), стирает
 #      и e2e-память фактов: факты о стёртых людях — тот же каст.
 #
@@ -675,44 +673,16 @@ print(f"E2E_FATAL: inherits_previous_act обязан быть true|false, а н
 sys.exit(2)
 PY
 }
-_read_dialogue_reset_token() {
-    robot_ros "ros2 param get /dialogue_node e2e_session_reset_token --no-daemon" 2>/dev/null \
-        | grep -aoE 'String value is: [A-Za-z0-9_.-]+' | tail -1 | sed 's/^String value is: //'
-}
-reset_dialogue_session_for_act() {  # $1 = токен (только [A-Za-z0-9_.-], с буквы)
-    local token="$1"
-    robot_ros "ros2 param set /dialogue_node e2e_session_reset_token $token --no-daemon" >/dev/null 2>&1
-    if [ "$(_read_dialogue_reset_token)" = "$token" ]; then
-        log "🧹 dialogue_node: окно диалога сброшено перед актом (token=$token) — ходы прошлых актов LLM не увидит"
-        return 0
-    fi
-    # ФАТАЛ: без сброса вердикт акта нечитаем — LLM отвечает по ходам
-    # чужого акта (issue #2890). Лучше честно не прогнать акт.
-    echo "E2E_FATAL: dialogue_node не подтвердил сброс сессии перед актом (token=$token) — акт увидел бы ходы прошлого акта (issue #2890)" >&2
-    echo "           проверь вручную: ssh <robot> \"docker exec voice-assistant bash -lc 'source /opt/ros/humble/setup.bash; source /ws/install/setup.bash; ros2 param get /dialogue_node e2e_session_reset_token --no-daemon'\"" >&2
-    exit 2
-}
-
-# --- ADR-0150 PR-8 (#3702): движок диалога v1 | v2 --------------------------
-# При ``dialog_engine: v2`` (dialog_engine.yaml на роботе) вместо dialogue_node
-# работает dialog_node: параметра e2e_session_reset_token у него нет, сессию
-# сбрасывает сервис /dialog/control (reset, set_by=tars), а текст ходов для
-# приёмки (turn_metrics.py --db, honesty_audit.py --db) пишется в e2e-БД
-# только при e2e_mode и пути ВНЕ /data (rob_box_dialog.e2e_events).
-# Движок узнаём у самой ноды: значение параметра dialog_engine у /dialog_node.
-# Ноды нет (v1) — путь v1 без изменений.
-E2E_DIALOG_ENGINE="v1"
+# --- диалог v2 (единственный движок, #4354 A4) ------------------------------
+# Диалог ведёт dialog_node: сессию сбрасывает сервис /dialog/control (reset,
+# set_by=tars), а текст ходов для приёмки (turn_metrics.py --db,
+# honesty_audit.py --db) пишется в e2e-БД только при e2e_mode и пути ВНЕ /data
+# (rob_box_dialog.e2e_events). Ноды v1 нет и опрашивать нечего.
 E2E_DIALOG_DB_PATH="${E2E_DIALOG_DB_PATH:-/tmp/e2e_dialog/dialog_events_${RUN_ID:-local}.db}"
 E2E_DIALOG_DB_ACTIVATED=0
 _read_dialog_param() {  # $1 = имя параметра /dialog_node → True|False|строка
     robot_ros "ros2 param get /dialog_node $1 --no-daemon" 2>/dev/null \
         | grep -aoE '(Boolean|String) value is: .*' | tail -1 | sed -E 's/^(Boolean|String) value is: //'
-}
-detect_dialog_engine() {
-    E2E_DIALOG_ENGINE="v1"
-    [ "$(_read_dialog_param dialog_engine)" = "v2" ] && E2E_DIALOG_ENGINE="v2"
-    echo "E2E_DIALOG_ENGINE ${E2E_DIALOG_ENGINE}"
-    return 0
 }
 reset_dialog_v2_session_for_act() {
     local out
@@ -784,17 +754,12 @@ isolate_act_start() {  # $1 = файл сценария
             *) echo "E2E_PRECONDITION speaker_db=live" ;;
         esac
     fi
-    detect_dialog_engine
     if [ "$inherits" = "0" ]; then
         log "🔗 акт наследует окно диалога прошлого акта (inherits_previous_act=true) — сброс сессии пропущен намеренно"
-    elif [ "$E2E_DIALOG_ENGINE" = "v2" ]; then
-        reset_dialog_v2_session_for_act
     else
-        reset_dialogue_session_for_act "e2e-$(date -u +%Y%m%dT%H%M%SZ)-$$"
+        reset_dialog_v2_session_for_act
     fi
-    if [ "$E2E_DIALOG_ENGINE" = "v2" ]; then
-        activate_e2e_dialog_db
-    fi
+    activate_e2e_dialog_db
 }
 
 # --- issue #2809 — node_params: сценарий форсирует зону сомнения переспроса --
@@ -1052,7 +1017,7 @@ check_gate1_aggregate() {  # $1=acceptance_file_path $2=before_rfc3339
         PYTHONPATH="$SCRIPT_DIR_E2E${PYTHONPATH:+:$PYTHONPATH}" \
         python3 - <<'PY' > "$OUT_DIR/acceptance.json"
 import json, os, re, sys
-# «тул вызван» != «тул есть в списке доступных»: dialogue_node печатает
+# «тул вызван» != «тул есть в списке доступных»: dialog_node печатает
 # tools(56) и системный промпт на каждом ходе (см. e2e_tool_match.py).
 from e2e_tool_match import tool_invoked, strip_llm_request_dump
 # Issue #2406: для discovery-тул ассерта нужен порядок «tool ДО voice».
@@ -1091,7 +1056,7 @@ if not isinstance(expected_call, list) or not isinstance(must_not, list):
     sys.exit(0)
 
 # Substring search по всем логам прогона (case-insensitive).
-# Tool names в логах: dialogue_node печатает "Calling MCP tool: <name>" и
+# Tool names в логах: dialog_node печатает "Calling MCP tool: <name>" и
 # "MCP tool result: <name>"; некоторая tool_call нода — JSON-RPC формат.
 # Ищем substring — robust к формату, ловит оба.
 def has(frag):
@@ -1934,7 +1899,7 @@ check_music_compare() {  # $1 = label, $2 = файл сценария, $3 = на
 # Проверка эха диалога в Telegram (issue #1196, L2).
 #
 # После голосового e2e проверяем, что telegram_node получил ответ
-# dialogue_node. Без внешнего Telegram — дёшево, ловит разрыв
+# dialog_node. Без внешнего Telegram — дёшево, ловит разрыв
 # диалог↔бот. Признак: счётчик ``telegram_message_total{out,...}`` на
 # :9101/metrics вырос (бот отправил сообщение) ИЛИ в логах telegram-bot
 # есть вызов send_message. Если метрики недоступны (prometheus_client
@@ -1980,7 +1945,7 @@ for line in data.splitlines():
     #    диалог↔бот (L2 ловит именно разрыв на этом участке).
     tg_logs="$(${ROBOT_SSH} "docker logs telegram-bot --since '${before}' 2>&1" 2>/dev/null || echo '')"
     if printf '%s' "$tg_logs" | grep -qiE "send_message|response_echo|dialogue.*echo|Echo.*chat|Dropping dialogue echo|Failed to echo"; then
-        log "TG_ECHO: ✅ telegram_node получил ответ dialogue_node (send_message / echo evidence)"
+        log "TG_ECHO: ✅ telegram_node получил ответ dialog_node (send_message / echo evidence)"
         printf '%s\n' "$tg_logs" | grep -iE "send_message|response_echo|dialogue.*echo|Echo.*chat|Dropping dialogue echo|Failed to echo" | tail -3 > "$OUT_DIR/tg_echo_evidence.txt" 2>/dev/null || true
         return 0
     fi
@@ -2023,7 +1988,7 @@ check_backlog_accumulated() {  # $1=before_rfc3339
 # 14.81с — то есть сценарий был лотереей с зазором 0.19с, а не проверкой.
 #
 # Диагноз «backlog_miss» отправлял ретро-инженера искать регресс в
-# dialogue_node, которого там нет. По ADR-0018 честный FAIL обязан называть
+# dialog_node, которого там нет. По ADR-0018 честный FAIL обязан называть
 # настоящую причину: возвращаем её отдельным kind'ом (vad_rejected), с
 # измеренной длительностью и лимитом в тексте шага.
 #
@@ -2270,7 +2235,7 @@ run_step() {  # $1=text $2=voice $3=step_label $4=expect_kind(cycle|wake-gated|b
     #    expect=wake-gated И preflight показал cold-start NOT cleared —
     #    шаг пропускается (SKIP), не FAIL. Это by design поведение
     #    backlog-аккумулятора: «Робот, ...» без wake → STT получает
-    #    «...» (без «Робот»), dialogue_node копит в [backlog] вместо
+    #    «...» (без «Робот»), dialog_node копит в [backlog] вместо
     #    вызова LLM. Acceptance fail (missing stop_music) — это
     #    симптом cold-start flake, а не acceptance flake.
     if [ "$expect" = "wake-gated" ] && [ "${WAKE_GATE_CLEARED:-0}" != "1" ]; then
@@ -2343,7 +2308,7 @@ run_step() {  # $1=text $2=voice $3=step_label $4=expect_kind(cycle|wake-gated|b
     # minimax звучит 17.37с, окно audio_node — speech_max_duration=15.0.
     # audio_node выбрасывал фразу ДО STT, а харнесс тратил на неё две
     # попытки по react_window и отчитывался `FAIL backlog_miss`, то есть
-    # обвинял dialogue_node. Соседний n305 прошёл на 14.81с — зазор 0.19с,
+    # обвинял dialog_node. Соседний n305 прошёл на 14.81с — зазор 0.19с,
     # так что «зелёный» шаг был лотереей на скорости речи провайдера.
     #
     # Здесь wav уже синтезирован — мерим ФАКТ, а не оцениваем по символам.
@@ -2424,7 +2389,7 @@ run_step() {  # $1=text $2=voice $3=step_label $4=expect_kind(cycle|wake-gated|b
             emit_step "${label} SKIP barge_in_anchor_missing"
             return 4
         fi
-    elif [ "${E2E_EVENT_WAITS:-1}" != "0" ] && [ "${E2E_DIALOG_ENGINE:-v1}" = "v2" ]; then
+    elif [ "${E2E_EVENT_WAITS:-1}" != "0" ]; then
         _quiet_done=1
         if wait_robot_quiet; then
             log "STEP ${label}: робот молчит -- команду можно играть (silence_after=${E2E_STEP_SILENCE_SEC}s)"
@@ -2506,7 +2471,7 @@ run_step() {  # $1=text $2=voice $3=step_label $4=expect_kind(cycle|wake-gated|b
         # Прежде чем обвинить бэклог — проверяем, доехал ли звук до STT вообще.
         # run 35658231116: n303/n304 отчитались backlog_miss, а в логах робота
         # лежало `Речь отклонена: 17.37с (max=15.0)` — audio_node выбросил
-        # фразу по длине, dialogue_node её не видел. BEFORE здесь — окно
+        # фразу по длине, dialog_node её не видел. BEFORE здесь — окно
         # последней попытки, ровно то, что нас интересует.
         log "STEP ${label}: ❌ backlog accumulation не подтверждён после ${E2E_MAX_ATTEMPTS} попыток"
         emit_step_fail_or_vad "$label" "$BEFORE" "FAIL backlog_miss" feature
@@ -2564,7 +2529,7 @@ run_step() {  # $1=text $2=voice $3=step_label $4=expect_kind(cycle|wake-gated|b
         # #4196: ход был, но STT исказил ключевое слово фразы шага (поле stt_keys) -- шаг с stt_replay играет фразу ещё раз.
         [ "${E2E_WAIT_RC:-0}" = "0" ] && step_stt_replay "$label" "$safe"
 
-        if [ "$E2E_WAIT_MODE" = "event" ] && [ "${E2E_DIALOG_ENGINE:-v1}" = "v2" ]; then
+        if [ "$E2E_WAIT_MODE" = "event" ]; then
             # #3954: v2 -- ОДИН судья, e2e_events.py (ПРИНЯТО + `📊 [turn]` + SpeechEvent). check_cycle с его
             # «TTS finished» -- наследие v1: в v2-ходе без речи такой строки нет, и он гонял ещё 2 попытки по 40 с.
             case "${E2E_WAIT_RC:-0}" in
@@ -3095,7 +3060,7 @@ fi
 trap 'restore_robot_tts_default; restore_node_params; leave_e2e_mode; deactivate_e2e_dialog_db; collect_e2e_speaker_db "$OUT_DIR" "${SCENARIO_FILE:-}"; stop_recording' EXIT
 
 # Issue #2890 — изоляция акта ДО первого шага: e2e-БД дикторов (#2750),
-# e2e-память фактов (#2781) и окно диалога dialogue_node. См. isolate_act_start.
+# e2e-память фактов (#2781) и окно диалога dialog_node. См. isolate_act_start.
 if [ -n "$SCENARIO_FILE" ] && [ "$E2E_PRESYNTH_FAILED" != "1" ]; then
     isolate_act_start "$SCENARIO_FILE"
     E2E_ACT_STARTED=1
@@ -3107,7 +3072,7 @@ if [ -n "$SCENARIO_FILE" ] && [ "$E2E_PRESYNTH_FAILED" != "1" ]; then
     scenario_inherits_previous_act "$SCENARIO_FILE" && _music_inherits=yes
     ensure_music_stopped_for_act "$_music_inherits"
     # Issue #3886 — прогрев sink и пауза перед первой фразой v2-акта (потеря «Робот,» в n201).
-    [ "${E2E_DIALOG_ENGINE:-v1}" = "v2" ] && warm_act_audio_path "$OUT_DIR"
+    warm_act_audio_path "$OUT_DIR"
     # Issue #3989 п.5 — тишина («замолчи») прошлого акта не переезжает в этот: снимается и помечается.
     ensure_not_silenced_for_act
 fi
@@ -3262,7 +3227,7 @@ elif [ -n "$SCENARIO_FILE" ]; then
         # («[backlog] flushed to LLM backlog_handled=true»): на первой попытке
         # бэклог уже слит, на повторе сливать нечего, и паттерн не может
         # совпасть больше никогда. Такой шаг в принципе неретраебельный, и
-        # молчать об этом нельзя — иначе разбор уходит в dialogue_node.
+        # молчать об этом нельзя — иначе разбор уходит в dialog_node.
         last_fail_what=""
         pat_ok_any=0
         acc_ok_any=0
@@ -3403,7 +3368,7 @@ for p in json.load(sys.stdin):
             # зарегистрировала Бориса и задала переспрос, попытка 2 та же
             # реплика ушла ОТВЕТОМ на переспрос). Откатить регистрацию/вопрос
             # харнессу нечем (speakers.db общая с живыми людьми, ожидание
-            # ответа — в памяти dialogue_node), поэтому такой ретрай
+            # ответа — в памяти dialog_node), поэтому такой ретрай
             # запрещается по уликам в логе ЭТОЙ попытки: см.
             # retry_block_reason() в e2e_tool_match.py. Сбой самого разбора —
             # тоже запрет: «не доказано, что безопасно» не равно «безопасно».
@@ -3604,7 +3569,7 @@ if [ "$PASS" = "1" ]; then
     ensure_outdir
     echo "PASS" > "$OUT_DIR/verdict.txt"
     # Issue #1196 L2: после голосового e2e проверяем эхо в Telegram
-    # (telegram_node получил ответ dialogue_node). Полуавтомат: включается
+    # (telegram_node получил ответ dialog_node). Полуавтомат: включается
     # флагом --check-tg-echo (RUN_NOW / ручной прогон). Не фейлит вердикт —
     # голосовой e2e не обязан слать сообщения в чат; эхо-проверка ловит
     # разрыв диалог↔бот как диагностика.

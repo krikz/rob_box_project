@@ -206,7 +206,7 @@ def _run(tmp_path, log_text, body, env=None, timeout=60):
         'ROBOT_SSH="bash %s"' % FAKE.as_posix(),
         'SCRIPT_DIR_E2E="%s"' % SCRIPTS_DIR.as_posix(),
         'log() { echo ">>> $*"; }',
-        "E2E_DIALOG_ENGINE=v2; E2E_EVENT_POLL=1; E2E_BARGE_POLL=1",
+        "E2E_EVENT_POLL=1; E2E_BARGE_POLL=1",
         LIB.read_text(encoding="utf-8").replace("\r\n", "\n"),
         body,
     ])

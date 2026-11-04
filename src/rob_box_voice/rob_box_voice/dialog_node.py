@@ -1,7 +1,7 @@
 """dialog_node — тонкий ROS-хост диалога v2 (ADR-0150 §2.2, §3; PR-8 ч.8e2 #3702).
 
-Стартует из launch (``rob_box_core.dialog_engine.launch_nodes``); нода v1 ``dialogue_node``
-удалена в PR-15 (#3711). Вся логика хода — ``rob_box_dialog`` (``address → grammar → context → LLM → command →
+Стартует из launch (``rob_box_core.dialog_engine.launch_nodes``); нода v1 удалена в PR-15 (#3711). Вся логика хода —
+``rob_box_dialog`` (``address → grammar → context → LLM → command →
 Executor → respond``, :class:`rob_box_dialog.turn.TurnEngine`); транспорт — ``core.dialog_v2_ports`` (дорога
 исполнения v1: LLM-цепочка с мостом команд, MCP-тулы под планировщиком ресурсов). Здесь — только ROS:
 
@@ -52,7 +52,7 @@ from rclpy.qos import DurabilityPolicy, HistoryPolicy, QoSProfile, ReliabilityPo
 from rcl_interfaces.msg import SetParametersResult
 from std_msgs.msg import String
 
-from rob_box_core import dialog_engine, speech_client
+from rob_box_core import speech_client
 from rob_box_core.e2e_mode import E2EModeFollower
 from rob_box_core.provider_publisher import make_publisher, publish_provider_states
 from rob_box_core.speaker_wire import speaker_result_to_payload
@@ -361,7 +361,6 @@ class DialogNode(Node):
         self._package_logs = RosLogHandler.attach(self.get_logger())  # INFO python-логгеров rob_box_dialog (#4061)
         declare_params(self)
         start_metrics(self)
-        self.engine_flag = dialog_engine.declare(self)
         self.last_turn: Any = None  # concurrent.futures.Future последнего хода (журнал, тесты)
         self.last_chat_turn: Any = None  # то же для хода телеграм-агента
         self._loop = asyncio.new_event_loop()
@@ -421,7 +420,7 @@ class DialogNode(Node):
         self.create_timer(2.0, self._reporter.tick)
         self.add_on_set_parameters_callback(self._on_params)
         self._thread.start()
-        self.get_logger().info(f"✅ dialog_node v2: {kn.AGENTS[0]}, dialog_engine={self.engine_flag}, "
+        self.get_logger().info(f"✅ dialog_node v2: {kn.AGENTS[0]}, "
                                f"wake={self._wake[:3]}…, e2e={self._engine_events_state()}")
 
     def _subscribe(self) -> None:

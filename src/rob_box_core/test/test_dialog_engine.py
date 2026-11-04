@@ -1,4 +1,4 @@
-"""Ноды диалога в launch voice_assistant и метка движка ``dialog_node`` (ADR-0150 §11; флаг v1|v2 снят, #4354 A3).
+"""Ноды диалога в launch voice_assistant (ADR-0150 §11; флаг v1|v2 снят в #4354 A3, метка у dialog_node — в A4).
 
 Launch-файлы грузятся с подменой ``launch``/``launch_ros`` (записывающие заглушки): тест видит ровно тот список нод,
 который launch отдаёт ROS, и их порядок.
@@ -34,23 +34,11 @@ NODES = {
 }
 
 
-def test_declare_reads_node_parameter():
-    class Node:
-        def __init__(self, value):
-            self.value = value
-            self.declared = {}
-
-        def declare_parameter(self, name, default):
-            self.declared[name] = default
-
-        def get_parameter(self, name):
-            return types.SimpleNamespace(value=self.value if self.value is not None else self.declared[name])
-
-    assert de.declare(Node(None)) == "v2"
-    assert de.declare(Node(" V2 ")) == "v2"
-    for bad in ("v1", "v9"):
-        with pytest.raises(ValueError):
-            de.declare(Node(bad))
+def test_engine_label_param_is_gone():
+    """#4354 A4: метки ``dialog_engine`` у ``dialog_node`` нет — её читала только ветка v1 e2e-харнесса."""
+    assert not hasattr(de, "declare") and not hasattr(de, "PARAM") and not hasattr(de, "V2")
+    node_py = REPO / "src" / "rob_box_voice" / "rob_box_voice" / "dialog_node.py"
+    assert "dialog_engine.declare" not in node_py.read_text(encoding="utf-8")
 
 
 def test_no_engine_flag_file_in_config_dirs():
