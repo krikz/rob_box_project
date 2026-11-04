@@ -117,3 +117,22 @@ def test_n813_command_ack_is_not_an_answer_about_music():
     assert etm.step_verdict(acc, honest)["pass"]
     command_tikho = log(tts("c", "Тихо, Саша. Молчу."))
     assert not etm.step_verdict(acc, command_tikho)["pass"]
+
+
+N807_CONTINUES = {"expected_tool_calls": [], "must_not_call": [], "count_continues": True}
+
+
+def test_count_continuation_mechanism_4207():
+    """Решение Шифу 04.11: счёт - речь. Продолжение не с единицы, подряд, со словом «шаг» после правки."""
+    ok = log(ev("started", "a"), tts("a", "Семь."), ev("started", "b"), tts("b", "Восемь шаг, девять шаг, десять шаг."))
+    assert etm.count_continuation_failures(ok) == []
+    assert etm.step_verdict(N807_CONTINUES, ok)["pass"]
+    restart = log(ev("started", "a"), tts("a", "Семь. Один шаг, два шага."))
+    assert "count restarted from one after the edit" in etm.count_continuation_failures(restart)
+    assert not etm.step_verdict(N807_CONTINUES, restart)["pass"]
+    gap = log(ev("started", "a"), tts("a", "Семь. Девять шаг."))
+    assert any("not consecutive" in f for f in etm.count_continuation_failures(gap))
+    no_step = log(ev("started", "a"), tts("a", "Семь. Восемь, девять."))
+    assert any("шаг" in f for f in etm.count_continuation_failures(no_step))
+    silent = log(ev("started", "a"), tts("a", "Хорошо."))
+    assert etm.count_continuation_failures(silent) == ["no count heard in the window"]

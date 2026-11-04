@@ -197,7 +197,7 @@ def test_count_above_the_ceiling_is_capped_with_an_honest_code_phrase():
     full = counting.full_count(Command(speech="Один, два."), "посчитай до 150")
     said = [n for segment in full.perform.segments for n in counting.said_numbers(segment)]
     assert said[-1] == kn.COUNT_MAX and len(full.perform.segments) <= kn.SEGMENTS_MAX
-    assert full.perform.segments[0].startswith(phrases.text(kn.COUNT_CAPPED_PHRASE, top="ста"))
+    assert full.perform.segments[0].startswith(phrases.text(kn.COUNT_CAPPED_PHRASE, top="пятидесяти"))
 
 
 def test_n802_turn_performs_the_code_count():
