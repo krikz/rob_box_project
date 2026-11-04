@@ -811,9 +811,9 @@ _ev_kv() {  # stdin = key=value строки; $1=key
 # (silent_ok шага либо льгота E2E_NO_SPEECH_GRACE; у v1 льгота ведёт к rc=0, как раньше).
 wait_reply_done() {
     local since="$1" barge_flag="" poll="${E2E_EVENT_POLL:-2}" ceiling="${E2E_REACTION_WINDOW:-40}"
-    local accept_win=0 reason performing limit
+    local accept_win reason performing limit
     [ "${2:-0}" = "1" ] && barge_flag="--barge"
-    [ "${E2E_DIALOG_ENGINE:-v1}" = "v2" ] && accept_win="${E2E_ACCEPT_WINDOW:-15}"
+    accept_win="${E2E_ACCEPT_WINDOW:-15}"
     E2E_REPLY_VERDICT="wait"; E2E_REPLY_REASON="-"
     local grace="${E2E_NO_SPEECH_GRACE:-8}" tail_s="${E2E_SPEECH_TAIL:-2}"
     local t0 now out verdict sig quiet prev_sig="" stable=0 nospeech_at=0 silent_flag=""
@@ -822,7 +822,7 @@ wait_reply_done() {
     t0="$(date +%s)"
     while :; do
         now="$(date +%s)"
-        out="$(_events_fetch "$since" "$_E2E_EVENT_GREP" | python3 "$(_events_py)" state --engine "${E2E_DIALOG_ENGINE:-v1}" $silent_flag $barge_flag --waited "$((now - t0))" --accept-window "$accept_win" --perform-ceiling "${E2E_PERFORM_WAIT_MAX:-0}")"
+        out="$(_events_fetch "$since" "$_E2E_EVENT_GREP" | python3 "$(_events_py)" state --engine v2 $silent_flag $barge_flag --waited "$((now - t0))" --accept-window "$accept_win" --perform-ceiling "${E2E_PERFORM_WAIT_MAX:-0}")"
         verdict="$(printf '%s\n' "$out" | _ev_kv verdict)"
         sig="$(printf '%s\n' "$out" | _ev_kv sig)"
         quiet="$(printf '%s\n' "$out" | _ev_kv quiet_for)"
@@ -852,8 +852,7 @@ wait_reply_done() {
                 if [ $((now - nospeech_at)) -ge "$grace" ]; then
                     E2E_REPLY_NO_SPEECH=1; E2E_REPLY_VERDICT="nospeech"; E2E_REPLY_AFTER=$((now - t0))
                     # v2: ход кончился, речи не было и шаг тишину не разрешал -- FAIL сразу, без повторов.
-                    [ "${E2E_DIALOG_ENGINE:-v1}" = "v2" ] && { E2E_REPLY_REASON="no_speech"; return 2; }
-                    return 0
+                    E2E_REPLY_REASON="no_speech"; return 2
                 fi ;;
             *) stable=0; prev_sig=""; nospeech_at=0 ;;
         esac
@@ -902,7 +901,7 @@ wait_robot_quiet() {
     local t0 now out nopen sig quiet fetch prev_sig="" stable=0
     t0="$(date +%s)"
     while :; do
-        out="$(_events_fetch "${E2E_QUIET_LOOKBACK:-600s}" "$_E2E_SPEECH_GREP" | python3 "$(_events_py)" quiet --engine "${E2E_DIALOG_ENGINE:-v1}")"
+        out="$(_events_fetch "${E2E_QUIET_LOOKBACK:-600s}" "$_E2E_SPEECH_GREP" | python3 "$(_events_py)" quiet --engine v2)"
         fetch="$(printf '%s\n' "$out" | _ev_kv fetch)"
         nopen="$(printf '%s\n' "$out" | _ev_kv open)"
         sig="$(printf '%s\n' "$out" | _ev_kv sig)"
@@ -942,7 +941,7 @@ wait_barge_anchor() {
     esac
     t0="$(date +%s)"
     while :; do
-        out="$(_events_fetch "$since" "$_E2E_EVENT_GREP" | python3 "$(_events_py)" anchor --engine "${E2E_DIALOG_ENGINE:-v1}" --after "$after" --n "${n:-1}")"
+        out="$(_events_fetch "$since" "$_E2E_EVENT_GREP" | python3 "$(_events_py)" anchor --engine v2 --after "$after" --n "${n:-1}")"
         if [ "$(printf '%s\n' "$out" | _ev_kv found)" = "1" ]; then
             E2E_ANCHOR_TS="$(printf '%s\n' "$out" | _ev_kv ts)"
             E2E_ANCHOR_ID="$(printf '%s\n' "$out" | _ev_kv speech_id)"
@@ -1247,7 +1246,6 @@ _session_report() {  # $1 = вывод рабочего процесса -> key=
 }
 
 ensure_not_silenced_for_act() {
-    [ "${E2E_DIALOG_ENGINE:-v1}" = "v2" ] || return 0   # сцена Silence -- только у dialog v2
     local code_b64 phrase phrase_b64 out rep detail wait_s="${E2E_UNSILENCE_WAIT:-8}"
     code_b64="$(_e2e_session_py | base64 | tr -d '\n\r')"
     out="$(robot_ros "python3 -c \"import base64;exec(base64.b64decode('${code_b64}').decode())\" read - 0" 2>/dev/null)"

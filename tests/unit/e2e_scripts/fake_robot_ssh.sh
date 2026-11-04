@@ -16,11 +16,9 @@
 #   * #3904: режим e2e один — ``e2e_mode_applied`` последователя (/mcp_server)
 #     повторяет ``e2e_mode`` владельца /speaker_id_node; таймер снятия
 #     ``e2e_release_after_s`` хранится как Double;
-#   * ``ros2 param set /dialogue_node e2e_session_reset_token <t>`` пишет
-#     ``RESET <node> <t>`` и сохраняет токен; при FAKE_DIALOGUE_REJECT=1
-#     значение ОТКЛОНЯЕТСЯ, как отклонил бы parameters_callback при
-#     провале сброса (печать «Set parameter failed», токен не меняется) —
-#     харнесс обязан прочитать токен обратно и упасть E2E_FATAL;
+#   * ``ros2 service call /dialog/control ... action: 2 ... set_by: tars`` (сброс сессии v2) пишет
+#     ``RESET /dialog_node`` и отвечает ``ok=True, epoch=1``; при FAKE_V2_RESET_REJECT=1 — ``ok=False``,
+#     харнесс обязан упасть E2E_FATAL;
 #   * ``ros2 param get`` печатает то, что печатает ros2cli:
 #     «Boolean value is: True|False» / «String value is: <v>».
 #
@@ -35,8 +33,7 @@
 # Env:
 #   FAKE_ROBOT_STATE     — каталог состояния (обязателен)
 #   FAKE_ROBOT_LOG       — файл «docker logs voice-assistant» (необязателен)
-#   FAKE_DIALOGUE_REJECT — 1: dialogue_node отклоняет e2e_session_reset_token
-#   FAKE_ENGINE          — значение dialog_engine у /dialog_node (пусто = v1, ноды нет)
+#   FAKE_V2_RESET_REJECT — 1: /dialog/control reset отвечает ok=False
 #
 # Музыка (issue #3871): ``docker exec voice-assistant ... python3`` идёт с фейковым
 # rclpy из ros_stubs/ (см. там docstring): файл $FAKE_ROBOT_STATE/music_state.json —
@@ -68,7 +65,22 @@ _pfile() {  # $1=node $2=name
     printf '%s/param_%s\n' "$FAKE_ROBOT_STATE" "$(printf '%s%s' "$1" "$2" | tr '/' '_')"
 }
 
-ros2() {  # ros2 param set|get <node> <name> [value] [--no-daemon]
+# ``timeout N ros2 service call ...`` -- ros2 здесь функция, внешний timeout её не видит; остальное -- настоящий timeout.
+timeout() { local n="$1"; shift; case "$*" in "ros2 service "*) "$@" ;; *) command timeout "$n" "$@" ;; esac; }
+
+ros2() {  # ros2 param set|get <node> <name> [value] [--no-daemon] | ros2 service call /dialog/control ...
+    if [ "${1:-}" = "service" ]; then
+        case "$*" in
+            *"call /dialog/control "*"action: 2"*"set_by: tars"*)
+                if [ "${FAKE_V2_RESET_REJECT:-0}" = "1" ]; then
+                    echo "rob_box_dialog_msgs.srv.DialogControl_Response(ok=False, epoch=0, scenes=[])"
+                else
+                    echo "RESET /dialog_node" >> "$FAKE_ROBOT_STATE/events"
+                    echo "rob_box_dialog_msgs.srv.DialogControl_Response(ok=True, epoch=1, scenes=[])"
+                fi
+                return 0 ;;
+        esac
+    fi
     [ "${1:-}" = "param" ] || { _unsupported "ros2 $*"; return; }
     local verb="${2:-}" node="${3:-}" name="${4:-}" value="${5:-}" f was
     f="$(_pfile "$node" "$name")"
@@ -81,15 +93,6 @@ ros2() {  # ros2 param set|get <node> <name> [value] [--no-daemon]
             echo "$value" > "$f"
             echo "Set parameter successful"
             ;;
-        set:e2e_session_reset_token)
-            if [ "${FAKE_DIALOGUE_REJECT:-0}" = "1" ]; then
-                echo "Set parameter failed: issue 2890: e2e session reset failed"
-                return 0
-            fi
-            echo "RESET $node $value" >> "$FAKE_ROBOT_STATE/events"
-            echo "$value" > "$f"
-            echo "Set parameter successful"
-            ;;
         get:e2e_mode)
             if [ "$(cat "$f" 2>/dev/null || echo false)" = "true" ]; then
                 echo "Boolean value is: True"
@@ -97,7 +100,7 @@ ros2() {  # ros2 param set|get <node> <name> [value] [--no-daemon]
                 echo "Boolean value is: False"
             fi
             ;;
-        get:e2e_session_reset_token | get:e2e_db_path)
+        get:e2e_db_path)
             echo "String value is: $(cat "$f" 2>/dev/null)"
             ;;
         set:e2e_db_path | set:e2e_release_after_s)
@@ -120,16 +123,6 @@ ros2() {  # ros2 param set|get <node> <name> [value] [--no-daemon]
                 echo "Boolean value is: True"
             else
                 echo "Boolean value is: False"
-            fi
-            ;;
-        get:dialog_engine)
-            # ADR-0150 PR-8 (#3702): /dialog_node есть только при v2. Фейк —
-            # робот v1 (ros2cli печатает «Node not found»), если не задан
-            # FAKE_ENGINE.
-            if [ "$node" = /dialog_node ] && [ -n "${FAKE_ENGINE:-}" ]; then
-                echo "String value is: $FAKE_ENGINE"
-            else
-                echo "Node not found"
             fi
             ;;
         *)

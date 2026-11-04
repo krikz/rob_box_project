@@ -2,7 +2,7 @@
 test_issue_2890_act_isolation.py — изоляция АКТА E2E, а не только БД дикторов.
 
 Issue #2890: e2e_mode при старте акта стирал ``/data/speakers.e2e.db``, но
-окно диалога dialogue_node и e2e-память фактов переживали переход между
+окно диалога dialog_node и e2e-память фактов переживали переход между
 актами. Прогон акта 2b 35903232434 сразу после акта 2 35900007906: в
 контексте LLM стоял ход акта 2 «[Spkr:Саша] поищи … про чай», и новой Саше
 (профиль 5baad325; старая 243092d7 стёрта) робот сказал факт старой.
@@ -54,10 +54,7 @@ FUNCTIONS = (
     "adopt_e2e_mode",
     "marathon_e2e_mode",
     "leave_e2e_mode",
-    "_read_dialogue_reset_token",
-    "reset_dialogue_session_for_act",
     "_read_dialog_param",
-    "detect_dialog_engine",
     "reset_dialog_v2_session_for_act",
     "activate_e2e_dialog_db",
     "deactivate_e2e_dialog_db",
@@ -106,14 +103,6 @@ robot_ros() {
                     fi
                     echo "$value" > "$f"
                     ;;
-                e2e_session_reset_token)
-                    if [ "${FAKE_DIALOGUE_REJECT:-0}" = 1 ]; then
-                        echo "Set parameter failed: issue 2890: e2e session reset failed"
-                        return 0
-                    fi
-                    echo "RESET $node" >> "$STATE/events"
-                    echo "$value" > "$f"
-                    ;;
                 e2e_db_path)
                     [ "$value" = "''" ] && value=""
                     echo "$value" > "$f"
@@ -141,16 +130,8 @@ robot_ros() {
                         echo "Boolean value is: False"
                     fi
                     ;;
-                e2e_session_reset_token | e2e_db_path)
+                e2e_db_path)
                     echo "String value is: $(cat "$f" 2>/dev/null)"
-                    ;;
-                dialog_engine)
-                    # /dialog_node есть только при v2; при v1 ros2cli печатает «Node not found».
-                    if [ "$node" = /dialog_node ] && [ -n "${FAKE_ENGINE:-}" ]; then
-                        echo "String value is: $FAKE_ENGINE"
-                    else
-                        echo "Node not found"
-                    fi
                     ;;
             esac
             ;;
@@ -181,7 +162,7 @@ def _require_bash_sees(path: Path) -> None:
         pytest.skip(f"bash не видит {path} (вероятно WSL на Windows) — проверка только в CI")
 
 
-def _run_isolation(tmp_path: Path, scenario: Path, *, reject=False, preset=None, engine=None,
+def _run_isolation(tmp_path: Path, scenario: Path, *, preset=None,
                    v2_reject=False, db_path="/tmp/e2e_dialog/dialog_events_test.db", tail="",
                    hold=False, follower_stuck=False, phase="", timer_reject=False):
     state = tmp_path / "state"
@@ -196,7 +177,7 @@ def _run_isolation(tmp_path: Path, scenario: Path, *, reject=False, preset=None,
     script = (
         f'STATE="{_bash_path(state)}"\n'
         f'python3() {{ "{py}" "$@"; }}\n'
-        f'E2E_DIALOG_ENGINE=v1\nE2E_DIALOG_DB_PATH="{db_path}"\nE2E_DIALOG_DB_ACTIVATED=0\n'
+        f'E2E_DIALOG_DB_PATH="{db_path}"\nE2E_DIALOG_DB_ACTIVATED=0\n'
         f'E2E_MODE_FOLLOWERS="/mcp_server"\nE2E_MODE_HELD=0\nE2E_HOLD_FOR_NEXT_ACT={1 if hold else 0}\n'
         'E2E_HOLD_RELEASE_S=1800\nE2E_FOLLOWER_WAIT_S=1\n'
         f'E2E_MARATHON_PHASE="{phase}"\nE2E_MARATHON_HOLD_S=10800\n'
@@ -206,10 +187,6 @@ def _run_isolation(tmp_path: Path, scenario: Path, *, reject=False, preset=None,
         'echo "EXIT_OK"\n'
     )
     env = {"PATH": os.environ.get("PATH", ""), "PYTHONIOENCODING": "utf-8"}
-    if reject:
-        env["FAKE_DIALOGUE_REJECT"] = "1"
-    if engine:
-        env["FAKE_ENGINE"] = engine
     if v2_reject:
         env["FAKE_V2_RESET_REJECT"] = "1"
     if follower_stuck:
@@ -267,10 +244,10 @@ def test_act2b_resets_dialogue_and_wipes_speakers_and_memory(tmp_path):
         "акт стёр каст дикторов, но оставил факты о нём — факт старой Саши "
         "доживает до новой (issue #2890)"
     )
-    assert "RESET /dialogue_node" in events, (
+    assert "RESET /dialog_node" in events, (
         "окно диалога не сброшено — LLM акта 2b увидит ходы акта 2 (issue #2890)"
     )
-    assert "окно диалога сброшено перед актом" in proc.stdout
+    assert "новая сессия перед актом" in proc.stdout
     assert "E2E_PRECONDITION speaker_db=e2e" in proc.stdout
 
 
@@ -280,7 +257,7 @@ def test_plain_act_resets_dialogue_without_touching_dbs(tmp_path):
     proc, events = _run_isolation(tmp_path, _scenario(tmp_path, "plain_v1"))
 
     assert "EXIT_OK" in proc.stdout, proc.stderr
-    assert events == ["RESET /dialogue_node"]
+    assert events == ["RESET /dialog_node"]
     assert "E2E_PRECONDITION speaker_db=live" in proc.stdout
 
 
@@ -293,7 +270,7 @@ def test_inheriting_act_keeps_dialogue_window(tmp_path):
     proc, events = _run_isolation(tmp_path, scenario, preset={"_speaker_id_nodee2e_mode": "true"})
 
     assert "EXIT_OK" in proc.stdout, proc.stderr
-    assert "RESET /dialogue_node" not in events
+    assert "RESET /dialog_node" not in events
     assert "inherits_previous_act=true" in proc.stdout
 
 
@@ -314,7 +291,7 @@ def test_marathon_act2_then_inheriting_act3_stays_on_e2e_db(tmp_path):
     act2 = _copy_real(tmp_path, NIGHT / "night_marathon_act2_acquaintance_v1.json")
     proc, events = _run_isolation(tmp_path, act2, hold=True, tail="leave_e2e_mode")
     assert "EXIT_OK" in proc.stdout, proc.stderr
-    assert events == ["WIPE /speaker_id_node", "WIPE /mcp_server", "RESET /dialogue_node"]
+    assert events == ["WIPE /speaker_id_node", "WIPE /mcp_server", "RESET /dialog_node"]
     assert "E2E_PRECONDITION speaker_db=e2e" in proc.stdout
     assert "E2E_MODE held_for_next_act release_after_s=1800" in proc.stdout
     assert _owner(tmp_path, "e2e_mode") == "true", "trap акта 2 снял режим — акт 3 пойдёт на боевую БД"
@@ -421,18 +398,6 @@ def test_non_bool_inherit_flag_is_schema_error(tmp_path):
 
 
 @bash_required
-def test_rejected_reset_is_fatal_not_a_warning(tmp_path):
-    """Узел не подтвердил сброс — акт не прогоняется: вердикт по ходам чужого
-    акта нечитаем."""
-    proc, events = _run_isolation(tmp_path, _scenario(tmp_path, "plain_v1"), reject=True)
-
-    assert proc.returncode == 2
-    assert "E2E_FATAL" in proc.stderr and "dialogue_node" in proc.stderr
-    assert "EXIT_OK" not in proc.stdout
-    assert "RESET /dialogue_node" not in events
-
-
-@bash_required
 def test_stale_e2e_mode_from_crashed_run_is_rewiped(tmp_path):
     """Прошлый прогон не вернул узлы на боевую: e2e_mode уже true. Раньше
     включение было no-op и акт наследовал чужой каст — теперь выкл/вкл со
@@ -512,7 +477,7 @@ def test_trap_is_armed_before_act_isolation():
     assert trap_at < call_at
 
 
-# ── ADR-0150 PR-8 (#3702): харнесс понимает dialog_engine v2 ────────────────
+# ── ADR-0150 PR-8 (#3702): харнесс ведёт диалог v2 ────────────────
 
 V2_DB = "/tmp/e2e_dialog/dialog_events_test.db"
 
@@ -523,25 +488,12 @@ def _param(tmp_path: Path, node: str, name: str) -> str:
 
 
 @bash_required
-def test_v1_robot_keeps_v1_path(tmp_path):
-    """/dialog_node нет — движок v1, сброс через dialogue_node как раньше, e2e-БД ходов не трогается."""
+def test_v2_resets_via_dialog_control_and_opens_e2e_db(tmp_path):
+    """v2: сброс — /dialog/control reset e2e-БД ходов — вне /data."""
     proc, events = _run_isolation(tmp_path, _scenario(tmp_path, "plain_v1"))
 
     assert "EXIT_OK" in proc.stdout, proc.stderr
-    assert "E2E_DIALOG_ENGINE v1" in proc.stdout
-    assert events == ["RESET /dialogue_node"]
-    assert _param(tmp_path, "/dialog_node", "e2e_db_path") == ""
-
-
-@bash_required
-def test_v2_resets_via_dialog_control_and_opens_e2e_db(tmp_path):
-    """v2: сброс — /dialog/control reset (не параметр dialogue_node), e2e-БД ходов — вне /data."""
-    proc, events = _run_isolation(tmp_path, _scenario(tmp_path, "plain_v1"), engine="v2")
-
-    assert "EXIT_OK" in proc.stdout, proc.stderr
-    assert "E2E_DIALOG_ENGINE v2" in proc.stdout
     assert "RESET /dialog_node" in events
-    assert "RESET /dialogue_node" not in events
     assert "epoch=1" in proc.stdout
     assert f"E2E_DIALOG_DB {V2_DB}" in proc.stdout
     assert _param(tmp_path, "/dialog_node", "e2e_mode") == "", "#3904: своего e2e_mode у dialog_node нет"
@@ -550,7 +502,7 @@ def test_v2_resets_via_dialog_control_and_opens_e2e_db(tmp_path):
 
 @bash_required
 def test_v2_rejected_reset_is_fatal(tmp_path):
-    proc, events = _run_isolation(tmp_path, _scenario(tmp_path, "plain_v1"), engine="v2", v2_reject=True)
+    proc, events = _run_isolation(tmp_path, _scenario(tmp_path, "plain_v1"), v2_reject=True)
 
     assert proc.returncode == 2
     assert "E2E_FATAL" in proc.stderr and "dialog_node (v2)" in proc.stderr
@@ -563,16 +515,16 @@ def test_v2_rejected_reset_is_fatal(tmp_path):
 def test_v2_inheriting_act_skips_reset_but_records_turns(tmp_path):
     scenario = _copy_real(tmp_path, NIGHT / "night_marathon_act3_backlog_diarization_v1.json")
 
-    proc, events = _run_isolation(tmp_path, scenario, engine="v2", preset={"_speaker_id_nodee2e_mode": "true"})
+    proc, events = _run_isolation(tmp_path, scenario, preset={"_speaker_id_nodee2e_mode": "true"})
 
     assert "EXIT_OK" in proc.stdout, proc.stderr
-    assert "RESET /dialog_node" not in events and "RESET /dialogue_node" not in events
+    assert "RESET /dialog_node" not in events
     assert f"E2E_DIALOG_DB {V2_DB}" in proc.stdout
 
 
 @bash_required
 def test_v2_e2e_db_inside_data_is_fatal(tmp_path):
-    proc, _ = _run_isolation(tmp_path, _scenario(tmp_path, "plain_v1"), engine="v2", db_path="/data/dialog.db")
+    proc, _ = _run_isolation(tmp_path, _scenario(tmp_path, "plain_v1"), db_path="/data/dialog.db")
 
     assert proc.returncode == 2
     assert "E2E_FATAL" in proc.stderr and "/data" in proc.stderr
@@ -581,7 +533,7 @@ def test_v2_e2e_db_inside_data_is_fatal(tmp_path):
 
 @bash_required
 def test_v2_deactivate_stops_recording(tmp_path):
-    proc, _ = _run_isolation(tmp_path, _scenario(tmp_path, "plain_v1"), engine="v2", tail="deactivate_e2e_dialog_db")
+    proc, _ = _run_isolation(tmp_path, _scenario(tmp_path, "plain_v1"), tail="deactivate_e2e_dialog_db")
 
     assert "EXIT_OK" in proc.stdout, proc.stderr
     assert _param(tmp_path, "/dialog_node", "e2e_db_path") == ""

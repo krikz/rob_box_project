@@ -71,17 +71,17 @@ def _tail(path: Path, size: int) -> str:
 
 
 def find_log() -> Path:
-    """Файл, в который пишет dialogue_node прямо сейчас.
+    """Файл, в который пишет dialog_node прямо сейчас.
 
     Цепляемся за имя ноды, а не за наличие ходов: сразу после рестарта
     ходов ещё нет, и поиск «по ходам» привязался бы к прошлой сессии.
     """
     candidates = [
-        p for p in LOG_DIR.glob("*.log") if "[dialogue_node]" in _tail(p, 200_000)
+        p for p in LOG_DIR.glob("*.log") if "[dialog_node]" in _tail(p, 200_000)
     ]
     if not candidates:
         raise SystemExit(
-            "не найден лог dialogue_node в /root/.ros/log — нода поднялась?"
+            "не найден лог dialog_node в /root/.ros/log — нода поднялась?"
         )
     return max(candidates, key=lambda p: p.stat().st_mtime)
 
@@ -267,7 +267,7 @@ def main(argv: list[str] | None = None) -> int:
 
     speaker = Speaker()
     if not speaker.wait_ready():
-        print("⚠️  подписчика на /voice/stt/utterance нет — dialogue_node жив?", flush=True)
+        print("⚠️  подписчика на /voice/stt/utterance нет — dialog_node жив?", flush=True)
 
     turns: list[dict[str, Any]] = []
     for rep in range(1, args.repeat + 1):

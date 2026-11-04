@@ -456,7 +456,7 @@ jobs:
             -o addopts="" \
             -p no:cacheprovider
 
-      # Issue #2890: изоляция акта E2E — сброс окна диалога dialogue_node и
+      # Issue #2890: изоляция акта E2E — сброс окна диалога dialog_node и
       # e2e-памяти фактов в начале каждого акта. Тест исполняет НАСТОЯЩИЙ
       # isolate_act_start из e2e_voice_test.sh против фейкового робота
       # (состояние параметров узлов — файлы). Нужны только bash + python3.

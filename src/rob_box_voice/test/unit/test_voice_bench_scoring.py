@@ -245,9 +245,9 @@ def test_collect_takes_its_own_turn_not_the_previous_one(tmp_path) -> None:
     log = tmp_path / "node.log"
     _write(
         log,
-        "[dialogue_node]: [handle_result] spoken='ЧУЖОЙ ОТВЕТ' (len=11) "
+        "[dialog_node]: [handle_result] spoken='ЧУЖОЙ ОТВЕТ' (len=11) "
         "tools=['set_dj_mode'] user_input='будь диджеем устрой вечеринку'",
-        "[dialogue_node]: [handle_result] spoken='Запомнила кухню.' (len=16) "
+        "[dialog_node]: [handle_result] spoken='Запомнила кухню.' (len=16) "
         "tools=['save_waypoint'] user_input='[Speaker:unknown] это кухня'",
     )
     turn = rb.collect(log, 0, timeout=1.0, phrase="робот это кухня")
@@ -259,7 +259,7 @@ def test_collect_reports_undelivered_phrase(tmp_path) -> None:
     """Реплика не долетела до ноды — это не «робот промолчал», а обрыв связи."""
     rb = _runner()
     log = tmp_path / "node.log"
-    _write(log, "[dialogue_node]: тишина")
+    _write(log, "[dialog_node]: тишина")
     turn = rb.collect(log, 0, timeout=0.5, phrase="робот это кухня")
     assert turn["error"] == "NOT_DELIVERED"
 
