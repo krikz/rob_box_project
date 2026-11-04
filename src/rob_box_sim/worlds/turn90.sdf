@@ -1,0 +1,97 @@
+<?xml version="1.0"?>
+<!--
+  Г-поворот на 90° налево: коридор 1.2 м в свету.
+  Ветка A: x -1.0..4.2, y ±0.6. Ветка B: x 3.0..4.2, y до 5.0.
+  Робот спавнится в (0, 0), смотрит по +X.
+
+  Файл сгенерирован: python3 -m rob_box_sim.worlds_catalog (или grid_to_sdf). Руками не править.
+  Системы мира: Sensors (ogre2) нужен gpu_lidar, Imu — IMU-сенсору робота.
+-->
+<sdf version="1.8">
+  <world name="turn90">
+    <physics name="1ms" type="ignored">
+      <max_step_size>0.001</max_step_size>
+      <real_time_factor>1.0</real_time_factor>
+    </physics>
+    <plugin filename="ignition-gazebo-physics-system" name="ignition::gazebo::systems::Physics"/>
+    <plugin filename="ignition-gazebo-user-commands-system" name="ignition::gazebo::systems::UserCommands"/>
+    <plugin filename="ignition-gazebo-scene-broadcaster-system" name="ignition::gazebo::systems::SceneBroadcaster"/>
+    <plugin filename="ignition-gazebo-sensors-system" name="ignition::gazebo::systems::Sensors">
+      <render_engine>ogre2</render_engine>
+    </plugin>
+    <plugin filename="ignition-gazebo-imu-system" name="ignition::gazebo::systems::Imu"/>
+
+    <light type="directional" name="sun">
+      <cast_shadows>false</cast_shadows>
+      <pose>0 0 10 0 0 0</pose>
+      <diffuse>0.8 0.8 0.8 1</diffuse>
+      <specular>0.2 0.2 0.2 1</specular>
+      <direction>-0.5 0.1 -0.9</direction>
+    </light>
+
+    <model name="ground_plane">
+      <static>true</static>
+      <link name="link">
+        <collision name="collision">
+          <geometry><plane><normal>0 0 1</normal><size>100 100</size></plane></geometry>
+        </collision>
+        <visual name="visual">
+          <geometry><plane><normal>0 0 1</normal><size>100 100</size></plane></geometry>
+          <material><ambient>0.8 0.8 0.8 1</ambient><diffuse>0.8 0.8 0.8 1</diffuse></material>
+        </visual>
+      </link>
+    </model>
+
+    <model name="turn90_walls">
+      <static>true</static>
+      <link name="leg_a_south">
+        <pose>1.600 -0.650 0.500 0 0 0.000000</pose>
+        <collision name="collision"><geometry><box><size>5.400 0.100 1.000</size></box></geometry></collision>
+        <visual name="visual">
+          <geometry><box><size>5.400 0.100 1.000</size></box></geometry>
+          <material><ambient>0.7 0.7 0.7 1</ambient><diffuse>0.7 0.7 0.7 1</diffuse></material>
+        </visual>
+      </link>
+      <link name="leg_a_north">
+        <pose>0.925 0.650 0.500 0 0 0.000000</pose>
+        <collision name="collision"><geometry><box><size>4.050 0.100 1.000</size></box></geometry></collision>
+        <visual name="visual">
+          <geometry><box><size>4.050 0.100 1.000</size></box></geometry>
+          <material><ambient>0.7 0.7 0.7 1</ambient><diffuse>0.7 0.7 0.7 1</diffuse></material>
+        </visual>
+      </link>
+      <link name="leg_a_end">
+        <pose>-1.050 0.000 0.500 0 0 0.000000</pose>
+        <collision name="collision"><geometry><box><size>0.100 1.400 1.000</size></box></geometry></collision>
+        <visual name="visual">
+          <geometry><box><size>0.100 1.400 1.000</size></box></geometry>
+          <material><ambient>0.7 0.7 0.7 1</ambient><diffuse>0.7 0.7 0.7 1</diffuse></material>
+        </visual>
+      </link>
+      <link name="leg_b_outer">
+        <pose>4.250 2.225 0.500 0 0 0.000000</pose>
+        <collision name="collision"><geometry><box><size>0.100 5.750 1.000</size></box></geometry></collision>
+        <visual name="visual">
+          <geometry><box><size>0.100 5.750 1.000</size></box></geometry>
+          <material><ambient>0.7 0.7 0.7 1</ambient><diffuse>0.7 0.7 0.7 1</diffuse></material>
+        </visual>
+      </link>
+      <link name="leg_b_inner">
+        <pose>2.950 2.850 0.500 0 0 0.000000</pose>
+        <collision name="collision"><geometry><box><size>0.100 4.500 1.000</size></box></geometry></collision>
+        <visual name="visual">
+          <geometry><box><size>0.100 4.500 1.000</size></box></geometry>
+          <material><ambient>0.7 0.7 0.7 1</ambient><diffuse>0.7 0.7 0.7 1</diffuse></material>
+        </visual>
+      </link>
+      <link name="leg_b_end">
+        <pose>3.600 5.050 0.500 0 0 0.000000</pose>
+        <collision name="collision"><geometry><box><size>1.400 0.100 1.000</size></box></geometry></collision>
+        <visual name="visual">
+          <geometry><box><size>1.400 0.100 1.000</size></box></geometry>
+          <material><ambient>0.7 0.7 0.7 1</ambient><diffuse>0.7 0.7 0.7 1</diffuse></material>
+        </visual>
+      </link>
+    </model>
+  </world>
+</sdf>

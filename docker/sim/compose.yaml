@@ -31,6 +31,8 @@
 #   SIM_PREFIX         префикс имён контейнеров    (rob-box-sim)
 #   SIM_DRI_CARD       DRM-карта для EGL Gazebo    (/dev/dri/card0)
 #   SIM_DRI_RENDER     render-node                 (/dev/dri/renderD128)
+#   SIM_WORLD          мир из src/rob_box_sim/worlds без .sdf (polygon):
+#                      polygon | turn90 | corridor | low_obstacle | local/<мир из карты робота>
 #
 # rtabmap, как на роботе, стартует в localization (start_rtabmap.sh). Чтобы
 # построить карту мира, переключить его тем же сервисом, что на роботе:
@@ -88,7 +90,16 @@ services:
       - ../main/config:/config:ro
       - ../common/scripts:/ros_scripts:ro
       - ../common/config:/common_config:ro
-    command: ["/ros_scripts/ros_with_namespace.sh", "ros2", "launch", "rob_box_sim", "sim.launch.py"]
+      # Миры монтируются, а не берутся из образа: правка мира — без пересборки,
+      # а миры из карты робота (worlds/local/, не в git) доступны как SIM_WORLD=local/<имя>.
+      - ../../src/rob_box_sim/worlds:/sim_worlds:ro
+    command:
+      - /ros_scripts/ros_with_namespace.sh
+      - ros2
+      - launch
+      - rob_box_sim
+      - sim.launch.py
+      - world:=/sim_worlds/${SIM_WORLD:-polygon}.sdf
     depends_on:
       - zenoh-router
       - robot-state-publisher

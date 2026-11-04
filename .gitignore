@@ -128,3 +128,5 @@ node_modules/
 /.vite/
 /artifacts_live*
 /live_check*
+# Сим: миры из карты робота (rob_box_sim.grid_to_sdf) — карта дома, в публичный репо не кладём
+src/rob_box_sim/worlds/local/
