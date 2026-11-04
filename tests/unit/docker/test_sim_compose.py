@@ -165,6 +165,20 @@ def test_nav2_overlays_mounted_and_exist_for_every_choice():
                         assert p.is_file(), p
 
 
+def test_mppi_checks_footprint_only_with_polygon_footprint():
+    # С кругом robot_radius MPPI с consider_footprint=true не конфигурируется (замер шага 6).
+    def mppi_flag(*names):
+        flag = None
+        for n in names:
+            doc = yaml.safe_load((SIM_NAV2 / n).read_text(encoding="utf-8"))
+            fp = doc.get("controller_server", {}).get("ros__parameters", {}).get("FollowPath", {})
+            flag = fp.get("ObstaclesCritic", {}).get("consider_footprint", flag)
+        return flag
+
+    assert mppi_flag("controller_mppi.yaml", "footprint_radius.yaml") is False
+    assert mppi_flag("controller_mppi.yaml", "footprint_urdf.yaml") is True
+
+
 def test_footprint_radius_overlay_is_robot_value():
     robot = yaml.safe_load((MAIN / "config" / "nav2" / "nav2_params.yaml").read_text(encoding="utf-8"))
     doc = yaml.safe_load((SIM_NAV2 / "footprint_radius.yaml").read_text(encoding="utf-8"))

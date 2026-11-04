@@ -51,10 +51,10 @@ controller_server:
         cost_power: 1
         repulsion_weight: 1.5
         critical_weight: 20.0
-        # true: проверять столкновение по габариту (SIM_FOOTPRINT=urdf — прямоугольник).
-        # С false MPPI смотрит только стоимость под центром робота, и углы
-        # прямоугольника заходят в стену (замер: 4 касания из 5 на turn90).
-        consider_footprint: true
+        # consider_footprint задаёт оверлей габарита (footprint_*.yaml): с кругом
+        # robot_radius MPPI при true не конфигурируется («no robot footprint provided
+        # in the costmap», замер), с прямоугольником при false углы заходят в стену.
+        consider_footprint: false
         collision_cost: 10000.0
         collision_margin_distance: 0.1
         near_goal_distance: 0.5
