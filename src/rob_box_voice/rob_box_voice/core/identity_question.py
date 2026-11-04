@@ -355,8 +355,8 @@ async def settle_identity(node: Any, timeout_s: float = kn.REGISTER_OUTCOME_WAIT
 
 
 def start_after_turn_question(node: Any, plan: Optional[Mapping[str, Any]], result: Any) -> None:
-    """Вопрос личности после ответа хода (#2828/#2908). LLM в ходе что-то сказала и есть Chooser
-    (:mod:`.identity_dedup`) — решение «уже спросила?» идёт ПАРАЛЛЕЛЬНО с речью хода (:func:`ask_after_turn` в своём
+    """Вопрос личности после ответа хода (#2828/#2908). LLM в ходе что-то сказала и у ноды есть Chooser
+    (``node._identity_dedup``) — решение «уже спросила?» идёт ПАРАЛЛЕЛЬНО с речью хода (:func:`ask_after_turn` в своём
     потоке: loop ноды между ходами не крутится — живой прогон 3, задача в loop'е заснула до следующего хода); иначе
     вопрос уходит в речь сразу, как без Chooser'а."""
     if plan is None:

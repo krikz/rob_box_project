@@ -53,11 +53,6 @@ def _load_by_path(name: str, rel: str):
     return mod
 
 
-def test_dialogue_helpers_alias_is_same_object():
-    mod = _load_by_path("_dh_under_test", "core/dialogue_helpers.py")
-    assert mod.INVALID_SPEAKER_NAMES is INVALID_SPEAKER_NAMES
-
-
 def test_speaker_embeddings_alias_is_same_object():
     pytest.importorskip("numpy")
     mod = _load_by_path("_se_under_test", "utils/speaker_embeddings.py")

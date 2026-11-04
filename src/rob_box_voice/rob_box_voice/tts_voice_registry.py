@@ -336,7 +336,7 @@ def named_voices_for(provider: str) -> list[tuple[str, ...]]:
     джовиалмен»). Название и каждый алиас - отдельные элементы кортежа, не склейка: ``rob_box_dialog.turn.command_form``
     ищет в реплике каждое имя целым словом, а Tier-1 читает алиасы вторым кругом, после названия и хвоста id
     (``grammar._voice``). Хвост id («Jovialman») грамматика берёт сама. Одно знание об именах - ``VOICE_ALIASES`` (его же
-    читает ``voice_id_by_name``); для v1 (``tier1_host``) и v2 (``dialog_node``) список один; провайдер неизвестен -
+    читает ``voice_id_by_name``); читатель - ``turn_context.tts_voices`` (``dialog_node``); провайдер неизвестен -
     пустой список."""
     return [(vid, voice_display_name(provider, vid), *VOICE_ALIASES.get(f"{provider}:{vid}", ()))
             for vid in voices_for(provider)]

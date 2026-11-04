@@ -7,8 +7,8 @@
 v1 или LLM). Работает в любом состоянии, включая SILENCED, — тогда отдаёт только незвучащие виды
 (``knowledge.TIER1_KINDS``). Слова — из :mod:`.knowledge`, сверка по границам слов — :mod:`.words`.
 
-Стоп внутри другой команды (В19): «спой песню про стоп» — :attr:`Tier1Command.disputed`; решает Chooser хоста
-(``{stop, part_of_command}``, дедлайн ``STOP_CHOOSER_DEADLINE_MS``, таймаут → ``part_of_command``), а не этот модуль.
+Стоп внутри другой команды (В19): «спой песню про стоп» — :attr:`Tier1Command.disputed`; что с ним делать, решает
+хост хода (``turn``, ``interrupt``), а не этот модуль.
 Музыка и диджей — медиа-грамматика v1 (``media_command_grammar``), здесь их нет.
 """
 

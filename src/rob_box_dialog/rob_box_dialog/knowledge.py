@@ -619,18 +619,9 @@ NEW_SESSION_PHRASES: Tuple[str, ...] = (
 #: Ответ на вопрос робота ``Ask(expects="yes_no")`` (U9) — точные формы из :data:`SHORT_ANSWERS`.
 YES_WORDS: Tuple[str, ...] = ("да", "ага", "угу", "ок", "ладно")
 NO_WORDS: Tuple[str, ...] = ("нет", "не")
-#: В19: Chooser спорного стопа — варианты ответа, дедлайн (таймаут/ошибка → ``part_of_command``, речь не рвётся).
-#: 1,5 с — решение Шифу 21.10 08:22: DeepSeek (``llm_harness``) отвечает за 1,1 с, при 1 с Chooser всегда опаздывал.
-STOP_CHOICES: Tuple[str, ...] = ("stop", "part_of_command")
-STOP_CHOOSER_DEADLINE_MS = 1500
-#: Идея Шифу 21.10: Chooser «LLM в этом ходе уже спросила о том же?» перед вопросом личности кодом; дедлайн тот
-#: же, что у спорного стопа. Таймаут/ошибка/нет ключа → ``not_said`` (лучше спросить дважды, чем не спросить).
-IDENTITY_DEDUP_CHOICES: Tuple[str, ...] = ("already_said", "not_said")
-#: Chooser спрашивается ПАРАЛЛЕЛЬНО с речью хода; ждём его не дольше конца этой речи + ``IDENTITY_DEDUP_AFTER_SPEECH_S``
-#: (вопрос не звучит позже, чем без Chooser'а, если речь хода длиннее ответа модели). Дедлайн самой модели — с
-#: запасом на длинную речь хода (живой робот 21.10: llm_harness 1.45–1.5 с, при дедлайне 1.5 с — 4 таймаута из 6).
+#: Вопрос личности после хода ждёт вердикт «LLM уже спросила?» не дольше конца речи хода +
+#: ``IDENTITY_DEDUP_AFTER_SPEECH_S`` (``identity_question.ask_after_turn``).
 IDENTITY_DEDUP_AFTER_SPEECH_S = 1.0
-IDENTITY_DEDUP_DEADLINE_MS = 6000
 
 # ---------------------------------------------------------------------------------------------------------------
 # Классы действий (§5.1) и тулы по классам
@@ -803,7 +794,7 @@ CONTEXT_BUDGET_TOKENS: Mapping[str, int] = MappingProxyType({
     "system": 4000, "snapshot": 1000, "tools": 4000, "window": 3000,
 })
 #: Разделы снимка хода ``<system_context>`` в порядке вывода (``context.build_context``): данные, а не правила.
-#: ``user_profile`` — пока строки шва собеседника v1 (``turn_identity``), структурой — с контрактом §7.5 (PR-11).
+#: ``user_profile`` — пока строки шва собеседника, структурой — с контрактом §7.5 (PR-11).
 #: ``speaker`` — кто сказал реплику (``speaker_adapter.speaker_block``): имя только при ``confirmed`` (§7.5, A30).
 #: ``speaker_memory`` — «робот помнит собеседника» (решение Шифу 23.10): ``dialog_count`` (какой это ход с ним,
 #: профиль ведёт код при уверенном ``SpeakerRef``) и ``facts`` — его факты из той памяти, куда пишут ``memory_save``.
