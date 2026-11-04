@@ -1,0 +1,90 @@
+<?xml version="1.0"?>
+<!--
+  Комната 8×4 м (x -1.5..6.5, y ±2.0). На прямой от спавна к цели (5, 0) —
+  коробка 0.5×0.8 м высотой 0.3 м в (2.5, 0.0):
+  ниже плоскости лидара, лидар её не видит (слепая зона).
+  Робот спавнится в (0, 0), смотрит по +X.
+
+  Файл сгенерирован: python3 -m rob_box_sim.worlds_catalog (или grid_to_sdf). Руками не править.
+  Системы мира: Sensors (ogre2) нужен gpu_lidar, Imu — IMU-сенсору робота.
+-->
+<sdf version="1.8">
+  <world name="low_obstacle">
+    <physics name="1ms" type="ignored">
+      <max_step_size>0.001</max_step_size>
+      <real_time_factor>1.0</real_time_factor>
+    </physics>
+    <plugin filename="ignition-gazebo-physics-system" name="ignition::gazebo::systems::Physics"/>
+    <plugin filename="ignition-gazebo-user-commands-system" name="ignition::gazebo::systems::UserCommands"/>
+    <plugin filename="ignition-gazebo-scene-broadcaster-system" name="ignition::gazebo::systems::SceneBroadcaster"/>
+    <plugin filename="ignition-gazebo-sensors-system" name="ignition::gazebo::systems::Sensors">
+      <render_engine>ogre2</render_engine>
+    </plugin>
+    <plugin filename="ignition-gazebo-imu-system" name="ignition::gazebo::systems::Imu"/>
+
+    <light type="directional" name="sun">
+      <cast_shadows>false</cast_shadows>
+      <pose>0 0 10 0 0 0</pose>
+      <diffuse>0.8 0.8 0.8 1</diffuse>
+      <specular>0.2 0.2 0.2 1</specular>
+      <direction>-0.5 0.1 -0.9</direction>
+    </light>
+
+    <model name="ground_plane">
+      <static>true</static>
+      <link name="link">
+        <collision name="collision">
+          <geometry><plane><normal>0 0 1</normal><size>100 100</size></plane></geometry>
+        </collision>
+        <visual name="visual">
+          <geometry><plane><normal>0 0 1</normal><size>100 100</size></plane></geometry>
+          <material><ambient>0.8 0.8 0.8 1</ambient><diffuse>0.8 0.8 0.8 1</diffuse></material>
+        </visual>
+      </link>
+    </model>
+
+    <model name="low_obstacle_walls">
+      <static>true</static>
+      <link name="wall_north">
+        <pose>2.500 2.000 0.500 0 0 0.000000</pose>
+        <collision name="collision"><geometry><box><size>8.100 0.100 1.000</size></box></geometry></collision>
+        <visual name="visual">
+          <geometry><box><size>8.100 0.100 1.000</size></box></geometry>
+          <material><ambient>0.7 0.7 0.7 1</ambient><diffuse>0.7 0.7 0.7 1</diffuse></material>
+        </visual>
+      </link>
+      <link name="wall_south">
+        <pose>2.500 -2.000 0.500 0 0 0.000000</pose>
+        <collision name="collision"><geometry><box><size>8.100 0.100 1.000</size></box></geometry></collision>
+        <visual name="visual">
+          <geometry><box><size>8.100 0.100 1.000</size></box></geometry>
+          <material><ambient>0.7 0.7 0.7 1</ambient><diffuse>0.7 0.7 0.7 1</diffuse></material>
+        </visual>
+      </link>
+      <link name="wall_west">
+        <pose>-1.500 0.000 0.500 0 0 0.000000</pose>
+        <collision name="collision"><geometry><box><size>0.100 4.000 1.000</size></box></geometry></collision>
+        <visual name="visual">
+          <geometry><box><size>0.100 4.000 1.000</size></box></geometry>
+          <material><ambient>0.7 0.7 0.7 1</ambient><diffuse>0.7 0.7 0.7 1</diffuse></material>
+        </visual>
+      </link>
+      <link name="wall_east">
+        <pose>6.500 0.000 0.500 0 0 0.000000</pose>
+        <collision name="collision"><geometry><box><size>0.100 4.000 1.000</size></box></geometry></collision>
+        <visual name="visual">
+          <geometry><box><size>0.100 4.000 1.000</size></box></geometry>
+          <material><ambient>0.7 0.7 0.7 1</ambient><diffuse>0.7 0.7 0.7 1</diffuse></material>
+        </visual>
+      </link>
+      <link name="low_box">
+        <pose>2.500 0.000 0.150 0 0 0.000000</pose>
+        <collision name="collision"><geometry><box><size>0.500 0.800 0.300</size></box></geometry></collision>
+        <visual name="visual">
+          <geometry><box><size>0.500 0.800 0.300</size></box></geometry>
+          <material><ambient>0.8 0.3 0.1 1</ambient><diffuse>0.8 0.3 0.1 1</diffuse></material>
+        </visual>
+      </link>
+    </model>
+  </world>
+</sdf>

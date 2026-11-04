@@ -5,6 +5,8 @@
   Поперечные перегородки с проёмом по центру (y=0):
     x=2.0 — 1.2 м, x=4.0 — 1.0 м, x=6.0 — 0.9 м, x=8.0 — 0.8 м.
   Робот спавнится в (0, 0), смотрит по +X — прямо в проёмы.
+
+  Файл сгенерирован: python3 -m rob_box_sim.worlds_catalog (или grid_to_sdf). Руками не править.
   Системы мира: Sensors (ogre2) нужен gpu_lidar, Imu — IMU-сенсору робота.
 -->
 <sdf version="1.8">
@@ -33,10 +35,10 @@
       <static>true</static>
       <link name="link">
         <collision name="collision">
-          <geometry><plane><normal>0 0 1</normal><size>40 40</size></plane></geometry>
+          <geometry><plane><normal>0 0 1</normal><size>100 100</size></plane></geometry>
         </collision>
         <visual name="visual">
-          <geometry><plane><normal>0 0 1</normal><size>40 40</size></plane></geometry>
+          <geometry><plane><normal>0 0 1</normal><size>100 100</size></plane></geometry>
           <material><ambient>0.8 0.8 0.8 1</ambient><diffuse>0.8 0.8 0.8 1</diffuse></material>
         </visual>
       </link>
@@ -45,99 +47,99 @@
     <model name="polygon_walls">
       <static>true</static>
       <link name="wall_north">
-        <pose>4.500 3.000 0.500 0 0 0</pose>
+        <pose>4.500 3.000 0.500 0 0 0.000000</pose>
         <collision name="collision"><geometry><box><size>12.100 0.100 1.000</size></box></geometry></collision>
         <visual name="visual">
           <geometry><box><size>12.100 0.100 1.000</size></box></geometry>
-          <material><ambient>0.6 0.6 0.6 1</ambient><diffuse>0.7 0.7 0.7 1</diffuse></material>
+          <material><ambient>0.7 0.7 0.7 1</ambient><diffuse>0.7 0.7 0.7 1</diffuse></material>
         </visual>
       </link>
       <link name="wall_south">
-        <pose>4.500 -3.000 0.500 0 0 0</pose>
+        <pose>4.500 -3.000 0.500 0 0 0.000000</pose>
         <collision name="collision"><geometry><box><size>12.100 0.100 1.000</size></box></geometry></collision>
         <visual name="visual">
           <geometry><box><size>12.100 0.100 1.000</size></box></geometry>
-          <material><ambient>0.6 0.6 0.6 1</ambient><diffuse>0.7 0.7 0.7 1</diffuse></material>
+          <material><ambient>0.7 0.7 0.7 1</ambient><diffuse>0.7 0.7 0.7 1</diffuse></material>
         </visual>
       </link>
       <link name="wall_west">
-        <pose>-1.500 0.000 0.500 0 0 0</pose>
+        <pose>-1.500 0.000 0.500 0 0 0.000000</pose>
         <collision name="collision"><geometry><box><size>0.100 6.000 1.000</size></box></geometry></collision>
         <visual name="visual">
           <geometry><box><size>0.100 6.000 1.000</size></box></geometry>
-          <material><ambient>0.6 0.6 0.6 1</ambient><diffuse>0.7 0.7 0.7 1</diffuse></material>
+          <material><ambient>0.7 0.7 0.7 1</ambient><diffuse>0.7 0.7 0.7 1</diffuse></material>
         </visual>
       </link>
       <link name="wall_east">
-        <pose>10.500 0.000 0.500 0 0 0</pose>
+        <pose>10.500 0.000 0.500 0 0 0.000000</pose>
         <collision name="collision"><geometry><box><size>0.100 6.000 1.000</size></box></geometry></collision>
         <visual name="visual">
           <geometry><box><size>0.100 6.000 1.000</size></box></geometry>
-          <material><ambient>0.6 0.6 0.6 1</ambient><diffuse>0.7 0.7 0.7 1</diffuse></material>
+          <material><ambient>0.7 0.7 0.7 1</ambient><diffuse>0.7 0.7 0.7 1</diffuse></material>
         </visual>
       </link>
       <link name="gap_1_2_left">
-        <pose>2.000 1.800 0.500 0 0 0</pose>
+        <pose>2.000 1.800 0.500 0 0 0.000000</pose>
         <collision name="collision"><geometry><box><size>0.100 2.400 1.000</size></box></geometry></collision>
         <visual name="visual">
           <geometry><box><size>0.100 2.400 1.000</size></box></geometry>
-          <material><ambient>0.6 0.6 0.6 1</ambient><diffuse>0.7 0.7 0.7 1</diffuse></material>
+          <material><ambient>0.7 0.7 0.7 1</ambient><diffuse>0.7 0.7 0.7 1</diffuse></material>
         </visual>
       </link>
       <link name="gap_1_2_right">
-        <pose>2.000 -1.800 0.500 0 0 0</pose>
+        <pose>2.000 -1.800 0.500 0 0 0.000000</pose>
         <collision name="collision"><geometry><box><size>0.100 2.400 1.000</size></box></geometry></collision>
         <visual name="visual">
           <geometry><box><size>0.100 2.400 1.000</size></box></geometry>
-          <material><ambient>0.6 0.6 0.6 1</ambient><diffuse>0.7 0.7 0.7 1</diffuse></material>
+          <material><ambient>0.7 0.7 0.7 1</ambient><diffuse>0.7 0.7 0.7 1</diffuse></material>
         </visual>
       </link>
       <link name="gap_1_0_left">
-        <pose>4.000 1.750 0.500 0 0 0</pose>
+        <pose>4.000 1.750 0.500 0 0 0.000000</pose>
         <collision name="collision"><geometry><box><size>0.100 2.500 1.000</size></box></geometry></collision>
         <visual name="visual">
           <geometry><box><size>0.100 2.500 1.000</size></box></geometry>
-          <material><ambient>0.6 0.6 0.6 1</ambient><diffuse>0.7 0.7 0.7 1</diffuse></material>
+          <material><ambient>0.7 0.7 0.7 1</ambient><diffuse>0.7 0.7 0.7 1</diffuse></material>
         </visual>
       </link>
       <link name="gap_1_0_right">
-        <pose>4.000 -1.750 0.500 0 0 0</pose>
+        <pose>4.000 -1.750 0.500 0 0 0.000000</pose>
         <collision name="collision"><geometry><box><size>0.100 2.500 1.000</size></box></geometry></collision>
         <visual name="visual">
           <geometry><box><size>0.100 2.500 1.000</size></box></geometry>
-          <material><ambient>0.6 0.6 0.6 1</ambient><diffuse>0.7 0.7 0.7 1</diffuse></material>
+          <material><ambient>0.7 0.7 0.7 1</ambient><diffuse>0.7 0.7 0.7 1</diffuse></material>
         </visual>
       </link>
       <link name="gap_0_9_left">
-        <pose>6.000 1.725 0.500 0 0 0</pose>
+        <pose>6.000 1.725 0.500 0 0 0.000000</pose>
         <collision name="collision"><geometry><box><size>0.100 2.550 1.000</size></box></geometry></collision>
         <visual name="visual">
           <geometry><box><size>0.100 2.550 1.000</size></box></geometry>
-          <material><ambient>0.6 0.6 0.6 1</ambient><diffuse>0.7 0.7 0.7 1</diffuse></material>
+          <material><ambient>0.7 0.7 0.7 1</ambient><diffuse>0.7 0.7 0.7 1</diffuse></material>
         </visual>
       </link>
       <link name="gap_0_9_right">
-        <pose>6.000 -1.725 0.500 0 0 0</pose>
+        <pose>6.000 -1.725 0.500 0 0 0.000000</pose>
         <collision name="collision"><geometry><box><size>0.100 2.550 1.000</size></box></geometry></collision>
         <visual name="visual">
           <geometry><box><size>0.100 2.550 1.000</size></box></geometry>
-          <material><ambient>0.6 0.6 0.6 1</ambient><diffuse>0.7 0.7 0.7 1</diffuse></material>
+          <material><ambient>0.7 0.7 0.7 1</ambient><diffuse>0.7 0.7 0.7 1</diffuse></material>
         </visual>
       </link>
       <link name="gap_0_8_left">
-        <pose>8.000 1.700 0.500 0 0 0</pose>
+        <pose>8.000 1.700 0.500 0 0 0.000000</pose>
         <collision name="collision"><geometry><box><size>0.100 2.600 1.000</size></box></geometry></collision>
         <visual name="visual">
           <geometry><box><size>0.100 2.600 1.000</size></box></geometry>
-          <material><ambient>0.6 0.6 0.6 1</ambient><diffuse>0.7 0.7 0.7 1</diffuse></material>
+          <material><ambient>0.7 0.7 0.7 1</ambient><diffuse>0.7 0.7 0.7 1</diffuse></material>
         </visual>
       </link>
       <link name="gap_0_8_right">
-        <pose>8.000 -1.700 0.500 0 0 0</pose>
+        <pose>8.000 -1.700 0.500 0 0 0.000000</pose>
         <collision name="collision"><geometry><box><size>0.100 2.600 1.000</size></box></geometry></collision>
         <visual name="visual">
           <geometry><box><size>0.100 2.600 1.000</size></box></geometry>
-          <material><ambient>0.6 0.6 0.6 1</ambient><diffuse>0.7 0.7 0.7 1</diffuse></material>
+          <material><ambient>0.7 0.7 0.7 1</ambient><diffuse>0.7 0.7 0.7 1</diffuse></material>
         </visual>
       </link>
     </model>

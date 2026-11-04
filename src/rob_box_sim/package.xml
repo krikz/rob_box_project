@@ -9,6 +9,7 @@
   <license>MIT</license>
 
   <buildtool_depend>ament_cmake</buildtool_depend>
+  <buildtool_depend>ament_cmake_python</buildtool_depend>
 
   <exec_depend>rob_box_description</exec_depend>
   <exec_depend>ros_gz_sim</exec_depend>
@@ -17,6 +18,12 @@
   <exec_depend>controller_manager</exec_depend>
   <exec_depend>diff_drive_controller</exec_depend>
   <exec_depend>joint_state_broadcaster</exec_depend>
+  <exec_depend>python3-yaml</exec_depend>
+  <!-- стенд сценариев rob_box_sim.nav_bench -->
+  <exec_depend>nav2_simple_commander</exec_depend>
+  <exec_depend>tf2_ros</exec_depend>
+  <exec_depend>std_srvs</exec_depend>
+  <exec_depend>nav_msgs</exec_depend>
 
   <export>
     <build_type>ament_cmake</build_type>
