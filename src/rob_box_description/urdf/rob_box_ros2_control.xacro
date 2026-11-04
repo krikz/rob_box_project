@@ -12,6 +12,12 @@
   <!-- ═══════════════════════════════════════════════════════════════ -->
   
   <xacro:arg name="controllers_yaml" default="/config/controllers/controller_manager.yaml"/>
+  <!-- HIL (docs/research/2026-11-04-hil-robot-on-gazebo-data.md §5.2): узел, у которого   -->
+  <!-- gz_ros2_control берёт robot_description. Пусто — по умолчанию плагина              -->
+  <!-- (/robot_state_publisher, обычный сим). В HIL на Main Pi под этим именем живёт      -->
+  <!-- боевой RSP с URDF VESC, поэтому сим задаёт свой узел, например                     -->
+  <!-- /sim/robot_state_publisher (src/rob_box_sim/launch/sim.launch.py, hil:=true).      -->
+  <xacro:arg name="sim_robot_param_node" default=""/>
   <xacro:unless value="${is_sim}">
   <ros2_control name="VescSystem" type="system">
     <hardware>
@@ -167,6 +173,9 @@
   <gazebo>
     <plugin filename="gz_ros2_control-system" name="gz_ros2_control::GazeboSimROS2ControlPlugin">
       <parameters>$(arg controllers_yaml)</parameters>
+      <xacro:if value="${'$(arg sim_robot_param_node)' != ''}">
+      <robot_param_node>$(arg sim_robot_param_node)</robot_param_node>
+      </xacro:if>
     </plugin>
   </gazebo>
   </xacro:if>

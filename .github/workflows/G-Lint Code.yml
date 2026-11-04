@@ -771,6 +771,14 @@ jobs:
         run: |
           bash scripts/deploy/tests/test_preflight_pull_images.sh
 
+      # Эпик #4371: HIL. hil.sh не трогает боевые пути (./maps, /data), порядок
+      # «замок → стоп моторов → sim time → сим», off гасит сим до возврата
+      # ros2-control; деплой падает при замке /tmp/hil.lock. Фейковые ssh/docker.
+      - name: HIL switch + deploy lock (epic #4371)
+        run: |
+          bash scripts/hil/tests/test_hil.sh
+          shellcheck scripts/hil/hil.sh scripts/hil/remote_pi.sh scripts/hil/hil.conf             scripts/hil/tests/test_hil.sh scripts/deploy/check_hil_lock.sh docker/sim/hil_run.sh
+
       - name: Lint shell scripts
         run: |
           echo "::group::ShellCheck"

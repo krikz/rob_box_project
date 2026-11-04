@@ -1,0 +1,74 @@
+# Оверлей docker/sim/compose.yaml: режим HIL — Gazebo кормит стек НАСТОЯЩЕГО робота.
+#
+# План: docs/research/2026-11-04-hil-robot-on-gazebo-data.md §3.3, §5, §6 (шаг 1). Эпик #4371.
+# Запускает scripts/hil/hil.sh on (он же задаёт переменные ниже). Боевой режим сима
+# (compose.yaml без оверлея) не меняется: ROBOT_ID=sim, network_mode: none.
+#
+# Как сим и робот видят друг друга:
+#   * rmw_zenoh кладёт все ключи ноды под namespace "robots/$ROBOT_ID"
+#     (docker/common/scripts/ros_with_namespace.sh). Сим публикует под ID робота
+#     (HIL_ROBOT_ID=RBXU100001), поэтому /scan, /clock, /tf Gazebo и топики робота
+#     оказываются в одном пространстве ключей;
+#   * роутер песочницы — в сети хоста, слушает HIL_SANDBOX_IP и сам подключается к
+#     роутерам Main и Vision (HIL_ZENOH_CONNECT). Конфиги роутеров робота не меняются:
+#     они слушают tcp/<eth0>:7447 и принимают входящие router-to-router.
+#   * После `down` роутер песочницы гаснет, и робот снова сам по себе.
+#
+# На песочнице в HIL живут только zenoh-router и gazebo. robot-state-publisher, twist-mux,
+# rtabmap, imu-filter и nav2 — на роботе; здесь они уведены в профиль sim-only и не стартуют.
+# URDF для gz_ros2_control даёт свой RSP /sim/robot_state_publisher внутри gazebo
+# (sim.launch.py hil:=true), а не /robot_state_publisher Main Pi (боевой URDF с VESC).
+# Сторож графа (docker/sim/hil_run.sh, rob_box_sim.hil) не даёт Gazebo стартовать при живом
+# /controller_manager робота и гасит Gazebo, если второй контроллер появился потом.
+#
+#   HIL_ROBOT_ID=RBXU100001 HIL_SANDBOX_IP=10.1.1.250 \
+#   HIL_ZENOH_CONNECT=tcp/10.1.1.10:7447,tcp/10.1.1.11:7447 \
+#   docker compose -p rob_box_hil -f docker/sim/compose.yaml -f docker/sim/compose.hil.yaml \
+#     up -d --no-build zenoh-router gazebo
+#
+# Обязательные переменные:
+#   HIL_ROBOT_ID        ID робота (ROBOT_ID из .env Main Pi)
+#   HIL_SANDBOX_IP      IPv4 песочницы, по которому её видят Pi (Wi-Fi или провод, §3.1)
+#   HIL_ZENOH_CONNECT   роутеры робота через запятую; провод — с #iface=<eth> (hil.sh)
+# Необязательные: HIL_GUARD_INTERVAL (5 с), HIL_GUARD_NO_LINK (0; 1 — песочница без робота),
+#   и всё из compose.yaml (SIM_IMAGE, SIM_PREFIX, SIM_WORLD, SIM_DRI_*).
+
+x-hil-ids: &hil_ids
+  ROBOT_ID: ${HIL_ROBOT_ID:?HIL_ROBOT_ID не задан — ID робота (scripts/hil/hil.sh)}
+  ZENOH_LISTEN_IP: ${HIL_SANDBOX_IP:?HIL_SANDBOX_IP не задан — IPv4 песочницы (scripts/hil/hil.sh)}
+
+services:
+  zenoh-router:
+    network_mode: host
+    environment:
+      <<: *hil_ids
+      ZENOH_CONNECT_ENDPOINTS: ${HIL_ZENOH_CONNECT:?HIL_ZENOH_CONNECT не задан — роутеры робота (scripts/hil/hil.sh)}
+
+  gazebo:
+    network_mode: host
+    environment:
+      <<: *hil_ids
+      HIL_GUARD_INTERVAL: ${HIL_GUARD_INTERVAL:-5}
+      HIL_GUARD_NO_LINK: ${HIL_GUARD_NO_LINK:-0}
+    volumes:
+      - ./hil_run.sh:/hil_run.sh:ro
+    command:
+      - /ros_scripts/ros_with_namespace.sh
+      - /hil_run.sh
+      - world:=/sim_worlds/${SIM_WORLD:-polygon}.sdf
+    depends_on: !override
+      - zenoh-router
+
+  # Стек навигации — на роботе. В HIL здесь не поднимается.
+  robot-state-publisher:
+    profiles: ["sim-only"]
+  twist-mux:
+    profiles: ["sim-only"]
+  rtabmap:
+    profiles: ["sim-only"]
+  imu-filter:
+    profiles: ["sim-only"]
+  nav2:
+    profiles: ["sim-only"]
+  bench:
+    profiles: ["sim-only"]
