@@ -1,7 +1,7 @@
 {
   "version": 1,
-  "created": "2026-11-03",
-  "base_sha": "9b63e58d693775087e4730dfed0b2016aa8fd004",
+  "created": "2026-11-04",
+  "base_sha": "ed1811dd065af8ec012fe2cda991be5518db3c48",
   "limits": {
     "method": 15,
     "init": 20
@@ -50,9 +50,6 @@
     },
     "src/rob_box_mcp_tools/rob_box_mcp_tools/tools/dialogue.py": {
       "SpeakTextTool._split_sentences": 18
-    },
-    "src/rob_box_mcp_tools/rob_box_mcp_tools/tools/mapping.py": {
-      "StartMappingTool.execute": 16
     },
     "src/rob_box_mcp_tools/rob_box_mcp_tools/tools/sound.py": {
       "GetSoundInfoTool.execute": 19
@@ -210,12 +207,6 @@
       "path": "src/rob_box_mcp_tools/rob_box_mcp_tools/tools/dialogue.py",
       "method": "SpeakTextTool._split_sentences",
       "cc": 18,
-      "since": "cc_budget_baseline.json created 2026-09-08; legacy grandfather — parent gate #1984 / #2077 covers decomp backlog"
-    },
-    {
-      "path": "src/rob_box_mcp_tools/rob_box_mcp_tools/tools/mapping.py",
-      "method": "StartMappingTool.execute",
-      "cc": 16,
       "since": "cc_budget_baseline.json created 2026-09-08; legacy grandfather — parent gate #1984 / #2077 covers decomp backlog"
     },
     {
