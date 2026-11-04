@@ -5,20 +5,20 @@
  "generator": "scripts/dialog/understanding_corpus/build_marathon.py",
  "scenarios": {
   "dir": ".github/e2e/scenarios/night",
-  "last_commit": "43f02745bfe799d4df70b114a16321783b6ac5b6",
+  "last_commit": "c9b1421b80236a9e931b1f452e191f49f5f72e47",
   "sha256": {
-   "night_marathon_act10_finale_memory_v1.json": "a1bcf7177ebf4fb0769ecceac39628f08e4b4a7b55d0459e7bfba5bb83b0921c",
-   "night_marathon_act1_wakeup_v1.json": "2f995adba0f3742ad3d8492becb42a0e8f155e861499b91d319ace00e8e468c9",
-   "night_marathon_act2_acquaintance_v1.json": "116ca07cb11b3b443ac3a3c1014d8a68b1818e8bce42a915d20a361d5e3776d2",
+   "night_marathon_act10_finale_memory_v1.json": "913b6556dbe92558e9b5e73eb096349f3cc388e8acac3f150994690c0ffbb87a",
+   "night_marathon_act1_wakeup_v1.json": "6f95732a41fd6beda025cfee66549dde56b3284a4c26b1ebfdc318328cef7e8e",
+   "night_marathon_act2_acquaintance_v1.json": "35425c35cf4e238acedb27c11793e44c29637039efb3020dca76f31a361d23aa",
    "night_marathon_act2b_identity_question_v1.json": "58e6678aafb3bfd3a6735c1c087cc9f1b0ce4b430b4cb80cc28f011188936fbc",
    "night_marathon_act2c_voice_conflict_question_v1.json": "445039b4505105da69158b378e0dfa203443b05a4458858d491309beb2c8e283",
-   "night_marathon_act3_backlog_diarization_v1.json": "da09564f7073dafd470a86d8f0ee2d2963eddc3d9d1b3eaf936753c4eb8f96c8",
-   "night_marathon_act4_voice_prosody_v1.json": "a9c373e5506eedfe934652490c7bbf63e6afaa298069cf2d5acd029bacd9da21",
-   "night_marathon_act5_renardo_live_v1.json": "a255c741f812a908af56886c21d238e7108555caa5bfea65664e98b753e70300",
-   "night_marathon_act6_dj_booth_v1.json": "fe70a7b1900ee4d4351c58e53519a4c0a39b044c29627f16c69605fcdd2c5215",
-   "night_marathon_act7_neuro_composer_v1.json": "3cc97ebe0f8ed1081971361649a7c99c4af3c310ba7b0c58742e4ac34d53600b",
-   "night_marathon_act8_barge_in_v1.json": "7d25474cd9489c59509e4776073f5ff6214a761a81826d147c7183fe33dbfdce",
-   "night_marathon_act9_world_outside_v1.json": "fa5238f8edc00efd877850bb10c5a63a56993ab29a9e560bb127664a279620cd"
+   "night_marathon_act3_backlog_diarization_v1.json": "d2d45716a75d04173634d427369bcff00629e012216b9585711522da9c99a845",
+   "night_marathon_act4_voice_prosody_v1.json": "8dbfcfcc365515ceac02e363ed6f2d2fb604b33f2835f5a98076c4ba93ad703e",
+   "night_marathon_act5_renardo_live_v1.json": "8c7a1e2bd9b0ded6c7539ceb47f7c8433af9e6423d535aa309477c4a96ca0a54",
+   "night_marathon_act6_dj_booth_v1.json": "73a657873648a31a984ed9e2ff2615170fa84975805976a13c50bb2abb792770",
+   "night_marathon_act7_neuro_composer_v1.json": "ea9ccc18c32ac7db4f403e8065a354a2a04ebbe6b3e8056861e441b8a3f3972a",
+   "night_marathon_act8_barge_in_v1.json": "19d54211145e0d7a47b216e84878ffcea935a03e1af3767a3aeb3b932f5694d4",
+   "night_marathon_act9_world_outside_v1.json": "57867241f42a029a7121d9e6ca72049c6f7526e1f66922d331e8e8d6129e5343"
   }
  },
  "counts": {
@@ -27,7 +27,7 @@
   "acoustic_context": 42,
   "unique_phrases": 130
  },
- "corpus_sha256": "6700df6d06a5a67eb9b9a5d79736cbd0cfb25a57fedc55f2ca73d12329acbcf6",
+ "corpus_sha256": "f71596f88c68588d577d26878fc0bed3f6bbbb5a677d12dce5c0280894b3c1bb",
  "acts": [
   {
    "act": "1",
@@ -3091,8 +3091,7 @@
       },
       "silent_ok": true,
       "patterns": [
-       "📊 \\[turn\\] .*stage=done status=finished",
-       "PlanEvent segment_replaced block="
+       "📊 \\[turn\\] .*stage=done status=finished"
       ],
       "acceptance": {
        "must_not_call": [
@@ -3104,6 +3103,7 @@
         "Данные получил, а ответ у меня не сложился. Спроси ещё раз?|Не понял, как это сделать. Скажи ещё раз?|Ответ вышел слишком длинным — спроси покороче, пожалуйста.|Не вышло.|Хм… не знаю, что сказать.|Не расслышал, повтори?|Эээ… даже не знаю, что ответить.|Хм, я задумался и ничего не придумал. Повтори?|Что-то я долго думаю — повтори, пожалуйста.|так и не ответил — я перестал ждать. Повтори, пожалуйста.|не ответил — повтори, пожалуйста."
        ],
        "no_repeat_numbers": true,
+       "count_continues": true,
        "expected_tool_calls": []
       }
      }

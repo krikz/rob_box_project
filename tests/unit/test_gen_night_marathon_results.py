@@ -778,9 +778,18 @@ def test_n709_conditional_offer_after_stop_is_not_a_false_action_4077():
     assert not _verdict("n709_stop_generated", "\n".join([stop, ok, lie, _cc]))["pass"]
 
 
-def test_n807_requires_the_perform_edit_line_4077():
-    """#4077/#4207: без `PlanEvent segment_replaced` (правка не встала) шаг красный, с ней -- зелёный."""
-    edit = "🗓️ [plan] PlanEvent segment_replaced block=perform-ab12 seg=9 reason=edit"
-    base = _tts("Десять шаг, одиннадцать шаг.")
-    assert not _verdict("n807_merge_addition", "\n".join([base, DONE]))["pass"]
-    assert _verdict("n807_merge_addition", "\n".join([base, edit, DONE]))["pass"]
+def test_n807_judges_the_count_by_speech_mechanism_4207():
+    """#4207/Шифу 04.11: счёт - речь, `PlanEvent segment_replaced` не нужен. Продолжение: не с единицы, подряд, со «шаг»."""
+    acc = _steps()["n807_merge_addition"]["acceptance"]
+    assert acc["count_continues"] is True
+    assert "PlanEvent segment_replaced block=" not in _steps()["n807_merge_addition"]["patterns"]
+    ok = _tts("Семь. Восемь шаг, девять шаг, десять шаг.")
+    assert _verdict("n807_merge_addition", "\n".join([ok, DONE]))["pass"]
+    restart = _tts("Семь. Один шаг, два шага, три шага.")
+    assert not _verdict("n807_merge_addition", "\n".join([restart, DONE]))["pass"]
+    no_step = _tts("Семь. Восемь, девять, десять.")
+    assert not _verdict("n807_merge_addition", "\n".join([no_step, DONE]))["pass"]
+    gap = _tts("Семь. Девять шаг, десять шаг.")
+    assert not _verdict("n807_merge_addition", "\n".join([gap, DONE]))["pass"]
+    repeat = _tts("Семь. Восемь шаг, семь шаг.")
+    assert not _verdict("n807_merge_addition", "\n".join([repeat, DONE]))["pass"]

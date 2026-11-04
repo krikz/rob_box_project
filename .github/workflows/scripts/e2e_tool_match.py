@@ -75,7 +75,7 @@ __all__ = ["TOOL_NAME_RE", "invocation_markers", "tool_invoked", "strip_llm_requ
            "registration_outcome", "registration_expected",
            "registration_failures", "registration_pending",
            "identify_failures", "robot_speech", "keyword_hit", "REGEX_PREFIX",
-           "drop_unspoken_cancels", "repeated_numerals",
+           "drop_unspoken_cancels", "repeated_numerals", "count_continuation_failures",
            "retry_block_reason", "step_verdict", "patterns_missing"]
 
 # Маркеры голосового ответа (любой из них обозначает «робот начал говорить»).
@@ -793,6 +793,31 @@ def repeated_numerals(logs: str) -> list:
     return ["%s x%d" % (w, n) for w, n in counts.items() if n > 1]
 
 
+_STEP_RE = re.compile(r"(?<![а-яё])шаг")
+
+
+def count_continuation_failures(logs: str) -> list:
+    """Правка звучащего счёта («добавляй слово шаг», #4207) продолжила его, а не начала заново: механизм речи.
+
+    Смотрит звучавшую речь окна (:func:`_sounded_speech`), числа 1..20: счёт был слышен; идёт не с единицы; числа
+    следуют подряд (+1, без возврата и пропусков); после первого числа окна прозвучало слово «шаг». Возвращает список
+    причин (пусто -- продолжение верное)."""
+    speech = _sounded_speech(logs).lower()
+    found = list(_NUMERAL_RE.finditer(speech))
+    if not found:
+        return ["no count heard in the window"]
+    numbers = [_NUMERALS.index(m.group(1)) + 1 for m in found]
+    failures: list = []
+    if 1 in numbers:
+        failures.append("count restarted from one after the edit")
+    broken = [f"{a}->{b}" for a, b in zip(numbers, numbers[1:]) if b != a + 1]
+    if broken:
+        failures.append(f"numbers not consecutive: {broken}")
+    if not _STEP_RE.search(speech, found[0].end()):
+        failures.append("word 'шаг' not spoken after the edit")
+    return failures
+
+
 def step_verdict(acc: dict, logs: str, *, label: str = "", timing_path: str = "") -> dict:
     """Вердикт ``acceptance`` шага по логу шага: те же правила, что исполняет ``check_acceptance`` на роботе.
 
@@ -837,6 +862,7 @@ def step_verdict(acc: dict, logs: str, *, label: str = "", timing_path: str = ""
     missing_expected = [c for c in expected_call if not tool_invoked(logs, c)]
     forbidden_called = [c for c in must_not if tool_invoked(kept_logs, c)]
     repeated_numbers = repeated_numerals(logs) if acc.get("no_repeat_numbers") else []
+    count_failures = count_continuation_failures(logs) if acc.get("count_continues") else []
     found_keywords = [k for k in expected_kw if keyword_hit(logs, k)]
     missing_keywords = [k for k in expected_kw if not keyword_hit(logs, k)]
     forbidden_said = [k for k in must_not_say if keyword_hit(logs, k)]
@@ -896,6 +922,8 @@ def step_verdict(acc: dict, logs: str, *, label: str = "", timing_path: str = ""
         failures.append(f"forbidden phrases spoken by robot: {forbidden_said}")
     if repeated_numbers:
         failures.append(f"numbers spoken more than once (#4207: count restarted after edit): {repeated_numbers}")
+    if count_failures:
+        failures.append(f"count not continued after the edit (#4207): {count_failures}")
     if identification_failures:
         failures.extend(identification_failures)
     if discovery_tool_errors:
@@ -924,6 +952,8 @@ def step_verdict(acc: dict, logs: str, *, label: str = "", timing_path: str = ""
         "forbidden_said": forbidden_said,
         "no_repeat_numbers": bool(acc.get("no_repeat_numbers")),
         "repeated_numbers": repeated_numbers,
+        "count_continues": bool(acc.get("count_continues")),
+        "count_failures": count_failures,
         "must_not_identify_as": acc.get("must_not_identify_as", []) or [],
         "identify_failures": identification_failures,
         "discovery_tools": discovery_tools,

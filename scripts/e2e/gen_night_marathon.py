@@ -285,12 +285,6 @@ TURN_CLOSED_BY_CODE = r"📊 \[turn\] .*stage=done status=(finished|done)"
 NAMES_DEFAULT_VOICE = "qingse|цинсе|цин се|цзинсэ|male-qn"
 
 
-#: Правка идущего выступления встала (``perform.py``: ``PlanEvent segment_replaced``, ``plan_events.event_line``). n807 29.10
-#: (#4207): модель ответила обычной речью и начала счёт заново, шаг зеленел по ``stage=done status=finished`` -- без этой строки
-#: правки не было, шаг честно красный (#4077).
-PERFORM_EDIT_APPLIED = r"PlanEvent segment_replaced block="
-
-
 def spoken_by(provider: str) -> str:
     """Реплика синтезирована провайдером ``provider`` (``speech_owner``: ``SpeechEvent synthesized … provider=<имя>``).
 
@@ -720,6 +714,7 @@ def step(
     retry: int = 0,
     why: str = "",
     no_repeat_numbers: bool = False,
+    count_continues: bool = False,
     discovery_tools: Optional[List[str]] = None,
     barge_in: Optional[Dict[str, Any]] = None,
     silent_ok: bool = False,
@@ -752,7 +747,7 @@ def step(
         raise ValueError(f"{label}: шаг ждёт выступление ({PERFORM_STARTED_MARK}…) -- retry запрещён (#3971 R4)")
     acc = _acceptance(
         expect_tools, discovery_tools, must_not, must_not_say, must_not_identify_as, keywords, voice_changed, why,
-        no_repeat_numbers, code_closes,
+        no_repeat_numbers, code_closes, count_continues,
     )
     if acc:
         s["acceptance"] = acc
@@ -809,6 +804,7 @@ def _acceptance(
     why: str,
     no_repeat_numbers: bool = False,
     code_closes: bool = False,
+    count_continues: bool = False,
 ) -> Dict[str, Any]:
     """Блок ``acceptance`` шага (пустой -- шаг без него). Порядок ключей -- как в JSON актов (сверяет ``--check``).
 
@@ -831,6 +827,8 @@ def _acceptance(
         ("voice_changed", True if voice_changed else None),
         # #4196/#4207: числа 1..20 в звучавшей речи окна -- не больше раза (счёт после правки не идёт заново).
         ("no_repeat_numbers", True if no_repeat_numbers else None),
+        # #4207: правка звучащего счёта продолжает его (не с единицы, подряд, со словом «шаг»), а не стартует заново.
+        ("count_continues", True if count_continues else None),
     )
     acc: Dict[str, Any] = {key: value for key, value in fields if value}
     if not acc:
@@ -2466,9 +2464,10 @@ act(
             "Робот, и после каждого числа добавляй слово шаг.",
             barge_in=BARGE_3S,
             silent_ok=True,
-            patterns=[TURN_DONE, PERFORM_EDIT_APPLIED],
+            patterns=[TURN_DONE],
             must_not=["🛑 [interrupt]", "SpeechEvent cancelled"],
             no_repeat_numbers=True,
+            count_continues=True,
             why="Зонд gp12: MERGE вне песни. Добавка к ИДУЩЕЙ задаче не должна "
             "её обрывать (ADR-0150 PR-5: не стоп — речь не рвётся, interrupt.py "
             "NO_INTERRUPT; «Cancel: new STT input» здесь законен — отменяется ход LLM, "
@@ -2480,9 +2479,10 @@ act(
             "Это НЕ стоп-шаг: паттерн отмены речи здесь не ставим, наоборот. #4196 (М5, run 40801693422): "
             "`SpeechEvent cancelled` с `spoken_chars=0` у реплики без `started` -- выброшенный пред-синтез "
             "заменённого сегмента, не обрыв речи: `must_not` его не считает (`e2e_tool_match.drop_unspoken_cancels`); "
-            "обрыв звучащей реплики (`started` в окне или `spoken_chars>0`) по-прежнему красный. Настоящий дефект "
-            "(#4207: после правки счёт пошёл заново, 9-19 прозвучали дважды) держит `no_repeat_numbers`: числа 1..20 "
-            "в звучавшей речи окна не повторяются -- шаг красен, пока #4207 не закрыт.",
+            "обрыв звучащей реплики (`started` в окне или `spoken_chars>0`) по-прежнему красный. Решение Шифу 04.11 "
+            "(#4207, PR #4331): счёт -- речь, а не выступление, `PlanEvent segment_replaced` здесь не бывает. Шаг судит "
+            "механизм речи: `count_continues` (продолжение не с единицы, числа подряд, слово «шаг» после правки) и "
+            "`no_repeat_numbers` (числа 1..20 в звучавшей речи окна не повторяются).",
         ),
         action_step(
             "n809_music_bed",
