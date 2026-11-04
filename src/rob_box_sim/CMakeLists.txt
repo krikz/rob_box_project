@@ -9,7 +9,7 @@ ament_python_install_package(${PROJECT_NAME})
 
 # worlds/local/ — миры из карты робота, в git и в образ не идут (карта дома).
 install(
-  DIRECTORY config launch worlds
+  DIRECTORY config launch scenarios worlds
   DESTINATION share/${PROJECT_NAME}
   PATTERN "local" EXCLUDE
 )

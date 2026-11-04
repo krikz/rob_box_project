@@ -149,5 +149,38 @@ services:
       - twist-mux
       - gazebo
 
+  # Стенд сценариев навигации (rob_box_sim.nav_bench), шаг 4 плана. Не стартует
+  # с `up` (профиль bench); запускается, когда мир SIM_WORLD и Nav2 уже подняты:
+  #   SIM_UID=$(id -u) SIM_GID=$(id -g) SIM_WORLD=polygon \
+  #     docker compose -f docker/sim/compose.yaml --profile bench run --rm bench
+  # Результаты (json/csv/md/pgm) — в SIM_RESULTS_DIR (./results рядом с compose).
+  bench:
+    <<: *sim_service
+    container_name: ${SIM_PREFIX:-rob-box-sim}-bench
+    profiles: ["bench"]
+    user: "${SIM_UID:-0}:${SIM_GID:-0}"
+    environment:
+      <<: *sim_env
+      RMW_IMPLEMENTATION: rmw_zenoh_cpp
+      ZENOH_SESSION_CONFIG_URI: /tmp/zenoh_session_config.json5
+      ROS_AUTOMATIC_DISCOVERY_RANGE: LOCALHOST
+      ROS_HOME: /tmp/ros
+    volumes:
+      - ../common/scripts:/ros_scripts:ro
+      - ../common/config:/common_config:ro
+      - ../../src/rob_box_sim/worlds:/sim_worlds:ro
+      - ${SIM_RESULTS_DIR:-./results}:/results
+    command:
+      - /ros_scripts/ros_with_namespace.sh
+      - python3
+      - -m
+      - rob_box_sim.nav_bench
+      - --world
+      - ${SIM_WORLD:-polygon}
+      - --label
+      - ${SIM_BENCH_LABEL:-baseline}
+    depends_on:
+      - nav2
+
 volumes:
   sim-maps:
