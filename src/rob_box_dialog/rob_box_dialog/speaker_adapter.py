@@ -266,10 +266,17 @@ def asks_recognized(text: str) -> bool:
     """В реплике нет ничего, кроме вопроса «ты меня узнал?» (таблица ``knowledge.RECOGNIZED_ASK``): без переспроса в
     конце (``tags``: «да?», «или нет?»), пояснений (``along``: «я тот же», «мы недавно уже говорили») и связок - одно
     дополнение или больше («меня», «мой голос», «кто я такой») и глагол узнавания (``verbs``: «узнал», «не узнал»),
-    где угодно в реплике. Любое другое слово (другая просьба, «про меня», «же»/«да» утверждения, «что» придаточного,
+    где угодно в реплике; или вопрос имени (``names``: «как меня зовут?», n723) - рядом с ним только слова таблицы и
+    ``name_filler``. Любое другое слово (другая просьба, «про меня», «же»/«да» утверждения, «что» придаточного,
     «не знаешь») - нет: ход идёт модели."""
     ask = kn.RECOGNIZED_ASK
-    said = [t for t in _without(_untagged(name_tokens(text), ask["tags"]), ask["along"]) if t not in ask["filler"]]
+    words = _untagged(name_tokens(text), ask["tags"])
+    unnamed = _without(words, ask["names"])
+    if len(unnamed) < len(words):  # вопрос имени - сам вопрос узнавания: рядом только слова таблицы
+        skip = (*ask["filler"], *ask["name_filler"])
+        rest = _without([t for t in _without(unnamed, ask["along"]) if t not in skip], ask["objects"])
+        return not rest or " ".join(rest) in ask["verbs"]
+    said = [t for t in _without(words, ask["along"]) if t not in ask["filler"]]
     verb = _without(said, ask["objects"])
     return " ".join(verb) in ask["verbs"] and len(verb) < len(said)
 

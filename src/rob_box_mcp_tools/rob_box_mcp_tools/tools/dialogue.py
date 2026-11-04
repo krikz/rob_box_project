@@ -726,6 +726,10 @@ class RegisterSpeakerTool(MCPTool):
         # Step 1 — if old_name provided, rename the existing entry first. Issue #4095: переименование по old_name
         # проходит гейт (:func:`rename_gate`) ДО публикации - профиль не получает имя, которым человек себя не называл,
         # и чужой профиль не переименовывается чужим голосом.
+        if voice_already_named(name, known_speaker_name):
+            # М10 n723: голос уверенно узнан под ЭТИМ именем - переименовывать нечего (old_name - прежнее имя того же
+            # профиля или чужое); дальше обычная регистрация, как без old_name: исход «уже знаю», а не отказ.
+            old_name = None
         refused = self._rename_refusal(old_name, name, self_intro_name, known_speaker_name)
         if refused is not None:
             return refused
@@ -955,6 +959,16 @@ def _rename_source(old_name: str | None) -> str | None:
     if old_clean.lower() in {"", "null", "none"} or len(old_clean) < 2:
         return None
     return old_clean
+
+
+def voice_already_named(name: str | None, known_speaker_name: str | None) -> bool:
+    """Голос фразы уверенно узнан под именем ``name`` - переименовывать по ``old_name`` нечего (М10 n723, 04.11).
+
+    Живой случай: Нину переименовали в Тамару (n722, #4054), на «как меня зовут?» модель позвала
+    ``register_speaker(name='Тамара', old_name='Нина')``; :func:`rename_gate` сравнил ``old_name`` с голосом и
+    ответил «по голосу ты другой человек» - неправда: голос тот же, профиль уже «Тамара». Падеж не важен (``name_key``)."""
+    known = name_key(known_speaker_name)
+    return bool(known) and name_key(name) == known
 
 
 def rename_gate(
