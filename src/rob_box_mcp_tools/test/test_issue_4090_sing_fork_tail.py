@@ -20,7 +20,7 @@ from rob_box_dialog import phrases
 from rob_box_dialog.command import ToolCall
 from rob_box_dialog.execute import Executor
 from rob_box_dialog.respond import join
-from rob_box_harness.core.tool_loop.command_turn import owner_event
+from rob_box_dialog.execute import owner_event
 from rob_box_llm.provider import ToolResult as LLMToolResult
 from rob_box_mcp_tools.engine import engine_tools
 from rob_box_mcp_tools.engine.classic import ClassicPick

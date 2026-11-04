@@ -14,8 +14,8 @@
 * first-chunk-гуард #2718: ``complete()`` хода с рассуждением не рубится на
   10-й секунде; в стриме рассуждение отдельным полем считается «первым
   чанком», а мёртвый провайдер по-прежнему уходит в фолбек;
-* ``<think>`` не ломает сборку tool-call из стрима и не попадает ни в
-  ответ AgentCore, ни в восстановление вызова из текста (#2760).
+* ``<think>`` не ломает сборку tool-call из стрима (цикл v1 ``AgentCore`` и восстановление вызова из текста
+  удалены, #4354 A3b).
 """
 
 from __future__ import annotations
@@ -26,13 +26,6 @@ from typing import Any, AsyncIterator, Awaitable, Callable
 
 import pytest
 
-from rob_box_harness.core.agent_core import AgentCore
-from rob_box_harness.core.dialogue_state_machine import (
-    DialogueEvent,
-    DialogueStateMachine,
-)
-from rob_box_harness.core.tool_loop.markup_recovery import parse_tool_call_markup
-from rob_box_harness.memory.base import InMemoryStore
 from rob_box_harness.providers import minimax as harness_minimax
 from rob_box_harness.providers.minimax import (
     FirstChunkTimeoutError,
@@ -45,18 +38,10 @@ from rob_box_harness.providers.reasoning import (
     strip_reasoning,
     without_reasoning,
 )
-from rob_box_harness.tools import FakeToolProvider
 from rob_box_llm.provider import LLMChunk, LLMMessage, LLMResponse
 
 DISABLED = {"type": "disabled"}
 
-#: Рассуждение, в котором модель «пишет» вызов тула разметкой протокола —
-#: ровно то, что #2760 восстанавливает из ``content`` и исполняет.
-THINK_WITH_MARKUP = (
-    "<think>Юзер просит осеннюю тему. План: "
-    '<invoke name="compose_music"><parameter name="style">club</parameter>'
-    "</invoke> и потом скажу пару слов.</think>"
-)
 COMPOSE_TOOL = {
     "type": "function",
     "function": {
@@ -305,7 +290,7 @@ def test_stream_inline_think_arrives_as_first_chunk() -> None:
     assert "".join(c.content_delta for c in chunks).endswith("Играю.")
 
 
-# ── парсинг: tool-calls, разметка, AgentCore ───────────────────────────
+# ── парсинг: tool-calls ───────────────────────────
 
 
 def test_think_in_content_does_not_break_streamed_tool_call() -> None:
@@ -324,57 +309,6 @@ def test_think_in_content_does_not_break_streamed_tool_call() -> None:
     assert [(c.name, dict(c.arguments)) for c in calls] == [("compose_music", {"style": "club"})]
     content = "".join(c.content_delta for c in chunks)
     assert without_reasoning(LLMResponse(content=content)).content == ""
-
-
-def test_markup_inside_reasoning_is_not_recovered_as_a_tool_call() -> None:
-    """#2760 исполняет вызов, написанный текстом; рассуждение — не вызов."""
-    raw = THINK_WITH_MARKUP + "Готово."
-    assert parse_tool_call_markup(raw, tools=[COMPOSE_TOOL]), (
-        "контроль: без вырезания рассуждения #2760 восстановил бы вызов из <think>"
-    )
-    cleaned = without_reasoning(LLMResponse(content=raw)).content
-    assert cleaned == "Готово."
-    assert parse_tool_call_markup(cleaned, tools=[COMPOSE_TOOL]) == ()
-
-
-class _ThinkingProvider:
-    """LLM-двойник: отвечает рассуждением + репликой в обоих путях."""
-
-    name = "fake-thinking"
-
-    def __init__(self, content: str) -> None:
-        self._content = content
-
-    async def complete(self, messages: Any, *, tools: Any = (), **_: Any) -> LLMResponse:
-        return LLMResponse(content=self._content, finish_reason="stop")
-
-    async def stream(self, messages: Any, *, tools: Any = (), **_: Any) -> AsyncIterator[LLMChunk]:
-        for piece in (self._content[:20], self._content[20:]):
-            yield LLMChunk(content_delta=piece)
-        yield LLMChunk(content_delta="", finish_reason="stop")
-
-
-def _core(provider: Any, *, streaming: bool) -> AgentCore:
-    dsm = DialogueStateMachine()
-    dsm.on_event(DialogueEvent.WAKE_WORD)
-    dsm.on_event(DialogueEvent.STT_RESULT)
-    return AgentCore(
-        llm=provider,
-        tools=FakeToolProvider(),
-        memory=InMemoryStore(),
-        dsm=dsm,
-        system_prompt="ты робот",
-        use_streaming=streaming,
-    )
-
-
-@pytest.mark.parametrize("streaming", [False, True])
-def test_agent_core_reply_has_no_reasoning(streaming: bool) -> None:
-    core = _core(_ThinkingProvider("<think>The user wants music. Plan…</think>Держи осень!"), streaming=streaming)
-
-    result = asyncio.run(core.process_input("сыграй осень", preclassified_event=DialogueEvent.STT_RESULT))
-
-    assert result.spoken_text == "Держи осень!"
 
 
 # ── вырезание рассуждения ───────────────────────────────────────────────

@@ -69,6 +69,30 @@ OnLate = Callable[[ActionResult], Any]
 Epoch = Callable[[], int]
 
 
+def owner_event(request: ActionRequest, result: Any) -> OwnerEvent:
+    """Исход тула как событие владельца (перенесено из ``command_turn`` v1, #4354 A3b). Статус и причина — из данных
+    результата (их кладёт тул по событию владельца: ``play_sound`` — ``SoundEvent``, ``register_speaker`` —
+    ``pending``; план — ``timeout``/``rejected``); статуса нет — ошибка тула ``rejected``, иначе ``done``. Слоты фразы —
+    аргументы вызова, данные результата поверх них. Фраза, которую построил сам тул (``ToolResult.message``), у
+    выполненного ``query`` ложится в данные полем ``knowledge.TOOL_MESSAGE_FIELD``: по ней код ответит, если модель
+    промолчит (#4157, ``turn.query_answer``). ``result`` — ``rob_box_llm.provider.ToolResult`` или утиный аналог
+    (``data``, ``is_error``, ``content``, ``message``)."""
+    data = dict(getattr(result, "data", None) or {})
+    is_error = bool(getattr(result, "is_error", False))
+    status = data.get("status")
+    if status not in kn.ACTION_STATUSES:
+        status = "rejected" if is_error else "done"
+    message = getattr(result, "message", None)  # тулы и тесты отдают и утиные результаты без поля
+    if message and status == "done" and getattr(request, "cls", None) == "query":
+        data.setdefault(kn.TOOL_MESSAGE_FIELD, message)
+    reason = data.get("reason") if isinstance(data.get("reason"), str) else None
+    if reason is None and is_error:  # отказ MCP до тула (подпись, срез): причина — в тексте ошибки (#3853)
+        reason = (getattr(result, "content", "") or "")[:200] or None
+    ref = data.get("event_ref")
+    return OwnerEvent(request.turn_id, status, reason, {**dict(request.args), **data},
+                      event_ref=ref if isinstance(ref, str) and ref else None)
+
+
 def deadline_s(cls: str) -> float:
     """Дедлайн события класса; у классов, где его задаёт владелец (речь, выступление), — потолок хода."""
     timeout = kn.ACTION_CLASSES[cls].timeout_s

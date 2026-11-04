@@ -238,7 +238,7 @@ class TestSetTtsProviderTool:
 
         from rob_box_dialog import knowledge as kn
         from rob_box_dialog.respond import ActionResult, phrase_from_result
-        from rob_box_harness.core.tool_loop.command_turn import owner_event
+        from rob_box_dialog.execute import owner_event
 
         _active(mock_node, provider)
         result = SetTtsProviderTool(mock_node).execute(provider=provider)

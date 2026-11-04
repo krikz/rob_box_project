@@ -265,7 +265,7 @@ def describe_response(resp: Any) -> dict[str, Any]:
     reasoning = extra.get("reasoning_content")
     reasoning = reasoning if isinstance(reasoning, str) else ""
     raw_usage = raw.usage.model_dump() if raw is not None and getattr(raw, "usage", None) else {}
-    from rob_box_harness.core.tool_loop.text_classify import is_tool_call_markup
+    from rob_box_core.tool_call_markup import is_tool_call_markup
 
     cleaned = without_reasoning(resp).content
     return {
@@ -586,10 +586,11 @@ async def case_r2(model: str, system: str) -> None:
 
 def case_e() -> None:
     """Рассуждение не речь: вырезание и разбор разметки вызова (озвучка content удалена, #3698 ч.7d-3)."""
-    from rob_box_harness.core.tool_loop.markup_recovery import parse_tool_call_markup
+    # Восстановление вызова из разметки (``tool_loop.markup_recovery``) жило только в цикле v1 и удалено
+    # (#4354 A3b); v2 разметку в речи не исполняет — смотрим, осталась ли она после вырезания рассуждения.
+    from rob_box_core.tool_call_markup import is_tool_call_markup
     from rob_box_harness.providers.reasoning import strip_reasoning
 
-    tools, _ = real_tools()
     samples = {
         "think_in_content": "<think>надо поздороваться</think>Привет, Шифу!",
         "clean_content": "Привет, Шифу!",
@@ -602,7 +603,7 @@ def case_e() -> None:
         stripped = strip_reasoning(text)
         out[name] = {
             "stripped": stripped,
-            "recovered_calls": [(n, dict(a)) for n, a in parse_tool_call_markup(stripped, tools=tools)],
+            "markup_left": is_tool_call_markup(stripped),
         }
     emit("e_reasoning_not_speech_synthetic", **out)
 

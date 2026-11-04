@@ -1,11 +1,11 @@
 """Мост режима команд в v1 (ADR-0150 §4.1, §4.5; #3696 ч.5, PR-7 ч.7c): форма запроса — по capabilities адаптера,
 ответ — одна команда через ``rob_box_dialog.command.parse``; голая реплика — текстом, остальное — вызовом ``command``,
-который v1-цикл ``AgentCore`` исполняет кодом (``command_turn``: событие владельца, фраза кода, ход терминален)."""
+который транспорт хода v2 переводит в ``command.Result`` (``dialog_v2_ports.to_result``). Сквозные ходы через цикл v1
+``AgentCore`` удалены вместе с ним (#4354 A3b)."""
 
 from __future__ import annotations
 
 import asyncio
-import dataclasses
 import json
 from typing import Any, AsyncIterator, Iterable, List, Mapping, Optional
 
@@ -13,11 +13,6 @@ import pytest
 
 from rob_box_dialog import knowledge as kn
 from rob_box_dialog.command import Invalid
-from rob_box_harness.core.agent_core import AgentCore
-from rob_box_harness.core.dialogue_state_machine import DialogueEvent, DialogueStateMachine
-from rob_box_harness.health import HealthAwareFallbackLLM, HealthCache
-from rob_box_harness.memory.base import InMemoryStore
-from rob_box_harness.tools import FakeToolProvider, ToolSpec
 from rob_box_llm.provider import LLMChunk, LLMMessage, LLMResponse, LLMSettings, ProviderCapabilities, ToolCall
 from rob_box_llm.providers.deepseek import DeepSeekProvider
 from rob_box_llm.providers.minimax import MiniMaxProvider
@@ -348,130 +343,6 @@ def test_command_mode_is_on_by_default_for_deepseek_and_minimax_fallback() -> No
     assert wrap(deepseek).mode == "tool_choice" and wrap(minimax).mode == "tool_offered" and wrap(mimo) is mimo
 
 
-# ── сквозной ход через v1-цикл AgentCore и цепочку здоровья ────────────────────────────────────────────────
-
-
-def _dsm() -> DialogueStateMachine:
-    dsm = DialogueStateMachine()
-    dsm.on_event(DialogueEvent.WAKE_WORD)
-    dsm.on_event(DialogueEvent.STT_RESULT)
-    return dsm
-
-
-class _OwnerTools(FakeToolProvider):
-    """Как реальный MCP: успех ``memory_save`` несёт в данных результата ``saved{fact_id}`` владельца памяти."""
-
-    async def execute(self, call):  # type: ignore[no-untyped-def]
-        result = await super().execute(call)
-        if call.name == "memory_save" and not result.is_error:
-            return dataclasses.replace(result, data={"event": "saved", "fact_id": 1})
-        return result
-
-
-class _Spoken:
-    """Тулы хода v1: ``memory_save``, ``get_current_time`` и ``speak_text`` с журналом реплик."""
-
-    def __init__(self) -> None:
-        self.said: List[str] = []
-        self.tools = _OwnerTools()
-        for name, handler in (("memory_save", lambda a: {"fact_id": 1, "fact": a["fact"]}),
-                              ("get_current_time", lambda a: "12:00"), ("speak_text", self._say),
-                              ("play_sound", lambda a: {"status": "done"})):
-            self.tools.register(ToolSpec(name=name, description=name, parameters={"type": "object"}), handler)
-
-    def _say(self, args: Mapping[str, Any]) -> str:
-        self.said.append(args["text"])
-        return "ok"
-
-
-def _core(inner: _Inner, streaming: bool, spoken: _Spoken) -> AgentCore:
-    chain = HealthAwareFallbackLLM([cb.wrapper_for("deepseek")(inner), _Inner(MINIMAX_CAPS, [], name="minimax")],
-                                   cache=HealthCache())
-    return AgentCore(llm=chain, tools=spoken.tools, memory=InMemoryStore(), dsm=_dsm(),
-                     system_prompt="ты РОББОКС", use_streaming=streaming)
-
-
-@pytest.mark.parametrize("streaming", [False, True])
-def test_agent_core_turn_with_action_is_terminal_and_code_tells_the_outcome(streaming: bool) -> None:
-    """Команда с действием → исполнитель команды → фраза кода по исходу; LLM второго слова не получает."""
-    action = [{"tool": "memory_save", "args": {"fact": "Саша любит чай"}}]
-    inner = _Inner(DEEPSEEK_CAPS, [LLMResponse(tool_calls=(_command_call(actions=action),))])
-    spoken = _Spoken()
-    result = asyncio.run(_core(inner, streaming, spoken).process_input(
-        "запомни что Саша любит чай", preclassified_event=DialogueEvent.STT_RESULT))
-
-    assert result.error is None and len(inner.requests) == 1
-    assert spoken.said == ["Запомнил: Саша любит чай."]
-    assert list(result.tools_called) == ["memory_save", "speak_text"] and result.speak_text_real_count == 1
-    assert result.spoken_text == ""
-    tools = [t["function"]["name"] for t in inner.requests[0]["tools"]]
-    assert tools[0] == kn.COMMAND_TOOL and "speak_text" not in tools
-
-
-@pytest.mark.parametrize("streaming", [False, True])
-def test_agent_core_query_returns_data_to_llm_then_speech_is_final(streaming: bool) -> None:
-    inner = _Inner(DEEPSEEK_CAPS, [
-        LLMResponse(tool_calls=(_command_call(actions=[{"tool": "get_current_time", "args": {}}]),)),
-        LLMResponse(tool_calls=(_command_call(speech="Сейчас полдень."),)),
-    ])
-    spoken = _Spoken()
-    result = asyncio.run(_core(inner, streaming, spoken).process_input(
-        "который час", preclassified_event=DialogueEvent.STT_RESULT))
-
-    assert result.error is None and result.spoken_text == "Сейчас полдень." and spoken.said == []
-    second = inner.requests[1]
-    assert second["settings"].tool_choice == "required"
-    assert any(m.role == "tool" and "12:00" in str(m.content) for m in second["messages"])
-
-
-class _Down(_Inner):
-    """DeepSeek лёг (нет денег / сеть): любой запрос падает, цепочка здоровья идёт к следующему."""
-
-    def _take(self, messages: Iterable[LLMMessage], tools: Iterable[Mapping[str, Any]],
-              settings: Optional[LLMSettings]) -> LLMResponse:
-        self.requests.append({"messages": list(messages), "tools": list(tools), "settings": settings})
-        raise RuntimeError("deepseek is down")
-
-
-@pytest.mark.parametrize("streaming", [False, True])
-def test_minimax_fallback_answers_with_the_same_command_by_default(streaming: bool) -> None:
-    """#3698 ч.7d: DeepSeek лёг — MiniMax-фолбек по умолчанию отвечает той же командой (тул ``command`` без
-    ``tool_choice``)."""
-    down = _Down(DEEPSEEK_CAPS, [])
-    minimax = _Inner(MINIMAX_CAPS, [LLMResponse(tool_calls=(_command_call(speech="Привет, я РОББОКС."),))],
-                     name="minimax")
-    wrap = cb.wrapper_for(kn.COMMAND_PROVIDERS_DEFAULT)
-    chain = HealthAwareFallbackLLM([wrap(down), wrap(minimax)], cache=HealthCache())
-    core = AgentCore(llm=chain, tools=_Spoken().tools, memory=InMemoryStore(), dsm=_dsm(),
-                     system_prompt="ты РОББОКС", use_streaming=streaming)
-    result = asyncio.run(core.process_input("привет", preclassified_event=DialogueEvent.STT_RESULT))
-
-    assert result.error is None and down.requests and result.spoken_text == "Привет, я РОББОКС."
-    offered = [t["function"]["name"] for t in minimax.requests[0]["tools"]]
-    assert offered[0] == kn.COMMAND_TOOL and "speak_text" not in offered
-    assert minimax.requests[0]["settings"].tool_choice is None
-
-
-@pytest.mark.parametrize("streaming", [False, True])
-def test_fallback_to_a_provider_outside_the_list_keeps_the_old_v1_path(streaming: bool) -> None:
-    """Провайдер вне списка ``llm_command_providers`` - свои тулы и ``speak_text``, без команды."""
-    down = _Down(DEEPSEEK_CAPS, [])
-    say = ToolCall(id="s1", name="speak_text", arguments={"text": "Привет, я РОББОКС."})
-    minimax = _Inner(MINIMAX_CAPS, [LLMResponse(tool_calls=(say,)), LLMResponse(content="")], name="minimax")
-    spoken = _Spoken()
-    wrap = cb.wrapper_for("deepseek")
-    chain = HealthAwareFallbackLLM([wrap(down), wrap(minimax)], cache=HealthCache())
-    core = AgentCore(llm=chain, tools=spoken.tools, memory=InMemoryStore(), dsm=_dsm(),
-                     system_prompt="ты РОББОКС", use_streaming=streaming)
-    result = asyncio.run(core.process_input("привет", preclassified_event=DialogueEvent.STT_RESULT))
-
-    assert result.error is None and down.requests
-    assert spoken.said == ["Привет, я РОББОКС."]
-    offered = [t["function"]["name"] for t in minimax.requests[0]["tools"]]
-    assert kn.COMMAND_TOOL not in offered and "speak_text" in offered
-    assert minimax.requests[0]["settings"] is None or minimax.requests[0]["settings"].tool_choice != "required"
-
-
 # ── повтор невалидной команды с перечнем нарушений (решение Шифу 21.10, #3698) ─────────────────────────────────
 
 
@@ -552,102 +423,6 @@ def test_layer_one_repair_needs_no_retry() -> None:
     out, inner, log = _answer(DEEPSEEK_CAPS, [reply])
     assert _actions(out) == [("play_sound", {"sound": "robot_happy"})] and len(inner.requests) == 1
     assert not any("retry=" in line for line in log)
-
-
-@pytest.mark.parametrize("streaming", [False, True])
-def test_agent_core_invalid_then_fixed_command_executes_the_action(streaming: bool) -> None:
-    """Сквозной ход: невалидная команда → повтор внутри моста → действие исполнено, фраза кода; «Не понял» не звучит,
-    ход один."""
-    bad = [{"tool": "memory_save", "args": {"fact": "Саша любит чай", "category": "food"}}]
-    good = [{"tool": "memory_save", "args": {"fact": "Саша любит чай", "category": "preference"}}]
-    inner = _Inner(DEEPSEEK_CAPS, [LLMResponse(tool_calls=(_command_call(actions=bad),)),
-                                   LLMResponse(tool_calls=(_command_call(actions=good),))])
-    spoken = _Spoken()
-    result = asyncio.run(_core(inner, streaming, spoken).process_input(
-        "запомни что Саша любит чай", preclassified_event=DialogueEvent.STT_RESULT))
-
-    assert result.error is None and len(inner.requests) == 2
-    assert "bad_args" in inner.requests[1]["messages"][-1].content
-    assert spoken.said == ["Запомнил: Саша любит чай."] and result.turn_failure == ""
-
-
-@pytest.mark.parametrize("streaming", [False, True])
-def test_joke_in_speech_beside_a_sound_is_retried_into_perform_and_the_sound_stays_silent(streaming: bool) -> None:
-    """Живой прогон 7c (#3698, вариант 2): шутка в ``speech`` рядом с ``play_sound`` раньше пропадала молча; теперь
-    модель получает нарушение и кладёт шутку в ``perform`` - она звучит, о звуке код молчит."""
-    joke = {"kind": "poem", "segments": ["Заходит робот в бар.", "А бар ему: опять ты со своими битами!"]}
-    bad = LLMResponse(tool_calls=(_command_call(speech="Вот звук! Шутка: заходит робот в бар.", actions=SOUND),))
-    good = LLMResponse(tool_calls=(_command_call(perform=joke, actions=SOUND),))
-    inner = _Inner(DEEPSEEK_CAPS, [bad, good])
-    spoken = _Spoken()
-    result = asyncio.run(_core(inner, streaming, spoken).process_input(
-        "включи звук радостный и расскажи шутку", preclassified_event=DialogueEvent.STT_RESULT))
-
-    assert result.error is None and len(inner.requests) == 2 and result.turn_failure == ""
-    assert "speech_with_actions" in inner.requests[1]["messages"][-1].content
-    assert spoken.said == [*joke["segments"]]
-
-
-@pytest.mark.parametrize("streaming", [False, True])
-def test_words_about_the_action_in_speech_are_retried_away_and_never_spoken(streaming: bool) -> None:
-    bad = LLMResponse(tool_calls=(_command_call(speech="Вот звук!", actions=SOUND),))
-    good = LLMResponse(tool_calls=(_command_call(actions=SOUND),))
-    inner = _Inner(DEEPSEEK_CAPS, [bad, good])
-    spoken = _Spoken()
-    result = asyncio.run(_core(inner, streaming, spoken).process_input(
-        "включи звук радостный", preclassified_event=DialogueEvent.STT_RESULT))
-
-    assert result.error is None and len(inner.requests) == 2 and spoken.said == []
-    assert "убери speech" in inner.requests[1]["messages"][-1].content
-
-
-@pytest.mark.parametrize("streaming", [False, True])
-def test_agent_core_invalid_twice_fails_the_turn_without_speech_and_next_turn_is_normal(streaming: bool) -> None:
-    bad = LLMResponse(tool_calls=(_command_call(actions=[{"tool": "memory_save", "args": {}}]),))
-    good = LLMResponse(tool_calls=(_command_call(speech="Привет, Шифу."),))
-    inner = _Inner(DEEPSEEK_CAPS, [bad, bad, good])
-    spoken = _Spoken()
-    core = _core(inner, streaming, spoken)
-    result = asyncio.run(core.process_input("запомни", preclassified_event=DialogueEvent.STT_RESULT))
-    assert len(inner.requests) == 2 and result.spoken_text == "" and spoken.said == []
-    assert result.turn_failure.startswith("invalid_command") and result.error is None
-
-    # Следующий ход идёт обычно: никаких хвостов состояния.
-    core._dsm.on_event(DialogueEvent.WAKE_WORD)  # новая реплика с вейк-словом, как у узла
-    core._dsm.on_event(DialogueEvent.STT_RESULT)
-    nxt = asyncio.run(core.process_input("привет", preclassified_event=DialogueEvent.STT_RESULT))
-    assert nxt.turn_failure == "" and nxt.spoken_text == "Привет, Шифу."
-
-
-# ── пустая команда — нарушение команды, а не «тихий ответ» v1 (ночной замер #3698 22.10, ход 4) ──────────────────
-
-
-@pytest.mark.parametrize("streaming", [False, True])
-def test_agent_core_empty_command_is_retried_by_the_bridge_not_by_v1(streaming: bool) -> None:
-    """Пустой ответ → один повтор моста с объяснением → исправленная команда исполнена. Ретрая #1217 (SYSTEM
-    CORRECTION, третий запрос к LLM) нет: ровно 2 запроса."""
-    empty = LLMResponse(tool_calls=(_command_call(expression={"emotion": "neutral"}),))
-    good = LLMResponse(tool_calls=(ToolCall(id="c2", name=kn.COMMAND_TOOL, arguments={"actions": SAVE}),))
-    inner = _Inner(DEEPSEEK_CAPS, [empty, good])
-    spoken = _Spoken()
-    result = asyncio.run(_core(inner, streaming, spoken).process_input(
-        "запомни что Саша любит чай", preclassified_event=DialogueEvent.STT_RESULT))
-
-    assert result.error is None and len(inner.requests) == 2 and result.turn_failure == ""
-    assert spoken.said == [SAVED]
-    assert kn.VIOLATION_EMPTY_COMMAND in inner.requests[1]["messages"][-1].content
-
-
-@pytest.mark.parametrize("streaming", [False, True])
-def test_agent_core_empty_twice_fails_the_turn_without_a_third_llm_call(streaming: bool) -> None:
-    empty = LLMResponse(tool_calls=(_command_call(expression={"emotion": "neutral"}),))
-    inner = _Inner(DEEPSEEK_CAPS, [empty, empty])
-    spoken = _Spoken()
-    result = asyncio.run(_core(inner, streaming, spoken).process_input(
-        "включи звук радостный", preclassified_event=DialogueEvent.STT_RESULT))
-
-    assert len(inner.requests) == 2 and result.spoken_text == "" and spoken.said == []
-    assert result.turn_failure == f"invalid_command:{kn.VIOLATION_EMPTY_COMMAND}" and result.error is None
 
 
 def test_telegram_agent_may_write_text_beside_actions_personality_may_not() -> None:

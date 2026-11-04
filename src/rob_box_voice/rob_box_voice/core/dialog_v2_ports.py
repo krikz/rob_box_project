@@ -7,7 +7,7 @@
   нарушениям ``COMMAND_RETRIES_MAX``). Ответ моста в форме v1 (текст речи или вызов ``command``) переводится обратно в
   ``command.Result`` (:func:`to_result`); цикла ``AgentCore`` нет — окно и итерации ``query`` ведёт ``turn.py``;
 * **действия** — :class:`rob_box_dialog.execute.Executor` поверх исполнителя тулов v1 (``plan_host.make_tool_executor``:
-  MCP под планировщиком ресурсов), исход — событие владельца из данных результата (``command_turn.owner_event``).
+  MCP под планировщиком ресурсов), исход — событие владельца из данных результата (``execute.owner_event``).
   Топик ``ActionRequest`` не публикуется: подписчика у него нет (mcp_server слушает ``/mcp/execute``);
 * **речь / стадии / интент** — ``speech_client``, ``expression_client`` (+ рефлекс ``expression.reflex``, на итоге
   ``done`` окрашенный экспрессией команды через ``expression.merge``, #3997; пачка ``play_animation`` — очередью
@@ -32,13 +32,11 @@ from rob_box_dialog import knowledge as kn
 from rob_box_dialog.command import Busy, Command, Expression, Invalid, Result, ToolCall as CommandCall, parse
 from rob_box_dialog.context import measure
 from rob_box_dialog.deadline import ProviderFailed
-from rob_box_dialog.execute import ActionRequest, Executor
+from rob_box_dialog.execute import ActionRequest, Executor, owner_event
 from rob_box_dialog.expression import ExpressionPlan, held_face, hold_ms, merge, queued, reflex
 from rob_box_dialog.respond import ActionResult
 from rob_box_dialog.session import SessionSnapshot
 from rob_box_dialog.turn import Answer
-from rob_box_harness.core.agent_core import answering_provider
-from rob_box_harness.core.tool_loop.command_turn import owner_event
 from rob_box_llm.errors import ProviderError
 from rob_box_llm.provider import LLMMessage, LLMResponse, LLMSettings, ToolCall, ToolResult
 
@@ -48,6 +46,15 @@ from .command_parser import Command as MotionCommand, IntentType
 #: Ответ модели пуст (ни речи, ни команды) — невалиден (A14: пустой ответ по провайдеру).
 EMPTY = "empty"
 _STATUS = {"done": "finished", "failed": "failed", "timeout": "failed"}
+
+
+def answering_provider(llm: Any) -> str:
+    """Имя провайдера, ответившего на последний вызов: у цепочки с фолбеком — ``answered_by``, иначе ``name`` LLM.
+
+    ``name`` обёртки (``health-aware-fallback``) один на все провайдеры, и метрика A5 по провайдерам по нему не
+    собирается (живая проверка #3696 ч.4, 21.10). Перенесено из ``agent_core`` v1 (#4354 A3b).
+    """
+    return getattr(llm, "answered_by", None) or getattr(llm, "name", "unknown")
 
 
 class CallCounter:
