@@ -105,3 +105,21 @@ def test_single_link_world_keeps_same_geometry():
     one = sorted((round(b.cx, 3), round(b.cy, 3), b.sx, b.sy, b.height) for b in boxes_from_sdf(one_text))
     assert one == many
     assert one_text.count("<link ") == 2  # пол + walls
+
+
+def test_dead_end_robot_can_turn_by_body_but_not_with_big_padding():
+    """Тупик: разворот на месте по корпусу помещается (~0.12 м), а круг с padding 0.10 — нет."""
+    from rob_box_sim.geometry2d import ROBOT_FOOTPRINT as fp
+
+    boxes = load_world_boxes(WORLDS / "dead_end.sdf")
+    side = [b for b in boxes if b.sx > b.sy]
+    assert len(side) == 2
+    inner = min(abs(b.cy) - b.sy / 2 for b in side)
+    assert 2 * inner == pytest.approx(wc.DEAD_END_WIDTH, abs=1e-3)
+    end = max((b for b in boxes if b.sy > b.sx), key=lambda b: b.cx)
+    assert end.cx - end.sx / 2 - fp.x_max == pytest.approx(wc.DEAD_END_FRONT, abs=1e-3)
+    swept = max(math.hypot(x, y) for x in (fp.x_min, fp.x_max) for y in (fp.y_min, fp.y_max))
+    assert inner - swept > 0.1  # по корпусу разворот на месте свободен
+    assert inner - (swept + 0.10 * math.sqrt(2)) < 0  # padding 0.10: по costmap — нет
+    for yaw in (0.0, 0.7, 1.5708, 2.4, 3.1416):
+        assert clearance(Pose2D(0, 0, yaw), boxes) > 0.1

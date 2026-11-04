@@ -71,3 +71,45 @@ def test_dwb_checks_whole_footprint():
     assert "ObstacleFootprint" in fp["critics"]
     assert "BaseObstacle" not in fp["critics"]
     assert "ObstacleFootprint.scale" in fp
+
+
+# --- разворот: проверка столкновения включена (Шифу 04.11) ---------------------
+
+
+def _behavior() -> dict:
+    return _params()["behavior_server"]["ros__parameters"]
+
+
+def test_spin_collision_check_is_on_at_node_level():
+    """Spin/BackUp (Humble) читают simulate_ahead_time без префикса плагина.
+
+    Ключ spin.simulate_ahead_time Nav2 не читает: 0.0 там (28.02.2026) проверку не
+    выключал, а только вводил в заблуждение. Значение — у behavior_server, > 0.
+    """
+    bs = _behavior()
+    assert "simulate_ahead_time" not in bs["spin"], "spin.simulate_ahead_time Nav2 не читает"
+    assert bs["simulate_ahead_time"] >= 1.0
+    # 0.5 с при max_rotational_vel 0.6 рад/с — 0.3 рад впереди, ровно тормозной угол
+    # с 0.6 рад/с при rotational_acc_lim 0.6 рад/с²: запаса на задержку costmap нет.
+    lookahead_rad = bs["simulate_ahead_time"] * bs["max_rotational_vel"]
+    braking_rad = bs["max_rotational_vel"] ** 2 / (2 * bs["rotational_acc_lim"])
+    assert lookahead_rad >= 2 * braking_rad
+
+
+def test_dwb_rotate_to_goal_lookahead_positive_within_horizon():
+    fp = _params()["controller_server"]["ros__parameters"]["FollowPath"]
+    assert 0 < fp["RotateToGoal.lookahead_time"] <= fp["sim_time"]
+
+
+@pytest.mark.parametrize("cm", COSTMAPS)
+def test_padding_is_measured_compromise(cm):
+    """Запас вокруг корпуса — из замера в симе 04.11 (3 прогона на вариант).
+
+    0.01 — разворот в тупике 1.1 м 2/3, зазор 0.043; 0.03 — всё 3/3, зазор 0.081;
+    0.05 и больше — проём 0.8 м 1/3 и меньше, разворот в тупике 0/3; 0.10 — проём 0.9 0/3.
+    Корпус с запасом должен проходить проём 0.8 м с клеткой costmap с каждой стороны.
+    """
+    p = _costmap(cm)
+    pad = p["footprint_padding"]
+    assert 0.02 <= pad < 0.05, pad
+    assert WIDTH_M + 2 * pad + 2 * p["resolution"] <= 0.8

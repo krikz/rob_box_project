@@ -1,3 +1,4 @@
+import math
 from pathlib import Path
 
 import yaml
@@ -8,10 +9,17 @@ NAV2_CONFIG = REPO_ROOT / "docker/main/config/nav2/nav2_params.yaml"
 
 
 def test_nav2_costmaps_use_reduced_inflation_radius():
+    """inflation_radius = описанный радиус габарита с padding + ~0.10 м (как у круга 0.45 + 0.10).
+
+    С 04.11 padding 0.03: описанный 0.473 → 0.57 (было 0.55 при padding 0.01).
+    """
     config = yaml.safe_load(NAV2_CONFIG.read_text(encoding="utf-8"))
 
-    local_inflation = config["local_costmap"]["local_costmap"]["ros__parameters"]["inflation_layer"]
-    global_inflation = config["global_costmap"]["global_costmap"]["ros__parameters"]["inflation_layer"]
-
-    assert local_inflation["inflation_radius"] == 0.55
-    assert global_inflation["inflation_radius"] == 0.55
+    for cm in ("local_costmap", "global_costmap"):
+        params = config[cm][cm]["ros__parameters"]
+        pad = params["footprint_padding"]
+        corners = yaml.safe_load(params["footprint"])
+        circumscribed = max(math.hypot(abs(x) + pad, abs(y) + pad) for x, y in corners)
+        inflation = params["inflation_layer"]["inflation_radius"]
+        assert inflation == 0.57, (cm, inflation)
+        assert round(circumscribed + 0.10, 2) == inflation, (cm, circumscribed)
