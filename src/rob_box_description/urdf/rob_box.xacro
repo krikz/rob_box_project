@@ -392,7 +392,8 @@
 	</xacro:macro>
 
 	<!-- Simple USB Camera Macro - для обычных USB камер (ceiling camera, etc.) -->
-	<xacro:macro name="usb_camera" params="name parent_link origin_xyz origin_rpy">
+	<!-- optical_rpy: поворот оптического кадра от линка; по умолчанию оптическая ось Z = +X линка (вперёд) -->
+	<xacro:macro name="usb_camera" params="name parent_link origin_xyz origin_rpy optical_rpy:='-1.5708 0 -1.5708'">
 		<!-- camera_link - основной корпус камеры -->
 		<link name="${name}_link">
 			<visual>
@@ -426,12 +427,12 @@
 			<origin xyz="${origin_xyz}" rpy="${origin_rpy}"/>
 		</joint>
 
-		<!-- Optical frame: X right, Y down, Z forward (ROS camera convention) -->
+		<!-- Optical frame (ROS camera convention): X вправо по кадру, Y вниз по кадру, Z по оптической оси -->
 		<link name="${name}_optical_frame"/>
 		<joint name="${name}_optical_frame_joint" type="fixed">
 			<parent link="${name}_link"/>
 			<child link="${name}_optical_frame"/>
-			<origin xyz="0 0 0" rpy="-1.5708 0 -1.5708"/>
+			<origin xyz="0 0 0" rpy="${optical_rpy}"/>
 		</joint>
 	</xacro:macro>
 
@@ -468,8 +469,13 @@
 	<!-- OAK-D-Lite камера: Fusion 360 исправленный экспорт xyz="-0.115772 -0.000238 0.4595" rpy="0 0 0" -->
 	<xacro:oak_d_camera name="camera" parent_link="base_link" origin_xyz="-0.115772 -0.000238 0.4595" origin_rpy="0 0 0"/>
 	<!-- Потолочная USB камера: Fusion 360 исправленный экспорт xyz="-0.170663 0.065 0.4615" -->
-	<!-- Поворот на 90° по часовой стрелке вокруг Y (pitch=-90°) для правильной ориентации -->
-	<xacro:usb_camera name="ceiling_camera" parent_link="base_link" origin_xyz="-0.170663 0.065 0.4615" origin_rpy="0 0 0"/>
+	<!-- Камера смотрит вертикально вверх (HARDWARE.md §3.3). Линк оставлен как в Fusion   -->
+	<!-- (rpy 0, к нему привязан меш), поворачивается только оптический кадр:               -->
+	<!-- Z оптики = +Z base_link (вверх), верх кадра (−Y оптики) = +X (вперёд),             -->
+	<!-- правый край кадра (+X оптики) = +Y (влево; снизу вверх картинка зеркальна).         -->
+	<!-- Поворот кадра вокруг оси НЕ измерен: проверка — тег на потолке, робот едет вперёд, -->
+	<!-- тег в кадре уходит вниз (docs/guides/ceiling-camera-calibration.md, шаг 5).        -->
+	<xacro:usb_camera name="ceiling_camera" parent_link="base_link" origin_xyz="-0.170663 0.065 0.4615" origin_rpy="0 0 0" optical_rpy="0 0 1.5708"/>
 
 	<!-- Микрофонный массив: только фрейм (без меша). Центр массива, Z вверх.     -->
 	<!-- Потребитель — азимут DOA → трек (ADR-0130 §2.9, этап 5). Положение — см. выше. -->
