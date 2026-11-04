@@ -68,6 +68,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import e2e_db  # noqa: E402
 import understanding_variants as uv  # noqa: E402
+from rob_box_core.speaker_wire import SOURCE_ENROLL  # noqa: E402
 from rob_box_dialog import knowledge as kn  # noqa: E402
 from rob_box_dialog.address import (  # noqa: E402
     BARE_WAKE, Addressed, NotAddressed, decide_in_session, heard_from, log_label, wake_words,
@@ -183,12 +184,18 @@ def load_memory_tools() -> types.ModuleType:
 # ── Биометрия диктора (фейк) ──────────────────────────────────────────────────────────────────────────────────────
 
 
+#: Кличка профиля без имени у фейка биометрии (на роботе - ``speaker_id_node`` по эпитетам, #1787); вслух не звучит.
+FAKE_EPITHET = "Гость"
+
+
 class FakeSpeakers:
     """Владелец биометрии: голос синтеза (``anton``, ``ermil`` …) → результат в форме ``rob_box_core.speaker_wire``.
 
-    Незарегистрированный голос — ``unknown_voice``; после ``register_speaker`` (тул вызывается во время хода) голос
-    узнан с уверенным именем уже на СЛЕДУЮЩЕЙ реплике (как биометрия, которая приходит после хода). Настоящий порог
-    0.72 и прогрев профиля на роботе — акустика, здесь их нет."""
+    Голос, впервые услышанный, — профиль без имени (#3858, как ``speaker_id_node``: ``is_known`` без имени,
+    ``source=enroll`` на самой фразе; #4314 n211: без этого стенд не видел голоса, запомненного без имени); после
+    ``register_speaker`` (тул вызывается во время хода) тот же профиль узнан с уверенным именем уже на СЛЕДУЮЩЕЙ
+    реплике (как биометрия, которая приходит после хода). Настоящий порог 0.72 и прогрев профиля на роботе —
+    акустика, здесь их нет."""
 
     def __init__(self) -> None:
         self._known: Dict[str, Tuple[str, str]] = {}
@@ -200,9 +207,14 @@ class FakeSpeakers:
 
     def result_for(self, voice_id: str) -> Dict[str, Any]:
         known = self._known.get(voice_id)
-        if known is None:
-            return {"is_known": False, "inconclusive": False, "speaker_id": None, "name": None, "confidence": 0.0}
+        if known is None:  # первая фраза голоса: профиль без имени заводится из неё (#3858)
+            sid = self.register(voice_id, "")
+            return {"is_known": True, "inconclusive": False, "speaker_id": sid, "name": None, "confidence": 0.0,
+                    "epithet": FAKE_EPITHET, "source": SOURCE_ENROLL}
         sid, name = known
+        if not name:
+            return {"is_known": True, "inconclusive": False, "speaker_id": sid, "name": None, "confidence": 0.0,
+                    "epithet": FAKE_EPITHET}
         return {"is_known": True, "inconclusive": False, "speaker_id": sid, "name": name, "confidence": 0.88}
 
 
@@ -932,10 +944,16 @@ class DryStand:
         msg = self._utterance_msg(text, started, ended, uid, source)
         self.emit(f"🎤 STT: {log_label(msg)}")
         bio = self.speakers.result_for(voice_id) if voice_id else {"is_known": False}
-        if bio.get("is_known"):
+        if bio.get("is_known") and bio.get("name"):
             self.touch("speaker")
             # speaker_id_node.py: f"👤 Speaker: '{match.name}' confidence={…:.3f} ({elapsed:.0f} ms)"
             self.emit(f"👤 Speaker: '{bio['name']}' confidence={bio['confidence']:.3f} (400 ms)")
+        elif bio.get("is_known"):
+            self.touch("speaker")
+            # speaker_id_node.py (#3858): f"👤 Speaker: безымянный профиль id={….speaker_id[:8]} (кличка …) (… ms)"
+            new = "новый, " if bio.get("source") == SOURCE_ENROLL else ""
+            self.emit(f"👤 Speaker: безымянный профиль id={bio['speaker_id'][:8]} ({new}кличка "
+                      f"{FAKE_EPITHET!r}) (400 ms)")
         else:
             self.emit("👤 Speaker: unknown (400 ms)")  # speaker_id_node.py: f"👤 Speaker: unknown ({elapsed:.0f} ms)"
         person = str(bio.get("speaker_id") or "") if bio.get("is_known") else ""

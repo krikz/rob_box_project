@@ -34,11 +34,11 @@ _STRIP_STEPS = 8
 
 def name_keys(names: Iterable[Any]) -> FrozenSet[str]:
     """Ключи имён для сверки (``words.name_key``: регистр, ё, падеж). Метка из нескольких слов («Иван Петров») - ключ
-    каждого слова; метка «незнакомый голос» и пустые - не имена."""
+    каждого слова; метки «незнакомый голос», «голос без имени» и пустые - не имена."""
     keys = set()
     for name in names:
         label = str(name or "").strip()
-        if not label or label.lower() == kn.UNKNOWN_SPEAKER_LABEL:
+        if not label or label.lower() in kn.SPEAKER_LABELS_NOT_NAMES:
             continue
         keys.update(key for key in map(name_key, name_tokens(label)) if key)
     return frozenset(keys)

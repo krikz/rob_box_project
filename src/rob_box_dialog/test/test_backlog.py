@@ -1,5 +1,6 @@
 """Бэклог неадресованных фраз (ADR-0150 §7.3 В12, #3767; приёмка A31: 0 чужих фраз в снимке адресованного хода)."""
 
+from rob_box_dialog import knowledge as kn
 from rob_box_dialog.address import decide
 from rob_box_dialog.backlog import Backlog, Heard, pickup_summary, same_direction
 from rob_box_dialog.knowledge import (
@@ -237,7 +238,8 @@ def test_author_of_a_backlog_phrase_reaches_the_wake_turn_snapshot_4145():
     (recent,) = recent_section(decide(wake, backlog, list(DEFAULT_WAKE_WORDS)))
     assert recent["text"] == "включи что нибудь весёлое"
     assert recent["speaker_id"] == "spk-76b59285" and recent["same_as_caller"] is True
-    assert recent["who"] == "незнакомый голос"  # имени нет — вслух не называем, но автор известен по id
+    # имени нет — вслух не называем, но голос свой: «запомнен», не «незнакомый» (#4314 n211); автор известен по id
+    assert recent["who"] == kn.NAMELESS_SPEAKER_LABEL
 
 
 def test_two_nameless_voices_in_the_background_differ_by_author_id_4161():
@@ -249,8 +251,8 @@ def test_two_nameless_voices_in_the_background_differ_by_author_id_4161():
         backlog.note_voice(uid, voice_tag({"is_known": True, "speaker_id": sid, "epithet": "Гость", "confidence": 0.8}))
     wake = Heard(text="Робот, кто тут говорил", t=100.0, voice_s=3.0)
     section = background_section(decide(wake, backlog, list(DEFAULT_WAKE_WORDS)))
-    assert [(p["who"], p["speaker_id"]) for p in section] == [("незнакомый голос", "spk-a"),
-                                                              ("незнакомый голос", "spk-b")]
+    assert [(p["who"], p["speaker_id"]) for p in section] == [(kn.NAMELESS_SPEAKER_LABEL, "spk-a"),
+                                                              (kn.NAMELESS_SPEAKER_LABEL, "spk-b")]
 
 
 def _voice_phrase(backlog, uid, t, payload):

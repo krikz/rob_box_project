@@ -1232,6 +1232,12 @@ RECOGNIZED_TURN_REASON = "recognized"
 #: Авторство прошлой реплики окна: в историю модели реплика человека уходит с тегом, кто говорил в тот ход
 #: (снимок ``SpeakerRef`` на начало хода), а не голой строкой - иначе чужая реплика читается как слова текущего.
 UNKNOWN_SPEAKER_LABEL = "незнакомый голос"
+#: Автор реплики - свой профиль голоса без имени (#3858: биометрия завела его с кличкой, ``person_ref`` есть, имени нет).
+#: Не «незнакомый голос»: n211 М9 - по метке «незнакомый» модель сказала «голос той женщины я не запомнил», хотя профиль
+#: был заведён (#4314 К1). Кличка не звучит вслух и в метку не идёт.
+NAMELESS_SPEAKER_LABEL = "голос без имени, запомнен"
+#: Метки авторов, что не имена (``foreign_name.name_keys``).
+SPEAKER_LABELS_NOT_NAMES: Tuple[str, ...] = (UNKNOWN_SPEAKER_LABEL, NAMELESS_SPEAKER_LABEL)
 SPEAKER_TAG = "[говорит: {who}] {text}"
 #: Отказы памяти, которых в окне LLM нет вообще: отклонённый факт чужого или неузнанного собеседника, оставшись
 #: в окне даже пометкой, переезжает к следующему («зелёный чай» Саши записан Борису). Модель узнаёт исход из фразы кода.
@@ -1656,6 +1662,26 @@ VOICE_PROMISE_HINT = ("в speech обещано сменить голос, те�
                       " set_pitch; тула нет в перечне хода - не обещай. Звучащий голос назови по current_voice_name из"
                       " tts_context, не по памяти и не по id")
 VOICE_PROMISE_PHRASE = "command.voice_promise"
+#: Нарушение «обещал поискать, а тула поиска нет» (:data:`SEARCH_PROMISES`, #4314 К1: n907 «Поищу ещё раз» без
+#: второго поиска). Повтор с подсказкой :data:`SEARCH_PROMISE_HINT`; повтора нет - говорит код: поиск в ходе был -
+#: по его данным (``turn.query_fallback``), не было - :data:`SEARCH_PROMISE_PHRASE`.
+VIOLATION_SEARCH_PROMISE = "search_promise"
+SEARCH_PROMISE_HINT = ("в speech обещано поискать («поищу», «посмотрю в интернете», «уточню запрос»), а в actions нет"
+                       " тула поиска: слова без действия - неправда. Нужен ещё поиск - вызови search_web с другим"
+                       " запросом в actions, без обещаний в speech; поиск уже был в этом ходе - ответь по его данным"
+                       " выше (нет конкретики - так и скажи), не обещая искать снова")
+SEARCH_PROMISE_PHRASE = "command.search_promise"
+#: Счёт вслух до N, урезанный моделью, строит код (``counting.full_count``, #4314 К1, n802 М9: «от одного до сорока» -
+#: «Один… Десять.»). Глаголы просьбы о счёте (слово целиком, без «ё»).
+COUNT_VERBS: Tuple[str, ...] = (
+    "посчитай", "посчитайте", "сосчитай", "сосчитайте", "досчитай", "досчитайте", "считай", "считайте", "посчитаем",
+    "сосчитаем", "отсчитай", "отсчитайте", "посчитать", "сосчитать", "досчитать")
+#: Дальше этого числа код не считает (лимит - на решение Шифу, #4314): чисел не больше ``SEGMENTS_MAX`` × десяток.
+COUNT_MAX = 100
+#: Чисел в сегменте выступления счёта: «Один. Два. … Десять.» - заметно короче ``SEGMENT_MAX_CHARS``.
+COUNT_PER_SEGMENT = 10
+#: Фраза кода перед счётом, урезанным до :data:`COUNT_MAX` (слот ``top`` - предел в родительном падеже).
+COUNT_CAPPED_PHRASE = "count.capped"
 #: Нарушение «неизвестного собеседника назвали чужим именем» (n210: «Понял, Саша.» Грише при ``name_state``
 #: ``unknown``, а Саша — из истории разговора): обращение по имени к человеку, чьё имя не ``confirmed``, - выдумка, как
 #: бы ни звали других (``foreign_name``). Повтор с подсказкой :data:`FOREIGN_NAME_HINT`; повтора нет - имя из речи
@@ -1876,7 +1902,7 @@ PHRASE_KEYS: Tuple[str, ...] = (
     "understand.timeout", PASSED_ADDRESSED_PHRASE, NEW_SESSION_PHRASE, QUERY_FALLBACK_GENERIC, INVALID_COMMAND_PHRASE,
     LISTEN_ONLY_PHRASE,
     SPEECH_CUT_PHRASE, *INVALID_COMMAND_PHRASES.values(), *MUSIC_PROMISE_PHRASES.values(), VOICE_PROMISE_PHRASE,
-    STATE_CLAIM_PHRASE,
+    SEARCH_PROMISE_PHRASE, COUNT_CAPPED_PHRASE, STATE_CLAIM_PHRASE,
     *(question.declined for question in TOOL_QUESTIONS.values()),
     *(key for entry in QUERY_FALLBACK_PHRASES.values() for key in phrase_keys(entry)), QUERY_NAMES_PHRASE,
     REPEAT_NOTHING_PHRASE,
@@ -2655,6 +2681,22 @@ VOICE_PROMISES: Mapping[str, MusicPromise] = MappingProxyType({
         near=("голос", "голосом", "голоса", "голосу"),
         unless_before=("скажу", "прочитаю", "расскажу", "спою", "отвечу"),
         tools=("set_voice", "set_tts_provider")),
+})
+#: Обещание поискать без тула поиска (#4314 К1, n907 М9: ``search_web`` исполнен, а ответ «Поищу ещё раз, уточню
+#: запрос.» - второго поиска не было). Та же форма, что :data:`MUSIC_PROMISES`; валидатор команды
+#: (``command._check_search_promise``) сверяет по словам (``words.search_promises``). «Поищу» держит любой тул поиска:
+#: в интернете, в памяти, в библиотеке. Прошедшее («поискал», «нашёл») не обещание. ``again`` - «найду ещё раз»:
+#: «ещё раз» рядом только с «найду» (с «проверю», «попробую» оно - про статус или песню, не про поиск).
+SEARCH_PROMISE_TOOLS: Tuple[str, ...] = ("search_web", "memory_search", "music_library")
+SEARCH_PROMISES: Mapping[str, MusicPromise] = MappingProxyType({
+    "search": MusicPromise(
+        alone=("поищу", "поищем", "погуглю", "погуглим", "загуглю", "прогуглю", "отыщу", "разыщу"),
+        with_near=("посмотрю", "посмотрим", "гляну", "глянем", "найду", "найдем", "проверю", "проверим", "уточню",
+                   "уточним", "попробую", "попробуем", "ищу", "ищем"),
+        near=("интернет", "сети", "поиск", "запрос", "гугл", "яндекс", "онлайн"),
+        tools=SEARCH_PROMISE_TOOLS),
+    "again": MusicPromise(
+        with_near=("найду", "найдем"), near=("ещ", "снова", "заново", "повторн"), tools=SEARCH_PROMISE_TOOLS),
 })
 #: Причина нарушения «пустая команда»: ни речи, ни вопроса, ни действий, ни выступления, и не ``passed``. Это нарушение
 #: (тот же один повтор с объяснением → ``failed``), а не «тихий первый ответ» v1: иначе ход звал LLM второй раз через

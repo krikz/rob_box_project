@@ -97,15 +97,23 @@ class WindowEntry:
 
 
 def speaker_label(speaker: Any) -> str:
-    """Кто говорит в ход, словами кода: имя/кличка из снимка, нет - «незнакомый голос»."""
-    return (getattr(speaker, "name", None) or kn.UNKNOWN_SPEAKER_LABEL).strip()
+    """Кто говорит в ход, словами кода: имя из снимка; профиль голоса без имени (``person_ref`` есть, #3858) -
+    «голос без имени, запомнен» (#4314, n211: не «незнакомый» - профиль заведён); нет и профиля - «незнакомый голос»."""
+    name = getattr(speaker, "name", None)
+    if name:
+        return name.strip()
+    return kn.NAMELESS_SPEAKER_LABEL if getattr(speaker, "person_ref", None) else kn.UNKNOWN_SPEAKER_LABEL
 
 
 def phrase_label(speaker: Mapping[str, Any]) -> str:
     """Кто сказал фразу бэклога (метка ``speaker_adapter.phrase_speaker`` на момент самой фразы) словами
-    той же схемы, что :func:`speaker_label`: узнан — имя, иначе «незнакомый голос» (гипотеза голоса — не имя, A30)."""
+    той же схемы, что :func:`speaker_label`: узнан — имя; голос свой, а имени нет и гипотезы нет (``bio=known`` без
+    ``candidate``) — «голос без имени, запомнен»; иначе «незнакомый голос» (гипотеза голоса — не имя, A30)."""
     name = speaker.get("name") if speaker.get("identified") else None
-    return (name or kn.UNKNOWN_SPEAKER_LABEL).strip()
+    if name:
+        return name.strip()
+    nameless = speaker.get("bio") == "known" and not speaker.get("candidate")
+    return kn.NAMELESS_SPEAKER_LABEL if nameless else kn.UNKNOWN_SPEAKER_LABEL
 
 
 def _plain(value: Any) -> Any:
