@@ -799,7 +799,7 @@ def hand_perform(ports: Ports, turn_id: str, epoch: int, cmd: Command, log: Any 
     log.info(f"{LOG_MARK} выступление {'правка' if cmd.edit_pending else 'старт'} kind={cmd.perform.kind} "
              f"backing={cmd.perform.backing or '-'} segments={len(cmd.perform.segments)} → {dict(outcome)} "
              f"turn={turn_id}")
-    if outcome.get("status") != "rejected":
+    if outcome.get("status") != "rejected" or outcome.get("phrased"):  # отказ уже озвучило выступление — одна фраза
         return True, ""
     reason = outcome.get("reason")
     key = phrases.first_key(f"{kn.PERFORM_REJECTED_PHRASE}.{reason}" if reason else None, "local.rejected")
