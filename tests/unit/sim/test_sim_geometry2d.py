@@ -57,9 +57,24 @@ def test_footprint_matches_sim_xacro():
     cx, sx, sy = (float(v) for v in m.groups())
     assert ROBOT_FOOTPRINT.x_min == pytest.approx(cx - sx / 2)
     assert ROBOT_FOOTPRINT.x_max == pytest.approx(cx + sx / 2)
-    assert sy / 2 < ROBOT_FOOTPRINT.y_max
+    assert ROBOT_FOOTPRINT.y_max == pytest.approx(sy / 2)
+    assert ROBOT_FOOTPRINT.y_min == pytest.approx(-sy / 2)
     wheel_re = r'wheel"?\s+(?:sim_center_y="[-\d.]+"\s+)?origin_xyz="[-\d.]+ ([-\d.]+) '
     wheel_y = [abs(float(y)) for y in re.findall(wheel_re, text)]
     assert len(wheel_y) == 4
-    # центр колеса по y + сдвиг цилиндра 0.0375 + полширины 0.0375
-    assert ROBOT_FOOTPRINT.y_max == pytest.approx(max(wheel_y) + 0.075, abs=0.002)
+    # центр колеса по y + сдвиг цилиндра 0.0375 + полширины 0.0375: колёса внутри корпуса
+    assert max(wheel_y) + 0.075 < ROBOT_FOOTPRINT.y_max
+
+
+def test_footprint_is_nav2_footprint_of_robot():
+    """Один прямоугольник: метрики стенда и Nav2 робота (замер 04.11, 0.61 × 0.605)."""
+    import yaml
+
+    nav2 = Path(__file__).resolve().parents[3] / "docker" / "main" / "config" / "nav2" / "nav2_params.yaml"
+    doc = yaml.safe_load(nav2.read_text(encoding="utf-8"))
+    for cm in ("local_costmap", "global_costmap"):
+        pts = yaml.safe_load(doc[cm][cm]["ros__parameters"]["footprint"])
+        assert min(x for x, _ in pts) == pytest.approx(ROBOT_FOOTPRINT.x_min)
+        assert max(x for x, _ in pts) == pytest.approx(ROBOT_FOOTPRINT.x_max)
+        assert min(y for _, y in pts) == pytest.approx(ROBOT_FOOTPRINT.y_min)
+        assert max(y for _, y in pts) == pytest.approx(ROBOT_FOOTPRINT.y_max)
