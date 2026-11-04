@@ -192,10 +192,18 @@ class PerformHost:
     # -- команды -------------------------------------------------------------------------------------------------------
 
     def start(self, perf: Performance, turn_id: str, epoch: int = 0) -> Dict[str, Any]:
-        """Новое выступление; идёт другое — правка его не начатых сегментов (MERGE, COMPOSITION perform×perform)."""
+        """Новое выступление; идёт другое и у него есть не отданные на звучание сегменты — правка их (MERGE,
+        COMPOSITION perform×perform). Всё отдано (звучит последний) — править нечего: прежнее досказывает владелец
+        речи, это — новое выступление за ним (#4318: повторный счёт отклоняли как правку)."""
         with self._lock:
             if self.block is not None and not self.block.ended:
-                return self._edit_locked(perf)
+                if self.block.unsaid or not perf.segments:
+                    return self._edit_locked(perf)
+                self._run.apply(self.block.hand_over(self._clock()))
+            return self._start_locked(perf, turn_id, epoch)
+
+    def _start_locked(self, perf: Performance, turn_id: str, epoch: int) -> Dict[str, Any]:
+        with self._lock:
             self._run.turn_id, self._run.epoch = turn_id, epoch
             self.block = PerformBlock(perf, f"perform-{turn_id or next(self._ids)}", turn_id=turn_id, epoch=epoch,
                                       output_latency_ms=self._latency_ms, log=self._run.log,
@@ -204,9 +212,15 @@ class PerformHost:
             self._run.apply(self.block.start(self._clock(), playing))
             return {"status": "pending", "block_id": self.block.block_id}
 
-    def edit(self, perf: Performance) -> Dict[str, Any]:
-        """``edit_pending``: правка не начатых сегментов идущего выступления (с какого — :meth:`_edit_locked`)."""
+    def edit(self, perf: Performance, turn_id: str = "", epoch: int = 0) -> Dict[str, Any]:
+        """``edit_pending``: правка не начатых сегментов идущего выступления (с какого — :meth:`_edit_locked`).
+        Несказанного нет, а правка целиком повторяет сказанное («посчитай ещё раз» с флагом правки) — это новое
+        выступление (#4318), а не отказ ``edit_repeats_said``."""
         with self._lock:
+            block = self.block
+            if block is not None and not block.ended and not block.unsaid and block.repeats_said(perf):
+                self._run.apply(block.hand_over(self._clock()))
+                return self._start_locked(perf, turn_id, epoch)
             return self._edit_locked(perf)
 
     def stop(self, keep_backing: bool = False) -> bool:
@@ -276,7 +290,11 @@ class PerformHost:
         effects = block.edit(perf, self._clock())
         self._run.apply(effects)
         rejected = [e for e in effects if isinstance(e, PlanEvent) and e.kind == "rejected"]
-        return {"status": "rejected", "reason": rejected[0].reason} if rejected else {"status": "done"}
+        if not rejected:
+            return {"status": "done"}
+        # фраза отказа уже сказана выступлением («дочитаю как было») — ход второй («Не вышло.») не добавляет
+        phrased = any(isinstance(e, Say) and e.key == "perform.edit_rejected" for e in effects)
+        return {"status": "rejected", "reason": rejected[0].reason, "phrased": phrased}
 
     def _add_backing_locked(self, block: PerformBlock, backing: str) -> bool:
         """Бит выступлению, у которого его нет (#993): ``True`` — заказан; уже есть или решается — ``False``."""

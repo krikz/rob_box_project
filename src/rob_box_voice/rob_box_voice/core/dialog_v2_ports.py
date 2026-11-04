@@ -340,7 +340,7 @@ class V2Ports:
         host = self._performer()
         if host is None:
             return None
-        return host.edit(perf) if edit else host.start(perf, turn_id, epoch)
+        return host.edit(perf, turn_id, epoch) if edit else host.start(perf, turn_id, epoch)
 
     def intent(self, turn_id: str, epoch: int, kind: str) -> None:
         """Интент движения для ``command_node`` (сейчас — только ``stop_motion`` Tier-1 стопа)."""

@@ -463,6 +463,17 @@ class PerformBlock:
         правят, ``from_segment`` ≥ ACTIVE+1); 0 — ещё ни одного; ``None`` — выступления нет."""
         return None if self.ended else self.lines.top(FIXED)
 
+    @property
+    def unsaid(self) -> bool:
+        """Есть ли сегменты, ещё не отданные на звучание: только тогда новая просьба правит это выступление (MERGE).
+        Всё отдано (звучит последний) — править нечего, новая просьба — новое выступление (#4318)."""
+        return not self.ended and any(line.no and line.state == "pending" for line in self.lines.lines)
+
+    def repeats_said(self, perf: Performance) -> bool:
+        """Присланные сегменты целиком повторяют уже сказанное (:func:`.repeats.drop_said`): «посчитай ещё раз»."""
+        rows = segment_rows(perf)
+        return bool(rows) and not drop_said(rows, self.lines.said())
+
     def predicted_end(self, now: float) -> float:
         """Когда кончится речь выступления (раскладка по тактам подложки, если она есть)."""
         return self.lines.predicted_end(now, self.backing.grid)
@@ -557,6 +568,14 @@ class PerformBlock:
         self.log(f"правка с сегмента {perf.from_segment} отклонена ({reason})")
         rejected: List[Effect] = [self._event("rejected", perf.from_segment, reason=reason)]
         return rejected + ([self.speech.phrase("perform.edit_rejected")] if reason != "not_running" else [])
+
+    def hand_over(self, now: float) -> List[Effect]:
+        """Всё отдано на звучание (:attr:`unsaid` ложно), а пришло новое выступление (#4318): отданное досказывает
+        владелец речи, блок закрывается (``done``, подложка — outro на такте), новое идёт своим блоком за ним."""
+        if self.ended or self.unsaid:
+            return []
+        self.log("всё отдано на звучание — новая просьба начнёт новое выступление")
+        return self.music.release(now, "bar", "perform_end", _SOUNDING) + self._end("done")
 
     def stop(self, now: float, keep_backing: bool = False) -> List[Effect]:
         """Tier-1 «хватит» (X5): звучащий сегмент — до конца предложения, остальное снимается, затем outro.
