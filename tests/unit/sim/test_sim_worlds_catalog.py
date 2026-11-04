@@ -93,3 +93,15 @@ def test_compose_selects_world_by_env_and_mounts_worlds():
     gz = compose["services"]["gazebo"]
     assert "world:=/sim_worlds/${SIM_WORLD:-polygon}.sdf" in gz["command"]
     assert "../../src/rob_box_sim/worlds:/sim_worlds:ro" in gz["volumes"]
+
+
+def test_single_link_world_keeps_same_geometry():
+    """Большой мир (карта робота) пишется одним звеном — геометрия та же, что по звену на коробку."""
+    from rob_box_sim.world_sdf import render_world
+
+    world = wc.CATALOG["polygon"]
+    many = sorted((round(b.cx, 3), round(b.cy, 3), b.sx, b.sy, b.height) for b in boxes_from_sdf(world.sdf()))
+    one_text = render_world("p", world.boxes, "x", single_link=True)
+    one = sorted((round(b.cx, 3), round(b.cy, 3), b.sx, b.sy, b.height) for b in boxes_from_sdf(one_text))
+    assert one == many
+    assert one_text.count("<link ") == 2  # пол + walls

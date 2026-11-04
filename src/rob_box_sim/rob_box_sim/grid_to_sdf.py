@@ -209,7 +209,8 @@ def build(
         f"yaw {spawn_in_map.yaw:.3f}) — это (0, 0, 0).\n"
         "  Генератор: python3 -m rob_box_sim.grid_to_sdf. В git не кладётся (карта дома)."
     )
-    (out_dir / f"{name}.sdf").write_text(render_world(name, boxes, description), encoding="utf-8", newline="\n")
+    sdf = render_world(name, boxes, description, single_link=True)
+    (out_dir / f"{name}.sdf").write_text(sdf, encoding="utf-8", newline="\n")
     meta = {
         "world": name,
         "source_map": str(yaml_path.name),

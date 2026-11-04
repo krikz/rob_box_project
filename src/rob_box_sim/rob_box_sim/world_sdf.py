@@ -43,14 +43,38 @@ def _box_link(box: Box) -> str:
     )
 
 
-def render_world(name: str, boxes: Sequence[Box], description: str) -> str:
-    """Текст SDF-мира. ``description`` уходит в шапку-комментарий (без ``--``)."""
+def _single_link(boxes: Sequence[Box]) -> str:
+    """Все коробки — коллизии и визуалы ОДНОГО звена.
+
+    Для карт робота (тысячи коробок): по звену на коробку Gazebo Fortress на
+    песочнице не тянул — 2175 звеньев, gazebo 100 % CPU и 7 ГБ, спаунер
+    diff_drive_controller упал по таймауту (замер 04.11).
+    """
+    parts = ['      <link name="walls">\n']
+    for i, box in enumerate(boxes):
+        size = f"{_f(box.sx)} {_f(box.sy)} {_f(box.height)}"
+        color = WALL_COLOR if box.height >= 0.8 else LOW_COLOR
+        pose = f"<pose>{_f(box.cx)} {_f(box.cy)} {_f(box.height / 2)} 0 0 {_f(box.yaw, 6)}</pose>"
+        parts.append(
+            f'        <collision name="c{i}">{pose}<geometry><box><size>{size}</size></box></geometry></collision>\n'
+            f'        <visual name="v{i}">{pose}<geometry><box><size>{size}</size></box></geometry>'
+            f"<material><ambient>{color}</ambient><diffuse>{color}</diffuse></material></visual>\n"
+        )
+    parts.append("      </link>\n")
+    return "".join(parts)
+
+
+def render_world(name: str, boxes: Sequence[Box], description: str, single_link: bool = False) -> str:
+    """Текст SDF-мира. ``description`` уходит в шапку-комментарий (без ``--``).
+
+    ``single_link`` — все коробки в одном звене (большие миры из карты робота).
+    """
     names = [b.name for b in boxes]
     if len(set(names)) != len(names):
         raise ValueError(f"имена коробок в мире {name} повторяются")
     if "--" in description:
         raise ValueError("в XML-комментарии нельзя «--»")
-    links = "".join(_box_link(b) for b in boxes)
+    links = _single_link(boxes) if single_link else "".join(_box_link(b) for b in boxes)
     return f"""<?xml version="1.0"?>
 <!--
 {description.rstrip()}
