@@ -20,7 +20,8 @@ HIL (``hil:=true``, docker/sim/compose.hil.yaml, эпик #4371): Gazebo кор�
 настоящего робота. Тогда launch сам поднимает RSP с сим-URDF под именем
 ``/sim/robot_state_publisher`` (``/tf`` и ``/tf_static`` → ``/sim/...``), а плагин
 gz_ros2_control и spawn берут URDF у него, а не у ``/robot_state_publisher`` Main Pi
-(боевой URDF с VESC). Имена — rob_box_sim.hil.
+(боевой URDF с VESC). Имена — rob_box_sim.hil. /clock Gazebo (1 кГц) прореживает rob_box_sim.clock_relay
+до ``clock_hz`` (100 Гц sim): мост пишет в /sim/clock_raw, робот видит только /clock реле.
 
 Пример (внутри compose-профиля):
   ros2 launch rob_box_sim sim.launch.py
@@ -48,6 +49,7 @@ from launch.substitutions import (
 from launch_ros.actions import Node
 from launch_ros.parameter_descriptions import ParameterValue
 
+from rob_box_sim.clock_relay import RAW_TOPIC as CLOCK_RAW_TOPIC
 from rob_box_sim.hil import (
     SIM_NAMESPACE,
     SIM_ROBOT_DESCRIPTION_TOPIC,
@@ -115,16 +117,30 @@ def generate_launch_description():
         ],
     )
 
+    bridge_config = os.path.join(sim_share, "config", "bridge.yaml")
     bridge = Node(
         package="ros_gz_bridge",
         executable="parameter_bridge",
         output="screen",
-        parameters=[
-            {
-                "config_file": os.path.join(sim_share, "config", "bridge.yaml"),
-                "use_sim_time": True,
-            }
-        ],
+        parameters=[{"config_file": bridge_config, "use_sim_time": True}],
+        condition=UnlessCondition(hil),
+    )
+
+    # HIL: сырой /clock Gazebo (1 кГц) уходит в /sim/clock_raw, а в /clock — только
+    # прореженный clock_relay (по умолчанию 100 Гц sim). Мосту sim time не нужен: иначе его
+    # собственные часы подписались бы на тот же сырой поток.
+    bridge_hil = Node(
+        package="ros_gz_bridge",
+        executable="parameter_bridge",
+        output="screen",
+        parameters=[{"config_file": bridge_config, "use_sim_time": False}],
+        remappings=[("/clock", CLOCK_RAW_TOPIC)],
+        condition=IfCondition(hil),
+    )
+    clock_relay = ExecuteProcess(
+        cmd=["python3", "-m", "rob_box_sim.clock_relay", "--hz", LaunchConfiguration("clock_hz")],
+        output="screen",
+        condition=IfCondition(hil),
     )
 
     # HIL: свой RSP с сим-URDF. robot_param_node в URDF указывает плагину
@@ -180,6 +196,11 @@ def generate_launch_description():
             default_value="false",
             description="true — HIL: свой RSP /sim/robot_state_publisher для gz_ros2_control",
         ),
+        DeclareLaunchArgument(
+            "clock_hz",
+            default_value="100",
+            description="HIL: частота /clock для робота по sim-времени, Гц (Gazebo даёт 1 кГц)",
+        ),
         DeclareLaunchArgument("x", default_value="0.0"),
         DeclareLaunchArgument("y", default_value="0.0"),
         DeclareLaunchArgument("yaw", default_value="0.0"),
@@ -188,6 +209,8 @@ def generate_launch_description():
         gz_headless_rendering,
         gz_plain,
         bridge,
+        bridge_hil,
+        clock_relay,
         sim_rsp,
         spawn,
         RegisterEventHandler(OnProcessExit(target_action=spawn, on_exit=[jsb])),
