@@ -82,11 +82,13 @@ from rob_box_dialog_msgs.msg import SpeechEvent
 from rob_box_dialog_msgs.msg import Utterance as UtteranceMsg
 from rob_box_dialog_msgs.srv import DialogControl
 from rob_box_llm.provider import LLMSettings
+from rob_box_voice.observability import is_metrics_enabled, start_metrics_server
 from rob_box_mcp_tools.voice_request import REQUEST_TOPIC as VOICE_REQUEST_TOPIC
 
 from .core import greeting_window, identity_question
 from .core import dialog_v2_parity as parity
 from .core import plan_host
+from .core.dialog_metrics import llm_metrics, record_interrupt
 from .core.backlog_voice import note_backlog_voice
 from .core.dialog_v2_ports import CallCounter, V2Ports, assemble_llm
 from .core.music_player_state import MUSIC_EVENT_TOPIC, MUSIC_STATE_TOPIC, parse_music_state
@@ -107,6 +109,7 @@ _LATCHED = QoSProfile(reliability=ReliabilityPolicy.RELIABLE, history=HistoryPol
 
 def declare_params(node: Any) -> None:
     """Параметры ноды (``dialog_node.yaml``; ключи API — из окружения, как у ``dialogue_node``)."""
+    node.declare_parameter("metrics_port", 9100)  # Prometheus-экспортер (#4328); 0 - выключен
     node.declare_parameter("llm_providers", "deepseek,minimax")
     node.declare_parameter("system_prompt_file", "master_prompt_compact.txt")
     node.declare_parameter("wake_words_path", "/config/wake_words.yaml")
@@ -151,6 +154,19 @@ def _prompt_dir() -> Path:
     from ament_index_python.packages import get_package_share_directory  # noqa: PLC0415
 
     return Path(get_package_share_directory("rob_box_voice")) / "prompts"
+
+
+def start_metrics(node: Any) -> bool:
+    """Prometheus-экспортер ноды на порту ``metrics_port`` (#4328, 9100; 0 - выключен), как у tts/stt/audio."""
+    port = int(node.get_parameter("metrics_port").value or 0)
+    if port <= 0 or not is_metrics_enabled():
+        return False
+    started = start_metrics_server(port)
+    if started:
+        node.get_logger().info(f"📊 dialog metrics server listening on :{port}/metrics")
+    else:
+        node.get_logger().warning(f"📊 dialog metrics port {port} not bound (busy or prometheus_client missing)")
+    return started
 
 
 def build_llm(node: Any, counter: CallCounter, agent: str = kn.AGENTS[0]) -> tuple:
@@ -325,7 +341,7 @@ def build_chats(node: Any, tools: Any, intent_pub: Any, wake: Any, hold: Any = l
     def make_engine(chat_id: int) -> TurnEngine:
         session = Session(kn.TEXT_CHANNEL_AGENT, clock=time.time, session_id=channel_ref(chat_id))
         base = V2Ports(node, llm, counter, chat_tools, agent=kn.TEXT_CHANNEL_AGENT, intent_pub=intent_pub, log=log,
-                       epoch=lambda: session.snapshot.epoch)
+                       epoch=lambda: session.snapshot.epoch, on_ask=llm_metrics(llm))
         ports = ChatPorts(base, chat_id, send, log, hold, robot, progress)
         chats.adopt(base.executor)
         engine = TurnEngine(session, ports, system_prompt=system, log=_RosLog(node.get_logger()),  # потолок хода (В31)
@@ -344,6 +360,7 @@ class DialogNode(Node):
         super().__init__("dialog_node")
         self._package_logs = RosLogHandler.attach(self.get_logger())  # INFO python-логгеров rob_box_dialog (#4061)
         declare_params(self)
+        start_metrics(self)
         self.engine_flag = dialog_engine.declare(self)
         self.last_turn: Any = None  # concurrent.futures.Future последнего хода (журнал, тесты)
         self.last_chat_turn: Any = None  # то же для хода телеграм-агента
@@ -384,7 +401,7 @@ class DialogNode(Node):
                                   sing=chat_sing, voices=voices)
         self._ports = V2Ports(self, llm, counter, self._tool_executor, intent_pub=intent_pub,
                               log=self.get_logger().info, epoch=lambda: self._session.snapshot.epoch,
-                              performer=functools.partial(plan_host.performer, self))
+                              performer=functools.partial(plan_host.performer, self), on_ask=llm_metrics(llm))
         self._reporter = ProviderStateReporter(llm, functools.partial(publish_provider_states, make_publisher(self)),
                                                self._speak_direct)
         self._engine = TurnEngine(self._session, self._ports, system_prompt=system, sections=self._sections,
@@ -542,6 +559,7 @@ class DialogNode(Node):
         speech_client.cancel(self, agent=kn.AGENTS[0], epoch=snap.epoch, reason=f"interrupt:{uid or '-'}",
                              boundary=stop.speech_boundary)
         cancelled = self._turns.cancel(keep_key=uid)
+        record_interrupt()
         self.get_logger().info(f"🛑 [interrupt] {stop.policy} via={via} {text[:60]!r} epoch={snap.epoch} "
                                f"boundary={stop.speech_boundary} turns_cancelled={cancelled} "
                                f"за {(time.monotonic() - started) * 1000:.1f} мс utterance={uid or '-'}")
