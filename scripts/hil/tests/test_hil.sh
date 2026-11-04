@@ -73,14 +73,14 @@ case "$1" in
         name=$(last "$@")
         case "$*" in
             *"State.Status}} {{.State.ExitCode"*)
-                [ -f "$S/$name" ] || exit 1; echo "$(cat "$S/$name") 0" ;;
+                [ -f "$S/$name" ] || { [ -n "${FAKE_INSPECT_BLANK:-}" ] && echo; exit 1; }; echo "$(cat "$S/$name") 0" ;;
             *"State.Status"*) echo "$(st "$name")" ;;
             *"State.Running"*) [ "$(st "$name")" = running ] && echo true || echo false ;;
             *"Config.Env"*) [ -f "$S/$name.simt" ] && echo "USE_SIM_TIME=$(cat "$S/$name.simt")"; echo PATH=/x ;;
         esac ;;
     image) exit 0 ;;
     logs) echo "fake logs" ;;
-    exec) echo "${FAKE_CM:-1}" ;;
+    exec) [ -n "${FAKE_ZENOH_LOG:-}" ] && echo "INFO zenoh::net::runtime: Using ZID: 1a2b3c"; echo "${FAKE_CM:-1}"; echo /controller_manager ;;
     ps)
         case "$*" in
             *working_dir=*) for s in ros2-control lslidar robot-state-publisher twist-mux rtabmap imu-filter nav2 oak-d ceiling-camera; do
@@ -192,6 +192,39 @@ check "off: возврат без compose.hil.yaml, sim time снят" \
     '! grep -E "main.hil.yaml up" "$WORK/docker.log" && [ ! -f "$WORK/state/nav2.simt" ] && [ "$(cat "$WORK/state/ros2-control")" = running ]'
 check "off: oak-d и ceiling-camera подняты" '[ "$(cat "$WORK/state/oak-d")" = running ] && [ "$(cat "$WORK/state/ceiling-camera")" = running ]'
 check "off: замок снят последним" '[ ! -e "$WORK/tmp/hil.lock" ] && [ "$(tail -n 1 "$WORK/ssh.log" | grep -c lock-release)" -eq 1 ]'
+
+# ── 6b. status: лог zenoh в stdout перед числом; docker inspect без контейнера ──
+reset_state
+run_hil on >/dev/null
+run_hil status FAKE_ZENOH_LOG=1; rc=$?
+check "status: число /controller_manager при zenoh-логе перед ним (rc=$rc)" \
+    'grep -qE "controller_manager в графе.*: 1 \(норма" "$WORK/out.log"'
+reset_state
+run_hil on FAKE_ZENOH_LOG=1 FAKE_CM=2 >/dev/null; rc=$?
+check "on: два /controller_manager ловится и при zenoh-логе (rc=$rc)" '[ "$rc" -eq 1 ]'
+reset_state
+run_hil on FAKE_ZENOH_LOG=1 >/dev/null; rc=$?
+check "on: zenoh-лог в stdout счёта не ломает (rc=$rc)" '[ "$rc" -eq 0 ]'
+reset_state
+run_hil status FAKE_INSPECT_BLANK=1; rc=$?
+check "status: контейнера gazebo нет (docker inspect печатает пустую строку) -> absent -" \
+    'grep -qx "── gazebo: absent -" "$WORK/out.log"'
+# off после упавшего on: gazebo нет, замок есть — робот должен вернуться.
+reset_state
+echo "HIL on since earlier" > "$WORK/tmp/hil.lock"
+echo exited > "$WORK/state/ros2-control"
+run_hil off FAKE_INSPECT_BLANK=1; rc=$?
+check "off после упавшего on (gazebo нет, пустой inspect): ros2-control вернулся, замок снят (rc=$rc)" \
+    '[ "$rc" -eq 0 ] && [ "$(cat "$WORK/state/ros2-control")" = running ] && [ ! -e "$WORK/tmp/hil.lock" ]'
+# status: helper не доставлен != нет ssh.
+reset_state
+run_hil status; rc=$?
+check "status сам доставляет helper (rc=$rc)" '[ -f "$WORK/remote/remote_pi.sh" ] && ! grep -q "нет ssh" "$WORK/out.log"'
+reset_state
+run_hil status FAKE_SSH_DOWN=vision; rc=$?
+check "status: ssh до Vision лежит -> нет ssh до vision" 'grep -q "нет ssh до vision" "$WORK/out.log"'
+check "vision ssh в hil.conf 10.1.1.21, zenoh-роутеры не тронуты" \
+    'grep -q "HIL_VISION_HOST:=ros2@10.1.1.21}" "$REPO_ROOT/scripts/hil/hil.conf" && grep -q "HIL_ROBOT_ROUTERS:=10.1.1.10 10.1.1.11 10.1.1.12}" "$REPO_ROOT/scripts/hil/hil.conf"'
 
 # ── 7. замок в деплое ─────────────────────────────────────────────────────
 fake_free() { echo HIL_FREE; }
