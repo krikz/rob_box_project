@@ -8,7 +8,8 @@
 
 Под играющим сетом (кадр ``DJ``) просьба со стилем, а тула смены в команде нет и в ходе не было - код кладёт
 ``dj_set start`` с темой словом человека (:func:`with_switch`), слова модели не звучат: о новом сете скажет код по
-исходу тула. Стиля в словах нет - тему код не угадывает, слова модели заменяет честная фраза
+исходу тула. Стоп сета (``dj_set stop``) сменой не считается и вместо смены не исполняется (живой n604 04.11).
+Стиля в словах нет - тему код не угадывает, слова модели заменяет честная фраза
 ``knowledge.THEME_SWITCH_FAILED_PHRASE``. Модель читает данные (``query``) или переспрашивает (``ask``) - её ход:
 команда остаётся. Модуль чистый: без ROS и I/O.
 """
@@ -32,10 +33,23 @@ def switch_call(theme: str) -> ToolCall:
     return ToolCall(SWITCH_TOOL, {"action": "start", "theme": theme})
 
 
+def _switches(call: ToolCall) -> bool:
+    """Вызов исполняет смену темы: тул смены (``knowledge.THEME_SWITCH_TOOLS``), но не стоп музыки
+    (``knowledge.stops_music``): ``dj_set stop`` гасит сет, а не меняет тему (#4347, живой n604 04.11: повтор вернул
+    один стоп - «Выключил музыку.», рока нет)."""
+    return call.tool in kn.THEME_SWITCH_TOOLS and not kn.stops_music(call.tool, call.args)
+
+
+def _without_stops(actions: Sequence[ToolCall]) -> Tuple[ToolCall, ...]:
+    """Действия без стопов музыки: человек просил сменить тему, а не выключить - новый сет сам заменит идущий."""
+    return tuple(a for a in actions if not kn.stops_music(a.tool, a.args))
+
+
 def owed_switch(dj_playing: bool, text: str, actions: Sequence[ToolCall], acted: Sequence[ToolCall]) -> Optional[str]:
     """Тема смены, которую команда не исполнила: стиль словом человека, ``""`` - просьба без стиля, ``None`` - смены
-    не ждут (сет не играет, просьбы нет, тул смены в команде или уже исполнен в ходе)."""
-    if not dj_playing or any(a.tool in kn.THEME_SWITCH_TOOLS for a in (*actions, *acted)):
+    не ждут (сет не играет, просьбы нет, вызов смены в команде или уже исполнен в ходе). Стоп музыки сменой не
+    считается (:func:`_switches`); без просьбы сменить («выключи музыку») стоп остаётся стопом."""
+    if not dj_playing or any(_switches(a) for a in (*actions, *acted)):
         return None
     return theme_switch_ask(text)
 
@@ -50,14 +64,16 @@ def with_switch(dj_playing: bool, text: str, cmd: Command, acted: Sequence[ToolC
     theme = owed_switch(dj_playing, text, cmd.actions, acted)
     if theme is None:
         return cmd, ""
+    kept = _without_stops(cmd.actions)  # стоп вместо смены не исполняется: сет играет, пока не сменится
     if not theme:
-        return replace(cmd, speech=phrases.text(kn.THEME_SWITCH_FAILED_PHRASE)), "vague"
-    return replace(cmd, actions=(*cmd.actions, switch_call(theme)), speech=None), "built"
+        return replace(cmd, actions=kept, speech=phrases.text(kn.THEME_SWITCH_FAILED_PHRASE)), "vague"
+    return replace(cmd, actions=(*kept, switch_call(theme)), speech=None), "built"
 
 
 def salvage_with_switch(dj_playing: bool, text: str, salvage: Sequence[ToolCall],
                         acted: Sequence[ToolCall] = ()) -> Tuple[ToolCall, ...]:
     """Допустимые действия невалидной команды (``Invalid.salvage``) и смена темы, если человек назвал стиль, а тула
-    смены нет: обещание модели не прозвучит, а просьбу код исполнит. Стиля нет - как было (говорит фраза нарушения)."""
+    смены нет: обещание модели не прозвучит, а просьбу код исполнит; стоп музыки среди спасённых уступает смене. Стиля
+    нет - как было (говорит фраза нарушения)."""
     theme = owed_switch(dj_playing, text, salvage, acted)
-    return (*salvage, switch_call(theme)) if theme else tuple(salvage)
+    return (*_without_stops(salvage), switch_call(theme)) if theme else tuple(salvage)

@@ -69,10 +69,7 @@ def classed(result: ActionResult, args: Mapping[str, Any]) -> ActionResult:
 
 def _stops_music(result: ActionResult) -> bool:
     """Результат тула, что гасит музыку (``knowledge.MUSIC_STOP_TOOLS``), исполненный (``done``)."""
-    if result.status != "done" or result.tool not in kn.MUSIC_STOP_TOOLS:
-        return False
-    marker = kn.MUSIC_STOP_TOOLS[result.tool]
-    return marker is None or result.data.get(marker[0]) == marker[1]
+    return result.status == "done" and kn.stops_music(result.tool, result.data)
 
 
 def reconcile_stops(stopped: bool, results: Sequence[ActionResult]) -> Tuple[bool, Tuple[ActionResult, ...]]:
