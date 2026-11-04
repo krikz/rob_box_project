@@ -90,6 +90,7 @@ from rob_box_dialog import foreign_name
 from rob_box_dialog import knowledge as kn
 from rob_box_dialog import memory
 from rob_box_dialog import state_claim
+from rob_box_dialog import theme_switch
 from rob_box_dialog import phrases
 from rob_box_dialog import tool_ask
 from rob_box_dialog import track_ref
@@ -966,9 +967,20 @@ def considered(engine: "TurnEngine", turn: "_Turn", cmd: Command, last: bool) ->
     :func:`unclaimed_without_retry`)."""
     log, snapshot = engine._log, engine.session.snapshot
     fresh = counted_in_full(log, turn, unreread(log, turn, unrepeated(log, turn, cmd)))
+    fresh = switched_theme(log, snapshot, turn, fresh)  # просьба сменить тему сета - действием кода (#4347)
     names = foreign_keys(engine.log.window(exclude=turn.turn_id), turn, fresh, snapshot)
     fresh = unnamed_without_retry(log, turn, fresh, names, last)
     return unclaimed_without_retry(log, turn, fresh, snapshot.agent, last), names
+
+
+def switched_theme(log: Any, snapshot: SessionSnapshot, turn: "_Turn", cmd: Command) -> Command:
+    """Просьба сменить тему играющего сета, которую команда не исполнила, - действием кода (``theme_switch``, #4347:
+    «заявку принял: рок будет» без ``dj_set``)."""
+    fresh, done = theme_switch.with_switch(snapshot.top("DJ") is not None, turn.text, cmd, turn.acted)
+    if done:
+        log.warning(f"{LOG_MARK} смена темы сета без тула ({done}): слова модели не звучат, "
+                    f"{[a.tool for a in fresh.actions]} turn={turn.turn_id}")
+    return fresh
 
 
 def owed_now(snapshot: SessionSnapshot, turn: "_Turn", cmd: Command, fresh: Command, names: Collection[str],
@@ -1364,6 +1376,8 @@ async def _close_invalid(engine: "TurnEngine", turn: _Turn, invalid: Invalid, sn
         said, emotion = data_close(turn, invalid_emotion(invalid, ()))
         engine._say(turn, said, None, emotion)
         return None
+    invalid = replace(invalid, salvage=theme_switch.salvage_with_switch(
+        engine.session.snapshot.top("DJ") is not None, turn.text, invalid.salvage, turn.acted))
     log.warning(f"{LOG_MARK} невалидная команда {why} → допустимых действий {len(invalid.salvage)}, итог скажет код")
     results = await engine._execute(turn, invalid.salvage, snap)
     if engine._stale(turn, "results"):

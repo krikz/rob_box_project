@@ -44,6 +44,8 @@ from rob_box_dialog.knowledge import (
     STOP_QUESTION_PARTICLES,
     STOP_SCOPE,
     STOP_WORDS,
+    THEME_SWITCH_ASK,
+    THEME_SWITCH_VAGUE,
     TIER1_POLICY,
     VOICE_PROMISES,
     VOICE_STEP,
@@ -309,6 +311,20 @@ def search_promises(text: str) -> Tuple[str, ...]:
     «нашёл») не обещание. Тул поиска судит валидатор команды (``command._check_search_promise``)."""
     tokens = name_tokens(text)
     return tuple(kind for kind, promise in SEARCH_PROMISES.items() if _promises(tokens, promise))
+
+
+def theme_switch_ask(text: str) -> Optional[str]:
+    """Просьба человека сменить тему играющего сета (``knowledge.THEME_SWITCH_ASK``, #4347) и её стиль словом
+    человека: «уводи в сторону рока» - ``"рока"``; глагол смены есть, а стиля нет («смени музыку»,
+    ``THEME_SWITCH_VAGUE``) - ``""``; просьбы нет - ``None``. По словам, как :func:`music_promises`."""
+    tokens = name_tokens(text)
+    for i, token in enumerate(tokens):
+        if token in THEME_SWITCH_ASK.with_near:
+            around = (*tokens[i + 1:i + 1 + MUSIC_PROMISE_WINDOW], *tokens[max(0, i - MUSIC_PROMISE_WINDOW):i])
+            style = next((word for word in around if word.startswith(THEME_SWITCH_ASK.near)), None)
+            if style is not None:
+                return style
+    return "" if _promises(tokens, THEME_SWITCH_VAGUE) else None
 
 
 def words_in_order(heard: str, said: str) -> int:

@@ -2711,6 +2711,27 @@ MUSIC_PROMISES: Mapping[str, MusicPromise] = MappingProxyType({
         near=(*MUSIC_PROMISE_NOUNS, *MUSIC_STYLE_STEMS),
         tools=("dj_set", "request_music", "edit_music", "generate_music", "music_library")),
 })
+#: Просьба ЧЕЛОВЕКА сменить тему играющего диджей-сета (#4347, М10 n604 «Робот, уводи в сторону рока…»: модель дважды
+#: обещала «заявку принял: рок будет», а тула не дала - на повторе обещание без глагола из ``MUSIC_PROMISES``, и оно
+#: прозвучало). Решает код по словам человека и структуре команды (ADR-0148), а не по тексту ответа модели: под
+#: играющим сетом (кадр ``DJ``) повелительный глагол направления и рядом название стиля - смена темы однозначна, в
+#: команде нет тула смены (:data:`THEME_SWITCH_TOOLS`) - код сам кладёт ``dj_set start`` с этой темой (тему сета тул
+#: всё равно сверяет со словами реплики, ``heard_text``), а слова модели не звучат: о новом сете скажет код по исходу.
+#: Глагол есть, а стиля нет («смени музыку») - тему код не угадывает: звучит честная фраза :data:`THEME_SWITCH_FAILED_PHRASE`.
+#: Та же форма, что :data:`MUSIC_PROMISES` (слова целые, строчные, без «ё»; основа ``near`` - начало слова).
+THEME_SWITCH_VERBS: Tuple[str, ...] = (
+    "уводи", "уведи", "сворачивай", "сверни", "переключи", "переключай", "переключись", "поменяй", "меняй", "смени",
+    "сменим", "поверни", "поворачивай", "переходи", "перейди", "уходи", "уйди")
+#: Основы стилей, которые называют тему смены (без «стил»/«жанр»: это слово о смене, а не её тема).
+THEME_SWITCH_STYLES: Tuple[str, ...] = tuple(s for s in MUSIC_STYLE_STEMS if s not in ("стил", "жанр"))
+THEME_SWITCH_ASK = MusicPromise(with_near=THEME_SWITCH_VERBS, near=THEME_SWITCH_STYLES)
+#: Просьба сменить без названия стиля: глагол рядом со словом о музыке или теме («смени тему», «переключи музыку»).
+THEME_SWITCH_VAGUE = MusicPromise(with_near=THEME_SWITCH_VERBS,
+                                  near=(*MUSIC_PROMISE_NOUNS, "тему", "темы", "стил", "жанр", "направлени", "сет"))
+#: Тулы, что исполняют смену: те же, что у обещания ``switch``.
+THEME_SWITCH_TOOLS: Tuple[str, ...] = MUSIC_PROMISES["switch"].tools
+THEME_SWITCH_FAILED_PHRASE = "command.theme_switch_failed"
+PHRASE_KEYS = PHRASE_KEYS + (THEME_SWITCH_FAILED_PHRASE,)
 #: Обещание сменить собственную речь без тула (ADR-0148): «заговорю помедленнее», «переключусь на голос
 #: Алёны», «понижу тон». Та же форма, что :data:`MUSIC_PROMISES` (слова целые, строчные, без «ё»; основа ``near`` - начало
 #: слова), валидатор команды (``command._check_voice_promise``) сверяет по словам (``words.voice_promises``). Настоящее
