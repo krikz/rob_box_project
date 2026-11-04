@@ -108,3 +108,21 @@ def test_sim_has_imu_on_camera_imu_frame(sim_urdf):
 def test_sim_mass_is_about_20kg(sim_urdf):
     total = sum(float(m.get("value")) for m in sim_urdf.iter("mass"))
     assert 19.0 < total < 21.5, total
+
+
+def test_sim_default_has_no_robot_param_node(sim_urdf):
+    """Обычный сим: плагин берёт URDF у /robot_state_publisher по умолчанию."""
+    gz_plugin = sim_urdf.find("./gazebo/plugin[@filename='gz_ros2_control-system']")
+    assert gz_plugin.find("robot_param_node") is None
+
+
+def test_hil_points_gz_ros2_control_at_sim_rsp():
+    """HIL (#4371): URDF для gz_ros2_control — у сим-RSP, а не у RSP Main Pi."""
+    urdf = ET.fromstring(_xacro("sim:=true", "sim_robot_param_node:=/sim/robot_state_publisher"))
+    gz_plugin = urdf.find("./gazebo/plugin[@filename='gz_ros2_control-system']")
+    assert gz_plugin.findtext("robot_param_node") == "/sim/robot_state_publisher"
+
+
+def test_real_robot_urdf_ignores_hil_arg():
+    golden = _strip_banner(GOLDEN.read_text(encoding="utf-8"))
+    assert _xacro("sim_robot_param_node:=/sim/robot_state_publisher") == golden

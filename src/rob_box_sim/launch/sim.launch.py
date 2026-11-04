@@ -16,6 +16,12 @@
 сервис robot-state-publisher, а /cmd_vel → /diff_drive_controller/cmd_vel_unstamped
 ведёт боевой twist_mux. Временный relay шага 1 удалён.
 
+HIL (``hil:=true``, docker/sim/compose.hil.yaml, эпик #4371): Gazebo кормит стек
+настоящего робота. Тогда launch сам поднимает RSP с сим-URDF под именем
+``/sim/robot_state_publisher`` (``/tf`` и ``/tf_static`` → ``/sim/...``), а плагин
+gz_ros2_control и spawn берут URDF у него, а не у ``/robot_state_publisher`` Main Pi
+(боевой URDF с VESC). Имена — rob_box_sim.hil.
+
 Пример (внутри compose-профиля):
   ros2 launch rob_box_sim sim.launch.py
   ros2 launch rob_box_sim sim.launch.py headless_rendering:=false   # программный рендер
@@ -33,8 +39,21 @@ from launch.actions import (
 )
 from launch.conditions import IfCondition, UnlessCondition
 from launch.event_handlers import OnProcessExit
-from launch.substitutions import LaunchConfiguration, PathJoinSubstitution
+from launch.substitutions import (
+    Command,
+    LaunchConfiguration,
+    PathJoinSubstitution,
+    PythonExpression,
+)
 from launch_ros.actions import Node
+from launch_ros.parameter_descriptions import ParameterValue
+
+from rob_box_sim.hil import (
+    SIM_NAMESPACE,
+    SIM_ROBOT_DESCRIPTION_TOPIC,
+    SIM_RSP_NODE,
+    SIM_TF_REMAPS,
+)
 
 
 def generate_launch_description():
@@ -43,6 +62,7 @@ def generate_launch_description():
 
     world = LaunchConfiguration("world")
     headless_rendering = LaunchConfiguration("headless_rendering")
+    hil = LaunchConfiguration("hil")
 
     # package://rob_box_description/meshes/... в URDF: Gazebo ищет модель
     # rob_box_description в каталогах ресурсов, поэтому кладём туда родителя share.
@@ -83,7 +103,10 @@ def generate_launch_description():
         executable="create",
         output="screen",
         arguments=[
-            "-topic", "robot_description",
+            # HIL: URDF сим-RSP (/sim/robot_description), не боевой URDF Main Pi.
+            "-topic", PythonExpression([
+                "'", SIM_ROBOT_DESCRIPTION_TOPIC, "' if '", hil, "' == 'true' else 'robot_description'",
+            ]),
             "-name", "rob_box",
             "-x", LaunchConfiguration("x"),
             "-y", LaunchConfiguration("y"),
@@ -102,6 +125,30 @@ def generate_launch_description():
                 "use_sim_time": True,
             }
         ],
+    )
+
+    # HIL: свой RSP с сим-URDF. robot_param_node в URDF указывает плагину
+    # gz_ros2_control на этот узел; TF сим-URDF уходит в /sim/tf*, у робота
+    # TF публикует его собственный RSP (на sim time).
+    sim_rsp = Node(
+        package="robot_state_publisher",
+        executable="robot_state_publisher",
+        name="robot_state_publisher",
+        namespace=SIM_NAMESPACE,
+        output="screen",
+        parameters=[{
+            "robot_description": ParameterValue(
+                Command([
+                    "xacro ",
+                    os.path.join(description_share, "urdf", "rob_box.xacro"),
+                    " sim:=true sim_robot_param_node:=", SIM_RSP_NODE,
+                ]),
+                value_type=str,
+            ),
+            "use_sim_time": True,
+        }],
+        remappings=list(SIM_TF_REMAPS),
+        condition=IfCondition(hil),
     )
 
     def spawner(name):
@@ -128,6 +175,11 @@ def generate_launch_description():
             default_value="true",
             description="--headless-rendering (EGL, нужен /dev/dri); false — без него",
         ),
+        DeclareLaunchArgument(
+            "hil",
+            default_value="false",
+            description="true — HIL: свой RSP /sim/robot_state_publisher для gz_ros2_control",
+        ),
         DeclareLaunchArgument("x", default_value="0.0"),
         DeclareLaunchArgument("y", default_value="0.0"),
         DeclareLaunchArgument("yaw", default_value="0.0"),
@@ -136,6 +188,7 @@ def generate_launch_description():
         gz_headless_rendering,
         gz_plain,
         bridge,
+        sim_rsp,
         spawn,
         RegisterEventHandler(OnProcessExit(target_action=spawn, on_exit=[jsb])),
         RegisterEventHandler(OnProcessExit(target_action=jsb, on_exit=[ddc])),

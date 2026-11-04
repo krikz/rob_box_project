@@ -291,6 +291,15 @@ jobs:
           echo "✅ All connectivity checks passed"
           echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 
+      # Эпик #4371: при включённом HIL (scripts/hil/hil.sh on) ros2-control на Main Pi
+      # намеренно остановлен, а стек навигации едет по Gazebo. Деплой (down + up -d)
+      # поднял бы моторы рядом со вторым /controller_manager. Шаг стоит ДО любых
+      # остановок на Pi: при замке /tmp/hil.lock деплой падает с понятной ошибкой.
+      - name: "[Main Pi] HIL lock (#4371)"
+        if: '!inputs.dry_run'
+        run: |
+          bash scripts/deploy/check_hil_lock.sh             sshpass -p 'open' ssh $SSH_OPTS ros2@${{ env.main_pi_ip }}
+
       - name: Dry Run Notice
         if: inputs.dry_run
         run: |

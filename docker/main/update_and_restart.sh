@@ -10,6 +10,15 @@ echo "Main Pi - Обновление и перезапуск"
 echo "=========================================="
 echo ""
 
+# Эпик #4371: при включённом HIL ros2-control намеренно остановлен (моторы),
+# а down + up -d ниже поднял бы его. Замок кладёт scripts/hil/hil.sh on.
+if [ -e /tmp/hil.lock ]; then
+    echo "❌ На этом Pi включён HIL (замок /tmp/hil.lock): $(cat /tmp/hil.lock)"
+    echo "   Обновление остановлено. Сначала: scripts/hil/hil.sh off"
+    exit 1
+fi
+
+# Переходим в корень проекта
 # Переходим в корень проекта
 SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
 PROJECT_ROOT="$( cd "$SCRIPT_DIR/../.." && pwd )"

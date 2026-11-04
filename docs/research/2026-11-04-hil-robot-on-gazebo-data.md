@@ -1,6 +1,6 @@
 # HIL: стек робота на данных из Gazebo
 
-> Дата: 04.11.2026. Исследование и план. Кода в этом PR нет.
+> Дата: 04.11.2026. Исследование и план. §8 — шаг 1 в коде (эпик #4371): как устроено и как запускать.
 > Идея товарища Шифу (04.11): весь стек работает на настоящих Main Pi, Vision Pi и Sound Pi,
 > а сенсоры и движение берутся из Gazebo на песочнице 10.1.1.250. Робот стоит на кирпичах.
 >
@@ -464,6 +464,8 @@ Joint-имена в обоих URDF одни и те же (sim-добавки в
 
 ## 7. Что нужно от Шифу
 
+> Ответы Шифу 04.11 — в §8.1. Провод песочница ↔ робот проложен — §8.2.
+
 1. **Разрешение на остановку `ros2-control` и `lslidar`** (Main) и `oak-d`, `ceiling-camera` (Vision) на время HIL.
    Плюс правило: деплой ждёт замок HIL.
 2. **`can0 down` на время HIL** — да или нет (конфиг хоста, только «да» в чате).
@@ -480,6 +482,134 @@ Joint-имена в обоих URDF одни и те же (sim-добавки в
     (а) имя из ответа на вопрос робота при одном лице в кадре, без биометрии (рекомендую);
     (б) по живому голосу на каждого; (в) отключить голосовое опознание в HIL.
     И «найти всех»: сначала обход точек обзора, а frontier-исследование потом — согласны?
+
+## 8. Шаг 1: как устроено и как запускать (PR 1a+1c, эпик #4371)
+
+### 8.1 Решения Шифу (04.11) по §7
+
+| § 7 | Решение | Что это значит в коде |
+|---|---|---|
+| 1 | Останавливать `ros2-control`, `lslidar` (Main), `oak-d`, `ceiling-camera` (Vision). Деплой ждёт замок | `hil.sh on` делает `docker stop`; шаг «[Main Pi] HIL lock» в деплое и проверка в `update_and_restart.sh` |
+| 2 | `can0` не трогать. Моторы получают команды только от `ros2-control`, его остановки хватает. Проверка «один `/controller_manager`, и он из Gazebo» обязательна | `ip link` нигде не вызывается. Сторож `rob_box_sim.hil` и ожидание в `hil.sh on` (§8.4) |
+| 3 | Отдельная карта и отдельная база лиц для HIL — да | Карта: `HIL_MAPS_DIR` (§8.3). Лица: на шаге 1 `oak-d` стоит, кадров у `vision-face` нет, поэтому база лиц не задета. Отдельный `FACE_STORE_ROOT` вводится в PR 2c вместе с камерой |
+| 4 | Провод песочница ↔ робот есть (04.11) | §8.2 |
+| 5 | Фото людей — любые, в том числе синтетические, лишь бы распознавались | для шагов 2–3 |
+| 8 | Робот уже стоит на кирпичах в мастерской | — |
+
+### 8.2 Сеть: провод
+
+Схема 04.11 [измерено координатором]: на песочнице `enp2s0` = `10.1.1.30/32`, маршруты `/32` к `10.1.1.10`, `.11`, `.12`
+идут через `enp2s0`, интернет и управление (ssh) остаются на Wi-Fi `10.1.1.250`. Пинг 0.2 мс против 2.3 мс по Wi-Fi, линк 100 Мбит/с.
+Маршруты на песочнице я видел сам (`ip route`: `10.1.1.10 dev enp2s0 proto static scope link metric 100`, так же `.11`, `.12`).
+
+| Что | Адрес | Где задаётся |
+|---|---|---|
+| Роутер песочницы слушает, робот обращается к ней | `10.1.1.30:7447` | `HIL_SANDBOX_IP` (по умолчанию `10.1.1.30`) |
+| Песочница подключается к роутерам Pi | `tcp/10.1.1.10:7447`, `tcp/10.1.1.11:7447`, `tcp/10.1.1.12:7447` (eth0 Main, Vision, Sound) | `HIL_ROBOT_ROUTERS` |
+| Привязка исходящих линков к проводу | `#iface=enp2s0` в каждом endpoint Zenoh | `HIL_SANDBOX_IFACE` (пусто — без привязки) |
+| ssh к песочнице | `ros2@10.1.1.250` (Wi-Fi) | `HIL_SANDBOX_HOST` |
+
+Почему так:
+- Подсеть та же `10.1.1.0/24`, отдельная не нужна: у Pi на `eth0` уже маршрут `10.1.1.0/24` с метрикой 100 (у Wi-Fi 600), поэтому
+  ответы на `10.1.1.30` уходят с Pi по проводу. Конфиги хостов и роутеров робота не меняются.
+- `#iface=enp2s0`: если провод пропадёт, линк Zenoh не поднимется, а не уйдёт молча в Wi-Fi. Синтаксис проверен на zenohd 1.6.2
+  на песочнице: роутер с `--connect "tcp/127.0.0.1:7449#iface=lo"` открыл сессию ([измерено]: в `@/local/router` есть `sessions` с линком).
+- Камера (шаг 2) на 100 Мбит/с идёт **сжатой**: сырая RGB 1280×720 при 5 Гц — это ~110 Мбит/с (§3.2), больше линка.
+  Сжатая (~6.5 Мбит/с) остаётся вариантом по умолчанию и на гигабите.
+- Запасной путь по Wi-Fi: `HIL_SANDBOX_IP=10.1.1.250 HIL_SANDBOX_IFACE=`, тогда трафик идёт как в §3.1.
+
+### 8.3 Как сим и робот видят друг друга (Zenoh-namespace)
+
+- Каждая нода кладёт ключи под `robots/$ROBOT_ID/...`: `ros_with_namespace.sh` вписывает `namespace` в session config.
+  Обычный сим ходит под `ROBOT_ID=sim` с `network_mode: none`, и это не меняется (`docker/sim/compose.yaml`).
+- HIL-оверлей `docker/sim/compose.hil.yaml` ставит `ROBOT_ID=$HIL_ROBOT_ID` роутеру и Gazebo (`hil.sh` берёт его из `.env` Main Pi,
+  у робота `RBXU100001`), переводит их в сеть хоста и подключает роутер песочницы к роутерам Pi. Ключи сима и робота оказываются
+  в одном пространстве. Остальные сервисы сима (RSP, twist-mux, rtabmap, imu-filter, nav2) уводятся в профиль `sim-only`
+  и не стартуют: этот стек работает на роботе.
+- Проверено на песочнице [измерено 04.11, 15:53–16:01 UTC, без робота: роутер на `127.0.0.1`, connect в пустой `127.0.0.1:7448`]:
+  admin space роутера показывает ключи `robots/RBXU100001/0/clock/...` и `robots/RBXU100001/0/diff_drive_controller/cmd_vel_unstamped/...`.
+  Фейковый `/controller_manager` под `ROBOT_ID=sim` сторож не видит, под `RBXU100001` — видит (§8.5).
+- `gz_ros2_control` берёт URDF у `/sim/robot_state_publisher`. Это свой RSP с сим-URDF в контейнере gazebo (`sim.launch.py hil:=true`,
+  xacro-аргумент `sim_robot_param_node`). Его `/tf` и `/tf_static` переназначены в `/sim/tf*`, spawn берёт `/sim/robot_description`.
+  Лог плагина: `robot_param_node is /sim/robot_state_publisher`, затем `System Successfully configured!`. У `/tf_static` нет
+  ни одного издателя из сима (`Unknown topic '/tf_static'`), у `/sim/tf_static` — один, `/sim/robot_state_publisher`.
+- Main Pi на время HIL (`docker/main/compose.hil.yaml`): `USE_SIM_TIME=true` у robot-state-publisher, twist-mux, rtabmap,
+  imu-filter, nav2. Каталог `/maps` в rtabmap и nav2 — это `HIL_MAPS_DIR` (по умолчанию `/home/ros2/rob_box_hil/maps` на Main Pi),
+  а не боевой `./maps`. rtabmap стартует в `HIL_RTABMAP_MODE=mapping` с пустой HIL-базой, карта мастерской
+  (`docker/main/maps/rtabmap.db`) не открывается. `hil.sh` отказывает ещё до первого ssh, если `HIL_MAPS_DIR` указывает
+  на `./maps`, `/maps` или `/data`.
+- Голос и Sound Pi в HIL не трогаются: голосовая база меняется так же, как в обычной работе робота. Отдельная `speakers.db`
+  нужна сценарию Б (§6.4), а не шагу 1.
+
+### 8.4 Сторож «ровно один /controller_manager»
+
+`docker/sim/hil_run.sh` — команда gazebo в HIL, логика в `rob_box_sim.hil`:
+1. `precheck`: в графе должен быть виден `/robot_state_publisher` робота (линк поднят, ID совпадает), а `/controller_manager`
+   не должно быть ни одного. Иначе выход 2, Gazebo не стартует.
+2. `ros2 launch rob_box_sim sim.launch.py hil:=true`.
+3. `watch` каждые 5 с: если `/controller_manager` стало больше одного (поднялся `ros2-control` робота после деплоя или перезагрузки
+   Main Pi), launch гасится, контейнер выходит с кодом 3 и сам не поднимается (`restart: "no"`).
+
+`hil.sh on` после старта ждёт, пока сторож увидит ровно один `/controller_manager`. При этом контейнер `ros2-control` на Main Pi
+не должен работать, значит единственный контроллер — из Gazebo. Иначе сим гасится, а робот остаётся без моторов до `hil.sh off`.
+
+### 8.5 Что проверено на песочнице (без робота) [измерено 04.11]
+
+Образ `shidi-hil-rob-box-sim:hil` из ветки. Настройки: `HIL_SANDBOX_IP=127.0.0.1`, `HIL_ZENOH_CONNECT=tcp/127.0.0.1:7448` (никуда),
+`HIL_GUARD_NO_LINK=1` везде, кроме случаев C и D:
+
+| Случай | Результат |
+|---|---|
+| Обычный старт | `OK: /controller_manager в графе нет` → `joint_state_broadcaster` и `diff_drive_controller` активны → `/controller_manager: 1` |
+| A: фейковый `/controller_manager` под `RBXU100001` до старта | `ОТКАЗ: в графе уже 1 × /controller_manager до старта Gazebo`, `Exited (2)` |
+| B: фейковый `/controller_manager` под `RBXU100001` после старта | `НАРУШЕНИЕ: в графе 2 × /controller_manager`, `Exited (3)` через ~2 с |
+| Фейк под `ROBOT_ID=sim` | сторож его не видит, Gazebo работает (namespace разделяет) |
+| C: `HIL_GUARD_NO_LINK=0`, робота нет | `ОТКАЗ: не видно /robot_state_publisher робота`, `Exited (2)` |
+| D: `HIL_GUARD_NO_LINK=0`, фейковый `/robot_state_publisher` под `RBXU100001` | precheck OK, `/controller_manager: 1` |
+| `/clock` | `ros2 topic hz /clock --window 2000`: **average rate 999.985** |
+
+`/clock` идёт с частотой 1 кГц, это ~1000 сообщений/с на каждую sim-ноду Main Pi (их ~10). Для провода это мелочь,
+а нагрузку на CPU Main Pi не мерили. Если Nav2 или rtabmap на Pi не будут успевать, следующий маленький PR —
+прореживание `/clock` до 100 Гц на песочнице.
+Робот, `hil.sh on` и `hil.sh off` живьём не запускались: первый запуск делает координатор с Шифу.
+
+### 8.6 Запуск
+
+Один раз на песочнице (чекаут и образ; путь и тег задаются в `HIL_SANDBOX_REPO`, `HIL_SIM_IMAGE`):
+
+```bash
+ssh ros2@10.1.1.250
+git clone -b develop https://github.com/krikz/rob_box_project ~/rob_box_hil   # или git -C ~/rob_box_hil pull
+cd ~/rob_box_hil && docker build -f docker/sim/Dockerfile -t rob_box_sim:hil .
+```
+
+С машины оператора (нужны ssh-ключи к `10.1.1.10`, `10.1.1.11`, `10.1.1.250`; пароли не используются):
+
+```bash
+scripts/hil/hil.sh status          # что сейчас; на Pi меняет только /tmp/hil/remote_pi.sh
+scripts/hil/hil.sh on              # только когда робот на кирпичах!
+scripts/hil/hil.sh status          # /controller_manager = 1, ros2-control exited, USE_SIM_TIME=true у пяти
+docker logs rob-box-hil-gazebo | grep hil-guard        # на песочнице: лог сторожа
+scripts/hil/hil.sh off             # сим гаснет первым, затем compose up -d тех же сервисов, замок снимается
+```
+
+Настройки лежат в `scripts/hil/hil.conf`. Их можно переопределить переменной (`HIL_SANDBOX_IP=10.1.1.250 HIL_SANDBOX_IFACE= scripts/hil/hil.sh on`)
+или своим файлом (`HIL_CONF=~/my-hil.conf`). Мир задаёт `HIL_SIM_WORLD=polygon`.
+
+Что делает `off`: на Main и Vision выполняется `docker compose -f docker-compose.yaml -f /tmp/hil/<pi>.images.yaml up -d --no-deps --pull never`
+для тех же сервисов. Образы закреплены по работающим контейнерам, поэтому `off` не тянет новые теги и не зависит от `IMAGE_TAG`
+в окружении. Затем проверка: все сервисы `running`, `USE_SIM_TIME` не `true`. Только после неё снимается замок.
+
+Деплой при включённом HIL падает на шаге «[Main Pi] HIL lock (#4371)» до любых остановок на Pi:
+`::error::На Main Pi включён HIL (замок /tmp/hil.lock): HIL on since ...`. Перезагрузка Main Pi стирает `/tmp/hil.lock`, а systemd
+поднимает `ros2-control`. Тогда сторож гасит Gazebo (случай B), и робот работает как обычно.
+
+Риски (на живом роботе не проверены):
+- `/clock` 1 кГц и нагрузка на CPU Main Pi (§8.5);
+- Main Pi передаёт ключи робота в облако (`zenoh.robbox.online`), поэтому топики Gazebo в HIL уйдут туда под ID робота [по коду, роутер Main Pi];
+- `off` закрепляет образы по `docker ps` на момент вызова. Если контейнер удалили вручную, его сервис не закрепится, и compose возьмёт тег из `.env`;
+- icp_odometry на скане Gazebo 360 лучей против 456 у N10 (§6, шаг 1);
+- точки `WaypointStore` заданы под карту мастерской, в мире Gazebo их координаты бессмысленны (§6.4).
 
 ## Приложение: raw живых проверок (04.11, только чтение)
 

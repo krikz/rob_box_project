@@ -19,6 +19,9 @@
   <exec_depend>diff_drive_controller</exec_depend>
   <exec_depend>joint_state_broadcaster</exec_depend>
   <exec_depend>python3-yaml</exec_depend>
+  <!-- HIL: свой RSP /sim/robot_state_publisher (launch/sim.launch.py hil:=true) -->
+  <exec_depend>robot_state_publisher</exec_depend>
+  <exec_depend>xacro</exec_depend>
   <!-- стенд сценариев rob_box_sim.nav_bench -->
   <exec_depend>nav2_simple_commander</exec_depend>
   <exec_depend>tf2_ros</exec_depend>

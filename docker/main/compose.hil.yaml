@@ -1,0 +1,47 @@
+# Оверлей Main Pi на время HIL: стек навигации робота едет по данным Gazebo.
+#
+# План: docs/research/2026-11-04-hil-robot-on-gazebo-data.md §1.2, §2.3, §5.3, §6 (шаг 1).
+# Эпик #4371. Применяет ТОЛЬКО scripts/hil/hil.sh on (копирует файл на Main Pi
+# в /tmp/hil/ и пересоздаёт пять сервисов с --no-deps). Деплой этот файл не
+# читает: имя не попадает под docker/*/docker-compose*.yaml.
+#
+# Что меняется у пяти сервисов контура навигации — и больше ничего:
+#   * USE_SIM_TIME=true — боевые стартовые скрипты берут время из /clock Gazebo
+#     (docker/common/scripts/use_sim_time.sh);
+#   * rtabmap и nav2 видят в /maps каталог HIL_MAPS_DIR, а не боевой ./maps:
+#     карта мастерской (./maps/rtabmap.db) в HIL не открывается и не перезаписывается;
+#   * rtabmap стартует в HIL_RTABMAP_MODE (mapping по умолчанию: пустая HIL-база,
+#     start_rtabmap.sh разрешает mapping только при USE_SIM_TIME=true).
+# ros2-control и lslidar здесь не упоминаются: hil.sh их останавливает (docker stop).
+#
+# Обязательные переменные (без них compose падает, а не берёт боевой путь):
+#   HIL_MAPS_DIR       абсолютный каталог HIL-карты на Main Pi (hil.sh: /home/ros2/rob_box_hil/maps)
+# Необязательные:
+#   HIL_RTABMAP_MODE   mapping | localization   (mapping)
+
+services:
+  robot-state-publisher:
+    environment:
+      - USE_SIM_TIME=true
+
+  twist-mux:
+    environment:
+      - USE_SIM_TIME=true
+
+  rtabmap:
+    environment:
+      - USE_SIM_TIME=true
+      - RTABMAP_START_MODE=${HIL_RTABMAP_MODE:-mapping}
+    volumes:
+      # Тот же target /maps, что в боевом compose: compose заменяет том по target.
+      - ${HIL_MAPS_DIR:?HIL_MAPS_DIR не задан — каталог HIL-карты (scripts/hil/hil.sh)}:/maps
+
+  imu-filter:
+    environment:
+      - USE_SIM_TIME=true
+
+  nav2:
+    environment:
+      - USE_SIM_TIME=true
+    volumes:
+      - ${HIL_MAPS_DIR:?HIL_MAPS_DIR не задан — каталог HIL-карты (scripts/hil/hil.sh)}:/maps:ro
