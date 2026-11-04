@@ -54,7 +54,7 @@ for world in "$@"; do
         echo "❌ $world: стенд упал (лог $log)"
         rc=1
     fi
-    dc logs --no-color --tail 400 gazebo nav2 rtabmap > "$SIM_RESULTS_DIR/$(echo "$world" | tr '/' '_').stack.log" 2>&1 || true
+    dc logs --no-color --tail 400 gazebo nav2 rtabmap imu-filter > "$SIM_RESULTS_DIR/$(echo "$world" | tr '/' '_').stack.log" 2>&1 || true
     dc --profile bench down -v
 done
 exit "$rc"

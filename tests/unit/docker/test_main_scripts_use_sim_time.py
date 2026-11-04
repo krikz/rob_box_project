@@ -140,7 +140,7 @@ RTABMAP_EXPECTED = sorted(
     [
         "RUN: python3 /scripts/patch_rtabmap_launch.py",
         "EXEC: ros2 launch rtabmap_launch rtabmap.launch.py use_sim_time:=false "
-        "imu_topic:=/camera/imu/data localization:=true",
+        "imu_topic:=/camera/imu/data wait_imu_to_init:=false localization:=true",
     ]
 )
 
@@ -231,7 +231,7 @@ def test_rtabmap_sim_time_goes_after_compose_args():
         [
             "RUN: python3 /scripts/patch_rtabmap_launch.py",
             "EXEC: ros2 launch rtabmap_launch rtabmap.launch.py use_sim_time:=false "
-            "imu_topic:=/camera/imu/data localization:=true use_sim_time:=true",
+            "imu_topic:=/camera/imu/data wait_imu_to_init:=false localization:=true use_sim_time:=true",
         ]
     )
 
@@ -291,7 +291,7 @@ def test_rtabmap_reads_imu_topic_from_flag():
     assert r.returncode == 0, r.stdout
     assert (
         "EXEC: ros2 launch rtabmap_launch rtabmap.launch.py use_sim_time:=false "
-        "imu_topic:=/imu/data localization:=true"
+        "imu_topic:=/imu/data wait_imu_to_init:=true localization:=true"
     ) in commands(r.stdout)
 
 

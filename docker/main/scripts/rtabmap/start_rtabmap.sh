@@ -25,15 +25,20 @@ python3 /scripts/patch_rtabmap_launch.py || echo "[start_rtabmap.sh] WARN: patch
 
 # ── IMU (решение Шифу 04.11) ────────────────────────────────────────────────
 # RTABMAP_IMU_TOPIC задаёт docker-compose.yaml: по умолчанию /imu/data — выход
-# imu_filter_madgwick (сервис imu-filter). Пусто → IMU выключен, как до 04.11:
-# мёртвое имя /camera/imu/data (его никто не публикует). Пустой imu_topic:=
-# в launch не передаём — пустой remap роняет узел.
-IMU_TOPIC="${RTABMAP_IMU_TOPIC:-/camera/imu/data}"
+# imu_filter_madgwick (сервис imu-filter).
+#   * включено: wait_imu_to_init:=true — без него icp_odometry на IMU даже не
+#     подписывается (замер в симе 04.11: подписчик /imu/data только /rtabmap/rtabmap,
+#     а там IMU нужен лишь для гравитации, и та выключена Optimizer/GravitySigma=0).
+#     Цена: пока нет ни одного сообщения IMU, ICP-одометрия не стартует.
+#   * пусто: IMU выключен, как до 04.11 — мёртвое имя /camera/imu/data и
+#     wait_imu_to_init:=false. Пустой imu_topic:= не передаём: пустой remap роняет узел.
 if [ -n "${RTABMAP_IMU_TOPIC:-}" ]; then
-    echo "[start_rtabmap.sh] IMU on: imu_topic:=$IMU_TOPIC"
+    IMU_ARGS=("imu_topic:=$RTABMAP_IMU_TOPIC" "wait_imu_to_init:=true")
+    echo "[start_rtabmap.sh] IMU on: ${IMU_ARGS[*]}"
 else
-    echo "[start_rtabmap.sh] IMU off (RTABMAP_IMU_TOPIC пуст): imu_topic:=$IMU_TOPIC"
+    IMU_ARGS=("imu_topic:=/camera/imu/data" "wait_imu_to_init:=false")
+    echo "[start_rtabmap.sh] IMU off (RTABMAP_IMU_TOPIC пуст): ${IMU_ARGS[*]}"
 fi
 
 echo "[start_rtabmap.sh] Launching with localization:=true: $@"
-exec "$@" "imu_topic:=$IMU_TOPIC" "localization:=true" "${SIM_TIME_LAUNCH_ARGS[@]}"
+exec "$@" "${IMU_ARGS[@]}" "localization:=true" "${SIM_TIME_LAUNCH_ARGS[@]}"

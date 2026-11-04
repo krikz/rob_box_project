@@ -164,11 +164,11 @@ services:
       - frame_id:=base_footprint
       - odom_frame_id:=icp_odom
       - odom_topic:=/odom
-      # IMU: imu_topic:= дописывает start_rtabmap.sh из RTABMAP_IMU_TOPIC (см. environment).
-      # OAK-D публикует СЫРОЙ IMU в /camera/camera/imu (~248 Гц, frame camera_imu_frame),
-      # orientation = единичный кватернион с нулевой ковариацией (фиктивная) — поэтому
-      # rtabmap получает не его, а выход imu_filter_madgwick (сервис imu-filter, /imu/data).
-      - wait_imu_to_init:=false
+      # IMU: imu_topic:= и wait_imu_to_init:= дописывает start_rtabmap.sh из
+      # RTABMAP_IMU_TOPIC (см. environment). OAK-D публикует СЫРОЙ IMU в
+      # /camera/camera/imu (~248 Гц, frame camera_imu_frame), orientation = единичный
+      # кватернион с нулевой ковариацией (фиктивная) — поэтому rtabmap получает не его,
+      # а выход imu_filter_madgwick (сервис imu-filter, /imu/data).
       # AprilTag детекции: launch-аргумент rtabmap.launch.py называется tag_topic
       # (apriltag_topic не существует в текущем launch — молча игнорировался).
       # patch_rtabmap_launch.py дополнительно мигрирует внутренний remap
