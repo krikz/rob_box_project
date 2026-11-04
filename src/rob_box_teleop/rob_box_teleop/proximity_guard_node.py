@@ -1,15 +1,20 @@
-"""proximity_guard_node — зона безопасности вокруг корпуса (#4365): мигалки, сирена, аварийный стоп.
+"""proximity_guard_node — зона безопасности вокруг корпуса (#4365): мигалка, писк, голос, аварийный стоп.
 
 Тонкая нода на Main Pi (контейнер ``proximity-guard`` на образе teleop). Решает всё ``rob_box_teleop.proximity``;
 нода подаёт туда скан и скорость и публикует решённое через готовые механизмы:
 
 * ``/scan`` (``LaserScan``) -> точки в ``base_footprint`` (поза лидара — из TF, статическая);
-* ``/odom`` (``Odometry``) -> «в движении» и куда едет корпус;
+* ``/diff_drive_controller/odom`` (``Odometry``, 50 Гц) -> «в движении» и куда едет корпус. Колёсная одометрия,
+  а не ``/odom``: тот публикует rtabmap icp_odometry (10 Гц, живёт вместе с rtabmap), см. controller_manager.yaml;
 * стоп: нулевой ``Twist`` в ``cmd_vel_emergency`` — вход twist_mux с priority 255 и timeout 0.1 с,
   поэтому пока держится стоп, нода шлёт его таймером ``rate_hz`` (умолчание 20 Гц);
 * мигалка: ``ExpressionRequest.gesture`` в ``/voice/expression/request`` (``expression_client``) —
   её показывает ``face_node`` на Vision Pi;
-* звук: имя триггера sound_pack в ``/voice/sound/trigger`` — его играет ``sound_node`` на Sound Pi.
+* писк: имя триггера sound_pack в ``/voice/sound/trigger`` — его играет ``sound_node`` на Sound Pi;
+* голос: фраза кода (``Utterance``) в ``SpeechRequest`` через ``speech_client``, автор ``system`` — как у
+  joystick_control_node; озвучивает владелец голоса на Sound Pi.
+
+Какие каналы, когда и на сколько — решает ``proximity.AlarmScheduler`` (одно событие тревоги на зону).
 
 Габарит корпуса — footprint local_costmap из того же ``nav2_params.yaml``, что у Nav2 (один источник).
 Включение: ``COMPOSE_PROFILES=proximity-guard`` (по умолчанию сервиса нет).
@@ -29,21 +34,22 @@ from nav_msgs.msg import Odometry
 from sensor_msgs.msg import LaserScan
 from std_msgs.msg import String
 
-from rob_box_core import expression_client
+from rob_box_core import expression_client, speech_client
 from rob_box_core.speech_client import SYSTEM_AGENT
+from rob_box_core.utterance import Utterance
 
 from rob_box_teleop import proximity as px
 
 EMERGENCY_TOPIC = "cmd_vel_emergency"
 SOUND_TRIGGER_TOPIC = "/voice/sound/trigger"
-#: Скан или одометрия старше этого — данных нет (угрозы не видно, это пишется в журнал).
+#: Скан или колёсная одометрия старше этого — данных нет (угрозы не видно, это пишется в журнал).
 STALE_S = 0.5
 
 _DEFAULTS = {
     "footprint_file": "/config/nav2/nav2_params.yaml",
     "base_frame": "base_footprint",
     "scan_topic": "/scan",
-    "odom_topic": "/odom",
+    "odom_topic": "/diff_drive_controller/odom",
     "rate_hz": 20.0,
     "warn_m": px.Thresholds.warn_m,
     "stop_m": px.Thresholds.stop_m,
@@ -53,6 +59,7 @@ _DEFAULTS = {
     "moving_v": px.Thresholds.moving_v,
     "moving_w": px.Thresholds.moving_w,
     "closing_mps": px.Thresholds.closing_mps,
+    "min_points": px.Thresholds.min_points,
 }
 _THRESHOLD_KEYS = ("warn_m", "stop_m", "release_margin_m", "release_s", "stop_hold_s", "moving_v", "moving_w",
                    "closing_mps")
@@ -73,7 +80,8 @@ class ProximityGuardNode(Node):
         super().__init__("proximity_guard")
         for name, default in _DEFAULTS.items():
             self.declare_parameter(name, default)
-        self.th = px.Thresholds(**{k: float(self._p(k)) for k in _THRESHOLD_KEYS})
+        self.th = px.Thresholds(min_points=int(self._p("min_points")),
+                                **{k: float(self._p(k)) for k in _THRESHOLD_KEYS})
         self.body = load_body(str(self._p("footprint_file")))
         self.base_frame = str(self._p("base_frame"))
         self.tracker = px.ZoneTracker(self.th)
@@ -92,6 +100,7 @@ class ProximityGuardNode(Node):
         self._stop_pub = self.create_publisher(Twist, EMERGENCY_TOPIC, 10)
         self._sound_pub = self.create_publisher(String, SOUND_TRIGGER_TOPIC, 10)
         expression_client.prepare(self, "request")
+        speech_client.prepare(self, "request")
         self.create_subscription(LaserScan, str(self._p("scan_topic")), self._on_scan, 10)
         self.create_subscription(Odometry, str(self._p("odom_topic")), self._on_odom, 10)
         self.create_timer(1.0 / float(self._p("rate_hz")), self._on_tick)
@@ -139,36 +148,54 @@ class ProximityGuardNode(Node):
     # -- решение и выходы ---------------------------------------------------------------------------
     def _on_tick(self) -> None:
         now = self._now()
-        gap = self._gap(now)
-        tr = self.tracker.update(now, gap)
+        threat = self._threat(now)
+        tr = self.tracker.update(now, threat.gap)
         if tr is not None:
-            log = self.get_logger().warn if px.severity(tr.zone) else self.get_logger().info
-            log(f"🛡️ {px.describe(tr)}; v={self._vel[0]:+.2f} м/с w={self._vel[1]:+.2f} рад/с")
+            self._log_transition(tr, threat)
         if self.tracker.stopping:
             self._stop_pub.publish(Twist())
         for effect in self.alarms.tick(now, self.tracker.zone):
             self._apply(effect)
 
-    def _gap(self, now: float) -> float:
+    def _log_transition(self, tr: px.Transition, threat: px.Threat) -> None:
+        where = "" if threat.point is None else f" в точке ({threat.point[0]:+.2f}, {threat.point[1]:+.2f})"
+        line = f"🛡️ {px.describe(tr)}{where}; v={self._vel[0]:+.2f} м/с w={self._vel[1]:+.2f} рад/с"
+        # Два вызова, а не выбор метода: rclpy запрещает менять уровень у одного места вызова
+        # («Logger severity cannot be changed between calls», поймано в симе).
+        if px.severity(tr.zone):
+            self.get_logger().warn(line)
+        else:
+            self.get_logger().info(line)
+
+    def _threat(self, now: float) -> px.Threat:
         blind = now - self._scan_at > STALE_S or now - self._odom_at > STALE_S
         if blind != self._blind_logged:
             self._blind_logged = blind
             if blind:
-                self.get_logger().error(f"🛡️ нет свежих /scan или /odom (> {STALE_S} с) — зона НЕ контролируется")
+                self.get_logger().error(f"🛡️ нет свежих скана или одометрии (> {STALE_S} с) — зона НЕ контролируется")
             else:
-                self.get_logger().info("🛡️ /scan и /odom снова идут — зона под контролем")
+                self.get_logger().info("🛡️ скан и одометрия идут — зона под контролем")
         if blind:
-            return math.inf
-        return px.threat_gap(self.body, self._points, self._vel[0], self._vel[1], self.th)
+            return px.NO_THREAT
+        return px.nearest_threat(self.body, self._points, self._vel[0], self._vel[1], self.th)
 
     def _apply(self, effect: px.Effect) -> None:
-        if effect.kind == "animation":
+        if effect.kind == px.EFFECT_LIGHTS:
             expression_client.express(self, turn_id="", epoch=0, agent=SYSTEM_AGENT, gesture=effect.name,
                                       ttl_ms=effect.ttl_ms)
-        else:
+        elif effect.kind == px.EFFECT_SOUND:
             msg = String()
             msg.data = json.dumps({"sound": effect.name, "request_id": ""}, ensure_ascii=False)
             self._sound_pub.publish(msg)
+        else:
+            self._say(effect.name)
+
+    def _say(self, text: str) -> None:
+        """Фраза тревоги голосом; сбой отправки — в журнал, стоп и мигалку он не трогает (как у джойстика)."""
+        try:
+            speech_client.say(self, Utterance(text=text), agent=SYSTEM_AGENT)
+        except Exception as exc:  # noqa: BLE001 - речь — обратная связь, не управление
+            self.get_logger().error(f"🛡️ фраза тревоги не отправлена ({text!r}): {exc!r}")
 
 
 def main(args=None) -> None:

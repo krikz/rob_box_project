@@ -472,8 +472,9 @@ services:
       logging: "promtail"
 
   # Зона безопасности вокруг корпуса (#4365) — ВЫКЛЮЧЕНА по умолчанию (profile).
-  # Только в движении: ближе 0.40 м от корпуса — мигалка (face_node) и robot_alert
-  # (sound_node), ближе 0.20 м — нулевой Twist в cmd_vel_emergency (twist_mux 255).
+  # Только в движении: ближе 0.40 м от корпуса — мигалка (face_node) и короткий
+  # писк (sound_node); ближе 0.20 м — нулевой Twist в cmd_vel_emergency (twist_mux
+  # 255) и одним событием мигалка, писк и «Осторожно!» голосом (SpeechRequest).
   # Включить: в .env Main Pi COMPOSE_PROFILES=proximity-guard (через запятую с
   # monitoring, если он там есть), затем docker compose up -d proximity-guard.
   # Образ — teleop (rob_box_teleop + сообщения диалога); footprint берётся из

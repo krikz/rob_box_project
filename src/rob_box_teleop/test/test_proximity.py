@@ -71,26 +71,38 @@ def test_rotation_closes_on_a_point_off_the_corner():
 
 
 def test_standing_next_to_an_obstacle_is_no_threat():
-    assert px.threat_gap(BODY, [ahead(0.05)], 0.0, 0.0, TH) == math.inf
+    assert px.nearest_threat(BODY, [ahead(0.05)], 0.0, 0.0, TH) == px.NO_THREAT
 
 
 def test_driving_at_an_obstacle_is_a_threat():
-    assert px.threat_gap(BODY, [ahead(0.15), ahead(0.5)], 0.2, 0.0, TH) == pytest.approx(0.15)
+    wall = [ahead(0.5), ahead(0.15), (BODY.x_max + 0.16, 0.01)]
+    threat = px.nearest_threat(BODY, wall, 0.2, 0.0, TH)
+    assert threat.gap == pytest.approx(0.16)
+    assert threat.point == (BODY.x_max + 0.16, 0.01)
+
+
+def test_a_single_ghost_ray_is_no_threat():
+    """Сим, прогон run5: один луч давал точку в 0.20 м от корпуса в пустом мире — тормозить по ней нельзя."""
+    assert px.nearest_threat(BODY, [ahead(0.15), ahead(0.9)], 0.2, 0.0, TH).gap == pytest.approx(0.9)
+    assert px.nearest_threat(BODY, [ahead(0.15)], 0.2, 0.0, TH) == px.NO_THREAT
+    assert px.nearest_threat(BODY, [ahead(0.15)], 0.2, 0.0, px.Thresholds(min_points=1)).gap == pytest.approx(0.15)
 
 
 def test_backing_away_or_passing_a_doorway_is_no_threat():
-    assert px.threat_gap(BODY, [ahead(0.10)], -0.2, 0.0, TH) == math.inf
+    assert px.nearest_threat(BODY, [ahead(0.10)], -0.2, 0.0, TH) == px.NO_THREAT
     jamb = [(0.0, BODY.y_max + 0.12), (0.0, BODY.y_min - 0.12)]  # проём 0.85 м
-    assert px.threat_gap(BODY, jamb, 0.2, 0.0, TH) == math.inf
+    assert px.nearest_threat(BODY, jamb, 0.2, 0.0, TH) == px.NO_THREAT
 
 
 def test_points_inside_the_hull_are_ignored():
-    assert px.threat_gap(BODY, [(0.2, 0.0)], 0.3, 0.0, TH) == math.inf
+    assert px.nearest_threat(BODY, [(0.2, 0.0)], 0.3, 0.0, TH) == px.NO_THREAT
 
 
 def test_thresholds_reject_stop_beyond_warn():
     with pytest.raises(ValueError):
         px.Thresholds(warn_m=0.2, stop_m=0.4)
+    with pytest.raises(ValueError):
+        px.Thresholds(min_points=0)
 
 
 # -- зона и гистерезис ----------------------------------------------------------------------
@@ -145,24 +157,51 @@ def test_stop_releases_to_warn_when_still_close():
     assert tr.update(1.6, 0.30).zone == px.ZONE_WARN
 
 
-# -- мигалки и звук ---------------------------------------------------------------------------
+# -- тревога: мигалка, писк, голос — одним событием ------------------------------------------
+
+LIGHTS = px.Effect(px.EFFECT_LIGHTS, "police_lights", px.LIGHTS_TTL_MS)
 
 
-def test_warn_flashes_and_beeps_once_then_only_refreshes_the_lights():
+def test_warn_is_lights_and_one_short_beep_without_voice():
     s = px.AlarmScheduler()
-    assert s.tick(0.0, px.ZONE_WARN) == [px.Effect("animation", "police_lights", 3000),
-                                         px.Effect("sound", "robot_alert")]
-    assert s.tick(1.0, px.ZONE_WARN) == []
-    assert s.tick(2.5, px.ZONE_WARN) == [px.Effect("animation", "police_lights", 3000)]
-    assert s.tick(5.0, px.ZONE_WARN) == [px.Effect("animation", "police_lights", 3000)]
+    assert s.tick(0.0, px.ZONE_WARN) == [LIGHTS, px.Effect(px.EFFECT_SOUND, "ui_notification")]
+    assert s.tick(0.3, px.ZONE_WARN) == []
+    assert s.tick(0.5, px.ZONE_WARN) == [LIGHTS]          # продление мигалки, писк не повторяется
+    assert s.tick(2.0, px.ZONE_WARN) == [LIGHTS]
 
 
-def test_stop_sirens_on_entry_and_keeps_repeating():
+def test_stop_starts_lights_beep_and_voice_in_one_tick():
     s = px.AlarmScheduler()
     s.tick(0.0, px.ZONE_WARN)
-    assert [e.kind for e in s.tick(0.1, px.ZONE_STOP)] == ["animation", "sound"]
-    assert s.tick(1.0, px.ZONE_STOP) == []
-    assert [e.kind for e in s.tick(2.6, px.ZONE_STOP)] == ["animation", "sound"]
+    assert s.tick(0.1, px.ZONE_STOP) == [LIGHTS, px.Effect(px.EFFECT_SOUND, "robot_error"),
+                                         px.Effect(px.EFFECT_SPEECH, "Осторожно!")]
+
+
+def test_stop_keeps_beeping_and_lights_while_it_holds_voice_only_on_entry():
+    s = px.AlarmScheduler()
+    s.tick(0.0, px.ZONE_STOP)
+    assert s.tick(0.5, px.ZONE_STOP) == [LIGHTS]
+    assert s.tick(0.8, px.ZONE_STOP) == [px.Effect(px.EFFECT_SOUND, "robot_error")]
+    assert [e.kind for e in s.tick(1.6, px.ZONE_STOP)] == [px.EFFECT_LIGHTS, px.EFFECT_SOUND]
+
+
+def test_alarm_ends_with_the_zone_lights_expire_by_ttl():
+    s = px.AlarmScheduler()
+    s.tick(0.0, px.ZONE_STOP)
+    assert s.tick(1.0, px.ZONE_CLEAR) == []
+    assert s.tick(5.0, px.ZONE_CLEAR) == []
+    assert px.LIGHTS_TTL_MS / 1000.0 > px.LIGHTS_EVERY_S   # продление успевает до того, как мигалка погаснет
+
+
+def test_voice_is_not_repeated_more_often_than_the_cooldown():
+    s = px.AlarmScheduler()
+    s.tick(0.0, px.ZONE_STOP)
+    s.tick(1.5, px.ZONE_CLEAR)
+    again = s.tick(1.6, px.ZONE_STOP)                     # стоп сразу снова — писк и мигалка, голоса нет
+    assert [e.kind for e in again] == [px.EFFECT_LIGHTS, px.EFFECT_SOUND]
+    s.tick(3.0, px.ZONE_CLEAR)
+    later = s.tick(px.PHRASE_COOLDOWN_S + 0.1, px.ZONE_STOP)
+    assert px.Effect(px.EFFECT_SPEECH, "Осторожно!") in later
 
 
 def test_clear_is_silent():

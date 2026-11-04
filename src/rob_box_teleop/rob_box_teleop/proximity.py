@@ -2,20 +2,22 @@
 
 Решение Шифу 04.11: предупреждать **только в движении**. Умолчания координатора:
 
-* «внимание» — препятствие ближе ``warn_m`` = 0.40 м от КОРПУСА: мигалки и короткий сигнал;
-* «стоп» — ближе ``stop_m`` = 0.20 м: нулевой Twist в ``cmd_vel_emergency`` (twist_mux priority 255) и сирена.
+* «внимание» — препятствие ближе ``warn_m`` = 0.40 м от КОРПУСА: мигалка и короткий писк, без голоса;
+* «стоп» — ближе ``stop_m`` = 0.20 м: нулевой Twist в ``cmd_vel_emergency`` (twist_mux priority 255), мигалка,
+  писк и голосом «Осторожно!» — одним событием тревоги, с одним началом и одним концом (решение Шифу 04.11).
 
 Расстояние считается от прямоугольника корпуса (footprint из ``nav2_params.yaml``), а не от центра.
 Угрозой считается только точка, к которой корпус СЕЙЧАС приближается (скорость ближайшей точки корпуса
 направлена на препятствие): робот, который стоит у стены, едет вдоль неё в проёме или отъезжает назад,
 не тревожит. Точки внутри корпуса (колёса, сам корпус, отражения) отбрасываются.
 
-Здесь вся логика решения: геометрия, классификация зоны, гистерезис, расписание мигалок и звука.
+Здесь вся логика решения: геометрия, классификация зоны, гистерезис, расписание мигалки, писка и голоса.
 Нода (``proximity_guard_node``) только подаёт сюда скан и скорость и публикует то, что решено.
 """
 
 from __future__ import annotations
 
+import heapq
 import json
 import math
 from dataclasses import dataclass, field
@@ -148,10 +150,15 @@ class Thresholds:
     moving_w: float = 0.10
     #: Точка — угроза, если корпус приближается к ней быстрее этого, м/с.
     closing_mps: float = 0.02
+    #: Угроза — не меньше стольких точек скана ближе порога: одиночный луч-призрак не тормозит
+    #: (в симе луч 225 давал точку в 0.2 м от корпуса при пустом мире, прогон run5 04.11).
+    min_points: int = 2
 
     def __post_init__(self) -> None:
         if not 0.0 < self.stop_m < self.warn_m:
             raise ValueError(f"нужно 0 < stop_m < warn_m, получено stop_m={self.stop_m}, warn_m={self.warn_m}")
+        if self.min_points < 1:
+            raise ValueError(f"min_points ≥ 1, получено {self.min_points}")
 
 
 def is_moving(vx: float, wz: float, th: Thresholds) -> bool:
@@ -159,19 +166,30 @@ def is_moving(vx: float, wz: float, th: Thresholds) -> bool:
     return abs(vx) > th.moving_v or abs(wz) > th.moving_w
 
 
-def threat_gap(body: Body, points: Iterable[Point], vx: float, wz: float, th: Thresholds) -> float:
-    """Расстояние от корпуса до ближайшей точки, к которой робот едет; ``inf`` — угрозы нет.
+@dataclass(frozen=True)
+class Threat:
+    """Ближайшая точка, к которой едет корпус: расстояние до корпуса и сама точка (``None`` — угрозы нет)."""
+
+    gap: float = math.inf
+    point: Optional[Point] = None
+
+
+NO_THREAT = Threat()
+
+
+def nearest_threat(body: Body, points: Iterable[Point], vx: float, wz: float, th: Thresholds) -> Threat:
+    """Угроза: ``min_points``-я по близости к корпусу точка из тех, к которым робот едет; ``NO_THREAT`` — таких меньше.
 
     Стоит — угрозы нет (решение Шифу: только в движении). Точки внутри корпуса не считаются.
     """
     if not is_moving(vx, wz, th):
-        return math.inf
-    best = math.inf
-    for x, y in points:
-        gap = body.gap(x, y)
-        if 0.0 < gap < best and closing_speed(body, x, y, vx, wz) > th.closing_mps:
-            best = gap
-    return best
+        return NO_THREAT
+    closing = ((body.gap(x, y), (x, y)) for x, y in points if closing_speed(body, x, y, vx, wz) > th.closing_mps)
+    nearest = heapq.nsmallest(th.min_points, (c for c in closing if c[0] > 0.0))
+    if len(nearest) < th.min_points:
+        return NO_THREAT
+    gap, point = nearest[-1]
+    return Threat(gap, point)
 
 
 def classify(gap: float, th: Thresholds, margin: float = 0.0) -> str:
@@ -228,35 +246,49 @@ class ZoneTracker:
         return tr
 
 
-# -- мигалки и звук --------------------------------------------------------------------------------
+# -- тревога: мигалка, писк, голос -----------------------------------------------------------------
 
 
 @dataclass(frozen=True)
 class Alarm:
-    """Что показывает и играет зона.
+    """Что делает зона — одним событием тревоги (решение Шифу 04.11): все каналы начинаются на входе в зону
+    и кончаются на выходе из неё.
 
-    ``animation`` — сцена LED-лица (``rob_box_animations.face.states``), уходит ``gesture`` в ``ExpressionRequest``;
-    повторяется каждые ``animation_every_s``, пока зона держится, и живёт ``animation_ms``.
-    ``sound`` — триггер sound_pack (``/voice/sound/trigger``); ``sound_every_s`` ``None`` — только на входе.
+    ``animation`` — сцена LED-лица (``rob_box_animations.face.states``), ``gesture`` в ``ExpressionRequest``;
+    живёт ``LIGHTS_TTL_MS`` и продлевается каждые ``LIGHTS_EVERY_S``, пока зона держится, — гаснет не позже
+    ``LIGHTS_TTL_MS`` после выхода.
+    ``sound`` — триггер sound_pack (``/voice/sound/trigger``): на входе и каждые ``sound_every_s``, пока зона
+    держится (``None`` — только на входе).
+    ``phrase`` — фраза кода голосом робота (``SpeechRequest``, не LLM): на входе, не чаще ``PHRASE_COOLDOWN_S``;
+    ``None`` — без голоса.
     """
 
     animation: str
-    animation_ms: int
-    animation_every_s: float
     sound: str
     sound_every_s: Optional[float]
+    phrase: Optional[str]
 
 
-#: Мигалка и сирена — те же, что у голосовой команды «сирена и мигалка» (n903: police_lights + robot_alert).
+#: «Внимание» (< 0.40 м): мигалка и короткий писк, без голоса. «Стоп» (< 0.20 м): мигалка, писк, пока стоит
+#: стоп, и «Осторожно!» на входе.
 ALARMS: Mapping[str, Alarm] = {
-    ZONE_WARN: Alarm("police_lights", 3000, 2.5, "robot_alert", None),
-    ZONE_STOP: Alarm("police_lights", 3000, 2.5, "robot_alert", 2.5),
+    ZONE_WARN: Alarm("police_lights", "ui_notification", None, None),
+    ZONE_STOP: Alarm("police_lights", "robot_error", 0.8, "Осторожно!"),
 }
+#: Время жизни мигалки на лице и шаг продления, пока зона держится.
+LIGHTS_TTL_MS = 1000
+LIGHTS_EVERY_S = 0.5
+#: Голосовую фразу — не чаще раза в столько секунд (повторные стопы подряд не тараторят).
+PHRASE_COOLDOWN_S = 10.0
+
+EFFECT_LIGHTS = "lights"
+EFFECT_SOUND = "sound"
+EFFECT_SPEECH = "speech"
 
 
 @dataclass(frozen=True)
 class Effect:
-    """Одно действие для ноды: ``kind`` — ``animation`` | ``sound``."""
+    """Одно действие для ноды: ``kind`` — ``lights`` (сцена, ``ttl_ms``) | ``sound`` (триггер) | ``speech`` (фраза)."""
 
     kind: str
     name: str
@@ -265,12 +297,14 @@ class Effect:
 
 @dataclass
 class AlarmScheduler:
-    """Когда слать мигалку и звук: на входе в зону и повторами, пока зона держится."""
+    """Расписание тревоги: на входе в зону — все каналы зоны в одном такте; пока держится — продление мигалки и
+    повтор писка; на выходе — ничего нового (мигалка гаснет по ``LIGHTS_TTL_MS``)."""
 
     alarms: Mapping[str, Alarm] = field(default_factory=lambda: ALARMS)
     _zone: str = ZONE_CLEAR
-    _led_at: float = -math.inf
+    _lights_at: float = -math.inf
     _sound_at: float = -math.inf
+    _phrase_at: float = -math.inf
 
     def tick(self, now: float, zone: str) -> List[Effect]:
         """Действия на этот такт."""
@@ -280,13 +314,16 @@ class AlarmScheduler:
         if alarm is None:
             return []
         effects: List[Effect] = []
-        if entered or now - self._led_at >= alarm.animation_every_s:
-            self._led_at = now
-            effects.append(Effect("animation", alarm.animation, alarm.animation_ms))
+        if entered or now - self._lights_at >= LIGHTS_EVERY_S:
+            self._lights_at = now
+            effects.append(Effect(EFFECT_LIGHTS, alarm.animation, LIGHTS_TTL_MS))
         repeat = alarm.sound_every_s is not None and now - self._sound_at >= alarm.sound_every_s
         if entered or repeat:
             self._sound_at = now
-            effects.append(Effect("sound", alarm.sound))
+            effects.append(Effect(EFFECT_SOUND, alarm.sound))
+        if entered and alarm.phrase and now - self._phrase_at >= PHRASE_COOLDOWN_S:
+            self._phrase_at = now
+            effects.append(Effect(EFFECT_SPEECH, alarm.phrase))
         return effects
 
 
@@ -297,8 +334,9 @@ def describe(tr: Transition) -> str:
 
 
 __all__ = [
-    "ALARMS", "Alarm", "AlarmScheduler", "Body", "Effect", "Mount", "NAV2_FOOTPRINT_PATH", "Thresholds",
-    "Transition", "ZONES", "ZONE_CLEAR", "ZONE_STOP", "ZONE_WARN", "ZoneTracker", "body_from_nav2_params",
-    "classify", "closing_speed", "describe", "is_moving", "parse_footprint", "scan_points", "severity",
-    "threat_gap", "yaw_from_quaternion",
+    "ALARMS", "Alarm", "AlarmScheduler", "Body", "EFFECT_LIGHTS", "EFFECT_SOUND", "EFFECT_SPEECH", "Effect",
+    "LIGHTS_EVERY_S", "LIGHTS_TTL_MS", "PHRASE_COOLDOWN_S", "Mount", "NAV2_FOOTPRINT_PATH", "NO_THREAT", "Threat",
+    "Thresholds", "Transition", "ZONES", "ZONE_CLEAR", "ZONE_STOP", "ZONE_WARN", "ZoneTracker", "body_from_nav2_params",
+    "classify", "closing_speed", "describe", "is_moving", "nearest_threat", "parse_footprint", "scan_points",
+    "severity", "yaw_from_quaternion",
 ]

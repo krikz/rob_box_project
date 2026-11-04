@@ -28,6 +28,8 @@ def test_alarm_names_exist_in_the_led_scenes_and_the_sound_pack():
     for alarm in px.ALARMS.values():
         assert alarm.sound in triggers, alarm.sound
         assert f"'{alarm.animation}':" in states, alarm.animation
+    assert px.ALARMS[px.ZONE_WARN].phrase is None, "«внимание» — без голоса (решение Шифу 04.11)"
+    assert px.ALARMS[px.ZONE_STOP].phrase, "«стоп» — голосом"
 
 
 def _service():
