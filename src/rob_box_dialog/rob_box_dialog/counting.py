@@ -7,8 +7,11 @@ n802 марафона М9: «посчитай вслух от одного до 
 (в пределах схемы ``SEGMENTS_MAX`` × ``SEGMENT_MAX_CHARS``). Дальше ``COUNT_MAX`` код не считает и говорит об этом
 сам (``COUNT_CAPPED_PHRASE``). Пределы и глаголы - в :mod:`.knowledge`, числительные - в :mod:`.plan.repeats`.
 
-Модель отказалась считать или переспросила (в ответе меньше двух чисел) - её ответ остаётся: код не считает за неё
-то, чего она не начинала. Правка идущего выступления (``edit_pending``) - не новый счёт.
+Модель отказалась считать или переспросила (в ответе меньше двух чисел, обещания счёта нет) - её ответ остаётся: код
+не считает за неё то, чего она не начинала. Пообещала счёт и не начала («Считаю до семидесяти, слушай внимательно.»,
+#4339; :func:`promised`, глаголы - ``knowledge.COUNT_PROMISE_VERBS``) - числа строит код, а слова модели не звучат:
+в них её граница («до семидесяти»), что может быть выше ``COUNT_MAX``. Правка идущего выступления (``edit_pending``) -
+не новый счёт.
 
 Счёт речью - ряд элементов: число и слова его формы («Четыре шаг»), :func:`series`. Код пишет его по предложению на
 число (:func:`sentenced`), чтобы владелец речи резал реплику на границе числа. Правка звучащего счёта («и после
@@ -114,6 +117,31 @@ def short_count(cmd: Command, asked: Tuple[int, int]) -> bool:
     return (max(nums) < end) if end >= start else (min(nums) > end)
 
 
+def promised(cmd: Command) -> bool:
+    """Речь модели обещает счёт (#4339): глагол счёта 1-го лица (``knowledge.COUNT_PROMISE_VERBS``) без отрицания перед
+    ним и без мнения после («считаю, что…»), либо глагол начала с предметом счёта («начинаю считать»). Переспрос
+    (``ask``) - не обещание."""
+    if cmd.ask:
+        return False
+    tokens = words(cmd.speech or "")
+    for i, token in enumerate(tokens):
+        before = set(tokens[max(0, i - 2):i])
+        after = tokens[i + 1] if i + 1 < len(tokens) else ""
+        if before & set(kn.COUNT_PROMISE_UNLESS_BEFORE):
+            continue
+        if token in kn.COUNT_PROMISE_VERBS and after not in kn.COUNT_PROMISE_UNLESS_AFTER:
+            return True
+        if token in kn.COUNT_PROMISE_STARTS and after in kn.COUNT_PROMISE_OBJECTS:
+            return True
+    return False
+
+
+def owed(cmd: Command, asked: Tuple[int, int]) -> bool:
+    """Счёт за моделью: начала и не досчитала (:func:`short_count`) или пообещала и не начала (:func:`promised`, меньше
+    двух чисел)."""
+    return short_count(cmd, asked) or (len(reached(cmd)) < 2 and promised(cmd))
+
+
 def say(number: int) -> str:
     """Число 0…100 словами (именительный): «сорок два»."""
     if number in NUMERAL_SAY:
@@ -134,10 +162,10 @@ def counted(asked: Tuple[int, int]) -> Tuple[Tuple[int, ...], bool]:
 
 
 def full_count(cmd: Command, text: str) -> Optional[Command]:
-    """Команда со счётом, построенным кодом, когда реплика ``text`` просила счёт до N, а модель досчитала меньше
-    (:func:`short_count`); иначе ``None`` - команда модели остаётся."""
+    """Команда со счётом, построенным кодом, когда реплика ``text`` просила счёт до N, а модель досчитала меньше или
+    только пообещала (:func:`owed`); иначе ``None`` - команда модели остаётся."""
     asked = asked_range(text)
-    if asked is None or cmd.edit_pending or not short_count(cmd, asked):
+    if asked is None or cmd.edit_pending or not owed(cmd, asked):
         return None
     numbers, capped = counted(asked)
     lead = phrases.text(kn.COUNT_CAPPED_PHRASE, top=_genitive(kn.COUNT_MAX)) if capped else ""
@@ -237,5 +265,5 @@ def _genitive(number: int) -> str:
     return next(word for word, value in NUMERAL_GENITIVE.items() if value == number)
 
 
-__all__ = ["Item", "Series", "asked_range", "continued", "count_text", "counted", "full_count", "is_count", "reached",
-           "said_numbers", "say", "sentenced", "series", "short_count"]
+__all__ = ["Item", "Series", "asked_range", "continued", "count_text", "counted", "full_count", "is_count", "owed",
+           "promised", "reached", "said_numbers", "say", "sentenced", "series", "short_count"]
