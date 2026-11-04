@@ -118,7 +118,7 @@ def test_reply_gives_way_to_the_spoken_line():
     log.begin("t1", 0, "включи музыку")
     log.result("t1", _result("t1/0", tool="request_music", intent="track"))
     log.said("t1", "s1", "Включаю музыку.")
-    assert log.window()[-1].content == "[ответ действием: request_music track — сделано]", "речь ещё звучит"
+    assert log.window()[-1].content == kn.WINDOW_SOUNDING_REPLY.format(text="Включаю музыку."),         "речь ещё звучит: в окне она меткой «говорю сейчас» (#4207), исход действия - записью tool"
     log.spoken("s1", 15)
     assert _dialogue(log.window()) == [(USER, "включи музыку"), (ASSISTANT, "Включаю музыку.")]
 

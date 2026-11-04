@@ -8,7 +8,9 @@
   подхваченные фразы, каждую с её автором на момент самой фразы;
 * ``assistant`` — ``text[:spoken_chars]`` по событию владельца речи (``SpeechEvent`` ``finished/cancelled``): не
   прозвучало — нет и в истории; у текстового канала (телеграм) — весь текст, он доставлен. Озвученное помечено
-  (``WindowEntry.voiced``): его, и только его, повторяет «повтори» (:meth:`TurnLog.last_spoken`). Ход отработан
+  (``WindowEntry.voiced``): его, и только его, повторяет «повтори» (:meth:`TurnLog.last_spoken`). Реплика ещё звучит
+  (отдана, конца нет) - в окне её текст под меткой ``knowledge.WINDOW_SOUNDING_REPLY`` (#4207), а не «ответ лицом»;
+  озвученной она не считается. Ход отработан
   действиями, а ответа словами в окне нет — реплику робота строит код из исходов этих действий
   (``knowledge.WINDOW_ACTIONS_REPLY``: «[ответ действием: play_animation sad — сделано]»; исход по данным —
   «stop_music — сделано, ничего не играло»), иначе реплика человека висит в истории без ответа и модель
@@ -233,6 +235,14 @@ def _action_reply(lead: Sequence[WindowEntry], entries: Sequence[WindowEntry], f
     return [WindowEntry(ASSISTANT, kn.WINDOW_FACE_REPLY.format(face=face))] if face else []
 
 
+def _sounding(speech: Mapping[str, Tuple[str, str]], fillers: Set[str], turn_id: str) -> List[WindowEntry]:
+    """Реплики хода, отданные владельцу речи и ещё не отзвучавшие (``finished``/``cancelled`` не пришёл), - меткой
+    ``knowledge.WINDOW_SOUNDING_REPLY`` с текстом (#4207, М9 n807: пока звучал счёт, окно говорило «ответ лицом», и
+    модель начала счёт заново). Не озвучены (``voiced`` нет): «повтори» их не берёт. Заглушка ожидания - не ответ."""
+    return [WindowEntry(ASSISTANT, kn.WINDOW_SOUNDING_REPLY.format(text=text))
+            for speech_id, (owner, text) in speech.items() if owner == turn_id and speech_id not in fillers]
+
+
 def _tool_content(result: Any) -> Mapping[str, Any]:
     data = dict(getattr(result, "data", None) or {})
     out: Dict[str, Any] = {"tool": result.tool, "status": result.status}
@@ -437,7 +447,8 @@ class TurnLog:
 
     def _entries(self, turn: _Turn) -> List[WindowEntry]:
         lead = list(turn.heard) or ([WindowEntry(USER, turn.user, turn.speaker)] if turn.user else [])
-        return lead + list(turn.entries) + _action_reply(lead, turn.entries, turn.faced)
+        entries = list(turn.entries) + _sounding(self._speech, self._fillers, turn.turn_id)
+        return lead + entries + _action_reply(lead, entries, turn.faced)
 
     def _tokens(self, turns: List[List[WindowEntry]]) -> int:
         return sum(self._estimate(e.text()) for t in turns for e in t)

@@ -14,7 +14,8 @@ def test_assistant_is_only_the_spoken_part():
     log = TurnLog()
     log.begin("t1", 0, "расскажи сказку")
     log.said("t1", "s1", "Жил-был робот. Он пел песни.")
-    assert log.window() == (WindowEntry(USER, "расскажи сказку"),), "до события речи ответа в окне нет"
+    sounding = kn.WINDOW_SOUNDING_REPLY.format(text="Жил-был робот. Он пел песни.")
+    assert log.window() == (WindowEntry(USER, "расскажи сказку"), WindowEntry(ASSISTANT, sounding)),         "до события речи - метка «говорю сейчас», не озвученное (#4207)"
     assert log.spoken("s1", 14) == "Жил-был робот."
     assert log.window() == (WindowEntry(USER, "расскажи сказку"), WindowEntry(ASSISTANT, "Жил-был робот."))
 
