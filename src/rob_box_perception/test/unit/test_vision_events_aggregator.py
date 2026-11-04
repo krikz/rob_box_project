@@ -76,6 +76,12 @@ class _FakeNode:
         self._subs[topic] = callback
         return sub
 
+    def create_client(self, srv_type, name, **kwargs):
+        # Issue #4352: агрегатор спрашивает режим rtabmap через GetParameters.
+        client = MagicMock()
+        client.service_is_ready.return_value = False
+        return client
+
     def create_timer(self, period, callback, callback_group=None):
         timer = MagicMock()
         timer.period = period
