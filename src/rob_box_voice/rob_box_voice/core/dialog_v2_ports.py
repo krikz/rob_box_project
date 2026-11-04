@@ -247,10 +247,12 @@ class V2Ports:
             self.on_late(result)
 
     def say(self, turn_id: str, epoch: int, text: str, voice: Optional[str] = None,
-            emotion: Optional[str] = None) -> str:
+            emotion: Optional[str] = None, boundary: str = "none") -> str:
+        """Реплика хода; ``boundary="sentence"`` - счёт (#4207): отмена дочитывает звучащее предложение-число."""
         utterance = Utterance(text=text, sink=Sink.SPEAKERS, voice=voice or None, role=voice or "", emotion=emotion or None,
                               speech_id=str(uuid.uuid4()))
-        return speech_client.say(self._node, utterance, agent=self._agent, epoch=epoch, turn_id=turn_id)
+        return speech_client.say(self._node, utterance, agent=self._agent, epoch=epoch, turn_id=turn_id,
+                                 boundary=boundary)
 
     def stage(self, turn_id: str, epoch: int, stage: str, status: str, reason: str = "", cls: Optional[str] = None,
               llm_calls: int = 0, provider: str = "", source: str = "",
@@ -320,8 +322,10 @@ class V2Ports:
             handle.cancel()
         self._log(f"🎭 [turn-v2] очередь лица снята: {len(pending)} сцен (стадия {stage} turn={turn_id})")
 
-    def cancel_speech(self, epoch: int, reason: str, boundary: str = "as_requested") -> None:
-        speech_client.cancel(self._node, agent=self._agent, epoch=epoch, reason=reason, boundary=boundary)
+    def cancel_speech(self, epoch: int, reason: str, boundary: str = "as_requested", speech_id: str = "") -> None:
+        """Отмена речи эпохи; ``speech_id`` - ровно этой реплики (правка звучащего счёта, #4207)."""
+        speech_client.cancel(self._node, agent=self._agent, speech_id=speech_id or None, epoch=epoch, reason=reason,
+                             boundary=boundary)
 
     def stop_perform(self, how: str, keep_backing: bool = False) -> bool:
         """Перебивание выступления (``PerformHost.halt``/``stop``); ``True`` — играющая музыка — его бит, и его

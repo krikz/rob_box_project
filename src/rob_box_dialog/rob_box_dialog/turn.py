@@ -79,7 +79,7 @@ import random
 import time
 import uuid
 from dataclasses import dataclass, field, fields, replace
-from typing import (Any, Awaitable, Callable, Collection, FrozenSet, Iterable, List, Mapping, Optional, Protocol,
+from typing import (Any, Awaitable, Callable, Collection, Dict, FrozenSet, Iterable, List, Mapping, Optional, Protocol,
                     Sequence, Tuple)
 
 from rob_box_core.tool_catalog import get_tool
@@ -188,7 +188,10 @@ class Ports(Protocol):
                 turn_id: str) -> Awaitable[List[ActionResult]]: ...
 
     def say(self, turn_id: str, epoch: int, text: str, voice: Optional[str] = None,
-            emotion: Optional[str] = None) -> str: ...
+            emotion: Optional[str] = None, boundary: str = "none") -> str:
+        """Реплика владельцу речи; ``boundary="sentence"`` - отмена режет её на конце предложения (счёт, #4207).
+        Порт без ``boundary`` зовётся прежним вызовом (:func:`send_speech`)."""
+        ...
 
     def stage(self, turn_id: str, epoch: int, stage: str, status: str, reason: str = "",
               cls: Optional[str] = None, llm_calls: int = 0, provider: str = "", source: str = "",
@@ -198,7 +201,10 @@ class Ports(Protocol):
         зовётся прежним вызовом (:func:`finish_stage`); ``False`` в ответ — лицо порт не показал (пульт чата)."""
         ...
 
-    def cancel_speech(self, epoch: int, reason: str, boundary: str = "as_requested") -> None: ...
+    def cancel_speech(self, epoch: int, reason: str, boundary: str = "as_requested", speech_id: str = "") -> None:
+        """Отмена речи эпохи хода; ``speech_id`` - ровно этой реплики (правка счёта, :func:`count_edit`). Порт без
+        ``speech_id`` правку звучащего счёта не поддерживает."""
+        ...
 
     def stop_perform(self, how: str, keep_backing: bool = False) -> bool:
         """Выступление: ``halt`` — сразу, ``stop`` — дочитать предложение. ``True`` — играющая музыка — его бит
@@ -896,10 +902,58 @@ def counted_in_full(log: Any, turn: "_Turn", cmd: Command) -> Command:
     """Счёт, урезанный моделью, - числами кода (``counting.full_count``, #4314 n802: «до сорока» → «Один… Десять.»)."""
     full = counting.full_count(cmd, turn.text)
     if full is None:
-        return cmd
+        return counting.sentenced(cmd, turn.text) or cmd  # счёт речью - по числу в предложении (#4207)
     log.warning(f"{LOG_MARK} счёт урезан моделью (до {max(counting.reached(cmd))}): числа строит код "
                 f"{counting.asked_range(turn.text)} turn={turn.turn_id}")
     return full
+
+
+def send_speech(ports: Any, turn_id: str, epoch: int, text: str, voice: Optional[str],
+                emotion: Optional[str]) -> str:
+    """Реплика владельцу речи. Счёт («Один. Два. …», ``counting.is_count``) - с ``boundary=sentence``: отмена (правка
+    счёта, «хватит») дочитывает звучащее число, а не режет его посередине (#4207)."""
+    if counting.is_count(text) and _accepts(ports.say, "boundary"):
+        return ports.say(turn_id, epoch, text, voice, emotion, boundary="sentence")
+    return ports.say(turn_id, epoch, text, voice, emotion)
+
+
+def _sounding_count(engine: "TurnEngine", turn: "_Turn") -> Optional[str]:
+    """``speech_id`` последнего звучащего счёта прошлого хода (``TurnLog.sounding``); нет - ``None``."""
+    counts = [sid for sid, owner, text in engine.log.sounding() if owner != turn.turn_id and counting.is_count(text)]
+    return counts[-1] if counts else None
+
+
+def count_edit(engine: "TurnEngine", turn: "_Turn", cmd: Command) -> Command:
+    """Правка звучащего счёта (#4207, n807: «и после каждого числа добавляй слово шаг»). Модель на неё присылает счёт
+    с начала («Один шаг, два шага…»), и он звучал повтором после старого. Решает код (ADR-0148): старый счёт режется
+    на границе звучащего числа (``cancel_speech`` по его ``speech_id``, реплика счёта отдана с
+    ``boundary=sentence``), а продолжение строится, когда владелец речи скажет, сколько прозвучало
+    (:func:`continue_count`, ``counting.continued``): числа - старого ряда после сказанного, форма - из правки.
+    Новая просьба о счёте («посчитай до тридцати») - не правка; речь при громких действиях не звучит (§4.1) - и не
+    правит. Не правка - команда как есть."""
+    sid = _sounding_count(engine, turn)
+    if (sid is None or not cmd.speech or loud_actions(cmd) or not counting.is_count(cmd.speech)
+            or counting.asked_range(turn.text) is not None or not _accepts(engine._ports.cancel_speech, "speech_id")):
+        return cmd
+    engine._count_edits[sid] = (turn, cmd.speech, cmd.voice, cmd.expression.emotion)
+    engine._ports.cancel_speech(turn.epoch, "count_edit", "as_requested", speech_id=sid)
+    engine._log.info(f"{LOG_MARK} правка счёта: звучащий {sid[:8]} режу на границе числа, продолжение - по "
+                     f"spoken_chars, форма из правки turn={turn.turn_id}")
+    return replace(cmd, speech=None)
+
+
+def continue_count(engine: "TurnEngine", speech_id: str, said: Optional[Tuple[str, str]], spoken_chars: int) -> None:
+    """Счёт, который правили (:func:`count_edit`), отзвучал (``cancelled`` на границе числа или ``finished``):
+    продолжение - числа, что не прозвучали по ``spoken_chars``, в новой форме. Всё прозвучало - молчим: счёт не
+    повторяется."""
+    edit = engine._count_edits.pop(speech_id, None)
+    if edit is None or said is None:
+        return
+    turn, told, voice, emotion = edit
+    text = counting.continued(said[1], spoken_chars, told)
+    engine._log.info(f"{LOG_MARK} правка счёта: прозвучало {spoken_chars} из {len(said[1])} знаков, продолжение "
+                     f"{text[:80]!r} turn={turn.turn_id}")
+    engine._say(turn, text, voice, emotion)
 
 
 def considered(engine: "TurnEngine", turn: "_Turn", cmd: Command, last: bool) -> Tuple[Command, FrozenSet[str]]:
@@ -1746,6 +1800,8 @@ class TurnEngine:
         self._deadline_s = deadline_s
         self._log = log or _LOG
         self._window = WindowGuard()
+        #: Правки звучащего счёта (:func:`count_edit`): ``speech_id`` старого счёта → (ход, правка, голос, эмоция).
+        self._count_edits: Dict[str, Tuple[Any, str, Optional[str], Optional[str]]] = {}
 
     def reset_window(self, reason: str) -> None:
         """Сброс окна по смене режима e2e (#4258); хост зовёт в потоке цикла ходов."""
@@ -1794,6 +1850,7 @@ class TurnEngine:
         part = self.log.spoken(speech_id, spoken_chars)
         if said is not None and part:
             self._event_raw("speech_spoken", said[0], text=part, data={"spoken_chars": int(spoken_chars)})
+        continue_count(self, speech_id, said, spoken_chars)  # правленый счёт - дальше в новой форме (#4207)
 
     async def _tier1(self, turn: _Turn, command: Tier1Command, snap: SessionSnapshot, parsed: str) -> None:
         """Tier-1 кодом: сессия — здесь, действия — владельцам, речь и движение — через порты. 0 вызовов LLM.
@@ -1907,6 +1964,7 @@ class TurnEngine:
         outcome = _spoken_outcome(cmd, results, self.session.snapshot.agent, self.log.performing())
         if outcome:  # провал - грустно, вопрос тула («Удалить «X»?») - эмоцией вопроса, иначе лицом модели
             self._say(turn, outcome, None, outcome_emotion(results, cmd.expression.emotion))
+        cmd = count_edit(self, turn, cmd)  # правка звучащего счёта: продолжение, а не счёт с начала (#4207)
         asked = over_ordered_music(asked_voice(cmd), results)  # голос и подложка, о которых просил человек
         owned, refusal = hand_perform(self._ports, turn.turn_id, turn.epoch, asked, self._log)
         note_perform_start(self.log, turn.turn_id, cmd, owned and not refusal)
@@ -1979,7 +2037,7 @@ class TurnEngine:
         if not text or self._stale(turn, "speech"):
             return
         turn.sad |= emotion == "sad"  # лицо итога без лица команды - по грустной фразе
-        speech_id = self._ports.say(turn.turn_id, turn.epoch, text, voice, emotion)
+        speech_id = send_speech(self._ports, turn.turn_id, turn.epoch, text, voice, emotion)
         # реплика не в динамики (чат, шлем оператора) — SpeechEvent о ней не придёт: в окне она сразу, как отдана
         delivered = agent_spec(self.session.snapshot.agent).sink != Sink.SPEAKERS
         self.log.said(turn.turn_id, speech_id, text, delivered=delivered, filler=filler)

@@ -243,6 +243,10 @@ def _sounding(speech: Mapping[str, Tuple[str, str]], fillers: Set[str], turn_id:
             for speech_id, (owner, text) in speech.items() if owner == turn_id and speech_id not in fillers]
 
 
+def _not_fillers(speech: Mapping[str, Tuple[str, str]], fillers: Set[str]) -> Tuple[Tuple[str, str, str], ...]:
+    return tuple((speech_id, owner, text) for speech_id, (owner, text) in speech.items() if speech_id not in fillers)
+
+
 def _tool_content(result: Any) -> Mapping[str, Any]:
     data = dict(getattr(result, "data", None) or {})
     out: Dict[str, Any] = {"tool": result.tool, "status": result.status}
@@ -315,6 +319,11 @@ class TurnLog:
     def speech(self, speech_id: str) -> Optional[Tuple[str, str]]:
         """``(turn_id, текст)`` реплики, которая ещё не отзвучала; чужая или уже отзвучавшая — ``None``."""
         return self._speech.get(speech_id)
+
+    def sounding(self) -> Tuple[Tuple[str, str, str], ...]:
+        """``(speech_id, turn_id, текст)`` реплик, отданных владельцу речи и ещё не отзвучавших, по порядку отдачи;
+        заглушки ожидания - не ответ, их нет (#4207: правка звучащего счёта)."""
+        return _not_fillers(self._speech, self._fillers)
 
     def last_spoken(self, exclude: str = "") -> str:
         """Последняя ОЗВУЧЕННАЯ реплика робота в журнале сессии (Tier-1 «повтори»): то, что прозвучало
