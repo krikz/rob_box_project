@@ -3,6 +3,11 @@
 
 source /opt/ros/humble/setup.bash
 
+# USE_SIM_TIME=true только в профиле docker/sim (Gazebo): use_sim_time:=true
+# дописывается ПОСЛЕ аргументов compose и перекрывает их use_sim_time:=false.
+# На роботе массив пустой.
+source /ros_scripts/use_sim_time.sh
+
 # ── Mapping Lifecycle: always start in localization mode ───────────────────
 # rtabmap ВСЕГДА стартует в localization:=true.
 #
@@ -19,4 +24,4 @@ echo "[start_rtabmap.sh] Starting in localization mode (always safe default)"
 python3 /scripts/patch_rtabmap_launch.py || echo "[start_rtabmap.sh] WARN: patch_rtabmap_launch.py failed"
 
 echo "[start_rtabmap.sh] Launching with localization:=true: $@"
-exec "$@" "localization:=true"
+exec "$@" "localization:=true" "${SIM_TIME_LAUNCH_ARGS[@]}"

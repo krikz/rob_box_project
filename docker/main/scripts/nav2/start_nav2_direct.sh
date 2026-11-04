@@ -8,6 +8,10 @@ echo "Starting Nav2 nodes directly..."
 # Source ROS2
 source /opt/ros/humble/setup.bash
 
+# USE_SIM_TIME=true только в профиле docker/sim (Gazebo): тогда каждому узлу
+# добавляется -p use_sim_time:=true поверх nav2_params.yaml. На роботе пусто.
+source /ros_scripts/use_sim_time.sh
+
 PARAMS="/config/nav2/nav2_params.yaml"
 
 # Ожидание готовности одометрии (топик /odom публикуется diff_drive_controller
@@ -35,6 +39,7 @@ fi
 ros2 run nav2_lifecycle_manager lifecycle_manager \
     --ros-args \
     --params-file $PARAMS \
+    "${SIM_TIME_ROS_ARGS[@]}" \
     -r __node:=lifecycle_manager_navigation &
 
 sleep 2
@@ -43,12 +48,14 @@ sleep 2
 ros2 run nav2_controller controller_server \
     --ros-args \
     --params-file $PARAMS \
+    "${SIM_TIME_ROS_ARGS[@]}" \
     -r /tf:=tf \
     -r /tf_static:=tf_static &
 
 ros2 run nav2_planner planner_server \
     --ros-args \
     --params-file $PARAMS \
+    "${SIM_TIME_ROS_ARGS[@]}" \
     -r __node:=planner_server \
     -r /tf:=tf \
     -r /tf_static:=tf_static &
@@ -56,6 +63,7 @@ ros2 run nav2_planner planner_server \
 ros2 run nav2_bt_navigator bt_navigator \
     --ros-args \
     --params-file $PARAMS \
+    "${SIM_TIME_ROS_ARGS[@]}" \
     -r __node:=bt_navigator \
     -r /tf:=tf \
     -r /tf_static:=tf_static &
@@ -63,6 +71,7 @@ ros2 run nav2_bt_navigator bt_navigator \
 ros2 run nav2_behaviors behavior_server \
     --ros-args \
     --params-file $PARAMS \
+    "${SIM_TIME_ROS_ARGS[@]}" \
     -r __node:=behavior_server \
     -r /tf:=tf \
     -r /tf_static:=tf_static &
@@ -70,6 +79,7 @@ ros2 run nav2_behaviors behavior_server \
 ros2 run nav2_waypoint_follower waypoint_follower \
     --ros-args \
     --params-file $PARAMS \
+    "${SIM_TIME_ROS_ARGS[@]}" \
     -r __node:=waypoint_follower \
     -r /tf:=tf \
     -r /tf_static:=tf_static &
@@ -77,6 +87,7 @@ ros2 run nav2_waypoint_follower waypoint_follower \
 ros2 run nav2_velocity_smoother velocity_smoother \
     --ros-args \
     --params-file $PARAMS \
+    "${SIM_TIME_ROS_ARGS[@]}" \
     -r __node:=velocity_smoother \
     -r /tf:=tf \
     -r /tf_static:=tf_static &
@@ -84,6 +95,7 @@ ros2 run nav2_velocity_smoother velocity_smoother \
 ros2 run nav2_smoother smoother_server \
     --ros-args \
     --params-file $PARAMS \
+    "${SIM_TIME_ROS_ARGS[@]}" \
     -r __node:=smoother_server \
     -r /tf:=tf \
     -r /tf_static:=tf_static &

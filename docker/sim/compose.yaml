@@ -1,0 +1,142 @@
+# Профиль «sim»: РОББОКС в Gazebo Fortress с боевым стеком навигации Main Pi (amd64).
+#
+# План: docs/research/2026-11-04-gazebo-sim-navigation.md §6, шаг 2.
+#
+# Имя файла — compose.yaml, а не docker-compose.yaml: docker/*/docker-compose*.yaml —
+# это контейнеры робота (их сканирует tools/architecture_audit.py), а сим на робота
+# не деплоится. Тег !override (compose ≥ 2.24) обычный yaml.safe_load не читает.
+#
+# Главное правило: узлы навигации запускаются ТЕМИ ЖЕ скриптами и с ТЕМИ ЖЕ
+# конфигами, что на Main Pi. Сервисы robot-state-publisher, twist-mux, rtabmap,
+# nav2 и zenoh-router наследуются (`extends`) из docker/main/docker-compose.yaml:
+# команда, тома ./config, ./scripts/*, ../common/** — оттуда, без копий.
+# Здесь переопределяется только то, что отличает сим от робота:
+#   * образ — один amd64-образ docker/sim/Dockerfile на все сервисы;
+#   * USE_SIM_TIME=true — боевые скрипты добавляют use_sim_time (docker/common/scripts/use_sim_time.sh);
+#   * URDF_SIM=true — robot_state_publisher строит URDF с sim:=true;
+#   * сеть — все сервисы в одном сетевом пространстве zenoh-router с
+#     network_mode: none: zenoh только на 127.0.0.1, наружу (облако, роутеры
+#     робота, соседи по машине) ничего не уходит;
+#   * /maps — свой том, боевую карту сим не трогает;
+#   * restart: "no" — упавший узел виден сразу, а не перезапуском.
+# Вместо ros2-control и lslidar — сервис gazebo: колёсами управляет тот же
+# diff_drive_controller (gz_ros2_control), /scan даёт gpu_lidar Gazebo.
+#
+# Запуск из корня репо (песочница 10.1.1.250, Intel iGPU — card1):
+#   docker build -f docker/sim/Dockerfile -t rob_box_sim:local .
+#   SIM_DRI_CARD=/dev/dri/card1 docker compose -f docker/sim/compose.yaml up -d --no-build
+#
+# Переменные (все необязательные):
+#   SIM_IMAGE          тег образа                  (rob_box_sim:local)
+#   SIM_PREFIX         префикс имён контейнеров    (rob-box-sim)
+#   SIM_DRI_CARD       DRM-карта для EGL Gazebo    (/dev/dri/card0)
+#   SIM_DRI_RENDER     render-node                 (/dev/dri/renderD128)
+#
+# rtabmap, как на роботе, стартует в localization (start_rtabmap.sh). Чтобы
+# построить карту мира, переключить его тем же сервисом, что на роботе:
+#   docker exec <SIM_PREFIX>-rtabmap /ros_scripts/ros_with_namespace.sh \
+#     bash -c 'source /opt/ros/humble/setup.bash &&
+#              ros2 service call /rtabmap/rtabmap/set_mode_mapping std_srvs/srv/Empty'
+
+name: rob_box_sim
+
+x-sim-env: &sim_env
+  ROBOT_ID: sim
+  ZENOH_LISTEN_IP: 127.0.0.1
+  USE_SIM_TIME: "true"
+  # Образы робота — aarch64; в amd64-образе каталог библиотек x86_64-linux-gnu.
+  LD_LIBRARY_PATH: /opt/ros/humble/opt/zenoh_cpp_vendor/lib:/opt/ros/humble/lib/x86_64-linux-gnu:/opt/ros/humble/lib
+
+x-sim-service: &sim_service
+  image: ${SIM_IMAGE:-rob_box_sim:local}
+  network_mode: service:zenoh-router
+  restart: "no"
+
+services:
+  zenoh-router:
+    extends:
+      file: ../main/docker-compose.yaml
+      service: zenoh-router
+    container_name: ${SIM_PREFIX:-rob-box-sim}-zenoh-router
+    network_mode: none
+    restart: "no"
+    environment:
+      ROBOT_ID: sim
+      ZENOH_LISTEN_IP: 127.0.0.1
+      # В облако сим не ходит. Шаблон роутера требует непустой список, поэтому —
+      # адрес, где никого нет: роутер тихо ретраит его (exit_on_failure: false).
+      ZENOH_CONNECT_ENDPOINTS: tcp/127.0.0.1:7448
+
+  # Вместо ros2-control + lslidar робота: Gazebo, мост /clock /scan /imu,
+  # спаунеры контроллеров из controller_manager.yaml робота.
+  gazebo:
+    <<: *sim_service
+    build:
+      context: ../..
+      dockerfile: docker/sim/Dockerfile
+    container_name: ${SIM_PREFIX:-rob-box-sim}-gazebo
+    devices:
+      - ${SIM_DRI_CARD:-/dev/dri/card0}
+      - ${SIM_DRI_RENDER:-/dev/dri/renderD128}
+    environment:
+      <<: *sim_env
+      RMW_IMPLEMENTATION: rmw_zenoh_cpp
+      ZENOH_SESSION_CONFIG_URI: /tmp/zenoh_session_config.json5
+      ROS_AUTOMATIC_DISCOVERY_RANGE: LOCALHOST
+      RUST_LOG: zenoh=info
+    volumes:
+      - ../main/config:/config:ro
+      - ../common/scripts:/ros_scripts:ro
+      - ../common/config:/common_config:ro
+    command: ["/ros_scripts/ros_with_namespace.sh", "ros2", "launch", "rob_box_sim", "sim.launch.py"]
+    depends_on:
+      - zenoh-router
+      - robot-state-publisher
+
+  robot-state-publisher:
+    extends:
+      file: ../main/docker-compose.yaml
+      service: robot-state-publisher
+    <<: *sim_service
+    container_name: ${SIM_PREFIX:-rob-box-sim}-robot-state-publisher
+    environment:
+      <<: *sim_env
+      URDF_SIM: "true"
+
+  twist-mux:
+    extends:
+      file: ../main/docker-compose.yaml
+      service: twist-mux
+    <<: *sim_service
+    container_name: ${SIM_PREFIX:-rob-box-sim}-twist-mux
+    environment: *sim_env
+
+  rtabmap:
+    extends:
+      file: ../main/docker-compose.yaml
+      service: rtabmap
+    <<: *sim_service
+    container_name: ${SIM_PREFIX:-rob-box-sim}-rtabmap
+    environment: *sim_env
+    volumes:
+      - sim-maps:/maps
+
+  nav2:
+    extends:
+      file: ../main/docker-compose.yaml
+      service: nav2
+    <<: *sim_service
+    container_name: ${SIM_PREFIX:-rob-box-sim}-nav2
+    environment: *sim_env
+    volumes:
+      - sim-maps:/maps:ro
+    # У робота nav2 ждёт ещё ros2-control и lslidar; в симе их заменяет gazebo.
+    depends_on: !override
+      - zenoh-router
+      - robot-state-publisher
+      - rtabmap
+      - twist-mux
+      - gazebo
+
+volumes:
+  sim-maps:
