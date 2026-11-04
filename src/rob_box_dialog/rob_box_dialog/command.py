@@ -37,7 +37,7 @@ from rob_box_dialog import phrases
 from rob_box_dialog.cast import Role
 from rob_box_dialog.expression import shows
 from rob_box_dialog.face_scene import FIELDS as FACE_FIELDS, FaceScene, problem as face_problem
-from rob_box_dialog.words import music_promises, voice_promises
+from rob_box_dialog.words import music_promises, search_promises, voice_promises
 
 #: Поля команды и экспрессии — из той же схемы, что видит LLM (:func:`knowledge.command_schema`).
 _COMMAND_FIELDS: Tuple[str, ...] = tuple(kn.command_schema("json")["properties"])
@@ -634,6 +634,7 @@ def validate(cmd: Result, available_tools: Collection[str], session: Any = None,
         lambda: _check_speech_with_actions(cmd, agent),
         lambda: _check_music_promise(cmd, agent),
         lambda: _check_voice_promise(cmd, agent),
+        lambda: _check_search_promise(cmd, agent),
         lambda: _check_args_without_action(cmd),
         lambda: _check_perform(cmd, busy),
         lambda: _check_sing(cmd, form),
@@ -1015,6 +1016,18 @@ def _check_voice_promise(cmd: Command, agent: str) -> None:
         raise _Bad(kn.VIOLATION_VOICE_PROMISE, f"speech обещает {', '.join(broken)} без тула")
 
 
+def _check_search_promise(cmd: Command, agent: str) -> None:
+    """Речь обещает поискать («Поищу ещё раз, уточню запрос.»), а тула поиска (``knowledge.SEARCH_PROMISES``) в
+    команде нет (#4314 К1, n907 М9, ADR-0148): слова без действия. Нарушение ``VIOLATION_SEARCH_PROMISE`` - повтор с
+    подсказкой; речь, что не прозвучит (:func:`_speech_is_dropped`), никого не обещает."""
+    if _speech_is_dropped(cmd, agent):
+        return
+    called = {a.tool for a in cmd.actions}
+    broken = [kind for kind in search_promises(cmd.speech or "") if not called & set(kn.SEARCH_PROMISES[kind].tools)]
+    if broken:
+        raise _Bad(kn.VIOLATION_SEARCH_PROMISE, f"speech обещает {', '.join(broken)} без тула поиска")
+
+
 def _check_args_without_action(cmd: Command) -> None:
     """Модель положила аргументы действия на уровень команды, а самого действия нет (:func:`_lift_args` выбросил
     их целиком): она хотела действие, но не назвала тул - команда без него молча ничего не сделает. Нарушение
@@ -1252,6 +1265,7 @@ HINTS: Mapping[str, str] = MappingProxyType({
                                   f"speech, коротко, не длиннее {kn.SPEECH_MAX_CHARS} символов",
     kn.VIOLATION_MUSIC_PROMISE: kn.MUSIC_PROMISE_HINT,
     kn.VIOLATION_VOICE_PROMISE: kn.VOICE_PROMISE_HINT,
+    kn.VIOLATION_SEARCH_PROMISE: kn.SEARCH_PROMISE_HINT,
     kn.VIOLATION_ARGS_WITHOUT_ACTION: "аргументы пишутся только внутри действия: {\"actions\": [{\"tool\": <тул>, "
                                       "\"args\": {...}}]}; на уровне команды их нет, и без тула ничего не сделано",
     "bad_ask": "у ask нужен text",

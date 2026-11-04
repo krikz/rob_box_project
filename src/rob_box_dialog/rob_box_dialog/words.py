@@ -37,6 +37,7 @@ from rob_box_dialog.knowledge import (
     REPLY_NOT_A_NAME,
     REPLY_VERB_ENDINGS,
     REQUEST_LEADS,
+    SEARCH_PROMISES,
     SELF_MEMORY_ASK,
     SILENCE_WORDS,
     STOP_LEAD_WORDS,
@@ -300,6 +301,14 @@ def voice_promises(text: str) -> Tuple[str, ...]:
     (``command._check_voice_promise``)."""
     tokens = name_tokens(text)
     return tuple(kind for kind, promise in VOICE_PROMISES.items() if _promises(tokens, promise))
+
+
+def search_promises(text: str) -> Tuple[str, ...]:
+    """Виды обещаний поискать в речи робота (ключи ``knowledge.SEARCH_PROMISES``: ``search``, ``again``) - по словам,
+    как :func:`music_promises`: «поищу ещё раз», «посмотрю в интернете», «найду ещё раз». Прошедшее («поискал»,
+    «нашёл») не обещание. Тул поиска судит валидатор команды (``command._check_search_promise``)."""
+    tokens = name_tokens(text)
+    return tuple(kind for kind, promise in SEARCH_PROMISES.items() if _promises(tokens, promise))
 
 
 def words_in_order(heard: str, said: str) -> int:

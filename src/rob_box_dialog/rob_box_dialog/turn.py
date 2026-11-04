@@ -84,6 +84,7 @@ from typing import (Any, Awaitable, Callable, Collection, FrozenSet, Iterable, L
 
 from rob_box_core.tool_catalog import get_tool
 from rob_box_core.utterance import Sink, Utterance
+from rob_box_dialog import counting
 from rob_box_dialog import face_scene
 from rob_box_dialog import foreign_name
 from rob_box_dialog import knowledge as kn
@@ -891,13 +892,24 @@ def reread_reason(turn: "_Turn", cmd: Command, fresh: Command, last: bool) -> st
     return kn.VIOLATION_QUERY_REPEAT
 
 
+def counted_in_full(log: Any, turn: "_Turn", cmd: Command) -> Command:
+    """Счёт, урезанный моделью, - числами кода (``counting.full_count``, #4314 n802: «до сорока» → «Один… Десять.»)."""
+    full = counting.full_count(cmd, turn.text)
+    if full is None:
+        return cmd
+    log.warning(f"{LOG_MARK} счёт урезан моделью (до {max(counting.reached(cmd))}): числа строит код "
+                f"{counting.asked_range(turn.text)} turn={turn.turn_id}")
+    return full
+
+
 def considered(engine: "TurnEngine", turn: "_Turn", cmd: Command, last: bool) -> Tuple[Command, FrozenSet[str]]:
     """Команда к исполнению и имена, которыми нельзя звать собеседника (:func:`foreign_keys`): без повторов
-    исполненного (:func:`unrepeated`) и прочитанного (:func:`unreread`) в ходе; без чужого имени и без утверждения о
+    исполненного (:func:`unrepeated`) и прочитанного (:func:`unreread`) в ходе; счёт, урезанный моделью, - числами
+    кода (:func:`counted_in_full`); без чужого имени и без утверждения о
     состоянии без данных, когда вернуть команду модели уже нельзя (:func:`unnamed_without_retry`,
     :func:`unclaimed_without_retry`)."""
     log, snapshot = engine._log, engine.session.snapshot
-    fresh = unreread(log, turn, unrepeated(log, turn, cmd))
+    fresh = counted_in_full(log, turn, unreread(log, turn, unrepeated(log, turn, cmd)))
     names = foreign_keys(engine.log.window(exclude=turn.turn_id), turn, fresh, snapshot)
     fresh = unnamed_without_retry(log, turn, fresh, names, last)
     return unclaimed_without_retry(log, turn, fresh, snapshot.agent, last), names
@@ -1340,7 +1352,16 @@ def _salvaged_phrase(engine: "TurnEngine", turn: _Turn, invalid: Invalid, result
         return engine._pick(music_promise_key(turn.music_stopped, snap.music_playing))
     if invalid.reason == kn.VIOLATION_VOICE_PROMISE:
         return engine._pick(kn.VOICE_PROMISE_PHRASE)
+    if invalid.reason == kn.VIOLATION_SEARCH_PROMISE:
+        return search_promise_phrase(engine, turn)
     return engine._pick(kn.INVALID_COMMAND_PHRASES.get(invalid.reason, kn.INVALID_COMMAND_PHRASE))
+
+
+def search_promise_phrase(engine: "TurnEngine", turn: _Turn) -> str:
+    """Фраза кода после обещания поискать без тула и после повтора (#4314, n907): поиск в этом ходе был - ответ по его
+    данным (:func:`query_fallback`), а не «поищу ещё»; не было - честное «поиск я не запускал»."""
+    searched = [r for r in turn.queried if r.tool in kn.SEARCH_PROMISE_TOOLS]
+    return query_fallback(searched) if searched else engine._pick(kn.SEARCH_PROMISE_PHRASE)
 
 
 def music_promise_key(stopped: bool, playing: bool) -> str:

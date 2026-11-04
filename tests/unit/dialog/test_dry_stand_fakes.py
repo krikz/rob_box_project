@@ -317,7 +317,9 @@ def test_regression_wiping_the_cast_per_act_loses_the_voice_by_act_10(make_env):
     env = make_env(acquaintance_rule)
     reports = [env.act(a, dm.NO_PHASE) for a in three_acts()]
     final = reports[-1][0]
-    assert "👤 Speaker: unknown" in final.log and "Саша" not in user_text(env.seen[-1])
+    # голос стёртого каста - новый профиль без имени (#3858, фейк биометрии с #4314), Саша не узнан
+    assert "👤 Speaker: безымянный профиль" in final.log and "👤 Speaker: 'Саша'" not in final.log
+    assert "Саша" not in user_text(env.seen[-1])
 
 
 # ── Срок давности окна диалога: #4258 ────────────────────────────────────────────────────────────────────────────

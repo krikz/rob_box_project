@@ -33,6 +33,16 @@ _NUMERAL_FORMS: Dict[int, Tuple[str, ...]] = {
     90: ("девяносто",), 100: ("сто",),
 }
 NUMERAL_WORDS: Dict[str, int] = {form: value for value, forms in _NUMERAL_FORMS.items() for form in forms}
+#: Числительное словом для счёта кодом (``counting``): первая форма именительного.
+NUMERAL_SAY: Dict[int, str] = {value: forms[0] for value, forms in _NUMERAL_FORMS.items()}
+#: Родительный падеж («до сорока», «от одного», #4314); ё → е, как в :func:`words`.
+NUMERAL_GENITIVE: Dict[str, int] = {
+    "одного": 1, "одной": 1, "двух": 2, "трех": 3, "четырех": 4, "пяти": 5, "шести": 6, "семи": 7, "восьми": 8,
+    "девяти": 9, "десяти": 10, "одиннадцати": 11, "двенадцати": 12, "тринадцати": 13, "четырнадцати": 14,
+    "пятнадцати": 15, "шестнадцати": 16, "семнадцати": 17, "восемнадцати": 18, "девятнадцати": 19, "двадцати": 20,
+    "тридцати": 30, "сорока": 40, "пятидесяти": 50, "шестидесяти": 60, "семидесяти": 70, "восьмидесяти": 80,
+    "девяноста": 90, "ста": 100,
+}
 SENTENCE_END = ".!?…"
 #: Слов, кроме чисел, в предложении счёта, которое всё ещё считается единицей счёта (когда счёт уже шёл): «и … шаг — пришли».
 COUNT_FILLER_WORDS = 3
@@ -131,4 +141,5 @@ def drop_said(rows: Sequence[Tuple[str, str, str]], said: Sequence[str]) -> List
     return []
 
 
-__all__ = ["NUMERAL_WORDS", "drop_said", "is_counting", "is_repeat", "numerals", "said_numbers", "words"]
+__all__ = ["NUMERAL_GENITIVE", "NUMERAL_SAY", "NUMERAL_WORDS", "drop_said", "is_counting", "is_repeat", "numerals",
+           "said_numbers", "words"]

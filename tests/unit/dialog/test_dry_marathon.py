@@ -662,6 +662,7 @@ def test_stand_log_uses_the_formats_of_the_real_robot_lines():
         (f"{voice}/speaker_id_node.py", "✅ Speaker '{name}' registered (id={sid[:8]})"),
         (f"{voice}/speaker_id_node.py", "👤 Speaker: '{match.name}' confidence={match.confidence:.3f} "),
         (f"{voice}/speaker_id_node.py", "👤 Speaker: unknown ({elapsed:.0f} ms)"),
+        (f"{voice}/speaker_id_node.py", "👤 Speaker: безымянный профиль id={enrolled.speaker_id[:8]} (новый, кличка "),
         (f"{voice}/dialog_node.py", "[backlog] accumulated reason={decision.reason} entries="),
         (f"{mcp}/llm_adapter.py", "📤 Отправлен запрос {request_id[:8]}: {tool_name}"),
         (f"{mcp}/mcp_server.py", "📥 Запрос выполнения: {tool_name} с параметрами {parameters}"),
