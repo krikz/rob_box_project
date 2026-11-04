@@ -130,6 +130,10 @@ class FaceObservation:
     crop: Optional[Any] = None
     frame_w: int = 0
     frame_h: int = 0
+    #: 5 точек RetinaFace (10 normalized float, см. ``face_frontality``)
+    #: или ``None``. Трекер их не читает; по ним ``face_frontality``
+    #: решает, можно ли по Встрече завести новую запись (ADR-0130 §10.4).
+    landmarks: Optional[List[float]] = None
 
 
 @dataclass

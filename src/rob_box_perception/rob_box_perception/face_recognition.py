@@ -141,6 +141,7 @@ try:
 except ImportError:
     align_face = None  # type: ignore[assignment]
 
+from rob_box_perception.face_frontality import encounter_gate
 from rob_box_perception.face_tracker import FaceObservation, FaceTracker
 
 #: Запас вокруг bbox'а лица при кропе (ADR-0123 §4.2: «40 % по краям,
@@ -340,6 +341,9 @@ class FaceRecognizer:
         self._embed_failures = 0
         self._recognized_total = 0
         self._new_people_total = 0
+        #: Встречи незнакомца, по которым новую запись НЕ завели:
+        #: нефронтально или нет лица (ADR-0130 §10.4 п.2).
+        self._new_record_suppressed_total = 0
         self._voice_merges_total = 0
         self._embed_calls = 0
         self._embed_ms_total = 0.0
@@ -722,6 +726,7 @@ class FaceRecognizer:
                     crop=crop,
                     frame_w=frame_w,
                     frame_h=frame_h,
+                    landmarks=det.get('landmarks'),
                 )
             )
         return observations
@@ -765,24 +770,23 @@ class FaceRecognizer:
         """Встреча состоялась: записать её и поднять повод заговорить."""
         self._encounters_total += 1
 
-        if encounter.embedding is None:
-            # Трек дожил до Встречи, но ни один кадр не дал эмбеддинга
-            # (мелкое лицо / ArcFace в degraded). Записывать нечего, и
-            # выдумывать «кого-то» мы не будем.
-            self._log(
-                'warn',
-                f'Встреча track={encounter.track_id} без эмбеддинга — '
-                f'запись пропущена (лицо мельче {self._min_embed_px:.0f}px '
-                f'или ArcFace недоступен).',
-            )
-            return
-
-        best_crop = encounter.best[0].crop if encounter.best else None
-        snapshot = None
-        if self._store_snapshots and best_crop is not None:
-            snapshot = encode_jpeg(best_crop)
-
         try:
+            # Нет эмбеддинга — писать нечего; нефронтальная Встреча
+            # незнакомца — новую запись не заводим (ADR-0130 §10.4 п.2).
+            # Известного человека пропускаем при любой позе.
+            gate = encounter_gate(
+                encounter, self._store.identify, self._min_embed_px,
+            )
+            if not gate.record:
+                self._new_record_suppressed_total += gate.suppressed_birth
+                self._log(gate.level, gate.reason)
+                return
+
+            best_crop = encounter.best[0].crop if encounter.best else None
+            snapshot = None
+            if self._store_snapshots and best_crop is not None:
+                snapshot = encode_jpeg(best_crop)
+
             match = self._store.record_encounter(
                 encounter.embedding,
                 snapshot=snapshot,
@@ -1009,6 +1013,7 @@ class FaceRecognizer:
             'encounters_total': self._encounters_total,
             'recognized_total': self._recognized_total,
             'new_people_total': self._new_people_total,
+            'new_record_suppressed_total': self._new_record_suppressed_total,
             'voice_merges_total': self._voice_merges_total,
             # Issue #2748 — причины, по которым note_voice_identification()
             # НЕ привязала имя, чтобы «слияний=0» в сводке ноды не было
