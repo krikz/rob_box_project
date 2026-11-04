@@ -115,11 +115,12 @@ services:
       - *zenoh_listen_ip  # адрес локального роутера для session config
       # КРИТИЧНО: Путь к библиотекам Zenoh (vendor устанавливает в нестандартный путь)
       - LD_LIBRARY_PATH=/opt/ros/${ROS_DISTRO:-humble}/opt/zenoh_cpp_vendor/lib:/opt/ros/${ROS_DISTRO:-humble}/lib/aarch64-linux-gnu:/opt/ros/${ROS_DISTRO:-humble}/lib
-      # IMU в оценке движения (решение Шифу 04.11): выход imu_filter_madgwick
-      # (сервис imu-filter). Без двоеточия: не задано → /imu/data (включено),
-      # RTABMAP_IMU_TOPIC= (пусто) в .env → выключено, как до 04.11
+      # IMU в оценке движения (решение Шифу 04.11: «заливаем, но пока не включаем»).
+      # По умолчанию ВЫКЛЮЧЕНО: не задано или пусто → поведение как до 04.11
       # (start_rtabmap.sh подставит мёртвый /camera/imu/data, imu-filter спит).
-      - &rtabmap_imu_topic RTABMAP_IMU_TOPIC=${RTABMAP_IMU_TOPIC-/imu/data}
+      # Включить: RTABMAP_IMU_TOPIC=/imu/data в .env (выход imu_filter_madgwick,
+      # сервис imu-filter) и пересоздать rtabmap + imu-filter.
+      - &rtabmap_imu_topic RTABMAP_IMU_TOPIC=${RTABMAP_IMU_TOPIC:-}
     volumes:
       - ./config:/config:ro
       - ../common/scripts:/ros_scripts:ro
@@ -200,7 +201,8 @@ services:
   # ориентация в /imu/data для rtabmap. Магнитометра у OAK-D нет: use_mag=false,
   # курс — интеграл гироскопа (дрейфует), крен/тангаж — по гравитации.
   # Образ — тот же rtabmap (пакет ставит docker/main/rtabmap/Dockerfile).
-  # Выключение — RTABMAP_IMU_TOPIC= (пусто) в .env: узел не стартует, контейнер спит.
+  # По умолчанию выключен (RTABMAP_IMU_TOPIC не задан): узел не стартует, контейнер спит.
+  # Включение — RTABMAP_IMU_TOPIC=/imu/data в .env.
   # Замеры в симе: docs/research/2026-11-04-imu-madgwick-rtabmap.md.
   imu-filter:
     image: ${SERVICE_IMAGE_PREFIX:-ghcr.io/krikz/rob_box}:rtabmap-${ROS_DISTRO:-humble}-${RTABMAP_TAG:-${IMAGE_TAG}}

@@ -1,11 +1,11 @@
 # IMU OAK-D → imu_filter_madgwick → rtabmap: замер в Gazebo (04.11.2026)
 
 Решение Шифу 04.11 (TG): «да, подключи» гироскоп/IMU в оценку движения, вариант (а) —
-madgwick перед rtabmap. Здесь — что подключено, как выключить и что показал сим.
+madgwick перед rtabmap. Здесь — что подключено, как включить и что показал сим.
 
 ## Итог одной строкой
 
-IMU подключён (по умолчанию включён), но **коридор он не чинит**: 0/6 целей и с IMU, и без,
+IMU подключён (на роботе по умолчанию **выключен**, в симе включён), но **коридор он не чинит**: 0/6 целей и с IMU, и без,
 ошибка позы в конце того же порядка (5–15 м). Причина — по физике задачи [догадка, не
 проверялась отдельным опытом]: в гладком коридоре ICP теряет **продольный сдвиг**, а IMU даёт
 только поворот. На polygon IMU ничего не сломал.
@@ -22,14 +22,18 @@ IMU подключён (по умолчанию включён), но **кори
 
 | где | что |
 |---|---|
-| `docker/main/docker-compose.yaml` | новый сервис `imu-filter` (образ rtabmap): `/camera/camera/imu` → madgwick → `/imu/data`; переменная `RTABMAP_IMU_TOPIC=${RTABMAP_IMU_TOPIC-/imu/data}` у `rtabmap` и `imu-filter` |
+| `docker/main/docker-compose.yaml` | новый сервис `imu-filter` (образ rtabmap): `/camera/camera/imu` → madgwick → `/imu/data`; переменная `RTABMAP_IMU_TOPIC=${RTABMAP_IMU_TOPIC:-}` у `rtabmap` и `imu-filter` (**по умолчанию пусто = IMU выключен**) |
 | `docker/main/scripts/rtabmap/start_imu_filter.sh` | запуск `imu_filter_madgwick_node`; пустой флаг → `sleep infinity` |
 | `docker/main/config/rtabmap/imu_filter_madgwick.yaml` | `use_mag: false`, `world_frame: enu`, `publish_tf: false`, `gain: 0.1` |
 | `docker/main/scripts/rtabmap/start_rtabmap.sh` | флаг → `imu_topic:=… wait_imu_to_init:=true`; пусто → `imu_topic:=/camera/imu/data wait_imu_to_init:=false` (как до 04.11) |
 | `docker/sim/compose.yaml`, `src/rob_box_sim/config/bridge.yaml` | сим публикует сырой IMU под именем робота `/camera/camera/imu`, `imu-filter` наследуется из боевого compose |
 | `src/rob_box_description/urdf/rob_box.xacro` (только `sim:=true`) | шум IMU: гироскоп σ = 0.002 рад/с, смещение 0.0005 ± 0.0002 рад/с; акселерометр σ = 0.02 м/с². Порядок BMI270, **на роботе не мерил** |
 
-**Откат:** `RTABMAP_IMU_TOPIC=` (пусто) в `.env` Main Pi и пересоздать `rtabmap` + `imu-filter`.
+**По умолчанию на роботе IMU выключен** (решение Шифу 04.11: «заливаем, но пока не включаем»):
+переменная не задана → rtabmap без IMU (`wait_imu_to_init:=false`), `imu-filter` спит и ничего не публикует.
+**Включить:** `RTABMAP_IMU_TOPIC=/imu/data` в `.env` Main Pi и пересоздать `rtabmap` + `imu-filter`.
+**Выключить обратно:** убрать строку (или `RTABMAP_IMU_TOPIC=`) и пересоздать оба.
+В симе (`docker/sim/compose.yaml`) IMU включён явно.
 
 ### Находка: без `wait_imu_to_init:=true` IMU не доходит до ICP-одометрии [измерено]
 

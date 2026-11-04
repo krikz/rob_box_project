@@ -51,14 +51,14 @@ def test_imu_filter_input_is_published_camera_topic():
     assert _env(services["imu-filter"])["IMU_FILTER_INPUT"] == "${IMU_FILTER_INPUT:-/camera/camera/imu}"
 
 
-def test_rtabmap_reads_filter_output_and_empty_flag_disables_both():
+def test_rtabmap_reads_filter_output_and_default_is_imu_off():
     """Выход фильтра = вход rtabmap — одна переменная на оба сервиса.
 
-    ``${VAR-default}`` без двоеточия: не задано → /imu/data (включено),
-    задано пустым → пусто (выключено; start_rtabmap.sh и start_imu_filter.sh).
+    ``${VAR:-}``: не задано или пусто → пусто (IMU выключен по умолчанию, решение Шифу
+    04.11: «заливаем, но пока не включаем»); включение — RTABMAP_IMU_TOPIC=/imu/data в .env.
     """
     services = yaml.safe_load(MAIN_COMPOSE.read_text(encoding="utf-8"))["services"]
-    flag = "${RTABMAP_IMU_TOPIC-/imu/data}"
+    flag = "${RTABMAP_IMU_TOPIC:-}"
     assert _env(services["rtabmap"])["RTABMAP_IMU_TOPIC"] == flag
     assert _env(services["imu-filter"])["RTABMAP_IMU_TOPIC"] == flag
     assert services["imu-filter"]["image"] == services["rtabmap"]["image"]

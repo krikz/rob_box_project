@@ -15,6 +15,7 @@ Docker не нужен.
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 import yaml
@@ -119,3 +120,33 @@ def test_gazebo_reads_robot_controller_config():
     vols = SIM_COMPOSE["gazebo"]["volumes"]
     assert "../main/config:/config:ro" in vols
     assert (MAIN / "config" / "controllers" / "controller_manager.yaml").is_file()
+
+
+def _interpolate(value: str, environ: dict[str, str]) -> str:
+    """Подстановка ``${VAR}`` / ``${VAR-def}`` / ``${VAR:-def}`` как в docker compose."""
+
+    def repl(m: re.Match) -> str:
+        name, op, default = m.group(1), m.group(2), m.group(3) or ""
+        if name in environ and not (op == ":-" and environ[name] == ""):
+            return environ[name]
+        return default if op else ""
+
+    return re.sub(r"\$\{(\w+)(?:(:-|-)([^}]*))?\}", repl, value)
+
+
+def test_robot_compose_imu_is_off_by_default():
+    """Решение Шифу 04.11: «заливаем, но пока не включаем» — без переменной IMU выключен."""
+    for name in ("rtabmap", "imu-filter"):
+        raw = _env(MAIN_COMPOSE[name])["RTABMAP_IMU_TOPIC"]
+        assert _interpolate(raw, {}) == "", (name, raw)
+        assert _interpolate(raw, {"RTABMAP_IMU_TOPIC": ""}) == "", (name, raw)
+        # Явное включение в .env доходит до контейнеров.
+        assert _interpolate(raw, {"RTABMAP_IMU_TOPIC": "/imu/data"}) == "/imu/data", name
+
+
+def test_sim_compose_imu_is_on_explicitly():
+    for name in ("rtabmap", "imu-filter"):
+        raw = _env(SIM_COMPOSE[name])["RTABMAP_IMU_TOPIC"]
+        assert _interpolate(raw, {}) == "/imu/data", (name, raw)
+        # Прогон без IMU в симе: RTABMAP_IMU_TOPIC= (пусто) в окружении.
+        assert _interpolate(raw, {"RTABMAP_IMU_TOPIC": ""}) == "", (name, raw)

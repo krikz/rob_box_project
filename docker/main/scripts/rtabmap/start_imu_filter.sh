@@ -2,8 +2,8 @@
 # imu_filter_madgwick перед rtabmap (сервис imu-filter, решение Шифу 04.11).
 #
 #   IMU_FILTER_INPUT   сырой IMU (по умолчанию в compose — /camera/camera/imu, OAK-D)
-#   RTABMAP_IMU_TOPIC  выход фильтра = вход rtabmap (по умолчанию /imu/data);
-#                      пусто → IMU выключен: узел не стартует, контейнер спит,
+#   RTABMAP_IMU_TOPIC  выход фильтра = вход rtabmap (включение: /imu/data);
+#                      пусто (по умолчанию в боевом compose) → IMU выключен: узел не стартует, контейнер спит,
 #                      чтобы restart: unless-stopped не крутил его по кругу.
 
 source /opt/ros/humble/setup.bash
