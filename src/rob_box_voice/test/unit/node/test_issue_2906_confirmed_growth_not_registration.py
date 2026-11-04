@@ -102,8 +102,6 @@ def speaker_node(tmp_path, monkeypatch):
 
     n = object.__new__(sid_node.SpeakerIdNode)
     n._db = SpeakerDatabase(str(tmp_path / "speakers.db"))
-    n._speech_log = {}
-    n._speech_log_lock = threading.Lock()
     n._sample_rate = 16000
     n._recent_embeddings = collections.deque(maxlen=20)
     n._MAX_EMBED_AGE_SEC = 30.0
@@ -113,7 +111,6 @@ def speaker_node(tmp_path, monkeypatch):
     n._pending_register_lock = threading.Lock()
     n._result_pub = _FakePublisher()
     n.get_logger = MagicMock(return_value=MagicMock())
-    n._epithet_request_pub = None
     n._growth_session_gap_sec = 30.0
     n._growth_session = None
     n._growth_owner_min_score = 0.65

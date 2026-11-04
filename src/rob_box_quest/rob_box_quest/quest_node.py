@@ -2138,15 +2138,8 @@ class QuestNode(Node):
             OccupancyGrid, "/rtabmap/map", self._on_map, _MAP_QOS
         )
         # voice_state (0x1202): состояние голоса → нормализованный msgpack-фрейм → WS-подписчикам. Источник
-        # одной таблицей — rob_box_core.voice_state (issue #3911): при dialog_engine=v2 это TurnEvent/SpeechEvent/
-        # SessionState (watch), при v1 — строка /voice/dialogue/state (on_legacy; уходит с dialogue_node, PR-15).
+        # одной таблицей — rob_box_core.voice_state (issue #3911): TurnEvent/SpeechEvent/SessionState (watch).
         self._voice = voice_state.VoiceStateTracker()
-        self._dialogue_state_sub = self.create_subscription(
-            String,
-            "/voice/dialogue/state",
-            self._on_dialogue_state,
-            _RE,
-        )
         voice_state.watch(self, self._voice, lambda state: send_voice_state(self, state))
         # Эх последнего state — для тестов моста без полного ROS-стека.
         self._last_voice_state: dict[str, Any] = {
@@ -2465,10 +2458,6 @@ class QuestNode(Node):
     def _on_map_pose_timer(self) -> None:
         """5 Гц: лёгкий map_2d-кадр «только поза» (без PNG)."""
         self.bridge.publish_map_pose(self._map_pose())
-
-    def _on_dialogue_state(self, msg: String) -> None:
-        """Удалит PR-15 #3711: ROS /voice/dialogue/state (только dialogue_node v1) → адаптер → шлем."""
-        send_voice_state(self, self._voice.on_legacy(msg.data))
 
     def _on_tts_voices(self, msg: String) -> None:
         """ROS /voice/tts/voices (TRANSIENT_LOCAL, latched) → bridge кэш.

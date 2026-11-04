@@ -549,12 +549,8 @@ class STTNode(Node):
         self.avatar_ptt_result_pub = self.create_publisher(String, "/avatar/ptt/result", 10)
         self.avatar_stt_result_pub = self.create_publisher(String, "/avatar/stt/result", 10)
         self.state_pub = self.create_publisher(String, "/voice/stt/state", 10)
-        # Issue #1077 — speaker_analysis (speaker_tag) от Yandex SpeechKit v3.
-        # Публикуем отдельным топиком (String, JSON: {"speaker_tag", "text"}).
-        # dialogue_node подписывается и создаёт профиль спикера
-        # (scope=speaker:<tag>). Поле Utterance.speaker_tag дублирует метку:
-        # отдельный топик уйдёт в PR, который переведёт читателя на Utterance.
-        self.speaker_pub = self.create_publisher(String, "/voice/stt/speaker", 10)
+        # Issue #1077 — speaker_tag Yandex едет полем Utterance.speaker_tag; отдельный топик
+        # /voice/stt/speaker читал только dialogue_node v1 — снят (#4354 A2).
         # Фраза «не расслышал» (issue #979) — клиентом речи (ADR-0150 PR-3).
         speech_client.prepare(self, "request")
         # Ранний сигнал «услышал» больше не звук stt_node: сегмент с вейком уходит в /dialog/interrupt_request,
@@ -906,11 +902,6 @@ class STTNode(Node):
             )
             self.get_logger().info(f"✅ ПРИНЯТО ({source}): {text}")
             if source == _SRC_RESPEAKER:
-                # Issue #1077 — speaker публикуем ПЕРЕД результатом: dialogue_node
-                # хранит tag по тексту и забирает его в _on_stt. Если бы speaker
-                # шёл после result, гонка топиков могла бы потерять корреляцию.
-                # Для источника шлема speaker-профиль не нужен (это оператор).
-                self._publish_speaker(text, duration)
                 # Issue #2829 (ADR-0131) — utterance_id фразы: speaker_id_node
                 # считает его тем же способом от тех же PCM-байт
                 # /audio/speech_audio — id совпадёт без координации нод.
@@ -1815,35 +1806,6 @@ class STTNode(Node):
         self.recognizer.SetWords(True)
 
         return text
-
-    def _publish_speaker(self, text: str, duration_s: float = 0.0) -> None:
-        """Публикация speaker_tag (issue #1077) на /voice/stt/speaker.
-
-        Отдельный топик (контракт /voice/stt/speaker, ADR-0150 PR-2 его не трогает).
-        JSON: ``{"speaker_tag": "0", "text": "...", "duration_s": 1.2}``.
-        Если tag=None (Vosk fallback / Yandex без speaker_analysis) — не
-        публикуем, dialogue_node не создаст профиль. ``duration_s`` — длина
-        фразы в секундах; dialogue_node использует её для правила «короткие
-        (<0.8с) не создают профиль».
-        """
-        tag = self._last_speaker_tag
-        if not tag:
-            return
-        payload = json.dumps(
-            {
-                "speaker_tag": tag,
-                "text": text,
-                "duration_s": round(float(duration_s), 3),
-            },
-            ensure_ascii=False,
-        )
-        msg = String()
-        msg.data = payload
-        self.speaker_pub.publish(msg)
-        self.get_logger().info(
-            f"👤 [issue 1077] Speaker: tag={tag!r} duration={duration_s:.2f}s "
-            f"text={text[:40]!r}"
-        )
 
     def _offer_interrupt(self, text: str) -> None:
         """Сегмент фразы ReSpeaker с вейком → ``/dialog/interrupt_request`` (ADR-0150 §6.2, PR-5).

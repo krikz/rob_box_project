@@ -94,8 +94,6 @@ def node(tmp_path, monkeypatch):
 
     instance = object.__new__(sid_node.SpeakerIdNode)
     instance._db = SpeakerDatabase(str(tmp_path / "speakers.db"))
-    instance._speech_log = {}
-    instance._speech_log_lock = threading.Lock()
     instance._sample_rate = 16000
     instance._recent_embeddings: Deque[Tuple[float, np.ndarray, float, Optional[str]]] = collections.deque(maxlen=20)
     instance._MAX_EMBED_AGE_SEC = 30.0
@@ -105,8 +103,6 @@ def node(tmp_path, monkeypatch):
     instance._pending_register_lock = threading.Lock()
     instance._result_pub = _FakePublisher()
     instance.get_logger = MagicMock(return_value=MagicMock())
-    instance._epithet_request_pub = None
-    instance._epithet_llm_reasked = set()
     instance._growth_session_gap_sec = 30.0
     instance._growth_session = None
     instance._growth_owner_min_score = 0.65
@@ -264,8 +260,6 @@ def test_unnamed_limit_evicts_oldest_and_cleans_node_state(node):
     results = []
     for i in range(UNNAMED_MAX + 2):
         results.append(_hear(node, _embedding(600 + i), 4.5, f"u{i}"))
-        if i == 0:
-            node._speech_log[results[0]["speaker_id"]] = collections.deque(["давно сказанное"])
 
     ids = {row["id"]: row["name"] for row in _profiles(node)}
     unnamed = [sid for sid, name in ids.items() if not name]
@@ -274,7 +268,6 @@ def test_unnamed_limit_evicts_oldest_and_cleans_node_state(node):
     assert results[0]["speaker_id"] not in ids and results[1]["speaker_id"] not in ids, "старейшие вытеснены"
     assert all(result["speaker_id"] in ids for result in results[2:]), "новые на месте"
     assert node._db.orphaned_embedding_count() == 0
-    assert results[0]["speaker_id"] not in node._speech_log, "служебное состояние вытесненного забыто"
 
 
 # ---------------------------------------------------------------------------

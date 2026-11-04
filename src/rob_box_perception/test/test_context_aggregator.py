@@ -736,19 +736,6 @@ class TestCallbacks(unittest.TestCase):
     def tearDown(self):
         self.node.destroy_node()
 
-    def test_on_robot_response(self):
-        """Тест: callback robot_response."""
-        msg = String()
-        msg.data = '{"ssml": "<speak>Привет!</speak>"}'
-
-        self.node.on_robot_response(msg)
-
-        # Проверяем что добавлено в robot_response_events
-        self.assertGreater(len(self.node.robot_response_events), 0)
-        self.assertEqual(
-            self.node.robot_response_events[-1]['type'], 'robot_response'
-        )
-
     def test_on_speech_request_robot_voice_becomes_robot_response(self):
         """issue #3911: на dialog_engine=v2 ответ робота - SpeechRequest агента personality (голый текст, ADR-0160)."""
         self.node.on_robot_response(_SpeechRequest('personality', 'Привет, я Робби!'))
@@ -767,10 +754,10 @@ class TestCallbacks(unittest.TestCase):
 
         self.assertEqual(self.node.robot_response_events, [])
 
-    def test_speech_request_subscription_registered_next_to_v1_response(self):
-        """Подписка на запрос речи создана; v1-топик ответа живёт до PR-15 (TEMP)."""
+    def test_speech_request_subscription_registered_without_v1_response(self):
+        """Подписка на запрос речи создана; v1-топика ответа нет (#4354 A2)."""
         self.assertEqual(self.node._subs['/voice/speech/request'], self.node.on_robot_response)
-        self.assertEqual(self.node._subs['/voice/dialogue/response'], self.node.on_robot_response)
+        self.assertNotIn('/voice/dialogue/response', self.node._subs)
 
     def test_on_robot_thought(self):
         """Тест: callback robot_thought (удалён в W10 — пропускаем)."""

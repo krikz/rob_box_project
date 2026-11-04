@@ -1,7 +1,7 @@
 {
   "version": 1,
-  "created": "2026-11-03",
-  "base_sha": "41a3f3bca1b731904157e5507e1a082a9445c2b3",
+  "created": "2026-11-04",
+  "base_sha": "b1a0c5f8d9c8ae2352658435adbf4dad71bfb831",
   "limits": {
     "wmc": 80,
     "methods": 40
@@ -40,8 +40,8 @@
       "methods": 59
     },
     "src/rob_box_quest/rob_box_quest/quest_node.py:QuestNode": {
-      "wmc": 166,
-      "methods": 36
+      "wmc": 165,
+      "methods": 35
     },
     "src/rob_box_quest/rob_box_quest/server/ws_server.py:WSSServer": {
       "wmc": 220,
@@ -72,12 +72,12 @@
       "methods": 31
     },
     "src/rob_box_voice/rob_box_voice/speaker_id_node.py:SpeakerIdNode": {
-      "wmc": 195,
-      "methods": 38
+      "wmc": 152,
+      "methods": 32
     },
     "src/rob_box_voice/rob_box_voice/stt_node.py:STTNode": {
-      "wmc": 201,
-      "methods": 39
+      "wmc": 199,
+      "methods": 38
     },
     "src/rob_box_voice/rob_box_voice/tts_node.py:TTSNode": {
       "wmc": 500,

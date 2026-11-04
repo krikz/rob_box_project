@@ -37,10 +37,10 @@ CODE_PHRASE_MARK = "фраза кода вместо ответа модели:"
 #: Записи бэклога, отданные LLM в ход: до ADR-0150 PR-5 — блок «flushed», после — снимок ``recent_unaddressed`` (≤ 1).
 BACKLOG_FLUSH_MARKS = ("[backlog] flushed", "[backlog] recent_unaddressed")
 BACKLOG_ACC_MARK = "[backlog] accumulated"
-#: ADR-0150 PR-6 (#3696): Tier-1 команда кодом (0 LLM) и спорный стоп (В19), решённый Chooser.
+#: ADR-0150 PR-6 (#3696): Tier-1 команда кодом (0 LLM) и спорный стоп (В19). Chooser спорного стопа
+#: (``[stop-chooser]``) удалён с ``core/stop_chooser`` в #4354 A1, его маркер — в A2.
 TIER1_MARK = "🧩 [tier1] kind="
 TIER1_DISPUTED_MARK = "disputed=True"
-STOP_CHOOSER_MARK = "🤔 [stop-chooser] verdict="
 #: ADR-0150 A5 (#3696): строка на каждый вызов LLM — ``rob_box_dialog.context.PROMPT_TOKENS_MARK``.
 PROMPT_TOKENS_MARK = "🧮 [prompt] tokens="
 

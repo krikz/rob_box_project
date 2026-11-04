@@ -143,13 +143,6 @@ topics:
     # speaker_id_node по ней профиль не заводит и не растит (core/echo_window.EchoVerdicts)
     writers_allowed: [stt_node]
     readers: [speaker_id_node]
-  /voice/stt/speaker:
-    owner: stt_node
-    type: std_msgs/String
-    status: live
-    writers_allowed: [stt_node]
-    readers: []
-    debt: "читатель был только у ноды v1 (удалена в PR-15 15p #3711); писатель stt_node уходит в части 15t карты docs/dialog/pr15_removal_map.md"
   /voice/stt/state:
     owner: stt_node
     type: std_msgs/String
@@ -182,14 +175,8 @@ topics:
     writers_allowed: [mcp_server]
     readers: [speaker_id_node]
   # /voice/speaker/{merge,observe,epithet}: единственный писатель — нода v1, удалена в PR-15 15p (#3711); записи сняты.
-  # Мёртвые подписки speaker_id_node на них (и писатель epithet_request) удаляются по Q6 карты PR-15.
-  /voice/speaker/epithet_request:
-    owner: speaker_id_node
-    type: std_msgs/String
-    status: live
-    writers_allowed: [speaker_id_node]
-    readers: []
-    debt: "читатель был только у ноды v1 (удалена в PR-15 15p #3711); писатель speaker_id_node удаляется по Q6 карты PR-15"
+  # Подписки speaker_id_node на observe/epithet, писатель epithet_request и /voice/stt/speaker сняты в #4354 A2;
+  # /voice/speaker/merge остаётся ручным входом оператора.
   # -- Музыка: владелец плеера v2 (ADR-0149 §2.3) ------------------------------
   /voice/music/state:
     owner: mcp_server

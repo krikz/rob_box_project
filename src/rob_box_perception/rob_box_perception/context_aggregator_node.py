@@ -19,7 +19,6 @@ Perception Context Aggregator node.
 - /rosout (system logs)
 - /voice/stt/utterance (входящая речь, rob_box_dialog_msgs/Utterance)
 - /voice/speech/request (ответы робота: реплики агента personality, dialog v2)
-- /voice/dialogue/response (ответы робота, только dialogue_node v1; TEMP до PR-15 #3711)
 - /voice/command/intent (intent команд)
 - /voice/command/feedback (feedback команд)
 - /dynamic_joint_states (joint battery, интерфейс voltage)
@@ -245,13 +244,6 @@ class ContextAggregatorNode(Node):
             self.on_robot_response,
             10
         )
-        # Удалит PR-15 #3711: dialogue_node v1 пишет JSON с SSML в /voice/dialogue/response; уходит с ним.
-        self.dialogue_response_sub = self.create_subscription(
-            String,
-            '/voice/dialogue/response',
-            self.on_robot_response,
-            10
-        )
 
         # Command intents (от CommandNode - распознанные команды)
         self.command_intent_sub = self.create_subscription(
@@ -458,7 +450,7 @@ class ContextAggregatorNode(Node):
             self.add_to_memory('user_speech', text, important=True)
 
     def on_robot_response(self, msg):
-        """Ответ робота: ``SpeechRequest`` агента personality (dialog v2) или JSON dialogue_node v1 (TEMP, PR-15)."""
+        """Ответ робота: ``SpeechRequest`` агента personality (dialog v2)."""
         text = robot_said(msg)
         if text:
             self.get_logger().info(f'🤖 Робот: "{text[:50]}..."')

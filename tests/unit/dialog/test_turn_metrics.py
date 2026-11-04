@@ -103,7 +103,7 @@ def test_retry_turn_inherits_stt_anchor(tmp_path):
 
 
 def test_tier1_and_disputed_stop_share(tmp_path):
-    """#3696: доля спорных стопов (В19) и исход Chooser — из маркеров лога, без рантайма робота."""
+    """#3696: доля спорных стопов (В19) — из маркеров лога, без рантайма робота."""
     log = tmp_path / "tier1.log"
     log.write_text(
         "\n".join(
@@ -112,8 +112,6 @@ def test_tier1_and_disputed_stop_share(tmp_path):
                 "silenced=False text='стоп'",
                 "[dialogue_node-4] [INFO] [2.0] [dialogue_node]: 🧩 [tier1] kind=stop_all disputed=True args={} rest='' "
                 "silenced=False text='спой песню про стоп'",
-                "[dialogue_node-4] [INFO] [3.0] [dialogue_node]: 🤔 [stop-chooser] verdict=part_of_command stage=model "
-                "ms=640 text='спой песню про стоп'",
             ]
         )
         + "\n",
@@ -121,7 +119,7 @@ def test_tier1_and_disputed_stop_share(tmp_path):
     )
     line = turn_metrics._tier1_line(logparse.read_lines(log))
     assert "команды кодом, 0 LLM): 2" in line and "спорных стопов (В19): 1 (50 %)" in line
-    assert "part_of_command 1" in line and "stop 0" in line
+    assert "Chooser" not in line
 
 
 def _prompt_line(ts, tokens, over):

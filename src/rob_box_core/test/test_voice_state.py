@@ -1,13 +1,12 @@
 """Состояние голоса для читателей (шлем Quest, арбитр, кольцо) из контрактов диалога v2 (issue #3911).
 
 Таблицы - одно место: ``rob_box_core.voice_state``. Здесь: переходы по ``TurnEvent``/``SpeechEvent``/``SessionState``,
-адаптер v1 (``/voice/dialogue/state``), правило «наибольшая активность, тишина от любого источника», подписки ``watch``.
+правило «наибольшая активность, тишина важнее», подписки ``watch``.
 """
 
 from __future__ import annotations
 
 import ast
-import logging
 import sys
 import types
 from pathlib import Path
@@ -139,65 +138,15 @@ def test_session_of_other_agent_is_not_our_silence():
     assert tracker.current == IDLE
 
 
-# ── v1: адаптер строки ────────────────────────────────────────────────────────────────────────────────────
-
-
-@pytest.mark.parametrize("raw, expected", [
-    ("IDLE", vs.VoiceState("idle")),
-    ("LISTENING", vs.VoiceState("listening")),
-    ("DIALOGUE", vs.VoiceState("speaking")),
-    ("SILENCED", vs.VoiceState("idle", "silenced")),
-    ("  IDLE\n", vs.VoiceState("idle")),
-])
-def test_legacy_string_maps_to_bridge(raw, expected):
-    assert vs.legacy_state(raw) == expected
-    assert vs.VoiceStateTracker().on_legacy(raw) == expected
-
-
-def test_legacy_unknown_falls_back_with_warning_and_lowercase_is_unknown(caplog):
-    with caplog.at_level(logging.WARNING):
-        assert vs.legacy_state("BOGUS_STATE") == IDLE
-        assert vs.legacy_state("idle") == IDLE
-    assert any("BOGUS_STATE" in r.message and "fallback" in r.message for r in caplog.records)
-    assert any("'idle'" in r.message for r in caplog.records)
-
-
-@pytest.mark.parametrize("raw", ["", "   ", None])
-def test_legacy_empty_is_idle_without_warning(raw, caplog):
-    with caplog.at_level(logging.DEBUG):
-        assert vs.legacy_state(raw) == IDLE
-    assert [r for r in caplog.records if r.levelno >= logging.WARNING] == []
-
-
-def test_legacy_returns_state_every_time_like_v1_did():
-    tracker = vs.VoiceStateTracker()
-    assert tracker.on_legacy("IDLE") == IDLE
-    assert tracker.on_legacy("IDLE") == IDLE
-
-
-def test_legacy_table_keys_are_uppercase_and_values_are_bridge_states():
-    for raw, (state, _detail) in vs.LEGACY_STATE.items():
-        assert raw == raw.upper()
-        assert state in vs.BRIDGE_STATES
-
-
 # ── сложение источников ────────────────────────────────────────────────────────────────────────────────────
 
 
-def test_v1_and_v2_sources_take_the_most_active_and_never_fight():
+def test_turn_and_speech_take_the_most_active():
     tracker = vs.VoiceStateTracker()
-    tracker.on_legacy("DIALOGUE")  # v1: весь ответ «говорит»
     tracker.on_turn_event(turn("thinking"))
-    assert tracker.current.state == "speaking"
-    assert tracker.on_legacy("IDLE") == vs.VoiceState("thinking")  # v1 ушёл в покой, ход v2 ещё думает
+    assert tracker.on_speech_event(speech(2)) == vs.VoiceState("speaking")
+    assert tracker.on_speech_event(speech(4)) == vs.VoiceState("thinking")  # речь кончилась, ход ещё думает
     assert tracker.on_turn_event(turn("done", "finished")) == IDLE
-
-
-def test_silenced_from_either_source_and_cleared_only_when_both_clear():
-    tracker = vs.VoiceStateTracker()
-    tracker.on_session(session("Silence"))
-    assert tracker.on_legacy("IDLE") == vs.VoiceState("idle", "silenced")
-    assert tracker.on_session(session()) == IDLE
 
 
 # ── drift: литералы совпадают со знанием диалога ─────────────────────────────────────────────────────────
