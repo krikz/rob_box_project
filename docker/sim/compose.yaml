@@ -28,6 +28,7 @@
 #
 # Переменные (все необязательные):
 #   SIM_IMAGE          тег образа                  (rob_box_sim:local)
+#   RTABMAP_IMU_TOPIC  IMU в rtabmap, как на роботе (/imu/data — madgwick; пусто — без IMU)
 #   SIM_PREFIX         префикс имён контейнеров    (rob-box-sim)
 #   SIM_DRI_CARD       DRM-карта для EGL Gazebo    (/dev/dri/card0)
 #   SIM_DRI_RENDER     render-node                 (/dev/dri/renderD128)
@@ -132,6 +133,16 @@ services:
     volumes:
       - sim-maps:/maps
 
+  # imu_filter_madgwick, как на роботе: /camera/camera/imu (Gazebo) → /imu/data → rtabmap.
+  # Выключить IMU в прогоне: RTABMAP_IMU_TOPIC= (пусто) в окружении compose.
+  imu-filter:
+    extends:
+      file: ../main/docker-compose.yaml
+      service: imu-filter
+    <<: *sim_service
+    container_name: ${SIM_PREFIX:-rob-box-sim}-imu-filter
+    environment: *sim_env
+
   nav2:
     extends:
       file: ../main/docker-compose.yaml
@@ -146,6 +157,7 @@ services:
       - zenoh-router
       - robot-state-publisher
       - rtabmap
+      - imu-filter
       - twist-mux
       - gazebo
 

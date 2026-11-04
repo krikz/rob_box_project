@@ -23,5 +23,17 @@ echo "[start_rtabmap.sh] Starting in localization mode (always safe default)"
 # Patch rtabmap.launch.py to inject explicit LiDAR-only ROS2 parameters.
 python3 /scripts/patch_rtabmap_launch.py || echo "[start_rtabmap.sh] WARN: patch_rtabmap_launch.py failed"
 
+# ── IMU (решение Шифу 04.11) ────────────────────────────────────────────────
+# RTABMAP_IMU_TOPIC задаёт docker-compose.yaml: по умолчанию /imu/data — выход
+# imu_filter_madgwick (сервис imu-filter). Пусто → IMU выключен, как до 04.11:
+# мёртвое имя /camera/imu/data (его никто не публикует). Пустой imu_topic:=
+# в launch не передаём — пустой remap роняет узел.
+IMU_TOPIC="${RTABMAP_IMU_TOPIC:-/camera/imu/data}"
+if [ -n "${RTABMAP_IMU_TOPIC:-}" ]; then
+    echo "[start_rtabmap.sh] IMU on: imu_topic:=$IMU_TOPIC"
+else
+    echo "[start_rtabmap.sh] IMU off (RTABMAP_IMU_TOPIC пуст): imu_topic:=$IMU_TOPIC"
+fi
+
 echo "[start_rtabmap.sh] Launching with localization:=true: $@"
-exec "$@" "localization:=true" "${SIM_TIME_LAUNCH_ARGS[@]}"
+exec "$@" "imu_topic:=$IMU_TOPIC" "localization:=true" "${SIM_TIME_LAUNCH_ARGS[@]}"

@@ -115,6 +115,11 @@ services:
       - *zenoh_listen_ip  # адрес локального роутера для session config
       # КРИТИЧНО: Путь к библиотекам Zenoh (vendor устанавливает в нестандартный путь)
       - LD_LIBRARY_PATH=/opt/ros/${ROS_DISTRO:-humble}/opt/zenoh_cpp_vendor/lib:/opt/ros/${ROS_DISTRO:-humble}/lib/aarch64-linux-gnu:/opt/ros/${ROS_DISTRO:-humble}/lib
+      # IMU в оценке движения (решение Шифу 04.11): выход imu_filter_madgwick
+      # (сервис imu-filter). Без двоеточия: не задано → /imu/data (включено),
+      # RTABMAP_IMU_TOPIC= (пусто) в .env → выключено, как до 04.11
+      # (start_rtabmap.sh подставит мёртвый /camera/imu/data, imu-filter спит).
+      - &rtabmap_imu_topic RTABMAP_IMU_TOPIC=${RTABMAP_IMU_TOPIC-/imu/data}
     volumes:
       - ./config:/config:ro
       - ../common/scripts:/ros_scripts:ro
@@ -159,14 +164,10 @@ services:
       - frame_id:=base_footprint
       - odom_frame_id:=icp_odom
       - odom_topic:=/odom
-      # IMU: по умолчанию ВЫКЛЮЧЕН (топик /camera/imu/data никто не публикует —
-      # исторически мёртвое имя, см. docs/research/2026-11-04-stereo-lidar-nav-history.md).
+      # IMU: imu_topic:= дописывает start_rtabmap.sh из RTABMAP_IMU_TOPIC (см. environment).
       # OAK-D публикует СЫРОЙ IMU в /camera/camera/imu (~248 Гц, frame camera_imu_frame),
-      # orientation = единичный кватернион с нулевой ковариацией (то есть «валидная», но
-      # фиктивная ориентация, не -1) — подавать её в rtabmap без imu_filter_madgwick нельзя.
-      # Включать только осознанно: RTABMAP_IMU_TOPIC=/camera/camera/imu в .env Main Pi
-      # после проверки одометрии на роботе (#3106).
-      - imu_topic:=${RTABMAP_IMU_TOPIC:-/camera/imu/data}
+      # orientation = единичный кватернион с нулевой ковариацией (фиктивная) — поэтому
+      # rtabmap получает не его, а выход imu_filter_madgwick (сервис imu-filter, /imu/data).
       - wait_imu_to_init:=false
       # AprilTag детекции: launch-аргумент rtabmap.launch.py называется tag_topic
       # (apriltag_topic не существует в текущем launch — молча игнорировался).
@@ -189,6 +190,39 @@ services:
       # 0.3 = 3x крупнее вокселей чем 0.1 → ~27x меньше точек → ~27x меньший publish.
       # Для навигации 30cm вокселей достаточно — nav2 использует 2D costmap, не 3D облако.
       - cloud_output_voxels:=0.3
+    depends_on:
+      - zenoh-router
+    restart: unless-stopped
+    labels:
+      logging: "promtail"
+
+  # imu_filter_madgwick: сырой IMU OAK-D (gyro+accel, фиктивная orientation) →
+  # ориентация в /imu/data для rtabmap. Магнитометра у OAK-D нет: use_mag=false,
+  # курс — интеграл гироскопа (дрейфует), крен/тангаж — по гравитации.
+  # Образ — тот же rtabmap (пакет ставит docker/main/rtabmap/Dockerfile).
+  # Выключение — RTABMAP_IMU_TOPIC= (пусто) в .env: узел не стартует, контейнер спит.
+  # Замеры в симе: docs/research/2026-11-04-imu-madgwick-rtabmap.md.
+  imu-filter:
+    image: ${SERVICE_IMAGE_PREFIX:-ghcr.io/krikz/rob_box}:rtabmap-${ROS_DISTRO:-humble}-${RTABMAP_TAG:-${IMAGE_TAG}}
+    container_name: imu-filter
+    network_mode: host
+    environment:
+      - ROS_DOMAIN_ID=0
+      - RMW_IMPLEMENTATION=rmw_zenoh_cpp
+      - RUST_LOG=zenoh=info
+      - ROS_AUTOMATIC_DISCOVERY_RANGE=LOCALHOST
+      - ROBOT_ID=${ROBOT_ID}  # Для генерации namespace
+      - ZENOH_SESSION_CONFIG_URI=/tmp/zenoh_session_config.json5  # Сгенерированный конфиг
+      - *zenoh_listen_ip  # адрес локального роутера для session config
+      - LD_LIBRARY_PATH=/opt/ros/${ROS_DISTRO:-humble}/opt/zenoh_cpp_vendor/lib:/opt/ros/${ROS_DISTRO:-humble}/lib/aarch64-linux-gnu:/opt/ros/${ROS_DISTRO:-humble}/lib
+      - *rtabmap_imu_topic  # выход фильтра = вход rtabmap; пусто → фильтр выключен
+      - IMU_FILTER_INPUT=${IMU_FILTER_INPUT:-/camera/camera/imu}  # сырой IMU OAK-D (Vision Pi)
+    volumes:
+      - ./config:/config:ro
+      - ../common/scripts:/ros_scripts:ro
+      - ../common/config:/common_config:ro
+      - ./scripts/rtabmap:/scripts:ro
+    command: ["/ros_scripts/ros_with_namespace.sh", "/scripts/start_imu_filter.sh"]
     depends_on:
       - zenoh-router
     restart: unless-stopped

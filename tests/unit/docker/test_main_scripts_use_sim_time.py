@@ -139,7 +139,8 @@ TWIST_MUX_EXPECTED = [
 RTABMAP_EXPECTED = sorted(
     [
         "RUN: python3 /scripts/patch_rtabmap_launch.py",
-        "EXEC: ros2 launch rtabmap_launch rtabmap.launch.py use_sim_time:=false localization:=true",
+        "EXEC: ros2 launch rtabmap_launch rtabmap.launch.py use_sim_time:=false "
+        "imu_topic:=/camera/imu/data localization:=true",
     ]
 )
 
@@ -230,7 +231,7 @@ def test_rtabmap_sim_time_goes_after_compose_args():
         [
             "RUN: python3 /scripts/patch_rtabmap_launch.py",
             "EXEC: ros2 launch rtabmap_launch rtabmap.launch.py use_sim_time:=false "
-            "localization:=true use_sim_time:=true",
+            "imu_topic:=/camera/imu/data localization:=true use_sim_time:=true",
         ]
     )
 
@@ -271,3 +272,54 @@ def test_bad_urdf_sim_fails_loudly():
     r = run_script("robot_state_publisher/start_robot_state_publisher.sh", {"URDF_SIM": "1"})
     assert r.returncode != 0
     assert "URDF_SIM='1'" in r.stdout
+
+
+# ── IMU в rtabmap через imu_filter_madgwick (решение Шифу 04.11) ─────────────
+# RTABMAP_IMU_TOPIC задаёт compose (по умолчанию /imu/data); пусто — выключено:
+# rtabmap получает мёртвое имя, как до 04.11, а imu-filter спит.
+
+IMU_FILTER_EXEC = (
+    "EXEC: ros2 run imu_filter_madgwick imu_filter_madgwick_node --ros-args "
+    "--params-file /config/rtabmap/imu_filter_madgwick.yaml "
+    "-r imu/data_raw:=/camera/camera/imu -r imu/data:=/imu/data"
+)
+IMU_ON = {"RTABMAP_IMU_TOPIC": "/imu/data", "IMU_FILTER_INPUT": "/camera/camera/imu"}
+
+
+def test_rtabmap_reads_imu_topic_from_flag():
+    r = run_script("rtabmap/start_rtabmap.sh", {"RTABMAP_IMU_TOPIC": "/imu/data"}, RTABMAP_ARGS)
+    assert r.returncode == 0, r.stdout
+    assert (
+        "EXEC: ros2 launch rtabmap_launch rtabmap.launch.py use_sim_time:=false "
+        "imu_topic:=/imu/data localization:=true"
+    ) in commands(r.stdout)
+
+
+def test_rtabmap_empty_imu_flag_is_old_dead_topic():
+    r = run_script("rtabmap/start_rtabmap.sh", {"RTABMAP_IMU_TOPIC": ""}, RTABMAP_ARGS)
+    assert r.returncode == 0, r.stdout
+    assert commands(r.stdout) == RTABMAP_EXPECTED
+
+
+def test_imu_filter_runs_madgwick_from_raw_to_flag_topic():
+    r = run_script("rtabmap/start_imu_filter.sh", IMU_ON)
+    assert r.returncode == 0, r.stdout
+    assert commands(r.stdout) == [IMU_FILTER_EXEC]
+
+
+def test_imu_filter_sim_time():
+    r = run_script("rtabmap/start_imu_filter.sh", {**IMU_ON, "USE_SIM_TIME": "true"})
+    assert r.returncode == 0, r.stdout
+    assert commands(r.stdout) == [IMU_FILTER_EXEC + " -p use_sim_time:=true"]
+
+
+def test_imu_filter_sleeps_when_imu_disabled():
+    r = run_script("rtabmap/start_imu_filter.sh", {**IMU_ON, "RTABMAP_IMU_TOPIC": ""})
+    assert r.returncode == 0, r.stdout
+    assert commands(r.stdout) == ["EXEC: sleep infinity"]
+
+
+def test_imu_filter_without_input_fails_loudly():
+    r = run_script("rtabmap/start_imu_filter.sh", {**IMU_ON, "IMU_FILTER_INPUT": ""})
+    assert r.returncode == 1, r.stdout
+    assert not commands(r.stdout)

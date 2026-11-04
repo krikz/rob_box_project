@@ -23,7 +23,7 @@ REPO_ROOT = Path(__file__).resolve().parents[3]
 SIM = REPO_ROOT / "docker" / "sim"
 MAIN = REPO_ROOT / "docker" / "main"
 
-NAV_SERVICES = ("robot-state-publisher", "twist-mux", "rtabmap", "nav2")
+NAV_SERVICES = ("robot-state-publisher", "twist-mux", "rtabmap", "imu-filter", "nav2")
 EXTENDED = ("zenoh-router", *NAV_SERVICES)
 # Железо робота, которое в симе заменяет сервис gazebo.
 REPLACED_BY_GAZEBO = {"ros2-control", "lslidar"}
