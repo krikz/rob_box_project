@@ -7,13 +7,13 @@ import json
 from rob_box_sim.bench_report import aggregate, config_of, load_rows, markdown, totals
 
 
-def _goal(goal, status, time_s=20.0, clear=0.2, osc=10.0, osc_raw=None, rec=0, coll=False, tilt=1.0):
+def _goal(goal, status, time_s=20.0, clear=0.2, osc=10.0, osc_raw=None, rec=0, coll=False, tilt=1.0, rtf=None):
     ran = status != "SKIPPED"
     return {
         "world": "polygon", "goal": goal, "status": status, "success": status == "SUCCEEDED",
         "time_s": time_s if ran else None, "min_clearance_m": clear if ran else None,
         "osc_per_m": osc if ran else None, "osc_raw_per_m": osc_raw, "recoveries": rec if ran else None,
-        "collision": coll if ran else None, "tilt_max_deg": tilt if ran else None,
+        "collision": coll if ran else None, "tilt_max_deg": tilt if ran else None, "rtf": rtf,
     }
 
 
@@ -52,3 +52,15 @@ def test_repeats_fold_into_one_row_and_skipped_is_not_an_attempt(tmp_path):
     assert "| rpp | polygon | gap_1.2 | 2/3 |" in md
     assert "| rpp | polygon | gap_0.9 | 0/1 (+2 SKIPPED) | — |" in md
     assert "| rpp | 2/4 |" in md
+
+
+def test_rtf_marks_loaded_and_unmeasured_attempts(tmp_path):
+    d1 = _write(tmp_path, "r1", "dwb@1", [_goal("gap_1.2", "SUCCEEDED", rtf=0.95)])
+    d2 = _write(tmp_path, "r2", "dwb@2", [_goal("gap_1.2", "SUCCEEDED", rtf=0.4)])
+    d3 = _write(tmp_path, "r3", "dwb@3", [_goal("gap_1.2", "SUCCEEDED")])
+    old = _write(tmp_path, "r4", "old@1", [_goal("gap_1.2", "SUCCEEDED")])
+    agg = {a["config"]: a for a in aggregate(load_rows([d1, d2, d3, old]))}
+    assert (agg["dwb"]["rtf_min"], agg["dwb"]["rtf_low"], agg["dwb"]["rtf_unknown"]) == (0.4, 1, 1)
+    md = markdown(list(agg.values()))
+    assert "| 0.40 ⚠ 1<0.8 (1 не мерян) |" in md
+    assert "| не мерян |" in md

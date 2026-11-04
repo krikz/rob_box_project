@@ -153,3 +153,10 @@ def test_trajectory_csv_truth_and_estimate_skip_missing_tf(tmp_path):
     assert len(truth) == 4 and len(est) == 3
     assert [float(v) for v in truth[-1]] == pytest.approx([25.0, 2.0, 0.0, 0.0])
     assert write_trajectories(GoalRecord("g", Pose2D(0, 0, 0), "SKIPPED", 0, 0), tmp_path, "x") == []
+
+
+def test_rtf_is_sim_time_over_wall_time():
+    rec = _straight_run(2.0)  # 15 с sim time
+    assert goal_metrics(rec, [WALL])["rtf"] is None  # настенное время не записано
+    rec.wall_s = 30.0
+    assert goal_metrics(rec, [WALL])["rtf"] == 0.5

@@ -11,7 +11,9 @@
   * время до цели — медиана по успешным (провал по таймауту не «быстрый»);
   * мин. зазор — наименьший по всем попыткам и медиана;
   * смены знака w на метр — медиана по ``/cmd_vel`` и по выходу контроллера ``/cmd_vel_nav``;
-  * recovery — медиана и максимум; столкновения — число попыток с касанием.
+  * recovery — медиана и максимум; столкновения — число попыток с касанием;
+  * RTF min — худший real-time factor попытки; «⚠ k<0.8» — k попыток под нагрузкой,
+    «не мерян» — json старше счётчика RTF.
 
     python3 -m rob_box_sim.bench_report results/*/ > table.md
 """
@@ -25,6 +27,8 @@ import sys
 from collections import defaultdict
 from pathlib import Path
 from typing import Iterable, Optional, Sequence
+
+from rob_box_sim.nav_metrics import RTF_OK
 
 
 def config_of(label: str) -> str:
@@ -78,6 +82,9 @@ def aggregate(rows: Sequence[dict]) -> list[dict]:
             "rec_max": max(rec) if rec else None,
             "collisions": sum(1 for r in ran if r.get("collision")),
             "tilt_max_deg": max(_vals(ran, "tilt_max_deg"), default=None),
+            "rtf_min": min(_vals(ran, "rtf"), default=None),
+            "rtf_low": sum(1 for r in ran if r.get("rtf") is not None and r["rtf"] < RTF_OK),
+            "rtf_unknown": sum(1 for r in ran if r.get("rtf") is None),
         })
     return out
 
@@ -101,19 +108,31 @@ def _f(v, nd: int = 2) -> str:
 
 COLUMNS = (
     "| конфигурация | мир | цель | успех | время, с (медиана успешных) | мин. зазор, м (min / медиана) "
-    "| смен знака w/м: cmd_vel / cmd_vel_nav | recovery (медиана / max) | столкн. | наклон max, ° |"
+    "| смен знака w/м: cmd_vel / cmd_vel_nav | recovery (медиана / max) | столкн. | наклон max, ° | RTF min |"
 )
 
 
+def _rtf_cell(a: dict) -> str:
+    """RTF min и пометка: «⚠ k<0.8» — k попыток под нагрузкой, «не мерян» — старый прогон."""
+    if a["ran"] and a["rtf_unknown"] == a["ran"]:
+        return "не мерян"
+    cell = _f(a["rtf_min"])
+    if a["rtf_low"]:
+        cell += f" ⚠ {a['rtf_low']}<{RTF_OK}"
+    if a["rtf_unknown"]:
+        cell += f" ({a['rtf_unknown']} не мерян)"
+    return cell
+
+
 def markdown(agg: Sequence[dict]) -> str:
-    lines = [COLUMNS, "|" + "---|" * 10]
+    lines = [COLUMNS, "|" + "---|" * 11]
     for a in agg:
         skipped = f" (+{a['skipped']} SKIPPED)" if a["skipped"] else ""
         lines.append(
             f"| {a['config']} | {a['world']} | {a['goal']} | {a['ok']}/{a['ran']}{skipped} | "
             f"{_f(a['time_med_s'], 1)} | {_f(a['clear_min_m'], 3)} / {_f(a['clear_med_m'], 3)} | "
             f"{_f(a['osc_med'])} / {_f(a['osc_raw_med'])} | {_f(a['rec_med'], 0)} / {_f(a['rec_max'])} | "
-            f"{a['collisions']} | {_f(a['tilt_max_deg'], 1)} |"
+            f"{a['collisions']} | {_f(a['tilt_max_deg'], 1)} | {_rtf_cell(a)} |"
         )
     lines.append("")
     lines.append("| конфигурация | успех по всем целям |")

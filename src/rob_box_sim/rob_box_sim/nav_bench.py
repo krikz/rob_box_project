@@ -166,6 +166,7 @@ def run_goal(nav, recorder: Recorder, name: str, goal: Pose2D, timeout_s: float)
 
     rec = GoalRecord(name, goal, "RUNNING", recorder.now(), recorder.now())
     recorder.rec = rec
+    wall0 = time.monotonic()
     if not nav.goToPose(_pose_stamped(nav, goal)):
         rec.status = "REJECTED"
     else:
@@ -189,6 +190,7 @@ def run_goal(nav, recorder: Recorder, name: str, goal: Pose2D, timeout_s: float)
                 TaskResult.FAILED: "FAILED",
             }.get(res, f"UNKNOWN({res})")
     rec.t_end = recorder.now()
+    rec.wall_s = time.monotonic() - wall0
     recorder.rec = None
     return rec
 

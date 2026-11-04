@@ -11,6 +11,9 @@
     когда smoother не в цепочке и контроллер пишет прямо в ``/cmd_vel``);
   * ``scan_min`` — минимум ``/scan`` (что видит лидар);
   * ``recoveries`` — ``number_of_recoveries`` из feedback ``NavigateToPose``;
+  * ``rtf`` — real-time factor за цель: sim time цели / настенное время цели. Все
+    времена метрик — sim time; RTF < RTF_OK значит, что песочница не тянула и
+    узлы с настенными таймерами (циклы контроллера) работали не как на роботе;
   * ``tilt_max_rad`` — наибольший наклон корпуса по истинной позе: при наклоне
     ~10° плоскость лидара (z ≈ 0.52 м) задевает пол в ~3 м и пишет в costmap
     препятствие, которого нет.
@@ -32,6 +35,8 @@ from rob_box_sim.geometry2d import Box, Pose2D, clearance, wrap_angle
 
 # |w| ниже этого — «ноль», смена знака через ноль не считается колебанием.
 OSC_DEADBAND = 0.05
+# RTF ниже этого — прогон под нагрузкой: в сводке помечается, сравнивать нельзя.
+RTF_OK = 0.8
 # Зазор меньше этого — касание препятствия (столкновение).
 CONTACT_M = 0.01
 
@@ -50,6 +55,7 @@ class GoalRecord:
     scan_min: list[tuple[float, float]] = field(default_factory=list)  # t, r
     recoveries: int = 0
     tilt_max_rad: float = 0.0  # наибольший наклон корпуса по истинной позе (тангаж/крен)
+    wall_s: Optional[float] = None  # сколько цель шла по настенным часам (для RTF)
 
 
 def sign_changes(values: Sequence[float], deadband: float = OSC_DEADBAND) -> int:
@@ -129,6 +135,7 @@ def goal_metrics(rec: GoalRecord, boxes: Sequence[Box]) -> dict:
         "osc_per_m": _r(sign_changes(wz) / plen, 2) if plen > 0.05 else None,
         "osc_raw_per_m": _r(sign_changes(wz_raw) / plen, 2) if wz_raw and plen > 0.05 else None,
         "recoveries": rec.recoveries,
+        "rtf": _r((rec.t_end - rec.t_start) / rec.wall_s, 2) if rec.wall_s and rec.truth else None,
         "tilt_max_deg": _r(math.degrees(rec.tilt_max_rad), 1) if rec.truth else None,
         "samples_truth": len(rec.truth),
         "samples_cmd": len(rec.cmd),
