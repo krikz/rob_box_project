@@ -119,3 +119,15 @@ def test_gazebo_reads_robot_controller_config():
     vols = SIM_COMPOSE["gazebo"]["volumes"]
     assert "../main/config:/config:ro" in vols
     assert (MAIN / "config" / "controllers" / "controller_manager.yaml").is_file()
+
+
+def test_video_overlay_changes_only_world_and_scenario():
+    """compose.video.yaml (видео из Gazebo): навигация, сеть, железо — как у стенда."""
+    video = _load(SIM / "compose.video.yaml")["services"]
+    assert set(video) == {"gazebo", "bench"}
+    for name, svc in video.items():
+        assert set(svc) <= {"volumes", "command"}, name
+    gz_cmd = " ".join(video["gazebo"]["command"])
+    assert "rob_box_sim.video_overlay" in gz_cmd and "world:=/sim_video/world.sdf" in gz_cmd
+    assert (REPO_ROOT / "src" / "rob_box_sim" / "scenarios" / "video.yaml").is_file()
+    assert "/ws/install/rob_box_sim/share/rob_box_sim/scenarios/video.yaml" in video["bench"]["command"]

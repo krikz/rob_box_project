@@ -61,6 +61,9 @@ RUN set -eux; \
     rm -f /tmp/rmw-zenoh.deb /tmp/zenoh-vendor.deb; \
     rm -rf /var/lib/apt/lists/*
 
+# ffmpeg — склейка кадров камер-сенсоров в mp4/gif (docker/sim/record_video.sh).
+RUN apt-get update && apt-get install -y --no-install-recommends ffmpeg     && rm -rf /var/lib/apt/lists/*
+
 WORKDIR /ws
 COPY src/rob_box_description /ws/src/rob_box_description
 COPY src/rob_box_sim /ws/src/rob_box_sim
