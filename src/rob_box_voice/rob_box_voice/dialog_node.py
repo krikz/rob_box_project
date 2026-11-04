@@ -588,10 +588,10 @@ class DialogNode(Node):
     # -- выход и служебное ---------------------------------------------------------------------------------------
 
     def _sections(self, snap: Any, text: str) -> Dict[str, Any]:
-        """Разделы снимка хода из владельцев: собеседник, провайдеры, музыка (данные, не правила); журнал смены — на
-        вопрос о ней (``shift_log.shift_asked``, #4076)."""
+        """Разделы снимка хода из владельцев: собеседник, провайдеры, музыка, звучащий голос (``tts_context``, #4370) —
+        данные, не правила; журнал смены — на вопрос о ней (``shift_log.shift_asked``, #4076)."""
         return {**host_sections(snap, self._music, reporter_context(self._reporter), self._turn_memory),
-                **self._shift.section(text)}
+                "tts_context": plan_host.tts_context(self), **self._shift.section(text)}
 
     def _speak_direct(self, text: str) -> None:
         """Фраза кода вне хода (смена провайдера): речь личности текущей эпохи."""

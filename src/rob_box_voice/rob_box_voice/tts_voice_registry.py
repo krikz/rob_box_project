@@ -520,21 +520,37 @@ def format_tts_context(
     None → показываем дефолтный (current == default). ``current_voice_name`` — имя этого голоса из каталога:
     людям голос называют им, а не id и не по памяти (#4020, n402).
     """
+    fields = tts_context_fields(provider, default_voice, current_voice)
+    voices_str = ", ".join(fields["voices"]) or "-"
+    return (
+        f"[TTS] provider: {fields['provider']} | "
+        f"default_voice: {fields['default_voice']} | "
+        f"current_voice: {fields['current_voice']} | "
+        f"current_voice_name: {fields['current_voice_name']} | "
+        f"voices: {voices_str}"
+    )
+
+
+def tts_context_fields(
+    provider: str,
+    default_voice: str | None = None,
+    current_voice: str | None = None,
+) -> dict:
+    """Данные раздела ``tts_context`` снимка хода (#4370): провайдер, голос по умолчанию, звучащий голос и его имя
+    для людей, каталог голосов. Единственное место, где имя звучащего голоса берётся из реестра, а не из памяти
+    модели (n402 М8 29.10: звучал male-qn-qingse, а модель по id «угадала» «Надёжный мужчина» - это
+    Russian_ReliableMan). Голос вне каталога называется своим id."""
     voices = voices_for(provider)
     default = default_voice or default_voice_for(provider)
     current = current_voice or default
-    voices_str = ", ".join(voices) if voices else "-"
-    # Имя звучащего голоса даёт реестр, а не память модели (n402 М8 29.10: звучал male-qn-qingse, а модель по id
-    # «угадала» «Надёжный мужчина» - это Russian_ReliableMan). Голос вне каталога называется своим id.
     info = voice_info_for(provider, current) if current else None
-    current_name = info["display_name"] if info else current
-    return (
-        f"[TTS] provider: {provider} | "
-        f"default_voice: {default} | "
-        f"current_voice: {current} | "
-        f"current_voice_name: {current_name} | "
-        f"voices: {voices_str}"
-    )
+    return {
+        "provider": provider,
+        "default_voice": default,
+        "current_voice": current,
+        "current_voice_name": info["display_name"] if info else current,
+        "voices": list(voices),
+    }
 
 
 # ── Пресеты пения (ADR-0158 §2.3, решение В8) ───────────────────────────────
