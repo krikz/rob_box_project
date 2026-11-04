@@ -228,13 +228,46 @@ def in_view(entry: Dict[str, Any]) -> bool:
     return entry['age_s'] is not None and entry['age_s'] <= IN_VIEW_S
 
 
+#: Классы детектора (COCO, порядок как в ``vision_hailo_loader.COCO_CLASS_NAMES``) по-русски.
+#: Класса нет в таблице - остаётся английское слово как есть, без выдумок (issue #4352).
+COCO_RU: Dict[str, str] = {
+    'bicycle': 'велосипед', 'car': 'машина', 'motorcycle': 'мотоцикл', 'airplane': 'самолёт',
+    'bus': 'автобус', 'train': 'поезд', 'truck': 'грузовик', 'boat': 'лодка',
+    'traffic light': 'светофор', 'fire hydrant': 'гидрант', 'stop sign': 'знак стоп',
+    'parking meter': 'паркомат', 'bench': 'скамейка', 'bird': 'птица', 'cat': 'кошка',
+    'dog': 'собака', 'horse': 'лошадь', 'sheep': 'овца', 'cow': 'корова', 'elephant': 'слон',
+    'bear': 'медведь', 'zebra': 'зебра', 'giraffe': 'жираф', 'backpack': 'рюкзак',
+    'umbrella': 'зонт', 'handbag': 'сумка', 'tie': 'галстук', 'suitcase': 'чемодан',
+    'frisbee': 'фрисби', 'skis': 'лыжи', 'snowboard': 'сноуборд', 'sports ball': 'мяч',
+    'kite': 'воздушный змей', 'baseball bat': 'бейсбольная бита',
+    'baseball glove': 'бейсбольная перчатка', 'skateboard': 'скейтборд',
+    'surfboard': 'сёрфборд', 'tennis racket': 'теннисная ракетка', 'bottle': 'бутылка',
+    'wine glass': 'бокал', 'cup': 'чашка', 'fork': 'вилка', 'knife': 'нож', 'spoon': 'ложка',
+    'bowl': 'миска', 'banana': 'банан', 'apple': 'яблоко', 'sandwich': 'сэндвич',
+    'orange': 'апельсин', 'broccoli': 'брокколи', 'carrot': 'морковь', 'hot dog': 'хот-дог',
+    'pizza': 'пицца', 'donut': 'пончик', 'cake': 'торт', 'chair': 'стул', 'couch': 'диван',
+    'potted plant': 'комнатное растение', 'bed': 'кровать', 'dining table': 'обеденный стол',
+    'toilet': 'унитаз', 'tv': 'телевизор', 'laptop': 'ноутбук', 'mouse': 'компьютерная мышь',
+    'remote': 'пульт', 'keyboard': 'клавиатура', 'cell phone': 'телефон',
+    'microwave': 'микроволновка', 'oven': 'духовка', 'toaster': 'тостер', 'sink': 'раковина',
+    'refrigerator': 'холодильник', 'book': 'книга', 'clock': 'часы', 'vase': 'ваза',
+    'scissors': 'ножницы', 'teddy bear': 'плюшевый мишка', 'hair drier': 'фен',
+    'toothbrush': 'зубная щётка',
+}
+
+
+def ru_class(class_name: str) -> str:
+    """Русское имя класса детектора; незнакомый класс - как пришёл."""
+    return COCO_RU.get(class_name, class_name)
+
+
 def _say_entry(entry: Dict[str, Any]) -> str:
     if entry['kind'] == 'face':
         what = f'лицо «{entry["name"]}»' if entry['name'] else 'незнакомое лицо'
     elif entry['kind'] == 'person':
         what = 'силуэт человека'
     else:
-        what = entry['label']
+        what = ru_class(entry['label'])
     if entry['distance_m'] is not None:
         what += f' ~{entry["distance_m"]:.1f} м'
     return what
