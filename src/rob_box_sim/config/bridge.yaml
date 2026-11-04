@@ -14,8 +14,9 @@
   gz_type_name: ignition.msgs.LaserScan
   direction: GZ_TO_ROS
 
-# rtabmap на роботе ждёт IMU здесь (docker/main/docker-compose.yaml:162).
-- ros_topic_name: /camera/imu/data
+# Сырой IMU — под тем же именем, что у OAK-D на роботе (/camera/camera/imu).
+# Дальше, как на роботе: imu-filter (madgwick) → /imu/data → rtabmap.
+- ros_topic_name: /camera/camera/imu
   gz_topic_name: /imu
   ros_type_name: sensor_msgs/msg/Imu
   gz_type_name: ignition.msgs.IMU

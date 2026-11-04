@@ -5,7 +5,7 @@
 Что поднимается:
   * ``ign gazebo`` без окна (``-s``), с ``--headless-rendering`` для gpu_lidar;
   * spawn робота (``ros_gz_sim create``) из топика /robot_description;
-  * ros_gz_bridge: /clock, /scan, /camera/imu/data, /sim/ground_truth/odom;
+  * ros_gz_bridge: /clock, /scan, /camera/camera/imu (сырой, как OAK-D), /sim/ground_truth/odom;
   * спаунеры joint_state_broadcaster и diff_drive_controller — controller_manager
     живёт внутри плагина gz_ros2_control и читает ТОТ ЖЕ controller_manager.yaml,
     что контейнер ros2-control на роботе.
