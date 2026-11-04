@@ -1095,3 +1095,9 @@ def test_4328_clear_stop_counts_barge_in_and_non_stop_does_not(node):
     msg.text_partial, msg.utterance_id = "Робот, стоп", "u2"
     node._on_interrupt(msg)
     assert count() == before + 1
+
+
+def test_snapshot_sections_carry_tts_context_4370(node):
+    """#4370: окно модели получает ``tts_context`` с именем звучащего голоса - подсказка ссылается на него (М10 n402)."""
+    section = node._sections(node._session.snapshot, "какой у тебя голос?")["tts_context"]
+    assert section["provider"] and section["current_voice"] and section["current_voice_name"]

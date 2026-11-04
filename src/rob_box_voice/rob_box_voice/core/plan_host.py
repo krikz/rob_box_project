@@ -23,7 +23,7 @@ from rob_box_dialog.plan.runner import PlanRunner
 from rob_box_dialog_msgs.msg import PlanEvent as PlanEventMsg
 from rob_box_dialog_msgs.msg import SoundEvent, SpeechEvent
 
-from rob_box_voice.tts_voice_registry import gender_of, known_provider, role_voices_for
+from rob_box_voice.tts_voice_registry import gender_of, known_provider, role_voices_for, tts_context_fields
 
 from . import perform_ask
 from .music_player_state import parse_music_event
@@ -191,6 +191,14 @@ def robot_voice(node: Any, provider: str, fallback: str) -> str:
     return fallback
 
 
+def tts_context(node: Any) -> dict:
+    """Раздел ``tts_context`` снимка хода (#4370, ADR-0148): звучащий провайдер и голос робота с именем для людей из
+    реестра. Голос - :func:`robot_voice` (ответ владельца на ``set_voice``), провайдер - :func:`tts_state`. Скорости и
+    тона здесь нет: хозяин их не публикует, придумывать их нельзя."""
+    provider, fallback = tts_state(node)
+    return tts_context_fields(provider, current_voice=robot_voice(node, provider, fallback))
+
+
 def perform_busy(node: Any) -> Busy:
     """Что занято для валидатора команды: идущее выступление, его ACTIVE-сегмент (``edit_pending``) и роли с голосами
     (``Busy.cast``: правка их не перекрашивает), и каталог голосов РОЛЕЙ с полом — русские голоса звучащего провайдера
@@ -207,4 +215,4 @@ def perform_busy(node: Any) -> Busy:
 
 __all__ = ["PLAN_EVENT_TOPIC", "TTS_PROVIDER_STATE_TOPIC", "begin_turn", "make_tool_executor", "note_perform_end",
            "on_music", "on_music_event", "on_sound", "on_speech", "on_tts_provider_state", "perform_busy", "performer",
-           "robot_voice"]
+           "robot_voice", "tts_context"]
