@@ -1,7 +1,7 @@
 {
   "version": 1,
   "created": "2026-11-04",
-  "base_sha": "ed1811dd065af8ec012fe2cda991be5518db3c48",
+  "base_sha": "41660f9858a27433b1130cb45284ca80d95aef37",
   "limits": {
     "method": 15,
     "init": 20
@@ -26,8 +26,7 @@
       "TTSNode.dialogue_callback": 16
     },
     "src/rob_box_supervisor/rob_box_supervisor/supervisor_node.py": {
-      "AvatarSupervisor._on_avatar_command": 17,
-      "AvatarSupervisor._run_agent_sync": 19
+      "AvatarSupervisor._on_avatar_command": 17
     },
     "src/rob_box_harness/rob_box_harness/config.py": {
       "_parse_tts": 17
@@ -153,12 +152,6 @@
       "path": "src/rob_box_supervisor/rob_box_supervisor/supervisor_node.py",
       "method": "AvatarSupervisor._on_avatar_command",
       "cc": 17,
-      "since": "cc_budget_baseline.json created 2026-09-08; legacy grandfather — parent gate #1984 / #2077 covers decomp backlog"
-    },
-    {
-      "path": "src/rob_box_supervisor/rob_box_supervisor/supervisor_node.py",
-      "method": "AvatarSupervisor._run_agent_sync",
-      "cc": 19,
       "since": "cc_budget_baseline.json created 2026-09-08; legacy grandfather — parent gate #1984 / #2077 covers decomp backlog"
     },
     {

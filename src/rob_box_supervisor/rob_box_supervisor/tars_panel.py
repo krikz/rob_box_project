@@ -123,7 +123,7 @@ class TarsPanelDispatcher:
         self._panel_data_pub = node.create_publisher(String, panel_data_topic, 10)
         # Своя ReentrantCallbackGroup, НЕ дефолтная группа ноды. LLM-ход
         # оператора идёт внутри callback'а дефолтной MutuallyExclusive-группы
-        # (_on_avatar_command → _run_agent_sync → asyncio.run) и синхронно
+        # (_on_avatar_command → _agent_runner) и синхронно
         # ждёт результат show_metrics, который mcp_server гонит через
         # panel_request → panel_data. В дефолтной группе panel_request не
         # мог стартовать до конца хода → mcp_server ловил таймаут 8 с, а

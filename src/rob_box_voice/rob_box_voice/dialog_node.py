@@ -1,6 +1,6 @@
 """dialog_node — тонкий ROS-хост диалога v2 (ADR-0150 §2.2, §3; PR-8 ч.8e2 #3702).
 
-Стартует только при ``dialog_engine: v2`` (launch, ``rob_box_core.dialog_engine``); нода v1 ``dialogue_node``
+Стартует из launch (``rob_box_core.dialog_engine.launch_nodes``); нода v1 ``dialogue_node``
 удалена в PR-15 (#3711). Вся логика хода — ``rob_box_dialog`` (``address → grammar → context → LLM → command →
 Executor → respond``, :class:`rob_box_dialog.turn.TurnEngine`); транспорт — ``core.dialog_v2_ports`` (дорога
 исполнения v1: LLM-цепочка с мостом команд, MCP-тулы под планировщиком ресурсов). Здесь — только ROS:

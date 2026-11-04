@@ -8,7 +8,7 @@
 «карточку» в чате. Дальнейшие обновления приходят из супервизора
 через ``SupervisorClient.subscribe_state(listener)``.
 
-listener вызывается из **ROS-потока** (тот же, что и ``_on_response`` в
+listener вызывается из **ROS-потока** (тот же, что и ``_on_dialog_output`` в
 ``telegram_node.py`` — issue #1195 учил нас не звать Telegram API прямо
 отсюда). Мы пробрасываем работу в asyncio-loop telegram-бота через
 ``loop.call_soon_threadsafe`` — проверенный паттерн из

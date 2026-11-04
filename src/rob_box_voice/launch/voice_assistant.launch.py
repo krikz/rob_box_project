@@ -94,8 +94,8 @@ def generate_launch_description():
 
     # Лицо LED-матрицы — face_node в контейнере led-matrix на Vision Pi (ADR-0150 PR-3a, #3689).
 
-    # Нода диалога — dialog_node (v2): её строит dialog_engine.launch_nodes (OpaqueFunction ниже) из
-    # config_dir/dialog_node.yaml. Нода v1 удалена в PR-15 (#3711, часть 15p).
+    # Нода диалога — dialog_node: её строит dialog_engine.launch_nodes (OpaqueFunction ниже) из
+    # config_dir/dialog_node.yaml. Нода v1 удалена в PR-15 (#3711), флаг движка — в #4354 A3.
 
     # === TTS Node (Yandex/Silero + opt-in MiniMax) ===
     # Issue #1004: tts_node.yaml первым, launch-override provider — чтобы
@@ -212,7 +212,7 @@ def generate_launch_description():
         provider_arg,
         audio_node,
         led_node,
-        # ✅ dialog_node (v2) + tts_node (Silero/MiniMax opt-in); dialog_engine: v1 — ошибка (PR-15 #3711)
+        # ✅ dialog_node + tts_node (Silero/MiniMax opt-in)
         OpaqueFunction(function=dialog_engine.launch_nodes, args=[tts_node_args]),
         stt_node,       # ✅ Phase 3: Vosk STT
         sound_node,     # ✅ Phase 4: Sound Effects

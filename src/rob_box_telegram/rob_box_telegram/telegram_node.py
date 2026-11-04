@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-import asyncio, functools, json, logging, os, re, threading, time, uuid
+import asyncio, functools, json, logging, os, threading, time, uuid
 from typing import Optional
 import rclpy
 from geometry_msgs.msg import Twist
@@ -38,7 +38,7 @@ from rob_box_core.avatar_command import (
     make_telegram_client_id,
 )
 # voice-vr 12 (issue #2197, ADR-0080 §1.3 / §2.3): единый сборщик реплики (голый текст, ADR-0160 §2.3).
-from rob_box_core import dialog_engine, speech_client
+from rob_box_core import speech_client
 from rob_box_core.utterance import Sink, Utterance
 
 from .camera_cache import CameraCache
@@ -133,18 +133,14 @@ def _on_dialog_output(send, msg) -> None:
 
 
 def _subscribe_replies(node, group):
-    """Откуда ответы в чат: v1 — эхо Личности ``/voice/dialogue/response`` (его пишет только dialogue_node v1,
-    PR-8 #3702); v2 — ответ телеграм-агента своего чата ``/dialog/output`` (dialog_node, PR-12a #3706).
-    Подписка v1 и сам v1-путь уходят вместе с v1 (PR-15). Возвращает ``(response_sub, output_sub)``."""
-    if dialog_engine.declare(node) == dialog_engine.V1:
-        return node.create_subscription(String, "/voice/dialogue/response", node._on_response, _RE,
-                                        callback_group=group), None
+    """Ответы в чат — ответ телеграм-агента своего чата ``/dialog/output`` (dialog_node, PR-12a #3706). Эхо Личности
+    v1 ``/voice/dialogue/response`` удалено вместе с v1 (#4354 A3)."""
     send = functools.partial(_on_dialog_output, functools.partial(_send_chat_text, node))
-    return None, node.create_subscription(DialogOutput, "/dialog/output", send, _RE, callback_group=group)
+    return node.create_subscription(DialogOutput, "/dialog/output", send, _RE, callback_group=group)
 
 
 def _unpack(item):
-    """Элемент очереди чата -> ``(chat_id, text, role, kind)``: у квитанций и эха v1 только ``(chat_id, text)``."""
+    """Элемент очереди чата -> ``(chat_id, text, role, kind)``: у квитанций и простого ответа только ``(chat_id, text)``."""
     chat_id, text, *rest = item
     role, kind = (rest + ["", ""])[:2]
     return chat_id, text, role, kind
@@ -173,7 +169,7 @@ def _flush_expired(receipts, send) -> None:
 
 
 class TelegramNode(Node):
-    """Telegram Bot API ↔ /voice/stt/utterance + /voice/dialogue/response bridge.
+    """Telegram Bot API ↔ /voice/stt/utterance + /dialog/output bridge.
 
     AV-10 (ADR-0028 §4.4): после рефакторинга эта нода — клиент
     ``avatar_supervisor``. Движение и TTS публикуются только после
@@ -273,11 +269,8 @@ class TelegramNode(Node):
             _RE,
             callback_group=g,
         )
-        # Issue #1195 — restore the echo path: dialogue/TTS output is
-        # duplicated into the active Telegram chat so the operator sees
-        # what the robot says (removed in 88cecc91 because of the
-        # asyncio-loop bug; reimplemented queue-based, see _on_response).
-        self._response_sub, self._output_sub = _subscribe_replies(self, g)
+        # Issue #1195 / PR-12a (#3706) — ответ телеграм-агента идёт в чат очередью (``_chat_echo_worker``).
+        self._output_sub = _subscribe_replies(self, g)
         # AV-10 — direct publishers оставлены как fallback для Phase 1
         # (монитор-режим). Публикации идут только после успешного
         # AcquireFloor (см. ``publish_move_with_floor``/``publish_tts_with_floor``).
@@ -567,49 +560,6 @@ class TelegramNode(Node):
             return int(prefix[len("telegram:") :])
         except (TypeError, ValueError):
             return None
-
-    def _on_response(self, msg: String) -> None:
-        """Echo dialogue/TTS output back into the active Telegram chat.
-
-        Issue #1195 — runs on the ROS 2 executor thread, so the actual
-        ``bot.send_message`` must happen on the telegram asyncio loop.
-        We push ``(chat_id, text)`` into ``_response_queue``; the telegram
-        loop's ``_chat_echo_worker`` consumes it and sends. No
-        ``run_coroutine_threadsafe`` from this thread — that was the
-        t_aad8e224 bug (loop captured wrong / closed → AttributeError
-        silently swallowed every TG reply).
-        """
-        try:
-            payload = json.loads(msg.data or "")
-        except (json.JSONDecodeError, TypeError):
-            payload = {}
-        ssml = payload.get("ssml")
-        if ssml:
-            text = re.sub(r"<[^>]+>", "", ssml).strip()
-        else:
-            text = (msg.data or "").strip()
-        if not text:
-            return
-        # Prefer the chat_id dialogue_node routed for this turn; fall back
-        # to the active chat (last chat that wrote to the robot).
-        chat_id = payload.get("tg_chat_id") or self._active_chat_id
-        loop, queue = self._telegram_loop, self._response_queue
-        if not (loop and queue and chat_id):
-            self.get_logger().warning(
-                "Dropping dialogue echo, bot not ready / no active chat "
-                f"(app={bool(self._telegram_app)}, loop={bool(loop)}, "
-                f"chat_id={chat_id!r}, text_len={len(text)})"
-            )
-            return
-        try:
-            loop.call_soon_threadsafe(queue.put_nowait, (int(chat_id), text))
-        except RuntimeError as exc:
-            # Loop closed underneath us (bot crashed, outer loop is between
-            # attempts). Drop rather than crash the ROS executor — the next
-            # valid response will be picked up after the loop is restored.
-            self.get_logger().error(
-                f"Failed to schedule TG echo (loop closed?): {exc!r}"
-            )
 
     async def _chat_echo_worker(self) -> None:
         """Consume dialogue responses and send them into the chat.

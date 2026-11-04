@@ -8,10 +8,8 @@ keeps camera frames available to Telegram handlers:
     Telegram user --text/voice--> /voice/stt/utterance         (dialogue in)
     CompressedImage topics      -> in-memory CameraCache     (camera frames)
 
-The node subscribes to ``/voice/dialogue/response`` and duplicates every
-dialogue/TTS output into the active Telegram chat (issue #1195, echo path
-restored queue-based after 88cecc91 removed it because of the
-asyncio-loop bug t_aad8e224).
+The node subscribes to ``/dialog/output`` and sends the telegram agent's reply
+into its chat (PR-12a #3706; queue-based since t_aad8e224).
 
 These tests cover the W9 acceptance criteria from
 ``.planning/phases/06-harness-p0-finalization/06-03-PLAN.md``:
@@ -556,38 +554,16 @@ class TestTelegramBridge(unittest.IsolatedAsyncioTestCase):
         self.node.set_active_chat(12345)
         self.assertEqual(self.node._active_chat_id, 12345)
 
-    def test_node_subscribes_to_dialogue_response(self) -> None:
-        """Telegram must consume dialogue/TTS output to echo it to the chat
-        (issue #1195 — echo path restored). Проводка v1: флаг выставлен явно, дефолт теперь v2."""
-        from rob_box_core import dialog_engine
-
-        with patch.object(dialog_engine, "declare", return_value=dialog_engine.V1):
-            node = self._node_mod.TelegramNode()
-        sub = next(s for s in node._created_subscriptions if s.topic == "/voice/dialogue/response")
-        self.assertIsNotNone(sub.callback)
-
-    def test_default_engine_is_v2_wiring(self) -> None:
-        """Дефолт ``dialog_engine`` = v2 (Шифу 23.10): нет ``/voice/dialogue/response``, есть ``/dialog/output``."""
+    def test_replies_come_from_dialog_output_only(self) -> None:
+        """Эха v1 ``/voice/dialogue/response`` нет (#4354 A3), ответ в чат — ``/dialog/output``."""
         topics = [s.topic for s in self.node._created_subscriptions]
         self.assertNotIn("/voice/dialogue/response", topics)
         self.assertIn("/dialog/output", topics)
 
-    def test_v2_does_not_subscribe_dialogue_response(self) -> None:
-        """ADR-0150 PR-8 (#3702): при ``dialog_engine=v2`` топика ``dialogue_node`` v1 нет — нода его не слушает."""
-        from rob_box_core import dialog_engine
-
-        with patch.object(dialog_engine, "declare", return_value=dialog_engine.V2):
-            node = self._node_mod.TelegramNode()
-        self.assertNotIn("/voice/dialogue/response", [s.topic for s in node._created_subscriptions])
-        self.assertIsNone(node._response_sub)
-
-    def test_v2_say_is_still_verbatim_one_request_and_no_chat_agent_turn(self) -> None:
-        """#3727 при v2 (PR-12a): /say — ровно один SpeechRequest с введённым текстом, мимо телеграм-агента
+    def test_say_is_still_verbatim_one_request_and_no_chat_agent_turn(self) -> None:
+        """#3727 (PR-12a): /say — ровно один SpeechRequest с введённым текстом, мимо телеграм-агента
         (в /voice/stt/utterance ничего не уходит, LLM не зовётся)."""
-        from rob_box_core import dialog_engine
-
-        with patch.object(dialog_engine, "declare", return_value=dialog_engine.V2):
-            node = self._node_mod.TelegramNode()
+        node = self._node_mod.TelegramNode()
         speech = next(p for p in node._created_publishers if p.topic == "/voice/speech/request")
         stt = next(p for p in node._created_publishers if p.topic == "/voice/stt/utterance")
         node.publish_tts_with_floor("Ровно этот текст", receipt_chat_id=7)
@@ -595,23 +571,12 @@ class TestTelegramBridge(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(speech.publish.call_args.args[0].text, "Ровно этот текст")
         stt.publish.assert_not_called()
 
-    def test_v1_does_not_subscribe_dialog_output(self) -> None:
-        """PR-12a (#3706): при v1 ответ в чат — эхо Личности, ``/dialog/output`` не слушаем (v1 не ломаем)."""
-        from rob_box_core import dialog_engine
-
-        with patch.object(dialog_engine, "declare", return_value=dialog_engine.V1):
-            node = self._node_mod.TelegramNode()
-        self.assertNotIn("/dialog/output", [s.topic for s in node._created_subscriptions])
-
-    def test_v2_routes_dialog_output_to_its_chat_only(self) -> None:
-        """PR-12a (#3706): при v2 ответ телеграм-агента (``DialogOutput``) уходит в чат своего ``channel_ref``;
+    def test_dialog_output_goes_to_its_chat_only(self) -> None:
+        """PR-12a (#3706): ответ телеграм-агента (``DialogOutput``) уходит в чат своего ``channel_ref``;
         чужой агент, чужой канал и пустой текст — мимо."""
         from unittest.mock import MagicMock
 
-        from rob_box_core import dialog_engine
-
-        with patch.object(dialog_engine, "declare", return_value=dialog_engine.V2):
-            node = self._node_mod.TelegramNode()
+        node = self._node_mod.TelegramNode()
         loop, queue = MagicMock(), MagicMock()
         node._telegram_loop, node._response_queue = loop, queue
         sub = next(s for s in node._created_subscriptions if s.topic == "/dialog/output")
@@ -622,52 +587,6 @@ class TestTelegramBridge(unittest.IsolatedAsyncioTestCase):
         loop.call_soon_threadsafe.assert_not_called()
         sub.callback(out(agent="telegram", channel_ref="telegram:7", text="Сейчас 12:30.", speech_id="s1"))
         loop.call_soon_threadsafe.assert_called_once_with(queue.put_nowait, (7, "Сейчас 12:30."))
-
-    async def test_response_echo_pushes_to_queue(self) -> None:
-        """``_on_response`` must parse the SSML payload and push
-        ``(chat_id, text)`` into the telegram loop's queue.
-
-        The send itself happens on the telegram asyncio loop
-        (``_chat_echo_worker``), never via ``run_coroutine_threadsafe``
-        from the ROS thread (t_aad8e224).
-        """
-
-        self.node._telegram_loop = asyncio.get_running_loop()
-        self.node._response_queue = asyncio.Queue()
-        self.node._active_chat_id = 12345
-
-        msg = types.SimpleNamespace(
-            data=json.dumps(
-                {"ssml": "<speak>Привет!</speak>", "speech_id": "s1"},
-                ensure_ascii=False,
-            )
-        )
-        self.node._on_response(msg)
-
-        # Give the loop a chance to run the scheduled put_nowait.
-        await asyncio.sleep(0)
-        item = self.node._response_queue.get_nowait()
-        self.assertEqual(item, (12345, "Привет!"))
-
-    async def test_response_echo_uses_payload_tg_chat_id(self) -> None:
-        """When dialogue_node routes the reply explicitly (tg_chat_id in the
-        payload), that chat wins over the fallback active chat."""
-
-        self.node._telegram_loop = asyncio.get_running_loop()
-        self.node._response_queue = asyncio.Queue()
-        self.node._active_chat_id = 999
-
-        msg = types.SimpleNamespace(
-            data=json.dumps(
-                {"ssml": "<speak>Привет!</speak>", "tg_chat_id": 777},
-                ensure_ascii=False,
-            )
-        )
-        self.node._on_response(msg)
-
-        await asyncio.sleep(0)
-        item = self.node._response_queue.get_nowait()
-        self.assertEqual(item, (777, "Привет!"))
 
     async def test_response_echo_worker_sends_message(self) -> None:
         """``_chat_echo_worker`` must consume the queue and call
@@ -704,10 +623,7 @@ class TestTelegramBridge(unittest.IsolatedAsyncioTestCase):
 
     async def test_dialog_output_with_role_and_kind_reaches_the_queue_as_four_items(self) -> None:
         """#4243: реплика героя и подпись шага идут в чат с ``role``/``kind``; обычный ответ - прежней парой."""
-        from rob_box_core import dialog_engine
-
-        with patch.object(dialog_engine, "declare", return_value=dialog_engine.V2):
-            node = self._node_mod.TelegramNode()
+        node = self._node_mod.TelegramNode()
         node._telegram_loop, node._response_queue = asyncio.get_running_loop(), asyncio.Queue()
         sub = next(s for s in node._created_subscriptions if s.topic == "/dialog/output")
         out = types.SimpleNamespace

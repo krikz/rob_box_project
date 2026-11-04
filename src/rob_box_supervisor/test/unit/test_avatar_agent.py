@@ -23,7 +23,7 @@
    (нет лишних импортов/LLM-init-ов в monitor-режиме).
 
 Используем mock-rclpy из conftest.py. Реального AgentCore/LLM в тестах НЕТ:
-``_agent_core``/``_run_agent_sync`` подменяются (см. ``_stub_agent_core``),
+``_agent_core``/``_agent_runner`` подменяются (см. ``_stub_agent_core``),
 чтобы не дёргать LLM и не требовать async-loop-а / ключей API.
 """
 
@@ -58,14 +58,13 @@ def _published_results(node: AvatarSupervisor) -> list[dict]:
 
 
 def _stub_agent_core(node: AvatarSupervisor) -> None:
-    """Заглушить сборку реального AgentCore (нет ключей/ROS в unit-тестах).
+    """Заглушить сборку реального хоста ТАРС (нет ключей/ROS в unit-тестах).
 
     ``_ensure_agent_core`` возвращает готовый ``_agent_core``, реальная
-    сборка (LLM/Tools/Memory) не запускается. ``_run_agent_sync`` тесты
+    сборка (LLM/Tools) не запускается. ``_agent_runner`` тесты
     подменяют отдельно (scripted-mapping результата).
     """
     node._agent_core = object()
-    node._operator_dsm = None
     node._operator_journal = None
 
 
@@ -199,7 +198,7 @@ class TestAvatarAgentTopology(unittest.TestCase):
 class TestSayCommandExecutes(unittest.TestCase):
     """Команда «скажи привет» → tool-call say → ok=true.
 
-    Реальный AgentCore не строится (_stub_agent_core); ``_run_agent_sync``
+    Реальный AgentCore не строится (_stub_agent_core); ``_agent_runner``
     подменяется scripted-mapping — эквивалент mock-LLM без async-loop-а.
     """
 
@@ -233,12 +232,12 @@ class TestSayCommandExecutes(unittest.TestCase):
                 }
             )
         )
-        original = self.node._run_agent_sync
-        self.node._run_agent_sync = fake_run
+        original = self.node._agent_runner
+        self.node._agent_runner = fake_run
         try:
             self.node._on_avatar_command(msg)
         finally:
-            self.node._run_agent_sync = original
+            self.node._agent_runner = original
 
         results = _published_results(self.node)
         self.assertEqual(len(results), 1)
@@ -287,12 +286,12 @@ class TestNoToolReturnsNoTool(unittest.TestCase):
                 }
             )
         )
-        original = self.node._run_agent_sync
-        self.node._run_agent_sync = fake_run
+        original = self.node._agent_runner
+        self.node._agent_runner = fake_run
         try:
             self.node._on_avatar_command(msg)
         finally:
-            self.node._run_agent_sync = original
+            self.node._agent_runner = original
 
         results = _published_results(self.node)
         self.assertEqual(len(results), 1)
@@ -381,7 +380,7 @@ class TestDialogueControlSwapTryFinally(unittest.TestCase):
         self.assertIn("agent_command_done", resume_payload["reason"])
 
     def test_llm_exception_swap_finally_publishes_resume(self) -> None:
-        """AC #8 end-to-end: исключение из ``_run_agent_sync`` →
+        """AC #8 end-to-end: исключение из ``_agent_runner`` →
         ``/dialogue/control`` всё равно получает resume, и результат
         публикуется с ``ok=False, summary="outer_error: ..."``.
         """
@@ -397,8 +396,8 @@ class TestDialogueControlSwapTryFinally(unittest.TestCase):
         def exploding_run(core, payload):
             raise RuntimeError("simulated LLM crash")
 
-        original_run = self.node._run_agent_sync
-        self.node._run_agent_sync = exploding_run
+        original_run = self.node._agent_runner
+        self.node._agent_runner = exploding_run
         try:
             msg = _make_string_msg(
                 json.dumps(
@@ -412,7 +411,7 @@ class TestDialogueControlSwapTryFinally(unittest.TestCase):
             )
             self.node._on_avatar_command(msg)
         finally:
-            self.node._run_agent_sync = original_run
+            self.node._agent_runner = original_run
             self.node._publish_dialogue_control = original_publish
 
         # Pause+resume произошли (порядок важен — pause до resume).
@@ -505,8 +504,8 @@ class TestAgentMetrics(unittest.TestCase):
                 ],
             }
 
-        original = self.node._run_agent_sync
-        self.node._run_agent_sync = fake_run
+        original = self.node._agent_runner
+        self.node._agent_runner = fake_run
         try:
             msg = _make_string_msg(
                 json.dumps(
@@ -520,7 +519,7 @@ class TestAgentMetrics(unittest.TestCase):
             )
             self.node._on_avatar_command(msg)
         finally:
-            self.node._run_agent_sync = original
+            self.node._agent_runner = original
             commands_counter.labels = original_commands_labels
             tools_counter.labels = original_tool_labels
 
@@ -547,8 +546,8 @@ class TestAgentMetrics(unittest.TestCase):
                 "tool_calls": [],
             }
 
-        original = self.node._run_agent_sync
-        self.node._run_agent_sync = fake_run
+        original = self.node._agent_runner
+        self.node._agent_runner = fake_run
         try:
             msg = _make_string_msg(
                 json.dumps(
@@ -562,7 +561,7 @@ class TestAgentMetrics(unittest.TestCase):
             )
             self.node._on_avatar_command(msg)
         finally:
-            self.node._run_agent_sync = original
+            self.node._agent_runner = original
             commands_counter.labels = original_labels
 
         no_tool_labels = [
@@ -795,12 +794,12 @@ class TestAgentReplyIsSpoken(unittest.TestCase):
                 }
             )
         )
-        original = self.node._run_agent_sync
-        self.node._run_agent_sync = fake_run
+        original = self.node._agent_runner
+        self.node._agent_runner = fake_run
         try:
             self.node._on_avatar_command(msg)
         finally:
-            self.node._run_agent_sync = original
+            self.node._agent_runner = original
 
     def test_quest_reply_goes_to_headset_tts(self) -> None:
         """Голосовой вход → ответ уходит владельцу речи, sink=headset."""
@@ -857,104 +856,14 @@ class TestAgentReplyIsSpoken(unittest.TestCase):
         self.assertEqual(_published_results(self.node)[0]["summary"], full)
 
 
-# ─────────────────────────────────────────────────────────────────────
-# ADR-0083 §2.3 — supervisor_node собирает AgentCore через build_agent(spec)
-# (PR #2276 + follow-up t_387a9288). Этот блок — приёмка инфраструктуры:
-#   * ``_build_agent_core_sync`` собирает ``AgentSpec(name='operator', ...)``
-#     и зовёт ``build_agent(spec, tools=..., memory=...)``;
-#   * ``narrow_tools_to_skill=False`` (ТАРС видит все инструменты);
-#   * ``memory_namespace='operator'`` (ADR-0083 §2.4);
-#   * ``health_cache_persist_path`` общий на машину
-#     (``~/.rob_box/llm_health.json``) — supervisor и dialogue делят
-#     один HealthCache, ADR-0083 §1.3 #1 закрыт;
-#   * ``skill_slice=("operator.speech", "operator.control")`` —
-#     supervisor больше НЕ лезет в ``rob_box_voice/prompts/skills``
-#     (ADR-0083 §1.3 #3).
-# ─────────────────────────────────────────────────────────────────────
-
-
-class TestBuildAgentSpecOperator(unittest.TestCase):
-    """Acceptance-тест: supervisor собирает AgentCore через ``build_agent``."""
+class TestOperatorProviderChain(unittest.TestCase):
+    """Цепочка провайдеров ТАРС из параметра ``llm_providers``."""
 
     def setUp(self) -> None:
         self.node = AvatarSupervisor()
 
     def tearDown(self) -> None:
         self.node.destroy_node()
-
-    def test_build_agent_sync_calls_build_agent_with_operator_spec(self) -> None:
-        """AC ADR-0083 §2.3: _build_agent_core_sync → build_agent(spec).
-
-        Подменяем ``build_agent`` (lazy import) и проверяем, что спек
-        передаётся с правильным ``name='operator'``. Это контракт для
-        обоих follow-up карточек (dialogue + supervisor).
-        """
-        captured: dict = {}
-
-        def fake_build_agent(spec, *, tools, memory, system_prompt=None):  # type: ignore[no-untyped-def]
-            captured["spec"] = spec
-            captured["tools"] = tools
-            captured["memory"] = memory
-            captured["system_prompt"] = system_prompt
-            return object()
-
-        # Подменяем build_agent в модуле, чтобы lazy import внутри
-        # _build_agent_core_sync зацепил наш stub.
-        from rob_box_supervisor import supervisor_node as sn_mod
-        original = sn_mod.build_agent
-        sn_mod.build_agent = fake_build_agent
-        # Stub tools/memory, чтобы сборка не валилась.
-        self.node._build_operator_tools = lambda: object()  # type: ignore[method-assign]
-        self.node._build_operator_memory = lambda: object()  # type: ignore[method-assign]
-        try:
-            core, dsm = self.node._build_agent_core_sync()
-        finally:
-            sn_mod.build_agent = original
-
-        self.assertIsNotNone(core, "build_agent не вызван — supervisor не собрался")
-        spec = captured.get("spec")
-        self.assertIsNotNone(spec, "AgentSpec не передан в build_agent")
-        # PR-13b #3708: промпт — правила файла + инструменты из реестра (operator_prompt), а не голый файл
-        from rob_box_supervisor.operator_prompt import TOOLS_HEADER
-        self.assertIn(TOOLS_HEADER, captured["system_prompt"] or "")
-        # ADR-0083 §2.3 / §2.4
-        self.assertEqual(spec.name, "operator")
-        self.assertEqual(spec.memory_namespace, "operator")
-        # ADR-0083 §2.2 #J — ТАРС видит все инструменты: среза в спеке нет (срез хода задаёт только личность).
-        self.assertFalse(hasattr(spec, "narrow_tools_to_skill"))
-        # ADR-0083 §1.2 #B
-        self.assertEqual(
-            dict(spec.per_provider_settings), {},
-            "supervisor держит per_provider_settings пусто (ADR-0083 §1.2 #B)",
-        )
-        # ADR-0083 §1.2 #A
-        self.assertEqual(
-            dict(spec.health_balance_checkers), {},
-            "supervisor держит balance_checkers пусто (ADR-0083 §1.2 #A)",
-        )
-        # ADR-0083 §1.3 #1 — общий persist_path.
-        self.assertIsNotNone(
-            spec.health_cache_persist_path,
-            "health_cache_persist_path обязателен (ADR-0083 §1.3 #1)",
-        )
-        self.assertTrue(
-            str(spec.health_cache_persist_path).endswith("llm_health.json"),
-            f"persist_path должен указывать на общий llm_health.json, "
-            f"got {spec.health_cache_persist_path!r}",
-        )
-        # ADR-0083 §1.3 #3 / ADR-0150 PR-6 — срезов скиллов нет, в voice/skills supervisor не лезет.
-        self.assertFalse(hasattr(spec, "skill_slice"))
-        # ADR-0083 §G — on_prompt observer.
-        self.assertIsNotNone(
-            spec.on_prompt,
-            "on_prompt observer обязателен для PromptStats (ADR-0083 §G)",
-        )
-        # tools/memory пробрасываются нодой — без них build_agent невозможен.
-        # Проверяем через ``is`` те самые объекты, что попали в build_agent
-        # (а не новые object() — каждый ``_build_operator_tools()`` создаёт
-        # новый).
-        self.assertIsNotNone(captured.get("tools"))
-        self.assertIsNotNone(captured.get("memory"))
 
     def test_parse_provider_chain_default_is_minimax_deepseek(self) -> None:
         """Issue #2111: default ``llm_providers`` = ``minimax,deepseek`` (ADR-0043 §3.2)."""
@@ -966,60 +875,3 @@ class TestBuildAgentSpecOperator(unittest.TestCase):
         # Empty → fallback (защита от битого YAML, ADR-0043 §3.2).
         names = AvatarSupervisor._parse_provider_chain("")
         self.assertEqual(names, ("deepseek",))
-
-    def test_memory_init_uses_operator_namespace(self) -> None:
-        """ADR-0083 §2.4 / §E: SQLiteVoiceMemory(agent='operator').
-
-        Без запуска реальной БД — проверяем через mock, что ``agent``
-        kwarg передан с правильным значением (иначе факты оператора
-        попадут в namespace 'default' и сольются с личностью).
-        """
-        captured: dict = {}
-
-        def fake_sqlite_voice(db_path, *, agent="default"):  # type: ignore[no-untyped-def]
-            captured["db_path"] = db_path
-            captured["agent"] = agent
-            return _FakeStore()
-
-        from rob_box_harness import memory as harness_memory
-        original = harness_memory.SQLiteVoiceMemory
-        harness_memory.SQLiteVoiceMemory = fake_sqlite_voice  # type: ignore[assignment]
-        # Оборачиваем asyncio.run, чтобы не запускать event loop.
-        # Возвращаем ``None`` для совместимости с любыми корутинами —
-        # supervisor вызывает ``asyncio.run(store.init())``.
-        import asyncio as _asyncio
-        original_run = _asyncio.run
-
-        def fake_run(coro):  # type: ignore[no-untyped-def]
-            try:
-                coro.close()  # type: ignore[attr-defined]
-            except Exception:  # noqa: BLE001
-                pass
-            return None
-
-        _asyncio.run = fake_run
-        try:
-            store = self.node._build_operator_memory()
-        finally:
-            harness_memory.SQLiteVoiceMemory = original  # type: ignore[assignment]
-            _asyncio.run = original_run
-
-        self.assertEqual(
-            captured.get("agent"), "operator",
-            "SQLiteVoiceMemory должен собираться с agent='operator' "
-            "(ADR-0083 §2.4 / §E)",
-        )
-        # default сменился на /data/harness_voice.db.
-        self.assertEqual(
-            captured.get("db_path"), "/data/harness_voice.db",
-            "default sqlite_db_path теперь /data/harness_voice.db "
-            "(ADR-0083 §E, общая БД с dialogue_node)",
-        )
-        self.assertIsNotNone(store)
-
-
-class _FakeStore:
-    """Заглушка SQLiteVoiceMemory: init() ничего не делает."""
-
-    async def init(self) -> None:
-        return None

@@ -134,12 +134,8 @@ def test_tier1_stop_cancels_operator_speech_without_llm(stop_hosts):
     assert base.cancelled and not hasattr(base, "tools")  # LLM не звали
 
 
-def test_agent_path_picks_engine_by_flag():
-    node = SimpleNamespace(_build_agent_core_sync=lambda: ("core", "dsm"),
-                           _run_agent_sync=lambda core, payload: {"core": core, **payload})
-    build, run = ot.agent_path(node, "v1")
-    assert build() == ("core", "dsm") and run("c", {"x": 1}) == {"core": "c", "x": 1}
-    build, run = ot.agent_path(SimpleNamespace(), "v2")
+def test_agent_path_runs_the_shared_engine_host():
+    build, run = ot.agent_path(SimpleNamespace())
     assert run(SimpleNamespace(run_payload=lambda p: {"v2": p}), {"y": 2}) == {"v2": {"y": 2}}
 
 

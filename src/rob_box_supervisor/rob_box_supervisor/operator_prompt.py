@@ -7,15 +7,13 @@
 (тулы речи) и ``metrics_source.METRIC_DICTIONARY``. Второй копии списка тулов нет — промпт не может назвать то,
 чего нет в реестре, и не может промолчать о том, что есть (#3298: промпт звал ``set_voice_preset``, которого не было).
 
-Правило о подтверждении зависит от движка: в v2 об итоге действия говорит код по событию владельца (§5.3), модель
-«выполнено» не пишет; v1 (``AgentCore``, до PR-15) отвечает текстом модели.
+Об итоге действия говорит код по событию владельца (§5.3), модель «выполнено» не пишет (:data:`CONFIRM_RULE`).
 """
 
 from __future__ import annotations
 
 from typing import Iterable, Tuple
 
-from rob_box_core import dialog_engine
 from rob_box_core.tool_catalog import ToolCatalogEntry, operator_visible_tools
 from rob_box_dialog import knowledge as kn
 from rob_box_supervisor.metrics_source import metric_dictionary_text
@@ -24,10 +22,7 @@ from rob_box_supervisor.metrics_source import metric_dictionary_text
 METRICS_TOOL = "show_metrics"
 #: Заголовок сгенерированного раздела (по нему тест находит раздел).
 TOOLS_HEADER = "Инструменты (список строит код из реестра оператора):"
-CONFIRM_RULE = {
-    dialog_engine.V2: "Об итоге действия скажет код по результату инструмента — сам «выполнено»/«не вышло» не пиши.",
-    dialog_engine.V1: "Если ты вызвал инструмент и он сработал — подтверди одним-двумя словами («выполнено», «ок»).",
-}
+CONFIRM_RULE = "Об итоге действия скажет код по результату инструмента — сам «выполнено»/«не вышло» не пиши."
 
 
 def _first_sentence(text: str) -> str:
@@ -35,7 +30,7 @@ def _first_sentence(text: str) -> str:
     return head[:160]
 
 
-def tools_section(entries: Iterable[ToolCatalogEntry], engine: str = dialog_engine.V2) -> str:
+def tools_section(entries: Iterable[ToolCatalogEntry]) -> str:
     """Раздел промпта об инструментах оператора из записей реестра: только те, что движок исполняет командой
     (``knowledge.TOOL_CLASSES``), без тулов «только кодом» (``TOOLS_CODE_ONLY``)."""
     entries = tuple(e for e in entries if e.name in kn.TOOL_CLASSES and e.name not in kn.TOOLS_CODE_ONLY)
@@ -51,17 +46,16 @@ def tools_section(entries: Iterable[ToolCatalogEntry], engine: str = dialog_engi
                      f"{', '.join(kn.SPEECH_CHANNEL_TOOLS)} — инструмент личности, его не вызывай.")
     if METRICS_TOOL in names:
         lines.append(f"{METRICS_TOOL}: в запрос — имя из словаря, PromQL сам не пиши: {metric_dictionary_text()}.")
-    lines.append(CONFIRM_RULE[engine])
+    lines.append(CONFIRM_RULE)
     return "\n".join(lines)
 
 
-def operator_prompt(rules: str, engine: str = dialog_engine.V2,
-                    entries: Tuple[ToolCatalogEntry, ...] = ()) -> str:
+def operator_prompt(rules: str, entries: Tuple[ToolCatalogEntry, ...] = ()) -> str:
     """Промпт ТАРС: правила файла + раздел инструментов реестра (``entries`` пусто — реестр оператора каталога).
     Пустые правила — пустой промпт (нет файла — нет агента, как у ``load_system_prompt``)."""
     if not rules.strip():
         return ""
-    return f"{rules.strip()}\n\n{tools_section(entries or operator_visible_tools(), engine)}"
+    return f"{rules.strip()}\n\n{tools_section(entries or operator_visible_tools())}"
 
 
 __all__ = ["CONFIRM_RULE", "METRICS_TOOL", "TOOLS_HEADER", "operator_prompt", "tools_section"]
