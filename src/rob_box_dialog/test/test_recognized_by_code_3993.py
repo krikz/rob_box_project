@@ -114,7 +114,8 @@ def test_negated_and_tagged_recognition_question(text):
 
 
 @pytest.mark.parametrize("text", ["ты меня узнал? включи музыку", "узнай погоду", "что ты обо мне помнишь?",
-                                  "ты узнал, что Саша любит чай?", "как меня зовут?", "узнал", "ты меня слышишь?",
+                                  "ты узнал, что Саша любит чай?", "как меня зовут и что я люблю?", "узнал",
+                                  "ты меня слышишь?",
                                   "узнал узнал меня", "", "откуда ты меня знаешь?", "что ты про меня помнишь?",
                                   "ты знаешь, кто такой Гагарин?", "помнишь, что я люблю зелёный чай?",
                                   "мы уже знакомы?", "ты меня узнал? кстати, какая погода"])
@@ -340,3 +341,34 @@ def test_code_reply_lands_in_the_window_as_robot_speech():
     asyncio.run(engine.run(_ask("ты меня узнал?")))
     engine.speech_ended("sp1", len(UNSURE))
     assert [(e.role, e.content) for e in engine.log.window()][-1] == ("assistant", UNSURE)
+
+
+# -- вопрос имени (марафон М10, акт 2c, n723, 04.11) ------------------------------------------------------------
+
+#: n723 рукописного акта 2c как есть: голос Нины, переименованный в n722 в «Тамара» (#4054).
+N723 = "Робот, а скажи-ка, ты же меня по голосу запомнил, как меня зовут?"
+TAMARA = {"is_known": True, "speaker_id": "e35517b2", "name": "Тамара", "confidence": 0.93}
+
+
+@pytest.mark.parametrize("text", [N723, "как меня зовут?", "ты знаешь, как меня зовут?", "скажи мне, как моё имя",
+                                  "ты запомнил, как меня зовут?"])
+def test_name_question_is_the_recognition_question(text):
+    """М10 n723: «как меня зовут?» - вопрос узнавания целиком; рядом - только слова таблицы («скажи-ка», «же»)."""
+    assert asks_recognized(strip_wake_word(text))
+
+
+@pytest.mark.parametrize("text", ["как меня зовут и что я люблю?", "вот как меня зовут",
+                                  "да похер как меня зовут покажи анимацию", "ты же меня знаешь"])
+def test_name_question_inside_something_else_goes_to_the_model(text):
+    assert not asks_recognized(strip_wake_word(text))
+
+
+def test_n723_name_question_is_answered_by_code_without_llm():
+    """М10 run 41823050555, n723: модель на «как меня зовут?» позвала register_speaker(name='Тамара', old_name='Нина'),
+    робот сказал «Чужую запись не переименовываю: по голосу ты другой человек.». Теперь имя называет код по голосу
+    ЭТОЙ фразы, модель не зовётся - переименования нет."""
+    engine, ports, _ = _engine(TAMARA)
+    agg = asyncio.run(engine.run(_ask(strip_wake_word(N723))))
+    assert ports.asked == [], "модель не зовётся"
+    assert ports.said == ["Узнал — ты Тамара."]
+    assert (agg.stage, agg.status, agg.llm_calls) == ("done", "finished", 0)

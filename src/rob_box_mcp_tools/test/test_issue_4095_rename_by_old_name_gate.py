@@ -53,6 +53,7 @@ from rob_box_mcp_tools.mcp_auth import PERSONALITY_SENDER  # noqa: E402
 NINA, AGIK, STRANGER, UID = _v2.NINA, _v2.AGIK, _v2.STRANGER, _v2.UID
 #: Модуль тулов диалога так, как его грузит стенд (без настоящего rclpy).
 rename_gate, _rename_source = _h._DIALOGUE.rename_gate, _h._DIALOGUE._rename_source
+voice_already_named = _h._DIALOGUE.voice_already_named
 
 
 @pytest.fixture(autouse=True)
@@ -173,3 +174,29 @@ def test_refusal_phrases_are_in_the_catalog() -> None:
     catalog = phrases.catalog()
     assert "identity.rejected.not_own_profile" in catalog
     assert catalog["identity.rejected.not_own_profile"] != catalog["identity.rejected"]
+
+
+#: Голос Нины после n722 (#4054): тот же профиль, имя уже «Тамара».
+TAMARA = {**NINA, "name": "Тамара"}
+
+
+def test_n723_old_name_of_the_same_voice_is_not_someone_elses_profile() -> None:
+    """М10 run 41823050555, n723: «как меня зовут?» голосом Тамары (бывшей Нины), модель зовёт
+    ``register_speaker(name='Тамара', old_name='Нина')``. Голос уже под этим именем - переименовывать нечего: запрос на
+    ``/voice/speaker/rename`` не уходит, отказа «по голосу ты другой человек» нет (голос тот же), исход - обычная
+    регистрация того же имени, фраза кода называет имя."""
+    result, renames, sent, said = _renamed("а скажи-ка, ты же меня по голосу запомнил, как меня зовут?", TAMARA,
+                                           {"name": "Тамара", "old_name": "Нина"})
+    assert renames == [], "профиль «Нина» больше не существует; чужую «Нину» переименование забрало бы"
+    assert sent == [{"name": "Тамара", "utterance_id": UID}]
+    assert result.status == "done" and result.reason != "not_own_profile"
+    assert said != phrases.text("identity.rejected.not_own_profile")
+    assert "другой человек" not in said and "Тамар" in said
+
+
+@pytest.mark.parametrize("name, known, already", [
+    ("Тамара", "Тамара", True), ("тамарой", "Тамара", True), ("Тамара", "Нина", False), ("Тамара", None, False),
+    (None, "Тамара", False), ("  ", "Тамара", False),
+])
+def test_voice_already_named_table(name, known, already) -> None:
+    assert voice_already_named(name, known) is already
