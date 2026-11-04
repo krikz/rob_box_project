@@ -69,7 +69,7 @@ class Env:
         inner = FakeLLMProvider(on_complete=on_complete, name="deepseek",
                                 capabilities=ProviderCapabilities(tools=True, tool_choice=True))
         relay = dm.LogRelay()
-        llm = command_bridge.wrapper_for("deepseek", log=relay)(Counted(inner, self.counter))
+        llm = command_bridge.wrapper_for(log=relay)(Counted(inner, self.counter))
         self.stand = dry_stand.DryStand(llm, self.counter, "Ты робот.", tmp_path)
         relay.target = self.stand
 

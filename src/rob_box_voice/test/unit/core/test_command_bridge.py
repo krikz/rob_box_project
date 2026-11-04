@@ -1,7 +1,7 @@
-"""Мост режима команд в v1 (ADR-0150 §4.1, §4.5; #3696 ч.5, PR-7 ч.7c): форма запроса — по capabilities адаптера,
-ответ — одна команда через ``rob_box_dialog.command.parse``; голая реплика — текстом, остальное — вызовом ``command``,
-который транспорт хода v2 переводит в ``command.Result`` (``dialog_v2_ports.to_result``). Сквозные ходы через цикл v1
-``AgentCore`` удалены вместе с ним (#4354 A3b)."""
+"""Режим команд провайдера (ADR-0150 §4.1, §4.5; #3696 ч.5, PR-7 ч.7c): форма запроса — по capabilities адаптера,
+ответ — одна команда через ``rob_box_dialog.command.parse``, которую ход v2 получает как есть
+(``CommandResponse.command``, ``command_bridge.for_turn``): голая реплика — одной речью, остальное — командой целиком.
+Формы v1 (текст речи или вызов ``command``) нет с #4354 B2."""
 
 from __future__ import annotations
 
@@ -12,7 +12,7 @@ from typing import Any, AsyncIterator, Iterable, List, Mapping, Optional
 import pytest
 
 from rob_box_dialog import knowledge as kn
-from rob_box_dialog.command import Invalid
+from rob_box_dialog.command import Command, Invalid, to_args
 from rob_box_dialog.speech_channel import ModeRequest
 from rob_box_llm.provider import LLMChunk, LLMMessage, LLMResponse, LLMSettings, ProviderCapabilities, ToolCall
 from rob_box_llm.providers.deepseek import DeepSeekProvider
@@ -137,7 +137,7 @@ def test_tool_offered_accepts_command_call_or_json_in_text() -> None:
     """Без принуждения модель отвечает и вызовом ``command``, и JSON-ом в тексте — оба дают одну команду."""
     called = _convert(MINIMAX_CAPS, LLMResponse(tool_calls=(_command_call(speech="Привет!"),)))
     texted = _convert(MINIMAX_CAPS, LLMResponse(content='{"speech": "Привет!"}'))
-    assert called.content == texted.content == "Привет!" and not called.tool_calls and not texted.tool_calls
+    assert _speech(called) == _speech(texted) == "Привет!"
 
 
 def test_two_command_calls_in_one_answer_are_one_violation_and_go_to_the_retry() -> None:
@@ -167,14 +167,14 @@ def test_mode_note_is_the_knowledge_fragment_alone_outside_json_modes() -> None:
         assert cb.mode_note(mode, ModeRequest(mode=mode)) == kn.prompt_fragment()
 
 
-# ── разбор ответа и перевод в форму v1 ─────────────────────────────────────────────────────────────────────
+# ── разбор ответа: команда хода ────────────────────────────────────────────────────────────────────────────
 
 
 #: Срез тулов запроса: команда проверяется по нему (``command.validate``), аргументы — по схеме каталога.
 TOOLS = [_tool(n) for n in ("memory_save", "get_current_time", "search_web", "get_battery_level", "play_sound")]
 
 
-def _convert(caps: ProviderCapabilities, reply: LLMResponse, log: Optional[list] = None) -> LLMResponse:
+def _convert(caps: ProviderCapabilities, reply: LLMResponse, log: Optional[list] = None) -> cb.CommandResponse:
     lines: list = [] if log is None else log
     bridge = cb.CommandModeLLM(_Inner(caps, [reply]), lines.append)
     return _run(bridge.complete(_messages(), tools=TOOLS))
@@ -184,26 +184,32 @@ def test_speech_only_command_becomes_spoken_text_and_ends_turn() -> None:
     log: list = []
     out = _convert(DEEPSEEK_CAPS, LLMResponse(tool_calls=(_command_call(speech="Привет!"),),
                                               usage={"prompt_tokens": 900}), log)
-    assert (out.content, out.tool_calls, out.finish_reason) == ("Привет!", (), "stop")
+    assert _speech(out) == "Привет!"
     assert out.usage == {"prompt_tokens": 900}
     assert log == [f"{cb.COMMAND_LOG_MARK} provider=deepseek mode=tool_choice verdict=speech actions=[] "
                    "speech_dropped=0"]
 
 
-def _actions(out: LLMResponse) -> list:
-    """Действия единственного вызова ``command``, который мост отдал v1-циклу."""
-    assert [c.name for c in out.tool_calls] == [kn.COMMAND_TOOL] and out.content == ""
-    return [(a["tool"], a["args"]) for a in out.tool_calls[0].arguments.get("actions", [])]
+def _speech(out: cb.CommandResponse) -> str:
+    """Речь голой реплики: ход получает одну ``speech`` — ни действий, ни лица, ни голоса."""
+    cmd = out.command
+    assert isinstance(cmd, Command) and cmd == Command(speech=cmd.speech), cmd
+    return cmd.speech
 
 
-def test_actions_go_as_one_command_call() -> None:
+def _actions(out: cb.CommandResponse) -> list:
+    """Действия команды, которую мост отдал ходу (текста и вызовов для цикла тулов в ответе нет)."""
+    assert isinstance(out.command, Command) and (out.content, out.tool_calls) == ("", ()), out
+    return [(a.tool, dict(a.args)) for a in out.command.actions]
+
+
+def test_actions_go_as_one_command() -> None:
     log: list = []
     reply = LLMResponse(tool_calls=(
         _command_call(actions=[{"tool": "memory_save", "args": {"fact": "чай"}}]),
         ToolCall(id="n1", name="get_current_time", arguments={}),
     ))
     out = _convert(DEEPSEEK_CAPS, reply, log)
-    assert out.finish_reason == "tool_calls" and out.tool_calls[0].id.startswith(cb.CALL_ID_PREFIX)
     assert _actions(out) == [("memory_save", {"fact": "чай"}), ("get_current_time", {})]
     assert log == [f"{cb.COMMAND_LOG_MARK} provider=deepseek mode=tool_choice verdict=command "
                    "actions=['memory_save', 'get_current_time'] speech_dropped=0"]
@@ -216,7 +222,7 @@ def test_face_slots_beside_expression_are_moved_and_logged_not_invalid() -> None
         actions=[{"tool": "memory_save", "args": {"fact": "чай"}}],
         expression={"emotion": "happy", "eyes": "wide", "rear": "party", "mood": "весело"}),))
     out = _convert(DEEPSEEK_CAPS, reply, log)
-    assert out.tool_calls[0].arguments["expression"] == {
+    assert to_args(out.command)["expression"] == {
         "emotion": "happy", "face": {"eyes": "wide", "rear": "party"}}  # время не задано: ключа нет (#4089)
     assert log == [f"{cb.COMMAND_LOG_MARK} provider=deepseek mode=tool_choice verdict=command "
                    "actions=['memory_save'] speech_dropped=0 fields_moved=['expression.eyes', 'expression.rear'] "
@@ -226,7 +232,7 @@ def test_face_slots_beside_expression_are_moved_and_logged_not_invalid() -> None
 def test_json_in_text_after_reasoning_is_parsed() -> None:
     reply = LLMResponse(content='<think>{"черновик": 1}</think>\n{"speech": "Сейчас полдень."}')
     out = _convert(MINIMAX_CAPS, reply)
-    assert out.content == "Сейчас полдень." and out.tool_calls == ()
+    assert _speech(out) == "Сейчас полдень."
 
 
 def test_json_in_text_with_native_tool_call_merges_actions() -> None:
@@ -245,7 +251,7 @@ def test_minimax_false_passed_and_empty_args_are_not_invalid() -> None:
     """Бейк-офф 21.10: MiniMax json_in_text — ``"passed": false`` (49 из 52 invalid), tool_choice — ``args: ""``."""
     log: list = []
     said = _convert(MINIMAX_CAPS, LLMResponse(content='{"speech": "Привет!", "actions": [], "passed": false}'), log)
-    assert (said.content, said.tool_calls) == ("Привет!", ())
+    assert _speech(said) == "Привет!"
     assert "verdict=speech" in log[0]
     empty_args = [{"tool": "get_current_time", "args": ""}]
     acted = _convert(MINIMAX_CAPS, LLMResponse(tool_calls=(_command_call(actions=empty_args),)))
@@ -261,13 +267,12 @@ def test_minimax_false_passed_and_empty_args_are_not_invalid() -> None:
     (LLMResponse(tool_calls=(_command_call(speech=""),)), kn.VIOLATION_EMPTY_COMMAND),
 ])
 def test_invalid_twice_marks_the_command_invalid_after_one_retry(reply: LLMResponse, reason: str) -> None:
-    """Повтор ровно один (``COMMAND_RETRIES_MAX``): второй невалидный ответ — вызов ``command`` с пометкой, без речи."""
+    """Повтор ровно один (``COMMAND_RETRIES_MAX``): второй невалидный ответ — ``Invalid`` хода с причиной, без речи."""
     log: list = []
     inner = _Inner(MINIMAX_CAPS, [reply, reply], name="minimax")
     out = _run(cb.CommandModeLLM(inner, log.append).complete(_messages(), tools=TOOLS))
-    (call,) = out.tool_calls
-    assert out.content == "" and call.name == kn.COMMAND_TOOL and len(inner.requests) == 2
-    assert call.arguments == {kn.COMMAND_INVALID_FIELD: reason}
+    assert isinstance(out.command, Invalid) and len(inner.requests) == 2
+    assert (out.command.reason, out.command.salvage) == (reason, ())
     assert f"verdict=invalid:{reason}" in log[0] and f"verdict=invalid:{reason}" in log[1]
     assert log[2].startswith(f"{cb.COMMAND_LOG_MARK} retry=1 violations=['{reason}'] → verdict=invalid:{reason} (")
 
@@ -276,79 +281,64 @@ def test_expression_only_command_is_valid_not_empty() -> None:
     """#3974: «покажи, как тебе грустно» - команда из одного expression (лицо без слов) принимается, не empty_command."""
     log: list = []
     out = _convert(DEEPSEEK_CAPS, LLMResponse(tool_calls=(_command_call(expression={"emotion": "sad"}),)), log)
-    (call,) = out.tool_calls
-    assert call.name == kn.COMMAND_TOOL and call.arguments == {"expression": {"emotion": "sad"}}
+    assert to_args(out.command) == {"expression": {"emotion": "sad"}}
     assert "verdict=command" in log[0] and "invalid" not in log[0]
 
 
 def test_passed_is_honest_silence_carried_as_command() -> None:
-    """#3859: молчание — вызов ``command`` с одним полем ``passed`` (пустой ответ потребитель принял бы за ошибку)."""
+    """#3859: молчание — команда с одним исходом ``passed`` (пустой ответ ход принял бы за ошибку)."""
     out = _convert(DEEPSEEK_CAPS, LLMResponse(tool_calls=(_command_call(passed="nothing_to_say"),)))
-    (call,) = out.tool_calls
-    assert out.content == "" and call.name == kn.COMMAND_TOOL and call.arguments == {"passed": "nothing_to_say"}
+    assert out.command == Command(passed="nothing_to_say")
 
 
 def test_perform_and_voice_go_to_the_command_executor_ask_is_spoken() -> None:
     tale = {"kind": "tale", "segments": ["Жил-был ёж.", "И жил он долго."], "voice_per_segment": ["", "zahar"]}
     perform = _convert(DEEPSEEK_CAPS, LLMResponse(tool_calls=(_command_call(perform=tale),)))
-    assert _actions(perform) == [] and perform.tool_calls[0].arguments["perform"]["voice_per_segment"] == ["", "zahar"]
+    assert _actions(perform) == [] and to_args(perform.command)["perform"]["voice_per_segment"] == ["", "zahar"]
     voiced = _convert(DEEPSEEK_CAPS, LLMResponse(tool_calls=(_command_call(speech="Привет", voice="alena"),)))
-    assert voiced.tool_calls[0].arguments["voice"] == "alena"
+    assert voiced.command.voice == "alena"
     ask = _convert(DEEPSEEK_CAPS, LLMResponse(tool_calls=(_command_call(ask={"expects": "name", "text": "Как тебя зовут?"}),)))
-    assert ask.content == "Как тебя зовут?"
+    assert _speech(ask) == "Как тебя зовут?"  # вопрос без действий звучит репликой, как до #4354 B2
 
 
 def test_speak_text_in_actions_is_speech_not_action() -> None:
     out = _convert(MINIMAX_CAPS, LLMResponse(content='{"actions": [{"tool": "speak_text", "args": {"text": "Привет"}}]}'))
-    assert (out.content, out.tool_calls) == ("Привет", ())
+    assert _speech(out) == "Привет"
     voiced = _convert(MINIMAX_CAPS, LLMResponse(
         content='{"actions": [{"tool": "speak_text", "args": {"text": "Привет", "voice": "zahar"}}]}'))
-    args = voiced.tool_calls[0].arguments
+    args = to_args(voiced.command)
     assert (args["speech"], args["voice"], args.get("actions")) == ("Привет", "zahar", None)
 
 
-@pytest.mark.parametrize("reply, content, calls", [
-    (LLMResponse(tool_calls=(_command_call(speech="Привет!"),), usage={"prompt_tokens": 5}), "Привет!", []),
-    (LLMResponse(content='{"actions": [{"tool": "memory_save", "args": {"fact": "чай"}}]}'), "", [kn.COMMAND_TOOL]),
-])
-def test_stream_is_collected_then_replayed_in_v1_shape(reply: LLMResponse, content: str, calls: list) -> None:
-    inner = _Inner(DEEPSEEK_CAPS, [reply])
-    bridge = cb.CommandModeLLM(inner)
+def test_stream_is_not_a_command_answer() -> None:
+    """Команду разбирают только целиком: потокового ответа в режиме команд нет, ход зовёт ``complete``."""
+    inner = _Inner(DEEPSEEK_CAPS, [LLMResponse(tool_calls=(_command_call(speech="Привет!"),))])
 
     async def _drain() -> list:
-        return [chunk async for chunk in bridge.stream(_messages(), tools=TOOLS)]
+        return [chunk async for chunk in cb.CommandModeLLM(inner).stream(_messages(), tools=TOOLS)]
 
-    chunks = _run(_drain())
-    assert "".join(c.content_delta for c in chunks) == content
-    assert [c.tool_call_delta.name for c in chunks if c.tool_call_delta] == calls
-    assert chunks[-1].finish_reason == ("tool_calls" if calls else "stop")
-    assert inner.closed_streams == 1
+    with pytest.raises(NotImplementedError):
+        _run(_drain())
+    assert inner.requests == []
 
 
 # ── подключение: какие провайдеры, имя и атрибуты обёрнутого ────────────────────────────────────────────────
 
 
-def test_wrapper_for_wraps_only_listed_providers_and_logs_the_mode() -> None:
+def test_wrapper_for_wraps_every_provider_and_logs_the_mode() -> None:
+    """v2 отвечает только командой: каждый провайдер цепочки — в режиме команд (DeepSeek ``tool_choice``, MiniMax
+    ``tool_offered``, замер ч.7d), режим — по его capabilities; имя и атрибуты — у обёрнутого."""
     log: list = []
-    wrap = cb.wrapper_for(" DeepSeek , ", log.append)
-    deepseek, minimax = _Inner(DEEPSEEK_CAPS, []), _Inner(MINIMAX_CAPS, [], name="minimax")
-    wrapped = wrap(deepseek)
-    assert isinstance(wrapped, cb.CommandModeLLM) and wrap(minimax) is minimax
-    assert wrapped.name == "deepseek" and wrapped.model == "deepseek-model"
-    assert wrapped.capabilities is DEEPSEEK_CAPS
-    assert log == [f"{cb.COMMAND_LOG_MARK} provider=deepseek mode=tool_choice (по capabilities адаптера)"]
-    assert cb.wrapper_for("")(deepseek) is deepseek
-    assert cb.command_providers(["minimax", " "]) == frozenset({"minimax"})
-
-
-def test_command_mode_is_on_by_default_for_deepseek_and_minimax_fallback() -> None:
-    """Решения Шифу 22.10 (#3698): без конфига командой отвечают DeepSeek (``tool_choice``) и MiniMax-фолбек
-    (``tool_offered``, замер ч.7d); прочие провайдеры — старый путь v1."""
-    assert kn.COMMAND_PROVIDERS_DEFAULT == "deepseek,minimax"
-    wrap = cb.wrapper_for(kn.COMMAND_PROVIDERS_DEFAULT)
+    wrap = cb.wrapper_for(log.append)
     deepseek, minimax = _Inner(DEEPSEEK_CAPS, []), _Inner(MINIMAX_CAPS, [], name="minimax")
     mimo = _Inner(ProviderCapabilities(tools=True), [], name="mimo")
-    assert wrap(deepseek).mode == "tool_choice" and wrap(minimax).mode == "tool_offered" and wrap(mimo) is mimo
+    wrapped = wrap(deepseek)
+    assert isinstance(wrapped, cb.CommandModeLLM) and wrapped.mode == "tool_choice"
+    assert wrapped.name == "deepseek" and wrapped.model == "deepseek-model"
+    assert wrapped.capabilities is DEEPSEEK_CAPS
+    assert wrap(minimax).mode == "tool_offered" and isinstance(wrap(mimo), cb.CommandModeLLM)
+    assert log[0] == f"{cb.COMMAND_LOG_MARK} provider=deepseek mode=tool_choice (по capabilities адаптера)"
+    assert kn.COMMAND_PROVIDERS_DEFAULT == "deepseek,minimax"  # цепочка по умолчанию: DeepSeek, запасной MiniMax
 
 
 # ── повтор невалидной команды с перечнем нарушений (решение Шифу 21.10, #3698) ─────────────────────────────────
@@ -393,7 +383,7 @@ def test_invalid_command_goes_back_as_tool_result_and_the_fixed_one_is_executed(
 def test_enum_violation_lists_the_allowed_values_from_knowledge() -> None:
     bad = LLMResponse(tool_calls=(_command_call(speech="Привет", expression={"emotion": "ecstatic"}),))
     out, inner, _ = _answer(DEEPSEEK_CAPS, [bad, LLMResponse(tool_calls=(_command_call(speech="Привет"),))])
-    assert out.content == "Привет"
+    assert _speech(out) == "Привет"
     note = inner.requests[1]["messages"][-1].content
     assert "emotion=ecstatic" in note and f"Допустимо: {', '.join(kn.EMOTIONS)}" in note
 
@@ -402,7 +392,7 @@ def test_bad_json_arguments_get_one_retry() -> None:
     """Адаптер отдаёт ``{}``, когда JSON аргументов не разобрался: это ``bad_json``, а не пустая команда."""
     broken = LLMResponse(tool_calls=(_command_call(),))
     out, inner, log = _answer(DEEPSEEK_CAPS, [broken, LLMResponse(tool_calls=(_command_call(speech="Сейчас."),))])
-    assert out.content == "Сейчас." and len(inner.requests) == 2
+    assert _speech(out) == "Сейчас." and len(inner.requests) == 2
     assert "verdict=invalid:bad_json" in log[0]
     assert "аргументы command не разобраны" in inner.requests[1]["messages"][-1].content
 
@@ -411,7 +401,7 @@ def test_json_in_text_retry_goes_as_user_message() -> None:
     """MiniMax (запасной, JSON в тексте): вызова нет — нарушения идут репликой пользователя после ответа модели."""
     bad = LLMResponse(content='{"speech": "Привет", "mood": "весело"}')
     out, inner, _ = _answer(MINIMAX_CAPS, [bad, LLMResponse(content='{"speech": "Привет"}')], name="minimax")
-    assert out.content == "Привет"
+    assert _speech(out) == "Привет"
     said, note = inner.requests[1]["messages"][-2:]
     assert (said.role, said.content) == ("assistant", bad.content)
     assert note.role == "user" and "unknown_field" in note.content and "Допустимо: speech" in note.content
@@ -440,7 +430,7 @@ def test_telegram_agent_may_write_text_beside_actions_personality_may_not() -> N
     assert cb.judge(reply, ["play_sound"]).reason == kn.VIOLATION_SPEECH_WITH_ACTIONS
     chat = cb.judge(reply, ["play_sound"], agent=kn.TEXT_CHANNEL_AGENT)
     assert chat.speech == "Включаю." and [a.tool for a in chat.actions] == ["play_sound"]
-    wrapped = cb.wrapper_for("deepseek", agent=kn.TEXT_CHANNEL_AGENT)(_Inner(DEEPSEEK_CAPS, [reply]))
+    wrapped = cb.wrapper_for(agent=kn.TEXT_CHANNEL_AGENT)(_Inner(DEEPSEEK_CAPS, [reply]))
     assert wrapped._judged(reply, ["play_sound"]).speech == "Включаю."
 
 
@@ -451,13 +441,13 @@ def test_quiet_action_beside_speech_is_valid_for_personality_3953() -> None:
     assert checked.speech == "Привет, Саша!" and [a.tool for a in checked.actions] == ["memory_save"]
 
 
-def test_invalid_command_carries_its_valid_actions_through_the_bridge_form_3953() -> None:
+def test_invalid_command_carries_its_valid_actions_to_the_turn_3953() -> None:
     """Невалидная после повтора команда отдаёт ходу свои допустимые действия: speech при громком + кривое второе."""
     bad = [*SOUND, {"tool": "memory_save", "args": {}}]
     res = cb.judge(LLMResponse(tool_calls=(_command_call(speech="Вот!", actions=bad),)), ["play_sound", "memory_save"])
     assert isinstance(res, Invalid) and [a.tool for a in res.salvage] == ["play_sound"]
-    _, calls, verdict = cb.to_legacy(res)
-    assert verdict.startswith("invalid:") and calls[0].arguments["actions"][0]["tool"] == "play_sound"
+    assert cb.verdict(res).startswith("invalid:") and cb.for_turn(res) is res
+    assert cb.model_call(res).arguments == {"actions": [{"tool": "play_sound", "args": {"sound": "robot_happy"}}]}
 
 
 # ── тул вне среза хода (#3897, ADR-0148) ───────────────────────────────────────────────────────────────────
@@ -543,7 +533,7 @@ def test_retry_after_query_says_data_received_not_nothing_done() -> None:
     good = LLMResponse(tool_calls=(_command_call(speech="Коротко."),))
     inner = _Inner(DEEPSEEK_CAPS, [long, good])
     out = _run(cb.CommandModeLLM(inner, [].append).complete(_query_followup(), tools=TOOLS))
-    assert out.content == "Коротко." and len(inner.requests) == 2
+    assert _speech(out) == "Коротко." and len(inner.requests) == 2
     hint = inner.requests[1]["messages"][-1].content
     assert kn.VIOLATION_SPEECH_TOO_LONG in hint and str(kn.SPEECH_MAX_CHARS) in hint
     assert "получены" in hint and "ничего не сделано" not in hint
@@ -579,5 +569,5 @@ def test_tale_without_cast_is_retried_and_the_second_try_gets_voices_from_the_co
     schema = json.dumps(inner.requests[0]["tools"], ensure_ascii=False)
     assert '"cast"' in schema and '"role_per_segment"' in schema and "voice_per_segment" not in schema
     assert "verdict=invalid:tale_without_cast" in log[0] and "verdict=command" in log[1]
-    perform = out.tool_calls[0].arguments["perform"]
+    perform = to_args(out.command)["perform"]
     assert perform["voice_per_segment"] == ["", "zahar", "alena"] and perform["role_per_segment"] == roles

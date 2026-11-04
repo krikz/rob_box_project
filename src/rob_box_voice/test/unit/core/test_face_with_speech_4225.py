@@ -4,9 +4,10 @@
 blue, …}, "duration_s": 15}, "speech": "…Глаза опустил, свечусь синим — вот так мне грустно."}`` → ``🧾 [command]
 verdict=speech actions=[]`` → строки «🎭 лицо команды на done» нет → ``face_node: сцена по запросу: happy -> happy (3.0
 с)`` (рефлекс ``done`` без окраски). Все 58 ходов «речь + эмоция» прогона - так же. Причина: мост команд
-(``command_bridge.to_legacy``) отдавал реплику без действий ТЕКСТОМ, а ``dialog_v2_ports.to_result`` собирал из текста
-``Command(speech=…)`` - ``expression`` терялась по дороге, ход красить итог было нечем. Ход с одной ``expression`` (без
-речи) шёл вызовом ``command`` (#3974) - поэтому строка «лицо команды на done» была только у ходов без речи.
+отдавал реплику без действий ТЕКСТОМ (форма v1), а транспорт хода собирал из текста ``Command(speech=…)`` -
+``expression`` терялась по дороге, ход красить итог было нечем (формы v1 нет с #4354 B2: ``command_bridge.for_turn``).
+Ход с одной ``expression`` (без речи) шёл вызовом ``command`` (#3974) - поэтому строка «лицо команды на done» была
+только у ходов без речи.
 
 Тесты гонят ответ модели через НАСТОЯЩИЙ мост (``CommandModeLLM``) и ``V2Ports`` до ``ExpressionRequest`` итога, а не
 подставляют готовую команду мимо моста (так прежние тесты #3997/#4049 и пропустили потерю).
@@ -31,7 +32,7 @@ from rob_box_dialog.turn import TurnEngine  # noqa: E402
 from rob_box_llm.provider import LLMResponse, ToolCall  # noqa: E402
 from rob_box_llm.providers.deepseek import DeepSeekProvider  # noqa: E402
 from rob_box_voice.core import command_bridge as cb  # noqa: E402
-from rob_box_voice.core.dialog_v2_ports import CallCounter, V2Ports, counted_wrapper, to_result  # noqa: E402
+from rob_box_voice.core.dialog_v2_ports import CallCounter, V2Ports, counted_wrapper  # noqa: E402
 
 TIME = type(M.TurnEvent().stamp)
 #: Реплика n904 как её слышит ход (вейк снимает адресация) и ответ модели из лога (речь - полностью).
@@ -87,7 +88,7 @@ class _Tools:
 def _turn(args, text=N904):
     """Ход Личности: ответ модели ``args`` (вызов ``command``) через мост команд и ``V2Ports``."""
     lines, node, counter = [], _Node(), CallCounter()
-    llm = counted_wrapper(cb.wrapper_for("deepseek", log=lines.append), counter)(
+    llm = counted_wrapper(cb.wrapper_for(log=lines.append), counter)(
         _DeepSeek([LLMResponse(tool_calls=(ToolCall(id="c1", name=kn.COMMAND_TOOL, arguments=args),))]))
     ports = V2Ports(node, llm, counter, _Tools(), log=lines.append)
     agg = asyncio.run(TurnEngine(Session("personality"), ports, system_prompt="Ты робот.").run(Addressed(text, VOICE)))
@@ -122,19 +123,18 @@ def test_ordinary_reply_with_an_emotion_colours_done_with_it():
 
 
 def test_reply_without_expression_is_still_spoken_text_and_the_plain_reflex():
-    """Голая реплика (``expression`` не задана) - как раньше: текст моста, рефлекс ``done`` как есть."""
-    text, calls, verdict = cb.to_legacy(Command(speech="Привет!"))
-    assert (text, calls, verdict) == ("Привет!", (), "speech")
+    """Голая реплика (``expression`` не задана) - как раньше: одна речь, рефлекс ``done`` как есть."""
+    assert cb.for_turn(Command(speech="Привет!")) == Command(speech="Привет!")
+    assert cb.verdict(Command(speech="Привет!")) == "speech"
     agg, node, lines = _turn({"speech": "Привет!"}, text="робот привет")
     assert _done(node).emotion == reflex("done").emotion
     assert not any("лицо команды" in line for line in lines)
 
 
-def test_bridge_gives_speech_with_face_as_one_command_call_that_round_trips():
+def test_bridge_gives_speech_with_face_as_one_command():
     cmd = parse(N904_ARGS)
-    text, calls, verdict = cb.to_legacy(cmd)
-    assert (text, verdict, [c.name for c in calls]) == ("", "speech", [kn.COMMAND_TOOL])
-    back = to_result(LLMResponse(tool_calls=calls))
+    assert cb.verdict(cmd) == "speech"
+    back = cb.for_turn(cmd)
     assert back.speech == SPEECH and back.expression == cmd.expression
     assert back.expression.emotion == "sad" and back.expression.duration_s == 15.0
 
@@ -144,5 +144,5 @@ def test_actions_and_voice_keep_the_command_verdict():
     face = {"emotion": "happy"}
     acted = parse({"speech": "Включаю.", "actions": [{"tool": "play_sound", "args": {"sound": "boop"}}],
                    "expression": face})
-    assert cb.to_legacy(acted)[2] == "command"
-    assert cb.to_legacy(Command(expression=Expression(emotion="sad")))[2] == "command", "лицо без слов (#3974)"
+    assert cb.verdict(acted) == "command"
+    assert cb.verdict(Command(expression=Expression(emotion="sad"))) == "command", "лицо без слов (#3974)"

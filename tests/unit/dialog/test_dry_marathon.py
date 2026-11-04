@@ -76,7 +76,7 @@ class Env:
         self.inner = FakeLLMProvider(on_complete=on_complete, name="deepseek",
                                      capabilities=ProviderCapabilities(tools=True, tool_choice=True))
         relay = dm.LogRelay()
-        llm = command_bridge.wrapper_for("deepseek", log=relay)(Counted(self.inner, self.counter))
+        llm = command_bridge.wrapper_for(log=relay)(Counted(self.inner, self.counter))
         self.stand = dry_stand.DryStand(llm, self.counter, "Ты робот.", tmp_path)
         relay.target = self.stand
         self.stand.speakers.register("anton", "Саша")
@@ -264,16 +264,16 @@ def test_3859_passed_on_addressed_phrase_finishes_the_turn(make_env):
 
 
 def test_3859_regression_passed_as_empty_answer_makes_step_red(make_env, monkeypatch):
-    real = command_bridge.to_legacy
+    real = command_bridge.for_turn
 
     def passed_is_empty(result):
         # «промолчать» на адресованную реплику приходит к мосту нарушением формы хода (#4021) — его исход тоже теряем
         insisted = isinstance(result, command_bridge.Invalid) and result.reason == kn.VIOLATION_PASSED_ADDRESSED
         if insisted or (not isinstance(result, command_bridge.Invalid) and result.passed):
-            return "", (), "empty"
+            return command_bridge.Invalid(command_bridge.EMPTY, "ни речи, ни команды")
         return real(result)
 
-    monkeypatch.setattr(command_bridge, "to_legacy", passed_is_empty)
+    monkeypatch.setattr(command_bridge, "for_turn", passed_is_empty)
     env = make_env(lambda env, msgs, tools: {"passed": "not_addressed"})
     report = env.run(PASSED)
     assert report.verdict == dm.FAIL and "finished" in report.fail[0]

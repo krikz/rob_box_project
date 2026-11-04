@@ -13,6 +13,7 @@ import asyncio
 import pytest
 
 from rob_box_dialog import knowledge as kn
+from rob_box_dialog.command import Invalid
 from rob_box_llm.provider import LLMMessage, LLMResponse, ToolCall
 from rob_box_llm.providers.deepseek import DeepSeekProvider
 from rob_box_voice.core import command_bridge as cb
@@ -53,7 +54,5 @@ def test_the_retry_is_judged_by_the_same_promise_guards(first: str, again: str, 
     inner = _Inner([_speech(first), _speech(again)])
     msgs = [LLMMessage(role="system", content="ты РОББОКС"), LLMMessage(role="user", content="уводи в сторону рока")]
     out = asyncio.run(cb.CommandModeLLM(inner, log.append).complete(msgs, tools=TOOLS))
-    (call,) = out.tool_calls
-    assert len(inner.requests) == 2 and out.content == ""
-    assert call.arguments[kn.COMMAND_INVALID_FIELD] == reason
+    assert len(inner.requests) == 2 and isinstance(out.command, Invalid) and out.command.reason == reason
     assert f"retry=1 violations=['{reason}'] → verdict=invalid:{reason}" in log[2]

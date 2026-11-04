@@ -14,6 +14,7 @@ import json
 from typing import Any, AsyncIterator, Iterable, List, Mapping, Optional
 
 from rob_box_dialog import knowledge as kn
+from rob_box_dialog.command import Command, Invalid
 from rob_box_llm.provider import LLMChunk, LLMMessage, LLMResponse, LLMSettings, ProviderCapabilities, ToolCall
 from rob_box_llm.providers import deepseek as ds
 from rob_box_voice.core import command_bridge as cb
@@ -76,8 +77,10 @@ def _answer(*replies: LLMResponse) -> tuple:
     return out, inner.requests, log
 
 
-def _actions(out: LLMResponse) -> List[str]:
-    return [a["tool"] for a in out.tool_calls[0].arguments.get("actions", [])]
+def _actions(out: cb.CommandResponse) -> List[str]:
+    """Действия, которые исполнит ход: команды или допустимые невалидной (``Invalid.salvage``)."""
+    cmd = out.command
+    return [a.tool for a in (cmd.salvage if isinstance(cmd, Invalid) else cmd.actions)]
 
 
 def test_n903_retry_with_extra_closing_brace_is_the_whole_object_not_bad_json():
@@ -94,9 +97,7 @@ def test_tail_other_than_closers_stays_bad_json_and_cut_object_stays_truncated()
 def test_n903_retry_with_empty_arguments_runs_the_first_answers_actions_without_its_speech():
     """Повтор отдал пустые аргументы (``bad_json``) — ход получает действия первого ответа, речи нет."""
     out, requests, log = _answer(_reply(N903_FIRST), _reply({}))
-    assert len(requests) == 2 and out.content == ""
-    args = out.tool_calls[0].arguments
-    assert args[kn.COMMAND_INVALID_FIELD] == "bad_json" and "speech" not in args
+    assert len(requests) == 2 and isinstance(out.command, Invalid) and out.command.reason == "bad_json"
     assert _actions(out) == ["play_sound", "play_animation"]
     assert any("retry=1 violations=['speech_with_actions'] → verdict=invalid:bad_json" in line
                and "salvage=['play_sound', 'play_animation']" in line for line in log)
@@ -104,8 +105,7 @@ def test_n903_retry_with_empty_arguments_runs_the_first_answers_actions_without_
 
 def test_n903_retry_parsed_as_whole_object_is_a_valid_command_with_the_actions():
     out, _, _ = _answer(_reply(N903_FIRST), _reply(ds._safe_json(N903_RETRY_RAW)))
-    args = out.tool_calls[0].arguments
-    assert kn.COMMAND_INVALID_FIELD not in args and not args.get("speech")
+    assert isinstance(out.command, Command) and not out.command.speech
     assert _actions(out) == ["play_sound", "play_animation"]
 
 
@@ -113,12 +113,11 @@ def test_retry_with_its_own_valid_actions_keeps_them_not_the_first_ones():
     """Повтор невалиден, но со своими допустимыми действиями — исполняются его, а не первого ответа."""
     own = {"actions": [{"tool": "play_sound", "args": {"sound": "robot_alert"}}], "speech": "Вот!"}
     out, _, _ = _answer(_reply(N903_FIRST), _reply(own))
-    assert out.tool_calls[0].arguments[kn.COMMAND_INVALID_FIELD] == kn.VIOLATION_SPEECH_WITH_ACTIONS
+    assert isinstance(out.command, Invalid) and out.command.reason == kn.VIOLATION_SPEECH_WITH_ACTIONS
     assert _actions(out) == ["play_sound"]
 
 
 def test_first_answer_without_valid_actions_still_closes_invalid_with_nothing_to_run():
     """Настоящее нарушение не маскируется: нечего было исполнять — ход по-прежнему невалиден без действий."""
     out, _, _ = _answer(_reply({"actions": [{"tool": "play_sound", "args": {}}]}), _reply({}))
-    args = out.tool_calls[0].arguments
-    assert args[kn.COMMAND_INVALID_FIELD] == "bad_json" and "actions" not in args
+    assert isinstance(out.command, Invalid) and (out.command.reason, out.command.salvage) == ("bad_json", ())
