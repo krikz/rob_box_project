@@ -14,6 +14,10 @@
   <depend>std_msgs</depend>
   <depend>geometry_msgs</depend>
   <depend>sensor_msgs</depend>
+  <!-- proximity_guard_node (#4365): /odom, поза лидара из TF, footprint из nav2_params.yaml -->
+  <depend>nav_msgs</depend>
+  <depend>tf2_ros</depend>
+  <exec_depend>python3-yaml</exec_depend>
   <!-- speech_client.say -> SpeechRequest (PR-15 part 15-0d); the types come from the msgs image -->
   <depend>rob_box_core</depend>
   <depend>rob_box_dialog_msgs</depend>

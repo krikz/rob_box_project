@@ -471,6 +471,48 @@ services:
     labels:
       logging: "promtail"
 
+  # Зона безопасности вокруг корпуса (#4365) — ВЫКЛЮЧЕНА по умолчанию (profile).
+  # Только в движении: ближе 0.40 м от корпуса — мигалка (face_node) и короткий
+  # писк (sound_node); ближе 0.20 м — нулевой Twist в cmd_vel_emergency (twist_mux
+  # 255) и одним событием мигалка, писк и «Осторожно!» голосом (SpeechRequest).
+  # Включить: в .env Main Pi COMPOSE_PROFILES=proximity-guard (через запятую с
+  # monitoring, если он там есть), затем docker compose up -d proximity-guard.
+  # Образ — teleop (rob_box_teleop + сообщения диалога); footprint берётся из
+  # ./config/nav2/nav2_params.yaml — тот же, что у Nav2.
+  proximity-guard:
+    image: ${SERVICE_IMAGE_PREFIX:-ghcr.io/krikz/rob_box}:teleop-${ROS_DISTRO:-humble}-${IMAGE_TAG:-local}
+    container_name: proximity-guard
+    profiles: ["proximity-guard"]
+    network_mode: host
+    environment:
+      - ROS_DOMAIN_ID=0
+      - RMW_IMPLEMENTATION=rmw_zenoh_cpp
+      - RUST_LOG=zenoh=info
+      - ROS_AUTOMATIC_DISCOVERY_RANGE=LOCALHOST
+      - ROBOT_ID=${ROBOT_ID}
+      - ZENOH_SESSION_CONFIG_URI=/tmp/zenoh_session_config.json5
+      - *zenoh_listen_ip  # адрес локального роутера для session config
+      - LD_LIBRARY_PATH=/opt/ros/humble/opt/zenoh_cpp_vendor/lib:/opt/ros/humble/lib/aarch64-linux-gnu:/opt/ros/humble/lib
+    volumes:
+      - ./config:/config:ro
+      - ../common/scripts:/ros_scripts:ro
+      - ../common/config:/common_config:ro
+      - ./scripts/teleop:/scripts:ro
+    command: ["/ros_scripts/ros_with_namespace.sh", "/scripts/start_proximity_guard.sh"]
+    depends_on:
+      - zenoh-router
+      - twist-mux
+      - lslidar
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pgrep -f proximity_guard_node || exit 1"]
+      interval: 10s
+      timeout: 5s
+      start_period: 20s
+      retries: 3
+    labels:
+      logging: "promtail"
+
   # non-ROS service: Loki log shipper (profile: monitoring).
   # Не использует ROS/Zenoh, depends_on: zenoh-router не требуется.
   promtail:
