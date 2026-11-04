@@ -331,3 +331,43 @@ def test_m8_code_named_id_does_not_open_the_guard_for_a_made_up_one(library):
     _as_server(tool, action="info", track_ref=REF)
     refused = _as_server(tool, action="info", track_id="f" * 32)
     assert refused.data["reason"] == "unknown_track"
+
+
+# ---------------------------------------------------------------------------------------------------------------
+# М9 03.11 (n707): вчерашняя версия названа длиннее - «Енот-механик и робот» (764a53ab); модель видела её в list
+# (n704) и сразу позвала info с её id, без search. Название свежей «Енот-механик» (d679a795) целиком внутри старого.
+# ---------------------------------------------------------------------------------------------------------------
+
+def _m9_library(library):
+    old = _save(library, "Енот-механик и робот", "OLD")
+    other = _save(library, "Механический дождь", "RAIN")  # одно общее слово с названием свежей - не версия
+    fresh = _save(library, "Енот-механик", "NEW")
+    library.generated.note(fresh)
+    return old, other, fresh
+
+
+def test_m9_n707_info_of_the_longer_titled_old_version_from_the_list_gives_the_new_song(library):
+    old, _, fresh = _m9_library(library)
+    tool = _tool(library)
+    tool.execute(action="list")  # n704: модель видела весь список
+    assert tool.bind_arguments({"action": "info", "track_id": old})["track_id"] == fresh
+    info = _as_server(tool, action="info", track_id=old)
+    assert info.success and (info.data["id"], info.data["title"]) == (fresh, "Енот-механик")
+
+
+def test_m9_n708_play_of_the_longer_titled_old_version_plays_the_new_song(library, monkeypatch):
+    played = []
+    old, _, fresh = _m9_library(library)
+    monkeypatch.setattr(_mm, "play_library_track", lambda node, lib, track_id, **kw: played.append(track_id) or _Played())
+    tool = _tool(library)
+    tool.execute(action="list")
+    _as_server(tool, action="play", track_id=old)
+    assert played == [fresh]
+
+
+def test_m9_a_title_sharing_only_part_of_the_new_title_is_not_a_version(library):
+    _, other, _ = _m9_library(library)
+    tool = _tool(library)
+    tool.execute(action="list")
+    assert tool.bind_arguments({"action": "info", "track_id": other})["track_id"] == other
+    assert _as_server(tool, action="info", track_id=other).data["id"] == other

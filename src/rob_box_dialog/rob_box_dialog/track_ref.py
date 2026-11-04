@@ -28,6 +28,8 @@ LAST_GENERATED = "last_generated"
 REF_ACTIONS: Tuple[str, ...] = ("info", "play", "update", "delete")
 #: Указательные слова («эта песня», «эту песню про енота»): целые, строчные, без «ё».
 _THIS = ("эта", "эту", "этой", "этот", "этого", "этом")
+#: «Последняя песня» библиотеки ``music_library`` (там только сочинённое роботом) - та же ссылка; основа слова.
+_LAST = "последн"
 #: Основы существительных песни/трека; начало слова.
 _NOUNS = ("песн", "трек", "композиц", "мелоди", "инструментал")
 #: Сколько слов между указательным и существительным допустимо («эту новую песню», «этот твой трек»); дальше -
@@ -39,10 +41,12 @@ _JUST_WINDOW = 4
 
 
 def refers_to_last_generated(text: str) -> bool:
-    """Реплика называет песню, которую робот сочинил только что: «эта/эту песню», «этот трек», «только что сочинённую»."""
+    """Реплика называет песню, которую робот сочинил только что: «эта/эту песню», «этот трек», «последнюю песню»,
+    «только что сочинённую»."""
     tokens = name_tokens(text)
     for i, token in enumerate(tokens):
-        if token in _THIS and any(w.startswith(_NOUNS) for w in tokens[i + 1:i + 2 + _GAP]):
+        deictic = token in _THIS or token.startswith(_LAST)
+        if deictic and any(w.startswith(_NOUNS) for w in tokens[i + 1:i + 2 + _GAP]):
             return True
         if token == "только" and tokens[i + 1:i + 2] == ("что",):
             if any(w.startswith(_MADE) for w in tokens[i + 2:i + 2 + _JUST_WINDOW]):
