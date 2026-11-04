@@ -161,10 +161,8 @@ def _make_node(**overrides):
         avatar_ptt_result_pub=MagicMock(),
         avatar_stt_result_pub=MagicMock(),
         state_pub=MagicMock(),
-        speaker_pub=MagicMock(),
         # поведенческие mocks (обходим реальную публикацию/LLM-сайд-эффекты)
         publish_result=MagicMock(),
-        _publish_speaker=MagicMock(),
         _maybe_speak_unclear=MagicMock(),
     )
     defaults.update(overrides)
@@ -209,7 +207,6 @@ class TestRespeakerRoute:
         _run_route(node, "respeaker", "робокс включи музыку")
         node.publish_result.assert_called_once()
         assert node.publish_result.call_args.args[0] == "робокс включи музыку"
-        node._publish_speaker.assert_called_once()
         node.avatar_stt_result_pub.publish.assert_not_called()
         node.avatar_ptt_result_pub.publish.assert_not_called()
 
@@ -238,11 +235,6 @@ class TestPttRoute:
         assert published.data == "всем привет с левого грипа"
         node.publish_result.assert_not_called()
         node.avatar_stt_result_pub.publish.assert_not_called()
-
-    def test_ptt_no_speaker_profile(self):
-        node = _make_node()
-        _run_route(node, "ptt", "проверка связи")
-        node._publish_speaker.assert_not_called()
 
 
 class TestWakeRoute:

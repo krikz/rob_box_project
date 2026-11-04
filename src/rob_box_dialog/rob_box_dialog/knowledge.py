@@ -619,9 +619,6 @@ NEW_SESSION_PHRASES: Tuple[str, ...] = (
 #: Ответ на вопрос робота ``Ask(expects="yes_no")`` (U9) — точные формы из :data:`SHORT_ANSWERS`.
 YES_WORDS: Tuple[str, ...] = ("да", "ага", "угу", "ок", "ладно")
 NO_WORDS: Tuple[str, ...] = ("нет", "не")
-#: Вопрос личности после хода ждёт вердикт «LLM уже спросила?» не дольше конца речи хода +
-#: ``IDENTITY_DEDUP_AFTER_SPEECH_S`` (``identity_question.ask_after_turn``).
-IDENTITY_DEDUP_AFTER_SPEECH_S = 1.0
 
 # ---------------------------------------------------------------------------------------------------------------
 # Классы действий (§5.1) и тулы по классам

@@ -69,7 +69,6 @@ CONTROL_TOPICS = (
     "/vision/hailo/events",
     "/perception/observations",
     "/voice/stt/utterance",
-    "/voice/stt/speaker",
 )
 #: Что пишется в бэг сцены (conductor.py): входы + сырой звук + контроль.
 RECORD_TOPICS = INPUT_TOPICS + ("/audio/audio",) + CONTROL_TOPICS

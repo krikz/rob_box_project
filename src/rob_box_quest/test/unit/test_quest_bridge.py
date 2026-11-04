@@ -9,7 +9,6 @@ emergency_stop правильно роутят в publishers и обновляю
 test.
 """
 
-import msgpack
 import json
 import time
 
@@ -59,8 +58,7 @@ class _Logger:
 
     def info(self, msg: str) -> None:
         # None означает «sink недоступен» — даунгрейд до no-op, чтобы старые
-        # тесты, которые создают _Logger с одним аргументом, не падали (см.
-        # _LoggerCapture в _make_node_only_for_callback_test ниже).
+        # тесты, которые создают _Logger с одним аргументом, не падали.
         if self._sink_info is not None:
             self._sink_info.append(msg)
 
@@ -504,128 +502,6 @@ def test_publish_voice_pipeline_missing_publisher_logs_and_silently_drops(
     bridge.publish_voice_pipeline(True, "translate", "en")
     # Никаких exceptions. Warning залогирован.
     assert any("voice_pipeline" in w for w in node.warnings)
-
-
-# --- voice_state (AV-20, 0x1202) --------------------------------------------
-#
-# Тесты callback'а ``QuestNode._on_dialogue_state``. Чтобы не поднимать
-# rclpy/init-спиннер, инстанцируем QuestNode через ``__new__`` (без
-# ``__init__``) и руками проставляем минимальный набор атрибутов. Тест
-# проверяет, что нормализация + encode + publish_frame связаны в одну
-# цепочку и любой переход FSM превращается в msgpack-фрейм с правильным
-# state/detail.
-#
-# ``_MockNode`` и ``_Logger`` уже определены в начале модуля — переиспользуем.
-
-
-def _make_node_only_for_callback_test():
-    """Вернуть (node, capture_ws_frames, RosString) для изолированного теста callback'а.
-
-    Используем ``QuestNode.__new__`` чтобы пропустить ``__init__`` (там
-    create_publisher/create_subscription — нужен rclpy.init). Это
-    стандартный приём для unit-теста ROS-нод без поднятия DDS.
-
-    Тест под ``pytest.importorskip("rclpy")`` потому что ``QuestNode.__new__``
-    всё равно тянет в MRO базовый ``rclpy.node.Node``, у которого
-    метакласс проверяет наличие rclpy. Если rclpy недоступен — пропускаем
-    (CI имеет).
-    """
-    pytest.importorskip("rclpy", reason="QuestNode callback test requires rclpy")
-    from std_msgs.msg import String as RosString  # noqa: WPS433
-    from rob_box_quest.quest_node import QuestNode  # noqa: WPS433
-
-    # ``__new__`` обходит ``__init__``, но всё равно пройдёт через
-    # метакласс Node'а. На dev-env без rclpy это падает — importorskip
-    # выше это уже отфильтровал.
-    from rob_box_core.voice_state import VoiceStateTracker  # noqa: WPS433
-
-    node = QuestNode.__new__(QuestNode)
-    node._last_voice_state = {"state": "idle", "detail": None}
-    node._voice = VoiceStateTracker()
-    node.warnings = []
-
-    class _LoggerCapture:
-        def warning(self_inner, msg: str) -> None:
-            node.warnings.append(msg)
-
-        def debug(self_inner, msg: str) -> None:
-            pass
-
-        def info(self_inner, msg: str) -> None:
-            pass
-
-    node.get_logger = lambda: _LoggerCapture()  # type: ignore[method-assign]
-
-    captured: list[tuple[str, bytes]] = []
-
-    class _BridgeSpy:
-        def publish_frame(self_inner, ui_name: str, payload: bytes) -> None:
-            captured.append((ui_name, payload))
-
-    node.bridge = _BridgeSpy()  # type: ignore[assignment]
-    return node, captured, RosString
-
-
-def test_dialogue_state_callback_emits_idle_when_idle():
-    node, captured, RosString = _make_node_only_for_callback_test()
-    msg = RosString()
-    msg.data = "IDLE"
-    node._on_dialogue_state(msg)
-    assert len(captured) == 1
-    ui_name, payload = captured[0]
-    assert ui_name == "voice_state"
-    decoded = msgpack.unpackb(payload, raw=False)
-    assert decoded["state"] == "idle"
-    assert "detail" not in decoded
-    assert isinstance(decoded["ts_ms"], int)
-
-
-def test_dialogue_state_callback_emits_speaking_for_dialogue():
-    node, captured, RosString = _make_node_only_for_callback_test()
-    msg = RosString()
-    msg.data = "DIALOGUE"
-    node._on_dialogue_state(msg)
-    assert captured[0][0] == "voice_state"
-    decoded = msgpack.unpackb(captured[0][1], raw=False)
-    assert decoded["state"] == "speaking"
-
-
-def test_dialogue_state_callback_marks_silenced():
-    node, captured, RosString = _make_node_only_for_callback_test()
-    msg = RosString()
-    msg.data = "SILENCED"
-    node._on_dialogue_state(msg)
-    decoded = msgpack.unpackb(captured[0][1], raw=False)
-    assert decoded["state"] == "idle"
-    assert decoded["detail"] == "silenced"
-
-
-def test_dialogue_state_callback_unknown_falls_back_silently_to_ws():
-    """Неизвестная строка → WARNING + state=idle (НО фрейм всё равно шлём).
-
-    Это контракт: «не молчим, но и не крашим». Клиент увидит ``idle`` и
-    WARNING появится в логах супервизора.
-    """
-    node, captured, RosString = _make_node_only_for_callback_test()
-    msg = RosString()
-    msg.data = "WEIRD_NEW_STATE"
-    node._on_dialogue_state(msg)
-    assert len(captured) == 1
-    decoded = msgpack.unpackb(captured[0][1], raw=False)
-    assert decoded["state"] == "idle"
-    assert "detail" not in decoded
-
-
-def test_dialogue_state_callback_updates_last_voice_state_cache():
-    """``_last_voice_state`` обновляется при каждом callback'е."""
-    node, captured, RosString = _make_node_only_for_callback_test()
-    msg = RosString()
-    msg.data = "LISTENING"
-    node._on_dialogue_state(msg)
-    assert node._last_voice_state["state"] == "listening"
-    msg.data = "DIALOGUE"
-    node._on_dialogue_state(msg)
-    assert node._last_voice_state["state"] == "speaking"
 
 
 # ── AV-27 / issue #1919 — TTS picker (list_voices / set_voice / preview_voice) ─

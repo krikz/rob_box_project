@@ -97,9 +97,6 @@ def enroll(
 
 def forget(node: Any, speaker_id: str) -> None:
     """Забыть служебное состояние удалённого (вытесненного) профиля."""
-    with node._speech_log_lock:
-        node._speech_log.pop(speaker_id, None)
-    node._epithet_llm_reasked.discard(speaker_id)
     session = node._growth_session
     if session is not None and session["speaker_id"] == speaker_id:
         node._growth_session = None

@@ -18,8 +18,7 @@ Data flow (current — Phase 6 v2):
                           (orphan publisher)
   [9 ROS2 topics] ---> context_aggregator -> /perception/context_update
                           (vision, pose, odom, joint_states, rosout,
-                           voice/stt/utterance,
-                           voice/dialogue/response,
+                           voice/stt/utterance, voice/speech/request,
                            voice/command/intent, voice/command/feedback)
                                      |
                                      v

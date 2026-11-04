@@ -1,5 +1,5 @@
-"""Вопрос личности после хода и личность хода с конфликтом голоса (ADR-0148). Chooser «уже спросила?» (#3765,
-``core/identity_dedup``) удалён в #4354 A1: в v2 его никто не ставил ноде."""
+"""Личность хода с конфликтом голоса (ADR-0148). Chooser «уже спросила?» (#3765, ``core/identity_dedup``) удалён
+в #4354 A1, вопрос после хода без вызывающего (``start_after_turn_question``/``ask_after_turn``) — в #4354 A2."""
 
 from __future__ import annotations
 
@@ -15,37 +15,8 @@ install_dialog_msgs_stub()
 from rob_box_dialog import knowledge as kn  # noqa: E402
 from rob_box_voice.core import identity_question as iq  # noqa: E402
 
-QUESTION = "Твой голос очень похож на голос, который я запомнил как Аркадий. Вы разные люди или это ты под другим именем?"
-PLAN = {"kind": "conflict", "question": QUESTION, "new_id": "new", "new_name": "Матвей", "known_id": "old",
-        "known_name": "Аркадий"}
-
-
-def _node(speaking=False):
-    logger = MagicMock()
-    node = types.SimpleNamespace(get_logger=lambda: logger, _session_pub=None, _speaker_ref=None,
-                                 _turn_llm_said=["Голос у меня записан как Аркадий. Ты Аркадий или Матвей?"],
-                                 _speaking_watch=types.SimpleNamespace(speaking=speaking),
-                                 _identity_question_asked_in_turn=False)
-    node._speak_identity_question = MagicMock(return_value="q1")
-    return node
-
-
-def _result(text="done"):
-    return types.SimpleNamespace(spoken_text=text)
-
-
-def _ask(node, plan, result=None):
-    """Конец хода: вопрос стартует; задачу после хода (если есть) дожидаемся."""
-    iq.start_after_turn_question(node, plan, result or _result())
-    task = getattr(node, "_after_turn_task", None)
-    if task is not None:
-        task.join(5)
-
-
-def test_without_chooser_code_phrase_is_spoken():
-    node = _node()
-    _ask(node, PLAN)
-    node._speak_identity_question.assert_called_once_with(PLAN)
+PLAN = {"kind": "conflict", "question": "Вы разные люди или это ты под другим именем?", "new_id": "new",
+        "new_name": "Матвей", "known_id": "old", "known_name": "Аркадий"}
 
 
 # -- личность хода с конфликтом голоса выясняет робот, не LLM (п.1 координатора) ----------------------------
@@ -82,15 +53,7 @@ def test_outcome_not_arrived_in_time_turn_goes_on():
 
 
 def test_wait_constant_lives_in_knowledge():
-    assert kn.REGISTER_OUTCOME_WAIT_S == 2.5 and kn.IDENTITY_DEDUP_AFTER_SPEECH_S <= 1.5
-
-
-def test_nothing_said_by_llm_question_goes_at_once_without_task():
-    node = _node()
-    node._turn_llm_said = []
-    iq.start_after_turn_question(node, PLAN, _result("done"))
-    node._speak_identity_question.assert_called_once_with(PLAN)
-    assert getattr(node, "_after_turn_task", None) is None
+    assert kn.REGISTER_OUTCOME_WAIT_S == 2.5
 
 
 def test_real_speaking_watch_property_is_read_not_called():
