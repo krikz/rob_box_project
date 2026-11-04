@@ -5,9 +5,15 @@
 Источники (их пишет nav_bench, здесь — только счёт):
   * ``truth`` — истинная поза из Gazebo ``/sim/ground_truth/odom``;
   * ``estimate`` — что думает робот: TF ``map → base_footprint`` в тот же миг;
-  * ``cmd`` — ``/cmd_vel`` (что DWB/behavior_server велели колёсам);
+  * ``cmd`` — ``/cmd_vel`` (что ушло в twist_mux и колёса: после velocity_smoother,
+    если он в цепочке, шаг 6);
+  * ``cmd_raw`` — ``/cmd_vel_nav`` (выход контроллера до velocity_smoother; пусто,
+    когда smoother не в цепочке и контроллер пишет прямо в ``/cmd_vel``);
   * ``scan_min`` — минимум ``/scan`` (что видит лидар);
-  * ``recoveries`` — ``number_of_recoveries`` из feedback ``NavigateToPose``.
+  * ``recoveries`` — ``number_of_recoveries`` из feedback ``NavigateToPose``;
+  * ``tilt_max_rad`` — наибольший наклон корпуса по истинной позе: при наклоне
+    ~10° плоскость лидара (z ≈ 0.52 м) задевает пол в ~3 м и пишет в costmap
+    препятствие, которого нет.
 
 Зазор и столкновения считаются по геометрии: габарит робота в истинной позе
 против коробок мира (geometry2d.clearance). Зазор < CONTACT_M — касание/столкновение:
@@ -40,8 +46,10 @@ class GoalRecord:
     truth: list[tuple[float, float, float, float]] = field(default_factory=list)  # t, x, y, yaw
     estimate: list[Optional[tuple[float, float, float]]] = field(default_factory=list)  # x, y, yaw | None
     cmd: list[tuple[float, float, float]] = field(default_factory=list)  # t, vx, wz
+    cmd_raw: list[tuple[float, float, float]] = field(default_factory=list)  # t, vx, wz до smoother
     scan_min: list[tuple[float, float]] = field(default_factory=list)  # t, r
     recoveries: int = 0
+    tilt_max_rad: float = 0.0  # наибольший наклон корпуса по истинной позе (тангаж/крен)
 
 
 def sign_changes(values: Sequence[float], deadband: float = OSC_DEADBAND) -> int:
@@ -93,6 +101,7 @@ def goal_metrics(rec: GoalRecord, boxes: Sequence[Box]) -> dict:
     plen = path_length(pts)
     straight = start.distance_to(rec.goal) if start else None
     wz = [w for _, _, w in rec.cmd]
+    wz_raw = [w for _, _, w in rec.cmd_raw]
     scan = [r for _, r in rec.scan_min if math.isfinite(r)]
 
     out = {
@@ -118,7 +127,9 @@ def goal_metrics(rec: GoalRecord, boxes: Sequence[Box]) -> dict:
         "min_scan_m": _r(min(scan)) if scan else None,
         "osc_sign_changes": sign_changes(wz),
         "osc_per_m": _r(sign_changes(wz) / plen, 2) if plen > 0.05 else None,
+        "osc_raw_per_m": _r(sign_changes(wz_raw) / plen, 2) if wz_raw and plen > 0.05 else None,
         "recoveries": rec.recoveries,
+        "tilt_max_deg": _r(math.degrees(rec.tilt_max_rad), 1) if rec.truth else None,
         "samples_truth": len(rec.truth),
         "samples_cmd": len(rec.cmd),
     }
@@ -141,6 +152,7 @@ SUMMARY_COLUMNS = (
     ("collision", "столкн."),
     ("min_scan_m", "мин. скан, м"),
     ("osc_sign_changes", "смен знака w"),
+    ("osc_per_m", "смен знака w на м"),
     ("recoveries", "recovery"),
 )
 

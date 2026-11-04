@@ -65,11 +65,13 @@ wait() { :; }
 . "$SCRIPT" "$@"
 """
 
+SIM_SWITCHES = ("USE_SIM_TIME", "URDF_SIM", "NAV2_PARAMS_OVERLAYS", "NAV2_SMOOTH_CMD_VEL")
+
 RTABMAP_ARGS = ["ros2", "launch", "rtabmap_launch", "rtabmap.launch.py", "use_sim_time:=false"]
 
 
 def run_script(rel: str, env_extra: dict[str, str] | None = None, args: list[str] | None = None):
-    env = {k: v for k, v in os.environ.items() if k not in ("USE_SIM_TIME", "URDF_SIM")}
+    env = {k: v for k, v in os.environ.items() if k not in SIM_SWITCHES}
     env.update(
         {
             "SCRIPT": (MAIN_SCRIPTS / rel).as_posix(),
@@ -271,3 +273,51 @@ def test_bad_urdf_sim_fails_loudly():
     r = run_script("robot_state_publisher/start_robot_state_publisher.sh", {"URDF_SIM": "1"})
     assert r.returncode != 0
     assert "URDF_SIM='1'" in r.stdout
+
+
+# ── Шаг 6 плана Gazebo: оверлеи параметров и цепочка velocity_smoother ───────
+# Обе переменные ставит только docker/sim/compose.yaml; без них команды выше
+# (test_nav2_without_flag_is_unchanged) — ровно как на роботе.
+
+SIM_NAV2 = REPO_ROOT / "src" / "rob_box_sim" / "config" / "nav2"
+
+
+def _nav2_cmd(out: str, exe: str) -> str:
+    return next(line for line in commands(out) if f"ros2 run {exe} " in line)
+
+
+def test_nav2_overlays_go_after_robot_params_on_every_node():
+    a, b = (SIM_NAV2 / "sim.yaml").as_posix(), (SIM_NAV2 / "controller_rpp.yaml").as_posix()
+    r = run_script("nav2/start_nav2_direct.sh", {"NAV2_PARAMS_OVERLAYS": f"{a} {b}"})
+    assert r.returncode == 0, r.stdout
+    lines = commands(r.stdout)
+    assert len(lines) == len(NAV2_NODES) + 1
+    for line in lines:
+        assert f"--params-file {PARAMS} --params-file {a} --params-file {b} " in line, line
+
+
+def test_nav2_missing_overlay_fails_loudly():
+    r = run_script("nav2/start_nav2_direct.sh", {"NAV2_PARAMS_OVERLAYS": "/nonexistent/x.yaml"})
+    assert r.returncode != 0
+    assert "/nonexistent/x.yaml" in r.stdout
+    assert not any(line.startswith("RUN: ros2 run") for line in r.stdout.splitlines())
+
+
+def test_nav2_smoother_chain_remaps_controller_and_smoother_only():
+    r = run_script("nav2/start_nav2_direct.sh", {"NAV2_SMOOTH_CMD_VEL": "true"})
+    assert r.returncode == 0, r.stdout
+    assert "-r cmd_vel:=cmd_vel_nav -r /tf:=tf" in _nav2_cmd(r.stdout, "nav2_controller controller_server")
+    assert "-r cmd_vel:=cmd_vel_nav -r cmd_vel_smoothed:=cmd_vel -r __node:=velocity_smoother" in _nav2_cmd(
+        r.stdout, "nav2_velocity_smoother velocity_smoother"
+    )
+    others = [
+        line for line in commands(r.stdout)
+        if "controller_server" not in line and "velocity_smoother" not in line
+    ]
+    assert others and not any("cmd_vel" in line for line in others)
+
+
+def test_nav2_bad_smoother_switch_fails_loudly():
+    r = run_script("nav2/start_nav2_direct.sh", {"NAV2_SMOOTH_CMD_VEL": "yes"})
+    assert r.returncode != 0
+    assert "NAV2_SMOOTH_CMD_VEL='yes'" in r.stdout

@@ -1,0 +1,10 @@
+# Габарит — как на роботе: круг robot_radius 0.45 (nav2_params.yaml). Оверлей
+# только называет его явно: SIM_FOOTPRINT=radius|urdf в docker/sim/compose.yaml.
+local_costmap:
+  local_costmap:
+    ros__parameters:
+      robot_radius: 0.45
+global_costmap:
+  global_costmap:
+    ros__parameters:
+      robot_radius: 0.45

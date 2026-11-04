@@ -116,3 +116,23 @@ def test_local_world_goals_come_from_generator_file(tmp_path):
     sc = load_scenario(SCENARIOS, "local/robot_map", tmp_path)
     assert sc["goals"] == [{"name": "pose_1", "x": 1.0, "y": 2.0, "yaw": 0.0}]
     assert sc["stop_on_failure"] is False
+
+
+def test_raw_controller_oscillation_counted_separately_from_smoothed():
+    rec = _straight_run(2.0, w=[0.0])
+    rec.cmd_raw = [(t, 0.15, 0.3 if i % 2 else -0.3) for i, (t, _, _) in enumerate(rec.cmd)]
+    m = goal_metrics(rec, [WALL])
+    assert m["osc_sign_changes"] == 0 and m["osc_per_m"] == 0.0
+    assert m["osc_raw_per_m"] == pytest.approx((len(rec.cmd) - 1) / 2.0, abs=0.01)
+
+
+def test_raw_oscillation_is_none_without_smoother_chain():
+    assert goal_metrics(_straight_run(2.0), [WALL])["osc_raw_per_m"] is None
+
+
+def test_tilt_reported_in_degrees_and_none_without_pose():
+    rec = _straight_run(2.0)
+    rec.tilt_max_rad = math.radians(11.0)
+    assert goal_metrics(rec, [WALL])["tilt_max_deg"] == pytest.approx(11.0)
+    empty = GoalRecord("g", Pose2D(1.0, 0.0, 0.0), "SKIPPED", 0.0, 0.0)
+    assert goal_metrics(empty, [WALL])["tilt_max_deg"] is None

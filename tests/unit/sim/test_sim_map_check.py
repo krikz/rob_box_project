@@ -45,3 +45,17 @@ def test_write_pgm_flips_rows(tmp_path):
     px = data[len(b"P5\n10 10\n255\n"):]
     assert px[9 * 10 + 0] == 205  # нижняя строка картинки = строка 0 карты, клетка 0 неизвестна
     assert px[9] == 0 and px[0] == 254
+
+
+def test_value_at_and_raw_pgm_keep_cost_levels(tmp_path):
+    from rob_box_sim.map_check import write_raw_pgm
+
+    g = OccupancyGrid(3, 2, 0.5, -1.0, 0.0, [0, 50, 99, 100, -1, 7])
+    assert g.value_at(-0.9, 0.1) == 0
+    assert g.value_at(0.1, 0.1) == 99
+    assert g.value_at(-0.4, 0.6) == -1
+    assert g.value_at(5.0, 0.0) is None and g.value_at(-1.1, 0.0) is None
+    write_raw_pgm(g, tmp_path / "c.pgm")
+    raw = (tmp_path / "c.pgm").read_bytes()
+    assert raw.startswith(b"P5\n3 2\n255\n")
+    assert list(raw[-6:]) == [100, 255, 7, 0, 50, 99]  # верх — +Y: сначала строка r=1
