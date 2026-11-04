@@ -21,7 +21,7 @@ This conftest makes the intent explicit at the dir level so pytest 9.x
 import sys
 from pathlib import Path
 
-# ``from ros_stubs import make_utterance`` должно работать из любого каталога тестов.
+# ``from ros_stubs import ...`` должно работать из любого каталога тестов.
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 # ADR-0150 PR-2: ``rob_box_dialog_msgs`` (rosidl) без ROS не собирается;

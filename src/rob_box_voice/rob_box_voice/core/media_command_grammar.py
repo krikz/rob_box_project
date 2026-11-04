@@ -1112,7 +1112,7 @@ _LIBRARY_FILLER: FrozenSet[str] = _PLAY_NAMED_FILLER | _COMMON_FILLER | _GENERIC
 
 def _library_command(words: Sequence[str]) -> Optional[MediaCommand]:
     """Реплика со словом «библиотека» (#3696): «включи (X) из библиотеки» → ``LIBRARY(kind=play, name=X)``; «что у
-    тебя в библиотеке» → ``LIBRARY(kind=list)``. Трек выбирает код (``library_command``), не LLM."""
+    тебя в библиотеке» → ``LIBRARY(kind=list)``. Трек выбирает код, не LLM."""
     if not any(w.startswith(_LIBRARY_STEM) for w in words):
         return None
     body = list(itertools.dropwhile(lambda w: w in _PLAY_NAMED_LEAD_IN, words))

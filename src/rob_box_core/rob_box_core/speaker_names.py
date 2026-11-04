@@ -4,7 +4,7 @@ architecture audit 2026-09-29, ADR-0145: раньше набор дублиро�
 местах и разошёлся:
 
 * ``rob_box_voice.utils.speaker_embeddings._INVALID_SPEAKER_NAMES``
-* ``rob_box_voice.core.dialogue_helpers.INVALID_SPEAKER_NAMES``
+* ``rob_box_voice.core.dialogue_helpers.INVALID_SPEAKER_NAMES`` (модуль удалён, #4354)
 * ``rob_box_mcp_tools.tools.dialogue.RegisterSpeakerTool._NOISE_NAMES``
 
 Здесь — объединение всех трёх. Сравнение выполняют вызывающие: точное

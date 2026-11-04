@@ -23,10 +23,6 @@ from rob_box_dialog import phrases
 #: Порог «давно не виделись» (``knowledge.MEETING_LONG_ABSENCE_S``). Ниже — тот же день, молчим.
 DEFAULT_LONG_ABSENCE_SEC = kn.MEETING_LONG_ABSENCE_S
 
-#: Кулдаун повода ``meeting`` в v1 ``OccasionGate`` (как раньше). В v1 он не срабатывал: ``mark_consumed`` по
-#: встрече не звался. Держится для v1 до PR-15.
-MEETING_SOURCE_COOLDOWN_SEC = 5.0
-
 
 @dataclass(frozen=True)
 class MeetingMarker:
@@ -175,5 +171,5 @@ def unprompted_quiet(snapshot: Any, turn_busy: bool) -> bool:
     return bool(turn_busy) or any(snapshot.top(kind) is not None for kind in kn.UNPROMPTED_QUIET_SCENES)
 
 
-__all__ = ["DEFAULT_LONG_ABSENCE_SEC", "MEETING_SOURCE_COOLDOWN_SEC", "MeetingGreeter", "MeetingMarker",
+__all__ = ["DEFAULT_LONG_ABSENCE_SEC", "MeetingGreeter", "MeetingMarker",
            "greet_on_meeting", "parse_meeting_marker", "time_of_day_greeting", "unprompted_quiet"]

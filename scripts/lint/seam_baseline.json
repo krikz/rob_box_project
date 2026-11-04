@@ -21,6 +21,7 @@
     "/camera/camera/color/image_raw",
     "/ceiling_camera/image_raw/compressed",
     "/perception/vision_context",
+    "/voice/dialogue/response",
     "/voice/speaker/merge",
     "~/load_animation"
   ],

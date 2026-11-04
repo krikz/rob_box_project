@@ -3,7 +3,7 @@
 Живой робот 27.10 20:14 (dev-d97bb04): «Робот, говори голосом Весельчак» - модель ответила «Такого голоса у меня нет»,
 ``set_voice`` не вызван. Голос в каталоге был: ``dialog_node`` строил ``TurnEngine`` без ``voices=``, реестр имён
 (``grammar._voice``) был пуст, и по имени голоса Tier-1 не срабатывал (срабатывал только «обычным голосом», он реестр не
-смотрит). В v1 тот же список давал ``tier1_host.voices`` - порт на общую функцию ``turn_context.tts_voices``.
+смотрит). Список голосов - общая функция ``turn_context.tts_voices``.
 """
 
 from __future__ import annotations
@@ -34,7 +34,6 @@ except ImportError:
 
 from rob_box_llm.provider import LLMResponse, ToolResult  # noqa: E402
 from rob_box_voice import dialog_node as dn  # noqa: E402
-from rob_box_voice.core.tier1_host import Tier1Runner  # noqa: E402
 from rob_box_voice.core.turn_context import tts_voices  # noqa: E402
 from rob_box_voice.tts_voice_registry import (  # noqa: E402
     PROVIDER_VOICES,
@@ -229,8 +228,3 @@ def test_tts_voices_follow_the_sounding_provider_then_the_parameter_then_the_rob
     assert tts_voices(label) == named_voices_for("minimax"), "нет параметра - провайдер робота по умолчанию"
     param = types.SimpleNamespace(_actual_tts_provider=None, get_parameter=lambda _n: types.SimpleNamespace(value="silero"))
     assert tts_voices(param) == named_voices_for("silero")
-
-
-def test_v1_tier1_runner_takes_the_same_voices_as_v2():
-    node_v1 = types.SimpleNamespace(_actual_tts_provider="yandex")
-    assert Tier1Runner(node_v1).voices() == tts_voices(node_v1) == named_voices_for("yandex")

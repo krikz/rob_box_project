@@ -100,11 +100,9 @@ jobs:
           done
           echo "::group::rob_box_harness"
           # у harness test/ - пакет: importlib-режим, чтобы pytest не положил src/rob_box_harness в sys.path.
-          # test_speaker_memory тянет rob_box_voice.speaker_profiles (трекер дикторов ноды, не ядро) - его гоняет
-          # G-Run Tests в colcon-окружении. asyncio_mode=auto - как у корневого pytest.ini (им harness гоняют всегда).
+          # asyncio_mode=auto - как у корневого pytest.ini (им harness гоняют всегда).
           ( cd src/rob_box_harness && "$VENV/bin/pytest" -v -p no:cacheprovider --import-mode=importlib \
-              -o asyncio_mode=auto test \
-              --ignore=test/test_speaker_memory.py )
+              -o asyncio_mode=auto test )
           echo "::endgroup::"
 
       - name: Dry stand and console from the installed package

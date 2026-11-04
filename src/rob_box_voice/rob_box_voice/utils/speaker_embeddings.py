@@ -72,7 +72,7 @@ IDENTIFY_THRESHOLD: float = 0.72    # cosine similarity to accept a match
 # Issue #2348 / AC3 / issue #1101 — единая точка истины для «мусорных имён».
 # Объединяет noise-токены из dialogue.RegisterSpeakerTool._NOISE_NAMES
 # (LLM иногда передаёт служебное слово из фразы «меня зовут X» вместо X)
-# и INVALID_SPEAKER_NAMES из core.dialogue_helpers (Null/None/undefined
+# и INVALID_SPEAKER_NAMES (rob_box_core.speaker_names; Null/None/undefined
 # приходят из resemblyzer / битых JSON-полей). Здесь, в низкоуровневом
 # модуле записи в БД, валидация повторяется как «второй рубеж»: даже
 # если MCP-тул пропустит мусор (или кто-то вызовет db.register() в обход
@@ -279,7 +279,7 @@ _EPITHET_COLUMNS: Tuple[Tuple[str, str], ...] = (
 def _validate_speaker_name(name: object) -> str:
     """Normalise raw speaker name; ``""`` for junk.
 
-    Аналог ``core.dialogue_helpers.sanitize_speaker_name``, но с
+    Аналог прежнего ``core.dialogue_helpers.sanitize_speaker_name`` (удалён, #4354), но с
     расширенным blacklist'ом (включает русские noise-токены «зовут» /
     «имя» / «меня» из dialogue.RegisterSpeakerTool._NOISE_NAMES,
     issue #1101) и проверкой длины. Совпадает по контракту с

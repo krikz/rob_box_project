@@ -25,7 +25,6 @@ from rob_box_music.choice import DeterministicChooser
 from rob_box_music.model import AudioTrack
 from rob_box_music.render.audio import render_audio
 from rob_box_music.source import SourceAsk, SourceContext, set_cache, source_ask
-from rob_box_voice.core.media_plan_run import _started_text
 
 from .test_engine_session import BPM, _rig
 
@@ -292,9 +291,6 @@ def test_dj_set_rock_goes_through_source_path_and_plays_cache(tmp_path, monkeypa
     assert out.data["source"] == "generated" and out.data["route"].startswith(("cache:", "generate:"))
     assert out.data["source_message"] == "Рок-сет на 3 трека: 2 из сочинённого раньше, остальные допишу по ходу."
     assert "loop(" in dj._owner.played[0].code and dj.running
-    plan = SimpleNamespace(tool_calls=(SimpleNamespace(name="dj_set", arguments={"action": "start"}),),
-                           say_ok="Включаю диджей-сет.")
-    assert _started_text(plan, {**out.data, "theme": "рок"}) == out.data["source_message"]  # фраза кода, не шаблон
 
 
 def test_dj_set_club_goes_suno_first_and_rock_without_key_or_cache_declines(tmp_path):
