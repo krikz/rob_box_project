@@ -31,7 +31,8 @@ from rob_box_core.utterance import Utterance
 from rob_box_dialog import knowledge as kn
 from rob_box_dialog.command import Performance
 from rob_box_dialog.plan.backing import Backing, MusicStop
-from rob_box_dialog.plan.perform import AskReplace, Cancel, PerformBlock, Say, context_block, edit_asks_backing
+from rob_box_dialog.plan.perform import (AskReplace, Cancel, PerformBlock, Say, context_block, edit_asks_backing,
+                                         repeats_said, repeats_whole)
 from rob_box_dialog.plan.plan_events import PlanEvent
 from rob_box_llm.provider import ToolCall, ToolResult
 
@@ -194,13 +195,25 @@ class PerformHost:
     def start(self, perf: Performance, turn_id: str, epoch: int = 0) -> Dict[str, Any]:
         """Новое выступление; идёт другое и у него есть не отданные на звучание сегменты — правка их (MERGE,
         COMPOSITION perform×perform). Всё отдано (звучит последний) — править нечего: прежнее досказывает владелец
-        речи, это — новое выступление за ним (#4318: повторный счёт отклоняли как правку)."""
+        речи, это — новое выступление за ним (#4318: повторный счёт отклоняли как правку). То же выступление целиком,
+        пока есть несказанное, — перезапуск с начала (#4320: правка была бы пустой, старый счёт дочитал бы хвост)."""
         with self._lock:
-            if self.block is not None and not self.block.ended:
-                if self.block.unsaid or not perf.segments:
+            block = self.block
+            if block is not None and not block.ended:
+                if self._restarted(block, perf):
+                    return self._start_locked(perf, turn_id, epoch)
+                if block.unsaid or not perf.segments:
                     return self._edit_locked(perf)
-                self._run.apply(self.block.hand_over(self._clock()))
+                self._run.apply(block.hand_over(self._clock()))
             return self._start_locked(perf, turn_id, epoch)
+
+    def _restarted(self, block: PerformBlock, perf: Performance) -> bool:
+        """Та же просьба целиком, пока у ``block`` есть несказанное (``plan.perform.repeats_whole``): блок
+        перезапущен (:meth:`PerformBlock.restart`) — ``True``, новое выступление начнёт вызывающий."""
+        if not (perf.segments and block.unsaid and repeats_whole(block, perf)):
+            return False
+        self._run.apply(block.restart(self._clock()))
+        return True
 
     def _start_locked(self, perf: Performance, turn_id: str, epoch: int) -> Dict[str, Any]:
         with self._lock:
@@ -215,10 +228,13 @@ class PerformHost:
     def edit(self, perf: Performance, turn_id: str = "", epoch: int = 0) -> Dict[str, Any]:
         """``edit_pending``: правка не начатых сегментов идущего выступления (с какого — :meth:`_edit_locked`).
         Несказанного нет, а правка целиком повторяет сказанное («посчитай ещё раз» с флагом правки) — это новое
-        выступление (#4318), а не отказ ``edit_repeats_said``."""
+        выступление (#4318), а не отказ ``edit_repeats_said``. Несказанное есть, а правка — то же выступление целиком,
+        — перезапуск (#4320), как у :meth:`start`."""
         with self._lock:
             block = self.block
-            if block is not None and not block.ended and not block.unsaid and block.repeats_said(perf):
+            if block is not None and not block.ended and self._restarted(block, perf):
+                return self._start_locked(perf, turn_id, epoch)
+            if block is not None and not block.ended and not block.unsaid and repeats_said(block, perf):
                 self._run.apply(block.hand_over(self._clock()))
                 return self._start_locked(perf, turn_id, epoch)
             return self._edit_locked(perf)

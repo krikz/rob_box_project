@@ -141,5 +141,16 @@ def drop_said(rows: Sequence[Tuple[str, str, str]], said: Sequence[str]) -> List
     return []
 
 
+def same_performance(new: Sequence[str], old: Sequence[str]) -> bool:
+    """Присланные сегменты ``new`` - то же выступление, что ``old``, целиком (#4320: та же просьба посреди идущего):
+    счёт - те же числа по порядку (цифрами или словами, нарезка на сегменты любая), остальное - те же слова (без знаков
+    и регистра)."""
+    if not new or not old:
+        return False
+    if all(is_counting(text) for text in (*new, *old)):
+        return numerals(" ".join(new)) == numerals(" ".join(old))
+    return words(" ".join(new)) == words(" ".join(old))
+
+
 __all__ = ["NUMERAL_GENITIVE", "NUMERAL_SAY", "NUMERAL_WORDS", "drop_said", "is_counting", "is_repeat", "numerals",
-           "said_numbers", "words"]
+           "said_numbers", "same_performance", "words"]

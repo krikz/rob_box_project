@@ -38,8 +38,8 @@ from typing import Any, AsyncIterator, Awaitable, Callable, Iterable, List, Mapp
 
 from rob_box_dialog import knowledge as kn
 from rob_box_dialog.command import (NOT_RUN, Busy, Command, Expression, Invalid, Result, explain, fit_speech,
-                                    form_schema, is_empty, is_query_data, overlong_only, parse, to_args, validate,
-                                    words_only)
+                                    form_schema, is_empty, is_query_data, loud_actions, overlong_only, parse, to_args,
+                                    validate, words_only)
 from rob_box_dialog.command import ToolCall as CommandCall
 from rob_box_dialog.degrade import CommandMode, select_mode
 from rob_box_dialog.speech_channel import FieldChannel, ModeRequest
@@ -253,7 +253,8 @@ def log_line(provider: str, mode: CommandMode, result: Result, verdict: str) -> 
     озвучивается, §4.1: она остаётся только здесь — текстового канала мимо TTS у v1 нет)."""
     cmd = result if isinstance(result, Command) else None
     actions = [a.tool for a in cmd.actions if a.tool not in kn.SPEECH_CHANNEL_TOOLS] if cmd is not None else []
-    dropped = cmd.speech if actions and cmd is not None and cmd.speech else ""
+    # отброшена речь только при громком действии: рядом с тихим (``QUIET_WITH_SPEECH_TOOLS``) она звучит (#4320)
+    dropped = cmd.speech if cmd is not None and cmd.speech and loud_actions(cmd) and actions else ""
     detail = getattr(result, "detail", "") if isinstance(result, Invalid) else ""
     fixes = (("fields_moved", cmd.moved), ("fields_dropped", cmd.dropped)) if cmd is not None else ()
     fixed = "".join(f" {name}={list(fields)}" for name, fields in fixes if fields)
