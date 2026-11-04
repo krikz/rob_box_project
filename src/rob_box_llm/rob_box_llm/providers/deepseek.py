@@ -700,6 +700,9 @@ def _safe_json(raw: Any) -> dict[str, Any]:
         return json.loads(raw)
     except Exception:  # noqa: BLE001 — re-classified below
         pass
+    whole = _object_before_extra_closers(raw)
+    if whole is not None:
+        return whole
 
     # Truncation heuristic — apply only when the input is "JSON-ish"
     # (starts with ``{`` or ``[``) AND lacks a matching closer at the
@@ -725,6 +728,21 @@ def _safe_json(raw: Any) -> dict[str, Any]:
     else:
         _log.warning("Could not parse tool-call arguments JSON: %r", raw)
     return {}
+
+
+def _object_before_extra_closers(raw: str) -> dict | None:
+    """Целый JSON-объект, за которым только лишние закрывающие скобки (n903 марафона-9 04.11: DeepSeek закрыл
+    ``expression`` на одну ``}`` больше — аргументы ``command`` стали ``{}``, ход «Не понял»). Объект уже закрыт
+    сам, хвост из ``}``/``]`` ничего не значит; прочий хвост — не наш случай, ``None``."""
+    try:
+        obj, end = json.JSONDecoder().raw_decode(raw.lstrip())
+    except ValueError:
+        return None
+    tail = raw.lstrip()[end:]
+    if isinstance(obj, dict) and tail.strip() and not tail.strip().strip("}]").strip():
+        _log.warning("tool-call arguments JSON: отброшены лишние закрывающие скобки %r", tail.strip())
+        return obj
+    return None
 
 
 # Issue #1899 — module-level flag set by ``_safe_json`` when the input

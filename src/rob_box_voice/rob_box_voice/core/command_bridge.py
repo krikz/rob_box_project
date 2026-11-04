@@ -209,6 +209,16 @@ def _without_speech_tool(cmd: Command) -> Command:
                    voice=str(args.get("voice") or "").strip() or cmd.voice)
 
 
+def _keep_salvage(fixed: Result, invalid: Invalid) -> Result:
+    """Повтор снова невалиден и исполнить в нём нечего (n903 марафона-9 04.11: на ``speech_with_actions`` модель
+    прислала те же действия без речи, но JSON с лишней ``}`` — ``bad_json``), а у отвергнутой команды допустимые
+    действия были — ход исполняет их (``Invalid.salvage``), речь отвергнутой отброшена, итог скажет код, а не «Не
+    понял». Повтор со своими допустимыми действиями или валидный — как есть."""
+    if isinstance(fixed, Invalid) and not fixed.salvage and invalid.salvage:
+        return replace(fixed, salvage=invalid.salvage)
+    return fixed
+
+
 def to_legacy(result: Result) -> Tuple[str, Tuple[ToolCall, ...], str]:
     """Команда → ``(текст речи, вызовы, вердикт для лога)`` в форме v1-цикла: голая реплика — текстом (авто-TTS ноды),
     команда с действиями, выступлением, голосом реплики или лицом (``expression``) — одним вызовом ``command``
@@ -355,9 +365,11 @@ class CommandModeLLM(LLMProvider):
             self._log(f"{COMPACT_LOG_MARK} {_overlong(invalid)} — прошу компактнее")
         started = time.monotonic()
         retry = without_reasoning(await ask([*msgs, *retry_messages(response, invalid, query_done(msgs))]))
-        fixed = self._judged(retry, available)
+        fixed = _keep_salvage(self._judged(retry, available), invalid)
         self._log(f"{COMMAND_LOG_MARK} retry={attempt} violations={[v.reason for v in invalid.all]} "
-                  f"→ verdict={to_legacy(fixed)[2]} ({(time.monotonic() - started) * 1000:.0f} мс)")
+                  f"→ verdict={to_legacy(fixed)[2]} ({(time.monotonic() - started) * 1000:.0f} мс)"
+                  + (f" salvage={[a.tool for a in fixed.salvage]}" if isinstance(fixed, Invalid) and fixed.salvage
+                     else ""))
         return retry, fixed
 
     def _fitted(self, response: LLMResponse, available: Iterable[str], invalid: Invalid) -> Result:
