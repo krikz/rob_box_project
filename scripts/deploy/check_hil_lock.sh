@@ -18,22 +18,35 @@ set -uo pipefail
 LOCK="${HIL_LOCK:-/tmp/hil.lock}"
 [ "$#" -gt 0 ] || { echo "usage: $0 <команда до Main Pi>..." >&2; exit 2; }
 
-out=$("$@" "if [ -e '$LOCK' ]; then echo HIL_LOCKED; cat '$LOCK'; else echo HIL_FREE; fi" 2>&1)
+errf=$(mktemp)
+trap 'rm -f "$errf"' EXIT
+# stderr (ssh: «Permanently added ... known hosts») отдельно от stdout: ответ Pi
+# читаем только из stdout и ищем маркер построчно.
+out=$("$@" "if [ -e '$LOCK' ]; then echo HIL_LOCKED; cat '$LOCK'; else echo HIL_FREE; fi" 2>"$errf")
 rc=$?
-case "$out" in
-    HIL_FREE*)
+err=$(cat "$errf")
+if grep -qx 'HIL_LOCKED' <<<"$out"; then
+    verdict=locked
+elif grep -qx 'HIL_FREE' <<<"$out"; then
+    verdict=free
+else
+    verdict=unknown
+fi
+case "$verdict" in
+    free)
         echo "✅ HIL выключен: замка $LOCK на Main Pi нет"
         exit 0
         ;;
-    HIL_LOCKED*)
-        echo "::error::На Main Pi включён HIL (замок $LOCK): ${out#HIL_LOCKED}"
+    locked)
+        details=$(sed -n '/^HIL_LOCKED$/,$p' <<<"$out" | tail -n +2)
+        echo "::error::На Main Pi включён HIL (замок $LOCK): $details"
         echo "❌ Деплой остановлен до каких-либо действий на Pi. ros2-control и lslidar сейчас"
         echo "   намеренно выключены, стек навигации едет по Gazebo. Деплой поднял бы моторы."
         echo "   Сначала: scripts/hil/hil.sh off  (план docs/research/2026-11-04-hil-robot-on-gazebo-data.md §8)"
         exit 1
         ;;
     *)
-        echo "::error::Не удалось проверить замок HIL на Main Pi (rc=$rc): $out"
+        echo "::error::Не удалось проверить замок HIL на Main Pi (rc=$rc): ${out:-<пусто>} ${err:+| stderr: $err}"
         exit 2
         ;;
 esac

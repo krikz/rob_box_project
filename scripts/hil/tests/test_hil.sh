@@ -205,6 +205,21 @@ check "check_hil_lock: замок → 1 и текст про hil.sh off" '[ "$rc
 mk_probe 'echo "ssh: connect to host 10.1.1.10 port 22: No route"; exit 255'
 out=$(bash "$LOCKCHK" "$WORK/bin/probe"); rc=$?
 check "check_hil_lock: нет ответа → 2" '[ "$rc" -eq 2 ]'
+mk_probe 'echo "Warning: Permanently added x (ECDSA) to the list of known hosts." >&2; echo HIL_FREE'
+out=$(bash "$LOCKCHK" "$WORK/bin/probe"); rc=$?
+check "check_hil_lock: stderr-предупреждение known hosts + HIL_FREE → 0" '[ "$rc" -eq 0 ]'
+mk_probe 'echo "Warning: Permanently added x (ECDSA) to the list of known hosts."; echo HIL_FREE'
+out=$(bash "$LOCKCHK" "$WORK/bin/probe"); rc=$?
+check "check_hil_lock: предупреждение строкой в stdout + HIL_FREE → 0" '[ "$rc" -eq 0 ]'
+mk_probe 'echo "Warning: Permanently added x (ECDSA)." >&2; printf "HIL_LOCKED\nby shifu\n"'
+out=$(bash "$LOCKCHK" "$WORK/bin/probe"); rc=$?
+check "check_hil_lock: предупреждение + HIL_LOCKED → 1" '[ "$rc" -eq 1 ] && grep -q "by shifu" <<<"$out"'
+mk_probe 'exit 0'
+out=$(bash "$LOCKCHK" "$WORK/bin/probe"); rc=$?
+check "check_hil_lock: пустой вывод → 2" '[ "$rc" -eq 2 ]'
+mk_probe 'echo "Warning: only stderr" >&2'
+out=$(bash "$LOCKCHK" "$WORK/bin/probe"); rc=$?
+check "check_hil_lock: только stderr без маркера → 2" '[ "$rc" -eq 2 ]'
 # Настоящая проверка на «Pi»: команда — bash -c.
 mk_probe 'exec bash -c "$1"'
 out=$(HIL_LOCK="$WORK/tmp/hl" bash "$LOCKCHK" "$WORK/bin/probe"); rc=$?
