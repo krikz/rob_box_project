@@ -615,6 +615,7 @@ def validate(cmd: Result, available_tools: Collection[str], session: Any = None,
         return cmd
     form = form or current_form()
     cmd = _drop_closed_passed(_drop_cosmetic_voice(_fit_soft_args(_drop_nested_extras(cmd)), form, busy), form)
+    cmd = _drop_replaced_stops(cmd)  # stop+start одного тула - смена, не два действия класса (#4347)
     # подложка: сначала вид без просьбы о музыке теряет её, потом путь пения подгоняет остальное;
     # число лиц по сегментам правит другое поле выступления и идёт последним, порядок с подложкой не важен
     cmd = _fit_sing_backing(_drop_default_backing(cmd, form), form)
@@ -679,6 +680,25 @@ def _extra_args_droppable(call: ToolCall) -> bool:
     поле (``{"animated": true}``) - вызов без смысла, его отвергает схема, как раньше."""
     meaning = kn.DROPPABLE.tool_args.get(call.tool, ())
     return any(name in call.args for name in meaning)
+
+
+def _drop_replaced_stops(cmd: Command) -> Command:
+    """Команда без стопа музыки, который заменяет старт того же тула ПОЗЖЕ в этой команде
+    (``knowledge.START_REPLACES_STOP``: ``dj_set start`` сам гасит идущий сет). Живой n604 04.11 (#4347): «уводи в
+    сторону рока» под сетом - ``dj_set stop`` + ``dj_set start style=rock``, два действия ``action.media`` - отказ
+    ``single_action_class``, а повтор вернул один стоп: музыка выключена, рока нет. Пара - это смена темы, решает код:
+    стоп уходит в ``dropped``, старт остаётся. Стоп без старта того же тула (и старт ДО стопа) не трогается."""
+    actions, notes = [], []
+    for i, call in enumerate(cmd.actions):
+        later = cmd.actions[i + 1:]
+        if kn.stops_music(call.tool, call.args) and any(
+                a.tool == call.tool and kn.replaces_stop(a.tool, a.args) for a in later):
+            notes.append(f"actions[{i}].{call.tool}.stop")
+            continue
+        actions.append(call)
+    if not notes:
+        return cmd
+    return replace(cmd, actions=tuple(actions), dropped=(*cmd.dropped, *notes))
 
 
 def _drop_nested_extras(cmd: Command) -> Command:

@@ -1402,6 +1402,29 @@ GEN_WAIT = ByData((GEN_PENDING_FIELD, GEN_BRIDGE_FIELD), {
 MUSIC_STOP_TOOLS: Mapping[str, Optional[Tuple[str, str]]] = MappingProxyType({
     "stop_music": None, "dj_set": ("action", "stop"),
 })
+#: Старт, что сам заменяет играющее ЭТИМ ЖЕ тулом: ``dj_set start`` под сетом гасит старый сет (``stop
+#: reason=new_set``). Стоп того же тула перед таким стартом в ОДНОЙ команде лишний - пара stop+start есть смена темы
+#: (#4347, живой n604 04.11: «уводи в сторону рока» -> ``dj_set stop`` + ``dj_set start style=rock`` -> отказ
+#: ``single_action_class``, повтор вернул один стоп, рока нет). Валидатор (``command._drop_replaced_stops``)
+#: выбрасывает такой стоп, а не отвергает команду. Тул -> (аргумент, значение старта).
+START_REPLACES_STOP: Mapping[str, Tuple[str, str]] = MappingProxyType({"dj_set": ("action", "start")})
+
+
+def stops_music(tool: str, args: Mapping[str, Any]) -> bool:
+    """Вызов гасит музыку (:data:`MUSIC_STOP_TOOLS`): ``stop_music`` - любой, ``dj_set`` - ``action=stop``. ``args`` -
+    аргументы вызова или данные результата (аргументы лежат в них поверх ответа тула). Единственное место признака."""
+    if tool not in MUSIC_STOP_TOOLS:
+        return False
+    marker = MUSIC_STOP_TOOLS[tool]
+    return marker is None or args.get(marker[0]) == marker[1]
+
+
+def replaces_stop(tool: str, args: Mapping[str, Any]) -> bool:
+    """Вызов - старт, что сам гасит играющее этим тулом (:data:`START_REPLACES_STOP`)."""
+    marker = START_REPLACES_STOP.get(tool)
+    return marker is not None and args.get(marker[0]) == marker[1]
+
+
 STOPPED_EARLIER_FIELD = "stopped_earlier"
 #: Метка исхода в ``recent_actions`` снимка: действие исполнено ЭТИМ ходом до вызова модели (остаток фразы после ясного
 #: стопа - ``turn._tier1_then_rest``: «хватит, борис уже уснул под неё», n709): модель видит, что музыку уже
