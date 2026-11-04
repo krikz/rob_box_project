@@ -78,7 +78,8 @@ diff_drive_controller:
     # Odometry Configuration
     # ───────────────────────────────────────────────────────────────
     # Wheel odometry публикует TF odom → base_footprint
-    # ICP odometry использует это как guess и публикует icp_odom → base_footprint
+    # ICP odometry использует это как guess и публикует поправку icp_odom → odom
+    # (замер /tf на Main Pi 04.11: odom→base_footprint — только diff_drive_controller)
     # RTABMAP использует icp_odom (скорректированную лидаром одометрию)
     enable_odom_tf: true
 
@@ -86,9 +87,11 @@ diff_drive_controller:
     odom_frame_id: odom
     base_frame_id: base_footprint
 
-    # Для duty-cycle привода без position feedback одометрия должна идти от команд,
-    # иначе odom→base_footprint залипает на нуле и ломает guess для ICP.
-    # Т.е. одометрия считается по КОМАНДАМ (cmd_vel), а не по энкодерам.
+    # true — одометрия интегрирует КОМАНДЫ cmd_vel (так с 2026-03-09, 95375a19b).
+    # false — интегрирует state velocity колёс: vesc_nexus ≥ 2.1.0 считает её из eRPM
+    # холлов (ERPM / pole_pairs / gear_ratio, рад/с колеса). На роботе переключается
+    # без правки файла: DIFF_DRIVE_OPEN_LOOP=false в .env Main Pi
+    # (scripts/ros2_control/render_controller_config.py). TF-издатель тот же.
     open_loop: true
 
     # Публиковать одометрию

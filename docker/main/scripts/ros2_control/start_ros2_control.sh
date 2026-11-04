@@ -149,6 +149,16 @@ fi
 
 echo -e "${GREEN}✅ Controller config found${NC}"
 
+# Источник колёсной одометрии: DIFF_DRIVE_OPEN_LOOP=true|false переопределяет
+# open_loop diff_drive_controller (false = интеграл eRPM холлов VESC).
+# Пусто/не задано — конфиг как есть, без копии.
+if ! CONTROLLER_CONFIG=$(python3 /scripts/render_controller_config.py \
+        "${CONTROLLER_CONFIG}" /tmp/controller_manager.rendered.yaml); then
+    echo -e "${RED}❌ ERROR: bad DIFF_DRIVE_OPEN_LOOP='${DIFF_DRIVE_OPEN_LOOP}'${NC}"
+    exit 1
+fi
+echo -e "   DIFF_DRIVE_OPEN_LOOP: ${DIFF_DRIVE_OPEN_LOOP:-<yaml>} → ${CONTROLLER_CONFIG}"
+
 # ═══════════════════════════════════════════════════════════════
 # 5. Запуск Controller Manager
 # ═══════════════════════════════════════════════════════════════
