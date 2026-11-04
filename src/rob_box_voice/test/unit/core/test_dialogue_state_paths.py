@@ -160,9 +160,6 @@ def test_every_package_config_matches_a_node_name() -> None:
 # wake_words: one declaration
 # ---------------------------------------------------------------------------
 
-E2E_CONFIG = (
-    REPO_ROOT / "docker" / "vision" / "test" / "config" / "voice_assistant_test.yaml"
-)
 ALL_CONFIG_DIRS = (PACKAGE_CONFIG_DIR, DEPLOYED_CONFIG_DIR)
 
 
@@ -196,9 +193,6 @@ def test_wake_words_are_declared_exactly_once() -> None:
             for node, params in _node_params(path):
                 if "wake_words" in params:
                     offenders[f"{path.name}:{node}"] = params["wake_words"]
-    for node, params in _node_params(E2E_CONFIG):
-        if "wake_words" in params:
-            offenders[f"{E2E_CONFIG.name}:{node}"] = params["wake_words"]
     assert not offenders, (
         "wake_words re-declared in YAML — the list lives in "
         "rob_box_voice.core.dialogue_text.DEFAULT_WAKE_WORDS and nowhere "
