@@ -87,7 +87,7 @@ def test_log_composition_reads_every_axis_from_started_lines(tmp_path):
     other = dict(comp, pad="other")
     lines = []
     for n, c in enumerate((comp, other, comp)):
-        lines.append(f"[mcp_server-10] [INFO] [17912121{n}0.1] [mcp_server]: [set v2] s трек {n} started "
+        lines.append(f"[mcp_server-10] [INFO] [17912121{n}0.1] [mcp_server]: [set] s трек {n} started "
                      f"track_id=s:0{n}:A:ab form_end_beat=1.0 source=theme "
                      f"composition={json.dumps(c, ensure_ascii=False)}")
     log = tmp_path / "set1.full.log"

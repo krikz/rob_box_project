@@ -9,9 +9,9 @@ from unittest.mock import patch
 
 import pytest
 
-from rob_box_mcp_tools.engine import tools_v2
+from rob_box_mcp_tools.engine import engine_tools
 from rob_box_mcp_tools.engine.classic import ClassicPick
-from rob_box_mcp_tools.engine.tools_v2 import NOT_A_SET_REQUEST, club_theme, lead_for, set_refusal
+from rob_box_mcp_tools.engine.engine_tools import NOT_A_SET_REQUEST, club_theme, lead_for, set_refusal
 
 from ._ros_stubs import RosStubs
 from .test_engine_classic import _picker
@@ -87,13 +87,13 @@ def test_club_order_on_an_instrument_plays_its_synth():
     rig = _rig()
     _dj, req = _tools(rig)
     built = []
-    real = tools_v2.compose
+    real = engine_tools.compose
 
     def spy(*args, **kwargs):
         built.append(real(*args, **kwargs))
         return built[-1]
 
-    with patch.object(tools_v2, "compose", spy):
+    with patch.object(engine_tools, "compose", spy):
         result = req.execute(intent="track", text="сыграй на арфе", heard_text="Робот, сыграй что-нибудь на арфе")
     assert result.success and result.data["instrument_played"] == "harp"
     assert built[0].parts["lead"].synth_or_sample == "karp"

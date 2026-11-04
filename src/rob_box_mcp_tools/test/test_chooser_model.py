@@ -216,15 +216,15 @@ def test_shadow_enabled_by_env_with_key_builds_the_provider():
 
 def test_request_music_tool_builds_its_chooser_from_env(monkeypatch):
     """Потребитель шва: ``RequestMusicTool`` собирает ``PieceChain`` с выбиралкой из env."""
-    from rob_box_mcp_tools.engine import tools_v2
+    from rob_box_mcp_tools.engine import engine_tools
 
     monkeypatch.setenv(cm.SHADOW_ENV, "jev")
-    tool = tools_v2.RequestMusicTool(None, None, object(), lambda ids: {}, records=lambda ids: {},
-                                     words=lambda w: None, classic=lambda *a, **k: None)
+    tool = engine_tools.RequestMusicTool(None, None, object(), lambda ids: {}, records=lambda ids: {},
+                                         words=lambda w: None, classic=lambda *a, **k: None)
     assert isinstance(tool._pieces._chooser._model, cm.ShadowModel)
     monkeypatch.delenv(cm.SHADOW_ENV)
-    plain = tools_v2.RequestMusicTool(None, None, object(), lambda ids: {}, records=lambda ids: {},
-                                      words=lambda w: None, classic=lambda *a, **k: None)
+    plain = engine_tools.RequestMusicTool(None, None, object(), lambda ids: {}, records=lambda ids: {},
+                                          words=lambda w: None, classic=lambda *a, **k: None)
     assert plain._pieces._chooser._model is None
 
 
@@ -440,13 +440,13 @@ def test_unknown_chooser_mode_is_deterministic_with_a_warning():
 
 
 def test_request_music_tool_runs_the_chain_by_mode(monkeypatch):
-    from rob_box_mcp_tools.engine import tools_v2
+    from rob_box_mcp_tools.engine import engine_tools
 
-    tool = tools_v2.RequestMusicTool(None, None, object(), lambda ids: {}, records=lambda ids: {},
-                                     words=lambda w: None, classic=lambda *a, **k: None, chooser_mode="chain")
+    tool = engine_tools.RequestMusicTool(None, None, object(), lambda ids: {}, records=lambda ids: {},
+                                         words=lambda w: None, classic=lambda *a, **k: None, chooser_mode="chain")
     assert isinstance(tool._pieces._chooser._model, cm.ChainModel)
-    default = tools_v2.RequestMusicTool(None, None, object(), lambda ids: {}, records=lambda ids: {},
-                                        words=lambda w: None, classic=lambda *a, **k: None)
+    default = engine_tools.RequestMusicTool(None, None, object(), lambda ids: {}, records=lambda ids: {},
+                                            words=lambda w: None, classic=lambda *a, **k: None)
     assert default._pieces._chooser._model is None  # библиотечный умолчательный - код; chain включает yaml
 
 

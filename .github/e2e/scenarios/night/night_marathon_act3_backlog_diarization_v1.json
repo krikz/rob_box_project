@@ -254,7 +254,7 @@
       "text": "Робот, всё, спасибо, выключай музыку, курьерша уехала.",
       "patterns": [
         "✅ Инструмент stop_music выполнен успешно",
-        "🎵 \\[music v2\\] stop track_id=[a-z0-9]\\S* reason=user_stop",
+        "🎵 \\[music\\] stop track_id=[a-z0-9]\\S* reason=user_stop",
         "📊 \\[turn\\] .*stage=done status=finished"
       ],
       "acceptance": {
@@ -273,7 +273,7 @@
       },
       "skip_when": {
         "reason": "NO_MUSIC_N310",
-        "log": "\\[music v2\\] (started|stop|finished) track_id=",
+        "log": "\\[music\\] (started|stop|finished) track_id=",
         "deck": "idle"
       },
       "music_compare": "stopped",

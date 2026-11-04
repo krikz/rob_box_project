@@ -11,7 +11,7 @@ from rob_box_llm.provider import LLMResponse, ToolCall
 from rob_box_mcp_tools.engine.dj_lines import TransitionLines, latin_fold
 from rob_box_mcp_tools.engine.reasoner import SetPlanBox, SetReasoner
 from rob_box_mcp_tools.engine.search import ThemeHits
-from rob_box_mcp_tools.engine.tools_v2 import DjSetTool
+from rob_box_mcp_tools.engine.engine_tools import DjSetTool
 from rob_box_music import dj_line as dl
 from rob_box_music.arrange.compose import upcoming_hooks
 from rob_box_music.set_plan import seeded_plan

@@ -12,7 +12,7 @@ import pytest
 from rob_box_core.tool_catalog import llm_visible_tools, operator_visible_tools
 from rob_box_harness.core.tool_registry import ToolRegistry
 from rob_box_mcp_tools.engine.search import ThemeHits
-from rob_box_mcp_tools.engine.tools_v2 import DjSetTool, RequestMusicTool
+from rob_box_mcp_tools.engine.engine_tools import DjSetTool, RequestMusicTool
 from rob_box_music import knowledge as kn
 from rob_box_voice.core.music_player_state import MusicEvent, MusicEventLog
 
@@ -68,7 +68,7 @@ def test_4060_order_words_are_not_the_title_of_the_club_track():
 
 
 def test_track_facts_of_a_piece_name_the_catalog_title_and_source():
-    from rob_box_mcp_tools.engine.tools_v2 import track_facts
+    from rob_box_mcp_tools.engine.engine_tools import track_facts
 
     staged = {"title": "Toccata", "bpm": 112, "key": "D minor", "instrument_played": "organ",
               "played": {"title": "Toccata", "composer": "Louis Vierne", "source": "score"}}

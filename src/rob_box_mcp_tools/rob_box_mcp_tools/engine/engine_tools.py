@@ -1,6 +1,6 @@
 """Узкие MCP-тулы движка v2 (ADR-0149 §5.1): ``dj_set(start|stop)`` (PR-5), ``request_music`` (PR-6).
 
-Регистрируются ``mcp_server._attach_player_owner_v2``; старый путь (``compose_music`` & Co.)
+Регистрируются ``mcp_server._attach_player_owner``; старый путь (``compose_music`` & Co.)
 удалён вместе с флагом выбора движка (PR-13/PR-15).
 Параметры трека (темп, тоника, синты, сид) тулы не принимают: тема → мелодии по её словам
 (``engine.search.theme_search``, #3399, #3427) → ``theme.seeded_profile``
@@ -734,7 +734,7 @@ class DjSetTool(MCPTool):
     def _transition_lines(self, persona: Optional[str], logger: Any, missing: Tuple[str, ...] = ()) -> TransitionLines:
         """Факты и реплики сета — одни правила для сета синтезом и сета из генерации (#4006): факты (мелодия трека,
         план дальше, ``missing`` — не найденное) — всегда, в снимок и ``status``; реплика — если включена параметром
-        (``music_v2_dj_lines``) и есть чем говорить (``speak_text`` робота); раскраска — LLM ризонера (его breaker)."""
+        (``music_dj_lines``) и есть чем говорить (``speak_text`` робота); раскраска — LLM ризонера (его breaker)."""
         speak = self._speak if self._lines else None
         ask = self._reasoner.ask if self._reasoner.enabled and speak is not None else None
         return TransitionLines(speak, titles=self._titles, ask=ask, persona=persona, missing=missing,

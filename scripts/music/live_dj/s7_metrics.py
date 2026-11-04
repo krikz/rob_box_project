@@ -2,7 +2,7 @@
 """ADR-0153 S7: метрики записей стилей ТЕМ ЖЕ методом, что профили эталонов (07.10, ``style_profile.py``).
 
 Запись ``s7_<ключ>.wav`` (``s7_styles.sh``) режется с начала трека 1 на ``--seconds`` (старт — первый звук записи,
-сверяется с ROS-штампом ``[music v2] started`` в ``<ключ>.full.log``), декодируется ffmpeg в 16 кГц стерео s16 (как
+сверяется с ROS-штампом ``[music] started`` в ``<ключ>.full.log``), декодируется ffmpeg в 16 кГц стерео s16 (как
 ``prep.sh`` эталонов), окна 20 с считаются функцией ``win_metrics`` эталонов (полосы низ <150 / середина / верх,
 crest, LR, side, онсеты, темп тремя методами), свинг — ``swing_from`` эталонов, но с темпом из лога робота (ADR-0153
 §5 S2, вывод отчёта эталонов: авто-темп ненадёжен). Громкость: σ по минутам, ebur128 (LUFS/LRA), пик.
@@ -70,7 +70,7 @@ def parse_log(path):
     txt = open(path, encoding="utf-8", errors="replace").read()
     out = {"tracks": []}
     started = (
-        r"\[[A-Z]+\] \[(\d+\.\d+)\] \[mcp_server\]: \S+ \[music v2\] started (track_id=\S+)"
+        r"\[[A-Z]+\] \[(\d+\.\d+)\] \[mcp_server\]: \S+ \[music\] started (track_id=\S+)"
         r".*?late_beats=([\d.]+) bpm=([\d.]+)"
     )
     for m in re.finditer(started, txt):
@@ -91,7 +91,7 @@ def parse_log(path):
             except ValueError:
                 out["tracks"][i]["composition_raw"] = js[:400]
     out["stt"] = re.findall(r"STT: (.*)", txt)[:4]
-    out["rejected"] = len(re.findall(r"\[music v2\] rejected", txt))
+    out["rejected"] = len(re.findall(r"\[music\] rejected", txt))
     out["dj_auto"] = txt.count("DJ_AUTO")
     return out
 
@@ -218,7 +218,7 @@ def main():
         path = os.path.join(a.folder, name)
         log = parse_log(os.path.join(a.folder, f"{key}.full.log"))
         if not log["tracks"]:
-            res[key] = dict(error="нет [music v2] started в логе", log=log)
+            res[key] = dict(error="нет [music] started в логе", log=log)
             print(key, "нет трека в логе", flush=True)
             continue
         sr, x = read_wav(path)

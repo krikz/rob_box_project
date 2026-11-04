@@ -67,7 +67,7 @@ from .engine.renardo_runtime import RenardoRuntime
 from .engine.speech_duck import TICK_S, SpeechDuck, VoiceSource, duck_controls
 from .engine.reasoner import DEADLINE_S as V2_REASONER_DEADLINE_S, SetReasoner
 from .engine.request_slots import harness_ask
-from .engine.tools_v2 import DjSetTool, EditMusicTool, GenerateMusicTool, RequestMusicTool, music_busy
+from .engine.engine_tools import DjSetTool, EditMusicTool, GenerateMusicTool, RequestMusicTool, music_busy
 from .registry import MCPToolRegistry
 from .tools import (
     NavigateToWaypointTool,
@@ -188,9 +188,9 @@ def _teed_events(publish: Callable[[str], None], log: MusicEventLog) -> Callable
 
 
 def _set_reasoner(node: Any) -> SetReasoner:
-    """PR-10: ризонер плана сета по параметрам ноды; ``music_v2_reasoner: false`` — ноль вызовов LLM."""
-    return SetReasoner(enabled=bool(node.get_parameter("music_v2_reasoner").value),
-                       deadline_s=float(node.get_parameter("music_v2_reasoner_deadline_s").value),
+    """PR-10: ризонер плана сета по параметрам ноды; ``music_reasoner: false`` — ноль вызовов LLM."""
+    return SetReasoner(enabled=bool(node.get_parameter("music_reasoner").value),
+                       deadline_s=float(node.get_parameter("music_reasoner_deadline_s").value),
                        logger=node.get_logger())
 
 
@@ -222,7 +222,7 @@ def _song_studio(node: Any, events: Any) -> Optional[SongStudio]:
 def _play_cached(node: Any) -> Any:
     """Шов «сыграть трек кэша» для внутренних исполнителей (путь, песня, кавер, сет; ADR-0158 PR-9): функция
     ``play_library_track`` на кэше ноды, а не тул по реестру. Кэш поднимается позже движка — читаем лениво.
-    ``hold`` — мост ожидания песни (петля с кроссфейдом через ``BridgeHold``, ``tools_v2.hold_start``)."""
+    ``hold`` — мост ожидания песни (петля с кроссфейдом через ``BridgeHold``, ``engine_tools.hold_start``)."""
     def play(track_id: str, hold: Any = None) -> Any:
         library = getattr(node, "_generated_music_library", None)
         if library is None:
@@ -279,7 +279,7 @@ def _music_level_step(node: Any) -> Callable[[str], Any]:
     return step
 
 
-def _attach_player_owner_v2(node: Any, runtime: Any) -> Optional[PlayerOwner]:
+def _attach_player_owner(node: Any, runtime: Any) -> Optional[PlayerOwner]:
     """ADR-0149 §9, PR-4b — владелец плеера v2 (с PR-13b — единственный музыкальный путь).
 
     ``PlayerOwner`` — единственный писатель ``/voice/music/state`` и
@@ -291,7 +291,7 @@ def _attach_player_owner_v2(node: Any, runtime: Any) -> Optional[PlayerOwner]:
     if runtime is None:
         node.get_logger().error("❌ RenardoRuntime не создан — музыкальный движок v2 выключен")
         return None
-    latency = float(node.get_parameter("music_v2_clock_latency").value)
+    latency = float(node.get_parameter("music_clock_latency").value)
     event_qos = QoSProfile(reliability=ReliabilityPolicy.RELIABLE, history=HistoryPolicy.KEEP_LAST, depth=10)
     node.music_event_pub = node.create_publisher(String, MUSIC_EVENT_TOPIC, event_qos)
     adapter = RenardoAdapter(runtime.context, runtime.known_synth_names, runtime.send_osc, latency_s=latency)
@@ -309,8 +309,8 @@ def _attach_player_owner_v2(node: Any, runtime: Any) -> Optional[PlayerOwner]:
     history = MusicHistory(tools_db_path())  # music_history: хуки и оси недавних сетов переживают перезапуск (I17, #3399)
     history.announce(node.get_logger())
     dj_set = DjSetTool(node, owner, confirm=confirm, reasoner=_set_reasoner(node), speak=_speaker(node),
-                       history=history, tracks_dir=str(node.get_parameter("music_v2_tracks_dir").value),
-                       lines=bool(node.get_parameter("music_v2_dj_lines").value))
+                       history=history, tracks_dir=str(node.get_parameter("music_tracks_dir").value),
+                       lines=bool(node.get_parameter("music_dj_lines").value))
     node.registry.register(dj_set)  # PR-5: сет v2 — SetSession поверх владельца
     node._dj_set_tool = dj_set  # стоп деки закрывает и сет (MCPServer._stop_deck)
     cover = _cover_maker(node)  # PR-4: кавер пьесы; его баланс KIE — и сету из генерации
@@ -318,7 +318,7 @@ def _attach_player_owner_v2(node: Any, runtime: Any) -> Optional[PlayerOwner]:
     # PR-6: одиночный club-трек v2; PR-11: classic-песня v2 (мелодия по названию)
     # ADR-0157 PR-2: одиночная пьеса читает и пишет ту же music_history (свежесть пьес между заказами)
     request = RequestMusicTool(node, owner, dj_set, confirm=confirm, history=history,
-                               tracks_dir=str(node.get_parameter("music_v2_tracks_dir").value),
+                               tracks_dir=str(node.get_parameter("music_tracks_dir").value),
                                chooser_mode=str(node.get_parameter("music_chooser").value),
                                slots_ask=harness_ask(log=node.get_logger),  # #3609: LLM-разбор фразы в слоты
                                # ADR-0158 PR-3: кэш генераций поднимается позже (_register_gen_library_tools) —
@@ -452,15 +452,15 @@ class MCPServer(Node):
         # ADR-0149: владелец плеера v2 (engine/player_owner.py) — единственный писатель
         # /voice/music/state и /voice/music/event.
         # Clock.latency v2 (#3328): 0.5 с — late-бандлов 250/мин → 0 (PR-2/PR-4 замеры).
-        self.declare_parameter("music_v2_clock_latency", V2_CLOCK_LATENCY_S)
+        self.declare_parameter("music_clock_latency", V2_CLOCK_LATENCY_S)
         # ADR-0149 PR-10: ризонер плана сета (В1 MiniMax). §12 В2 (решение Шифу 06.10): реплика диджея на
         # каждом переходе — факты из плана, LLM ризонера раскрашивает, иначе шаблон; музыку не трогает.
-        # Старый ключ music_v2_hype_line (выкрик один раз за сет) больше не читается.
-        self.declare_parameter("music_v2_reasoner", True)
-        self.declare_parameter("music_v2_reasoner_deadline_s", V2_REASONER_DEADLINE_S)
-        self.declare_parameter("music_v2_dj_lines", True)
+        # Старый ключ music_hype_line (выкрик один раз за сет) больше не читается.
+        self.declare_parameter("music_reasoner", True)
+        self.declare_parameter("music_reasoner_deadline_s", V2_REASONER_DEADLINE_S)
+        self.declare_parameter("music_dj_lines", True)
         # ADR-0152 §2.3: полная модель каждого трека сета — <track_id>.json (ротация); "" — не писать.
-        self.declare_parameter("music_v2_tracks_dir", "/data/music_v2/tracks")
+        self.declare_parameter("music_tracks_dir", "/data/music_v2/tracks")
         # ADR-0157 PR-7 (#3564): кто выбирает пьесу при неоднозначном заказе - режим как у провайдеров LLM/STT/TTS
         # (параметр ноды, не env): deterministic | jev | chain (Jev 900 мс → LLM 2 с → кубик кода; решение Шифу 13.10).
         self.declare_parameter("music_chooser", CHOOSER_DEFAULT_MODE)
@@ -566,7 +566,7 @@ class MCPServer(Node):
         # получает последний снимок, а не «ничего не играет» до тика.
         # Подписчики обязаны подписываться тоже TRANSIENT_LOCAL.
         self.music_state_pub = self.create_publisher(String, MUSIC_STATE_TOPIC, tools_qos)
-        self._player_owner = _attach_player_owner_v2(self, getattr(self, "_renardo_runtime", None))
+        self._player_owner = _attach_player_owner(self, getattr(self, "_renardo_runtime", None))
         self._speech_duck = _attach_speech_duck(self, getattr(self, "_renardo_runtime", None))
 
         # Subscriber для запросов на выполнение
@@ -1020,7 +1020,7 @@ class MCPServer(Node):
         """Регистрирует ``music_library`` — один узкий тул над кэшем генераций (graceful degradation).
 
         Новый узкий ``generate_music`` (ADR-0158 PR-3) регистрируется рядом с
-        ``request_music`` в ``_attach_player_owner_v2``: он просьба к чойсеру пути.
+        ``request_music`` в ``_attach_player_owner``: он просьба к чойсеру пути.
 
         Failure modes (each disables only music_library, Renardo keeps working):
             * Module import failed                              → log + return

@@ -2,7 +2,7 @@
 
 Расхождения сверки, которые шли от стенда, а не от модели:
 
-* музыка (n312, n511, n602, n708, n709, n712): фейковый плеер не писал строк владельца ``🎵 [music v2] started`` /
+* музыка (n312, n511, n602, n708, n709, n712): фейковый плеер не писал строк владельца ``🎵 [music] started`` /
   ``stop track_id=… reason=user_stop``, по которым шаг судит харнесс; поиск в библиотеке включал музыку;
 * память акта 10 (n1001, n1003, n1004, n1008, n1009): акты 2b/2c стирали каст и память акта 2 (живой марафон стирает
   e2e-БД один раз, актом ``first``, #3972), и в акте 10 голос Саши был «unknown»; раздела ``speaker_memory`` хоста
@@ -35,8 +35,8 @@ from rob_box_voice.core import command_bridge  # noqa: E402
 from rob_box_voice.core.dialog_v2_ports import CallCounter, Counted  # noqa: E402
 
 #: Паттерн шагов стопа марафона (``gen_night_marathon``): стоп с НАСТОЯЩИМ id трека и причиной человека.
-STOP_PATTERN = re.compile(r"🎵 \[music v2\] stop track_id=[a-z0-9]\S* reason=user_stop")
-STARTED_PATTERN = re.compile(r"🎵 \[music v2\] started track_id=")
+STOP_PATTERN = re.compile(r"🎵 \[music\] stop track_id=[a-z0-9]\S* reason=user_stop")
+STARTED_PATTERN = re.compile(r"🎵 \[music\] started track_id=")
 
 
 def marathon_step(act: str, label: str) -> dict:
@@ -108,13 +108,13 @@ def say(text: str) -> dict:
 def test_music_owner_lines_are_the_formats_of_the_real_player_and_set():
     """Строки фейкового плеера сверены с источниками: поменяется формат у владельца - тест красный."""
     pairs = [
-        ("rob_box_mcp_tools/rob_box_mcp_tools/engine/player_owner.py", '🎵 [music v2] started track_id={track_id} "'),
+        ("rob_box_mcp_tools/rob_box_mcp_tools/engine/player_owner.py", '🎵 [music] started track_id={track_id} "'),
         ("rob_box_mcp_tools/rob_box_mcp_tools/engine/player_owner.py",
-         "🎵 [music v2] stop track_id={last} reason={reason}"),
-        ("rob_box_mcp_tools/rob_box_mcp_tools/engine/session.py", "🎧 [set v2] {self.set_id} stop reason={reason}"),
+         "🎵 [music] stop track_id={last} reason={reason}"),
+        ("rob_box_mcp_tools/rob_box_mcp_tools/engine/session.py", "🎧 [set] {self.set_id} stop reason={reason}"),
         ("rob_box_mcp_tools/rob_box_mcp_tools/tools/music.py", 'stop_deck("user_stop")'),
         ("rob_box_mcp_tools/rob_box_mcp_tools/engine/gen/library_play.py", 'f"gen_{track_id[:8]}_{int(clock())}"'),
-        ("rob_box_mcp_tools/rob_box_mcp_tools/engine/tools_v2.py", 'set_id=f"req{seed % 100000:05d}"'),
+        ("rob_box_mcp_tools/rob_box_mcp_tools/engine/engine_tools.py", 'set_id=f"req{seed % 100000:05d}"'),
     ]
     for rel, fragment in pairs:
         assert fragment in (REPO / "src" / rel).read_text(encoding="utf-8"), f"{rel}: формат изменился: {fragment}"
@@ -127,9 +127,9 @@ def test_player_lines_have_the_live_shape(make_env):
     env.stand.player.stop("user_stop")
     lines = env.stand._log.lines  # noqa: SLF001
     assert re.fullmatch(r"req\d{5}:01:A", track)
-    assert any(line.startswith(f"🎵 [music v2] started track_id={track} ") and "phase_in_form=0" in line
+    assert any(line.startswith(f"🎵 [music] started track_id={track} ") and "phase_in_form=0" in line
                for line in lines), lines
-    assert f"🎵 [music v2] stop track_id={track} reason=user_stop" in lines
+    assert f"🎵 [music] stop track_id={track} reason=user_stop" in lines
 
 
 # ── Стоп музыки: n312 / n511 / n709 / n712 ───────────────────────────────────────────────────────────────────────
@@ -145,7 +145,7 @@ def test_n312_stop_of_playing_music_passes_by_the_live_patterns(make_env):
     track = env.stand.player.request("ночной бит")
     report = env.run(marathon_step("3", "n312_stop_music"))
     assert report.verdict == dm.PASS, report.fail
-    assert f"🎵 [music v2] stop track_id={track} reason=user_stop" in report.log
+    assert f"🎵 [music] stop track_id={track} reason=user_stop" in report.log
     assert report.said == [phrases.text("music.stop_ok")] and not env.stand.player.playing
 
 
@@ -155,7 +155,7 @@ def test_stop_without_playing_track_writes_no_track_line_and_says_idle(make_env)
     env = make_env(stop_rule)
     report = env.run(marathon_step("3", "n312_stop_music"))
     assert not STOP_PATTERN.search(report.log), report.log
-    assert "🎵 [music v2] stop track_id=None reason=user_stop" in report.log
+    assert "🎵 [music] stop track_id=None reason=user_stop" in report.log
     assert report.verdict == dm.FAIL and any("паттерны шага не найдены" in f for f in report.fail)
     assert report.said == [phrases.text("music.stop_idle")]
 
@@ -166,7 +166,7 @@ def test_tier1_stop_all_writes_the_stop_line_of_the_playing_track(make_env):
     track = env.stand.player.request("бит")
     report = env.run(marathon_step("5", "n511_stop_music"))
     assert "tier1 kind=stop_all" in report.log
-    assert f"🎵 [music v2] stop track_id={track} reason=user_stop" in report.log, report.log
+    assert f"🎵 [music] stop track_id={track} reason=user_stop" in report.log, report.log
     assert report.verdict == dm.PASS, report.fail
 
 
@@ -177,8 +177,8 @@ def test_stop_music_closes_the_set_with_its_line_then_the_deck(make_env):
     ok, data = env.stand.tools._t_stop_music({})  # noqa: SLF001
     lines = env.stand._log.lines  # noqa: SLF001
     assert ok and data == {"was_playing": True}
-    assert lines[-2:] == [f"🎧 [set v2] {started['set_id']} stop reason=user_stop",
-                          f"🎵 [music v2] stop track_id={started['track_id']} reason=user_stop"]
+    assert lines[-2:] == [f"🎧 [set] {started['set_id']} stop reason=user_stop",
+                          f"🎵 [music] stop track_id={started['track_id']} reason=user_stop"]
 
 
 # ── Старт музыки: n602 / n708 ─────────────────────────────────────────────────────────────────────────────────────
@@ -191,7 +191,7 @@ def test_n602_dj_set_start_writes_started_and_dj_is_on_in_the_snapshot(make_env)
                    if "dj_set" in tools else say("Хорошо."))
     report = env.run(marathon_step("6", "n602_dj_on"))
     assert report.verdict == dm.PASS and report.attempts == 1, report.fail
-    assert re.search(r"🎵 \[music v2\] started track_id=set\d{5}:01:A ", report.log)
+    assert re.search(r"🎵 \[music\] started track_id=set\d{5}:01:A ", report.log)
     assert env.stand.music_mem.section()["dj"] == "on"
 
 
@@ -201,8 +201,8 @@ def test_n608_stop_of_the_set_writes_the_set_line_and_the_stop_line_of_its_track
     started = env.stand.player.start_set("дискотека")
     report = env.run(marathon_step("6", "n608_dj_off"))
     assert report.verdict == dm.PASS, report.fail
-    assert f"🎧 [set v2] {started['set_id']} stop reason=user_stop" in report.log
-    assert f"🎵 [music v2] stop track_id={started['track_id']} reason=user_stop" in report.log
+    assert f"🎧 [set] {started['set_id']} stop reason=user_stop" in report.log
+    assert f"🎵 [music] stop track_id={started['track_id']} reason=user_stop" in report.log
     assert env.stand.music_mem.section()["dj"] == "off"
 
 
@@ -231,7 +231,7 @@ def test_n708_library_play_writes_started_after_search(make_env):
     report = env.run(marathon_step("7", "n708_gen_play"))
     assert report.verdict == dm.PASS and report.attempts == 1, report.fail
     assert report.tools == ["music_library", "music_library"]
-    assert re.search(rf"🎵 \[music v2\] started track_id=gen_{song['id'][:8]}_\d+ ", report.log)
+    assert re.search(rf"🎵 \[music\] started track_id=gen_{song['id'][:8]}_\d+ ", report.log)
 
 
 def test_library_list_search_info_do_not_start_music(make_env):
@@ -261,7 +261,7 @@ def test_act_start_stops_music_like_the_harness_and_keeps_the_step_log_clean(mak
     assert dm.isolate_act_start(env.stand, act, dm.MIDDLE) == "stopped"
     assert not env.stand.player.busy() and env.stand.music_mem.section()["playing"] == "no"
     report = env.act(act, dm.MIDDLE)[0]
-    assert "[music v2] stop" not in report.log and "[set v2]" not in report.log
+    assert "[music] stop" not in report.log and "[set]" not in report.log
     assert dm.isolate_act_start(env.stand, act, dm.MIDDLE) == "was_idle"
 
 

@@ -178,20 +178,20 @@ def _mcp(ts: float, msg: str) -> str:
 
 
 def started(ts: float, track: str = "gen_ab12_1") -> str:
-    return _mcp(ts, "🎵 [music v2] started track_id=%s clock_beat=9792.069 start_beat=9792.0 phase_in_form=0.0 "
+    return _mcp(ts, "🎵 [music] started track_id=%s clock_beat=9792.069 start_beat=9792.0 phase_in_form=0.0 "
                     "late_beats=0.069 bpm=90 deck=A form_beats=192.0 players_aligned=True latency_s=0.5" % track)
 
 
 def finished(ts: float, track: str = "gen_ab12_1") -> str:
-    return _mcp(ts, "🎵 [music v2] finished track_id=%s" % track)
+    return _mcp(ts, "🎵 [music] finished track_id=%s" % track)
 
 
 def stopped(ts: float, track: str = "gen_ab12_1", reason: str = "user_stop") -> str:
-    return _mcp(ts, "🎵 [music v2] stop track_id=%s reason=%s" % (track, reason))
+    return _mcp(ts, "🎵 [music] stop track_id=%s reason=%s" % (track, reason))
 
 
 def edited(ts: float, track: str = "gen_ab12_1") -> str:
-    return _mcp(ts, "🎚️ [music v2] edit applied track_id=%s at_beat=9856 bpm=100" % track)
+    return _mcp(ts, "🎚️ [music] edit applied track_id=%s at_beat=9856 bpm=100" % track)
 
 
 T0 = 1792793000.0
@@ -337,7 +337,7 @@ def _stop_log(said: str, track: str = "set01234:2") -> List[str]:
         _mcp(T0 + 60, "📥 Запрос выполнения: dj_set с параметрами {'action': 'stop'}"),
         stopped(T0 + 60.5, track),
         _mcp(T0 + 61, "📥 Запрос выполнения: stop_music с параметрами {}"),
-        _mcp(T0 + 61.1, "🎵 [music v2] stop track_id=None reason=user_stop"),
+        _mcp(T0 + 61.1, "🎵 [music] stop track_id=None reason=user_stop"),
         _mcp(T0 + 61.2, "[stop_music] was_playing=False"),
         _mcp(T0 + 61.3, "✅ Инструмент stop_music выполнен успешно"),
         _tts(said),

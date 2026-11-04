@@ -16,7 +16,7 @@ from rob_box_mcp_tools.base import MCPToolResult
 from rob_box_mcp_tools.engine.order_level import NO_VOLUME_TOOL, UNCHANGED, apply_level, with_level
 from rob_box_mcp_tools.engine.search import ThemeHits
 from rob_box_mcp_tools.engine.theme_grounding import heard_theme
-from rob_box_mcp_tools.engine.tools_v2 import DjSetTool, club_theme
+from rob_box_mcp_tools.engine.engine_tools import DjSetTool, club_theme
 
 from .test_engine_session import _rig
 from .test_issue_4013_engine_slot_and_quick_start import RHYTHM, _tools

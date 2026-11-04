@@ -24,7 +24,7 @@ from rob_box_music.theme import seeded_profile
 
 from rob_box_mcp_tools.engine.score_library import DEFAULT_DIR, ENV, INDEX_FILE, ScoreIndex, ScoreLibrary, library_dir
 from rob_box_mcp_tools.engine.search import ThemeHits, ThemeQuery, part_query
-from rob_box_mcp_tools.engine.tools_v2 import DjSetTool
+from rob_box_mcp_tools.engine.engine_tools import DjSetTool
 
 from .test_engine_session import _rig, _started
 

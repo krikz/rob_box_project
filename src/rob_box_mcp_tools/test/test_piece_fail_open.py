@@ -15,7 +15,7 @@ import pytest
 
 from rob_box_mcp_tools.engine.classic import ClassicPick
 from rob_box_mcp_tools.engine.search import PartQuery, Term, ThemeHits, ThemeQuery
-from rob_box_mcp_tools.engine.tools_v2 import NOT_FOUND, DjSetTool, RequestMusicTool
+from rob_box_mcp_tools.engine.engine_tools import NOT_FOUND, DjSetTool, RequestMusicTool
 from rob_box_music import knowledge as kn
 from rob_box_music import material as mt
 from rob_box_music.diversity import MusicHistory

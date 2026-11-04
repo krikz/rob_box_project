@@ -3,7 +3,7 @@
 До #4192 модель звала ``request_music`` - новый трек снимал сет (``reason=request_music``, марафон-3 19:50:18); после
 #4192 путь правки брал ``edit_music``, а тул на сете честно отказывал (``отказ=set``): настроение сета не менялось.
 Теперь правка настроения (``knowledge.SET_VIBES``) под сетом - смена стиля идущего сета кодом: та же тема и персона,
-остаток длины, стиль из таблицы (``tools_v2.restyle_set`` - тот же путь, что смена темы посреди сета, #3400); фраза
+остаток длины, стиль из таблицы (``engine_tools.restyle_set`` - тот же путь, что смена темы посреди сета, #3400); фраза
 исхода - из исхода; ни ``request_music``, ни ``generate_music``.
 
 Настоящие ``PlayerOwner`` + ``RenardoAdapter`` + ``compose``/``render`` на симуляторе клока (рига
@@ -14,7 +14,7 @@ from functools import partial
 
 import pytest
 
-from rob_box_mcp_tools.engine.tools_v2 import restyle_set
+from rob_box_mcp_tools.engine.engine_tools import restyle_set
 from rob_box_mcp_tools.engine.track_edit import TrackEditor
 from rob_box_music import knowledge as kn
 from rob_box_music.track_edit import SET, EditTarget, edit_text, plan_edit

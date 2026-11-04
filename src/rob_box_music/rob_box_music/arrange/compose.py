@@ -639,7 +639,7 @@ def _arrange_theme(style: kn.Style, spec: FormSpec, motif: Hook, key: Key, lead_
         try:
             return motif, form, _arrange(style, form, motif, key, lead_synth, harm)
         except ValueError as exc:
-            _LOG.info("🎵 [music v2] hook melody=%s тема без гармонии: %s — хук без темы", motif.source, exc)
+            _LOG.info("🎵 [music] hook melody=%s тема без гармонии: %s — хук без темы", motif.source, exc)
             motif = replace(motif, theme=(), theme_bars=0)
     return motif, spec, _arrange(style, spec, motif, key, lead_synth, harm)
 
@@ -692,7 +692,7 @@ def _from_material(style: kn.Style, spec: FormSpec, material_id: Optional[str],
         return None
     material = (materials or {}).get(material_id)
     if material is None:
-        _LOG.info("🎵 [music v2] material=%s нет среди переданных — хук темы", material_id)
+        _LOG.info("🎵 [music] material=%s нет среди переданных — хук темы", material_id)
         return None
     try:
         material, anchor, motif, key = hooks.material_hook(
@@ -709,9 +709,9 @@ def _from_material(style: kn.Style, spec: FormSpec, material_id: Optional[str],
             lambda degrees: bass.material_tones(style, material, span, degrees, beats, scale))
         motif, form, arranged = _arrange_theme(style, spec, motif, key, lead_synth, harm)
     except ValueError as exc:  # HookError — тоже ValueError
-        _LOG.info("🎵 [music v2] material=%s отказ: %s — хук темы", material_id, exc)
+        _LOG.info("🎵 [music] material=%s отказ: %s — хук темы", material_id, exc)
         return None
-    _LOG.info("🎵 [music v2] material=%s ступени %s тема %d тактов", material_id,
+    _LOG.info("🎵 [music] material=%s ступени %s тема %d тактов", material_id,
               harmony.progression_name(arranged.loop), motif.theme_bars)
     return motif, key, arranged, form
 

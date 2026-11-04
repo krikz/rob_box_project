@@ -89,7 +89,7 @@ n312 28.10). С ``"deck": "playing"`` (#4196, n512) -- наоборот: муз�
 =============================
 Поле шага ``music_compare`` (:data:`COMPARES`) -- результат, который виден только в сравнении с музыкой ДО шага:
 «ускорь» -- тот же трек быстрее (правка на такте, #4029), «выключи» -- играла и выключена человеком. Судья читает
-строки деки ``[music v2] started|edit applied|stop|finished`` за акт (:func:`music_compare`); паттерн шага (grep по
+строки деки ``[music] started|edit applied|stop|finished`` за акт (:func:`music_compare`); паттерн шага (grep по
 окну шага) этого не может: «что-то заиграло» и «быстрее того, что играло» в окне шага неотличимы.
 """
 
@@ -878,11 +878,11 @@ class MusicEvent(NamedTuple):
     reason: str = ""
 
 
-#: Строки деки: ``player_owner.py`` -- ``🎵 [music v2] started track_id=<id> … bpm=<число> …`` / ``… stop track_id=<id>
+#: Строки деки: ``player_owner.py`` -- ``🎵 [music] started track_id=<id> … bpm=<число> …`` / ``… stop track_id=<id>
 #: reason=<причина>`` / ``… finished track_id=<id>``; ``engine/track_edit.py`` (#4029, правка играющего на такте без
-#: нового ``started``) -- ``🎚️ [music v2] edit applied track_id=<id> at_beat=<доля> bpm=<число>``. ``⚠️ … started
+#: нового ``started``) -- ``🎚️ [music] edit applied track_id=<id> at_beat=<доля> bpm=<число>``. ``⚠️ … started
 #: track_id=<id> устарел`` (заменён до старта) -- без ``bpm``, это не событие деки.
-MUSIC_EVENT_RE = re.compile(r"\[music v2\] (started|edit applied|stop|finished) track_id=(\S+)(.*)")
+MUSIC_EVENT_RE = re.compile(r"\[music\] (started|edit applied|stop|finished) track_id=(\S+)(.*)")
 _BPM_RE = re.compile(r"\bbpm=([0-9.]+)")
 _REASON_RE = re.compile(r"\breason=(\S+)")
 #: Вид события по слову строки (``edit applied`` -> ``edit``).

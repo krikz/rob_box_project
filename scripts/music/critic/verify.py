@@ -380,7 +380,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         sys.stdout.reconfigure(encoding="utf-8", errors="replace")
     ap = argparse.ArgumentParser(description="Верификатор утверждений судьи по Track-модели")
     ap.add_argument("fixtures", nargs="+", type=Path, help="JSON стиля: tracks[{model,start_s}] + claims[]")
-    ap.add_argument("--tracks", type=Path, required=True, help="каталог моделей треков (music_v2_tracks_dir)")
+    ap.add_argument("--tracks", type=Path, required=True, help="каталог моделей треков (music_tracks_dir)")
     ap.add_argument("--out", type=Path, default=None, help="куда писать report.md")
     args = ap.parse_args(argv)
     per_style, provider = {}, "fake"

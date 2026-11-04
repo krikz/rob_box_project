@@ -119,7 +119,7 @@ def _track(dj, now=100.0):
 @pytest.mark.parametrize("text", ["что сейчас играет", "что ты включил", "а что это за трек",
                                   "а раскажи что ты сейчас включил", "скажи какой трек играет"])
 def test_live_3613_single_club_track_is_named_by_code(text):
-    """Живой лог #3613: при ``[music v2] started req99682…`` LLM сказала «в плеере тишина». Теперь — код, без LLM."""
+    """Живой лог #3613: при ``[music] started req99682…`` LLM сказала «в плеере тишина». Теперь — код, без LLM."""
     plan = MediaRouter().route(text, _track(CLUB))
     assert plan.tool_calls == ()
     assert plan.say_ok == ("Сейчас играет музыка — клуб, синтез Ренардо, 124 удара в минуту. "

@@ -96,13 +96,13 @@ async def _confirm_started(
     track_id = data.get("track_id")
     if not track_id and data.get("ok") and data.get("pending"):
         # песня пишется, моста нет (#3696): фраза ожидания — ``source_message`` тула, о запуске скажет сама песня
-        log(f"🎛️ [media-router v2] {first} pending={data['pending']} без моста — фраза ожидания тула")
+        log(f"🎛️ [media-router] {first} pending={data['pending']} без моста — фраза ожидания тула")
         return True, launch_text(plan.say_ok, data)
     begin = time.monotonic()
     event = await asyncio.to_thread(events.wait, track_id, STARTED_WAIT_S) if events and track_id else None
     waited = time.monotonic() - begin
     kind = event.event if event is not None else "none"
-    log(f"🎛️ [media-router v2] {first} track_id={track_id} событие={kind} ждали={waited:.2f}с")
+    log(f"🎛️ [media-router] {first} track_id={track_id} событие={kind} ждали={waited:.2f}с")
     if kind == "started":
         return True, _started_text(plan, data)
     if kind == "rejected":

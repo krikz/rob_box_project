@@ -95,7 +95,7 @@ def _said(call, outcome, text="включи", performing=False):
 
 
 def test_dj_set_stop_says_the_music_is_off_not_that_it_is_on():
-    """n608 (марафон 27.10): ``dj_set {'action': 'stop'}`` → ``[music v2] stop`` → «Включаю музыку.» - ложь об исходе."""
+    """n608 (марафон 27.10): ``dj_set {'action': 'stop'}`` → ``[music] stop`` → «Включаю музыку.» - ложь об исходе."""
     stop = ToolCall("dj_set", {"action": "stop"})
     assert _said(stop, ("done", None, {"ok": True, "was_playing": True})) == [phrases.text("music.stop_ok")]
     assert _said(stop, ("done", None, {"ok": True})) == [phrases.text("music.stop_ok")], "тул не сообщил - как stop_music"

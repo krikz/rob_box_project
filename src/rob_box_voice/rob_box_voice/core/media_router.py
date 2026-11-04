@@ -147,7 +147,7 @@ STOP_FAIL_TEXT = _phrase("music.stop_fail")
 #: Тул ответил, а ``started`` так и не пришло: об успехе не говорим (A14).
 NOT_STARTED_TEXT = _phrase("music.not_started")
 
-#: Имена тулов движка v2 (``rob_box_mcp_tools.engine.tools_v2``).
+#: Имена тулов движка v2 (``rob_box_mcp_tools.engine.engine_tools``).
 DJ_SET_TOOL = "dj_set"
 REQUEST_MUSIC_TOOL = "request_music"
 #: Просьба сгенерировать (ADR-0158 PR-3): тот же чойсер пути, что у ``request_music``.

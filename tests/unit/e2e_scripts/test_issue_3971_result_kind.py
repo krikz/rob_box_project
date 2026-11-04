@@ -85,19 +85,19 @@ def _mcp(ts: float, msg: str) -> str:
 
 def started(ts: float, track_id: str, bpm: float) -> str:
     """``player_owner.track_started`` (va_marathon.log:6024, 23.10)."""
-    return _mcp(ts, "🎵 [music v2] started track_id=%s clock_beat=9792.069 start_beat=9792.0 phase_in_form=0.0 "
+    return _mcp(ts, "🎵 [music] started track_id=%s clock_beat=9792.069 start_beat=9792.0 phase_in_form=0.0 "
                     "late_beats=0.069 bpm=%s deck=A form_beats=192.0 players_aligned=True latency_s=0.5"
                 % (track_id, bpm))
 
 
 def stopped(ts: float, track_id: str, reason: str = "user_stop") -> str:
     """``player_owner.stop`` (va_marathon.log:6773, 23.10)."""
-    return _mcp(ts, "🎵 [music v2] stop track_id=%s reason=%s" % (track_id, reason))
+    return _mcp(ts, "🎵 [music] stop track_id=%s reason=%s" % (track_id, reason))
 
 
 def edited(ts: float, track_id: str, bpm: float) -> str:
     """``engine/track_edit.TrackEditor._retune`` (#4029): правка встала на такте того же трека."""
-    return _mcp(ts, "🎚️ [music v2] edit applied track_id=%s at_beat=9856 bpm=%g" % (track_id, bpm))
+    return _mcp(ts, "🎚️ [music] edit applied track_id=%s at_beat=9856 bpm=%g" % (track_id, bpm))
 
 
 def _judge(kind: str, lines, since: float, now: float = 1793200000.0) -> Dict[str, object]:
@@ -148,7 +148,7 @@ def test_edit_of_the_playing_track_is_the_edit_tool_on_the_bar_not_a_new_track()
     for label in ("n504_add_bass", "n505_vibe_dark"):
         assert _verdict(label, "\n".join(ok))["pass"], label
         assert not _verdict(label, "\n".join(ok + [_tts("Включаю музыку.")]))["pass"], label
-        new_track = ok + [_mcp(4.0, "🎵 [music v2] exec track_id=req93574:01:A:64e243fb deck=A bpm=125 — ждём started")]
+        new_track = ok + [_mcp(4.0, "🎵 [music] exec track_id=req93574:01:A:64e243fb deck=A bpm=125 — ждём started")]
         assert not _verdict(label, "\n".join(new_track))["pass"], label
         failed = ["✅ Инструмент edit_music выполнен успешно", _tts("Не получилось поменять музыку — играет как было."),
                   DONE]
@@ -284,15 +284,15 @@ def test_stopped_needs_music_before_a_user_stop_and_silence_after():
 
 
 def test_judge_reads_only_deck_events_with_robot_time_and_says_when_it_could_not_read():
-    stale = _mcp(150.0, "⚠️ [music v2] started track_id=req2:01:A:x устарел — заменён до старта")
-    waiting = _mcp(205.0, "🎚️ [music v2] edit track_id=req1:01:A:x at_beat=96 bpm→150 — ждём такта")
+    stale = _mcp(150.0, "⚠️ [music] started track_id=req2:01:A:x устарел — заменён до старта")
+    waiting = _mcp(205.0, "🎚️ [music] edit track_id=req1:01:A:x at_beat=96 bpm→150 — ждём такта")
     before = started(100.0, "req1:01:A:x", 120.0)
     verdict = _judge("faster", [before, stale, waiting], 200.0)
     assert verdict["ok"] == 0 and "в конце шага req1:01:A:x bpm=120" in verdict["detail"], \
         "устаревший старт и правка, которая не встала на такт, -- не события деки"
     no_clock = eev.music_compare("faster", started(100.0, "req1:01:A:x", 120.0), _at(50.0))
     assert no_clock == {"fetch": 0, "ok": 0, "detail": "лог робота не прочитан -- сверка не доказана"}
-    assert eev.music_event("🎵 [music v2] started track_id=req1:01:A:x bpm=120.0") is None, "без метки времени"
+    assert eev.music_event("🎵 [music] started track_id=req1:01:A:x bpm=120.0") is None, "без метки времени"
 
 
 def test_step_window_start_is_the_harness_utc_stamp():
@@ -355,22 +355,22 @@ def test_n805b_own_lost_wake_is_recovered_by_the_bare_wake_never_by_its_own_phra
 
 @pytest.mark.parametrize("rel,fragment", [
     # строки деки, которые читает судья и паттерны видов результата
-    ("src/rob_box_mcp_tools/rob_box_mcp_tools/engine/player_owner.py", 'f"🎵 [music v2] started track_id={track_id} "'),
+    ("src/rob_box_mcp_tools/rob_box_mcp_tools/engine/player_owner.py", 'f"🎵 [music] started track_id={track_id} "'),
     ("src/rob_box_mcp_tools/rob_box_mcp_tools/engine/player_owner.py",
      '"clock_beat", "start_beat", "phase_in_form", "late_beats",'),
     ("src/rob_box_mcp_tools/rob_box_mcp_tools/engine/player_owner.py", '"bpm", "deck", "form_beats"'),
-    ("src/rob_box_mcp_tools/rob_box_mcp_tools/engine/player_owner.py", 'f"🎵 [music v2] finished track_id={track_id}"'),
+    ("src/rob_box_mcp_tools/rob_box_mcp_tools/engine/player_owner.py", 'f"🎵 [music] finished track_id={track_id}"'),
     ("src/rob_box_mcp_tools/rob_box_mcp_tools/engine/track_edit.py",
-     'f"🎚️ [music v2] edit applied track_id={track_id} at_beat={outcome.get(\'at_beat\'):g} "'),
+     'f"🎚️ [music] edit applied track_id={track_id} at_beat={outcome.get(\'at_beat\'):g} "'),
     ("src/rob_box_mcp_tools/rob_box_mcp_tools/engine/track_edit.py", 'f"bpm={outcome.get(\'bpm\'):g}"'),
     # стоп человека -- user_stop; деку занял другой заказ -- другая причина
     ("src/rob_box_mcp_tools/rob_box_mcp_tools/tools/music.py", 'stop_deck("user_stop")'),
-    ("src/rob_box_mcp_tools/rob_box_mcp_tools/engine/tools_v2.py", 'self._session.stop("new_set")'),
+    ("src/rob_box_mcp_tools/rob_box_mcp_tools/engine/engine_tools.py", 'self._session.stop("new_set")'),
     # синт-трек заказа -- сет req<сид>
-    ("src/rob_box_mcp_tools/rob_box_mcp_tools/engine/tools_v2.py", 'set_id=f"req{seed % 100000:05d}"'),
+    ("src/rob_box_mcp_tools/rob_box_mcp_tools/engine/engine_tools.py", 'set_id=f"req{seed % 100000:05d}"'),
     # тул правки играющего и его фразы
     ("src/rob_box_dialog/rob_box_dialog/knowledge.py", 'EDIT_TOOL = "edit_music"'),
-    ("src/rob_box_mcp_tools/rob_box_mcp_tools/engine/tools_v2.py", 'return "edit_music"'),
+    ("src/rob_box_mcp_tools/rob_box_mcp_tools/engine/engine_tools.py", 'return "edit_music"'),
     # тишина Tier-1 и снятие только в тишине (n805b)
     ("src/rob_box_dialog/rob_box_dialog/grammar.py", 'if snapshot.top("Silence") is None or not has_word(text, '
                                                      'kn.UNSILENCE_WORDS):'),
@@ -432,11 +432,11 @@ def _fake(ts_ago: float, msg: str) -> str:
 @needs_bash
 def test_harness_turns_a_random_faster_track_red_and_a_real_one_green(tmp_path):
     since = "%.0f" % (time.time() - 30)
-    base = _fake(60, "🎵 [music v2] started track_id=req93513:01:A:x clock_beat=1 bpm=120.0 deck=A")
-    other = _fake(10, "🎵 [music v2] started track_id=req93630:01:A:y clock_beat=1 bpm=124.0 deck=A")
+    base = _fake(60, "🎵 [music] started track_id=req93513:01:A:x clock_beat=1 bpm=120.0 deck=A")
+    other = _fake(10, "🎵 [music] started track_id=req93630:01:A:y clock_beat=1 bpm=124.0 deck=A")
     out, err = _harness(tmp_path, [base, other], "n506_faster", since)
     assert "PATTERN_MISS: music_compare=faster: трек сменился" in out and "RC=1" in out, (out, err)
-    faster = _fake(10, "🎚️ [music v2] edit applied track_id=req93513:01:A:x at_beat=96 bpm=130")
+    faster = _fake(10, "🎚️ [music] edit applied track_id=req93513:01:A:x at_beat=96 bpm=130")
     out, err = _harness(tmp_path, [base, faster], "n506_faster", since)
     assert "PATTERN_OK: music_compare=faster: до шага req93513:01:A:x bpm=120, в конце шага req93513:01:A:x bpm=130" \
         in out and "RC=0" in out, (out, err)

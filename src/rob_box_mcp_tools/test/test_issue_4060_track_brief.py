@@ -18,7 +18,7 @@ from rob_box_mcp_tools.engine.gen import gen_session as gs
 from rob_box_mcp_tools.engine.gen.library_play import description_facts
 from rob_box_mcp_tools.engine.player_owner import PlayerOwner
 from rob_box_mcp_tools.engine.search import ThemeHits
-from rob_box_mcp_tools.engine.tools_v2 import DjSetTool
+from rob_box_mcp_tools.engine.engine_tools import DjSetTool
 from rob_box_music.source import cover_slot
 from rob_box_music.track_brief import track_brief
 from rob_box_voice.core.music_player_state import parse_music_state

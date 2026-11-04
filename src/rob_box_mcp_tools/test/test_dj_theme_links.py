@@ -21,7 +21,7 @@ import pytest
 from rob_box_mcp_tools.core.rtttl_library import RtttlLibrary
 from rob_box_mcp_tools.engine.search import ThemeHits, theme_search
 from rob_box_mcp_tools.engine.theme_links import ThemeLinks, verify
-from rob_box_mcp_tools.engine.tools_v2 import DjSetTool, library_melodies, theme_finder
+from rob_box_mcp_tools.engine.engine_tools import DjSetTool, library_melodies, theme_finder
 from rob_box_music import theme_queries as tq
 from rob_box_music.dj_line import SET_NOT_FOUND
 from rob_box_music.works import ThemeLink, put_theme_link, theme_links_report

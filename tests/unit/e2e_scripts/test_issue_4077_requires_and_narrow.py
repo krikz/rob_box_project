@@ -193,5 +193,5 @@ def test_n810_rap_needs_performance_and_no_deck_stop():
     speech = "🗣️ SpeechEvent started speech_id=aa agent=tars epoch=1 text_len=9"
     assert _verdict("n810_rap_over_music", speech, DONE)["missing"]
     assert not _verdict("n810_rap_over_music", speech, start, DONE)["missing"]
-    stopped = _verdict("n810_rap_over_music", speech, start, "🎵 [music v2] stop track_id=x reason=user_stop", DONE)
+    stopped = _verdict("n810_rap_over_music", speech, start, "🎵 [music] stop track_id=x reason=user_stop", DONE)
     assert not stopped["pass"]

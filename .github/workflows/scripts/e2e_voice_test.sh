@@ -1911,7 +1911,7 @@ check_patterns() {
 
 # Issue #3971 — результат, видный только в сравнении с музыкой ДО шага (поле шага music_compare: «ускорь» — тот же трек
 # быстрее, «выключи» — играла и выключена). Решает e2e_events.py compare по строкам деки за акт (какие строки — решает
-# он, сюда — все строки [music v2]); итог — строкой паттерна. rc 0 — сверки у шага нет или она прошла; 1 — не прошла.
+# он, сюда — все строки [music]); итог — строкой паттерна. rc 0 — сверки у шага нет или она прошла; 1 — не прошла.
 check_music_compare() {  # $1 = label, $2 = файл сценария, $3 = начало окна шага (UTC робота)
     local raw kind out
     [ -n "$2" ] && [ -f "$2" ] || return 0
@@ -1921,7 +1921,7 @@ check_music_compare() {  # $1 = label, $2 = файл сценария, $3 = на
     fi
     kind="$(printf '%s\n' "$raw" | _ev_kv compare)"
     case "$kind" in ''|-) return 0 ;; esac
-    out="$(_events_fetch "${E2E_RUN_BEFORE:-600s}" '\[music v2\] ' \
+    out="$(_events_fetch "${E2E_RUN_BEFORE:-600s}" '\[music\] ' \
         | python3 "$(_events_py)" compare --scenario "$2" --label "$1" --since "$3" 2>&1)"
     if [ "$(printf '%s\n' "$out" | _ev_kv ok)" = "1" ]; then
         echo "  PATTERN_OK: music_compare=${kind}: $(printf '%s\n' "$out" | _ev_kv detail)"

@@ -11,7 +11,7 @@ import pytest
 
 from rob_box_mcp_tools.core.rtttl_library import RtttlLibrary
 from rob_box_mcp_tools.engine.session import plan_source
-from rob_box_mcp_tools.engine.tools_v2 import library_melodies
+from rob_box_mcp_tools.engine.engine_tools import library_melodies
 from rob_box_music import knowledge as kn
 from rob_box_music.arrange import hook as hooks
 from rob_box_music.arrange.compose import hook_register

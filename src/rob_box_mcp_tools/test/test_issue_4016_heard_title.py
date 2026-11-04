@@ -32,7 +32,7 @@ from rob_box_mcp_tools.engine.gen.library import GeneratedMusicLibrary
 from rob_box_mcp_tools.engine.request_slots import Catalog, RequestSlotParser, doubt_text
 from rob_box_mcp_tools.engine.search import (HEARD_SLACK_WORD, ThemeHits, _aligned, _vocab, find, heard_title,
                                              names_itself, phonetic_key, terms, warm_heard)
-from rob_box_mcp_tools.engine.tools_v2 import DjSetTool, NOT_FOUND, RequestMusicTool, _classic_outcome
+from rob_box_mcp_tools.engine.engine_tools import DjSetTool, NOT_FOUND, RequestMusicTool, _classic_outcome
 from rob_box_music import knowledge as kn
 from rob_box_music.request_slots import RequestSlots
 from rob_box_voice.core.media_command_grammar import parse_media_command

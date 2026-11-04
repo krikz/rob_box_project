@@ -13,7 +13,7 @@ from rob_box_mcp_tools.core.rtttl_library import RtttlLibrary
 from rob_box_mcp_tools.engine.classic import find_record
 from rob_box_mcp_tools.engine.reasoner import SetPlanBox
 from rob_box_mcp_tools.engine.search import find, sound_key, stem, theme_hooks
-from rob_box_mcp_tools.engine.tools_v2 import library_melodies
+from rob_box_mcp_tools.engine.engine_tools import library_melodies
 from rob_box_music.arrange.compose import compose
 from rob_box_music.diversity import track_history
 from rob_box_music.set_plan import seeded_plan

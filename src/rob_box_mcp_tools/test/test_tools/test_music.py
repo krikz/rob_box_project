@@ -200,7 +200,7 @@ class TestGetMusicStateTool:
         assert result.data["playing"] is False
 
     def test_live_3613_single_v2_track_is_reported_as_playing(self, music_node):
-        """Живой лог #3613: ``[music v2] started req99682…`` — а ответ «Диджей-сета не было. Renardo: доступен…»."""
+        """Живой лог #3613: ``[music] started req99682…`` — а ответ «Диджей-сета не было. Renardo: доступен…»."""
         owner = music_node._player_owner
         owner.play(_program("req99682:03:A", bpm=124.0),
                    dj={"enabled": False, "title": "космос · 124 BPM", "source": "synth",
@@ -241,7 +241,7 @@ class TestGetMusicStateTool:
         assert result.data["deck"]["brief"] == "«Ночной город», синтвейв"
 
     def test_4060_running_set_answers_with_the_track_description(self, music_node):
-        from rob_box_mcp_tools.engine.tools_v2 import brief_facts
+        from rob_box_mcp_tools.engine.engine_tools import brief_facts
         from rob_box_music.dj_line import now_playing_text
 
         owner = music_node._player_owner

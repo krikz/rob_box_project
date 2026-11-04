@@ -30,8 +30,8 @@ CONFIG_DIRS = [REPO / "src/rob_box_voice/config", REPO / "docker/sound/config/vo
 
 class _Node:
     def __init__(self):
-        self.params = {"music_v2_clock_latency": 0.5, "music_v2_reasoner": True,
-                       "music_v2_reasoner_deadline_s": 45.0, "music_v2_dj_lines": True, "music_v2_tracks_dir": "", "music_chooser": "deterministic"}
+        self.params = {"music_clock_latency": 0.5, "music_reasoner": True,
+                       "music_reasoner_deadline_s": 45.0, "music_dj_lines": True, "music_tracks_dir": "", "music_chooser": "deterministic"}
         self.music_state_pub = _FakePublisher()
         self.created = []
         self._logger = _FakeLogger()
@@ -59,14 +59,14 @@ def test_owner_is_attached_unconditionally(monkeypatch):
     """PR-13b/PR-15: старый путь и флаг удалены — владелец плеера v2 единственный."""
     module = _load_mcp_server_module(monkeypatch)
     node, manager = _Node(), _manager()
-    assert module._attach_player_owner_v2(node, manager) is not None
+    assert module._attach_player_owner(node, manager) is not None
     assert [t.name for t in node.registry.tools] == ["dj_set", "request_music", "generate_music", "edit_music"]  # #4029
 
 
 def test_no_manager_attaches_nothing_loudly(monkeypatch):
     module = _load_mcp_server_module(monkeypatch)
     node = _Node()
-    assert module._attach_player_owner_v2(node, None) is None
+    assert module._attach_player_owner(node, None) is None
     assert node.created == [] and node.registry.tools == []
     assert any("RenardoRuntime" in m for m in node._logger.error_messages)
 
@@ -75,7 +75,7 @@ def test_v2_owner_is_the_only_state_writer(monkeypatch):
     module = _load_mcp_server_module(monkeypatch)
     node, manager = _Node(), _manager()
     state_pub = node.music_state_pub
-    owner = module._attach_player_owner_v2(node, manager)
+    owner = module._attach_player_owner(node, manager)
     assert owner is not None and node.created == ["/voice/music/event"]
     assert manager.osc_fail_listener == owner.on_server_fail
     # PR-5: сет v2 поверх владельца; PR-6: одиночный club-трек v2
@@ -96,15 +96,15 @@ def _load(name):
 def test_yaml_copies_match_and_are_declared_with_the_same_types():
     # ADR-0004: один файл — одна секция; у mcp_server.yaml — только своя.
     assert _load("mcp_server.yaml") == {"mcp_server": {"ros__parameters": {
-        "music_v2_clock_latency": 0.5, "music_v2_reasoner": True, "music_v2_reasoner_deadline_s": 45.0,
-        "music_v2_dj_lines": True, "music_v2_tracks_dir": "/data/music_v2/tracks",
+        "music_clock_latency": 0.5, "music_reasoner": True, "music_reasoner_deadline_s": 45.0,
+        "music_dj_lines": True, "music_tracks_dir": "/data/music_v2/tracks",
         "music_chooser": "chain",
         "music_duck_db": -9.0, "music_duck_attack_ms": 80.0, "music_duck_release_ms": 400.0}}}  # PR-7d
     src = (REPO / "src/rob_box_mcp_tools/rob_box_mcp_tools/mcp_server.py").read_text(encoding="utf-8")
-    assert re.search(r'declare_parameter\("music_v2_clock_latency", V2_CLOCK_LATENCY_S\)', src)
-    assert re.search(r'declare_parameter\("music_v2_reasoner", True\)', src)
-    assert re.search(r'declare_parameter\("music_v2_reasoner_deadline_s", V2_REASONER_DEADLINE_S\)', src)
-    assert re.search(r'declare_parameter\("music_v2_dj_lines", True\)', src)  # В2 (06.10): реплика на переходе
+    assert re.search(r'declare_parameter\("music_clock_latency", V2_CLOCK_LATENCY_S\)', src)
+    assert re.search(r'declare_parameter\("music_reasoner", True\)', src)
+    assert re.search(r'declare_parameter\("music_reasoner_deadline_s", V2_REASONER_DEADLINE_S\)', src)
+    assert re.search(r'declare_parameter\("music_dj_lines", True\)', src)  # В2 (06.10): реплика на переходе
     assert re.search(r'declare_parameter\("music_chooser", CHOOSER_DEFAULT_MODE\)', src)  # PR-7: режим выбора пьесы
 
 
