@@ -142,11 +142,11 @@ sim_compose() {  # sim_compose <args compose>...
     rsh "$HIL_SANDBOX_HOST" "cd $(q "$HIL_SANDBOX_REPO") && $(sim_env) docker compose -p $(q "$HIL_SIM_PROJECT") -f docker/sim/compose.yaml -f docker/sim/compose.hil.yaml $*"
 }
 sim_gazebo_state() {
-    rsh "$HIL_SANDBOX_HOST" "docker inspect -f '{{.State.Status}} {{.State.ExitCode}}' $(q "$HIL_SIM_PREFIX-gazebo") 2>/dev/null || echo 'absent -'"
+    rsh "$HIL_SANDBOX_HOST" "docker inspect -f '{{.State.Status}} {{.State.ExitCode}}' $(q "$HIL_SIM_PREFIX-gazebo") 2>/dev/null | grep . || echo 'absent -'"
 }
 # Число /controller_manager в графе — глазами сторожа внутри gazebo; «-» — gazebo не работает.
 sim_cm_count() {
-    rsh "$HIL_SANDBOX_HOST" "docker exec $(q "$HIL_SIM_PREFIX-gazebo") /entrypoint.sh python3 -m rob_box_sim.hil count --settle 3 2>/dev/null | head -n 1" || echo -
+    rsh "$HIL_SANDBOX_HOST" "docker exec $(q "$HIL_SIM_PREFIX-gazebo") /entrypoint.sh python3 -m rob_box_sim.hil count --settle 3 2>/dev/null | grep -E '^[0-9]+$' | tail -n 1 | grep . || echo -" || echo -
 }
 sim_down() {
     log "песочница: гашу zenoh-router и gazebo ($HIL_SIM_PROJECT)"
@@ -280,15 +280,27 @@ cmd_off() {
     log "✅ HIL выключен, робот в боевом режиме"
 }
 
+# Статус Pi: сначала отличаем «нет ssh» от «нет helper'а», helper доставляем сами (как on/off).
+status_pi() {  # status_pi <host> <контейнеры>...
+    local host="$1"; shift
+    if ! rsh "$host" true 2>/dev/null; then
+        echo "  нет ssh до $host"
+        return 0
+    fi
+    if ! rsh "$host" "test -f $(q "$REMOTE_PI")" 2>/dev/null; then
+        rput "$host" "$HERE/remote_pi.sh" "$REMOTE_PI" || { echo "  helper не доставлен на $host (ssh есть, rput не удался)"; return 0; }
+    fi
+    rpi "$host" state "$@" || echo "  helper на $host вернул ошибку (ssh есть)"
+}
+
 cmd_status() {
     check_net
     echo "── замок ($HIL_MAIN_HOST:$HIL_LOCK)"
     rsh "$HIL_MAIN_HOST" "cat $(q "$HIL_LOCK") 2>/dev/null || echo нет" || echo "  нет ssh"
     echo "── Main Pi"
-    rsh "$HIL_MAIN_HOST" "test -f $(q "$REMOTE_PI")" 2>/dev/null || push_helpers
-    rpi "$HIL_MAIN_HOST" state "${MAIN_STOP[@]}" "${MAIN_SIM_TIME[@]}" || echo "  нет ssh"
+    status_pi "$HIL_MAIN_HOST" "${MAIN_STOP[@]}" "${MAIN_SIM_TIME[@]}"
     echo "── Vision Pi"
-    rpi "$HIL_VISION_HOST" state "${VISION_STOP[@]}" vision-face || echo "  нет ssh"
+    status_pi "$HIL_VISION_HOST" "${VISION_STOP[@]}" vision-face
     echo "── песочница ($HIL_SANDBOX_HOST, проект $HIL_SIM_PROJECT)"
     rsh "$HIL_SANDBOX_HOST" "docker ps -a --filter label=com.docker.compose.project=$(q "$HIL_SIM_PROJECT") --format '{{.Names}} {{.Status}}'" || echo "  нет ssh"
     local gz
