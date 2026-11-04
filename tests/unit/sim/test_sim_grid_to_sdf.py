@@ -74,7 +74,8 @@ def test_build_moves_first_robot_pose_to_origin(tmp_path):
     y = _write_map(tmp_path, rows, origin=(-1.0, 0.0))
     # робот стартовал в (1, 1) лицом на +Y (к верхней стене), потом поехал к правой
     poses = _write_poses(tmp_path, [(1.0, 1.0, math.pi / 2), (1.5, 1.0, 0.0), (2.0, 1.5, 0.0)])
-    meta = build(y, poses, tmp_path / "out", "t", goal_step=0.4, max_goals=5)  # шаг 0.5 — на границе float, CI брал вторую точку
+    # шаг 0.4, не 0.5: расстояние 0.5 до первой цели на границе float (в CI цель пропускалась)
+    meta = build(y, poses, tmp_path / "out", "t", goal_step=0.4, max_goals=5)
     boxes = load_world_boxes(tmp_path / "out" / "t.sdf")
     assert meta["spawn_in_map"] == pytest.approx([1.0, 1.0, math.pi / 2], abs=1e-4)
     # верхняя стена в мире — прямо по курсу робота: её ближняя грань на 1.9 м впереди
