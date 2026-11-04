@@ -298,7 +298,7 @@ jobs:
       - name: "[Main Pi] HIL lock (#4371)"
         if: '!inputs.dry_run'
         run: |
-          bash scripts/deploy/check_hil_lock.sh             sshpass -p 'open' ssh $SSH_OPTS ros2@${{ env.main_pi_ip }}
+          bash scripts/deploy/check_hil_lock.sh             sshpass -p 'open' ssh -o LogLevel=ERROR $SSH_OPTS ros2@${{ env.main_pi_ip }}
 
       - name: Dry Run Notice
         if: inputs.dry_run
