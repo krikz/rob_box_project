@@ -903,8 +903,10 @@ def counted_in_full(log: Any, turn: "_Turn", cmd: Command) -> Command:
     full = counting.full_count(cmd, turn.text)
     if full is None:
         return counting.sentenced(cmd, turn.text) or cmd  # счёт речью - по числу в предложении (#4207)
-    log.warning(f"{LOG_MARK} счёт урезан моделью (до {max(counting.reached(cmd))}): числа строит код "
-                f"{counting.asked_range(turn.text)} turn={turn.turn_id}")
+    reached = counting.reached(cmd)
+    upto = f"до {max(reached)}" if reached else "обещан без чисел"
+    log.warning(f"{LOG_MARK} счёт урезан моделью ({upto}): числа строит код {counting.asked_range(turn.text)} "
+                f"turn={turn.turn_id}")
     return full
 
 
