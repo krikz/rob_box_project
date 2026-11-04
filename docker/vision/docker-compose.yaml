@@ -159,6 +159,10 @@ services:
       - ZENOH_SESSION_CONFIG_URI=/tmp/zenoh_session_config.json5  # Сгенерированный конфиг
       - *zenoh_listen_ip  # адрес локального роутера для session config
       - COMPRESSED_IMAGE_TRANSPORT_JPEG_QUALITY=85  # JPEG качество для compressed transport
+      # AprilTag потолка (ceiling_apriltag.launch.py): 5 Гц mono8 → apriltag_node,
+      # выход /ceiling_camera/apriltag/{detections,tf}, не /detections OAK-D.
+      # Выключено: камера не откалибрована (docs/guides/ceiling-camera-calibration.md).
+      - CEILING_APRILTAG_ENABLED=${CEILING_APRILTAG_ENABLED:-false}
     volumes:
       - ./config:/config:ro
       - ../common/scripts:/ros_scripts:ro

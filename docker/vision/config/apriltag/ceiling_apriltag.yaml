@@ -1,0 +1,22 @@
+# AprilTag потолочной камеры (ceiling_apriltag.launch.py).
+# Отличия от apriltag_config.yaml (OAK-D):
+#   * image_transport: raw — кормушка ceiling_tag_feed уже отдаёт mono8 5 Гц
+#     в этом же контейнере, сжимать и разжимать незачем;
+#   * имя узла другое — ceiling_apriltag.
+ceiling_apriltag:
+  ros__parameters:
+    image_transport: raw
+    family: 36h11
+    size: 0.119            # чёрный квадрат тега, м (замер Шифу 04.11: 11,9 см)
+    profile: false
+    max_hamming: 0
+    detector:
+      threads: 1           # нагрузка Vision Pi: одно ядро максимум
+      decimate: 2.0        # детекция четырёхугольников на 320×240
+      blur: 0.0
+      refine: true
+      sharpening: 0.25
+      debug: false
+    # Поза по PnP берёт fx, fy, cx, cy из camera_info.P. Пока ceiling_camera.yaml
+    # не откалиброван, поза — оценка (docs/guides/ceiling-camera-calibration.md).
+    pose_estimation_method: "pnp"
