@@ -50,7 +50,7 @@ from rob_box_dialog.command import Performance
 from rob_box_dialog.plan.backing import Backing, BackingTrack, MusicStop
 from rob_box_dialog.plan.estimate import SpeechRate
 from rob_box_dialog.plan.plan_events import PlanEvent
-from rob_box_dialog.plan.repeats import drop_said
+from rob_box_dialog.plan.repeats import drop_said, same_performance
 from rob_box_dialog.plan.segments import FIXED, HEARD, Line, SegmentList, segment_rows
 from rob_box_dialog.plan.sync import BeatGrid, beat_offset_ms, next_bar
 
@@ -469,11 +469,6 @@ class PerformBlock:
         Всё отдано (звучит последний) — править нечего, новая просьба — новое выступление (#4318)."""
         return not self.ended and any(line.no and line.state == "pending" for line in self.lines.lines)
 
-    def repeats_said(self, perf: Performance) -> bool:
-        """Присланные сегменты целиком повторяют уже сказанное (:func:`.repeats.drop_said`): «посчитай ещё раз»."""
-        rows = segment_rows(perf)
-        return bool(rows) and not drop_said(rows, self.lines.said())
-
     def predicted_end(self, now: float) -> float:
         """Когда кончится речь выступления (раскладка по тактам подложки, если она есть)."""
         return self.lines.predicted_end(now, self.backing.grid)
@@ -577,6 +572,16 @@ class PerformBlock:
         self.log("всё отдано на звучание — новая просьба начнёт новое выступление")
         return self.music.release(now, "bar", "perform_end", _SOUNDING) + self._end("done")
 
+    def restart(self, now: float) -> List[Effect]:
+        """Та же просьба целиком (:func:`repeats_whole`), пока есть несказанное (#4320): перезапуск. Звучащий сегмент
+        дочитывается до конца предложения, отданные и несказанные снимаются, подложка - outro на такте, блок закрыт
+        (``stopped``); новое идёт с начала своим блоком за звучащим предложением."""
+        if self.ended:
+            return []
+        self.log("та же просьба посреди выступления — перезапуск с начала")
+        out: List[Effect] = list(withdraw(self.lines, "sentence"))
+        return out + self.music.release(now, "bar", "perform_restart", _SOUNDING) + self._end("stopped")
+
     def stop(self, now: float, keep_backing: bool = False) -> List[Effect]:
         """Tier-1 «хватит» (X5): звучащий сегмент — до конца предложения, остальное снимается, затем outro.
         ``keep_backing`` («хватит читать, а музыку оставь») — играющий бит без outro доигрывает сам; ещё не
@@ -670,5 +675,17 @@ class PerformBlock:
         return PlanEvent(kind, self.block_id, segment_no=no, **self._ids, **fields)
 
 
+def repeats_said(block: PerformBlock, perf: Performance) -> bool:
+    """Присланные сегменты целиком повторяют уже сказанное блоком (:func:`.repeats.drop_said`): «посчитай ещё раз»."""
+    rows = segment_rows(perf)
+    return bool(rows) and not drop_said(rows, block.lines.said())
+
+
+def repeats_whole(block: PerformBlock, perf: Performance) -> bool:
+    """Присланное - это же выступление блока целиком (:func:`.repeats.same_performance`): та же просьба ещё раз
+    (#4320). Правка тут пустая - сказанное она не повторяет, а несказанный хвост тот же."""
+    return same_performance([row[0] for row in segment_rows(perf)], [line.text for line in block.lines.segments()])
+
+
 __all__ = ["AskReplace", "Cancel", "Effect", "LOG_MARK", "MusicSide", "PerformBlock", "Say", "SpeechSide",
-           "context_block", "edit_asks_backing", "edit_range", "presynth", "withdraw"]
+           "context_block", "edit_asks_backing", "edit_range", "presynth", "repeats_said", "repeats_whole", "withdraw"]

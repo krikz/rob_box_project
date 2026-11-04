@@ -23,18 +23,22 @@ from rob_box_dialog.command import Command, Performance
 from rob_box_dialog.plan.repeats import NUMERAL_GENITIVE, NUMERAL_SAY, NUMERAL_WORDS, words
 
 _VALUE: Dict[str, int] = {**NUMERAL_WORDS, **NUMERAL_GENITIVE}
+#: Слова границ просьбы о счёте: «от M», «до N».
+_BOUNDS = ("от", "до")
 
 
 def _number_at(tokens: Sequence[str], i: int) -> Tuple[Optional[int], int]:
     """Число, что начинается со слова ``i`` (цифры, слово, составное «двадцать один» / «тридцати пяти»), и сколько
-    слов оно заняло; не число - ``(None, 0)``."""
+    слов оно заняло; не число - ``(None, 0)``. Составное - только в одном падеже: «до сорока. Один» - это 40 и 1, а не
+    41 (#4320)."""
     word = tokens[i] if i < len(tokens) else ""
     if word.isdigit():
         return int(word), 1
     value = _VALUE.get(word)
     if value is None:
         return None, 0
-    unit = _VALUE.get(tokens[i + 1]) if i + 1 < len(tokens) else None
+    after = tokens[i + 1] if i + 1 < len(tokens) else ""
+    unit = _VALUE.get(after) if (word in NUMERAL_GENITIVE) == (after in NUMERAL_GENITIVE) else None
     if 20 <= value <= 90 and value % 10 == 0 and unit is not None and 1 <= unit <= 9:
         return value + unit, 2
     return value, 1
@@ -48,7 +52,7 @@ def asked_range(text: str) -> Optional[Tuple[int, int]]:
         return None
     bounds: Dict[str, int] = {}
     for i, token in enumerate(tokens):
-        value, _ = _number_at(tokens, i + 1) if token in ("от", "до") and token not in bounds else (None, 0)
+        value, _ = _number_at(tokens, i + 1) if token in _BOUNDS and token not in bounds else (None, 0)
         if value is not None:
             bounds[token] = value
     if "до" not in bounds:
@@ -56,23 +60,25 @@ def asked_range(text: str) -> Optional[Tuple[int, int]]:
     return bounds.get("от", 1), bounds["до"]
 
 
-def said_numbers(text: str) -> Tuple[int, ...]:
-    """Числа текста по порядку, составные - одним числом («Двадцать один.» - 21)."""
+def said_numbers(text: str, bounds: bool = True) -> Tuple[int, ...]:
+    """Числа текста по порядку, составные - одним числом («Двадцать один.» - 21). ``bounds=False`` - без границ
+    просьбы («до сорока», «от пяти»): это пересказ просьбы, а не счёт."""
     tokens = words(text)
     out: List[int] = []
     i = 0
     while i < len(tokens):
         value, used = _number_at(tokens, i)
-        if value is not None:
+        if value is not None and (bounds or not i or tokens[i - 1] not in _BOUNDS):
             out.append(value)
         i += used or 1
     return tuple(out)
 
 
 def reached(cmd: Command) -> Tuple[int, ...]:
-    """Числа, что звучат в команде: речь и сегменты выступления."""
+    """Числа, что звучат в команде: речь и сегменты выступления. Граница просьбы в словах модели - не досчитанное
+    число (#4320: «Считаю до сорока. Один, …» читалось как 41, 2, … - счёт «полный», и код его не достраивал)."""
     parts = [cmd.speech or "", *(cmd.perform.segments if cmd.perform is not None else ())]
-    return tuple(n for part in parts for n in said_numbers(part))
+    return tuple(n for part in parts for n in said_numbers(part, bounds=False))
 
 
 def short_count(cmd: Command, asked: Tuple[int, int]) -> bool:
