@@ -65,7 +65,8 @@ _pfile() {  # $1=node $2=name
     printf '%s/param_%s\n' "$FAKE_ROBOT_STATE" "$(printf '%s%s' "$1" "$2" | tr '/' '_')"
 }
 
-timeout() { shift; "$@"; }  # ``timeout N ros2 ...`` -- ros2 здесь функция, внешний timeout её не видит
+# ``timeout N ros2 service call ...`` -- ros2 здесь функция, внешний timeout её не видит; остальное -- настоящий timeout.
+timeout() { local n="$1"; shift; case "$*" in "ros2 service "*) "$@" ;; *) command timeout "$n" "$@" ;; esac; }
 
 ros2() {  # ros2 param set|get <node> <name> [value] [--no-daemon] | ros2 service call /dialog/control ...
     if [ "${1:-}" = "service" ]; then
