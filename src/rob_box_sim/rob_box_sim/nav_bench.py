@@ -195,6 +195,41 @@ def run_goal(nav, recorder: Recorder, name: str, goal: Pose2D, timeout_s: float)
     return rec
 
 
+def run_spin(nav, recorder: Recorder, name: str, angle: float, timeout_s: float) -> GoalRecord:
+    """Цель ``spin``: behavior Spin (recovery Nav2) на месте, без NavigateToPose.
+
+    Проверка столкновения Spin — ``simulate_ahead_time`` behavior_server; отказ
+    «Collision Ahead - Exiting Spin» приходит как FAILED. Цель — та же точка с курсом
+    +angle (до цели, м ≈ 0, если робот не сдвинулся).
+    """
+    from nav2_simple_commander.robot_navigator import TaskResult
+
+    x, y, yaw = recorder.last_truth or (0.0, 0.0, 0.0)
+    rec = GoalRecord(name, Pose2D(x, y, yaw + angle), "RUNNING", recorder.now(), recorder.now())
+    recorder.rec = rec
+    wall0 = time.monotonic()
+    if not nav.spin(spin_dist=angle, time_allowance=int(timeout_s)):
+        rec.status = "REJECTED"
+    else:
+        while not nav.isTaskComplete():
+            if recorder.now() - rec.t_start > timeout_s + 10:
+                nav.cancelTask()
+                rec.status = "TIMEOUT"
+                _spin_for(nav, 1.0)
+                break
+        if rec.status == "RUNNING":
+            res = nav.getResult()
+            rec.status = {
+                TaskResult.SUCCEEDED: "SUCCEEDED",
+                TaskResult.CANCELED: "CANCELED",
+                TaskResult.FAILED: "FAILED",
+            }.get(res, f"UNKNOWN({res})")
+    rec.t_end = recorder.now()
+    rec.wall_s = time.monotonic() - wall0
+    recorder.rec = None
+    return rec
+
+
 def dump_costmap(nav, recorder: Recorder, out: Path, stem: str) -> int | None:
     """Глобальная costmap в миг провала: значения клеток (pgm) и стоимость под роботом.
 
@@ -286,6 +321,10 @@ def main(argv: list[str] | None = None) -> int:
         goal = Pose2D(float(g["x"]), float(g["y"]), float(g.get("yaw", 0.0)))
         if failed and sc.get("stop_on_failure", True):
             rec = GoalRecord(g["name"], goal, "SKIPPED", recorder.now(), recorder.now())
+        elif "spin" in g:
+            print(f"[bench] {g['name']}: spin {g['spin']} рад на месте", flush=True)
+            rec = run_spin(nav, recorder, g["name"], float(g["spin"]), float(sc["timeout_base_s"]))
+            failed = failed or rec.status != "SUCCEEDED"
         else:
             start = Pose2D(*recorder.last_truth) if recorder.last_truth else Pose2D(0, 0, 0)
             timeout = timeout_for(sc, start, goal)

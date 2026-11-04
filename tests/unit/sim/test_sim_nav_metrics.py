@@ -160,3 +160,11 @@ def test_rtf_is_sim_time_over_wall_time():
     assert goal_metrics(rec, [WALL])["rtf"] is None  # настенное время не записано
     rec.wall_s = 30.0
     assert goal_metrics(rec, [WALL])["rtf"] == 0.5
+
+
+def test_dead_end_scenario_turns_and_spins_in_place():
+    sc = load_scenario(SCENARIOS, "dead_end", SIM / "worlds")
+    assert sc["stop_on_failure"] is False  # spin в торце — даже если выезд не удался
+    spins = [g for g in sc["goals"] if "spin" in g]
+    assert len(spins) == 1 and abs(spins[0]["spin"]) == pytest.approx(math.pi, abs=1e-3)
+    assert any(abs(g.get("yaw", 0.0)) == pytest.approx(math.pi, abs=1e-3) for g in sc["goals"] if "spin" not in g)

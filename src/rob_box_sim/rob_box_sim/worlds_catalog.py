@@ -17,7 +17,7 @@ import sys
 from dataclasses import dataclass
 from pathlib import Path
 
-from rob_box_sim.geometry2d import Box
+from rob_box_sim.geometry2d import ROBOT_FOOTPRINT, Box
 from rob_box_sim.world_sdf import render_world
 
 WALL_T = 0.1
@@ -158,7 +158,37 @@ def low_obstacle() -> World:
     )
 
 
-CATALOG = {w.name: w for w in (polygon(), turn90(), corridor(), low_obstacle())}
+# Тупик: разворот на месте у стены. Коридор DEAD_END_WIDTH в свету, робот спавнится
+# лицом в торец с зазором DEAD_END_FRONT. Углы габарита 0.61×0.605 заметают круг
+# радиусом 0.43 м (geometry2d.ROBOT_FOOTPRINT): до стен тупика ~0.12 м — по корпусу
+# разворот возможен, а footprint_padding (Spin «Collision Ahead», DWB ObstacleFootprint)
+# раздувает этот круг на padding·√2 — так видно, при каком запасе разворот отказывает.
+DEAD_END_WIDTH = 1.1
+DEAD_END_FRONT = 0.25
+DEAD_END_LENGTH = 4.5  # от торца назад, до задней стены
+
+
+def dead_end() -> World:
+    half = DEAD_END_WIDTH / 2
+    t2 = WALL_T / 2
+    x_end = ROBOT_FOOTPRINT.x_max + DEAD_END_FRONT  # грань торца
+    x_back = x_end - DEAD_END_LENGTH
+    boxes = (
+        wall_x("side_north", half + t2, x_back - WALL_T, x_end + WALL_T),
+        wall_x("side_south", -half - t2, x_back - WALL_T, x_end + WALL_T),
+        wall_y("end_wall", x_end + t2, -half, half),
+        wall_y("back_wall", x_back - t2, -half, half),
+    )
+    return World(
+        "dead_end",
+        f"  Тупик: коридор {DEAD_END_WIDTH:.1f} м в свету, x {x_back:.3f}..{x_end:.3f}, y ±{half:.2f}.\n"
+        f"  Робот спавнится в (0, 0) лицом в торец (+X), зазор до торца {DEAD_END_FRONT:.2f} м.\n"
+        "  Сценарий: развернуться на месте у стены (DWB и Spin) и выехать.",
+        boxes,
+    )
+
+
+CATALOG = {w.name: w for w in (polygon(), turn90(), corridor(), low_obstacle(), dead_end())}
 
 
 def main(argv: list[str] | None = None) -> int:

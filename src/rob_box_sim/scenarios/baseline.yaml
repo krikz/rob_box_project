@@ -40,3 +40,13 @@ worlds:
   local/robot_map:
     stop_on_failure: false
     goals_from: local/robot_map.goals.yaml
+
+  # Разворот на месте у стены (worlds_catalog.dead_end): DWB (RotateToGoal +
+  # ObstacleFootprint) разворачивает к выходу и обратно, затем behavior Spin на 180°
+  # в торце — его отказ «Collision Ahead» = FAILED.
+  dead_end:
+    stop_on_failure: false
+    goals:
+      - {name: turn_out, x: -2.5, y: 0.0, yaw: 3.1416}
+      - {name: back_in, x: 0.0, y: 0.0, yaw: 0.0}
+      - {name: spin_180, x: 0.0, y: 0.0, yaw: 0.0, spin: 3.1416}
