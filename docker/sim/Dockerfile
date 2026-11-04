@@ -3,7 +3,7 @@
 #
 # План: docs/research/2026-11-04-gazebo-sim-navigation.md §6.
 #   Шаг 1 — робот в Gazebo едет от /cmd_vel.
-#   Шаг 2 — один образ на все сервисы docker/sim/docker-compose.yaml:
+#   Шаг 2 — один образ на все сервисы docker/sim/compose.yaml:
 #           robot_state_publisher, twist_mux, rtabmap, Nav2 запускаются
 #           БОЕВЫМИ скриптами docker/main/scripts/** с БОЕВЫМИ конфигами
 #           docker/main/config/** (оба монтируются compose, в образ не копируются).

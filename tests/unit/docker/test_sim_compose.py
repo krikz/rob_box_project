@@ -49,7 +49,7 @@ def _load(path: Path) -> dict:
     return yaml.load(path.read_text(encoding="utf-8"), Loader=_Loader)  # noqa: S506 — SafeLoader
 
 
-SIM_COMPOSE = _load(SIM / "docker-compose.yaml")["services"]
+SIM_COMPOSE = _load(SIM / "compose.yaml")["services"]
 MAIN_COMPOSE = _load(MAIN / "docker-compose.yaml")["services"]
 
 

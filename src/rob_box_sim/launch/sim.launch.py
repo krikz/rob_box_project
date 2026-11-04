@@ -11,7 +11,7 @@
     что контейнер ros2-control на роботе.
 
 Чего здесь нет (шаг 2): robot_state_publisher и twist_mux запускаются отдельными
-сервисами docker/sim/docker-compose.yaml БОЕВЫМИ скриптами docker/main/scripts/**
+сервисами docker/sim/compose.yaml БОЕВЫМИ скриптами docker/main/scripts/**
 (``URDF_SIM=true``, ``USE_SIM_TIME=true``). Поэтому /robot_description публикует
 сервис robot-state-publisher, а /cmd_vel → /diff_drive_controller/cmd_vel_unstamped
 ведёт боевой twist_mux. Временный relay шага 1 удалён.

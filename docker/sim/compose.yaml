@@ -2,6 +2,10 @@
 #
 # План: docs/research/2026-11-04-gazebo-sim-navigation.md §6, шаг 2.
 #
+# Имя файла — compose.yaml, а не docker-compose.yaml: docker/*/docker-compose*.yaml —
+# это контейнеры робота (их сканирует tools/architecture_audit.py), а сим на робота
+# не деплоится. Тег !override (compose ≥ 2.24) обычный yaml.safe_load не читает.
+#
 # Главное правило: узлы навигации запускаются ТЕМИ ЖЕ скриптами и с ТЕМИ ЖЕ
 # конфигами, что на Main Pi. Сервисы robot-state-publisher, twist-mux, rtabmap,
 # nav2 и zenoh-router наследуются (`extends`) из docker/main/docker-compose.yaml:
@@ -20,7 +24,7 @@
 #
 # Запуск из корня репо (песочница 10.1.1.250, Intel iGPU — card1):
 #   docker build -f docker/sim/Dockerfile -t rob_box_sim:local .
-#   SIM_DRI_CARD=/dev/dri/card1 docker compose -f docker/sim/docker-compose.yaml up -d --no-build
+#   SIM_DRI_CARD=/dev/dri/card1 docker compose -f docker/sim/compose.yaml up -d --no-build
 #
 # Переменные (все необязательные):
 #   SIM_IMAGE          тег образа                  (rob_box_sim:local)
