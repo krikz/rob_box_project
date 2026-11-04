@@ -5,7 +5,7 @@
 1. ``accepted`` — ``/avatar/stt/result`` (stt_node, wake «ТАРС» принят);
    шлёт ``QuestNode._on_avatar_stt_result``.
 2. ``thinking`` — ``/avatar/tars/stage`` от supervisor'а: ход LLM начался
-   (``AvatarSupervisor._on_avatar_command`` перед ``_run_agent_sync``).
+   (``AvatarSupervisor._on_avatar_command`` перед ``_agent_runner``).
    Оттуда же ``idle``, если ход кончился без реплики в шлем.
 3. Ответ LLM → ``SpeechRequest`` (sink=headset, ``speech_id``) владельцу речи
    → :meth:`TarsStageRelay.on_request` (#4252).

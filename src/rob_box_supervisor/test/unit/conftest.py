@@ -502,13 +502,25 @@ except ImportError:
 import pytest  # noqa: E402
 
 
+class DialogControlRecorder:
+    """Писатель pause/resume личности в тестах: тот же вход ``publish(String JSON)``, что у клиента
+    ``/dialog/control``, но без ROS-сервиса — порядок и состав команд видны в ``published``."""
+
+    def __init__(self) -> None:
+        self.published: list[Any] = []
+
+    def publish(self, msg: Any) -> None:
+        self.published.append(msg)
+
+
 @pytest.fixture(autouse=True)
-def _dialog_engine_v1_unless_test_sets_own():
-    """Тесты этого каталога проверяют проводку v1 (``/dialogue/control``); дефолт ``dialog_engine`` теперь v2
-    (Шифу 23.10), поэтому v1 выставлен явно. Тесты v2 патчат ``declare`` сами (вложенный patch перекрывает)."""
+def _record_dialog_control_unless_test_uses_client():
+    """Тесты каталога проверяют, ЧТО супервизор шлёт личности (pause/resume); сам клиент сервиса
+    ``/dialog/control`` (ack, отказ, таймаут) проверяют ``test_dialog_control_client.py`` и
+    ``test_supervisor_node.py`` (настоящий писатель взят там при импорте модуля, до подмены)."""
     from unittest.mock import patch  # noqa: PLC0415
 
-    from rob_box_core import dialog_engine  # noqa: PLC0415
+    from rob_box_supervisor import supervisor_node  # noqa: PLC0415
 
-    with patch.object(dialog_engine, "declare", return_value=dialog_engine.V1):
+    with patch.object(supervisor_node, "_dialogue_control_publisher", lambda _node: DialogControlRecorder()):
         yield

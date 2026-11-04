@@ -106,7 +106,7 @@ def test_wiring_v2_topics_and_no_v1_dialogue_topics(node):
     assert {"/dialog/session", "/dialog/intent"} <= pubs  # /dialog/plan_event — plan_host в build_tools (подменён)
     for legacy in ("/voice/dialogue/response", "/voice/tts/request", "/dialogue/control", "/dialogue/control_ack"):
         assert legacy not in subs | pubs, legacy
-    assert node.engine_flag == "v2"  # дефолт v2 (Шифу 23.10); параметр есть; какую ноду стартовать, решает launch по dialog_engine.yaml
+    assert node.engine_flag == "v2"  # метка движка для e2e (detect_dialog_engine) до #4354 A4; флага v1/v2 нет
 
 
 def test_node_fixture_never_points_the_facts_reader_at_the_host_voice_memory_db(request, monkeypatch, tmp_path):

@@ -20,7 +20,6 @@
     "/audio/enable_reactive",
     "/camera/camera/color/image_raw",
     "/ceiling_camera/image_raw/compressed",
-    "/voice/dialogue/response",
     "/voice/speaker/merge",
     "~/load_animation"
   ],

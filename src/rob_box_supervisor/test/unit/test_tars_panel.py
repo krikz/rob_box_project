@@ -88,8 +88,13 @@ class _StubToolSpec:
 _rob_box_harness_tools.ToolSpec = _StubToolSpec  # type: ignore[attr-defined]
 _rob_box_harness_tools.ToolHandler = Callable[[Any], Any]  # type: ignore[attr-defined]
 _rob_box_harness.tools = _rob_box_harness_tools  # type: ignore[attr-defined]
-sys.modules.setdefault("rob_box_harness", _rob_box_harness)
-sys.modules.setdefault("rob_box_harness.tools", _rob_box_harness_tools)
+# Настоящий пакет есть — заглушка не ставится: иначе она перекроет rob_box_harness для тестов каталога, что
+# импортируются позже (supervisor_node больше не тянет rob_box_harness при импорте, #4354 A3).
+try:
+    import rob_box_harness.tools  # noqa: F401, E402
+except ImportError:
+    sys.modules.setdefault("rob_box_harness", _rob_box_harness)
+    sys.modules.setdefault("rob_box_harness.tools", _rob_box_harness_tools)
 
 # Импорт dispatcher'а — после подмены.
 from rob_box_supervisor.tars_panel import TarsPanelDispatcher  # noqa: E402

@@ -1,7 +1,7 @@
 {
   "version": 1,
   "created": "2026-11-04",
-  "base_sha": "b1a0c5f8d9c8ae2352658435adbf4dad71bfb831",
+  "base_sha": "41660f9858a27433b1130cb45284ca80d95aef37",
   "limits": {
     "wmc": 80,
     "methods": 40
@@ -52,8 +52,8 @@
       "methods": 33
     },
     "src/rob_box_supervisor/rob_box_supervisor/supervisor_node.py:AvatarSupervisor": {
-      "wmc": 316,
-      "methods": 62
+      "wmc": 283,
+      "methods": 58
     },
     "src/rob_box_telegram/rob_box_telegram/supervisor_client.py:SupervisorClient": {
       "wmc": 133,
