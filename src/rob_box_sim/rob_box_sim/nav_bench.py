@@ -16,7 +16,8 @@
      число recovery; по таймауту — отмена и статус TIMEOUT;
   4. после провала при ``stop_on_failure`` остальные цели — SKIPPED;
   5. в конце снимает ``/rtabmap/map`` и сверяет с миром (map_check);
-  6. пишет ``<out>/<мир>.json``, ``.csv``, ``.md`` и ``<мир>_map.pgm``.
+  6. пишет ``<out>/<мир>.json``, ``.csv``, ``.md`` и ``<мир>_map.pgm``; после каждой цели —
+     позы ``<мир>_<цель>_truth.csv`` / ``_estimate.csv`` (t, x, y, yaw) для анимации.
 
 Сравнение контроллеров и правка параметров — шаг 6; здесь только замер.
 """
@@ -40,6 +41,7 @@ from rob_box_sim.world_sdf import load_world_boxes
 
 DEFAULT_SCENARIOS = "/ws/install/rob_box_sim/share/rob_box_sim/scenarios/baseline.yaml"
 SET_MAPPING_SERVICE = "/rtabmap/rtabmap/set_mode_mapping"
+GLOBAL_COSTMAP_TOPIC = "/global_costmap/costmap"
 
 
 def load_scenario(path: Path, world: str, worlds_dir: Path) -> dict:
@@ -65,6 +67,12 @@ def _yaw(q) -> float:
     return math.atan2(2 * (q.w * q.z + q.x * q.y), 1 - 2 * (q.y * q.y + q.z * q.z))
 
 
+def _tilt(q) -> float:
+    """Наклон корпуса от вертикали, рад (крен и тангаж вместе): угол оси z тела с мировой z."""
+    zz = 1 - 2 * (q.x * q.x + q.y * q.y)
+    return math.acos(max(-1.0, min(1.0, zz)))
+
+
 class Recorder:
     """Подписки стенда на узле навигатора: колбэки крутит сам BasicNavigator."""
 
@@ -82,6 +90,7 @@ class Recorder:
         self.last_truth: tuple[float, float, float] | None = None
         node.create_subscription(Odometry, "/sim/ground_truth/odom", self._on_truth, 20)
         node.create_subscription(Twist, "/cmd_vel", self._on_cmd, 20)
+        node.create_subscription(Twist, "/cmd_vel_nav", self._on_cmd_raw, 20)
         node.create_subscription(LaserScan, "/scan", self._on_scan, qos_profile_sensor_data)
 
     def now(self) -> float:
@@ -103,10 +112,15 @@ class Recorder:
         if self.rec is not None:
             self.rec.truth.append((self.now(), *self.last_truth))
             self.rec.estimate.append(self.estimate())
+            self.rec.tilt_max_rad = max(self.rec.tilt_max_rad, _tilt(p.orientation))
 
     def _on_cmd(self, msg):
         if self.rec is not None:
             self.rec.cmd.append((self.now(), msg.linear.x, msg.angular.z))
+
+    def _on_cmd_raw(self, msg):
+        if self.rec is not None:
+            self.rec.cmd_raw.append((self.now(), msg.linear.x, msg.angular.z))
 
     def _on_scan(self, msg):
         if self.rec is not None:
@@ -152,6 +166,7 @@ def run_goal(nav, recorder: Recorder, name: str, goal: Pose2D, timeout_s: float)
 
     rec = GoalRecord(name, goal, "RUNNING", recorder.now(), recorder.now())
     recorder.rec = rec
+    wall0 = time.monotonic()
     if not nav.goToPose(_pose_stamped(nav, goal)):
         rec.status = "REJECTED"
     else:
@@ -175,8 +190,49 @@ def run_goal(nav, recorder: Recorder, name: str, goal: Pose2D, timeout_s: float)
                 TaskResult.FAILED: "FAILED",
             }.get(res, f"UNKNOWN({res})")
     rec.t_end = recorder.now()
+    rec.wall_s = time.monotonic() - wall0
     recorder.rec = None
     return rec
+
+
+def dump_costmap(nav, recorder: Recorder, out: Path, stem: str) -> int | None:
+    """Глобальная costmap в миг провала: значения клеток (pgm) и стоимость под роботом.
+
+    Стоимость под роботом 99/100 — центр робота в зоне inscribed/lethal: планировщик
+    не выводит путь из такой клетки, контроллер не находит допустимой траектории.
+    """
+    grid = map_check.grab_map(nav, GLOBAL_COSTMAP_TOPIC, timeout_s=10.0)
+    if grid is None:
+        print(f"[bench] COSTMAP {stem}: {GLOBAL_COSTMAP_TOPIC} не пришла", flush=True)
+        return None
+    out.mkdir(parents=True, exist_ok=True)
+    map_check.write_raw_pgm(grid, out / f"{stem}_costmap.pgm")
+    est = recorder.estimate()
+    under = grid.value_at(est[0], est[1]) if est else None
+    print(f"[bench] COSTMAP {stem} {grid.width}x{grid.height} res={grid.resolution:.3f} "
+          f"origin=({grid.origin_x:.2f},{grid.origin_y:.2f}) robot={est} cost_under_robot={under}", flush=True)
+    return under
+
+
+def write_trajectories(rec: GoalRecord, out: Path, stem: str) -> list[Path]:
+    """Позы цели для анимации: ``<stem>_truth.csv`` и ``<stem>_estimate.csv`` (t, x, y, yaw).
+
+    truth — истинная поза Gazebo, estimate — TF ``map → base_footprint`` в те же моменты
+    (момент без TF пропускается). Цель без поз (SKIPPED) файлов не даёт.
+    """
+    if not rec.truth:
+        return []
+    out.mkdir(parents=True, exist_ok=True)
+    est = [(t, *e) for (t, *_), e in zip(rec.truth, rec.estimate) if e is not None]
+    paths = []
+    for kind, samples in (("truth", rec.truth), ("estimate", est)):
+        path = out / f"{stem}_{kind}.csv"
+        with open(path, "w", newline="", encoding="utf-8") as f:
+            w = csv.writer(f)
+            w.writerow(["t", "x", "y", "yaw"])
+            w.writerows([[f"{v:.4f}" for v in row] for row in samples])
+        paths.append(path)
+    return paths
 
 
 def write_outputs(out: Path, world: str, rows: list[dict], extra: dict) -> None:
@@ -236,9 +292,13 @@ def main(argv: list[str] | None = None) -> int:
             print(f"[bench] {g['name']}: цель ({goal.x}, {goal.y}, {goal.yaw}) таймаут {timeout:.0f} с", flush=True)
             rec = run_goal(nav, recorder, g["name"], goal, timeout)
             failed = failed or rec.status != "SUCCEEDED"
-        row = {"world": args.world, "label": args.label, **goal_metrics(rec, boxes)}
+        under = None
+        if rec.status not in ("SUCCEEDED", "SKIPPED"):
+            under = dump_costmap(nav, recorder, args.out, f"{args.world.replace('/', '_')}_{g['name']}")
+        row = {"world": args.world, "label": args.label, **goal_metrics(rec, boxes), "fail_cost_under_robot": under}
         print("[bench] " + json.dumps(row, ensure_ascii=False), flush=True)
         rows.append(row)
+        write_trajectories(rec, args.out, f"{args.world.replace('/', '_')}_{g['name']}")
 
     grid = map_check.grab_map(nav)
     map_stats = None

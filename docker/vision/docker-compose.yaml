@@ -209,7 +209,7 @@ services:
   # Не использует ROS/Zenoh, depends_on: zenoh-router не требуется.
   # cAdvisor - мониторинг контейнеров (CPU, память, сеть)
   cadvisor:
-    image: gcr.io/cadvisor/cadvisor:v0.52.1
+    image: ghcr.io/google/cadvisor:v0.60.6  # #4332: 0.52.1 не видит docker с containerd snapshotter (нужен >=0.54.0, google/cadvisor#3709); в gcr.io выше 0.52.1 нет
     container_name: cadvisor-vision
     profiles: ["monitoring"]
     pull_policy: if_not_present

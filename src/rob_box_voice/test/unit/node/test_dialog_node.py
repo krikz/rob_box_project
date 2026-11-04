@@ -1082,3 +1082,16 @@ def test_biometry_of_this_phrase_after_stt_decides_the_answer_4141(node):
                              "utterance_id": "u-b"}))
     node.last_turn.result(timeout=10)
     assert _speech_texts(node) == ["Узнал — ты Борис."]
+
+
+def test_4328_clear_stop_counts_barge_in_and_non_stop_does_not(node):
+    prometheus = pytest.importorskip("prometheus_client")
+    count = lambda: prometheus.REGISTRY.get_sample_value("voice_barge_in_total") or 0.0  # noqa: E731
+    before = count()
+    msg = M.InterruptRequest()
+    msg.text_partial, msg.utterance_id = "Робот, расскажи анекдот", "u1"
+    node._on_interrupt(msg)
+    assert count() == before
+    msg.text_partial, msg.utterance_id = "Робот, стоп", "u2"
+    node._on_interrupt(msg)
+    assert count() == before + 1

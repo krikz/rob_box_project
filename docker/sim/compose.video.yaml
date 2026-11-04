@@ -1,0 +1,40 @@
+# Оверлей docker/sim/compose.yaml для видео из Gazebo (docker/sim/record_video.sh).
+#
+# Отличия от стенда — только два:
+#   * gazebo грузит КОПИЮ мира с камерами-сенсорами (rob_box_sim.video_overlay):
+#     вид сверху и сзади-сбоку, кадры пишет сам сенсор в /sim_video/frames;
+#   * bench едет по scenarios/video.yaml (одна цель на мир).
+# Навигация, конфиги и сеть — те же, что у стенда (наследуются из compose.yaml).
+#
+#   docker compose -f docker/sim/compose.yaml -f docker/sim/compose.video.yaml ...
+#
+# SIM_VIDEO_DIR — каталог хоста для мира с камерами и кадров (обязателен).
+
+services:
+  gazebo:
+    volumes:
+      - ${SIM_VIDEO_DIR:?SIM_VIDEO_DIR}:/sim_video
+    command:
+      - /ros_scripts/ros_with_namespace.sh
+      - bash
+      - -c
+      - >-
+        python3 -m rob_box_sim.video_overlay
+        --world /sim_worlds/${SIM_WORLD:-polygon}.sdf --name ${SIM_WORLD:-polygon}
+        --scenarios /ws/install/rob_box_sim/share/rob_box_sim/scenarios/video.yaml
+        --out /sim_video/world.sdf --frames /sim_video/frames
+        --width ${SIM_VIDEO_WIDTH:-1280} --rate ${SIM_VIDEO_RATE:-10}
+        && exec ros2 launch rob_box_sim sim.launch.py world:=/sim_video/world.sdf
+
+  bench:
+    command:
+      - /ros_scripts/ros_with_namespace.sh
+      - python3
+      - -m
+      - rob_box_sim.nav_bench
+      - --world
+      - ${SIM_WORLD:-polygon}
+      - --scenarios
+      - /ws/install/rob_box_sim/share/rob_box_sim/scenarios/video.yaml
+      - --label
+      - video

@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import asyncio
 import threading
+import time
 import uuid
 from dataclasses import replace
 from typing import Any, AsyncIterator, Callable, Iterable, List, Mapping, Optional, Sequence, Tuple
@@ -180,10 +181,13 @@ class V2Ports:
                  settings: Optional[LLMSettings] = None, intent_pub: Any = None,
                  log: Callable[[str], None] = lambda line: None, epoch: Optional[Callable[[], int]] = None,
                  performer: Callable[[], Any] = lambda: None,
-                 later: Callable[[float, Callable[[], None]], Any] = _call_later) -> None:
+                 later: Callable[[float, Callable[[], None]], Any] = _call_later,
+                 on_ask: Callable[..., None] = lambda provider, *, ok, duration_s: None) -> None:
         self._node = node
         #: Таймер очереди лица (#4083): ``later(через_с, fire) -> handle.cancel()``; тест подменяет его своим.
         self._later = later
+        #: Итог вызова цепочки LLM (провайдер, ok, задержка) - хост ставит метрики (#4328); ядро без prometheus.
+        self._on_ask = on_ask
         self._queue: List[Any] = []
         self._llm = llm
         self._counter = counter
@@ -210,11 +214,14 @@ class V2Ports:
         msgs = [to_message(m) for m in messages]
         schemas = [tool_schema(t) for t in tools]
         before = self._counter.calls
+        started = time.monotonic()
         try:
             response = await self._llm.complete(msgs, tools=schemas, settings=self._settings)
         except (ProviderError, OSError, asyncio.TimeoutError) as exc:
+            self._on_ask(self.provider(), ok=False, duration_s=time.monotonic() - started)
             raise ProviderFailed(self.provider(), exc) from exc
         provider = answering_provider(self._llm)
+        self._on_ask(provider, ok=True, duration_s=time.monotonic() - started)
         usage = dict(response.usage or {})
         tokens = int(usage.get("prompt_tokens") or measure(msgs, schemas).total)
         self._log(f"🧮 [prompt] tokens={tokens} estimated={'prompt_tokens' not in usage} provider={provider} "
@@ -247,10 +254,12 @@ class V2Ports:
             self.on_late(result)
 
     def say(self, turn_id: str, epoch: int, text: str, voice: Optional[str] = None,
-            emotion: Optional[str] = None) -> str:
+            emotion: Optional[str] = None, boundary: str = "none") -> str:
+        """Реплика хода; ``boundary="sentence"`` - счёт (#4207): отмена дочитывает звучащее предложение-число."""
         utterance = Utterance(text=text, sink=Sink.SPEAKERS, voice=voice or None, role=voice or "", emotion=emotion or None,
                               speech_id=str(uuid.uuid4()))
-        return speech_client.say(self._node, utterance, agent=self._agent, epoch=epoch, turn_id=turn_id)
+        return speech_client.say(self._node, utterance, agent=self._agent, epoch=epoch, turn_id=turn_id,
+                                 boundary=boundary)
 
     def stage(self, turn_id: str, epoch: int, stage: str, status: str, reason: str = "", cls: Optional[str] = None,
               llm_calls: int = 0, provider: str = "", source: str = "",
@@ -320,8 +329,10 @@ class V2Ports:
             handle.cancel()
         self._log(f"🎭 [turn-v2] очередь лица снята: {len(pending)} сцен (стадия {stage} turn={turn_id})")
 
-    def cancel_speech(self, epoch: int, reason: str, boundary: str = "as_requested") -> None:
-        speech_client.cancel(self._node, agent=self._agent, epoch=epoch, reason=reason, boundary=boundary)
+    def cancel_speech(self, epoch: int, reason: str, boundary: str = "as_requested", speech_id: str = "") -> None:
+        """Отмена речи эпохи; ``speech_id`` - ровно этой реплики (правка звучащего счёта, #4207)."""
+        speech_client.cancel(self._node, agent=self._agent, speech_id=speech_id or None, epoch=epoch, reason=reason,
+                             boundary=boundary)
 
     def stop_perform(self, how: str, keep_backing: bool = False) -> bool:
         """Перебивание выступления (``PerformHost.halt``/``stop``); ``True`` — играющая музыка — его бит, и его

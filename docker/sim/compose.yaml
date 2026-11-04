@@ -35,8 +35,9 @@
 #   SIM_WORLD          мир из src/rob_box_sim/worlds без .sdf (polygon):
 #                      polygon | turn90 | corridor | low_obstacle | local/<мир из карты робота>
 #
-# rtabmap, как на роботе, стартует в localization (start_rtabmap.sh). Чтобы
-# построить карту мира, переключить его тем же сервисом, что на роботе:
+# rtabmap, как на роботе, стартует в localization (start_rtabmap.sh).
+# SIM_RTABMAP_MODE=mapping — старт сразу в картографии с пустой базой (видео
+# картографии, docker/sim/record_mapping.sh). Или переключить тем же сервисом, что на роботе:
 #   docker exec <SIM_PREFIX>-rtabmap /ros_scripts/ros_with_namespace.sh \
 #     bash -c 'source /opt/ros/humble/setup.bash &&
 #              ros2 service call /rtabmap/rtabmap/set_mode_mapping std_srvs/srv/Empty'
@@ -132,7 +133,12 @@ services:
       service: rtabmap
     <<: *sim_service
     container_name: ${SIM_PREFIX:-rob-box-sim}-rtabmap
-    environment: *sim_env
+    environment:
+      <<: *sim_env
+      #   SIM_RTABMAP_MODE  localization | mapping   (localization, как на роботе)
+      # mapping — start_rtabmap.sh стартует с localization:=false и пустой базой
+      # (--delete_db_on_start), как StartMapping с new_location; только при USE_SIM_TIME=true.
+      RTABMAP_START_MODE: ${SIM_RTABMAP_MODE:-localization}
     volumes:
       - sim-maps:/maps
 
@@ -152,9 +158,24 @@ services:
       service: nav2
     <<: *sim_service
     container_name: ${SIM_PREFIX:-rob-box-sim}-nav2
-    environment: *sim_env
+    environment:
+      <<: *sim_env
+      # Шаг 6: оверлеи поверх боевого nav2_params.yaml (src/rob_box_sim/config/nav2/)
+      # и цепочка velocity_smoother; разбор — docker/main/scripts/nav2/start_nav2_direct.sh.
+      #   SIM_CONTROLLER  dwb | rpp | mppi   (dwb, как на роботе)
+      #   SIM_PLANNER     navfn | smac       (navfn, как на роботе)
+      #   SIM_FOOTPRINT   radius | urdf      (radius 0.45, как на роботе; urdf — опыт)
+      #   SIM_GLOBAL_MAP  static | none      (static — карта rtabmap; none — как на роботе)
+      #   SIM_SMOOTH_CMD_VEL  true | false   (true; false — как на роботе сейчас)
+      NAV2_PARAMS_OVERLAYS: >-
+        /sim_nav2/global_${SIM_GLOBAL_MAP:-static}.yaml
+        /sim_nav2/controller_${SIM_CONTROLLER:-dwb}.yaml
+        /sim_nav2/planner_${SIM_PLANNER:-navfn}.yaml
+        /sim_nav2/footprint_${SIM_FOOTPRINT:-radius}.yaml
+      NAV2_SMOOTH_CMD_VEL: ${SIM_SMOOTH_CMD_VEL:-true}
     volumes:
       - sim-maps:/maps:ro
+      - ../../src/rob_box_sim/config/nav2:/sim_nav2:ro
     # У робота nav2 ждёт ещё ros2-control и lslidar; в симе их заменяет gazebo.
     depends_on: !override
       - zenoh-router

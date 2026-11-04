@@ -251,6 +251,10 @@ services:
       # CAN интерфейс (can0 или can1)
       - CAN_INTERFACE=can0
       - CONTROLLER_CONFIG=/config/controllers/controller_manager.yaml
+      # Колёсная одометрия: пусто — open_loop из yaml (true, по командам);
+      # false — по eRPM холлов VESC. Ставить в .env Main Pi только после
+      # проверки рулеткой (план в PR feat/wheel-odom-closed-loop-erpm).
+      - DIFF_DRIVE_OPEN_LOOP=${DIFF_DRIVE_OPEN_LOOP:-}
     volumes:
       - ./config:/config:ro
       - ../common/scripts:/ros_scripts:ro

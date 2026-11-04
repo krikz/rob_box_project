@@ -1427,8 +1427,35 @@ VOICE_FAILED = ByData(("status", "voice_default"), {
     ("fallback", True): "voice.unavailable_default", ("fallback", False): "voice.unavailable",
     ("fallback", None): "voice.rejected", ("timeout", None): "voice.timeout",
 })
+#: Итог поездки к точке (``navigate_to_waypoint``/``navigate_to_coordinates``, #4344): фразу строит код по данным
+#: исхода, которые тул кладёт по ответу Nav2 (``rob_box_mcp_tools.core.action_outcome.nav_data``), а не общее
+#: «Приехал.» класса. Живой 04.11 11:22: робот уже стоял на точке «а», Nav2 ответил Goal succeeded за 60 мс - в чат
+#: ушло «Приехал.» без точки. Поля данных: :data:`NAV_TARGET_FIELD` - точка словами (слот ``{target}``),
+#: :data:`NAV_ARRIVAL_FIELD` - как достигнута (:data:`NAV_ALREADY_THERE`: робот уже стоял на ней, :data:`NAV_ARRIVED`:
+#: доехал), :data:`NAV_OUTCOME_FIELD` - вид исхода Nav2 (он же причина отказа), :data:`NAV_FAILURE_OUTCOMES` - виды
+#: неуспеха, у каждого своя фраза «Не доехал до точки …: причина». Значения поля - контракт с тулом (тест в
+#: ``rob_box_mcp_tools``): тул берёт имена полей и значения прибытия отсюда.
+NAV_TARGET_FIELD = "target"
+NAV_ARRIVAL_FIELD = "arrival"
+NAV_OUTCOME_FIELD = "outcome"
+NAV_ALREADY_THERE = "already_there"
+NAV_ARRIVED = "arrived"
+NAV_UNKNOWN_TARGET = "unknown_target"
+NAV_FAILURE_OUTCOMES: Tuple[str, ...] = (
+    "aborted", "canceled", "timeout", "rejected", "no_response", "server_unavailable", "unknown_status",
+    NAV_UNKNOWN_TARGET,
+)
+NAV_DONE = ByData((NAV_ARRIVAL_FIELD,), {
+    (NAV_ALREADY_THERE,): "motion.already_there", (NAV_ARRIVED,): "motion.arrived",
+})
+NAV_FAILED = ByData((NAV_OUTCOME_FIELD,), {(kind,): f"motion.not_reached.{kind}" for kind in NAV_FAILURE_OUTCOMES})
+NAV_TOOL_PHRASES: Mapping[str, Any] = MappingProxyType({"done": NAV_DONE, "rejected": NAV_FAILED})
 #: Ключи фраз, особые для тула (поверх ключа класса): «Запомнил: …» строится по событию saved владельца памяти.
 TOOL_PHRASES: Mapping[str, Mapping[str, Any]] = MappingProxyType({
+    # поездка к точке (#4344): «Я уже на точке а.» / «Приехал на точку а.» / «Не доехал до точки а: …» по данным
+    # исхода; данных нет (отказ плана, моторы) - ключ класса ``motion.*``
+    "navigate_to_waypoint": NAV_TOOL_PHRASES,
+    "navigate_to_coordinates": NAV_TOOL_PHRASES,
     "memory_save": MappingProxyType({"done": "memory.saved"}),
     "set_voice": MappingProxyType({"done": VOICE_DONE, "rejected": VOICE_FAILED, "timeout": "voice.timeout"}),
     "set_tts_provider": MappingProxyType({"done": VOICE_DONE, "rejected": VOICE_FAILED, "timeout": "voice.timeout"}),
@@ -1681,12 +1708,25 @@ SEARCH_PROMISE_PHRASE = "command.search_promise"
 COUNT_VERBS: Tuple[str, ...] = (
     "посчитай", "посчитайте", "сосчитай", "сосчитайте", "досчитай", "досчитайте", "считай", "считайте", "посчитаем",
     "сосчитаем", "отсчитай", "отсчитайте", "посчитать", "сосчитать", "досчитать")
-#: Дальше этого числа код не считает (лимит - на решение Шифу, #4314): чисел не больше ``SEGMENTS_MAX`` × десяток.
-COUNT_MAX = 100
+#: Дальше этого числа код не считает (лимит 50 - решение Шифу 04.11, #4314): чисел не больше ``SEGMENTS_MAX`` × десяток.
+COUNT_MAX = 50
 #: Чисел в сегменте выступления счёта: «Один. Два. … Десять.» - заметно короче ``SEGMENT_MAX_CHARS``.
 COUNT_PER_SEGMENT = 10
 #: Фраза кода перед счётом, урезанным до :data:`COUNT_MAX` (слот ``top`` - предел в родительном падеже).
 COUNT_CAPPED_PHRASE = "count.capped"
+#: Обещание счёта в речи робота (#4339: «посчитай до семидесяти» → «Считаю до семидесяти, слушай внимательно.» - и
+#: ни одного числа). Модель пообещала счёт и не начала - числа строит код (``counting.full_count``), как при урезанном
+#: счёте; отказ и переспрос (без этих слов) остаются. Глаголы 1-го лица (слово целиком, строчные, без «ё»), что обещают
+#: счёт сами, и глаголы начала («начинаю») - только с предметом счёта сразу после («начинаю считать», «начну отсчёт»).
+COUNT_PROMISE_VERBS: Tuple[str, ...] = (
+    "считаю", "посчитаю", "сосчитаю", "досчитаю", "отсчитаю", "считаем", "посчитаем", "сосчитаем", "досчитаем",
+    "отсчитаем", "отсчитываю", "отсчитываем")
+COUNT_PROMISE_STARTS: Tuple[str, ...] = ("начинаю", "начну", "начинаем", "начнем", "запускаю")
+COUNT_PROMISE_OBJECTS: Tuple[str, ...] = ("считать", "счет", "отсчет", "посчитать", "сосчитать", "отсчитывать")
+#: Слова, с которыми глагол счёта не обещание: перед ним (вплотную или через слово) - отрицание («не досчитаю», «не
+#: буду … считаю»); сразу после - мнение, а не счёт («считаю, что это долго», «считаю нужным уточнить»).
+COUNT_PROMISE_UNLESS_BEFORE: Tuple[str, ...] = ("не", "нет")
+COUNT_PROMISE_UNLESS_AFTER: Tuple[str, ...] = ("что", "чтобы", "нужным", "правильным", "лишним", "разумным")
 #: Нарушение «неизвестного собеседника назвали чужим именем» (n210: «Понял, Саша.» Грише при ``name_state``
 #: ``unknown``, а Саша — из истории разговора): обращение по имени к человеку, чьё имя не ``confirmed``, - выдумка, как
 #: бы ни звали других (``foreign_name``). Повтор с подсказкой :data:`FOREIGN_NAME_HINT`; повтора нет - имя из речи
@@ -2671,6 +2711,27 @@ MUSIC_PROMISES: Mapping[str, MusicPromise] = MappingProxyType({
         near=(*MUSIC_PROMISE_NOUNS, *MUSIC_STYLE_STEMS),
         tools=("dj_set", "request_music", "edit_music", "generate_music", "music_library")),
 })
+#: Просьба ЧЕЛОВЕКА сменить тему играющего диджей-сета (#4347, М10 n604 «Робот, уводи в сторону рока…»: модель дважды
+#: обещала «заявку принял: рок будет», а тула не дала - на повторе обещание без глагола из ``MUSIC_PROMISES``, и оно
+#: прозвучало). Решает код по словам человека и структуре команды (ADR-0148), а не по тексту ответа модели: под
+#: играющим сетом (кадр ``DJ``) повелительный глагол направления и рядом название стиля - смена темы однозначна, в
+#: команде нет тула смены (:data:`THEME_SWITCH_TOOLS`) - код сам кладёт ``dj_set start`` с этой темой (тему сета тул
+#: всё равно сверяет со словами реплики, ``heard_text``), а слова модели не звучат: о новом сете скажет код по исходу.
+#: Глагол есть, а стиля нет («смени музыку») - тему код не угадывает: звучит честная фраза :data:`THEME_SWITCH_FAILED_PHRASE`.
+#: Та же форма, что :data:`MUSIC_PROMISES` (слова целые, строчные, без «ё»; основа ``near`` - начало слова).
+THEME_SWITCH_VERBS: Tuple[str, ...] = (
+    "уводи", "уведи", "сворачивай", "сверни", "переключи", "переключай", "переключись", "поменяй", "меняй", "смени",
+    "сменим", "поверни", "поворачивай", "переходи", "перейди", "уходи", "уйди")
+#: Основы стилей, которые называют тему смены (без «стил»/«жанр»: это слово о смене, а не её тема).
+THEME_SWITCH_STYLES: Tuple[str, ...] = tuple(s for s in MUSIC_STYLE_STEMS if s not in ("стил", "жанр"))
+THEME_SWITCH_ASK = MusicPromise(with_near=THEME_SWITCH_VERBS, near=THEME_SWITCH_STYLES)
+#: Просьба сменить без названия стиля: глагол рядом со словом о музыке или теме («смени тему», «переключи музыку»).
+THEME_SWITCH_VAGUE = MusicPromise(with_near=THEME_SWITCH_VERBS,
+                                  near=(*MUSIC_PROMISE_NOUNS, "тему", "темы", "стил", "жанр", "направлени", "сет"))
+#: Тулы, что исполняют смену: те же, что у обещания ``switch``.
+THEME_SWITCH_TOOLS: Tuple[str, ...] = MUSIC_PROMISES["switch"].tools
+THEME_SWITCH_FAILED_PHRASE = "command.theme_switch_failed"
+PHRASE_KEYS = PHRASE_KEYS + (THEME_SWITCH_FAILED_PHRASE,)
 #: Обещание сменить собственную речь без тула (ADR-0148): «заговорю помедленнее», «переключусь на голос
 #: Алёны», «понижу тон». Та же форма, что :data:`MUSIC_PROMISES` (слова целые, строчные, без «ё»; основа ``near`` - начало
 #: слова), валидатор команды (``command._check_voice_promise``) сверяет по словам (``words.voice_promises``). Настоящее

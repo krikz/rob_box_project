@@ -126,7 +126,7 @@ class _NavClient:
     def wait_for_server(self, timeout_sec=0.0):
         return self.server
 
-    def send_goal_async(self, goal):
+    def send_goal_async(self, goal, feedback_callback=None):
         return self.send_future
 
 
@@ -170,7 +170,7 @@ def test_nav_aborted_is_honest_failure(nav):
     res = _go(nav, client)
     assert res.success is False
     assert "ABORTED" in res.error
-    assert res.data == {"outcome": ao.NAV_ABORTED}
+    assert res.data["outcome"] == ao.NAV_ABORTED
     assert "Приехал" not in (res.message or "")
 
 
@@ -178,21 +178,21 @@ def test_nav_aborted_is_honest_failure(nav):
 def test_nav_canceled_is_honest_failure(nav):
     client, _ = _client_with(ao.GOAL_STATUS_CANCELED)
     res = _go(nav, client)
-    assert res.success is False and res.data == {"outcome": ao.NAV_CANCELED}
+    assert res.success is False and res.data["outcome"] == ao.NAV_CANCELED
 
 
 @pytest.mark.unit
 def test_nav_unknown_status_is_failure(nav):
     client, _ = _client_with(ao.GOAL_STATUS_UNKNOWN)
     res = _go(nav, client)
-    assert res.success is False and res.data == {"outcome": ao.NAV_UNKNOWN_STATUS}
+    assert res.success is False and res.data["outcome"] == ao.NAV_UNKNOWN_STATUS
 
 
 @pytest.mark.unit
 def test_nav_timeout_is_failure_and_cancels_goal(nav):
     handle = _GoalHandle(result=None, result_done=False)
     res = _go(nav, _NavClient(send_future=_Future(handle)))
-    assert res.success is False and res.data == {"outcome": ao.NAV_TIMEOUT}
+    assert res.success is False and res.data["outcome"] == ao.NAV_TIMEOUT
     assert handle.cancel_calls == 1
 
 
@@ -200,26 +200,26 @@ def test_nav_timeout_is_failure_and_cancels_goal(nav):
 def test_nav_empty_result_is_timeout_failure(nav):
     handle = _GoalHandle(result=None, result_done=True)
     res = _go(nav, _NavClient(send_future=_Future(handle)))
-    assert res.success is False and res.data == {"outcome": ao.NAV_TIMEOUT}
+    assert res.success is False and res.data["outcome"] == ao.NAV_TIMEOUT
 
 
 @pytest.mark.unit
 def test_nav_goal_rejected_is_failure(nav):
     client, _ = _client_with(ao.GOAL_STATUS_SUCCEEDED, accepted=False)
     res = _go(nav, client)
-    assert res.success is False and res.data == {"outcome": ao.NAV_REJECTED}
+    assert res.success is False and res.data["outcome"] == ao.NAV_REJECTED
 
 
 @pytest.mark.unit
 def test_nav_no_reply_to_goal_is_failure(nav):
     res = _go(nav, _NavClient(send_future=_Future(None)))
-    assert res.success is False and res.data == {"outcome": ao.NAV_NO_RESPONSE}
+    assert res.success is False and res.data["outcome"] == ao.NAV_NO_RESPONSE
 
 
 @pytest.mark.unit
 def test_nav_server_unavailable_is_failure(nav):
     res = _go(nav, _NavClient(server=False))
-    assert res.success is False and res.data == {"outcome": ao.NAV_SERVER_UNAVAILABLE}
+    assert res.success is False and res.data["outcome"] == ao.NAV_SERVER_UNAVAILABLE
 
 
 def _coords_tool(nav, client):
@@ -242,7 +242,8 @@ def test_navigate_tool_does_not_say_arrived_on_abort(nav):
 def test_navigate_tool_says_arrived_on_succeeded(nav):
     client, _ = _client_with(ao.GOAL_STATUS_SUCCEEDED)
     res = _coords_tool(nav, client).execute(1.0, 2.0)
-    assert res.success is True and res.message.startswith("Приехал")
+    # фейк Nav2 отвечает мгновенно: робот уже стоял на цели (#4344)
+    assert res.success is True and res.message.startswith("Уже стою")
 
 
 # ---------------------------------------------------------------- stop_navigation (хвост #3789)
@@ -310,7 +311,7 @@ def test_stop_navigation_confirmed_by_server_reply(nav):
     client = _CancelClient(future=_Future(_cancel_resp(ao.CANCEL_ERROR_NONE, [object()])))
     res = _stop(nav, client)
     assert res.success is True and res.message == "Останавливаюсь"
-    assert res.data == {"outcome": ao.CANCEL_CONFIRMED} and client.calls == 1
+    assert res.data["outcome"] == ao.CANCEL_CONFIRMED and client.calls == 1
 
 
 @pytest.mark.unit
@@ -318,14 +319,14 @@ def test_stop_navigation_without_active_goal_says_so(nav):
     client = _CancelClient(future=_Future(_cancel_resp(ao.CANCEL_ERROR_UNKNOWN_GOAL_ID)))
     res = _stop(nav, client)
     assert res.success is True and "и так стою" in res.message
-    assert res.data == {"outcome": ao.CANCEL_NO_ACTIVE_GOAL}
+    assert res.data["outcome"] == ao.CANCEL_NO_ACTIVE_GOAL
 
 
 @pytest.mark.unit
 def test_stop_navigation_server_rejected_cancel_is_failure(nav):
     client = _CancelClient(future=_Future(_cancel_resp(ao.CANCEL_ERROR_REJECTED)))
     res = _stop(nav, client)
-    assert res.success is False and res.data == {"outcome": ao.CANCEL_REFUSED}
+    assert res.success is False and res.data["outcome"] == ao.CANCEL_REFUSED
     assert "Останавливаюсь" not in res.message
 
 
@@ -333,7 +334,7 @@ def test_stop_navigation_server_rejected_cancel_is_failure(nav):
 def test_stop_navigation_service_missing_is_failure_without_call(nav):
     client = _CancelClient(ready=False)
     res = _stop(nav, client)
-    assert res.success is False and res.data == {"outcome": ao.SVC_UNAVAILABLE}
+    assert res.success is False and res.data["outcome"] == ao.SVC_UNAVAILABLE
     assert client.calls == 0 and "Останавливаюсь" not in res.message
 
 
@@ -341,18 +342,18 @@ def test_stop_navigation_service_missing_is_failure_without_call(nav):
 def test_stop_navigation_no_reply_in_time_is_failure(nav):
     client = _CancelClient(future=_Future(None, done=False))
     res = _stop(nav, client)
-    assert res.success is False and res.data == {"outcome": ao.SVC_TIMEOUT}
+    assert res.success is False and res.data["outcome"] == ao.SVC_TIMEOUT
     assert "Останавливаюсь" not in res.message
 
 
 @pytest.mark.unit
 def test_stop_navigation_empty_reply_is_failure(nav):
     res = _stop(nav, _CancelClient(future=_Future(None)))
-    assert res.success is False and res.data == {"outcome": ao.SVC_NO_RESPONSE}
+    assert res.success is False and res.data["outcome"] == ao.SVC_NO_RESPONSE
 
 
 @pytest.mark.unit
 def test_stop_navigation_future_exception_is_failure(nav):
     res = _stop(nav, _CancelClient(future=_RaisingFuture(None)))
-    assert res.success is False and res.data == {"outcome": ao.SVC_NO_RESPONSE}
+    assert res.success is False and res.data["outcome"] == ao.SVC_NO_RESPONSE
     assert "сервер упал" in res.error

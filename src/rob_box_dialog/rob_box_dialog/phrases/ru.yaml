@@ -108,6 +108,8 @@ command.music_promise.playing: ["Сделать с музыкой ничего �
 command.voice_promise: ["Голос и темп я не менял — скажи ещё раз, что нужно."]
 # ...то же про поиск, а поиска в этом ходе не было (был - код говорит по его данным).
 command.search_promise: ["Поиск я не запускал — скажи ещё раз, что найти."]
+# Под играющим сетом человек просит сменить тему, а стиль не назван и тула смены нет (#4347): тему код не угадывает.
+command.theme_switch_failed: ["Тему сета я не сменил — скажи ещё раз, в какой стиль свернуть."]
 # Счёт до N, урезанный моделью, строит код (counting.full_count); дальше COUNT_MAX не считает и говорит об этом.
 count.capped: ["Досчитаю до {top} — дальше слишком долго."]
 command.state_claim: ["Про {subjects} данных у меня нет — утверждать не буду."]
@@ -174,6 +176,22 @@ motion.rejected.no_motors: ["Не могу поехать — моторы вы�
 motion.rejected.not_asked: ["Ты не просил ехать, остаюсь на месте. Если надо поехать, скажи «поезжай»."]
 motion.timeout: ["Не доехал — время вышло."]
 motion.cancelled: ["Остановился."]
+# move_direction: причина отказа - вид исхода Nav2 (``outcome`` тула, #4344); точки у него нет
+motion.rejected.aborted: ["Не доехал: навигация прервалась."]
+motion.rejected.canceled: ["Не доехал: движение отменили."]
+motion.rejected.timeout: ["Не доехал — время вышло."]
+motion.rejected.unknown_status: ["Не уверен, что доехал: навигация не подтвердила прибытие."]
+# Итог поездки к точке (#4344, knowledge.NAV_TOOL_PHRASES): по данным исхода тула, {target} - точка словами.
+motion.already_there: ["Я уже на точке {target}."]
+motion.arrived: ["Приехал на точку {target}."]
+motion.not_reached.aborted: ["Не доехал до точки {target}: навигация прервалась."]
+motion.not_reached.canceled: ["Не доехал до точки {target}: движение отменили."]
+motion.not_reached.timeout: ["Не доехал до точки {target}: время вышло."]
+motion.not_reached.rejected: ["Не доехал до точки {target}: навигация не приняла цель."]
+motion.not_reached.no_response: ["Не доехал до точки {target}: навигация не ответила."]
+motion.not_reached.server_unavailable: ["Не доехал до точки {target}: навигация недоступна."]
+motion.not_reached.unknown_status: ["Не уверен, что доехал до точки {target}: навигация не подтвердила прибытие."]
+motion.not_reached.unknown_target: ["Не знаю точку {target}."]
 
 identity.done: ["Запомнил тебя, {name}."]
 # исход register_speaker по SpeakerResult владельца — причина в ключе, нет ключа — общая фраза.

@@ -16,6 +16,7 @@ navigation.py - Инструменты навигации и движения р
 
 from typing import Any, Dict, List, Optional, TYPE_CHECKING
 import math
+import time
 from rclpy.action import ActionClient
 from geometry_msgs.msg import PoseStamped
 from nav2_msgs.action import NavigateToPose
@@ -31,12 +32,16 @@ from ..core.action_outcome import (
     NAV_NO_RESPONSE,
     NAV_REJECTED,
     NAV_SERVER_UNAVAILABLE,
+    NAV_SUCCEEDED,
     NAV_TIMEOUT,
     classify_cancel_response,
     classify_nav_status,
     classify_service_call,
+    nav_data,
     nav_outcome,
+    start_distance,
 )
+from rob_box_dialog import knowledge as kn
 
 _CANCEL_ALL_LABEL = "Nav2 cancel_goal"
 _CANCEL_ALL_TIMEOUT_SEC = 5.0
@@ -45,9 +50,24 @@ _CANCEL_ALL_TIMEOUT_SEC = 5.0
 def _nav_failure(kind: str, status: Optional[int] = None) -> MCPToolResult:
     """Неуспех навигации: ошибку и фразу строит код (ADR-0148), не LLM."""
     outcome = nav_outcome(kind, status)
-    return MCPToolResult(
-        success=False, error=outcome.error, message=outcome.message, data={"outcome": outcome.kind}
-    )
+    return MCPToolResult(success=False, error=outcome.error, message=outcome.message, data=nav_data(outcome.kind))
+
+
+def _with_target(result: MCPToolResult, target: str, **extra: Any) -> MCPToolResult:
+    """Данные исхода с точкой словами (слот ``{target}`` фразы кода, #4344) и полями тула поверх."""
+    result.data = {**(result.data or {}), kn.NAV_TARGET_FIELD: target, **extra}
+    return result
+
+
+def _distance_feedback(distances: List[float]):
+    """Обратная связь Nav2 → ``distance_remaining`` в ``distances`` (путь до цели в начале поездки, #4344)."""
+
+    def on_feedback(message) -> None:
+        value = getattr(getattr(message, "feedback", None), "distance_remaining", None)
+        if isinstance(value, (int, float)):
+            distances.append(float(value))
+
+    return on_feedback
 
 
 def _cancel_goal_best_effort(goal_handle, logger) -> None:
@@ -63,6 +83,8 @@ def _send_nav_goal(nav_client, node, x: float, y: float, theta: float, frame_id:
 
     Успех — только если Nav2 вернул ``GoalStatus.STATUS_SUCCEEDED`` (#3789):
     ``ABORTED``/``CANCELED``/таймаут/отказ в приёме цели — честный неуспех.
+    Данные успеха — как достигнута цель (``action_outcome.nav_data``, #4344): время от
+    принятия цели до ответа Nav2 и путь до цели по обратной связи.
 
     Returns ``MCPToolResult``.
     """
@@ -78,7 +100,8 @@ def _send_nav_goal(nav_client, node, x: float, y: float, theta: float, frame_id:
     goal.pose.pose.orientation.z = math.sin(theta / 2.0)
     goal.pose.pose.orientation.w = math.cos(theta / 2.0)
 
-    send_future = nav_client.send_goal_async(goal)
+    distances: List[float] = []
+    send_future = nav_client.send_goal_async(goal, feedback_callback=_distance_feedback(distances))
     if not wait_future(send_future, timeout_sec=10.0) or send_future.result() is None:
         return _nav_failure(NAV_NO_RESPONSE)
 
@@ -86,6 +109,7 @@ def _send_nav_goal(nav_client, node, x: float, y: float, theta: float, frame_id:
     if not goal_handle.accepted:
         return _nav_failure(NAV_REJECTED)
 
+    started = time.monotonic()
     result_future = goal_handle.get_result_async()
     if not wait_future(result_future, timeout_sec=timeout) or result_future.result() is None:
         _cancel_goal_best_effort(goal_handle, node.get_logger())
@@ -95,7 +119,16 @@ def _send_nav_goal(nav_client, node, x: float, y: float, theta: float, frame_id:
     outcome = classify_nav_status(status)
     if not outcome.success:
         return _nav_failure(outcome.kind, status)
-    return MCPToolResult(success=True)
+    return MCPToolResult(
+        success=True, data=nav_data(NAV_SUCCEEDED, time.monotonic() - started, start_distance(distances))
+    )
+
+
+def _arrived_message(result: MCPToolResult, where: str) -> str:
+    """Подсказка тула модели (v1) по тому же исходу, что и фраза кода диалога: уже стоял или доехал."""
+    if (result.data or {}).get(kn.NAV_ARRIVAL_FIELD) == kn.NAV_ALREADY_THERE:
+        return f"Уже стою на {where}"
+    return f"Приехал к {where}"
 
 
 def _future_response(future, completed: bool):
@@ -183,15 +216,16 @@ class NavigateToWaypointTool(MCPTool):
                 success=False,
                 error=f"Неизвестная точка '{waypoint}'",
                 message=f"Доступные точки: {names}",
+                data={**nav_data(kn.NAV_UNKNOWN_TARGET), kn.NAV_TARGET_FIELD: waypoint},
             )
 
         self.log_info(f"📍 Координаты: x={coords['x']:.2f}, y={coords['y']:.2f}, θ={coords['theta']:.2f}")
 
         result = _send_nav_goal(self.nav_client, self.node, coords["x"], coords["y"], coords["theta"], timeout=120.0)
+        _with_target(result, waypoint, waypoint=waypoint, coordinates=coords)
         if result.success:
-            result.data = {"waypoint": waypoint, "coordinates": coords}
-            result.message = f"Приехал к точке {waypoint}"
-            self.log_info(f"✅ Навигация к {waypoint} завершена")
+            result.message = _arrived_message(result, f"точке {waypoint}")
+            self.log_info(f"✅ Навигация к {waypoint} завершена: {result.data.get(kn.NAV_ARRIVAL_FIELD)}")
         return result
 
 
@@ -247,9 +281,9 @@ class NavigateToCoordinatesTool(MCPTool):
         self.log_info(f"Навигация к координатам: x={x:.2f}, y={y:.2f}, θ={theta:.2f}")
 
         result = _send_nav_goal(self.nav_client, self.node, x, y, theta, timeout=120.0)
+        _with_target(result, f"({x:.1f}, {y:.1f})", x=x, y=y, theta=theta)
         if result.success:
-            result.data = {"x": x, "y": y, "theta": theta}
-            result.message = f"Приехал в точку ({x:.1f}, {y:.1f})"
+            result.message = _arrived_message(result, f"точке ({x:.1f}, {y:.1f})")
             self.log_info(f"✅ Навигация к ({x:.2f}, {y:.2f}) завершена")
         return result
 
@@ -326,7 +360,9 @@ class MoveDirectionTool(MCPTool):
             self.nav_client, self.node, coords["x"], coords["y"], coords["theta"], frame_id="base_link", timeout=60.0
         )
         if result.success:
-            result.data = {"direction": direction, "distance": distance, "relative_coords": coords}
+            result.data = {
+                **(result.data or {}), "direction": direction, "distance": distance, "relative_coords": coords
+            }
             result.message = f"Приехал: {direction} {distance}м"
             self.log_info(f"✅ Движение {direction} завершено")
         return result

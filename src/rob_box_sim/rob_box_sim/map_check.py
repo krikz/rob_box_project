@@ -34,6 +34,14 @@ class OccupancyGrid:
         r, c = divmod(i, self.width)
         return (self.origin_x + (c + 0.5) * self.resolution, self.origin_y + (r + 0.5) * self.resolution)
 
+    def value_at(self, x: float, y: float) -> int | None:
+        """Значение клетки под точкой (x, y) в системе карты; None — вне сетки."""
+        c = math.floor((x - self.origin_x) / self.resolution)
+        r = math.floor((y - self.origin_y) / self.resolution)
+        if not (0 <= c < self.width and 0 <= r < self.height):
+            return None
+        return self.data[r * self.width + c]
+
     def occupied_cells(self, thresh: int = 65) -> list[int]:
         return [i for i, v in enumerate(self.data) if v >= thresh]
 
@@ -103,17 +111,41 @@ def write_pgm(grid: OccupancyGrid, path) -> None:
         f.write(bytes(px))
 
 
-def grab_map(node, topic: str = "/rtabmap/map", timeout_s: float = 30.0) -> OccupancyGrid | None:
-    """Одно сообщение карты (rclpy). Возвращает None, если за ``timeout_s`` не пришло."""
+def write_raw_pgm(grid: OccupancyGrid, path) -> None:
+    """Сетка в pgm без порога: байт = значение клетки 0..100, 255 — неизвестно; верх — +Y.
+
+    Для costmap Nav2: 99 — inscribed (центр робота ближе robot_radius к препятствию),
+    100 — lethal, 1..98 — инфляция. NavFn/Smac считают 99 и выше непроходимым.
+    """
+    px = bytearray()
+    for r in range(grid.height - 1, -1, -1):
+        for c in range(grid.width):
+            v = grid.data[r * grid.width + c]
+            px.append(255 if v < 0 else min(int(v), 254))
+    with open(path, "wb") as f:
+        f.write(b"P5\n%d %d\n255\n" % (grid.width, grid.height))
+        f.write(bytes(px))
+
+
+def grab_map(
+    node, topic: str = "/rtabmap/map", timeout_s: float = 30.0, transient_local: bool = True
+) -> OccupancyGrid | None:
+    """Одно сообщение карты (rclpy). Возвращает None, если за ``timeout_s`` не пришло.
+
+    ``transient_local`` — взять последнюю уже опубликованную карту (rtabmap и costmap Nav2
+    публикуют её latched): иначе стоящий робот, у которого карта не меняется, ничего не пришлёт.
+    """
     import time
 
     import rclpy
     from nav_msgs.msg import OccupancyGrid as GridMsg
-    from rclpy.qos import QoSProfile, ReliabilityPolicy
+    from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
 
     got: list = []
+    durability = DurabilityPolicy.TRANSIENT_LOCAL if transient_local else DurabilityPolicy.VOLATILE
     sub = node.create_subscription(
-        GridMsg, topic, got.append, QoSProfile(depth=1, reliability=ReliabilityPolicy.RELIABLE)
+        GridMsg, topic, got.append,
+        QoSProfile(depth=1, reliability=ReliabilityPolicy.RELIABLE, durability=durability),
     )
     deadline = time.monotonic() + timeout_s
     while not got and time.monotonic() < deadline:

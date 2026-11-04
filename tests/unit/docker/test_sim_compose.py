@@ -150,3 +150,131 @@ def test_sim_compose_imu_is_on_explicitly():
         assert _interpolate(raw, {}) == "/imu/data", (name, raw)
         # Прогон без IMU в симе: RTABMAP_IMU_TOPIC= (пусто) в окружении.
         assert _interpolate(raw, {"RTABMAP_IMU_TOPIC": ""}) == "", (name, raw)
+
+
+def test_video_overlay_changes_only_world_and_scenario():
+    """compose.video.yaml (видео из Gazebo): навигация, сеть, железо — как у стенда."""
+    video = _load(SIM / "compose.video.yaml")["services"]
+    assert set(video) == {"gazebo", "bench"}
+    for name, svc in video.items():
+        assert set(svc) <= {"volumes", "command"}, name
+    gz_cmd = " ".join(video["gazebo"]["command"])
+    assert "rob_box_sim.video_overlay" in gz_cmd and "world:=/sim_video/world.sdf" in gz_cmd
+    assert (REPO_ROOT / "src" / "rob_box_sim" / "scenarios" / "video.yaml").is_file()
+    assert "/ws/install/rob_box_sim/share/rob_box_sim/scenarios/video.yaml" in video["bench"]["command"]
+
+
+# ── Шаг 6: оверлеи Nav2 для сравнения контроллеров ───────────────────────────
+
+SIM_NAV2 = REPO_ROOT / "src" / "rob_box_sim" / "config" / "nav2"
+# Оверлей сима трогает только то, что сравнивается; остальное — боевой nav2_params.yaml.
+OVERLAY_SECTIONS = {"controller_server", "planner_server", "global_costmap", "local_costmap"}
+
+
+def _overlay_paths(controller: str, planner: str, footprint: str, global_map: str = "static") -> list[Path]:
+    raw = _env(SIM_COMPOSE["nav2"])["NAV2_PARAMS_OVERLAYS"]
+    raw = raw.replace("${SIM_GLOBAL_MAP:-static}", global_map)
+    raw = raw.replace("${SIM_CONTROLLER:-dwb}", controller).replace("${SIM_PLANNER:-navfn}", planner)
+    raw = raw.replace("${SIM_FOOTPRINT:-radius}", footprint)
+    assert "$" not in raw, raw
+    out = []
+    for p in raw.split():
+        assert p.startswith("/sim_nav2/"), p
+        out.append(SIM_NAV2 / p[len("/sim_nav2/"):])
+    return out
+
+
+def test_nav2_overlays_mounted_and_exist_for_every_choice():
+    assert "../../src/rob_box_sim/config/nav2:/sim_nav2:ro" in SIM_COMPOSE["nav2"]["volumes"]
+    for controller in ("dwb", "rpp", "mppi"):
+        for planner in ("navfn", "smac"):
+            for footprint in ("radius", "urdf"):
+                for global_map in ("static", "none"):
+                    paths = _overlay_paths(controller, planner, footprint, global_map)
+                    assert paths[0].name == f"global_{global_map}.yaml" and len(paths) == 4
+                    for p in paths:
+                        assert p.is_file(), p
+
+
+def test_mppi_checks_footprint_only_with_polygon_footprint():
+    # С кругом robot_radius MPPI с consider_footprint=true не конфигурируется (замер шага 6).
+    def mppi_flag(*names):
+        flag = None
+        for n in names:
+            doc = yaml.safe_load((SIM_NAV2 / n).read_text(encoding="utf-8"))
+            fp = doc.get("controller_server", {}).get("ros__parameters", {}).get("FollowPath", {})
+            flag = fp.get("ObstaclesCritic", {}).get("consider_footprint", flag)
+        return flag
+
+    assert mppi_flag("controller_mppi.yaml", "footprint_radius.yaml") is False
+    assert mppi_flag("controller_mppi.yaml", "footprint_urdf.yaml") is True
+
+
+def test_footprint_radius_overlay_is_robot_value():
+    robot = yaml.safe_load((MAIN / "config" / "nav2" / "nav2_params.yaml").read_text(encoding="utf-8"))
+    doc = yaml.safe_load((SIM_NAV2 / "footprint_radius.yaml").read_text(encoding="utf-8"))
+    for cm in ("local_costmap", "global_costmap"):
+        assert doc[cm][cm]["ros__parameters"]["robot_radius"] == robot[cm][cm]["ros__parameters"]["robot_radius"]
+
+
+def test_nav2_overlays_touch_only_compared_sections_and_name_plugin():
+    plugins = {}
+    for p in sorted(SIM_NAV2.glob("*.yaml")):
+        doc = yaml.safe_load(p.read_text(encoding="utf-8"))
+        assert set(doc) <= OVERLAY_SECTIONS, (p.name, set(doc))
+        if p.name.startswith("controller_"):
+            plugins[p.stem] = doc["controller_server"]["ros__parameters"]["FollowPath"]["plugin"]
+        if p.name.startswith("planner_"):
+            plugins[p.stem] = doc["planner_server"]["ros__parameters"]["GridBased"]["plugin"]
+    assert plugins == {
+        "controller_dwb": "dwb_core::DWBLocalPlanner",
+        "controller_mppi": "nav2_mppi_controller::MPPIController",
+        "controller_rpp": "nav2_regulated_pure_pursuit_controller::RegulatedPurePursuitController",
+        "planner_navfn": "nav2_navfn_planner/NavfnPlanner",
+        "planner_smac": "nav2_smac_planner/SmacPlanner2D",
+    }
+
+
+def test_sim_global_costmap_takes_rtabmap_map_and_robot_does_not():
+    doc = yaml.safe_load((SIM_NAV2 / "global_static.yaml").read_text(encoding="utf-8"))
+    gc = doc["global_costmap"]["global_costmap"]["ros__parameters"]
+    assert gc["plugins"][0] == "static_layer"
+    assert gc["static_layer"]["map_topic"] == "/rtabmap/map"
+    robot = yaml.safe_load((MAIN / "config" / "nav2" / "nav2_params.yaml").read_text(encoding="utf-8"))
+    robot_plugins = robot["global_costmap"]["global_costmap"]["ros__parameters"]["plugins"]
+    assert "static_layer" not in robot_plugins
+    # «none» — контроль «как на роботе»: тот же список слоёв, что в боевом файле
+    none = yaml.safe_load((SIM_NAV2 / "global_none.yaml").read_text(encoding="utf-8"))
+    assert none["global_costmap"]["global_costmap"]["ros__parameters"]["plugins"] == robot_plugins
+
+
+def test_sim_smoother_chain_on_by_default_robot_has_no_switch():
+    assert _env(SIM_COMPOSE["nav2"])["NAV2_SMOOTH_CMD_VEL"] == "${SIM_SMOOTH_CMD_VEL:-true}"
+    env = _env(MAIN_COMPOSE["nav2"])
+    assert "NAV2_SMOOTH_CMD_VEL" not in env and "NAV2_PARAMS_OVERLAYS" not in env
+
+
+# ── Видео картографии: rtabmap в mapping только в симе ───────────────────────
+
+
+def test_rtabmap_start_mode_is_localization_by_default_and_absent_on_robot():
+    assert _env(SIM_COMPOSE["rtabmap"])["RTABMAP_START_MODE"] == "${SIM_RTABMAP_MODE:-localization}"
+    assert _env(SIM_COMPOSE["rtabmap"])["USE_SIM_TIME"] == "true"  # mapping скрипт пускает только с ним
+    assert "RTABMAP_START_MODE" not in _env(MAIN_COMPOSE["rtabmap"])
+    # Команда та же, что у робота: режим добавляет start_rtabmap.sh, а не compose.
+    assert "command" not in SIM_COMPOSE["rtabmap"]
+
+
+def test_mapping_overlay_changes_only_bench_route_and_adds_recorder():
+    mapping = _load(SIM / "compose.mapping.yaml")["services"]
+    assert set(mapping) == {"bench", "maprec"}
+    assert set(mapping["bench"]) == {"command"}
+    assert "/ws/install/rob_box_sim/share/rob_box_sim/scenarios/mapping.yaml" in mapping["bench"]["command"]
+    assert (REPO_ROOT / "src" / "rob_box_sim" / "scenarios" / "mapping.yaml").is_file()
+    rec = mapping["maprec"]
+    # Сеть, образ, тома и sim time — от стенда; рекордер не стартует с `up` без профиля.
+    assert rec["extends"] == {"file": "compose.yaml", "service": "bench"}
+    assert rec["profiles"] == ["bench"]
+    assert "rob_box_sim.map_recorder" in rec["command"]
+    script = (SIM / "record_mapping.sh").read_text(encoding="utf-8")
+    assert "SIM_RTABMAP_MODE=mapping" in script and "compose.mapping.yaml" in script
