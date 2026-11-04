@@ -398,14 +398,18 @@ def test_speech_end_puts_spoken_part_into_window(node):
 ])
 def test_only_the_end_of_a_speech_puts_its_spoken_part_into_window(node, kind, ended):
     """Конец реплики - ``speech_client.is_speech_end`` (одно знание, ревью PR #4108; своей копии списка видов в ноде нет):
-    ``finished``/``cancelled``/``rejected`` кладут озвученную часть в окно, остальные виды - нет."""
+    ``finished``/``cancelled``/``rejected`` кладут озвученную часть в окно, остальные виды - нет: реплика ещё звучит,
+    в окне она меткой «говорю сейчас» (#4207)."""
+    from rob_box_dialog import knowledge as kn
+
     node._on_utterance(_utterance("Робот, как дела"))
     node.last_turn.result(timeout=10)
     said = _published(node, "/voice/speech/request")[0]
     event = M.SpeechEvent()
     event.kind, event.speech_id, event.agent, event.spoken_chars = kind, said.speech_id, "personality", 7
     node._on_speech_event(event)
-    assert [e.content for e in node._engine.log.window()] == (["как дела", "Привет,"] if ended else ["как дела"])
+    sounding = kn.WINDOW_SOUNDING_REPLY.format(text="Привет, я робот.")
+    assert [e.content for e in node._engine.log.window()] == ["как дела", "Привет," if ended else sounding]
 
 
 def test_control_reset_hold_resume(node):
