@@ -101,10 +101,20 @@ def _opposed(kind: str, kinds: Sequence[str]) -> bool:
     return group in kn.EDIT_OPPOSED_GROUPS and any(k != kind and kn.TRACK_EDITS[k].group == group for k in kinds)
 
 
+def _negated(clause: Sequence[str], first: int) -> bool:
+    """Отрицание (``knowledge.EDIT_NEGATIONS``) раньше слова правки в части реплики. «Не» перед повелительным
+    совершенного вида (``knowledge.EDIT_NEGATION_SLIP_VERBS``: «не добавь баса») — оговорка STT, а не запрет."""
+    return any(
+        word in kn.EDIT_NEGATIONS and clause[at + 1] not in kn.EDIT_NEGATION_SLIP_VERBS
+        for at, word in enumerate(clause[:first])
+    )
+
+
 def _clause_edits(clause: Sequence[str]) -> List[str]:
     """Виды правки одной части реплики — по порядку в речи. Запись длиннее побеждает перекрытую («слишком много» —
-    не «много»); отрицание раньше в части («не быстрее», «не надо больше баса») снимает правку; правке с предметом
-    (``TrackEdit.about``: бас) нужен предмет в этой части; встречные виды одной оси — не правка (:func:`_opposed`)."""
+    не «много»); отрицание раньше в части («не быстрее», «не надо больше баса», :func:`_negated`) снимает правку;
+    правке с предметом (``TrackEdit.about``: бас) нужен предмет в этой части; встречные виды одной оси — не правка
+    (:func:`_opposed`)."""
     taken: set = set()
     picked: List[Tuple[int, str]] = []
     for first, end, kind in sorted(_matches(clause), key=lambda m: (m[0] - m[1], m[0])):
@@ -113,7 +123,7 @@ def _clause_edits(clause: Sequence[str]) -> List[str]:
             continue
         taken |= span
         about = kn.TRACK_EDITS[kind].about
-        negated = bool(set(clause[:first]) & set(kn.EDIT_NEGATIONS))
+        negated = _negated(clause, first)
         if not negated and (not about or set(clause) & set(about)):
             picked.append((first, kind))
     kinds = [kind for _first, kind in sorted(picked)]
