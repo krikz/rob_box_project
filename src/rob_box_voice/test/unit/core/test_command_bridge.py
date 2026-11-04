@@ -13,6 +13,7 @@ import pytest
 
 from rob_box_dialog import knowledge as kn
 from rob_box_dialog.command import Invalid
+from rob_box_dialog.speech_channel import ModeRequest
 from rob_box_llm.provider import LLMChunk, LLMMessage, LLMResponse, LLMSettings, ProviderCapabilities, ToolCall
 from rob_box_llm.providers.deepseek import DeepSeekProvider
 from rob_box_llm.providers.minimax import MiniMaxProvider
@@ -104,7 +105,7 @@ def test_tool_choice_request_forces_command_tool_and_hides_speak_text() -> None:
     assert tools[0]["function"]["parameters"] == kn.with_tool_enum(kn.command_schema("json"), ["speak_text", "memory_save"])
     assert settings.tool_choice == "required" and settings.temperature == 0.3
     assert settings.extra == {"thinking": {"type": "disabled"}}
-    assert msgs[0].content.startswith("ты РОББОКС") and cb.V1_TRANSPORT_NOTE in msgs[0].content
+    assert msgs[0].content.startswith("ты РОББОКС\n\n" + kn.prompt_fragment())
     assert kn.prompt_fragment() in msgs[0].content and "JSON-схема" not in msgs[0].content
     assert msgs[1:] == original[1:] and original[0].content == "ты РОББОКС"  # исходный список не тронут
 
@@ -156,7 +157,14 @@ def test_json_mode_sets_response_format() -> None:
 
 def test_note_becomes_first_system_message_when_there_is_none() -> None:
     msgs, _, _ = cb.CommandModeLLM(_Inner(DEEPSEEK_CAPS, [])).shape([LLMMessage(role="user", content="x")], [], None)
-    assert msgs[0].role == "system" and cb.V1_TRANSPORT_NOTE in msgs[0].content and msgs[1].content == "x"
+    assert msgs[0].role == "system" and kn.prompt_fragment() in msgs[0].content and msgs[1].content == "x"
+
+
+def test_mode_note_is_the_knowledge_fragment_alone_outside_json_modes() -> None:
+    """Форма ответа — из одного источника (``knowledge.prompt_fragment``, ADR-0148): поправок к промпту поверх неё
+    мост не дописывает (v1-поправка о ``speak_text``/``done`` снята, #4354 B1)."""
+    for mode in ("tool_choice", "tool_offered", "structured_output"):
+        assert cb.mode_note(mode, ModeRequest(mode=mode)) == kn.prompt_fragment()
 
 
 # ── разбор ответа и перевод в форму v1 ─────────────────────────────────────────────────────────────────────
