@@ -1427,8 +1427,35 @@ VOICE_FAILED = ByData(("status", "voice_default"), {
     ("fallback", True): "voice.unavailable_default", ("fallback", False): "voice.unavailable",
     ("fallback", None): "voice.rejected", ("timeout", None): "voice.timeout",
 })
+#: Итог поездки к точке (``navigate_to_waypoint``/``navigate_to_coordinates``, #4344): фразу строит код по данным
+#: исхода, которые тул кладёт по ответу Nav2 (``rob_box_mcp_tools.core.action_outcome.nav_data``), а не общее
+#: «Приехал.» класса. Живой 04.11 11:22: робот уже стоял на точке «а», Nav2 ответил Goal succeeded за 60 мс - в чат
+#: ушло «Приехал.» без точки. Поля данных: :data:`NAV_TARGET_FIELD` - точка словами (слот ``{target}``),
+#: :data:`NAV_ARRIVAL_FIELD` - как достигнута (:data:`NAV_ALREADY_THERE`: робот уже стоял на ней, :data:`NAV_ARRIVED`:
+#: доехал), :data:`NAV_OUTCOME_FIELD` - вид исхода Nav2 (он же причина отказа), :data:`NAV_FAILURE_OUTCOMES` - виды
+#: неуспеха, у каждого своя фраза «Не доехал до точки …: причина». Значения поля - контракт с тулом (тест в
+#: ``rob_box_mcp_tools``): тул берёт имена полей и значения прибытия отсюда.
+NAV_TARGET_FIELD = "target"
+NAV_ARRIVAL_FIELD = "arrival"
+NAV_OUTCOME_FIELD = "outcome"
+NAV_ALREADY_THERE = "already_there"
+NAV_ARRIVED = "arrived"
+NAV_UNKNOWN_TARGET = "unknown_target"
+NAV_FAILURE_OUTCOMES: Tuple[str, ...] = (
+    "aborted", "canceled", "timeout", "rejected", "no_response", "server_unavailable", "unknown_status",
+    NAV_UNKNOWN_TARGET,
+)
+NAV_DONE = ByData((NAV_ARRIVAL_FIELD,), {
+    (NAV_ALREADY_THERE,): "motion.already_there", (NAV_ARRIVED,): "motion.arrived",
+})
+NAV_FAILED = ByData((NAV_OUTCOME_FIELD,), {(kind,): f"motion.not_reached.{kind}" for kind in NAV_FAILURE_OUTCOMES})
+NAV_TOOL_PHRASES: Mapping[str, Any] = MappingProxyType({"done": NAV_DONE, "rejected": NAV_FAILED})
 #: Ключи фраз, особые для тула (поверх ключа класса): «Запомнил: …» строится по событию saved владельца памяти.
 TOOL_PHRASES: Mapping[str, Mapping[str, Any]] = MappingProxyType({
+    # поездка к точке (#4344): «Я уже на точке а.» / «Приехал на точку а.» / «Не доехал до точки а: …» по данным
+    # исхода; данных нет (отказ плана, моторы) - ключ класса ``motion.*``
+    "navigate_to_waypoint": NAV_TOOL_PHRASES,
+    "navigate_to_coordinates": NAV_TOOL_PHRASES,
     "memory_save": MappingProxyType({"done": "memory.saved"}),
     "set_voice": MappingProxyType({"done": VOICE_DONE, "rejected": VOICE_FAILED, "timeout": "voice.timeout"}),
     "set_tts_provider": MappingProxyType({"done": VOICE_DONE, "rejected": VOICE_FAILED, "timeout": "voice.timeout"}),

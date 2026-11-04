@@ -174,6 +174,22 @@ motion.rejected.no_motors: ["Не могу поехать — моторы вы�
 motion.rejected.not_asked: ["Ты не просил ехать, остаюсь на месте. Если надо поехать, скажи «поезжай»."]
 motion.timeout: ["Не доехал — время вышло."]
 motion.cancelled: ["Остановился."]
+# move_direction: причина отказа - вид исхода Nav2 (``outcome`` тула, #4344); точки у него нет
+motion.rejected.aborted: ["Не доехал: навигация прервалась."]
+motion.rejected.canceled: ["Не доехал: движение отменили."]
+motion.rejected.timeout: ["Не доехал — время вышло."]
+motion.rejected.unknown_status: ["Не уверен, что доехал: навигация не подтвердила прибытие."]
+# Итог поездки к точке (#4344, knowledge.NAV_TOOL_PHRASES): по данным исхода тула, {target} - точка словами.
+motion.already_there: ["Я уже на точке {target}."]
+motion.arrived: ["Приехал на точку {target}."]
+motion.not_reached.aborted: ["Не доехал до точки {target}: навигация прервалась."]
+motion.not_reached.canceled: ["Не доехал до точки {target}: движение отменили."]
+motion.not_reached.timeout: ["Не доехал до точки {target}: время вышло."]
+motion.not_reached.rejected: ["Не доехал до точки {target}: навигация не приняла цель."]
+motion.not_reached.no_response: ["Не доехал до точки {target}: навигация не ответила."]
+motion.not_reached.server_unavailable: ["Не доехал до точки {target}: навигация недоступна."]
+motion.not_reached.unknown_status: ["Не уверен, что доехал до точки {target}: навигация не подтвердила прибытие."]
+motion.not_reached.unknown_target: ["Не знаю точку {target}."]
 
 identity.done: ["Запомнил тебя, {name}."]
 # исход register_speaker по SpeakerResult владельца — причина в ключе, нет ключа — общая фраза.
