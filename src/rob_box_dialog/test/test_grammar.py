@@ -490,7 +490,7 @@ def test_voice_change_is_not_tier1_when_silenced(text):
 
 def test_silenced_kinds_are_the_quiet_ones():
     assert {kind for kind, sounds in kn.TIER1_KINDS.items() if not sounds} == {
-        "stop_all", "stop_speech", "silence", "unsilence", "volume", "new_session", "answer"}
+        "stop_all", "stop_speech", "silence", "unsilence", "volume", "new_session", "answer", kn.MUSIC_OFF_KIND}
 
 
 ORDINARY = [

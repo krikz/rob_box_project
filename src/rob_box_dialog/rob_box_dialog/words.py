@@ -24,6 +24,12 @@ from rob_box_dialog.knowledge import (
     INTRO_NOT_A_NAME,
     KNOWN_FIRST_NAMES,
     LISTEN_ONLY_FORMS,
+    MUSIC_OFF_FILLER,
+    MUSIC_OFF_NEAR,
+    MUSIC_OFF_NEGATION,
+    MUSIC_OFF_OBJECT_FORMS,
+    MUSIC_OFF_OBJECT_STEMS,
+    MUSIC_OFF_WORDS,
     MUSIC_PROMISE_WINDOW,
     MUSIC_PROMISES,
     NAME_CASE_MIN_STEM,
@@ -603,6 +609,29 @@ def _clauses(text: str, spans: Sequence[Span], joins: Sequence[str]) -> Tuple[Tu
         if not join:
             current.append(span)
     return tuple(out + [tuple(current)] if current else out)
+
+
+def music_off_rest(text: str) -> Optional[str]:
+    """Просьба выключить музыку (``knowledge.MUSIC_OFF_*``, #4349) → остаток фразы после неё («» - остатка нет) или
+    ``None``: формы выключения рядом с объектом музыки нет, перед формой «не», или до её части есть не служебные
+    слова (их просьбу решает LLM). Играет ли музыка, решает вызывающий по снимку плеера, не этот разбор."""
+    parts = clauses(text, STOP_SCOPE.joins)
+    at = next((n for n, part in enumerate(parts) if _asks_music_off(tuple(t for t, _, _ in part))), None)
+    if at is None or not all(_filler_part(part) for part in parts[:at]):
+        return None
+    tail = next((part for part in parts[at + 1:] if not _filler_part(part)), None)
+    return (text or "")[tail[0][1]:].strip(" ,.!?;:-–—") if tail else ""
+
+
+def _asks_music_off(tokens: Sequence[str]) -> bool:
+    """В части есть форма ``MUSIC_OFF_WORDS`` без «не» перед ней и объект музыки не дальше ``MUSIC_OFF_NEAR`` слов."""
+    objects = [i for i, t in enumerate(tokens) if t in MUSIC_OFF_OBJECT_FORMS or t.startswith(MUSIC_OFF_OBJECT_STEMS)]
+    return any(t in MUSIC_OFF_WORDS and not (i and tokens[i - 1] in MUSIC_OFF_NEGATION)
+               and any(abs(i - j) <= MUSIC_OFF_NEAR for j in objects) for i, t in enumerate(tokens))
+
+
+def _filler_part(part: Sequence[Span]) -> bool:
+    return all(token in MUSIC_OFF_FILLER for token, _, _ in part)
 
 
 def _kept_later(clauses: Sequence[Tuple[Span, ...]]) -> bool:

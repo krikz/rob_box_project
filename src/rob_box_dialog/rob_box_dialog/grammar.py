@@ -2,7 +2,7 @@
 
 :func:`match` — шаг темпа и тона речи («говори басом», «тараторь», «хватит тянуть, теперь наоборот — тараторь»),
 стоп, тишина и её снятие, громкость по каналу, голос, «говори нормально» (сброс скорости и тона), новая сессия, да/нет на вопрос робота, «покажи по очереди радость, грусть и удивление» (очередь сцен лица),
-«повтори, я не расслышал» (повтор последней озвученной реплики).
+«повтори, я не расслышал» (повтор последней озвученной реплики), «выключи музыку» под играющей музыкой (#4349).
 Команда должна быть покрыта грамматикой ЦЕЛИКОМ: лишнее слово — не Tier-1, решает следующий шаг (медиа-грамматика
 v1 или LLM). Работает в любом состоянии, включая SILENCED, — тогда отдаёт только незвучащие виды
 (``knowledge.TIER1_KINDS``). Слова — из :mod:`.knowledge`, сверка по границам слов — :mod:`.words`.
@@ -22,8 +22,8 @@ from typing import Any, List, Mapping, Optional, Sequence, Tuple
 
 from rob_box_dialog import knowledge as kn
 from rob_box_dialog.session import SessionSnapshot
-from rob_box_dialog.words import (STOP_CLEAR, STOP_DISPUTED, clauses, has_form, has_word, name_tokens,
-                                  speech_manner, stop_command, strip_wake_word, without_forms)
+from rob_box_dialog.words import (STOP_CLEAR, STOP_DISPUTED, clauses, has_form, has_word, music_off_rest,
+                                  name_tokens, speech_manner, stop_command, strip_wake_word, without_forms)
 
 _TOKEN = re.compile(r"\w+")
 #: ``(voice_id, display_name, *алиасы)`` голосов активного провайдера (реестр ``tts_voice_registry.named_voices_for`` -
@@ -55,7 +55,7 @@ def match(text: str, snapshot: SessionSnapshot, voices: Voices = ()) -> Optional
     """Tier-1 команда во фразе (вейк уже снят или ещё стоит — без разницы) или ``None``."""
     silenced = snapshot.top("Silence") is not None
     body = strip_wake_word(text or "")
-    for rule in (_voice_step, _stop, _new_session, _unsilence, _volume, _voice, _prosody, _answer, _show_queue,
+    for rule in (_voice_step, _stop, _music_off, _new_session, _unsilence, _volume, _voice, _prosody, _answer, _show_queue,
                  _repeat):
         command = rule((text or "") if rule is _stop else body, snapshot, voices)
         if command is not None and not (silenced and kn.TIER1_KINDS[command.kind]):
@@ -206,6 +206,15 @@ def _stop(text: str, snapshot: SessionSnapshot, _voices: Voices) -> Optional[Tie
         return Tier1Command("stop_speech", args, disputed=disputed, rest=call.rest)
     keep = MappingProxyType({"keep_music": True} if scope.keep_music else {})
     return Tier1Command("silence" if silence else "stop_all", keep, disputed=disputed, rest=call.rest)
+
+
+def _music_off(text: str, snapshot: SessionSnapshot, _voices: Voices) -> Optional[Tier1Command]:
+    """«Теперь и музыку выключай», «выключи её» → ``music_off``, только пока музыка играет (снимок плеера,
+    ``SessionSnapshot.music_playing``; #4349): стоп музыки решает код, а не LLM. Без музыки, без объекта музыки
+    («выключи свет») и с «не» перед формой («музыку не выключай») — не Tier-1, как раньше. Слова —
+    ``knowledge.MUSIC_OFF_*``, разбор — ``words.music_off_rest``."""
+    rest = music_off_rest(text) if snapshot.music_playing else None
+    return None if rest is None else Tier1Command(kn.MUSIC_OFF_KIND, rest=rest)
 
 
 def _new_session(text: str, _snapshot: SessionSnapshot, _voices: Voices) -> Optional[Tier1Command]:

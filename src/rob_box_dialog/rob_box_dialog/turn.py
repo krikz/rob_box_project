@@ -679,7 +679,7 @@ def tier1_phrase(command: Tier1Command, results: Sequence[ActionResult],
         return prosody_phrase(results)
     if command.kind == kn.SHOW_QUEUE_KIND:
         return show_queue_phrase(results)
-    if command.kind == kn.VOICE_STEP_KIND:
+    if command.kind in (kn.VOICE_STEP_KIND, kn.MUSIC_OFF_KIND):  # «выключи музыку» - фраза по исходу стопа (#4349)
         return outcome_phrase(results)
     if command.kind == "set_voice":
         return voice_phrase(results)
@@ -1662,6 +1662,8 @@ async def _tier1_then_rest(engine: "TurnEngine", turn: _Turn, command: Tier1Comm
     snap = engine.session.snapshot
     engine._log.info(f"{LOG_MARK} остаток после стопа: {turn.text[:80]!r} turn={turn.turn_id}")
     follow, parsed = tier1_of(turn.text, turn.command, snap, engine._voices())
+    if follow is not None and follow.kind == kn.MUSIC_OFF_KIND and stops_music(command):
+        follow = None  # «хватит, диджей выключай»: музыку уже гасит стоп, остаток - модели, как до #4349 (n608)
     if follow is not None and not follow.disputed:
         await _tier1_then_rest(engine, turn, follow, snap, parsed)
     else:
