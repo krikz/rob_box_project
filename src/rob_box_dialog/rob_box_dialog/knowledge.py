@@ -666,7 +666,9 @@ MUSIC_ACTION_DEADLINE_S = MUSIC_START_WAIT_S + MUSIC_PREPARE_S
 ACTION_GRACE_S = 1.0
 #: Классы, итог которых после закрытия хода (поздний ``done``/``rejected`` после ``timeout``) говорит код: музыка
 #: заиграла позже дедлайна — «Включаю музыку.», а не тишина после «пока не заиграла». Движение, выступление и прочее
-#: свои поздние итоги ведут иначе (обещание ``pending``, PlanEvent).
+#: свои поздние итоги ведут иначе (обещание ``pending``, PlanEvent). Движение итог говорит в ходе: ход ждёт его весь
+#: срок класса (``turn.action_term``), транспорт - не меньше (``execute.transport_timeouts``, #4344); итог позже срока -
+#: это свой таймаут тула (цель Nav2 ждёт те же 120 с и отменяется), и поздняя фраза повторила бы «время вышло».
 LATE_SPOKEN_CLASSES: Tuple[str, ...] = ("action.media",)
 
 ACTION_CLASSES: Mapping[str, ActionClass] = MappingProxyType({
@@ -1290,7 +1292,8 @@ WINDOW_ACTION_DETAILS: Mapping[str, Tuple[str, ...]] = MappingProxyType({
 #: таблица :data:`TOOL_PHRASES` по данным, что строит фразу кода) -> слова после статуса. ``stop_music`` при
 #: ``was_playing=False`` - «сделано, ничего не играло», а не голое «сделано»: Tier-1 «хватит» гасит молча, и без этих
 #: слов модель считала бы, что музыка играла и выключена. Ключа нет в таблице - только статус.
-WINDOW_OUTCOME_NOTES: Mapping[str, str] = MappingProxyType({"music.stop_idle": "ничего не играло"})
+WINDOW_OUTCOME_NOTES: Mapping[str, str] = MappingProxyType({"music.stop_idle": "ничего не играло",
+                                                           "motion.stop.idle": "робот и так стоял"})
 #: Статус исхода словами этой реплики: статусы исполнителя (:data:`ACTION_STATUSES`) и выступления (``turn_log``
 #: ``PERFORM_*``). Статус вне таблицы - как есть.
 WINDOW_ACTION_STATUS: Mapping[str, str] = MappingProxyType({
@@ -1483,6 +1486,22 @@ NAV_DONE = ByData((NAV_ARRIVAL_FIELD,), {
 })
 NAV_FAILED = ByData((NAV_OUTCOME_FIELD,), {(kind,): f"motion.not_reached.{kind}" for kind in NAV_FAILURE_OUTCOMES})
 NAV_TOOL_PHRASES: Mapping[str, Any] = MappingProxyType({"done": NAV_DONE, "rejected": NAV_FAILED})
+#: Стоп навигации (``stop_navigation``, #3789): тул в классе ``action.motion``, но «Приехал.»/«Не могу поехать.»/«Не
+#: доехал — время вышло.» класса о стопе - ложь (HIL 04.11 21:51:18: активной цели нет, тул ответил ``no_active_goal``,
+#: робот сказал «Приехал.»). Фразу строит код по виду исхода отмены в поле :data:`NAV_OUTCOME_FIELD` (кладёт тул:
+#: ``rob_box_mcp_tools.core.action_outcome.classify_cancel_response``; значения - отсюда): :data:`STOP_CONFIRMED` -
+#: сервер принял отмену идущей цели, :data:`STOP_IDLE` - отменять было нечего. Любой неуспех (сервис отмены недоступен,
+#: не ответил, отказал) и ``timeout`` - «не уверен, что остановился», а не «не могу поехать».
+STOP_TOOL = "stop_navigation"
+STOP_CONFIRMED = "cancel_confirmed"
+STOP_IDLE = "no_active_goal"
+STOP_FAILED_KEY = "motion.stop.failed"
+STOP_TOOL_PHRASES: Mapping[str, Any] = MappingProxyType({
+    "done": ByData((NAV_OUTCOME_FIELD,), {(STOP_CONFIRMED,): "motion.stop.confirmed", (STOP_IDLE,): "motion.stop.idle"},
+                   "motion.stop.confirmed"),
+    "rejected": STOP_FAILED_KEY,
+    "timeout": STOP_FAILED_KEY,
+})
 #: Картография (#4363): тулы ``start_mapping``/``continue_mapping``/``finish_mapping``/``optimize_map``/``load_map`` в
 #: классе ``action.motion``, но «Приехал.»/«Не могу поехать.» о карте - ложь (живой 04.11 14:51: старт карты - «Приехал.»,
 #: отказ «уже идёт картографирование» - «Не могу поехать.»). Фразу строит код по данным исхода тула. Поля данных:
@@ -1513,14 +1532,20 @@ MAP_NAMED_DONE = {
     "load": ByData((MAP_NAME_FIELD,), {(True,): "mapping.loaded", (False,): "mapping.loaded_unnamed"},
                    present=(MAP_NAME_FIELD,)),
 }
+#: Итога тула карты нет в срок класса (#4344: транспорт теперь ждёт тул весь срок, а не 10 с) - о карте, а не «Не
+#: доехал — время вышло.» класса.
+MAP_TIMEOUT_KEY = "mapping.failed.timeout"
 MAP_TOOL_PHRASES: Mapping[str, Mapping[str, Any]] = MappingProxyType({
-    "start_mapping": MappingProxyType({"done": MAP_START_DONE, "rejected": MAP_FAILED}),
-    "continue_mapping": MappingProxyType({"done": "mapping.continued", "rejected": MAP_FAILED}),
-    "finish_mapping": MappingProxyType({"done": MAP_NAMED_DONE["finish"], "rejected": MAP_FAILED}),
-    "load_map": MappingProxyType({"done": MAP_NAMED_DONE["load"], "rejected": MAP_FAILED}),
+    "start_mapping": MappingProxyType({"done": MAP_START_DONE, "rejected": MAP_FAILED, "timeout": MAP_TIMEOUT_KEY}),
+    "continue_mapping": MappingProxyType({"done": "mapping.continued", "rejected": MAP_FAILED,
+                                          "timeout": MAP_TIMEOUT_KEY}),
+    "finish_mapping": MappingProxyType({"done": MAP_NAMED_DONE["finish"], "rejected": MAP_FAILED,
+                                        "timeout": MAP_TIMEOUT_KEY}),
+    "load_map": MappingProxyType({"done": MAP_NAMED_DONE["load"], "rejected": MAP_FAILED, "timeout": MAP_TIMEOUT_KEY}),
     "optimize_map": MappingProxyType({
         "done": ByData((MAP_PARTIAL_FIELD,), {(True,): "mapping.optimize_partial"}, "mapping.optimized"),
         "rejected": MAP_FAILED,
+        "timeout": MAP_TIMEOUT_KEY,
     }),
 })
 #: Ключи фраз, особые для тула (поверх ключа класса): «Запомнил: …» строится по событию saved владельца памяти.
@@ -1530,6 +1555,8 @@ TOOL_PHRASES: Mapping[str, Mapping[str, Any]] = MappingProxyType({
     # исхода; данных нет (отказ плана, моторы) - ключ класса ``motion.*``
     "navigate_to_waypoint": NAV_TOOL_PHRASES,
     "navigate_to_coordinates": NAV_TOOL_PHRASES,
+    # стоп (#3789): «Останавливаюсь.» / «Я и так стою.» по виду отмены, а не «Приехал.» класса
+    STOP_TOOL: STOP_TOOL_PHRASES,
     "memory_save": MappingProxyType({"done": "memory.saved"}),
     "set_voice": MappingProxyType({"done": VOICE_DONE, "rejected": VOICE_FAILED, "timeout": "voice.timeout"}),
     "set_tts_provider": MappingProxyType({"done": VOICE_DONE, "rejected": VOICE_FAILED, "timeout": "voice.timeout"}),

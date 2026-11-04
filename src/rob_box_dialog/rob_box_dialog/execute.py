@@ -10,7 +10,7 @@
 решает планировщик ресурсов у транспорта (``plan.runner``, PR-7b) по ``knowledge.COMPOSITION``. Событие
 ``pending`` (обещание: «Еду к…») закрывает ожидание статусом ``pending``; итог по его ``event_ref`` придёт позже —
 в ``on_late``. Транспорт (ROS-топик, вызов MCP) — снаружи: модуль чистый, без ROS; сколько транспорт ждёт итог тула с
-поздним итогом, решает :func:`transport_timeouts` (дольше срока класса).
+сроком класса и поздним итогом, решает :func:`transport_timeouts` (не меньше срока класса, у позднего итога - дольше).
 
 Эпоха (PR-9, §6.2): исполнитель с ``epoch`` (текущая эпоха сессии) отбрасывает исход запроса прошлой эпохи —
 ``WARNING stale_epoch``, в ход он приходит ``cancelled{stale_epoch}``, в ``on_late`` не попадает. Отмена хода
@@ -100,14 +100,22 @@ def deadline_s(cls: str) -> float:
 
 
 def transport_timeouts() -> Mapping[str, float]:
-    """Сколько транспорт тула (MCP-вызов v2, ``ROSMCPToolProvider``) ждёт его итог, по тулам классов с поздним итогом
-    (``LATE_SPOKEN_CLASSES``): дольше срока класса — до потолка хода. Срок класса закрывает ожидание хода честным
-    ``timeout``, а итог, пришедший позже, транспорт ещё несёт исполнителю — в ``on_late``. Транспорт со сроком, равным
-    сроку класса, бросал итог вместе с ходом (n809: трек заиграл через 1,4 с после срока, мост вернул «Timeout
-    ожидания результата», «Включаю музыку.» не прозвучало). Поздний итог исполнитель держит только у этих классов,
-    поэтому тулам остальных транспорт ждёт как раньше (``default_timeout``)."""
-    return MappingProxyType({tool: max(deadline_s(cls) + kn.ACTION_GRACE_S, float(kn.TURN_CEILING_S))
-                             for tool, cls in kn.TOOL_CLASSES.items() if cls in kn.LATE_SPOKEN_CLASSES})
+    """Сколько транспорт тула (MCP-вызов v2, ``ROSMCPToolProvider``) ждёт его итог, по тулам: не меньше срока класса +
+    ``ACTION_GRACE_S``, чтобы итог тула решал исполнитель, а не обрыв транспорта. Транспорт ждал 10 с
+    (``default_timeout``) любой тул, и поездка дольше 10 с давала «Не могу поехать.», а робот ехал дальше и доезжал
+    (#4344, HIL 04.11 21:45: обрыв на 10,0 с, Nav2 SUCCEEDED на 35,7 с, итог не прозвучал): срок ``action.motion`` -
+    120 с. Тулам классов с поздним итогом (``LATE_SPOKEN_CLASSES``) - дольше срока класса, до потолка хода: срок класса
+    закрывает ожидание хода честным ``timeout``, а итог, пришедший позже, транспорт ещё несёт исполнителю - в
+    ``on_late`` (n809: трек заиграл через 1,4 с после срока, мост вернул «Timeout ожидания результата», «Включаю
+    музыку.» не прозвучало). Классы без своего срока (речь, выступление: срок задаёт владелец) транспорт ждёт как
+    раньше (``default_timeout``)."""
+    waits: Dict[str, float] = {}
+    for tool, cls in kn.TOOL_CLASSES.items():
+        if kn.ACTION_CLASSES[cls].timeout_s is None:
+            continue
+        wait = deadline_s(cls) + kn.ACTION_GRACE_S
+        waits[tool] = max(wait, float(kn.TURN_CEILING_S)) if cls in kn.LATE_SPOKEN_CLASSES else wait
+    return MappingProxyType(waits)
 
 
 class Executor:

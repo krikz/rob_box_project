@@ -193,6 +193,10 @@ motion.not_reached.no_response: ["Не доехал до точки {target}: н
 motion.not_reached.server_unavailable: ["Не доехал до точки {target}: навигация недоступна."]
 motion.not_reached.unknown_status: ["Не уверен, что доехал до точки {target}: навигация не подтвердила прибытие."]
 motion.not_reached.unknown_target: ["Не знаю точку {target}."]
+# Стоп навигации (#3789, knowledge.STOP_TOOL_PHRASES): по виду отмены из данных тула, а не «Приехал.» класса.
+motion.stop.confirmed: ["Останавливаюсь."]
+motion.stop.idle: ["Я и так стою."]
+motion.stop.failed: ["Не уверен, что остановился: навигация не подтвердила отмену."]
 # Картография (#4363, knowledge.MAP_TOOL_PHRASES): по данным исхода тула, {map_name} - имя карты, {active_map} - карта, что пишется.
 mapping.start: ["Начал новую карту «{map_name}». Води меня по комнатам, потом скажи «заверши картографирование»."]
 mapping.start_unnamed: ["Начал новую карту. Води меня по комнатам, потом скажи «заверши картографирование»."]
