@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# local_test/quest_smoke.sh — Meta Quest WebXR smoke test (Phase 1.7, ADR-0027 §6).
+# tools/dev/quest_smoke.sh — Meta Quest WebXR smoke test (Phase 1.7, ADR-0027 §6).
 #
 # Контракт (issue #1643 acceptance):
 #   --check-only : DNS resolve + TLS cert (subject, SAN, expiry) — без живого сервера.
@@ -82,7 +82,7 @@ command -v python3 >/dev/null 2>&1 || {
 
 if [ ! -f "${LIB_PY}" ]; then
     echo "FATAL: quest_smoke_lib.py not found at ${LIB_PY}" >&2
-    echo "  (quest_smoke.sh и библиотека должны лежать рядом в local_test/)" >&2
+    echo "  (quest_smoke.sh и библиотека должны лежать рядом в tools/dev/)" >&2
     exit 65
 fi
 

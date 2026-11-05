@@ -19,7 +19,7 @@ export RMW_IMPLEMENTATION=rmw_zenoh_cpp
 export ROS_AUTOMATIC_DISCOVERY_RANGE=LOCALHOST
 
 ZENOH_CONFIG="/tmp/zenoh_view_wheel_${ROBOT_ID}.json5"
-cp /home/ros2/rob_box_project/local_test/zenoh_client_config.json5 "$ZENOH_CONFIG"
+cp /home/ros2/rob_box_project/tools/dev/zenoh_client_config.json5 "$ZENOH_CONFIG"
 sed -i 's|"mode": "peer",|"mode": "peer",\n  "namespace": "robots/'$ROBOT_ID'",|' "$ZENOH_CONFIG"
 export ZENOH_SESSION_CONFIG_URI="$ZENOH_CONFIG"
 

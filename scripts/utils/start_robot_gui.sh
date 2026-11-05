@@ -15,7 +15,7 @@ export ROS_AUTOMATIC_DISCOVERY_RANGE=LOCALHOST
 
 # Создаём Zenoh конфиг с namespace (как в RViz)
 ZENOH_CONFIG="/tmp/zenoh_gui_config_${ROBOT_ID}.json5"
-cp "$(dirname "$0")/../local_test/zenoh_client_config.json5" "$ZENOH_CONFIG"
+cp "$(dirname "$0")/../tools/dev/zenoh_client_config.json5" "$ZENOH_CONFIG"
 # Добавляем namespace в Zenoh конфиг
 sed -i 's|"mode": "peer",|"mode": "peer",\n  "namespace": "robots/'$ROBOT_ID'",|' "$ZENOH_CONFIG"
 export ZENOH_SESSION_CONFIG_URI="$ZENOH_CONFIG"

@@ -5,9 +5,9 @@
 ТОЛЬКО уже установленный `websockets` lib — никаких aiohttp/multidict/yarl.
 
 Запуск (в отдельном терминале):
-    python3 local_test/_dev_fake_quest.py
+    python3 tools/dev/_dev_fake_quest.py
 Потом в другом:
-    ./local_test/quest_smoke.sh --all --host 127.0.0.1 --port 18765 --pin 123456
+    ./tools/dev/quest_smoke.sh --all --host 127.0.0.1 --port 18765 --pin 123456
 
 Не часть прод-контракта — оставлен в репо как dev-helper, исключён
 через underscore-prefix в имени (не импортируется из других модулей).

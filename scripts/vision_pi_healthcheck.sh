@@ -227,7 +227,7 @@ run_remote() {
     fi
     if ! ssh -o ConnectTimeout=5 -o BatchMode=yes -o StrictHostKeyChecking=accept-new \
             "${VISION_PI_USER}@${VISION_PI_HOST}" 'echo OK' >/dev/null 2>&1; then
-        die "ssh на ${VISION_PI_USER}@${VISION_PI_HOST} не прошёл. Возможно нужен sshpass или ключ. См. local_test/README.md § 'SSH доступ'."
+        die "ssh на ${VISION_PI_USER}@${VISION_PI_HOST} не прошёл. Возможно нужен sshpass или ключ. См. tools/dev/README.md § 'SSH доступ'."
     fi
     log "✅ ssh ок."
     log ""

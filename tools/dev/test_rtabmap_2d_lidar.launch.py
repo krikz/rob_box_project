@@ -4,7 +4,7 @@
 Запуск БЕЗ Docker, напрямую через ROS 2
 
 Использование:
-    ros2 launch local_test/test_rtabmap_2d_lidar.launch.py
+    ros2 launch tools/dev/test_rtabmap_2d_lidar.launch.py
 
 Топики:
     /scan - LaserScan данные от лидара

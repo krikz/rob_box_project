@@ -44,7 +44,7 @@
     #
     # Regression (t_0b926b23): здесь стоял 8765 — порт voice-action-server,
     # который в host-network живёт рядом и тоже отвечает 200 на /healthz.
-    # Из-за этого smoke-скрипт (local_test/quest_smoke.sh, секция healthz)
+    # Из-за этого smoke-скрипт (tools/dev/quest_smoke.sh, секция healthz)
     # получал `{"ok": true, "active_goals": 0}` от ЧУЖОГО сервиса и печатал
     # PASS даже когда quest_node лежал — классический «красивый PASS»
     # (ADR-0018). Правильный ответ содержит status/sessions_active/

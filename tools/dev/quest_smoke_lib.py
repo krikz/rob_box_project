@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Wire-protocol helpers for local_test/quest_smoke.sh.
+"""Wire-protocol helpers for tools/dev/quest_smoke.sh.
 
 Этот модуль НЕ зависит от rob_box_quest (который требует ROS2) — он
 копирует минимальный контракт: 1 byte type + 4 bytes stream_id LE + LEB128
@@ -895,7 +895,7 @@ def _exit_code(suite: SuiteResult) -> int:
 def main() -> int:  # pragma: no cover — CLI
     parser = argparse.ArgumentParser(
         prog="quest_smoke_lib",
-        description="Pure-Python wire helpers for local_test/quest_smoke.sh",
+        description="Pure-Python wire helpers for tools/dev/quest_smoke.sh",
     )
     parser.add_argument("--host", default="quest.rob_box.local")
     parser.add_argument("--port", type=int, default=8443)

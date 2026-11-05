@@ -80,7 +80,7 @@ rob_box_project/
 │   └── client-app/
 ├── docs/                    # Документация
 ├── scripts/                 # Утилиты разработки
-├── local_test/              # Локальные тесты
+├── tools/dev/               # Dev-окружение ноутбука (бывший local_test/)
 ├── migrations/              # SQL миграции
 ├── PRD.md
 ├── tasks.json

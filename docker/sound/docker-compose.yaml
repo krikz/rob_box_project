@@ -251,7 +251,7 @@ services:
       # supercollider читает их по тому же пути (issue 986)
       - sc_synthdefs:/root/.local/share/SuperCollider/synthdefs
       # Renardo/FoxDot reference documentation for MusicSkill LLM context
-      - ../../local_test/RENARDO_REFERENCE.md:/renardo_ref/RENARDO_REFERENCE.md:ro
+      - ./config/RENARDO_REFERENCE.md:/renardo_ref/RENARDO_REFERENCE.md:ro
       # DB migrations (applied idempotently at startup by WaypointStore, FAQStore, etc.)
       - ../../migrations:/migrations:ro
     mem_limit: 5g  # Voice Assistant + Animations

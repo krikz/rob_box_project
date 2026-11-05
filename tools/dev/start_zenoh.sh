@@ -1,6 +1,6 @@
 #!/bin/bash
 # Запуск Zenoh local router для подключения к роботу
-# Использование: ./local_test/start_zenoh.sh
+# Использование: ./tools/dev/start_zenoh.sh
 
 set -e
 

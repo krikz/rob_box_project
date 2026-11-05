@@ -12,18 +12,18 @@
 
 Использование:
     # Линейный тест (0.5 м вперёд)
-    python3 local_test/calibrate_odometry.py --linear
+    python3 tools/dev/calibrate_odometry.py --linear
 
     # Угловой тест (360° на месте)
-    python3 local_test/calibrate_odometry.py --angular
+    python3 tools/dev/calibrate_odometry.py --angular
 
     # Указать скорость и дистанцию
-    python3 local_test/calibrate_odometry.py --linear --speed 0.1 --distance 0.5
+    python3 tools/dev/calibrate_odometry.py --linear --speed 0.1 --distance 0.5
 
 Перед запуском:
     source /opt/ros/humble/setup.bash
     export RMW_IMPLEMENTATION=rmw_zenoh_cpp
-    export ZENOH_SESSION_CONFIG_URI=$(pwd)/local_test/zenoh_local_session.json5
+    export ZENOH_SESSION_CONFIG_URI=$(pwd)/tools/dev/zenoh_local_session.json5
     export ROS_AUTOMATIC_DISCOVERY_RANGE=LOCALHOST
 """
 

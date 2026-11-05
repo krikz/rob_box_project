@@ -18,7 +18,7 @@ voice-action-server») перевёл `/quest` на 8766, но `/healthz` ост
     via Caddy  https://localhost:443/healthz  -> {"ok": true, "active_goals": 0, ...}
     quest_node http://localhost:8766/healthz  -> {"status": "ok", "sessions_active": 0, ...}
 
-`local_test/quest_smoke_lib.py::check_healthz` проверяет `body["status"] == "ok"`.
+`tools/dev/quest_smoke_lib.py::check_healthz` проверяет `body["status"] == "ok"`.
 Ответ voice-action-server такого поля не содержит, поэтому секция падала бы —
 но 200 от чужого сервиса маскировал факт, что здоровье quest_node вообще НЕ
 проверяется. Это ровно тот «красивый PASS», который запрещает ADR-0018.
@@ -32,8 +32,8 @@ from pathlib import Path
 
 import pytest
 
-# local_test/ -> repo root
-_REPO_ROOT = Path(__file__).resolve().parent.parent
+# tools/dev/ -> repo root
+_REPO_ROOT = Path(__file__).resolve().parents[2]
 _CADDYFILE = _REPO_ROOT / "docker" / "sound" / "quest" / "Caddyfile"
 _COMPOSE = _REPO_ROOT / "docker" / "sound" / "docker-compose.yaml"  # quest — Sound Pi с ADR-0159 PR-7
 
