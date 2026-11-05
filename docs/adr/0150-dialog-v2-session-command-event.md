@@ -369,6 +369,10 @@ flowchart TD
 
 ### 4.1 Узкий слот LLM: команда
 
+> **Поправка ADR-0165 (Proposed, 05.11.2026, #4403):** потолок «≤ 3 действия» ниже заменяется вереницей
+> действий после ответа — фраза плана кодом, шаги по одному, лимит по классу и сроку, отмена остатка по стопу.
+> Что именно меняется в этом разделе — ADR-0165 §11; текст ниже правится после решения товарища Шифу.
+
 ```python
 # rob_box_dialog/command.py (frozen dataclasses; схема генерируется из них для tool_calls и для JSON-режима)
 class Expression:  emotion: Emotion = "neutral"; gesture: Gesture | None; earcon: Earcon | None   # enum из knowledge
