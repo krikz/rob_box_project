@@ -1579,12 +1579,16 @@ def foreign_keys(window: Sequence[Any], turn: "_Turn", cmd: Command, snapshot: S
     фона, лица в кадре из прочитанного в ходе (:func:`foreign_name.face_names`, #4388); ключи -
     :func:`foreign_name.name_keys`.
     Не считаются названные самим человеком в этой реплике и им же в ``register_speaker`` команды: «меня зовут Гриша» -
-    ответ «Понял, Гриша» честен."""
-    if not foreign_name.unconfirmed(snapshot.speaker):
+    ответ «Понял, Гриша» честен.
+    Лица в кадре берутся и без снимка собеседника (:func:`foreign_name.named`: фраза без биометрии - инъекция, первая
+    после рестарта): лицо в кадре не говорящий, пока голос не подтвердил имя (#4388, живой 05.11)."""
+    speaker = snapshot.speaker
+    if foreign_name.named(speaker):
         return frozenset()
-    seen = [e.speaker for e in window if e.role == USER] + [who for who, _ in turn.heard]
-    seen += [str(p.get("who") or "") for p in (*turn.recent, *turn.background)]
-    seen += foreign_name.face_names((*turn.seen, *turn.queried))
+    seen = list(foreign_name.face_names((*turn.seen, *turn.queried)))
+    if foreign_name.unconfirmed(speaker):
+        seen += [e.speaker for e in window if e.role == USER] + [who for who, _ in turn.heard]
+        seen += [str(p.get("who") or "") for p in (*turn.recent, *turn.background)]
     said = [turn.text, *(text for _who, text in turn.heard)]
     said += [str(a.args.get("name") or "") for a in cmd.actions if a.tool == "register_speaker"]
     return foreign_name.name_keys(seen) - foreign_name.name_keys(said)

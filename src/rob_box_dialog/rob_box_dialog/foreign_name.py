@@ -60,6 +60,14 @@ def face_names(results: Iterable[Any]) -> Tuple[str, ...]:
     return tuple(names)
 
 
+def named(speaker: Any) -> bool:
+    """Имя собеседника подтверждено профилем голоса: только тогда лицо в кадре может оказаться им. Снимка собеседника
+    нет (``None``: фраза без биометрии - инъекция, первая после рестарта, Telegram) - не подтверждено: модель видит
+    в снимке хода тот же ``name_state=unknown`` (``speaker_adapter.speaker_block``), и звать его именем лица из кадра -
+    выдумка (#4388, живой 05.11 10:31: «Вижу тебя, Литвин…» после рестарта, ``speaker=None``)."""
+    return speaker is not None and getattr(speaker, "name_state", None) == NAME_CONFIRMED
+
+
 def unconfirmed(speaker: Any) -> bool:
     """Собеседник есть в снимке, а его имя не подтверждено: ему имени не дают (``None`` - снимка собеседника нет, как у
     канала без биометрии: о нём код ничего не утверждает)."""
@@ -149,4 +157,5 @@ def unnamed(cmd: Command, keys: Collection[str]) -> Command:
     return replace(cmd, speech=_clean(cmd.speech, keys), ask=ask)
 
 
-__all__ = ["addressed", "face_names", "name_keys", "offending", "spoken", "unconfirmed", "unnamed", "without_address"]
+__all__ = ["addressed", "face_names", "name_keys", "named", "offending", "spoken", "unconfirmed", "unnamed",
+           "without_address"]
