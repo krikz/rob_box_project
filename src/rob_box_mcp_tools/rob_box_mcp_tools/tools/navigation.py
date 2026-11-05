@@ -14,7 +14,7 @@ navigation.py - Инструменты навигации и движения р
 - GetCurrentPoseTool: Получить текущую позицию робота
 """
 
-from typing import Any, Dict, List, Optional, TYPE_CHECKING
+from typing import Any, Callable, List, Optional, TYPE_CHECKING
 import math
 import time
 from rclpy.action import ActionClient
@@ -42,6 +42,7 @@ from ..core.action_outcome import (
     start_distance,
 )
 from rob_box_dialog import knowledge as kn
+from ..map_pose import LEGACY_WAYPOINT_FRAME, MapPose
 
 _CANCEL_ALL_LABEL = "Nav2 cancel_goal"
 _CANCEL_ALL_TIMEOUT_SEC = 5.0
@@ -141,19 +142,14 @@ def _future_response(future, completed: bool):
         return None, str(exc) or type(exc).__name__
 
 
-def _lookup_pose(pose_getter, logger) -> Optional[Dict[str, float]]:
-    """Return the latest robot pose ``{x, y, theta}`` from the /odom snapshot, or *None*.
-
-    ``pose_getter`` is a callable returning ``{"x": ..., "y": ..., "theta": ...}``
-    or ``None`` (no data yet). Replaces the blocking ``tf_buffer.lookup_transform``
-    which kept a ~110 Hz /tf subscription alive and burned ~45% CPU via wait-set
-    rebuilds over rmw_zenoh (see mcp-server-cpu-loop-2026-08-22).
-    """
-    pose = pose_getter()
-    if not pose:
-        logger.warning("Позиция робота недоступна (нет данных /odom)")
-        return None
-    return {"x": float(pose["x"]), "y": float(pose["y"]), "theta": float(pose["theta"])}
+def _pose_failure(pose: MapPose, message: str) -> MCPToolResult:
+    """Отказ по позе на карте: причину строит код из статуса (#4390, ADR-0148), не одометрия молча."""
+    return MCPToolResult(
+        success=False,
+        error=f"Не могу определить позицию робота на карте: {pose.reason}",
+        message=message,
+        data={"pose_status": pose.status, "frame_id": pose.frame_id},
+    )
 
 
 # ============================================================
@@ -219,10 +215,22 @@ class NavigateToWaypointTool(MCPTool):
                 data={**nav_data(kn.NAV_UNKNOWN_TARGET), kn.NAV_TARGET_FIELD: waypoint},
             )
 
-        self.log_info(f"📍 Координаты: x={coords['x']:.2f}, y={coords['y']:.2f}, θ={coords['theta']:.2f}")
+        # Цель — в кадре точки (#4390). Точка до #4390 без frame_id — как и раньше в ``map``,
+        # но помечена: её писали из /odom, совпадение с картой не гарантировано.
+        frame_id = coords.get("frame_id") or LEGACY_WAYPOINT_FRAME
+        frame_assumed = not coords.get("frame_id")
+        if frame_assumed:
+            self.log_warning(f"Точка '{waypoint}' без кадра (записана до #4390 из /odom) — цель в '{frame_id}'")
+        self.log_info(
+            f"📍 Координаты: x={coords['x']:.2f}, y={coords['y']:.2f}, θ={coords['theta']:.2f} [{frame_id}]"
+        )
 
-        result = _send_nav_goal(self.nav_client, self.node, coords["x"], coords["y"], coords["theta"], timeout=120.0)
-        _with_target(result, waypoint, waypoint=waypoint, coordinates=coords)
+        result = _send_nav_goal(
+            self.nav_client, self.node, coords["x"], coords["y"], coords["theta"], frame_id=frame_id, timeout=120.0
+        )
+        _with_target(
+            result, waypoint, waypoint=waypoint, coordinates=coords, frame_id=frame_id, frame_assumed=frame_assumed
+        )
         if result.success:
             result.message = _arrived_message(result, f"точке {waypoint}")
             self.log_info(f"✅ Навигация к {waypoint} завершена: {result.data.get(kn.NAV_ARRIVAL_FIELD)}")
@@ -495,10 +503,10 @@ class SaveWaypointTool(MCPTool):
 
     event_source = "inproc:waypoint_store"
 
-    def __init__(self, node, waypoint_store: "WaypointAdapter", pose_getter, mapping_state=None):
+    def __init__(self, node, waypoint_store: "WaypointAdapter", pose_source: Callable[[], MapPose], mapping_state=None):
         super().__init__(node)
         self.waypoint_store = waypoint_store
-        self._pose_getter = pose_getter
+        self._pose_source = pose_source
         self.mapping_state = mapping_state
 
     @property
@@ -544,21 +552,18 @@ class SaveWaypointTool(MCPTool):
                 error="Сейчас идёт картографирование. Завершите картографирование командой 'завершить картографирование', потом сохраняйте точки.",
             )
 
-        pose = _lookup_pose(self._pose_getter, self.node.get_logger())
-        if pose is None:
-            return MCPToolResult(
-                success=False,
-                error="Не могу определить позицию робота (нет данных /odom)",
-                message="Позиция неизвестна. Убедись что одометрия публикует данные.",
-            )
+        pose = self._pose_source()
+        if not pose.ok:
+            self.log_warning(f"Точку '{name}' не сохранил: {pose.status} {pose.detail}")
+            return _pose_failure(pose, f"Позиция на карте неизвестна — точку '{name}' не сохранил.")
 
-        self.waypoint_store.save_waypoint(name, pose["x"], pose["y"], pose["theta"])
-        self.log_info(f"✅ Точка '{name}' сохранена: ({pose['x']:.2f}, {pose['y']:.2f}, {pose['theta']:.2f})")
+        self.waypoint_store.save_waypoint(name, pose.x, pose.y, pose.theta, frame_id=pose.frame_id)
+        self.log_info(f"✅ Точка '{name}' сохранена: ({pose.x:.2f}, {pose.y:.2f}, {pose.theta:.2f}) [{pose.frame_id}]")
 
         return MCPToolResult(
             success=True,
-            data={"name": name, **pose},
-            message=f"Запомнил! Точка '{name}' сохранена ({pose['x']:.1f}, {pose['y']:.1f})",
+            data={"name": name, **pose.as_dict()},
+            message=f"Запомнил! Точка '{name}' сохранена ({pose.x:.1f}, {pose.y:.1f})",
         )
 
 
@@ -676,9 +681,9 @@ class ClearWaypointsTool(MCPTool):
 class GetCurrentPoseTool(MCPTool):
     """Получить текущую позицию робота на карте."""
 
-    def __init__(self, node, pose_getter):
+    def __init__(self, node, pose_source: Callable[[], MapPose]):
         super().__init__(node)
-        self._pose_getter = pose_getter
+        self._pose_source = pose_source
 
     @property
     def name(self) -> str:
@@ -703,17 +708,14 @@ class GetCurrentPoseTool(MCPTool):
     def execute(self) -> MCPToolResult:
         self.log_info("Запрос текущей позиции")
 
-        pose = _lookup_pose(self._pose_getter, self.node.get_logger())
-        if pose is None:
-            return MCPToolResult(
-                success=False,
-                error="Не могу определить позицию (нет данных /odom)",
-                message="Позиция неизвестна",
-            )
+        pose = self._pose_source()
+        if not pose.ok:
+            self.log_warning(f"Позиция на карте недоступна: {pose.status} {pose.detail}")
+            return _pose_failure(pose, "Позиция на карте неизвестна")
 
-        self.log_info(f"📍 Позиция: x={pose['x']:.2f}, y={pose['y']:.2f}, θ={pose['theta']:.2f}")
+        self.log_info(f"📍 Позиция: x={pose.x:.2f}, y={pose.y:.2f}, θ={pose.theta:.2f} [{pose.frame_id}]")
         return MCPToolResult(
             success=True,
-            data=pose,
-            message=f"Позиция: ({pose['x']:.2f}, {pose['y']:.2f}), угол {math.degrees(pose['theta']):.0f}°",
+            data=pose.as_dict(),
+            message=f"Позиция: ({pose.x:.2f}, {pose.y:.2f}), угол {math.degrees(pose.theta):.0f}°",
         )

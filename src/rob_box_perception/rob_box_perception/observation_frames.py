@@ -14,8 +14,10 @@ camera_color_optical_frame`` отдаёт статический трансфо�
 §8 п.5).
 
 Модуль без rclpy и tf2 на уровне импорта: :class:`FrameResolver` —
-чистая логика над протоколом «найди трансформ», :class:`Tf2Lookup` —
-адаптер к ``tf2_ros.Buffer``, импорты ROS — лениво в конструкторе.
+чистая логика над протоколом «найди трансформ». Адаптер к
+``tf2_ros.Buffer`` (:class:`Tf2Lookup`), :class:`RigidTransform` и ошибки
+поиска живут в ``rob_box_core.tf_lookup`` (второй потребитель — поза робота
+на карте для точек навигации, #4390) и реэкспортируются отсюда.
 
 Политика ожидания. Сначала ``can_transform`` на последний момент без
 ожидания: если цепочки ``target ← source`` в дереве нет вовсе (нет
@@ -30,8 +32,22 @@ Zenoh могут опоздать на десятки мс. Не дождали�
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass
-from typing import Any, Callable, Dict, Optional, Sequence, Tuple
+from typing import Any, Dict, Optional, Sequence, Tuple
+
+from rob_box_core.tf_lookup import (
+    LookupFn,
+    NoTransform,
+    Quat,
+    RigidTransform,
+    Tf2Lookup,
+    TransformStale,
+    Vec3,
+)
+
+__all__ = [
+    'LookupFn', 'NoTransform', 'Quat', 'RigidTransform', 'Tf2Lookup',
+    'TransformStale', 'Vec3', 'FrameResolver',
+]
 
 # ============================================================================
 # Словарь Observation.{base_link,map}_status
@@ -69,52 +85,6 @@ FRAME_FIELDS = (
 DEFAULT_TF_TIMEOUT_SEC = 0.05
 
 _NAN_POINT = (math.nan, math.nan, math.nan)
-
-Vec3 = Tuple[float, float, float]
-Quat = Tuple[float, float, float, float]  # x, y, z, w
-
-
-class NoTransform(Exception):
-    """В дереве TF нет цепочки target ← source."""
-
-
-class TransformStale(Exception):
-    """Цепочка есть, но данных на нужный момент нет."""
-
-
-@dataclass(frozen=True)
-class RigidTransform:
-    """Трансформ target ← source: p_target = R(rotation)·p_source + translation."""
-
-    translation: Vec3
-    rotation: Quat
-
-    def apply(self, point: Sequence[float]) -> Vec3:
-        """Перевести точку source → target (кватернион нормируется)."""
-        qx, qy, qz, qw = self.rotation
-        norm = math.sqrt(qx * qx + qy * qy + qz * qz + qw * qw)
-        if norm == 0.0:
-            raise ValueError('нулевой кватернион в трансформе')
-        qx, qy, qz, qw = qx / norm, qy / norm, qz / norm, qw / norm
-        px, py, pz = (float(v) for v in point)
-        # v' = v + 2w(q×v) + 2 q×(q×v)
-        cx = qy * pz - qz * py
-        cy = qz * px - qx * pz
-        cz = qx * py - qy * px
-        ccx = qy * cz - qz * cy
-        ccy = qz * cx - qx * cz
-        ccz = qx * cy - qy * cx
-        tx, ty, tz = self.translation
-        return (
-            px + 2.0 * (qw * cx + ccx) + tx,
-            py + 2.0 * (qw * cy + ccy) + ty,
-            pz + 2.0 * (qw * cz + ccz) + tz,
-        )
-
-
-#: Протокол поиска: (target, source, stamp_sec, timeout_sec) → трансформ;
-#: бросает NoTransform / TransformStale.
-LookupFn = Callable[[str, str, float, float], RigidTransform]
 
 
 class FrameResolver:
@@ -193,61 +163,3 @@ class FrameResolver:
             return None, FRAME_STATUS_NO_TRANSFORM
         except TransformStale:
             return None, FRAME_STATUS_TRANSFORM_STALE
-
-
-class Tf2Lookup:
-    """Адаптер ``tf2_ros.Buffer`` → :data:`LookupFn`.
-
-    ``exceptions`` — (lookup, connectivity, extrapolation) классы tf2;
-    ``to_time`` / ``to_duration`` — float сек → rclpy Time / Duration.
-    По умолчанию берутся из tf2_ros / rclpy (лениво), тесты подставляют
-    дублёры вместе с фейковым буфером.
-    """
-
-    def __init__(
-        self,
-        buffer: Any,
-        *,
-        exceptions: Optional[Tuple[type, type, type]] = None,
-        to_time: Optional[Callable[[float], Any]] = None,
-        to_duration: Optional[Callable[[float], Any]] = None,
-    ) -> None:
-        self._buffer = buffer
-        if exceptions is None:
-            import tf2_ros  # noqa: PLC0415 — лениво: модуль без ROS в CI
-            exceptions = (
-                tf2_ros.LookupException,
-                tf2_ros.ConnectivityException,
-                tf2_ros.ExtrapolationException,
-            )
-        if to_time is None or to_duration is None:
-            from rclpy.duration import Duration  # noqa: PLC0415
-            from rclpy.time import Time  # noqa: PLC0415
-            to_time = to_time or (lambda s: Time(nanoseconds=int(round(s * 1e9))))
-            to_duration = to_duration or (
-                lambda s: Duration(nanoseconds=int(round(s * 1e9)))
-            )
-        self._lookup_exc, self._connectivity_exc, self._extrapolation_exc = exceptions
-        self._to_time = to_time
-        self._to_duration = to_duration
-
-    def __call__(
-        self, target: str, source: str, stamp_sec: float, timeout_sec: float,
-    ) -> RigidTransform:
-        latest = self._to_time(0.0)
-        if not self._buffer.can_transform(target, source, latest, self._to_duration(0.0)):
-            raise NoTransform(f'{target} <- {source}')
-        try:
-            stamped = self._buffer.lookup_transform(
-                target, source, self._to_time(stamp_sec), self._to_duration(timeout_sec),
-            )
-        except self._extrapolation_exc as exc:
-            raise TransformStale(str(exc)) from exc
-        except (self._lookup_exc, self._connectivity_exc) as exc:
-            raise NoTransform(str(exc)) from exc
-        t = stamped.transform.translation
-        r = stamped.transform.rotation
-        return RigidTransform(
-            translation=(float(t.x), float(t.y), float(t.z)),
-            rotation=(float(r.x), float(r.y), float(r.z), float(r.w)),
-        )
