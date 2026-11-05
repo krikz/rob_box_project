@@ -98,12 +98,12 @@ from rcl_interfaces.msg import SetParametersResult
 from rclpy.qos import DurabilityPolicy, HistoryPolicy, QoSProfile, ReliabilityPolicy
 from rob_box_dialog_msgs.msg import SpeakerResult, SpeechEvent
 from std_msgs.msg import String
-from rob_box_core import speech_client
+from rob_box_core import epithets, speech_client
 from rob_box_core.e2e_mode import E2EModeOwner
 from rob_box_core.speaker_wire import SOURCE_ENROLL, TENTATIVE_CONTESTED, TENTATIVE_SINGLE, fill_speaker_result
 from rob_box_core.tools_db import tools_db_path
 
-from .core import echo_window, epithets, unnamed_voice
+from .core import echo_window, unnamed_voice
 from .core.utterance_id import compute_utterance_id
 from .utils import speaker_embeddings as _se_mod
 from .utils.speaker_embeddings import SpeakerDatabase, SpeakerMatch
