@@ -188,7 +188,7 @@ class WaypointAdapter:
         return self._store.list_waypoints()
 
     def get_waypoint(self, name: str) -> Optional[Dict[str, Any]]:
-        """MCP shape — ``{"name", "x", "y", "theta"}`` or ``None``."""
+        """MCP shape — ``{"name", "x", "y", "theta", "frame_id"}`` or ``None``."""
         return self._store.get_waypoint(name)
 
     def save_waypoint(
@@ -197,9 +197,13 @@ class WaypointAdapter:
         x: float,
         y: float,
         theta: float = 0.0,
+        frame_id: Optional[str] = None,
     ) -> bool:
-        """Write through to MCP schema (active map). Returns ``True``."""
-        return self._store.save_waypoint(name, x, y, theta)
+        """Write through to MCP schema (active map). Returns ``True``.
+
+        ``frame_id`` — кадр TF координат (#4390), ``None`` — неизвестен.
+        """
+        return self._store.save_waypoint(name, x, y, theta, frame_id=frame_id)
 
     def delete_waypoint(self, name: str) -> bool:
         """Delete on the active map. ``True`` if a row was deleted."""
