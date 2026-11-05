@@ -474,8 +474,10 @@ services:
   # Зона безопасности вокруг корпуса (#4365) — ВСЕГДА в стеке (решение Шифу 05.11; профиль снят:
   # деплой Main Pi делает голый `docker compose up -d`, COMPOSE_PROFILES там нет, так что профиль = выключено).
   # Только в движении: ближе 0.40 м от корпуса — мигалка (face_node) и короткий
-  # писк (sound_node); ближе 0.20 м — нулевой Twist в cmd_vel_emergency (twist_mux
-  # 255) и одним событием мигалка, писк и «Осторожно!» голосом (SpeechRequest).
+  # писк (sound_node); ближе 0.20 м в коридоре хода (0.08 м сбоку, 0.10 м на развороте) —
+  # нулевой Twist в cmd_vel_emergency (twist_mux 255) и одним событием мигалка, писк и
+  # «Осторожно!» голосом (SpeechRequest). Стоп держится, пока вход twist_mux (список —
+  # ./config/twist_mux/twist_mux.yaml) толкает в препятствие (HIL 05.11, #4365).
   # Образ — teleop (rob_box_teleop + сообщения диалога); footprint берётся из
   # ./config/nav2/nav2_params.yaml — тот же, что у Nav2.
   proximity-guard:

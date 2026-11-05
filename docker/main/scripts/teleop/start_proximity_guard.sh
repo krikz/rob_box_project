@@ -10,6 +10,8 @@ source /workspace/install/setup.bash
 source /ros_scripts/use_sim_time.sh
 
 echo "🛡️ Starting proximity_guard_node (footprint: /config/nav2/nav2_params.yaml)..."
-exec ros2 run rob_box_teleop proximity_guard_node --ros-args \
+# Без `ros2 run`: он становится PID 1 и SIGTERM от `docker stop` ноде не пересылает — контейнер добивался
+# SIGKILL через 10 с (Exited 137, HIL 05.11, #4365). Теперь нода сама PID 1 и выходит по SIGTERM.
+exec python3 -m rob_box_teleop.proximity_guard_node --ros-args \
     "${SIM_TIME_ROS_ARGS[@]}" \
     --log-level info

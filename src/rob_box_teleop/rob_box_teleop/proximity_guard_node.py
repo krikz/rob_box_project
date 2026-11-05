@@ -6,6 +6,8 @@
 * ``/scan`` (``LaserScan``) -> точки в ``base_footprint`` (поза лидара — из TF, статическая);
 * ``/diff_drive_controller/odom`` (``Odometry``, 50 Гц) -> «в движении» и куда едет корпус. Колёсная одометрия,
   а не ``/odom``: тот публикует rtabmap icp_odometry (10 Гц, живёт вместе с rtabmap), см. controller_manager.yaml;
+* входы twist_mux (список и таймауты — из ``twist_mux.yaml``, кроме ``cmd_vel_emergency``) -> какая команда
+  сейчас прошла бы в mux: пока держится стоп и команда толкает корпус в препятствие, стоп не отпускается;
 * стоп: нулевой ``Twist`` в ``cmd_vel_emergency`` — вход twist_mux с priority 255 и timeout 0.1 с,
   поэтому пока держится стоп, нода шлёт его таймером ``rate_hz`` (умолчание 20 Гц);
 * мигалка: ``ExpressionRequest.gesture`` в ``/voice/expression/request`` (``expression_client``) —
@@ -17,14 +19,18 @@
 Какие каналы, когда и на сколько — решает ``proximity.AlarmScheduler`` (одно событие тревоги на зону).
 
 Габарит корпуса — footprint local_costmap из того же ``nav2_params.yaml``, что у Nav2 (один источник).
-Включение: ``COMPOSE_PROFILES=proximity-guard`` (по умолчанию сервиса нет).
+Сервис всегда в стеке main. Выход по SIGTERM (``docker stop``) — чистый: нода запускается без ``ros2 run``
+(он PID 1 и SIGTERM не пересылает) и сама ловит SIGTERM.
 """
 
 from __future__ import annotations
 
 import json
 import math
-from typing import List, Optional
+import signal
+from typing import Optional
+
+import numpy as np
 
 import rclpy
 from rclpy.node import Node
@@ -47,12 +53,16 @@ STALE_S = 0.5
 
 _DEFAULTS = {
     "footprint_file": "/config/nav2/nav2_params.yaml",
+    "twist_mux_file": "/config/twist_mux/twist_mux.yaml",
     "base_frame": "base_footprint",
     "scan_topic": "/scan",
     "odom_topic": "/diff_drive_controller/odom",
     "rate_hz": 20.0,
     "warn_m": px.Thresholds.warn_m,
     "stop_m": px.Thresholds.stop_m,
+    "side_stop_m": px.Thresholds.side_stop_m,
+    "spin_stop_m": px.Thresholds.spin_stop_m,
+    "corridor_margin_m": px.Thresholds.corridor_margin_m,
     "release_margin_m": px.Thresholds.release_margin_m,
     "release_s": px.Thresholds.release_s,
     "stop_hold_s": px.Thresholds.stop_hold_s,
@@ -61,16 +71,20 @@ _DEFAULTS = {
     "closing_mps": px.Thresholds.closing_mps,
     "min_points": px.Thresholds.min_points,
 }
-_THRESHOLD_KEYS = ("warn_m", "stop_m", "release_margin_m", "release_s", "stop_hold_s", "moving_v", "moving_w",
-                   "closing_mps")
+_THRESHOLD_KEYS = ("warn_m", "stop_m", "side_stop_m", "spin_stop_m", "corridor_margin_m", "release_margin_m",
+                   "release_s", "stop_hold_s", "moving_v", "moving_w", "closing_mps")
+
+
+def _load_yaml(path: str):
+    import yaml  # noqa: PLC0415 - нужен только на старте ноды
+
+    with open(path, encoding="utf-8") as fh:
+        return yaml.safe_load(fh)
 
 
 def load_body(path: str) -> px.Body:
     """Корпус из ``nav2_params.yaml``."""
-    import yaml  # noqa: PLC0415 - нужен только на старте ноды
-
-    with open(path, encoding="utf-8") as fh:
-        return px.body_from_nav2_params(yaml.safe_load(fh))
+    return px.body_from_nav2_params(_load_yaml(path))
 
 
 class ProximityGuardNode(Node):
@@ -87,7 +101,7 @@ class ProximityGuardNode(Node):
         self.tracker = px.ZoneTracker(self.th)
         self.alarms = px.AlarmScheduler()
         self._mount: Optional[px.Mount] = None
-        self._points: List[px.Point] = []
+        self._points = np.empty((0, 2))
         self._scan_at = -math.inf
         self._vel = (0.0, 0.0)
         self._odom_at = -math.inf
@@ -103,14 +117,29 @@ class ProximityGuardNode(Node):
         speech_client.prepare(self, "request")
         self.create_subscription(LaserScan, str(self._p("scan_topic")), self._on_scan, 10)
         self.create_subscription(Odometry, str(self._p("odom_topic")), self._on_odom, 10)
+        self.mux = px.CommandMux(self._mux_sources(str(self._p("twist_mux_file"))))
+        for src in self.mux.sources:
+            self.create_subscription(Twist, src.topic, lambda msg, topic=src.topic: self._on_cmd(topic, msg), 10)
         self.create_timer(1.0 / float(self._p("rate_hz")), self._on_tick)
         self.get_logger().info(
             f"🛡️ зона корпуса: x[{self.body.x_min:.3f}, {self.body.x_max:.3f}] y[{self.body.y_min:.3f}, "
-            f"{self.body.y_max:.3f}]; внимание < {self.th.warn_m:.2f} м, стоп < {self.th.stop_m:.2f} м, "
-            f"только в движении (|v| > {self.th.moving_v}, |w| > {self.th.moving_w})")
+            f"{self.body.y_max:.3f}]; внимание < {self.th.warn_m:.2f} м, стоп < {self.th.stop_m:.2f} м в коридоре хода "
+            f"(± {self.th.corridor_margin_m:.2f} м), < {self.th.side_stop_m:.2f} м сбоку, "
+            f"< {self.th.spin_stop_m:.2f} м на развороте; только в движении (|v| > {self.th.moving_v}, "
+            f"|w| > {self.th.moving_w}); стоп держится, пока толкает команда из "
+            f"{[s.topic for s in self.mux.sources]}")
 
     def _p(self, name: str):
         return self.get_parameter(name).value
+
+    def _mux_sources(self, path: str):
+        """Входы twist_mux; без файла удержание стопа по команде выключено (стоп как до #4365 HIL — по таймеру)."""
+        try:
+            return px.mux_sources(_load_yaml(path), EMERGENCY_TOPIC)
+        except Exception as exc:  # noqa: BLE001 - файл, YAML и структура дают разные ошибки
+            self.get_logger().error(f"🛡️ входы twist_mux не прочитаны из {path}: {exc!r} — стоп не держится "
+                                    "по команде, отпускается через stop_hold_s")
+            return []
 
     def _now(self) -> float:
         return self.get_clock().now().nanoseconds * 1e-9
@@ -127,6 +156,9 @@ class ProximityGuardNode(Node):
     def _on_odom(self, msg) -> None:
         self._vel = (float(msg.twist.twist.linear.x), float(msg.twist.twist.angular.z))
         self._odom_at = self._now()
+
+    def _on_cmd(self, topic: str, msg) -> None:
+        self.mux.update(topic, self._now(), float(msg.linear.x), float(msg.angular.z))
 
     def _mount_for(self, frame: str) -> Optional[px.Mount]:
         """Поза лидара в ``base_frame`` из TF (статическая — берётся один раз)."""
@@ -149,7 +181,7 @@ class ProximityGuardNode(Node):
     def _on_tick(self) -> None:
         now = self._now()
         threat = self._threat(now)
-        tr = self.tracker.update(now, threat.gap)
+        tr = self.tracker.update(now, threat)
         if tr is not None:
             self._log_transition(tr, threat)
         if self.tracker.stopping:
@@ -158,7 +190,8 @@ class ProximityGuardNode(Node):
             self._apply(effect)
 
     def _log_transition(self, tr: px.Transition, threat: px.Threat) -> None:
-        where = "" if threat.point is None else f" в точке ({threat.point[0]:+.2f}, {threat.point[1]:+.2f})"
+        point = threat.stop_point if tr.zone == px.ZONE_STOP else threat.point
+        where = "" if point is None else f" в точке ({point[0]:+.2f}, {point[1]:+.2f})"
         line = f"🛡️ {px.describe(tr)}{where}; v={self._vel[0]:+.2f} м/с w={self._vel[1]:+.2f} рад/с"
         # Два вызова, а не выбор метода: rclpy запрещает менять уровень у одного места вызова
         # («Logger severity cannot be changed between calls», поймано в симе).
@@ -177,7 +210,7 @@ class ProximityGuardNode(Node):
                 self.get_logger().info("🛡️ скан и одометрия идут — зона под контролем")
         if blind:
             return px.NO_THREAT
-        return px.nearest_threat(self.body, self._points, self._vel[0], self._vel[1], self.th)
+        return px.assess(self.body, self._points, self._vel, self.mux.current(now), self.tracker.stopping, self.th)
 
     def _apply(self, effect: px.Effect) -> None:
         if effect.kind == px.EFFECT_LIGHTS:
@@ -198,8 +231,22 @@ class ProximityGuardNode(Node):
             self.get_logger().error(f"🛡️ фраза тревоги не отправлена ({text!r}): {exc!r}")
 
 
+def _raise_keyboard_interrupt(signum, frame) -> None:
+    raise KeyboardInterrupt
+
+
+def exit_on_sigterm() -> None:
+    """SIGTERM (``docker stop``) — как Ctrl+C: spin прерывается, нода гасится в ``finally``.
+
+    Без этого контейнер жил 10 с и получал SIGKILL (Exited 137, HIL 05.11): Python-процесс PID 1 по умолчанию
+    SIGTERM не получает. Ставится после ``rclpy.init`` — поверх его обработчика.
+    """
+    signal.signal(signal.SIGTERM, _raise_keyboard_interrupt)
+
+
 def main(args=None) -> None:
     rclpy.init(args=args)
+    exit_on_sigterm()
     node = ProximityGuardNode()
     try:
         rclpy.spin(node)
