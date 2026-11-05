@@ -18,24 +18,21 @@ from pathlib import Path
 from PIL import Image, ImageDraw
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / 'src' / 'rob_box_animations'))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / 'src' / 'ros2leds' / 'led_matrix_effects'))
 
 from rob_box_animations.face import states as S  # noqa: E402
-from rob_box_animations.face.face import to_wire  # noqa: E402
+from led_matrix_effects import Strip  # noqa: E402
+from led_matrix_effects.preview import draw_panel  # noqa: E402
+from rob_box_animations.face.face import STRIP  # noqa: E402
 from rob_box_animations.face.scene import Scene  # noqa: E402
 
 P = 7               # pixels per LED
 
 
 def draw_grid(d, x0, y0, arr, brightness):
-    q = to_wire(arr).astype(int) * brightness // 255
-    for y in range(q.shape[0]):
-        for x in range(q.shape[1]):
-            cx, cy = x0 + x * P, y0 + y * P
-            if q[y, x].max() == 0:
-                d.ellipse([cx + 2, cy + 2, cx + P - 3, cy + P - 3], fill=(26, 26, 30))
-            else:
-                c = tuple(int(255 * (v / brightness) ** (1 / 2.2)) for v in q[y, x])
-                d.ellipse([cx + 1, cy + 1, cx + P - 2, cy + P - 2], fill=c)
+    """One panel as LED dots, quantised like the driver at ``brightness`` (ros2leds ``led_matrix_effects.preview``)."""
+    strip = STRIP if brightness == STRIP.brightness else Strip(STRIP.num_leds, brightness=brightness)
+    draw_panel(d, x0, y0, arr, strip, P)
 
 
 def render(name: str, brightness: int, step_ms: int, max_ms: int):

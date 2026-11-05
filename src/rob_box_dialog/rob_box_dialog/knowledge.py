@@ -2582,7 +2582,7 @@ class CalendarTheme:
     scene_s: Optional[float] = None
 
 
-#: Календарь тем фар: имена тем — ``rob_box_animations/face/rear.py:THEMES``. Окно — один день; дни рождения робота
+#: Календарь тем фар: имена тем — ``led_matrix_effects.lamps.THEMES`` (ros2leds). Окно — один день; дни рождения робота
 #: и Шифу добавляются, когда будут известны даты (в ADR их нет).
 CALENDAR: Tuple[CalendarTheme, ...] = (
     CalendarTheme(1, 1, "new_year"),

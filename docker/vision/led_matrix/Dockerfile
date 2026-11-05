@@ -155,6 +155,8 @@ COPY src/rob_box_dialog/package.xml /ws/src/rob_box_dialog/
 COPY src/rob_box_animations/package.xml /ws/src/rob_box_animations/
 COPY src/ros2leds/led_matrix_driver/package.xml /ws/src/led_matrix_driver/
 COPY src/ros2leds/led_matrix_compositor/package.xml /ws/src/led_matrix_compositor/
+# Общие LED-эффекты лица (холст, фоны, импульсы, спецсигналы, фары) — пакет ros2leds, чистый numpy.
+COPY src/ros2leds/led_matrix_effects/package.xml /ws/src/led_matrix_effects/
 
 # 2. Установка ROS зависимостей через rosdep (кэшируется если package.xml не изменился)
 # apt-get update ОБЯЗАТЕЛЕН перед rosdep: apt-блок выше заканчивается
@@ -173,6 +175,7 @@ RUN . /opt/ros/${ROS_DISTRO}/setup.sh && \
 # 3. Копируем setup.py - изменяются реже чем код
 COPY src/ros2leds/led_matrix_driver/setup.py /ws/src/led_matrix_driver/
 COPY src/ros2leds/led_matrix_compositor/setup.py /ws/src/led_matrix_compositor/
+COPY src/ros2leds/led_matrix_effects/setup.py /ws/src/led_matrix_effects/
 
 # 4. Только ТЕПЕРЬ копируем весь исходный код (изменяется часто)
 COPY src/rob_box_core /ws/src/rob_box_core
@@ -180,6 +183,7 @@ COPY src/rob_box_dialog /ws/src/rob_box_dialog
 COPY src/rob_box_animations /ws/src/rob_box_animations
 COPY src/ros2leds/led_matrix_driver /ws/src/led_matrix_driver
 COPY src/ros2leds/led_matrix_compositor /ws/src/led_matrix_compositor
+COPY src/ros2leds/led_matrix_effects /ws/src/led_matrix_effects
 
 # 5. Сборка пакетов
 #
@@ -202,7 +206,8 @@ COPY src/ros2leds/led_matrix_compositor /ws/src/led_matrix_compositor
 # не нужен.
 RUN . /opt/ros/${ROS_DISTRO}/setup.sh && \
     colcon build \
-    --packages-select rob_box_core rob_box_dialog led_matrix_driver led_matrix_compositor rob_box_animations \
+    --packages-select rob_box_core rob_box_dialog led_matrix_driver led_matrix_compositor led_matrix_effects \
+      rob_box_animations \
     --cmake-args \
       -DCMAKE_BUILD_TYPE=Release \
       -DCMAKE_EXPORT_COMPILE_COMMANDS=ON

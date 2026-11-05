@@ -18,6 +18,13 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / 'rob_box_dialog'))
 # rob_box_core (pure Python): SpeakingWatch — «говорит» по SpeechEvent (PR-15 15-0b); в образе led-matrix собран рядом
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / 'rob_box_core'))
+# led_matrix_effects (ros2leds, pure numpy): canvas, backgrounds, pulses, signals, lamps of the face. In the repo it is
+# the submodule src/ros2leds; CI copies the package next to this one into test_ws/src; colcon puts it on the path.
+for _fx in (Path(__file__).resolve().parents[2] / 'ros2leds' / 'led_matrix_effects',
+            Path(__file__).resolve().parents[2] / 'led_matrix_effects'):
+    if (_fx / 'led_matrix_effects' / '__init__.py').is_file():
+        sys.path.insert(0, str(_fx))
+        break
 
 
 class _Msg:

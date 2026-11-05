@@ -6,6 +6,7 @@ from pathlib import Path
 
 import pytest
 import yaml
+from led_matrix_effects import read_groups
 from rob_box_animations.face import layout as L
 from rob_box_animations.face.face import Frame
 
@@ -21,7 +22,7 @@ def test_offline_the_layout_comes_from_the_repo_copy_of_the_compositor_yaml():
 
 
 def test_boards_are_the_compositor_groups():
-    sizes, n = L.read_boards(REPO_YAML)
+    sizes, n = read_groups(yaml.safe_load(REPO_YAML.read_text(encoding='utf-8')))
     assert sizes == {'main_display': (25, 5), 'wheel_front_left': (8, 8), 'wheel_front_right': (8, 8),
                      'wheel_rear_left': (8, 8), 'wheel_rear_right': (8, 8)}
     assert dict(L.GROUP_SIZE) == sizes and L.N_LEDS == n == 381

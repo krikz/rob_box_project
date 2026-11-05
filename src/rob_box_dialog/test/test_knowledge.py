@@ -13,6 +13,11 @@ from rob_box_dialog import knowledge as kn
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[3]
 #: Сцены процедурного лица (ADR-0150 PR-3a #3689: генератор переехал из tools/led_face_lab в пакет).
 FACE = REPO_ROOT / "src" / "rob_box_animations" / "rob_box_animations" / "face"
+# темы задних фар — ros2leds led_matrix_effects.lamps: в репо сабмодуль src/ros2leds, в G-Run Tests пакет рядом
+# в test_ws/src. Джоба без сабмодулей (G-Dialog-Core-Package) файла не видит — там проверка пропускается.
+LAMPS = next((p for p in (REPO_ROOT / "src" / "ros2leds" / "led_matrix_effects" / "led_matrix_effects" / "lamps.py",
+                          REPO_ROOT / "src" / "led_matrix_effects" / "led_matrix_effects" / "lamps.py") if p.is_file()),
+             None)
 WAKE_YAML = REPO_ROOT / "docker" / "sound" / "config" / "wake_words.yaml"
 
 
@@ -215,7 +220,9 @@ def test_reflex_ttl_is_set_for_every_turn_stage_and_fits_the_face_limit():
 
 
 def test_calendar_themes_exist_in_rear_lights():
-    themes = set(_literal(FACE / "rear.py", "THEMES"))
+    if LAMPS is None:
+        pytest.skip("led_matrix_effects (сабмодуль ros2leds) не выкачан: темы фар проверяет G-Run Tests")
+    themes = set(_literal(LAMPS, "THEMES"))
     for theme in kn.CALENDAR:
         assert theme.rear in themes, theme
         assert 1 <= theme.month <= 12 and 1 <= theme.day <= 31

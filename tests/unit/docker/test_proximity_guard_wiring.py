@@ -96,6 +96,7 @@ def test_backup_beep_is_a_1khz_tone_inside_the_respeaker_band_without_clipping()
 def test_roadworks_beacon_flashes_amber_left_then_right_never_both():
     pytest.importorskip("numpy")
     sys.path.insert(0, str(REPO / "src" / "rob_box_animations"))
+    sys.path.insert(0, str(REPO / "src" / "ros2leds" / "led_matrix_effects"))
     from rob_box_animations.face import states, vehicles  # noqa: E402
 
     assert states.SCENES["roadworks_beacon"].fn is vehicles.roadworks_beacon

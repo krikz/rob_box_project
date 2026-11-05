@@ -16,18 +16,13 @@ from dataclasses import dataclass, field, replace
 
 import numpy as np
 
-from .layout import N_LEDS, PANEL_SHAPE
+from led_matrix_effects import BLACK, Strip, clamp, col
+from led_matrix_effects import Frame as _Frame
+
+from .layout import N_LEDS, ROVER
 
 FPS = 25
 DT = 1.0 / FPS
-MAX_LV = 25.0
-
-
-def col(r, g, b):
-    return np.array((r, g, b), dtype=float)
-
-
-BLACK = col(0, 0, 0)
 
 # ---------------------------------------------------------------- palette
 EYE = col(25, 21, 9)        # Bender's warm visor-white
@@ -67,31 +62,18 @@ def lerp(a, b, t):
     return a + (b - a) * t
 
 
-def clamp(v, lo, hi):
-    return max(lo, min(hi, v))
-
-
 def ease_io(t):
     t = clamp(t, 0.0, 1.0)
     return t * t * (3 - 2 * t)
 
 
 # ---------------------------------------------------------------- frame
-class Frame:
-    """One picture of the face: an (rows, cols, 3) array of levels per panel, sizes from ``layout.PANEL_SHAPE``."""
+class Frame(_Frame):
+    """One picture of the face: an (rows, cols, 3) array of levels per panel of ``layout.ROVER`` (ros2leds
+    ``led_matrix_effects.Frame``): ``eye_l``, ``eye_r``, ``mouth``, ``rear_l``, ``rear_r``."""
 
     def __init__(self):
-        self.eye_l = np.zeros(PANEL_SHAPE['eye_l'] + (3,))
-        self.eye_r = np.zeros(PANEL_SHAPE['eye_r'] + (3,))
-        self.mouth = np.zeros(PANEL_SHAPE['mouth'] + (3,))
-        self.rear_l = np.zeros(PANEL_SHAPE['rear_l'] + (3,))
-        self.rear_r = np.zeros(PANEL_SHAPE['rear_r'] + (3,))
-
-    def panels(self):
-        return {
-            'eye_l': self.eye_l, 'eye_r': self.eye_r, 'mouth': self.mouth,
-            'rear_l': self.rear_l, 'rear_r': self.rear_r,
-        }
+        super().__init__(ROVER)
 
 
 # ---------------------------------------------------------------- eyes
@@ -434,38 +416,26 @@ def gaze_at(pts, t, snap=0.07):
     return lerp(before[1], prev[1], k), lerp(before[2], prev[2], k)
 
 
-# ---------------------------------------------------------------- wire
-def to_wire(levels):
-    """Levels 0..25 -> channel bytes for the driver at brightness 25.
-
-    ``ceil``: the driver sends ``v * 25 // 255``, and level L must come back
-    exactly as L (L=1 -> 11 -> 1)."""
-    v = np.clip(np.asarray(levels, dtype=float), 0.0, MAX_LV) / MAX_LV * 255.0
-    return np.ceil(v - 1e-6).astype(np.uint8)
-
-
-# ---------------------------------------------------------------- current budget
+# ---------------------------------------------------------------- wire and current budget
 MA_PER_CHANNEL = 20.0         # WS2812B, one channel at PWM 255 (datasheet)
 IDLE_MA_PER_LED = 1.0
 DRIVER_BRIGHTNESS = 25        # led_matrix_driver.yaml; raising it is a separate decision
-IDLE_MA = N_LEDS * IDLE_MA_PER_LED
+#: The strip as the driver drives it (ros2leds ``led_matrix_effects.Strip``): levels 0..25 at brightness 25, the
+#: driver's current model (#3674): every channel is ``v * brightness // 255`` on the wire and draws 20 mA at 255,
+#: plus 1 mA idle per LED.
+STRIP = Strip(N_LEDS, brightness=DRIVER_BRIGHTNESS, ma_per_channel=MA_PER_CHANNEL, idle_ma_per_led=IDLE_MA_PER_LED)
+MAX_LV = STRIP.max_level
+IDLE_MA = STRIP.idle_ma
 #: Lit current (above the 381 mA idle of the strip) any scene may draw at
 #: brightness 25. Total peak of the heaviest scene is then ~1.25 A: x3.6 headroom
 #: to the driver limiter (4.5 A), A28.
 SCENE_LIT_LIMIT_MA = 1000.0
-
-
-def frame_ma(frame: Frame, brightness: int = DRIVER_BRIGHTNESS) -> float:
-    """Strip current of a frame by the driver's own model (#3674): every channel
-    is ``v * brightness // 255`` on the wire and draws 20 mA at 255, plus 1 mA
-    idle per LED."""
-    return wire_ma([to_wire(a) for a in frame.panels().values()], brightness)
-
-
-def wire_ma(wires, brightness: int = DRIVER_BRIGHTNESS) -> float:
-    """``frame_ma`` of panels already turned into wire bytes (``to_wire``): the node does not convert a frame twice."""
-    lit = sum(int((w.astype(np.int64) * brightness // 255).sum()) for w in wires)
-    return IDLE_MA + lit / 255.0 * MA_PER_CHANNEL
+#: Levels 0..25 -> channel bytes (``ceil``: level L comes back from the driver exactly as L, L=1 -> 11 -> 1).
+to_wire = STRIP.to_wire
+#: Strip current of a frame, mA.
+frame_ma = STRIP.frame_ma
+#: ``frame_ma`` of panels already turned into wire bytes (``to_wire``): the node does not convert a frame twice.
+wire_ma = STRIP.wire_ma
 
 
 # ---------------------------------------------------------------- tint

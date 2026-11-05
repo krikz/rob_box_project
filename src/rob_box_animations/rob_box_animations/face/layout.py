@@ -4,7 +4,7 @@ Two kinds of knowledge, kept apart:
 
 * **Boards** — logical groups of the ros2leds compositor and their sizes, the LED count of the strip. They are
   *read* from the compositor's own YAML (the file the compositor on the robot reads), not copied into code:
-  :data:`GROUP_SIZE`, :data:`N_LEDS`.
+  :data:`GROUP_SIZE`, :data:`N_LEDS` (``led_matrix_effects.Layout.from_compositor``, ros2leds).
 * **The face on the boards** — which face panel goes to which group (:data:`GROUP_OF`) and where it lies on the
   canvas of cross-panel effects (:data:`CANVAS_AT`). The compositor does not know this; it lives here.
 
@@ -17,9 +17,9 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
-from typing import Dict, Mapping, Optional, Tuple
+from typing import Mapping, Optional, Tuple
 
-import yaml
+from led_matrix_effects import Layout
 
 CONFIG_ENV = 'LED_MATRIX_COMPOSITOR_CONFIG'
 VOLUME_YAML = Path('/config/led_matrix/led_matrix_compositor.yaml')
@@ -80,28 +80,14 @@ def compositor_yaml_path() -> Path:
     raise FileNotFoundError('led_matrix_compositor.yaml not found; tried: ' + ', '.join(map(str, candidates)))
 
 
-def read_boards(path: Path) -> Tuple[Dict[str, Tuple[int, int]], int]:
-    """Compositor YAML -> ({group: (width, height)}, LEDs in the strip): the compositor's own arithmetic."""
-    raw = yaml.safe_load(Path(path).read_text(encoding='utf-8'))
-    cfg = raw['led_matrix_compositor']['ros__parameters']
-    panels = cfg['physical_panels']
-    sizes = {}
-    for g in cfg['logical_groups']:
-        cols, rows = g['arrangement']
-        first = panels[g['physical_indices'][0]]
-        sizes[g['name']] = (int(first['width']) * cols, int(first['height']) * rows)
-    return sizes, sum(int(p['width']) * int(p['height']) for p in panels)
-
-
 COMPOSITOR_YAML = compositor_yaml_path()
-_sizes, N_LEDS = read_boards(COMPOSITOR_YAML)
-_missing = sorted(set(GROUP_OF.values()) - set(_sizes))
-if _missing:
-    raise ValueError(f'{COMPOSITOR_YAML}: no logical group(s) {_missing} for the face panels')
+#: The rover's panels in ``led_matrix_effects`` terms: sizes from the compositor YAML, the face's groups and canvas.
+ROVER = Layout.from_compositor(COMPOSITOR_YAML, group_of=GROUP_OF, at=CANVAS_AT)
 #: (width, height) of every logical group of the face, as the compositor expects them.
-GROUP_SIZE: Mapping[str, Tuple[int, int]] = {g: _sizes[g] for g in sorted(set(GROUP_OF.values()))}
+GROUP_SIZE: Mapping[str, Tuple[int, int]] = dict(sorted(ROVER.group_size.items()))
+N_LEDS = ROVER.n_leds
 #: Panel -> numpy shape (rows, columns) of its array in a ``Frame``.
-PANEL_SHAPE: Mapping[str, Tuple[int, int]] = {p: GROUP_SIZE[g][::-1] for p, g in GROUP_OF.items()}
+PANEL_SHAPE: Mapping[str, Tuple[int, int]] = ROVER.shape
 
-__all__ = ['CANVAS_AT', 'COMPOSITOR_YAML', 'GROUP_OF', 'GROUP_SIZE', 'N_LEDS', 'PANEL_SHAPE', 'compositor_yaml_path',
-           'read_boards']
+__all__ = ['CANVAS_AT', 'COMPOSITOR_YAML', 'GROUP_OF', 'GROUP_SIZE', 'N_LEDS', 'PANEL_SHAPE', 'ROVER',
+           'compositor_yaml_path']

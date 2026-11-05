@@ -136,6 +136,9 @@ jobs:
           # to repo root when the tests are copied into test_ws/src/.
           mkdir -p ${{ github.workspace }}/test_ws/src
           rsync -av --exclude='ros2leds' --exclude='vesc_nexus' --exclude='robot_sensor_hub_msg' src/ ${{ github.workspace }}/test_ws/src/
+          # Из сабмодуля ros2leds берём только led_matrix_effects: чистый numpy, лицо (rob_box_animations)
+          # импортирует из него холст, фоны, импульсы, спецсигналы и темы фар.
+          rsync -a src/ros2leds/led_matrix_effects/ ${{ github.workspace }}/test_ws/src/led_matrix_effects/
           # Sibling directories referenced by tests (NOT compiled by colcon).
           # .github is here for .github/e2e/{scenarios,voice_commands}: six
           # tests in test_issue_1532_voice_multi_skazka.py read those fixtures
@@ -612,6 +615,9 @@ jobs:
           source /opt/ros/humble/setup.bash
           mkdir -p ${{ github.workspace }}/test_ws/src
           rsync -av --exclude='ros2leds' --exclude='vesc_nexus' --exclude='robot_sensor_hub_msg' src/ ${{ github.workspace }}/test_ws/src/
+          # Из сабмодуля ros2leds берём только led_matrix_effects: чистый numpy, лицо (rob_box_animations)
+          # импортирует из него холст, фоны, импульсы, спецсигналы и темы фар.
+          rsync -a src/ros2leds/led_matrix_effects/ ${{ github.workspace }}/test_ws/src/led_matrix_effects/
           # Sibling directories referenced by tests (NOT compiled by colcon).
           # Same as the unit-tests job above. Without this, tests that walk up
           # to find e.g. docker/sound/scripts/supercollider/metrics_server.py

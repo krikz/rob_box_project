@@ -7,7 +7,7 @@ import datetime as dt
 import pytest
 from rob_box_dialog.knowledge import CALENDAR
 
-from rob_box_animations.face import rear as R
+from led_matrix_effects import lamps as R
 from rob_box_animations.face.states import SCENES
 from rob_box_animations.face_director import FaceDirector
 from rob_box_animations.outside import (BatteryWatch, DriveTracker, battery_percent, calendar_rear, calendar_scene)

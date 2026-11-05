@@ -11,7 +11,8 @@ import random
 
 import numpy as np
 
-from . import rear as R
+from led_matrix_effects import lamps as R
+
 from . import talk as TK
 from . import vehicles as V
 from .scene import SceneSpec
