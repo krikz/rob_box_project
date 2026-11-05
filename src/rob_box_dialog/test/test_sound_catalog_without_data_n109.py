@@ -2,7 +2,7 @@
 («Умею подтверждать… глючить… капать нотой… пикать») без ``get_sound_info``.
 
 PR #4397 ловит звук без слов ПОСЛЕ запроса; здесь запроса не было вовсе. Решает код (ADR-0148): вопрос о каталоге
-звуков (``tools_view.sound_catalog_asked`` - слова человека) без данных каталога в ходе и без ``get_sound_info`` в
+звуков (``tools_view.catalogs_asked`` - слова человека) без данных каталога в ходе и без ``get_sound_info`` в
 команде - нарушение ``VIOLATION_SOUND_CATALOG`` (``turn.catalog_owed``): модели повтор с подсказкой, повтора нет -
 каталог читает код сам и говорит по его данным (``query.sounds_summary``), слова модели по памяти не звучат.
 """
@@ -16,7 +16,7 @@ from rob_box_dialog.address import VOICE, Addressed
 from rob_box_dialog.command import Ask, Command, Performance, ToolCall
 from rob_box_dialog.respond import ActionResult
 from rob_box_dialog.session import Session
-from rob_box_dialog.tools_view import sound_catalog_asked
+from rob_box_dialog.tools_view import catalogs_asked
 from rob_box_dialog.turn import TurnEngine, _Turn, catalog_owed, owed_reason
 
 from test_sound_answer_after_query_n109 import HAPPY, SOUND_DATA, SOUNDS, SOUNDS_PHRASE, Ports, _answer, _played
@@ -91,7 +91,7 @@ def test_request_for_a_sound_stays_a_sound():
     ("Робот, звук погромче", False),
 ])
 def test_sound_catalog_asked(text, expected):
-    assert sound_catalog_asked(text) is expected
+    assert ("sounds" in catalogs_asked(text)) is expected
 
 
 def _turn(text=N109, queried=False):
@@ -110,7 +110,8 @@ def _turn(text=N109, queried=False):
     (Command(perform=Performance(kind="song", segments=("Пи-пи",))), {}, False),
 ])
 def test_catalog_owed(cmd, kw, expected):
-    assert catalog_owed(Session("personality").snapshot, _turn(**kw), cmd) is expected
+    owed = catalog_owed(Session("personality").snapshot, _turn(**kw), cmd)
+    assert owed == (kn.VIOLATION_SOUND_CATALOG if expected else "")
 
 
 def test_owed_reason_names_the_sound_catalog():

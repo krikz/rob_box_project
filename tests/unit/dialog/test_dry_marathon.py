@@ -312,7 +312,10 @@ def test_3897_regression_full_catalog_enum_is_visible(make_env, monkeypatch):
 
 
 LONG = "Я умею говорить голосами " + ", ".join(f"голос{n}" for n in range(60)) + "."
-VOICES = step("n401", "Робот, какими голосами ты умеешь говорить? Перечисли, что у тебя есть.", expect_tools=[])
+#: Длинный ответ без тула. Не вопрос о каталоге голосов: на «какими голосами ты умеешь говорить?» перечень по памяти
+#: теперь нарушение ``voice_catalog`` (М12 n401, #4236) - каталог читает код, длина до хода компактнее не доходит.
+#: Здесь проверяется путь длины (#3883/#4137), поэтому реплика - просьба рассказать, а не каталог.
+VOICES = step("n401", "Робот, расскажи подробно, как ты говоришь с людьми.", expect_tools=[])
 
 
 def test_3883_long_answer_is_retried_into_a_short_one(make_env):
@@ -342,6 +345,19 @@ def test_4137_long_answer_that_stays_long_is_trimmed_by_code_not_a_stub(make_env
     assert LONG.startswith(head) and not head.endswith(",")
     assert said != phrases.text(kn.INVALID_COMMAND_PHRASES["too_long"])
     assert "прошу компактнее" in report.log and "ужата кодом" in report.log
+
+
+def test_m12_n401_voices_listed_from_memory_are_read_by_code(make_env):
+    """М12 n401 (#4236): на вопрос о каталоге голосов модель перечисляет по памяти и после повторов - её перечень не
+    звучит, код сам читает ``list_tts_voices`` и говорит сводку по данным реестра."""
+    env = make_env(lambda env, msgs, tools: {"speech": LONG})
+    report = env.run(step("n401", "Робот, какими голосами ты умеешь говорить? Перечисли, что у тебя есть.",
+                          expect_tools=["list_tts_voices"]))
+    assert report.tools == ["list_tts_voices"]
+    assert all("голос0" not in said for said in report.said)
+    spoken = " ".join(report.said)
+    for provider in PROVIDER_VOICES:
+        assert f"{PROVIDER_LABELS[provider]} — {len(PROVIDER_VOICES[provider])}" in spoken, (provider, spoken)
 
 
 # ── #3883 (23.10): «какими голосами умеешь» - запрос выполнен, речь длинная, повтор честный, молчать нельзя ─────────

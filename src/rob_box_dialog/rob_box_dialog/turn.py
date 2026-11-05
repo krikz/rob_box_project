@@ -112,8 +112,8 @@ from rob_box_dialog.session import Session, SessionSnapshot
 from rob_box_dialog.speaker_adapter import asks_recognized, recognition_reply, speaker_block
 from rob_box_dialog.window_reset import WindowGuard, reset_if_idle, reset_window
 from rob_box_dialog.words import asks_question, asks_to_listen, music_stop_claimed, same_stop_rest
-from rob_box_dialog.tools_view import (available_tools, music_asked, needs_words, robot_asked, show_asked,
-                                       sound_catalog_asked, voice_asked, voice_named)
+from rob_box_dialog.tools_view import (available_tools, catalogs_asked, music_asked, needs_words, robot_asked,
+                                       show_asked, voice_asked, voice_named)
 from rob_box_dialog.turn_log import (PERFORM_STARTED, TOOL, USER, TurnAggregate, TurnLog, phrase_label, results_of,
                                      speaker_label)
 
@@ -488,17 +488,22 @@ def sound_owed(snapshot: SessionSnapshot, turn: "_Turn", cmd: Command) -> bool:
     return bool(cmd.actions) and all(a.tool in kn.SILENT_DONE_TOOLS for a in cmd.actions)
 
 
-def catalog_owed(snapshot: SessionSnapshot, turn: "_Turn", cmd: Command) -> bool:
-    """Человек спросил о каталоге звуков (``tools_view.sound_catalog_asked``: «какие звуки ты умеешь?»), агенту тул
-    каталога доступен, а ответ - без его данных: в ходе ``get_sound_info`` не читали и в команде его нет (М11 n109,
-    01:12:19: «Умею подтверждать… глючить… капать нотой…» - список по памяти). Встречный вопрос, перформанс и пропуск
-    хода - не ответ о каталоге. Решает код по реплике человека и структуре команды, не по тексту ответа (ADR-0148)."""
-    tool = kn.SOUND_CATALOG_TOOL
-    if not sound_catalog_asked(turn.text) or tool not in tools_for(agent_spec(snapshot.agent)):
-        return False
-    if any(r.tool == tool for r in turn.queried) or any(a.tool == tool for a in cmd.actions):
-        return False
-    return cmd.ask is None and cmd.perform is None and not cmd.passed
+def catalog_owed(snapshot: SessionSnapshot, turn: "_Turn", cmd: Command) -> str:
+    """Нарушение ``Catalog.violation`` (``knowledge.CATALOGS``) или «»: человек спросил о каталоге, который знает только
+    тул робота (``tools_view.catalogs_asked``: «какие звуки ты умеешь?», «какими голосами ты умеешь говорить?»), агенту
+    тул каталога доступен, а ответ - без его данных: в ходе тул не читали и в команде его нет (М11 n109, 01:12:19:
+    «Умею подтверждать… глючить…» - звуки по памяти; М12 n401, 05:22:14: «надёжный мужчина… русоволосый друг детства»
+    - голоса по памяти). Встречный вопрос, перформанс и пропуск хода - не ответ о каталоге. Решает код по реплике
+    человека и структуре команды, не по тексту ответа (ADR-0148)."""
+    if cmd.ask is not None or cmd.perform is not None or cmd.passed:
+        return ""
+    available = tools_for(agent_spec(snapshot.agent))
+    for key in catalogs_asked(turn.text):
+        catalog = kn.CATALOGS[key]
+        read = any(r.tool == catalog.tool for r in turn.queried) or any(a.tool == catalog.tool for a in cmd.actions)
+        if catalog.tool in available and not read:
+            return catalog.violation
+    return ""
 
 
 def done_expression(turn: "_Turn", snapshot: SessionSnapshot) -> Optional[Expression]:
@@ -1529,16 +1534,17 @@ def robot_owed(snapshot: SessionSnapshot, turn: "_Turn", cmd: Command) -> bool:
 def owed_reason(snapshot: SessionSnapshot, turn: "_Turn", cmd: Command, names: Collection[str] = ()) -> str:
     """Ответ модели не тот, что ждёт человек, — причина нарушения (:data:`_OWED`), иначе «»: голый неслышимый ответ на
     адресованную реплику (:func:`words_owed`; и подхват бэклога), звук без слов на вопрос после чтения
-    (:func:`sound_owed`), ответ о каталоге звуков без его данных (:func:`catalog_owed`), только текст в чат на просьбу сделать
-    роботом (:func:`robot_owed`), обращение к неподтверждённому собеседнику чужим именем (``names`` - ключи
+    (:func:`sound_owed`), ответ о каталоге звуков/голосов без его данных (:func:`catalog_owed`), только текст в чат на
+    просьбу сделать роботом (:func:`robot_owed`), обращение к неподтверждённому собеседнику чужим именем (``names`` - ключи
     из :func:`foreign_keys`), «тишина» под играющей музыкой без стопа (:func:`stop_claim_false`) или утверждение о
     состоянии подсистемы робота без данных о ней (:func:`unbacked_claims`)."""
     if words_owed(snapshot, turn.text, cmd) or read_owed(snapshot, turn, cmd):
         return kn.VIOLATION_SILENT_ANSWER
     if sound_owed(snapshot, turn, cmd):
         return kn.VIOLATION_SOUND_ANSWER
-    if catalog_owed(snapshot, turn, cmd):
-        return kn.VIOLATION_SOUND_CATALOG
+    catalog = catalog_owed(snapshot, turn, cmd)
+    if catalog:
+        return catalog
     if robot_owed(snapshot, turn, cmd):
         return kn.VIOLATION_REMOTE_OWED
     if foreign_name.offending(cmd, names):
@@ -1607,8 +1613,7 @@ _OWED: Mapping[str, _Owed] = {
     kn.VIOLATION_STATE_CLAIM: _Owed(kn.STATE_CLAIM_HINT, "утверждение о состоянии подсистемы без данных о ней"),
     kn.VIOLATION_QUERY_REPEAT: _Owed(kn.QUERY_REPEAT_HINT, "повтор чтения, уже исполненного в этом ходе"),
     kn.VIOLATION_SOUND_ANSWER: _Owed(kn.SOUND_ANSWER_HINT, "звук без слов на вопрос после чтения"),
-    kn.VIOLATION_SOUND_CATALOG: _Owed(kn.SOUND_CATALOG_HINT, "ответ о каталоге звуков без его данных",
-                                      reads=kn.SOUND_CATALOG_TOOL),
+    **{c.violation: _Owed(c.hint, c.what, reads=c.tool) for c in kn.CATALOGS.values()},
     # после повтора говорит код по состоянию (``_salvaged_phrase`` → ``music_promise_key``: «играет» - «Сделать с
     # музыкой ничего не получилось…»), ложная «Тишина» не звучит
     kn.VIOLATION_MUSIC_PROMISE: _Owed(kn.MUSIC_STOP_CLAIM_HINT, "заявлена тишина без стоп-тула, а музыка играет"),
