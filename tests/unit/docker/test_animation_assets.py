@@ -31,8 +31,8 @@ REPO_ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(REPO_ROOT / "src" / "rob_box_animations"))
 
 from rob_box_animations.face import states as S  # noqa: E402
-from rob_box_animations.face.face import (  # noqa: E402
-    GROUP_OF, GROUP_SIZE, IDLE_MA, SCENE_LIT_LIMIT_MA, frame_ma, to_wire)
+from rob_box_animations.face.face import IDLE_MA, SCENE_LIT_LIMIT_MA, frame_ma, to_wire  # noqa: E402
+from rob_box_animations.face.layout import GROUP_OF, GROUP_SIZE  # noqa: E402
 from rob_box_animations.face.scene import FaceContext, Scene, clip  # noqa: E402
 from rob_box_animations.face.sides import GLYPHS, MARKS, sides_frame  # noqa: E402
 

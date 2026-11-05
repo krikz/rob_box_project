@@ -1,4 +1,4 @@
-"""Procedural LED face for rob_box: models, palette, layout, current budget.
+"""Procedural LED face for rob_box: models, palette, current budget (boards and canvas — ``layout``).
 
 All colours are in *LED levels* 0..25: the driver runs at brightness 25/255,
 so a channel value v becomes v*25//255 on the wire. Designing in levels keeps
@@ -15,6 +15,8 @@ import math
 from dataclasses import dataclass, field, replace
 
 import numpy as np
+
+from .layout import N_LEDS, PANEL_SHAPE
 
 FPS = 25
 DT = 1.0 / FPS
@@ -76,12 +78,14 @@ def ease_io(t):
 
 # ---------------------------------------------------------------- frame
 class Frame:
+    """One picture of the face: an (rows, cols, 3) array of levels per panel, sizes from ``layout.PANEL_SHAPE``."""
+
     def __init__(self):
-        self.eye_l = np.zeros((8, 8, 3))
-        self.eye_r = np.zeros((8, 8, 3))
-        self.mouth = np.zeros((5, 25, 3))
-        self.rear_l = np.zeros((8, 8, 3))
-        self.rear_r = np.zeros((8, 8, 3))
+        self.eye_l = np.zeros(PANEL_SHAPE['eye_l'] + (3,))
+        self.eye_r = np.zeros(PANEL_SHAPE['eye_r'] + (3,))
+        self.mouth = np.zeros(PANEL_SHAPE['mouth'] + (3,))
+        self.rear_l = np.zeros(PANEL_SHAPE['rear_l'] + (3,))
+        self.rear_r = np.zeros(PANEL_SHAPE['rear_r'] + (3,))
 
     def panels(self):
         return {
@@ -430,41 +434,7 @@ def gaze_at(pts, t, snap=0.07):
     return lerp(before[1], prev[1], k), lerp(before[2], prev[2], k)
 
 
-# ---------------------------------------------------------------- layout
-#: Panel of the face (drawn for a person facing the robot) -> logical group of
-#: the ros2leds compositor. The robot's left headlight (wheel_front_left) is on
-#: the viewer's RIGHT, so eye_r goes there. Rear lights are drawn as seen from
-#: behind: rear_l is the robot's left board. Checked on the robot by the side
-#: test frame (``test_pattern.py``); the test pins this table.
-GROUP_OF = {
-    'eye_l': 'wheel_front_right',
-    'eye_r': 'wheel_front_left',
-    'mouth': 'main_display',
-    'rear_l': 'wheel_rear_left',
-    'rear_r': 'wheel_rear_right',
-}
-#: (width, height) of every logical group, as the compositor expects them.
-GROUP_SIZE = {
-    'main_display': (25, 5),
-    'wheel_front_left': (8, 8),
-    'wheel_front_right': (8, 8),
-    'wheel_rear_left': (8, 8),
-    'wheel_rear_right': (8, 8),
-}
-#: Panel -> (x, y) of its top-left LED on the face *canvas*: the one coordinate system of effects that cross
-#: panels (a rainbow wave, the katana slash, ``face/effects.py``). The robot unrolled as seen from outside,
-#: walking round it from the front to its left side and on to the back: ``eye_l | mouth | eye_r`` (front),
-#: then ``rear_l | rear_r`` (back, seen from behind). Gaps are the dark space between boards in LEDs, by eye
-#: (not measured on the robot); the mouth hangs 2 rows below the top of the headlights.
-CANVAS_AT = {
-    'eye_l': (0, 0),
-    'mouth': (12, 2),
-    'eye_r': (41, 0),
-    'rear_l': (61, 0),
-    'rear_r': (73, 0),
-}
-
-
+# ---------------------------------------------------------------- wire
 def to_wire(levels):
     """Levels 0..25 -> channel bytes for the driver at brightness 25.
 
@@ -475,7 +445,6 @@ def to_wire(levels):
 
 
 # ---------------------------------------------------------------- current budget
-N_LEDS = 381
 MA_PER_CHANNEL = 20.0         # WS2812B, one channel at PWM 255 (datasheet)
 IDLE_MA_PER_LED = 1.0
 DRIVER_BRIGHTNESS = 25        # led_matrix_driver.yaml; raising it is a separate decision

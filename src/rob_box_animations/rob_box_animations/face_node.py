@@ -32,7 +32,8 @@ from std_msgs.msg import Bool, Int32, String
 from rob_box_dialog import expression, face_scene
 from rob_box_dialog.knowledge import FACE_SCENE_CANCEL_SCENES as CANCEL_SCENES
 
-from .face.face import FPS, GROUP_OF, GROUP_SIZE, IDLE_MA, SCENE_LIT_LIMIT_MA, to_wire, wire_ma
+from .face.face import FPS, IDLE_MA, SCENE_LIT_LIMIT_MA, to_wire, wire_ma
+from .face.layout import GROUP_OF, GROUP_SIZE
 from .outside import battery_percent
 from .face_director import FaceDirector, GazeTrack, parse_animation_request
 

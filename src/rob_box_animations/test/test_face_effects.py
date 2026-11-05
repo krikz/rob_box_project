@@ -9,8 +9,8 @@ import pytest
 
 from rob_box_dialog import knowledge as kn
 from rob_box_animations.face import effects as E
-from rob_box_animations.face.face import (CANVAS_AT, GROUP_OF, GROUP_SIZE, IDLE_MA, SCENE_LIT_LIMIT_MA, FPS, Frame,
-                                          frame_ma)
+from rob_box_animations.face.face import IDLE_MA, SCENE_LIT_LIMIT_MA, FPS, Frame, frame_ma
+from rob_box_animations.face.layout import CANVAS_AT, GROUP_OF, GROUP_SIZE
 from rob_box_animations.face.scene import IDLE, Scene
 from rob_box_animations.face.states import SCENES
 from rob_box_animations.face_director import FaceDirector

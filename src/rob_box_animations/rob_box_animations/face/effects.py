@@ -3,7 +3,7 @@
 One slot of ``knowledge.FACE_SCENE_SLOTS`` per kind, the tables below are the renderers of their values:
 
 * ``bg`` (:data:`BACKGROUNDS`) lasts with the scene and lies UNDER the eyes and mouth: ``bg(t) -> Frame`` on the
-  canvas of ``face.CANVAS_AT``, no channel above :data:`BG_LV` levels. It runs through the features too: they keep
+  canvas of ``layout.CANVAS_AT``, no channel above :data:`BG_LV` levels. It runs through the features too: they keep
   their level and take its hue (:func:`under`), the background next to them is dimmed to :data:`UNDER_FEATURES` —
   the features read and the strip stays in the current budget. The rear boards show it instead of their theme.
 * ``fx`` (:data:`PULSES`) is one pulse from the scene start (after :data:`PULSE_LEAD_S`): ``fx(t, f) -> Frame``
@@ -22,7 +22,8 @@ from typing import Callable, Dict, Mapping, Optional, Tuple
 
 import numpy as np
 
-from .face import BLACK, CANVAS_AT, EYE, EYE_RIM_MASK, FPS, GROUP_OF, RAINBOW_PERIOD_S, Frame, clamp, col
+from .face import BLACK, EYE, EYE_RIM_MASK, FPS, RAINBOW_PERIOD_S, Frame, clamp, col
+from .layout import CANVAS_AT, GROUP_OF
 from .sides import MARKS
 
 PANELS: Tuple[str, ...] = tuple(CANVAS_AT)
