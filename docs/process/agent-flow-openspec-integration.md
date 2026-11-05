@@ -1,5 +1,7 @@
 # Agent-flow ↔ OpenSpec integration
 
+> **DEPRECATED (см. ADR-0162, `docs/adr/0162-current-agent-process.md`).** Автоматика hermes / agent-flow стоит с 05.10.2026 (файл `MAINTENANCE`, коммит `6b7ed35cf`). Текущий процесс — `docs/process/claude-coordinator-robot-flow.md`. Документ оставлен как история.
+
 Status: **accepted** (ADR-0039)
 Pilot location: `docs/research/openspec-pilot/openspec/`
 Production target: `openspec/` (post-pilot, when Шифу approves масштабирование)

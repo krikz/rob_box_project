@@ -1,5 +1,7 @@
 # Agent Flow Proposal — Issue → branch+PR → e2e round → manual merge → close
 
+> **DEPRECATED (см. ADR-0162, `docs/adr/0162-current-agent-process.md`).** Автоматика hermes / agent-flow стоит с 05.10.2026 (файл `MAINTENANCE`, коммит `6b7ed35cf`). Текущий процесс — `docs/process/claude-coordinator-robot-flow.md`. Документ оставлен как история.
+
 | Поле | Значение |
 |------|----------|
 | Документ | `docs/design/AGENT_FLOW_PROPOSAL.md` |
