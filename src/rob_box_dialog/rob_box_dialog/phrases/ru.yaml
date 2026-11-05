@@ -71,6 +71,14 @@ query.rejected.no_person_unvoiced: ["Не знаю, кто ты, поэтому 
 # выдуманному id трека (update/delete того же - music.library_fail.unknown_track, один текст)
 query.rejected.search_unavailable: ["Не смог проверить в интернете: поиск сейчас не ответил."]
 query.rejected.unknown_track: &unknown_track ["Не знаю такого трека в библиотеке. Попроси показать список или найти по названию."]
+# пульт по лицам (people_list, person_photo, #4469): отказ владельца лиц с причиной, не «не нашёл ответа»
+query.rejected.person_not_found: ["Лица с таким id в базе нет."]
+query.rejected.ambiguous_id: ["Такому id отвечает больше одного лица. Нужны все 8 знаков из списка."]
+query.rejected.bad_id: ["id лица — ровно 8 знаков 0-9a-f из списка лиц."]
+query.rejected.bad_filter: ["Такого фильтра нет: бывает все, без имени или за сегодня."]
+query.rejected.exhibition_mode: ["В режиме выставки снимки лиц не отдаю."]
+query.rejected.no_snapshot: ["У этого лица нет снимка."]
+query.rejected.owner_unavailable: ["База лиц на Vision Pi не отвечает."]
 query.timeout: ["Не дождался ответа — поиск не успел."]
 # Страховка от молчания: запрос выполнен, речь модели не прошла проверку и после повтора — говорит код.
 query.voices_summary: ["Голосов у меня так: {summary}. Назвать какие-нибудь?"]
@@ -138,6 +146,15 @@ local.rejected.voice_unconfirmed: ["Голос знакомый, но не ув�
 local.rejected.ask_intro: ["Не узнал, кто это сказал. Представься — и я запомню."]
 local.rejected.speaker_changed: ["Говорил другой человек, поэтому не запомню."]
 local.rejected.no_evidence: ["Память не подтвердила запись, так что не запомнил."]
+# пульт по лицам (name_person, #4469): успех по данным владельца лиц (id, stored_name из базы, previous_name)
+people.named: ["Готово: лицо {id} теперь {stored_name}."]
+people.renamed: ["Готово: лицо {id} (было «{previous_name}») теперь {stored_name}."]
+# пульт по лицам (name_person, #4469): причину говорит владелец лиц (people_service), фразу - код
+local.rejected.person_not_found: ["Лица с таким id в базе нет — имя не записал."]
+local.rejected.ambiguous_id: ["Такому id отвечает больше одного лица — имя не записал. Нужны все 8 знаков из списка."]
+local.rejected.bad_id: ["id лица — ровно 8 знаков 0-9a-f из списка лиц. Имя не записал."]
+local.rejected.bad_name: ["Такое имя не записываю: до 40 знаков, буквы, цифры, пробел, точка, дефис, апостроф."]
+local.rejected.owner_unavailable: ["База лиц на Vision Pi не отвечает — имя не записал."]
 # set_speed / set_pitch: у активного провайдера нет такой регулировки - тул отказал с причиной
 # {speed,pitch}_unsupported, голос не менялся; без этих ключей говорилось общее «Не вышло.»
 local.rejected.speed_unsupported: ["У этого голоса скорость не регулируется — речь не изменилась."]
@@ -301,6 +318,9 @@ chat.tool.get_battery_level: ["Смотрю заряд…"]
 chat.tool.get_current_time: ["Смотрю время…"]
 chat.tool.read_logs: ["Читаю журнал…"]
 chat.tool.play_animation: ["Показываю лицом…"]
+chat.tool.people_list: ["Смотрю лица…"]
+chat.tool.person_photo: ["Достаю снимок…"]
+chat.tool.name_person: ["Записываю имя…"]
 chat.step.query: ["Смотрю данные…"]
 chat.step.action.local: ["Настраиваю…"]
 chat.step.action.media: ["Занимаюсь музыкой…"]

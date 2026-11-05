@@ -8,7 +8,7 @@ from rclpy.node import Node
 from rclpy.qos import DurabilityPolicy, HistoryPolicy, QoSProfile, ReliabilityPolicy
 from sensor_msgs.msg import CompressedImage
 from nav_msgs.msg import OccupancyGrid
-from rob_box_dialog.chats import PROGRESS_KIND, chat_of
+from rob_box_dialog.chats import PHOTO_KIND, PROGRESS_KIND, chat_of
 from rob_box_dialog_msgs.msg import DialogOutput, SpeechEvent
 from rob_box_dialog_msgs.msg import Utterance as UtteranceMsg
 from std_msgs.msg import String
@@ -159,6 +159,8 @@ async def _dispatch(sender, chat_id: int, text: str, role: str, kind: str) -> No
         sender.begin(chat_id)
     elif kind == PROGRESS_KIND:
         sender.set_progress(chat_id, text)
+    elif kind == PHOTO_KIND:
+        await sender.send_person_photo(chat_id, text)
     else:
         await sender.deliver(chat_id, text, role)
 
