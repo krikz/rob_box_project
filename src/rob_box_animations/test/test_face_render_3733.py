@@ -134,9 +134,13 @@ def test_background_under_the_face_matches_the_per_panel_code(bg, t):
 
 
 def test_publisher_counts_the_current_once_and_only_on_a_change():
+    try:    # real sensor_msgs/Image (CI) insists on builtin_interfaces/Time
+        from builtin_interfaces.msg import Time
+    except ImportError:
+        Time = type(None)
     node = types.SimpleNamespace(
         create_publisher=lambda *a: types.SimpleNamespace(publish=lambda m: None),
-        get_clock=lambda: types.SimpleNamespace(now=lambda: types.SimpleNamespace(to_msg=lambda: None)))
+        get_clock=lambda: types.SimpleNamespace(now=lambda: types.SimpleNamespace(to_msg=Time)))
     pub = PanelPublisher(node)
     scene = Scene(SCENES['music_shades'])
     for i in range(30):
