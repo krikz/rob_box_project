@@ -45,7 +45,7 @@ next_free="$(printf '%s\n0000\n' "$used" | sort -u | awk 'BEGIN{n=0} {if ($0+0 =
 echo "$next_free"
 ```
 
-Перед `gh pr create` прогони `bash scripts/agent_flow/validate_adr_namespace.sh`
+Перед `gh pr create` прогони `bash scripts/lint/validate_adr_namespace.sh`
 (exit 0 = clean, exit 1 = collision + подсказка с next-free). Переименование
 старого номера — только с согласия товарища Шифу (label `adr-collision-override`
 на issue).

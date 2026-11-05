@@ -169,7 +169,7 @@ def test_voice_command_file_exists() -> None:
     assert VOICE_COMMAND.exists(), (
         f"Voice command for mv03 is missing: {VOICE_COMMAND}. "
         f"Generate via Yandex TTS (or espeak + ffmpeg as fallback) and "
-        f"commit it — see scripts/agent_flow/tests/ for examples."
+        f"commit it."
     )
 
 

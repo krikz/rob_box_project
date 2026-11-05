@@ -8,8 +8,7 @@
 записи и пишет координатору через Telegram-бот робота.
 
 Это единственный процесс разработки в репо (ADR-0162); автоматика
-hermes / agent-flow (`docs/design/AGENT_FLOW_PROPOSAL.md`,
-`scripts/agent_flow/`) — deprecated.
+hermes / agent-flow выведена из репо (код и документы — в git-истории).
 
 Документ описывает процесс. Правила честности — в `AGENTS.md`
 («Честный FAIL лучше красивого PASS»), они здесь не повторяются.

@@ -10,7 +10,7 @@ Actively build and sharpen the project's domain model as you design. This is the
 > **Rob Box specifics**: у проекта уже есть корневой `CONTEXT.md` и свои правила
 > ADR — см. `CONTRIBUTING.md` §«ADR-процесс» и `docs/adr/0030-adr-numbering-sot.md`.
 > Номера ADR — 4 цифры, следующий свободный после максимума в `origin/develop`;
-> перед созданием ADR прогони `bash scripts/agent_flow/validate_adr_namespace.sh`.
+> перед созданием ADR прогони `bash scripts/lint/validate_adr_namespace.sh`.
 > Где этот скилл расходится с CONTRIBUTING.md — побеждает CONTRIBUTING.md.
 
 ## File structure
