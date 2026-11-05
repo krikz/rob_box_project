@@ -53,37 +53,13 @@ fail() {
     echo "  FAIL: $1 — $2"
 }
 
-# Извлекаем YAML-loader-блок из start_vision_hailo.sh как функцию.
-# Блок между "if [ -f \"\${HAILO_MODELS_YAML}\" ]..." и "fi" — это eval $().
-# Для тестирования мы выносим его в отдельный скрипт, который принимает YAML path.
-EXTRACT_BLOCK='
-import os, sys, yaml
-try:
-    with open(sys.argv[1]) as f:
-        cfg = yaml.safe_load(f) or {}
-except Exception as exc:
-    print(f"echo \"[start_vision_hailo] WARN: yaml parse failed: {exc}\" >&2")
-    sys.exit(0)
-node = (cfg.get("vision_hailo_node") or {})
-def emit(k, v):
-    if isinstance(v, bool):
-        v = "true" if v else "false"
-    print(f"export {k.upper()}=\"{v}\"")
-for key in ("hailo_enabled", "hef_path", "stub_period_sec",
-            "confidence_threshold", "input_topic", "output_topic"):
-    if key not in node:
-        continue
-    env_name = key.upper()
-    env_val = os.environ.get(env_name, "")
-    if env_val:
-        print(
-            f"[start_vision_hailo] ENV override wins: {env_name} "
-            f"(env=\"{env_val}\", yaml=\"{node[key]}\")",
-            file=sys.stderr,
-        )
-        continue
-    emit(key, node[key])
-'
+# Берём YAML-loader-блок ПРЯМО из start_vision_hailo.sh (heredoc <<'PY' … PY),
+# а не его копию: копия в тесте не ловила бы регресс скрипта (ADR-0166 §5.2).
+EXTRACT_BLOCK="$(awk "/<<'PY'\$/ {f=1; next} /^PY\$/ {f=0} f" "${SCRIPT_UNDER_TEST}")"
+if [ -z "${EXTRACT_BLOCK}" ] || ! printf '%s\n' "${EXTRACT_BLOCK}" | grep -q 'ENV override wins'; then
+    echo "FAIL: не удалось вырезать YAML-loader (<<'PY' … PY) из ${SCRIPT_UNDER_TEST}"
+    exit 1
+fi
 
 WORKDIR="$(mktemp -d)"
 trap 'rm -rf "${WORKDIR}"' EXIT
@@ -165,7 +141,7 @@ YAML='vision_hailo_node:
   confidence_threshold: 0.5
   input_topic: /yaml/input
   output_topic: /yaml/output'
-out="$(env -i bash -c "
+out="$(env -i PATH="${PATH}" HOME="${HOME}" bash -c "
     eval \"\$(python3 - '/dev/stdin' '${WORKDIR}/dummy.yaml' <<'PY'
 ${EXTRACT_BLOCK}
 PY
@@ -176,7 +152,7 @@ PY
 
 printf '%s\n' "${YAML}" > "${WORKDIR}/dummy.yaml"
 # Re-run with the actual file (heredoc trick doesn't allow both - and stdin file).
-out="$(env -i bash -c "
+out="$(env -i PATH="${PATH}" HOME="${HOME}" bash -c "
     eval \"\$(python3 - '${WORKDIR}/dummy.yaml' <<'PY'
 ${EXTRACT_BLOCK}
 PY
@@ -197,7 +173,7 @@ assert_no_warn "${stderr}" "HAILO_ENABLED"
 
 echo
 echo "=== Test 2: F-2 scenario — ENV=HAILO_ENABLED=true, YAML=hailo_enabled:false ==="
-out="$(env -i HAILO_ENABLED=true bash -c "
+out="$(env -i PATH="${PATH}" HOME="${HOME}" HAILO_ENABLED=true bash -c "
     eval \"\$(python3 - '${WORKDIR}/dummy.yaml' <<'PY'
 ${EXTRACT_BLOCK}
 PY
@@ -212,7 +188,7 @@ assert_warn "${stderr}" "HAILO_ENABLED"
 
 echo
 echo "=== Test 3: partial ENV override (only INPUT_TOPIC set) ==="
-out="$(env -i INPUT_TOPIC=/env/input bash -c "
+out="$(env -i PATH="${PATH}" HOME="${HOME}" INPUT_TOPIC=/env/input bash -c "
     eval \"\$(python3 - '${WORKDIR}/dummy.yaml' <<'PY'
 ${EXTRACT_BLOCK}
 PY
@@ -234,7 +210,7 @@ echo
 echo "=== Test 4: empty string in ENV for HAILO_ENABLED — treated as 'unset' (YAML wins) ==="
 # Note: bash semantics — empty string IS a value, but our contract says
 # "non-empty" wins. python sees os.environ.get('HAILO_ENABLED', '') = ''.
-out="$(env -i HAILO_ENABLED= bash -c "
+out="$(env -i PATH="${PATH}" HOME="${HOME}" HAILO_ENABLED= bash -c "
     eval \"\$(python3 - '${WORKDIR}/dummy.yaml' <<'PY'
 ${EXTRACT_BLOCK}
 PY

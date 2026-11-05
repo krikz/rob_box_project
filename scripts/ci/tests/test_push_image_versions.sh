@@ -10,6 +10,12 @@
 # the 10-min job-level timeout we added on update-image-versions jobs.
 #
 # Run: bash scripts/ci/tests/test_push_image_versions.sh
+#
+# РУЧНОЙ (ADR-0166): тест ходит в сеть (git push на недоступный 192.0.2.1)
+# и меряет время отказа, поэтому в CI его нет. На ubuntu-latest он КРАСНЫЙ:
+# run 42036798239 (05.11.2026) — каждая git-операция ждёт TCP-connect
+# ~135 с, итого 540 с при пороге 180 с; GIT_TERMINAL_TIMEOUT connect-таймаут
+# не ограничивает. То есть «fail fast» скрипта на blackhole-хосте не доказан.
 
 set -euo pipefail
 

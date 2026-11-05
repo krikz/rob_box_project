@@ -75,10 +75,9 @@ echo "4. Проверка механизма передачи SHA в сборк�
 
 # С Phase 2 механизм разнесён: ДАННЫЕ (какой сервис от какого субмодуля
 # зависит) живут в docker/build-manifest.yaml, ЛОГИКА (посчитать SHA и
-# подмешать build-arg) — в композите .github/actions/l-build-service.
-# Пер-Pi workflow'ы только прокидывают поле матрицы в композит.
-# Исключение — L-Build Single Service.yml: он композит НЕ использует и
-# считает SHA сам.
+# подмешать build-arg) — в scripts/build/buildx_build.sh, который зовёт
+# композит .github/actions/l-build-service. Workflow'ы сборки (Pi Services и
+# Single Service) только прокидывают путь субмодуля в композит.
 
 # 4.1 Манифест объявляет submodule_sha для обоих сервисов
 if grep -q "submodule_sha: src/ros2leds" docker/build-manifest.yaml; then
@@ -103,11 +102,19 @@ else
     exit 1
 fi
 
-# 4.3 Композит считает SHA и подмешивает его как <BASENAME>_SHA build-arg
-if grep -qF 'git submodule status "$SUBMODULE_PATH"' .github/actions/l-build-service/action.yml; then
-    echo -e "   ${GREEN}✓${NC} композит l-build-service считает SHA субмодуля"
+# 4.3 Композит передаёт путь субмодуля в общий скрипт сборки, а тот считает
+# SHA и подмешивает его как <BASENAME>_SHA build-arg (scripts/build/buildx_build.sh —
+# один и тот же для CI и локальной сборки).
+if grep -qF 'BUILD_SUBMODULE_SHA: ${{ inputs.compute-submodule-sha }}' .github/actions/l-build-service/action.yml; then
+    echo -e "   ${GREEN}✓${NC} композит l-build-service передаёт путь субмодуля в buildx_build.sh"
 else
-    echo -e "   ${RED}✗${NC} композит l-build-service НЕ считает SHA субмодуля"
+    echo -e "   ${RED}✗${NC} композит l-build-service НЕ передаёт BUILD_SUBMODULE_SHA"
+    exit 1
+fi
+if grep -qF 'git submodule status "$SUBMODULE"' scripts/build/buildx_build.sh; then
+    echo -e "   ${GREEN}✓${NC} buildx_build.sh считает SHA субмодуля"
+else
+    echo -e "   ${RED}✗${NC} buildx_build.sh НЕ считает SHA субмодуля"
     exit 1
 fi
 
@@ -121,18 +128,11 @@ for wf in "L-Build Pi Services"; do
     fi
 done
 
-# 4.5 Single Service композит не использует — считает SHA инлайном
-if grep -qF 'ROS2LEDS_SHA=$(git submodule status src/ros2leds' ".github/workflows/L-Build Single Service.yml"; then
-    echo -e "   ${GREEN}✓${NC} L-Build Single Service считает ROS2LEDS_SHA инлайном"
+# 4.5 Single Service теперь тоже идёт через композит и передаёт ему путь субмодуля
+if grep -qF 'compute-submodule-sha: ${{ steps.extra.outputs.submodule_sha }}' ".github/workflows/L-Build Single Service.yml"; then
+    echo -e "   ${GREEN}✓${NC} L-Build Single Service передаёт submodule_sha в композит"
 else
-    echo -e "   ${RED}✗${NC} L-Build Single Service НЕ считает ROS2LEDS_SHA"
-    exit 1
-fi
-
-if grep -qF 'VESC_NEXUS_SHA=$(git submodule status src/vesc_nexus' ".github/workflows/L-Build Single Service.yml"; then
-    echo -e "   ${GREEN}✓${NC} L-Build Single Service считает VESC_NEXUS_SHA инлайном"
-else
-    echo -e "   ${RED}✗${NC} L-Build Single Service НЕ считает VESC_NEXUS_SHA"
+    echo -e "   ${RED}✗${NC} L-Build Single Service НЕ передаёт submodule_sha в композит"
     exit 1
 fi
 

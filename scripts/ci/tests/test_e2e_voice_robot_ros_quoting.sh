@@ -130,7 +130,9 @@ expect_tokens_intact() {
         FAIL=$((FAIL + 1))
         return
     fi
-    if ! printf '%s' "$cmd" | grep -qF 'eval '; then
+    # Харнесс экранирует всю remote-команду через printf %q, поэтому пробел
+    # после eval приходит как «eval\ » — принимаем обе формы.
+    if ! printf '%s' "$cmd" | grep -qE 'eval\\? '; then
         printf '  ❌ %s: в SSH-команде нет удалённого eval\n' "$name"
         printf '     cmd: %s\n' "$cmd"
         FAIL=$((FAIL + 1))

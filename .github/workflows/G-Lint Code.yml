@@ -512,6 +512,29 @@ jobs:
           python scripts/testing/test_e2e_expected_keywords.py
           python scripts/testing/test_vision_camera_pipeline.py
 
+      # ADR-0166 §5.2: тесты офлайн-инструментов музыки и рэп-синхрона лежали
+      # в репо, но их не звал ни один workflow. Все офлайновые (numpy/scipy/
+      # soundfile/librosa/music21, без ROS, сети и робота). music21 и librosa
+      # ставим явно: без них часть тестов ушла бы в importorskip — тихий SKIP.
+      - name: scripts/music + scripts/dialog/rap_sync offline tests (ADR-0166)
+        run: |
+          pip install scipy soundfile librosa music21
+          PYTHONPATH="src/rob_box_music:src/rob_box_core:src/rob_box_dialog:src/rob_box_mcp_tools" \
+          python -m pytest \
+            scripts/music/test_loudness_nrt_v2.py \
+            scripts/music/test_pdmx_batch.py \
+            scripts/music/test_score_corpus_stats.py \
+            scripts/music/test_score_import.py \
+            scripts/music/critic/test_judge.py \
+            scripts/music/critic/test_verify.py \
+            scripts/music/live_dj/test_v2log.py \
+            scripts/music/live_dj/test_diversity.py \
+            scripts/dialog/rap_sync/test_rap_sync.py \
+            -v \
+            -rs \
+            -o addopts="" \
+            -p no:cacheprovider
+
       - name: Seam-without-consumer guard self-tests (issue #2118)
         run: |
           python -m unittest scripts.lint.test_seam_without_consumer -v
