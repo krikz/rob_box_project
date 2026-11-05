@@ -136,16 +136,16 @@ class ChatSender:
         for item in chat_render.render(text, role):
             await self._send(chat_id, item)
 
-    async def send_person_photo(self, chat_id: int, payload: str, root: Any = None) -> None:
-        """Снимок лица в чат (#4469, ``DialogOutput.kind=photo``): индикатор хода снят, файл читается из корня лиц.
-        Нет файла или путь не наш - честная строка вместо тишины (робот уже сказал «показываю»)."""
+    async def send_person_photo(self, chat_id: int, payload: str, fetch: Any) -> None:
+        """Снимок лица в чат (#4469, ``DialogOutput.kind=photo``): индикатор хода снят, байты берёт ``fetch`` у владельца
+        лиц (в потоке: вызов блокирует). Отказ владельца - честная строка с его причиной, а не тишина."""
         await self._end(chat_id)
         parsed = person_photo.parse_payload(payload)
-        data = person_photo.read_photo(parsed[0], root) if parsed else None
-        if parsed is None or data is None:
-            self._log.warning("снимок лица не отправлен chat=%s: путь вне шаблона или файла нет", chat_id)
-            await self._retry("send_message(нет снимка)", lambda: self.bot.send_message(
-                chat_id=chat_id, text="Снимок не нашёл на диске, прислать не смог."))
+        ok, reason, data = (await asyncio.to_thread(fetch, parsed[0])) if parsed else (False, "bad_id", b"")
+        if not (ok and data):
+            self._log.warning("снимок лица не отправлен chat=%s: %s", chat_id, reason or "пустой ответ")
+            text = person_photo.REFUSALS.get(reason, person_photo.REFUSAL_DEFAULT)
+            await self._retry("send_message(нет снимка)", lambda: self.bot.send_message(chat_id=chat_id, text=text))
             return
         await self._retry("send_photo", lambda: self.bot.send_photo(chat_id=chat_id, photo=data, caption=parsed[1] or None))
 

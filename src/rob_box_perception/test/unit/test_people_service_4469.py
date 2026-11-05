@@ -106,14 +106,51 @@ def test_list_is_capped_and_says_how_many_were_cut(tmp_path):
     assert reply.data["total"] == ps.LIST_MAX + 3 and reply.data["shown"] == ps.LIST_MAX
 
 
-def test_photo_returns_reference_path_that_exists(tmp_path):
+def test_photo_returns_the_snapshot_bytes_not_a_path(tmp_path):
     store = _store(tmp_path)
     pid = _met(store, 0)
 
     reply = ps.PeopleService(store).handle(ps.OP_PHOTO, person_id=pid[:8])
 
-    assert reply.ok and reply.data == {"id": pid[:8], "photo_path": f"{pid}/reference.jpg"}
-    assert (tmp_path / reply.data["photo_path"]).read_bytes() == b"jpeg"
+    assert reply.ok and reply.jpeg == b"jpeg" and reply.data == {"id": pid[:8], "size": 4}
+    assert "photo_path" not in reply.data
+
+
+def test_big_snapshot_is_recompressed_under_the_limit(tmp_path):
+    import cv2
+
+    noise = np.random.default_rng(1).integers(0, 255, (1200, 1200, 3), dtype=np.uint8)
+    big = cv2.imencode(".jpg", noise, [cv2.IMWRITE_JPEG_QUALITY, 95])[1].tobytes()
+    assert len(big) > ps.PHOTO_MAX_BYTES
+    store = _store(tmp_path)
+    pid = _met(store, 0, snapshot=big)
+
+    reply = ps.PeopleService(store).handle(ps.OP_PHOTO, person_id=pid[:8])
+
+    assert reply.ok and 0 < len(reply.jpeg) <= ps.PHOTO_MAX_BYTES and reply.data["size"] == len(reply.jpeg)
+    assert cv2.imdecode(np.frombuffer(reply.jpeg, np.uint8), cv2.IMREAD_COLOR) is not None
+
+
+def test_snapshot_that_cannot_be_fitted_is_refused_not_truncated(tmp_path):
+    store = _store(tmp_path)
+    pid = _met(store, 0, snapshot=b"x" * (ps.PHOTO_MAX_BYTES + 1))  # не JPEG: пережать нечем
+
+    reply = ps.PeopleService(store).handle(ps.OP_PHOTO, person_id=pid[:8])
+
+    assert (reply.ok, reply.reason, reply.jpeg) == (False, "no_snapshot", b"")
+
+
+def test_serve_puts_the_jpeg_into_the_ros_response(tmp_path):
+    store = _store(tmp_path)
+    pid = _met(store, 0)
+    request = SimpleNamespace(op=ps.OP_PHOTO, filter="", person_id=pid[:8], name="")
+
+    response = ps.serve(ps.PeopleService(store), request, SimpleNamespace())
+
+    assert response.ok is True and bytes(response.jpeg) == b"jpeg"
+    refused = ps.serve(ps.PeopleService(store), SimpleNamespace(op=ps.OP_PHOTO, filter="", person_id="deadbeef", name=""),
+                       SimpleNamespace())
+    assert refused.ok is False and list(refused.jpeg) == []
 
 
 def test_photo_of_unknown_id_is_an_honest_refusal(tmp_path):

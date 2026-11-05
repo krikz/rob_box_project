@@ -50,6 +50,7 @@ from .handlers.messages import attachment_message_handler, text_message_handler,
 
 # AV-23 (issue #1915, P8): per-chat /radio mode — голосовые из Telegram
 # как рация → /avatar/voice_in. См. radio.py + voice_transcode.py.
+from . import person_photo
 from .chat_sender import KIND_BEGIN, ChatSender
 from .radio import RadioPublisher
 from .speech_receipts import SpeechReceipts
@@ -153,14 +154,14 @@ def _sender_of(app, sender):
     return sender if sender is not None and sender.bot is app.bot else ChatSender(app.bot)
 
 
-async def _dispatch(sender, chat_id: int, text: str, role: str, kind: str) -> None:
+async def _dispatch(sender, chat_id: int, text: str, role: str, kind: str, fetch=None) -> None:
     """Подпись шага и начало хода - в индикатор процесса, остальное - ответ в чат с оформлением."""
     if kind == KIND_BEGIN:
         sender.begin(chat_id)
     elif kind == PROGRESS_KIND:
         sender.set_progress(chat_id, text)
     elif kind == PHOTO_KIND:
-        await sender.send_person_photo(chat_id, text)
+        await sender.send_person_photo(chat_id, text, fetch)
     else:
         await sender.deliver(chat_id, text, role)
 
@@ -581,7 +582,7 @@ class TelegramNode(Node):
                 if sender is None:
                     continue
                 try:
-                    await _dispatch(sender, chat_id, text, role, kind)
+                    await _dispatch(sender, chat_id, text, role, kind, person_photo.ros_fetch(self))
                 except Exception as exc:  # noqa: BLE001
                     self.get_logger().warning(f"Failed to echo LLM reply to chat {chat_id}: {exc!r}")
         except asyncio.CancelledError:

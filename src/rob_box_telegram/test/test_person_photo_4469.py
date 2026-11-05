@@ -1,4 +1,7 @@
-"""Снимок лица в чат (issue #4469): путь от владельца проверяется по шаблону, файл читает бот, отправка - ``ChatSender``."""
+"""Снимок лица в чат (issue #4469): id из ``DialogOutput``, байты берёт у владельца ``fetch``, отправка - ``ChatSender``.
+
+Сеть и ROS не нужны: ``fetch`` и бот подставные. Каталог ``/data/faces`` на Sound Pi не читается.
+"""
 
 from __future__ import annotations
 
@@ -11,36 +14,25 @@ import pytest
 from rob_box_telegram import person_photo
 from rob_box_telegram.chat_sender import ChatSender
 
-PID = "fff371fe-1111-2222-3333-444444444444"
-
-
-def _faces(tmp_path):
-    (tmp_path / PID / "encounters").mkdir(parents=True)
-    (tmp_path / PID / "reference.jpg").write_bytes(b"ref")
-    (tmp_path / PID / "encounters" / "000003_face.jpg").write_bytes(b"enc")
-    (tmp_path / "secret.jpg").write_bytes(b"secret")
-    return tmp_path
-
-
-def test_reads_reference_and_encounter_files(tmp_path):
-    root = _faces(tmp_path)
-    assert person_photo.read_photo(f"{PID}/reference.jpg", root) == b"ref"
-    assert person_photo.read_photo(f"{PID}/encounters/000003_face.jpg", root) == b"enc"
-
-
-@pytest.mark.parametrize("bad", [
-    "../secret.jpg", f"{PID}/../secret.jpg", "secret.jpg", f"{PID}/meta.json", "/etc/passwd",
-    f"{PID}/encounters/../../secret.jpg", f"{PID}/reference.jpg/", "", f"{PID}/missing.jpg",
-])
-def test_paths_outside_the_template_or_missing_files_are_not_read(tmp_path, bad):
-    assert person_photo.read_photo(bad, _faces(tmp_path)) is None
+PID = "fff371fe"
 
 
 def test_payload_parsing():
-    text = json.dumps({"path": "a/reference.jpg", "caption": "x" * 500}, ensure_ascii=False)
-    path, caption = person_photo.parse_payload(text)
-    assert path == "a/reference.jpg" and len(caption) == person_photo.CAPTION_MAX
-    assert person_photo.parse_payload("не json") is None and person_photo.parse_payload('{"caption": "x"}') is None
+    text = json.dumps({"id": PID, "caption": "x" * 500}, ensure_ascii=False)
+    pid, caption = person_photo.parse_payload(text)
+    assert pid == PID and len(caption) == person_photo.CAPTION_MAX
+
+
+@pytest.mark.parametrize("bad", [
+    "не json", "[]", '{"caption": "x"}', '{"id": 5}', '{"id": "../secret"}', '{"id": "fff371fe-1111"}',
+    '{"id": "FFF371FE"}', '{"path": "fff371fe-1111/reference.jpg"}',
+])
+def test_payload_without_a_valid_id_is_not_ours(bad):
+    assert person_photo.parse_payload(bad) is None
+
+
+def test_no_disk_reader_left():
+    assert not hasattr(person_photo, "read_photo") and not hasattr(person_photo, "faces_root")
 
 
 class Bot:
@@ -56,19 +48,64 @@ class Bot:
         return SimpleNamespace(message_id=2)
 
 
-def test_sender_sends_the_photo_with_caption(tmp_path):
+class Owner:
+    def __init__(self, reply):
+        self.reply, self.asked = reply, []
+
+    def __call__(self, person_id):
+        self.asked.append(person_id)
+        return self.reply
+
+
+def _send(bot, owner, payload):
+    asyncio.run(ChatSender(bot, rich=False).send_person_photo(7, payload, owner))
+
+
+def test_sender_sends_the_bytes_from_the_owner_with_caption():
+    bot, owner = Bot(), Owner((True, "", b"jpeg-bytes"))
+
+    _send(bot, owner, json.dumps({"id": PID, "caption": "fff371fe - Кирилл"}, ensure_ascii=False))
+
+    assert owner.asked == [PID]
+    assert bot.photos == [{"chat_id": 7, "photo": b"jpeg-bytes", "caption": "fff371fe - Кирилл"}] and bot.messages == []
+
+
+@pytest.mark.parametrize("reason, fragment", [
+    ("exhibition_mode", "выставки"), ("no_snapshot", "нет снимка"), ("person_not_found", "нет в базе"),
+    ("owner_unavailable", "не ответил"), ("store_error", "не удалось"),
+])
+def test_owner_refusal_is_said_honestly_and_no_photo_is_sent(reason, fragment):
     bot = Bot()
-    payload = json.dumps({"path": f"{PID}/reference.jpg", "caption": "fff371fe - Кирилл"}, ensure_ascii=False)
 
-    asyncio.run(ChatSender(bot, rich=False).send_person_photo(7, payload, _faces(tmp_path)))
+    _send(bot, Owner((False, reason, b"")), json.dumps({"id": PID, "caption": "x"}))
 
-    assert bot.photos == [{"chat_id": 7, "photo": b"ref", "caption": "fff371fe - Кирилл"}] and bot.messages == []
+    assert bot.photos == [] and fragment in bot.messages[0]["text"]
 
 
-def test_sender_says_honestly_when_the_file_is_not_there(tmp_path):
+def test_ok_without_bytes_is_not_a_photo():
     bot = Bot()
-    payload = json.dumps({"path": f"{PID}/encounters/000009_face.jpg", "caption": "x"})
 
-    asyncio.run(ChatSender(bot, rich=False).send_person_photo(7, payload, _faces(tmp_path)))
+    _send(bot, Owner((True, "", b"")), json.dumps({"id": PID}))
 
-    assert bot.photos == [] and "не нашёл" in bot.messages[0]["text"]
+    assert bot.photos == [] and len(bot.messages) == 1
+
+
+def test_bad_payload_never_reaches_the_owner():
+    bot, owner = Bot(), Owner((True, "", b"x"))
+
+    _send(bot, owner, '{"id": "../etc"}')
+
+    assert owner.asked == [] and bot.photos == [] and len(bot.messages) == 1
+
+
+def test_ros_fetch_without_a_ready_service_is_owner_unavailable(monkeypatch):
+    import sys
+    import types
+
+    srv = types.ModuleType("rob_box_perception_msgs.srv")
+    srv.People = SimpleNamespace(Request=lambda: SimpleNamespace())
+    monkeypatch.setitem(sys.modules, "rob_box_perception_msgs", types.ModuleType("rob_box_perception_msgs"))
+    monkeypatch.setitem(sys.modules, "rob_box_perception_msgs.srv", srv)
+    node = SimpleNamespace(create_client=lambda *a: SimpleNamespace(service_is_ready=lambda: False))
+
+    assert person_photo.ros_fetch(node)(PID) == (False, "owner_unavailable", b"")

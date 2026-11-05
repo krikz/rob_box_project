@@ -83,14 +83,13 @@ def test_list_refusal_carries_the_owners_reason():
     assert result.success is False and result.data == {"status": "rejected", "reason": "bad_filter"}
 
 
-def test_photo_returns_path_and_caption_for_the_bot():
-    tool, owner = make(people.PersonPhotoTool,
-                       (True, "", {"id": "fff371fe", "photo_path": "fff371fe-1111/reference.jpg", "name": None}))
+def test_photo_returns_id_and_caption_for_the_bot():
+    tool, owner = make(people.PersonPhotoTool, (True, "", {"id": "fff371fe", "size": 4, "name": None}))
 
     result = tool.execute(id="fff371fe")
 
     assert owner.calls == [(people.OP_PHOTO, "", "fff371fe", "")]
-    assert result.success and result.data["photo_path"] == "fff371fe-1111/reference.jpg"
+    assert result.success and result.data["photo_id"] == "fff371fe" and "photo_path" not in result.data
     assert result.data["caption"] == "fff371fe - без имени" and result.data["status"] == "done"
 
 

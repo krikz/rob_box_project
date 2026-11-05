@@ -6,8 +6,9 @@ people.py - тулы пульта Telegram по лицам (issue #4469, ADR-014
 
 * :class:`PeopleListTool` - ``people_list(filter)``: лица с id, именем, кличкой, последней встречей, числом встреч и
   связью с голосом.
-* :class:`PersonPhotoTool` - ``person_photo(id)``: лучший снимок лица из галереи. Тул отдаёт путь внутри корня
-  ``/data/faces`` (``photo_path``), отправляет файл в чат бот Telegram (он монтирует корень на чтение).
+* :class:`PersonPhotoTool` - ``person_photo(id)``: лучший снимок лица из галереи. Тул проверяет у владельца, что
+  снимок есть (сервис отдаёт JPEG байтами), и отдаёт id (``photo_id``); картинку бот Telegram берёт у владельца сам по
+  этому id (байты в ``DialogOutput`` не гоняем), диск лиц на Sound Pi не читается.
 * :class:`NamePersonTool` - ``name_person(id, name)``: имя лицу. Пишет владелец (``FaceStore`` в ``vision_face``);
   фразу «Готово» строит код по ответу владельца (диалог берёт её из данных исхода).
 
@@ -191,13 +192,13 @@ class PersonPhotoTool(_PeopleCalls, MCPTool):
                                  description="id лица: 8 знаков 0-9a-f из people_list.")]
 
     def execute(self, id: str) -> MCPToolResult:  # noqa: A002 - имя параметра в схеме тула
-        """Путь к снимку от владельца; отправку в чат делает бот."""
+        """Владелец подтвердил снимок (байты тул не несёт); id уходит боту, он заберёт снимок у владельца сам."""
         ok, reason, data = self._call(OP_PHOTO, "", id, "")
         if not ok:
             return _rejected(reason or OWNER_UNAVAILABLE)
         who = data.get("name") or "без имени"
         return MCPToolResult(success=True, message=f"Снимок {data['id']} ({who}) отправляю в чат.",
-                             data={"status": "done", "id": data["id"], "photo_path": data["photo_path"],
+                             data={"status": "done", "id": data["id"], "photo_id": data["id"],
                                    "caption": f"{data['id']} - {who}"})
 
 

@@ -18,7 +18,10 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Callable, Dict, List, Optional
 
-from .face_store import MODE_EXHIBITION, FaceStore, best_snapshot_path
+from .face_store import MODE_EXHIBITION, FaceStore, best_snapshot_bytes
+
+#: Потолок снимка в ответе: байты идут через zenoh между Pi, большое пережимается на Vision.
+PHOTO_MAX_BYTES = 200 * 1024
 
 #: Значения ``People.srv`` ``op`` (зеркало констант .srv: модуль не импортирует ROS-типы).
 OP_LIST, OP_PHOTO, OP_SET_NAME = 0, 1, 2
@@ -46,10 +49,31 @@ class Reply:
     ok: bool
     reason: str = ""
     data: Any = field(default_factory=dict)
+    jpeg: bytes = b""
 
 
 def _refuse(reason: str) -> Reply:
     return Reply(False, reason, {})
+
+
+def fit_jpeg(raw: bytes, limit: int = PHOTO_MAX_BYTES) -> Optional[bytes]:
+    """Снимок не больше ``limit`` байт: влезает - как есть; иначе уменьшаем и пережимаем (cv2). Не вышло - ``None``."""
+    if len(raw) <= limit:
+        return raw
+    try:
+        import cv2  # noqa: PLC0415 - тяжёлая зависимость только для редкого большого снимка
+        import numpy as np  # noqa: PLC0415
+
+        img = cv2.imdecode(np.frombuffer(raw, np.uint8), cv2.IMREAD_COLOR)
+        for _ in range(4):
+            for quality in (85, 70, 55):
+                ok, buf = cv2.imencode(".jpg", img, [cv2.IMWRITE_JPEG_QUALITY, quality])
+                if ok and len(buf) <= limit:
+                    return bytes(buf)
+            img = cv2.resize(img, None, fx=0.75, fy=0.75, interpolation=cv2.INTER_AREA)
+    except Exception:  # noqa: BLE001 - битый снимок или нет cv2: честный отказ, не обрезанный файл
+        return None
+    return None
 
 
 def day_start(now: float) -> float:
@@ -130,10 +154,11 @@ class PeopleService:
         full = self._resolve(query)
         if isinstance(full, Reply):
             return full
-        path = best_snapshot_path(self._store, full)
-        if path is None:
+        raw = best_snapshot_bytes(self._store, full)
+        jpeg = fit_jpeg(raw) if raw else None
+        if not jpeg:
             return _refuse("no_snapshot")
-        return Reply(True, "", {"id": full[:8], "photo_path": path})
+        return Reply(True, "", {"id": full[:8], "size": len(jpeg)}, jpeg)
 
     def _set_name(self, query: str, name: str) -> Reply:
         clean = " ".join((name or "").split())
@@ -157,9 +182,10 @@ def serve(service: PeopleService, request: Any, response: Any) -> Any:
     except Exception as exc:  # noqa: BLE001 - клиент получает честную причину, нода не падает
         reply = Reply(False, "store_error", {"error": f"{type(exc).__name__}: {exc}"[:200]})
     response.ok, response.reason = reply.ok, reply.reason
+    response.jpeg = list(reply.jpeg)
     response.data_json = json.dumps(reply.data, ensure_ascii=False)
     return response
 
 
 __all__ = ["FILTERS", "LIST_MAX", "NAME_MAX", "OP_LIST", "OP_PHOTO", "OP_SET_NAME", "PeopleService", "REASONS", "Reply",
-           "day_start", "serve", "valid_name"]
+           "PHOTO_MAX_BYTES", "day_start", "fit_jpeg", "serve", "valid_name"]

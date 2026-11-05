@@ -1770,8 +1770,8 @@ class OwnerText:
 OUTCOME_OWNER_TEXT: Mapping[str, OwnerText] = MappingProxyType({
     **{tool: OwnerText(whole="source_message", note="source_note") for tool in ("request_music", "generate_music")},
     "dj_set": OwnerText(note="source_note")})
-#: Тул пульта Telegram, чей успех уносит в чат картинку (#4469): ``photo_path`` - путь снимка внутри корня лиц,
-#: ``caption`` - подпись; чат шлёт файл ``DialogOutput(kind=photo)``, читает его бот, который монтирует корень на чтение.
+#: Тул пульта Telegram, чей успех уносит в чат картинку (#4469): ``photo_id`` - id лица, ``caption`` - подпись; чат шлёт
+#: ``DialogOutput(kind=photo)`` с id, снимок бот забирает у владельца лиц (``/perception/people``) байтами.
 PHOTO_TOOL = "person_photo"
 #: Действия, чей успех - сам себе доказательство: фразы об исходе done нет (§4.1; Шифу 21.10: «включил щелчок и ещё
 #: сказал, что он заиграл, бред же»). Неудача (rejected/timeout) говорится одной фразой кода. Исключение - звукоподражание
