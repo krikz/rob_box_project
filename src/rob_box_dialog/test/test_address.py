@@ -663,3 +663,16 @@ def test_4085_telegram_text_has_no_separate_command():
     """Эхо речи робота — склейка микрофона: у Telegram и оператора текст хода и есть команда."""
     decision = decide(_heard("скажи ему, робот, хватит", source="telegram"), None, DEFAULT_WAKE_WORDS)
     assert isinstance(decision, Addressed) and decision.command == ""
+
+
+@pytest.mark.parametrize("text", ["Робот робот", "робот, робот!", "Робот, ну, робот"])
+def test_repeated_wake_is_bare_wake_and_picks_up_backlog(text):
+    """М11 n310: «робот робот» - голый вейк (повтор вейка не фраза), бэклог подхватывается."""
+    backlog = _backlog_with("запусти диджей сет", t=95.0)
+    out = decide(_heard(text, t=100.0), backlog, WAKES)
+    assert out.source == BACKLOG_PICKUP and out.text == "запусти диджей сет" and out.pickup
+
+
+def test_repeated_wake_with_phrase_stays_a_phrase():
+    out = decide(_heard("робот включи робот", t=100.0), Backlog(), WAKES)
+    assert out.source == VOICE and "включи" in out.text
