@@ -19,6 +19,11 @@ from .scene import SceneSpec
 from .states import SLEEP_EYE, X_EYE, eq_mouth
 
 DSL_KEY = 'face_dsl'
+#: Слот ``rear`` сцены лица для LLM (``knowledge.FACE_SCENE_SLOTS['rear']``) -> тема ``led_matrix_effects.lamps.THEMES`` (ros2leds).
+REAR_OF_SLOT = {
+    'off': 'off', 'markers': 'default', 'hazard': 'hazard', 'party': 'party',
+    'new_year': 'new_year', 'halloween': 'halloween', 'heart': 'valentine', 'rocket': 'cosmonautics',
+}
 #: Темп морганий, саккад и эквалайзера.
 TEMPO = {'slow': 0.5, 'normal': 1.0, 'fast': 2.0}
 #: Моргание: (от, до) секунд между морганиями.

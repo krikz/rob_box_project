@@ -29,6 +29,7 @@ np = pytest.importorskip("numpy")
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(REPO_ROOT / "src" / "rob_box_animations"))
+sys.path.insert(0, str(REPO_ROOT / "src" / "ros2leds" / "led_matrix_effects"))  # эффекты лица (ros2leds)
 
 from rob_box_animations.face import states as S  # noqa: E402
 from rob_box_animations.face.face import IDLE_MA, SCENE_LIT_LIMIT_MA, frame_ma, to_wire  # noqa: E402

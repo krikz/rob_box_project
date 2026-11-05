@@ -14,7 +14,7 @@ import numpy as np
 import pytest
 
 from rob_box_animations.face import effects as E
-from rob_box_animations.face import rear as R
+from led_matrix_effects import lamps as R
 from rob_box_animations.face.face import (BLACK, EYE_MASK, EYE_RIM_MASK, LID_EDGE, Eye, Frame, Mouth, clamp, col,
                                           draw_eye, draw_mouth, frame_ma, to_wire, wire_ma)
 from rob_box_animations.face.scene import FaceContext, Scene

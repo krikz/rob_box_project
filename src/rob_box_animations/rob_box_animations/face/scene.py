@@ -15,8 +15,9 @@ from typing import Callable, Dict, Iterator, List, Mapping, Optional, Tuple
 
 import numpy as np
 
+from led_matrix_effects import lamps as R
+
 from . import effects as E
-from . import rear as R
 from .face import FPS, Frame
 
 
