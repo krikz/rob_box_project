@@ -60,6 +60,7 @@ slices:
     - get_sound_info
     - get_music_state
     - list_waypoints
+    - list_maps
 
   # ── PERSONALITY: всё, что LLM-личность может вызывать в обычном
   # диалоге (музыка, память, навигация, mapping, речь).
@@ -111,6 +112,7 @@ slices:
     - finish_mapping
     - optimize_map
     - load_map
+    - delete_map
 
   # ── OPERATOR.SPEECH: речевой канал оператора (через ТАРС).
   # ``set_voice`` / ``set_tts_provider`` / ``list_tts_voices`` уже

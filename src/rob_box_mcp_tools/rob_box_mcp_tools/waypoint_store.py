@@ -79,6 +79,12 @@ CREATE TABLE IF NOT EXISTS waypoints (
 CREATE INDEX IF NOT EXISTS idx_wp_map ON waypoints(map_id);
 """
 
+
+def map_name_key(name: Optional[str]) -> str:
+    """Ключ сравнения имён карт: без пробелов по краям и без регистра (``lower()`` SQLite кириллицу не понижает)."""
+    return (name or "").strip().casefold()
+
+
 #: Колонка кадра точки (#4390); NULL — точка записана до неё, кадр неизвестен.
 _FRAME_ID_COLUMN = "frame_id"
 
@@ -181,31 +187,30 @@ class WaypointStore:
             map_id = self.create_map(name="default")
         return map_id
 
-    def set_active_map_by_name(self, name: str) -> bool:
-        """Find a map by name (case-insensitive) and make it active.
+    def delete_inactive_maps_by_name(self, name: str) -> int:
+        """Удалить строки карт с именем ``name`` (без учёта регистра), кроме активной; их точки - каскадом.
 
-        Returns True if found and activated, False if no map with that name.
+        Активную карту так не удалить (#4392): её геометрия - единственная база rtabmap, строку-описание без
+        базы оставить нельзя. Возвращает число удалённых строк (``0`` - таких неактивных карт нет).
         """
-        name_lower = name.strip().lower()
+        wanted = map_name_key(name)
+        if not wanted:
+            return 0
         with self._lock:
-            row = self._conn.execute(
-                "SELECT map_id FROM maps WHERE lower(name) = ? ORDER BY created_at DESC LIMIT 1",
-                (name_lower,),
-            ).fetchone()
-            if row is None:
-                return False
-            map_id = row["map_id"]
+            rows = self._conn.execute("SELECT map_id, name FROM maps WHERE is_active = 0").fetchall()
+            doomed = [r["map_id"] for r in rows if map_name_key(r["name"]) == wanted]
             cur = self._conn.cursor()
-            cur.execute("UPDATE maps SET is_active = 0 WHERE is_active = 1")
-            cur.execute("UPDATE maps SET is_active = 1 WHERE map_id = ?", (map_id,))
+            for map_id in doomed:
+                cur.execute("DELETE FROM waypoints WHERE map_id = ?", (map_id,))
+                cur.execute("DELETE FROM maps WHERE map_id = ?", (map_id,))
             self._conn.commit()
-        return True
+        return len(doomed)
 
     def list_maps(self) -> list:
         """Return all maps ordered by creation time (newest first)."""
         with self._lock:
             rows = self._conn.execute(
-                "SELECT map_id, name, created_at, is_active FROM maps ORDER BY created_at DESC"
+                "SELECT map_id, name, created_at, is_active FROM maps ORDER BY created_at DESC, id DESC"
             ).fetchall()
         return [
             {"map_id": r["map_id"], "name": r["name"], "created_at": r["created_at"], "is_active": bool(r["is_active"])}

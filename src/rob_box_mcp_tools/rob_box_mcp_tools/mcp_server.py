@@ -90,6 +90,8 @@ from .tools import (
     FinishMappingTool,
     OptimizeMapTool,
     LoadMapTool,
+    ListMapsTool,
+    DeleteMapTool,
     PlayAnimationTool,
     PlaySoundTool,
     GetSoundInfoTool,
@@ -514,7 +516,8 @@ class MCPServer(Node):
         self.waypoint_store = self._init_waypoint_store()
 
         # MappingState — FSM персистентное состояние (localization / mapping)
-        self.mapping_state = MappingState()
+        # Имя активной карты FSM читает у владельца карт (``maps.is_active``), копии не держит (#4392).
+        self.mapping_state = MappingState(active_map=self.waypoint_store.get_active_map)
         _ms = self.mapping_state.get()
         self.get_logger().info(
             f"🗺️  MappingState: mode={_ms['mode']}, map='{_ms.get('map_name') or 'none'}'"
@@ -878,6 +881,8 @@ class MCPServer(Node):
         self.registry.register(FinishMappingTool(self, self.waypoint_store, self.mapping_state))
         self.registry.register(OptimizeMapTool(self))
         self.registry.register(LoadMapTool(self, self.waypoint_store, self.mapping_state))
+        self.registry.register(ListMapsTool(self, self.waypoint_store))
+        self.registry.register(DeleteMapTool(self, self.waypoint_store))
 
         # Animation tools
         self.registry.register(PlayAnimationTool(self))

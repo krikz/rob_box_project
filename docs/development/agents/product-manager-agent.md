@@ -24,10 +24,10 @@
 
 ---
 
-## Место в процессе (Context Engineering)
+## Место в процессе
 
 Этот файл — **сервисный агент** для управления продуктом.  
-Процесс: `.agents/skills/context-engineering/SKILL.md` | Бэклог: GitHub Issues (устаревшая ссылка на `tasks.json`, файл больше не существует)
+Процесс: `docs/process/claude-coordinator-robot-flow.md` (ADR-0162) | Бэклог: GitHub Issues
 
 Вызывай для актуализации `PRD.md`, приоритизации backlog'а (GitHub Issues), контроля прогресса Milestones.
 

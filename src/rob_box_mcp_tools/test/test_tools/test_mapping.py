@@ -266,8 +266,8 @@ class _FakeMappingState:
     def __init__(self):
         self.localization_calls = []
 
-    def set_localization(self, map_name=None, map_id=None):
-        self.localization_calls.append((map_name, map_id))
+    def set_localization(self):
+        self.localization_calls.append("localization")
 
 
 def _finish(monkeypatch, *, mode=object(), publish=object(), mode_ready=True, state=None):
@@ -287,7 +287,7 @@ def test_finish_mapping_ok_on_service_reply_and_updates_state(monkeypatch):
     tool, _ = _finish(monkeypatch, state=state)
     result = tool.execute(map_name="квартира")
     assert result.success is True
-    assert state.localization_calls == [("квартира", None)]
+    assert state.localization_calls == ["localization"]
     assert "опубликовать не удалось" not in result.message
 
 
@@ -389,11 +389,11 @@ def test_load_map_fails_when_localization_switch_refused(monkeypatch):
 def test_load_map_ok_on_both_replies(monkeypatch):
     state = _FakeMappingState()
     tool, node = _load_tool(monkeypatch, state=state)
-    result = tool.execute(map_name="офис")
+    result = tool.execute()
     assert result.success is True
     assert node.clients["/rtabmap/rtabmap/load_database"].call_count == 1
     assert node.clients["/rtabmap/rtabmap/set_mode_localization"].call_count == 1
-    assert state.localization_calls == [("офис", None)]
+    assert state.localization_calls == ["localization"]
 
 # ---------------------------------------------------------------- #3789 хвост: continue / start / load по имени
 
@@ -406,29 +406,20 @@ class _RaisingFuture:
         raise RuntimeError("сервис упал")
 
 
-class _NamedStore(_FakeWaypointStore):
-    def __init__(self, known=(), raises=None):
-        super().__init__()
-        self.known = set(known)
-        self.raises = raises
-        self.activated = []
+class _RaisingStore:
+    def get_active_map(self):
+        raise RuntimeError("база повреждена")
 
-    def set_active_map_by_name(self, name):
-        if self.raises:
-            raise self.raises
-        self.activated.append(name)
-        return name in self.known
-
-    def get_active_map_id(self):
-        return "map-active"
+    def list_maps(self):
+        raise RuntimeError("база повреждена")
 
 
 class _FakeStartState:
     def __init__(self):
         self.mapping_calls = []
 
-    def set_mapping(self, map_name=None, map_id=None):
-        self.mapping_calls.append((map_name, map_id))
+    def set_mapping(self):
+        self.mapping_calls.append("mapping")
 
 
 def _continue(monkeypatch, *, ready=True, result=object()):
@@ -507,7 +498,7 @@ def test_start_mapping_ok_creates_map_and_switches_state(monkeypatch):
     result = tool.execute(map_name="кухня", new_location=True)
     assert result.success is True
     assert [m["name"] for m in store.created_maps] == ["кухня"]
-    assert state.mapping_calls == [("кухня", "map-1")]
+    assert state.mapping_calls == ["mapping"]
 
 
 @pytest.mark.unit
@@ -529,49 +520,89 @@ def test_start_mapping_without_service_reply_creates_nothing(monkeypatch, kwargs
     assert "Начинаю" not in (result.message or "")
 
 
+def _real_store(*names):
+    """Настоящий ``WaypointStore`` в памяти: карты создаются по порядку, активна (в базе rtabmap) последняя."""
+    from rob_box_mcp_tools.waypoint_store import WaypointStore
+
+    store = WaypointStore(db_path=":memory:")
+    for name in names:
+        store.create_map(name)
+    return store
+
+
 @pytest.mark.unit
 def test_load_map_unknown_name_fails_and_reloads_nothing(monkeypatch):
-    store = _NamedStore(known=["офис"])
     state = _FakeMappingState()
     tool, node = _load_tool(monkeypatch, state=state)
-    tool.waypoint_store = store
+    tool.waypoint_store = _real_store("офис")
     result = tool.execute(map_name="дача")
-    assert result.success is False and result.data == {"outcome": "map_not_found", "reason": "map_not_found"}
-    assert result.message == "Карта «дача» не найдена, ничего не загружал"
+    assert result.success is False and result.data["reason"] == "map_not_found"
+    assert result.message == "Карты «дача» нет, ничего не загружал"
     assert node.clients["/rtabmap/rtabmap/load_database"].call_count == 0
     assert node.clients["/rtabmap/rtabmap/set_mode_localization"].call_count == 0
     assert state.localization_calls == []
 
 
 @pytest.mark.unit
-def test_load_map_known_name_activates_and_loads(monkeypatch):
-    store = _NamedStore(known=["офис"])
+def test_load_map_name_of_map_in_db_loads_it(monkeypatch):
+    store = _real_store("офис")
     state = _FakeMappingState()
     tool, node = _load_tool(monkeypatch, state=state)
     tool.waypoint_store = store
-    result = tool.execute(map_name="офис")
-    assert result.success is True
-    assert store.activated == ["офис"]
-    assert node.clients["/rtabmap/rtabmap/load_database"].call_count == 1
-    assert state.localization_calls == [("офис", "map-active")]
+    result = tool.execute(map_name="Офис ")
+    assert result.success is True and result.data["map_name"] == "офис"
+    assert node.clients["/rtabmap/rtabmap/load_database"].requests[0].database_path == "/maps/rtabmap.db"
+    assert state.localization_calls == ["localization"]
+    assert store.get_active_map()["name"] == "офис"
+
+
+@pytest.mark.unit
+def test_load_map_name_of_overwritten_map_refuses_and_keeps_active(monkeypatch):
+    """#4392 (HIL 04.11): «загрузи мастерскую», а в базе уже хил-офис - честный отказ, база и активная карта те же."""
+    store = _real_store("мастерская", "хил-офис")
+    state = _FakeMappingState()
+    tool, node = _load_tool(monkeypatch, state=state)
+    tool.waypoint_store = store
+    result = tool.execute(map_name="мастерская")
+    assert result.success is False
+    assert result.data["reason"] == "map_not_stored" and result.data["active_map"] == "хил-офис"
+    assert result.message == "Карту «мастерская» не храню: база карт у меня одна — «хил-офис». Ничего не загружал"
+    assert node.clients["/rtabmap/rtabmap/load_database"].call_count == 0
+    assert state.localization_calls == []
+    assert store.get_active_map()["name"] == "хил-офис"
 
 
 @pytest.mark.unit
 def test_load_map_store_error_fails_and_reloads_nothing(monkeypatch):
-    store = _NamedStore(raises=RuntimeError("база повреждена"))
     tool, node = _load_tool(monkeypatch)
-    tool.waypoint_store = store
+    tool.waypoint_store = _RaisingStore()
     result = tool.execute(map_name="офис")
-    assert result.success is False and result.data == {"outcome": "map_lookup_failed", "reason": "map_lookup_failed"}
+    assert result.success is False and result.data["reason"] == "map_lookup_failed"
     assert "база повреждена" in result.error
     assert node.clients["/rtabmap/rtabmap/load_database"].call_count == 0
 
 
 @pytest.mark.unit
-def test_load_map_without_name_reloads_current_even_if_store_knows_nothing(monkeypatch):
-    store = _NamedStore()
+def test_load_map_named_without_store_refuses(monkeypatch):
+    """Имя не проверить - не говорим «загрузил» (раньше без хранилища грузилась база под любым именем)."""
     tool, node = _load_tool(monkeypatch)
-    tool.waypoint_store = store
+    result = tool.execute(map_name="офис")
+    assert result.success is False and result.data["reason"] == "map_lookup_failed"
+    assert node.clients["/rtabmap/rtabmap/load_database"].call_count == 0
+
+
+@pytest.mark.unit
+def test_load_map_without_name_reloads_current_and_names_it(monkeypatch):
+    tool, node = _load_tool(monkeypatch)
+    tool.waypoint_store = _real_store("двор", "мастерская")
     result = tool.execute()
-    assert result.success is True and store.activated == []
+    assert result.success is True and result.data["map_name"] == "мастерская"
     assert node.clients["/rtabmap/rtabmap/load_database"].call_count == 1
+
+
+@pytest.mark.unit
+def test_load_map_without_name_and_empty_store_is_unnamed(monkeypatch):
+    tool, node = _load_tool(monkeypatch)
+    tool.waypoint_store = _real_store()
+    result = tool.execute()
+    assert result.success is True and result.data["map_name"] is None

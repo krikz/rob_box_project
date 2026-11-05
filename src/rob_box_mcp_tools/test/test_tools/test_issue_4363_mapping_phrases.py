@@ -45,8 +45,8 @@ def test_start_mapping_says_new_map_started(monkeypatch):
 @pytest.mark.unit
 def test_start_mapping_while_mapping_says_map_is_already_being_written():
     """Живой случай #4363: повторный старт во время записи карты - причина вслух, а не «Не могу поехать.»."""
-    state = MappingState()
-    state.set_mapping(map_name="мастерская", map_id="m1")
+    state = MappingState(active_map=lambda: {"map_id": "m1", "name": "мастерская"})
+    state.set_mapping()
     res = _fsm_block(state, "start_mapping")
     assert res.data["reason"] == kn.MAP_ACTIVE_REASON
     assert _spoken("start_mapping", {"map_name": "мастерская"}, res) == (
@@ -55,16 +55,16 @@ def test_start_mapping_while_mapping_says_map_is_already_being_written():
 
 @pytest.mark.unit
 def test_start_mapping_while_unnamed_mapping():
-    state = MappingState()
-    state.set_mapping(map_name=None)
+    state = MappingState(active_map=lambda: {"map_id": "m1", "name": None})
+    state.set_mapping()
     res = _fsm_block(state, "start_mapping")
     assert _spoken("start_mapping", {}, res) == "Карта уже пишется. Когда объедем, скажи «заверши картографирование»."
 
 
 @pytest.mark.unit
 def test_navigation_blocked_by_mapping_names_the_reason():
-    state = MappingState()
-    state.set_mapping(map_name="мастерская")
+    state = MappingState(active_map=lambda: {"map_id": "m1", "name": "мастерская"})
+    state.set_mapping()
     res = _fsm_block(state, "navigate_to_waypoint")
     assert _spoken("navigate_to_waypoint", {"waypoint": "а"}, res) == (
         "Идёт картографирование. Сначала скажи «заверши картографирование».")
@@ -86,9 +86,11 @@ def test_finish_mapping_says_map_saved(monkeypatch):
 
 @pytest.mark.unit
 def test_finish_mapping_names_the_active_map_when_no_name_given(monkeypatch):
-    state = MappingState()
-    state.set_mapping(map_name="мастерская")
+    store = tm._real_store("мастерская")
+    state = MappingState(active_map=store.get_active_map)
+    state.set_mapping()
     tool, _ = tm._finish(monkeypatch, state=state)
+    tool.waypoint_store = store
     res = tool.execute()
     assert _spoken("finish_mapping", {}, res) == "Карта «мастерская» сохранена."
 
@@ -102,9 +104,8 @@ def test_finish_mapping_failure_is_not_motion(monkeypatch):
 
 @pytest.mark.unit
 def test_load_map_says_loaded_and_unknown_map_is_named(monkeypatch):
-    store = tm._NamedStore(known=["офис"])
     tool, _ = tm._load_tool(monkeypatch, state=tm._FakeMappingState())
-    tool.waypoint_store = store
+    tool.waypoint_store = tm._real_store("офис")
     assert _spoken("load_map", {"map_name": "офис"}, tool.execute(map_name="офис")) == "Загрузил карту «офис»."
     assert _spoken("load_map", {"map_name": "дача"}, tool.execute(map_name="дача")) == (
         "Карты «дача» нет, ничего не загружал.")
