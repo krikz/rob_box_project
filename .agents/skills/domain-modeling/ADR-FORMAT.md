@@ -1,9 +1,9 @@
 # ADR Format (Rob Box)
 
 > ⚠️ Rob Box использует СВОЙ формат ADR, отличный от generic-формата этого
-> скилла. Канонические правила — `CONTRIBUTING.md` §«ADR-процесс» и
-> `docs/adr/0030-adr-numbering-sot.md`. Ниже — выжимка; где расходятся —
-> побеждает CONTRIBUTING.md.
+> скилла. Канонические правила — `AGENTS.md` §«ADR» и
+> `docs/adr/AF-0030-adr-numbering-sot.md`. Ниже — выжимка; где расходятся —
+> побеждает AGENTS.md.
 
 ADR живут в `docs/adr/NNNN-<kebab-case-slug>.md` и нумеруются **глобальным
 монотонным счётчиком** (4 цифры). Номер — **следующий свободный после
@@ -45,7 +45,7 @@ next_free="$(printf '%s\n0000\n' "$used" | sort -u | awk 'BEGIN{n=0} {if ($0+0 =
 echo "$next_free"
 ```
 
-Перед `gh pr create` прогони `bash scripts/agent_flow/validate_adr_namespace.sh`
+Перед `gh pr create` прогони `bash scripts/lint/validate_adr_namespace.sh`
 (exit 0 = clean, exit 1 = collision + подсказка с next-free). Переименование
 старого номера — только с согласия товарища Шифу (label `adr-collision-override`
 на issue).
