@@ -101,6 +101,17 @@ def is_bare(rest: str) -> bool:
     return all(w in ADDRESS_FILLER_WORDS for w in _WORD.findall((rest or "").lower()))
 
 
+def _collapse_repeated_wake(rest: str, wake_words: Sequence[str]) -> str:
+    """«Робот робот» (М11 n310): ``strip_wake_word`` снимает только первый вейк, а повтор вейка - тот же голый вызов,
+    не фраза. Если после снятия ВСЕХ вейков остались одни заполнители - фразы нет (``""``), иначе ``rest`` как есть."""
+    left = rest
+    for _ in range(8):
+        if not has_wake_word(left, wake_words):
+            break
+        left = strip_wake_word(left, wake_words)
+    return "" if left != rest and is_bare(left) else rest
+
+
 def _yes_no_in_window(frame: Optional[SceneFrame], text: str, t: float) -> bool:
     """Окно вопроса да/нет открыто и фраза — «да» или «нет». Окно — с конца вопроса, грейс микрофона включён
     (``in_grace``): целое «да»/«нет» эхом «Сейчас играет …, выключить и зачитать?» не бывает, а кадр
@@ -168,6 +179,8 @@ def _decide(heard: Heard, backlog: Optional[Backlog], wake_words: Sequence[str],
             else slipped_wake_rest(text, wake_words, music_playing=music_playing))
     if rest is None:
         return _wakeless_reply(text, heard, question, greeting, ask)
+    if woken:
+        rest = _collapse_repeated_wake(rest, wake_words)
     if is_bare(rest) and _yes_no_in_window(ask, rest, heard.t):  # «Робот, да» — ответ на вопрос, не голый вейк
         return Addressed(rest, PERFORM_ANSWER)
     return _woken(rest, heard, backlog, _command(text, rest, wake_words) if woken else "")
