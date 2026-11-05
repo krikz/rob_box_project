@@ -1936,6 +1936,15 @@ VIOLATION_FOREIGN_NAME = "foreign_name"
 FOREIGN_NAME_HINT = ("имя собеседника не подтверждено (name_state не confirmed): не обращайся к нему по имени — ни по"
                      " чужому из истории разговора (Саша, Борис…), ни по угаданному; говори без обращения. Имя другого"
                      " человека можно назвать, только когда речь О нём")
+#: Регистрация голоса, который уже записан под этим именем (М13 n211, 05.11 13:24:29, run 42034287725): «Робот,
+#: перечисли всех, кого ты сегодня запомнил по голосу» голосом Саши (0.959, ``confirmed``) - модель позвала
+#: ``register_speaker(name="Саша")`` без слов, код сказал «Запомнил тебя, Саша.», вопрос остался без ответа. Имя
+#: подтверждено, в реплике человек себя не называл (``speaker_adapter.known_voice_registers``) - записывать нечего.
+#: Повтор с подсказкой :data:`KNOWN_VOICE_REGISTER_HINT`; повтора нет - такая регистрация не исполняется, говорит код.
+VIOLATION_KNOWN_VOICE_REGISTER = "known_voice_register"
+KNOWN_VOICE_REGISTER_HINT = (f"голос собеседника уже записан под этим именем (speaker.name_state confirmed), а в этой"
+                             f" реплике он себя не называл: {NAME_OWNER_TOOL} ничего не запишет и на реплику не"
+                             f" ответит. Убери {NAME_OWNER_TOOL} и ответь на реплику словами в speech")
 
 
 @dataclass(frozen=True)
@@ -2204,7 +2213,8 @@ INVALID_COMMAND_PHRASES: Mapping[str, str] = MappingProxyType({"too_long": "comm
 #: Нарушения, после которых фраза кода звучит без грусти: модель ответила, только не словами (лицом, анимацией, одним
 #: earcon) - ничего не провалилось («Угу, я тут.» звучало с ``sad``). Провал исполненного действия
 #: грустит по-прежнему: эмоцию фразы решает его исход.
-CALM_VIOLATIONS: Tuple[str, ...] = (VIOLATION_SILENT_ANSWER, VIOLATION_SPEECH_REQUIRED, VIOLATION_SOUND_ANSWER,
+CALM_VIOLATIONS: Tuple[str, ...] = (VIOLATION_KNOWN_VOICE_REGISTER, VIOLATION_SILENT_ANSWER, VIOLATION_SPEECH_REQUIRED,
+                                    VIOLATION_SOUND_ANSWER,
                                     VIOLATION_SOUND_CATALOG, VIOLATION_VOICE_CATALOG)
 #: Особые ключи каталога фраз (не по классу действия): их обязан содержать ``phrases/ru.yaml``.
 PHRASE_KEYS: Tuple[str, ...] = (

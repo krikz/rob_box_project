@@ -440,6 +440,17 @@ def named_self(text: str) -> Optional[str]:
     return rename.name if rename is not None else self_intro_name(text)
 
 
+def known_voice_registers(speaker: Optional[SpeakerRef], text: str, actions: Iterable[Any]) -> Tuple[Any, ...]:
+    """Вызовы ``register_speaker`` команды, которым нечего записать (``knowledge.VIOLATION_KNOWN_VOICE_REGISTER``):
+    имя собеседника подтверждено (``confirmed``), модель регистрирует ЭТО ЖЕ имя, а себя человек в реплике не называл
+    (:func:`named_self`). М13 n211: «перечисли всех, кого ты сегодня запомнил по голосу» голосом Саши →
+    ``register_speaker(name="Саша")`` вместо ответа. Представился («я Саша, чиню технику», акт 2b n701) - вызов законен:
+    владелец голосов ответит «уже знаю»; другое имя - судит гейт регистрации (``not_self_introduction``)."""
+    if speaker is None or speaker.name_state != NAME_CONFIRMED or named_self(text):
+        return ()
+    return tuple(a for a in actions if a.tool == kn.NAME_OWNER_TOOL and same_name(a.args.get("name"), speaker.name))
+
+
 @dataclass(frozen=True)
 class IdentityStep:
     """Что код делает с личностью в этом ходе: ``phrase`` — что робот говорит (0 LLM, ADR-0148); ``rename`` —
