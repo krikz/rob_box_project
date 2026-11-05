@@ -126,7 +126,7 @@ def _walk(schema):
 def test_command_schema_modes():
     schema = kn.command_schema("json")
     assert schema["properties"]["speech"]["maxLength"] == kn.SPEECH_MAX_CHARS
-    assert schema["properties"]["actions"]["maxItems"] == kn.ACTIONS_MAX
+    assert schema["properties"]["actions"]["maxItems"] == kn.ACTIONS_ACCEPT_MAX  # исполняет ход ACTIONS_MAX (#4391)
     face = schema["properties"]["expression"]["properties"]["face"]["properties"]
     assert {k: tuple(v["enum"]) for k, v in face.items() if "enum" in v} == dict(kn.FACE_SCENE_SLOTS)
     for node in _walk(schema):

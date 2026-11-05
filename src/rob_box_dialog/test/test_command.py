@@ -140,7 +140,7 @@ def test_minimax_empty_shapes_normalized():
 
 
 def test_actions_limit_visibility_and_catalog():
-    four = [{"tool": "get_current_time"}] * (kn.ACTIONS_MAX + 1)
+    four = [{"tool": "get_current_time"}] * (kn.ACTIONS_ACCEPT_MAX + 1)
     bad({"actions": four}, "too_many_actions")
     bad({"actions": [{"tool": "search_web", "args": {"query": "x"}}]}, "tool_not_available", tools=["get_current_time"])
     bad({"actions": [{"tool": "speak_text", "args": {"text": "x"}}]}, "speech_channel_tool")
@@ -441,7 +441,7 @@ def test_thousands_of_random_commands_never_raise():
         seen[type(res)] += 1
         if isinstance(res, Command):
             assert res.speech is None or len(res.speech) <= kn.SPEECH_ACCEPT_MAX_CHARS
-            assert len(res.actions) <= kn.ACTIONS_MAX
+            assert len(res.actions) <= kn.ACTIONS_ACCEPT_MAX
             assert all(a.tool in kn.TOOL_CLASSES for a in res.actions)
             assert not (res.perform and res.speech)
             assert parse(cm.to_args(res)) == dataclasses.replace(res, dropped=(), moved=())  # мост → исполнитель

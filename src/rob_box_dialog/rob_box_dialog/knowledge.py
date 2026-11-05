@@ -822,12 +822,16 @@ class ToolGroup:
 
     ``weak`` — общие глаголы («включи», «поставь»): группа по ним одним уступает группам, названным прямо
     («включи голос …» — голос, а не музыка). ``forms`` — слова РОВНО этих форм (не основы): «сет» — музыка, «сеть» — нет.
+    ``verbs`` + ``objects`` — группа названа, когда в реплике есть и глагол, и предмет (основы, в любом месте фразы):
+    «удали ещё точку» - не подстрока «удали точк» (#4391: слово между ними закрывало ``delete_waypoint``).
     """
 
     stems: Tuple[str, ...]
     tools: Tuple[str, ...]
     weak: Tuple[str, ...] = ()
     forms: Tuple[str, ...] = ()
+    verbs: Tuple[str, ...] = ()
+    objects: Tuple[str, ...] = ()
 
 
 #: Глаголы восприятия: «посмотри налево», «глянь что справа», «посмотри на меня» — взгляд лица
@@ -1087,9 +1091,13 @@ TOOL_GROUPS: Mapping[str, ToolGroup] = MappingProxyType({
         ("navigate_to_waypoint", "list_waypoints", "move_direction", "save_waypoint", "stop_navigation",
          "get_current_pose"),
     ),
+    # #4391 (HIL 04.11): «удали ещё точку хил-окно» не совпадало с «удали точк» - срез без delete_waypoint, а модель
+    # сказала «удалена» без тула. Глагол и предмет - по отдельности (``ToolGroup.verbs``/``objects``)
     "waypoints_edit": ToolGroup(
-        ("удали точк", "удали все точк", "очисти точк", "координат"),
+        ("координат",),
         ("delete_waypoint", "clear_waypoints", "navigate_to_coordinates", "list_waypoints"),
+        verbs=("удали", "удаля", "сотри", "стери", "очисти", "убери", "забудь"),
+        objects=("точк",),
     ),
     "mapping": ToolGroup(("карт",),
                          ("start_mapping", "continue_mapping", "finish_mapping", "optimize_map", "load_map")),
@@ -3097,7 +3105,19 @@ SPEECH_MAX_CHARS = 280
 SPEECH_ACCEPT_MAX_CHARS = 350
 #: Имя голоса реплики/сегмента (``Command.voice``, ``Performance.voice_per_segment``) - как ``speak_text.voice``.
 VOICE_MAX_CHARS = 64
+#: Действий команды исполняется за ход не больше стольких (ADR-0150 §4.1: «до трёх действий»): первые по порядку модели.
+#: Остальные код не исполняет и называет сам (``turn.capped``, фраза :data:`ACTIONS_CAPPED_PHRASE`), а не выбрасывает
+#: молча (#4391, HIL 04.11: «удали четыре точки» - модель под потолок схемы урезала просьбу сама, прозвучало «Готово.»).
 ACTIONS_MAX = 3
+#: Сколько действий модель может ПРИСЛАТЬ (``maxItems`` схемы, ``too_many_actions``) - больше исполняемого
+#: :data:`ACTIONS_MAX`, как речь 280/350 (``SPEECH_ACCEPT_MAX_CHARS``): просьба человека доходит до кода целиком, и
+#: лишнее видит код, а не теряет модель. Потолок исполнения этим не поднят.
+ACTIONS_ACCEPT_MAX = 8
+#: Фраза кода о действиях сверх :data:`ACTIONS_MAX`: ``named`` - со слотом ``rest`` (что не сделано, словами аргументов
+#: вызова), без имён - общая.
+ACTIONS_CAPPED_PHRASE = "command.actions_capped"
+ACTIONS_CAPPED_NAMED_PHRASE = "command.actions_capped.named"
+PHRASE_KEYS = PHRASE_KEYS + (ACTIONS_CAPPED_PHRASE, ACTIONS_CAPPED_NAMED_PHRASE)
 PERFORM_KINDS: Tuple[str, ...] = ("rap", "song", "tale", "poem")
 PERFORM_BACKINGS: Tuple[str, ...] = ("beat", "calm", "none")
 #: Подложка выступления по виду (решение Шифу 28.10: «на сказку необязательно музыку включать», «на анекдот
@@ -3376,7 +3396,7 @@ def command_schema(mode: str = "json") -> Dict[str, Any]:
         "voice": {"type": "string", "maxLength": VOICE_MAX_CHARS},
         "ask": _object({"expects": _enum(ASK_EXPECTS), "text": {"type": "string", "maxLength": SPEECH_MAX_CHARS}},
                        required=("expects", "text")),
-        "actions": {"type": "array", "maxItems": ACTIONS_MAX,
+        "actions": {"type": "array", "maxItems": ACTIONS_ACCEPT_MAX,
                     "items": _object({"tool": {"type": "string"}, "args": {"type": "object"}}, required=("tool",))},
         "perform": _object({
             "kind": _enum(PERFORM_KINDS),
@@ -3587,7 +3607,8 @@ def prompt_fragment(schema: Optional[Mapping[str, Any]] = None) -> str:
                    " звучит."),
         ("voice", "- voice: голос этой реплики (имя голоса); голос робота не меняет."),
         ("ask", f"- ask: вопрос с ожиданием ответа, expects ∈ {_set(ASK_EXPECTS)}."),
-        ("actions", f"- actions: ≤ {ACTIONS_MAX} вызовов тулов {{tool, args}}; не больше одного на класс"
+        ("actions", f"- actions: вызовы тулов {{tool, args}} - все, о чём просил человек, не урезай: за ход код"
+                    f" исполнит первые {ACTIONS_MAX}, об остальных скажет сам; не больше одного на класс"
                     f" {' и '.join(SINGLE_ACTION_CLASSES)}."),
         ("perform", f"- perform: выступление kind ∈ {_set(kinds)}, {SEGMENTS_MIN}–{SEGMENTS_MAX} сегментов"
                     f" по ≤ {SEGMENT_MAX_CHARS} символов (куплет или абзац на сегмент), backing ∈ {_set(backings)};"

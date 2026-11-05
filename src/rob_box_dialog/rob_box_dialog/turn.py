@@ -256,6 +256,7 @@ class _Turn:
     unvoiced: Tuple[ActionResult, ...] = ()  # исходы действий хода, о которых код ещё не сказал (Tier-1 стоп молчит)
     seen: Tuple[Mapping[str, Any], ...] = ()  # ``recent_actions`` снимка хода: данные, что модель видела до хода
     read: Tuple[ToolCall, ...] = ()  # исполненные в ходе вызовы ``query``: повтор не исполняется (:func:`unreread`)
+    capped: Tuple[ToolCall, ...] = ()  # вызовы сверх ``ACTIONS_MAX``, не исполненные кодом (:func:`capped`, #4391)
 
 
 def picked_heard(addressed: Addressed) -> Tuple[Tuple[str, str], ...]:
@@ -966,11 +967,43 @@ def considered(engine: "TurnEngine", turn: "_Turn", cmd: Command, last: bool) ->
     состоянии без данных, когда вернуть команду модели уже нельзя (:func:`unnamed_without_retry`,
     :func:`unclaimed_without_retry`)."""
     log, snapshot = engine._log, engine.session.snapshot
-    fresh = counted_in_full(log, turn, unreread(log, turn, unrepeated(log, turn, cmd)))
+    fresh = capped(log, turn, counted_in_full(log, turn, unreread(log, turn, unrepeated(log, turn, cmd))))
     fresh = switched_theme(log, snapshot, turn, fresh)  # просьба сменить тему сета - действием кода (#4347)
     names = foreign_keys(engine.log.window(exclude=turn.turn_id), turn, fresh, snapshot)
     fresh = unnamed_without_retry(log, turn, fresh, names, last)
     return unclaimed_without_retry(log, turn, fresh, snapshot.agent, last), names
+
+
+def capped(log: Any, turn: "_Turn", cmd: Command) -> Command:
+    """Команда не больше ``knowledge.ACTIONS_MAX`` действий: первые по порядку модели исполняются, остальные - нет, и
+    код их запоминает в ходе (``_Turn.capped``), чтобы назвать (:func:`capped_phrase`), а не выбросить молча (#4391,
+    HIL 04.11: четвёртая точка из «удали четыре точки» осталась, а прозвучало «Готово.»). Принять модель может больше
+    (``ACTIONS_ACCEPT_MAX``): потолок исполнения решает код здесь, а не модель урезанием просьбы."""
+    if len(cmd.actions) <= kn.ACTIONS_MAX:
+        return cmd
+    kept, rest = cmd.actions[:kn.ACTIONS_MAX], cmd.actions[kn.ACTIONS_MAX:]
+    turn.capped += rest
+    log.warning(f"{LOG_MARK} действий {len(cmd.actions)} > {kn.ACTIONS_MAX}: не исполнены "
+                f"{[(a.tool, dict(a.args)) for a in rest]} turn={turn.turn_id}")
+    return replace(cmd, actions=kept)
+
+
+def capped_phrase(turn: "_Turn") -> str:
+    """Фраза кода о вызовах сверх потолка (:func:`capped`), которые так и не исполнены в этом ходе (на следующей
+    итерации модель могла прислать их снова - тогда исполнены и не называются): словами аргументов вызова («хил-окно»),
+    у вызова без строкового аргумента - общая фраза. Нечего назвать - ``""``."""
+    left = [c for c in turn.capped if not any(c.tool == a.tool and dict(c.args) == dict(a.args) for a in turn.acted)]
+    if not left:
+        return ""
+    labels = [_call_label(c) for c in left]
+    if all(labels):
+        return phrases.text(kn.ACTIONS_CAPPED_NAMED_PHRASE, rest=", ".join(dict.fromkeys(labels)))
+    return phrases.text(kn.ACTIONS_CAPPED_PHRASE)
+
+
+def _call_label(call: ToolCall) -> str:
+    """Чем вызов назвать человеку: первое непустое строковое значение аргументов (имя точки, запрос); нет - ``""``."""
+    return next((v.strip() for v in call.args.values() if isinstance(v, str) and v.strip()), "")
 
 
 def switched_theme(log: Any, snapshot: SessionSnapshot, turn: "_Turn", cmd: Command) -> Command:
@@ -1982,6 +2015,7 @@ class TurnEngine:
         outcome = _spoken_outcome(cmd, results, self.session.snapshot.agent, self.log.performing())
         if outcome:  # провал - грустно, вопрос тула («Удалить «X»?») - эмоцией вопроса, иначе лицом модели
             self._say(turn, outcome, None, outcome_emotion(results, cmd.expression.emotion))
+        self._say(turn, capped_phrase(turn))  # сверх потолка действий - не молча (#4391)
         cmd = count_edit(self, turn, cmd)  # правка звучащего счёта: продолжение, а не счёт с начала (#4207)
         asked = over_ordered_music(asked_voice(cmd), results)  # голос и подложка, о которых просил человек
         owned, refusal = hand_perform(self._ports, turn.turn_id, turn.epoch, asked, self._log)

@@ -1067,8 +1067,8 @@ def _check_ask(ask: Optional[Ask]) -> None:
 
 
 def _check_actions(actions: Tuple[ToolCall, ...], available: Collection[str], agent: str) -> None:
-    if len(actions) > kn.ACTIONS_MAX:
-        raise _Bad("too_many_actions", f"{len(actions)} > {kn.ACTIONS_MAX}")
+    if len(actions) > kn.ACTIONS_ACCEPT_MAX:  # сверх исполняемого ACTIONS_MAX - не нарушение: лишнее называет ход
+        raise _Bad("too_many_actions", f"{len(actions)} > {kn.ACTIONS_ACCEPT_MAX}")
     per_class: dict = {}
     for call in actions:
         cls = _action_class(call.tool, available, agent)
@@ -1258,7 +1258,7 @@ HINTS: Mapping[str, str] = MappingProxyType({
     kn.VIOLATION_EMPTY_COMMAND: "команда пустая: ответь речью (speech), вопросом (ask), действием (actions) или "
                                 "выступлением (perform); молчать — passed",
     "single_action_class": "в этом классе действий — одно действие за ход",
-    "too_many_actions": f"действий не больше {kn.ACTIONS_MAX}",
+    "too_many_actions": f"действий не больше {kn.ACTIONS_ACCEPT_MAX}",
     "bad_args": "аргументы действия не по схеме тула",
     "tool_not_available": "этого тула в этом ходе нет: возьми из перечня (тулы хода того же класса действия, "
                           "а если класс неизвестен — все тулы хода)",
