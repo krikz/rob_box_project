@@ -1,6 +1,6 @@
 """#4086: каждый голос каста марафона (харнесс e2e) есть в каталоге голосов робота.
 
-Каст живёт в ``map_tts_voice`` харнесса (``.github/workflows/scripts/e2e_voice_lib.sh``, ветка ``minimax``): bash не
+Каст живёт в ``map_tts_voice`` харнесса (``scripts/ci/e2e/e2e_voice_lib.sh``, ветка ``minimax``): bash не
 импортируется из Python, поэтому источник один - эта функция, а каталог (``tts_voice_registry``) сверяется с ней тестом.
 Разойдутся (в харнесс добавили голос, а в каталог робота нет) - «Робот, говори голосом <имя каста>» опять честно ответит
 «такого голоса нет», как 27.10 (dev-0d94634): тест красный раньше живой проверки.
@@ -21,7 +21,7 @@ from pathlib import Path
 import pytest
 
 ROOT = Path(__file__).resolve().parents[3]
-E2E_LIB = ROOT / ".github" / "workflows" / "scripts" / "e2e_voice_lib.sh"
+E2E_LIB = ROOT / "scripts" / "ci" / "e2e" / "e2e_voice_lib.sh"
 REGISTRY = ROOT / "src" / "rob_box_voice" / "rob_box_voice" / "tts_voice_registry.py"
 
 #: Каст #3992 (docs/dialog/role_voices_biometrics_2026-10-26.md) и запасной женский голос #4038.

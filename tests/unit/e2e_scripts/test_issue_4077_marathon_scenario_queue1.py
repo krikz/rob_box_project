@@ -34,7 +34,7 @@ from tests.unit.e2e_scripts.test_issue_2890_act_isolation import (
 
 ROOT = Path(__file__).resolve().parents[3]
 NIGHT = ROOT / ".github" / "e2e" / "scenarios" / "night"
-for _dir in (ROOT / "scripts" / "e2e", ROOT / ".github" / "workflows" / "scripts"):
+for _dir in (ROOT / "scripts" / "e2e", ROOT / "scripts" / "ci" / "e2e"):
     if str(_dir) not in sys.path:
         sys.path.insert(0, str(_dir))
 
@@ -625,10 +625,10 @@ def _marathon_tree(tmp_path: Path) -> Path:
     )
     shutil.copytree(NIGHT, tree / ".github" / "e2e" / "scenarios" / "night")
     # #3971: генератор пишет поля судьи харнесса и сверяет их его таблицами (``e2e_events.COMPARES``)
-    harness = tree / ".github" / "workflows" / "scripts"
+    harness = tree / "scripts" / "ci" / "e2e"
     harness.mkdir(parents=True)
     shutil.copy2(
-        ROOT / ".github" / "workflows" / "scripts" / "e2e_events.py",
+        ROOT / "scripts" / "ci" / "e2e" / "e2e_events.py",
         harness / "e2e_events.py",
     )
     return tree

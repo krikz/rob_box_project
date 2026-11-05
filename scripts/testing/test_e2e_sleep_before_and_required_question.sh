@@ -27,8 +27,8 @@ set -u
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
-HARNESS="$REPO_ROOT/.github/workflows/scripts/e2e_voice_test.sh"
-LIB="$REPO_ROOT/.github/workflows/scripts/e2e_voice_lib.sh"
+HARNESS="$REPO_ROOT/scripts/ci/e2e/e2e_voice_test.sh"
+LIB="$REPO_ROOT/scripts/ci/e2e/e2e_voice_lib.sh"
 
 if [ -t 1 ]; then
     RED=$'\033[0;31m'; GRN=$'\033[0;32m'; NC=$'\033[0m'

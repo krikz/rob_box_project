@@ -31,7 +31,7 @@ from pathlib import Path
 import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
-E2E_SCRIPT = REPO_ROOT / ".github" / "workflows" / "scripts" / "e2e_voice_test.sh"
+E2E_SCRIPT = REPO_ROOT / "scripts" / "ci" / "e2e" / "e2e_voice_test.sh"
 SCENARIOS = REPO_ROOT / ".github" / "e2e" / "scenarios"
 NIGHT = SCENARIOS / "night"
 

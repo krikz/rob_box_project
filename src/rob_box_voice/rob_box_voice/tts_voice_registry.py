@@ -61,7 +61,7 @@ PROVIDER_VOICES: dict[str, list[str]] = {
         "Russian_BrightHeroine", "Russian_AmbitiousWoman",
         "Russian_CrazyQueen", "Russian_PessimisticGirl",         # female
         # голоса каста марафона (#3992): ими харнесс e2e озвучивает людей (``map_tts_voice`` в
-        # ``.github/workflows/scripts/e2e_voice_lib.sh``). В каталоге робота они с #4086: «говори голосом Весельчак»
+        # ``scripts/ci/e2e/e2e_voice_lib.sh``). В каталоге робота они с #4086: «говори голосом Весельчак»
         # без записи здесь честно отвечало «такого голоса нет». Нерусские: русский текст читают с акцентом.
         "English_Jovialman", "English_WiseScholar", "Chinese (Mandarin)_Gentle_Senior",   # male, male, female
         "English_Whispering_girl", "Portuguese_StrictBoss",                               # female, female

@@ -21,7 +21,7 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 SRC = REPO_ROOT / "src"
-E2E_SCRIPT = REPO_ROOT / ".github" / "workflows" / "scripts" / "e2e_voice_test.sh"
+E2E_SCRIPT = REPO_ROOT / "scripts" / "ci" / "e2e" / "e2e_voice_test.sh"
 OWNER_MODULE = SRC / "rob_box_core" / "rob_box_core" / "e2e_mode.py"
 
 _DECLARE_MODE = re.compile(r"""declare_parameter\(\s*["']e2e_mode["']""")

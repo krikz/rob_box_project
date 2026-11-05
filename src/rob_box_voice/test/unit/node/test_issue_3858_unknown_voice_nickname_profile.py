@@ -418,7 +418,7 @@ def test_nameless_match_does_not_count_as_other_name_in_gap_rule():
 
 
 def _verdict_names(line: str) -> list[str]:
-    """Тот же регэксп, что у харнесса (.github/workflows/scripts/e2e_tool_match.py::_IDENTIFY_VERDICT_RE)."""
+    """Тот же регэксп, что у харнесса (scripts/ci/e2e/e2e_tool_match.py::_IDENTIFY_VERDICT_RE)."""
     import re
 
     return re.findall(r"(?:👤\s*)?Speaker:\s*['\"]([^'\"]+)['\"]", line)

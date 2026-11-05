@@ -10,12 +10,12 @@ name: "G: Check Container Status Tests"
 # «робот лежит».
 #
 # Фикс (двухзамерная проверка через `docker inspect`) вынесен в скрипт
-# .github/scripts/check_container_status.sh (коммиты 70e863026 + 7f8939d28
+# scripts/ci/check_container_status.sh (коммиты 70e863026 + 7f8939d28
 # в develop, плюс эта обвязка для тестируемости).
 #
 # Этот workflow прогоняет регрессионный bash-тест на любом pull_request,
-# который меняет .github/scripts/check_container_status.sh или тест
-# .github/scripts/tests/test_check_container_status.sh. Защита от
+# который меняет scripts/ci/check_container_status.sh или тест
+# scripts/ci/tests/test_check_container_status.sh. Защита от
 # регрессии: если кто-то снова упростит проверку до «один снимок и
 # State != running» — CI красный.
 on:
@@ -24,8 +24,8 @@ on:
       - develop
       - main
     paths:
-      - '.github/scripts/check_container_status.sh'
-      - '.github/scripts/tests/test_check_container_status.sh'
+      - 'scripts/ci/check_container_status.sh'
+      - 'scripts/ci/tests/test_check_container_status.sh'
   workflow_dispatch:
 
 permissions:
@@ -57,10 +57,10 @@ jobs:
           # SC2030/SC2031 — ложные для подоболочек (нет в нашем коде, но
           # shellcheck старой версии ругается на subshell-сценарии).
           shellcheck -e SC2086,SC2030,SC2031 \
-            .github/scripts/check_container_status.sh \
-            .github/scripts/tests/test_check_container_status.sh
+            scripts/ci/check_container_status.sh \
+            scripts/ci/tests/test_check_container_status.sh
 
       - name: Run regression test
         run: |
           set -euo pipefail
-          bash .github/scripts/tests/test_check_container_status.sh
+          bash scripts/ci/tests/test_check_container_status.sh

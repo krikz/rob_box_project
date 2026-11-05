@@ -1,4 +1,4 @@
-"""Тесты .github/scripts/check_container_logs.py (шаг «[<Pi>] Check Container Logs»).
+"""Тесты scripts/ci/check_container_logs.py (шаг «[<Pi>] Check Container Logs»).
 
 SSH подменяется функцией-раннером: тест видит, какие команды уходят на Pi, и
 отдаёт заранее заданные «логи». Фильтры critical/warning — настоящие, из

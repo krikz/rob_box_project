@@ -9,7 +9,7 @@
                                    spoken='Хм, тут пустовато — …'
     1790212639.05 [tts_node]      🔊 TTS: text='Хм, тут пустовато — …'
 
-Харнесс (``check_cycle()``, ``.github/workflows/scripts/e2e_voice_test.sh``
+Харнесс (``check_cycle()``, ``scripts/ci/e2e/e2e_voice_test.sh``
 ~строка 1439) трижды написал ``нет акцепта`` и переиграл реплику n704, хотя
 ``docker logs voice-assistant`` за то же окно показывают полный цикл все три
 раза (таймстемпы согласуются с PLAY attempt 1/2/3 из лога харнесса run
@@ -49,7 +49,7 @@ from pathlib import Path
 import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
-SCRIPTS_DIR = REPO_ROOT / ".github" / "workflows" / "scripts"
+SCRIPTS_DIR = REPO_ROOT / "scripts" / "ci" / "e2e"
 E2E_SCRIPT = SCRIPTS_DIR / "e2e_voice_test.sh"
 LIB = SCRIPTS_DIR / "e2e_voice_lib.sh"
 

@@ -18,7 +18,7 @@ from typing import Any, Dict
 import pytest
 
 ROOT = Path(__file__).resolve().parents[3]
-for _dir in (ROOT / "scripts" / "e2e", ROOT / ".github" / "workflows" / "scripts"):
+for _dir in (ROOT / "scripts" / "e2e", ROOT / "scripts" / "ci" / "e2e"):
     if str(_dir) not in sys.path:
         sys.path.insert(0, str(_dir))
 
@@ -26,7 +26,7 @@ import e2e_events as eev  # noqa: E402
 import e2e_tool_match as etm  # noqa: E402
 import gen_night_marathon as gen  # noqa: E402
 
-EVENTS = ROOT / ".github" / "workflows" / "scripts" / "e2e_events.py"
+EVENTS = ROOT / "scripts" / "ci" / "e2e" / "e2e_events.py"
 NIGHT = ROOT / ".github" / "e2e" / "scenarios" / "night"
 DONE = "📊 [turn] turn_id=t1 epoch=1 agent=main stage=done status=finished latency_ms=900 llm_calls=2 llm_provider=x tokens=10"
 

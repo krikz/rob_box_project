@@ -1,6 +1,6 @@
 #!/bin/bash
 # ⚠️ DEPRECATED (11.08): заменён атомарным e2e_voice_test.sh — см.
-#   .github/workflows/scripts/README.md и docs/design/E2E_TESTING_DESIGN_v2.md §A.10.
+#   scripts/ci/e2e/README.md и docs/design/E2E_TESTING_DESIGN_v2.md §A.10.
 #   Оставлен для истории и дебага. Не запускай напрямую: даёт ложные PASS из-за
 #   приветствия (TTS finished совпадает с приветствием до команды). Держит
 #   совместимость только для старых e2e-round'ов, если атомарный харнесс отстал.

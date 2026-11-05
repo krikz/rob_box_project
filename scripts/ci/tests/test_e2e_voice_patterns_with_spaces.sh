@@ -33,7 +33,7 @@ set -u
 
 TEST_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO="$(cd "$TEST_DIR/../../.." && pwd)"
-HARNESS="${HARNESS:-$REPO/.github/workflows/scripts/e2e_voice_test.sh}"
+HARNESS="${HARNESS:-$REPO/scripts/ci/e2e/e2e_voice_test.sh}"
 
 [ -f "$HARNESS" ] || { echo "FAIL: $HARNESS not found"; exit 1; }
 

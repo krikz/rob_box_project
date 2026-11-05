@@ -46,7 +46,7 @@ import pytest
 # tests/.github/... которого не существует. Шифу в ретро не указывал
 # на это явно, но модуль e2e_tool_match.py не находится → ImportError.
 REPO_ROOT = Path(__file__).resolve().parents[3]
-SCRIPTS = REPO_ROOT / ".github" / "workflows" / "scripts"
+SCRIPTS = REPO_ROOT / "scripts" / "ci" / "e2e"
 sys.path.insert(0, str(SCRIPTS))
 
 from e2e_tool_match import identify_failures  # noqa: E402

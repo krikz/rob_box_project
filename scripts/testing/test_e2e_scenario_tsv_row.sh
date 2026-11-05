@@ -39,7 +39,7 @@ set -u
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
-LIB="$REPO_ROOT/.github/workflows/scripts/e2e_voice_lib.sh"
+LIB="$REPO_ROOT/scripts/ci/e2e/e2e_voice_lib.sh"
 ACT2="$REPO_ROOT/.github/e2e/scenarios/night/night_marathon_act2_acquaintance_v1.json"
 ACT2B="$REPO_ROOT/.github/e2e/scenarios/night/night_marathon_act2b_identity_question_v1.json"
 

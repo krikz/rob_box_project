@@ -15,7 +15,7 @@ set -u
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
-LIB="$REPO_ROOT/.github/workflows/scripts/e2e_voice_lib.sh"
+LIB="$REPO_ROOT/scripts/ci/e2e/e2e_voice_lib.sh"
 
 # Цвета (отключаются если не TTY)
 if [ -t 1 ]; then

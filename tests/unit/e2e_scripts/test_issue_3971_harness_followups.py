@@ -32,7 +32,7 @@ from tests.unit.e2e_scripts.test_issue_3857_run_step import extract_function
 from tests.unit.e2e_scripts.test_issue_3989_recover import BOTH, STEP, _act_start, _run_step
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
-SCRIPTS_DIR = REPO_ROOT / ".github" / "workflows" / "scripts"
+SCRIPTS_DIR = REPO_ROOT / "scripts" / "ci" / "e2e"
 LIB = SCRIPTS_DIR / "e2e_voice_lib.sh"
 EVENTS = SCRIPTS_DIR / "e2e_events.py"
 FAKE = Path(__file__).resolve().parent / "fake_robot_ssh.sh"

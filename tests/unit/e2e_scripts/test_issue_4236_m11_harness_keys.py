@@ -6,7 +6,7 @@ import sys
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.abspath(os.path.join(HERE, "..", "..", ".."))
 NIGHT = os.path.join(ROOT, ".github", "e2e", "scenarios", "night")
-sys.path.insert(0, os.path.join(ROOT, ".github", "workflows", "scripts"))
+sys.path.insert(0, os.path.join(ROOT, "scripts", "ci", "e2e"))
 import e2e_events as eev  # noqa: E402
 
 

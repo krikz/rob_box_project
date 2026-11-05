@@ -1046,9 +1046,9 @@ jobs:
       - name: "[Vision Pi] Check Container Status"
         if: '!inputs.dry_run'
         id: vision_status
-        # Source-of-truth для логики вынесен в .github/scripts/check_container_status.sh
+        # Source-of-truth для логики вынесен в scripts/ci/check_container_status.sh
         # (рефакторинг после #2122 — ретро run 34153246013). Скрипт покрыт
-        # регрессионным тестом .github/scripts/tests/test_check_container_status.sh
+        # регрессионным тестом scripts/ci/tests/test_check_container_status.sh
         # (14 ассертов, 7 сценариев) и CI G-Check-Container-Status-Tests. Здесь
         # только тонкий wrapper: выставляем env и парсим JSON-результат.
         run: |
@@ -1071,7 +1071,7 @@ jobs:
           FINDINGS_FILE="$VISION_FINDINGS_FILE" \
           ENVIRONMENT="${{ inputs.environment }}" \
           SCOPE=vision \
-            bash .github/scripts/check_container_status.sh > /tmp/vision_status.json
+            bash scripts/ci/check_container_status.sh > /tmp/vision_status.json
 
           # Гарантируем наличие файла (на случай если скрипт упал до записи)
           touch vision_status_summary.txt
@@ -1115,7 +1115,7 @@ jobs:
           ENVIRONMENT="${{ inputs.environment }}" \
           SCOPE=sound \
           EXPECTED_CONTAINERS="zenoh-router-sound supercollider voice-assistant avatar-supervisor avatar-arbiter rob-box-quest telegram-bot" \
-            bash .github/scripts/check_container_status.sh > /tmp/sound_status.json
+            bash scripts/ci/check_container_status.sh > /tmp/sound_status.json
 
           touch sound_status_summary.txt
 
@@ -1138,7 +1138,7 @@ jobs:
         id: main_status
         # См. комментарий в "[Vision Pi] Check Container Status" — та же
         # логика (двухзамерная проверка через docker inspect, см. скрипт
-        # .github/scripts/check_container_status.sh), но для Main Pi.
+        # scripts/ci/check_container_status.sh), но для Main Pi.
         run: |
           echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
           echo "🔍 Checking Main Pi container status..."
@@ -1155,7 +1155,7 @@ jobs:
           FINDINGS_FILE="$MAIN_FINDINGS_FILE" \
           ENVIRONMENT="${{ inputs.environment }}" \
           SCOPE=main \
-            bash .github/scripts/check_container_status.sh > /tmp/main_status.json
+            bash scripts/ci/check_container_status.sh > /tmp/main_status.json
 
           touch main_status_summary.txt
 
@@ -1176,9 +1176,9 @@ jobs:
       - name: "[Vision Pi] Check Container Logs"
         if: '!inputs.dry_run'
         id: vision_logs
-        # Логика вынесена в .github/scripts/check_container_logs.py (одна на все
+        # Логика вынесена в scripts/ci/check_container_logs.py (одна на все
         # три Pi; раньше ~110 строк bash копировались на каждый узел, ADR-0159).
-        # Тесты: .github/scripts/tests/test_check_container_logs.py.
+        # Тесты: scripts/ci/tests/test_check_container_logs.py.
         run: |
           echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
           echo "📋 Checking Vision Pi container logs..."
@@ -1193,14 +1193,14 @@ jobs:
           ENVIRONMENT="${{ inputs.environment }}" \
           FINDINGS_FILE="$VISION_FINDINGS_FILE" \
           LOGS_FILE=vision_logs.txt \
-            python3 .github/scripts/check_container_logs.py
+            python3 scripts/ci/check_container_logs.py
 
       - name: "[Sound Pi] Check Container Logs"
         if: '!inputs.dry_run'
         id: sound_logs
-        # Логика вынесена в .github/scripts/check_container_logs.py (одна на все
+        # Логика вынесена в scripts/ci/check_container_logs.py (одна на все
         # три Pi; раньше ~110 строк bash копировались на каждый узел, ADR-0159).
-        # Тесты: .github/scripts/tests/test_check_container_logs.py.
+        # Тесты: scripts/ci/tests/test_check_container_logs.py.
         run: |
           echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
           echo "📋 Checking Sound Pi container logs..."
@@ -1215,14 +1215,14 @@ jobs:
           ENVIRONMENT="${{ inputs.environment }}" \
           FINDINGS_FILE="$SOUND_FINDINGS_FILE" \
           LOGS_FILE=sound_logs.txt \
-            python3 .github/scripts/check_container_logs.py
+            python3 scripts/ci/check_container_logs.py
 
       - name: "[Main Pi] Check Container Logs"
         if: '!inputs.dry_run'
         id: main_logs
-        # Логика вынесена в .github/scripts/check_container_logs.py (одна на все
+        # Логика вынесена в scripts/ci/check_container_logs.py (одна на все
         # три Pi; раньше ~110 строк bash копировались на каждый узел, ADR-0159).
-        # Тесты: .github/scripts/tests/test_check_container_logs.py.
+        # Тесты: scripts/ci/tests/test_check_container_logs.py.
         run: |
           echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
           echo "📋 Checking Main Pi container logs..."
@@ -1237,7 +1237,7 @@ jobs:
           ENVIRONMENT="${{ inputs.environment }}" \
           FINDINGS_FILE="$MAIN_FINDINGS_FILE" \
           LOGS_FILE=main_logs.txt \
-            python3 .github/scripts/check_container_logs.py
+            python3 scripts/ci/check_container_logs.py
 
       - name: "[Vision Pi] Check ROS2 Topics"
         if: '!inputs.dry_run'
@@ -1429,7 +1429,7 @@ jobs:
           OPEN_ISSUES_FILE="${RUNNER_TEMP}/open_deployment_issues.json"
           NEW_ISSUES_FILE="${RUNNER_TEMP}/new_deployment_issues.json"
 
-          python3 .github/scripts/deployment_issue_dedup.py prepare \
+          python3 scripts/ci/deployment_issue_dedup.py prepare \
             --findings-file "$VISION_FINDINGS_FILE" \
             --findings-file "$SOUND_FINDINGS_FILE" \
             --findings-file "$MAIN_FINDINGS_FILE" \
@@ -1449,7 +1449,7 @@ jobs:
             --json number,title,body,url \
             > "$OPEN_ISSUES_FILE"
 
-          python3 .github/scripts/deployment_issue_dedup.py filter \
+          python3 scripts/ci/deployment_issue_dedup.py filter \
             --candidates-file "$CANDIDATES_FILE" \
             --issues-file "$OPEN_ISSUES_FILE" \
             > "$NEW_ISSUES_FILE"

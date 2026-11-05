@@ -24,7 +24,7 @@ set -u
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
-LIB="$REPO_ROOT/.github/workflows/scripts/e2e_voice_lib.sh"
+LIB="$REPO_ROOT/scripts/ci/e2e/e2e_voice_lib.sh"
 
 [ -f "$LIB" ] || { printf 'FATAL: отсутствует %s\n' "$LIB"; exit 1; }
 # shellcheck disable=SC1090

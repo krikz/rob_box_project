@@ -92,7 +92,7 @@ STT услышал «Робби» вместо wake-слова, тёрн не д
 PR #2791 (от 22.09) добавил `must_not_say` поле в acceptance.json. Семантика:
 
 ```python
-# .github/workflows/scripts/e2e_voice_test.sh:2096-2104
+# scripts/ci/e2e/e2e_voice_test.sh:2096-2104
 must_not_say = acc.get("must_not_say", []) or []  # НЕ должно ЗВУЧАТЬ
 # ... scoped to robot_speech() — только spoken=/speak_text/TTS text
 forbidden_said = [k for k in must_not_say if _keyword_hit(k)]
@@ -302,7 +302,7 @@ else:
 
 - `docs/adr/0127-speaker-register-name-conflict.md` — прецедент false-positive, не менять.
 - `docs/adr/0119-encounter-seam-current-speaker-id-sso.md` — SSO спикера, не менять.
-- `.github/workflows/scripts/e2e_voice_test.sh` — `must_not_say` уже работает (issue #2791).
+- `scripts/ci/e2e/e2e_voice_test.sh` — `must_not_say` уже работает (issue #2791).
 - `src/rob_box_voice/rob_box_voice/dialogue_node.py:_prepare_user_input_context` — PR #2789 уже починил бэклог-утечку.
 
 ---

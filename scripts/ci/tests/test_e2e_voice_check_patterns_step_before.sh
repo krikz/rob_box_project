@@ -2,7 +2,7 @@
 # ============================================================================
 # test_e2e_voice_check_patterns_step_before.sh — ретро t_27c7e7f7 (issue #1771)
 #
-# Проверяет что в .github/workflows/scripts/e2e_voice_test.sh:
+# Проверяет что в scripts/ci/e2e/e2e_voice_test.sh:
 #   1) check_patterns вызывается с $STEP_BEFORE, а не с фиксированным
 #      $(date -u -d '-6 minutes') — иначе multi-step сценарии (>6 мин)
 #      ложно фейлятся (matcher читает логи РАНЕЕ чем произошёл шаг).
@@ -23,7 +23,7 @@ set -euo pipefail
 TEST_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # tests/ → scripts/ci/tests/ → scripts/ci/ → scripts/ → REPO_ROOT
 REPO_ROOT="$(cd "$TEST_DIR/../../.." && pwd)"
-SCRIPT="$REPO_ROOT/.github/workflows/scripts/e2e_voice_test.sh"
+SCRIPT="$REPO_ROOT/scripts/ci/e2e/e2e_voice_test.sh"
 
 TESTS_TOTAL=0
 TESTS_PASSED=0

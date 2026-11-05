@@ -112,7 +112,7 @@ ReSpeaker 4 Mic Array (`2886:0018`, ALSA card `ArrayUAC10`) — **и микро�
 | `L-Build Vision Pi Services.yml` / `L-Build Main Pi Services.yml` | по workflow на Pi, матрица из манифеста (`gen_build_matrix.py`); `L-Build-All-Services.yml` вызывает оба |
 | `L-Build Single Service.yml` | `pi_type: [main, vision]`, `docker/${PI_TYPE}/.image-versions.${TAG}`, ветки `ci/image-versions-{pi_type}` |
 | `L-Deploy and Verify.yml` | `vision_pi_ip=10.1.1.11`, `main_pi_ip=10.1.1.10` в `case environment`; ~20 шагов `[Vision Pi] …` / `[Main Pi] …` копипастой; ресурсный пак (`apply_resource_pack.sh --only …models/samples/scores`) гоняется **на Vision Pi** |
-| `.github/scripts/check_container_status.sh` | уже параметризован `PI_HOST`/`PI_COMPOSE_DIR`/`SCOPE` — третий вызов дёшев |
+| `scripts/ci/check_container_status.sh` | уже параметризован `PI_HOST`/`PI_COMPOSE_DIR`/`SCOPE` — третий вызов дёшев |
 | `G-Validate Docker Compose.yml` | два пути compose захардкожены (`paths:` и два job'а) |
 | `L-E2E Voice Test.yml` | `ros2@10.1.1.21` в 5 местах (190, 207, 209, 376, 478) — это **хост voice-assistant** |
 | `agent-flow-e2e-process.sh:254` (`E2E_ROBOT_HOST=10.1.1.21`), `padavan-step4-voice-smoke.sh:77`, `watchdog-tts.sh:32`, `robot_dev/hotpatch.sh:17` (`ROBOT=ros2@10.1.1.21`), `agent-flow-deploy-sweep.sh:47–48` | дефолты «voice-assistant живёт на 10.1.1.21» |

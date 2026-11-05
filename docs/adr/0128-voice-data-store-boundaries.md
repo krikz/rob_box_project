@@ -13,7 +13,7 @@
 
 За 12 часов трижды: копия `speakers.db.bak-<UTC>Z` + очистка таблицы `speakers`. Профиль живого человека, зарегистрированный в 10:03:26, стёрт в 10:22:00 — за 13 секунд до старта акта 2 ночного марафона («Знакомство и прогрев голосов»), которому по сценарию нужна пустая база (иначе шаг `n211_who_do_you_know` не проходит детерминированно).
 
-Логика бэкапа+очистки **не найдена ни в одном месте репозитория** — проверено `scripts/e2e/run_night_marathon.sh`, `scripts/e2e/gen_night_marathon.py`, `.github/workflows/scripts/e2e_voice_test.sh`, `e2e_voice_lib.sh`, `.github/workflows/L-E2E Voice Test.yml`, `scripts/agent_flow/*`, а также все ветки, где эти файлы отличаются от develop. Формат имени `.bak-%Y%m%dT%H%M%SZ` не встречается в репозитории вообще.
+Логика бэкапа+очистки **не найдена ни в одном месте репозитория** — проверено `scripts/e2e/run_night_marathon.sh`, `scripts/e2e/gen_night_marathon.py`, `scripts/ci/e2e/e2e_voice_test.sh`, `e2e_voice_lib.sh`, `.github/workflows/L-E2E Voice Test.yml`, `scripts/agent_flow/*`, а также все ветки, где эти файлы отличаются от develop. Формат имени `.bak-%Y%m%dT%H%M%SZ` не встречается в репозитории вообще.
 
 Подтверждено владельцем в комментарии к issue #2750 (22.09, 07:56 UTC): чистка шла вручную по ssh перед каждым прогоном акта 2, готовя чистую базу для проверки фикса ADR-0127 / PR #2743 —
 
@@ -54,7 +54,7 @@ Definition of Done issue #2000 («`voice_memory.db` больше не пишет
 
 ### 2.1 Почему параметр, а не топик (ретро по ходу ревью)
 
-Первая версия этой правки заводила топик `/voice/speaker/e2e_mode` (`std_msgs/String`, JSON `{"enabled": true|false}`). CI (`Python Code Quality` → `scripts/lint/seam_without_consumer.py`, ADR-0021, issue #2118) справедливо пометил его новым швом без потребителя: паблишер живёт в `.github/workflows/scripts/e2e_voice_test.sh` — bash, а сканер топиков смотрит только Python под `src/`, так что для него это подписчик без единого паблишера в репозитории.
+Первая версия этой правки заводила топик `/voice/speaker/e2e_mode` (`std_msgs/String`, JSON `{"enabled": true|false}`). CI (`Python Code Quality` → `scripts/lint/seam_without_consumer.py`, ADR-0021, issue #2118) справедливо пометил его новым швом без потребителя: паблишер живёт в `scripts/ci/e2e/e2e_voice_test.sh` — bash, а сканер топиков смотрит только Python под `src/`, так что для него это подписчик без единого паблишера в репозитории.
 
 Сторож не единственная причина отказаться от топика — он лишь указал на настоящую проблему: топик, которым можно **стереть БД одним fire-and-forget сообщением**, без подтверждения, без ответа, без встроенной авторизации («кто угодно опубликовавший в него — обнуляет базу») — конструкция слабее, чем нужно для операции такого веса. У репозитория уже есть протоптанный путь для ровно этого класса задач — runtime-параметр с валидирующим колбэком, используемый `dialogue_node` (`barge_in_policy`, докстринг `run_night_marathon.sh`: `ssh <robot> 'ros2 param set /dialogue_node barge_in_policy classify'`) и `tts_node` (`volume_db`, voice-параметры, `pregenerate_enabled` — все меняются `ros2 param set` и подхватываются синхронно в `parameters_callback`). `speaker_id_node.e2e_mode` следует тому же паттерну:
 
@@ -72,7 +72,7 @@ Definition of Done issue #2000 («`voice_memory.db` больше не пишет
 
 Важный нюанс (учтён по ходу ревью): переход **true→true** (повторный `ros2 param set ... e2e_mode true` тем же значением, например при ретрае шага сценария посреди акта) НЕ чистит базу второй раз — иначе повторный вызов обнулил бы уже накопленные за этот же прогон регистрации. Чистка — только на фактическом переключении режима, не на каждом `set_parameters` с тем же значением.
 
-Владелец параметра — `.github/workflows/scripts/e2e_voice_test.sh`: перед сценарием `night_marathon_act2_acquaintance_*` выполняет `ros2 param set /speaker_id_node e2e_mode true`, в `trap ... EXIT` (гарантированно, что бы ни случилось со сценарием) — `e2e_mode false`. Боевая `speakers.db` при этом физически не открывается на запись ни на секунду.
+Владелец параметра — `scripts/ci/e2e/e2e_voice_test.sh`: перед сценарием `night_marathon_act2_acquaintance_*` выполняет `ros2 param set /speaker_id_node e2e_mode true`, в `trap ... EXIT` (гарантированно, что бы ни случилось со сценарием) — `e2e_mode false`. Боевая `speakers.db` при этом физически не открывается на запись ни на секунду.
 
 **Обновление #3904 (23.10.2026) — один владелец режима e2e на весь марафон.** Режим жил тремя флагами (`speaker_id_node.e2e_mode`, `mcp_server.e2e_mode`, `dialog_node.e2e_mode`) с условиями включения и временем жизни «один акт»; наследующий акт 3 пошёл на боевую `speakers.db`. Теперь переключатель один — `/speaker_id_node e2e_mode`; нода публикует режим в latched `/e2e/mode` (`rob_box_core/e2e_mode.py`), `mcp_server` — последователь без своего параметра (применённое видно в `e2e_mode_applied`), у `dialog_node` журнал ходов включает сам непустой `e2e_db_path` (это не БД `/data`). Харнесс снимает режим не в trap каждого акта: акт, за которым идёт наследующий (решает `run_night_marathon.sh`), оставляет режим и ставит владельцу `e2e_release_after_s`; наследующий акт подхватывает режим без стирания, иначе `E2E_PRECONDITION speaker_db=live` + `E2E_FATAL`.
 

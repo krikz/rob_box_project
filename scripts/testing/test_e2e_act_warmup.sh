@@ -4,8 +4,8 @@
 # Запуск: bash scripts/testing/test_e2e_act_warmup.sh   Exit: 0 = PASS, N = число упавших.
 set -u
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-LIB="$SCRIPT_DIR/../../.github/workflows/scripts/e2e_voice_lib.sh"
-HARNESS="$SCRIPT_DIR/../../.github/workflows/scripts/e2e_voice_test.sh"
+LIB="$SCRIPT_DIR/../../scripts/ci/e2e/e2e_voice_lib.sh"
+HARNESS="$SCRIPT_DIR/../../scripts/ci/e2e/e2e_voice_test.sh"
 [ -f "$LIB" ] || { echo "нет $LIB"; exit 1; }
 # shellcheck disable=SC1090
 source "$LIB" 2>/dev/null

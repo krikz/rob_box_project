@@ -4,7 +4,7 @@
 #
 # Баг (issue #2805, runs 22.09–24.09.2026 — #2750/#2763/#2764/#2781)
 # ----------------------------------------------------------------
-# robot_ros() в .github/workflows/scripts/e2e_voice_test.sh:355-357 был:
+# robot_ros() в scripts/ci/e2e/e2e_voice_test.sh:355-357 был:
 #
 #     robot_ros() {
 #         ${ROBOT_SSH} "docker exec voice-assistant bash -lc '... $*'"
@@ -42,7 +42,7 @@ set -e
 
 TEST_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO="$(cd "$TEST_DIR/../../.." && pwd)"
-HARNESS="${HARNESS:-$REPO/.github/workflows/scripts/e2e_voice_test.sh}"
+HARNESS="${HARNESS:-$REPO/scripts/ci/e2e/e2e_voice_test.sh}"
 
 [ -f "$HARNESS" ] || { echo "FAIL: $HARNESS not found"; exit 1; }
 
