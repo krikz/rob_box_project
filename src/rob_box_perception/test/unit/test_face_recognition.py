@@ -117,6 +117,8 @@ class FakeStore:
         self.attach_name_calls: List[Any] = []
         self.attach_name_return: bool = True
         self.find_by_speaker_map: Dict[str, str] = {}
+        self.binding_map: Dict[str, Any] = {}
+        self.seen_person_ids: set = set()  # записи, которые «узнал» identify (галерея people())
         self.stats_return: Dict[str, Any] = {'people': 0}
         self.stats_raises: bool = False
 
@@ -136,6 +138,18 @@ class FakeStore:
 
     def find_by_speaker(self, speaker_id: str) -> Optional[str]:
         return self.find_by_speaker_map.get(speaker_id)
+
+    def people(self) -> List[Dict[str, Any]]:
+        """Записи галереи: ``binding_map`` — ``person_id → (имя, speaker_id)``; по умолчанию любая встреченная
+        запись безымянная и без голоса (issue #4357)."""
+        known = {pid for pid in self.binding_map}
+        known.update(c[0] for c in self.attach_name_calls)
+        known.update(self.seen_person_ids)
+        return [
+            {'person_id': pid, 'name': self.binding_map.get(pid, (None, None))[0],
+             'speaker_id': self.binding_map.get(pid, (None, None))[1]}
+            for pid in sorted(known)
+        ]
 
     def stats(self) -> Dict[str, Any]:
         if self.stats_raises:
@@ -474,17 +488,152 @@ def _prime_last_frame(rec: FaceRecognizer, store: FakeStore, person_ids: List[Op
     store.identify = original_identify  # type: ignore[method-assign]
 
 
-def test_voice_merge_single_known_face_attaches_name():
+def _speaking_landmarks(cx: float, cy: float, mouth_half: float) -> List[float]:
+    """5 точек лица (глаза, нос, углы рта), normalized: глаза на 0.08 друг от друга, рот шириной 2*mouth_half."""
+    return [
+        cx - 0.04, cy - 0.03, cx + 0.04, cy - 0.03, cx, cy,
+        cx - mouth_half, cy + 0.04, cx + mouth_half, cy + 0.04,
+    ]
+
+
+#: Ширина половины рта по кадрам: говорит — гуляет на десятки процентов; фото — стоит (issue #4357).
+SPEAKING_MOUTH = (0.025, 0.035, 0.028, 0.038, 0.026, 0.034)
+PHOTO_MOUTH = (0.030,) * 6
+
+
+def _speak_window(rec: FaceRecognizer, store: FakeStore, person_id: Optional[str], t0: float,
+                  mouth=SPEAKING_MOUTH, landmarks: bool = True) -> float:
+    """Окно фразы: кадры раз в 0.5 с, одно лицо ``person_id`` с ртом ``mouth``; вернуть время конца окна."""
+    frame = make_frame()
+    original_identify = store.identify
+
+    def fake_identify(embedding):
+        store.identify_calls.append(embedding)
+        return make_match(person_id=person_id) if person_id is not None else None
+
+    if person_id is not None:
+        store.seen_person_ids.add(person_id)
+    store.identify = fake_identify  # type: ignore[method-assign]
+    ts = t0
+    for half in mouth:
+        det = make_detection(cx=0.5, w=0.2, h=0.2)
+        det['landmarks'] = _speaking_landmarks(0.5, 0.5, half) if landmarks else None
+        rec.process([det], frame, now=ts)
+        ts += 0.5
+    store.identify = original_identify  # type: ignore[method-assign]
+    return ts
+
+
+def test_voice_merge_speaking_face_attaches_name_after_three_phrases():
+    """Issue #4357: одно лицо всё окно, рот двигался, три фразы подряд — только тогда имя."""
     tracker = FaceTracker(min_track_sec=1000.0)  # промоушн не мешает тесту
     store = FakeStore()
     rec = FaceRecognizer(embedder=FakeEmbedder(), store=store, tracker=tracker, voice_merge_window_sec=6.0)
 
-    _prime_last_frame(rec, store, ['p1'], now=10.0)
+    results = []
+    for t0 in (10.0, 20.0, 30.0):
+        end = _speak_window(rec, store, 'p1', t0)
+        results.append(rec.note_voice_identification(speaker_id='spk-1', name='Денис', now=end))
 
-    result = rec.note_voice_identification(speaker_id='spk-1', name='Денис', now=11.0)
-
-    assert result == 'p1'
+    assert results == [None, None, 'p1']
     assert store.attach_name_calls == [('p1', 'Денис', 'spk-1')]
+    assert rec.stats()['voice_merge_pending'] == 2
+
+
+def test_voice_merge_photo_with_still_mouth_never_gets_name():
+    """Живой случай 04.11 (#4357): фото на кресле — единственное лицо, голос Дэнчика рядом. Рот фото не меняется —
+    имя не привязывается, сколько бы фраз ни прозвучало."""
+    tracker = FaceTracker(min_track_sec=1000.0)
+    store = FakeStore()
+    log = RecordingLog()
+    rec = FaceRecognizer(embedder=FakeEmbedder(), store=store, tracker=tracker, log_fn=log)
+
+    for t0 in (10.0, 20.0, 30.0, 40.0, 50.0):
+        end = _speak_window(rec, store, '566331d3', t0, mouth=PHOTO_MOUTH)
+        assert rec.note_voice_identification(speaker_id='1ae4b0ac', name='Дэнчик', now=end) is None
+
+    assert store.attach_name_calls == []
+    assert rec.stats()['voice_merge_skip_not_speaking'] == 5
+    assert log.has('info', 'лицо не говорило')
+
+
+def test_voice_merge_without_mouth_landmarks_is_no_evidence():
+    tracker = FaceTracker(min_track_sec=1000.0)
+    store = FakeStore()
+    rec = FaceRecognizer(embedder=FakeEmbedder(), store=store, tracker=tracker, voice_merge_confirmations=1)
+
+    end = _speak_window(rec, store, 'p1', 10.0, landmarks=False)
+
+    assert rec.note_voice_identification(speaker_id='spk-1', name='Денис', now=end) is None
+    assert store.attach_name_calls == []
+    assert rec.stats()['voice_merge_skip_not_speaking'] == 1
+
+
+def test_voice_merge_same_window_counts_once():
+    """Два результата голоса в одном окне — одно доказательство, а не два."""
+    tracker = FaceTracker(min_track_sec=1000.0)
+    store = FakeStore()
+    rec = FaceRecognizer(embedder=FakeEmbedder(), store=store, tracker=tracker, voice_merge_confirmations=2)
+
+    end = _speak_window(rec, store, 'p1', 10.0)
+    assert rec.note_voice_identification(speaker_id='spk-1', name='Денис', now=end) is None
+    assert rec.note_voice_identification(speaker_id='spk-1', name='Денис', now=end + 0.1) is None
+    end = _speak_window(rec, store, 'p1', 20.0)
+
+    assert rec.note_voice_identification(speaker_id='spk-1', name='Денис', now=end) == 'p1'
+
+
+def test_voice_merge_other_face_resets_confirmations():
+    tracker = FaceTracker(min_track_sec=1000.0)
+    store = FakeStore()
+    rec = FaceRecognizer(embedder=FakeEmbedder(), store=store, tracker=tracker, voice_merge_confirmations=2)
+
+    for t0, pid in ((10.0, 'p1'), (20.0, 'p2'), (30.0, 'p1')):
+        end = _speak_window(rec, store, pid, t0)
+        assert rec.note_voice_identification(speaker_id='spk-1', name='Денис', now=end) is None
+
+    assert store.attach_name_calls == []
+
+
+def test_voice_merge_two_people_in_turns_within_window_no_merge():
+    """В каждом кадре одно лицо, но в окне фразы их было двое по очереди — это не «одно лицо»."""
+    tracker = FaceTracker(min_track_sec=1000.0)
+    store = FakeStore()
+    rec = FaceRecognizer(embedder=FakeEmbedder(), store=store, tracker=tracker, voice_merge_confirmations=1)
+
+    _speak_window(rec, store, 'p1', 10.0)
+    end = _speak_window(rec, store, 'p2', 13.0)
+
+    assert rec.note_voice_identification(speaker_id='spk-1', name='Денис', now=end - 0.5) is None
+    assert rec.stats()['voice_merge_skip_multi_face'] == 1
+
+
+def test_voice_merge_does_not_overwrite_other_name():
+    """Шифу переименовал фото в «Литвин» (speaker_id снят) — голос Дэнчика имя не перетирает (#4357)."""
+    tracker = FaceTracker(min_track_sec=1000.0)
+    store = FakeStore()
+    store.binding_map = {'566331d3': ('Литвин', None)}
+    log = RecordingLog()
+    rec = FaceRecognizer(embedder=FakeEmbedder(), store=store, tracker=tracker, log_fn=log,
+                         voice_merge_confirmations=1)
+
+    end = _speak_window(rec, store, '566331d3', 10.0)
+
+    assert rec.note_voice_identification(speaker_id='1ae4b0ac', name='Дэнчик', now=end) is None
+    assert store.attach_name_calls == []
+    assert rec.stats()['voice_merge_skip_named_other'] == 1
+    assert log.has('warn', 'не перетираю')
+
+
+def test_voice_merge_same_name_same_voice_is_allowed():
+    tracker = FaceTracker(min_track_sec=1000.0)
+    store = FakeStore()
+    store.binding_map = {'p1': ('денис', 'spk-1')}
+    rec = FaceRecognizer(embedder=FakeEmbedder(), store=store, tracker=tracker, voice_merge_confirmations=1)
+
+    end = _speak_window(rec, store, 'p1', 10.0)
+
+    assert rec.note_voice_identification(speaker_id='spk-1', name='Денис', now=end) == 'p1'
 
 
 def test_voice_merge_two_faces_in_frame_no_merge():
@@ -558,11 +707,12 @@ def test_voice_merge_speaker_bound_to_different_person_no_merge_and_warns():
     store = FakeStore()
     store.find_by_speaker_map = {'spk-1': 'other-person'}
     log = RecordingLog()
-    rec = FaceRecognizer(embedder=FakeEmbedder(), store=store, tracker=tracker, log_fn=log)
+    rec = FaceRecognizer(embedder=FakeEmbedder(), store=store, tracker=tracker, log_fn=log,
+                         voice_merge_confirmations=1)
 
-    _prime_last_frame(rec, store, ['p1'], now=10.0)
+    end = _speak_window(rec, store, 'p1', 10.0)
 
-    result = rec.note_voice_identification(speaker_id='spk-1', name='Денис', now=11.0)
+    result = rec.note_voice_identification(speaker_id='spk-1', name='Денис', now=end)
 
     assert result is None
     assert store.attach_name_calls == []
@@ -621,10 +771,10 @@ def test_voice_merge_skip_counted_as_conflict():
     tracker = FaceTracker(min_track_sec=1000.0)
     store = FakeStore()
     store.find_by_speaker_map = {'spk-1': 'other-person'}
-    rec = FaceRecognizer(embedder=FakeEmbedder(), store=store, tracker=tracker)
-    _prime_last_frame(rec, store, ['p1'], now=10.0)
+    rec = FaceRecognizer(embedder=FakeEmbedder(), store=store, tracker=tracker, voice_merge_confirmations=1)
+    end = _speak_window(rec, store, 'p1', 10.0)
 
-    rec.note_voice_identification(speaker_id='spk-1', name='Денис', now=11.0)
+    rec.note_voice_identification(speaker_id='spk-1', name='Денис', now=end)
 
     s = rec.stats()
     assert s['voice_merge_skip_conflict'] == 1
@@ -647,10 +797,11 @@ def test_voice_merge_skip_counters_accumulate_across_calls():
 def test_successful_merge_does_not_touch_skip_counters():
     tracker = FaceTracker(min_track_sec=1000.0)
     store = FakeStore()
-    rec = FaceRecognizer(embedder=FakeEmbedder(), store=store, tracker=tracker, voice_merge_window_sec=6.0)
-    _prime_last_frame(rec, store, ['p1'], now=10.0)
+    rec = FaceRecognizer(embedder=FakeEmbedder(), store=store, tracker=tracker, voice_merge_window_sec=6.0,
+                         voice_merge_confirmations=1)
+    end = _speak_window(rec, store, 'p1', 10.0)
 
-    result = rec.note_voice_identification(speaker_id='spk-1', name='Денис', now=11.0)
+    result = rec.note_voice_identification(speaker_id='spk-1', name='Денис', now=end)
 
     assert result == 'p1'
     s = rec.stats()

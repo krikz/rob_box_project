@@ -1,7 +1,7 @@
 {
   "version": 1,
   "created": "2026-11-05",
-  "base_sha": "682f0aab331a4554122680d2295248bef5200b09",
+  "base_sha": "7dc4a962b0354ea44c6fa1e48166909561bf6d1e",
   "limits": {
     "wmc": 80,
     "methods": 40
@@ -24,7 +24,7 @@
       "methods": 17
     },
     "src/rob_box_perception/rob_box_perception/face_recognition.py:FaceRecognizer": {
-      "wmc": 86,
+      "wmc": 85,
       "methods": 15
     },
     "src/rob_box_perception/rob_box_perception/face_store.py:FaceStore": {
