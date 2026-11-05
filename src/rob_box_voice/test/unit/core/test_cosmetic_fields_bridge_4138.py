@@ -8,6 +8,7 @@ import asyncio
 from typing import Any, AsyncIterator, Iterable, List, Mapping, Optional
 
 from rob_box_dialog import knowledge as kn
+from rob_box_dialog.command import Command, Invalid, to_args
 from rob_box_llm.provider import LLMChunk, LLMMessage, LLMResponse, LLMSettings, ProviderCapabilities, ToolCall
 from rob_box_llm.providers.deepseek import DeepSeekProvider
 from rob_box_voice.core import command_bridge as cb
@@ -66,10 +67,10 @@ def _answer(*replies: LLMResponse) -> tuple:
     return out, inner.requests, log
 
 
-def _command_args(out: LLMResponse) -> Mapping[str, Any]:
-    (call,) = out.tool_calls
-    assert call.name == kn.COMMAND_TOOL
-    return call.arguments
+def _command_args(out: cb.CommandResponse) -> Mapping[str, Any]:
+    """Поля команды, которую исполнит ход (``command.to_args``); невалидной тут быть не должно."""
+    assert isinstance(out.command, Command), out.command
+    return to_args(out.command)
 
 
 def test_4138_earcon_none_is_dropped_with_no_retry_and_the_animation_goes_to_the_executor():
@@ -93,7 +94,7 @@ def test_4138_extra_animated_argument_is_dropped_with_no_retry_and_never_reaches
 def test_4138_both_n904_answers_in_a_row_no_longer_end_in_the_stub():
     """Живой n904: ответ с ``earcon=none``, затем повтор с ``animated``. Теперь первый же ответ исполняется."""
     out, requests, _ = _answer(_show(earcon="none"), _show({**SAD, "animated": True}))
-    assert len(requests) == 1 and kn.COMMAND_INVALID_FIELD not in _command_args(out)
+    assert len(requests) == 1 and isinstance(out.command, Command)
 
 
 def test_4138_only_an_extra_argument_means_no_meaning_the_model_gets_the_violation_and_fixes_it():
@@ -108,4 +109,4 @@ def test_4138_unknown_tool_is_still_invalid_after_the_retry():
     wrong = _reply(actions=[{"tool": "no_such_tool", "args": {"animated": True}}])
     out, requests, _ = _answer(wrong, wrong)
     assert len(requests) == 2
-    assert _command_args(out)[kn.COMMAND_INVALID_FIELD] == "tool_not_available"
+    assert isinstance(out.command, Invalid) and out.command.reason == "tool_not_available"

@@ -26,10 +26,11 @@ except ImportError:
     sys.modules["rob_box_dialog_msgs"].srv = _srv
 
 from prometheus_client import REGISTRY  # noqa: E402
+from rob_box_dialog.command import Command  # noqa: E402
 from rob_box_dialog.deadline import ProviderFailed  # noqa: E402
 from rob_box_llm.errors import ProviderError  # noqa: E402
-from rob_box_llm.provider import LLMResponse  # noqa: E402
 from rob_box_voice import dialog_node as dn  # noqa: E402
+from rob_box_voice.core.command_bridge import CommandResponse  # noqa: E402
 from rob_box_voice.core.dialog_metrics import llm_metrics, record_interrupt  # noqa: E402
 from rob_box_voice.core.dialog_v2_ports import CallCounter, V2Ports  # noqa: E402
 
@@ -50,7 +51,7 @@ class _Chain:
     async def complete(self, messages, tools=(), settings=None):
         if self.error:
             raise self.error
-        return LLMResponse(content="Привет!")
+        return CommandResponse(command=Command(speech="Привет!"))
 
 
 def _ask(chain):

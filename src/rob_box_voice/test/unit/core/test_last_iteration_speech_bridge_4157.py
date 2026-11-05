@@ -114,7 +114,7 @@ def test_a_sound_without_words_on_the_asked_form_passes_without_retry():
             return await bridge.complete(_after_query(), tools=[_tool("memory_search"), _tool("play_sound")])
 
     out = asyncio.run(run())
-    assert len(inner.requests) == 1 and kn.COMMAND_INVALID_FIELD not in out.tool_calls[0].arguments
+    assert len(inner.requests) == 1 and isinstance(out.command, cm.Command)
 
 
 def test_bare_face_on_the_asked_form_goes_to_the_turn_at_once_without_a_bridge_retry():
@@ -128,14 +128,14 @@ def test_bare_face_on_the_asked_form_goes_to_the_turn_at_once_without_a_bridge_r
 
     out = asyncio.run(run())
     assert len(inner.requests) == 1
-    assert out.tool_calls[0].arguments[kn.COMMAND_INVALID_FIELD] == kn.VIOLATION_SPEECH_REQUIRED
+    assert isinstance(out.command, cm.Invalid) and out.command.reason == kn.VIOLATION_SPEECH_REQUIRED
 
 
 def test_the_same_face_on_an_open_form_is_a_valid_command_without_retry():
     inner = _Inner([LLMResponse(tool_calls=(_call(expression=FACE),))])
     bridge = cb.CommandModeLLM(inner)
     out = asyncio.run(bridge.complete(_after_query(), tools=[_tool("memory_search")]))
-    assert len(inner.requests) == 1 and kn.COMMAND_INVALID_FIELD not in out.tool_calls[0].arguments
+    assert len(inner.requests) == 1 and isinstance(out.command, cm.Command)
 
 
 # -- весь ход v2: TurnEngine → V2Ports → мост ---------------------------------------------------------------------

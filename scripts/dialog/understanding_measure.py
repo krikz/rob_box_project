@@ -206,7 +206,7 @@ def fake_stand(rule: Callable[[List[Any], List[str]], Dict[str, Any]], workdir: 
     inner = FakeLLMProvider(on_complete=on_complete, name="deepseek",
                             capabilities=ProviderCapabilities(tools=True, tool_choice=True))
     relay = dm.LogRelay()
-    llm = command_bridge.wrapper_for("deepseek", log=relay)(Counted(inner, counter))
+    llm = command_bridge.wrapper_for(log=relay)(Counted(inner, counter))
     stand = DryStand(llm, counter, "Ты робот.", workdir, variant=variant, router=router, memory_path=memory_path,
                      clock=clock)
     relay.target = stand

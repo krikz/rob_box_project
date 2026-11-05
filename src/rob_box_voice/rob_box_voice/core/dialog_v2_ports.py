@@ -3,9 +3,9 @@
 Одна дорога на оба движка (решение координатора 22.10 по #3702):
 
 * **LLM** — цепочка ``rob_box_harness.core.assembly.build_llm_chain`` (тот же ``HealthAwareFallbackLLM``), каждый
-  провайдер — в режиме команд моста ``command_bridge`` (форма запроса по ``degrade.select_mode``, один парсер, повтор по
-  нарушениям ``COMMAND_RETRIES_MAX``). Ответ моста в форме v1 (текст речи или вызов ``command``) переводится обратно в
-  ``command.Result`` (:func:`to_result`); цикла ``AgentCore`` нет — окно и итерации ``query`` ведёт ``turn.py``;
+  провайдер — в режиме команд ``command_bridge`` (форма запроса по ``degrade.select_mode``, один парсер, повтор по
+  нарушениям ``COMMAND_RETRIES_MAX``); его ответ несёт ``command.Result`` (``CommandResponse.command``), окно и
+  итерации ``query`` ведёт ``turn.py``;
 * **действия** — :class:`rob_box_dialog.execute.Executor` поверх исполнителя тулов v1 (``plan_host.make_tool_executor``:
   MCP под планировщиком ресурсов), исход — событие владельца из данных результата (``execute.owner_event``).
   Топик ``ActionRequest`` не публикуется: подписчика у него нет (mcp_server слушает ``/mcp/execute``);
@@ -24,12 +24,12 @@ import threading
 import time
 import uuid
 from dataclasses import replace
-from typing import Any, AsyncIterator, Callable, Iterable, List, Mapping, Optional, Sequence, Tuple
+from typing import Any, Callable, Iterable, List, Mapping, Optional, Sequence, Tuple
 
 from rob_box_core import expression_client, speech_client
 from rob_box_core.utterance import Sink, Utterance
 from rob_box_dialog import knowledge as kn
-from rob_box_dialog.command import Busy, Command, Expression, Invalid, Result, ToolCall as CommandCall, parse
+from rob_box_dialog.command import Busy, Expression, Result, ToolCall as CommandCall
 from rob_box_dialog.context import measure
 from rob_box_dialog.deadline import ProviderFailed
 from rob_box_dialog.execute import ActionRequest, Executor, owner_event
@@ -40,11 +40,10 @@ from rob_box_dialog.turn import Answer
 from rob_box_llm.errors import ProviderError
 from rob_box_llm.provider import LLMMessage, LLMResponse, LLMSettings, ToolCall, ToolResult
 
+from .command_bridge import EMPTY, model_call, wrapper_for
 from .command_intent import fill_intent
 from .command_parser import Command as MotionCommand, IntentType
 
-#: Ответ модели пуст (ни речи, ни команды) — невалиден (A14: пустой ответ по провайдеру).
-EMPTY = "empty"
 _STATUS = {"done": "finished", "failed": "failed", "timeout": "failed"}
 
 
@@ -82,28 +81,19 @@ class Counted:
         self._counter.calls += 1
         return await self._inner.complete(messages, **kwargs)
 
-    def stream(self, messages: Iterable[LLMMessage], **kwargs: Any) -> AsyncIterator[Any]:
-        self._counter.calls += 1
-        return self._inner.stream(messages, **kwargs)
-
 
 def counted_wrapper(bridge_wrap: Callable[[Any], Any], counter: CallCounter) -> Callable[[Any], Any]:
     """``AgentSpec.wrap_provider`` для v2: счётчик вызовов внутри моста команд (повтор считается)."""
     return lambda provider: bridge_wrap(Counted(provider, counter))
 
 
-def to_result(response: LLMResponse) -> Result:
-    """Ответ моста (форма v1) → команда: вызов ``command`` — его аргументы (отметка невалидности моста — ``Invalid``),
-    иначе текст — реплика; ни того ни другого — ``Invalid(empty)``."""
-    for call in response.tool_calls or ():
-        if call.name == kn.COMMAND_TOOL:
-            marked = call.arguments.get(kn.COMMAND_INVALID_FIELD)
-            if not marked:
-                return parse(dict(call.arguments))
-            rest = parse({k: v for k, v in call.arguments.items() if k != kn.COMMAND_INVALID_FIELD})
-            return Invalid(str(marked), salvage=rest.actions if isinstance(rest, Command) else ())
-    text = (response.content or "").strip()
-    return Command(speech=text) if text else Invalid(EMPTY, "ни речи, ни команды")
+def result_of(response: LLMResponse) -> Result:
+    """Команда хода из ответа цепочки (``CommandResponse.command``). Ответа без команды v2 не ждёт: провайдер цепочки
+    без режима команд — ошибка сборки, ход падает громко, а не молчит."""
+    result = getattr(response, "command", None)
+    if result is None:
+        raise TypeError(f"ответ LLM без команды ({type(response).__name__}): провайдер цепочки не в режиме команд")
+    return result
 
 
 def stage_plan(stage: str, cls: Optional[str] = None,
@@ -161,17 +151,13 @@ def tool_schema(entry: Any) -> Mapping[str, Any]:
                                              "parameters": dict(entry.parameters)}}
 
 
-def follow_for(response: LLMResponse) -> Callable[[str], Sequence[Any]]:
-    """Продолжение запроса данными ``query``: вызов ``command`` модели и tool-результат с данными на него. Невалидную
-    команду мост отдаёт вызовом с отметкой ``COMMAND_INVALID_FIELD`` и спасёнными действиями (#4050: спасённый
-    ``query`` возвращает данные модели) - модель видит свой вызов без служебной отметки: только исполненные действия."""
-    calls = tuple(c for c in response.tool_calls or () if c.name == kn.COMMAND_TOOL)
-    if not calls:
+def follow_for(result: Result) -> Callable[[str], Sequence[Any]]:
+    """Продолжение запроса данными ``query``: вызов ``command`` модели (``command_bridge.model_call``) и
+    tool-результат с данными на него. У невалидной команды модель видит в своём вызове только спасённые действия
+    (#4050: спасённый ``query`` возвращает данные модели). Вызова нет (голая реплика) — данные репликой пользователя."""
+    call = model_call(result)
+    if call is None:
         return lambda data: ({"role": "user", "content": data},)
-    call = calls[0]
-    if kn.COMMAND_INVALID_FIELD in call.arguments:
-        call = ToolCall(id=call.id, name=call.name,
-                        arguments={k: v for k, v in call.arguments.items() if k != kn.COMMAND_INVALID_FIELD})
 
     def follow(data: str) -> Sequence[Any]:
         return (LLMMessage(role="assistant", content="", tool_calls=(call,)),
@@ -233,8 +219,8 @@ class V2Ports:
         tokens = int(usage.get("prompt_tokens") or measure(msgs, schemas).total)
         self._log(f"🧮 [prompt] tokens={tokens} estimated={'prompt_tokens' not in usage} provider={provider} "
                   f"view=v2 tools={len(schemas)}")
-        return Answer(to_result(response), provider, max(1, self._counter.calls - before), tokens,
-                      follow_for(response))
+        result = result_of(response)
+        return Answer(result, provider, max(1, self._counter.calls - before), tokens, follow_for(result))
 
     async def execute(self, actions: Sequence[CommandCall], snapshot: SessionSnapshot,
                       turn_id: str) -> List[ActionResult]:
@@ -370,11 +356,6 @@ class V2Ports:
         self._intent_pub.publish(fill_intent(Intent(), stop, epoch=epoch, turn_id=turn_id))
 
 
-def command_providers(chain: Sequence[str]) -> str:
-    """Все провайдеры цепочки — в режиме команд (v2 не знает ``speak_text``): строка для ``command_bridge``."""
-    return ",".join(n for n in chain if n)
-
-
 def assemble_llm(chain: Sequence[str], counter: CallCounter, *, prompt_dir: Any, system_prompt_file: str,
                  settings: Optional[LLMSettings] = None, agent: str = kn.AGENTS[0],
                  log: Callable[[str], None] = lambda line: None, busy: Optional[Callable[[], Busy]] = None) -> tuple:
@@ -383,10 +364,8 @@ def assemble_llm(chain: Sequence[str], counter: CallCounter, *, prompt_dir: Any,
     стенда (``scripts/dialog/dry_marathon.py``, #3906): ответ модели строит та же цепочка, что на роботе."""
     from rob_box_harness.core.assembly import AgentSpec, build_llm_chain  # noqa: PLC0415
 
-    from . import command_bridge  # noqa: PLC0415
-
     names = tuple(p.strip().lower() for p in chain if p.strip())
-    bridge = command_bridge.wrapper_for(command_providers(names), log=log, busy=busy or Busy, agent=agent)
+    bridge = wrapper_for(log=log, busy=busy or Busy, agent=agent)
     spec = AgentSpec(name=agent, prompt_dir=prompt_dir, system_prompt_file=system_prompt_file, provider_chain=names,
                      settings=settings, wrap_provider=counted_wrapper(bridge, counter))
     return build_llm_chain(spec), system_prompt(spec, agent)
@@ -402,6 +381,5 @@ def system_prompt(spec: Any, agent: str) -> str:
     return f"{base}\n\n{rules}" if base and rules else base
 
 
-__all__ = ["CallCounter", "Counted", "EMPTY", "V2Ports", "assemble_llm", "command_providers", "counted_wrapper",
-           "follow_for", "show_plan", "show_queue", "stage_plan", "system_prompt", "to_message", "to_result",
-           "tool_schema"]
+__all__ = ["CallCounter", "Counted", "EMPTY", "V2Ports", "assemble_llm", "counted_wrapper", "follow_for", "result_of",
+           "show_plan", "show_queue", "stage_plan", "system_prompt", "to_message", "tool_schema"]

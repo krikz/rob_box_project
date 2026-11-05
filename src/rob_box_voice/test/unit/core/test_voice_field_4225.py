@@ -90,7 +90,7 @@ def _turn(args, text=N404):
     inner = _DeepSeek([LLMResponse(tool_calls=(ToolCall(id="c1", name=kn.COMMAND_TOOL, arguments=args),)),
                        LLMResponse(tool_calls=(ToolCall(id="c2", name=kn.COMMAND_TOOL,
                                                         arguments={**args, "voice": "arina"}),))])
-    llm = counted_wrapper(cb.wrapper_for("deepseek", log=lines.append, busy=lambda: perform_busy(node)), counter)(inner)
+    llm = counted_wrapper(cb.wrapper_for(log=lines.append, busy=lambda: perform_busy(node)), counter)(inner)
     ports = V2Ports(node, llm, counter, _Tools(), log=lines.append)
     agg = asyncio.run(TurnEngine(session, ports, system_prompt="Ты робот.").run(Addressed(text, VOICE)))
     return agg, node, lines, inner

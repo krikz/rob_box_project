@@ -37,7 +37,9 @@ from rob_box_dialog import knowledge as kn  # noqa: E402
 from rob_box_dialog import phrases  # noqa: E402
 from rob_box_dialog.command import current_form  # noqa: E402
 from rob_box_dialog.plan.plan_events import PlanEvent  # noqa: E402
-from rob_box_llm.provider import LLMResponse, ToolCall, ToolResult  # noqa: E402
+from rob_box_dialog.command import parse  # noqa: E402
+from rob_box_llm.provider import ToolResult  # noqa: E402
+from rob_box_voice.core.command_bridge import CommandResponse, for_turn  # noqa: E402
 from rob_box_voice import dialog_node as dn  # noqa: E402
 from rob_box_voice.core import plan_host  # noqa: E402
 
@@ -79,8 +81,13 @@ class _PerformHost:
         return {"status": "done"}
 
 
+def _reply(args):
+    """Ответ цепочки в режиме команд: команда хода из аргументов вызова ``command`` модели (как её отдаёт мост)."""
+    return CommandResponse(command=for_turn(parse(args)))
+
+
 def _node(monkeypatch, command):
-    chat_llm = _LLM([LLMResponse(content="", tool_calls=(ToolCall(id="c1", name="command", arguments=command),))])
+    chat_llm = _LLM([_reply(command)])
     tools = _Tools()
     monkeypatch.setattr(dn, "build_llm", lambda node, counter, agent="personality": (
         (chat_llm, "Ты пульт робота.") if agent == "telegram" else (_LLM([]), "Ты робот.")))
