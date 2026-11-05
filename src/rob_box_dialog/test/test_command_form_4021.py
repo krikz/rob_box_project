@@ -17,7 +17,7 @@ from rob_box_dialog import command as cm
 from rob_box_dialog import knowledge as kn
 from rob_box_dialog import phrases
 from rob_box_dialog.address import VOICE, Addressed
-from rob_box_dialog.command import Busy, Command, Expression, Form, Invalid, parse, validate
+from rob_box_dialog.command import Ask, Busy, Command, Expression, Form, Invalid, parse, validate
 from rob_box_dialog.session import MusicStateRef, Session
 from rob_box_dialog.tools_view import needs_words, voice_asked
 from rob_box_dialog.turn import Answer, TurnEngine, command_form, invalid_emotion
@@ -205,10 +205,13 @@ def test_n109_voice_is_open_only_when_the_voice_is_asked_in_this_reply():
     named = _FormPorts([Answer(Command(speech="Хорошо."), "deepseek")])
     _turn(named, Addressed("скажи как шаонв", VOICE), voices=lambda: (("female-shaonv", "шаонв"),))
     assert named.forms == [Form(passed=False, voice=True, backing=False)]
-    plain = _FormPorts([Answer(Command(speech="Сирену, звонок."), "deepseek")])
+    # список звуков по памяти без ``get_sound_info`` - нарушение ``sound_catalog`` (М11 n109): второй ответ модели -
+    # встречный вопрос; форма у обоих вызовов одна
+    plain = _FormPorts([Answer(Command(speech="Сирену, звонок."), "deepseek"),
+                        Answer(Command(ask=Ask(text="Какие тебе интересны?")), "deepseek")])
     _turn(plain, Addressed(N109, VOICE))
     # «играть» - слово группы music (``tools_view.music_asked``, #4152): подложка выступления у такой реплики не закрыта
-    assert plain.forms == [Form(passed=False, voice=False, backing=True)]
+    assert plain.forms == [Form(passed=False, voice=False, backing=True)] * 2
 
 
 JOVIALMAN = ("English_Jovialman", "Весельчак", "Джовиалмен", "Джовиалмэн")  # (id, display_name, *алиасы) реестра

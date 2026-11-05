@@ -806,7 +806,9 @@ CONTEXT_BUDGET_TOKENS: Mapping[str, int] = MappingProxyType({
 #: ``age_s`` (В23, 23.10; ``Backlog.background_since_reply``): чужие реплики, не просьбы к роботу.
 #: ``background_summary`` — сводка фона кодом (``backlog.voices_summary``): ``voices`` (разных собеседников по
 #: ``speaker_id``), ``known`` (имена узнанных), ``unknown`` (безымянных профилей), ``unattributed`` (фраз без профиля,
-#: если есть). Числа и состав голосов в ответе берутся отсюда, а не пересчётом ``background_since_reply``.
+#: если есть), ``picked_up`` (сколько фраз окна ушло подхватом бэклога: в ``background_since_reply`` их нет, а голоса их
+#: авторов в ``voices`` есть, М11 n306/n307). Числа и состав голосов в ответе берутся отсюда, а не пересчётом
+#: ``background_since_reply``.
 #: ``shift_log`` — журнал смены (``shift_log.ShiftLog.section``): кто приходил, что звучало, что робот сделал,
 #: с фразой-итогом кода; только когда человек спрашивает о смене (``shift_log.shift_asked``: ``SHIFT_ASK_*``).
 #: ``operator_journal`` — журнал ТАРС (§7.4): записи моложе своего ``ttl`` и сводка за сутки с датой.
@@ -1921,6 +1923,22 @@ QUERY_REPEAT_HINT = ("этот запрос (тот же тул и аргуме�
 VIOLATION_SOUND_ANSWER = "sound_answer"
 SOUND_ANSWER_HINT = (f"человек задал вопрос, данные запроса выше в окне, а {SOUND_TOOL} на вопрос не отвечает - успех"
                      f" звука молчит: ответь по этим данным словами в speech, без actions")
+#: Тул каталога звуков робота: что робот умеет издавать, знает только он (``sound_pack/sound_catalog.json``).
+SOUND_CATALOG_TOOL = "get_sound_info"
+#: Вопрос о каталоге звуков (М11 n109, засчитанный прогон 01:12:19: «Умею подтверждать… глючить… капать нотой…» - список
+#: по памяти, без ``get_sound_info``): в реплике человека слово о звуках (основа :data:`SOUND_CATALOG_STEMS`) и форма
+#: «сколько/какие/перечисли» (:data:`SOUND_CATALOG_ASK_FORMS`, слово целиком: «какой-нибудь звук» - просьба, не каталог).
+#: Решает намерение человека по его словам (``tools_view.sound_catalog_asked``), а не текст ответа модели.
+SOUND_CATALOG_STEMS: Tuple[str, ...] = ("звук",)
+SOUND_CATALOG_ASK_FORMS: Tuple[str, ...] = (
+    "какие", "каких", "сколько", "список", "списком", "перечень", "перечисли", "перечислите", "назови", "назовите")
+#: Нарушение «ответ о каталоге звуков без его данных»: спросили, какие звуки робот умеет, а команда без
+#: :data:`SOUND_CATALOG_TOOL` и в ходе его не читали (``turn.catalog_owed``). Повтор с подсказкой; повтора нет - каталог
+#: читает код сам и говорит по его данным (``query.sounds_summary``), слова модели о звуках не звучат.
+VIOLATION_SOUND_CATALOG = "sound_catalog"
+SOUND_CATALOG_HINT = (f"человек спрашивает, какие звуки ты умеешь: каталог звуков знает только {SOUND_CATALOG_TOOL},"
+                      f" по памяти звуки не перечисляй. Положи {SOUND_CATALOG_TOOL} в actions (без speech и без"
+                      f" {SOUND_TOOL}) - ответишь словами по его данным")
 #: Слова перед именем без запятой, после которых оно — обращение, а не рассказ о человеке: «Привет Борис!», «Спасибо
 #: Саша». С запятой («Понял, Саша.») и в начале фразы перед запятой («Саша, понял.») лид не нужен.
 ADDRESS_LEAD_WORDS: Tuple[str, ...] = (
@@ -2060,7 +2078,8 @@ INVALID_COMMAND_PHRASES: Mapping[str, str] = MappingProxyType({"too_long": "comm
 #: Нарушения, после которых фраза кода звучит без грусти: модель ответила, только не словами (лицом, анимацией, одним
 #: earcon) - ничего не провалилось («Угу, я тут.» звучало с ``sad``). Провал исполненного действия
 #: грустит по-прежнему: эмоцию фразы решает его исход.
-CALM_VIOLATIONS: Tuple[str, ...] = (VIOLATION_SILENT_ANSWER, VIOLATION_SPEECH_REQUIRED, VIOLATION_SOUND_ANSWER)
+CALM_VIOLATIONS: Tuple[str, ...] = (VIOLATION_SILENT_ANSWER, VIOLATION_SPEECH_REQUIRED, VIOLATION_SOUND_ANSWER,
+                                    VIOLATION_SOUND_CATALOG)
 #: Особые ключи каталога фраз (не по классу действия): их обязан содержать ``phrases/ru.yaml``.
 PHRASE_KEYS: Tuple[str, ...] = (
     "understand.timeout", PASSED_ADDRESSED_PHRASE, NEW_SESSION_PHRASE, QUERY_FALLBACK_GENERIC, INVALID_COMMAND_PHRASE,

@@ -133,6 +133,13 @@ def show_asked(text: str) -> bool:
     return kn.FACE_ASK_GROUP in requested_groups(text) or silent_asked(text)
 
 
+def sound_catalog_asked(text: str) -> bool:
+    """Спросил ли человек о каталоге звуков робота (М11 n109): слово о звуках (``knowledge.SOUND_CATALOG_STEMS``) и
+    «какие/сколько/перечисли» целым словом (``SOUND_CATALOG_ASK_FORMS``): «какие звуки ты умеешь издавать?», «сколько
+    у тебя звуков». «Включи какой-нибудь звук» - просьба, не каталог. Таблицы - ``knowledge``."""
+    return has_word(text or "", kn.SOUND_CATALOG_STEMS) and has_form(text or "", kn.SOUND_CATALOG_ASK_FORMS)
+
+
 def voice_asked(snapshot: SessionSnapshot, text: str, voices: Sequence[str] = ()) -> bool:
     """Просил ли человек в ЭТОЙ реплике о голосе (n109): его словами открыта группа «только по явной просьбе»
     (``knowledge.TOOL_GROUPS_EXPLICIT``: «голос», «яндекс», «басом»; под играющей музыкой «ускорь» - музыка, не голос,
@@ -260,4 +267,4 @@ def available_tools(snapshot: SessionSnapshot, caps: Optional[Any] = None, agent
 
 __all__ = ["asked_groups", "available_tools", "command_groups", "face_asked", "groups_for", "motion_named",
            "motion_refusal", "music_asked", "needs_words", "requested_groups", "robot_asked", "show_asked",
-           "silent_asked", "voice_asked", "voice_named", "widen_for"]
+           "silent_asked", "sound_catalog_asked", "voice_asked", "voice_named", "widen_for"]

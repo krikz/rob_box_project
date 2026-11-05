@@ -6,7 +6,8 @@
 * :meth:`Backlog.pickup` — голое «робот» (исправление пропущенного вейка) забирает **всегда** все фразы не старше
   :data:`~rob_box_dialog.knowledge.BACKLOG_FRESH_S` и более ранние куски того же рассказа (речь длиннее 15 с
   audio_node режет на куски), по порядку; они становятся текстом хода и из бэклога уходят (решение Шифу
-  21.10: «бэклог должен уходить по любому всегда»). Свежего нет — берёт последнюю фразу окна
+  21.10: «бэклог должен уходить по любому всегда»), но остаются в сводке голосов окна (:meth:`Backlog.background_summary`,
+  М11 n306/n307: подхват унёс фразу курьера, и «кто говорил?» насчитало троих при четверых). Свежего нет — берёт последнюю фразу окна
   :data:`~rob_box_dialog.knowledge.BACKLOG_PICKUP_S` (3 минуты, решение Шифу 28.10), которую робот ещё не слышал
   адресованной, и её куски рассказа. «Тот же собеседник» не фильтр, а поле метки;
 * :meth:`Backlog.recent_unaddressed` — в снимок адресованного хода с фразой не больше одной записи того же
@@ -75,6 +76,9 @@ class Backlog:
     def __init__(self, ttl_s: float = BACKLOG_TTL_S, max_entries: int = BACKLOG_MAX_ENTRIES) -> None:
         self.ttl_s, self.max_entries = ttl_s, max_entries
         self._entries: List[Heard] = []
+        #: Подхваченные фразы (:meth:`pickup`): из бэклога ушли (второй раз не подхватываются и в
+        #: ``background_since_reply`` не идут), но говорил их человек в окне - сводка голосов их считает.
+        self._picked: List[Heard] = []
         #: Когда роботу в последний раз сказали фразу с вейком (или подхватили бэклог): всё, что звучало раньше, он уже
         #: слышал разделами снимка того хода и голым «робот» издалека не подхватывается (:meth:`_last_unheard`).
         self._addressed_t = float("-inf")
@@ -88,6 +92,7 @@ class Backlog:
 
     def clear(self) -> None:
         self._entries.clear()
+        self._picked.clear()
         self._addressed_t = float("-inf")
 
     def note_addressed(self, t: float) -> None:
@@ -102,13 +107,15 @@ class Backlog:
     def note_voice(self, utterance_id: str, voice: VoiceTag) -> None:
         """Биометрия фразы пришла позже STT: дописать её записи с этим ``utterance_id``."""
         name = voice.name or voice.tentative
-        for i, entry in enumerate(self._entries):
-            if utterance_id and entry.utterance_id == utterance_id:
-                self._entries[i] = replace(entry, person_ref=voice.person_ref, speaker_name=name, voice=voice)
+        for entries in (self._entries, self._picked):  # биометрия могла прийти уже после подхвата фразы
+            for i, entry in enumerate(entries):
+                if utterance_id and entry.utterance_id == utterance_id:
+                    entries[i] = replace(entry, person_ref=voice.person_ref, speaker_name=name, voice=voice)
 
     def pickup(self, heard: Heard) -> List[Heard]:
         """Голое «робот» (В12): забрать все свежие фразы и примыкающие к ним куски рассказа, по порядку; свежего
-        нет — последнюю фразу окна ``BACKLOG_PICKUP_S`` и её куски. Подхват тоже считается «слышал»."""
+        нет — последнюю фразу окна ``BACKLOG_PICKUP_S`` и её куски. Подхват тоже считается «слышал»; подхваченное
+        уходит из бэклога, но остаётся в сводке голосов окна (:meth:`background_summary`)."""
         self._prune(heard.t)
         fresh = [i for i, e in enumerate(self._entries) if 0.0 <= heard.t - e.t <= BACKLOG_FRESH_S]
         fresh = fresh or self._last_unheard(heard.t)
@@ -119,6 +126,7 @@ class Backlog:
             first -= 1
         taken = self._entries[first:fresh[-1] + 1][-BACKLOG_PICKUP_MAX:]
         self._entries = [e for e in self._entries if all(e is not t for t in taken)]
+        self._picked = (self._picked + taken)[-self.max_entries:]
         self.note_addressed(heard.t)
         return taken
 
@@ -147,10 +155,15 @@ class Backlog:
 
     def background_summary(self, heard: Heard) -> Dict[str, Any]:
         """Сводка фона за то же окно, что :meth:`background_since_reply`, но по ВСЕМ фразам окна, а не по последним
-        ``BACKGROUND_MAX_PHRASES``: :func:`voices_summary`. Пусто, если фоновых фраз нет."""
+        ``BACKGROUND_MAX_PHRASES``: :func:`voices_summary`. Подхваченные фразы окна (:meth:`pickup`) тоже в ней: их
+        сказал человек рядом, и голос его - голос окна; сколько их - ``picked_up`` (М11 n306/n307). Пусто, если фоновых
+        фраз нет."""
         self._prune(heard.t)
-        window = [e for e in self._entries if 0.0 <= heard.t - e.t <= BACKGROUND_WINDOW_S]
-        return voices_summary([self.label(e, heard) for e in window], caller=heard.person_ref)
+        window = [e for e in sorted(self._entries + self._picked, key=lambda e: e.t)
+                  if 0.0 <= heard.t - e.t <= BACKGROUND_WINDOW_S]
+        out = voices_summary([self.label(e, heard) for e in window], caller=heard.person_ref)
+        picked = sum(1 for e in window if any(e is p for p in self._picked))
+        return {**out, "picked_up": picked} if picked else out
 
     @staticmethod
     def label(entry: Heard, heard: Heard) -> Dict[str, Any]:
@@ -166,6 +179,7 @@ class Backlog:
 
     def _prune(self, now: float) -> None:
         self._entries = [e for e in self._entries if now - e.t <= self.ttl_s]
+        self._picked = [e for e in self._picked if now - e.t <= self.ttl_s]
 
 
 def _continues(prev: Heard, nxt: Heard) -> bool:
