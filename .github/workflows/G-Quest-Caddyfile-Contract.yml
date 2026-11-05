@@ -3,9 +3,9 @@ name: "G: Quest Caddyfile Contract"
 # Контракт HTTPS-фронтенда rob_box_quest (task t_0b926b23).
 #
 # Зачем отдельный workflow:
-#   `local_test/` НЕ покрыт ни одним существующим workflow (G-Run Tests гоняет
+#   `tools/dev/` НЕ покрыт ни одним существующим workflow (G-Run Tests гоняет
 #   только src/*/test через colcon, pytest.ini testpaths ограничен
-#   rob_box_harness). Поэтому регресс-тест Caddyfile, положенный в local_test/,
+#   rob_box_harness). Поэтому регресс-тест Caddyfile, положенный в tools/dev/,
 #   без этого файла никогда бы не запустился в CI — то есть был бы ровно тем
 #   «красивым PASS», от которого он должен защищать (ADR-0018).
 #
@@ -36,7 +36,9 @@ on:
     paths:
       - 'docker/sound/quest/Caddyfile'
       - 'docker/sound/docker-compose.yaml'
-      - 'local_test/test_quest_caddyfile.py'
+      - 'tools/dev/test_quest_caddyfile.py'
+      - 'tools/dev/quest_smoke_lib.py'
+      - 'tools/dev/test_quest_smoke_lib.py'
       - '.github/workflows/G-Quest-Caddyfile-Contract.yml'
   pull_request:
     # #3922: PR-триггер только на develop. Вечный PR develop->main (#3713)
@@ -49,7 +51,9 @@ on:
     paths:
       - 'docker/sound/quest/Caddyfile'
       - 'docker/sound/docker-compose.yaml'
-      - 'local_test/test_quest_caddyfile.py'
+      - 'tools/dev/test_quest_caddyfile.py'
+      - 'tools/dev/quest_smoke_lib.py'
+      - 'tools/dev/test_quest_smoke_lib.py'
       - '.github/workflows/G-Quest-Caddyfile-Contract.yml'
   workflow_dispatch:
 
@@ -70,7 +74,7 @@ jobs:
           python-version: '3.11'
 
       - name: Install pytest
-        run: python3 -m pip install --quiet --no-cache-dir pytest
+        run: python3 -m pip install --quiet --no-cache-dir pytest websockets
 
       - name: Run Caddyfile contract tests
         run: |
@@ -78,7 +82,9 @@ jobs:
           # -o addopts="" : корневой pytest.ini добавляет --cov=rob_box_harness,
           # который здесь не установлен (и не нужен — тесты не про harness).
           # -p no:cacheprovider : не мусорим .pytest_cache в CI.
-          python3 -m pytest local_test/test_quest_caddyfile.py \
+          # test_quest_smoke_lib.py — юнит-тесты библиотеки smoke-скрипта Quest:
+          # до ADR-0166 их не звал ни один workflow (решение Шифу 05.11 — подключить).
+          python3 -m pytest tools/dev/test_quest_caddyfile.py tools/dev/test_quest_smoke_lib.py \
             -v \
             -o addopts="" \
             -p no:cacheprovider

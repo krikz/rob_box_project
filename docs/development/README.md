@@ -181,7 +181,7 @@
 
 ## 🧪 Тестирование
 
-### Локальное тестирование в `local_test/`
+### Локальное тестирование в `tools/dev/` (бывший `local_test/`)
 - `quick_test.sh` - Быстрая проверка
 - `auto_test.sh` - Автоматические тесты
 - `fake_lidar_publisher.py` - Имитация LIDAR

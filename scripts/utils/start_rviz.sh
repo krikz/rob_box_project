@@ -67,7 +67,7 @@ echo -e "${BLUE}🤖 Robot ID: ${ROBOT_ID}${NC}"
 echo -e "${YELLOW}   Namespace: robots/${ROBOT_ID}${NC}"
 
 # Generate Zenoh configuration with namespace
-ZENOH_CONFIG_TEMPLATE="$PROJECT_ROOT/local_test/zenoh_client_config.json5"
+ZENOH_CONFIG_TEMPLATE="$PROJECT_ROOT/tools/dev/zenoh_client_config.json5"
 ZENOH_CONFIG="/tmp/zenoh_rviz_config_${ROBOT_ID}.json5"
 
 if [ ! -f "$ZENOH_CONFIG_TEMPLATE" ]; then

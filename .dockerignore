@@ -43,7 +43,7 @@ test/
 *.log
 
 # Host-specific
-local_test/
+tools/dev/
 scripts/
 tools/
 

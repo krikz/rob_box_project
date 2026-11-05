@@ -36,7 +36,7 @@ echo "Удаляем старую БД..."
 rm -f /tmp/rtabmap_test.db
 
 echo "Запускаем fake_lidar_publisher..."
-python3 local_test/fake_lidar_publisher.py > "$LOG_DIR/test${TEST_NUM}_lidar.log" 2>&1 &
+python3 tools/dev/fake_lidar_publisher.py > "$LOG_DIR/test${TEST_NUM}_lidar.log" 2>&1 &
 LIDAR_PID=$!
 sleep 2
 

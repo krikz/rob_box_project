@@ -1,4 +1,4 @@
-"""Unit-тесты для local_test/quest_smoke_lib.py (Phase 1.7, issue #1643).
+"""Unit-тесты для tools/dev/quest_smoke_lib.py (Phase 1.7, issue #1643).
 
 Не требуют aiohttp / rclpy / websockets-сервера — проверяют чистую логику:
 - frame codec (LEB128, header)
@@ -15,7 +15,7 @@ from pathlib import Path
 
 import pytest
 
-# quest_smoke_lib лежит рядом с тестом (в local_test/) — добавляем в sys.path.
+# quest_smoke_lib лежит рядом с тестом (в tools/dev/) — добавляем в sys.path.
 _LIB = Path(__file__).resolve().parent / "quest_smoke_lib.py"
 sys.path.insert(0, str(_LIB.parent))
 import quest_smoke_lib as L  # noqa: E402

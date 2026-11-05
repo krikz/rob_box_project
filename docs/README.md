@@ -59,7 +59,7 @@
 - `../architecture/` (корень) — машинные файлы CI: `ownership.yml`, `runtime-baseline.json`, `minimax-provider.md`.
 - `../evidence/` — сырые замеры и выводы; `scripts/e2e/gen_night_marathon.py` читает `evidence/tts-voice-distinctness-*`.
 - `../.agents/skills/` — единственный источник скилов агентов.
-- `../local_test/` — частично: Caddyfile-контракт в CI, `RENARDO_REFERENCE.md` монтируется в compose Sound Pi.
+- `../tools/dev/` (бывший `local_test/`, ADR-0166) — dev-окружение ноутбука; Caddyfile-контракт в CI. `RENARDO_REFERENCE.md` — в `docker/sound/config/`, монтируется в compose Sound Pi.
 
 ## Куда класть новый документ (правило, ADR-0163 §3.1)
 

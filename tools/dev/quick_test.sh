@@ -14,7 +14,7 @@ read -p "Выбор (1/2): " middleware
 
 if [ "$middleware" == "1" ]; then
     export RMW_IMPLEMENTATION=rmw_zenoh_cpp
-    export ZENOH_CONFIG="$(pwd)/local_test/zenoh_local_config.json5"
+    export ZENOH_CONFIG="$(pwd)/tools/dev/zenoh_local_config.json5"
     export ROS_AUTOMATIC_DISCOVERY_RANGE=LOCALHOST
     echo "✅ Используем Zenoh (peer mode)"
 else
@@ -41,7 +41,7 @@ TF_PID=$!
 
 if [ "$mode" == "1" ]; then
     echo "Запуск симулятора лидара..."
-    python3 local_test/fake_lidar_publisher.py &
+    python3 tools/dev/fake_lidar_publisher.py &
     LIDAR_PID=$!
     sleep 2
 fi

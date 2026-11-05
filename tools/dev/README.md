@@ -1,12 +1,14 @@
-# 🧪 Local Test Scripts - Инструменты для удалённой диагностики
+# 🧪 tools/dev — dev-окружение ноутбука для удалённой диагностики
 
 Коллекция утилит для тестирования и мониторинга робота через Zenoh middleware с локальной машины (без необходимости SSH на Raspberry Pi).
 
+До 05.11.2026 каталог назывался `local_test/` (перенесён по ADR-0166). Январские пробы `voice/` и `hardware/`
+удалены (решение Шифу 05.11), `RENARDO_REFERENCE.md` переехал в `docker/sound/config/` (его монтирует compose Sound Pi).
+
 ## � Структура
 
-- **voice/** - Тесты голосового ассистента (STT, LLM, TTS)
-- **hardware/** - Тесты железа (LED, ReSpeaker, USB устройства)
-- Корень: скрипты визуализации и мониторинга через Zenoh
+- Скрипты визуализации и мониторинга через Zenoh, конфиги Zenoh, RViz-конфиги;
+- Quest smoke (`quest_smoke.sh`, `quest_smoke_lib.py`) и контракт Caddyfile (`test_quest_caddyfile.py`, гоняет CI).
 
 ## �📋 Обзор
 
@@ -59,7 +61,7 @@ sudo apt install ros-humble-rqt-image-view python3-opencv python3-cv-bridge
 
 **Использование:**
 ```bash
-cd local_test
+cd tools/dev
 ./launch_rviz.sh
 ```
 
@@ -91,7 +93,7 @@ cd local_test
 
 **Использование:**
 ```bash
-cd local_test
+cd tools/dev
 ./view_camera.sh
 ```
 
@@ -117,7 +119,7 @@ cd local_test
 
 **Использование:**
 ```bash
-cd local_test
+cd tools/dev
 ./visualize_apriltag.sh
 ```
 
@@ -177,7 +179,7 @@ sudo apt install python3-cv-bridge
 
 **Использование:**
 ```bash
-cd local_test
+cd tools/dev
 ./monitor_apriltag.sh
 ```
 
