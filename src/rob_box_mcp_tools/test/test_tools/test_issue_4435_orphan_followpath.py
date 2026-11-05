@@ -31,7 +31,9 @@ def nav(monkeypatch):
     tools_pkg.__path__ = [str(_PKG / "tools")]
     monkeypatch.setitem(sys.modules, "rob_box_mcp_tools.tools", tools_pkg)
     monkeypatch.delitem(sys.modules, "rob_box_mcp_tools.tools.navigation", raising=False)
-    spec = importlib.util.spec_from_file_location("rob_box_mcp_tools.tools.navigation", _PKG / "tools" / "navigation.py")
+    spec = importlib.util.spec_from_file_location(
+        "rob_box_mcp_tools.tools.navigation", _PKG / "tools" / "navigation.py"
+    )
     module = importlib.util.module_from_spec(spec)
     monkeypatch.setitem(sys.modules, spec.name, module)
     spec.loader.exec_module(module)
@@ -205,7 +207,9 @@ def test_halt_cancels_all_follow_path_goals_and_zeroes_cmd_vel(nav):
 @pytest.mark.unit
 def test_halt_catches_late_accepted_orphan_in_second_round(nav):
     """Первая отмена — «целей нет» (запрос FollowPath ещё в очереди), вторая гасит сироту."""
-    cancel = _CancelClient([_cancel_resp(ao.CANCEL_ERROR_UNKNOWN_GOAL_ID), _cancel_resp(ao.CANCEL_ERROR_NONE, [object()])])
+    cancel = _CancelClient(
+        [_cancel_resp(ao.CANCEL_ERROR_UNKNOWN_GOAL_ID), _cancel_resp(ao.CANCEL_ERROR_NONE, [object()])]
+    )
     halt, _ = _real_halt(nav, cancel)
     assert halt("aborted") == ao.CANCEL_CONFIRMED and cancel.calls == 2
 
