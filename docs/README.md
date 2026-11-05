@@ -45,10 +45,9 @@
 | [deployment/](deployment/) | → `runbooks/` |
 | [api/](api/) | → `architecture/` |
 | [analysis/](analysis/), [investigations/](investigations/), [recon/](recon/), [diagnostics/](diagnostics/) | → `research/` или архив |
-| [fixes/](fixes/) **(архив)** | фикс-заметки до 09.2026; новые не заводим — пишем в PR/issue |
-| [reports/](reports/) **(архив)** | отчёты, в основном до 09.2026; новые не заводим — пишем в PR/issue |
-| [retros/](retros/), [grant/](grant/), [verification/](verification/), [testing/](testing/), [integration/](integration/), [prompts/](prompts/), [voice/](voice/) **(архив)** | → `docs/archive/` |
-| [DOCUMENTATION_STRUCTURE.md](DOCUMENTATION_STRUCTURE.md) **(архив)** | старое описание структуры; заменено этой картой |
+| [fixes/](fixes/) | остались только заметки, на которые ссылаются живые гайды, скилл `zenoh-dev-setup` и свежие исследования (Zenoh, LiDAR, NAV2); остальное удалено (ADR-0163). Новые не заводим — пишем в PR/issue |
+| [reports/](reports/) | остались только отчёты, на которые ссылаются код, CI или живые доки (Hailo DKMS, ReSpeaker, Zenoh, одометрия, интерфейсы нод, AI HAT); остальное удалено (ADR-0163). Новые не заводим — пишем в PR/issue |
+| [grant/](grant/), [voice/](voice/) | ждут решения (ADR-0163 §4) |
 
 ## Spec-driven попытка — удалена (ADR-0163)
 

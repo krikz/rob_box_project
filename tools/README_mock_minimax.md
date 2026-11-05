@@ -198,7 +198,7 @@ Mock **принимает любые** значения `Authorization` и `Grou
 для тестов не нужны настоящие креды MiniMax.
 
 Но чтобы **переключить `tts_node` на этот mock** без правок продакшн-кода,
-нужны изменения в `MiniMaxTTSProvider.__init__` (см. `BLOCKERS.md`).
+нужны изменения в `MiniMaxTTSProvider.__init__` (см. `BLOCKERS.md` в git-истории, удалён по ADR-0163).
 Прямо сейчас tts_node всегда ходит на `https://api.minimax.io`,
 поскольку `base_url` не читается из env. Это задокументировано как blocker.
 

@@ -12,10 +12,6 @@
 
 ## 📚 Документация
 
-### 🗺️ Roadmap
-- **[ROADMAP_SIMPLE.md](ROADMAP_SIMPLE.md)** ⭐ - **Презентационный формат** - обзор проекта для широкой аудитории без технического жаргона
-- **[ROADMAP.md](ROADMAP.md)** - Техническая дорожная карта: реализованные и планируемые фичи, технологический стек, этапы развития
-
 ### 🚀 Быстрый старт
 Новичкам начать здесь:
 - **[Быстрый старт](docs/guides/QUICK_START.md)** - Запуск системы за 10 минут
@@ -80,7 +76,7 @@
 - 🔧 **Бесконечные анимации** — race condition исправлен, добавлен лимит итераций MAX_ITERATIONS=10
 - 🎵 **51 звуковой эффект** — sound_catalog.json, загрузка по контексту, GetSoundInfoTool
 - ⏱️ **Stream timeouts** — таймауты и ThreadPoolExecutor fix для dialogue_node
-- 📊 **Логирование токенов** — учёт usage токенов LLM API ([TOKEN_USAGE_LOGGING.md](docs/fixes/TOKEN_USAGE_LOGGING.md))
+- 📊 **Логирование токенов** — учёт usage токенов LLM API
 - 🔗 **DeepSeek connection pool** — отключён idle timeout, QoS mismatch исправлен
 
 **20 декабря 2025** - ICP Одометрия и NAV2 тюнинг:
@@ -128,7 +124,7 @@
 
 ## 🧪 Test bench (воспроизводимое окружение)
 
-> Полная пошаговая инструкция: **[TEST_BENCH.md](TEST_BENCH.md)** — подготовка,
+> Полная пошаговая инструкция была в `TEST_BENCH.md` (удалён по ADR-0163, есть в git-истории) — подготовка,
 > standalone MiniMax mock, полный bench, ROS2 capture harness, ffmpeg-сценарии,
 > acceptance checks и известный endpoint blocker.
 >
