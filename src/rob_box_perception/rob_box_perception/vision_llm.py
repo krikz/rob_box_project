@@ -56,6 +56,16 @@ PROVIDER_PRESETS: Dict[str, ProviderPreset] = {
     'deepseek': ProviderPreset('https://api.deepseek.com', 'deepseek-v4-flash-vision-exp', 'DEEPSEEK_API_KEY'),
 }
 
+#: Добавочные поля тела запроса по имени модели (единственная таблица). MiniMax-M3 по умолчанию думает и кладёт
+#: ``<think>…</think>`` прямо в ``content`` перед JSON (замер 05.11: 231 из 283 токенов ответа — рассуждение,
+#: проверка схемы отклоняла ответ). ``thinking: disabled`` по документации MiniMax (text-openai-api) у M3
+#: отключает рассуждение; у ``MiniMax-M3.1-Flash`` то же поле даёт 400, поэтому ключ — модель (в нижнем регистре),
+#: а не провайдер. Источник знания о моделях — ``rob_box_llm.providers.minimax`` (``model_always_thinks``); в образ
+#: ``vision-hailo`` ``rob_box_llm`` не входит, поэтому таблица здесь, а согласие с ним держит тест.
+MODEL_EXTRA_BODY: Dict[str, Dict[str, Any]] = {
+    'minimax-m3': {'thinking': {'type': 'disabled'}},
+}
+
 DEFAULT_TIMEOUT_SEC = 20.0
 MAX_TOKENS = 400
 
@@ -86,6 +96,7 @@ def make_describer(
                     {'type': 'image_url', 'image_url': {'url': image}},
                 ],
             }],
+            **MODEL_EXTRA_BODY.get(model.strip().lower(), {}),
         }
         request = urllib.request.Request(
             url, data=json.dumps(body, ensure_ascii=False).encode('utf-8'),
@@ -135,6 +146,7 @@ __all__ = [
     'ENV_MAX_PER_HOUR',
     'ENV_MODEL',
     'ENV_PROVIDER',
+    'MODEL_EXTRA_BODY',
     'PROVIDER_PRESETS',
     'ProviderPreset',
     'budget_from_env',
