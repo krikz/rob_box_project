@@ -1680,6 +1680,11 @@ synth_command() {  # $1=text $2=voice $3=out_wav
         return 1
     fi
     provider="$E2E_TTS_PROVIDER_RESOLVED"
+    # Одиночное вейк-слово -- русским голосом, чей бы шаг ни был (05.11; список слов -- e2e_events.BARE_WAKE_WORDS).
+    if [ "$(python3 "$(_events_py)" barewake --heard "$text" 2>/dev/null | _ev_kv bare)" = "1" ]; then
+        echo ">>> synth wake-only: «${text}» голосом wake вместо ${voice:-по умолчанию}"
+        voice="wake"
+    fi
     native="$(map_tts_voice "$provider" "$voice")"
     case "$provider" in
         yandex|minimax|silero) ;;
@@ -1708,7 +1713,7 @@ synth_surface_log() {
     [ -f "$2" ] || return 0
     while IFS= read -r line; do
         log "STEP ${1}: ${line#>>> }"
-    done < <(grep -aE '^>>> synth (retry|cache)' "$2" 2>/dev/null)
+    done < <(grep -aE '^>>> synth (retry|cache|wake)' "$2" 2>/dev/null)
     return 0
 }
 

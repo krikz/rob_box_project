@@ -127,6 +127,18 @@ PY
 map_tts_voice() {
     # $1=provider $2=voice. Печатает голос провайдера в stdout.
     local provider="$1" voice="$2"
+    # Метка ``wake`` -- одиночное вейк-слово (synth_command, e2e_events.is_bare_wake): РУССКИЙ голос, не каст.
+    # MiniMax: Russian_ReliableMan -- единственный русский голос с замером вейка на живом канале (19/22, 86 %,
+    # docs/dialog/role_voices_biometrics_2026-10-23.md; не хуже каста 17-21/21) и тот же, что дефолт ниже. Yandex не измерен.
+    if [ "$voice" = "wake" ]; then
+        case "$provider" in
+            yandex) printf 'anton' ;;
+            silero) printf 'aidar' ;;
+            minimax) printf 'Russian_ReliableMan' ;;
+            *) printf 'wake' ;;
+        esac
+        return 0
+    fi
     case "$provider" in
         yandex)
             # Yandex — исходный каталог сценариев, перевод не нужен.
