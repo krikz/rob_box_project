@@ -12,7 +12,7 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(REPO_ROOT / "scripts" / "e2e"))
-sys.path.insert(0, str(REPO_ROOT / ".github" / "workflows" / "scripts"))
+sys.path.insert(0, str(REPO_ROOT / "scripts" / "ci" / "e2e"))
 
 import e2e_tool_match as etm  # noqa: E402
 import gen_night_marathon as gen  # noqa: E402

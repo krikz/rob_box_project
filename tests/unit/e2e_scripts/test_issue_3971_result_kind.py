@@ -32,7 +32,7 @@ from typing import Any, Dict
 import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
-SCRIPTS_DIR = REPO_ROOT / ".github" / "workflows" / "scripts"
+SCRIPTS_DIR = REPO_ROOT / "scripts" / "ci" / "e2e"
 NIGHT = REPO_ROOT / ".github" / "e2e" / "scenarios" / "night"
 ACT5 = NIGHT / "night_marathon_act5_renardo_live_v1.json"
 ACT8 = NIGHT / "night_marathon_act8_barge_in_v1.json"

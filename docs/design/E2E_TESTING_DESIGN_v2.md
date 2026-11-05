@@ -217,7 +217,7 @@ v2 добавляет в cron-конфиг: `e2e_alert` тег — чтобы п
 ### A.10 Атомарный харнесс `e2e_voice_test.sh` (v2, 11.08) — ТЕКУЩИЙ СТАНДАРТ
 
 С 11.08 `L-E2E Voice Test.yml` вызывает **`e2e_voice_test.sh`** (лежит в
-`.github/workflows/scripts/e2e_voice_test.sh`, копируется на build host 249
+`scripts/ci/e2e/e2e_voice_test.sh`, копируется на build host 249
 и запускается там). Старый `e2e_remote.sh` больше **не используется**
 workflow'ом.
 

@@ -38,7 +38,7 @@ GATE-1 зелёный, а проверено — ничего.
 
 Каст 26.10 (#4038, решение Шифу: голоса ролей разнесены по эмбеддингам живого канала; замер —
 `docs/dialog/role_voices_biometrics_2026-10-26.md`). Имя голоса в шаге — метка роли, голос MiniMax ей подбирает
-`map_tts_voice` в `.github/workflows/scripts/e2e_voice_lib.sh` (одна таблица).
+`map_tts_voice` в `scripts/ci/e2e/e2e_voice_lib.sh` (одна таблица).
 
 | Голос в шаге | Голос MiniMax | Персонаж | Представляется? |
 |---|---|---|---|
@@ -73,7 +73,7 @@ GATE-1 зелёный, а проверено — ничего.
 Имена голосов в сценариях — яндексовские, но синтезирует команду тот
 провайдер, который сегодня жив (`--tts-provider`, по умолчанию `auto`:
 yandex → minimax → silero). Перевод имени делает `map_tts_voice()` в
-`.github/workflows/scripts/e2e_voice_lib.sh`.
+`scripts/ci/e2e/e2e_voice_lib.sh`.
 
 **Это не косметика.** Акты 2 и 3 держатся на том, что робот слышит четырёх
 РАЗНЫХ людей. Если два голоса провайдера звучат для resemblyzer одинаково,
@@ -553,7 +553,7 @@ Vision Pi ROS не установлен. Форма `ssh <robot> 'ros2 param set
   прогона; берутся шаги, у которых текст и голос в логе те же, что в сценарии).
 
 Печать `PRESYNTH <label>: eq=…` и `E2E_INFRA_FAIL scenario_too_long` до первого PLAY в `presynth_scenario` — правка
-харнесса (`.github/workflows/scripts/e2e_voice_test.sh`), в #4077 очереди 1 не сделана.
+харнесса (`scripts/ci/e2e/e2e_voice_test.sh`), в #4077 очереди 1 не сделана.
 
 ---
 
@@ -613,7 +613,7 @@ tools(56): clear_waypoints, compose_music, ..., stop_music, ...
   ADR-0022 гейт был декоративным.
 - **`must_not_call` падал всегда**, когда его вообще выставляли.
 
-Починка — `.github/workflows/scripts/e2e_tool_match.py`: `tool_invoked()`
+Починка — `scripts/ci/e2e/e2e_tool_match.py`: `tool_invoked()`
 ищет имя тула только по маркерам реального вызова (`tools=['x']`,
 `ToolCall(name='x')`, `Запрос выполнения: x`, `Инструмент x выполнен`),
 а для НЕ-имён (`"STOP command received"`, `"Cancel: new STT input"`)
@@ -668,7 +668,7 @@ tools(56): clear_waypoints, compose_music, ..., stop_music, ...
 | `.github/e2e/scenarios/night/night_marathon_manifest.json` | порядок актов для раннера |
 | `scripts/agent_flow/agent-flow-night-marathon.sh` | cron-обёртка: окно, дедлайн, дедуп за сутки |
 | `scripts/agent_flow/tests/test_e2e_process_robot_busy_gate.sh` | тест гейта G3.5 (робот занят) |
-| `.github/workflows/scripts/e2e_tool_match.py` | «тул вызван» vs «тул доступен» (§8.5) |
+| `scripts/ci/e2e/e2e_tool_match.py` | «тул вызван» vs «тул доступен» (§8.5) |
 | `tests/unit/e2e_scripts/test_e2e_tool_match.py` | тесты матчера на живых логах |
 
 Файлы актов **генерируются**. Правка руками переживёт ровно до следующего

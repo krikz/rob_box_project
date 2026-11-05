@@ -6,7 +6,7 @@
 | Дата | 2026-08-22 |
 | Автор | devops (Hermes Agent) |
 | Контекст | kanban t_b7d7656e — `harness-output-missing` (round-167 scp race, run #32533566491) |
-| Затрагивает | `.github/workflows/L-E2E Voice Test.yml` (`Collect e2e artifacts from build machine` + `Validate e2e result`), `.github/workflows/scripts/e2e_voice_test.sh` (уже пишет verdict.txt) |
+| Затрагивает | `.github/workflows/L-E2E Voice Test.yml` (`Collect e2e artifacts from build machine` + `Validate e2e result`), `scripts/ci/e2e/e2e_voice_test.sh` (уже пишет verdict.txt) |
 | Родители | ADR-0015 (e2e verdict SOT, stdout), ADR-0022 (GATE-1 done-gates) |
 | Связанные | PR #1517, verdict-fail-streak-2026-08-22.md (t_fb037ed1) §W4 + §S3, issue #1353 (GITHUB_RUN_ID env для OUT_DIR), issue #1478 (rsync вместо trailing-dot scp) |
 

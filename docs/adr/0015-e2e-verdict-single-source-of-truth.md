@@ -48,7 +48,7 @@
 
 ### 1.3 Корневая причина ложного PASS в `check_cycle`
 
-Файл: `.github/workflows/scripts/e2e_voice_test.sh`, строки 119–147:
+Файл: `scripts/ci/e2e/e2e_voice_test.sh`, строки 119–147:
 
 ```bash
 # 3) ПОРЯДОК: LLM INPUT команды должен быть ПОСЛЕ ПРИНЯТО,
@@ -126,7 +126,7 @@ notes=only_greeting: tts[greeting]@11:59:45 < accept[command]@12:00:17
 
 #### Изменение A: Skip-line фильтр в `check_cycle` (root cause fix)
 
-**Файл**: `.github/workflows/scripts/e2e_voice_test.sh`
+**Файл**: `scripts/ci/e2e/e2e_voice_test.sh`
 
 **Сейчас** (lines 119–147):
 ```bash

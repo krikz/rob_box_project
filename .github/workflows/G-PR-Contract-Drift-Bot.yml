@@ -102,4 +102,4 @@ jobs:
           DEDUP_HOURS: "6"
         run: |
           set -euo pipefail
-          bash .github/scripts/pr_contract_drift_bot.sh
+          bash scripts/ci/pr_contract_drift_bot.sh

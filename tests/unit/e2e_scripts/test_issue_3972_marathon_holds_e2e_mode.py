@@ -39,7 +39,7 @@ from tests.unit.e2e_scripts.test_issue_2890_act_isolation import (
 
 RUNNER = REPO_ROOT / "scripts" / "e2e" / "run_night_marathon.sh"
 WORKFLOW = REPO_ROOT / ".github" / "workflows" / "L-E2E Voice Test.yml"
-HARNESS = REPO_ROOT / ".github" / "workflows" / "scripts" / "e2e_voice_test.sh"
+HARNESS = REPO_ROOT / "scripts" / "ci" / "e2e" / "e2e_voice_test.sh"
 
 ACT2 = "night_marathon_act2_acquaintance_v1.json"
 ACT2B = "night_marathon_act2b_identity_question_v1.json"

@@ -28,7 +28,7 @@ import sys
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-HARNESS = REPO_ROOT / ".github" / "workflows" / "scripts" / "e2e_voice_test.sh"
+HARNESS = REPO_ROOT / "scripts" / "ci" / "e2e" / "e2e_voice_test.sh"
 
 # Фрагмент лога робота из run 35699257202, шаг n209_recall_boris.
 LOGS = (

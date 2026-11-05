@@ -3,7 +3,7 @@
 
 Зачем
 =====
-Таблица ``map_tts_voice`` в ``.github/workflows/scripts/e2e_voice_lib.sh``
+Таблица ``map_tts_voice`` в ``scripts/ci/e2e/e2e_voice_lib.sh``
 утверждает, что четыре яндексовских голоса сценариев (anton / ermil /
 zahar / filipp) переводятся в «гарантированно различимых» четырёх
 speaker'ов у каждого провайдера. Это утверждение никогда не измерялось.
@@ -48,7 +48,7 @@ resemblyzer, torch, requests, yandex-grpc и ключи провайдеров::
 ========================
 Запросы к провайдерам ПОВТОРЯЮТ то, что делает e2e-харнесс
 (``synth_minimax`` / ``synth_yandex`` в
-``.github/workflows/scripts/e2e_voice_test.sh``) — мерить надо ровно тот
+``scripts/ci/e2e/e2e_voice_test.sh``) — мерить надо ровно тот
 звук, который e2e играет роботу. При расхождении источник истины —
 харнесс, а не этот скрипт.
 
@@ -487,7 +487,7 @@ def role_specs(provider: str) -> List[str]:
     bash = shutil.which("bash")
     if bash is None:
         raise RuntimeError("--roles: нужен bash (таблица голосов живёт в e2e_voice_lib.sh)")
-    lib = Path(__file__).resolve().parents[2] / ".github" / "workflows" / "scripts" / "e2e_voice_lib.sh"
+    lib = Path(__file__).resolve().parents[2] / "scripts" / "ci" / "e2e" / "e2e_voice_lib.sh"
     script = 'source "$1" 2>/dev/null; for v in %s; do map_tts_voice "$2" "$v"; echo; done' % " ".join(
         SCENARIO_VOICES
     )
@@ -509,7 +509,7 @@ def table_scenario_of(provider: str) -> Dict[str, str]:
     bash = shutil.which("bash")
     if bash is None:
         return {}
-    lib = Path(__file__).resolve().parents[2] / ".github" / "workflows" / "scripts" / "e2e_voice_lib.sh"
+    lib = Path(__file__).resolve().parents[2] / "scripts" / "ci" / "e2e" / "e2e_voice_lib.sh"
     names = list(SCENARIO_VOICES) + ["alena", "jane", "arina", "omazh"]
     script = 'source "$1" 2>/dev/null; for v in %s; do map_tts_voice "$2" "$v"; echo; done' % " ".join(names)
     try:

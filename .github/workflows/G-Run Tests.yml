@@ -18,7 +18,7 @@ on:
       # зависит job e2e-contract-guards: без них правка харнесса, гарда или
       # сценария не поднимала проверки на push в develop.
       - '.github/workflows/G-Run Tests.yml'
-      - '.github/workflows/scripts/**'
+      - 'scripts/ci/e2e/**'
       - 'scripts/testing/**'
       - '.github/e2e/scenarios/**'
       # ADR-0166: гарды из scripts/ci/tests и scripts/e2e/tests теперь в

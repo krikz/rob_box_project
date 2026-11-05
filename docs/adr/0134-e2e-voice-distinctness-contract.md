@@ -114,7 +114,7 @@ Issue #2754 фиксирует регрессию e2e-сценария `night_ma
 ## 4. Что входит в PR
 
 1. **`scripts/e2e/gen_night_marathon.py`** — kw-only `must_not_identify_as` в `step()`, propagate в `acceptance`. Helper `_validate_voice_distinctness(...)`. Вызов helper перед `with open(...)` для каждого scenario-файла. Уважительный warning при отсутствии файла замера. CLI-флаг `--voice-distinctness-threshold` для override.
-2. **`.github/workflows/scripts/e2e_voice_test.sh`** — парсер `acceptance.must_not_identify_as` в GATE-2, fail шага с понятным сообщением.
+2. **`scripts/ci/e2e/e2e_voice_test.sh`** — парсер `acceptance.must_not_identify_as` в GATE-2, fail шага с понятным сообщением.
 3. **`.github/e2e/scenarios/night/night_marathon_act2_acquaintance_v1.json`** (регенерация) — у `n210_grisha_no_name` появится `must_not_identify_as=["Борис", "Саша"]`. Остальные 11 scenarios регенерируются автоматически (без изменений, кроме возможной косметики порядка полей — сохраняем diff минимальным).
 4. **`tests/unit/test_gen_night_marathon_voice_guard.py`** — синтетический сценарий с 4 одинаковыми голосами → `SystemExit(2)`; с 4 различными yandex-голосами → OK.
 5. **`tests/unit/e2e_scripts/test_e2e_voice_test_must_not_identify_as.py`** — синтетический лог с `Speaker: 'Борис'` + список `must_not_identify_as=["Борис","Саша"]` → красный; с `Speaker: 'unknown'` → зелёный.

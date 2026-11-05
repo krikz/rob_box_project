@@ -51,7 +51,7 @@ set -u
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
-HARNESS="$REPO_ROOT/.github/workflows/scripts/e2e_voice_test.sh"
+HARNESS="$REPO_ROOT/scripts/ci/e2e/e2e_voice_test.sh"
 CONFIG="$REPO_ROOT/docker/sound/config/voice_assistant/audio_node.yaml"
 
 for f in "$HARNESS" "$CONFIG"; do

@@ -21,7 +21,7 @@
 компонент как **первые два сегмента пути**:
 
 ```
-.github/workflows/scripts/e2e_voice_test.sh   →  .github/workflows
+scripts/ci/e2e/e2e_voice_test.sh   →  .github/workflows
 .github/e2e/scenarios/night/...json            →  .github/e2e
 scripts/testing/test_e2e_harness_deploy.sh     →  scripts/testing
 src/rob_box_voice/turn_guard.py                →  src/rob_box_voice
@@ -107,7 +107,7 @@ churn > 0 в том же окне, с явным указанием статус
 **Альтернатива A: расширить компонент до `.github/**`**
 
 Отвергнуто. Это ломает модель сегментации. `.github/e2e/scenarios/*.json`
-— это не код воркфлоу, а фикстуры/конфиги; `.github/workflows/scripts/*` —
+— это не код воркфлоу, а фикстуры/конфиги; `scripts/ci/e2e/*` —
 это код воркфлоу; `.github/ISSUE_TEMPLATE/*` — это про другое.
 Смешение делает карточку бессмысленной («ревью чего?»).
 

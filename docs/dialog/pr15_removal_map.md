@@ -51,7 +51,7 @@ bash docs/dialog/pr15_map_greps.sh origin/develop 8178e2809                  # g
 | N5 | «Вне тестов» в `pr15_map_greps.sh` применён к строке `путь:строка:текст`, а не к пути: `/voice/tts/request` 64/23 → 60/22, `/dialogue/control` 49/12 → 48/11, `/voice/tts/control` 7/4 → 8/5, `dialog_engine` 75 → 77 строк (27 файлов); остальные счётчики §4 совпали. `docker/vision/test/scenario_runner/runner.py` — читатель для 15-0a′, но в счёт «23/13» не входит | счётчики §4 читать с этой поправкой; скрипт `pr15_map_greps.sh` исправляется отдельно (фильтр по пути) | §4, 15-0a′ | нет |
 | N6 | Писатели/читатели JSON `/voice/tts/request`, которые замолчат после 15q: `scripts/maintenance/scene_set/conductor.py:231` (издатель), `tools/gui/robot_control_gui.py:39` и `robot_control_gui_simple.py:52`, `tools/audio_capture_harness/audio_capture_harness.py:549, :828`, `scripts/diagnostics/watchdog-tts.sh:63–102` (считает издателей через `ros2 topic info`, при нуле пишет «не вмешиваюсь» и тихо перестаёт чинить зависший TTS) | к 15-0d добавлены эти пять мест (перевод на `speech_client.say`; watchdog — на счёт по `SpeechRequest`-топику); без них 15q оставит тихие поломки | 15-0d (расширить) → 15q | да (строки) |
 | N7 | Тесты, которых AST не видит: `test/unit/utils/test_github_summary.py` (436) грузит `github_summary.py` по пути через `importlib` → 15a1 без его удаления красит CI; `test/ros_stubs.py:324` (`make_utterance`) лениво импортирует `parse_tg_prefix` из `core/stt_admission`, 12 тестов `unit/node/*` зовут хелпер → переписать в 15m3b; `rob_box_core/test/test_speaker_names.py:56` грузит `core/dialogue_helpers.py` по пути и проверяет алиас `INVALID_SPEAKER_NAMES`, а 15m5 оставляет там только `sanitize_speaker_name` | в строке `github_summary` «тестов 0» → 1 (436); `ros_stubs.make_utterance` — в 15m3b, `test_speaker_names` — в 15m5 | 15a1, 15m3b, 15m5 | да (все три места) |
-| N8 | Внешние упоминания `dialogue_node` вне B6, живой v2 не ломают: `.github/workflows/L-E2E Voice Test.yml:716–744`, `.github/workflows/scripts/e2e_tool_match.py` (22), `scripts/voice_bench/run_bench.py:80`, `scripts/music/live_dj/an_set.py:37`, `night_dj.sh:14`, `scripts/dialog/logparse.py:7`, `bridge_protocol.py:626/913`, `protocol_generated.ts:159/316` (литерал service `dialogue_node` в `admin_logs`) | добавить в 15p как «правка текстов/логпарсеров», часть уже не работает при v2 по умолчанию | 15p | нет |
+| N8 | Внешние упоминания `dialogue_node` вне B6, живой v2 не ломают: `.github/workflows/L-E2E Voice Test.yml:716–744`, `scripts/ci/e2e/e2e_tool_match.py` (22), `scripts/voice_bench/run_bench.py:80`, `scripts/music/live_dj/an_set.py:37`, `night_dj.sh:14`, `scripts/dialog/logparse.py:7`, `bridge_protocol.py:626/913`, `protocol_generated.ts:159/316` (литерал service `dialogue_node` в `admin_logs`) | добавить в 15p как «правка текстов/логпарсеров», часть уже не работает при v2 по умолчанию | 15p | нет |
 | N9 | D2 («`re.compile` = 0 в слое диалога: `rob_box_dialog`, `dialog_node`») — в «состоянии» только `speak_helpers` 18 и `dialogue_guards` 2; в `rob_box_dialog` ещё 12 строк в 7 файлах: `address` 2, `grammar` 1, `greeting_reply` 1, `reply_grammar` 1, `words` 3, `plan/rap_pauses` 3, `plan/segments` 1 | ни одна часть их не берёт → предложение: в 15v; если D2 про нормализацию перед синтезом, а не про весь слой — текст D2 надо сузить (решает координатор) | 15v (предложение) | да (12 строк, 7 файлов) |
 | N10 | 15m3a: хвост `stt_admission` по AST начинается раньше строки 545 (комментарий «Default steps» `:538`, `EmptyTextStep` `:544–553`), 296 строк, а не 297–303 | размер 15m3a ≈ 343 принимается как оценка; границу резать по AST | 15m3a | да (`:538`, `:544`) |
 
@@ -740,7 +740,7 @@ src/rob_box_voice/rob_box_voice/core/dialogue_guards.py:2
       1 architecture/runtime-baseline.json
       1 architecture/ownership.yml
       1 architecture/minimax-provider.md
-      1 .github/workflows/scripts/e2e_voice_test.sh
+      1 scripts/ci/e2e/e2e_voice_test.sh
 --- /voice/tts/state: строк 16, файлов 12
       3 src/rob_box_animations/rob_box_animations/face_node.py
       2 tools/led_face_lab/preview_template.html
@@ -819,7 +819,7 @@ src/rob_box_voice/rob_box_voice/core/dialogue_guards.py:2
      10 src/rob_box_supervisor/rob_box_supervisor/supervisor_node.py
       7 scripts/robot_dev/dialog_engine.sh
       5 src/rob_box_supervisor/rob_box_supervisor/operator_prompt.py
-      5 .github/workflows/scripts/e2e_voice_test.sh
+      5 scripts/ci/e2e/e2e_voice_test.sh
       4 src/rob_box_voice/rob_box_voice/dialog_node.py
       4 src/rob_box_voice/rob_box_voice/core/speech_compat.py
       4 src/rob_box_voice/config/dialog_engine.yaml
@@ -842,7 +842,7 @@ src/rob_box_voice/rob_box_voice/core/dialogue_guards.py:2
       1 src/rob_box_core/rob_box_core/voice_state.py
       1 docker/sound/scripts/telegram_bot/start_telegram_bot.sh
       1 docker/sound/scripts/supervisor/start_supervisor.sh
-      1 .github/workflows/scripts/e2e_events.py
+      1 scripts/ci/e2e/e2e_events.py
   на 8178e2809: строк 52, файлов 19
 
 === зависимости вне src (B6) ===
@@ -858,10 +858,10 @@ scripts/dialogue/chat.py:633:        from rob_box_harness.core.dialogue_state_ma
 scripts/music/live_dj/router_offline.py:23:from rob_box_voice.core.dialogue_text import strip_wake_word
 --- имя ROS-ноды /dialogue_node вне src (не путь к файлу):
 .github/e2e/scenarios/turn_occasion_meeting_v1.json:23:      "ros2 node info /dialogue_node показывает подписку на /vision/hailo/events",
-.github/workflows/scripts/e2e_voice_test.sh:644:#      «новая сессия», но молча — ros2 param set /dialogue_node
-.github/workflows/scripts/e2e_voice_test.sh:676:    robot_ros "ros2 param get /dialogue_node e2e_session_reset_token --no-daemon" 2>/dev/null \
-.github/workflows/scripts/e2e_voice_test.sh:681:    robot_ros "ros2 param set /dialogue_node e2e_session_reset_token $token --no-daemon" >/dev/null 2>&1
-.github/workflows/scripts/e2e_voice_test.sh:689:    echo "           проверь вручную: ssh <robot> \"docker exec voice-assistant bash -lc 'source /opt/ros/humble/setup.bash; source /ws/install/setup.bash; ros2 param get /dialogue_node e2e_session_reset_token --no-daemon'\"" >&2
+scripts/ci/e2e/e2e_voice_test.sh:644:#      «новая сессия», но молча — ros2 param set /dialogue_node
+scripts/ci/e2e/e2e_voice_test.sh:676:    robot_ros "ros2 param get /dialogue_node e2e_session_reset_token --no-daemon" 2>/dev/null \
+scripts/ci/e2e/e2e_voice_test.sh:681:    robot_ros "ros2 param set /dialogue_node e2e_session_reset_token $token --no-daemon" >/dev/null 2>&1
+scripts/ci/e2e/e2e_voice_test.sh:689:    echo "           проверь вручную: ssh <robot> \"docker exec voice-assistant bash -lc 'source /opt/ros/humble/setup.bash; source /ws/install/setup.bash; ros2 param get /dialogue_node e2e_session_reset_token --no-daemon'\"" >&2
 docker/vision/test/config/voice_assistant_test.yaml:6:/dialogue_node:
 scripts/lint/seam_allowlist.json:17:    "/voice/music/event": "ADR-0149 §2.3, PR-4 (#3312): события владельца плеера v2 (started/rejected), публикуются владельцем плеера v2. Подписчики — SetSession/dialogue_node в PR-5/PR-6 той же миграции (ADR-0149 §9); до них наблюдатель — живая проверка `ros2 topic echo /voice/music/event`. Запись удалить в PR, где появится подписчик.",
 scripts/robot_dev/dialog_engine.sh:5:#   scripts/robot_dev/dialog_engine.sh status  # только показать значение и строки dialog_node/dialogue_node из логов

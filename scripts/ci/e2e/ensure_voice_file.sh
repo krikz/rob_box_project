@@ -1,6 +1,6 @@
 #!/bin/bash
 # E2E voice test: ensure voice command file exists on build machine.
-# ⚠️ DEPRECATED (11.08): атомарный e2e_voice_test.sh (см. .github/workflows/scripts/README.md)
+# ⚠️ DEPRECATED (11.08): атомарный e2e_voice_test.sh (см. scripts/ci/e2e/README.md)
 #   синтезирует голосовую команду на лету сам — этот скрипт больше не нужен.
 #   Оставлен для legacy-вызовов со старым контрактом voice_file. Удалить через
 #   месяц если не понадобится.

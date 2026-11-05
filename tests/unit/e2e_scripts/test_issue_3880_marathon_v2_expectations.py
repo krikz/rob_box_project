@@ -182,7 +182,7 @@ def test_harness_reads_silent_ok_from_the_scenario(tmp_path, label):
     bash = shutil.which("bash")
     if bash is None:
         pytest.skip("bash недоступен")
-    lib = ROOT / ".github/workflows/scripts/e2e_voice_lib.sh"
+    lib = ROOT / "scripts/ci/e2e/e2e_voice_lib.sh"
     out = tmp_path / "o.tsv"
     script = ('source "%s"; parse_scenario_to_tsv "%s" "%s"; '
               'while IFS=$\'\\x1f\' eval "$E2E_SCENARIO_ROW_READ"; do '

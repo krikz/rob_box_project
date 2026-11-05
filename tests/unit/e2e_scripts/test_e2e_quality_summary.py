@@ -36,7 +36,7 @@ from pathlib import Path
 import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
-E2E_SCRIPT = REPO_ROOT / ".github" / "workflows" / "scripts" / "e2e_voice_test.sh"
+E2E_SCRIPT = REPO_ROOT / "scripts" / "ci" / "e2e" / "e2e_voice_test.sh"
 WORKFLOW = REPO_ROOT / ".github" / "workflows" / "L-E2E Voice Test.yml"
 
 pytestmark = pytest.mark.skipif(shutil.which("bash") is None, reason="bash недоступен")
@@ -237,7 +237,7 @@ class TestSummaryContent:
         напрямую, а не по памяти.
         """
         producer = (
-            REPO_ROOT / ".github" / "workflows" / "scripts" / "e2e_audio_metrics.py"
+            REPO_ROOT / "scripts" / "ci" / "e2e" / "e2e_audio_metrics.py"
         ).read_text(encoding="utf-8")
         consumer = E2E_SCRIPT.read_text(encoding="utf-8")
         for key in ("rms_dbfs", "peak_dbfs", "silence_ratio", "mic_working"):

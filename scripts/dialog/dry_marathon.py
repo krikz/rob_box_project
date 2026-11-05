@@ -37,7 +37,7 @@ sys.path.insert(0, str(_HERE))
 
 from dry_stand import REPO, DryStand, new_workdir  # noqa: E402
 
-sys.path.insert(0, str(REPO / ".github" / "workflows" / "scripts"))
+sys.path.insert(0, str(REPO / "scripts" / "ci" / "e2e"))
 import e2e_tool_match as etm  # noqa: E402
 
 SCENARIOS = REPO / ".github" / "e2e" / "scenarios" / "night"

@@ -27,7 +27,7 @@
 #
 # Локальный прогон:
 #   GH_REPO=krikz/rob_box_project PR_NUMBER=1857 DRY_RUN=true \
-#     bash .github/scripts/pr_contract_drift_bot.sh
+#     bash scripts/ci/pr_contract_drift_bot.sh
 # ============================================================================
 set -euo pipefail
 

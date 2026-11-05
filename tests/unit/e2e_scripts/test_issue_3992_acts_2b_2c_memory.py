@@ -27,7 +27,7 @@ import pytest
 
 ROOT = Path(__file__).resolve().parents[3]
 NIGHT = ROOT / ".github" / "e2e" / "scenarios" / "night"
-SCRIPTS = ROOT / ".github" / "workflows" / "scripts"
+SCRIPTS = ROOT / "scripts" / "ci" / "e2e"
 GEN = ROOT / "scripts" / "e2e" / "gen_night_marathon.py"
 SPEAKER_ID_NODE = ROOT / "src" / "rob_box_voice" / "rob_box_voice" / "speaker_id_node.py"
 

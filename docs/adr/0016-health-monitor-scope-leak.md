@@ -120,7 +120,7 @@ stdout, который деплой-чек сканирует.
 Реализация (PR к #775):
 
 ```python
-# .github/scripts/deployment_issue_dedup.py
+# scripts/ci/deployment_issue_dedup.py
 CRITICAL_EXCLUDE_BY_SCOPE = {
     "main": [
         # ... existing patterns ...

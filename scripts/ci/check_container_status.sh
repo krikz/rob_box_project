@@ -2,7 +2,7 @@
 # ============================================================================
 # check_container_status.sh — регрессионный скрипт (issue #2122)
 #
-# Источник истины: <repo>/.github/scripts/check_container_status.sh
+# Источник истины: <repo>/scripts/ci/check_container_status.sh
 # Копия на runner (self-hosted) обновляется через checkout — НЕ через
 # hardlink/symlink. Шаблон дистрибуции совпадает с deployment_issue_dedup.py
 # (вызывается из .github/workflows/L-Deploy and Verify.yml).

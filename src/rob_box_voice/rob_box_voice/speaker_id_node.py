@@ -1817,7 +1817,7 @@ class SpeakerIdNode(Node):
         ``create_publisher``/``create_subscription`` под ``src/`` — топик,
         который стирает БД по одному fire-and-forget сообщению без ответа
         и без авторизации, паблишер которого живёт в
-        ``.github/workflows/scripts/e2e_voice_test.sh`` (bash, сторож его
+        ``scripts/ci/e2e/e2e_voice_test.sh`` (bash, сторож его
         не видит), заслуженно падал как «шов без потребителя». Параметр
         сильнее и по существу: ``ros2 param set`` синхронный и возвращает
         успех/провал вызывающему в exit-коде, а ``e2e_mode`` объявлен
