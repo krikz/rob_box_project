@@ -221,6 +221,43 @@ def road_service(ticks, T=6.0, direction=1):
         yield f
 
 
+# ------------------------------------------------------------ roadworks beacon
+YELLOW = col(25, 17, 0)
+#: Amber strobe wig-wag (#4365): one cycle — double flash on the left (orange), then on the right (yellow).
+ROADWORKS_CYCLE_S = 1.2
+ROADWORKS_FLASHES = ((0.0, 0.08), (0.15, 0.23))   # (on, off) inside each half-cycle, s
+
+
+def roadworks_pattern(t):
+    """Which side flashes at ``t``: ``(left_on, right_on)``, never both."""
+    p = t % ROADWORKS_CYCLE_S
+    half = ROADWORKS_CYCLE_S / 2
+    right = p >= half
+    q = p - half if right else p
+    on = any(a <= q < b for a, b in ROADWORKS_FLASHES)
+    return on and not right, on and right
+
+
+def roadworks_beacon(ticks, T=4.8):
+    """'Roadworks': amber/yellow strobe beacons instead of the eyes and rear lights, the grille is a yellow-black
+    hazard board crawling slowly; the flashing side of the board lights up with its beacon. Proximity alarm (#4365)."""
+    for t in ticks:
+        left, right = roadworks_pattern(t)
+        f = Frame()
+        f.eye_l = flasher(AMBER, left)
+        f.eye_r = flasher(YELLOW, right)
+        shift = int(t * 6)
+        for y in range(5):
+            for x in range(25):
+                if x == 12 or ((x + y + shift) // 3) % 2:
+                    continue
+                side_on = left if x < 12 else right
+                f.mouth[y, x] = (AMBER if x < 12 else YELLOW) * (1.0 if side_on else 0.2)
+        f.rear_l = flasher(AMBER, left)
+        f.rear_r = flasher(YELLOW, right)
+        yield f
+
+
 # ------------------------------------------------------------ driving
 def accelerating(ticks, T=5.0):
     for t in ticks:

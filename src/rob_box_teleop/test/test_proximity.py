@@ -159,30 +159,49 @@ def test_stop_releases_to_warn_when_still_close():
 
 # -- тревога: мигалка, писк, голос — одним событием ------------------------------------------
 
-LIGHTS = px.Effect(px.EFFECT_LIGHTS, "police_lights", px.LIGHTS_TTL_MS)
+LIGHTS = px.Effect(px.EFFECT_LIGHTS, "roadworks_beacon", px.LIGHTS_TTL_MS)
+WARN_BEEP = px.Effect(px.EFFECT_SOUND, "robot_backup_beep")
+STOP_BEEP = px.Effect(px.EFFECT_SOUND, "robot_backup_beep_fast")
 
 
-def test_warn_is_lights_and_one_short_beep_without_voice():
+def test_alarm_is_the_roadworks_beacon_and_the_truck_backup_beeper_not_the_police():
+    """Решение Шифу 05.11: маячок «дорожные работы» вместо полицейской мигалки, бипер заднего хода вместо писков;
+    «внимание» бипает мерно (бип 0.45 с / пауза 0.45 с), «стоп» — чаще."""
+    warn, stop = px.ALARMS[px.ZONE_WARN], px.ALARMS[px.ZONE_STOP]
+    assert warn.animation == stop.animation == "roadworks_beacon"
+    assert (warn.sound, warn.sound_every_s) == ("robot_backup_beep", 0.9)
+    assert (stop.sound, stop.sound_every_s) == ("robot_backup_beep_fast", 0.4)
+    assert stop.sound_every_s < warn.sound_every_s
+    assert all(a.animation != "police_lights" for a in px.ALARMS.values())
+
+
+def test_warn_is_lights_and_a_steady_beeper_without_voice():
     s = px.AlarmScheduler()
-    assert s.tick(0.0, px.ZONE_WARN) == [LIGHTS, px.Effect(px.EFFECT_SOUND, "ui_notification")]
+    assert s.tick(0.0, px.ZONE_WARN) == [LIGHTS, WARN_BEEP]
     assert s.tick(0.3, px.ZONE_WARN) == []
-    assert s.tick(0.5, px.ZONE_WARN) == [LIGHTS]          # продление мигалки, писк не повторяется
-    assert s.tick(2.0, px.ZONE_WARN) == [LIGHTS]
+    assert s.tick(0.5, px.ZONE_WARN) == [LIGHTS]          # продление мигалки, бип ещё не пора
+    assert s.tick(0.9, px.ZONE_WARN) == [WARN_BEEP]       # бип 0.45 с + пауза 0.45 с — следующий
+    assert s.tick(1.0, px.ZONE_WARN) == [LIGHTS]
+    assert s.tick(1.8, px.ZONE_WARN) == [LIGHTS, WARN_BEEP]
+    assert all(e.kind != px.EFFECT_SPEECH for t in (2.7, 3.6, 4.5) for e in s.tick(t, px.ZONE_WARN))
 
 
 def test_stop_starts_lights_beep_and_voice_in_one_tick():
     s = px.AlarmScheduler()
     s.tick(0.0, px.ZONE_WARN)
-    assert s.tick(0.1, px.ZONE_STOP) == [LIGHTS, px.Effect(px.EFFECT_SOUND, "robot_error"),
-                                         px.Effect(px.EFFECT_SPEECH, "Осторожно!")]
+    assert s.tick(0.1, px.ZONE_STOP) == [LIGHTS, STOP_BEEP, px.Effect(px.EFFECT_SPEECH, "Осторожно!")]
 
 
-def test_stop_keeps_beeping_and_lights_while_it_holds_voice_only_on_entry():
+def test_stop_beeps_fast_and_keeps_lights_while_it_holds_voice_only_on_entry():
     s = px.AlarmScheduler()
     s.tick(0.0, px.ZONE_STOP)
+    assert s.tick(0.2, px.ZONE_STOP) == []
+    assert s.tick(0.4, px.ZONE_STOP) == [STOP_BEEP]
     assert s.tick(0.5, px.ZONE_STOP) == [LIGHTS]
-    assert s.tick(0.8, px.ZONE_STOP) == [px.Effect(px.EFFECT_SOUND, "robot_error")]
-    assert [e.kind for e in s.tick(1.6, px.ZONE_STOP)] == [px.EFFECT_LIGHTS, px.EFFECT_SOUND]
+    assert s.tick(0.8, px.ZONE_STOP) == [STOP_BEEP]
+    beeps = sum(e == STOP_BEEP for k in range(1, 41) for e in s.tick(0.8 + k * 0.05, px.ZONE_STOP))
+    assert beeps == 5                                     # 2 с при 20 Гц — бип каждые 0.4 с
+    assert [e.kind for e in s.tick(3.6, px.ZONE_STOP)] == [px.EFFECT_LIGHTS, px.EFFECT_SOUND]
 
 
 def test_alarm_ends_with_the_zone_lights_expire_by_ttl():
@@ -197,7 +216,7 @@ def test_voice_is_not_repeated_more_often_than_the_cooldown():
     s = px.AlarmScheduler()
     s.tick(0.0, px.ZONE_STOP)
     s.tick(1.5, px.ZONE_CLEAR)
-    again = s.tick(1.6, px.ZONE_STOP)                     # стоп сразу снова — писк и мигалка, голоса нет
+    again = s.tick(1.6, px.ZONE_STOP)                     # стоп сразу снова — бип и мигалка, голоса нет
     assert [e.kind for e in again] == [px.EFFECT_LIGHTS, px.EFFECT_SOUND]
     s.tick(3.0, px.ZONE_CLEAR)
     later = s.tick(px.PHRASE_COOLDOWN_S + 0.1, px.ZONE_STOP)
