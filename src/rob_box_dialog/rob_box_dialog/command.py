@@ -37,7 +37,7 @@ from rob_box_dialog import phrases
 from rob_box_dialog.cast import Role
 from rob_box_dialog.expression import shows
 from rob_box_dialog.face_scene import FIELDS as FACE_FIELDS, FaceScene, problem as face_problem
-from rob_box_dialog.words import music_promises, search_promises, voice_promises
+from rob_box_dialog.words import done_claims, music_promises, search_promises, voice_promises
 
 #: Поля команды и экспрессии — из той же схемы, что видит LLM (:func:`knowledge.command_schema`).
 _COMMAND_FIELDS: Tuple[str, ...] = tuple(kn.command_schema("json")["properties"])
@@ -636,6 +636,7 @@ def validate(cmd: Result, available_tools: Collection[str], session: Any = None,
         lambda: _check_music_promise(cmd, agent),
         lambda: _check_voice_promise(cmd, agent),
         lambda: _check_search_promise(cmd, agent),
+        lambda: _check_done_claim(cmd, agent),
         lambda: _check_args_without_action(cmd),
         lambda: _check_perform(cmd, busy),
         lambda: _check_sing(cmd, form),
@@ -1048,6 +1049,26 @@ def _check_search_promise(cmd: Command, agent: str) -> None:
         raise _Bad(kn.VIOLATION_SEARCH_PROMISE, f"speech обещает {', '.join(broken)} без тула поиска")
 
 
+def unkept_done_claims(cmd: Command) -> Tuple[str, ...]:
+    """Виды утверждений о сделанном в ``speech`` (``words.done_claims``), которых команда не делает: нет тула
+    ``knowledge.DONE_CLAIMS[вид].tools`` среди ``actions``."""
+    called = {a.tool for a in cmd.actions}
+    return tuple(kind for kind in done_claims(cmd.speech or "") if not called & set(kn.DONE_CLAIMS[kind].tools))
+
+
+def _check_done_claim(cmd: Command, agent: str) -> None:
+    """Речь говорит, что действие уже сделано («Готово, хил-окно удалена.», «сохранил точку», «поехал»), а тула, что его
+    делает, в команде нет (#4391, ADR-0148: фразу об успехе строит код по результату тула, не модель). Нарушение
+    ``VIOLATION_DONE_CLAIM`` - повтор с подсказкой, после него - фраза кода «не сделал»; ``allowed`` - тулы, что
+    сделали бы слова правдой. Речь, что не прозвучит (:func:`_speech_is_dropped`), ничего не утверждает."""
+    if _speech_is_dropped(cmd, agent):
+        return
+    broken = unkept_done_claims(cmd)
+    if broken:
+        tools = tuple(dict.fromkeys(t for kind in broken for t in kn.DONE_CLAIMS[kind].tools))
+        raise _Bad(kn.VIOLATION_DONE_CLAIM, f"speech утверждает {', '.join(broken)} без тула", tools)
+
+
 def _check_args_without_action(cmd: Command) -> None:
     """Модель положила аргументы действия на уровень команды, а самого действия нет (:func:`_lift_args` выбросил
     их целиком): она хотела действие, но не назвала тул - команда без него молча ничего не сделает. Нарушение
@@ -1321,6 +1342,7 @@ HINTS: Mapping[str, str] = MappingProxyType({
     kn.VIOLATION_MUSIC_PROMISE: kn.MUSIC_PROMISE_HINT,
     kn.VIOLATION_VOICE_PROMISE: kn.VOICE_PROMISE_HINT,
     kn.VIOLATION_SEARCH_PROMISE: kn.SEARCH_PROMISE_HINT,
+    kn.VIOLATION_DONE_CLAIM: kn.DONE_CLAIM_HINT,
     kn.VIOLATION_ARGS_WITHOUT_ACTION: "аргументы пишутся только внутри действия: {\"actions\": [{\"tool\": <тул>, "
                                       "\"args\": {...}}]}; на уровне команды их нет, и без тула ничего не сделано",
     "bad_ask": "у ask нужен text",
