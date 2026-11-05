@@ -63,6 +63,10 @@ REJECT_DESCRIPTION_EMPTY = "description_empty"
 
 _PROPOSAL_KEYS = (SECTION_APPEARANCE, SECTION_SPEECH, "epithet")
 _FENCE_RE = re.compile(r"^```(?:json)?\s*|\s*```$", re.IGNORECASE)
+_THINK_OPEN, _THINK_CLOSE = "<think>", "</think>"
+
+#: Сколько знаков ответа модели попадает в строку лога об отказе схемы.
+RAW_PREVIEW_LEN = 120
 
 #: Узкая схема ответа модели. ``behavior`` в ней нет — его пишет код.
 PROPOSAL_SCHEMA: Dict[str, Any] = {
@@ -226,24 +230,65 @@ def build_proposal_prompt(material: PersonaMaterial, *, current_epithet: Optiona
     )
 
 
+def preview_raw(raw: Any) -> str:
+    """Начало ответа модели для лога отказа: одна строка, не длиннее :data:`RAW_PREVIEW_LEN` знаков."""
+    text = raw.decode("utf-8", "replace") if isinstance(raw, bytes) else str(raw)
+    text = " ".join(text.split())
+    return text if len(text) <= RAW_PREVIEW_LEN else text[:RAW_PREVIEW_LEN] + "…"
+
+
+def _strip_wrappers(text: str) -> Tuple[Optional[str], str]:
+    """Снять обёртки ответа: ведущий блок ``<think>…</think>`` (рассуждение M3 в content) и ```json-ограду.
+
+    ``(текст, "")`` или ``(None, почему)``: рассуждение без закрывающего тега — ответ оборван (потолок токенов).
+    """
+    text = text.strip()
+    if text[: len(_THINK_OPEN)].lower() == _THINK_OPEN:
+        close_at = text.lower().find(_THINK_CLOSE)
+        if close_at < 0:
+            return None, f"ответ оборван внутри {_THINK_OPEN} (нет {_THINK_CLOSE})"
+        text = text[close_at + len(_THINK_CLOSE) :].strip()  # noqa: E203 — срез по black
+    return _FENCE_RE.sub("", text).strip(), ""
+
+
+def _schema_mismatch(data: Any) -> str:
+    """Чем разобранный JSON не совпал со схемой; пустая строка — совпал."""
+    if not isinstance(data, Mapping):
+        return f"не объект, а {type(data).__name__}"
+    extra = sorted(str(k) for k in set(data) - set(_PROPOSAL_KEYS))
+    missing = [k for k in _PROPOSAL_KEYS if k not in data]
+    if extra or missing:
+        return f"лишние ключи {extra}, нет ключей {missing}"
+    wrong = [k for k in _PROPOSAL_KEYS if not isinstance(data[k], str)]
+    return f"не строка в {wrong}" if wrong else ""
+
+
+def _parse(raw: Any) -> Tuple[Optional[Dict[str, str]], str]:
+    """``(поля, "")`` или ``(None, подробность отказа)``."""
+    data = raw
+    if isinstance(raw, (str, bytes)):
+        text, problem = _strip_wrappers(raw.decode("utf-8", "replace") if isinstance(raw, bytes) else raw)
+        if text is None:
+            return None, problem
+        try:
+            data = json.loads(text)
+        except ValueError as exc:
+            return None, f"не JSON ({exc.msg})"
+    problem = _schema_mismatch(data)
+    if problem:
+        return None, problem
+    return {k: " ".join(data[k].split()) for k in _PROPOSAL_KEYS}, ""
+
+
 def parse_proposal(raw: Any) -> Tuple[Optional[Dict[str, str]], Optional[str]]:
     """Разобрать ответ модели по :data:`PROPOSAL_SCHEMA`: ``(поля, None)`` или ``(None, REJECT_SCHEMA)``.
 
-    Принимает dict (structured output) или строку JSON, в том числе в ```json-ограде. Лишний ключ, не-строка
-    или отсутствующий ключ — отказ: схема узкая, догадок нет.
+    Принимает dict (structured output) или строку JSON, в том числе в ```json-ограде и после блока
+    ``<think>…</think>``. Лишний ключ, не-строка или отсутствующий ключ — отказ: схема узкая, догадок нет.
+    Подробность отказа — в :attr:`ProposalVerdict.detail` (:func:`check_proposal`).
     """
-    data = raw
-    if isinstance(raw, (str, bytes)):
-        text = _FENCE_RE.sub("", raw.decode("utf-8", "replace") if isinstance(raw, bytes) else raw).strip()
-        try:
-            data = json.loads(text)
-        except ValueError:
-            return None, REJECT_SCHEMA
-    if not isinstance(data, Mapping) or set(data) != set(_PROPOSAL_KEYS):
-        return None, REJECT_SCHEMA
-    if not all(isinstance(data[k], str) for k in _PROPOSAL_KEYS):
-        return None, REJECT_SCHEMA
-    return {k: " ".join(data[k].split()) for k in _PROPOSAL_KEYS}, None
+    fields, _ = _parse(raw)
+    return (fields, None) if fields is not None else (None, REJECT_SCHEMA)
 
 
 @dataclass(frozen=True)
@@ -253,6 +298,8 @@ class ProposalVerdict:
     description: Optional[PersonaDescription] = None
     epithet: Optional[str] = None
     reject_reason: Optional[str] = None
+    #: Подробность отказа схемы для лога: что не так и начало ответа (:func:`preview_raw`).
+    detail: str = ""
 
 
 def _description_problem(fields: Mapping[str, str], material: PersonaMaterial) -> Optional[str]:
@@ -275,9 +322,9 @@ def check_proposal(
     now: float = 0.0,
 ) -> ProposalVerdict:
     """Проверить предложение модели. Решение о записи — :func:`decide`."""
-    fields, problem = parse_proposal(raw)
+    fields, detail = _parse(raw)
     if fields is None:
-        return ProposalVerdict(reject_reason=problem)
+        return ProposalVerdict(reject_reason=REJECT_SCHEMA, detail=f"{detail}; ответ: «{preview_raw(raw)}»")
     problem = _description_problem(fields, material)
     if problem:
         return ProposalVerdict(reject_reason=problem)
@@ -344,6 +391,13 @@ def _usable(label: Optional[str]) -> bool:
     return bool(label and str(label).strip()) and not epithets.is_stranger_epithet(label)
 
 
+def _reject_note(verdict: Optional[ProposalVerdict]) -> str:
+    if verdict is None:
+        return "кандидат отклонён: нет ответа"
+    detail = f" — {verdict.detail}" if verdict.detail else ""
+    return f"кандидат отклонён: {verdict.reject_reason}{detail}"
+
+
 def decide(
     material: PersonaMaterial,
     verdict: Optional[ProposalVerdict],
@@ -365,7 +419,7 @@ def decide(
             epithet=verdict.epithet, reason=None if same else REASON_PERSONA,
             description=description, note="по описанию", previous=previous,
         )
-    note = unavailable or f"кандидат отклонён: {verdict.reject_reason if verdict else 'нет ответа'}"
+    note = unavailable or _reject_note(verdict)
     if previous:
         return EpithetDecision(epithet=previous, reason=None, description=description, note=note, previous=previous)
     label = fallback_epithet(material, taken=taken)
@@ -448,5 +502,7 @@ __all__ = [
     "fallback_epithet",
     "history_entry",
     "parse_proposal",
+    "preview_raw",
+    "RAW_PREVIEW_LEN",
     "taken_union",
 ]

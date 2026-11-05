@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
 import pytest
 
@@ -70,6 +71,56 @@ def test_parse_accepts_fenced_json_and_dict():
     fields, problem = ps.parse_proposal(fenced)
     assert problem is None and fields["appearance"] == "в очках"
     assert ps.parse_proposal({"appearance": "a  b", "speech": "", "epithet": "x"})[0]["appearance"] == "a b"
+
+
+_FIXTURES = Path(__file__).parent / "fixtures"
+
+
+def _m3_content(name):
+    """``content`` из сырого ответа MiniMax-M3 (вызов с Vision Pi 05.11, синтетическая картинка, не лицо)."""
+    payload = json.loads((_FIXTURES / name).read_text(encoding="utf-8"))
+    return payload["choices"][0]["message"]["content"]
+
+
+def test_m3_default_thinking_block_is_stripped(face_material):
+    raw = _m3_content("minimax_m3_thinking_default_2026-11-05.json")
+    assert raw.startswith("<think>")  # так M3 отвечает без ``thinking: disabled`` — причина отказа schema 05.11
+    fields, problem = ps.parse_proposal(raw)
+    assert problem is None and fields["epithet"] == "-" and fields["speech"] == ""
+    verdict = ps.check_proposal(raw, face_material)
+    assert verdict.description is not None and verdict.detail == ""
+
+
+def test_m3_thinking_disabled_answer_parses():
+    fields, problem = ps.parse_proposal(_m3_content("minimax_m3_thinking_disabled_2026-11-05.json"))
+    assert problem is None and fields["appearance"].startswith("На снимке")
+
+
+def test_think_then_fenced_json_parses():
+    raw = "<THINK>думаю\nещё</THINK>\n\n```json\n" + _proposal("в очках") + "\n```"
+    assert ps.parse_proposal(raw)[0]["appearance"] == "в очках"
+
+
+@pytest.mark.parametrize("raw, needle", [
+    ("<think>рассуждение без конца {\"appearance\"", "оборван внутри <think>"),
+    ("Вот JSON: " + _proposal("в очках"), "не JSON"),
+    (json.dumps({"внешность": "a", "speech": "", "epithet": "Б в"}, ensure_ascii=False), "лишние ключи ['внешность']"),
+    (json.dumps({"appearance": 1, "speech": "", "epithet": "Б в"}), "не строка в ['appearance']"),
+    (json.dumps(["appearance"]), "не объект"),
+])
+def test_schema_reject_detail_names_the_problem(face_material, raw, needle):
+    verdict = ps.check_proposal(raw, face_material)
+    assert verdict.reject_reason == ps.REJECT_SCHEMA
+    assert needle in verdict.detail
+    assert "ответ: «" in verdict.detail
+    note = ps.decide(face_material, verdict).note
+    assert note.startswith("словарная (кандидат отклонён: schema — ") and needle in note
+
+
+def test_preview_is_one_line_and_capped():
+    preview = ps.preview_raw("a\n\n" + "б" * 500)
+    assert "\n" not in preview and len(preview) == ps.RAW_PREVIEW_LEN + 1 and preview.endswith("…")
+    assert ps.preview_raw(b"short") == "short"
 
 
 # ── Проверка описания и клички ───────────────────────────────────────────────

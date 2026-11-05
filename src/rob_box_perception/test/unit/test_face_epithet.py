@@ -410,6 +410,29 @@ def test_explicit_vlm_env_overrides_preset():
     assert seen['auth'] == 'Bearer x' and seen['body']['model'] == 'm'
 
 
+def test_minimax_m3_request_disables_thinking():
+    """05.11: M3 без ``thinking: disabled`` кладёт ``<think>…</think>`` в content → отказ schema."""
+    seen, _ = _capture({'MINIMAX_API_KEY': 'mm'})
+    assert seen['body']['thinking'] == {'type': 'disabled'}
+    assert seen['body']['response_format'] == {'type': 'json_object'}
+
+
+@pytest.mark.parametrize('env', [
+    {vl.ENV_PROVIDER: 'deepseek', 'DEEPSEEK_API_KEY': 'k'},
+    {'MINIMAX_API_KEY': 'mm', vl.ENV_MODEL: 'MiniMax-M3.1-Flash'},  # у Flash ``disabled`` → 400 по документации
+])
+def test_thinking_field_only_for_models_that_accept_it(env):
+    seen, _ = _capture(env)
+    assert 'thinking' not in seen['body']
+
+
+def test_disabled_thinking_table_agrees_with_rob_box_llm():
+    minimax = pytest.importorskip('rob_box_llm.providers.minimax')
+    for model, extra in vl.MODEL_EXTRA_BODY.items():
+        if extra.get('thinking') == {'type': 'disabled'}:
+            assert not minimax.model_always_thinks(model), model
+
+
 # ── Новая Встреча известного лица: один вызов на Встречу ─────────────────────
 
 
