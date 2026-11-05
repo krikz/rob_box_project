@@ -103,6 +103,13 @@ def test_unsilence_words():
     assert not has_word("заработает", UNSILENCE_WORDS)
 
 
+def test_unsilence_stt_slip_govory():
+    """М11 n805b: «робот говоры» - искажение «говори»; «говорящий» тишину не снимает."""
+    for text in ("робот говоры", "робот говорили", "робот говори"):
+        assert has_word(text, UNSILENCE_WORDS), text
+    assert not has_word("робот говорящий", UNSILENCE_WORDS)
+
+
 def test_empty_stems_match_nothing():
     assert not has_word("хватит", ())
 
