@@ -397,6 +397,18 @@ def _verdict_line(
     )
 
 
+def _published_epithet(match: SpeakerMatch, decision: Optional[str] = None) -> Optional[str]:
+    """Кличка, которая уходит в ``SpeakerResult`` (ADR-0164 этап 3, #3781 п.4); ``None`` — клички нет.
+
+    Плейсхолдер «незнакомца» (``epithets.is_stranger_epithet``, старая LLM-кличка «Незнакомец» у ``c9e981cb``) —
+    не кличка: тёзок не различает. Спорная фраза (``contested``) не приписана ни одному профилю, кличка ближайшего
+    из них — чужая. Решает код здесь, у издателя: потребители получают уже чистое поле.
+    """
+    if decision == NAME_TENTATIVE_CONTESTED or epithets.is_stranger_epithet(match.epithet):
+        return None
+    return match.epithet
+
+
 def _unnamed_payload(
     match: SpeakerMatch, utterance_id: Optional[str], source: Optional[str]
 ) -> Tuple[dict, str]:
@@ -405,12 +417,13 @@ def _unnamed_payload(
     Гипотез имени (``tentative_*``) нет: безымянному профилю предлагать нечего. Диалог видит собеседника с
     ``speaker_id`` и без имени -- состояние «знаком, не представлялся». Возвращает ``(payload, строка лога)``.
     """
+    epithet = _published_epithet(match)
     payload = {
         "is_known": True,
         "speaker_id": match.speaker_id,
         "name": None,
         "confidence": round(match.confidence, 4),
-        "epithet": match.epithet,
+        "epithet": epithet,
     }
     if utterance_id:
         payload["utterance_id"] = utterance_id
@@ -418,7 +431,7 @@ def _unnamed_payload(
         payload["source"] = source
     line = (
         f"📢 Publishing: is_known=true name=None (профиль без имени, #3858) "
-        f"epithet={match.epithet!r} conf={match.confidence:.3f} source={source!r}"
+        f"epithet={epithet!r} conf={match.confidence:.3f} source={source!r}"
     )
     return payload, line
 
@@ -458,6 +471,7 @@ def _named_payload(
         )
         confident = decision == NAME_CONFIDENT
     published_name = match.name if confident else None
+    epithet = _published_epithet(match, decision)
     payload = {
         "is_known": True,
         "speaker_id": match.speaker_id,
@@ -465,7 +479,7 @@ def _named_payload(
         "confidence": round(match.confidence, 4),
         # Issue #1787 — внутренняя кличка. None до первой реплики
         # (профиль из старой БД) — потребитель обязан это терпеть.
-        "epithet": match.epithet,
+        "epithet": epithet,
     }
     # Issue #2829 (ADR-0131) — id фразы, для которой это результат
     # биометрии. Добавляем только когда он есть — старые/тестовые
@@ -482,7 +496,7 @@ def _named_payload(
             payload["tentative_name"] = match.name
     line = (
         f"📢 Publishing: is_known=true name={published_name!r} "
-        f"epithet={match.epithet!r} conf={match.confidence:.3f}"
+        f"epithet={epithet!r} conf={match.confidence:.3f}"
         + ("" if confident else f" (name suppressed: {decision}, issue #2809)")
         + (f" source={source!r}" if source else "")
     )

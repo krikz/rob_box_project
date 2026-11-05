@@ -35,7 +35,7 @@ from rob_box_dialog import knowledge as _dialog_kn
 from rob_box_dialog_msgs.msg import SpeakerResult
 from rob_box_core.e2e_mode import E2EModeFollower
 from rob_box_core.speaker_wire import NAME_CONFIRMED, name_state, speaker_result_to_payload
-from rob_box_core.tools_db import TOOLS_E2E_DB_DEFAULT, tools_db_path
+from rob_box_core.tools_db import TOOLS_E2E_DB_DEFAULT, tools_db_path, waypoint_db_path
 import asyncio
 import json
 import os
@@ -827,10 +827,13 @@ class MCPServer(Node):
         (data-migration) могла сменить бэкенд «под ковром» без
         затрагивания вызывающего кода.
         """
-        db_path = tools_db_path()
+        # Реестр карт и точек: БД инструментов или, в HIL, свой файл (WAYPOINT_DB_PATH, #4371/#4392).
+        db_path = waypoint_db_path()
         try:
             store = WaypointStore(db_path=db_path)
             adapter = WaypointAdapter(store=store)
+            # В HIL здесь /data/hil/... (scripts/hil/hil.sh), в боевом режиме — БД инструментов.
+            self.get_logger().info(f"📍 WaypointAdapter: реестр карт и точек — {db_path}")
             active = adapter.get_active_map()
             if active:
                 wp_count = len(adapter.list_waypoints())

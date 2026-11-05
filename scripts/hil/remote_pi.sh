@@ -11,8 +11,13 @@
 #   remote_pi.sh stop <контейнер>...         docker stop; проверка, что не работает
 #   remote_pi.sh state <контейнер>...        «имя running|exited|absent USE_SIM_TIME=…»
 #   remote_pi.sh compose <каталог> <args>... docker compose в каталоге
+#   remote_pi.sh env <контейнер> <ПЕРЕМЕННАЯ> значение env контейнера или «unset»
+#   remote_pi.sh maps-dump <контейнер> <БД>  SELECT * FROM maps ORDER BY id (строки a|b|c)
+#                                            из SQLite внутри контейнера, ТОЛЬКО чтение
+#                                            (mode=ro); нет таблицы/файла — код 7
 #
-# Боевые данные (/data, ./maps) скрипт не читает и не пишет.
+# Боевые данные (/data, ./maps) скрипт не пишет. Читает одно: maps-dump — боевой реестр
+# карт Sound Pi для сверки «до on / после off» (#4392), открывается только на чтение.
 set -euo pipefail
 
 cmd="${1:-}"
@@ -78,8 +83,27 @@ case "$cmd" in
         cd "$dir"
         docker compose "$@"
         ;;
+    env)
+        name="$1"; var="$2"
+        val=$(docker inspect -f '{{range .Config.Env}}{{println .}}{{end}}' "$name" 2>/dev/null \
+            | sed -n "s/^$var=//p" | tail -n 1)
+        echo "${val:-unset}"
+        ;;
+    maps-dump)
+        name="$1"; db="$2"
+        # Файла нет — sqlite в mode=ro не создаёт его, а падает: «нечего сверять» не путается с «пусто».
+        if ! docker exec "$name" python3 -c '
+import sqlite3, sys
+conn = sqlite3.connect("file:" + sys.argv[1] + "?mode=ro", uri=True)
+for row in conn.execute("SELECT * FROM maps ORDER BY id"):
+    print("|".join("" if v is None else str(v) for v in row))
+' "$db"; then
+            echo "❌ maps-dump: не прочитал maps из $db в $name" >&2
+            exit 7
+        fi
+        ;;
     *)
-        sed -n '2,15p' "$0" >&2
+        sed -n '2,20p' "$0" >&2
         exit 2
         ;;
 esac

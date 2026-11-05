@@ -17,6 +17,10 @@
 #   5. on, если в графе два /controller_manager — сим гасится, выход 1;
 #   6. off: сим гаснет ДО возврата ros2-control; замок снимается последним;
 #   7. scripts/deploy/check_hil_lock.sh: свободно / замок / нет ответа;
+#   8. реестр карт и точек (#4392): on снимает снапшот боевого maps и пересоздаёт
+#      voice-assistant на Sound Pi с WAYPOINT_DB_PATH=/data/hil/…; off возвращает боевой
+#      и сверяет maps со снапшотом (изменился — выход 3 и diff); плохой HIL_WAYPOINT_DB —
+#      отказ до ssh; HIL_PROD_TOOLS_DB = rob_box_core.tools_db.TOOLS_DB_DEFAULT;
 #      шаг замка в деплое стоит до первой остановки контейнеров, update_and_restart.sh
 #      проверяет замок до `down`.
 #
@@ -76,22 +80,30 @@ case "$1" in
                 [ -f "$S/$name" ] || { [ -n "${FAKE_INSPECT_BLANK:-}" ] && echo; exit 1; }; echo "$(cat "$S/$name") 0" ;;
             *"State.Status"*) echo "$(st "$name")" ;;
             *"State.Running"*) [ "$(st "$name")" = running ] && echo true || echo false ;;
-            *"Config.Env"*) [ -f "$S/$name.simt" ] && echo "USE_SIM_TIME=$(cat "$S/$name.simt")"; echo PATH=/x ;;
+            *"Config.Env"*) [ -f "$S/$name.simt" ] && echo "USE_SIM_TIME=$(cat "$S/$name.simt")"
+                            [ -f "$S/$name.wpdb" ] && echo "WAYPOINT_DB_PATH=$(cat "$S/$name.wpdb")"; echo PATH=/x ;;
         esac ;;
     image) exit 0 ;;
     logs) echo "fake logs" ;;
-    exec) [ -n "${FAKE_ZENOH_LOG:-}" ] && echo "INFO zenoh::net::runtime: Using ZID: 1a2b3c"; echo "${FAKE_CM:-1}"; echo /controller_manager ;;
+    exec)
+        case "$*" in
+            *"python3 -c"*)  # maps-dump: боевой maps — файл $FAKE_STATE/prod_maps; нет файла — sqlite падает
+                [ "$(last "$@")" = "${FAKE_PROD_DB:-/data/voice_memory.db}" ] || exit 1
+                [ -f "$S/prod_maps" ] || exit 1
+                cat "$S/prod_maps" ;;
+            *) [ -n "${FAKE_ZENOH_LOG:-}" ] && echo "INFO zenoh::net::runtime: Using ZID: 1a2b3c"; echo "${FAKE_CM:-1}"; echo /controller_manager ;;
+        esac ;;
     ps)
         case "$*" in
-            *working_dir=*) for s in ros2-control lslidar robot-state-publisher twist-mux rtabmap imu-filter nav2 oak-d ceiling-camera; do
+            *working_dir=*) for s in ros2-control lslidar robot-state-publisher twist-mux rtabmap imu-filter nav2 oak-d ceiling-camera voice-assistant; do
                                 echo "$s ghcr.io/krikz/rob_box:$s-humble-dev-abc"; done ;;
         esac ;;
     compose)
         shift
-        hil=0; sim=0; verb=""; svcs=()
+        hil=0; sim=0; snd=0; verb=""; svcs=()
         while [ "$#" -gt 0 ]; do
             case "$1" in
-                -f) case "$2" in *main.hil.yaml) hil=1 ;; *compose.hil.yaml) sim=1 ;; esac; shift 2 ;;
+                -f) case "$2" in *main.hil.yaml) hil=1 ;; *sound.hil.yaml) snd=1 ;; *compose.hil.yaml) sim=1 ;; esac; shift 2 ;;
                 -p) shift 2 ;;
                 --pull) shift 2 ;;
                 up | down) verb="$1"; shift ;;
@@ -105,6 +117,7 @@ case "$1" in
             for s in "${svcs[@]}"; do
                 echo running > "$S/$s"
                 if [ "$hil" = 1 ]; then echo true > "$S/$s.simt"; else rm -f "$S/$s.simt"; fi
+                if [ "$snd" = 1 ]; then printf '%s\n' "${HIL_WAYPOINT_DB:?compose.hil.yaml Sound без HIL_WAYPOINT_DB}" > "$S/$s.wpdb"; else rm -f "$S/$s.wpdb"; fi
             done
         fi ;;
 esac
@@ -112,18 +125,26 @@ exit 0
 EOF
 chmod +x "$WORK/bin/ssh" "$WORK/bin/docker"
 
-mkdir -p "$WORK/main" "$WORK/vision" "$WORK/sbx/docker/sim"
+mkdir -p "$WORK/main" "$WORK/vision" "$WORK/sound" "$WORK/sbx/docker/sim"
 echo "ROBOT_ID=RBXTEST01" > "$WORK/main/.env"
 touch "$WORK/sbx/docker/sim/compose.hil.yaml"
 
-reset_state() { rm -rf "$WORK/state" "$WORK/remote" "$WORK/tmp"; mkdir -p "$WORK/state" "$WORK/tmp"; : > "$WORK/ssh.log"; : > "$WORK/docker.log"; }
+PROD_MAPS='1|aaaa-1111|мастерская|1793000000.0|1
+2|bbbb-2222|хил-офис|1793100000.0|0'
+reset_state() {
+    rm -rf "$WORK/state" "$WORK/remote" "$WORK/tmp" "$WORK/sndstate"
+    mkdir -p "$WORK/state" "$WORK/tmp"
+    printf '%s\n' "$PROD_MAPS" > "$WORK/state/prod_maps"
+    : > "$WORK/ssh.log"; : > "$WORK/docker.log"
+}
 
 run_hil() {  # run_hil <cmd> [VAR=val ...]
     local cmd="$1"; shift
     env PATH="$WORK/bin:$PATH" FAKE_SSH_LOG="$WORK/ssh.log" FAKE_DOCKER_LOG="$WORK/docker.log" \
         FAKE_STATE="$WORK/state" SIM_PREFIX=t-hil \
-        HIL_MAIN_HOST=main HIL_VISION_HOST=vision HIL_SANDBOX_HOST=sbx \
-        HIL_MAIN_DIR="$WORK/main" HIL_VISION_DIR="$WORK/vision" HIL_SANDBOX_REPO="$WORK/sbx" \
+        HIL_MAIN_HOST=main HIL_VISION_HOST=vision HIL_SOUND_HOST=sound HIL_SANDBOX_HOST=sbx \
+        HIL_MAIN_DIR="$WORK/main" HIL_VISION_DIR="$WORK/vision" HIL_SOUND_DIR="$WORK/sound" HIL_SANDBOX_REPO="$WORK/sbx" \
+        HIL_MAPS_SNAPSHOT="$WORK/sndstate/prod_maps.before.txt" \
         HIL_LOCK="$WORK/tmp/hil.lock" HIL_REMOTE_DIR="$WORK/remote" HIL_MAPS_DIR="$WORK/hilmaps" \
         HIL_SIM_PREFIX=t-hil HIL_WAIT_CM_S=5 \
         "$@" bash "$HIL" "$cmd" > "$WORK/out.log" 2>&1
@@ -160,8 +181,10 @@ check "on: ROBOT_ID робота из .env Main Pi и провод с #iface" \
     'grep -qF "$EXPECT_SIM_ENV" "$WORK/ssh.log"'
 EXPECT_MAPS="HIL_MAPS_DIR='$WORK/hilmaps'"
 check "on: карта rtabmap — HIL_MAPS_DIR" 'grep -qF "$EXPECT_MAPS" "$WORK/ssh.log" && [ -d "$WORK/hilmaps" ]'
-check "on: ни одна команда не трогает /data и боевой ./maps" \
-    '! grep -E "/data|$WORK/main/maps|rtabmap\.db" "$WORK/ssh.log"'
+check "on: ни одна команда Main/Vision/песочницы не трогает /data и боевой ./maps" \
+    '! grep -v "^sound|" "$WORK/ssh.log" | grep -E "/data|$WORK/main/maps|rtabmap\.db"'
+check "on: Sound видит /data только как HIL-реестр и чтение боевого maps (maps-dump)" \
+    '! grep "^sound|" "$WORK/ssh.log" | grep "/data" | grep -vE "maps-dump.*/data/voice_memory\.db|HIL_WAYPOINT_DB=./data/hil/waypoints\.db."'
 # Оверлей, который применяется на Main Pi, тоже не ссылается на боевые пути.
 check "compose.hil.yaml Main: /maps только из HIL_MAPS_DIR" \
     '! grep -E "^\s*- \./maps|/data" "$REPO_ROOT/docker/main/compose.hil.yaml" && [ "$(grep -c "HIL_MAPS_DIR:?" "$REPO_ROOT/docker/main/compose.hil.yaml")" -eq 2 ]'
@@ -225,6 +248,102 @@ run_hil status FAKE_SSH_DOWN=vision; rc=$?
 check "status: ssh до Vision лежит -> нет ssh до vision" 'grep -q "нет ssh до vision" "$WORK/out.log"'
 check "vision ssh в hil.conf 10.1.1.21, zenoh-роутеры не тронуты" \
     'grep -q "HIL_VISION_HOST:=ros2@10.1.1.21}" "$REPO_ROOT/scripts/hil/hil.conf" && grep -q "HIL_ROBOT_ROUTERS:=10.1.1.10 10.1.1.11 10.1.1.12}" "$REPO_ROOT/scripts/hil/hil.conf"'
+
+# ── 8. реестр карт и точек на Sound Pi (#4392) ────────────────────────────
+for bad in /data/voice_memory.db /data/hil.db /data/hil/../voice_memory.db /data/hil/ relative/hil.db /data/hil/x.txt /maps/hil/x.db; do
+    for c in on off; do
+        reset_state
+        run_hil "$c" HIL_WAYPOINT_DB="$bad"; rc=$?
+        check "$c отказывает при HIL_WAYPOINT_DB=$bad (rc=$rc), ssh не вызывался" \
+            '[ "$rc" -ne 0 ] && [ ! -s "$WORK/ssh.log" ]'
+    done
+done
+reset_state
+run_hil on HIL_PROD_TOOLS_DB=/data/hil/waypoints.db; rc=$?
+check "on: HIL_WAYPOINT_DB = HIL_PROD_TOOLS_DB — отказ до ssh (rc=$rc)" '[ "$rc" -ne 0 ] && [ ! -s "$WORK/ssh.log" ]'
+
+reset_state
+run_hil on; rc=$?
+check "on (реестр): выход 0 (rc=$rc)" '[ "$rc" -eq 0 ]' || cat "$WORK/out.log"
+check "on: voice-assistant пересоздан с sound.hil.yaml и --no-deps" \
+    'grep -q "sound.hil.yaml up -d --no-deps --pull never voice-assistant" "$WORK/docker.log"'
+check "on: у voice-assistant WAYPOINT_DB_PATH=/data/hil/waypoints.db" \
+    '[ "$(cat "$WORK/state/voice-assistant.wpdb")" = /data/hil/waypoints.db ]'
+check "on: снапшот боевого maps снят и равен SELECT * FROM maps" \
+    '[ "$(cat "$WORK/sndstate/prod_maps.before.txt")" = "$PROD_MAPS" ] && [ ! -e "$WORK/sndstate/prod_maps.before.txt.part" ]'
+L_SNAP=$(line_of "maps-dump" "$WORK/ssh.log")
+L_SWITCH=$(line_of "sound.hil.yaml' up -d" "$WORK/ssh.log")
+L_LOCK=$(line_of "lock-take" "$WORK/ssh.log")
+L_SIMUP=$(line_of "compose.hil.yaml up -d --no-build" "$WORK/docker.log")
+L_SNDUP=$(line_of "sound.hil.yaml up" "$WORK/docker.log")
+check "on: порядок замок → снапшот → переключение реестра → сим" \
+    '[ -n "$L_SNAP" ] && [ -n "$L_SWITCH" ] && [ "$L_LOCK" -lt "$L_SNAP" ] && [ "$L_SNAP" -lt "$L_SWITCH" ] && [ "$L_SNDUP" -lt "$L_SIMUP" ]'
+check "on: на Sound пересоздан только voice-assistant" \
+    '[ "$(grep "^sound|" "$WORK/ssh.log" | grep -c "docker compose")" -eq 1 ] && ! grep "^sound|" "$WORK/ssh.log" | grep -E "docker (stop|rm)|supercollider"'
+check "compose.hil.yaml Sound: только WAYPOINT_DB_PATH из обязательного HIL_WAYPOINT_DB" \
+    'grep -q "WAYPOINT_DB_PATH=\${HIL_WAYPOINT_DB:?" "$REPO_ROOT/docker/sound/compose.hil.yaml" && [ "$(grep -cE "^\s+- " "$REPO_ROOT/docker/sound/compose.hil.yaml")" -eq 1 ] && ! grep -E "VOICE_MEMORY_DB_PATH|volumes:" "$REPO_ROOT/docker/sound/compose.hil.yaml"'
+run_hil status; rc=$?
+check "status: Sound показывает WAYPOINT_DB_PATH в HIL" 'grep -q "WAYPOINT_DB_PATH=/data/hil/waypoints.db" "$WORK/out.log"'
+
+: > "$WORK/docker.log"; : > "$WORK/ssh.log"
+run_hil off; rc=$?
+check "off (реестр): выход 0 (rc=$rc)" '[ "$rc" -eq 0 ]' || cat "$WORK/out.log"
+check "off: voice-assistant без sound.hil.yaml, WAYPOINT_DB_PATH снят" \
+    'grep -q "up -d --no-deps --pull never voice-assistant" "$WORK/docker.log" && ! grep -q "sound.hil.yaml up" "$WORK/docker.log" && [ ! -f "$WORK/state/voice-assistant.wpdb" ]'
+check "off: в логе сверка «реестр не изменился» и строки до/после" \
+    'grep -q "боевой реестр карт (SELECT \* FROM maps) за HIL не изменился" "$WORK/out.log" && grep -q "до    1|aaaa-1111|мастерская" "$WORK/out.log" && grep -q "после 2|bbbb-2222|хил-офис" "$WORK/out.log"'
+check "off: снапшот после успешной сверки убран, замок снят последним" \
+    '[ ! -e "$WORK/sndstate/prod_maps.before.txt" ] && [ ! -e "$WORK/tmp/hil.lock" ] && [ "$(tail -n 1 "$WORK/ssh.log" | grep -c lock-release)" -eq 1 ]'
+
+# Боевой maps изменился за HIL (кто-то переключил is_active) — off возвращает робота, но выход 3 и diff.
+reset_state
+run_hil on >/dev/null
+printf '%s\n' '1|aaaa-1111|мастерская|1793000000.0|0' '2|bbbb-2222|хил-офис|1793100000.0|1' > "$WORK/state/prod_maps"
+run_hil off; rc=$?
+check "off при изменённом боевом maps: выход 3 (rc=$rc), робот вернулся, замок снят" \
+    '[ "$rc" -eq 3 ] && [ "$(cat "$WORK/state/ros2-control")" = running ] && [ ! -f "$WORK/state/voice-assistant.wpdb" ] && [ ! -e "$WORK/tmp/hil.lock" ]'
+check "off при изменённом maps: diff в логе, снапшот оставлен" \
+    'grep -q "ИЗМЕНИЛСЯ" "$WORK/out.log" && grep -qE "^ +< 1\|aaaa-1111\|мастерская\|1793000000.0\|1" "$WORK/out.log" && grep -qE "^ +> 1\|aaaa-1111\|мастерская\|1793000000.0\|0" "$WORK/out.log" && [ -f "$WORK/sndstate/prod_maps.before.txt" ]'
+
+# Боевой maps не читается — on не переключает реестр.
+reset_state
+rm -f "$WORK/state/prod_maps"
+run_hil on; rc=$?
+check "on: боевой maps не прочитан — выход ≠0 (rc=$rc), voice-assistant не пересоздан, сим не поднят" \
+    '[ "$rc" -ne 0 ] && ! grep -q "sound.hil.yaml up" "$WORK/docker.log" && [ ! -f "$WORK/state/t-hil-gazebo" ]'
+
+# off после on, упавшего до Sound (снапшота нет): робот возвращается, сверка честно «не сверен».
+reset_state
+echo "HIL on since earlier" > "$WORK/tmp/hil.lock"
+run_hil off; rc=$?
+check "off без снапшота: выход 0 (rc=$rc), в логе «НЕ сверен», замок снят" \
+    '[ "$rc" -eq 0 ] && grep -q "снапшота .* нет" "$WORK/out.log" && grep -q "НЕ сверен" "$WORK/out.log" && [ ! -e "$WORK/tmp/hil.lock" ]'
+
+# off, а voice-assistant остался на HIL-реестре (compose не снял env) — замок не снимается.
+reset_state
+run_hil on >/dev/null
+mkdir -p "$WORK/bin2"
+cat > "$WORK/bin2/docker" <<'EOF'
+#!/usr/bin/env bash
+# Фейк поверх фейка: compose up на Sound без оверлея «забывает» снять WAYPOINT_DB_PATH.
+real="$(dirname "$0")/../bin/docker"
+case "$*" in
+    *"sound.images.yaml up"*) echo "docker $*" >> "$FAKE_DOCKER_LOG"; echo running > "$FAKE_STATE/voice-assistant"; exit 0 ;;
+esac
+exec "$real" "$@"
+EOF
+chmod +x "$WORK/bin2/docker"
+run_hil off PATH="$WORK/bin2:$WORK/bin:$PATH"; rc=$?
+check "off: voice-assistant остался с WAYPOINT_DB_PATH — отказ (rc=$rc), замок оставлен" \
+    '[ "$rc" -ne 0 ] && [ -e "$WORK/tmp/hil.lock" ] && grep -q "WAYPOINT_DB_PATH=/data/hil/waypoints.db" "$WORK/out.log"'
+
+TOOLS_DEFAULT=$(sed -n 's/^TOOLS_DB_DEFAULT = "\(.*\)"$/\1/p' "$REPO_ROOT/src/rob_box_core/rob_box_core/tools_db.py" | tr -d '\r')
+check "hil.conf: HIL_PROD_TOOLS_DB = TOOLS_DB_DEFAULT из rob_box_core.tools_db ($TOOLS_DEFAULT)" \
+    '[ -n "$TOOLS_DEFAULT" ] && grep -qF "HIL_PROD_TOOLS_DB:=$TOOLS_DEFAULT}" "$REPO_ROOT/scripts/hil/hil.conf"'
+check "hil.conf: Sound Pi ssh ros2@10.1.1.22, реестр HIL под /data/hil/" \
+    'grep -q "HIL_SOUND_HOST:=ros2@10.1.1.22}" "$REPO_ROOT/scripts/hil/hil.conf" && grep -q "HIL_WAYPOINT_DB:=/data/hil/waypoints.db}" "$REPO_ROOT/scripts/hil/hil.conf"'
+check "env WAYPOINT_DB_PATH — то же имя, что rob_box_core.tools_db.WAYPOINT_DB_ENV" \
+    'grep -q "^WAYPOINT_DB_ENV = \"WAYPOINT_DB_PATH\"" "$REPO_ROOT/src/rob_box_core/rob_box_core/tools_db.py"'
 
 # ── 7. замок в деплое ─────────────────────────────────────────────────────
 fake_free() { echo HIL_FREE; }
