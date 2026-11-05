@@ -31,7 +31,7 @@ from dataclasses import dataclass, replace
 from enum import Enum
 from typing import FrozenSet, List, Mapping, Optional, Sequence, Tuple
 
-from rob_box_dialog.knowledge import GRAMMAR_FILLER, VOLUME_STEMS
+from rob_box_dialog.knowledge import GRAMMAR_FILLER, MUSIC_SERVICE_WORDS, VOLUME_STEMS
 from rob_box_music import knowledge as kn
 from rob_box_music.dj_line import persona_title
 from rob_box_music.instruments import near, split_instrument
@@ -838,9 +838,12 @@ SET_ANNOUNCE_WORDS: FrozenSet[str] = frozenset({
 })
 
 #: Слова просьбы о сете — не тема: глаголы заказа и запуска, «сет», обращение и назначение персоны, длина сета,
-#: служебные. Одна таблица для грамматики и для темы из слов реплики (``theme_grounding.heard_theme``, 07.10).
+#: служебные. Одна таблица для грамматики и для темы из слов реплики (``theme_grounding.heard_theme``, 07.10). Стоп,
+#: смена, «вместо него», вейк, связки - таблица ``rob_box_dialog.knowledge.MUSIC_SERVICE_WORDS`` (#4393: «останови
+#: этот сет и поставь вместо него ночной рок» - не тема «останови и вместо него ночной»).
 SET_REQUEST_WORDS: FrozenSet[str] = (
     _ORDER_VERBS | _SET_WORDS | _DJ_FILLER | LENGTH_WORDS | SET_CONTINUE_WORDS | SET_SWITCH_WORDS | SET_ANNOUNCE_WORDS
+    | MUSIC_SERVICE_WORDS
 ) | {
     "давай", "давайте", "робот", "робби", "будешь", "станешь", "побудь", "диджеем", "диджея", "сэту", "сету",
     "сеты", "замутим", "замутить", "замутишь", "сделаешь", "организуй", "забабахай", "дай", "пусть",
