@@ -1,7 +1,7 @@
-"""Tooling directory: developer/test utilities (mock servers, capture harnesses, etc.).
+"""Tooling directory: developer/test utilities (generators, architecture audit, benches).
 
-This module exists so that submodules (e.g. ``tools.audio_capture_harness``,
-``tools.mock_minimax_server``) are importable as ``tools.X.Y`` Python
+This module exists so that submodules (e.g. ``tools.music_bench``,
+``tools.architecture_audit``) are importable as ``tools.X.Y`` Python
 modules. The individual scripts under ``tools/`` also work as
 top-level ``python3 tools/<script>.py`` invocations — adding this
 file does not affect that path because script execution with

@@ -348,7 +348,7 @@ class MiniMaxSTTProvider:
     * API key from ``MINIMAX_API_KEY`` (default env name, overridable
       via :meth:`maybe_from_env`'s ``api_key_env``).
     * Base URL is ``https://api.minimax.io`` (override only for tests
-      with the mock server in ``tools/mock_minimax_server.py``).
+      with a local mock server).
     * Default model ``asr-1.0`` (a.k.a. MiniMax-M3 STT), default
       language ``"ru"`` (set to ``None`` to auto-detect).
     * Per-call HTTP timeout: connect 5s / read 15s / write 10s
