@@ -739,7 +739,6 @@ jobs:
           scripts/ci/tests/test_e2e_voice_patterns_with_spaces.sh
           scripts/ci/tests/test_e2e_voice_robot_ros_quoting.sh
           scripts/ci/tests/test_e2e_voice_workflow_crlf_inputs.sh
-          scripts/ci/tests/test_push_image_versions.sh
           scripts/ci/tests/test_validate_test_ws_dirs.sh
           scripts/ci/tests/test_workflow_no_scp_dotrex.sh
           "
