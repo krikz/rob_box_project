@@ -412,10 +412,16 @@ services:
       - FACE_ENROLL_THRESHOLD=${FACE_ENROLL_THRESHOLD:-}
       # ADR-0164 этап 6: кличка нового лица по внешности (vision-LLM, только режим workshop).
       # Пусто → облака нет, лицо получает словарную кличку, и лог говорит почему.
+      # Провайдер minimax (по умолчанию, MiniMax-M3) | deepseek; ключ пресета берётся из
+      # MINIMAX_API_KEY / DEEPSEEK_API_KEY (хостовый .env.secrets), явные FACE_PERSONA_VLM_* перекрывают.
+      - FACE_PERSONA_VLM_PROVIDER=${FACE_PERSONA_VLM_PROVIDER:-}
       - FACE_PERSONA_VLM_API_KEY=${FACE_PERSONA_VLM_API_KEY:-}
       - FACE_PERSONA_VLM_BASE_URL=${FACE_PERSONA_VLM_BASE_URL:-}
       - FACE_PERSONA_VLM_MODEL=${FACE_PERSONA_VLM_MODEL:-}
       - FACE_PERSONA_VLM_MAX_PER_HOUR=${FACE_PERSONA_VLM_MAX_PER_HOUR:-}
+    env_file:
+      - path: .env.secrets
+        required: false
     volumes:
       - ./config:/config:ro
       - ../common/scripts:/ros_scripts:ro

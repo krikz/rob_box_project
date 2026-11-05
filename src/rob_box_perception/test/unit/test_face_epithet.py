@@ -353,13 +353,19 @@ class _Resp(io.BytesIO):
         return False
 
 
-def test_describer_from_env_requires_key_url_and_model():
-    describer, note = vl.describer_from_env({vl.ENV_API_KEY: 'k'})
-    assert describer is None
-    assert vl.ENV_BASE_URL in note and vl.ENV_MODEL in note and 'k' not in note.split('(')[0]
+def test_describer_from_env_without_key_is_dictionary_only_with_honest_reason():
+    for env in ({}, {vl.ENV_PROVIDER: 'deepseek'}, {'DEEPSEEK_API_KEY': 'k', vl.ENV_PROVIDER: 'minimax'}):
+        describer, note = vl.describer_from_env(env)
+        assert 'словарные клички' in note
+    assert 'MINIMAX_API_KEY' in vl.describer_from_env({})[1]
 
 
-def test_describer_sends_image_and_returns_content():
+def test_unknown_provider_is_reported():
+    describer, note = vl.describer_from_env({vl.ENV_PROVIDER: 'foo', vl.ENV_API_KEY: 'k'})
+    assert describer is None and 'foo' in note
+
+
+def _capture(env):
     seen = {}
 
     def opener(request, timeout):
@@ -368,17 +374,119 @@ def test_describer_sends_image_and_returns_content():
         seen['body'] = json.loads(request.data.decode('utf-8'))
         return _Resp(json.dumps({'choices': [{'message': {'content': GOOD_ANSWER}}]}).encode('utf-8'))
 
-    describer, note = vl.describer_from_env(
-        {vl.ENV_API_KEY: 'secret', vl.ENV_BASE_URL: 'https://example.test/v1/', vl.ENV_MODEL: 'vl-model'},
-        opener=opener,
-    )
-    assert 'secret' not in note
-    assert describer(JPEG, 'опиши', persona.PROPOSAL_SCHEMA) == GOOD_ANSWER
+    describer, note = vl.describer_from_env(env, opener=opener)
+    assert describer is not None, note
+    describer(JPEG, 'опиши', persona.PROPOSAL_SCHEMA)
+    return seen, note
+
+
+def test_default_provider_is_minimax_m3_with_minimax_key():
+    seen, note = _capture({'MINIMAX_API_KEY': 'mm-secret'})
+    assert seen['url'] == 'https://api.minimax.io/v1/chat/completions'
+    assert seen['auth'] == 'Bearer mm-secret'
+    assert seen['body']['model'] == 'MiniMax-M3'
+    assert seen['body']['messages'][0]['content'][1]['image_url']['url'].startswith('data:image/jpeg;base64,')
+    assert 'mm-secret' not in note
+
+
+def test_deepseek_preset_uses_deepseek_key_and_vision_model():
+    seen, note = _capture({vl.ENV_PROVIDER: 'deepseek', 'DEEPSEEK_API_KEY': 'ds-secret',
+                           'MINIMAX_API_KEY': 'mm-secret'})
+    assert seen['url'] == 'https://api.deepseek.com/chat/completions'
+    assert seen['auth'] == 'Bearer ds-secret'
+    assert seen['body']['model'] == 'deepseek-v4-flash-vision-exp'
+    assert 'ds-secret' not in note
+
+
+def test_deepseek_model_is_overridable_by_env():
+    seen, _ = _capture({vl.ENV_PROVIDER: 'deepseek', 'DEEPSEEK_API_KEY': 'k', vl.ENV_MODEL: 'deepseek-flash'})
+    assert seen['body']['model'] == 'deepseek-flash'
+
+
+def test_explicit_vlm_env_overrides_preset():
+    seen, _ = _capture({vl.ENV_API_KEY: 'x', vl.ENV_BASE_URL: 'https://example.test/v1/',
+                        vl.ENV_MODEL: 'm', 'MINIMAX_API_KEY': 'mm'})
     assert seen['url'] == 'https://example.test/v1/chat/completions'
-    assert seen['auth'] == 'Bearer secret'
-    parts = seen['body']['messages'][0]['content']
-    assert parts[1]['image_url']['url'].startswith('data:image/jpeg;base64,')
-    assert seen['body']['response_format'] == {'type': 'json_object'}
+    assert seen['auth'] == 'Bearer x' and seen['body']['model'] == 'm'
+
+
+# ── Новая Встреча известного лица: один вызов на Встречу ─────────────────────
+
+
+class _Enc:
+    class _Obs:
+        landmarks = LANDMARKS
+
+    best = [_Obs()]
+    max_face_px = 120.0
+
+
+def _meeting(namer, store, i=0):
+    match = store.record_encounter(_vec(i), snapshot=JPEG)
+    return match, namer.on_encounter(match, _Enc(), JPEG)
+
+
+def test_new_meeting_of_known_face_calls_model_once_per_meeting(tmp_path):
+    store, describer = _store(tmp_path), Describer()
+    namer, _ = _namer(store, describer)
+    pid, _ = _new_face(store, namer)
+    assert len(describer.calls) == 1  # рождение
+
+    match, label = _meeting(namer, store)  # новая Встреча известного
+    assert not match.is_new and match.person_id == pid
+    assert len(describer.calls) == 2
+    assert label == 'Бородач в синем свитере'  # принятая кличка держится
+
+    _meeting(namer, store)  # ещё одна Встреча — ещё один вызов
+    assert len(describer.calls) == 3
+
+
+def test_recognition_inside_same_meeting_does_not_call_model(tmp_path):
+    """Кадры и узнавания внутри одной Встречи моделью не обслуживаются: зовёт только on_encounter."""
+    store, describer = _store(tmp_path), Describer()
+    namer, _ = _namer(store, describer)
+    _new_face(store, namer)
+    before = len(describer.calls)
+    for _ in range(5):
+        assert store.identify(_vec(0)).person_id  # узнавание без события Встречи
+    assert len(describer.calls) == before
+
+
+def test_known_meeting_without_key_stays_dictionary(tmp_path):
+    store = _store(tmp_path)
+    namer, _ = _namer(store, describer=None)
+    pid, first = _new_face(store, namer)
+    match, label = _meeting(namer, store)
+    assert label == first == _ep(store, pid)
+    assert namer.stats()['epithet_skip_unconfigured'] >= 2
+
+
+def test_known_meeting_exhibition_and_bad_snapshot_do_not_call_model(tmp_path):
+    describer = Describer()
+    store = _store(tmp_path, fs.MODE_EXHIBITION)
+    namer, _ = _namer(store, describer)
+    match = store.record_encounter(_vec(0), snapshot=JPEG)
+    namer.on_encounter(match, _Enc(), JPEG)
+    assert describer.calls == []
+
+    store2 = _store(tmp_path / 'w')
+    namer2, _ = _namer(store2, describer)
+    pid = store2.record_encounter(_vec(0)).person_id
+    store2.set_epithet(pid, 'Странник', 'first_seen')
+    known = store2.record_encounter(_vec(0))
+    assert namer2.on_known_meeting(known.person_id, snapshot=None, landmarks=LANDMARKS, face_px=120.0) is False
+    assert describer.calls == []
+
+
+def test_known_meeting_rejected_candidate_keeps_previous_epithet(tmp_path):
+    store, describer = _store(tmp_path), Describer()
+    namer, _ = _namer(store, describer)
+    pid, _ = _new_face(store, namer)
+    describer.answer = json.dumps({'appearance': 'Другая одежда', 'speech': '', 'epithet': ''},
+                                  ensure_ascii=False)
+    _meeting(namer, store)
+    assert _ep(store, pid) == 'Бородач в синем свитере'
+    assert _meta(tmp_path, pid)['persona']['appearance'] == 'Другая одежда'
 
 
 @pytest.mark.parametrize('raw, expected', [

@@ -1,6 +1,9 @@
 #!/usr/bin/env python3
 """face_epithet.py — кличка лица при рождении записи (ADR-0164 §4.1, этап 6).
 
+Шифу 05.11: модель зовём только по событиям — рождение лица и новая Встреча известного
+(``on_known_meeting``); не по кадрам. Потолок в час — лишь предохранитель.
+
 Шифу 05.11 (В2): новое лицо получает кличку сразу, по внешности. Порядок:
 
 1. Сразу, синхронно — словарная кличка (одно слово, ``persona.fallback_epithet``). У записи всегда есть
@@ -156,12 +159,18 @@ class FaceEpithetNamer:
 
         Ошибка именования не роняет Встречу: строка в лог, маркер уходит без клички.
         """
-        if not match.is_new:
-            return getattr(match, 'epithet', None) or ''
-        best = encounter.best[0] if encounter.best else None
         try:
+            enc_best = getattr(encounter, 'best', None)
+            landmarks = getattr(enc_best[0], 'landmarks', None) if enc_best else None
+            if not match.is_new:
+                self.on_known_meeting(
+                    match.person_id, snapshot=snapshot, landmarks=landmarks,
+                    face_px=float(getattr(encounter, 'max_face_px', 0.0)),
+                    encounter_count=int(match.encounter_count),
+                )
+                return self._current(match.person_id) or getattr(match, 'epithet', None) or ''
             label = self.on_new_face(
-                match.person_id, snapshot=snapshot, landmarks=getattr(best, 'landmarks', None),
+                match.person_id, snapshot=snapshot, landmarks=landmarks,
                 face_px=float(encounter.max_face_px), encounter_count=int(match.encounter_count),
             )
         except Exception as exc:  # noqa: BLE001
@@ -205,8 +214,38 @@ class FaceEpithetNamer:
             self._runner(lambda: self._describe(person_id, snapshot, material))
         return decision.epithet
 
+    def on_known_meeting(
+        self,
+        person_id: str,
+        *,
+        snapshot: Optional[bytes],
+        landmarks: Any,
+        face_px: float,
+        encounter_count: int = 1,
+    ) -> bool:
+        """Новая Встреча уже известного лица: один вызов модели, освежить описание (Шифу 05.11).
+
+        Зовётся из ``on_encounter`` ровно один раз на Встречу (не на кадр и не на узнавание внутри неё).
+        Кличку меняет только ``persona.decide`` (принятая > прежняя > словарь). Нет облака, режим не
+        ``workshop``, снимок негоден или потолок выбран — модель не зовём, причина в счётчике.
+
+        Returns:
+            ``True`` — вызов модели запрошен.
+        """
+        policy = self._store.epithet_policy
+        if policy == EPITHET_POLICY_NONE:
+            return False
+        quality_ok = snapshot_quality_ok(snapshot, landmarks, face_px, self._min_face_px)
+        skip = self._vision_skip(policy, quality_ok)
+        if skip:
+            self._count(f'epithet_skip_{skip}')
+            return False
+        material = self._material(person_id, encounter_count, has_snapshot=True)
+        self._runner(lambda: self._describe(person_id, snapshot, material))
+        return True
+
     def _describe(self, person_id: str, snapshot: bytes, material: Any) -> None:
-        """Фон: vision-LLM по снимку → проверка → решение → запись. Ошибка — словарная кличка остаётся."""
+        """Фон: vision-LLM по снимку → проверка → решение → запись. Ошибка — прежняя кличка остаётся."""
         self._count('epithet_vision_calls')
         current = self._current(person_id)
         try:
