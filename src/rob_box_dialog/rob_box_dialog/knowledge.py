@@ -822,12 +822,16 @@ class ToolGroup:
 
     ``weak`` — общие глаголы («включи», «поставь»): группа по ним одним уступает группам, названным прямо
     («включи голос …» — голос, а не музыка). ``forms`` — слова РОВНО этих форм (не основы): «сет» — музыка, «сеть» — нет.
+    ``verbs`` + ``objects`` — группа названа, когда в реплике есть и глагол, и предмет (основы, в любом месте фразы):
+    «удали ещё точку» - не подстрока «удали точк» (#4391: слово между ними закрывало ``delete_waypoint``).
     """
 
     stems: Tuple[str, ...]
     tools: Tuple[str, ...]
     weak: Tuple[str, ...] = ()
     forms: Tuple[str, ...] = ()
+    verbs: Tuple[str, ...] = ()
+    objects: Tuple[str, ...] = ()
 
 
 #: Глаголы восприятия: «посмотри налево», «глянь что справа», «посмотри на меня» — взгляд лица
@@ -1087,9 +1091,13 @@ TOOL_GROUPS: Mapping[str, ToolGroup] = MappingProxyType({
         ("navigate_to_waypoint", "list_waypoints", "move_direction", "save_waypoint", "stop_navigation",
          "get_current_pose"),
     ),
+    # #4391 (HIL 04.11): «удали ещё точку хил-окно» не совпадало с «удали точк» - срез без delete_waypoint, а модель
+    # сказала «удалена» без тула. Глагол и предмет - по отдельности (``ToolGroup.verbs``/``objects``)
     "waypoints_edit": ToolGroup(
-        ("удали точк", "удали все точк", "очисти точк", "координат"),
+        ("координат",),
         ("delete_waypoint", "clear_waypoints", "navigate_to_coordinates", "list_waypoints"),
+        verbs=("удали", "удаля", "сотри", "стери", "очисти", "убери", "забудь"),
+        objects=("точк",),
     ),
     "mapping": ToolGroup(("карт",),
                          ("start_mapping", "continue_mapping", "finish_mapping", "optimize_map", "load_map")),
@@ -1805,6 +1813,14 @@ SEARCH_PROMISE_HINT = ("в speech обещано поискать («поищу�
                        " запросом в actions, без обещаний в speech; поиск уже был в этом ходе - ответь по его данным"
                        " выше (нет конкретики - так и скажи), не обещая искать снова")
 SEARCH_PROMISE_PHRASE = "command.search_promise"
+#: Нарушение «сказал, что сделал, а тула нет» (``DONE_CLAIMS``). Повтор с подсказкой :data:`DONE_CLAIM_HINT`;
+#: повтора нет - ложные слова не звучат, код говорит правду: ничего не сделано (:data:`DONE_CLAIM_PHRASE`).
+VIOLATION_DONE_CLAIM = "done_claim"
+DONE_CLAIM_HINT = ("в speech сказано, что действие уже сделано («удалил», «сохранил точку», «поехал»), а в actions нет"
+                   " тула, что его делает: слова без действия - неправда. Нужно действие - положи тул в actions без"
+                   " speech (о сделанном скажет код по результату); тула нет в перечне хода - не утверждай, а скажи,"
+                   " что сделать не можешь, или спроси в ask")
+DONE_CLAIM_PHRASE = "command.done_claim"
 #: Счёт вслух до N, урезанный моделью, строит код (``counting.full_count``, #4314 К1, n802 М9: «от одного до сорока» -
 #: «Один… Десять.»). Глаголы просьбы о счёте (слово целиком, без «ё»).
 COUNT_VERBS: Tuple[str, ...] = (
@@ -2039,7 +2055,8 @@ SPEECH_CUT_PHRASE = "command.speech_cut"
 INVALID_COMMAND_PHRASES: Mapping[str, str] = MappingProxyType({"too_long": "command.too_long",
                                                                VIOLATION_SPEECH_TOO_LONG: "command.too_long",
                                                                VIOLATION_SILENT_ANSWER: SILENT_ANSWER_PHRASE,
-                                                               VIOLATION_REMOTE_OWED: REMOTE_OWED_PHRASE})
+                                                               VIOLATION_REMOTE_OWED: REMOTE_OWED_PHRASE,
+                                                               VIOLATION_DONE_CLAIM: DONE_CLAIM_PHRASE})
 #: Нарушения, после которых фраза кода звучит без грусти: модель ответила, только не словами (лицом, анимацией, одним
 #: earcon) - ничего не провалилось («Угу, я тут.» звучало с ``sad``). Провал исполненного действия
 #: грустит по-прежнему: эмоцию фразы решает его исход.
@@ -2875,6 +2892,32 @@ SEARCH_PROMISES: Mapping[str, MusicPromise] = MappingProxyType({
     "again": MusicPromise(
         with_near=("найду", "найдем"), near=("ещ", "снова", "заново", "повторн"), tools=SEARCH_PROMISE_TOOLS),
 })
+#: Утверждение о сделанном без тула (#4391, HIL 04.11: «Готово, хил-окно удалена.» - ``delete_waypoint`` не вызван, его
+#: не было и в срезе хода). Та же форма, что :data:`MUSIC_PROMISES`, но про прошедшее: речь говорит, что действие уже
+#: сделано, а тула, что его делает, в команде нет; валидатор команды (``command._check_done_claim``) сверяет по словам
+#: (``words.done_claims``). ``unless_before`` - здесь и для ``alone``: «уже удалил» (раньше, в прошлом ходе) и «не
+#: удалил» не утверждают сделанного сейчас. Музыки и памяти тут нет: «музыку выключил» после кодового стопа - правда
+#: (``MUSIC_PROMISES``), «запомнил» говорит код знакомства. Слова - целые, строчные, без «ё».
+DONE_CLAIM_UNLESS_BEFORE: Tuple[str, ...] = ("уже", "не", "раньше", "ранее")
+DONE_CLAIMS: Mapping[str, MusicPromise] = MappingProxyType({
+    "delete": MusicPromise(
+        alone=("удалил", "удалила", "удалили", "удалено", "удалена", "удален", "удалены", "стер", "стерла", "стерли",
+               "стерто", "стерта", "стерты", "очистил", "очистила", "очищено", "очищены"),
+        tools=("delete_waypoint", "clear_waypoints", "music_library"),
+        unless_before=DONE_CLAIM_UNLESS_BEFORE),
+    "waypoint_save": MusicPromise(
+        with_near=("сохранил", "сохранила", "сохранено", "сохранена", "сохранен", "запомнил", "запомнила", "отметил",
+                   "отметила", "записал", "записала"),
+        near=("точк",),
+        tools=("save_waypoint",),
+        unless_before=DONE_CLAIM_UNLESS_BEFORE),
+    "motion": MusicPromise(
+        # «еду» - и «качу», и «вкусную еду»: формы без второго смысла
+        alone=("поехал", "поехала", "выезжаю", "приехал", "приехала", "доехал", "доехала", "подъехал", "подъехала",
+               "отъехал", "отъехала", "двигаюсь"),
+        tools=MOTION_TOOLS + ("stop_navigation",),
+        unless_before=DONE_CLAIM_UNLESS_BEFORE),
+})
 #: Причина нарушения «пустая команда»: ни речи, ни вопроса, ни действий, ни выступления, и не ``passed``. Это нарушение
 #: (тот же один повтор с объяснением → ``failed``), а не «тихий первый ответ» v1: иначе ход звал LLM второй раз через
 #: ретрай мимо команды (ночной замер 22.10, ход 4: звук потерян). Молчать честно — ``passed``.
@@ -3100,7 +3143,19 @@ SPEECH_MAX_CHARS = 280
 SPEECH_ACCEPT_MAX_CHARS = 350
 #: Имя голоса реплики/сегмента (``Command.voice``, ``Performance.voice_per_segment``) - как ``speak_text.voice``.
 VOICE_MAX_CHARS = 64
+#: Действий команды исполняется за ход не больше стольких (ADR-0150 §4.1: «до трёх действий»): первые по порядку модели.
+#: Остальные код не исполняет и называет сам (``turn.capped``, фраза :data:`ACTIONS_CAPPED_PHRASE`), а не выбрасывает
+#: молча (#4391, HIL 04.11: «удали четыре точки» - модель под потолок схемы урезала просьбу сама, прозвучало «Готово.»).
 ACTIONS_MAX = 3
+#: Сколько действий модель может ПРИСЛАТЬ (``maxItems`` схемы, ``too_many_actions``) - больше исполняемого
+#: :data:`ACTIONS_MAX`, как речь 280/350 (``SPEECH_ACCEPT_MAX_CHARS``): просьба человека доходит до кода целиком, и
+#: лишнее видит код, а не теряет модель. Потолок исполнения этим не поднят.
+ACTIONS_ACCEPT_MAX = 8
+#: Фраза кода о действиях сверх :data:`ACTIONS_MAX`: ``named`` - со слотом ``rest`` (что не сделано, словами аргументов
+#: вызова), без имён - общая.
+ACTIONS_CAPPED_PHRASE = "command.actions_capped"
+ACTIONS_CAPPED_NAMED_PHRASE = "command.actions_capped.named"
+PHRASE_KEYS = PHRASE_KEYS + (ACTIONS_CAPPED_PHRASE, ACTIONS_CAPPED_NAMED_PHRASE)
 PERFORM_KINDS: Tuple[str, ...] = ("rap", "song", "tale", "poem")
 PERFORM_BACKINGS: Tuple[str, ...] = ("beat", "calm", "none")
 #: Подложка выступления по виду (решение Шифу 28.10: «на сказку необязательно музыку включать», «на анекдот
@@ -3379,7 +3434,7 @@ def command_schema(mode: str = "json") -> Dict[str, Any]:
         "voice": {"type": "string", "maxLength": VOICE_MAX_CHARS},
         "ask": _object({"expects": _enum(ASK_EXPECTS), "text": {"type": "string", "maxLength": SPEECH_MAX_CHARS}},
                        required=("expects", "text")),
-        "actions": {"type": "array", "maxItems": ACTIONS_MAX,
+        "actions": {"type": "array", "maxItems": ACTIONS_ACCEPT_MAX,
                     "items": _object({"tool": {"type": "string"}, "args": {"type": "object"}}, required=("tool",))},
         "perform": _object({
             "kind": _enum(PERFORM_KINDS),
@@ -3590,7 +3645,8 @@ def prompt_fragment(schema: Optional[Mapping[str, Any]] = None) -> str:
                    " звучит."),
         ("voice", "- voice: голос этой реплики (имя голоса); голос робота не меняет."),
         ("ask", f"- ask: вопрос с ожиданием ответа, expects ∈ {_set(ASK_EXPECTS)}."),
-        ("actions", f"- actions: ≤ {ACTIONS_MAX} вызовов тулов {{tool, args}}; не больше одного на класс"
+        ("actions", f"- actions: вызовы тулов {{tool, args}} - все, о чём просил человек, не урезай: за ход код"
+                    f" исполнит первые {ACTIONS_MAX}, об остальных скажет сам; не больше одного на класс"
                     f" {' и '.join(SINGLE_ACTION_CLASSES)}."),
         ("perform", f"- perform: выступление kind ∈ {_set(kinds)}, {SEGMENTS_MIN}–{SEGMENTS_MAX} сегментов"
                     f" по ≤ {SEGMENT_MAX_CHARS} символов (куплет или абзац на сегмент), backing ∈ {_set(backings)};"

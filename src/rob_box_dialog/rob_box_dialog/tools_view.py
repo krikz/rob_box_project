@@ -216,7 +216,7 @@ def _group_of(tool: str, allowed: set) -> List[str]:
 def _named(text: str, field: str) -> set:
     said, own_voice = without_forms(text, kn.PERSON_VOICE_FORMS)  # «запомни мой голос» - не голос робота
     names = {name for name, group in kn.TOOL_GROUPS.items() if has_word(said, getattr(group, field))
-             or (field == "stems" and has_form(said, group.forms))}
+             or (field == "stems" and (has_form(said, group.forms) or _verb_and_object(said, group)))}
     if field == "stems" and (own_voice or introduces_self(text)):  # «здравствуй, я Саша»: основой это не поймать
         names.add(kn.SELF_INTRO_GROUP)
     if field == "stems" and face_asked(text):  # «покажи победу»: «покажи» без «победы» лицо не просит
@@ -224,6 +224,12 @@ def _named(text: str, field: str) -> set:
     if field == "stems" and has_speech_manner(text):  # «хватит тянуть резину» - про темп речи
         names.add(kn.VOICE_STEP_GROUP)
     return names
+
+
+def _verb_and_object(text: str, group: kn.ToolGroup) -> bool:
+    """Группу назвали глаголом и предметом в любом месте реплики (``ToolGroup.verbs``/``objects``): «удали ещё точку»
+    (#4391), а не только подстрокой основы."""
+    return bool(group.verbs) and has_word(text, group.verbs) and has_word(text, group.objects)
 
 
 def _ordered(names: set) -> Tuple[str, ...]:
