@@ -74,7 +74,7 @@ jobs:
           python-version: '3.11'
 
       - name: Install pytest
-        run: python3 -m pip install --quiet --no-cache-dir pytest
+        run: python3 -m pip install --quiet --no-cache-dir pytest websockets
 
       - name: Run Caddyfile contract tests
         run: |
