@@ -1089,6 +1089,11 @@ WIFI_STEMS: Tuple[str, ...] = ("wi-fi", "wifi", "вайфа", "вай-фа", "р
 INTERNET_STEMS: Tuple[str, ...] = ("интернет",)
 NETWORK_STEMS: Tuple[str, ...] = ("сеть", "сети", "сетью", "сетев", "связь", "связью")
 
+#: Как просят запомнить место: глагол + предмет («запомни это место», «отметь здесь», «сохрани точку») открывают
+#: группу ``navigation`` (``save_waypoint``). «Запомни, что я не ем лук» предмета не называет - это ``memory_save``.
+WAYPOINT_SAVE_VERBS: Tuple[str, ...] = ("запомни", "запоминай", "сохрани", "отметь", "запиши", "зафиксируй")
+WAYPOINT_SAVE_OBJECTS: Tuple[str, ...] = ("мест", "точк", "здесь", "тут")
+
 #: Группы по приоритету: при пересечении групп срез режется по этому порядку (``TOOLS_VISIBLE_MAX``). Голос —
 #: только по явной голосовой просьбе (LLM сама меняла голос посреди сказки, а голос персистентный, PR-4).
 TOOL_GROUPS: Mapping[str, ToolGroup] = MappingProxyType({
@@ -1118,6 +1123,10 @@ TOOL_GROUPS: Mapping[str, ToolGroup] = MappingProxyType({
          "туда", "сюда", "отъед", "подъед", "катись"),
         ("navigate_to_waypoint", "list_waypoints", "move_direction", "save_waypoint", "stop_navigation",
          "get_current_pose"),
+        # #4406 (HIL 05.11): «запомни это место как хил-один» без слова «точку» - срез без save_waypoint, модель звала
+        # memory_save. Так просит и подсказка list_waypoints («Скажи 'запомни это место как [имя]'»): глагол + предмет
+        verbs=WAYPOINT_SAVE_VERBS,
+        objects=WAYPOINT_SAVE_OBJECTS,
     ),
     # #4391 (HIL 04.11): «удали ещё точку хил-окно» не совпадало с «удали точк» - срез без delete_waypoint, а модель
     # сказала «удалена» без тула. Глагол и предмет - по отдельности (``ToolGroup.verbs``/``objects``)

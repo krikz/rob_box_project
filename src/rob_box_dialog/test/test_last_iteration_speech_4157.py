@@ -219,7 +219,7 @@ def test_answer_without_words_on_the_asked_form_is_a_violation_with_a_hint(raw):
 @pytest.mark.parametrize("raw", [
     {"speech": "Помню, что ты любишь чай."},
     {"ask": {"expects": "yes_no", "text": "Назвать ещё?"}},
-    {"actions": [{"tool": "play_sound", "args": {"sound": "robot_happy"}}]},    # исход звука скажет код
+    {"actions": [{"tool": "play_sound", "args": {"sound": "robot_happy"}}]},    # звук сам себе доказательство: успех молчит (SILENT_DONE_TOOLS)
     {"speech": "Запомнил.", "actions": [{"tool": "memory_save", "args": {"fact": "любит чай"}}]},
     {"speech": "Слова", "expression": {"emotion": "happy"}},
 ])
