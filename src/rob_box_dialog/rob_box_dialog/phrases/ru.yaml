@@ -224,6 +224,13 @@ mapping.failed.timeout: ["С картой не получилось: серви�
 mapping.failed.no_response: ["С картой не получилось: сервис карт не ответил."]
 mapping.failed.map_not_found: ["Карты «{map_name}» нет, ничего не загружал."]
 mapping.failed.map_lookup_failed: ["Не смог проверить карту «{map_name}», ничего не загружал."]
+# #4392: база карт одна - карту с другим именем загрузить нельзя, {active_map} - карта, что в базе.
+mapping.failed.map_not_stored: ["Карту «{map_name}» не храню: база карт у меня одна — «{active_map}». Ничего не загружал."]
+mapping.failed.map_not_stored_unnamed: ["Карту «{map_name}» не храню: база карт у меня одна, и это не она. Ничего не загружал."]
+mapping.deleted: ["Забыл карту «{map_name}»."]
+mapping.delete.in_db: ["Карту «{map_name}» удалить не могу: она у меня в базе одна, её можно только перезаписать новой картой."]
+mapping.delete.not_found: ["Карты «{map_name}» у меня нет, удалять нечего."]
+mapping.delete.failed: ["Не смог удалить карту «{map_name}»."]
 
 identity.done: ["Запомнил тебя, {name}."]
 # исход register_speaker по SpeakerResult владельца — причина в ключе, нет ключа — общая фраза.

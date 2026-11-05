@@ -59,6 +59,8 @@ __all__ = [
     "FinishMappingTool",
     "OptimizeMapTool",
     "LoadMapTool",
+    "ListMapsTool",
+    "DeleteMapTool",
     # Animation tools
     "PlayAnimationTool",
     # Sound tools

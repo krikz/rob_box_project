@@ -7,10 +7,20 @@ mapping.py - Инструменты для управления картогра
 - ContinueMappingTool: Продолжить картографирование
 - FinishMappingTool: Завершить картографирование и перейти в локализацию
 - OptimizeMapTool: Постобработка карты (loop closures + bundle adjustment + cleanup)
-- LoadMapTool: Загрузить существующую карту и перейти в режим локализации
+- LoadMapTool: Перезагрузить карту из базы и перейти в режим локализации
+- ListMapsTool: Какие карты робот хранит
+- DeleteMapTool: Забыть карту по имени (кроме той, что в базе)
+
+Хранение карт (#4392). База rtabmap у робота ОДНА - ``/maps/rtabmap.db`` (:data:`SLAM_DB_PATH`):
+``start_mapping`` с новой картой стирает её и пишет заново, ``load_map`` перезагружает тот же файл.
+Таблица ``maps`` в БД инструментов - описания карт (имя, точки), геометрия есть только у активной
+(``is_active``): её строку создаёт ``start_mapping`` после успешной очистки базы, переименовывает
+``finish_mapping``. Остальные строки - имена карт, чья геометрия уже стёрта. Поэтому активная строка
+``maps`` - единственное место правды о том, какая карта в базе, и никто, кроме ``create_map``, её не
+переключает: ``load_map`` с чужим именем честно отказывает (``map_not_stored``), а не «загружает».
 """
 
-from typing import List, Optional, TYPE_CHECKING
+from typing import Dict, List, Optional, Tuple, TYPE_CHECKING
 
 try:
     from rclpy.callback_groups import ReentrantCallbackGroup
@@ -28,6 +38,10 @@ from ..base import MCPTool, MCPToolParameter, MCPToolResult, ToolExecutionType, 
 from rob_box_dialog import knowledge as kn
 
 from ..core.action_outcome import Outcome, classify_service_call
+from ..waypoint_store import map_name_key
+
+#: Единственная база rtabmap (том ``/maps`` контейнера rtabmap на Main Pi): все карты пишутся в неё (#4346, #4392).
+SLAM_DB_PATH = "/maps/rtabmap.db"
 
 
 def _create_service_client(node, srv_type, srv_name, callback_group):
@@ -66,12 +80,34 @@ def _start_data(map_id, new_location, map_name: str) -> dict:
     }
 
 
-def _saved_map_name(map_name: str, mapping_state) -> str:
-    """Имя сохранённой карты: названное в вызове, иначе имя активной карты FSM (``""`` - безымянная)."""
-    named = (map_name or "").strip()
-    if named or mapping_state is None:
-        return named
-    return mapping_state.get().get("map_name") or ""
+def _active_map(store) -> Optional[Dict]:
+    """Строка карты, что сейчас в базе rtabmap (``maps.is_active``), или ``None``. Ошибку БД отдаёт вызывающему."""
+    return store.get_active_map() if store is not None else None
+
+
+def _active_name(store) -> Optional[str]:
+    """Имя карты в базе для фразы кода; БД недоступна или карта безымянная - ``None`` (имени не выдумываем)."""
+    try:
+        return (_active_map(store) or {}).get("name") or None
+    except Exception:  # noqa: BLE001 - имя только для фразы: нет имени - безымянная фраза, а не падение тула
+        return None
+
+
+#: Вердикты запроса карты по имени (:func:`resolve_map_request`).
+MAP_IN_DB = "in_db"
+MAP_NOT_STORED = "not_stored"
+MAP_UNKNOWN = "unknown"
+
+
+def resolve_map_request(wanted: str, active: Optional[Dict], maps: List[Dict]) -> str:
+    """Что значит имя ``wanted`` при одной базе: карта в базе (:data:`MAP_IN_DB`), карта была, но её геометрия
+    стёрта (:data:`MAP_NOT_STORED`), такой карты не было (:data:`MAP_UNKNOWN`). Пустое имя - карта в базе."""
+    key = map_name_key(wanted)
+    if not key or (active is not None and map_name_key(active.get("name")) == key):
+        return MAP_IN_DB
+    if any(map_name_key(m.get("name")) == key for m in maps):
+        return MAP_NOT_STORED
+    return MAP_UNKNOWN
 
 
 class StartMappingTool(MCPTool):
@@ -176,7 +212,7 @@ class StartMappingTool(MCPTool):
 
         from rtabmap_msgs.srv import LoadDatabase  # type: ignore
         req = LoadDatabase.Request()
-        req.database_path = "/maps/rtabmap.db"
+        req.database_path = SLAM_DB_PATH
         req.clear = bool(new_location)
         loaded = _call_service(self.load_database_client, req, 20.0, "RTABMap load_database")
         if not loaded.success:
@@ -184,30 +220,37 @@ class StartMappingTool(MCPTool):
         action = "очищена и перезагружена" if new_location else "перезагружена"
         self.log_info(f"База данных {action}")
 
-        # 4. Создать новую карту в WaypointStore
-        map_id = None
-        if self.waypoint_store and new_location:
-            try:
-                map_id = self.waypoint_store.create_map(map_name.strip() if map_name else None)
-                self.log_info(f"📍 Новая карта создана: {map_id[:8]}...")
-            except Exception as e:
-                self.log_warning(f"⚠️ Не удалось создать карту в WaypointStore: {e}")
+        # 4. Строка карты в ``maps`` - описание того, что теперь в базе (#4392)
+        map_id, spoken_name = self._record_map(map_name, bool(new_location))
 
         # 5. Обновить FSM состояние → mapping
         if self.mapping_state is not None:
-            self.mapping_state.set_mapping(
-                map_name=map_name.strip() if map_name else None,
-                map_id=map_id,
-            )
-            self.log_info(f"🗺️  MappingState → mapping (map='{map_name}')")
+            self.mapping_state.set_mapping()
+            self.log_info(f"🗺️  MappingState → mapping (map='{spoken_name}')")
 
-        suffix = f" Карта: '{map_name}'." if map_name else ""
+        suffix = f" Карта: '{spoken_name}'." if spoken_name else ""
         mode_msg = "чистой базе" if new_location else "существующей карте"
         return MCPToolResult(
             success=True,
-            data=_start_data(map_id, new_location, map_name),
+            data=_start_data(map_id, new_location, spoken_name),
             message=f"Начинаю картографирование на {mode_msg}. Старая карта сохранена в резервной копии.{suffix}"
         )
+
+    def _record_map(self, map_name: str, new_location: bool) -> Tuple[Optional[str], str]:
+        """Новая карта - строка в ``maps`` (становится активной: её геометрия теперь в базе). Возвращает
+        ``(map_id, имя для фразы)``: у новой - названное (если строка создалась), у продолжения - имя карты, что уже
+        в базе, а не аргумент вызова."""
+        if not new_location:
+            return None, _active_name(self.waypoint_store) or ""
+        if self.waypoint_store is None:
+            return None, map_name.strip()
+        try:
+            map_id = self.waypoint_store.create_map(map_name.strip() or None)
+        except Exception as e:  # noqa: BLE001 - строка не создалась: имени у карты в базе нет, так и говорим
+            self.log_warning(f"⚠️ Не удалось создать карту в WaypointStore: {e}")
+            return None, ""
+        self.log_info(f"📍 Новая карта создана: {map_id[:8]}...")
+        return map_id, map_name.strip()
 
     def _create_backup(self) -> bool:
         """Создать backup RTABMap базы данных через ROS 2 сервис /rtabmap/rtabmap/backup (fire-and-forget)."""
@@ -370,14 +413,12 @@ class FinishMappingTool(MCPTool):
 
         # Обновить FSM состояние → localization
         if self.mapping_state is not None:
-            self.mapping_state.set_localization(
-                map_name=map_name.strip() if map_name else None,
-                map_id=active_map_id,
-            )
+            self.mapping_state.set_localization()
             self.log_info(f"🗺️  MappingState → localization (map='{map_name}')")
 
-        saved_name = _saved_map_name(map_name, self.mapping_state)
-        suffix = f" Карта: '{map_name}'." if map_name else ""
+        # Имя сохранённой карты - из владельца (после переименования), без него - названное в вызове.
+        saved_name = _active_name(self.waypoint_store) if self.waypoint_store else (map_name or "").strip()
+        suffix = f" Карта: '{saved_name}'." if saved_name else ""
         note = "" if publish.success else " Но карту на экран опубликовать не удалось."
         return MCPToolResult(
             success=True,
@@ -570,8 +611,9 @@ class LoadMapTool(MCPTool):
     @property
     def description(self) -> str:
         return (
-            "Загрузить сохранённую карту и перейти в режим локализации (навигации). "
-            "Используй когда нужно переключиться на уже исследованную локацию."
+            "Перезагрузить карту из базы и перейти в режим локализации (навигации). "
+            "База карт у робота одна: загрузить можно только карту, что в ней сейчас; "
+            "про карту с другим именем тул честно ответит, что её нет."
         )
 
     @property
@@ -580,7 +622,7 @@ class LoadMapTool(MCPTool):
             MCPToolParameter(
                 name="map_name",
                 type="string",
-                description="Название карты для загрузки (например 'квартира', 'офис'). Если не указано — перезагружает текущую.",
+                description="Название карты (например 'квартира'). Если не указано — перезагружает текущую.",
                 required=False,
             )
         ]
@@ -589,31 +631,44 @@ class LoadMapTool(MCPTool):
     def execution_type(self) -> ToolExecutionType:
         return ToolExecutionType.LONG
 
-    def _activate_named_map(self, wanted: str) -> Optional[MCPToolResult]:
-        """Сделать карту ``wanted`` активной; ``None`` — всё хорошо, иначе готовый честный неуспех."""
+    def _refuse(self, wanted: str, active_name: Optional[str], reason: str, message: str,
+                error: Optional[str] = None) -> MCPToolResult:
+        """Честный отказ без перезагрузки: причину и фразу строит код (#4392)."""
+        self.log_warning(f"⚠️ load_map('{wanted}'): {reason}, в базе карта '{active_name or ''}'")
+        return MCPToolResult(
+            success=False,
+            error=error or message,
+            message=message,
+            data={"outcome": reason, "reason": reason, kn.MAP_NAME_FIELD: wanted or None,
+                  kn.MAP_ACTIVE_FIELD: active_name},
+        )
+
+    def _check_request(self, wanted: str) -> Tuple[Optional[MCPToolResult], Optional[str]]:
+        """Можно ли загрузить карту ``wanted``: ``(отказ или None, имя карты в базе)``. Ничего не переключает."""
+        if not wanted:
+            return None, _active_name(self.waypoint_store)
+        lookup_failed = f"Не удалось проверить карту «{wanted}», ничего не загружал"
+        if self.waypoint_store is None:
+            return self._refuse(wanted, None, "map_lookup_failed", lookup_failed), None
         try:
-            found = self.waypoint_store.set_active_map_by_name(wanted)
+            active = _active_map(self.waypoint_store)
+            maps = self.waypoint_store.list_maps()
         except Exception as exc:  # noqa: BLE001 - нельзя подтвердить имя = нельзя говорить «загружена»
-            self.log_warning(f"⚠️ Ошибка WaypointStore при поиске карты '{wanted}': {exc}")
-            return MCPToolResult(
-                success=False,
-                error=f"Не удалось проверить карту '{wanted}' в WaypointStore: {exc}",
-                message=f"Не удалось проверить карту «{wanted}», ничего не загружал",
-                data={"outcome": "map_lookup_failed", "reason": "map_lookup_failed"},
-            )
-        if not found:
-            self.log_warning(f"⚠️ Карта '{wanted}' не найдена в WaypointStore")
-            return MCPToolResult(
-                success=False,
-                error=f"Карта '{wanted}' не найдена в WaypointStore",
-                message=f"Карта «{wanted}» не найдена, ничего не загружал",
-                data={"outcome": "map_not_found", "reason": "map_not_found"},
-            )
-        self.log_info(f"📍 Активная карта: '{wanted}'")
-        return None
+            return self._refuse(wanted, None, "map_lookup_failed", lookup_failed,
+                                error=f"Не удалось проверить карту '{wanted}' в WaypointStore: {exc}"), None
+        active_name = (active or {}).get("name") or None
+        verdict = resolve_map_request(wanted, active, maps)
+        if verdict == MAP_NOT_STORED:
+            where = f" — «{active_name}»" if active_name else ", и это не она"
+            return self._refuse(wanted, active_name, kn.MAP_NOT_STORED_REASON,
+                                f"Карту «{wanted}» не храню: база карт у меня одна{where}. Ничего не загружал"), None
+        if verdict == MAP_UNKNOWN:
+            return self._refuse(wanted, active_name, "map_not_found",
+                                f"Карты «{wanted}» нет, ничего не загружал"), None
+        return None, active_name
 
     def execute(self, map_name: str = "") -> MCPToolResult:
-        """Загрузить карту и переключиться в режим локализации."""
+        """Перезагрузить карту из базы и переключиться в режим локализации."""
         # Нет клиента (rtabmap_msgs не собран на этой Pi) — понятная ошибка, не исключение (#3789).
         if self.load_database_client is None:
             return MCPToolResult(
@@ -626,16 +681,15 @@ class LoadMapTool(MCPTool):
         from rtabmap_msgs.srv import LoadDatabase  # type: ignore
         from std_srvs.srv import Empty
 
-        # Найти карту в WaypointStore и сделать её активной. Не нашли — ничего не перезагружаем (#3789).
-        wanted = map_name.strip()
-        if wanted and self.waypoint_store:
-            failure = self._activate_named_map(wanted)
-            if failure is not None:
-                return failure
+        # База одна (#4392): имя не той карты, что в ней, - честный отказ, ничего не перезагружаем.
+        wanted = (map_name or "").strip()
+        refusal, loaded_name = self._check_request(wanted)
+        if refusal is not None:
+            return refusal
 
         # Перезагрузить базу данных (clear=False — не стирать, просто reload)
         req = LoadDatabase.Request()
-        req.database_path = "/maps/rtabmap.db"
+        req.database_path = SLAM_DB_PATH
         req.clear = False
         loaded = _call_service(self.load_database_client, req, 20.0, "RTABMap load_database")
         if not loaded.success:
@@ -650,23 +704,145 @@ class LoadMapTool(MCPTool):
             return _failed_call(self, switched, "Карта загружена, но режим навигации не включился")
         self.log_info("🧭 Режим локализации активирован")
 
-        # Обновить FSM состояние → localization
         if self.mapping_state is not None:
-            resolved_id = None
-            if self.waypoint_store:
-                try:
-                    resolved_id = self.waypoint_store.get_active_map_id()
-                except Exception:
-                    pass
-            self.mapping_state.set_localization(
-                map_name=map_name.strip() if map_name.strip() else None,
-                map_id=resolved_id,
-            )
-            self.log_info(f"🗺️  MappingState → localization via load_map (map='{map_name}')")
+            self.mapping_state.set_localization()
+            self.log_info(f"🗺️  MappingState → localization via load_map (map='{loaded_name or ''}')")
 
-        suffix = f" Карта: '{map_name}'." if map_name.strip() else ""
+        # Имя в фразе - карты, что реально в базе (из ``maps``), а не аргумент вызова.
+        suffix = f" Карта: '{loaded_name}'." if loaded_name else ""
         return MCPToolResult(
             success=True,
             message=f"Карта загружена, переключаюсь в режим навигации.{suffix}",
-            data={kn.MAP_NAME_FIELD: wanted or None},
+            data={kn.MAP_NAME_FIELD: loaded_name},
         )
+
+
+def _distinct_names(maps: List[Dict], skip: Optional[str]) -> List[str]:
+    """Имена карт без повторов (по :func:`map_name_key`), кроме ``skip`` и безымянных, в порядке ``maps``."""
+    seen = {map_name_key(skip)} if skip else set()
+    names = []
+    for m in maps:
+        name = (m.get("name") or "").strip()
+        if name and map_name_key(name) not in seen:
+            seen.add(map_name_key(name))
+            names.append(name)
+    return names
+
+
+def _maps_failed(error: str) -> MCPToolResult:
+    return MCPToolResult(success=False, error=error, message="Не смог посмотреть карты",
+                         data={"reason": "map_lookup_failed"})
+
+
+class ListMapsTool(MCPTool):
+    """Какие карты робот хранит (#4392): одна база - одна карта; остальные имена - без геометрии."""
+
+    event_source = "inproc:waypoint_store"
+
+    def __init__(self, node, waypoint_store: Optional["WaypointAdapter"] = None):
+        super().__init__(node)
+        self.waypoint_store = waypoint_store
+
+    @property
+    def name(self) -> str:
+        return "list_maps"
+
+    @property
+    def description(self) -> str:
+        return (
+            "Какие карты помещений робот хранит: «какие карты знаешь», «на какой ты карте». "
+            "Отвечай по данным тула: база карт одна, остальные имена — старые карты без геометрии."
+        )
+
+    @property
+    def parameters(self) -> List[MCPToolParameter]:
+        return []
+
+    @property
+    def execution_type(self) -> ToolExecutionType:
+        return ToolExecutionType.INSTANT
+
+    def execute(self) -> MCPToolResult:
+        if self.waypoint_store is None:
+            return _maps_failed("WaypointStore недоступен")
+        try:
+            active = _active_map(self.waypoint_store)
+            maps = self.waypoint_store.list_maps()
+        except Exception as exc:  # noqa: BLE001 - не прочли БД карт: так и говорим
+            return _maps_failed(f"WaypointStore: {exc}")
+        active_name = (active or {}).get("name") or None
+        stale = _distinct_names([m for m in maps if not m.get("is_active")], active_name)
+        if active is None:
+            head = "Готовой карты у меня нет."
+        elif active_name:
+            head = f"Храню одну карту — «{active_name}»: база карт у меня одна."
+        else:
+            head = "Храню одну карту, без имени: база карт у меня одна."
+        tail = f" Старые названия без карты: {', '.join(stale)}." if stale else ""
+        return MCPToolResult(
+            success=True,
+            message=head + tail,
+            data={kn.MAP_NAME_FIELD: active_name, "has_map": active is not None, "stale_names": stale},
+        )
+
+
+class DeleteMapTool(MCPTool):
+    """Забыть карту по имени (#4392): строки старых карт удаляются, карту в базе удалить нельзя."""
+
+    event_source = "inproc:waypoint_store"
+
+    def __init__(self, node, waypoint_store: Optional["WaypointAdapter"] = None):
+        super().__init__(node)
+        self.waypoint_store = waypoint_store
+
+    @property
+    def name(self) -> str:
+        return "delete_map"
+
+    @property
+    def description(self) -> str:
+        return (
+            "Забыть (удалить) карту по имени: «удали карту офис», «забудь карту». "
+            "Карту, что сейчас в базе, удалить нельзя — её можно только перезаписать новым картографированием."
+        )
+
+    @property
+    def parameters(self) -> List[MCPToolParameter]:
+        return [
+            MCPToolParameter(name="map_name", type="string", description="Название карты, которую забыть",
+                             required=True),
+        ]
+
+    @property
+    def execution_type(self) -> ToolExecutionType:
+        return ToolExecutionType.INSTANT
+
+    @property
+    def slice(self) -> str:
+        return "personality"
+
+    def _fail(self, wanted: str, reason: str, message: str, error: Optional[str] = None) -> MCPToolResult:
+        return MCPToolResult(success=False, error=error or message, message=message,
+                             data={"reason": reason, kn.MAP_NAME_FIELD: wanted or None})
+
+    def execute(self, map_name: str = "") -> MCPToolResult:
+        wanted = (map_name or "").strip()
+        if not wanted:
+            return self._fail(wanted, "map_not_found", "Какую карту забыть? Назови её")
+        if self.waypoint_store is None:
+            return self._fail(wanted, "map_lookup_failed", f"Не смог удалить карту «{wanted}»")
+        try:
+            active = _active_map(self.waypoint_store)
+            if active is not None and map_name_key(active.get("name")) == map_name_key(wanted):
+                return self._fail(wanted, kn.MAP_DELETE_ACTIVE_REASON,
+                                  f"Карту «{wanted}» удалить не могу: она у меня в базе одна, "
+                                  "её можно только перезаписать новой картой")
+            removed = self.waypoint_store.delete_inactive_maps_by_name(wanted)
+        except Exception as exc:  # noqa: BLE001 - БД карт упала: не говорим «удалил»
+            return self._fail(wanted, "map_lookup_failed", f"Не смог удалить карту «{wanted}»",
+                              error=f"WaypointStore: {exc}")
+        if removed == 0:
+            return self._fail(wanted, "map_not_found", f"Карты «{wanted}» у меня нет, удалять нечего")
+        self.log_info(f"🗑️ Забыта карта '{wanted}' ({removed} строк maps)")
+        return MCPToolResult(success=True, message=f"Забыл карту «{wanted}».",
+                             data={kn.MAP_NAME_FIELD: wanted, "removed": removed})

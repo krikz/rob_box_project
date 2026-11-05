@@ -717,11 +717,11 @@ TOOL_CLASSES: Mapping[str, str] = MappingProxyType({
     **{t: "query" for t in (
         "container_status", "estimate_tts_duration", "faq_search", "get_battery_level", "get_current_pose",
         "get_current_time", "get_music_state", "get_perception_context", "get_robot_status", "get_sound_info",
-        "list_tts_voices", "list_waypoints", "listen_for_response", "lookup_melody", "memory_context",
+        "list_maps", "list_tts_voices", "list_waypoints", "listen_for_response", "lookup_melody", "memory_context",
         "memory_search", "read_logs", "ros2_node_status", "search_melody", "search_web", "show_metrics",
     )},
     **{t: "action.local" for t in (
-        "add_music_material", "clear_waypoints", "delete_waypoint", "memory_save", "play_animation",
+        "add_music_material", "clear_waypoints", "delete_map", "delete_waypoint", "memory_save", "play_animation",
         "save_waypoint", "set_music_volume", "set_pitch", "set_speed", "set_tts_provider", "set_voice",
         "set_volume",
     )},
@@ -1135,6 +1135,15 @@ TOOL_GROUPS: Mapping[str, ToolGroup] = MappingProxyType({
         ("delete_waypoint", "clear_waypoints", "navigate_to_coordinates", "list_waypoints"),
         verbs=("удали", "удаля", "сотри", "стери", "очисти", "убери", "забудь"),
         objects=("точк",),
+    ),
+    # #4392: какие карты хранит робот и забыть старую - глагол + «карт» (группа раньше ``mapping``: при обрезке среза
+    # по ``TOOLS_VISIBLE_MAX`` на «какие карты знаешь» / «удали карту офис» остаются их тулы, а не оптимизация)
+    "maps": ToolGroup(
+        (),
+        ("list_maps", "delete_map", "load_map"),
+        verbs=("какие", "каких", "список", "перечисл", "знаешь", "хранишь", "удали", "удаля", "сотри", "стери",
+               "забудь"),
+        objects=("карт",),
     ),
     "mapping": ToolGroup(("карт",),
                          ("start_mapping", "continue_mapping", "finish_mapping", "optimize_map", "load_map")),
@@ -1559,12 +1568,15 @@ MAP_NEW_FIELD = "new_location"
 MAP_PARTIAL_FIELD = "partial"
 MAP_ACTIVE_FIELD = "active_map"
 MAP_ACTIVE_REASON = "mapping_active"
+#: База rtabmap одна (#4392): ``load_map`` с именем карты, чья геометрия стёрта новой картой, - отказ этой причиной,
+#: в :data:`MAP_ACTIVE_FIELD` - имя карты, что в базе. «Загрузил X» звучит, только если в базе и есть X.
+MAP_NOT_STORED_REASON = "map_not_stored"
 MAP_FAILURE_REASONS: Tuple[str, ...] = (
     "service_error", "unavailable", "timeout", "no_response", "map_not_found", "map_lookup_failed",
 )
 MAP_FAILED = ByData(("reason", MAP_ACTIVE_FIELD), {
-    **{(MAP_ACTIVE_REASON, named): f"mapping.failed.{MAP_ACTIVE_REASON}{'' if named else '_unnamed'}"
-       for named in (True, False)},
+    **{(reason, named): f"mapping.failed.{reason}{'' if named else '_unnamed'}"
+       for reason in (MAP_ACTIVE_REASON, MAP_NOT_STORED_REASON) for named in (True, False)},
     **{(reason, named): f"mapping.failed.{reason}" for reason in MAP_FAILURE_REASONS for named in (True, False)},
 }, "mapping.failed", present=(MAP_ACTIVE_FIELD,))
 MAP_START_DONE = ByData((MAP_NEW_FIELD, MAP_NAME_FIELD), {
@@ -1577,6 +1589,13 @@ MAP_NAMED_DONE = {
     "load": ByData((MAP_NAME_FIELD,), {(True,): "mapping.loaded", (False,): "mapping.loaded_unnamed"},
                    present=(MAP_NAME_FIELD,)),
 }
+#: Забыть карту (``delete_map``, #4392): строки старых карт удаляются, карту в базе - нельзя (причина
+#: :data:`MAP_DELETE_ACTIVE_REASON`), её можно только перезаписать новым картографированием.
+MAP_DELETE_ACTIVE_REASON = "map_in_db"
+MAP_DELETE_FAILED = ByData(("reason",), {
+    (MAP_DELETE_ACTIVE_REASON,): "mapping.delete.in_db",
+    ("map_not_found",): "mapping.delete.not_found",
+}, "mapping.delete.failed")
 #: Итога тула карты нет в срок класса (#4344: транспорт теперь ждёт тул весь срок, а не 10 с) - о карте, а не «Не
 #: доехал — время вышло.» класса.
 MAP_TIMEOUT_KEY = "mapping.failed.timeout"
@@ -1596,6 +1615,8 @@ MAP_TOOL_PHRASES: Mapping[str, Mapping[str, Any]] = MappingProxyType({
 #: Ключи фраз, особые для тула (поверх ключа класса): «Запомнил: …» строится по событию saved владельца памяти.
 TOOL_PHRASES: Mapping[str, Mapping[str, Any]] = MappingProxyType({
     **MAP_TOOL_PHRASES,
+    # забыть карту (#4392): класс action.local, фраза по причине отказа (карта в базе / нет такой)
+    "delete_map": MappingProxyType({"done": "mapping.deleted", "rejected": MAP_DELETE_FAILED}),
     # поездка к точке (#4344): «Я уже на точке а.» / «Приехал на точку а.» / «Не доехал до точки а: …» по данным
     # исхода; данных нет (отказ плана, моторы) - ключ класса ``motion.*``
     "navigate_to_waypoint": NAV_TOOL_PHRASES,

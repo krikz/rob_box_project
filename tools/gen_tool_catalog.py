@@ -542,6 +542,8 @@ SKILL_TOOLS: dict[str, tuple[str, ...]] = {
         "finish_mapping",
         "optimize_map",
         "load_map",
+        "list_maps",
+        "delete_map",
     ),
     "voice-tts": (
         "set_voice",
