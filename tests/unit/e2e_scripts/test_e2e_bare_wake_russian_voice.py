@@ -1,7 +1,7 @@
 """05.11 (Шифу, марафон): одиночное вейк-слово -- русским голосом, остальные реплики -- голосом роли.
 
 Голос с акцентом (English_Jovialman) вейк «Робот!» теряет. Решение принимает код харнесса: ``e2e_events.is_bare_wake``
-(единственный список ``BARE_WAKE_WORDS``) + метка ``wake`` в ``map_tts_voice``; реплика с командой голос роли сохраняет
+(единственный список ``BARE_WAKE_WORDS``) + ``wake_voice`` харнесса; реплика с командой голос роли сохраняет
 (многоголосие актов -- биометрия).
 """
 
@@ -66,10 +66,10 @@ class TestBareWakeVoice:
         assert bodies[0]["voice_setting"]["voice_id"] == "English_Jovialman"
         assert not re.search("wake-only", out)
 
-    def test_map_tts_voice_wake_label(self, tmp_path):
+    def test_wake_voice_per_provider(self, tmp_path):
         out, err = run_bash(
             tmp_path,
-            'for p in yandex silero minimax; do map_tts_voice "$p" wake; echo; done',
+            'for p in yandex silero minimax; do wake_voice "$p"; echo; done',
         )
         lines = [ln for ln in out.splitlines() if ln and not ln.startswith(">>>") and not ln.startswith("CALLS")]
         assert lines[:3] == ["anton", "aidar", "Russian_ReliableMan"], (out, err)
