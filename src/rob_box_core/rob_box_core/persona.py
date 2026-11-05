@@ -74,7 +74,7 @@ PROPOSAL_SCHEMA: Dict[str, Any] = {
     "properties": {
         SECTION_APPEARANCE: {"type": "string", "maxLength": SECTION_MAX_LEN},
         SECTION_SPEECH: {"type": "string", "maxLength": SECTION_MAX_LEN},
-        "epithet": {"type": "string", "maxLength": epithets.LLM_EPITHET_MAX_LEN},
+        "epithet": {"type": "string", "maxLength": epithets.SHORT_EPITHET_MAX_LEN},
     },
     "required": list(_PROPOSAL_KEYS),
     "additionalProperties": False,
@@ -221,9 +221,12 @@ def build_proposal_prompt(material: PersonaMaterial, *, current_epithet: Optiona
         f"{current}\n"
         "Пиши только то, что видно на снимке или есть в списке выше; если речи нет — поле "
         f"«{SECTION_SPEECH}» оставь пустой строкой. Каждое поле — до {SECTION_MAX_LEN} знаков.\n"
-        f"Кличка — {epithets.LLM_EPITHET_MIN_WORDS}–{epithets.LLM_EPITHET_MAX_WORDS} слова на русском из этого "
-        "описания, первое с большой буквы, например «Бородач в синем свитере». Одежда допустима. Без имён, "
-        "без насмешек над внешностью, здоровьем, национальностью, без грубых слов, не «незнакомец» и не «гость». "
+        f"Кличка — прозвище из {epithets.SHORT_EPITHET_MAX_WORDS} слов или одно слово, до "
+        f"{epithets.SHORT_EPITHET_MAX_LEN} знаков, образное, а не перечень примет; первое слово с большой буквы. "
+        "Примеры: «Странник», «Очкарик», «Тёмный странник», «Бородач». "
+        "Не начинай с «мужчина», «женщина», «человек», «парень», «девушка» и подобных, не пиши «в синем свитере». "
+        "Без имён, без насмешек над внешностью, здоровьем, национальностью, без грубых слов, не «незнакомец» "
+        "и не «гость». "
         "Если описать нечего — в поле кличка поставь «-».\n"
         "Ответь ОДНИМ JSON-объектом с ключами "
         f"{', '.join(_PROPOSAL_KEYS)} и ничем больше."
@@ -337,7 +340,7 @@ def check_proposal(
         ts=float(now),
     )
     label, reason = epithets.check_llm_epithet(
-        fields["epithet"], taken=taken, names=list(material.names) + list(names or ())
+        fields["epithet"], taken=taken, names=list(material.names) + list(names or ()), short=True
     )
     return ProposalVerdict(description=description, epithet=label, reject_reason=reason)
 

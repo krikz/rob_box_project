@@ -98,6 +98,8 @@ REJECT_STRANGER = "stranger"
 REJECT_REFUSAL = "refusal"
 REJECT_NAME = "name"
 REJECT_TAKEN = "taken"
+# Короткая кличка лица (persona, ADR-0164): описание внешности вместо клички («Мужчина в тёмной одежде»).
+REJECT_DESCRIPTION = "epithet: описание, не кличка"
 
 # Границы для клички, придуманной LLM (слой 2 гибрида). Issue #2887
 # (решение Шифу 23.09.2026): 2–4 слова вместо одного. Дефис внутри слова
@@ -107,6 +109,19 @@ LLM_EPITHET_MIN_WORDS: int = 2
 LLM_EPITHET_MAX_WORDS: int = 4
 LLM_EPITHET_MIN_LEN: int = 5
 LLM_EPITHET_MAX_LEN: int = 48
+
+# Короткая кличка лица (``check_llm_epithet(..., short=True)``): 1–2 слова, до 20 знаков, как у словарных
+# («Странник», «Очкарик»). MiniMax-M3 присылал в поле кличка описание («Мужчина в тёмной одежде»).
+SHORT_EPITHET_MIN_WORDS: int = 1
+SHORT_EPITHET_MAX_WORDS: int = 2
+SHORT_EPITHET_MAX_LEN: int = 20
+
+# Родовые слова-описания: кличка не может с них начинаться (одно место знания, ADR-0148). Сверка без «ё».
+GENERIC_DESCRIPTOR_WORDS = frozenset({
+    "мужчина", "женщина", "человек", "парень", "девушка", "мальчик", "девочка", "юноша", "ребенок",
+    "подросток", "старик", "старушка", "дедушка", "бабушка", "дама", "господин", "персона", "особа",
+    "люди", "мужик", "тетка", "дядька", "дядя", "тетя",
+})
 
 # Первое слово — с большой буквы (как было у однословной клички: отсекает
 # обрывки прозы), остальные — любого регистра («Ночной паяльщик моторов»).
@@ -646,6 +661,26 @@ def _label_format_problem(words: Sequence[str]) -> Optional[str]:
     return None
 
 
+def _short_label_problem(words: Sequence[str]) -> Optional[str]:
+    """Причина отказа короткой клички (описание, длина, число слов) или ``None``; формат — как у обычной."""
+    if words[0].lower().replace("ё", "е") in GENERIC_DESCRIPTOR_WORDS:
+        return REJECT_DESCRIPTION
+    if len(words) > SHORT_EPITHET_MAX_WORDS:
+        return f"epithet: длинная ({len(words)} слов)"
+    label = " ".join(words)
+    if len(label) > SHORT_EPITHET_MAX_LEN:
+        return f"epithet: длинная ({len(label)} знаков)"
+    if not (LLM_EPITHET_MIN_LEN <= len(label) <= SHORT_EPITHET_MAX_LEN):
+        return REJECT_INVALID
+    if not _LLM_EPITHET_FIRST_RE.match(words[0]):
+        return REJECT_INVALID
+    if not all(_LLM_EPITHET_WORD_RE.match(w) for w in words[1:]):
+        return REJECT_INVALID
+    if any(w.lower() in _NON_EPITHET_WORDS for w in words):
+        return REJECT_INVALID
+    return None
+
+
 def _has_person_name(label: str, names: Iterable[str]) -> bool:
     """В кличке есть имя знакомого человека (своё или чужое).
 
@@ -670,6 +705,7 @@ def check_llm_epithet(
     *,
     taken: Iterable[str] = (),
     names: Iterable[str] = (),
+    short: bool = False,
 ) -> Tuple[Optional[str], Optional[str]]:
     """Проверить кличку, придуманную LLM: ``(кличка, None)`` или ``(None, причина)``.
 
@@ -693,6 +729,9 @@ def check_llm_epithet(
     * ``REJECT_TAKEN`` — кличка уже у другого профиля; сравнение всей
       клички целиком через ``normalize_epithet``.
 
+    ``short=True`` (кличка лица, persona): 1–2 слова до 20 знаков, без родового слова-описания первым
+    («Мужчина в тёмной одежде» → ``REJECT_DESCRIPTION``); длинная → ``epithet: длинная (N слов)``.
+
     Отказ означает «оставить словарного кандидата» — именно поэтому
     словарный слой пишется в БД ДО запроса к LLM: у робота всегда есть
     рабочая метка, даже если сеть легла или модель вернула мусор
@@ -706,7 +745,7 @@ def check_llm_epithet(
         return None, REJECT_STRANGER
     if is_refusal_epithet(label):
         return None, REJECT_REFUSAL
-    problem = _label_format_problem(words)
+    problem = _short_label_problem(words) if short else _label_format_problem(words)
     if problem:
         return None, problem
     if _has_person_name(label, names):
@@ -816,7 +855,11 @@ __all__ = [
     "LLM_EPITHET_MIN_LEN",
     "LLM_EPITHET_MIN_WORDS",
     "REASON_LLM",
+    "GENERIC_DESCRIPTOR_WORDS",
+    "REJECT_DESCRIPTION",
     "REJECT_EMPTY",
+    "SHORT_EPITHET_MAX_LEN",
+    "SHORT_EPITHET_MAX_WORDS",
     "REJECT_INVALID",
     "REJECT_NAME",
     "REJECT_REFUSAL",

@@ -28,7 +28,7 @@ persona = importlib.import_module('rob_box_core.persona')
 JPEG = b'\xff\xd8fake-jpeg'
 LANDMARKS = [0.4, 0.4, 0.6, 0.4, 0.5, 0.5, 0.42, 0.6, 0.58, 0.6]
 GOOD_ANSWER = json.dumps(
-    {'appearance': 'Борода, синий свитер, очки', 'speech': '', 'epithet': 'Бородач в синем свитере'},
+    {'appearance': 'Борода, синий свитер, очки', 'speech': '', 'epithet': 'Тёмный бородач'},
     ensure_ascii=False,
 )
 
@@ -170,11 +170,11 @@ def test_workshop_new_face_gets_dictionary_then_appearance_epithet(tmp_path):
     assert len(describer.calls) == 1 and describer.calls[0]['jpeg'] == JPEG
     assert describer.calls[0]['schema'] is persona.PROPOSAL_SCHEMA
     meta = _meta(tmp_path, pid)
-    assert meta['epithet'] == 'Бородач в синем свитере'
+    assert meta['epithet'] == 'Тёмный бородач'
     assert [h['reason'] for h in meta['epithet_history']] == ['first_seen', 'persona']
     assert meta['persona']['appearance'] == 'Борода, синий свитер, очки'
     assert meta['persona']['behavior'] == 'Встречен впервые.'
-    assert f'[лицо] кличка {pid[:8]}: «{first}» → «Бородач в синем свитере»' in log.text()
+    assert f'[лицо] кличка {pid[:8]}: «{first}» → «Тёмный бородач»' in log.text()
     assert namer.stats()['epithet_vision_accepted'] == 1
 
 
@@ -262,7 +262,7 @@ def test_made_up_speech_is_rejected(tmp_path):
 
 def test_voice_epithets_count_as_taken(tmp_path):
     store = _store(tmp_path)
-    namer, log = _namer(store, Describer(), foreign_taken=lambda: ['бородач в синем свитере'])
+    namer, log = _namer(store, Describer(), foreign_taken=lambda: ['тёмный бородач'])
     pid, label = _new_face(store, namer)
     assert _ep(store, pid) == label
     assert 'taken' in log.text()
@@ -273,7 +273,7 @@ def test_two_faces_get_different_epithets(tmp_path):
     namer, _ = _namer(store, describer)
     a, _ = _new_face(store, namer, 0)
     b, _ = _new_face(store, namer, 1)
-    assert _ep(store, a) == 'Бородач в синем свитере'
+    assert _ep(store, a) == 'Тёмный бородач'
     assert _ep(store, b) != _ep(store, a)
 
 
@@ -458,7 +458,7 @@ def test_new_meeting_of_known_face_calls_model_once_per_meeting(tmp_path):
     match, label = _meeting(namer, store)  # новая Встреча известного
     assert not match.is_new and match.person_id == pid
     assert len(describer.calls) == 2
-    assert label == 'Бородач в синем свитере'  # принятая кличка держится
+    assert label == 'Тёмный бородач'  # принятая кличка держится
 
     _meeting(namer, store)  # ещё одна Встреча — ещё один вызов
     assert len(describer.calls) == 3
@@ -508,7 +508,7 @@ def test_known_meeting_rejected_candidate_keeps_previous_epithet(tmp_path):
     describer.answer = json.dumps({'appearance': 'Другая одежда', 'speech': '', 'epithet': ''},
                                   ensure_ascii=False)
     _meeting(namer, store)
-    assert _ep(store, pid) == 'Бородач в синем свитере'
+    assert _ep(store, pid) == 'Тёмный бородач'
     assert _meta(tmp_path, pid)['persona']['appearance'] == 'Другая одежда'
 
 
