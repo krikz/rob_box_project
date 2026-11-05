@@ -1,5 +1,7 @@
 # agent-flow-orphan-audit — telemetry для тёзок-карточек
 
+> **DEPRECATED (см. ADR-0162, `docs/adr/0162-current-agent-process.md`).** Автоматика hermes / agent-flow стоит с 05.10.2026 (файл `MAINTENANCE`, коммит `6b7ed35cf`). Текущий процесс — `docs/process/claude-coordinator-robot-flow.md`. Документ оставлен как история.
+
 `scripts/agent_flow/agent-flow-orphan-audit.sh` — **telemetry-only** watchdog
 для agent-flow pipeline (retrospective-карточка `t_3dbde205`,
 retro-key `g10c-prereq-merged-card-cancel`).

@@ -1028,6 +1028,11 @@ def capped_phrase(turn: "_Turn") -> str:
     return phrases.text(kn.ACTIONS_CAPPED_PHRASE)
 
 
+def one_phrase(outcome: Optional[str], over: str) -> Tuple[Optional[str], str]:
+    """Общее «Готово.» и пояснение о недоделанном (:func:`capped_phrase`) подряд - одна фраза: пояснение (#4406)."""
+    return (None if over and outcome == phrases.text("local.done") else outcome), over
+
+
 def _call_label(call: ToolCall) -> str:
     """Чем вызов назвать человеку: первое непустое строковое значение аргументов (имя точки, запрос); нет - ``""``."""
     return next((v.strip() for v in call.args.values() if isinstance(v, str) and v.strip()), "")
@@ -2089,9 +2094,10 @@ class TurnEngine:
         (:func:`_close_unread`), без грусти, если это ответ по данным (:func:`query_emotion`)."""
         turn.expression = command_face(cmd.expression, results, turn.text, earlier=turn.expression)
         outcome = _spoken_outcome(cmd, results, self.session.snapshot.agent, self.log.performing())
+        outcome, over = one_phrase(outcome, capped_phrase(turn))
         if outcome:  # провал - грустно, вопрос тула («Удалить «X»?») - эмоцией вопроса, иначе лицом модели
             self._say(turn, outcome, None, outcome_emotion(results, cmd.expression.emotion))
-        self._say(turn, capped_phrase(turn))  # сверх потолка действий - не молча (#4391)
+        self._say(turn, over)  # сверх потолка действий - не молча (#4391)
         cmd = count_edit(self, turn, cmd)  # правка звучащего счёта: продолжение, а не счёт с начала (#4207)
         asked = over_ordered_music(asked_voice(cmd), results)  # голос и подложка, о которых просил человек
         owned, refusal = hand_perform(self._ports, turn.turn_id, turn.epoch, asked, self._log)
