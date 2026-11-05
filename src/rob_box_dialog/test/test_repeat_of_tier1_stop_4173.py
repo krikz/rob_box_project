@@ -23,6 +23,9 @@ N608 = "робот хватит диджей выключай"  # STT мараф
 MODEL_REST = "робот хватит диджей что дальше"
 OK = phrases.text("music.stop_ok")
 
+#: Варианты фразы Tier-1 стопа музыки (решение Шифу 05.11: вариант выбирает код, без повтора подряд).
+SAID = frozenset(phrases.catalog()[kn.MUSIC_STOP_SAID])
+
 
 class Ports:
     """Транспорт хода: идёт сет, первый стоп гасит музыку, стоп на тишине отвечает ``was_playing=False``."""
@@ -88,7 +91,7 @@ def test_n608_model_repeating_the_tier1_dj_stop_closes_the_turn_with_the_code_ph
     assert "повтор исполненного в этом ходе не исполняется: ['dj_set']" in caplog.text
     # ход не провален: фраза кода по исходу Tier-1, одна, без грусти
     assert (agg.stage, agg.status) == ("done", "finished")
-    assert [text for text, _emotion in ports.said] == [OK] and ports.said[0][1] != "sad"
+    assert len(ports.said) == 1 and ports.said[0][0] in SAID and ports.said[0][1] != "sad"
 
 
 def test_repeat_of_a_voiced_outcome_closes_done_without_saying_it_again():

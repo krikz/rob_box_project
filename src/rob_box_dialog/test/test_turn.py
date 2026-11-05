@@ -162,7 +162,7 @@ def test_tier1_stop_all_stops_music_motion_and_speech():
     _run(engine, "стоп")
     assert ports.cancels == ["tier1 stop_all"] and ports.intents == ["stop_motion"]
     assert ports.executed == [[("stop_music", {})]]
-    assert ports.said == []
+    assert [s[0] for s in ports.said] in [[v] for v in phrases.catalog()[kn.MUSIC_STOP_SAID]]  # стоп музыки - словами
 
 
 def _with_music(engine, **music):
@@ -180,7 +180,8 @@ def test_enough_stops_the_set_and_speech_but_does_not_silence_and_next_command_i
     assert ports.cancels == ["tier1 stop_all"]
     assert ports.executed == [[("dj_set", {"action": "stop"}), ("stop_music", {})]]
     assert engine.session.snapshot.top("Silence") is None
-    assert ports.said == []
+    assert [s[0] for s in ports.said] in [[v] for v in phrases.catalog()[kn.MUSIC_STOP_SAID]]  # стоп музыки - словами
+    ports.said.clear()
     _run(engine, "музыку громче")  # следующая команда принята, а не проглочена тишиной
     assert ports.executed[-1] == [("set_music_volume", {"action": "louder"})]
     assert ports.said == [(phrases.text("music.volume.louder"), None, None)]

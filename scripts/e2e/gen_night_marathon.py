@@ -241,6 +241,9 @@ ROBOT_PHRASES: Dict[str, Tuple[str, ...]] = {
     "media.rejected": ("Не получилось включить музыку.",),
     "media.timeout": ("Музыка пока не заиграла.",),
     "music.stop_ok": ("Выключил музыку.",),
+    "music.stop_said": ("Выключил музыку.", "Всё, музыку выключил.", "Готово, музыка выключена.",
+                        "Музыку выключил, отдыхаем.", "Выключил, больше не играет."),
+    "music.stop_quiet": ("И так тихо — музыка не играет.", "Музыка и не играла.", "Тут и так тихо, ничего не играет."),
     "music.stop_idle": ("Сейчас ничего не играет — на всякий случай всё остановил.",),
     "music.stop_fail": ("Не получилось выключить музыку.",),
     "music.edit_fail": ("Не получилось поменять музыку — играет как было.",),
@@ -614,11 +617,13 @@ MEMORY_USED = tool_done("memory_search") + "|" + MEMORY_FACT_SPOKEN
 #: ``set<сид>:``/``gen<сид>:``. «Выбран путь synth» без синт-трека на деке -- не результат.
 SYNTH_STARTED = MUSIC_STARTED + r"req[0-9]+:"
 #: Речь, противоречащая результату «музыка играет»: потолок, отказ запуска, стоп (каталог фраз робота).
-MUSIC_ON_CONTRADICTED = robot_said("media.timeout", "media.rejected", "music.stop_ok", "music.stop_idle")
+MUSIC_ON_CONTRADICTED = robot_said("media.timeout", "media.rejected", "music.stop_ok", "music.stop_said",
+                                   "music.stop_idle", "music.stop_quiet")
 #: Речь, противоречащая результату «играющее поправлено»: фраза НОВОГО трека (``media.done`` «Включаю музыку.» -- 27.10
 #: на n504-n506), отказ и потолок правки (фраза успеха -- ``message`` результата, ``music.edit_said``), потолок и стоп.
 MUSIC_EDIT_CONTRADICTED = robot_said("media.done", "media.timeout", "media.rejected", "music.stop_ok",
-                                     "music.stop_idle", "music.edit_fail", "music.edit_timeout")
+                                     "music.stop_said", "music.stop_idle", "music.stop_quiet", "music.edit_fail",
+                                     "music.edit_timeout")
 #: Речь, противоречащая результату «выключил»: фразы ЗАПУСКА (``media.done`` «Включаю музыку.» -- 27.10 09:37:37 после
 #: ``dj_set {"action": "stop"}``), ожидания, потолка и стопа вхолостую.
 #: Речь о ДЕЙСТВИИ с музыкой, которого после «выключи» нет и быть не может (n709 марафона-3, run 40758476879, 20:00:04): Tier-1
@@ -635,7 +640,10 @@ MUSIC_FALSE_ACTION = ("сделаю потише|сделаю тише|сдел�
 #: #4077 (М8, n709 29.10 18:32:16): «если хочешь, включу его потише ещё раз» -- УСЛОВНОЕ предложение после честного стопа, а не
 #: обещание без тула; голое «включу» краснило шаг по работающему роботу (красный от харнесса). «Включу» ловится только как заявление о действии СЕЙЧАС («включаю», «сейчас включу», «включу что-нибудь»): явная ложь n709 марафона-3 («сделаю потише…») осталась в списке.
 MUSIC_OFF_CONTRADICTED = robot_said("media.done", "media.progress", "media.timeout", "media.rejected",
-                                    "music.stop_idle", "music.stop_fail") + "|" + MUSIC_FALSE_ACTION
+                                    "music.stop_idle", "music.stop_quiet", "music.stop_fail") + "|" + MUSIC_FALSE_ACTION
+#: Фраза Tier-1 стопа музыки (решение Шифу 05.11: «всегда что-то говорить, разные вариации»; ``turn.music_stop_phrase``):
+#: шаг Tier-1 стопа под музыкой ждёт её в речи робота -- любой вариант (n511, n712; раньше ``silent_ok``, #4408).
+MUSIC_STOP_SAID = robot_said("music.stop_said")
 
 
 class ResultKind(NamedTuple):
@@ -2043,15 +2051,15 @@ act(
             result="stopped",
             expect_tools=["stop_music"],
             skip_when="NO_MUSIC_N506",
-            silent_ok=True,
+            keywords=[MUSIC_STOP_SAID],
             why="#3971: стоп засчитывается по `Инструмент stop_music выполнен успешно` + "
             "`[music] stop`, а не по слову «выключаю». #4196 (марафон-3 28.10: музыку снял n506, «глуши» получило «ничего не "
             "играет» -- красный каскадом): предусловие «музыка играет» (`skip_when` NO_MUSIC_N506, `deck: idle`) -- дека пуста, "
             "SKIP NO_MUSIC_N506 (каскад от n506), а не FAIL. Корень (n506: `stop_music` в `must_not`) краснеет сам. "
-            "`silent_ok` (М12 05.11 05:35:50, run 41974510126): «глуши музыку» -- Tier-1 `stop_all` (#4402, и с вейком, и "
-            "без него под музыкой): стоп кодом, `llm_calls=0`, речи нет по замыслу (как «стоп»). Робот погасил музыку "
-            "(`stop_music was_playing=True`, `[music] stop`), а харнесс красил `turn_nospeech`. Доказательство стопа -- "
-            "паттерны результата, флаг их не ослабляет.",
+            "М12 05.11 05:35:50 (run 41974510126): «глуши музыку» -- Tier-1 `stop_all` (#4402, и с вейком, и без него под "
+            "музыкой), стоп кодом без слов; `silent_ok` (#4408) снят решением Шифу 05.11 «всегда что-то говорить»: "
+            "Tier-1 стоп музыки говорит вариант `music.stop_said` -- он и ждётся в речи (`expected_keywords`). "
+            "Доказательство стопа -- по-прежнему паттерны результата.",
         ),
         step(
             "n512_silence_after_stop",
@@ -2343,10 +2351,11 @@ act(
             ["stop_music"],
             result="stopped",
             expect_tools=["stop_music"],
-            silent_ok=True,
-            why="`silent_ok` (М12 n511, тот же класс): STT «робот заглушил» -- Tier-1 `music_off` с фразой «Выключил "
-            "музыку.», а верно услышанное «робот всё глуши» -- Tier-1 `stop_all`, стоп без речи по замыслу (#4402). Оба "
-            "исхода честные; стоп доказывают паттерны результата (`stop_music` выполнен, `[music] stop`).",
+            keywords=[MUSIC_STOP_SAID],
+            why="М12 n511, тот же класс: STT «робот заглушил» -- Tier-1 `music_off`, верно услышанное «робот всё глуши» -- "
+            "Tier-1 `stop_all` (#4402). `silent_ok` (#4408) снят решением Шифу 05.11 «всегда что-то говорить»: оба пути "
+            "говорят вариант `music.stop_said` (ждётся в речи); стоп доказывают паттерны результата (`stop_music` "
+            "выполнен, `[music] stop`).",
         ),
     ],
     [

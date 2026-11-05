@@ -27,6 +27,9 @@ def _snap(**kw):
 
 N812 = "роботы пере музыку выключай"  # STT М10 n812
 OK = phrases.text("music.stop_ok")
+
+#: Варианты фразы Tier-1 стопа музыки (решение Шифу 05.11: вариант выбирает код, без повтора подряд).
+SAID = frozenset(phrases.catalog()[kn.MUSIC_STOP_SAID])
 PLAYING = _snap(music=MusicStateRef("playing", track_id="req95689:01:A"))
 IDLE = _snap()
 
@@ -122,7 +125,7 @@ def test_n812_turn_stops_music_by_code_and_says_the_code_phrase(text, command):
     agg = _run(ports, text, command)
     assert ports.executed == [("stop_music", {})]
     assert ports.asked == 0, "стоп музыки решает код, LLM не зовётся"
-    assert ports.said == [OK]
+    assert len(ports.said) == 1 and ports.said[0] in SAID, ports.said
     assert (agg.stage, agg.status) == ("done", "finished")
 
 

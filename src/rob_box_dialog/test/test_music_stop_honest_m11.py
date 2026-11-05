@@ -29,6 +29,9 @@ from rob_box_dialog.words import music_stop_claimed, music_stop_unwoken, same_st
 
 WAKE = ("робот",)
 OK = phrases.text("music.stop_ok")
+
+#: Варианты фразы Tier-1 стопа музыки (решение Шифу 05.11: вариант выбирает код, без повтора подряд).
+SAID = frozenset(phrases.catalog()[kn.MUSIC_STOP_SAID])
 PLAYING_PHRASE = phrases.text(kn.MUSIC_PROMISE_PHRASES["playing"])
 N712_STT = "робот заглушил"  # STT М11 n712, 02:22:46
 N712_LLM = "Тишина. Борису больше не мешаем."  # ответ LLM М11 n712 без тула
@@ -126,7 +129,7 @@ def test_n712_stt_stops_music_by_code_without_llm():
     agg = _run(ports, Addressed("заглушил", VOICE))
     assert ports.executed == [("stop_music", {})]
     assert ports.asked == 0, "стоп музыки решает код"
-    assert ports.said == [OK]
+    assert len(ports.said) == 1 and ports.said[0] in SAID, ports.said
     assert (agg.stage, agg.status) == ("done", "finished")
 
 
@@ -190,7 +193,7 @@ def test_n608_rest_of_the_same_stop_does_not_reach_the_llm(text):
     agg = _run(ports, Addressed(text, VOICE), dj=True)
     assert ports.asked == 0, "остаток - тот же стоп, модели нечего решать"
     assert ports.executed == [("dj_set", {"action": "stop"}), ("stop_music", {})]
-    assert ports.said == [OK]
+    assert len(ports.said) == 1 and ports.said[0] in SAID, ports.said
     assert (agg.stage, agg.status) == ("done", "finished")
 
 
@@ -239,5 +242,5 @@ def test_n511_turn_stops_music_by_code_and_nothing_else_reaches_the_llm():
     agg = _run(ports, _decide(N511_STT, True))
     assert ports.executed == [("stop_music", {})]
     assert ports.asked == 0, "остаток фразы без вейка модели не уходит"
-    assert ports.said == [], "«глуши музыку» - ясный стоп всего, он молчит (как с вейком)"
+    assert len(ports.said) == 1 and ports.said[0] in SAID, "«глуши музыку» без вейка - стоп кодом и фраза кода (Шифу 05.11)"
     assert (agg.stage, agg.status) == ("done", "finished")

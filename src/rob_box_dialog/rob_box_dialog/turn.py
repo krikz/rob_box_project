@@ -255,6 +255,7 @@ class _Turn:
     sad: bool = False  # прозвучала грустная фраза (провал, отказ): лицо итога без лица команды - грусть
     utterance_id: str = ""  # фраза STT хода (``Addressed.utterance_id``): по ней - её SpeakerResult
     music_stopped: bool = False  # ход уже выключил музыку (стоп-тул ``done``): второй стоп не «ничего не играет»
+    stop_said: bool = False  # Tier-1 уже сказал о стопе музыки (:func:`music_stop_phrase`): второй стоп хода молчит
     unvoiced: Tuple[ActionResult, ...] = ()  # исходы действий хода, о которых код ещё не сказал (Tier-1 стоп молчит)
     seen: Tuple[Mapping[str, Any], ...] = ()  # ``recent_actions`` снимка хода: данные, что модель видела до хода
     read: Tuple[ToolCall, ...] = ()  # исполненные в ходе вызовы ``query``: повтор не исполняется (:func:`unreread`)
@@ -716,14 +717,46 @@ def voice_phrase(results: Sequence[ActionResult]) -> Optional[str]:
     return outcome_phrase(own)
 
 
+def music_stop_phrase(command: Tier1Command, results: Sequence[ActionResult],
+                      pick: Callable[[str], str]) -> Optional[str]:
+    """Фраза Tier-1 стопа музыки (решение Шифу 05.11: «всегда что-то говорить, разные вариации»; М12 n511/n712 -
+    «глуши музыку» молчало). Вариант выбирает код без повтора подряд (``pick``), исход - по факту: тул стопа отказал -
+    его фраза (``music.stop_fail``); музыку погасили (``was_playing`` не ``False`` или погасил раньше в ходе) -
+    :data:`~rob_box_dialog.knowledge.MUSIC_STOP_SAID`; играть было нечему - ``MUSIC_STOP_QUIET`` («И так тихо»), но у
+    ``stop_all`` без тулов музыки (стоп одной речи, выступление погасил хост) слов нет: о музыке его не просили."""
+    own = [r for r in results if r.cls != _QUERY]
+    if any(r.status != "done" for r in own):
+        return outcome_phrase(own)
+    if not own and command.kind != kn.MUSIC_OFF_KIND:
+        return None
+    played = any(r.data.get("was_playing") is not False or r.data.get(kn.STOPPED_EARLIER_FIELD) for r in own)
+    return pick(kn.MUSIC_STOP_SAID if played else kn.MUSIC_STOP_QUIET)
+
+
+def note_stop_said(turn: "_Turn", command: Tier1Command) -> None:
+    """Tier-1 сказал фразу о погашенной музыке (:func:`music_stop_phrase`): стоп модели в том же ходе её не повторит
+    (:func:`unsaid_stops`), заглушка по данным рядом не нужна (:func:`data_close`)."""
+    if stops_music(command) and turn.music_stopped:
+        turn.stop_said = True
+
+
+def unsaid_stops(turn: "_Turn", results: Sequence[ActionResult]) -> Sequence[ActionResult]:
+    """Исходы без стопа музыки, о котором ход уже сказал (``_Turn.stop_said``): «хватит, диджей выключай» - Tier-1
+    сказал «Выключил музыку», а стоп модели в том же ходе (``STOPPED_EARLIER_FIELD``) второй раз этого не говорит."""
+    if not turn.stop_said:
+        return results
+    return [r for r in results if not (r.status == "done" and r.data.get(kn.STOPPED_EARLIER_FIELD))]
+
+
 def tier1_phrase(command: Tier1Command, results: Sequence[ActionResult],
                  pick: Callable[[str], str] = lambda key: "", last_spoken: str = "") -> Optional[str]:
     """Фраза Tier-1: громкость — по исходу тула; сброс скорости и тона — по исходам тулов (:func:`prosody_phrase`);
     шаг голоса — по исходам тулов («Говорю ниже.», ось на границе — «Ниже уже некуда…», отказ — его фраза);
     новая сессия — вариант из каталога; очередь показа — лицом, слова только о провале (:func:`show_queue_phrase`);
     «повтори» — ``last_spoken`` дословно (последняя озвученная реплика робота, ``TurnLog.last_spoken``), а
-    повторять нечего — фраза кода ``REPEAT_NOTHING_PHRASE``; стоп и тишина молчат; смена голоса — одна фраза кода по
-    результатам тулов (:func:`voice_phrase`), тул голоса не говорит."""
+    повторять нечего — фраза кода ``REPEAT_NOTHING_PHRASE``; стоп музыки — вариант кода по исходу
+    (:func:`music_stop_phrase`), стоп одной речи и тишина молчат; смена голоса — одна фраза кода по результатам тулов
+    (:func:`voice_phrase`), тул голоса не говорит."""
     if command.kind == kn.REPEAT_KIND:
         return repeat_phrase(last_spoken)
     if command.kind == "new_session":
@@ -732,7 +765,9 @@ def tier1_phrase(command: Tier1Command, results: Sequence[ActionResult],
         return prosody_phrase(results)
     if command.kind == kn.SHOW_QUEUE_KIND:
         return show_queue_phrase(results)
-    if command.kind in (kn.VOICE_STEP_KIND, kn.MUSIC_OFF_KIND):  # «выключи музыку» - фраза по исходу стопа (#4349)
+    if stops_music(command):  # «выключи музыку», «хватит» под музыкой, стоп без вейка (решение Шифу 05.11)
+        return music_stop_phrase(command, results, pick)
+    if command.kind == kn.VOICE_STEP_KIND:
         return outcome_phrase(results)
     if command.kind == "set_voice":
         return voice_phrase(results)
@@ -1202,7 +1237,8 @@ def data_close(turn: _Turn, emotion: Optional[str]) -> Tuple[str, Optional[str]]
     unvoiced, turn.unvoiced = turn.unvoiced, ()
     said = join(unvoiced)
     read = any(r.status == "done" for r in turn.queried)
-    tail = "" if said is not None and read and query_answer(turn.queried) is None else query_fallback(turn.queried)
+    voiced = said is not None or turn.stop_said  # исход стопа уже сказал Tier-1 (``_Turn.stop_said``)
+    tail = "" if voiced and read and query_answer(turn.queried) is None else query_fallback(turn.queried)
     text = " ".join(part for part in (said.text if said is not None else "", tail) if part)
     return text, said.emotion if said is not None else query_emotion(turn.queried, emotion)
 
@@ -2039,6 +2075,7 @@ class TurnEngine:
         said = tier1_phrase(command, results, self._pick, self.log.last_spoken(exclude=turn.turn_id))  # повтор
         if said and self.session.snapshot.top("Silence") is None:
             self._say(turn, said)
+            note_stop_said(turn, command)
         turn.unvoiced += unvoiced(said, results)  # стоп молчит: исход скажет код, если модель повторит то же (n608)
 
     def _interrupt(self, turn: _Turn, stop: Interrupt) -> SessionSnapshot:
@@ -2124,7 +2161,7 @@ class TurnEngine:
         ``query`` или только повторила исполненное): слов её не слышно — говорит код по данным хода
         (:func:`_close_unread`), без грусти, если это ответ по данным (:func:`query_emotion`)."""
         turn.expression = command_face(cmd.expression, results, turn.text, earlier=turn.expression)
-        outcome = _spoken_outcome(cmd, results, self.session.snapshot.agent, self.log.performing())
+        outcome = _spoken_outcome(cmd, unsaid_stops(turn, results), self.session.snapshot.agent, self.log.performing())
         outcome, over = one_phrase(outcome, capped_phrase(turn))
         if outcome:  # провал - грустно, вопрос тула («Удалить «X»?») - эмоцией вопроса, иначе лицом модели
             self._say(turn, outcome, None, outcome_emotion(results, cmd.expression.emotion))
