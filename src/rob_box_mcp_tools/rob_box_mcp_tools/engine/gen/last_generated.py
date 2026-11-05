@@ -13,31 +13,18 @@
 
 from __future__ import annotations
 
-import re
 import time
 from typing import Any, Callable, Mapping, Optional, Tuple
+
+from rob_box_core.topic_words import topic_stems  # одно правило темы с диалогом (rob_box_dialog.track_ref, М11 n707)
 
 #: Сколько секунд только что сочинённый трек остаётся «этой песней»: «расскажи про неё», «включи с начала» через минуты
 #: после ``[song] готова`` - про него, а не про старую версию.
 GENERATED_FRESH_S = 900.0
 #: Сколько секунд помнится тема поиска, совпавшая со свежим треком: ``info`` по старой версии той же темы идёт следом.
 TOPIC_TTL_S = 300.0
-#: Слова короче не тема. Основа слова - без двух последних букв, но не короче ``STEM_MIN``: «енота» и «енот-механик» -
-#: «енот».
-WORD_MIN = 4
-STEM_MIN = 4
-#: Слова о самой песне - не тема («расскажи про песню про енота»: тема - «енот», а не «песня»).
-GENERIC_STEMS: Tuple[str, ...] = ("песн", "трек", "композиц", "музык", "мелоди", "инструментал", "произведен", "саундтрек")
-_WORD = re.compile(r"[^\W\d_]+")
 #: Поля трека, в которых ищется тема.
 _TEXT_FIELDS = ("title", "lyrics", "prompt", "notes", "genre", "mood")
-
-
-def topic_stems(text: str) -> Tuple[str, ...]:
-    """Основы слов темы запроса (строчные, ё → е; слова о самой песне отброшены)."""
-    words = (w.casefold().replace("ё", "е") for w in _WORD.findall(text or ""))
-    stems = (w[:max(STEM_MIN, len(w) - 2)] for w in words if len(w) >= WORD_MIN)
-    return tuple(dict.fromkeys(s for s in stems if not s.startswith(GENERIC_STEMS)))
 
 
 def _norm(value: Any) -> str:
