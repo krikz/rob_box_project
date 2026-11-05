@@ -1,9 +1,9 @@
 # ADR Format (Rob Box)
 
 > ⚠️ Rob Box использует СВОЙ формат ADR, отличный от generic-формата этого
-> скилла. Канонические правила — `CONTRIBUTING.md` §«ADR-процесс» и
-> `docs/adr/0030-adr-numbering-sot.md`. Ниже — выжимка; где расходятся —
-> побеждает CONTRIBUTING.md.
+> скилла. Канонические правила — `AGENTS.md` §«ADR» и
+> `docs/adr/AF-0030-adr-numbering-sot.md`. Ниже — выжимка; где расходятся —
+> побеждает AGENTS.md.
 
 ADR живут в `docs/adr/NNNN-<kebab-case-slug>.md` и нумеруются **глобальным
 монотонным счётчиком** (4 цифры). Номер — **следующий свободный после
