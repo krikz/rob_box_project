@@ -471,18 +471,16 @@ services:
     labels:
       logging: "promtail"
 
-  # Зона безопасности вокруг корпуса (#4365) — ВЫКЛЮЧЕНА по умолчанию (profile).
+  # Зона безопасности вокруг корпуса (#4365) — ВСЕГДА в стеке (решение Шифу 05.11; профиль снят:
+  # деплой Main Pi делает голый `docker compose up -d`, COMPOSE_PROFILES там нет, так что профиль = выключено).
   # Только в движении: ближе 0.40 м от корпуса — мигалка (face_node) и короткий
   # писк (sound_node); ближе 0.20 м — нулевой Twist в cmd_vel_emergency (twist_mux
   # 255) и одним событием мигалка, писк и «Осторожно!» голосом (SpeechRequest).
-  # Включить: в .env Main Pi COMPOSE_PROFILES=proximity-guard (через запятую с
-  # monitoring, если он там есть), затем docker compose up -d proximity-guard.
   # Образ — teleop (rob_box_teleop + сообщения диалога); footprint берётся из
   # ./config/nav2/nav2_params.yaml — тот же, что у Nav2.
   proximity-guard:
     image: ${SERVICE_IMAGE_PREFIX:-ghcr.io/krikz/rob_box}:teleop-${ROS_DISTRO:-humble}-${IMAGE_TAG:-local}
     container_name: proximity-guard
-    profiles: ["proximity-guard"]
     network_mode: host
     environment:
       - ROS_DOMAIN_ID=0
