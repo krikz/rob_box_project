@@ -1889,6 +1889,7 @@ class TurnEngine:
         self._deadline_s = deadline_s
         self._log = log or _LOG
         self._window = WindowGuard()
+        self._generated = track_ref.GeneratedTopic(clock)  # тема последнего заказа генерации: «песня про енота» (n707)
         #: Правки звучащего счёта (:func:`count_edit`): ``speech_id`` старого счёта → (ход, правка, голос, эмоция).
         self._count_edits: Dict[str, Tuple[Any, str, Optional[str], Optional[str]]] = {}
 
@@ -2071,7 +2072,8 @@ class TurnEngine:
     async def _execute(self, turn: _Turn, actions: Sequence[ToolCall], snap: SessionSnapshot) -> List[ActionResult]:
         if not actions:
             return []
-        actions = track_ref.bind_last_generated(actions, turn.text)  # «эта песня» - сочинённая только что (#4216)
+        # «эта песня» / «песня про <тему заказа>» - сочинённая только что (#4216, М11 n707): ссылку ставит код
+        actions = track_ref.bind_last_generated(actions, turn.text, self._generated.stems())
         cls = kn.call_class(actions[0].tool, actions[0].args)
         turn.waiting = cls
         turn.replacing = orders_over_music(self.session.snapshot, actions)
@@ -2080,6 +2082,7 @@ class TurnEngine:
         turn.deadline.grant(action_term(actions))
         run = execute_for_speaker(self._ports, actions, snap, self.session.snapshot, turn.turn_id, self._log)
         results = await turn.deadline.wait(run, "actions")
+        self._generated.note(actions, results)
         turn.music_stopped, results = reconcile_stops(turn.music_stopped, results)  # фраза стопа - правда о ходе
         turn.acted += acted_calls(actions, results)  # повтор в этом ходе не исполняется
         turn.read += read_calls(actions, results)  # повтор чтения в этом ходе не исполняется

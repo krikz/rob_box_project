@@ -619,7 +619,7 @@ def validate(cmd: Result, available_tools: Collection[str], session: Any = None,
     # подложка: сначала вид без просьбы о музыке теряет её, потом путь пения подгоняет остальное;
     # число лиц по сегментам правит другое поле выступления и идёт последним, порядок с подложкой не важен
     cmd = _fit_sing_backing(_drop_default_backing(cmd, form), form)
-    cmd = _fit_expression_count(cmd)
+    cmd = _fit_expression_count(_fit_segments(cmd))  # пустые сегменты и длина ролей - до лиц: лица по числу сегментов
     cmd = _voice_roles(cmd, busy)
     agent = getattr(session, "agent", None) or kn.AGENTS[0]
     # тулы, закрытые путём пения, судит _check_sing своим нарушением: не «тула нет в срезе» — мост его не расширяет
@@ -1128,12 +1128,46 @@ def _check_perform(cmd: Command, busy: Busy) -> None:
     _check_edit(cmd.edit_pending, busy)
 
 
+#: Поля выступления «по сегменту»: у пустого сегмента их элемент уходит вместе с ним.
+_PER_SEGMENT = ("role_per_segment", "voice_per_segment", "expression_per_segment")
+
+
+def _fit_segments(cmd: Command) -> Command:
+    """Структура выступления подгоняется кодом, а не отвергается (М11 05.11 n804: сказка из 10 сегментов с одним
+    пустым - ``bad_segments``, на повторе ролей не по числу сегментов - «Не понял, как это сделать»). Пустой сегмент
+    (``""``, одни пробелы) убирается вместе со своим элементом в полях по сегменту (:data:`_PER_SEGMENT`); длина
+    ``role_per_segment`` после этого - ровно по сегментам: недостающие роли - рассказчик (``""``), лишние отрезаются.
+    Поправки - в ``dropped`` (``perform.segments[10->9]``, ``perform.role_per_segment[8->9]``). Ничего не осталось или
+    сегментов вне пределов - по-прежнему ``bad_segments`` (:func:`_check_segments`). ``voice_per_segment`` решает код
+    (:func:`_voice_roles`): его длину не подгоняем - она нарушение, как прежде."""
+    perf = cmd.perform
+    if perf is None:
+        return cmd
+    notes: List[str] = []
+    keep = [i for i, segment in enumerate(perf.segments) if str(segment).strip()]
+    if len(keep) != len(perf.segments):
+        fields: Dict[str, Any] = {"segments": tuple(perf.segments[i] for i in keep)}
+        for name in _PER_SEGMENT:
+            per = getattr(perf, name)
+            if per is not None and len(per) == len(perf.segments):
+                fields[name] = tuple(per[i] for i in keep) or None
+        notes.append(f"perform.segments[{len(perf.segments)}->{len(keep)}]")
+        perf = replace(perf, **fields)
+    roles, count = perf.role_per_segment, len(perf.segments)
+    if roles is not None and len(roles) != count:
+        fitted = tuple(roles[:count]) + ("",) * (count - len(roles))
+        notes.append(f"perform.role_per_segment[{len(roles)}->{len(fitted)}]")
+        perf = replace(perf, role_per_segment=fitted)
+    return replace(cmd, perform=perf, dropped=cmd.dropped + tuple(notes)) if notes else cmd
+
+
 def _fit_expression_count(cmd: Command) -> Command:
     """Лиц по сегментам - ровно столько, сколько сегментов (n810 28.10: рэп с 4 куплетами и другим числом лиц
     отвергнут целиком дважды). Лицо - косметика (ADR-0148, как у прочих выбрасываемых полей): лишние лица отрезаются, недостающие
     дополняются последним лицом, пустой список - лиц нет (``None``); поправка - в ``dropped`` (лог ``fields_dropped``:
-    ``perform.expression_per_segment[3->4]``), выступление исполняется. Роли и голоса сегментов смысл несут (чья
-    реплика) - их длина по-прежнему нарушение ``bad_segments``. Число самих сегментов судит :func:`_check_segments`."""
+    ``perform.expression_per_segment[3->4]``), выступление исполняется. Длину ролей подгоняет :func:`_fit_segments`
+    (недостающие - рассказчик), длина голосов сегментов - нарушение ``bad_segments``. Число самих сегментов судит
+    :func:`_check_segments`."""
     perf = cmd.perform
     faces = None if perf is None else perf.expression_per_segment
     if faces is None or len(faces) == len(perf.segments):
