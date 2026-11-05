@@ -7,10 +7,13 @@
 #   scripts/hil/hil.sh off      вернуть робота как было (docker compose up -d)
 #
 # on:
-#   1. проверки: ssh до трёх машин, настройки, пути карт (не боевые), образ сима;
+#   1. проверки: ssh до четырёх машин, настройки, пути карт и реестра (не боевые), образ сима;
 #   2. замок HIL_LOCK (/tmp/hil.lock) на Main Pi — деплой его видит и не идёт;
 #   3. Main: docker stop ros2-control lslidar — моторы (CAN → VESC) получают команды
 #      только от ros2-control; Vision: docker stop oak-d ceiling-camera;
+#   3b. Sound: снапшот боевого `SELECT * FROM maps` (только чтение) в HIL_MAPS_SNAPSHOT;
+#      voice-assistant пересоздаётся с docker/sound/compose.hil.yaml — реестр карт и точек
+#      (maps/waypoints) в отдельном файле HIL_WAYPOINT_DB, остальная память боевая (#4392);
 #   4. Main: robot-state-publisher, twist-mux, rtabmap, imu-filter, nav2 пересоздаются
 #      с USE_SIM_TIME=true и картой HIL_MAPS_DIR (docker/main/compose.hil.yaml, --no-deps);
 #   5. песочница: zenoh-router + gazebo из docker/sim/compose.hil.yaml под ID робота.
@@ -18,8 +21,9 @@
 #      робота Gazebo не стартует, второй контроллер позже — Gazebo гасится;
 #   6. ждём: в графе ровно один /controller_manager, контейнер ros2-control не работает —
 #      значит, единственный контроллер — Gazebo. Иначе сим гасится, робот остаётся без моторов.
-# off: сим гасится первым, затем на Main и Vision `docker compose up -d --no-deps` тех же
-#   сервисов с теми же образами (закреплены по работающим контейнерам), замок снимается.
+# off: сим гасится первым, затем на Main, Vision и Sound `docker compose up -d --no-deps` тех же
+#   сервисов с теми же образами (закреплены по работающим контейнерам), замок снимается;
+#   последним — сверка боевого `SELECT * FROM maps` со снапшотом on: изменился — выход 3.
 #
 # Настройки — scripts/hil/hil.conf (переопределяются переменными окружения или HIL_CONF).
 # Пароли не используются: ssh -o BatchMode=yes, нужен ключ в authorized_keys.
@@ -42,6 +46,8 @@ MAIN_STOP=(ros2-control lslidar)
 VISION_STOP=(oak-d ceiling-camera)
 MAIN_SIM_TIME=(robot-state-publisher twist-mux rtabmap imu-filter nav2)
 SIM_SERVICES=(zenoh-router gazebo)
+# Сервис и контейнер Sound Pi с mcp_server — владельцем реестра карт и точек (WaypointStore).
+SOUND_SWITCH=(voice-assistant)
 
 log() { printf '[hil %s] %s\n' "$(date -u +%H:%M:%SZ)" "$*"; }
 die() { printf '❌ %s\n' "$*" >&2; exit 1; }
@@ -92,6 +98,29 @@ check_hil_paths() {
         mapping | localization) ;;
         *) die "HIL_RTABMAP_MODE='$HIL_RTABMAP_MODE' — mapping или localization" ;;
     esac
+    check_hil_registry
+}
+
+# Реестр карт и точек HIL — файл внутри voice-assistant только под /data/hil/ (не боевой
+# /data/voice_memory.db и не соседние БД памяти), имя *.db, без . и .. (#4392).
+check_hil_registry() {
+    local p="$HIL_WAYPOINT_DB"
+    case "/$p/" in
+        */../* | */./*) die "HIL_WAYPOINT_DB='$p' — без . и .. в пути" ;;
+    esac
+    case "$p" in
+        /data/hil/?*.db) ;;
+        *) die "HIL_WAYPOINT_DB='$p' — нужен файл *.db под /data/hil/ (внутри voice-assistant), не боевая БД" ;;
+    esac
+    [ "$p" != "$HIL_PROD_TOOLS_DB" ] || die "HIL_WAYPOINT_DB совпадает с боевой БД инструментов"
+    case "$HIL_PROD_TOOLS_DB" in
+        /*) ;;
+        *) die "HIL_PROD_TOOLS_DB='$HIL_PROD_TOOLS_DB' — нужен абсолютный путь внутри voice-assistant" ;;
+    esac
+    case "$HIL_MAPS_SNAPSHOT" in
+        /*) ;;
+        *) die "HIL_MAPS_SNAPSHOT='$HIL_MAPS_SNAPSHOT' — нужен абсолютный путь на Sound Pi" ;;
+    esac
 }
 
 check_net() {
@@ -125,10 +154,43 @@ resolve_robot_id() {
 
 push_helpers() {
     local host
-    for host in "$HIL_MAIN_HOST" "$HIL_VISION_HOST"; do
+    for host in "$HIL_MAIN_HOST" "$HIL_VISION_HOST" "$HIL_SOUND_HOST"; do
         rput "$host" "$HERE/remote_pi.sh" "$REMOTE_PI"
     done
     rput "$HIL_MAIN_HOST" "$REPO_ROOT/docker/main/compose.hil.yaml" "$HIL_REMOTE_DIR/main.hil.yaml"
+    rput "$HIL_SOUND_HOST" "$REPO_ROOT/docker/sound/compose.hil.yaml" "$HIL_REMOTE_DIR/sound.hil.yaml"
+}
+
+# ── Sound Pi: реестр карт и точек (#4392) ─────────────────────────────────
+
+# Снапшот боевого maps: сначала во временный файл, потом mv — оборванный ssh не оставит полснапшота.
+sound_snapshot_maps() {
+    rsh "$HIL_SOUND_HOST" "mkdir -p $(q "$(dirname "$HIL_MAPS_SNAPSHOT")") && bash $REMOTE_PI maps-dump $(q "${SOUND_SWITCH[0]}") $(q "$HIL_PROD_TOOLS_DB") > $(q "$HIL_MAPS_SNAPSHOT.part") && mv -f $(q "$HIL_MAPS_SNAPSHOT.part") $(q "$HIL_MAPS_SNAPSHOT")"
+}
+
+# off, последний шаг: боевой maps сейчас против снапшота on. 0 — совпало, 3 — изменился, 1 — не сверить.
+sound_verify_maps() {
+    local now before
+    if ! rsh "$HIL_SOUND_HOST" "test -f $(q "$HIL_MAPS_SNAPSHOT")"; then
+        log "⚠️  боевой реестр карт: снапшота $HIL_SOUND_HOST:$HIL_MAPS_SNAPSHOT нет (on не доходил до Sound?) — сверять не с чем"
+        return 1
+    fi
+    before=$(rsh "$HIL_SOUND_HOST" "cat $(q "$HIL_MAPS_SNAPSHOT")") || { log "⚠️  снапшот не прочитан"; return 1; }
+    now=$(rpi "$HIL_SOUND_HOST" maps-dump "${SOUND_SWITCH[0]}" "$HIL_PROD_TOOLS_DB") \
+        || { log "⚠️  боевой реестр карт не прочитан ($HIL_PROD_TOOLS_DB) — сверка не сделана"; return 1; }
+    log "боевой реестр карт до on ($(grep -c . <<<"$before") строк):"
+    printf '%s\n' "$before" | sed 's/^/    до    /'
+    log "боевой реестр карт после off ($(grep -c . <<<"$now") строк):"
+    printf '%s\n' "$now" | sed 's/^/    после /'
+    if [ "$before" = "$now" ]; then
+        log "✅ боевой реестр карт (SELECT * FROM maps) за HIL не изменился"
+        rsh "$HIL_SOUND_HOST" "rm -f -- $(q "$HIL_MAPS_SNAPSHOT")" || true
+        return 0
+    fi
+    log "❌ боевой реестр карт за HIL ИЗМЕНИЛСЯ (diff до → после):"
+    diff <(printf '%s\n' "$before") <(printf '%s\n' "$now") | sed 's/^/    /' || true
+    log "снапшот оставлен для разбора: $HIL_SOUND_HOST:$HIL_MAPS_SNAPSHOT"
+    return 3
 }
 
 # ── Песочница ─────────────────────────────────────────────────────────────
@@ -159,7 +221,7 @@ preflight() {
     check_hil_paths
     check_net
     local host
-    for host in "$HIL_MAIN_HOST" "$HIL_VISION_HOST" "$HIL_SANDBOX_HOST"; do
+    for host in "$HIL_MAIN_HOST" "$HIL_VISION_HOST" "$HIL_SOUND_HOST" "$HIL_SANDBOX_HOST"; do
         rsh "$host" true || die "нет ssh до $host (нужен ключ, пароли не используются)"
     done
     resolve_robot_id
@@ -181,6 +243,22 @@ cmd_on() {
     rpi "$HIL_MAIN_HOST" stop "${MAIN_STOP[@]}" || die "Main: не остановились ${MAIN_STOP[*]} — HIL не включён, замок стоит; разобраться и hil.sh off"
     log "Vision: останавливаю ${VISION_STOP[*]}"
     rpi "$HIL_VISION_HOST" stop "${VISION_STOP[@]}" || die "Vision: не остановились ${VISION_STOP[*]}; hil.sh off"
+
+    log "Sound: снапшот боевого реестра карт ($HIL_PROD_TOOLS_DB, только чтение) → $HIL_MAPS_SNAPSHOT"
+    sound_snapshot_maps || die "Sound: снапшот боевого maps не снят — реестр не переключаю; hil.sh off"
+    log "Sound: ${SOUND_SWITCH[*]} → реестр карт и точек $HIL_WAYPOINT_DB (остальная память боевая)"
+    rpi "$HIL_SOUND_HOST" pin "$HIL_SOUND_DIR" "$HIL_REMOTE_DIR/sound.images.yaml" \
+        || die "Sound: образы не закреплены; hil.sh off"
+    rsh "$HIL_SOUND_HOST" "cd $(q "$HIL_SOUND_DIR") && HIL_WAYPOINT_DB=$(q "$HIL_WAYPOINT_DB") docker compose -f docker-compose.yaml -f $(q "$HIL_REMOTE_DIR/sound.images.yaml") -f $(q "$HIL_REMOTE_DIR/sound.hil.yaml") up -d --no-deps --pull never ${SOUND_SWITCH[*]}" \
+        || die "Sound: пересоздание ${SOUND_SWITCH[*]} с HIL-реестром не прошло; hil.sh off"
+    local wpdb
+    wpdb=$(rpi "$HIL_SOUND_HOST" env "${SOUND_SWITCH[0]}" WAYPOINT_DB_PATH)
+    [ "$wpdb" = "$HIL_WAYPOINT_DB" ] \
+        || die "Sound: у ${SOUND_SWITCH[0]} WAYPOINT_DB_PATH='$wpdb', ждали '$HIL_WAYPOINT_DB' — реестр боевой; hil.sh off"
+    case "$(rpi "$HIL_SOUND_HOST" state "${SOUND_SWITCH[@]}")" in
+        *" running "*) ;;
+        *) die "Sound: ${SOUND_SWITCH[*]} не работает после пересоздания; hil.sh off" ;;
+    esac
 
     log "Main: ${MAIN_SIM_TIME[*]} → USE_SIM_TIME=true, карта $HIL_MAPS_DIR ($HIL_RTABMAP_MODE)"
     rsh "$HIL_MAIN_HOST" "mkdir -p $(q "$HIL_MAPS_DIR")"
@@ -231,8 +309,9 @@ cmd_on() {
 
 cmd_off() {
     check_net
+    check_hil_registry
     local host
-    for host in "$HIL_MAIN_HOST" "$HIL_VISION_HOST" "$HIL_SANDBOX_HOST"; do
+    for host in "$HIL_MAIN_HOST" "$HIL_VISION_HOST" "$HIL_SOUND_HOST" "$HIL_SANDBOX_HOST"; do
         rsh "$host" true || die "нет ssh до $host"
     done
     resolve_robot_id
@@ -254,11 +333,24 @@ cmd_off() {
     rpi "$HIL_VISION_HOST" pin "$HIL_VISION_DIR" "$HIL_REMOTE_DIR/vision.images.yaml"
     rpi "$HIL_VISION_HOST" compose "$HIL_VISION_DIR" -f docker-compose.yaml -f "$HIL_REMOTE_DIR/vision.images.yaml" \
         up -d --no-deps --pull never "${VISION_STOP[@]}"
+    log "Sound: возвращаю ${SOUND_SWITCH[*]} на боевой реестр карт и точек"
+    rpi "$HIL_SOUND_HOST" pin "$HIL_SOUND_DIR" "$HIL_REMOTE_DIR/sound.images.yaml"
+    rpi "$HIL_SOUND_HOST" compose "$HIL_SOUND_DIR" -f docker-compose.yaml -f "$HIL_REMOTE_DIR/sound.images.yaml" \
+        up -d --no-deps --pull never "${SOUND_SWITCH[@]}"
 
     # Каждый сервис: работает и без sim time. Строк должно прийти ровно столько, сколько сервисов.
-    local bad=0 line n=0 main_state vision_state
+    local bad=0 line n=0 main_state vision_state sound_state wpdb
     main_state=$(rpi "$HIL_MAIN_HOST" state "${MAIN_SIM_TIME[@]}" "${MAIN_STOP[@]}") || bad=1
     vision_state=$(rpi "$HIL_VISION_HOST" state "${VISION_STOP[@]}") || bad=1
+    sound_state=$(rpi "$HIL_SOUND_HOST" state "${SOUND_SWITCH[@]}") || bad=1
+    wpdb=$(rpi "$HIL_SOUND_HOST" env "${SOUND_SWITCH[0]}" WAYPOINT_DB_PATH) || bad=1
+    while read -r line; do
+        [ -n "$line" ] || continue
+        n=$((n + 1))
+        echo "  Sound  $line WAYPOINT_DB_PATH=$wpdb"
+        case "$line" in *" running "*) ;; *) bad=1 ;; esac
+        [ "$wpdb" = unset ] || bad=1
+    done <<<"$sound_state"
     while read -r line; do
         [ -n "$line" ] || continue
         n=$((n + 1))
@@ -274,10 +366,19 @@ cmd_off() {
         echo "  Vision $line"
         case "$line" in *" running "*) ;; *) bad=1 ;; esac
     done <<<"$vision_state"
-    [ "$n" -eq $(( ${#MAIN_SIM_TIME[@]} + ${#MAIN_STOP[@]} + ${#VISION_STOP[@]} )) ] || bad=1
+    [ "$n" -eq $(( ${#MAIN_SIM_TIME[@]} + ${#MAIN_STOP[@]} + ${#VISION_STOP[@]} + ${#SOUND_SWITCH[@]} )) ] || bad=1
     [ "$bad" = 0 ] || die "не всё вернулось (см. выше) — замок $HIL_LOCK оставлен"
+
+    # Сверка до снятия замка: результат в лог, но робот уже вернулся — замок снимается в любом случае.
+    local reg=0
+    sound_verify_maps || reg=$?
     rpi "$HIL_MAIN_HOST" lock-release "$HIL_LOCK"
-    log "✅ HIL выключен, робот в боевом режиме"
+    case "$reg" in
+        0) log "✅ HIL выключен, робот в боевом режиме" ;;
+        3) printf '❌ %s\n' "HIL выключен, робот в боевом режиме, НО боевой реестр карт изменился за HIL (diff выше)" >&2
+           exit 3 ;;
+        *) log "✅ HIL выключен, робот в боевом режиме; ⚠️  боевой реестр карт НЕ сверен (см. выше)" ;;
+    esac
 }
 
 # Статус Pi: сначала отличаем «нет ssh» от «нет helper'а», helper доставляем сами (как on/off).
@@ -301,6 +402,11 @@ cmd_status() {
     status_pi "$HIL_MAIN_HOST" "${MAIN_STOP[@]}" "${MAIN_SIM_TIME[@]}"
     echo "── Vision Pi"
     status_pi "$HIL_VISION_HOST" "${VISION_STOP[@]}" vision-face
+    echo "── Sound Pi (реестр карт и точек: WAYPOINT_DB_PATH, unset = боевой)"
+    status_pi "$HIL_SOUND_HOST" "${SOUND_SWITCH[@]}"
+    if rsh "$HIL_SOUND_HOST" "test -f $(q "$REMOTE_PI")" 2>/dev/null; then
+        echo "  WAYPOINT_DB_PATH=$(rpi "$HIL_SOUND_HOST" env "${SOUND_SWITCH[0]}" WAYPOINT_DB_PATH || echo '?')"
+    fi
     echo "── песочница ($HIL_SANDBOX_HOST, проект $HIL_SIM_PROJECT)"
     rsh "$HIL_SANDBOX_HOST" "docker ps -a --filter label=com.docker.compose.project=$(q "$HIL_SIM_PROJECT") --format '{{.Names}} {{.Status}}'" || echo "  нет ssh"
     local gz
