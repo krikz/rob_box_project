@@ -6,7 +6,7 @@ import types
 
 import pytest
 
-from rob_box_animations.face.face import GROUP_SIZE
+from rob_box_animations.face.layout import GROUP_SIZE
 from rob_box_animations.face.scene import Scene
 from rob_box_animations.face.states import SCENES
 from rob_box_animations.face_node import PanelPublisher
