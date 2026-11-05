@@ -14,10 +14,10 @@
 
 ---
 
-## Место в процессе (Context Engineering)
+## Место в процессе
 
 Этот файл — **сервисный агент** для аудита структуры проекта.  
-Процесс: `.agents/skills/context-engineering/SKILL.md` | Бэклог: GitHub Issues (устаревшая ссылка на `tasks.json`, файл больше не существует — см. `docs/development/agents/README.md`)
+Процесс: `docs/process/claude-coordinator-robot-flow.md` (ADR-0162) | Бэклог: GitHub Issues
 
 Вызывай при создании новых ROS 2 пакетов, аудите Docker структуры, или рефакторинге.
 

@@ -91,10 +91,6 @@ Original ID: {TASK-ID or TD-ID}
 | Status | `status:in-progress`, `status:blocked` | `status:in-progress` |
 | Milestone | `milestone:M1`, `milestone:M2`, `milestone:M3` | `milestone:M2` |
 
-## Связь с context-engineering skill
-
-Этот скилл дополняет `context-engineering/SKILL.md`. Research phase начинается с `gh issue view {N}`, не с tasks.json.
-
 ## Добавление комментария к Issue
 
 ```bash
