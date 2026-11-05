@@ -13,7 +13,7 @@ import pytest
 
 from rob_box_dialog.knowledge import MUSIC_SERVICE_WORDS
 from rob_box_mcp_tools.engine.theme_choice import LLM_ID, NEW_PREFIX, NONE_ID, choose_theme, chosen_slots
-from rob_box_mcp_tools.engine.theme_grounding import request_theme
+from rob_box_mcp_tools.engine.theme_grounding import confirmed_by_words, request_theme
 from rob_box_music.choice import DeterministicChooser
 from rob_box_music.known_themes import CACHE, KnownTheme
 from rob_box_music.source import theme_tags
@@ -100,3 +100,25 @@ def test_one_table_feeds_set_grammar():
     """Одно место правды: служебные слова — часть таблицы просьбы о сете грамматики."""
     assert MUSIC_SERVICE_WORDS <= SET_REQUEST_WORDS
     assert {"останови", "вместо", "него", "уводи", "сторону", "робот"} <= MUSIC_SERVICE_WORDS
+
+
+# -- решение Шифу 05.11 «а»: тема модели, если слова человека её подтверждают, и без слова «сет» --------------------
+
+
+@pytest.mark.parametrize("heard_text", WITHOUT_SET)
+def test_model_theme_confirmed_by_words_without_set_word(heard_text):
+    """«Поставь ночной рок» (без «сет»): слова темы модели «ночной рок» все сказаны человеком после снятия служебных -
+    тема сета «ночной рок» модели, а не «без темы» (сет по стилю)."""
+    assert confirmed_by_words(LLM, heard_text)
+    pick = _pick(heard_text)
+    assert (pick.theme, pick.id) == (LLM, LLM_ID)
+
+
+def test_model_theme_words_not_said_are_not_confirmed():
+    """Слово темы, которого человек не говорил, - не подтверждение: n604 огрызок STT и чужая тема остаются без темы."""
+    assert not confirmed_by_words("рок", "уводи сторону тётя гриша подруг добреет")
+    assert not confirmed_by_words("ночной город", "поставь ночной рок")
+    assert not confirmed_by_words("вместо него", "Робот, давай вместо этого ночной рок")  # служебные слова - не тема
+    assert not confirmed_by_words("", "поставь ночной рок")
+    pick = choose_theme("ночной город", "поставь ночной рок", (), DeterministicChooser(), log=_Log())
+    assert pick.theme != "ночной город"

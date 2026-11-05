@@ -37,8 +37,8 @@ from rob_box_music.source import set_genres
 from rob_box_music.theme import match_style_text
 
 from .search import _PART_RE, content_stems
-from .theme_grounding import (continued, grounded_theme, guessed_theme, heard_theme, named_by_human, names_theme,
-                              request_theme, set_slots, set_theme, theme_support)
+from .theme_grounding import (confirmed_by_words, continued, grounded_theme, guessed_theme, heard_theme,
+                              named_by_human, names_theme, request_theme, set_slots, set_theme, theme_support)
 
 _LOG = logging.getLogger(__name__)
 NONE_ID = "none"
@@ -95,7 +95,8 @@ def _new_options(heard: str, heard_text: str, llm_theme: str = "") -> Dict[str, 
 def _llm_option(texts: Dict[str, Dict[str, float]], heard: str, heard_text: str, llm_theme: str) -> Optional[str]:
     """Тема LLM вариантом: её слова темы делят основу со словами реплики (перефраз — слова человека) или в реплике слов
     темы нет совсем (тема из контекста диалога). Совпала со словами реплики — тот же вариант, подтверждённый LLM.
-    LLM, повторившая огрызок реплики, опоры ему не даёт: слова без опоры — ``bare`` и у неё. Текст варианта — тема LLM
+    LLM, повторившая огрызок реплики, опоры ему не даёт: слова без опоры — ``bare`` и у неё; опора темы LLM — и её
+    слова, все сказанные человеком (``confirmed_by_words``, «поставь ночной рок» без слова сета, #4393). Текст варианта — тема LLM
     как есть («Очень странные дела»: «очень» — не степень громкости, а название), если в ней есть слова темы."""
     words = heard_theme(llm_theme)
     if not words or (heard and not _stems(words) & _stems(heard) and theme_support(heard, heard_text)):
@@ -104,8 +105,9 @@ def _llm_option(texts: Dict[str, Dict[str, float]], heard: str, heard_text: str,
     if llm in texts:
         texts[llm]["llm"] = 1.0
         return None
+    supported = theme_support(llm, heard_text) or confirmed_by_words(llm, heard_text)  # «а» Шифу 05.11, #4393
     texts[llm] = {"asked": float(bool(heard)), "whole": float(bool(heard) and _stems(heard) <= _stems(llm)),
-                  "llm": 1.0, "bare": float(bool(heard) and not theme_support(llm, heard_text))}
+                  "llm": 1.0, "bare": float(bool(heard) and not supported)}
     return llm
 
 
