@@ -18,6 +18,9 @@ from rob_box_dialog.session import MusicStateRef, Session
 from rob_box_dialog.turn import Answer, TurnEngine
 
 N608 = "робот хватит диджей выключай"  # STT марафона-3 28.10 19:50:42 (va_m3.log), тот же шаг в марафоне-4
+#: М11 n608 (05.11): сам N608 модели больше не уходит - остаток «диджей выключай» тот же стоп, ход закрывает код
+#: (``test_music_stop_honest_m11``). Повтор исполненного стопа моделью проверяется на остатке, что ей уходит.
+MODEL_REST = "робот хватит диджей что дальше"
 OK = phrases.text("music.stop_ok")
 
 
@@ -78,7 +81,7 @@ def _run(ports, text):
 def test_n608_model_repeating_the_tier1_dj_stop_closes_the_turn_with_the_code_phrase_not_a_failure(caplog):
     ports = Ports([Answer(Command(actions=(ToolCall("dj_set", {"action": "stop"}),)), "deepseek")])
     with caplog.at_level("INFO"):
-        agg = _run(ports, N608)
+        agg = _run(ports, MODEL_REST)
     # Tier-1 исполнил оба стопа, повтор модели не исполнен (сет не трогается дважды)
     assert ports.executed == [("dj_set", {"action": "stop"}), ("stop_music", {})]
     assert ports.asked == 1

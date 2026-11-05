@@ -20,6 +20,9 @@ from rob_box_dialog.session import MusicStateRef, Session
 from rob_box_dialog.turn import Answer, TurnEngine
 
 N608 = "робот хватит диджей выключай"
+#: М11 n608 (05.11): сам N608 модели больше не уходит - остаток «диджей выключай» тот же стоп, ход закрывает код
+#: (``test_music_stop_honest_m11``). Повтор исполненного стопа моделью проверяется на остатке, что ей уходит.
+MODEL_REST = "робот хватит диджей что дальше"
 OK = phrases.text("music.stop_ok")
 SILENT = phrases.catalog()["understand.silent_answer"]
 DJ_STOP = ToolCall("dj_set", {"action": "stop"})
@@ -68,7 +71,7 @@ class Ports:
         return None
 
 
-def _run(ports, text=N608):
+def _run(ports, text=MODEL_REST):
     ids = iter(f"t{n}" for n in range(1, 100))
     session = Session("personality")
     session.set_music(MusicStateRef("playing", track_id="gen45685:01:A"))

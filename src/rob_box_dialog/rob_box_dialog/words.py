@@ -29,9 +29,13 @@ from rob_box_dialog.knowledge import (
     MUSIC_OFF_NEGATION,
     MUSIC_OFF_OBJECT_FORMS,
     MUSIC_OFF_OBJECT_STEMS,
+    MUSIC_MUTE_WORDS,
     MUSIC_OFF_WORDS,
     MUSIC_PROMISE_WINDOW,
     MUSIC_PROMISES,
+    MUSIC_STOP_CLAIM,
+    MUSIC_STOP_CLAIM_UNLESS,
+    MUSIC_STOP_UNWOKEN_FORMS,
     NAME_CASE_MIN_STEM,
     NAME_CASE_STEMS,
     NAME_CASE_SURE_TAILS,
@@ -48,6 +52,7 @@ from rob_box_dialog.knowledge import (
     SILENCE_WORDS,
     STOP_LEAD_WORDS,
     STOP_QUESTION_PARTICLES,
+    STOP_REST_VERBS,
     STOP_SCOPE,
     STOP_WORDS,
     THEME_SWITCH_ASK,
@@ -624,10 +629,66 @@ def music_off_rest(text: str) -> Optional[str]:
 
 
 def _asks_music_off(tokens: Sequence[str]) -> bool:
-    """В части есть форма ``MUSIC_OFF_WORDS`` без «не» перед ней и объект музыки не дальше ``MUSIC_OFF_NEAR`` слов."""
-    objects = [i for i, t in enumerate(tokens) if t in MUSIC_OFF_OBJECT_FORMS or t.startswith(MUSIC_OFF_OBJECT_STEMS)]
-    return any(t in MUSIC_OFF_WORDS and not (i and tokens[i - 1] in MUSIC_OFF_NEGATION)
-               and any(abs(i - j) <= MUSIC_OFF_NEAR for j in objects) for i, t in enumerate(tokens))
+    """В части есть форма ``MUSIC_OFF_WORDS``/``MUSIC_MUTE_WORDS`` без «не» перед ней и объект музыки не дальше
+    ``MUSIC_OFF_NEAR`` слов; форма ``MUSIC_MUTE_WORDS`` («заглуши») - и без объекта, если прочие слова части служебные
+    или объекты музыки («всё, заглушил»)."""
+    return _off_near_object(tokens, (*MUSIC_OFF_WORDS, *MUSIC_MUTE_WORDS)) is not None or any(
+        t in MUSIC_MUTE_WORDS and not (i and tokens[i - 1] in MUSIC_OFF_NEGATION)
+        and all(o == t or o in MUSIC_OFF_FILLER or _music_object(o) for o in tokens) for i, t in enumerate(tokens))
+
+
+def _music_object(token: str) -> bool:
+    """Слово - объект музыки стопа (``MUSIC_OFF_OBJECT_FORMS`` целиком или основа ``MUSIC_OFF_OBJECT_STEMS``)."""
+    return token in MUSIC_OFF_OBJECT_FORMS or token.startswith(MUSIC_OFF_OBJECT_STEMS)
+
+
+def _off_near_object(tokens: Sequence[str], forms: Sequence[str]) -> Optional[Tuple[int, int]]:
+    """Первая пара ``(форма, объект)``: форма из ``forms`` без «не» перед ней и объект музыки не дальше
+    ``MUSIC_OFF_NEAR`` слов; нет - ``None``."""
+    objects = [i for i, t in enumerate(tokens) if _music_object(t)]
+    for i, t in enumerate(tokens):
+        if t in forms and not (i and tokens[i - 1] in MUSIC_OFF_NEGATION):
+            near = next((j for j in objects if abs(i - j) <= MUSIC_OFF_NEAR), None)
+            if near is not None:
+                return i, near
+    return None
+
+
+def music_stop_unwoken(text: str) -> Optional[str]:
+    """Стоп музыки во фразе БЕЗ вейка (``knowledge.MUSIC_STOP_UNWOKEN_FORMS``, М11 n511): «врубай все глуши музыку» -
+    ``"глуши музыку"``, команда хода, собранная кодом из найденных слов (глагол, затем объект: «музыку стоп» -
+    ``"стоп музыку"``), остальное фразы в ход не идёт; формы рядом с объектом музыки нет или перед ней «не» - ``None``.
+    Играет ли музыка, решает вызывающий по снимку плеера (``address.decide``), не этот разбор."""
+    tokens = name_tokens(text)
+    pair = _off_near_object(tokens, MUSIC_STOP_UNWOKEN_FORMS)
+    return None if pair is None else f"{tokens[pair[0]]} {tokens[pair[1]]}"
+
+
+def same_stop_rest(rest: str) -> bool:
+    """Остаток после стопа музыки - тот же стоп (``knowledge.STOP_REST_VERBS``, М11 n608): «диджей выключай»,
+    «музыку стоп», «выключай» - слова стопа, объекты музыки и служебные, хоть одно слово стопа; «ещё песню»,
+    «не выключай», «спой» - нет (их решает модель)."""
+    tokens = name_tokens(rest)
+    return any(t in STOP_REST_VERBS for t in tokens) and all(
+        t in STOP_REST_VERBS or t in MUSIC_OFF_FILLER or t in STOP_SCOPE.filler or _music_object(t) for t in tokens)
+
+
+def music_stop_claimed(text: str) -> bool:
+    """Речь робота утверждает, что музыку выключили или стало тихо (``knowledge.MUSIC_STOP_CLAIM``, М11 n712:
+    «Тишина.», «музыку выключил») - по словам, как :func:`music_promises`. Правда ли это, решает вызывающий по
+    состоянию музыки (``turn.stop_claim_false``), не этот разбор. Предложение-вопрос и предложение со словами
+    ``MUSIC_STOP_CLAIM_UNLESS`` («если хочешь - будет тишина», «музыку не выключил») не утверждают."""
+    for sentence in _CLAIM_SENTENCE.findall(text or ""):
+        tokens = name_tokens(sentence)
+        if sentence.rstrip().endswith("?") or set(tokens) & set(MUSIC_STOP_CLAIM_UNLESS):
+            continue
+        if _promises(tokens, MUSIC_STOP_CLAIM):
+            return True
+    return False
+
+
+#: Предложение речи: до знака конца включительно (последнее - и без знака).
+_CLAIM_SENTENCE = re.compile(r"[^.!?…]+[.!?…]*")
 
 
 def _filler_part(part: Sequence[Span]) -> bool:
