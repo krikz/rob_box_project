@@ -209,12 +209,12 @@ class ChatPorts:
         return results
 
     def _send_photos(self, results: Any) -> None:
-        """Снимок лица (#4469, ``person_photo`` исполнен) уходит в чат отдельным выводом ``kind=photo``: путь и подпись
-        дал владелец лиц, отправляет файл бот. Отказ тула (``rejected``) снимка не шлёт - фразу об отказе говорит код."""
+        """Снимок лица (#4469, ``person_photo`` исполнен) уходит в чат отдельным выводом ``kind=photo``: id и подпись
+        (байты по zenoh не гоняем), снимок бот берёт у владельца лиц по id. Отказ тула (``rejected``) снимка не шлёт - фразу об отказе говорит код."""
         for result in results if isinstance(results, (list, tuple)) else ():
-            path = result.data.get("photo_path") if isinstance(result, ActionResult) else None
-            if path and result.tool == kn.PHOTO_TOOL and result.status == "done":
-                payload = json.dumps({"path": path, "caption": str(result.data.get("caption") or "")}, ensure_ascii=False)
+            photo_id = result.data.get("photo_id") if isinstance(result, ActionResult) else None
+            if photo_id and result.tool == kn.PHOTO_TOOL and result.status == "done":
+                payload = json.dumps({"id": photo_id, "caption": str(result.data.get("caption") or "")}, ensure_ascii=False)
                 self._send(self._ref, payload, uuid.uuid4().hex, kind=PHOTO_KIND)
                 self._log(f"{LOG_MARK} → {self._ref} снимок лица {result.data.get('id') or '-'}")
 

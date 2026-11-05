@@ -115,19 +115,19 @@ def _res(tool, status, data=None, reason=None):
 
 def test_executed_person_photo_goes_to_the_chat_as_a_photo_output():
     ports, sent = _ports([_res("person_photo", "done", {
-        "id": "fff371fe", "photo_path": "fff371fe-1111/reference.jpg", "caption": "fff371fe - без имени"})])
+        "id": "fff371fe", "photo_id": "fff371fe", "caption": "fff371fe - без имени"})])
 
     _run(ports.execute([ToolCall("person_photo", {"id": "fff371fe"})], SNAP, "t"))
 
     photos = [(ref, text, extra) for ref, text, extra in sent if extra.get("kind") == PHOTO_KIND]
     assert len(photos) == 1 and photos[0][0] == "telegram:7"
-    assert '"path": "fff371fe-1111/reference.jpg"' in photos[0][1] and "fff371fe - без имени" in photos[0][1]
+    assert '"id": "fff371fe"' in photos[0][1] and "path" not in photos[0][1] and "fff371fe - без имени" in photos[0][1]
 
 
 @pytest.mark.parametrize("result", [
     _res("person_photo", "rejected", {"reason": "exhibition_mode"}, "exhibition_mode"),
     _res("person_photo", "done", {"id": "fff371fe"}),  # владелец пути не дал
-    _res("people_list", "done", {"photo_path": "x/reference.jpg"}),  # чужой тул путь не уносит
+    _res("people_list", "done", {"photo_id": "fff371fe"}),  # чужой тул путь не уносит
 ])
 def test_no_photo_without_an_executed_person_photo_with_a_path(result):
     ports, sent = _ports([result])

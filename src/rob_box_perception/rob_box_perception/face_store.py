@@ -1344,25 +1344,29 @@ class FaceStore:
                 self._persist_record(rec)
 
 
-def best_snapshot_path(store: FaceStore, person_id: str) -> Optional[str]:
-    """Лучший снимок лица записи: путь внутри корня хранилища (``<id>/reference.jpg``) или ``None`` (issue #4469).
+def best_snapshot_bytes(store: FaceStore, person_id: str) -> Optional[bytes]:
+    """Байты лучшего снимка лица записи или ``None`` (issue #4469).
 
     Эталон (первый снимок, не ротируется) - первым; нет эталона - самый свежий снимок встречи, чей файл жив.
-    Путь, а не байты: ``telegram-bot`` монтирует корень только на чтение и отправляет файл сам. Режим
-    (``exhibition``/``strict``) тут не решает: снимков, которых режим не пишет, на диске нет, а выдавать ли
-    снимок наружу, решает вызывающий (``people_service``). Функция модуля, а не метод: читает записи под замком
-    хранилища, но не раздувает класс (ADR-0145, class_budget).
+    Отдаёт байты, а не путь: потребитель (бот Telegram на Sound Pi) не делит с Vision Pi диск, копия каталога на
+    Sound Pi отстаёт (40 лиц против 107). Режим (``exhibition``/``strict``) тут не решает: снимков, которых режим
+    не пишет, на диске нет, а выдавать ли снимок наружу, решает вызывающий (``people_service``). Функция модуля, а
+    не метод: читает записи под замком хранилища, но не раздувает класс (ADR-0145, class_budget).
     """
     with store._lock:
         rec = store._records.get(person_id)
         if rec is None:
             return None
-        if rec.has_reference_snapshot and (store._person_dir(person_id) / _REFERENCE_FILENAME).is_file():
-            return f'{person_id}/{_REFERENCE_FILENAME}'
-        for entry in reversed(rec.encounters):
-            name = entry.get('face_snapshot')
-            if name and (store._encounters_dir(person_id) / name).is_file():
-                return f'{person_id}/{_ENCOUNTERS_DIRNAME}/{name}'
+        candidates = []
+        if rec.has_reference_snapshot:
+            candidates.append(store._person_dir(person_id) / _REFERENCE_FILENAME)
+        candidates += [store._encounters_dir(person_id) / e['face_snapshot']
+                       for e in reversed(rec.encounters) if e.get('face_snapshot')]
+        for path in candidates:
+            try:
+                return path.read_bytes()
+            except OSError:
+                continue
         return None
 
 
@@ -1378,5 +1382,5 @@ __all__ = [
     'EPITHET_POLICY_VISION',
     'FaceMatch',
     'FaceStore',
-    'best_snapshot_path',
+    'best_snapshot_bytes',
 ]
