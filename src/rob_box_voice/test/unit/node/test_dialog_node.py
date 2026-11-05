@@ -35,10 +35,17 @@ except ImportError:
     sys.modules["rob_box_dialog_msgs"].srv = _srv
 
 from rob_box_dialog_msgs.srv import DialogControl  # noqa: E402
-from rob_box_llm.provider import LLMResponse, ToolResult  # noqa: E402
+from rob_box_dialog.command import parse  # noqa: E402
+from rob_box_llm.provider import ToolResult  # noqa: E402
+from rob_box_voice.core.command_bridge import CommandResponse, for_turn  # noqa: E402
 from rob_box_voice import dialog_node as dn  # noqa: E402
 
 TIME = type(M.TurnEvent().stamp)
+
+
+def _reply(args):
+    """Ответ цепочки в режиме команд: команда хода из аргументов вызова ``command`` модели (как её отдаёт мост)."""
+    return CommandResponse(command=for_turn(parse(args)))
 
 
 class _LLM:
@@ -67,8 +74,8 @@ def node(monkeypatch, tmp_path):
     # ``/data/voice_memory.db`` хоста, где он идёт (на роботе - живые факты людей). Тест, что задал путь сам до ноды,
     # его и получит.
     monkeypatch.setenv(tools_db.TOOLS_DB_ENV, os.environ.get(tools_db.TOOLS_DB_ENV) or str(tmp_path / "tools_isolated.db"))
-    llm = _LLM([LLMResponse(content="Привет, я робот.")])
-    chat_llm = _LLM([LLMResponse(content="Привет из чата.")])
+    llm = _LLM([_reply({"speech": "Привет, я робот."})])
+    chat_llm = _LLM([_reply({"speech": "Привет из чата."})])
     tools = _Tools()
     monkeypatch.setattr(dn, "build_llm", lambda node, counter, agent="personality": (
         (chat_llm, "Ты ассистент чата.") if agent == "telegram" else (llm, "Ты робот.")))
@@ -157,12 +164,11 @@ class _AloudTools:
 
 
 def _aloud_node(monkeypatch, hold=False):
-    from rob_box_llm.provider import ToolCall
 
     story = "Жил-был робот."
-    command = ToolCall(id="c1", name="command", arguments={
-        "speech": story, "actions": [{"tool": "say_aloud", "args": {"text": story}}]})
-    llm, chat_llm, chat_tools = _LLM([]), _LLM([LLMResponse(content="", tool_calls=(command,))]), _AloudTools()
+    command = {
+        "speech": story, "actions": [{"tool": "say_aloud", "args": {"text": story}}]}
+    llm, chat_llm, chat_tools = _LLM([]), _LLM([_reply(command)]), _AloudTools()
     monkeypatch.setattr(dn, "build_llm", lambda node, counter, agent="personality": (
         (chat_llm, "Ты ассистент чата.") if agent == "telegram" else (llm, "Ты робот.")))
     monkeypatch.setattr(dn, "build_tools", lambda node: _Tools())
@@ -354,7 +360,7 @@ def test_barge_in_whose_voice_comes_first_gets_its_own_speaker_and_no_foreign_ba
 def test_addressed_turn_sees_all_background_of_the_last_3_minutes_3892(node):
     """Решение Шифу 23.10 (В23): Борис и незнакомец говорят без вейка, Саша «Робот, кто говорил на фоне?» — в
     запросе LLM раздел `background_since_reply` с обеими фразами, авторами и возрастом; ответ робота его не обнуляет, фраза старше окна не попадает."""
-    node.test_llm.responses.append(LLMResponse(content="Ещё раз."))
+    node.test_llm.responses.append(_reply({"speech": "Ещё раз."}))
     node._on_utterance(_long("совсем давняя фраза", "u-old", 200.0))
     node._on_speaker(_voice({"is_known": True, "speaker_id": "spk-boris", "name": "Борис", "confidence": 0.9,
                              "utterance_id": "u-b"}))
@@ -639,7 +645,7 @@ def test_cancel_goes_through_fallback_chain_without_asking_next_provider(monkeyp
     server = _SilentServer()
     first = _HttpLLM(server.port)
     first.name = "deepseek"
-    second = _LLM([LLMResponse(content="Жили-были…")])
+    second = _LLM([_reply({"speech": "Жили-были…"})])
     second.name = "minimax"
     cache = HealthCache()
     node = _hang_node(monkeypatch, HealthAwareFallbackLLM([first, second], cache=cache))
@@ -757,7 +763,7 @@ def _remember(node, tmp_path, person="spk-boris"):
 def test_snapshot_remembers_confirmed_speaker_3919(node, tmp_path):
     """#3919: узнанный Борис — в снимке хода `speaker_memory` с номером диалога и его фактом; второй ход — «2»."""
     _remember(node, tmp_path)
-    node.test_llm.responses.append(LLMResponse(content="Ещё раз."))
+    node.test_llm.responses.append(_reply({"speech": "Ещё раз."}))
     for uid in ("u-1", "u-2"):
         node._on_speaker(_voice({"is_known": True, "speaker_id": "spk-boris", "name": "Борис", "confidence": 0.9,
                                  "utterance_id": uid}))
@@ -846,14 +852,13 @@ def _music_node(monkeypatch, delay, tool="request_music", args=None):
     """Нода с настоящими ``build_tools``/``build_chat_tools`` (``ROSMCPToolProvider`` под планировщиком) и мостом
     :class:`_Bridge`; LLM заказывает ``request_music`` (или другой ``tool`` с ``args``)."""
     import rob_box_mcp_tools.llm_adapter as adapter
-    from rob_box_llm.provider import ToolCall
 
     bridges = []
     monkeypatch.setattr(adapter, "LLMToolCallAdapter", lambda node, sender=None, turn_context=None: (
         bridges.append(_Bridge(turn_context, delay)) or bridges[-1]))
-    order = ToolCall(id="c1", name="command", arguments={
-        "actions": [{"tool": tool, "args": args or {"intent": "track", "text": N809}}]})
-    llm = _LLM([LLMResponse(content="", tool_calls=(order,))])
+    order = {
+        "actions": [{"tool": tool, "args": args or {"intent": "track", "text": N809}}]}
+    llm = _LLM([_reply(order)])
     monkeypatch.setattr(dn, "build_llm", lambda node, counter, agent="personality": (llm, "Ты робот."))
     made = dn.DialogNode()
     stamp = TIME(sec=1, nanosec=0)
@@ -890,11 +895,9 @@ def test_chat_tool_call_gets_the_chat_text_not_the_voice_turn(monkeypatch):
             seen.append(dict(dn.tool_turn_context()))
             return ToolResult(tool_call_id=call.id, content="ok", data={"status": "done"})
 
-    from rob_box_llm.provider import ToolCall
-
-    order = ToolCall(id="c1", name="command", arguments={
-        "actions": [{"tool": "request_music", "args": {"intent": "track", "text": "сыграй Running Up That Hill"}}]})
-    chat_llm = _LLM([LLMResponse(content="", tool_calls=(order,))])
+    order = {
+        "actions": [{"tool": "request_music", "args": {"intent": "track", "text": "сыграй Running Up That Hill"}}]}
+    chat_llm = _LLM([_reply(order)])
     monkeypatch.setattr(dn, "build_llm", lambda node, counter, agent="personality": (
         (chat_llm, "Ты ассистент чата.") if agent == "telegram" else (_LLM([]), "Ты робот.")))
     monkeypatch.setattr(dn, "build_tools", lambda node: _Tools())
@@ -989,11 +992,9 @@ def test_chat_turn_gets_no_gate_keys_even_when_the_text_names_someone_4054(monke
             seen.append(dict(dn.tool_turn_context()))
             return ToolResult(tool_call_id=call.id, content="ok", data={"status": "done"})
 
-    from rob_box_llm.provider import ToolCall
-
-    order = ToolCall(id="c1", name="command", arguments={
-        "actions": [{"tool": "request_music", "args": {"intent": "track", "text": "сыграй Running Up That Hill"}}]})
-    chat_llm = _LLM([LLMResponse(content="", tool_calls=(order,))])
+    order = {
+        "actions": [{"tool": "request_music", "args": {"intent": "track", "text": "сыграй Running Up That Hill"}}]}
+    chat_llm = _LLM([_reply(order)])
     monkeypatch.setattr(dn, "build_llm", lambda node, counter, agent="personality": (
         (chat_llm, "Ты ассистент чата.") if agent == "telegram" else (_LLM([]), "Ты робот.")))
     monkeypatch.setattr(dn, "build_tools", lambda node: _Tools())
