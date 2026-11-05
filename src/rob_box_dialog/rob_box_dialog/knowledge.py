@@ -1912,6 +1912,15 @@ STATE_CLAIM_AGENTS: Tuple[str, ...] = ("operator",)
 VIOLATION_QUERY_REPEAT = "query_repeat"
 QUERY_REPEAT_HINT = ("этот запрос (тот же тул и аргументы) в этом ходе уже выполнен, его данные выше в окне - второй раз"
                      " он не исполняется: ответь по ним словами в speech или возьми другой тул")
+#: Ответ звуком на вопрос после чтения (М11 n109, #4236): «какие звуки ты умеешь издавать?» → ``get_sound_info`` →
+#: команда из одних ``play_sound`` без слов. Успех звука молчит (:data:`SILENT_DONE_TOOLS`), и вопрос оставался без
+#: ответа. Звук после запроса без слов законен на ПРОСЬБУ («включи какой-нибудь звук»), а на вопрос
+#: (``words.asks_question``) - нарушение: модели повтор с подсказкой, повтора нет - код говорит по данным
+#: (``turn.data_close``). Решает ход по структуре команды и реплике человека (``turn.sound_owed``), а не по тексту
+#: ответа.
+VIOLATION_SOUND_ANSWER = "sound_answer"
+SOUND_ANSWER_HINT = (f"человек задал вопрос, данные запроса выше в окне, а {SOUND_TOOL} на вопрос не отвечает - успех"
+                     f" звука молчит: ответь по этим данным словами в speech, без actions")
 #: Слова перед именем без запятой, после которых оно — обращение, а не рассказ о человеке: «Привет Борис!», «Спасибо
 #: Саша». С запятой («Понял, Саша.») и в начале фразы перед запятой («Саша, понял.») лид не нужен.
 ADDRESS_LEAD_WORDS: Tuple[str, ...] = (
@@ -2051,7 +2060,7 @@ INVALID_COMMAND_PHRASES: Mapping[str, str] = MappingProxyType({"too_long": "comm
 #: Нарушения, после которых фраза кода звучит без грусти: модель ответила, только не словами (лицом, анимацией, одним
 #: earcon) - ничего не провалилось («Угу, я тут.» звучало с ``sad``). Провал исполненного действия
 #: грустит по-прежнему: эмоцию фразы решает его исход.
-CALM_VIOLATIONS: Tuple[str, ...] = (VIOLATION_SILENT_ANSWER, VIOLATION_SPEECH_REQUIRED)
+CALM_VIOLATIONS: Tuple[str, ...] = (VIOLATION_SILENT_ANSWER, VIOLATION_SPEECH_REQUIRED, VIOLATION_SOUND_ANSWER)
 #: Особые ключи каталога фраз (не по классу действия): их обязан содержать ``phrases/ru.yaml``.
 PHRASE_KEYS: Tuple[str, ...] = (
     "understand.timeout", PASSED_ADDRESSED_PHRASE, NEW_SESSION_PHRASE, QUERY_FALLBACK_GENERIC, INVALID_COMMAND_PHRASE,

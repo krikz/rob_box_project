@@ -111,7 +111,7 @@ from rob_box_dialog.respond import (ActionResult, asks, audible, classed, failed
 from rob_box_dialog.session import Session, SessionSnapshot
 from rob_box_dialog.speaker_adapter import asks_recognized, recognition_reply, speaker_block
 from rob_box_dialog.window_reset import WindowGuard, reset_if_idle, reset_window
-from rob_box_dialog.words import asks_to_listen
+from rob_box_dialog.words import asks_question, asks_to_listen
 from rob_box_dialog.tools_view import (available_tools, music_asked, needs_words, robot_asked, show_asked,
                                        voice_asked, voice_named)
 from rob_box_dialog.turn_log import (PERFORM_STARTED, TOOL, USER, TurnAggregate, TurnLog, phrase_label, results_of,
@@ -472,6 +472,20 @@ def read_owed(snapshot: SessionSnapshot, turn: "_Turn", cmd: Command) -> bool:
     чат) ``speaks_aloud`` ложно - без этого ход закрывался молча. Решает код по структуре хода и реплике человека
     (``tools_view.needs_words``), а не по тексту ответа."""
     return bool(turn.queried) and not speaks_aloud(snapshot) and needs_words(turn.text, cmd)
+
+
+def sound_owed(snapshot: SessionSnapshot, turn: "_Turn", cmd: Command) -> bool:
+    """Ход прочитал данные (``_Turn.queried``), человек спросил (``words.asks_question``), а ответ - одни звуки без
+    слов (М11 n109, #4236: «какие звуки ты умеешь издавать?» → ``get_sound_info`` → ``play_sound robot_happy``; робот
+    пискнул и не ответил). Успех звука молчит (``knowledge.SILENT_DONE_TOOLS``), так что вопрос остаётся без ответа.
+    Звук на ПРОСЬБУ («включи какой-нибудь звук») - законный ответ без слов: здесь ``asks_question`` ложно. Слов ждут
+    там же, где :func:`words_owed` (:func:`speaks_aloud`); лицо по просьбе (``tools_view.show_asked``) - не трогаем.
+    Решает код по структуре команды и реплике человека, а не по тексту ответа модели (ADR-0148)."""
+    if not turn.queried or not speaks_aloud(snapshot) or show_asked(turn.text) or not asks_question(turn.text):
+        return False
+    if cmd.speech or cmd.ask is not None or cmd.perform is not None or cmd.passed:
+        return False
+    return bool(cmd.actions) and all(a.tool in kn.SILENT_DONE_TOOLS for a in cmd.actions)
 
 
 def done_expression(turn: "_Turn", snapshot: SessionSnapshot) -> Optional[Expression]:
@@ -1093,7 +1107,7 @@ def _push_for_words(engine: "TurnEngine", turn: _Turn) -> Optional[str]:
 
 #: Нарушения последней итерации «ответа нет, слов нет»: за словами ход повторяет вызов (:func:`_push_for_words`) -
 #: от валидатора моста (форма итерации) и от хода (голый ответ, когда мост команду не судит).
-_WORDS_MISSED = (kn.VIOLATION_SPEECH_REQUIRED, kn.VIOLATION_SILENT_ANSWER)
+_WORDS_MISSED = (kn.VIOLATION_SPEECH_REQUIRED, kn.VIOLATION_SILENT_ANSWER, kn.VIOLATION_SOUND_ANSWER)
 
 
 def _missed_words(engine: "TurnEngine", turn: _Turn, reason: str) -> Optional[str]:
@@ -1496,11 +1510,14 @@ def robot_owed(snapshot: SessionSnapshot, turn: "_Turn", cmd: Command) -> bool:
 
 def owed_reason(snapshot: SessionSnapshot, turn: "_Turn", cmd: Command, names: Collection[str] = ()) -> str:
     """Ответ модели не тот, что ждёт человек, — причина нарушения (:data:`_OWED`), иначе «»: голый неслышимый ответ на
-    адресованную реплику (:func:`words_owed`; и подхват бэклога), только текст в чат на просьбу сделать
+    адресованную реплику (:func:`words_owed`; и подхват бэклога), звук без слов на вопрос после чтения
+    (:func:`sound_owed`), только текст в чат на просьбу сделать
     роботом (:func:`robot_owed`), обращение к неподтверждённому собеседнику чужим именем (``names`` - ключи
     из :func:`foreign_keys`) или утверждение о состоянии подсистемы робота без данных о ней (:func:`unbacked_claims`)."""
     if words_owed(snapshot, turn.text, cmd) or read_owed(snapshot, turn, cmd):
         return kn.VIOLATION_SILENT_ANSWER
+    if sound_owed(snapshot, turn, cmd):
+        return kn.VIOLATION_SOUND_ANSWER
     if robot_owed(snapshot, turn, cmd):
         return kn.VIOLATION_REMOTE_OWED
     if foreign_name.offending(cmd, names):
@@ -1548,6 +1565,7 @@ _OWED: Mapping[str, _Owed] = {
     kn.VIOLATION_FOREIGN_NAME: _Owed(kn.FOREIGN_NAME_HINT, "обращение к неподтверждённому собеседнику чужим именем"),
     kn.VIOLATION_STATE_CLAIM: _Owed(kn.STATE_CLAIM_HINT, "утверждение о состоянии подсистемы без данных о ней"),
     kn.VIOLATION_QUERY_REPEAT: _Owed(kn.QUERY_REPEAT_HINT, "повтор чтения, уже исполненного в этом ходе"),
+    kn.VIOLATION_SOUND_ANSWER: _Owed(kn.SOUND_ANSWER_HINT, "звук без слов на вопрос после чтения"),
 }
 
 
