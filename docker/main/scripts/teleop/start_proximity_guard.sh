@@ -1,7 +1,7 @@
 #!/bin/bash
 # Зона безопасности вокруг корпуса (#4365): мигалки и сирена в движении, аварийный стоп
 # через cmd_vel_emergency (twist_mux priority 255). Логика — rob_box_teleop.proximity.
-# Сервис proximity-guard по умолчанию не поднимается: COMPOSE_PROFILES=proximity-guard.
+# Сервис proximity-guard всегда в стеке main (без профиля, решение Шифу 05.11).
 set -e
 
 source /opt/ros/${ROS_DISTRO}/setup.bash

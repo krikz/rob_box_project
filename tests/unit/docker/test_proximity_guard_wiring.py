@@ -1,4 +1,4 @@
-"""Зона безопасности корпуса (#4365): имена мигалки и звука живут в каталогах, сервис по умолчанию выключен.
+"""Зона безопасности корпуса (#4365): имена мигалки и звука живут в каталогах, сервис всегда в стеке.
 
 Лежит здесь, а не в ``rob_box_teleop/test``: в сборке пакета (G-Run Tests, ``test_ws``) нет ``sound_pack/``.
 """
@@ -36,8 +36,11 @@ def _service():
     return yaml.safe_load(COMPOSE.read_text(encoding="utf-8"))["services"]["proximity-guard"]
 
 
-def test_service_is_off_unless_its_profile_is_enabled():
-    assert _service()["profiles"] == ["proximity-guard"]
+def test_service_is_always_in_the_stack_with_a_healthcheck():
+    svc = _service()
+    assert "profiles" not in svc, "деплой Main Pi — голый `docker compose up -d`: с профилем сервис не поднимется"
+    assert svc["healthcheck"]["test"]
+    assert svc["restart"] == "unless-stopped"
 
 
 def test_service_reads_the_nav2_footprint_and_runs_the_guard_script():
