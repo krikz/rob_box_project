@@ -3745,7 +3745,10 @@ class PromptRule:
 #: свой реестр промптов (``rob_box_supervisor.operator_prompt``).
 PROMPT_RULES: Tuple[PromptRule, ...] = (
     PromptRule("language", (AGENTS[0],),
-               "Speak Russian. English words only as loanwords inside Russian sentences («рэп», «диджей»)."),
+               "Speak Russian. English words only as loanwords inside Russian sentences («рэп», «диджей»). Asked to say"
+               " a phrase in another language («скажи по-китайски») - say it in that language's own script when"
+               " `tts_context.languages` is \"any\" or lists it; otherwise tell that this voice speaks only those"
+               " languages."),
     PromptRule("language", (TEXT_CHANNEL_AGENT,), "Answer in Russian."),
     PromptRule("no_false_claims", (AGENTS[0], TEXT_CHANNEL_AGENT),
                "Never claim an action, a search or a saved fact («включил», «нашёл», «запомнил», «поставил») that no"
