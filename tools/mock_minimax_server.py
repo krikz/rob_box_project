@@ -54,7 +54,7 @@ Design choices
   ``MINIMAX_API_KEY`` from the environment at start-up (purely for
   logging / acknowledgement — the mock accepts ANY value for both, so a
   caller can switch from the real endpoint to this mock without
-  embedding secrets).  See ``BLOCKERS.md`` for the production-side
+  embedding secrets).  See ``BLOCKERS.md`` (git history) for the production-side
   changes required to actually consume ``MINIMAX_BASE_URL`` from env.
 
 Run standalone
@@ -593,7 +593,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     )
 
     # Acknowledge env-injected values — these are purely diagnostic since
-    # the mock accepts ANY non-empty value for both.  See BLOCKERS.md for
+    # the mock accepts ANY non-empty value for both.  See BLOCKERS.md (git history) for
     # the production-side blocker: the provider and tts_node do not
     # currently read ``MINIMAX_BASE_URL`` from env, so a caller cannot
     # switch the live endpoint without a code change.

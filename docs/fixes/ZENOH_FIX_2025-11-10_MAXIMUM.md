@@ -467,7 +467,6 @@ apt-cache policy ros-humble-rmw-zenoh-cpp
 
 - [ZENOH_TRANSPORT_ERROR_ANALYSIS_2025-11-09.md](../reports/ZENOH_TRANSPORT_ERROR_ANALYSIS_2025-11-09.md) - Полный анализ проблемы
 - [ZENOH_TRANSPORT_FIX_QUICKREF.md](ZENOH_TRANSPORT_FIX_QUICKREF.md) - Краткий справочник по исправлениям
-- [ZENOH_FIX_2025-11-10_DEPLOYMENT.md](ZENOH_FIX_2025-11-10_DEPLOYMENT.md) - Процедура развёртывания усиленного исправления
 
 ### Контакты и поддержка
 

@@ -333,4 +333,3 @@ if __name__ == "__main__":
 - [`src/rob_box_harness/README.md`](../../src/rob_box_harness/README.md) — API-reference фреймворка
 - [`src/rob_box_harness/rob_box_harness/providers/README.md`](../../src/rob_box_harness/rob_box_harness/providers/README.md) — `MiniMaxProvider` API
 - [MiniMax LLM user-guide](MINIMAX.md) — полный гайд по capabilities / vision / tools
-- [`SPEC_CURRENT.md`](../../SPEC_CURRENT.md) — источник истины по состоянию P0

@@ -172,7 +172,6 @@ git commit (без push) → следующая фаза
 | Ресурс | Назначение |
 |--------|-----------|
 | GitHub Issues | Бэклог задач: `gh issue list/view/create --repo krikz/rob_box_project` |
-| `PRD.md` | Продуктовые требования и архитектурный контекст |
 | `docs/development/PYTHON_STYLE_GUIDE.md` | Стандарты Python для всех фаз |
 | `docs/development/DOCKER_STANDARDS.md` | Стандарты Docker для Design/Plan/Implement |
 | `docs/architecture/SYSTEM_OVERVIEW.md` | Системная архитектура для Design фазы |
