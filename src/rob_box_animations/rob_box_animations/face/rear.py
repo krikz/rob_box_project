@@ -353,6 +353,10 @@ def speaker_rings(t, bpm, hue_shift=0.0):
     return out, out[:, ::-1].copy()
 
 
+#: Colour of the k-th level of a bar from the bottom: green, amber, red on top.
+_EQ_STACK = np.array([(2, 18, 6) if k < 4 else ((25, 16, 0) if k < 6 else (25, 2, 2)) for k in range(8)], dtype=float)
+
+
 def eq_bars(t, bpm, seed=5):
     beat = t * bpm / 60.0
     ph = beat % 1.0
@@ -366,30 +370,26 @@ def eq_bars(t, bpm, seed=5):
             r = random.Random(int(t * 10) * 17 + band * 3 + side)
             h = lo * (2 + kick * 6.5) + (1 - lo) * (3 + 4.5 * r.random()) * (0.7 + 0.3 * math.sin(t * 3 + band))
             h = int(clamp(h, 1, 8))
-            for k in range(h):
-                y = 7 - k
-                c = col(2, 18, 6) if k < 4 else (col(25, 16, 0) if k < 6 else col(25, 2, 2))
-                img[y, b] = c
+            img[8 - h:, b] = _EQ_STACK[h - 1::-1]       # row 7 - k gets the colour of level k
         outs.append(img)
     return outs[0], outs[1]
 
 
+DISCO_PAL = np.array(((25, 0, 10), (25, 12, 0), (18, 22, 0), (0, 20, 8), (0, 9, 25), (12, 0, 25)), dtype=float)
+_DISCO_ANG = np.array([[math.atan2(y - 3.5, x - 3.5) for x in range(8)] for y in range(8)])
+_DISCO_DISC = (_D <= 3.95)[..., None]
+
+
 def disco(t, bpm):
+    """Disco wheels: six colour sectors turning with the beat, every other one dimmed (vectorised, #3733)."""
     beat = t * bpm / 60.0
     outs = []
     for side in (0, 1):
-        img = np.zeros((8, 8, 3))
         ang = beat * math.pi / 2 * (1 if side else -1)
-        for y in range(8):
-            for x in range(8):
-                a = math.atan2(y - 3.5, x - 3.5) + ang
-                sector = int(((a % math.tau) / math.tau) * 6)
-                d = _D[y, x]
-                if d <= 3.95:
-                    pal = [col(25, 0, 10), col(25, 12, 0), col(18, 22, 0), col(0, 20, 8), col(0, 9, 25), col(12, 0, 25)]
-                    k = 0.9 if (sector + int(beat)) % 2 == 0 else 0.25
-                    img[y, x] = pal[sector] * k
-        outs.append(img)
+        a = _DISCO_ANG + ang
+        sector = ((a % math.tau) / math.tau * 6).astype(int)
+        k = np.where((sector + int(beat)) % 2 == 0, 0.9, 0.25)[..., None]
+        outs.append(np.where(_DISCO_DISC, DISCO_PAL[sector] * k, 0.0))
     return outs[0], outs[1]
 
 

@@ -51,11 +51,49 @@ LIT_LV = 3.0
 THROUGH = 0.85
 
 
-def _canvas(fn: Callable[[np.ndarray, np.ndarray], np.ndarray]) -> Frame:
-    f = Frame()
+#: All LEDs of the canvas in one flat row, panel after panel (#3733): an effect is a few numpy operations over
+#: these 381 LEDs, not the same operations five times over tiny boards (numpy's per-call cost was the bill).
+_SHAPES = {p: getattr(Frame(), p).shape[:2] for p in PANELS}
+_SPANS: Dict[str, Tuple[int, int]] = {}
+_n = 0
+for _p in PANELS:
+    _SPANS[_p] = (_n, _n + _SHAPES[_p][0] * _SHAPES[_p][1])
+    _n = _SPANS[_p][1]
+FLAT_X = np.concatenate([XY[p][0].ravel() for p in PANELS])
+FLAT_Y = np.concatenate([XY[p][1].ravel() for p in PANELS])
+
+
+def _neighbours() -> np.ndarray:
+    """(4, N) flat index of each LED's up/down/left/right neighbour on its own board; N (dark sentinel) at an edge."""
+    n = len(FLAT_X)
+    nb = np.full((4, n), n)
     for p in PANELS:
-        setattr(f, p, fn(*XY[p]))
+        h, w = _SHAPES[p]
+        idx = np.arange(*_SPANS[p]).reshape(h, w)
+        nb[0, idx[1:].ravel()] = idx[:-1].ravel()
+        nb[1, idx[:-1].ravel()] = idx[1:].ravel()
+        nb[2, idx[:, 1:].ravel()] = idx[:, :-1].ravel()
+        nb[3, idx[:, :-1].ravel()] = idx[:, 1:].ravel()
+    return nb
+
+
+_NB = _neighbours()
+
+
+def _flat(f: Frame) -> np.ndarray:
+    return np.concatenate([getattr(f, p).reshape(-1, 3) for p in PANELS])
+
+
+def _split(flat: np.ndarray, f: Optional[Frame] = None) -> Frame:
+    f = Frame() if f is None else f
+    for p in PANELS:
+        a, b = _SPANS[p]
+        setattr(f, p, flat[a:b].reshape(_SHAPES[p] + (3,)))
     return f
+
+
+def _canvas(fn: Callable[[np.ndarray, np.ndarray], np.ndarray]) -> Frame:
+    return _split(fn(FLAT_X, FLAT_Y))
 
 
 # ---------------------------------------------------------------- backgrounds
@@ -99,21 +137,18 @@ MATRIX_CYCLE = CANVAS_H + 9.0  # rows from one drop of a column to the next
 _MRNG = np.random.RandomState(3780)
 _M_SPEED = _MRNG.uniform(5.0, 11.0, CANVAS_W)      # rows per second, per canvas column
 _M_PHASE = _MRNG.uniform(0.0, MATRIX_CYCLE, CANVAS_W)
-_M_COLS = {p: (_M_SPEED[XY[p][0].astype(int)], _M_PHASE[XY[p][0].astype(int)]) for p in PANELS}
+_M_FLAT = (_M_SPEED[FLAT_X.astype(int)], _M_PHASE[FLAT_X.astype(int)])
 MATRIX_GREEN = col(0, 1.0, 0.15)
 MATRIX_HEAD = col(0.45, 1.0, 0.45)
 
 
 def bg_matrix(t: float) -> Frame:
     """Green drops of «code» falling down every canvas column, each column at its own speed; the head is paler."""
-    f = Frame()
-    for p in PANELS:
-        speed, phase = _M_COLS[p]
-        d = (t * speed + phase) % MATRIX_CYCLE - XY[p][1]
-        k = np.where((d >= 0.0) & (d < MATRIX_TRAIL), 1.0 - d / MATRIX_TRAIL, 0.0)[..., None]
-        head = ((d >= 0.0) & (d < 1.0))[..., None]
-        setattr(f, p, k * BG_LV * np.where(head, MATRIX_HEAD, MATRIX_GREEN))
-    return f
+    speed, phase = _M_FLAT
+    d = (t * speed + phase) % MATRIX_CYCLE - FLAT_Y
+    k = np.where((d >= 0.0) & (d < MATRIX_TRAIL), 1.0 - d / MATRIX_TRAIL, 0.0)[..., None]
+    head = ((d >= 0.0) & (d < 1.0))[..., None]
+    return _split(k * BG_LV * np.where(head, MATRIX_HEAD, MATRIX_GREEN))
 
 
 #: Slot ``bg`` -> background. ``none`` — no background.
@@ -121,29 +156,24 @@ BACKGROUNDS: Mapping[str, Callable[[float], Frame]] = {'rainbow': bg_rainbow, 'f
 
 
 def _near(lit: np.ndarray) -> np.ndarray:
-    n = lit.copy()
-    n[1:] |= lit[:-1]
-    n[:-1] |= lit[1:]
-    n[:, 1:] |= lit[:, :-1]
-    n[:, :-1] |= lit[:, 1:]
-    return n
+    """Flat ``lit`` -> lit or next to a lit LED (4-neighbours on the same board)."""
+    padded = np.append(lit, False)
+    return lit | padded[_NB].any(axis=0)
 
 
 def under(f: Frame, bg: Frame) -> Frame:
     """Background through the canvas, features on top. A lit feature pixel keeps its level (the brightest channel)
     and takes the background's hue by :data:`THROUGH` of the background's strength there — the wave passes through
     the eyes too, they stay the brightest; elsewhere the background, dimmed next to the features."""
-    for p in PANELS:
-        a, b = getattr(f, p), getattr(bg, p)
-        lv = a.max(axis=2, keepdims=True)
-        lit = lv[..., 0] >= LIT_LV
-        bl = b.max(axis=2, keepdims=True)
-        w = np.clip(bl / BG_LV, 0.0, 1.0) * THROUGH
-        feat = a / np.maximum(lv, 1e-6) * (1.0 - w) + b / np.maximum(bl, 1e-6) * w
-        feat *= lv / np.maximum(feat.max(axis=2, keepdims=True), 1e-6)
-        dim = np.where(_near(lit), UNDER_FEATURES, 1.0)[..., None]
-        setattr(f, p, np.where(lit[..., None], feat, b * dim))
-    return f
+    a, b = _flat(f), _flat(bg)
+    lv = a.max(axis=1, keepdims=True)
+    lit = lv[..., 0] >= LIT_LV
+    bl = b.max(axis=1, keepdims=True)
+    w = np.clip(bl / BG_LV, 0.0, 1.0) * THROUGH
+    feat = a / np.maximum(lv, 1e-6) * (1.0 - w) + b / np.maximum(bl, 1e-6) * w
+    feat *= lv / np.maximum(feat.max(axis=1, keepdims=True), 1e-6)
+    dim = np.where(_near(lit), UNDER_FEATURES, 1.0)[..., None]
+    return _split(np.where(lit[..., None], feat, b * dim), f)
 
 
 def has_bg(slots: Optional[Mapping[str, str]]) -> bool:
