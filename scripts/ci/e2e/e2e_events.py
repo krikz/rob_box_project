@@ -429,6 +429,15 @@ ACT_RECOVERY: Tuple[str, ...] = (SILENCED, "music")
 #: Маркер восстановления в логе акта -- один вид на все места: ``E2E_RECOVER <вид> <метка шага|at_act_start> …``.
 RECOVER_MARK = "E2E_RECOVER"
 AT_ACT_START = "at_act_start"
+#: Одиночное вейк-слово (05.11, Шифу: «Робот!» голосом с акцентом -- «весельчак» English_Jovialman -- вейк теряется):
+#: реплика из одного этого слова (с пунктуацией) всегда звучит русским голосом (``wake`` в ``map_tts_voice`` харнесса),
+#: чей бы шаг это ни был. Голос обычных реплик не меняется (многоголосие актов -- биометрия). Единственный список.
+BARE_WAKE_WORDS: Tuple[str, ...] = ("робот", "робби", "роббокс")
+
+
+def is_bare_wake(text: str) -> bool:
+    """Реплика -- ровно одно вейк-слово (``BARE_WAKE_WORDS``), без другой речи: «Робот!», «робби.», «Роббокс…»."""
+    return _norm(text) in BARE_WAKE_WORDS
 
 
 def recover_marker(kind: str, where: str, detail: str = "") -> str:
@@ -1167,6 +1176,12 @@ def _cmd_trackcheck(opts: Dict[str, str], flags: List[str]) -> int:
     return 0
 
 
+def _cmd_barewake(opts: Dict[str, str], flags: List[str]) -> int:
+    """``--heard ТЕКСТ`` -> ``bare=1`` (одно вейк-слово) | ``bare=0``."""
+    _emit({"bare": 1 if is_bare_wake(opts["--heard"]) else 0})
+    return 0
+
+
 def _cmd_requires(opts: Dict[str, str], flags: List[str]) -> int:
     """``--scenario F`` -> ``label<TAB>метки,через,запятую`` шагов с ``requires``; ошибка схемы -- rc 2."""
     try:
@@ -1200,7 +1215,7 @@ COMMANDS: Mapping[str, Callable[[Dict[str, str], List[str]], int]] = MappingProx
     "state": _cmd_state, "quiet": _cmd_quiet, "anchor": _cmd_anchor,
     "policy": _cmd_policy, "recovery": _cmd_recovery, "session": _cmd_session,
     "mark": _cmd_mark, "skips": _cmd_skips, "skip": _cmd_skip, "compare": _cmd_compare, "stt": _cmd_stt,
-    "requires": _cmd_requires, "require": _cmd_require,
+    "requires": _cmd_requires, "require": _cmd_require, "barewake": _cmd_barewake,
     "trackrefs": _cmd_trackrefs, "trackbind": _cmd_trackbind, "trackcheck": _cmd_trackcheck,
 })
 USAGE = ("usage: e2e_events.py state|quiet|anchor --engine v1|v2 [--silent-ok] [--barge] [--waited S --accept-window S]"
@@ -1208,7 +1223,7 @@ USAGE = ("usage: e2e_events.py state|quiet|anchor --engine v1|v2 [--silent-ok] [
          " | mark --kind K --where W [--detail D] | skips --scenario FILE | skip --scenario FILE --label L < log"
          " | compare --scenario FILE --label L [--since S < log] | stt --scenario FILE --label L --heard TEXT [--executed 0|1]"
          " | requires --scenario FILE | require --labels A,B [--steps FILE] [--prior L=S,…]"
-         " | trackrefs --scenario FILE | trackbind --scenario FILE --label L < log"
+         " | barewake --heard TEXT | trackrefs --scenario FILE | trackbind --scenario FILE --label L < log"
          " | trackcheck --scenario FILE --label L --track ID < log\n")
 
 
