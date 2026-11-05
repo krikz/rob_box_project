@@ -51,7 +51,11 @@ log/
 *.db3
 
 # IDE
-.vscode/
+# .vscode/settings.json — общие настройки репо (URDF-визуализатор rob_box_description, пути ROS Humble
+# для анализатора Python, исключения build/log/cache из поиска и вотчеров); остальное в .vscode — личное
+# (ADR-0166 §8, решение Шифу 05.11). Каталог исключён через «/*», иначе файл не вернуть.
+.vscode/*
+!.vscode/settings.json
 .idea/
 *.swp
 *.swo
