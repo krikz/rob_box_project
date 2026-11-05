@@ -93,27 +93,33 @@ def phrase_author(label: Mapping[str, Any]) -> Optional[SpeakerRef]:
 
 
 def by_caller(picked: Sequence[Mapping[str, Any]]) -> bool:
-    """Каждая фраза сказана инициатором по признаку кода: ``same_as_caller`` метки (``speaker_adapter.same_interlocutor``)
-    у фразы, голос которой никому не приписан. У приписанной фразы ``same_as_caller`` бывает от одного канала «голос
-    длинной фразы узнан» — это знание об авторе, а не о том, что «Робот» сказал он же (n213: фраза Саши 0.956
-    ``same_as_caller`` при спорном вейке); такую фразу решает её автор (:func:`phrase_author`)."""
+    """Каждая фраза сказана инициатором по признаку кода: ``same_as_caller`` метки
+    (``speaker_adapter.same_interlocutor``) у фразы, голос которой никому не приписан. У приписанной фразы
+    ``same_as_caller`` бывает от одного канала «голос длинной фразы узнан» — это знание об авторе, а не о том, что
+    «Робот» сказал он же (n213: фраза Саши 0.956 ``same_as_caller`` при спорном вейке); такую фразу решает её автор
+    (:func:`phrase_author`)."""
     unattributed = [p for p in picked if str(p.get("speaker_id") or NAME_UNKNOWN) == NAME_UNKNOWN]
     return bool(picked) and len(unattributed) == len(picked) and all(p.get("same_as_caller") for p in picked)
 
 
 def turn_speaker(picked: Sequence[Mapping[str, Any]], initiator: Optional[SpeakerRef]) -> SpeakerRef:
     """Собеседник подхвата по правам (правило модуля, п. 1–2): уверенный единственный автор; иначе инициатор, если
-    каждая фраза — его по признаку кода (:func:`by_caller`); иначе никто — ``SpeakerRef`` без профиля (``contested``, если в ходе
-    звучал знакомый голос: память отклоняется честным ``voice_unconfirmed``, а не «не узнаю голос»)."""
+    каждая фраза — его по признаку кода (:func:`by_caller`); иначе никто — ``SpeakerRef`` без профиля
+    (``contested``, если в ходе звучал знакомый голос: память отклоняется честным ``voice_unconfirmed``, а не
+    «не узнаю голос»)."""
     authors = {ref.person_ref: ref for ref in map(phrase_author, picked) if ref is not None}
-    doubtful = [p for p in picked if phrase_author(p) is None
-                and phrase_certainty(p.get("speaker") or {}) != VOICE_SILENT]
+    doubtful = [phrase_certainty(p.get("speaker") or {}) for p in picked if phrase_author(p) is None]
+    doubtful = [c for c in doubtful if c != VOICE_SILENT]  # чужой или спорный голос среди фраз
     if len(authors) == 1 and not doubtful:
         return next(iter(authors.values()))
     if not authors and initiator is not None and by_caller(picked):
         return initiator
-    familiar = bool(authors) or any(phrase_certainty(p.get("speaker") or {}) in NAME_UNCONFIRMED for p in doubtful)
-    familiar = familiar or initiator_certainty(initiator) not in (NAME_UNKNOWN,)
+    return _nobody(bool(authors) or any(c in NAME_UNCONFIRMED for c in doubtful), initiator)
+
+
+def _nobody(familiar: bool, initiator: Optional[SpeakerRef]) -> SpeakerRef:
+    """Права ничьи: собеседник без профиля; ``contested``, если в ходе звучал знакомый голос (фразы или вейк)."""
+    familiar = familiar or initiator_certainty(initiator) != NAME_UNKNOWN
     return SpeakerRef(name_state=NAME_CONTESTED if familiar else NAME_UNKNOWN)
 
 

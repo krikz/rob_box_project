@@ -120,10 +120,12 @@ _SAVE = Command(actions=(ToolCall("memory_save", {"fact": "пьёт только
 
 def test_n213_memory_search_goes_to_the_phrase_author_not_the_contested_wake():
     """Было: ``memory_search`` → ``rejected{voice_unconfirmed}`` и «Голос знакомый, но не уверен чей…».
-    Стало: запрос владельцу памяти с ``person_ref`` Саши — автора фразы (0.956), короткий спорный вейк прав не решает."""
+    Стало: запрос владельцу памяти с ``person_ref`` Саши — автора фразы (0.956); короткий спорный вейк прав не
+    решает."""
     addressed = _n213()
     assert isinstance(addressed, Addressed) and addressed.source == BACKLOG_PICKUP
-    ports, _ = _run(addressed, _ref(WAKE_CONTESTED), [Answer(_SEARCH, "x"), Answer(Command(speech="Зелёный чай."), "x")])
+    answers = [Answer(_SEARCH, "x"), Answer(Command(speech="Зелёный чай."), "x")]
+    ports, _ = _run(addressed, _ref(WAKE_CONTESTED), answers)
     assert [(r.tool, r.args[kn.PERSON_ARG]) for r in ports.requests] == [("memory_search", SASHA_ID)]
     assert not any("не уверен чей" in text for text in ports.said)
 
