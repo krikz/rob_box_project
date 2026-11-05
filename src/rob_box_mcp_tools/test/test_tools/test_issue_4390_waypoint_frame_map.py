@@ -206,9 +206,15 @@ def test_get_current_pose_without_tf_refuses(nav):
     assert res.error == "Не могу определить позицию робота на карте: " + mp.POSE_FAILURE_REASONS["no_transform"]
 
 
+def _no_orphan_halt(reason, rounds=2):
+    return ao.CANCEL_NO_ACTIVE_GOAL  # #4435: фейк гашения контроллера; здесь Nav2 всегда успешен
+
+
 def _drive(nav, store, name):
     client = _NavClient()
-    res = _tool(nav.NavigateToWaypointTool, nav_client=client, waypoint_store=store).execute(name)
+    res = _tool(
+        nav.NavigateToWaypointTool, nav_client=client, waypoint_store=store, controller_halt=_no_orphan_halt
+    ).execute(name)
     assert len(client.goals) == 1
     return res, client.goals[0]
 
