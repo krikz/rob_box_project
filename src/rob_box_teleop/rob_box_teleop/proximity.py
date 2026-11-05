@@ -474,6 +474,36 @@ class AlarmScheduler:
         return effects
 
 
+#: Переменная окружения, по которой контейнер знает, что едет на симе (HIL): ``docker/main/compose.hil.yaml``,
+#: ``docker/common/scripts/use_sim_time.sh``. Один источник признака HIL для защиты.
+SIM_TIME_ENV = "USE_SIM_TIME"
+
+#: ``HIL_GUARD_SOUND=off`` (hil.conf -> compose.hil.yaml) глушит звук и голос защиты в HIL; по умолчанию они звучат.
+GUARD_SOUND_ENV = "HIL_GUARD_SOUND"
+
+#: Эффекты, которые при выключенном звуке HIL не уходят на настоящего робота: звук и голос слышны в мастерской (#4470).
+#: Мигалка (``lights``) остаётся — она на лице, а не в воздухе.
+HIL_MUTED_KINDS = frozenset({EFFECT_SOUND, EFFECT_SPEECH})
+
+
+def hil_mute_sound(env: Mapping[str, str]) -> bool:
+    """Глушить звук и голос: только в HIL и только при ``HIL_GUARD_SOUND=off``. Боевой режим не глушится никогда."""
+    return hil_active(env) and env.get(GUARD_SOUND_ENV, "on").strip().lower() == "off"
+
+
+def hil_active(env: Mapping[str, str]) -> bool:
+    """HIL включён, если ``USE_SIM_TIME=true`` (допустимы только true/false, как в use_sim_time.sh)."""
+    return env.get(SIM_TIME_ENV, "false").strip().lower() == "true"
+
+
+def split_hil_effects(effects: Sequence[Effect], mute: bool) -> Tuple[List[Effect], List[Effect]]:
+    """(что публиковать, что заглушено). Без ``mute`` заглушённых нет. Стоп сюда не попадает — он не ``Effect``."""
+    if not mute:
+        return list(effects), []
+    kept = [e for e in effects if e.kind not in HIL_MUTED_KINDS]
+    return kept, [e for e in effects if e.kind in HIL_MUTED_KINDS]
+
+
 def describe(tr: Transition) -> str:
     """Строка журнала о смене зоны (её строит код, не LLM)."""
     gap = "—" if math.isinf(tr.gap) else f"{tr.gap:.2f} м"
@@ -482,9 +512,11 @@ def describe(tr: Transition) -> str:
 
 __all__ = [
     "ALARMS", "ALARM_LIGHTS", "Alarm", "AlarmScheduler", "Body", "CommandMux", "EFFECT_LIGHTS", "EFFECT_SOUND",
-    "EFFECT_SPEECH", "Effect", "LIGHTS_EVERY_S", "LIGHTS_TTL_MS", "MuxSource", "PHRASE_COOLDOWN_S", "Mount",
+    "EFFECT_SPEECH", "Effect", "GUARD_SOUND_ENV", "HIL_MUTED_KINDS", "LIGHTS_EVERY_S", "LIGHTS_TTL_MS", "MuxSource",
+    "PHRASE_COOLDOWN_S", "Mount", "SIM_TIME_ENV",
     "NAV2_FOOTPRINT_PATH", "NO_THREAT", "STOP_BEEP", "STOP_BEEP_EVERY_S", "Threat", "Thresholds", "Transition",
     "WARN_BEEP", "WARN_BEEP_EVERY_S", "ZONES", "ZONE_CLEAR", "ZONE_STOP", "ZONE_WARN", "ZoneTracker", "assess",
-    "body_from_nav2_params", "classify", "closing_speed", "describe", "is_moving", "mux_sources", "nearest_threat",
-    "parse_footprint", "scan_points", "severity", "stop_limits", "yaw_from_quaternion",
+    "body_from_nav2_params", "classify", "closing_speed", "describe", "hil_active", "hil_mute_sound",
+    "is_moving", "mux_sources", "nearest_threat",
+    "parse_footprint", "scan_points", "severity", "split_hil_effects", "stop_limits", "yaw_from_quaternion",
 ]

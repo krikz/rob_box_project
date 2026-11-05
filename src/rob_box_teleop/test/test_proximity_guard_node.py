@@ -124,3 +124,88 @@ def test_start_script_runs_the_node_as_pid_1_not_through_ros2_run():
     script = (REPO / "docker" / "main" / "scripts" / "teleop" / "start_proximity_guard.sh").read_text(encoding="utf-8")
     assert "exec python3 -m rob_box_teleop.proximity_guard_node" in script
     assert "ros2 run" not in script.split("exec ", 1)[1]
+
+
+# -- HIL: звук и голос защиты не уходят на настоящего робота (#4470) -----------------------------------
+def _sound_msgs(n):
+    return [pub for topic, pub in n.publishers if topic == guard.SOUND_TRIGGER_TOPIC][0].messages
+
+
+def _hil_node(node_params, hil):
+    node_params.update(footprint_file=str(CONFIG / "nav2" / "nav2_params.yaml"),
+                       twist_mux_file=str(CONFIG / "twist_mux" / "twist_mux.yaml"), hil_mute_alarm=hil)
+    n = guard.ProximityGuardNode()
+    n._mount = LIDAR
+    n.clock = 0.0
+    n._now = lambda: n.clock
+    return n
+
+
+@pytest.fixture
+def spoken(monkeypatch):
+    said = []
+    monkeypatch.setattr(guard.speech_client, "say", lambda node, utt, agent=None: said.append(utt.text))
+    return said
+
+
+def test_hil_mutes_sound_and_speech_but_keeps_lights_and_emergency_stop(node_params, spoken, monkeypatch):
+    n = _hil_node(node_params, True)
+    lights = []
+    monkeypatch.setattr(guard.expression_client, "express", lambda *a, **kw: lights.append(kw["gesture"]))
+    drive(n, 3.0, 0.10, 0.10)
+    assert n.tracker.stopping and len(stops(n)) > 0       # безопасность не тронута
+    assert lights                                          # мигалка осталась
+    assert _sound_msgs(n) == [] and spoken == []           # писка и «Осторожно!» нет
+    muted = [c for c in n.get_logger().info.call_args_list if "HIL" in str(c)]
+    assert len(muted) == 1                                 # одна строка на вход в зону, без спама
+
+
+def test_live_mode_still_beeps_and_speaks(node_params, spoken, monkeypatch):
+    n = _hil_node(node_params, False)
+    monkeypatch.setattr(guard.expression_client, "express", lambda *a, **kw: None)
+    drive(n, 3.0, 0.10, 0.10)
+    assert len(_sound_msgs(n)) >= 2 and spoken
+    assert not [c for c in n.get_logger().info.call_args_list if "HIL" in str(c)]
+
+
+def _node_from_env(node_params):
+    node_params.update(footprint_file=str(CONFIG / "nav2" / "nav2_params.yaml"))
+    return guard.ProximityGuardNode()
+
+
+@pytest.mark.parametrize("sim, guard_sound, muted", [
+    ("true", "off", True),        # HIL + флаг off -> глушим
+    ("true", "on", False),        # HIL, звук включён
+    ("true", None, False),        # HIL, флага нет -> умолчание: звучит
+    ("false", "off", False),      # боевой режим: флаг не действует
+    (None, "off", False),
+    (None, None, False),
+])
+def test_mute_only_in_hil_with_guard_sound_off(node_params, monkeypatch, sim, guard_sound, muted):
+    for name, val in ((px.SIM_TIME_ENV, sim), (px.GUARD_SOUND_ENV, guard_sound)):
+        monkeypatch.delenv(name, raising=False)
+        if val is not None:
+            monkeypatch.setenv(name, val)
+    assert _node_from_env(node_params).hil_mute is muted
+
+
+def test_hil_default_keeps_sound_and_speech(node_params, spoken, monkeypatch):
+    n = _hil_node(node_params, False)  # HIL с HIL_GUARD_SOUND=on: hil_mute_alarm=False
+    monkeypatch.setattr(guard.expression_client, "express", lambda *a, **kw: None)
+    drive(n, 3.0, 0.10, 0.10)
+    assert _sound_msgs(n) and spoken
+
+
+def test_split_hil_effects_filters_only_in_hil():
+    effects = [px.Effect(px.EFFECT_LIGHTS, "a", 1), px.Effect(px.EFFECT_SOUND, "b"), px.Effect(px.EFFECT_SPEECH, "c")]
+    kept, muted = px.split_hil_effects(effects, True)
+    assert [e.kind for e in kept] == [px.EFFECT_LIGHTS]
+    assert [e.kind for e in muted] == [px.EFFECT_SOUND, px.EFFECT_SPEECH]
+    assert px.split_hil_effects(effects, False) == (effects, [])
+
+
+def test_hil_overlay_and_script_pass_the_same_flag_to_proximity_guard():
+    overlay = (REPO / "docker" / "main" / "compose.hil.yaml").read_text(encoding="utf-8")
+    assert "proximity-guard:\n    environment:\n      - USE_SIM_TIME=true" in overlay
+    assert "HIL_GUARD_SOUND=${HIL_GUARD_SOUND:-on}" in overlay
+    assert "proximity-guard" in (REPO / "scripts" / "hil" / "hil.sh").read_text(encoding="utf-8")
