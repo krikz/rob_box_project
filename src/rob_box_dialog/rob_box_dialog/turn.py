@@ -113,7 +113,7 @@ from rob_box_dialog.speaker_adapter import asks_recognized, recognition_reply, s
 from rob_box_dialog.window_reset import WindowGuard, reset_if_idle, reset_window
 from rob_box_dialog.words import asks_question, asks_to_listen
 from rob_box_dialog.tools_view import (available_tools, music_asked, needs_words, robot_asked, show_asked,
-                                       voice_asked, voice_named)
+                                       sound_catalog_asked, voice_asked, voice_named)
 from rob_box_dialog.turn_log import (PERFORM_STARTED, TOOL, USER, TurnAggregate, TurnLog, phrase_label, results_of,
                                      speaker_label)
 
@@ -486,6 +486,19 @@ def sound_owed(snapshot: SessionSnapshot, turn: "_Turn", cmd: Command) -> bool:
     if cmd.speech or cmd.ask is not None or cmd.perform is not None or cmd.passed:
         return False
     return bool(cmd.actions) and all(a.tool in kn.SILENT_DONE_TOOLS for a in cmd.actions)
+
+
+def catalog_owed(snapshot: SessionSnapshot, turn: "_Turn", cmd: Command) -> bool:
+    """Человек спросил о каталоге звуков (``tools_view.sound_catalog_asked``: «какие звуки ты умеешь?»), агенту тул
+    каталога доступен, а ответ - без его данных: в ходе ``get_sound_info`` не читали и в команде его нет (М11 n109,
+    01:12:19: «Умею подтверждать… глючить… капать нотой…» - список по памяти). Встречный вопрос, перформанс и пропуск
+    хода - не ответ о каталоге. Решает код по реплике человека и структуре команды, не по тексту ответа (ADR-0148)."""
+    tool = kn.SOUND_CATALOG_TOOL
+    if not sound_catalog_asked(turn.text) or tool not in tools_for(agent_spec(snapshot.agent)):
+        return False
+    if any(r.tool == tool for r in turn.queried) or any(a.tool == tool for a in cmd.actions):
+        return False
+    return cmd.ask is None and cmd.perform is None and not cmd.passed
 
 
 def done_expression(turn: "_Turn", snapshot: SessionSnapshot) -> Optional[Expression]:
@@ -1511,13 +1524,15 @@ def robot_owed(snapshot: SessionSnapshot, turn: "_Turn", cmd: Command) -> bool:
 def owed_reason(snapshot: SessionSnapshot, turn: "_Turn", cmd: Command, names: Collection[str] = ()) -> str:
     """Ответ модели не тот, что ждёт человек, — причина нарушения (:data:`_OWED`), иначе «»: голый неслышимый ответ на
     адресованную реплику (:func:`words_owed`; и подхват бэклога), звук без слов на вопрос после чтения
-    (:func:`sound_owed`), только текст в чат на просьбу сделать
+    (:func:`sound_owed`), ответ о каталоге звуков без его данных (:func:`catalog_owed`), только текст в чат на просьбу сделать
     роботом (:func:`robot_owed`), обращение к неподтверждённому собеседнику чужим именем (``names`` - ключи
     из :func:`foreign_keys`) или утверждение о состоянии подсистемы робота без данных о ней (:func:`unbacked_claims`)."""
     if words_owed(snapshot, turn.text, cmd) or read_owed(snapshot, turn, cmd):
         return kn.VIOLATION_SILENT_ANSWER
     if sound_owed(snapshot, turn, cmd):
         return kn.VIOLATION_SOUND_ANSWER
+    if catalog_owed(snapshot, turn, cmd):
+        return kn.VIOLATION_SOUND_CATALOG
     if robot_owed(snapshot, turn, cmd):
         return kn.VIOLATION_REMOTE_OWED
     if foreign_name.offending(cmd, names):
@@ -1549,11 +1564,13 @@ def foreign_keys(window: Sequence[Any], turn: "_Turn", cmd: Command, snapshot: S
 class _Owed:
     """Нарушение «ответ не тот, что ждут» (ADR-0148 п.2: валидатор с понятной ошибкой): ``hint`` — подсказка модели,
     ``what`` — что в логе, ``keeps_words`` — после повтора слова модели уходят как есть, а код говорит рядом факт
-    (фраза ``INVALID_COMMAND_PHRASES``), а не вместо них."""
+    (фраза ``INVALID_COMMAND_PHRASES``), а не вместо них; ``reads`` — после повтора код сам читает этот тул вместо
+    действий команды и говорит по его данным (``_salvaged_phrase`` → ``query_fallback``)."""
 
     hint: str
     what: str
     keeps_words: bool = False
+    reads: str = ""
 
 
 #: Голый неслышимый ответ на адресованную реплику: слов модели нет — говорит код. Текст в чат на просьбу
@@ -1566,6 +1583,8 @@ _OWED: Mapping[str, _Owed] = {
     kn.VIOLATION_STATE_CLAIM: _Owed(kn.STATE_CLAIM_HINT, "утверждение о состоянии подсистемы без данных о ней"),
     kn.VIOLATION_QUERY_REPEAT: _Owed(kn.QUERY_REPEAT_HINT, "повтор чтения, уже исполненного в этом ходе"),
     kn.VIOLATION_SOUND_ANSWER: _Owed(kn.SOUND_ANSWER_HINT, "звук без слов на вопрос после чтения"),
+    kn.VIOLATION_SOUND_CATALOG: _Owed(kn.SOUND_CATALOG_HINT, "ответ о каталоге звуков без его данных",
+                                      reads=kn.SOUND_CATALOG_TOOL),
 }
 
 
@@ -1624,8 +1643,9 @@ async def _answer_owed(engine: "TurnEngine", turn: _Turn, cmd: Command, snap: Se
     engine._log.warning(f"{LOG_MARK} {reason}: {tools} {owed.what} и после повтора → исполняем, говорит код "
                         f"turn={turn.turn_id}")
     # лицо команды, как и её анимация, показывается — говорит код; последняя итерация после запроса - сначала
-    # повтор за словами (:func:`_push_for_words`)
-    return await _close_invalid(engine, turn, Invalid(reason, salvage=cmd.actions), snap, cmd.expression)
+    # повтор за словами (:func:`_push_for_words`); ответ без данных тула (``_Owed.reads``) - тул читает код сам
+    salvage = (ToolCall(owed.reads),) if owed.reads else cmd.actions
+    return await _close_invalid(engine, turn, Invalid(reason, salvage=salvage), snap, cmd.expression)
 
 
 def query_fallback(results: Sequence[ActionResult]) -> str:
