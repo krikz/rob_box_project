@@ -31,7 +31,7 @@
 
 ### Raw-вывод ОБЯЗАТЕЛЕН
 
-В карточках kanban, комментариях, PR-описаниях **ВСЕГДА** прикладывай:
+В карточках (GitHub issue), комментариях, PR-описаниях **ВСЕГДА** прикладывай:
 
 - `pytest -v` output — не «тесты прошли», а полный вывод с `-v`.
 - `gh pr view <N>` + `gh run view <run_id>` ссылки — не «CI зелёный», а конкретный run_id.
@@ -47,14 +47,16 @@
 - Старший воркер: **шисюн** (师兄).
 - Младший воркер: **шиди** (师弟).
 
-В коде, комментариях, commit-сообщениях — это не обязательно. В диалоге с Шифу и в kanban-комментариях — обязательно.
+В коде, комментариях, commit-сообщениях — это не обязательно. В диалоге с Шифу и в комментариях к issue — обязательно.
 
 ### Процесс-команды
 
-- **НЕ фиксить баги руками** (только через воркеров).
-- **НЕ мёржить PR** (только Шифу).
-- Issue → triage → kanban → worker → PR → wait for Шифу merge.
-- Если юзер злится — НЕ ВРАТЬ ЧТОБЫ УГОДИТЬ. Лучше сказать «не готово, нужно время».
+Процесс один — координатор и воркеры, `docs/process/claude-coordinator-robot-flow.md` (ADR-0162). Автоматика hermes / agent-flow (kanban, cron-триаж, merge-gate, e2e-раунды) — deprecated, на неё не опираться.
+
+- Цикл: issue с raw-фактами → бриф воркеру → воркер в worktree от `develop` (код + тесты + гарды + проверка на роботе) → PR в `develop` через REST → CI → приёмка и мёрж координатором → `L: Build All Services` → `L: Deploy and Verify` → живая проверка → закрытие issue с raw.
+- Код фич пишет воркер; координатор ставит задачу, принимает и мёржит.
+- Воркер оставляет мёрж координатору. Координатор мёржит в `develop` по праву, которое Шифу дал в чате приложения; `main` — только Шифу.
+- Если Шифу злится — говори правду: «не готово, нужно время».
 
 ## Код решает, LLM говорит (ADR-0148, 01.10.2026)
 
@@ -71,13 +73,15 @@
 
 - `CONTRIBUTING.md` → секция «🐉 Культура честности (наказ товарища Шифу, 18.08)» — формальная база.
 - `docs/adr/0018-agent-honesty-culture.md` — обоснование, trade-offs, альтернативы.
-- `docs/adr/0013-incremental-delivery-over-big-bang.md` — правила размера PR.
+- `docs/adr/AF-0013-incremental-delivery-over-big-bang.md` — правила размера PR.
+- `docs/process/claude-coordinator-robot-flow.md` — текущий процесс (роли, цикл задачи, стенд, Telegram, хендофф).
+- `docs/adr/0162-current-agent-process.md` — почему процесс один, что из hermes/agent-flow deprecated и в каком порядке выводится.
 - `docs/architecture/tts-extension-points.md` — `capability-honest` (no silent degradation) в TTS.
-- `docs/design/AGENT_FLOW_PROPOSAL.md` — общий процесс.
+- `docs/design/AGENT_FLOW_PROPOSAL.md` — прежний процесс hermes (deprecated, история).
 
 ## Инструменты
 
-- `scripts/agent_flow/validate_honesty.sh` — pre-PR check (warning, не блокер). Сканирует PR body и комментарии воркера на голословные маркеры (`проверил`, `работает`, `PASS` без raw-evidence).
+- `scripts/agent_flow/validate_honesty.sh` — pre-PR check (warning, не блокер). Сканирует PR body и комментарии воркера на голословные маркеры (`проверил`, `работает`, `PASS` без raw-evidence). В CI не подключён; судьба — ADR-0162 §5.
 - `scripts/agent_flow/tests/test_validate_honesty.sh` — регресс-тест.
 
 ## Минимальный контракт воркера

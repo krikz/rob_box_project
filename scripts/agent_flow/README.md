@@ -1,5 +1,7 @@
 # Agent-flow scripts
 
+> **DEPRECATED (см. ADR-0162, `docs/adr/0162-current-agent-process.md`).** Автоматика hermes / agent-flow стоит с 05.10.2026 (файл `MAINTENANCE`, коммит `6b7ed35cf`). Текущий процесс — `docs/process/claude-coordinator-robot-flow.md`. Документ оставлен как история.
+
 ## Source of Truth (SOT) — единственная точка правки
 
 **`<repo>/scripts/agent_flow/`** (эта папка в репо). Если ты правишь
