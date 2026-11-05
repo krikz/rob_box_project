@@ -90,6 +90,7 @@ from rob_box_dialog import foreign_name
 from rob_box_dialog import knowledge as kn
 from rob_box_dialog import memory
 from rob_box_dialog import pickup_parties
+from rob_box_dialog.voice_warmth import no_warm_voices
 from rob_box_dialog import state_claim
 from rob_box_dialog import theme_switch
 from rob_box_dialog import phrases
@@ -269,16 +270,19 @@ def picked_heard(addressed: Addressed) -> Tuple[Tuple[str, str], ...]:
     return tuple((phrase_label(p.get("speaker") or {}), str(p.get("text") or "")) for p in addressed.picked)
 
 
-def pickup_parts(addressed: Addressed, snap: SessionSnapshot) -> Tuple[Optional[SpeakerRef], SessionSnapshot,
-                                                                       Mapping[str, Any]]:
+def pickup_parts(addressed: Addressed, snap: SessionSnapshot, warm: Sequence[str] = ()
+                 ) -> Tuple[Optional[SpeakerRef], SessionSnapshot, Mapping[str, Any]]:
     """Подхват (решение Шифу 05.11, ``pickup_parties``): собеседник хода по правам (автор фразы, а не короткий вейк),
     снимок хода с ним и раздел ``backlog_pickup`` — авторы фраз (метки :func:`picked_heard`), инициатор (собеседник
-    сессии ``snap``) и чья память у хода (``memory.memory_owner`` снимка хода). Не подхват — ``(None, snap, {})``."""
+    сессии ``snap``) и чья память у хода (``memory.memory_owner`` снимка хода); ``warm`` — прогретые голоса без имени
+    (``voice_warmth``): автор не узнан — просьба назваться (``pickup_parties.ask_intro``). Не подхват —
+    ``(None, snap, {})``."""
     speaker = pickup_parties.pickup_speaker(addressed, snap.speaker)
     own = pickup_parties.own_snapshot(snap, speaker)
     owner = speaker if speaker is not None and memory.memory_owner(own) else None
     authors = [who for who, _ in picked_heard(addressed)]
-    return speaker, own, pickup_parties.pickup_section(addressed.picked, authors, snap.speaker, owner)
+    intro = pickup_parties.ask_intro(addressed.picked, snap.speaker, speaker, warm)
+    return speaker, own, pickup_parties.pickup_section(addressed.picked, authors, snap.speaker, owner, intro)
 
 
 def recent_section(addressed: Addressed) -> Tuple[Mapping[str, Any], ...]:
@@ -1939,8 +1943,10 @@ class TurnEngine:
                  events: Any = None, new_id: Callable[[], str] = lambda: uuid.uuid4().hex[:12],
                  clock: Callable[[], float] = time.monotonic, deadline_s: float = kn.TURN_CEILING_S,
                  log: Optional[logging.Logger] = None, rng: Optional[random.Random] = None,
-                 sing: Optional[SingRouter] = None, phrase_voice: PhraseVoice = no_phrase_voice) -> None:
+                 sing: Optional[SingRouter] = None, phrase_voice: PhraseVoice = no_phrase_voice,
+                 warm_voices: Callable[[], Tuple[str, ...]] = no_warm_voices) -> None:
         self.session = session
+        self._warm_voices = warm_voices  # прогретые голоса без имени от хоста (``voice_warmth``, Шифу 05.11)
         self._sing = sing  # путь пения от хоста; нет — форма хода без пути пения
         self._phrase_voice = phrase_voice  # голос фразы по её id от хоста
         self._rng = rng
@@ -1971,7 +1977,7 @@ class TurnEngine:
 
         reset_if_idle(self.session, self.log, self._window, self._clock(), self._log)  # окно без срока давности (#4258)
         self._window.touch(self._clock())
-        speaker, snap, view = pickup_parts(addressed, self.session.snapshot)  # подхват: права - у автора фразы
+        speaker, snap, view = pickup_parts(addressed, self.session.snapshot, self._warm_voices())  # права - у автора
         turn = _Turn(self._new_id(), snap.epoch, addressed.text.strip(), addressed.source,
                      TurnDeadline(self._deadline_s, clock=self._clock), pickup=addressed.pickup,
                      heard=picked_heard(addressed), recent=recent_section(addressed),
@@ -2150,7 +2156,7 @@ class TurnEngine:
         turn.deadline.grant(action_term(actions))
         now = pickup_parties.own_snapshot(self.session.snapshot, turn.speaker)  # подхват: собеседник - автор фразы
         run = execute_for_speaker(self._ports, actions, snap, now, turn.turn_id, self._log)
-        results = await turn.deadline.wait(run, "actions")
+        results = pickup_parties.intro_reasons(await turn.deadline.wait(run, "actions"), turn.pickup_view)
         self._generated.note(actions, results)
         turn.music_stopped, results = reconcile_stops(turn.music_stopped, results)  # фраза стопа - правда о ходе
         turn.acted += acted_calls(actions, results)  # повтор в этом ходе не исполняется

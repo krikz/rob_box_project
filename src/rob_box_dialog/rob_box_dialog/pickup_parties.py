@@ -35,7 +35,7 @@
 from __future__ import annotations
 
 from dataclasses import replace
-from typing import Any, Dict, Mapping, Optional, Sequence
+from typing import Any, Dict, List, Mapping, Optional, Sequence
 
 from rob_box_core.speaker_wire import (
     NAME_CONFIRMED,
@@ -177,15 +177,38 @@ def _same_person(picked: Sequence[Mapping[str, Any]], initiator: Optional[Speake
     return initiator.person_ref in authors
 
 
+def ask_intro(picked: Sequence[Mapping[str, Any]], initiator: Optional[SpeakerRef], speaker: Optional[SpeakerRef],
+              warm: Sequence[str]) -> bool:
+    """Просить автора назваться вместо отказа памяти (решение Шифу 05.11, после #4427): права хода ничьи, ни одна
+    подхваченная фраза никому не приписана (автор не узнан), а в беседе есть прогретый голос без имени, кроме
+    инициатора (``voice_warmth.WarmVoices.warm``). Короткий разговор (прогретых нет) — прежний отказ."""
+    unknown_author = bool(picked) and all(str(p.get("speaker_id") or NAME_UNKNOWN) == NAME_UNKNOWN for p in picked)
+    nobody = speaker is not None and not speaker.person_ref
+    caller = initiator.person_ref if initiator is not None else None
+    return nobody and unknown_author and any(person != caller for person in warm)
+
+
+def intro_reasons(results: Sequence[Any], view: Mapping[str, Any]) -> List[Any]:
+    """Исходы тулов памяти, отклонённые кодом без собеседника (``knowledge.UNBOUND_REASONS``), в ходе с просьбой
+    назваться (``view["ask_intro"]``, :func:`pickup_section`) — с причиной ``ASK_INTRO_REASON``: фраза кода
+    «Представься — и я поищу / запомню» вместо «Голос знакомый, но не уверен чей». Иначе исходы как есть."""
+    if not view.get("ask_intro"):
+        return list(results)
+    return [replace(r, reason=kn.ASK_INTRO_REASON)
+            if r.tool in kn.PERSON_SCOPED_TOOLS and r.status == "rejected" and r.reason in kn.UNBOUND_REASONS else r
+            for r in results]
+
+
 def pickup_section(picked: Sequence[Mapping[str, Any]], authors: Sequence[str], initiator: Optional[SpeakerRef],
-                   memory_of: Optional[SpeakerRef]) -> Dict[str, Any]:
+                   memory_of: Optional[SpeakerRef], intro: bool = False) -> Dict[str, Any]:
     """Раздел снимка :data:`PICKUP_SECTION` — кто и что сказал в подхвате: ``phrases``
     (автор словами ``authors`` — метка ``turn_log.phrase_label`` каждой фразы, уверенность, текст), ``initiator``
-    (кто сказал «Робот» и уверенность), ``same_person`` и ``memory_of`` — чья память у хода (``None`` — ничья).
-    Не подхват — ``{}`` (раздел пропускается)."""
+    (кто сказал «Робот» и уверенность), ``same_person``, ``memory_of`` — чья память у хода (``None`` — ничья) и
+    ``ask_intro`` — код просит автора назваться (:func:`ask_intro`), только когда так. Не подхват — ``{}``."""
     if not picked:
         return {}
-    return {"phrases": [_phrase(p, a) for p, a in zip(picked, authors)],
-            "initiator": {"who": who(initiator), "certainty": initiator_certainty(initiator)},
-            "same_person": _same_person(picked, initiator),
-            "memory_of": None if memory_of is None else who(memory_of)}
+    out = {"phrases": [_phrase(p, a) for p, a in zip(picked, authors)],
+           "initiator": {"who": who(initiator), "certainty": initiator_certainty(initiator)},
+           "same_person": _same_person(picked, initiator),
+           "memory_of": None if memory_of is None else who(memory_of)}
+    return {**out, "ask_intro": True} if intro else out

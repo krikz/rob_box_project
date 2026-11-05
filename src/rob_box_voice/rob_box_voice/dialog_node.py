@@ -69,6 +69,7 @@ from rob_box_dialog.execute import transport_timeouts
 from rob_box_dialog.interrupt import TurnsInFlight, on_interrupt
 from rob_box_dialog.memory import profiled_person
 from rob_box_dialog.pickup_parties import rights_speaker
+from rob_box_dialog.voice_warmth import WarmVoices
 from rob_box_dialog.respond import ActionResult
 from rob_box_dialog.scenes import HOLD, RESET, RESUME, SceneDirector, apply_control
 from rob_box_dialog.session import MusicStateRef, Session
@@ -405,10 +406,12 @@ class DialogNode(Node):
                               performer=functools.partial(plan_host.performer, self), on_ask=llm_metrics(llm))
         self._reporter = ProviderStateReporter(llm, functools.partial(publish_provider_states, make_publisher(self)),
                                                self._speak_direct)
+        self._warm = WarmVoices()  # прогретые голоса без имени: просьба назваться в подхвате (Шифу 05.11)
         self._engine = TurnEngine(self._session, self._ports, system_prompt=system, sections=self._sections,
                                   voices=voices, turn_log=TurnLog(on_outcome=self._shift.outcome),  # исходы — в смену
                                   events=self._open_events(), log=_RosLog(self.get_logger()), sing=sing,
-                                  phrase_voice=self._speakers.resolve)  # голос фразы по её id (#4141)
+                                  phrase_voice=self._speakers.resolve,  # голос фразы по её id (#4141)
+                                  warm_voices=self._warm.warm)
         self._ports.on_late = functools.partial(late_outcome, self._engine,
                                                 functools.partial(say_late, self._engine))  # поздний итог (#3960)
         self._subscribe()
@@ -490,6 +493,7 @@ class DialogNode(Node):
         Окно диалога сбрасывается в обе стороны (#4258): ходы e2e-ролей в боевой разговор не переходят и наоборот."""
         if enabled:
             self._speaker_memory.reset_e2e()
+        self._warm.reset()  # беседа с голосами без имени — заново, как окно диалога
         self._loop.call_soon_threadsafe(self._engine.reset_window, REASON_E2E_ON if enabled else REASON_E2E_OFF)
         return True
 
@@ -510,6 +514,7 @@ class DialogNode(Node):
         if msg.utterance_id:
             self._speakers.submit(msg.utterance_id, data)
             note_backlog_voice(self, msg.utterance_id, data)  # фраза в бэклоге: кто сказал её (#3767, #3892)
+            self._warm.note(data)  # сколько реплик у голоса без имени (voice_warmth)
         self._session.set_speaker(speaker_ref(data, now=time.time(), prev=self._session.snapshot.speaker))
 
     def _on_speech_event(self, msg: Any) -> None:
