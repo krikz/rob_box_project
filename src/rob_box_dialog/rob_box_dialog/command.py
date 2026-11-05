@@ -1358,6 +1358,18 @@ HINTS: Mapping[str, str] = MappingProxyType({
 })
 
 
+#: Правила про ``actions`` при повторе ПОСЛЕ запроса (#4398, М11 n109): шапка :data:`INVALID_AFTER_QUERY_HEAD` требует
+#: «без actions», и строка нарушения не должна велеть переделать действия («одно действие за ход») - модель
+#: послушалась её, а не шапки, и прислала одну ``play_sound`` без слов. Здесь те же причины, но словами шапки.
+AFTER_QUERY_HINTS: Mapping[str, str] = MappingProxyType({
+    "single_action_class": "действий не нужно: данные уже получены — ответь словами в speech",
+    "too_many_actions": "действий не нужно: данные уже получены — ответь словами в speech",
+    "tool_not_available": "тула не нужно: данные уже получены — ответь словами в speech",
+    "bad_args": "тула не нужно: данные уже получены — ответь словами в speech",
+    "unknown_tool": "тула не нужно: данные уже получены — ответь словами в speech",
+})
+
+
 def is_query_data(content: str) -> bool:
     """Сообщение хода с данными ``query`` (``turn._query_data``): запрос в этом ходе уже выполнен."""
     return content.lstrip().startswith('{"' + kn.QUERY_RESULTS_FIELD + '"')
@@ -1368,9 +1380,10 @@ def explain(invalid: Invalid, after_query: bool = False) -> str:
     хода уже выполнен: подсказка говорит, что данные получены, а не что «ничего не сделано»."""
     lines = [INVALID_AFTER_QUERY_HEAD if after_query else INVALID_HEAD]
     for v in invalid.all:
-        line = f"- {v.reason}: {HINTS.get(v.reason, 'нарушено правило команды')}"
+        redo = after_query and v.reason in AFTER_QUERY_HINTS  # переделывать действия шапка не велит (#4398)
+        line = f"- {v.reason}: {AFTER_QUERY_HINTS[v.reason] if redo else HINTS.get(v.reason, 'нарушено правило команды')}"
         line += f" ({v.detail})" if v.detail else ""
-        lines.append(line + (f". Допустимо: {', '.join(v.allowed)}" if v.allowed else ""))
+        lines.append(line + (f". Допустимо: {', '.join(v.allowed)}" if v.allowed and not redo else ""))
     return "\n".join(lines)
 
 
