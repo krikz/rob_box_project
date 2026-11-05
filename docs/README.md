@@ -48,7 +48,7 @@
 | [analysis/](analysis/), [investigations/](investigations/), [recon/](recon/), [diagnostics/](diagnostics/) | → `research/` или архив |
 | [fixes/](fixes/) | остались только заметки, на которые ссылаются живые гайды, скилл `zenoh-dev-setup` и свежие исследования (Zenoh, LiDAR, NAV2); остальное удалено (ADR-0163). Новые не заводим — пишем в PR/issue |
 | [reports/](reports/) | остались только отчёты, на которые ссылаются код, CI или живые доки (Hailo DKMS, ReSpeaker, Zenoh, одометрия, интерфейсы нод, AI HAT); остальное удалено (ADR-0163). Новые не заводим — пишем в PR/issue |
-| [grant/](grant/), [voice/](voice/) | ждут решения (ADR-0163 §4) |
+| [voice/](voice/) | ждёт решения (ADR-0163 §4); `grant/` удалён по решению Шифу 05.11 ([запись](shifu-decisions.md#d-20261105-remove-legacy)) |
 
 ## Spec-driven попытка — удалена (ADR-0163)
 
