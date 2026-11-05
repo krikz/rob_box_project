@@ -11,11 +11,10 @@
 #
 # Run: bash scripts/ci/tests/test_push_image_versions.sh
 #
-# РУЧНОЙ (ADR-0166): тест ходит в сеть (git push на недоступный 192.0.2.1)
-# и меряет время отказа, поэтому в CI его нет. На ubuntu-latest он КРАСНЫЙ:
-# run 42036798239 (05.11.2026) — каждая git-операция ждёт TCP-connect
-# ~135 с, итого 540 с при пороге 180 с; GIT_TERMINAL_TIMEOUT connect-таймаут
-# не ограничивает. То есть «fail fast» скрипта на blackhole-хосте не доказан.
+# ADR-0166 / run 42036798239 (05.11.2026): раньше тест был КРАСНЫЙ, потому что
+# GIT_TERMINAL_TIMEOUT - не переменная git и connect не ограничивала (4 операции
+# по ~135 с = 540 с). Теперь скрипт оборачивает сетевые git-вызовы в `timeout`,
+# и отказ на blackhole-хосте укладывается в cap * число операций.
 
 set -euo pipefail
 
@@ -65,8 +64,8 @@ fi
 # GIT_TERMINAL_TIMEOUT=5 (per env override) applies to each git call; with 2
 # attempts × ~60s for unreachable TEST-NET-1 TLS handshake + 1s sleep = ~120s
 # is the realistic ceiling on this network. Allow generous headroom.
-if [ "$elapsed" -gt 180 ]; then
-  echo "❌ script did not fail fast (took ${elapsed}s, expected <180s)"
+if [ "$elapsed" -gt 40 ]; then
+  echo "❌ script did not fail fast (took ${elapsed}s, expected <40s)"
   cat /tmp/script.err
   exit 1
 fi
