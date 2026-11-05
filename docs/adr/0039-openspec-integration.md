@@ -1,6 +1,6 @@
 # ADR-0039: OpenSpec ↔ agent-flow sync hooks
 
-- **Status:** Accepted
+- **Status:** Superseded by ADR-0163 (05.11.2026: OpenSpec не прижился, каталоги `openspec/`, `specs/`, `docs/research/openspec-pilot/` удалены)
 - **Date:** 2026-09-01
 - **Deciders:** Товарищ Шифу (владелец репо), devops-профиль
 - **Supersedes:** none

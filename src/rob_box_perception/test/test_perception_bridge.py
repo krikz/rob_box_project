@@ -6,7 +6,7 @@ Phase 6 v2 / W12. Exercises the UART → /sensors/data + /perception/health
 bridge end-to-end with fakes for ROS2 publishers/subscribers, serial/UART,
 and timer callbacks. No real hardware or network access.
 
-Coverage (from .planning/phases/06-harness-p0-finalization/06-04-PLAN.md §W12):
+Coverage (план GSD 06-04 §W12; каталог .planning/ удалён, ADR-0163 — см. git-историю):
 
 1. Sensor data published to /sensors/data
 2. Health status published to /perception/health

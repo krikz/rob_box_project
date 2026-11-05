@@ -1,13 +1,13 @@
-# specs/avatar-floor-protocol/spec.md — capability delta
+# Avatar floor protocol — контракт сервисов супервизора аватара
 
-This is the **authoritative capability delta** merged from
-`openspec/changes/avatar-floor-protocol/`. Tracking:
+Как устроено сейчас: сервисы `acquire_floor` / `release_floor` /
+`set_avatar_mode` узла `avatar_supervisor` на типизированных
+`src/rob_box_supervisor_msgs/srv/{AcquireFloor,ReleaseFloor,SetAvatarMode}.srv`.
+Перенесено из `specs/avatar-floor-protocol/spec.md` (OpenSpec, #1927, AV-12;
+ADR-0163 — spec-driven каталоги выведены). Источник истины — код и `.srv`;
+при расхождении правится этот файл.
 
-- ADDED Requirements: avatar-floor-protocol (see below)
-- MODIFIED Requirements: none
-- REMOVED Requirements: JSON-in-request.data for floor services
-
-## ADDED Requirements
+## Requirements
 
 ### Capability: avatar-floor-protocol
 

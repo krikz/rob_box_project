@@ -50,13 +50,9 @@
 | [retros/](retros/), [grant/](grant/), [verification/](verification/), [testing/](testing/), [integration/](integration/), [prompts/](prompts/), [voice/](voice/) **(архив)** | → `docs/archive/` |
 | [DOCUMENTATION_STRUCTURE.md](DOCUMENTATION_STRUCTURE.md) **(архив)** | старое описание структуры; заменено этой картой |
 
-## Deprecated: попытка spec-driven
+## Spec-driven попытка — удалена (ADR-0163)
 
-Код и CI эти каталоги не читают. Новое туда не класть.
-
-- `../openspec/`, `../specs/` — OpenSpec (ADR-0038/0039, 31.08–03.09.2026). Живое там одно — контракт floor-сервисов супервизора, он переедет в `architecture/`.
-- [research/openspec-pilot/](research/openspec-pilot/) — пилот OpenSpec, 116 файлов.
-- `../.planning/` — GSD-проект (15.05–28.07.2026).
+`openspec/`, `specs/`, `docs/research/openspec-pilot/` (OpenSpec, 31.08–03.09.2026) и `.planning/` (GSD, 15.05–28.07.2026) удалены, история — в git. Живой контракт floor-сервисов супервизора — [architecture/avatar-floor-protocol.md](architecture/avatar-floor-protocol.md). Эти каталоги не заводить заново.
 
 ## Вне `docs/`, но живое
 
