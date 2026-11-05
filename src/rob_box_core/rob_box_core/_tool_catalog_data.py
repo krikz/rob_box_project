@@ -128,6 +128,28 @@ TOOL_CATALOG_DATA: tuple[dict[str, Any], ...] = (   {   'llm_visible': True,
         'starts_music': False,
         'execution_type': 'instant',
         'event_source': 'inproc:waypoint_store',
+        'name': 'delete_map',
+        'description': 'Забыть (удалить) карту по имени: «удали карту офис», «забудь '
+                       'карту». Карту, что сейчас в базе, удалить нельзя — её можно '
+                       'только перезаписать новым картографированием.',
+        'parameters': {   'type': 'object',
+                          'properties': {   'map_name': {   'type': 'string',
+                                                            'description': 'Название '
+                                                                           'карты, '
+                                                                           'которую '
+                                                                           'забыть'}},
+                          'required': ['map_name'],
+                          'additionalProperties': False},
+        'signature': {'params': ['map_name'], 'required': [], 'accepts_kwargs': False},
+        'skill': ('mapping',)},
+    {   'llm_visible': True,
+        'operator_visible': False,
+        'read_only': False,
+        'destructive': True,
+        'idempotent': False,
+        'starts_music': False,
+        'execution_type': 'instant',
+        'event_source': 'inproc:waypoint_store',
         'name': 'delete_waypoint',
         'description': 'Удалить сохранённую точку по имени. Используй когда '
                        "пользователь говорит 'удали зал', 'забудь кухню'.",
@@ -602,6 +624,24 @@ TOOL_CATALOG_DATA: tuple[dict[str, Any], ...] = (   {   'llm_visible': True,
     {   'llm_visible': True,
         'operator_visible': False,
         'read_only': False,
+        'destructive': True,
+        'idempotent': False,
+        'starts_music': False,
+        'execution_type': 'instant',
+        'event_source': 'inproc:waypoint_store',
+        'name': 'list_maps',
+        'description': 'Какие карты помещений робот хранит: «какие карты знаешь», «на '
+                       'какой ты карте». Отвечай по данным тула: база карт одна, '
+                       'остальные имена — старые карты без геометрии.',
+        'parameters': {   'type': 'object',
+                          'properties': {},
+                          'required': [],
+                          'additionalProperties': False},
+        'signature': {'params': [], 'required': [], 'accepts_kwargs': False},
+        'skill': ('mapping',)},
+    {   'llm_visible': True,
+        'operator_visible': False,
+        'read_only': False,
         'destructive': False,
         'idempotent': False,
         'starts_music': False,
@@ -695,17 +735,16 @@ TOOL_CATALOG_DATA: tuple[dict[str, Any], ...] = (   {   'llm_visible': True,
         'execution_type': 'long',
         'event_source': 'srv:/rtabmap/rtabmap/load_database',
         'name': 'load_map',
-        'description': 'Загрузить сохранённую карту и перейти в режим локализации '
-                       '(навигации). Используй когда нужно переключиться на уже '
-                       'исследованную локацию.',
+        'description': 'Перезагрузить карту из базы и перейти в режим локализации '
+                       '(навигации). База карт у робота одна: загрузить можно только '
+                       'карту, что в ней сейчас; про карту с другим именем тул честно '
+                       'ответит, что её нет.',
         'parameters': {   'type': 'object',
                           'properties': {   'map_name': {   'type': 'string',
                                                             'description': 'Название '
-                                                                           'карты для '
-                                                                           'загрузки '
+                                                                           'карты '
                                                                            '(например '
-                                                                           "'квартира', "
-                                                                           "'офис'). "
+                                                                           "'квартира'). "
                                                                            'Если не '
                                                                            'указано — '
                                                                            'перезагружает '
