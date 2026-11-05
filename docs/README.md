@@ -10,6 +10,7 @@
 |---|---|
 | Как работать в репо (агентам и людям) | [AGENTS.md](../AGENTS.md) — единственная точка входа (CONTRIBUTING.md, copilot-instructions, .cursorrules только ссылаются на него) |
 | Словарь терминов | [CONTEXT.md](../CONTEXT.md) |
+| Решения товарища Шифу | [shifu-decisions.md](shifu-decisions.md) — «Как завещал товарищ Шифу», по датам и тегам |
 | Что за робот, быстрый старт | [README.md](../README.md), [guides/QUICK_START.md](guides/QUICK_START.md) |
 | Железо, батарея, сеть, три узла (Main / Vision / Sound Pi) | [architecture/HARDWARE.md](architecture/HARDWARE.md), [architecture/NETWORK_TOPOLOGY.md](architecture/NETWORK_TOPOLOGY.md) |
 | Почему сделано так | [adr/](adr/) — решения |
