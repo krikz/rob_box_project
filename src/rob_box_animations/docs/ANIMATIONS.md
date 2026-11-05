@@ -105,6 +105,7 @@ python tools/led_face_lab/render_gifs.py docs/assets/animations --gallery src/ro
 | `fire_truck` | Пожарная: глаза — вращающиеся маяки, балка красно-белая, потом «огонь» во рту | ![](../../../docs/assets/animations/fire_truck.gif) |
 | `ambulance` | Скорая: красный крест бьётся в такт пульсу, во рту кардиограмма, синие вспышки | ![](../../../docs/assets/animations/ambulance.gif) |
 | `road_service` | Дорожная служба: жёлтые маяки, во рту табло со стрелками, сзади стрелки | ![](../../../docs/assets/animations/road_service.gif) |
+| `roadworks_beacon` | Дорожные работы: янтарные проблесковые маячки вместо глаз и сзади: двойная вспышка слева (оранжевая), потом справа (жёлтая), во рту жёлто-чёрная полосатая доска; тревога зоны безопасности (#4365) | ![](../../../docs/assets/animations/roadworks_beacon.gif) |
 
 ### Езда
 

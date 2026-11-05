@@ -2,9 +2,10 @@
 
 Решение Шифу 04.11: предупреждать **только в движении**. Умолчания координатора:
 
-* «внимание» — препятствие ближе ``warn_m`` = 0.40 м от КОРПУСА: мигалка и короткий писк, без голоса;
-* «стоп» — ближе ``stop_m`` = 0.20 м: нулевой Twist в ``cmd_vel_emergency`` (twist_mux priority 255), мигалка,
-  писк и голосом «Осторожно!» — одним событием тревоги, с одним началом и одним концом (решение Шифу 04.11).
+* «внимание» — препятствие ближе ``warn_m`` = 0.40 м от КОРПУСА: маячок «дорожные работы» и мерный бипер
+  заднего хода, без голоса;
+* «стоп» — ближе ``stop_m`` = 0.20 м: нулевой Twist в ``cmd_vel_emergency`` (twist_mux priority 255), маячок,
+  частый бипер и голосом «Осторожно!» — одним событием тревоги, с одним началом и одним концом (решение Шифу 04.11).
 
 Расстояние считается от прямоугольника корпуса (footprint из ``nav2_params.yaml``), а не от центра.
 Угрозой считается только точка, к которой корпус СЕЙЧАС приближается (скорость ближайшей точки корпуса
@@ -269,17 +270,26 @@ class Alarm:
     phrase: Optional[str]
 
 
-#: «Внимание» (< 0.40 м): мигалка и короткий писк, без голоса. «Стоп» (< 0.20 м): мигалка, писк, пока стоит
+#: Мигалка тревоги — янтарный маячок «дорожные работы» (решение Шифу 05.11: не полицейская).
+ALARM_LIGHTS = "roadworks_beacon"
+#: Писк — бипер заднего хода грузовика (решение Шифу 05.11; ``sound_pack/make_backup_beep.py``): бип 0.45 с.
+#: «Внимание» повторяет его каждые 0.9 с (бип 0.45 / пауза 0.45), «стоп» — короткий бип 0.2 с каждые 0.4 с.
+WARN_BEEP, WARN_BEEP_EVERY_S = "robot_backup_beep", 0.9
+STOP_BEEP, STOP_BEEP_EVERY_S = "robot_backup_beep_fast", 0.4
+#: «Внимание» (< 0.40 м): маячок и мерный бипер, без голоса. «Стоп» (< 0.20 м): маячок, частый бипер, пока стоит
 #: стоп, и «Осторожно!» на входе.
 ALARMS: Mapping[str, Alarm] = {
-    ZONE_WARN: Alarm("police_lights", "ui_notification", None, None),
-    ZONE_STOP: Alarm("police_lights", "robot_error", 0.8, "Осторожно!"),
+    ZONE_WARN: Alarm(ALARM_LIGHTS, WARN_BEEP, WARN_BEEP_EVERY_S, None),
+    ZONE_STOP: Alarm(ALARM_LIGHTS, STOP_BEEP, STOP_BEEP_EVERY_S, "Осторожно!"),
 }
 #: Время жизни мигалки на лице и шаг продления, пока зона держится.
 LIGHTS_TTL_MS = 1000
 LIGHTS_EVERY_S = 0.5
 #: Голосовую фразу — не чаще раза в столько секунд (повторные стопы подряд не тараторят).
 PHRASE_COOLDOWN_S = 10.0
+
+#: Допуск сравнения времени тактов: ритм бипера не съезжает на такт из-за погрешности float (0.4 → 0.45 с).
+TICK_EPS_S = 1e-6
 
 EFFECT_LIGHTS = "lights"
 EFFECT_SOUND = "sound"
@@ -314,10 +324,10 @@ class AlarmScheduler:
         if alarm is None:
             return []
         effects: List[Effect] = []
-        if entered or now - self._lights_at >= LIGHTS_EVERY_S:
+        if entered or now - self._lights_at >= LIGHTS_EVERY_S - TICK_EPS_S:
             self._lights_at = now
             effects.append(Effect(EFFECT_LIGHTS, alarm.animation, LIGHTS_TTL_MS))
-        repeat = alarm.sound_every_s is not None and now - self._sound_at >= alarm.sound_every_s
+        repeat = alarm.sound_every_s is not None and now - self._sound_at >= alarm.sound_every_s - TICK_EPS_S
         if entered or repeat:
             self._sound_at = now
             effects.append(Effect(EFFECT_SOUND, alarm.sound))
@@ -334,9 +344,9 @@ def describe(tr: Transition) -> str:
 
 
 __all__ = [
-    "ALARMS", "Alarm", "AlarmScheduler", "Body", "EFFECT_LIGHTS", "EFFECT_SOUND", "EFFECT_SPEECH", "Effect",
-    "LIGHTS_EVERY_S", "LIGHTS_TTL_MS", "PHRASE_COOLDOWN_S", "Mount", "NAV2_FOOTPRINT_PATH", "NO_THREAT", "Threat",
-    "Thresholds", "Transition", "ZONES", "ZONE_CLEAR", "ZONE_STOP", "ZONE_WARN", "ZoneTracker", "body_from_nav2_params",
-    "classify", "closing_speed", "describe", "is_moving", "nearest_threat", "parse_footprint", "scan_points",
-    "severity", "yaw_from_quaternion",
+    "ALARMS", "ALARM_LIGHTS", "Alarm", "AlarmScheduler", "Body", "EFFECT_LIGHTS", "EFFECT_SOUND", "EFFECT_SPEECH",
+    "Effect", "LIGHTS_EVERY_S", "LIGHTS_TTL_MS", "PHRASE_COOLDOWN_S", "Mount", "NAV2_FOOTPRINT_PATH", "NO_THREAT",
+    "STOP_BEEP", "STOP_BEEP_EVERY_S", "Threat", "Thresholds", "Transition", "WARN_BEEP", "WARN_BEEP_EVERY_S", "ZONES",
+    "ZONE_CLEAR", "ZONE_STOP", "ZONE_WARN", "ZoneTracker", "body_from_nav2_params", "classify", "closing_speed",
+    "describe", "is_moving", "nearest_threat", "parse_footprint", "scan_points", "severity", "yaw_from_quaternion",
 ]

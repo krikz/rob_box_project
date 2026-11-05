@@ -1056,6 +1056,7 @@ SOUND_ALIASES_RU: Tuple[Tuple[Tuple[str, ...], Tuple[str, ...]], ...] = (
     (("robot_glitch",), ("глюк", "помех")),
     (("robot_work_1", "robot_work_2", "robot_work_3", "robot_terminal"), ("принтер", "терминал")),
     (("robot_stinger", "robot_fantasy"), ("стингер",)),
+    (("robot_backup_beep", "robot_backup_beep_fast"), ("бипер", "пикалк", "пищалк")),
 )
 #: Триггеры каталога без разговорного названия: звучат как реакции робота, человек их по имени не просит.
 SOUND_UNNAMED: Tuple[str, ...] = (
@@ -2263,6 +2264,7 @@ KNOWN_ANIMATIONS: Tuple[str, ...] = (
     "low_battery",
     "police_lights",
     "road_service",
+    "roadworks_beacon",
     "sad",
     "sleep",
     "surprised",
@@ -2292,6 +2294,7 @@ SCENE_WORDS: Mapping[str, str] = MappingProxyType({
     "low_battery": "слабая батарея",
     "police_lights": "полицейская мигалка",
     "road_service": "дорожная служба",
+    "roadworks_beacon": "маячок дорожных работ",
     "sad": "грусть",
     "sleep": "сон",
     "surprised": "удивление",
