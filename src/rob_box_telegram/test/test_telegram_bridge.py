@@ -12,7 +12,7 @@ The node subscribes to ``/dialog/output`` and sends the telegram agent's reply
 into its chat (PR-12a #3706; queue-based since t_aad8e224).
 
 These tests cover the W9 acceptance criteria from
-``.planning/phases/06-harness-p0-finalization/06-03-PLAN.md``:
+плана GSD 06-03 (каталог ``.planning/`` удалён, ADR-0163 — см. git-историю):
 
     1. Telegram message -> published to /voice/stt/utterance (with [TG:chat_id] source marker)
     2. Telegram node subscribes to the dialogue/TTS response topic and echoes to the chat

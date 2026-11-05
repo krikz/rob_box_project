@@ -69,7 +69,7 @@
 ### 1.5 Связь с источниками истины
 
 - **SPEC_CURRENT** ([../../SPEC_CURRENT.md](../../SPEC_CURRENT.md)) определяет текущее состояние проекта и ближайшие шаги (PR #907 → merge → реализация этого ADR).
-- **ROADMAP** ([../../.planning/ROADMAP.md](../../.planning/ROADMAP.md)) описывает общий многофазный план проекта, в который этот ADR встраивается как технический артефакт фазы «Реализация харнесов».
+- **ROADMAP** (`.planning/ROADMAP.md`, удалён по ADR-0163, есть в git-истории) описывал общий многофазный план проекта, в который этот ADR встраивается как технический артефакт фазы «Реализация харнесов».
 - Подробный тактический план — в [../../refactoring-plan.md](../../refactoring-plan.md) (Proposed, приложение к этому ADR).
 
 ---
@@ -938,7 +938,7 @@ sequenceDiagram
 
 **Критерий приёмки**: покрытие `dialogue_node.py` ≥ 60%, `telegram_node.py` ≥ 60%, e2e-сценарий «voice → LLM → telegram reply» работает через общий `AgentSession`.
 
-**Связь с ROADMAP**: фазы P0–P2 настоящего ADR соответствуют общему «Milestone 3 — реализация харнесов» в [`.planning/ROADMAP.md`](../../.planning/ROADMAP.md) (см. SPEC_CURRENT §2 «Этап C — дальнейшее развитие», направления C1–C4).
+**Связь с ROADMAP**: фазы P0–P2 настоящего ADR соответствуют общему «Milestone 3 — реализация харнесов» в `.planning/ROADMAP.md` (удалён по ADR-0163) (см. SPEC_CURRENT §2 «Этап C — дальнейшее развитие», направления C1–C4).
 
 ---
 
@@ -949,7 +949,7 @@ sequenceDiagram
 - Интерфейсы текущих нод: `docs/reports/PERSISTENT_NODES_INTERFACES.md`
 - Имплементация: `t_ace66f51` (Kanban)
 - Тактический план: [../../refactoring-plan.md](../../refactoring-plan.md) (приложение к этому ADR)
-- Источник истины: [../../SPEC_CURRENT.md](../../SPEC_CURRENT.md), [../../.planning/ROADMAP.md](../../.planning/ROADMAP.md)
+- Источник истины (на момент ADR): `SPEC_CURRENT.md`, `.planning/ROADMAP.md` — оба выведены по ADR-0163, есть в git-истории
 - Реализация `LLMProvider`: `src/rob_box_llm/rob_box_llm/provider.py`
 - Реализация `MiniMaxProvider`: `src/rob_box_llm/rob_box_llm/providers/minimax.py` (см. ADR-0002)
 - Реализация `TTSProvider`: `src/rob_box_llm/rob_box_llm/tts.py` (см. ADR-0003, ADR-0008)
