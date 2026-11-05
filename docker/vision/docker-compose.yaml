@@ -410,6 +410,12 @@ services:
       # узнавания. Без этой строки FACE_ENROLL_THRESHOLD из .env до
       # контейнера не доезжает вовсе и молча берётся дефолт ноды.
       - FACE_ENROLL_THRESHOLD=${FACE_ENROLL_THRESHOLD:-}
+      # ADR-0164 этап 6: кличка нового лица по внешности (vision-LLM, только режим workshop).
+      # Пусто → облака нет, лицо получает словарную кличку, и лог говорит почему.
+      - FACE_PERSONA_VLM_API_KEY=${FACE_PERSONA_VLM_API_KEY:-}
+      - FACE_PERSONA_VLM_BASE_URL=${FACE_PERSONA_VLM_BASE_URL:-}
+      - FACE_PERSONA_VLM_MODEL=${FACE_PERSONA_VLM_MODEL:-}
+      - FACE_PERSONA_VLM_MAX_PER_HOUR=${FACE_PERSONA_VLM_MAX_PER_HOUR:-}
     volumes:
       - ./config:/config:ro
       - ../common/scripts:/ros_scripts:ro
