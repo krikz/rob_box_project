@@ -1,5 +1,8 @@
 # Структура документации Rob Box Project
 
+> **DEPRECATED (см. [ADR-0163](adr/0163-docs-structure-and-spec-driven-deprecation.md)).** Описание устарело.
+> Актуальная карта — [docs/README.md](README.md).
+
 Полная документация проекта РОББОКС организована в структурированную иерархию.
 
 ## 📂 Главные разделы
