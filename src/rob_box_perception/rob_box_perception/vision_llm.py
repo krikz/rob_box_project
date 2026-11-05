@@ -5,12 +5,18 @@ OpenAI-совместимый ``/chat/completions``: текст запроса �
 JSON-объект (``response_format=json_object``). Без сторонних зависимостей (urllib), чтобы образ
 ``vision-hailo`` не тянул SDK.
 
-Включается только явной настройкой окружения контейнера ``vision-face``:
+Провайдер выбирает ``FACE_PERSONA_VLM_PROVIDER`` (``minimax`` по умолчанию | ``deepseek``); пресеты
+(адрес, модель, имя переменной с ключом) — таблица ``PROVIDER_PRESETS`` в этом модуле, единственная.
+Шифу 05.11: модель зовём только по событиям (новое лицо, новая Встреча), не по кадрам.
 
-* ``FACE_PERSONA_VLM_API_KEY`` — ключ (пусто → облака нет, лицо получает словарную кличку);
+Явные переменные перекрывают пресет:
+
+* ``FACE_PERSONA_VLM_API_KEY`` — ключ (иначе ключ пресета: ``MINIMAX_API_KEY`` / ``DEEPSEEK_API_KEY``;
+  нет ни того ни другого → облака нет, лицо получает словарную кличку);
 * ``FACE_PERSONA_VLM_BASE_URL`` — адрес OpenAI-совместимого API;
 * ``FACE_PERSONA_VLM_MODEL`` — модель с поддержкой изображений;
-* ``FACE_PERSONA_VLM_MAX_PER_HOUR`` — потолок вызовов в час (пусто → ``persona.VISION_CALLS_PER_HOUR``).
+* ``FACE_PERSONA_VLM_MAX_PER_HOUR`` — предохранитель: потолок вызовов в час (пусто →
+  ``persona.VISION_CALLS_PER_HOUR``). Основной ограничитель — события, а не этот потолок.
 
 Ключ в лог не пишется.
 """
@@ -20,7 +26,7 @@ from __future__ import annotations
 import base64
 import json
 import urllib.request
-from typing import Any, Callable, Dict, Mapping, Optional, Tuple
+from typing import Any, Callable, Dict, Mapping, NamedTuple, Optional, Tuple
 
 from rob_box_core import persona
 
@@ -28,6 +34,27 @@ ENV_API_KEY = 'FACE_PERSONA_VLM_API_KEY'
 ENV_BASE_URL = 'FACE_PERSONA_VLM_BASE_URL'
 ENV_MODEL = 'FACE_PERSONA_VLM_MODEL'
 ENV_MAX_PER_HOUR = 'FACE_PERSONA_VLM_MAX_PER_HOUR'
+ENV_PROVIDER = 'FACE_PERSONA_VLM_PROVIDER'
+
+DEFAULT_PROVIDER = 'minimax'
+
+
+class ProviderPreset(NamedTuple):
+    """Пресет облака: адрес, модель с картинками и имя переменной с ключом."""
+
+    base_url: str
+    model: str
+    key_env: str
+
+
+#: Единственная таблица пресетов. MiniMax: картинки понимает только M3 (M2.x — текст).
+#: DeepSeek: обычный ``deepseek-v4-flash`` на картинку отвечает 400; vision-модель —
+#: ``deepseek-v4-flash-vision-exp`` (по стороннему гайду её заменил ``deepseek-flash`` — официально не
+#: подтверждено; имя меняется через ``FACE_PERSONA_VLM_MODEL``).
+PROVIDER_PRESETS: Dict[str, ProviderPreset] = {
+    'minimax': ProviderPreset('https://api.minimax.io/v1', 'MiniMax-M3', 'MINIMAX_API_KEY'),
+    'deepseek': ProviderPreset('https://api.deepseek.com', 'deepseek-v4-flash-vision-exp', 'DEEPSEEK_API_KEY'),
+}
 
 DEFAULT_TIMEOUT_SEC = 20.0
 MAX_TOKENS = 400
@@ -78,14 +105,18 @@ def describer_from_env(
     opener: Callable[..., Any] = urllib.request.urlopen,
 ) -> Tuple[Optional[Callable[[bytes, str, Dict[str, Any]], str]], str]:
     """``(describer, пояснение)``; без ключа, адреса или модели — ``(None, почему)`` для честного лога."""
-    key = (env.get(ENV_API_KEY) or '').strip()
-    base = (env.get(ENV_BASE_URL) or '').strip()
-    model = (env.get(ENV_MODEL) or '').strip()
-    missing = [name for name, value in ((ENV_API_KEY, key), (ENV_BASE_URL, base), (ENV_MODEL, model))
-               if not value]
-    if missing:
-        return None, f'vision-LLM не настроена (пусто: {", ".join(missing)}) — только словарные клички'
-    return make_describer(base, key, model, opener=opener), f'vision-LLM: {model} @ {base}'
+    provider = (env.get(ENV_PROVIDER) or '').strip().lower() or DEFAULT_PROVIDER
+    preset = PROVIDER_PRESETS.get(provider)
+    if preset is None:
+        return None, (f'vision-LLM не настроена: неизвестный {ENV_PROVIDER}={provider!r} '
+                      f'(есть: {", ".join(sorted(PROVIDER_PRESETS))}) — только словарные клички')
+    key = (env.get(ENV_API_KEY) or env.get(preset.key_env) or '').strip()
+    base = (env.get(ENV_BASE_URL) or '').strip() or preset.base_url
+    model = (env.get(ENV_MODEL) or '').strip() or preset.model
+    if not key:
+        return None, (f'vision-LLM не настроена (провайдер {provider}: нет ключа, '
+                      f'пусто {ENV_API_KEY} и {preset.key_env}) — только словарные клички')
+    return make_describer(base, key, model, opener=opener), f'vision-LLM: {provider} {model} @ {base}'
 
 
 def budget_from_env(env: Mapping[str, str]) -> persona.CallBudget:
@@ -103,6 +134,9 @@ __all__ = [
     'ENV_BASE_URL',
     'ENV_MAX_PER_HOUR',
     'ENV_MODEL',
+    'ENV_PROVIDER',
+    'PROVIDER_PRESETS',
+    'ProviderPreset',
     'budget_from_env',
     'describer_from_env',
     'make_describer',
