@@ -812,12 +812,16 @@ CONTEXT_BUDGET_TOKENS: Mapping[str, int] = MappingProxyType({
 #: если есть), ``picked_up`` (сколько фраз окна ушло подхватом бэклога: в ``background_since_reply`` их нет, а голоса их
 #: авторов в ``voices`` есть, М11 n306/n307). Числа и состав голосов в ответе берутся отсюда, а не пересчётом
 #: ``background_since_reply``.
+#: ``backlog_pickup`` — ход подхвата (голое «Робот», решение Шифу 05.11): кто и что сказал — фразы с автором,
+#: уверенностью и текстом, отдельно инициатор подхвата (кто сказал «Робот») с уверенностью, ``same_person`` и
+#: ``memory_of`` — чья память у хода по решению кода (``pickup_parties.pickup_section``).
 #: ``shift_log`` — журнал смены (``shift_log.ShiftLog.section``): кто приходил, что звучало, что робот сделал,
 #: с фразой-итогом кода; только когда человек спрашивает о смене (``shift_log.shift_asked``: ``SHIFT_ASK_*``).
 #: ``operator_journal`` — журнал ТАРС (§7.4): записи моложе своего ``ttl`` и сводка за сутки с датой.
 CONTEXT_SECTIONS: Tuple[str, ...] = (
     "user_profile", "speaker", "speaker_memory", "tts_context", "speech_gender", "position", "providers", "music_state",
-    "performance", "recent_unaddressed", "background_since_reply", "background_summary", "recent_actions", "shift_log", "operator_journal",
+    "performance", "recent_unaddressed", "background_since_reply", "background_summary", "backlog_pickup",
+    "recent_actions", "shift_log", "operator_journal",
 )
 
 
@@ -1302,8 +1306,12 @@ UNKNOWN_SPEAKER_LABEL = "незнакомый голос"
 #: Не «незнакомый голос»: n211 М9 - по метке «незнакомый» модель сказала «голос той женщины я не запомнил», хотя профиль
 #: был заведён (#4314 К1). Кличка не звучит вслух и в метку не идёт.
 NAMELESS_SPEAKER_LABEL = "голос без имени, запомнен"
+#: Голос похож на знакомого, а чей — спорно (спор или гипотеза биометрии): не имя и не «незнакомый» — инициатор
+#: подхвата в n213 (М12, «Робот!» 0.96 с: «Саша» 0.764 / «Борис» 0.671). Метка раздела ``backlog_pickup``
+#: (``pickup_parties.who``).
+CONTESTED_SPEAKER_LABEL = "голос знакомый, чей — не уверен"
 #: Метки авторов, что не имена (``foreign_name.name_keys``).
-SPEAKER_LABELS_NOT_NAMES: Tuple[str, ...] = (UNKNOWN_SPEAKER_LABEL, NAMELESS_SPEAKER_LABEL)
+SPEAKER_LABELS_NOT_NAMES: Tuple[str, ...] = (UNKNOWN_SPEAKER_LABEL, NAMELESS_SPEAKER_LABEL, CONTESTED_SPEAKER_LABEL)
 SPEAKER_TAG = "[говорит: {who}] {text}"
 #: Отказы памяти, которых в окне LLM нет вообще: отклонённый факт чужого или неузнанного собеседника, оставшись
 #: в окне даже пометкой, переезжает к следующему («зелёный чай» Саши записан Борису). Модель узнаёт исход из фразы кода.
