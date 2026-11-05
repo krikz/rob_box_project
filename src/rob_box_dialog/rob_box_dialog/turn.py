@@ -89,6 +89,7 @@ from rob_box_dialog import face_scene
 from rob_box_dialog import foreign_name
 from rob_box_dialog import knowledge as kn
 from rob_box_dialog import memory
+from rob_box_dialog import pickup_parties
 from rob_box_dialog import state_claim
 from rob_box_dialog import theme_switch
 from rob_box_dialog import phrases
@@ -108,7 +109,7 @@ from rob_box_dialog.interrupt import Interrupt, interrupt_for, stop_music_calls,
 from rob_box_dialog.music_state import after_stop
 from rob_box_dialog.respond import (ActionResult, asks, audible, classed, failed, join, outcome_emotion,
                                     reconcile_stops)
-from rob_box_dialog.session import Session, SessionSnapshot
+from rob_box_dialog.session import Session, SessionSnapshot, SpeakerRef
 from rob_box_dialog.speaker_adapter import asks_recognized, recognition_reply, speaker_block
 from rob_box_dialog.window_reset import WindowGuard, reset_if_idle, reset_window
 from rob_box_dialog.words import asks_question, asks_to_listen, music_stop_claimed, same_stop_rest
@@ -257,12 +258,27 @@ class _Turn:
     seen: Tuple[Mapping[str, Any], ...] = ()  # ``recent_actions`` снимка хода: данные, что модель видела до хода
     read: Tuple[ToolCall, ...] = ()  # исполненные в ходе вызовы ``query``: повтор не исполняется (:func:`unreread`)
     capped: Tuple[ToolCall, ...] = ()  # вызовы сверх ``ACTIONS_MAX``, не исполненные кодом (:func:`capped`, #4391)
+    #: Подхват: собеседник хода по правам — автор фразы (``pickup_parties.pickup_speaker``); ``None`` — сессии.
+    speaker: Optional[SpeakerRef] = None
+    pickup_view: Mapping[str, Any] = field(default_factory=dict)  # раздел ``backlog_pickup``: кто и что сказал
 
 
 def picked_heard(addressed: Addressed) -> Tuple[Tuple[str, str], ...]:
     """Подхваченные фразы бэклога ``(кто, фраза)``: автор — метка самой фразы (``Backlog.label``), не собеседник
     хода."""
     return tuple((phrase_label(p.get("speaker") or {}), str(p.get("text") or "")) for p in addressed.picked)
+
+
+def pickup_parts(addressed: Addressed, snap: SessionSnapshot) -> Tuple[Optional[SpeakerRef], SessionSnapshot,
+                                                                       Mapping[str, Any]]:
+    """Подхват (решение Шифу 05.11, ``pickup_parties``): собеседник хода по правам (автор фразы, а не короткий вейк),
+    снимок хода с ним и раздел ``backlog_pickup`` — авторы фраз (метки :func:`picked_heard`), инициатор (собеседник
+    сессии ``snap``) и чья память у хода (``memory.memory_owner`` снимка хода). Не подхват — ``(None, snap, {})``."""
+    speaker = pickup_parties.pickup_speaker(addressed, snap.speaker)
+    own = pickup_parties.own_snapshot(snap, speaker)
+    owner = speaker if speaker is not None and memory.memory_owner(own) else None
+    authors = [who for who, _ in picked_heard(addressed)]
+    return speaker, own, pickup_parties.pickup_section(addressed.picked, authors, snap.speaker, owner)
 
 
 def recent_section(addressed: Addressed) -> Tuple[Mapping[str, Any], ...]:
@@ -998,7 +1014,7 @@ def considered(engine: "TurnEngine", turn: "_Turn", cmd: Command, last: bool) ->
     кода (:func:`counted_in_full`); без чужого имени и без утверждения о
     состоянии без данных, когда вернуть команду модели уже нельзя (:func:`unnamed_without_retry`,
     :func:`unclaimed_without_retry`)."""
-    log, snapshot = engine._log, engine.session.snapshot
+    log, snapshot = engine._log, pickup_parties.own_snapshot(engine.session.snapshot, turn.speaker)
     fresh = capped(log, turn, counted_in_full(log, turn, unreread(log, turn, unrepeated(log, turn, cmd))))
     fresh = switched_theme(log, snapshot, turn, fresh)  # просьба сменить тему сета - действием кода (#4347)
     names = foreign_keys(engine.log.window(exclude=turn.turn_id), turn, fresh, snapshot)
@@ -1955,12 +1971,12 @@ class TurnEngine:
 
         reset_if_idle(self.session, self.log, self._window, self._clock(), self._log)  # окно без срока давности (#4258)
         self._window.touch(self._clock())
-        snap = self.session.snapshot
+        speaker, snap, view = pickup_parts(addressed, self.session.snapshot)  # подхват: права - у автора фразы
         turn = _Turn(self._new_id(), snap.epoch, addressed.text.strip(), addressed.source,
                      TurnDeadline(self._deadline_s, clock=self._clock), pickup=addressed.pickup,
                      heard=picked_heard(addressed), recent=recent_section(addressed),
                      background=background_section(addressed), background_summary=addressed.background_summary,
-                     command=addressed.command,
+                     command=addressed.command, speaker=speaker, pickup_view=view,
                      utterance_id=addressed.utterance_id)
         self.log.begin(turn.turn_id, turn.epoch, turn.text, speaker_label(snap.speaker), turn.heard)
         log_pickup(self._log, addressed, turn)
@@ -2132,7 +2148,8 @@ class TurnEngine:
         self._ports.stage(turn.turn_id, turn.epoch, "executing", "started", cls=cls)
         # свой срок класса целиком (исполнитель закроет честным timeout), а не остаток хода после LLM и его повтора
         turn.deadline.grant(action_term(actions))
-        run = execute_for_speaker(self._ports, actions, snap, self.session.snapshot, turn.turn_id, self._log)
+        now = pickup_parties.own_snapshot(self.session.snapshot, turn.speaker)  # подхват: собеседник - автор фразы
+        run = execute_for_speaker(self._ports, actions, snap, now, turn.turn_id, self._log)
         results = await turn.deadline.wait(run, "actions")
         self._generated.note(actions, results)
         turn.music_stopped, results = reconcile_stops(turn.music_stopped, results)  # фраза стопа - правда о ходе
@@ -2171,6 +2188,7 @@ class TurnEngine:
         context = build_context({**sections, RECENT_UNADDRESSED: list(turn.recent),
                                  BACKGROUND_SINCE_REPLY: list(turn.background),
                                  BACKGROUND_SUMMARY: dict(turn.background_summary),
+                                 pickup_parties.PICKUP_SECTION: dict(turn.pickup_view),
                                  RECENT_ACTIONS: recent[-kn.TURN_WINDOW_MAX_TURNS:]})
         messages: List[Any] = [{"role": "system", "content": self._system}] if self._system else []
         messages += [{"role": e.role, "content": e.for_llm()} for e in history]

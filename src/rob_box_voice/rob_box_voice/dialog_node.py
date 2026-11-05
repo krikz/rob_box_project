@@ -68,6 +68,7 @@ from rob_box_dialog.e2e_events import open_events
 from rob_box_dialog.execute import transport_timeouts
 from rob_box_dialog.interrupt import TurnsInFlight, on_interrupt
 from rob_box_dialog.memory import profiled_person
+from rob_box_dialog.pickup_parties import rights_speaker
 from rob_box_dialog.respond import ActionResult
 from rob_box_dialog.scenes import HOLD, RESET, RESUME, SceneDirector, apply_control
 from rob_box_dialog.session import MusicStateRef, Session
@@ -493,8 +494,9 @@ class DialogNode(Node):
         return True
 
     async def _note_speaker(self, decision: Addressed) -> None:
-        """Начало хода: профиль подтверждённого собеседника ведёт код, раздел ``speaker_memory`` - в снимок (#3919)."""
-        speaker = self._session.snapshot.speaker
+        """Начало хода: профиль подтверждённого собеседника ведёт код, раздел ``speaker_memory`` - в снимок (#3919).
+        Подхват бэклога - профиль автора фразы, а не того, кто сказал «Робот» (``pickup_parties``, 05.11)."""
+        speaker = rights_speaker(decision, self._session.snapshot.speaker)
         counts = decision.source != BARE_WAKE and bool(decision.text.strip())  # пустой ход - не диалог (как у v1)
         section = await self._speaker_memory.section(speaker) if counts else None
         self._turn_memory = (profiled_person(speaker), section)
