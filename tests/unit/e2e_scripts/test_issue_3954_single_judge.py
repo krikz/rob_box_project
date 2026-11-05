@@ -21,7 +21,7 @@ from pathlib import Path
 from tests.unit.e2e_scripts.test_issue_3857_run_step import _run, needs_bash
 
 HERE = Path(__file__).resolve().parent
-SCRIPTS_DIR = HERE.parents[2] / ".github" / "workflows" / "scripts"
+SCRIPTS_DIR = HERE.parents[2] / "scripts" / "ci" / "e2e"
 sys.path.insert(0, str(SCRIPTS_DIR))
 import e2e_events  # noqa: E402
 

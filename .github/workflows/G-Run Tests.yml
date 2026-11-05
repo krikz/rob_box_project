@@ -18,9 +18,18 @@ on:
       # зависит job e2e-contract-guards: без них правка харнесса, гарда или
       # сценария не поднимала проверки на push в develop.
       - '.github/workflows/G-Run Tests.yml'
-      - '.github/workflows/scripts/**'
+      - 'scripts/ci/e2e/**'
       - 'scripts/testing/**'
       - '.github/e2e/scenarios/**'
+      # ADR-0166: гарды из scripts/ci/tests и scripts/e2e/tests теперь в
+      # e2e-contract-guards; их предметы — скрипты CI/сборки, композит и
+      # стартовый скрипт vision-hailo (test_yaml_loader_env_override.sh).
+      - 'scripts/ci/**'
+      - 'scripts/e2e/**'
+      - 'scripts/build/**'
+      - '.github/actions/**'
+      - 'docker/build-manifest.yaml'
+      - 'docker/vision/scripts/vision-hailo/**'
   pull_request:
     # #3922: PR-триггер только на develop. Вечный PR develop->main (#3713)
     # получает synchronize на каждый push в develop, и проверка гонялась ещё
@@ -716,6 +725,22 @@ jobs:
           scripts/testing/test_e2e_voice_safe_label.sh
           scripts/testing/test_e2e_tts_restore.sh
           scripts/testing/test_e2e_check_patterns_llm_dump.sh
+          scripts/testing/test_e2e_act_warmup.sh
+          scripts/testing/test_e2e_when_robot_asked.sh
+          scripts/testing/test_e2e_node_params.sh
+          scripts/testing/test_e2e_scenario_tsv_row.sh
+          scripts/testing/test_e2e_sleep_before_and_required_question.sh
+          scripts/testing/test_e2e_voice_map_tts_voice.sh
+          scripts/testing/test_yaml_loader_env_override.sh
+          scripts/testing/test_submodule_cache_invalidation.sh
+          scripts/e2e/tests/test_marathon_markers.sh
+          scripts/ci/tests/test_check_image_versions_usage.sh
+          scripts/ci/tests/test_e2e_voice_check_patterns_step_before.sh
+          scripts/ci/tests/test_e2e_voice_patterns_with_spaces.sh
+          scripts/ci/tests/test_e2e_voice_robot_ros_quoting.sh
+          scripts/ci/tests/test_e2e_voice_workflow_crlf_inputs.sh
+          scripts/ci/tests/test_validate_test_ws_dirs.sh
+          scripts/ci/tests/test_workflow_no_scp_dotrex.sh
           "
           rc=0
           {

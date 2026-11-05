@@ -2,9 +2,9 @@
 # ============================================================================
 # test_check_set_voice_traffic.sh — регрессионный тест (issue #2138.C / ADR-0073)
 #
-# Источник истины: <repo>/.github/scripts/tests/test_check_set_voice_traffic.sh
+# Источник истины: <repo>/scripts/ci/tests/test_check_set_voice_traffic.sh
 #
-# Тестирует <repo>/.github/scripts/check_set_voice_traffic.sh (вынесенная
+# Тестирует <repo>/scripts/ci/check_set_voice_traffic.sh (вынесенная
 # из workflow L-Deploy and Verify.yml логика healthcheck'а трафика на
 # /avatar/set_voice). Каждый кейс запускает СКРИПТ с мокнутыми `sshpass`/
 # `timeout`/`ros2` через PATH, читает HEALTHY_RESULT/HZ_RESULT и сверяет
@@ -24,14 +24,14 @@
 #   5. average rate: <0.001               → healthy=false (ниже порога)
 #
 # Run:
-#   bash .github/scripts/tests/test_check_set_voice_traffic.sh
+#   bash scripts/ci/tests/test_check_set_voice_traffic.sh
 # ============================================================================
 set -euo pipefail
 
 # --- paths -----------------------------------------------------------------
 SCRIPT_DIR_HERE="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR_HERE/../../.." && pwd)"
-SCRIPT_UNDER_TEST="$REPO_ROOT/.github/scripts/check_set_voice_traffic.sh"
+SCRIPT_UNDER_TEST="$REPO_ROOT/scripts/ci/check_set_voice_traffic.sh"
 
 [ -f "$SCRIPT_UNDER_TEST" ] || {
     echo "FATAL: $SCRIPT_UNDER_TEST не найден. Запускай из корня репо." >&2
@@ -150,6 +150,9 @@ run_case() {
     local got_healthy got_hz
     got_healthy="$(echo "$result" | jq -r '.healthy')"
     got_hz="$(echo "$result" | jq -r '.hz')"
+    # jq 1.6 (ubuntu-22.04) печатает число 0.5000 как «0.5», jq 1.7 — как
+    # в литерале. Сравниваем значение, а не запись: приводим к %.4f.
+    got_hz="$(LC_ALL=C awk -v v="$got_hz" 'BEGIN { if (v ~ /^-?[0-9.]+$/) printf "%.4f", v; else printf "%s", v }')"
 
     printf '  [%s]\n' "$label"
     assert_eq "$got_healthy" "$expect_healthy" "healthy"

@@ -20,22 +20,22 @@ assert 'E2E_FATAL: YANDEX_API_KEY не задан"' not in text
 ```
 
 ищет подстроку с **закрывающей кавычкой сразу после слова «задан»**. В
-`.github/workflows/scripts/e2e_voice_test.sh` такой подстроки никогда не было —
+`scripts/ci/e2e/e2e_voice_test.sh` такой подстроки никогда не было —
 между «задан» и закрывающей `"` стоит пробел и `(--tts-provider=yandex)`.
 
 ### Raw-evidence
 
 ```
 $ grep -nF 'E2E_FATAL: YANDEX_API_KEY не задан"' \
-    .github/workflows/scripts/e2e_voice_test.sh
+    scripts/ci/e2e/e2e_voice_test.sh
 (0 совпадений)
 
 $ grep -nF 'E2E_FATAL: YANDEX_API_KEY не задан' \
-    .github/workflows/scripts/e2e_voice_test.sh
+    scripts/ci/e2e/e2e_voice_test.sh
 303:    echo "E2E_FATAL: YANDEX_API_KEY не задан (--tts-provider=yandex)" >&2; exit 2
 
 $ python3 -c '
-text = open(".github/workflows/scripts/e2e_voice_test.sh").read()
+text = open("scripts/ci/e2e/e2e_voice_test.sh").read()
 print("старая assert:    ", "E2E_FATAL: YANDEX_API_KEY не задан\"" not in text)'
 старая assert:     True   # ← мёртвая, всегда True
 ```
@@ -141,7 +141,7 @@ for i, line in enumerate(lines):
 ## Файлы
 
 - Меняется: `tests/unit/e2e_scripts/test_tts_provider_selection.py::TestHarnessContract::test_yandex_key_no_longer_unconditional_fatal`
-- Контрактная ссылка: `.github/workflows/scripts/e2e_voice_test.sh:302-303`
+- Контрактная ссылка: `scripts/ci/e2e/e2e_voice_test.sh:302-303`
 - Issue: #2803
 - Kanban: t_20825dc6
 

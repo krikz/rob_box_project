@@ -2,7 +2,7 @@
 # ============================================================================
 # check_set_voice_traffic.sh — регрессионный скрипт (issue #2138.C / ADR-0073)
 #
-# Источник истины: <repo>/.github/scripts/check_set_voice_traffic.sh
+# Источник истины: <repo>/scripts/ci/check_set_voice_traffic.sh
 # Копия на runner (self-hosted) обновляется через checkout — НЕ через
 # hardlink/symlink. Шаблон дистрибуции совпадает с check_container_status.sh
 # (вызывается из .github/workflows/L-Deploy and Verify.yml).

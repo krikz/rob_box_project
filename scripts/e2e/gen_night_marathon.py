@@ -20,7 +20,7 @@
     night_marathon_actN_<slug>_acceptance_v1.json — GATE-1 (ADR-0022)
     night_marathon_manifest.json                  — порядок актов для раннера
 
-Контракт харнесса (``.github/workflows/scripts/e2e_voice_test.sh``)
+Контракт харнесса (``scripts/ci/e2e/e2e_voice_test.sh``)
 ====================================================================
 Поля шага, которые реально читаются парсером (см. scenario_parsed.txt):
     label, text, voice, patterns[], acceptance{}, expect, retry_acceptance
@@ -128,7 +128,7 @@ from typing import Any, Callable, Dict, List, NamedTuple, Optional, Tuple
 HERE = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.dirname(os.path.dirname(HERE))
 #: Судья харнесса (``e2e_events.py``): генератор пишет поля, которые он читает, и проверяет их его же таблицами.
-HARNESS_DIR = os.path.join(REPO, ".github", "workflows", "scripts")
+HARNESS_DIR = os.path.join(REPO, "scripts", "ci", "e2e")
 for _path in (HERE, HARNESS_DIR):
     if _path not in sys.path:
         sys.path.insert(0, _path)

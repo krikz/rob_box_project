@@ -36,7 +36,7 @@ from tests.unit.e2e_scripts.test_issue_3857_event_waits import _feed, _l, accept
 from tests.unit.e2e_scripts.test_issue_3857_run_step import extract_function
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
-SCRIPTS_DIR = REPO_ROOT / ".github" / "workflows" / "scripts"
+SCRIPTS_DIR = REPO_ROOT / "scripts" / "ci" / "e2e"
 E2E_SCRIPT = SCRIPTS_DIR / "e2e_voice_test.sh"
 LIB = SCRIPTS_DIR / "e2e_voice_lib.sh"
 EVENTS = SCRIPTS_DIR / "e2e_events.py"

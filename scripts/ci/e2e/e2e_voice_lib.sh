@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # BUG-B (t_f0612a43) — общие helper'ы для e2e voice-скриптов.
 #
-# Этот файл source'ится и из основного harness (.github/workflows/scripts/
+# Этот файл source'ится и из основного harness (scripts/ci/e2e/
 # e2e_voice_test.sh), и из unit-тестов (scripts/testing/test_e2e_voice_*).
 # НЕ выполняет ничего, кроме определения функций — никакого main flow,
 # никакого чтения ENV.

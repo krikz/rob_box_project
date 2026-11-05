@@ -38,11 +38,11 @@ set -u
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 NODE="$REPO_ROOT/src/rob_box_voice/rob_box_voice/stt_node.py"
-HARNESS="$REPO_ROOT/.github/workflows/scripts/e2e_voice_test.sh"
+HARNESS="$REPO_ROOT/scripts/ci/e2e/e2e_voice_test.sh"
 # Вердикт acceptance (#3906) живёт в e2e_tool_match.step_verdict: heredoc харнесса его только зовёт.
-VERDICT="$REPO_ROOT/.github/workflows/scripts/e2e_tool_match.py"
-WAKE="$REPO_ROOT/.github/workflows/scripts/e2e_voice_wake_gate.sh"
-TIMING="$REPO_ROOT/.github/workflows/scripts/e2e_timing.py"
+VERDICT="$REPO_ROOT/scripts/ci/e2e/e2e_tool_match.py"
+WAKE="$REPO_ROOT/scripts/ci/e2e/e2e_voice_wake_gate.sh"
+TIMING="$REPO_ROOT/scripts/ci/e2e/e2e_timing.py"
 
 for f in "$NODE" "$HARNESS" "$VERDICT" "$WAKE" "$TIMING"; do
     [ -f "$f" ] || { printf '❌ отсутствует: %s\n' "$f"; exit 1; }

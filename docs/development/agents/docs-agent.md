@@ -116,7 +116,7 @@ git diff --name-only HEAD~5 HEAD
 ### Проверка битых ссылок:
 ```bash
 # Проверь ссылки в markdown файлах
-bash scripts/check_broken_links.sh
+python scripts/diagnostics/check_links.py
 
 # Или вручную — ищи паттерны [text](path) где path не существует
 grep -r '\[.*\](.*\.md)' docs/ | grep -v 'http'

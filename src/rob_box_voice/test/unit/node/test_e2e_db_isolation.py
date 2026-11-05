@@ -13,7 +13,7 @@ embeddings; DELETE FROM speakers``, подтверждено владельце�
 ``/voice/speaker/e2e_mode`` (``std_msgs/String``), но
 ``scripts/lint/seam_without_consumer.py`` (ADR-0021, issue #2118) справедливо
 пометил его новым «швом без потребителя» — паблишер живёт в
-``.github/workflows/scripts/e2e_voice_test.sh`` (bash, Python-сканер топиков
+``scripts/ci/e2e/e2e_voice_test.sh`` (bash, Python-сканер топиков
 под ``src/`` его не видит), и топик, которым можно стереть БД одним
 безответным сообщением, — слабая конструкция сама по себе. Параметр —
 тот же паттерн, что ``e2e_session_reset_token`` у ``dialogue_node`` и

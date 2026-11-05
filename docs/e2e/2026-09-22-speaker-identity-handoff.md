@@ -15,7 +15,7 @@ ADR-0097) и померила то, что до сих пор жило в ком
 |---|---|
 | Регистрация не переименовывает чужой профиль | PR [#2743](https://github.com/krikz/rob_box_project/pull/2743), ADR-0127 |
 | `register()` не стирает эпитет/теги/`created_at` (`INSERT OR REPLACE` → UPDATE) | тот же PR, ADR-0097 (принят 15.09, в код не попадал) |
-| Таблица `map_tts_voice` пересобрана по замеру; дубль тела функции убран | `.github/workflows/scripts/e2e_voice_lib.sh` |
+| Таблица `map_tts_voice` пересобрана по замеру; дубль тела функции убран | `scripts/ci/e2e/e2e_voice_lib.sh` |
 | Замерялка различимости голосов | `scripts/e2e/measure_tts_voice_distinctness.py` |
 | Сырые данные замеров | `evidence/tts-voice-distinctness-2026-09-22/` |
 

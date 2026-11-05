@@ -21,7 +21,7 @@ import pytest
 
 ROOT = Path(__file__).resolve().parents[3]
 ACT2B = ROOT / ".github" / "e2e" / "scenarios" / "night" / "night_marathon_act2b_identity_question_v1.json"
-SCRIPTS = ROOT / ".github" / "workflows" / "scripts"
+SCRIPTS = ROOT / "scripts" / "ci" / "e2e"
 
 for _pkg in ("rob_box_core", "rob_box_dialog"):
     _path = str(ROOT / "src" / _pkg)

@@ -2,9 +2,9 @@
 # ============================================================================
 # test_check_container_status.sh — регрессионный тест (issue #2122)
 #
-# Источник истины: <repo>/.github/scripts/tests/test_check_container_status.sh
+# Источник истины: <repo>/scripts/ci/tests/test_check_container_status.sh
 #
-# Тестирует <repo>/.github/scripts/check_container_status.sh (вынесенная из
+# Тестирует <repo>/scripts/ci/check_container_status.sh (вынесенная из
 # workflow L-Deploy and Verify.yml логика «[Vision Pi] Check Container Status»
 # + «[Main Pi] Check Container Status»). Каждый кейс запускает СКРИПТ с
 # мокнутыми `sshpass`/`docker` через PATH, читает HEALTHY_RESULT/FAILED_COUNT
@@ -31,15 +31,15 @@
 #   6. running в обоих, но RestartCount вырос (та самая гонка) → healthy=false
 #
 # Run:
-#   bash .github/scripts/tests/test_check_container_status.sh
-#   make -C .github/scripts/tests test_check_container_status
+#   bash scripts/ci/tests/test_check_container_status.sh
+#   make -C scripts/ci/tests test_check_container_status
 # ============================================================================
 set -euo pipefail
 
 # --- paths -----------------------------------------------------------------
 SCRIPT_DIR_HERE="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR_HERE/../../.." && pwd)"
-SCRIPT_UNDER_TEST="$REPO_ROOT/.github/scripts/check_container_status.sh"
+SCRIPT_UNDER_TEST="$REPO_ROOT/scripts/ci/check_container_status.sh"
 
 # Проверяем что мы запущены из репо (а не из снапшота).
 [ -f "$SCRIPT_UNDER_TEST" ] || {

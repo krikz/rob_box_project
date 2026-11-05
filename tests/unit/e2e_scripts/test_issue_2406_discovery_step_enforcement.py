@@ -39,8 +39,8 @@ from pathlib import Path
 import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
-SCRIPTS_DIR = REPO_ROOT / ".github" / "workflows" / "scripts"
-E2E_SCRIPT = REPO_ROOT / ".github" / "workflows" / "scripts" / "e2e_voice_test.sh"
+SCRIPTS_DIR = REPO_ROOT / "scripts" / "ci" / "e2e"
+E2E_SCRIPT = REPO_ROOT / "scripts" / "ci" / "e2e" / "e2e_voice_test.sh"
 
 sys.path.insert(0, str(SCRIPTS_DIR))
 from e2e_tool_match import (  # noqa: E402

@@ -37,7 +37,7 @@ from rob_box_voice.tts_voice_registry import (
 M = install_dialog_msgs_stub()
 TIME = type(M.SpeechEvent().stamp)
 ALL_TOOLS = [t.name for t in TOOL_CATALOG]
-LIB = Path(".github") / "workflows" / "scripts" / "e2e_voice_lib.sh"
+LIB = Path("scripts") / "ci" / "e2e" / "e2e_voice_lib.sh"
 
 
 def _repo_root(start: Path) -> Path:

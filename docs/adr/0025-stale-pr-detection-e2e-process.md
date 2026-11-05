@@ -22,7 +22,7 @@
 - e2e-process создал `z-{e2e}/test-round-178` от актуального develop
   (с `db84ff59`), но при мерже PR tip в round — старый `7d36af73` принёс с собой:
   - `.github/e2e/scenarios/voice_core_suite_v1.json` со старыми `patterns = ["alena"]`
-  - `.github/workflows/scripts/e2e_voice_test.sh` БЕЗ `E2E_RUN_BEFORE`
+  - `scripts/ci/e2e/e2e_voice_test.sh` БЕЗ `E2E_RUN_BEFORE`
 - Round-178 fail: `mv01/mv02 PATTERN_MISS: alena` + `dj02 expected tool calls not
   invoked: stop_music` + `GATE-1 ❌ expected tool calls not invoked during run:
   set_voice, execute_music_code, stop_music`.
@@ -72,7 +72,7 @@ Pre-dispatch gate в `agent-flow-e2e-process.sh`:
 ### 4.1 Snapshot develop в test-branch (вариант A из S1 вердикта)
 
 Делать `git checkout origin/develop -- .github/e2e/scenarios/voice_core_suite_v1.json
-.github/workflows/scripts/e2e_voice_test.sh` после merge PR tip. Брать suite/harness
+scripts/ci/e2e/e2e_voice_test.sh` после merge PR tip. Брать suite/harness
 **всегда** из develop, остальное — из PR.
 
 **Почему нет:** сценарий про voice, но PR может нести фиксы в `dialogue_node`,

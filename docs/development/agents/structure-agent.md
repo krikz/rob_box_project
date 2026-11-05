@@ -235,7 +235,7 @@ for svc, cfg in compose.get('services', {}).items():
 ### Регулярный аудит (запускай раз в неделю):
 ```bash
 bash scripts/audit_documentation.sh
-bash scripts/check_broken_links.sh
+python scripts/diagnostics/check_links.py
 grep -r "COPY config\|COPY scripts" docker/ --include="Dockerfile" && echo "⚠️ НАРУШЕНИЯ!"
 ```
 

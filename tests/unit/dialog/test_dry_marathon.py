@@ -693,6 +693,6 @@ def test_stand_log_uses_the_formats_of_the_real_robot_lines():
 
 def test_acceptance_check_is_one_function_for_the_robot_harness_and_the_dry_run():
     """Heredoc ``check_acceptance`` зовёт ``step_verdict``; своей копии правил в bash нет."""
-    sh = (REPO / ".github/workflows/scripts/e2e_voice_test.sh").read_text(encoding="utf-8")
+    sh = (REPO / "scripts/ci/e2e/e2e_voice_test.sh").read_text(encoding="utf-8")
     assert "from e2e_tool_match import step_verdict" in sh
     assert "forbidden_said = [" not in sh and "missing_keywords = [" not in sh

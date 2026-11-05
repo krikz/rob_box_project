@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Контракт деплоя атомарного e2e-харнесса.
 #
-# ЗАЧЕМ. Харнесс .github/workflows/scripts/e2e_voice_test.sh запускается НЕ в
+# ЗАЧЕМ. Харнесс scripts/ci/e2e/e2e_voice_test.sh запускается НЕ в
 # чекауте репозитория: workflow "L: E2E Voice Test" копирует его одиночным
 # файлом в /tmp на билд-машину 10.1.1.249 и дёргает через ssh, где CWD —
 # домашний каталог ros2. Всё, что харнесс source'ит или зовёт по пути, обязано
@@ -28,7 +28,7 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
-SCRIPTS_DIR="$ROOT/.github/workflows/scripts"
+SCRIPTS_DIR="$ROOT/scripts/ci/e2e"
 HARNESS="$SCRIPTS_DIR/e2e_voice_test.sh"
 LIB="$SCRIPTS_DIR/e2e_voice_lib.sh"
 WAKE="$SCRIPTS_DIR/e2e_voice_wake_gate.sh"
@@ -59,7 +59,7 @@ while IFS= read -r dep; do
         fail "$dep: харнесс зовёт его, но файла нет в $SCRIPTS_DIR"
         continue
     fi
-    if grep -q "scp .*scripts/$dep ros2@10\.1\.1\.249:/tmp/$dep" "$WORKFLOW"; then
+    if grep -q "scp .*scripts/ci/e2e/$dep ros2@10\.1\.1\.249:/tmp/$dep" "$WORKFLOW"; then
         ok "$dep — копируется на 249"
     else
         fail "$dep: харнесс зовёт его через \$SCRIPT_DIR_E2E, но workflow НЕ копирует его на 249 (добавь scp в шаг «Push atomic harness»)"
@@ -71,7 +71,7 @@ done <<< "$referenced"
 #          На 249 нет чекаута — такой путь не разрешается никогда.
 # ---------------------------------------------------------------------------
 printf 'CHECK 2: нет repo-relative вызовов внутри харнесса\n'
-if bad="$(grep -nE 'python3?[[:space:]]+\.github/workflows/scripts/' "$HARNESS")"; then
+if bad="$(grep -nE 'python3?[[:space:]]+scripts/ci/e2e/' "$HARNESS")"; then
     while IFS= read -r line; do
         fail "repo-relative вызов (на 249 не разрешится): $line"
     done <<< "$bad"

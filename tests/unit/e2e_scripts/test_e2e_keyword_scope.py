@@ -28,7 +28,7 @@ from pathlib import Path
 import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
-SCRIPTS = REPO_ROOT / ".github" / "workflows" / "scripts"
+SCRIPTS = REPO_ROOT / "scripts" / "ci" / "e2e"
 sys.path.insert(0, str(SCRIPTS))
 
 from e2e_tool_match import keyword_hit, robot_speech  # noqa: E402

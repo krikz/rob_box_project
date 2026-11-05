@@ -27,7 +27,7 @@ from tests.unit.e2e_scripts.test_issue_3857_event_waits import _feed, _l, needs_
 from tests.unit.e2e_scripts.test_issue_3989_recover import _act_start
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
-SCRIPTS_DIR = REPO_ROOT / ".github" / "workflows" / "scripts"
+SCRIPTS_DIR = REPO_ROOT / "scripts" / "ci" / "e2e"
 EVENTS = SCRIPTS_DIR / "e2e_events.py"
 NIGHT = REPO_ROOT / ".github" / "e2e" / "scenarios" / "night"
 ACT7 = NIGHT / "night_marathon_act7_neuro_composer_v1.json"

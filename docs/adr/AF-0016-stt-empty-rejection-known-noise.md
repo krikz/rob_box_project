@@ -43,7 +43,7 @@ Severity `warning`, kind `warning_log`, scope `vision`, container `voice-assista
 
 ## 2. Почему валидатор сработал
 
-`deployment_issue_dedup.py` (`.github/scripts/`):
+`deployment_issue_dedup.py` (`scripts/ci/`):
 
 - `WARNING_MATCH_RE = \b(warn|warning)\b` ловит любую строку с «warn»;
 - белые списки `WARNING_EXCLUDE_COMMON` / `WARNING_EXCLUDE_BY_SCOPE` не содержали

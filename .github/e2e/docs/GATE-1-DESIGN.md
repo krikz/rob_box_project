@@ -97,7 +97,7 @@ Per-step acceptance проверял только, что LLM **вызвала**
 Для шага, у которого `register_speaker` есть в `expected_tool_calls` или
 `discovery_tools`, `check_acceptance` дополнительно требует **исход**
 регистрации в логе `voice-assistant` за окно шага
-(`registration_failures()` в `.github/workflows/scripts/e2e_tool_match.py`):
+(`registration_failures()` в `scripts/ci/e2e/e2e_tool_match.py`):
 
 | в логе шага | вердикт |
 |---|---|

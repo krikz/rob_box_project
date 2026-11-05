@@ -11,7 +11,7 @@
 # НЕ запускается (нет Docker, нет живого Vision Pi).
 #
 # Каждый шаг печатает маркер E2E_STEP <label> OK/FAIL/SKIP для
-# пост-валидатора (по аналогии с .github/workflows/scripts/e2e_voice_test.sh).
+# пост-валидатора (по аналогии с scripts/ci/e2e/e2e_voice_test.sh).
 
 set -euo pipefail
 
