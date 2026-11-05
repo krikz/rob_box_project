@@ -21,7 +21,7 @@ import pytest
 
 from rob_box_core import epithets as ep
 
-_PKG_ROOT = Path(__file__).resolve().parents[1] / "rob_box_voice"
+_PKG_ROOT = Path(__file__).resolve().parents[3] / "rob_box_voice"
 
 
 def _load(name: str, path: Path):

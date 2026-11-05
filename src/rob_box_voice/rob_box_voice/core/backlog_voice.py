@@ -7,8 +7,8 @@ from __future__ import annotations
 
 from typing import Any, Mapping
 
-from rob_box_dialog.speaker_adapter import voice_tag
 from rob_box_core.epithets import is_stranger_epithet
+from rob_box_dialog.speaker_adapter import voice_tag
 
 
 def note_backlog_voice(node: Any, utterance_id: str, data: Mapping[str, Any]) -> None:

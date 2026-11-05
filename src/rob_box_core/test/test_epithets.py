@@ -3,7 +3,7 @@
 
 Модуль переехал из ``rob_box_voice/core`` в ``rob_box_core`` (ADR-0164 этап 4) — знание о кличках в одном
 месте, голос и лицо импортируют. Хранение клички в ``speakers.db`` проверяет
-``rob_box_voice/test/test_epithet_storage.py``.
+``rob_box_voice/test/unit/utils/test_epithet_storage.py``.
 """
 
 from __future__ import annotations
@@ -11,7 +11,6 @@ from __future__ import annotations
 import pytest
 
 from rob_box_core import epithets as ep
-
 
 # ── Словарь ──────────────────────────────────────────────────────────────────
 
