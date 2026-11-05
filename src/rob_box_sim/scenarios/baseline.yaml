@@ -18,7 +18,7 @@ worlds:
       - {name: gap_1.2, x: 3.0, y: 0.0, yaw: 0.0}
       - {name: gap_1.0, x: 5.0, y: 0.0, yaw: 0.0}
       - {name: gap_0.9, x: 7.0, y: 0.0, yaw: 0.0}
-      - {name: gap_0.8, x: 9.0, y: 0.0, yaw: 0.0}
+      - {name: gap_0.85, x: 9.0, y: 0.0, yaw: 0.0}
 
   turn90:
     goals:

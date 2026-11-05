@@ -105,7 +105,7 @@ def test_polygon_scenario_goals_are_behind_each_gap():
     sc = load_scenario(SCENARIOS, "polygon", SIM / "worlds")
     xs = [g["x"] for g in sc["goals"]]
     for (gap_x, gap), goal, name in zip(wc.POLYGON_GAPS, xs, [g["name"] for g in sc["goals"]]):
-        assert gap_x < goal and name == f"gap_{gap:.1f}"
+        assert gap_x < goal and name == f"gap_{wc.gap_label(gap)}"
 
 
 def test_local_world_goals_come_from_generator_file(tmp_path):

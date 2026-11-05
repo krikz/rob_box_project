@@ -3,7 +3,7 @@
   Полигон проходимости РОББОКСА (план docs/research/2026-11-04-gazebo-sim-navigation.md §5).
   Арена 12×6 м (x -1.5..10.5, y ±3.0), стены высотой 1.0 м, толщиной 0.1 м.
   Поперечные перегородки с проёмом по центру (y=0):
-    x=2.0 — 1.2 м, x=4.0 — 1.0 м, x=6.0 — 0.9 м, x=8.0 — 0.8 м.
+    x=2.0 — 1.2 м, x=4.0 — 1.0 м, x=6.0 — 0.9 м, x=8.0 — 0.85 м.
   Робот спавнится в (0, 0), смотрит по +X — прямо в проёмы.
 
   Файл сгенерирован: python3 -m rob_box_sim.worlds_catalog (или grid_to_sdf). Руками не править.
@@ -126,19 +126,19 @@
           <material><ambient>0.7 0.7 0.7 1</ambient><diffuse>0.7 0.7 0.7 1</diffuse></material>
         </visual>
       </link>
-      <link name="gap_0_8_left">
-        <pose>8.000 1.700 0.500 0 0 0.000000</pose>
-        <collision name="collision"><geometry><box><size>0.100 2.600 1.000</size></box></geometry></collision>
+      <link name="gap_0_85_left">
+        <pose>8.000 1.713 0.500 0 0 0.000000</pose>
+        <collision name="collision"><geometry><box><size>0.100 2.576 1.000</size></box></geometry></collision>
         <visual name="visual">
-          <geometry><box><size>0.100 2.600 1.000</size></box></geometry>
+          <geometry><box><size>0.100 2.576 1.000</size></box></geometry>
           <material><ambient>0.7 0.7 0.7 1</ambient><diffuse>0.7 0.7 0.7 1</diffuse></material>
         </visual>
       </link>
-      <link name="gap_0_8_right">
-        <pose>8.000 -1.700 0.500 0 0 0.000000</pose>
-        <collision name="collision"><geometry><box><size>0.100 2.600 1.000</size></box></geometry></collision>
+      <link name="gap_0_85_right">
+        <pose>8.000 -1.713 0.500 0 0 0.000000</pose>
+        <collision name="collision"><geometry><box><size>0.100 2.576 1.000</size></box></geometry></collision>
         <visual name="visual">
-          <geometry><box><size>0.100 2.600 1.000</size></box></geometry>
+          <geometry><box><size>0.100 2.576 1.000</size></box></geometry>
           <material><ambient>0.7 0.7 0.7 1</ambient><diffuse>0.7 0.7 0.7 1</diffuse></material>
         </visual>
       </link>
