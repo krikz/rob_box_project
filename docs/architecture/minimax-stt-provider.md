@@ -158,8 +158,8 @@ Coverage includes the **real response bodies captured from the robot**
 (`TestQuotaInResponseBody.PLAN_500` / `QUOTA_200`), the chain-order
 invariants, dead-cache TTL classification, and gRPC status mapping.
 
-`tools/mock_minimax_server.py` provides a canned HTTP server for
-end-to-end checks outside the unit suite.
+The former canned HTTP mock (`tools/mock_minimax_server.py`) was removed
+with the July TTS bench (ADR-0166); unit tests mock HTTP with `respx`.
 
 ## 6. Troubleshooting
 
