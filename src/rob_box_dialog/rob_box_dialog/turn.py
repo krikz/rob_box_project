@@ -111,7 +111,7 @@ from rob_box_dialog.respond import (ActionResult, asks, audible, classed, failed
 from rob_box_dialog.session import Session, SessionSnapshot
 from rob_box_dialog.speaker_adapter import asks_recognized, recognition_reply, speaker_block
 from rob_box_dialog.window_reset import WindowGuard, reset_if_idle, reset_window
-from rob_box_dialog.words import asks_question, asks_to_listen
+from rob_box_dialog.words import asks_question, asks_to_listen, music_stop_claimed, same_stop_rest
 from rob_box_dialog.tools_view import (available_tools, music_asked, needs_words, robot_asked, show_asked,
                                        sound_catalog_asked, voice_asked, voice_named)
 from rob_box_dialog.turn_log import (PERFORM_STARTED, TOOL, USER, TurnAggregate, TurnLog, phrase_label, results_of,
@@ -1526,7 +1526,8 @@ def owed_reason(snapshot: SessionSnapshot, turn: "_Turn", cmd: Command, names: C
     адресованную реплику (:func:`words_owed`; и подхват бэклога), звук без слов на вопрос после чтения
     (:func:`sound_owed`), ответ о каталоге звуков без его данных (:func:`catalog_owed`), только текст в чат на просьбу сделать
     роботом (:func:`robot_owed`), обращение к неподтверждённому собеседнику чужим именем (``names`` - ключи
-    из :func:`foreign_keys`) или утверждение о состоянии подсистемы робота без данных о ней (:func:`unbacked_claims`)."""
+    из :func:`foreign_keys`), «тишина» под играющей музыкой без стопа (:func:`stop_claim_false`) или утверждение о
+    состоянии подсистемы робота без данных о ней (:func:`unbacked_claims`)."""
     if words_owed(snapshot, turn.text, cmd) or read_owed(snapshot, turn, cmd):
         return kn.VIOLATION_SILENT_ANSWER
     if sound_owed(snapshot, turn, cmd):
@@ -1537,7 +1538,22 @@ def owed_reason(snapshot: SessionSnapshot, turn: "_Turn", cmd: Command, names: C
         return kn.VIOLATION_REMOTE_OWED
     if foreign_name.offending(cmd, names):
         return kn.VIOLATION_FOREIGN_NAME
+    if stop_claim_false(snapshot, turn, cmd):
+        return kn.VIOLATION_MUSIC_PROMISE
     return kn.VIOLATION_STATE_CLAIM if unbacked_claims(snapshot.agent, turn, cmd) else ""
+
+
+def stop_claim_false(snapshot: SessionSnapshot, turn: "_Turn", cmd: Command) -> bool:
+    """Речь команды утверждает, что музыку выключили или стало тихо (``words.music_stop_claimed``), а музыка играет
+    (М11 n712: «Тишина. Борису больше не мешаем.» без стоп-тула, музыка играла дальше). Решает код по СОСТОЯНИЮ
+    (ADR-0148): снимок плеера говорит «играет» (``SessionSnapshot.music_playing``), ход музыку не выключал
+    (``_Turn.music_stopped``, стоп-тул среди исполненных ``_Turn.acted``), и в самой команде стоп-тула нет. После
+    стопа и без музыки те же слова - правда, нарушения нет."""
+    if not snapshot.music_playing or turn.music_stopped or not cmd.speech:
+        return False
+    if any(kn.stops_music(a.tool, a.args) for a in (*cmd.actions, *turn.acted)):
+        return False
+    return music_stop_claimed(cmd.speech)
 
 
 def unbacked_claims(agent: str, turn: "_Turn", cmd: Command) -> Tuple[str, ...]:
@@ -1585,6 +1601,9 @@ _OWED: Mapping[str, _Owed] = {
     kn.VIOLATION_SOUND_ANSWER: _Owed(kn.SOUND_ANSWER_HINT, "звук без слов на вопрос после чтения"),
     kn.VIOLATION_SOUND_CATALOG: _Owed(kn.SOUND_CATALOG_HINT, "ответ о каталоге звуков без его данных",
                                       reads=kn.SOUND_CATALOG_TOOL),
+    # после повтора говорит код по состоянию (``_salvaged_phrase`` → ``music_promise_key``: «играет» - «Сделать с
+    # музыкой ничего не получилось…»), ложная «Тишина» не звучит
+    kn.VIOLATION_MUSIC_PROMISE: _Owed(kn.MUSIC_STOP_CLAIM_HINT, "заявлена тишина без стоп-тула, а музыка играет"),
 }
 
 
@@ -1729,16 +1748,31 @@ async def _tier1_then_rest(engine: "TurnEngine", turn: _Turn, command: Tier1Comm
     await engine._tier1(turn, command, snap, parsed)
     if not command.rest:
         return
+    if stops_music(command) and same_stop_rest(command.rest):  # «хватит, диджей выключай»: тот же стоп (М11 n608)
+        _close_same_stop(engine, turn, command.rest)
+        return
     turn.text, turn.command = command.rest, ""
     snap = engine.session.snapshot
     engine._log.info(f"{LOG_MARK} остаток после стопа: {turn.text[:80]!r} turn={turn.turn_id}")
     follow, parsed = tier1_of(turn.text, turn.command, snap, engine._voices())
     if follow is not None and follow.kind == kn.MUSIC_OFF_KIND and stops_music(command):
-        follow = None  # «хватит, диджей выключай»: музыку уже гасит стоп, остаток - модели, как до #4349 (n608)
+        follow = None  # «хватит, выключи музыку и спой»: музыку уже гасит стоп, остаток - модели, как до #4349
     if follow is not None and not follow.disputed:
         await _tier1_then_rest(engine, turn, follow, snap, parsed)
     else:
         await understand(engine, turn, snap)
+
+
+def _close_same_stop(engine: "TurnEngine", turn: _Turn, rest: str) -> None:
+    """Остаток после Tier-1 стопа музыки - тот же стоп (``words.same_stop_rest``: «диджей выключай», М11 n608): LLM
+    не зовётся, ход закрыт кодом. Человек назвал музыку словами - об исходе стопа, что Tier-1 не сказал (стоп молчит,
+    ``_Turn.unvoiced``), говорит код по результату («Выключил музыку.»), а не модель после ``get_music_state``."""
+    said = outcome_phrase(turn.unvoiced) if turn.unvoiced else None
+    engine._log.info(f"{LOG_MARK} остаток после стопа - тот же стоп: {rest[:80]!r}, ход закрыт кодом "
+                     f"said={said!r} turn={turn.turn_id}")
+    if said and engine.session.snapshot.top("Silence") is None:
+        engine._say(turn, said)
+        turn.unvoiced = ()
 
 
 def turn_work(engine: "TurnEngine", turn: _Turn, snap: SessionSnapshot) -> Awaitable[None]:
