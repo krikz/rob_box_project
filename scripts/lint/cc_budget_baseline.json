@@ -143,7 +143,7 @@
       "path": "src/rob_box_voice/rob_box_voice/tts_node.py",
       "method": "TTSNode.dialogue_callback",
       "cc": 16,
-      "since": "Bumped 29->22 after refactor in issue 2626 (CC-budget guard, closed; живая карточка долга: #3291) — decomposed _synthesize_and_play call into a helper. ADR-0021-r1 R-1a/b: legacy-cc cannot be shrunk in place; this entry remains in _legacy_acknowledged so the upstream refactor card can pick it up. Track: PR landed 2026-09-15, baseline refreshed as part of issue 2626 acceptance."
+      "since": "Bumped 29->22 after refactor in issue 2626 (CC-budget guard, closed; прежняя карточка долга закрыта; живая карточка долга: #4414 — упрощение dialogue_callback CC=16>15) — decomposed _synthesize_and_play call into a helper. ADR-0021-r1 R-1a/b: legacy-cc cannot be shrunk in place; this entry remains in _legacy_acknowledged so the upstream refactor card can pick it up. Track: PR landed 2026-09-15, baseline refreshed as part of issue 2626 acceptance."
     },
     {
       "path": "src/rob_box_supervisor/rob_box_supervisor/supervisor_node.py",
