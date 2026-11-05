@@ -23,6 +23,9 @@ from rob_box_dialog.turn import Answer, TurnEngine, query_answer, query_fallback
 
 GENERIC = phrases.catalog()[kn.QUERY_FALLBACK_GENERIC]
 STOP_OK = phrases.text("music.stop_ok")
+
+#: Варианты фразы Tier-1 стопа музыки (решение Шифу 05.11: вариант выбирает код, без повтора подряд).
+SAID = frozenset(phrases.catalog()[kn.MUSIC_STOP_SAID])
 N608 = "робот хватит диджей выключай"
 #: М11 n608 (05.11): сам N608 модели больше не уходит - остаток «диджей выключай» тот же стоп, ход закрывает код
 #: (``test_music_stop_honest_m11``). Повтор исполненного стопа моделью проверяется на остатке, что ей уходит.
@@ -114,7 +117,7 @@ def test_n608_stop_then_state_then_repeat_says_the_stop_and_the_tool_phrase():
     agg = _run(ports, MODEL_REST, dj=True)
     assert ("dj_set", {"action": "stop"}) in ports.executed and ("get_music_state", {}) in ports.executed
     assert ports.executed.count(("dj_set", {"action": "stop"})) == 1, "повтор исполненного не исполняется"
-    assert ports.said == [f"{STOP_OK} {NOTHING}"], ports.said
+    assert len(ports.said) == 2 and ports.said[0] in SAID and ports.said[1] == NOTHING, ports.said
     assert not set(ports.said) & set(GENERIC)
     assert agg.stage == "done"
 
@@ -124,7 +127,7 @@ def test_n608_state_without_words_still_says_the_stop_not_the_stub():
     ports = Ports([_query(STATE), Answer(Command(actions=(DJ_STOP,), expression=FACE), "deepseek")],
                   {"get_music_state": {"playing": False}})
     _run(ports, MODEL_REST, dj=True)
-    assert ports.said == [STOP_OK], ports.said
+    assert len(ports.said) == 1 and ports.said[0] in SAID, ports.said
 
 
 # -- n707: поиски в библиотеке, итерации кончились --------------------------------------------------------------------

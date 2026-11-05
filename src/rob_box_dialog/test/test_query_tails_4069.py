@@ -242,7 +242,7 @@ def test_request_music_label_says_what_was_ordered():
 
 
 def test_tier1_stop_with_a_stale_playing_snapshot_writes_the_truth_to_the_window():
-    """«Хватит» молчит (Tier-1), а снимок отстал: играло «playing», тул ответил ``was_playing=False``. В окне следующего
+    """«Хватит» (Tier-1), а снимок отстал: играло «playing», тул ответил ``was_playing=False``. В окне следующего
     хода - «ничего не играло», а не «сделано» (модель не думает, что выключила музыку)."""
     ports = Ports([Answer(Command(speech="Хорошо."), "deepseek")],
                   {"stop_music": ("done", {"was_playing": False}, None)})
@@ -251,7 +251,8 @@ def test_tier1_stop_with_a_stale_playing_snapshot_writes_the_truth_to_the_window
     asyncio.run(engine.run(Addressed("Робот, хватит", VOICE)))
     asyncio.run(engine.run(Addressed("Робот, что сейчас играет?", VOICE)))
     history = [m["content"] for m in ports.asked[0] if m["role"] == "assistant"]
-    assert history == ["[ответ действием: stop_music — сделано, ничего не играло]"]
+    assert len(history) == 1 and "сделано" not in history[0]  # не «выключил»: правда - тихо было и раньше
+    assert any(quiet in history[0] for quiet in phrases.catalog()[kn.MUSIC_STOP_QUIET]), history  # фраза кода (05.11)
 
 
 def test_every_window_note_is_a_phrase_key_of_the_outcome_table():

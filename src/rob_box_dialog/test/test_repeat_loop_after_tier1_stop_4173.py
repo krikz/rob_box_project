@@ -24,6 +24,9 @@ N608 = "робот хватит диджей выключай"
 #: (``test_music_stop_honest_m11``). Повтор исполненного стопа моделью проверяется на остатке, что ей уходит.
 MODEL_REST = "робот хватит диджей что дальше"
 OK = phrases.text("music.stop_ok")
+
+#: Варианты фразы Tier-1 стопа музыки (решение Шифу 05.11: вариант выбирает код, без повтора подряд).
+SAID = frozenset(phrases.catalog()[kn.MUSIC_STOP_SAID])
 SILENT = phrases.catalog()["understand.silent_answer"]
 DJ_STOP = ToolCall("dj_set", {"action": "stop"})
 
@@ -91,7 +94,7 @@ def test_n608_repeat_with_a_face_closes_the_turn_at_once_with_the_stop_phrase():
     agg = _run(ports)
     assert ports.executed == [("dj_set", {"action": "stop"}), ("stop_music", {})], "повтор не исполнен"
     assert ports.asked == 1, "после повтора исполненного модель больше не зовётся"
-    assert ports.said == [OK], ports.said
+    assert len(ports.said) == 1 and ports.said[0] in SAID, ports.said
     assert not set(ports.said) & set(SILENT), "заглушка «Ага, я на связи.» не звучит"
     assert (agg.stage, agg.status) == ("done", "finished") and agg.llm_calls == 1
 
@@ -101,14 +104,14 @@ def test_n608_three_repeats_by_log_make_one_model_call_and_one_phrase():
     вызов и одна фраза кода."""
     ports = Ports([_repeat(), Answer(_repeat().result, "deepseek", calls=2), _repeat()])
     agg = _run(ports)
-    assert ports.asked == 1 and ports.said == [OK]
+    assert ports.asked == 1 and len(ports.said) == 1 and ports.said[0] in SAID
     assert len(ports.executed) == 2 and agg.llm_calls == 1
 
 
 def test_repeat_without_a_face_still_closes_with_the_stop_phrase():
     ports = Ports([_repeat(face=False)])
     agg = _run(ports)
-    assert ports.asked == 1 and ports.said == [OK] and (agg.stage, agg.status) == ("done", "finished")
+    assert ports.asked == 1 and len(ports.said) == 1 and ports.said[0] in SAID and (agg.stage, agg.status) == ("done", "finished")
 
 
 def test_new_action_after_the_stop_still_runs_and_is_not_swallowed():

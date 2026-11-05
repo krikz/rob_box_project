@@ -483,10 +483,15 @@ def test_music_stop_on_empty_deck_is_not_a_result():
                       "[mcp_server]: [stop_music] [stop_music] was_playing=False", DONE])
     real = "\n".join(["✅ Инструмент stop_music выполнен успешно",
                       "🎵 [music] stop track_id=req95964:01:A:f7de93b5 reason=user_stop",
-                      "[mcp_server]: [stop_music] [stop_music] was_playing=True", DONE])
+                      "[mcp_server]: [stop_music] [stop_music] was_playing=True",
+                      _tts(gen.ROBOT_PHRASES["music.stop_said"][1]), DONE])
     for label in ("n312_stop_music", "n511_stop_music", "n709_stop_generated", "n712_stop_all", "n812_stop_music"):
         assert not _verdict(label, idle)["pass"], label
         assert _verdict(label, real)["pass"], label
+    # Шифу 05.11 «всегда что-то говорить»: Tier-1 стоп n511/n712 без фразы стопа - красный (silent_ok снят, #4408)
+    silent = "\n".join(line for line in real.split("\n") if "TTS:" not in line)
+    for label in ("n511_stop_music", "n712_stop_all"):
+        assert not _verdict(label, silent)["pass"], label
     no_flag = real.replace("was_playing=True", "was_playing=False")
     assert not _verdict("n812_stop_music", no_flag)["pass"]
 
