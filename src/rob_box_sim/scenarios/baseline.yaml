@@ -5,7 +5,7 @@
 # Таймаут цели: timeout_base_s + расстояние до цели / timeout_speed_mps (sim time).
 # max_vel_x робота 0.15 м/с (nav2_params.yaml) — запас на повороты и recovery.
 # stop_on_failure: после первой проваленной цели остальные — SKIPPED
-# (у полигона каждый следующий проход уже, за проваленным не проехать).
+# (у полигона каждый следующий проход шире, но за проваленным всё равно не проехать).
 
 defaults:
   timeout_base_s: 120
@@ -15,10 +15,10 @@ defaults:
 worlds:
   polygon:
     goals:
-      - {name: gap_1.2, x: 3.0, y: 0.0, yaw: 0.0}
-      - {name: gap_1.0, x: 5.0, y: 0.0, yaw: 0.0}
-      - {name: gap_0.9, x: 7.0, y: 0.0, yaw: 0.0}
-      - {name: gap_0.85, x: 9.0, y: 0.0, yaw: 0.0}
+      - {name: gap_0.9, x: 3.0, y: 0.0, yaw: 0.0}
+      - {name: gap_0.95, x: 5.0, y: 0.0, yaw: 0.0}
+      - {name: gap_1.0, x: 7.0, y: 0.0, yaw: 0.0}
+      - {name: gap_1.1, x: 9.0, y: 0.0, yaw: 0.0}
 
   turn90:
     goals:
