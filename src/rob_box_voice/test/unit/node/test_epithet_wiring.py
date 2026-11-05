@@ -1,6 +1,6 @@
 """test_epithet_wiring.py — обвязка эпитетов в speaker_id_node (issue #1787).
 
-Чистая логика выбора клички проверяется в ``test/test_epithets.py``. Здесь —
+Чистая логика выбора клички проверяется в ``rob_box_core/test/test_epithets.py``. Здесь —
 решения, которые принимает НОДА поверх неё:
 
 1. регистрация сразу даёт словарную кличку (``first_seen``), тёзки — разные;
@@ -47,7 +47,7 @@ for _hw in ("pyaudio", "usb", "usb.core", "usb.util", "sounddevice"):
 sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
 
 from rob_box_voice import speaker_id_node as sid_node  # noqa: E402
-from rob_box_voice.core import epithets as ep  # noqa: E402
+from rob_box_core import epithets as ep  # noqa: E402
 from rob_box_voice.utils.speaker_embeddings import (  # noqa: E402
     SpeakerDatabase,
     SpeakerMatch,

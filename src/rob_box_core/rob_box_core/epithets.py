@@ -1,6 +1,9 @@
 #!/usr/bin/env python3
 """epithets — внутренние клички спикеров (issue #1787, v1).
 
+Знание о кличках живёт здесь одно (ADR-0164 этап 4, ADR-0148): модуль переехал из
+``rob_box_voice/core`` в ``rob_box_core``, голос и лицо импортируют ``rob_box_core.epithets``.
+
 Зачем
 -----
 Робот запоминает собеседника по **имени** (``speakers.name``), но имя —
@@ -40,8 +43,8 @@ LLM) закрыта детерминированно, а не вероятнос
 
 Модуль — **чистый stdlib**: ни rclpy, ни numpy,
 ни sqlite. Всё, что связано с хранением, живёт в
-``utils/speaker_embeddings.py``; всё, что связано с ROS-топиками — в
-``speaker_id_node``. Здесь только «текст → теги → кличка».
+``rob_box_voice/utils/speaker_embeddings.py``; всё, что связано с ROS-топиками — в
+``rob_box_voice/speaker_id_node``. Здесь только «текст → теги → кличка».
 
 Словарь держим Python-константой, а не JSON-файлом (research §4.1
 предлагал ``data/epithets.json``): пакет ставится через ament/setuptools,
