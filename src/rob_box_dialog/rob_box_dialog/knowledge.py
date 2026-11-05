@@ -1223,7 +1223,17 @@ VOICE_UNCONFIRMED_REASON = "voice_unconfirmed"
 #: Отказ чтения (``memory_search``/``memory_context``, класс ``query``) на вопрос о памяти о самом человеке
 #: (:data:`SELF_MEMORY_ASK`) - исход, о котором говорит код своей фразой ``query.rejected.<причина>`` (на
 #: «что ты обо мне помнишь?» звучать должно не «запоминать не буду» записи, а «не буду гадать, что помню»).
-UNBOUND_REASONS: Tuple[str, str] = (NO_PERSON_REASON, VOICE_UNCONFIRMED_REASON)
+#: Отказ памяти в подхвате, где автор фразы не узнан, а в беседе есть «прогретый» голос без имени
+#: (``voice_warmth``, решение Шифу 05.11): вместо «Голос знакомый, но не уверен чей» код одной фразой просит
+#: назваться (``pickup_parties.intro_reasons``).
+ASK_INTRO_REASON = "ask_intro"
+UNBOUND_REASONS: Tuple[str, ...] = (NO_PERSON_REASON, VOICE_UNCONFIRMED_REASON, ASK_INTRO_REASON)
+#: «Прогретый» голос (``voice_warmth.WarmVoices``): профиль без имени, у которого за последние
+#: ``WARM_VOICE_WINDOW_S`` не меньше ``WARM_VOICE_MIN_PHRASES`` фраз, и между первой и последней прошло не меньше
+#: ``WARM_VOICE_MIN_SPAN_S`` («несколько реплик за сессию, беседа идёт давно» — Шифу 05.11). На роботе не замерено.
+WARM_VOICE_MIN_PHRASES = 3
+WARM_VOICE_MIN_SPAN_S = 60.0
+WARM_VOICE_WINDOW_S = 1800.0
 #: Реплика - вопрос о памяти о самом человеке. Только на неё отказ чтения памяти с причиной из
 #: :data:`UNBOUND_REASONS` говорит код своей фразой (``memory.voiced_refusals``). На любую другую реплику отказ уходит
 #: модели данными, как раньше, и она отвечает на сам вопрос: неузнанный голос спросил «кто такой Гагарин?», модель
@@ -1316,7 +1326,7 @@ SPEAKER_TAG = "[говорит: {who}] {text}"
 #: Отказы памяти, которых в окне LLM нет вообще: отклонённый факт чужого или неузнанного собеседника, оставшись
 #: в окне даже пометкой, переезжает к следующему («зелёный чай» Саши записан Борису). Модель узнаёт исход из фразы кода.
 WINDOW_DROPPED_REJECTS: Mapping[str, Tuple[str, ...]] = MappingProxyType({
-    "memory_save": (NO_PERSON_REASON, VOICE_UNCONFIRMED_REASON, SPEAKER_CHANGED_REASON),
+    "memory_save": (NO_PERSON_REASON, VOICE_UNCONFIRMED_REASON, SPEAKER_CHANGED_REASON, ASK_INTRO_REASON),
 })
 #: Ход отработан действиями, а ответа словами в окне нет (живой робот 27.10 06:36: «покажи молча, как тебе
 #: грустно» - только ``play_animation(sad)``; реплика человека висела в истории без ответа, следующий ход «догнал» её -
@@ -2221,6 +2231,8 @@ PHRASE_KEYS: Tuple[str, ...] = (
     *SOUND_IMITATIONS.values(),
     # отказ памяти при узнанном, но не подтверждённом голосе: своя фраза, не «Не узнаю твой голос»
     f"local.rejected.{VOICE_UNCONFIRMED_REASON}",
+    # подхват с неузнанным автором при прогретом голосе без имени: просьба назваться, а не отказ (Шифу 05.11)
+    f"local.rejected.{ASK_INTRO_REASON}",
     # отказ ЧТЕНИЯ памяти без собеседника: своя фраза, не «запоминать не буду» записи
     *(f"query.rejected.{reason}" for reason in UNBOUND_REASONS),
     # отказ памяти без собеседника у чата Telegram и ТАРС: без слова «голос»
