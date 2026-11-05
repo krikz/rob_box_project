@@ -9,7 +9,7 @@ from __future__ import annotations
 import functools
 import itertools
 import re
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from typing import Any, Dict, FrozenSet, Optional, Sequence, Set, Tuple
 
 from rob_box_dialog.knowledge import (
@@ -19,7 +19,6 @@ from rob_box_dialog.knowledge import (
     CHAT_ROBOT_ASK_FORMS,
     CHAT_TOPIC_MARKERS,
     DEFAULT_WAKE_WORDS,
-    DONE_CLAIMS,
     INTRO_ADJECTIVE_ENDINGS,
     INTRO_GREETING_WORDS,
     INTRO_NOT_A_NAME,
@@ -318,21 +317,6 @@ def search_promises(text: str) -> Tuple[str, ...]:
     «нашёл») не обещание. Тул поиска судит валидатор команды (``command._check_search_promise``)."""
     tokens = name_tokens(text)
     return tuple(kind for kind, promise in SEARCH_PROMISES.items() if _promises(tokens, promise))
-
-
-def done_claims(text: str) -> Tuple[str, ...]:
-    """Виды утверждений о сделанном в речи робота (ключи ``knowledge.DONE_CLAIMS``: ``delete``, ``waypoint_save``,
-    ``motion``) - по словам, как :func:`music_promises`, но про прошедшее: «Готово, хил-окно удалена.», «сохранил
-    точку», «поехал». Слово с ``unless_before`` за одно-два слова до него («уже удалил», «не удалил») - не утверждение:
-    такие слова из фразы убираются до сверки. Тул, что утверждение делает правдой, судит валидатор команды
-    (``command._check_done_claim``)."""
-    tokens = name_tokens(text)
-    found = []
-    for kind, claim in DONE_CLAIMS.items():
-        kept = tuple("" if set(tokens[max(0, i - 2):i]) & set(claim.unless_before) else t for i, t in enumerate(tokens))
-        if _promises(kept, replace(claim, unless_before=())):
-            found.append(kind)
-    return tuple(found)
 
 
 def theme_switch_ask(text: str) -> Optional[str]:

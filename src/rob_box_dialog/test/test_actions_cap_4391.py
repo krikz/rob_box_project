@@ -5,7 +5,7 @@
    (``ACTIONS_ACCEPT_MAX``), код исполняет первые ``ACTIONS_MAX`` и называет остальное (``turn.capped``).
 2. «Удали ещё точку хил-окно»: «ещё» между «удали» и «точку» - группа ``waypoints_edit`` не открылась, ``delete_waypoint``
    не было в срезе, модель сказала «Готово, хил-окно удалена.» без тула. Теперь группу открывают глагол и предмет по
-   отдельности, а речь о сделанном без тула - нарушение ``VIOLATION_DONE_CLAIM`` (повтор, затем фраза кода).
+   отдельности. Речь о сделанном без тула - отдельный PR (ждёт решения Шифу).
 """
 
 import asyncio
@@ -15,16 +15,13 @@ import pytest
 from rob_box_dialog import knowledge as kn
 from rob_box_dialog import phrases
 from rob_box_dialog.address import VOICE, Addressed
-from rob_box_dialog.command import Command, Invalid, ToolCall, explain, parse, unkept_done_claims, validate
+from rob_box_dialog.command import Command, Invalid, ToolCall, parse, validate
 from rob_box_dialog.respond import ActionResult
 from rob_box_dialog.session import Session
 from rob_box_dialog.tools_view import available_tools, requested_groups
 from rob_box_dialog.turn import Answer, TurnEngine
-from rob_box_dialog.words import done_claims
 
 POINTS = ("хил-вход", "хил-кухня", "хил-диван", "хил-окно")
-#: Речь модели из HIL 04.11 23:41 UTC дословно (verdict=speech actions=[]).
-HIL_LIE = "Готово, хил-окно удалена."
 TOOLS = ("delete_waypoint", "clear_waypoints", "list_waypoints", "save_waypoint", "play_animation", "memory_save")
 
 
@@ -131,10 +128,10 @@ def test_a_capped_call_without_a_string_argument_gets_the_general_phrase():
     assert ports.said[-1] == phrases.text(kn.ACTIONS_CAPPED_PHRASE)
 
 
-def test_the_capped_phrases_are_in_the_catalog_and_claim_nothing():
+def test_the_capped_phrases_are_in_the_catalog():
     for key in (kn.ACTIONS_CAPPED_PHRASE, kn.ACTIONS_CAPPED_NAMED_PHRASE):
         assert key in kn.PHRASE_KEYS
-        assert done_claims(phrases.text(key, rest="хил-окно")) == ()
+        assert phrases.text(key, rest="хил-окно")
 
 
 # ---------------------------------------------------------------------------------------------------------------
@@ -158,57 +155,3 @@ def test_delete_waypoint_is_in_the_slice_when_the_human_asks_to_delete_a_point(t
 @pytest.mark.parametrize("text", ["Робот, какие у тебя точки?", "Робот, удали трек из библиотеки"])
 def test_without_verb_and_object_together_the_edit_group_stays_closed(text):
     assert "waypoints_edit" not in requested_groups(text)
-
-
-# ---------------------------------------------------------------------------------------------------------------
-# 2б. речь о сделанном без тула - нарушение, после повтора говорит код
-# ---------------------------------------------------------------------------------------------------------------
-
-
-@pytest.mark.parametrize("text, kinds", [
-    (HIL_LIE, ("delete",)),
-    ("Удалил точку кухня.", ("delete",)),
-    ("Все точки стёрты.", ("delete",)),
-    ("Сохранил точку у окна.", ("waypoint_save",)),
-    ("Точку запомнил, называется кухня.", ("waypoint_save",)),
-    ("Поехал на кухню!", ("motion",)),
-    ("Выезжаю к окну.", ("motion",)),
-])
-def test_done_claim_words(text, kinds):
-    assert done_claims(text) == kinds
-
-
-@pytest.mark.parametrize("text", [
-    "Точку хил-окно я уже удалил раньше.",       # было в прошлом ходе
-    "Не удалил: такой точки нет.",
-    "Удалить точку хил-окно?",
-    "Запомнил, тебя зовут Саша.",                # знакомство - речь кода, не точка
-    "Музыку выключил.",                          # после кодового стопа - правда (MUSIC_PROMISES)
-    "Люблю вкусную еду.",                        # «еду» - не езда
-])
-def test_not_a_done_claim(text):
-    assert done_claims(text) == ()
-
-
-def test_hil_lie_without_a_tool_is_a_violation_with_a_hint_and_the_tools_that_would_do_it():
-    result = validate(parse({"speech": HIL_LIE}), TOOLS)
-    assert isinstance(result, Invalid) and result.reason == kn.VIOLATION_DONE_CLAIM
-    assert "delete_waypoint" in result.all[0].allowed
-    assert kn.DONE_CLAIM_HINT in explain(result)
-
-
-def test_the_claim_with_its_tool_is_not_a_done_claim():
-    cmd = parse({"actions": [{"tool": "delete_waypoint", "args": {"name": "хил-окно"}}]})
-    assert unkept_done_claims(cmd) == ()
-    cmd = Command(speech=HIL_LIE, actions=(ToolCall("delete_waypoint", {"name": "хил-окно"}),))
-    assert unkept_done_claims(cmd) == ()
-
-
-def test_after_the_exhausted_retry_the_code_says_nothing_was_done():
-    """Повтор моста не помог - невалидная команда доходит до хода: ложь «удалена» не звучит, звучит фраза кода."""
-    ports = Ports([Answer(Invalid(kn.VIOLATION_DONE_CLAIM, "speech утверждает delete без тула"), "deepseek")])
-    _run(ports, "Робот, удали ещё точку хил-окно")
-    assert ports.executed == []
-    assert ports.said == [phrases.text(kn.DONE_CLAIM_PHRASE)] and HIL_LIE not in ports.said
-    assert "delete_waypoint" in ports.asked[0]  # 2а: тул был в срезе хода
-    assert done_claims(ports.said[0]) == ()

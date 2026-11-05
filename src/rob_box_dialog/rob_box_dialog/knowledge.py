@@ -1813,14 +1813,6 @@ SEARCH_PROMISE_HINT = ("в speech обещано поискать («поищу�
                        " запросом в actions, без обещаний в speech; поиск уже был в этом ходе - ответь по его данным"
                        " выше (нет конкретики - так и скажи), не обещая искать снова")
 SEARCH_PROMISE_PHRASE = "command.search_promise"
-#: Нарушение «сказал, что сделал, а тула нет» (``DONE_CLAIMS``). Повтор с подсказкой :data:`DONE_CLAIM_HINT`;
-#: повтора нет - ложные слова не звучат, код говорит правду: ничего не сделано (:data:`DONE_CLAIM_PHRASE`).
-VIOLATION_DONE_CLAIM = "done_claim"
-DONE_CLAIM_HINT = ("в speech сказано, что действие уже сделано («удалил», «сохранил точку», «поехал»), а в actions нет"
-                   " тула, что его делает: слова без действия - неправда. Нужно действие - положи тул в actions без"
-                   " speech (о сделанном скажет код по результату); тула нет в перечне хода - не утверждай, а скажи,"
-                   " что сделать не можешь, или спроси в ask")
-DONE_CLAIM_PHRASE = "command.done_claim"
 #: Счёт вслух до N, урезанный моделью, строит код (``counting.full_count``, #4314 К1, n802 М9: «от одного до сорока» -
 #: «Один… Десять.»). Глаголы просьбы о счёте (слово целиком, без «ё»).
 COUNT_VERBS: Tuple[str, ...] = (
@@ -2055,8 +2047,7 @@ SPEECH_CUT_PHRASE = "command.speech_cut"
 INVALID_COMMAND_PHRASES: Mapping[str, str] = MappingProxyType({"too_long": "command.too_long",
                                                                VIOLATION_SPEECH_TOO_LONG: "command.too_long",
                                                                VIOLATION_SILENT_ANSWER: SILENT_ANSWER_PHRASE,
-                                                               VIOLATION_REMOTE_OWED: REMOTE_OWED_PHRASE,
-                                                               VIOLATION_DONE_CLAIM: DONE_CLAIM_PHRASE})
+                                                               VIOLATION_REMOTE_OWED: REMOTE_OWED_PHRASE})
 #: Нарушения, после которых фраза кода звучит без грусти: модель ответила, только не словами (лицом, анимацией, одним
 #: earcon) - ничего не провалилось («Угу, я тут.» звучало с ``sad``). Провал исполненного действия
 #: грустит по-прежнему: эмоцию фразы решает его исход.
@@ -2891,32 +2882,6 @@ SEARCH_PROMISES: Mapping[str, MusicPromise] = MappingProxyType({
         tools=SEARCH_PROMISE_TOOLS),
     "again": MusicPromise(
         with_near=("найду", "найдем"), near=("ещ", "снова", "заново", "повторн"), tools=SEARCH_PROMISE_TOOLS),
-})
-#: Утверждение о сделанном без тула (#4391, HIL 04.11: «Готово, хил-окно удалена.» - ``delete_waypoint`` не вызван, его
-#: не было и в срезе хода). Та же форма, что :data:`MUSIC_PROMISES`, но про прошедшее: речь говорит, что действие уже
-#: сделано, а тула, что его делает, в команде нет; валидатор команды (``command._check_done_claim``) сверяет по словам
-#: (``words.done_claims``). ``unless_before`` - здесь и для ``alone``: «уже удалил» (раньше, в прошлом ходе) и «не
-#: удалил» не утверждают сделанного сейчас. Музыки и памяти тут нет: «музыку выключил» после кодового стопа - правда
-#: (``MUSIC_PROMISES``), «запомнил» говорит код знакомства. Слова - целые, строчные, без «ё».
-DONE_CLAIM_UNLESS_BEFORE: Tuple[str, ...] = ("уже", "не", "раньше", "ранее")
-DONE_CLAIMS: Mapping[str, MusicPromise] = MappingProxyType({
-    "delete": MusicPromise(
-        alone=("удалил", "удалила", "удалили", "удалено", "удалена", "удален", "удалены", "стер", "стерла", "стерли",
-               "стерто", "стерта", "стерты", "очистил", "очистила", "очищено", "очищены"),
-        tools=("delete_waypoint", "clear_waypoints", "music_library"),
-        unless_before=DONE_CLAIM_UNLESS_BEFORE),
-    "waypoint_save": MusicPromise(
-        with_near=("сохранил", "сохранила", "сохранено", "сохранена", "сохранен", "запомнил", "запомнила", "отметил",
-                   "отметила", "записал", "записала"),
-        near=("точк",),
-        tools=("save_waypoint",),
-        unless_before=DONE_CLAIM_UNLESS_BEFORE),
-    "motion": MusicPromise(
-        # «еду» - и «качу», и «вкусную еду»: формы без второго смысла
-        alone=("поехал", "поехала", "выезжаю", "приехал", "приехала", "доехал", "доехала", "подъехал", "подъехала",
-               "отъехал", "отъехала", "двигаюсь"),
-        tools=MOTION_TOOLS + ("stop_navigation",),
-        unless_before=DONE_CLAIM_UNLESS_BEFORE),
 })
 #: Причина нарушения «пустая команда»: ни речи, ни вопроса, ни действий, ни выступления, и не ``passed``. Это нарушение
 #: (тот же один повтор с объяснением → ``failed``), а не «тихий первый ответ» v1: иначе ход звал LLM второй раз через
