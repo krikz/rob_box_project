@@ -7,14 +7,13 @@
 
 import re
 import sys
-from pathlib import Path
 
 import pytest
 
-from tests.unit.e2e_scripts.test_issue_3875_synth_retry_cache import needs_bash, run_bash
+from tests.unit.e2e_scripts.test_issue_3875_synth_retry_cache import SCRIPTS_DIR, needs_bash, run_bash
 from tests.unit.e2e_scripts.test_issue_3931_role_prosody import _Capture, minimax_server  # noqa: F401
 
-HARNESS = Path(__file__).resolve().parents[3] / ".github" / "workflows" / "scripts"
+HARNESS = SCRIPTS_DIR
 sys.path.insert(0, str(HARNESS))
 import e2e_events as eev  # noqa: E402
 
