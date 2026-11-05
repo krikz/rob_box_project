@@ -13,6 +13,9 @@
 * мигалка: ``ExpressionRequest.gesture`` в ``/voice/expression/request`` (``expression_client``) —
   её показывает ``face_node`` на Vision Pi;
 * писк: имя триггера sound_pack в ``/voice/sound/trigger`` — его играет ``sound_node`` на Sound Pi;
+* в HIL (``USE_SIM_TIME=true``) при ``HIL_GUARD_SOUND=off`` (параметр ``hil_mute_alarm``) писк и голос не
+  уходят на настоящего робота (#4470; по умолчанию звучат):
+  вместо них одна строка в журнал на вход в зону; мигалка и стоп работают как всегда;
 * голос: фраза кода (``Utterance``) в ``SpeechRequest`` через ``speech_client``, автор ``system`` — как у
   joystick_control_node; озвучивает владелец голоса на Sound Pi.
 
@@ -27,6 +30,7 @@ from __future__ import annotations
 
 import json
 import math
+import os
 import signal
 from typing import Optional
 
@@ -94,6 +98,10 @@ class ProximityGuardNode(Node):
         super().__init__("proximity_guard")
         for name, default in _DEFAULTS.items():
             self.declare_parameter(name, default)
+        # HIL = USE_SIM_TIME=true (как у остального стека), глушит HIL_GUARD_SOUND=off; параметр — для переопределения.
+        self.declare_parameter("hil_mute_alarm", px.hil_mute_sound(os.environ))
+        self.hil_mute = bool(self._p("hil_mute_alarm"))
+        self._muted_logged_zone = px.ZONE_CLEAR
         self.th = px.Thresholds(min_points=int(self._p("min_points")),
                                 **{k: float(self._p(k)) for k in _THRESHOLD_KEYS})
         self.body = load_body(str(self._p("footprint_file")))
@@ -186,8 +194,22 @@ class ProximityGuardNode(Node):
             self._log_transition(tr, threat)
         if self.tracker.stopping:
             self._stop_pub.publish(Twist())
-        for effect in self.alarms.tick(now, self.tracker.zone):
+        kept, muted = px.split_hil_effects(self.alarms.tick(now, self.tracker.zone), self.hil_mute)
+        self._log_muted(muted)
+        for effect in kept:
             self._apply(effect)
+
+    def _log_muted(self, muted) -> None:
+        """HIL: заглушённые звук и голос — одна строка на вход в зону, повторы писка молчат."""
+        zone = self.tracker.zone
+        if zone == self._muted_logged_zone:
+            return
+        if not muted and zone != px.ZONE_CLEAR:
+            return  # заглушать нечего (мигалка) — зону отметим, когда придёт заглушённое
+        self._muted_logged_zone = zone
+        if muted:
+            what = ", ".join(f"{e.kind}:{e.name!r}" for e in muted)
+            self.get_logger().info(f"🛡️ HIL: зона {zone}, на настоящий робот не уходит (HIL_GUARD_SOUND=off): {what}")
 
     def _log_transition(self, tr: px.Transition, threat: px.Threat) -> None:
         point = threat.stop_point if tr.zone == px.ZONE_STOP else threat.point

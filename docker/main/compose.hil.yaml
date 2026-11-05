@@ -2,10 +2,10 @@
 #
 # План: docs/research/2026-11-04-hil-robot-on-gazebo-data.md §1.2, §2.3, §5.3, §6 (шаг 1).
 # Эпик #4371. Применяет ТОЛЬКО scripts/hil/hil.sh on (копирует файл на Main Pi
-# в /tmp/hil/ и пересоздаёт пять сервисов с --no-deps). Деплой этот файл не
+# в /tmp/hil/ и пересоздаёт шесть сервисов с --no-deps). Деплой этот файл не
 # читает: имя не попадает под docker/*/docker-compose*.yaml.
 #
-# Что меняется у пяти сервисов контура навигации — и больше ничего:
+# Что меняется у шести сервисов контура навигации — и больше ничего:
 #   * USE_SIM_TIME=true — боевые стартовые скрипты берут время из /clock Gazebo
 #     (docker/common/scripts/use_sim_time.sh);
 #   * rtabmap и nav2 видят в /maps каталог HIL_MAPS_DIR, а не боевой ./maps:
@@ -17,6 +17,7 @@
 # Обязательные переменные (без них compose падает, а не берёт боевой путь):
 #   HIL_MAPS_DIR       абсолютный каталог HIL-карты на Main Pi (hil.sh: /home/ros2/rob_box_hil/maps)
 # Необязательные:
+#   HIL_GUARD_SOUND    on | off — звук и голос proximity-guard в HIL (on)
 #   HIL_RTABMAP_MODE   mapping | localization   (mapping)
 
 services:
@@ -27,6 +28,13 @@ services:
   twist-mux:
     environment:
       - USE_SIM_TIME=true
+
+  # Защита по лидару на сканах Gazebo. Писк и голос звучат на настоящем роботе; HIL_GUARD_SOUND=off
+  # (hil.conf) переводит их в журнал (#4470). Мигалка и аварийный стоп — как в бою.
+  proximity-guard:
+    environment:
+      - USE_SIM_TIME=true
+      - HIL_GUARD_SOUND=${HIL_GUARD_SOUND:-on}
 
   rtabmap:
     environment:
