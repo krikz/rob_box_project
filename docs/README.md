@@ -8,7 +8,7 @@
 
 | Нужно | Куда смотреть |
 |---|---|
-| Как работать в репо (агентам и людям) | [AGENTS.md](../AGENTS.md) — точка входа; подробности — [CONTRIBUTING.md](../CONTRIBUTING.md) |
+| Как работать в репо (агентам и людям) | [AGENTS.md](../AGENTS.md) — единственная точка входа (CONTRIBUTING.md, copilot-instructions, .cursorrules только ссылаются на него) |
 | Словарь терминов | [CONTEXT.md](../CONTEXT.md) |
 | Что за робот, быстрый старт | [README.md](../README.md), [guides/QUICK_START.md](guides/QUICK_START.md) |
 | Железо, батарея, сеть, три узла (Main / Vision / Sound Pi) | [architecture/HARDWARE.md](architecture/HARDWARE.md), [architecture/NETWORK_TOPOLOGY.md](architecture/NETWORK_TOPOLOGY.md) |
@@ -18,7 +18,7 @@
 
 | Каталог | Что там | Куда класть новое |
 |---|---|---|
-| [adr/](adr/) | решения: `NNNN-*` — рантайм робота, `AF-NNNN-*` — процесс агентов | новое решение с вариантами и последствиями |
+| [adr/](adr/) | решения: `NNNN-*` — общая серия; `AF-NNNN-*` — процесс агентов, **серия заморожена с 05.11.2026** (ADR-0162), новые процессные ADR — в общей серии | новое решение с вариантами и последствиями |
 | [architecture/](architecture/) | как система устроена **сейчас**: железо, сеть, контракты, топики. `meta-quest-api.md` читает тест | правка существующего файла; новый — только если темы нет |
 | [research/](research/) | исследования и замеры, `YYYY-MM-DD-<тема>.md`; `jev/scenarios/acceptance.yaml` читают тест и скрипт | новое исследование; сырые выводы — в корневой `evidence/` |
 | [plans/](plans/) | планы эпиков; `2026-09-15-service-manifest.md` — опора CI-гарда | план активного эпика; закрыт эпик — в архив |
