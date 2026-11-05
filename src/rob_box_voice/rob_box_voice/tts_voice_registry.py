@@ -297,6 +297,25 @@ def unsupported_language_notice(provider: str, language: str | None) -> str | No
     )
 
 
+#: Значение ``languages`` раздела ``tts_context`` у провайдера без привязки языка к голосу: любой язык.
+ANY_LANGUAGE = "any"
+
+
+def spoken_languages(provider: str, voice_id: str | None = None) -> str | list[str]:
+    """На каких языках звучащий голос скажет фразу сейчас (М12 n909, #4236): :data:`ANY_LANGUAGE` или список кодов.
+
+    Факт для окна модели («скажи по-китайски спокойной ночи»), один источник - этот реестр. MiniMax
+    (:data:`LANGUAGE_AGNOSTIC_PROVIDERS`) говорит на любом языке любым голосом: английский голос по-русски с акцентом,
+    русский - по-китайски. У остальных язык прибит к голосу (``VOICE_METADATA``): Silero - только ``v5_ru``, Yandex -
+    язык звучащего голоса (``anton`` - русский; ``john``/``lea`` берёт ``tts_node`` только при поле ``language``
+    реплики, а реплика диалога v2 его не ставит). Голос вне каталога - пустой список: про него ничего не знаем."""
+    prov = str(provider or "").strip().lower()
+    if prov in LANGUAGE_AGNOSTIC_PROVIDERS:
+        return ANY_LANGUAGE
+    lang = language_of(prov, voice_id or default_voice_for(prov))
+    return [lang] if lang else []
+
+
 def voice_for_language(provider: str, language: str) -> str:
     """Голос провайдера, говорящий на ``language``; "" если такого нет.
 
@@ -537,7 +556,7 @@ def tts_context_fields(
     current_voice: str | None = None,
 ) -> dict:
     """Данные раздела ``tts_context`` снимка хода (#4370): провайдер, голос по умолчанию, звучащий голос и его имя
-    для людей, каталог голосов. Единственное место, где имя звучащего голоса берётся из реестра, а не из памяти
+    для людей, языки звучащего голоса (:func:`spoken_languages`, М12 n909), каталог голосов. Единственное место, где имя звучащего голоса берётся из реестра, а не из памяти
     модели (n402 М8 29.10: звучал male-qn-qingse, а модель по id «угадала» «Надёжный мужчина» - это
     Russian_ReliableMan). Голос вне каталога называется своим id."""
     voices = voices_for(provider)
@@ -549,6 +568,7 @@ def tts_context_fields(
         "default_voice": default,
         "current_voice": current,
         "current_voice_name": info["display_name"] if info else current,
+        "languages": spoken_languages(provider, current),
         "voices": list(voices),
     }
 
