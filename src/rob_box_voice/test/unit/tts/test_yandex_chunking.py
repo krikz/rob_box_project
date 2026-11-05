@@ -269,14 +269,18 @@ def _import_chunk_text():
 
     sys.path.insert(0, str(_PACKAGE_ROOT))
     # Force re-import in case test order matters
-    if "rob_box_voice.tts_node" in sys.modules:
-        del sys.modules["rob_box_voice.tts_node"]
+    previous = sys.modules.pop("rob_box_voice.tts_node", None)
     from rob_box_voice.tts_node import YANDEX_MAX_CHUNK_CHARS
     from rob_box_voice.tts_providers.yandex import chunk_text
 
     yield chunk_text, YANDEX_MAX_CHUNK_CHARS
 
-    sys.modules.pop("rob_box_voice.tts_node", None)
+    # Вернуть модуль, который видели тесты до нас: без него ``inspect.getsource(TTSNode...)`` в
+    # test_tts_node_sink_routing (импорт на сборке) падает «is a built-in class» — модуля класса нет в sys.modules.
+    if previous is not None:
+        sys.modules["rob_box_voice.tts_node"] = previous
+    else:
+        sys.modules.pop("rob_box_voice.tts_node", None)
 
 
 def test_short_text_no_split(_import_chunk_text):
