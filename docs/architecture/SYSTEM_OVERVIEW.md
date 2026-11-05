@@ -92,7 +92,7 @@ graph TB
             CAN --> VESC
         end
         
-        Battery["2×10S LiPo<br/>Battery"]
+        Battery["2× 10S2P Li-ion<br/>36/42V, параллельно"]
         Buck12V["12V Buck<br/>(Isolated)"]
         Buck5V["5V Buck<br/>(Isolated)"]
         
@@ -149,7 +149,7 @@ graph TB
 
 | Компонент | Напряжение | Источник | Описание |
 |-----------|-----------|----------|----------|
-| **Battery** | 37V (10S LiPo) × 2 | — | Основное питание |
+| **Battery** | 36V ном. / 42V заряд — 2× 10S2P Li-ion параллельно (10S4P), см. [HARDWARE.md §6.1](HARDWARE.md) | — | Основное питание |
 | **12V Buck** | 12V | Battery → isolated buck | Raspberry Pi 5, VESC |
 | **5V Buck** | 5V | Battery → isolated buck | NeoPixel LED (381×), сенсоры |
 | **CAN HAT** | 5V | Main Pi | Гальваническая развязка CAN |

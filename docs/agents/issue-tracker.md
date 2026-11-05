@@ -16,24 +16,21 @@ Use the `gh` CLI for all operations.
 
 ## Rob Box specifics (важно)
 
-- **Авто-триаж, не руками.** Issue с меткой `hermes` подхватывает
-  `scripts/agent_flow/agent-flow-triage.sh` (каждую минуту) и заводит
-  kanban-карточку. Просто `gh issue create` без `hermes` + `agent:<role>`
-  карточку НЕ создаст — issue будет висеть.
-- **Создание задачи:** `gh issue create --label "type:functional,priority:high,ai-generated,source:gsd" --repo krikz/rob_box_project`.
-- **Таксономия лейблов** (`type:*`, `priority:*`, `agent:<role>`, `hermes`,
-  `needs-e2e`, `e2e-done`, `e2e:rejected`, `no-e2e-required`, `needs-review`,
-  `source:gsd`) — в `CONTRIBUTING.md` и `.agents/skills/github-issues-workflow/SKILL.md`.
+- **Триажа-автомата нет.** Issue разбирает координатор (процесс —
+  `docs/process/claude-coordinator-robot-flow.md`, ADR-0162).
+- **Создание задачи:** `gh issue create --title "..." --body-file <файл> --repo krikz/rob_box_project`;
+  тело — raw-факты (лог, run_id, файл:строка). Метки — по смыслу (`bug`, `type:*`, `priority:*`).
+- Метки `source:gsd`, `ai-generated`, `hermes`, `agent:*`, `needs-e2e`, `e2e-done`
+  новым issue **не ставить** — их некому читать (`AGENTS.md`).
 
 ## Pull requests as a triage surface
 
-**PRs as a request surface: no.** Внутренние PR агентов идут через
-merge-gate (`agent-flow-merge-gate.sh`) → e2e-ротацию, а не через ручной
-triage внешних PR.
+**PRs as a request surface: no.** PR воркеров принимает и мёржит координатор
+после CI (`AGENTS.md`, «Процесс-команды»).
 
 ## When a skill says "publish to the issue tracker"
 
-Create a GitHub issue с подходящими `type:*` + `agent:<role>` метками.
+Create a GitHub issue с подходящими `type:*` метками.
 
 ## When a skill says "fetch the relevant ticket"
 

@@ -21,7 +21,7 @@
 - **[Визуализация в RViz](docs/guides/VISUALIZATION.md)** - Проверка URDF модели
 - **[Управление питанием RPi5](docs/guides/POWER_MANAGEMENT.md)** - Питание, троттлинг, HAT
 - **[Система мониторинга](docs/guides/MONITORING_SYSTEM.md)** ⭐ - Grafana, Prometheus, Loki для мониторинга робота
-- **[Скрипты мониторинга](docker/monitor_system.sh)** - Проверка состояния системы
+- **[Скрипты мониторинга](scripts/diagnostics/monitor_system.sh)** - Проверка состояния системы
 - **[Настройка LSLIDAR](docs/guides/LSLIDAR_SETUP.md)** - Подключение лидара
 - **[Решение проблем](docs/guides/TROUBLESHOOTING.md)** - Диагностика и устранение неисправностей
 - **[Bash алиасы](docs/deployment/VISION_PI_DEPLOYMENT.md)** - Удобные команды
@@ -38,7 +38,8 @@
 - **[Резюме оптимизации](docs/development/BUILD_OPTIMIZATION.md)** - Краткий обзор изменений
 
 ### 🔧 Для разработчиков
-- **[Руководство для AI агентов](docs/development/AGENT_GUIDE.md)** ⭐ Критически важно!
+- **[AGENTS.md](AGENTS.md)** ⭐ — правила работы для AI-агентов и людей (одна точка входа)
+- **[Справочник для AI агентов](docs/development/AGENT_GUIDE.md)** - система, Docker, CI (старый, правила — в AGENTS.md)
 - **[Стандарты Docker](docs/development/DOCKER_STANDARDS.md)** - Правила работы с Docker
 - **[Оптимизация сборки](docs/development/BUILD_OPTIMIZATION.md)** - Ускорение разработки
 - **[Build Machine](docker/build/README.md)** ⭐ - Локальная инфраструктура сборки (10-20x быстрее)
@@ -213,7 +214,13 @@ timeout 5 ros2 run rob_box_voice led_node
    указывает на `/usr/bin/python3.10`. **Не запускать `ros2 run …` под `python3.11`** —
    ROS бинари слинкованы с libpython3.10.
 
-## 🚑 Cold-start при недоступных образах (Vision Pi)
+## 🚑 Cold-start при недоступных образах (Vision Pi, Sound Pi)
+
+> **Где что живёт (с 19–20.10.2026, ADR-0159).** Голосовой стек — `supercollider`, `voice-assistant`,
+> `telegram-bot`, `avatar-arbiter` (и `supervisor`, `quest`) — на **Sound Pi**: `docker/sound/docker-compose.yaml`,
+> юнит `robbox-sound.service`, модели STT/TTS на хост кладёт шаг деплоя «[Sound Pi] Ensure STT/TTS models».
+> На Vision Pi — зрение (`docker/vision/docker-compose.yaml`, `robbox-vision.service`). Всё, что ниже сказано
+> про голосовые сервисы, относится к Sound Pi: в командах подставляй `docker/sound/…` и `robbox-sound`.
 
 После применения серии фиксов ([issue #2610](https://github.com/krikz/rob_box_project/issues/2610), [ADR-0111](docs/adr/0111-voice-resources-image-sourcing.md)) Vision Pi **поднимает стек частично**, а не валится целиком, если один из образов недоступен (registry offline, отсутствует тег, переключение DNS).
 
@@ -241,8 +248,8 @@ timeout 5 ros2 run rob_box_voice led_node
 
 | Категория | Сервисы | Что произойдёт, если образ недоступен |
 |-----------|---------|---------------------------------------|
-| **Критичные** (без них стек бесполезен) | `ros2_bridge`, `zenoh-router`, `hailo`, `vision_node` (лицевая/person), `avatar-arbiter` | Робот «глух и слеп» — голос и зрение не работают. Но **стек всё равно поднимется**, systemd рестартует и логи покажут причину. |
-| **Опциональные** (можно без них) | `supercollider` (без сэмплов на хосте → `synth-only mode`), `monitoring`-профиль, `ai`-профиль | `voice-assistant` стартует в `synth-only mode` (без музыки), `cadvisor`/`promtail`/`ollama` просто не поднимаются, остальное работает. |
+| **Критичные** (без них стек бесполезен) | Vision Pi: `ros2_bridge`, `zenoh-router`, `hailo`, `vision_node` (лицевая/person); Sound Pi: `zenoh-router`, `voice-assistant`, `avatar-arbiter` | Робот «глух и слеп» — голос и зрение не работают. Но **стек всё равно поднимется**, systemd рестартует и логи покажут причину. |
+| **Опциональные** (можно без них) | Sound Pi: `supercollider` (без сэмплов на хосте → `synth-only mode`); `monitoring`-профиль, `ai`-профиль | `voice-assistant` стартует в `synth-only mode` (без музыки), `cadvisor`/`promtail`/`ollama` просто не поднимаются, остальное работает. |
 
 ### Диагностика: что делать, если часть контейнеров не поднялась
 
@@ -318,8 +325,11 @@ docker compose --pull never up -d
 - **Vision Pi** (Raspberry Pi 5, 8GB RAM):
   - OAK-D-Lite драйвер + AprilTag детектор
   - MJPEG потолочная камера (ceiling-based локализация)
-  - ReSpeaker Mic Array v2.0 (голосовой ассистент)
   - LED Matrix Driver (381 NeoPixel)
+  
+- **Sound Pi** (Raspberry Pi 5, 8GB RAM; с 19.10.2026, ADR-0159, `docker/sound/`):
+  - ReSpeaker Mic Array v2.0, голосовой ассистент (`voice-assistant`), SuperCollider
+  - Супервизор аватара, `avatar-arbiter`, Quest (`rob_box_quest`)
   - Telegram-бот оператора (`rob_box_telegram`)
 
 ### Сенсоры
