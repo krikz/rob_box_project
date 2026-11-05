@@ -1,7 +1,7 @@
 {
   "version": 1,
   "created": "2026-11-05",
-  "base_sha": "7dc4a962b0354ea44c6fa1e48166909561bf6d1e",
+  "base_sha": "a9e55086d7809c1fc5ab80c8ac1a10019dff75e0",
   "limits": {
     "wmc": 80,
     "methods": 40
@@ -28,8 +28,8 @@
       "methods": 15
     },
     "src/rob_box_perception/rob_box_perception/face_store.py:FaceStore": {
-      "wmc": 177,
-      "methods": 36
+      "wmc": 171,
+      "methods": 34
     },
     "src/rob_box_quest/rob_box_quest/quest_node.py:QuestBridge": {
       "wmc": 175,

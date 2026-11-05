@@ -142,6 +142,7 @@ except ImportError:
     align_face = None  # type: ignore[assignment]
 
 from rob_box_perception import face_voice_binding as fvb
+from rob_box_perception.face_epithet import NO_NAMER
 from rob_box_perception.face_frontality import encounter_gate
 from rob_box_perception.face_tracker import FaceObservation, FaceTracker
 
@@ -319,6 +320,7 @@ class FaceRecognizer:
         voice_merge_confirmations: int = fvb.DEFAULT_CONFIRMATIONS,
         max_embeds_per_frame: int = DEFAULT_MAX_EMBEDS_PER_FRAME,
         store_snapshots: bool = True,
+        namer: Any = NO_NAMER,
         log_fn: Optional[Any] = None,
     ) -> None:
         self._embedder = embedder
@@ -334,6 +336,8 @@ class FaceRecognizer:
         self._voice_merge_window_sec = float(voice_merge_window_sec)
         self._max_embeds_per_frame = max(1, int(max_embeds_per_frame))
         self._store_snapshots = bool(store_snapshots)
+        # Кличка записи (ADR-0164 этап 6, :mod:`face_epithet`). ``NO_NAMER`` — новым кличек не выдаём.
+        self._namer = namer
         self._log_fn = log_fn
 
         # Кадры окна фразы и счёт подтверждений «голос — лицо» (issue #4357): одно лицо в ПОСЛЕДНЕМ кадре
@@ -809,6 +813,8 @@ class FaceRecognizer:
             self._log('error', f'FaceStore.record_encounter failed: {exc!r}')
             return
 
+        # Новой записи — кличка сразу (ADR-0164 В2); известной — её кличка. Ошибки ловит сам неймер.
+        epithet = self._namer.on_encounter(match, encounter, snapshot)
         if match.is_new:
             self._new_people_total += 1
         else:
@@ -855,13 +861,14 @@ class FaceRecognizer:
             ),
         )
 
-        self._mark_encounter_start(encounter, detections, match)
+        self._mark_encounter_start(encounter, detections, match, epithet)
 
     def _mark_encounter_start(
         self,
         encounter: Any,
         detections: List[Dict[str, Any]],
         match: Any,
+        epithet: str = '',
     ) -> None:
         """Поставить маркер Встречи на ту детекцию, из которой она выросла.
 
@@ -887,6 +894,8 @@ class FaceRecognizer:
                 'encounter_count': int(match.encounter_count),
                 'face_px': round(float(encounter.max_face_px), 1),
                 'privacy_mode': getattr(self._store, 'mode', ''),
+                # ADR-0164 §4.1: кличка — метка для рассказа о человеке другим, не обращение к нему.
+                'epithet': epithet,
             },
             ensure_ascii=False,
         )
@@ -1017,6 +1026,8 @@ class FaceRecognizer:
             'align_fallback_total': self._align_fallback_total,
             'active_tracks': self._tracker.active_track_count(),
             'store': store_stats,
+            # ADR-0164 этап 6: клички новых лиц — словарные, по внешности, отказы и пропуски.
+            'epithet': self._namer.stats(),
         }
 
 

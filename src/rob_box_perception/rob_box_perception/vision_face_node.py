@@ -366,6 +366,7 @@ class VisionFaceNode(VisionHailoNode):
             min_face_px=min_face_px,
         )
         embedder = ArcFaceEmbedder(hef_path=arcface_hef)
+        namer = self._build_namer(store, min_face_px)
 
         recognizer = FaceRecognizer(
             embedder=embedder,
@@ -377,6 +378,7 @@ class VisionFaceNode(VisionHailoNode):
             min_crop_mean=min_crop_mean,
             min_crop_contrast=min_crop_contrast,
             store_snapshots=(mode != 'strict'),
+            namer=namer,
             log_fn=self._recognizer_log,
         )
 
@@ -397,6 +399,24 @@ class VisionFaceNode(VisionHailoNode):
             )
         )
         return recognizer
+
+    def _build_namer(self, store: Any, min_face_px: float) -> Any:
+        """Кличка новых лиц (ADR-0164 этап 6). Облако — только по env, иначе словарные, и лог об этом."""
+        import os
+
+        from rob_box_perception.face_epithet import FaceEpithetNamer
+        from rob_box_perception.vision_llm import budget_from_env, describer_from_env
+
+        describer, note = describer_from_env(os.environ)
+        budget = budget_from_env(os.environ)
+        self.get_logger().info(
+            f'[лицо] клички: режим={store.epithet_policy}, {note}, '
+            f'потолок={budget.per_window}/ч.'
+        )
+        return FaceEpithetNamer(
+            store, describer=describer, budget=budget, min_face_px=min_face_px,
+            log_fn=self._recognizer_log,
+        )
 
     def _recognizer_log(self, level: str, msg: str) -> None:
         logger = self.get_logger()

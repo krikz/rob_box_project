@@ -281,3 +281,26 @@ class TestThresholdAndQuiet:
             session.pop_scene(kind)
         session.push_scene("DJ", "code")  # музыка/сет в v1 не глушили приветствие — и здесь не глушат
         assert unprompted_quiet(session.snapshot, turn_busy=False) is False
+
+
+class TestEpithetOnMarker:
+    """ADR-0164 этап 6: кличка лица едет в маркере Встречи; приветствие её не говорит (В1)."""
+
+    def test_marker_carries_epithet(self) -> None:
+        payload = TestParseMeetingMarker()._good_payload(epithet='Бородач в синем свитере')
+        marker = parse_meeting_marker('face', payload, source_camera='main_camera')
+        assert marker is not None and marker.epithet == 'Бородач в синем свитере'
+
+    def test_old_marker_without_epithet_parses(self) -> None:
+        marker = parse_meeting_marker('face', TestParseMeetingMarker()._good_payload(), source_camera='main_camera')
+        assert marker is not None and marker.epithet == ''
+
+    def test_greeting_does_not_say_epithet(self) -> None:
+        m = _Meet()
+        base = dict(person_id='p1', name='Денис', is_new=False, similarity=0.9, face_px=100.0,
+                    privacy_mode='workshop', epithet='Бородач в синем свитере')
+        m.meet(MeetingMarker(encounter_count=1, **base))
+        m.clock.now += 21 * HOUR
+        phrase = m.meet(MeetingMarker(encounter_count=3, **base))
+        assert phrase is not None and 'Денис' in phrase
+        assert 'Бородач' not in phrase

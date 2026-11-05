@@ -37,6 +37,8 @@ class MeetingMarker:
     privacy_mode: str
     #: Реальный источник кадра из VisionEvent (стаб-фильтр v1 ``OccasionGate`` и :func:`parse_meeting_marker`).
     source_camera: str = ''
+    #: Кличка лица (ADR-0164 §4.1). Только для рассказа о человеке другим: приветствие и обращение её не берут.
+    epithet: str = ''
 
     @property
     def is_named(self) -> bool:
@@ -81,6 +83,7 @@ def parse_meeting_marker(
         face_px=float(payload.get('face_px') or 0.0),
         privacy_mode=str(payload.get('privacy_mode') or ''),
         source_camera=source_camera,
+        epithet=str(payload.get('epithet') or ''),
     )
 
 
