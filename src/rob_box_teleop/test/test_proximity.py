@@ -3,6 +3,7 @@
 import math
 from pathlib import Path
 
+import numpy as np
 import pytest
 import yaml
 
@@ -10,6 +11,8 @@ from rob_box_teleop import proximity as px
 
 REPO = Path(__file__).resolve().parents[3]
 NAV2_PARAMS = REPO / "docker" / "main" / "config" / "nav2" / "nav2_params.yaml"
+TWIST_MUX = REPO / "docker" / "main" / "config" / "twist_mux" / "twist_mux.yaml"
+DATA = Path(__file__).resolve().parent / "data" / "hil_2026-11-05_stops.csv"
 
 # Габарит РОББОКСа (замер 04.11, nav2_params.yaml #4361).
 BODY = px.Body(-0.3036, 0.3064, -0.3025, 0.3025)
@@ -19,6 +22,11 @@ TH = px.Thresholds()
 def ahead(gap):
     """Точка прямо по курсу на ``gap`` от переднего края."""
     return (BODY.x_max + gap, 0.0)
+
+
+def straight(gap):
+    """Угроза по коридору хода: точка ``gap`` от корпуса с порогом ``stop_m``."""
+    return px.Threat(gap=gap, slack=gap - TH.stop_m, stop_gap=gap)
 
 
 # -- геометрия ----------------------------------------------------------------------------------
@@ -44,7 +52,7 @@ def test_scan_points_apply_mount_offset_and_yaw_and_drop_bad_ranges():
     mount = px.Mount(0.1, 0.0, math.pi)  # лидар повёрнут назад
     pts = px.scan_points([1.0, float("inf"), 0.05, 20.0], 0.0, math.pi / 2, 0.15, 12.0, mount)
     assert len(pts) == 1
-    assert pts[0] == pytest.approx((-0.9, 0.0))
+    assert tuple(pts[0]) == pytest.approx((-0.9, 0.0))
 
 
 def test_yaw_from_quaternion():
@@ -109,52 +117,52 @@ def test_thresholds_reject_stop_beyond_warn():
 
 
 def test_classify_default_thresholds():
-    assert px.classify(0.39, TH) == px.ZONE_WARN
-    assert px.classify(0.19, TH) == px.ZONE_STOP
-    assert px.classify(0.41, TH) == px.ZONE_CLEAR
-    assert px.classify(math.inf, TH) == px.ZONE_CLEAR
+    assert px.classify(straight(0.39), TH) == px.ZONE_WARN
+    assert px.classify(straight(0.19), TH) == px.ZONE_STOP
+    assert px.classify(straight(0.41), TH) == px.ZONE_CLEAR
+    assert px.classify(px.NO_THREAT, TH) == px.ZONE_CLEAR
 
 
 def test_enter_is_immediate_and_escalates_through_warn_to_stop():
     tr = px.ZoneTracker(TH)
-    assert tr.update(0.0, 0.35) == px.Transition(px.ZONE_CLEAR, px.ZONE_WARN, 0.35)
-    assert tr.update(0.1, 0.18).zone == px.ZONE_STOP
+    assert tr.update(0.0, straight(0.35)) == px.Transition(px.ZONE_CLEAR, px.ZONE_WARN, 0.35)
+    assert tr.update(0.1, straight(0.18)).zone == px.ZONE_STOP
     assert tr.stopping
 
 
 def test_warn_releases_only_after_margin_held_for_release_s():
     tr = px.ZoneTracker(TH)
-    tr.update(0.0, 0.35)
-    assert tr.update(0.1, 0.42) is None          # дальше порога, но в запасе 5 см — держим
-    assert tr.update(0.2, 0.50) is None          # с запасом — начали отсчёт
-    assert tr.update(0.6, 0.50) is None          # 0.4 с < 0.5 с
-    assert tr.update(0.75, 0.50).zone == px.ZONE_CLEAR
+    tr.update(0.0, straight(0.35))
+    assert tr.update(0.1, straight(0.42)) is None          # дальше порога, но в запасе 5 см — держим
+    assert tr.update(0.2, straight(0.50)) is None          # с запасом — начали отсчёт
+    assert tr.update(0.6, straight(0.50)) is None          # 0.4 с < 0.5 с
+    assert tr.update(0.75, straight(0.50)).zone == px.ZONE_CLEAR
 
 
 def test_flicker_resets_the_release_timer():
     tr = px.ZoneTracker(TH)
-    tr.update(0.0, 0.35)
-    tr.update(0.1, 0.50)
-    tr.update(0.4, 0.38)                         # снова близко — отсчёт сначала
-    assert tr.update(0.7, 0.50) is None
-    assert tr.update(1.25, 0.50).zone == px.ZONE_CLEAR
+    tr.update(0.0, straight(0.35))
+    tr.update(0.1, straight(0.50))
+    tr.update(0.4, straight(0.38))                         # снова близко — отсчёт сначала
+    assert tr.update(0.7, straight(0.50)) is None
+    assert tr.update(1.25, straight(0.50)).zone == px.ZONE_CLEAR
 
 
 def test_stop_is_held_at_least_stop_hold_s_even_when_the_robot_stood_still():
     tr = px.ZoneTracker(TH)
-    tr.update(0.0, 0.15)
+    tr.update(0.0, straight(0.15))
     # Встал — угрозы нет (inf), но стоп держится stop_hold_s.
     for t in (0.1, 0.6, 1.0, 1.4):
-        assert tr.update(t, math.inf) is None and tr.stopping
-    assert tr.update(1.5, math.inf).zone == px.ZONE_CLEAR
+        assert tr.update(t, px.NO_THREAT) is None and tr.stopping
+    assert tr.update(1.5, px.NO_THREAT).zone == px.ZONE_CLEAR
     assert not tr.stopping
 
 
 def test_stop_releases_to_warn_when_still_close():
     tr = px.ZoneTracker(TH)
-    tr.update(0.0, 0.15)
-    tr.update(1.0, 0.30)
-    assert tr.update(1.6, 0.30).zone == px.ZONE_WARN
+    tr.update(0.0, straight(0.15))
+    tr.update(1.0, straight(0.30))
+    assert tr.update(1.6, straight(0.30)).zone == px.ZONE_WARN
 
 
 # -- тревога: мигалка, писк, голос — одним событием ------------------------------------------
@@ -237,3 +245,170 @@ def test_clear_is_silent():
 def test_describe_transition():
     assert px.describe(px.Transition(px.ZONE_CLEAR, px.ZONE_STOP, 0.123)) == "зона clear → stop (до корпуса 0.12 м)"
     assert "—" in px.describe(px.Transition(px.ZONE_STOP, px.ZONE_CLEAR, math.inf))
+
+
+# -- коридор хода, бока и разворот (HIL 05.11, #4365) ------------------------------------------------------------
+
+
+def wall(x0, x1, y0, y1, step=0.01):
+    """Контур прямоугольника стены в мире точками через ``step``."""
+    xs = np.arange(x0, x1 + 1e-9, step)
+    ys = np.arange(y0, y1 + 1e-9, step)
+    edges = [np.column_stack((xs, np.full_like(xs, y))) for y in (y0, y1)]
+    edges += [np.column_stack((np.full_like(ys, x), ys)) for x in (x0, x1)]
+    return np.vstack(edges)
+
+
+def doorway(x0, width, thickness=0.10, reach=2.0):
+    """Перегородка поперёк хода в ``x0`` с проёмом ``width`` по центру (как в мире polygon)."""
+    half = width / 2.0
+    return np.vstack((wall(x0, x0 + thickness, half, half + reach), wall(x0, x0 + thickness, -half - reach, -half)))
+
+
+def in_robot_frame(world, x, y, yaw):
+    """Точки мира в ``base_footprint`` робота в позе ``(x, y, yaw)``."""
+    c, s = math.cos(yaw), math.sin(yaw)
+    d = np.asarray(world) - (x, y)
+    return np.column_stack((c * d[:, 0] + s * d[:, 1], -s * d[:, 0] + c * d[:, 1]))
+
+
+def zone_at(world, pose, v, w, th=TH):
+    return px.classify(px.nearest_threat(BODY, in_robot_frame(world, *pose), v, w, th), th)
+
+
+@pytest.mark.parametrize("width", [1.0, 0.9])
+@pytest.mark.parametrize("offset,yaw_deg", [(0.0, 0.0), (0.05, 0.0), (-0.03, 3.0)])
+def test_driving_straight_through_a_narrow_doorway_never_stops(width, offset, yaw_deg):
+    """HIL 05.11: проём 1.0 м давал 65/34/86 стопов (косяк впереди-сбоку под 0.20 м), без защиты Nav2 проезжал за
+    20 с. Косяк вне коридора хода — порог ``side_stop_m``; в проёме 1.0 м до него ~0.2 м на сторону."""
+    door = doorway(1.0, width)
+    zones = {zone_at(door, (x, offset, math.radians(yaw_deg)), 0.15, 0.0) for x in np.arange(-0.5, 2.0, 0.02)}
+    assert px.ZONE_STOP not in zones
+    assert px.ZONE_WARN in zones  # «внимание» по косякам слышно — тесно
+
+
+def test_head_on_wall_stops_at_stop_m():
+    front = wall(1.0, 1.1, -1.0, 1.0)
+    assert zone_at(front, (1.0 - BODY.x_max - 0.21, 0.0, 0.0), 0.10, 0.0) == px.ZONE_WARN
+    assert zone_at(front, (1.0 - BODY.x_max - 0.19, 0.0, 0.0), 0.10, 0.0) == px.ZONE_STOP
+
+
+def test_wall_behind_stops_when_reversing_and_not_when_driving_away():
+    back = wall(-1.1, -1.0, -1.0, 1.0)
+    pose = (-1.0 - BODY.x_min + 0.19, 0.0, 0.0)
+    assert zone_at(back, pose, -0.10, 0.0) == px.ZONE_STOP
+    assert zone_at(back, pose, 0.10, 0.0) == px.ZONE_CLEAR
+
+
+def test_jamb_beside_the_corridor_stops_only_at_side_stop_m():
+    y = BODY.y_max + TH.corridor_margin_m + 0.02  # вне коридора хода
+    far, near = (BODY.x_max + 0.10, y), (BODY.x_max + 0.01, y)
+    assert BODY.gap(*far) > TH.side_stop_m > BODY.gap(*near)
+    assert px.classify(px.nearest_threat(BODY, [far] * 2, 0.15, 0.0, TH), TH) == px.ZONE_WARN
+    assert px.classify(px.nearest_threat(BODY, [near] * 2, 0.15, 0.0, TH), TH) == px.ZONE_STOP
+
+
+def test_corridor_edge_is_body_width_plus_margin():
+    inside = (BODY.x_max + 0.15, BODY.y_min - TH.corridor_margin_m + 0.01)
+    outside = (BODY.x_max + 0.15, BODY.y_min - TH.corridor_margin_m - 0.01)
+    assert px.classify(px.nearest_threat(BODY, [inside] * 2, 0.15, 0.0, TH), TH) == px.ZONE_STOP
+    assert px.classify(px.nearest_threat(BODY, [outside] * 2, 0.15, 0.0, TH), TH) == px.ZONE_WARN
+
+
+@pytest.mark.parametrize("corner_gap,zone", [(0.08, px.ZONE_STOP), (0.13, px.ZONE_WARN), (0.17, px.ZONE_WARN)])
+def test_turning_in_place_by_a_wall_stops_only_near_the_corner(corner_gap, zone):
+    """HIL 05.11 (4b): разворот w=0.5 в 0.61 м от стены — угол проходил в 0.16–0.19 м и вставал 8 раз из 8.
+    Стена вдоль борта в ``corner_gap``: на развороте в любую сторону на неё идёт один из углов."""
+    side = wall(-2.0, 2.0, BODY.y_max + corner_gap, BODY.y_max + corner_gap + 0.1)
+    assert [zone_at(side, (0.0, 0.0, 0.0), 0.0, w) for w in (0.5, -0.5)] == [zone, zone]
+
+
+def test_logged_hil_stops_replayed_through_the_corridor_rule():
+    """Все 466 входов в stop из HIL 05.11 (точка, v, w — как напечатала нода): в проёмах 1.0/0.9/0.8 м, в углу и на
+    развороте почти ничего не остаётся, лоб в стену и задний ход в стену — стопят как раньше. Точку лога подаём
+    дважды (``min_points`` = 2), поэтому это пересчёт по логам, не прогон на скане."""
+    rows = [line.split(",") for line in DATA.read_text(encoding="utf-8").splitlines()[3:]]
+    kept = {}
+    for run, _, _, x, y, v, w in rows:
+        point = (float(x), float(y))
+        threat = px.nearest_threat(BODY, [point, point], float(v), float(w), TH)
+        before, after = kept.get(run, (0, 0))
+        kept[run] = (before + 1, after + (px.classify(threat, TH) == px.ZONE_STOP))
+    assert len(rows) == 466
+    doors = ("s1b_door10", "s1f_door10_repeat", "s1k_door10_r3", "s1g_door09", "s1h_door09_repeat", "s1i_door08")
+    assert sum(kept[r][0] for r in doors) == 297
+    assert sum(kept[r][1] for r in doors) <= 1
+    assert kept["s2a_corner"] == (62, 0)
+    assert kept["s4b_teleop_spin"] == (8, 0)
+    assert kept["s5a_push_wall"][1] >= 4  # лоб в стену: 4 из 5
+    assert kept["s5c_reverse_into_wall"] == (2, 2)
+
+
+def test_thresholds_reject_side_or_spin_stop_beyond_stop():
+    with pytest.raises(ValueError):
+        px.Thresholds(side_stop_m=0.25)
+    with pytest.raises(ValueError):
+        px.Thresholds(spin_stop_m=0.0)
+    with pytest.raises(ValueError):
+        px.Thresholds(corridor_margin_m=-0.01)
+
+
+def test_scan_points_are_an_array_for_the_whole_scan():
+    pts = px.scan_points(np.full(720, 2.0), -math.pi, 2 * math.pi / 720, 0.15, 12.0, px.Mount(-0.171))
+    assert pts.shape == (720, 2)
+    assert np.hypot(pts[:, 0] + 0.171, pts[:, 1]) == pytest.approx(np.full(720, 2.0))
+
+
+# -- удержание стопа, пока команда толкает (решение Шифу 05.11) ---------------------------------------------------
+
+WALL_AHEAD = [ahead(0.18), (BODY.x_max + 0.185, 0.02)]
+TICK = 0.05
+
+
+def run_hold(cmds):
+    """Робот встал у стены в 0.18 м (одометрия — ноль), дальше в mux приходят команды ``cmds`` по одной на такт.
+    Вернуть зоны по тактам."""
+    tracker = px.ZoneTracker(TH)
+    tracker.update(0.0, px.assess(BODY, WALL_AHEAD, (0.10, 0.0), None, False, TH))
+    assert tracker.stopping
+    zones = []
+    for i, cmd in enumerate(cmds, start=1):
+        threat = px.assess(BODY, WALL_AHEAD, (0.0, 0.0), cmd, tracker.stopping, TH)
+        tracker.update(i * TICK, threat)
+        zones.append(tracker.zone)
+    return zones
+
+
+def test_stop_holds_while_the_command_pushes_into_the_wall():
+    """HIL 05.11 (5a): телеоп 0.1 м/с в стену — стоп 1.5 с, отпускание, 0.1 с хода, снова стоп (период 1.65 с)."""
+    zones = run_hold([(0.10, 0.0)] * 200)  # 10 с толкаем
+    assert set(zones) == {px.ZONE_STOP}
+
+
+@pytest.mark.parametrize("cmd", [(-0.10, 0.0), (0.0, 0.0), None])
+def test_stop_releases_after_hold_when_the_command_reverses_or_stops(cmd):
+    zones = run_hold([(0.10, 0.0)] * 60 + [cmd] * 60)  # 3 с толкаем, потом назад / ноль / нет команды
+    assert set(zones[:60]) == {px.ZONE_STOP}
+    assert zones[-1] == px.ZONE_CLEAR  # одометрия — ноль: стоящий робот не тревожит
+    assert zones.index(px.ZONE_CLEAR) - 60 <= round((TH.release_s + TICK) / TICK)
+
+
+def test_hold_ignores_the_command_until_a_stop_has_happened():
+    assert px.assess(BODY, WALL_AHEAD, (0.0, 0.0), (0.10, 0.0), False, TH) == px.NO_THREAT
+
+
+def test_command_mux_picks_the_freshest_highest_priority_source_like_twist_mux():
+    doc = yaml.safe_load(TWIST_MUX.read_text(encoding="utf-8"))
+    sources = px.mux_sources(doc, "cmd_vel_emergency")
+    assert "cmd_vel_emergency" not in {s.topic for s in sources}  # свой выход не слушаем — петли нет
+    assert {"cmd_vel", "cmd_vel_joy", "cmd_vel_web"} <= {s.topic for s in sources}
+    mux = px.CommandMux(sources)
+    assert mux.current(0.0) is None
+    mux.update("cmd_vel", 0.0, 0.15, 0.0)  # Nav2
+    assert mux.current(0.1) == (0.15, 0.0)
+    mux.update("cmd_vel_joy", 0.2, -0.1, 0.0)  # пульт перебивает Nav2
+    assert mux.current(0.3) == (-0.1, 0.0)
+    mux.update("cmd_vel", 0.5, 0.15, 0.0)
+    assert mux.current(0.6) == (-0.1, 0.0)  # пульт свеж (timeout 0.5) — он
+    assert mux.current(0.8) == (0.15, 0.0)  # пульт протух — снова Nav2
+    assert mux.current(1.1) is None  # и Nav2 протух

@@ -18,6 +18,8 @@
   <depend>nav_msgs</depend>
   <depend>tf2_ros</depend>
   <exec_depend>python3-yaml</exec_depend>
+  <!-- proximity: скан и угроза векторно (CPU Main Pi, #4365) -->
+  <exec_depend>python3-numpy</exec_depend>
   <!-- speech_client.say -> SpeechRequest (PR-15 part 15-0d); the types come from the msgs image -->
   <depend>rob_box_core</depend>
   <depend>rob_box_dialog_msgs</depend>
