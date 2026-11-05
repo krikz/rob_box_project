@@ -34,6 +34,8 @@ from rob_box_dialog.knowledge import (
     MUSIC_OFF_WORDS,
     MUSIC_PROMISE_WINDOW,
     MUSIC_PROMISES,
+    MUSIC_SILENCE_CLAIM_HEADS,
+    MUSIC_SILENCE_CLAIM_LEADS,
     MUSIC_STOP_CLAIM,
     MUSIC_STOP_CLAIM_UNLESS,
     MUSIC_STOP_UNWOKEN_FORMS,
@@ -693,18 +695,29 @@ def music_stop_claimed(text: str) -> bool:
     """Речь робота утверждает, что музыку выключили или стало тихо (``knowledge.MUSIC_STOP_CLAIM``, М11 n712:
     «Тишина.», «музыку выключил») - по словам, как :func:`music_promises`. Правда ли это, решает вызывающий по
     состоянию музыки (``turn.stop_claim_false``), не этот разбор. Предложение-вопрос и предложение со словами
-    ``MUSIC_STOP_CLAIM_UNLESS`` («если хочешь - будет тишина», «музыку не выключил») не утверждают."""
+    ``MUSIC_STOP_CLAIM_UNLESS`` («если хочешь - будет тишина», «музыку не выключил») не утверждают. «Тишина»
+    утверждает, только начиная часть предложения (``MUSIC_SILENCE_CLAIM_HEADS``): «Тишина.», «Всё, тишина.»; «раз
+    тишина давит на уши» - пересказ, не утверждение (М12 n311)."""
     for sentence in _CLAIM_SENTENCE.findall(text or ""):
         tokens = name_tokens(sentence)
         if sentence.rstrip().endswith("?") or set(tokens) & set(MUSIC_STOP_CLAIM_UNLESS):
             continue
-        if _promises(tokens, MUSIC_STOP_CLAIM):
+        if _promises(tokens, MUSIC_STOP_CLAIM) or any(_silence_heads(part) for part in _CLAIM_PART.split(sentence)):
             return True
     return False
 
 
+def _silence_heads(part: str) -> bool:
+    """Часть предложения начинается словом тишины (``MUSIC_SILENCE_CLAIM_HEADS``) - после служебных слов
+    ``MUSIC_SILENCE_CLAIM_LEADS`` или сразу: «всё тишина», «тишина борису не мешаем»; «раз тишина давит» - нет."""
+    head = next((t for t in name_tokens(part) if t not in MUSIC_SILENCE_CLAIM_LEADS), "")
+    return head in MUSIC_SILENCE_CLAIM_HEADS
+
+
 #: Предложение речи: до знака конца включительно (последнее - и без знака).
 _CLAIM_SENTENCE = re.compile(r"[^.!?…]+[.!?…]*")
+#: Граница частей предложения для головы утверждения: запятая, точка с запятой, двоеточие, тире.
+_CLAIM_PART = re.compile(r"[,;:—–]|\s-\s")
 
 
 def _filler_part(part: Sequence[Span]) -> bool:
