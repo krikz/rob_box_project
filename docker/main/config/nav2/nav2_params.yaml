@@ -93,7 +93,9 @@ controller_server:
       min_vel_y: 0.0
       max_vel_x: 0.15  # Reduced for smoother approach
       max_vel_y: 0.0
-      max_vel_theta: 0.8  # Allow smoother arcs without forcing long in-place turns
+      # 0.6 (было 0.8): меньше заносит корму на косяк, когда DWB доворачивает в узком проёме
+      # (HIL 05.11, #4365: t2 — проём 0.85 на восток 2/2, см. docs/research/2026-11-05-nav2-hil-tuning.md).
+      max_vel_theta: 0.6
       min_speed_xy: 0.05  # 50 mm/s - minimum speed due to min_duty=0.06
       max_speed_xy: 0.15
       min_speed_theta: 0.0  # Allow fine heading corrections while still moving forward
@@ -118,7 +120,8 @@ controller_server:
       # центром (с прямоугольником это вписанный радиус 0.30 — углы 0.43 не видит),
       # ObstacleFootprint — все клетки контура габарита по траектории.
       critics: ["RotateToGoal", "Oscillation", "ObstacleFootprint", "GoalAlign", "PathAlign", "PathDist", "GoalDist"]
-      ObstacleFootprint.scale: 0.02
+      # 0.04 (было 0.02): стоимость клеток под контуром заметнее — держит корпус по центру проёма.
+      ObstacleFootprint.scale: 0.04
       RotateToGoal.scale: 8.0  # Keep final alignment, but stop dominating normal path following
       RotateToGoal.slowing_factor: 5.0
       # lookahead_time — НЕ проверка столкновения (dwb_critics/rotate_to_goal.cpp): курс
@@ -127,11 +130,14 @@ controller_server:
       # траектории. 1.0 с (> 0 по решению Шифу 04.11) — внутри горизонта sim_time 1.5 с.
       RotateToGoal.lookahead_time: 1.0
       Oscillation.scale: 0.5  # Reduced from default (1.0) - less strict oscillation detection
-      PathAlign.scale: 24.0  # Lower heading obsession so DWB accepts curved trajectories
-      PathAlign.forward_point_distance: 0.15  # Increased from 0.1 - look further ahead
+      # Курс по пути перед проёмом (HIL 05.11): при 24 / 0.15 DWB подводил корпус к проёму
+      # 0.8–0.9 м наискось (до 21°), защита стопила по косяку. 48 / 0.325 (дефолт Nav2) —
+      # точка на пути дальше носа, корпус входит по оси.
+      PathAlign.scale: 48.0
+      PathAlign.forward_point_distance: 0.325
       GoalAlign.scale: 12.0  # Avoid in-place pre-alignment far away from the goal
       GoalDist.scale: 20.0
-      PathDist.scale: 25.0
+      PathDist.scale: 32.0  # было 25: ближе к линии пути (она идёт по центру проёма)
 
 local_costmap:
   local_costmap:
@@ -153,17 +159,19 @@ local_costmap:
       # Вписанный радиус 0.3025, описанный 0.43 (был круг robot_radius 0.45:
       # в проём 0.9 м центр не пускал, сим шаг 6 — DWB 5/15 против 25/25).
       footprint: "[[0.3064, 0.3025], [0.3064, -0.3025], [-0.3036, -0.3025], [-0.3036, 0.3025]]"
-      # Запас 3 см (сим 04.11, по 3 прогона polygon/turn90/dead_end): 0.01 — тупик 1.1 м
+      # Запас 2 см. Сим 04.11 (по 3 прогона polygon/turn90/dead_end): 0.01 — тупик 1.1 м
       # 2/3 и зазор 0.043; 0.03 — всё 3/3, зазор в тупике 0.081; от 0.05 — проём 0.8
-      # 1/3, разворот в тупике 0/3; 0.10 — проём 0.9 0/3. Разбор — PR fix/nav2-footprint-margin-spin-check.
-      footprint_padding: 0.03
+      # 1/3, разворот в тупике 0/3; 0.10 — проём 0.9 0/3. HIL 05.11 (#4365): с 0.03 в проёме
+      # 0.85 DWB пишет «No valid trajectories … Trajectory Hits Obstacle» (на бок 0.092 м),
+      # с 0.02 (и критиками выше) проём 0.85 на восток проходит. Тупик с 0.02 не мерян.
+      footprint_padding: 0.02
       plugins: ["voxel_layer", "inflation_layer"]
       inflation_layer:
         plugin: "nav2_costmap_2d::InflationLayer"
         cost_scaling_factor: 3.0
         # Считается от препятствия до центра робота: ближе вписанного радиуса
-        # 0.3325 (0.3025 + padding) — INSCRIBED, дальше спад до 0.57.
-        # 0.57 = описанный радиус 0.473 (с padding) + ~0.10 м — тот же запас, что
+        # 0.3225 (0.3025 + padding) — INSCRIBED, дальше спад до 0.57.
+        # 0.57 = описанный радиус 0.459 (с padding) + ~0.10 м — тот же запас, что
         # был у круга (0.45 + 0.10): стоимость не обрывается раньше угла корпуса
         # при развороте. В проёме 0.9 м по оси (0.45 от стен) — ~177 из 252.
         inflation_radius: 0.57
@@ -204,7 +212,7 @@ global_costmap:
       use_sim_time: false
       # Габарит — тот же прямоугольник, что у local_costmap (замер 04.11)
       footprint: "[[0.3064, 0.3025], [0.3064, -0.3025], [-0.3036, -0.3025], [-0.3036, 0.3025]]"
-      footprint_padding: 0.03
+      footprint_padding: 0.02  # как у local_costmap
       resolution: 0.05
       transform_tolerance: 1.0  # Increased from 0.5 — LiDAR scans can be ~0.83s behind TF after restart
       tf_buffer_duration: 30.0  # Keep TF history 30s — prevents drops when TF buffer is fresh after restart
@@ -233,8 +241,8 @@ global_costmap:
         plugin: "nav2_costmap_2d::InflationLayer"
         cost_scaling_factor: 3.0
         # Считается от препятствия до центра робота: ближе вписанного радиуса
-        # 0.3325 (0.3025 + padding) — INSCRIBED, дальше спад до 0.57.
-        # 0.57 = описанный радиус 0.473 (с padding) + ~0.10 м — тот же запас, что
+        # 0.3225 (0.3025 + padding) — INSCRIBED, дальше спад до 0.57.
+        # 0.57 = описанный радиус 0.459 (с padding) + ~0.10 м — тот же запас, что
         # был у круга (0.45 + 0.10): стоимость не обрывается раньше угла корпуса
         # при развороте. В проёме 0.9 м по оси (0.45 от стен) — ~177 из 252.
         inflation_radius: 0.57
@@ -278,7 +286,10 @@ behavior_server:
       plugin: "nav2_behaviors/DriveOnHeading"
     wait:
       plugin: "nav2_behaviors/Wait"
-    global_frame: map
+    # odom, как local costmap (costmap_topic выше): Spin/BackUp ищут позу робота в этой
+    # costmap. С map при сдвиге map→odom больше полуокна (2.5 м) — «Pose Goes Off Grid.
+    # Collision Ahead - Exiting Spin» без всякого препятствия (HIL 05.11, #4365).
+    global_frame: odom
     robot_base_frame: base_footprint
     transform_tolerance: 0.5  # Increased for ICP latency tolerance
     use_sim_time: false
@@ -310,7 +321,7 @@ velocity_smoother:
     smoothing_frequency: 20.0
     scale_velocities: false
     feedback: "OPEN_LOOP"
-    max_velocity: [0.2, 0.0, 0.8]  # Match DWB limits so angular commands are not clipped
+    max_velocity: [0.2, 0.0, 0.8]  # не в цепочке на роботе (NAV2_SMOOTH_CMD_VEL=false)
     min_velocity: [-0.15, 0.0, -0.8]  # Symmetric limits
     max_accel: [0.2, 0.0, 1.0]  # Match DWB acceleration limits
     max_decel: [-0.2, 0.0, -1.0]  # Match DWB deceleration limits

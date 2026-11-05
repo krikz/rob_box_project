@@ -8,12 +8,12 @@ local_costmap:
   local_costmap:
     ros__parameters:
       footprint: "[[0.3064, 0.3025], [0.3064, -0.3025], [-0.3036, -0.3025], [-0.3036, 0.3025]]"
-      footprint_padding: 0.03
+      footprint_padding: 0.02
 global_costmap:
   global_costmap:
     ros__parameters:
       footprint: "[[0.3064, 0.3025], [0.3064, -0.3025], [-0.3036, -0.3025], [-0.3036, 0.3025]]"
-      footprint_padding: 0.03
+      footprint_padding: 0.02
 # MPPI (SIM_CONTROLLER=mppi): проверять столкновение по прямоугольнику, а не по
 # клетке под центром — иначе углы заходят в стену (серия mppi-urdf: 4 касания из 5
 # на turn90). DWB и RPP этот параметр не читают.

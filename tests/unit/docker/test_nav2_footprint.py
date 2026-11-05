@@ -96,6 +96,29 @@ def test_spin_collision_check_is_on_at_node_level():
     assert lookahead_rad >= 2 * braking_rad
 
 
+def test_behaviors_take_pose_in_frame_of_their_costmap():
+    """Spin/BackUp (Humble 1.1.20) берут позу робота в global_frame behavior_server и ищут её
+    клетку в costmap из costmap_topic. Это local costmap — окно 5×5 м в odom. С global_frame
+    map при сдвиге map→odom больше полуокна поза вне сетки: «Pose Goes Off Grid. Collision
+    Ahead - Exiting Spin» (HIL 05.11, #4365, 2 из 2 в открытом месте).
+    """
+    bs = _behavior()
+    assert bs["costmap_topic"].startswith("local_costmap/")
+    assert bs["global_frame"] == _costmap("local_costmap")["global_frame"]
+
+
+def test_dwb_path_align_looks_past_the_nose():
+    """Курс по пути считается в точке перед носом корпуса, а не у центра.
+
+    HIL 05.11 (#4365): при forward_point_distance 0.15 (нос — 0.31 м) DWB подводил корпус
+    к проёму 0.8–0.9 м наискось, до 21°, и защита стопила по косяку.
+    """
+    fp = _params()["controller_server"]["ros__parameters"]["FollowPath"]
+    nose = max(p[0] for p in _polygon("local_costmap"))
+    assert fp["PathAlign.forward_point_distance"] > nose
+    assert "PathAlign" in fp["critics"]
+
+
 def test_dwb_rotate_to_goal_lookahead_positive_within_horizon():
     fp = _params()["controller_server"]["ros__parameters"]["FollowPath"]
     assert 0 < fp["RotateToGoal.lookahead_time"] <= fp["sim_time"]
@@ -107,6 +130,7 @@ def test_padding_is_measured_compromise(cm):
 
     0.01 — разворот в тупике 1.1 м 2/3, зазор 0.043; 0.03 — всё 3/3, зазор 0.081;
     0.05 и больше — проём 0.8 м 1/3 и меньше, разворот в тупике 0/3; 0.10 — проём 0.9 0/3.
+    HIL 05.11: 0.03 в проёме 0.85 — «No valid trajectories», 0.02 — проходит (на восток).
     Корпус с запасом должен проходить проём 0.8 м с клеткой costmap с каждой стороны.
     """
     p = _costmap(cm)
