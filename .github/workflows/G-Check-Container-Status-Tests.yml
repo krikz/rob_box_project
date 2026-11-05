@@ -26,6 +26,16 @@ on:
     paths:
       - 'scripts/ci/check_container_status.sh'
       - 'scripts/ci/tests/test_check_container_status.sh'
+      # ADR-0166: остальные скрипты проверки деплоя (L-Deploy and Verify)
+      # переехали сюда из .github/scripts/ вместе с тестами, которые раньше
+      # не звал ни один workflow.
+      - 'scripts/ci/check_set_voice_traffic.sh'
+      - 'scripts/ci/check_container_logs.py'
+      - 'scripts/ci/deployment_issue_dedup.py'
+      - 'scripts/ci/tests/test_check_set_voice_traffic.sh'
+      - 'scripts/ci/tests/test_check_container_logs.py'
+      - 'scripts/ci/tests/test_deployment_issue_dedup*.py'
+      - '.github/workflows/G-Check-Container-Status-Tests.yml'
   workflow_dispatch:
 
 permissions:
@@ -64,3 +74,21 @@ jobs:
         run: |
           set -euo pipefail
           bash scripts/ci/tests/test_check_container_status.sh
+
+      # ADR-0166: тесты остальных скриптов шага проверки деплоя.
+      - name: Run set_voice traffic test
+        run: |
+          set -euo pipefail
+          bash scripts/ci/tests/test_check_set_voice_traffic.sh
+
+      - name: Run container logs + deployment issue dedup tests
+        run: |
+          set -euo pipefail
+          python3 -m pip install --quiet pytest
+          python3 -m pytest \
+            scripts/ci/tests/test_check_container_logs.py \
+            scripts/ci/tests/test_deployment_issue_dedup.py \
+            scripts/ci/tests/test_deployment_issue_dedup_monitoring_noise.py \
+            scripts/ci/tests/test_deployment_issue_dedup_telegram.py \
+            scripts/ci/tests/test_deployment_issue_dedup_vesc_segfault.py \
+            -v -o addopts="" -p no:cacheprovider
