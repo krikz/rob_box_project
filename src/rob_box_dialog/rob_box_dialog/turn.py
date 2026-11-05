@@ -111,7 +111,7 @@ from rob_box_dialog.music_state import after_stop
 from rob_box_dialog.respond import (ActionResult, asks, audible, classed, failed, join, outcome_emotion,
                                     reconcile_stops)
 from rob_box_dialog.session import Session, SessionSnapshot, SpeakerRef
-from rob_box_dialog.speaker_adapter import asks_recognized, recognition_reply, speaker_block
+from rob_box_dialog.speaker_adapter import asks_recognized, known_voice_registers, recognition_reply, speaker_block
 from rob_box_dialog.window_reset import WindowGuard, reset_if_idle, reset_window
 from rob_box_dialog.words import asks_question, asks_to_listen, music_stop_claimed, same_stop_rest
 from rob_box_dialog.tools_view import (available_tools, catalogs_asked, music_asked, needs_words, robot_asked,
@@ -1596,6 +1596,8 @@ def owed_reason(snapshot: SessionSnapshot, turn: "_Turn", cmd: Command, names: C
     состоянии подсистемы робота без данных о ней (:func:`unbacked_claims`)."""
     if words_owed(snapshot, turn.text, cmd) or read_owed(snapshot, turn, cmd):
         return kn.VIOLATION_SILENT_ANSWER
+    if known_voice_registers(turn_speaker(snapshot, turn), turn.text, cmd.actions):
+        return kn.VIOLATION_KNOWN_VOICE_REGISTER
     if sound_owed(snapshot, turn, cmd):
         return kn.VIOLATION_SOUND_ANSWER
     catalog = catalog_owed(snapshot, turn, cmd)
@@ -1608,6 +1610,11 @@ def owed_reason(snapshot: SessionSnapshot, turn: "_Turn", cmd: Command, names: C
     if stop_claim_false(snapshot, turn, cmd):
         return kn.VIOLATION_MUSIC_PROMISE
     return kn.VIOLATION_STATE_CLAIM if unbacked_claims(snapshot.agent, turn, cmd) else ""
+
+
+def turn_speaker(snapshot: SessionSnapshot, turn: "_Turn") -> Optional[SpeakerRef]:
+    """Собеседник хода: при подхвате - автор фразы (``_Turn.speaker``), иначе собеседник сессии."""
+    return turn.speaker if turn.speaker is not None else snapshot.speaker
 
 
 def stop_claim_false(snapshot: SessionSnapshot, turn: "_Turn", cmd: Command) -> bool:
@@ -1670,6 +1677,8 @@ _OWED: Mapping[str, _Owed] = {
     kn.VIOLATION_REMOTE_OWED: _Owed(kn.REMOTE_OWED_HINT, "только текст в чат на просьбу сделать роботом",
                                     keeps_words=True),
     kn.VIOLATION_FOREIGN_NAME: _Owed(kn.FOREIGN_NAME_HINT, "обращение к неподтверждённому собеседнику чужим именем"),
+    kn.VIOLATION_KNOWN_VOICE_REGISTER: _Owed(kn.KNOWN_VOICE_REGISTER_HINT,
+                                             "регистрация голоса, уже записанного под этим именем"),
     kn.VIOLATION_STATE_CLAIM: _Owed(kn.STATE_CLAIM_HINT, "утверждение о состоянии подсистемы без данных о ней"),
     kn.VIOLATION_QUERY_REPEAT: _Owed(kn.QUERY_REPEAT_HINT, "повтор чтения, уже исполненного в этом ходе"),
     kn.VIOLATION_SOUND_ANSWER: _Owed(kn.SOUND_ANSWER_HINT, "звук без слов на вопрос после чтения"),
@@ -1737,6 +1746,8 @@ async def _answer_owed(engine: "TurnEngine", turn: _Turn, cmd: Command, snap: Se
     # лицо команды, как и её анимация, показывается — говорит код; последняя итерация после запроса - сначала
     # повтор за словами (:func:`_push_for_words`); ответ без данных тула (``_Owed.reads``) - тул читает код сам
     salvage = (ToolCall(owed.reads),) if owed.reads else cmd.actions
+    needless = known_voice_registers(turn_speaker(engine.session.snapshot, turn), turn.text, salvage)
+    salvage = tuple(a for a in salvage if all(a is not n for n in needless))  # регистрировать нечего (М13 n211)
     return await _close_invalid(engine, turn, Invalid(reason, salvage=salvage), snap, cmd.expression)
 
 
