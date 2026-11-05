@@ -672,7 +672,7 @@ jobs:
           python -m pip install --upgrade pip
           pip install yamllint==1.35.1
 
-      # Конфиг — закоммиченный .yamllint.yml (тот же у pre-commit и у
+      # Конфиг — закоммиченный .yamllint.yml (тот же у
       # локального прогона scripts/ci/run_workflow_job.py). Раньше здесь был
       # шаг, перезаписывавший его heredoc'ом с ДРУГИМИ правилами — CI и
       # локальная проверка линтили по-разному.
@@ -837,7 +837,4 @@ jobs:
           echo "# Format Python code" >> $GITHUB_STEP_SUMMARY
           echo "black ." >> $GITHUB_STEP_SUMMARY
           echo "isort ." >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "# Check before commit" >> $GITHUB_STEP_SUMMARY
-          echo "pre-commit run --all-files" >> $GITHUB_STEP_SUMMARY
           echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
