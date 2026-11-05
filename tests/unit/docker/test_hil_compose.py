@@ -120,12 +120,16 @@ def test_hil_gazebo_runs_under_guard():
 
 
 def test_main_overlay_touches_only_nav_loop():
-    assert set(MAIN_HIL) == set(NAV_SERVICES)
+    # + proximity-guard: звук защиты в HIL гасится флагом HIL_GUARD_SOUND (#4470)
+    assert set(MAIN_HIL) == set(NAV_SERVICES) | {"proximity-guard"}
     assert "ros2-control" not in MAIN_HIL and "lslidar" not in MAIN_HIL
     for name, svc in MAIN_HIL.items():
         assert set(svc) <= {"environment", "volumes"}, name
         assert _env(svc)["USE_SIM_TIME"] == "true", name
         allowed = {"USE_SIM_TIME"} | ({"RTABMAP_START_MODE"} if name == "rtabmap" else set())
+        allowed |= {"HIL_GUARD_SOUND"} if name == "proximity-guard" else set()
+        if name == "proximity-guard":
+            assert _env(svc)["HIL_GUARD_SOUND"] == "${HIL_GUARD_SOUND:-on}"
         assert set(_env(svc)) == allowed, name
 
 
