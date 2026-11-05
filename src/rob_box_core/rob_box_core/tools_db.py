@@ -16,6 +16,11 @@
 
 E2E. Пока владелец режима (``rob_box_core.e2e_mode``) держит e2e, ``mcp_server`` пишет факты в
 :data:`TOOLS_E2E_DB_DEFAULT`, и ``dialog_node`` читает их оттуда же - одно умолчание на обоих.
+
+HIL (эпик #4371, #4392). Реестр карт и точек (таблицы ``maps``/``waypoints``, владелец ``WaypointStore``) можно
+увести в отдельный файл env :data:`WAYPOINT_DB_ENV`: ``scripts/hil/hil.sh on`` пересоздаёт ``voice-assistant`` с
+``docker/sound/compose.hil.yaml``, и «начни карту» в HIL переключает активную карту в HIL-реестре, а не в боевом.
+Остальная память (факты, музыка, FAQ) остаётся в :func:`tools_db_path`. Env не задан - реестр в БД инструментов.
 """
 
 from __future__ import annotations
@@ -25,6 +30,7 @@ import os
 TOOLS_DB_ENV = "VOICE_MEMORY_DB_PATH"
 TOOLS_DB_DEFAULT = "/data/voice_memory.db"
 TOOLS_E2E_DB_DEFAULT = "/data/voice_memory.e2e.db"
+WAYPOINT_DB_ENV = "WAYPOINT_DB_PATH"
 
 
 def tools_db_path() -> str:
@@ -32,4 +38,16 @@ def tools_db_path() -> str:
     return os.environ.get(TOOLS_DB_ENV, "").strip() or TOOLS_DB_DEFAULT
 
 
-__all__ = ["TOOLS_DB_DEFAULT", "TOOLS_DB_ENV", "TOOLS_E2E_DB_DEFAULT", "tools_db_path"]
+def waypoint_db_path() -> str:
+    """Файл реестра карт и точек: :data:`WAYPOINT_DB_ENV`, если задан и не пуст (HIL), иначе :func:`tools_db_path`."""
+    return os.environ.get(WAYPOINT_DB_ENV, "").strip() or tools_db_path()
+
+
+__all__ = [
+    "TOOLS_DB_DEFAULT",
+    "TOOLS_DB_ENV",
+    "TOOLS_E2E_DB_DEFAULT",
+    "WAYPOINT_DB_ENV",
+    "tools_db_path",
+    "waypoint_db_path",
+]

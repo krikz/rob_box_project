@@ -39,3 +39,25 @@ def test_e2e_file_is_a_different_file_on_the_same_volume():
         tools_db.TOOLS_E2E_DB_DEFAULT.rsplit("/", 1)[0]
         == tools_db.TOOLS_DB_DEFAULT.rsplit("/", 1)[0]
     )
+
+
+def test_waypoint_registry_follows_the_tools_db_without_its_env(monkeypatch, tmp_path):
+    """Без ``WAYPOINT_DB_PATH`` реестр карт и точек - в БД инструментов, как до HIL (#4392)."""
+    monkeypatch.delenv(tools_db.WAYPOINT_DB_ENV, raising=False)
+    monkeypatch.setenv(tools_db.TOOLS_DB_ENV, str(tmp_path / "tools.db"))
+    assert tools_db.waypoint_db_path() == str(tmp_path / "tools.db")
+
+
+@pytest.mark.parametrize("blank", ["", "   "])
+def test_blank_waypoint_env_is_the_tools_db(monkeypatch, blank):
+    monkeypatch.delenv(tools_db.TOOLS_DB_ENV, raising=False)
+    monkeypatch.setenv(tools_db.WAYPOINT_DB_ENV, blank)
+    assert tools_db.waypoint_db_path() == tools_db.TOOLS_DB_DEFAULT
+
+
+def test_waypoint_env_moves_only_the_registry(monkeypatch, tmp_path):
+    """HIL: ``hil.sh on`` задаёт ``WAYPOINT_DB_PATH`` - реестр уходит в свой файл, БД инструментов прежняя."""
+    monkeypatch.delenv(tools_db.TOOLS_DB_ENV, raising=False)
+    monkeypatch.setenv(tools_db.WAYPOINT_DB_ENV, str(tmp_path / "hil.db"))
+    assert tools_db.waypoint_db_path() == str(tmp_path / "hil.db")
+    assert tools_db.tools_db_path() == tools_db.TOOLS_DB_DEFAULT
