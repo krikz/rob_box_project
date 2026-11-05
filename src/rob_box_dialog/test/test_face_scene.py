@@ -95,3 +95,14 @@ def test_command_uses_the_same_scene_type_and_check():
 
 def test_failed_and_silenced_scenes_come_from_the_reflex_table():
     assert set(kn.FACE_SCENE_CANCEL_SCENES) == {"error", "taped_mouth"}
+
+
+def test_face_effect_hint_covers_every_effect_value_from_one_source():
+    """Каждое значение bg/fx/feat имеет пояснение «когда уместно», а описание схемы собрано из него."""
+    for slot in ("bg", "fx", "feat"):
+        values = set(kn.FACE_SCENE_SLOTS[slot]) - {"none"}
+        assert set(kn.FACE_EFFECT_WHEN[slot]) == values, slot
+        for value, when in kn.FACE_EFFECT_WHEN[slot].items():
+            assert when.strip()
+            assert value in kn.FACE_SCENE_HINT and when in kn.FACE_SCENE_HINT
+    assert fs.schema()["description"] == kn.FACE_SCENE_HINT
