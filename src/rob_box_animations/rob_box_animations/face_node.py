@@ -32,7 +32,7 @@ from std_msgs.msg import Bool, Int32, String
 from rob_box_dialog import expression, face_scene
 from rob_box_dialog.knowledge import FACE_SCENE_CANCEL_SCENES as CANCEL_SCENES
 
-from .face.face import FPS, GROUP_OF, GROUP_SIZE, IDLE_MA, SCENE_LIT_LIMIT_MA, frame_ma, to_wire
+from .face.face import FPS, GROUP_OF, GROUP_SIZE, IDLE_MA, SCENE_LIT_LIMIT_MA, to_wire, wire_ma
 from .outside import battery_percent
 from .face_director import FaceDirector, GazeTrack, parse_animation_request
 
@@ -56,17 +56,27 @@ class PanelPublisher:
         self._full_refresh_s = full_refresh_s
         self._full_at = 0.0
         self.sent = 0
+        #: strip current of the last frame (``wire_ma``); recounted only when a panel changed (#3733)
+        self.ma = IDLE_MA
 
-    def publish(self, frame, now: float) -> None:
+    def publish(self, frame, now: float) -> float:
+        """Publish the changed panels; returns the strip current of the frame (mA)."""
         full = now - self._full_at >= self._full_refresh_s
         if full:
             self._full_at = now
-        stamp = self._node.get_clock().now().to_msg()
+        stamp = None
+        wires, changed = [], False
         for panel, arr in frame.panels().items():
             group = GROUP_OF[panel]
-            data = to_wire(arr).tobytes()
-            if not full and self._last.get(group) == data:
+            wire = to_wire(arr)
+            wires.append(wire)
+            data = wire.tobytes()
+            same = self._last.get(group) == data
+            changed = changed or not same
+            if not full and same:
                 continue
+            if stamp is None:
+                stamp = self._node.get_clock().now().to_msg()
             self._last[group] = data
             w, h = GROUP_SIZE[group]
             msg = Image()
@@ -75,6 +85,9 @@ class PanelPublisher:
             msg.data = data
             self._pub.publish(msg)
             self.sent += 1
+        if changed:
+            self.ma = wire_ma(wires)
+        return self.ma
 
 
 class FaceNode(Node):
@@ -225,14 +238,14 @@ class FaceNode(Node):
         t0 = time.perf_counter()
         prev = self.director.key
         frame = self.director.tick(now)
-        self.panels.publish(frame, now)
+        ma = self.panels.publish(frame, now)
         ms = (time.perf_counter() - t0) * 1000.0
         if self.director.key != prev:
             self.get_logger().info(f'лицо: {prev or "—"} -> {self.director.key}')
         self._frames += 1
         self._render_ms = max(self._render_ms, ms)
         self._render_sum += ms
-        self._peak_ma = max(self._peak_ma, frame_ma(frame))
+        self._peak_ma = max(self._peak_ma, ma)
         if now - self._metrics_at >= self._metrics_period:
             self._log_metrics(now)
 
