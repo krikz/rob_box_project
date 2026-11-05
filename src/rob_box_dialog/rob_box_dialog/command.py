@@ -1258,6 +1258,7 @@ HINTS: Mapping[str, str] = MappingProxyType({
     kn.VIOLATION_EMPTY_COMMAND: "команда пустая: ответь речью (speech), вопросом (ask), действием (actions) или "
                                 "выступлением (perform); молчать — passed",
     "single_action_class": "в этом классе действий — одно действие за ход",
+    kn.VIOLATION_SOUND_ANSWER: "на вопрос звук не отвечает",
     "too_many_actions": f"действий не больше {kn.ACTIONS_ACCEPT_MAX}",
     "bad_args": "аргументы действия не по схеме тула",
     "tool_not_available": "этого тула в этом ходе нет: возьми из перечня (тулы хода того же класса действия, "
