@@ -10,6 +10,7 @@
 |---|---|
 | Как работать в репо (агентам и людям) | [AGENTS.md](../AGENTS.md) — единственная точка входа (CONTRIBUTING.md, copilot-instructions, .cursorrules только ссылаются на него) |
 | Словарь терминов | [CONTEXT.md](../CONTEXT.md) |
+| Решения товарища Шифу | [shifu-decisions.md](shifu-decisions.md) — «Как завещал товарищ Шифу», по датам и тегам |
 | Что за робот, быстрый старт | [README.md](../README.md), [guides/QUICK_START.md](guides/QUICK_START.md) |
 | Железо, батарея, сеть, три узла (Main / Vision / Sound Pi) | [architecture/HARDWARE.md](architecture/HARDWARE.md), [architecture/NETWORK_TOPOLOGY.md](architecture/NETWORK_TOPOLOGY.md) |
 | Почему сделано так | [adr/](adr/) — решения |
@@ -47,7 +48,7 @@
 | [analysis/](analysis/), [investigations/](investigations/), [recon/](recon/), [diagnostics/](diagnostics/) | → `research/` или архив |
 | [fixes/](fixes/) | остались только заметки, на которые ссылаются живые гайды, скилл `zenoh-dev-setup` и свежие исследования (Zenoh, LiDAR, NAV2); остальное удалено (ADR-0163). Новые не заводим — пишем в PR/issue |
 | [reports/](reports/) | остались только отчёты, на которые ссылаются код, CI или живые доки (Hailo DKMS, ReSpeaker, Zenoh, одометрия, интерфейсы нод, AI HAT); остальное удалено (ADR-0163). Новые не заводим — пишем в PR/issue |
-| [grant/](grant/), [voice/](voice/) | ждут решения (ADR-0163 §4) |
+| [voice/](voice/) | ждёт решения (ADR-0163 §4); `grant/` удалён по решению Шифу 05.11 ([запись](shifu-decisions.md#d-20261105-remove-legacy)) |
 
 ## Spec-driven попытка — удалена (ADR-0163)
 
