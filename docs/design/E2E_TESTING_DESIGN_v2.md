@@ -1,5 +1,8 @@
 # E2E Testing Design v2 — реальный pipeline, multi-model coverage, валидация после fix-ов 06.08
 
+> **05.11.2026 (ADR-0166):** каталог `tests/e2e/live/` (`run_live_e2e.sh`, `snapshot.sh`) удалён — e2e идёт
+> через `L: E2E Voice Test` и марафон; старые скрипты остались в истории git.
+
 > **⚠️ UPDATE 11.08 (атомарный харнесс v3):** с 11.08 e2e-прогоны идут на
 > **`e2e_voice_test.sh` (атомарный v2)** — см. §A.10. Старый `e2e_remote.sh`
 > (шляпа) и `ensure_voice_file.sh` + закоммиченные .ogg **устарели**:

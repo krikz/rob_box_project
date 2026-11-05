@@ -97,4 +97,4 @@ jobs:
           echo "НЕ ставьте сюда 8765 — это порт voice-action-server, который"
           echo "в host-network живёт рядом и отвечает 200 на /healthz своим"
           echo "телом. Тогда smoke-проверка зеленеет, не проверив quest_node."
-          echo "См. evidence/DEFECT-B-healthz-wrong-upstream.md и ADR-0018."
+          echo "См. PR #1723 (разбор DEFECT-B: /healthz на 8765) и ADR-0018."
