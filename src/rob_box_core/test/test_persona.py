@@ -12,7 +12,7 @@ from rob_box_core import epithets as ep
 from rob_box_core import persona as ps
 
 
-def _proposal(appearance="", speech="", epithet="Бородач в синем свитере"):
+def _proposal(appearance="", speech="", epithet="Тёмный бородач"):
     return json.dumps({"appearance": appearance, "speech": speech, "epithet": epithet}, ensure_ascii=False)
 
 
@@ -129,7 +129,7 @@ def test_preview_is_one_line_and_capped():
 def test_valid_proposal_gives_description_and_epithet(face_material):
     verdict = ps.check_proposal(_proposal("Борода, синий свитер, очки"), face_material, now=100.0)
     assert verdict.reject_reason is None
-    assert verdict.epithet == "Бородач в синем свитере"
+    assert verdict.epithet == "Тёмный бородач"
     assert verdict.description.appearance == "Борода, синий свитер, очки"
     assert verdict.description.behavior == "Встречен впервые."
     assert verdict.description.session_id == "s1"
@@ -159,9 +159,12 @@ def test_empty_description_is_rejected(face_material):
 
 @pytest.mark.parametrize("label, reason", [
     ("Незнакомец в куртке", ep.REJECT_STRANGER),
-    ("Бородач", ep.REJECT_WORD_COUNT),
-    ("-", ep.REJECT_WORD_COUNT),
-    ("Борис в свитере", ep.REJECT_NAME),
+    ("Три красивых слова", "epithet: длинная (3 слов)"),
+    ("Мужчина в тёмной одежде", ep.REJECT_DESCRIPTION),
+    ("Женщина", ep.REJECT_DESCRIPTION),
+    ("Электромонтажник-самоучка", "epithet: длинная (25 знаков)"),
+    ("-", ep.REJECT_INVALID),
+    ("Борис очкарик", ep.REJECT_NAME),
     ("Тихий наблюдатель", ep.REJECT_TAKEN),
 ])
 def test_bad_epithet_keeps_description(face_material, label, reason):
@@ -175,7 +178,7 @@ def test_bad_epithet_keeps_description(face_material, label, reason):
 
 def test_material_names_also_block_epithet():
     mat = ps.collect_material("f", "s", has_snapshot=True, names=["Михаил"])
-    assert ps.check_proposal(_proposal("очки", epithet="Михаил в очках"), mat).reject_reason == ep.REJECT_NAME
+    assert ps.check_proposal(_proposal("очки", epithet="Михаил очкарик"), mat).reject_reason == ep.REJECT_NAME
 
 
 # ── Уникальность по обоим хранилищам ─────────────────────────────────────────
@@ -188,14 +191,14 @@ def test_taken_union_merges_face_and_voice_stores():
 
 
 def test_taken_union_excludes_own_epithet(face_material):
-    taken = ps.taken_union(["Бородач в синем свитере", "Электрик"], exclude="бородач в синем свитере")
+    taken = ps.taken_union(["Тёмный бородач", "Электрик"], exclude="тёмный бородач")
     assert taken == ["Электрик"]
     verdict = ps.check_proposal(_proposal("борода"), face_material, taken=taken)
-    assert verdict.epithet == "Бородач в синем свитере"
+    assert verdict.epithet == "Тёмный бородач"
 
 
 def test_voice_epithet_blocks_face_candidate(face_material):
-    taken = ps.taken_union([], ["Бородач в синем свитере"])
+    taken = ps.taken_union([], ["Тёмный бородач"])
     assert ps.check_proposal(_proposal("борода"), face_material, taken=taken).reject_reason == ep.REJECT_TAKEN
 
 
@@ -205,15 +208,15 @@ def test_voice_epithet_blocks_face_candidate(face_material):
 def test_decide_accepts_checked_epithet(face_material):
     verdict = ps.check_proposal(_proposal("борода"), face_material)
     decision = ps.decide(face_material, verdict, current="Странник")
-    assert decision.epithet == "Бородач в синем свитере"
+    assert decision.epithet == "Тёмный бородач"
     assert decision.reason == ps.REASON_PERSONA and decision.changed
     assert decision.previous == "Странник"
-    assert "«Странник» → «Бородач в синем свитере»" in ps.decision_log_line("лица ab12", decision)
+    assert "«Странник» → «Тёмный бородач»" in ps.decision_log_line("лица ab12", decision)
 
 
 def test_decide_same_epithet_is_not_a_change(face_material):
     verdict = ps.check_proposal(_proposal("борода"), face_material)
-    decision = ps.decide(face_material, verdict, current="бородач в синем свитере")
+    decision = ps.decide(face_material, verdict, current="тёмный бородач")
     assert not decision.changed
 
 
@@ -294,3 +297,21 @@ def test_schema_is_narrow():
     assert ps.PROPOSAL_SCHEMA["additionalProperties"] is False
     assert set(ps.PROPOSAL_SCHEMA["required"]) == {"appearance", "speech", "epithet"}
     assert "behavior" not in ps.PROPOSAL_SCHEMA["properties"]
+
+
+@pytest.mark.parametrize("label", ["Тёмный странник", "Очкарик", "Бородач"])
+def test_short_epithet_is_accepted(face_material, label):
+    verdict = ps.check_proposal(_proposal("Синий свитер", epithet=label), face_material)
+    assert verdict.epithet == label and verdict.reject_reason is None
+
+
+def test_description_epithet_falls_back_to_previous_and_keeps_appearance(face_material):
+    verdict = ps.check_proposal(_proposal("Тёмная одежда", epithet="Мужчина в тёмной одежде"), face_material)
+    decision = ps.decide(face_material, verdict, current="Странник")
+    assert decision.epithet == "Странник" and not decision.changed
+    assert decision.description.appearance == "Тёмная одежда"
+    assert ep.REJECT_DESCRIPTION in decision.note
+
+
+def test_voice_epithet_rules_unchanged():
+    assert ep.check_llm_epithet("Мужчина в тёмной одежде")[0] == "Мужчина в тёмной одежде"
