@@ -169,13 +169,72 @@ def _project_vision_events(events_json: str, now: float) -> List[Dict[str, Any]]
     свежей и «видела» ушедшего человека всё окно памяти агрегатора.
     """
     newest: Dict[Tuple[str, str], Dict[str, Any]] = {}
+    where: Dict[Tuple[str, str], _Spot] = {}
     for item in _parse_events(events_json):
         entry = _vision_entry(item, now)
         key = (entry['kind'], str(item.get('embedding_id') or entry['name'] or ''))
         kept = newest.get(key)
         if kept is None or _fresher(entry, kept):
             newest[key] = entry
-    return sorted(newest.values(), key=_age_order)
+            where[key] = _spot(item, entry)
+    return sorted(_one_entry_per_face(newest, where), key=_age_order)
+
+
+#: Безымянное лицо ближе этого (м) к именованному в другом кадре окна - то же лицо (issue #4388), когда bbox нет.
+SAME_FACE_DISTANCE_M = 0.25
+
+#: ``(stamp, cx, cy, сторона bbox, distance_m)`` самой свежей детекции объекта; ``None`` - величины нет.
+_Spot = Tuple[Any, Any, Any, Any, Any]
+
+
+def _spot(item: Dict[str, Any], entry: Dict[str, Any]) -> _Spot:
+    stamp = item.get('stamp')
+    at = None
+    if isinstance(stamp, dict):
+        try:
+            at = float(stamp['sec']) + float(stamp.get('nanosec', 0)) * 1e-9
+        except (KeyError, TypeError, ValueError):
+            at = None
+    try:
+        cx, cy = float(item['bbox_cx']), float(item['bbox_cy'])
+        side = max(float(item['bbox_w']), float(item['bbox_h']))
+    except (KeyError, TypeError, ValueError):
+        cx = cy = side = None
+    if side is not None and side <= 0:
+        cx = cy = side = None
+    return at, cx, cy, side, entry['distance_m']
+
+
+def _same_place(a: _Spot, b: _Spot) -> bool:
+    """Две детекции лица из РАЗНЫХ кадров на одном месте: центры bbox ближе стороны бокса, а без bbox - дистанции
+    ближе :data:`SAME_FACE_DISTANCE_M`. Один кадр (тот же stamp) - два разных лица, не схлопываются."""
+    if a[0] is None or b[0] is None or a[0] == b[0]:
+        return False
+    if a[1] is not None and b[1] is not None:
+        return ((a[1] - b[1]) ** 2 + (a[2] - b[2]) ** 2) ** 0.5 <= max(a[3], b[3])
+    if a[4] is not None and b[4] is not None:
+        return abs(a[4] - b[4]) <= SAME_FACE_DISTANCE_M
+    return False
+
+
+def _one_entry_per_face(
+    newest: Dict[Tuple[str, str], Dict[str, Any]], where: Dict[Tuple[str, str], _Spot],
+) -> List[Dict[str, Any]]:
+    """Одно физическое лицо - одна запись (issue #4388, живой 04.11: «незнакомое лицо ~1.1 м» age 0.5 с и «Литвин»
+    ~1.1 м age 0.9 с - одно фото; почему кадр остался без имени, по логу не установлено). Безымянное лицо из другого
+    кадра на месте именованного вливается в именованное: имя остаётся, возраст и дистанция - самой свежей детекции."""
+    named = [k for k, e in newest.items() if e['kind'] == 'face' and e['name']]
+    out = dict(newest)
+    for key, entry in newest.items():
+        if entry['kind'] != 'face' or entry['name']:
+            continue
+        twin = next((k for k in named if _same_place(where[key], where[k])), None)
+        if twin is None:
+            continue
+        del out[key]
+        if _fresher(entry, out[twin]):
+            out[twin] = dict(out[twin], age_s=entry['age_s'], distance_m=entry['distance_m'])
+    return list(out.values())
 
 
 def _parse_events(events_json: str) -> List[Dict[str, Any]]:

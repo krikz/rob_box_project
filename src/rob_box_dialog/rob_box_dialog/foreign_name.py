@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import replace
-from typing import Any, Collection, FrozenSet, Iterable, List, Optional, Tuple
+from typing import Any, Collection, FrozenSet, Iterable, List, Mapping, Optional, Tuple
 
 from rob_box_core.speaker_wire import NAME_CONFIRMED
 from rob_box_dialog import knowledge as kn
@@ -42,6 +42,22 @@ def name_keys(names: Iterable[Any]) -> FrozenSet[str]:
             continue
         keys.update(key for key in map(name_key, name_tokens(label)) if key)
     return frozenset(keys)
+
+
+def face_names(results: Iterable[Any]) -> Tuple[str, ...]:
+    """Имена лиц из кадра, которые модель прочитала в исходах тулов хода (``data.faces[].name``,
+    ``get_perception_context``). Лицо в кадре - не говорящий (#4388: «Вижу тебя… Литвин» неопознанному собеседнику,
+    в кадре было фото «Литвин»): обращаться к неподтверждённому собеседнику этим именем - так же выдумка, как именем
+    из истории разговора."""
+    names = []
+    for result in results:
+        data = result.get("data") if isinstance(result, Mapping) else getattr(result, "data", None)
+        faces = data.get("faces") if isinstance(data, Mapping) else None
+        for face in faces if isinstance(faces, (list, tuple)) else ():
+            name = face.get("name") if isinstance(face, Mapping) else None
+            if name:
+                names.append(str(name))
+    return tuple(names)
 
 
 def unconfirmed(speaker: Any) -> bool:
@@ -133,4 +149,4 @@ def unnamed(cmd: Command, keys: Collection[str]) -> Command:
     return replace(cmd, speech=_clean(cmd.speech, keys), ask=ask)
 
 
-__all__ = ["addressed", "name_keys", "offending", "spoken", "unconfirmed", "unnamed", "without_address"]
+__all__ = ["addressed", "face_names", "name_keys", "offending", "spoken", "unconfirmed", "unnamed", "without_address"]

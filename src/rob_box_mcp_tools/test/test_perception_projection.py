@@ -410,3 +410,56 @@ def test_person_who_left_is_not_in_view():
     ctx = project_perception_event(_FakePerceptionEvent(vision_events_json=payload, apriltag_ids=[]))
     assert ctx['faces'] == []
     assert ctx['vision_context'] == 'сейчас в кадре никого; последним было: лицо «Литвин» ~1.0 м 12 с назад'
+
+
+# ---------- 7. одно лицо - одна запись: issue #4388 ---------------------------
+# Живой 04.11.2026 22:51 UTC: в кадре одно фото «Литвин», а get_perception_context отдал
+# faces=[{name: None, 1.115 м, age 0.5}, {name: 'Литвин', 1.120 м, age 0.9}] и «незнакомое лицо ~1.1 м; ... лицо
+# «Литвин» ~1.1 м» - робот сказал о двух лицах.
+
+def _face_at(sec, nanosec, name='', embedding_id='', distance=1.12, cx=None):
+    event = _live_event('face', sec, name, embedding_id, distance)
+    event['stamp'] = {'sec': sec, 'nanosec': nanosec}
+    if cx is not None:
+        event.update(bbox_cx=cx, bbox_cy=0.5, bbox_w=0.2, bbox_h=0.25)
+    return event
+
+
+def test_unnamed_face_from_other_frame_at_same_place_merges_into_named():
+    payload = json.dumps([
+        _face_at(1_699_999_999, 600_000_000, 'Литвин', '566331d3', distance=1.1198),
+        _face_at(1_700_000_000, 0, distance=1.1148),
+    ], ensure_ascii=False)
+    ctx = project_perception_event(_FakePerceptionEvent(vision_events_json=payload, apriltag_ids=[21]))
+    assert ctx['faces'] == [{'name': 'Литвин', 'distance_m': pytest.approx(1.1148), 'age_s': 0.5}]
+    assert ctx['vision_context'] == 'в кадре: лицо «Литвин» ~1.1 м; метки AprilTag: 21'
+
+
+def test_unnamed_face_with_its_own_record_id_still_merges_by_place():
+    """Кадр мог узнать фото как другую, безымянную запись галереи (104 безымянных лица) - место то же."""
+    payload = json.dumps([
+        _face_at(1_699_999_999, 600_000_000, 'Литвин', '566331d3', cx=0.50),
+        _face_at(1_700_000_000, 0, embedding_id='46b612c4', cx=0.52),
+    ], ensure_ascii=False)
+    ctx = project_perception_event(_FakePerceptionEvent(vision_events_json=payload, apriltag_ids=[]))
+    assert [f['name'] for f in ctx['faces']] == ['Литвин']
+
+
+def test_two_faces_in_one_frame_stay_two():
+    """Тот же stamp - один кадр, два лица: не схлопывать, даже на одной дистанции."""
+    payload = json.dumps([
+        _face_at(1_700_000_000, 0, 'Литвин', '566331d3'),
+        _face_at(1_700_000_000, 0, distance=1.15),
+    ], ensure_ascii=False)
+    ctx = project_perception_event(_FakePerceptionEvent(vision_events_json=payload, apriltag_ids=[]))
+    assert sorted(str(f['name']) for f in ctx['faces']) == ['None', 'Литвин']
+
+
+def test_unnamed_face_elsewhere_in_frame_is_another_person():
+    payload = json.dumps([
+        _face_at(1_699_999_999, 600_000_000, 'Литвин', '566331d3', cx=0.2),
+        _face_at(1_700_000_000, 0, cx=0.8),
+    ], ensure_ascii=False)
+    ctx = project_perception_event(_FakePerceptionEvent(vision_events_json=payload, apriltag_ids=[]))
+    assert len(ctx['faces']) == 2
+    assert ctx['vision_context'].startswith('в кадре: незнакомое лицо')

@@ -31,9 +31,12 @@
 лицо разъехались бы по несвязанным ключам.
 
 **Слияние с голосом** (ADR-0123 §6): нода слушает
-``/voice/speaker/result`` и, если голос уверенно опознал человека, а в
-кадре ровно одно лицо, привязывает имя к лицевой записи. Два лица в
-кадре — слияния нет (открытый вопрос ADR-0105 §3 п.4).
+``/voice/speaker/result`` и, если голос уверенно опознал человека, а
+доказано, что говорит лицо в кадре (одно лицо всё окно фразы, рот
+двигался, несколько фраз подряд — ``face_voice_binding``, issue #4357),
+привязывает имя к лицевой записи. Два лица в кадре — слияния нет
+(открытый вопрос ADR-0105 §3 п.4). Топик ``/voice/speaker/merge`` к
+этому не относится: это склейка двух ГОЛОСОВЫХ профилей.
 
 Stub-режим (hailo_enabled=false): ``StubHEFLoader`` публикует
 ``event_type="stub"`` (маркер выдуманного события, ADR-0089 §2.2) —
@@ -466,8 +469,8 @@ class VisionFaceNode(VisionHailoNode):
         # Issue #2748 — источник ``source="register"`` (speaker_id_node,
         # момент регистрации) принимается НАРАВНЕ с обычным узнаванием:
         # имя названо самим человеком, доверия к нему больше, чем к
-        # косинусу identify(). Условие «ровно одно лицо в кадре»
-        # (ADR-0105 §3 п.4) не отличает источники — оно живёт внутри
+        # косинусу identify(). Доказательство «говорит это лицо» (issue
+        # #4357, ADR-0105 §3 п.4) не отличает источники — оно живёт внутри
         # note_voice_identification() и остаётся строгим для ОБОИХ.
         try:
             self._recognizer.note_voice_identification(
@@ -505,6 +508,10 @@ class VisionFaceNode(VisionHailoNode):
             ('два+_лица', stats.get('voice_merge_skip_multi_face', 0)),
             ('устарело', stats.get('voice_merge_skip_stale', 0)),
             ('конфликт_профилей', stats.get('voice_merge_skip_conflict', 0)),
+            # Issue #4357: лицо не говорило / пара копит подтверждения / у лица уже другое имя.
+            ('лицо_не_говорило', stats.get('voice_merge_skip_not_speaking', 0)),
+            ('ждёт_подтверждений', stats.get('voice_merge_pending', 0)),
+            ('у_лица_другое_имя', stats.get('voice_merge_skip_named_other', 0)),
         )
         skip_suffix = ''
         active_reasons = [f'{label}={count}' for label, count in skip_reasons if count]

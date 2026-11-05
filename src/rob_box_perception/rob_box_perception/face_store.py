@@ -1186,6 +1186,8 @@ class FaceStore:
                 {
                     'person_id': rec.person_id,
                     'name': rec.name,
+                    # issue #4357: слияние с голосом не перетирает чужую привязку (face_voice_binding.store_veto).
+                    'speaker_id': rec.speaker_id,
                     'encounter_count': rec.encounter_count,
                     'has_snapshot': rec.has_reference_snapshot,
                     'is_stranger': rec.name is None,

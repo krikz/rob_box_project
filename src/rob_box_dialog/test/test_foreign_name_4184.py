@@ -172,6 +172,51 @@ def test_unknown_who_gave_his_own_name_is_called_by_it():
     assert ports.said == ["Понял."]
 
 
+class _CameraPorts(Ports):
+    """Тул кадра отдаёт лицо «Литвин» (живой 04.11 22:51, #4388): фото в кадре, говорит неопознанный."""
+
+    async def execute(self, actions, snapshot, turn_id):
+        return [ActionResult(f"{turn_id}/{n}", snapshot.epoch, snapshot.agent, a.tool, kn.TOOL_CLASSES[a.tool], "done",
+                             None, {"vision_context": "в кадре: лицо «Литвин» ~1.1 м",
+                                    "faces": [{"name": "Литвин", "distance_m": 1.12, "age_s": 0.9}]})
+                for n, a in enumerate(actions)]
+
+
+def _look(answers, speaker):
+    session = Session("personality")
+    look = Answer(Command(actions=(ToolCall("get_perception_context", {}),)), "deepseek")
+    ports = _CameraPorts([look] + list(answers))
+    engine = TurnEngine(session, ports, system_prompt="Ты робот.")
+    session.set_speaker(speaker)
+    asyncio.run(engine.run(Addressed("робот что ты сейчас видишь", VOICE)))
+    return ports
+
+
+def test_face_name_from_the_camera_is_not_the_unknown_speakers_name():
+    """#4388: «Вижу тебя примерно в метре от меня, Литвин.» неопознанному - нарушение, как имя из истории."""
+    wrong = Answer(Command(speech="Вижу тебя примерно в метре от меня, Литвин."), "deepseek")
+    ports = _look([wrong, wrong], NEW)
+    assert any(kn.VIOLATION_FOREIGN_NAME in m["content"] for m in ports.asked[-1] if isinstance(m.get("content"), str))
+    assert ports.said == ["Вижу тебя примерно в метре от меня."]
+
+
+def test_face_name_told_about_in_third_person_stays():
+    ports = _look([Answer(Command(speech="В кадре лицо Литвина, примерно в метре."), "deepseek")], NEW)
+    assert ports.said == ["В кадре лицо Литвина, примерно в метре."]
+
+
+def test_confirmed_speaker_may_be_called_by_the_face_name():
+    ports = _look([Answer(Command(speech="Вижу тебя, Саша."), "deepseek")], SASHA)
+    assert ports.said == ["Вижу тебя, Саша."]
+
+
+def test_face_names_reads_tool_data_only():
+    results = [ActionResult("t/0", 1, "personality", "get_perception_context", "query", "done", None,
+                            {"faces": [{"name": "Литвин"}, {"name": None}]}),
+               {"tool": "get_perception_context", "status": "done", "data": {"faces": "мусор"}}]
+    assert fn.face_names(results) == ("Литвин",)
+
+
 def test_unknown_with_a_name_in_the_registration_may_be_called_by_it():
     reg = Command(speech="Приятно познакомиться, Гриша.",
                   actions=(ToolCall("register_speaker", {"name": "Гриша"}),))
