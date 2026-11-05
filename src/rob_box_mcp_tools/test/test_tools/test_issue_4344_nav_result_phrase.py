@@ -103,10 +103,15 @@ class _Store:
         return [{"name": n} for n in self._points]
 
 
+def _no_orphan_halt(reason, rounds=2):
+    return ao.CANCEL_NO_ACTIVE_GOAL  # #4435: фейк гашения контроллера (сироты нет)
+
+
 def _waypoint_tool(nav, client):
     tool = nav.NavigateToWaypointTool.__new__(nav.NavigateToWaypointTool)
     tool.node = MagicMock()
     tool.nav_client = client
+    tool.controller_halt = _no_orphan_halt
     tool.waypoint_store = _Store({"а": {"x": 10.459, "y": 6.685, "theta": 0.0}})
     return tool
 
@@ -115,6 +120,7 @@ def _coords_tool(nav, client):
     tool = nav.NavigateToCoordinatesTool.__new__(nav.NavigateToCoordinatesTool)
     tool.node = MagicMock()
     tool.nav_client = client
+    tool.controller_halt = _no_orphan_halt
     return tool
 
 
@@ -223,6 +229,7 @@ def test_move_direction_failure_names_the_reason(nav):
     tool = nav.MoveDirectionTool.__new__(nav.MoveDirectionTool)
     tool.node = MagicMock()
     tool.nav_client = _NavClient(ao.GOAL_STATUS_ABORTED)
+    tool.controller_halt = _no_orphan_halt
     res = tool.execute("вперёд", 1.0)
     assert _spoken("move_direction", {"direction": "вперёд"}, res) == "Не доехал: навигация прервалась."
 

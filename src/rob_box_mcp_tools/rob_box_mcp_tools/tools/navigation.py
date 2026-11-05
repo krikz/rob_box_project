@@ -18,7 +18,7 @@ from typing import Any, Callable, List, Optional, TYPE_CHECKING
 import math
 import time
 from rclpy.action import ActionClient
-from geometry_msgs.msg import PoseStamped
+from geometry_msgs.msg import PoseStamped, Twist
 from nav2_msgs.action import NavigateToPose
 from action_msgs.srv import CancelGoal
 from action_msgs.msg import GoalInfo
@@ -29,6 +29,8 @@ if TYPE_CHECKING:
 
 from ..base import MCPTool, MCPToolParameter, MCPToolResult, ToolExecutionType, wait_future
 from ..core.action_outcome import (
+    CANCEL_CONFIRMED,
+    CANCEL_NO_ACTIVE_GOAL,
     NAV_NO_RESPONSE,
     NAV_REJECTED,
     NAV_SERVER_UNAVAILABLE,
@@ -46,6 +48,21 @@ from ..map_pose import LEGACY_WAYPOINT_FRAME, MapPose
 
 _CANCEL_ALL_LABEL = "Nav2 cancel_goal"
 _CANCEL_ALL_TIMEOUT_SEC = 5.0
+
+# #4435: «сирота» FollowPath. Nav2 Humble ``BtActionNode`` при таймауте подтверждения цели
+# (``default_server_timeout``) сбрасывает future и возвращает FAILURE без goal handle, а его
+# ``halt()`` отменяет только цель с handle. Запрос цели уже ушёл: controller_server принимает
+# её позже и ведёт робота, хотя NavigateToPose давно ABORTED. Поэтому при любом исходе ≠ успех
+# наш слой сам гасит контроллер: отмена всех целей ``follow_path`` + нулевой ``cmd_vel``.
+_FOLLOW_PATH_CANCEL_SRV = "/follow_path/_action/cancel_goal"
+_FOLLOW_PATH_CANCEL_LABEL = "controller_server follow_path cancel_goal"
+_NAV_CMD_VEL_TOPIC = "/cmd_vel"  # выход controller_server → twist_mux (вход navigation, priority 10)
+_HALT_CANCEL_TIMEOUT_SEC = 2.0
+# Второй раунд ловит позднее подтверждение: запрос FollowPath мог дойти до сервера уже после
+# нашей первой отмены (отмена «всех» гасит только цели, принятые к моменту отмены).
+_HALT_ROUNDS_ON_FAILURE = 2
+_HALT_ROUND_GAP_SEC = 1.0
+_ZERO_TWIST_REPEATS = 3
 
 
 def _nav_failure(kind: str, status: Optional[int] = None) -> MCPToolResult:
@@ -71,6 +88,64 @@ def _distance_feedback(distances: List[float]):
     return on_feedback
 
 
+def _cancel_all_goals(client, label: str, timeout_sec: float):
+    """Отменить ВСЕ цели action-сервера (нулевые uuid и время). Возвращает ``(исход вызова, ответ)``."""
+    ready = client.wait_for_service(timeout_sec=0.5)
+    response, completed, error = None, False, None
+    if ready:
+        request = CancelGoal.Request()
+        request.goal_info = GoalInfo()  # нулевые uuid и время — отменить все цели
+        future = client.call_async(request)
+        completed = wait_future(future, timeout_sec=timeout_sec)
+        response, error = _future_response(future, completed)
+    call = classify_service_call(ready=ready, completed=completed, response=response, label=label, error=error)
+    return call, response
+
+
+class ControllerHalt:
+    """Гарантированная остановка controller_server после NavigateToPose (#4435).
+
+    ``halt(reason, rounds)`` отменяет все цели ``follow_path`` и публикует нулевой ``cmd_vel``.
+    Возвращает вид исхода отмены (``action_outcome``): ``CANCEL_CONFIRMED`` — «сирота» была
+    и погашена, ``CANCEL_NO_ACTIVE_GOAL`` — контроллер и так стоял, иначе — сбой вызова.
+    """
+
+    def __init__(self, node):
+        self._node = node
+        self._cancel_client = node.create_client(CancelGoal, _FOLLOW_PATH_CANCEL_SRV)
+        self._cmd_vel = node.create_publisher(Twist, _NAV_CMD_VEL_TOPIC, 10)
+
+    def __call__(self, reason: str, rounds: int = _HALT_ROUNDS_ON_FAILURE) -> str:
+        kinds = []
+        for i in range(max(1, rounds)):
+            if i:
+                time.sleep(_HALT_ROUND_GAP_SEC)
+            kinds.append(self._cancel_round())
+            self._publish_zero()
+        kind = CANCEL_CONFIRMED if CANCEL_CONFIRMED in kinds else kinds[-1]
+        log = self._node.get_logger()
+        line = f"#4435 halt контроллера ({reason}): отмена follow_path {kinds} -> {kind}, cmd_vel=0"
+        (log.warning if kind == CANCEL_CONFIRMED else log.info)(line)
+        return kind
+
+    def _cancel_round(self) -> str:
+        call, response = _cancel_all_goals(self._cancel_client, _FOLLOW_PATH_CANCEL_LABEL, _HALT_CANCEL_TIMEOUT_SEC)
+        if not call.success:
+            return call.kind
+        return classify_cancel_response(response).kind
+
+    def _publish_zero(self) -> None:
+        for _ in range(_ZERO_TWIST_REPEATS):
+            self._cmd_vel.publish(Twist())
+
+
+def _halt_after(result: MCPToolResult, halt: Optional[Callable[..., str]], reason: str) -> MCPToolResult:
+    """Неуспех навигации → погасить контроллер; исход остановки — в ``data`` (для логов и HIL)."""
+    if halt is not None:
+        result.data = {**(result.data or {}), "controller_halt": halt(reason)}
+    return result
+
+
 def _cancel_goal_best_effort(goal_handle, logger) -> None:
     """Таймаут не должен оставлять робота ехать дальше, пока мы говорим «не доехал»."""
     try:
@@ -79,13 +154,26 @@ def _cancel_goal_best_effort(goal_handle, logger) -> None:
         logger.warning(f"Не удалось отменить цель Nav2 после таймаута: {exc}")
 
 
-def _send_nav_goal(nav_client, node, x: float, y: float, theta: float, frame_id: str = "map", timeout: float = 120.0):
+def _send_nav_goal(
+    nav_client,
+    node,
+    x: float,
+    y: float,
+    theta: float,
+    frame_id: str = "map",
+    timeout: float = 120.0,
+    halt: Optional[Callable[..., str]] = None,
+):
     """Shared helper: send a NavigateToPose goal and block until completion.
 
     Успех — только если Nav2 вернул ``GoalStatus.STATUS_SUCCEEDED`` (#3789):
     ``ABORTED``/``CANCELED``/таймаут/отказ в приёме цели — честный неуспех.
     Данные успеха — как достигнута цель (``action_outcome.nav_data``, #4344): время от
     принятия цели до ответа Nav2 и путь до цели по обратной связи.
+
+    #4435: если цель ушла в Nav2 и исход ≠ успех (ABORTED/CANCELED/неизвестный статус,
+    таймаут результата, нет ответа на отправку) — ``halt`` гасит controller_server
+    (``ControllerHalt``). Без сервера и при отказе в приёме цели гасить нечего.
 
     Returns ``MCPToolResult``.
     """
@@ -104,7 +192,7 @@ def _send_nav_goal(nav_client, node, x: float, y: float, theta: float, frame_id:
     distances: List[float] = []
     send_future = nav_client.send_goal_async(goal, feedback_callback=_distance_feedback(distances))
     if not wait_future(send_future, timeout_sec=10.0) or send_future.result() is None:
-        return _nav_failure(NAV_NO_RESPONSE)
+        return _halt_after(_nav_failure(NAV_NO_RESPONSE), halt, NAV_NO_RESPONSE)
 
     goal_handle = send_future.result()
     if not goal_handle.accepted:
@@ -114,12 +202,12 @@ def _send_nav_goal(nav_client, node, x: float, y: float, theta: float, frame_id:
     result_future = goal_handle.get_result_async()
     if not wait_future(result_future, timeout_sec=timeout) or result_future.result() is None:
         _cancel_goal_best_effort(goal_handle, node.get_logger())
-        return _nav_failure(NAV_TIMEOUT)
+        return _halt_after(_nav_failure(NAV_TIMEOUT), halt, NAV_TIMEOUT)
 
     status = getattr(result_future.result(), "status", None)
     outcome = classify_nav_status(status)
     if not outcome.success:
-        return _nav_failure(outcome.kind, status)
+        return _halt_after(_nav_failure(outcome.kind, status), halt, outcome.kind)
     return MCPToolResult(
         success=True, data=nav_data(NAV_SUCCEEDED, time.monotonic() - started, start_distance(distances))
     )
@@ -165,6 +253,7 @@ class NavigateToWaypointTool(MCPTool):
     def __init__(self, node, waypoint_store: "WaypointAdapter"):
         super().__init__(node)
         self.nav_client = ActionClient(node, NavigateToPose, "navigate_to_pose")
+        self.controller_halt = ControllerHalt(node)
         self.waypoint_store = waypoint_store
         self.current_goal_handle = None
 
@@ -226,7 +315,14 @@ class NavigateToWaypointTool(MCPTool):
         )
 
         result = _send_nav_goal(
-            self.nav_client, self.node, coords["x"], coords["y"], coords["theta"], frame_id=frame_id, timeout=120.0
+            self.nav_client,
+            self.node,
+            coords["x"],
+            coords["y"],
+            coords["theta"],
+            frame_id=frame_id,
+            timeout=120.0,
+            halt=self.controller_halt,
         )
         _with_target(
             result, waypoint, waypoint=waypoint, coordinates=coords, frame_id=frame_id, frame_assumed=frame_assumed
@@ -250,6 +346,7 @@ class NavigateToCoordinatesTool(MCPTool):
     def __init__(self, node):
         super().__init__(node)
         self.nav_client = ActionClient(node, NavigateToPose, "navigate_to_pose")
+        self.controller_halt = ControllerHalt(node)
 
     @property
     def name(self) -> str:
@@ -288,7 +385,7 @@ class NavigateToCoordinatesTool(MCPTool):
     def execute(self, x: float, y: float, theta: float = 0.0) -> MCPToolResult:
         self.log_info(f"Навигация к координатам: x={x:.2f}, y={y:.2f}, θ={theta:.2f}")
 
-        result = _send_nav_goal(self.nav_client, self.node, x, y, theta, timeout=120.0)
+        result = _send_nav_goal(self.nav_client, self.node, x, y, theta, timeout=120.0, halt=self.controller_halt)
         _with_target(result, f"({x:.1f}, {y:.1f})", x=x, y=y, theta=theta)
         if result.success:
             result.message = _arrived_message(result, f"точке ({x:.1f}, {y:.1f})")
@@ -316,6 +413,7 @@ class MoveDirectionTool(MCPTool):
     def __init__(self, node):
         super().__init__(node)
         self.nav_client = ActionClient(node, NavigateToPose, "navigate_to_pose")
+        self.controller_halt = ControllerHalt(node)
 
     @property
     def name(self) -> str:
@@ -365,7 +463,14 @@ class MoveDirectionTool(MCPTool):
             coords["x"] *= distance
 
         result = _send_nav_goal(
-            self.nav_client, self.node, coords["x"], coords["y"], coords["theta"], frame_id="base_link", timeout=60.0
+            self.nav_client,
+            self.node,
+            coords["x"],
+            coords["y"],
+            coords["theta"],
+            frame_id="base_link",
+            timeout=60.0,
+            halt=self.controller_halt,
         )
         if result.success:
             result.data = {
@@ -389,6 +494,7 @@ class StopNavigationTool(MCPTool):
     def __init__(self, node):
         super().__init__(node)
         self.cancel_client = node.create_client(CancelGoal, "/navigate_to_pose/_action/cancel_goal")
+        self.controller_halt = ControllerHalt(node)
 
     @property
     def name(self) -> str:
@@ -414,19 +520,11 @@ class StopNavigationTool(MCPTool):
     def execute(self) -> MCPToolResult:
         self.log_info("Остановка навигации")
 
-        ready = self.cancel_client.wait_for_service(timeout_sec=0.5)
-        response, completed, error = None, False, None
-        if ready:
-            request = CancelGoal.Request()
-            request.goal_info = GoalInfo()  # нулевые uuid и время — отменить все цели
-            future = self.cancel_client.call_async(request)
-            completed = wait_future(future, timeout_sec=_CANCEL_ALL_TIMEOUT_SEC)
-            response, error = _future_response(future, completed)
+        call, response = _cancel_all_goals(self.cancel_client, _CANCEL_ALL_LABEL, _CANCEL_ALL_TIMEOUT_SEC)
+        # #4435: контроллер гасим всегда — «сирота» FollowPath едет и без активной NavigateToPose.
+        halt_kind = self.controller_halt("stop_navigation", rounds=1)
 
         # Успех — только по ответу сервера отмены (#3789, ADR-0148): фразу строит код.
-        call = classify_service_call(
-            ready=ready, completed=completed, response=response, label=_CANCEL_ALL_LABEL, error=error
-        )
         if not call.success:
             self.log_warning(f"⚠️ {call.error}")
             return MCPToolResult(
@@ -443,7 +541,11 @@ class StopNavigationTool(MCPTool):
                 success=False, error=outcome.error, message=outcome.message, data={"outcome": outcome.kind}
             )
         self.log_info(f"Отмена подтверждена: {outcome.kind}")
-        return MCPToolResult(success=True, message=outcome.message, data={"outcome": outcome.kind})
+        kind, message = outcome.kind, outcome.message
+        if kind == CANCEL_NO_ACTIVE_GOAL and halt_kind == CANCEL_CONFIRMED:
+            # Цели навигации не было, а контроллер ещё вёл робота (#4435): это остановка, не «и так стою».
+            kind, message = CANCEL_CONFIRMED, "Останавливаюсь"
+        return MCPToolResult(success=True, message=message, data={"outcome": kind, "controller_halt": halt_kind})
 
 
 # ============================================================

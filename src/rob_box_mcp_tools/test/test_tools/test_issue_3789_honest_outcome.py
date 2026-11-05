@@ -226,6 +226,7 @@ def _coords_tool(nav, client):
     tool = nav.NavigateToCoordinatesTool.__new__(nav.NavigateToCoordinatesTool)
     tool.node = MagicMock()
     tool.nav_client = client
+    tool.controller_halt = lambda reason, rounds=2: ao.CANCEL_NO_ACTIVE_GOAL  # #4435
     return tool
 
 
@@ -303,6 +304,7 @@ def _stop(nav, client):
     tool = nav.StopNavigationTool.__new__(nav.StopNavigationTool)
     tool.node = MagicMock()
     tool.cancel_client = client
+    tool.controller_halt = lambda reason, rounds=2: ao.CANCEL_NO_ACTIVE_GOAL  # #4435: сироты нет
     return tool.execute()
 
 
