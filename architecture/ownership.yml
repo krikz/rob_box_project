@@ -121,6 +121,17 @@ nodes:
     # зовёт его dialog_node (v2).
     source: [src/rob_box_core/rob_box_core/expression_client.py]
 
+# Сервисы (гард ownership_check читает только топики; здесь - карта владельцев для людей, #4469).
+services:
+  /perception/people:
+    owner: vision_face_node
+    type: rob_box_perception_msgs/srv/People
+    status: live
+    introduced_by: "#4469"
+    # единственный писатель лиц (list/photo/set_name над FaceStore); клиент - тулы people_list, person_photo, name_person
+    # в mcp_server (Sound Pi, срез telegram): они только зовут и переводят ответ в фразу кода
+    clients_allowed: [mcp_server]
+
 topics:
   # -- Вход речи и собеседник (PR-2: оба топика типизированы) ------------------
   /voice/stt/utterance:

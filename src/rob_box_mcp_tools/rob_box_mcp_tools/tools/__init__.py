@@ -22,6 +22,7 @@ from .sound import *
 from .say import *  # AV-21: operator-agent minimal TTS (no emotion/animation)
 from .dialogue import *
 from .memory import *
+from .people import *  # #4469: пульт Telegram по лицам (people_list, person_photo, name_person)
 try:
     # music.py тянет rob_box_music и движок v2 (engine/), которые доступны
     # только в CI-сборке (colcon). В локальной dev-среде модуль может
@@ -73,6 +74,10 @@ __all__ = [
     # AV-21: minimal operator-voice TTS (каркас; полная интеграция — AV-27)
     "SayTool",
     "SayAloudTool",  # PR-12b: озвучка из чата Telegram с итогом по SpeechEvent
+    # #4469: пульт Telegram по лицам (срез telegram)
+    "PeopleListTool",
+    "PersonPhotoTool",
+    "NamePersonTool",
     # Memory tools
     "MemorySaveTool",
     "MemorySearchTool",

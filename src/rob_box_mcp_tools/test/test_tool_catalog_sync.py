@@ -248,9 +248,10 @@ def test_say_is_operator_visible_and_hidden_from_personality(catalog) -> None:
 
 
 def test_telegram_visible_tools_are_registered_and_hidden_from_personality(catalog) -> None:
-    """telegram_visible (``say_aloud``, PR-12b) - «чат-только»: зарегистрирован на сервере, личности не виден."""
+    """telegram_visible (``say_aloud``, PR-12b; пульт по лицам, #4469) - «чат-только»: зарегистрирован на сервере,
+    личности не виден."""
     chat_only = {entry.name for entry in catalog if entry.telegram_visible}
-    assert chat_only == {"say_aloud"}
+    assert chat_only == {"say_aloud", "people_list", "person_photo", "name_person"}
     assert chat_only <= _registered_tool_names()
     assert not [entry.name for entry in catalog if entry.telegram_visible and entry.llm_visible]
 

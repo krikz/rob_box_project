@@ -724,11 +724,12 @@ TOOL_CLASSES: Mapping[str, str] = MappingProxyType({
         "container_status", "estimate_tts_duration", "faq_search", "get_battery_level", "get_current_pose",
         "get_current_time", "get_music_state", "get_perception_context", "get_robot_status", "get_sound_info",
         "list_maps", "list_tts_voices", "list_waypoints", "listen_for_response", "lookup_melody", "memory_context",
-        "memory_search", "read_logs", "ros2_node_status", "search_melody", "search_web", "show_metrics",
+        "memory_search", "people_list", "person_photo", "read_logs", "ros2_node_status", "search_melody",
+        "search_web", "show_metrics",
     )},
     **{t: "action.local" for t in (
-        "add_music_material", "clear_waypoints", "delete_map", "delete_waypoint", "memory_save", "play_animation",
-        "save_waypoint", "set_music_volume", "set_pitch", "set_speed", "set_tts_provider", "set_voice",
+        "add_music_material", "clear_waypoints", "delete_map", "delete_waypoint", "memory_save", "name_person",
+        "play_animation", "save_waypoint", "set_music_volume", "set_pitch", "set_speed", "set_tts_provider", "set_voice",
         "set_volume",
     )},
     **{t: "action.media" for t in (
@@ -1381,7 +1382,9 @@ WINDOW_ACTION_STATUS: Mapping[str, str] = MappingProxyType({
 })
 #: Тул -> поле данных события владельца, без которого ``done`` не засчитывается: «Запомнил» говорится только по
 #: ``saved{fact_id}`` памяти (ADR-0148); успех без доказательства - ``rejected{no_evidence}``.
-DONE_EVIDENCE: Mapping[str, str] = MappingProxyType({"memory_save": "fact_id"})
+#: ``name_person`` (#4469): «Готово» говорится только по имени, которое владелец (FaceStore) прочитал из базы после записи
+#: (``stored_name``); имя из аргументов вызова доказательством не служит.
+DONE_EVIDENCE: Mapping[str, str] = MappingProxyType({"memory_save": "fact_id", "name_person": "stored_name"})
 NO_EVIDENCE_REASON = "no_evidence"
 #: Имя собеседника пишет в профиль голоса тул :data:`NAME_OWNER_TOOL` (``speaker_id_node``), а не факт памяти
 #: (решение Шифу 27.10): факт «Пользователя зовут Тамара» в профиле «Нина» - два имени у одного человека, а фраза
@@ -1649,6 +1652,9 @@ TOOL_PHRASES: Mapping[str, Mapping[str, Any]] = MappingProxyType({
     # стоп (#3789): «Останавливаюсь.» / «Я и так стою.» по виду отмены, а не «Приехал.» класса
     STOP_TOOL: STOP_TOOL_PHRASES,
     "memory_save": MappingProxyType({"done": "memory.saved"}),
+    # имя лицу (#4469): «Готово: лицо fff371fe теперь Кирилл.» - шаблон по данным владельца лиц (``id``, ``stored_name`` -
+    # имя, прочитанное из базы после записи, ``previous_name``), а не слова модели
+    "name_person": MappingProxyType({"done": ByData(("previous_name",), {(None,): "people.named"}, "people.renamed")}),
     "set_voice": MappingProxyType({"done": VOICE_DONE, "rejected": VOICE_FAILED, "timeout": "voice.timeout"}),
     "set_tts_provider": MappingProxyType({"done": VOICE_DONE, "rejected": VOICE_FAILED, "timeout": "voice.timeout"}),
     # звук - не музыка: класс action.media, но фраза о SoundEvent, а не «Включаю музыку»
@@ -1764,6 +1770,9 @@ class OwnerText:
 OUTCOME_OWNER_TEXT: Mapping[str, OwnerText] = MappingProxyType({
     **{tool: OwnerText(whole="source_message", note="source_note") for tool in ("request_music", "generate_music")},
     "dj_set": OwnerText(note="source_note")})
+#: Тул пульта Telegram, чей успех уносит в чат картинку (#4469): ``photo_path`` - путь снимка внутри корня лиц,
+#: ``caption`` - подпись; чат шлёт файл ``DialogOutput(kind=photo)``, читает его бот, который монтирует корень на чтение.
+PHOTO_TOOL = "person_photo"
 #: Действия, чей успех - сам себе доказательство: фразы об исходе done нет (§4.1; Шифу 21.10: «включил щелчок и ещё
 #: сказал, что он заиграл, бред же»). Неудача (rejected/timeout) говорится одной фразой кода. Исключение - звукоподражание
 #: (:data:`SOUND_IMITATIONS`).

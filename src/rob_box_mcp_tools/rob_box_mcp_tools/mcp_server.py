@@ -125,6 +125,9 @@ from .tools import (
     Ros2NodeStatusTool,
     SayAloudTool,
     SayTool,
+    PeopleListTool,
+    PersonPhotoTool,
+    NamePersonTool,
 )
 
 # Issue #1392 / ADR-0158 — library of generated tracks (cache) + music_library tool.
@@ -935,6 +938,10 @@ class MCPServer(Node):
         self.registry.register(SayTool(self))
         # PR-12b (#3707) — ``say_aloud``: озвучка из чата Telegram, итог по SpeechEvent (срез ``telegram``).
         self.registry.register(SayAloudTool(self))
+        # #4469 — пульт Telegram по лицам (срез ``telegram``): данные и запись у владельца, vision_face /perception/people.
+        self.registry.register(PeopleListTool(self))
+        self.registry.register(PersonPhotoTool(self))
+        self.registry.register(NamePersonTool(self))
 
         # Memory tools (долгосрочная память + семантический поиск)
         self.registry.register(MemorySaveTool(self))

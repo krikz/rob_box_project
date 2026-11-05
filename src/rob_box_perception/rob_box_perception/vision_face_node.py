@@ -59,6 +59,8 @@ from rob_box_perception.vision_hailo_node import VisionHailoNode
 
 #: Топик голосовой биометрии (std_msgs/String, JSON SpeakerMatch).
 SPEAKER_RESULT_TOPIC = '/voice/speaker/result'
+#: Сервис пульта по лицам (issue #4469): список, снимок, имя. Владелец - эта нода (FaceStore).
+PEOPLE_SERVICE = '/perception/people'
 
 #: Как часто печатать сводку узнавания в лог ноды. Режим приватности
 #: обязан быть виден (ADR-0123 §2), а «сколько встреч и кого узнали» —
@@ -224,6 +226,7 @@ class VisionFaceNode(VisionHailoNode):
 
         if self._recognizer is not None:
             self._subscribe_speaker_result()
+            self._people_srv = self._serve_people()
             self._stats_timer = self.create_timer(
                 STATS_LOG_PERIOD_SEC, self._log_stats
             )
@@ -346,7 +349,7 @@ class VisionFaceNode(VisionHailoNode):
         min_crop_mean = float(self.get_parameter('min_crop_mean').value)
         min_crop_contrast = float(self.get_parameter('min_crop_contrast').value)
 
-        store = FaceStore(
+        store = self._face_store = FaceStore(
             root=root,
             mode=mode,
             identify_threshold=identify_threshold,
@@ -455,6 +458,17 @@ class VisionFaceNode(VisionHailoNode):
                 f'Не удалось подписаться на {SPEAKER_RESULT_TOPIC}: {exc!r}. '
                 f'Лица будут узнаваться, но без имён.'
             )
+
+    def _serve_people(self) -> Any:
+        """Сервис ``/perception/people``: пульт Telegram читает и правит лица только через владельца (#4469)."""
+        try:
+            from rob_box_perception_msgs.srv import People
+        except ImportError:  # pragma: no cover — вне ROS-окружения
+            return None
+        from rob_box_perception.people_service import PeopleService, serve
+
+        service = PeopleService(self._face_store)
+        return self.create_service(People, PEOPLE_SERVICE, lambda req, res: serve(service, req, res))
 
     def _on_speaker_result(self, msg: Any) -> None:
         if self._recognizer is None:

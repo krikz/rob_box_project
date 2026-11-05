@@ -1198,6 +1198,38 @@ TOOL_CATALOG_DATA: tuple[dict[str, Any], ...] = (   {   'llm_visible': True,
                          'required': [],
                          'accepts_kwargs': True},
         'skill': ('player',)},
+    {   'llm_visible': False,
+        'operator_visible': False,
+        'read_only': False,
+        'destructive': True,
+        'idempotent': True,
+        'starts_music': False,
+        'execution_type': 'medium',
+        'event_source': 'srv:/perception/people',
+        'telegram_visible': True,
+        'name': 'name_person',
+        'description': 'Дать или сменить имя лицу в базе лиц робота. Звать на «назови '
+                       'fff371fe Кириллом», «это Кирилл» про лицо из списка. id - '
+                       'ровно 8 знаков 0-9a-f из people_list; имя - до 40 знаков: '
+                       'буквы, цифры, пробел, точка, дефис, апостроф. Имя записывает '
+                       'владелец базы, а фразу «Готово» говорит код по его ответу: не '
+                       'пиши «записал» сам. В память (memory_save) id лица не клади.',
+        'parameters': {   'type': 'object',
+                          'properties': {   'id': {   'type': 'string',
+                                                      'description': 'id лица: 8 '
+                                                                     'знаков 0-9a-f из '
+                                                                     'people_list.'},
+                                            'name': {   'type': 'string',
+                                                        'description': 'Имя, как его '
+                                                                       'назвал человек '
+                                                                       'в чате, до 40 '
+                                                                       'знаков.'}},
+                          'required': ['id', 'name'],
+                          'additionalProperties': False},
+        'signature': {   'params': ['id', 'name'],
+                         'required': ['id', 'name'],
+                         'accepts_kwargs': False},
+        'skill': ()},
     {   'llm_visible': True,
         'operator_visible': False,
         'read_only': False,
@@ -1273,6 +1305,65 @@ TOOL_CATALOG_DATA: tuple[dict[str, Any], ...] = (   {   'llm_visible': True,
                           'additionalProperties': False},
         'signature': {'params': [], 'required': [], 'accepts_kwargs': False},
         'skill': ('mapping',)},
+    {   'llm_visible': False,
+        'operator_visible': False,
+        'read_only': True,
+        'destructive': True,
+        'idempotent': False,
+        'starts_music': False,
+        'execution_type': 'medium',
+        'event_source': '',
+        'telegram_visible': True,
+        'name': 'people_list',
+        'description': 'Список лиц, которых робот видел камерой: id (8 знаков), имя, '
+                       'кличка, когда видел последний раз, сколько встреч, связано ли '
+                       'лицо с голосом. Звать на «покажи лица», «кто без имени», «кого '
+                       'видел сегодня». id из списка передавай в person_photo и '
+                       'name_person как есть. Пересказывай данные результата, ничего '
+                       'не добавляй.',
+        'parameters': {   'type': 'object',
+                          'properties': {   'filter': {   'type': 'string',
+                                                          'description': 'all - все; '
+                                                                         'unnamed - '
+                                                                         'только без '
+                                                                         'имени; today '
+                                                                         '- '
+                                                                         'встречались '
+                                                                         'сегодня. По '
+                                                                         'умолчанию '
+                                                                         'all.',
+                                                          'enum': [   'all',
+                                                                      'unnamed',
+                                                                      'today']}},
+                          'required': [],
+                          'additionalProperties': False},
+        'signature': {'params': ['filter'], 'required': [], 'accepts_kwargs': False},
+        'skill': ()},
+    {   'llm_visible': False,
+        'operator_visible': False,
+        'read_only': True,
+        'destructive': True,
+        'idempotent': False,
+        'starts_music': False,
+        'execution_type': 'medium',
+        'event_source': '',
+        'telegram_visible': True,
+        'name': 'person_photo',
+        'description': 'Прислать в чат лучший снимок лица из галереи робота. Звать на '
+                       '«покажи fff371fe», «как выглядит Кирилл». id - ровно 8 знаков '
+                       '0-9a-f из people_list; имени вместо id тул не принимает: найди '
+                       'id в people_list. Картинку в чат отправляет код после вызова, '
+                       'ты её не описываешь и не обещаешь без вызова. Снимка нет или '
+                       'режим выставки - тул откажет с причиной.',
+        'parameters': {   'type': 'object',
+                          'properties': {   'id': {   'type': 'string',
+                                                      'description': 'id лица: 8 '
+                                                                     'знаков 0-9a-f из '
+                                                                     'people_list.'}},
+                          'required': ['id'],
+                          'additionalProperties': False},
+        'signature': {'params': ['id'], 'required': ['id'], 'accepts_kwargs': False},
+        'skill': ()},
     {   'llm_visible': True,
         'operator_visible': False,
         'read_only': False,

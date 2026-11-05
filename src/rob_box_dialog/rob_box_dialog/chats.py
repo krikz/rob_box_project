@@ -24,6 +24,7 @@
 
 from __future__ import annotations
 
+import json
 import logging
 import time
 import uuid
@@ -44,6 +45,8 @@ _LOG = logging.getLogger(__name__)
 LOG_MARK = "💬 [tg-agent]"
 #: ``DialogOutput.kind`` подписи шага хода (пустой ``kind`` — реплика).
 PROGRESS_KIND = "progress"
+#: ``DialogOutput.kind`` снимка лица для чата (#4469): ``text`` - JSON ``{"path", "caption"}``, файл читает бот Telegram.
+PHOTO_KIND = "photo"
 #: ``DialogOutput.channel_ref`` чата: ``telegram:<chat_id>``.
 CHANNEL_PREFIX = "telegram:"
 #: ``Send(channel_ref, text, speech_id)`` — публикация ``DialogOutput`` хостом; реплика героя (ADR-0160 §2.3) — с
@@ -202,7 +205,18 @@ class ChatPorts:
         self._steps_started(actions)
         results = await self._execute(actions, snapshot, turn_id)
         self._steps_finished(results)
+        self._send_photos(results)
         return results
+
+    def _send_photos(self, results: Any) -> None:
+        """Снимок лица (#4469, ``person_photo`` исполнен) уходит в чат отдельным выводом ``kind=photo``: путь и подпись
+        дал владелец лиц, отправляет файл бот. Отказ тула (``rejected``) снимка не шлёт - фразу об отказе говорит код."""
+        for result in results if isinstance(results, (list, tuple)) else ():
+            path = result.data.get("photo_path") if isinstance(result, ActionResult) else None
+            if path and result.tool == kn.PHOTO_TOOL and result.status == "done":
+                payload = json.dumps({"path": path, "caption": str(result.data.get("caption") or "")}, ensure_ascii=False)
+                self._send(self._ref, payload, uuid.uuid4().hex, kind=PHOTO_KIND)
+                self._log(f"{LOG_MARK} → {self._ref} снимок лица {result.data.get('id') or '-'}")
 
     async def _execute(self, actions: Sequence[Any], snapshot: Any, turn_id: str) -> Any:
         """Действия владельцам. ``say_aloud`` при ``OperatorHold`` — ``rejected{operator_hold}`` без запроса (§9.2.3);

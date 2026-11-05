@@ -1254,6 +1254,9 @@ class FaceStore:
                     # issue #4357: слияние с голосом не перетирает чужую привязку (face_voice_binding.store_veto).
                     'speaker_id': rec.speaker_id,
                     'encounter_count': rec.encounter_count,
+                    # issue #4469: «последняя встреча по лицу» (не last_seen шва «Знакомый»); пульт TG показывает
+                    # её с этой оговоркой. 0.0 - встреч с отметкой времени нет.
+                    'last_encounter_ts': rec.last_encounter_ts,
                     'has_snapshot': rec.has_reference_snapshot,
                     'epithet': rec.epithet,
                     'is_stranger': rec.name is None,
@@ -1341,6 +1344,28 @@ class FaceStore:
                 self._persist_record(rec)
 
 
+def best_snapshot_path(store: FaceStore, person_id: str) -> Optional[str]:
+    """Лучший снимок лица записи: путь внутри корня хранилища (``<id>/reference.jpg``) или ``None`` (issue #4469).
+
+    Эталон (первый снимок, не ротируется) - первым; нет эталона - самый свежий снимок встречи, чей файл жив.
+    Путь, а не байты: ``telegram-bot`` монтирует корень только на чтение и отправляет файл сам. Режим
+    (``exhibition``/``strict``) тут не решает: снимков, которых режим не пишет, на диске нет, а выдавать ли
+    снимок наружу, решает вызывающий (``people_service``). Функция модуля, а не метод: читает записи под замком
+    хранилища, но не раздувает класс (ADR-0145, class_budget).
+    """
+    with store._lock:
+        rec = store._records.get(person_id)
+        if rec is None:
+            return None
+        if rec.has_reference_snapshot and (store._person_dir(person_id) / _REFERENCE_FILENAME).is_file():
+            return f'{person_id}/{_REFERENCE_FILENAME}'
+        for entry in reversed(rec.encounters):
+            name = entry.get('face_snapshot')
+            if name and (store._encounters_dir(person_id) / name).is_file():
+                return f'{person_id}/{_ENCOUNTERS_DIRNAME}/{name}'
+        return None
+
+
 __all__ = [
     'MODE_WORKSHOP',
     'MODE_EXHIBITION',
@@ -1353,4 +1378,5 @@ __all__ = [
     'EPITHET_POLICY_VISION',
     'FaceMatch',
     'FaceStore',
+    'best_snapshot_path',
 ]
