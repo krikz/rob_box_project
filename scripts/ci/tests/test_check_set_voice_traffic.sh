@@ -150,6 +150,9 @@ run_case() {
     local got_healthy got_hz
     got_healthy="$(echo "$result" | jq -r '.healthy')"
     got_hz="$(echo "$result" | jq -r '.hz')"
+    # jq 1.6 (ubuntu-22.04) печатает число 0.5000 как «0.5», jq 1.7 — как
+    # в литерале. Сравниваем значение, а не запись: приводим к %.4f.
+    got_hz="$(LC_ALL=C awk -v v="$got_hz" 'BEGIN { if (v ~ /^-?[0-9.]+$/) printf "%.4f", v; else printf "%s", v }')"
 
     printf '  [%s]\n' "$label"
     assert_eq "$got_healthy" "$expect_healthy" "healthy"
