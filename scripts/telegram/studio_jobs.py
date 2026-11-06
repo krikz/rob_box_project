@@ -31,7 +31,11 @@ REFINE_LABELS = {
     cs.ACTION_ANGLE: "другая подача",
     cs.ACTION_MEDIA: "другое медиа",
     cs.ACTION_FREEFORM: "правка по твоему сообщению",
+    cs.ACTION_ANIMATE: "анимация",
+    cs.ACTION_VIDEO: "видео",
 }
+# Действия, которым не нужны факты сессии: ролик берёт материал с песочницы, а не из facts.json.
+NO_FACTS_ACTIONS = (cs.ACTION_ANIMATE, cs.ACTION_VIDEO)
 GH_REPO = os.environ.get("STUDIO_GH_REPO", "krikz/rob_box_project")
 
 
@@ -106,10 +110,44 @@ def update_draft(bot, record: dict, chat_id: int, new_media: Optional[Path] = No
     return False, description
 
 
-def _save_fields(state_path: Path, post_id: str, fields: dict) -> None:
+def save_fields(state_path: Path, post_id: str, fields: dict) -> None:
+    """Дописать поля черновика под замком. active_at — отметка «черновик трогали» для studio_intent.target."""
     with st.state_transaction(state_path) as current:
         record = current.setdefault("posts", {}).setdefault(post_id, {"id": post_id})
         record.update(fields)
+        record["active_at"] = time.time()
+
+
+_save_fields = save_fields
+
+
+def report(state_path: Path, post_id: str, action: str, progress, started: float, out, ok: bool) -> None:
+    """Итог работы в журнал и в состояние: причина неудачи — в state.posts[id].last_error (#4513).
+
+    Раньше журнал писал «не вышло за 13.5 с» без причины, а причина жила только в индикаторе у Шифу.
+    """
+    seconds = time.monotonic() - started
+    failure = progress.failure or {}
+    line = f"пост {post_id or '—'}: {action} → {'готово' if ok else 'не вышло'} за {seconds:.1f} с"
+    if not ok:
+        line += f" на шаге «{failure.get('step', '?')}»: {failure.get('reason', 'причина не записана')}"
+    out(line + f" (индикатор message_id={progress.message_id}, правок {progress.edits})")
+    if not post_id:
+        return
+    with st.state_transaction(state_path) as current:
+        record = (current.get("posts") or {}).get(post_id)
+        if record is None:
+            return  # черновика нет — пустую запись не заводим (разбор 06.11)
+        if ok:
+            record.pop("last_error", None)
+            record["active_at"] = time.time()
+            return
+        record["last_error"] = {
+            "at": st.now_iso(),
+            "action": action,
+            "step": failure.get("step", ""),
+            "reason": failure.get("reason", "причина не записана"),
+        }
 
 
 def request_material(post_id: str, what: str) -> str:
@@ -146,11 +184,14 @@ def refine_job(
     started = time.monotonic()
     progress = sp.Progress(bot, chat_id, f"Черновик {post_id}: {REFINE_LABELS.get(action, action)}", reply_to=reply_to)
     progress.step("Беру черновик и факты сессии")
-    ok = _refine(bot, state_path, post_id, action, progress, chat_id, out, instruction)
-    out(
-        f"пост {post_id}: {action} → {'готово' if ok else 'не вышло'} за {time.monotonic() - started:.1f} с "
-        f"(индикатор message_id={progress.message_id}, правок {progress.edits})"
-    )
+    try:
+        ok = _refine(bot, state_path, post_id, action, progress, chat_id, out, instruction)
+    except Exception as exc:  # noqa: BLE001 — упавшая работа тоже обязана оставить причину
+        progress.fail(f"{type(exc).__name__}: {exc}")
+        ok = False
+    if not ok and progress.failure is None:
+        progress.fail("работа закончилась без результата")
+    report(state_path, post_id, action, progress, started, out, ok)
     return ok
 
 
@@ -166,11 +207,15 @@ def _refine(
         progress.fail(f"черновик уже {'одобрен' if record['status'] == 'approved' else 'отклонён'} — не трогаю")
         return False
     facts = load_run_facts()
-    if not facts:
+    if not facts and action not in NO_FACTS_ACTIONS:
         progress.fail("факты сессии не найдены (docker/studio/run/facts.json)")
         return False
     own = _own_facts(record, facts)
     progress.note(f"Беру черновик и факты сессии: своих {len(own)} из {len(facts)}")
+    if action in NO_FACTS_ACTIONS:
+        import studio_motion
+
+        return studio_motion.refine_motion(bot, state_path, record, facts, action, progress, chat_id, instruction)
     if action == cs.ACTION_MEDIA:
         return _refine_media(bot, state_path, record, facts, progress, chat_id)
     return _refine_text(bot, state_path, record, own or facts, action, progress, chat_id, instruction)
