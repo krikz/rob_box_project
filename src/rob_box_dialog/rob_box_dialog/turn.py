@@ -1916,6 +1916,17 @@ def replacing_music(engine: "TurnEngine", turn: Any) -> bool:
             and engine.session.snapshot.music_playing)
 
 
+def replace_timeout_outcome(engine: "TurnEngine", turn: Any, results: Sequence[ActionResult],
+                            outcome: Optional[str]) -> Optional[str]:
+    """Срок класса вышел (исполнитель закрыл ``action.media`` статусом ``timeout``), а ход заказал смену под играющую
+    музыку (#4479, М14 n604: «Музыка пока не заиграла.» при играющем сете): факт - из снимка плеера, не из слов
+    модели; прежний сет звучит - фраза смены (``MUSIC_REPLACE_PHRASES``), иначе исход как есть."""
+    timed_out = any(r.cls == "action.media" and r.status == "timeout" for r in results)
+    if timed_out and replacing_music(engine, turn):
+        return phrases.text(kn.MUSIC_REPLACE_PHRASES["timeout"])
+    return outcome
+
+
 def progress_due(engine: "TurnEngine", turn: _Turn) -> Optional[str]:
     """Промежуточная фраза хода (В31) или ``None``: ход ещё молчит, речь идёт в динамики, не тишина. Ключ — по тому,
     чего ход ждёт (``knowledge.PROGRESS_PHRASES``: ответ LLM, старт музыки)."""
@@ -2173,6 +2184,7 @@ class TurnEngine:
         (:func:`_close_unread`), без грусти, если это ответ по данным (:func:`query_emotion`)."""
         turn.expression = command_face(cmd.expression, results, turn.text, earlier=turn.expression)
         outcome = _spoken_outcome(cmd, unsaid_stops(turn, results), self.session.snapshot.agent, self.log.performing())
+        outcome = replace_timeout_outcome(self, turn, results, outcome)  # прежний сет звучит - не «не заиграла» (#4479)
         outcome, over = one_phrase(outcome, capped_phrase(turn))
         if outcome:  # провал - грустно, вопрос тула («Удалить «X»?») - эмоцией вопроса, иначе лицом модели
             self._say(turn, outcome, None, outcome_emotion(results, cmd.expression.emotion))
