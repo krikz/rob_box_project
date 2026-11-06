@@ -102,3 +102,10 @@ def test_send_draft_goes_to_private_chat_not_channel(tmp_path):
     assert (queue / "003-p.md").read_text(encoding="utf-8").count("status: draft") == 1  # статус не менялся
     assert channel_post.send_draft(queue, tmp_path, 9, transport, True, out=out.append) == 1
     assert datetime(2026, 1, 1, tzinfo=timezone.utc)
+
+
+def test_preview_all_survives_pending_media_placeholder():
+    out = []
+    rc = channel_post.preview_all(REPO / "docs" / "channel" / "queue", REPO, out=out.append)
+    assert rc == 1  # заглушка поста 002 честно считается проблемой
+    assert any("НЕТ ФАЙЛА" in line for line in out)

@@ -292,7 +292,7 @@ def describe(method: str, params: dict, media: Optional[Path]) -> str:
     """Что будет отправлено — для --dry-run (без токена, он сюда не попадает)."""
     out = [f"  метод:  {method}", f"  чат:    {params.get('chat_id')}"]
     if media is not None:
-        out.append(f"  файл:   {media} ({media.stat().st_size} байт)")
+        out.append(f"  файл:   {media} (" + (f"{media.stat().st_size} байт)" if media.exists() else "НЕТ ФАЙЛА)"))
     text = params.get("caption") or params.get("text") or params.get("title") or params.get("description")
     if text is not None:
         out.append("  текст:")
