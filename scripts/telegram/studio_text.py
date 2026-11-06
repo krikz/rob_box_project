@@ -6,9 +6,9 @@
   * проверяет код: числа и имена собственные в тексте есть среди фактов, лимиты и разметку
     проверяет channel_lib.validate, лиц/внутренних IP/ключей быть не должно.
 
-Модель — MiniMax-M3: именно она умеет thinking: disabled (M3.1-Flash на этом отвечает HTTP 400,
-см. src/rob_box_llm/rob_box_llm/providers/minimax.py), а выключенный thinking обязателен —
-иначе в текст попадёт «<think>…».
+Модель — MiniMax-M3.1-Flash (та же, что у профилей Hermes). У неё thinking выключить
+нельзя: API отвечает HTTP 400, поэтому глубина размышлений задаётся reasoning_effort
+(см. ниже). Для MiniMax-M3 выключение через thinking={"type": "disabled"} работает.
 """
 
 from __future__ import annotations
@@ -18,6 +18,7 @@ import json
 import os
 import re
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
@@ -79,6 +80,150 @@ STOP_PROPER = {
     "FIXME",
 }
 
+# Кириллические имена: заглавная буква ВНУТРИ предложения — это имя (человек, компания).
+# Начало предложения и начало строки — обычное слово (в посте абзацы идут строками),
+# поэтому такие слова не считаем именами.
+CYRILLIC_NAME_RE = re.compile(r"(?<![.!?…][ \t\n])(?<![.!?…]\n)(?<!^)(?<!\n)\b[А-ЯЁ][а-яё]{2,}\b")
+
+# Слова канала, которые всегда с заглавной и не являются именами.
+STOP_CYRILLIC = {
+    "РОББОКС",
+    "Робот",
+    "Робота",
+    "Роботу",
+    "Роботом",
+    "Роботы",
+    "Мы",
+    "Нам",
+    "Наш",
+    "Наша",
+    "Наши",
+    "Шифу",
+    "Привет",
+    "Пост",
+    "Посты",
+    "Канал",
+    "Канала",
+    "Слот",
+    "Ссылка",
+    "Так",
+    "Тогда",
+    "Теперь",
+    "Если",
+    "Когда",
+    "Что",
+    "Это",
+    "Для",
+    "Он",
+    "Она",
+    "Оно",
+    "Они",
+    "Его",
+    "Её",
+    "Их",
+    "Вот",
+    "Да",
+    "Нет",
+    "Как",
+    "Где",
+    "Зачем",
+    "Почему",
+    "Смотри",
+    "Сделал",
+    "Сделано",
+    "Работает",
+    "Работа",
+    "Часть",
+    "Раз",
+    "Пара",
+    "Вместе",
+    "Есть",
+    "Быть",
+    "Главное",
+    "Суть",
+    "Идея",
+    "Идеи",
+    "Факт",
+    "Факты",
+    "Источник",
+    "Разбор",
+    "Замер",
+    "Замеры",
+    "Результат",
+    "Проверка",
+    "Проверки",
+    "Правило",
+    "Правила",
+    "Смысл",
+    "Суть",
+    "Вывод",
+    "Причина",
+    "Причины",
+    "Симптом",
+    "Ошибка",
+    "Ошибки",
+    "Ремонт",
+    "Прогон",
+    "Прогоны",
+    "Замер",
+    "Шаг",
+    "Шаги",
+    "Слоты",
+    "Тема",
+    "Темы",
+    "Угол",
+    "Углы",
+    "Съёмка",
+    "Сцена",
+    "Сценарий",
+    "Ролик",
+    "Ролики",
+    "Кадр",
+    "Кадры",
+    "Видео",
+    "Гифка",
+    "Гифки",
+    "Инфографика",
+    "Файл",
+    "Файлы",
+    "Строка",
+    "Строки",
+    "Правило",
+    "Порядок",
+    "Смысл",
+    "Задача",
+    "Задачи",
+    "Вопрос",
+    "Вопросы",
+    "Ответ",
+    "Ответы",
+    "Итак",
+    "Короче",
+    "Потом",
+    "Сейчас",
+    "Раньше",
+    "Позже",
+    "Здесь",
+    "Там",
+    "Иначе",
+    "Поэтому",
+    "Проверили",
+    "Изменение",
+    "Изменения",
+    "Проверка",
+    "Оговорка",
+    "Оговорки",
+    "Пример",
+    "Примеры",
+    "Суть",
+    "Мысль",
+    "Мысли",
+    "Сводка",
+    "Итог",
+    "Итоги",
+    "Сводка",
+}
+
 
 def extract_fact_text(facts: list) -> str:
     """Всё, что модель имеет право утверждать: утверждения, источники, пути."""
@@ -102,23 +247,27 @@ def load_rules(repo_root: Path) -> str:
 
 
 def build_prompt(facts: list, rules: str, media_ref: str = "") -> str:
-    """Промпт: только факты и правила, никаких просьб «придумай»."""
+    """Промпт: только факты и правила, никаких просьб «придумай».
+
+    По брифу сначала в личку уходит СПИСОК ИДЕЙ, а не готовые посты: текст пишется
+    позже, только для идеи, которую Шифу взял. Поэтому здесь body_html не просим.
+    """
     return (
-        "Ты пишешь посты для Telegram-канала проекта робота. У тебя есть только факты ниже "
-        "и правила канала. НИЧЕГО, чего нет в фактах, ты не пишешь: ни новых чисел, ни новых "
-        "имён, ни предположений. Если фактов мало — верни пустой массив ideas.\n\n"
+        "Ты готовишь СПИСОК ИДЕЙ для Telegram-канала проекта робота. У тебя есть только "
+        "факты ниже и правила канала. НИЧЕГО, чего нет в фактах, ты не пишешь: ни новых "
+        "чисел, ни новых имён, ни предположений. Если фактов мало — верни пустой массив ideas.\n\n"
         f"ПРАВИЛА КАНАЛА:\n{rules}\n\n"
         f"ФАКТЫ (источник каждого обязателен):\n{extract_fact_text(facts)}\n\n"
-        f"МЕДИА: {media_ref or 'готового медиа нет — поле media_ref оставь пустым'}\n\n"
+        f"МЕДИА: {media_ref or 'готового медиа нет — в поле media_ref оставь пустым'}\n\n"
         "Верни СТРОГО JSON без пояснений:\n"
-        '{"ideas": [{"id": "i1", "title": "тема поста одной строкой", '
-        '"body_html": "<b>HTML</b> текст поста", "tags": ["#роббокс"], '
-        '"media_ref": "путь или пустая строка", "facts": ["использованные факты"]}]}\n\n'
-        "Требования к body_html: только теги b, i, code, pre из разрешённых; "
-        "абзацы разделяй переводом строки, а не тегом <br> — Telegram HTML его не поддерживает; "
-        "тег <a> со ссылкой на источник разрешён; "
-        "цель 400–700 знаков; хештеги только из словаря канала; "
-        "никаких внутренних IP, лиц людей и ключей."
+        '{"ideas": [{"id": "i1", "title": "о чём пост — одна строка", '
+        '"facts": ["использованные факты"], "show": "что показать: готовое медиа из '
+        'репозитория, инфографика или «нужна съёмка»", "deadline": "примерный срок", '
+        '"media_ref": "путь к готовому медиа или пустая строка"}]}\n\n'
+        "Требования: title — до 80 знаков, без кавычек; facts — только точные формулировки "
+        "фактов выше, иначе идея будет отклонена; show — что именно показать читателю; "
+        "deadline — когда лучше опубликовать (например «на следующей неделе»); "
+        "media_ref — путь к файлу из репозитория, если он уже готов, иначе пустая строка."
     )
 
 
@@ -168,51 +317,145 @@ def call_minimax(prompt: str, model: str = DEFAULT_MODEL, api_key: Optional[str]
         return {"error": f"JSON не разобрался: {e}", "raw": content[:400]}
 
 
+def _fact_numbers(fact: dict) -> set:
+    """Числа, которые есть в конкретном факте.
+
+    Из чисел факта убираем номера прогонов (8+ цифр) и даты: они не разрешают
+    упоминать «12 м» в тексте. Раньше разрешалось всё, что встречалось где угодно,
+    и «12» из run_id legitimировал «12 метров».
+    """
+    text = " ".join(
+        [
+            fact.get("claim", "") or "",
+            *(fact.get("evidence", []) or []),
+        ]
+    )
+    # Даты — не числа утверждения.
+    text = re.sub(r"\b\d{4}-\d{2}-\d{2}\b", " ", text)
+    numbers = set()
+    for match in NUMBER_RE.findall(text):
+        digits = match.replace(",", "").replace(".", "")
+        if len(digits) >= 8:
+            # Идентификатор прогона: цифр много, смысла в тексте поста не несёт.
+            continue
+        numbers.add(match.replace(",", "."))
+    return numbers
+
+
+def _fact_refs(fact: dict) -> set:
+    """Номера PR/issue из источника факта: «PR #4502» — их можно упоминать в тексте."""
+    return set(re.findall(r"#(\d{1,6})\b", fact.get("source") or ""))
+
+
 def check_against_facts(body: str, facts: list) -> list:
     """Каждое число и имя собственное в тексте должно быть среди фактов."""
     problems = []
-    parts = []
-    for fact in facts:
-        parts.append(fact.get("claim", ""))
-        parts.append(fact.get("source", ""))
-        parts.extend(fact.get("evidence", []) or [])
-    blob = " ".join(parts).lower()
     # HTML убираем: атрибуты (<a href="...">) — не имена собственные, а синтаксис разметки.
     plain = re.sub(r"<[^>]+>", " ", body)
-    # Числа: нормализованные (запятая → точка), чтобы «3,5» и «3.5» считались одним.
+
     allowed = set()
-    for match in NUMBER_RE.findall(blob):
-        allowed.add(match.replace(",", "."))
+    refs = set()
+    for fact in facts:
+        allowed |= _fact_numbers(fact)
+        refs |= _fact_refs(fact)
     for match in NUMBER_RE.findall(plain):
         normalized = match.replace(",", ".")
-        if normalized not in allowed:
+        digits = match.replace(",", "").replace(".", "")
+        if len(digits) >= 8:
+            problems.append(f"идентификатор прогона «{match}» не место в тексте поста")
+            continue
+        if normalized not in allowed and match not in refs:
             problems.append(f"число «{match}» не найдено среди фактов")
+
+    blob = " ".join(
+        [
+            part
+            for fact in facts
+            for part in [fact.get("claim", "") or "", fact.get("source", "") or "", *(fact.get("evidence", []) or [])]
+        ]
+    ).lower()
     for match in PROPER_RE.findall(plain):
         if match in STOP_PROPER:
+            continue
+        if match.lower() not in blob:
+            problems.append(f"имя «{match}» не найдено среди фактов")
+
+    for match in CYRILLIC_NAME_RE.findall(plain):
+        if match in STOP_CYRILLIC:
             continue
         if match.lower() not in blob:
             problems.append(f"имя «{match}» не найдено среди фактов")
     return problems
 
 
+def match_fact_keys(idea: dict, facts: list) -> list:
+    """Ключи фактов, которые идея действительно использует.
+
+    Модель возвращает тексты утверждений, а не ключи. Сопоставляем по началу текста:
+    если утверждение модели начинается с утверждения факта — факт использован.
+    """
+    used = []
+    for claim in idea.get("facts") or []:
+        claim = (claim or "").strip().lower()
+        if not claim:
+            continue
+        for fact in facts:
+            fact_claim = (fact.get("claim") or "").strip().lower()
+            if not fact_claim:
+                continue
+            if claim.startswith(fact_claim[:60]) or fact_claim.startswith(claim[:60]):
+                key = fact.get("key")
+                if key and key not in used:
+                    used.append(key)
+                break
+    return used
+
+
 def extract_tags(body: str) -> list:
     """Хештеги из текста — по порядку появления, только из словаря канала.
 
-    Теги достаёт код, а не модель: модель часто забывает поле tags, а хештег в тексте
-    есть всегда. Так теги не могут разойтись с текстом и не могут быть чужими.
+    Реализация — в channel_lib (общий модуль канала), здесь только реэкспорт:
+    так правило хештегов одно на канал, а не по копии в каждом скрипте.
     """
-    found = []
-    for match in re.findall(r"#[^\W\d]\w*", body):
-        if match in lib.TAG_DICTIONARY and match not in found:
-            found.append(match)
-    return found
+    return lib.extract_tags(body)
 
 
-def validate_draft(idea: dict, facts: list, repo_root: Path) -> list:
-    """Проверка черновика кодом: факты, лимиты, разметка, теги."""
-    problems = check_against_facts(idea.get("body_html", ""), facts)
-    body = idea.get("body_html", "")
-    tags = idea.get("tags", [])
+def validate_idea(idea: dict, facts: list) -> list:
+    """Проверка идеи кодом: тема, источники, что показать, срок.
+
+    Идея — это ещё не пост: текста в ней нет by design (бриф: сначала список идей).
+    Поэтому проверяем то, что в идее есть.
+    """
+    problems = []
+    title = (idea.get("title") or "").strip()
+    if not title:
+        problems.append("пустая тема идеи")
+    elif len(title) > 120:
+        problems.append(f"тема {len(title)} знаков, много")
+    if not (idea.get("facts") or []):
+        problems.append("у идеи нет фактов")
+    # Поле facts из ответа модели проверяем: Шифу не должен увидеть выдуманные источники.
+    for claim in idea.get("facts") or []:
+        claim = (claim or "").strip().lower()
+        if not claim:
+            continue
+        known = any(
+            claim.startswith((fact.get("claim") or "").strip().lower()[:60])
+            or (fact.get("claim") or "").strip().lower().startswith(claim[:60])
+            for fact in facts
+        )
+        if not known:
+            problems.append(f"источник «{claim[:40]}» не найден среди фактов")
+    if not (idea.get("show") or "").strip():
+        problems.append("не сказано, что показать")
+    if not (idea.get("deadline") or "").strip():
+        problems.append("не назван примерный срок")
+    return problems
+
+
+def validate_post(body: str, tags: list, facts: list, has_media: bool = False) -> list:
+    """Проверка готового поста кодом: факты, лимиты, разметка, теги, приватность."""
+    problems = check_against_facts(body, facts)
     if not body.strip():
         problems.append("пустой текст")
     if not 2 <= len(tags) <= 5:
@@ -222,7 +465,7 @@ def validate_draft(idea: dict, facts: list, repo_root: Path) -> list:
             problems.append(f"хештег {tag} не в словаре канала")
         if tag not in body:
             problems.append(f"хештег {tag} не упомянут в тексте")
-    limit = lib.CAPTION_LIMIT if idea.get("media_ref") else lib.MESSAGE_LIMIT
+    limit = lib.CAPTION_LIMIT if has_media else lib.MESSAGE_LIMIT
     length = lib.visible_length(body)
     if length > limit:
         problems.append(f"текст {length} знаков, лимит {limit}")
@@ -233,17 +476,76 @@ def validate_draft(idea: dict, facts: list, repo_root: Path) -> list:
     return problems
 
 
+def build_post_prompt(idea: dict, facts: list, rules: str) -> str:
+    """Промпт производства: пишем ТЕКСТ поста по уже согласованной идее.
+
+    Это второй шаг (бриф): идея сначала согласована с Шифу, и только потом пишется пост.
+    """
+    return (
+        "Ты пишешь текст поста для Telegram-канала проекта робота. Ниже — согласованная идея "
+        "и факты, на которые она опирается. НИЧЕГО, чего нет в идее и фактах, не пиши.\n\n"
+        f"ПРАВИЛА КАНАЛА:\n{rules}\n\n"
+        f"ИДЕЯ: {idea.get('title', '')}\n"
+        f"ЧТО ПОКАЗАТЬ: {idea.get('show', '')}\n"
+        f"СРОК: {idea.get('deadline', '')}\n"
+        f"МЕДИА: {idea.get('media_ref') or 'готового медиа нет'}\n\n"
+        f"ФАКТЫ:\n{extract_fact_text(facts)}\n\n"
+        "Верни СТРОГО JSON:\n"
+        '{"body_html": "текст поста", "tags": ["#роббокс"]}\n\n'
+        "Требования к body_html: Telegram HTML разрешает только теги "
+        "b, strong, i, em, u, ins, s, strike, del, a, code, pre, blockquote, tg-spoiler, tg-emoji. "
+        "Других тегов быть не должно: ни <br>, ни <ul>, ни <li>, ни <ol>, ни <p>, ни <h1>. "
+        "Абзацы разделяй переводом строки, список — строками с «—». "
+        "Тег <a> со ссылкой на источник разрешён. "
+        "Цель 400–700 знаков; хештеги только из словаря канала; "
+        "никаких внутренних IP, лиц людей и ключей."
+    )
+
+
+def produce_post(idea: dict, facts: list, model: str = DEFAULT_MODEL, repo_root: Path = REPO_ROOT) -> dict:
+    """Произвести пост по согласованной идее: модель пишет, код проверяет."""
+    prompt = build_post_prompt(idea, facts, load_rules(repo_root))
+    result = call_minimax(prompt, model=model)
+    if "error" in result:
+        return {"error": result["error"]}
+    body = (result.get("body_html") or "").strip()
+    tags = result.get("tags") or []
+    if not tags:
+        tags = lib.extract_tags(body)
+    problems = validate_post(body, tags, facts, has_media=bool(idea.get("media_ref")))
+    return {
+        "body_html": body,
+        "tags": tags,
+        "problems": problems,
+        "ok": not problems,
+    }
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--facts", type=Path, required=True, help="JSON с фактами (вывод studio_facts.py)")
     ap.add_argument("--out", type=Path, help="куда записать идеи (JSON)")
     ap.add_argument("--model", default=DEFAULT_MODEL)
     ap.add_argument("--repo-root", type=Path, default=REPO_ROOT)
+    ap.add_argument("--produce", type=Path, help="JSON с одной согласованной идеей: написать текст поста")
     args = ap.parse_args()
 
     data = json.loads(args.facts.read_text(encoding="utf-8"))
     facts = data.get("facts", data) if isinstance(data, dict) else data
     visible_facts = [f for f in facts if f.get("visible")]
+
+    # Режим производства: пишем текст поста по согласованной идее.
+    if args.produce:
+        idea = json.loads(args.produce.read_text(encoding="utf-8"))
+        if isinstance(idea, dict) and "idea" in idea:
+            idea = idea["idea"]
+        # Факты идеи — по её ключам, а не по всем: текст должен опираться на своё.
+        keys = set(idea.get("fact_keys") or [])
+        own = [f for f in facts if f.get("key") in keys] or visible_facts
+        result = produce_post(idea, own, model=args.model, repo_root=args.repo_root)
+        print(json.dumps(result, ensure_ascii=False, indent=2))
+        return 0 if result.get("ok") else 1
+
     if not visible_facts:
         payload = {"ideas": [], "reason": "нет видимых фактов — показывать нечего"}
         print(json.dumps(payload, ensure_ascii=False, indent=2))
@@ -256,16 +558,21 @@ def main() -> int:
         return 1
 
     ideas = result.get("ideas") or []
+    # Идентификатор задаёт код: модель каждый раз начинает с «i1», и идеи разных сессий
+    # слипались бы в одну. Префикс с датой сессии делает их разными и узнаваемыми.
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%d")
     checked = []
-    for idea in ideas:
+    for index, idea in enumerate(ideas, start=1):
         idea = dict(idea)
-        # Теги — из текста (код решает), а не из ответа модели: модель их часто не возвращает.
-        body = idea.get("body_html", "") or ""
-        tags = extract_tags(body)
-        if not tags:
-            tags = list(idea.get("tags") or [])
-        idea["tags"] = tags
-        problems = validate_draft(idea, visible_facts, args.repo_root)
+        idea["id"] = f"i{stamp}-{index}"
+        # Ключи фактов: по ним студия поймёт, что событие уже показано.
+        idea["fact_keys"] = match_fact_keys(idea, visible_facts)
+        # Полные факты идеи: нужны, чтобы поставить событие в ожидание
+        # (иначе оно предлагалось бы снова каждую сессию).
+        idea["fact_dicts"] = [
+            f for f in visible_facts if f.get("key") in set(idea["fact_keys"])
+        ]
+        problems = validate_idea(idea, visible_facts)
         idea["problems"] = problems
         idea["ok"] = not problems
         checked.append(idea)

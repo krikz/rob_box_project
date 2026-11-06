@@ -15,7 +15,9 @@ from __future__ import annotations
 
 import argparse
 import json
+import studio_state as st
 import os
+import re
 import subprocess
 import sys
 from datetime import datetime, timedelta, timezone
@@ -24,6 +26,11 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_REPO = "krikz/rob_box_project"
 DEFAULT_STATE = REPO_ROOT / "docker" / "studio" / "state.json"
+
+# Сколько раз факт можно предложить, прежде чем он станет «отложенным».
+# Три попытки — достаточно, чтобы Шифу успел ответить, и достаточно мало,
+# чтобы непроизносимое событие не мусорило в ленте.
+MAX_ATTEMPTS = 3
 
 # Какие темы считаются «видимым изменением» — по ним есть что показать (бриф, шаг 2).
 # Пишем и словами («навигация»), и scope'ами в скобках («fix(nav): …») — в заголовках
@@ -101,6 +108,74 @@ def run_gh(args: list, repo: str) -> list:
 def visible(text: str) -> bool:
     low = (text or "").lower()
     return any(topic in low for topic in VISIBLE_TOPICS)
+
+
+def fact_key(fact: dict) -> str:
+    """Устойчивый ключ факта: по нему видно, что событие уже показано.
+
+    Ключ переживает перезапуск сессии и пересборку фактов, в отличие от номера в списке.
+    """
+    kind = fact.get("kind", "")
+    if kind == "merged_pr":
+        match = re.search(r"PR #(\d+)", fact.get("claim", ""))
+        return f"pr:{match.group(1)}" if match else f"pr:{fact.get('claim', '')[:40]}"
+    if kind == "closed_issue":
+        match = re.search(r"#(\d+)", fact.get("claim", ""))
+        return f"issue:{match.group(1)}" if match else f"issue:{fact.get('claim', '')[:40]}"
+    if kind == "run":
+        match = re.search(r"run_id (\d+)", fact.get("source", ""))
+        return f"run:{match.group(1)}" if match else f"run:{fact.get('source', '')[:40]}"
+    if kind == "adr":
+        return f"adr:{fact.get('source', '')[:60]}"
+    if kind == "media":
+        return f"media:{fact.get('source', '')[:80]}"
+    if kind == "decisions":
+        return "decisions:shifu"
+    return f"{kind}:{fact.get('source', fact.get('claim', ''))[:50]}"
+
+
+def covered_from_posts(queue_dir: Path, facts: list) -> set:
+    """Ключи фактов, которые уже показаны в опубликованных постах.
+
+    Пост может сослаться на правку («после правки #4487») или на файл
+    («docs/research/…md»). Такой факт уже рассказан читателю — предлагать его снова нельзя.
+    Ищем не по теме, а по прямой ссылке: тема может повторяться, а событие — нет.
+    """
+    if not queue_dir.is_dir():
+        return set()
+    cited_numbers = set()
+    cited_paths = set()
+    for post in sorted(queue_dir.glob("*.md")):
+        text = post.read_text(encoding="utf-8", errors="ignore")
+        head, _, body = text.partition("\n---\n")
+        if "status: posted" not in head and "status: approved" not in head:
+            continue  # черновик ещё не опубликован — он не закрывает событие
+        cited_numbers.update(re.findall(r"#(\d{3,6})", body))
+        cited_paths.update(re.findall(r"docs/[\w./-]+\.(?:md|py|yaml|yml|gif|png|jpe?g|mp4)", body))
+
+    if not cited_numbers and not cited_paths:
+        return set()
+
+    # Номер в посте может быть номером PR или issue: PR и issue живут в разных
+    # пространствах, а по названию не отличить. Различаем по тому, есть ли такой PR
+    # среди собранных фактов: если PR есть — это PR, если нет — это issue.
+    pr_numbers = {f["key"].split(":", 1)[1] for f in facts if f.get("key", "").startswith("pr:")}
+
+    covered = set()
+    for fact in facts:
+        key = fact.get("key")
+        if not key:
+            continue
+        source = fact.get("source", "") or ""
+        if source and source in cited_paths:
+            covered.add(key)
+            continue
+        match = re.search(r"#(\d{3,6})", fact.get("claim", ""))
+        if match and match.group(1) in cited_numbers:
+            number = match.group(1)
+            if f"pr:{number}" == key or (f"pr:{number}" not in pr_numbers and f"issue:{number}" == key):
+                covered.add(key)
+    return covered
 
 
 def collect_merged_prs(repo: str, since: str) -> list:
@@ -267,7 +342,7 @@ def collect_new_files(repo_root: Path, since: str) -> list:
     return facts
 
 
-def load_state(path: Path) -> dict:
+def _unused_load_state(path: Path) -> dict:
     if not path.exists():
         return {}
     try:
@@ -277,10 +352,17 @@ def load_state(path: Path) -> dict:
 
 
 def save_last_session(path: Path, when: str) -> None:
-    state = load_state(path)
+    state = st.load_state(path)
     state["last_session"] = when
+    st.save_state(path, state)
+
+
+def save_state(path: Path, state: dict) -> None:
+    """Сохранить состояние атомарно."""
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    tmp.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
+    tmp.replace(path)
 
 
 def main() -> int:
@@ -302,15 +384,43 @@ def main() -> int:
     facts += collect_runs(args.repo, since[:10])
     facts += collect_new_files(REPO_ROOT, since)
 
+    state = load_state(args.state)
+    # Ключ каждому факту: по нему видно, что событие уже показано.
+    for fact in facts:
+        fact["key"] = fact_key(fact)
+
+    # Что уже закрыто — не предлагаем снова.
+    closed = st.covered_keys(state)
+    # Что уже рассказано в опубликованных постах — тоже не предлагаем.
+    closed |= covered_from_posts(REPO_ROOT / "docs" / "channel" / "queue", facts)
+    # Что предлагали, но не показали — возвращаем: событие не должно потеряться.
+    for fact in st.pending_facts(state):
+        key = fact.get("key")
+        if key and key not in closed:
+            facts.append(fact)
+
+    # Событие, которое предлагали три раза и не взяли, — помечаем как отложенное:
+    # дальше оно не мусорит в ленте, но и не пропадает из учёта.
+    fresh = []
+    deferred = []
+    for fact in facts:
+        if int(fact.get("attempts", 0)) >= MAX_ATTEMPTS and fact.get("key") not in closed:
+            deferred.append(fact.get("key"))
+            continue
+        fresh.append(fact)
+
     if not args.no_save:
-        save_last_session(args.state, datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"))
+        state["deferred"] = sorted(set(state.get("deferred", [])) | set(deferred))
+        st.save_state(args.state, state)
 
     payload = {
         "since": since,
         "repo": args.repo,
-        "facts": facts,
-        "visible_facts": [f for f in facts if f.get("visible")],
-        "fact_count": len(facts),
+        "facts": fresh,
+        "visible_facts": [f for f in fresh if f.get("visible")],
+        "fact_count": len(fresh),
+        "closed_count": len(closed),
+        "deferred": sorted(set(deferred)),
     }
     print(json.dumps(payload, ensure_ascii=False, indent=2))
     return 0

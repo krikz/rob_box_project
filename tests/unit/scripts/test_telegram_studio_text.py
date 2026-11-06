@@ -93,38 +93,26 @@ def test_html_attributes_are_not_proper_names():
 
 def test_br_tag_is_rejected():
     """Telegram HTML не знает <br> — абзацы разделяют переводом строки."""
-    problems = text_mod.validate_draft(
-        {"body_html": "первый<br>второй", "tags": ["#роббокс"], "media_ref": ""}, make_facts(), REPO
-    )
+    problems = text_mod.validate_post("первый<br>второй", ["#роббокс"], make_facts())
     assert any("<br>" in p for p in problems)
 
 
 def test_internal_ip_is_rejected():
-    problems = text_mod.validate_draft(
-        {"body_html": "робот живёт на 10.1.1.22 #роббокс", "tags": ["#роббокс"], "media_ref": ""},
-        make_facts(),
-        REPO,
-    )
+    problems = text_mod.validate_post("робот живёт на 10.1.1.22 #роббокс", ["#роббокс"], make_facts())
     assert any("внутренний IP" in p for p in problems)
 
 
 def test_valid_draft_passes():
-    problems = text_mod.validate_draft(
-        {
-            "body_html": "В PR #4502 сторож локализации не считает потерю опоры успехом. #навигация #честность",
-            "tags": ["#навигация", "#честность"],
-            "media_ref": "",
-        },
+    problems = text_mod.validate_post(
+        "В PR #4502 сторож локализации не считает потерю опоры успехом. #навигация #честность",
+        ["#навигация", "#честность"],
         make_facts(),
-        REPO,
     )
     assert problems == []
 
 
 def test_tag_not_in_dictionary_is_rejected():
-    problems = text_mod.validate_draft(
-        {"body_html": "текст #выдуманныйтег", "tags": ["#выдуманныйтег"], "media_ref": ""}, make_facts(), REPO
-    )
+    problems = text_mod.validate_post("текст #выдуманныйтег", ["#выдуманныйтег"], make_facts())
     assert any("словаре" in p for p in problems)
 
 
@@ -219,3 +207,62 @@ def test_call_minimax_sends_reasoning_effort_for_flash(monkeypatch):
     text_mod.call_minimax("тест", model="MiniMax-M3.1-Flash", api_key="k")
     assert captured["reasoning_effort"] == "low"
     assert "thinking" not in captured
+
+
+# --- проверки на выдумку (главный блокер ревью) ------------------------------
+
+
+def test_invented_russian_name_is_rejected():
+    """Имя, которого нет в фактах, — выдумка модели, а не факт."""
+    body = "В работе над навигацией Саша проверил потерю опоры"
+    problems = text_mod.check_against_facts(body, make_facts())
+    assert any("Саша" in p for p in problems)
+
+
+def test_invented_number_is_rejected():
+    """Числа нет в фактах — даже если похожее число есть в номере прогона."""
+    facts = [
+        {
+            "claim": "Сторож локализации не считает потерю опоры успехом",
+            "source": "PR #4502",
+            "evidence": ["run_id 39985229892"],
+        }
+    ]
+    body = "Сторож локализации работает 12 минут"
+    problems = text_mod.check_against_facts(body, facts)
+    assert any("12" in p for p in problems)
+
+
+def test_run_id_is_not_allowed_in_text():
+    """Идентификатор прогона в тексте поста — лишнее и потенциально внутреннее."""
+    facts = [{"claim": "Сторож локализации работает", "source": "PR #4502", "evidence": []}]
+    body = "Прогон 39985229892 прошёл успешно"
+    problems = text_mod.check_against_facts(body, facts)
+    assert any("39985229892" in p for p in problems)
+
+
+def test_api_key_in_text_is_rejected():
+    """Ключ в тексте — стоп: публиковать такое нельзя."""
+    body = "Ключ sk-abcdefghijklmnopqrstuvwxyz1234567890 в конфиге"
+    problems = text_mod.validate_post(body, ["#роббокс"], make_facts())
+    assert any("ключ API" in p for p in problems)
+
+
+def test_idea_without_show_or_deadline_is_rejected():
+    """По брифу у идеи есть «что показать» и «примерный срок»."""
+    idea = {"title": "Тема", "facts": ["Сторож локализации не считает потерю опоры успехом"], "show": "", "deadline": ""}
+    problems = text_mod.validate_idea(idea, make_facts())
+    assert any("что показать" in p for p in problems)
+    assert any("срок" in p for p in problems)
+
+
+def test_idea_with_invented_source_is_rejected():
+    """Поле facts модели проверяется: выдуманный источник — не источник."""
+    idea = {
+        "title": "Тема",
+        "facts": ["Андрей переписал навигацию"],
+        "show": "скриншот",
+        "deadline": "на следующей неделе",
+    }
+    problems = text_mod.validate_idea(idea, make_facts())
+    assert any("не найден среди фактов" in p for p in problems)

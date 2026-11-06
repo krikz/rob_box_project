@@ -11,6 +11,13 @@ sys.path.insert(0, str(REPO / "scripts" / "telegram"))
 
 import channel_lib as lib  # noqa: E402
 import channel_studio as studio  # noqa: E402
+import studio_state as st  # noqa: E402
+
+
+@pytest.fixture(autouse=True)
+def _queue_goes_to_tmp(tmp_path, monkeypatch):
+    """Очередь канала — во временный каталог: тесты не пишут в репозиторий."""
+    monkeypatch.setenv("STUDIO_QUEUE_DIR", str(tmp_path / "queue"))
 
 
 # --------------------------------------------------------------------------- DirectTransport
@@ -122,12 +129,12 @@ def test_make_transport_picks_implementation(monkeypatch):
 
 def test_state_roundtrip(tmp_path):
     path = tmp_path / "state.json"
-    state = studio.load_state(path)
-    assert state == {"offset": 0, "ideas": [], "posts": {}}
+    state = st.load_state(path)
+    assert state == {"offset": 0, "ideas": [], "posts": {}, "messages": []}
     state["ideas"].append({"id": "i1", "title": "тест", "status": "proposed"})
     state["offset"] = 42
-    studio.save_state(state, path)
-    again = studio.load_state(path)
+    st.save_state(path, state)
+    again = st.load_state(path)
     assert again["offset"] == 42
     assert again["ideas"][0]["title"] == "тест"
 
@@ -135,7 +142,7 @@ def test_state_roundtrip(tmp_path):
 def test_broken_state_file_does_not_crash(tmp_path):
     path = tmp_path / "state.json"
     path.write_text("{это не json", encoding="utf-8")
-    assert studio.load_state(path)["offset"] == 0
+    assert st.load_state(path)["offset"] == 0
 
 
 # --------------------------------------------------------------------------- кнопки
@@ -181,13 +188,44 @@ def test_idea_actions_change_status(action, expected):
 def test_unknown_idea_is_reported():
     state = {"ideas": []}
     answer = studio.handle_callback(state, {"data": "studio:idea:i9:take"})
-    assert "не найдена" in answer
+    # Ответ должен быть человеческим, а не служебным: в чате это видит Шифу.
+    assert "нет в списке" in answer
+    assert "Напиши" in answer
 
 
-def test_post_publish_marks_approved():
+def test_post_publish_marks_approved(tmp_path, monkeypatch):
+    """Одобрение не только меняет статус — пост реально встаёт в очередь канала."""
+    queue = tmp_path / "queue"
+    monkeypatch.setenv("STUDIO_QUEUE_DIR", str(queue))
     state = {"posts": {}}
     studio.handle_callback(state, {"data": "studio:post:001:publish"})
+    # Поста без текста в очередь не встать не может — студия честно это говорит.
+    assert state["posts"]["001"]["status"] == "rejected"
+
+
+def test_post_publish_puts_post_into_queue(tmp_path, monkeypatch):
+    """Готовый пост с хештегами после «Опубликовать» оказывается в очереди."""
+    queue = tmp_path / "queue"
+    monkeypatch.setenv("STUDIO_QUEUE_DIR", str(queue))
+    state = {
+        "posts": {
+            "001": {
+                "status": "proposed",
+                "title": "Сторож локализации",
+                "body_html": "В PR #4502 сторож локализации не считает потерю опоры успехом. #роббокс #честность",
+                "tags": ["#роббокс", "#честность"],
+            }
+        }
+    }
+    answer = studio.handle_callback(state, {"data": "studio:post:001:publish"})
     assert state["posts"]["001"]["status"] == "approved"
+    files = list(queue.glob("*.md"))
+    assert files, "пост не попал в очередь"
+    text = files[0].read_text(encoding="utf-8")
+    assert "status: approved" in text
+    assert "not_before:" in text
+    assert "#роббокс" in text
+    assert "одобрен" in answer
 
 
 def test_post_reject_marks_rejected():
@@ -232,7 +270,7 @@ class FakeBot:
 
 def test_poll_once_handles_callback_and_advances_offset(tmp_path):
     path = tmp_path / "state.json"
-    state = studio.load_state(path)
+    state = st.load_state(path)
     state["ideas"] = [{"id": "i1", "title": "идея", "status": "proposed"}]
     bot = FakeBot(
         [
@@ -246,21 +284,21 @@ def test_poll_once_handles_callback_and_advances_offset(tmp_path):
             }
         ]
     )
-    handled = studio.poll_once(bot, state, path, timeout=0)
+    handled = studio.poll_once(bot, path, timeout=0, state=state)
     assert handled == 1
     assert state["offset"] == 101
     assert state["ideas"][0]["status"] == "agreed"
     assert bot.answered[0][0] == "cb1"
     assert bot.sent[0]["chat_id"] == 495039871
     # состояние сохранено на диск
-    assert studio.load_state(path)["offset"] == 101
+    assert st.load_state(path)["offset"] == 101
 
 
 def test_poll_once_ignores_non_callback_updates(tmp_path):
     path = tmp_path / "state.json"
-    state = studio.load_state(path)
+    state = st.load_state(path)
     bot = FakeBot([{"update_id": 5, "message": {"text": "привет"}}])
-    assert studio.poll_once(bot, state, path, timeout=0) == 0
+    assert studio.poll_once(bot, path, timeout=0, state=state) == 0
     assert state["offset"] == 6
 
 
@@ -321,3 +359,14 @@ def test_state_file_not_in_docs_channel():
     """state.json — локальное состояние, в git ему не место."""
     assert studio.STATE_PATH.name == "state.json"
     assert "docs" not in studio.STATE_PATH.parts
+
+
+def test_callback_from_stranger_is_ignored():
+    """Нажатие не от Шифу не меняет статус идеи."""
+    state = {"ideas": [{"id": "i1", "status": "proposed"}], "posts": {}}
+    answer = studio.handle_callback(
+        state,
+        {"data": "studio:idea:i1:skip", "from": {"id": 12345}},
+    )
+    assert "не для тебя" in answer
+    assert state["ideas"][0]["status"] == "proposed"

@@ -78,6 +78,11 @@ FORBIDDEN = [
     (re.compile(r"\b10\.1\.1\.\d{1,3}\b"), "внутренний IP"),
     (re.compile(r"\b192\.168\.\d{1,3}\.\d{1,3}\b"), "внутренний IP"),
     (re.compile(r"\d{8,}:[A-Za-z0-9_-]{30,}"), "токен бота"),
+    (re.compile(r"\bsk-[A-Za-z0-9_-]{20,}"), "ключ API"),
+    (re.compile(r"\bgh[pousr]_[A-Za-z0-9]{20,}"), "токен GitHub"),
+    (re.compile(r"\bgithub_pat_[A-Za-z0-9_]{20,}"), "токен GitHub"),
+    (re.compile(r"\bAAG[A-Za-z0-9_-]{30,}"), "токен бота"),
+    (re.compile(r"\beyJ[A-Za-z0-9_-]{20,}"), "секрет в JWT-виде"),
 ]
 
 # Отправка: (метод Bot API, параметры, файл | список файлов для альбома | None) -> ответ контейнера
@@ -257,6 +262,19 @@ def validate(post: Post, repo_root: Path) -> list:
     problems += album_problems(post)
     problems += [f"не готово: {item}" for item in post.pending]
     return problems
+
+
+def extract_tags(body: str) -> list:
+    """Хештеги из текста — по порядку появления, только из словаря канала.
+
+    Теги достаёт код, а не модель: модель часто забывает поле tags, а хештег в тексте
+    есть всегда. Так теги не могут разойтись с текстом и не могут быть чужими.
+    """
+    found = []
+    for match in re.findall(r"#[^\W\d]\w*", body):
+        if match in TAG_DICTIONARY and match not in found:
+            found.append(match)
+    return found
 
 
 def build_request(post: Post, repo_root: Path, chat_id: int = CHANNEL_ID) -> tuple:

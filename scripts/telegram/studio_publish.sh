@@ -17,7 +17,11 @@ fi
 
 set +e
 # shellcheck disable=SC1090
+# set -a: переменные из файла секретов должны попасть в ОКРУЖЕНИЕ дочерних процессов.
+# Без него python3 внутри скрипта не видит TG_STUDIO_BOT_TOKEN — ровно так и падал опрос.
+set -a
 . "$SECRETS"
+set +a
 set -e
 
 if [ -z "${TG_STUDIO_BOT_TOKEN:-}" ]; then
@@ -35,4 +39,24 @@ if ! flock -n 9; then
     exit 0
 fi
 
-python3 scripts/telegram/channel_post.py --transport direct
+PUBLISH_RC=0
+# set -e убьёт скрипт на ненулевом коде до записи в PUBLISH_RC — ловим явно.
+python3 scripts/telegram/channel_post.py --transport direct || PUBLISH_RC=$?
+
+# Публикатор правит front matter очереди (posted_at, message_id). Без коммита
+# в репозитории остаётся грязное дерево, и правка теряется при следующем pull.
+# Коммитим только если дерево чистое кроме очереди: чужую работу не трогаем.
+if [ "$PUBLISH_RC" = "0" ]; then
+    DIRTY=$(git -C "$STUDIO_REPO" status --porcelain -- docs/channel/queue 2>/dev/null | wc -l)
+    OTHER=$(git -C "$STUDIO_REPO" status --porcelain 2>/dev/null | grep -v "docs/channel/queue" | wc -l)
+    if [ "$DIRTY" != "0" ] && [ "$OTHER" = "0" ]; then
+        git -C "$STUDIO_REPO" add docs/channel/queue
+        git -C "$STUDIO_REPO" commit -q -m "channel: опубликован пост" && \
+            echo "[studio-publish] правка очереди закоммичена" || \
+            echo "[studio-publish] не смог закоммитить правку очереди"
+    elif [ "$OTHER" != "0" ]; then
+        echo "[studio-publish] в дереве есть чужие изменения — коммит очереди пропущен"
+    fi
+fi
+
+exit $PUBLISH_RC

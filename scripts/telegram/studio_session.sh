@@ -19,7 +19,11 @@ fi
 
 set +e
 # shellcheck disable=SC1090
+# set -a: переменные из файла секретов должны попасть в ОКРУЖЕНИЕ дочерних процессов.
+# Без него python3 внутри скрипта не видит TG_STUDIO_BOT_TOKEN — ровно так и падал опрос.
+set -a
 . "$SECRETS"
+set +a
 set -e
 
 if [ -z "${TG_STUDIO_BOT_TOKEN:-}" ] || [ -z "${MINIMAX_API_KEY:-}" ]; then
@@ -36,7 +40,15 @@ IDEAS="$WORK/ideas.json"
 echo "[studio-session] 1/3 собираю факты"
 python3 scripts/telegram/studio_facts.py --no-save --state "$STUDIO_REPO/docker/studio/state.json" > "$FACTS"
 
-VISIBLE=$(python3 -c "import json;print(len(json.load(open('$FACTS')).get('visible_facts',[])))")
+VISIBLE=$(python3 - "$FACTS" <<'PY'
+import json
+import sys
+
+# Путь — через argv: подстановка в код превращает имя файла в исполняемый код.
+with open(sys.argv[1], encoding="utf-8") as handle:
+    print(len(json.load(handle).get("visible_facts", [])))
+PY
+)
 echo "[studio-session] видимых фактов: $VISIBLE"
 if [ "$VISIBLE" = "0" ]; then
     echo "[studio-session] показывать нечего — Шифу ничего не шлю"
@@ -49,7 +61,14 @@ if ! python3 scripts/telegram/studio_text.py --facts "$FACTS" --out "$IDEAS" > /
     exit 1
 fi
 
-OK_IDEAS=$(python3 -c "import json;print(sum(1 for i in json.load(open('$IDEAS')).get('ideas',[]) if i.get('ok')))")
+OK_IDEAS=$(python3 - "$IDEAS" <<'PY'
+import json
+import sys
+
+with open(sys.argv[1], encoding="utf-8") as handle:
+    print(sum(1 for i in json.load(handle).get("ideas", []) if i.get("ok")))
+PY
+)
 echo "[studio-session] идей прошли проверку: $OK_IDEAS"
 if [ "$OK_IDEAS" = "0" ]; then
     echo "[studio-session] ни одна идея не прошла проверку — молчу"

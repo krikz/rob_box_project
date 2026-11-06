@@ -20,7 +20,11 @@ fi
 
 set +e
 # shellcheck disable=SC1090
+# set -a: переменные из файла секретов должны попасть в ОКРУЖЕНИЕ дочерних процессов.
+# Без него python3 внутри скрипта не видит TG_STUDIO_BOT_TOKEN — ровно так и падал опрос.
+set -a
 . "$SECRETS"
+set +a
 set -e
 
 if [ -z "${TG_STUDIO_BOT_TOKEN:-}" ]; then
