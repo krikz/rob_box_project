@@ -1,7 +1,7 @@
 ---
 status: approved
 media: docs/channel/media/hil-depot.mp4
-not_before: 2026-11-10T10:00:00Z
+not_before: 2026-12-03T10:00:00Z
 message_id:
 hashtags: #навигация #симуляция #дневник
 ---
