@@ -38,7 +38,7 @@ omegaconf>=2.4.0
 
 # === Dialogue & LLM ===
 # DeepSeek / OpenAI compatible API
-openai>=3.41.0
+openai>=3.42.1
 
 # === Утилиты ===
 pyyaml>=6.0.3
