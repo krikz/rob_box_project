@@ -18,10 +18,15 @@
 #   ACTS=1,2,3 bash scripts/e2e/run_night_marathon.sh      # подмножество
 #   REF=develop bash scripts/e2e/run_night_marathon.sh
 #   DRY_RUN=1 bash scripts/e2e/run_night_marathon.sh       # показать план
+#   START_FROM_ACT=5 bash scripts/e2e/run_night_marathon.sh   # продолжить с акта 5 (2b, 2c - как в манифесте)
 #
 # ENV:
 #   REF        (default develop)  — ветка, с которой берётся workflow+сценарии
 #   ACTS       (default all)      — список актов через запятую
+#   START_FROM_ACT (default пусто) — пропустить акты до N (как в манифесте: 5, 2b ...). Метки шагов пропущенных
+#              актов берутся из их сценариев и идут в prior_steps как OK (PRIOR_STEPS_ASSUMED, default OK), чтобы
+#              requires работали; первый запускаемый акт получает фазу first (включает режим e2e, стирает e2e-БД).
+#   Диспатч workflow - scripts/dev/gh-workflow-dispatch.sh (REST, повтор при 5xx; #4476), ошибка идёт в лог марафона.
 #   REPORT     (default tests/e2e/_artifacts/night_<UTC>/)
 #   POLL_SEC   (default 60)       — период опроса статуса
 #   MAX_WAIT   (default 3600)     — потолок ожидания одного акта, сек
@@ -56,8 +61,6 @@ MAX_WAIT="${MAX_WAIT:-3600}"
 DRY_RUN="${DRY_RUN:-0}"
 STOP_ON_FOUNDATION_FAIL="${STOP_ON_FOUNDATION_FAIL:-1}"
 TTS_PROVIDER="${TTS_PROVIDER:-}"
-TTS_ARGS=()
-[ -n "$TTS_PROVIDER" ] && TTS_ARGS=(-f tts_provider="$TTS_PROVIDER")
 
 # --- robot-busy sentinel (взаимное исключение с e2e-ротацией) ---------------
 # Робот один: ротация (agent-flow-e2e-process.sh, cron every 20m) и марафон
@@ -106,6 +109,9 @@ log() { printf '[night %s] %s\n' "$(date -u +%H:%M:%S)" "$*"; }
 
 # --- какие акты гоняем ------------------------------------------------------
 ACTS_FILTER="${ACTS:-}"
+START_FROM_ACT="${START_FROM_ACT:-}"
+PRIOR_STEPS_ASSUMED="${PRIOR_STEPS_ASSUMED:-OK}"
+DISPATCH_SH="${DISPATCH_SH:-$ROOT/scripts/dev/gh-workflow-dispatch.sh}"
 
 # Манифест читаем питоном (jq на билд-машинах есть не всегда, python3 — есть).
 # python3 на Windows-хостах бывает WindowsApps-заглушкой: она есть в PATH,
@@ -119,7 +125,7 @@ if [ -z "$PY" ]; then
     echo "FATAL: не найден рабочий python3 (пробовал python3/python/py)" >&2
     exit 2
 fi
-plan="$("$PY" - "$MANIFEST" "$ACTS_FILTER" "$ROOT" <<'PYEOF'
+plan="$("$PY" - "$MANIFEST" "$ACTS_FILTER" "$ROOT" "$START_FROM_ACT" "$PRIOR_STEPS_ASSUMED" <<'PYEOF'
 import json, os, sys
 # Названия актов кириллические; на Windows-хосте stdout по умолчанию cp1252
 # и print() падает с UnicodeEncodeError ещё до первого диспатча.
@@ -127,11 +133,26 @@ try:
     sys.stdout.reconfigure(encoding="utf-8")
 except Exception:
     pass
-manifest, flt, root = sys.argv[1], sys.argv[2], sys.argv[3]
+manifest, flt, root, start, assumed = sys.argv[1:6]
 acts = json.load(open(manifest, encoding="utf-8"))["acts"]
 if flt.strip():
-    want = {int(x) for x in flt.replace(" ", "").split(",") if x}
-    acts = [a for a in acts if a["act"] in want]
+    want = {x for x in flt.replace(" ", "").split(",") if x}
+    acts = [a for a in acts if str(a["act"]) in want]
+# START_FROM_ACT (#4476): акты до N пропускаем, метки их шагов отдаём строкой #PRIOR для prior_steps (поле requires).
+skipped = []
+if start.strip():
+    ids = [str(a["act"]) for a in acts]
+    if start.strip() not in ids:
+        print("#ERR\tSTART_FROM_ACT=%s нет среди актов плана %s" % (start.strip(), ",".join(ids)))
+        sys.exit(0)
+    cut = ids.index(start.strip())
+    skipped, acts = acts[:cut], acts[cut:]
+prior = []
+for a in skipped:
+    with open(os.path.join(root, a["scenario_file"]), encoding="utf-8") as fh:
+        prior += ["%s=%s" % (st["label"], assumed) for st in json.load(fh)["steps"]]
+if start.strip():
+    print("#PRIOR\t" + ",".join(prior) + "\t" + ",".join(str(a["act"]) for a in skipped))
 
 
 def inherits(act):
@@ -145,7 +166,9 @@ def inherits(act):
 # получить свежий пустой каст. Иначе (один акт / план с наследующего) - старое поведение #3904: акт держит
 # режим для следующего, только если следующий акт ЭТОГО плана наследует (inherits_previous_act).
 n = len(acts)
-phased = n >= 2 and not inherits(acts[0])
+# START_FROM_ACT: первый запускаемый акт - first и без проверки inherits (режим e2e включает раннер, иначе наследующий акт
+# с середины падал бы на E2E_PRECONDITION).
+phased = n >= 2 and (bool(start.strip()) or not inherits(acts[0]))
 holds = [i + 1 < n and inherits(acts[i + 1]) for i in range(n)]
 for i, (a, hold) in enumerate(zip(acts, holds)):
     phase = ("first" if i == 0 else "last" if i == n - 1 else "middle") if phased else "-"
@@ -160,12 +183,25 @@ PYEOF
 # Python на Windows-хосте печатает \r\n: \r прилипал к последней колонке плана
 # (a_hold="hold\r" — акт не держал режим e2e для наследующего, #3904).
 plan="$(printf '%s' "$plan" | tr -d '\r')"
+START_PRIOR=""
+START_SKIPPED=""
+_err_line="$(printf '%s\n' "$plan" | grep -m1 '^#ERR' || true)"
+if [ -n "$_err_line" ]; then
+    echo "FATAL: ${_err_line#*$'\t'}" >&2
+    exit 2
+fi
+_prior_line="$(printf '%s\n' "$plan" | grep -m1 '^#PRIOR' || true)"
+if [ -n "$_prior_line" ]; then
+    IFS=$'\t' read -r _ START_PRIOR START_SKIPPED <<<"$_prior_line"
+    plan="$(printf '%s\n' "$plan" | grep -v '^#PRIOR' || true)"
+fi
 if [ -z "$plan" ]; then
     echo "FATAL: ни один акт не выбран (ACTS=$ACTS_FILTER)" >&2
     exit 2
 fi
 
 n_acts="$(printf '%s\n' "$plan" | wc -l | tr -d ' ')"
+[ -n "$START_FROM_ACT" ] && log "START_FROM_ACT=$START_FROM_ACT: пропущены акты [${START_SKIPPED:-}], prior_steps из их сценариев как $PRIOR_STEPS_ASSUMED ($(printf '%s' "$START_PRIOR" | tr ',' '\n' | grep -c .) меток)"
 log "REF=$REF  актов=$n_acts  tts_provider=${TTS_PROVIDER:-auto}  отчёт=$REPORT"
 printf '%s\n' "$plan" | while IFS=$'\t' read -r a_n a_title a_stab a_steps a_scn a_acc a_phase a_hold; do
     log "  акт $a_n  «$a_title»  ($a_steps шагов, $a_stab)$([ "$a_phase" != - ] && echo "  → режим e2e марафона: $a_phase")$([ "$a_hold" = hold ] && echo '  → режим e2e держит для следующего (наследует)')"
@@ -269,7 +305,7 @@ fi
 
 overall=0
 # #4077 П4: итоги шагов прошлых актов (метка=СТАТУС,…) -- поле шага requires, связь между актами.
-PRIOR_STEPS=""
+PRIOR_STEPS="$START_PRIOR"
 while IFS=$'\t' read -r a_n a_title a_stab a_steps a_scn a_acc a_phase a_hold; do
     [ -z "$a_n" ] && continue
 
@@ -286,12 +322,12 @@ while IFS=$'\t' read -r a_n a_title a_stab a_steps a_scn a_acc a_phase a_hold; d
     log "=== АКТ $a_n «$a_title» ($a_steps шагов, $a_stab) ==="
     # Issue #3904 — следующий акт наследует этот: режим e2e на роботе не
     # снимать в trap этого акта (снимет последний акт или таймер владельца).
-    HOLD_ARGS=()
-    [ "$a_hold" = "hold" ] && HOLD_ARGS=(-f e2e_hold_for_next_act=true)
+    HOLD_VALUES=()
+    [ "$a_hold" = "hold" ] && HOLD_VALUES=(e2e_hold_for_next_act=true)
     # Issue #3972 - режим e2e держит раннер: одно включение/стирание на марафон (first), остальные акты
     # его только подхватывают, last выключает. Без этого акты 2/2b/2c стирали каст друг друга.
     if [ "$a_phase" != "-" ]; then
-        HOLD_ARGS+=(-f e2e_marathon_phase="$a_phase")
+        HOLD_VALUES+=(e2e_marathon_phase="$a_phase")
         PHASE_STARTED=1
     fi
 
@@ -299,18 +335,18 @@ while IFS=$'\t' read -r a_n a_title a_stab a_steps a_scn a_acc a_phase a_hold; d
     before_iso="$(date -u -d '-2 minutes' +%Y-%m-%dT%H:%M:%SZ 2>/dev/null \
                   || date -u +%Y-%m-%dT%H:%M:%SZ)"
 
-    if ! gh workflow run "$WORKFLOW" \
-            --repo "$REPO_SLUG" \
-            --ref "$REF" \
-            -f environment=test \
-            -f scenario_file="$a_scn" \
-            -f acceptance_file="$a_acc" \
-            -f triggered_by_script="run_night_marathon.sh" \
-            -f triggered_by_reason="night marathon act $a_n: $a_title" \
-            ${PRIOR_STEPS:+-f prior_steps="$PRIOR_STEPS"} \
-            ${TTS_ARGS[@]+"${TTS_ARGS[@]}"} \
-            ${HOLD_ARGS[@]+"${HOLD_ARGS[@]}"} \
-            >/dev/null 2>&1; then
+    # #4476: REST через scripts/dev/gh-workflow-dispatch.sh (`gh workflow run` отдавал HTTP 500); stderr хелпера
+    # (HTTP-код и тело ответа) идёт в лог марафона, не в /dev/null.
+    if ! bash "$DISPATCH_SH" "$WORKFLOW" "$REF" \
+            environment=test \
+            scenario_file="$a_scn" \
+            acceptance_file="$a_acc" \
+            triggered_by_script="run_night_marathon.sh" \
+            triggered_by_reason="night marathon act $a_n: $a_title" \
+            ${PRIOR_STEPS:+prior_steps="$PRIOR_STEPS"} \
+            ${TTS_PROVIDER:+tts_provider="$TTS_PROVIDER"} \
+            ${HOLD_VALUES[@]+"${HOLD_VALUES[@]}"} \
+            2> >(while IFS= read -r _l; do log "  dispatch: $_l"; done); then
         log "  ❌ dispatch не прошёл (акт $a_n) — пропускаю"
         printf '%s\t%s\t%s\t%s\t-\tdispatch_failed\t-\t-\t-\n' \
             "$a_n" "$a_title" "$a_stab" "$a_steps" >> "$SUMMARY"
