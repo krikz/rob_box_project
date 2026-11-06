@@ -887,8 +887,10 @@ class STTNode(Node):
         # Эхо собственной речи робота (core/echo_window.py): голос звучал только в эхо-окне (#4072), короткий обрывок
         # при речи (ревью #4122) или слова фразы повторяют звучавшую рядом реплику робота (#4145). Ясный стоп с вейком
         # идёт всегда; эхо — молча, без «не расслышал» (петля #989), не в диалог (ни бэклога, ни модели) и в
-        # /voice/stt/echo: биометрия не заводит и не растит из него профиль.
-        echo = admission.echo(text, self.wake_words, duration)
+        # /voice/stt/echo: биометрия не заводит и не растит из него профиль. В окне ответа (#4509) решают время, голос
+        # (узнан ли по имени — опознание биометрии уже пришло) и слова.
+        human = self._echo.human_voice(self._active_utterance_id)
+        echo = admission.echo(text, self.wake_words, duration, human_voice=human)
         if echo is not None:
             self.get_logger().info(echo.note)
             self._echo.publish_echo(self._active_utterance_id, text)
