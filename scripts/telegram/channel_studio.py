@@ -42,6 +42,9 @@ ACTION_REJECT = "reject"  # «Отклонить»
 IDEA_ACTIONS = (ACTION_TAKE, ACTION_DISCUSS, ACTION_SKIP)
 POST_ACTIONS = (ACTION_PUBLISH, ACTION_REJECT)
 
+# Личка Шифу: сюда студия шлёт идеи и черновики, отсюда приходят кнопки и ответы.
+SHIFU_CHAT_ID = int(os.environ.get("TG_SHIFU_CHAT_ID", "495039871"))
+
 # callback_data: studio:<что>:<id>:<действие>
 CALLBACK_RE = re.compile(r"^studio:(idea|post):([A-Za-z0-9_-]{1,32}):([a-z]{2,10})$")
 
@@ -226,19 +229,40 @@ def poll_once(bot: StudioBot, state: dict, state_path: Path, timeout: int = 30, 
         update_id = update.get("update_id", 0)
         state["offset"] = max(state.get("offset", 0), update_id + 1)
         callback = update.get("callback_query")
-        if not callback:
+        if callback:
+            answer = handle_callback(state, callback)
+            bot.answer_callback(callback.get("id", ""), answer[:200])
+            message = callback.get("message") or {}
+            chat_id = message.get("chat", {}).get("id")
+            if chat_id:
+                bot.send_message(chat_id, answer)
+            out(f"обработано: {callback.get('data')} → {answer}")
+            handled += 1
             continue
-        answer = handle_callback(state, callback)
-        bot.answer_callback(callback.get("id", ""), answer[:200])
-        message = callback.get("message") or {}
-        chat_id = message.get("chat", {}).get("id")
-        if chat_id:
-            bot.send_message(chat_id, answer)
-        out(f"обработано: {callback.get('data')} → {answer}")
-        handled += 1
+        message = update.get("message")
+        if message:
+            # Текст от Шифу — это обсуждение идеи. Сохраняем, чтобы агент подхватил.
+            note = capture_message(state, message)
+            if note:
+                out(f"сообщение от Шифу сохранено: {note[:60]}")
+                handled += 1
     if handled or updates:
         save_state(state, state_path)
     return handled
+
+
+def capture_message(state: dict, message: dict) -> str:
+    """Сохранить текстовое сообщение Шифу в состояние (фаза обсуждения)."""
+    text = (message.get("text") or "").strip()
+    if not text:
+        return ""
+    chat = message.get("chat") or {}
+    if chat.get("id") != SHIFU_CHAT_ID:
+        return ""
+    notes = state.setdefault("messages", [])
+    notes.append({"at": message.get("date"), "text": text[:2000]})
+    del notes[:-20]  # последние 20 сообщений
+    return text
 
 
 def watch(bot: StudioBot, state_path: Path, timeout: int = 30, once: bool = False, out=print) -> int:
