@@ -41,6 +41,7 @@
     "/camera/camera/color/camera_info": "Публикует внешний драйвер depthai_ros_driver в контейнере oak-d (C++, не в src/): intrinsics RGB-камеры, конфиг docker/vision/config/oak-d/oak_d_config.yaml (i_rs_compat:true → rgb→color). Подписчик — шов «Взгляд» gaze.OakDSource (src/rob_box_perception/rob_box_perception/gaze.py), ADR-0138 §2.4; тот же топик remap-ится в apriltag_node (docker/vision/config/oak-d/launch/oakd_with_apriltag.launch.py).",
     "/rtabmap/grid_prob_map": "Публикует rtabmap_ros (внешний ROS2-пакет SLAM, не в src/).",
     "/rtabmap/localization_pose": "Публикует rtabmap_ros, см. /rtabmap/grid_prob_map.",
+    "/rtabmap/info": "Публикует rtabmap_ros (узел rtabmap, статистика rtabmap_msgs/Info), см. /rtabmap/grid_prob_map. Подписчик — сторож локализации навигационных тулов (src/rob_box_mcp_tools/rob_box_mcp_tools/localization_watch.py, #4495): Loop/MapToOdom_* на время поездки.",
     "/rtabmap/map": "Публикует rtabmap_ros, см. /rtabmap/grid_prob_map.",
     "/plan": "Публикует nav2 planner_server (внешний пакет, не в src/) — глобальный план, топик `plan` без namespace. Запуск: docker/main/scripts/nav2/start_nav2_direct.sh. Потребитель — quest_node nav_path (issue #3151).",
     "/rosout": "Встроенный топик логов ROS2 — публикуется рантаймом rclpy/rclcpp у КАЖДОГО узла автоматически, никогда через явный create_publisher(...). Подписчики (health_monitor.py, context_aggregator_node.py) легитимны.",

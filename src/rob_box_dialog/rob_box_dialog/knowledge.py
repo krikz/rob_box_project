@@ -1578,6 +1578,9 @@ NAV_UNKNOWN_TARGET = "unknown_target"
 NAV_FAILURE_OUTCOMES: Tuple[str, ...] = (
     "aborted", "canceled", "timeout", "rejected", "no_response", "server_unavailable", "unknown_status",
     NAV_UNKNOWN_TARGET,
+    # #4495: Nav2 ответил успехом, но поза на карте за поездку потеряла опору (лидарная одометрия потеряна или карта
+    # прыгнула): не «приехал», а «не уверен, где я» (rob_box_mcp_tools.core.localization_check).
+    "localization_lost",
 )
 NAV_DONE = ByData((NAV_ARRIVAL_FIELD,), {
     (NAV_ALREADY_THERE,): "motion.already_there", (NAV_ARRIVED,): "motion.arrived",

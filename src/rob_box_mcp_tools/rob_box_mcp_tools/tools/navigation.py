@@ -31,6 +31,7 @@ from ..base import MCPTool, MCPToolParameter, MCPToolResult, ToolExecutionType, 
 from ..core.action_outcome import (
     CANCEL_CONFIRMED,
     CANCEL_NO_ACTIVE_GOAL,
+    NAV_LOCALIZATION_LOST,
     NAV_NO_RESPONSE,
     NAV_REJECTED,
     NAV_SERVER_UNAVAILABLE,
@@ -44,6 +45,7 @@ from ..core.action_outcome import (
     start_distance,
 )
 from rob_box_dialog import knowledge as kn
+from ..localization_watch import LocalizationWatch
 from ..map_pose import LEGACY_WAYPOINT_FRAME, MapPose
 
 _CANCEL_ALL_LABEL = "Nav2 cancel_goal"
@@ -154,7 +156,49 @@ def _cancel_goal_best_effort(goal_handle, logger) -> None:
         logger.warning(f"Не удалось отменить цель Nav2 после таймаута: {exc}")
 
 
+def _confirm_localization(result: MCPToolResult, track) -> MCPToolResult:
+    """#4495: успех Nav2 → «приехал» только если поза за поездку не теряла опору (``core.localization_check``).
+
+    Nav2 судит о прибытии по позе в ``map``; если ICP-одометрия была потеряна или карта прыгнула,
+    эта поза ничего не говорит о мире. Тогда исход — ``NAV_LOCALIZATION_LOST``, фразу строит код.
+    Вердикт кладётся в ``data["localization"]`` при любом исходе (для логов и HIL).
+    """
+    if track is None:
+        return result
+    verdict = track.verdict()
+    extra = {"localization": verdict.status, "localization_detail": verdict.detail}
+    if result.success and not verdict.trusted:
+        result = _nav_failure(NAV_LOCALIZATION_LOST)
+    result.data = {**(result.data or {}), **extra}
+    return result
+
+
 def _send_nav_goal(
+    nav_client,
+    node,
+    x: float,
+    y: float,
+    theta: float,
+    frame_id: str = "map",
+    timeout: float = 120.0,
+    halt: Optional[Callable[..., str]] = None,
+    localization: Optional[LocalizationWatch] = None,
+):
+    """Поездка к цели с проверкой локализации (#4495): сигналы слушаются только на время поездки.
+
+    ``localization`` (``LocalizationWatch``) — для целей в кадре карты; без него — как раньше.
+    Остальное — :func:`_drive_to_goal`.
+    """
+    track = localization.start() if localization is not None else None
+    try:
+        result = _drive_to_goal(nav_client, node, x, y, theta, frame_id=frame_id, timeout=timeout, halt=halt)
+    finally:
+        if localization is not None:
+            localization.stop(track)
+    return _confirm_localization(result, track)
+
+
+def _drive_to_goal(
     nav_client,
     node,
     x: float,
@@ -249,11 +293,14 @@ class NavigateToWaypointTool(MCPTool):
     """Навигация к именованной точке из базы данных вейпоинтов."""
 
     event_source = "action:/navigate_to_pose"
+    #: #4495: сторож локализации; ставит ``__init__`` (без него — тул собран в обход конструктора, проверки нет).
+    localization_watch: Optional[LocalizationWatch] = None
 
     def __init__(self, node, waypoint_store: "WaypointAdapter"):
         super().__init__(node)
         self.nav_client = ActionClient(node, NavigateToPose, "navigate_to_pose")
         self.controller_halt = ControllerHalt(node)
+        self.localization_watch = LocalizationWatch(node)
         self.waypoint_store = waypoint_store
         self.current_goal_handle = None
 
@@ -323,6 +370,7 @@ class NavigateToWaypointTool(MCPTool):
             frame_id=frame_id,
             timeout=120.0,
             halt=self.controller_halt,
+            localization=self.localization_watch,
         )
         _with_target(
             result, waypoint, waypoint=waypoint, coordinates=coords, frame_id=frame_id, frame_assumed=frame_assumed
@@ -342,11 +390,14 @@ class NavigateToCoordinatesTool(MCPTool):
     """Навигация к произвольным координатам в map frame."""
 
     event_source = "action:/navigate_to_pose"
+    #: #4495: сторож локализации; ставит ``__init__`` (без него — тул собран в обход конструктора, проверки нет).
+    localization_watch: Optional[LocalizationWatch] = None
 
     def __init__(self, node):
         super().__init__(node)
         self.nav_client = ActionClient(node, NavigateToPose, "navigate_to_pose")
         self.controller_halt = ControllerHalt(node)
+        self.localization_watch = LocalizationWatch(node)
 
     @property
     def name(self) -> str:
@@ -385,7 +436,16 @@ class NavigateToCoordinatesTool(MCPTool):
     def execute(self, x: float, y: float, theta: float = 0.0) -> MCPToolResult:
         self.log_info(f"Навигация к координатам: x={x:.2f}, y={y:.2f}, θ={theta:.2f}")
 
-        result = _send_nav_goal(self.nav_client, self.node, x, y, theta, timeout=120.0, halt=self.controller_halt)
+        result = _send_nav_goal(
+            self.nav_client,
+            self.node,
+            x,
+            y,
+            theta,
+            timeout=120.0,
+            halt=self.controller_halt,
+            localization=self.localization_watch,
+        )
         _with_target(result, f"({x:.1f}, {y:.1f})", x=x, y=y, theta=theta)
         if result.success:
             result.message = _arrived_message(result, f"точке ({x:.1f}, {y:.1f})")
