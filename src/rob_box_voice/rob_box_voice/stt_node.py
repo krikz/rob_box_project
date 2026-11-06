@@ -33,7 +33,7 @@ from rob_box_core.provider_publisher import ProviderStatePublisher
 from .core.provider_health import stt_provider_states
 from .core.interrupt_request import InterruptOffer
 from .stt_hang_guard import HangGuard
-from std_msgs.msg import Bool, Int32, String
+from std_msgs.msg import Bool, Float32, Int32, String
 from vosk import KaldiRecognizer, Model
 
 # Pure-Python fallback/retry/short-phrase логика (issue #979).
@@ -522,7 +522,10 @@ class STTNode(Node):
         # (PR-15 15-0b #3711). Эхо-окно после неё (#989, #4072) — по фронтам /audio/vad: фраза, чей голос звучал
         # только в окне, — эхо, из неё проходит лишь ясный стоп с вейком (core/echo_window.py). Журнал речи
         # (SpeechRequest — текст по speech_id) даёт фразе рядом с речью слова робота: их повтор — эхо (#4145).
-        self._echo = echo_window.watch(self, grace_s=self.tts_grace_s, aec_mode=self.aec_mode, vad_type=Bool)
+        # Открытое окно ответа (#4509, событие dialog_node) пускает фразу из эхо-окна на сверку словами.
+        self._echo = echo_window.watch(
+            self, grace_s=self.tts_grace_s, aec_mode=self.aec_mode, vad_type=Bool, reply_type=Float32
+        )
         # ADR-0150 PR-5 (#3694) — речь stt_node больше не глушит: на сегмент с вейком публикует
         # /dialog/interrupt_request, решает диалог (ясная стоп-команда — SpeechCancel по эпохе).
         # Направление на говорящего — DOA ReSpeaker, снятый во время речи (VAD), по окну фразы.

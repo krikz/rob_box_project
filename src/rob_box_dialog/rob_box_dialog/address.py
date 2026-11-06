@@ -26,7 +26,13 @@ from rob_box_dialog.backlog import Backlog, Heard
 from rob_box_dialog.heard import repair
 from rob_box_dialog.reply_grammar import NO, YES, classify_reply
 from rob_box_dialog.session import SceneFrame
-from rob_box_dialog.speaker_adapter import answer_to_greeting, answer_to_question, attributed_person, in_reply_window
+from rob_box_dialog.speaker_adapter import (
+    answer_to_greeting,
+    answer_to_question,
+    attributed_person,
+    greeting_open,
+    in_reply_window,
+)
 from rob_box_dialog.knowledge import (
     ADDRESS_FILLER_WORDS,
     COORDINATOR_NAMES,
@@ -42,6 +48,10 @@ SOURCE_RESPEAKER, SOURCE_TELEGRAM, SOURCE_OPERATOR = "respeaker", "telegram", "o
 VOICE, BACKLOG_PICKUP, BARE_WAKE, IDENTITY_ANSWER = "voice", "backlog_pickup", "bare_wake", "identity_answer"
 #: Фраза без вейка в окне после приветствия при встрече.
 GREETING_REPLY = "greeting_reply"
+#: Голое «робот» в окне после приветствия, бэклог пуст (#4509): код говорит «Слушаю.», окно ответа открывается заново.
+GREETING_WAKE = "greeting_wake"
+#: Ходы без слов человека: текст хода не из фразы, у хода нет её ``utterance_id``.
+WORDLESS: Tuple[str, ...] = (BARE_WAKE, GREETING_WAKE)
 #: «Да»/«нет» без вейка в окне вопроса выступления о смене музыки (О9′).
 PERFORM_ANSWER = "perform_answer"
 #: Стоп музыки без вейка, пока музыка играет (М11 n511, #4030: вейк под музыкой теряется): ход - только этот стоп.
@@ -165,7 +175,7 @@ def decide(heard: Heard, backlog: Optional[Backlog], wake_words: Sequence[str],
 def _of_phrase(decision: Decision, heard: Heard) -> Decision:
     """Ход, текст которого — сама фраза ``heard`` (не подхват бэклога и не голый вейк), — с её ``utterance_id``: по нему
     ход находит SpeakerResult этой фразы."""
-    if isinstance(decision, Addressed) and not decision.pickup and decision.source != BARE_WAKE:
+    if isinstance(decision, Addressed) and not decision.pickup and decision.source not in WORDLESS:
         return replace(decision, utterance_id=heard.utterance_id)
     return decision
 
@@ -191,7 +201,15 @@ def _decide(heard: Heard, backlog: Optional[Backlog], wake_words: Sequence[str],
         rest = _collapse_repeated_wake(rest, wake_words)
     if is_bare(rest) and _yes_no_in_window(ask, rest, heard.t):  # «Робот, да» — ответ на вопрос, не голый вейк
         return Addressed(rest, PERFORM_ANSWER)
-    return _woken(rest, heard, backlog, _command(text, rest, wake_words) if woken else "")
+    return _greeting_wake(_woken(rest, heard, backlog, _command(text, rest, wake_words) if woken else ""), greeting)
+
+
+def _greeting_wake(decision: Addressed, greeting: Optional[SceneFrame]) -> Addressed:
+    """Голое «робот» при пустом бэклоге в открытом окне ответа на приветствие (#4509): не пустой ход, а
+    :data:`GREETING_WAKE` — человек зовёт робота ответить; рефлекс-ход молча закрывался (``pickup n=0``)."""
+    if decision.source == BARE_WAKE and greeting_open(greeting):
+        return replace(decision, source=GREETING_WAKE)
+    return decision
 
 
 def _command(text: str, rest: str, wake_words: Sequence[str]) -> str:

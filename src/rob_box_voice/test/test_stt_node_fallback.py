@@ -119,6 +119,7 @@ def _ensure_rclpy_mock(monkeypatch):
     class _Msg:
         String = MagicMock()
         Bool = MagicMock()
+        Float32 = MagicMock()
         Int32 = MagicMock()
 
     monkeypatch.setitem(sys.modules, "std_msgs", _Msg())

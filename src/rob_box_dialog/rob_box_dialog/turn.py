@@ -96,7 +96,7 @@ from rob_box_dialog import theme_switch
 from rob_box_dialog import phrases
 from rob_box_dialog import tool_ask
 from rob_box_dialog import track_ref
-from rob_box_dialog.address import BARE_WAKE, Addressed
+from rob_box_dialog.address import GREETING_WAKE, WORDLESS, Addressed
 from rob_box_dialog.agents import agent_spec, allows_tier1, tools_for
 from rob_box_dialog.command import (Command, Expression, Form, Invalid, Performance, Result, ToolCall, current_form,
                                     explain, fit_speech, loud_actions, turn_form)
@@ -309,7 +309,7 @@ def user_text(turn: "_Turn") -> str:
 def log_pickup(log: Any, addressed: Addressed, turn: "_Turn") -> None:
     """Голое «робот»: строка подхвата — сколько фраз, чьи, в каком ходе (``n=0`` — бэклог пуст или фразы старше
     окна, ход — только рефлекс)."""
-    if addressed.pickup or addressed.source == BARE_WAKE:
+    if addressed.pickup or addressed.source in WORDLESS:
         speakers = ",".join(who for who, _ in turn.heard) or "-"
         log.info(f"{PICKUP_MARK} n={len(turn.heard)} speakers={speakers} turn={turn.turn_id}")
 
@@ -823,6 +823,19 @@ def answer_listen_only(engine: "TurnEngine", turn: "_Turn") -> bool:
                      f"зовётся turn={turn.turn_id}")
     engine._say(turn, phrases.text(kn.LISTEN_ONLY_PHRASE))
     return True
+
+
+def wordless(engine: "TurnEngine", turn: "_Turn") -> bool:
+    """Ход без слов человека — модели нечего отвечать, ход кончается без LLM. Голое «робот» — рефлекс (лицо, кольцо);
+    голое «робот» в окне ответа на приветствие (``GREETING_WAKE``, #4509) — ещё и «Слушаю.» кодом: человека позвал
+    робот, молча закрытый ход оставлял его без ответа. ``False`` — у хода есть текст, он идёт дальше."""
+    if turn.source == GREETING_WAKE:
+        turn.stage, turn.reason = "done", kn.LISTEN_ONLY_PHRASE
+        engine._log.info(f"{LOG_MARK} голое «робот» в окне ответа на приветствие → «слушаю» кодом, LLM не зовётся "
+                         f"turn={turn.turn_id}")
+        engine._say(turn, phrases.text(kn.LISTEN_ONLY_PHRASE))
+        return True
+    return turn.source in WORDLESS or not turn.text
 
 
 async def understand(engine: "TurnEngine", turn: "_Turn", snap: SessionSnapshot) -> None:
@@ -2047,7 +2060,7 @@ class TurnEngine:
         log_stt_fixes(self._log, addressed, turn)
         self._event("user", turn, text=turn.text, data={"source": turn.source})
         self._ports.stage(turn.turn_id, turn.epoch, "addressed", "started", source=turn.source)
-        if addressed.source == BARE_WAKE or not turn.text:
+        if wordless(self, turn):
             return self._finish(turn)
         work = turn_work(self, turn, snap)
         try:
