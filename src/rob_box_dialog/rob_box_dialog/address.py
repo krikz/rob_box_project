@@ -169,7 +169,20 @@ def decide(heard: Heard, backlog: Optional[Backlog], wake_words: Sequence[str],
     ``music_playing`` — играет ли музыка: под ней искажённый вейк пропускает и правку музыки («роботы ускорь темп»,
     ворота ``under_music`` в ``knowledge.WAKE_SLIP_GATES``). Ход из самой фразы помнит её id
     (``Addressed.utterance_id``, :func:`_of_phrase`)."""
-    return _of_phrase(_decide(heard, backlog, wake_words, question, greeting, ask, hold, music_playing), heard)
+    decision = _decide(heard, backlog, wake_words, question, greeting, ask, hold, music_playing)
+    _note_answered(decision, heard, backlog)
+    return _of_phrase(decision, heard)
+
+
+def _note_answered(decision: Decision, heard: Heard, backlog: Optional[Backlog]) -> None:
+    """Единственная точка отметки «ход ответил человеку» (#4509): фраза с текстом (вейк, ``greeting_reply``,
+    ответ на вопрос и т. п.) помечает бэклог до своего начала учтённым — фоновое до неё модель видит в снимке хода,
+    голое «робот» позже не должно подхватить его второй раз. «да»/«нет» на вопрос выступления бэклог не съедает
+    (#3772). Голый вейк и подхват отмечаются в ``Backlog.pickup``."""
+    if (backlog is not None and isinstance(decision, Addressed) and not decision.pickup
+            and decision.source not in WORDLESS + (PERFORM_ANSWER,)
+            and heard.source not in (SOURCE_TELEGRAM, SOURCE_OPERATOR)):
+        backlog.note_addressed(heard.t)
 
 
 def _of_phrase(decision: Decision, heard: Heard) -> Decision:
@@ -237,8 +250,6 @@ def _woken(rest: str, heard: Heard, backlog: Optional[Backlog], command: str = "
         said, after_wake = repair(rest), repair(command)
         recent = backlog.recent_unaddressed(heard) if backlog is not None else None
         since = backlog.background_since_reply(heard) if backlog is not None else []
-        if backlog is not None:
-            backlog.note_addressed(heard.t)  # фоновое до этой фразы модель видит в снимке хода: издалека не подхватывать
         return Addressed(said.text, VOICE, recent=(recent,) if recent else (), background=tuple(since),
                          background_summary=backlog.background_summary(heard) if backlog is not None else {},
                          command=after_wake.text, stt_fixes=said.fixes + after_wake.fixes)

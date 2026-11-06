@@ -157,3 +157,20 @@ def test_phrase_after_the_answered_turn_is_still_picked_up():
     backlog.add(Heard("Включи музыку", t=105.0))
     picked = decide(Heard("Робот", t=108.0), backlog, WAKES)
     assert picked.pickup and picked.text == "Включи музыку"
+
+
+def test_wakeless_phrase_then_greeting_reply_then_bare_wake_in_new_window_is_listening_not_second_answer():
+    """Лог 1793997605/638/700: «добрый вечер» без вейка → бэклог; та же фраза в окне приветствия — ``greeting_reply``,
+    робот ответил; голое «робот» в окне следующего приветствия подхватывало старое («второй ответ»), а «Слушаю.» не
+    звучало. Теперь ход-ответ помечает бэклог учтённым: ``GREETING_WAKE``."""
+    backlog = Backlog()
+    first = Heard("добрый вечер", t=GREETED_AT + 3.0)
+    assert decide(first, backlog, WAKES) == NotAddressed("no_wake")
+    backlog.add(first)
+    reply = decide(Heard("добрый вечер", t=GREETED_AT + 9.0), backlog, WAKES, greeting=_window())
+    assert reply.source == GREETING_REPLY
+    second_greeted_at = GREETED_AT + 90.0
+    wake = decide(Heard("робот", t=second_greeted_at + 8.0), backlog, WAKES, greeting=_window(second_greeted_at))
+    assert wake == Addressed("", GREETING_WAKE) and not wake.pickup
+    ports, _ = _run(wake)
+    assert ports.said == ["Слушаю."]
