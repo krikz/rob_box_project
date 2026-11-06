@@ -168,7 +168,7 @@ def test_every_nav_failure_kind_has_its_phrase_in_dialog():
     """Контракт с диалогом: каждый вид неуспеха тула - своя фраза «Не доехал до точки …: причина»."""
     tool_kinds = {ao.nav_outcome(k).kind for k in (
         ao.NAV_ABORTED, ao.NAV_CANCELED, ao.NAV_TIMEOUT, ao.NAV_REJECTED, ao.NAV_NO_RESPONSE,
-        ao.NAV_SERVER_UNAVAILABLE, "что-то новое")}
+        ao.NAV_SERVER_UNAVAILABLE, ao.NAV_LOCALIZATION_LOST, "что-то новое")}
     assert tool_kinds | {kn.NAV_UNKNOWN_TARGET} == set(kn.NAV_FAILURE_OUTCOMES)
 
 
