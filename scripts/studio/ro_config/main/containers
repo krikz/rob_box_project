@@ -1,0 +1,15 @@
+# Пример конфига гейта студии (scripts/studio/studio_ro_gate.sh); install_ro_key.sh кладёт его в ~/.config/studio_ro/.
+# Один элемент на строку, # — комментарий. Пути абсолютные; несуществующие гейт молча пропускает.
+# /data (лица, голоса, speakers.db) сюда НЕ включать: гейт всё равно отобьёт его жёстким запретом.
+# Main Pi 10.1.1.10 / 10.1.1.20: навигация и движение.
+zenoh-router
+twist-mux
+robot-state-publisher
+rtabmap
+imu-filter
+ros2-control
+lslidar
+perception
+nav2
+teleop
+proximity-guard
