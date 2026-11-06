@@ -76,5 +76,5 @@ def test_n603_accepts_dj_set_phrasing():
 def test_n101_allows_one_wake_replay():
     n101 = _steps()["n101_wake_cold_start"]
     assert eev.WAKE_REPLAY in n101["recover"]
-    assert "no_wake" in n101["recover"]
+    assert "no_wake" not in n101["recover"]  # акт 1 проверяет сам вейк: «Робот!» не лечит
     eev.recover_kinds({}, n101)  # схема поля валидна

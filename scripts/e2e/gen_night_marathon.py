@@ -771,7 +771,10 @@ def step(
     # Промах вейка у хрупкого голоса: после «Робот!» шаг повторяет свою фразу один раз (e2e_events.WAKE_REPLAY).
     # #4481: n101 -- холодный старт, STT съел «Робот»: ``wake_replay=True`` разрешает шагу тот же один повтор фразы.
     fragile = voice in WAKE_FRAGILE_VOICES and has_wake_start(text)
-    recover: Optional[List[str]] = list(WAKE_FRAGILE_RECOVER) if fragile or wake_replay else None
+    recover: Optional[List[str]] = list(WAKE_FRAGILE_RECOVER) if fragile else None
+    if wake_replay and recover is None:
+        # Без no_wake: акт 1 проверяет САМ вейк, голое «Робот!» не лечит (#4034); повтор фразы шага -- можно.
+        recover = [eev.SILENCED, eev.WAKE_REPLAY]
     # #4196: ключевые слова фразы, которые STT не должен терять (n411 «говори» -> «гарри»): нет слова в ПРИНЯТО -- фраза ещё раз.
     if stt_keys:
         s[eev.STT_KEYS_FIELD] = list(stt_keys)

@@ -32,7 +32,6 @@
       },
       "expect": "cycle",
       "recover": [
-        "no_wake",
         "silenced",
         "wake_replay"
       ]

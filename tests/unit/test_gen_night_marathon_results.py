@@ -359,7 +359,9 @@ def test_act1_checks_the_wake_itself_no_wake_is_not_recovered():
     act1 = gen.build()["night_marathon_act1_wakeup_v1.json"]
     assert act1["recover"] == ["silenced"]
     for step in act1["steps"]:
-        assert eev.recover_kinds(act1, step) == ("silenced",), step["label"]
+        # #4481: n101 (холодный старт) -- ещё и один повтор фразы шага
+        want = ("silenced", "wake_replay") if step["label"] == "n101_wake_cold_start" else ("silenced",)
+        assert eev.recover_kinds(act1, step) == want, step["label"]
     act2 = gen.build()["night_marathon_act2_acquaintance_v1.json"]
     assert "recover" not in act2  # остальные акты -- по умолчанию харнесса (все виды)
     assert eev.recover_kinds(act2, act2["steps"][0]) == ("no_wake", "silenced")
