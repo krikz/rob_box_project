@@ -146,6 +146,8 @@ def _quiet(_m):
     [
         ("Может сделать из него анимацию?", "animate"),
         ("сделай ролик до/после по дрейфу", "video"),
+        # Живое сообщение Шифу 06.11 19:48 (journalctl studio-watch): ушло в правку текста, а не в ролик.
+        ("Давай сделаем видос до после из сима", "video"),
         ("другая картинка", "media"),
         ("короче", "shorter"),
         ("Сделай попроще", "simpler"),
@@ -568,6 +570,19 @@ def test_pose_rows_and_summary(tmp_path):
     stats = pose_anim.summary(rows)
     assert stats["max_error"] == pytest.approx(5.9, abs=0.01) and stats["with_estimate"] == 59
     assert pose_anim.meters(0.0774) == "0.08 м" and pose_anim.meters(16.54) == "16.5 м"
+
+
+def test_map_layer_stays_inside_its_panel():
+    """Уплывшая карта «до» шире мира прогона: клетки вне панели не рисуются (живая сборка 06.11)."""
+    pytest.importorskip("PIL")
+    import pose_anim
+
+    view = pose_anim.Viewport((0.0, 0.0, 10.0, 10.0), (100, 100, 200, 200))
+    data = [[100] * 40 for _ in range(40)]  # занято всё поле 40×40 м с началом в (-15, -15)
+    snap = {"resolution": 1.0, "origin_x": -15.0, "origin_y": -15.0, "data": data}
+    layer = pose_anim.map_layer(snap, view, (300, 300))
+    x0, y0, x1, y1 = layer.getbbox()
+    assert 100 <= x0 and 100 <= y0 and x1 <= 201 and y1 <= 201
 
 
 def test_track_log_port_parses_hp2_lines(tmp_path):

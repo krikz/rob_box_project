@@ -206,13 +206,20 @@ def font(size: int, bold: bool = False):
 
 
 def map_layer(snapshot: dict, view: Viewport, size: tuple) -> Image.Image:
-    """Слой карты rtabmap (занятые клетки серым) — один раз на снимок, потом вставляется в кадры."""
+    """Слой карты rtabmap (занятые клетки серым) — один раз на снимок, потом вставляется в кадры.
+
+    Клетки вне панели не рисуются: карта «до» уплывшая и шире мира прогона, без обрезки она
+    залезала на заголовок и на соседнюю панель (живая сборка 06.11, #4513).
+    """
     layer = Image.new("RGBA", size, (0, 0, 0, 0))
     draw = ImageDraw.Draw(layer)
     res, ox, oy, data = snapshot["resolution"], snapshot["origin_x"], snapshot["origin_y"], snapshot["data"]
     half = max(1.0, res * view.scale / 2)
+    bx0, by0, bx1, by1 = view.box
     for row_i, col_i in occupied_cells(data):
         x, y = view.px(ox + (col_i + 0.5) * res, oy + (row_i + 0.5) * res)
+        if not (bx0 + half <= x <= bx1 - half and by0 + half <= y <= by1 - half):
+            continue
         draw.rectangle([x - half, y - half, x + half, y + half], fill=WALL + (200,))
     return layer
 
@@ -371,9 +378,10 @@ def _draw_run(img, run: Run, view: Viewport, t_rel: float, size: tuple, span: fl
         status = "оценки позы ещё нет"
     else:
         status = f"ошибка позы {meters(err)} · худшая {meters(run.peak[upto])}"
-    if t_rel > run.span:
-        status += f" · прогон закончился ({run.span:.0f} с)"
     color = ESTIMATE if (err or 0) > 1.0 else TRUTH
+    if t_rel > run.span:
+        # Отдельной строкой: в одну с ошибкой не влезала в панель 1280×720 (живая сборка 06.11).
+        draw.text((x0 + 8, y1 - 52), f"прогон закончился ({run.span:.0f} с)", font=small, fill=DIM)
     draw.text((x0 + 8, y1 - 28), status, font=small, fill=color)
     draw_error_strip(img, (x0, y1 + 8, x1, y1 + 8 + strip - 12), run.rows, run.start, span, t_rel, top_err)
 
