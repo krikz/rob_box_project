@@ -30,6 +30,7 @@ REFINE_LABELS = {
     cs.ACTION_SIMPLER: "проще",
     cs.ACTION_ANGLE: "другая подача",
     cs.ACTION_MEDIA: "другое медиа",
+    cs.ACTION_FREEFORM: "правка по твоему сообщению",
 }
 GH_REPO = os.environ.get("STUDIO_GH_REPO", "krikz/rob_box_project")
 
@@ -137,13 +138,15 @@ def request_material(post_id: str, what: str) -> str:
 # --------------------------------------------------------------------------- кнопки черновика
 
 
-def refine_job(bot, state_path: Path, post_id: str, action: str, reply_to: Optional[int] = None, out=print) -> bool:
+def refine_job(
+    bot, state_path: Path, post_id: str, action: str, reply_to: Optional[int] = None, out=print, instruction: str = ""
+) -> bool:
     """Кнопки «Короче/Проще/Подача/Медиа»: индикатор шагов, работа, правка черновика на месте."""
     chat_id = cs.SHIFU_CHAT_ID
     started = time.monotonic()
     progress = sp.Progress(bot, chat_id, f"Черновик {post_id}: {REFINE_LABELS.get(action, action)}", reply_to=reply_to)
     progress.step("Беру черновик и факты сессии")
-    ok = _refine(bot, state_path, post_id, action, progress, chat_id, out)
+    ok = _refine(bot, state_path, post_id, action, progress, chat_id, out, instruction)
     out(
         f"пост {post_id}: {action} → {'готово' if ok else 'не вышло'} за {time.monotonic() - started:.1f} с "
         f"(индикатор message_id={progress.message_id}, правок {progress.edits})"
@@ -151,7 +154,9 @@ def refine_job(bot, state_path: Path, post_id: str, action: str, reply_to: Optio
     return ok
 
 
-def _refine(bot, state_path: Path, post_id: str, action: str, progress, chat_id: int, out) -> bool:
+def _refine(
+    bot, state_path: Path, post_id: str, action: str, progress, chat_id: int, out, instruction: str = ""
+) -> bool:
     record = (st.load_state(state_path).get("posts") or {}).get(post_id) or {}
     if not record.get("body_html"):
         progress.fail("черновика нет в состоянии студии — пришлю новый со следующей сессией")
@@ -168,7 +173,7 @@ def _refine(bot, state_path: Path, post_id: str, action: str, progress, chat_id:
     progress.note(f"Беру черновик и факты сессии: своих {len(own)} из {len(facts)}")
     if action == cs.ACTION_MEDIA:
         return _refine_media(bot, state_path, record, facts, progress, chat_id)
-    return _refine_text(bot, state_path, record, own or facts, action, progress, chat_id)
+    return _refine_text(bot, state_path, record, own or facts, action, progress, chat_id, instruction)
 
 
 def _refine_media(bot, state_path: Path, record: dict, facts: list, progress, chat_id: int) -> bool:
@@ -208,11 +213,18 @@ def _refine_media(bot, state_path: Path, record: dict, facts: list, progress, ch
     return True
 
 
-def _refine_text(bot, state_path: Path, record: dict, facts: list, action: str, progress, chat_id: int) -> bool:
+def _refine_text(
+    bot, state_path: Path, record: dict, facts: list, action: str, progress, chat_id: int, instruction: str = ""
+) -> bool:
     import studio_text
 
     progress.step(f"Пишу текст ({studio_text.DEFAULT_MODEL})")
-    produced = _produce(record, facts, cs.REFINE_INSTRUCTIONS[action])
+    if not instruction:
+        instruction = cs.REFINE_INSTRUCTIONS[action]
+    else:
+        # Свободная правка Шифу: его слова — задание, факты и правила канала остаются в силе.
+        instruction = f"Правка от Шифу: «{instruction[:500]}». Выполни её; числа и имена — только из фактов."
+    produced = _produce(record, facts, instruction)
     if produced.get("error"):
         progress.fail(str(produced["error"])[:200])
         return False

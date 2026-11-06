@@ -497,3 +497,47 @@ def test_post_id_for_is_stable():
 
     post = {"source": "PR #4502", "title": "Сторож"}
     assert studio_draft.post_id_for(post, "20261106") == studio_draft.post_id_for(dict(post), "20261106")
+
+
+# --------------------------------------------------------------------------- 8. свободный текст Шифу
+
+
+def test_active_draft_prefers_reply_then_latest():
+    state = {
+        "posts": {
+            "old": {"status": "proposed", "message_id": 10, "body_html": "a"},
+            "new": {"status": "proposed", "message_id": 20, "body_html": "b"},
+            "done": {"status": "approved", "message_id": 30, "body_html": "c"},
+        }
+    }
+    assert studio.active_draft(state, reply_to=10) == "old"
+    assert studio.active_draft(state) == "new"
+    assert studio.active_draft({"posts": {}}) == ""
+
+
+def test_free_text_edits_latest_draft_in_place(run_env, monkeypatch):
+    """«Убери номера PR» в личке — правка черновика на месте, а не болтовня."""
+    path = run_env / "state.json"
+    _draft(path, message_kind="media", media_path=str(run_env / "a.png"))
+    seen = {}
+
+    def fake_produce(record, facts, instruction):
+        seen["instruction"] = instruction
+        return {
+            "body_html": "<b>Сторож</b> честный. #роббокс #навигация",
+            "tags": ["#роббокс", "#навигация"],
+            "problems": [],
+            "ok": True,
+            "why": "",
+            "why_problems": [],
+            "checks": {"numbers": 0, "numbers_ok": 0, "length": 30},
+        }
+
+    monkeypatch.setattr(jobs, "_produce", fake_produce)
+    update = {"update_id": 5, "message": {"chat": {"id": SHIFU}, "text": "Убери номера PR", "message_id": 90}}
+    bot = Bot([update])
+    studio.poll_once(bot, path, timeout=0, out=lambda _m: None)
+    assert "Убери номера PR" in seen["instruction"]
+    captions = [c for c in bot.calls if c[0] == "editMessageCaption"]
+    assert captions and captions[0][2] == 77
+    assert st.load_state(path)["posts"]["p1"]["body_html"].startswith("<b>Сторож</b> честный")

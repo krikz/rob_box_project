@@ -49,6 +49,7 @@ ACTION_SHORTER = "shorter"  # «Короче»
 ACTION_SIMPLER = "simpler"  # «Проще»
 ACTION_ANGLE = "angle"  # «Подача»
 ACTION_MEDIA = "media"  # «Медиа»
+ACTION_FREEFORM = "edit"  # свободный текст Шифу к черновику (не кнопка)
 
 # Чем переделать пост по кнопке Шифу (решение Шифу, 06.11).
 REFINE_INSTRUCTIONS = {
@@ -623,16 +624,60 @@ def poll_once(
             handled += _on_callback(bot, state_path, state, update_id, callback, runner, out)
             continue
         message = update.get("message")
-        note = _with_state(state_path, state, lambda cur: (_advance_offset(cur, update_id), _capture(cur, message))[1])
+        note, draft_id = _with_state(state_path, state, lambda cur: _take_message(cur, update_id, message))
         if note:
             out(f"сообщение от Шифу: {note[:60]}")
-            runner.submit("reply", reply_to_shifu, bot, state_path, note, out)
             handled += 1
+            if draft_id:
+                _edit_by_message(bot, state_path, draft_id, note, message, runner, out)
+            else:
+                runner.submit("reply", reply_to_shifu, bot, state_path, note, out)
     return handled
 
 
-def _capture(state: dict, message: Optional[dict]) -> str:
-    return capture_message(state, message) if message else ""
+def _take_message(state: dict, update_id: int, message: Optional[dict]) -> tuple:
+    """Сдвинуть смещение, сохранить текст Шифу и найти черновик, к которому он относится."""
+    _advance_offset(state, update_id)
+    note = capture_message(state, message) if message else ""
+    if not note:
+        return "", ""
+    reply_to = ((message or {}).get("reply_to_message") or {}).get("message_id")
+    return note, active_draft(state, reply_to)
+
+
+def active_draft(state: dict, reply_to: Optional[int] = None) -> str:
+    """Черновик, к которому относится сообщение Шифу. Решает код, не модель (ADR-0148).
+
+    1. Ответ (reply) на сообщение черновика — правка именно этого черновика.
+    2. Иначе — последний черновик на обсуждении (status proposed, есть message_id): после
+       решения Шифу 06.11 обсуждение идёт над готовым постом, свободный текст — правка к нему.
+    Черновика нет — пустая строка, сообщение уходит в обычный ответ модели.
+    """
+    drafts = [
+        (post_id, record)
+        for post_id, record in (state.get("posts") or {}).items()
+        if record.get("status") == "proposed" and record.get("message_id") and record.get("body_html")
+    ]
+    if reply_to:
+        for post_id, record in drafts:
+            if record.get("message_id") == reply_to:
+                return post_id
+    if not drafts:
+        return ""
+    return max(drafts, key=lambda item: item[1].get("message_id") or 0)[0]
+
+
+def _edit_by_message(bot, state_path: Path, draft_id: str, note: str, message: dict, runner, out) -> None:
+    """Свободный текст Шифу → правка черновика на месте, с индикатором шагов."""
+    key = f"post:{draft_id}"
+    if not runner.claim(key):
+        bot.send_message(SHIFU_CHAT_ID, "Уже правлю этот черновик — пришли правку, когда закончу.", parse_mode=None)
+        return
+    import studio_jobs as jobs
+
+    runner.submit(
+        key, jobs.refine_job, bot, state_path, draft_id, ACTION_FREEFORM, message.get("message_id"), out, note
+    )
 
 
 def _parse_callback(callback: dict) -> tuple:
