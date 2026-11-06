@@ -146,8 +146,23 @@ class TestStepTally:
             "skip": 1,
             "recovered": 0,  # #3989: OK recovered_<вид> -- отдельный счёт, тут таких нет
             "recovered_labels": [],
+            "wake_attempts": {},
             "failed_labels": ["s2"],
         }
+
+    def test_wake_attempts_are_counted_by_the_attempt_that_passed(self):
+        """06.11: итог прогона -- сколько шагов прошло с 1-й, 2-й и 3-й попытки вейка; FAIL и шаги без счёта не в счёте."""
+        data = run_summary(
+            [
+                'emit_step "s1 OK wake_attempt=1/3"',
+                'emit_step "s2 OK recovered_wake_replay wake_attempt=2/3"',
+                'emit_step "s3 OK recovered_wake_replay wake_attempt=3/3"',
+                'emit_step "s4 OK wake_attempt=1/3"',
+                'emit_step "s5 FAIL turn_no_wake after_recover_wake_replay wake_attempt=3/3 (no_wake)"',
+                'emit_step "s6 OK backlog"',
+            ]
+        )
+        assert data["steps"]["wake_attempts"] == {"1": 2, "2": 1, "3": 1}
 
     def test_duplicate_label_collapses_to_last(self):
         """run_step печатает свой FAIL, scenario-цикл — итог того же шага.

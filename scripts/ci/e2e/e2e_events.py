@@ -435,6 +435,39 @@ AT_ACT_START = "at_act_start"
 BARE_WAKE_WORDS: Tuple[str, ...] = ("робот", "робби", "роббокс")
 
 
+#: Решение Шифу 06.11 («чтобы избежать глухости вейка, давать на вейк больше попыток для всех шагов, где у нас есть
+#: вейк, например три вейка по очереди»): ВСЕГО попыток фразы шага при ``no_wake``, считая первую. Единственная константа.
+WAKE_MAX_ATTEMPTS = 3
+#: ``expect`` шага, который проверяет САМ вейк (фраза без вейка должна уйти в бэклог): ему вейк не повторяют.
+WAKE_RETRY_EXEMPT_EXPECT: Tuple[str, ...] = ("backlog",)
+
+
+def has_wake(text: str) -> bool:
+    """В фразе есть вейк-слово (``BARE_WAKE_WORDS``) целым словом: «Робот, который час?» -- да, «спать пора» -- нет."""
+    return any(w in BARE_WAKE_WORDS for w in _norm(text).split())
+
+
+def wake_retry(expect: str, verdict: str, attempt: int, text: str, barge_in: bool = False) -> Dict[str, Any]:
+    """Одно правило для любого шага с вейком: при ``no_wake`` фраза шага звучит ещё раз, до :data:`WAKE_MAX_ATTEMPTS`
+    попыток всего. Разрешено и шагу, запретившему ``recover`` (``silenced`` и т. п.): это глухота STT, а не ответ робота.
+    Повтора НЕТ: ход был (``verdict`` не ``no_wake`` -- робот ответил или выполнил действие, повтор заказал бы дубль);
+    шаг проверяет сам вейк (:data:`WAKE_RETRY_EXEMPT_EXPECT`) или перебивает речь (``barge_in``); в фразе нет вейка;
+    попытки кончились. Возвращает ``retry`` (0/1), ``reason``, ``attempt`` и ``max``."""
+    if verdict != "no_wake":
+        reason = "turn_happened"
+    elif expect in WAKE_RETRY_EXEMPT_EXPECT:
+        reason = "step_tests_wake"
+    elif barge_in:
+        reason = "barge_in"
+    elif not has_wake(text):
+        reason = "no_wake_word_in_phrase"
+    elif attempt >= WAKE_MAX_ATTEMPTS:
+        reason = "attempts_exhausted"
+    else:
+        reason = "retry"
+    return {"retry": int(reason == "retry"), "reason": reason, "attempt": attempt, "max": WAKE_MAX_ATTEMPTS}
+
+
 def is_bare_wake(text: str) -> bool:
     """Реплика -- ровно одно вейк-слово (``BARE_WAKE_WORDS``), без другой речи: «Робот!», «робби.», «Роббокс…»."""
     return _norm(text) in BARE_WAKE_WORDS
@@ -1061,6 +1094,17 @@ def _cmd_recovery(opts: Dict[str, str], flags: List[str]) -> int:
     return 0
 
 
+def _cmd_wake_retry(opts: Dict[str, str], flags: List[str]) -> int:
+    """``--expect E --verdict V --attempt N --text T [--barge-in 1]`` -> ``retry=`` / ``reason=`` / ``attempt=`` / ``max=``."""
+    try:
+        attempt = int(opts["--attempt"] or "1")
+    except ValueError:
+        sys.stderr.write(f"--attempt: не число: {opts['--attempt']}\n")
+        return 2
+    _emit(wake_retry(opts["--expect"], opts["--verdict"], attempt, opts["--text"], opts["--barge-in"] == "1"))
+    return 0
+
+
 def _cmd_session(opts: Dict[str, str], flags: List[str]) -> int:
     try:
         report = json.loads(sys.stdin.read())
@@ -1219,14 +1263,14 @@ def _cmd_require(opts: Dict[str, str], flags: List[str]) -> int:
 
 COMMANDS: Mapping[str, Callable[[Dict[str, str], List[str]], int]] = MappingProxyType({
     "state": _cmd_state, "quiet": _cmd_quiet, "anchor": _cmd_anchor,
-    "policy": _cmd_policy, "recovery": _cmd_recovery, "session": _cmd_session,
+    "policy": _cmd_policy, "recovery": _cmd_recovery, "wake-retry": _cmd_wake_retry, "session": _cmd_session,
     "mark": _cmd_mark, "skips": _cmd_skips, "skip": _cmd_skip, "compare": _cmd_compare, "stt": _cmd_stt,
     "requires": _cmd_requires, "require": _cmd_require, "barewake": _cmd_barewake,
     "trackrefs": _cmd_trackrefs, "trackbind": _cmd_trackbind, "trackcheck": _cmd_trackcheck,
 })
 USAGE = ("usage: e2e_events.py state|quiet|anchor --engine v1|v2 [--silent-ok] [--barge] [--waited S --accept-window S]"
          " [--perform-ceiling S] [--after A --n N] | policy --scenario FILE | recovery [--kind K] | session < report.json"
-         " | mark --kind K --where W [--detail D] | skips --scenario FILE | skip --scenario FILE --label L < log"
+         " | wake-retry --expect E --verdict V --attempt N --text T [--barge-in 1] | mark --kind K --where W [--detail D] | skips --scenario FILE | skip --scenario FILE --label L < log"
          " | compare --scenario FILE --label L [--since S < log] | stt --scenario FILE --label L --heard TEXT [--executed 0|1]"
          " | requires --scenario FILE | require --labels A,B [--steps FILE] [--prior L=S,…]"
          " | barewake --heard TEXT | trackrefs --scenario FILE | trackbind --scenario FILE --label L < log"
@@ -1245,7 +1289,7 @@ def main(argv: List[str]) -> int:
     opts = {"--engine": "v1", "--after": "speech_started", "--n": "1", "--waited": "0", "--accept-window": "0",
             "--scenario": "", "--kind": "", "--perform-ceiling": "", "--where": "", "--detail": "", "--label": "",
             "--since": "", "--heard": "", "--track": "", "--executed": "0", "--labels": "", "--steps": "",
-            "--prior": ""}
+            "--prior": "", "--expect": "", "--verdict": "", "--attempt": "", "--text": "", "--barge-in": "0"}
     flags = argv[2:]
     for i, tok in enumerate(flags):
         if tok in opts and i + 1 < len(flags):
