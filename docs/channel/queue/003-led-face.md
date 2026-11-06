@@ -3,9 +3,10 @@ status: posted
 media: docs/channel/media/led381.gif
 extra_media: docs/channel/media/face-cpu.png
 not_before: 2026-11-12T10:00:00Z
-message_id: 7
+message_id: 18
 hashtags: #светодиоды #железо #opensource #цифры
-posted_at: 2026-11-06T08:56:13.036394+00:00
+posted_at: 2026-11-06T10:21:42.544958+00:00
+extra_message_ids: 19
 ---
 👁 <b>Лицо из 381 светодиода</b>
 

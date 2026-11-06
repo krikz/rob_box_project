@@ -2,9 +2,10 @@
 status: posted
 media: docs/assets/animations/roadworks_beacon.gif
 not_before: 2026-11-17T10:00:00Z
-message_id: 10
+message_id: 21
 hashtags: #безопасность #навигация #какэтоработает
-posted_at: 2026-11-06T08:57:10.505359+00:00
+posted_at: 2026-11-06T10:22:31.045308+00:00
+extra_message_ids: 
 ---
 🚧 <b>Зона безопасности по лидару</b>
 

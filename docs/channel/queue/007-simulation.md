@@ -2,9 +2,10 @@
 status: posted
 media: docs/assets/hil/polygon.gif
 not_before: 2026-11-21T10:00:00Z
-message_id: 12
+message_id: 23
 hashtags: #симуляция #ros2 #какэтоработает
-posted_at: 2026-11-06T08:57:58.723750+00:00
+posted_at: 2026-11-06T10:23:18.446837+00:00
+extra_message_ids: 
 ---
 🧪 <b>Робот «ездит» в Gazebo, пока стоит в мастерской</b>
 

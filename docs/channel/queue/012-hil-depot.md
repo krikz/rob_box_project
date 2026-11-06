@@ -1,9 +1,10 @@
 ---
-status: approved
+status: posted
 media: docs/channel/media/hil-depot.mp4
 not_before: 2026-12-03T10:00:00Z
-message_id:
+message_id: 28
 hashtags: #навигация #симуляция #дневник
+posted_at: 2026-11-06T10:25:20.348541+00:00
 ---
 🎬 <b>Склад Depot: робот сам снимает карту и ездит по точкам</b>
 

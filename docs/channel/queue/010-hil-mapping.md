@@ -2,9 +2,10 @@
 status: posted
 media: docs/assets/hil/corridor_mapping.gif
 not_before: 2026-11-28T10:00:00Z
-message_id: 15
+message_id: 26
 hashtags: #навигация #симуляция #дневник
-posted_at: 2026-11-06T08:59:12.946766+00:00
+posted_at: 2026-11-06T10:24:30.895631+00:00
+extra_message_ids: 
 ---
 🗺 <b>Как робот строит карту коридора</b>
 

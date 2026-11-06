@@ -2,9 +2,10 @@
 status: posted
 media: docs/channel/media/marathon.png
 not_before: 2026-11-24T10:00:00Z
-message_id: 13
+message_id: 24
 hashtags: #тесты #голос #честность
-posted_at: 2026-11-06T08:58:24.572701+00:00
+posted_at: 2026-11-06T10:23:43.371617+00:00
+extra_message_ids: 
 ---
 🌙 <b>Ночной марафон: одна история вместо списка команд</b>
 
