@@ -3163,6 +3163,14 @@ DONE_CLAIMS: Mapping[str, MusicPromise] = MappingProxyType({
                "отъехал", "отъехала", "двигаюсь"),
         tools=MOTION_TOOLS + ("stop_navigation",),
         unless_before=DONE_CLAIM_UNLESS_BEFORE),
+    # громкость (#4480, М14 n511: «Сделал звук глуше и тише.» без единого тула, музыка играла дальше): прошедшее об
+    # уровне - тоже утверждение о сделанном; исполняет его тул громкости (оба канала, как у ``MUSIC_PROMISES["volume"]``)
+    "volume": MusicPromise(
+        alone=("убавил", "убавила", "приглушил", "приглушила", "прибавил", "прибавила"),
+        with_near=("сделал", "сделала", "поправил", "поправила"),
+        near=MUSIC_PROMISES["volume"].near,
+        tools=MUSIC_PROMISES["volume"].tools,
+        unless_before=DONE_CLAIM_UNLESS_BEFORE),
 })
 #: Причина нарушения «пустая команда»: ни речи, ни вопроса, ни действий, ни выступления, и не ``passed``. Это нарушение
 #: (тот же один повтор с объяснением → ``failed``), а не «тихий первый ответ» v1: иначе ход звал LLM второй раз через
