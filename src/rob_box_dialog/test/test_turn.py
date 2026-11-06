@@ -1456,6 +1456,24 @@ def test_4313_ceiling_when_nothing_plays_still_says_not_started(monkeypatch):
     assert _said(ports) == [phrases.text("media.timeout")]
 
 
+def test_4479_executor_timeout_under_playing_set_does_not_say_not_started():
+    """М14 n604: срок класса вышел (исполнитель закрыл ``timeout``), прежний сет звучит - «не заиграла» врёт."""
+    ports = NamedPorts(answers=[Answer(Command(actions=(_DJ_ROCK,)), "deepseek")])
+    ports.outcomes["dj_set"] = ("timeout", {})
+    engine = _engine(ports)
+    _with_music(engine)
+    _run(engine, "уводи в сторону рока")
+    assert _said(ports) == [phrases.text("media.timeout_replace")]
+    assert phrases.text("media.timeout") not in _said(ports)
+
+
+def test_4479_executor_timeout_when_nothing_plays_still_says_not_started():
+    ports = NamedPorts(answers=[Answer(Command(actions=(_DJ_ROCK,)), "deepseek")])
+    ports.outcomes["dj_set"] = ("timeout", {})
+    _run(_engine(ports), "поставь рок")
+    assert _said(ports) == [phrases.text("media.timeout")]
+
+
 def test_4313_stop_under_playing_music_is_not_a_replacement(monkeypatch):
     from types import SimpleNamespace
 
