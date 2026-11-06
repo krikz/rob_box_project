@@ -12,6 +12,7 @@
 | Словарь терминов | [CONTEXT.md](../CONTEXT.md) |
 | Решения товарища Шифу | [shifu-decisions.md](shifu-decisions.md) — «Как завещал товарищ Шифу», по датам и тегам |
 | Как вести Telegram-канал проекта | [process/telegram-channel.md](process/telegram-channel.md) — тон, частота, очередь постов `docs/channel/queue/`, приватность |
+| Студия канала: бриф агенту на отдельной машине | [process/channel-studio-brief.md](process/channel-studio-brief.md) — сам настраивается, раз в сутки собирает материал, черновики Шифу на кнопку (#4492) |
 | Что за робот, быстрый старт | [README.md](../README.md), [guides/QUICK_START.md](guides/QUICK_START.md) |
 | Железо, батарея, сеть, три узла (Main / Vision / Sound Pi) | [architecture/HARDWARE.md](architecture/HARDWARE.md), [architecture/NETWORK_TOPOLOGY.md](architecture/NETWORK_TOPOLOGY.md) |
 | Почему сделано так | [adr/](adr/) — решения |
