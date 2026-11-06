@@ -10,8 +10,8 @@
 | Песочница | `10.1.1.250` | `sandbox` | `/home/ros2/rob_box_hilvideo/out`, `/home/ros2/rob_box_hil/reports`, `git log` чекаута HIL |
 | katana | `10.1.1.249` | `katana` | `docs`, `/opt/rob_box/{vendor,models}`, логи раннеров `build-github-runner-1..8` |
 | Main Pi | `10.1.1.10` / `.20` | `main` | `~/rob_box_project/docs`, логи навигации (nav2, rtabmap, ros2-control …) |
-| Vision Pi | `10.1.1.11` / `.21` | `vision` | `docs`, логи oak-d, led-matrix, ceiling-camera, vision-hailo |
-| Sound Pi | `10.1.1.12` / `.22` | `sound` | `docs`, логи supercollider, sensor-bridge, avatar-arbiter, zenoh |
+| Vision Pi | `10.1.1.11` / `.21` | `vision` | `docs`, логи oak-d, led-matrix, ceiling-camera, vision-hailo, vision-face |
+| Sound Pi | `10.1.1.12` / `.22` | `sound` | `docs`, логи supercollider, sensor-bridge, avatar-arbiter, zenoh, voice-assistant, avatar-supervisor, telegram-bot |
 
 Списки — в `scripts/studio/ro_config/<профиль>/{roots,containers,repos}`.
 
@@ -36,8 +36,9 @@
   `*/data/voices*`, файлы `*.db`, `*.sqlite`, `.env`, ключи, `*.npy` (эмбеддинги), `*.wav/*.ogg/*.flac` (голоса),
   `/etc`, `/root`, `/proc`, `/sys`, `/dev`, `~/.ssh`, сам конфиг гейта. Корень `/` отбрасывается.
 - Логи `voice-assistant`, `avatar-supervisor`, `telegram-bot` (речь людей мастерской, диалог, переписка) и
-  `vision-face` (имена узнанных людей) в списках **закомментированы**. Включать их можно только по отдельному
-  решению Шифу.
+  `vision-face` (имена узнанных людей) **открыты** — решение Шифу 06.11 «все логи открывай». Файлы `/data`
+  (лица, голоса, эмбеддинги, базы) по-прежнему под жёстким запретом гейта. Что из логов попадает в посты, решает
+  правило приватности канала (`docs/process/telegram-channel.md`): людей не публикуем.
 - Каждый вызов пишется строкой в `~/.local/state/studio_ro/gate.log`:
   `время UTC<TAB>allow|deny<TAB>причина<TAB>IP клиента<TAB>команда`. Если лог записать нельзя, команда
   не исполняется.

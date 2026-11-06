@@ -7,4 +7,5 @@ oak-d
 led-matrix
 ceiling-camera
 vision-hailo
-# vision-face НЕ включать: в его логе имена узнанных людей.
+# Решение Шифу 06.11: открыть все логи (в логе — имена узнанных людей).
+vision-face
