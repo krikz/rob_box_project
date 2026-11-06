@@ -106,7 +106,8 @@ def base_canvas(spec: dict, size: tuple):
         d.ellipse([x, 78, x + 14, 92], fill=RAINBOW[c % len(RAINBOW)] if c % 3 else (40, 42, 50))
     d.text((MARGIN, 118), spec["title"], font=font(40), fill=TEXT)
     if spec.get("subtitle"):
-        d.text((MARGIN, 174), spec["subtitle"], font=font(24), fill=DIM)
+        for i, ln in enumerate(wrap(d, spec["subtitle"], font(22), w - 2 * MARGIN)[:2]):
+            d.text((MARGIN, 172 + i * 28), ln, font=font(22), fill=DIM)
     src = "Источник: " + "; ".join(sources_of(spec))
     sf = font(17)
     lines = wrap(d, src, sf, w - 2 * MARGIN - 150)[:2]
@@ -165,7 +166,7 @@ def draw_nodes(d, spec, size, reveal):
 def draw_before_after(d, spec, size, reveal):
     for i, p in enumerate(spec["pairs"]):
         a = reveal - i
-        y = 225 + i * 72
+        y = 252 + i * 72
         label = p["label"] + (" · " + p["note"] if p.get("note") else "")
         d.text((MARGIN, y), label, font=font(22), fill=mix(DIM, a))
         d.text((MARGIN, y + 28), str(p["before"]), font=font(34), fill=mix(TEXT, a))

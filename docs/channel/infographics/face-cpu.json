@@ -1,22 +1,22 @@
 {
   "template": "before_after",
-  "title": "Лицо: цель и факт",
-  "subtitle": "Красное называем красным: на тяжёлой сцене не уложились",
+  "title": "Лицо: было → стало",
+  "subtitle": "Оговорка: утром на старом коде CPU тоже был 25–28 %, разброс по дням больше эффекта",
   "pairs": [
     {
-      "label": "CPU контейнера лица: цель не выше → факт",
-      "before": "35 %",
-      "after": "41–48 %",
-      "note": "сцена music_shades",
-      "source": "docs/dialog/acceptance_2026-10-23.md, строка A26; issue #3733",
-      "status": "fail"
+      "label": "/panel_image, сообщений в секунду",
+      "before": "57–64",
+      "after": "25",
+      "note": "после #4487",
+      "source": "issue #3733, комментарий координатора от 06.11 (замер 07:45 UTC)",
+      "status": "ok"
     },
     {
-      "label": "кадров в секунду: цель не ниже → факт",
-      "before": "25 к/с",
-      "after": "25.0 к/с",
-      "note": "face.metrics fps",
-      "source": "docs/dialog/acceptance_2026-10-23.md, строка A26; issue #3733",
+      "label": "CPU лица на music_shades, предел ≤ 35 %",
+      "before": "38–45 %",
+      "after": "25–28 %",
+      "note": "вечер 05.11 → утро 06.11",
+      "source": "issue #3733, комментарии координатора от 05.11 и 06.11",
       "status": "ok"
     }
   ]

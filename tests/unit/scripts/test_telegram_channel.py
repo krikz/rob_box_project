@@ -136,11 +136,14 @@ def test_validate_caption_limit_and_html(queue, tmp_path):
     assert any("лимит" in p for p in problems) and any("div" in p for p in problems)
 
 
-def test_real_queue_is_valid_and_all_draft():
+def test_real_queue_is_valid_and_only_pin_may_be_approved():
     posts = lib.load_queue(REPO / "docs" / "channel" / "queue")
     assert 8 <= len(posts) <= 11
     for post in posts:
-        assert post.status == "draft", post.name
+        if post.name.startswith("001-"):  # закреп одобрен Шифу к боевому запуску channel_setup.py
+            assert post.status in ("draft", "approved")
+        else:
+            assert post.status == "draft", post.name
         problems = lib.validate(post, REPO)
         if post.pending:  # заглушка медиа: единственное, что допустимо — «не готово» и отсутствие файла
             assert all("не готово" in p or "нет файла" in p for p in problems), (post.name, problems)
@@ -161,9 +164,39 @@ def test_setup_dry_run_steps_and_limits(capsys):
     assert len(profile["description"]) <= 255
 
 
-def test_setup_refuses_live_without_approved_pin(capsys):
-    rc = channel_setup.run(REPO, lambda *a: pytest.fail("сеть без одобрения"), dry_run=False)
+def test_setup_refuses_live_without_approved_pin(tmp_path):
+    import shutil
+
+    shutil.copytree(REPO / "docs" / "channel", tmp_path / "docs" / "channel")
+    shutil.copytree(REPO / "docs" / "assets" / "animations", tmp_path / "docs" / "assets" / "animations")
+    pin = tmp_path / "docs" / "channel" / "queue" / "001-hello-pin.md"
+    pin.write_text(pin.read_text(encoding="utf-8").replace("status: approved", "status: draft", 1), encoding="utf-8")
+    rc = channel_setup.run(tmp_path, lambda *a: pytest.fail("сеть без одобрения"), dry_run=False, out=lambda s: None)
     assert rc == 1
+
+
+def test_setup_live_runs_all_steps_and_marks_pin_posted(tmp_path):
+    import shutil
+
+    shutil.copytree(REPO / "docs" / "channel", tmp_path / "docs" / "channel")
+    shutil.copytree(REPO / "docs" / "assets" / "animations", tmp_path / "docs" / "assets" / "animations")
+    calls = []
+
+    def transport(method, params, media):
+        calls.append((method, params))
+        return {"ok": True, "message_id": 77}
+
+    assert channel_setup.run(tmp_path, transport, dry_run=False, out=lambda s: None) == 0
+    assert [c[0] for c in calls] == [
+        "setChatPhoto",
+        "setChatTitle",
+        "setChatDescription",
+        "sendAnimation",
+        "pinChatMessage",
+    ]
+    assert calls[-1][1]["message_id"] == 77
+    pin = lib.parse_post(tmp_path / "docs" / "channel" / "queue" / "001-hello-pin.md")
+    assert (pin.status, pin.message_id) == ("posted", 77)
 
 
 def test_avatar_is_640_square():
