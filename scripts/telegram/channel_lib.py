@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import html
 import json
+import os
 import re
 import shlex
 import subprocess
@@ -15,7 +16,7 @@ import tempfile
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Callable, Optional
+from typing import Callable, Optional, Protocol
 
 CHANNEL_ID = -1004323185327
 MIN_GAP = timedelta(hours=48)
@@ -80,7 +81,10 @@ FORBIDDEN = [
 ]
 
 # Отправка: (метод Bot API, параметры, файл | список файлов для альбома | None) -> ответ контейнера
-Transport = Callable[[str, dict, object], dict]
+class Transport(Protocol):
+    """Куда уходит пост. Реализации: RobotTransport (через робота) и DirectTransport (через токен студии)."""
+
+    def __call__(self, method: str, params: dict, media: object = None) -> dict: ...
 
 
 @dataclass
@@ -355,6 +359,78 @@ FILE_FIELD = {
 }
 
 
+def _as_path(item: object) -> Path:
+    """Медиа — всегда путь. Тип object в сигнатуре транспорта требует сузить его здесь, а не молча."""
+    if isinstance(item, Path):
+        return item
+    if isinstance(item, str):
+        return Path(item)
+    raise TypeError(f"медиа должно быть путём, а не {type(item).__name__}")
+
+
+class DirectTransport:
+    """Прямые вызовы Bot API с токеном студии (TG_STUDIO_BOT_TOKEN).
+
+    Нужен там, где робот недоступен: студия контента живёт на отдельной машине, а канал ведёт отдельный бот
+    (@robboxcontentbot). Токен приходит из окружения и наружу не печатается: в сообщениях об ошибках URL
+    вырезается, как и в channel_exec.py.
+
+    Ответ приводится к тому же виду, что у RobotTransport: {"ok", "message_id", "message_ids", "description"}.
+    """
+
+    def __init__(self, token: Optional[str] = None, timeout: int = 180, session=None):
+        self.token = token or os.environ.get("TG_STUDIO_BOT_TOKEN", "")
+        if not self.token:
+            raise RuntimeError("TG_STUDIO_BOT_TOKEN не задан: студии нужен свой бот, токен робота не подходит")
+        self.timeout = timeout
+        self._session = session
+
+    def _post(self, method: str, params: dict, files: list) -> dict:
+        url = f"https://api.telegram.org/bot{self.token}/{method}"
+        data = {k: (json.dumps(v) if isinstance(v, (bool, dict, list)) else v) for k, v in params.items()}
+        session = self._session
+        if session is None:
+            import requests  # локальный импорт: requests нужен только для живой отправки
+
+            session = requests.Session()
+        try:
+            if files:
+                handles = [(f["field"], open(f["path"], "rb")) for f in files]
+                try:
+                    r = session.post(url, data=data, files=dict(handles), timeout=self.timeout)
+                finally:
+                    for _, fh in handles:
+                        fh.close()
+            else:
+                r = session.post(url, json=params, timeout=self.timeout)
+            payload = r.json()
+        except Exception as e:  # не печатать URL: в нём токен
+            return {"ok": False, "description": f"ERR {type(e).__name__}"}
+        result = payload.get("result")
+        if isinstance(result, list):  # sendMediaGroup: массив Message
+            ids = [m.get("message_id") for m in result if isinstance(m, dict)]
+        elif isinstance(result, dict):
+            ids = [result.get("message_id")]
+        else:
+            ids = []
+        ids = [i for i in ids if i]
+        return {
+            "ok": bool(payload.get("ok")),
+            "message_id": ids[0] if ids else None,
+            "message_ids": ids,
+            "description": payload.get("description", ""),
+        }
+
+    def __call__(self, method: str, params: dict, media: object = None) -> dict:
+        if isinstance(media, list):  # альбом: поля f0, f1, ... совпадают с attach://fN в params["media"]
+            files = [{"field": f"f{i}", "path": str(item)} for i, item in enumerate(media)]
+        elif media is not None:
+            files = [{"field": FILE_FIELD.get(method, "document"), "path": str(media)}]
+        else:
+            files = []
+        return self._post(method, params, files)
+
+
 class RobotTransport:
     """Вызов Bot API из контейнера telegram-bot на Sound Pi: токен в окружении контейнера."""
 
@@ -362,7 +438,7 @@ class RobotTransport:
         self.robot = robot
         self.executor = executor or Path(__file__).with_name("channel_exec.py")
 
-    def __call__(self, method: str, params: dict, media: Optional[Path] = None) -> dict:
+    def __call__(self, method: str, params: dict, media: object = None) -> dict:
         ssh = ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=10", self.robot]
         remote = ["docker cp /tmp/channel_exec.py telegram-bot:/tmp/channel_exec.py"]
         scp = ["scp", "-q", "-o", "BatchMode=yes"]
@@ -371,12 +447,12 @@ class RobotTransport:
         if isinstance(media, list):  # альбом: поля f0, f1, ... совпадают с attach://fN в params["media"]
             request["files"] = []
             for i, item in enumerate(media):
-                tmp = f"/tmp/channel_media_{i}{item.suffix.lower()}"
+                tmp = f"/tmp/channel_media_{i}{_as_path(item).suffix.lower()}"
                 subprocess.run(scp + [str(item), f"{self.robot}:{tmp}"], check=True, timeout=180)
                 remote.append(f"docker cp {shlex.quote(tmp)} telegram-bot:{shlex.quote(tmp)}")
                 request["files"].append({"field": f"f{i}", "path": tmp})
         elif media is not None:
-            tmp = f"/tmp/channel_media{media.suffix.lower()}"
+            tmp = f"/tmp/channel_media{_as_path(media).suffix.lower()}"
             subprocess.run(scp + [str(media), f"{self.robot}:{tmp}"], check=True, timeout=180)
             remote.append(f"docker cp {shlex.quote(tmp)} telegram-bot:{shlex.quote(tmp)}")
             request["file"] = {"field": FILE_FIELD[method], "path": tmp}
@@ -388,6 +464,18 @@ class RobotTransport:
             return json.loads(done.stdout.strip().splitlines()[-1])
         except (IndexError, ValueError):
             return {"ok": False, "description": f"нет ответа от контейнера (код {done.returncode})"}
+
+
+def make_transport(kind: str = "robot", robot: str = "ros2@10.1.1.22", token: Optional[str] = None):
+    """Транспорт по имени: robot — через контейнер робота на Sound Pi, direct — через токен студии.
+
+    robot остаётся умолчанием: студия и робот ведут канал по-разному, но старый путь не должен ломаться.
+    """
+    if kind == "direct":
+        return DirectTransport(token)
+    if kind == "robot":
+        return RobotTransport(robot)
+    raise ValueError(f"неизвестный транспорт {kind!r}: нужен robot или direct")
 
 
 def number_of(post: Post) -> int:

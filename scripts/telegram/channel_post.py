@@ -281,22 +281,29 @@ def main() -> int:
     ap.add_argument("--queue", type=Path, default=REPO / "docs" / "channel" / "queue")
     ap.add_argument("--now", help="подменить текущее время (ISO, UTC) — для проверки расписания")
     ap.add_argument("--robot", default="ros2@10.1.1.22")
+    ap.add_argument(
+        "--transport",
+        choices=("robot", "direct"),
+        default="robot",
+        help="robot — через контейнер telegram-bot на Sound Pi (по умолчанию); direct — через токен студии "
+        "(TG_STUDIO_BOT_TOKEN), когда робот недоступен",
+    )
     args = ap.parse_args()
     if args.send_draft is not None:
-        transport = None if args.dry_run else lib.RobotTransport(args.robot)
+        transport = None if args.dry_run else lib.make_transport(args.transport, args.robot)
         return send_draft(args.queue, REPO, args.send_draft, transport, args.dry_run)
     if args.republish_from is not None:
-        transport = None if args.dry_run else lib.RobotTransport(args.robot)
+        transport = None if args.dry_run else lib.make_transport(args.transport, args.robot)
         return republish_from(
             args.queue, REPO, args.republish_from, parse_extra_ids(args.extra_ids), transport, args.dry_run
         )
     if args.backfill:
-        transport = None if args.dry_run else lib.RobotTransport(args.robot)
+        transport = None if args.dry_run else lib.make_transport(args.transport, args.robot)
         return backfill(args.queue, REPO, transport, args.dry_run)
     if args.preview_all:
         return preview_all(args.queue, REPO)
     now = datetime.fromisoformat(args.now.replace("Z", "+00:00")) if args.now else datetime.now(timezone.utc)
-    transport = None if args.dry_run else lib.RobotTransport(args.robot)
+    transport = None if args.dry_run else lib.make_transport(args.transport, args.robot)
     return run(args.queue, REPO, now, transport, args.dry_run)
 
 
