@@ -26,8 +26,11 @@ def test_patch_injects_required_rtabmap_params_without_map_reanchoring(tmp_path)
     patched = launch_file.read_text(encoding="utf-8")
     assert '"Grid/Sensor": "0"' in patched
     assert '"Optimizer/Strategy": "1"' in patched
-    assert '"Mem/IncrementalMemory": "false"' in patched
     assert '"RGBD/OptimizeFromGraphEnd": "true"' not in patched
+    # #4495: Mem/IncrementalMemory ставит сам launch из localization:= (дубль ключа в dict был мёртвым),
+    # Odom/* узел rtabmap стирает (CoreWrapper) — в его dict их нет.
+    assert '"Mem/IncrementalMemory": "false"' not in patched
+    assert '"Odom/ResetCountdown"' not in patched
 
 
 def test_patch_migrates_legacy_tag_detections_remap(tmp_path):
@@ -109,7 +112,7 @@ def _icp_block(text):
 
 
 def test_patch_sets_icp_odometry_reset_countdown_explicitly(tmp_path):
-    """#4495: cfg:=rtabmap.ini не доходит до icp_odometry (HIL 06.11: ros2 param get Odom/ResetCountdown = 0).
+    """#4495: явный параметр узла icp_odometry (rtabmap.ini не применялся: HIL 06.11, ros2 param get = 0).
 
     Без сброса одометрия после одной неудачной регистрации осталась lost на весь прогон (8309 кадров
     из 8946) и стек ехал на колёсах. Параметр должен стоять явным параметром узла icp_odometry.
@@ -145,3 +148,20 @@ def test_icp_patch_skips_launch_without_icp_node():
     content = 'Node(parameters=[{\n    "Mem/IncrementalMemory": LaunchConfiguration("Mem/IncrementalMemory"),\n}])\n'
     patched, changed = module.patch_icp_odometry(content)
     assert changed is False and patched == content
+
+
+def test_rendered_params_match_the_dicts(tmp_path):
+    """Что в dict модуля, то и в launch: каждая пара ключ–значение ровно в своём узле."""
+    module = load_module()
+    launch_file = tmp_path / "rtabmap.launch.py"
+    launch_file.write_text(_ICP_AND_RTABMAP_NODES, encoding="utf-8")
+    module.LAUNCH_FILE = str(launch_file)
+
+    assert module.patch() is True
+
+    patched = launch_file.read_text(encoding="utf-8")
+    icp, rtabmap = _icp_block(patched), patched[patched.index("executable='rtabmap'") :]
+    for key, value in module.RTABMAP_PARAMS.items():
+        assert f'"{key}": "{value}"' in rtabmap and f'"{key}"' not in icp, key
+    for key, value in module.ICP_ODOMETRY_PARAMS.items():
+        assert f'"{key}": "{value}"' in icp and f'"{key}"' not in rtabmap, key

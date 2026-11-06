@@ -57,7 +57,7 @@ docker/
 │   │   ├── cyclonedds.xml         # → /config/cyclonedds.xml
 │   │   ├── zenoh_session_config.json5  # → /config/zenoh_session_config.json5
 │   │   └── rtabmap/               # Конфиги специфичные для rtabmap
-│   │       └── rtabmap.yaml       # → /config/rtabmap/rtabmap.yaml
+│   │       └── imu_filter_madgwick.yaml  # параметры rtabmap — scripts/rtabmap/patch_rtabmap_launch.py
 │   ├── scripts/
 │   │   ├── rtabmap/
 │   │   │   └── start_rtabmap.sh   # → /scripts/start_rtabmap.sh

@@ -17,7 +17,6 @@ docker/
 │   │   ├── zenoh_session_config.json5       # Общий для всех
 │   │   ├── cyclonedds.xml                   # Общий для всех
 │   │   ├── rtabmap/                         # Специфичные для rtabmap
-│   │   │   ├── rtabmap.yaml
 │   │   │   └── rtabmap_config.yaml
 │   │   └── robot_state_publisher/           # Специфичные для RSP
 │   │       └── (будущие конфиги)

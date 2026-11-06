@@ -49,7 +49,7 @@ Rob Box - это автономный мобильный робот с расп�
 
 ### 2.1. Текущая конфигурация RTABMAP
 
-**Местоположение**: `docker/main/config/rtabmap/rtabmap.yaml`
+**Местоположение**: `docker/main/config/rtabmap/rtabmap.yaml` (удалён в #4495; параметры — `docker/main/scripts/rtabmap/patch_rtabmap_launch.py`)
 
 ```yaml
 rtabmap:
