@@ -116,9 +116,9 @@ def test_send_post_failure_is_reported(monkeypatch):
 # ------------------------------------------------------------------ 3. Агент без инструментов
 
 
-def test_agent_runs_without_toolsets():
-    """У агента-моста не должно быть инструментов: с файловым он тянул .env.secrets."""
-    assert reply.AGENT_TOOLSETS == ""
+def test_reply_answer_with_minimax_key_is_rejected():
+    """У моста нет инструментов; а если модель всё же выдала ключ — ответ не уходит."""
+    assert reply.answer_problems("ключ eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9")
 
 
 def test_secret_patterns_cover_minimax_key():

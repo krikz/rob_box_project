@@ -103,19 +103,18 @@ def test_send_post_reports_failure_honestly(tmp_path):
 # --- C. Мост к агенту: без токена бота и с проверкой ответа --------------------
 
 
-def test_agent_env_has_no_bot_token(monkeypatch):
-    """Агенту нельзя отдавать токен бота: он мог бы опубликовать в канал сам."""
-    monkeypatch.setenv("TG_STUDIO_BOT_TOKEN", "секрет-токен")
-    monkeypatch.setenv("TG_BOT_TOKEN", "секрет-токен-робота")
-    env = reply_mod.clean_env()
-    assert "TG_STUDIO_BOT_TOKEN" not in env
-    assert "TG_BOT_TOKEN" not in env
+def test_reply_bridge_has_no_agent_and_no_subprocess():
+    """Мост к Шифу — модель без инструментов, а не агент: `hermes -t ""` включал набор по умолчанию."""
+    source = (REPO / "scripts" / "telegram" / "studio_reply.py").read_text(encoding="utf-8")
+    assert "import subprocess" not in source
+    assert '"hermes"' not in source
 
 
-def test_agent_toolsets_exclude_terminal():
-    """terminal агента не нужен и опасен: с ним он может выполнить публикацию."""
-    assert "terminal" not in reply_mod.AGENT_TOOLSETS
-    assert "cronjob" not in reply_mod.AGENT_TOOLSETS
+def test_reply_uses_narrow_schema():
+    """Ответ берётся только из поля answer; любой другой ответ модели — пустота, а не мусор в чат."""
+    assert reply_mod.ask_model("x", call=lambda p, timeout=0: {"answer": " Привет "}) == "Привет"
+    assert reply_mod.ask_model("x", call=lambda p, timeout=0: {"text": "мимо схемы"}) == ""
+    assert reply_mod.ask_model("x", call=lambda p, timeout=0: {"error": "HTTP 500"}) == ""
 
 
 def test_answer_is_stripped_of_html_and_noise():

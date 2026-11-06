@@ -788,7 +788,7 @@ def discussed_idea(state: dict) -> dict:
 
 
 def run_reply_agent(text: str, idea: dict) -> str:
-    """Позвать агента профиля studio. Ответ приходит из его же слов."""
+    """Ответ модели без инструментов (studio_reply.py: MiniMax по схеме {"answer"}, проверка кодом)."""
     script = Path(__file__).with_name("studio_reply.py")
     cmd = ["python3", str(script), "--message", text]
     if idea.get("id"):
