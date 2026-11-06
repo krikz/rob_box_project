@@ -1,45 +1,37 @@
 #!/usr/bin/env python3
-"""Patch rtabmap.launch.py to fix two issues on the deployed robot image.
+"""Patch rtabmap.launch.py: the ONE source of RTAB-Map parameters on Main Pi (#4495).
 
-Patch 1 — inject Grid/Sensor=0 and other parameters
-  that are otherwise auto-overridden by the rtabmap node constructor.
+Parameters of the ``rtabmap`` and ``icp_odometry`` nodes live here, in
+:data:`RTABMAP_PARAMS` and :data:`ICP_ODOMETRY_PARAMS`, and nowhere else. They are written into
+the ``Node(parameters=[{...}])`` dicts of rtabmap.launch.py as explicit ROS 2 parameters, so
+``ros2 param get /rtabmap/rtabmap <name>`` and ``ros2 param get /rtabmap/icp_odometry <name>``
+show exactly what runs.
 
-  Root cause:
-    rtabmap C++ node forces Grid/Sensor=0 when subscribe_scan=true,
-    UNLESS Grid/Sensor is already present as an EXPLICIT ROS2 parameter
-    in the node's parameters dict.
+Why not ``cfg:=rtabmap.ini`` (removed in #4495, it was never applied):
+  * rtabmap reads only the ``[Core]`` section of the ini, keys like ``Icp\\PointToPlane``
+    (rtabmap 0.24.2 corelib/src/Parameters.cpp, ``readINIImpl()``). Our file had ``[Icp]``,
+    ``[Odom]``, ... sections, and both nodes logged
+    ``readINIImpl() Section "Core" in /config/rtabmap/rtabmap.ini doesn't exist``
+    (Main Pi, ``docker logs rtabmap``, 06.11). ``ros2 param get`` and the HIL rtabmap.db
+    showed rtabmap defaults instead of the ini values.
+  * Even a working ini is invisible to ``ros2 param get`` on the rtabmap node: CoreWrapper
+    declares ROS parameters with rtabmap DEFAULTS and only explicit overrides change them
+    (rtabmap_ros 0.23.13-humble rtabmap_slam/src/CoreWrapper.cpp, ``onInit``).
+  * CoreWrapper rewrites ``config_path`` with ALL its parameters on shutdown
+    (``CoreWrapper::saveParameters``): the ini is a file rtabmap itself owns, not a config.
+  Priority, when both exist: explicit ROS parameter > ini ``[Core]`` > rtabmap default.
 
-    Parameters from cfg:= (INI file) are loaded into rtabmap's INTERNAL
-    parameter map, not the ROS2 parameter server → auto-override wins.
+Patch 1 — :data:`RTABMAP_PARAMS` into the rtabmap Node dict (before ``Mem/IncrementalMemory``,
+  which the launch file sets itself from ``localization:=``). Grid/Sensor must be explicit:
+  the rtabmap node forces Grid/Sensor=0 with subscribe_scan=true unless it is already set.
 
-  Fix:
-    Insert required parameters directly into the Node(parameters=[{...}])
-    dict in rtabmap.launch.py BEFORE the Mem/IncrementalMemory entry.
-    This makes them explicit ROS2 node parameters → auto-override is skipped.
+Patch 2 — migrate the AprilTag input remap from the deprecated internal topic name
+  "tag_detections" to the current "apriltag/detections". rtabmap_ros CoreWrapper subscribes
+  to both; the launch file remaps only the legacy one, and rtabmap warns
+  ``"tag_detections" input topic name for apriltag_msgs is deprecated``. Remapping the
+  current name leaves the legacy subscription unmapped (no data, no warning).
 
-Patch 2 — migrate the AprilTag input remap from the deprecated internal
-  topic name "tag_detections" to the current "apriltag/detections".
-
-  Root cause:
-    rtabmap_ros (humble-latest) CoreWrapper subscribes to BOTH
-    "tag_detections" (legacy, deprecated) and "apriltag/detections" (current).
-    The launch file remaps only the legacy name:
-
-        ("tag_detections", LaunchConfiguration('tag_topic')),
-
-    so detections arrive through the legacy subscription and rtabmap logs:
-
-        [WARN] "tag_detections" input topic name for apriltag_msgs is
-        deprecated, remap "apriltag" input topic name instead.
-
-  Fix:
-    Remap the CURRENT internal name instead:
-
-        ("apriltag/detections", LaunchConfiguration('tag_topic')),
-
-    The legacy "tag_detections" subscription then stays unmapped (no data,
-    no warning) and the current "apriltag/detections" subscription receives
-    the data on the configured tag_topic (=/detections) without warnings.
+Patch 3 — :data:`ICP_ODOMETRY_PARAMS` into the icp_odometry Node dict.
 
 Usage:
   Called from start_rtabmap.sh before 'exec \"$@\"'.
@@ -50,51 +42,56 @@ import sys
 LAUNCH_FILE = "/opt/ros/humble/share/rtabmap_launch/launch/rtabmap.launch.py"
 SENTINEL = '"Mem/IncrementalMemory"'
 
-# Parameters to inject into the rtabmap Node parameters dict (Patch 1)
-INJECTED_PARAMS = """\
-                "Grid/Sensor": "0",             # LiDAR only for occupancy grid stability
-                "Grid/MaxObstacleHeight": "1.5",  # Obstacles above 1.5m ignored
-                "Grid/MinGroundHeight": "-0.1",   # Filter floor points below -0.1m
-                "Grid/RangeMin": "0.2",
-                "Grid/RangeMax": "10.0",
-                "Grid/CellSize": "0.05",
-                "Reg/Force3DoF": "true",        # Ground robot: constrain to 2D
-                "Reg/Strategy": "1",            # ICP registration
-                "Icp/VoxelSize": "0.05",
-                "Icp/MaxCorrespondenceDistance": "0.1",
-                "Icp/CorrespondenceRatio": "0.05",
-                "Mem/IncrementalMemory": "false",  # Localization mode, don't grow WM online
-                "RGBD/OptimizeMaxError": "5.0",
-                "Optimizer/Strategy": "1",      # Force g2o, avoid GTSAM localization failures
-                "Optimizer/GravitySigma": "0",
-                "Odom/ResetCountdown": "1",
-"""
+# ── Parameters (the only place; decisions per parameter — docs/research/2026-11-05-nav2-hil-tuning.md §9.6) ──
+# Everything not listed runs with the rtabmap default (rtabmap 0.24.2, Parameters.h).
+RTABMAP_PARAMS = {
+    "Grid/Sensor": "0",  # LiDAR only for the occupancy grid
+    "Grid/MaxObstacleHeight": "1.5",  # obstacles above 1.5 m ignored
+    "Grid/MinGroundHeight": "-0.1",  # floor points below -0.1 m filtered
+    "Grid/RangeMin": "0.2",
+    "Grid/RangeMax": "10.0",
+    "Grid/CellSize": "0.05",
+    "Reg/Force3DoF": "true",  # ground robot: x, y, yaw
+    "Reg/Strategy": "1",  # ICP registration for loop closure and proximity
+    "Icp/VoxelSize": "0.05",
+    "Icp/MaxCorrespondenceDistance": "0.1",
+    "Icp/CorrespondenceRatio": "0.05",
+    "RGBD/OptimizeMaxError": "5.0",  # reject loop closures with a large graph error
+    "Optimizer/Strategy": "1",  # g2o: GTSAM failed on ill-posed graphs in localization
+    "Optimizer/GravitySigma": "0",  # no IMU gravity constraints
+}
+
+# icp_odometry: Odom/* exist only here (CoreWrapper erases Odom/* from the rtabmap node).
+#   Odom/ResetCountdown=1 (#4495, HIL Depot 06.11): without it, after one failed registration
+#   (fast in-place turn, far walls) ICP odometry stayed `lost` for the rest of the run (8309 of
+#   8946 frames). With 1 it resets after one lost frame and resumes from the last good pose.
+ICP_ODOMETRY_PARAMS = {
+    "Odom/ResetCountdown": "1",
+}
 
 # Patch 2: legacy remap -> current remap (AprilTag detections)
 LEGACY_REMAP = "(\"tag_detections\", LaunchConfiguration('tag_topic')),"
 CURRENT_REMAP = "(\"apriltag/detections\", LaunchConfiguration('tag_topic')),"
 
-# Patch 3 (#4495): parameters of the icp_odometry node.
-#   cfg:=/config/rtabmap/rtabmap.ini is NOT applied: `ros2 param get /rtabmap/icp_odometry
-#   Odom/ResetCountdown` gave 0 (ini says 1), Icp/PointToPlane gave true (ini says false), and
-#   the Info.parameters row of the HIL rtabmap.db shows the same (HIL Depot 06.11). So
-#   icp_odometry ran with rtabmap defaults. After one failed registration (fast in-place turn,
-#   far walls) it stayed `lost` for the rest of the run (8309 of 8946 frames) and the whole
-#   stack drove on open-loop wheel odometry. Odom/ResetCountdown=1 resets ICP odometry after one
-#   lost frame: it resumes from the last good pose plus the wheel guess and builds a new local
-#   map, instead of staying lost forever. Explicit node parameters win over the ini.
 ICP_NODE_MARKER = "executable='icp_odometry'"
 ICP_PARAMS_OPEN = "parameters=[{"
-ICP_SENTINEL = '"Odom/ResetCountdown"'
-ICP_INJECTED_PARAMS = """
-                "Odom/ResetCountdown": "1",     # #4495: do not stay lost forever after one failed ICP"""
+ICP_SENTINEL = f'"{next(iter(ICP_ODOMETRY_PARAMS))}"'
+
+
+def render_params(params: dict) -> str:
+    """``{"A/B": "1"}`` → lines ``"A/B": "1",`` indented as the launch file dicts."""
+    return "".join(f'\n                "{key}": "{value}",' for key, value in params.items())
+
+
+INJECTED_PARAMS = render_params(RTABMAP_PARAMS).lstrip("\n") + "\n"
+ICP_INJECTED_PARAMS = render_params(ICP_ODOMETRY_PARAMS)
 
 
 def patch_icp_odometry(content: str):
     """Patch 3: explicit parameters into the icp_odometry Node dict. Returns ``(content, patched)``.
 
-    Idempotent: looks for the sentinel only inside the icp_odometry Node block (the rtabmap
-    Node dict of Patch 1 carries the same key). No icp_odometry Node — warning, nothing changed.
+    Idempotent: looks for the sentinel only inside the icp_odometry Node block.
+    No icp_odometry Node — warning, nothing changed.
     """
     start = content.find(ICP_NODE_MARKER)
     if start < 0:

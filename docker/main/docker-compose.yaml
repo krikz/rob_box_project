@@ -185,7 +185,8 @@ services:
       - database_path:=/maps/rtabmap.db
       - wait_for_transform:=0.5
       - use_sim_time:=false
-      - cfg:=/config/rtabmap/rtabmap.ini
+      # Параметры RTAB-Map (Grid/*, Icp/*, Odom/* …) — только в scripts/rtabmap/patch_rtabmap_launch.py
+      # (#4495). cfg:=rtabmap.ini удалён: rtabmap читает из ini лишь секцию [Core], файл не применялся.
       # Вокселизация cloud_map: уменьшает размер сообщения в ~100-1000x.
       # Предотвращает переполнение Zenoh TCP буфера при loop closure.
       # 0.3 = 3x крупнее вокселей чем 0.1 → ~27x меньше точек → ~27x меньший publish.
