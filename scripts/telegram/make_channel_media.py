@@ -171,10 +171,15 @@ def card(
     w: int = 1000,
     h: int = 560,
     boxes: list | None = None,
+    bg: Image.Image | None = None,
 ) -> Image.Image:
     img = Image.new("RGB", (w, h), BG)
     d = RecordingDraw(img, boxes)
     d.rounded_rectangle([40, 40, w - 40, h - 40], radius=28, fill=PANEL)
+    if bg is not None:
+        import channel_bg
+
+        channel_bg.apply_background(img, bg)
     # полоска светодиодов сверху: тот же приём, что и в лице
     for c in range(30):
         x = 90 + c * 27
@@ -193,18 +198,47 @@ def card(
     return img
 
 
+CARD_BACKGROUNDS = {  # декоративные подложки карточек (channel_bg): абстракция по теме поста, не «фото робота»
+    "marathon": {
+        "slug": "bg-night",
+        "prompt": "Abstract calm night scene, deep indigo sky, soft concentric sound ripples, faint moon glow",
+        "seed": 8,
+    },
+    "code-decides": {
+        "slug": "bg-code",
+        "prompt": "Abstract geometric bracket shapes balanced against flowing speech waves, dark cyan and teal glow",
+        "seed": 9,
+    },
+}
+
+
 def main() -> None:
+    import channel_bg
+
     ap = argparse.ArgumentParser()
     ap.add_argument("--out", default="docs/channel/media")
-    out = Path(ap.parse_args().out)
+    ap.add_argument("--no-bg", action="store_true", help="без подложек MiniMax (только кэш не используется)")
+    args = ap.parse_args()
+    out = Path(args.out)
     out.mkdir(parents=True, exist_ok=True)
+
+    def bg_for(name):
+        return None if args.no_bg else channel_bg.load_background(CARD_BACKGROUNDS[name])
+
     make_led_gif(out / "led381.gif")
-    card(out / "marathon.png", ["131 шаг,", "12 актов,", "одна ночь"], "Ночной голосовой марафон", acts=12)
+    card(
+        out / "marathon.png",
+        ["131 шаг,", "12 актов,", "одна ночь"],
+        "Ночной голосовой марафон",
+        acts=12,
+        bg=bg_for("marathon"),
+    )
     card(
         out / "code-decides.png",
         ["Код решает,", "LLM говорит"],
         "ADR-0148 · честный FAIL лучше красивого PASS",
         accent=CYAN,
+        bg=bg_for("code-decides"),
     )
 
 

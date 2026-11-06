@@ -19,6 +19,7 @@ from pathlib import Path
 from PIL import Image
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+import channel_bg  # noqa: E402
 from make_channel_media import (  # noqa: E402
     BG,
     CYAN,
@@ -96,11 +97,13 @@ def mix(color, alpha: float, base=PANEL):
     return tuple(int(base[k] + (color[k] - base[k]) * alpha) for k in range(3))
 
 
-def base_canvas(spec: dict, size: tuple, boxes: list | None = None):
+def base_canvas(spec: dict, size: tuple, boxes: list | None = None, bg=None):
     w, h = size
     img = Image.new("RGB", size, BG)
     d = RecordingDraw(img, boxes)
     d.rounded_rectangle([40, 40, w - 40, h - 40], radius=28, fill=PANEL)
+    if bg is not None:  # декоративная подложка, уже затемнённая и размытая (channel_bg.finish)
+        channel_bg.apply_background(img, bg)
     for c in range((w - 2 * MARGIN) // 27):  # полоска светодиодов — тот же приём, что у обложек
         x = MARGIN + c * 27
         d.ellipse([x, 78, x + 14, 92], fill=RAINBOW[c % len(RAINBOW)] if c % 3 else (40, 42, 50))
@@ -195,10 +198,15 @@ DRAWERS = {
 }
 
 
-def render(spec: dict, size_name: str = "card", reveal: float = 99.0, boxes: list | None = None) -> Image.Image:
+def render(
+    spec: dict, size_name: str = "card", reveal: float = 99.0, boxes: list | None = None, bg_loader=None
+) -> Image.Image:
     validate_spec(spec)
     size = SIZES[size_name]
-    img, d = base_canvas(spec, size, boxes)
+    bg = None
+    if spec.get("background"):
+        bg = (bg_loader or channel_bg.load_background)(spec["background"])
+    img, d = base_canvas(spec, size, boxes, bg)
     DRAWERS[spec["template"]](d, spec, size, reveal)
     return img
 
@@ -232,7 +240,7 @@ def main() -> int:
             render_gif(spec, args.out, args.size)
         else:
             render(spec, args.size).save(args.out, optimize=True)
-    except (SpecError, LayoutError) as e:
+    except (SpecError, LayoutError, channel_bg.BackgroundError) as e:
         print(f"{args.spec}: {e}")
         return 1
     print(f"{args.out}: {args.out.stat().st_size} байт")
