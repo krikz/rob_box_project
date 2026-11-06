@@ -534,10 +534,28 @@ def test_free_text_edits_latest_draft_in_place(run_env, monkeypatch):
         }
 
     monkeypatch.setattr(jobs, "_produce", fake_produce)
-    update = {"update_id": 5, "message": {"chat": {"id": SHIFU}, "text": "Убери номера PR", "message_id": 90}}
-    bot = Bot([update])
+    message = {
+        "chat": {"id": SHIFU},
+        "text": "Убери номера PR",
+        "message_id": 90,
+        "reply_to_message": {"message_id": 77},
+    }
+    bot = Bot([{"update_id": 5, "message": message}])
     studio.poll_once(bot, path, timeout=0, out=lambda _m: None)
     assert "Убери номера PR" in seen["instruction"]
     captions = [c for c in bot.calls if c[0] == "editMessageCaption"]
     assert captions and captions[0][2] == 77
     assert st.load_state(path)["posts"]["p1"]["body_html"].startswith("<b>Сторож</b> честный")
+
+
+def test_free_text_without_reply_is_conversation_not_edit(run_env, monkeypatch):
+    """«Ок, ищи данные» без reply не переписывает пост; ответ модели + подсказка от кода."""
+    path = run_env / "state.json"
+    _draft(path)
+    monkeypatch.setattr(jobs, "_produce", lambda *a: pytest.fail("без reply правки быть не должно"))
+    monkeypatch.setattr(studio, "run_reply_agent", lambda text, idea: "Нужен файл с замером.")
+    bot = Bot([{"update_id": 6, "message": {"chat": {"id": SHIFU}, "text": "Ок, ищи данные", "message_id": 91}}])
+    studio.poll_once(bot, path, timeout=0, out=lambda _m: None)
+    final = [c[1] for c in bot.calls if c[0] in ("sendMessage", "editMessageText")][-1]
+    assert final.startswith("Нужен файл с замером.")
+    assert "ответь на него (reply)" in final and "p1" in final

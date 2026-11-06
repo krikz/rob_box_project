@@ -642,7 +642,12 @@ def _take_message(state: dict, update_id: int, message: Optional[dict]) -> tuple
     if not note:
         return "", ""
     reply_to = ((message or {}).get("reply_to_message") or {}).get("message_id")
-    return note, active_draft(state, reply_to)
+    if not reply_to:
+        # Без reply текст — разговор, а не правка: «ок, ищи данные» не должно переписывать пост.
+        return note, ""
+    found = active_draft(state, reply_to)
+    matched = found and (state.get("posts") or {}).get(found, {}).get("message_id") == reply_to
+    return note, found if matched else ""
 
 
 def active_draft(state: dict, reply_to: Optional[int] = None) -> str:
@@ -805,7 +810,13 @@ def reply_to_shifu(bot: StudioBot, state_path: Path, text: str, out=print) -> bo
     idea = discussed_idea(state)
     answer = run_reply_agent(text, idea)
     if not answer:
-        answer = "Не смог ответить сейчас — идея осталась на обсуждении, спрошу позже."
+        answer = "Не смог ответить сейчас — модель не дала ответа, который прошёл бы проверку."
+    draft = active_draft(state)
+    if draft:
+        # Подсказку строит код, а не модель: как править черновик — знает студия, а не LLM.
+        answer += (
+            f"\n\nЧтобы поправить черновик {draft}, ответь на него (reply) своими словами — правка встанет на место."
+        )
     if message_id:
         bot.edit_message_text(SHIFU_CHAT_ID, message_id, answer, parse_mode=None)
     else:
