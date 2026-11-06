@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import copy
 import os
+import re
 from dataclasses import dataclass, field
 from types import MappingProxyType
 from typing import Any, Dict, FrozenSet, Iterable, List, Mapping, Optional, Sequence, Tuple
@@ -1106,6 +1107,16 @@ NETWORK_STEMS: Tuple[str, ...] = ("сеть", "сети", "сетью", "сет�
 WAYPOINT_SAVE_VERBS: Tuple[str, ...] = ("запомни", "запоминай", "сохрани", "отметь", "запиши", "зафиксируй")
 WAYPOINT_SAVE_OBJECTS: Tuple[str, ...] = ("мест", "точк", "здесь", "тут")
 
+#: Слова про лица и людей (группа ``faces``, #4469): основы по левой границе слова.
+FACES_STEMS: Tuple[str, ...] = (
+    "лиц", "имя", "имени", "назови", "назвать", "назов", "зовут", "кто это", "людей", "люди", "кличк", "фото",
+    "снимок", "снимк", "незнаком",
+)
+#: id лица в реплике: 8 hex целым словом. Структура, а не грамматика музыки (мораторий #3132 не касается).
+FACE_ID_RE = re.compile(r"(?<![0-9a-f])[0-9a-f]{8}(?![0-9a-f])", re.IGNORECASE)
+#: Группа пульта по лицам; у голоса её тулов нет (``llm_visible=False``).
+FACES_GROUP = "faces"
+
 #: Группы по приоритету: при пересечении групп срез режется по этому порядку (``TOOLS_VISIBLE_MAX``). Голос —
 #: только по явной голосовой просьбе (LLM сама меняла голос посреди сказки, а голос персистентный, PR-4).
 TOOL_GROUPS: Mapping[str, ToolGroup] = MappingProxyType({
@@ -1162,6 +1173,11 @@ TOOL_GROUPS: Mapping[str, ToolGroup] = MappingProxyType({
     "people": ToolGroup(("зовут", "помни", "запомни", "знаком", "обо мне", "кто я", "моё имя", "мое имя",
                          "зови меня", "называй меня"),
                         ("memory_context", "register_speaker")),
+    # #4469 (Sound Pi 06.11 05:44): «Задай для лица fff371fe имя Кирилл» - срез чата без ``name_person``, модель звала
+    # ``memory_save`` (``rejected no_person``). Пульт по лицам видит только чат (``telegram_visible``): у голоса
+    # ``llm_visible=False``, срез голоса не меняется (``tools_view.groups_for(agent=...)``). Голое «покажи» основой не
+    # берём («покажи CPU», «покажи кухню»): «покажи лица» открывает «лиц». id лица (8 hex) открывает группу без слов
+    "faces": ToolGroup(FACES_STEMS, ("people_list", "person_photo", "name_person")),
     "sound": ToolGroup(SOUND_STEMS, ("play_sound", "get_sound_info")),
     # анимация всегда видна (``TOOLS_ALWAYS``); группа — чтобы просьба «покажи анимацию …» была командой (В17)
     # глаголы восприятия («посмотри налево») — взгляд лица, а не движение базы (``MOTION_VERB_STEMS``);

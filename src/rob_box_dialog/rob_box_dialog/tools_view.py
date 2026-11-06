@@ -28,7 +28,7 @@ from rob_box_dialog.words import asks_robot_to_act, has_form, has_speech_manner,
 
 
 def groups_for(snapshot: SessionSnapshot, text: str, carry: Sequence[str] = (),
-               asked: Sequence[str] = ()) -> Tuple[str, ...]:
+               asked: Sequence[str] = (), agent: str = "personality") -> Tuple[str, ...]:
     """Группы среза: прямо названные словами человека (порядок ``TOOL_GROUPS``) и группы тулов открытого вопроса
     (``asked``, :func:`asked_groups`), затем сцены снимка, затем названные только общим глаголом; ни одной —
     ``carry`` (группы прошлого хода: «я же просил про стрижей» — продолжение; кроме тех, что только по явной просьбе,
@@ -39,12 +39,23 @@ def groups_for(snapshot: SessionSnapshot, text: str, carry: Sequence[str] = (),
     не видел ``get_battery_level``, и LLM отвечала «заряд мне не виден» (run 39849541397).
     """
     named = _under_music(snapshot, text, _named(text, "stems")) | set(asked_groups(asked))
+    named = _faces_for(agent, text, named)
     scene = ({"music"} if snapshot.music_playing else set()) - named
     weak = _named(text, "weak") - named - scene
     if not named | scene | weak:
         named = {g for g in carry if g in kn.TOOL_GROUPS and g not in kn.TOOL_GROUPS_EXPLICIT}
         named = named or set(kn.TOOL_GROUPS_DEFAULT)
     return _ordered(named) + _ordered(scene) + _ordered(weak)
+
+
+def _faces_for(agent: str, text: str, named: set) -> set:
+    """Группа ``faces`` (#4469): id лица (8 hex) открывает её без слов; агенту без её тулов (голос) - не открывается,
+    чтобы пустая группа не вытесняла статус по умолчанию."""
+    if kn.FACE_ID_RE.search(text):
+        named = named | {kn.FACES_GROUP}
+    if kn.FACES_GROUP in named and not set(kn.TOOL_GROUPS[kn.FACES_GROUP].tools) & set(tools_for(agent_spec(agent))):
+        named = named - {kn.FACES_GROUP}
+    return named
 
 
 def asked_groups(tools: Sequence[str]) -> Tuple[str, ...]:
@@ -264,7 +275,7 @@ def available_tools(snapshot: SessionSnapshot, caps: Optional[Any] = None, agent
     allowed = set(tools_for(agent_spec(agent))) | set(kn.SPEECH_CHANNEL_TOOLS)
     names: List[str] = []
     drive = motion_named(text)
-    grouped = tuple(t for g in groups_for(snapshot, text, carry, asked) for t in kn.TOOL_GROUPS[g].tools)
+    grouped = tuple(t for g in groups_for(snapshot, text, carry, asked, agent) for t in kn.TOOL_GROUPS[g].tools)
     for name in kn.TOOLS_ALWAYS + kn.ALOUD_TOOLS + grouped:
         if name in kn.MOTION_TOOLS and not drive:
             continue
