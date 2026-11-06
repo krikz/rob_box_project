@@ -71,8 +71,47 @@ INJECTED_PARAMS = """\
 """
 
 # Patch 2: legacy remap -> current remap (AprilTag detections)
-LEGACY_REMAP = '("tag_detections", LaunchConfiguration(\'tag_topic\')),'
-CURRENT_REMAP = '("apriltag/detections", LaunchConfiguration(\'tag_topic\')),'
+LEGACY_REMAP = "(\"tag_detections\", LaunchConfiguration('tag_topic')),"
+CURRENT_REMAP = "(\"apriltag/detections\", LaunchConfiguration('tag_topic')),"
+
+# Patch 3 (#4495): parameters of the icp_odometry node.
+#   cfg:=/config/rtabmap/rtabmap.ini is NOT applied: `ros2 param get /rtabmap/icp_odometry
+#   Odom/ResetCountdown` gave 0 (ini says 1), Icp/PointToPlane gave true (ini says false), and
+#   the Info.parameters row of the HIL rtabmap.db shows the same (HIL Depot 06.11). So
+#   icp_odometry ran with rtabmap defaults. After one failed registration (fast in-place turn,
+#   far walls) it stayed `lost` for the rest of the run (8309 of 8946 frames) and the whole
+#   stack drove on open-loop wheel odometry. Odom/ResetCountdown=1 resets ICP odometry after one
+#   lost frame: it resumes from the last good pose plus the wheel guess and builds a new local
+#   map, instead of staying lost forever. Explicit node parameters win over the ini.
+ICP_NODE_MARKER = "executable='icp_odometry'"
+ICP_PARAMS_OPEN = "parameters=[{"
+ICP_SENTINEL = '"Odom/ResetCountdown"'
+ICP_INJECTED_PARAMS = """
+                "Odom/ResetCountdown": "1",     # #4495: do not stay lost forever after one failed ICP"""
+
+
+def patch_icp_odometry(content: str):
+    """Patch 3: explicit parameters into the icp_odometry Node dict. Returns ``(content, patched)``.
+
+    Idempotent: looks for the sentinel only inside the icp_odometry Node block (the rtabmap
+    Node dict of Patch 1 carries the same key). No icp_odometry Node — warning, nothing changed.
+    """
+    start = content.find(ICP_NODE_MARKER)
+    if start < 0:
+        print("[patch_rtabmap_launch] WARN: icp_odometry Node not found — skipping icp patch.", file=sys.stderr)
+        return content, False
+    end = content.find("Node(", start)
+    block = content[start:] if end < 0 else content[start:end]
+    if ICP_SENTINEL in block:
+        print("[patch_rtabmap_launch] icp_odometry parameters already injected.")
+        return content, False
+    opening = block.find(ICP_PARAMS_OPEN)
+    if opening < 0:
+        print("[patch_rtabmap_launch] WARN: icp_odometry parameters dict not found — skipping.", file=sys.stderr)
+        return content, False
+    at = start + opening + len(ICP_PARAMS_OPEN)
+    print("[patch_rtabmap_launch] icp_odometry parameters injected (#4495).")
+    return content[:at] + ICP_INJECTED_PARAMS + content[at:], True
 
 
 def patch() -> bool:
@@ -82,7 +121,6 @@ def patch() -> bool:
         print(f"[patch_rtabmap_launch] ERROR reading {LAUNCH_FILE}: {e}", file=sys.stderr)
         return False
 
-    original = content
     patched_remap = False
     patched_params = False
 
@@ -95,8 +133,7 @@ def patch() -> bool:
         print("[patch_rtabmap_launch] Remap migrated: tag_detections -> apriltag/detections.")
     else:
         print(
-            "[patch_rtabmap_launch] WARN: neither legacy nor current apriltag remap "
-            "found — skipping remap patch.",
+            "[patch_rtabmap_launch] WARN: neither legacy nor current apriltag remap " "found — skipping remap patch.",
             file=sys.stderr,
         )
 
@@ -113,6 +150,10 @@ def patch() -> bool:
             file=sys.stderr,
         )
         return False
+
+    # ---- Patch 3: icp_odometry parameters (idempotent, #4495) ----
+    content, patched_icp = patch_icp_odometry(content)
+    patched_params = patched_params or patched_icp
 
     if not (patched_remap or patched_params):
         print(f"[patch_rtabmap_launch] Already fully patched: {LAUNCH_FILE}")

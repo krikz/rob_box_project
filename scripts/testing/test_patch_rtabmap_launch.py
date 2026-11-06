@@ -15,9 +15,7 @@ def test_patch_injects_required_rtabmap_params_without_map_reanchoring(tmp_path)
     module = load_module()
     launch_file = tmp_path / "rtabmap.launch.py"
     launch_file.write_text(
-        'Node(parameters=[{\n'
-        '    "Mem/IncrementalMemory": LaunchConfiguration("Mem/IncrementalMemory"),\n'
-        '}])\n',
+        "Node(parameters=[{\n" '    "Mem/IncrementalMemory": LaunchConfiguration("Mem/IncrementalMemory"),\n' "}])\n",
         encoding="utf-8",
     )
 
@@ -43,14 +41,14 @@ def test_patch_migrates_legacy_tag_detections_remap(tmp_path):
     module = load_module()
     launch_file = tmp_path / "rtabmap.launch.py"
     launch_file.write_text(
-        'Node(\n'
-        '    remappings=[\n'
-        '        ("tag_detections", LaunchConfiguration(\'tag_topic\')),\n'
-        '        ("scan", LaunchConfiguration(\'scan_topic\')),\n'
-        '    ],\n'
-        '    parameters=[{\n'
+        "Node(\n"
+        "    remappings=[\n"
+        "        (\"tag_detections\", LaunchConfiguration('tag_topic')),\n"
+        "        (\"scan\", LaunchConfiguration('scan_topic')),\n"
+        "    ],\n"
+        "    parameters=[{\n"
         '    "Mem/IncrementalMemory": LaunchConfiguration("Mem/IncrementalMemory"),\n'
-        '    }])\n',
+        "    }])\n",
         encoding="utf-8",
     )
 
@@ -60,10 +58,10 @@ def test_patch_migrates_legacy_tag_detections_remap(tmp_path):
 
     patched = launch_file.read_text(encoding="utf-8")
     # Legacy remap replaced with the current internal name.
-    assert '("apriltag/detections", LaunchConfiguration(\'tag_topic\'))' in patched
+    assert "(\"apriltag/detections\", LaunchConfiguration('tag_topic'))" in patched
     assert '("tag_detections",' not in patched
     # Other remappings must be preserved.
-    assert '("scan", LaunchConfiguration(\'scan_topic\'))' in patched
+    assert "(\"scan\", LaunchConfiguration('scan_topic'))" in patched
 
 
 def test_patch_remap_is_idempotent(tmp_path):
@@ -72,14 +70,14 @@ def test_patch_remap_is_idempotent(tmp_path):
     module = load_module()
     launch_file = tmp_path / "rtabmap.launch.py"
     already = (
-        'Node(\n'
-        '    remappings=[\n'
-        '        ("apriltag/detections", LaunchConfiguration(\'tag_topic\')),\n'
-        '    ],\n'
-        '    parameters=[{\n'
+        "Node(\n"
+        "    remappings=[\n"
+        "        (\"apriltag/detections\", LaunchConfiguration('tag_topic')),\n"
+        "    ],\n"
+        "    parameters=[{\n"
         '        "Grid/Sensor": "0",\n'
         '    "Mem/IncrementalMemory": LaunchConfiguration("Mem/IncrementalMemory"),\n'
-        '    }])\n'
+        "    }])\n"
     )
     launch_file.write_text(already, encoding="utf-8")
 
@@ -89,3 +87,61 @@ def test_patch_remap_is_idempotent(tmp_path):
     # No duplicates of the migrated remap.
     patched = launch_file.read_text(encoding="utf-8")
     assert patched.count('("apriltag/detections",') == 1
+
+
+_ICP_AND_RTABMAP_NODES = (
+    "Node(\n"
+    "    package='rtabmap_odom', executable='icp_odometry', name=\"icp_odometry\",\n"
+    "    parameters=[{\n"
+    "        \"frame_id\": LaunchConfiguration('frame_id'),\n"
+    "    }]),\n"
+    "Node(\n"
+    "    package='rtabmap_slam', executable='rtabmap', name=\"rtabmap\",\n"
+    "    parameters=[{\n"
+    '    "Mem/IncrementalMemory": LaunchConfiguration("Mem/IncrementalMemory"),\n'
+    "    }])\n"
+)
+
+
+def _icp_block(text):
+    start = text.index("executable='icp_odometry'")
+    return text[start : text.index("Node(", start)]
+
+
+def test_patch_sets_icp_odometry_reset_countdown_explicitly(tmp_path):
+    """#4495: cfg:=rtabmap.ini не доходит до icp_odometry (HIL 06.11: ros2 param get Odom/ResetCountdown = 0).
+
+    Без сброса одометрия после одной неудачной регистрации осталась lost на весь прогон (8309 кадров
+    из 8946) и стек ехал на колёсах. Параметр должен стоять явным параметром узла icp_odometry.
+    """
+    module = load_module()
+    launch_file = tmp_path / "rtabmap.launch.py"
+    launch_file.write_text(_ICP_AND_RTABMAP_NODES, encoding="utf-8")
+    module.LAUNCH_FILE = str(launch_file)
+
+    assert module.patch() is True
+
+    patched = launch_file.read_text(encoding="utf-8")
+    assert '"Odom/ResetCountdown": "1"' in _icp_block(patched)
+    # Patch 1 по-прежнему в узле rtabmap
+    assert '"Grid/Sensor": "0"' in patched[patched.index("executable='rtabmap'") :]
+
+
+def test_icp_patch_is_idempotent(tmp_path):
+    module = load_module()
+    launch_file = tmp_path / "rtabmap.launch.py"
+    launch_file.write_text(_ICP_AND_RTABMAP_NODES, encoding="utf-8")
+    module.LAUNCH_FILE = str(launch_file)
+
+    assert module.patch() is True
+    once = launch_file.read_text(encoding="utf-8")
+    assert module.patch() is True
+    assert launch_file.read_text(encoding="utf-8") == once
+    assert _icp_block(once).count('"Odom/ResetCountdown"') == 1
+
+
+def test_icp_patch_skips_launch_without_icp_node():
+    module = load_module()
+    content = 'Node(parameters=[{\n    "Mem/IncrementalMemory": LaunchConfiguration("Mem/IncrementalMemory"),\n}])\n'
+    patched, changed = module.patch_icp_odometry(content)
+    assert changed is False and patched == content
