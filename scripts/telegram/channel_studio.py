@@ -78,10 +78,16 @@ class StudioBot:
         self._session = session
 
     def _post(self, method: str, params: dict) -> dict:
-        import requests  # локальный импорт: сеть нужна только вживую
-
         url = f"https://api.telegram.org/bot{self.token}/{method}"
-        session = self._session or requests.Session()
+        session = self._session
+        if session is None:
+            # requests импортируем только когда реально идём в сеть: в оффлайн-тестах
+            # модуля нет, и его отсутствие не должно ронять тест.
+            try:
+                import requests  # локальный импорт: сеть нужна только вживую
+            except ImportError:
+                return {"ok": False, "description": "ERR нет модуля requests"}
+            session = requests.Session()
         last = {"ok": False, "description": "ERR no attempt"}
         # 429 — Telegram просит подождать, 409 — конфликт long-poll (например два
         # получателя апдейтов). Оба проходят сами, если подождать и повторить.
