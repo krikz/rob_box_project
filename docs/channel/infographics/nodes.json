@@ -1,0 +1,11 @@
+{
+  "template": "nodes",
+  "title": "Три Raspberry Pi 5 — три узла",
+  "subtitle": "Что работает на каком (контейнеры по docker-compose)",
+  "source": "README.md, раздел «Железо и узлы»; docker/main, docker/vision, docker/sound",
+  "nodes": [
+    {"name": "Main Pi", "role": "движение и карта", "items": ["ros2-control (VESC по CAN)", "lslidar, rtabmap, nav2", "proximity-guard, twist-mux"]},
+    {"name": "Vision Pi", "role": "зрение и лицо", "items": ["oak-d, ceiling-camera", "vision-hailo, vision-face", "led-matrix"]},
+    {"name": "Sound Pi", "role": "голос и музыка", "items": ["voice-assistant", "supercollider", "supervisor, telegram-bot"]}
+  ]
+}

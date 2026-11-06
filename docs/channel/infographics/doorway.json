@@ -1,0 +1,22 @@
+{
+  "template": "numbers",
+  "title": "Минимальный проём — 0.90 м",
+  "subtitle": "Gazebo, стек настоящего робота, footprint_padding 0.03",
+  "items": [
+    {
+      "value": "0.90 м",
+      "label": "минимальная ширина проёма для навигации",
+      "source": "docs/research/2026-11-05-nav2-hil-tuning.md §8"
+    },
+    {
+      "value": "2 из 2",
+      "label": "в обе стороны в чистых кругах; 0.85 м — нет",
+      "source": "docs/research/2026-11-05-nav2-hil-tuning.md §8"
+    },
+    {
+      "value": "4 из 6",
+      "label": "на восток, считая все попытки; запад 2 из 3",
+      "source": "docs/research/2026-11-05-nav2-hil-tuning.md §8"
+    }
+  ]
+}
