@@ -178,3 +178,12 @@ def test_schemas_are_narrow():
     for name in ("person_photo", "name_person"):
         assert schema[name]["required"][0] == "id" and schema[name]["additionalProperties"] is False
     assert schema["name_person"]["required"] == ["id", "name"]
+
+
+def test_photo_caption_uses_name_then_epithet_then_placeholder():
+    """#4505: подпись - имя, нет имени - кличка, нет ничего - «без имени»."""
+    for data, caption in (({"name": "Денчик", "epithet": "рыжий"}, "fff371fe - Денчик"),
+                          ({"name": None, "epithet": "рыжий"}, "fff371fe - рыжий"),
+                          ({"name": None, "epithet": None}, "fff371fe - без имени")):
+        tool, _ = make(people.PersonPhotoTool, (True, "", {"id": "fff371fe", "size": 4, **data}))
+        assert tool.execute(id="fff371fe").data["caption"] == caption

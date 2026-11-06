@@ -196,7 +196,7 @@ class PersonPhotoTool(_PeopleCalls, MCPTool):
         ok, reason, data = self._call(OP_PHOTO, "", id, "")
         if not ok:
             return _rejected(reason or OWNER_UNAVAILABLE)
-        who = data.get("name") or "без имени"
+        who = _who(data)
         return MCPToolResult(success=True, message=f"Снимок {data['id']} ({who}) отправляю в чат.",
                              data={"status": "done", "id": data["id"], "photo_id": data["id"],
                                    "caption": f"{data['id']} - {who}"})
