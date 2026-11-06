@@ -1,6 +1,7 @@
 {
   "version": 1,
   "publishers_without_local_subscriber": {
+    "/diff_drive_controller/cmd_vel_unstamped": "Подписчик — diff_drive_controller (ros2_controllers, внешний C++), вход моторов; на роботе в него пишет twist_mux (docker/main/scripts/twist_mux/start_twist_mux.sh). Публикует ещё замер привода сима src/rob_box_sim/rob_box_sim/turn_calibration.py (#4495): только в контейнере gazebo, где контроллер — Gazebo.",
     "/cmd_vel_voice": "Потребитель — twist_mux (внешний скомпилированный ROS2-узел, не Python/не в src/), арбитрирует источники скорости. Конфиг: docker/main/config/twist_mux/twist_mux.yaml.",
     "/cmd_vel_web": "Потребитель — twist_mux, см. /cmd_vel_voice. Конфиг: docker/main/config/twist_mux/twist_mux.yaml (topic: cmd_vel_web).",
     "cmd_vel_emergency": "Потребитель — twist_mux, см. /cmd_vel_voice. Конфиг: docker/main/config/twist_mux/twist_mux.yaml (topic: cmd_vel_emergency).",
@@ -31,6 +32,7 @@
     "/scan": "Публикует lidar-драйвер (lslidar, внешний пакет, не в src/). Конфиг: docker/main/config/lslidar/lsx10_custom.yaml.",
     "/cmd_vel": "Публикуют Nav2 controller_server и behavior_server (внешний C++-стек, не в src/), конфиг docker/main/config/nav2/nav2_params.yaml. Подписчики: twist_mux (внешний) и стенд сима src/rob_box_sim/rob_box_sim/nav_bench.py (метрика колебаний, шаг 4 docs/research/2026-11-04-gazebo-sim-navigation.md).",
     "/sim/ground_truth/odom": "Только сим: публикует ros_gz_bridge (внешний C++) из плагина Gazebo OdometryPublisher, мост src/rob_box_sim/config/bridge.yaml. Подписчик — стенд сима src/rob_box_sim/rob_box_sim/nav_bench.py (истинная поза для метрик).",
+    "/diff_drive_controller/odom": "Только сим и робот: публикует diff_drive_controller (ros2_controllers, внешний C++; на роботе — ros2-control, в симе — gz_ros2_control), конфиг docker/main/config/controllers/controller_manager.yaml. Подписчик — замер привода сима src/rob_box_sim/rob_box_sim/turn_calibration.py (#4495).",
     "/cmd_vel_nav": "Публикует Nav2 controller_server (внешний C++), когда NAV2_SMOOTH_CMD_VEL=true переназначает его cmd_vel → cmd_vel_nav (docker/main/scripts/nav2/start_nav2_direct.sh; включает профиль docker/sim, на роботе выключено). Подписчики: velocity_smoother (внешний) и стенд сима src/rob_box_sim/rob_box_sim/nav_bench.py (колебания до smoother-а, шаг 6).",
     "/camera/camera/color/image_raw": "ADR-0104 (issue #2531): публикует OAK-D камера в реальном launch (oakd_with_apriltag.launch.py, namespace='camera', i_rs_compat:true → rgb→color). Подписка в новом шве «Взгляд» (src/rob_box_perception/rob_box_perception/gaze.py:OakDSource). Заменяет старый /oak/rgb/image_raw/compressed, который не публикуется в текущей конфигурации (i_publish_compressed:false).",
     "/camera/camera/color/image_raw/compressed": "Публикует камера-контейнер oak-d (внешний драйвер, не Python/не в src/). Используется quest_node.py:1918 и telegram_node.py:101 (rear-camera feed в шлем и Telegram). См. docker/vision/scripts/monitor_camera_startup.sh, realtime_monitor.sh.",
