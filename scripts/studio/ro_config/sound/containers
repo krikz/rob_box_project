@@ -6,8 +6,7 @@ zenoh-router-sound
 supercollider
 sensor-bridge
 avatar-arbiter
-# В логах ниже речь людей мастерской (STT), диалог и переписка Telegram.
-# Включать только по отдельному решению Шифу:
-# voice-assistant
-# avatar-supervisor
-# telegram-bot
+# Решение Шифу 06.11: открыть все логи (в логах — речь людей мастерской, диалог, переписка Telegram).
+voice-assistant
+avatar-supervisor
+telegram-bot
