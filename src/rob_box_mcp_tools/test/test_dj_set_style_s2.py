@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from rob_box_mcp_tools.engine.tools_v2 import STYLE_CHOICES, set_style
+from rob_box_mcp_tools.engine.engine_tools import STYLE_CHOICES, set_style
 
 
 def test_style_choices_name_the_new_styles():

@@ -3,10 +3,8 @@
 Каждый файл в этой директории — **domain context** для определённого технического домена.  
 Используй соответствующий файл во время фаз **Design** и **Implement** как дополнительный контекст.
 
-> **Процесс разработки:** `.agents/skills/context-engineering/SKILL.md`  
-> **Задачи:** GitHub Issues (`tasks.json`, упоминаемый ниже в отдельных файлах
-> этой директории, устарел и больше не существует в репо — актуальный backlog
-> это `gh issue list/view/create`, см. `.github/copilot-instructions.md`)
+> **Процесс разработки:** `docs/process/claude-coordinator-robot-flow.md` (ADR-0162)  
+> **Задачи:** GitHub Issues (`gh issue list/view/create`). `tasks.json` в репо нет.
 
 ---
 
@@ -31,27 +29,19 @@
 | [devops-agent.md](devops-agent.md) | 🚀 DevOps Engineer | Docker, CI/CD, GitHub Actions, деплой, мониторинг |
 | [docs-agent.md](docs-agent.md) | 📚 Documentation Engineer | Обновление docs/, CHANGELOG.md, PRD.md после изменений |
 | [structure-agent.md](structure-agent.md) | 🏗️ Project Structure Guardian | Аудит структуры, рефакторинг, новые пакеты/сервисы |
-| [git-agent.md](git-agent.md) | 📝 Git Commit Engineer | Коммиты, ветки, progress.md (PR/merge — только через agent-flow, см. AGENTS.md) |
+| [git-agent.md](git-agent.md) | 📝 Git Commit Engineer | Коммиты, ветки, progress.md (PR/merge — только через координатора, см. AGENTS.md) |
 | [diagnostics-agent.md](diagnostics-agent.md) | 🔍 Robot Diagnostics Engineer | Проверка логов на роботе, диагностика после деплоя, тесты в контейнерах |
 
 ---
 
-## Workflow (Context Engineering)
+## Workflow
 
 ```
-GitHub Issue → /research-codebase {issue-N}
-    │  (используй domain context файл своего стека)
+GitHub Issue → координатор пишет бриф воркеру (domain context файла своего стека — в бриф)
     ↓
-/design-feature <name> <research.md>     → docs/design/
-    │  (передай domain context как доп. контекст)
+воркер (worktree от develop): код + тесты + гарды → PR в develop
     ↓
-[Ревью дизайна] → /plan-feature <design-dir>  → docs/plan/
-    ↓
-[Ревью плана] → /implement-feature <plan-dir> → code + commits
-    ↓
-git-agent: коммит + PR
-    ↓
-devops-agent: CI/CD + деплой через GitHub Actions
+координатор: мёрж, L: Build All Services, L: Deploy and Verify
     ↓
 diagnostics-agent: health check на роботах
     ↓
@@ -62,9 +52,7 @@ docs-agent: обновить docs/ если изменилась архитек�
 
 ## Как использовать domain context файлы
 
-**В Research фазе:** прочитай соответствующий файл — актуальный стек, структура файлов, ROS 2 топики.  
-**В Design фазе:** передай агенту вместе с research документом при вызове `/design-feature`.  
-**В Implement фазе:** Backend Developer агент использует domain стандарты как дополнительный контекст.
+**Постановка задачи воркеру:** вложи файл своего домена в бриф как дополнительный контекст.
 
 **Секция `## When to Apply`** в каждом файле — триггеры для автоактивации  
 (GitHub Copilot, Claude Code активируют нужный контекст по типу задачи автоматически).

@@ -21,6 +21,9 @@ from rob_box_dialog.turn import Answer, TurnEngine
 
 OK, IDLE = phrases.text("music.stop_ok"), phrases.text("music.stop_idle")
 
+#: Варианты фразы Tier-1 стопа музыки (решение Шифу 05.11: вариант выбирает код, без повтора подряд).
+SAID = frozenset(phrases.catalog()[kn.MUSIC_STOP_SAID])
+
 
 class Ports:
     """Транспорт хода: музыка играет, пока её не погасит первый стоп-тул; стоп на тишине отвечает ``was_playing=False``
@@ -79,17 +82,19 @@ def _result(tool, **data):
 
 
 def test_n608_dj_off_after_a_clear_stop_in_the_same_turn_says_the_music_is_off():
-    """«Хватит, диджей выключай»: Tier-1 стоп гасит музыку, модель зовёт ``dj_set stop`` - «Выключил музыку.»."""
+    """«Хватит, диджей …»: Tier-1 стоп гасит музыку, модель зовёт ``dj_set stop`` - «Выключил музыку.». Остаток
+    «диджей выключай» (сам n608) модели уже не уходит - тот же стоп, М11 ``test_music_stop_honest_m11``; здесь остаток,
+    что ей уходит."""
     ports = Ports([Answer(Command(actions=(ToolCall("dj_set", {"action": "stop"}),)), "deepseek")])
-    _run(ports, "Робот, хватит диджей выключай")
+    _run(ports, "Робот, хватит диджей что дальше")
     assert ports.executed == ["stop_music", "dj_set"], "Tier-1 стоп первым, затем вызов модели"
-    assert ports.said == [OK] and IDLE not in ports.said
+    assert len(ports.said) == 1 and ports.said[0] in SAID and IDLE not in ports.said
 
 
 def test_stop_music_after_the_clear_stop_in_the_same_turn_is_not_idle_either():
     ports = Ports([Answer(Command(actions=(ToolCall("stop_music", {"boundary": "bar"}),)), "deepseek")])
-    _run(ports, "Робот, хватит выключай")
-    assert ports.said == [OK]
+    _run(ports, "Робот, хватит, что дальше")
+    assert len(ports.said) == 1 and ports.said[0] in SAID
 
 
 def test_the_first_stop_of_the_turn_that_finds_silence_still_says_nothing_was_playing():

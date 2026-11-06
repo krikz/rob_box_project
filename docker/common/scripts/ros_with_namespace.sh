@@ -71,6 +71,20 @@ sed -i "s|// namespace: \"my/namespace\"|namespace: \"robots/$ROBOT_ID\"|g" "$GE
 # Адрес локального роутера
 sed -i "s|\${ZENOH_LISTEN_IP}|$ZENOH_LISTEN_IP|g" "$GENERATED_CONFIG"
 
+# Пул приёма zenoh на каждый линк (#4307): buffer_size/64 КБ буферов, которые
+# сессия держит и не возвращает. 16 МБ x 8 линков-соседей на хосте дали
+# ~130 МБ анонимной памяти на любую ноду; сервисы с мелким трафиком задают
+# 65535 (дефолт zenoh) в compose. Ниже 65535 zenoh сам округляет до одного буфера.
+ZENOH_RX_BUFFER_SIZE="${ZENOH_RX_BUFFER_SIZE:-16777216}"
+case "$ZENOH_RX_BUFFER_SIZE" in
+    "" | *[!0-9]*)
+        echo "❌ ОШИБКА: ZENOH_RX_BUFFER_SIZE='$ZENOH_RX_BUFFER_SIZE' — нужно целое число байт"
+        exit 1
+        ;;
+esac
+echo "📥 Zenoh rx buffer_size: $ZENOH_RX_BUFFER_SIZE"
+sed -i "s|\${ZENOH_RX_BUFFER_SIZE}|$ZENOH_RX_BUFFER_SIZE|g" "$GENERATED_CONFIG"
+
 if grep -q '\${' "$GENERATED_CONFIG"; then
     echo "❌ ОШИБКА: в $GENERATED_CONFIG остался неподставленный плейсхолдер:"
     grep -n '\${' "$GENERATED_CONFIG"

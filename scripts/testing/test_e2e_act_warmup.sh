@@ -4,8 +4,8 @@
 # Запуск: bash scripts/testing/test_e2e_act_warmup.sh   Exit: 0 = PASS, N = число упавших.
 set -u
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-LIB="$SCRIPT_DIR/../../.github/workflows/scripts/e2e_voice_lib.sh"
-HARNESS="$SCRIPT_DIR/../../.github/workflows/scripts/e2e_voice_test.sh"
+LIB="$SCRIPT_DIR/../../scripts/ci/e2e/e2e_voice_lib.sh"
+HARNESS="$SCRIPT_DIR/../../scripts/ci/e2e/e2e_voice_test.sh"
 [ -f "$LIB" ] || { echo "нет $LIB"; exit 1; }
 # shellcheck disable=SC1090
 source "$LIB" 2>/dev/null
@@ -42,10 +42,10 @@ fi
 CALLS=""; E2E_ACT_WARMUP_SEC=abc warm_act_audio_path "$tmp" >/dev/null
 case "$CALLS" in *sleep:15*) ok "мусор в E2E_ACT_WARMUP_SEC -> 15" ;; *) bad "garbage: [$CALLS]" ;; esac
 
-# 5. харнесс реально вызывает прогрев после остановки музыки, только для v2
+# 5. харнесс реально вызывает прогрев после остановки музыки
 if grep -A3 'ensure_music_stopped_for_act "\$_music_inherits"' "$HARNESS" \
-    | grep -q 'E2E_DIALOG_ENGINE:-v1}" = "v2" \] && warm_act_audio_path'; then
-    ok "харнесс зовёт прогрев после музыки для v2"
+    | grep -q 'warm_act_audio_path'; then
+    ok "харнесс зовёт прогрев после музыки"
 else
     bad "вызов прогрева в харнессе не найден"
 fi

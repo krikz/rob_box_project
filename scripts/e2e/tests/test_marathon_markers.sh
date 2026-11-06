@@ -22,4 +22,15 @@ else
     echo "FAIL настоящий NO_REACTION не найден"; fail=1
 fi
 rm -f "$T"
+
+# #4077 П4: итоги шагов акта для поля requires следующих актов -- последняя строка на метку, эхо исходника не считается.
+T="$(mktemp)"
+printf '%s\n' \
+    '2026-11-03T10:00:00.1Z E2E_STEP n203 FAIL pattern_miss' \
+    '2026-11-03T10:00:01.1Z >>> E2E_STEP n203 OK recovered_no_wake' \
+    '2026-11-03T10:00:02.0Z E2E_STEP n204 SKIP requires:n203' \
+    '2026-11-03T10:00:03.0Z echo "E2E_STEP n999 OK"' > "$T"
+got="$(marathon_step_statuses "$T")"
+if [ "$got" = "n203=OK,n204=SKIP" ]; then echo "PASS итоги шагов акта: $got"; else echo "FAIL итоги шагов акта: '$got'"; fail=1; fi
+rm -f "$T"
 exit "$fail"

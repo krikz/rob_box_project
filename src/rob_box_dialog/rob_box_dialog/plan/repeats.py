@@ -1,4 +1,4 @@
-"""Правка идущего выступления не повторяет уже сказанное (#4207, ADR-0148: решает код).
+"""Правка идущего выступления не повторяет уже сказанное (ADR-0148: решает код).
 
 Марафоны 4-6, акт 8 (n807): «посчитай от одного до двадцати», посреди счёта «и после каждого числа добавляй слово шаг».
 Модель присылала счёт С НАЧАЛА («Один шаг, два шага…»), а код ставил его на места ещё не сказанных сегментов - числа
@@ -33,7 +33,19 @@ _NUMERAL_FORMS: Dict[int, Tuple[str, ...]] = {
     90: ("девяносто",), 100: ("сто",),
 }
 NUMERAL_WORDS: Dict[str, int] = {form: value for value, forms in _NUMERAL_FORMS.items() for form in forms}
+#: Числительное словом для счёта кодом (``counting``): первая форма именительного.
+NUMERAL_SAY: Dict[int, str] = {value: forms[0] for value, forms in _NUMERAL_FORMS.items()}
+#: Родительный падеж («до сорока», «от одного», #4314); ё → е, как в :func:`words`.
+NUMERAL_GENITIVE: Dict[str, int] = {
+    "одного": 1, "одной": 1, "двух": 2, "трех": 3, "четырех": 4, "пяти": 5, "шести": 6, "семи": 7, "восьми": 8,
+    "девяти": 9, "десяти": 10, "одиннадцати": 11, "двенадцати": 12, "тринадцати": 13, "четырнадцати": 14,
+    "пятнадцати": 15, "шестнадцати": 16, "семнадцати": 17, "восемнадцати": 18, "девятнадцати": 19, "двадцати": 20,
+    "тридцати": 30, "сорока": 40, "пятидесяти": 50, "шестидесяти": 60, "семидесяти": 70, "восьмидесяти": 80,
+    "девяноста": 90, "ста": 100,
+}
 SENTENCE_END = ".!?…"
+#: Слов, кроме чисел, в предложении счёта, которое всё ещё считается единицей счёта (когда счёт уже шёл): «и … шаг — пришли».
+COUNT_FILLER_WORDS = 3
 
 
 def words(text: str) -> Tuple[str, ...]:
@@ -88,6 +100,14 @@ def _sentences(text: str) -> List[str]:
     return out
 
 
+def _count_unit(sentence: str, nums: Sequence[int], counting: bool) -> bool:
+    """Предложение - единица счёта: числа - не меньше половины слов («Девятнадцать — шаг.»); счёт уже шёл в снятых
+    ведущих сегментах (``counting``) - допустимы ещё до ``COUNT_FILLER_WORDS`` слов-приправ («и двадцать шаг — пришли.»
+    после звучащего «И двадцать.»: М8 29.10, n807). Длиннее - рассказ с числом, он остаётся."""
+    extra = len(words(sentence)) - len(nums)
+    return len(nums) * 2 >= len(words(sentence)) or (counting and extra <= COUNT_FILLER_WORDS)
+
+
 def _unsaid_part(text: str, said_nums: FrozenSet[int], counting: bool) -> str:
     """Счёт, где есть и новые числа: ведущие предложения из уже названных чисел отрезаются («Двадцать — шаг. Все
     дошли.» после «двадцать» → «Все дошли.»); концовка счёт не отменяет. Счёт уже шёл в снятых ведущих сегментах
@@ -99,7 +119,7 @@ def _unsaid_part(text: str, said_nums: FrozenSet[int], counting: bool) -> str:
     skip = 0
     for sentence in sentences:
         nums = numerals(sentence)
-        if not (nums and all(n in said_nums for n in nums) and len(nums) * 2 >= len(words(sentence))):
+        if not (nums and all(n in said_nums for n in nums) and _count_unit(sentence, nums, counting)):
             break
         skip += 1
     return " ".join(sentences[skip:]) if skip else text
@@ -121,4 +141,16 @@ def drop_said(rows: Sequence[Tuple[str, str, str]], said: Sequence[str]) -> List
     return []
 
 
-__all__ = ["NUMERAL_WORDS", "drop_said", "is_counting", "is_repeat", "numerals", "said_numbers", "words"]
+def same_performance(new: Sequence[str], old: Sequence[str]) -> bool:
+    """Присланные сегменты ``new`` - то же выступление, что ``old``, целиком (#4320: та же просьба посреди идущего):
+    счёт - те же числа по порядку (цифрами или словами, нарезка на сегменты любая), остальное - те же слова (без знаков
+    и регистра)."""
+    if not new or not old:
+        return False
+    if all(is_counting(text) for text in (*new, *old)):
+        return numerals(" ".join(new)) == numerals(" ".join(old))
+    return words(" ".join(new)) == words(" ".join(old))
+
+
+__all__ = ["NUMERAL_GENITIVE", "NUMERAL_SAY", "NUMERAL_WORDS", "drop_said", "is_counting", "is_repeat", "numerals",
+           "said_numbers", "same_performance", "words"]

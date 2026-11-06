@@ -188,7 +188,7 @@ class WaypointAdapter:
         return self._store.list_waypoints()
 
     def get_waypoint(self, name: str) -> Optional[Dict[str, Any]]:
-        """MCP shape — ``{"name", "x", "y", "theta"}`` or ``None``."""
+        """MCP shape — ``{"name", "x", "y", "theta", "frame_id"}`` or ``None``."""
         return self._store.get_waypoint(name)
 
     def save_waypoint(
@@ -197,9 +197,13 @@ class WaypointAdapter:
         x: float,
         y: float,
         theta: float = 0.0,
+        frame_id: Optional[str] = None,
     ) -> bool:
-        """Write through to MCP schema (active map). Returns ``True``."""
-        return self._store.save_waypoint(name, x, y, theta)
+        """Write through to MCP schema (active map). Returns ``True``.
+
+        ``frame_id`` — кадр TF координат (#4390), ``None`` — неизвестен.
+        """
+        return self._store.save_waypoint(name, x, y, theta, frame_id=frame_id)
 
     def delete_waypoint(self, name: str) -> bool:
         """Delete on the active map. ``True`` if a row was deleted."""
@@ -217,9 +221,9 @@ class WaypointAdapter:
         """Active ``map_id`` UUID or ``None``. Mirrors ``WaypointStore``."""
         return self._store.get_active_map_id()
 
-    def set_active_map_by_name(self, name: str) -> bool:
-        """Switch active map by name (case-insensitive). Pass-through."""
-        return self._store.set_active_map_by_name(name)
+    def delete_inactive_maps_by_name(self, name: str) -> int:
+        """Delete non-active maps named ``name`` (#4392). Pass-through."""
+        return self._store.delete_inactive_maps_by_name(name)
 
     def rename_map(self, map_id: str, name: str) -> bool:
         """Rename a map by ``map_id``. Pass-through."""
@@ -326,9 +330,8 @@ class WaypointAdapter:
         # Delegate to the underlying store. WaypointStore always writes
         # to the *active* map, so we set active = target_map_id first
         # when it differs. ``WaypointStore`` does not expose a public
-        # ``set_active_map(map_id)`` yet (only ``set_active_map_by_name``),
-        # so we use the name-based setter when the target isn't already
-        # active.
+        # ``set_active_map(map_id)``, so ``_activate_map`` toggles the
+        # flag when the target isn't already active.
         current_active = self._store.get_active_map_id()
         if current_active != target_map_id:
             if not self._activate_map(target_map_id):
@@ -456,7 +459,7 @@ class WaypointAdapter:
 
     def _activate_map(self, map_id: str) -> bool:
         """Switch the active map to ``map_id`` via the only public setter that
-        works by id (``set_active_map_by_name`` only takes a name).
+        works by id.
 
         WaypointStore currently has no ``set_active_map(map_id)``,
         so we toggle via the raw connection under the store's lock.

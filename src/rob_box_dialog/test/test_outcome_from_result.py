@@ -251,7 +251,7 @@ def _stop(was_playing):
 
 
 def test_stop_music_with_nothing_playing_says_nothing_is_playing():
-    """Живой прогон 26.10 20:57:50: ``[music v2] stop track_id=None`` → «Выключил музыку.» - ложь."""
+    """Живой прогон 26.10 20:57:50: ``[music] stop track_id=None`` → «Выключил музыку.» - ложь."""
     assert _stop(False) == [phrases.text("music.stop_idle")]
     assert phrases.text("music.stop_idle") != phrases.text("music.stop_ok")
 

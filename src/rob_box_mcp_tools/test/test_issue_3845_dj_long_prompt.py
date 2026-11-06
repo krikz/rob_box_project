@@ -12,7 +12,7 @@ import pytest
 
 from rob_box_mcp_tools.engine.brief import HEAD_MAX_CHARS, split_brief, spec_bpm, unsupported, unsupported_note
 from rob_box_mcp_tools.engine.theme_grounding import heard_theme
-from rob_box_mcp_tools.engine.tools_v2 import brief_args
+from rob_box_mcp_tools.engine.engine_tools import brief_args
 
 from .test_engine_request_music import _tools
 from .test_engine_session import _rig

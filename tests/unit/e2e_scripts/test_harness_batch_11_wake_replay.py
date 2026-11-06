@@ -128,13 +128,16 @@ class TestGeneratedScenario:
             for label, s in ALL_STEPS.items()
             if s["voice"] in gen.WAKE_FRAGILE_VOICES and gen.has_wake_start(s["text"])
         }
-        assert asking == fragile
+        assert asking == fragile | {"n101_wake_cold_start"}  # #4481: холодный старт, один повтор фразы
 
     def test_act_that_forbids_the_wake_recovery_has_no_fragile_wake_step(self):
         """Акт 1 проверяет САМ вейк (recover=[silenced]): шаг с recover на уровне шага перекрыл бы запрет акта."""
         for act in gen.ACTS:
             if act["recover"] is not None and "no_wake" not in act["recover"]:
-                assert not [s["label"] for s in act["steps"] if "recover" in s], act["n"]
+                # #4481: n101 -- повтор фразы (wake_replay) без no_wake, запрет акта на «Робот!» цел
+                own = [s for s in act["steps"] if "recover" in s]
+                assert all("no_wake" not in s["recover"] for s in own), act["n"]
+                assert {s["label"] for s in own} <= {"n101_wake_cold_start"}, act["n"]
 
     def test_json_on_disk_carries_the_field(self):
         act2 = json.loads((NIGHT / "night_marathon_act2_acquaintance_v1.json").read_text(encoding="utf-8"))
@@ -204,7 +207,7 @@ class TestWakeReplayKind:
 
 # -- bash: run_step с повтором фразы на промах вейка ----------------------------------------------------------
 
-KINDS = "E2E_STEP_RECOVER_KINDS=no_wake,silenced,wake_replay; E2E_STEP_RECOVERED=''; E2E_STEP_WAKE_REPLAYED=''"
+KINDS = "E2E_STEP_RECOVER_KINDS=no_wake,silenced,wake_replay; E2E_STEP_RECOVERED=''; E2E_STEP_WAKE_REPLAYED=''; E2E_STEP_WAKE_ATTEMPT=''"
 STEP_PHRASE_HEARD = heard("робот мы тут немного пошумим робот", "{NOW-11}")
 
 
@@ -223,20 +226,26 @@ class TestRunStepWakeReplay:
         assert out.count("E2E_RECOVER no_wake a ") == 1 and out.count("E2E_RECOVER wake_replay a ") == 1, out
         assert "RECOVERED=wake_replay" in out and "PLAY_COUNT=3" in out
         assert _names(played) == ["cmd_a_eq.wav", "rec_no_wake_a_eq.wav", "cmd_a_eq.wav"]
-        assert "вейк потерян и «Робот!» не помог -- фраза шага ещё раз" in out
+        assert "вейк потерян -- фраза шага ещё раз (wake_attempt=2/3)" in out
 
-    def test_replay_that_misses_the_wake_again_is_an_honest_fail_without_a_third_try(self, tmp_path):
+    def test_wake_missed_everywhere_is_an_honest_fail_after_three_attempts(self, tmp_path):
+        """06.11: «Робот!» не помог, фраза шага -- 2-я и 3-я попытки, все без вейка: FAIL с wake_attempt=3/3, без 4-й."""
+        miss = heard("ребят мы пошумим", "{NOW-11}") + no_wake("{NOW-10}")
+        out, err, _, played = _run_step(tmp_path, N301, [heard("робот", "{NOW-12}"), miss, miss], STEP, KINDS)
+        assert "RC=1" in out and "PLAY_COUNT=4" in out, (out, err)
+        assert out.count("E2E_RECOVER wake_replay a ") == 2
+        assert "E2E_STEP a FAIL turn_no_wake after_recover_wake_replay wake_attempt=3/3" in out
+        assert "повтора фразы нет (attempts_exhausted, wake_attempt=3/3)" in out
+        assert _names(played) == ["cmd_a_eq.wav", "rec_no_wake_a_eq.wav", "cmd_a_eq.wav", "cmd_a_eq.wav"]
+
+    def test_third_attempt_passes(self, tmp_path):
+        miss = heard("ребят мы пошумим", "{NOW-11}") + no_wake("{NOW-10}")
         out, err, _, played = _run_step(
-            tmp_path,
-            N301,
-            [heard("робот", "{NOW-12}"), heard("ребят мы пошумим", "{NOW-11}") + no_wake("{NOW-10}")],
-            STEP,
-            KINDS,
+            tmp_path, N301, [heard("робот", "{NOW-12}"), miss, STEP_PHRASE_HEARD + REPLY], STEP, KINDS
         )
-        assert "RC=1" in out and "PLAY_COUNT=3" in out, (out, err)
-        assert out.count("E2E_RECOVER wake_replay a ") == 1
-        assert "E2E_STEP a FAIL turn_no_wake after_recover_wake_replay" in out
-        assert _names(played) == ["cmd_a_eq.wav", "rec_no_wake_a_eq.wav", "cmd_a_eq.wav"]
+        assert "RC=0" in out and "PLAY_COUNT=4" in out, (out, err)
+        assert "WAKE_ATTEMPT=3" in out and "RECOVERED=wake_replay" in out
+        assert _names(played) == ["cmd_a_eq.wav", "rec_no_wake_a_eq.wav", "cmd_a_eq.wav", "cmd_a_eq.wav"]
 
     def test_step_that_asks_only_for_the_replay_skips_the_bare_wake(self, tmp_path):
         out, err, _, played = _run_step(
@@ -244,7 +253,7 @@ class TestRunStepWakeReplay:
             N301,
             [STEP_PHRASE_HEARD + REPLY],
             STEP,
-            "E2E_STEP_RECOVER_KINDS=wake_replay; E2E_STEP_RECOVERED=''; E2E_STEP_WAKE_REPLAYED=''",
+            "E2E_STEP_RECOVER_KINDS=wake_replay; E2E_STEP_RECOVERED=''; E2E_STEP_WAKE_REPLAYED=''; E2E_STEP_WAKE_ATTEMPT=''",
         )
         assert "RC=0" in out and "PLAY_COUNT=2" in out, (out, err)
         assert "E2E_RECOVER no_wake" not in out and out.count("E2E_RECOVER wake_replay a ") == 1
@@ -257,17 +266,19 @@ class TestRunStepWakeReplay:
         assert "RECOVERED=no_wake" in out and "E2E_RECOVER wake_replay" not in out
         assert _names(played) == ["cmd_a_eq.wav", "rec_no_wake_a_eq.wav"]
 
-    def test_step_without_the_kind_is_never_replayed(self, tmp_path):
-        out, err, _, _ = _run_step(
+    def test_step_that_forbids_recover_is_still_replayed_on_no_wake(self, tmp_path):
+        """06.11: глухота STT -- не ответ робота; ``recover: silenced`` (акт 1) повтор фразы не запрещает."""
+        out, err, _, played = _run_step(
             tmp_path,
             N301,
-            [heard("робот", "{NOW-12}")],
+            [STEP_PHRASE_HEARD + REPLY],
             STEP,
-            "E2E_STEP_RECOVER_KINDS=no_wake,silenced; E2E_STEP_RECOVERED=''",
+            "E2E_STEP_RECOVER_KINDS=silenced; E2E_STEP_RECOVERED=''; E2E_STEP_WAKE_REPLAYED=''; E2E_STEP_WAKE_ATTEMPT=''",
         )
-        assert "RC=1" in out and "PLAY_COUNT=2" in out, (out, err)
-        assert "E2E_RECOVER wake_replay" not in out
-        assert "E2E_STEP a FAIL turn_no_wake after_recover_no_wake" in out
+        assert "RC=0" in out and "PLAY_COUNT=2" in out, (out, err)
+        assert "E2E_RECOVER no_wake" not in out and out.count("E2E_RECOVER wake_replay a ") == 1
+        assert "WAKE_ATTEMPT=2" in out
+        assert _names(played) == ["cmd_a_eq.wav", "cmd_a_eq.wav"]
 
     def test_wrong_answer_is_not_a_wake_miss_and_is_not_replayed(self, tmp_path):
         """Ход был (робот услышал вейк и ответил, пусть неверно) -- судья отдаёт done, повтор фразы не заказывается:
@@ -289,16 +300,77 @@ class TestRunStepWakeReplay:
         assert "RC=1" in out and "PLAY_COUNT=1" in out, (out, err)
         assert "E2E_RECOVER wake_replay" not in out
 
-    def test_only_one_replay_per_step_across_retry_acceptance(self, tmp_path):
-        """Повтор шага (retry_acceptance) зовёт run_step с той же меткой: фразу на промах вейка повторяли -- второго нет."""
+    def test_attempt_budget_is_shared_across_retry_acceptance(self, tmp_path):
+        """Повтор шага (retry_acceptance) зовёт run_step с той же меткой: попытки вейка общие, 3 на шаг, не 3 на вызов."""
         chunks = [
             heard("робот", "{NOW-12}") + no_wake("{NOW-11}"),  # PLAY 2: «Робот!» не помог
-            STEP_PHRASE_HEARD + REPLY,  # PLAY 3: повтор фразы шага -- ход есть
-            N301,  # PLAY 4: вторая попытка шага снова без вейка
+            STEP_PHRASE_HEARD + REPLY,  # PLAY 3: попытка 2 -- ход есть
+            N301,  # PLAY 4: вторая проверка шага снова без вейка (попытка 3)
+            N301,  # PLAY 5 не должен случиться
         ]
         body = STEP.replace('echo "RC=$?"', 'echo "RC1=$?"') + "\n" + STEP.replace('echo "RC=$?"', 'echo "RC2=$?"')
         out, err, _, played = _run_step(tmp_path, N301, chunks, body, KINDS, replace=True)
-        assert "RC1=0" in out and "RC2=1" in out and "PLAY_COUNT=4" in out, (out, err)
-        assert out.count("E2E_RECOVER wake_replay ") == 1, out
-        assert "фраза шага уже повторялась (wake_replay), второго повтора нет" in out
+        assert "RC1=0" in out and "RC2=1" in out and "PLAY_COUNT=5" in out, (out, err)
+        assert out.count("E2E_RECOVER wake_replay ") == 2, out
+        assert "wake_attempt=3/3" in out
         assert _names(played)[-1] == "cmd_a_eq.wav"
+
+
+# -- e2e_events.wake_retry: решает код (ADR-0148), исключения -----------------------------------------------
+
+
+class TestWakeRetryDecision:
+    PHRASE = "Робот, который час?"
+
+    def test_the_cap_is_one_constant_of_three(self):
+        assert eev.WAKE_MAX_ATTEMPTS == 3
+
+    @pytest.mark.parametrize("attempt", [1, 2])
+    def test_no_wake_is_replayed_until_the_cap(self, attempt):
+        d = eev.wake_retry("cycle", "no_wake", attempt, self.PHRASE)
+        assert d == {"retry": 1, "reason": "retry", "attempt": attempt, "max": 3}
+
+    def test_third_attempt_is_the_last(self):
+        d = eev.wake_retry("cycle", "no_wake", 3, self.PHRASE)
+        assert d["retry"] == 0 and d["reason"] == "attempts_exhausted"
+
+    @pytest.mark.parametrize("verdict", ["done", "silenced", "failed", "perform_ceiling", "ok"])
+    def test_a_turn_that_happened_is_never_replayed(self, verdict):
+        d = eev.wake_retry("cycle", verdict, 1, self.PHRASE)
+        assert d["retry"] == 0 and d["reason"] == "turn_happened"
+
+    def test_step_that_tests_the_wake_itself_is_exempt(self):
+        """expect: backlog -- «фраза без вейка уходит в бэклог»: повтор вейка сломал бы проверку."""
+        d = eev.wake_retry("backlog", "no_wake", 1, self.PHRASE)
+        assert d["retry"] == 0 and d["reason"] == "step_tests_wake"
+        assert eev.WAKE_RETRY_EXEMPT_EXPECT == ("backlog",)
+
+    def test_barge_in_step_is_exempt(self):
+        assert eev.wake_retry("cycle", "no_wake", 1, self.PHRASE, barge_in=True)["reason"] == "barge_in"
+
+    def test_phrase_without_wake_is_not_replayed(self):
+        assert eev.wake_retry("cycle", "no_wake", 1, "Спать пора")["reason"] == "no_wake_word_in_phrase"
+
+    def test_wake_word_must_be_a_whole_word(self):
+        assert eev.has_wake("робби, привет") and eev.has_wake("Привет, Роббокс!")
+        assert not eev.has_wake("Роботизация цехов")
+
+    def test_every_backlog_step_of_the_marathon_is_exempt_and_every_wake_cycle_step_is_not(self):
+        for path in sorted(NIGHT.glob("night_marathon_act*_v1.json")):
+            scenario = json.loads(path.read_text(encoding="utf-8"))
+            for step in scenario.get("steps", []):
+                d = eev.wake_retry(step.get("expect", "cycle"), "no_wake", 1, step.get("text", ""),
+                                   bool(step.get("barge_in")))
+                if step.get("expect") == "backlog":
+                    assert d["retry"] == 0, (path.name, step["label"])
+                elif eev.has_wake(step.get("text", "")) and not step.get("barge_in"):
+                    assert d["retry"] == 1, (path.name, step["label"])
+
+    def test_cli_answers_like_the_function(self):
+        out = subprocess.run(
+            [sys.executable, str(EVENTS), "wake-retry", "--expect", "cycle", "--verdict", "no_wake",
+             "--attempt", "2", "--text", self.PHRASE, "--barge-in", "0"],
+            capture_output=True, text=True, encoding="utf-8",
+        )
+        assert out.returncode == 0, out.stderr
+        assert out.stdout.split() == ["retry=1", "reason=retry", "attempt=2", "max=3"]

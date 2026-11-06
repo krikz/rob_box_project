@@ -20,7 +20,7 @@ import pytest
 from tests.unit.e2e_scripts.test_issue_3857_event_waits import (accept, llm, speech, turn_done, _l)
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
-SCRIPTS_DIR = REPO_ROOT / ".github" / "workflows" / "scripts"
+SCRIPTS_DIR = REPO_ROOT / "scripts" / "ci" / "e2e"
 E2E_SCRIPT = SCRIPTS_DIR / "e2e_voice_test.sh"
 LIB = SCRIPTS_DIR / "e2e_voice_lib.sh"
 FAKE = Path(__file__).resolve().parent / "fake_robot_ssh.sh"
@@ -79,7 +79,7 @@ def _run(tmp_path, steps_body, log_text=LOG):
         'ROBOT_SSH="bash %s"' % FAKE.as_posix(),
         'SCRIPT_DIR_E2E="%s"' % SCRIPTS_DIR.as_posix(),
         "E2E_MAX_ATTEMPTS=1; E2E_REACTION_WINDOW=40; E2E_RETRY_PAUSE=0; E2E_EVENT_POLL=1; E2E_BARGE_POLL=1",
-        "E2E_DIALOG_ENGINE=v2; E2E_SILENCE_WAIT_MAX=30",
+        "E2E_SILENCE_WAIT_MAX=30",
         'log() { echo ">>> $*"; }',
         LIB.read_text(encoding="utf-8").replace("\r\n", "\n"),
         extract_function("ensure_outdir"),

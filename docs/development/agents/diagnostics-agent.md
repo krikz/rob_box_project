@@ -8,10 +8,10 @@
 
 ---
 
-## Место в процессе (Context Engineering)
+## Место в процессе
 
 Этот файл — **сервисный агент**, работает после деплоя.  
-Процесс: `.agents/skills/context-engineering/SKILL.md` | Бэклог: GitHub Issues (устаревшая ссылка на `tasks.json`, файл больше не существует — см. `docs/development/agents/README.md`)
+Процесс: `docs/process/claude-coordinator-robot-flow.md` (ADR-0162) | Бэклог: GitHub Issues
 
 Вызывай после каждого деплоя на роботов или при диагностике проблем в логах.
 
@@ -24,7 +24,7 @@ Use this skill when:
 - Docker container shows errors in logs (`docker logs <container> -f`)
 - ROS 2 topic not publishing or service not responding (`ros2 topic hz`, `ros2 service list`)
 - Zenoh connectivity issues between Main Pi and Vision Pi
-- Running scripts in `scripts/diagnostics/` or `local_test/`
+- Running scripts in `scripts/diagnostics/` or `tools/dev/`
 - User reports: robot not responding, camera down, voice assistant silent
 
 ---

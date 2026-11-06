@@ -48,7 +48,7 @@ class InstrumentalOrder:
 
     def start(self, route: Route, ask: SourceAsk, args: Tuple[Any, ...], order: Callable[..., Any],
               wrap: Callable[..., Any]) -> Any:
-        """``args`` — ``(intent, text, mood, genre, turn_id, heard_text)``; ``wrap`` — ``tools_v2.tool_result``."""
+        """``args`` — ``(intent, text, mood, genre, turn_id, heard_text)``; ``wrap`` — ``engine_tools.tool_result``."""
         maker, model, turn = self._maker, route.id.rsplit(":", 1)[-1], args[4]
         theme = order_theme(args[1], args[5])  # тема просьбы — в заказ Suno и во фразы (#3775)
         if maker.ordered_in(turn):  # тот же ход: трек уже пишется, ответ тот же, что у первого вызова

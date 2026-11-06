@@ -11,7 +11,8 @@ import random
 
 import numpy as np
 
-from . import rear as R
+from led_matrix_effects import lamps as R
+
 from . import talk as TK
 from . import vehicles as V
 from .scene import SceneSpec
@@ -352,6 +353,10 @@ def music_shades(ticks, seed=15, T=8.0, bpm=118):
         yield f
 
 
+VIBE_GLOW = col(25, 20, 8)
+_VIBE_X = np.arange(1, 24, dtype=float)
+
+
 def music_vibe(ticks, seed=16, T=8.0, bpm=96):
     for t in ticks:
         bpm_, tb = beat_time(ticks, t, bpm)
@@ -360,12 +365,11 @@ def music_vibe(ticks, seed=16, T=8.0, bpm=96):
         f = Frame()
         put_face(f, e, e, Mouth(curve=1.0))
         # humming: a warm glow rolls along the teeth with the beat
-        mm = f.mouth
+        mm = f.mouth[:, 1:24]
         pos = (beat * 0.5 % 1.0) * 30 - 3
-        for x in range(1, 24):
-            k = max(0.0, 1 - abs(x - pos) / 4.0)
-            lit = mm[:, x].sum(axis=1) > 0
-            mm[lit, x] = mm[lit, x] * (1 - k) + col(25, 20, 8) * k
+        k = np.maximum(0.0, 1 - np.abs(_VIBE_X - pos) / 4.0)[None, :, None]
+        lit = (mm.sum(axis=2) > 0)[..., None]
+        mm[:] = np.where(lit, mm * (1 - k) + VIBE_GLOW * k, mm)
         f.rear_l, f.rear_r = R.eq_bars(tb, bpm_)
         yield f
 
@@ -513,6 +517,9 @@ SCENES = {
     'fire_truck': _s(V.fire_truck, 7.0, 'emergency', 'Пожарная', 'глаза — вращающиеся маяки, балка красно-белая, потом «огонь» во рту'),
     'ambulance': _s(V.ambulance, 6.0, 'emergency', 'Скорая', 'красный крест бьётся в такт пульсу, во рту кардиограмма, синие вспышки'),
     'road_service': _s(V.road_service, 6.0, 'emergency', 'Дорожная служба', 'жёлтые маяки, во рту табло со стрелками, сзади стрелки'),
+    'roadworks_beacon': _s(V.roadworks_beacon, 4.8, 'emergency', 'Дорожные работы',
+                           'янтарные проблесковые маячки вместо глаз и сзади: двойная вспышка слева (оранжевая), потом '
+                           'справа (жёлтая), во рту жёлто-чёрная полосатая доска; тревога зоны безопасности (#4365)'),
     'turn_left': _s(V.turn, 4.0, 'driving', 'Поворот налево', 'глаз со стороны поворота мигает жёлтым, бегущая заливка сзади', side='left'),
     'turn_right': _s(V.turn, 4.0, 'driving', 'Поворот направо', 'то же зеркально', side='right'),
     'brake': _s(brake, 4.0, 'driving', 'Торможение', 'стоп-сигнал, прищур'),

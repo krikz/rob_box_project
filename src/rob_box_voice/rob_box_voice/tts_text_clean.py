@@ -10,6 +10,8 @@
 * :func:`strip_markdown` - звёздочки и решётки не читаются как «звёздочка» (#988);
 * :func:`strip_bracket_asides` - вставки ``[…]`` не звучат: модель иногда пишет свои рассуждения в ``content``
   (``[… §2 ANTI-DUP …]``, живой прогон 06.10, PR #3474);
+* :func:`strip_markup_tags` - теги, которые модель вписала в текст реплики (``<Текст>``, ``</text>``, #3598), не звучат;
+* :func:`speech_text` - всё вместе: голый текст реплики (ADR-0160 §2.3) -> текст для синтеза;
 * :func:`is_system_template_regurgitated_in_ssml` - ответ целиком из ``<system>…</system>`` (кусок системного шаблона,
   который модель выдала буквально, #2175) - не речь, ``tts_node`` отказывает.
 
@@ -97,6 +99,39 @@ def strip_bracket_asides(text: str) -> str:
     return _SPACE_RUN_RE.sub(" ", out).strip()
 
 
+#: Issue #3598 - тег разметки в тексте реплики: ``<Текст>``, ``</text>``, ``<music_state playing="no">``. Имя начинается
+#: с буквы, атрибуты - только ``имя="значение"``: «x<y & z>0» и метка паузы рэпа ``<#1.06#>`` тегом не считаются.
+_MARKUP_TAG_RE = re.compile(
+    r"</?[^\W\d_][\w:.-]*(?:\s+[\w:.-]+\s*=\s*(?:\"[^\"<>]*\"|'[^'<>]*'))*\s*/?>"
+)
+
+
+def strip_markup_tags(text: str) -> str:
+    """Убрать теги разметки, которые модель вписала в текст реплики, - человеку их не произносят (#3598).
+
+    Живой лог 13.10 09:17 UTC: модель ответила ``'<Текст>У РОББОКСа нет Вагнера…</Текст>'``, и синтезатор прочитал теги
+    вслух. До ADR-0160 санитайзер стоял в сборщике SSML ``rob_box_core.utterance``; реплика теперь несёт голый текст, и
+    правило живёт здесь, в одной точке перед синтезом. Не-строка и пустая строка возвращаются как есть.
+
+    >>> strip_markup_tags("<Текст>Привет</Текст>")
+    'Привет'
+    >>> strip_markup_tags("x<y & z>0")
+    'x<y & z>0'
+    """
+    if not isinstance(text, str) or not text:
+        return text
+    return _MARKUP_TAG_RE.sub("", text).strip()
+
+
+def speech_text(text: str) -> str:
+    """Голый текст реплики -> текст для синтеза: без тегов модели, вставок ``[…]`` и Markdown.
+
+    Единственная точка очистки для всех входов ``tts_node`` (динамики, шлем, preview, пред-синтез). SSML здесь не
+    разбирается: на проводе его нет (ADR-0160 §2.3), ``&``, ``<``, ``>`` - обычные символы текста.
+    """
+    return strip_markdown(strip_bracket_asides(strip_markup_tags(text or ""))).strip()
+
+
 def is_system_template_regurgitated_in_ssml(ssml: Optional[str]) -> bool:
     """Issue #2175 - в СЫРОМ SSML лежит только кусок системного шаблона, а не реплика.
 
@@ -111,6 +146,8 @@ def is_system_template_regurgitated_in_ssml(ssml: Optional[str]) -> bool:
 
 __all__ = [
     "is_system_template_regurgitated_in_ssml",
+    "speech_text",
     "strip_bracket_asides",
     "strip_markdown",
+    "strip_markup_tags",
 ]

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 LEDNode - управление 12× RGB LED на ReSpeaker Mic Array v2.0
-Подписывается на: /dialog/turn_event, /dialog/session (только тишина; v1: /voice/dialogue/state), /audio/direction
+Подписывается на: /dialog/turn_event, /dialog/session (только тишина), /audio/direction
 Публикует: /voice/expression/event (ExpressionEvent{executor=ring})
 Предоставляет сервис: /voice/set_auto_led
 
@@ -14,19 +14,13 @@ from rclpy.node import Node
 from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
 from rob_box_core import voice_state
 from rob_box_dialog_msgs.msg import ExpressionEvent, SessionState, TurnEvent
-from std_msgs.msg import String, Int32
+from std_msgs.msg import Int32
 from std_srvs.srv import SetBool
 import usb.core
 import usb.util
 from typing import Optional
 
 from .core.ring_reflex import RingReflex
-
-# Удалит PR-15 #3711: состояние диалога v1 публикует dialogue_node (std_msgs/String, имя
-# DialogueStateKind: IDLE / LISTENING / DIALOGUE / SILENCED); при dialog_engine=v2 тишину даёт сцена ``Silence``
-# в SessionState (``/dialog/session``, issue #3911). Топика ``/voice/state`` на роботе никто не публикует — это
-# старое имя (ADR-0027 #2, arbiter_node.VOICE_DIALOGUE_STATE_TOPIC), issue #3107.
-VOICE_STATE_TOPIC = '/voice/dialogue/state'
 
 
 class PixelRingLite:
@@ -171,8 +165,7 @@ class LEDNode(Node):
         self.reflex = RingReflex(self.pixel_ring, self._call_later, self._answer)
 
         # Subscribers
-        # Стадии хода (ADR-0150 §2.3): кольцо живёт по ним; тишина - сцена Silence в /dialog/session (v2) или
-        # строка /voice/dialogue/state (v1, TEMP до PR-15).
+        # Стадии хода (ADR-0150 §2.3): кольцо живёт по ним; тишина - сцена Silence в /dialog/session (issue #3911).
         self.turn_sub = self.create_subscription(TurnEvent, '/dialog/turn_event', self.turn_event_callback, 10)
         self._voice = voice_state.VoiceStateTracker()
         self.session_sub = self.create_subscription(
@@ -181,13 +174,6 @@ class LEDNode(Node):
             self.session_callback,
             QoSProfile(depth=1, reliability=ReliabilityPolicy.RELIABLE, durability=DurabilityPolicy.TRANSIENT_LOCAL),
         )
-        self.state_sub = self.create_subscription(
-            String,
-            VOICE_STATE_TOPIC,
-            self.state_callback,
-            10
-        )
-
         self.direction_sub = self.create_subscription(
             Int32,
             '/audio/direction',
@@ -203,7 +189,6 @@ class LEDNode(Node):
         )
 
         # Состояние
-        self.current_mode = 'idle'
         self.current_direction = 0
 
         # Инициализация
@@ -259,14 +244,6 @@ class LEDNode(Node):
         changed = self._voice.on_session(msg)
         if changed is not None:
             self.reflex.on_state('silenced' if changed.detail == voice_state.SILENCED_DETAIL else 'idle')
-
-    def state_callback(self, msg: String):
-        """Удалит PR-15 #3711: состояние диалога v1 - кольцо гаснет в тишине (SILENCED), остальное - стадии хода."""
-        if not self.auto_mode:
-            return
-        state = msg.data.lower()
-        self.current_mode = state
-        self.reflex.on_state(state)
 
     def direction_callback(self, msg: Int32):
         """Обработка изменения направления на источник звука."""

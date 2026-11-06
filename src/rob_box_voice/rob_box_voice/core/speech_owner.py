@@ -19,11 +19,11 @@
 Старых JSON-входов речи (``/voice/tts/request``, ``/voice/dialogue/response``, STOP в ``/voice/tts/control``) у ноды
 нет (PR-15 часть 15-core, #3711): речь приходит только как ``SpeechRequest``.
 ``at`` / ``boundary=sentence`` / ``commit=false`` - :mod:`.speech_timing`.
+``sink=headset`` - наушники шлема оператора (ТАРС, #4252): тот же журнал и те же события, звук - в ``/avatar/tts/audio``.
 """
 
 from __future__ import annotations
 
-import html
 import json
 import re
 import threading
@@ -36,7 +36,6 @@ import numpy as np
 
 from rob_box_core.speech_client import ANY_AGENT, PRIORITY_OPERATOR_U8, VOICE_OWNER_AGENT
 from rob_box_dialog import knowledge as kn
-from rob_box_core.utterance import Utterance
 
 from .speech_timing import PREFETCH_PROVIDER, Presynth, at_delay_s
 
@@ -48,15 +47,19 @@ TICK_S = 0.1
 #: Запись без перехода дольше этого - потерянная (воркер упал до финала).
 STALE_RECORD_S = 300.0
 SPEAKER_SINKS = ("", "speaker", "speakers")
+#: Наушники шлема оператора (ТАРС, ADR-0055): звук уходит в ``/avatar/tts/audio``, динамики молчат. События — те же,
+#: кроме ``started``/``progress``/огибающей: звучит не здесь, а в шлеме (стадию ``speaking`` видит ``quest_node``
+#: по доставленным чанкам). Пред-синтеза (``commit=false``) и ``at`` у шлема нет — такой запрос ``rejected``.
+HEADSET_SINK = "headset"
 _KINDS = ("queued", "synthesized", "started", "progress", "finished", "cancelled", "voice_changed", "rejected")
-_TAG_RE = re.compile(r"<[^>]+>")
 _SENTENCE_END_RE = re.compile(r"[.!?…]+(?=\s|$)")
 _CANCEL_ERRORS = ("stopped", "cancelled")
 
 
-def plain_text(ssml: str) -> str:
-    """Текст реплики без тегов SSML и XML-сущностей - по нему считаются символы."""
-    return " ".join(html.unescape(_TAG_RE.sub(" ", ssml or "")).split())
+def plain_text(text: str) -> str:
+    """Голый текст реплики без лишних пробелов - по нему считаются символы. Меток пауз на проводе нет: такт едет полем
+    ``beat_s``, паузы ставит адаптер голоса (#4241); ``<`` и ``>`` в тексте - обычные символы (ADR-0160 §2.3)."""
+    return " ".join((text or "").split())
 
 
 def sentence_ends(text: str) -> Tuple[int, ...]:
@@ -102,21 +105,22 @@ class SpeechMeta:
 
 def unsupported_field(msg: Any) -> str:
     """Поле ``SpeechRequest``, которое владелец не исполняет (``""`` - всё в порядке)."""
-    if (msg.sink or "") not in SPEAKER_SINKS:
-        return "sink_unsupported"
-    return ""
+    sink = msg.sink or ""
+    if sink == HEADSET_SINK:
+        return "" if msg.commit and not msg.at else "headset_timing_unsupported"
+    return "" if sink in SPEAKER_SINKS else "sink_unsupported"
 
 
 def chunk_from_request(msg: Any) -> Dict[str, Any]:
-    """Словарь-чанк конвейера ``tts_node`` из ``SpeechRequest``."""
-    text = msg.text or ""
+    """Словарь-чанк конвейера ``tts_node`` из ``SpeechRequest``: голый текст реплики (ADR-0160 §2.3)."""
     meta = SpeechMeta(agent=msg.agent or "personality", epoch=int(msg.epoch),
                       turn_id=msg.turn_id, interruptible=bool(msg.interruptible),
                       at=float(msg.at), boundary=int(msg.boundary), commit=bool(msg.commit))
+    speech_id = msg.speech_id or str(uuid.uuid4())
     chunk: Dict[str, Any] = {
-        "ssml": text if text.lstrip().startswith("<speak") else Utterance(text=text).ssml,
-        "speech_id": msg.speech_id or str(uuid.uuid4()),
-        "sink": "speaker",
+        "text": msg.text or "",
+        "speech_id": speech_id,
+        "sink": HEADSET_SINK if msg.sink == HEADSET_SINK else "speaker",
         "priority": "operator" if msg.priority >= PRIORITY_OPERATOR_U8 else "normal",
         "emotion": msg.emotion or "neutral",
         "_speech": asdict(meta),
@@ -124,6 +128,13 @@ def chunk_from_request(msg: Any) -> Dict[str, Any]:
     for key in ("voice", "language"):
         if getattr(msg, key):
             chunk[key] = getattr(msg, key)
+    beat_s = float(getattr(msg, "beat_s", 0.0) or 0.0)  # такт рэпа (#4241); у запросов без поля - 0
+    if beat_s > 0:
+        chunk["beat_s"] = beat_s
+    if chunk["sink"] == HEADSET_SINK:
+        # Ключ реплики у шлема (``/avatar/tts/audio_meta``, ``/tars1/text``) — тот же speech_id, что в SpeechEvent:
+        # quest_node связывает чанки, панель и конец реплики одним ключом.
+        chunk["request_id"] = speech_id
     return chunk
 
 
@@ -279,8 +290,10 @@ class SpeechOwner:
             rec = SpeechRecord(chunk["speech_id"], SpeechMeta.from_chunk(chunk), 0, (0,))
             self._emit("rejected", rec, reason=reason)
             return
-        if not msg.commit:
+        if not msg.commit or chunk["sink"] == HEADSET_SINK:
+            # Ветка шлема конвейера tts_node реплику в журнал не заводит — заводим здесь, иначе финал не даст события.
             self.admit(chunk, chunk["speech_id"])
+        if not msg.commit:
             self.presynth.run(self._node, chunk, self._presynth_done, self.ledger.is_cancelled)
             return
         self._node.dialogue_callback(_JsonMsg(json.dumps(chunk, ensure_ascii=False)))
@@ -318,7 +331,7 @@ class SpeechOwner:
 
     def admit(self, chunk: Dict[str, Any], speech_id: str) -> None:
         meta = SpeechMeta.from_chunk(chunk)
-        self._emit("queued", self.ledger.admit(speech_id, meta, plain_text(chunk.get("ssml", ""))))
+        self._emit("queued", self.ledger.admit(speech_id, meta, plain_text(chunk.get("text", ""))))
 
     def synthesized(
         self, speech_id: Optional[str], duration_s: float, ctx: Dict[str, Any], voice: Optional[str]
@@ -371,8 +384,8 @@ class SpeechOwner:
             self.ledger.set_duration(rec, total_s)
 
     def terminal(self, speech_id: str, success: bool, error: Optional[str], queued: bool) -> None:
-        """Финал реплики из единой воронки финалов ``tts_node._publish_tts_finished`` (там же старый String-топик v1
-        до части 15t PR-15); событие — только у реплик, принятых в журнал (``admit``)."""
+        """Финал реплики из единой воронки финалов ``tts_node._publish_tts_finished`` (String-топика v1 нет с #4252
+        ч.2); событие — только у реплик, принятых в журнал (``admit``)."""
         rec = None if queued else self.ledger.close(speech_id)
         if rec is None:
             return

@@ -251,7 +251,7 @@ services:
       # supercollider читает их по тому же пути (issue 986)
       - sc_synthdefs:/root/.local/share/SuperCollider/synthdefs
       # Renardo/FoxDot reference documentation for MusicSkill LLM context
-      - ../../local_test/RENARDO_REFERENCE.md:/renardo_ref/RENARDO_REFERENCE.md:ro
+      - ./config/RENARDO_REFERENCE.md:/renardo_ref/RENARDO_REFERENCE.md:ro
       # DB migrations (applied idempotently at startup by WaypointStore, FAQStore, etc.)
       - ../../migrations:/migrations:ro
     mem_limit: 5g  # Voice Assistant + Animations
@@ -670,7 +670,7 @@ services:
   # non-ROS service: мониторинговый агент (profile: monitoring).
   # Не использует ROS/Zenoh, depends_on: zenoh-router не требуется.
   cadvisor:
-    image: gcr.io/cadvisor/cadvisor:v0.52.1
+    image: ghcr.io/google/cadvisor:v0.60.6  # #4332: 0.52.1 не видит docker с containerd snapshotter (нужен >=0.54.0, google/cadvisor#3709); в gcr.io выше 0.52.1 нет
     container_name: cadvisor-sound
     profiles: ["monitoring"]
     pull_policy: if_not_present
@@ -695,7 +695,7 @@ services:
   # non-ROS service: Loki log shipper (profile: monitoring).
   # Не использует ROS/Zenoh, depends_on: zenoh-router не требуется.
   promtail:
-    image: grafana/promtail:2.9.2
+    image: grafana/promtail:3.6.11  # #3659: клиент Docker API согласуется с демоном (2.9.2 жёстко 1.42 < min 1.44 на Docker 29)
     container_name: promtail-sound
     profiles: ["monitoring"]
     pull_policy: if_not_present

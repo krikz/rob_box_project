@@ -29,7 +29,7 @@
 
 ## Каст
 
-Одна таблица знания — `map_tts_voice` в `.github/workflows/scripts/e2e_voice_lib.sh` (строка `voice:pitch:speed`).
+Одна таблица знания — `map_tts_voice` в `scripts/ci/e2e/e2e_voice_lib.sh` (строка `voice:pitch:speed`).
 Провайдер у всех четырёх один (MiniMax), поэтому второй реализации/провайдера-на-роль в харнессе не потребовалось.
 
 | Роль (голос сценария) | Голос MiniMax (читает русский текст) | Пол | Питч/темп | Вейк (HIT/проигрышей) |

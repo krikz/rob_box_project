@@ -24,14 +24,13 @@ tts_node:
     # float [0.0, 10.0], ``pronunciation_dict`` str). Нейтральные дефолты
     # сохраняют текущее поведение (поля НЕ передаются в API, если явно
     # не заданы). Канонический блок задаётся ниже (после
-    # ``yandex_ssml_aware``); первый блок с int/float ``pitch=0`` /
+    # ``yandex_speed``); первый блок с int/float ``pitch=0`` /
     # ``volume=0.0`` был legacy и порождал дубликат ключа в YAML →
     # rclpy set_parameters валился на типе (InvalidParameterTypeException
     # → tts_node crash-loop на Vision Pi, issue #1830). Убран.
     # Допустимые значения emotion (MiniMax T2A v2 voice_setting.emotion):
     #   happy | neutral | sad | angry | fearful | disgusted | surprised
     # Прокидывание значений в ``TTSSettings`` — в карточке t_4e98182a.
-    normalize_text: true
     # #4022 — set_pitch двигает pitch_shift (1.0 = норма) и читает его назад. Без chipmunk_mode тон слышен только у
     # MiniMax: pitch_shift -> voice_setting.pitch полутонами (12*log2, +-12) к minimax_pitch; у Yandex/Silero тона
     # нет, тул отвечает отказом. С chipmunk_mode: true коэффициент съедает передискретизация (любой провайдер).
@@ -45,14 +44,6 @@ tts_node:
     yandex_api_key: ''
     yandex_voice: anton
     yandex_speed: 1.0
-    # Issue #1780 / issue #1004 — флаг «ssml-aware» режима для Yandex.
-    # При True — Yandex-провайдер должен передавать вход как SSML
-    # (``<speak>...<emotion>happy</emotion>...</speak>``) и использовать
-    # ``<emotion>`` / ``<prosody pitch=...>`` теги, поддерживаемые
-    # Yandex gRPC v3. Сейчас False (legacy: текст → Hints(voice, speed)).
-    # Полная интеграция — в карточке t_c401ecaa; флаг уже здесь, чтобы
-    # YAML был валиден и можно было безопасно переключать.
-    yandex_ssml_aware: false
     chunk_max_chars_yandex: 250
     chunk_max_chars_silero: 800
     chunk_max_chars_minimax: 5000

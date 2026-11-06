@@ -16,8 +16,9 @@ import numpy as np
 from PIL import Image
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / 'src' / 'rob_box_animations'))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / 'src' / 'ros2leds' / 'led_matrix_effects'))
 
-from rob_box_animations.face import rear as R  # noqa: E402
+from led_matrix_effects import lamps as R  # noqa: E402
 from rob_box_animations.face import states as S  # noqa: E402
 from rob_box_animations.face.face import FPS, Frame  # noqa: E402
 from rob_box_animations.face.scene import clip  # noqa: E402

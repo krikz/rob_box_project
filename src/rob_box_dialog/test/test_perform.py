@@ -49,7 +49,7 @@ def test_rap_with_beat_every_line_starts_on_a_bar_and_beat_outros():
     sim.start()
     started = [e for _, e in sim.effects]
     assert started[0].kind == "block_start"
-    assert [s.commit for s in started if isinstance(s, Say)] == [False] * len(SEGS)  # пред-синтез всех сегментов
+    assert [s for s in started if isinstance(s, Say)] == []  # пред-синтез ждёт подложку: её такт едет в реплике (#4241)
     (backing,) = sim.backings()
     estimate = sum(len(s) for s in SEGS) / kn.SPEECH_CHARS_PER_S_GUESS
     assert backing.mood == kn.PERFORM_BACKING_MOODS["beat"][0] and not backing.extend
@@ -75,6 +75,8 @@ def test_rap_with_beat_every_line_starts_on_a_bar_and_beat_outros():
     assert [e.segment_no for e in sim.events("segment_started")] == [1, 2, 3, 4, 5, 6]
     assert all(e.synced for e in sim.events("segment_started"))
     assert sim.block.summary()["spoken_chars"] == sum(len(s) for s in SEGS)
+    segments = [e for _, e in sim.effects if isinstance(e, Say) and not e.key]
+    assert {e.beat_s for e in segments} == {BAR_S}  # пред-синтез и звучание — с тактом подложки
 
 
 def test_without_backing_reads_back_to_back_and_honestly_unsynced():

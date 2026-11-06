@@ -33,8 +33,8 @@ SPEAK_TEXT_ALENA = (
     "animation=happy voice=alena text='Говорю голосом Алены через Яндекс!'"
 )
 CATALOG_DUMP = (
-    "[dialogue_node-4]   tools(61): add_music_material, clear_waypoints, compose_music, "
-    "continue_mapping, execute_music_code, music_library, set_voice, speak_text"
+    "[dialogue_node-4]   tools(61): add_music_material, clear_waypoints, generate_music, "
+    "continue_mapping, dj_set, music_library, set_voice, speak_text"
 )
 
 

@@ -32,8 +32,8 @@ python tools/led_face_lab/render_gifs.py docs/assets/animations --gallery src/ro
 - **Эффекты полотна (#3780):** слоты сцены LLM `bg` (фон сквозь всё полотно:
   `rainbow`, `fire`, `matrix`; ≤ 6 уровней, черты светят своим уровнем),
   `fx` (импульс в начале сцены: `slash`, `glitch`, `boot`, `power_down`) и
-  `feat` (`loading_eyes`). Полотно — одна таблица `face/face.py:CANVAS_AT`
-  рядом с `GROUP_OF`, рендер — `face/effects.py`.
+  `feat` (`loading_eyes`). Полотно — одна таблица `face/layout.py:CANVAS_AT`
+  рядом с `GROUP_OF`, рендер — ros2leds `led_matrix_effects` (привязка к лицу — `face/effects.py`).
 - **Какая сцена когда:** речь — `talk_<mouth_design>` (рот по голосу, В13:
   `jaw`), запрос `play_animation`/`ExpressionRequest` — сцена на время,
   музыка — по темпу (`< 100` кайф, `100–125` грув, `≥ 125` очки), покой —
@@ -105,6 +105,7 @@ python tools/led_face_lab/render_gifs.py docs/assets/animations --gallery src/ro
 | `fire_truck` | Пожарная: глаза — вращающиеся маяки, балка красно-белая, потом «огонь» во рту | ![](../../../docs/assets/animations/fire_truck.gif) |
 | `ambulance` | Скорая: красный крест бьётся в такт пульсу, во рту кардиограмма, синие вспышки | ![](../../../docs/assets/animations/ambulance.gif) |
 | `road_service` | Дорожная служба: жёлтые маяки, во рту табло со стрелками, сзади стрелки | ![](../../../docs/assets/animations/road_service.gif) |
+| `roadworks_beacon` | Дорожные работы: янтарные проблесковые маячки вместо глаз и сзади: двойная вспышка слева (оранжевая), потом справа (жёлтая), во рту жёлто-чёрная полосатая доска; тревога зоны безопасности (#4365) | ![](../../../docs/assets/animations/roadworks_beacon.gif) |
 
 ### Езда
 

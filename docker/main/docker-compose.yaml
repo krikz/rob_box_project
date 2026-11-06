@@ -115,6 +115,12 @@ services:
       - *zenoh_listen_ip  # адрес локального роутера для session config
       # КРИТИЧНО: Путь к библиотекам Zenoh (vendor устанавливает в нестандартный путь)
       - LD_LIBRARY_PATH=/opt/ros/${ROS_DISTRO:-humble}/opt/zenoh_cpp_vendor/lib:/opt/ros/${ROS_DISTRO:-humble}/lib/aarch64-linux-gnu:/opt/ros/${ROS_DISTRO:-humble}/lib
+      # IMU в оценке движения (решение Шифу 04.11: «заливаем, но пока не включаем»).
+      # По умолчанию ВЫКЛЮЧЕНО: не задано или пусто → поведение как до 04.11
+      # (start_rtabmap.sh подставит мёртвый /camera/imu/data, imu-filter спит).
+      # Включить: RTABMAP_IMU_TOPIC=/imu/data в .env (выход imu_filter_madgwick,
+      # сервис imu-filter) и пересоздать rtabmap + imu-filter.
+      - &rtabmap_imu_topic RTABMAP_IMU_TOPIC=${RTABMAP_IMU_TOPIC:-}
     volumes:
       - ./config:/config:ro
       - ../common/scripts:/ros_scripts:ro
@@ -159,8 +165,11 @@ services:
       - frame_id:=base_footprint
       - odom_frame_id:=icp_odom
       - odom_topic:=/odom
-      - imu_topic:=/camera/imu/data
-      - wait_imu_to_init:=false
+      # IMU: imu_topic:= и wait_imu_to_init:= дописывает start_rtabmap.sh из
+      # RTABMAP_IMU_TOPIC (см. environment). OAK-D публикует СЫРОЙ IMU в
+      # /camera/camera/imu (~248 Гц, frame camera_imu_frame), orientation = единичный
+      # кватернион с нулевой ковариацией (фиктивная) — поэтому rtabmap получает не его,
+      # а выход imu_filter_madgwick (сервис imu-filter, /imu/data).
       # AprilTag детекции: launch-аргумент rtabmap.launch.py называется tag_topic
       # (apriltag_topic не существует в текущем launch — молча игнорировался).
       # patch_rtabmap_launch.py дополнительно мигрирует внутренний remap
@@ -188,6 +197,40 @@ services:
     labels:
       logging: "promtail"
 
+  # imu_filter_madgwick: сырой IMU OAK-D (gyro+accel, фиктивная orientation) →
+  # ориентация в /imu/data для rtabmap. Магнитометра у OAK-D нет: use_mag=false,
+  # курс — интеграл гироскопа (дрейфует), крен/тангаж — по гравитации.
+  # Образ — тот же rtabmap (пакет ставит docker/main/rtabmap/Dockerfile).
+  # По умолчанию выключен (RTABMAP_IMU_TOPIC не задан): узел не стартует, контейнер спит.
+  # Включение — RTABMAP_IMU_TOPIC=/imu/data в .env.
+  # Замеры в симе: docs/research/2026-11-04-imu-madgwick-rtabmap.md.
+  imu-filter:
+    image: ${SERVICE_IMAGE_PREFIX:-ghcr.io/krikz/rob_box}:rtabmap-${ROS_DISTRO:-humble}-${RTABMAP_TAG:-${IMAGE_TAG}}
+    container_name: imu-filter
+    network_mode: host
+    environment:
+      - ROS_DOMAIN_ID=0
+      - RMW_IMPLEMENTATION=rmw_zenoh_cpp
+      - RUST_LOG=zenoh=info
+      - ROS_AUTOMATIC_DISCOVERY_RANGE=LOCALHOST
+      - ROBOT_ID=${ROBOT_ID}  # Для генерации namespace
+      - ZENOH_SESSION_CONFIG_URI=/tmp/zenoh_session_config.json5  # Сгенерированный конфиг
+      - *zenoh_listen_ip  # адрес локального роутера для session config
+      - LD_LIBRARY_PATH=/opt/ros/${ROS_DISTRO:-humble}/opt/zenoh_cpp_vendor/lib:/opt/ros/${ROS_DISTRO:-humble}/lib/aarch64-linux-gnu:/opt/ros/${ROS_DISTRO:-humble}/lib
+      - *rtabmap_imu_topic  # выход фильтра = вход rtabmap; пусто → фильтр выключен
+      - IMU_FILTER_INPUT=${IMU_FILTER_INPUT:-/camera/camera/imu}  # сырой IMU OAK-D (Vision Pi)
+    volumes:
+      - ./config:/config:ro
+      - ../common/scripts:/ros_scripts:ro
+      - ../common/config:/common_config:ro
+      - ./scripts/rtabmap:/scripts:ro
+    command: ["/ros_scripts/ros_with_namespace.sh", "/scripts/start_imu_filter.sh"]
+    depends_on:
+      - zenoh-router
+    restart: unless-stopped
+    labels:
+      logging: "promtail"
+
   # ROS2 Control Manager - управление моторами через VESC
   # VESC Nexus работает как hardware_interface плагин
   ros2-control:
@@ -208,6 +251,10 @@ services:
       # CAN интерфейс (can0 или can1)
       - CAN_INTERFACE=can0
       - CONTROLLER_CONFIG=/config/controllers/controller_manager.yaml
+      # Колёсная одометрия: пусто — open_loop из yaml (true, по командам);
+      # false — по eRPM холлов VESC. Ставить в .env Main Pi только после
+      # проверки рулеткой (план в PR feat/wheel-odom-closed-loop-erpm).
+      - DIFF_DRIVE_OPEN_LOOP=${DIFF_DRIVE_OPEN_LOOP:-}
     volumes:
       - ./config:/config:ro
       - ../common/scripts:/ros_scripts:ro
@@ -424,10 +471,52 @@ services:
     labels:
       logging: "promtail"
 
+  # Зона безопасности вокруг корпуса (#4365) — ВСЕГДА в стеке (решение Шифу 05.11; профиль снят:
+  # деплой Main Pi делает голый `docker compose up -d`, COMPOSE_PROFILES там нет, так что профиль = выключено).
+  # Только в движении: ближе 0.40 м от корпуса — мигалка (face_node) и короткий
+  # писк (sound_node); ближе 0.20 м в коридоре хода (0.08 м сбоку, 0.10 м на развороте) —
+  # нулевой Twist в cmd_vel_emergency (twist_mux 255) и одним событием мигалка, писк и
+  # «Осторожно!» голосом (SpeechRequest). Стоп держится, пока вход twist_mux (список —
+  # ./config/twist_mux/twist_mux.yaml) толкает в препятствие (HIL 05.11, #4365).
+  # Образ — teleop (rob_box_teleop + сообщения диалога); footprint берётся из
+  # ./config/nav2/nav2_params.yaml — тот же, что у Nav2.
+  proximity-guard:
+    image: ${SERVICE_IMAGE_PREFIX:-ghcr.io/krikz/rob_box}:teleop-${ROS_DISTRO:-humble}-${IMAGE_TAG:-local}
+    container_name: proximity-guard
+    network_mode: host
+    environment:
+      - ROS_DOMAIN_ID=0
+      - RMW_IMPLEMENTATION=rmw_zenoh_cpp
+      - RUST_LOG=zenoh=info
+      - ROS_AUTOMATIC_DISCOVERY_RANGE=LOCALHOST
+      - ROBOT_ID=${ROBOT_ID}
+      - ZENOH_SESSION_CONFIG_URI=/tmp/zenoh_session_config.json5
+      - *zenoh_listen_ip  # адрес локального роутера для session config
+      - LD_LIBRARY_PATH=/opt/ros/humble/opt/zenoh_cpp_vendor/lib:/opt/ros/humble/lib/aarch64-linux-gnu:/opt/ros/humble/lib
+    volumes:
+      - ./config:/config:ro
+      - ../common/scripts:/ros_scripts:ro
+      - ../common/config:/common_config:ro
+      - ./scripts/teleop:/scripts:ro
+    command: ["/ros_scripts/ros_with_namespace.sh", "/scripts/start_proximity_guard.sh"]
+    depends_on:
+      - zenoh-router
+      - twist-mux
+      - lslidar
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pgrep -f proximity_guard_node || exit 1"]
+      interval: 10s
+      timeout: 5s
+      start_period: 20s
+      retries: 3
+    labels:
+      logging: "promtail"
+
   # non-ROS service: Loki log shipper (profile: monitoring).
   # Не использует ROS/Zenoh, depends_on: zenoh-router не требуется.
   promtail:
-    image: grafana/promtail:2.9.2
+    image: grafana/promtail:3.6.11  # #3659: клиент Docker API согласуется с демоном (2.9.2 жёстко 1.42 < min 1.44 на Docker 29)
     container_name: promtail
     profiles: ["monitoring"]
     network_mode: host

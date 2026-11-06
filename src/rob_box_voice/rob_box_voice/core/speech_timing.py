@@ -27,6 +27,8 @@ import concurrent.futures
 import threading
 from typing import Any, Callable, Dict, Optional
 
+from ..tts_text_clean import speech_text
+
 #: Дольше ждать ``at`` не будем: старт «через минуту» - ошибка вызывающего.
 MAX_AT_WAIT_S = 30.0
 #: Потоков пред-синтеза: столько сегментов правки синтезируются одновременно.
@@ -92,21 +94,21 @@ class Presynth:
             return self._executor
 
     def _worker(self, node: Any, chunk: Dict[str, Any], done: Done, cancelled: Callable[[str], bool]) -> None:
-        speech_id, ssml = chunk["speech_id"], chunk["ssml"]
+        speech_id = chunk["speech_id"]
         # без ``stream_ok``: пред-синтез - HTTP целиком, поток MiniMax звучит сразу (#3930)
         ctx: Dict[str, Any] = {"audio_np": None, "sample_rate": 16000, "used_provider": None,
-                               "used_voice": None, "result": {}}
+                               "used_voice": None, "result": {},
+                               "beat_s": chunk.get("beat_s", 0.0)}  # такт рэпа: паузы - адаптеру (#4241)
         if cancelled(speech_id):  # отменили, пока ждал пула: не платим за синтез
             done(speech_id, 0.0, ctx)
             return
         voice, language = chunk.get("voice"), chunk.get("language")
         ctx["requested_voice"] = voice  # какой голос просили: подмена голоса при синтезе - событие, не тишина (#4024)
-        text = node._extract_text_from_ssml(ssml)
-        attrs = node._parse_ssml_attributes(ssml) or {}
+        text = speech_text(chunk.get("text", ""))  # голый текст реплики, ADR-0160 §2.3
         try:
-            node._sap_run_provider_chain(voice, language, attrs, text, "speaker", ctx)
+            node._sap_run_provider_chain(voice, language, text, "speaker", ctx)
             if ctx["audio_np"] is None:
-                node._sap_silero_fallback(text, voice, language, attrs, None, ctx)
+                node._sap_silero_fallback(text, voice, language, None, ctx)
         except Exception as exc:  # noqa: BLE001 - честный rejected вместо тишины
             node._publish_tts_finished(speech_id, success=False, error=f"presynth: {exc}")
             return

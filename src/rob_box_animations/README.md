@@ -6,8 +6,8 @@
 ```
 rob_box_animations/
 ├── rob_box_animations/
-│   ├── face/                 # сцены: face.py (модели, палитра 0..25, раскладка, ток),
-│   │                         # states.py (SCENES), talk.py (рты), rear.py (фары),
+│   ├── face/                 # сцены: face.py (модели, палитра 0..25, ток), layout.py (раскладка ровера),
+│   │                         # states.py (SCENES), talk.py (рты), effects.py (фон/импульсы на полотне),
 │   │                         # vehicles.py (экстренные, езда), scene.py (Scene.frame), sides.py (тест-кадр)
 │   ├── face_director.py      # что показать: речь, запрос, музыка, покой, сон (чистый Python)
 │   └── face_node.py          # ROS-нода: 25 Гц -> /panel_image
@@ -15,6 +15,11 @@ rob_box_animations/
 ├── launch/face_led_matrix.launch.py   # драйвер + композитор ros2leds + face_node
 └── docs/ANIMATIONS.md        # галерея сцен
 ```
+
+Общие эффекты — в сабмодуле ros2leds, пакет `led_matrix_effects` (чистый numpy): полотно и кадр по группам,
+фоны (радуга, огонь, матрица), импульсы (slash, glitch, boot, power_down), спецсигналы (маяки, стробы,
+узоры полиции и дорожных работ), темы задних фар (`lamps.THEMES`), уровни и ток ленты (`Strip`). Здесь —
+лицо Бендера (глаза, рот, сцены, DSL), раскладка ровера и то, что знает про диалог.
 
 ## Где и как работает
 

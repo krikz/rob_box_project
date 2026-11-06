@@ -10,7 +10,8 @@ from __future__ import annotations
 
 import numpy as np
 
-from .face import GROUP_OF, Frame, col
+from .face import Frame, col
+from .layout import GROUP_OF
 
 GLYPHS = {
     'L': ["#..", "#..", "#..", "#..", "###"],

@@ -1,9 +1,9 @@
 """dialog_node — тонкий ROS-хост диалога v2 (ADR-0150 §2.2, §3; PR-8 ч.8e2 #3702).
 
-Стартует только при ``dialog_engine: v2`` (launch, ``rob_box_core.dialog_engine``); при ``v1`` работает
-``dialogue_node``. Вся логика хода — ``rob_box_dialog`` (``address → grammar → context → LLM → command → Executor →
-respond``, :class:`rob_box_dialog.turn.TurnEngine`); транспорт — ``core.dialog_v2_ports`` (дорога исполнения v1:
-LLM-цепочка с мостом команд, MCP-тулы под планировщиком ресурсов). Здесь — только ROS:
+Стартует из launch (``rob_box_core.dialog_engine.launch_nodes``); нода v1 удалена в PR-15 (#3711). Вся логика хода —
+``rob_box_dialog`` (``address → grammar → context → LLM → command →
+Executor → respond``, :class:`rob_box_dialog.turn.TurnEngine`); транспорт — ``core.dialog_v2_ports`` (дорога
+исполнения v1: LLM-цепочка с мостом команд, MCP-тулы под планировщиком ресурсов). Здесь — только ROS:
 
 * подписки: ``/voice/stt/utterance`` (реплика → адресация → ход), ``/voice/speaker/result`` (собеседник),
   ``/voice/speech/event`` (окно озвученного, план, «говорю»), ``/voice/sound/event`` (план), ``/voice/music/state`` и
@@ -52,7 +52,7 @@ from rclpy.qos import DurabilityPolicy, HistoryPolicy, QoSProfile, ReliabilityPo
 from rcl_interfaces.msg import SetParametersResult
 from std_msgs.msg import String
 
-from rob_box_core import dialog_engine, speech_client
+from rob_box_core import speech_client
 from rob_box_core.e2e_mode import E2EModeFollower
 from rob_box_core.provider_publisher import make_publisher, publish_provider_states
 from rob_box_core.speaker_wire import speaker_result_to_payload
@@ -63,11 +63,13 @@ from rob_box_dialog.address import log_label
 from rob_box_dialog.address import person_ref_from
 from rob_box_dialog.address import wake_words as load_wake_words
 from rob_box_dialog.backlog import Backlog
-from rob_box_dialog.chats import LOG_MARK as CHAT_LOG_MARK, ChatPorts, ChatTurns, channel_ref
+from rob_box_dialog.chats import LOG_MARK as CHAT_LOG_MARK, PROGRESS_KIND, ChatPorts, ChatTurns, channel_ref
 from rob_box_dialog.e2e_events import open_events
 from rob_box_dialog.execute import transport_timeouts
 from rob_box_dialog.interrupt import TurnsInFlight, on_interrupt
 from rob_box_dialog.memory import profiled_person
+from rob_box_dialog.pickup_parties import rights_speaker
+from rob_box_dialog.voice_warmth import WarmVoices
 from rob_box_dialog.respond import ActionResult
 from rob_box_dialog.scenes import HOLD, RESET, RESUME, SceneDirector, apply_control
 from rob_box_dialog.session import MusicStateRef, Session
@@ -82,20 +84,23 @@ from rob_box_dialog_msgs.msg import SpeechEvent
 from rob_box_dialog_msgs.msg import Utterance as UtteranceMsg
 from rob_box_dialog_msgs.srv import DialogControl
 from rob_box_llm.provider import LLMSettings
+from rob_box_voice.observability import is_metrics_enabled, start_metrics_server
 from rob_box_mcp_tools.voice_request import REQUEST_TOPIC as VOICE_REQUEST_TOPIC
 
 from .core import greeting_window, identity_question
 from .core import dialog_v2_parity as parity
 from .core import plan_host
+from .core.dialog_metrics import llm_metrics, record_interrupt
+from .core.backlog_voice import note_backlog_voice
 from .core.dialog_v2_ports import CallCounter, V2Ports, assemble_llm
 from .core.music_player_state import MUSIC_EVENT_TOPIC, MUSIC_STATE_TOPIC, parse_music_state
 from .core.provider_reporter import ProviderStateReporter, on_provider_states, reporter_context
 from .core.speaker_memory import SpeakerMemory
-from .core.speaker_turn import note_backlog_voice
 from .core.turn_context import tts_voices
 from .core.utterance_speaker import UtteranceSpeakerRegistry
 from .tts_voice_registry import robot_default_voice
 from rob_box_dialog.music_state import MusicStateMemory
+from rob_box_dialog.window_reset import REASON_E2E_OFF, REASON_E2E_ON
 
 #: ``DialogControl.Request.ACTION_*`` -> действие :func:`rob_box_dialog.scenes.apply_control`.
 _CONTROL_ACTIONS = {DialogControl.Request.ACTION_HOLD: HOLD, DialogControl.Request.ACTION_RESUME: RESUME,
@@ -106,6 +111,7 @@ _LATCHED = QoSProfile(reliability=ReliabilityPolicy.RELIABLE, history=HistoryPol
 
 def declare_params(node: Any) -> None:
     """Параметры ноды (``dialog_node.yaml``; ключи API — из окружения, как у ``dialogue_node``)."""
+    node.declare_parameter("metrics_port", 9100)  # Prometheus-экспортер (#4328); 0 - выключен
     node.declare_parameter("llm_providers", "deepseek,minimax")
     node.declare_parameter("system_prompt_file", "master_prompt_compact.txt")
     node.declare_parameter("wake_words_path", "/config/wake_words.yaml")
@@ -150,6 +156,19 @@ def _prompt_dir() -> Path:
     from ament_index_python.packages import get_package_share_directory  # noqa: PLC0415
 
     return Path(get_package_share_directory("rob_box_voice")) / "prompts"
+
+
+def start_metrics(node: Any) -> bool:
+    """Prometheus-экспортер ноды на порту ``metrics_port`` (#4328, 9100; 0 - выключен), как у tts/stt/audio."""
+    port = int(node.get_parameter("metrics_port").value or 0)
+    if port <= 0 or not is_metrics_enabled():
+        return False
+    started = start_metrics_server(port)
+    if started:
+        node.get_logger().info(f"📊 dialog metrics server listening on :{port}/metrics")
+    else:
+        node.get_logger().warning(f"📊 dialog metrics port {port} not bound (busy or prometheus_client missing)")
+    return started
 
 
 def build_llm(node: Any, counter: CallCounter, agent: str = kn.AGENTS[0]) -> tuple:
@@ -229,7 +248,8 @@ def late_outcome(engine: TurnEngine, say: Callable[[ActionResult], Any], result:
 
 def _mcp_provider(node: Any, sender: str, for_telegram: bool = False) -> Any:
     """Провайдер MCP-тулов под подписью ``sender`` (``LLMToolCallAdapter`` → ``ROSMCPToolProvider``). Итог тула с
-    поздним итогом транспорт ждёт дольше срока класса (``execute.transport_timeouts``, #3960)."""
+    сроком класса транспорт ждёт не меньше срока (поездка 120 с, #4344), с поздним итогом - дольше срока класса
+    (``execute.transport_timeouts``, #3960)."""
     from rob_box_harness.core.tool_registry import ToolRegistry  # noqa: PLC0415
     from rob_box_harness.executors import ROSMCPToolProvider, adapt_tool_provider  # noqa: PLC0415
     from rob_box_mcp_tools.llm_adapter import LLMToolCallAdapter  # noqa: PLC0415
@@ -310,18 +330,22 @@ def build_chats(node: Any, tools: Any, intent_pub: Any, wake: Any, hold: Any = l
     pub = node.create_publisher(DialogOutput, "/dialog/output", 10)
     log = node.get_logger().info
 
-    def send(ref: str, text: str, speech_id: str) -> None:
+    def send(ref: str, text: str, speech_id: str, role: str = "", kind: str = "") -> None:
         msg = DialogOutput()
         msg.agent, msg.channel_ref, msg.text, msg.speech_id = kn.TEXT_CHANNEL_AGENT, ref, text, speech_id
+        msg.role, msg.kind = role, kind
         pub.publish(msg)
+
+    def progress(ref: str, label: str) -> None:
+        send(ref, label, "", kind=PROGRESS_KIND)
 
     chat_tools = build_chat_tools(node, tools)
 
     def make_engine(chat_id: int) -> TurnEngine:
         session = Session(kn.TEXT_CHANNEL_AGENT, clock=time.time, session_id=channel_ref(chat_id))
         base = V2Ports(node, llm, counter, chat_tools, agent=kn.TEXT_CHANNEL_AGENT, intent_pub=intent_pub, log=log,
-                       epoch=lambda: session.snapshot.epoch)
-        ports = ChatPorts(base, chat_id, send, log, hold, robot)
+                       epoch=lambda: session.snapshot.epoch, on_ask=llm_metrics(llm))
+        ports = ChatPorts(base, chat_id, send, log, hold, robot, progress)
         chats.adopt(base.executor)
         engine = TurnEngine(session, ports, system_prompt=system, log=_RosLog(node.get_logger()),  # потолок хода (В31)
                             sing=sing, voices=voices)
@@ -339,7 +363,7 @@ class DialogNode(Node):
         super().__init__("dialog_node")
         self._package_logs = RosLogHandler.attach(self.get_logger())  # INFO python-логгеров rob_box_dialog (#4061)
         declare_params(self)
-        self.engine_flag = dialog_engine.declare(self)
+        start_metrics(self)
         self.last_turn: Any = None  # concurrent.futures.Future последнего хода (журнал, тесты)
         self.last_chat_turn: Any = None  # то же для хода телеграм-агента
         self._loop = asyncio.new_event_loop()
@@ -379,13 +403,15 @@ class DialogNode(Node):
                                   sing=chat_sing, voices=voices)
         self._ports = V2Ports(self, llm, counter, self._tool_executor, intent_pub=intent_pub,
                               log=self.get_logger().info, epoch=lambda: self._session.snapshot.epoch,
-                              performer=functools.partial(plan_host.performer, self))
+                              performer=functools.partial(plan_host.performer, self), on_ask=llm_metrics(llm))
         self._reporter = ProviderStateReporter(llm, functools.partial(publish_provider_states, make_publisher(self)),
                                                self._speak_direct)
+        self._warm = WarmVoices()  # прогретые голоса без имени: просьба назваться в подхвате (Шифу 05.11)
         self._engine = TurnEngine(self._session, self._ports, system_prompt=system, sections=self._sections,
                                   voices=voices, turn_log=TurnLog(on_outcome=self._shift.outcome),  # исходы — в смену
                                   events=self._open_events(), log=_RosLog(self.get_logger()), sing=sing,
-                                  phrase_voice=self._speakers.resolve)  # голос фразы по её id (#4141)
+                                  phrase_voice=self._speakers.resolve,  # голос фразы по её id (#4141)
+                                  warm_voices=self._warm.warm)
         self._ports.on_late = functools.partial(late_outcome, self._engine,
                                                 functools.partial(say_late, self._engine))  # поздний итог (#3960)
         self._subscribe()
@@ -399,7 +425,7 @@ class DialogNode(Node):
         self.create_timer(2.0, self._reporter.tick)
         self.add_on_set_parameters_callback(self._on_params)
         self._thread.start()
-        self.get_logger().info(f"✅ dialog_node v2: {kn.AGENTS[0]}, dialog_engine={self.engine_flag}, "
+        self.get_logger().info(f"✅ dialog_node v2: {kn.AGENTS[0]}, "
                                f"wake={self._wake[:3]}…, e2e={self._engine_events_state()}")
 
     def _subscribe(self) -> None:
@@ -463,14 +489,18 @@ class DialogNode(Node):
                 self.get_logger().error(f"🧭 [turn-v2] ход упал: {type(exc).__name__}: {exc}")
 
     def _apply_e2e_mode(self, enabled: bool) -> bool:
-        """Режим владельца применён: на входе в e2e профиль e2e-собеседников начинается с нуля (счёт диалогов акта)."""
+        """Режим владельца применён: на входе в e2e профиль e2e-собеседников начинается с нуля (счёт диалогов акта).
+        Окно диалога сбрасывается в обе стороны (#4258): ходы e2e-ролей в боевой разговор не переходят и наоборот."""
         if enabled:
             self._speaker_memory.reset_e2e()
+        self._warm.reset()  # беседа с голосами без имени — заново, как окно диалога
+        self._loop.call_soon_threadsafe(self._engine.reset_window, REASON_E2E_ON if enabled else REASON_E2E_OFF)
         return True
 
     async def _note_speaker(self, decision: Addressed) -> None:
-        """Начало хода: профиль подтверждённого собеседника ведёт код, раздел ``speaker_memory`` - в снимок (#3919)."""
-        speaker = self._session.snapshot.speaker
+        """Начало хода: профиль подтверждённого собеседника ведёт код, раздел ``speaker_memory`` - в снимок (#3919).
+        Подхват бэклога - профиль автора фразы, а не того, кто сказал «Робот» (``pickup_parties``, 05.11)."""
+        speaker = rights_speaker(decision, self._session.snapshot.speaker)
         counts = decision.source != BARE_WAKE and bool(decision.text.strip())  # пустой ход - не диалог (как у v1)
         section = await self._speaker_memory.section(speaker) if counts else None
         self._turn_memory = (profiled_person(speaker), section)
@@ -484,6 +514,7 @@ class DialogNode(Node):
         if msg.utterance_id:
             self._speakers.submit(msg.utterance_id, data)
             note_backlog_voice(self, msg.utterance_id, data)  # фраза в бэклоге: кто сказал её (#3767, #3892)
+            self._warm.note(data)  # сколько реплик у голоса без имени (voice_warmth)
         self._session.set_speaker(speaker_ref(data, now=time.time(), prev=self._session.snapshot.speaker))
 
     def _on_speech_event(self, msg: Any) -> None:
@@ -535,6 +566,7 @@ class DialogNode(Node):
         speech_client.cancel(self, agent=kn.AGENTS[0], epoch=snap.epoch, reason=f"interrupt:{uid or '-'}",
                              boundary=stop.speech_boundary)
         cancelled = self._turns.cancel(keep_key=uid)
+        record_interrupt()
         self.get_logger().info(f"🛑 [interrupt] {stop.policy} via={via} {text[:60]!r} epoch={snap.epoch} "
                                f"boundary={stop.speech_boundary} turns_cancelled={cancelled} "
                                f"за {(time.monotonic() - started) * 1000:.1f} мс utterance={uid or '-'}")
@@ -563,10 +595,10 @@ class DialogNode(Node):
     # -- выход и служебное ---------------------------------------------------------------------------------------
 
     def _sections(self, snap: Any, text: str) -> Dict[str, Any]:
-        """Разделы снимка хода из владельцев: собеседник, провайдеры, музыка (данные, не правила); журнал смены — на
-        вопрос о ней (``shift_log.shift_asked``, #4076)."""
+        """Разделы снимка хода из владельцев: собеседник, провайдеры, музыка, звучащий голос (``tts_context``, #4370) —
+        данные, не правила; журнал смены — на вопрос о ней (``shift_log.shift_asked``, #4076)."""
         return {**host_sections(snap, self._music, reporter_context(self._reporter), self._turn_memory),
-                **self._shift.section(text)}
+                "tts_context": plan_host.tts_context(self), **self._shift.section(text)}
 
     def _speak_direct(self, text: str) -> None:
         """Фраза кода вне хода (смена провайдера): речь личности текущей эпохи."""

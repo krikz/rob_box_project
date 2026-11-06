@@ -62,6 +62,7 @@ class LegacyToolProviderAdapter(LegacyToolProvider):
             is_error=result.is_error,
             # Тело результата (status/reason события владельца) — коду, а не модели (ADR-0150 PR-7 ч.7c).
             data=result.value if isinstance(result.value, Mapping) else None,
+            message=_tool_message(result),
         )
 
     async def aclose(self) -> None:
@@ -77,6 +78,18 @@ def adapt_tool_provider(provider: CoreToolProvider) -> LegacyToolProviderAdapter
 #: the LLM-visible tool result. ``data`` is left uncapped: it's already
 #: expected to be compact (PR-4 keeps the score as one text blob).
 _MAX_MESSAGE_CHARS = 500
+
+
+def _tool_message(result: CoreToolResult) -> str | None:
+    """Фраза, которую построил тул (``MCPToolResult.message``): при ``data`` она в ``metadata``, без ``data`` она и
+    есть ``value``. Ошибка - ``None`` (её текст - причина отказа, а не ответ)."""
+    if result.error is not None:
+        return None
+    message = (result.metadata or {}).get("message")
+    if message is None and isinstance(result.value, str):
+        message = result.value
+    text = " ".join(str(message or "").split())
+    return text or None
 
 
 def _result_content(result: CoreToolResult) -> str:

@@ -1,20 +1,17 @@
-"""Utterance — единое место сборки SSML для всех TTS-запросов rob_box.
+"""Utterance — реплика: голый текст, адресат и голос для всех запросов речи rob_box.
 
 Контекст
 --------
-До появления ``Utterance`` каждый TTS-producer собирал SSML самостоятельно
-через ``f"<speak>{text}</speak>"``. На сентябрь 2026 таких мест 10 в 5
-пакетах (``rob_box_voice``, ``rob_box_supervisor``, ``rob_box_telegram``,
-``rob_box_mcp_tools``), и ни одно не экранировало XML: текст с ``&`` /
-``<`` / ``>`` ломал синтезатор или проходил со «съеденными» символами.
+ADR-0080 §2.3: реплика собирается в **одном** модуле — продюсеры не лепят
+JSON запроса сами. До ADR-0160 этот модуль обрамлял текст в ``<speak>`` с
+XML-экранированием, а ``tts_node`` тут же снимал все теги: SSML был
+конвертом, который никто не читал.
 
-ADR-0080 §2.3 / §1.3, инвариант 5 (один канал сборки реплики) и 6
-(экранирование — на стороне сборщика, не TTS) требуют, чтобы:
-
-* SSML собирался в **одном** модуле, в **одном** месте;
-* XML-экранирование выполнялось до вставки в ``<speak>...</speak>``;
-* ``Utterance`` не знал ни о ROS, ни о producer'е — он только про текст
-  и адресата (``sink``).
+ADR-0160 §2.3 (PR-2, #4239): на проводе голый текст — слова и обычная
+пунктуация, строки через ``
+``. Разметку под свой сервис делает адаптер
+провайдера голоса; конверт ``<speak>`` с экранированием собирает только
+адаптер Silero (``rob_box_voice.tts_ssml.silero_ssml``).
 
 Использование
 -------------
@@ -27,27 +24,22 @@ ADR-0080 §2.3 / §1.3, инвариант 5 (один канал сборки �
         sink=Sink.SPEAKERS,
         priority="operator",
     ).to_request()
-    # {"ssml": "<speak>Ошибка: x&lt;y &amp; z&gt;0</speak>",
-    #  "sink": "speakers", "priority": "operator"}
+    # {"text": "Ошибка: x<y & z>0", "sink": "speakers",
+    #  "priority": "operator", "emotion": "neutral"}
 
-Producer'ы дописывают свои поля (``speech_id``, ``emotion``, ``batch_id``,
-``commands``) на словарь из ``to_request()`` — это и сохраняет существующий
-контракт топиков, и держит экранирование централизованным.
+Producer'ы дописывают свои поля (``request_id``, ``batch_id``, ``commands``)
+на словарь из ``to_request()`` — контракт топиков держится в одном месте.
 
 Не путать
 ---------
 * ``Utterance`` — структура данных; **не** ROS-сообщение.
 * ``Sink`` — адресат (динамики / наушники / preview), а не канал DDS
-  (``/voice/tts/request`` vs ``/avatar/tts/request``); выбор топика остаётся
+  (``/voice/speech/request`` vs ``/avatar/tts/request``); выбор топика остаётся
   на producer'е.
-
-Out of scope (см. voice-vr 13): единый вход ``tts_node``. Этот модуль только
-про сборку запроса.
 """
 
 from __future__ import annotations
 
-import re
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, Optional
@@ -57,9 +49,9 @@ class Sink(str, Enum):
     """Адресат реплики (инвариант 6b: «Два выхода звука не смешиваются»).
 
     * ``SPEAKERS`` — реплика личности / пайплайна грипа, играется динамиками
-      робота (``/voice/tts/request``).
+      робота (``SpeechRequest`` в ``/voice/speech/request``).
     * ``HEADSET`` — собственная реплика ТАРС, играется только в наушники
-      шлема оператора (``/avatar/tts/request``).
+      шлема оператора (``SpeechRequest(sink=headset)``, #4252).
     * ``PREVIEW`` — не идёт ни в TTS-очередь, ни в шлем: уходит в
       ``/avatar/preview_voice`` (operator preview panel).
     """
@@ -83,79 +75,19 @@ ALLOWED_PRIORITIES = frozenset(
 )
 
 
-# Полный набор XML-управляющих символов, которые могут встретиться в
-# пользовательском / LLM-тексте и которые ломают парсер SSML. Их
-# экранирование обязательно; остальные символы (включая кавычки и
-# апострофы) для текстового узла SSML безопасны.
-_XML_ESCAPE_TABLE = str.maketrans(
-    {
-        "&": "&amp;",  # must run first
-        "<": "&lt;",
-        ">": "&gt;",
-    }
-)
-
-
-def _escape_xml_text(text: str) -> str:
-    """Экранировать ``&``, ``<``, ``>`` для вставки в текстовый узел SSML.
-
-    Публичный re-export: ``escape_xml_text``. Нужен вызывающим, которые
-    собирают НЕ-стандартный SSML (например, ``<prosody>...</prosody>`` внутри
-    ``<speak>...</speak>``) и хотят ровно тот же escape, что в
-    :attr:`Utterance.ssml`.
-
-    >>> escape_xml_text("a & b < c > d")
-    'a &amp; b &lt; c &gt; d'
-    >>> escape_xml_text("plain")
-    'plain'
-    """
-    return text.translate(_XML_ESCAPE_TABLE)
-
-
-#: Публичный алиас для :func:`_escape_xml_text`.
-escape_xml_text = _escape_xml_text
-
-#: Issue #3598 — тег разметки в тексте реплики: ``<Текст>``, ``</text>``,
-#: ``<music_state playing="no">``. Имя начинается с буквы, атрибуты — только
-#: в форме ``имя="значение"``: «x<y & z>0» тегом не считается.
-_MARKUP_TAG_RE = re.compile(
-    r"</?[^\W\d_][\w:.-]*(?:\s+[\w:.-]+\s*=\s*(?:\"[^\"<>]*\"|'[^'<>]*'))*\s*/?>"
-)
-
-
-def strip_markup_tags(text: str) -> str:
-    """Убрать теги разметки из текста реплики — человеку их не произносят.
-
-    Живой лог 13.10 09:17 UTC: модель ответила
-    ``'<Текст>У РОББОКСа нет Вагнера…</Текст>'`` и ``speak_text`` с
-    ``'Отлично, на связи. Что делаем?</text>'``; :attr:`Utterance.ssml`
-    экранировал теги, ``tts_node`` раскрыл entity — и синтезатор прочитал
-    их вслух (а Telegram получил их дублем). Санитайзер детерминированный
-    и стоит в единственной точке сборки SSML, поэтому покрывает и
-    авто-TTS ``dialogue_node``, и ``speak_text``, и прочих producer'ов.
-
-    >>> strip_markup_tags("<Текст>Привет</Текст>")
-    'Привет'
-    >>> strip_markup_tags("x<y & z>0")
-    'x<y & z>0'
-    """
-    if not text:
-        return text
-    return _MARKUP_TAG_RE.sub("", text).strip()
-
-
 @dataclass
 class Utterance:
-    """Одна реплика, готовая к упаковке в TTS-запрос.
+    """Одна реплика, готовая к упаковке в запрос речи.
 
-    Поля ровно те, что определяет контракт TTS-очереди (см. ADR-0080 §1.3):
+    Поля ровно те, что определяет контракт очереди речи (см. ADR-0080 §1.3):
     текст, адресат, приоритет, голос, язык, эмоция и стабильный
     ``speech_id`` (если передан). Producer'ы дописывают свои поля на
-    словарь из :meth:`to_request`, не конкурируя за SSML.
+    словарь из :meth:`to_request`.
 
     Attributes:
-        text: Текст реплики. Любые ``&`` / ``<`` / ``>`` экранируются
-            автоматически.
+        text: Голый текст реплики (ADR-0160 §2.3): без SSML и без
+            экранирования; строки через ``
+``.
         sink: Куда играть (см. :class:`Sink`).
         priority: Приоритет TTS-очереди. ``None`` ⇒ ``"normal"``.
         voice: Имя голоса (``"ermil"``, ``"alena"`` …). ``None`` — дефолт
@@ -166,6 +98,10 @@ class Utterance:
             ``"neutral"``.
         speech_id: Идентификатор реплики. ``None`` — producer сгенерирует
             свой (``uuid4``).
+        role: Герой реплики (ADR-0160 §2.3) или ``""`` для рассказчика. Голос роль не читает:
+            она нужна приёмникам текста (экран, чат).
+        beat_s: Такт подложки выступления (с) или 0 (ADR-0160 §2.3): данные, а не метка — паузы строк по нему
+            ставит адаптер провайдера голоса (#4241).
     """
 
     text: str
@@ -175,9 +111,11 @@ class Utterance:
     language: Optional[str] = None
     emotion: Optional[str] = None
     speech_id: Optional[str] = None
+    role: str = ""
+    beat_s: float = 0.0
     # Доп. поля, которые producer хочет протащить в dict, но не считает
     # частью ``Utterance`` (``chunk``, ``commands``, ``batch_id``,
-    # ``tg_chat_id`` и т. п.). Применяются **после** SSML-сборки.
+    # ``tg_chat_id`` и т. п.). Поля ``Utterance`` их перекрывают.
     extra: dict[str, Any] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
@@ -194,19 +132,12 @@ class Utterance:
         if self.emotion is None:
             self.emotion = "neutral"
 
-    @property
-    def ssml(self) -> str:
-        """Собранный и экранированный SSML — ``<speak>...</speak>``."""
-        clean = strip_markup_tags(self.text or "")
-        return f"<speak>{_escape_xml_text(clean)}</speak>"
-
     def to_request(self) -> dict[str, Any]:
-        """Словарь для ``json.dumps`` в payload ``/voice/tts/request`` или
-        ``/avatar/tts/request``.
+        """Словарь для ``json.dumps`` в payload ``/avatar/tts/request``.
 
         Гарантируется:
 
-        * ``ssml`` — единственный источник тегов ``<speak>``, экранирован;
+        * ``text`` — голый текст реплики как есть (ADR-0160 §2.3);
         * ``sink`` — строка из :class:`Sink` (``"speakers"`` / ``"headset"``
           / ``"preview"``);
         * ``priority`` — строка (или ``"normal"`` по умолчанию);
@@ -217,7 +148,7 @@ class Utterance:
           (поля Utterance выигрывают).
         """
         payload: dict[str, Any] = {
-            "ssml": self.ssml,
+            "text": self.text or "",
             "sink": self.sink.value,
             "priority": self.priority or DEFAULT_PRIORITY,
             "emotion": self.emotion,
@@ -228,21 +159,25 @@ class Utterance:
             payload["language"] = self.language
         if self.speech_id is not None:
             payload["speech_id"] = self.speech_id
+        if self.role:
+            payload["role"] = self.role
+        if self.beat_s > 0:
+            payload["beat_s"] = float(self.beat_s)
         if self.extra:
             # Utterance-поля выигрывают — защита от случайного
-            # переопределения ``ssml``/``sink`` через ``extra``.
+            # переопределения ``text``/``sink`` через ``extra``.
             merged = dict(self.extra)
             merged.update(payload)
             payload = merged
         return payload
 
 
-#: Поля, без которых ``tts_node.dialogue_callback`` молча отбрасывает запрос
-#: из ``/voice/tts/request`` (лог «⚠ Chunk без SSML», звука нет). Единый
+#: Поля, без которых ``tts_node.dialogue_callback`` отбрасывает запрос
+#: (лог «⚠ Chunk без текста», звука нет). Единый
 #: источник правды для приёмника и продюсеров: 29.09.2026 инструмент ``say``
 #: слал ``{"text": ...}`` без ``ssml`` и отчитывался success=True, хотя
 #: робот молчал.
-TTS_REQUEST_REQUIRED_FIELDS: tuple[str, ...] = ("ssml",)
+TTS_REQUEST_REQUIRED_FIELDS: tuple[str, ...] = ("text",)
 
 
 def missing_tts_request_fields(payload: Any) -> list[str]:
@@ -252,10 +187,10 @@ def missing_tts_request_fields(payload: Any) -> list[str]:
     тест продюсера, прогнавший свой payload через неё, проверяет ровно тот
     контракт, по которому приёмник решает «синтезировать / отбросить».
 
-    >>> missing_tts_request_fields({"ssml": "<speak>a</speak>"})
-    []
     >>> missing_tts_request_fields({"text": "a"})
-    ['ssml']
+    []
+    >>> missing_tts_request_fields({"ssml": "<speak>a</speak>"})
+    ['text']
     """
     if not isinstance(payload, dict):
         return list(TTS_REQUEST_REQUIRED_FIELDS)
@@ -273,5 +208,4 @@ __all__ = [
     "TTS_REQUEST_REQUIRED_FIELDS",
     "Utterance",
     "missing_tts_request_fields",
-    "strip_markup_tags",
 ]

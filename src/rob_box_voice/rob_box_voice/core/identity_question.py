@@ -25,7 +25,6 @@ from __future__ import annotations
 import asyncio
 import json
 import math
-import threading
 import time
 from typing import Any, Dict, Mapping, Optional
 
@@ -34,7 +33,6 @@ from rob_box_dialog.reply_grammar import NAME, classify_rename, classify_reply
 from rob_box_dialog.session import Session, SessionChanged, SessionSnapshot, SpeakerRef
 from rob_box_dialog.speaker_adapter import (
     VOICE_STRANGER,
-    AskCandidate,
     IdentityStep,
     merge_answer,
     merge_step,
@@ -70,14 +68,6 @@ def session(node: Any) -> Session:
 
 def set_speaker(node: Any, ref: SpeakerRef) -> None:
     session(node).set_speaker(ref)
-
-
-def open_question(node: Any, cand: AskCandidate, speech_id: str) -> None:
-    """Вопрос отдан в речь — кадр ``Identity`` с азимутом фразы собеседника, пока ЖДЁТ конца речи ``speech_id``.
-
-    Окно ответа открывает :func:`on_speech_event` (``SpeechEvent finished`` этого вопроса): ход мог отвечать 12 с,
-    вопрос звучит после, и 15 с от конца хода истекли бы до вопроса (#3771)."""
-    _push(node, question_frame(cand.key, cand.kind, cand.name, _azimuth(node), None, speech_id))
 
 
 def open_merge_question(node: Any, plan: Mapping[str, Any], speech_id: str) -> None:
@@ -363,66 +353,6 @@ async def settle_identity(node: Any, timeout_s: float = kn.REGISTER_OUTCOME_WAIT
         f"👥 [#3765] личность выясняет робот (kind={plan['kind']}): ход LLM без register_speaker и без сведений о голосе")
 
 
-def start_after_turn_question(node: Any, plan: Optional[Mapping[str, Any]], result: Any) -> None:
-    """Вопрос личности после ответа хода (#2828/#2908). LLM в ходе что-то сказала и есть Chooser
-    (:mod:`.identity_dedup`) — решение «уже спросила?» идёт ПАРАЛЛЕЛЬНО с речью хода (:func:`ask_after_turn` в своём
-    потоке: loop ноды между ходами не крутится — живой прогон 3, задача в loop'е заснула до следующего хода); иначе
-    вопрос уходит в речь сразу, как без Chooser'а."""
-    if plan is None:
-        return
-    said = list(getattr(node, "_turn_llm_said", None) or ())
-    spoken = str(getattr(result, "spoken_text", "") or "").strip()
-    if spoken and spoken.lower() not in ("done", "готово"):
-        said.append(spoken)
-    if getattr(node, "_identity_dedup", None) is None or not any(s.strip() for s in said):
-        node._speak_identity_question(plan)
-        return
-    node._after_turn_task = threading.Thread(target=ask_after_turn, args=(node, plan, said), daemon=True,
-                                             name="identity-dedup")
-    node._after_turn_task.start()
-
-
-def ask_after_turn(node: Any, plan: Mapping[str, Any], said: Any) -> None:
-    """Дождаться вердикта Chooser'а не дольше конца речи хода + ``IDENTITY_DEDUP_AFTER_SPEECH_S``. ``already_said`` —
-    фраза кода не звучит, кадр ``Identity`` всё равно открывается — от конца речи хода; не успел — ``not_said``."""
-    if _dedup_verdict(node, said, plan["question"]) != "already_said":
-        node._speak_identity_question(plan)
-        return
-    node._identity_question_asked_in_turn = True
-    if plan.get("kind") in kn.IDENTITY_CODED_KINDS:
-        open_merge_question(node, plan, ANY_SPEECH)
-        if not _speaking(node):
-            _arm(node, session(node).snapshot.top("Identity"))
-
-
-def _dedup_verdict(node: Any, said: Any, phrase: str) -> str:
-    started = time.monotonic()
-    box: dict = {}
-    worker = threading.Thread(target=lambda: box.update(v=node._identity_dedup.decide(list(said), phrase)),
-                              daemon=True, name="identity-dedup-model")
-    worker.start()
-    ended_at: Optional[float] = None
-    heard = False  # речь хода ещё синтезируется (живой прогон 3: «не говорит» сразу после хода) — конец считаем после начала
-    while worker.is_alive():
-        now = time.monotonic()
-        if _speaking(node):
-            heard, ended_at = True, None
-        elif not heard:
-            pass
-        elif ended_at is None:
-            ended_at = now
-        elif now - ended_at >= kn.IDENTITY_DEDUP_AFTER_SPEECH_S:
-            break
-        time.sleep(0.05)
-    waited = 0.0 if ended_at is None else (time.monotonic() - ended_at) * 1000.0
-    done = "v" in box
-    verdict = box["v"][0] if done else "not_said"
-    node.get_logger().info(
-        f"🔁 [identity-dedup] итог verdict={verdict} ms={(time.monotonic() - started) * 1000.0:.0f} ждали после конца "
-        f"речи: {waited:.0f} мс{'' if done else ' (Chooser не успел — not_said)'}")
-    return verdict
-
-
 def introduced_name(node: Any, text: str) -> Optional[str]:
     """Имя, которым человек назвал себя в реплике хода: «меня зовут X» (#2925) или голое имя в ответ на вопрос.
     Ответ, который решает код (:func:`code_decides`: шаблон, склейка, смена имени, #3801), — не представление."""
@@ -471,6 +401,5 @@ def _time(msg: Any, t: float) -> Any:
 
 
 __all__ = ["SESSION_TOPIC", "answer_name", "code_decides", "identity_reply", "introduced_name", "on_speech_event",
-           "open_merge_question", "open_question", "question", "refuse_second_profile", "session", "session_state",
-           "set_speaker", "settle_identity", "settled_by_voice", "take_answer", "ask_after_turn", "deliver_turn_result",
-           "start_after_turn_question", "ANY_SPEECH"]
+           "open_merge_question", "question", "refuse_second_profile", "session", "session_state",
+           "set_speaker", "settle_identity", "settled_by_voice", "take_answer", "deliver_turn_result", "ANY_SPEECH"]

@@ -82,7 +82,8 @@ class FakeNode:
         self.publishers.append((topic, pub))
         return pub
 
-    def create_subscription(self, *args, **kwargs):
+    def create_subscription(self, msg_type, topic, callback, *args, **kwargs):
+        self.__dict__.setdefault("subscriptions", []).append((topic, callback))
         return MagicMock()
 
     def create_timer(self, period, callback):
@@ -142,6 +143,10 @@ def _install_ros_mocks():
         "geometry_msgs.msg": mock_geometry_msgs_msg,
         "std_msgs": mock_std_msgs,
         "std_msgs.msg": mock_std_msgs_msg,
+        # proximity_guard_node (#4365): одометрия и TF — только типы, сообщения в тестах — SimpleNamespace
+        "nav_msgs": MagicMock(),
+        "nav_msgs.msg": MagicMock(),
+        "tf2_ros": MagicMock(),
     }
     for name, mock in mocks.items():
         sys.modules.setdefault(name, mock)

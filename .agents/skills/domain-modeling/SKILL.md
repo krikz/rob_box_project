@@ -8,10 +8,10 @@ description: Build and sharpen a project's domain model. Use when discussing cod
 Actively build and sharpen the project's domain model as you design. This is the *active* discipline: challenging terms, inventing edge-case scenarios, and writing the glossary and decisions down the moment they crystallise. (Merely *reading* `CONTEXT.md` for vocabulary is not this skill: that's a one-line habit any skill can do. This skill is for when you're changing the model, not just consuming it.)
 
 > **Rob Box specifics**: у проекта уже есть корневой `CONTEXT.md` и свои правила
-> ADR — см. `CONTRIBUTING.md` §«ADR-процесс» и `docs/adr/0030-adr-numbering-sot.md`.
+> ADR — см. `AGENTS.md` §«ADR» и `docs/adr/AF-0030-adr-numbering-sot.md`.
 > Номера ADR — 4 цифры, следующий свободный после максимума в `origin/develop`;
-> перед созданием ADR прогони `bash scripts/agent_flow/validate_adr_namespace.sh`.
-> Где этот скилл расходится с CONTRIBUTING.md — побеждает CONTRIBUTING.md.
+> перед созданием ADR прогони `bash scripts/lint/validate_adr_namespace.sh`.
+> Где этот скилл расходится с AGENTS.md — побеждает AGENTS.md.
 
 ## File structure
 

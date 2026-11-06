@@ -34,7 +34,7 @@ from tests.unit.e2e_scripts.test_issue_2890_act_isolation import (
 
 ROOT = Path(__file__).resolve().parents[3]
 NIGHT = ROOT / ".github" / "e2e" / "scenarios" / "night"
-for _dir in (ROOT / "scripts" / "e2e", ROOT / ".github" / "workflows" / "scripts"):
+for _dir in (ROOT / "scripts" / "e2e", ROOT / "scripts" / "ci" / "e2e"):
     if str(_dir) not in sys.path:
         sys.path.insert(0, str(_dir))
 
@@ -44,7 +44,7 @@ import phrase_budget as pb  # noqa: E402
 
 DONE = "📊 [turn] turn_id=t1 epoch=1 agent=main stage=done status=finished latency_ms=900 llm_calls=1 llm_provider=x tokens=10"
 MUSIC_OK = "✅ Инструмент request_music выполнен успешно"
-STARTED = "🎵 [music v2] started track_id=req95964:01:A:f7de93b5 clock_beat=4"
+STARTED = "🎵 [music] started track_id=req95964:01:A:f7de93b5 clock_beat=4"
 
 
 def _steps() -> Dict[str, Dict[str, Any]]:
@@ -415,7 +415,7 @@ def test_n1001_n1002_n1008_phrases_are_short_and_do_not_contain_their_own_answer
 # ── акт 5: n502/n504/n506 ───────────────────────────────────────────────────────────────────────────────────
 
 #: Raw 27.10 (аудит, run 40480199644): вместо синта и правки играющего — трек библиотеки.
-LIBRARY_EXEC = "🎵 [music v2] exec track_id=gen_5b4e8031_1793093054 bpm=60"
+LIBRARY_EXEC = "🎵 [music] exec track_id=gen_5b4e8031_1793093054 bpm=60"
 
 
 def test_n502_asks_the_synth_and_checks_the_synth_route_not_any_music_tool():
@@ -428,7 +428,7 @@ def test_n502_asks_the_synth_and_checks_the_synth_route_not_any_music_tool():
             "🎤 STT: робот сыграй на рем дарда спокойный ночной бит",
             LIBRARY_EXEC,
             MUSIC_OK,
-            "🎵 [music v2] started track_id=gen_5b4e8031_1793093054 clock_beat=4",
+            "🎵 [music] started track_id=gen_5b4e8031_1793093054 clock_beat=4",
             DONE,
         ]
     )
@@ -448,14 +448,14 @@ def test_n502_asks_the_synth_and_checks_the_synth_route_not_any_music_tool():
 #: #4029 (PR #4116): правка играющего встала на такте того же трека (``engine/track_edit.py``).
 EDIT_OK = "✅ Инструмент edit_music выполнен успешно"
 EDIT_APPLIED = (
-    "🎚️ [music v2] edit applied track_id=req95964:01:A:f7de93b5 at_beat=9856 bpm=147"
+    "🎚️ [music] edit applied track_id=req95964:01:A:f7de93b5 at_beat=9856 bpm=147"
 )
 
 
 @pytest.mark.parametrize("label", ["n504_add_bass", "n506_faster", "n505_vibe_dark"])
 def test_editing_the_playing_track_by_a_new_library_track_is_not_a_result(label):
     """27.10: n504 и n506 зелёные потому, что тул успешен, а поставлен ДРУГОЙ трек библиотеки. После #4029 правка --
-    ``edit_music`` на такте; любой новый трек на деке (``[music v2] exec``) -- подмена (#3971).
+    ``edit_music`` на такте; любой новый трек на деке (``[music] exec``) -- подмена (#3971).
     """
     ok = "\n".join([EDIT_OK, EDIT_APPLIED, DONE])
     assert _verdict(label, ok)["pass"]
@@ -625,10 +625,10 @@ def _marathon_tree(tmp_path: Path) -> Path:
     )
     shutil.copytree(NIGHT, tree / ".github" / "e2e" / "scenarios" / "night")
     # #3971: генератор пишет поля судьи харнесса и сверяет их его таблицами (``e2e_events.COMPARES``)
-    harness = tree / ".github" / "workflows" / "scripts"
+    harness = tree / "scripts" / "ci" / "e2e"
     harness.mkdir(parents=True)
     shutil.copy2(
-        ROOT / ".github" / "workflows" / "scripts" / "e2e_events.py",
+        ROOT / "scripts" / "ci" / "e2e" / "e2e_events.py",
         harness / "e2e_events.py",
     )
     return tree

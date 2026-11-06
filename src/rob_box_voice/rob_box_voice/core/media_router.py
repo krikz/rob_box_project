@@ -26,8 +26,8 @@ ADR-0149 PR-6/PR-13a — музыку ведёт движок v2: «включи
 ``dj_set(stop)`` + ``stop_music``; заказ по имени (classic, PR-11) — поиск
 ``lookup_melody``, играет ``request_music``. Старый путь (``compose_music`` /
 ``set_dj_mode`` / DJ-превью) удалён в PR-13a. Фраза об успехе
-запуска — только по событию ``started`` плеера (``MediaPlan.confirm_started``,
-исполняет :mod:`.media_plan_run`), при ``rejected`` — честный отказ.
+запуска — только по событию ``started`` плеера (``MediaPlan.confirm_started``),
+при ``rejected`` — честный отказ.
 
 Модуль чистый: без ROS и без I/O. Исполнение — в ``DialogueNode``.
 """
@@ -121,8 +121,8 @@ class MediaPlan:
         confirm_started: ADR-0149 PR-6 — ``say_ok`` только после события
             ``started`` с ``track_id`` из ответа первого тула; ``rejected`` →
             ``say_fail``; события нет — :data:`NOT_STARTED_TEXT` (A14).
-        library: #3696 — ``play``/``list`` из библиотеки генераций: исполняет
-            :mod:`.library_command` (поиск/список → трек выбирает код → ``play``).
+        library: #3696 — ``play``/``list`` из библиотеки генераций (поиск/список →
+            трек выбирает код → ``play``).
     """
 
     command: MediaCommand
@@ -147,7 +147,7 @@ STOP_FAIL_TEXT = _phrase("music.stop_fail")
 #: Тул ответил, а ``started`` так и не пришло: об успехе не говорим (A14).
 NOT_STARTED_TEXT = _phrase("music.not_started")
 
-#: Имена тулов движка v2 (``rob_box_mcp_tools.engine.tools_v2``).
+#: Имена тулов движка v2 (``rob_box_mcp_tools.engine.engine_tools``).
 DJ_SET_TOOL = "dj_set"
 REQUEST_MUSIC_TOOL = "request_music"
 #: Просьба сгенерировать (ADR-0158 PR-3): тот же чойсер пути, что у ``request_music``.

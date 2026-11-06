@@ -1,30 +1,29 @@
-"""Мост режима команд в v1: LLM отвечает ОДНОЙ командой, v1-цикл тулов исполняет её как раньше (ADR-0150 §4.1, §4.5).
+"""Режим команд провайдера: LLM отвечает ОДНОЙ командой, ход v2 получает её ``command.Result`` (ADR-0150 §4.1, §4.5).
 
-Временный модуль (#3696 ч.5, удаляется в PR-8 вместе с v1-циклом ``AgentCore``). Оборачивает ОДИН провайдер цепочки:
+Оборачивает ОДИН провайдер цепочки (``AgentSpec.wrap_provider``, :func:`wrapper_for`) — каждый: v2 отвечает только
+командой. Ответ обёртки — :class:`CommandResponse` с полем ``command``; формы v1 (текст речи или вызов ``command``
+для цикла ``AgentCore``) больше нет (#4354 B2):
 
 * **форма запроса — по возможностям адаптера**, а не по промпту: ``degrade.select_mode(capabilities)`` →
   ``tool_choice`` (DeepSeek: тул ``command`` + ``tool_choice="required"``) | ``tool_offered`` (MiniMax: тул ``command``
   без ``tool_choice`` — принуждение сервер не исполняет, ADR-0143, замер #3698 ч.7d) | ``json_mode`` /
   ``structured_output`` | ``json_in_text``; запрос строит ``speech_channel.FieldChannel`` (решение О4: речь — поле
   ``speech``), тула ``speak_text`` модель в этом режиме не видит — слот речи один;
-* **ответ разбирает один парсер** ``rob_box_dialog.command.parse``: голая реплика (без действий, выступления и голоса)
-  → текст речи (терминальный ход, авто-TTS ``dialogue_node``); остальное → один вызов ``command``, который v1-цикл
-  отдаёт исполнителю команды ``rob_box_harness.core.tool_loop.command_turn`` (PR-7 ч.7c: действия по событию
-  владельца, фраза кода, ``speech`` при действиях не звучит, ход терминален); ``passed`` → пустой ответ;
+* **ответ разбирает один парсер** ``rob_box_dialog.command.parse``; что из команды получает ход — :func:`for_turn`
+  (голая реплика — одной речью, ``passed`` — одним исходом);
 * **невалидная команда** (разбор + ``command.validate`` по срезу тулов запроса) возвращается модели в том же запросе:
   её вызов ``command`` + tool-результат с нарушениями (``command.explain``; в JSON-режимах — реплика пользователя),
   не больше ``knowledge.COMMAND_RETRIES_MAX`` раз на ответ (решение Шифу 21.10 по #3698, как deepseek-harness:
-  ``invalid arguments`` с перечнем допустимого). Снова невалидна — исполнителю хода уходит вызов ``command`` с полем
-  ``knowledge.COMMAND_INVALID_FIELD``: ход закрывается как провал без речи (рефлекс ``failed``). Пока идёт повтор,
-  робот молчит: ответ ноде уходит один, после повтора;
+  ``invalid arguments`` с перечнем допустимого). Снова невалидна — ход получает ``Invalid`` и закрывает его кодом
+  (допустимые действия ``Invalid.salvage`` исполняются, итог говорит код). Пока идёт повтор, робот молчит: ответ
+  ходу уходит один, после повтора;
 * **речь длиннее, чем звучит** (#4137, решение Шифу 28.10) — единственное нарушение ``VIOLATION_SPEECH_TOO_LONG``
   (``command.overlong_only``): тот же повтор, но своим счётом ``knowledge.SPEECH_COMPACT_TURNS`` — ход компактнее
   есть, даже когда повтор потрачен на другое; и после него длинно — речь ужимает код (``command.fit_speech``), строка
   лога :data:`COMPACT_LOG_MARK`.
 
-Какие провайдеры отвечают командой — строка конфига ``llm_command_providers`` (:func:`wrapper_for`); остальные
-остаются на ``speak_text``. ``"passed": false`` / ``args: ""`` MiniMax нормализует ``command.parse`` (PR-7 #3698).
-Каждый ответ — строка лога :data:`COMMAND_LOG_MARK` (A14 по провайдерам).
+``"passed": false`` / ``args: ""`` MiniMax нормализует ``command.parse`` (PR-7 #3698). Каждый ответ — строка лога
+:data:`COMMAND_LOG_MARK` (A14 по провайдерам).
 """
 
 from __future__ import annotations
@@ -32,14 +31,14 @@ from __future__ import annotations
 import json
 import time
 import uuid
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from types import SimpleNamespace
-from typing import Any, AsyncIterator, Awaitable, Callable, Iterable, List, Mapping, Optional, Sequence, Tuple, Union
+from typing import Any, AsyncIterator, Awaitable, Callable, Iterable, List, Mapping, Optional, Sequence, Tuple
 
 from rob_box_dialog import knowledge as kn
 from rob_box_dialog.command import (NOT_RUN, Busy, Command, Expression, Invalid, Result, explain, fit_speech,
-                                    form_schema, is_empty, is_query_data, overlong_only, parse, to_args, validate,
-                                    words_only)
+                                    form_schema, is_empty, is_query_data, loud_actions, overlong_only, parse, to_args,
+                                    validate, words_only)
 from rob_box_dialog.command import ToolCall as CommandCall
 from rob_box_dialog.degrade import CommandMode, select_mode
 from rob_box_dialog.speech_channel import FieldChannel, ModeRequest
@@ -60,17 +59,12 @@ from rob_box_llm.provider import (
 COMMAND_LOG_MARK = "🧾 [command]"
 #: Маркер строк лога о речи длиннее, чем звучит (#4137): ход компактнее и ужатие кодом.
 COMPACT_LOG_MARK = "✂️ [command]"
-#: Префикс id вызова ``command``, который собрал мост (видно в истории и логах исполнителя).
+#: Префикс id вызова ``command`` модели в истории запроса (:func:`model_call`, продолжение данными ``query``).
 CALL_ID_PREFIX = "cmd-"
+#: Ответ модели пуст (ни речи, ни команды) — невалиден (A14: пустой ответ по провайдеру).
+EMPTY = "empty"
 #: Режимы, где схема команды идёт текстом в промпте (в остальных её несёт тул или ``response_format``).
 _SCHEMA_IN_PROMPT: Tuple[CommandMode, ...] = ("json_mode", "json_in_text")
-#: Поправка к правилам v1-промпта о транспорте речи: мастер-промпт учит ``speak_text`` и ``done`` (до PR-8).
-V1_TRANSPORT_NOTE = (
-    "Форма ответа в этом режиме важнее правил о speak_text и done выше: тула speak_text нет — всё, что человек должен "
-    "услышать, клади в поле speech; сказку, стих, рэп, анекдот — в perform.segments (куплет или абзац на сегмент), "
-    "героев с репликами — в perform.cast и role_per_segment (голоса им даёт код); о результате действий не говори — его "
-    "скажет код; done не пиши."
-)
 
 Log = Callable[[str], None]
 Ask = Callable[[List[LLMMessage]], Awaitable[LLMResponse]]
@@ -78,6 +72,15 @@ Ask = Callable[[List[LLMMessage]], Awaitable[LLMResponse]]
 
 def _no_log(_: str) -> None:
     return None
+
+
+@dataclass(frozen=True)
+class CommandResponse(LLMResponse):
+    """Ответ провайдера в режиме команд: ``command`` — команда хода (:func:`for_turn`) после разбора, проверки и
+    повторов. ``content``/``tool_calls`` пусты: текста и вызовов для цикла тулов нет, ход читает ``command``;
+    ``usage``/``raw``/``finish_reason`` — последнего ответа модели."""
+
+    command: Optional[Result] = None
 
 
 class _Widen(Exception):
@@ -97,9 +100,9 @@ def _schemas(names: Iterable[str]) -> List[Mapping[str, Any]]:
 
 
 def mode_note(mode: CommandMode, request: ModeRequest, schema: Mapping[str, Any] | None = None) -> str:
-    """Добавка к системному промпту: форма команды из ``knowledge`` (строки только о полях схемы хода, #4021) +
-    поправка v1 + схема для JSON-режимов."""
-    parts = [kn.prompt_fragment(schema), V1_TRANSPORT_NOTE]
+    """Добавка к системному промпту: форма команды из ``knowledge`` (строки только о полях схемы хода, #4021) + схема
+    для JSON-режимов. Промпт Личности о транспорте речи не говорит — форму ответа несёт только эта добавка (#4354 B1)."""
+    parts = [kn.prompt_fragment(schema)]
     if request.instruction:
         parts.append(request.instruction)
     if mode in _SCHEMA_IN_PROMPT:
@@ -190,6 +193,11 @@ def _spoken(cmd: Command) -> str:
     return ""
 
 
+def _acted(cmd: Command, text: str) -> bool:
+    """У команды есть что исполнить: действия, выступление или голос реплики."""
+    return bool(cmd.actions) or cmd.perform is not None or bool(cmd.voice and text)
+
+
 def _overlong(invalid: Invalid) -> str:
     """Что длиннее, чем звучит, — подробности нарушений ``VIOLATION_SPEECH_TOO_LONG`` («speech 400 > 350»)."""
     return "; ".join(v.detail for v in invalid.all)
@@ -209,32 +217,66 @@ def _without_speech_tool(cmd: Command) -> Command:
                    voice=str(args.get("voice") or "").strip() or cmd.voice)
 
 
-def to_legacy(result: Result) -> Tuple[str, Tuple[ToolCall, ...], str]:
-    """Команда → ``(текст речи, вызовы, вердикт для лога)`` в форме v1-цикла: голая реплика — текстом (авто-TTS ноды),
-    команда с действиями, выступлением, голосом реплики или лицом (``expression``) — одним вызовом ``command``
-    исполнителю команды. Реплика с лицом — вызов с вердиктом ``speech``: текст терял ``expression`` (#4225,
-    марафон-6: 58 ходов «речь + эмоция», на лице всегда рефлекс ``done`` happy 3 с, а речь говорила «глаза опустил,
-    свечусь синим»).
-    Невалидная — тоже вызов ``command``, но с причиной в ``COMMAND_INVALID_FIELD``: речи нет, ход закроет провал.
-    «Промолчать» (``passed``) — вызов ``command`` с одним полем ``passed``: пустой ответ без вызова потребитель не отличил бы
-    от пустого (``Invalid(empty)``, #3859), а так исход доходит до хода как есть."""
+def _keep_salvage(fixed: Result, invalid: Invalid) -> Result:
+    """Повтор снова невалиден и исполнить в нём нечего (n903 марафона-9 04.11: на ``speech_with_actions`` модель
+    прислала те же действия без речи, но JSON с лишней ``}`` — ``bad_json``), а у отвергнутой команды допустимые
+    действия были — ход исполняет их (``Invalid.salvage``), речь отвергнутой отброшена, итог скажет код, а не «Не
+    понял». Повтор со своими допустимыми действиями или валидный — как есть."""
+    if isinstance(fixed, Invalid) and not fixed.salvage and invalid.salvage:
+        return replace(fixed, salvage=invalid.salvage)
+    return fixed
+
+
+def for_turn(result: Result) -> Result:
+    """Что из ответа модели получает ход. Невалидная — как есть (причина и ``salvage``: ход закроет её кодом).
+    «Промолчать» — один исход ``passed``. Команда с действиями, выступлением, голосом реплики или лицом
+    (``expression``: #3974 лицо без слов, #4225 лицо при речи) — целиком. Иначе голая реплика — одной речью
+    (``speech``, текст ``ask`` или сегменты выступления: :func:`_spoken`); ни слова — ``Invalid(EMPTY)``.
+
+    Так ход получал команду и до #4354 B2 (через текст речи и вызов ``command`` формы v1): вопрос ``ask`` без
+    действий звучит репликой и ``pending_ask`` хода не ставит. Включить его — смена поведения, отдельной карточкой."""
     if isinstance(result, Invalid):
-        call = ToolCall(id=f"{CALL_ID_PREFIX}{uuid.uuid4().hex[:12]}", name=kn.COMMAND_TOOL,
-                        arguments={kn.COMMAND_INVALID_FIELD: result.reason,
-                                   **({"actions": [{"tool": a.tool, "args": dict(a.args)} for a in result.salvage]}
-                                      if result.salvage else {})})
-        return "", (call,), f"invalid:{result.reason}"
+        return result
     if result.passed:
-        call = ToolCall(id=f"{CALL_ID_PREFIX}{uuid.uuid4().hex[:12]}", name=kn.COMMAND_TOOL,
-                        arguments={"passed": result.passed})
-        return "", (call,), f"passed:{result.passed}"
+        return Command(passed=result.passed)
     cmd = _without_speech_tool(result)
     text = _spoken(cmd)
-    acted = bool(cmd.actions) or cmd.perform is not None or bool(cmd.voice and text)
-    if acted or cmd.expression != Expression():  # #3974 лицо без слов, #4225 лицо при речи - тоже команда
-        call = ToolCall(id=f"{CALL_ID_PREFIX}{uuid.uuid4().hex[:12]}", name=kn.COMMAND_TOOL, arguments=to_args(cmd))
-        return "", (call,), "speech" if text and not acted else "command"
-    return text, (), "speech" if text else "empty"
+    if _acted(cmd, text) or cmd.expression != Expression():
+        return cmd
+    return Command(speech=text) if text else Invalid(EMPTY, "ни речи, ни команды")
+
+
+def verdict(result: Result) -> str:
+    """Вердикт ответа для строки лога :data:`COMMAND_LOG_MARK`: ``invalid:<причина>``, ``passed:<почему>``,
+    ``speech`` (одни слова, и с лицом), ``command`` (есть что исполнить) или ``empty``."""
+    if isinstance(result, Invalid):
+        return f"invalid:{result.reason}"
+    if result.passed:
+        return f"passed:{result.passed}"
+    cmd = _without_speech_tool(result)
+    text = _spoken(cmd)
+    acted = _acted(cmd, text)
+    if acted or cmd.expression != Expression():
+        return "speech" if text and not acted else "command"
+    return "speech" if text else "empty"
+
+
+def model_call(result: Result) -> Optional[ToolCall]:
+    """Вызов ``command`` модели, как его видит история запроса (продолжение данными ``query``, ``dialog_v2_ports``):
+    аргументы команды хода (``command.to_args``); у невалидной — только её допустимые действия (``salvage``, #4050);
+    у ``passed`` — одно это поле. Голой реплике и пустому ответу вызова нет — данные уходят репликой пользователя."""
+    if isinstance(result, Invalid):
+        if result.reason == EMPTY:
+            return None
+        args: Mapping[str, Any] = ({"actions": [{"tool": a.tool, "args": dict(a.args)} for a in result.salvage]}
+                                   if result.salvage else {})
+    elif result.passed:
+        args = {"passed": result.passed}
+    elif _acted(result, _spoken(result)) or result.expression != Expression():
+        args = to_args(result)
+    else:
+        return None
+    return ToolCall(id=f"{CALL_ID_PREFIX}{uuid.uuid4().hex[:12]}", name=kn.COMMAND_TOOL, arguments=dict(args))
 
 
 def log_line(provider: str, mode: CommandMode, result: Result, verdict: str) -> str:
@@ -243,36 +285,14 @@ def log_line(provider: str, mode: CommandMode, result: Result, verdict: str) -> 
     озвучивается, §4.1: она остаётся только здесь — текстового канала мимо TTS у v1 нет)."""
     cmd = result if isinstance(result, Command) else None
     actions = [a.tool for a in cmd.actions if a.tool not in kn.SPEECH_CHANNEL_TOOLS] if cmd is not None else []
-    dropped = cmd.speech if actions and cmd is not None and cmd.speech else ""
+    # отброшена речь только при громком действии: рядом с тихим (``QUIET_WITH_SPEECH_TOOLS``) она звучит (#4320)
+    dropped = cmd.speech if cmd is not None and cmd.speech and loud_actions(cmd) and actions else ""
     detail = getattr(result, "detail", "") if isinstance(result, Invalid) else ""
     fixes = (("fields_moved", cmd.moved), ("fields_dropped", cmd.dropped)) if cmd is not None else ()
     fixed = "".join(f" {name}={list(fields)}" for name, fields in fixes if fields)
     return (f"{COMMAND_LOG_MARK} provider={provider} mode={mode} verdict={verdict} "
             f"actions={actions} speech_dropped={int(bool(dropped))}" + fixed
             + (f" speech={dropped[:120]!r}" if dropped else "") + (f" detail={detail[:120]!r}" if detail else ""))
-
-
-async def _collect(stream: AsyncIterator[LLMChunk]) -> LLMResponse:
-    """Собрать стрим провайдера в один ответ (команду можно разобрать только целиком)."""
-    parts: List[str] = []
-    calls: List[ToolCall] = []
-    finish: Optional[str] = None
-    usage: Optional[Mapping[str, int]] = None
-    truncated = False
-    try:
-        async for chunk in stream:
-            parts.append(chunk.content_delta or "")
-            if chunk.tool_call_delta is not None:
-                calls.append(chunk.tool_call_delta)
-            finish = chunk.finish_reason or finish
-            usage = chunk.usage or usage
-            truncated = truncated or chunk.truncated_tool_args
-    finally:
-        aclose = getattr(stream, "aclose", None)
-        if aclose is not None:
-            await aclose()
-    return LLMResponse(content="".join(parts), tool_calls=tuple(calls), finish_reason=finish, usage=usage or {},
-                       truncated_tool_args=truncated)
 
 
 class CommandModeLLM(LLMProvider):
@@ -320,7 +340,7 @@ class CommandModeLLM(LLMProvider):
 
     async def answer(self, ask: Ask, msgs: List[LLMMessage], offered: Sequence[Mapping[str, Any]],
                      widen: bool = False) -> LLMResponse:
-        """Ответ провайдера → ответ в форме v1 (речь текстом или вызовы тулов). Невалидная команда — повтор в том же
+        """Ответ провайдера → :class:`CommandResponse` с командой хода. Невалидная команда — повтор в том же
         запросе с нарушениями, не больше ``COMMAND_RETRIES_MAX`` раз; речь длиннее, чем звучит (одно это нарушение,
         ``command.overlong_only``) — ход компактнее своим счётом ``SPEECH_COMPACT_TURNS``, а и после него длинно —
         речь ужимает код (:meth:`_fitted`, #4137). Ответ без слов на последней итерации (``command.words_only``, #4157)
@@ -343,9 +363,8 @@ class CommandModeLLM(LLMProvider):
             response, result = await self._retried(ask, msgs, available, response, result, attempt)
         if isinstance(result, Invalid) and overlong_only(result):
             result = self._fitted(response, available, result)
-        text, calls, _ = to_legacy(result)
-        return LLMResponse(content=text, tool_calls=calls, finish_reason="tool_calls" if calls else "stop",
-                           usage=response.usage, raw=response.raw)
+        return CommandResponse(finish_reason=response.finish_reason, usage=response.usage, raw=response.raw,
+                               command=for_turn(result))
 
     async def _retried(self, ask: Ask, msgs: List[LLMMessage], available: Iterable[str], response: LLMResponse,
                        invalid: Invalid, attempt: int) -> Tuple[LLMResponse, Result]:
@@ -355,9 +374,11 @@ class CommandModeLLM(LLMProvider):
             self._log(f"{COMPACT_LOG_MARK} {_overlong(invalid)} — прошу компактнее")
         started = time.monotonic()
         retry = without_reasoning(await ask([*msgs, *retry_messages(response, invalid, query_done(msgs))]))
-        fixed = self._judged(retry, available)
+        fixed = _keep_salvage(self._judged(retry, available), invalid)
         self._log(f"{COMMAND_LOG_MARK} retry={attempt} violations={[v.reason for v in invalid.all]} "
-                  f"→ verdict={to_legacy(fixed)[2]} ({(time.monotonic() - started) * 1000:.0f} мс)")
+                  f"→ verdict={verdict(fixed)} ({(time.monotonic() - started) * 1000:.0f} мс)"
+                  + (f" salvage={[a.tool for a in fixed.salvage]}" if isinstance(fixed, Invalid) and fixed.salvage
+                     else ""))
         return retry, fixed
 
     def _fitted(self, response: LLMResponse, available: Iterable[str], invalid: Invalid) -> Result:
@@ -366,12 +387,12 @@ class CommandModeLLM(LLMProvider):
         fitted = judge(response, available, self._busy(), self._agent, fit=True)
         said = len(_spoken(fitted)) if isinstance(fitted, Command) else 0
         self._log(f"{COMPACT_LOG_MARK} {_overlong(invalid)} и после хода компактнее → ужата кодом до {said} символов, "
-                  f"verdict={to_legacy(fitted)[2]}")
+                  f"verdict={verdict(fitted)}")
         return fitted
 
     def _judged(self, response: LLMResponse, available: Iterable[str]) -> Result:
         result = judge(response, available, self._busy(), self._agent)
-        self._log(log_line(self.name, self.mode, result, to_legacy(result)[2]))
+        self._log(log_line(self.name, self.mode, result, verdict(result)))
         return result
 
     async def complete(self, messages: Iterable[LLMMessage], *, tools: Iterable[Mapping[str, Any]] = (),
@@ -388,44 +409,21 @@ class CommandModeLLM(LLMProvider):
 
     async def stream(self, messages: Iterable[LLMMessage], *, tools: Iterable[Mapping[str, Any]] = (),
                      settings: LLMSettings | None = None) -> AsyncIterator[LLMChunk]:
-        out = await self._stream_answer(messages, list(tools), settings)
-        if out.content:
-            yield LLMChunk(content_delta=out.content)
-        for call in out.tool_calls:
-            yield LLMChunk(tool_call_delta=call)
-        yield LLMChunk(finish_reason=out.finish_reason, usage=out.usage or None)
-
-    async def _stream_answer(self, messages: Iterable[LLMMessage], tools: List[Mapping[str, Any]],
-                             settings: LLMSettings | None) -> LLMResponse:
-        messages, widen = list(messages), True
-        while True:
-            msgs, offered, shaped = self.shape(messages, tools, settings)
-            try:
-                return await self.answer(lambda m: _collect(self._inner.stream(m, tools=offered, settings=shaped)),
-                                         msgs, offered, widen)
-            except _Widen as wide:
-                tools, widen = [*tools, *_schemas(wide.names)], False
-                self._log(f"{COMMAND_LOG_MARK} tool_not_available → в запрос добавлены тулы {list(wide.names)}")
+        """Потокового ответа в режиме команд нет: команду разбирают только целиком, ход зовёт :meth:`complete`."""
+        raise NotImplementedError("режим команд отвечает целиком: зовите complete()")
+        yield LLMChunk()  # pragma: no cover - делает метод асинхронным генератором, как у LLMProvider
 
     async def aclose(self) -> None:
         await self._inner.aclose()
 
 
-def command_providers(value: Union[str, Iterable[str], None]) -> frozenset:
-    """Имена провайдеров из конфига (строка через запятую или список), в нижнем регистре."""
-    items = value.split(",") if isinstance(value, str) else (value or ())
-    return frozenset(str(n).strip().lower() for n in items if str(n).strip())
-
-
-def wrapper_for(value: Union[str, Iterable[str], None], log: Log = _no_log,
-                busy: Callable[[], Busy] = Busy, agent: str = kn.AGENTS[0]) -> Callable[[Any], Any]:
-    """Обёртка провайдера для ``AgentSpec.wrap_provider``: провайдеры из списка — в режим команд, прочие как есть;
-    ``busy`` — что занято сейчас (выступление) для валидатора команды, ``agent`` — чьи команды проверяются."""
-    names = command_providers(value)
+def wrapper_for(log: Log = _no_log, busy: Callable[[], Busy] = Busy,
+                agent: str = kn.AGENTS[0]) -> Callable[[Any], Any]:
+    """Обёртка провайдера для ``AgentSpec.wrap_provider``: каждый провайдер цепочки — в режим команд (v2 отвечает
+    только командой); ``busy`` — что занято сейчас (выступление) для валидатора команды, ``agent`` — чьи команды
+    проверяются."""
 
     def wrap(provider: Any) -> Any:
-        if str(getattr(provider, "name", "")).lower() not in names:
-            return provider
         wrapped = CommandModeLLM(provider, log, busy, agent)
         log(f"{COMMAND_LOG_MARK} provider={wrapped.name} mode={wrapped.mode} (по capabilities адаптера)")
         return wrapped
@@ -434,7 +432,7 @@ def wrapper_for(value: Union[str, Iterable[str], None], log: Log = _no_log,
 
 
 __all__ = [
-    "CALL_ID_PREFIX", "COMMAND_LOG_MARK", "COMPACT_LOG_MARK", "CommandModeLLM", "V1_TRANSPORT_NOTE",
-    "command_providers", "judge", "log_line", "mode_note", "query_done", "reply_command", "retry_messages",
-    "to_legacy", "wrapper_for",
+    "CALL_ID_PREFIX", "COMMAND_LOG_MARK", "COMPACT_LOG_MARK", "CommandModeLLM", "CommandResponse", "EMPTY",
+    "for_turn", "judge", "log_line", "mode_note", "model_call", "query_done", "reply_command", "retry_messages",
+    "verdict", "wrapper_for",
 ]

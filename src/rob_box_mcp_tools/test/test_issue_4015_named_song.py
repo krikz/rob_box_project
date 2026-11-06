@@ -8,7 +8,7 @@
 
 Ревью PR #4124: «названное» — это пьеса, чьё название несёт понятые слова заказа или которую подтвердил каталог
 (``CoverWork.named``, ``piece.named_pick``), а не любая собранная пьеса: «спой что-нибудь», «спой народную песню» —
-песня робота; просьба сочинить песню о чём-то (грамматика: ``GENERATE``, ``tools_v2.song_asked``: «спой о море») — тоже.
+песня робота; просьба сочинить песню о чём-то (грамматика: ``GENERATE``, ``engine_tools.song_asked``: «спой о море») — тоже.
 """
 
 from __future__ import annotations
@@ -25,7 +25,7 @@ from rob_box_mcp_tools.engine.search import ThemeHits, ThemeQuery, part_query
 from rob_box_mcp_tools.engine.song_order import SongOrder
 from rob_box_mcp_tools.engine.instrumental_order import InstrumentalOrder
 from rob_box_mcp_tools.engine.source_route import SourceRouter
-from rob_box_mcp_tools.engine.tools_v2 import SOURCE_DECLINED, DjSetTool, RequestMusicTool, song_asked
+from rob_box_mcp_tools.engine.engine_tools import SOURCE_DECLINED, DjSetTool, RequestMusicTool, song_asked
 from rob_box_music.choice import DeterministicChooser
 from rob_box_music.source import (DECLINE, GENERATE, NAMED_SONG, REASON_WORDS, CoverWork, Route, SourceAsk,
                                   SourceContext, decline_text, source_ask, source_candidates)

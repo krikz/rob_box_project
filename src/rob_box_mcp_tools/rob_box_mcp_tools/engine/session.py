@@ -247,7 +247,7 @@ class SetSession:
     def stop(self, reason: str = "user_stop") -> Dict[str, Any]:
         """Сет закрыт: очередь пуста, плеер ``idle``; запланированное на клоке устаревает."""
         self._deactivate()
-        self._log.info(f"🎧 [set v2] {self.set_id} stop reason={reason}")
+        self._log.info(f"🎧 [set] {self.set_id} stop reason={reason}")
         return {**self._owner.stop(reason), "set_id": self.set_id}
 
     def detach(self) -> None:
@@ -289,7 +289,7 @@ class SetSession:
             return
         self._ended = True
         self._deactivate()
-        self._log.info(f"🎧 [set v2] {self.set_id} сет окончен: {self.tracks} {tracks_word(self.tracks)}")
+        self._log.info(f"🎧 [set] {self.set_id} сет окончен: {self.tracks} {tracks_word(self.tracks)}")
 
     def _prepare(self, track_no: int, deck: str) -> Optional[Any]:
         """Компоновка → рендер → тот же темп. ``None`` — артефакт отвергнут (событие ``rejected``)."""
@@ -328,10 +328,10 @@ class SetSession:
             self._models = {k: v for k, v in self._models.items() if k == track_id}
             self._seams.keep(track_id)
         form_end = float(snap["start_beat"]) + float(snap["form_beats"])
-        self._log.info(f"🎧 [set v2] {self.set_id} трек {no}/{self.tracks} started track_id={track_id} "
+        self._log.info(f"🎧 [set] {self.set_id} трек {no}/{self.tracks} started track_id={track_id} "
                        f"form_end_beat={form_end} {self._note(track_id)} {self._composition_note(model)}".rstrip())
         if no >= self.tracks:  # последний: плеер доиграет форму один раз (once), следующего нет
-            self._log.info(f"🎧 [set v2] {self.set_id} трек {no} последний — играет форму до конца, следующего нет")
+            self._log.info(f"🎧 [set] {self.set_id} трек {no} последний — играет форму до конца, следующего нет")
             return
         self._owner.watch(track_id, form_end, self._lead, self._on_nearly_finished)
         self._compose_next_soon()
@@ -344,7 +344,7 @@ class SetSession:
             try:
                 write_track_file(self._tracks_dir, model)
             except OSError as exc:
-                self._log.warning(f"⚠️ [set v2] {self.set_id} модель трека не записана: {type(exc).__name__}: {exc}")
+                self._log.warning(f"⚠️ [set] {self.set_id} модель трека не записана: {type(exc).__name__}: {exc}")
         return "composition=" + json.dumps(track_composition(model), ensure_ascii=False, separators=(",", ":"))
 
     def _compose_next_soon(self) -> None:
@@ -384,11 +384,11 @@ class SetSession:
                                        leave_at=form_end if overlap else None,
                                        once=current["no"] + 1 >= self.tracks)
         if not advanced:
-            self._log.warning(f"⚠️ [set v2] {self.set_id} трек {current['no'] + 1} не готов — "
+            self._log.warning(f"⚠️ [set] {self.set_id} трек {current['no'] + 1} не готов — "
                               f"продлеваю трек {current['no']} ещё на проход формы")
             self._compose_next_soon()
         elif overlap:
-            self._log.info(f"🎧 [set v2] {self.set_id} блэнд трек {current['no']}→{current['no'] + 1}: "
+            self._log.info(f"🎧 [set] {self.set_id} блэнд трек {current['no']}→{current['no'] + 1}: "
                            f"{overlap / BEATS_PER_BAR:g} тактов с доли {form_end - overlap}")
         # Страховка и при стыке: не встанет N+1 (exec упал) — N играет, проверка через проход.
         self._owner.watch(track_id, form_end + current["form_beats"], self._lead, self._on_nearly_finished)
@@ -402,7 +402,7 @@ class SetSession:
         if beats is None:
             return 0.0
         if not beats or beats > self._lead - BEATS_PER_BAR:  # вход должен успеть встать на такт после события
-            self._log.warning(f"⚠️ [set v2] {self.set_id} блэнда нет ({leaving.track_id}→{incoming.track_id}: "
+            self._log.warning(f"⚠️ [set] {self.set_id} блэнда нет ({leaving.track_id}→{incoming.track_id}: "
                               f"{beats:g} долей при lead {self._lead:g}) — стык на границе формы")
             return 0.0
         return beats

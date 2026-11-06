@@ -28,8 +28,8 @@ from pathlib import Path
 import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
-E2E_SCRIPT = REPO_ROOT / ".github" / "workflows" / "scripts" / "e2e_voice_test.sh"
-WAKE_GATE_LIB = REPO_ROOT / ".github" / "workflows" / "scripts" / "e2e_voice_wake_gate.sh"
+E2E_SCRIPT = REPO_ROOT / "scripts" / "ci" / "e2e" / "e2e_voice_test.sh"
+WAKE_GATE_LIB = REPO_ROOT / "scripts" / "ci" / "e2e" / "e2e_voice_wake_gate.sh"
 
 
 # --- helpers ---------------------------------------------------------------

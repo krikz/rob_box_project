@@ -4,7 +4,7 @@
 диджей молчал до конца сета (марафон 23.10, акт 6 n605: ложный PASS по фразе запуска). Здесь — поведение: сет из трёх
 треков даёт две реплики перехода (трек 1 озвучивает фраза запуска, мост — своя фраза), в реплике факты трека (номер,
 длина, произведение кавера), название-метка инструментала (одно на все треки темы) связкой не повторяется,
-``music_v2_dj_lines: false`` глушит реплики, но не факты. Без сети: фейковый KIE, настоящий кэш, симулятор клока.
+``music_dj_lines: false`` глушит реплики, но не факты. Без сети: фейковый KIE, настоящий кэш, симулятор клока.
 """
 
 from __future__ import annotations
@@ -18,7 +18,7 @@ from rob_box_mcp_tools.engine.dj_lines import TransitionLines, latin_fold
 from rob_box_mcp_tools.engine.gen import gen_session as gs
 from rob_box_mcp_tools.engine.gen.library import GeneratedMusicLibrary
 from rob_box_mcp_tools.engine.source_route import cache_tracks
-from rob_box_mcp_tools.engine.tools_v2 import DjSetTool
+from rob_box_mcp_tools.engine.engine_tools import DjSetTool
 from rob_box_music import dj_line as dl
 from rob_box_music import knowledge as kn
 from rob_box_music.choice import DeterministicChooser
@@ -156,7 +156,7 @@ def test_bridge_is_not_a_set_track_and_gets_no_line(tmp_path):
 
 
 def test_dj_lines_off_by_parameter_keeps_facts(tmp_path):
-    """``music_v2_dj_lines: false`` — переходы молчат и в сете из генерации; факты трека всё равно в снимке."""
+    """``music_dj_lines: false`` — переходы молчат и в сете из генерации; факты трека всё равно в снимке."""
     said, log, published = [], Log(), []
     gen = _gen(_lib(tmp_path), _lines(said, log, speak=False, published=published))
     notes = _play(gen)
@@ -193,7 +193,7 @@ def test_dj_set_from_cache_speaks_on_every_transition_through_robot_voice(tmp_pa
         _wait(lambda: len([e for e in rig.events if e["event"] == "queued"]) == k)
         rig.clock.run_until(first["start_beat"] + k * first["form_beats"] + 1)
     _wait(lambda: len(said) == 2)
-    started = [m for _l, m in rig.log.lines if "[set v2]" in m and " started " in m]
+    started = [m for _l, m in rig.log.lines if "[set]" in m and " started " in m]
     assert len(started) == 3 and "dj_line=start_phrase" in started[0]
     assert all("dj_line=on" in m for m in started[1:])
     assert len(said) == 2 and not [s for s in said if LABEL.lower() in s.lower()]

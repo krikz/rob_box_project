@@ -31,6 +31,9 @@ ANIM_CALL = ToolCall("play_animation", {"animation": "sad"})
 LIST_CALL = ToolCall("music_library", {"action": "list", "limit": 10})
 TRACKS = {"tracks": [{"title": "Ночной дозор"}, {"title": "Рассвет"}], "count": 2}
 ANSWER = "В библиотеке два трека: «Ночной дозор» и «Рассвет»."
+#: Фраза кода по данным ``TRACKS`` (#4157 К2): числа ``total`` у фикстуры нет - называются названия из данных, а не
+#: общая заглушка «ответ не сложился».
+NAMES = "Вот что нашлось: «Ночной дозор», «Рассвет»."
 LIBRARY_DONE = {"music_library": ("done", TRACKS, None)}
 
 
@@ -154,13 +157,14 @@ def test_pr4067_salvaged_refused_memory_read_before_the_last_iteration_closes_th
 
 def test_pr4067_bare_query_expression_does_not_paint_the_done_face():
     """Ревью PR #4067: экспрессия команды с голым ``query`` написана до данных, как и её слова, - итог она не красит
-    (как до PR): данные модели, её ответ невалиден - фраза кода по данным, лицо итога - её грусть («не смог сложить»,
-    #4069 п.8), а не ``happy`` команды."""
+    (как до PR): данные модели, её ответ невалиден - фраза кода по данным (#4157 К2: названия из данных, без грусти),
+    а не ``happy`` команды."""
     happy = Answer(Command(actions=(LIST_CALL,), expression=Expression(emotion="happy")), "deepseek")
     ports = Ports([happy, Answer(Invalid(kn.VIOLATION_SPEECH_TOO_LONG, "speech"), "deepseek", calls=2)], LIBRARY_DONE)
     _run(ports)
-    assert [t for t, _, _ in ports.said] == [phrases.text(kn.QUERY_FALLBACK_GENERIC)]
-    assert ports.faces == [("done", SAD_FACE)], "экспрессия до данных итог не красит"
+    assert [t for t, _, _ in ports.said] == [NAMES]
+    # ответ кода по данным - не провал (#4157 К2): грусти нет, и ``happy`` команды итог тоже не красит
+    assert ports.faces == [], "экспрессия до данных итог не красит"
 
 
 def test_pr4067_executed_animation_next_to_query_still_paints_the_done_face():
@@ -176,7 +180,7 @@ def test_4065_invalid_answer_after_the_mixed_data_is_said_from_the_data_3883():
     код по данным запроса; list повторно не исполняется."""
     ports = Ports([_mixed(), Answer(Invalid(kn.VIOLATION_SPEECH_TOO_LONG, "speech"), "deepseek", calls=2)], LIBRARY_DONE)
     agg = _run(ports)
-    assert [t for t, _, _ in ports.said] == [phrases.text(kn.QUERY_FALLBACK_GENERIC)]
+    assert [t for t, _, _ in ports.said] == [NAMES]
     assert (agg.stage, agg.status) == ("done", "done") and len(ports.executed) == 1
 
 
@@ -187,13 +191,14 @@ def test_4065_mixed_on_the_last_iteration_without_words_is_said_by_code_from_the
     """Модель до потолка просит ``[play_animation, list]`` без слов: на последней итерации list не исполняется
     (читать некому), анимация исполнена один раз (#4069 п.1: повтор в том же ходе не исполняется) и красит итог, а
     говорит код по данным хода - не тишина."""
+    # #4286: и тот же ``list`` второй раз не исполняется (``turn.unreread``): на первый повтор модели - подсказка
+    # «уже выполнено», на второй ход закрывает код по данным
     ports = Ports([_mixed()] * (kn.LLM_QUERY_ITERATIONS_MAX + 1), LIBRARY_DONE)
     agg = _run(ports)
-    assert len(ports.asked) == kn.LLM_QUERY_ITERATIONS_MAX + 1
-    assert ports.executed == [[("play_animation", {"animation": "sad"}), ("music_library", dict(LIST_CALL.args))],
-                              *[[("music_library", dict(LIST_CALL.args))]] * (kn.LLM_QUERY_ITERATIONS_MAX - 1)], \
-        "анимация не повторена; query на последней итерации не исполнен"
-    assert ports.said == [(phrases.text(kn.QUERY_FALLBACK_GENERIC), None, "sad")]
+    assert len(ports.asked) == 3
+    assert ports.executed == [[("play_animation", {"animation": "sad"}), ("music_library", dict(LIST_CALL.args))]], \
+        "анимация и чтение не повторены"
+    assert ports.said == [(NAMES, None, None)], "ответ по данным - без грусти (#4157 К2)"
     assert (agg.stage, agg.status) == ("done", "done") and ports.stages[-1] == ("done", "done", "query_fallback:ceiling")
     assert ports.faces == [("done", Shown(emotion="sad", duration_s=kn.FACE_SHOW_DEFAULT_S))], \
         "исполненная анимация красит итог (#4049) временем показа (#4083)"

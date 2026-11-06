@@ -61,7 +61,7 @@ PROVIDER_VOICES: dict[str, list[str]] = {
         "Russian_BrightHeroine", "Russian_AmbitiousWoman",
         "Russian_CrazyQueen", "Russian_PessimisticGirl",         # female
         # голоса каста марафона (#3992): ими харнесс e2e озвучивает людей (``map_tts_voice`` в
-        # ``.github/workflows/scripts/e2e_voice_lib.sh``). В каталоге робота они с #4086: «говори голосом Весельчак»
+        # ``scripts/ci/e2e/e2e_voice_lib.sh``). В каталоге робота они с #4086: «говори голосом Весельчак»
         # без записи здесь честно отвечало «такого голоса нет». Нерусские: русский текст читают с акцентом.
         "English_Jovialman", "English_WiseScholar", "Chinese (Mandarin)_Gentle_Senior",   # male, male, female
         "English_Whispering_girl", "Portuguese_StrictBoss",                               # female, female
@@ -297,6 +297,25 @@ def unsupported_language_notice(provider: str, language: str | None) -> str | No
     )
 
 
+#: Значение ``languages`` раздела ``tts_context`` у провайдера без привязки языка к голосу: любой язык.
+ANY_LANGUAGE = "any"
+
+
+def spoken_languages(provider: str, voice_id: str | None = None) -> str | list[str]:
+    """На каких языках звучащий голос скажет фразу сейчас (М12 n909, #4236): :data:`ANY_LANGUAGE` или список кодов.
+
+    Факт для окна модели («скажи по-китайски спокойной ночи»), один источник - этот реестр. MiniMax
+    (:data:`LANGUAGE_AGNOSTIC_PROVIDERS`) говорит на любом языке любым голосом: английский голос по-русски с акцентом,
+    русский - по-китайски. У остальных язык прибит к голосу (``VOICE_METADATA``): Silero - только ``v5_ru``, Yandex -
+    язык звучащего голоса (``anton`` - русский; ``john``/``lea`` берёт ``tts_node`` только при поле ``language``
+    реплики, а реплика диалога v2 его не ставит). Голос вне каталога - пустой список: про него ничего не знаем."""
+    prov = str(provider or "").strip().lower()
+    if prov in LANGUAGE_AGNOSTIC_PROVIDERS:
+        return ANY_LANGUAGE
+    lang = language_of(prov, voice_id or default_voice_for(prov))
+    return [lang] if lang else []
+
+
 def voice_for_language(provider: str, language: str) -> str:
     """Голос провайдера, говорящий на ``language``; "" если такого нет.
 
@@ -336,7 +355,7 @@ def named_voices_for(provider: str) -> list[tuple[str, ...]]:
     джовиалмен»). Название и каждый алиас - отдельные элементы кортежа, не склейка: ``rob_box_dialog.turn.command_form``
     ищет в реплике каждое имя целым словом, а Tier-1 читает алиасы вторым кругом, после названия и хвоста id
     (``grammar._voice``). Хвост id («Jovialman») грамматика берёт сама. Одно знание об именах - ``VOICE_ALIASES`` (его же
-    читает ``voice_id_by_name``); для v1 (``tier1_host``) и v2 (``dialog_node``) список один; провайдер неизвестен -
+    читает ``voice_id_by_name``); читатель - ``turn_context.tts_voices`` (``dialog_node``); провайдер неизвестен -
     пустой список."""
     return [(vid, voice_display_name(provider, vid), *VOICE_ALIASES.get(f"{provider}:{vid}", ()))
             for vid in voices_for(provider)]
@@ -514,21 +533,44 @@ def format_tts_context(
 
     Формат::
 
-        [TTS] provider: yandex | default_voice: anton | current_voice: zahar | voices: anton, alena, jane, ...
+        [TTS] provider: yandex | default_voice: anton | current_voice: zahar | current_voice_name: Захар | voices: ...
 
     ``current_voice`` — установленный через set_voice голос (если был);
-    None → показываем дефолтный (current == default).
+    None → показываем дефолтный (current == default). ``current_voice_name`` — имя этого голоса из каталога:
+    людям голос называют им, а не id и не по памяти (#4020, n402).
     """
+    fields = tts_context_fields(provider, default_voice, current_voice)
+    voices_str = ", ".join(fields["voices"]) or "-"
+    return (
+        f"[TTS] provider: {fields['provider']} | "
+        f"default_voice: {fields['default_voice']} | "
+        f"current_voice: {fields['current_voice']} | "
+        f"current_voice_name: {fields['current_voice_name']} | "
+        f"voices: {voices_str}"
+    )
+
+
+def tts_context_fields(
+    provider: str,
+    default_voice: str | None = None,
+    current_voice: str | None = None,
+) -> dict:
+    """Данные раздела ``tts_context`` снимка хода (#4370): провайдер, голос по умолчанию, звучащий голос и его имя
+    для людей, языки звучащего голоса (:func:`spoken_languages`, М12 n909), каталог голосов. Единственное место, где имя звучащего голоса берётся из реестра, а не из памяти
+    модели (n402 М8 29.10: звучал male-qn-qingse, а модель по id «угадала» «Надёжный мужчина» - это
+    Russian_ReliableMan). Голос вне каталога называется своим id."""
     voices = voices_for(provider)
     default = default_voice or default_voice_for(provider)
     current = current_voice or default
-    voices_str = ", ".join(voices) if voices else "-"
-    return (
-        f"[TTS] provider: {provider} | "
-        f"default_voice: {default} | "
-        f"current_voice: {current} | "
-        f"voices: {voices_str}"
-    )
+    info = voice_info_for(provider, current) if current else None
+    return {
+        "provider": provider,
+        "default_voice": default,
+        "current_voice": current,
+        "current_voice_name": info["display_name"] if info else current,
+        "languages": spoken_languages(provider, current),
+        "voices": list(voices),
+    }
 
 
 # ── Пресеты пения (ADR-0158 §2.3, решение В8) ───────────────────────────────

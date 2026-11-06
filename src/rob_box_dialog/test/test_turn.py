@@ -162,7 +162,7 @@ def test_tier1_stop_all_stops_music_motion_and_speech():
     _run(engine, "стоп")
     assert ports.cancels == ["tier1 stop_all"] and ports.intents == ["stop_motion"]
     assert ports.executed == [[("stop_music", {})]]
-    assert ports.said == []
+    assert [s[0] for s in ports.said] in [[v] for v in phrases.catalog()[kn.MUSIC_STOP_SAID]]  # стоп музыки - словами
 
 
 def _with_music(engine, **music):
@@ -180,7 +180,8 @@ def test_enough_stops_the_set_and_speech_but_does_not_silence_and_next_command_i
     assert ports.cancels == ["tier1 stop_all"]
     assert ports.executed == [[("dj_set", {"action": "stop"}), ("stop_music", {})]]
     assert engine.session.snapshot.top("Silence") is None
-    assert ports.said == []
+    assert [s[0] for s in ports.said] in [[v] for v in phrases.catalog()[kn.MUSIC_STOP_SAID]]  # стоп музыки - словами
+    ports.said.clear()
     _run(engine, "музыку громче")  # следующая команда принята, а не проглочена тишиной
     assert ports.executed[-1] == [("set_music_volume", {"action": "louder"})]
     assert ports.said == [(phrases.text("music.volume.louder"), None, None)]
@@ -773,9 +774,11 @@ def test_query_data_goes_back_to_llm_once_then_answer():
 
 
 def test_query_beyond_limit_is_not_run_and_code_speaks_instead_of_silence():
-    """#3953: модель и на последнем вызове просит query (мост не отсёк) — он не исполняется, ход ``done`` с фразой кода."""
-    q = Command(actions=(ToolCall("get_current_time", {}),))
-    ports = Ports(answers=[Answer(q, "deepseek") for _ in range(kn.LLM_QUERY_ITERATIONS_MAX + 1)])
+    """#3953: модель и на последнем вызове просит query (мост не отсёк) — он не исполняется, ход ``done`` с фразой кода.
+    Запросы разные: тот же второй раз в ходе не исполняется вовсе (#4286, ``turn.unreread``)."""
+    qs = [Command(actions=(ToolCall("memory_search", {"query": f"час {n}"}),))
+          for n in range(kn.LLM_QUERY_ITERATIONS_MAX + 1)]
+    ports = Ports(answers=[Answer(q, "deepseek") for q in qs])
     agg = _run(_engine(ports), "который час")
     assert len(ports.asked) == kn.LLM_QUERY_ITERATIONS_MAX + 1
     assert len(ports.executed) == kn.LLM_QUERY_ITERATIONS_MAX
@@ -1415,6 +1418,84 @@ def test_ceiling_while_action_runs_says_its_timeout_not_dont_understand(monkeypa
     agg = _run(_engine(ports, deadline_s=0.1), "поставь ровный ритм")
     assert _said(ports) == [phrases.text("media.timeout")]
     assert phrases.text("understand.timeout") not in _said(ports) and agg.status == "failed"
+
+
+_DJ_ROCK = ToolCall("dj_set", {"action": "start", "theme": "рок"})
+
+
+def test_4313_theme_switch_under_playing_set_progress_says_rebuilding_not_launching(monkeypatch):
+    """М9 n604 «уводи в сторону рока»: новый сет собирается, старый играет - «музыка запускается» врёт."""
+    monkeypatch.setattr(kn, "PROGRESS_AFTER_S", 0.03)
+    ports = NamedPorts(answers=[Answer(Command(actions=(_DJ_ROCK,)), "deepseek")], execute_delay=0.4)
+    engine = _engine(ports)
+    _with_music(engine)
+    _run(engine, "уводи в сторону рока")
+    said = _said(ports)
+    assert said[0] == phrases.text("media.progress_replace") and phrases.text("media.progress") not in said
+
+
+def test_4313_ceiling_under_playing_set_does_not_say_not_started(monkeypatch):
+    """Потолок кончился, прежний сет звучит: «Музыка пока не заиграла» - ложь, фраза по факту снимка плеера."""
+    from rob_box_dialog.deadline import TurnDeadline
+
+    monkeypatch.setattr(TurnDeadline, "grant", lambda self, own_s: None, raising=False)
+    ports = NamedPorts(answers=[Answer(Command(actions=(_DJ_ROCK,)), "deepseek")], execute_delay=5)
+    engine = _engine(ports, deadline_s=0.1)
+    _with_music(engine)
+    _run(engine, "уводи в сторону рока")
+    assert _said(ports) == [phrases.text("media.timeout_replace")]
+    assert phrases.text("media.timeout") not in _said(ports)
+
+
+def test_4313_ceiling_when_nothing_plays_still_says_not_started(monkeypatch):
+    from rob_box_dialog.deadline import TurnDeadline
+
+    monkeypatch.setattr(TurnDeadline, "grant", lambda self, own_s: None, raising=False)
+    ports = NamedPorts(answers=[Answer(Command(actions=(_DJ_ROCK,)), "deepseek")], execute_delay=5)
+    _run(_engine(ports, deadline_s=0.1), "поставь рок")
+    assert _said(ports) == [phrases.text("media.timeout")]
+
+
+def test_4479_executor_timeout_under_playing_set_does_not_say_not_started():
+    """М14 n604: срок класса вышел (исполнитель закрыл ``timeout``), прежний сет звучит - «не заиграла» врёт."""
+    ports = NamedPorts(answers=[Answer(Command(actions=(_DJ_ROCK,)), "deepseek")])
+    ports.outcomes["dj_set"] = ("timeout", {})
+    engine = _engine(ports)
+    _with_music(engine)
+    _run(engine, "уводи в сторону рока")
+    assert _said(ports) == [phrases.text("media.timeout_replace")]
+    assert phrases.text("media.timeout") not in _said(ports)
+
+
+def test_4479_executor_timeout_when_nothing_plays_still_says_not_started():
+    ports = NamedPorts(answers=[Answer(Command(actions=(_DJ_ROCK,)), "deepseek")])
+    ports.outcomes["dj_set"] = ("timeout", {})
+    _run(_engine(ports), "поставь рок")
+    assert _said(ports) == [phrases.text("media.timeout")]
+
+
+def test_4313_stop_under_playing_music_is_not_a_replacement(monkeypatch):
+    from types import SimpleNamespace
+
+    from rob_box_dialog.turn import replacing_music
+
+    engine = _engine(Ports())
+    _with_music(engine)
+    assert replacing_music(engine, SimpleNamespace(replacing=True, waiting="action.media")) is True
+    assert replacing_music(engine, SimpleNamespace(replacing=False, waiting="action.media")) is False
+    assert replacing_music(engine, SimpleNamespace(replacing=True, waiting="llm")) is False
+
+
+def test_4313_new_set_after_ceiling_is_announced_by_code_with_first_track():
+    """Новый сет встал после потолка: код объявляет его, как первый сет (#4217): сколько треков и какой первый."""
+    from rob_box_dialog.turn import say_late
+
+    ports = Ports()
+    engine = _engine(ports)
+    late = ActionResult("t9/0", 0, "personality", "dj_set", kn.TOOL_CLASSES["dj_set"], "done", None,
+                        {"action": "start", "opening": "Rock Anthem", "tracks_text": "5 треков"})
+    say_late(engine, late)
+    assert len(ports.said) == 1 and "Rock Anthem" in ports.said[0][0] and "5 треков" in ports.said[0][0]
 
 
 def test_dead_provider_closes_turn_at_once_without_waiting_ceiling():

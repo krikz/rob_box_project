@@ -102,7 +102,9 @@
 
 ### 5.1 Capability-метаданные (`capabilities()`)
 
-`TTSCapabilities` — `frozen @dataclass` с **8 boolean-полями**: streaming, voice_cloning, ssml, pronunciation_dict, audio_format_pcm, audio_format_mp3, audio_format_ogg, custom_endpoint. Default = все `False`. Провайдер переопределяет **только те, что реально поддерживает**.
+`TTSCapabilities` — `frozen @dataclass` с **11 boolean-полями**: streaming, voice_cloning, ssml, pronunciation_dict, audio_format_pcm, audio_format_mp3, audio_format_ogg, custom_endpoint и флаги сервиса из ADR-0160 §2.5 — `reads_digits` (сам читает цифры), `sets_stress` (сам ставит ударения), `pause_markup` (адаптер передаёт паузы такта своей меткой). Default = все `False`. Провайдер переопределяет **только те, что реально поддерживает**.
+
+**`prepare(text) → text`** (#4240, ADR-0160 §2.5) — шестая точка: адаптер сам готовит голый текст реплики под свой сервис (паузы, нормализация, ударения, конверт). Default — текст как есть. Адаптеры: MiniMax — `rob_box_llm.providers.minimax_tts` (текст как есть, паузы `<#x#>` родные); Yandex и Silero — `rob_box_voice.tts_providers` (снимают метки MiniMax; конверт `<speak>` у Silero — на каждый чанк). Флаги отражают то, что адаптер делает сейчас: `sil<[мс]>` у Yandex и `<break>` у Silero — PR-4, нормализатор для Silero — PR-5, поэтому у них `pause_markup=False`, у Silero `reads_digits=False`.
 
 Зачем: `tts_node` (и CLI) могут до вызова проверить `if not provider.capabilities().streaming: use sync path`. Это убирает неявный fallback `mini_max_provider.stream → synthesize` (см. ADR-0003 §2.4) и даёт **явный failure** вместо silent-degradation.
 

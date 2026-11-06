@@ -21,9 +21,13 @@
   <!-- SpeakingWatch: «говорит» по SpeechEvent (PR-15 15-0b #3711) -->
   <exec_depend>rob_box_core</exec_depend>
   <exec_depend>python3-numpy</exec_depend>
+  <!-- face/layout.py reads the boards from the led_matrix_compositor YAML -->
+  <exec_depend>python3-yaml</exec_depend>
   <exec_depend>launch</exec_depend>
   <exec_depend>launch_ros</exec_depend>
   <exec_depend>led_matrix_compositor</exec_depend>
+  <!-- ros2leds: canvas, backgrounds, pulses, signals and lamp themes of the face -->
+  <exec_depend>led_matrix_effects</exec_depend>
 
   <test_depend>ament_lint_auto</test_depend>
   <test_depend>ament_lint_common</test_depend>

@@ -18,8 +18,8 @@
 # stamp    = время КАДРА, на котором сделана детекция (header кадра камеры),
 #            а не время публикации (ADR-0130 §2.5).
 # frame_id = optical frame камеры из header кадра (REP-103 optical:
-#            z вперёд, x вправо, y вниз). В base_link/map переводит
-#            потребитель (трекер на Main Pi, ADR-0130 §2.11), не Vision Pi.
+#            z вперёд, x вправо, y вниз). Та же точка в base_link / map —
+#            поля position_base_link / position_map в конце сообщения.
 std_msgs/Header header
 
 # Id датчика = имя адаптера шва «Взгляд» ("oak_d", "ceiling_camera").
@@ -70,3 +70,17 @@ string candidate_id
 
 # Сходство с candidate_id [0, 1]; -1.0 = не посчитано на этом кадре.
 float32 candidate_similarity
+
+# Та же точка в base_link и в map — через tf2 на момент header.stamp
+# (ADR-0130 §7 этап 1, ADR-0138 §«Поправка 03.11.2026»). Каждый фрейм со
+# своим честным статусом; точка NaN×3, когда статус не "ok".
+# Словарь — observation_frames.FRAME_STATUS_*:
+#   ok | no_position (position_valid=false) | tf_disabled (перевод выключен
+#   или нет tf2) | no_transform (в дереве TF нет цепочки — например, нет
+#   map, когда RTAB-Map не публикует) | transform_stale (цепочка есть,
+#   но данных TF на момент кадра нет за tf_timeout_sec)
+# Трансформ на другой момент вместо момента кадра НЕ подставляется.
+geometry_msgs/Point position_base_link
+string base_link_status
+geometry_msgs/Point position_map
+string map_status

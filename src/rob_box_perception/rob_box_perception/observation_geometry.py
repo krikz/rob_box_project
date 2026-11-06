@@ -21,7 +21,7 @@
 * :func:`estimate_position` — медиана валидных глубин по центральной части
   бокса, отсечение выбросов, перевод пикселя через K в optical frame.
 * :func:`build_observation` — VisionEvent-dict + кадр → поля
-  ``Observation.msg`` (``OBSERVATION_FIELDS``) без имени (ADR-0130 §5.1).
+  ``Observation.msg`` (``GEOMETRY_FIELDS``) без имени (ADR-0130 §5.1).
 """
 
 from __future__ import annotations
@@ -30,6 +30,8 @@ import json
 import math
 from dataclasses import dataclass
 from typing import Any, Dict, Optional, Sequence, Tuple
+
+from rob_box_perception.observation_frames import FRAME_FIELDS
 
 # ============================================================================
 # Словарь Observation.position_status (ADR-0018 capability-honest)
@@ -59,15 +61,20 @@ STATUS_DEPTH_INVALID = 'depth_invalid'
 #: реализуется только профиль person; «face» — детекция части человека).
 OBSERVATION_CLASSES = ('person', 'face')
 
-#: Поля Observation.msg без ``header`` (его ставит нода) — Python-сторона
-#: контракта, сверяется с IDL в test_observation_parity.py.
-OBSERVATION_FIELDS = (
+#: Поля Observation.msg, которые считает :func:`build_observation` (всё,
+#: что видно из кадра: детекция и точка в optical frame).
+GEOMETRY_FIELDS = (
     'source', 'class_name', 'confidence',
     'bbox_cx_px', 'bbox_cy_px', 'bbox_w_px', 'bbox_h_px',
     'image_width', 'image_height',
     'position', 'distance_m', 'position_valid', 'position_status',
     'position_stddev_m', 'candidate_id', 'candidate_similarity',
 )
+
+#: Поля Observation.msg без ``header`` (его ставит нода) — Python-сторона
+#: контракта, сверяется с IDL в test_observation_parity.py. Хвост —
+#: точка в base_link / map (``observation_frames.FrameResolver``).
+OBSERVATION_FIELDS = GEOMETRY_FIELDS + FRAME_FIELDS
 
 # Параметры оценки. Не калиброваны на роботе — разумные значения для
 # OAK-D Lite (рабочий диапазон стерео ~0.2–10 м); меняются здесь.
@@ -227,7 +234,7 @@ def build_observation(
     """VisionEvent-dict (bbox в долях кадра) → поля Observation.msg.
 
     Returns:
-        dict с ключами ``OBSERVATION_FIELDS`` (``position`` — кортеж
+        dict с ключами ``GEOMETRY_FIELDS`` (``position`` — кортеж
         (x, y, z)); None — если класс вне ``OBSERVATION_CLASSES`` или у
         кадра нет размера (наблюдение не из кадра).
 

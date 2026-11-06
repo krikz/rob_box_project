@@ -80,10 +80,11 @@ def test_operator_sees_say_and_the_personality_does_not():
 
 
 def test_reply_is_built_by_code_from_the_turn(stop_hosts):
-    host, _base, _late = _host([Command(speech="Батарея в норме.")])
+    # речь без утверждения о подсистеме: «Батарея в норме.» без тула - ложь, её судит ``state_claim`` (#4286)
+    host, _base, _late = _host([Command(speech="Принял, оператор.")])
     stop_hosts.append(host)
-    out = host.run_payload({"text": "как батарея", "source": "telegram", "client_id": "c", "request_id": "r1"})
-    assert out == {"ok": True, "summary": "Батарея в норме.", "tool_calls": [], "source": "telegram", "client_id": "c"}
+    out = host.run_payload({"text": "привет", "source": "telegram", "client_id": "c", "request_id": "r1"})
+    assert out == {"ok": True, "summary": "Принял, оператор.", "tool_calls": [], "source": "telegram", "client_id": "c"}
 
 
 def test_say_is_a_promise_then_late_result_by_speech_event(stop_hosts):
@@ -133,12 +134,8 @@ def test_tier1_stop_cancels_operator_speech_without_llm(stop_hosts):
     assert base.cancelled and not hasattr(base, "tools")  # LLM не звали
 
 
-def test_agent_path_picks_engine_by_flag():
-    node = SimpleNamespace(_build_agent_core_sync=lambda: ("core", "dsm"),
-                           _run_agent_sync=lambda core, payload: {"core": core, **payload})
-    build, run = ot.agent_path(node, "v1")
-    assert build() == ("core", "dsm") and run("c", {"x": 1}) == {"core": "c", "x": 1}
-    build, run = ot.agent_path(SimpleNamespace(), "v2")
+def test_agent_path_runs_the_shared_engine_host():
+    build, run = ot.agent_path(SimpleNamespace())
     assert run(SimpleNamespace(run_payload=lambda p: {"v2": p}), {"y": 2}) == {"v2": {"y": 2}}
 
 

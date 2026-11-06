@@ -14,8 +14,8 @@
 
 **Files:**
 - Modify: `.github/workflows/L-Deploy and Verify.yml`
-- Create: `.github/scripts/deployment_issue_dedup.py`
-- Create: `.github/scripts/tests/test_deployment_issue_dedup.py`
+- Create: `scripts/ci/deployment_issue_dedup.py`
+- Create: `scripts/ci/tests/test_deployment_issue_dedup.py`
 
 **Step 1: Write the failing test**
 
@@ -27,35 +27,35 @@ Example test target:
 
 **Step 2: Run test to verify it fails**
 
-Run: `python -m pytest .github/scripts/tests/test_deployment_issue_dedup.py -q`
+Run: `python -m pytest scripts/ci/tests/test_deployment_issue_dedup.py -q`
 
 Expected: FAIL because helper script or function does not exist yet.
 
 **Step 3: Write minimal implementation**
 
-Create `.github/scripts/deployment_issue_dedup.py` with:
+Create `scripts/ci/deployment_issue_dedup.py` with:
 - a simple CLI entrypoint scaffold
 - a pure function for normalization
 - a pure function for building a signature from normalized data
 
 **Step 4: Run test to verify it passes**
 
-Run: `python -m pytest .github/scripts/tests/test_deployment_issue_dedup.py -q`
+Run: `python -m pytest scripts/ci/tests/test_deployment_issue_dedup.py -q`
 
 Expected: PASS
 
 **Step 5: Commit**
 
 ```bash
-git add .github/scripts/deployment_issue_dedup.py .github/scripts/tests/test_deployment_issue_dedup.py
+git add scripts/ci/deployment_issue_dedup.py scripts/ci/tests/test_deployment_issue_dedup.py
 git commit -m "test(deploy): add deployment issue dedup helpers"
 ```
 
 ### Task 2: Add signature stability tests
 
 **Files:**
-- Modify: `.github/scripts/tests/test_deployment_issue_dedup.py`
-- Modify: `.github/scripts/deployment_issue_dedup.py`
+- Modify: `scripts/ci/tests/test_deployment_issue_dedup.py`
+- Modify: `scripts/ci/deployment_issue_dedup.py`
 
 **Step 1: Write the failing test**
 
@@ -66,7 +66,7 @@ Add tests proving:
 
 **Step 2: Run test to verify it fails**
 
-Run: `python -m pytest .github/scripts/tests/test_deployment_issue_dedup.py -q`
+Run: `python -m pytest scripts/ci/tests/test_deployment_issue_dedup.py -q`
 
 Expected: FAIL on at least one new signature assertion.
 
@@ -81,23 +81,23 @@ Implement deterministic signature generation using:
 
 **Step 4: Run test to verify it passes**
 
-Run: `python -m pytest .github/scripts/tests/test_deployment_issue_dedup.py -q`
+Run: `python -m pytest scripts/ci/tests/test_deployment_issue_dedup.py -q`
 
 Expected: PASS
 
 **Step 5: Commit**
 
 ```bash
-git add .github/scripts/deployment_issue_dedup.py .github/scripts/tests/test_deployment_issue_dedup.py
+git add scripts/ci/deployment_issue_dedup.py scripts/ci/tests/test_deployment_issue_dedup.py
 git commit -m "test(deploy): verify stable issue signatures"
 ```
 
 ### Task 3: Teach helper to parse raw findings into per-problem records
 
 **Files:**
-- Modify: `.github/scripts/deployment_issue_dedup.py`
+- Modify: `scripts/ci/deployment_issue_dedup.py`
 - Modify: `.github/workflows/L-Deploy and Verify.yml`
-- Modify: `.github/scripts/tests/test_deployment_issue_dedup.py`
+- Modify: `scripts/ci/tests/test_deployment_issue_dedup.py`
 
 **Step 1: Write the failing test**
 
@@ -109,7 +109,7 @@ Add tests for transforming raw collected findings into a list of problem records
 
 **Step 2: Run test to verify it fails**
 
-Run: `python -m pytest .github/scripts/tests/test_deployment_issue_dedup.py -q`
+Run: `python -m pytest scripts/ci/tests/test_deployment_issue_dedup.py -q`
 
 Expected: FAIL because parser/output format is incomplete.
 
@@ -121,22 +121,22 @@ Update the workflow to write raw findings into temp files instead of directly ju
 
 **Step 4: Run test to verify it passes**
 
-Run: `python -m pytest .github/scripts/tests/test_deployment_issue_dedup.py -q`
+Run: `python -m pytest scripts/ci/tests/test_deployment_issue_dedup.py -q`
 
 Expected: PASS
 
 **Step 5: Commit**
 
 ```bash
-git add .github/workflows/L-Deploy\ and\ Verify.yml .github/scripts/deployment_issue_dedup.py .github/scripts/tests/test_deployment_issue_dedup.py
+git add .github/workflows/L-Deploy\ and\ Verify.yml scripts/ci/deployment_issue_dedup.py scripts/ci/tests/test_deployment_issue_dedup.py
 git commit -m "refactor(deploy): emit per-problem findings"
 ```
 
 ### Task 4: Add duplicate-detection tests against existing issue markers
 
 **Files:**
-- Modify: `.github/scripts/tests/test_deployment_issue_dedup.py`
-- Modify: `.github/scripts/deployment_issue_dedup.py`
+- Modify: `scripts/ci/tests/test_deployment_issue_dedup.py`
+- Modify: `scripts/ci/deployment_issue_dedup.py`
 
 **Step 1: Write the failing test**
 
@@ -153,7 +153,7 @@ Cover:
 
 **Step 2: Run test to verify it fails**
 
-Run: `python -m pytest .github/scripts/tests/test_deployment_issue_dedup.py -q`
+Run: `python -m pytest scripts/ci/tests/test_deployment_issue_dedup.py -q`
 
 Expected: FAIL on duplicate-detection behavior.
 
@@ -164,14 +164,14 @@ Implement marker parsing and duplicate matching using the HTML comment marker:
 
 **Step 4: Run test to verify it passes**
 
-Run: `python -m pytest .github/scripts/tests/test_deployment_issue_dedup.py -q`
+Run: `python -m pytest scripts/ci/tests/test_deployment_issue_dedup.py -q`
 
 Expected: PASS
 
 **Step 5: Commit**
 
 ```bash
-git add .github/scripts/deployment_issue_dedup.py .github/scripts/tests/test_deployment_issue_dedup.py
+git add scripts/ci/deployment_issue_dedup.py scripts/ci/tests/test_deployment_issue_dedup.py
 git commit -m "test(deploy): cover duplicate issue detection"
 ```
 
@@ -179,8 +179,8 @@ git commit -m "test(deploy): cover duplicate issue detection"
 
 **Files:**
 - Modify: `.github/workflows/L-Deploy and Verify.yml`
-- Modify: `.github/scripts/deployment_issue_dedup.py`
-- Test: `.github/scripts/tests/test_deployment_issue_dedup.py`
+- Modify: `scripts/ci/deployment_issue_dedup.py`
+- Test: `scripts/ci/tests/test_deployment_issue_dedup.py`
 
 **Step 1: Write the failing test**
 
@@ -195,7 +195,7 @@ Expected result:
 
 **Step 2: Run test to verify it fails**
 
-Run: `python -m pytest .github/scripts/tests/test_deployment_issue_dedup.py -q`
+Run: `python -m pytest scripts/ci/tests/test_deployment_issue_dedup.py -q`
 
 Expected: FAIL because end-to-end orchestration is incomplete.
 
@@ -212,7 +212,7 @@ Remove the old single-summary issue logic.
 
 **Step 4: Run test to verify it passes**
 
-Run: `python -m pytest .github/scripts/tests/test_deployment_issue_dedup.py -q`
+Run: `python -m pytest scripts/ci/tests/test_deployment_issue_dedup.py -q`
 
 Expected: PASS
 
@@ -229,7 +229,7 @@ Expected: `ok`
 **Step 6: Commit**
 
 ```bash
-git add .github/workflows/L-Deploy\ and\ Verify.yml .github/scripts/deployment_issue_dedup.py .github/scripts/tests/test_deployment_issue_dedup.py
+git add .github/workflows/L-Deploy\ and\ Verify.yml scripts/ci/deployment_issue_dedup.py scripts/ci/tests/test_deployment_issue_dedup.py
 git commit -m "feat(deploy): deduplicate auto-generated deployment issues"
 ```
 
@@ -272,13 +272,13 @@ git commit -m "docs(deploy): document issue deduplication flow"
 
 **Files:**
 - Modify: none
-- Test: `.github/scripts/tests/test_deployment_issue_dedup.py`
+- Test: `scripts/ci/tests/test_deployment_issue_dedup.py`
 - Test: `.github/workflows/L-Deploy and Verify.yml`
 - Test: `docs/deployment/DEPLOYMENT_WORKFLOW.md`
 
 **Step 1: Run helper tests**
 
-Run: `python -m pytest .github/scripts/tests/test_deployment_issue_dedup.py -q`
+Run: `python -m pytest scripts/ci/tests/test_deployment_issue_dedup.py -q`
 
 Expected: PASS
 

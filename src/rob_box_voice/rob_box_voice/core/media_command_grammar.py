@@ -31,7 +31,7 @@ from dataclasses import dataclass, replace
 from enum import Enum
 from typing import FrozenSet, List, Mapping, Optional, Sequence, Tuple
 
-from rob_box_dialog.knowledge import GRAMMAR_FILLER, VOLUME_STEMS
+from rob_box_dialog.knowledge import GRAMMAR_FILLER, MUSIC_SERVICE_WORDS, VOLUME_STEMS
 from rob_box_music import knowledge as kn
 from rob_box_music.dj_line import persona_title
 from rob_box_music.instruments import near, split_instrument
@@ -799,7 +799,7 @@ _NOT_THEME_CLASSES: FrozenSet[str] = frozenset({"volume", "stop"})
 
 
 #: Просьба продолжить сет (#3581, живой сет 12.10: «продолжай сэт» стал темой «продолжай» → хуки «Carry On»,
-#: «Keep It Up»). Слово — не тема; без новой темы в реплике тема — тема последнего сета (``tools_v2.DjSetTool``).
+#: «Keep It Up»). Слово — не тема; без новой темы в реплике тема — тема последнего сета (``engine_tools.DjSetTool``).
 SET_CONTINUE_WORDS: FrozenSet[str] = frozenset({
     "продолжай", "продолжайте", "продолжи", "продолжим", "продолжаем", "продолжить", "продолжение", "дальше",
     "ещё", "еще", "снова", "опять", "повтори",
@@ -838,9 +838,12 @@ SET_ANNOUNCE_WORDS: FrozenSet[str] = frozenset({
 })
 
 #: Слова просьбы о сете — не тема: глаголы заказа и запуска, «сет», обращение и назначение персоны, длина сета,
-#: служебные. Одна таблица для грамматики и для темы из слов реплики (``theme_grounding.heard_theme``, 07.10).
+#: служебные. Одна таблица для грамматики и для темы из слов реплики (``theme_grounding.heard_theme``, 07.10). Стоп,
+#: смена, «вместо него», вейк, связки - таблица ``rob_box_dialog.knowledge.MUSIC_SERVICE_WORDS`` (#4393: «останови
+#: этот сет и поставь вместо него ночной рок» - не тема «останови и вместо него ночной»).
 SET_REQUEST_WORDS: FrozenSet[str] = (
     _ORDER_VERBS | _SET_WORDS | _DJ_FILLER | LENGTH_WORDS | SET_CONTINUE_WORDS | SET_SWITCH_WORDS | SET_ANNOUNCE_WORDS
+    | MUSIC_SERVICE_WORDS
 ) | {
     "давай", "давайте", "робот", "робби", "будешь", "станешь", "побудь", "диджеем", "диджея", "сэту", "сету",
     "сеты", "замутим", "замутить", "замутишь", "сделаешь", "организуй", "забабахай", "дай", "пусть",
@@ -860,7 +863,7 @@ _SET_NEGATION: FrozenSet[str] = frozenset({
 def asks_for_set(text: str) -> bool:
     """Человек просит сет: слово сета/диджея/вечеринки без отрицания перед ним или явный стиль («включи рейв»).
     Иначе заказ — одна пьеса (``mode=piece``, ADR-0157 §2.1): ``dj_set(start)`` по такой реплике отказывает
-    (``tools_v2.NOT_A_SET_REQUEST``)."""
+    (``engine_tools.NOT_A_SET_REQUEST``)."""
     words = _theme_words(extract_user_utterance(text))
     for i, word in enumerate(words):
         named = word in _SET_WORDS or word in _SET_NOUNS or word.startswith(_SET_MODE_STEMS)
@@ -1112,7 +1115,7 @@ _LIBRARY_FILLER: FrozenSet[str] = _PLAY_NAMED_FILLER | _COMMON_FILLER | _GENERIC
 
 def _library_command(words: Sequence[str]) -> Optional[MediaCommand]:
     """Реплика со словом «библиотека» (#3696): «включи (X) из библиотеки» → ``LIBRARY(kind=play, name=X)``; «что у
-    тебя в библиотеке» → ``LIBRARY(kind=list)``. Трек выбирает код (``library_command``), не LLM."""
+    тебя в библиотеке» → ``LIBRARY(kind=list)``. Трек выбирает код, не LLM."""
     if not any(w.startswith(_LIBRARY_STEM) for w in words):
         return None
     body = list(itertools.dropwhile(lambda w: w in _PLAY_NAMED_LEAD_IN, words))

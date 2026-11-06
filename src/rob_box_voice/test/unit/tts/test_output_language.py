@@ -43,10 +43,8 @@ from test.unit.tts.test_voice_selection import _playback_node  # noqa: E402
 def _run(node, *, voice=None, language=None, text="hello") -> None:
     TTSNode._synthesize_and_play(
         node,
-        f"<speak>{text}</speak>",
         text,
         None,
-        {},
         None,
         None,
         None,
@@ -158,11 +156,11 @@ def test_silero_speaks_notice_instead_of_foreign_text() -> None:
     """
     node = _playback_node()
     node._synthesize_minimax = MagicMock(side_effect=RuntimeError("MiniMax dead"))
-    node._synthesize_yandex = MagicMock(side_effect=RuntimeError("Yandex dead"))
+    node._yandex_tts.synthesize_np = MagicMock(side_effect=RuntimeError("Yandex dead"))
     node.provider_chain = ["minimax", "yandex", "silero"]
     _run(node, language="fr", text="Je vais vers le portail")
-    node._synthesize_silero.assert_called_once()
-    spoken = node._synthesize_silero.call_args[0][0]
+    node._silero_tts.synthesize_np.assert_called_once()
+    spoken = node._silero_tts.synthesize_np.call_args[0][0]
     assert "Je vais vers le portail" not in spoken
     assert "французском" in spoken
 
@@ -171,26 +169,26 @@ def test_silero_speaks_russian_text_unchanged() -> None:
     """Русский язык Silero умеет — текст обязан дойти нетронутым."""
     node = _playback_node()
     node._synthesize_minimax = MagicMock(side_effect=RuntimeError("MiniMax dead"))
-    node._synthesize_yandex = MagicMock(side_effect=RuntimeError("Yandex dead"))
+    node._yandex_tts.synthesize_np = MagicMock(side_effect=RuntimeError("Yandex dead"))
     node.provider_chain = ["minimax", "yandex", "silero"]
     _run(node, language="ru", text="еду к воротам")
-    assert node._synthesize_silero.call_args[0][0] == "еду к воротам"
+    assert node._silero_tts.synthesize_np.call_args[0][0] == "еду к воротам"
 
 
 def test_silero_without_language_is_untouched() -> None:
     """Обычная реплика робота (language=None) — прежнее поведение."""
     node = _playback_node()
     node._synthesize_minimax = MagicMock(side_effect=RuntimeError("MiniMax dead"))
-    node._synthesize_yandex = MagicMock(side_effect=RuntimeError("Yandex dead"))
+    node._yandex_tts.synthesize_np = MagicMock(side_effect=RuntimeError("Yandex dead"))
     node.provider_chain = ["minimax", "yandex", "silero"]
     _run(node, text="еду к воротам")
-    assert node._synthesize_silero.call_args[0][0] == "еду к воротам"
+    assert node._silero_tts.synthesize_np.call_args[0][0] == "еду к воротам"
 
 
 def _yandex_node():
     node = _playback_node()
     node._synthesize_minimax = MagicMock(side_effect=RuntimeError("MiniMax dead"))
-    node._synthesize_yandex = MagicMock(
+    node._yandex_tts.synthesize_np = MagicMock(
         return_value=np.zeros(4800, dtype=np.float32)
     )
     node.provider_chain = ["minimax", "yandex", "silero"]
@@ -205,30 +203,30 @@ def test_yandex_switches_voice_to_match_language() -> None:
     """
     node = _yandex_node()
     _run(node, language="de", text="Ich fahre zum Tor")
-    node._synthesize_yandex.assert_called_once()
-    assert node._synthesize_yandex.call_args[0][0] == "Ich fahre zum Tor"
-    assert node._synthesize_yandex.call_args[1].get("voice") == "lea"
+    node._yandex_tts.synthesize_np.assert_called_once()
+    assert node._yandex_tts.synthesize_np.call_args[0][0] == "Ich fahre zum Tor"
+    assert node._yandex_tts.synthesize_np.call_args[1].get("voice") == "lea"
 
 
 def test_yandex_switches_voice_for_english() -> None:
     node = _yandex_node()
     _run(node, language="en", text="heading to the gate")
-    assert node._synthesize_yandex.call_args[1].get("voice") == "john"
+    assert node._yandex_tts.synthesize_np.call_args[1].get("voice") == "john"
 
 
 def test_yandex_keeps_operator_voice_for_russian() -> None:
     """Русский — голос оператора не трогаем."""
     node = _yandex_node()
     _run(node, voice="zahar", language="ru", text="еду к воротам")
-    assert node._synthesize_yandex.call_args[1].get("voice") == "zahar"
+    assert node._yandex_tts.synthesize_np.call_args[1].get("voice") == "zahar"
 
 
 def test_yandex_refuses_language_without_a_voice() -> None:
     """Французского у SpeechKit нет — вместо текста звучит отказ."""
     node = _yandex_node()
     _run(node, language="fr", text="Je vais vers le portail")
-    node._synthesize_yandex.assert_called_once()
-    spoken = node._synthesize_yandex.call_args[0][0]
+    node._yandex_tts.synthesize_np.assert_called_once()
+    spoken = node._yandex_tts.synthesize_np.call_args[0][0]
     assert "Je vais vers le portail" not in spoken
     assert "французском" in spoken
 
@@ -247,7 +245,7 @@ def test_worker_forwards_language_via_kwargs() -> None:
     node = _playback_node()
     node._synthesize_and_play = MagicMock()
     TTSNode._run_synthesis_worker.__get__(node, type(node))(
-        "<speak>x</speak>", "x", None, {}, "sid1", "bid1", 1, 1,
+        "x", None, "sid1", "bid1", 1, 1,
         play_seq=1, voice="zahar", language="fr",
     )
     node._synthesize_and_play.assert_called_once()
@@ -260,7 +258,7 @@ def test_worker_without_language_passes_none() -> None:
     node = _playback_node()
     node._synthesize_and_play = MagicMock()
     TTSNode._run_synthesis_worker.__get__(node, type(node))(
-        "<speak>x</speak>", "x", None, {}, "sid1", "bid1", 1, 1, play_seq=1,
+        "x", None, "sid1", "bid1", 1, 1, play_seq=1,
     )
     _, kwargs = node._synthesize_and_play.call_args
     assert kwargs.get("language") is None

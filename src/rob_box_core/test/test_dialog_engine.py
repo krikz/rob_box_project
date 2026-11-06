@@ -1,8 +1,7 @@
-"""Флаг ``dialog_engine`` (ADR-0150 §11, PR-8 #3702): значения, чтение yaml, две копии, выбор нод launch-ом.
+"""Ноды диалога в launch voice_assistant (ADR-0150 §11; флаг v1|v2 снят в #4354 A3, метка у dialog_node — в A4).
 
 Launch-файлы грузятся с подменой ``launch``/``launch_ros`` (записывающие заглушки): тест видит ровно тот список нод,
-который launch отдаёт ROS, и их порядок. PR-15 (#3711, часть 15p): нода v1 удалена — ``v1`` в launch даёт громкую
-ошибку, а не запуск несуществующего исполняемого файла.
+который launch отдаёт ROS, и их порядок.
 """
 
 from __future__ import annotations
@@ -18,9 +17,9 @@ import yaml
 from rob_box_core import dialog_engine as de
 
 REPO = Path(__file__).resolve().parents[3]
-CONFIG_COPIES = (
-    REPO / "docker" / "sound" / "config" / "voice_assistant" / de.FILE_NAME,
-    REPO / "src" / "rob_box_voice" / "config" / de.FILE_NAME,
+CONFIG_DIRS = (
+    REPO / "docker" / "sound" / "config" / "voice_assistant",
+    REPO / "src" / "rob_box_voice" / "config",
 )
 LAUNCHES = {
     "headless": REPO / "docker" / "sound" / "config" / "voice_assistant" / "voice_assistant_headless.launch.py",
@@ -35,52 +34,17 @@ NODES = {
 }
 
 
-def test_engine_accepts_only_known_values():
-    assert de.engine("v1") == "v1"
-    assert de.engine(" V2 ") == "v2"
-    for bad in ("", None, "v3", "true"):
-        with pytest.raises(ValueError):
-            de.engine(bad)
+def test_engine_label_param_is_gone():
+    """#4354 A4: метки ``dialog_engine`` у ``dialog_node`` нет — её читала только ветка v1 e2e-харнесса."""
+    assert not hasattr(de, "declare") and not hasattr(de, "PARAM") and not hasattr(de, "V2")
+    node_py = REPO / "src" / "rob_box_voice" / "rob_box_voice" / "dialog_node.py"
+    assert "dialog_engine.declare" not in node_py.read_text(encoding="utf-8")
 
 
-def test_both_config_copies_are_identical_and_default_v2():
-    texts = [p.read_text(encoding="utf-8") for p in CONFIG_COPIES]
-    assert texts[0] == texts[1], "docker/sound и src/rob_box_voice: dialog_engine.yaml разошлись"
-    data = yaml.safe_load(texts[0])
-    assert data == {"/**": {"ros__parameters": {"dialog_engine": de.DEFAULT}}}
-    assert de.from_yaml(CONFIG_COPIES[0]) == "v2"
-
-
-def test_from_yaml_missing_file_is_default(tmp_path):
-    assert de.from_yaml(tmp_path / "nope.yaml") == de.DEFAULT
-
-
-def test_from_yaml_typo_is_loud(tmp_path):
-    bad = tmp_path / de.FILE_NAME
-    bad.write_text('/**:\n  ros__parameters:\n    dialog_engine: "v3"\n', encoding="utf-8")
-    with pytest.raises(ValueError):
-        de.from_yaml(bad)
-    bad.write_text('/**:\n  ros__parameters:\n    other: 1\n', encoding="utf-8")
-    with pytest.raises(ValueError):
-        de.from_yaml(bad)
-
-
-def test_declare_reads_node_parameter():
-    class Node:
-        def __init__(self, value):
-            self.value = value
-            self.declared = {}
-
-        def declare_parameter(self, name, default):
-            self.declared[name] = default
-
-        def get_parameter(self, name):
-            return types.SimpleNamespace(value=self.value if self.value is not None else self.declared[name])
-
-    assert de.declare(Node(None)) == "v2"
-    assert de.declare(Node("v2")) == "v2"
-    with pytest.raises(ValueError):
-        de.declare(Node("v9"))
+def test_no_engine_flag_file_in_config_dirs():
+    """#4354 A3: флага движка нет — файла ``dialog_engine.yaml`` нет ни в одной копии каталога конфигов."""
+    for config_dir in CONFIG_DIRS:
+        assert not (config_dir / "dialog_engine.yaml").exists(), config_dir
 
 
 # ── launch ──────────────────────────────────────────────────────────────
@@ -142,68 +106,54 @@ def _nodes(monkeypatch, which, config_dir):
     return names, tts
 
 
-def _config(tmp_path, value):
-    (tmp_path / de.FILE_NAME).write_text(f'/**:\n  ros__parameters:\n    dialog_engine: "{value}"\n', encoding="utf-8")
-    return tmp_path
-
-
 @pytest.mark.parametrize("which", sorted(LAUNCHES))
-def test_launch_v1_is_a_loud_error_not_a_missing_executable(monkeypatch, tmp_path, which):
-    """PR-15 15p: ноды v1 нет — ``v1`` в yaml роняет сборку launch понятной ошибкой (откат только гитом)."""
-    with pytest.raises(ValueError, match="v1 удалён"):
-        _nodes(monkeypatch, which, _config(tmp_path, "v1"))
-
-
-@pytest.mark.parametrize("which", sorted(LAUNCHES))
-def test_launch_without_flag_file_is_default_v2(monkeypatch, tmp_path, which):
-    names, _ = _nodes(monkeypatch, which, tmp_path)
-    assert names == NODES[which]
-
-
-@pytest.mark.parametrize("which", sorted(LAUNCHES))
-def test_launch_v2_starts_dialog_node(monkeypatch, tmp_path, which):
-    names, tts = _nodes(monkeypatch, which, _config(tmp_path, "v2"))
+def test_launch_starts_dialog_node_and_tts_without_engine_param(monkeypatch, tmp_path, which):
+    """``tts_node`` параметр ``dialog_engine`` не объявляет — launch его больше не передаёт (#4354 A3)."""
+    names, tts = _nodes(monkeypatch, which, tmp_path)
     assert names == NODES[which]
     assert "dialogue_node" not in names
-    assert {"dialog_engine": "v2"} in tts.kwargs["parameters"]
+    assert not any(isinstance(p, dict) and "dialog_engine" in p for p in tts.kwargs["parameters"])
 
 
-def test_launch_v2_dialog_node_gets_its_yaml_and_flag(monkeypatch, tmp_path):
+def test_launch_dialog_node_gets_its_yaml(monkeypatch, tmp_path):
     _fake_launch(monkeypatch)
-    cfg = _config(tmp_path, "v2")
+    cfg = tmp_path
     tts_args = {"package": "rob_box_voice", "executable": "tts_node", "name": "tts_node", "namespace": "",
                 "parameters": ["tts_node.yaml"]}
     dialog, tts = de.launch_nodes({"config_dir": str(cfg)}, tts_args)
     assert (dialog.kwargs["executable"], dialog.name) == ("dialog_node", "dialog_node")
-    assert dialog.kwargs["parameters"] == [str(cfg / "dialog_node.yaml"), {"dialog_engine": "v2"}]
+    assert dialog.kwargs["parameters"] == [str(cfg / "dialog_node.yaml"), {}]
 
 
-def test_launch_v2_dialog_node_gets_the_music_chooser_of_the_mcp_server(monkeypatch, tmp_path):
+def test_launch_dialog_node_gets_the_music_chooser_of_the_mcp_server(monkeypatch, tmp_path):
     """Ревью #4071 N4: путь пения хода (``dialog_node.build_sing``) выбирает тем же выбирателем, что путь тула музыки —
     значение ``mcp_server.music_chooser`` одно, launch передаёт его ``dialog_node`` (своей копии в yaml нет)."""
     _fake_launch(monkeypatch)
-    cfg = _config(tmp_path, "v2")
+    cfg = tmp_path
     (cfg / "mcp_server.yaml").write_text('mcp_server:\n  ros__parameters:\n    music_chooser: "deterministic"\n',
                                          encoding="utf-8")
     tts_args = {"package": "rob_box_voice", "executable": "tts_node", "name": "tts_node", "namespace": "",
                 "parameters": ["tts_node.yaml"]}
     dialog, _tts = de.launch_nodes({"config_dir": str(cfg)}, tts_args)
-    assert dialog.kwargs["parameters"][1] == {"dialog_engine": "v2", "music_chooser": "deterministic"}
+    assert dialog.kwargs["parameters"][1] == {"music_chooser": "deterministic"}
 
 
 def test_shared_params_of_both_config_copies_are_the_live_music_chooser():
     """Обе копии каталога конфигов дают ``dialog_node`` режим выбирателя из своего ``mcp_server.yaml``."""
-    for copy in CONFIG_COPIES:
-        mcp = yaml.safe_load((copy.parent / "mcp_server.yaml").read_text(encoding="utf-8"))
-        assert de.shared_params(copy.parent) == {"music_chooser": mcp["mcp_server"]["ros__parameters"]["music_chooser"]}
+    for config_dir in CONFIG_DIRS:
+        mcp = yaml.safe_load((config_dir / "mcp_server.yaml").read_text(encoding="utf-8"))
+        assert de.shared_params(config_dir) == {"music_chooser": mcp["mcp_server"]["ros__parameters"]["music_chooser"]}
     assert de.shared_params(Path("нет-такого-каталога")) == {}
 
 
-def test_flag_value_lives_only_in_dialog_engine_module():
-    """Значения флага не копируются: launch-файлы и ноды берут их из ``rob_box_core.dialog_engine``."""
+def test_engine_flag_is_gone_from_supervisor_telegram_and_launch():
+    """#4354 A3: ТАРС и Telegram не выбирают движок (ветки v1 удалены), launch не читает флаг."""
     users = [LAUNCHES["headless"], LAUNCHES["src"],
              REPO / "src" / "rob_box_telegram" / "rob_box_telegram" / "telegram_node.py",
-             REPO / "src" / "rob_box_supervisor" / "rob_box_supervisor" / "supervisor_node.py"]
+             REPO / "src" / "rob_box_supervisor" / "rob_box_supervisor" / "supervisor_node.py",
+             REPO / "src" / "rob_box_supervisor" / "rob_box_supervisor" / "operator_turns.py",
+             REPO / "src" / "rob_box_supervisor" / "rob_box_supervisor" / "operator_prompt.py"]
     for path in users:
         text = path.read_text(encoding="utf-8")
-        assert '"v2"' not in text and "'v2'" not in text and '"v1"' not in text and "'v1'" not in text, path
+        assert "dialog_engine.declare" not in text and "dialog_engine.V1" not in text, path
+        assert '"v1"' not in text and "'v1'" not in text, path

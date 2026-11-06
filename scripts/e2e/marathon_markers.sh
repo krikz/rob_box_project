@@ -22,3 +22,12 @@ marathon_summary_value() {
         | tail -1 | grep -oE "(^|[[:space:]])${key}=[^[:space:]]+" | tail -1 | sed -E "s/^[[:space:]]*${key}=//")"
     printf '%s' "${value:--}"
 }
+
+# marathon_step_statuses <log>  → «метка=СТАТУС,метка=СТАТУС» по строкам-маркерам E2E_STEP харнесса (#4077 П4).
+# Итог шага — ПОСЛЕДНЯЯ строка на метку (run_step печатает промежуточный FAIL, цикл сценария — финальный вердикт);
+# эхо исходника шага workflow маркером не считается (то же правило, что у marathon_has_marker). Нет шагов — пусто.
+marathon_step_statuses() {
+    grep -aE "(^|[[:space:]])[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9:.]+Z (>>> )?E2E_STEP [A-Za-z][A-Za-z0-9_]* (OK|FAIL|SKIP)([[:space:]]|\$)" "$1" 2>/dev/null \
+        | sed -E 's/.*E2E_STEP ([A-Za-z][A-Za-z0-9_]*) (OK|FAIL|SKIP).*/\1 \2/' \
+        | awk '{ s[$1] = $2; if (!($1 in o)) { o[$1] = ++n; k[n] = $1 } } END { for (i = 1; i <= n; i++) printf "%s%s=%s", (i > 1 ? "," : ""), k[i], s[k[i]] }'
+}

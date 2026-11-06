@@ -102,7 +102,7 @@ Segmentation fault (Address not mapped to object [(nil)])
 
 ## Что починено в этом PR
 
-В файле `.github/scripts/deployment_issue_dedup.py` добавляется exclusion для segfault в `VescHandler::processCanFrame` с обоснованием в комментарии (race в vesc_hardware_interface, робот перезапускается успешно). Regression-тест в `.github/scripts/tests/test_deployment_issue_dedup_vesc_segfault.py` — позитивный (exclusion работает в main scope) и негативный (другие critical-patterns в main scope не глушатся).
+В файле `scripts/ci/deployment_issue_dedup.py` добавляется exclusion для segfault в `VescHandler::processCanFrame` с обоснованием в комментарии (race в vesc_hardware_interface, робот перезапускается успешно). Regression-тест в `scripts/ci/tests/test_deployment_issue_dedup_vesc_segfault.py` — позитивный (exclusion работает в main scope) и негативный (другие critical-patterns в main scope не глушатся).
 
 ## Что НЕ починено в этом PR (scope-out)
 
@@ -115,9 +115,9 @@ Segmentation fault (Address not mapped to object [(nil)])
 
 ## Verification
 
-- [x] `python -m pytest .github/scripts/tests/test_deployment_issue_dedup.py -q` — pass
-- [x] `python -m pytest .github/scripts/tests/test_deployment_issue_dedup_vesc_segfault.py -q` — pass
-- [x] `python -m pytest .github/scripts/tests/ -q` — pass (full regression)
+- [x] `python -m pytest scripts/ci/tests/test_deployment_issue_dedup.py -q` — pass
+- [x] `python -m pytest scripts/ci/tests/test_deployment_issue_dedup_vesc_segfault.py -q` — pass
+- [x] `python -m pytest scripts/ci/tests/ -q` — pass (full regression)
 - [x] Raw docker logs (см. backtrace выше)
 - [x] Live state робота (см. таблицу)
 - [ ] CI checks on PR — pending

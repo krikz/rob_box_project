@@ -1,20 +1,17 @@
 """Unit-тесты для rob_box_core.utterance.
 
 Покрывает:
-* XML-экранирование ``&``, ``<``, ``>`` в тексте реплики;
-* целостность «безопасного» текста (русский, юникод, цифры, пунктуация);
+* голый текст реплики (ADR-0160 §2.3): ``&``, ``<``, ``>``, юникод и строки
+  через ``\n`` уходят как есть, без SSML и экранирования;
 * контракт ``Utterance.to_request()`` — фиксированный набор полей и
-  правильный приоритет (``Utterance``-поля выигрывают у ``extra``);
-* инвариант «SSML не сыпется при спецсимволах» — сгенерированный
-  ``<speak>...</speak>`` остаётся валидным XML.
+  правильный приоритет (``Utterance``-поля выигрывают у ``extra``).
 
-См. ADR-0080 §1.3 (одна точка сборки), §2.3 инвариант 5/6
-(экранирование на стороне сборщика, не TTS).
+Экранирование и конверт ``<speak>`` — у адаптера Silero
+(``rob_box_voice/test/unit/tts/test_silero_ssml_envelope_4239.py``).
+См. ADR-0080 §1.3 (одна точка сборки), ADR-0160 §2.3.
 """
 
 from __future__ import annotations
-
-import xml.etree.ElementTree as ET
 
 import pytest
 
@@ -31,69 +28,35 @@ from rob_box_core.utterance import (
 
 
 # ---------------------------------------------------------------------------
-# SSML escape
+# Голый текст (ADR-0160 §2.3)
 # ---------------------------------------------------------------------------
 
 
-class TestXmlEscape:
-    def test_ampersand_escaped(self):
-        u = Utterance(text="AT&T и Tom & Jerry", sink=Sink.SPEAKERS)
-        # & всегда экранируется первым (иначе повторное экранирование
-        # уже-экранированных сущностей).
-        assert u.ssml == "<speak>AT&amp;T и Tom &amp; Jerry</speak>"
+class TestPlainText:
+    @pytest.mark.parametrize(
+        "text",
+        [
+            "AT&T и Tom & Jerry",
+            "1 < 2 & 3 > 2",
+            "ёлка × ÷ ∞ → 👍",
+            "Первая строка куплета\nВторая строка куплета",
+            "foo &amp; bar",
+        ],
+    )
+    def test_text_goes_to_request_as_is(self, text):
+        assert Utterance(text=text).to_request()["text"] == text
 
-    def test_less_than_escaped(self):
-        u = Utterance(text="x<y", sink=Sink.SPEAKERS)
-        assert u.ssml == "<speak>x&lt;y</speak>"
+    def test_no_ssml_in_request(self):
+        req = Utterance(text="Привет, мир!").to_request()
+        assert "ssml" not in req
+        assert "<speak" not in req["text"]
 
-    def test_greater_than_escaped(self):
-        u = Utterance(text="x>y", sink=Sink.SPEAKERS)
-        assert u.ssml == "<speak>x&gt;y</speak>"
-
-    def test_all_three_combined(self):
-        # Issue #3598: теги разметки (``<a href='x'>``) теперь снимаются до
-        # экранирования — их не произносят; экранирование проверяем на
-        # тексте без тегов.
-        u = Utterance(text="1 < 2 & 3 > 2", sink=Sink.SPEAKERS)
-        assert u.ssml == "<speak>1 &lt; 2 &amp; 3 &gt; 2</speak>"
-
-    def test_dangerous_text_produces_valid_xml(self):
-        """Главный инвариант DoD: текст с ``&`` и ``<`` даёт валидный XML
-        и произносится без потери символов."""
-        text = "Ошибка 5 < 10 & нужна проверка"
-        u = Utterance(text=text, sink=Sink.SPEAKERS)
-        # Парсер не должен падать и не должен «съесть» < или &.
-        root = ET.fromstring(u.ssml)
-        assert root.tag == "speak"
-        assert root.text == text
-
-    def test_safe_text_unchanged(self):
-        u = Utterance(text="Привет, мир!", sink=Sink.SPEAKERS)
-        assert u.ssml == "<speak>Привет, мир!</speak>"
-
-    def test_unicode_preserved(self):
-        text = "ёлка × ÷ ∞ → 👍"
-        u = Utterance(text=text, sink=Sink.SPEAKERS)
-        assert u.ssml == f"<speak>{text}</speak>"
-        # Юникод не должен пострадать и после round-trip через ET.
-        assert ET.fromstring(u.ssml).text == text
-
-    def test_existing_ampersand_entity_not_double_escaped(self):
-        """Если caller уже прислал ``&amp;`` как часть подготовленного
-        текста, мы экранируем амперсанд — на выходе ``&amp;amp;``.
-        Это ожидаемо: Utterance не разбирает SSML-вход, только экранирует.
-        Документируем поведение явно, чтобы не было сюрпризов."""
-        u = Utterance(text="foo &amp; bar", sink=Sink.SPEAKERS)
-        # ``&`` в "amp;" экранируется в "amp;amp;".
-        assert u.ssml == "<speak>foo &amp;amp; bar</speak>"
-
-    def test_empty_text(self):
-        u = Utterance(text="", sink=Sink.SPEAKERS)
-        assert u.ssml == "<speak></speak>"
+    def test_utterance_has_no_ssml_builder(self):
+        assert not hasattr(Utterance(text="x"), "ssml")
 
     def test_none_text_becomes_empty(self):
         u = Utterance(text=None, sink=Sink.SPEAKERS)  # type: ignore[arg-type]
-        assert u.ssml == "<speak></speak>"
+        assert u.to_request()["text"] == ""
 
 
 # ---------------------------------------------------------------------------
@@ -106,7 +69,7 @@ class TestToRequest:
         u = Utterance(text="hi", sink=Sink.SPEAKERS)
         req = u.to_request()
         assert req == {
-            "ssml": "<speak>hi</speak>",
+            "text": "hi",
             "sink": "speakers",
             "priority": DEFAULT_PRIORITY,
             "emotion": "neutral",
@@ -160,12 +123,11 @@ class TestToRequest:
         assert req["batch_index"] == 1
         assert req["batch_total"] == 3
 
-    def test_extra_cannot_override_ssml(self):
-        """Utterance-поля выигрывают у extra — иначе caller может
-        вернуть «сырой» ``<speak>`` без экранирования."""
-        u = Utterance(text="x & y", extra={"ssml": "<speak>RAW</speak>"})
+    def test_extra_cannot_override_text(self):
+        """Utterance-поля выигрывают у extra — текст реплики один."""
+        u = Utterance(text="x & y", extra={"text": "RAW"})
         req = u.to_request()
-        assert req["ssml"] == "<speak>x &amp; y</speak>"
+        assert req["text"] == "x & y"
 
     def test_extra_cannot_override_sink(self):
         u = Utterance(text="x", sink=Sink.HEADSET, extra={"sink": "speakers"})
@@ -217,14 +179,13 @@ class TestJsonRoundtrip:
         # asdict-сериализация + ensure_ascii=False — это ровно то, что
         # делают все producer'ы (json.dumps(..., ensure_ascii=False)).
         payload = json.dumps(u.to_request(), ensure_ascii=False)
-        assert "<speak>a &amp; b &lt; c</speak>" in payload
+        assert '"text": "a & b < c"' in payload
         assert '"sink": "headset"' in payload
         assert '"chunk": 1' in payload
 
     def test_producer_mimic_grip_tts(self):
         """Снимок payload'а, который шлёт ``supervisor._publish_grip_tts``
-        (issue #2137) — заменяем ``f\"<speak>{text}</speak>`` на
-        ``Utterance(...).to_request()`` и сравниваем ключи."""
+        (issue #2137) — ``Utterance(...).to_request()``, сравниваем ключи."""
         u = Utterance(
             text="готово",
             sink=Sink.SPEAKERS,
@@ -233,7 +194,7 @@ class TestJsonRoundtrip:
         )
         req = u.to_request()
         # Обязательные поля grip-пайплайна.
-        assert req["ssml"] == "<speak>готово</speak>"
+        assert req["text"] == "готово"
         assert req["priority"] == "operator"
         assert req["language"] == "ru-RU"
         # И никакого голого текста рядом — producer допишет при

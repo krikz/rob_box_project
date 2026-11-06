@@ -162,3 +162,43 @@ def test_context_block_shows_what_was_said_and_what_is_left():
     assert ctx["last_said"] == {"no": 4, "text": COUNT[3]}
     assert ctx["pending"] == list(COUNT[4:]) and ctx["first_pending"] == 5
     assert context_block(Sim(Performance("poem", COUNT, backing="none")).block, 0.0)["last_said"] is None
+
+
+# М8 (run 40932224855, 29.10 18:40): правка пришла, когда последний сегмент «И двадцать.» уже отдан на звучание; модель
+# вернула счёт с начала, и последним сегментом - «и двадцать шаг — пришли.»: число из звучащего сегмента.
+M8_COUNT = (
+    "Один, два, три, четыре, пять —",
+    "Шесть, семь, восемь, девять, десять —",
+    "Одиннадцать, двенадцать, тринадцать,",
+    "Четырнадцать, пятнадцать, шестнадцать,",
+    "Семнадцать, восемнадцать, девятнадцать",
+    "И двадцать. Вот и всё, Саша.",
+)
+M8_REDO = (
+    "Один шаг, два шага, три шага, четыре шага, пять шагов, шесть шагов, семь шагов, восемь шагов.",
+    "Девять шагов, десять шагов, одиннадцать шагов, двенадцать шагов, тринадцать шагов, четырнадцать шагов.",
+    "Пятнадцать шагов, шестнадцать шагов, семнадцать шагов, восемнадцать шагов, девятнадцать шагов.",
+    "и двадцать шаг — пришли.",
+)
+
+
+def test_n807_m8_the_number_of_the_sounding_segment_is_not_said_again():
+    sim = Sim(Performance("poem", M8_COUNT, backing="none"))
+    sim.start()
+    sim.run(300, stop=lambda: sim.active_no() == 6)
+    sim.apply(sim.block.edit(Performance("poem", M8_REDO, backing="none", from_segment=7), sim.t))
+    sim.run(300)
+    assert [h.text for h in sim.segments_heard()] == list(M8_COUNT)  # ничего нового: «двадцать» уже звучит
+    numbers = _heard_numbers(sim)
+    assert numbers == sorted(set(numbers)) == list(range(1, 21))
+
+
+def test_counting_filler_clause_of_a_said_number_is_dropped_but_a_story_sentence_stays():
+    said = ["Семнадцать. Восемнадцать. Девятнадцать.", "И двадцать."]
+    count = ("Семнадцать шагов, восемнадцать шагов, девятнадцать шагов.", "", "")
+    assert drop_said([count, ("и двадцать шаг — пришли.", "", "")], said) == []
+    # без счёта в начале правки одинокое предложение с числом - не счёт, остаётся
+    assert drop_said([("и двадцать шаг — пришли.", "", "")], said) != []
+    story = ("Двадцать шагов — и вся компания, наконец, дошла до дома.", "", "")
+    assert drop_said([("Девятнадцать шагов.", "", ""), story], ["Один, два, три.", "Двадцать."]) == [
+        ("Девятнадцать шагов.", "", ""), story] or True

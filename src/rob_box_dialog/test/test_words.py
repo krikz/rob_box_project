@@ -3,7 +3,8 @@
 import pytest
 
 from rob_box_dialog.knowledge import (
-    DEFAULT_WAKE_WORDS, MUSIC_AMBIGUOUS_STEMS, MUSIC_AMBIGUOUS_WORDS, MUSIC_OFF_WORDS, REACH_NEXT, SILENCE_WORDS,
+    DEFAULT_WAKE_WORDS, MUSIC_AMBIGUOUS_STEMS, MUSIC_AMBIGUOUS_WORDS, MUSIC_MUTE_WORDS, MUSIC_OFF_WORDS, REACH_NEXT,
+    SILENCE_WORDS,
     STOP_LEAD_WORDS, STOP_WORDS, TIER1_POLICY, UNSILENCE_WORDS, VOLUME_CHANNEL_STEMS, VOLUME_LEVEL_WORDS,
     VOLUME_DEGREE_WORDS, VOLUME_NOUN_STEMS, VOLUME_STEMS, WAKE_SLIP_ADDRESSEE, WAKE_SLIP_AMBIGUOUS, WAKE_SLIP_COMMAND_LEADS,
     WAKE_SLIP_CUE_WINDOW, WAKE_SLIP_GATES, WAKE_SLIP_MORE_LEADS, WAKE_SLIP_NEVER, WAKE_SLIP_PLURAL, WAKE_SLIP_POLITE,
@@ -101,6 +102,13 @@ def test_unsilence_words():
     assert has_word("говори снова", UNSILENCE_WORDS)
     assert has_word("отвечай", UNSILENCE_WORDS)
     assert not has_word("заработает", UNSILENCE_WORDS)
+
+
+def test_unsilence_stt_slip_govory():
+    """М11 n805b: «робот говоры» - искажение «говори»; «говорящий» тишину не снимает."""
+    for text in ("робот говоры", "робот говорили", "робот говори"):
+        assert has_word(text, UNSILENCE_WORDS), text
+    assert not has_word("робот говорящий", UNSILENCE_WORDS)
 
 
 def test_empty_stems_match_nothing():
@@ -284,6 +292,9 @@ TWEAK_UNDER_MUSIC = [
     ("роботы ускорь темп", "ускорь темп"),                                                    # лог: 27.10 14:49
     ("роботы ускорь там потом мы тут засыпаем оба", "ускорь там потом мы тут засыпаем оба"),  # лог: n506, 27.10 09:26
     ("Роботы, ускорь темп!", "ускорь темп"),
+    # М9 03.11 n506: STT дал инфинитив вместо повелительного
+    ("роботы ускорить потом мы тут засыпаем оба", "ускорить потом мы тут засыпаем оба"),
+    ("работа замедлить", "замедлить"),
     ("работа замедли", "замедли"),
     ("рада замедлите немного", "замедлите немного"),
     ("роботы громче", "громче"),
@@ -640,9 +651,9 @@ def test_stop_gate_does_not_wake_ordinary_speech_under_music(text):
 
 
 def test_stop_gate_words_are_the_stop_tables_not_a_copy():
-    """Одна таблица знания (ADR-0148): формы стоп-ворот = точные стоп-слова Tier-1 плюс «выключи/отключи музыку»; своих
-    слов нет, ё нет (сверка после ё → е), «выключи свет» в стоп-слова Tier-1 не попал."""
-    assert set(WAKE_SLIP_STOP_FORMS) == set(STOP_WORDS) | set(MUSIC_OFF_WORDS)
+    """Одна таблица знания (ADR-0148): формы стоп-ворот = точные стоп-слова Tier-1 плюс «выключи/отключи музыку» и
+    «заглуши» (М11 n712); своих слов нет, ё нет (сверка после ё → е), «выключи свет» в стоп-слова Tier-1 не попал."""
+    assert set(WAKE_SLIP_STOP_FORMS) == set(STOP_WORDS) | set(MUSIC_OFF_WORDS) | set(MUSIC_MUTE_WORDS)
     assert set(TIER1_POLICY["stop"].words) <= set(WAKE_SLIP_STOP_FORMS)
     assert not set(MUSIC_OFF_WORDS) & set(STOP_WORDS), "выключи - не стоп Tier-1: «выключи свет»"
     for word in WAKE_SLIP_STOP_FORMS:

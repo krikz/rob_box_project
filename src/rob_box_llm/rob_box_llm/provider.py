@@ -136,12 +136,15 @@ class ToolResult:
 
     ``data`` — структурное тело результата тула (``MCPToolResult.data``: ``status``/``reason`` события владельца), если
     оно есть; модель видит только ``content``, ``data`` читает код (исполнитель команды, ADR-0150 PR-7 ч.7c).
+    ``message`` — фраза, которую тул построил из своего результата (``MCPToolResult.message``, ADR-0148), отдельно от
+    ``content``: по ней код отвечает за модель, если та промолчала (#4157).
     """
 
     tool_call_id: str
     content: str
     is_error: bool = False
     data: Mapping[str, Any] | None = field(default=None, compare=False)
+    message: str | None = field(default=None, compare=False)
 
 
 @dataclass(frozen=True)

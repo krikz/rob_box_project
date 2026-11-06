@@ -14,7 +14,7 @@ from rob_box_music.works import TITLE_EXACT, TITLE_PARTIAL, WorkRef, WorkWord
 
 from rob_box_mcp_tools.engine.score_library import ScoreIndex
 from rob_box_mcp_tools.engine.search import ThemeHits
-from rob_box_mcp_tools.engine.tools_v2 import DjSetTool, RequestMusicTool
+from rob_box_mcp_tools.engine.engine_tools import DjSetTool, RequestMusicTool
 
 from .test_adr0154_pr5_score_search import make_library, synthetic
 from .test_engine_session import _rig
@@ -98,7 +98,7 @@ def test_set_theme_toccata_in_d_minor_has_no_minority_hook(tmp_path):
     """Приёмка #3560: «ставь диджей сет Токката ре минор» — тональность не слова поиска темы сета (прогон 09.10 #19:
     в сете играл «Minority», Green Day)."""
     from rob_box_mcp_tools.core.rtttl_library import RtttlLibrary
-    from rob_box_mcp_tools.engine.tools_v2 import theme_finder
+    from rob_box_mcp_tools.engine.engine_tools import theme_finder
 
     library = RtttlLibrary(db_path=str(tmp_path / "set_key.db"))
     names = theme_finder(lambda: library)("Токката ре минор").names

@@ -9,7 +9,12 @@ bt_navigator:
     robot_base_frame: base_footprint
     odom_topic: /odom
     bt_loop_duration: 10
-    default_server_timeout: 20
+    # #4435: 20 мс (дефолт Humble) под нагрузкой Main Pi (load 10–18) не хватало на подтверждение
+    # цели FollowPath: BtActionNode по таймауту сбрасывал future и не знал goal handle, его halt()
+    # отменить цель не мог — controller_server 108 с вёл «сироту». Ожидание подтверждения в BT
+    # не блокирует (узел возвращает RUNNING), поэтому 1 с безопасна. Дыру сужает, но не закрывает:
+    # остаток гасит ControllerHalt в rob_box_mcp_tools/tools/navigation.py.
+    default_server_timeout: 1000
     enable_groot_monitoring: false
     groot_zmq_publisher_port: 1666
     groot_zmq_server_port: 1667
@@ -88,7 +93,9 @@ controller_server:
       min_vel_y: 0.0
       max_vel_x: 0.15  # Reduced for smoother approach
       max_vel_y: 0.0
-      max_vel_theta: 0.8  # Allow smoother arcs without forcing long in-place turns
+      # 0.6 (было 0.8): меньше заносит корму на косяк, когда DWB доворачивает в узком проёме
+      # (HIL 05.11, #4365: t2 — проём 0.85 на восток 2/2, см. docs/research/2026-11-05-nav2-hil-tuning.md).
+      max_vel_theta: 0.6
       min_speed_xy: 0.05  # 50 mm/s - minimum speed due to min_duty=0.06
       max_speed_xy: 0.15
       min_speed_theta: 0.0  # Allow fine heading corrections while still moving forward
@@ -109,17 +116,28 @@ controller_server:
       trans_stopped_velocity: 0.03  # Don't classify slow arc motion as a full stop
       short_circuit_trajectory_evaluation: true
       stateful: true
-      critics: ["RotateToGoal", "Oscillation", "BaseObstacle", "GoalAlign", "PathAlign", "PathDist", "GoalDist"]
-      BaseObstacle.scale: 0.02
+      # ObstacleFootprint вместо BaseObstacle: BaseObstacle смотрит одну клетку под
+      # центром (с прямоугольником это вписанный радиус 0.30 — углы 0.43 не видит),
+      # ObstacleFootprint — все клетки контура габарита по траектории.
+      critics: ["RotateToGoal", "Oscillation", "ObstacleFootprint", "GoalAlign", "PathAlign", "PathDist", "GoalDist"]
+      # 0.04 (было 0.02): стоимость клеток под контуром заметнее — держит корпус по центру проёма.
+      ObstacleFootprint.scale: 0.04
       RotateToGoal.scale: 8.0  # Keep final alignment, but stop dominating normal path following
       RotateToGoal.slowing_factor: 5.0
-      RotateToGoal.lookahead_time: -1.0  # Отключить проверку столкновения при повороте у цели
+      # lookahead_time — НЕ проверка столкновения (dwb_critics/rotate_to_goal.cpp): курс
+      # траектории оценивается в момент lookahead_time, а при -1 — в её конце (sim_time
+      # 1.5 с). Столкновение разворота на месте ловит ObstacleFootprint по всем позам
+      # траектории. 1.0 с (> 0 по решению Шифу 04.11) — внутри горизонта sim_time 1.5 с.
+      RotateToGoal.lookahead_time: 1.0
       Oscillation.scale: 0.5  # Reduced from default (1.0) - less strict oscillation detection
-      PathAlign.scale: 24.0  # Lower heading obsession so DWB accepts curved trajectories
-      PathAlign.forward_point_distance: 0.15  # Increased from 0.1 - look further ahead
+      # Курс по пути перед проёмом (HIL 05.11): при 24 / 0.15 DWB подводил корпус к проёму
+      # 0.8–0.9 м наискось (до 21°), защита стопила по косяку. 48 / 0.325 (дефолт Nav2) —
+      # точка на пути дальше носа, корпус входит по оси.
+      PathAlign.scale: 48.0
+      PathAlign.forward_point_distance: 0.325
       GoalAlign.scale: 12.0  # Avoid in-place pre-alignment far away from the goal
       GoalDist.scale: 20.0
-      PathDist.scale: 25.0
+      PathDist.scale: 32.0  # было 25: ближе к линии пути (она идёт по центру проёма)
 
 local_costmap:
   local_costmap:
@@ -135,14 +153,30 @@ local_costmap:
       resolution: 0.05
       transform_tolerance: 1.0  # Increased from 0.5 — LiDAR scans can be ~0.83s behind TF after restart
       tf_buffer_duration: 30.0  # Keep TF history 30s — prevents drops when TF buffer is fresh after restart
-      # Круговой footprint для skid-steer: не меняется при вращении!
-      # Макс. диагональ робота 0.90м → радиус 0.45м
-      robot_radius: 0.45
+      # Габарит — прямоугольник по замеру рулеткой (Шифу 04.11): 0.61 м вдоль хода,
+      # 0.605 м поперёк. Совпадает с мешем base_link.stl (x −0.3036…+0.3064,
+      # y ±0.303): центр корпуса смещён от base_footprint вперёд на 1.4 мм.
+      # Вписанный радиус 0.3025, описанный 0.43 (был круг robot_radius 0.45:
+      # в проём 0.9 м центр не пускал, сим шаг 6 — DWB 5/15 против 25/25).
+      footprint: "[[0.3064, 0.3025], [0.3064, -0.3025], [-0.3036, -0.3025], [-0.3036, 0.3025]]"
+      # Запас 3 см (с 06.11 снова 0.03: безопасность не ослабляем, проём ограничен 0.90 м —
+      # docs/shifu-decisions.md). Сим 04.11 (по 3 прогона polygon/turn90/dead_end): 0.01 — тупик 1.1 м
+      # 2/3 и зазор 0.043; 0.03 — всё 3/3, зазор в тупике 0.081; от 0.05 — проём 0.8
+      # 1/3, разворот в тупике 0/3; 0.10 — проём 0.9 0/3. HIL 05.11 (#4365): с 0.03 в проёме
+      # 0.85 DWB пишет «No valid trajectories … Trajectory Hits Obstacle» (на бок 0.092 м),
+      # с 0.02 (и критиками выше) проём 0.85 на восток проходит. HIL 06.11 с 0.03: проём 0.90
+      # 2/2 в обе стороны, 0.85 — нет (research/2026-11-05-nav2-hil-tuning.md §8).
+      footprint_padding: 0.03
       plugins: ["voxel_layer", "inflation_layer"]
       inflation_layer:
         plugin: "nav2_costmap_2d::InflationLayer"
         cost_scaling_factor: 3.0
-        inflation_radius: 0.55  # Restore extra safety margin: robot(0.45) + 0.10м запас
+        # Считается от препятствия до центра робота: ближе вписанного радиуса
+        # 0.3225 (0.3025 + padding) — INSCRIBED, дальше спад до 0.57.
+        # 0.57 = описанный радиус 0.459 (с padding) + ~0.10 м — тот же запас, что
+        # был у круга (0.45 + 0.10): стоимость не обрывается раньше угла корпуса
+        # при развороте. В проёме 0.9 м по оси (0.45 от стен) — ~177 из 252.
+        inflation_radius: 0.57
       voxel_layer:
         plugin: "nav2_costmap_2d::VoxelLayer"
         enabled: true
@@ -178,8 +212,9 @@ global_costmap:
       global_frame: map
       robot_base_frame: base_footprint
       use_sim_time: false
-      # Круговой footprint для skid-steer (соответствует local_costmap)
-      robot_radius: 0.45
+      # Габарит — тот же прямоугольник, что у local_costmap (замер 04.11)
+      footprint: "[[0.3064, 0.3025], [0.3064, -0.3025], [-0.3036, -0.3025], [-0.3036, 0.3025]]"
+      footprint_padding: 0.03  # как у local_costmap
       resolution: 0.05
       transform_tolerance: 1.0  # Increased from 0.5 — LiDAR scans can be ~0.83s behind TF after restart
       tf_buffer_duration: 30.0  # Keep TF history 30s — prevents drops when TF buffer is fresh after restart
@@ -207,7 +242,12 @@ global_costmap:
       inflation_layer:
         plugin: "nav2_costmap_2d::InflationLayer"
         cost_scaling_factor: 3.0
-        inflation_radius: 0.55  # Restore extra safety margin: robot(0.45) + 0.10м запас
+        # Считается от препятствия до центра робота: ближе вписанного радиуса
+        # 0.3225 (0.3025 + padding) — INSCRIBED, дальше спад до 0.57.
+        # 0.57 = описанный радиус 0.459 (с padding) + ~0.10 м — тот же запас, что
+        # был у круга (0.45 + 0.10): стоимость не обрывается раньше угла корпуса
+        # при развороте. В проёме 0.9 м по оси (0.45 от стен) — ~177 из 252.
+        inflation_radius: 0.57
       always_send_full_costmap: true
 
 planner_server:
@@ -239,18 +279,29 @@ behavior_server:
     behavior_plugins: ["spin", "backup", "drive_on_heading", "wait"]
     spin:
       plugin: "nav2_behaviors/Spin"
-      simulate_ahead_time: 0.0  # Отключить проверку столкновения при spin (круговой footprint безопасен)
+      # simulate_ahead_time здесь НЕ ставить: Spin (Humble, spin.cpp) читает его без
+      # префикса плагина — ниже, на уровне behavior_server. Ключ spin.simulate_ahead_time
+      # (0.0 с 28.02.2026) Nav2 не читал, проверка всё время шла с 0.5 с.
     backup:
       plugin: "nav2_behaviors/BackUp"
     drive_on_heading:
       plugin: "nav2_behaviors/DriveOnHeading"
     wait:
       plugin: "nav2_behaviors/Wait"
-    global_frame: map
+    # odom, как local costmap (costmap_topic выше): Spin/BackUp ищут позу робота в этой
+    # costmap. С map при сдвиге map→odom больше полуокна (2.5 м) — «Pose Goes Off Grid.
+    # Collision Ahead - Exiting Spin» без всякого препятствия (HIL 05.11, #4365).
+    global_frame: odom
     robot_base_frame: base_footprint
     transform_tolerance: 0.5  # Increased for ICP latency tolerance
     use_sim_time: false
-    simulate_ahead_time: 0.5  # Increased for higher accelerations
+    # Проверка столкновения Spin/BackUp/DriveOnHeading вперёд по времени (Шифу 04.11:
+    # при развороте проверять). Общая для трёх behavior. 2.0 с — дефолт Nav2: при
+    # 0.6 рад/с это 1.2 рад впереди, а торможение с 0.6 рад/с при 0.6 рад/с² — 0.3 рад,
+    # т.е. 0.5 с покрывали ровно тормозной угол без запаса на задержку costmap (5 Гц)
+    # и ICP. Ложных отказов больше не станет: симуляция обрезается остатком угла
+    # (Spin) или пути (BackUp), отказ = столкновение в пределах самой команды.
+    simulate_ahead_time: 2.0
     max_rotational_vel: 0.6  # Original value from e367f09
     min_rotational_vel: 0.2  # Allow slow spins
     rotational_acc_lim: 0.6  # Original value from e367f09, match DWB
@@ -272,7 +323,7 @@ velocity_smoother:
     smoothing_frequency: 20.0
     scale_velocities: false
     feedback: "OPEN_LOOP"
-    max_velocity: [0.2, 0.0, 0.8]  # Match DWB limits so angular commands are not clipped
+    max_velocity: [0.2, 0.0, 0.8]  # не в цепочке на роботе (NAV2_SMOOTH_CMD_VEL=false)
     min_velocity: [-0.15, 0.0, -0.8]  # Symmetric limits
     max_accel: [0.2, 0.0, 1.0]  # Match DWB acceleration limits
     max_decel: [-0.2, 0.0, -1.0]  # Match DWB deceleration limits

@@ -25,8 +25,9 @@ from rob_box_dialog import expression as _expression
 from rob_box_dialog.knowledge import (FACE_SCENE_MAX_S, FACE_SHOW_DEFAULT_S, MUSIC_DEFAULT_BPM,
                                       MUSIC_SCENE_MIN_S)
 
-from .face import rear as R
-from .face.dsl import DSL_KEY, DSL_SPEC
+from led_matrix_effects import lamps as R
+
+from .face.dsl import DSL_KEY, DSL_SPEC, REAR_OF_SLOT
 from .face.face import Frame, tint_of
 from .face.scene import FaceContext, Scene
 from .face.sides import sides_frame
@@ -294,7 +295,7 @@ class FaceDirector:
         self._overlay = (dict(slots), now + seconds)
         self._replay = True                 # a new scene replays from its start (a wink, the sunglasses drop)
         if slots.get('rear'):
-            self.set_rear(R.REAR_OF_SLOT[slots['rear']], seconds, now)
+            self.set_rear(REAR_OF_SLOT[slots['rear']], seconds, now)
 
     def clear_face(self) -> bool:
         """failed / silenced take the LLM scene (and its rear theme) off the face; True if there was one."""

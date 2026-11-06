@@ -1,6 +1,6 @@
 # ADR-0038: Adopt OpenSpec (HYBRID + bulk-import legacy ADR)
 
-- **Status:** Accepted
+- **Status:** Superseded by ADR-0163 (05.11.2026: OpenSpec не прижился, каталоги `openspec/`, `specs/`, `docs/research/openspec-pilot/` удалены)
 - **Date:** 2026-08-31
 - **Deciders:** Товарищ Шифу (владелец репо)
 - **Supersedes:** none

@@ -16,7 +16,7 @@ from rob_box_teleop.joystick_control_node import JoystickControlNode
 
 ARMED = "Моторы активированы, готов к езде"
 DISARMED = "Моторы отключены"
-ARM_THEN_DISARM = [f"<speak>{ARMED}</speak>", f"<speak>{DISARMED}</speak>"]
+ARM_THEN_DISARM = [f"{ARMED}", f"{DISARMED}"]
 LEGACY_TOPICS = ("/voice/tts/request", "/tts/speak")
 
 
@@ -70,7 +70,7 @@ def test_speak_publishes_one_speech_request_from_the_system_author(node_params):
     node.speak(ARMED)
 
     (req,) = _speech(node)
-    assert req.text == f"<speak>{ARMED}</speak>"
+    assert req.text == f"{ARMED}"
     assert req.agent == speech_client.SYSTEM_AGENT == "system"
     # same values the old JSON carried: speakers, normal priority, neutral emotion
     assert req.sink == "speakers"
@@ -87,7 +87,7 @@ def test_speak_publishes_one_speech_request_from_the_system_author(node_params):
 def test_speak_escapes_xml_in_the_text(node_params):
     node = JoystickControlNode()
     node.speak("a & b < c > d")
-    assert _speech(node)[-1].text == "<speak>a &amp; b &lt; c &gt; d</speak>"
+    assert _speech(node)[-1].text == "a & b < c > d"
 
 
 def test_speak_gives_every_phrase_its_own_speech_id(node_params):

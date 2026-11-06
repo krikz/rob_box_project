@@ -38,6 +38,8 @@ OUTPUT_TOPIC="${OUTPUT_TOPIC:-/vision/hailo/events}"
 OBSERVATION_TOPIC="${OBSERVATION_TOPIC:-/perception/observations}"
 DEPTH_ENABLED="${DEPTH_ENABLED:-true}"
 DEPTH_SYNC_TOLERANCE_SEC="${DEPTH_SYNC_TOLERANCE_SEC:-0.15}"
+# ADR-0130 §7 этап 1: точка наблюдения в base_link / map через tf2.
+TF_ENABLED="${TF_ENABLED:-true}"
 HAILO_MODELS_YAML="${HAILO_MODELS_YAML:-/config/hailo_models.yaml}"
 
 # ---------- source ROS workspace ----------
@@ -83,7 +85,8 @@ for key in ('hailo_enabled', 'hef_path', 'stub_period_sec',
             'confidence_threshold', 'input_topic', 'output_topic',
             'gaze_source', 'first_frame_timeout_sec',
             # ADR-0138: Observation + глубина OAK-D.
-            'observation_topic', 'depth_enabled', 'depth_sync_tolerance_sec'):
+            'observation_topic', 'depth_enabled', 'depth_sync_tolerance_sec',
+            'tf_enabled'):
     if key not in node:
         continue
     env_name = key.upper()
@@ -141,6 +144,15 @@ if [ "${HAILO_ENABLED}" = "true" ]; then
     bash "$(dirname "${BASH_SOURCE[0]}")/hailo_device_smoke.sh" || exit 1
 fi
 
+# ---------- уборка /dev/shm от прошлых запусков (#4277) ----------
+# Буферы HailoRT прошлого процесса остаются в /dev/shm хоста после любого
+# рестарта; когда tmpfs забит, нода падает SIGBUS (exit code -7) на первом
+# кадре. Удаляем только файлы своей модели — см. hailo_shm_reap.py.
+if [ "${HAILO_ENABLED}" = "true" ] && [ -n "${HEF_PATH}" ]; then
+    python3 "$(dirname "${BASH_SOURCE[0]}")/hailo_shm_reap.py" \
+        --tag "[start_vision_hailo]" "${HEF_PATH}" || true
+fi
+
 # ---------- launch ROS 2 node (ADR-0110) ----------
 # ADR-0110: vision_hailo стартует декларативно через launch-файл
 # (vision_hailo.launch.py), а не через захардкоженный `ros2 run` с
@@ -173,6 +185,7 @@ LAUNCH_ARGS=(
     observation_topic:=${OBSERVATION_TOPIC}
     depth_enabled:=${DEPTH_ENABLED}
     depth_sync_tolerance_sec:=${DEPTH_SYNC_TOLERANCE_SEC}
+    tf_enabled:=${TF_ENABLED}
     # ADR-0104 acceptance #5 (issue #2703): в проде обязан быть false —
     # true маскирует недоступность источника кадра (нода бы публиковала
     # stub-события бесконечно, даже когда gaze_source мёртв). launch_factory

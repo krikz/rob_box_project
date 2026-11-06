@@ -14,15 +14,15 @@ The fix moves the cold-load into a daemon ``Thread`` started from
 ``TTSNode.__init__`` whenever Silero is *only* a fallback (i.e. the
 primary provider is yandex or minimax).  The synchronous synth path
 waits up to 1.5 s on a ``threading.Event`` (``self._silero_loaded``);
-on timeout it skips playback for that one chunk (publishing a
-``silero_warming`` marker on ``/voice/tts/finished``) so the user
+on timeout it skips playback for that one chunk (the chunk ends with
+an honest failure final, SpeechEvent ``rejected``) so the user
 hears the *next* fallback at full speed instead of a hang.
 
 This module proves the runtime + structural invariants of the fix:
 
   1. When ``provider=yandex``, ``TTSNode.__init__`` launches a daemon
      ``Thread`` named ``silero-warm-load`` that calls
-     ``_load_silero_model`` in the background.
+     ``SileroTTSProvider.load`` in the background.
   2. The ``_silero_loaded`` ``threading.Event`` is **always** set at
      the end of the warm-load — success OR failure — so the hot-path
      wait never blocks forever.
@@ -35,9 +35,8 @@ This module proves the runtime + structural invariants of the fix:
   6. On a successful warm-load the hot-path ``_synthesize_and_play``
      fallback branch doesn't pay the cold-load latency (the model
      attribute is already populated when we enter the branch).
-  7. The hot-path skip-on-timeout publishes ``silero_warming:<id>``
-     on ``/voice/tts/finished``
-     so barge-in state stays consistent.
+  7. The hot-path skip-on-timeout ends the chunk with a failure final
+     (no audio) so the speech owner's journal stays consistent.
 
 The tests use ``conftest.py``'s rclpy/grpc/torch stubs so
 ``rob_box_voice.tts_node`` is importable in a developer environment
@@ -108,9 +107,9 @@ def _destroy_node(node) -> None:
     # explicit join needed (and unsafe — the thread is intentionally
     # daemon=True so it never blocks shutdown).
     for attr in (
-        "_synthesis_executor", "audio_pub", "state_pub", "finished_pub",
+        "_synthesis_executor", "audio_pub",
         "dialogue_sub", "tts_request_sub", "control_sub",
-        "_new_dialogue_id_sub", "playback_manager", "yandex_stub",
+        "_new_dialogue_id_sub", "playback_manager", "_yandex_tts",
     ):
         if hasattr(node, attr):
             try:
@@ -244,20 +243,21 @@ def _make_node(tts_node_module, provider: str = "yandex") -> "object":
 
     The conftest's torch mock is a bare MagicMock — any real
     torch.package call would explode.  We also stub the synchronous
-    ``_load_silero_model`` to a no-op so the warm-load thread doesn't
+    ``SileroTTSProvider.load`` to a no-op so the warm-load thread doesn't
     try to materialise a real model.  The daemon thread itself is
-    real, just executing a stubbed ``_load_silero_model``.
+    real, just executing a stubbed ``SileroTTSProvider.load``.
     """
     # Patch the *method* on the class so both __init__ (sync path when
     # provider=silero) and the warm-load thread (provider=yandex path)
     # route through the stub.  ``autospec`` keeps the ``self`` arg
-    # semantics so ``side_effect`` can mutate ``self.silero_model``.
+    # semantics so ``side_effect`` can set the adapter's ``self.model``.
     cls = tts_node_module.TTSNode
 
     def _fake_load(self):
-        self.silero_model = MagicMock(name="FakeSileroModel")
+        self.model = MagicMock(name="FakeSileroModel")
+        return True
 
-    with patch.object(cls, "_load_silero_model", autospec=True, side_effect=_fake_load):
+    with patch.object(tts_node_module.SileroTTSProvider, "load", autospec=True, side_effect=_fake_load):
         node = cls()
     return node
 
@@ -288,7 +288,7 @@ def test_warm_load_spawns_daemon_thread_for_yandex_primary(tts_node_module) -> N
             f"warm-load outcome expected 'ok', got {node._silero_load_outcome!r}"
         )
         # silero_model is populated — no need to lazy-load on first fallback.
-        assert node.silero_model is not None, (
+        assert node._silero_tts.model is not None, (
             "warm-loaded silero_model must be populated before first fallback"
         )
     finally:
@@ -307,7 +307,8 @@ def test_no_warm_load_thread_for_silero_primary(tts_node_module) -> None:
     cls = tts_node_module.TTSNode
 
     def _fake_load(self):
-        self.silero_model = MagicMock(name="FakeSileroModel")
+        self.model = MagicMock(name="FakeSileroModel")
+        return True
 
     # Patch the FakeNode's declare_parameter to coerce provider='silero'
     # for the duration of __init__.
@@ -320,7 +321,7 @@ def test_no_warm_load_thread_for_silero_primary(tts_node_module) -> None:
         return orig_declare(self, name, default=default)
 
     with patch.object(
-        cls, "_load_silero_model", autospec=True, side_effect=_fake_load
+        tts_node_module.SileroTTSProvider, "load", autospec=True, side_effect=_fake_load
     ) as mock_load, patch.object(
         rclpy_node_mod.Node, "declare_parameter", _patched_declare
     ):
@@ -393,7 +394,8 @@ def test_warm_load_disabled_by_parameter(tts_node_module) -> None:
     cls = tts_node_module.TTSNode
 
     def _fake_load(self):
-        self.silero_model = MagicMock(name="FakeSileroModel")
+        self.model = MagicMock(name="FakeSileroModel")
+        return True
 
     rclpy_node_mod = __import__("sys").modules["rclpy.node"]
     orig_declare = rclpy_node_mod.Node.declare_parameter
@@ -404,7 +406,7 @@ def test_warm_load_disabled_by_parameter(tts_node_module) -> None:
         return orig_declare(self, name, default=default)
 
     with patch.object(
-        cls, "_load_silero_model", autospec=True, side_effect=_fake_load
+        tts_node_module.SileroTTSProvider, "load", autospec=True, side_effect=_fake_load
     ) as mock_load, patch.object(
         rclpy_node_mod.Node, "declare_parameter", _patched_declare
     ):
@@ -419,7 +421,7 @@ def test_warm_load_disabled_by_parameter(tts_node_module) -> None:
             "silero_warm_load=false must not load the model in __init__ "
             f"(lazy path only); got {mock_load.call_count} calls"
         )
-        assert node.silero_model is None, (
+        assert node._silero_tts.model is None, (
             "silero_warm_load=false must leave silero_model=None until "
             "the first real fallback"
         )
@@ -446,7 +448,8 @@ def test_warm_load_disabled_hot_path_lazy_loads(tts_node_module) -> None:
 
     def _fake_load(self):
         load_calls.append(1)
-        self.silero_model = MagicMock(name="FakeSileroModel")
+        self.model = MagicMock(name="FakeSileroModel")
+        return True
 
     rclpy_node_mod = __import__("sys").modules["rclpy.node"]
     orig_declare = rclpy_node_mod.Node.declare_parameter
@@ -461,26 +464,28 @@ def test_warm_load_disabled_hot_path_lazy_loads(tts_node_module) -> None:
     node = None
     try:
         with patch.object(
-            cls, "_load_silero_model", autospec=True, side_effect=_fake_load
+            tts_node_module.SileroTTSProvider, "load", autospec=True, side_effect=_fake_load
         ) as mock_load, patch.object(
             rclpy_node_mod.Node, "declare_parameter", _patched_declare
         ):
             node = cls()
 
             # Hot-path: Yandex fails → Silero branch must lazy-load.
-            # NOTE: _load_silero_model patch stays ACTIVE for the whole
+            # NOTE: SileroTTSProvider.load patch stays ACTIVE for the whole
             # with-block — the call below must hit the fake, not the real
             # torch.package loader.
-            node.yandex_stub = MagicMock()
+            node._yandex_tts = tts_node_module.YandexTTSProvider("fake-key", MagicMock(), logger=MagicMock())
             synth_mock = MagicMock(
                 side_effect=RuntimeError("simulated Yandex gRPC fail")
             )
-            with patch.object(node, "_synthesize_yandex", synth_mock):
+            finals = MagicMock(wraps=node._publish_tts_finished)
+            node._publish_tts_finished = finals
+            with patch.object(node._yandex_tts, "synthesize_np", synth_mock):
                 t0 = time.monotonic()
                 node._synthesize_and_play(
-                    ssml="<speak>test</speak>",
                     text="test",
                     dialogue_id="dlg-lazy-load",
+                    speech_id="sid-lazy-load",
                 )
                 elapsed = time.monotonic() - t0
 
@@ -490,22 +495,16 @@ def test_warm_load_disabled_hot_path_lazy_loads(tts_node_module) -> None:
             # Lazy-load happens synchronously (mock returns instantly, so
             # elapsed is small — well below the 1.5 s skip threshold).
             assert load_calls, (
-                "hot-path must call _load_silero_model when warm-load is disabled"
+                "hot-path must call SileroTTSProvider.load when warm-load is disabled"
             )
             assert elapsed < 1.0, (
                 f"lazy-load path must be synchronous and fast with stubbed model; "
                 f"got {elapsed:.2f}s"
             )
-            # No silero_warming skip marker — the chunk actually played.
-            published = []
-            for call in node.finished_pub.publish.call_args_list:
-                try:
-                    published.append(call.args[0].data)
-                except Exception:  # noqa: BLE001
-                    pass
-            assert not any("silero_warming" in p for p in published), (
-                f"warm-load-disabled path must NOT publish silero_warming skip "
-                f"marker; got publishes: {published}"
+            # No skip — the chunk was synthesized by Silero, not failed for warming.
+            assert node._silero_tts.model is not None
+            assert not any(c.kwargs.get("error") == "silero_warming" for c in finals.call_args_list), (
+                f"warm-load-disabled path must not skip the chunk; finals: {finals.call_args_list}"
             )
             # NOTE: dialogue bookkeeping is intentionally NOT asserted
             # here — it is cleared at the very end of _synthesize_and_play
@@ -523,11 +522,11 @@ def test_warm_load_failure_still_sets_event(tts_node_module) -> None:
     forever (Event.wait(timeout=...) would always time out and we'd
     retry on every fallback).
     """
-    # Stub _load_silero_model to raise (simulates torch.package
+    # Stub SileroTTSProvider.load to raise (simulates torch.package
     # failure, network down for torch.hub, etc.).
     cls = tts_node_module.TTSNode
     with patch.object(
-        cls, "_load_silero_model", autospec=True,
+        tts_node_module.SileroTTSProvider, "load", autospec=True,
         side_effect=RuntimeError("simulated torch.package load failure"),
     ):
         node = cls()
@@ -546,12 +545,12 @@ def test_warm_load_failure_still_sets_event(tts_node_module) -> None:
         )
         # silero_model stays None — the legacy sync path on hot-path
         # fallback will try once more (synchronously) before giving up.
-        assert node.silero_model is None
+        assert node._silero_tts.model is None
     finally:
         _destroy_node(node)
 
 
-def test_hot_path_skips_on_timeout_and_publishes_marker(tts_node_module) -> None:
+def test_hot_path_skips_on_timeout_with_failure_final(tts_node_module) -> None:
     """If warm-load is slow (>1.5 s), hot-path skips playback for that chunk.
 
     Acceptance criterion: "TTSNode init не блокирует основной поток >0.5 с"
@@ -569,10 +568,11 @@ def test_hot_path_skips_on_timeout_and_publishes_marker(tts_node_module) -> None
         # We use a short sleep for the test (3 s > 1.5 s timeout)
         # so the assertion below is deterministic.
         time.sleep(3.0)
-        self.silero_model = MagicMock(name="FakeSileroModel")
+        self.model = MagicMock(name="FakeSileroModel")
         slow_done.set()
+        return True
 
-    with patch.object(cls, "_load_silero_model", autospec=True, side_effect=_slow_load):
+    with patch.object(tts_node_module.SileroTTSProvider, "load", autospec=True, side_effect=_slow_load):
         node = cls()
 
     try:
@@ -582,19 +582,21 @@ def test_hot_path_skips_on_timeout_and_publishes_marker(tts_node_module) -> None
         )
 
         # Make the hot-path see Yandex fail so we go to the Silero branch.
-        node.yandex_stub = MagicMock()  # so the Yandex branch is taken
+        node._yandex_tts = tts_node_module.YandexTTSProvider("fake-key", MagicMock(), logger=MagicMock())  # so the Yandex branch is taken
 
         # Stub the Yandex synth to raise immediately so we fall through
         # to the Silero branch.
         with patch.object(
-            node, "_synthesize_yandex",
+            node._yandex_tts, "synthesize_np",
             side_effect=RuntimeError("simulated Yandex gRPC fail"),
         ):
+            finals = MagicMock(wraps=node._publish_tts_finished)
+            node._publish_tts_finished = finals
             t0 = time.monotonic()
             node._synthesize_and_play(
-                ssml="<speak>test</speak>",
                 text="test",
                 dialogue_id="dlg-skip-test",
+                speech_id="sid-skip-test",
             )
             elapsed = time.monotonic() - t0
 
@@ -604,19 +606,11 @@ def test_hot_path_skips_on_timeout_and_publishes_marker(tts_node_module) -> None
             f"got {elapsed:.2f}s — either timeout missing or not bounded"
         )
 
-        # finished_pub should have published 'silero_warming:<id>'.
-        # The conftest's create_publisher returns a MagicMock, so
-        # finished_pub.publish is a MagicMock we can inspect.
-        published = []
-        for call in node.finished_pub.publish.call_args_list:
-            try:
-                published.append(call.args[0].data)
-            except Exception:  # noqa: BLE001
-                pass
-        assert any("silero_warming:dlg-skip-test" in p for p in published), (
-            f"hot-path skip-on-timeout must publish "
-            f"'silero_warming:<dialogue_id>' on /voice/tts/finished; "
-            f"got publishes: {published}"
+        # #4252 ч.2: маркера ``silero_warming`` в /voice/tts/finished нет — пропущенный чанк
+        # закрывается честным финалом-провалом (SpeechEvent ``rejected``), звук не публикуется.
+        skipped = [c for c in finals.call_args_list if c.args and c.args[0] == "sid-skip-test"]
+        assert skipped and (skipped[-1].kwargs["success"], skipped[-1].kwargs["error"]) == (False, "silero_warming"), (
+            f"hot-path skip-on-timeout must end the chunk with a failure final; got {finals.call_args_list}"
         )
 
     finally:

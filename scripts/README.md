@@ -8,7 +8,7 @@ Utility scripts organized by purpose for Rob Box development and operations.
 Docker image building and CI/CD utilities
 - `local-build.sh` - Local Docker builds
 - `set-docker-tags.sh` - Manage Docker tags based on git branch
-- `patch_*_workflows.sh` - CI/CD workflow patches
+- (`patch_*_workflows.sh` удалены по ADR-0166: разовые патчи 2025 года)
 - 📖 See [build/README_DOCKER_MANAGEMENT.md](build/README_DOCKER_MANAGEMENT.md) for detailed Docker documentation
 
 ### [dialogue/](dialogue/)

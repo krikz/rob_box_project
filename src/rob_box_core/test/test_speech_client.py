@@ -53,7 +53,7 @@ def test_say_builds_request_from_utterance_and_returns_speech_id():
     (req,) = pub.sent
     assert pub.topic == "/voice/speech/request" and pub.msg_type is M.SpeechRequest
     assert req.speech_id == sid and len(sid) == 36
-    assert req.text == "<speak>x&lt;y &amp; z</speak>"  # SSML собирает Utterance
+    assert req.text == "x<y & z"  # голый текст реплики, SSML на проводе нет (ADR-0160 §2.3)
     assert (req.agent, req.epoch, req.turn_id) == ("operator", 3, "t1")
     assert (req.voice, req.language, req.sink) == ("ermil", "ru-RU", "speakers")
     assert req.priority == speech_client.PRIORITY_OPERATOR_U8
@@ -223,3 +223,25 @@ def test_is_speech_end_tolerates_events_without_a_kind():
 def test_event_outcome_maps_speech_event_to_action_status(kind, reason, seconds, expected):
     event = types.SimpleNamespace(kind=kind, reason=reason, seconds=seconds)
     assert speech_client.event_outcome(event) == expected
+
+
+def test_role_goes_to_the_request_and_defaults_to_narrator():
+    """#4243: герой реплики (ADR-0160 §2.3) доходит до ``SpeechRequest.role``; без роли - рассказчик (``""``)."""
+    node = _Node()
+    speech_client.say(node, Utterance(text="Ты делал бэкап?", voice="ermil", role="Ермил"), agent="personality")
+    speech_client.say(node, Utterance(text="Привет"), agent="personality")
+    first, second = node.pubs[0].sent
+    assert (first.role, second.role) == ("Ермил", "")
+    assert Utterance(text="x", role="Ермил").to_request()["role"] == "Ермил"
+    assert "role" not in Utterance(text="x").to_request()
+
+
+def test_beat_goes_to_the_request_and_defaults_to_none():
+    """#4241: такт рэпа (ADR-0160 §2.3) — поле ``SpeechRequest.beat_s``, а не метка в тексте; без такта - 0."""
+    node = _Node()
+    speech_client.say(node, Utterance(text="Йо,\nенот", beat_s=1.83), agent="personality")
+    speech_client.say(node, Utterance(text="Привет"), agent="personality")
+    first, second = node.pubs[0].sent
+    assert (first.beat_s, second.beat_s, first.text) == (1.83, 0.0, "Йо,\nенот")
+    assert Utterance(text="x", beat_s=2.0).to_request()["beat_s"] == 2.0
+    assert "beat_s" not in Utterance(text="x").to_request()

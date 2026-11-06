@@ -158,6 +158,22 @@ def theme_support(heard: str, heard_text: Optional[str]) -> bool:
     return any(_known_word(w) for w in words) or led or bool(SET_WORDS.intersection(said))
 
 
+def confirmed_by_words(theme: Optional[str], heard_text: Optional[str]) -> bool:
+    """Слова реплики подтверждают тему ``theme`` (решение Шифу 05.11 «а», #4393): каждая значимая основа темы
+    (:func:`search.content_stems`, жанр - меткой) есть в реплике после снятия служебных слов просьбы
+    (``rob_box_dialog.knowledge.MUSIC_SERVICE_WORDS``: стоп, «вместо него», вейк, связки). «Поставь ночной рок» при теме
+    модели «ночной рок» - тема названа словами человека, хоть слова сета и нет (правило опоры :func:`theme_support`
+    его требует). Слово темы, которого человек не говорил («рок» при «уводи сторону тётя гриша…», n604), - не
+    подтверждение. Пустая тема - ``False``."""
+    from rob_box_dialog.knowledge import MUSIC_SERVICE_WORDS
+
+    stems = content_stems(theme or "")
+    if not stems:
+        return False
+    said = " ".join(w for w, _s, _e in words_of(heard_text or "") if w not in MUSIC_SERVICE_WORDS)
+    return stems <= content_stems(said)
+
+
 def request_theme(heard_text: Optional[str]) -> str:
     """Слова темы реплики для сета: :func:`heard_theme` без названия движка («на синтезаторе» — путь, не тема)."""
     from rob_box_music.source import blank_engine
@@ -183,7 +199,8 @@ def grounded_theme(theme: Optional[str], heard_text: Optional[str]) -> Tuple[str
     heard = heard_theme(heard_text or "")
     if not heard or content_stems(theme) & content_stems(heard):
         return theme, False
-    if theme and (not _names_new_theme(heard_text) or not names_theme(heard, heard_text)):
+    if theme and (not _names_new_theme(heard_text) or not names_theme(heard, heard_text)
+                  or not theme_support(heard, heard_text)):  # огрызок без опоры, даже длинный: n604 М8 (#4217)
         return theme, False
     return heard, True
 
@@ -297,5 +314,5 @@ def set_slots(theme: Optional[str], persona: Optional[str], heard_text: Optional
     return slots.theme, persona
 
 
-__all__ = ["SetTheme", "continued", "grounded_theme", "guessed_theme", "heard_theme", "named_by_human", "names_theme",
+__all__ = ["SetTheme", "confirmed_by_words", "continued", "grounded_theme", "guessed_theme", "heard_theme", "named_by_human", "names_theme",
            "order_theme", "request_theme", "set_slots", "set_theme", "theme_support"]

@@ -456,7 +456,7 @@ jobs:
             -o addopts="" \
             -p no:cacheprovider
 
-      # Issue #2890: изоляция акта E2E — сброс окна диалога dialogue_node и
+      # Issue #2890: изоляция акта E2E — сброс окна диалога dialog_node и
       # e2e-памяти фактов в начале каждого акта. Тест исполняет НАСТОЯЩИЙ
       # isolate_act_start из e2e_voice_test.sh против фейкового робота
       # (состояние параметров узлов — файлы). Нужны только bash + python3.
@@ -511,6 +511,29 @@ jobs:
           python scripts/testing/test_monitoring_config.py
           python scripts/testing/test_e2e_expected_keywords.py
           python scripts/testing/test_vision_camera_pipeline.py
+
+      # ADR-0166 §5.2: тесты офлайн-инструментов музыки и рэп-синхрона лежали
+      # в репо, но их не звал ни один workflow. Все офлайновые (numpy/scipy/
+      # soundfile/librosa/music21, без ROS, сети и робота). music21 и librosa
+      # ставим явно: без них часть тестов ушла бы в importorskip — тихий SKIP.
+      - name: scripts/music + scripts/dialog/rap_sync offline tests (ADR-0166)
+        run: |
+          pip install scipy soundfile librosa music21
+          PYTHONPATH="src/rob_box_music:src/rob_box_core:src/rob_box_dialog:src/rob_box_mcp_tools" \
+          python -m pytest \
+            scripts/music/test_loudness_nrt_v2.py \
+            scripts/music/test_pdmx_batch.py \
+            scripts/music/test_score_corpus_stats.py \
+            scripts/music/test_score_import.py \
+            scripts/music/critic/test_judge.py \
+            scripts/music/critic/test_verify.py \
+            scripts/music/live_dj/test_v2log.py \
+            scripts/music/live_dj/test_diversity.py \
+            scripts/dialog/rap_sync/test_rap_sync.py \
+            -v \
+            -rs \
+            -o addopts="" \
+            -p no:cacheprovider
 
       - name: Seam-without-consumer guard self-tests (issue #2118)
         run: |
@@ -624,13 +647,13 @@ jobs:
       # Hard gate (no continue-on-error) — PR с новым docs/adr/(AF-)?NNNN-*.md
       # на занятом в своём домене номере должен фейлить lint ещё до merge-gate.
       # Скрипт локальный, 13/13 регресс-тестов зелёные
-      # (scripts/agent_flow/tests/test_validate_adr_namespace.sh, +3 для AF).
+      # (scripts/lint/tests/test_validate_adr_namespace.sh, +3 для AF).
       # Сам скрипт ждёт git fetch origin develop (на runner checkout
       # без push контекста — нужна явная выборка ref'а).
       - name: ADR-namespace collision guard (ADR-AF-0030)
         run: |
           git fetch --no-tags origin develop
-          bash scripts/agent_flow/validate_adr_namespace.sh --ref origin/develop
+          bash scripts/lint/validate_adr_namespace.sh --ref origin/develop
 
   # ============================================================================
   # YAML Linting
@@ -649,7 +672,7 @@ jobs:
           python -m pip install --upgrade pip
           pip install yamllint==1.35.1
 
-      # Конфиг — закоммиченный .yamllint.yml (тот же у pre-commit и у
+      # Конфиг — закоммиченный .yamllint.yml (тот же у
       # локального прогона scripts/ci/run_workflow_job.py). Раньше здесь был
       # шаг, перезаписывавший его heredoc'ом с ДРУГИМИ правилами — CI и
       # локальная проверка линтили по-разному.
@@ -755,21 +778,19 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y shellcheck
 
-      # ADR-0021-паттерн / issue #2069: сторож ретро-пути merge-gate. Hard gate
-      # (без continue-on-error) — этот экстрактор решает, закрывать ли карточку
-      # как COMPLETED, и однажды уже закрыл три карточки с отсутствующим кодом.
-      # Тесты scripts/agent_flow/tests/ целиком в CI не поднять: merge-gate
-      # форсит HOME=/home/builder и требует моков gh/hermes. Этот тест
-      # изолирован от такого окружения и потому запускается здесь.
-      - name: Retro-path intent extractor (issue #2069)
-        run: |
-          bash scripts/agent_flow/tests/test_retro_intent_extractor.sh
-
       # Issue #2930: деплой не должен делать `compose down`, пока не
       # подтверждено, что все образы стека скачаны/лежат локально.
       - name: Deploy preflight pull-before-stop (issue #2930)
         run: |
           bash scripts/deploy/tests/test_preflight_pull_images.sh
+
+      # Эпик #4371: HIL. hil.sh не трогает боевые пути (./maps, /data), порядок
+      # «замок → стоп моторов → sim time → сим», off гасит сим до возврата
+      # ros2-control; деплой падает при замке /tmp/hil.lock. Фейковые ssh/docker.
+      - name: HIL switch + deploy lock (epic #4371)
+        run: |
+          bash scripts/hil/tests/test_hil.sh
+          shellcheck scripts/hil/hil.sh scripts/hil/remote_pi.sh scripts/hil/hil.conf             scripts/hil/tests/test_hil.sh scripts/deploy/check_hil_lock.sh docker/sim/hil_run.sh
 
       - name: Lint shell scripts
         run: |
@@ -816,7 +837,4 @@ jobs:
           echo "# Format Python code" >> $GITHUB_STEP_SUMMARY
           echo "black ." >> $GITHUB_STEP_SUMMARY
           echo "isort ." >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "# Check before commit" >> $GITHUB_STEP_SUMMARY
-          echo "pre-commit run --all-files" >> $GITHUB_STEP_SUMMARY
           echo "\`\`\`" >> $GITHUB_STEP_SUMMARY

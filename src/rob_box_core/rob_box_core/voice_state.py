@@ -13,10 +13,9 @@
 speaking`` и ``detail="silenced"`` в тишине. ``VoiceStateTracker`` - чистый класс без ROS; ``watch()`` вешает
 подписки на узел.
 
-Адаптер v1 (``on_legacy``): строка старого топика попадает в тот же трекер, итог - наибольшая из активностей по
-источникам (``idle < listening < thinking < speaking``), тишина - если молчит любой источник. Источники не
-спорят: при v2 v1-топик молчит, при v1 события v2 дают то же самое или богаче. Адаптер и подписка на старый топик
-уходят вместе с ``dialogue_node`` (PR-15 #3711, карта удаления 15-0a) - ``LEGACY_STATE`` вычищается одним блоком.
+Итог - наибольшая из активностей по источникам (``idle < listening < thinking < speaking``), тишина - если молчит
+любой источник. Адаптер строки v1 (``on_legacy``/``LEGACY_STATE``) удалён вместе с подписками на старый топик
+(#4354 A2): издателя у ``/voice/dialogue/state`` нет с удаления ``dialogue_node``.
 
 Агент и сцена продублированы литералами (``rob_box_dialog`` есть не во всех образах - quest его не несёт); drift
 держит ``test_voice_state.py`` (сверка с ``rob_box_dialog.knowledge``).
@@ -24,14 +23,11 @@ speaking`` и ``detail="silenced"`` в тишине. ``VoiceStateTracker`` - ч�
 
 from __future__ import annotations
 
-import logging
 import time
 from typing import Any, Callable, Mapping, NamedTuple, Optional, Tuple
 
 from rob_box_core.expression_client import TURN_EVENT_TOPIC
 from rob_box_core.speech_client import SPEECH_EVENT_TOPIC, SpeakingWatch
-
-logger = logging.getLogger(__name__)
 
 #: Топик снимка сессии (latched); писатель - ``dialog_node`` (``identity_question.publish``).
 SESSION_TOPIC = "/dialog/session"
@@ -58,15 +54,6 @@ TURN_STAGE_STATE: Mapping[str, str] = {
     "timeout": "idle",
 }
 
-#: Удалит PR-15 #3711: v1-строка ``/voice/dialogue/state`` (``DialogueStateKind.name``) -> (состояние,
-#: ``detail``). Ключи UPPERCASE: чужое регистр-значение не должно прокрасться молча. Удаляется с ``dialogue_node``.
-LEGACY_STATE: Mapping[str, Tuple[str, Optional[str]]] = {
-    "IDLE": ("idle", None),
-    "LISTENING": ("listening", None),
-    "DIALOGUE": ("speaking", None),
-    "SILENCED": ("idle", SILENCED_DETAIL),
-}
-
 
 class VoiceState(NamedTuple):
     """Итог для читателей: ``state`` из :data:`BRIDGE_STATES`, ``detail`` - ``"silenced"`` или ``None``."""
@@ -75,44 +62,25 @@ class VoiceState(NamedTuple):
     detail: Optional[str] = None
 
 
-def legacy_state(raw: Any) -> VoiceState:
-    """v1-строка -> :class:`VoiceState` (чистая функция адаптера; неизвестное - WARNING и ``idle``, не крах)."""
-    text = str(raw or "").strip()
-    mapped = LEGACY_STATE.get(text)
-    if mapped is None:
-        if text:
-            logger.warning("voice_state: неизвестное состояние диалога %r -> fallback %r (обнови LEGACY_STATE в "
-                           "rob_box_core/voice_state.py)", text, FALLBACK_STATE)
-        else:
-            logger.debug("voice_state: пустое состояние диалога -> %r", FALLBACK_STATE)
-        return VoiceState(FALLBACK_STATE)
-    return VoiceState(*mapped)
-
-
 def _rank(state: str) -> int:
     return BRIDGE_STATES.index(state)
 
 
 class VoiceStateTracker:
-    """Складывает источники состояния голоса; ``on_*`` возвращают новое :class:`VoiceState`, если оно изменилось.
-
-    ``on_legacy`` возвращает состояние всегда (v1 слал кадр на каждое сообщение топика, шлем дедуплицирует сам).
-    """
+    """Складывает источники состояния голоса; ``on_*`` возвращают новое :class:`VoiceState`, если оно изменилось."""
 
     def __init__(self, agent: str = VOICE_AGENT, clock: Callable[[], float] = time.monotonic) -> None:
         self.agent = agent
         self._speech = SpeakingWatch(agent, clock)
         self._turn = FALLBACK_STATE
         self._scene_silenced = False
-        self._legacy = VoiceState(FALLBACK_STATE)
         self._last = VoiceState(FALLBACK_STATE)
 
     @property
     def current(self) -> VoiceState:
-        silenced = self._scene_silenced or self._legacy.detail == SILENCED_DETAIL
-        if silenced:
+        if self._scene_silenced:
             return VoiceState(FALLBACK_STATE, SILENCED_DETAIL)
-        rank = max(_rank(self._turn), _rank(self._legacy.state), _rank("speaking") if self._speech.speaking else 0)
+        rank = max(_rank(self._turn), _rank("speaking") if self._speech.speaking else 0)
         return VoiceState(BRIDGE_STATES[rank])
 
     def _changed(self) -> Optional[VoiceState]:
@@ -145,12 +113,6 @@ class VoiceStateTracker:
         self._scene_silenced = any(getattr(s, "kind", "") == SILENCE_SCENE for s in getattr(state, "scenes", ()))
         return self._changed()
 
-    def on_legacy(self, raw: Any) -> VoiceState:
-        """Удалит PR-15 #3711: строка старого ``/voice/dialogue/state`` (адаптер v1)."""
-        self._legacy = legacy_state(raw)
-        self._last = self.current
-        return self._last
-
 
 def watch(node: Any, tracker: VoiceStateTracker, on_change: Callable[[VoiceState], None]) -> None:
     """Подписать узел на три контракта v2; ``on_change(VoiceState)`` - на каждое изменение итога (и строка в логе
@@ -175,7 +137,6 @@ def watch(node: Any, tracker: VoiceStateTracker, on_change: Callable[[VoiceState
 __all__ = [
     "BRIDGE_STATES",
     "FALLBACK_STATE",
-    "LEGACY_STATE",
     "SESSION_TOPIC",
     "SILENCED_DETAIL",
     "SILENCE_SCENE",
@@ -183,6 +144,5 @@ __all__ = [
     "VOICE_AGENT",
     "VoiceState",
     "VoiceStateTracker",
-    "legacy_state",
     "watch",
 ]

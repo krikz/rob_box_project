@@ -2,8 +2,8 @@
 
 Runs in the ``led-matrix`` container on Vision Pi next to the compositor
 (decision В14): frames never cross Zenoh. A 25 Hz timer asks ``FaceDirector``
-for a frame and publishes the panels that changed to ``/panel_image``
-(``sensor_msgs/Image`` rgb8, ``frame_id`` = logical group), one publisher.
+for a frame and publishes the panels that changed to ``/panel_image`` as ONE
+``sensor_msgs/Image`` per frame (rgb8, ``frame_id`` = logical groups joined by comma), one publisher.
 
 Inputs: ``/voice/speech/envelope`` (mouth by the real voice) + ``/voice/speech/event``
 («speaking» while a reply sounds; ``cancelled`` shuts the mouth), ``/audio/direction`` +
@@ -32,7 +32,8 @@ from std_msgs.msg import Bool, Int32, String
 from rob_box_dialog import expression, face_scene
 from rob_box_dialog.knowledge import FACE_SCENE_CANCEL_SCENES as CANCEL_SCENES
 
-from .face.face import FPS, GROUP_OF, GROUP_SIZE, IDLE_MA, SCENE_LIT_LIMIT_MA, frame_ma, to_wire
+from .face.face import FPS, IDLE_MA, SCENE_LIT_LIMIT_MA, to_wire, wire_ma
+from .face.layout import GROUP_OF, GROUP_SIZE
 from .outside import battery_percent
 from .face_director import FaceDirector, GazeTrack, parse_animation_request
 
@@ -46,35 +47,60 @@ SPEAKER_GAZE_HOLD_S = 4.0
 SILENCED_REASON = 'silenced'
 
 
-class PanelPublisher:
-    """Frame -> one ``Image`` per logical group; only panels that changed (all of them once a second)."""
+#: Раз в столько секунд кадр уходит целиком, даже если не менялся: композитор мог перезапуститься (#3733).
+FULL_REFRESH_S = 1.0
 
-    def __init__(self, node: Node, full_refresh_s: float = 1.0) -> None:
+
+class PanelPublisher:
+    """Frame -> ONE ``Image`` per frame holding the panels that changed (all of them once a second).
+
+    ``frame_id`` = logical groups joined by comma, ``data`` = their images back to back, ``width`` = pixel count,
+    ``height`` = 1 (ros2leds compositor multi-group frame). Nothing changed -> nothing published (#3733)."""
+
+    def __init__(self, node: Node, full_refresh_s: float = FULL_REFRESH_S) -> None:
         self._node = node
         self._pub = node.create_publisher(Image, '/panel_image', 10)
         self._last: dict = {}
         self._full_refresh_s = full_refresh_s
         self._full_at = 0.0
+        #: panels sent / messages published (a frame is one message)
         self.sent = 0
+        self.messages = 0
+        #: strip current of the last frame (``wire_ma``); recounted only when a panel changed (#3733)
+        self.ma = IDLE_MA
 
-    def publish(self, frame, now: float) -> None:
+    def publish(self, frame, now: float) -> float:
+        """Publish the changed panels as one message; returns the strip current of the frame (mA)."""
         full = now - self._full_at >= self._full_refresh_s
         if full:
             self._full_at = now
-        stamp = self._node.get_clock().now().to_msg()
+        wires, changed = [], False
+        groups, chunks, pixels = [], [], 0
         for panel, arr in frame.panels().items():
             group = GROUP_OF[panel]
-            data = to_wire(arr).tobytes()
-            if not full and self._last.get(group) == data:
+            wire = to_wire(arr)
+            wires.append(wire)
+            data = wire.tobytes()
+            same = self._last.get(group) == data
+            changed = changed or not same
+            if not full and same:
                 continue
             self._last[group] = data
             w, h = GROUP_SIZE[group]
+            groups.append(group)
+            chunks.append(data)
+            pixels += w * h
+        if groups:
             msg = Image()
-            msg.header.stamp, msg.header.frame_id = stamp, group
-            msg.width, msg.height, msg.encoding, msg.is_bigendian, msg.step = w, h, 'rgb8', 0, w * 3
-            msg.data = data
+            msg.header.stamp, msg.header.frame_id = self._node.get_clock().now().to_msg(), ','.join(groups)
+            msg.width, msg.height, msg.encoding, msg.is_bigendian, msg.step = pixels, 1, 'rgb8', 0, pixels * 3
+            msg.data = b''.join(chunks)
             self._pub.publish(msg)
-            self.sent += 1
+            self.sent += len(groups)
+            self.messages += 1
+        if changed:
+            self.ma = wire_ma(wires)
+        return self.ma
 
 
 class FaceNode(Node):
@@ -225,20 +251,20 @@ class FaceNode(Node):
         t0 = time.perf_counter()
         prev = self.director.key
         frame = self.director.tick(now)
-        self.panels.publish(frame, now)
+        ma = self.panels.publish(frame, now)
         ms = (time.perf_counter() - t0) * 1000.0
         if self.director.key != prev:
             self.get_logger().info(f'лицо: {prev or "—"} -> {self.director.key}')
         self._frames += 1
         self._render_ms = max(self._render_ms, ms)
         self._render_sum += ms
-        self._peak_ma = max(self._peak_ma, frame_ma(frame))
+        self._peak_ma = max(self._peak_ma, ma)
         if now - self._metrics_at >= self._metrics_period:
             self._log_metrics(now)
 
     def _reset_metrics(self, now: float) -> None:
         self._metrics_at, self._frames, self._render_ms, self._render_sum, self._peak_ma = now, 0, 0.0, 0.0, 0.0
-        self._sent_at = self.panels.sent
+        self._sent_at, self._msgs_at = self.panels.sent, self.panels.messages
 
     def _log_metrics(self, now: float) -> None:
         dt = now - self._metrics_at
@@ -246,7 +272,8 @@ class FaceNode(Node):
         level = self.get_logger().warn if self._peak_ma - IDLE_MA > SCENE_LIT_LIMIT_MA else self.get_logger().info
         level(f'face.metrics scene={self.director.key} fps={self._frames / dt:.1f} '
               f'render_ms_avg={self._render_sum / n:.2f} render_ms_max={self._render_ms:.2f} '
-              f'panels_per_s={(self.panels.sent - self._sent_at) / dt:.1f} face.peak_ma={self._peak_ma:.0f}')
+              f'panels_per_s={(self.panels.sent - self._sent_at) / dt:.1f} '
+              f'msgs_per_s={(self.panels.messages - self._msgs_at) / dt:.1f} face.peak_ma={self._peak_ma:.0f}')
         self._reset_metrics(now)
 
 

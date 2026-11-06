@@ -43,7 +43,7 @@ def offline_chain(scores_dir: Optional[str] = None, db_dir: Optional[str] = None
     from rob_box_mcp_tools.engine.classic import classic_picker
     from rob_box_mcp_tools.engine.piece import PieceChain
     from rob_box_mcp_tools.engine.score_library import ScoreLibrary
-    from rob_box_mcp_tools.engine.tools_v2 import DjSetTool, library_records, theme_finder, word_hooks
+    from rob_box_mcp_tools.engine.engine_tools import DjSetTool, library_records, theme_finder, word_hooks
 
     box: Dict[str, Any] = {}
 

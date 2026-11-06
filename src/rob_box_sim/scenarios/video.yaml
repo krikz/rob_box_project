@@ -1,0 +1,20 @@
+# Сценарии для видео из Gazebo (docker/sim/record_video.sh): одна цель на мир,
+# те же точки, что в baseline.yaml. По ним же video_overlay ставит камеры
+# (область «спавн + цели») и зелёные метки целей.
+# Миры из карты квартиры (local/) сюда не добавлять: приватно.
+
+defaults:
+  timeout_base_s: 120
+  timeout_speed_mps: 0.1
+  stop_on_failure: true
+
+worlds:
+  # Сцена 1: проход 0.9 м (перегородка x=2.0), цель за ним.
+  polygon:
+    goals:
+      - {name: gap_0.9, x: 3.0, y: 0.0, yaw: 0.0}
+
+  # Сцена 2: Г-поворот налево на 90° в коридоре 1.2 м.
+  turn90:
+    goals:
+      - {name: turn_left_90, x: 3.6, y: 4.0, yaw: 1.5708}

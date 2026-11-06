@@ -1,0 +1,24 @@
+# Лица для пульта Telegram (issue #4469). Владелец данных - FaceStore на Vision Pi (vision_face_node);
+# сервис /perception/people читает и пишет только он, клиент (тулы mcp_server) лишь зовёт.
+
+uint8 OP_LIST=0
+uint8 OP_PHOTO=1
+uint8 OP_SET_NAME=2
+# Что сделать.
+uint8 op
+# OP_LIST: all | unnamed | today.
+string filter
+# OP_PHOTO, OP_SET_NAME: 8 первых символов id лица (или полный id); должен совпасть с существующей записью.
+string person_id
+# OP_SET_NAME: новое имя (до 40 знаков).
+string name
+---
+# Принято ли; нет - причина в reason (person_not_found, ambiguous_id, bad_name, bad_filter, exhibition_mode,
+# no_snapshot, bad_id, bad_op, store_error).
+bool ok
+string reason
+# OP_LIST: JSON-массив лиц; OP_PHOTO и OP_SET_NAME: JSON-объект исхода. Данные пишет владелец, не модель.
+string data_json
+# OP_PHOTO: сам снимок (JPEG, не больше 200 КБ: большее владелец пережимает); у остальных операций пуст.
+# Байты, а не путь: каталог лиц есть только у владельца на Vision Pi, копия на Sound Pi отстаёт.
+uint8[] jpeg

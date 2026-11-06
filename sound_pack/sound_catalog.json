@@ -1,16 +1,16 @@
 {
   "metadata": {
-    "total_sounds": 51,
-    "total_duration_seconds": 89.83,
-    "total_duration_minutes": 1.50,
-    "average_duration": 1.76,
+    "total_sounds": 53,
+    "total_duration_seconds": 90.48,
+    "total_duration_minutes": 1.51,
+    "average_duration": 1.71,
     "min_duration": 0.061,
     "max_duration": 12.353,
-    "updated": "2026-01-29",
+    "updated": "2026-11-05",
     "categories": {
-      "base": 20,
+      "base": 21,
       "ui": 12,
-      "robot": 19
+      "robot": 20
     }
   },
   "sounds": {
@@ -57,6 +57,28 @@
       "source": "Small Robot pack",
       "trigger": "robot_angry",
       "usage": "Раздражение, злость, недовольство"
+    },
+    "backup_beep.mp3": {
+      "duration": 0.45,
+      "category": "robot",
+      "description": "Truck backup beeper, one beep (1 kHz + odd harmonics, synthesized)",
+      "description_ru": "Бипер заднего хода грузовика, один бип (1 кГц, синтез кодом)",
+      "author": "rob_box_project (sound_pack/make_backup_beep.py)",
+      "license": "CC0",
+      "source": "synthesized",
+      "trigger": "robot_backup_beep",
+      "usage": "Зона безопасности «внимание» (#4365): бип 0,45 с каждые 0,9 с, пока препятствие ближе 0,40 м"
+    },
+    "backup_beep_fast.mp3": {
+      "duration": 0.2,
+      "category": "robot",
+      "description": "Truck backup beeper, short fast beep (1 kHz + odd harmonics, synthesized)",
+      "description_ru": "Бипер заднего хода, короткий частый бип (1 кГц, синтез кодом)",
+      "author": "rob_box_project (sound_pack/make_backup_beep.py)",
+      "license": "CC0",
+      "source": "synthesized",
+      "trigger": "robot_backup_beep_fast",
+      "usage": "Зона безопасности «стоп» (#4365): бип 0,2 с каждые 0,4 с, пока держится аварийный стоп"
     },
     "bubbles.mp3": {
       "duration": 1.19,

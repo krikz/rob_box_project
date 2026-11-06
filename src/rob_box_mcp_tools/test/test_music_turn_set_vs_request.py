@@ -13,7 +13,7 @@ from unittest.mock import patch
 import pytest
 
 from rob_box_mcp_tools.engine.classic import ClassicPick
-from rob_box_mcp_tools.engine.tools_v2 import SET_PLAYING
+from rob_box_mcp_tools.engine.engine_tools import SET_PLAYING
 from rob_box_voice.core.media_phrases import SET_PLAYING_REASON
 from rob_box_voice.core.music_player_state import MusicEvent
 
@@ -96,7 +96,7 @@ def test_compose_error_does_not_stop_the_running_set():
     rig = _rig()
     dj, req, _started = _set_running(rig)
 
-    with patch("rob_box_mcp_tools.engine.tools_v2.compose", side_effect=RuntimeError("boom")):
+    with patch("rob_box_mcp_tools.engine.engine_tools.compose", side_effect=RuntimeError("boom")):
         result = req.execute(intent="track", text="поставь клубный трек", turn_id="turn-b")
 
     assert result.success is False and result.data["reason"] == "compose_error"

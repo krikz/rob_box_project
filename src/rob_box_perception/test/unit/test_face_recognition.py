@@ -117,6 +117,8 @@ class FakeStore:
         self.attach_name_calls: List[Any] = []
         self.attach_name_return: bool = True
         self.find_by_speaker_map: Dict[str, str] = {}
+        self.binding_map: Dict[str, Any] = {}
+        self.seen_person_ids: set = set()  # записи, которые «узнал» identify (галерея people())
         self.stats_return: Dict[str, Any] = {'people': 0}
         self.stats_raises: bool = False
 
@@ -136,6 +138,18 @@ class FakeStore:
 
     def find_by_speaker(self, speaker_id: str) -> Optional[str]:
         return self.find_by_speaker_map.get(speaker_id)
+
+    def people(self) -> List[Dict[str, Any]]:
+        """Записи галереи: ``binding_map`` — ``person_id → (имя, speaker_id)``; по умолчанию любая встреченная
+        запись безымянная и без голоса (issue #4357)."""
+        known = {pid for pid in self.binding_map}
+        known.update(c[0] for c in self.attach_name_calls)
+        known.update(self.seen_person_ids)
+        return [
+            {'person_id': pid, 'name': self.binding_map.get(pid, (None, None))[0],
+             'speaker_id': self.binding_map.get(pid, (None, None))[1]}
+            for pid in sorted(known)
+        ]
 
     def stats(self) -> Dict[str, Any]:
         if self.stats_raises:
@@ -314,6 +328,8 @@ def test_encounter_promotion_records_once_and_marks_one_detection():
     last_out: List[Dict[str, Any]] = []
     for t in (0.0, 0.5, 1.0):
         dets = [make_detection(w=0.5, h=0.5)]
+        # Анфас: незнакомца по нефронтальной Встрече не пишут (ADR-0130 §10.4).
+        dets[0]['landmarks'] = _landmarks()
         last_out = rec.process(dets, frame, now=t)
 
     assert len(store.record_encounter_calls) == 1
@@ -339,9 +355,11 @@ def test_holding_face_longer_does_not_produce_second_encounter_or_marker():
     rec = FaceRecognizer(embedder=embedder, store=store, tracker=tracker)
     frame = make_frame()
 
-    # Доводим трек до Встречи.
+    # Доводим трек до Встречи (анфас — иначе незнакомца не пишут, ADR-0130 §10.4).
     for t in (0.0, 0.5, 1.0):
-        rec.process([make_detection(w=0.5, h=0.5)], frame, now=t)
+        det = make_detection(w=0.5, h=0.5)
+        det['landmarks'] = _landmarks()
+        rec.process([det], frame, now=t)
     assert len(store.record_encounter_calls) == 1
 
     # Держим лицо в кадре ещё много кадров.
@@ -470,17 +488,152 @@ def _prime_last_frame(rec: FaceRecognizer, store: FakeStore, person_ids: List[Op
     store.identify = original_identify  # type: ignore[method-assign]
 
 
-def test_voice_merge_single_known_face_attaches_name():
+def _speaking_landmarks(cx: float, cy: float, mouth_half: float) -> List[float]:
+    """5 точек лица (глаза, нос, углы рта), normalized: глаза на 0.08 друг от друга, рот шириной 2*mouth_half."""
+    return [
+        cx - 0.04, cy - 0.03, cx + 0.04, cy - 0.03, cx, cy,
+        cx - mouth_half, cy + 0.04, cx + mouth_half, cy + 0.04,
+    ]
+
+
+#: Ширина половины рта по кадрам: говорит — гуляет на десятки процентов; фото — стоит (issue #4357).
+SPEAKING_MOUTH = (0.025, 0.035, 0.028, 0.038, 0.026, 0.034)
+PHOTO_MOUTH = (0.030,) * 6
+
+
+def _speak_window(rec: FaceRecognizer, store: FakeStore, person_id: Optional[str], t0: float,
+                  mouth=SPEAKING_MOUTH, landmarks: bool = True) -> float:
+    """Окно фразы: кадры раз в 0.5 с, одно лицо ``person_id`` с ртом ``mouth``; вернуть время конца окна."""
+    frame = make_frame()
+    original_identify = store.identify
+
+    def fake_identify(embedding):
+        store.identify_calls.append(embedding)
+        return make_match(person_id=person_id) if person_id is not None else None
+
+    if person_id is not None:
+        store.seen_person_ids.add(person_id)
+    store.identify = fake_identify  # type: ignore[method-assign]
+    ts = t0
+    for half in mouth:
+        det = make_detection(cx=0.5, w=0.2, h=0.2)
+        det['landmarks'] = _speaking_landmarks(0.5, 0.5, half) if landmarks else None
+        rec.process([det], frame, now=ts)
+        ts += 0.5
+    store.identify = original_identify  # type: ignore[method-assign]
+    return ts
+
+
+def test_voice_merge_speaking_face_attaches_name_after_three_phrases():
+    """Issue #4357: одно лицо всё окно, рот двигался, три фразы подряд — только тогда имя."""
     tracker = FaceTracker(min_track_sec=1000.0)  # промоушн не мешает тесту
     store = FakeStore()
     rec = FaceRecognizer(embedder=FakeEmbedder(), store=store, tracker=tracker, voice_merge_window_sec=6.0)
 
-    _prime_last_frame(rec, store, ['p1'], now=10.0)
+    results = []
+    for t0 in (10.0, 20.0, 30.0):
+        end = _speak_window(rec, store, 'p1', t0)
+        results.append(rec.note_voice_identification(speaker_id='spk-1', name='Денис', now=end))
 
-    result = rec.note_voice_identification(speaker_id='spk-1', name='Денис', now=11.0)
-
-    assert result == 'p1'
+    assert results == [None, None, 'p1']
     assert store.attach_name_calls == [('p1', 'Денис', 'spk-1')]
+    assert rec.stats()['voice_merge_pending'] == 2
+
+
+def test_voice_merge_photo_with_still_mouth_never_gets_name():
+    """Живой случай 04.11 (#4357): фото на кресле — единственное лицо, голос Дэнчика рядом. Рот фото не меняется —
+    имя не привязывается, сколько бы фраз ни прозвучало."""
+    tracker = FaceTracker(min_track_sec=1000.0)
+    store = FakeStore()
+    log = RecordingLog()
+    rec = FaceRecognizer(embedder=FakeEmbedder(), store=store, tracker=tracker, log_fn=log)
+
+    for t0 in (10.0, 20.0, 30.0, 40.0, 50.0):
+        end = _speak_window(rec, store, '566331d3', t0, mouth=PHOTO_MOUTH)
+        assert rec.note_voice_identification(speaker_id='1ae4b0ac', name='Дэнчик', now=end) is None
+
+    assert store.attach_name_calls == []
+    assert rec.stats()['voice_merge_skip_not_speaking'] == 5
+    assert log.has('info', 'лицо не говорило')
+
+
+def test_voice_merge_without_mouth_landmarks_is_no_evidence():
+    tracker = FaceTracker(min_track_sec=1000.0)
+    store = FakeStore()
+    rec = FaceRecognizer(embedder=FakeEmbedder(), store=store, tracker=tracker, voice_merge_confirmations=1)
+
+    end = _speak_window(rec, store, 'p1', 10.0, landmarks=False)
+
+    assert rec.note_voice_identification(speaker_id='spk-1', name='Денис', now=end) is None
+    assert store.attach_name_calls == []
+    assert rec.stats()['voice_merge_skip_not_speaking'] == 1
+
+
+def test_voice_merge_same_window_counts_once():
+    """Два результата голоса в одном окне — одно доказательство, а не два."""
+    tracker = FaceTracker(min_track_sec=1000.0)
+    store = FakeStore()
+    rec = FaceRecognizer(embedder=FakeEmbedder(), store=store, tracker=tracker, voice_merge_confirmations=2)
+
+    end = _speak_window(rec, store, 'p1', 10.0)
+    assert rec.note_voice_identification(speaker_id='spk-1', name='Денис', now=end) is None
+    assert rec.note_voice_identification(speaker_id='spk-1', name='Денис', now=end + 0.1) is None
+    end = _speak_window(rec, store, 'p1', 20.0)
+
+    assert rec.note_voice_identification(speaker_id='spk-1', name='Денис', now=end) == 'p1'
+
+
+def test_voice_merge_other_face_resets_confirmations():
+    tracker = FaceTracker(min_track_sec=1000.0)
+    store = FakeStore()
+    rec = FaceRecognizer(embedder=FakeEmbedder(), store=store, tracker=tracker, voice_merge_confirmations=2)
+
+    for t0, pid in ((10.0, 'p1'), (20.0, 'p2'), (30.0, 'p1')):
+        end = _speak_window(rec, store, pid, t0)
+        assert rec.note_voice_identification(speaker_id='spk-1', name='Денис', now=end) is None
+
+    assert store.attach_name_calls == []
+
+
+def test_voice_merge_two_people_in_turns_within_window_no_merge():
+    """В каждом кадре одно лицо, но в окне фразы их было двое по очереди — это не «одно лицо»."""
+    tracker = FaceTracker(min_track_sec=1000.0)
+    store = FakeStore()
+    rec = FaceRecognizer(embedder=FakeEmbedder(), store=store, tracker=tracker, voice_merge_confirmations=1)
+
+    _speak_window(rec, store, 'p1', 10.0)
+    end = _speak_window(rec, store, 'p2', 13.0)
+
+    assert rec.note_voice_identification(speaker_id='spk-1', name='Денис', now=end - 0.5) is None
+    assert rec.stats()['voice_merge_skip_multi_face'] == 1
+
+
+def test_voice_merge_does_not_overwrite_other_name():
+    """Шифу переименовал фото в «Литвин» (speaker_id снят) — голос Дэнчика имя не перетирает (#4357)."""
+    tracker = FaceTracker(min_track_sec=1000.0)
+    store = FakeStore()
+    store.binding_map = {'566331d3': ('Литвин', None)}
+    log = RecordingLog()
+    rec = FaceRecognizer(embedder=FakeEmbedder(), store=store, tracker=tracker, log_fn=log,
+                         voice_merge_confirmations=1)
+
+    end = _speak_window(rec, store, '566331d3', 10.0)
+
+    assert rec.note_voice_identification(speaker_id='1ae4b0ac', name='Дэнчик', now=end) is None
+    assert store.attach_name_calls == []
+    assert rec.stats()['voice_merge_skip_named_other'] == 1
+    assert log.has('warn', 'не перетираю')
+
+
+def test_voice_merge_same_name_same_voice_is_allowed():
+    tracker = FaceTracker(min_track_sec=1000.0)
+    store = FakeStore()
+    store.binding_map = {'p1': ('денис', 'spk-1')}
+    rec = FaceRecognizer(embedder=FakeEmbedder(), store=store, tracker=tracker, voice_merge_confirmations=1)
+
+    end = _speak_window(rec, store, 'p1', 10.0)
+
+    assert rec.note_voice_identification(speaker_id='spk-1', name='Денис', now=end) == 'p1'
 
 
 def test_voice_merge_two_faces_in_frame_no_merge():
@@ -554,11 +707,12 @@ def test_voice_merge_speaker_bound_to_different_person_no_merge_and_warns():
     store = FakeStore()
     store.find_by_speaker_map = {'spk-1': 'other-person'}
     log = RecordingLog()
-    rec = FaceRecognizer(embedder=FakeEmbedder(), store=store, tracker=tracker, log_fn=log)
+    rec = FaceRecognizer(embedder=FakeEmbedder(), store=store, tracker=tracker, log_fn=log,
+                         voice_merge_confirmations=1)
 
-    _prime_last_frame(rec, store, ['p1'], now=10.0)
+    end = _speak_window(rec, store, 'p1', 10.0)
 
-    result = rec.note_voice_identification(speaker_id='spk-1', name='Денис', now=11.0)
+    result = rec.note_voice_identification(speaker_id='spk-1', name='Денис', now=end)
 
     assert result is None
     assert store.attach_name_calls == []
@@ -617,10 +771,10 @@ def test_voice_merge_skip_counted_as_conflict():
     tracker = FaceTracker(min_track_sec=1000.0)
     store = FakeStore()
     store.find_by_speaker_map = {'spk-1': 'other-person'}
-    rec = FaceRecognizer(embedder=FakeEmbedder(), store=store, tracker=tracker)
-    _prime_last_frame(rec, store, ['p1'], now=10.0)
+    rec = FaceRecognizer(embedder=FakeEmbedder(), store=store, tracker=tracker, voice_merge_confirmations=1)
+    end = _speak_window(rec, store, 'p1', 10.0)
 
-    rec.note_voice_identification(speaker_id='spk-1', name='Денис', now=11.0)
+    rec.note_voice_identification(speaker_id='spk-1', name='Денис', now=end)
 
     s = rec.stats()
     assert s['voice_merge_skip_conflict'] == 1
@@ -643,10 +797,11 @@ def test_voice_merge_skip_counters_accumulate_across_calls():
 def test_successful_merge_does_not_touch_skip_counters():
     tracker = FaceTracker(min_track_sec=1000.0)
     store = FakeStore()
-    rec = FaceRecognizer(embedder=FakeEmbedder(), store=store, tracker=tracker, voice_merge_window_sec=6.0)
-    _prime_last_frame(rec, store, ['p1'], now=10.0)
+    rec = FaceRecognizer(embedder=FakeEmbedder(), store=store, tracker=tracker, voice_merge_window_sec=6.0,
+                         voice_merge_confirmations=1)
+    end = _speak_window(rec, store, 'p1', 10.0)
 
-    result = rec.note_voice_identification(speaker_id='spk-1', name='Денис', now=11.0)
+    result = rec.note_voice_identification(speaker_id='spk-1', name='Денис', now=end)
 
     assert result == 'p1'
     s = rec.stats()
@@ -994,7 +1149,7 @@ def test_landmarks_present_embedder_gets_aligned_crop_store_gets_plain_crop(monk
     aligned_sentinel = np.full((112, 112, 3), 42, dtype=np.uint8)
 
     def fake_align_face(frame_rgb, landmarks, *, output_size=112):
-        assert landmarks == [0.1] * 10
+        assert landmarks == _landmarks()
         return aligned_sentinel
 
     monkeypatch.setattr(face_recognition_mod, 'align_face', fake_align_face)
@@ -1024,7 +1179,8 @@ def test_landmarks_present_embedder_gets_aligned_crop_store_gets_plain_crop(monk
 
     for t in (0.0, 0.5, 1.0):
         dets = [make_detection(w=0.5, h=0.5)]
-        dets[0]['landmarks'] = [0.1] * 10
+        # Анфас: незнакомца по нефронтальной Встрече не пишут (ADR-0130 §10.4).
+        dets[0]['landmarks'] = _landmarks()
         rec.process(dets, frame, now=t)
 
     # Эмбеддер видел ИМЕННО выровненный кроп — не обычный crop_face.
@@ -1138,3 +1294,97 @@ def test_align_face_exception_is_swallowed_and_falls_back(monkeypatch):
     assert embedder.embed_calls == [1], 'после сбоя align_face фолбек всё равно доезжает до ArcFace'
     assert rec.stats()['align_fallback_total'] == 1
     assert log.has('warn')
+
+
+# ============================================================================
+# ADR-0130 §10.4 п.2: новую запись не заводить по нефронтальной Встрече
+# или по кадрам без лица; узнавание известных — как раньше
+# ============================================================================
+
+#: Шаблон ArcFace 112x112 (анфас), вписанный в bbox make_detection().
+_FRONTAL_112 = (
+    (38.2946, 51.6963), (73.5318, 51.5014), (56.0252, 71.7366),
+    (41.5493, 92.3655), (70.7299, 92.2041),
+)
+
+
+def _landmarks(nose_dx: float = 0.0) -> List[float]:
+    """5 точек в normalized координатах кадра; nose_dx — сдвиг носа (px шаблона)."""
+    out: List[float] = []
+    for k, (x, y) in enumerate(_FRONTAL_112):
+        if k == 2:
+            x += nose_dx
+        out += [0.25 + 0.5 * x / 112.0, 0.25 + 0.5 * y / 112.0]
+    return out
+
+
+def _run_to_encounter(rec, landmarks) -> List[Dict[str, Any]]:
+    frame = make_frame()
+    out: List[Dict[str, Any]] = []
+    for t in (0.0, 0.5, 1.0):
+        det = make_detection(w=0.5, h=0.5)
+        det['landmarks'] = landmarks
+        out = rec.process([det], frame, now=t)
+    return out
+
+
+@pytest.mark.parametrize(
+    'landmarks, known, recorded',
+    [
+        (_landmarks(), False, True),              # анфас незнакомца — заводим
+        (_landmarks(nose_dx=20.0), False, False),  # поворот головы, незнакомец
+        (None, False, False),                     # точек нет — лицо не подтверждено
+        (_landmarks(nose_dx=20.0), True, True),   # поворот, но человек известен
+        (None, True, True),
+    ],
+)
+def test_encounter_reaches_store_only_if_frontal_or_known(landmarks, known, recorded):
+    tracker = FaceTracker(min_track_sec=1.0, min_face_px=48.0, max_gap_sec=5.0)
+    store = FakeStore()
+    store.identify_return = make_match(person_id='p1') if known else None
+    store.record_encounter_return = make_match(person_id='p1', is_new=not known)
+    rec = FaceRecognizer(embedder=FakeEmbedder(), store=store, tracker=tracker)
+
+    _run_to_encounter(rec, landmarks)
+
+    assert len(store.record_encounter_calls) == (1 if recorded else 0)
+    assert rec.stats()['new_record_suppressed_total'] == (0 if recorded else 1)
+
+
+def test_nonfrontal_stranger_creates_no_record(tmp_path):
+    """Живой FaceStore: профиль незнакомца — ни записи, ни маркера Встречи."""
+    tracker = FaceTracker(min_track_sec=1.0, min_face_px=48.0, max_gap_sec=5.0)
+    store = face_store_mod.FaceStore(root=str(tmp_path), mode=face_store_mod.MODE_WORKSHOP)
+    rec = FaceRecognizer(embedder=FakeEmbedder(), store=store, tracker=tracker)
+
+    out = _run_to_encounter(rec, _landmarks(nose_dx=20.0))
+
+    assert store.people() == []
+    assert all('attributes_json' not in d for d in out)
+    assert rec.stats()['new_record_suppressed_total'] == 1
+    assert rec.stats()['new_people_total'] == 0
+
+
+def test_frontal_stranger_still_creates_record(tmp_path):
+    tracker = FaceTracker(min_track_sec=1.0, min_face_px=48.0, max_gap_sec=5.0)
+    store = face_store_mod.FaceStore(root=str(tmp_path), mode=face_store_mod.MODE_WORKSHOP)
+    rec = FaceRecognizer(embedder=FakeEmbedder(), store=store, tracker=tracker)
+
+    _run_to_encounter(rec, _landmarks())
+
+    assert len(store.people()) == 1
+    assert rec.stats()['new_people_total'] == 1
+
+
+def test_nonfrontal_known_person_still_recognized(tmp_path):
+    """Отсекается только рождение: известного узнаём и в профиль."""
+    store = face_store_mod.FaceStore(root=str(tmp_path), mode=face_store_mod.MODE_WORKSHOP)
+    known = store.record_encounter(np.array([1.0, 0.0, 0.0], dtype=np.float32))
+    tracker = FaceTracker(min_track_sec=1.0, min_face_px=48.0, max_gap_sec=5.0)
+    rec = FaceRecognizer(embedder=FakeEmbedder(), store=store, tracker=tracker)
+
+    _run_to_encounter(rec, _landmarks(nose_dx=20.0))
+
+    assert [p['person_id'] for p in store.people()] == [known.person_id]
+    assert rec.stats()['recognized_total'] == 1
+    assert rec.stats()['new_record_suppressed_total'] == 0

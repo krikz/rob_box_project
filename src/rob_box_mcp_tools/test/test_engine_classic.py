@@ -17,7 +17,7 @@ import pytest
 from rob_box_mcp_tools.core.rtttl_compose import melody_to_compose_params, rtttl_to_melody
 from rob_box_mcp_tools.engine.classic import ClassicPick, find_record, pick_classic, pick_score, song_material
 from rob_box_mcp_tools.engine.search import ThemeHits
-from rob_box_mcp_tools.engine.tools_v2 import DjSetTool, RequestMusicTool
+from rob_box_mcp_tools.engine.engine_tools import DjSetTool, RequestMusicTool
 from rob_box_music import knowledge as kn
 from rob_box_music.arrange.song import song_track, verse_count
 from rob_box_music.model import BEATS_PER_BAR

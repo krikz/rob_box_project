@@ -1,5 +1,9 @@
 # Руководство для AI агентов - Rob Box Project
 
+> **Правила работы агентов — только в [AGENTS.md](../../AGENTS.md)** (одна точка входа, ADR-0163 §3).
+> Этот файл — старый справочник по системе, Docker и CI; правил здесь не заводить. Где он расходится
+> с `AGENTS.md`, `docs/architecture/` или `docs/process/claude-coordinator-robot-flow.md` — прав не он.
+
 ## 📋 Оглавление
 - [🎯 Примеры эффективных запросов к AI](#-примеры-эффективных-запросов-к-ai)
 - [Обзор системы](#обзор-системы)
@@ -637,8 +641,8 @@ sshpass -p 'open' ssh ros2@10.1.1.22 \
 > `docker/diagnose_data_flow.sh`, `docker/vision/diagnose.sh`,
 > `docker/vision/force_publish.sh`, `docker/tune.sh`,
 > `docker/vision/config/start_*.sh`) в репозитории больше **не существуют**.
-> Актуальные утилитарные скрипты лежат в `docker/scripts/` (`start_oak_d.sh`,
-> `start_apriltag.sh`, `start_lslidar.sh`, `check_power_status.sh`,
+> Актуальные стартовые скрипты сервисов — в `docker/main/scripts/<svc>/` и
+> `docker/vision/scripts/<svc>/`; в `docker/scripts/` — утилиты питания и CAN (`check_power_status.sh`,
 > `check_usb_devices.sh`, `monitor_power_live.sh` и др.) — эта секция описывает
 > снапшот на 2025-10-09 и оставлена как историческая справка, не как текущий
 > инвентарь. Из перечисленного ниже актуальны только

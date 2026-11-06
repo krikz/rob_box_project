@@ -106,7 +106,7 @@ def test_sink_preview_publishes_audio_and_result_but_not_headset_or_speaker():
         {
             "request_id": "abc12345",
             "sink": "preview",
-            "ssml": "<speak>привет</speak>",
+            "text": "привет",
             "voice": "male-qn-qingse",
         },
         ensure_ascii=False,
@@ -172,7 +172,7 @@ def test_sink_preview_provider_error_publishes_preview_error_with_reason():
         {
             "request_id": "fail-test",
             "sink": "preview",
-            "ssml": "<speak>привет</speak>",
+            "text": "привет",
             "voice": "male-qn-qingse",
         },
         ensure_ascii=False,
@@ -204,7 +204,7 @@ def test_sink_preview_empty_text_publishes_empty_text_error():
 
     msg = MagicMock()
     msg.data = json.dumps(
-        {"request_id": "empty-test", "sink": "preview", "ssml": "<speak>   </speak>"},
+        {"request_id": "empty-test", "sink": "preview", "text": "   "},
         ensure_ascii=False,
     )
     node._on_avatar_tts_request(msg)
@@ -234,8 +234,6 @@ def test_sink_headset_does_not_touch_preview_publishers():
     # Чтобы старый путь headset не падал на _submit_synthesis и т.п.,
     # мокаем все внешние зависимости no-op.
     node._submit_synthesis = MagicMock()  # type: ignore[assignment]
-    node._parse_ssml_attributes = lambda ssml: {}  # type: ignore[assignment]
-    node._extract_text_from_ssml = lambda ssml: "привет"  # type: ignore[assignment]
     node._publish_tars1_text = MagicMock()  # type: ignore[assignment]
 
     msg = MagicMock()
@@ -243,7 +241,7 @@ def test_sink_headset_does_not_touch_preview_publishers():
         {
             "request_id": "headset-test",
             "sink": "headset",
-            "ssml": "<speak>привет</speak>",
+            "text": "привет",
             "voice": "default",
         },
         ensure_ascii=False,
@@ -274,7 +272,7 @@ def test_invalid_sink_publishes_avatar_tts_error_invalid_sink():
 
     msg = MagicMock()
     msg.data = json.dumps(
-        {"request_id": "bogus-test", "sink": "bogus", "ssml": "<speak>x</speak>"},
+        {"request_id": "bogus-test", "sink": "bogus", "text": "x"},
         ensure_ascii=False,
     )
     node._on_avatar_tts_request(msg)

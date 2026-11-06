@@ -94,7 +94,7 @@ def test_n813_passed_on_addressed_turn_is_retried_with_the_violation_and_the_ans
             return await bridge.complete([LLMMessage(role="user", content="тишина")], tools=[])
 
     out = asyncio.run(run())
-    assert out.content == "Тишина так тишина — молчу." and not out.tool_calls
+    assert out.command == cm.Command(speech="Тишина так тишина — молчу.")
     retry = inner.requests[1]["messages"]
     assert any(kn.VIOLATION_PASSED_ADDRESSED in (m.content or "") for m in retry if m.role == "tool")
     assert any(f"violations=['{kn.VIOLATION_PASSED_ADDRESSED}']" in line for line in lines)
@@ -109,7 +109,7 @@ def test_backlog_pickup_passed_goes_through_without_retry():
             return await bridge.complete([LLMMessage(role="user", content="фон")], tools=[])
 
     out = asyncio.run(run())
-    assert len(inner.requests) == 1 and out.tool_calls[0].arguments == {"passed": "not_addressed"}
+    assert len(inner.requests) == 1 and out.command == cm.Command(passed="not_addressed")
     assert "passed" in _command_schema(inner.requests[0])["properties"]
 
 
@@ -123,7 +123,7 @@ def test_n109_unasked_voice_is_dropped_and_logged_the_line_is_plain_speech():
             return await bridge.complete([LLMMessage(role="user", content="какие звуки умеешь")], tools=[])
 
     out = asyncio.run(run())
-    assert out.content == "Умею сирену и звонок." and not out.tool_calls, "реплика без голоса — текстом, без command"
+    assert out.command == cm.Command(speech="Умею сирену и звонок."), "реплика без голоса — голая речь"
     assert any("fields_dropped=['voice']" in line for line in lines)
     assert len(inner.requests) == 1, "лишнее поле — не нарушение, повтора нет"
 
@@ -171,7 +171,7 @@ def test_n813_whole_v2_turn_answers_in_words_not_with_the_mumble():
     engine = TurnEngine(Session("personality"), ports, system_prompt="Ты робот.")
     asyncio.run(engine.run(Addressed("тишина", VOICE)))
     said = [s.text for s in node.pubs["/voice/speech/request"].sent]
-    assert said == ["<speak>Тихо так тихо.</speak>"]
+    assert said == ["Тихо так тихо."]
     assert not any(v in said[0] for v in phrases.catalog()[kn.PASSED_ADDRESSED_PHRASE])
     assert "passed" not in _command_schema(inner.requests[0])["properties"]
     assert cm.current_form() == Form()

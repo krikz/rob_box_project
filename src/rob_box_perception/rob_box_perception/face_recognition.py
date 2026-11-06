@@ -141,6 +141,9 @@ try:
 except ImportError:
     align_face = None  # type: ignore[assignment]
 
+from rob_box_perception import face_voice_binding as fvb
+from rob_box_perception.face_epithet import NO_NAMER
+from rob_box_perception.face_frontality import encounter_gate
 from rob_box_perception.face_tracker import FaceObservation, FaceTracker
 
 #: Запас вокруг bbox'а лица при кропе (ADR-0123 §4.2: «40 % по краям,
@@ -290,6 +293,8 @@ class FaceRecognizer:
             лучшего кадра трека в ``face_tracker`` (issue #2774, см.
             ``DEFAULT_MIN_SHARPNESS``).
         voice_merge_window_sec: окно слияния с голосом (ADR-0123 §6).
+        voice_merge_min_frames / voice_merge_min_mouth_spread / voice_merge_confirmations: доказательство
+            «говорит это лицо» (issue #4357, :mod:`face_voice_binding`).
         store_snapshots: писать ли снимок встречи. Решение «лечь ли ему
             на диск» всё равно принимает ``FaceStore`` по режиму — здесь
             только экономия на JPEG-кодировании в ``strict``.
@@ -310,8 +315,12 @@ class FaceRecognizer:
         max_top_clip_frac: float = DEFAULT_MAX_TOP_CLIP_FRAC,
         min_sharpness: float = DEFAULT_MIN_SHARPNESS,
         voice_merge_window_sec: float = DEFAULT_VOICE_MERGE_WINDOW_SEC,
+        voice_merge_min_frames: int = fvb.DEFAULT_MIN_FRAMES,
+        voice_merge_min_mouth_spread: float = fvb.DEFAULT_MIN_MOUTH_SPREAD,
+        voice_merge_confirmations: int = fvb.DEFAULT_CONFIRMATIONS,
         max_embeds_per_frame: int = DEFAULT_MAX_EMBEDS_PER_FRAME,
         store_snapshots: bool = True,
+        namer: Any = NO_NAMER,
         log_fn: Optional[Any] = None,
     ) -> None:
         self._embedder = embedder
@@ -327,19 +336,27 @@ class FaceRecognizer:
         self._voice_merge_window_sec = float(voice_merge_window_sec)
         self._max_embeds_per_frame = max(1, int(max_embeds_per_frame))
         self._store_snapshots = bool(store_snapshots)
+        # Кличка записи (ADR-0164 этап 6, :mod:`face_epithet`). ``NO_NAMER`` — новым кличек не выдаём.
+        self._namer = namer
         self._log_fn = log_fn
 
-        # Последний кадр — для правила ADR-0123 §6 «голос + РОВНО ОДНО
-        # лицо в кадре». Без этого в галерею Дениса однажды попадёт лицо
-        # того, кто стоял рядом.
-        self._last_frame_ts: float = 0.0
-        self._last_frame_person_ids: List[Optional[str]] = []
+        # Кадры окна фразы и счёт подтверждений «голос — лицо» (issue #4357): одно лицо в ПОСЛЕДНЕМ кадре
+        # отдало имя Дэнчика фото на кресле, доказательство теперь копит face_voice_binding.
+        self._binding = fvb.VoiceFaceBinding(
+            window_sec=self._voice_merge_window_sec,
+            min_frames=voice_merge_min_frames,
+            min_mouth_spread=voice_merge_min_mouth_spread,
+            confirmations=voice_merge_confirmations,
+        )
 
         # Счётчики для ``stats()`` и для честного health (ADR-0018).
         self._encounters_total = 0
         self._embed_failures = 0
         self._recognized_total = 0
         self._new_people_total = 0
+        #: Встречи незнакомца, по которым новую запись НЕ завели:
+        #: нефронтально или нет лица (ADR-0130 §10.4 п.2).
+        self._new_record_suppressed_total = 0
         self._voice_merges_total = 0
         self._embed_calls = 0
         self._embed_ms_total = 0.0
@@ -366,14 +383,8 @@ class FaceRecognizer:
         self._align_used_total = 0
         self._align_fallback_total = 0
 
-        # Issue #2748 — «слияний=0» само по себе не говорит, ПОЧЕМУ: некого
-        # было сливать (голос не опознан) или не с чем (в кадре не одно
-        # лицо). Раздельные счётчики причин пропуска note_voice_identification
-        # — см. докстринг метода и periodic-сводку vision_face_node._log_stats.
-        self._voice_merge_skip_no_face = 0
-        self._voice_merge_skip_multi_face = 0
-        self._voice_merge_skip_stale = 0
-        self._voice_merge_skip_conflict = 0
+        # Issue #2748 / #4357 — причины, по которым голос НЕ привязан к лицу, считает сам
+        # face_voice_binding (``self._binding.skips``); stats() отдаёт их под ключами voice_merge_skip_*.
 
     # ------------------------------------------------------------------
     # Логирование
@@ -419,8 +430,7 @@ class FaceRecognizer:
             # состарить, иначе «ушедший» человек останется живым треком
             # и следующая Встреча не поднимется.
             self._tracker.expire(ts)
-            self._last_frame_ts = ts
-            self._last_frame_person_ids = []
+            self._binding.note_frame(ts, [])
             return detections
 
         frame_h, frame_w = int(image.shape[0]), int(image.shape[1])
@@ -441,8 +451,9 @@ class FaceRecognizer:
 
         # 1. Кто в кадре — на каждом кадре, только чтение.
         person_ids = self._annotate_identities(detections, embeddings)
-        self._last_frame_ts = ts
-        self._last_frame_person_ids = person_ids
+        self._binding.note_frame(ts, person_ids, [
+            fvb.mouth_ratio(det.get('landmarks'), frame_w, frame_h) for det in detections
+        ])
 
         # 2. Кто появился — редко, по правилу Встречи.
         promoted = self._tracker.update(observations, ts)
@@ -722,6 +733,7 @@ class FaceRecognizer:
                     crop=crop,
                     frame_w=frame_w,
                     frame_h=frame_h,
+                    landmarks=det.get('landmarks'),
                 )
             )
         return observations
@@ -765,24 +777,23 @@ class FaceRecognizer:
         """Встреча состоялась: записать её и поднять повод заговорить."""
         self._encounters_total += 1
 
-        if encounter.embedding is None:
-            # Трек дожил до Встречи, но ни один кадр не дал эмбеддинга
-            # (мелкое лицо / ArcFace в degraded). Записывать нечего, и
-            # выдумывать «кого-то» мы не будем.
-            self._log(
-                'warn',
-                f'Встреча track={encounter.track_id} без эмбеддинга — '
-                f'запись пропущена (лицо мельче {self._min_embed_px:.0f}px '
-                f'или ArcFace недоступен).',
-            )
-            return
-
-        best_crop = encounter.best[0].crop if encounter.best else None
-        snapshot = None
-        if self._store_snapshots and best_crop is not None:
-            snapshot = encode_jpeg(best_crop)
-
         try:
+            # Нет эмбеддинга — писать нечего; нефронтальная Встреча
+            # незнакомца — новую запись не заводим (ADR-0130 §10.4 п.2).
+            # Известного человека пропускаем при любой позе.
+            gate = encounter_gate(
+                encounter, self._store.identify, self._min_embed_px,
+            )
+            if not gate.record:
+                self._new_record_suppressed_total += gate.suppressed_birth
+                self._log(gate.level, gate.reason)
+                return
+
+            best_crop = encounter.best[0].crop if encounter.best else None
+            snapshot = None
+            if self._store_snapshots and best_crop is not None:
+                snapshot = encode_jpeg(best_crop)
+
             match = self._store.record_encounter(
                 encounter.embedding,
                 snapshot=snapshot,
@@ -802,6 +813,8 @@ class FaceRecognizer:
             self._log('error', f'FaceStore.record_encounter failed: {exc!r}')
             return
 
+        # Новой записи — кличка сразу (ADR-0164 В2); известной — её кличка. Ошибки ловит сам неймер.
+        epithet = self._namer.on_encounter(match, encounter, snapshot)
         if match.is_new:
             self._new_people_total += 1
         else:
@@ -848,13 +861,14 @@ class FaceRecognizer:
             ),
         )
 
-        self._mark_encounter_start(encounter, detections, match)
+        self._mark_encounter_start(encounter, detections, match, epithet)
 
     def _mark_encounter_start(
         self,
         encounter: Any,
         detections: List[Dict[str, Any]],
         match: Any,
+        epithet: str = '',
     ) -> None:
         """Поставить маркер Встречи на ту детекцию, из которой она выросла.
 
@@ -880,6 +894,8 @@ class FaceRecognizer:
                 'encounter_count': int(match.encounter_count),
                 'face_px': round(float(encounter.max_face_px), 1),
                 'privacy_mode': getattr(self._store, 'mode', ''),
+                # ADR-0164 §4.1: кличка — метка для рассказа о человеке другим, не обращение к нему.
+                'epithet': epithet,
             },
             ensure_ascii=False,
         )
@@ -922,17 +938,16 @@ class FaceRecognizer:
         name: str,
         now: Optional[float] = None,
     ) -> Optional[str]:
-        """Привязать имя к лицу, когда голос уверенно опознал человека.
+        """Привязать имя к лицу, когда голос опознал человека И доказано, что говорит это лицо.
 
-        Правило ADR-0123 §6 — строгое и намеренно: привязка происходит
-        ТОЛЬКО если в кадре **ровно одно** лицо. Два и больше — слияния
-        нет; это открытый вопрос ADR-0105 §3 п.4, и здесь он не решается.
-        Иначе в галерею Дениса однажды попадёт лицо того, кто стоял рядом.
+        Одно лицо в кадре — не доказательство (issue #4357: фото на кресле получило имя Дэнчика, говорившего вне
+        кадра). Вердикт строит :class:`~rob_box_perception.face_voice_binding.VoiceFaceBinding`: одно лицо всё
+        окно фразы, рот этого лица менялся, пара «голос — лицо» подтверждена несколькими фразами. Два и больше
+        лиц — слияния нет (ADR-0105 §3 п.4). Имя, которое у записи уже есть и отличается от голосового, голос не
+        перетирает: его поставил человек (ручное переименование) или прошлое доказанное слияние.
 
-        Issue #2748 — каждый ранний ``return None`` инкрементирует счётчик
-        причины (``_voice_merge_skip_*``), чтобы periodic-сводка ноды могла
-        сказать не просто «слияний=0», а ПОЧЕМУ: нет свежего кадра / не
-        одно лицо в кадре / голос уже привязан к другому лицу.
+        Каждый отказ считается своим счётчиком ``voice_merge_skip_*`` в :meth:`stats` (issue #2748): сводка ноды говорит не
+        «слияний=0», а ПОЧЕМУ.
 
         Args:
             speaker_id: стабильный биометрический id голоса.
@@ -945,52 +960,33 @@ class FaceRecognizer:
         ts = time.monotonic() if now is None else float(now)
 
         if not name or not speaker_id:
-            # Голос не опознан (is_known=false) — на этот уровень такой
-            # payload вообще не должен доходить (vision_face_node фильтрует
-            # по is_known до вызова), поэтому счётчика здесь нет: это
-            # программная ошибка вызывающего кода, а не штатный «нечего
-            # сливать». См. VisionFaceNode._speaker_unknown_total — ИМЕННО
-            # там считается «голос без опознанного имени».
+            # Голос не опознан (is_known=false) — сюда такой payload не доходит (vision_face_node фильтрует по
+            # is_known и считает это VisionFaceNode._speaker_unknown_total): программная ошибка вызывающего.
             return None
-        if ts - self._last_frame_ts > self._voice_merge_window_sec:
-            self._voice_merge_skip_stale += 1
-            return None  # голос без свежего кадра — не с чем сливать
-        if len(self._last_frame_person_ids) == 0:
-            self._voice_merge_skip_no_face += 1
-            return None  # никого в кадре — сливать некого
-        if len(self._last_frame_person_ids) > 1:
-            self._voice_merge_skip_multi_face += 1
-            return None  # двое и больше в кадре — см. докстринг (ADR-0105 §3 п.4)
-        person_id = self._last_frame_person_ids[0]
-        if person_id is None:
-            self._voice_merge_skip_no_face += 1
+        verdict = self._binding.judge(speaker_id, ts)  # отказы вердикта он считает сам
+        if verdict.kind != fvb.BIND:
+            note = fvb.skip_note(verdict, speaker_id, name)
+            if note:
+                self._log('info', note)
             return None
-
-        # Уже привязан к другому голосу — не перебиваем: разбор дублей
-        # голосовых профилей (ADR-0123 §6, карточка §9.1) живёт отдельно.
+        person_id = verdict.person_id
         try:
-            existing = self._store.find_by_speaker(speaker_id)
-            if existing is not None and existing != person_id:
-                self._voice_merge_skip_conflict += 1
-                self._log(
-                    'warn',
-                    f'Голос {speaker_id[:8]} уже привязан к лицу '
-                    f'{existing[:8]}, а в кадре {person_id[:8]} — '
-                    f'слияние пропущено (дубли профилей, ADR-0123 §9.1).',
-                )
-                return None
-            ok = self._store.attach_name(person_id, name, speaker_id=speaker_id)
+            veto = fvb.store_veto(self._store, person_id, speaker_id, name)
+            ok = veto is None and self._store.attach_name(person_id, name, speaker_id=speaker_id)
         except Exception as exc:  # noqa: BLE001
             self._log('error', f'FaceStore.attach_name failed: {exc!r}')
             return None
-
+        if veto is not None:
+            self._binding.count(veto[0])
+            self._log('warn', veto[1])
+            return None
         if not ok:
             return None
         self._voice_merges_total += 1
         self._log(
             'info',
-            f'🔗 Лицо {person_id[:8]} = «{name}» (по голосу '
-            f'{speaker_id[:8]}, одно лицо в кадре).',
+            f'🔗 Лицо {person_id[:8]} = «{name}» (по голосу {speaker_id[:8]}: одно лицо всё окно, '
+            f'рот двигался, {verdict.detail}).',
         )
         return person_id
 
@@ -1009,14 +1005,11 @@ class FaceRecognizer:
             'encounters_total': self._encounters_total,
             'recognized_total': self._recognized_total,
             'new_people_total': self._new_people_total,
+            'new_record_suppressed_total': self._new_record_suppressed_total,
             'voice_merges_total': self._voice_merges_total,
-            # Issue #2748 — причины, по которым note_voice_identification()
-            # НЕ привязала имя, чтобы «слияний=0» в сводке ноды не было
-            # немым нулём (см. VisionFaceNode._log_stats).
-            'voice_merge_skip_no_face': self._voice_merge_skip_no_face,
-            'voice_merge_skip_multi_face': self._voice_merge_skip_multi_face,
-            'voice_merge_skip_stale': self._voice_merge_skip_stale,
-            'voice_merge_skip_conflict': self._voice_merge_skip_conflict,
+            # Issue #2748 / #4357 — причины, по которым голос НЕ привязан к лицу
+            # (voice_merge_skip_* и voice_merge_pending), см. VisionFaceNode._log_stats.
+            **self._binding.stats(),
             'embed_failures': self._embed_failures,
             'embed_calls': self._embed_calls,
             'embed_ms_avg': round(
@@ -1033,6 +1026,8 @@ class FaceRecognizer:
             'align_fallback_total': self._align_fallback_total,
             'active_tracks': self._tracker.active_track_count(),
             'store': store_stats,
+            # ADR-0164 этап 6: клички новых лиц — словарные, по внешности, отказы и пропуски.
+            'epithet': self._namer.stats(),
         }
 
 

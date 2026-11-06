@@ -1,0 +1,86 @@
+# Ядро диалога одним пакетом без ROS (ADR-0160 §8 К1, карточка #4245).
+#
+# Решение Шифу 30.10 п.4: граница сначала внутри репо, пакет (не сабмодуль), отдельный репозиторий — потом.
+# Исходники НЕ копируются: пакет собирается из тех же каталогов src/<пакет>/<пакет>, что и ROS-пакеты робота
+# (colcon по-прежнему ставит их своими setup.py). Здесь только граница: что входит в ядро.
+#
+#   pip install "git+https://github.com/krikz/rob_box_project@develop#subdirectory=packaging/dialog-core"
+#   pip install ./packaging/dialog-core            # из чекаута
+#
+# Сборка только «в дереве» (pip ≥ 21.3: локальный каталог и git+…#subdirectory): каталоги пакетов лежат выше
+# pyproject.toml, поэтому sdist (python -m build --sdist) их не унесёт — колесо собирать из чекаута.
+#
+# Состав:
+#   * целиком: rob_box_core, rob_box_llm, rob_box_harness, rob_box_dialog и rob_box_music (чистая модель музыки:
+#     её знание читают фразы медиа);
+#   * связка хода из rob_box_voice (ADR-0160 §8): мост команд, порты диалога, память, каталог голосов, состояние
+#     музыки — и их чистые зависимости (разбор команд движения, фразы медиа);
+#   * из rob_box_mcp_tools — событие владельца и форма запроса голоса (voice_request).
+# Пакеты rob_box_voice и rob_box_mcp_tools здесь НЕПОЛНЫЕ: ставить это ядро в одно окружение с полным
+# ROS-пакетом нельзя (робот так и не делает — у него colcon). Следующий шаг — перенести связку к ядру (#4245).
+# Список модулей сверяет тест src/rob_box_dialog/test/test_core_package_4245.py: каждый — без ROS на верхнем уровне.
+
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "rob-box-dialog-core"
+version = "0.1.0"
+description = "Ядро диалога РОББОКСа без ROS: ход, адресация, мост команд LLM, память (ADR-0150, ADR-0160 §8)"
+license = "MIT"
+requires-python = ">=3.10"
+dependencies = [
+    "PyYAML>=6.0",
+    "openai>=1.0",
+    "httpx>=0.27",
+]
+
+[project.optional-dependencies]
+test = [
+    "pytest>=7.4",
+    "pytest-asyncio>=0.21",
+    "respx>=0.21",
+    "faker>=18.0",
+    # respx не понимает httpx 2 (https://github.com/lundberg/respx/pull/317) — как в rob_box_llm[dev]
+    "openai>=1.0,<3.0",
+]
+
+[tool.setuptools]
+zip-safe = false
+py-modules = [
+    "rob_box_voice.core.command_bridge",
+    "rob_box_voice.core.command_intent",
+    "rob_box_voice.core.command_parser",
+    "rob_box_voice.core.dialog_v2_ports",
+    "rob_box_voice.core.faq_store",
+    "rob_box_voice.core.media_phrases",
+    "rob_box_voice.core.music_player_state",
+    "rob_box_voice.core.speaker_memory",
+    "rob_box_voice.core.voice_memory",
+    "rob_box_voice.tts_voice_registry",
+    "rob_box_mcp_tools.owner_event",
+    "rob_box_mcp_tools.voice_request",
+    "rob_box_mcp_tools.base",
+]
+
+[tool.setuptools.packages.find]
+where = [
+    "../../src/rob_box_core",
+    "../../src/rob_box_llm",
+    "../../src/rob_box_harness",
+    "../../src/rob_box_dialog",
+    "../../src/rob_box_music",
+]
+include = ["rob_box_core*", "rob_box_llm*", "rob_box_harness*", "rob_box_dialog*", "rob_box_music*"]
+exclude = ["*.test", "*.test.*"]
+
+[tool.setuptools.package-dir]
+rob_box_voice = "../../src/rob_box_voice/rob_box_voice"
+rob_box_mcp_tools = "../../src/rob_box_mcp_tools/rob_box_mcp_tools"
+
+[tool.setuptools.package-data]
+"rob_box_dialog.phrases" = ["*.yaml"]
+"rob_box_harness.core.data" = ["*.yaml"]
+"rob_box_core" = ["py.typed"]
+"rob_box_music" = ["data/*.json"]

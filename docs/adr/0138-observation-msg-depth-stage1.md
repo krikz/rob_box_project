@@ -201,7 +201,7 @@ OAK-D ─► /camera/camera/color/image_raw ──────┐
    Причина по исходникам `depthai-ros` `v2.12.2-humble` (прочитаны 29.09.2026): при `i_low_bandwidth: true` `stereo.cpp::setXinXout` линкует `disparity` (а не `depth`) в MJPEG-энкодер, `stereo_param_handler.cpp` выключает subpixel; на хосте `ImageConverter::toRosMsgRawPtr` считает `depth = |baseline·10|·info.p[0] / disp`, где `info` — `camera_info`, построенный `sensor_helpers::getCalibInfo` для `i_board_socket_id` (CAM_A, RGB) в разрешении `i_width×i_height` = 1280×720. **Подтверждено по коду:** на хосте берётся fx RGB-камеры в 1280×720. **Не подтверждено:** что disparity с устройства при `setDepthAlign` остаётся в пикселях моно-сенсора (это поведение прошивки depthai-core, в исходниках драйвера его нет) и конкретное fx моно (OV7251 480P, по умолчанию драйвера) из калибровки этой камеры — отношение fx_RGB/fx_mono ≈ 2.2 согласуется с замером, но калибровку я не читал.
 
    **Решение:** `depth.i_low_bandwidth: false` в `docker/vision/config/oak-d/oak_d_config.yaml` (RGB остаётся `true`). Потребители `compressedDepth` (`quest_node`, `telegram_node`) не зависят от режима: это плагин `image_transport` на том же издателе (`img_pub.cpp`: выбор издателя — по `i_publish_compressed`/IPC, не по `i_low_bandwidth`), их раскраска нормирует по перцентилям 2/98, от масштаба не зависит. **Цена не замерена:** CPU контейнера `oak-d` ~75–81 % ядра по трём сэмплам `docker stats` против 64.6 % в раннем 10-минутном замере в других условиях; Vision Pi 79.6 °C, load1 ~10. Корректный A/B по нагрузке — открыт.
-3. **Межпайный TF (ADR-0130 §8 п.5)** — переносится на этап 2: трекер будет искать `base_link ← <optical frame>` на Main Pi по `header.stamp` наблюдения; задержка TF и расхождение часов (chrony — этап 0) там и замеряются. Реальный `frame_id` RGB-кадра OAK-D с `i_publish_tf_from_calibration: false` и то, есть ли для него статический TF в URDF, **не проверены** — трекеру этапа 2 он нужен.
+3. **Межпайный TF (ADR-0130 §8 п.5)** — *пересмотрено 03.11.2026, см. §9: TF на Vision Pi виден, перевод в `base_link`/`map` сделан на Vision Pi; ниже — исходный текст.* Переносится на этап 2: трекер будет искать `base_link ← <optical frame>` на Main Pi по `header.stamp` наблюдения; задержка TF и расхождение часов (chrony — этап 0) там и замеряются. Реальный `frame_id` RGB-кадра OAK-D с `i_publish_tf_from_calibration: false` и то, есть ли для него статический TF в URDF, **не проверены** — трекеру этапа 2 он нужен.
 4. **Покадровое сходство лица.** Нужно ли `candidate_similarity` на каждом кадре (одна строка в `_annotate_identities` — но это файл логики узнавания, этапы 3–4), или трекеру хватит `candidate_id` + сходства на Встрече?
 5. **Задержка depth относительно RGB** и уместность допуска 0.15 с — не замерены. Метрики доли статусов (`ok` / `depth_out_of_sync` / …) в Prometheus этим PR не добавляются; первая проверка на роботе — `ros2 topic echo /perception/observations --field position_status`.
 6. **Разрыв статического аудита — только у `tools/architecture_audit.py`.** Он берёт лишь литеральные имена топиков и не видит топики, имя которых приходит из параметра (`self.output_topic`, `self.observation_topic`) или атрибута класса (`OakDSource.depth_topic`), поэтому этот PR даёт в нём 0 новых находок, хотя по сути добавляет publisher без подписчика. Гейт `scripts/lint/seam_without_consumer.py` (ADR-0021, #2118) имя из параметра резолвит и шов видит — поэтому `/perception/observations` внесён в `scripts/lint/seam_allowlist.json` с пометкой «ВРЕМЕННО» до этапа 2 (§3). Стоит ли учить `architecture_audit.py` дефолтам `declare_parameter` (например, по образцу резолва в `seam_without_consumer.py`) — отдельная задача.
@@ -214,3 +214,30 @@ OAK-D ─► /camera/camera/color/image_raw ──────┐
 - `python tools/architecture_audit.py …` + `tools/architecture_findings.py …` до и после (сравнение по ключам `(type, subject)`).
 - `flake8 --max-line-length=99` и `pydocstyle --convention=pep257` (игноры ament) по изменённым файлам.
 - **Не проверено:** colcon build `rob_box_perception_msgs` с новым `.msg`, тесты под настоящим `rclpy`, запуск на роботе (топики, stamp, `frame_id`, задержка, CPU), доставка через Zenoh до Main Pi.
+
+---
+
+## 9. Поправка 03.11.2026: точка наблюдения в `base_link` / `map`
+
+ADR-0130 §10.1 (сверка 03.11) отметил строку этапа 1 «…в `base_link` / `map`» как ❌: координаты только в optical frame, TF в коде нет. Этот раздел пересматривает решение §2.1/§5 «TF на Vision Pi не подключается».
+
+**Замер (03.11.2026 ~22:02 UTC, только чтение).** Vision Pi, одноразовый контейнер из образа `vision-hailo-humble-dev` (`--network host`, `-m 512m`, zenoh-конфиг `/tmp/zenoh_session_config.json5` скопирован из `vision-hailo`; сервисные контейнеры не трогались):
+
+- `tf2_echo base_link camera_color_optical_frame` → `Translation: [-0.116, -0.000, 0.460]`, `Quaternion (xyzw) [-0.500, 0.500, -0.500, 0.500]`, `At time 0.0` (статический). Ответ §7 п.3 «есть ли статический TF для `frame_id` RGB-кадра»: есть, `frame_id` наблюдений = `camera_color_optical_frame` (живьём 03.11, ADR-0130 §10.1) и он в дереве.
+- `tf2_echo map base_link` → `Translation: [10.400, 6.732, 0.114]` (динамический); `odom → base_link` — тоже.
+- `/tf_static` — 1 издатель; `/tf` — `robot_state_publisher`, `diff_drive_controller`, `/rtabmap/rtabmap`, `/rtabmap/icp_odometry`, `apriltag` (все — Main Pi). Через Zenoh до Vision Pi доходят.
+- **Не измерено:** задержка `/tf` через Zenoh, цена подписки на `/tf` (~70 сообщений/с по `topic echo` за 6 с) по CPU в двух контейнерах.
+
+**Решение.** Перевод делает публикующая нода (`VisionHailoNode`, оба контейнера), модуль `observation_frames.py`:
+
+- `Observation.msg` дополнен хвостом: `position_base_link`, `base_link_status`, `position_map`, `map_status`. Точка в optical frame (`position`, `header.frame_id`) не меняется.
+- Трансформ ищется на `header.stamp` КАДРА. Сначала `can_transform` на latest без ожидания: нет цепочки (нет `map`, лежит RTAB-Map) → `no_transform` сразу, кадр не задерживается. Цепочка есть → `lookup_transform` на stamp с таймаутом `tf_timeout_sec` (0.05 с); не дождались → `transform_stale`. Трансформ на другой момент вместо момента кадра не подставляется. Невалидная глубина → `no_position`; выключено/нет tf2 → `tf_disabled` (WARN при старте). Точка NaN×3, когда статус не `ok`.
+- TF слушает отдельная нода `transform_listener_impl_*` со своим потоком (`TransformListener(buffer, None, spin_thread=True)`), чтобы ожидание с таймаутом не стояло в однопоточном executor'е основной ноды.
+- Кэш на (frame_id, stamp): детекции одного кадра ищут TF один раз на фрейм.
+- Рычаг: `tf_enabled` в `hailo_models.yaml` (оба узла) / `TF_ENABLED` в ENV.
+
+**Почему не на Main Pi (как предполагал §5).** Довод §5 был «тащить TF-буфер через Zenoh на Vision Pi ради того, что трекер всё равно делает на Main Pi». Трекера (этап 2) нет, потребителей у топика нет (ADR-0130 §10.1); точка в `base_link` нужна уже сейчас — safety stop ADR-0089 Phase 1 и сам трекер получают готовые координаты робота. Перевод на стороне потребителя потребовал бы ещё одну ноду на Main Pi и ещё один топик без потребителя. Цена — подписка на `/tf` на Vision Pi; не замерена, рычаг `tf_enabled: false`.
+
+**Потребитель.** По-прежнему нет: `/perception/observations` остаётся в `scripts/lint/seam_allowlist.json` («ВРЕМЕННО» до этапа 2). Новых топиков этот раздел не добавляет; новые поля проверяются тестами (`test_observation_frames.py`, `test_vision_hailo_observation.py`), фиктивного подписчика не заводим (§3).
+
+**Не проверено:** colcon build с расширенным `.msg` и пересборка образов (меняется IDL — пересобираются все образы с `rob_box_perception_msgs`); работа под настоящим `rclpy`/`tf2_ros`; на роботе — статусы в живых наблюдениях, задержка, CPU.

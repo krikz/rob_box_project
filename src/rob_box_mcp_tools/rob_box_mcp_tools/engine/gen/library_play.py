@@ -37,12 +37,12 @@ def play_library_track(node: Any, library: Any, track_id: str, clock: Callable[[
                        run: Callable[..., Any] = subprocess.run, hold: Optional[HoldStart] = None) -> MCPToolResult:
     """Сыграть трек ``track_id`` кэша на деке владельца. ``node`` даёт ``_player_owner``, ``_dj_set_tool``
     (закрыть идущий сет) и ``_music_confirm`` (ожидание ``started``). ``hold`` — мост ожидания генерации: трек
-    петлёй с кроссфейдом запускает он (``tools_v2.hold_start``), а не ``play(once=True)``."""
+    петлёй с кроссфейдом запускает он (``engine_tools.hold_start``), а не ``play(once=True)``."""
     from rob_box_music import knowledge as kn
     from rob_box_music.render.audio import render_audio
     from rob_box_voice.core.media_phrases import library_play_text
 
-    from ..tools_v2 import confirmed
+    from ..engine_tools import confirmed
 
     info = library.get_track_info(track_id)
     if not info.get("success"):

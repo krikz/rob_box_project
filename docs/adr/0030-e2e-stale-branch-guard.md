@@ -91,7 +91,7 @@ PR #1544 (в ретро) — удалён (404). PR #1566 — closed.
 
 **Архитектурный insight:** guard сейчас сравнивает **коммиты**, а должен сравнивать **файлы, влияющие на e2e**:
 - `.github/e2e/scenarios/voice_core_suite_v1.json` — обновляется ~раз в неделю.
-- `.github/workflows/scripts/e2e_voice_test.sh` — обновляется в рамках voice PR.
+- `scripts/ci/e2e/e2e_voice_test.sh` — обновляется в рамках voice PR.
 - `e2e_voice_test.sh` — аналогично.
 
 Если файлы в PR tip **идентичны** develop — PR не устарел с точки зрения e2e, даже если
@@ -117,7 +117,7 @@ PR #1544 (в ретро) — удалён (404). PR #1566 — closed.
 
 Сравнивать не "N коммитов", а "PR tip vs develop по 3 файлам":
 - `.github/e2e/scenarios/*.json`
-- `.github/workflows/scripts/e2e_voice_test.sh`
+- `scripts/ci/e2e/e2e_voice_test.sh`
 - `scripts/e2e_voice_test.sh` (если есть)
 
 Если PR tip == develop по этим файлам — guard не блокирует независимо от commit count.

@@ -1,16 +1,12 @@
 {
   "version": 1,
-  "created": "2026-10-28",
-  "base_sha": "2719e5553d39719128495c779b90f55d967bd9d8",
+  "created": "2026-11-05",
+  "base_sha": "a9e55086d7809c1fc5ab80c8ac1a10019dff75e0",
   "limits": {
     "wmc": 80,
     "methods": 40
   },
   "classes": {
-    "src/rob_box_harness/rob_box_harness/core/agent_core.py:AgentCore": {
-      "wmc": 152,
-      "methods": 24
-    },
     "src/rob_box_llm/rob_box_llm/providers/deepseek.py:_OpenAICompatibleProvider": {
       "wmc": 82,
       "methods": 9
@@ -24,24 +20,24 @@
       "methods": 15
     },
     "src/rob_box_mcp_tools/rob_box_mcp_tools/mcp_server.py:MCPServer": {
-      "wmc": 96,
-      "methods": 20
+      "wmc": 91,
+      "methods": 17
     },
     "src/rob_box_perception/rob_box_perception/face_recognition.py:FaceRecognizer": {
-      "wmc": 86,
+      "wmc": 85,
       "methods": 15
     },
     "src/rob_box_perception/rob_box_perception/face_store.py:FaceStore": {
-      "wmc": 177,
-      "methods": 36
+      "wmc": 171,
+      "methods": 34
     },
     "src/rob_box_quest/rob_box_quest/quest_node.py:QuestBridge": {
       "wmc": 175,
       "methods": 59
     },
     "src/rob_box_quest/rob_box_quest/quest_node.py:QuestNode": {
-      "wmc": 170,
-      "methods": 36
+      "wmc": 165,
+      "methods": 35
     },
     "src/rob_box_quest/rob_box_quest/server/ws_server.py:WSSServer": {
       "wmc": 220,
@@ -52,8 +48,8 @@
       "methods": 33
     },
     "src/rob_box_supervisor/rob_box_supervisor/supervisor_node.py:AvatarSupervisor": {
-      "wmc": 321,
-      "methods": 63
+      "wmc": 283,
+      "methods": 58
     },
     "src/rob_box_telegram/rob_box_telegram/supervisor_client.py:SupervisorClient": {
       "wmc": 133,
@@ -72,16 +68,16 @@
       "methods": 31
     },
     "src/rob_box_voice/rob_box_voice/speaker_id_node.py:SpeakerIdNode": {
-      "wmc": 195,
-      "methods": 38
+      "wmc": 152,
+      "methods": 32
     },
     "src/rob_box_voice/rob_box_voice/stt_node.py:STTNode": {
-      "wmc": 201,
-      "methods": 39
+      "wmc": 199,
+      "methods": 38
     },
     "src/rob_box_voice/rob_box_voice/tts_node.py:TTSNode": {
-      "wmc": 599,
-      "methods": 98
+      "wmc": 500,
+      "methods": 88
     },
     "src/rob_box_voice/rob_box_voice/utils/speaker_embeddings.py:SpeakerDatabase": {
       "wmc": 97,

@@ -90,7 +90,7 @@ def _turn(args, text=N404):
     inner = _DeepSeek([LLMResponse(tool_calls=(ToolCall(id="c1", name=kn.COMMAND_TOOL, arguments=args),)),
                        LLMResponse(tool_calls=(ToolCall(id="c2", name=kn.COMMAND_TOOL,
                                                         arguments={**args, "voice": "arina"}),))])
-    llm = counted_wrapper(cb.wrapper_for("deepseek", log=lines.append, busy=lambda: perform_busy(node)), counter)(inner)
+    llm = counted_wrapper(cb.wrapper_for(log=lines.append, busy=lambda: perform_busy(node)), counter)(inner)
     ports = V2Ports(node, llm, counter, _Tools(), log=lines.append)
     agg = asyncio.run(TurnEngine(session, ports, system_prompt="Ты робот.").run(Addressed(text, VOICE)))
     return agg, node, lines, inner
@@ -110,7 +110,7 @@ def test_n404_speech_with_the_current_voice_is_valid_at_once_and_sounds_in_the_s
     assert inner.asked == 1 and agg.llm_calls == 1, "без повтора: голос реплики - не нарушение"
     assert (agg.stage, agg.status) == ("done", "finished")
     (said,) = node.pubs["/voice/speech/request"].sent
-    assert said.text == f"<speak>{SPEECH}</speak>"
+    assert said.text == f"{SPEECH}"
     assert said.voice == "", "голос реплики не задан - TTS говорит голосом сессии (alena, yandex), а не чужим"
     (verdict,) = [line for line in lines if line.startswith(cb.COMMAND_LOG_MARK) and "verdict=" in line]
     assert "verdict=speech" in verdict and "fields_dropped=['voice']" in verdict and "invalid" not in verdict

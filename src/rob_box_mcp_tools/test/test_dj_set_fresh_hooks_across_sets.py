@@ -18,7 +18,7 @@ import pytest
 from rob_box_mcp_tools.core.rtttl_library import RtttlLibrary
 from rob_box_mcp_tools.engine.search import theme_search
 from rob_box_mcp_tools.engine.session import SetMemory, plan_source
-from rob_box_mcp_tools.engine.tools_v2 import library_melodies
+from rob_box_mcp_tools.engine.engine_tools import library_melodies
 from rob_box_music.rtttl import CONTOUR_NOTES, contour
 from rob_box_music.set_plan import seeded_plan
 from rob_box_music.theme import seeded_profile

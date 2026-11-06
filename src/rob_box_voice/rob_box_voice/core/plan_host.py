@@ -23,7 +23,7 @@ from rob_box_dialog.plan.runner import PlanRunner
 from rob_box_dialog_msgs.msg import PlanEvent as PlanEventMsg
 from rob_box_dialog_msgs.msg import SoundEvent, SpeechEvent
 
-from rob_box_voice.tts_voice_registry import gender_of, known_provider, role_voices_for
+from rob_box_voice.tts_voice_registry import gender_of, known_provider, role_voices_for, tts_context_fields
 
 from . import perform_ask
 from .music_player_state import parse_music_event
@@ -67,7 +67,6 @@ def make_tool_executor(node: Any, provider_adapter: Any, on_tool: Any) -> PlanTo
                                      perform_event, kn.SPEECH_OUTPUT_LATENCY_MS, clock=lambda: _now(node),
                                      playing=lambda: _foreign_music(node),
                                      on_ask=lambda title: perform_ask.open_window(node, title),
-                                     tts_provider=lambda: _tts_provider(node),
                                      speaking=lambda: "speech" in planner.state.busy())
     node.create_timer(TICK_S, executor.performer.tick)
     return executor
@@ -98,22 +97,10 @@ def _foreign_music(node: Any) -> str:
     return str(info.get("brief") or info.get("title") or "музыка")
 
 
-def _tts_provider(node: Any) -> str:
-    """Провайдер TTS сейчас: фактический из ``/voice/tts/provider_state`` (после фолбека), иначе номинальный
-    параметр ``tts_provider``; неизвестен — ``""`` (выступление тогда без пауз MiniMax, с причиной в логе).
-    Метка не из каталога реестра (``prefetch`` и т.п.) — не провайдер (:func:`known_provider`)."""
-    actual = known_provider(getattr(node, "_actual_tts_provider", None))
-    if actual:
-        return actual
-    try:
-        return str(node.get_parameter("tts_provider").value or "")
-    except Exception:  # noqa: BLE001 — параметр не объявлен (тестовая нода): провайдер неизвестен
-        return ""
-
-
 def on_tts_provider_state(node: Any, msg: Any) -> None:
-    """``/voice/tts/provider_state`` (JSON ``{"provider": …}`` от tts_node) → фактический провайдер TTS для
-    :func:`_tts_provider`: без него хост v2 не знал провайдера, и паузы MiniMax по сетке строк не включались (#3901).
+    """``/voice/tts/provider_state`` (JSON ``{"provider": …}`` от tts_node) → фактический провайдер TTS для каталога
+    голосов (``turn_context.tts_state``). Выступлению провайдер не нужен: такт едет в реплике, паузы ставит адаптер
+    голоса (ADR-0160 §2.2, #4241).
     Принимается только провайдер из каталога реестра: ``prefetch`` (#4024) факт не затирает — иначе каталог голосов
     пуст и голоса сегментов сказки не сверяются."""
     try:
@@ -204,6 +191,14 @@ def robot_voice(node: Any, provider: str, fallback: str) -> str:
     return fallback
 
 
+def tts_context(node: Any) -> dict:
+    """Раздел ``tts_context`` снимка хода (#4370, ADR-0148): звучащий провайдер и голос робота с именем для людей из
+    реестра. Голос - :func:`robot_voice` (ответ владельца на ``set_voice``), провайдер - :func:`tts_state`. Скорости и
+    тона здесь нет: хозяин их не публикует, придумывать их нельзя."""
+    provider, fallback = tts_state(node)
+    return tts_context_fields(provider, current_voice=robot_voice(node, provider, fallback))
+
+
 def perform_busy(node: Any) -> Busy:
     """Что занято для валидатора команды: идущее выступление, его ACTIVE-сегмент (``edit_pending``) и роли с голосами
     (``Busy.cast``: правка их не перекрашивает), и каталог голосов РОЛЕЙ с полом — русские голоса звучащего провайдера
@@ -220,4 +215,4 @@ def perform_busy(node: Any) -> Busy:
 
 __all__ = ["PLAN_EVENT_TOPIC", "TTS_PROVIDER_STATE_TOPIC", "begin_turn", "make_tool_executor", "note_perform_end",
            "on_music", "on_music_event", "on_sound", "on_speech", "on_tts_provider_state", "perform_busy", "performer",
-           "robot_voice"]
+           "robot_voice", "tts_context"]

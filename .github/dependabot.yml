@@ -35,6 +35,18 @@ updates:
     schedule:
       interval: "weekly"
       day: "monday"
+    ignore:
+      # torch/torchaudio: пины точные и с суффиксом +cpu (issue #2609). Колёса
+      # +cpu для linux/aarch64 выходят в download.pytorch.org/whl/cpu позже,
+      # чем на PyPI, - бамп dependabot ломает Build All Services
+      # ("No matching distribution found for torch==2.15.0+cpu"). Сверяем руками.
+      - dependency-name: "torch"
+      - dependency-name: "torchaudio"
+      # numpy/scipy: пара должна быть совместима по ABI (scipy.signal падает с
+      # "_ARRAY_API not found" при несовпадении, Silero не грузится). Пины точные,
+      # сверяем руками вместе с torch; сторож импорта - в Dockerfile voice_base/voice_assistant.
+      - dependency-name: "numpy"
+      - dependency-name: "scipy"
     groups:
       python-deps:
         patterns: ["*"]
@@ -44,13 +56,11 @@ updates:
   # Glob: /docker/main/* → each service subdir (lslidar, nav2, perception, …)
   #       /docker/vision/* → each service subdir (oak-d, led_matrix, quest, …)
   #       /docker/sound/* → each service subdir (voice_assistant, supercollider, supervisor, …; ADR-0159)
-  #       /docker/vision/test/* → test service subdirs (mock_llm, ollama, …)
   - package-ecosystem: "docker"
     directories:
       - "/docker/main/*"
       - "/docker/vision/*"
       - "/docker/sound/*"
-      - "/docker/vision/test/*"
     schedule:
       interval: "weekly"
       day: "monday"

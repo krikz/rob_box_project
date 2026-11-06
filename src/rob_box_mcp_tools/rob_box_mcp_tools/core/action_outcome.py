@@ -11,7 +11,9 @@
 """
 
 from dataclasses import dataclass
-from typing import Any, Optional
+from typing import Any, Dict, Iterable, Optional
+
+from rob_box_dialog import knowledge as kn
 
 # action_msgs/msg/GoalStatus
 GOAL_STATUS_UNKNOWN = 0
@@ -45,9 +47,10 @@ CANCEL_ERROR_REJECTED = 1
 CANCEL_ERROR_UNKNOWN_GOAL_ID = 2
 CANCEL_ERROR_GOAL_TERMINATING = 3
 
-# Виды исхода отмены цели (дополняют SVC_* — те же значения для сбоя вызова).
-CANCEL_CONFIRMED = "cancel_confirmed"
-CANCEL_NO_ACTIVE_GOAL = "no_active_goal"
+# Виды исхода отмены цели (дополняют SVC_* — те же значения для сбоя вызова). Успехи — контракт с фразой кода диалога
+# (``kn.STOP_TOOL_PHRASES``, #3789): значения оттуда.
+CANCEL_CONFIRMED = kn.STOP_CONFIRMED
+CANCEL_NO_ACTIVE_GOAL = kn.STOP_IDLE
 CANCEL_REFUSED = "cancel_refused"
 
 
@@ -84,6 +87,50 @@ def nav_outcome(kind: str, status: Optional[int] = None) -> Outcome:
         f"Nav2 вернул неожиданный статус цели: {status!r}",
         "Не уверен, что доехал: навигация не подтвердила прибытие",
     )
+
+
+#: Допуск цели по положению: ``xy_goal_tolerance`` goal checker'а Nav2 (``docker/main/config/nav2/nav2_params.yaml``).
+NAV_XY_TOLERANCE_M = 0.25
+#: Цель достигнута быстрее - робот уже стоял на ней: Nav2 не успел бы проехать (живой 04.11: Goal succeeded за 60 мс,
+#: #4344).
+NAV_INSTANT_S = 1.0
+
+
+def arrival_kind(elapsed_s: float, start_distance_m: Optional[float] = None) -> str:
+    """Как достигнута цель (#4344): робот уже стоял на ней (``kn.NAV_ALREADY_THERE``) или доехал (``kn.NAV_ARRIVED``).
+
+    Уже стоял - Nav2 ответил успехом быстрее :data:`NAV_INSTANT_S` или путь до цели по обратной связи Nav2
+    (наибольший ``distance_remaining``; ``None`` - обратной связи не было) не длиннее допуска цели.
+    """
+    if elapsed_s < NAV_INSTANT_S:
+        return kn.NAV_ALREADY_THERE
+    if start_distance_m is not None and start_distance_m <= NAV_XY_TOLERANCE_M:
+        return kn.NAV_ALREADY_THERE
+    return kn.NAV_ARRIVED
+
+
+def start_distance(distances: Iterable[float]) -> Optional[float]:
+    """Путь до цели в начале поездки по обратной связи Nav2: наибольший ``distance_remaining`` (первая обратная связь
+    до расчёта пути бывает нулём), ``None`` - обратной связи не было."""
+    seen = [float(d) for d in distances]
+    return max(seen) if seen else None
+
+
+def nav_data(kind: str, elapsed_s: Optional[float] = None, start_distance_m: Optional[float] = None) -> Dict[str, Any]:
+    """Данные исхода навигации для фразы кода (``kn.NAV_TOOL_PHRASES``): вид исхода, а у успеха - как достигнута цель.
+
+    Неуспех кладёт вид исхода и в ``reason``: по нему диалог берёт фразу отказа (``motion.rejected.<вид>``).
+    """
+    data: Dict[str, Any] = {kn.NAV_OUTCOME_FIELD: kind}
+    if kind != NAV_SUCCEEDED:
+        data["reason"] = kind
+        return data
+    # время не измерено - не «мгновенно»: «уже на точке» только по доказательству
+    elapsed = float("inf") if elapsed_s is None else float(elapsed_s)
+    data["elapsed_s"] = None if elapsed_s is None else round(elapsed, 3)
+    data["start_distance_m"] = None if start_distance_m is None else round(start_distance_m, 3)
+    data[kn.NAV_ARRIVAL_FIELD] = arrival_kind(elapsed, start_distance_m)
+    return data
 
 
 def classify_nav_status(status: Optional[int]) -> Outcome:

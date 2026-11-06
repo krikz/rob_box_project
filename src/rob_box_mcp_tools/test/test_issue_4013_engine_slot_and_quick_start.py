@@ -21,11 +21,11 @@ import pytest
 from rob_box_core.tool_catalog import get_tool
 from rob_box_dialog.command import _schema_error
 from rob_box_mcp_tools.core.rtttl_library import RtttlLibrary
-from rob_box_mcp_tools.engine import tools_v2
+from rob_box_mcp_tools.engine import engine_tools
 from rob_box_mcp_tools.engine.classic import ClassicPick
 from rob_box_mcp_tools.engine.search import ThemeHits
 from rob_box_mcp_tools.engine.theme_links import ThemeLinks
-from rob_box_mcp_tools.engine.tools_v2 import DjSetTool, GenerateMusicTool, RequestMusicTool
+from rob_box_mcp_tools.engine.engine_tools import DjSetTool, GenerateMusicTool, RequestMusicTool
 from rob_box_music import knowledge as kn
 from rob_box_music.source import LIVE_TOOL_TEXT
 
@@ -155,7 +155,7 @@ def test_live_singing_reaching_a_music_tool_is_not_a_generation(heard, caplog):
                    gen.execute(kind="robot_song", theme="енот", heard_text=heard)]
     for result in results:
         assert not result.success and result.data["route"] == "live:song", heard
-        assert result.data["reason"] == tools_v2.SOURCE_DECLINED and LIVE_TOOL_TEXT in (result.error or "")
+        assert result.data["reason"] == engine_tools.SOURCE_DECLINED and LIVE_TOOL_TEXT in (result.error or "")
         assert "движок так не играет" not in (result.error or "")
     lines = [r.getMessage() for r in caplog.records if "[source]" in r.getMessage()]
     assert lines and all("кандидаты=['live:song'] → live:song (code)" in line for line in lines), lines
@@ -286,7 +286,7 @@ def test_engine_of_a_track_whose_start_failed_is_not_inherited():
     assert not failed.success
     snap = rig.owner.now_playing()
     assert snap["engine"] == "synth" and not snap["playing"] and not snap["pending"]  # факт остался при пустой деке
-    assert tools_v2.playing_engine(rig.owner) == ""
+    assert engine_tools.playing_engine(rig.owner) == ""
     heard = "Робот, ускорь темп"
     req.execute(intent="track", text=heard, heard_text=heard)
     assert len(asks) == 2 and asks[-1].engine == ""
@@ -388,7 +388,7 @@ def real_chain(archive, tmp_path):
     llm = SlowLLM()
     rig = _rig()
     links = lambda node, reasoner: ThemeLinks(ask=reasoner.ask, wait_s=LONG_SET_WAIT_S)  # noqa: E731
-    with patch.object(tools_v2, "_rtttl_library", lambda: library), patch.object(tools_v2, "theme_links", links):
+    with patch.object(engine_tools, "_rtttl_library", lambda: library), patch.object(engine_tools, "theme_links", links):
         dj = DjSetTool(None, rig.owner, melodies=lambda ids: {}, seed=lambda: 4242,
                        reasoner=SimpleNamespace(enabled=True, ask=llm))
         req = RequestMusicTool(None, rig.owner, dj, melodies=lambda ids: {}, seed=lambda: 777,

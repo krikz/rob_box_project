@@ -44,12 +44,11 @@ def test_rules_file_names_no_tool() -> None:
     assert _named(_rules()) == set()
 
 
-@pytest.mark.parametrize("engine", ["v1", "v2"])
-def test_rendered_prompt_names_only_registry_tools(engine: str) -> None:
-    prompt = operator_prompt(_rules(), engine)
+def test_rendered_prompt_names_only_registry_tools() -> None:
+    prompt = operator_prompt(_rules())
     assert prompt.startswith(_rules().strip()) and TOOLS_HEADER in prompt
     assert _named(prompt) <= _registry()
-    assert CONFIRM_RULE[engine] in prompt
+    assert CONFIRM_RULE in prompt
 
 
 def test_every_operator_only_tool_is_described() -> None:

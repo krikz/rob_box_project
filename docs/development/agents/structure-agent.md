@@ -14,10 +14,10 @@
 
 ---
 
-## Место в процессе (Context Engineering)
+## Место в процессе
 
 Этот файл — **сервисный агент** для аудита структуры проекта.  
-Процесс: `.agents/skills/context-engineering/SKILL.md` | Бэклог: GitHub Issues (устаревшая ссылка на `tasks.json`, файл больше не существует — см. `docs/development/agents/README.md`)
+Процесс: `docs/process/claude-coordinator-robot-flow.md` (ADR-0162) | Бэклог: GitHub Issues
 
 Вызывай при создании новых ROS 2 пакетов, аудите Docker структуры, или рефакторинге.
 
@@ -80,7 +80,7 @@ rob_box_project/
 │   └── client-app/
 ├── docs/                    # Документация
 ├── scripts/                 # Утилиты разработки
-├── local_test/              # Локальные тесты
+├── tools/dev/               # Dev-окружение ноутбука (бывший local_test/)
 ├── migrations/              # SQL миграции
 ├── PRD.md
 ├── tasks.json
@@ -235,7 +235,7 @@ for svc, cfg in compose.get('services', {}).items():
 ### Регулярный аудит (запускай раз в неделю):
 ```bash
 bash scripts/audit_documentation.sh
-bash scripts/check_broken_links.sh
+python scripts/diagnostics/check_links.py
 grep -r "COPY config\|COPY scripts" docker/ --include="Dockerfile" && echo "⚠️ НАРУШЕНИЯ!"
 ```
 

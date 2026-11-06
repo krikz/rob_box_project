@@ -25,7 +25,7 @@ from rob_box_mcp_tools.engine.backing_deck import BackingDeck
 from rob_box_mcp_tools.engine.renardo_adapter import RETUNE_LEAD_BEATS
 from rob_box_mcp_tools.engine.search import ThemeHits
 from rob_box_mcp_tools.engine.sing_route import SingRouteHost
-from rob_box_mcp_tools.engine.tools_v2 import DjSetTool, EditMusicTool, RequestMusicTool, music_busy
+from rob_box_mcp_tools.engine.engine_tools import DjSetTool, EditMusicTool, RequestMusicTool, music_busy
 from rob_box_mcp_tools.engine.track_edit import TrackEditor
 from rob_box_music import knowledge as kn
 from rob_box_music.choice import DeterministicChooser
@@ -374,8 +374,26 @@ def test_n506_speedup_with_a_tail_cannot_end_in_stop_music():
     assert validate(stop, tools, form=form).reason == dkn.VIOLATION_SING_ROUTE
     edit = validate(parse({"actions": [{"tool": "edit_music", "args": {"change": "faster"}}]}), tools, form=form)
     assert isinstance(edit, Command) and edit.actions[0].tool == "edit_music"
-    form, _tools = _form_under_music("выключай музыку")  # явный стоп - как раньше, без пути правки
-    assert form.sing == ""
+    # явный стоп - не путь правки: с #4349 его под музыкой решает код (Tier-1 music_off), модель не зовётся
+    host, _lines = _host()
+    ports = _StoppingPorts(Answer(Command(speech="…")))
+    session = Session("personality")
+    session.set_music(MusicStateRef("playing", track_id="req00777:03:A:abc", bpm=136.0, title="клубный трек · 136"))
+    asyncio.run(TurnEngine(session, ports, system_prompt="Ты робот.", sing=host).run(Addressed("выключай музыку", VOICE)))
+    assert ports.forms == [] and ports.executed == ["stop_music"]
+
+
+class _StoppingPorts(Ports):
+    """Порты хода, у которых стоп музыки исполняется (``Ports.execute`` заглушки результатов не даёт)."""
+
+    def __init__(self, answer):
+        super().__init__(answer)
+        self.executed = []
+
+    async def execute(self, actions, snapshot, turn_id):
+        self.executed += [a.tool for a in actions]
+        return [ActionResult(f"{turn_id}/{n}", snapshot.epoch, snapshot.agent, a.tool, dkn.TOOL_CLASSES[a.tool], "done",
+                             None, {"was_playing": True}) for n, a in enumerate(actions)]
 
 
 def test_n505_darker_turn_is_an_edit_and_n502_order_in_silence_is_untouched():

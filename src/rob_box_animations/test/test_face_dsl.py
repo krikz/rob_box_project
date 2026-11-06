@@ -11,7 +11,8 @@ import numpy as np
 import pytest
 
 from rob_box_dialog import knowledge as kn
-from rob_box_animations.face import dsl, rear as R
+from led_matrix_effects import lamps as R
+from rob_box_animations.face import dsl
 from rob_box_animations.face.face import SHADES_L, TINTS, tint_of, to_wire
 from rob_box_animations.face_director import FaceDirector
 
@@ -127,8 +128,8 @@ def test_shades_use_the_one_sunglasses_sprite_not_a_copy():
 
 
 def test_rear_slot_sets_the_rear_theme_for_the_scene_duration_and_names_exist():
-    assert set(R.REAR_OF_SLOT) == set(kn.FACE_SCENE_SLOTS['rear'])
-    assert set(R.REAR_OF_SLOT.values()) <= set(R.THEMES)
+    assert set(dsl.REAR_OF_SLOT) == set(kn.FACE_SCENE_SLOTS['rear'])
+    assert set(dsl.REAR_OF_SLOT.values()) <= set(R.THEMES)
     d = awake()
     now = T0 + 8.0
     d.apply_face({'rear': 'heart'}, 5.0, now)

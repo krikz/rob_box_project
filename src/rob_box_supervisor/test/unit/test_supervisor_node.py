@@ -8,7 +8,7 @@
 - Нода создаётся с name="avatar_supervisor" и параметром mode="monitor".
 - Voice-управление dialogue_node (ADR-0028 S5 / ADR-0066 §6.7): после
   удаления ``voice_input_mode`` супервизор управляет личностью через
-  топик ``/dialogue/control``. ``/avatar/set_voice_mode`` остался для
+  сервис ``/dialog/control`` (pause/resume). ``/avatar/set_voice_mode`` остался для
   legacy-контракта (UI Quest, web-admin) — маппится на pause/resume.
 - Нода НЕ регистрирует floor-сервисы и НЕ публикует /avatar/state
   (арбитраж — в avatar_arbiter), НЕ правит twist_mux.
@@ -26,7 +26,6 @@ from rob_box_supervisor.supervisor_node import (
     DIALOGUE_CONTROL_ACTIONS,
     DIALOGUE_CONTROL_PAUSE,
     DIALOGUE_CONTROL_RESUME,
-    DIALOGUE_CONTROL_TOPIC,
     GRIP_DEFAULT_LANGUAGE,
     MONITOR_MODE_REASON,
     SET_VOICE_MODE_TOPIC,
@@ -34,6 +33,8 @@ from rob_box_supervisor.supervisor_node import (
     VOICE_PRESET_IDS,
     AvatarSupervisor,
 )
+# Настоящий писатель pause/resume — до подмены фикстурой conftest (она действует только внутри теста).
+from rob_box_supervisor.supervisor_node import _dialogue_control_publisher as _REAL_DIALOG_CONTROL_PUBLISHER  # noqa: E402
 
 
 def _make_string_msg(data: str) -> MagicMock:
@@ -118,8 +119,8 @@ class TestAvatarSupervisorDoesNotMutateExternalState(unittest.TestCase):
     def test_no_set_parameter_calls_for_dialogue_via_pubs(self) -> None:
         """Нет publisher-ов на /voice/ (кроме /voice/speech/request — грип/say, ADR-0150 PR-3, и
         /voice/tts/set_voice, voice-vr 21 / ADR-0080 §2.7) +
-        в /dialogue/ — только ``/dialogue/control`` (ADR-0066 §6.7,
-        pause/resume для личности). Голос-параметры — через топик
+        в /dialogue/ — ничего (pause/resume личности — сервис ``/dialog/control``,
+        ADR-0150 PR-10). Голос-параметры — через топик
         /voice/tts/set_voice (НЕ записью в чужие ROS-параметры), голос
         личности — yaml-direct через ``grip_pipeline``.
         """
@@ -131,7 +132,7 @@ class TestAvatarSupervisorDoesNotMutateExternalState(unittest.TestCase):
         dialogue_pubs = [
             t for t in self.node._publishers if t.startswith("/dialogue/")
         ]
-        self.assertEqual(dialogue_pubs, ["/dialogue/control"])
+        self.assertEqual(dialogue_pubs, [])
 
     def test_log_startup_diagnostics_uses_single_msg_arg(self) -> None:
         """Регресс #1644: ``_log.info`` получает ОДИН строковый msg.
@@ -179,23 +180,18 @@ class TestAvatarSupervisorVoiceMode(unittest.TestCase):
         topics = [s.topic for s in self.node._subscriptions]
         self.assertIn(SET_VOICE_MODE_TOPIC, topics)
 
-    def test_dialogue_control_publisher_declared(self) -> None:
-        """ADR-0066 §6.7 — супервизор публикует в ``/dialogue/control``."""
-        self.assertIn(DIALOGUE_CONTROL_TOPIC, self.node._publishers)
-        self.assertEqual(DIALOGUE_CONTROL_TOPIC, "/dialogue/control")
-
-    def test_v2_has_no_dialogue_control_topic_but_a_service_client(self) -> None:
-        """ADR-0150 PR-10 (#3704): при ``dialog_engine=v2`` ``/dialogue/control`` не создаётся, пауза — сервис
-        ``/dialog/control``; нет сервиса в сети — отказ ``False``, а не тихий успех."""
+    def test_pause_goes_to_the_dialog_control_service_client(self) -> None:
+        """ADR-0150 PR-10 (#3704): топика ``/dialogue/control`` нет, пауза — сервис ``/dialog/control``; нет сервиса
+        в сети — отказ ``False``, а не тихий успех."""
         from unittest.mock import patch
 
-        from rob_box_core import dialog_engine
+        from rob_box_supervisor import supervisor_node
         from rob_box_supervisor.supervisor_node import DIALOG_CONTROL_SERVICE, _DialogControlClient
 
-        with patch.object(dialog_engine, "declare", return_value=dialog_engine.V2):
+        with patch.object(supervisor_node, "_dialogue_control_publisher", _REAL_DIALOG_CONTROL_PUBLISHER):
             node = AvatarSupervisor()
         try:
-            self.assertNotIn(DIALOGUE_CONTROL_TOPIC, node._publishers)
+            self.assertNotIn("/dialogue/control", node._publishers)
             self.assertIsInstance(node._dialogue_control_pub, _DialogControlClient)
             self.assertEqual(node._dialogue_control_pub._client.srv_name, DIALOG_CONTROL_SERVICE)
             node._dialogue_control_pub._client.wait_for_service.return_value = False

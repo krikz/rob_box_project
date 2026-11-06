@@ -63,6 +63,11 @@ from rob_box_perception.gaze import (
     GazeSourceUnavailable,
     make_source,
 )
+from rob_box_perception.observation_frames import (
+    DEFAULT_TF_TIMEOUT_SEC,
+    FrameResolver,
+    Tf2Lookup,
+)
 from rob_box_perception.observation_geometry import (
     OBSERVATION_FIELDS,
     build_observation,
@@ -112,6 +117,9 @@ DEFAULT_CONFIDENCE_THRESHOLD = 0.5
 
 # Допустимые имена gaze source (ADR-0104, см. gaze.make_source).
 KNOWN_GAZE_SOURCES = ('oak_d', 'ceiling_camera', 'stub')
+
+#: Поля Observation.msg типа geometry_msgs/Point.
+_POINT_FIELDS = ('position', 'position_base_link', 'position_map')
 
 
 class VisionHailoNode(Node):
@@ -175,6 +183,9 @@ class VisionHailoNode(Node):
         # ADR-0138 (этап 1 ADR-0130): наблюдения с 3D-положением.
         self.declare_parameter('observation_topic', '/perception/observations')
         self.declare_parameter('depth_enabled', True)
+        # Точка наблюдения в base_link / map через tf2 (ADR-0130 §7 этап 1).
+        self.declare_parameter('tf_enabled', True)
+        self.declare_parameter('tf_timeout_sec', DEFAULT_TF_TIMEOUT_SEC)
         self.declare_parameter(
             'depth_sync_tolerance_sec', DEFAULT_DEPTH_SYNC_TOLERANCE_SEC
         )
@@ -203,6 +214,8 @@ class VisionHailoNode(Node):
             self.get_parameter('observation_topic').value
         )
         self.depth_enabled = bool(self.get_parameter('depth_enabled').value)
+        self.tf_enabled = bool(self.get_parameter('tf_enabled').value)
+        self.tf_timeout_sec = float(self.get_parameter('tf_timeout_sec').value)
         self.depth_sync_tolerance_sec = float(
             self.get_parameter('depth_sync_tolerance_sec').value
         )
@@ -311,6 +324,10 @@ class VisionHailoNode(Node):
             )
             self._observation_publisher = None
 
+        # ============ base_link / map для наблюдений ============
+        self._tf_listener: Optional[Any] = None
+        self._frames = self._make_frame_resolver()
+
         # ============ Таймер поллинга gaze source ============
         # Non-blocking poll (issue #2602): кадр складывается ROS-колбэком
         # источника в поле _latest, а _poll_gaze лишь читает его через
@@ -345,6 +362,7 @@ class VisionHailoNode(Node):
             f'output_topic={self.output_topic}, '
             f'observation_topic={self.observation_topic}, '
             f'depth_enabled={self.depth_enabled}, '
+            f'tf_enabled={self._frames.enabled}, '
             f'confidence_threshold={self.confidence_threshold}, '
             f'publish_when_no_input={self.publish_when_no_input}, '
             f'heartbeat_path={self.heartbeat_path!r})'
@@ -370,6 +388,32 @@ class VisionHailoNode(Node):
     # ----------------------------------------------------------------
     # Lifecycle hooks
     # ----------------------------------------------------------------
+
+    def _make_frame_resolver(self) -> FrameResolver:
+        """FrameResolver на tf2 или выключенный (``tf_disabled``) — с WARN.
+
+        TF слушает ОТДЕЛЬНАЯ нода со своим потоком (``node=None`` +
+        ``spin_thread=True`` — tf2_ros сам заводит ``transform_listener_impl_*``):
+        ``spin_thread`` на основной ноде крутил бы её таймеры во втором
+        executor'е, а ожидание TF с таймаутом в однопоточном executor'е
+        основной ноды не дождалось бы колбэков /tf.
+        """
+        if not self.tf_enabled:
+            return FrameResolver(None)
+        try:
+            import tf2_ros  # noqa: PLC0415
+
+            buffer = tf2_ros.Buffer()
+            self._tf_listener = tf2_ros.TransformListener(
+                buffer, None, spin_thread=True,
+            )
+            return FrameResolver(Tf2Lookup(buffer), timeout_sec=self.tf_timeout_sec)
+        except Exception as exc:  # noqa: BLE001
+            self.get_logger().warning(
+                f'tf2 недоступен ({exc!r}) — наблюдения без base_link/map, '
+                f'статус tf_disabled.'
+            )
+            return FrameResolver(None)
 
     def _poll_gaze(self) -> None:
         """Poll gaze source — сохранить последний кадр для _tick.
@@ -530,7 +574,10 @@ class VisionHailoNode(Node):
             self._publish_observation(observation, frame)
 
     def _publish_observation(self, observation: Dict[str, Any], frame: Any) -> None:
-        """Observation-dict → msg; header = stamp и frame_id КАДРА."""
+        """Observation-dict → msg; header = stamp и frame_id КАДРА.
+
+        Точки в base_link / map — от ``self._frames`` на stamp кадра.
+        """
         if self._observation_publisher is None or ObservationMsg is None:
             return
         msg = ObservationMsg()
@@ -541,11 +588,14 @@ class VisionHailoNode(Node):
         msg.header.stamp.sec = sec
         msg.header.stamp.nanosec = nanosec
         msg.header.frame_id = frame.frame_id
+        observation = dict(observation, **self._frames.resolve(
+            frame.frame_id, frame.stamp,
+            observation['position'], observation['position_valid'],
+        ))
         for field in OBSERVATION_FIELDS:
-            if field == 'position':
-                msg.position.x, msg.position.y, msg.position.z = (
-                    float(v) for v in observation['position']
-                )
+            if field in _POINT_FIELDS:
+                point = getattr(msg, field)
+                point.x, point.y, point.z = (float(v) for v in observation[field])
             else:
                 setattr(msg, field, observation[field])
         self._observation_publisher.publish(msg)
@@ -557,7 +607,21 @@ class VisionHailoNode(Node):
                 self._gaze.stop()
         except Exception:  # noqa: BLE001
             pass
+        self._stop_tf()
         return super().destroy_node()
+
+    def _stop_tf(self) -> None:
+        """Погасить поток и ноду TF-слушателя, если они есть."""
+        listener = getattr(self, '_tf_listener', None)
+        if listener is None:
+            return
+        self._tf_listener = None
+        try:
+            listener.executor.shutdown()
+            listener.dedicated_listener_thread.join(timeout=2.0)
+            listener.node.destroy_node()
+        except Exception:  # noqa: BLE001
+            pass
 
 
 def main(args: Optional[List[str]] = None) -> None:

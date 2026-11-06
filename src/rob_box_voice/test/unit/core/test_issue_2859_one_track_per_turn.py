@@ -9,25 +9,18 @@
 * чистый :class:`TrackStartGuard` (успех → лимит, провал → повтор разрешён,
   ``reset`` → новый ход);
 * :class:`PlanToolExecutor` — отказ не доходит до провайдера;
-* сквозной сценарий через настоящий ``AgentCore`` со скриптованной LLM:
-  8 запусков в одном ходе → выполнен ровно 1, 7 отказов с текстом.
+* каждый стартёр трека ограничен (сквозные сценарии через цикл v1 ``AgentCore`` удалены вместе с ним, #4354 A3b).
 """
 
 from __future__ import annotations
 
 import asyncio
 import json
-from typing import Any
 
 import pytest
 
-from rob_box_harness.core.agent_core import AgentCore
-from rob_box_harness.core.dialogue_state_machine import (
-    DialogueEvent,
-    DialogueStateMachine,
-)
 from rob_box_harness.tools import ToolSpec
-from rob_box_llm.provider import LLMResponse, ToolCall, ToolResult
+from rob_box_llm.provider import ToolCall, ToolResult
 from rob_box_voice.core.track_start_guard import (
     REFUSAL_ERROR_CODE,
     REFUSAL_MESSAGE,
@@ -74,74 +67,6 @@ class _FakeUnderlying:
 
     def names(self) -> list[str]:
         return [c.name for c in self.executed]
-
-
-class _ScriptedLLM:
-    """Отдаёт заготовленные ответы по одному; дальше — финальный текст."""
-
-    name = "scripted"
-
-    def __init__(self, responses: list[LLMResponse]) -> None:
-        self.responses = list(responses)
-        self.calls: list[list[Any]] = []
-
-    async def complete(self, messages: Any = None, **_kw: Any) -> LLMResponse:
-        self.calls.append(list(messages or []))
-        if self.responses:
-            return self.responses.pop(0)
-        return LLMResponse(content="Йоу, качаем дальше!", tool_calls=())
-
-    async def aclose(self) -> None:
-        return None
-
-
-class _NullMemory:
-    async def save_fact(self, scope: str, fact: Any) -> None:
-        return None
-
-    async def search_facts(self, scope: str, query: str, limit: int = 5):
-        return []
-
-    async def aclose(self) -> None:
-        return None
-
-
-def _dj_batch(i: int) -> LLMResponse:
-    """Один шаг живого хода #23: generate_music + set_dj_mode."""
-    return LLMResponse(
-        content="",
-        tool_calls=(
-            ToolCall(id=f"cm{i}", name="generate_music",
-                     arguments={"name": f"still dre {i}"}),
-            ToolCall(id=f"dj{i}", name="set_dj_mode",
-                     arguments={"enabled": True, "interval": 75}),
-        ),
-    )
-
-
-def _core(llm: _ScriptedLLM, executor: PlanToolExecutor) -> AgentCore:
-    dsm = DialogueStateMachine()
-    core = AgentCore(llm=llm, tools=executor, memory=_NullMemory(), dsm=dsm)
-    dsm.on_event(DialogueEvent.WAKE_WORD)
-    return core
-
-
-def _tool_messages(llm: _ScriptedLLM) -> list[str]:
-    """Тексты tool-сообщений из последнего запроса к LLM."""
-    last = llm.calls[-1]
-    return [m.content for m in last if getattr(m, "role", "") == "tool"]
-
-
-def _refusals(contents: list[str]) -> list[dict]:
-    out = []
-    for text in contents:
-        try:
-            payload = json.loads(text)
-        except (TypeError, ValueError):
-            continue
-        if payload.get("error") == REFUSAL_ERROR_CODE:
-            out.append(payload)
-    return out
 
 
 # ---------------------------------------------------------------------------
@@ -218,60 +143,6 @@ def test_executor_refuses_second_start_without_calling_provider() -> None:
     assert payload["error"] == REFUSAL_ERROR_CODE
     assert payload["message"] == REFUSAL_MESSAGE
     assert payload["already_started_by"] == "generate_music"
-
-
-# ---------------------------------------------------------------------------
-# End-to-end through AgentCore (scripted LLM)
-# ---------------------------------------------------------------------------
-
-
-def test_eight_compose_calls_in_one_turn_execute_exactly_one() -> None:
-    """Живой ход #23: 8 × (generate_music + set_dj_mode) → 1 трек."""
-    underlying = _FakeUnderlying()
-    executor = PlanToolExecutor(underlying)
-    llm = _ScriptedLLM([_dj_batch(i) for i in range(8)])
-    core = _core(llm, executor)
-
-    asyncio.run(core.process_input("[DJ_AUTO переход #23]", history=[]))
-
-    assert underlying.names().count("generate_music") == 1
-    assert underlying.names().count("set_dj_mode") == 8
-    refusals = _refusals(_tool_messages(llm))
-    assert len(refusals) == 7
-    assert all(r["message"] == REFUSAL_MESSAGE for r in refusals)
-    # Первый (исполненный) трек — именно первый вызов модели.
-    first = next(c for c in underlying.executed if c.name == "generate_music")
-    assert first.id == "cm0"
-
-
-def test_failed_start_then_retry_executes_both() -> None:
-    underlying = _FakeUnderlying(fail_first=1)
-    executor = PlanToolExecutor(underlying)
-    llm = _ScriptedLLM([_dj_batch(i) for i in range(3)])
-    core = _core(llm, executor)
-
-    asyncio.run(core.process_input("[DJ_AUTO переход #24]", history=[]))
-
-    # cm0 упал, cm1 — исправление (выполнен), cm2 — отказ.
-    assert underlying.names().count("generate_music") == 2
-    assert len(_refusals(_tool_messages(llm))) == 1
-
-
-def test_next_turn_allows_new_track() -> None:
-    underlying = _FakeUnderlying()
-    executor = PlanToolExecutor(underlying)
-    llm = _ScriptedLLM([_dj_batch(0), _dj_batch(1)])
-    core = _core(llm, executor)
-
-    asyncio.run(core.process_input("[DJ_AUTO переход #25]", history=[]))
-    assert underlying.names().count("generate_music") == 1
-
-    llm.responses = [_dj_batch(2)]
-    core._dsm.on_event(DialogueEvent.WAKE_WORD)
-    asyncio.run(core.process_input("[DJ_AUTO переход #26]", history=[]))
-
-    started = [c.id for c in underlying.executed if c.name == "generate_music"]
-    assert started == ["cm0", "cm2"]
 
 
 @pytest.mark.parametrize("tool", sorted(TRACK_STARTING_TOOLS))

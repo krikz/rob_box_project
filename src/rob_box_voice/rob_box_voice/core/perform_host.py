@@ -31,7 +31,8 @@ from rob_box_core.utterance import Utterance
 from rob_box_dialog import knowledge as kn
 from rob_box_dialog.command import Performance
 from rob_box_dialog.plan.backing import Backing, MusicStop
-from rob_box_dialog.plan.perform import AskReplace, Cancel, PerformBlock, Say, context_block, edit_asks_backing
+from rob_box_dialog.plan.perform import (AskReplace, Cancel, PerformBlock, Say, context_block, edit_asks_backing,
+                                         repeats_said, repeats_whole)
 from rob_box_dialog.plan.plan_events import PlanEvent
 from rob_box_llm.provider import ToolCall, ToolResult
 
@@ -86,7 +87,7 @@ class EffectRunner:
 
     def _say(self, say: Say) -> None:
         utterance = Utterance(text=say.text, voice=say.voice or None, emotion=say.emotion or None,
-                              speech_id=say.speech_id)
+                              speech_id=say.speech_id, beat_s=say.beat_s)
         speech_client.say(self._node, utterance, agent=AGENT, epoch=self.epoch, turn_id=self.turn_id,
                           at=say.at, commit=say.commit, boundary="sentence")
 
@@ -141,7 +142,7 @@ class PerformHost:
     def __init__(self, node: Any, run_tool: RunTool, loop: Callable[[], Optional[asyncio.AbstractEventLoop]],
                  emit: Callable[[PlanEvent], None], output_latency_ms: int,
                  clock: Callable[[], float] = time.time, playing: Callable[[], str] = str,
-                 on_ask: Callable[[str], None] = lambda title: None, tts_provider: Callable[[], str] = str,
+                 on_ask: Callable[[str], None] = lambda title: None,
                  speaking: Callable[[], bool] = lambda: False) -> None:
         self._latency_ms = int(output_latency_ms)
         #: Голос занят чужой речью (столбец ``speech`` снимка планировщика): сторож выступления её не считает сбоем.
@@ -153,8 +154,6 @@ class PerformHost:
         #: Что играет чужое (название; ``""`` — тишина или наш бит) и как открыть окно ответа да/нет (О9′).
         self._playing = playing
         self._on_ask = on_ask
-        #: Фактический провайдер TTS: паузы MiniMax по сетке строк — только у него (О11, #3901).
-        self._tts_provider = tts_provider
         self._run = EffectRunner(node, run_tool, loop, emit, self._outcome)
 
     # -- что видят валидатор, LLM и планировщик ---------------------------------------------------------------------
@@ -194,21 +193,50 @@ class PerformHost:
     # -- команды -------------------------------------------------------------------------------------------------------
 
     def start(self, perf: Performance, turn_id: str, epoch: int = 0) -> Dict[str, Any]:
-        """Новое выступление; идёт другое — правка его не начатых сегментов (MERGE, COMPOSITION perform×perform)."""
+        """Новое выступление; идёт другое и у него есть не отданные на звучание сегменты — правка их (MERGE,
+        COMPOSITION perform×perform). Всё отдано (звучит последний) — править нечего: прежнее досказывает владелец
+        речи, это — новое выступление за ним (#4318: повторный счёт отклоняли как правку). То же выступление целиком,
+        пока есть несказанное, — перезапуск с начала (#4320: правка была бы пустой, старый счёт дочитал бы хвост)."""
         with self._lock:
-            if self.block is not None and not self.block.ended:
-                return self._edit_locked(perf)
+            block = self.block
+            if block is not None and not block.ended:
+                if self._restarted(block, perf):
+                    return self._start_locked(perf, turn_id, epoch)
+                if block.unsaid or not perf.segments:
+                    return self._edit_locked(perf)
+                self._run.apply(block.hand_over(self._clock()))
+            return self._start_locked(perf, turn_id, epoch)
+
+    def _restarted(self, block: PerformBlock, perf: Performance) -> bool:
+        """Та же просьба целиком, пока у ``block`` есть несказанное (``plan.perform.repeats_whole``): блок
+        перезапущен (:meth:`PerformBlock.restart`) — ``True``, новое выступление начнёт вызывающий."""
+        if not (perf.segments and block.unsaid and repeats_whole(block, perf)):
+            return False
+        self._run.apply(block.restart(self._clock()))
+        return True
+
+    def _start_locked(self, perf: Performance, turn_id: str, epoch: int) -> Dict[str, Any]:
+        with self._lock:
             self._run.turn_id, self._run.epoch = turn_id, epoch
             self.block = PerformBlock(perf, f"perform-{turn_id or next(self._ids)}", turn_id=turn_id, epoch=epoch,
                                       output_latency_ms=self._latency_ms, log=self._run.log,
-                                      tts_provider=self._tts_provider(), voice_busy=self._speaking)
+                                      voice_busy=self._speaking)
             playing = self._playing() if perf.backing in kn.PERFORM_BACKING_MOODS else ""
             self._run.apply(self.block.start(self._clock(), playing))
             return {"status": "pending", "block_id": self.block.block_id}
 
-    def edit(self, perf: Performance) -> Dict[str, Any]:
-        """``edit_pending``: правка не начатых сегментов идущего выступления (с какого — :meth:`_edit_locked`)."""
+    def edit(self, perf: Performance, turn_id: str = "", epoch: int = 0) -> Dict[str, Any]:
+        """``edit_pending``: правка не начатых сегментов идущего выступления (с какого — :meth:`_edit_locked`).
+        Несказанного нет, а правка целиком повторяет сказанное («посчитай ещё раз» с флагом правки) — это новое
+        выступление (#4318), а не отказ ``edit_repeats_said``. Несказанное есть, а правка — то же выступление целиком,
+        — перезапуск (#4320), как у :meth:`start`."""
         with self._lock:
+            block = self.block
+            if block is not None and not block.ended and self._restarted(block, perf):
+                return self._start_locked(perf, turn_id, epoch)
+            if block is not None and not block.ended and not block.unsaid and repeats_said(block, perf):
+                self._run.apply(block.hand_over(self._clock()))
+                return self._start_locked(perf, turn_id, epoch)
             return self._edit_locked(perf)
 
     def stop(self, keep_backing: bool = False) -> bool:
@@ -278,7 +306,11 @@ class PerformHost:
         effects = block.edit(perf, self._clock())
         self._run.apply(effects)
         rejected = [e for e in effects if isinstance(e, PlanEvent) and e.kind == "rejected"]
-        return {"status": "rejected", "reason": rejected[0].reason} if rejected else {"status": "done"}
+        if not rejected:
+            return {"status": "done"}
+        # фраза отказа уже сказана выступлением («дочитаю как было») — ход второй («Не вышло.») не добавляет
+        phrased = any(isinstance(e, Say) and e.key == "perform.edit_rejected" for e in effects)
+        return {"status": "rejected", "reason": rejected[0].reason, "phrased": phrased}
 
     def _add_backing_locked(self, block: PerformBlock, backing: str) -> bool:
         """Бит выступлению, у которого его нет (#993): ``True`` — заказан; уже есть или решается — ``False``."""

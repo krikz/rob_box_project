@@ -15,7 +15,7 @@ dialogue_node, и ``/voice/tts/request`` от MCP ``speak_text``) — тот ж�
 
 * текст с >10% чужих букв НЕ уходит в синтез (``_submit_synthesis``
   не вызывается) — робот молчит, а не бормочет;
-* публикуется ``/voice/tts/finished`` с ``success=False`` и
+* финал реплики ``success=False`` (SpeechEvent ``rejected``) с
   ``error="unsupported_script"``, чтобы MCP ``speak_text`` /
   dialogue_node не висели в ожидании навсегда (батч закрывается);
 * нормальная русская речь проходит без изменений (back-compat);
@@ -34,6 +34,9 @@ from pathlib import Path
 from unittest.mock import MagicMock
 
 import pytest
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[3]))  # rob_box_voice/ — для test.unit.tts
+from test.unit.tts.conftest import FinalsSpy  # noqa: E402
 
 
 def _load_tts_node_class():
@@ -165,7 +168,7 @@ def _make_node(tts_node_cls):
     n._logger = logger
     n.get_logger = lambda: logger
     n.current_speech_id = None
-    n.finished_pub = _CapturingPublisher()
+    n._speech = FinalsSpy()  # #4252 ч.2: финал реплики — у владельца речи
     n._submit_synthesis = MagicMock()
     # Issue #2553 — babble-retry / DJ-overlap guard. Для тестов
     # dialogue_callback (одиночный submit без активного batch'а)
@@ -185,7 +188,7 @@ def _msg(payload: dict):
 
 
 def _finished_payloads(node) -> list:
-    return [json.loads(m.data) for m in node.finished_pub.messages]
+    return list(node._speech.finals)
 
 
 def _all_logs(node) -> str:
@@ -202,7 +205,7 @@ class TestGuardFollowsSelectedProvider:
     def test_minimax_selected_reads_hieroglyphs_so_chunk_is_submitted(self, tts_node_cls):
         n = _make_node(tts_node_cls)
         n.provider_chain = ["minimax", "yandex", "silero"]
-        n.dialogue_callback(_msg({"ssml": "<speak>你好世界，今天天气很好</speak>", "speech_id": "sid-zh"}))
+        n.dialogue_callback(_msg({"text": "你好世界，今天天气很好", "speech_id": "sid-zh"}))
         n._submit_synthesis.assert_called_once()
         assert _finished_payloads(n) == []
 
@@ -210,7 +213,7 @@ class TestGuardFollowsSelectedProvider:
         n = _make_node(tts_node_cls)
         n.provider_chain = ["minimax", "yandex", "silero"]
         n._provider_dead_until = {"minimax": float("inf")}  # квота: выбранный теперь Yandex
-        n.dialogue_callback(_msg({"ssml": "<speak>你好世界，今天天气很好</speak>", "speech_id": "sid-zh2"}))
+        n.dialogue_callback(_msg({"text": "你好世界，今天天气很好", "speech_id": "sid-zh2"}))
         n._submit_synthesis.assert_not_called()
         assert _finished_payloads(n)[0]["error"] == "unsupported_script"
 
@@ -222,7 +225,7 @@ class TestForeignScriptDropped:
     def test_hieroglyph_text_is_not_synthesized(self, tts_node_cls):
         node = _make_node(tts_node_cls)
         node.dialogue_callback(
-            _msg({"ssml": "<speak>你好世界，加油加油</speak>",
+            _msg({"text": "你好世界，加油加油",
                   "speech_id": "sid-cjk-0001"})
         )
         node._submit_synthesis.assert_not_called()
@@ -231,7 +234,7 @@ class TestForeignScriptDropped:
         """«Хинди» из репорта юзера."""
         node = _make_node(tts_node_cls)
         node.dialogue_callback(
-            _msg({"ssml": "<speak>नमस्ते दुनिया</speak>",
+            _msg({"text": "नमस्ते दुनिया",
                   "speech_id": "sid-dev-0001"})
         )
         node._submit_synthesis.assert_not_called()
@@ -244,7 +247,7 @@ class TestForeignScriptDropped:
         """
         node = _make_node(tts_node_cls)
         node.dialogue_callback(
-            _msg({"ssml": "<speak>你好世界，加油加油</speak>",
+            _msg({"text": "你好世界，加油加油",
                   "speech_id": "sid-cjk-0002"})
         )
         payloads = _finished_payloads(node)
@@ -254,32 +257,26 @@ class TestForeignScriptDropped:
         assert payloads[0]["error"] == "unsupported_script"
 
     def test_dropped_chunk_preserves_batch_metadata(self, tts_node_cls):
-        """batch_id/index/total пробрасываются — батч закрывается корректно."""
+        """Отброшенный последний чанк батча всё равно закрывает батч."""
         node = _make_node(tts_node_cls)
         node.dialogue_callback(
             _msg({
-                "ssml": "<speak>加油加油加油加油</speak>",
+                "text": "加油加油加油加油",
                 "speech_id": "sid-cjk-0003",
                 "batch_id": "batch-1",
                 "batch_index": 2,
                 "batch_total": 2,
             })
         )
-        payloads = _finished_payloads(node)
-        assert payloads[0]["batch_id"] == "batch-1"
-        assert payloads[0]["batch_index"] == 2
-        assert payloads[0]["batch_total"] == 2
-        # Последний чанк батча → маркер закрытия батча тоже улетает.
-        assert any(p.get("batch_complete") for p in payloads), (
-            "последний чанк батча должен закрыть батч даже когда текст "
-            "отброшен guard'ом"
-        )
+        assert _finished_payloads(node)[0]["success"] is False
+        # Последний чанк батча закрывает батч (drain отложенной очереди) даже когда текст отброшен.
+        assert any("batch closed" in m for m in node._logger.info_msgs)
 
     def test_dropped_chunk_logs_full_text_and_diagnostics(self, tts_node_cls):
         """Acceptance: полный текст + доля/письменности в WARNING."""
         node = _make_node(tts_node_cls)
         node.dialogue_callback(
-            _msg({"ssml": "<speak>Слушай: 加油加油加油加油加油加油</speak>",
+            _msg({"text": "Слушай: 加油加油加油加油加油加油",
                   "speech_id": "sid-cjk-0004",
                   "voice": "anton"})
         )
@@ -298,7 +295,7 @@ class TestNormalSpeechUnaffected:
     def test_russian_text_is_synthesized(self, tts_node_cls):
         node = _make_node(tts_node_cls)
         node.dialogue_callback(
-            _msg({"ssml": "<speak>Привет! Я РОББОКС, поехали.</speak>",
+            _msg({"text": "Привет! Я РОББОКС, поехали.",
                   "speech_id": "sid-ru-0001"})
         )
         node._submit_synthesis.assert_called_once()
@@ -315,14 +312,14 @@ class TestNormalSpeechUnaffected:
             "вот таким единственным символом 加 в самом конце фразы"
         )
         node.dialogue_callback(
-            _msg({"ssml": f"<speak>{text}</speak>", "speech_id": "sid-mix-1"})
+            _msg({"text": text, "speech_id": "sid-mix-1"})
         )
         node._submit_synthesis.assert_called_once()
 
     def test_emoji_and_digits_pass_through(self, tts_node_cls):
         node = _make_node(tts_node_cls)
         node.dialogue_callback(
-            _msg({"ssml": "<speak>Погнали 2024! 🎶🦝 128 bpm!</speak>",
+            _msg({"text": "Погнали 2024! 🎶🦝 128 bpm!",
                   "speech_id": "sid-emoji-1"})
         )
         node._submit_synthesis.assert_called_once()
@@ -339,7 +336,7 @@ class TestNormalSpeechUnaffected:
             "песенку про то, как хорошо быть енотиком весёлым"
         )
         node.dialogue_callback(
-            _msg({"ssml": f"<speak>{text}</speak>", "speech_id": "sid-long-1"})
+            _msg({"text": text, "speech_id": "sid-long-1"})
         )
         logs = _all_logs(node)
         assert text in logs, "полный текст обязан быть в логе (issue #1709)"

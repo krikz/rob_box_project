@@ -28,7 +28,9 @@ except ImportError:
     sys.modules["rob_box_dialog_msgs.srv"] = _srv
     sys.modules["rob_box_dialog_msgs"].srv = _srv
 
-from rob_box_llm.provider import LLMResponse, ToolCall, ToolResult  # noqa: E402
+from rob_box_dialog.command import parse  # noqa: E402
+from rob_box_llm.provider import ToolResult  # noqa: E402
+from rob_box_voice.core.command_bridge import CommandResponse, for_turn  # noqa: E402
 from rob_box_voice import dialog_node as dn  # noqa: E402
 
 EXECUTE_LINE = "📨 [execute] событие"
@@ -189,14 +191,14 @@ class _Tools:
 
 @pytest.fixture()
 def node(monkeypatch):
-    order = ToolCall(id="c1", name="command", arguments={
-        "actions": [{"tool": "request_music", "args": {"intent": "track", "text": "сыграй Running Up That Hill"}}]})
+    order = {
+        "actions": [{"tool": "request_music", "args": {"intent": "track", "text": "сыграй Running Up That Hill"}}]}
 
     class _LLM:
         answered_by = "deepseek"
 
         def __init__(self):
-            self.responses = [LLMResponse(content="", tool_calls=(order,))]
+            self.responses = [CommandResponse(command=for_turn(parse(order)))]
 
         async def complete(self, messages, tools=(), settings=None):
             return self.responses.pop(0)

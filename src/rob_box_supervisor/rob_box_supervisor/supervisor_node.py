@@ -11,7 +11,7 @@
     AV-28 ``set_voice_preset|language`` удалены по ADR-0087 (живой путь
     смены стиля/языка — ``/avatar/voice_pipeline`` ниже);
   * супервизор-агент оператора (ТАРС, issue #1988): ``/avatar/command`` и
-    ``/avatar/stt/result`` → ``AgentCore`` (промпт оператора) →
+    ``/avatar/stt/result`` → общий движок ``rob_box_dialog`` (``operator_turns``) →
     ``/avatar/command_result`` + voice-mode swap;
   * пайплайн грипа (issue #1989, шаг 4б): ``/avatar/ptt/result`` +
     ``/avatar/voice_pipeline`` → transform (0|1 LLM, pure-логика в
@@ -59,12 +59,13 @@ from rob_box_voice.tts_voice_registry import voices_for as _voices_for
 # AVATAR_COMMAND_TOPIC/AVATAR_COMMAND_RESULT_TOPIC) — это и было причиной
 # регрессии: rob_box_core.avatar_command содержит актуальные значения
 # контракта, а supervisor импортирует старые. Теперь импортируем SoT.
-from rob_box_core import dialog_engine, speech_client
+from rob_box_core import speech_client
 from rob_box_core.avatar_command import (
     AVATAR_COMMAND_RESULT_TOPIC,
     AVATAR_COMMAND_TOPIC,
 )
-# voice-vr 12 (issue #2197, ADR-0080 §1.3 / §2.3): единый сборщик SSML. Фолбек #2233 удалён (ADR-0150 D2, PR-13):
+# voice-vr 12 (issue #2197, ADR-0080 §1.3 / §2.3): единый сборщик реплики (голый текст, ADR-0160 §2.3). Фолбек #2233
+# удалён (ADR-0150 D2, PR-13):
 # образ супервизора собирается на базе voice-assistant с тем же rob_box_core.
 from rob_box_core.utterance import Sink, Utterance  # noqa: E402
 # Issue #2240 — ws_server и supervisor больше НЕ держат свои копии
@@ -77,30 +78,12 @@ from rob_box_core.bridge_protocol import (  # noqa: E402,F401
     VOICE_PRESET_IDS,  # re-export для обратной совместимости
 )
 # issue #3253 (Ш2) — стадии ТАРС-в-шлем (thinking/idle) в /avatar/tars/stage.
+from rob_box_supervisor import headset_speech  # noqa: E402
 from rob_box_supervisor.spoken_text import to_spoken  # noqa: E402
 from rob_box_supervisor.tars_stage import TarsStagePublisher  # noqa: E402
-# ADR-0150 PR-13 (#3708) — ТАРС на общем движке при dialog_engine=v2.
+# ADR-0150 PR-13 (#3708) — ТАРС на общем движке rob_box_dialog (путь v1 AgentCore удалён, #4354 A3).
 from rob_box_supervisor.operator_turns import agent_path  # noqa: E402
-# ADR-0083 §2.3 — supervisor собирает AgentCore через build_agent(AgentSpec).
-# До этого PR у supervisor был свой ``_build_operator_llm`` (без persist_path),
-# свой ``_load_operator_system_prompt``, своя ``_load_operator_skill_prompts``
-# (лезла в voice/skills — протечка), и не было ``on_prompt``. Сейчас все
-# эти 4 хелпера удалены, остался только ``_build_operator_memory``
-# (нода владеет asyncio-loop) и ``_build_operator_tools`` (нужен self
-# для ``ROSMCPToolProvider(LLMToolCallAdapter(self))``).
-from rob_box_harness.core.assembly import (  # noqa: E402  — lazy harness import
-    AgentSpec,
-    build_agent,
-    load_system_prompt,
-)
 from rob_box_dialog.knowledge import COMMAND_PROVIDERS_DEFAULT  # noqa: E402
-from rob_box_supervisor.operator_prompt import operator_prompt  # noqa: E402
-# ADR-0083 §G — PromptStats для supervisor идут в ту же гистограмму
-# ``voice_llm_prompt_tokens``, что и dialogue_node (issue #2111).
-from rob_box_voice.observability import (  # noqa: E402
-    record_llm_prompt_tokens,
-)
-
 # voice-vr 21 — единый белый список voice-пресетов и языков (AV-28 §P7).
 # Раньше жил в ``supervisor_node`` и ``ws_server`` двумя параллельными
 # копиями (третья — приватный ``_AV28_*`` на классе), что и дало
@@ -154,24 +137,6 @@ REASON_APPLIED = "applied"
 # отказывает клиенту. Стандартное behaviour: applied=false, reason=MONITOR_MODE_REASON.
 REASON_MONITOR = MONITOR_MODE_REASON
 
-# ADR-0083 §2.3 / issue #2111 — supervisor собирает AgentCore через
-# :func:`rob_box_harness.core.assembly.build_agent` с
-# :class:`AgentSpec`. Это закрывает три бага:
-#   * §1.3 #1 — supervisor ронял HealthCache() без persist_path (после
-#     рестарта все «больные» провайдеры снова «здоровы»). ``build_agent``
-#     использует общий ``~/.rob_box/llm_health.json`` — supervisor и
-#     dialogue делят один кеш.
-#   * §1.3 #3 — supervisor лез в ``rob_box_voice/prompts/skills`` по
-#     относительному пути (протечка в чужой пакет). Срезов скиллов нет
-#     совсем (ADR-0150 PR-6): ТАРС живёт на одном системном промпте.
-#   * §2.3 #G — supervisor не публиковал PromptStats. ``AgentSpec.on_prompt``
-#     зовёт ``_record_supervisor_prompt_stats``, и ``record_llm_prompt_tokens``
-#     пишет в ту же гистограмму, что и dialogue.
-# ADR-0083 §E — ``/data/operator_memory.db`` упразднён. Оба агента
-# (personality + operator) пишут в ``/data/harness_voice.db`` через
-# ``SQLiteVoiceMemory(agent=...)``. ``agent`` — колонка ``facts`` (миграция
-# 011_agent_namespace.sql).
-#
 # ADR-0066 — после merge §6 dialogue_node больше НЕ принимает параметр
 # ``voice_input_mode``. Управление личностью идёт через топик
 # ``/dialogue/control`` (String JSON, action: pause|resume). Внешний
@@ -187,8 +152,6 @@ SET_VOICE_MODE_TOPIC: str = "/avatar/set_voice_mode"
 # QoS — RELIABLE, KEEP_LAST depth=10 (синхронизировано с dialogue_node,
 # см. dialogue_node.py:200). Payload: JSON
 # ``{"action": "pause"|"resume", "reason": str, "ts_s": float}``.
-DIALOGUE_CONTROL_TOPIC: str = "/dialogue/control"
-DIALOGUE_CONTROL_ACK_TOPIC: str = "/dialogue/control_ack"
 # Допустимые ``action``-значения (ADR-0066 §2.1, _on_dialogue_control
 # в dialogue_node.py:2189). Используются как whitelist в
 # ``_publish_dialogue_control`` для защиты от опечаток в caller-коде.
@@ -209,7 +172,7 @@ _HOLD_ACTION = {DIALOGUE_CONTROL_PAUSE: 0, DIALOGUE_CONTROL_RESUME: 1}  # Dialog
 
 
 class _DialogControlClient:
-    """``dialog_engine=v2``: ``pause``/``resume`` супервизора -> ``DialogControl.hold``/``resume`` с ack владельца.
+    """``pause``/``resume`` супервизора -> ``DialogControl.hold``/``resume`` с ack владельца.
 
     Тот же вход ``publish(String JSON {action, reason, ttl_s})``, что у топика v1, но исход честный: нет сервиса,
     нет ответа за срок или ``ok=false`` — исключение (``_publish_dialogue_control`` вернёт ``False``), а не
@@ -235,12 +198,11 @@ class _DialogControlClient:
             raise RuntimeError(f"{DIALOG_CONTROL_SERVICE}: владелец отказал action={payload['action']}")
 
 
-def _dialogue_control_publisher(node: Any, engine: str) -> Any:
-    """Писатель управления личностью по флагу движка: ``v1`` — топик ``/dialogue/control``, ``v2`` — сервис
-    ``/dialog/control`` (клиент в своей реентерабельной группе: ответ приходит, пока обработчик команды ждёт)."""
-    if engine == dialog_engine.V1:
-        return node.create_publisher(RosString, DIALOGUE_CONTROL_TOPIC, 10)
-    from rob_box_dialog_msgs.srv import DialogControl  # noqa: PLC0415 - только v2
+def _dialogue_control_publisher(node: Any) -> Any:
+    """Писатель управления личностью — сервис ``/dialog/control`` владельца ``dialog_node`` (клиент в своей
+    реентерабельной группе: ответ приходит, пока обработчик команды ждёт). Топик v1 ``/dialogue/control`` удалён
+    (#4354 A3)."""
+    from rob_box_dialog_msgs.srv import DialogControl  # noqa: PLC0415
 
     try:
         from rclpy.callback_groups import ReentrantCallbackGroup  # noqa: PLC0415
@@ -426,8 +388,8 @@ AGENT_STT_RESULT_TOPIC: str = "/avatar/stt/result"
 # issue #3253 (Ш2, ADR-0078 §3.6) — стадии ТАРС-в-шлем от супервизора:
 # ``thinking`` — ход LLM начался; ``idle`` — ход закончился БЕЗ реплики в
 # шлем (агент выключен/недоступен, текстовый вход, пустой ответ). Если
-# реплика ушла в /avatar/tts/request, speaking/idle выводит quest_node
-# по чанкам и /voice/tts/finished. String JSON ``{stage, request_id,
+# реплика ушла в шлем (SpeechRequest sink=headset), speaking/idle выводит quest_node
+# по чанкам и SpeechEvent (#4252). String JSON ``{stage, request_id,
 # reason?, ts_ms}``; потребитель — quest_node → WS ``tars_state``.
 AVATAR_TARS_STAGE_TOPIC: str = "/avatar/tars/stage"
 
@@ -442,9 +404,10 @@ GRIP_VOICE_PIPELINE_TOPIC: str = "/avatar/voice_pipeline"
 # Выход пайплайна — динамики робота: SpeechRequest клиентом речи ``speech_client`` (ADR-0150 PR-3), агент
 # ``operator`` — как у инструмента say. Своего имени топика у супервизора нет (PR-13).
 # ADR-0055 / issue #1993 — обратный канал ТАРС в шлем: собственные реплики
-# avatar_supervisor'а идут в /avatar/tts/request (sink="headset"), tts_node
+# avatar_supervisor'а идут владельцу речи SpeechRequest-ом с sink="headset" (#4252), tts_node
 # шлёт синтез в /avatar/tts/audio, quest_node доставляет в шлем. Грип и
 # инструмент ``say`` говорят в динамики робота SpeechRequest-ом (ADR-0150 PR-3).
+# /avatar/tts/request остался только для образца голоса (sink="preview", ADR-0079).
 AVATAR_TTS_REQUEST_TOPIC: str = "/avatar/tts/request"
 # priority реплики грипа в SpeechRequest (врезка за играющим чанком).
 GRIP_TTS_SOURCE: str = "operator"
@@ -540,13 +503,12 @@ class AvatarSupervisor(Node):
             RosString, SET_VOICE_MODE_TOPIC, self._on_set_voice_mode, 10
         )
         # ADR-0066 §6.7 — публикация в ``/dialogue/control``. Используется
-        # для swap-контекста вокруг ``_run_agent_sync`` (pause на входе,
+        # для swap-контекста вокруг ``_agent_runner`` (pause на входе,
         # resume в finally) и для обработки явных
         # ``/avatar/set_voice_mode``-команд (legacy-контракт).
-        # ADR-0150 PR-10 (#3704): ``/dialogue/control`` слушает только dialogue_node v1 — при dialog_engine=v2
-        # пауза личности идёт сервисом DialogControl ``/dialog/control`` (hold/resume с ack).
-        self._dialog_engine = dialog_engine.declare(self)
-        self._dialogue_control_pub = _dialogue_control_publisher(self, self._dialog_engine)
+        # ADR-0150 PR-10 (#3704): пауза личности идёт сервисом DialogControl ``/dialog/control`` (hold/resume
+        # с ack); топик v1 ``/dialogue/control`` удалён вместе с нодой v1 (#4354 A3).
+        self._dialogue_control_pub = _dialogue_control_publisher(self)
         # AV-28 §P7 (issue #1920) — voice style preset/language подписки
         # удалены по ADR-0087: канал был «честный no-op» после PR #2255
         # (whitelist + log + ack, без побочного эффекта) и без владельца
@@ -642,15 +604,12 @@ class AvatarSupervisor(Node):
         # через ``_dialogue_control_swap`` — жёстко шлём ``pause`` на
         # входе и ``resume`` в finally (контракт ADR-0066 §2.1).
 
-        # AgentCore создаётся ЛЕНИВО (см. _ensure_agent_core): при
-        # ``agent_enabled=false`` мы не должны инстанцировать LLM /
-        # Tools / Memory. DSM оператора держим рядом с core — перед
-        # каждым входом гоним его в DIALOGUE (см. _run_agent_sync).
+        # Хост ТАРС создаётся ЛЕНИВО (см. _ensure_agent_core): при
+        # ``agent_enabled=false`` мы не должны инстанцировать LLM / Tools.
         self._agent_core: Any = None
-        self._operator_dsm: Any = None
-        # ADR-0150 PR-13 (#3708): при dialog_engine=v2 ТАРС — общий движок rob_box_dialog (operator_turns), при v1 —
-        # AgentCore ниже (удаление — PR-15). Сборка и ход выбираются здесь один раз.
-        self._agent_builder, self._agent_runner = agent_path(self, self._dialog_engine)
+        # ADR-0150 PR-13 (#3708): ТАРС — общий движок rob_box_dialog (operator_turns); путь v1 AgentCore удалён
+        # (#4354 A3).
+        self._agent_builder, self._agent_runner = agent_path(self)
         # Журнал ТАРС (§5.4) — тоже лениво, персист по journal_path.
         self._operator_journal: Any = None
         # Метрики супервизор-агента (issue #2232). РАНЬШЕ здесь стояла
@@ -710,11 +669,9 @@ class AvatarSupervisor(Node):
         # Грип НЕ строит AgentCore / ToolProvider / Memory.
         self._grip_llm: Any = None
         speech_client.prepare(self, "request")
-        # ADR-0055 / issue #1993 — обратный канал ТАРС в шлем. Publisher
-        # /avatar/tts/request для СОБСТВЕННЫХ реплик supervisor'а и пайплайна
-        # грипа. Контракт String JSON (см. ADR-0055 §tts_node):
-        # ``{request_id, ssml, sink:\"headset\", voice?, language?}``.
-        # Динамики робота (грип, say) — SpeechRequest клиентом речи, НЕ шлем.
+        # ADR-0079 — образец голоса для picker'а: /avatar/tts/request, String JSON
+        # ``{request_id, text, sink:\"preview\", voice?}`` (голый текст, ADR-0160 §2.3).
+        # Реплики ТАРС в шлем и динамики робота (грип, say) — SpeechRequest клиентом речи (#4252).
         self._avatar_tts_request_pub = self.create_publisher(
             RosString, AVATAR_TTS_REQUEST_TOPIC, 10
         )
@@ -1654,14 +1611,11 @@ class AvatarSupervisor(Node):
         # с sink="preview". request_id протаскиваем до tts_node — он его
         # проставит в preview_voice_audio/result/error, чтобы ws_server
         # коррелировал с picker'ом.
-        sent_rid = self._publish_avatar_tts(
-            text=text,
-            voice=voice_id,
-            sink="preview",
-            request_id=request_id,
+        sent_rid = headset_speech.publish_preview(
+            self._avatar_tts_request_pub, RosString, text, voice_id, request_id, self._log
         )
         if not sent_rid:
-            # На случай если _publish_avatar_tts вернул пустую строку
+            # На случай если publish_preview вернул пустую строку
             # (text drop). request_id сохранён, ошибка уже отлогирована
             # внутри. Дополнительно шлём preview_error с той же причиной
             # для ws_server, чтобы picker не завис на «слушаю…».
@@ -1834,7 +1788,7 @@ class AvatarSupervisor(Node):
             self._log.warning(f"agent_metrics: tool_call record failed: {exc}")
 
     # ── helpers: dialogue control swap (ADR-0066 §6.7) ──────────────────
-    # После удаления ``voice_input_mode`` swap вокруг ``_run_agent_sync``
+    # После удаления ``voice_input_mode`` swap вокруг хода ТАРС
     # работает по новой схеме: на входе публикуем ``pause`` в
     # ``/dialogue/control``, в ``finally`` (включая путь с исключением)
     # публикуем ``resume``. Snapshot предыдущего состояния личности НЕ
@@ -1923,103 +1877,18 @@ class AvatarSupervisor(Node):
             return default
 
     def _ensure_agent_core(self) -> Any:
-        """Ленивая сборка операторского AgentCore (один раз на ноду).
+        """Ленивая сборка хоста ТАРС (один раз на ноду).
 
         Тест-инвариант: ``agent_enabled=false`` → core НЕ создаётся
         (в _on_avatar_command _ensure_agent_core не вызывается). Кеш в
         ``self._agent_core`` — чтобы на каждый /avatar/command не
-        пересобирать AgentCore (там LLM/Tools/Memory init дорого).
+        пересобирать хост (там LLM/Tools init дорого).
         """
         if self._agent_core is None:
-            core, dsm = self._agent_builder()
+            core, _ = self._agent_builder()
             if core is not None:
                 self._agent_core = core
-                self._operator_dsm = dsm
         return self._agent_core
-
-    def _build_agent_core_sync(self) -> tuple[Any, Any]:
-        """Собрать ``(AgentCore, DialogueStateMachine)`` оператора.
-
-        ADR-0083 §2.3 — supervisor использует :func:`build_agent` из
-        :mod:`rob_box_harness.core.assembly`. Все расхождения между
-        личностью и ТАРС раскладываются по полям :class:`AgentSpec`:
-
-        * ``name='operator'``, ``memory_namespace='operator'`` — обе
-          ноды пишут в ``/data/harness_voice.db``, фильтрация по
-          колонке ``agent`` (миграция 011_agent_namespace.sql).
-        * среза тулов нет (``set_visible_tools`` не зовётся) — ТАРС видит
-          все инструменты (ADR-0083 §2.2 #J).
-        * ``health_cache_persist_path`` — общий ``~/.rob_box/llm_health.json``
-          (ADR-0083 §1.3 #1). Если dialogue_node уже туда пишет —
-          supervisor и личность делят один HealthCache.
-        * ``per_provider_settings={}`` — supervisor держит пусто,
-          ``temperature``/``max_tokens`` приходят из YAML
-          dialogue-параметров (ADR-0083 §1.2 #B).
-        * ``health_balance_checkers={}`` — supervisor держит пусто
-          (ADR-0083 §1.2 #A): MiniMax без balance API, deepseek
-          авто-детектится в ``build_agent``.
-        * ``on_prompt=self._record_supervisor_prompt_stats`` —
-          закрывает §G (supervisor не публиковал PromptStats).
-
-        ``tools`` и ``memory`` нода собирает сама — ``tools``
-        требует ``self`` для ``ROSMCPToolProvider``, ``memory``
-        требует asyncio-loop, на котором зовётся
-        ``SQLiteVoiceMemory.init()``. Возвращает ``(None, None)``
-        на любой сбой (ADR-0018: честный FAIL, не падение ноды).
-        """
-        try:
-            from rob_box_harness.core.dialogue_state_machine import (  # noqa: PLC0415
-                DialogueStateMachine,
-            )
-        except ImportError as exc:
-            self._log.warning(f"_build_agent_core_sync: import failed: {exc}")
-            return (None, None)
-
-        tools = self._build_operator_tools()
-        if tools is None:
-            return (None, None)
-        memory = self._build_operator_memory()
-
-        # ── Operator AgentSpec (ADR-0083 §2.3 / §1.2 #A-#B / §2.2 #F/#J) ──
-        provider_chain = self._parse_provider_chain(
-            self._param_str("llm_providers", COMMAND_PROVIDERS_DEFAULT)
-        )
-        settings = self._build_operator_llm_settings()
-        try:
-            from pathlib import Path  # noqa: PLC0415
-
-            spec = AgentSpec(
-                name="operator",
-                prompt_dir=self._resolve_prompts_dir() or Path(""),
-                system_prompt_file=self._system_prompt_file,
-                memory_namespace="operator",
-                on_prompt=self._record_supervisor_prompt_stats,
-                provider_chain=provider_chain,
-                settings=settings,
-                per_provider_settings={},
-                health_cache_persist_path=Path(
-                    "~/.rob_box/llm_health.json"
-                ).expanduser(),
-                health_balance_checkers={},
-                history_trim_limit=self._param_int("history_max_turns", 10),
-                dsm=DialogueStateMachine(),
-                user_id="operator",
-            )
-        except Exception as exc:  # noqa: BLE001
-            self._log.warning(f"_build_agent_core_sync: AgentSpec build failed: {exc}")
-            return (None, None)
-
-        try:
-            # промпт: правила файла + инструменты из реестра (#3298, PR-13b)
-            core = build_agent(spec, tools=tools, memory=memory,
-                               system_prompt=operator_prompt(load_system_prompt(spec), dialog_engine.V1))
-        except Exception as exc:  # noqa: BLE001
-            self._log.warning(f"_build_agent_core_sync: build_agent failed: {exc}")
-            return (None, None)
-
-        # Журнал ТАРС создаём вместе с core (персист — best-effort).
-        self._operator_journal = self._build_operator_journal()
-        return (core, spec.dsm)
 
     @staticmethod
     def _parse_provider_chain(raw: str) -> tuple[str, ...]:
@@ -2059,29 +1928,6 @@ class AvatarSupervisor(Node):
             temperature=(temperature if temperature > 0 else None),
             max_tokens=(max_tokens if max_tokens > 0 else None),
         )
-
-    def _record_supervisor_prompt_stats(self, stats: Any) -> None:
-        """Опубликовать размер промпта supervisor'а (ADR-0083 §G).
-
-        Зеркало :meth:`dialogue_node._on_prompt_stats` — та же
-        гистограмма ``voice_llm_prompt_tokens``, различается через
-        метку ``skill`` (``"none"`` пока скиллы оператора не
-        активированы). Зовётся из :class:`AgentCore` на КАЖДОЕ
-        обращение к LLM, включая каждую итерацию тул-цикла.
-
-        Любое исключение гасится: телеметрия не имеет права ронять
-        живой ход. AgentCore тоже глушит исключения наблюдателя —
-        это второй слой.
-        """
-        try:
-            record_llm_prompt_tokens(
-                stats.provider,
-                tokens=stats.prompt_tokens,
-                skill=stats.skill,
-                estimated=stats.estimated,
-            )
-        except Exception as exc:  # noqa: BLE001
-            self._log.debug(f"[operator prompt] record failed: {exc}")
 
     def _build_operator_tools(self) -> Any:
         """Реальный ToolProvider оператора (ROSMCPToolProvider поверх /mcp).
@@ -2170,57 +2016,14 @@ class AvatarSupervisor(Node):
             self._log.warning(f"_build_operator_tools: build failed: {exc}")
             return None
 
-    def _build_operator_memory(self) -> Any:
-        """Память оператора — общая БД с личностью, фильтр по ``agent`` (ADR-0083 §E).
-
-        До ADR-0083 §E supervisor писал в отдельный файл
-        ``/data/operator_memory.db`` и терял общий контекст с личностью.
-        Теперь обе ноды пишут в ``/data/harness_voice.db`` через
-        ``SQLiteVoiceMemory(agent=...)``: ``agent='operator'`` для ТАРС,
-        ``agent='personality'`` для личности. Колонка ``agent`` в
-        ``facts`` создана миграцией 011_agent_namespace.sql.
-
-        Параметр ``sqlite_db_path`` — единый с dialogue_node
-        (тот же default ``/data/harness_voice.db``). ``operator_db_path``
-        оставлен как DEPRECATED fallback для round-веток до полного
-        ребилда. При сбое — InMemoryStore (нода живёт).
-        """
-        # Приоритет: ``sqlite_db_path`` (новый, ADR-0083 §E) →
-        # ``operator_db_path`` (legacy, тот же файл сейчас). Оба ведут
-        # на ``/data/harness_voice.db`` в текущем supervisor.yaml.
-        db = (
-            self._param_str("sqlite_db_path", "")
-            or self._param_str("operator_db_path", "")
-            or "/data/harness_voice.db"
-        )
-        try:
-            from rob_box_harness.memory import SQLiteVoiceMemory  # noqa: PLC0415
-
-            store = SQLiteVoiceMemory(db_path=db, agent="operator")
-            asyncio.run(store.init())
-            return store
-        except Exception as exc:  # noqa: BLE001
-            self._log.warning(f"operator memory init failed ({exc}); InMemoryStore")
-            try:
-                from rob_box_harness.memory import InMemoryStore  # noqa: PLC0415
-
-                store = InMemoryStore()
-                try:
-                    asyncio.run(store.init())
-                except Exception:  # noqa: BLE001
-                    pass
-                return store
-            except ImportError:
-                return None
-
     @staticmethod
     def _resolve_prompts_dir() -> Any:
         """Каталог ``rob_box_supervisor/prompts`` (источник истины).
 
         Порядок: ament share (установленный пакет) → source-tree
         (colcon symlink / unit-тесты). Возвращает ``Path`` или ``None``.
-        Используется в :meth:`_build_agent_core_sync` для построения
-        :class:`AgentSpec.prompt_dir` — ``build_agent`` берёт
+        Используется в ``operator_turns.build_host`` для построения
+        :class:`AgentSpec.prompt_dir` — ``load_system_prompt`` берёт
         ``system_prompt_file`` отсюда (срезов скиллов нет, ADR-0150 PR-6).
         """
         from pathlib import Path  # noqa: PLC0415
@@ -2249,7 +2052,7 @@ class AvatarSupervisor(Node):
         )
 
     def _render_journal_context(self) -> str:
-        """Свежие записи журнала для ``dynamic_system`` (AgentCore)."""
+        """Свежие записи журнала для секции ``operator_journal`` хода ТАРС."""
         journal = getattr(self, "_operator_journal", None)
         if journal is None:
             return ""
@@ -2274,106 +2077,6 @@ class AvatarSupervisor(Node):
             journal.record(action, outcome=outcome)
         except Exception as exc:  # noqa: BLE001
             self._log.debug(f"_record_operator_journal: {exc}")
-
-    def _run_agent_sync(self, core: Any, payload: Mapping[str, Any]) -> dict[str, Any]:
-        """Один turn оператора: ``AgentCore.process_input`` → mapping.
-
-        DSM оператора гоним в DIALOGUE (зеркало dialogue_node._on_stt,
-        фикс #1217) и зовём ``process_input`` с
-        ``preclassified_event=STT_RESULT`` — прямой команде вейк-слово не
-        нужно, повторная классификация навредит (wake-слово внутри текста).
-        Журнал инжектим через ``dynamic_system``.
-
-        Mapping DialogResult → ``{ok, summary, tool_calls, error, source,
-        client_id}``: ``ok`` — агент ответил (текстом или инструментом);
-        ``summary`` — оператор-видимый текст ответа; ``tool_calls`` — имена
-        реально исполненных инструментов.
-        """
-        text = str(payload.get("text", "") or "").strip()
-        source = str(payload.get("source", "") or "")
-        client_id = str(payload.get("client_id", "") or "")
-        if not text:
-            return {
-                "ok": False,
-                "summary": "empty_input",
-                "tool_calls": [],
-                "error": "empty text",
-                "source": source,
-                "client_id": client_id,
-            }
-        try:
-            from rob_box_harness.core.dialogue_state_machine import (  # noqa: PLC0415
-                DialogueEvent,
-                DialogueStateKind,
-            )
-        except ImportError as exc:
-            return {
-                "ok": False,
-                "summary": f"agent_unavailable: {type(exc).__name__}",
-                "tool_calls": [],
-                "source": source,
-                "client_id": client_id,
-            }
-
-        # DSM-пре-драйв в DIALOGUE.
-        dsm = self._operator_dsm
-        if dsm is not None:
-            state = getattr(dsm, "current_state", None)
-            if state != DialogueStateKind.DIALOGUE:
-                if state == DialogueStateKind.IDLE:
-                    try:
-                        dsm.on_event(DialogueEvent.WAKE_WORD)
-                    except Exception:  # noqa: BLE001
-                        pass
-                try:
-                    dsm.on_event(DialogueEvent.STT_RESULT)
-                except Exception:  # noqa: BLE001
-                    pass
-
-        journal_text = self._render_journal_context()
-        try:
-            result = asyncio.run(
-                core.process_input(
-                    text,
-                    dynamic_system=journal_text or None,
-                    preclassified_event=DialogueEvent.STT_RESULT,
-                )
-            )
-        except Exception as exc:  # noqa: BLE001 — AgentCore не должен, но страхуемся
-            return {
-                "ok": False,
-                "summary": f"llm_error: {type(exc).__name__}",
-                "tool_calls": [],
-                "error": str(exc),
-                "source": source,
-                "client_id": client_id,
-            }
-
-        if getattr(result, "error", None) is not None:
-            return {
-                "ok": False,
-                "summary": f"llm_error: {type(result.error).__name__}",
-                "tool_calls": [],
-                "error": str(result.error),
-                "source": source,
-                "client_id": client_id,
-            }
-
-        spoken = (getattr(result, "spoken_text", "") or "").strip()
-        tool_names = list(getattr(result, "tools_called", None) or [])
-        if spoken:
-            ok, summary = True, spoken
-        elif tool_names:
-            ok, summary = True, "ok"
-        else:
-            ok, summary = False, "no_tool"
-        return {
-            "ok": ok,
-            "summary": summary,
-            "tool_calls": [{"name": name} for name in tool_names],
-            "source": source,
-            "client_id": client_id,
-        }
 
     # ── /avatar/command processing ─────────────────────────────────────────────────
 
@@ -2461,11 +2164,11 @@ class AvatarSupervisor(Node):
         Главная точка входа супервизор-агента (ТАРС). Поток:
           1. Парсинг JSON. Битый → публикуем ``malformed_input``, выходим.
           2. Гейт ``agent_enabled``. False → публикуем ``agent_disabled``.
-          3. Ленивая инициализация AgentCore (один раз).
+          3. Ленивая инициализация хоста ТАРС (один раз).
           4. ``_dialogue_control_swap()`` (try/finally) — личность молчит
              пока мы работаем (ADR-0066 §6.7: публикуем ``pause`` в
              ``/dialogue/control`` на входе, ``resume`` в finally).
-          5. ``AgentCore.process_input(payload)`` → результат.
+          5. ``OperatorHost.run_payload(payload)`` → результат.
           6. Публикация результата в ``/avatar/command_result``.
           7. Метрики + запись в журнал ТАРС.
         """
@@ -2538,7 +2241,7 @@ class AvatarSupervisor(Node):
                 "tool_calls": [],
             }
 
-        # Нормализуем tool_calls (_run_agent_sync возвращает dict-ы вида
+        # Нормализуем tool_calls (``_agent_runner`` возвращает dict-ы вида
         # {"name": ...}; записываем метрики на каждый tool).
         tool_calls = result.get("tool_calls", []) or []
         tool_names: list[str] = []
@@ -2561,9 +2264,9 @@ class AvatarSupervisor(Node):
         # issue #2116 — ТАРС обязан ОТВЕЧАТЬ ГОЛОСОМ В ШЛЕМ, а не только
         # класть текст в /avatar/command_result. Это решение владельца №12
         # хендоффа и ADR-0055: «все supervisor-ответы строго в
-        # /avatar/tts/request с sink=headset».
+        # шлем, sink=headset» (с #4252 — SpeechRequest владельцу речи).
         #
-        # ``_publish_avatar_tts`` существовал, был покрыт целым файлом тестов
+        # Публикатор в шлем тогда существовал, был покрыт целым файлом тестов
         # (test_supervisor_avatar_tts.py) — и НЕ ИМЕЛ НИ ОДНОГО вызова в
         # проде. Замер на роботе 2026-09-08: агент отвечал
         # `content='ТАРС, агент оператора.'`, а /avatar/tts/request оставался
@@ -2847,7 +2550,7 @@ class AvatarSupervisor(Node):
         люди рядом с роботом, поэтому грип говорит голосом робота из
         динамиков (тот же канал, что и инструмент ``say``).
 
-        ``SpeechRequest`` (ADR-0150 PR-3): SSML строит ``Utterance``,
+        ``SpeechRequest`` (ADR-0150 PR-3): реплику (голый текст) строит ``Utterance``,
         ``priority="operator"`` (ADR-0056 §3.5, _TTS_PRIORITY_PREEMPTS)
         чтобы voice-планировщик вставил реплику сразу за текущей
         озвучкой и положил её поверх очереди динамика — иначе грип
@@ -2856,9 +2559,9 @@ class AvatarSupervisor(Node):
         звучать на выбранном языке (AV-28); дословный текст остаётся на
         языке оператора без override.
 
-        Шлем (sink="headset", ``/avatar/tts/request``) сюда НЕ идёт —
+        Шлем (sink="headset") сюда НЕ идёт —
         инвариант 6b §7.4: «Два выхода звука не смешиваются».
-        Собственные реплики ТАРС остаются в шлеме через ``_publish_avatar_tts``.
+        Собственные реплики ТАРС остаются в шлеме через ``headset_speech.say_in_headset``.
 
         Issue #2096 — drop при пустом text (раньше публиковали
         ``<speak></speak>``, tts_node получал пустой SSML и райзил
@@ -2879,9 +2582,9 @@ class AvatarSupervisor(Node):
             )
             return
 
-        # voice-vr 12 (issue #2197): единый сборщик SSML — ``Utterance``.
-        # XML-экранирование &, <, > делает сам сборщик. Канал — динамики робота;
-        # шлем (sink=headset) — отдельный ``_publish_avatar_tts`` (инвариант 6b).
+        # voice-vr 12 (issue #2197): единый сборщик реплики — ``Utterance``
+        # (голый текст, ADR-0160 §2.3). Канал — динамики робота;
+        # шлем (sink=headset) — отдельный ``headset_speech.say_in_headset`` (инвариант 6b).
         utterance = Utterance(
             text=text,
             sink=Sink.SPEAKERS,
@@ -2904,10 +2607,10 @@ class AvatarSupervisor(Node):
 
         Озвучиваем только голосовой вход: на текстовую команду из Telegram
         оператор ждёт текст, а не речь в наушниках. Пустой ``summary``
-        отсекает сам ``_publish_avatar_tts`` (#2096).
+        отсекает сам ``headset_speech.say_in_headset`` (#2096).
 
         Returns:
-            True, если реплика ушла в /avatar/tts/request (issue #3253:
+            True, если реплика ушла владельцу речи (issue #3253:
             иначе ``TarsStagePublisher.finish_turn`` шлёт шлему ``idle``).
         """
         if source != "quest":
@@ -2915,90 +2618,7 @@ class AvatarSupervisor(Node):
         if not self._param_bool("speak_agent_replies", True):
             return False
         # issue #3296: вслух — речевая версия, полный текст остаётся на экране.
-        return bool(self._publish_avatar_tts(to_spoken(summary)))
-
-    def _publish_avatar_tts(
-        self,
-        text: str,
-        language: Optional[str] = None,
-        voice: Optional[str] = None,
-        sink: str = "headset",
-        request_id: Optional[str] = None,
-    ) -> str:
-        """ADR-0055 / issue #1993 — публикация собственной реплики ТАРС в шлем.
-
-        Используется для всех supervisor-ответов вида «принял», «не умею»,
-        «камера повёрнута», «не понял» и т.п. — раньше они ходили в
-        ``/voice/tts/request`` (если вообще ходили), теперь строго в
-        ``/avatar/tts/request`` с ``sink="headset"``, чтобы попасть в шлем
-        оператора через новый обратный канал (ADR-0055).
-
-        ADR-0079 / issue #2138.A.3 — preview-канал для picker'а голосов.
-        ``sink="preview"`` уходит на тот же ``/avatar/tts/request``, но
-        tts_node его ловит в ``_on_avatar_tts_request`` отдельной веткой и
-        делает pure-synth БЕЗ _synthesize_and_play (НЕ идёт в FIFO/ALSA,
-        НЕ публикует /avatar/tts/audio, НЕ публикует /voice/audio/speech).
-        Результат — bytes в mp3/wav контейнере — публикуется в
-        ``/avatar/preview_voice/audio`` (см. preview_audio_sink.ts §1).
-
-        request_id: для sink="preview" caller ЗНАЕТ request_id (он пришёл
-        от quest_node через /avatar/preview_voice), и его надо протащить
-        до tts_node для корреляции preview_voice_audio/done/error с ws_server.
-        Для sink="headset" — генерируем свой uuid4().hex[:8] (старое поведение).
-
-        Returns:
-            request_id (uuid hex8), чтобы caller мог логировать/коррелировать
-            с /avatar/tts/error и /voice/tts/finished от tts_node.
-
-        Issue #2096 — drop при пустом text. Возвращает пустую строку
-        request_id, чтобы caller не пытался коррелировать несуществующий
-        запрос.
-        """
-        import uuid as _uuid
-
-        # Issue #2096 — пустой text → DROP (warning) + возврат пустого
-        # request_id. Зеркальная защита к _on_avatar_tts_request в tts_node:
-        # upstream не должен слать в /avatar/tts/request нечего синтезировать.
-        if not text or not text.strip():
-            self._log.warning(
-                f"avatar_supervisor: avatar_tts_request skipped — empty text "
-                f"(language={language!r}, voice={voice!r}, sink={sink!r})"
-            )
-            return ""
-
-        if request_id is not None:
-            # Caller-provided (preview). Не регенерим.
-            rid = request_id
-        else:
-            rid = _uuid.uuid4().hex[:8]
-        # voice-vr 12 (issue #2197): единый сборщик SSML — ``Utterance``.
-        # XML-экранирование &, <, > делает сам сборщик; sink приходит как
-        # строка от вызывающего (headset|preview) — нормализуем через Sink.
-        # speech_id задаём сами (issue #3253): без него tts_node генерит
-        # случайный uuid4, и конец синтеза (/voice/tts/finished несёт только
-        # speech_id) не связать с request_id реплики.
-        # issue #3253 (Ш2): speech_id = f"tars-{rid}" — quest_node по нему
-        # сопоставляет /voice/tts/finished с репликой и отдаёт шлему idle.
-        utterance = Utterance(
-            text=text,
-            sink=sink,
-            voice=voice,
-            language=language,
-            speech_id=f"tars-{rid}",
-        )
-        payload = {
-            "request_id": rid,
-            **utterance.to_request(),
-        }
-        try:
-            msg = RosString()
-            msg.data = json.dumps(payload, ensure_ascii=False)
-            self._avatar_tts_request_pub.publish(msg)
-        except Exception as exc:  # noqa: BLE001
-            self._log.warning(
-                f"avatar_supervisor: avatar_tts_request publish failed: {exc}"
-            )
-        return rid
+        return bool(headset_speech.say_in_headset(self, to_spoken(summary), self._log))
 
 
 class _NoopLabelCounter:

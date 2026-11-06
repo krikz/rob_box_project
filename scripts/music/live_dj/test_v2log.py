@@ -5,10 +5,10 @@ import sys
 sys.path.insert(0, os.path.dirname(__file__))
 import v2log  # noqa: E402
 
-STARTED = ("[mcp_server-10] [INFO] [1791212154.284156992] [mcp_server]: 🎵 [music v2] started "
+STARTED = ("[mcp_server-10] [INFO] [1791212154.284156992] [mcp_server]: 🎵 [music] started "
            "track_id=set12076:02:B:7e3c14d8 clock_beat=736.065 start_beat=736.0 phase_in_form=0.0 "
            "late_beats=0.065 bpm=128.0 deck=B form_beats=192.0 players_aligned=True latency_s=0.5")
-SET = ("[mcp_server-10] [INFO] [1791212154.1] [mcp_server]: 🎧 [set v2] set12076 трек 2 started "
+SET = ("[mcp_server-10] [INFO] [1791212154.1] [mcp_server]: 🎧 [set] set12076 трек 2 started "
        "track_id=set12076:02:B:7e3c14d8 form_end_beat=928.0 source=theme A11=1/2")
 PLAN = ("[mcp_server-10] [INFO] [1791212100.5] [mcp_server]: 🧠 [reasoner] set12816 план применён: "
         "row=cyber mode=minor hooks=['a', 'b']")

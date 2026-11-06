@@ -116,6 +116,9 @@ services:
       - ROS_AUTOMATIC_DISCOVERY_RANGE=LOCALHOST
       - ZENOH_SESSION_CONFIG_URI=/tmp/zenoh_session_config.json5  # Сгенерированный конфиг
       - *zenoh_listen_ip  # адрес локального роутера для session config
+      # #4307: пул приёма zenoh 64 КБ на линк вместо 16 МБ — у лица и LED только
+      # мелкие сообщения, а 16 МБ x ~8 линков x 3 ноды вели контейнер к OOM 512 МБ.
+      - ZENOH_RX_BUFFER_SIZE=65535
     volumes:
       - ./config:/config:ro
       - ../common/scripts:/ros_scripts:ro
@@ -156,6 +159,10 @@ services:
       - ZENOH_SESSION_CONFIG_URI=/tmp/zenoh_session_config.json5  # Сгенерированный конфиг
       - *zenoh_listen_ip  # адрес локального роутера для session config
       - COMPRESSED_IMAGE_TRANSPORT_JPEG_QUALITY=85  # JPEG качество для compressed transport
+      # AprilTag потолка (ceiling_apriltag.launch.py): 5 Гц mono8 → apriltag_node,
+      # выход /ceiling_camera/apriltag/{detections,tf}, не /detections OAK-D.
+      # Выключено: камера не откалибрована (docs/guides/ceiling-camera-calibration.md).
+      - CEILING_APRILTAG_ENABLED=${CEILING_APRILTAG_ENABLED:-false}
     volumes:
       - ./config:/config:ro
       - ../common/scripts:/ros_scripts:ro
@@ -206,7 +213,7 @@ services:
   # Не использует ROS/Zenoh, depends_on: zenoh-router не требуется.
   # cAdvisor - мониторинг контейнеров (CPU, память, сеть)
   cadvisor:
-    image: gcr.io/cadvisor/cadvisor:v0.52.1
+    image: ghcr.io/google/cadvisor:v0.60.6  # #4332: 0.52.1 не видит docker с containerd snapshotter (нужен >=0.54.0, google/cadvisor#3709); в gcr.io выше 0.52.1 нет
     container_name: cadvisor-vision
     profiles: ["monitoring"]
     pull_policy: if_not_present
@@ -232,7 +239,7 @@ services:
   # Не использует ROS/Zenoh, depends_on: zenoh-router не требуется.
   # Promtail - сбор логов из Docker контейнеров и отправка на машину мониторинга
   promtail:
-    image: grafana/promtail:2.9.2
+    image: grafana/promtail:3.6.11  # #3659: клиент Docker API согласуется с демоном (2.9.2 жёстко 1.42 < min 1.44 на Docker 29)
     container_name: promtail-vision
     profiles: ["monitoring"]
     pull_policy: if_not_present
@@ -403,6 +410,18 @@ services:
       # узнавания. Без этой строки FACE_ENROLL_THRESHOLD из .env до
       # контейнера не доезжает вовсе и молча берётся дефолт ноды.
       - FACE_ENROLL_THRESHOLD=${FACE_ENROLL_THRESHOLD:-}
+      # ADR-0164 этап 6: кличка нового лица по внешности (vision-LLM, только режим workshop).
+      # Пусто → облака нет, лицо получает словарную кличку, и лог говорит почему.
+      # Провайдер minimax (по умолчанию, MiniMax-M3) | deepseek; ключ пресета берётся из
+      # MINIMAX_API_KEY / DEEPSEEK_API_KEY (хостовый .env.secrets), явные FACE_PERSONA_VLM_* перекрывают.
+      - FACE_PERSONA_VLM_PROVIDER=${FACE_PERSONA_VLM_PROVIDER:-}
+      - FACE_PERSONA_VLM_API_KEY=${FACE_PERSONA_VLM_API_KEY:-}
+      - FACE_PERSONA_VLM_BASE_URL=${FACE_PERSONA_VLM_BASE_URL:-}
+      - FACE_PERSONA_VLM_MODEL=${FACE_PERSONA_VLM_MODEL:-}
+      - FACE_PERSONA_VLM_MAX_PER_HOUR=${FACE_PERSONA_VLM_MAX_PER_HOUR:-}
+    env_file:
+      - path: .env.secrets
+        required: false
     volumes:
       - ./config:/config:ro
       - ../common/scripts:/ros_scripts:ro

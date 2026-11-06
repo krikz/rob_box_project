@@ -8,7 +8,9 @@
   подхваченные фразы, каждую с её автором на момент самой фразы;
 * ``assistant`` — ``text[:spoken_chars]`` по событию владельца речи (``SpeechEvent`` ``finished/cancelled``): не
   прозвучало — нет и в истории; у текстового канала (телеграм) — весь текст, он доставлен. Озвученное помечено
-  (``WindowEntry.voiced``): его, и только его, повторяет «повтори» (:meth:`TurnLog.last_spoken`). Ход отработан
+  (``WindowEntry.voiced``): его, и только его, повторяет «повтори» (:meth:`TurnLog.last_spoken`). Реплика ещё звучит
+  (отдана, конца нет) - в окне её текст под меткой ``knowledge.WINDOW_SOUNDING_REPLY`` (#4207), а не «ответ лицом»;
+  озвученной она не считается. Ход отработан
   действиями, а ответа словами в окне нет — реплику робота строит код из исходов этих действий
   (``knowledge.WINDOW_ACTIONS_REPLY``: «[ответ действием: play_animation sad — сделано]»; исход по данным —
   «stop_music — сделано, ничего не играло»), иначе реплика человека висит в истории без ответа и модель
@@ -97,15 +99,23 @@ class WindowEntry:
 
 
 def speaker_label(speaker: Any) -> str:
-    """Кто говорит в ход, словами кода: имя/кличка из снимка, нет - «незнакомый голос»."""
-    return (getattr(speaker, "name", None) or kn.UNKNOWN_SPEAKER_LABEL).strip()
+    """Кто говорит в ход, словами кода: имя из снимка; профиль голоса без имени (``person_ref`` есть, #3858) -
+    «голос без имени, запомнен» (#4314, n211: не «незнакомый» - профиль заведён); нет и профиля - «незнакомый голос»."""
+    name = getattr(speaker, "name", None)
+    if name:
+        return name.strip()
+    return kn.NAMELESS_SPEAKER_LABEL if getattr(speaker, "person_ref", None) else kn.UNKNOWN_SPEAKER_LABEL
 
 
 def phrase_label(speaker: Mapping[str, Any]) -> str:
     """Кто сказал фразу бэклога (метка ``speaker_adapter.phrase_speaker`` на момент самой фразы) словами
-    той же схемы, что :func:`speaker_label`: узнан — имя, иначе «незнакомый голос» (гипотеза голоса — не имя, A30)."""
+    той же схемы, что :func:`speaker_label`: узнан — имя; голос свой, а имени нет и гипотезы нет (``bio=known`` без
+    ``candidate``) — «голос без имени, запомнен»; иначе «незнакомый голос» (гипотеза голоса — не имя, A30)."""
     name = speaker.get("name") if speaker.get("identified") else None
-    return (name or kn.UNKNOWN_SPEAKER_LABEL).strip()
+    if name:
+        return name.strip()
+    nameless = speaker.get("bio") == "known" and not speaker.get("candidate")
+    return kn.NAMELESS_SPEAKER_LABEL if nameless else kn.UNKNOWN_SPEAKER_LABEL
 
 
 def _plain(value: Any) -> Any:
@@ -225,6 +235,18 @@ def _action_reply(lead: Sequence[WindowEntry], entries: Sequence[WindowEntry], f
     return [WindowEntry(ASSISTANT, kn.WINDOW_FACE_REPLY.format(face=face))] if face else []
 
 
+def _sounding(speech: Mapping[str, Tuple[str, str]], fillers: Set[str], turn_id: str) -> List[WindowEntry]:
+    """Реплики хода, отданные владельцу речи и ещё не отзвучавшие (``finished``/``cancelled`` не пришёл), - меткой
+    ``knowledge.WINDOW_SOUNDING_REPLY`` с текстом (#4207, М9 n807: пока звучал счёт, окно говорило «ответ лицом», и
+    модель начала счёт заново). Не озвучены (``voiced`` нет): «повтори» их не берёт. Заглушка ожидания - не ответ."""
+    return [WindowEntry(ASSISTANT, kn.WINDOW_SOUNDING_REPLY.format(text=text))
+            for speech_id, (owner, text) in speech.items() if owner == turn_id and speech_id not in fillers]
+
+
+def _not_fillers(speech: Mapping[str, Tuple[str, str]], fillers: Set[str]) -> Tuple[Tuple[str, str, str], ...]:
+    return tuple((speech_id, owner, text) for speech_id, (owner, text) in speech.items() if speech_id not in fillers)
+
+
 def _tool_content(result: Any) -> Mapping[str, Any]:
     data = dict(getattr(result, "data", None) or {})
     out: Dict[str, Any] = {"tool": result.tool, "status": result.status}
@@ -297,6 +319,11 @@ class TurnLog:
     def speech(self, speech_id: str) -> Optional[Tuple[str, str]]:
         """``(turn_id, текст)`` реплики, которая ещё не отзвучала; чужая или уже отзвучавшая — ``None``."""
         return self._speech.get(speech_id)
+
+    def sounding(self) -> Tuple[Tuple[str, str, str], ...]:
+        """``(speech_id, turn_id, текст)`` реплик, отданных владельцу речи и ещё не отзвучавших, по порядку отдачи;
+        заглушки ожидания - не ответ, их нет (#4207: правка звучащего счёта)."""
+        return _not_fillers(self._speech, self._fillers)
 
     def last_spoken(self, exclude: str = "") -> str:
         """Последняя ОЗВУЧЕННАЯ реплика робота в журнале сессии (Tier-1 «повтори»): то, что прозвучало
@@ -429,7 +456,8 @@ class TurnLog:
 
     def _entries(self, turn: _Turn) -> List[WindowEntry]:
         lead = list(turn.heard) or ([WindowEntry(USER, turn.user, turn.speaker)] if turn.user else [])
-        return lead + list(turn.entries) + _action_reply(lead, turn.entries, turn.faced)
+        entries = list(turn.entries) + _sounding(self._speech, self._fillers, turn.turn_id)
+        return lead + entries + _action_reply(lead, entries, turn.faced)
 
     def _tokens(self, turns: List[List[WindowEntry]]) -> int:
         return sum(self._estimate(e.text()) for t in turns for e in t)

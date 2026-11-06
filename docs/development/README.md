@@ -172,7 +172,7 @@
 - `test_docker_local_arm64.sh` - Локальное тестирование ARM64
 - `validate_dockerfiles.sh` - Валидация Dockerfile синтаксиса
 - `audit_documentation.sh` - Проверка документации
-- `check_broken_links.sh` - Поиск битых ссылок
+- `diagnostics/check_links.py` - Поиск битых ссылок в `*.md` (единственная проверялка, ADR-0166)
 
 ### Скрипты в `docker/scripts/`
 - `diagnose_data_flow.sh` - Диагностика потоков данных
@@ -181,7 +181,7 @@
 
 ## 🧪 Тестирование
 
-### Локальное тестирование в `local_test/`
+### Локальное тестирование в `tools/dev/` (бывший `local_test/`)
 - `quick_test.sh` - Быстрая проверка
 - `auto_test.sh` - Автоматические тесты
 - `fake_lidar_publisher.py` - Имитация LIDAR

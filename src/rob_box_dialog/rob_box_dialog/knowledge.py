@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import copy
 import os
+import re
 from dataclasses import dataclass, field
 from types import MappingProxyType
 from typing import Any, Dict, FrozenSet, Iterable, List, Mapping, Optional, Sequence, Tuple
@@ -167,7 +168,8 @@ WAKE_NAMESPACES: Tuple[str, ...] = ("personality", "operator")
 #: музыку, сет), режим тишины он не включает. Слова «хватит» и «стоп» — ``STOP_WORDS``/``TIER1_POLICY["stop"]``.
 SILENCE_WORDS: Tuple[str, ...] = ("помолч", "замолч")
 #: Снятие тишины (в состоянии SILENCED): «говори», «включайся», «работай», «отвечай», «разговаривай».
-UNSILENCE_WORDS: Tuple[str, ...] = ("говори", "включ", "работ", "отвеч", "разговар")
+#: «говоры» - искажение STT «говори» (М11 n805b «робот говоры»); «говорили» уже ловит основа «говори».
+UNSILENCE_WORDS: Tuple[str, ...] = ("говори", "говоры", "включ", "работ", "отвеч", "разговар")
 #: Просьба слушать и не встревать (марафон-2 n301 «ты просто слушай и не влезай», живое «не вылезай»): не
 #: тишина SILENCED (её включает Tier-1 по :data:`SILENCE_WORDS`), а «слушай дальше». Подхват бэклога голым «робот»
 #: адресован и ждёт слов (``turn.words_owed``), кроме одного случая: подхваченная фраза - такая просьба (эти формы
@@ -280,6 +282,8 @@ class VolumeChannel:
 MUSIC_STEMS: Tuple[str, ...] = (
     "музык", "музон", "трек", "трей", "бит", "песн", "мелоди", "сет", "дидж", "играй", "сыграй", "поиграй",
     "ритм", "подложк")
+#: «Сет» (диджей-сет) группа музыки берёт словом целиком: основа «сет» цепляла «сеть», «сетевой» (#4297).
+MUSIC_SET_FORMS: Tuple[str, ...] = ("сет", "сета", "сету", "сеты", "сетом", "сете", "сетов")
 #: Только для группы тулов (на громкость они канал не называют): остальные музыкальные слова и «фоном».
 MUSIC_GROUP_EXTRA_STEMS: Tuple[str, ...] = (
     "песен", "сыгра", "игра", "спой", "спеть", "споёшь", "споешь", "сочини", "сгенер", "сэт", "библиотек", "композ",
@@ -404,6 +408,15 @@ VOICE_STEP_KIND = "voice_step"
 #: без LLM. Марафон 23.10, n808: «повтори последнее ещё раз, я не расслышал» шло в LLM, и та во время выступления
 #: правкой (``edit_pending``) заменила его сегменты 3–11. Слова - :data:`REPEAT`.
 REPEAT_KIND = "repeat"
+#: Вид Tier-1 «выключи музыку» под играющей музыкой (#4349): ``stop_music`` (идёт сет - и ``dj_set stop``) кодом по
+#: снимку плеера, фраза - по исходу тула. Речь, выступление и движение не трогает. Слова - ``MUSIC_OFF_*``.
+MUSIC_OFF_KIND = "music_off"
+#: Фразы Tier-1 стопа музыки (решение Шифу 05.11: «всегда что-то говорить, разные вариации»): ``music_off``,
+#: ``stop_all`` под музыкой и стоп без вейка (``address.MUSIC_STOP_UNWOKEN``) говорят вариант ключа кодом без повтора
+#: подряд (``turn.music_stop_phrase``, ``phrases.Picker``). Музыку погасили - :data:`MUSIC_STOP_SAID`; играть было
+#: нечему - :data:`MUSIC_STOP_QUIET` («И так тихо»); отказ тула - его фраза (``music.stop_fail``).
+MUSIC_STOP_SAID = "music.stop_said"
+MUSIC_STOP_QUIET = "music.stop_quiet"
 #: Вид Tier-1 команды → звучит ли её исполнение. В SILENCED (§6.3) грамматика отдаёт только незвучащие виды:
 #: стоп, тишина, её снятие, громкость, новая сессия (сброс снимает и тишину, §7.1). Смена голоса звучит —
 #: «Говорю голосом X» говорит код по результату ``set_voice`` (:data:`VOICE_DONE`). ``stop_speech`` — «хватит читать/говорить/петь»,
@@ -414,7 +427,7 @@ REPEAT_KIND = "repeat"
 TIER1_KINDS: Mapping[str, bool] = MappingProxyType({
     "stop_all": False, "stop_speech": False, "silence": False, "unsilence": False, "volume": False,
     "new_session": False, "set_voice": True, PROSODY_NORMAL_KIND: True, VOICE_STEP_KIND: True, "answer": False,
-    SHOW_QUEUE_KIND: True, REPEAT_KIND: True,
+    SHOW_QUEUE_KIND: True, REPEAT_KIND: True, MUSIC_OFF_KIND: False,
 })
 #: Служебные слова закрытой грамматики: команда «покрыта целиком», если вне них в ней только слова команды.
 #: Этот же список — служебные слова медиа-грамматики v1 (``media_command_grammar._COMMON_FILLER``).
@@ -614,18 +627,6 @@ NEW_SESSION_PHRASES: Tuple[str, ...] = (
 #: Ответ на вопрос робота ``Ask(expects="yes_no")`` (U9) — точные формы из :data:`SHORT_ANSWERS`.
 YES_WORDS: Tuple[str, ...] = ("да", "ага", "угу", "ок", "ладно")
 NO_WORDS: Tuple[str, ...] = ("нет", "не")
-#: В19: Chooser спорного стопа — варианты ответа, дедлайн (таймаут/ошибка → ``part_of_command``, речь не рвётся).
-#: 1,5 с — решение Шифу 21.10 08:22: DeepSeek (``llm_harness``) отвечает за 1,1 с, при 1 с Chooser всегда опаздывал.
-STOP_CHOICES: Tuple[str, ...] = ("stop", "part_of_command")
-STOP_CHOOSER_DEADLINE_MS = 1500
-#: Идея Шифу 21.10: Chooser «LLM в этом ходе уже спросила о том же?» перед вопросом личности кодом; дедлайн тот
-#: же, что у спорного стопа. Таймаут/ошибка/нет ключа → ``not_said`` (лучше спросить дважды, чем не спросить).
-IDENTITY_DEDUP_CHOICES: Tuple[str, ...] = ("already_said", "not_said")
-#: Chooser спрашивается ПАРАЛЛЕЛЬНО с речью хода; ждём его не дольше конца этой речи + ``IDENTITY_DEDUP_AFTER_SPEECH_S``
-#: (вопрос не звучит позже, чем без Chooser'а, если речь хода длиннее ответа модели). Дедлайн самой модели — с
-#: запасом на длинную речь хода (живой робот 21.10: llm_harness 1.45–1.5 с, при дедлайне 1.5 с — 4 таймаута из 6).
-IDENTITY_DEDUP_AFTER_SPEECH_S = 1.0
-IDENTITY_DEDUP_DEADLINE_MS = 6000
 
 # ---------------------------------------------------------------------------------------------------------------
 # Классы действий (§5.1) и тулы по классам
@@ -673,7 +674,9 @@ MUSIC_ACTION_DEADLINE_S = MUSIC_START_WAIT_S + MUSIC_PREPARE_S
 ACTION_GRACE_S = 1.0
 #: Классы, итог которых после закрытия хода (поздний ``done``/``rejected`` после ``timeout``) говорит код: музыка
 #: заиграла позже дедлайна — «Включаю музыку.», а не тишина после «пока не заиграла». Движение, выступление и прочее
-#: свои поздние итоги ведут иначе (обещание ``pending``, PlanEvent).
+#: свои поздние итоги ведут иначе (обещание ``pending``, PlanEvent). Движение итог говорит в ходе: ход ждёт его весь
+#: срок класса (``turn.action_term``), транспорт - не меньше (``execute.transport_timeouts``, #4344); итог позже срока -
+#: это свой таймаут тула (цель Nav2 ждёт те же 120 с и отменяется), и поздняя фраза повторила бы «время вышло».
 LATE_SPOKEN_CLASSES: Tuple[str, ...] = ("action.media",)
 
 ACTION_CLASSES: Mapping[str, ActionClass] = MappingProxyType({
@@ -721,12 +724,13 @@ TOOL_CLASSES: Mapping[str, str] = MappingProxyType({
     **{t: "query" for t in (
         "container_status", "estimate_tts_duration", "faq_search", "get_battery_level", "get_current_pose",
         "get_current_time", "get_music_state", "get_perception_context", "get_robot_status", "get_sound_info",
-        "list_tts_voices", "list_waypoints", "listen_for_response", "lookup_melody", "memory_context",
-        "memory_search", "read_logs", "ros2_node_status", "search_melody", "search_web", "show_metrics",
+        "list_maps", "list_tts_voices", "list_waypoints", "listen_for_response", "lookup_melody", "memory_context",
+        "memory_search", "people_list", "person_photo", "read_logs", "ros2_node_status", "search_melody",
+        "search_web", "show_metrics",
     )},
     **{t: "action.local" for t in (
-        "add_music_material", "clear_waypoints", "delete_waypoint", "memory_save", "play_animation",
-        "save_waypoint", "set_music_volume", "set_pitch", "set_speed", "set_tts_provider", "set_voice",
+        "add_music_material", "clear_waypoints", "delete_map", "delete_waypoint", "memory_save", "name_person",
+        "play_animation", "save_waypoint", "set_music_volume", "set_pitch", "set_speed", "set_tts_provider", "set_voice",
         "set_volume",
     )},
     **{t: "action.media" for t in (
@@ -743,6 +747,8 @@ TOOL_CLASSES: Mapping[str, str] = MappingProxyType({
 })
 #: Тул библиотеки сгенерированной музыки: семь действий одним тулом каталога (``action``), а класс у них разный.
 LIBRARY_TOOL = "music_library"
+#: Тул заказа генерации (Suno): его ``theme`` - тема «только что сочинённой» для ``track_ref`` у ``music_library``.
+GENERATE_TOOL = "generate_music"
 #: Тул правки ИГРАЮЩЕЙ музыки: темп, тембр, бас своего синт-трека на такте или честный отказ кодом.
 EDIT_TOOL = "edit_music"
 #: Название трека в слоте ``{name}`` фраз библиотеки, когда в данных результата его нет (удаление отдаёт без названия).
@@ -798,7 +804,7 @@ CONTEXT_BUDGET_TOKENS: Mapping[str, int] = MappingProxyType({
     "system": 4000, "snapshot": 1000, "tools": 4000, "window": 3000,
 })
 #: Разделы снимка хода ``<system_context>`` в порядке вывода (``context.build_context``): данные, а не правила.
-#: ``user_profile`` — пока строки шва собеседника v1 (``turn_identity``), структурой — с контрактом §7.5 (PR-11).
+#: ``user_profile`` — пока строки шва собеседника, структурой — с контрактом §7.5 (PR-11).
 #: ``speaker`` — кто сказал реплику (``speaker_adapter.speaker_block``): имя только при ``confirmed`` (§7.5, A30).
 #: ``speaker_memory`` — «робот помнит собеседника» (решение Шифу 23.10): ``dialog_count`` (какой это ход с ним,
 #: профиль ведёт код при уверенном ``SpeakerRef``) и ``facts`` — его факты из той памяти, куда пишут ``memory_save``.
@@ -809,15 +815,21 @@ CONTEXT_BUDGET_TOKENS: Mapping[str, int] = MappingProxyType({
 #: причина), а не текстом в репликах (§7.3, PR-8).
 #: ``background_since_reply`` — все фоновые фразы всех авторов за ``BACKGROUND_WINDOW_S``, каждая с ``who`` и
 #: ``age_s`` (В23, 23.10; ``Backlog.background_since_reply``): чужие реплики, не просьбы к роботу.
-#: ``background_summary`` — сводка фона кодом (``backlog.voices_summary``, #4212): ``voices`` (разных собеседников по
+#: ``background_summary`` — сводка фона кодом (``backlog.voices_summary``): ``voices`` (разных собеседников по
 #: ``speaker_id``), ``known`` (имена узнанных), ``unknown`` (безымянных профилей), ``unattributed`` (фраз без профиля,
-#: если есть). Числа и состав голосов в ответе берутся отсюда, а не пересчётом ``background_since_reply``.
+#: если есть), ``picked_up`` (сколько фраз окна ушло подхватом бэклога: в ``background_since_reply`` их нет, а голоса их
+#: авторов в ``voices`` есть, М11 n306/n307). Числа и состав голосов в ответе берутся отсюда, а не пересчётом
+#: ``background_since_reply``.
+#: ``backlog_pickup`` — ход подхвата (голое «Робот», решение Шифу 05.11): кто и что сказал — фразы с автором,
+#: уверенностью и текстом, отдельно инициатор подхвата (кто сказал «Робот») с уверенностью, ``same_person`` и
+#: ``memory_of`` — чья память у хода по решению кода (``pickup_parties.pickup_section``).
 #: ``shift_log`` — журнал смены (``shift_log.ShiftLog.section``): кто приходил, что звучало, что робот сделал,
 #: с фразой-итогом кода; только когда человек спрашивает о смене (``shift_log.shift_asked``: ``SHIFT_ASK_*``).
 #: ``operator_journal`` — журнал ТАРС (§7.4): записи моложе своего ``ttl`` и сводка за сутки с датой.
 CONTEXT_SECTIONS: Tuple[str, ...] = (
     "user_profile", "speaker", "speaker_memory", "tts_context", "speech_gender", "position", "providers", "music_state",
-    "performance", "recent_unaddressed", "background_since_reply", "background_summary", "recent_actions", "shift_log", "operator_journal",
+    "performance", "recent_unaddressed", "background_since_reply", "background_summary", "backlog_pickup",
+    "recent_actions", "shift_log", "operator_journal",
 )
 
 
@@ -826,12 +838,17 @@ class ToolGroup:
     """Группа тулов среза: ``stems`` — основы слов человека (матч по левой границе слова), ``tools`` — ≤ 6 схем.
 
     ``weak`` — общие глаголы («включи», «поставь»): группа по ним одним уступает группам, названным прямо
-    («включи голос …» — голос, а не музыка).
+    («включи голос …» — голос, а не музыка). ``forms`` — слова РОВНО этих форм (не основы): «сет» — музыка, «сеть» — нет.
+    ``verbs`` + ``objects`` — группа названа, когда в реплике есть и глагол, и предмет (основы, в любом месте фразы):
+    «удали ещё точку» - не подстрока «удали точк» (#4391: слово между ними закрывало ``delete_waypoint``).
     """
 
     stems: Tuple[str, ...]
     tools: Tuple[str, ...]
     weak: Tuple[str, ...] = ()
+    forms: Tuple[str, ...] = ()
+    verbs: Tuple[str, ...] = ()
+    objects: Tuple[str, ...] = ()
 
 
 #: Глаголы восприятия: «посмотри налево», «глянь что справа», «посмотри на меня» — взгляд лица
@@ -916,7 +933,9 @@ WAKE_SLIP_TWEAK_REQUEST_STEMS: Tuple[str, ...] = tuple(
     stem for stem in WAKE_SLIP_TWEAK_STEMS if stem not in WAKE_SLIP_TWEAK_NOUN_STEMS)
 #: Окончания, после которых основа правки - просьба сама по себе: повелительное («ускорь/ускорьте/замедли/замедлите/
 #: убавь/подкрути/ускоряй»). «роботы ускоряются», «роботы ускоряют производство» под них не подходят и не будят.
-WAKE_SLIP_TWEAK_IMPERATIVE_ENDINGS: Tuple[str, ...] = ("ь", "ьте", "и", "ите", "яй", "яйте")
+#: Инфинитив («ускорить», «замедлить», «убавить», «ускорять») — та же просьба: М9 03.11 n506 Yandex дал «роботы ускорить
+#: потом мы тут засыпаем оба» вместо «ускорь», фраза ушла в бэклог, правки не было.
+WAKE_SLIP_TWEAK_IMPERATIVE_ENDINGS: Tuple[str, ...] = ("ь", "ьте", "и", "ите", "яй", "яйте", "ить", "ять")
 #: Окончания сравнительной степени и наречия («быстрее/быстрей/помедленнее», «громче» целиком - пустое окончание): просьба,
 #: только если фраза на этом кончается или дальше идёт знак (:data:`WAKE_SLIP_TWEAK_CUE_STEMS`), а не «работа громче
 #: всех».
@@ -949,11 +968,47 @@ WAKE_SLIP_DO_LEADS: Tuple[str, ...] = ("добавь", "добавьте", "сд
 #: стоп). Точные формы (не основы): «выключается» - рассказ. Сверка после ё → е.
 MUSIC_OFF_WORDS: Tuple[str, ...] = (
     "выключи", "выключай", "выключите", "выключайте", "отключи", "отключай", "отключите", "отключайте")
+#: Tier-1 «выключи музыку» (:data:`MUSIC_OFF_KIND`, #4349, М10 n812: «роботы пере музыку выключай» под битом будило,
+#: но стоп решала LLM и отвечала «бит оставил» по прошлому шагу). Пока музыка ИГРАЕТ (снимок плеера, не слова модели),
+#: форма :data:`MUSIC_OFF_WORDS` и рядом с ней (не дальше :data:`MUSIC_OFF_NEAR` слов, в той же части фразы) объект
+#: музыки - стоп музыки кодом. Объект - основы музыки охвата стопа (``STOP_SCOPE.objects["music"]``: «музыку», «бит»,
+#: «песню», «трек») без голой основы «сет» («сеть», #4297) и слова целиком :data:`MUSIC_OFF_OBJECT_FORMS` («сет»
+#: формами, «её», «это»). «Не» прямо перед формой («музыку не выключай») - не просьба (:data:`MUSIC_OFF_NEGATION`).
+#: Части фразы до этой - только служебные :data:`MUSIC_OFF_FILLER` («теперь и музыку выключай»), иначе решает LLM, как
+#: раньше («расскажи сказку и выключи музыку»); части после - остаток, новая просьба («выключи бит и спой»).
+MUSIC_OFF_OBJECT_STEMS: Tuple[str, ...] = tuple(s for s in STOP_SCOPE.objects["music"].stems if s != "сет")
+MUSIC_OFF_OBJECT_FORMS: Tuple[str, ...] = (*MUSIC_SET_FORMS, "ее", "его", "это", "эту", "этот")
+MUSIC_OFF_NEAR = 2
+MUSIC_OFF_NEGATION: Tuple[str, ...] = ("не",)
+MUSIC_OFF_FILLER: Tuple[str, ...] = (*GRAMMAR_FILLER, *STOP_LEAD_WORDS, "теперь", "тогда", "тоже", "пожалуйста")
+#: «Глуши/заглуши» под музыкой - стоп музыки кодом (М11 n712, 05.11 02:22:46: «Робот, всё, глуши.» STT услышал
+#: «робот заглушил», Tier-1 не узнал форму, LLM сказала «Тишина», а музыка играла). Глагол сам про звук, поэтому ему
+#: объект не нужен, если остальные слова его части служебные (:data:`MUSIC_OFF_FILLER`) или объект музыки: «заглуши»,
+#: «всё, заглушил». С другими словами в части - как :data:`MUSIC_OFF_WORDS`, только при объекте музыки рядом
+#: («врубай все глуши музыку»); «заглуши мотор» - не стоп музыки. Прошедшее «заглушил(а)» - искажение STT повелительного
+#: (так его слышат под музыкой), не рассказ: действует только пока музыка играет, как весь Tier-1 ``music_off``.
+#: «Глуши» есть и в :data:`STOP_WORDS` (ясный стоп всего - правило ``_stop`` идёт раньше и гасит и музыку).
+MUSIC_MUTE_WORDS: Tuple[str, ...] = (
+    "глуши", "глушите", "заглуши", "заглушите", "заглушай", "заглушайте", "заглушил", "заглушила", "заглушили")
+#: Формы стопа музыки без вейка под играющей музыкой (М11 n511, #4030: «Робот, всё, глуши музыку…» STT услышал
+#: «врубай все глуши музыку», вейк потерян, фраза ушла в бэклог, музыку погасил харнесс). Узкое исключение из правила
+#: «только через вейк» (``address.decide``): пока музыка ИГРАЕТ (снимок плеера), фраза, где форма отсюда стоит рядом
+#: с объектом музыки (:data:`MUSIC_OFF_OBJECT_STEMS`/:data:`MUSIC_OFF_OBJECT_FORMS`, не дальше :data:`MUSIC_OFF_NEAR`
+#: слов, без «не» перед ней) - стоп музыки. Ход - ровно этот стоп (код собирает «глагол + объект»), остаток фразы
+#: модели не уходит: без вейка робот ничего другого не берёт. «Выключи свет», «стоп, машина» - объекта музыки нет.
+MUSIC_STOP_UNWOKEN_FORMS: Tuple[str, ...] = tuple(dict.fromkeys((*MUSIC_OFF_WORDS, *MUSIC_MUTE_WORDS, "стоп")))
+#: Остаток после Tier-1 стопа, что гасит музыку, - тот же стоп другими словами (М11 n608, 05.11: «Робот, хватит
+#: диджеить, выключай» - Tier-1 ``stop_all`` погасил музыку, а остаток «диджей выключай» ушёл модели; она звала
+#: ``get_music_state``, повторяла ``dj_set stop``, ход закрывался запасной фразой по потолку). Остаток из одних слов
+#: стопа (:data:`STOP_WORDS`, :data:`MUSIC_OFF_WORDS`, :data:`MUSIC_MUTE_WORDS`), объектов музыки и служебных - ход
+#: закрыт кодом, LLM не зовётся. Хоть одно слово стопа обязательно: «хватит, ещё песню» - новая просьба (объект без
+#: глагола стопа), её решает модель, как раньше; «не» в остатке («…, не выключай») - тоже модели.
+STOP_REST_VERBS: Tuple[str, ...] = tuple(dict.fromkeys((*STOP_WORDS, *MUSIC_OFF_WORDS, *MUSIC_MUTE_WORDS)))
 #: Стоп-слова искажённого вейка под музыкой (n812, 28.10: «роботы пере музыку выключай» не разбудило, харнесс сказал
 #: «Робот!»): ТЕ ЖЕ точные формы, что у ясного стопа (:data:`STOP_WORDS`, они же ``TIER1_POLICY["stop"/"halt"]`` и
-#: повелительные ``SILENCE_WORDS``), плюс :data:`MUSIC_OFF_WORDS`. Своих слов нет: «роботы стоят» и «роботы выключаются»
+#: повелительные ``SILENCE_WORDS``), плюс :data:`MUSIC_OFF_WORDS` и :data:`MUSIC_MUTE_WORDS` («роботы заглуши»). Своих слов нет: «роботы стоят» и «роботы выключаются»
 #: не будят.
-WAKE_SLIP_STOP_FORMS: Tuple[str, ...] = tuple(dict.fromkeys((*STOP_WORDS, *MUSIC_OFF_WORDS)))
+WAKE_SLIP_STOP_FORMS: Tuple[str, ...] = tuple(dict.fromkeys((*STOP_WORDS, *MUSIC_OFF_WORDS, *MUSIC_MUTE_WORDS)))
 #: Сколько слов после ведущего смотрим в поисках стоп-слова под музыкой: «пере музыку выключай» - ведущее «пере», стоп
 #: третьим словом. Уже окна :data:`WAKE_SLIP_CUE_WINDOW`: стоп-слово далеко от «роботы» - речь о другом («захватят мир ...»).
 WAKE_SLIP_STOP_WINDOW = 3
@@ -1009,6 +1064,7 @@ SOUND_ALIASES_RU: Tuple[Tuple[Tuple[str, ...], Tuple[str, ...]], ...] = (
     (("robot_glitch",), ("глюк", "помех")),
     (("robot_work_1", "robot_work_2", "robot_work_3", "robot_terminal"), ("принтер", "терминал")),
     (("robot_stinger", "robot_fantasy"), ("стингер",)),
+    (("robot_backup_beep", "robot_backup_beep_fast"), ("бипер", "пикалк", "пищалк")),
 )
 #: Триггеры каталога без разговорного названия: звучат как реакции робота, человек их по имени не просит.
 SOUND_UNNAMED: Tuple[str, ...] = (
@@ -1041,15 +1097,37 @@ INTRO_NOT_A_NAME: FrozenSet[str] = frozenset({
 #: Окончания прилагательных: «я голодный», «я уставшая» - не имя (словарные имена на «-ий» проверка не касается).
 INTRO_ADJECTIVE_ENDINGS: Tuple[str, ...] = ("ый", "ий", "ой", "ая", "яя", "ое", "ее", "ые", "ие", "ная", "ший")
 
+#: Слова о связи: ОДНА таблица для среза (группа ``network``) и для проверки утверждений (``STATE_CLAIMS``).
+WIFI_STEMS: Tuple[str, ...] = ("wi-fi", "wifi", "вайфа", "вай-фа", "роутер", "маршрутизатор", "wlan")
+INTERNET_STEMS: Tuple[str, ...] = ("интернет",)
+NETWORK_STEMS: Tuple[str, ...] = ("сеть", "сети", "сетью", "сетев", "связь", "связью")
+
+#: Как просят запомнить место: глагол + предмет («запомни это место», «отметь здесь», «сохрани точку») открывают
+#: группу ``navigation`` (``save_waypoint``). «Запомни, что я не ем лук» предмета не называет - это ``memory_save``.
+WAYPOINT_SAVE_VERBS: Tuple[str, ...] = ("запомни", "запоминай", "сохрани", "отметь", "запиши", "зафиксируй")
+WAYPOINT_SAVE_OBJECTS: Tuple[str, ...] = ("мест", "точк", "здесь", "тут")
+
+#: Слова про лица и людей (группа ``faces``, #4469): основы по левой границе слова.
+FACES_STEMS: Tuple[str, ...] = (
+    "лиц", "имя", "имени", "назови", "назвать", "назов", "зовут", "кто это", "людей", "люди", "кличк", "фото",
+    "снимок", "снимк", "незнаком",
+)
+#: id лица в реплике: 8 hex целым словом. Структура, а не грамматика музыки (мораторий #3132 не касается).
+FACE_ID_RE = re.compile(r"(?<![0-9a-f])[0-9a-f]{8}(?![0-9a-f])", re.IGNORECASE)
+#: Группа пульта по лицам; у голоса её тулов нет (``llm_visible=False``).
+FACES_GROUP = "faces"
+
 #: Группы по приоритету: при пересечении групп срез режется по этому порядку (``TOOLS_VISIBLE_MAX``). Голос —
 #: только по явной голосовой просьбе (LLM сама меняла голос посреди сказки, а голос персистентный, PR-4).
 TOOL_GROUPS: Mapping[str, ToolGroup] = MappingProxyType({
     "music": ToolGroup(
-        MUSIC_STEMS + MUSIC_GROUP_EXTRA_STEMS,
+        # «сет» основой цепляет «сеть» (#4297: «как сеть» открывало музыку, она вытесняла тулы сети) - только формами
+        tuple(s for s in MUSIC_STEMS if s != "сет") + MUSIC_GROUP_EXTRA_STEMS,
         # порядок — приоритет при обрезке среза: под играющую музыку рядом с названной группой первыми
         # остаются «стоп» и «что играет»
         ("stop_music", "get_music_state", "request_music", "dj_set", "music_library", "generate_music"),
         weak=("включи", "поставь"),
+        forms=MUSIC_SET_FORMS,
     ),
     "volume": ToolGroup(("громк", "громче", "погромче", "тише", "потише"), ("set_volume", "set_music_volume")),
     "voice": ToolGroup(
@@ -1068,32 +1146,66 @@ TOOL_GROUPS: Mapping[str, ToolGroup] = MappingProxyType({
          "туда", "сюда", "отъед", "подъед", "катись"),
         ("navigate_to_waypoint", "list_waypoints", "move_direction", "save_waypoint", "stop_navigation",
          "get_current_pose"),
+        # #4406 (HIL 05.11): «запомни это место как хил-один» без слова «точку» - срез без save_waypoint, модель звала
+        # memory_save. Так просит и подсказка list_waypoints («Скажи 'запомни это место как [имя]'»): глагол + предмет
+        verbs=WAYPOINT_SAVE_VERBS,
+        objects=WAYPOINT_SAVE_OBJECTS,
     ),
+    # #4391 (HIL 04.11): «удали ещё точку хил-окно» не совпадало с «удали точк» - срез без delete_waypoint, а модель
+    # сказала «удалена» без тула. Глагол и предмет - по отдельности (``ToolGroup.verbs``/``objects``)
     "waypoints_edit": ToolGroup(
-        ("удали точк", "удали все точк", "очисти точк", "координат"),
+        ("координат",),
         ("delete_waypoint", "clear_waypoints", "navigate_to_coordinates", "list_waypoints"),
+        verbs=("удали", "удаля", "сотри", "стери", "очисти", "убери", "забудь"),
+        objects=("точк",),
+    ),
+    # #4392: какие карты хранит робот и забыть старую - глагол + «карт» (группа раньше ``mapping``: при обрезке среза
+    # по ``TOOLS_VISIBLE_MAX`` на «какие карты знаешь» / «удали карту офис» остаются их тулы, а не оптимизация)
+    "maps": ToolGroup(
+        (),
+        ("list_maps", "delete_map", "load_map"),
+        verbs=("какие", "каких", "список", "перечисл", "знаешь", "хранишь", "удали", "удаля", "сотри", "стери",
+               "забудь"),
+        objects=("карт",),
     ),
     "mapping": ToolGroup(("карт",),
                          ("start_mapping", "continue_mapping", "finish_mapping", "optimize_map", "load_map")),
     "people": ToolGroup(("зовут", "помни", "запомни", "знаком", "обо мне", "кто я", "моё имя", "мое имя",
                          "зови меня", "называй меня"),
                         ("memory_context", "register_speaker")),
+    # #4469 (Sound Pi 06.11 05:44): «Задай для лица fff371fe имя Кирилл» - срез чата без ``name_person``, модель звала
+    # ``memory_save`` (``rejected no_person``). Пульт по лицам видит только чат (``telegram_visible``): у голоса
+    # ``llm_visible=False``, срез голоса не меняется (``tools_view.groups_for(agent=...)``). Голое «покажи» основой не
+    # берём («покажи CPU», «покажи кухню»): «покажи лица» открывает «лиц». id лица (8 hex) открывает группу без слов
+    "faces": ToolGroup(FACES_STEMS, ("people_list", "person_photo", "name_person")),
     "sound": ToolGroup(SOUND_STEMS, ("play_sound", "get_sound_info")),
     # анимация всегда видна (``TOOLS_ALWAYS``); группа — чтобы просьба «покажи анимацию …» была командой (В17)
     # глаголы восприятия («посмотри налево») — взгляд лица, а не движение базы (``MOTION_VERB_STEMS``);
     # «покажи» + что показать (``FACE_SHOW_*``) группу открывает ``tools_view.face_asked``
     "animation": ToolGroup(FACE_ASK_STEMS, ("play_animation",)),
     "event": ToolGroup(("мероприят", "фестивал", "расписан", "программ", "умеешь"), ("faq_search",)),
-    "status": ToolGroup(
-        ("батар", "заряд", "статус", "видишь", "перед тобой", "слышишь", "как ты", "самочувств", "подожди"),
-        ("get_robot_status", "get_battery_level", "get_perception_context", "listen_for_response"),
-    ),
     # тулы оператора (срез ``operator.admin``, ADR-0150 §9.3, PR-13b): у Личности их нет в срезе — группа ей ничего
     # не открывает; без группы ТАРС v2 не видел ``show_metrics`` вовсе («покажи CPU» — без тула)
+    # #4286 (живой 03.11 №11 #4253): «статус контейнеров» - группа статуса (4) и всегда-видимые заполняли срез
+    # (``TOOLS_VISIBLE_MAX``), из телеметрии влезал один ``show_metrics``: ``container_status`` модель не видела и
+    # крутила ``show_metrics`` up→cpu→memory до потолка запросов. Узкий срез: предмет человека - его тул, и
+    # группы оператора по приоритету раньше статуса
     "telemetry": ToolGroup(
-        ("метрик", "телеметр", "график", "панел", "процессор", "cpu", "нагрузк", "задержк", "латенс", "лог",
-         "нод", "контейнер", "сервис"),
-        ("show_metrics", "read_logs", "ros2_node_status", "container_status"),
+        ("метрик", "телеметр", "график", "панел", "процессор", "cpu", "нагрузк", "задержк", "латенс"),
+        ("show_metrics",),
+    ),
+    "logs": ToolGroup(("лог",), ("read_logs",)),
+    "nodes": ToolGroup(("нод", "ros"), ("ros2_node_status",)),
+    "containers": ToolGroup(("контейнер", "сервис", "докер", "docker"), ("container_status",)),
+    # #4297 (живой 03.11 «как сеть»): слов сети в таблице не было, срез оставался без данных, модель трижды звала тул
+    # вне среза (``tool_not_available``). Данные о сети есть у двух тулов: ``internet_available`` в
+    # ``get_perception_context`` и опрос целей Prometheus (``show_metrics``: ``services_up``, задержки LLM/STT/TTS).
+    # Wi-Fi и роутера нет ни в одном (``STATE_CLAIMS["wifi"]``): утверждение о них код вырезает (``state_claim``)
+    "network": ToolGroup(WIFI_STEMS + INTERNET_STEMS + NETWORK_STEMS, ("get_perception_context", "show_metrics")),
+    # статус - после групп оператора (#4286): слово «статус» общее, предмет («контейнеров», «нод») важнее
+    "status": ToolGroup(
+        ("батар", "заряд", "статус", "видишь", "перед тобой", "слышишь", "как ты", "самочувств", "здоровье", "здоровья", "подожди"),
+        ("get_robot_status", "get_battery_level", "get_perception_context", "listen_for_response"),
     ),
 })
 #: Ни одна группа не совпала со словами — тулы статуса (как раньше «core»-скилл каталога).
@@ -1135,7 +1247,17 @@ VOICE_UNCONFIRMED_REASON = "voice_unconfirmed"
 #: Отказ чтения (``memory_search``/``memory_context``, класс ``query``) на вопрос о памяти о самом человеке
 #: (:data:`SELF_MEMORY_ASK`) - исход, о котором говорит код своей фразой ``query.rejected.<причина>`` (на
 #: «что ты обо мне помнишь?» звучать должно не «запоминать не буду» записи, а «не буду гадать, что помню»).
-UNBOUND_REASONS: Tuple[str, str] = (NO_PERSON_REASON, VOICE_UNCONFIRMED_REASON)
+#: Отказ памяти в подхвате, где автор фразы не узнан, а в беседе есть «прогретый» голос без имени
+#: (``voice_warmth``, решение Шифу 05.11): вместо «Голос знакомый, но не уверен чей» код одной фразой просит
+#: назваться (``pickup_parties.intro_reasons``).
+ASK_INTRO_REASON = "ask_intro"
+UNBOUND_REASONS: Tuple[str, ...] = (NO_PERSON_REASON, VOICE_UNCONFIRMED_REASON, ASK_INTRO_REASON)
+#: «Прогретый» голос (``voice_warmth.WarmVoices``): профиль без имени, у которого за последние
+#: ``WARM_VOICE_WINDOW_S`` не меньше ``WARM_VOICE_MIN_PHRASES`` фраз, и между первой и последней прошло не меньше
+#: ``WARM_VOICE_MIN_SPAN_S`` («несколько реплик за сессию, беседа идёт давно» — Шифу 05.11). На роботе не замерено.
+WARM_VOICE_MIN_PHRASES = 3
+WARM_VOICE_MIN_SPAN_S = 60.0
+WARM_VOICE_WINDOW_S = 1800.0
 #: Реплика - вопрос о памяти о самом человеке. Только на неё отказ чтения памяти с причиной из
 #: :data:`UNBOUND_REASONS` говорит код своей фразой (``memory.voiced_refusals``). На любую другую реплику отказ уходит
 #: модели данными, как раньше, и она отвечает на сам вопрос: неузнанный голос спросил «кто такой Гагарин?», модель
@@ -1183,8 +1305,14 @@ RECOGNIZED_ASK: Mapping[str, Tuple[str, ...]] = MappingProxyType({
               "кто приходила недавно", "мы недавно уже говорили", "мы уже говорили", "мы недавно говорили",
               "мы уже знакомы", "ты еще здесь", "вы еще здесь", "как думаешь", "как ты думаешь",
               "откуда ты меня знаешь", "откуда меня знаешь", "ну что"),
-    "filler": ("ты", "вы", "а", "и", "так", "ли", "еще", "скажи", "вообще", "теперь", "сейчас", "по", "голосу",
-               "привет", "эй"),
+    "filler": ("ты", "вы", "а", "и", "так", "ли", "еще", "скажи", "скажи-ка", "вообще", "теперь", "сейчас", "по",
+               "голосу", "привет", "эй"),
+    # Вопрос имени (марафон М10 n723, 04.11: «а скажи-ка, ты же меня по голосу запомнил, как меня зовут?» - модель
+    # позвала register_speaker(old_name=прежнее имя) вместо ответа). Он сам - и глагол, и дополнение: «как меня
+    # зовут?» целиком - вопрос узнавания; рядом допустимы только слова таблицы и ``name_filler`` («же»: при вопросе
+    # имени «ты же меня запомнил» - часть вопроса, без него «ты же меня знаешь» - утверждение, ход модели).
+    "names": ("как меня зовут", "как зовут меня", "как мое имя"),
+    "name_filler": ("же", "мне"),
 })
 #: Ответ на :data:`RECOGNIZED_ASK` - по голосу ЭТОЙ фразы (``speaker_adapter.recognition_reply``): исход - одно
 #: из состояний имени её SpeakerResult (словарь ``rob_box_core.speaker_wire.NAME_*``; здесь их нет: модуль без
@@ -1208,11 +1336,21 @@ RECOGNIZED_TURN_REASON = "recognized"
 #: Авторство прошлой реплики окна: в историю модели реплика человека уходит с тегом, кто говорил в тот ход
 #: (снимок ``SpeakerRef`` на начало хода), а не голой строкой - иначе чужая реплика читается как слова текущего.
 UNKNOWN_SPEAKER_LABEL = "незнакомый голос"
+#: Автор реплики - свой профиль голоса без имени (#3858: биометрия завела его с кличкой, ``person_ref`` есть, имени нет).
+#: Не «незнакомый голос»: n211 М9 - по метке «незнакомый» модель сказала «голос той женщины я не запомнил», хотя профиль
+#: был заведён (#4314 К1). Кличка не звучит вслух и в метку не идёт.
+NAMELESS_SPEAKER_LABEL = "голос без имени, запомнен"
+#: Голос похож на знакомого, а чей — спорно (спор или гипотеза биометрии): не имя и не «незнакомый» — инициатор
+#: подхвата в n213 (М12, «Робот!» 0.96 с: «Саша» 0.764 / «Борис» 0.671). Метка раздела ``backlog_pickup``
+#: (``pickup_parties.who``).
+CONTESTED_SPEAKER_LABEL = "голос знакомый, чей — не уверен"
+#: Метки авторов, что не имена (``foreign_name.name_keys``).
+SPEAKER_LABELS_NOT_NAMES: Tuple[str, ...] = (UNKNOWN_SPEAKER_LABEL, NAMELESS_SPEAKER_LABEL, CONTESTED_SPEAKER_LABEL)
 SPEAKER_TAG = "[говорит: {who}] {text}"
 #: Отказы памяти, которых в окне LLM нет вообще: отклонённый факт чужого или неузнанного собеседника, оставшись
 #: в окне даже пометкой, переезжает к следующему («зелёный чай» Саши записан Борису). Модель узнаёт исход из фразы кода.
 WINDOW_DROPPED_REJECTS: Mapping[str, Tuple[str, ...]] = MappingProxyType({
-    "memory_save": (NO_PERSON_REASON, VOICE_UNCONFIRMED_REASON, SPEAKER_CHANGED_REASON),
+    "memory_save": (NO_PERSON_REASON, VOICE_UNCONFIRMED_REASON, SPEAKER_CHANGED_REASON, ASK_INTRO_REASON),
 })
 #: Ход отработан действиями, а ответа словами в окне нет (живой робот 27.10 06:36: «покажи молча, как тебе
 #: грустно» - только ``play_animation(sad)``; реплика человека висела в истории без ответа, следующий ход «догнал» её -
@@ -1226,6 +1364,11 @@ WINDOW_ACTIONS_REPLY = "[ответ действием: {actions}]"
 #: строит код из показанного лица (``expression.face_label``: сцена эмоции, жест, «сцена лица» от LLM). Лицо не показано
 #: (отмена, тишина) - записи нет.
 WINDOW_FACE_REPLY = "[ответ лицом: {face} — показано]"
+#: Реплика хода отдана владельцу речи и ещё звучит (``SpeechEvent finished/cancelled`` не пришёл): в окне - её текст
+#: под этой меткой, а не «ответ лицом» (#4207, М9 n807: правка «добавляй слово шаг» пришла, пока звучал счёт 1-20;
+#: модель видела «[ответ лицом: сцена лица — показано]», не знала, что считает, и начала заново «Один шаг.»).
+#: Отзвучала - на её месте озвученная часть (``turn_log.TurnLog.spoken``).
+WINDOW_SOUNDING_REPLY = "[говорю сейчас, ещё не досказал: {text}]"
 #: Слова метки для сцены лица, которую модель нарисовала сама (``Expression.face``): имени у неё нет.
 WINDOW_FACE_SCENE = "сцена лица"
 #: Ключевой аргумент тула в этой реплике - поле данных результата (аргументы вызова лежат в данных поверх ответа тула);
@@ -1245,7 +1388,8 @@ WINDOW_ACTION_DETAILS: Mapping[str, Tuple[str, ...]] = MappingProxyType({
 #: таблица :data:`TOOL_PHRASES` по данным, что строит фразу кода) -> слова после статуса. ``stop_music`` при
 #: ``was_playing=False`` - «сделано, ничего не играло», а не голое «сделано»: Tier-1 «хватит» гасит молча, и без этих
 #: слов модель считала бы, что музыка играла и выключена. Ключа нет в таблице - только статус.
-WINDOW_OUTCOME_NOTES: Mapping[str, str] = MappingProxyType({"music.stop_idle": "ничего не играло"})
+WINDOW_OUTCOME_NOTES: Mapping[str, str] = MappingProxyType({"music.stop_idle": "ничего не играло",
+                                                           "motion.stop.idle": "робот и так стоял"})
 #: Статус исхода словами этой реплики: статусы исполнителя (:data:`ACTION_STATUSES`) и выступления (``turn_log``
 #: ``PERFORM_*``). Статус вне таблицы - как есть.
 WINDOW_ACTION_STATUS: Mapping[str, str] = MappingProxyType({
@@ -1254,7 +1398,9 @@ WINDOW_ACTION_STATUS: Mapping[str, str] = MappingProxyType({
 })
 #: Тул -> поле данных события владельца, без которого ``done`` не засчитывается: «Запомнил» говорится только по
 #: ``saved{fact_id}`` памяти (ADR-0148); успех без доказательства - ``rejected{no_evidence}``.
-DONE_EVIDENCE: Mapping[str, str] = MappingProxyType({"memory_save": "fact_id"})
+#: ``name_person`` (#4469): «Готово» говорится только по имени, которое владелец (FaceStore) прочитал из базы после записи
+#: (``stored_name``); имя из аргументов вызова доказательством не служит.
+DONE_EVIDENCE: Mapping[str, str] = MappingProxyType({"memory_save": "fact_id", "name_person": "stored_name"})
 NO_EVIDENCE_REASON = "no_evidence"
 #: Имя собеседника пишет в профиль голоса тул :data:`NAME_OWNER_TOOL` (``speaker_id_node``), а не факт памяти
 #: (решение Шифу 27.10): факт «Пользователя зовут Тамара» в профиле «Нина» - два имени у одного человека, а фраза
@@ -1311,6 +1457,30 @@ class ByData:
         return (*self.keys.values(), *((self.default,) if self.default else ()))
 
 
+@dataclass(frozen=True)
+class ByAction:
+    """Ключ фразы по действию вызова (``action`` в данных результата: аргументы лежат поверх ответа тула): у
+    ``music_library`` ``list``/``search``/``info`` - разные фразы. Значение - ключ каталога или :class:`ByData`;
+    действия нет в таблице - ``None`` (фразы по данным у вызова нет)."""
+
+    table: Mapping[str, Any]
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "table", MappingProxyType(dict(self.table)))
+
+    def key(self, data: Mapping[str, Any]) -> Optional[str]:
+        entry = self.table.get(data.get("action"))
+        return entry.key(data) if isinstance(entry, ByData) else entry
+
+    def all_keys(self) -> Tuple[str, ...]:
+        return tuple(key for entry in self.table.values() for key in phrase_keys(entry))
+
+
+def phrase_keys(entry: Any) -> Tuple[str, ...]:
+    """Все ключи каталога записи таблицы фраз: строка, :class:`ByData` или :class:`ByAction`."""
+    return entry.all_keys() if isinstance(entry, (ByData, ByAction)) else (entry,)
+
+
 #: Платная генерация началась, трек ещё пишется (Шифу 27.10: «надо было сказать: подожди, скоро будет, а пока
 #: послушай»). Тул музыки сообщает это в данных результата: ``pending`` - что пишется (``song`` - песня, в т.ч. голосом
 #: робота, ``instrumental`` - трек без слов) и ``track_id`` - играет мост ожидания (своё или сочинённое раньше), пока трек
@@ -1333,12 +1503,35 @@ GEN_WAIT = ByData((GEN_PENDING_FIELD, GEN_BRIDGE_FIELD), {
 MUSIC_STOP_TOOLS: Mapping[str, Optional[Tuple[str, str]]] = MappingProxyType({
     "stop_music": None, "dj_set": ("action", "stop"),
 })
+#: Старт, что сам заменяет играющее ЭТИМ ЖЕ тулом: ``dj_set start`` под сетом гасит старый сет (``stop
+#: reason=new_set``). Стоп того же тула перед таким стартом в ОДНОЙ команде лишний - пара stop+start есть смена темы
+#: (#4347, живой n604 04.11: «уводи в сторону рока» -> ``dj_set stop`` + ``dj_set start style=rock`` -> отказ
+#: ``single_action_class``, повтор вернул один стоп, рока нет). Валидатор (``command._drop_replaced_stops``)
+#: выбрасывает такой стоп, а не отвергает команду. Тул -> (аргумент, значение старта).
+START_REPLACES_STOP: Mapping[str, Tuple[str, str]] = MappingProxyType({"dj_set": ("action", "start")})
+
+
+def stops_music(tool: str, args: Mapping[str, Any]) -> bool:
+    """Вызов гасит музыку (:data:`MUSIC_STOP_TOOLS`): ``stop_music`` - любой, ``dj_set`` - ``action=stop``. ``args`` -
+    аргументы вызова или данные результата (аргументы лежат в них поверх ответа тула). Единственное место признака."""
+    if tool not in MUSIC_STOP_TOOLS:
+        return False
+    marker = MUSIC_STOP_TOOLS[tool]
+    return marker is None or args.get(marker[0]) == marker[1]
+
+
+def replaces_stop(tool: str, args: Mapping[str, Any]) -> bool:
+    """Вызов - старт, что сам гасит играющее этим тулом (:data:`START_REPLACES_STOP`)."""
+    marker = START_REPLACES_STOP.get(tool)
+    return marker is not None and args.get(marker[0]) == marker[1]
+
+
 STOPPED_EARLIER_FIELD = "stopped_earlier"
 #: Метка исхода в ``recent_actions`` снимка: действие исполнено ЭТИМ ходом до вызова модели (остаток фразы после ясного
 #: стопа - ``turn._tier1_then_rest``: «хватит, борис уже уснул под неё», n709): модель видит, что музыку уже
 #: остановил код, а не думает, что она ещё играет и её можно «сделать потише».
 THIS_TURN_FIELD = "this_turn"
-#: Старт сета с объявлением (#4217, n605 «поставь сет из трёх треков, объявляй каждый»): сет объявляет треки вслух, и
+#: Старт сета с объявлением (n605 «поставь сет из трёх треков, объявляй каждый»): сет объявляет треки вслух, и
 #: первый - тоже: ``dj_set`` кладёт в данные исхода название трека 1 (``opening``) и длину сета словами (``tracks_text``),
 #: фразу строит код по ним («Ставлю сет на 3 трека. Первый - «X».»), а не общее «Включаю музыку.» класса. Названия нет
 #: (мост ожидания генерации, трек без названия, реплики диджея выключены) - ключ класса, как было.
@@ -1368,9 +1561,116 @@ VOICE_FAILED = ByData(("status", "voice_default"), {
     ("fallback", True): "voice.unavailable_default", ("fallback", False): "voice.unavailable",
     ("fallback", None): "voice.rejected", ("timeout", None): "voice.timeout",
 })
+#: Итог поездки к точке (``navigate_to_waypoint``/``navigate_to_coordinates``, #4344): фразу строит код по данным
+#: исхода, которые тул кладёт по ответу Nav2 (``rob_box_mcp_tools.core.action_outcome.nav_data``), а не общее
+#: «Приехал.» класса. Живой 04.11 11:22: робот уже стоял на точке «а», Nav2 ответил Goal succeeded за 60 мс - в чат
+#: ушло «Приехал.» без точки. Поля данных: :data:`NAV_TARGET_FIELD` - точка словами (слот ``{target}``),
+#: :data:`NAV_ARRIVAL_FIELD` - как достигнута (:data:`NAV_ALREADY_THERE`: робот уже стоял на ней, :data:`NAV_ARRIVED`:
+#: доехал), :data:`NAV_OUTCOME_FIELD` - вид исхода Nav2 (он же причина отказа), :data:`NAV_FAILURE_OUTCOMES` - виды
+#: неуспеха, у каждого своя фраза «Не доехал до точки …: причина». Значения поля - контракт с тулом (тест в
+#: ``rob_box_mcp_tools``): тул берёт имена полей и значения прибытия отсюда.
+NAV_TARGET_FIELD = "target"
+NAV_ARRIVAL_FIELD = "arrival"
+NAV_OUTCOME_FIELD = "outcome"
+NAV_ALREADY_THERE = "already_there"
+NAV_ARRIVED = "arrived"
+NAV_UNKNOWN_TARGET = "unknown_target"
+NAV_FAILURE_OUTCOMES: Tuple[str, ...] = (
+    "aborted", "canceled", "timeout", "rejected", "no_response", "server_unavailable", "unknown_status",
+    NAV_UNKNOWN_TARGET,
+)
+NAV_DONE = ByData((NAV_ARRIVAL_FIELD,), {
+    (NAV_ALREADY_THERE,): "motion.already_there", (NAV_ARRIVED,): "motion.arrived",
+})
+NAV_FAILED = ByData((NAV_OUTCOME_FIELD,), {(kind,): f"motion.not_reached.{kind}" for kind in NAV_FAILURE_OUTCOMES})
+NAV_TOOL_PHRASES: Mapping[str, Any] = MappingProxyType({"done": NAV_DONE, "rejected": NAV_FAILED})
+#: Стоп навигации (``stop_navigation``, #3789): тул в классе ``action.motion``, но «Приехал.»/«Не могу поехать.»/«Не
+#: доехал — время вышло.» класса о стопе - ложь (HIL 04.11 21:51:18: активной цели нет, тул ответил ``no_active_goal``,
+#: робот сказал «Приехал.»). Фразу строит код по виду исхода отмены в поле :data:`NAV_OUTCOME_FIELD` (кладёт тул:
+#: ``rob_box_mcp_tools.core.action_outcome.classify_cancel_response``; значения - отсюда): :data:`STOP_CONFIRMED` -
+#: сервер принял отмену идущей цели, :data:`STOP_IDLE` - отменять было нечего. Любой неуспех (сервис отмены недоступен,
+#: не ответил, отказал) и ``timeout`` - «не уверен, что остановился», а не «не могу поехать».
+STOP_TOOL = "stop_navigation"
+STOP_CONFIRMED = "cancel_confirmed"
+STOP_IDLE = "no_active_goal"
+STOP_FAILED_KEY = "motion.stop.failed"
+STOP_TOOL_PHRASES: Mapping[str, Any] = MappingProxyType({
+    "done": ByData((NAV_OUTCOME_FIELD,), {(STOP_CONFIRMED,): "motion.stop.confirmed", (STOP_IDLE,): "motion.stop.idle"},
+                   "motion.stop.confirmed"),
+    "rejected": STOP_FAILED_KEY,
+    "timeout": STOP_FAILED_KEY,
+})
+#: Картография (#4363): тулы ``start_mapping``/``continue_mapping``/``finish_mapping``/``optimize_map``/``load_map`` в
+#: классе ``action.motion``, но «Приехал.»/«Не могу поехать.» о карте - ложь (живой 04.11 14:51: старт карты - «Приехал.»,
+#: отказ «уже идёт картографирование» - «Не могу поехать.»). Фразу строит код по данным исхода тула. Поля данных:
+#: :data:`MAP_NAME_FIELD` - имя карты (аргумент вызова, у ``finish_mapping``/``load_map`` ещё и имя активной карты),
+#: :data:`MAP_NEW_FIELD` - старт на чистой базе (``start_mapping``), :data:`MAP_PARTIAL_FIELD` - часть шагов
+#: оптимизации не удалась (``optimize_map``), :data:`MAP_ACTIVE_FIELD` - имя карты, что пишется сейчас (отказ FSM,
+#: :data:`MAP_ACTIVE_REASON`), ``reason`` - структурная причина отказа (:data:`MAP_FAILURE_REASONS`).
+MAP_NAME_FIELD = "map_name"
+MAP_NEW_FIELD = "new_location"
+MAP_PARTIAL_FIELD = "partial"
+MAP_ACTIVE_FIELD = "active_map"
+MAP_ACTIVE_REASON = "mapping_active"
+#: База rtabmap одна (#4392): ``load_map`` с именем карты, чья геометрия стёрта новой картой, - отказ этой причиной,
+#: в :data:`MAP_ACTIVE_FIELD` - имя карты, что в базе. «Загрузил X» звучит, только если в базе и есть X.
+MAP_NOT_STORED_REASON = "map_not_stored"
+MAP_FAILURE_REASONS: Tuple[str, ...] = (
+    "service_error", "unavailable", "timeout", "no_response", "map_not_found", "map_lookup_failed",
+)
+MAP_FAILED = ByData(("reason", MAP_ACTIVE_FIELD), {
+    **{(reason, named): f"mapping.failed.{reason}{'' if named else '_unnamed'}"
+       for reason in (MAP_ACTIVE_REASON, MAP_NOT_STORED_REASON) for named in (True, False)},
+    **{(reason, named): f"mapping.failed.{reason}" for reason in MAP_FAILURE_REASONS for named in (True, False)},
+}, "mapping.failed", present=(MAP_ACTIVE_FIELD,))
+MAP_START_DONE = ByData((MAP_NEW_FIELD, MAP_NAME_FIELD), {
+    (True, True): "mapping.start", (True, False): "mapping.start_unnamed",
+    (False, True): "mapping.start_existing", (False, False): "mapping.start_existing",
+}, "mapping.start", present=(MAP_NAME_FIELD,))
+MAP_NAMED_DONE = {
+    "finish": ByData((MAP_NAME_FIELD,), {(True,): "mapping.finished", (False,): "mapping.finished_unnamed"},
+                     present=(MAP_NAME_FIELD,)),
+    "load": ByData((MAP_NAME_FIELD,), {(True,): "mapping.loaded", (False,): "mapping.loaded_unnamed"},
+                   present=(MAP_NAME_FIELD,)),
+}
+#: Забыть карту (``delete_map``, #4392): строки старых карт удаляются, карту в базе - нельзя (причина
+#: :data:`MAP_DELETE_ACTIVE_REASON`), её можно только перезаписать новым картографированием.
+MAP_DELETE_ACTIVE_REASON = "map_in_db"
+MAP_DELETE_FAILED = ByData(("reason",), {
+    (MAP_DELETE_ACTIVE_REASON,): "mapping.delete.in_db",
+    ("map_not_found",): "mapping.delete.not_found",
+}, "mapping.delete.failed")
+#: Итога тула карты нет в срок класса (#4344: транспорт теперь ждёт тул весь срок, а не 10 с) - о карте, а не «Не
+#: доехал — время вышло.» класса.
+MAP_TIMEOUT_KEY = "mapping.failed.timeout"
+MAP_TOOL_PHRASES: Mapping[str, Mapping[str, Any]] = MappingProxyType({
+    "start_mapping": MappingProxyType({"done": MAP_START_DONE, "rejected": MAP_FAILED, "timeout": MAP_TIMEOUT_KEY}),
+    "continue_mapping": MappingProxyType({"done": "mapping.continued", "rejected": MAP_FAILED,
+                                          "timeout": MAP_TIMEOUT_KEY}),
+    "finish_mapping": MappingProxyType({"done": MAP_NAMED_DONE["finish"], "rejected": MAP_FAILED,
+                                        "timeout": MAP_TIMEOUT_KEY}),
+    "load_map": MappingProxyType({"done": MAP_NAMED_DONE["load"], "rejected": MAP_FAILED, "timeout": MAP_TIMEOUT_KEY}),
+    "optimize_map": MappingProxyType({
+        "done": ByData((MAP_PARTIAL_FIELD,), {(True,): "mapping.optimize_partial"}, "mapping.optimized"),
+        "rejected": MAP_FAILED,
+        "timeout": MAP_TIMEOUT_KEY,
+    }),
+})
 #: Ключи фраз, особые для тула (поверх ключа класса): «Запомнил: …» строится по событию saved владельца памяти.
 TOOL_PHRASES: Mapping[str, Mapping[str, Any]] = MappingProxyType({
+    **MAP_TOOL_PHRASES,
+    # забыть карту (#4392): класс action.local, фраза по причине отказа (карта в базе / нет такой)
+    "delete_map": MappingProxyType({"done": "mapping.deleted", "rejected": MAP_DELETE_FAILED}),
+    # поездка к точке (#4344): «Я уже на точке а.» / «Приехал на точку а.» / «Не доехал до точки а: …» по данным
+    # исхода; данных нет (отказ плана, моторы) - ключ класса ``motion.*``
+    "navigate_to_waypoint": NAV_TOOL_PHRASES,
+    "navigate_to_coordinates": NAV_TOOL_PHRASES,
+    # стоп (#3789): «Останавливаюсь.» / «Я и так стою.» по виду отмены, а не «Приехал.» класса
+    STOP_TOOL: STOP_TOOL_PHRASES,
     "memory_save": MappingProxyType({"done": "memory.saved"}),
+    # имя лицу (#4469): «Готово: лицо fff371fe теперь Кирилл.» - шаблон по данным владельца лиц (``id``, ``stored_name`` -
+    # имя, прочитанное из базы после записи, ``previous_name``), а не слова модели
+    "name_person": MappingProxyType({"done": ByData(("previous_name",), {(None,): "people.named"}, "people.renamed")}),
     "set_voice": MappingProxyType({"done": VOICE_DONE, "rejected": VOICE_FAILED, "timeout": "voice.timeout"}),
     "set_tts_provider": MappingProxyType({"done": VOICE_DONE, "rejected": VOICE_FAILED, "timeout": "voice.timeout"}),
     # звук - не музыка: класс action.media, но фраза о SoundEvent, а не «Включаю музыку»
@@ -1486,6 +1786,9 @@ class OwnerText:
 OUTCOME_OWNER_TEXT: Mapping[str, OwnerText] = MappingProxyType({
     **{tool: OwnerText(whole="source_message", note="source_note") for tool in ("request_music", "generate_music")},
     "dj_set": OwnerText(note="source_note")})
+#: Тул пульта Telegram, чей успех уносит в чат картинку (#4469): ``photo_id`` - id лица, ``caption`` - подпись; чат шлёт
+#: ``DialogOutput(kind=photo)`` с id, снимок бот забирает у владельца лиц (``/perception/people``) байтами.
+PHOTO_TOOL = "person_photo"
 #: Действия, чей успех - сам себе доказательство: фразы об исходе done нет (§4.1; Шифу 21.10: «включил щелчок и ещё
 #: сказал, что он заиграл, бред же»). Неудача (rejected/timeout) говорится одной фразой кода. Исключение - звукоподражание
 #: (:data:`SOUND_IMITATIONS`).
@@ -1599,6 +1902,57 @@ MUSIC_PROMISE_HINT = ("в speech обещано действие с музыко
 MUSIC_PROMISE_PHRASES: Mapping[str, str] = MappingProxyType({
     "stopped": "command.music_promise.stopped", "silent": "command.music_promise.silent",
     "playing": "command.music_promise.playing"})
+#: Нарушение «обещал сменить голос, темп или тон речи, а тула нет» (:data:`VOICE_PROMISES`, #4020 К1: слова без
+#: действия - ложь о собственной речи). Повтор с подсказкой :data:`VOICE_PROMISE_HINT`; повтора нет - говорит код
+#: (:data:`VOICE_PROMISE_PHRASE`): что с голосом и темпом ничего не сделано, звучит прежний.
+VIOLATION_VOICE_PROMISE = "voice_promise"
+VOICE_PROMISE_HINT = ("в speech обещано сменить голос, темп или тон речи, а в actions нет тула, что это исполняет: слова"
+                      " без действия - неправда о твоей речи. Голос меняет только set_voice, темп - set_speed, тон -"
+                      " set_pitch; тула нет в перечне хода - не обещай. Звучащий голос назови по current_voice_name из"
+                      " tts_context (там провайдер, голос и каталог voices; скорости и тона в нём нет - их значений"
+                      " не называй), не по памяти и не по id")
+VOICE_PROMISE_PHRASE = "command.voice_promise"
+#: Нарушение «обещал поискать, а тула поиска нет» (:data:`SEARCH_PROMISES`, #4314 К1: n907 «Поищу ещё раз» без
+#: второго поиска). Повтор с подсказкой :data:`SEARCH_PROMISE_HINT`; повтора нет - говорит код: поиск в ходе был -
+#: по его данным (``turn.query_fallback``), не было - :data:`SEARCH_PROMISE_PHRASE`.
+VIOLATION_SEARCH_PROMISE = "search_promise"
+SEARCH_PROMISE_HINT = ("в speech обещано поискать («поищу», «посмотрю в интернете», «уточню запрос»), а в actions нет"
+                       " тула поиска: слова без действия - неправда. Нужен ещё поиск - вызови search_web с другим"
+                       " запросом в actions, без обещаний в speech; поиск уже был в этом ходе - ответь по его данным"
+                       " выше (нет конкретики - так и скажи), не обещая искать снова")
+SEARCH_PROMISE_PHRASE = "command.search_promise"
+#: Нарушение «сказал, что сделал, а тула нет» (``DONE_CLAIMS``). Повтор с подсказкой :data:`DONE_CLAIM_HINT`;
+#: повтора нет - ложные слова не звучат, код говорит правду: ничего не сделано (:data:`DONE_CLAIM_PHRASE`).
+VIOLATION_DONE_CLAIM = "done_claim"
+DONE_CLAIM_HINT = ("в speech сказано, что действие уже сделано («удалил», «сохранил точку», «поехал»), а в actions нет"
+                   " тула, что его делает: слова без действия - неправда. Нужно действие - положи тул в actions без"
+                   " speech (о сделанном скажет код по результату); тула нет в перечне хода - не утверждай, а скажи,"
+                   " что сделать не можешь, или спроси в ask")
+DONE_CLAIM_PHRASE = "command.done_claim"
+#: Счёт вслух до N, урезанный моделью, строит код (``counting.full_count``, #4314 К1, n802 М9: «от одного до сорока» -
+#: «Один… Десять.»). Глаголы просьбы о счёте (слово целиком, без «ё»).
+COUNT_VERBS: Tuple[str, ...] = (
+    "посчитай", "посчитайте", "сосчитай", "сосчитайте", "досчитай", "досчитайте", "считай", "считайте", "посчитаем",
+    "сосчитаем", "отсчитай", "отсчитайте", "посчитать", "сосчитать", "досчитать")
+#: Дальше этого числа код не считает (лимит 50 - решение Шифу 04.11, #4314): чисел не больше ``SEGMENTS_MAX`` × десяток.
+COUNT_MAX = 50
+#: Чисел в сегменте выступления счёта: «Один. Два. … Десять.» - заметно короче ``SEGMENT_MAX_CHARS``.
+COUNT_PER_SEGMENT = 10
+#: Фраза кода перед счётом, урезанным до :data:`COUNT_MAX` (слот ``top`` - предел в родительном падеже).
+COUNT_CAPPED_PHRASE = "count.capped"
+#: Обещание счёта в речи робота (#4339: «посчитай до семидесяти» → «Считаю до семидесяти, слушай внимательно.» - и
+#: ни одного числа). Модель пообещала счёт и не начала - числа строит код (``counting.full_count``), как при урезанном
+#: счёте; отказ и переспрос (без этих слов) остаются. Глаголы 1-го лица (слово целиком, строчные, без «ё»), что обещают
+#: счёт сами, и глаголы начала («начинаю») - только с предметом счёта сразу после («начинаю считать», «начну отсчёт»).
+COUNT_PROMISE_VERBS: Tuple[str, ...] = (
+    "считаю", "посчитаю", "сосчитаю", "досчитаю", "отсчитаю", "считаем", "посчитаем", "сосчитаем", "досчитаем",
+    "отсчитаем", "отсчитываю", "отсчитываем")
+COUNT_PROMISE_STARTS: Tuple[str, ...] = ("начинаю", "начну", "начинаем", "начнем", "запускаю")
+COUNT_PROMISE_OBJECTS: Tuple[str, ...] = ("считать", "счет", "отсчет", "посчитать", "сосчитать", "отсчитывать")
+#: Слова, с которыми глагол счёта не обещание: перед ним (вплотную или через слово) - отрицание («не досчитаю», «не
+#: буду … считаю»); сразу после - мнение, а не счёт («считаю, что это долго», «считаю нужным уточнить»).
+COUNT_PROMISE_UNLESS_BEFORE: Tuple[str, ...] = ("не", "нет")
+COUNT_PROMISE_UNLESS_AFTER: Tuple[str, ...] = ("что", "чтобы", "нужным", "правильным", "лишним", "разумным")
 #: Нарушение «неизвестного собеседника назвали чужим именем» (n210: «Понял, Саша.» Грише при ``name_state``
 #: ``unknown``, а Саша — из истории разговора): обращение по имени к человеку, чьё имя не ``confirmed``, - выдумка, как
 #: бы ни звали других (``foreign_name``). Повтор с подсказкой :data:`FOREIGN_NAME_HINT`; повтора нет - имя из речи
@@ -1607,6 +1961,143 @@ VIOLATION_FOREIGN_NAME = "foreign_name"
 FOREIGN_NAME_HINT = ("имя собеседника не подтверждено (name_state не confirmed): не обращайся к нему по имени — ни по"
                      " чужому из истории разговора (Саша, Борис…), ни по угаданному; говори без обращения. Имя другого"
                      " человека можно назвать, только когда речь О нём")
+#: Регистрация голоса, который уже записан под этим именем (М13 n211, 05.11 13:24:29, run 42034287725): «Робот,
+#: перечисли всех, кого ты сегодня запомнил по голосу» голосом Саши (0.959, ``confirmed``) - модель позвала
+#: ``register_speaker(name="Саша")`` без слов, код сказал «Запомнил тебя, Саша.», вопрос остался без ответа. Имя
+#: подтверждено, в реплике человек себя не называл (``speaker_adapter.known_voice_registers``) - записывать нечего.
+#: Повтор с подсказкой :data:`KNOWN_VOICE_REGISTER_HINT`; повтора нет - такая регистрация не исполняется, говорит код.
+VIOLATION_KNOWN_VOICE_REGISTER = "known_voice_register"
+KNOWN_VOICE_REGISTER_HINT = (f"голос собеседника уже записан под этим именем (speaker.name_state confirmed), а в этой"
+                             f" реплике он себя не называл: {NAME_OWNER_TOOL} ничего не запишет и на реплику не"
+                             f" ответит. Убери {NAME_OWNER_TOOL} и ответь на реплику словами в speech")
+
+
+@dataclass(frozen=True)
+class StateClaim:
+    """Утверждение о состоянии подсистемы робота в речи («Wi-Fi и роутер живы», «батарея в норме»): ``subjects`` -
+    основы слов подсистемы (начало слова, строчные, без «ё»); ``label`` - как её назвать во фразе кода
+    (:data:`STATE_CLAIM_PHRASE`, слот ``subjects``); опора - исход ``done`` тула из ``tools`` или в данных исхода ключ,
+    содержащий одну из подстрок ``keys`` (``internet_available``, ``battery_level``). Пустые ``tools`` - у подсистемы
+    нет тула, о ней знает только ключ данных (Wi-Fi: ни один тул робота о нём не говорит)."""
+
+    subjects: Tuple[str, ...]
+    label: str
+    keys: Tuple[str, ...] = ()
+    tools: Tuple[str, ...] = ()
+
+
+#: Утверждение о состоянии подсистемы без данных о ней (#4286, класс К1 #4020; живой 03.11 №13 #4253: «Wi-Fi и роутер
+#: живы» - ни тула, ни поля о сети в ходе): слова о состоянии - только из данных, которые модель видела (исходы
+#: ``query`` этого хода и ``recent_actions``). Повтор с подсказкой :data:`STATE_CLAIM_HINT`; повтора нет - код вырезает
+#: утверждение из речи и говорит рядом, о чём данных нет (:data:`STATE_CLAIM_PHRASE`). Единственная таблица: ход
+#: (``state_claim``) и аудит логов (``scripts/dialog/honesty_audit.py``) читают её.
+VIOLATION_STATE_CLAIM = "state_claim"
+STATE_CLAIMS: Mapping[str, StateClaim] = MappingProxyType({
+    "wifi": StateClaim(WIFI_STEMS, "Wi-Fi и роутер",
+                       keys=("wifi", "wi_fi", "wlan", "rssi", "ssid", "router")),
+    # ``internet_available`` отдаёт ``get_perception_context`` (поле снимка восприятия); сеть до целей - и опрос
+    # Prometheus (``show_metrics``: «cadvisor отвечают по сети», живой прогон 03.11 #4286)
+    "internet": StateClaim(INTERNET_STEMS, "интернет", keys=("internet",), tools=("get_perception_context",)),
+    "network": StateClaim(NETWORK_STEMS, "сеть",
+                          keys=("internet", "network", "wifi", "ping"),
+                          tools=("get_perception_context", "show_metrics")),
+    "battery": StateClaim(("батаре", "заряд", "аккумулятор", "акб"), "батарею",
+                          keys=("battery", "voltage"), tools=("get_battery_level", "get_robot_status")),
+    "containers": StateClaim(("контейнер", "сервис", "докер", "docker"), "контейнеры",
+                             keys=("container",), tools=("container_status", "show_metrics", "read_logs")),
+    "nodes": StateClaim(("нод", "ros"), "ноды",
+                        keys=("nodes",), tools=("ros2_node_status", "get_perception_context", "show_metrics")),
+    "motors": StateClaim(("мотор", "двигател", "колес", "привод", "энкодер"), "моторы",
+                         keys=("motor", "wheel", "encoder")),
+    "sensors": StateClaim(("лидар", "камер", "датчик", "сенсор"), "датчики",
+                          keys=("lidar", "camera", "sensor", "vision"), tools=("get_perception_context",)),
+})
+#: Слова состояния: в предложении с подсистемой они делают его утверждением о ней. Основы (начало слова) и формы
+#: целиком (короткие: «ок» - не «около»); число («Батарея 90%») - тоже состояние.
+STATE_CLAIM_STEMS: Tuple[str, ...] = (
+    "жив", "работа", "работоспособ", "норм", "исправ", "доступ", "недоступ", "лежит", "лежат", "упал", "отвал",
+    "подключ", "отключ", "онлайн", "офлайн", "оффлайн", "стабил", "порядк", "здоров", "заряжен", "разряж", "мертв",
+    "умер", "сдох", "запущен", "отвеча", "крутят", "крутит", "в строю")
+STATE_CLAIM_FORMS: Tuple[str, ...] = ("есть", "нет", "ок", "сел", "села", "сели", "цел", "целы", "up", "down")
+#: Слова, с которыми упоминание подсистемы не утверждение: о данных («данных о Wi-Fi нет»), отказ и предложение
+#: проверить («гляну контейнеры»). Основы; сверка - в той же части предложения (между запятыми), что подсистема.
+STATE_CLAIM_UNLESS: Tuple[str, ...] = (
+    "данн", "информац", "неизвест", "не знаю", "провер", "гляну", "глянуть", "посмотр", "узна", "спрос", "покаж",
+    "показа", "могу", "можно", "нужн", "хочешь", "если")
+STATE_CLAIM_HINT = ("в speech утверждение о состоянии подсистемы робота, а данных о ней в этом ходе нет (ни исхода тула,"
+                    " ни поля в recent_actions): слова о состоянии - только из данных. Позови тул, что её читает, если"
+                    " он есть в перечне хода, или скажи прямо, что данных о ней нет; не угадывай")
+STATE_CLAIM_PHRASE = "command.state_claim"
+#: Агенты, чью речь судит :data:`VIOLATION_STATE_CLAIM`: ТАРС (оператор, текст в чат и шлем). Личность и чат Telegram -
+#: не включены: их снимок несёт данные мимо ``recent_actions`` (``host_sections``), без замера ложных срабатываний.
+STATE_CLAIM_AGENTS: Tuple[str, ...] = ("operator",)
+#: Повтор чтения в ходе (#4286; живой 03.11 №1 #4253: ``get_robot_status`` дважды подряд): тот же ``query`` (тул и
+#: аргументы) второй раз не исполняется - модели уходит подсказка, что данные уже выше; снова повтор - ход закрывает
+#: код фразой по данным (``turn._close_unread``).
+VIOLATION_QUERY_REPEAT = "query_repeat"
+QUERY_REPEAT_HINT = ("этот запрос (тот же тул и аргументы) в этом ходе уже выполнен, его данные выше в окне - второй раз"
+                     " он не исполняется: ответь по ним словами в speech или возьми другой тул")
+#: Ответ звуком на вопрос после чтения (М11 n109, #4236): «какие звуки ты умеешь издавать?» → ``get_sound_info`` →
+#: команда из одних ``play_sound`` без слов. Успех звука молчит (:data:`SILENT_DONE_TOOLS`), и вопрос оставался без
+#: ответа. Звук после запроса без слов законен на ПРОСЬБУ («включи какой-нибудь звук»), а на вопрос
+#: (``words.asks_question``) - нарушение: модели повтор с подсказкой, повтора нет - код говорит по данным
+#: (``turn.data_close``). Решает ход по структуре команды и реплике человека (``turn.sound_owed``), а не по тексту
+#: ответа.
+VIOLATION_SOUND_ANSWER = "sound_answer"
+SOUND_ANSWER_HINT = (f"человек задал вопрос, данные запроса выше в окне, а {SOUND_TOOL} на вопрос не отвечает - успех"
+                     f" звука молчит: ответь по этим данным словами в speech, без actions")
+#: Тул каталога звуков робота: что робот умеет издавать, знает только он (``sound_pack/sound_catalog.json``).
+SOUND_CATALOG_TOOL = "get_sound_info"
+#: Вопрос о каталоге звуков (М11 n109, засчитанный прогон 01:12:19: «Умею подтверждать… глючить… капать нотой…» - список
+#: по памяти, без ``get_sound_info``): в реплике человека слово о звуках (основа :data:`SOUND_CATALOG_STEMS`) и форма
+#: «сколько/какие/перечисли» (:data:`SOUND_CATALOG_ASK_FORMS`, слово целиком: «какой-нибудь звук» - просьба, не каталог).
+#: Решает намерение человека по его словам (``tools_view.catalogs_asked``), а не текст ответа модели.
+SOUND_CATALOG_STEMS: Tuple[str, ...] = ("звук",)
+SOUND_CATALOG_ASK_FORMS: Tuple[str, ...] = (
+    "какие", "каких", "сколько", "список", "списком", "перечень", "перечисли", "перечислите", "назови", "назовите")
+#: Нарушение «ответ о каталоге звуков без его данных»: спросили, какие звуки робот умеет, а команда без
+#: :data:`SOUND_CATALOG_TOOL` и в ходе его не читали (``turn.catalog_owed``). Повтор с подсказкой; повтора нет - каталог
+#: читает код сам и говорит по его данным (``query.sounds_summary``), слова модели о звуках не звучат.
+VIOLATION_SOUND_CATALOG = "sound_catalog"
+SOUND_CATALOG_HINT = (f"человек спрашивает, какие звуки ты умеешь: каталог звуков знает только {SOUND_CATALOG_TOOL},"
+                      f" по памяти звуки не перечисляй. Положи {SOUND_CATALOG_TOOL} в actions (без speech и без"
+                      f" {SOUND_TOOL}) - ответишь словами по его данным")
+#: Тул каталога голосов робота: какими голосами он говорит, знает только TTS (``list_tts_voices``).
+VOICE_CATALOG_TOOL = "list_tts_voices"
+#: Вопрос о каталоге голосов (М12 n401, 05.11 05:22:14: «какими голосами ты умеешь говорить? перечисли» → список по
+#: памяти «надёжный мужчина… русоволосый друг детства. Есть ещё английские и пара служебных» без ``list_tts_voices``):
+#: имя голосов во множественном числе (:data:`VOICE_CATALOG_NOUN_FORMS`, целым словом: «каким голосом говоришь» - про
+#: текущий голос, n402), глагол речи робота (:data:`VOICE_CATALOG_SPEAK_FORMS`: «посчитай по голосам», «кого
+#: запомнил по голосу» - про людей, не каталог) и форма «какие/сколько/перечисли» (:data:`VOICE_CATALOG_ASK_FORMS`).
+VOICE_CATALOG_NOUN_FORMS: Tuple[str, ...] = ("голоса", "голосов", "голосами")
+VOICE_CATALOG_SPEAK_FORMS: Tuple[str, ...] = (
+    "говорить", "говоришь", "заговорить", "разговаривать", "разговариваешь", "звучать", "звучишь", "озвучивать")
+VOICE_CATALOG_ASK_FORMS: Tuple[str, ...] = (*SOUND_CATALOG_ASK_FORMS, "какими")
+VIOLATION_VOICE_CATALOG = "voice_catalog"
+VOICE_CATALOG_HINT = (f"человек спрашивает, какими голосами ты говоришь: каталог голосов знает только"
+                      f" {VOICE_CATALOG_TOOL}, по памяти голоса не перечисляй. Положи {VOICE_CATALOG_TOOL} в actions"
+                      f" (без speech) - ответишь словами по его данным")
+
+
+@dataclass(frozen=True)
+class Catalog:
+    """Каталог, который знает только тул робота: о нём спросили (``tools_view.catalogs_asked``) - ответ без его данных
+    в ходе - нарушение ``violation`` с подсказкой ``hint`` (``turn.catalog_owed``); повтора нет - тул читает код."""
+
+    tool: str
+    violation: str
+    hint: str
+    what: str
+
+
+#: Каталоги робота, ответ о которых - только по данным их тула (М11 n109 - звуки, М12 n401 - голоса). Единственная
+#: таблица: какой каталог спрошен, решает ``tools_view.catalogs_asked`` по словам человека.
+CATALOGS: Mapping[str, Catalog] = MappingProxyType({
+    "sounds": Catalog(SOUND_CATALOG_TOOL, VIOLATION_SOUND_CATALOG, SOUND_CATALOG_HINT,
+                      "ответ о каталоге звуков без его данных"),
+    "voices": Catalog(VOICE_CATALOG_TOOL, VIOLATION_VOICE_CATALOG, VOICE_CATALOG_HINT,
+                      "ответ о каталоге голосов без его данных"),
+})
 #: Слова перед именем без запятой, после которых оно — обращение, а не рассказ о человеке: «Привет Борис!», «Спасибо
 #: Саша». С запятой («Понял, Саша.») и в начале фразы перед запятой («Саша, понял.») лид не нужен.
 ADDRESS_LEAD_WORDS: Tuple[str, ...] = (
@@ -1675,24 +2166,42 @@ SOUND_OTHER_NAME = "другие"
 #: говорит фразу по данным результата. Тул → ключ каталога (или :class:`ByData` - ключ по данным вызова); слоты строит
 #: код (``turn.query_answer``). ``music_library`` ``list`` (живой 27.10: на последней итерации звучала общая
 #: «Нашёл ответ, но не смог сложить…») - число треков и :data:`LIBRARY_SUMMARY_NAMES` названий, пустая библиотека -
-#: фраза о пустой; ``search``/``info`` своей фразы нет - общая. Память - 2–3 факта как есть
+#: фраза о пустой; ``search`` - сколько нашлось и названия, ``info`` - карточка трека (n707, #4157). Память - 2–3 факта как есть
 #: (:data:`MEMORY_SUMMARY_FACTS`), когда ход читал только её (:data:`MEMORY_FACTS_TOOLS`); каталог звуков без
 #: аргументов (живой 28.10 15:22, «какие звуки ты умеешь издавать») - сколько звуков и по каким категориям
 #: (:data:`SOUND_CATEGORY_NAMES`); поиск в сети (марафон-2 n908, «рецепт борща без лука») - текст первой строки
 #: выдачи как есть, речь ужимает ``command.fit_speech``.
 QUERY_FALLBACK_PHRASES: Mapping[str, Any] = MappingProxyType({
     "list_tts_voices": "query.voices_summary",
-    LIBRARY_TOOL: ByData(("action", "total"), {("list", 0): "music.library_empty"}, "query.library_summary"),
+    LIBRARY_TOOL: ByAction({
+        "list": ByData(("total",), {(0,): "music.library_empty"}, "query.library_summary"),
+        "search": ByData(("total",), {(0,): "query.library_none"}, "query.library_found"),
+        "info": "query.library_info"}),
     "memory_search": MEMORY_FACTS_PHRASE,
     "memory_context": MEMORY_FACTS_PHRASE,
     "get_sound_info": "query.sounds_summary",
     "search_web": "query.web_found",
+    "container_status": "query.containers_summary",
 })
 #: Сколько названий называет фраза списка библиотеки: 2–3, не весь список (варианты одного заказа - одно имя).
 LIBRARY_SUMMARY_NAMES = 3
-#: Тулов с фразой нет (или данные не дают слов) — общая честная фраза: данные получены, ответ не сложился. Причины
-#: она не называет: «слишком длинно» говорит только ``VIOLATION_SPEECH_TOO_LONG``, а бывает, что слов
-#: просто нет.
+#: Поля карточки трека (``music_library info``), которые фраза кода по данным называет после названия, - в этом
+#: порядке (n707 29.10: три поиска по названию, итерации кончились - звучала общая заглушка вместо слов о треке).
+LIBRARY_INFO_FIELDS: Tuple[str, ...] = ("genre", "mood", "tags")
+#: Поле данных ``query``-результата с фразой, которую построил САМ тул из своего результата (``MCPToolResult.message``,
+#: ADR-0148: «фразу об успехе строит код»): мост кладёт её в данные события владельца (``command_turn.owner_event``),
+#: когда она есть. У тула нет своей фразы в :data:`QUERY_FALLBACK_PHRASES` (``get_music_state``: «Сейчас ничего не
+#: играет.», марафон М7 n608) - код по данным говорит её, а не общую заглушку (#4157, класс К2).
+TOOL_MESSAGE_FIELD = "tool_message"
+#: Поля строк данных, которые называют найденное (``title`` трека, ``name`` голоса/звука): нет ни фразы тула, ни своей
+#: фразы - код называет до :data:`LIBRARY_SUMMARY_NAMES` значений из первого списка строк данных
+#: (``query.data_names``), а не заглушку.
+QUERY_NAME_FIELDS: Tuple[str, ...] = ("title", "name")
+QUERY_NAMES_PHRASE = "query.data_names"
+#: Последняя страховка (#4157 К2): данные получены, но в них нет ни одного слова для человека - ни фразы таблицы, ни
+#: фразы тула, ни названий. Звучать не должна (решение Шифу 28.10: «главное что ответ не был шаблоном»); марафон
+#: красит её заглушкой (``gen_night_marathon.STUB_PHRASE_KEYS``). Причины она не называет: «слишком длинно» говорит
+#: только ``VIOLATION_SPEECH_TOO_LONG``.
 QUERY_FALLBACK_GENERIC = "query.fallback_generic"
 #: Последняя итерация хода после выполненного запроса (ADR-0148 п.2: валидатор с понятной ошибкой): данные у
 #: модели, читать больше нечем - ответ без слов (одно лицо или анимация, ``command.bare_answer``) нарушает это
@@ -1724,19 +2233,22 @@ SPEECH_CUT_PHRASE = "command.speech_cut"
 INVALID_COMMAND_PHRASES: Mapping[str, str] = MappingProxyType({"too_long": "command.too_long",
                                                                VIOLATION_SPEECH_TOO_LONG: "command.too_long",
                                                                VIOLATION_SILENT_ANSWER: SILENT_ANSWER_PHRASE,
-                                                               VIOLATION_REMOTE_OWED: REMOTE_OWED_PHRASE})
+                                                               VIOLATION_REMOTE_OWED: REMOTE_OWED_PHRASE,
+                                                               VIOLATION_DONE_CLAIM: DONE_CLAIM_PHRASE})
 #: Нарушения, после которых фраза кода звучит без грусти: модель ответила, только не словами (лицом, анимацией, одним
 #: earcon) - ничего не провалилось («Угу, я тут.» звучало с ``sad``). Провал исполненного действия
 #: грустит по-прежнему: эмоцию фразы решает его исход.
-CALM_VIOLATIONS: Tuple[str, ...] = (VIOLATION_SILENT_ANSWER, VIOLATION_SPEECH_REQUIRED)
+CALM_VIOLATIONS: Tuple[str, ...] = (VIOLATION_KNOWN_VOICE_REGISTER, VIOLATION_SILENT_ANSWER, VIOLATION_SPEECH_REQUIRED,
+                                    VIOLATION_SOUND_ANSWER,
+                                    VIOLATION_SOUND_CATALOG, VIOLATION_VOICE_CATALOG)
 #: Особые ключи каталога фраз (не по классу действия): их обязан содержать ``phrases/ru.yaml``.
 PHRASE_KEYS: Tuple[str, ...] = (
     "understand.timeout", PASSED_ADDRESSED_PHRASE, NEW_SESSION_PHRASE, QUERY_FALLBACK_GENERIC, INVALID_COMMAND_PHRASE,
     LISTEN_ONLY_PHRASE,
-    SPEECH_CUT_PHRASE, *INVALID_COMMAND_PHRASES.values(), *MUSIC_PROMISE_PHRASES.values(),
+    SPEECH_CUT_PHRASE, *INVALID_COMMAND_PHRASES.values(), *MUSIC_PROMISE_PHRASES.values(), VOICE_PROMISE_PHRASE,
+    SEARCH_PROMISE_PHRASE, COUNT_CAPPED_PHRASE, STATE_CLAIM_PHRASE,
     *(question.declined for question in TOOL_QUESTIONS.values()),
-    *(key for entry in QUERY_FALLBACK_PHRASES.values()
-      for key in (entry.all_keys() if isinstance(entry, ByData) else (entry,))),
+    *(key for entry in QUERY_FALLBACK_PHRASES.values() for key in phrase_keys(entry)), QUERY_NAMES_PHRASE,
     REPEAT_NOTHING_PHRASE,
     *(f"provider.exhausted.{reason}" for reason in ("quota", "network", "timeout", "auth", "error")),
     "speak_aloud.rejected.unsupported_script", "speak_aloud.rejected.operator_hold", "speak_aloud.timeout",
@@ -1746,7 +2258,7 @@ PHRASE_KEYS: Tuple[str, ...] = (
     "voice.applied", "voice.unavailable", "voice.rejected", "voice.timeout", "voice.already_default",
     "voice.applied_default", "voice.unavailable_default", "voice.provider_same",
     *(f"perform.no_backing.{reason}" for reason in ("quota", "network", "timeout", "error")),
-    "perform.ask_replace_music", "perform.edit_rejected", "perform.stalled", "identity.ask_name", "identity.confirm",
+    "perform.ask_replace_music", "perform.edit_rejected", "perform.stalled",
     # Tier-1 громкость по каналу (``grammar``): фраза после ответа тула владельца канала
     *(f"{channel}.volume.{intent}" for channel in ("music", "voice") for intent in VOLUME_INTENTS),
     "music.volume_fail", "voice.volume_fail",
@@ -1761,6 +2273,8 @@ PHRASE_KEYS: Tuple[str, ...] = (
     *SOUND_IMITATIONS.values(),
     # отказ памяти при узнанном, но не подтверждённом голосе: своя фраза, не «Не узнаю твой голос»
     f"local.rejected.{VOICE_UNCONFIRMED_REASON}",
+    # подхват с неузнанным автором при прогретом голосе без имени: просьба назваться, а не отказ (Шифу 05.11)
+    f"local.rejected.{ASK_INTRO_REASON}",
     # отказ ЧТЕНИЯ памяти без собеседника: своя фраза, не «запоминать не буду» записи
     *(f"query.rejected.{reason}" for reason in UNBOUND_REASONS),
     # отказ памяти без собеседника у чата Telegram и ТАРС: без слова «голос»
@@ -1791,6 +2305,7 @@ KNOWN_ANIMATIONS: Tuple[str, ...] = (
     "low_battery",
     "police_lights",
     "road_service",
+    "roadworks_beacon",
     "sad",
     "sleep",
     "surprised",
@@ -1820,6 +2335,7 @@ SCENE_WORDS: Mapping[str, str] = MappingProxyType({
     "low_battery": "слабая батарея",
     "police_lights": "полицейская мигалка",
     "road_service": "дорожная служба",
+    "roadworks_beacon": "маячок дорожных работ",
     "sad": "грусть",
     "sleep": "сон",
     "surprised": "удивление",
@@ -1961,21 +2477,48 @@ FACE_SCENE_MAX_S = 30.0
 #: секунд»): сцена ``play_animation`` и лицо команды, когда лицо просили (``tools_view.show_asked``) или модель задала
 #: ``expression.duration_s``, держится не меньше ``FACE_SHOW_MIN_S`` и не больше ``FACE_SCENE_MAX_S`` (ADR §5.5.9);
 #: без заказанного времени - ``FACE_SHOW_DEFAULT_S`` (то же, что по умолчанию у ``face_director`` для запроса без
-#: ``ttl_ms``). Одно правило - ``expression.show_seconds`` (#4089): его читают диалог (``turn.command_face``), тул
+#: ``ttl_ms``). Одно правило - ``expression.show_seconds``: его читают диалог (``turn.command_face``), тул
 #: ``play_animation`` (``data.duration``) и ``face_node`` (сцена без времени); пачка сцен одной команды идёт по очереди,
 #: каждая своё время (``expression.queued``), а не перезаписью. Рефлекс ``done`` сцену вызова не обрезает: время итога -
 #: её время.
 FACE_SHOW_MIN_S = 5.0
 FACE_SHOW_DEFAULT_S = 8.0
-#: Описание параметра ``duration`` тула ``play_animation`` (#4089): пределы и умолчание - из тех же чисел, а не словами
+#: Описание параметра ``duration`` тула ``play_animation``: пределы и умолчание - из тех же чисел, а не словами
 #: в коде тула.
 FACE_SHOW_DURATION_HINT = (f"Сколько секунд держать анимацию: от {FACE_SHOW_MIN_S:g} до {FACE_SCENE_MAX_S:g}; меньше"
                            f" - {FACE_SHOW_MIN_S:g}, больше - {FACE_SCENE_MAX_S:g}; не задано - {FACE_SHOW_DEFAULT_S:g}")
+#: Когда уместен каждый эффект лица (Шифу 05.11, #3780: модель брала эффекты редко - из 314 сцен ``bg`` 3 раза,
+#: ``fx``/``matrix``/``loading_eyes`` ни разу, потому что ей дали список значений, но не сказали, когда что к месту).
+#: Одно место: отсюда собирается ``FACE_SCENE_HINT`` (схема ``expression.face`` и ``play_animation(face=...)``);
+#: ключи обязаны покрывать все значения слотов ``bg``/``fx``/``feat`` (тест), ``none`` - «без эффекта» - не поясняется.
+FACE_EFFECT_WHEN: Mapping[str, Mapping[str, str]] = MappingProxyType({
+    "bg": MappingProxyType({
+        "rainbow": "праздник, дискотека, радость",
+        "fire": "рок, азарт, злость в шутку",
+        "matrix": "думаю, ищу, считаю, «взламываю»",
+    }),
+    "fx": MappingProxyType({
+        "slash": "резкое «отрезал», шутка-удар",
+        "glitch": "что-то не вышло, ошибка, путаница",
+        "boot": "проснулся, включился",
+        "power_down": "засыпаю, выключаюсь",
+    }),
+    "feat": MappingProxyType({
+        "loading_eyes": "долгое ожидание, загрузка",
+    }),
+})
+
+
+def _effects_when(slot: str) -> str:
+    return "; ".join(f"{value} - {when}" for value, when in FACE_EFFECT_WHEN[slot].items())
+
+
 #: Описание схемы сцены для LLM (идёт в схему, не в промпт). ``left``/``right`` - со стороны человека напротив робота.
 FACE_SCENE_HINT = ("Слоты лица; всё, что не задано, берётся из текущей сцены. left/right - со стороны человека"
-                   " напротив робота. Только значения из списков, свободных цветов и форм нет. bg - фон под глазами"
-                   " и ртом; fx - разовый импульс в начале сцены (slash - удар катаной, glitch - сбой, boot -"
-                   " включение, power_down - выключение); feat=loading_eyes - спиннеры вместо глаз (жду, думаю).")
+                   " напротив робота. Только значения из списков, свободных цветов и форм нет."
+                   " Эффекты - когда уместно к смыслу реплики, не в каждом ответе. bg (фон под глазами и ртом): "
+                   f"{_effects_when('bg')}. fx (разовый импульс в начале сцены): {_effects_when('fx')}. "
+                   f"feat (замена черт): {_effects_when('feat')}. tint=rainbow - тоже праздник.")
 #: Стадии хода, чьи сцены лица снимают сцену LLM (``failed``/``silenced``: «радостно» о провале не бывает).
 FACE_SCENE_CANCEL_STAGES: Tuple[str, ...] = ("failed", "silenced")
 
@@ -2049,6 +2592,8 @@ EXECUTING_FACE: Mapping[str, Tuple[str, ...]] = MappingProxyType({
 })
 #: Стадии хода (``TurnEvent.stage``, §2.3), на которые есть рефлекс.
 TURN_STAGES: Tuple[str, ...] = ("addressed", "thinking", "executing", "speaking", "done", "failed", "timeout")
+#: Стадии, подпись которых видит чат пока ход идёт (``chat.progress.<стадия>`` в ``phrases/ru.yaml``).
+CHAT_PROGRESS_STAGES: Tuple[str, ...] = ("thinking", "executing")
 
 
 @dataclass(frozen=True)
@@ -2062,7 +2607,7 @@ class CalendarTheme:
     scene_s: Optional[float] = None
 
 
-#: Календарь тем фар: имена тем — ``rob_box_animations/face/rear.py:THEMES``. Окно — один день; дни рождения робота
+#: Календарь тем фар: имена тем — ``led_matrix_effects.lamps.THEMES`` (ros2leds). Окно — один день; дни рождения робота
 #: и Шифу добавляются, когда будут известны даты (в ADR их нет).
 CALENDAR: Tuple[CalendarTheme, ...] = (
     CalendarTheme(1, 1, "new_year"),
@@ -2153,7 +2698,7 @@ UNPROMPTED_QUIET_SCENES: Tuple[str, ...] = ("Silence", "OperatorHold")
 STARTUP_GREETING_DELAY_S = 12.0
 #: …earcon ``heard`` → пауза → earcon ``done`` → пауза → фраза ``startup.<вердикт готовности>`` (паузы v1: 2 с и 1,5 с).
 STARTUP_GREETING_STEPS_S: Tuple[float, float] = (2.0, 1.5)
-#: Стартовая фраза по готовности узлов (#3913): источник - ``/perception/context_update`` (``active_nodes``/
+#: Стартовая фраза по готовности узлов: источник - ``/perception/context_update`` (``active_nodes``/
 #: ``failed_nodes``/``missing_nodes`` монитора контекстного агрегатора) и здоровье цепочки LLM. Фраза ждёт, пока всё
 #: поднимется, не дольше стольких секунд от старта ноды; потом говорит, что есть (или честно «не знаю»).
 STARTUP_READY_TIMEOUT_S = 90.0
@@ -2303,15 +2848,6 @@ NAME_CASE_STEMS: Mapping[str, str] = MappingProxyType({"льв": "лев", "па
 NAME_CASE_SURE_TAILS: Mapping[str, str] = MappingProxyType({"ой": "а", "ом": ""})
 NAME_CASE_MIN_STEM = 3
 
-#: Вопрос об имени (В17, уточнение Шифу 21.10): не сразу — копить признаки; спрашивать не раньше N-й фразы
-#: собеседника или T секунд разговора с ним (и не меньше двух фраз), один раз на ``person_ref``.
-IDENTITY_ASK_MIN_PHRASES = 3
-IDENTITY_ASK_MIN_S = 60.0
-IDENTITY_ASK_MIN_PHRASES_BY_TIME = 2
-#: Незнакомец без ``person_ref``: не чаще раза в 10 мин (§7.5 п.2).
-IDENTITY_ASK_STRANGER_GAP_S = 600.0
-#: Лицо с именем в кадре за эти секунды — собеседник опознан лицом, «Как тебя зовут?» не нужен.
-IDENTITY_FACE_RECENT_S = 10.0
 #: Потолок хода (В31, решение Шифу 23.10: «вести запрос до конца, пока провайдер жив, промежуточная фраза на ~6 с,
 #: потолок 60–90 с, стоп всегда»). Пока провайдер жив, ход ждёт: вызов LLM в полёте, транспорт не оборвал его своим
 #: таймаутом, цепочка провайдеров не исчерпана (отказ цепочки закрывает ход сразу - ``deadline.ProviderFailed``).
@@ -2325,11 +2861,20 @@ PROGRESS_AFTER_S = 6.0
 #: ``PROGRESS_LLM_PHRASE``.
 PROGRESS_LLM_PHRASE = "understand.progress"
 PROGRESS_PHRASES: Mapping[str, str] = MappingProxyType({"llm": PROGRESS_LLM_PHRASE, "action.media": "media.progress"})
+#: Смена музыки под играющую (#4313, М9 n604 «уводи в сторону рока»: сбор нового сета ~23 с при окне хода 10 с, а
+#: старый сет всё это время играл; робот говорил «музыка запускается», потом «Музыка пока не заиграла»). Ход заказывает
+#: музыку (:data:`MUSIC_STARTING_TOOLS`), пока музыка играет (``SessionSnapshot.music_playing``, один источник «играет»)
+#: — промежуточная фраза и фраза потолка по факту: прежняя музыка звучит, новая собирается. Ключи класса действия.
+MUSIC_REPLACE_PHRASES: Mapping[str, str] = MappingProxyType({"progress": "media.progress_replace",
+                                                            "timeout": "media.timeout_replace"})
+#: Тулы, что заказывают новую музыку (``dj_set`` — кроме стопа; стоп и правка текущего трека ничего не собирают).
+MUSIC_STARTING_TOOLS: Tuple[str, ...] = ("dj_set", "request_music", "generate_music")
 #: Потолок истёк в ожидании LLM - фраза с именем провайдера; провайдер неизвестен - ``understand.timeout``.
 CEILING_PHRASE = "understand.ceiling"
 #: Цепочка провайдеров отказала (провайдер не жив) - фраза с его именем сразу, а не ожидание потолка.
 PROVIDER_FAILED_PHRASE = "understand.provider_failed"
-PHRASE_KEYS = PHRASE_KEYS + (CEILING_PHRASE, PROVIDER_FAILED_PHRASE, *PROGRESS_PHRASES.values())
+PHRASE_KEYS = PHRASE_KEYS + (CEILING_PHRASE, PROVIDER_FAILED_PHRASE, *PROGRESS_PHRASES.values(),
+                             *MUSIC_REPLACE_PHRASES.values())
 #: Журнал смены (решение Шифу 27.10 «можно просто вести лог событий и туда смотреть»; ``shift_log``): в памяти
 #: процесса, не дольше окна и не больше записей кольца; новая сессия разговора его не чистит, рестарт процесса - да.
 SHIFT_LOG_WINDOW_S = 12 * 3600.0
@@ -2395,8 +2940,11 @@ PHRASE_KEYS = PHRASE_KEYS + (SHIFT_EMPTY_PHRASE, SHIFT_SUMMARY_PHRASE, *SHIFT_PA
 #: старые ходы выпадают целиком, ход не режется посередине.
 TURN_WINDOW_MAX_TURNS = 12
 TURN_WINDOW_MAX_TOKENS = 3000
+#: Срок давности окна: пауза между адресованными ходами дольше - окно и сессия сбрасываются кодом
+#: (``window_reset``). 30 мин - предложение карточки, не замерено: дольше паузы внутри разговора, короче ночи.
+DIALOG_WINDOW_IDLE_RESET_S = 1800.0
 #: Query-цикл (§4.1): не больше четырёх итераций данных → LLM на ход (≤ 5 вызовов модели). Решение Шифу 29.10: 2 → 4:
-#: живой n707 (#4216) - модель сделала search, search, а info не влез, прозвучала заглушка «Данные получил…».
+#: живой n707 - модель сделала search, search, а info не влез, прозвучала заглушка «Данные получил…».
 LLM_QUERY_ITERATIONS_MAX = 4
 #: Невалидная команда LLM возвращается модели перечнем нарушений (tool-результат на её вызов ``command``) — столько
 #: повторов на ответ; дальше невалидна — допустимые действия исполняются, об исходе (или о том, что не вышло) говорит
@@ -2493,6 +3041,153 @@ MUSIC_PROMISES: Mapping[str, MusicPromise] = MappingProxyType({
         near=(*MUSIC_PROMISE_NOUNS, *MUSIC_STYLE_STEMS),
         tools=("dj_set", "request_music", "edit_music", "generate_music", "music_library")),
 })
+#: Утверждение «музыку выключил / тишина» в речи модели, пока музыка ИГРАЕТ (М11 n712, 05.11 02:22:46, req45347:
+#: «Тишина. Борису больше не мешаем.» без стоп-тула, музыка играла дальше). Прошедшее о стопе честно только после
+#: стопа: стоп-тул в команде, исход ``done`` стоп-тула в этом ходе (``_Turn.music_stopped``) или музыка уже не играет.
+#: Решает код по СОСТОЯНИЮ (снимок плеера ``SessionSnapshot.music_playing`` - событие владельца), слова лишь называют,
+#: что утверждается: та же форма, что :data:`MUSIC_PROMISES` (``words.music_stop_claimed``), то же нарушение
+#: ``VIOLATION_MUSIC_PROMISE`` и та же фраза кода по состоянию после повтора (``playing``: «Сделать с музыкой ничего
+#: не получилось…»). Без музыки (или после стопа) эти слова - правда, проверка молчит. ``alone`` - слова, что
+#: утверждают тишину сами («Заглушил.»; «Тишина.» - голова части, :data:`MUSIC_SILENCE_CLAIM_HEADS`); ``with_near`` -
+#: прошедшее стопа рядом со словом о музыке («музыку выключил», «трек остановлен»); «не» прямо перед глаголом («музыку
+#: не выключил») - не утверждение.
+MUSIC_STOP_CLAIM = MusicPromise(
+    alone=("заглушил", "заглушила", "заглушено", "заглушена"),
+    with_near=("выключил", "выключила", "выключили", "выключена", "выключено", "выключен", "остановил", "остановила",
+               "остановлена", "остановлено", "остановлен", "вырубил", "вырубила", "убрал", "убрала", "погасил",
+               "погасила", "стихла", "смолкла", "затихла", "замолчала"),
+    near=(*MUSIC_PROMISE_NOUNS, "дидж"), tools=tuple(MUSIC_STOP_TOOLS), unless_before=("не",))
+#: Слово, что утверждает тишину, только когда оно - ГОЛОВА части предложения (начало предложения или часть после
+#: запятой, тире, двоеточия; перед ним - лишь :data:`MUSIC_SILENCE_CLAIM_LEADS`): «Тишина.», «Всё, тишина.», «Тишина,
+#: Борису не мешаем». Посреди части оно - предмет рассказа, а не утверждение о плеере (М12 n311, 05.11 05:17:39: «А
+#: Борис минуту назад просил хоть какую-то музыку, раз тишина давит на уши.» - пересказ просьбы Бориса, музыка играла;
+#: проверка ``stop_claim_false`` дважды вернула ответ модели, и вместо ответа «кто просил» прозвучала сводка сета).
+MUSIC_SILENCE_CLAIM_HEADS: Tuple[str, ...] = ("тишина",)
+#: Служебные слова перед :data:`MUSIC_SILENCE_CLAIM_HEADS` в голове части: «всё, тишина», «ну вот и тишина».
+MUSIC_SILENCE_CLAIM_LEADS: Tuple[str, ...] = ("все", "вот", "ну", "и", "теперь", "наконец", "уже", "да", "так")
+#: Предложение, где есть эти слова, о стопе не утверждает: вопрос, условие, предложение, будущее («если хочешь,
+#: будет тишина», «скажи - и станет тихо», «могу выключить музыку»). Вопрос («Тишина?») - тоже не утверждение.
+MUSIC_STOP_CLAIM_UNLESS: Tuple[str, ...] = (
+    "если", "хочешь", "хотите", "хочется", "нужна", "нужно", "надо", "будет", "станет", "могу", "можем", "скажи",
+    "скажите", "давай", "чтобы", "чтоб")
+MUSIC_STOP_CLAIM_HINT = ("музыка сейчас ИГРАЕТ (music_state), а speech утверждает, что её выключили или стало тихо,"
+                         " хотя стоп-тула в actions нет: это неправда о состоянии. Хочешь выключить - вызови stop_music"
+                         " или dj_set {\"action\": \"stop\"} без speech (о стопе скажет код); не просили выключать -"
+                         " не утверждай тишину")
+#: Просьба ЧЕЛОВЕКА сменить тему играющего диджей-сета (#4347, М10 n604 «Робот, уводи в сторону рока…»: модель дважды
+#: обещала «заявку принял: рок будет», а тула не дала - на повторе обещание без глагола из ``MUSIC_PROMISES``, и оно
+#: прозвучало). Решает код по словам человека и структуре команды (ADR-0148), а не по тексту ответа модели: под
+#: играющим сетом (кадр ``DJ``) повелительный глагол направления и рядом название стиля - смена темы однозначна, в
+#: команде нет тула смены (:data:`THEME_SWITCH_TOOLS`) - код сам кладёт ``dj_set start`` с этой темой (тему сета тул
+#: всё равно сверяет со словами реплики, ``heard_text``), а слова модели не звучат: о новом сете скажет код по исходу.
+#: Глагол есть, а стиля нет («смени музыку») - тему код не угадывает: звучит честная фраза :data:`THEME_SWITCH_FAILED_PHRASE`.
+#: Та же форма, что :data:`MUSIC_PROMISES` (слова целые, строчные, без «ё»; основа ``near`` - начало слова).
+THEME_SWITCH_VERBS: Tuple[str, ...] = (
+    "уводи", "уведи", "сворачивай", "сверни", "переключи", "переключай", "переключись", "поменяй", "меняй", "смени",
+    "сменим", "поверни", "поворачивай", "переходи", "перейди", "уходи", "уйди")
+#: Служебные слова просьбы о музыке - не тема сета (#4393, HIL 04.11: «Останови этот сет и поставь вместо него ночной
+#: рок» дало тему «останови и вместо него ночной» при теме модели «ночной рок» - промах кэша и платная генерация KIE).
+#: Стоп идущей музыки в той же просьбе: стоп - действие, не тема.
+MUSIC_STOP_VERBS: Tuple[str, ...] = (
+    "останови", "остановите", "остановись", "остановить", "останавливай", "стоп", "хватит", "выключи", "выключай",
+    "выключить", "выруби", "вырубай", "заглуши", "прекрати", "прекращай", "убери")
+#: Замена и указание на идущее («вместо него», «вместо этого», «лучше»), направление смены («в сторону»).
+MUSIC_REPLACE_WORDS: Tuple[str, ...] = (
+    "вместо", "него", "нее", "его", "этого", "этот", "это", "эту", "этой", "этим", "лучше", "сторону", "стороне",
+    "стороны", "направлении")
+#: Вейк и обращение к роботу - имя, а не тема; связки между стопом и заказом («а теперь», «потом»).
+MUSIC_ADDRESS_WORDS: Tuple[str, ...] = ("робот", "робби", "роббокс", "робокс")
+MUSIC_LINK_WORDS: Tuple[str, ...] = ("а", "теперь", "сейчас", "потом", "затем", "уже", "тогда")
+#: Все служебные слова просьбы о музыке (строчные, без «ё»): одна таблица для темы сета из слов человека
+#: (``media_command_grammar.SET_REQUEST_WORDS`` → ``theme_grounding.heard_theme``) и смены темы
+#: (:data:`THEME_SWITCH_VERBS`).
+MUSIC_SERVICE_WORDS: FrozenSet[str] = frozenset(
+    (*THEME_SWITCH_VERBS, *MUSIC_STOP_VERBS, *MUSIC_REPLACE_WORDS, *MUSIC_ADDRESS_WORDS, *MUSIC_LINK_WORDS))
+#: Основы стилей, которые называют тему смены (без «стил»/«жанр»: это слово о смене, а не её тема).
+THEME_SWITCH_STYLES: Tuple[str, ...] = tuple(s for s in MUSIC_STYLE_STEMS if s not in ("стил", "жанр"))
+THEME_SWITCH_ASK = MusicPromise(with_near=THEME_SWITCH_VERBS, near=THEME_SWITCH_STYLES)
+#: Просьба сменить без названия стиля: глагол рядом со словом о музыке или теме («смени тему», «переключи музыку»).
+THEME_SWITCH_VAGUE = MusicPromise(with_near=THEME_SWITCH_VERBS,
+                                  near=(*MUSIC_PROMISE_NOUNS, "тему", "темы", "стил", "жанр", "направлени", "сет"))
+#: Тулы, что исполняют смену: те же, что у обещания ``switch``.
+THEME_SWITCH_TOOLS: Tuple[str, ...] = MUSIC_PROMISES["switch"].tools
+THEME_SWITCH_FAILED_PHRASE = "command.theme_switch_failed"
+PHRASE_KEYS = PHRASE_KEYS + (THEME_SWITCH_FAILED_PHRASE,)
+#: Обещание сменить собственную речь без тула (ADR-0148): «заговорю помедленнее», «переключусь на голос
+#: Алёны», «понижу тон». Та же форма, что :data:`MUSIC_PROMISES` (слова целые, строчные, без «ё»; основа ``near`` - начало
+#: слова), валидатор команды (``command._check_voice_promise``) сверяет по словам (``words.voice_promises``). Настоящее
+#: время («говорю медленнее») не обещание: после Tier-1 шага голоса (``voice_step``) оно правда, а фразу о результате
+#: говорит код по исходу тула (``VOICE_DONE``). Ключ - вид; тулы - те, что исполняют.
+VOICE_PROMISE_SPEECH_VERBS: Tuple[str, ...] = (
+    "заговорю", "заговорим", "буду", "будем", "стану", "начну", "скажу", "произнесу", "прочитаю", "продолжу")
+VOICE_PROMISES: Mapping[str, MusicPromise] = MappingProxyType({
+    "speed": MusicPromise(
+        alone=("замедлюсь", "замедляюсь", "замедлимся", "ускорюсь", "ускоряюсь", "ускоримся", "затараторю", "притормозю"),
+        with_near=VOICE_PROMISE_SPEECH_VERBS,
+        near=("помедленн", "медленнее", "побыстр", "быстрее", "тараторить"),
+        tools=("set_speed",)),
+    "pitch": MusicPromise(
+        alone=("понижу", "понижаю", "повышу", "повышаю"),
+        with_near=VOICE_PROMISE_SPEECH_VERBS,
+        near=("басом", "баском", "тоньше", "пискл", "тембр", "потолще"),
+        tools=("set_pitch",)),
+    "voice": MusicPromise(
+        with_near=("переключусь", "переключаюсь", "переключимся", "сменю", "меняю", "поменяю", "включу", "включаю",
+                   "поставлю", "ставлю", "заговорю", "перейду", "перехожу", "возьму", "беру"),
+        near=("голос", "голосом", "голоса", "голосу"),
+        unless_before=("скажу", "прочитаю", "расскажу", "спою", "отвечу"),
+        tools=("set_voice", "set_tts_provider")),
+})
+#: Обещание поискать без тула поиска (#4314 К1, n907 М9: ``search_web`` исполнен, а ответ «Поищу ещё раз, уточню
+#: запрос.» - второго поиска не было). Та же форма, что :data:`MUSIC_PROMISES`; валидатор команды
+#: (``command._check_search_promise``) сверяет по словам (``words.search_promises``). «Поищу» держит любой тул поиска:
+#: в интернете, в памяти, в библиотеке. Прошедшее («поискал», «нашёл») не обещание. ``again`` - «найду ещё раз»:
+#: «ещё раз» рядом только с «найду» (с «проверю», «попробую» оно - про статус или песню, не про поиск).
+SEARCH_PROMISE_TOOLS: Tuple[str, ...] = ("search_web", "memory_search", "music_library")
+SEARCH_PROMISES: Mapping[str, MusicPromise] = MappingProxyType({
+    "search": MusicPromise(
+        alone=("поищу", "поищем", "погуглю", "погуглим", "загуглю", "прогуглю", "отыщу", "разыщу"),
+        with_near=("посмотрю", "посмотрим", "гляну", "глянем", "найду", "найдем", "проверю", "проверим", "уточню",
+                   "уточним", "попробую", "попробуем", "ищу", "ищем"),
+        near=("интернет", "сети", "поиск", "запрос", "гугл", "яндекс", "онлайн"),
+        tools=SEARCH_PROMISE_TOOLS),
+    "again": MusicPromise(
+        with_near=("найду", "найдем"), near=("ещ", "снова", "заново", "повторн"), tools=SEARCH_PROMISE_TOOLS),
+})
+#: Утверждение о сделанном без тула (#4391, HIL 04.11: «Готово, хил-окно удалена.» - ``delete_waypoint`` не вызван, его
+#: не было и в срезе хода). Та же форма, что :data:`MUSIC_PROMISES`, но про прошедшее: речь говорит, что действие уже
+#: сделано, а тула, что его делает, в команде нет; валидатор команды (``command._check_done_claim``) сверяет по словам
+#: (``words.done_claims``). ``unless_before`` - здесь и для ``alone``: «уже удалил» (раньше, в прошлом ходе) и «не
+#: удалил» не утверждают сделанного сейчас. Музыки и памяти тут нет: «музыку выключил» после кодового стопа - правда
+#: (``MUSIC_PROMISES``), «запомнил» говорит код знакомства. Слова - целые, строчные, без «ё».
+DONE_CLAIM_UNLESS_BEFORE: Tuple[str, ...] = ("уже", "не", "раньше", "ранее")
+DONE_CLAIMS: Mapping[str, MusicPromise] = MappingProxyType({
+    "delete": MusicPromise(
+        alone=("удалил", "удалила", "удалили", "удалено", "удалена", "удален", "удалены", "стер", "стерла", "стерли",
+               "стерто", "стерта", "стерты", "очистил", "очистила", "очищено", "очищены"),
+        tools=("delete_waypoint", "clear_waypoints", "music_library"),
+        unless_before=DONE_CLAIM_UNLESS_BEFORE),
+    "waypoint_save": MusicPromise(
+        with_near=("сохранил", "сохранила", "сохранено", "сохранена", "сохранен", "запомнил", "запомнила", "отметил",
+                   "отметила", "записал", "записала"),
+        near=("точк",),
+        tools=("save_waypoint",),
+        unless_before=DONE_CLAIM_UNLESS_BEFORE),
+    "motion": MusicPromise(
+        # «еду» - и «качу», и «вкусную еду»: формы без второго смысла
+        alone=("поехал", "поехала", "выезжаю", "приехал", "приехала", "доехал", "доехала", "подъехал", "подъехала",
+               "отъехал", "отъехала", "двигаюсь"),
+        tools=MOTION_TOOLS + ("stop_navigation",),
+        unless_before=DONE_CLAIM_UNLESS_BEFORE),
+    # громкость (#4480, М14 n511: «Сделал звук глуше и тише.» без единого тула, музыка играла дальше): прошедшее об
+    # уровне - тоже утверждение о сделанном; исполняет его тул громкости (оба канала, как у ``MUSIC_PROMISES["volume"]``)
+    "volume": MusicPromise(
+        alone=("убавил", "убавила", "приглушил", "приглушила", "прибавил", "прибавила"),
+        with_near=("сделал", "сделала", "поправил", "поправила"),
+        near=MUSIC_PROMISES["volume"].near,
+        tools=MUSIC_PROMISES["volume"].tools,
+        unless_before=DONE_CLAIM_UNLESS_BEFORE),
+})
 #: Причина нарушения «пустая команда»: ни речи, ни вопроса, ни действий, ни выступления, и не ``passed``. Это нарушение
 #: (тот же один повтор с объяснением → ``failed``), а не «тихий первый ответ» v1: иначе ход звал LLM второй раз через
 #: ретрай мимо команды (ночной замер 22.10, ход 4: звук потерян). Молчать честно — ``passed``.
@@ -2500,14 +3195,11 @@ VIOLATION_EMPTY_COMMAND = "empty_command"
 #: Аргументы действия на уровне команды без самого действия (n411 марафона-4: ``args`` рядом с ``speech``, ``actions`` нет):
 #: код выбрасывает ``args`` (``command._lift_args``), а просьба осталась бы невыполненной - повтор с подсказкой.
 VIOLATION_ARGS_WITHOUT_ACTION = "args_without_action"
-#: Поле аргументов вызова ``command``, которым мост отдаёт исполнителю хода невалидную команду (значение — причина).
-COMMAND_INVALID_FIELD = "invalid"
-#: Провайдеры, отвечающие ОДНОЙ командой, пока конфиг ``llm_command_providers`` не задан (единственное место знания;
-#: yaml-ключ убран из обоих dialogue_node.yaml, параметр объявляет ``dialogue_node``). DeepSeek - основной, режим
-#: замерен ночью 21-22.10; MiniMax-M3 - запасной, режим ``tool_offered`` замерен 22.10
-#: (docs/research/minimax_command_mode_bench_2026-10-22.md): при отказе DeepSeek робот отвечает той же командой.
-#: Решения Шифу 22.10: 05:50Z «да давай по умолчанию включай»; после замера ч.7d — «MiniMax как запасной в режиме
-#: команд оправдан по скорости и качеству». Выключить - ``llm_command_providers: ""`` в yaml.
+#: Цепочка провайдеров по умолчанию (единственное место знания); каждый провайдер цепочки отвечает ОДНОЙ командой
+#: (``command_bridge.wrapper_for``, #4354 B2). DeepSeek - основной, режим замерен ночью 21-22.10; MiniMax-M3 -
+#: запасной, режим ``tool_offered`` замерен 22.10 (docs/research/minimax_command_mode_bench_2026-10-22.md): при отказе
+#: DeepSeek робот отвечает той же командой. Решения Шифу 22.10: 05:50Z «да давай по умолчанию включай»; после замера
+#: ч.7d — «MiniMax как запасной в режиме команд оправдан по скорости и качеству».
 COMMAND_PROVIDERS_DEFAULT = "deepseek,minimax"
 
 # ---------------------------------------------------------------------------------------------------------------
@@ -2718,7 +3410,19 @@ SPEECH_MAX_CHARS = 280
 SPEECH_ACCEPT_MAX_CHARS = 350
 #: Имя голоса реплики/сегмента (``Command.voice``, ``Performance.voice_per_segment``) - как ``speak_text.voice``.
 VOICE_MAX_CHARS = 64
+#: Действий команды исполняется за ход не больше стольких (ADR-0150 §4.1: «до трёх действий»): первые по порядку модели.
+#: Остальные код не исполняет и называет сам (``turn.capped``, фраза :data:`ACTIONS_CAPPED_PHRASE`), а не выбрасывает
+#: молча (#4391, HIL 04.11: «удали четыре точки» - модель под потолок схемы урезала просьбу сама, прозвучало «Готово.»).
 ACTIONS_MAX = 3
+#: Сколько действий модель может ПРИСЛАТЬ (``maxItems`` схемы, ``too_many_actions``) - больше исполняемого
+#: :data:`ACTIONS_MAX`, как речь 280/350 (``SPEECH_ACCEPT_MAX_CHARS``): просьба человека доходит до кода целиком, и
+#: лишнее видит код, а не теряет модель. Потолок исполнения этим не поднят.
+ACTIONS_ACCEPT_MAX = 8
+#: Фраза кода о действиях сверх :data:`ACTIONS_MAX`: ``named`` - со слотом ``rest`` (что не сделано, словами аргументов
+#: вызова), без имён - общая.
+ACTIONS_CAPPED_PHRASE = "command.actions_capped"
+ACTIONS_CAPPED_NAMED_PHRASE = "command.actions_capped.named"
+PHRASE_KEYS = PHRASE_KEYS + (ACTIONS_CAPPED_PHRASE, ACTIONS_CAPPED_NAMED_PHRASE)
 PERFORM_KINDS: Tuple[str, ...] = ("rap", "song", "tale", "poem")
 PERFORM_BACKINGS: Tuple[str, ...] = ("beat", "calm", "none")
 #: Подложка выступления по виду (решение Шифу 28.10: «на сказку необязательно музыку включать», «на анекдот
@@ -2997,7 +3701,7 @@ def command_schema(mode: str = "json") -> Dict[str, Any]:
         "voice": {"type": "string", "maxLength": VOICE_MAX_CHARS},
         "ask": _object({"expects": _enum(ASK_EXPECTS), "text": {"type": "string", "maxLength": SPEECH_MAX_CHARS}},
                        required=("expects", "text")),
-        "actions": {"type": "array", "maxItems": ACTIONS_MAX,
+        "actions": {"type": "array", "maxItems": ACTIONS_ACCEPT_MAX,
                     "items": _object({"tool": {"type": "string"}, "args": {"type": "object"}}, required=("tool",))},
         "perform": _object({
             "kind": _enum(PERFORM_KINDS),
@@ -3071,6 +3775,11 @@ def _roles_line(perform: Mapping[str, Any]) -> str:
 JOKE_SEGMENTS_MIN = 4
 TALE_SEGMENTS: Tuple[int, int] = (5, 7)
 
+#: Знаки, которые модель пишет в тексте речи (``speech``, ``perform.segments``) — ADR-0160 §2.1, PR-1 (#4238). Модель
+#: пишет голый текст: паузы, ударения, кавычки, тире прямой речи под голос или экран делает код (приёмник и адаптер
+#: провайдера). Кавычка внутри реплики героя ломала JSON команды (29.10, ``bad_json`` → «Не понял, как это сделать»).
+PLAIN_SPEECH_PUNCTUATION: Tuple[str, ...] = (".", ",", "!", "?", ":", ";")
+
 
 @dataclass(frozen=True)
 class PromptRule:
@@ -3088,7 +3797,10 @@ class PromptRule:
 #: свой реестр промптов (``rob_box_supervisor.operator_prompt``).
 PROMPT_RULES: Tuple[PromptRule, ...] = (
     PromptRule("language", (AGENTS[0],),
-               "Speak Russian. English words only as loanwords inside Russian sentences («рэп», «диджей»)."),
+               "Speak Russian. English words only as loanwords inside Russian sentences («рэп», «диджей»). Asked to say"
+               " a phrase in another language («скажи по-китайски») - say it in that language's own script when"
+               " `tts_context.languages` is \"any\" or lists it; otherwise tell that this voice speaks only those"
+               " languages."),
     PromptRule("language", (TEXT_CHANNEL_AGENT,), "Answer in Russian."),
     PromptRule("no_false_claims", (AGENTS[0], TEXT_CHANNEL_AGENT),
                "Never claim an action, a search or a saved fact («включил», «нашёл», «запомнил», «поставил») that no"
@@ -3124,6 +3836,14 @@ PROMPT_RULES: Tuple[PromptRule, ...] = (
                f" {JOKE_SEGMENTS_MIN} segments, story {TALE_SEGMENTS[0]}–{TALE_SEGMENTS[1]}, poem one segment per"
                " stanza). No meta-talk instead of the performance: no «Зачитаю рэпчик!», «Погнали!», «Хочешь ещё?»,"
                " no headers like «[Примечание]»."),
+    PromptRule("plain_speech", (AGENTS[0],),
+               "Text in `speech` and `perform.segments` is plain: the robot's code formats it for each voice and"
+               " screen (pauses, stress, quotes, dashes). Write only words and the punctuation"
+               f" {' '.join(PLAIN_SPEECH_PUNCTUATION)} (a hyphen inside a word is fine): no quotation marks of any"
+               " kind, no dash before direct speech, no brackets, no markup (SSML, tags, Markdown), no emoji. A pause"
+               " is the end of a sentence, a new line or a new segment. A hero's words in `perform` are a segment of"
+               " their own, without the hero's name and a colon in front: who speaks is `role_per_segment`. Rap and"
+               " poems: every line of a verse on its own row (a newline)."),
     PromptRule("remote", (TEXT_CHANNEL_AGENT,),
                "A request to act ON the robot («спой», «покажи анимацию», «покекай роботом», «через робота»,"
                " «развлекай народ», «скажи всем, какой прекрасный день») is done through the ROBOT outlets in this"
@@ -3193,20 +3913,21 @@ def prompt_fragment(schema: Optional[Mapping[str, Any]] = None) -> str:
                    " невалидна): о результате действий скажет код по событию исполнителя; ответ по сути (шутка, стих) —"
                    f" в perform. Исключение — тихие действия {', '.join(QUIET_WITH_SPEECH_TOOLS)}: speech с ними"
                    " звучит."),
-        ("voice", "- voice: голос этой реплики (имя голоса, как у speak_text); голос робота не меняет."),
+        ("voice", "- voice: голос этой реплики (имя голоса); голос робота не меняет."),
         ("ask", f"- ask: вопрос с ожиданием ответа, expects ∈ {_set(ASK_EXPECTS)}."),
-        ("actions", f"- actions: ≤ {ACTIONS_MAX} вызовов тулов {{tool, args}}; не больше одного на класс"
+        ("actions", f"- actions: вызовы тулов {{tool, args}} - все, о чём просил человек, не урезай: за ход код"
+                    f" исполнит первые {ACTIONS_MAX}, об остальных скажет сам; не больше одного на класс"
                     f" {' и '.join(SINGLE_ACTION_CLASSES)}."),
         ("perform", f"- perform: выступление kind ∈ {_set(kinds)}, {SEGMENTS_MIN}–{SEGMENTS_MAX} сегментов"
-                    f" по ≤ {SEGMENT_MAX_CHARS} символов, backing ∈ {_set(backings)}; вместо speech (speech при"
-                    " нём не пиши, даже с actions). Звучит и при actions: ответ по сути (сказка, стих, анекдот), не"
+                    f" по ≤ {SEGMENT_MAX_CHARS} символов (куплет или абзац на сегмент), backing ∈ {_set(backings)};"
+                    " вместо speech (speech при нём не пиши, даже с actions). Звучит и при actions: ответ по сути (сказка, стих, анекдот), не"
                     " отчёт о действиях." + _roles_line(perform) + " set_voice меняет голос робота насовсем — только"
                     " когда об этом просят."),
         ("when", f"- when ∈ {_set(WHEN)}: after_current — после текущего (по умолчанию), now — сейчас."),
         ("edit_pending", "- edit_pending: true — правка идущего выступления: в perform.segments только новые куплеты,"
                          " они заменят ещё не начатые (с какого — решает код). Пример — «и про енота» посреди рэпа:"
                          " {\"edit_pending\": true, \"perform\": {\"kind\": \"rap\", \"backing\": \"beat\","
-                         " \"segments\": [\"А вот и енот — ночной бандит…\", \"Комар и енот — два ночных бойца…\"]}}."),
+                         " \"segments\": [\"А вот и енот, ночной бандит!\", \"Комар и енот, два ночных бойца!\"]}}."),
         ("expression", f"- expression: emotion ∈ {_set(EMOTIONS)}; gesture ∈ {_set(GESTURES)}; earcon ∈"
                        f" {_set(EARCONS)}; face: {face}; duration_s — сколько секунд держать лицо,"
                        f" {FACE_SHOW_MIN_S:g}–{FACE_SCENE_MAX_S:g}."),

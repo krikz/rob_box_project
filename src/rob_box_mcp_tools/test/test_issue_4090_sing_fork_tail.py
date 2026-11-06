@@ -20,12 +20,12 @@ from rob_box_dialog import phrases
 from rob_box_dialog.command import ToolCall
 from rob_box_dialog.execute import Executor
 from rob_box_dialog.respond import join
-from rob_box_harness.core.tool_loop.command_turn import owner_event
+from rob_box_dialog.execute import owner_event
 from rob_box_llm.provider import ToolResult as LLMToolResult
-from rob_box_mcp_tools.engine import tools_v2
+from rob_box_mcp_tools.engine import engine_tools
 from rob_box_mcp_tools.engine.classic import ClassicPick
 from rob_box_mcp_tools.engine.search import ThemeHits
-from rob_box_mcp_tools.engine.tools_v2 import DjSetTool, GenerateMusicTool, RequestMusicTool
+from rob_box_mcp_tools.engine.engine_tools import DjSetTool, GenerateMusicTool, RequestMusicTool
 from rob_box_music.source import LIVE_TOOL_TEXT
 
 from .test_engine_session import _rig
@@ -161,7 +161,7 @@ def test_two_songs_on_the_synthesizer_are_live_singing_not_a_paid_instrumental()
     gen = GenerateMusicTool(None, req)
     result = gen.execute(kind="instrumental", heard_text="Робот, сгенерируй две песни на синтезаторе")
     assert not result.success and result.data["route"] == "live:song"
-    assert result.data["reason"] == tools_v2.SOURCE_DECLINED and LIVE_TOOL_TEXT in (result.error or "")
+    assert result.data["reason"] == engine_tools.SOURCE_DECLINED and LIVE_TOOL_TEXT in (result.error or "")
     assert rig.owner.now_playing().get("playing") is not True
 
 

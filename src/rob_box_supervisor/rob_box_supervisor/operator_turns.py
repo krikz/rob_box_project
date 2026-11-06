@@ -1,4 +1,4 @@
-"""ТАРС на общем движке диалога (ADR-0150 §9.3, решение В7; PR-13 #3708) — путь супервизора при ``dialog_engine=v2``.
+"""ТАРС на общем движке диалога (ADR-0150 §9.3, решение В7; PR-13 #3708) — единственный путь супервизора.
 
 Оператор говорит с тем же движком, что Личность (:class:`rob_box_dialog.turn.TurnEngine`): своя сессия
 ``agent="operator"`` со своим окном ходов, грамматика Tier-1 и срез тулов — из ``AgentSpec(operator)``, те же
@@ -10,7 +10,7 @@
 ``say`` — действие ``action.speak_aloud``: тул ждёт только начала реплики (``pending`` с ``event_ref=speech_id``), итог
 «Озвучил (N с)» приходит позже событием ``SpeechEvent finished`` (:meth:`OperatorHost.on_speech`) и уходит вторым
 ``command_result`` того же запроса (:attr:`OperatorPorts.on_late`). Сроки обещаний — те же, что у чата
-(:class:`rob_box_dialog.chats.ChatTurns`: одна реализация). Путь v1 (``AgentCore``) живёт до PR-15.
+(:class:`rob_box_dialog.chats.ChatTurns`: одна реализация). Путь v1 (``AgentCore``) удалён (#4354 A3).
 
 Модуль без ROS: LLM-цепочку, MCP-тулы и публикации даёт ``supervisor_node``.
 """
@@ -186,18 +186,17 @@ class OperatorHost:
 def build_host(node: Any) -> Tuple[Any, Any]:
     """ТАРС v2 у супервизора — та же дорога, что у ``dialog_node``: цепочка ``build_llm_chain`` в режиме команд моста
     (валидатор знает агента ``operator``), MCP-тулы оператора, ``V2Ports`` с исполнителем. ``(хост, None)``; сбой
-    сборки — ``(None, None)`` (как у v1: ``agent_unavailable``, а не падение ноды)."""
+    сборки — ``(None, None)`` (``agent_unavailable``, а не падение ноды)."""
     import time  # noqa: PLC0415
     from pathlib import Path  # noqa: PLC0415
 
-    from rob_box_core import dialog_engine  # noqa: PLC0415
     from rob_box_dialog import knowledge as kn  # noqa: PLC0415
     from rob_box_dialog.session import Session  # noqa: PLC0415
     from rob_box_dialog.turn import TurnEngine  # noqa: PLC0415
     from rob_box_dialog_msgs.msg import Intent, SpeechEvent  # noqa: PLC0415
     from rob_box_harness.core.assembly import AgentSpec, build_llm_chain, load_system_prompt  # noqa: PLC0415
     from rob_box_voice.core import command_bridge  # noqa: PLC0415
-    from rob_box_voice.core.dialog_v2_ports import CallCounter, V2Ports, command_providers, counted_wrapper  # noqa
+    from rob_box_voice.core.dialog_v2_ports import CallCounter, V2Ports, counted_wrapper  # noqa: PLC0415
 
     from rob_box_supervisor.operator_prompt import operator_prompt  # noqa: PLC0415
 
@@ -207,7 +206,7 @@ def build_host(node: Any) -> Tuple[Any, Any]:
     log = node.get_logger().info
     chain = node._parse_provider_chain(node._param_str("llm_providers", kn.COMMAND_PROVIDERS_DEFAULT))
     counter = CallCounter()
-    bridge = command_bridge.wrapper_for(command_providers(chain), log=log, agent=OPERATOR)
+    bridge = command_bridge.wrapper_for(log=log, agent=OPERATOR)
     spec = AgentSpec(name=OPERATOR, prompt_dir=node._resolve_prompts_dir() or Path(""),
                      system_prompt_file=node._system_prompt_file, provider_chain=chain,
                      settings=node._build_operator_llm_settings(), wrap_provider=counted_wrapper(bridge, counter))
@@ -219,7 +218,7 @@ def build_host(node: Any) -> Tuple[Any, Any]:
     ports = OperatorPorts(base, log)
     base.on_late = ports.late
     node._operator_journal = node._build_operator_journal()
-    engine = TurnEngine(session, ports, system_prompt=operator_prompt(load_system_prompt(spec), dialog_engine.V2),
+    engine = TurnEngine(session, ports, system_prompt=operator_prompt(load_system_prompt(spec)),
                         log=node.get_logger(),
                         sections=lambda _snap, _text: {"operator_journal": node._render_journal_context()})
     host = OperatorHost(engine, ports, base.executor, log)
@@ -232,12 +231,9 @@ def build_host(node: Any) -> Tuple[Any, Any]:
     return (host, None)
 
 
-def agent_path(node: Any, engine: str) -> Tuple[Callable[[], Tuple[Any, Any]], Callable[[Any, Mapping[str, Any]], Any]]:
-    """Сборка и ход агента ТАРС по флагу движка: ``v1`` — ``AgentCore`` супервизора, ``v2`` — общий движок."""
-    if engine == "v2":
-        return (lambda: _safe_build(node)), (lambda host, payload: host.run_payload(payload))
-    # v1 — позднее связывание: тесты и PR-15 подменяют методы ноды
-    return (lambda: node._build_agent_core_sync()), (lambda core, payload: node._run_agent_sync(core, payload))
+def agent_path(node: Any) -> Tuple[Callable[[], Tuple[Any, Any]], Callable[[Any, Mapping[str, Any]], Any]]:
+    """Сборка и ход агента ТАРС на общем движке: ``(сборка хоста, ход хоста)``."""
+    return (lambda: _safe_build(node)), (lambda host, payload: host.run_payload(payload))
 
 
 def _safe_build(node: Any) -> Tuple[Any, Any]:

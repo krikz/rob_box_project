@@ -11,7 +11,7 @@ import pytest
 
 from rob_box_mcp_tools.engine.gen import gen_session as gs
 from rob_box_mcp_tools.engine.gen.library import GeneratedMusicLibrary
-from rob_box_mcp_tools.engine.tools_v2 import DjSetTool, set_opening
+from rob_box_mcp_tools.engine.engine_tools import DjSetTool, set_opening
 from rob_box_music.choice import DeterministicChooser
 
 from .test_adr0158_pr8_gen_set import Kie, _fake_audio_track
@@ -94,3 +94,30 @@ def test_dj_set_with_dj_lines_off_gives_no_opening(tmp_path, monkeypatch):
     out = dj.execute(action="start", tracks=3, heard_text=N605)
     assert out.success, out.error
     assert "opening" not in out.data
+
+
+def test_4313_theme_switch_keeps_old_set_playing_while_new_one_is_prepared(tmp_path, monkeypatch):
+    """М9 n604 «уводи в сторону рока»: сбор нового сета (разбор слов, план путей) идёт, пока старый играет; снят он только
+    перед стартом нового (``replace_set``), и новый звучит сразу."""
+    dj = _dj(tmp_path, monkeypatch, speak=None)
+    assert dj.execute(action="start", tracks=3, heard_text=N605).success
+    assert dj.running
+    seen = {}
+    plan = dj.gen_sets.plan
+
+    def spy_plan(*args, **kwargs):
+        seen["old_active_in_plan"] = dj.running
+        return plan(*args, **kwargs)
+
+    monkeypatch.setattr(dj.gen_sets, "plan", spy_plan)
+    drop = dj._drop_session
+
+    def spy_drop():
+        seen["old_active_at_drop"] = dj.running
+        drop()
+
+    monkeypatch.setattr(dj, "_drop_session", spy_drop)
+    out = dj.execute(action="start", tracks=3, heard_text="Робот, диджей, уводи в сторону рока, сет из трёх треков")
+    assert out.success, out.error
+    assert seen == {"old_active_in_plan": True, "old_active_at_drop": True}
+    assert out.data["started"] and dj.running  # новый звучит (мост или трек кэша)

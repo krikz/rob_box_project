@@ -115,10 +115,22 @@ def build_msg_module(msg_dir: Path, package: str, module_name: Optional[str] = N
     return module
 
 
+def dialog_msgs_dir() -> Path:
+    """Каталог ``.msg`` пакета ``rob_box_dialog_msgs``: рядом с исходниками ядра (чекаут), а у ядра, поставленного
+    пакетом (``packaging/dialog-core``, #4245), - в чекауте, из которого идёт прогон (вверх от текущего каталога).
+    Не нашли - ошибка: пустая заглушка без единого типа молча ломала бы тесты дальше по коду."""
+    cwd = Path.cwd().resolve()
+    candidates = [Path(__file__).resolve().parents[2] / "rob_box_dialog_msgs" / "msg"]
+    candidates += [base / "src" / "rob_box_dialog_msgs" / "msg" for base in (cwd, *cwd.parents)]
+    for msg_dir in candidates:
+        if any(msg_dir.glob("*.msg")):
+            return msg_dir
+    raise FileNotFoundError(f"нет .msg rob_box_dialog_msgs: искали {[str(c) for c in candidates[:2]]} и выше по cwd")
+
+
 def build_dialog_msgs_module() -> types.ModuleType:
     """Заглушка ``rob_box_dialog_msgs.msg``, всегда построенная из ``.msg`` репозитория."""
-    msg_dir = Path(__file__).resolve().parents[2] / "rob_box_dialog_msgs" / "msg"
-    return build_msg_module(msg_dir, "rob_box_dialog_msgs")
+    return build_msg_module(dialog_msgs_dir(), "rob_box_dialog_msgs")
 
 
 def install_dialog_msgs_stub() -> types.ModuleType:

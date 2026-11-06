@@ -65,14 +65,14 @@ def _answer(text: str, kind: str, backing: str):
     lines: List[str] = []
     inner = _Inner([_perform(kind, backing)])
 
-    async def run() -> LLMResponse:
+    async def run() -> cb.CommandResponse:
         with cm.turn_form(form):
             return await cb.CommandModeLLM(inner, log=lines.append).complete(
                 [LLMMessage(role="user", content=text)], tools=[])
 
     out = asyncio.run(run())
     assert len(inner.requests) == 1, "лишнее поле - не нарушение: повтора моста нет"
-    return out.tool_calls[0].arguments["perform"], lines
+    return cm.to_args(out.command)["perform"], lines
 
 
 def test_the_live_case_of_28_10_tale_calm_without_a_music_request_reaches_the_executor_as_none() -> None:

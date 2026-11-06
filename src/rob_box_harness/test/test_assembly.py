@@ -1,46 +1,20 @@
-"""Tests for ``build_agent`` (ADR-0083).
+"""Tests for ``core.assembly`` (ADR-0083): :class:`AgentSpec`, :func:`load_system_prompt`, :func:`build_llm_chain`.
 
-The contract under test:
-
-* :class:`rob_box_harness.core.assembly.AgentSpec` — frozen dataclass
-  with 18 fields covering identity (always-different), LLM (partly shared)
-  and common (always-shared).
-* :func:`build_agent` — single public assembler for ``AgentCore``;
-  the only place outside ``core/agent_core.py`` and the test fixtures
-  where ``AgentCore(`` may appear in ``src/`` (ADR-0083 §2.1).
-* Two specs (personality + operator) with disjoint ``prompt_dir`` /
-  ``memory_namespace`` must yield two distinct ``AgentCore`` instances
-  with their prompts and memory namespaces intact (ADR-0083 §1.4 DoD
-  bullet #3). Skills are gone (ADR-0150 PR-6): the per-turn tool view is
-  set by the node via ``AgentCore.set_visible_tools``.
-* ``SQLiteVoiceMemory(..., agent=...)`` keeps namespaces disjoint
-  inside a single DB file (ADR-0083 §2.4 / §1.4 DoD bullet #2).
+``build_agent`` и цикл v1 ``AgentCore`` удалены (#4354 A3b): диалог v2 берёт только цепочку LLM и промпт.
 """
 
 from __future__ import annotations
 
-import asyncio
 import dataclasses
-import tempfile
-from collections.abc import Iterator
 from pathlib import Path
-from typing import TYPE_CHECKING
 
 import pytest
 
-from rob_box_harness.core.agent_core import AgentCore
 from rob_box_harness.core.assembly import (
     AgentSpec,
-    build_agent,
     load_system_prompt,
 )
-from rob_box_harness.core.dialogue_state_machine import DialogueStateMachine
-from rob_box_harness.memory import Fact, SQLiteVoiceMemory
 from rob_box_harness.providers import DummyLLMProvider
-from rob_box_harness.tools import FakeToolProvider
-
-if TYPE_CHECKING:
-    from rob_box_harness.tools import ToolSpec
 
 
 # ---------------------------------------------------------------------------
@@ -86,20 +60,6 @@ def _stub_llm_builder_auto(stub_llm_builder: DummyLLMProvider) -> DummyLLMProvid
     return stub_llm_builder
 
 
-# ---------------------------------------------------------------------------
-# Fakes (mirrors test_agent_core.py / test_sqlite_voice_memory.py patterns)
-# ---------------------------------------------------------------------------
-
-
-def _make_tools() -> FakeToolProvider:
-    """Test stub tool provider — implements the full ``ToolProvider`` ABC.
-
-    We could subclass the existing ``FakeToolProvider`` and add a single
-    ``noop`` tool, but the framework default is already empty + harmless.
-    """
-    return FakeToolProvider()
-
-
 @pytest.fixture
 def tmp_prompt_dirs(tmp_path: Path) -> tuple[Path, Path]:
     """Create two prompt directories: personality + operator.
@@ -136,13 +96,15 @@ def test_agent_spec_is_frozen(tmp_prompt_dirs: tuple[Path, Path]) -> None:
         spec.name = "operator"  # type: ignore[misc]
 
 
-def test_agent_spec_field_count_is_18(tmp_prompt_dirs: tuple[Path, Path]) -> None:
+def test_agent_spec_field_count_is_pinned(tmp_prompt_dirs: tuple[Path, Path]) -> None:
     """Pin the field count so accidental additions are caught by CI.
 
     The ADR-0083 §2.1 spec listed 18 fields; ADR-0150 PR-6 removed
     ``skill_slice`` and ``narrow_tools_to_skill`` (skills are gone); ADR-0150 §4.5
     (#3696 ч.5) added ``wrap_provider`` (command mode per provider); PR-7b (#3699)
-    removed the dead ``use_scheduler`` flag. A future ADR must accompany any new field.
+    removed the dead ``use_scheduler`` flag; #4354 A3b removed the fields only ``build_agent`` read
+    (``memory_namespace``, ``on_prompt``, ``use_streaming``, ``history_trim_limit``, ``user_id``, ``dsm``).
+    A future ADR must accompany any new field.
     """
     personality_dir, _ = tmp_prompt_dirs
     spec = AgentSpec(
@@ -150,7 +112,7 @@ def test_agent_spec_field_count_is_18(tmp_prompt_dirs: tuple[Path, Path]) -> Non
         prompt_dir=personality_dir,
         system_prompt_file="master.txt",
     )
-    assert len(spec.__dataclass_fields__) == 16
+    assert len(spec.__dataclass_fields__) == 10
 
 
 def test_agent_spec_required_fields_have_no_default(
@@ -205,185 +167,11 @@ def test_load_system_prompt_missing_dir_returns_empty(
     assert load_system_prompt(spec) == ""
 
 
-# ---------------------------------------------------------------------------
-# build_agent — single assembler contract (ADR-0083 §2.1, DoD bullet #1, #3)
-# ---------------------------------------------------------------------------
-
-
-@pytest.fixture
-def sqlite_db_path(tmp_path: Path) -> Iterator[Path]:
-    """Fresh SQLite DB for namespace tests."""
-    db = tmp_path / "harness_voice.db"
-    yield db
-    # Cleanup — tempfile fixture removes the dir.
-
-
-async def _make_memory(db_path: Path, agent: str) -> SQLiteVoiceMemory:
-    """Construct a SQLiteVoiceMemory bound to ``agent`` namespace.
-
-    Mirrors the supervisor/dialogue_node construction flow:
-    ``SQLiteVoiceMemory(db_path=...)`` + ``await store.init()``.
-    """
-    store = SQLiteVoiceMemory(db_path=str(db_path), agent=agent)
-    await store.init()
-    return store
-
-
-@pytest.mark.asyncio
-async def test_build_agent_returns_agent_core(
-    tmp_prompt_dirs: tuple[Path, Path],
-    sqlite_db_path: Path,
-) -> None:
-    """Smoke: ``build_agent`` constructs an ``AgentCore`` with all four
-    ports wired."""
-    personality_dir, _ = tmp_prompt_dirs
-    spec = AgentSpec(
-        name="personality",
-        prompt_dir=personality_dir,
-        system_prompt_file="master.txt",
-    )
-    memory = await _make_memory(sqlite_db_path, agent="personality")
-    tools = _make_tools()
-    core = build_agent(spec, tools=tools, memory=memory)
-    assert isinstance(core, AgentCore)
-
-
-@pytest.mark.asyncio
-async def test_build_agent_passes_system_prompt_to_core(
-    tmp_prompt_dirs: tuple[Path, Path],
-    sqlite_db_path: Path,
-) -> None:
-    """The loaded system prompt reaches ``AgentCore._system_prompt``.
-
-    Regression target — the legacy ``dialogue_node`` used to load the
-    system prompt but lost the reference before passing it to
-    ``AgentCore`` (issue #992 fix). The assembly bench must preserve
-    that wiring."""
-    personality_dir, _ = tmp_prompt_dirs
-    spec = AgentSpec(
-        name="personality",
-        prompt_dir=personality_dir,
-        system_prompt_file="master.txt",
-    )
-    memory = await _make_memory(sqlite_db_path, agent="personality")
-    core = build_agent(spec, tools=_make_tools(), memory=memory)
-    assert "личность робота" in core._system_prompt  # type: ignore[attr-defined]
-
-
-@pytest.mark.asyncio
-async def test_build_agent_two_specs_two_cores_disjoint(
-    tmp_prompt_dirs: tuple[Path, Path],
-    sqlite_db_path: Path,
-) -> None:
-    """ADR-0083 §1.4 DoD bullet #3 — ``build_agent`` for two specs gives
-    two cores with different prompts and different memory namespaces.
-
-    This is THE acceptance test for the contract."""
-    personality_dir, operator_dir = tmp_prompt_dirs
-
-    p_spec = AgentSpec(
-        name="personality",
-        prompt_dir=personality_dir,
-        system_prompt_file="master.txt",
-    )
-    o_spec = AgentSpec(
-        name="operator",
-        prompt_dir=operator_dir,
-        system_prompt_file="operator.txt",
-    )
-
-    # Two distinct memory handles — both pointing at the same SQLite
-    # file but with disjoint ``agent`` namespaces (ADR-0083 §2.4).
-    p_memory = await _make_memory(sqlite_db_path, agent="personality")
-    o_memory = await _make_memory(sqlite_db_path, agent="operator")
-
-    p_core = build_agent(p_spec, tools=_make_tools(), memory=p_memory)
-    o_core = build_agent(o_spec, tools=_make_tools(), memory=o_memory)
-
-    # Distinct core instances.
-    assert p_core is not o_core
-
-    # Different system prompts.
-    assert "личность робота" in p_core._system_prompt  # type: ignore[attr-defined]
-    assert "ТАРС" in o_core._system_prompt  # type: ignore[attr-defined]
-    assert "ТАРС" not in p_core._system_prompt  # type: ignore[attr-defined]
-    assert "личность робота" not in o_core._system_prompt  # type: ignore[attr-defined]
-
-    # Tool view is per turn (set by the node), not per spec: both start without one.
-    assert p_core._visible_tools is None and o_core._visible_tools is None  # type: ignore[attr-defined]
-
-    # Disjoint memory namespaces in a single SQLite file.
-    await p_memory.save_fact(
-        "user:1", Fact(key="hobby", value="hockey"), agent="personality"
-    )
-    await o_memory.save_fact(
-        "user:1", Fact(key="hobby", value="юбисочные"), agent="operator"
-    )
-
-    p_facts = await p_memory.search_facts(
-        "user:1", "hobby", top_k=5, agent="personality"
-    )
-    o_facts = await o_memory.search_facts(
-        "user:1", "hobby", top_k=5, agent="operator"
-    )
-    assert len(p_facts) == 1
-    assert p_facts[0].value == "hockey"
-    assert len(o_facts) == 1
-    assert o_facts[0].value == "юбисочные"
-
-
-@pytest.mark.asyncio
-async def test_build_agent_rejects_empty_provider_chain(
-    tmp_prompt_dirs: tuple[Path, Path],
-    sqlite_db_path: Path,
-) -> None:
-    """``provider_chain=()`` must fail loudly — silent fallback to
-    a default chain is exactly the class of bug ADR-0083 closes."""
-    personality_dir, _ = tmp_prompt_dirs
-    spec = AgentSpec(
-        name="personality",
-        prompt_dir=personality_dir,
-        system_prompt_file="master.txt",
-        provider_chain=(),
-    )
-    memory = await _make_memory(sqlite_db_path, agent="personality")
-    with pytest.raises(RuntimeError, match="provider_chain"):
-        build_agent(spec, tools=_make_tools(), memory=memory)
-
-
-@pytest.mark.asyncio
-async def test_build_agent_respects_user_id_and_dsm(
-    tmp_prompt_dirs: tuple[Path, Path],
-    sqlite_db_path: Path,
-) -> None:
-    """``user_id`` / ``dsm`` are forwarded verbatim to AgentCore
-    (ADR-0083 §2.2 #K, #L)."""
-    personality_dir, _ = tmp_prompt_dirs
-    dsm = DialogueStateMachine()
-    spec = AgentSpec(
-        name="personality",
-        prompt_dir=personality_dir,
-        system_prompt_file="master.txt",
-        user_id="session-uuid-42",
-        dsm=dsm,
-    )
-    memory = await _make_memory(sqlite_db_path, agent="personality")
-    core = build_agent(spec, tools=_make_tools(), memory=memory)
-    assert core._user_id == "session-uuid-42"  # type: ignore[attr-defined]
-    assert core._dsm is dsm  # type: ignore[attr-defined]
-
-
 @pytest.mark.asyncio
 async def test_build_llm_chain_returns_provider(
     tmp_prompt_dirs: tuple[Path, Path],
 ) -> None:
-    """``build_llm_chain`` публичный API для сборки LLM ДО ``build_agent``.
-
-    Нужен нодам, которые держат ссылку на LLM для метрик
-    ``record_voice_llm_request`` / OTel span ``dialogue.llm_call``
-    (issue #1160, ADR-0083 §2.3). Возвращённый LLM — тот же, что
-    потом использует AgentCore (single provider path).
-    """
+    """``build_llm_chain`` — цепочка LLM хода v2 (``dialog_v2_ports``, ТАРС ``operator_turns``)."""
     from rob_box_harness.core.assembly import build_llm_chain
 
     personality_dir, _ = tmp_prompt_dirs
@@ -399,66 +187,6 @@ async def test_build_llm_chain_returns_provider(
     # doesn't gate on env at construction time — that's a runtime
     # concern), so we just check the object exists and isn't None.
     assert llm is not None
-
-
-@pytest.mark.asyncio
-async def test_build_agent_accepts_prebuilt_llm(
-    tmp_prompt_dirs: tuple[Path, Path],
-    sqlite_db_path: Path,
-) -> None:
-    """``build_agent(..., llm=...)`` использует переданный LLM вместо
-    внутренней сборки.
-
-    Контракт (ADR-0083 §2.3): если нода уже собрала LLM
-    (``self._llm`` для метрик), она передаёт его явно, чтобы
-    не дублировать ``build_provider()``-цепочку. Проверяем, что
-    AgentCore использует тот же объект (``is`` identity, а не
-    ``==``).
-    """
-    from rob_box_harness.core.assembly import build_llm_chain
-
-    personality_dir, _ = tmp_prompt_dirs
-    spec = AgentSpec(
-        name="personality",
-        prompt_dir=personality_dir,
-        system_prompt_file="master.txt",
-        provider_chain=("deepseek",),
-    )
-    prebuilt = build_llm_chain(spec)
-    memory = await _make_memory(sqlite_db_path, agent="personality")
-    core = build_agent(
-        spec, tools=_make_tools(), memory=memory, llm=prebuilt
-    )
-    # Identity check: core must hold the exact LLM we passed in,
-    # not a freshly built one. This is the contract that prevents
-    # double build (and double env-key resolution) when the node
-    # wires metrics alongside the core.
-    assert core._llm is prebuilt  # type: ignore[attr-defined]
-
-
-@pytest.mark.asyncio
-async def test_build_agent_without_llm_keeps_backward_compatible_path(
-    tmp_prompt_dirs: tuple[Path, Path],
-    sqlite_db_path: Path,
-) -> None:
-    """``build_agent(spec, tools=..., memory=...)`` без ``llm=`` собирает
-    LLM внутри — обратная совместимость для тестов и supervisor'а
-    (ADR-0083 §2.3, §2.1).
-
-    Default branch must keep working: ``llm=None`` (явно или
-    неявно) → внутренний ``_build_llm_chain`` создаёт provider-chain
-    и core держит свежесобранный LLM.
-    """
-    personality_dir, _ = tmp_prompt_dirs
-    spec = AgentSpec(
-        name="personality",
-        prompt_dir=personality_dir,
-        system_prompt_file="master.txt",
-        provider_chain=("deepseek",),
-    )
-    memory = await _make_memory(sqlite_db_path, agent="personality")
-    core = build_agent(spec, tools=_make_tools(), memory=memory)
-    assert core._llm is not None  # type: ignore[attr-defined]
 
 
 def test_build_llm_chain_wraps_every_built_provider(

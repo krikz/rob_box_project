@@ -138,7 +138,8 @@ RUN pip3 install --no-cache-dir --retries 5 --timeout 300 \
     "coverage>=7.0" \
     "pyyaml>=6.0" \
     "ddgs>=9.0.0" \
-    "duckduckgo-search>=8.0.0"
+    "duckduckgo-search>=8.0.0" && \
+    python3 -c "import numpy, scipy.signal; print('numpy', numpy.__version__, 'scipy', scipy.__version__)"
 
 # IDL-пакеты — готовые из общего образа msgs (stage `msgs` в шапке), а не
 # компиляцией здесь. Стоит ПОСЛЕ pip-слоя: новый MSGS_IMAGE не пересобирает

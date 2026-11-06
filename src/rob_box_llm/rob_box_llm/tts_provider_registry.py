@@ -25,16 +25,9 @@ Composition-root contract:
 * :meth:`TTSProviderFactory.create` is the only entry point for both
   ROS path (``tts_node._synthesize_and_play``) and CLI path (future).
 
-A harness-side sibling exists on purpose:
-
-* :mod:`rob_box_harness.tts.registry` carries the same structure but a
-  different contract — typed ``TTSConfig`` instead of a ``Mapping``,
-  ``ProviderNotFoundError(port="tts")`` instead of ``KeyError``, and a
-  builder that returns the harness wrapper rather than the raw provider
-  built here. It is NOT a copy of this module and the two must not be
-  merged (card W6-2): the harness depends on this package, never the
-  other way round. ``rob_box_harness/test/test_tts_registry_two_levels.py``
-  pins both the intentional differences and the shared contract.
+The harness-side sibling (``rob_box_harness.tts.registry`` with its
+MiniMax wrapper) was removed in #4240: it had no consumers, and the
+wrapper was a second ``minimax_tts`` («не держать две реализации»).
 
 See also:
 

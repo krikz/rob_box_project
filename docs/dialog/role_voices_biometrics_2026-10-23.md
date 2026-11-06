@@ -41,7 +41,7 @@
 
 ## Таблица
 
-Одна таблица знания — `map_tts_voice` в `.github/workflows/scripts/e2e_voice_lib.sh`, строка `voice:pitch:speed`.
+Одна таблица знания — `map_tts_voice` в `scripts/ci/e2e/e2e_voice_lib.sh`, строка `voice:pitch:speed`.
 
 | Роль (голос сценария) | Голос MiniMax | Питч | Темп | Вейк (HIT / проигрыши) | F0, Гц* |
 |---|---|---|---|---|---|

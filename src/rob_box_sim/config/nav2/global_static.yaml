@@ -1,0 +1,26 @@
+# Оверлеи Nav2 для профиля docker/sim (шаг 6 плана Gazebo,
+# docs/research/2026-11-04-gazebo-sim-navigation.md; итоги —
+# docs/research/2026-11-04-sim-controllers-dwb-rpp-mppi.md). Каждый файл
+# этого каталога кладётся --params-file ПОСЛЕ боевого
+# docker/main/config/nav2/nav2_params.yaml (NAV2_PARAMS_OVERLAYS,
+# docker/main/scripts/nav2/start_nav2_direct.sh) и меняет только то, что
+# сравнивается. Робот эти файлы не видит.
+#
+# SIM_GLOBAL_MAP=static (по умолчанию): static_layer, одобрил Шифу 03.11 —
+# глобальная карта берёт карту rtabmap /rtabmap/map. Окно 50×50 м, которое
+# едет за роботом, оставлено: rtabmap в картировании наращивает карту по ходу,
+# и если размер окна взять по карте, цель за её краем планировщик отверг бы.
+# StaticLayer в rolling-окне переносит клетки карты в окно.
+#
+# Цепочка velocity_smoother — не параметр, а переназначение топиков:
+# NAV2_SMOOTH_CMD_VEL (SIM_SMOOTH_CMD_VEL) в docker/sim/compose.yaml.
+global_costmap:
+  global_costmap:
+    ros__parameters:
+      plugins: ["static_layer", "obstacle_layer", "inflation_layer"]
+      static_layer:
+        plugin: "nav2_costmap_2d::StaticLayer"
+        enabled: true
+        map_topic: /rtabmap/map
+        map_subscribe_transient_local: true
+        subscribe_to_updates: false

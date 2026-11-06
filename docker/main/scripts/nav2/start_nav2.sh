@@ -63,7 +63,8 @@ done
 echo ""
 echo -e "${GREEN}✓${NC} /robot_description topic found"
 
-# Ожидание /odom топика (от ros2_control)
+# Ожидание /odom топика (его публикует rtabmap icp_odometry, не ros2_control;
+# колёсная одометрия diff_drive идёт в /diff_drive_controller/odom)
 echo ""
 echo "Waiting for /odom topic..."
 ELAPSED=0
@@ -135,7 +136,7 @@ echo "  • Behavior trees: $BT_DIR"
 echo ""
 echo "Expected topics:"
 echo "  • /robot_description (robot model)"
-echo "  • /odom (odometry from ros2_control)"
+echo "  • /odom (ICP odometry from rtabmap icp_odometry, frame icp_odom -> base_footprint)"
 echo "  • /scan (laser scan from lslidar)"
 echo "  • /map (SLAM map from rtabmap)"
 echo "  • /cmd_vel (output - velocity commands)"

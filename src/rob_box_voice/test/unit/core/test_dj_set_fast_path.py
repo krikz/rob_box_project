@@ -1,27 +1,21 @@
 """Заказ сета словами человека запускает ``dj_set`` код, без LLM (ADR-0148; живой замер 06.10 19:08 UTC).
 
 «Робот, ты диджей 8битный и нас сегодня вечеринка любителей денди и классической музыки замути сэт на 30 минут»:
-STT 19:08:29.7 → ``process_input`` 30.2 → LLM подгрузка скилла 35.5 → LLM ``dj_set`` 44.4 → ``[music v2] started``
+STT 19:08:29.7 → ``process_input`` 30.2 → LLM подгрузка скилла 35.5 → LLM ``dj_set`` 44.4 → ``[music] started``
 46.7 — 17 с тишины. Грамматика видела DJ-запрос, но «и нас» (STT вместо «у нас») не выделило тему, реплика была
 «не закрыта» и ушла в LLM.
 
 Теперь: просьба одна — «замути сэт», остальное — тема; роутер зовёт ``dj_set(start, persona, tracks)`` сам. Тему
 из слов реплики выделяет ``dj_set`` по скрытому ``heard_text`` — той же функцией, что и на пути LLM, поэтому у
-команды ТЕ ЖЕ тема и длина. Контекст хода (``heard_text``/``heard_tracks``/``turn_id``) у команды свой
-(:func:`command_turn_context`), не прошлого хода LLM.
+команды ТЕ ЖЕ тема и длина.
 """
 
 from __future__ import annotations
-
-import asyncio
 
 import pytest
 
 from rob_box_voice.core.media_command_grammar import is_spoken_theme_set, parse_media_command
 from rob_box_voice.core.media_router import MediaRouter, MediaState
-from rob_box_voice.core.media_plan_run import command_turn_context, run_media_plan
-from rob_box_voice.core.music_player_state import MusicEventLog, build_music_event_payload
-from rob_box_voice.core.set_length_words import heard_set_length
 
 LIVE_1908 = ("Робот, ты диджей 8битный и нас сегодня вечеринка любителей денди и классической музыки "
              "замути сэт на 30 минут")
@@ -41,14 +35,6 @@ def test_live_phrase_is_routed_to_dj_set_by_code():
                                             "tracks": 24}
     assert plan.cancel_inflight and plan.confirm_started
     assert plan.say_ok == "Я диджей 8битный, включаю сет."  # фраза кода, по событию started
-
-
-def test_live_phrase_gets_its_own_turn_context_with_length_24():
-    plan = _route(LIVE_1908)
-    ctx = command_turn_context(plan, LIVE_1908)
-    assert ctx["_turn_heard_text"] == LIVE_1908
-    assert ctx["_turn_set_tracks"] == 24 == heard_set_length(LIVE_1908)
-    assert ctx["_turn_id"] and ctx["_turn_id"] != command_turn_context(plan, LIVE_1908)["_turn_id"]
 
 
 # Та же тема, что на пути LLM (денди + классика), — на настоящем dj_set с этими аргументами и heard_text:
@@ -88,15 +74,14 @@ def test_spoken_theme_set_accepts_one_set_order_with_theme_words():
     assert parse_media_command(LIVE_1908).closed is True
 
 
-def test_command_over_the_llm_turn_keeps_its_context():
-    """Ответ поверх хода LLM (без отмены: «что играет») — его скрытый контекст не трогаем. Громкость, которая была
-    таким примером, теперь Tier-1 ``rob_box_dialog.grammar`` (ADR-0150 PR-6) и плана роутера не имеет."""
+def test_command_over_the_llm_turn_does_not_cancel_it():
+    """Ответ поверх хода LLM (без отмены: «что играет»). Громкость, которая была таким примером, теперь Tier-1
+    ``rob_box_dialog.grammar`` (ADR-0150 PR-6) и плана роутера не имеет."""
     plan = _route("что сейчас играет", MediaState(music_playing=True, track_name="Still Dre"))
     assert plan is not None and not plan.cancel_inflight
-    assert command_turn_context(plan, "что сейчас играет") == {}
 
 
-# ── 07.10: тема «у нас сегодня …» — не грамматикой, фраза запуска — из темы результата dj_set ────────────────
+# ── 07.10: тема «у нас сегодня …» — не грамматикой ────────────────
 LIVE_U_NAS = ("Робот, ты диджей 8битный и у нас сегодня вечеринка любителей денди и классической музыки "
               "замути сэт на 30 минут")
 ATLAS = "Ты диджей Атлас и у нас сегодня вечеринка любителей кино, играй мелодии из топовых фильмов"
@@ -114,29 +99,7 @@ def test_spoken_theme_is_not_cut_by_the_grammar(text, args):
     assert "Тема" not in plan.say_ok and "диджей диджей" not in plan.say_ok
 
 
-def _started_phrase(plan, result):
-    events = MusicEventLog()
-    events.observe_json(build_music_event_payload("started", "s:01:A:x", ts=1.0, phase_in_form=0.0))
-
-    async def call_tool(_call):
-        return True, "Сет начат\n" + repr({"ok": True, "track_id": "s:01:A:x", **result})
-
-    return asyncio.run(run_media_plan(plan, call_tool, events))[1]
-
-
-def test_started_phrase_names_the_theme_dj_set_actually_took():
-    """Фразу строит код из результата тула (ADR-0148): тема — та, что выделил dj_set, а не сырой хвост реплики."""
-    assert _started_phrase(_route(ATLAS), {"theme": "кино, фильмов"}) == (
-        "Я диджей Атлас, включаю сет. Тема — кино, фильмов.")
-    assert _started_phrase(_route(ATLAS), {}) == "Я диджей Атлас, включаю сет."
-    themed = _route("включи диджей сет на тему космос")
-    assert _started_phrase(themed, {"theme": "что-то другое"}) == "Включаю диджей-сет. Тема — космос."
-
-
-def test_named_play_plan_gets_its_own_turn_context_3525():
-    """Заказ по имени (cancel_inflight=False до находки) — своя реплика: новый turn_id, как у команды роутера."""
+def test_named_play_plan_does_not_cancel_before_the_find_3525():
+    """Заказ по имени (cancel_inflight=False до находки) — план роутера с ``play_name``."""
     plan = _route("Робот, поставь к Элизе")
     assert plan is not None and plan.play_name and not plan.cancel_inflight
-    a, b = command_turn_context(plan, "x"), command_turn_context(plan, "x")
-    assert a["_turn_id"] and a["_turn_id"] != b["_turn_id"]
-    assert a["_turn_heard_text"] == "x"

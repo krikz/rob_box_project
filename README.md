@@ -1,422 +1,111 @@
 <div align="center">
-  <img src="assets/logo.svg" alt="РОББОКС Logo" width="400"/>
-  
-  # РОББОКС - Автономный колесный ровер
+  <img src="assets/logo.svg" alt="РОББОКС" width="400"/>
 
-  [![Build All Docker Images](https://github.com/krikz/rob_box_project/actions/workflows/build-all.yml/badge.svg)](https://github.com/krikz/rob_box_project/actions/workflows/build-all.yml)
-  [![Build Base Images](https://github.com/krikz/rob_box_project/actions/workflows/build-base-images.yml/badge.svg)](https://github.com/krikz/rob_box_project/actions/workflows/build-base-images.yml)
+  # РОББОКС
+
+  **Автономный четырёхколёсный ровер на ROS 2: ездит по карте, слушает, узнаёт людей, говорит, играет музыку и показывает лицо на светодиодах.**
+
+  [![G: Run Tests](https://github.com/krikz/rob_box_project/actions/workflows/G-Run%20Tests.yml/badge.svg)](https://github.com/krikz/rob_box_project/actions/workflows/G-Run%20Tests.yml)
+  [![G: Lint Code](https://github.com/krikz/rob_box_project/actions/workflows/G-Lint%20Code.yml/badge.svg)](https://github.com/krikz/rob_box_project/actions/workflows/G-Lint%20Code.yml)
+  [![L: Build All Services](https://github.com/krikz/rob_box_project/actions/workflows/L-Build-All-Services.yml/badge.svg)](https://github.com/krikz/rob_box_project/actions/workflows/L-Build-All-Services.yml)
+
+  <img src="https://raw.githubusercontent.com/krikz/ros2leds/main/docs/images/rover.gif" alt="Лицо ровера на светодиодных матрицах" width="480"/>
+  <br/><sub>Лицо ровера на NeoPixel-матрицах. Картинка из репозитория <a href="https://github.com/krikz/ros2leds/blob/main/docs/images/rover.gif">ros2leds</a>.</sub>
 </div>
 
-## Описание проекта
-РОББОКС - это образовательный проект автономного робота, созданный для изучения работы с ROS2. Проект охватывает основные аспекты разработки роботизированных систем, включая управление движением, обработку данных с датчиков и взаимодействие с пользователем.
+РОББОКС — образовательный проект робота-доставщика для помещений. Три Raspberry Pi 5 на борту, ROS 2 Humble,
+Docker, Zenoh. Репозиторий ведёт товарищ Шифу; код и документы пишут люди и AI-агенты по правилам из [AGENTS.md](AGENTS.md).
 
-## 📚 Документация
+## Что умеет
 
-### 🗺️ Roadmap
-- **[ROADMAP_SIMPLE.md](ROADMAP_SIMPLE.md)** ⭐ - **Презентационный формат** - обзор проекта для широкой аудитории без технического жаргона
-- **[ROADMAP.md](ROADMAP.md)** - Техническая дорожная карта: реализованные и планируемые фичи, технологический стек, этапы развития
+- **Голосовой диалог v2 с вейк-словом.** Модель отдаёт команду, код исполняет её и сам говорит об исходе ([ADR-0150](docs/adr/0150-dialog-v2-session-command-event.md), [ADR-0148](docs/adr/0148-code-decides-llm-speaks.md)).
+- **Узнаёт людей по голосу и лицу.** Лицо и голос связываются, незнакомцу выдаётся кличка ([ADR-0164](docs/adr/0164-person-identity-face-voice-nickname.md)).
+- **Пульт в Telegram.** Бот оператора живёт на Sound Pi (`docker/sound/telegram_bot`, пакет `rob_box_telegram`).
+- **Живая музыка и DJ-сеты.** Синтез в SuperCollider, аранжировщик и DJ-движок ([ADR-0149](docs/adr/0149-arranger-v2-dj-engine.md), [ADR-0147](docs/adr/0147-dj-set-energy-arc.md)).
+- **Лицо на светодиодах.** Драйвер [ros2leds](https://github.com/krikz/ros2leds) подключён сабмодулем (`src/ros2leds`), общие эффекты — его пакет `led_matrix_effects`, анимации лица — [`src/rob_box_animations`](src/rob_box_animations/README.md).
+- **Навигация Nav2 с картами и точками** (RTAB-Map и лидар LSLIDAR N10). Минимальный проём — **0.90 м**, подобран экспериментом в HIL 05.11 ([решение](docs/shifu-decisions.md#d-20261105-min-doorway), [замеры](docs/research/2026-11-05-nav2-hil-tuning.md)).
+- **Защита по лидару.** В движении `proximity_guard_node` включает «внимание» (маячок и бипер) и «стоп» (нулевой Twist в `cmd_vel_emergency`), см. «Зона безопасности» в [CONTEXT.md](CONTEXT.md).
+- **HIL-симуляция в Gazebo.** Стек настоящего робота работает на данных симулятора с песочницы ([`scripts/hil/`](scripts/hil/), [`docker/sim/`](docker/sim/)).
 
-### 🚀 Быстрый старт
-Новичкам начать здесь:
-- **[Быстрый старт](docs/guides/QUICK_START.md)** - Запуск системы за 10 минут
-- **[Чеклист](docs/guides/VISION_PI_SETUP.md)** - Контрольный список запуска
+## Симуляция (HIL)
 
-### 📖 Руководства пользователя
-- **[Визуализация в RViz](docs/guides/VISUALIZATION.md)** - Проверка URDF модели
-- **[Управление питанием RPi5](docs/guides/POWER_MANAGEMENT.md)** - Питание, троттлинг, HAT
-- **[Система мониторинга](docs/guides/MONITORING_SYSTEM.md)** ⭐ - Grafana, Prometheus, Loki для мониторинга робота
-- **[Скрипты мониторинга](docker/monitor_system.sh)** - Проверка состояния системы
-- **[Настройка LSLIDAR](docs/guides/LSLIDAR_SETUP.md)** - Подключение лидара
-- **[Решение проблем](docs/guides/TROUBLESHOOTING.md)** - Диагностика и устранение неисправностей
-- **[Bash алиасы](docs/deployment/VISION_PI_DEPLOYMENT.md)** - Удобные команды
-- **[MiniMax TTS — руководство пользователя](docs/guides/MINIMAX_TTS.md)** - подключение MiniMax T2A v2 как TTS-провайдера в `tts_node`
-- **[MiniMax TTS — getting started](docs/guides/MINIMAX_TTS_GETTING_STARTED.md)** - минимальный путь от нуля до публикации аудио в ROS2
-- **[MiniMax TTS — API reference](docs/api/MINIMAX_TTS.md)** - публичный контракт `MiniMaxTTSProvider` (параметры, возвращаемые значения, исключения)
+Записи настоящих прогонов: Gazebo и RTAB-Map на стеке робота. Устройство и план — [docs/research/2026-11-04-hil-robot-on-gazebo-data.md](docs/research/2026-11-04-hil-robot-on-gazebo-data.md).
 
-### 📖 Справочная информация
-- **[Архитектура](docs/architecture/SYSTEM_OVERVIEW.md)** - Полная архитектура системы
-- **[Process diagrams (ADD pipeline)](docs/diagrams/process-overview.md)** - Mermaid sequence + flowchart нашего ADD-процесса: Шифу → issue → triage → worker → PR → merge-gate → e2e-process → L-E2E Voice Test → completion-check (GATE-3). Связано с [ADR-0018](docs/adr/0018-agent-honesty-culture.md) и [ADR-0022](docs/adr/0022-process-e2e-done-gates.md).
-- **[Конфигурация RTAB-Map + LiDAR](docs/guides/VISUALIZATION.md)** ⭐ - 2D SLAM с лазерным сканером
-- **[Fusion 360 Measurements](docs/architecture/HARDWARE.md)** - Геометрия робота
-- **[VESC Integration](https://github.com/krikz/vesc_nexus)** - Интеграция моторов
-- **[Оптимизация](docs/development/BUILD_OPTIMIZATION.md)** - Детали оптимизации OAK-D + RTAB-Map
-- **[Резюме оптимизации](docs/development/BUILD_OPTIMIZATION.md)** - Краткий обзор изменений
+<table>
+  <tr>
+    <td align="center"><img src="docs/assets/hil/polygon.gif" alt="Gazebo: проезд полигона" width="400"/><br/><sub><b>Gazebo: проезд полигона (04.11).</b> Сверху и 3D-камера за роботом. Мир тогда был с проёмом 0.8 м, не 0.90 м.</sub></td>
+    <td align="center"><img src="docs/assets/hil/turn90.gif" alt="Gazebo: Г-образный поворот" width="400"/><br/><sub><b>Gazebo: Г-образный поворот (04.11).</b></sub></td>
+  </tr>
+  <tr>
+    <td align="center"><img src="docs/assets/hil/corridor_mapping.gif" alt="RTAB-Map строит карту коридора" width="400"/><br/><sub><b>RTAB-Map строит карту коридора (04.11):</b> истинная поза против оценки.</sub></td>
+    <td align="center"><img src="docs/assets/hil/e1_g090_r5.gif" alt="Проезд через проём 0.90 м" width="400"/><br/><sub><b>Проём 0.90 м, вид сверху (05.11).</b> После подбора запаса корпуса (<code>footprint_padding</code> 0.03).</sub></td>
+  </tr>
+</table>
 
-### 🔧 Для разработчиков
-- **[Руководство для AI агентов](docs/development/AGENT_GUIDE.md)** ⭐ Критически важно!
-- **[Стандарты Docker](docs/development/DOCKER_STANDARDS.md)** - Правила работы с Docker
-- **[Оптимизация сборки](docs/development/BUILD_OPTIMIZATION.md)** - Ускорение разработки
-- **[Build Machine](docker/build/README.md)** ⭐ - Локальная инфраструктура сборки (10-20x быстрее)
-- **[CI/CD Pipeline](docs/CI_CD_PIPELINE.md)** - Автоматизация сборки и деплоя
-- **[Contributing](CONTRIBUTING.md)** - Как участвовать в проекте
+Проезд через тот же проём в обратную сторону — [w4_g090_r5.gif](docs/assets/hil/w4_g090_r5.gif).
 
-📂 **[Полная документация](docs/README.md)** - Структурированный каталог всей документации
+## Железо и узлы
 
-## ⚡ Последние изменения
+Три Raspberry Pi 5 в одной сети, у каждого свой `docker-compose.yaml`. IP: `eth0` / `wlan0`.
 
-**22 июля 2026** — MiniMax LLM-провайдер (PR #907, фазы M0+M1+M4):
-- 🧠 **`MiniMaxProvider`** — OpenAI-compatible адаптер для `MiniMax-M3` в `rob_box_llm`:
-  text + tools + streaming + vision, opt-in через `MINIMAX_API_KEY`
-- 🖼️ **Мультимодальный `LLMMessage.content`** — `TextPart` / `ImagePart`
-  с per-model capability gate (`MINIMAX_MAX_IMAGE_BYTES = 10 MB`)
-- 🔐 **`MiniMaxRedactedLogFilter`** + маппинг `base_resp.status_code` →
-  типизированные `ProviderError` (auth / rate limit / content filter)
-- 📐 **`ProviderCapabilities` + `capabilities_for(model)`** —
-  fail-fast gate до сетевого вызова, безопасный fallback
-- 📖 **Документация** — [`docs/guides/MINIMAX.md`](docs/guides/MINIMAX.md)
-  (text+vision гайд), `docs/guides/examples/minimax_llm.yaml` (factory
-  шаблон), `architecture/minimax-provider.md`, [ADR-0002](docs/adr/0002-minimax-provider.md)
-- 🧪 **35 новых unit-тестов** + полный conformance suite; **85 зелёных** в `rob_box_llm` итого
-- ⚠️ **Не вошло**: provider registry/factory (M2), consumer migration (M3),
-  image generation (M6) — отдельные Kanban-задачи
-
-**19 февраля 2026** - PRD и система AI-агентов:
-- 📋 **PRD.md** — Product Requirements Document: 34 задачи, milestones, acceptance criteria
-- 🤖 **11 AI-агентов** — специализированные агенты: navigation, backend, voice, frontend, devops, docs, diagnostics и др.
-- 🔍 **diagnostics-agent** — удалённая SSH-диагностика контейнеров, ROS 2 топиков и здоровья сервисов
-- 📊 **tasks.json** — структурированный список задач с приоритетами и test_steps
-- 📝 **progress.md** — лог выполнения задач агентами
-
-**30 января 2026** - Стабилизация голосового ассистента:
-- 🔧 **Бесконечные анимации** — race condition исправлен, добавлен лимит итераций MAX_ITERATIONS=10
-- 🎵 **51 звуковой эффект** — sound_catalog.json, загрузка по контексту, GetSoundInfoTool
-- ⏱️ **Stream timeouts** — таймауты и ThreadPoolExecutor fix для dialogue_node
-- 📊 **Логирование токенов** — учёт usage токенов LLM API ([TOKEN_USAGE_LOGGING.md](docs/fixes/TOKEN_USAGE_LOGGING.md))
-- 🔗 **DeepSeek connection pool** — отключён idle timeout, QoS mismatch исправлен
-
-**20 декабря 2025** - ICP Одометрия и NAV2 тюнинг:
-- 📐 **ICP Odometry** — fusion wheel odometry + ICP (Iterative Closest Point) для RTAB-Map
-- 🎯 **NAV2 Tuning** — детальная настройка параметров навигации ([гайд](docs/fixes/NAV2_NAVIGATION_TUNING_2025-12-16.md))
-- 📡 **ICP архитектура** — [документация TF-дерева и потоков данных](docs/architecture/ICP_ODOMETRY.md)
-
-**4 ноября 2025** - LLM провайдеры и GUI:
-- 🔄 **Fallback Qwen ↔ DeepSeek** — автоматическое переключение провайдеров LLM при ошибке
-- 🖥️ **GUI управления роботом** — интерфейс мониторинга и управления (`tools/robot_control_gui_simple.py`)
-- 🎤 **enable_search** — параметр для Qwen API web-поиска
-- ⚡ **Batching запросов** — все запросы с таймаутом 2.5с отправляются одним пакетом в LLM
-
-**26 октября 2025** - Build Machine Infrastructure:
-- 🚀 **Build Machine** - Локальная инфраструктура для сборки Docker образов
-- ⚡ **10-20x быстрее** - обновление Raspberry Pi с 25-35 мин до 3-5 мин
-- 🗄️ **Локальный Registry** - Docker образы хранятся в локальной сети
-- 📦 **APT Cache** - кэширование пакетов ускоряет сборку в 3-5 раз
-- 🤖 **Self-hosted Runner** - GitHub Actions выполняются локально
-
-**24 октября 2025** - Крупные улучшения системы:
-- ✅ **Система мониторинга** - Grafana, Prometheus, Loki для наблюдения за роботом
-- ✅ **Исправление TF трансформаций** - robot-state-publisher теперь корректно публикует через Zenoh
-- ✅ **Улучшение голосового ассистента** - добавлена синхронизация TTS чанков и time awareness
-- ✅ **Перемещение контейнеров** - perception и lslidar теперь на Main Pi для оптимизации
-- ✅ **Документация Zenoh** - полное руководство по namespace и облачному подключению
-- ✅ **Исследование маппинга** - лучшие практики для RTAB-Map SLAM
-
-**23 октября 2025** - Улучшения CI/CD:
-- ✅ Изменена стратегия auto-merge на PR-based workflow для лучшего контроля
-- ✅ Исправлены дублирующиеся запуски тестов и линтинга
-
-**10 октября 2025** - Реорганизация проекта:
-- ✅ Исправлена структура Dockerfiles (убраны COPY конфигов/скриптов)
-- ✅ Реорганизована файловая структура (`config/{service}/`, `scripts/{service}/`)
-- ✅ Добавлена документация по питанию RPi5 и скрипты мониторинга
-- ✅ Структурирована документация в `docs/` с категориями
-- ✅ Изменения конфигов теперь применяются за 2-5 сек вместо 5-10 мин
-
-**8 октября 2025** - Оптимизация для Raspberry Pi:
-- 🚀 Снижение CPU: с 85% до 30-45% на Pi с камерой
-- 🌐 Снижение network: с 80-100 Mbps до 8-15 Mbps
-- 💾 Экономия памяти: ~50% на обоих Pi
-- ✅ Стабильная работа: 5 FPS без пропусков
-
-## 🧪 Test bench (воспроизводимое окружение)
-
-> Полная пошаговая инструкция: **[TEST_BENCH.md](TEST_BENCH.md)** — подготовка,
-> standalone MiniMax mock, полный bench, ROS2 capture harness, ffmpeg-сценарии,
-> acceptance checks и известный endpoint blocker.
->
-> Зафиксированные версии и инварианты для воспроизводимой сборки и прогона
-> `rob_box_llm` + `rob_box_voice` (см. задачу `t_85c00e0c`).
-
-### Подтверждённые версии (Debian 13 / trixie, хост builder)
-
-| Компонент | Версия | Источник |
+| Узел | IP | Контейнеры (по compose) |
 |---|---|---|
-| OS | Debian GNU/Linux 13 (trixie), kernel 6.8.0-124-generic | `/etc/os-release`, `uname -r` |
-| ROS 2 distro | **Humble** (`/opt/ros/humble`) | `apt packages.ros.org/ros2/ubuntu jammy` |
-| Python (ROS) | **3.10.12** (`/usr/bin/python3.10`) | `/opt/ros/humble/bin/ros2` shebang |
-| Python (system) | 3.11.15 (`/usr/local/bin/python3`) | hermes docker backend; **не использовать для ROS** |
-| rclpy | `2.3.2-1jammy.20260304.204758` (через `ros-humble-rcl-logging-spdlog`/interface) | `dpkg -l` |
-| ament_* | `1.3.14-1jammy.20260226.*` | `dpkg -l` |
-| `ros-humble-audio-common-msgs` | `0.4.0-2jammy.20260611.075308` | `dpkg -l` |
-| `ros-humble-std-srvs` | `4.9.1-1jammy.20260605.120647` | `dpkg -l` |
-| `colcon` (colcon-common-extensions) | 0.26.0 | `apt` |
-| `rosdep` | 0.26.0 | `apt` |
-| `ffmpeg` | 7.1.5-0+deb13u1 | `apt` |
-| `pytest` / `pytest-asyncio` / `pytest-cov` | 9.1.1 / 1.4.0 / 7.1.0 | pip 25.1.1 (user site, 3.10) |
-| `httpx`, `openai` | 0.28.1, 2.46.0 | pip (system Debian, 3.10) |
-| `aplay` / `arecord` (alsa-utils) | 1.2.14-1 | `apt` |
-| **ALSA loopback** (`snd_aloop`) | ❌ **не загружается** (модуль отсутствует в этом ядре) | `modinfo snd_aloop` → not found |
+| **Main Pi** | `10.1.1.10` / `10.1.1.20` | `ros2-control` (VESC по CAN), `lslidar`, `rtabmap`, `nav2`, `imu-filter`, `robot-state-publisher`, `twist-mux`, `proximity-guard`, `perception`, `teleop`, `zenoh-router` — [`docker/main/`](docker/main/docker-compose.yaml) |
+| **Vision Pi** | `10.1.1.11` / `10.1.1.21` | `oak-d` (OAK-D-Lite), `ceiling-camera`, `led-matrix`, `vision-hailo`, `vision-face`, `zenoh-router` — [`docker/vision/`](docker/vision/docker-compose.yaml) |
+| **Sound Pi** | `10.1.1.12` / `10.1.1.22` | `voice-assistant`, `supercollider`, `supervisor`, `avatar-arbiter`, `quest`, `telegram-bot`, `sensor-bridge`, `zenoh-router` — [`docker/sound/`](docker/sound/docker-compose.yaml), [ADR-0159](docs/adr/0159-sound-pi-third-node-voice-stack-and-sensor-hub.md) |
 
-### Виртуальный audio sink вместо ReSpeaker
+- **Привод:** 4 колеса 10″ от электросамоката, 4× VESC на CAN, драйвер [vesc_nexus](https://github.com/krikz/vesc_nexus) (сабмодуль).
+- **Датчики:** OAK-D-Lite, лидар LSLIDAR N10, ReSpeaker Mic Array v2.0, плата ESP32 [robot_sensor_hub](https://github.com/krikz/robot_sensor_hub).
+- **Питание:** две гироскутерные батареи smartONE 10S2P Li-ion, 36 В номинал, 42 В заряженные ([HARDWARE.md](docs/architecture/HARDWARE.md)).
+- **ПО:** ROS 2 Humble, Zenoh (`rmw_zenoh_cpp`), Docker Compose. Каталоги `config/` и `scripts/` монтируются volumes, а не копируются в образ.
 
-Реальное USB-устройство ReSpeaker Mic Array v2.0 в test-bench **не используется**.
-Разрешённые фиктивные sink-и (по убыванию предпочтения):
+## Архитектура
 
-1. **PulseAudio `module-null-sink` + `module-loopback`** (headless host с `pulseaudio -D`):
-   ```bash
-   pactl load-module module-null-sink sink_name=respeaker_fake
-   pactl load-module module-loopback source=respeaker_fake.monitor
-   ```
-2. **FFmpeg null muxer** (полностью файловый sink, без pulse):
-   ```bash
-   ffmpeg -f lavfi -i "anullsrc=channel_layout=mono:sample_rate=16000" -t 1 /dev/null
-   ```
-3. **ReSpeaker 4-mic config + AEC** — только если USB подключён и `arecord -l` показывает
-   `respeaker: 4-channel` (см. `src/rob_box_voice/scripts/configure_respeaker_aec.py`).
-
-> **Важно:** `audio_node` сам находит устройство через `find_respeaker_device`
-> (`src/rob_box_voice/rob_box_voice/utils/audio_utils.py`). Если ни один из sink-ов не
-> создан, нода упадёт при старте — это ожидаемо и фиксируется в BLOCKERS.md,
-> production-код не редактируется.
-
-### Acceptance check (воспроизводимая команда)
-
-```bash
-# 1. Подгрузить ROS + наш workspace
-source /opt/ros/humble/setup.bash
-source install/setup.bash
-
-# 2. Подтвердить, что оба пакета собрались и видны
-ros2 pkg list | grep -E 'rob_box_(llm|voice)'
-
-# 3. Подтвердить, что тестовая нода стартует (LED не требует аудио-железа)
-timeout 5 ros2 run rob_box_voice led_node
-#   Ожидаемо: "LEDNode инициализирован" + "❌ ReSpeaker LED не найден"
-#   (ReSpeaker LED на этой машине не подключён, но ROS-цикл работает.)
+```mermaid
+flowchart LR
+  subgraph Main["Main Pi 10.1.1.10"]
+    NAV["nav2 + rtabmap + lslidar"]
+    GUARD["proximity-guard"]
+    MUX["twist-mux"]
+    CTRL["ros2-control + VESC (CAN)"]
+    NAV -->|cmd_vel| MUX
+    GUARD -->|cmd_vel_emergency| MUX
+    MUX --> CTRL
+  end
+  subgraph Vision["Vision Pi 10.1.1.11"]
+    CAM["oak-d + ceiling-camera"]
+    FACE["vision-hailo + vision-face"]
+    LED["led-matrix"]
+  end
+  subgraph Sound["Sound Pi 10.1.1.12"]
+    VA["voice-assistant (dialog v2)"]
+    SC["supercollider"]
+    TG["telegram-bot"]
+    ARB["avatar-arbiter + supervisor"]
+  end
+  CAM --> FACE
+  FACE -->|люди и лица| VA
+  VA -->|цели навигации| NAV
+  VA --> SC
+  TG --> VA
+  ARB --> LED
 ```
 
-### Workarounds для test-bench (НЕ править прод-код)
+Все три узла связаны через Zenoh-роутеры. Схема упрощена: контейнеры взяты из compose-файлов, связи показаны по смыслу.
+Подробнее — [SYSTEM_OVERVIEW.md](docs/architecture/SYSTEM_OVERVIEW.md), [NETWORK_TOPOLOGY.md](docs/architecture/NETWORK_TOPOLOGY.md).
 
-Эти шаги нужны, чтобы **сам ROS работал** в текущем Debian 13 окружении.
-Прод-код пакетов не меняется.
+## Быстрые ссылки
 
-1. **spdlog ABI mismatch** (rclpy не импортируется из-за `librcl_logging_spdlog.so`
-   против `libspdlog.so.1.10` с null_mutex):
-   ```bash
-   apt-get install -y ros-humble-rcl-logging-noop
-   mv /opt/ros/humble/lib/librcl_logging_spdlog.so{,.bak}
-   ln -s librcl_logging_noop.so /opt/ros/humble/lib/librcl_logging_spdlog.so
-   ```
-2. **NumPy 2.x ABI break** (`/usr/lib/python3/dist-packages/numpy` скомпилирован
-   против Python 3.10 ABI, но содержит неполные бинари — `numpy._core._multiarray_umath`
-   not found при импорте):
-   ```bash
-   python3.10 -m pip install --user --no-cache-dir 'numpy<2'
-   # Теперь импорт rclpy под python3.10 работает (numpy 1.26.4).
-   ```
-3. **Python ABI** — все entry-points (`install/.../bin/led_node`, `tts_node`, …) и
-   `/opt/ros/humble/bin/ros2` имеют shebang `#!/usr/bin/python3`, что на этой машине
-   указывает на `/usr/bin/python3.10`. **Не запускать `ros2 run …` под `python3.11`** —
-   ROS бинари слинкованы с libpython3.10.
+| Нужно | Куда |
+|---|---|
+| Как работать в репо (единственная точка входа) | [AGENTS.md](AGENTS.md) |
+| Карта документации | [docs/README.md](docs/README.md) ([ADR-0163](docs/adr/0163-docs-structure-and-spec-driven-deprecation.md)) |
+| Словарь терминов | [CONTEXT.md](CONTEXT.md) |
+| Решения товарища Шифу | [docs/shifu-decisions.md](docs/shifu-decisions.md) |
+| Все архитектурные решения (ADR) | [docs/adr/](docs/adr/) |
+| Процесс: координатор и воркеры | [docs/process/claude-coordinator-robot-flow.md](docs/process/claude-coordinator-robot-flow.md) |
+| Быстрый старт и неполадки | [QUICK_START.md](docs/guides/QUICK_START.md), [TROUBLESHOOTING.md](docs/guides/TROUBLESHOOTING.md) |
+| HIL: симуляция на стеке робота | [scripts/hil/](scripts/hil/), [docker/sim/](docker/sim/) |
+| Сборка и деплой | [L: Build All Services](.github/workflows/L-Build-All-Services.yml), [L: Deploy and Verify](.github/workflows/L-Deploy%20and%20Verify.yml), [CI_CD_PIPELINE.md](docs/CI_CD_PIPELINE.md) |
 
-## 🚑 Cold-start при недоступных образах (Vision Pi)
-
-После применения серии фиксов ([issue #2610](https://github.com/krikz/rob_box_project/issues/2610), [ADR-0111](docs/adr/0111-voice-resources-image-sourcing.md)) Vision Pi **поднимает стек частично**, а не валится целиком, если один из образов недоступен (registry offline, отсутствует тег, переключение DNS).
-
-> **Статус (обновлено 2026-09-21):** фиксы смёржены в `develop`. Пункт
-> ADR-0111 §2.1 про bake Renardo-сэмплов в `voice-base` **не реализован
-> так, как описан ниже в истории PR** — вместо bake-in-образ выбран другой
-> механизм: [ADR-0125](docs/adr/0125-resource-pack-host-delivery-seam.md)
-> (Ресурсный пак) и [ADR-0126](docs/adr/0126-renardo-samples-host-delivery.md)
-> (уточняет ADR-0111 §2.1). Образ `voice-resources` и init-контейнер
-> `voice-resources-init` **удалены целиком**, никакого `profiles: [init]`
-> в compose больше нет. Сэмплы и STT/TTS-модели (Vosk, Silero) кладёт на
-> хост Vision Pi (`/opt/rob_box/samples`, `/opt/rob_box/models`) шаг деплоя
-> «Ensure STT/TTS models + Renardo samples», контейнеры видят их
-> bind-mount'ом. Проверено на роботе 21.09.2026 (raw: `docker inspect`
-> bind-mount, `ls` моделей/сэмплов внутри контейнера, прогрев Vosk/Silero).
-
-### Что нового
-
-- **`Restart=on-failure` + `RestartSec=60` + `StartLimitBurst=5` + `StartLimitIntervalSec=600`** в `robbox-vision.service` ([PR #2635](https://github.com/krikz/rob_box_project/pull/2635), `scripts/setup/setup_vision_pi.sh:setup_autostart`) — systemd сам поднимет юнит после транзитных сбоев (до 5 попыток за 10 минут), даже если `docker compose up -d` вернул ненулевой exit code.
-- **`pull_policy: missing`** для всех image-based сервисов в `docker/vision/docker-compose.yaml` ([PR #2634](https://github.com/krikz/rob_box_project/pull/2634)) — compose использует локальный кэш, если образ уже скачан; если нет — попытается стянуть, но **не уронит стек из-за одного образа**.
-- **`--pull never`** (через override-файл или явный флаг в `ExecStart`) — жёсткая гарантия «использовать только локальный кэш». Рекомендуется на проде Vision Pi, где registry может быть недоступен.
-- **Renardo-сэмплы и STT/TTS-модели переехали на хост** (ADR-0125/ADR-0126): никакого init-контейнера и `profiles: [init]` больше нет — стек стартует без обращения к registry за этими ресурсами. `supercollider` и `voice-assistant` получают сэмплы bind-mount'ом `/opt/rob_box/samples:/root/.config/renardo/samples`; `voice-assistant`, `telegram-bot` и др. получают модели bind-mount'ом `/opt/rob_box/models:/models`. Пополняется вручную: `sudo bash docker/vision/scripts/resource_pack/apply_resource_pack.sh` (или `--only <имя>` для одной записи манифеста, `--dry-run` для плана без сети).
-
-### Какие сервисы считаются критичными, а какие — опциональными
-
-| Категория | Сервисы | Что произойдёт, если образ недоступен |
-|-----------|---------|---------------------------------------|
-| **Критичные** (без них стек бесполезен) | `ros2_bridge`, `zenoh-router`, `hailo`, `vision_node` (лицевая/person), `avatar-arbiter` | Робот «глух и слеп» — голос и зрение не работают. Но **стек всё равно поднимется**, systemd рестартует и логи покажут причину. |
-| **Опциональные** (можно без них) | `supercollider` (без сэмплов на хосте → `synth-only mode`), `monitoring`-профиль, `ai`-профиль | `voice-assistant` стартует в `synth-only mode` (без музыки), `cadvisor`/`promtail`/`ollama` просто не поднимаются, остальное работает. |
-
-### Диагностика: что делать, если часть контейнеров не поднялась
-
-```bash
-# 1. Какие сервисы не стартовали и почему
-docker compose -f ~/rob_box_project/docker/vision/docker-compose.yaml ps --format json \
-  | jq -r '.[] | select(.State != "running") | "\(.Name)\t\(.State)\t\(.ExitCode // "-")\t\(.Error // "-")"'
-
-# 2. Логи конкретного сервиса
-docker compose logs --tail=200 <service>
-
-# 3. Полный статус systemd-юнита
-sudo systemctl status robbox-vision --no-pager -l
-
-# 4. Ресурсы (сэмплы/модели) не на месте — пополнить Ресурсный пак
-sudo bash docker/vision/scripts/resource_pack/apply_resource_pack.sh --dry-run  # план, без сети
-sudo bash docker/vision/scripts/resource_pack/apply_resource_pack.sh           # применить
-
-# 5. Полный cold-start с гарантией использования локального кэша
-docker compose --pull never up -d
-```
-
-### Сценарии
-
-| Сценарий | Что происходит | Что делать |
-|----------|---------------|-----------|
-| `/opt/rob_box/samples` или `/opt/rob_box/models` пусты/отсутствуют (registry/CDN offline на этапе доставки) | `supercollider`/`voice-assistant` поднимаются в `synth-only mode` (без музыки), STT/TTS без моделей не стартуют | `sudo bash docker/vision/scripts/resource_pack/apply_resource_pack.sh` когда сеть доступна |
-| Один из образов не скачался | Остальные сервисы работают. systemd рестартует юнит, повторный `pull` сделает best-effort | Дождаться registry или поднять руками: `docker compose --pull never up -d <service>` |
-| Нужно обновить сэмплы Renardo | Ресурсный пак идемпотентен (sha256/marker) — повторный прогон no-op, если манифест не менялся | `sudo bash docker/vision/scripts/resource_pack/apply_resource_pack.sh --only renardo-samples` |
-
-### Профили compose (Vision Pi)
-
-- **`default`** (без флага `--profile`): все основные сервисы. Используется в `robbox-vision.service` для повседневного старта. Init-профиля для сэмплов/моделей больше нет — их кладёт на хост Ресурсный пак ДО `docker compose up` (ADR-0125/ADR-0126).
-- **`monitoring`** (без изменений): `cadvisor-vision`, `promtail-vision`.
-- **`ai`** (без изменений): `ollama`.
-
-> **Главный инвариант**: стек **всегда** поднимает базовые сервисы без обращения к registry за сэмплами/моделями — они уже на хосте до `docker compose up` (ADR-0125, ADR-0126, уточняют [ADR-0111 §2.1](docs/adr/0111-voice-resources-image-sourcing.md#21-voice-resources-больше-не-отдельный-образ)). Образ `voice-resources` и init-контейнер удалены целиком. Defense-in-depth: `--ignore-pull-failures` (`.github/workflows/L-Deploy and Verify.yml:381`) + `pull_policy: missing` (compose) + `Restart=on-failure` (systemd) — независимые слои защиты от каскадного краша.
-
-## 🎯 Цель проекта
-
-**РОББОКС** - автономный робот-доставщик для использования внутри помещений.
-
-### Первый этап: Автономная навигация
-- ✅ Построение карты помещения (RTAB-Map SLAM)
-- ✅ Локализация робота на карте
-- ✅ Планирование траектории и навигация
-- 🔄 Разметка карты (точки интереса, зоны доставки)
-
-### Второй этап: Бизнес-процесс доставки
-- 📱 Клиентское приложение для вызова робота
-- 🚚 Доставка предметов из точки A в точку B
-- 🏠 Док-станция для автоматической подзарядки
-- 🤖 Голосовой ассистент для взаимодействия
-
-## 🛠️ Технические характеристики
-
-### Механика и привод
-- **Колеса:** 4×10" (от электросамоката)
-- **Регуляторы:** 4× VESC (CAN-шина)
-- **Hardware Interface:** [vesc_nexus](https://github.com/krikz/vesc_nexus) - ROS2 драйвер для управления VESC через CAN
-- **CAN Shield:** установлен на Main Pi для связи с VESC
-
-### Бортовые компьютеры
-- **Main Pi** (Raspberry Pi 5, 16GB RAM):
-  - RTAB-Map SLAM (LiDAR-based 2D SLAM)
-  - Robot State Publisher
-  - CAN Shield для связи с VESC
-  - Навигация и планирование (Nav2)
-  - LSLIDAR N10 драйвер
-  - Perception (health monitoring, context aggregator)
-  - MCP Tools сервер (управление роботом через LLM)
-  
-- **Vision Pi** (Raspberry Pi 5, 8GB RAM):
-  - OAK-D-Lite драйвер + AprilTag детектор
-  - MJPEG потолочная камера (ceiling-based локализация)
-  - ReSpeaker Mic Array v2.0 (голосовой ассистент)
-  - LED Matrix Driver (381 NeoPixel)
-  - Telegram-бот оператора (`rob_box_telegram`)
-
-### Сенсоры
-- **Камера:** OAK-D-Lite (RGB + Stereo Depth)
-- **Raspberry Pi Camera:** для ориентации по потолку
-- **Лидар:** LSLIDAR N10 (360° 2D)
-- **Микрофон:** ReSpeaker Mic Array v2.0 (для голосового ассистента)
-- **Сенсорная плата:** ESP32 с micro-ROS ([robot_sensor_hub](https://github.com/krikz/robot_sensor_hub))
-  - 1-8× датчиков AHT30 (температура/влажность)
-  - Тензодатчик HX711 (измерение веса)
-  - 2× вентилятора с PWM и тахометром
-
-### Индикация
-- **LED матрицы:** [ros2leds](https://github.com/krikz/ros2leds) - управление через ROS2
-  - 4× NeoPixel 8×8 (фары: передние и задние)
-  - 5× NeoPixel 5×5 (основной дисплей 5×25)
-  - Композитор для объединения панелей в логические группы
-
-### Коммуникация
-- **Middleware:** Zenoh DDS (rmw_zenoh_cpp)
-- **Сеть:** WiFi роутер D-Link DIR-320
-- **Связь между Pi:** Zenoh router для оптимизации трафика
-
-## 🚀 Функциональные возможности
-
-### Реализовано
-- ✅ **SLAM и построение карты** (RTAB-Map с LSLIDAR N10 2D LiDAR)
-- ✅ **Управление двигателями** через VESC Nexus (CAN-интерфейс)
-- ✅ **LED индикация** с 381 NeoPixel (4 группы: фары + дисплей)
-- ✅ **Мониторинг здоровья** робота (температура, вентиляторы, вес)
-- ✅ **AprilTag детектор** для маркеров (Vision Pi)
-- ✅ **Распределённая архитектура** на двух Raspberry Pi с Zenoh DDS
-- ✅ **Система мониторинга** с Grafana, Prometheus, Loki (октябрь 2025)
-- ✅ **Голосовой ассистент** с time awareness и синхронизацией TTS (октябрь 2025)
-- ✅ **LLM Fallback** автоматический Qwen ↔ DeepSeek (ноябрь 2025)
-- ✅ **ICP Одометрия** — fusion wheel + ICP для RTAB-Map (декабрь 2025)
-- ✅ **GUI управления роботом** — мониторинг и телеуправление (ноябрь 2025)
-- ✅ **Telegram-бот оператора** — управление роботом через Telegram + LLM (2026)
-- ✅ **MCP Tools сервер** — инструменты управления роботом для LLM агентов (2026)
-
-### В разработке
-- 🔄 **Навигация** - автономное планирование и движение по карте (TASK-003/004)
-- 🔄 **REST API** — бэкенд для управления роботом (TASK-011)
-- 🔄 **Веб-интерфейс** — React-приложение для заказа доставки (TASK-017)
-- 🔄 **Клиентское приложение** для заказа доставки (TASK-017)
-
-### Планируется
-- 📋 **Док-станция** для автоматической зарядки
-- 📋 **Интеграция с LLM** для естественного общения
-- 📋 **Система предотвращения столкновений**
-- 📋 **Телеметрия и удалённый мониторинг**
-
-## 🎙️ TTS-провайдеры
-
-Голосовой ассистент `tts_node` (пакет `rob_box_voice`) поддерживает три TTS-движка, переключаемых ROS-параметром `tts_node.provider`:
-
-| Провайдер | Где работает | Когда выбирать |
-|---|---|---|
-| **Yandex Cloud TTS** (gRPC v3, голос `anton`) | онлайн | ROBBOX-голос по умолчанию; минимальная настройка |
-| **Silero v5** (offline) | офлайн | нет сети на роботе; базовый fallback |
-| **MiniMax TTS** (HTTP T2A v2) | онлайн | многоязычный синтез, выбор голоса из обширного каталога, эмоциональная окраска |
-
-MiniMax подключается **opt-in** через `provider: "minimax"`. Секреты (`MINIMAX_API_KEY`, `MINIMAX_GROUP_ID`) живут только в ENV — никогда не в launch-yaml и не в логах.
-
-- Подробная инструкция: **[docs/guides/MINIMAX_TTS.md](docs/guides/MINIMAX_TTS.md)**
-- Минимальный путь от нуля до публикации в ROS2: **[docs/guides/MINIMAX_TTS_GETTING_STARTED.md](docs/guides/MINIMAX_TTS_GETTING_STARTED.md)**
-- Публичный контракт `MiniMaxTTSProvider` (параметры, возвращаемые значения, исключения): **[docs/api/MINIMAX_TTS.md](docs/api/MINIMAX_TTS.md)**
-- Архитектурное обоснование: **[ADR-0003](docs/adr/0003-minimax-tts-architecture.md)**
-
-## 📦 Связанные репозитории
-
-- **[vesc_nexus](https://github.com/krikz/vesc_nexus)** - ROS2 драйвер для VESC регуляторов через CAN
-  - Поддержка до 4+ VESC на CAN-шине
-  - Публикация одометрии и состояния моторов
-  - Управление через `/cmd_vel`
-  
-- **[ros2leds](https://github.com/krikz/ros2leds)** - Управление NeoPixel матрицами
-  - Драйвер для цепочки светодиодов через SPI
-  - Композитор для объединения панелей в логические группы
-  - Поддержка произвольного расположения панелей
-  
-- **[robot_sensor_hub](https://github.com/krikz/robot_sensor_hub)** - Сенсорная плата на ESP32 с micro-ROS
-  - Температура/влажность (AHT30)
-  - Тензодатчик (HX711)
-  - Управление вентиляторами с мониторингом RPM
-
-## 💻 Программное обеспечение
-
-- **ОС:** Ubuntu 24.04.2 LTS (на обоих Raspberry Pi)
-- **Фреймворк:** ROS 2 Humble Hawksbill
-- **Middleware:** Zenoh DDS (rmw_zenoh_cpp) для оптимизации сетевого трафика
-- **SLAM:** RTAB-Map (RGB-D + 2D LiDAR)
-- **Камера:** DepthAI для OAK-D-Lite
-- **Контейнеризация:** Docker + Docker Compose
-
+Раздела «Последние изменения» здесь нет: CHANGELOG выведен по ADR-0163. Что и почему решено — в своде решений и списке ADR выше.

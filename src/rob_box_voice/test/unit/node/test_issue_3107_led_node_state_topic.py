@@ -7,7 +7,9 @@ dialogue_node publishes ``DialogueStateKind.name`` as ``std_msgs/String`` on
 name per ADR-0027 #2 and ``arbiter_node.VOICE_DIALOGUE_STATE_TOPIC``.
 
 ADR-0150 PR-3b (#3690): the ring lives by the turn stages (``/dialog/turn_event``,
-``core/ring_reflex.py``); the dialogue state only starts the silence animation (#3984).
+``core/ring_reflex.py``); silence comes from the ``Silence`` scene in ``/dialog/session`` (#3911, #3984).
+#4354 A2: ``/voice/dialogue/state`` lost its only publisher with ``dialogue_node``; led_node no longer
+subscribes to it.
 
 ROS2 stubs come from this directory's conftest; ``usb`` (pyusb) is stubbed
 here because the ReSpeaker ring is hardware.
@@ -39,21 +41,12 @@ def _make_node():
     return node
 
 
-def test_topic_constant_is_dialogue_state():
-    assert led_node.VOICE_STATE_TOPIC == DIALOGUE_STATE_TOPIC
-
-
-def test_subscribes_to_dialogue_state_not_legacy_name():
+def test_subscribes_to_neither_v1_dialogue_state_nor_legacy_name():
     node = _make_node()
     topics = [topic for topic, _ in node._subscribers]
-    assert DIALOGUE_STATE_TOPIC in topics
+    assert DIALOGUE_STATE_TOPIC not in topics
     assert "/voice/state" not in topics
-
-
-def test_subscription_is_wired_to_state_callback():
-    node = _make_node()
-    sub = [fake for topic, fake in node._subscribers if topic == DIALOGUE_STATE_TOPIC][0]
-    assert sub.callback == node.state_callback
+    assert "/dialog/session" in topics
 
 
 def test_ring_follows_turn_events_not_the_removed_animation_topic():
@@ -64,21 +57,15 @@ def test_ring_follows_turn_events_not_the_removed_animation_topic():
     assert sub.callback == node.turn_event_callback
 
 
-def test_dialogue_node_payload_puts_the_ring_into_the_silence_animation():
-    """dialogue_node publishes upper-case enum names; led_node lower-cases them."""
+def test_silence_scene_puts_the_ring_into_the_silence_animation_and_back():
     node = _make_node()
     node.auto_mode = True
 
-    node.state_callback(types.SimpleNamespace(data="LISTENING"))
-    node.pixel_ring.mono.assert_not_called()
-    assert node.current_mode == "listening"
-
-    node.state_callback(types.SimpleNamespace(data="SILENCED"))
+    node.session_callback(types.SimpleNamespace(agent="personality", scenes=[types.SimpleNamespace(kind="Silence")]))
     node.pixel_ring.mono.assert_called_once_with(*SILENCE_FRAMES[0])   # #3984: своя анимация, не погасшее кольцо
 
-    node.state_callback(types.SimpleNamespace(data="IDLE"))
+    node.session_callback(types.SimpleNamespace(agent="personality", scenes=[]))
     node.pixel_ring.trace.assert_called()
-    assert node.current_mode == "idle"
 
 
 def test_addressed_turn_event_lights_the_ring_and_answers_with_an_event():

@@ -39,7 +39,7 @@ class FaceScene:
     bg: Optional[str] = None
     fx: Optional[str] = None
     feat: Optional[str] = None
-    duration_s: Optional[float] = None  # не задано - время по умолчанию ``expression.show_seconds`` (#4089)
+    duration_s: Optional[float] = None  # не задано - время по умолчанию ``expression.show_seconds``
 
     def slots(self) -> Dict[str, str]:
         """Заданные слоты (без длительности), в порядке таблицы."""

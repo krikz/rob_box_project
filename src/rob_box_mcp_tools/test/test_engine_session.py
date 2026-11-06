@@ -21,7 +21,7 @@ from rob_box_mcp_tools.engine.player_owner import PlayerOwner
 from rob_box_mcp_tools.engine.renardo_adapter import HANDOFF_STOP_BEATS, RenardoAdapter
 from rob_box_mcp_tools.engine.search import ThemeHits
 from rob_box_mcp_tools.engine.session import NEARLY_LEAD_BEATS, SetSession, compose_source
-from rob_box_mcp_tools.engine.tools_v2 import DjSetTool, library_melodies
+from rob_box_mcp_tools.engine.engine_tools import DjSetTool, library_melodies
 from rob_box_music import knowledge as kn
 from rob_box_music.set_plan import DEFAULT_TRACKS, MAX_TRACKS, seeded_plan
 from rob_box_music.theme import ThemeProfile
@@ -473,7 +473,7 @@ def test_set_of_three_tracks_plays_the_last_form_once_and_ends_idle_without_a_fo
     snap = json.loads(rig.states[-1])
     assert snap["state"] == "idle" and snap["finished_track_id"] == last["track_id"] and snap["dj"] == {"enabled": False}
     infos = [m for level, m in rig.log.lines if level == "info"]
-    assert "🎧 [set v2] s7 сет окончен: 3 трека" in infos
+    assert "🎧 [set] s7 сет окончен: 3 трека" in infos
     assert sum("трек 3 последний" in m for m in infos) == 1
     assert rig.session.active is False and rig.session.ended is True
     assert rig.owner.on_started is None and rig.owner.on_finished is None
@@ -725,7 +725,7 @@ def test_started_line_carries_one_line_composition_json_of_every_axis(tmp_path):
     rig.session._tracks_dir = str(tmp_path)
     assert rig.session.start()["ok"] is True
     rig.clock.run_until(rig.clock.beat + 2)
-    lines = [m for _l, m in rig.log.lines if "[set v2]" in m and " started track_id=" in m]
+    lines = [m for _l, m in rig.log.lines if "[set]" in m and " started track_id=" in m]
     assert len(lines) == 1 and "\n" not in lines[0]
     comp = _composition_of(lines[0])
     for axis in ("pad", "lead", "bass", "kick", "kit", "form", "bpm", "mode", "root", "hook", "prog", "sample",

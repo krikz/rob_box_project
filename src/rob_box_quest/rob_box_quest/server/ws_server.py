@@ -1006,8 +1006,8 @@ class WSSServer:
         «широкого шва» — канал не должен стать open-endpoint'ом).
 
         Returns False если для этого stream уже лимит активных request_id'ов
-        — supervisor/quest_node увидит ``/voice/tts/finished{success=False}``
-        и реплика ТАРС честно теряется (без спама retry).
+        — реплика ТАРС в шлем не зарегистрирована и честно теряется
+        (без спама retry).
         """
         if stream not in _AUDIO_STREAMS:
             log.warning(

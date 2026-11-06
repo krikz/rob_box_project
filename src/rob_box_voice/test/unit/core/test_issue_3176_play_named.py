@@ -8,16 +8,13 @@
    (мораторий #3132): глагол заказа + название; родовые слова — не заказ;
 2. план роутера (:mod:`media_router`) — ``play_name``;
 3. поток (:mod:`named_play`) — ``lookup_melody`` → полное совпадение →
-   ``request_music`` движка v2 (PR-11; ``compose_music`` удалён в PR-13a); промах — реплика в LLM;
-4. приём (:class:`SttAdmission.resume_after`) — промах возвращается в
-   шаги после ``MediaCommandStep``.
+   ``request_music`` движка v2 (PR-11; ``compose_music`` удалён в PR-13a); промах — реплика в LLM.
 """
 
 from __future__ import annotations
 
 import asyncio
 from typing import Any, Dict, List, Tuple
-from unittest.mock import MagicMock
 
 import pytest
 
@@ -29,13 +26,6 @@ from rob_box_voice.core.named_play import (
     play_ok_text,
     run_named_play,
     tool_data,
-)
-from rob_box_voice.core.stt_admission import (
-    PASS,
-    SttAdmission,
-    SttContext,
-    SttOutcomeKind,
-    handled,
 )
 
 # ── 1. Грамматика ──────────────────────────────────────────────────────
@@ -230,41 +220,3 @@ def test_tool_data_parses_adapter_render() -> None:
 def test_melody_hit_without_data_is_miss() -> None:
     assert melody_hit(None)[0] is None
     assert melody_hit({"name": "x", "title": "X"})[0] is None  # SQLite-фолбэк без match
-
-
-# ── 4. Возврат промаха в приём ─────────────────────────────────────────
-
-
-class _Step:
-    def __init__(self, name: str, verdict=PASS) -> None:
-        self.name = name
-        self.verdict = verdict
-        self.seen: List[str] = []
-
-    def apply(self, ctx: SttContext, host: Any):
-        self.seen.append(ctx.text)
-        return self.verdict
-
-
-def _ctx(text: str) -> SttContext:
-    return SttContext(raw=text, text=text, text_lower=text.lower(), skip_counter={})
-
-
-def test_resume_after_runs_only_later_steps() -> None:
-    before = _Step("before")
-    media = _Step("media_command", handled("media_command", "media_command"))
-    after = _Step("after")
-    admission = SttAdmission(steps=[before, media, after])
-    assert admission.evaluate(_ctx("поставь абракадабра"), MagicMock()).kind is (
-        SttOutcomeKind.HANDLED
-    )
-    assert after.seen == []
-    out = admission.resume_after("media_command", _ctx("поставь абракадабра"), MagicMock())
-    assert out.kind is SttOutcomeKind.PASS
-    assert before.seen == ["поставь абракадабра"]  # не повторяется
-    assert after.seen == ["поставь абракадабра"]
-
-
-def test_resume_after_unknown_step_is_caller_error() -> None:
-    with pytest.raises(ValueError):
-        SttAdmission(steps=[_Step("a")]).resume_after("nope", _ctx("x"), MagicMock())

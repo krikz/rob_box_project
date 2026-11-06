@@ -37,7 +37,9 @@ from rob_box_dialog import knowledge as kn  # noqa: E402
 from rob_box_dialog import phrases  # noqa: E402
 from rob_box_dialog.command import current_form  # noqa: E402
 from rob_box_dialog.plan.plan_events import PlanEvent  # noqa: E402
-from rob_box_llm.provider import LLMResponse, ToolCall, ToolResult  # noqa: E402
+from rob_box_dialog.command import parse  # noqa: E402
+from rob_box_llm.provider import ToolResult  # noqa: E402
+from rob_box_voice.core.command_bridge import CommandResponse, for_turn  # noqa: E402
 from rob_box_voice import dialog_node as dn  # noqa: E402
 from rob_box_voice.core import plan_host  # noqa: E402
 
@@ -79,8 +81,13 @@ class _PerformHost:
         return {"status": "done"}
 
 
+def _reply(args):
+    """Ответ цепочки в режиме команд: команда хода из аргументов вызова ``command`` модели (как её отдаёт мост)."""
+    return CommandResponse(command=for_turn(parse(args)))
+
+
 def _node(monkeypatch, command):
-    chat_llm = _LLM([LLMResponse(content="", tool_calls=(ToolCall(id="c1", name="command", arguments=command),))])
+    chat_llm = _LLM([_reply(command)])
     tools = _Tools()
     monkeypatch.setattr(dn, "build_llm", lambda node, counter, agent="personality": (
         (chat_llm, "Ты пульт робота.") if agent == "telegram" else (_LLM([]), "Ты робот.")))
@@ -166,7 +173,7 @@ def test_face_from_telegram_in_personality_silence_is_refused_by_code_not_claime
     _chat(made, "покажи победу")
 
     assert _published(made, "/voice/expression/request") == []
-    out = [o.text for o in _published(made, "/dialog/output")]
+    out = [o.text for o in _published(made, "/dialog/output") if not o.kind]
     assert out == [phrases.text(f"{kn.REMOTE_SHOW_REJECTED_PHRASE}.{kn.REMOTE_SILENCED}")]
 
 
@@ -176,7 +183,7 @@ def test_face_from_telegram_outside_silence_is_named_in_russian(made):
 
     faces = _published(made, "/voice/expression/request")
     assert [(f.agent, f.emotion) for f in faces] == [("personality", "victory")]
-    assert [o.text for o in _published(made, "/dialog/output")] == ["Показываю на роботе: победа."]
+    assert [o.text for o in _published(made, "/dialog/output") if not o.kind] == ["Показываю на роботе: победа."]
 
 
 @pytest.mark.parametrize("made", [SING], indirect=True)

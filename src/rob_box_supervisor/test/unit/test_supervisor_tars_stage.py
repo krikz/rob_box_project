@@ -1,13 +1,13 @@
 """issue #3253 (Ш2) — supervisor публикует стадии ТАРС в /avatar/tars/stage.
 
-* ``thinking`` — перед ходом LLM (``_run_agent_sync``).
+* ``thinking`` — перед ходом LLM (``_agent_runner``).
 * ``idle`` — ход закончился БЕЗ реплики в шлем (агент выключен, текстовый
   вход, битый вход). Если реплика ушла в /avatar/tts/request — idle ведёт
   quest_node, supervisor его НЕ шлёт.
 * Реплика в шлем несёт ``speech_id = "tars-<request_id>"``: по нему
   quest_node сопоставляет /voice/tts/finished с репликой.
 
-mock-rclpy из conftest.py; LLM подменён (``_run_agent_sync``).
+mock-rclpy из conftest.py; LLM подменён (``_agent_runner``).
 """
 
 from __future__ import annotations
@@ -33,7 +33,9 @@ def _stages(node: AvatarSupervisor) -> list[dict]:
 
 
 def _avatar_tts(node: AvatarSupervisor) -> list[dict]:
-    return [json.loads(m.data) for m in node._avatar_tts_request_pub.published]
+    """Реплики в шлем: ``SpeechRequest`` с ``sink=headset`` (#4252)."""
+    return [{"text": r.text, "agent": r.agent, "speech_id": r.speech_id}
+            for r in node._speech_client_pubs["request"].published if r.sink == "headset"]
 
 
 def _command(source: str) -> MagicMock:
@@ -45,9 +47,8 @@ class TestTarsStagePublisher(unittest.TestCase):
         self.node = AvatarSupervisor()
         self.node._agent_enabled = True
         self.node._agent_core = object()
-        self.node._operator_dsm = None
         self.node._operator_journal = None
-        self.node._run_agent_sync = lambda core, payload: {
+        self.node._agent_runner = lambda core, payload: {
             "ok": True,
             "summary": "Сейчас семь часов.",
             "tool_calls": [],
@@ -66,10 +67,11 @@ class TestTarsStagePublisher(unittest.TestCase):
         self.assertEqual([s["stage"] for s in stages], ["thinking"])
         self.assertEqual(stages[0]["request_id"], "c1:7")
         self.assertIsInstance(stages[0]["ts_ms"], int)
-        # Реплика ушла в шлем со speech_id для корреляции с finished.
+        # Реплика ушла в шлем со speech_id: по нему quest_node сводит SpeechEvent с репликой (#4252).
         tts = _avatar_tts(self.node)
         self.assertEqual(len(tts), 1)
-        self.assertEqual(tts[0]["speech_id"], f"tars-{tts[0]['request_id']}")
+        self.assertEqual(tts[0]["agent"], "operator")
+        self.assertTrue(tts[0]["speech_id"])
 
     def test_thinking_is_published_before_llm_runs(self) -> None:
         seen: list[list[str]] = []
@@ -78,7 +80,7 @@ class TestTarsStagePublisher(unittest.TestCase):
             seen.append([s["stage"] for s in _stages(self.node)])
             return {"ok": True, "summary": "ок", "tool_calls": []}
 
-        self.node._run_agent_sync = fake_run
+        self.node._agent_runner = fake_run
         self.node._on_avatar_command(_command("quest"))
         self.assertEqual(seen, [["thinking"]])
 
@@ -90,7 +92,7 @@ class TestTarsStagePublisher(unittest.TestCase):
         self.assertEqual(_avatar_tts(self.node), [])
 
     def test_empty_reply_ends_with_idle(self) -> None:
-        self.node._run_agent_sync = lambda core, payload: {
+        self.node._agent_runner = lambda core, payload: {
             "ok": False, "summary": "", "tool_calls": [],
         }
         self.node._on_avatar_command(_command("quest"))
@@ -102,7 +104,7 @@ class TestTarsStagePublisher(unittest.TestCase):
         def boom(core, payload):
             raise RuntimeError("llm down")
 
-        self.node._run_agent_sync = boom
+        self.node._agent_runner = boom
         self.node._on_avatar_command(_command("telegram"))
         self.assertEqual([s["stage"] for s in _stages(self.node)], ["thinking", "idle"])
 

@@ -433,7 +433,7 @@ class JoystickControlNode(Node):
     def speak(self, text: str):
         """Say ``text`` through the robot's speakers (SpeechRequest, author "system").
 
-        ``Utterance`` builds the SSML (escaping, markup sanitiser); sink, priority
+        ``Utterance`` builds the request (plain text, ADR-0160 §2.3); sink, priority
         and emotion are its defaults (speakers, normal, neutral) - the same values
         the old JSON payload carried. The joystick does not lead a dialog
         session, hence the "system" author and epoch 0.

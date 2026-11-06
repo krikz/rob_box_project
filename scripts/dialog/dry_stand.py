@@ -8,8 +8,8 @@
 ``VoiceMemory`` во временной e2e-БД), раздел ``speaker_memory`` хода (настоящий ``SpeakerMemory`` хоста, #3919).
 
 Фейковые владельцы, которые отвечают событием сразу (:class:`FakeTools`, :class:`FakeSpeech`, :class:`FakeSpeakers`,
-:class:`FakePlayer`, :class:`FakeLibrary`): речь, музыка (дека, сет, библиотека), голос/темп/громкость, лицо,
-биометрия диктора, статус робота. Что они знают о мире — таблицей здесь; в
+:class:`FakePlayer`, :class:`FakeLibrary`, :meth:`DryPorts.perform`): речь, музыка (дека, сет, библиотека),
+выступление, голос/темп/громкость, лицо, биометрия диктора, статус робота. Что они знают о мире — таблицей здесь; в
 отчёт каждого шага попадает, каких владельцев ход коснулся (``DryStand.touched``). Лог шага (:class:`StepLog`) — в
 форматах строк живого робота (источники указаны у каждой строки): по нему работает та же
 ``e2e_tool_match.step_verdict``, что у ``check_acceptance`` на стенде.
@@ -24,6 +24,7 @@
 from __future__ import annotations
 
 import importlib
+import importlib.metadata
 import json
 import re
 import sys
@@ -38,10 +39,25 @@ from typing import Any, Callable, Dict, List, Mapping, Optional, Sequence, Set, 
 REPO = Path(__file__).resolve().parents[2]
 #: Пакеты ``src/<пакет>/<пакет>``: свои, а не editable-установка основного чекаута (в worktree она старая).
 _SRC = REPO / "src"
+#: Ядро диалога одним пакетом (``packaging/dialog-core``, ADR-0160 §8 К1, #4245).
+CORE_DIST = "rob-box-dialog-core"
+
+
+def core_installed() -> bool:
+    """Ядро поставлено пакетом ``pip install packaging/dialog-core``: стенд и консоль берут его, а не ``src/``."""
+    try:
+        importlib.metadata.distribution(CORE_DIST)
+    except importlib.metadata.PackageNotFoundError:
+        return False
+    return True
 
 
 def ensure_paths() -> None:
-    """Положить пакеты репозитория первыми в ``sys.path`` (без ROS: сообщения ``rob_box_dialog_msgs`` не нужны)."""
+    """Без поставленного ядра - положить пакеты репозитория первыми в ``sys.path`` (без ROS: сообщения
+    ``rob_box_dialog_msgs`` не нужны). Ядро поставлено - путь не трогаем: импорт идёт из пакета. Тулы MCP
+    (:func:`load_tool_module`) - хост робота, не ядро: их стенд всегда читает из ``src/``."""
+    if core_installed():
+        return
     for pkg in sorted(_SRC.iterdir()) if _SRC.is_dir() else ():
         if (pkg / pkg.name).is_dir() and str(pkg) not in sys.path:
             sys.path.insert(0, str(pkg))
@@ -52,6 +68,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import e2e_db  # noqa: E402
 import understanding_variants as uv  # noqa: E402
+from rob_box_core.speaker_wire import SOURCE_ENROLL  # noqa: E402
 from rob_box_dialog import knowledge as kn  # noqa: E402
 from rob_box_dialog.address import (  # noqa: E402
     BARE_WAKE, Addressed, NotAddressed, decide_in_session, heard_from, log_label, wake_words,
@@ -167,12 +184,18 @@ def load_memory_tools() -> types.ModuleType:
 # ── Биометрия диктора (фейк) ──────────────────────────────────────────────────────────────────────────────────────
 
 
+#: Кличка профиля без имени у фейка биометрии (на роботе - ``speaker_id_node`` по эпитетам, #1787); вслух не звучит.
+FAKE_EPITHET = "Гость"
+
+
 class FakeSpeakers:
     """Владелец биометрии: голос синтеза (``anton``, ``ermil`` …) → результат в форме ``rob_box_core.speaker_wire``.
 
-    Незарегистрированный голос — ``unknown_voice``; после ``register_speaker`` (тул вызывается во время хода) голос
-    узнан с уверенным именем уже на СЛЕДУЮЩЕЙ реплике (как биометрия, которая приходит после хода). Настоящий порог
-    0.72 и прогрев профиля на роботе — акустика, здесь их нет."""
+    Голос, впервые услышанный, — профиль без имени (#3858, как ``speaker_id_node``: ``is_known`` без имени,
+    ``source=enroll`` на самой фразе; #4314 n211: без этого стенд не видел голоса, запомненного без имени); после
+    ``register_speaker`` (тул вызывается во время хода) тот же профиль узнан с уверенным именем уже на СЛЕДУЮЩЕЙ
+    реплике (как биометрия, которая приходит после хода). Настоящий порог 0.72 и прогрев профиля на роботе —
+    акустика, здесь их нет."""
 
     def __init__(self) -> None:
         self._known: Dict[str, Tuple[str, str]] = {}
@@ -184,9 +207,14 @@ class FakeSpeakers:
 
     def result_for(self, voice_id: str) -> Dict[str, Any]:
         known = self._known.get(voice_id)
-        if known is None:
-            return {"is_known": False, "inconclusive": False, "speaker_id": None, "name": None, "confidence": 0.0}
+        if known is None:  # первая фраза голоса: профиль без имени заводится из неё (#3858)
+            sid = self.register(voice_id, "")
+            return {"is_known": True, "inconclusive": False, "speaker_id": sid, "name": None, "confidence": 0.0,
+                    "epithet": FAKE_EPITHET, "source": SOURCE_ENROLL}
         sid, name = known
+        if not name:
+            return {"is_known": True, "inconclusive": False, "speaker_id": sid, "name": None, "confidence": 0.0,
+                    "epithet": FAKE_EPITHET}
         return {"is_known": True, "inconclusive": False, "speaker_id": sid, "name": name, "confidence": 0.88}
 
 
@@ -546,8 +574,8 @@ class FakePlayer:
         """``PlayerOwner.play`` и его ``started``: трек на деке, строка старта, снимок."""
         self._track, self._title = track_id, title
         self._dj = {**(dj or {}), "enabled": bool((dj or {}).get("enabled"))}
-        # player_owner.py: f"🎵 [music v2] started track_id={track_id} " + поля старта ``k=v`` через пробел
-        self._stand.emit(f"🎵 [music v2] started track_id={track_id} clock_beat=0.0 start_beat=0.0 phase_in_form=0 "
+        # player_owner.py: f"🎵 [music] started track_id={track_id} " + поля старта ``k=v`` через пробел
+        self._stand.emit(f"🎵 [music] started track_id={track_id} clock_beat=0.0 start_beat=0.0 phase_in_form=0 "
                          f"late_beats=0.0 bpm={STAND_BPM} deck=A form_beats={STAND_FORM_BEATS} players_aligned=True "
                          f"latency_s=0.0")
         self.publish()
@@ -583,8 +611,8 @@ class FakePlayer:
         if self._set_id is None:
             return None
         set_id, self._set_id = self._set_id, None
-        # session.py: f"🎧 [set v2] {self.set_id} stop reason={reason}"
-        self._stand.emit(f"🎧 [set v2] {set_id} stop reason={reason}")
+        # session.py: f"🎧 [set] {self.set_id} stop reason={reason}"
+        self._stand.emit(f"🎧 [set] {set_id} stop reason={reason}")
         return {**self.stop(reason), "set_id": set_id}
 
     def stop(self, reason: str = "user_stop") -> Dict[str, Any]:
@@ -592,8 +620,8 @@ class FakePlayer:
         last = self._track
         self._track = self._title = None
         self._dj = {"enabled": False}
-        # player_owner.py: f"🎵 [music v2] stop track_id={last} reason={reason}"
-        self._stand.emit(f"🎵 [music v2] stop track_id={last} reason={reason}")
+        # player_owner.py: f"🎵 [music] stop track_id={last} reason={reason}"
+        self._stand.emit(f"🎵 [music] stop track_id={last} reason={reason}")
         self.publish()
         return {"ok": True, "track_id": last}
 
@@ -692,6 +720,20 @@ class DryPorts(V2Ports):
     def stop_perform(self, how: str) -> bool:
         return False
 
+    def perform(self, turn_id: str, epoch: int, perf: Any, edit: bool) -> Optional[Mapping[str, Any]]:
+        """Владелец выступлений (на роботе - ``PerformHost``, ``dialog_v2_ports.V2Ports.perform``): сегменты звучат
+        у него, ход пишет ``выступление старт kind=…`` по исходу ``pending`` - строку, по которой марафон судит
+        «выступление взял владелец» (n412, n810). Без владельца ``V2Ports`` отдавал ``None``: сегменты звучали
+        репликами хода, строки старта не было ни при каком ответе модели (n810 красный с #4268). Такты, подложку и
+        паузы стенд не исполняет; сегменты «отзвучивают» сразу (:class:`FakeSpeech`), конец (``block_end`` → журнал
+        ходов) - после хода (:meth:`DryStand.end_performances`). Строк ``[perform]``/``PlanEvent`` стенд не пишет:
+        такие паттерны акустические (``dry_marathon._ACOUSTIC_PATTERN``)."""
+        voices = perf.voice_per_segment or ("",) * len(perf.segments)
+        for segment, voice in zip(perf.segments, voices):
+            self._stand.speech.say(turn_id, epoch, segment, voice or None)
+        self._stand.performed.append((turn_id, len(perf.segments)))
+        return {"status": "pending"}
+
     def intent(self, turn_id: str, epoch: int, kind: str) -> None:
         self.intents.append(kind)
 
@@ -709,6 +751,8 @@ class HearResult:
     source: str = ""
     aggregate: Any = None
     said: List[str] = field(default_factory=list)
+    #: Голос каждой реплики ``said`` (``""`` - голос робота/рассказчика; иначе голос роли, его дал код).
+    voices: List[str] = field(default_factory=list)
     tools: List[str] = field(default_factory=list)
     llm_calls: int = 0
     log: str = ""
@@ -788,6 +832,8 @@ class DryStand:
         self._turn_memory: Tuple[Optional[str], Optional[Mapping[str, Any]]] = (None, None)
         self.ros_node = _FakeRosNode(self.emit, self.memory)
         self.speech = FakeSpeech(self.emit)
+        #: Выступления хода, взятые фейковым владельцем (:meth:`DryPorts.perform`): ``(turn_id, сегментов)``.
+        self.performed: List[Tuple[str, int]] = []
         self.session = Session(kn.AGENTS[0], clock=self.clock.now)
         self.backlog = Backlog()
         self.music_mem = MusicStateMemory()
@@ -798,7 +844,7 @@ class DryStand:
         self.ports = DryPorts(self, llm, counter, self.tools)
         self.events = open_events(str(self.workdir / "e2e_dialog.db"), "dry-marathon")
         self.engine = TurnEngine(self.session, self.ports, system_prompt=system_prompt, sections=self._sections,
-                                 events=self.events, log=_EngineLog(self.emit), phrase_voice=self._phrase_voice)
+                                 clock=self.clock.now, events=self.events, log=_EngineLog(self.emit), phrase_voice=self._phrase_voice)
 
     # -- служебное ------------------------------------------------------------------------------------------------
 
@@ -898,10 +944,16 @@ class DryStand:
         msg = self._utterance_msg(text, started, ended, uid, source)
         self.emit(f"🎤 STT: {log_label(msg)}")
         bio = self.speakers.result_for(voice_id) if voice_id else {"is_known": False}
-        if bio.get("is_known"):
+        if bio.get("is_known") and bio.get("name"):
             self.touch("speaker")
             # speaker_id_node.py: f"👤 Speaker: '{match.name}' confidence={…:.3f} ({elapsed:.0f} ms)"
             self.emit(f"👤 Speaker: '{bio['name']}' confidence={bio['confidence']:.3f} (400 ms)")
+        elif bio.get("is_known"):
+            self.touch("speaker")
+            # speaker_id_node.py (#3858): f"👤 Speaker: безымянный профиль id={….speaker_id[:8]} (кличка …) (… ms)"
+            new = "новый, " if bio.get("source") == SOURCE_ENROLL else ""
+            self.emit(f"👤 Speaker: безымянный профиль id={bio['speaker_id'][:8]} ({new}кличка "
+                      f"{FAKE_EPITHET!r}) (400 ms)")
         else:
             self.emit("👤 Speaker: unknown (400 ms)")  # speaker_id_node.py: f"👤 Speaker: unknown ({elapsed:.0f} ms)"
         person = str(bio.get("speaker_id") or "") if bio.get("is_known") else ""
@@ -944,15 +996,24 @@ class DryStand:
             agg = await self.engine.run(decision)
         spoken_s = self.speech.settle(self.engine, kn.AGENTS[0])
         self.clock.advance(spoken_s)
+        self.end_performances()
         log = self._log.text
         return HearResult(text, True, source=decision.source, aggregate=agg,
-                          said=[s.text for s in self.speech.all], tools=[name for name, _ in self.tools.calls],
+                          said=[s.text for s in self.speech.all], voices=[s.voice for s in self.speech.all],
+                          tools=[name for name, _ in self.tools.calls],
                           llm_calls=self.counter.calls - calls_before, log=log,
                           touched=set(self.touched), outcomes=self._outcomes(agg.turn_id), tier1=tier1_kind(log),
                           latency_ms=agg.latency_ms + int(getattr(route, "latency_ms", 0) or 0), tokens=agg.tokens,
                           offered=list(offered[0]) if offered else [], widened=widened_tools(log),
                           variant=self.variant, route=route, calls=[(n, dict(a)) for n, a in self.tools.calls],
                           asked_yes=_ASKED_YES_LINE.search(log) is not None)
+
+    def end_performances(self) -> None:
+        """Сегменты отзвучали - конец выступления в журнал ходов, как ``plan_host.note_perform_end`` по ``block_end``
+        владельца (``done``): просьба в окне LLM закрыта исходом, а не висит «идёт» на следующих шагах."""
+        for turn_id, segments in self.performed:
+            self.engine.log.performance_ended(turn_id, "done", segments)
+        self.performed.clear()
 
     def _outcomes(self, turn_id: str) -> List[Tuple[str, str, Optional[str]]]:
         """Исходы действий хода — читателем e2e-БД, которым пользуются ``turn_metrics`` и ``honesty_audit``."""

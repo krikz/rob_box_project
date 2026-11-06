@@ -25,7 +25,7 @@ import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO_ROOT / "scripts" / "e2e"))
-sys.path.insert(0, str(REPO_ROOT / ".github" / "workflows" / "scripts"))
+sys.path.insert(0, str(REPO_ROOT / "scripts" / "ci" / "e2e"))
 
 import e2e_events as eev  # noqa: E402
 import e2e_tool_match as etm  # noqa: E402
@@ -193,8 +193,8 @@ def test_dj_set_with_result_markers_passes_n602_n604_n608():
     """Робот v2 включил сет, сменил стиль и выключил через ``dj_set`` -- шаги зелёные (run 132908 их краснил)."""
     done = "✅ Инструмент dj_set выполнен успешно"
     ended = TURN_LINE % ("done", "finished")
-    started = "🎵 [music v2] started track_id=set1:01:A clock_beat=4"
-    stopped = "🎵 [music v2] stop track_id=set1:01:A reason=user_stop"
+    started = "🎵 [music] started track_id=set1:01:A clock_beat=4"
+    stopped = "🎵 [music] stop track_id=set1:01:A reason=user_stop"
     assert _verdict("n602_dj_on", "\n".join(["📤 Отправлен запрос ab: dj_set", done, started, ended]))["pass"]
     assert _verdict("n604_dj_rock", "\n".join(["📤 Отправлен запрос ab: dj_set", done, ended]))["pass"]
     assert _verdict("n607_vibe_chill", "\n".join(["📤 Отправлен запрос ab: dj_set", done, ended]))["pass"]
@@ -237,7 +237,7 @@ def test_live_music_edit_is_the_edit_tool_on_the_playing_track_and_n506_forbids_
     """n504-n506 (#4029, PR #4116): правка играющего -- ``edit_music`` и ``edit applied`` того же трека; новый заказ
     (dj_set|request_music|generate_music) -- не правка; «ускорь темп» не крутит голос робота (#3976)."""
     ended = TURN_LINE % ("done", "finished")
-    applied = "🎚️ [music v2] edit applied track_id=req93513:01:A:bce191fa at_beat=9856 bpm=147"
+    applied = "🎚️ [music] edit applied track_id=req93513:01:A:bce191fa at_beat=9856 bpm=147"
     edit = "\n".join(["✅ Инструмент edit_music выполнен успешно", applied, ended])
     for label in ("n504_add_bass", "n505_vibe_dark", "n506_faster"):
         assert _verdict(label, edit)["pass"], label
@@ -359,7 +359,9 @@ def test_act1_checks_the_wake_itself_no_wake_is_not_recovered():
     act1 = gen.build()["night_marathon_act1_wakeup_v1.json"]
     assert act1["recover"] == ["silenced"]
     for step in act1["steps"]:
-        assert eev.recover_kinds(act1, step) == ("silenced",), step["label"]
+        # #4481: n101 (холодный старт) -- ещё и один повтор фразы шага
+        want = ("silenced", "wake_replay") if step["label"] == "n101_wake_cold_start" else ("silenced",)
+        assert eev.recover_kinds(act1, step) == want, step["label"]
     act2 = gen.build()["night_marathon_act2_acquaintance_v1.json"]
     assert "recover" not in act2  # остальные акты -- по умолчанию харнесса (все виды)
     assert eev.recover_kinds(act2, act2["steps"][0]) == ("no_wake", "silenced")
@@ -399,7 +401,10 @@ def test_performance_question_is_not_the_requested_speech():
     for label in ("n804_long_story", "n806_long_count_again", "n810_rap_over_music"):
         assert gen.PERFORM_ASKS_TO_REPLACE in _acc(label)["must_not_say"], label
         assert not _verdict(label, "\n".join([asked, started, DONE]))["pass"], label
-    assert _verdict("n810_rap_over_music", "\n".join([rap, started, DONE]))["pass"]
+    # #4077 П6: рэп -- выступление владельца (`выступление старт kind=rap`), одной речи мало
+    perform = "🎤 выступление старт kind=rap id=1"
+    assert not _verdict("n810_rap_over_music", "\n".join([rap, started, DONE]))["pass"]
+    assert _verdict("n810_rap_over_music", "\n".join([rap, started, perform, DONE]))["pass"]
 
 
 def test_n902_n903_silent_sound_is_judged_by_tool_result():
@@ -410,8 +415,11 @@ def test_n902_n903_silent_sound_is_judged_by_tool_result():
     anim = "✅ Инструмент play_animation выполнен успешно"
     assert _verdict("n902_sound_doorbell", "\n".join([sound, DONE]))["pass"]
     assert not _verdict("n902_sound_doorbell", "\n".join(["📤 Отправлен запрос ab: play_sound", DONE]))["pass"]
-    assert _verdict("n903_sound_siren_anim", "\n".join([sound, anim, DONE]))["pass"]
-    assert _verdict("n903_sound_siren_anim", "\n".join([sound, anim, _tts("Виу-виу!"), DONE]))["pass"]
+    # #4077 П6: анимация -- именно police_lights (параметр в строке запроса тула)
+    req = "📥 Запрос выполнения: play_animation с параметрами {'animation': 'police_lights', 'duration': 4}"
+    assert _verdict("n903_sound_siren_anim", "\n".join([sound, req, anim, DONE]))["pass"]
+    assert _verdict("n903_sound_siren_anim", "\n".join([sound, req, anim, _tts("Виу-виу!"), DONE]))["pass"]
+    assert not _verdict("n903_sound_siren_anim", "\n".join([sound, anim, DONE]))["pass"], "не police_lights"
     assert not _verdict("n903_sound_siren_anim", "\n".join([sound, DONE]))["pass"], "мигалку просили тоже"
 
 
@@ -462,25 +470,30 @@ def test_music_must_start_steps_forbid_the_timeout_phrase():
     assert not etm.step_verdict(_acc("n605_dj_set_plan"), lie)["forbidden_said"], "#4006 ещё не влит"
     # #3971: n809 просит синт («на синтезаторе») -- путь synth и синт-трек req… на деке
     route = "🎚️ [source] asked=[] genre=— кандидаты=['synth:club'] → synth:club (code) gen=ok"
-    ok = "\n".join([route, "✅ Инструмент request_music выполнен успешно", "🎵 [music v2] started track_id=req1:01:A",
+    ok = "\n".join([route, "✅ Инструмент request_music выполнен успешно", "🎵 [music] started track_id=req1:01:A",
                     DONE])
     assert _verdict("n809_music_bed", ok)["pass"]
     lie = "\n".join([_tts("Музыка пока не заиграла."), route, "✅ Инструмент request_music выполнен успешно",
-                     "🎵 [music v2] started track_id=req1:01:A", DONE])
+                     "🎵 [music] started track_id=req1:01:A", DONE])
     assert not _verdict("n809_music_bed", lie)["pass"]
 
 
 def test_music_stop_on_empty_deck_is_not_a_result():
     """n812 23.10: ``stop track_id=None`` + ``was_playing=False`` давал PASS -- теперь красный; нужен трек на деке."""
     idle = "\n".join(["✅ Инструмент stop_music выполнен успешно",
-                      "🎵 [music v2] stop track_id=None reason=user_stop",
+                      "🎵 [music] stop track_id=None reason=user_stop",
                       "[mcp_server]: [stop_music] [stop_music] was_playing=False", DONE])
     real = "\n".join(["✅ Инструмент stop_music выполнен успешно",
-                      "🎵 [music v2] stop track_id=req95964:01:A:f7de93b5 reason=user_stop",
-                      "[mcp_server]: [stop_music] [stop_music] was_playing=True", DONE])
+                      "🎵 [music] stop track_id=req95964:01:A:f7de93b5 reason=user_stop",
+                      "[mcp_server]: [stop_music] [stop_music] was_playing=True",
+                      _tts(gen.ROBOT_PHRASES["music.stop_said"][1]), DONE])
     for label in ("n312_stop_music", "n511_stop_music", "n709_stop_generated", "n712_stop_all", "n812_stop_music"):
         assert not _verdict(label, idle)["pass"], label
         assert _verdict(label, real)["pass"], label
+    # Шифу 05.11 «всегда что-то говорить»: Tier-1 стоп n511/n712 без фразы стопа - красный (silent_ok снят, #4408)
+    silent = "\n".join(line for line in real.split("\n") if "TTS:" not in line)
+    for label in ("n511_stop_music", "n712_stop_all"):
+        assert not _verdict(label, silent)["pass"], label
     no_flag = real.replace("was_playing=True", "was_playing=False")
     assert not _verdict("n812_stop_music", no_flag)["pass"]
 
@@ -492,7 +505,7 @@ def test_n811_stops_speech_and_keeps_music():
     assert _verdict("n811_stop_speech_keep_music", "\n".join([cancel, tier1]))["pass"]
     stop_all = tier1.replace("stop_speech", "stop_all")
     assert not _verdict("n811_stop_speech_keep_music", "\n".join([cancel, stop_all]))["pass"]
-    killed = "🎵 [music v2] stop track_id=req1:01:A reason=user_stop"
+    killed = "🎵 [music] stop track_id=req1:01:A reason=user_stop"
     assert not _verdict("n811_stop_speech_keep_music", "\n".join([cancel, tier1, killed]))["pass"]
     outro = "📥 Запрос выполнения: stop_music с параметрами {'boundary': 'bar'}"
     assert not _verdict("n811_stop_speech_keep_music", "\n".join([cancel, tier1, outro]))["pass"]
@@ -696,7 +709,7 @@ def _src(rel: str) -> str:
      'self.log_info(f"Принято {data} (показывает диалог по ExpressionRequest)")'),
     ("src/rob_box_mcp_tools/rob_box_mcp_tools/tools/animation.py", 'data["animation"] = resolved'),
     ("src/rob_box_mcp_tools/rob_box_mcp_tools/tools/music.py", 'self.log_info(f"[stop_music] was_playing={was_playing}")'),
-    ("src/rob_box_mcp_tools/rob_box_mcp_tools/engine/player_owner.py", 'f"🎵 [music v2] stop track_id={last} reason={reason}"'),
+    ("src/rob_box_mcp_tools/rob_box_mcp_tools/engine/player_owner.py", 'f"🎵 [music] stop track_id={last} reason={reason}"'),
     ("src/rob_box_mcp_tools/rob_box_mcp_tools/engine/gen/cover.py", 'f"🎼 [cover] баланс KIE: {value if value is not None'),
     ("src/rob_box_mcp_tools/rob_box_mcp_tools/base.py", 'self.node.get_logger().info(f"[{self.name}] {message}")'),
     ("src/rob_box_mcp_tools/rob_box_mcp_tools/mcp_server.py",
@@ -724,7 +737,7 @@ def _src(rel: str) -> str:
     ("src/rob_box_mcp_tools/rob_box_mcp_tools/engine/gen/song.py", 'f"🎤 [song] не вышло: {exc}"'),
     ("src/rob_box_mcp_tools/rob_box_mcp_tools/engine/gen/song.py", 'f"🎤 [song] сбой: {type(exc).__name__}: {exc}"'),
     ("src/rob_box_mcp_tools/rob_box_mcp_tools/engine/gen/song.py", 'f"🎤 [song] не заиграла: '),
-    ("src/rob_box_mcp_tools/rob_box_mcp_tools/engine/player_owner.py", 'f"🎵 [music v2] exec track_id={program.track_id} deck='),
+    ("src/rob_box_mcp_tools/rob_box_mcp_tools/engine/player_owner.py", 'f"🎵 [music] exec track_id={program.track_id} deck='),
 ])
 def test_marker_sources_exist_in_robot_code(rel, fragment):
     """Паттерны генератора собраны из f-строк кода робота: поменяли строку -- этот тест краснеет раньше марафона."""
@@ -749,3 +762,41 @@ def test_prosody_and_emotion_tables_match_robot_knowledge():
     knowledge = _src("src/rob_box_dialog/rob_box_dialog/knowledge.py")
     for scene in ('"sad": "sad"', '"happy": "happy"', '"victory": "victory"'):
         assert scene in knowledge, scene
+
+
+def test_n402_names_the_voice_not_the_provider_4077():
+    """#4077/М8: «MiniMax» (провайдер) без названия голоса -- не PASS; голос Qingse назван -- PASS."""
+    synth = "🗣️ SpeechEvent synthesized speech_id=e492c4cd agent=personality epoch=8 text_len=134 provider=minimax"
+    wrong = "\n".join([_tts("Сейчас я говорю на MiniMax, голос Надёжный мужчина."), synth, DONE])
+    assert not _verdict("n402_current_voice", wrong)["pass"]
+    for said in ("Я на MiniMax, мой голос Qingse.", "Сейчас голос male-qn-qingse.", "Это голос Цинсе."):
+        assert _verdict("n402_current_voice", "\n".join([_tts(said), synth, DONE]))["pass"], said
+
+
+def test_n709_conditional_offer_after_stop_is_not_a_false_action_4077():
+    """#4077/М8 n709: «если хочешь, включу его потише» после стопа -- условное предложение, не ложь о действии."""
+    stop = "🎵 [music] stop track_id=gen_b12d4ab5_1793298706 reason=user_stop"
+    ok = "✅ Инструмент stop_music выполнен успешно"
+    cond = _tts("Трек остановился. Если хочешь, включу его потише ещё раз.")
+    assert gen.MUSIC_FALSE_ACTION and "сейчас включу" in gen.MUSIC_FALSE_ACTION
+    lie = _tts("Раз Борис уснул -- сделаю потише, дослушивает шёпотом.")
+    from tests.unit.e2e_scripts.test_issue_4196_false_greens import CODE_CLOSED as _cc  # noqa: F401
+    assert _verdict("n709_stop_generated", "\n".join([stop, ok, cond, _cc]))["pass"]
+    assert not _verdict("n709_stop_generated", "\n".join([stop, ok, lie, _cc]))["pass"]
+
+
+def test_n807_judges_the_count_by_speech_mechanism_4207():
+    """#4207/Шифу 04.11: счёт - речь, `PlanEvent segment_replaced` не нужен. Продолжение: не с единицы, подряд, со «шаг»."""
+    acc = _steps()["n807_merge_addition"]["acceptance"]
+    assert acc["count_continues"] is True
+    assert "PlanEvent segment_replaced block=" not in _steps()["n807_merge_addition"]["patterns"]
+    ok = _tts("Семь. Восемь шаг, девять шаг, десять шаг.")
+    assert _verdict("n807_merge_addition", "\n".join([ok, DONE]))["pass"]
+    restart = _tts("Семь. Один шаг, два шага, три шага.")
+    assert not _verdict("n807_merge_addition", "\n".join([restart, DONE]))["pass"]
+    no_step = _tts("Семь. Восемь, девять, десять.")
+    assert not _verdict("n807_merge_addition", "\n".join([no_step, DONE]))["pass"]
+    gap = _tts("Семь. Девять шаг, десять шаг.")
+    assert not _verdict("n807_merge_addition", "\n".join([gap, DONE]))["pass"]
+    repeat = _tts("Семь. Восемь шаг, семь шаг.")
+    assert not _verdict("n807_merge_addition", "\n".join([repeat, DONE]))["pass"]

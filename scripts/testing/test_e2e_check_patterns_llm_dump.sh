@@ -21,8 +21,8 @@ set -u
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
-LIB="$REPO_ROOT/.github/workflows/scripts/e2e_voice_lib.sh"
-HARNESS="$REPO_ROOT/.github/workflows/scripts/e2e_voice_test.sh"
+LIB="$REPO_ROOT/scripts/ci/e2e/e2e_voice_lib.sh"
+HARNESS="$REPO_ROOT/scripts/ci/e2e/e2e_voice_test.sh"
 
 [ -f "$LIB" ] && [ -f "$HARNESS" ] || { echo "FATAL: нет lib/harness"; exit 1; }
 # shellcheck disable=SC1090

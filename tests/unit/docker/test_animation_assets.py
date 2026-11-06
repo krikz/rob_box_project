@@ -29,10 +29,11 @@ np = pytest.importorskip("numpy")
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(REPO_ROOT / "src" / "rob_box_animations"))
+sys.path.insert(0, str(REPO_ROOT / "src" / "ros2leds" / "led_matrix_effects"))  # эффекты лица (ros2leds)
 
 from rob_box_animations.face import states as S  # noqa: E402
-from rob_box_animations.face.face import (  # noqa: E402
-    GROUP_OF, GROUP_SIZE, IDLE_MA, SCENE_LIT_LIMIT_MA, frame_ma, to_wire)
+from rob_box_animations.face.face import IDLE_MA, SCENE_LIT_LIMIT_MA, frame_ma, to_wire  # noqa: E402
+from rob_box_animations.face.layout import GROUP_OF, GROUP_SIZE  # noqa: E402
 from rob_box_animations.face.scene import FaceContext, Scene, clip  # noqa: E402
 from rob_box_animations.face.sides import GLYPHS, MARKS, sides_frame  # noqa: E402
 
@@ -62,6 +63,7 @@ GOLDEN = {  # name: (sha1 frame t=1.0 seed default, sha1 whole pass)
     'fire_truck': ('4b36411d0a5cd5a01ef1f9868a89ad28c5ff4bad', 'd828c5f1d3f02987b4169100d57b1eba2bd31d92'),
     'ambulance': ('d847d21f25104f5c2f99728c47a94fd20d2cf03b', '1c441742bb1936ea3edacd63fef1c248dbf104f3'),
     'road_service': ('f1603814ef4b64ea5f33c76eacfe492f63c718bb', '661f311ab1c4072dcf5f5fa37fe24e949c12e2c0'),
+    'roadworks_beacon': ('8df36d5149844f1db965b259768481936781cc2e', 'f53d7ccc3923fc70f2501664590d2d84eb5a39ad'),
     'turn_left': ('1fa7178ac33fff144683089b321ae40e79fc07cc', '2738d36054942f7954383e49b0fa10c516e8d76f'),
     'turn_right': ('015636addef9ec9a119f2914103528509b152e17', '49f7a0a9245e46fc2f59d61572bcc7da86b28810'),
     'brake': ('7165a09f211e01449dfe90c917584f5db0e049d9', '4b0858ef73c41fa02b79fa85c8a024f86d71668b'),

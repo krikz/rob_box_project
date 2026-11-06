@@ -133,22 +133,3 @@ def test_greeting_reply_grammar(text, ok):
     from rob_box_dialog.greeting_reply import is_greeting_reply
 
     assert is_greeting_reply(text) is ok
-
-
-def test_meeting_glue_opens_the_window_with_the_speech_id():
-    from rob_box_harness.core.dialogue_state_machine import DialogueStateKind
-    from rob_box_voice.core.meeting import MeetingGreeter, MeetingMarker, greet_node_on_meeting
-    from rob_box_voice.core.occasion import OccasionGate
-
-    clock = _Clock()
-    node = _node(clock)
-    node._occasion = OccasionGate(source_cooldowns={'meeting': 5.0})
-    node._meeting_greeter = MeetingGreeter()
-    node._dsm = types.SimpleNamespace(current_state=DialogueStateKind.IDLE)
-    node._publish_response = lambda text, animation='neutral': "speech-1"
-    greet_node_on_meeting(node, MeetingMarker('p1', 'Денис', False, 0.9, 5, 100.0, '', 'oak_d'))
-    frame = node._session.snapshot.top("GreetingReply")
-    assert frame is not None and frame.payload["speech_id"] == "speech-1" and frame.payload["name"] == "Денис"
-    assert gw.window(node) is None, "пока приветствие звучит, окна нет"
-    gw.on_speech_event(node, _FINISHED, "speech-1", "personality")
-    assert gw.window(node) is not None

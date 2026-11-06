@@ -1,7 +1,7 @@
 {
   "version": 1,
-  "created": "2026-10-28",
-  "base_sha": "c6baece820029e804be4ffd4e1e6e7de1b804bc9",
+  "created": "2026-11-04",
+  "base_sha": "21f8b0d7caa085e68023aaa24e7ef42b8eba13d6",
   "limits": {
     "method": 15,
     "init": 20
@@ -22,22 +22,14 @@
     },
     "src/rob_box_voice/rob_box_voice/tts_node.py": {
       "TTSNode.__init__": 28,
-      "TTSNode._on_set_provider": 16,
-      "TTSNode._parse_ssml_attributes": 17,
-      "TTSNode._synthesize_and_play": 19,
-      "TTSNode._synthesize_silero": 23,
-      "TTSNode._synthesize_yandex": 18,
-      "TTSNode.dialogue_callback": 17
+      "TTSNode._synthesize_and_play": 17,
+      "TTSNode.dialogue_callback": 16
     },
     "src/rob_box_supervisor/rob_box_supervisor/supervisor_node.py": {
-      "AvatarSupervisor._on_avatar_command": 17,
-      "AvatarSupervisor._run_agent_sync": 19
+      "AvatarSupervisor._on_avatar_command": 17
     },
     "src/rob_box_harness/rob_box_harness/config.py": {
       "_parse_tts": 17
-    },
-    "src/rob_box_harness/rob_box_harness/core/agent_core.py": {
-      "AgentCore.process_input": 19
     },
     "src/rob_box_harness/rob_box_harness/core/confirmation_policy.py": {
       "ToolConfirmationPolicy.from_mapping": 16
@@ -54,9 +46,6 @@
     },
     "src/rob_box_mcp_tools/rob_box_mcp_tools/tools/dialogue.py": {
       "SpeakTextTool._split_sentences": 18
-    },
-    "src/rob_box_mcp_tools/rob_box_mcp_tools/tools/mapping.py": {
-      "StartMappingTool.execute": 16
     },
     "src/rob_box_mcp_tools/rob_box_mcp_tools/tools/sound.py": {
       "GetSoundInfoTool.execute": 19
@@ -146,39 +135,15 @@
     },
     {
       "path": "src/rob_box_voice/rob_box_voice/tts_node.py",
-      "method": "TTSNode._on_set_provider",
-      "cc": 16,
-      "since": "cc_budget_baseline.json created 2026-09-08; legacy grandfather — parent gate #1984 / #2077 covers decomp backlog"
-    },
-    {
-      "path": "src/rob_box_voice/rob_box_voice/tts_node.py",
-      "method": "TTSNode._parse_ssml_attributes",
-      "cc": 17,
-      "since": "cc_budget_baseline.json created 2026-09-08; legacy grandfather — parent gate #1984 / #2077 covers decomp backlog"
-    },
-    {
-      "path": "src/rob_box_voice/rob_box_voice/tts_node.py",
       "method": "TTSNode._synthesize_and_play",
-      "cc": 19,
-      "since": "cc_budget_baseline.json created 2026-09-08; legacy grandfather — parent gate #1984 / #2077 covers decomp backlog"
-    },
-    {
-      "path": "src/rob_box_voice/rob_box_voice/tts_node.py",
-      "method": "TTSNode._synthesize_silero",
-      "cc": 23,
-      "since": "cc_budget_baseline.json created 2026-09-08; legacy grandfather — parent gate #1984 / #2077 covers decomp backlog"
-    },
-    {
-      "path": "src/rob_box_voice/rob_box_voice/tts_node.py",
-      "method": "TTSNode._synthesize_yandex",
-      "cc": 18,
+      "cc": 17,
       "since": "cc_budget_baseline.json created 2026-09-08; legacy grandfather — parent gate #1984 / #2077 covers decomp backlog"
     },
     {
       "path": "src/rob_box_voice/rob_box_voice/tts_node.py",
       "method": "TTSNode.dialogue_callback",
-      "cc": 17,
-      "since": "Bumped 29->22 after refactor in issue 2626 (CC-budget guard, closed; живая карточка долга: #3291) — decomposed _synthesize_and_play call into a helper. ADR-0021-r1 R-1a/b: legacy-cc cannot be shrunk in place; this entry remains in _legacy_acknowledged so the upstream refactor card can pick it up. Track: PR landed 2026-09-15, baseline refreshed as part of issue 2626 acceptance."
+      "cc": 16,
+      "since": "Bumped 29->22 after refactor in issue 2626 (CC-budget guard, closed; прежняя карточка долга закрыта; живая карточка долга: #4414 — упрощение dialogue_callback CC=16>15) — decomposed _synthesize_and_play call into a helper. ADR-0021-r1 R-1a/b: legacy-cc cannot be shrunk in place; this entry remains in _legacy_acknowledged so the upstream refactor card can pick it up. Track: PR landed 2026-09-15, baseline refreshed as part of issue 2626 acceptance."
     },
     {
       "path": "src/rob_box_supervisor/rob_box_supervisor/supervisor_node.py",
@@ -187,21 +152,9 @@
       "since": "cc_budget_baseline.json created 2026-09-08; legacy grandfather — parent gate #1984 / #2077 covers decomp backlog"
     },
     {
-      "path": "src/rob_box_supervisor/rob_box_supervisor/supervisor_node.py",
-      "method": "AvatarSupervisor._run_agent_sync",
-      "cc": 19,
-      "since": "cc_budget_baseline.json created 2026-09-08; legacy grandfather — parent gate #1984 / #2077 covers decomp backlog"
-    },
-    {
       "path": "src/rob_box_harness/rob_box_harness/config.py",
       "method": "_parse_tts",
       "cc": 17,
-      "since": "cc_budget_baseline.json created 2026-09-08; legacy grandfather — parent gate #1984 / #2077 covers decomp backlog"
-    },
-    {
-      "path": "src/rob_box_harness/rob_box_harness/core/agent_core.py",
-      "method": "AgentCore.process_input",
-      "cc": 19,
       "since": "cc_budget_baseline.json created 2026-09-08; legacy grandfather — parent gate #1984 / #2077 covers decomp backlog"
     },
     {
@@ -238,12 +191,6 @@
       "path": "src/rob_box_mcp_tools/rob_box_mcp_tools/tools/dialogue.py",
       "method": "SpeakTextTool._split_sentences",
       "cc": 18,
-      "since": "cc_budget_baseline.json created 2026-09-08; legacy grandfather — parent gate #1984 / #2077 covers decomp backlog"
-    },
-    {
-      "path": "src/rob_box_mcp_tools/rob_box_mcp_tools/tools/mapping.py",
-      "method": "StartMappingTool.execute",
-      "cc": 16,
       "since": "cc_budget_baseline.json created 2026-09-08; legacy grandfather — parent gate #1984 / #2077 covers decomp backlog"
     },
     {

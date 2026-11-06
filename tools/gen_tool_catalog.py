@@ -43,7 +43,7 @@ REPO_ROOT = pathlib.Path(__file__).resolve().parent.parent
 TOOLS_DIR = REPO_ROOT / "src" / "rob_box_mcp_tools" / "rob_box_mcp_tools" / "tools"
 OUT_FILE = REPO_ROOT / "src" / "rob_box_core" / "rob_box_core" / "_tool_catalog_data.py"
 #: ADR-0149 PR-6: узкие тулы движка v2 живут в ``engine/``, а не в ``tools/`` — каталог читает и их.
-ENGINE_TOOL_SOURCES = (TOOLS_DIR.parent / "engine" / "tools_v2.py",)
+ENGINE_TOOL_SOURCES = (TOOLS_DIR.parent / "engine" / "engine_tools.py",)
 
 DYNAMIC = object()
 #: То же, что ``rob_box_mcp_tools.base.OPERATOR_SLICE_PREFIX`` (генератор не импортирует пакет с ROS; равенство держит
@@ -218,7 +218,7 @@ def _collect_class_constants(tree: ast.Module) -> dict[str, dict[str, ast.AST]]:
 SHARED_CONSTANT_MODULES: tuple[tuple[pathlib.Path, tuple[str, ...] | None], ...] = (
     (TOOLS_DIR.parent / "animations.py", None),
     (REPO_ROOT / "src" / "rob_box_dialog" / "rob_box_dialog" / "knowledge.py", ("KNOWN_ANIMATIONS",)),
-    # виды генерации ``generate_music`` — одна таблица с путём музыки (#4015 ревью: не держать вторую в tools_v2)
+    # виды генерации ``generate_music`` — одна таблица с путём музыки (#4015 ревью: не держать вторую в engine_tools)
     (REPO_ROOT / "src" / "rob_box_music" / "rob_box_music" / "source.py", ("GEN_KINDS",)),
 )
 
@@ -352,12 +352,12 @@ def _edit_values() -> list[str]:
 
 
 def _style_values() -> list[str]:
-    """``dj_set.style`` enum — ``auto`` и ключи ``knowledge.STYLES`` (ADR-0153 S1; ``tools_v2.STYLE_CHOICES``)."""
+    """``dj_set.style`` enum — ``auto`` и ключи ``knowledge.STYLES`` (ADR-0153 S1; ``engine_tools.STYLE_CHOICES``)."""
     return ["auto", *_knowledge().STYLES]
 
 
 def _gen_style_values() -> list[str]:
-    """``generate_music.style`` enum — «» и ключи ``knowledge.GEN_STYLES`` (``tools_v2.GEN_STYLE_CHOICES``)."""
+    """``generate_music.style`` enum — «» и ключи ``knowledge.GEN_STYLES`` (``engine_tools.GEN_STYLE_CHOICES``)."""
     return ["", *_knowledge().GEN_STYLES]
 
 
@@ -542,6 +542,8 @@ SKILL_TOOLS: dict[str, tuple[str, ...]] = {
         "finish_mapping",
         "optimize_map",
         "load_map",
+        "list_maps",
+        "delete_map",
     ),
     "voice-tts": (
         "set_voice",

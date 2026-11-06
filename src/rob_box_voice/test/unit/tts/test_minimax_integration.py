@@ -57,6 +57,7 @@ AudioTranscodeError = _mod.AudioTranscodeError
 
 # Import tts_node AFTER mocks are installed by conftest.
 from rob_box_voice import tts_node  # noqa: E402
+from rob_box_voice.tts_providers import YandexTTSProvider  # noqa: E402
 from rob_box_voice.core import tts_stream  # noqa: E402
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -237,11 +238,10 @@ class TestDefaultProviderPath:
         """Non-MiniMax providers must not depend on MiniMax-only state."""
         node = _make_fake_node()
         node.provider = "yandex"
-        node.normalize_text = False
         node.stop_requested = False
-        node.yandex_stub = object()
+        node._yandex_tts = YandexTTSProvider("fake-key", object(), logger=MagicMock())
         node.yandex_speed = 1.0
-        node._synthesize_yandex = MagicMock(
+        node._yandex_tts.synthesize_np = MagicMock(
             return_value=np.zeros(2205, dtype=np.float32)
         )
         node.publish_state = MagicMock()
@@ -255,14 +255,11 @@ class TestDefaultProviderPath:
         node.playback_manager = MagicMock()
         node.playback_manager.play_audio.return_value = True
         node.cleanup_playback_noise = MagicMock()
-        node.finished_pub = MagicMock()
 
         tts_node.TTSNode._synthesize_and_play(
             node,
-            "<speak>hello</speak>",
             "hello",
             None,
-            {},
             None,
         )
 
@@ -299,7 +296,7 @@ class TestRetryClassification:
         """2 timeout failures then success → 3 attempts, exp backoff."""
         call_count = [0]
 
-        async def fake_async(text, ssml_attributes, voice=None, language=None):
+        async def fake_async(text, voice=None, language=None):
             call_count[0] += 1
             if call_count[0] < 3:
                 raise TTSTimeoutError("net down")
@@ -314,7 +311,7 @@ class TestRetryClassification:
         """TTSAuthError → raised without retry."""
         call_count = [0]
 
-        async def fake_async(text, ssml_attributes, voice=None, language=None):
+        async def fake_async(text, voice=None, language=None):
             call_count[0] += 1
             raise TTSAuthError("bad key", provider="minimax")
 
@@ -328,7 +325,7 @@ class TestRetryClassification:
         """TTSBadRequestError → raised without retry."""
         call_count = [0]
 
-        async def fake_async(text, ssml_attributes, voice=None, language=None):
+        async def fake_async(text, voice=None, language=None):
             call_count[0] += 1
             raise TTSBadRequestError("invalid voice", provider="minimax")
 
@@ -341,7 +338,7 @@ class TestRetryClassification:
         """TTSRateLimitError → at most one retry, regardless of generic budget."""
         call_count = [0]
 
-        async def fake_async(text, ssml_attributes, voice=None, language=None):
+        async def fake_async(text, voice=None, language=None):
             call_count[0] += 1
             raise TTSRateLimitError("429", provider="minimax")
 
@@ -355,7 +352,7 @@ class TestRetryClassification:
         """After max_retries exhausted, propagate the last error."""
         call_count = [0]
 
-        async def fake_async(text, ssml_attributes, voice=None, language=None):
+        async def fake_async(text, voice=None, language=None):
             call_count[0] += 1
             raise TTSTimeoutError("timeout", provider="minimax")
 

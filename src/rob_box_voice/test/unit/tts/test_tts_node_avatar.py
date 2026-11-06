@@ -2,10 +2,10 @@
 
 Покрывает commit C2 из impl-плана 0055:
 
-* ``_on_avatar_tts_request`` с ``sink != "headset"`` → ``/avatar/tts/error``
-  с ``error="invalid_sink"`` + DROP, ``_submit_synthesis`` НЕ вызван.
-* ``_on_avatar_tts_request`` с ``sink == "headset"`` → ``_submit_synthesis``
-  с ``sink="headset"`` (worker берёт headset-путь).
+* ``/avatar/tts/request`` (``_on_avatar_tts_request``) несёт только образец голоса: ``sink != "preview"``
+  (в т.ч. ``"headset"``, #4252 ч.2) → ``/avatar/tts/error`` с ``error="invalid_sink"`` + DROP.
+* Чанк шлема от владельца речи (``_on_headset_chunk``) → ``_submit_synthesis``
+  с ``sink="headset"`` (worker берёт headset-путь); финал реплики — у владельца речи.
 * ``_publish_headset_audio`` шлёт AudioData в ``headset_audio_topic``,
   формат — int16 LE PCM (тот же, что ``/voice/audio/speech``).
 * Управляющего топика ``/avatar/tts/control`` у ноды нет: STOP принимал адаптер ``core/speech_compat``, писателей не
@@ -31,7 +31,7 @@ import pytest
 _PACKAGE_ROOT = Path(__file__).resolve().parents[3]  # rob_box_voice/
 sys.path.insert(0, str(_PACKAGE_ROOT))
 
-from test.unit.tts.conftest import _install_all_mocks  # noqa: E402
+from test.unit.tts.conftest import FinalsSpy, _install_all_mocks  # noqa: E402
 
 _install_all_mocks()
 
@@ -63,16 +63,16 @@ class _CapturingAudioPub:
 
 
 def _make_request_node():
-    """Минимальный node-stub для ``_on_avatar_tts_request``.
+    """Минимальный node-stub для ``_on_avatar_tts_request`` / ``_on_headset_chunk``.
 
-    Только то, что нужно callback'у: pub'ы (finished/error), state-machine
+    Только то, что нужно callback'у: владелец речи (финалы), pub ошибки шлема, state-machine
     для stale-dialogue guard, метод ``_publish_avatar_tts_error`` (через
     метод реального класса) и ``_submit_synthesis`` (MagicMock).
     """
     n = object.__new__(TTSNode)
     logger = MagicMock()
     n.get_logger = lambda: logger
-    n.finished_pub = _CapturingPublisher()
+    n._speech = FinalsSpy()
     n._avatar_tts_error_pub = _CapturingPublisher()
     n._avatar_tts_request_id = None
     n.current_speech_id = None
@@ -88,8 +88,13 @@ def _msg(payload: dict):
     return m
 
 
+def _headset(node, msg) -> None:
+    """Чанк ``sink="headset"`` так, как его отдаёт ``dialogue_callback`` (SpeechRequest от владельца речи)."""
+    node._on_headset_chunk(json.loads(msg.data))
+
+
 def _finished_payloads(node) -> list:
-    return [json.loads(m.data) for m in node.finished_pub.messages]
+    return list(node._speech.finals)
 
 
 def _error_payloads(node) -> list:
@@ -100,12 +105,11 @@ def _error_payloads(node) -> list:
 
 
 def test_avatar_tts_request_invalid_sink_published_error():
-    """sink != "headset" → /avatar/tts/error + DROP, без _submit_synthesis."""
+    """sink != "preview" → /avatar/tts/error + DROP, без _submit_synthesis."""
     node = _make_request_node()
     node._on_avatar_tts_request(
         _msg({
             "request_id": "req-bad-sink",
-            "ssml": "<speak>привет</speak>",
             "text": "привет",
             "sink": "speaker",  # недопустимый
         })
@@ -129,16 +133,16 @@ def test_avatar_tts_request_empty_ssml_dropped_with_empty_text_error():
     в deploy-логе (run #34144712828).
 
     Теперь: DROP + ``/avatar/tts/error{error="empty_text"}`` +
-    ``/voice/tts/finished{success=False, error="empty_text"}``.
+    финал реплики ``success=False, error="empty_text"`` (SpeechEvent ``rejected``).
     Caller (operator-agent / grip-pipeline) получает сигнал, что синтеза
     не будет, и не зависает в ожидании speech_id.
     """
     node = _make_request_node()
-    node._on_avatar_tts_request(
+    _headset(
+        node,
         _msg({
             "request_id": "req-empty-1",
             "speech_id": "sid-empty-1",
-            "ssml": "<speak></speak>",  # пустой SSML
             "text": "",
             "sink": "headset",
         })
@@ -150,9 +154,9 @@ def test_avatar_tts_request_empty_ssml_dropped_with_empty_text_error():
     assert errs, "avatar_tts_error_pub получил 0 сообщений"
     assert errs[0]["request_id"] == "req-empty-1"
     assert errs[0]["error"] == "empty_text"
-    # /voice/tts/finished с success=False + empty_text (чтобы speak_text не висел).
+    # Финал реплики success=False + empty_text (SpeechEvent rejected — шлем не ждёт).
     finished = _finished_payloads(node)
-    assert finished, "finished_pub получил 0 сообщений"
+    assert finished, "владелец речи не получил финал"
     assert finished[0]["success"] is False
     assert finished[0]["error"] == "empty_text"
     assert finished[0]["speech_id"] == "sid-empty-1"
@@ -161,17 +165,17 @@ def test_avatar_tts_request_empty_ssml_dropped_with_empty_text_error():
 def test_avatar_tts_request_whitespace_only_ssml_dropped():
     """Issue #2096 — SSML из одних пробелов/переносов → DROP.
 
-    ``_extract_text_from_ssml`` нормализует текст через ``strip_markdown().strip()``,
+    ``speech_text`` нормализует текст через ``strip_markdown().strip()``,
     поэтому ``"   \n  "`` после извлечения даёт пустую строку → тот же
     guard. Это покрывает кейс, когда LLM или grip-pipeline мог прислать
     «пустой по сути» SSML с whitespace.
     """
     node = _make_request_node()
-    node._on_avatar_tts_request(
+    _headset(
+        node,
         _msg({
             "request_id": "req-ws-1",
             "speech_id": "sid-ws-1",
-            "ssml": "<speak>   \n\t  </speak>",
             "text": "   \n\t  ",
             "sink": "headset",
         })
@@ -182,12 +186,11 @@ def test_avatar_tts_request_whitespace_only_ssml_dropped():
 
 
 def test_avatar_tts_request_no_sink_defaults_to_invalid():
-    """sink отсутствует → тоже DROP (только "headset" допустим)."""
+    """sink отсутствует → тоже DROP (только "preview" допустим)."""
     node = _make_request_node()
     node._on_avatar_tts_request(
         _msg({
             "request_id": "req-no-sink",
-            "ssml": "<speak>x</speak>",
             "text": "x",
             # sink не указан
         })
@@ -197,13 +200,22 @@ def test_avatar_tts_request_no_sink_defaults_to_invalid():
     assert errs[0]["error"] == "invalid_sink"
 
 
-def test_avatar_tts_request_headset_sink_submits_synthesis():
-    """sink == "headset" → _submit_synthesis с sink="headset" kwarg."""
+def test_avatar_tts_request_topic_no_longer_takes_headset_speech():
+    """#4252 ч.2: реплика в шлем по ``/avatar/tts/request`` — invalid_sink, синтеза нет (только SpeechRequest)."""
     node = _make_request_node()
-    node._on_avatar_tts_request(
+    node._on_avatar_tts_request(_msg({"request_id": "req-old-h", "text": "Готово", "sink": "headset"}))
+    node._submit_synthesis.assert_not_called()
+    assert _error_payloads(node)[0]["error"] == "invalid_sink"
+    assert not any("DEPRECATED" in str(c.args[0]) for c in node.get_logger().warn.call_args_list)
+
+
+def test_avatar_tts_request_headset_sink_submits_synthesis():
+    """Чанк шлема → _submit_synthesis с sink="headset" kwarg."""
+    node = _make_request_node()
+    _headset(
+        node,
         _msg({
             "request_id": "req-headset-1",
-            "ssml": "<speak>Готово</speak>",
             "text": "Готово",
             "sink": "headset",
             "voice": "male-qn-qingse",
@@ -226,12 +238,12 @@ def test_avatar_tts_request_emits_finished_with_speech_id_on_unsupported_script(
     """Unicode-script guard (issue 1709) → /avatar/tts/error + finished(Fail)."""
     node = _make_request_node()
     node.provider_chain = ["yandex", "silero"]  # #3728: Yandex иероглифы не читает
-    node._on_avatar_tts_request(
+    _headset(
+        node,
         _msg({
             "request_id": "req-cjk",
             "speech_id": "sid-cjk-1",
-            "ssml": "<speak>你好世界，加油加油</speak>",
-            "text": "你好世界",
+            "text": "你好世界，加油加油",
             "sink": "headset",
         })
     )
@@ -423,11 +435,13 @@ def test_sink_kwarg_in_synthesize_and_play_signature():
     sink_param = sig.parameters.get("sink")
     assert sink_param is not None
     assert sink_param.default == "speaker"
-    # sink должен идти ПОСЛЕ всех 8 канонических позиционных параметров.
+    # sink должен идти ПОСЛЕ всех 6 канонических позиционных параметров
+    # (#4240: ``ssml`` и ``ssml_attributes`` убраны из конвейера).
     canonical = [
-        "ssml", "text", "dialogue_id", "ssml_attributes", "speech_id",
-        "batch_id", "batch_index", "batch_total",
+        "text", "dialogue_id", "speech_id", "batch_id", "batch_index", "batch_total",
     ]
+    assert "ssml" not in [p.name for p in params]
+    assert "ssml_attributes" not in [p.name for p in params]
     names = [p.name for p in params]
     sink_idx = names.index("sink")
     for cname in canonical:
@@ -438,89 +452,51 @@ def test_sink_kwarg_in_synthesize_and_play_signature():
         )
 
 
-# ── Issue #2096 — ssml→text fallback (ADR-0055 contract) ────────────────
+# ── Issue #2096 / ADR-0160 §2.3 — голый текст реплики в шлем ────────────
 #
-# ``supervisor_node._publish_grip_tts`` / ``_publish_avatar_tts`` send
-# payloads that carry ONLY ``request_id``/``ssml``/``sink`` (+ optional
-# ``language``/``voice``) — NO ``text`` field at all (see their docstrings:
-# "ssml обязателен ... tts_node читает его в _on_avatar_tts_request"). Before
-# this fix ``_on_avatar_tts_request`` passed ``chunk_data.get("text", "")``
-# (always ``""`` for these payloads) to ``_submit_synthesis`` while ``ssml``
-# was used ONLY for ``_parse_ssml_attributes`` (prosody) — the actual words
-# were silently dropped, so MiniMax got an empty-text bad-request for a
-# perfectly normal, non-empty reply. This is the live incident from
-# voice-assistant (2026-09-07): 3 grip-pipeline replies in a row with real
-# text still produced ``text=''`` in the tts_node log and killed
-# minimax→yandex→silero.
+# 07.09 ``_on_avatar_tts_request`` брал слова из ``text``, которого
+# публикаторы не слали (они слали только ``ssml``) — MiniMax получал пустой
+# текст. С ADR-0160 §2.3 (#4239) ``Utterance.to_request()`` несёт голый
+# ``text``; SSML на проводе нет, разбирать нечего.
 
 
 def _submitted_text(node) -> str:
     """Extract the ``text`` positional arg passed to ``_submit_synthesis``.
 
-    Call shape (see ``_on_avatar_tts_request``):
-    ``_submit_synthesis(self._run_synthesis_worker, speech_id, ssml, text,
-    dialogue_id, ssml_attributes, speech_id, batch_id, batch_index,
-    batch_total, voice=..., language=..., sink="headset")``
+    Call shape (see ``_on_headset_chunk``):
+    ``_submit_synthesis(self._run_synthesis_worker, speech_id, text,
+    dialogue_id, speech_id, batch_id, batch_index, batch_total,
+    voice=..., language=..., sink="headset")``
     """
     args = node._submit_synthesis.call_args.args
-    return args[3]
+    return args[2]
 
 
-def test_avatar_tts_request_extracts_text_from_ssml_when_text_field_absent():
-    """Exact payload shape of ``_publish_grip_tts`` — no ``text`` key at all."""
+def test_avatar_tts_request_supervisor_payload_end_to_end():
+    """Ровно тот payload, что строит ``supervisor._publish_avatar_tts``:
+    ``{"request_id": ..., **Utterance(...).to_request()}``."""
+    from rob_box_core.utterance import Utterance
+
+    payload = {
+        "request_id": "3a48862f",
+        **Utterance(text="Мы начинаем осмотр", sink="headset", speech_id="tars-3a48862f").to_request(),
+    }
     node = _make_request_node()
-    node._on_avatar_tts_request(
-        _msg({
-            "request_id": "3a48862f",
-            "ssml": "<speak>Мы начинаем осмотр</speak>",
-            "sink": "headset",
-        })
-    )
+    _headset(node, _msg(payload))
     assert node._submit_synthesis.call_count == 1
     assert _submitted_text(node) == "Мы начинаем осмотр"
+    assert node._submit_synthesis.call_args.kwargs.get("sink") == "headset"
 
 
-def test_avatar_tts_request_extracts_text_from_ssml_when_text_field_empty():
-    """``text`` key present but ``""`` (exact shape of ``_publish_avatar_tts``
-    if it ever added an explicit empty ``text``) — same fallback applies."""
+def test_avatar_tts_request_keeps_xml_special_chars_as_text():
+    """``<``, ``&``, ``>`` — обычные символы голого текста: не экранируются и не
+    теряются (экранирует только конверт Silero)."""
     node = _make_request_node()
-    node._on_avatar_tts_request(
+    _headset(
+        node,
         _msg({
-            "request_id": "req-empty-text-field",
-            "ssml": "<speak>Принял</speak>",
-            "text": "",
-            "sink": "headset",
-        })
-    )
-    assert node._submit_synthesis.call_count == 1
-    assert _submitted_text(node) == "Принял"
-
-
-def test_avatar_tts_request_ssml_fallback_strips_nested_prosody_and_break():
-    """Nested ``<prosody>``/``<break>`` tags — text-only content survives."""
-    node = _make_request_node()
-    node._on_avatar_tts_request(
-        _msg({
-            "request_id": "req-nested",
-            "ssml": (
-                "<speak>Внимание<break time=\"300ms\"/>"
-                "<prosody rate=\"1.2\" pitch=\"high\">осмотр начат</prosody></speak>"
-            ),
-            "sink": "headset",
-        })
-    )
-    assert node._submit_synthesis.call_count == 1
-    assert _submitted_text(node) == "Вниманиеосмотр начат"
-
-
-def test_avatar_tts_request_ssml_fallback_unescapes_xml_entities():
-    """``&amp;``/``&lt;``/``&gt;`` in the SSML text content are unescaped,
-    not read aloud literally as "amp"/"lt"/"gt" (issue #2096 review note)."""
-    node = _make_request_node()
-    node._on_avatar_tts_request(
-        _msg({
-            "request_id": "req-entities",
-            "ssml": "<speak>Батарея &lt; 20% &amp; сигнал &gt; нормы</speak>",
+            "request_id": "req-chars",
+            "text": "Батарея < 20% & сигнал > нормы",
             "sink": "headset",
         })
     )
@@ -528,45 +504,25 @@ def test_avatar_tts_request_ssml_fallback_unescapes_xml_entities():
     assert _submitted_text(node) == "Батарея < 20% & сигнал > нормы"
 
 
-def test_avatar_tts_request_prefers_explicit_nonempty_text_over_ssml():
-    """Backward-compat: an explicit non-empty ``text`` field wins over
-    re-deriving it from ``ssml`` (matches dialogue_callback semantics for
-    payloads that DO carry a distinct plain-text field)."""
+def test_avatar_tts_request_strips_model_markup_tags():
+    """Тег, вписанный моделью (#3598), не звучит и в шлеме."""
     node = _make_request_node()
-    node._on_avatar_tts_request(
-        _msg({
-            "request_id": "req-explicit-text",
-            "ssml": "<speak>текст с разметкой</speak>",
-            "text": "явный текст без разметки",
-            "sink": "headset",
-        })
+    _headset(
+        node,
+        _msg({"request_id": "req-tags", "text": "<Текст>Принял</Текст>", "sink": "headset"})
     )
     assert node._submit_synthesis.call_count == 1
-    assert _submitted_text(node) == "явный текст без разметки"
+    assert _submitted_text(node) == "Принял"
 
 
-def test_avatar_tts_request_grip_pipeline_payload_end_to_end():
-    """End-to-end on the EXACT payload ``_publish_grip_tts`` constructs
-    (mirrors ``supervisor_node._publish_grip_tts``'s own
-    ``payload = {"request_id": ..., "ssml": f"<speak>{text}</speak>",
-    "sink": "headset"}`` — no ``text`` key, no ``language``)."""
-    import uuid as _uuid
-
-    original_text = "Мы начинаем"
-    request_id = _uuid.uuid4().hex[:8]
-    payload = {
-        "request_id": request_id,
-        "ssml": f"<speak>{original_text}</speak>",
-        "sink": "headset",
-    }
-
+def test_avatar_tts_request_ssml_payload_is_rejected():
+    """Старый формат ``{"ssml": ...}`` без ``text`` — отказ, а не синтез тегов."""
     node = _make_request_node()
-    node._on_avatar_tts_request(_msg(payload))
-
-    assert node._submit_synthesis.call_count == 1
-    assert _submitted_text(node) == original_text
-    call_kwargs = node._submit_synthesis.call_args.kwargs
-    assert call_kwargs.get("sink") == "headset"
+    _headset(
+        node,
+        _msg({"request_id": "req-old", "ssml": "<speak>Принял</speak>", "sink": "headset"})
+    )
+    node._submit_synthesis.assert_not_called()
 
 
 def test_sink_kwarg_in_run_synthesis_worker_signature():

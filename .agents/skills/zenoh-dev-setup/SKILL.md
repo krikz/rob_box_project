@@ -31,7 +31,7 @@ sudo apt install ros-humble-ros-base ros-humble-ros2cli ros-humble-rmw-zenoh-cpp
 ```bash
 cd ~/rob_box_project
 source /opt/ros/humble/setup.bash
-ZENOH_ROUTER_CONFIG_URI=$(pwd)/local_test/zenoh_local_router.json5 \
+ZENOH_ROUTER_CONFIG_URI=$(pwd)/tools/dev/zenoh_local_router.json5 \
   ros2 run rmw_zenoh_cpp rmw_zenohd
 ```
 
@@ -40,7 +40,7 @@ ZENOH_ROUTER_CONFIG_URI=$(pwd)/local_test/zenoh_local_router.json5 \
 ```bash
 source /opt/ros/humble/setup.bash
 export RMW_IMPLEMENTATION=rmw_zenoh_cpp
-export ZENOH_SESSION_CONFIG_URI=$(pwd)/local_test/zenoh_local_session.json5
+export ZENOH_SESSION_CONFIG_URI=$(pwd)/tools/dev/zenoh_local_session.json5
 export ROS_AUTOMATIC_DISCOVERY_RANGE=LOCALHOST
 ```
 
@@ -111,12 +111,12 @@ ros2 topic list   # Fresh discovery
 
 | File | Mode | Purpose |
 |------|------|---------|
-| `local_test/zenoh_local_router.json5` | router | Dev router → bridges to Main Pi 10.1.1.10:7447 |
-| `local_test/zenoh_local_session.json5` | peer | ROS nodes/CLI → connects to local router, has namespace |
-| `local_test/zenoh_local_session_no_namespace.json5` | peer | Same but no namespace (see raw prefixed topics) |
-| `local_test/zenoh_client_config.json5` | peer | Peer to local router with gossip autoconnect |
-| `local_test/zenoh_simple_peer.json5` | peer | Direct peer to Main Pi (no local router needed) |
-| `local_test/zenoh_client.json5` | client | Direct client to Main Pi (simplest, limited) |
+| `tools/dev/zenoh_local_router.json5` | router | Dev router → bridges to Main Pi 10.1.1.10:7447 |
+| `tools/dev/zenoh_local_session.json5` | peer | ROS nodes/CLI → connects to local router, has namespace |
+| `tools/dev/zenoh_local_session_no_namespace.json5` | peer | Same but no namespace (see raw prefixed topics) |
+| `tools/dev/zenoh_client_config.json5` | peer | Peer to local router with gossip autoconnect |
+| `tools/dev/zenoh_simple_peer.json5` | peer | Direct peer to Main Pi (no local router needed) |
+| `tools/dev/zenoh_client.json5` | client | Direct client to Main Pi (simplest, limited) |
 
 **Recommended setup:** Router (`zenoh_local_router.json5`) + Session (`zenoh_local_session.json5`)
 

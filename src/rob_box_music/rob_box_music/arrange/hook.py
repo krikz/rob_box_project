@@ -227,7 +227,7 @@ def from_rtttl(rtttl: str, melody_id: str, bpm: int, root: int, mode: str,
     try:
         _name, melody_bpm, notes = parse_rtttl(rtttl)
     except ValueError as exc:
-        _LOG.info("🎵 [music v2] hook melody=%s отказ: RTTTL не разбирается: %s", melody_id, exc)
+        _LOG.info("🎵 [music] hook melody=%s отказ: RTTTL не разбирается: %s", melody_id, exc)
         raise HookError(f"RTTTL не разбирается: {exc}") from exc
     theme = None
     if theme_max > 0 and theme_rtttl and theme_rtttl != rtttl:
@@ -305,9 +305,9 @@ def from_notes(notes: Notes, melody_bpm: float, melody_id: str, bpm: int, root: 
     try:
         hook, key, shift, answered = _hook(notes, melody_bpm, melody_id, bpm, root, mode, register, known_key, bars)
     except HookError as exc:
-        _LOG.info("🎵 [music v2] hook melody=%s отказ: %s", melody_id, exc)
+        _LOG.info("🎵 [music] hook melody=%s отказ: %s", melody_id, exc)
         raise
-    _LOG.info("🎵 [music v2] hook melody=%s key=%s %s key_fit=%.2f bars=%d", melody_id, kn.ROOTS[key.root], key.mode,
+    _LOG.info("🎵 [music] hook melody=%s key=%s %s key_fit=%.2f bars=%d", melody_id, kn.ROOTS[key.root], key.mode,
               hook.key_fit, hook.bars)
     if theme_max <= 0 or (answered and theme is None):
         return hook, key  # короткая мелодия RTTTL с ответом — тема и есть хук
@@ -346,10 +346,10 @@ def with_theme(hook: Hook, key: Key, onsets: Sequence[Tuple[float, float, int]],
         ends = [c * BEATS_PER_BAR for c in sorted(fit)]
         events = _theme_events(notes, ends, key, shift, (min(e.midi for e in hook.notes), register[1]))
     except HookError as exc:
-        _LOG.info("🎵 [music v2] hook melody=%s темы нет: %s", hook.source, exc)
+        _LOG.info("🎵 [music] hook melody=%s темы нет: %s", hook.source, exc)
         return hook
     bars = _bars4(max(fit))
-    _LOG.info("🎵 [music v2] hook melody=%s тема целиком: %d тактов, %d нот", hook.source, bars, len(events))
+    _LOG.info("🎵 [music] hook melody=%s тема целиком: %d тактов, %d нот", hook.source, bars, len(events))
     return replace(hook, theme=events, theme_bars=bars)
 
 
@@ -386,7 +386,7 @@ def _hook(notes: Notes, melody_bpm: float, melody_id: str, bpm: int, root: int, 
         raise HookError(f"мотив ломается: {folded} из {len(placed)} нот не помещаются в коридор {register} "
                         f"без переноса октавой ни целиком, ни по {', '.join(map(str, OCTAVE_SPANS))} такта")
     if span:
-        _LOG.info("🎵 [music v2] hook melody=%s октава по %d такта: перенесено %d из %d нот", melody_id, span, folded,
+        _LOG.info("🎵 [music] hook melody=%s октава по %d такта: перенесено %d из %d нот", melody_id, span, folded,
                   len(placed))
     moved = [(b, d, m) for (b, d, _m), m in zip(cut, placed)]
     _check_musical(moved)
@@ -624,7 +624,7 @@ def for_theme(material: ScoreMaterial, rtttls: Sequence[str],
     score, voice, beat = match
     bar = int(beat // _meter_bar(material))
     ok = score >= match_min
-    _LOG.info("🎵 [music v2] material=%s эталон RTTTL: голос %s такт %d совпадение %.2f — %s", material.material_id,
+    _LOG.info("🎵 [music] material=%s эталон RTTTL: голос %s такт %d совпадение %.2f — %s", material.material_id,
               voice, bar, score, "главный мотив оттуда" if ok else "мало — материал не узнаётся")
     if not ok:
         raise HookError(f"главного мотива эталона нет в голосах материала: совпадение {score:.2f} < {match_min}")
@@ -683,9 +683,9 @@ def rhythm_answer(material: ScoreMaterial, phrase: Phrase, hook: Hook, key: Key,
     try:
         placed = _answer_pitches(material, phrase, hook, key, bpm, register)
     except HookError as exc:
-        _LOG.info("🎵 [music v2] hook melody=%s ответ rhythm нет: %s", material.material_id, exc)
+        _LOG.info("🎵 [music] hook melody=%s ответ rhythm нет: %s", material.material_id, exc)
         return ()
-    _LOG.info("🎵 [music v2] hook melody=%s ответ rhythm: %d нот", material.material_id, len(placed))
+    _LOG.info("🎵 [music] hook melody=%s ответ rhythm: %d нот", material.material_id, len(placed))
     return tuple(PitchEvent(m, e.beat, e.dur_beats, e.accent) for e, m in zip(hook.notes, placed))
 
 

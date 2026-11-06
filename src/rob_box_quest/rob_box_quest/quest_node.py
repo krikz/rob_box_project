@@ -52,7 +52,7 @@ from rclpy.qos import (
     ReliabilityPolicy,
 )
 from sensor_msgs.msg import CompressedImage, LaserScan
-from rob_box_dialog_msgs.msg import SpeakerResult
+from rob_box_dialog_msgs.msg import SpeakerResult, SpeechEvent, SpeechRequest
 from std_msgs.msg import String
 
 # issue #1988 — константа топика ответа ТАРС (единый источник правды).
@@ -137,9 +137,9 @@ WAKE_AUDIO_LOG_INTERVAL_S: float = 10.0
 # issue #3253 (Ш2) — стадии ТАРС-в-шлем (ADR-0078 §3.6).
 # supervisor публикует сюда thinking (старт LLM) и idle (ход без речи в шлем).
 AVATAR_TARS_STAGE_TOPIC: str = "/avatar/tars/stage"
-# Конец синтеза реплики (tts_node, общий топик). Сопоставляется с
-# репликой ТАРС по speech_id из /avatar/tts/request.
-TTS_FINISHED_TOPIC: str = "/voice/tts/finished"
+# Реплика ТАРС в шлем — ``SpeechRequest(sink=headset)`` владельцу речи, её конец — ``SpeechEvent`` с тем же
+# speech_id (speech_client.SPEECH_REQUEST_TOPIC / SPEECH_EVENT_TOPIC, #4252). Приёмник шлема — одна строка.
+HEADSET_SINK: str = "headset"
 # Период опроса трекера стадий: отложенный idle после конца звука.
 TARS_STAGE_TICK_S: float = 0.1
 
@@ -1814,9 +1814,10 @@ class QuestNode(Node):
         # /avatar/tts/audio (AudioData int16 LE PCM) → ws_server.deliver_audio(
         # stream="operator_tts", ...) для воспроизведения в шлеме. Тот же
         # формат и QoS, что у /voice/audio/speech (см. tts_node audio_qos).
-        # Side-channel /avatar/tts/request (String JSON) даёт ДЕТЕРМИНИРОВАННУЮ
-        # привязку request_id → ws ДО прихода первого аудио-чанка (без
-        # race «request ушёл, ws ещё не зарегистрирован»).
+        # Side-channel SpeechRequest(sink=headset) (#4252; раньше String JSON
+        # /avatar/tts/request) даёт ДЕТЕРМИНИРОВАННУЮ привязку speech_id → ws
+        # ДО прихода первого аудио-чанка (без race «request ушёл, ws ещё не
+        # зарегистрирован»).
         # Параметры вынесены: forward-compat тесты + override через launch.
         from rclpy.qos import (  # noqa: PLC0415
             DurabilityPolicy as _Durability,
@@ -1832,7 +1833,6 @@ class QuestNode(Node):
         )
         # Параметры: ADR-0055 §quest_node.
         self.declare_parameter("avatar_tts_audio_topic", "/avatar/tts/audio")
-        self.declare_parameter("avatar_tts_request_topic", "/avatar/tts/request")
         # ADR-0078 §4 follow-up (issue #2162) — side-channel sample_rate
         # (String JSON от tts_node). Параметризован для тестов.
         self.declare_parameter("avatar_tts_audio_meta_topic", "/avatar/tts/audio_meta")
@@ -1842,9 +1842,6 @@ class QuestNode(Node):
         self._avatar_tts_audio_topic = str(
             self.get_parameter("avatar_tts_audio_topic").value
         )
-        self._avatar_tts_request_topic = str(
-            self.get_parameter("avatar_tts_request_topic").value
-        )
         self._avatar_tts_audio_meta_topic = str(
             self.get_parameter("avatar_tts_audio_meta_topic").value
         )
@@ -1852,7 +1849,7 @@ class QuestNode(Node):
             self.get_parameter("avatar_stt_result_topic").value
         )
         # Текущий avatar-request-id и привязанный ws. Обновляются в
-        # ``_on_avatar_tts_request_meta`` (side-channel). Используются в
+        # ``_on_headset_speech_request`` (side-channel). Используются в
         # ``_on_avatar_tts_audio`` для маршрутизации чанков в шлем.
         self._current_avatar_request_id: Optional[str] = None
         self._current_avatar_ws: Optional[Any] = None
@@ -1881,8 +1878,8 @@ class QuestNode(Node):
             self._on_avatar_stt_result, 10,
         )
         self._avatar_tts_request_sub = self.create_subscription(
-            String, self._avatar_tts_request_topic,
-            self._on_avatar_tts_request_meta, 10,
+            SpeechRequest, speech_client.SPEECH_REQUEST_TOPIC,
+            self._on_headset_speech_request, 10,
         )
         # issue #3253 (Ш2) — сервер сам шлёт стадии ТАРС: thinking (старт
         # LLM, от supervisor'а), speaking (первый чанк в шлем), idle +
@@ -1893,8 +1890,8 @@ class QuestNode(Node):
         self._tars_stage_sub = self.create_subscription(
             String, AVATAR_TARS_STAGE_TOPIC, self._tars_relay.on_supervisor_stage, 10,
         )
-        self._tts_finished_sub = self.create_subscription(
-            String, TTS_FINISHED_TOPIC, self._tars_relay.on_tts_finished, 10,
+        self._speech_event_sub = self.create_subscription(
+            SpeechEvent, speech_client.SPEECH_EVENT_TOPIC, self._tars_relay.on_speech_event, 10,
         )
         self._tars_stage_timer = self.create_timer(
             TARS_STAGE_TICK_S, self._tars_relay.tick
@@ -1910,7 +1907,7 @@ class QuestNode(Node):
             10,
         )
         # issue #2113 (quest #2112, Captain Bridge) — consumer /tars1/text:
-        # tts_node зеркалит avatar_text сюда на каждый /avatar/tts/request
+        # tts_node зеркалит avatar_text сюда на каждую реплику в шлем
         # (см. tts_node._publish_tars1_text). Тот же relay-паттерн, что у
         # avatar_command_result чуть выше: String JSON → JSON_EVENT всем
         # WS-сессиям (type="tars1_text"). Поверхность на клиенте —
@@ -2141,15 +2138,8 @@ class QuestNode(Node):
             OccupancyGrid, "/rtabmap/map", self._on_map, _MAP_QOS
         )
         # voice_state (0x1202): состояние голоса → нормализованный msgpack-фрейм → WS-подписчикам. Источник
-        # одной таблицей — rob_box_core.voice_state (issue #3911): при dialog_engine=v2 это TurnEvent/SpeechEvent/
-        # SessionState (watch), при v1 — строка /voice/dialogue/state (on_legacy; уходит с dialogue_node, PR-15).
+        # одной таблицей — rob_box_core.voice_state (issue #3911): TurnEvent/SpeechEvent/SessionState (watch).
         self._voice = voice_state.VoiceStateTracker()
-        self._dialogue_state_sub = self.create_subscription(
-            String,
-            "/voice/dialogue/state",
-            self._on_dialogue_state,
-            _RE,
-        )
         voice_state.watch(self, self._voice, lambda state: send_voice_state(self, state))
         # Эх последнего state — для тестов моста без полного ROS-стека.
         self._last_voice_state: dict[str, Any] = {
@@ -2469,10 +2459,6 @@ class QuestNode(Node):
         """5 Гц: лёгкий map_2d-кадр «только поза» (без PNG)."""
         self.bridge.publish_map_pose(self._map_pose())
 
-    def _on_dialogue_state(self, msg: String) -> None:
-        """Удалит PR-15 #3711: ROS /voice/dialogue/state (только dialogue_node v1) → адаптер → шлем."""
-        send_voice_state(self, self._voice.on_legacy(msg.data))
-
     def _on_tts_voices(self, msg: String) -> None:
         """ROS /voice/tts/voices (TRANSIENT_LOCAL, latched) → bridge кэш.
 
@@ -2573,31 +2559,23 @@ class QuestNode(Node):
 
     # ── ADR-0055 / issue #1993 — обратный канал ТАРС в шлем ────────────
 
-    def _on_avatar_tts_request_meta(self, msg: String) -> None:
-        """Side-channel: /avatar/tts/request (String JSON) → register ws.
+    def _on_headset_speech_request(self, msg: SpeechRequest) -> None:
+        """Side-channel: ``SpeechRequest(sink=headset)`` → register ws (#4252).
 
-        avatar_supervisor и tts_node оба подписаны на одно и то же сообщение.
-        На стороне quest_node мы достаём request_id и СРАЗУ регистрируем
-        request_id → ws через ``ws_server.register_audio_session`` ДО
-        прихода первого AudioData-чанка. Устраняет race «request ушёл,
-        ws ещё не зарегистрирован».
+        Владелец речи (tts_node) и quest_node оба подписаны на один и тот же
+        ``/voice/speech/request``. На стороне quest_node мы берём ``speech_id``
+        (он же ключ реплики в ``/avatar/tts/audio_meta`` — tts_node кладёт его
+        в ``request_id``) и СРАЗУ регистрируем его → ws через
+        ``ws_server.register_audio_session`` ДО прихода первого AudioData-чанка.
+        Устраняет race «request ушёл, ws ещё не зарегистрирован».
 
-        sink != "headset" → игнор (это tts_node-канал; контракт ADR-0055 —
-        tts_node сам публикует /avatar/tts/error при invalid_sink).
+        sink != "headset" → игнор (это реплика в динамики робота).
         """
-        try:
-            data = json.loads(msg.data) if msg.data else None
-        except (TypeError, ValueError) as exc:
-            self.get_logger().warning(f"avatar_tts_request_meta bad JSON: {exc}")
+        if msg.sink != HEADSET_SINK:
             return
-        if not isinstance(data, dict):
-            return
-        # Если sink не headset — это не наш канал. ADR-0055 §tts_node сам
-        # отвечает за /avatar/tts/error. Нам делать нечего.
-        if data.get("sink") != "headset":
-            return
-        request_id = data.get("request_id")
-        if not isinstance(request_id, str) or not request_id:
+        request_id = msg.speech_id
+        if not request_id:
+            self.get_logger().warning("🎧 [#4252] SpeechRequest в шлем без speech_id — звук не связать, DROP")
             return
 
         # Определяем целевой ws (детерминированная привязка).
@@ -2619,14 +2597,14 @@ class QuestNode(Node):
             self.get_logger().warning(
                 "🎧 [ADR-0055] register_audio_session(operator_tts) вернул False "
                 f"(лимит/UNKNOWN_STREAM), request_id={request_id[:8]} — "
-                "реплика ТАРС потеряется (supervisor увидит finished(Fail))"
+                "реплика ТАРС потеряется"
             )
             return
 
         self._current_avatar_request_id = request_id
         self._current_avatar_ws = ws
-        # issue #3253 (Ш2): speech_id связывает реплику с /voice/tts/finished.
-        self._tars_relay.on_request(request_id, data.get("speech_id"))
+        # issue #3253 (Ш2), #4252: speech_id связывает реплику с её SpeechEvent.
+        self._tars_relay.on_request(request_id, request_id)
         self.get_logger().debug(
             f"🎧 [ADR-0055] avatar TTS request зарегистрирован: "
             f"request_id={request_id[:8]}, ws={id(ws)}"
@@ -2638,7 +2616,7 @@ class QuestNode(Node):
         Маршрут в шлем оператора через ``ws_server.deliver_audio(
         stream="operator_tts", request_id=current, ws=current, ...)``.
         ``ws`` достаётся из side-channel registry (см.
-        ``_on_avatar_tts_request_meta``).
+        ``_on_headset_speech_request``).
 
         ADR-0078 §4 (issue #2162 follow-up): ``sample_rate`` берётся из
         кеша ``self._avatar_request_sample_rate[request_id]`` (заполняется
@@ -2899,7 +2877,7 @@ class QuestNode(Node):
         """ROS /tars1/text → JSON_EVENT (type=tars1_text) всем WS-сессиям.
 
         issue #2113 (quest #2112, Captain Bridge): tts_node зеркалит
-        avatar_text сюда на каждый /avatar/tts/request (см.
+        avatar_text сюда на каждую реплику в шлем (см.
         ``tts_node._publish_tars1_text``). Контракт входа — String JSON
         ``{request_id, text, streaming, done}``. Битый JSON молча дропаем:
         это зеркало best-effort для UI-панели, не должно ронять ноду.

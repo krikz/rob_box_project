@@ -31,9 +31,12 @@
 лицо разъехались бы по несвязанным ключам.
 
 **Слияние с голосом** (ADR-0123 §6): нода слушает
-``/voice/speaker/result`` и, если голос уверенно опознал человека, а в
-кадре ровно одно лицо, привязывает имя к лицевой записи. Два лица в
-кадре — слияния нет (открытый вопрос ADR-0105 §3 п.4).
+``/voice/speaker/result`` и, если голос уверенно опознал человека, а
+доказано, что говорит лицо в кадре (одно лицо всё окно фразы, рот
+двигался, несколько фраз подряд — ``face_voice_binding``, issue #4357),
+привязывает имя к лицевой записи. Два лица в кадре — слияния нет
+(открытый вопрос ADR-0105 §3 п.4). Топик ``/voice/speaker/merge`` к
+этому не относится: это склейка двух ГОЛОСОВЫХ профилей.
 
 Stub-режим (hailo_enabled=false): ``StubHEFLoader`` публикует
 ``event_type="stub"`` (маркер выдуманного события, ADR-0089 §2.2) —
@@ -56,6 +59,8 @@ from rob_box_perception.vision_hailo_node import VisionHailoNode
 
 #: Топик голосовой биометрии (std_msgs/String, JSON SpeakerMatch).
 SPEAKER_RESULT_TOPIC = '/voice/speaker/result'
+#: Сервис пульта по лицам (issue #4469): список, снимок, имя. Владелец - эта нода (FaceStore).
+PEOPLE_SERVICE = '/perception/people'
 
 #: Как часто печатать сводку узнавания в лог ноды. Режим приватности
 #: обязан быть виден (ADR-0123 §2), а «сколько встреч и кого узнали» —
@@ -221,6 +226,7 @@ class VisionFaceNode(VisionHailoNode):
 
         if self._recognizer is not None:
             self._subscribe_speaker_result()
+            self._people_srv = self._serve_people()
             self._stats_timer = self.create_timer(
                 STATS_LOG_PERIOD_SEC, self._log_stats
             )
@@ -343,7 +349,7 @@ class VisionFaceNode(VisionHailoNode):
         min_crop_mean = float(self.get_parameter('min_crop_mean').value)
         min_crop_contrast = float(self.get_parameter('min_crop_contrast').value)
 
-        store = FaceStore(
+        store = self._face_store = FaceStore(
             root=root,
             mode=mode,
             identify_threshold=identify_threshold,
@@ -363,6 +369,7 @@ class VisionFaceNode(VisionHailoNode):
             min_face_px=min_face_px,
         )
         embedder = ArcFaceEmbedder(hef_path=arcface_hef)
+        namer = self._build_namer(store, min_face_px)
 
         recognizer = FaceRecognizer(
             embedder=embedder,
@@ -374,6 +381,7 @@ class VisionFaceNode(VisionHailoNode):
             min_crop_mean=min_crop_mean,
             min_crop_contrast=min_crop_contrast,
             store_snapshots=(mode != 'strict'),
+            namer=namer,
             log_fn=self._recognizer_log,
         )
 
@@ -394,6 +402,24 @@ class VisionFaceNode(VisionHailoNode):
             )
         )
         return recognizer
+
+    def _build_namer(self, store: Any, min_face_px: float) -> Any:
+        """Кличка новых лиц (ADR-0164 этап 6). Облако — только по env, иначе словарные, и лог об этом."""
+        import os
+
+        from rob_box_perception.face_epithet import FaceEpithetNamer
+        from rob_box_perception.vision_llm import budget_from_env, describer_from_env
+
+        describer, note = describer_from_env(os.environ)
+        budget = budget_from_env(os.environ)
+        self.get_logger().info(
+            f'[лицо] клички: режим={store.epithet_policy}, {note}, '
+            f'потолок={budget.per_window}/ч.'
+        )
+        return FaceEpithetNamer(
+            store, describer=describer, budget=budget, min_face_px=min_face_px,
+            log_fn=self._recognizer_log,
+        )
 
     def _recognizer_log(self, level: str, msg: str) -> None:
         logger = self.get_logger()
@@ -433,6 +459,17 @@ class VisionFaceNode(VisionHailoNode):
                 f'Лица будут узнаваться, но без имён.'
             )
 
+    def _serve_people(self) -> Any:
+        """Сервис ``/perception/people``: пульт Telegram читает и правит лица только через владельца (#4469)."""
+        try:
+            from rob_box_perception_msgs.srv import People
+        except ImportError:  # pragma: no cover — вне ROS-окружения
+            return None
+        from rob_box_perception.people_service import PeopleService, serve
+
+        service = PeopleService(self._face_store)
+        return self.create_service(People, PEOPLE_SERVICE, lambda req, res: serve(service, req, res))
+
     def _on_speaker_result(self, msg: Any) -> None:
         if self._recognizer is None:
             return
@@ -466,8 +503,8 @@ class VisionFaceNode(VisionHailoNode):
         # Issue #2748 — источник ``source="register"`` (speaker_id_node,
         # момент регистрации) принимается НАРАВНЕ с обычным узнаванием:
         # имя названо самим человеком, доверия к нему больше, чем к
-        # косинусу identify(). Условие «ровно одно лицо в кадре»
-        # (ADR-0105 §3 п.4) не отличает источники — оно живёт внутри
+        # косинусу identify(). Доказательство «говорит это лицо» (issue
+        # #4357, ADR-0105 §3 п.4) не отличает источники — оно живёт внутри
         # note_voice_identification() и остаётся строгим для ОБОИХ.
         try:
             self._recognizer.note_voice_identification(
@@ -505,6 +542,10 @@ class VisionFaceNode(VisionHailoNode):
             ('два+_лица', stats.get('voice_merge_skip_multi_face', 0)),
             ('устарело', stats.get('voice_merge_skip_stale', 0)),
             ('конфликт_профилей', stats.get('voice_merge_skip_conflict', 0)),
+            # Issue #4357: лицо не говорило / пара копит подтверждения / у лица уже другое имя.
+            ('лицо_не_говорило', stats.get('voice_merge_skip_not_speaking', 0)),
+            ('ждёт_подтверждений', stats.get('voice_merge_pending', 0)),
+            ('у_лица_другое_имя', stats.get('voice_merge_skip_named_other', 0)),
         )
         skip_suffix = ''
         active_reasons = [f'{label}={count}' for label, count in skip_reasons if count]

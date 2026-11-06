@@ -21,11 +21,15 @@ RUN if [ -n "$APT_PROXY" ]; then \
         fi \
     fi
 
-# Установка USB Camera пакета и image transport для сжатия
+# Установка USB Camera пакета и image transport для сжатия.
+# apriltag-ros — детектор тегов потолка (ceiling_apriltag.launch.py), запускается
+# только при CEILING_APRILTAG_ENABLED=true; python3-numpy — кормушка ceiling_tag_feed.py.
 RUN apt-get update && apt-get install -y \
     ros-humble-usb-cam \
     ros-humble-image-transport-plugins \
     ros-humble-cv-bridge \
+    ros-humble-apriltag-ros \
+    python3-numpy \
     && rm -rf /var/lib/apt/lists/*
 RUN rm -f /etc/apt/apt.conf.d/02proxy
 

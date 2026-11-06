@@ -1,4 +1,4 @@
-"""Procedural LED face for rob_box: models, palette, layout, current budget.
+"""Procedural LED face for rob_box: models, palette, current budget (boards and canvas — ``layout``).
 
 All colours are in *LED levels* 0..25: the driver runs at brightness 25/255,
 so a channel value v becomes v*25//255 on the wire. Designing in levels keeps
@@ -16,16 +16,13 @@ from dataclasses import dataclass, field, replace
 
 import numpy as np
 
+from led_matrix_effects import BLACK, Strip, clamp, col
+from led_matrix_effects import Frame as _Frame
+
+from .layout import N_LEDS, ROVER
+
 FPS = 25
 DT = 1.0 / FPS
-MAX_LV = 25.0
-
-
-def col(r, g, b):
-    return np.array((r, g, b), dtype=float)
-
-
-BLACK = col(0, 0, 0)
 
 # ---------------------------------------------------------------- palette
 EYE = col(25, 21, 9)        # Bender's warm visor-white
@@ -65,29 +62,18 @@ def lerp(a, b, t):
     return a + (b - a) * t
 
 
-def clamp(v, lo, hi):
-    return max(lo, min(hi, v))
-
-
 def ease_io(t):
     t = clamp(t, 0.0, 1.0)
     return t * t * (3 - 2 * t)
 
 
 # ---------------------------------------------------------------- frame
-class Frame:
-    def __init__(self):
-        self.eye_l = np.zeros((8, 8, 3))
-        self.eye_r = np.zeros((8, 8, 3))
-        self.mouth = np.zeros((5, 25, 3))
-        self.rear_l = np.zeros((8, 8, 3))
-        self.rear_r = np.zeros((8, 8, 3))
+class Frame(_Frame):
+    """One picture of the face: an (rows, cols, 3) array of levels per panel of ``layout.ROVER`` (ros2leds
+    ``led_matrix_effects.Frame``): ``eye_l``, ``eye_r``, ``mouth``, ``rear_l``, ``rear_r``."""
 
-    def panels(self):
-        return {
-            'eye_l': self.eye_l, 'eye_r': self.eye_r, 'mouth': self.mouth,
-            'rear_l': self.rear_l, 'rear_r': self.rear_r,
-        }
+    def __init__(self):
+        super().__init__(ROVER)
 
 
 # ---------------------------------------------------------------- eyes
@@ -121,33 +107,74 @@ SHADES_L = [
 ]
 
 
+_RIM3 = EYE_RIM_MASK[..., None]
+_MASK3 = EYE_MASK[..., None]
+#: Sunglasses sprite cells per side: (y, x, is_lens), and their colours (built once, not per pixel - #3733).
+_SHADES_CELLS = {
+    s: tuple((y, x, ch == 'L') for y, row in enumerate(SHADES_L if s == 'l' else [r[::-1] for r in SHADES_L])
+             for x, ch in enumerate(row) if ch != '.')
+    for s in ('l', 'r')}
+SHADES_FRAME, SHADES_LENS_HI, SHADES_LENS = col(14, 14, 15), col(3, 3, 9), col(1, 1, 4)
+GLINT, GLINT_HALO = col(25, 25, 25), col(5, 5, 6)
+#: Memo of drawn eyes / mouths by their inputs: a scene holds its eyes still most frames, so an unchanged eye is
+#: copied, not redrawn (#3733: the per-pixel loops were half of face_node's CPU on the robot).
+_MEMO_MAX = 512
+_EYE_MEMO: dict = {}
+_MOUTH_MEMO: dict = {}
+
+
+def _arr_key(a):
+    return None if a is None else np.asarray(a, dtype=float).tobytes()
+
+
+def _memo_put(memo: dict, key, out):
+    if len(memo) >= _MEMO_MAX:
+        memo.clear()
+    memo[key] = out
+    return out
+
+
 def draw_eye(arr, e: Eye, side: str):
     """side: 'l' or 'r' in viewer space; inner corner faces the mouth."""
+    key = (side, e.top, e.slant, e.bot, e.bot_arc, e.gx, e.gy, e.pupil, _arr_key(e.color), _arr_key(e.rim),
+           e.bright, _arr_key(e.lid_color), e.shades, e.glint, e.bot_lid_dark)
+    out = _EYE_MEMO.get(key)
+    if out is None:
+        out = _memo_put(_EYE_MEMO, key, _draw_eye(e, side))
+    arr[:] = out
+
+
+def _eye_body(e: Eye, side: str):
+    """Iris, rim and anti-aliased lids, vectorised over the 8x8 board (same arithmetic per pixel as a loop)."""
     inner_dir = 1.0 if side == 'l' else -1.0
-    out = np.zeros((8, 8, 3))
-    cover = np.zeros((8, 8))
+    tops, bots = [], []
     for x in range(8):
         u = (x - 3.5) / 3.5 * inner_dir          # -1 outer .. +1 inner
-        top = e.top + e.slant * (u + 1) / 2 * 2.2 - (e.slant * 0.6 if e.slant else 0)
-        arc = e.bot_arc * (1 - ((x - 3.5) / 3.5) ** 2)
-        bot = e.bot - arc
-        for y in range(8):
-            if not EYE_MASK[y, x]:
-                continue
-            # anti-aliased lids: fractional coverage of the boundary row
-            ct = clamp(top - y, 0.0, 1.0)
-            cb = clamp(y - bot, 0.0, 1.0)
-            c = max(ct, cb)
-            cover[y, x] = c
-            iris = (e.rim if EYE_RIM_MASK[y, x] else e.color) * e.bright
-            lid = e.lid_color
-            if cb > ct and e.bot_lid_dark:
-                lid = BLACK
-            if c >= 1.0:
-                edge = (ct >= 1 and clamp(top - (y + 1), 0, 1) < 1) or (cb >= 1 and clamp((y - 1) - bot, 0, 1) < 1)
-                out[y, x] = LID_EDGE if (edge and not (cb > ct and e.bot_lid_dark)) else lid
-            else:
-                out[y, x] = iris * (1 - c) + lid * c
+        tops.append(e.top + e.slant * (u + 1) / 2 * 2.2 - (e.slant * 0.6 if e.slant else 0))
+        bots.append(e.bot - e.bot_arc * (1 - ((x - 3.5) / 3.5) ** 2))
+    top, bot = np.array(tops)[None, :], np.array(bots)[None, :]
+    # anti-aliased lids: fractional coverage of the boundary row
+    ct = np.clip(top - _YY, 0.0, 1.0)
+    cb = np.clip(_YY - bot, 0.0, 1.0)
+    c = np.maximum(ct, cb)
+    cover = np.where(EYE_MASK, c, 0.0)
+    dark_bot = (cb > ct) & bool(e.bot_lid_dark)
+    lid = np.where(dark_bot[..., None], BLACK, np.asarray(e.lid_color, dtype=float))
+    iris = np.where(_RIM3, np.asarray(e.rim, dtype=float), np.asarray(e.color, dtype=float)) * e.bright
+    c3 = c[..., None]
+    partial = iris * (1 - c3) + lid * c3
+    edge = (((ct >= 1) & (np.clip(top - (_YY + 1), 0, 1) < 1)) | ((cb >= 1) & (np.clip((_YY - 1) - bot, 0, 1) < 1)))
+    closed = np.where((edge & ~dark_bot)[..., None], LID_EDGE, lid)
+    out = np.where(_MASK3, np.where((c >= 1.0)[..., None], closed, partial), 0.0)
+    return out, cover
+
+
+def _draw_eye(e: Eye, side: str):
+    if e.shades >= 1:
+        # opaque sunglasses: the eye under them is black whatever it was (the pupil is skipped too)
+        out = np.zeros((8, 8, 3))
+    else:
+        out, cover = _eye_body(e, side)
     # pupil
     if e.pupil > 0 and e.shades < 0.99:
         p = e.pupil
@@ -169,27 +196,26 @@ def draw_eye(arr, e: Eye, side: str):
                         out[y, x] = out[y, x] * cover[y, x]
     # sunglasses ("deal with it"): slide down from above, glint sweeps the lens
     if e.shades > 0:
-        spr = SHADES_L if side == 'l' else [r[::-1] for r in SHADES_L]
         drop = int(round((1 - ease_io(e.shades)) * -7))
-        out[:] = 0 if e.shades >= 1 else out * (1 - e.shades)
-        for y, row in enumerate(spr):
-            for x, ch in enumerate(row):
-                yy = y + drop
-                if not (0 <= yy < 8) or ch == '.':
-                    continue
-                if ch == 'F':
-                    out[yy, x] = col(14, 14, 15)
-                else:
-                    # mirrored lens: dark blue with a lighter band near the top
-                    out[yy, x] = col(3, 3, 9) if y == 3 else col(1, 1, 4)
-                    if e.glint >= 0:
-                        gx_ = x if side == 'l' else 7 - x
-                        d = (gx_ + (y - 3)) - e.glint
-                        if abs(d) < 0.6:
-                            out[yy, x] = col(25, 25, 25)
-                        elif abs(d) < 1.6:
-                            out[yy, x] = col(5, 5, 6)
-    arr[:] = out
+        if e.shades < 1:
+            out = out * (1 - e.shades)
+        for y, x, lens in _SHADES_CELLS[side]:
+            yy = y + drop
+            if not 0 <= yy < 8:
+                continue
+            if not lens:
+                out[yy, x] = SHADES_FRAME
+            else:
+                # mirrored lens: dark blue with a lighter band near the top
+                out[yy, x] = SHADES_LENS_HI if y == 3 else SHADES_LENS
+                if e.glint >= 0:
+                    gx_ = x if side == 'l' else 7 - x
+                    d = (gx_ + (y - 3)) - e.glint
+                    if abs(d) < 0.6:
+                        out[yy, x] = GLINT
+                    elif abs(d) < 1.6:
+                        out[yy, x] = GLINT_HALO
+    return out
 
 
 # ---------------------------------------------------------------- mouth
@@ -246,6 +272,16 @@ def _cell_of(x):
 
 
 def draw_mouth(arr, m: Mouth, highlight=None, tint=None):
+    key = (m.curve, m.tilt, m.smirk, m.shape, None if m.open is None else tuple(map(tuple, m.open)), m.bright,
+           m.grid, _arr_key(m.color), m.x_shift, _arr_key(tint),
+           None if highlight is None else tuple((p, _arr_key(c)) for p, c in highlight.items()))
+    out = _MOUTH_MEMO.get(key)
+    if out is None:
+        out = _memo_put(_MOUTH_MEMO, key, _draw_mouth(m, highlight, tint))
+    arr[:] = out
+
+
+def _draw_mouth(m: Mouth, highlight, tint):
     out = np.zeros((5, 25, 3))
     seams = seam_cells(m.curve, m.tilt, m.smirk)
     opens = m.open or MOUTH_SHAPES[m.shape]
@@ -276,7 +312,7 @@ def draw_mouth(arr, m: Mouth, highlight=None, tint=None):
                 out[y, x] = c
     if m.x_shift:
         out = np.roll(out, m.x_shift, axis=1)
-    arr[:] = out
+    return out
 
 
 def tooth_ring():
@@ -380,68 +416,26 @@ def gaze_at(pts, t, snap=0.07):
     return lerp(before[1], prev[1], k), lerp(before[2], prev[2], k)
 
 
-# ---------------------------------------------------------------- layout
-#: Panel of the face (drawn for a person facing the robot) -> logical group of
-#: the ros2leds compositor. The robot's left headlight (wheel_front_left) is on
-#: the viewer's RIGHT, so eye_r goes there. Rear lights are drawn as seen from
-#: behind: rear_l is the robot's left board. Checked on the robot by the side
-#: test frame (``test_pattern.py``); the test pins this table.
-GROUP_OF = {
-    'eye_l': 'wheel_front_right',
-    'eye_r': 'wheel_front_left',
-    'mouth': 'main_display',
-    'rear_l': 'wheel_rear_left',
-    'rear_r': 'wheel_rear_right',
-}
-#: (width, height) of every logical group, as the compositor expects them.
-GROUP_SIZE = {
-    'main_display': (25, 5),
-    'wheel_front_left': (8, 8),
-    'wheel_front_right': (8, 8),
-    'wheel_rear_left': (8, 8),
-    'wheel_rear_right': (8, 8),
-}
-#: Panel -> (x, y) of its top-left LED on the face *canvas*: the one coordinate system of effects that cross
-#: panels (a rainbow wave, the katana slash, ``face/effects.py``). The robot unrolled as seen from outside,
-#: walking round it from the front to its left side and on to the back: ``eye_l | mouth | eye_r`` (front),
-#: then ``rear_l | rear_r`` (back, seen from behind). Gaps are the dark space between boards in LEDs, by eye
-#: (not measured on the robot); the mouth hangs 2 rows below the top of the headlights.
-CANVAS_AT = {
-    'eye_l': (0, 0),
-    'mouth': (12, 2),
-    'eye_r': (41, 0),
-    'rear_l': (61, 0),
-    'rear_r': (73, 0),
-}
-
-
-def to_wire(levels):
-    """Levels 0..25 -> channel bytes for the driver at brightness 25.
-
-    ``ceil``: the driver sends ``v * 25 // 255``, and level L must come back
-    exactly as L (L=1 -> 11 -> 1)."""
-    v = np.clip(np.asarray(levels, dtype=float), 0.0, MAX_LV) / MAX_LV * 255.0
-    return np.ceil(v - 1e-6).astype(np.uint8)
-
-
-# ---------------------------------------------------------------- current budget
-N_LEDS = 381
+# ---------------------------------------------------------------- wire and current budget
 MA_PER_CHANNEL = 20.0         # WS2812B, one channel at PWM 255 (datasheet)
 IDLE_MA_PER_LED = 1.0
 DRIVER_BRIGHTNESS = 25        # led_matrix_driver.yaml; raising it is a separate decision
-IDLE_MA = N_LEDS * IDLE_MA_PER_LED
+#: The strip as the driver drives it (ros2leds ``led_matrix_effects.Strip``): levels 0..25 at brightness 25, the
+#: driver's current model (#3674): every channel is ``v * brightness // 255`` on the wire and draws 20 mA at 255,
+#: plus 1 mA idle per LED.
+STRIP = Strip(N_LEDS, brightness=DRIVER_BRIGHTNESS, ma_per_channel=MA_PER_CHANNEL, idle_ma_per_led=IDLE_MA_PER_LED)
+MAX_LV = STRIP.max_level
+IDLE_MA = STRIP.idle_ma
 #: Lit current (above the 381 mA idle of the strip) any scene may draw at
 #: brightness 25. Total peak of the heaviest scene is then ~1.25 A: x3.6 headroom
 #: to the driver limiter (4.5 A), A28.
 SCENE_LIT_LIMIT_MA = 1000.0
-
-
-def frame_ma(frame: Frame, brightness: int = DRIVER_BRIGHTNESS) -> float:
-    """Strip current of a frame by the driver's own model (#3674): every channel
-    is ``v * brightness // 255`` on the wire and draws 20 mA at 255, plus 1 mA
-    idle per LED."""
-    lit = sum(int((to_wire(a).astype(np.int64) * brightness // 255).sum()) for a in frame.panels().values())
-    return IDLE_MA + lit / 255.0 * MA_PER_CHANNEL
+#: Levels 0..25 -> channel bytes (``ceil``: level L comes back from the driver exactly as L, L=1 -> 11 -> 1).
+to_wire = STRIP.to_wire
+#: Strip current of a frame, mA.
+frame_ma = STRIP.frame_ma
+#: ``frame_ma`` of panels already turned into wire bytes (``to_wire``): the node does not convert a frame twice.
+wire_ma = STRIP.wire_ma
 
 
 # ---------------------------------------------------------------- tint

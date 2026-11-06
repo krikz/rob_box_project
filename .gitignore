@@ -36,6 +36,9 @@ parts/
 sdist/
 var/
 wheels/
+# Каталог колёс Hailo в git ради .gitkeep и своего .gitignore (колёса *.whl игнорирует он).
+# Файл из игнорируемого каталога git не возвращает — возвращаем каталог (ADR-0166 §8).
+!docker/vision/vision-hailo/wheels/
 *.egg-info/
 .installed.cfg
 *.egg
@@ -48,7 +51,11 @@ log/
 *.db3
 
 # IDE
-.vscode/
+# .vscode/settings.json — общие настройки репо (URDF-визуализатор rob_box_description, пути ROS Humble
+# для анализатора Python, исключения build/log/cache из поиска и вотчеров); остальное в .vscode — личное
+# (ADR-0166 §8, решение Шифу 05.11). Каталог исключён через «/*», иначе файл не вернуть.
+.vscode/*
+!.vscode/settings.json
 .idea/
 *.swp
 *.swo
@@ -57,6 +64,9 @@ log/
 
 # Docker
 .env
+# docker/{main,sound,vision}/.env — конфиг деплоя (ROS_DISTRO, IMAGE_TAG, REGISTRY, ROBOT_ID),
+# секретов в них нет; compose читает их на роботе. Секреты — в .env.secrets (ADR-0166 §8).
+!docker/*/.env
 docker-compose.override.yml
 
 # Secrets (API keys, credentials)
@@ -75,17 +85,15 @@ docker-compose.override.yml
 /frames_*.gv
 /frames_*.pdf
 /clog
+/coverage.json
+
+# Огрызки Windows в корне рабочей копии (ADR-0166 §8)
+/.tmp_*/
+/*;C
 
 # Local Debian packages and ROS .deb drops (test-bench env setup)
 /*.deb
 /*.rpm
-
-# TTS audio bench: artifacts and runtime logs are regenerable; fixtures and
-# scripts commit normally.
-tts_audio_bench/artifacts/
-tts_audio_bench/logs/
-tts_audio_bench/__pycache__/
-tts_audio_bench/**/__pycache__/
 
 # AI Agent Skills
 # .agents/github-copilot/ — Rob Box кастомные скилы, КОММИТИМ
@@ -128,3 +136,7 @@ node_modules/
 /.vite/
 /artifacts_live*
 /live_check*
+# Сим: миры из карты робота (rob_box_sim.grid_to_sdf) — карта дома, в публичный репо не кладём
+src/rob_box_sim/worlds/local/
+docker/sim/results/
+docker/sim/video/

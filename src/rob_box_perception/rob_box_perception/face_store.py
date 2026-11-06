@@ -58,6 +58,8 @@ from typing import Any, Dict, List, Optional
 
 import numpy as np
 
+from rob_box_core import persona
+
 logger = logging.getLogger(__name__)
 
 # ── Режимы (ADR-0123 §2) ─────────────────────────────────────────────────────
@@ -65,6 +67,19 @@ MODE_WORKSHOP = 'workshop'
 MODE_EXHIBITION = 'exhibition'
 MODE_STRICT = 'strict'
 VALID_MODES = (MODE_WORKSHOP, MODE_EXHIBITION, MODE_STRICT)
+
+# ── Откуда кличка у лица (ADR-0164 §4.1 «Приватность») ───────────────────────
+#: workshop — описание по внешности (облачная vision-LLM по снимку) и кличка из него.
+EPITHET_POLICY_VISION = 'vision'
+#: exhibition — только словарная кличка в памяти, снимки в облако не уходят.
+EPITHET_POLICY_DICTIONARY = 'dictionary'
+#: strict — у незнакомцев клички нет.
+EPITHET_POLICY_NONE = 'none'
+_EPITHET_POLICY = {
+    MODE_WORKSHOP: EPITHET_POLICY_VISION,
+    MODE_EXHIBITION: EPITHET_POLICY_DICTIONARY,
+    MODE_STRICT: EPITHET_POLICY_NONE,
+}
 
 # ADR-0123 §8: «Файлы на Vision Pi: /data/faces/<person>/ — эталон,
 # снимки встреч, meta.json». Volume, не образ — переживает пересоздание
@@ -189,6 +204,8 @@ class FaceMatch:
     #: ``disambiguation_gap``). Диагностика для лога "Встреча" и
     #: сводки ``[лицо]`` - не влияет на остальной контракт FaceMatch.
     disambiguated: bool = False
+    #: Кличка записи (ADR-0164 §4.1). Метка, а не примета: в узнавании не участвует.
+    epithet: Optional[str] = None
 
 
 @dataclass
@@ -218,6 +235,11 @@ class _Record:
     # с версией конкретного вектора: FaceStore не хранит смешанные
     # версии в одной галерее, поэтому одного поля на запись достаточно.
     embedding_version: int = CURRENT_EMBEDDING_VERSION
+    # ADR-0164 §4.1: кличка, её история и описание персонажа — аддитивные поля meta.json;
+    # старые записи без них читаются с пустыми значениями.
+    epithet: Optional[str] = None
+    epithet_history: List[Dict[str, Any]] = field(default_factory=list)
+    persona: Optional[Dict[str, Any]] = None
 
 
 def _normalize(vec: np.ndarray) -> np.ndarray:
@@ -270,6 +292,98 @@ def _atomic_write_npy(path: Path, arr: np.ndarray) -> None:
         fh.flush()
         os.fsync(fh.fileno())
     os.replace(tmp, path)
+
+
+def _medoid(embeddings: List[np.ndarray]) -> np.ndarray:
+    """Эмбеддинг галереи с максимальной суммой косинусных сходств к
+    остальным — канонический, наиболее «согласованный со всеми»
+    ракурс. В отличие от геометрического центроида (среднего вектора,
+    который может не совпадать ни с одним реальным эмбеддингом),
+    медоид — это конкретная, когда-то реально записанная встреча,
+    поэтому годится и как точка допуска в галерею (``_should_enroll``),
+    и как якорь при вытеснении (``_evict_most_distant_from_medoid``).
+    Для галереи из одного элемента медоид — он сам."""
+    if len(embeddings) == 1:
+        return embeddings[0]
+    n = len(embeddings)
+    sums = [
+        sum(_cosine(embeddings[i], embeddings[j]) for j in range(n) if j != i)
+        for i in range(n)
+    ]
+    best_idx = max(range(n), key=lambda i: sums[i])
+    return embeddings[best_idx]
+
+
+def _gallery_cohesion(embeddings: List[np.ndarray]) -> Optional[float]:
+    """Медиана попарного косинуса внутри галереи — единственный
+    числовой показатель «эта запись описывает одного человека, а не
+    нескольких» (issue #2772, #2775 — нужен и для ``/perception/health``,
+    и для инструмента чистки). Здоровая запись держится в районе
+    ~0.9; живая отравленная галерея «Деньчика» (#2772, до фикса) —
+    медиана 0.302, min −0.007. Для 0-1 эмбеддингов попарных пар нет
+    — ``None``, а не 0.0/1.0 (оба значения были бы враньём об
+    измерении, которого не существует)."""
+    n = len(embeddings)
+    if n < 2:
+        return None
+    sims = [
+        _cosine(embeddings[i], embeddings[j])
+        for i in range(n)
+        for j in range(i + 1, n)
+    ]
+    return float(np.median(sims))
+
+
+def _fold_into_centroid(rec: _Record, emb: np.ndarray) -> None:
+    """``strict``: схлопнуть галерею в один вектор — скользящее среднее
+    по числу встреч, а не простое ``(old+new)/2`` (иначе поздние
+    встречи получали бы непропорционально много веса)."""
+    if not rec.embeddings:
+        rec.embeddings = [emb]
+        return
+    weight = max(1, rec.encounter_count)
+    centroid = rec.embeddings[0]
+    blended = centroid * ((weight - 1) / weight) + emb * (1.0 / weight)
+    rec.embeddings = [_normalize(blended)]
+
+
+def _fold_all_into_one_centroid(rec: _Record) -> None:
+    if len(rec.embeddings) <= 1:
+        return
+    centroid = _normalize(np.sum(np.stack(rec.embeddings), axis=0))
+    rec.embeddings = [centroid]
+
+
+# ── Кличка записи (ADR-0164 §4.1): поля meta.json и их правка — вне класса (ADR-0145) ──
+
+
+def _epithet_fields(data: Dict[str, Any]) -> Dict[str, Any]:
+    """Аддитивные поля клички из meta.json; у старых записей их нет — пустые значения."""
+    raw_persona = data.get('persona')
+    return {
+        'epithet': data.get('epithet') or None,
+        'epithet_history': list(data.get('epithet_history') or []),
+        'persona': raw_persona if isinstance(raw_persona, dict) else None,
+    }
+
+
+def _apply_epithet(
+    rec: _Record, epithet: str, reason: Optional[str],
+    persona_meta: Optional[Dict[str, Any]], ts: float,
+) -> None:
+    """Новая кличка уходит в запись, старая — в историю с причиной; ``reason=None`` — только описание."""
+    if reason is not None and epithet != rec.epithet:
+        rec.epithet_history.append(persona.history_entry(rec.epithet, epithet, reason, ts))
+        rec.epithet = epithet
+    if persona_meta is not None:
+        rec.persona = dict(persona_meta)
+
+
+def _inherit_epithet(keep: _Record, drop: _Record) -> None:
+    """Слияние записей: у ``keep`` нет клички — берёт кличку ``drop``. Пересборка — ADR-0164 этап 9."""
+    if keep.epithet is None:
+        keep.epithet = drop.epithet
+        keep.persona = keep.persona or drop.persona
 
 
 class FaceStore:
@@ -394,7 +508,7 @@ class FaceStore:
             embeddings = sum(len(r.embeddings) for r in self._records.values())
             cohesions = [
                 c for c in (
-                    self._gallery_cohesion(r.embeddings)
+                    _gallery_cohesion(r.embeddings)
                     for r in self._records.values()
                 )
                 if c is not None
@@ -505,6 +619,7 @@ class FaceStore:
             # (version_matches), либо она пуста и следующий же
             # ``record_encounter`` засеет её заново под текущей версией.
             embedding_version=self._embedding_version,
+            **_epithet_fields(data),
         )
 
     # ── Пути на диске ────────────────────────────────────────────────────
@@ -675,6 +790,7 @@ class FaceStore:
                 runner_up_person_id=runner_up_person_id,
                 runner_up_similarity=runner_up_similarity,
                 disambiguated=disambiguated,
+                epithet=rec.epithet,
             )
 
     def record_encounter(
@@ -755,7 +871,7 @@ class FaceStore:
 
             if self._mode == MODE_STRICT:
                 # §4.1: у знакомых в strict — один центроид, не галерея.
-                self._fold_into_centroid(rec, emb)
+                _fold_into_centroid(rec, emb)
             elif is_new:
                 # Первый эмбеддинг новой записи — семя галереи, кладётся
                 # безусловно (сравнивать не с чем, см. докстринг FaceMatch).
@@ -787,47 +903,10 @@ class FaceStore:
                 runner_up_person_id=runner_up_person_id,
                 runner_up_similarity=runner_up_similarity,
                 disambiguated=disambiguated,
+                epithet=rec.epithet,
             )
 
     # ── Галерея эмбеддингов ──────────────────────────────────────────────
-
-    def _medoid(self, embeddings: List[np.ndarray]) -> np.ndarray:
-        """Эмбеддинг галереи с максимальной суммой косинусных сходств к
-        остальным — канонический, наиболее «согласованный со всеми»
-        ракурс. В отличие от геометрического центроида (среднего вектора,
-        который может не совпадать ни с одним реальным эмбеддингом),
-        медоид — это конкретная, когда-то реально записанная встреча,
-        поэтому годится и как точка допуска в галерею (``_should_enroll``),
-        и как якорь при вытеснении (``_evict_most_distant_from_medoid``).
-        Для галереи из одного элемента медоид — он сам."""
-        if len(embeddings) == 1:
-            return embeddings[0]
-        n = len(embeddings)
-        sums = [
-            sum(_cosine(embeddings[i], embeddings[j]) for j in range(n) if j != i)
-            for i in range(n)
-        ]
-        best_idx = max(range(n), key=lambda i: sums[i])
-        return embeddings[best_idx]
-
-    def _gallery_cohesion(self, embeddings: List[np.ndarray]) -> Optional[float]:
-        """Медиана попарного косинуса внутри галереи — единственный
-        числовой показатель «эта запись описывает одного человека, а не
-        нескольких» (issue #2772, #2775 — нужен и для ``/perception/health``,
-        и для инструмента чистки). Здоровая запись держится в районе
-        ~0.9; живая отравленная галерея «Деньчика» (#2772, до фикса) —
-        медиана 0.302, min −0.007. Для 0-1 эмбеддингов попарных пар нет
-        — ``None``, а не 0.0/1.0 (оба значения были бы враньём об
-        измерении, которого не существует)."""
-        n = len(embeddings)
-        if n < 2:
-            return None
-        sims = [
-            _cosine(embeddings[i], embeddings[j])
-            for i in range(n)
-            for j in range(i + 1, n)
-        ]
-        return float(np.median(sims))
 
     def _should_enroll(self, rec: _Record, emb: np.ndarray, best_score: float) -> bool:
         """issue #2772: дописывать эмбеддинг в СУЩЕСТВУЮЩУЮ галерею только
@@ -883,7 +962,7 @@ class FaceStore:
             return True
         if best_score < self._enroll_threshold:
             return False
-        medoid = self._medoid(rec.embeddings)
+        medoid = _medoid(rec.embeddings)
         return _cosine(emb, medoid) >= self._enroll_threshold
 
     def _evict_most_distant_from_medoid(self, rec: _Record) -> None:
@@ -908,24 +987,12 @@ class FaceStore:
         подтверждающие личность векторы вымывались первыми, а случайные
         примеси оставались и множились."""
         while len(rec.embeddings) > self._max_embeddings:
-            medoid = self._medoid(rec.embeddings)
+            medoid = _medoid(rec.embeddings)
             n = len(rec.embeddings)
             worst_idx = min(
                 range(n), key=lambda i: _cosine(rec.embeddings[i], medoid)
             )
             rec.embeddings.pop(worst_idx)
-
-    def _fold_into_centroid(self, rec: _Record, emb: np.ndarray) -> None:
-        """``strict``: схлопнуть галерею в один вектор — скользящее среднее
-        по числу встреч, а не простое ``(old+new)/2`` (иначе поздние
-        встречи получали бы непропорционально много веса)."""
-        if not rec.embeddings:
-            rec.embeddings = [emb]
-            return
-        weight = max(1, rec.encounter_count)
-        centroid = rec.embeddings[0]
-        blended = centroid * ((weight - 1) / weight) + emb * (1.0 / weight)
-        rec.embeddings = [_normalize(blended)]
 
     # ── Снимки ───────────────────────────────────────────────────────────
 
@@ -1030,6 +1097,9 @@ class FaceStore:
             'encounters': rec.encounters,
             'mode_recorded': self._mode,
             'embedding_version': rec.embedding_version,
+            'epithet': rec.epithet,
+            'epithet_history': rec.epithet_history,
+            'persona': rec.persona,
         }
         _atomic_write_json(person_dir / _META_FILENAME, meta)
         dim = self._embedding_dim or 0
@@ -1108,7 +1178,7 @@ class FaceStore:
 
             keep.embeddings.extend(drop.embeddings)
             if self._mode == MODE_STRICT:
-                self._fold_all_into_one_centroid(keep)
+                _fold_all_into_one_centroid(keep)
             else:
                 self._evict_most_distant_from_medoid(keep)
 
@@ -1120,6 +1190,7 @@ class FaceStore:
             keep.encounter_count += drop.encounter_count
             if keep.speaker_id is None:
                 keep.speaker_id = drop.speaker_id
+            _inherit_epithet(keep, drop)
             keep.last_encounter_ts = max(keep.last_encounter_ts, drop.last_encounter_ts)
 
             self._remove_record(drop)
@@ -1127,12 +1198,6 @@ class FaceStore:
             if keep.persisted:
                 self._persist_record(keep)
             return True
-
-    def _fold_all_into_one_centroid(self, rec: _Record) -> None:
-        if len(rec.embeddings) <= 1:
-            return
-        centroid = _normalize(np.sum(np.stack(rec.embeddings), axis=0))
-        rec.embeddings = [centroid]
 
     def _migrate_snapshot_files(self, keep: _Record, drop: _Record) -> None:
         drop_dir = self._person_dir(drop.person_id)
@@ -1186,17 +1251,53 @@ class FaceStore:
                 {
                     'person_id': rec.person_id,
                     'name': rec.name,
+                    # issue #4357: слияние с голосом не перетирает чужую привязку (face_voice_binding.store_veto).
+                    'speaker_id': rec.speaker_id,
                     'encounter_count': rec.encounter_count,
+                    # issue #4469: «последняя встреча по лицу» (не last_seen шва «Знакомый»); пульт TG показывает
+                    # её с этой оговоркой. 0.0 - встреч с отметкой времени нет.
+                    'last_encounter_ts': rec.last_encounter_ts,
                     'has_snapshot': rec.has_reference_snapshot,
+                    'epithet': rec.epithet,
                     'is_stranger': rec.name is None,
                     'persisted': rec.persisted,
                     'embeddings': len(rec.embeddings),
                     # issue #2772/#2775: главный диагностический показатель
                     # здоровья галереи, см. докстринг _gallery_cohesion.
-                    'gallery_cohesion': self._gallery_cohesion(rec.embeddings),
+                    'gallery_cohesion': _gallery_cohesion(rec.embeddings),
                 }
                 for rec in self._records.values()
             ]
+
+    # ── Кличка (ADR-0164 §4.1, этап 6) ───────────────────────────────────
+
+    @property
+    def epithet_policy(self) -> str:
+        """Откуда брать кличку в текущем режиме — решает хранилище, как и сам режим (ADR-0164 §4.1)."""
+        return _EPITHET_POLICY[self._mode]
+
+    def set_epithet(
+        self,
+        person_id: str,
+        epithet: str,
+        reason: Optional[str],
+        *,
+        persona_meta: Optional[Dict[str, Any]] = None,
+    ) -> bool:
+        """Записать кличку (и описание) — пишет только код (ADR-0148).
+
+        ``reason=None`` — кличка не меняется, обновляется только описание. Старая кличка уходит в
+        ``epithet_history`` с причиной. В ``strict`` кличек нет; запись, которую уже забыли или слили,
+        не воскрешается (``False``).
+        """
+        with self._lock:
+            rec = self._records.get(person_id)
+            if rec is None or self.epithet_policy == EPITHET_POLICY_NONE:
+                return False
+            _apply_epithet(rec, epithet, reason, persona_meta, self._clock())
+            if rec.persisted:
+                self._persist_record(rec)
+            return True
 
     # ── Смена режима (ADR-0123 §5) ───────────────────────────────────────
 
@@ -1243,6 +1344,32 @@ class FaceStore:
                 self._persist_record(rec)
 
 
+def best_snapshot_bytes(store: FaceStore, person_id: str) -> Optional[bytes]:
+    """Байты лучшего снимка лица записи или ``None`` (issue #4469).
+
+    Эталон (первый снимок, не ротируется) - первым; нет эталона - самый свежий снимок встречи, чей файл жив.
+    Отдаёт байты, а не путь: потребитель (бот Telegram на Sound Pi) не делит с Vision Pi диск, копия каталога на
+    Sound Pi отстаёт (40 лиц против 107). Режим (``exhibition``/``strict``) тут не решает: снимков, которых режим
+    не пишет, на диске нет, а выдавать ли снимок наружу, решает вызывающий (``people_service``). Функция модуля, а
+    не метод: читает записи под замком хранилища, но не раздувает класс (ADR-0145, class_budget).
+    """
+    with store._lock:
+        rec = store._records.get(person_id)
+        if rec is None:
+            return None
+        candidates = []
+        if rec.has_reference_snapshot:
+            candidates.append(store._person_dir(person_id) / _REFERENCE_FILENAME)
+        candidates += [store._encounters_dir(person_id) / e['face_snapshot']
+                       for e in reversed(rec.encounters) if e.get('face_snapshot')]
+        for path in candidates:
+            try:
+                return path.read_bytes()
+            except OSError:
+                continue
+        return None
+
+
 __all__ = [
     'MODE_WORKSHOP',
     'MODE_EXHIBITION',
@@ -1250,6 +1377,10 @@ __all__ = [
     'VALID_MODES',
     'DEFAULT_ROOT',
     'CURRENT_EMBEDDING_VERSION',
+    'EPITHET_POLICY_DICTIONARY',
+    'EPITHET_POLICY_NONE',
+    'EPITHET_POLICY_VISION',
     'FaceMatch',
     'FaceStore',
+    'best_snapshot_bytes',
 ]

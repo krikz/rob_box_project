@@ -172,8 +172,117 @@ def test_unknown_who_gave_his_own_name_is_called_by_it():
     assert ports.said == ["Понял."]
 
 
+class _CameraPorts(Ports):
+    """Тул кадра отдаёт лицо «Литвин» (живой 04.11 22:51, #4388): фото в кадре, говорит неопознанный."""
+
+    async def execute(self, actions, snapshot, turn_id):
+        return [ActionResult(f"{turn_id}/{n}", snapshot.epoch, snapshot.agent, a.tool, kn.TOOL_CLASSES[a.tool], "done",
+                             None, {"vision_context": "в кадре: лицо «Литвин» ~1.1 м",
+                                    "faces": [{"name": "Литвин", "distance_m": 1.12, "age_s": 0.9}]})
+                for n, a in enumerate(actions)]
+
+
+def _look(answers, speaker):
+    session = Session("personality")
+    look = Answer(Command(actions=(ToolCall("get_perception_context", {}),)), "deepseek")
+    ports = _CameraPorts([look] + list(answers))
+    engine = TurnEngine(session, ports, system_prompt="Ты робот.")
+    session.set_speaker(speaker)
+    asyncio.run(engine.run(Addressed("робот что ты сейчас видишь", VOICE)))
+    return ports
+
+
+def test_face_name_from_the_camera_is_not_the_unknown_speakers_name():
+    """#4388: «Вижу тебя примерно в метре от меня, Литвин.» неопознанному - нарушение, как имя из истории."""
+    wrong = Answer(Command(speech="Вижу тебя примерно в метре от меня, Литвин."), "deepseek")
+    ports = _look([wrong, wrong], NEW)
+    assert any(kn.VIOLATION_FOREIGN_NAME in m["content"] for m in ports.asked[-1] if isinstance(m.get("content"), str))
+    assert ports.said == ["Вижу тебя примерно в метре от меня."]
+
+
+def test_face_name_told_about_in_third_person_stays():
+    ports = _look([Answer(Command(speech="В кадре лицо Литвина, примерно в метре."), "deepseek")], NEW)
+    assert ports.said == ["В кадре лицо Литвина, примерно в метре."]
+
+
+def test_confirmed_speaker_may_be_called_by_the_face_name():
+    ports = _look([Answer(Command(speech="Вижу тебя, Саша."), "deepseek")], SASHA)
+    assert ports.said == ["Вижу тебя, Саша."]
+
+
+def test_face_names_reads_tool_data_only():
+    results = [ActionResult("t/0", 1, "personality", "get_perception_context", "query", "done", None,
+                            {"faces": [{"name": "Литвин"}, {"name": None}]}),
+               {"tool": "get_perception_context", "status": "done", "data": {"faces": "мусор"}}]
+    assert fn.face_names(results) == ("Литвин",)
+
+
 def test_unknown_with_a_name_in_the_registration_may_be_called_by_it():
     reg = Command(speech="Приятно познакомиться, Гриша.",
                   actions=(ToolCall("register_speaker", {"name": "Гриша"}),))
     ports = _talk([Answer(reg, "deepseek")], NEW, text="запомни меня")
     assert len(ports.asked) == 3 and "Гриша" in ports.said[-1]
+
+
+# -- живой 05.11 10:31 UTC (#4388, деплой 42010438734): после рестарта фраза без биометрии, ``speaker=None`` ---------
+
+#: ``data`` исхода ``get_perception_context`` из лога voice-assistant (сообщение модели ``[3] tool``).
+LIVE_PERCEPTION = {
+    "timestamp": 1793874696.4482288,
+    "vision_context": "в кадре: чемодан; лицо «Литвин» ~1.1 м; силуэт человека ~1.1 м; метки AprilTag: 21",
+    "faces": [{"name": "Литвин", "distance_m": 1.117272973060608, "age_s": 0.3}],
+    "is_moving": False, "battery_voltage": 41.099998474121094, "battery_percent": 90.99998474121098,
+    "temperature": 0.0, "apriltag_ids": [21], "system_health_status": "HEALTHY",
+}
+LIVE_SPEECH = ("Вижу тебя, Литвин, примерно в метре. Рядом чемодан и метка двадцать один. "
+               "Батарея девяносто один процент.")
+
+
+class _LivePorts(_CameraPorts):
+    async def execute(self, actions, snapshot, turn_id):
+        return [ActionResult(f"{turn_id}/{n}", snapshot.epoch, snapshot.agent, a.tool, kn.TOOL_CLASSES[a.tool], "done",
+                             None, LIVE_PERCEPTION) for n, a in enumerate(actions)]
+
+
+def _look_live(answers, speaker):
+    session = Session("personality")
+    look = Answer(Command(actions=(ToolCall("get_perception_context", {}),)), "deepseek")
+    ports = _LivePorts([look] + list(answers))
+    engine = TurnEngine(session, ports, system_prompt="Ты робот.")
+    if speaker is not None:
+        session.set_speaker(speaker)
+    asyncio.run(engine.run(Addressed("робот что ты сейчас видишь", VOICE)))
+    return ports
+
+
+def test_live_phrase_addresses_the_face_name_mid_sentence():
+    assert fn.addressed(LIVE_SPEECH, fn.name_keys(fn.face_names([{"data": LIVE_PERCEPTION}]))) == ("Литвин",)
+
+
+@pytest.mark.parametrize("speaker", [None, NEW], ids=["no-speaker-snapshot", "unknown"])
+def test_live_face_name_to_an_unheard_speaker_is_a_violation(speaker):
+    """Живой ход: снимка собеседника нет (инъекция после рестарта), модель видит ``name_state=unknown`` и зовёт его
+    именем лица из кадра. Нарушение с повтором; после повтора имя вычищает код."""
+    ports = _look_live([Answer(Command(speech=LIVE_SPEECH), "deepseek")] * 2, speaker)
+    assert any(kn.VIOLATION_FOREIGN_NAME in m["content"] for m in ports.asked[-1] if isinstance(m.get("content"), str))
+    assert ports.said == ["Вижу тебя, примерно в метре. Рядом чемодан и метка двадцать один. "
+                          "Батарея девяносто один процент."]
+
+
+def test_live_retry_answer_without_the_name_is_spoken_as_is():
+    fixed = "Вижу тебя примерно в метре. Рядом чемодан и метка двадцать один."
+    ports = _look_live([Answer(Command(speech=LIVE_SPEECH), "deepseek"), Answer(Command(speech=fixed), "deepseek")],
+                       None)
+    assert ports.said == [fixed]
+
+
+@pytest.mark.parametrize("text", ["В кадре Литвин, примерно в метре.", "Вижу лицо Литвина, до него около метра."])
+def test_face_name_retold_without_speaker_snapshot_stays(text):
+    ports = _look_live([Answer(Command(speech=text), "deepseek")], None)
+    assert len(ports.asked) == 2 and ports.said == [text]
+
+
+def test_without_speaker_snapshot_history_names_are_not_judged():
+    """Снимка собеседника нет - имена из окна разговора код по-прежнему не судит (канал без биометрии); только лица."""
+    ports = _talk([Answer(Command(speech="Понял, Саша."), "deepseek")], None)
+    assert len(ports.asked) == 3 and ports.said == ["Понял, Саша."]

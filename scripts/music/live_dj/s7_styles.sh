@@ -1,6 +1,6 @@
 #!/bin/bash
 # ADR-0153 S7: приёмка стилей на роботе — по одному DJ-сету на стиль, запись 200 с с момента фразы
-# (трек 1 вырезается офлайн по ROS-штампу `[music v2] started`), полный лог voice-assistant и supercollider.
+# (трек 1 вырезается офлайн по ROS-штампу `[music] started`), полный лог voice-assistant и supercollider.
 #
 # Где: Sound Pi, тяжёлые контейнеры уже погашены, hotpatch status = чистый образ.
 # Как: flock -w 60 /tmp/music_test.lock bash s7_styles.sh [каталог=/tmp/s7]     (ONLY="club jazz" — подмножество)
@@ -47,7 +47,7 @@ for row in "${SETS[@]}"; do
   docker cp supercollider:/tmp/s7_$key.wav "$D/s7_$key.wav"; docker exec supercollider rm -f /tmp/s7_$key.wav
   docker logs -t voice-assistant --since "$S" > "$D/$key.full.log" 2>&1
   docker logs -t supercollider --since "$S" > "$D/$key.sc.log" 2>&1
-  echo "=== SET $key done $(date -u +%TZ) started=$(grep -c '\[music v2\] started' "$D/$key.full.log") late=$(grep -cE ' late [0-9]' "$D/$key.sc.log")" | tee -a "$D/index.txt"
+  echo "=== SET $key done $(date -u +%TZ) started=$(grep -c '\[music\] started' "$D/$key.full.log") late=$(grep -cE ' late [0-9]' "$D/$key.sc.log")" | tee -a "$D/index.txt"
   LAST=$S
 done
 inj "Робот, стоп диджей"; sleep 5

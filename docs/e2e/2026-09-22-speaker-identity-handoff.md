@@ -15,7 +15,7 @@ ADR-0097) и померила то, что до сих пор жило в ком
 |---|---|
 | Регистрация не переименовывает чужой профиль | PR [#2743](https://github.com/krikz/rob_box_project/pull/2743), ADR-0127 |
 | `register()` не стирает эпитет/теги/`created_at` (`INSERT OR REPLACE` → UPDATE) | тот же PR, ADR-0097 (принят 15.09, в код не попадал) |
-| Таблица `map_tts_voice` пересобрана по замеру; дубль тела функции убран | `.github/workflows/scripts/e2e_voice_lib.sh` |
+| Таблица `map_tts_voice` пересобрана по замеру; дубль тела функции убран | `scripts/ci/e2e/e2e_voice_lib.sh` |
 | Замерялка различимости голосов | `scripts/e2e/measure_tts_voice_distinctness.py` |
 | Сырые данные замеров | `evidence/tts-voice-distinctness-2026-09-22/` |
 
@@ -38,7 +38,7 @@ spoken='Сегодня по голосу я узнаю двоих: тебя, С�
 внутри (run 35667281570).
 
 Отдельно фикс проверен на **боевых** эмбеддингах из провалившегося прогона —
-`evidence/speaker-register-name-conflict-2026-09-22/replay-act2-real-embeddings.txt`:
+`evidence/speaker-register-name-conflict-2026-09-22/replay-act2-real-embeddings.txt` (удалён по ADR-0166 05.11.2026, есть в истории git и в PR #2743):
 при `cos=0.8464` получаются два профиля, Саша сохраняет имя и эпитет.
 
 ## 3. Измеренное про голоса
@@ -112,7 +112,7 @@ docker exec voice-assistant python3 /tmp/measure_tts_voice_distinctness.py \
 docs/adr/0127-speaker-register-name-conflict.md     — решение и отклонённые альтернативы
 docs/adr/0097-speaker-register-upsert-vs-update.md  — UPSERT-семантика register()
 evidence/tts-voice-distinctness-2026-09-22/         — матрицы косинусов, питч-эксперимент
-evidence/speaker-register-name-conflict-2026-09-22/ — pytest -v + проигрыш на боевых эмбеддингах
+PR #2743                                            — pytest -v + проигрыш на боевых эмбеддингах (evidence удалён по ADR-0166)
 scripts/e2e/measure_tts_voice_distinctness.py       — замерялка
 scripts/testing/test_e2e_voice_map_tts_voice.sh     — гард таблицы голосов
 scripts/testing/test_e2e_expected_keywords.py       — гард сопоставления ключей

@@ -26,6 +26,9 @@ echo -e "${GREEN}✓${NC} ROS2 Distro: $ROS_DISTRO"
 source /opt/ros/$ROS_DISTRO/setup.bash
 echo -e "${GREEN}✓${NC} ROS2 sourced"
 
+# USE_SIM_TIME=true только в профиле docker/sim (Gazebo); на роботе false.
+source /ros_scripts/use_sim_time.sh
+
 # Check config file
 CONFIG_FILE="/config/twist_mux/twist_mux.yaml"
 if [ ! -f "$CONFIG_FILE" ]; then
@@ -70,4 +73,4 @@ exec ros2 run twist_mux twist_mux \
     --ros-args \
     --params-file $CONFIG_FILE \
     -r cmd_vel_out:=/diff_drive_controller/cmd_vel_unstamped \
-    -p use_sim_time:=false
+    -p use_sim_time:="$USE_SIM_TIME"

@@ -35,10 +35,9 @@ from rob_box_dialog import knowledge as _dialog_kn
 from rob_box_dialog_msgs.msg import SpeakerResult
 from rob_box_core.e2e_mode import E2EModeFollower
 from rob_box_core.speaker_wire import NAME_CONFIRMED, name_state, speaker_result_to_payload
-from rob_box_core.tools_db import TOOLS_E2E_DB_DEFAULT, tools_db_path
+from rob_box_core.tools_db import TOOLS_E2E_DB_DEFAULT, tools_db_path, waypoint_db_path
 import asyncio
 import json
-import math
 import os
 import threading
 from typing import Any, Callable, Dict, Optional, Tuple
@@ -67,7 +66,7 @@ from .engine.renardo_runtime import RenardoRuntime
 from .engine.speech_duck import TICK_S, SpeechDuck, VoiceSource, duck_controls
 from .engine.reasoner import DEADLINE_S as V2_REASONER_DEADLINE_S, SetReasoner
 from .engine.request_slots import harness_ask
-from .engine.tools_v2 import DjSetTool, EditMusicTool, GenerateMusicTool, RequestMusicTool, music_busy
+from .engine.engine_tools import DjSetTool, EditMusicTool, GenerateMusicTool, RequestMusicTool, music_busy
 from .registry import MCPToolRegistry
 from .tools import (
     NavigateToWaypointTool,
@@ -91,6 +90,8 @@ from .tools import (
     FinishMappingTool,
     OptimizeMapTool,
     LoadMapTool,
+    ListMapsTool,
+    DeleteMapTool,
     PlayAnimationTool,
     PlaySoundTool,
     GetSoundInfoTool,
@@ -124,6 +125,9 @@ from .tools import (
     Ros2NodeStatusTool,
     SayAloudTool,
     SayTool,
+    PeopleListTool,
+    PersonPhotoTool,
+    NamePersonTool,
 )
 
 # Issue #1392 / ADR-0158 — library of generated tracks (cache) + music_library tool.
@@ -145,6 +149,7 @@ from .slice_authority import ToolSliceAuthority, load_default_authority
 from .waypoint_store import WaypointStore
 from .waypoint_adapter import WaypointAdapter
 from .mapping_state import MappingState
+from .map_pose import MapPoseSource, OnDemandTf
 from rob_box_core.provider_publisher import ProviderStatePublisher
 from .engine.gen.provider import gen_provider_states
 from .perception_projection import project_perception_event
@@ -188,9 +193,9 @@ def _teed_events(publish: Callable[[str], None], log: MusicEventLog) -> Callable
 
 
 def _set_reasoner(node: Any) -> SetReasoner:
-    """PR-10: ризонер плана сета по параметрам ноды; ``music_v2_reasoner: false`` — ноль вызовов LLM."""
-    return SetReasoner(enabled=bool(node.get_parameter("music_v2_reasoner").value),
-                       deadline_s=float(node.get_parameter("music_v2_reasoner_deadline_s").value),
+    """PR-10: ризонер плана сета по параметрам ноды; ``music_reasoner: false`` — ноль вызовов LLM."""
+    return SetReasoner(enabled=bool(node.get_parameter("music_reasoner").value),
+                       deadline_s=float(node.get_parameter("music_reasoner_deadline_s").value),
                        logger=node.get_logger())
 
 
@@ -222,7 +227,7 @@ def _song_studio(node: Any, events: Any) -> Optional[SongStudio]:
 def _play_cached(node: Any) -> Any:
     """Шов «сыграть трек кэша» для внутренних исполнителей (путь, песня, кавер, сет; ADR-0158 PR-9): функция
     ``play_library_track`` на кэше ноды, а не тул по реестру. Кэш поднимается позже движка — читаем лениво.
-    ``hold`` — мост ожидания песни (петля с кроссфейдом через ``BridgeHold``, ``tools_v2.hold_start``)."""
+    ``hold`` — мост ожидания песни (петля с кроссфейдом через ``BridgeHold``, ``engine_tools.hold_start``)."""
     def play(track_id: str, hold: Any = None) -> Any:
         library = getattr(node, "_generated_music_library", None)
         if library is None:
@@ -279,7 +284,7 @@ def _music_level_step(node: Any) -> Callable[[str], Any]:
     return step
 
 
-def _attach_player_owner_v2(node: Any, runtime: Any) -> Optional[PlayerOwner]:
+def _attach_player_owner(node: Any, runtime: Any) -> Optional[PlayerOwner]:
     """ADR-0149 §9, PR-4b — владелец плеера v2 (с PR-13b — единственный музыкальный путь).
 
     ``PlayerOwner`` — единственный писатель ``/voice/music/state`` и
@@ -291,7 +296,7 @@ def _attach_player_owner_v2(node: Any, runtime: Any) -> Optional[PlayerOwner]:
     if runtime is None:
         node.get_logger().error("❌ RenardoRuntime не создан — музыкальный движок v2 выключен")
         return None
-    latency = float(node.get_parameter("music_v2_clock_latency").value)
+    latency = float(node.get_parameter("music_clock_latency").value)
     event_qos = QoSProfile(reliability=ReliabilityPolicy.RELIABLE, history=HistoryPolicy.KEEP_LAST, depth=10)
     node.music_event_pub = node.create_publisher(String, MUSIC_EVENT_TOPIC, event_qos)
     adapter = RenardoAdapter(runtime.context, runtime.known_synth_names, runtime.send_osc, latency_s=latency)
@@ -309,8 +314,8 @@ def _attach_player_owner_v2(node: Any, runtime: Any) -> Optional[PlayerOwner]:
     history = MusicHistory(tools_db_path())  # music_history: хуки и оси недавних сетов переживают перезапуск (I17, #3399)
     history.announce(node.get_logger())
     dj_set = DjSetTool(node, owner, confirm=confirm, reasoner=_set_reasoner(node), speak=_speaker(node),
-                       history=history, tracks_dir=str(node.get_parameter("music_v2_tracks_dir").value),
-                       lines=bool(node.get_parameter("music_v2_dj_lines").value))
+                       history=history, tracks_dir=str(node.get_parameter("music_tracks_dir").value),
+                       lines=bool(node.get_parameter("music_dj_lines").value))
     node.registry.register(dj_set)  # PR-5: сет v2 — SetSession поверх владельца
     node._dj_set_tool = dj_set  # стоп деки закрывает и сет (MCPServer._stop_deck)
     cover = _cover_maker(node)  # PR-4: кавер пьесы; его баланс KIE — и сету из генерации
@@ -318,7 +323,7 @@ def _attach_player_owner_v2(node: Any, runtime: Any) -> Optional[PlayerOwner]:
     # PR-6: одиночный club-трек v2; PR-11: classic-песня v2 (мелодия по названию)
     # ADR-0157 PR-2: одиночная пьеса читает и пишет ту же music_history (свежесть пьес между заказами)
     request = RequestMusicTool(node, owner, dj_set, confirm=confirm, history=history,
-                               tracks_dir=str(node.get_parameter("music_v2_tracks_dir").value),
+                               tracks_dir=str(node.get_parameter("music_tracks_dir").value),
                                chooser_mode=str(node.get_parameter("music_chooser").value),
                                slots_ask=harness_ask(log=node.get_logger),  # #3609: LLM-разбор фразы в слоты
                                # ADR-0158 PR-3: кэш генераций поднимается позже (_register_gen_library_tools) —
@@ -452,15 +457,15 @@ class MCPServer(Node):
         # ADR-0149: владелец плеера v2 (engine/player_owner.py) — единственный писатель
         # /voice/music/state и /voice/music/event.
         # Clock.latency v2 (#3328): 0.5 с — late-бандлов 250/мин → 0 (PR-2/PR-4 замеры).
-        self.declare_parameter("music_v2_clock_latency", V2_CLOCK_LATENCY_S)
+        self.declare_parameter("music_clock_latency", V2_CLOCK_LATENCY_S)
         # ADR-0149 PR-10: ризонер плана сета (В1 MiniMax). §12 В2 (решение Шифу 06.10): реплика диджея на
         # каждом переходе — факты из плана, LLM ризонера раскрашивает, иначе шаблон; музыку не трогает.
-        # Старый ключ music_v2_hype_line (выкрик один раз за сет) больше не читается.
-        self.declare_parameter("music_v2_reasoner", True)
-        self.declare_parameter("music_v2_reasoner_deadline_s", V2_REASONER_DEADLINE_S)
-        self.declare_parameter("music_v2_dj_lines", True)
+        # Старый ключ music_hype_line (выкрик один раз за сет) больше не читается.
+        self.declare_parameter("music_reasoner", True)
+        self.declare_parameter("music_reasoner_deadline_s", V2_REASONER_DEADLINE_S)
+        self.declare_parameter("music_dj_lines", True)
         # ADR-0152 §2.3: полная модель каждого трека сета — <track_id>.json (ротация); "" — не писать.
-        self.declare_parameter("music_v2_tracks_dir", "/data/music_v2/tracks")
+        self.declare_parameter("music_tracks_dir", "/data/music_v2/tracks")
         # ADR-0157 PR-7 (#3564): кто выбирает пьесу при неоднозначном заказе - режим как у провайдеров LLM/STT/TTS
         # (параметр ноды, не env): deterministic | jev | chain (Jev 900 мс → LLM 2 с → кубик кода; решение Шифу 13.10).
         self.declare_parameter("music_chooser", CHOOSER_DEFAULT_MODE)
@@ -514,15 +519,16 @@ class MCPServer(Node):
         self.waypoint_store = self._init_waypoint_store()
 
         # MappingState — FSM персистентное состояние (localization / mapping)
-        self.mapping_state = MappingState()
+        # Имя активной карты FSM читает у владельца карт (``maps.is_active``), копии не держит (#4392).
+        self.mapping_state = MappingState(active_map=self.waypoint_store.get_active_map)
         _ms = self.mapping_state.get()
         self.get_logger().info(
             f"🗺️  MappingState: mode={_ms['mode']}, map='{_ms.get('map_name') or 'none'}'"
         )
 
-        # Лёгкий снимок позиции из /odom (вместо тяжёлого TF2 Listener на /tf 110 Гц)
-        self._pose_snapshot: "Dict[str, float] | None" = None
-        self._init_pose_subscription()
+        # Поза робота в кадре map для точек и «где ты» (#4390): TF map ← base_footprint,
+        # слушатель /tf только на время запроса (постоянный жёг CPU, mcp-server-cpu-loop-2026-08-22).
+        self.map_pose_source = MapPoseSource(lambda: OnDemandTf(self))
 
         # Регистрация инструментов
         self._register_tools()
@@ -566,7 +572,7 @@ class MCPServer(Node):
         # получает последний снимок, а не «ничего не играет» до тика.
         # Подписчики обязаны подписываться тоже TRANSIENT_LOCAL.
         self.music_state_pub = self.create_publisher(String, MUSIC_STATE_TOPIC, tools_qos)
-        self._player_owner = _attach_player_owner_v2(self, getattr(self, "_renardo_runtime", None))
+        self._player_owner = _attach_player_owner(self, getattr(self, "_renardo_runtime", None))
         self._speech_duck = _attach_speech_duck(self, getattr(self, "_renardo_runtime", None))
 
         # Subscriber для запросов на выполнение
@@ -824,10 +830,13 @@ class MCPServer(Node):
         (data-migration) могла сменить бэкенд «под ковром» без
         затрагивания вызывающего кода.
         """
-        db_path = tools_db_path()
+        # Реестр карт и точек: БД инструментов или, в HIL, свой файл (WAYPOINT_DB_PATH, #4371/#4392).
+        db_path = waypoint_db_path()
         try:
             store = WaypointStore(db_path=db_path)
             adapter = WaypointAdapter(store=store)
+            # В HIL здесь /data/hil/... (scripts/hil/hil.sh), в боевом режиме — БД инструментов.
+            self.get_logger().info(f"📍 WaypointAdapter: реестр карт и точек — {db_path}")
             active = adapter.get_active_map()
             if active:
                 wp_count = len(adapter.list_waypoints())
@@ -844,42 +853,6 @@ class MCPServer(Node):
             fallback_store = WaypointStore(db_path=":memory:")
             return WaypointAdapter(store=fallback_store)
 
-    def _init_pose_subscription(self) -> None:
-        """Подписка на /odom для лёгкого снимка позиции (без tf2_ros.Buffer).
-
-        Раньше здесь был ``tf2_ros.TransformListener`` → подписка на /tf (~110 Гц
-        с камеры), которая частыми wake-up'ами экзекутора и дорогой пересборкой
-        WaitSet на rmw_zenoh жгла ~45% CPU (см. mcp-server-cpu-loop-2026-08-22).
-        /odom (~10 Гц) даёт позицию робота напрямую; инструменты читают снимок,
-        а не делают blocking TF lookup.
-        """
-        try:
-            from nav_msgs.msg import Odometry
-
-            self.create_subscription(Odometry, "/odom", self._on_odom_snapshot, 10)
-            self.get_logger().info("📍 Подписан на /odom (лёгкий снимок позиции)")
-        except Exception as exc:  # noqa: BLE001
-            self.get_logger().warning(f"⚠️ Не удалось подписаться на /odom: {exc}")
-
-    def _on_odom_snapshot(self, msg) -> None:
-        """Обновить снимок позиции {x, y, theta} из nav_msgs/Odometry."""
-        try:
-            pos = msg.pose.pose.position
-            q = msg.pose.pose.orientation
-            siny_cosp = 2.0 * (q.w * q.z + q.x * q.y)
-            cosy_cosp = 1.0 - 2.0 * (q.y * q.y + q.z * q.z)
-            self._pose_snapshot = {
-                "x": float(pos.x),
-                "y": float(pos.y),
-                "theta": math.atan2(siny_cosp, cosy_cosp),
-            }
-        except Exception as exc:  # noqa: BLE001
-            self.get_logger().warning(f"⚠️ Ошибка обработки /odom: {exc}")
-
-    def get_current_pose_snapshot(self) -> "Dict[str, float] | None":
-        """Последний снимок позиции робота ({x, y, theta}) или None, если данных нет."""
-        return self._pose_snapshot
-
     def _register_tools(self):
         """Регистрация всех доступных инструментов."""
         # Navigation tools (require waypoint_store and/or pose snapshot)
@@ -889,11 +862,11 @@ class MCPServer(Node):
         self.registry.register(StopNavigationTool(self))
         self.registry.register(ListWaypointsTool(self, self.waypoint_store))
         self.registry.register(
-            SaveWaypointTool(self, self.waypoint_store, self.get_current_pose_snapshot, self.mapping_state)
+            SaveWaypointTool(self, self.waypoint_store, self.map_pose_source, self.mapping_state)
         )
         self.registry.register(DeleteWaypointTool(self, self.waypoint_store))
         self.registry.register(ClearWaypointsTool(self, self.waypoint_store))
-        self.registry.register(GetCurrentPoseTool(self, self.get_current_pose_snapshot))
+        self.registry.register(GetCurrentPoseTool(self, self.map_pose_source))
 
         # System tools
         self.registry.register(SetVolumeTool(self))
@@ -914,6 +887,8 @@ class MCPServer(Node):
         self.registry.register(FinishMappingTool(self, self.waypoint_store, self.mapping_state))
         self.registry.register(OptimizeMapTool(self))
         self.registry.register(LoadMapTool(self, self.waypoint_store, self.mapping_state))
+        self.registry.register(ListMapsTool(self, self.waypoint_store))
+        self.registry.register(DeleteMapTool(self, self.waypoint_store))
 
         # Animation tools
         self.registry.register(PlayAnimationTool(self))
@@ -963,6 +938,10 @@ class MCPServer(Node):
         self.registry.register(SayTool(self))
         # PR-12b (#3707) — ``say_aloud``: озвучка из чата Telegram, итог по SpeechEvent (срез ``telegram``).
         self.registry.register(SayAloudTool(self))
+        # #4469 — пульт Telegram по лицам (срез ``telegram``): данные и запись у владельца, vision_face /perception/people.
+        self.registry.register(PeopleListTool(self))
+        self.registry.register(PersonPhotoTool(self))
+        self.registry.register(NamePersonTool(self))
 
         # Memory tools (долгосрочная память + семантический поиск)
         self.registry.register(MemorySaveTool(self))
@@ -1020,7 +999,7 @@ class MCPServer(Node):
         """Регистрирует ``music_library`` — один узкий тул над кэшем генераций (graceful degradation).
 
         Новый узкий ``generate_music`` (ADR-0158 PR-3) регистрируется рядом с
-        ``request_music`` в ``_attach_player_owner_v2``: он просьба к чойсеру пути.
+        ``request_music`` в ``_attach_player_owner``: он просьба к чойсеру пути.
 
         Failure modes (each disables only music_library, Renardo keeps working):
             * Module import failed                              → log + return
@@ -1359,7 +1338,7 @@ class MCPServer(Node):
                 )
                 self.get_logger().warning(f"🚫 FSM blocked '{tool_name}' during mapping")
                 from .base import MCPToolResult
-                _result = MCPToolResult(success=False, error=_block_msg)
+                _result = MCPToolResult(success=False, error=_block_msg, data=self.mapping_state.block_data())
                 _resp = {"tool_name": tool_name, "request_id": request_id, "result": _result.to_dict()}
                 _msg_out = String()
                 _msg_out.data = json.dumps(_resp, ensure_ascii=False)

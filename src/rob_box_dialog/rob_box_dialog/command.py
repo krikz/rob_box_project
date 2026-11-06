@@ -37,7 +37,7 @@ from rob_box_dialog import phrases
 from rob_box_dialog.cast import Role
 from rob_box_dialog.expression import shows
 from rob_box_dialog.face_scene import FIELDS as FACE_FIELDS, FaceScene, problem as face_problem
-from rob_box_dialog.words import music_promises
+from rob_box_dialog.words import done_claims, music_promises, search_promises, voice_promises
 
 #: Поля команды и экспрессии — из той же схемы, что видит LLM (:func:`knowledge.command_schema`).
 _COMMAND_FIELDS: Tuple[str, ...] = tuple(kn.command_schema("json")["properties"])
@@ -615,10 +615,11 @@ def validate(cmd: Result, available_tools: Collection[str], session: Any = None,
         return cmd
     form = form or current_form()
     cmd = _drop_closed_passed(_drop_cosmetic_voice(_fit_soft_args(_drop_nested_extras(cmd)), form, busy), form)
+    cmd = _drop_replaced_stops(cmd)  # stop+start одного тула - смена, не два действия класса (#4347)
     # подложка: сначала вид без просьбы о музыке теряет её, потом путь пения подгоняет остальное;
     # число лиц по сегментам правит другое поле выступления и идёт последним, порядок с подложкой не важен
     cmd = _fit_sing_backing(_drop_default_backing(cmd, form), form)
-    cmd = _fit_expression_count(cmd)
+    cmd = _fit_expression_count(_fit_segments(cmd))  # пустые сегменты и длина ролей - до лиц: лица по числу сегментов
     cmd = _voice_roles(cmd, busy)
     agent = getattr(session, "agent", None) or kn.AGENTS[0]
     # тулы, закрытые путём пения, судит _check_sing своим нарушением: не «тула нет в срезе» — мост его не расширяет
@@ -633,6 +634,9 @@ def validate(cmd: Result, available_tools: Collection[str], session: Any = None,
         lambda: _check_actions(open_actions, available, agent),
         lambda: _check_speech_with_actions(cmd, agent),
         lambda: _check_music_promise(cmd, agent),
+        lambda: _check_voice_promise(cmd, agent),
+        lambda: _check_search_promise(cmd, agent),
+        lambda: _check_done_claim(cmd, agent),
         lambda: _check_args_without_action(cmd),
         lambda: _check_perform(cmd, busy),
         lambda: _check_sing(cmd, form),
@@ -677,6 +681,25 @@ def _extra_args_droppable(call: ToolCall) -> bool:
     поле (``{"animated": true}``) - вызов без смысла, его отвергает схема, как раньше."""
     meaning = kn.DROPPABLE.tool_args.get(call.tool, ())
     return any(name in call.args for name in meaning)
+
+
+def _drop_replaced_stops(cmd: Command) -> Command:
+    """Команда без стопа музыки, который заменяет старт того же тула ПОЗЖЕ в этой команде
+    (``knowledge.START_REPLACES_STOP``: ``dj_set start`` сам гасит идущий сет). Живой n604 04.11 (#4347): «уводи в
+    сторону рока» под сетом - ``dj_set stop`` + ``dj_set start style=rock``, два действия ``action.media`` - отказ
+    ``single_action_class``, а повтор вернул один стоп: музыка выключена, рока нет. Пара - это смена темы, решает код:
+    стоп уходит в ``dropped``, старт остаётся. Стоп без старта того же тула (и старт ДО стопа) не трогается."""
+    actions, notes = [], []
+    for i, call in enumerate(cmd.actions):
+        later = cmd.actions[i + 1:]
+        if kn.stops_music(call.tool, call.args) and any(
+                a.tool == call.tool and kn.replaces_stop(a.tool, a.args) for a in later):
+            notes.append(f"actions[{i}].{call.tool}.stop")
+            continue
+        actions.append(call)
+    if not notes:
+        return cmd
+    return replace(cmd, actions=tuple(actions), dropped=(*cmd.dropped, *notes))
 
 
 def _drop_nested_extras(cmd: Command) -> Command:
@@ -996,6 +1019,56 @@ def _check_music_promise(cmd: Command, agent: str) -> None:
         raise _Bad(kn.VIOLATION_MUSIC_PROMISE, f"speech обещает {', '.join(broken)} без тула")
 
 
+def unkept_voice_promises(cmd: Command) -> Tuple[str, ...]:
+    """Виды обещаний сменить голос, темп или тон речи в ``speech`` (``words.voice_promises``), которых команда не
+    исполняет: нет тула ``knowledge.VOICE_PROMISES[вид].tools`` среди ``actions``."""
+    called = {a.tool for a in cmd.actions}
+    return tuple(kind for kind in voice_promises(cmd.speech or "") if not called & set(kn.VOICE_PROMISES[kind].tools))
+
+
+def _check_voice_promise(cmd: Command, agent: str) -> None:
+    """Речь обещает сменить голос, темп или тон («заговорю помедленнее», «переключусь на голос Алёны»), а тула нет
+    (#4020 К1, ADR-0148): слова без действия - ложь о собственной речи. Нарушение ``VIOLATION_VOICE_PROMISE`` - повтор с
+    подсказкой; речь, что не прозвучит (:func:`_speech_is_dropped`), никого не обещает."""
+    if _speech_is_dropped(cmd, agent):
+        return
+    broken = unkept_voice_promises(cmd)
+    if broken:
+        raise _Bad(kn.VIOLATION_VOICE_PROMISE, f"speech обещает {', '.join(broken)} без тула")
+
+
+def _check_search_promise(cmd: Command, agent: str) -> None:
+    """Речь обещает поискать («Поищу ещё раз, уточню запрос.»), а тула поиска (``knowledge.SEARCH_PROMISES``) в
+    команде нет (#4314 К1, n907 М9, ADR-0148): слова без действия. Нарушение ``VIOLATION_SEARCH_PROMISE`` - повтор с
+    подсказкой; речь, что не прозвучит (:func:`_speech_is_dropped`), никого не обещает."""
+    if _speech_is_dropped(cmd, agent):
+        return
+    called = {a.tool for a in cmd.actions}
+    broken = [kind for kind in search_promises(cmd.speech or "") if not called & set(kn.SEARCH_PROMISES[kind].tools)]
+    if broken:
+        raise _Bad(kn.VIOLATION_SEARCH_PROMISE, f"speech обещает {', '.join(broken)} без тула поиска")
+
+
+def unkept_done_claims(cmd: Command) -> Tuple[str, ...]:
+    """Виды утверждений о сделанном в ``speech`` (``words.done_claims``), которых команда не делает: нет тула
+    ``knowledge.DONE_CLAIMS[вид].tools`` среди ``actions``."""
+    called = {a.tool for a in cmd.actions}
+    return tuple(kind for kind in done_claims(cmd.speech or "") if not called & set(kn.DONE_CLAIMS[kind].tools))
+
+
+def _check_done_claim(cmd: Command, agent: str) -> None:
+    """Речь говорит, что действие уже сделано («Готово, хил-окно удалена.», «сохранил точку», «поехал»), а тула, что его
+    делает, в команде нет (#4391, ADR-0148: фразу об успехе строит код по результату тула, не модель). Нарушение
+    ``VIOLATION_DONE_CLAIM`` - повтор с подсказкой, после него - фраза кода «не сделал»; ``allowed`` - тулы, что
+    сделали бы слова правдой. Речь, что не прозвучит (:func:`_speech_is_dropped`), ничего не утверждает."""
+    if _speech_is_dropped(cmd, agent):
+        return
+    broken = unkept_done_claims(cmd)
+    if broken:
+        tools = tuple(dict.fromkeys(t for kind in broken for t in kn.DONE_CLAIMS[kind].tools))
+        raise _Bad(kn.VIOLATION_DONE_CLAIM, f"speech утверждает {', '.join(broken)} без тула", tools)
+
+
 def _check_args_without_action(cmd: Command) -> None:
     """Модель положила аргументы действия на уровень команды, а самого действия нет (:func:`_lift_args` выбросил
     их целиком): она хотела действие, но не назвала тул - команда без него молча ничего не сделает. Нарушение
@@ -1015,8 +1088,8 @@ def _check_ask(ask: Optional[Ask]) -> None:
 
 
 def _check_actions(actions: Tuple[ToolCall, ...], available: Collection[str], agent: str) -> None:
-    if len(actions) > kn.ACTIONS_MAX:
-        raise _Bad("too_many_actions", f"{len(actions)} > {kn.ACTIONS_MAX}")
+    if len(actions) > kn.ACTIONS_ACCEPT_MAX:  # сверх исполняемого ACTIONS_MAX - не нарушение: лишнее называет ход
+        raise _Bad("too_many_actions", f"{len(actions)} > {kn.ACTIONS_ACCEPT_MAX}")
     per_class: dict = {}
     for call in actions:
         cls = _action_class(call.tool, available, agent)
@@ -1076,12 +1149,46 @@ def _check_perform(cmd: Command, busy: Busy) -> None:
     _check_edit(cmd.edit_pending, busy)
 
 
+#: Поля выступления «по сегменту»: у пустого сегмента их элемент уходит вместе с ним.
+_PER_SEGMENT = ("role_per_segment", "voice_per_segment", "expression_per_segment")
+
+
+def _fit_segments(cmd: Command) -> Command:
+    """Структура выступления подгоняется кодом, а не отвергается (М11 05.11 n804: сказка из 10 сегментов с одним
+    пустым - ``bad_segments``, на повторе ролей не по числу сегментов - «Не понял, как это сделать»). Пустой сегмент
+    (``""``, одни пробелы) убирается вместе со своим элементом в полях по сегменту (:data:`_PER_SEGMENT`); длина
+    ``role_per_segment`` после этого - ровно по сегментам: недостающие роли - рассказчик (``""``), лишние отрезаются.
+    Поправки - в ``dropped`` (``perform.segments[10->9]``, ``perform.role_per_segment[8->9]``). Ничего не осталось или
+    сегментов вне пределов - по-прежнему ``bad_segments`` (:func:`_check_segments`). ``voice_per_segment`` решает код
+    (:func:`_voice_roles`): его длину не подгоняем - она нарушение, как прежде."""
+    perf = cmd.perform
+    if perf is None:
+        return cmd
+    notes: List[str] = []
+    keep = [i for i, segment in enumerate(perf.segments) if str(segment).strip()]
+    if len(keep) != len(perf.segments):
+        fields: Dict[str, Any] = {"segments": tuple(perf.segments[i] for i in keep)}
+        for name in _PER_SEGMENT:
+            per = getattr(perf, name)
+            if per is not None and len(per) == len(perf.segments):
+                fields[name] = tuple(per[i] for i in keep) or None
+        notes.append(f"perform.segments[{len(perf.segments)}->{len(keep)}]")
+        perf = replace(perf, **fields)
+    roles, count = perf.role_per_segment, len(perf.segments)
+    if roles is not None and len(roles) != count:
+        fitted = tuple(roles[:count]) + ("",) * (count - len(roles))
+        notes.append(f"perform.role_per_segment[{len(roles)}->{len(fitted)}]")
+        perf = replace(perf, role_per_segment=fitted)
+    return replace(cmd, perform=perf, dropped=cmd.dropped + tuple(notes)) if notes else cmd
+
+
 def _fit_expression_count(cmd: Command) -> Command:
     """Лиц по сегментам - ровно столько, сколько сегментов (n810 28.10: рэп с 4 куплетами и другим числом лиц
     отвергнут целиком дважды). Лицо - косметика (ADR-0148, как у прочих выбрасываемых полей): лишние лица отрезаются, недостающие
     дополняются последним лицом, пустой список - лиц нет (``None``); поправка - в ``dropped`` (лог ``fields_dropped``:
-    ``perform.expression_per_segment[3->4]``), выступление исполняется. Роли и голоса сегментов смысл несут (чья
-    реплика) - их длина по-прежнему нарушение ``bad_segments``. Число самих сегментов судит :func:`_check_segments`."""
+    ``perform.expression_per_segment[3->4]``), выступление исполняется. Длину ролей подгоняет :func:`_fit_segments`
+    (недостающие - рассказчик), длина голосов сегментов - нарушение ``bad_segments``. Число самих сегментов судит
+    :func:`_check_segments`."""
     perf = cmd.perform
     faces = None if perf is None else perf.expression_per_segment
     if faces is None or len(faces) == len(perf.segments):
@@ -1206,7 +1313,8 @@ HINTS: Mapping[str, str] = MappingProxyType({
     kn.VIOLATION_EMPTY_COMMAND: "команда пустая: ответь речью (speech), вопросом (ask), действием (actions) или "
                                 "выступлением (perform); молчать — passed",
     "single_action_class": "в этом классе действий — одно действие за ход",
-    "too_many_actions": f"действий не больше {kn.ACTIONS_MAX}",
+    kn.VIOLATION_SOUND_ANSWER: "на вопрос звук не отвечает",
+    "too_many_actions": f"действий не больше {kn.ACTIONS_ACCEPT_MAX}",
     "bad_args": "аргументы действия не по схеме тула",
     "tool_not_available": "этого тула в этом ходе нет: возьми из перечня (тулы хода того же класса действия, "
                           "а если класс неизвестен — все тулы хода)",
@@ -1232,6 +1340,9 @@ HINTS: Mapping[str, str] = MappingProxyType({
                                   f"больше нечем; лицо и анимация слов не заменяют — ответь словами по этим данным в "
                                   f"speech, коротко, не длиннее {kn.SPEECH_MAX_CHARS} символов",
     kn.VIOLATION_MUSIC_PROMISE: kn.MUSIC_PROMISE_HINT,
+    kn.VIOLATION_VOICE_PROMISE: kn.VOICE_PROMISE_HINT,
+    kn.VIOLATION_SEARCH_PROMISE: kn.SEARCH_PROMISE_HINT,
+    kn.VIOLATION_DONE_CLAIM: kn.DONE_CLAIM_HINT,
     kn.VIOLATION_ARGS_WITHOUT_ACTION: "аргументы пишутся только внутри действия: {\"actions\": [{\"tool\": <тул>, "
                                       "\"args\": {...}}]}; на уровне команды их нет, и без тула ничего не сделано",
     "bad_ask": "у ask нужен text",
@@ -1247,6 +1358,18 @@ HINTS: Mapping[str, str] = MappingProxyType({
 })
 
 
+#: Правила про ``actions`` при повторе ПОСЛЕ запроса (#4398, М11 n109): шапка :data:`INVALID_AFTER_QUERY_HEAD` требует
+#: «без actions», и строка нарушения не должна велеть переделать действия («одно действие за ход») - модель
+#: послушалась её, а не шапки, и прислала одну ``play_sound`` без слов. Здесь те же причины, но словами шапки.
+AFTER_QUERY_HINTS: Mapping[str, str] = MappingProxyType({
+    "single_action_class": "действий не нужно: данные уже получены — ответь словами в speech",
+    "too_many_actions": "действий не нужно: данные уже получены — ответь словами в speech",
+    "tool_not_available": "тула не нужно: данные уже получены — ответь словами в speech",
+    "bad_args": "тула не нужно: данные уже получены — ответь словами в speech",
+    "unknown_tool": "тула не нужно: данные уже получены — ответь словами в speech",
+})
+
+
 def is_query_data(content: str) -> bool:
     """Сообщение хода с данными ``query`` (``turn._query_data``): запрос в этом ходе уже выполнен."""
     return content.lstrip().startswith('{"' + kn.QUERY_RESULTS_FIELD + '"')
@@ -1257,9 +1380,10 @@ def explain(invalid: Invalid, after_query: bool = False) -> str:
     хода уже выполнен: подсказка говорит, что данные получены, а не что «ничего не сделано»."""
     lines = [INVALID_AFTER_QUERY_HEAD if after_query else INVALID_HEAD]
     for v in invalid.all:
-        line = f"- {v.reason}: {HINTS.get(v.reason, 'нарушено правило команды')}"
+        redo = after_query and v.reason in AFTER_QUERY_HINTS  # переделывать действия шапка не велит (#4398)
+        line = f"- {v.reason}: {AFTER_QUERY_HINTS[v.reason] if redo else HINTS.get(v.reason, 'нарушено правило команды')}"
         line += f" ({v.detail})" if v.detail else ""
-        lines.append(line + (f". Допустимо: {', '.join(v.allowed)}" if v.allowed else ""))
+        lines.append(line + (f". Допустимо: {', '.join(v.allowed)}" if v.allowed and not redo else ""))
     return "\n".join(lines)
 
 

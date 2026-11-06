@@ -211,11 +211,3 @@ def test_without_actual_provider_and_parameter_the_robot_default_catalogue_is_us
 
 def test_unknown_configured_provider_does_not_empty_the_catalogue():
     assert plan_host.perform_busy(_node(param="auto")).voices
-
-
-def test_tts_provider_for_the_perform_host_skips_the_label_too():
-    node = _node("minimax")
-    node._actual_tts_provider = "prefetch"
-    assert plan_host._tts_provider(node) == "minimax"
-    _state(node, "yandex")
-    assert plan_host._tts_provider(node) == "yandex"

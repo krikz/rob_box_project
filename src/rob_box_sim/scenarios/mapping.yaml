@@ -1,0 +1,35 @@
+# Объезд мира для видео картографии (docker/sim/record_mapping.sh): rtabmap
+# стартует в mapping с пустой базой (SIM_RTABMAP_MODE=mapping) и строит карту
+# с нуля, пока стенд nav_bench ведёт робота по точкам через Nav2.
+# Цели — в системе map = мир Gazebo (спавн в (0, 0, 0), лицом по +X).
+# Миры из карты квартиры (local/) сюда не добавлять: приватно.
+
+defaults:
+  timeout_base_s: 120
+  timeout_speed_mps: 0.1
+  stop_on_failure: false
+
+worlds:
+  # Сквозь все проёмы (0.9 → 1.1 м) до восточной стены и обратно к спавну.
+  polygon:
+    goals:
+      - {name: gap_0.9, x: 3.0, y: 0.0, yaw: 0.0}
+      - {name: gap_0.95, x: 5.0, y: 0.0, yaw: 0.0}
+      - {name: gap_1.0, x: 7.0, y: 0.0, yaw: 0.0}
+      - {name: east, x: 9.5, y: 0.0, yaw: 3.1416}
+      - {name: back_gap_0.95, x: 5.0, y: 0.0, yaw: 3.1416}
+      - {name: home, x: 0.0, y: 0.0, yaw: 3.1416}
+
+  # Г-поворот: до конца ветки B и обратно.
+  turn90:
+    goals:
+      - {name: corner, x: 3.6, y: 0.0, yaw: 1.5708}
+      - {name: leg_b_end, x: 3.6, y: 4.2, yaw: -1.5708}
+      - {name: back_corner, x: 3.6, y: 0.0, yaw: 3.1416}
+      - {name: home, x: 0.0, y: 0.0, yaw: 3.1416}
+
+  # Гладкий коридор: 10 м вперёд и назад (ICP вдоль коридора вырожден).
+  corridor:
+    goals:
+      - {name: smooth_10m, x: 10.0, y: 0.0, yaw: 0.0}
+      - {name: back_home, x: 0.0, y: 0.0, yaw: 3.1416}

@@ -19,7 +19,7 @@ import json
 import time
 from types import SimpleNamespace
 
-from rob_box_mcp_tools.engine.tools_v2 import DjSetTool, RequestMusicTool
+from rob_box_mcp_tools.engine.engine_tools import DjSetTool, RequestMusicTool
 from rob_box_voice.core.dialogue_text import strip_wake_word
 from rob_box_voice.core.media_router import MediaRouter, MediaState
 

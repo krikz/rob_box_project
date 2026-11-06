@@ -1,8 +1,7 @@
 """voice_state (0x1202) в шлем из контрактов диалога v2 (issue #3911).
 
-``streams.voice_state.send_voice_state`` - единственный путь кадра: из ``watch`` (v2: TurnEvent/SpeechEvent/
-SessionState) и из ``QuestNode._on_dialogue_state`` (v1, адаптер до PR-15). Без rclpy: ``quest_node_mod`` ставит
-ROS-заглушки, узел - MagicMock.
+``streams.voice_state.send_voice_state`` - единственный путь кадра: из ``watch`` (TurnEvent/SpeechEvent/
+SessionState). Без rclpy: ``quest_node_mod`` ставит ROS-заглушки, узел - MagicMock.
 Таблицы состояний и переходы - ``rob_box_core/test/test_voice_state.py``.
 """
 
@@ -25,12 +24,6 @@ def _host():
     host.frames = []
     host.bridge.publish_frame.side_effect = lambda name, payload: host.frames.append((name, msgpack.unpackb(payload)))
     return host
-
-
-def _string(data: str):
-    msg = MagicMock()
-    msg.data = data
-    return msg
 
 
 def _frames(host):
@@ -56,16 +49,9 @@ def test_v2_speech_and_silence_reach_the_headset(quest_node_mod):
     assert _frames(host) == [("speaking", None), ("idle", "silenced")]
 
 
-def test_v1_string_still_reaches_the_headset(quest_node_mod):
-    """TEMP до PR-15: dialogue_node v1 пишет строку ``DIALOGUE`` - шлем видит ``speaking``."""
-    host = _host()
-    quest_node_mod.QuestNode._on_dialogue_state(host, _string("DIALOGUE"))
-    quest_node_mod.QuestNode._on_dialogue_state(host, _string("SILENCED"))
-    assert _frames(host) == [("speaking", None), ("idle", "silenced")]
-
-
 def test_publish_failure_does_not_crash_the_subscription(quest_node_mod):
     host = _host()
     host.bridge.publish_frame.side_effect = RuntimeError("ws closed")
-    quest_node_mod.QuestNode._on_dialogue_state(host, _string("LISTENING"))
+    listening = host._voice.on_turn_event(MagicMock(agent="personality", stage="addressed", status="started"))
+    send_voice_state(host, listening)
     assert host._last_voice_state["state"] == "listening"

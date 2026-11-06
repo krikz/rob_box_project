@@ -143,8 +143,6 @@ def node(tmp_path, monkeypatch):
 
     instance = object.__new__(sid_node.SpeakerIdNode)
     instance._db = SpeakerDatabase(str(tmp_path / "speakers.db"))
-    instance._speech_log = {}
-    instance._speech_log_lock = threading.Lock()
     instance._sample_rate = 16000
     instance._recent_embeddings: Deque[Tuple[float, np.ndarray, float]] = collections.deque(
         maxlen=20
@@ -154,9 +152,6 @@ def node(tmp_path, monkeypatch):
     instance._pending_register_lock = threading.Lock()
     instance._result_pub = _FakePublisher()
     instance.get_logger = MagicMock(return_value=MagicMock())
-    # epithet_request publisher — _ensure_epithet -> _assign_epithet ->
-    # _request_llm_epithet его читает через getattr(..., None).
-    instance._epithet_request_pub = None
     # Issue #2747 — growth-сессия (session-anchor рост галереи).
     instance._growth_session_gap_sec = 30.0
     instance._growth_session = None

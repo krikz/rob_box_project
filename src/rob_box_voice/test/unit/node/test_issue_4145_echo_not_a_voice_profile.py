@@ -86,8 +86,6 @@ def node(tmp_path, monkeypatch):
 
     instance = object.__new__(sid_node.SpeakerIdNode)
     instance._db = SpeakerDatabase(str(tmp_path / "speakers.db"))
-    instance._speech_log = {}
-    instance._speech_log_lock = threading.Lock()
     instance._sample_rate = 16000
     instance._recent_embeddings: Deque[
         Tuple[float, np.ndarray, float, Optional[str]]
@@ -98,8 +96,6 @@ def node(tmp_path, monkeypatch):
     instance._result_pub = _FakePublisher()
     logger = MagicMock()
     instance.get_logger = MagicMock(return_value=logger)
-    instance._epithet_request_pub = None
-    instance._epithet_llm_reasked = set()
     instance._growth_session_gap_sec = 30.0
     instance._growth_session = None
     instance._growth_owner_min_score = 0.65

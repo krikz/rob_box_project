@@ -1,0 +1,52 @@
+# Сценарии стенда навигации (rob_box_sim.nav_bench), план
+# docs/research/2026-11-04-gazebo-sim-navigation.md §6 шаг 4.
+#
+# Цели — в системе map = мир Gazebo (во всех мирах спавн в (0, 0, 0), лицом по +X).
+# Таймаут цели: timeout_base_s + расстояние до цели / timeout_speed_mps (sim time).
+# max_vel_x робота 0.15 м/с (nav2_params.yaml) — запас на повороты и recovery.
+# stop_on_failure: после первой проваленной цели остальные — SKIPPED
+# (у полигона каждый следующий проход шире, но за проваленным всё равно не проехать).
+
+defaults:
+  timeout_base_s: 120
+  timeout_speed_mps: 0.1
+  stop_on_failure: true
+
+worlds:
+  polygon:
+    goals:
+      - {name: gap_0.9, x: 3.0, y: 0.0, yaw: 0.0}
+      - {name: gap_0.95, x: 5.0, y: 0.0, yaw: 0.0}
+      - {name: gap_1.0, x: 7.0, y: 0.0, yaw: 0.0}
+      - {name: gap_1.1, x: 9.0, y: 0.0, yaw: 0.0}
+
+  turn90:
+    goals:
+      - {name: turn_left_90, x: 3.6, y: 4.0, yaw: 1.5708}
+
+  corridor:
+    stop_on_failure: false
+    goals:
+      - {name: smooth_10m, x: 10.0, y: 0.0, yaw: 0.0}
+      - {name: back_8m, x: 2.0, y: 0.0, yaw: 3.1416}
+
+  low_obstacle:
+    goals:
+      - {name: through_low_box, x: 5.0, y: 0.0, yaw: 0.0}
+
+  # Мир из карты робота: не в git (карта дома), строится
+  # python3 -m rob_box_sim.grid_to_sdf ... src/rob_box_sim/worlds/local --name robot_map.
+  # Цели — точки маршрута реального робота, файл пишет тот же генератор.
+  local/robot_map:
+    stop_on_failure: false
+    goals_from: local/robot_map.goals.yaml
+
+  # Разворот на месте у стены (worlds_catalog.dead_end): DWB (RotateToGoal +
+  # ObstacleFootprint) разворачивает к выходу и обратно, затем behavior Spin на 180°
+  # в торце — его отказ «Collision Ahead» = FAILED.
+  dead_end:
+    stop_on_failure: false
+    goals:
+      - {name: turn_out, x: -2.5, y: 0.0, yaw: 3.1416}
+      - {name: back_in, x: 0.0, y: 0.0, yaw: 0.0}
+      - {name: spin_180, x: 0.0, y: 0.0, yaw: 0.0, spin: 3.1416}

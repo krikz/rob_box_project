@@ -3,12 +3,12 @@
 Супервизор знает две стадии хода оператора, которых больше никто не видит:
 
 * ``thinking`` — ход LLM начался (``AvatarSupervisor._on_avatar_command``
-  прямо перед ``_run_agent_sync``);
+  прямо перед ``_agent_runner``);
 * ``idle`` — ход закончился БЕЗ реплики в шлем (агент выключен/недоступен,
   битый вход, текстовый источник, пустой ответ, ``speak_agent_replies=false``).
 
-Если реплика ушла в ``/avatar/tts/request``, ``speaking``/``idle`` выводит
-quest_node по чанкам и ``/voice/tts/finished`` — супервизор их не шлёт.
+Если реплика ушла в шлем (``SpeechRequest`` sink=headset, #4252), ``speaking``/``idle`` выводит
+quest_node по чанкам и ``SpeechEvent`` — супервизор их не шлёт.
 
 Вынесено из ``AvatarSupervisor`` отдельным классом: класс-бюджет ADR-0145
 запрещает растить ``AvatarSupervisor`` приватными хелперами.

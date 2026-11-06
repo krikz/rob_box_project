@@ -10,15 +10,26 @@ on:
       - 'src/*/**.py'
       - 'src/*/test/**.py'
       - 'src/*/package.xml'
+      - 'src/rob_box_description/urdf/**'
+      - 'src/rob_box_description/test/**'
       # '.github/workflows/test.yml' — файла с таким именем в репозитории нет
       # (этот workflow называется 'G-Run Tests.yml'), то есть правка самого
       # workflow'а его не триггерила. Заодно добавлены пути, от которых
       # зависит job e2e-contract-guards: без них правка харнесса, гарда или
       # сценария не поднимала проверки на push в develop.
       - '.github/workflows/G-Run Tests.yml'
-      - '.github/workflows/scripts/**'
+      - 'scripts/ci/e2e/**'
       - 'scripts/testing/**'
       - '.github/e2e/scenarios/**'
+      # ADR-0166: гарды из scripts/ci/tests и scripts/e2e/tests теперь в
+      # e2e-contract-guards; их предметы — скрипты CI/сборки, композит и
+      # стартовый скрипт vision-hailo (test_yaml_loader_env_override.sh).
+      - 'scripts/ci/**'
+      - 'scripts/e2e/**'
+      - 'scripts/build/**'
+      - '.github/actions/**'
+      - 'docker/build-manifest.yaml'
+      - 'docker/vision/scripts/vision-hailo/**'
   pull_request:
     # #3922: PR-триггер только на develop. Вечный PR develop->main (#3713)
     # получает synchronize на каждый push в develop, и проверка гонялась ещё
@@ -125,6 +136,9 @@ jobs:
           # to repo root when the tests are copied into test_ws/src/.
           mkdir -p ${{ github.workspace }}/test_ws/src
           rsync -av --exclude='ros2leds' --exclude='vesc_nexus' --exclude='robot_sensor_hub_msg' src/ ${{ github.workspace }}/test_ws/src/
+          # Из сабмодуля ros2leds берём только led_matrix_effects: чистый numpy, лицо (rob_box_animations)
+          # импортирует из него холст, фоны, импульсы, спецсигналы и темы фар.
+          rsync -a src/ros2leds/led_matrix_effects/ ${{ github.workspace }}/test_ws/src/led_matrix_effects/
           # Sibling directories referenced by tests (NOT compiled by colcon).
           # .github is here for .github/e2e/{scenarios,voice_commands}: six
           # tests in test_issue_1532_voice_multi_skazka.py read those fixtures
@@ -138,7 +152,7 @@ jobs:
           # tests silently SKIP (skipif(not _GENERATOR.exists())), masking a
           # real contract regression as a green CI. Guard against the next
           # occurrence:
-          #   python3 scripts/agent_flow/validate_test_ws_dirs.py
+          #   python3 scripts/ci/validate_test_ws_dirs.py
           for d in docker migrations docs .github scripts tools; do
             [ -d "$d" ] && rsync -av "$d" ${{ github.workspace }}/test_ws/
           done
@@ -514,6 +528,23 @@ jobs:
             --pytest-args ' -m' 'not linter' \
             || { echo "❌ rob_box_perception FAILED (rc=$?)"; exit 1; }
 
+      # Шаг 1 сима (docs/research/2026-11-04-gazebo-sim-navigation.md §6):
+      # rob_box.xacro получил аргумент sim. Тест сверяет URDF робота (sim:=false)
+      # с эталоном src/rob_box_description/test/golden/rob_box_real.urdf и
+      # проверяет сим-ветку. В образе rob-box-ci нет xacro — ставим здесь;
+      # без xacro тест молча скипнулся бы (skipif), отсюда проверка which.
+      - name: URDF sim-arg test (rob_box_description)
+        run: |
+          set -eo pipefail
+          apt-get update -qq
+          apt-get install -y -qq --no-install-recommends ros-humble-xacro
+          source /opt/ros/humble/setup.bash
+          command -v xacro
+          export PYTHONPATH="/usr/local/lib/python3.10/dist-packages:$PYTHONPATH"
+          echo "=== pytest: rob_box_description (xacro sim arg) ==="
+          timeout 120 python3 -m pytest -v -p no:cacheprovider -p no:launch_testing -o addopts= \
+            src/rob_box_description/test/
+
       - name: Display test results
         if: always()
         run: |
@@ -584,6 +615,9 @@ jobs:
           source /opt/ros/humble/setup.bash
           mkdir -p ${{ github.workspace }}/test_ws/src
           rsync -av --exclude='ros2leds' --exclude='vesc_nexus' --exclude='robot_sensor_hub_msg' src/ ${{ github.workspace }}/test_ws/src/
+          # Из сабмодуля ros2leds берём только led_matrix_effects: чистый numpy, лицо (rob_box_animations)
+          # импортирует из него холст, фоны, импульсы, спецсигналы и темы фар.
+          rsync -a src/ros2leds/led_matrix_effects/ ${{ github.workspace }}/test_ws/src/led_matrix_effects/
           # Sibling directories referenced by tests (NOT compiled by colcon).
           # Same as the unit-tests job above. Without this, tests that walk up
           # to find e.g. docker/sound/scripts/supercollider/metrics_server.py
@@ -697,6 +731,22 @@ jobs:
           scripts/testing/test_e2e_voice_safe_label.sh
           scripts/testing/test_e2e_tts_restore.sh
           scripts/testing/test_e2e_check_patterns_llm_dump.sh
+          scripts/testing/test_e2e_act_warmup.sh
+          scripts/testing/test_e2e_when_robot_asked.sh
+          scripts/testing/test_e2e_node_params.sh
+          scripts/testing/test_e2e_scenario_tsv_row.sh
+          scripts/testing/test_e2e_sleep_before_and_required_question.sh
+          scripts/testing/test_e2e_voice_map_tts_voice.sh
+          scripts/testing/test_yaml_loader_env_override.sh
+          scripts/testing/test_submodule_cache_invalidation.sh
+          scripts/e2e/tests/test_marathon_markers.sh
+          scripts/ci/tests/test_check_image_versions_usage.sh
+          scripts/ci/tests/test_e2e_voice_check_patterns_step_before.sh
+          scripts/ci/tests/test_e2e_voice_patterns_with_spaces.sh
+          scripts/ci/tests/test_e2e_voice_robot_ros_quoting.sh
+          scripts/ci/tests/test_e2e_voice_workflow_crlf_inputs.sh
+          scripts/ci/tests/test_validate_test_ws_dirs.sh
+          scripts/ci/tests/test_workflow_no_scp_dotrex.sh
           "
           rc=0
           {

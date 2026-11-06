@@ -58,8 +58,8 @@ def stop_music_calls(snapshot: SessionSnapshot) -> Tuple[ToolCall, ...]:
 
 def stops_music(command: Tier1Command) -> bool:
     """Гасит ли Tier-1 команда плеер музыки: стоп всего — да, если человек не оставил музыку («стой, а музыку оставь»,
-    ``args.keep_music``); стоп речи и тишина — нет."""
-    return command.kind == "stop_all" and not command.args.get("keep_music")
+    ``args.keep_music``); «выключи музыку» под музыкой (``music_off``, #4349) — да; стоп речи и тишина — нет."""
+    return command.kind == kn.MUSIC_OFF_KIND or (command.kind == "stop_all" and not command.args.get("keep_music"))
 
 
 @dataclass(frozen=True)

@@ -52,7 +52,7 @@ class _Node:
 
     def __init__(self):
         self.pubs, self.subs, self.timers = {}, {}, []
-        self.chunks, self.finished, self.states = [], [], []
+        self.chunks, self.finished = [], []
         self.interrupts = 0
         self.ros_now_s = 1_000.0
         self.owner = None
@@ -81,11 +81,8 @@ class _Node:
     def _interrupt_playback(self):
         self.interrupts += 1
 
-    def publish_state(self, state):
-        self.states.append(state)
-
     def _publish_tts_finished(self, speech_id, *, success, error=None, queued=False, **_):
-        """Как в tts_node: финал идёт в журнал владельца и в /voice/tts/finished."""
+        """Как в tts_node: финал идёт в журнал владельца (String-топика /voice/tts/finished нет, #4252)."""
         self.owner.terminal(speech_id, success, error, queued)
         self.finished.append((speech_id, success, error))
 
@@ -109,7 +106,7 @@ def _kinds(node):
 
 
 def _chunk(text="Раз два. Три четыре.", **meta):
-    return {"ssml": f"<speak>{text}</speak>", "_speech": dict(meta)}
+    return {"text": text, "_speech": dict(meta)}
 
 
 def _request(**fields):
@@ -134,7 +131,7 @@ def test_4053_voice_owner_event_carries_the_one_owner_agent_constant(setup):
 
 
 def test_plain_text_and_sentence_ends():
-    assert plain_text("<speak>x &lt; y  <break/> z</speak>") == "x < y z"
+    assert plain_text("x < y  \n z") == "x < y z"  # голый текст: меток пауз на проводе нет (#4241), пробелы сжаты
     assert sentence_ends("Раз два. Три четыре!") == (8, 20)
     assert sentence_ends("без точки") == (9,)
 
@@ -155,7 +152,7 @@ def test_request_goes_into_tts_pipeline_with_meta(setup):
     node, owner, _ = setup
     node.subs["/voice/speech/request"](_request(epoch=4, turn_id="t", voice="ermil", priority=10))
     (chunk,) = node.chunks
-    assert chunk["ssml"] == "<speak>Привет</speak>" and chunk["speech_id"] == "sid-1"
+    assert chunk["text"] == "Привет" and "ssml" not in chunk and chunk["speech_id"] == "sid-1"
     assert (chunk["sink"], chunk["priority"], chunk["voice"]) == ("speaker", "operator", "ermil")
     assert chunk["_speech"]["epoch"] == 4 and chunk["_speech"]["turn_id"] == "t"
 
@@ -166,13 +163,49 @@ def test_request_without_speech_id_gets_one(setup):
     assert len(node.chunks[0]["speech_id"]) == 36
 
 
-def test_request_to_headset_is_rejected_loudly(setup):
+def test_request_to_unknown_sink_is_rejected_loudly(setup):
     """Чего владелец не исполняет - честный rejected, а не тихое «сыграл как смог»."""
     node, _, _ = setup
-    node.subs["/voice/speech/request"](_request(sink="headset"))
+    node.subs["/voice/speech/request"](_request(sink="telegram"))
     assert node.chunks == []
     ((kind, ev),) = _events(node)
     assert (kind, ev.reason, ev.speech_id) == ("rejected", "sink_unsupported", "sid-1")
+
+
+def test_4252_headset_request_goes_to_headset_branch_with_speech_id_as_key(setup):
+    """#4252: ``sink=headset`` - в ветку шлема конвейера; ключ реплики у шлема (``request_id``) = ``speech_id``."""
+    node, _, _ = setup
+    node.subs["/voice/speech/request"](_request(sink="headset", agent="operator"))
+    (chunk,) = node.chunks
+    assert (chunk["sink"], chunk["request_id"], chunk["speech_id"]) == ("headset", "sid-1", "sid-1")
+    assert _kinds(node) == ["queued"]
+
+
+def test_4252_headset_speech_ends_with_the_same_events_as_speakers(setup):
+    """Ветка шлема не заводит реплику в журнал сама - владелец заводит её на входе, финал даёт событие."""
+    node, owner, _ = setup
+    node.subs["/voice/speech/request"](_request(sink="headset", agent="operator", text="Готово."))
+    owner.synthesized("sid-1", 0.8, {"used_provider": "minimax", "used_voice": "v"}, None)
+    node._publish_tts_finished("sid-1", success=True)
+    assert _kinds(node) == ["queued", "synthesized", "finished"]
+    assert [e.agent for _, e in _events(node)] == ["operator"] * 3
+
+
+def test_4252_headset_failure_is_rejected_with_the_reason(setup):
+    node, _, _ = setup
+    node.subs["/voice/speech/request"](_request(sink="headset"))
+    node._publish_tts_finished("sid-1", success=False, error="empty_text")
+    assert [(k, e.reason) for k, e in _events(node)] == [("queued", ""), ("rejected", "empty_text")]
+
+
+@pytest.mark.parametrize("fields", [{"commit": False}, {"at": 1234.5}])
+def test_4252_headset_has_no_presynth_and_no_at(setup, fields):
+    """Пред-синтеза и старта по часам у шлема нет - честный rejected, а не «сыграл сразу»."""
+    node, _, _ = setup
+    node.subs["/voice/speech/request"](_request(sink="headset", **fields))
+    assert node.chunks == []
+    ((kind, ev),) = _events(node)
+    assert (kind, ev.reason) == ("rejected", "headset_timing_unsupported")
 
 
 def test_timing_fields_travel_with_the_chunk(setup):
@@ -363,11 +396,9 @@ def test_at_in_the_past_plays_at_once(setup):
 
 def _presynth_node(node, submit=lambda fn, *a: fn(*a)):
     node.owner.presynth = Presynth(executor=types.SimpleNamespace(submit=submit))
-    node._extract_text_from_ssml = plain_text
-    node._parse_ssml_attributes = lambda ssml: {}
     node.synth_calls = []
 
-    def chain(voice, language, attrs, text, sink, ctx):
+    def chain(voice, language, text, sink, ctx):
         node.synth_calls.append(text)
         ctx.update(audio_np=np.zeros(8000, dtype=np.float32), sample_rate=16000, used_provider="minimax")
 
@@ -454,9 +485,9 @@ def test_presynth_in_streaming_mode_synthesizes_whole_without_stream(setup):
     seen = []
     chain = node._sap_run_provider_chain
 
-    def chain_spy(voice, language, attrs, text, sink, ctx):
+    def chain_spy(voice, language, text, sink, ctx):
         seen.append(ctx.get("stream_ok"))
-        chain(voice, language, attrs, text, sink, ctx)
+        chain(voice, language, text, sink, ctx)
 
     node._sap_run_provider_chain = chain_spy
     node.subs["/voice/speech/request"](_request(commit=False))
@@ -490,7 +521,7 @@ def test_streamed_envelope_follows_first_sound_and_duration_arrives_late(setup):
 def test_chunk_without_speech_meta_gets_the_defaults():
     """Чанк не из ``SpeechRequest`` (метаданных ``_speech`` нет) — агент «personality», эпоха 0. Старых JSON-входов,
     которые выводили агента из ``priority``/``epoch``, у ноды больше нет (PR-15 часть 15-core, #3711)."""
-    assert SpeechMeta.from_chunk({"ssml": "x", "epoch": 7, "priority": "operator"}) == SpeechMeta()
+    assert SpeechMeta.from_chunk({"text": "x", "epoch": 7, "priority": "operator"}) == SpeechMeta()
 
 
 def test_chunk_meta_is_taken_from_the_speech_field():
@@ -506,18 +537,18 @@ def _bare_tts(owner):
 
     n = object.__new__(TTSNode)
     n._speech = owner
-    n.finished_pub = MagicMock()
     n.get_logger = lambda: MagicMock()
     return n
 
 
-def test_tts_finished_projection_and_event_come_from_one_call(setup):
+def test_tts_finished_is_only_a_speech_event(setup):
+    """#4252 ч.2: финал реплики — только SpeechEvent владельца, String-топика /voice/tts/finished нет."""
     node, owner, _ = setup
     owner.admit(_chunk(), "s")
     n = _bare_tts(owner)
     n._publish_tts_finished("s", success=True, duration_sec=1.0)
-    assert json.loads(n.finished_pub.publish.call_args.args[0].data)["success"] is True
     assert _kinds(node)[-1] == "finished"
+    assert not hasattr(n, "finished_pub")
 
 
 def test_tts_fifo_gate_drops_cancelled_speech_without_sound(setup):
@@ -526,7 +557,6 @@ def test_tts_fifo_gate_drops_cancelled_speech_without_sound(setup):
     node.subs["/voice/speech/cancel"](M.SpeechCancel(speech_id="s", agent="personality"))
     n = _bare_tts(owner)
     assert n._sap_wait_fifo_and_dialogue(None, "s", None) is False
-    assert json.loads(n.finished_pub.publish.call_args.args[0].data)["error"] == "cancelled"
     assert _kinds(node)[-1] == "cancelled"
 
 
@@ -537,7 +567,7 @@ def test_tts_worker_skips_synthesis_of_cancelled_speech(setup):
     node.subs["/voice/speech/cancel"](M.SpeechCancel(speech_id="s", agent="personality"))
     n = _bare_tts(owner)
     n._synthesize_and_play = MagicMock()
-    n._run_synthesis_worker("<speak>x</speak>", "x", None, {}, "s", None, None, None, play_seq=None)
+    n._run_synthesis_worker("x", None, "s", None, None, None, play_seq=None)
     n._synthesize_and_play.assert_not_called()
     assert _kinds(node)[-1] == "cancelled"
 
@@ -556,7 +586,7 @@ def test_epoch_watch_feeds_barge_in_cancel(setup):
 
 
 def _presynth_chain_applying(node, provider, applied_voice):
-    def chain(voice, language, attrs, text, sink, ctx):
+    def chain(voice, language, text, sink, ctx):
         ctx.update(audio_np=np.zeros(8000, dtype=np.float32), sample_rate=16000, used_provider=provider,
                    used_voice=applied_voice)
 

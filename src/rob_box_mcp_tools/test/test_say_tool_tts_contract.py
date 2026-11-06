@@ -59,7 +59,7 @@ def test_execute_publishes_speech_request_as_operator(say_tool):
     publisher.publish.assert_called_once()
     req = publisher.publish.call_args.args[0]
     assert isinstance(req, M.SpeechRequest)
-    assert req.text == "<speak>Робот, скажи &amp; улыбнись</speak>"
+    assert req.text == "Робот, скажи & улыбнись"
     assert req.agent == "operator"
     assert result.data["speech_id"] == req.speech_id
     # события нет за срок ожидания начала: обещание (итог придёт позже), а не «озвучил»

@@ -8,7 +8,7 @@
 | Контекст | E2E-прогон voice_core_suite_v1 не зеленеет 7 дней — физика аудио-bridge 249↔21 не позволяет `paplay` на 249 долететь до USB-ReSpeaker на 21. Шифу в issue #1506 (комменты 22.08 11:19/12:31, 23.08 08:15/17:15): «Задача не была доведена до конца, е2е тест не позеленел!» |
 | Closes | (не закрывает issue #1506 — закрытие требует реального e2e-PASS, ADR предлагает путь как его получить) |
 | Родители | ADR-0001 (harness architecture), ADR-0022 (process e2e done gates), ADR-0024 (verdict SOT), ADR-0025 (stale-PR detection) |
-| Связанные | issue #1506 (voice_core_suite), PR #1555/1556/1557/1559 (verdict v1/v2/v3 + pre-flight + e2e-push-fix), `src/rob_box_voice/docs/PHASE2_IMPLEMENTATION.md:217` (доказанный `ros2 topic pub /voice/stt/result`), `.github/workflows/scripts/e2e_voice_test.sh:1287` (уже работающий `docker exec voice-assistant bash -c '...'`) |
+| Связанные | issue #1506 (voice_core_suite), PR #1555/1556/1557/1559 (verdict v1/v2/v3 + pre-flight + e2e-push-fix), `src/rob_box_voice/docs/PHASE2_IMPLEMENTATION.md:217` (доказанный `ros2 topic pub /voice/stt/result`), `scripts/ci/e2e/e2e_voice_test.sh:1287` (уже работающий `docker exec voice-assistant bash -c '...'`) |
 
 ---
 
@@ -27,7 +27,7 @@
 
 ### 1.2 Корневая причина — архитектурный долг тест-харнесса, не кода
 
-Текущий e2e-харнесс (`.github/workflows/scripts/e2e_voice_test.sh:834,870` + `e2e_remote.sh:64`) **обязательно** использует физический аудио-bridge:
+Текущий e2e-харнесс (`scripts/ci/e2e/e2e_voice_test.sh:834,870` + `e2e_remote.sh:64`) **обязательно** использует физический аудио-bridge:
 
 ```
 ┌─ 249 (build machine) ──────────────┐      ┌─ 21 (robot Pi) ─────────────┐
@@ -205,7 +205,7 @@ for step in scenario.steps:
 
 ### Phase 1 (1 PR, ~2-3 часа): минимальный topic-injection
 
-1. Добавить `--inject-via-topic` flag в `.github/workflows/scripts/e2e_voice_test.sh` (default `false`)
+1. Добавить `--inject-via-topic` flag в `scripts/ci/e2e/e2e_voice_test.sh` (default `false`)
 2. В `run_step()` — если flag=true, вместо `paplay` → `docker exec voice-assistant ros2 topic pub`
 3. Маркер `INJECT_VIA_TOPIC` в harness-логах
 4. Локальный smoke-test: `bash e2e_voice_test.sh --inject-via-topic --scenario voice_core_suite_v1.json --steps cc01_status_gate` (один шаг)

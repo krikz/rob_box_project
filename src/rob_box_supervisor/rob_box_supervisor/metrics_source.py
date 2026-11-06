@@ -120,7 +120,7 @@ METRIC_DICTIONARY: tuple[tuple[str, str, str, str, tuple[str, ...]], ...] = (
      ("перебивания", "barge-in", "barge_in_rate")),
     ("voice_confidence", "уверенность распознавания голоса", "от 0 до 1",
      _VOICE_CONFIDENCE, ("уверенность", "уверенность голоса", "speaker_confidence")),
-    ("services_up", "статус сервисов (1 — жив, 0 — лежит)", "0 или 1",
+    ("services_up", "ответ цели метрик (1 — Prometheus достучался, 0 — цель не ответила)", "0 или 1",
      _SERVICES_UP, ("up", "uptime", "health", "живость", "сервисы",
                     "статус сервисов")),
 )
@@ -588,7 +588,13 @@ def summarize_for_speech(result: Mapping[str, Any]) -> str:
         )
         note = result.get("note")
         prefix = f"({note}) " if note else ""
-        return f"{prefix}Вывел на TARS 2 — {head}" if head else "Вывел на TARS 2."
+        text = f"{prefix}Вывел на TARS 2 — {head}" if head else "Вывел на TARS 2."
+        # ADR-0148/#4285: фразу про «не отвечает» строит код. ``up == 0`` — это «скрейп не
+        # удался», а не «контейнер упал»: цель могла уехать на другой хост (ADR-0159).
+        if result.get("query") == _SERVICES_UP and any(_last_value(s) == 0 for s in series):
+            text += (" Нулевой up значит только «цель метрик не ответила Prometheus»;"
+                     " что контейнер упал, он не доказывает — сверь container_status или docker ps.")
+        return text
     if status == "empty":
         available = ", ".join((result.get("available") or [])[:5])
         tail = f" Есть: {available}." if available else ""

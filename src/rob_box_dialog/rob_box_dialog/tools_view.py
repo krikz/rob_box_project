@@ -28,7 +28,7 @@ from rob_box_dialog.words import asks_robot_to_act, has_form, has_speech_manner,
 
 
 def groups_for(snapshot: SessionSnapshot, text: str, carry: Sequence[str] = (),
-               asked: Sequence[str] = ()) -> Tuple[str, ...]:
+               asked: Sequence[str] = (), agent: str = "personality") -> Tuple[str, ...]:
     """Группы среза: прямо названные словами человека (порядок ``TOOL_GROUPS``) и группы тулов открытого вопроса
     (``asked``, :func:`asked_groups`), затем сцены снимка, затем названные только общим глаголом; ни одной —
     ``carry`` (группы прошлого хода: «я же просил про стрижей» — продолжение; кроме тех, что только по явной просьбе,
@@ -39,12 +39,23 @@ def groups_for(snapshot: SessionSnapshot, text: str, carry: Sequence[str] = (),
     не видел ``get_battery_level``, и LLM отвечала «заряд мне не виден» (run 39849541397).
     """
     named = _under_music(snapshot, text, _named(text, "stems")) | set(asked_groups(asked))
+    named = _faces_for(agent, text, named)
     scene = ({"music"} if snapshot.music_playing else set()) - named
     weak = _named(text, "weak") - named - scene
     if not named | scene | weak:
         named = {g for g in carry if g in kn.TOOL_GROUPS and g not in kn.TOOL_GROUPS_EXPLICIT}
         named = named or set(kn.TOOL_GROUPS_DEFAULT)
     return _ordered(named) + _ordered(scene) + _ordered(weak)
+
+
+def _faces_for(agent: str, text: str, named: set) -> set:
+    """Группа ``faces`` (#4469): id лица (8 hex) открывает её без слов; агенту без её тулов (голос) - не открывается,
+    чтобы пустая группа не вытесняла статус по умолчанию."""
+    if kn.FACE_ID_RE.search(text):
+        named = named | {kn.FACES_GROUP}
+    if kn.FACES_GROUP in named and not set(kn.TOOL_GROUPS[kn.FACES_GROUP].tools) & set(tools_for(agent_spec(agent))):
+        named = named - {kn.FACES_GROUP}
+    return named
 
 
 def asked_groups(tools: Sequence[str]) -> Tuple[str, ...]:
@@ -133,6 +144,21 @@ def show_asked(text: str) -> bool:
     return kn.FACE_ASK_GROUP in requested_groups(text) or silent_asked(text)
 
 
+def catalogs_asked(text: str) -> Tuple[str, ...]:
+    """О каких каталогах робота (ключи ``knowledge.CATALOGS``) спросил человек. Звуки (М11 n109): слово о звуках
+    (``SOUND_CATALOG_STEMS``) и «какие/сколько/перечисли» целым словом (``SOUND_CATALOG_ASK_FORMS``): «какие звуки ты
+    умеешь издавать?»; «включи какой-нибудь звук» - просьба, не каталог. Голоса (М12 n401): «голоса/голосов/голосами»,
+    глагол речи робота и форма вопроса (``VOICE_CATALOG_*``): «какими голосами ты умеешь говорить?»; «каким голосом
+    говоришь» (текущий голос) и «посчитай по голосам» (люди) - не каталог. Таблицы - ``knowledge``."""
+    text = text or ""
+    asked = {
+        "sounds": has_word(text, kn.SOUND_CATALOG_STEMS) and has_form(text, kn.SOUND_CATALOG_ASK_FORMS),
+        "voices": (has_form(text, kn.VOICE_CATALOG_NOUN_FORMS) and has_form(text, kn.VOICE_CATALOG_SPEAK_FORMS)
+                   and has_form(text, kn.VOICE_CATALOG_ASK_FORMS)),
+    }
+    return tuple(key for key in kn.CATALOGS if asked[key])
+
+
 def voice_asked(snapshot: SessionSnapshot, text: str, voices: Sequence[str] = ()) -> bool:
     """Просил ли человек в ЭТОЙ реплике о голосе (n109): его словами открыта группа «только по явной просьбе»
     (``knowledge.TOOL_GROUPS_EXPLICIT``: «голос», «яндекс», «басом»; под играющей музыкой «ускорь» - музыка, не голос,
@@ -150,7 +176,8 @@ def music_asked(text: str) -> bool:
     тексту ЧЕЛОВЕКА, не по ответу модели и не по сцене снимка: играющая музыка слов не заменяет (её выступление и так не
     трогает). Читает ``command_form``: у сказки, анекдота и стиха подложка - только по этой просьбе
     (``knowledge.PERFORM_BACKING_BY_KIND``)."""
-    return has_word(text or "", kn.TOOL_GROUPS["music"].stems)
+    music = kn.TOOL_GROUPS["music"]
+    return has_word(text or "", music.stems) or has_form(text or "", music.forms)
 
 
 def voice_named(text: str, voices: Sequence[str] = ()) -> bool:
@@ -214,7 +241,8 @@ def _group_of(tool: str, allowed: set) -> List[str]:
 
 def _named(text: str, field: str) -> set:
     said, own_voice = without_forms(text, kn.PERSON_VOICE_FORMS)  # «запомни мой голос» - не голос робота
-    names = {name for name, group in kn.TOOL_GROUPS.items() if has_word(said, getattr(group, field))}
+    names = {name for name, group in kn.TOOL_GROUPS.items() if has_word(said, getattr(group, field))
+             or (field == "stems" and (has_form(said, group.forms) or _verb_and_object(said, group)))}
     if field == "stems" and (own_voice or introduces_self(text)):  # «здравствуй, я Саша»: основой это не поймать
         names.add(kn.SELF_INTRO_GROUP)
     if field == "stems" and face_asked(text):  # «покажи победу»: «покажи» без «победы» лицо не просит
@@ -222,6 +250,12 @@ def _named(text: str, field: str) -> set:
     if field == "stems" and has_speech_manner(text):  # «хватит тянуть резину» - про темп речи
         names.add(kn.VOICE_STEP_GROUP)
     return names
+
+
+def _verb_and_object(text: str, group: kn.ToolGroup) -> bool:
+    """Группу назвали глаголом и предметом в любом месте реплики (``ToolGroup.verbs``/``objects``): «удали ещё точку»
+    (#4391), а не только подстрокой основы."""
+    return bool(group.verbs) and has_word(text, group.verbs) and has_word(text, group.objects)
 
 
 def _ordered(names: set) -> Tuple[str, ...]:
@@ -241,7 +275,7 @@ def available_tools(snapshot: SessionSnapshot, caps: Optional[Any] = None, agent
     allowed = set(tools_for(agent_spec(agent))) | set(kn.SPEECH_CHANNEL_TOOLS)
     names: List[str] = []
     drive = motion_named(text)
-    grouped = tuple(t for g in groups_for(snapshot, text, carry, asked) for t in kn.TOOL_GROUPS[g].tools)
+    grouped = tuple(t for g in groups_for(snapshot, text, carry, asked, agent) for t in kn.TOOL_GROUPS[g].tools)
     for name in kn.TOOLS_ALWAYS + kn.ALOUD_TOOLS + grouped:
         if name in kn.MOTION_TOOLS and not drive:
             continue
@@ -250,6 +284,6 @@ def available_tools(snapshot: SessionSnapshot, caps: Optional[Any] = None, agent
     return tuple(get_tool(name) for name in names)
 
 
-__all__ = ["asked_groups", "available_tools", "command_groups", "face_asked", "groups_for", "motion_named",
-           "motion_refusal", "music_asked", "needs_words", "requested_groups", "robot_asked", "show_asked",
-           "silent_asked", "voice_asked", "voice_named", "widen_for"]
+__all__ = ["asked_groups", "available_tools", "catalogs_asked", "command_groups", "face_asked", "groups_for",
+           "motion_named", "motion_refusal", "music_asked", "needs_words", "requested_groups", "robot_asked",
+           "show_asked", "silent_asked", "voice_asked", "voice_named", "widen_for"]

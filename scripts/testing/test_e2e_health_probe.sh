@@ -12,7 +12,7 @@ command -v python3 >/dev/null 2>&1 || {
     printf 'health probe contract: SKIP — нет python3 (проба его требует)\n' >&2
     exit 1
 }
-source "$ROOT/.github/workflows/scripts/e2e_voice_lib.sh"
+source "$ROOT/scripts/ci/e2e/e2e_voice_lib.sh"
 probe="$(ROBOT_SSH=true observe_step unit 2>&1)"
 python3 - "$probe" <<'PY'
 import json, sys

@@ -114,6 +114,11 @@ on:
         required: false
         default: ''
         type: string
+      prior_steps:
+        description: 'Issue #4077 П4 — итоги шагов прошлых актов марафона (label=СТАТУС через запятую) для поля шага requires. Ставит только run_night_marathon.sh.'
+        required: false
+        default: ''
+        type: string
       # Issue #1527: трейсинг «кто дёрнул workflow». Все скрипты/воркеры
       # используют твой GH_TOKEN, поэтому triggering_actor.login всегда = krikz.
       # Эти опциональные поля заполняются самими скриптами (agent-flow-*),
@@ -264,7 +269,7 @@ jobs:
           # и GATE-1 краснеет с невнятным «parse error».
           # bug(run 35658231116, 22.09.2026): ПЯТЫЙ и ШЕСТОЙ файлы того же
           # класса — e2e_audio_metrics.py и e2e_baseline_diff.py. Харнесс звал
-          # их repo-relative путём (.github/workflows/scripts/...), а на 249 он
+          # их repo-relative путём (scripts/ci/e2e/...), а на 249 он
           # лежит одиночным файлом в /tmp и CWD у ssh-сессии = $HOME ros2.
           # python3 не находил скрипт НИ РАЗУ за всю историю: audio_metrics.json
           # был 36-байтной заглушкой {"error":"audio_metrics.py failed"} в каждом
@@ -275,16 +280,16 @@ jobs:
           # ⚠️ Добавляешь новый файл, который харнесс source'ит/зовёт —
           # добавь его И СЮДА, И в scripts/testing/test_e2e_harness_deploy.sh
           # (тест сверяет список scp-команд с тем, что харнесс реально зовёт).
-          chmod +x .github/workflows/scripts/e2e_voice_test.sh
-          chmod +x .github/workflows/scripts/e2e_voice_lib.sh
-          chmod +x .github/workflows/scripts/e2e_voice_wake_gate.sh
-          sshpass -e scp -o StrictHostKeyChecking=no .github/workflows/scripts/e2e_voice_test.sh ros2@10.1.1.249:/tmp/e2e_voice_test.sh
-          sshpass -e scp -o StrictHostKeyChecking=no .github/workflows/scripts/e2e_voice_lib.sh ros2@10.1.1.249:/tmp/e2e_voice_lib.sh
-          sshpass -e scp -o StrictHostKeyChecking=no .github/workflows/scripts/e2e_voice_wake_gate.sh ros2@10.1.1.249:/tmp/e2e_voice_wake_gate.sh
-          sshpass -e scp -o StrictHostKeyChecking=no .github/workflows/scripts/e2e_tool_match.py ros2@10.1.1.249:/tmp/e2e_tool_match.py
-          sshpass -e scp -o StrictHostKeyChecking=no .github/workflows/scripts/e2e_audio_metrics.py ros2@10.1.1.249:/tmp/e2e_audio_metrics.py
-          sshpass -e scp -o StrictHostKeyChecking=no .github/workflows/scripts/e2e_baseline_diff.py ros2@10.1.1.249:/tmp/e2e_baseline_diff.py
-          sshpass -e scp -o StrictHostKeyChecking=no .github/workflows/scripts/e2e_events.py ros2@10.1.1.249:/tmp/e2e_events.py
+          chmod +x scripts/ci/e2e/e2e_voice_test.sh
+          chmod +x scripts/ci/e2e/e2e_voice_lib.sh
+          chmod +x scripts/ci/e2e/e2e_voice_wake_gate.sh
+          sshpass -e scp -o StrictHostKeyChecking=no scripts/ci/e2e/e2e_voice_test.sh ros2@10.1.1.249:/tmp/e2e_voice_test.sh
+          sshpass -e scp -o StrictHostKeyChecking=no scripts/ci/e2e/e2e_voice_lib.sh ros2@10.1.1.249:/tmp/e2e_voice_lib.sh
+          sshpass -e scp -o StrictHostKeyChecking=no scripts/ci/e2e/e2e_voice_wake_gate.sh ros2@10.1.1.249:/tmp/e2e_voice_wake_gate.sh
+          sshpass -e scp -o StrictHostKeyChecking=no scripts/ci/e2e/e2e_tool_match.py ros2@10.1.1.249:/tmp/e2e_tool_match.py
+          sshpass -e scp -o StrictHostKeyChecking=no scripts/ci/e2e/e2e_audio_metrics.py ros2@10.1.1.249:/tmp/e2e_audio_metrics.py
+          sshpass -e scp -o StrictHostKeyChecking=no scripts/ci/e2e/e2e_baseline_diff.py ros2@10.1.1.249:/tmp/e2e_baseline_diff.py
+          sshpass -e scp -o StrictHostKeyChecking=no scripts/ci/e2e/e2e_events.py ros2@10.1.1.249:/tmp/e2e_events.py
           sshpass -e ssh -o StrictHostKeyChecking=no ros2@10.1.1.249 "ls -la /tmp/e2e_voice_test.sh /tmp/e2e_voice_lib.sh /tmp/e2e_voice_wake_gate.sh /tmp/e2e_tool_match.py /tmp/e2e_audio_metrics.py /tmp/e2e_baseline_diff.py /tmp/e2e_events.py && echo HARNESS_PUSHED"
           # CRLF sanitization (single-line): отрезаем \r и \n от начала/конца.
           # Внутри значения CR/LF недопустимы для имён файлов/путей.
@@ -328,6 +333,7 @@ jobs:
           TTS_PROVIDER: ${{ inputs.tts_provider }}
           E2E_HOLD_FOR_NEXT_ACT: ${{ inputs.e2e_hold_for_next_act }}
           E2E_MARATHON_PHASE: ${{ inputs.e2e_marathon_phase }}
+          E2E_PRIOR_STEPS_IN: ${{ inputs.prior_steps }}
         run: |
           RID="${{ github.run_id }}"
           YKEY="$(cat "$YKEY_LOCAL" 2>/dev/null || true)"
@@ -389,6 +395,12 @@ jobs:
             first|middle|last) CMD="$CMD --e2e-marathon-phase $E2E_PHASE_CLEAN" ;;
             *) echo "E2E_FATAL: e2e_marathon_phase='$E2E_PHASE_CLEAN' — ожидается first|middle|last" >&2; exit 2 ;;
           esac
+
+          # Issue #4077 П4 — итоги шагов прошлых актов (только label=СТАТУС,…).
+          PRIOR_CLEAN=$(printf '%s' "$E2E_PRIOR_STEPS_IN" | tr -cd 'A-Za-z0-9_=,')
+          if [ -n "$PRIOR_CLEAN" ]; then
+            CMD="$CMD --prior-steps $PRIOR_CLEAN"
+          fi
 
           echo "RUN_CMD: $CMD"
           # Запускаем через SSH: ключ передаём env-переменной (не в cmdline — чтобы не светить в ps).
@@ -821,9 +833,9 @@ jobs:
           # voice_text — multi-line, режем ТОЛЬКО \r (LF — легитимный контент).
           VTXT=$(printf '%s' "$VTXT_RAW" | tr -d '\r')
           # Текст — для step summary, JSON — отдельный артефакт (issue #1396)
-          python3 .github/workflows/scripts/e2e_timing.py "/tmp/voice_e2e_${RID}.log" "${VTXT}" \
+          python3 scripts/ci/e2e/e2e_timing.py "/tmp/voice_e2e_${RID}.log" "${VTXT}" \
             | tee /tmp/e2e_timing.txt
-          python3 .github/workflows/scripts/e2e_timing.py "/tmp/voice_e2e_${RID}.log" "${VTXT}" --json \
+          python3 scripts/ci/e2e/e2e_timing.py "/tmp/voice_e2e_${RID}.log" "${VTXT}" --json \
             > /tmp/e2e_timing.json 2>/dev/null || echo '{"error":"timing json failed","partial_data":true}' > /tmp/e2e_timing.json
           # Подшивка в единый артефакт-дир НЕ здесь: шаг «Collect e2e
           # artifacts from build machine» ниже начинается с `rm -rf`

@@ -15,7 +15,6 @@ from rob_box_core.msg_stub import install_dialog_msgs_stub
 install_dialog_msgs_stub()
 
 from rob_box_dialog.session import Session, SpeakerRef  # noqa: E402
-from rob_box_dialog.speaker_adapter import AskCandidate  # noqa: E402
 from rob_box_voice.core import identity_question as iq  # noqa: E402
 
 
@@ -44,9 +43,14 @@ def _node(azimuth=None):
     return node
 
 
-def _ask(node, cand=None):
+def _open_question(node, key="stranger", kind="unknown", speech_id="q1"):
+    """Кадр ``Identity`` с вопросом, ушедшим в речь (в проде его открывает вопрос склейки, :func:`open_merge_question`)."""
+    iq._push(node, iq.question_frame(key, kind, None, iq._azimuth(node), None, speech_id))
+
+
+def _ask(node):
     """Вопрос ушёл в речь и договорился (для тестов, где время не важно)."""
-    iq.open_question(node, cand or AskCandidate("stranger", "unknown"), "q1")
+    _open_question(node)
     iq.on_speech_event(node, _FINISHED, "q1", "personality")
 
 
@@ -121,7 +125,7 @@ def test_long_turn_answer_does_not_eat_the_window_answer_10s_after_question_end_
     """#3771: ответ хода 12 с, вопрос звучит после него; окно 15 с идёт от конца ВОПРОСА."""
     clock = _Clock()
     node = _timed_node(clock)
-    iq.open_question(node, AskCandidate("stranger", "unknown"), "q1")  # ход кончился, вопрос ушёл в речь
+    _open_question(node)  # ход кончился, вопрос ушёл в речь
     clock.t += 12.0 + 1.5 + 3.0                                         # ответ хода + сам вопрос: без события — ждём
     assert iq.question(node) is None and node._session.snapshot.top("Identity") is not None
     iq.on_speech_event(node, _FINISHED, "q1", "personality")            # вопрос договорён
@@ -131,7 +135,7 @@ def test_long_turn_answer_does_not_eat_the_window_answer_10s_after_question_end_
 def test_answer_20s_after_question_end_is_too_late():
     clock = _Clock()
     node = _timed_node(clock)
-    iq.open_question(node, AskCandidate("stranger", "unknown"), "q1")
+    _open_question(node)
     iq.on_speech_event(node, _FINISHED, "q1", "personality")
     assert _answer_accepted(clock, node, 20.0) is False
     assert node._session.snapshot.top("Identity") is None, "кадр истёк и снят"
@@ -140,7 +144,7 @@ def test_answer_20s_after_question_end_is_too_late():
 def test_answer_during_mic_grace_after_question_is_not_an_answer():
     clock = _Clock()
     node = _timed_node(clock)
-    iq.open_question(node, AskCandidate("stranger", "unknown"), "q1")
+    _open_question(node)
     iq.on_speech_event(node, _FINISHED, "q1", "personality")
     assert _answer_accepted(clock, node, 1.0) is False   # микрофон ещё глух (эхо собственной речи)
     assert _answer_accepted(clock, node, 2.0) is True    # 3.0 с после конца: окно открыто
@@ -148,7 +152,7 @@ def test_answer_during_mic_grace_after_question_is_not_an_answer():
 
 def test_phrase_while_question_is_still_speaking_is_not_an_answer():
     node = _node(azimuth=80.0)
-    iq.open_question(node, AskCandidate("stranger", "unknown"), "q1")
+    _open_question(node)
     iq.take_answer(node, "identity_answer", _heard(time.time() + 3, doa=85.0))
     assert node._identity_answer is None
     assert node._session.snapshot.top("Identity") is not None, "кадр ждёт, фразой не снят"
@@ -157,14 +161,14 @@ def test_phrase_while_question_is_still_speaking_is_not_an_answer():
 @pytest.mark.parametrize("kind", [_CANCELLED, _REJECTED])
 def test_question_cancelled_or_rejected_leaves_no_frame(kind):
     node = _node(azimuth=80.0)
-    iq.open_question(node, AskCandidate("stranger", "unknown"), "q1")
+    _open_question(node)
     iq.on_speech_event(node, kind, "q1", "personality")
     assert node._session.snapshot.top("Identity") is None
 
 
 def test_events_of_other_speech_or_agent_do_not_touch_the_waiting_frame():
     node = _node(azimuth=80.0)
-    iq.open_question(node, AskCandidate("stranger", "unknown"), "q1")
+    _open_question(node)
     iq.on_speech_event(node, _FINISHED, "turn-answer", "personality")  # ответ хода кончился раньше вопроса
     iq.on_speech_event(node, _CANCELLED, "q1", "telegram")
     assert iq.question(node) is None and node._session.snapshot.top("Identity") is not None
@@ -175,23 +179,9 @@ def test_frame_waiting_for_a_lost_event_is_dropped_by_the_safety_cap():
 
     clock = _Clock()
     node = _timed_node(clock)
-    iq.open_question(node, AskCandidate("stranger", "unknown"), "q1")
+    _open_question(node)
     clock.t += kn.IDENTITY_WAIT_QUESTION_S + 1
     assert iq.question(node) is None and node._session.snapshot.top("Identity") is None
-
-
-def test_ask_planned_opens_frame_only_when_question_went_to_speech():
-    from rob_box_voice.core.speaker_turn import ask_planned
-
-    cand = AskCandidate("stranger", "unknown")
-    node = _node(azimuth=80.0)
-    node._speak_identity_question = MagicMock(return_value="")
-    ask_planned(node, cand)
-    assert node._session.snapshot.top("Identity") if hasattr(node, "_session") else True is True
-    assert getattr(node, "_session", None) is None or node._session.snapshot.top("Identity") is None
-    node._speak_identity_question = MagicMock(return_value="q9")
-    ask_planned(node, cand)
-    assert node._session.snapshot.top("Identity").payload["speech_id"] == "q9"
 
 
 def test_bare_name_without_question_is_nothing():

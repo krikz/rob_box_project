@@ -9,8 +9,9 @@
 адресации без вейка нет (§17 Ж); фразы без вейка, которые робот берёт, — ответ на его собственный вопрос
 об имени ≤ 15 с, если она по грамматике похожа на ответ — имя, да/нет, отказ (В17(б), решение Шифу 21.10,
 ``speaker_adapter.answer_to_question``; DOA не условие), ответ приветствованному в окне 15 с после
-приветствия при встрече (``speaker_adapter.answer_to_greeting``) и «да»/«нет» в окне 15 с после вопроса
-выступления «Сейчас играет …, выключить и зачитать?» (О9′).
+приветствия при встрече (``speaker_adapter.answer_to_greeting``), «да»/«нет» в окне 15 с после вопроса
+выступления «Сейчас играет …, выключить и зачитать?» (О9′) и стоп музыки, пока она играет («глуши музыку»: под
+музыкой вейк теряется, М11 n511; ``knowledge.MUSIC_STOP_UNWOKEN_FORMS``) - ход только из этого стопа.
 
 Чистый модуль: сообщения ROS читаются утиной типизацией (:func:`heard_from`).
 """
@@ -33,7 +34,7 @@ from rob_box_dialog.knowledge import (
     DEFAULT_WAKE_WORDS,
     resolve_wake_word_namespaces,
 )
-from rob_box_dialog.words import has_wake_word, slipped_wake_rest, strip_wake_word, wake_command
+from rob_box_dialog.words import has_wake_word, music_stop_unwoken, slipped_wake_rest, strip_wake_word, wake_command
 
 #: Источники реплики (значения ``Utterance.SOURCE_*``; тест сверяет с ``.msg``).
 SOURCE_RESPEAKER, SOURCE_TELEGRAM, SOURCE_OPERATOR = "respeaker", "telegram", "operator"
@@ -43,6 +44,8 @@ VOICE, BACKLOG_PICKUP, BARE_WAKE, IDENTITY_ANSWER = "voice", "backlog_pickup", "
 GREETING_REPLY = "greeting_reply"
 #: «Да»/«нет» без вейка в окне вопроса выступления о смене музыки (О9′).
 PERFORM_ANSWER = "perform_answer"
+#: Стоп музыки без вейка, пока музыка играет (М11 n511, #4030: вейк под музыкой теряется): ход - только этот стоп.
+MUSIC_STOP_UNWOKEN = "music_stop_unwoken"
 #: ``NotAddressed.reason``.
 NO_WAKE, COORDINATOR, EMPTY = "no_wake", "coordinator", "empty"
 #: Оператор держит личность (``OperatorHold``, ТАРС работает): голос не слушаем и в бэклог не копим (§6.3).
@@ -67,7 +70,7 @@ class Addressed:
     recent: Tuple[Dict[str, Any], ...] = ()
     #: Адресованный ход с фразой: все фоновые фразы всех авторов за последние ``BACKGROUND_WINDOW_S`` (В23, 23.10).
     background: Tuple[Dict[str, Any], ...] = ()
-    #: Сводка фона кодом (``backlog.voices_summary``): сколько голосов, кто узнан, сколько безымянных (#4212).
+    #: Сводка фона кодом (``backlog.voices_summary``): сколько голосов, кто узнан, сколько безымянных.
     background_summary: Mapping[str, Any] = field(default_factory=dict)
     #: Запасной разбор Tier-1 (``turn.tier1_of``): слова после вейка (``words.wake_command``), если они короче ``text``.
     #: Tier-1 разбирает сначала ``text`` целиком (команда до вейка — «Стоп, Робот, пожалуйста»), а это — только когда
@@ -101,6 +104,17 @@ def is_bare(rest: str) -> bool:
     return all(w in ADDRESS_FILLER_WORDS for w in _WORD.findall((rest or "").lower()))
 
 
+def _collapse_repeated_wake(rest: str, wake_words: Sequence[str]) -> str:
+    """«Робот робот» (М11 n310): ``strip_wake_word`` снимает только первый вейк, а повтор вейка - тот же голый вызов,
+    не фраза. Если после снятия ВСЕХ вейков остались одни заполнители - фразы нет (``""``), иначе ``rest`` как есть."""
+    left = rest
+    for _ in range(8):
+        if not has_wake_word(left, wake_words):
+            break
+        left = strip_wake_word(left, wake_words)
+    return "" if left != rest and is_bare(left) else rest
+
+
 def _yes_no_in_window(frame: Optional[SceneFrame], text: str, t: float) -> bool:
     """Окно вопроса да/нет открыто и фраза — «да» или «нет». Окно — с конца вопроса, грейс микрофона включён
     (``in_grace``): целое «да»/«нет» эхом «Сейчас играет …, выключить и зачитать?» не бывает, а кадр
@@ -112,15 +126,20 @@ def _yes_no_in_window(frame: Optional[SceneFrame], text: str, t: float) -> bool:
 
 
 def _wakeless_reply(text: str, heard: Heard, question: Optional[SceneFrame],
-                    greeting: Optional[SceneFrame], ask: Optional[SceneFrame] = None) -> Decision:
+                    greeting: Optional[SceneFrame], ask: Optional[SceneFrame] = None,
+                    music_playing: bool = False) -> Decision:
     """Фраза без вейка: ответ на вопрос об имени (В17(б)), ответ на приветствие, «да»/«нет» на вопрос
-    выступления (О9′) или не адресована."""
+    выступления (О9′), стоп музыки, пока она играет (М11 n511: «врубай все глуши музыку» - вейк потерян под
+    музыкой; ход - только команда стопа, собранная кодом, ``words.music_stop_unwoken``), или не адресована."""
     if text and answer_to_question(question, heard) is not None:
         return Addressed(text, IDENTITY_ANSWER)
     if text and answer_to_greeting(greeting, heard):
         return Addressed(text, GREETING_REPLY)
     if text and _yes_no_in_window(ask, text, heard.t):
         return Addressed(text, PERFORM_ANSWER)
+    stop = music_stop_unwoken(text) if music_playing else None
+    if stop:
+        return Addressed(stop, MUSIC_STOP_UNWOKEN)
     return NotAddressed(NO_WAKE)
 
 
@@ -167,7 +186,9 @@ def _decide(heard: Heard, backlog: Optional[Backlog], wake_words: Sequence[str],
     rest = (strip_wake_word(text, wake_words) if woken
             else slipped_wake_rest(text, wake_words, music_playing=music_playing))
     if rest is None:
-        return _wakeless_reply(text, heard, question, greeting, ask)
+        return _wakeless_reply(text, heard, question, greeting, ask, music_playing)
+    if woken:
+        rest = _collapse_repeated_wake(rest, wake_words)
     if is_bare(rest) and _yes_no_in_window(ask, rest, heard.t):  # «Робот, да» — ответ на вопрос, не голый вейк
         return Addressed(rest, PERFORM_ANSWER)
     return _woken(rest, heard, backlog, _command(text, rest, wake_words) if woken else "")

@@ -150,7 +150,6 @@ docker-compose up -d
 
 - `scripts/README.md` - Detailed script documentation with examples
 - `docs/CI_CD_PIPELINE.md` - Updated CI/CD documentation
-- `.actrc` - Configuration for running GitHub Actions locally
 
 ## Troubleshooting
 

@@ -30,7 +30,7 @@ from pathlib import Path
 import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
-SCRIPTS_DIR = REPO_ROOT / ".github" / "workflows" / "scripts"
+SCRIPTS_DIR = REPO_ROOT / "scripts" / "ci" / "e2e"
 LIB = SCRIPTS_DIR / "e2e_voice_lib.sh"
 FAKE = Path(__file__).resolve().parent / "fake_robot_ssh.sh"
 SCENARIOS = REPO_ROOT / ".github" / "e2e" / "scenarios"
@@ -206,7 +206,7 @@ def _run(tmp_path, log_text, body, env=None, timeout=60):
         'ROBOT_SSH="bash %s"' % FAKE.as_posix(),
         'SCRIPT_DIR_E2E="%s"' % SCRIPTS_DIR.as_posix(),
         'log() { echo ">>> $*"; }',
-        "E2E_DIALOG_ENGINE=v2; E2E_EVENT_POLL=1; E2E_BARGE_POLL=1",
+        "E2E_EVENT_POLL=1; E2E_BARGE_POLL=1",
         LIB.read_text(encoding="utf-8").replace("\r\n", "\n"),
         body,
     ])

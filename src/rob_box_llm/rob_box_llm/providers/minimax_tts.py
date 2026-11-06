@@ -700,8 +700,16 @@ class MiniMaxTTSProvider(BaseTTSProvider):
           :class:`TTSSettings`, forwarded as a top-level T2A v2 key).
 
         We do NOT claim ``ssml`` (MiniMax has no SSML parser).
+
+        ADR-0160 §2.5: MiniMax сам читает цифры и ставит ударения, паузы
+        такта понимает своей меткой ``<#x#>``. :meth:`prepare` текст не трогает:
+        паузы по такту реплики ставит робот (``rob_box_voice.tts_providers.beat``,
+        #4241) — раскладка и нормализатор живут в его пакетах.
         """
         return TTSCapabilities(
+            reads_digits=True,
+            sets_stress=True,
+            pause_markup=True,
             streaming=True,
             voice_cloning=True,
             ssml=False,

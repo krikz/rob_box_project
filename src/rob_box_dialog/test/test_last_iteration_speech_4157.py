@@ -147,7 +147,7 @@ def test_the_schema_does_not_require_speech_it_would_contradict_speech_with_acti
     """Схему форма не меняет: после запроса звук без слов - законный ответ («какие звуки» → ``play_sound``), а слова
     рядом со звуком - ``speech_with_actions``. ``required: [speech]`` толкал бы модель в это нарушение."""
     final = Answer(Command(speech="Звуков много."), "deepseek")
-    ports = Ports([*[_query(SOUNDS)] * MAX, final], {"get_sound_info": ("done", SOUND_DATA)})
+    ports = Ports([*_iters(_query(SOUNDS)), final], {"get_sound_info": ("done", SOUND_DATA)})  # разные: #4286
     _run(ports, N_SOUNDS)
     assert [schema for _, schema in ports.probes] == [ports.probes[0][1]] * (MAX + 1)
     assert "speech" not in ports.probes[-1][1]["required"]
@@ -219,7 +219,7 @@ def test_answer_without_words_on_the_asked_form_is_a_violation_with_a_hint(raw):
 @pytest.mark.parametrize("raw", [
     {"speech": "Помню, что ты любишь чай."},
     {"ask": {"expects": "yes_no", "text": "Назвать ещё?"}},
-    {"actions": [{"tool": "play_sound", "args": {"sound": "robot_happy"}}]},    # исход звука скажет код
+    {"actions": [{"tool": "play_sound", "args": {"sound": "robot_happy"}}]},    # звук сам себе доказательство: успех молчит (SILENT_DONE_TOOLS)
     {"speech": "Запомнил.", "actions": [{"tool": "memory_save", "args": {"fact": "любит чай"}}]},
     {"speech": "Слова", "expression": {"emotion": "happy"}},
 ])

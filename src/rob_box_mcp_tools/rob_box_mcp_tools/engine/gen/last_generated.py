@@ -7,36 +7,28 @@
 
 * :meth:`fresh` - id свежего трека;
 * :meth:`about` - свежий трек, если тема запроса (слова ``search``) совпала с ним: тул ставит его первым и запоминает тему;
-* :meth:`twin` - другой трек «из той же песни»: то же название либо тема, что совпала со свежим.
+* :meth:`twin` - другой трек «из той же песни»: название свежего целиком в его названии (то же или длиннее) либо тема,
+  что совпала со свежим.
 """
 
 from __future__ import annotations
 
-import re
 import time
 from typing import Any, Callable, Mapping, Optional, Tuple
+
+from rob_box_core.topic_words import topic_stems  # одно правило темы с диалогом (rob_box_dialog.track_ref, М11 n707)
 
 #: Сколько секунд только что сочинённый трек остаётся «этой песней»: «расскажи про неё», «включи с начала» через минуты
 #: после ``[song] готова`` - про него, а не про старую версию.
 GENERATED_FRESH_S = 900.0
 #: Сколько секунд помнится тема поиска, совпавшая со свежим треком: ``info`` по старой версии той же темы идёт следом.
 TOPIC_TTL_S = 300.0
-#: Слова короче не тема. Основа слова - без двух последних букв, но не короче ``STEM_MIN``: «енота» и «енот-механик» -
-#: «енот».
-WORD_MIN = 4
-STEM_MIN = 4
-#: Слова о самой песне - не тема («расскажи про песню про енота»: тема - «енот», а не «песня»).
-GENERIC_STEMS: Tuple[str, ...] = ("песн", "трек", "композиц", "музык", "мелоди", "инструментал", "произведен", "саундтрек")
-_WORD = re.compile(r"[^\W\d_]+")
 #: Поля трека, в которых ищется тема.
 _TEXT_FIELDS = ("title", "lyrics", "prompt", "notes", "genre", "mood")
 
 
-def topic_stems(text: str) -> Tuple[str, ...]:
-    """Основы слов темы запроса (строчные, ё → е; слова о самой песне отброшены)."""
-    words = (w.casefold().replace("ё", "е") for w in _WORD.findall(text or ""))
-    stems = (w[:max(STEM_MIN, len(w) - 2)] for w in words if len(w) >= WORD_MIN)
-    return tuple(dict.fromkeys(s for s in stems if not s.startswith(GENERIC_STEMS)))
+def _norm(value: Any) -> str:
+    return str(value or "").strip().casefold().replace("ё", "е")
 
 
 def _text(info: Mapping[str, Any]) -> str:
@@ -73,12 +65,16 @@ class LastGenerated:
         return fresh
 
     def twin(self, track_id: str) -> bool:
-        """``track_id`` - другая версия свежего трека: то же название либо недавняя тема (:meth:`about`), что есть и в нём."""
+        """``track_id`` - другая версия свежего трека: в его названии всё название свежего (то же название или длиннее:
+        «Енот-механик и робот» при свежем «Енот-механик», М9 03.11 n707) либо недавняя тема (:meth:`about`), что есть
+        и в нём."""
         fresh = self.fresh()
         if not fresh or track_id == fresh:
             return False
-        title = str(self._info(track_id).get("title") or "").strip().casefold()
-        if title and title == str(self._info(fresh).get("title") or "").strip().casefold():
+        title = _norm(self._info(track_id).get("title"))
+        fresh_title = _norm(self._info(fresh).get("title"))
+        stems = topic_stems(fresh_title)
+        if title and (title == fresh_title or (stems and all(s in title for s in stems))):
             return True
         topic = self._topic
         return bool(topic and self._clock() - topic[1] <= TOPIC_TTL_S and self._covers(track_id, topic[0]))

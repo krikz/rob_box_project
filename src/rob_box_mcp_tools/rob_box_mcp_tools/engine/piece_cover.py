@@ -40,7 +40,7 @@ def cover_work(staged: Optional[Mapping[str, Any]]) -> Optional[CoverWork]:
                      str(staged.get("title") or ""), bool((staged.get("played") or {}).get("named")))
 
 
-#: ``{id: (запись RTTTL, название для голоса)}`` по id хуков (``tools_v2.library_records``).
+#: ``{id: (запись RTTTL, название для голоса)}`` по id хуков (``engine_tools.library_records``).
 Records = Callable[[Sequence[str]], Mapping[str, Tuple[Mapping[str, Any], str]]]
 
 

@@ -128,6 +128,28 @@ TOOL_CATALOG_DATA: tuple[dict[str, Any], ...] = (   {   'llm_visible': True,
         'starts_music': False,
         'execution_type': 'instant',
         'event_source': 'inproc:waypoint_store',
+        'name': 'delete_map',
+        'description': 'Забыть (удалить) карту по имени: «удали карту офис», «забудь '
+                       'карту». Карту, что сейчас в базе, удалить нельзя — её можно '
+                       'только перезаписать новым картографированием.',
+        'parameters': {   'type': 'object',
+                          'properties': {   'map_name': {   'type': 'string',
+                                                            'description': 'Название '
+                                                                           'карты, '
+                                                                           'которую '
+                                                                           'забыть'}},
+                          'required': ['map_name'],
+                          'additionalProperties': False},
+        'signature': {'params': ['map_name'], 'required': [], 'accepts_kwargs': False},
+        'skill': ('mapping',)},
+    {   'llm_visible': True,
+        'operator_visible': False,
+        'read_only': False,
+        'destructive': True,
+        'idempotent': False,
+        'starts_music': False,
+        'execution_type': 'instant',
+        'event_source': 'inproc:waypoint_store',
         'name': 'delete_waypoint',
         'description': 'Удалить сохранённую точку по имени. Используй когда '
                        "пользователь говорит 'удали зал', 'забудь кухню'.",
@@ -521,12 +543,15 @@ TOOL_CATALOG_DATA: tuple[dict[str, Any], ...] = (   {   'llm_visible': True,
         'execution_type': 'medium',
         'event_source': '',
         'name': 'get_perception_context',
-        'description': 'Что робот сейчас видит камерой и чувствует: лица и объекты в '
-                       'кадре (детекции с уверенностью; age_s — сколько секунд назад '
-                       'замечено, свежее пары секунд — видно сейчас), а также время '
-                       'суток, заряд батареи, температура, движение, здоровье системы, '
-                       'режим картографирования, сводка недавних событий. Вызывай на '
-                       '«что ты видишь», «кто перед тобой», «видишь меня».',
+        'description': 'Что робот сейчас видит камерой и чувствует. vision_context — '
+                       'готовая фраза о кадре (лица с именем, если узнаны, силуэты, '
+                       'метки AprilTag; «нет данных», если данных нет) — говори о '
+                       'кадре только по ней. faces — лица в кадре (name=null — не '
+                       'узнан); лицо в кадре — не обязательно тот, кто с тобой '
+                       'говорит: кто говорит — раздел speaker хода. Ещё: время суток, '
+                       'заряд батареи, температура, движение (is_moving), здоровье '
+                       'системы, режим картографирования, сводка недавних событий. '
+                       'Вызывай на «что ты видишь», «кто перед тобой», «видишь меня».',
         'parameters': {   'type': 'object',
                           'properties': {},
                           'required': [],
@@ -596,6 +621,24 @@ TOOL_CATALOG_DATA: tuple[dict[str, Any], ...] = (   {   'llm_visible': True,
                          'required': [],
                          'accepts_kwargs': False},
         'skill': ('expression',)},
+    {   'llm_visible': True,
+        'operator_visible': False,
+        'read_only': False,
+        'destructive': True,
+        'idempotent': False,
+        'starts_music': False,
+        'execution_type': 'instant',
+        'event_source': 'inproc:waypoint_store',
+        'name': 'list_maps',
+        'description': 'Какие карты помещений робот хранит: «какие карты знаешь», «на '
+                       'какой ты карте». Отвечай по данным тула: база карт одна, '
+                       'остальные имена — старые карты без геометрии.',
+        'parameters': {   'type': 'object',
+                          'properties': {},
+                          'required': [],
+                          'additionalProperties': False},
+        'signature': {'params': [], 'required': [], 'accepts_kwargs': False},
+        'skill': ('mapping',)},
     {   'llm_visible': True,
         'operator_visible': False,
         'read_only': False,
@@ -692,17 +735,16 @@ TOOL_CATALOG_DATA: tuple[dict[str, Any], ...] = (   {   'llm_visible': True,
         'execution_type': 'long',
         'event_source': 'srv:/rtabmap/rtabmap/load_database',
         'name': 'load_map',
-        'description': 'Загрузить сохранённую карту и перейти в режим локализации '
-                       '(навигации). Используй когда нужно переключиться на уже '
-                       'исследованную локацию.',
+        'description': 'Перезагрузить карту из базы и перейти в режим локализации '
+                       '(навигации). База карт у робота одна: загрузить можно только '
+                       'карту, что в ней сейчас; про карту с другим именем тул честно '
+                       'ответит, что её нет.',
         'parameters': {   'type': 'object',
                           'properties': {   'map_name': {   'type': 'string',
                                                             'description': 'Название '
-                                                                           'карты для '
-                                                                           'загрузки '
+                                                                           'карты '
                                                                            '(например '
-                                                                           "'квартира', "
-                                                                           "'офис'). "
+                                                                           "'квартира'). "
                                                                            'Если не '
                                                                            'указано — '
                                                                            'перезагружает '
@@ -1156,6 +1198,38 @@ TOOL_CATALOG_DATA: tuple[dict[str, Any], ...] = (   {   'llm_visible': True,
                          'required': [],
                          'accepts_kwargs': True},
         'skill': ('player',)},
+    {   'llm_visible': False,
+        'operator_visible': False,
+        'read_only': False,
+        'destructive': True,
+        'idempotent': True,
+        'starts_music': False,
+        'execution_type': 'medium',
+        'event_source': 'srv:/perception/people',
+        'telegram_visible': True,
+        'name': 'name_person',
+        'description': 'Дать или сменить имя лицу в базе лиц робота. Звать на «назови '
+                       'fff371fe Кириллом», «это Кирилл» про лицо из списка. id - '
+                       'ровно 8 знаков 0-9a-f из people_list; имя - до 40 знаков: '
+                       'буквы, цифры, пробел, точка, дефис, апостроф. Имя записывает '
+                       'владелец базы, а фразу «Готово» говорит код по его ответу: не '
+                       'пиши «записал» сам. В память (memory_save) id лица не клади.',
+        'parameters': {   'type': 'object',
+                          'properties': {   'id': {   'type': 'string',
+                                                      'description': 'id лица: 8 '
+                                                                     'знаков 0-9a-f из '
+                                                                     'people_list.'},
+                                            'name': {   'type': 'string',
+                                                        'description': 'Имя, как его '
+                                                                       'назвал человек '
+                                                                       'в чате, до 40 '
+                                                                       'знаков.'}},
+                          'required': ['id', 'name'],
+                          'additionalProperties': False},
+        'signature': {   'params': ['id', 'name'],
+                         'required': ['id', 'name'],
+                         'accepts_kwargs': False},
+        'skill': ()},
     {   'llm_visible': True,
         'operator_visible': False,
         'read_only': False,
@@ -1231,6 +1305,65 @@ TOOL_CATALOG_DATA: tuple[dict[str, Any], ...] = (   {   'llm_visible': True,
                           'additionalProperties': False},
         'signature': {'params': [], 'required': [], 'accepts_kwargs': False},
         'skill': ('mapping',)},
+    {   'llm_visible': False,
+        'operator_visible': False,
+        'read_only': True,
+        'destructive': True,
+        'idempotent': False,
+        'starts_music': False,
+        'execution_type': 'medium',
+        'event_source': '',
+        'telegram_visible': True,
+        'name': 'people_list',
+        'description': 'Список лиц, которых робот видел камерой: id (8 знаков), имя, '
+                       'кличка, когда видел последний раз, сколько встреч, связано ли '
+                       'лицо с голосом. Звать на «покажи лица», «кто без имени», «кого '
+                       'видел сегодня». id из списка передавай в person_photo и '
+                       'name_person как есть. Пересказывай данные результата, ничего '
+                       'не добавляй.',
+        'parameters': {   'type': 'object',
+                          'properties': {   'filter': {   'type': 'string',
+                                                          'description': 'all - все; '
+                                                                         'unnamed - '
+                                                                         'только без '
+                                                                         'имени; today '
+                                                                         '- '
+                                                                         'встречались '
+                                                                         'сегодня. По '
+                                                                         'умолчанию '
+                                                                         'all.',
+                                                          'enum': [   'all',
+                                                                      'unnamed',
+                                                                      'today']}},
+                          'required': [],
+                          'additionalProperties': False},
+        'signature': {'params': ['filter'], 'required': [], 'accepts_kwargs': False},
+        'skill': ()},
+    {   'llm_visible': False,
+        'operator_visible': False,
+        'read_only': True,
+        'destructive': True,
+        'idempotent': False,
+        'starts_music': False,
+        'execution_type': 'medium',
+        'event_source': '',
+        'telegram_visible': True,
+        'name': 'person_photo',
+        'description': 'Прислать в чат лучший снимок лица из галереи робота. Звать на '
+                       '«покажи fff371fe», «как выглядит Кирилл». id - ровно 8 знаков '
+                       '0-9a-f из people_list; имени вместо id тул не принимает: найди '
+                       'id в people_list. Картинку в чат отправляет код после вызова, '
+                       'ты её не описываешь и не обещаешь без вызова. Снимка нет или '
+                       'режим выставки - тул откажет с причиной.',
+        'parameters': {   'type': 'object',
+                          'properties': {   'id': {   'type': 'string',
+                                                      'description': 'id лица: 8 '
+                                                                     'знаков 0-9a-f из '
+                                                                     'people_list.'}},
+                          'required': ['id'],
+                          'additionalProperties': False},
+        'signature': {'params': ['id'], 'required': ['id'], 'accepts_kwargs': False},
+        'skill': ()},
     {   'llm_visible': True,
         'operator_visible': False,
         'read_only': False,
@@ -1250,7 +1383,9 @@ TOOL_CATALOG_DATA: tuple[dict[str, Any], ...] = (   {   'llm_visible': True,
                        'turn_left, turn_right). Когда показываешь анимации по запросу '
                        '- НЕ описывай что происходит в анимации, просто говори: '
                        "'Показываю анимацию <название>' или 'Есть анимация "
-                       "<название>'.",
+                       "<название>'. Параметр face - сцена лица с эффектами "
+                       '(bg/fx/feat): когда какой уместен, сказано в его описании; '
+                       'брать к смыслу реплики, не в каждом ответе.',
         'parameters': {   'type': 'object',
                           'properties': {   'animation': {   'type': 'string',
                                                              'description': 'Название '
@@ -1272,6 +1407,7 @@ TOOL_CATALOG_DATA: tuple[dict[str, Any], ...] = (   {   'llm_visible': True,
                                                                          'low_battery',
                                                                          'police_lights',
                                                                          'road_service',
+                                                                         'roadworks_beacon',
                                                                          'sad',
                                                                          'sleep',
                                                                          'surprised',
@@ -1308,23 +1444,46 @@ TOOL_CATALOG_DATA: tuple[dict[str, Any], ...] = (   {   'llm_visible': True,
                                                                        'списков, '
                                                                        'свободных '
                                                                        'цветов и форм '
-                                                                       'нет. bg - фон '
-                                                                       'под глазами и '
-                                                                       'ртом; fx - '
-                                                                       'разовый '
+                                                                       'нет. Эффекты - '
+                                                                       'когда уместно '
+                                                                       'к смыслу '
+                                                                       'реплики, не в '
+                                                                       'каждом ответе. '
+                                                                       'bg (фон под '
+                                                                       'глазами и '
+                                                                       'ртом): rainbow '
+                                                                       '- праздник, '
+                                                                       'дискотека, '
+                                                                       'радость; fire '
+                                                                       '- рок, азарт, '
+                                                                       'злость в '
+                                                                       'шутку; matrix '
+                                                                       '- думаю, ищу, '
+                                                                       'считаю, '
+                                                                       '«взламываю». '
+                                                                       'fx (разовый '
                                                                        'импульс в '
-                                                                       'начале сцены '
-                                                                       '(slash - удар '
-                                                                       'катаной, '
-                                                                       'glitch - сбой, '
-                                                                       'boot - '
-                                                                       'включение, '
+                                                                       'начале сцены): '
+                                                                       'slash - резкое '
+                                                                       '«отрезал», '
+                                                                       'шутка-удар; '
+                                                                       'glitch - '
+                                                                       'что-то не '
+                                                                       'вышло, ошибка, '
+                                                                       'путаница; boot '
+                                                                       '- проснулся, '
+                                                                       'включился; '
                                                                        'power_down - '
-                                                                       'выключение); '
-                                                                       'feat=loading_eyes '
-                                                                       '- спиннеры '
-                                                                       'вместо глаз '
-                                                                       '(жду, думаю).',
+                                                                       'засыпаю, '
+                                                                       'выключаюсь. '
+                                                                       'feat (замена '
+                                                                       'черт): '
+                                                                       'loading_eyes - '
+                                                                       'долгое '
+                                                                       'ожидание, '
+                                                                       'загрузка. '
+                                                                       'tint=rainbow - '
+                                                                       'тоже праздник.',
                                                         'properties': {   'eyes': {   'type': 'string',
                                                                                       'description': 'Слот '
                                                                                                      'лица '
@@ -1470,6 +1629,8 @@ TOOL_CATALOG_DATA: tuple[dict[str, Any], ...] = (   {   'llm_visible': True,
                                                          'enum': [   'robot_affirm',
                                                                      'robot_alert',
                                                                      'robot_angry',
+                                                                     'robot_backup_beep',
+                                                                     'robot_backup_beep_fast',
                                                                      'robot_bubbles',
                                                                      'robot_concerned',
                                                                      'robot_confirm',
@@ -2352,6 +2513,7 @@ TOOL_CATALOG_DATA: tuple[dict[str, Any], ...] = (   {   'llm_visible': True,
                                                                          'low_battery',
                                                                          'police_lights',
                                                                          'road_service',
+                                                                         'roadworks_beacon',
                                                                          'sad',
                                                                          'sleep',
                                                                          'surprised',

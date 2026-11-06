@@ -3,11 +3,11 @@
 Одна дорога на оба движка (решение координатора 22.10 по #3702):
 
 * **LLM** — цепочка ``rob_box_harness.core.assembly.build_llm_chain`` (тот же ``HealthAwareFallbackLLM``), каждый
-  провайдер — в режиме команд моста ``command_bridge`` (форма запроса по ``degrade.select_mode``, один парсер, повтор по
-  нарушениям ``COMMAND_RETRIES_MAX``). Ответ моста в форме v1 (текст речи или вызов ``command``) переводится обратно в
-  ``command.Result`` (:func:`to_result`); цикла ``AgentCore`` нет — окно и итерации ``query`` ведёт ``turn.py``;
+  провайдер — в режиме команд ``command_bridge`` (форма запроса по ``degrade.select_mode``, один парсер, повтор по
+  нарушениям ``COMMAND_RETRIES_MAX``); его ответ несёт ``command.Result`` (``CommandResponse.command``), окно и
+  итерации ``query`` ведёт ``turn.py``;
 * **действия** — :class:`rob_box_dialog.execute.Executor` поверх исполнителя тулов v1 (``plan_host.make_tool_executor``:
-  MCP под планировщиком ресурсов), исход — событие владельца из данных результата (``command_turn.owner_event``).
+  MCP под планировщиком ресурсов), исход — событие владельца из данных результата (``execute.owner_event``).
   Топик ``ActionRequest`` не публикуется: подписчика у него нет (mcp_server слушает ``/mcp/execute``);
 * **речь / стадии / интент** — ``speech_client``, ``expression_client`` (+ рефлекс ``expression.reflex``, на итоге
   ``done`` окрашенный экспрессией команды через ``expression.merge``, #3997; пачка ``play_animation`` — очередью
@@ -21,32 +21,39 @@ from __future__ import annotations
 
 import asyncio
 import threading
+import time
 import uuid
 from dataclasses import replace
-from typing import Any, AsyncIterator, Callable, Iterable, List, Mapping, Optional, Sequence, Tuple
+from typing import Any, Callable, Iterable, List, Mapping, Optional, Sequence, Tuple
 
 from rob_box_core import expression_client, speech_client
 from rob_box_core.utterance import Sink, Utterance
 from rob_box_dialog import knowledge as kn
-from rob_box_dialog.command import Busy, Command, Expression, Invalid, Result, ToolCall as CommandCall, parse
+from rob_box_dialog.command import Busy, Expression, Result, ToolCall as CommandCall
 from rob_box_dialog.context import measure
 from rob_box_dialog.deadline import ProviderFailed
-from rob_box_dialog.execute import ActionRequest, Executor
+from rob_box_dialog.execute import ActionRequest, Executor, owner_event
 from rob_box_dialog.expression import ExpressionPlan, held_face, hold_ms, merge, queued, reflex
 from rob_box_dialog.respond import ActionResult
 from rob_box_dialog.session import SessionSnapshot
 from rob_box_dialog.turn import Answer
-from rob_box_harness.core.agent_core import answering_provider
-from rob_box_harness.core.tool_loop.command_turn import owner_event
 from rob_box_llm.errors import ProviderError
 from rob_box_llm.provider import LLMMessage, LLMResponse, LLMSettings, ToolCall, ToolResult
 
+from .command_bridge import EMPTY, model_call, wrapper_for
 from .command_intent import fill_intent
 from .command_parser import Command as MotionCommand, IntentType
 
-#: Ответ модели пуст (ни речи, ни команды) — невалиден (A14: пустой ответ по провайдеру).
-EMPTY = "empty"
 _STATUS = {"done": "finished", "failed": "failed", "timeout": "failed"}
+
+
+def answering_provider(llm: Any) -> str:
+    """Имя провайдера, ответившего на последний вызов: у цепочки с фолбеком — ``answered_by``, иначе ``name`` LLM.
+
+    ``name`` обёртки (``health-aware-fallback``) один на все провайдеры, и метрика A5 по провайдерам по нему не
+    собирается (живая проверка #3696 ч.4, 21.10). Перенесено из ``agent_core`` v1 (#4354 A3b).
+    """
+    return getattr(llm, "answered_by", None) or getattr(llm, "name", "unknown")
 
 
 class CallCounter:
@@ -74,28 +81,19 @@ class Counted:
         self._counter.calls += 1
         return await self._inner.complete(messages, **kwargs)
 
-    def stream(self, messages: Iterable[LLMMessage], **kwargs: Any) -> AsyncIterator[Any]:
-        self._counter.calls += 1
-        return self._inner.stream(messages, **kwargs)
-
 
 def counted_wrapper(bridge_wrap: Callable[[Any], Any], counter: CallCounter) -> Callable[[Any], Any]:
     """``AgentSpec.wrap_provider`` для v2: счётчик вызовов внутри моста команд (повтор считается)."""
     return lambda provider: bridge_wrap(Counted(provider, counter))
 
 
-def to_result(response: LLMResponse) -> Result:
-    """Ответ моста (форма v1) → команда: вызов ``command`` — его аргументы (отметка невалидности моста — ``Invalid``),
-    иначе текст — реплика; ни того ни другого — ``Invalid(empty)``."""
-    for call in response.tool_calls or ():
-        if call.name == kn.COMMAND_TOOL:
-            marked = call.arguments.get(kn.COMMAND_INVALID_FIELD)
-            if not marked:
-                return parse(dict(call.arguments))
-            rest = parse({k: v for k, v in call.arguments.items() if k != kn.COMMAND_INVALID_FIELD})
-            return Invalid(str(marked), salvage=rest.actions if isinstance(rest, Command) else ())
-    text = (response.content or "").strip()
-    return Command(speech=text) if text else Invalid(EMPTY, "ни речи, ни команды")
+def result_of(response: LLMResponse) -> Result:
+    """Команда хода из ответа цепочки (``CommandResponse.command``). Ответа без команды v2 не ждёт: провайдер цепочки
+    без режима команд — ошибка сборки, ход падает громко, а не молчит."""
+    result = getattr(response, "command", None)
+    if result is None:
+        raise TypeError(f"ответ LLM без команды ({type(response).__name__}): провайдер цепочки не в режиме команд")
+    return result
 
 
 def stage_plan(stage: str, cls: Optional[str] = None,
@@ -153,17 +151,13 @@ def tool_schema(entry: Any) -> Mapping[str, Any]:
                                              "parameters": dict(entry.parameters)}}
 
 
-def follow_for(response: LLMResponse) -> Callable[[str], Sequence[Any]]:
-    """Продолжение запроса данными ``query``: вызов ``command`` модели и tool-результат с данными на него. Невалидную
-    команду мост отдаёт вызовом с отметкой ``COMMAND_INVALID_FIELD`` и спасёнными действиями (#4050: спасённый
-    ``query`` возвращает данные модели) - модель видит свой вызов без служебной отметки: только исполненные действия."""
-    calls = tuple(c for c in response.tool_calls or () if c.name == kn.COMMAND_TOOL)
-    if not calls:
+def follow_for(result: Result) -> Callable[[str], Sequence[Any]]:
+    """Продолжение запроса данными ``query``: вызов ``command`` модели (``command_bridge.model_call``) и
+    tool-результат с данными на него. У невалидной команды модель видит в своём вызове только спасённые действия
+    (#4050: спасённый ``query`` возвращает данные модели). Вызова нет (голая реплика) — данные репликой пользователя."""
+    call = model_call(result)
+    if call is None:
         return lambda data: ({"role": "user", "content": data},)
-    call = calls[0]
-    if kn.COMMAND_INVALID_FIELD in call.arguments:
-        call = ToolCall(id=call.id, name=call.name,
-                        arguments={k: v for k, v in call.arguments.items() if k != kn.COMMAND_INVALID_FIELD})
 
     def follow(data: str) -> Sequence[Any]:
         return (LLMMessage(role="assistant", content="", tool_calls=(call,)),
@@ -180,10 +174,13 @@ class V2Ports:
                  settings: Optional[LLMSettings] = None, intent_pub: Any = None,
                  log: Callable[[str], None] = lambda line: None, epoch: Optional[Callable[[], int]] = None,
                  performer: Callable[[], Any] = lambda: None,
-                 later: Callable[[float, Callable[[], None]], Any] = _call_later) -> None:
+                 later: Callable[[float, Callable[[], None]], Any] = _call_later,
+                 on_ask: Callable[..., None] = lambda provider, *, ok, duration_s: None) -> None:
         self._node = node
         #: Таймер очереди лица (#4083): ``later(через_с, fire) -> handle.cancel()``; тест подменяет его своим.
         self._later = later
+        #: Итог вызова цепочки LLM (провайдер, ok, задержка) - хост ставит метрики (#4328); ядро без prometheus.
+        self._on_ask = on_ask
         self._queue: List[Any] = []
         self._llm = llm
         self._counter = counter
@@ -210,17 +207,20 @@ class V2Ports:
         msgs = [to_message(m) for m in messages]
         schemas = [tool_schema(t) for t in tools]
         before = self._counter.calls
+        started = time.monotonic()
         try:
             response = await self._llm.complete(msgs, tools=schemas, settings=self._settings)
         except (ProviderError, OSError, asyncio.TimeoutError) as exc:
+            self._on_ask(self.provider(), ok=False, duration_s=time.monotonic() - started)
             raise ProviderFailed(self.provider(), exc) from exc
         provider = answering_provider(self._llm)
+        self._on_ask(provider, ok=True, duration_s=time.monotonic() - started)
         usage = dict(response.usage or {})
         tokens = int(usage.get("prompt_tokens") or measure(msgs, schemas).total)
         self._log(f"🧮 [prompt] tokens={tokens} estimated={'prompt_tokens' not in usage} provider={provider} "
                   f"view=v2 tools={len(schemas)}")
-        return Answer(to_result(response), provider, max(1, self._counter.calls - before), tokens,
-                      follow_for(response))
+        result = result_of(response)
+        return Answer(result, provider, max(1, self._counter.calls - before), tokens, follow_for(result))
 
     async def execute(self, actions: Sequence[CommandCall], snapshot: SessionSnapshot,
                       turn_id: str) -> List[ActionResult]:
@@ -247,10 +247,12 @@ class V2Ports:
             self.on_late(result)
 
     def say(self, turn_id: str, epoch: int, text: str, voice: Optional[str] = None,
-            emotion: Optional[str] = None) -> str:
-        utterance = Utterance(text=text, sink=Sink.SPEAKERS, voice=voice or None, emotion=emotion or None,
+            emotion: Optional[str] = None, boundary: str = "none") -> str:
+        """Реплика хода; ``boundary="sentence"`` - счёт (#4207): отмена дочитывает звучащее предложение-число."""
+        utterance = Utterance(text=text, sink=Sink.SPEAKERS, voice=voice or None, role=voice or "", emotion=emotion or None,
                               speech_id=str(uuid.uuid4()))
-        return speech_client.say(self._node, utterance, agent=self._agent, epoch=epoch, turn_id=turn_id)
+        return speech_client.say(self._node, utterance, agent=self._agent, epoch=epoch, turn_id=turn_id,
+                                 boundary=boundary)
 
     def stage(self, turn_id: str, epoch: int, stage: str, status: str, reason: str = "", cls: Optional[str] = None,
               llm_calls: int = 0, provider: str = "", source: str = "",
@@ -320,8 +322,10 @@ class V2Ports:
             handle.cancel()
         self._log(f"🎭 [turn-v2] очередь лица снята: {len(pending)} сцен (стадия {stage} turn={turn_id})")
 
-    def cancel_speech(self, epoch: int, reason: str, boundary: str = "as_requested") -> None:
-        speech_client.cancel(self._node, agent=self._agent, epoch=epoch, reason=reason, boundary=boundary)
+    def cancel_speech(self, epoch: int, reason: str, boundary: str = "as_requested", speech_id: str = "") -> None:
+        """Отмена речи эпохи; ``speech_id`` - ровно этой реплики (правка звучащего счёта, #4207)."""
+        speech_client.cancel(self._node, agent=self._agent, speech_id=speech_id or None, epoch=epoch, reason=reason,
+                             boundary=boundary)
 
     def stop_perform(self, how: str, keep_backing: bool = False) -> bool:
         """Перебивание выступления (``PerformHost.halt``/``stop``); ``True`` — играющая музыка — его бит, и его
@@ -340,7 +344,7 @@ class V2Ports:
         host = self._performer()
         if host is None:
             return None
-        return host.edit(perf) if edit else host.start(perf, turn_id, epoch)
+        return host.edit(perf, turn_id, epoch) if edit else host.start(perf, turn_id, epoch)
 
     def intent(self, turn_id: str, epoch: int, kind: str) -> None:
         """Интент движения для ``command_node`` (сейчас — только ``stop_motion`` Tier-1 стопа)."""
@@ -352,11 +356,6 @@ class V2Ports:
         self._intent_pub.publish(fill_intent(Intent(), stop, epoch=epoch, turn_id=turn_id))
 
 
-def command_providers(chain: Sequence[str]) -> str:
-    """Все провайдеры цепочки — в режиме команд (v2 не знает ``speak_text``): строка для ``command_bridge``."""
-    return ",".join(n for n in chain if n)
-
-
 def assemble_llm(chain: Sequence[str], counter: CallCounter, *, prompt_dir: Any, system_prompt_file: str,
                  settings: Optional[LLMSettings] = None, agent: str = kn.AGENTS[0],
                  log: Callable[[str], None] = lambda line: None, busy: Optional[Callable[[], Busy]] = None) -> tuple:
@@ -365,10 +364,8 @@ def assemble_llm(chain: Sequence[str], counter: CallCounter, *, prompt_dir: Any,
     стенда (``scripts/dialog/dry_marathon.py``, #3906): ответ модели строит та же цепочка, что на роботе."""
     from rob_box_harness.core.assembly import AgentSpec, build_llm_chain  # noqa: PLC0415
 
-    from . import command_bridge  # noqa: PLC0415
-
     names = tuple(p.strip().lower() for p in chain if p.strip())
-    bridge = command_bridge.wrapper_for(command_providers(names), log=log, busy=busy or Busy, agent=agent)
+    bridge = wrapper_for(log=log, busy=busy or Busy, agent=agent)
     spec = AgentSpec(name=agent, prompt_dir=prompt_dir, system_prompt_file=system_prompt_file, provider_chain=names,
                      settings=settings, wrap_provider=counted_wrapper(bridge, counter))
     return build_llm_chain(spec), system_prompt(spec, agent)
@@ -384,6 +381,5 @@ def system_prompt(spec: Any, agent: str) -> str:
     return f"{base}\n\n{rules}" if base and rules else base
 
 
-__all__ = ["CallCounter", "Counted", "EMPTY", "V2Ports", "assemble_llm", "command_providers", "counted_wrapper",
-           "follow_for", "show_plan", "show_queue", "stage_plan", "system_prompt", "to_message", "to_result",
-           "tool_schema"]
+__all__ = ["CallCounter", "Counted", "EMPTY", "V2Ports", "assemble_llm", "counted_wrapper", "follow_for", "result_of",
+           "show_plan", "show_queue", "stage_plan", "system_prompt", "to_message", "tool_schema"]

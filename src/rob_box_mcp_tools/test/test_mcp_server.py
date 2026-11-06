@@ -57,6 +57,7 @@ class _FakeServer:
         self.registry = _FakeRegistry()
         self.waypoint_store = object()
         self.mapping_state = object()
+        self.map_pose_source = object()
         self._logger = _FakeLogger()
 
     def get_parameter(self, name):
@@ -67,9 +68,6 @@ class _FakeServer:
 
     def get_logger(self):
         return self._logger
-
-    def get_current_pose_snapshot(self):
-        return None
 
     def _register_gen_library_tools(self):
         self.gen_library_registered = True

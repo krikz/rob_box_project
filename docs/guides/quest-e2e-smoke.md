@@ -7,7 +7,7 @@
 >
 > Это **ручной** checklist для Шифу / шисюна после `docker compose up
 > quest` на Sound Pi. Для автоматического smoke (DNS + TLS + WSS) есть
-> [`local_test/quest_smoke.sh`](../../local_test/quest_smoke.sh) — он
+> [`tools/dev/quest_smoke.sh`](../../tools/dev/quest_smoke.sh) — он
 > покрывает первые 4 пункта чеклиста и подъезжает к п. 5 (видео +
 > LiDAR latency). Пункты 6–8 требуют живого шлема и оператора.
 >
@@ -37,7 +37,7 @@
 - Sound Pi в той же Wi-Fi сети, что и Quest (для `https://quest.rob_box.local:8443`).
 - Quest 2/3/Pro, **Developer Mode** включён + ADB-доступ (для импорта self-signed cert).
 - Dev-машина с доступом к Sound Pi по SSH (`ros2@10.1.1.22`) — для проверки `docker logs`.
-- (Опционально) `local_test/quest_smoke.sh` — должен быть уже в репо.
+- (Опционально) `tools/dev/quest_smoke.sh` — должен быть уже в репо.
 
 Проверить, что Docker-стек Quest жив:
 
@@ -77,7 +77,7 @@ docker logs --tail=50 rob-box-quest 2>&1 | head -80
 
 ```bash
 cd /home/builder/hermes-share/rob_box_project   # или где у тебя worktree
-./local_test/quest_smoke.sh --all --no-color
+./tools/dev/quest_smoke.sh --all --no-color
 ```
 
 Ожидаемый отчёт:

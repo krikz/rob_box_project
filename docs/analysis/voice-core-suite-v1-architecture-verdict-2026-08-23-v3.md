@@ -35,7 +35,7 @@ $ git log --oneline 85ca425b..origin/develop --no-merges | grep -v '^.\{8\} ci:'
 
 - `.github/e2e/scenarios/voice_core_suite_v1.json` (последнее изменение — `7d36af73`, 22.08 15:28, revert b71c86cb)
 - `.github/e2e/scenarios/voice_core_acceptance_v1.json` (последнее изменение — `7d36af73`)
-- `.github/workflows/scripts/e2e_voice_test.sh` (последнее изменение — `a2d2a764`, 23.08 10:43, fix RAW-конверсии parec-timeout)
+- `scripts/ci/e2e/e2e_voice_test.sh` (последнее изменение — `a2d2a764`, 23.08 10:43, fix RAW-конверсии parec-timeout)
 - ADR-0022 §4.6 (addendum о window semantics — `db84ff59`, 22.08 13:30)
 - ADR-RT-0068 — `accepted` (коммит `86889ee1`, 22.08 — `harness verdict SoT pull`)
 

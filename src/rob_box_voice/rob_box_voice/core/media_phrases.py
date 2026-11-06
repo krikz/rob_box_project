@@ -105,7 +105,7 @@ NOTHING_PLAYING_TEXT = _phrase("music.nothing_playing")
 #: Трек поставлен на деку, а ``started`` ещё не пришло: о звуке не говорим (A14).
 PENDING_TEXT = _phrase("music.pending")
 
-#: Источник звучащего трека (``rob_box_mcp_tools.engine.tools_v2.SOURCE_*``) — словами для фразы «что играет». Синтеза
+#: Источник звучащего трека (``rob_box_mcp_tools.engine.engine_tools.SOURCE_*``) — словами для фразы «что играет». Синтеза
 #: здесь нет: его называет движок среди черт трека (``rob_box_music.track_brief.ENGINE_WORDS``).
 SOURCE_WORDS: Mapping[str, str] = {k: _phrase(f"music.source.{k}") for k in ("piece", "melody", "generated")}
 
@@ -206,7 +206,7 @@ def _track_time(facts: Mapping[str, Any]) -> str:
 DJ_FAIL_TEXT = _phrase("music.dj_fail")
 REQUEST_FAIL_TEXT = _phrase("music.request_fail")
 
-#: Код отказа ``request_music`` (``rob_box_mcp_tools.engine.tools_v2.SET_PLAYING``): сет запущен в этом же
+#: Код отказа ``request_music`` (``rob_box_mcp_tools.engine.engine_tools.SET_PLAYING``): сет запущен в этом же
 #: ходе и играет, заказ его не снял. Равенство кодов держит ``test_music_turn_set_vs_request``.
 SET_PLAYING_REASON = "set_playing"
 #: Что сказать после фразы о сете, когда заказ поверх него отклонён (:data:`SET_PLAYING_REASON`).

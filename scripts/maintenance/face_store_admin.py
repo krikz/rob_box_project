@@ -266,9 +266,11 @@ def _import_face_store():
         return importlib.import_module('rob_box_perception.face_store')
     except ModuleNotFoundError:
         pass
-    pkg_root = _guess_pkg_root(_HERE, 'rob_box_perception')
-    if pkg_root is not None and str(pkg_root) not in sys.path:
-        sys.path.insert(0, str(pkg_root))
+    # face_store импортирует rob_box_core.persona (ADR-0164 этап 6) — оба пакета из чекаута.
+    for pkg_dir in ('rob_box_core', 'rob_box_perception'):
+        pkg_root = _guess_pkg_root(_HERE, pkg_dir)
+        if pkg_root is not None and str(pkg_root) not in sys.path:
+            sys.path.insert(0, str(pkg_root))
     return importlib.import_module('rob_box_perception.face_store')
 
 

@@ -18,7 +18,13 @@ from rob_box_dialog.session import MusicStateRef, Session
 from rob_box_dialog.turn import Answer, TurnEngine
 
 N608 = "робот хватит диджей выключай"  # STT марафона-3 28.10 19:50:42 (va_m3.log), тот же шаг в марафоне-4
+#: М11 n608 (05.11): сам N608 модели больше не уходит - остаток «диджей выключай» тот же стоп, ход закрывает код
+#: (``test_music_stop_honest_m11``). Повтор исполненного стопа моделью проверяется на остатке, что ей уходит.
+MODEL_REST = "робот хватит диджей что дальше"
 OK = phrases.text("music.stop_ok")
+
+#: Варианты фразы Tier-1 стопа музыки (решение Шифу 05.11: вариант выбирает код, без повтора подряд).
+SAID = frozenset(phrases.catalog()[kn.MUSIC_STOP_SAID])
 
 
 class Ports:
@@ -78,14 +84,14 @@ def _run(ports, text):
 def test_n608_model_repeating_the_tier1_dj_stop_closes_the_turn_with_the_code_phrase_not_a_failure(caplog):
     ports = Ports([Answer(Command(actions=(ToolCall("dj_set", {"action": "stop"}),)), "deepseek")])
     with caplog.at_level("INFO"):
-        agg = _run(ports, N608)
+        agg = _run(ports, MODEL_REST)
     # Tier-1 исполнил оба стопа, повтор модели не исполнен (сет не трогается дважды)
     assert ports.executed == [("dj_set", {"action": "stop"}), ("stop_music", {})]
     assert ports.asked == 1
     assert "повтор исполненного в этом ходе не исполняется: ['dj_set']" in caplog.text
     # ход не провален: фраза кода по исходу Tier-1, одна, без грусти
     assert (agg.stage, agg.status) == ("done", "finished")
-    assert [text for text, _emotion in ports.said] == [OK] and ports.said[0][1] != "sad"
+    assert len(ports.said) == 1 and ports.said[0][0] in SAID and ports.said[0][1] != "sad"
 
 
 def test_repeat_of_a_voiced_outcome_closes_done_without_saying_it_again():

@@ -12,7 +12,7 @@ from rob_box_music.source import DECLINE, GENERATE, SONG_GEN_KINDS, Route, Sourc
 
 from .gen.song import BUSY_TEXT, SongFailed, SongRequest, SongStudio, failed_words, wait_text
 
-#: Код отказа пути (``tools_v2.SOURCE_DECLINED``; равенство держит тест).
+#: Код отказа пути (``engine_tools.SOURCE_DECLINED``; равенство держит тест).
 DECLINED = "music_source"
 
 
@@ -57,7 +57,7 @@ class SongOrder:
         return route.kind == GENERATE and self._studio is not None and gen_kind(route.id) in SONG_GEN_KINDS
 
     def start(self, ask: SourceAsk, args: Tuple[Any, ...], order: Callable[..., Any], wrap: Callable[..., Any]) -> Any:
-        """``MCPToolResult`` заказа (ожидание или отказ; ``wrap`` — ``tools_v2.tool_result``). Мост не встал не из-за
+        """``MCPToolResult`` заказа (ожидание или отказ; ``wrap`` — ``engine_tools.tool_result``). Мост не встал не из-за
         «нечем играть» (сет играет, не нашлось): песню не начинаем, отдаём его результат как есть. ``args`` — ``(intent, text, mood, genre, turn_id, heard_text)`` заказа; мост — тот же ``order`` без просьбы
         петь (кэш по жанру, иначе синтез)."""
         kind, data = self._begin(ask, args, order)

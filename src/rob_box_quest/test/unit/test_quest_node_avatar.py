@@ -2,10 +2,10 @@
 
 Покрывает commit C3 из impl-плана 0055:
 
-* ``_on_avatar_tts_request_meta`` с ``sink="headset"`` → ``register_audio_session
-  ("operator_tts", request_id, ws)`` + сохранение request_id/ws в node state.
-* ``_on_avatar_tts_request_meta`` с ``sink != "headset"`` → игнор (это tts_node
-  канал, не quest).
+* ``_on_headset_speech_request`` (``SpeechRequest``, #4252) с ``sink="headset"`` →
+  ``register_audio_session("operator_tts", speech_id, ws)`` + сохранение в node state.
+* ``_on_headset_speech_request`` с ``sink != "headset"`` → игнор (реплика в
+  динамики робота, не quest).
 * ``_on_avatar_tts_audio`` после предрегистрации → ``ws_server.deliver_audio(
   stream="operator_tts", ..., ws=current)``.
 * ``_on_avatar_tts_audio`` без предрегистрации (race) → DROP + warning.
@@ -19,8 +19,8 @@
 
 from __future__ import annotations
 
-import json
 import unittest
+from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 try:  # Docker-only: quest_node тянет rclpy/audio_common_msgs.
@@ -36,11 +36,9 @@ _skip = unittest.skipUnless(
 )
 
 
-def _make_msg(payload: dict):
-    """MagicMock String-msg с JSON-encoded data."""
-    m = MagicMock()
-    m.data = json.dumps(payload, ensure_ascii=False)
-    return m
+def _req(speech_id: str, sink: str):
+    """``SpeechRequest`` (поля, которые читает quest_node, #4252)."""
+    return SimpleNamespace(speech_id=speech_id, sink=sink, agent="operator", text="готово")
 
 
 def _make_audio_msg(pcm_bytes: bytes):
@@ -132,20 +130,15 @@ class TestPickActiveOperatorWs(unittest.TestCase):
         self.assertEqual(result, host.ws_server._ws_by_session["sess-new"])
 
 
-# ── _on_avatar_tts_request_meta ───────────────────────────────────────
+# ── _on_headset_speech_request ────────────────────────────────────────
 
 
 @_skip
-class TestOnAvatarTtsRequestMeta(unittest.TestCase):
+class TestOnHeadsetSpeechRequest(unittest.TestCase):
     def test_sink_headset_registers_session_for_unique_ws(self):
         """sink=="headset" + 1 сессия → register_audio_session("operator_tts", r1, ws)."""
         host = _make_host(active_sessions_count=1)
-        msg = _make_msg({
-            "request_id": "r-1",
-            "ssml": "<speak>готово</speak>",
-            "sink": "headset",
-        })
-        QuestNode._on_avatar_tts_request_meta(host, msg)
+        QuestNode._on_headset_speech_request(host, _req("r-1", "headset"))
         # register_audio_session был вызван с правильными args.
         host.ws_server.register_audio_session.assert_called_once()
         call_args = host.ws_server.register_audio_session.call_args
@@ -158,12 +151,7 @@ class TestOnAvatarTtsRequestMeta(unittest.TestCase):
     def test_sink_not_headset_is_ignored(self):
         """sink != "headset" → игнор, register_audio_session НЕ вызван."""
         host = _make_host(active_sessions_count=1)
-        msg = _make_msg({
-            "request_id": "r-x",
-            "ssml": "<speak>...</speak>",
-            "sink": "speaker",
-        })
-        QuestNode._on_avatar_tts_request_meta(host, msg)
+        QuestNode._on_headset_speech_request(host, _req("r-x", "speaker"))
         host.ws_server.register_audio_session.assert_not_called()
         # request_id НЕ запомнен.
         self.assertIsNone(host._current_avatar_request_id)
@@ -171,32 +159,20 @@ class TestOnAvatarTtsRequestMeta(unittest.TestCase):
     def test_no_active_session_drops(self):
         """Нет активных сессий → DROP + warning, без регистрации."""
         host = _make_host(active_sessions_count=0)
-        msg = _make_msg({
-            "request_id": "r-lonely",
-            "ssml": "<speak>x</speak>",
-            "sink": "headset",
-        })
-        QuestNode._on_avatar_tts_request_meta(host, msg)
+        QuestNode._on_headset_speech_request(host, _req("r-lonely", "headset"))
         host.ws_server.register_audio_session.assert_not_called()
         self.assertIsNone(host._current_avatar_request_id)
 
-    def test_bad_json_does_not_crash(self):
-        """Битый JSON → warning + DROP."""
+    def test_tars_relay_learns_the_speech_id(self):
+        """#4252: конец реплики придёт SpeechEvent-ом с тем же speech_id — реле узнаёт его здесь."""
         host = _make_host(active_sessions_count=1)
-        bad = MagicMock()
-        bad.data = "not-json{"
-        QuestNode._on_avatar_tts_request_meta(host, bad)
-        host.ws_server.register_audio_session.assert_not_called()
+        QuestNode._on_headset_speech_request(host, _req("sid-7", "headset"))
+        host._tars_relay.on_request.assert_called_once_with("sid-7", "sid-7")
 
-    def test_empty_request_id_is_dropped(self):
-        """request_id="" или отсутствует → DROP, без регистрации."""
+    def test_empty_speech_id_is_dropped(self):
+        """speech_id="" → DROP, без регистрации."""
         host = _make_host(active_sessions_count=1)
-        msg = _make_msg({
-            "request_id": "",
-            "ssml": "<speak>x</speak>",
-            "sink": "headset",
-        })
-        QuestNode._on_avatar_tts_request_meta(host, msg)
+        QuestNode._on_headset_speech_request(host, _req("", "headset"))
         host.ws_server.register_audio_session.assert_not_called()
 
 
@@ -208,15 +184,8 @@ class TestOnAvatarTtsAudio(unittest.TestCase):
     def test_routes_to_registered_ws(self):
         """После предрегистрации: deliver_audio(stream="operator_tts", ws=current, ...)."""
         host = _make_host(active_sessions_count=1)
-        # Симулируем предрегистрацию через _on_avatar_tts_request_meta.
-        QuestNode._on_avatar_tts_request_meta(
-            host,
-            _make_msg({
-                "request_id": "r-route",
-                "ssml": "<speak>x</speak>",
-                "sink": "headset",
-            }),
-        )
+        # Симулируем предрегистрацию через _on_headset_speech_request.
+        QuestNode._on_headset_speech_request(host, _req("r-route", "headset"))
         host.ws_server.deliver_audio.reset_mock()  # сбросим вызов register как side-effect
         # Теперь шлём AudioData.
         QuestNode._on_avatar_tts_audio(host, _make_audio_msg(b"\x01\x02\x03\x04"))
@@ -235,21 +204,14 @@ class TestOnAvatarTtsAudio(unittest.TestCase):
     def test_without_preregistration_drops(self):
         """Race: audio пришёл ДО side-channel → DROP + warning."""
         host = _make_host(active_sessions_count=1)
-        # НЕ вызываем _on_avatar_tts_request_meta — request_id/ws == None.
+        # НЕ вызываем _on_headset_speech_request — request_id/ws == None.
         QuestNode._on_avatar_tts_audio(host, _make_audio_msg(b"\xaa\xbb"))
         host.ws_server.deliver_audio.assert_not_called()
 
     def test_deliver_audio_exception_does_not_crash_callback(self):
         """Исключение в deliver_audio логируется, не падает в ROS-callback."""
         host = _make_host(active_sessions_count=1)
-        QuestNode._on_avatar_tts_request_meta(
-            host,
-            _make_msg({
-                "request_id": "r-boom",
-                "ssml": "<speak>x</speak>",
-                "sink": "headset",
-            }),
-        )
+        QuestNode._on_headset_speech_request(host, _req("r-boom", "headset"))
         host.ws_server.deliver_audio.side_effect = RuntimeError("ws closed")
         # Не должно бросить исключение (callback от ROS).
         QuestNode._on_avatar_tts_audio(host, _make_audio_msg(b"\x00"))
@@ -264,14 +226,7 @@ class TestOnAvatarTtsAudio(unittest.TestCase):
         """
         import array as _array
         host = _make_host(active_sessions_count=1)
-        QuestNode._on_avatar_tts_request_meta(
-            host,
-            _make_msg({
-                "request_id": "r-arr",
-                "ssml": "<speak>x</speak>",
-                "sink": "headset",
-            }),
-        )
+        QuestNode._on_headset_speech_request(host, _req("r-arr", "headset"))
         host.ws_server.deliver_audio.reset_mock()
         payload = b"\x01\x02\x03\x04\x05\x06\x07\x08"
         QuestNode._on_avatar_tts_audio(host, _make_audio_msg_array(payload))
@@ -289,14 +244,7 @@ class TestOnAvatarTtsAudio(unittest.TestCase):
     def test_empty_data_sends_empty_payload(self):
         """msg.data == пустой bytes/array → audio_bytes = b"" (no crash, no leak)."""
         host = _make_host(active_sessions_count=1)
-        QuestNode._on_avatar_tts_request_meta(
-            host,
-            _make_msg({
-                "request_id": "r-empty",
-                "ssml": "<speak>x</speak>",
-                "sink": "headset",
-            }),
-        )
+        QuestNode._on_headset_speech_request(host, _req("r-empty", "headset"))
         host.ws_server.deliver_audio.reset_mock()
         QuestNode._on_avatar_tts_audio(host, _make_audio_msg_array(b""))
         host.ws_server.deliver_audio.assert_called_once()
@@ -314,14 +262,7 @@ class TestNoRegressionToVoicePath(unittest.TestCase):
         host = _make_host(active_sessions_count=1)
         # Имитируем: у ws_server НЕТ метода publish_to_voice_request — это
         # строго avatar-канал. Проверяем, что никаких лишних паблишей не было.
-        QuestNode._on_avatar_tts_request_meta(
-            host,
-            _make_msg({
-                "request_id": "r-iso",
-                "ssml": "<speak>x</speak>",
-                "sink": "headset",
-            }),
-        )
+        QuestNode._on_headset_speech_request(host, _req("r-iso", "headset"))
         # Никаких методов вне register_audio_session не звали.
         called_methods = [c[0] for c in host.ws_server.method_calls]
         self.assertTrue(

@@ -20,7 +20,7 @@ from rob_box_mcp_tools.engine.gen.library import GeneratedMusicLibrary
 from rob_box_mcp_tools.engine.gen.provider import GenUnavailable
 from rob_box_mcp_tools.engine.piece_cover import cover_work
 from rob_box_mcp_tools.engine.source_route import SourceRouter, cache_tracks
-from rob_box_mcp_tools.engine.tools_v2 import DjSetTool, RequestMusicTool
+from rob_box_mcp_tools.engine.engine_tools import DjSetTool, RequestMusicTool
 from rob_box_music import knowledge as kn
 from rob_box_music.choice import DeterministicChooser
 from rob_box_music.source import CoverWork, SourceAsk, source_ask

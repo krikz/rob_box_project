@@ -78,7 +78,6 @@ def _bare_node_with(mocks: dict) -> TTSNode:
       preview_audio_pub — публикатор /avatar/preview_voice/audio (новый).
       preview_result_pub — публикатор /avatar/preview_voice/result.
       preview_error_pub  — публикатор /avatar/preview_voice/error.
-      finished_pub    — публикатор /voice/tts/finished.
       provider        — объект с методом ``synthesize(text, settings=...)``
                         возвращающим ``TTSAudio``.
     """
@@ -94,7 +93,6 @@ def _bare_node_with(mocks: dict) -> TTSNode:
     n._preview_audio_pub = mocks.get("preview_audio_pub", _CapturingPublisher())
     n._preview_result_pub = mocks.get("preview_result_pub", _CapturingPublisher())
     n._preview_error_pub = mocks.get("preview_error_pub", _CapturingPublisher())
-    n.finished_pub = mocks.get("finished_pub", _CapturingPublisher())
     # preview НЕ должен:
     #   - менять active voice (см. self.minimax_voice)
     #   - идти в FIFO-gate (см. self._play_order_cond)

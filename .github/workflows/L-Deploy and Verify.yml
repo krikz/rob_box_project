@@ -291,6 +291,15 @@ jobs:
           echo "✅ All connectivity checks passed"
           echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 
+      # Эпик #4371: при включённом HIL (scripts/hil/hil.sh on) ros2-control на Main Pi
+      # намеренно остановлен, а стек навигации едет по Gazebo. Деплой (down + up -d)
+      # поднял бы моторы рядом со вторым /controller_manager. Шаг стоит ДО любых
+      # остановок на Pi: при замке /tmp/hil.lock деплой падает с понятной ошибкой.
+      - name: "[Main Pi] HIL lock (#4371)"
+        if: '!inputs.dry_run'
+        run: |
+          bash scripts/deploy/check_hil_lock.sh             sshpass -p 'open' ssh -o LogLevel=ERROR $SSH_OPTS ros2@${{ env.main_pi_ip }}
+
       - name: Dry Run Notice
         if: inputs.dry_run
         run: |
@@ -1037,9 +1046,9 @@ jobs:
       - name: "[Vision Pi] Check Container Status"
         if: '!inputs.dry_run'
         id: vision_status
-        # Source-of-truth для логики вынесен в .github/scripts/check_container_status.sh
+        # Source-of-truth для логики вынесен в scripts/ci/check_container_status.sh
         # (рефакторинг после #2122 — ретро run 34153246013). Скрипт покрыт
-        # регрессионным тестом .github/scripts/tests/test_check_container_status.sh
+        # регрессионным тестом scripts/ci/tests/test_check_container_status.sh
         # (14 ассертов, 7 сценариев) и CI G-Check-Container-Status-Tests. Здесь
         # только тонкий wrapper: выставляем env и парсим JSON-результат.
         run: |
@@ -1062,7 +1071,7 @@ jobs:
           FINDINGS_FILE="$VISION_FINDINGS_FILE" \
           ENVIRONMENT="${{ inputs.environment }}" \
           SCOPE=vision \
-            bash .github/scripts/check_container_status.sh > /tmp/vision_status.json
+            bash scripts/ci/check_container_status.sh > /tmp/vision_status.json
 
           # Гарантируем наличие файла (на случай если скрипт упал до записи)
           touch vision_status_summary.txt
@@ -1106,7 +1115,7 @@ jobs:
           ENVIRONMENT="${{ inputs.environment }}" \
           SCOPE=sound \
           EXPECTED_CONTAINERS="zenoh-router-sound supercollider voice-assistant avatar-supervisor avatar-arbiter rob-box-quest telegram-bot" \
-            bash .github/scripts/check_container_status.sh > /tmp/sound_status.json
+            bash scripts/ci/check_container_status.sh > /tmp/sound_status.json
 
           touch sound_status_summary.txt
 
@@ -1129,7 +1138,7 @@ jobs:
         id: main_status
         # См. комментарий в "[Vision Pi] Check Container Status" — та же
         # логика (двухзамерная проверка через docker inspect, см. скрипт
-        # .github/scripts/check_container_status.sh), но для Main Pi.
+        # scripts/ci/check_container_status.sh), но для Main Pi.
         run: |
           echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
           echo "🔍 Checking Main Pi container status..."
@@ -1146,7 +1155,7 @@ jobs:
           FINDINGS_FILE="$MAIN_FINDINGS_FILE" \
           ENVIRONMENT="${{ inputs.environment }}" \
           SCOPE=main \
-            bash .github/scripts/check_container_status.sh > /tmp/main_status.json
+            bash scripts/ci/check_container_status.sh > /tmp/main_status.json
 
           touch main_status_summary.txt
 
@@ -1167,9 +1176,9 @@ jobs:
       - name: "[Vision Pi] Check Container Logs"
         if: '!inputs.dry_run'
         id: vision_logs
-        # Логика вынесена в .github/scripts/check_container_logs.py (одна на все
+        # Логика вынесена в scripts/ci/check_container_logs.py (одна на все
         # три Pi; раньше ~110 строк bash копировались на каждый узел, ADR-0159).
-        # Тесты: .github/scripts/tests/test_check_container_logs.py.
+        # Тесты: scripts/ci/tests/test_check_container_logs.py.
         run: |
           echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
           echo "📋 Checking Vision Pi container logs..."
@@ -1184,14 +1193,14 @@ jobs:
           ENVIRONMENT="${{ inputs.environment }}" \
           FINDINGS_FILE="$VISION_FINDINGS_FILE" \
           LOGS_FILE=vision_logs.txt \
-            python3 .github/scripts/check_container_logs.py
+            python3 scripts/ci/check_container_logs.py
 
       - name: "[Sound Pi] Check Container Logs"
         if: '!inputs.dry_run'
         id: sound_logs
-        # Логика вынесена в .github/scripts/check_container_logs.py (одна на все
+        # Логика вынесена в scripts/ci/check_container_logs.py (одна на все
         # три Pi; раньше ~110 строк bash копировались на каждый узел, ADR-0159).
-        # Тесты: .github/scripts/tests/test_check_container_logs.py.
+        # Тесты: scripts/ci/tests/test_check_container_logs.py.
         run: |
           echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
           echo "📋 Checking Sound Pi container logs..."
@@ -1206,14 +1215,14 @@ jobs:
           ENVIRONMENT="${{ inputs.environment }}" \
           FINDINGS_FILE="$SOUND_FINDINGS_FILE" \
           LOGS_FILE=sound_logs.txt \
-            python3 .github/scripts/check_container_logs.py
+            python3 scripts/ci/check_container_logs.py
 
       - name: "[Main Pi] Check Container Logs"
         if: '!inputs.dry_run'
         id: main_logs
-        # Логика вынесена в .github/scripts/check_container_logs.py (одна на все
+        # Логика вынесена в scripts/ci/check_container_logs.py (одна на все
         # три Pi; раньше ~110 строк bash копировались на каждый узел, ADR-0159).
-        # Тесты: .github/scripts/tests/test_check_container_logs.py.
+        # Тесты: scripts/ci/tests/test_check_container_logs.py.
         run: |
           echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
           echo "📋 Checking Main Pi container logs..."
@@ -1228,7 +1237,7 @@ jobs:
           ENVIRONMENT="${{ inputs.environment }}" \
           FINDINGS_FILE="$MAIN_FINDINGS_FILE" \
           LOGS_FILE=main_logs.txt \
-            python3 .github/scripts/check_container_logs.py
+            python3 scripts/ci/check_container_logs.py
 
       - name: "[Vision Pi] Check ROS2 Topics"
         if: '!inputs.dry_run'
@@ -1420,7 +1429,7 @@ jobs:
           OPEN_ISSUES_FILE="${RUNNER_TEMP}/open_deployment_issues.json"
           NEW_ISSUES_FILE="${RUNNER_TEMP}/new_deployment_issues.json"
 
-          python3 .github/scripts/deployment_issue_dedup.py prepare \
+          python3 scripts/ci/deployment_issue_dedup.py prepare \
             --findings-file "$VISION_FINDINGS_FILE" \
             --findings-file "$SOUND_FINDINGS_FILE" \
             --findings-file "$MAIN_FINDINGS_FILE" \
@@ -1440,7 +1449,7 @@ jobs:
             --json number,title,body,url \
             > "$OPEN_ISSUES_FILE"
 
-          python3 .github/scripts/deployment_issue_dedup.py filter \
+          python3 scripts/ci/deployment_issue_dedup.py filter \
             --candidates-file "$CANDIDATES_FILE" \
             --issues-file "$OPEN_ISSUES_FILE" \
             > "$NEW_ISSUES_FILE"
@@ -1568,12 +1577,8 @@ jobs:
       # дубликаты) и срабатывал только на critical-findings из логов. Теперь
       # ЛЮБОЙ 'DEPLOYMENT COMPLETED WITH ISSUES' → один issue на (branch, env, день),
       # дедуп по маркеру в body.
-      # Ретро 15.08 t_feca724c: issues создавались БЕЗ метки hermes → агентный
-      # триаж их не видел, карточек не было, воркеры не обрабатывали (#1246/#1260
-      # висели OPEN сутками). Теперь при создании проставляем hermes (триаж
-      # превратит в kanban-карточку) + agent:devops (роль воркера — деплой-проблемы
-      # это зона devops). deploy-sweep пропускает такие issue (нет
-      # deploy-problem-сигнатуры) — они идут в триаж, а не в auto-close.
+      # Карточку разбирает координатор (ADR-0162): метки hermes / agent:devops
+      # для триажа hermes больше не ставим — триажа нет с 05.10.
 
       - name: "🚨 Create Deployment Issue (any issues)"
         if: always() && !inputs.dry_run && steps.deploy_summary.outputs.deploy_status == 'issues'
@@ -1639,10 +1644,6 @@ jobs:
           EXISTING="$(gh issue list --repo "${{ github.repository }}" --label deployment --state open --limit 200 --json number,body 2>/dev/null | jq --arg m "$MARKER" '[.[] | select(.body | contains($m))][0].number // empty' 2>/dev/null || true)"
           if [ -n "$EXISTING" ]; then
             echo "✅ Issue #${EXISTING} already tracks ${BRANCH}/${ENV_NAME} today — skip create, comment run"
-            # Ретро 15.08 t_feca724c: старые deploy-issues (созданные до фикса)
-            # не имеют hermes-метки → триаж их не видит. Догоняем метки здесь,
-            # чтобы существующий issue тоже стал kanban-карточкой.
-            gh issue edit "$EXISTING" --repo "${{ github.repository }}" --add-label hermes --add-label agent:devops >/dev/null 2>&1 || true
             COMMENT_FILE="$(mktemp)"
             {
               echo "Ещё один failing deploy run: $RUN_URL"
@@ -1677,10 +1678,8 @@ jobs:
             --title "🚨 Deploy issues on ${BRANCH} (${ENV_NAME}) — $(date -u +%Y-%m-%d)" \
             --body-file "$BODY_FILE" \
             --label deployment \
-            --label hermes \
-            --label agent:devops \
             >/dev/null 2>&1 \
-            && echo "✅ Created deployment issue for ${BRANCH} (${ENV_NAME}) [labels: deployment, hermes, agent:devops]" \
+            && echo "✅ Created deployment issue for ${BRANCH} (${ENV_NAME}) [label: deployment]" \
             || echo "⚠️  Failed to create deployment issue (may already exist)"
           rm -f "$BODY_FILE"
 

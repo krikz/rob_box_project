@@ -36,7 +36,7 @@ from tests.unit.e2e_scripts.test_issue_3857_event_waits import _feed, _l, accept
 from tests.unit.e2e_scripts.test_issue_3857_run_step import extract_function
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
-SCRIPTS_DIR = REPO_ROOT / ".github" / "workflows" / "scripts"
+SCRIPTS_DIR = REPO_ROOT / "scripts" / "ci" / "e2e"
 E2E_SCRIPT = SCRIPTS_DIR / "e2e_voice_test.sh"
 LIB = SCRIPTS_DIR / "e2e_voice_lib.sh"
 EVENTS = SCRIPTS_DIR / "e2e_events.py"
@@ -256,7 +256,7 @@ def _run_step(tmp_path, log_text, plays, body, env="", replace=False):
         'ROBOT_SSH="bash %s"' % FAKE.as_posix(),
         'SCRIPT_DIR_E2E="%s"' % SCRIPTS_DIR.as_posix(),
         "E2E_MAX_ATTEMPTS=1; E2E_REACTION_WINDOW=40; E2E_RETRY_PAUSE=0; E2E_EVENT_POLL=1; E2E_BARGE_POLL=1",
-        "E2E_DIALOG_ENGINE=v2; E2E_SILENCE_WAIT_MAX=30; E2E_FAIL_KIND=''",
+        "E2E_SILENCE_WAIT_MAX=30; E2E_FAIL_KIND=''",
         'log() { echo ">>> $*"; }',
         LIB.read_text(encoding="utf-8").replace("\r\n", "\n"),
         *(extract_function(name) for name in (
@@ -269,6 +269,7 @@ def _run_step(tmp_path, log_text, plays, body, env="", replace=False):
         body,
         'echo "PLAY_COUNT=$(cat "%s" 2>/dev/null || echo 0)"' % counter.as_posix(),
         'echo "RECOVERED=${E2E_STEP_RECOVERED:-}"',
+        'echo "WAKE_ATTEMPT=${E2E_STEP_WAKE_ATTEMPT:-}"',
     ])
     t0 = time.time()
     p = subprocess.run(["bash", "-s"], input=script.encode("utf-8"), capture_output=True, timeout=170)
@@ -310,35 +311,39 @@ class TestRunStepRecovery:
 
     def test_not_allowed_is_honest_fail_in_seconds(self, tmp_path):
         out, err, took, _ = _run_step(tmp_path, N301, [], STEP, "E2E_STEP_RECOVER_KINDS=''; E2E_STEP_RECOVERED=''")
-        assert "RC=1" in out and "PLAY_COUNT=1" in out, (out, err)
-        assert "E2E_STEP a FAIL turn_no_wake (no_wake)" in out and "E2E_RECOVER" not in out
-        assert took < 25, took
+        # 06.11: recover запрещён -- «Робот!» не говорим, но фраза шага при no_wake звучит ещё до 3 попыток всего.
+        assert "RC=1" in out and "PLAY_COUNT=3" in out, (out, err)
+        assert "E2E_RECOVER no_wake" not in out and out.count("E2E_RECOVER wake_replay a ") == 2
+        assert "E2E_STEP a FAIL turn_no_wake after_recover_wake_replay wake_attempt=3/3 (no_wake)" in out
+        assert took < 90, took
 
     def test_recovery_that_did_not_help_is_fail_not_second_recovery(self, tmp_path):
         out, err, _, _ = _run_step(tmp_path, N301, [heard("робот", "{NOW-12}")], STEP, BOTH)
-        assert "RC=1" in out and "PLAY_COUNT=2" in out, (out, err)
-        assert out.count("E2E_RECOVER ") == 1
-        assert "E2E_STEP a FAIL turn_no_wake after_recover_no_wake" in out
+        # 06.11: «Робот!» один раз (второй такой же нет), дальше фраза шага -- 2-я и 3-я попытки вейка.
+        assert "RC=1" in out and "PLAY_COUNT=4" in out, (out, err)
+        assert out.count("E2E_RECOVER no_wake ") == 1 and out.count("E2E_RECOVER wake_replay ") == 2
+        assert "E2E_STEP a FAIL turn_no_wake after_recover_wake_replay wake_attempt=3/3" in out
 
     def test_only_one_recovery_per_step_across_attempts(self, tmp_path):
         """E2E_MAX_ATTEMPTS=2: «Робот!» не услышан (no_accept) -> попытка 2 снова теряет вейк -> второго «Робот!»
         нет (ревью #4034: прежний тест не ловил удаление этой проверки -- run_step звал step_recover один раз)."""
         env = BOTH + "; E2E_MAX_ATTEMPTS=2; E2E_ACCEPT_WINDOW=3"
         out, err, _, played = _run_step(tmp_path, N301, ["", N301], STEP, env, replace=True)
-        assert "RC=1" in out and "PLAY_COUNT=3" in out, (out, err)
-        assert out.count("E2E_RECOVER ") == 1, out
-        assert "восстановление шага уже было (no_wake), второго нет" in out
-        assert [p.rsplit("/", 1)[-1] for p in played] == ["cmd_a_eq.wav", "rec_no_wake_a_eq.wav", "cmd_a_eq.wav"]
-        assert "E2E_STEP a FAIL turn_no_wake after_recover_no_wake" in out
+        # 06.11: «Робот!» по-прежнему один раз на шаг; дальше -- попытки вейка (фраза шага, всего 3), общие на обе попытки.
+        assert "RC=1" in out and "PLAY_COUNT=5" in out, (out, err)
+        assert out.count("E2E_RECOVER no_wake ") == 1, out
+        assert "восстановление шага уже было" in out
+        assert [p.rsplit("/", 1)[-1] for p in played].count("rec_no_wake_a_eq.wav") == 1
+        assert "E2E_STEP a FAIL turn_no_wake after_recover_wake_replay wake_attempt=3/3" in out
 
     def test_only_one_recovery_per_step_across_retry_acceptance(self, tmp_path):
         """Повтор шага (retry_acceptance) зовёт run_step с той же меткой: шаг уже восстановлен -- второго нет."""
         pickup = heard("робот", "{NOW-12}") + REPLY
         body = STEP.replace('echo "RC=$?"', 'echo "RC1=$?"') + "\n" + STEP.replace('echo "RC=$?"', 'echo "RC2=$?"')
         out, err, _, played = _run_step(tmp_path, N301, [pickup, N301], body, BOTH, replace=True)
-        assert "RC1=0" in out and "RC2=1" in out and "PLAY_COUNT=3" in out, (out, err)
-        assert out.count("E2E_RECOVER ") == 1, out
-        assert "E2E_STEP a FAIL turn_no_wake after_recover_no_wake" in out
+        assert "RC1=0" in out and "RC2=1" in out and "PLAY_COUNT=5" in out, (out, err)
+        assert out.count("E2E_RECOVER no_wake ") == 1 and out.count("E2E_RECOVER wake_replay ") == 2, out
+        assert "E2E_STEP a FAIL turn_no_wake after_recover_wake_replay wake_attempt=3/3" in out
 
 
 # -- bash: итог шага в scenario-цикле и сводка -------------------------------------------------------------
@@ -407,7 +412,7 @@ def _act_start(tmp_path, body, *, session=None, music=None, env=None):
         *("export %s='%s'" % kv for kv in (env or {}).items()),
         'ROBOT_SSH="bash %s"' % FAKE.as_posix(),
         'SCRIPT_DIR_E2E="%s"' % SCRIPTS_DIR.as_posix(),
-        "E2E_MUSIC_IDLE_WAIT=3; E2E_UNSILENCE_WAIT=3; E2E_DIALOG_ENGINE=v2; E2E_ACT_RECOVERED=''",
+        "E2E_MUSIC_IDLE_WAIT=3; E2E_UNSILENCE_WAIT=3; E2E_ACT_RECOVERED=''",
         'log() { echo ">>> $*"; }',
         LIB.read_text(encoding="utf-8").replace("\r\n", "\n"),
         extract_function("robot_ros"),
@@ -455,12 +460,6 @@ class TestActStartSilence:
         rc, out, err, _ = _act_start(tmp_path, 'robot_ros() { echo "Traceback: ImportError"; }; '
                                                "ensure_not_silenced_for_act", session=SESSION_SILENCED)
         assert rc == 0 and "E2E_PRECONDITION silence=unknown" in out, (out, err)
-
-    def test_v1_engine_has_no_scene(self, tmp_path):
-        rc, out, err, state = _act_start(tmp_path, "E2E_DIALOG_ENGINE=v1; ensure_not_silenced_for_act",
-                                         session=SESSION_SILENCED)
-        assert rc == 0 and "silence" not in out.replace("ACT_RECOVERED", ""), (out, err)
-        assert _utterances(state) == []
 
 
 PLAYING = json.dumps({"state": "playing", "track_id": "set1:3:abc", "form_ends_at": None, "stops_at": None,

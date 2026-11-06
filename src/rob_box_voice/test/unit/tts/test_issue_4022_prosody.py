@@ -184,43 +184,44 @@ def test_minimax_speed_set_live_is_what_the_next_minimax_synthesis_uses():
     """Корень #4022: MiniMax читает ``minimax_speed``, и нода обязана принимать его на лету."""
     node = _node()
     node.parameters_callback([_param("minimax_speed", 0.8)])
-    settings = TTSNode._minimax_settings(node, None, None, None)
+    settings = TTSNode._minimax_settings(node, None, None)
     assert settings.speed == 0.8
 
 
 def test_yandex_speed_does_not_leak_into_minimax_synthesis():
     node = _node()
     node.parameters_callback([_param("yandex_speed", 0.8)])
-    assert TTSNode._minimax_settings(node, None, None, None).speed == 1.0
+    assert TTSNode._minimax_settings(node, None, None).speed == 1.0
 
 
-def test_ssml_rate_of_the_replica_still_beats_the_node_speed():
+def test_minimax_speed_is_the_node_param_no_rate_from_the_wire():
+    """#4240: rate из SSML-атрибутов реплики больше нет — скорость только из ``minimax_speed``."""
     node = _node(minimax_speed=0.8)
-    assert TTSNode._minimax_settings(node, {"rate": 1.5}, None, None).speed == 1.5
+    assert TTSNode._minimax_settings(node, None, None).speed == 0.8
 
 
 def test_pitch_shift_set_live_reaches_minimax_voice_setting_without_chipmunk():
     node = _node()
     node.parameters_callback([_param("pitch_shift", 1.2)])
-    assert TTSNode._minimax_settings(node, None, None, None).pitch == 3
+    assert TTSNode._minimax_settings(node, None, None).pitch == 3
 
 
 def test_pitch_shift_is_a_noop_for_minimax_until_set_and_after_it_returns_to_normal():
     node = _node()
-    assert TTSNode._minimax_settings(node, None, None, None).pitch is None
+    assert TTSNode._minimax_settings(node, None, None).pitch is None
     node.parameters_callback([_param("pitch_shift", 0.8)])
-    assert TTSNode._minimax_settings(node, None, None, None).pitch == -4
+    assert TTSNode._minimax_settings(node, None, None).pitch == -4
     node.parameters_callback([_param("pitch_shift", 1.0)])
-    assert TTSNode._minimax_settings(node, None, None, None).pitch is None
+    assert TTSNode._minimax_settings(node, None, None).pitch is None
 
 
 def test_pitch_shift_with_chipmunk_is_left_to_the_resampler():
     node = _node(chipmunk_mode=True, pitch_shift=1.4)
-    assert TTSNode._minimax_settings(node, None, None, None).pitch is None
+    assert TTSNode._minimax_settings(node, None, None).pitch is None
 
 
 def test_configured_minimax_pitch_still_applies_and_live_shift_adds_to_it():
     node = _node(minimax_pitch_raw="2")
-    assert TTSNode._minimax_settings(node, None, None, None).pitch == 2
+    assert TTSNode._minimax_settings(node, None, None).pitch == 2
     node.parameters_callback([_param("pitch_shift", 1.2)])
-    assert TTSNode._minimax_settings(node, None, None, None).pitch == 5
+    assert TTSNode._minimax_settings(node, None, None).pitch == 5

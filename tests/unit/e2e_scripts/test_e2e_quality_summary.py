@@ -36,7 +36,7 @@ from pathlib import Path
 import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
-E2E_SCRIPT = REPO_ROOT / ".github" / "workflows" / "scripts" / "e2e_voice_test.sh"
+E2E_SCRIPT = REPO_ROOT / "scripts" / "ci" / "e2e" / "e2e_voice_test.sh"
 WORKFLOW = REPO_ROOT / ".github" / "workflows" / "L-E2E Voice Test.yml"
 
 pytestmark = pytest.mark.skipif(shutil.which("bash") is None, reason="bash недоступен")
@@ -146,8 +146,23 @@ class TestStepTally:
             "skip": 1,
             "recovered": 0,  # #3989: OK recovered_<вид> -- отдельный счёт, тут таких нет
             "recovered_labels": [],
+            "wake_attempts": {},
             "failed_labels": ["s2"],
         }
+
+    def test_wake_attempts_are_counted_by_the_attempt_that_passed(self):
+        """06.11: итог прогона -- сколько шагов прошло с 1-й, 2-й и 3-й попытки вейка; FAIL и шаги без счёта не в счёте."""
+        data = run_summary(
+            [
+                'emit_step "s1 OK wake_attempt=1/3"',
+                'emit_step "s2 OK recovered_wake_replay wake_attempt=2/3"',
+                'emit_step "s3 OK recovered_wake_replay wake_attempt=3/3"',
+                'emit_step "s4 OK wake_attempt=1/3"',
+                'emit_step "s5 FAIL turn_no_wake after_recover_wake_replay wake_attempt=3/3 (no_wake)"',
+                'emit_step "s6 OK backlog"',
+            ]
+        )
+        assert data["steps"]["wake_attempts"] == {"1": 2, "2": 1, "3": 1}
 
     def test_duplicate_label_collapses_to_last(self):
         """run_step печатает свой FAIL, scenario-цикл — итог того же шага.
@@ -237,7 +252,7 @@ class TestSummaryContent:
         напрямую, а не по памяти.
         """
         producer = (
-            REPO_ROOT / ".github" / "workflows" / "scripts" / "e2e_audio_metrics.py"
+            REPO_ROOT / "scripts" / "ci" / "e2e" / "e2e_audio_metrics.py"
         ).read_text(encoding="utf-8")
         consumer = E2E_SCRIPT.read_text(encoding="utf-8")
         for key in ("rms_dbfs", "peak_dbfs", "silence_ratio", "mic_working"):

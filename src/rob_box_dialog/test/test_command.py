@@ -140,7 +140,7 @@ def test_minimax_empty_shapes_normalized():
 
 
 def test_actions_limit_visibility_and_catalog():
-    four = [{"tool": "get_current_time"}] * (kn.ACTIONS_MAX + 1)
+    four = [{"tool": "get_current_time"}] * (kn.ACTIONS_ACCEPT_MAX + 1)
     bad({"actions": four}, "too_many_actions")
     bad({"actions": [{"tool": "search_web", "args": {"query": "x"}}]}, "tool_not_available", tools=["get_current_time"])
     bad({"actions": [{"tool": "speak_text", "args": {"text": "x"}}]}, "speech_channel_tool")
@@ -441,7 +441,7 @@ def test_thousands_of_random_commands_never_raise():
         seen[type(res)] += 1
         if isinstance(res, Command):
             assert res.speech is None or len(res.speech) <= kn.SPEECH_ACCEPT_MAX_CHARS
-            assert len(res.actions) <= kn.ACTIONS_MAX
+            assert len(res.actions) <= kn.ACTIONS_ACCEPT_MAX
             assert all(a.tool in kn.TOOL_CLASSES for a in res.actions)
             assert not (res.perform and res.speech)
             assert parse(cm.to_args(res)) == dataclasses.replace(res, dropped=(), moved=())  # мост → исполнитель
@@ -608,14 +608,16 @@ def test_hero_of_the_running_performance_does_not_ask_for_a_new_voice_4112():
     assert ok(raw, busy=held).perform.voice_per_segment == ("alena", "zahar")
 
 
-def test_role_list_of_a_wrong_length_names_the_models_field_not_the_codes_4112():
-    """Роли не по числу сегментов: нарушение называет ``role_per_segment`` - поле, которое пишет модель. Голоса сегментов
-    решает код (``voice_per_segment``), модель такого поля не видит."""
+def test_role_list_of_a_wrong_length_is_fitted_with_the_narrator_4112_m11_n804():
+    """Роли не по числу сегментов (М11 n804: на повторе «role_per_segment не по числу сегментов» → «Не понял»): код
+    подгоняет, а не отвергает - недостающие роли рассказчик (``""``), поправка в ``dropped``. Голоса сегментов решает
+    код по подогнанным ролям."""
     raw = {"perform": {"kind": "tale", "segments": TALE_SEGMENTS, "cast": [{"name": "Волк", "gender": "male"}],
                        "role_per_segment": ["", "Волк"]}}
-    res = bad(raw, "bad_segments", busy=POOL)
-    assert res.violations[0].detail == "role_per_segment не по числу сегментов"
-    assert "voice_per_segment" not in cm.explain(res) and "role_per_segment" in cm.explain(res)
+    cmd = ok(raw, busy=POOL)
+    assert cmd.perform.role_per_segment == ("", "Волк", "")
+    assert len(cmd.perform.voice_per_segment) == len(TALE_SEGMENTS)
+    assert "perform.role_per_segment[2->3]" in cmd.dropped
 
 
 def test_role_names_length_is_checked_4084():

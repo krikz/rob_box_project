@@ -3,8 +3,8 @@
 python tracks.py setN.full.log rN.wav "2026-10-01T12:20:00Z"
 (третий аргумент — старт записи из index.txt)
 
-Лог движка v2 (ADR-0149): трек — строка ``[music v2] started track_id=… bpm=… deck=…`` (время — ROS-штамп),
-источник (колонка «сэмпл») — ``[set v2] … started … source=…``, хуки/тон — ``[reasoner] … план применён``;
+Лог движка v2 (ADR-0149): трек — строка ``[music] started track_id=… bpm=… deck=…`` (время — ROS-штамп),
+источник (колонка «сэмпл») — ``[set] … started … source=…``, хуки/тон — ``[reasoner] … план применён``;
 не вызов ``compose_music``; при блэнде (PR-8) отрезок трека — от его входа до входа следующего.
 """
 import calendar
@@ -37,7 +37,7 @@ def grid_R(flux, fs, bpm, s, e, step=4.0):
 
 
 def v2_started(line, t_rec):
-    """Трек движка v2 из строки ``[music v2] started`` или ``None``."""
+    """Трек движка v2 из строки ``[music] started`` или ``None``."""
     r = V.parse_started(line)
     if not r:
         return None

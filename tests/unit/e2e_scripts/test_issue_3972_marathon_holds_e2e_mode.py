@@ -39,7 +39,7 @@ from tests.unit.e2e_scripts.test_issue_2890_act_isolation import (
 
 RUNNER = REPO_ROOT / "scripts" / "e2e" / "run_night_marathon.sh"
 WORKFLOW = REPO_ROOT / ".github" / "workflows" / "L-E2E Voice Test.yml"
-HARNESS = REPO_ROOT / ".github" / "workflows" / "scripts" / "e2e_voice_test.sh"
+HARNESS = REPO_ROOT / "scripts" / "ci" / "e2e" / "e2e_voice_test.sh"
 
 ACT2 = "night_marathon_act2_acquaintance_v1.json"
 ACT2B = "night_marathon_act2b_identity_question_v1.json"
@@ -195,11 +195,17 @@ def test_workflow_passes_phase_to_harness_only_when_valid():
 
 FAKE_GH = r'''#!/usr/bin/env bash
 # Фейковый gh: пишет диспатчи в $FAKE_GH_LOG; FAKE_GH_FAIL_DISPATCH_AT=N - N-й диспатч не проходит.
-case "$1 $2" in
-    "workflow run")
+# Диспатч идёт REST-ом (scripts/dev/gh-workflow-dispatch.sh, #4476): gh api -i .../dispatches -f inputs[k]=v.
+case "$*" in
+    *"/dispatches"*)
         n=$(( $(cat "$FAKE_GH_LOG.n" 2>/dev/null || echo 0) + 1 )); echo "$n" > "$FAKE_GH_LOG.n"
-        if [ "${FAKE_GH_FAIL_DISPATCH_AT:-0}" = "$n" ]; then exit 1; fi
-        echo "DISPATCH $*" >> "$FAKE_GH_LOG"; exit 0 ;;
+        if [ "${FAKE_GH_FAIL_DISPATCH_AT:-0}" = "$n" ]; then echo "gh: fake (HTTP 422)" >&2; exit 1; fi
+        echo "DISPATCH $*" >> "$FAKE_GH_LOG"; printf 'HTTP/2.0 204 No Content
+
+'; exit 0 ;;
+    *"actions/workflows"*) echo 4242; exit 0 ;;
+esac
+case "$1 $2" in
     "run list") echo 4242; exit 0 ;;
     "run view")
         case "$*" in *--log*) exit 0 ;; esac
@@ -236,7 +242,7 @@ def _run_runner(tmp_path: Path, acts: str = "", *, fail_dispatch_at: int = 0, re
 
 def _phase_of(dispatch: str) -> str:
     for token in dispatch.split():
-        if token.startswith("e2e_marathon_phase="):
+        if token.startswith("inputs[e2e_marathon_phase]="):
             return token.split("=", 1)[1]
     return ""
 
@@ -271,7 +277,7 @@ def test_runner_plan_starting_with_inheriting_act_keeps_legacy_hold(tmp_path):
 
     assert proc.returncode == 0, proc.stdout + proc.stderr
     assert [_phase_of(d) for d in dispatches] == ["", ""]
-    assert "e2e_hold_for_next_act=true" in dispatches[0] and "e2e_hold_for_next_act" not in dispatches[1]
+    assert "inputs[e2e_hold_for_next_act]=true" in dispatches[0] and "e2e_hold_for_next_act" not in dispatches[1]
 
 
 @bash_required

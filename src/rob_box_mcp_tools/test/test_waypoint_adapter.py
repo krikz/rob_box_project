@@ -350,7 +350,7 @@ class TestWaypointStoreCompat:
             "create_map",
             "list_maps",
             "rename_map",
-            "set_active_map_by_name",
+            "delete_inactive_maps_by_name",
         ],
     )
     def test_method_exists_and_callable(self, adapter, method_name):

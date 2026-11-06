@@ -21,7 +21,7 @@ template, откуда бы ни пришёл запрос (ответ хода 
 ``speak_text``). Результат:
 
 * ``_submit_synthesis`` НЕ вызывается;
-* публикуется ``/voice/tts/finished`` с ``success=False`` и
+* финал реплики ``success=False`` (SpeechEvent ``rejected``) с
   ``error="system_template_regurgitated"`` — чтобы ``SpeakTextTool``
   не висел в ожидании (тот же контракт, что для issue #1709);
 * в лог уходит полный regurgitated текст для forensic (как в
@@ -46,6 +46,9 @@ import pytest
 # ---------------------------------------------------------------------------
 # Загрузка TTSNode (как в test_issue_1709_unicode_guard.py)
 # ---------------------------------------------------------------------------
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[3]))  # rob_box_voice/ — для test.unit.tts
+from test.unit.tts.conftest import FinalsSpy  # noqa: E402
 
 
 def _load_tts_node_class():
@@ -159,7 +162,7 @@ def _make_node(tts_node_cls):
     n._logger = logger
     n.get_logger = lambda: logger
     n.current_speech_id = None
-    n.finished_pub = _CapturingPublisher()
+    n._speech = FinalsSpy()  # #4252 ч.2: финал реплики — у владельца речи
     n._submit_synthesis = MagicMock()
     # Issue #2553 — babble-retry / DJ-overlap guard. Эти конкретные тесты
     # про regurgitate-guard не трогают overlap-ветку (chunk'и скипаются ДО
@@ -179,7 +182,7 @@ def _msg(payload: dict):
 
 
 def _finished_payloads(node) -> list:
-    return [json.loads(m.data) for m in node.finished_pub.messages]
+    return list(node._speech.finals)
 
 
 # ---------------------------------------------------------------------------
@@ -195,11 +198,11 @@ class TestRegurgitatedSystemTemplateDropped:
         node = _make_node(tts_node_cls)
         node.dialogue_callback(
             _msg({
-                "ssml": (
-                    "<speak><system>\n"
+                "text": (
+                    "<system>\n"
                     "[получатель ответа забыл указать антропоморфные "
                     "атрибуты]\n"
-                    "</system></speak>"
+                    "</system>"
                 ),
                 "speech_id": "sid-2175-0001",
             })
@@ -211,7 +214,7 @@ class TestRegurgitatedSystemTemplateDropped:
         node = _make_node(tts_node_cls)
         node.dialogue_callback(
             _msg({
-                "ssml": "<speak><system>x</system></speak>",
+                "text": "<system>x</system>",
                 "speech_id": "sid-2175-0002",
             })
         )
@@ -224,8 +227,8 @@ class TestRegurgitatedSystemTemplateDropped:
         node = _make_node(tts_node_cls)
         node.dialogue_callback(
             _msg({
-                "ssml": (
-                    "<speak><system>\n[foo bar]\n</system></speak>"
+                "text": (
+                    "<system>\n[foo bar]\n</system>"
                 ),
                 "speech_id": "sid-2175-0003",
             })
@@ -237,21 +240,20 @@ class TestRegurgitatedSystemTemplateDropped:
         assert payloads[0]["error"] == "system_template_regurgitated"
 
     def test_dropped_chunk_preserves_batch_metadata(self, tts_node_cls):
-        """batch_id/index/total пробрасываются — батч закрывается корректно."""
+        """Отброшенный последний чанк батча всё равно закрывает батч."""
         node = _make_node(tts_node_cls)
         node.dialogue_callback(
             _msg({
-                "ssml": "<speak><system>foo</system></speak>",
+                "text": "<system>foo</system>",
                 "speech_id": "sid-2175-0004",
                 "batch_id": "batch-1",
                 "batch_index": 2,
                 "batch_total": 2,
             })
         )
-        payloads = _finished_payloads(node)
-        assert payloads[0]["batch_id"] == "batch-1"
-        assert payloads[0]["batch_index"] == 2
-        assert payloads[0]["batch_total"] == 2
+        assert _finished_payloads(node)[0]["success"] is False
+        # Последний чанк батча закрывает батч (drain отложенной очереди) даже когда текст отброшен.
+        assert any("batch closed" in m for m in node._logger.info_msgs)
 
     def test_dropped_chunk_logs_full_text(self, tts_node_cls):
         """Acceptance: полный regurgitated текст в WARNING логе для
@@ -259,11 +261,11 @@ class TestRegurgitatedSystemTemplateDropped:
         node = _make_node(tts_node_cls)
         node.dialogue_callback(
             _msg({
-                "ssml": (
-                    "<speak><system>\n"
+                "text": (
+                    "<system>\n"
                     "[получатель ответа забыл указать антропоморфные "
                     "атрибуты]\n"
-                    "</system></speak>"
+                    "</system>"
                 ),
                 "speech_id": "sid-2175-0005",
                 "voice": "Russian_ReliableMan",
@@ -289,7 +291,7 @@ class TestNormalSpeechUnaffected:
         node = _make_node(tts_node_cls)
         node.dialogue_callback(
             _msg({
-                "ssml": "<speak>Привет! Я РОББОКС, поехали.</speak>",
+                "text": "Привет! Я РОББОКС, поехали.",
                 "speech_id": "sid-2175-back-0001",
             })
         )
@@ -303,7 +305,7 @@ class TestNormalSpeechUnaffected:
         node = _make_node(tts_node_cls)
         node.dialogue_callback(
             _msg({
-                "ssml": "<speak>Согласно <system>инструкции</system>, отвечу.</speak>",
+                "text": "Согласно <system>инструкции</system>, отвечу.",
                 "speech_id": "sid-2175-back-0002",
             })
         )
@@ -319,7 +321,7 @@ class TestNormalSpeechUnaffected:
         node = _make_node(tts_node_cls)
         node.dialogue_callback(
             _msg({
-                "ssml": "<speak>Пишу <system>размышление вслух</speak>",
+                "text": "Пишу <system>размышление вслух",
                 "speech_id": "sid-2175-back-0003",
             })
         )
@@ -351,7 +353,7 @@ def test_regurgitate_is_blocked(ssml_inner: str, tts_node_cls):
     node = _make_node(tts_node_cls)
     node.dialogue_callback(
         _msg({
-            "ssml": f"<speak>{ssml_inner}</speak>",
+            "text": ssml_inner,
             "speech_id": f"sid-2175-param-{abs(hash(ssml_inner))}",
         })
     )

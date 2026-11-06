@@ -76,7 +76,7 @@ class Env:
         self.inner = FakeLLMProvider(on_complete=on_complete, name="deepseek",
                                      capabilities=ProviderCapabilities(tools=True, tool_choice=True))
         relay = dm.LogRelay()
-        llm = command_bridge.wrapper_for("deepseek", log=relay)(Counted(self.inner, self.counter))
+        llm = command_bridge.wrapper_for(log=relay)(Counted(self.inner, self.counter))
         self.stand = dry_stand.DryStand(llm, self.counter, "Ты робот.", tmp_path)
         relay.target = self.stand
         self.stand.speakers.register("anton", "Саша")
@@ -133,8 +133,8 @@ def _battery_rule(env, msgs, tools):
 
 def old_groups_for_music_first(real):
     """Старый порядок среза (#3857): играющая сцена вытесняет названную человеком группу."""
-    def groups(snapshot, text, carry=(), asked=()):
-        groups_now = real(snapshot, text, carry, asked)
+    def groups(snapshot, text, carry=(), asked=(), agent="personality"):
+        groups_now = real(snapshot, text, carry, asked, agent)
         return tuple(g for g in groups_now if g == "music") + tuple(g for g in groups_now if g != "music")
     return groups
 
@@ -264,16 +264,16 @@ def test_3859_passed_on_addressed_phrase_finishes_the_turn(make_env):
 
 
 def test_3859_regression_passed_as_empty_answer_makes_step_red(make_env, monkeypatch):
-    real = command_bridge.to_legacy
+    real = command_bridge.for_turn
 
     def passed_is_empty(result):
         # «промолчать» на адресованную реплику приходит к мосту нарушением формы хода (#4021) — его исход тоже теряем
         insisted = isinstance(result, command_bridge.Invalid) and result.reason == kn.VIOLATION_PASSED_ADDRESSED
         if insisted or (not isinstance(result, command_bridge.Invalid) and result.passed):
-            return "", (), "empty"
+            return command_bridge.Invalid(command_bridge.EMPTY, "ни речи, ни команды")
         return real(result)
 
-    monkeypatch.setattr(command_bridge, "to_legacy", passed_is_empty)
+    monkeypatch.setattr(command_bridge, "for_turn", passed_is_empty)
     env = make_env(lambda env, msgs, tools: {"passed": "not_addressed"})
     report = env.run(PASSED)
     assert report.verdict == dm.FAIL and "finished" in report.fail[0]
@@ -312,7 +312,10 @@ def test_3897_regression_full_catalog_enum_is_visible(make_env, monkeypatch):
 
 
 LONG = "Я умею говорить голосами " + ", ".join(f"голос{n}" for n in range(60)) + "."
-VOICES = step("n401", "Робот, какими голосами ты умеешь говорить? Перечисли, что у тебя есть.", expect_tools=[])
+#: Длинный ответ без тула. Не вопрос о каталоге голосов: на «какими голосами ты умеешь говорить?» перечень по памяти
+#: теперь нарушение ``voice_catalog`` (М12 n401, #4236) - каталог читает код, длина до хода компактнее не доходит.
+#: Здесь проверяется путь длины (#3883/#4137), поэтому реплика - просьба рассказать, а не каталог.
+VOICES = step("n401", "Робот, расскажи подробно, как ты говоришь с людьми.", expect_tools=[])
 
 
 def test_3883_long_answer_is_retried_into_a_short_one(make_env):
@@ -342,6 +345,19 @@ def test_4137_long_answer_that_stays_long_is_trimmed_by_code_not_a_stub(make_env
     assert LONG.startswith(head) and not head.endswith(",")
     assert said != phrases.text(kn.INVALID_COMMAND_PHRASES["too_long"])
     assert "прошу компактнее" in report.log and "ужата кодом" in report.log
+
+
+def test_m12_n401_voices_listed_from_memory_are_read_by_code(make_env):
+    """М12 n401 (#4236): на вопрос о каталоге голосов модель перечисляет по памяти и после повторов - её перечень не
+    звучит, код сам читает ``list_tts_voices`` и говорит сводку по данным реестра."""
+    env = make_env(lambda env, msgs, tools: {"speech": LONG})
+    report = env.run(step("n401", "Робот, какими голосами ты умеешь говорить? Перечисли, что у тебя есть.",
+                          expect_tools=["list_tts_voices"]))
+    assert report.tools == ["list_tts_voices"]
+    assert all("голос0" not in said for said in report.said)
+    spoken = " ".join(report.said)
+    for provider in PROVIDER_VOICES:
+        assert f"{PROVIDER_LABELS[provider]} — {len(PROVIDER_VOICES[provider])}" in spoken, (provider, spoken)
 
 
 # ── #3883 (23.10): «какими голосами умеешь» - запрос выполнен, речь длинная, повтор честный, молчать нельзя ─────────
@@ -662,6 +678,7 @@ def test_stand_log_uses_the_formats_of_the_real_robot_lines():
         (f"{voice}/speaker_id_node.py", "✅ Speaker '{name}' registered (id={sid[:8]})"),
         (f"{voice}/speaker_id_node.py", "👤 Speaker: '{match.name}' confidence={match.confidence:.3f} "),
         (f"{voice}/speaker_id_node.py", "👤 Speaker: unknown ({elapsed:.0f} ms)"),
+        (f"{voice}/speaker_id_node.py", "👤 Speaker: безымянный профиль id={enrolled.speaker_id[:8]} (новый, кличка "),
         (f"{voice}/dialog_node.py", "[backlog] accumulated reason={decision.reason} entries="),
         (f"{mcp}/llm_adapter.py", "📤 Отправлен запрос {request_id[:8]}: {tool_name}"),
         (f"{mcp}/mcp_server.py", "📥 Запрос выполнения: {tool_name} с параметрами {parameters}"),
@@ -676,6 +693,6 @@ def test_stand_log_uses_the_formats_of_the_real_robot_lines():
 
 def test_acceptance_check_is_one_function_for_the_robot_harness_and_the_dry_run():
     """Heredoc ``check_acceptance`` зовёт ``step_verdict``; своей копии правил в bash нет."""
-    sh = (REPO / ".github/workflows/scripts/e2e_voice_test.sh").read_text(encoding="utf-8")
+    sh = (REPO / "scripts/ci/e2e/e2e_voice_test.sh").read_text(encoding="utf-8")
     assert "from e2e_tool_match import step_verdict" in sh
     assert "forbidden_said = [" not in sh and "missing_keywords = [" not in sh

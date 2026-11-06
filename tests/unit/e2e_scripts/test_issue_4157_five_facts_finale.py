@@ -20,7 +20,7 @@ from typing import Any, Dict, List
 import pytest
 
 ROOT = Path(__file__).resolve().parents[3]
-for _dir in (ROOT / "scripts" / "e2e", ROOT / ".github" / "workflows" / "scripts"):
+for _dir in (ROOT / "scripts" / "e2e", ROOT / "scripts" / "ci" / "e2e"):
     if str(_dir) not in sys.path:
         sys.path.insert(0, str(_dir))
 

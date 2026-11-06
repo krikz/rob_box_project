@@ -15,7 +15,7 @@
 
 Issue #2137 (регресс против §7.5) — грип говорит голосом робота ИЗ ДИНАМИКОВ,
 ``/voice/speech/request`` с ``priority="operator"``. Шлем (sink="headset") — это
-только собственные реплики ТАРС через ``_publish_avatar_tts`` (инвариант 6b §7.4).
+только собственные реплики ТАРС через ``headset_speech.say_in_headset`` (инвариант 6b §7.4).
 
 Используем mock-rclpy из conftest.py. Реального LLM в тестах НЕТ: подменяем
 ``node._grip_llm`` заглушкой с async ``complete``. Загрузка пресетов идёт из
@@ -59,7 +59,7 @@ def _pipeline_config_msg(
 
 def _speech_payload(req) -> dict:
     """``SpeechRequest`` → поля, которые раньше лежали в JSON ``/voice/tts/request``."""
-    out = {"ssml": req.text, "priority": "operator" if req.priority >= 10 else "normal", "agent": req.agent}
+    out = {"text": req.text, "priority": "operator" if req.priority >= 10 else "normal", "agent": req.agent}
     if req.language:
         out["language"] = req.language
     return out
@@ -72,13 +72,14 @@ def _published_voice_tts(node: AvatarSupervisor) -> list[dict]:
 
 
 def _published_avatar_tts(node: AvatarSupervisor) -> list[dict]:
-    """Только собственные реплики ТАРС идут в ``/avatar/tts/request`` (sink=headset).
+    """Всё, что ушло в шлем: ``SpeechRequest`` с sink=headset (#4252) и старый канал ``/avatar/tts/request``.
 
-    Грип НЕ должен сюда ничего слать (инвариант 6b §7.4, issue #2137).
+    Грип НЕ должен слать в шлем ничего (инвариант 6b §7.4, issue #2137).
     Возвращаем payload'ы для ассертов «ничего не ушло в шлем».
     """
-    pub = node._avatar_tts_request_pub
-    return [json.loads(m.data) for m in pub.published]
+    headset = [{"text": r.text, "sink": r.sink}
+               for r in node._speech_client_pubs["request"].published if r.sink == "headset"]
+    return headset + [json.loads(m.data) for m in node._avatar_tts_request_pub.published]
 
 
 class _FakeResponse:
@@ -166,7 +167,7 @@ class TestGripNoStyleDirect(unittest.TestCase):
 
         pub = _published_voice_tts(self.node)
         self.assertEqual(len(pub), 1)
-        self.assertEqual(pub[0]["ssml"], "<speak>мы начинаем</speak>")
+        self.assertEqual(pub[0]["text"], "мы начинаем")
         # Issue #2137 / §7.5: грип идёт в /voice/speech/request с priority="operator"
         # (REPLACE-priority, ADR-0056 §3.5). Без sink=headset/request_id — это
         # канал say, а не headset-канал ТАРС.
@@ -190,7 +191,7 @@ class TestGripNoStyleDirect(unittest.TestCase):
 
         pub = _published_voice_tts(self.node)
         self.assertEqual(len(pub), 1)
-        self.assertEqual(pub[0]["ssml"], "<speak>дословно</speak>")
+        self.assertEqual(pub[0]["text"], "дословно")
         self.assertEqual(pub[0]["priority"], "operator")
         self.assertNotIn("language", pub[0])
         self.assertEqual(stub.call_count, 0)
@@ -204,7 +205,7 @@ class TestGripNoStyleDirect(unittest.TestCase):
 
         pub = _published_voice_tts(self.node)
         self.assertEqual(len(pub), 1)
-        self.assertEqual(pub[0]["ssml"], "<speak>просто фраза</speak>")
+        self.assertEqual(pub[0]["text"], "просто фраза")
         self.assertEqual(pub[0]["priority"], "operator")
         self.assertEqual(stub.call_count, 0)
 
@@ -238,7 +239,7 @@ class TestGripTranslateOneCall(unittest.TestCase):
         self.assertEqual(stub.call_count, 1)
         pub = _published_voice_tts(self.node)
         self.assertEqual(len(pub), 1)
-        self.assertEqual(pub[0]["ssml"], "<speak>We are starting now.</speak>")
+        self.assertEqual(pub[0]["text"], "We are starting now.")
         self.assertEqual(pub[0]["priority"], "operator")
         # Текст на целевом языке + language-override для tts_node (AV-28).
         self.assertEqual(pub[0]["language"], "en")
@@ -255,7 +256,7 @@ class TestGripTranslateOneCall(unittest.TestCase):
         self.assertEqual(stub.call_count, 1)
         # Заглушка вернула content="We are starting now." — см. setUp.
         pub = _published_voice_tts(self.node)
-        self.assertEqual(pub[0]["ssml"], "<speak>We are starting now.</speak>")
+        self.assertEqual(pub[0]["text"], "We are starting now.")
         self.assertEqual(pub[0]["priority"], "operator")
         self.assertEqual(pub[0]["language"], "en")
 
@@ -299,7 +300,7 @@ class TestGripToolCallsIgnored(unittest.TestCase):
         # Полный ответ модели содержал tool_call — в TTS ушёл только content.
         pub = _published_voice_tts(self.node)
         self.assertEqual(len(pub), 1)
-        self.assertEqual(pub[0]["ssml"], "<speak>переписанная фраза</speak>")
+        self.assertEqual(pub[0]["text"], "переписанная фраза")
         # complete вызван без инструментов (нет ToolProvider).
         self.assertEqual(list(stub.last_tools or []), [])
         # Приоритет operator всё равно проставлен.
@@ -324,7 +325,7 @@ class TestGripStyleSingleCall(unittest.TestCase):
         self.assertEqual(stub.call_count, 1)
         pub = _published_voice_tts(self.node)
         self.assertEqual(len(pub), 1)
-        self.assertEqual(pub[0]["ssml"], "<speak>фраза в стиле</speak>")
+        self.assertEqual(pub[0]["text"], "фраза в стиле")
         self.assertEqual(pub[0]["priority"], "operator")
 
     def test_llm_failure_falls_back_to_direct(self) -> None:
@@ -345,7 +346,7 @@ class TestGripStyleSingleCall(unittest.TestCase):
         pub = _published_voice_tts(self.node)
         self.assertEqual(len(pub), 1)
         # Дословный текст без language-override, но с priority="operator".
-        self.assertEqual(pub[0]["ssml"], "<speak>исходная фраза</speak>")
+        self.assertEqual(pub[0]["text"], "исходная фраза")
         self.assertEqual(pub[0]["priority"], "operator")
         self.assertNotIn("language", pub[0])
 

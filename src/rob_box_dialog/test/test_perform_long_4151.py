@@ -52,7 +52,7 @@ def _presynth_bursts(sim):
 def test_long_performance_starts_after_lead_in_and_goes_in_order(n, kind):
     """Как n412 (сказка, 12 сегментов) и n802 (счёт, 11): MiniMax, подложка calm, очередь KEEP_LAST 10 — все запросы
     доходят, после «Поехали!» звучат все сегменты по порядку, конец ``done``."""
-    sim = _run(tale(n, kind=kind), tts_provider="minimax")
+    sim = _run(tale(n, kind=kind))
     assert sim.lost == []
     assert sim.heard[0].text == phrases.text("perform.backing_started")
     assert [h.text for h in sim.segments_heard()] == list(_segments(n))
@@ -64,12 +64,11 @@ def test_long_performance_starts_after_lead_in_and_goes_in_order(n, kind):
     assert max(gaps) <= kn.SPEECH_RELEASE_TAIL_S + 4 * 60.0 / BPM + 0.01
 
 
-def test_long_performance_without_pause_markup_or_backing_also_goes_in_order():
-    """Не MiniMax (пред-синтез сразу при старте) и без подложки: 12 сегментов — тоже окном и по порядку."""
-    for perf, provider in ((tale(12), "yandex"), (tale(12, backing="none"), "minimax")):
-        sim = _run(perf, tts_provider=provider)
-        assert sim.lost == [] and sim.block.end_reason == "done"
-        assert [e.segment_no for e in sim.events("segment_started")] == list(range(1, 13))
+def test_long_performance_without_backing_also_goes_in_order():
+    """Без подложки (пред-синтез сразу при старте, такта нет): 12 сегментов — тоже окном и по порядку."""
+    sim = _run(tale(12, backing="none"))
+    assert sim.lost == [] and sim.block.end_reason == "done"
+    assert [e.segment_no for e in sim.events("segment_started")] == list(range(1, 13))
 
 
 def _numbers(block, effects, commit):
@@ -95,7 +94,7 @@ def test_without_window_the_queue_loses_segment_one_and_the_watchdog_ends_it_hon
     """Модель очереди воспроизводит робота: окно шире очереди (как до #4151) — из 13 запросов доходят 11, сегмент 1
     потерян (n412). Выступление больше не висит: сторож снимает его с фразой, подложка — сразу."""
     monkeypatch.setattr(kn, "PERFORM_PRESYNTH_WINDOW", 100)
-    sim = Sim(tale(12), bpm=BPM, qos_depth=QOS, tts_provider="minimax")
+    sim = Sim(tale(12), bpm=BPM, qos_depth=QOS)
     sim.start()
     sim.run(300)
     lost = [sim.block.lines.find(e.speech_id) for e in sim.lost if isinstance(e, Say)]
@@ -113,13 +112,13 @@ def test_short_performance_presynthesizes_all_segments_at_once_as_before():
         block = PerformBlock(tale(n, backing="none"), "b1", log=lambda _: None)
         says = [e for e in block.start(0.0) if isinstance(e, Say)]
         assert [(block.lines.find(s.speech_id).no, s.commit) for s in says] == [(i, False) for i in range(1, n + 1)]
-        sim = _run(tale(n), tts_provider="minimax")
+        sim = _run(tale(n))
         assert [h.text for h in sim.segments_heard()] == list(_segments(n)) and sim.block.end_reason == "done"
 
 
 def test_edit_of_a_long_performance_goes_in_order_without_losses():
     """«И про волка добавь» во время сегмента 2 из 12: правка с сегмента 3, звучит 1, 2, затем правка — по порядку."""
-    sim = Sim(tale(12), bpm=BPM, qos_depth=QOS, tts_provider="minimax")
+    sim = Sim(tale(12), bpm=BPM, qos_depth=QOS)
     sim.start()
     sim.run(600, stop=lambda: sim.active_no() == 2)
     wolf = tuple(f"А тут волк {i}: серый, зубастый, бежит по тропинке наперерез." for i in range(1, 9))
@@ -132,7 +131,7 @@ def test_edit_of_a_long_performance_goes_in_order_without_losses():
 
 def test_stop_of_a_long_performance_cancels_every_sent_segment():
     """«Хватит» на сегменте 2 из 12: отмены доходят все (очередь отмен — та же глубина), конец ``stopped``."""
-    sim = Sim(tale(12), bpm=BPM, qos_depth=QOS, tts_provider="minimax")
+    sim = Sim(tale(12), bpm=BPM, qos_depth=QOS)
     sim.start()
     sim.run(600, stop=lambda: sim.active_no() == 2)
     sim.apply(sim.block.stop(sim.t))
@@ -145,7 +144,7 @@ def test_stop_of_a_long_performance_cancels_every_sent_segment():
 
 def _stalled(**kw):
     """Пред-синтез сегмента 1 не отвечает вовсе (провайдер завис): после «Поехали!» речи нет."""
-    return Sim(tale(12), bpm=BPM, tts_provider="minimax", synth_never=(_segments(12)[0],), **kw)
+    return Sim(tale(12), bpm=BPM, synth_never=(_segments(12)[0],), **kw)
 
 
 def _nearly(sim):
@@ -195,7 +194,7 @@ def test_watchdog_waits_while_the_voice_speaks_someone_elses_reply():
 
 def test_watchdog_does_not_fire_on_slow_synthesis():
     """Медленный синтез (20 с на реплику, «Поехали!» тоже) — тишина меньше срока сторожа: дочитано целиком."""
-    sim = Sim(tale(12), bpm=BPM, tts_provider="minimax", synth_s=lambda text: 20.0)
+    sim = Sim(tale(12), bpm=BPM, synth_s=lambda text: 20.0)
     sim.start()
     sim.run(900)
     assert sim.block.end_reason == "done" and len(sim.segments_heard()) == 12

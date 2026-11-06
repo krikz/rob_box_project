@@ -11,6 +11,9 @@
      VisionEvent не меняется. Объекты (cup и т.п.) — только VisionEvent.
   5. В Observation нет имени, даже если VisionEvent его несёт.
   6. ``_tick`` передаёт в публикацию тот же кадр, на котором был infer.
+  7. Точка в base_link / map — от FrameResolver на stamp и frame_id кадра;
+     без tf2 / выключено — ``tf_disabled`` и NaN, а не нули (ADR-0130 §7
+     этап 1, ADR-0138 поправка 03.11.2026).
 
 ``vision_hailo_node`` импортирует ``rclpy`` на уровне модуля — тот же
 shim, что в test_vision_face_log_stats.py; ноду собираем через
@@ -59,6 +62,7 @@ node_mod = importlib.import_module('rob_box_perception.vision_hailo_node')
 gaze = importlib.import_module('rob_box_perception.gaze')
 geo = importlib.import_module('rob_box_perception.observation_geometry')
 loader_mod = importlib.import_module('rob_box_perception.vision_hailo_loader')
+frames_mod = importlib.import_module('rob_box_perception.observation_frames')
 
 W, H = 128, 72
 K = (100.0, 100.0, 64.0, 36.0)
@@ -91,6 +95,8 @@ class _ObservationMsg:
     def __init__(self) -> None:
         self.header = _Header()
         self.position = _Point()
+        self.position_base_link = _Point()
+        self.position_map = _Point()
 
 
 class _Publisher:
@@ -149,6 +155,7 @@ def _bare_node(loader=None, frame=None, real=True):
     node._degraded_logged = False
     node._max_logged_failures = 3
     node._heartbeat = _FakeHeartbeat()
+    node._frames = frames_mod.FrameResolver(None)
     return node
 
 
@@ -286,3 +293,106 @@ def test_tick_stub_mode_publishes_no_observations(msgs):
     assert loader.images == [None]
     assert len(node._publisher.published) == 1
     assert node._observation_publisher.published == []
+
+
+# ---------- base_link / map (ADR-0130 §7 этап 1) ----------------------------
+
+#: Живой трансформ base_link ← camera_color_optical_frame (03.11.2026).
+_CAMERA = frames_mod.RigidTransform((-0.116, 0.0, 0.46), (-0.5, 0.5, -0.5, 0.5))
+
+
+def test_observation_carries_base_link_and_honest_no_map(msgs):
+    calls = []
+
+    def lookup(target, source, stamp, timeout):
+        calls.append((target, source, stamp))
+        if target == 'map':
+            raise frames_mod.NoTransform('map')
+        return _CAMERA
+
+    node = _bare_node()
+    node._frames = frames_mod.FrameResolver(lookup)
+    frame = _frame(depth_mm=2000)
+    node._publish_event(_event(), frame)
+
+    [obs] = node._observation_publisher.published
+    assert obs.header.frame_id == 'camera_color_optical_frame'
+    assert obs.position.z == pytest.approx(2.0)  # optical frame не тронут
+    assert obs.base_link_status == 'ok'
+    assert obs.position_base_link.x == pytest.approx(1.884)
+    assert obs.position_base_link.y == pytest.approx(0.0, abs=1e-9)
+    assert obs.position_base_link.z == pytest.approx(0.46)
+    assert obs.map_status == 'no_transform'
+    assert math.isnan(obs.position_map.x)
+    assert ('base_link', 'camera_color_optical_frame', frame.stamp) in calls
+
+
+def test_without_tf_observation_says_tf_disabled(msgs):
+    node = _bare_node()
+    node._publish_event(_event(), _frame(depth_mm=2000))
+    [obs] = node._observation_publisher.published
+    assert obs.base_link_status == 'tf_disabled'
+    assert obs.map_status == 'tf_disabled'
+    assert math.isnan(obs.position_base_link.x)
+    assert math.isnan(obs.position_map.z)
+
+
+def test_no_depth_gives_no_position_in_robot_frames(msgs):
+    node = _bare_node()
+    node._frames = frames_mod.FrameResolver(lambda *a: _CAMERA)
+    node._publish_event(_event(), _frame(depth_mm=None, status=geo.STATUS_NO_DEPTH_STREAM))
+    [obs] = node._observation_publisher.published
+    assert obs.base_link_status == 'no_position'
+    assert obs.map_status == 'no_position'
+
+
+def _resolver_node(tf_enabled):
+    node = node_mod.VisionHailoNode.__new__(node_mod.VisionHailoNode)
+    node.tf_enabled = tf_enabled
+    node.tf_timeout_sec = 0.05
+    node._tf_listener = None
+    warnings = []
+    node.get_logger = lambda: types.SimpleNamespace(warning=warnings.append)
+    return node, warnings
+
+
+def test_tf_disabled_by_parameter():
+    node, warnings = _resolver_node(tf_enabled=False)
+    assert node._make_frame_resolver().enabled is False
+    assert warnings == []
+
+
+def test_missing_tf2_degrades_with_warning(monkeypatch):
+    monkeypatch.setitem(sys.modules, 'tf2_ros', None)  # import tf2_ros → ImportError
+    node, warnings = _resolver_node(tf_enabled=True)
+    assert node._make_frame_resolver().enabled is False
+    assert len(warnings) == 1 and 'tf_disabled' in warnings[0]
+
+
+def test_tf2_listener_gets_own_node_and_thread(monkeypatch):
+    created = {}
+
+    class _Listener:
+        def __init__(self, buffer, node, *, spin_thread=False):
+            created.update(buffer=buffer, node=node, spin_thread=spin_thread)
+
+    fake_tf2 = types.SimpleNamespace(
+        Buffer=lambda: 'buffer', TransformListener=_Listener,
+        LookupException=type('L', (Exception,), {}),
+        ConnectivityException=type('C', (Exception,), {}),
+        ExtrapolationException=type('E', (Exception,), {}),
+    )
+    monkeypatch.setitem(sys.modules, 'tf2_ros', fake_tf2)
+    fake_time = types.ModuleType('rclpy.time')
+    fake_time.Time = lambda nanoseconds=0: ('t', nanoseconds)
+    fake_dur = types.ModuleType('rclpy.duration')
+    fake_dur.Duration = lambda nanoseconds=0: ('d', nanoseconds)
+    monkeypatch.setitem(sys.modules, 'rclpy.time', fake_time)
+    monkeypatch.setitem(sys.modules, 'rclpy.duration', fake_dur)
+
+    node, warnings = _resolver_node(tf_enabled=True)
+    resolver = node._make_frame_resolver()
+    assert resolver.enabled is True
+    assert warnings == []
+    # node=None → tf2_ros заводит отдельную ноду; свой поток spin.
+    assert created == {'buffer': 'buffer', 'node': None, 'spin_thread': True}

@@ -52,6 +52,7 @@ from rob_box_harness.health import HealthCache  # noqa: E402
 from rob_box_llm.errors import TTSTimeoutError  # noqa: E402
 from rob_box_voice import tts_node  # noqa: E402
 from rob_box_voice.tts_node import TTSNode  # noqa: E402
+from rob_box_voice.tts_providers import SileroTTSProvider, YandexTTSProvider  # noqa: E402
 
 MiniMaxTTSAuthError = tts_node.MiniMaxTTSAuthError
 
@@ -109,7 +110,6 @@ def _playback_node() -> _Bare:
     """
     node = _bare_node()
     node.provider = "minimax"
-    node.normalize_text = False
     node.stop_requested = False
     node.minimax_streaming = False
     node.minimax_model = "speech-02-hd"
@@ -129,26 +129,24 @@ def _playback_node() -> _Bare:
     node.playback_manager = MagicMock()
     node.playback_manager.play_audio.return_value = True
     node.cleanup_playback_noise = MagicMock()
-    node.finished_pub = MagicMock()
     node.audio_output_sample_rate = 16000
     node._prepare_audio_for_topic = TTSNode._prepare_audio_for_topic.__get__(node, type(node))  # type: ignore[attr-defined]
 
     node._silero_loaded = threading.Event()
     node._silero_loaded.set()
-    node.silero_model = MagicMock(name="FakeSileroModel")
+    node._silero_tts = SileroTTSProvider(logger=MagicMock())
+    node._silero_tts.model = MagicMock(name="FakeSileroModel")
     node.silero_sample_rate = 48000
     node.silero_put_stress_homo = True
-    node._synthesize_silero = MagicMock(return_value=np.zeros(4800, dtype=np.float32))
+    node._silero_tts.synthesize_np = MagicMock(return_value=np.zeros(4800, dtype=np.float32))
     return node
 
 
 def _run_and_play(node) -> None:
     TTSNode._synthesize_and_play(
         node,
-        "<speak>hello</speak>",
         "hello",
         None,
-        {},
         None,
     )
 
@@ -218,8 +216,8 @@ class TestSharedHealthCacheChainIntegration:
         shared = HealthCache()
         shared.mark_unavailable("minimax", reason="LLM-side quota (2056)", ttl_s=300.0)
         node._shared_health_cache = shared
-        node.yandex_stub = object()
-        node._synthesize_yandex = MagicMock(return_value=np.zeros(2205, dtype=np.float32))
+        node._yandex_tts = YandexTTSProvider("fake-key", object(), logger=MagicMock())
+        node._yandex_tts.synthesize_np = MagicMock(return_value=np.zeros(2205, dtype=np.float32))
         # Canary: если регрессия — HTTP-запрос к MiniMax падает громко,
         # а не тихо тратит 30-90с на честный таймаут.
         node._synthesize_minimax = MagicMock(
@@ -232,8 +230,8 @@ class TestSharedHealthCacheChainIntegration:
         _run_and_play(node)
 
         node._synthesize_minimax.assert_not_called()
-        node._synthesize_yandex.assert_called_once()
-        node._synthesize_silero.assert_not_called()
+        node._yandex_tts.synthesize_np.assert_called_once()
+        node._silero_tts.synthesize_np.assert_not_called()
         node._publish_audio.assert_called_once()
 
     def test_minimax_local_failure_mirrors_into_shared_cache(self) -> None:
@@ -244,8 +242,8 @@ class TestSharedHealthCacheChainIntegration:
         _bind_dead_cache(node)
         shared = HealthCache()
         node._shared_health_cache = shared
-        node.yandex_stub = object()
-        node._synthesize_yandex = MagicMock(return_value=np.zeros(2205, dtype=np.float32))
+        node._yandex_tts = YandexTTSProvider("fake-key", object(), logger=MagicMock())
+        node._yandex_tts.synthesize_np = MagicMock(return_value=np.zeros(2205, dtype=np.float32))
         node._synthesize_minimax = MagicMock(
             side_effect=MiniMaxTTSAuthError(
                 "2056 Token Plan usage limit reached", provider="minimax"
@@ -381,8 +379,8 @@ class TestTransientTtlEscalation:
     def test_success_resets_the_streak(self) -> None:
         node = _playback_node()
         _bind_dead_cache(node)
-        node.yandex_stub = object()
-        node._synthesize_yandex = MagicMock(return_value=np.zeros(2205, dtype=np.float32))
+        node._yandex_tts = YandexTTSProvider("fake-key", object(), logger=MagicMock())
+        node._yandex_tts.synthesize_np = MagicMock(return_value=np.zeros(2205, dtype=np.float32))
         node._synthesize_minimax = MagicMock(side_effect=TimeoutError("net down"))
 
         _run_and_play(node)  # 1st failure → streak=1, ttl≈30
@@ -435,8 +433,8 @@ class TestCloudTtsBudgetChainLevel:
             raise RuntimeError("MiniMax timeout (simulated)")
 
         node._synthesize_minimax = MagicMock(side_effect=_slow_minimax_failure)
-        node.yandex_stub = object()
-        node._synthesize_yandex = MagicMock(
+        node._yandex_tts = YandexTTSProvider("fake-key", object(), logger=MagicMock())
+        node._yandex_tts.synthesize_np = MagicMock(
             side_effect=AssertionError(
                 "yandex MUST NOT be called once the cloud TTS budget is "
                 "exhausted (#2702)"
@@ -446,34 +444,34 @@ class TestCloudTtsBudgetChainLevel:
         _run_and_play(node)
 
         node._synthesize_minimax.assert_called_once()
-        node._synthesize_yandex.assert_not_called()
-        node._synthesize_silero.assert_called_once()
+        node._yandex_tts.synthesize_np.assert_not_called()
+        node._silero_tts.synthesize_np.assert_called_once()
         node._publish_audio.assert_called_once()
 
     def test_ample_budget_does_not_skip_yandex(self) -> None:
         """Sanity — обычный (не исчерпанный) бюджет ничего не меняет."""
         node = _playback_node()
         node.cloud_tts_budget_s = 8.0
-        node.yandex_stub = object()
-        node._synthesize_yandex = MagicMock(return_value=np.zeros(2205, dtype=np.float32))
+        node._yandex_tts = YandexTTSProvider("fake-key", object(), logger=MagicMock())
+        node._yandex_tts.synthesize_np = MagicMock(return_value=np.zeros(2205, dtype=np.float32))
         node._synthesize_minimax = MagicMock(side_effect=RuntimeError("boom"))
 
         _run_and_play(node)
 
-        node._synthesize_yandex.assert_called_once()
-        node._synthesize_silero.assert_not_called()
+        node._yandex_tts.synthesize_np.assert_called_once()
+        node._silero_tts.synthesize_np.assert_not_called()
 
     def test_default_budget_is_used_when_attribute_missing(self) -> None:
         """getattr-fallback (default 8.0s) — стаб без cloud_tts_budget_s не падает."""
         node = _playback_node()
         assert not hasattr(node, "cloud_tts_budget_s")
-        node.yandex_stub = object()
-        node._synthesize_yandex = MagicMock(return_value=np.zeros(2205, dtype=np.float32))
+        node._yandex_tts = YandexTTSProvider("fake-key", object(), logger=MagicMock())
+        node._yandex_tts.synthesize_np = MagicMock(return_value=np.zeros(2205, dtype=np.float32))
         node._synthesize_minimax = MagicMock(side_effect=RuntimeError("boom"))
 
         _run_and_play(node)  # не должно кинуть AttributeError
 
-        node._synthesize_yandex.assert_called_once()
+        node._yandex_tts.synthesize_np.assert_called_once()
 
 
 class TestCloudTtsBudgetRetryLoopLevel:
@@ -494,7 +492,7 @@ class TestCloudTtsBudgetRetryLoopLevel:
         MiniMax) — но раз дедлайн уже в прошлом, retry ОТМЕНЯЮТСЯ."""
         call_count = [0]
 
-        async def fake_async(text, ssml_attributes, voice=None, language=None):
+        async def fake_async(text, voice=None, language=None):
             call_count[0] += 1
             raise TTSTimeoutError("net down")
 
@@ -520,7 +518,7 @@ class TestCloudTtsBudgetRetryLoopLevel:
         существующих вызовов ``_synthesize_minimax_with_retry``)."""
         call_count = [0]
 
-        async def fake_async(text, ssml_attributes, voice=None, language=None):
+        async def fake_async(text, voice=None, language=None):
             call_count[0] += 1
             if call_count[0] < 2:
                 raise TTSTimeoutError("net down")
@@ -546,7 +544,7 @@ class TestCloudTtsBudgetRetryLoopLevel:
         ограничиваются бюджетом (только своим ``minimax_max_retries``)."""
         call_count = [0]
 
-        async def fake_async(text, ssml_attributes, voice=None, language=None):
+        async def fake_async(text, voice=None, language=None):
             call_count[0] += 1
             raise TTSTimeoutError("net down")
 

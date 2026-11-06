@@ -29,7 +29,7 @@ from pathlib import Path
 import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
-E2E_SCRIPT = REPO_ROOT / ".github" / "workflows" / "scripts" / "e2e_voice_test.sh"
+E2E_SCRIPT = REPO_ROOT / "scripts" / "ci" / "e2e" / "e2e_voice_test.sh"
 
 
 # --- helpers ---------------------------------------------------------------
@@ -99,7 +99,7 @@ def gate1_validate(acc: dict, logs: str) -> dict:
 #: Подставной робот для ROBOT_SSH_OVERRIDE (ADR-0057 / PR #3211): исполняет
 #: команду харнесса локальным bash с фейковыми docker/ros2 и СОСТОЯНИЕМ
 #: параметров узлов в каталоге — включая протокол изоляции акта #2890
-#: (set e2e_session_reset_token → get читает тот же токен обратно).
+#: (сброс сессии v2 сервисом /dialog/control).
 #: Семантика — та же, что у FAKE_ROBOT в test_issue_2890_act_isolation.py.
 FAKE_ROBOT_SSH = Path(__file__).resolve().parent / "fake_robot_ssh.sh"
 
@@ -118,7 +118,8 @@ def use_fake_robot(monkeypatch, tmp_path: Path, log_content: str = "") -> Path:
     monkeypatch.setenv("ROBOT_SSH_OVERRIDE", str(FAKE_ROBOT_SSH))
     monkeypatch.setenv("FAKE_ROBOT_STATE", str(state))
     monkeypatch.setenv("FAKE_ROBOT_LOG", str(log_file))
-    monkeypatch.delenv("FAKE_DIALOGUE_REJECT", raising=False)
+    monkeypatch.delenv("FAKE_V2_RESET_REJECT", raising=False)
+    monkeypatch.setenv("E2E_ACT_WARMUP_SEC", "0")  # прогрев sink перед актом (15 с) тестам не нужен
     return state
 
 
@@ -133,11 +134,11 @@ def assert_act_isolated(state: Path, result) -> None:
     получил ни одной команды, которую не умеет (иначе он тихо разошёлся бы
     с настоящим роботом)."""
     events = robot_events(state)
-    assert any(e.startswith("RESET /dialogue_node ") for e in events), (
-        f"изоляция акта не дошла до dialogue_node: events={events}\n"
+    assert any(e == "RESET /dialog_node" for e in events), (
+        f"изоляция акта не дошла до dialog_node: events={events}\n"
         f"STDOUT: {result.stdout}\nSTDERR: {result.stderr}"
     )
-    assert "окно диалога сброшено перед актом" in result.stdout, result.stdout
+    assert "новая сессия перед актом" in result.stdout, result.stdout
     assert "E2E_FATAL" not in result.stderr, result.stderr
     assert not [e for e in events if e.startswith("UNSUPPORTED")], events
 

@@ -229,7 +229,6 @@ def _pipeline(module, clock, recognized):
     node._recognize_with_fallback = MagicMock(return_value=(recognized, []))
     node.publish_result = MagicMock()
     node.publish_state = MagicMock()
-    node._publish_speaker = MagicMock()
     node._maybe_speak_unclear = MagicMock()
     return node
 
@@ -430,7 +429,6 @@ def test_agitation_echo_does_not_reach_the_dialog_and_goes_to_biometry_as_echo(n
     _phrase(node, clock, at=5.447, seconds=5.38)
     node._recognize_with_fallback.assert_called_once()
     node.publish_result.assert_not_called()
-    node._publish_speaker.assert_not_called()
     node._maybe_speak_unclear.assert_not_called()
     node.publish_state.assert_called_with("ready")
     (published,) = [c.args[0] for c in node.publishers_by_topic[echo_window.ECHO_TOPIC].publish.call_args_list]
