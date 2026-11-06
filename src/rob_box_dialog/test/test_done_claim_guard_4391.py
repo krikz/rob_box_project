@@ -86,6 +86,9 @@ def _run(ports, text):
     ("Точку запомнил, называется кухня.", ("waypoint_save",)),
     ("Поехал на кухню!", ("motion",)),
     ("Выезжаю к окну.", ("motion",)),
+    ("Сделал звук глуше и тише.", ("volume",)),       # #4480, М14 n511: ни одного тула, музыка играла дальше
+    ("Приглушил музыку.", ("volume",)),
+    ("Убавил громкость.", ("volume",)),
 ])
 def test_done_claim_words(text, kinds):
     assert done_claims(text) == kinds
@@ -98,6 +101,9 @@ def test_done_claim_words(text, kinds):
     "Запомнил, тебя зовут Саша.",                # знакомство - речь кода, не точка
     "Музыку выключил.",                          # после кодового стопа - правда (MUSIC_PROMISES)
     "Люблю вкусную еду.",                        # «еду» - не езда
+    "Сделаю потише.",                            # обещание, его ловит music_promise, не done_claim
+    "Звук я не сделал глуше: не просили.",
+    "Сделал бутерброд.",
 ])
 def test_not_a_done_claim(text):
     assert done_claims(text) == ()
@@ -128,3 +134,26 @@ def test_after_the_exhausted_retry_the_code_says_nothing_was_done():
 
 def test_the_done_claim_phrase_is_in_the_catalog():
     assert kn.DONE_CLAIM_PHRASE in kn.PHRASE_KEYS and kn.INVALID_COMMAND_PHRASES[kn.VIOLATION_DONE_CLAIM]
+
+
+VOLUME_LIE = "Сделал звук глуше и тише."
+VOLUME_TOOLS = (*TOOLS, "set_volume", "edit_music", "stop_music")
+
+
+def test_4480_volume_claim_without_a_tool_is_a_violation_with_volume_tools_allowed():
+    result = validate(parse({"speech": VOLUME_LIE}), VOLUME_TOOLS)
+    assert isinstance(result, Invalid) and result.reason == kn.VIOLATION_DONE_CLAIM
+    assert set(result.all[0].allowed) & set(kn.DONE_CLAIMS["volume"].tools)
+
+
+def test_4480_volume_claim_with_its_tool_is_not_a_violation():
+    for tool in kn.DONE_CLAIMS["volume"].tools:
+        cmd = Command(speech=VOLUME_LIE, actions=(ToolCall(tool, {}),))
+        assert unkept_done_claims(cmd) == ()
+
+
+def test_4480_exhausted_retry_does_not_voice_the_volume_lie():
+    ports = Ports([Answer(Invalid(kn.VIOLATION_DONE_CLAIM, "speech утверждает volume без тула"), "deepseek")])
+    _run(ports, "Робот, что там со звуком")
+    assert ports.executed == []
+    assert ports.said == [phrases.text(kn.DONE_CLAIM_PHRASE)] and VOLUME_LIE not in ports.said
