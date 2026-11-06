@@ -167,7 +167,7 @@ def test_setup_refuses_live_without_approved_pin(capsys):
 
 
 def test_avatar_is_640_square():
-    from PIL import Image
+    Image = pytest.importorskip("PIL.Image")
 
     assert Image.open(REPO / "docs" / "channel" / "avatar.png").size == (640, 640)
 
@@ -182,7 +182,7 @@ def test_post_with_pending_media_is_never_published(queue, tmp_path):
 
 def test_extra_infographic_is_sent_after_main_post(queue, tmp_path):
     (tmp_path / "a.gif").write_bytes(b"GIF89a")
-    from PIL import Image
+    Image = pytest.importorskip("PIL.Image")
 
     Image.new("RGB", (100, 60)).save(tmp_path / "i.png")
     make_post(queue, 1, media="a.gif", extra_media="i.png")

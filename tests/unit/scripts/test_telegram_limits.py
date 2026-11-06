@@ -5,7 +5,6 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 import pytest
-from PIL import Image
 
 REPO = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(REPO / "scripts" / "telegram"))
@@ -61,6 +60,7 @@ def test_new_html_features_are_allowed(tmp_path):
 
 
 def test_photo_limits(tmp_path):
+    Image = pytest.importorskip("PIL.Image", reason="нужен Pillow")
     Image.new("RGB", (4000, 100)).save(tmp_path / "wide.png")  # 40:1
     Image.new("RGB", (6000, 5000)).save(tmp_path / "huge.png")  # ширина+высота 11000
     ratio = lib.validate(post_with(tmp_path, "x", "wide.png"), tmp_path)

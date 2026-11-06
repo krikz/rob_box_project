@@ -5,7 +5,8 @@ import sys
 from pathlib import Path
 
 import pytest
-from PIL import Image
+
+Image = pytest.importorskip("PIL.Image", reason="нужен Pillow (pip install pillow)")
 
 REPO = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(REPO / "scripts" / "telegram"))

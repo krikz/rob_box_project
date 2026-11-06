@@ -176,8 +176,10 @@ def media_problems(media: Path, label: str) -> list:
         out = []
         if size > PHOTO_MAX_BYTES:
             out.append(f"фото {size} байт больше 10 МБ (sendPhoto)")
-        from PIL import Image
-
+        try:
+            from PIL import Image
+        except ImportError:  # без Pillow размеры сторон не проверить: размер файла уже проверен
+            return out
         width, height = Image.open(media).size
         if width + height > PHOTO_MAX_SUM:
             out.append(f"ширина+высота {width + height} больше {PHOTO_MAX_SUM} (sendPhoto)")
