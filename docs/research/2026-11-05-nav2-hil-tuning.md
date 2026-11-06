@@ -327,3 +327,116 @@ Raw (машина оператора, `scratchpad/locdrift/`): `s1csv/`, `s2csv/
 песочнице в `/home/ros2/rob_box_hilvideo/out/shisyun_s{1,2,2b}/bag` и `/home/ros2/shisyun_locdrift/s3/bag`.
 CAN (Main Pi, только чтение), окно 10:59–12:09 Z: 3 376 400 кадров, по id
 `{9: 823212, 14: 823209, 15: 823196, 16: 823209, 27: 83574}`, `COMMANDS {}`.
+
+### 9.6 `rtabmap.ini`: почему не применялся и один источник параметров (PR `fix/4495-rtabmap-ini`, решение Шифу 06.11)
+
+Закрывает пункт «`rtabmap.ini`» из §9.4. Версии в образе rtabmap Main Pi: rtabmap_ros **0.23.13**
+(`package.xml`), ядро `librtabmap_core.so.0.24.2`.
+
+**Как читается ini** [по коду + измерено]:
+
+- `Parameters::readINI` читает **только секцию `[Core]`**: ключи вида `Icp\PointToPlane`, обратный слэш
+  меняется на `/` (rtabmap 0.24.2, `corelib/src/Parameters.cpp`, `readINIImpl()`). Остальные секции
+  игнорируются. В нашем файле были `[Grid]`, `[Icp]`, `[Mem]`, `[Odom]` и другие, а `[Core]` не было.
+  Оба узла это и писали при старте [измерено, `docker logs rtabmap`, Main Pi, 06.11]:
+  `readINIImpl() Section "Core" in /config/rtabmap/rtabmap.ini doesn't exist`.
+- Путь приходит из `cfg:=` → параметр `config_path` в узлах `icp_odometry` и `rtabmap`
+  (`rtabmap_launch/launch/rtabmap.launch.py` в образе).
+- `icp_odometry` берёт из ini только параметры одометрии. Каждый из них потом объявляется ROS-параметром
+  со значением из ini, и явный параметр из launch сильнее (rtabmap_ros 0.23.13-humble,
+  `rtabmap_odom/src/OdometryROS.cpp`, `onInit`).
+- `rtabmap`: ini грузится во внутреннюю карту параметров, `Odom/*` из неё стираются. ROS-параметры
+  объявляются со значениями **по умолчанию rtabmap**, а не из ini, и сильнее только явные переопределения
+  (`rtabmap_slam/src/CoreWrapper.cpp`, `onInit`). Поэтому `ros2 param get /rtabmap/rtabmap …` не показал бы
+  значение из ini, даже если бы ini работал.
+- При остановке `CoreWrapper::saveParameters` переписывает `config_path` всеми своими параметрами. На
+  роботе том `./config` смонтирован `:ro`, и запись молча не проходит. Ini — файл, которым rtabmap владеет
+  сам, а не наш конфиг.
+- Порядок силы: явный ROS-параметр из launch > ini `[Core]` > значение по умолчанию rtabmap.
+
+**Выбор: параметры только в `docker/main/scripts/rtabmap/patch_rtabmap_launch.py`** — dict
+`RTABMAP_PARAMS` и `ICP_ODOMETRY_PARAMS`, они пишутся в launch явными параметрами узлов. Почему так:
+это единственный путь, который реально работал. Он виден в `ros2 param get` у обоих узлов. Grid/Sensor всё
+равно обязан быть явным: иначе узел сам ставит его при `subscribe_scan`. `rtabmap.ini` (мёртвый) и
+`rtabmap.yaml` (его не подключал ни один сервис, но он «синхронизирован для диагностики» и врал:
+`Icp/PointToPlane: false`) удалены, `cfg:=` из compose убран.
+Заодно из dict узла `rtabmap` убраны два ключа, которые ничего не делали:
+- `Mem/IncrementalMemory: "false"` — его перекрывал такой же ключ самого launch, стоящий ниже в dict;
+- `Odom/ResetCountdown` — узел rtabmap стирает `Odom/*`.
+
+Patched-launch с новым скриптом отличается от того, что сейчас на роботе, ровно этими двумя строками
+(diff по `rtabmap.launch.py` из образа робота).
+
+**Таблица: каждый ключ ini** [сейчас — `ros2 param get` на роботе 06.11 13:40 Z (localization) и
+`Info.parameters` HIL-базы mapping; «по умолч.» — значение rtabmap 0.24.2, `Parameters.h`]:
+
+| параметр | сейчас фактически | в ini | выбор и почему |
+|---|---|---|---|
+| Grid/Sensor | 0 (явный) | 0 | явный 0 — обязателен, иначе узел сам ставит |
+| Grid/CellSize, MaxObstacleHeight, MinGroundHeight, RangeMin, RangeMax | 0.05, 1.5, −0.1, 0.2, 10.0 (явные) | те же | явные, без изменений |
+| Grid/FromDepth | нет параметра | false | выбросить: в rtabmap переименован в Grid/Sensor (`Parameters.cpp`, removedParameters) |
+| Icp/CorrespondenceRatio | rtabmap 0.05 (явный), icp_odometry 0.1 (по умолч.) | 0.05 | как есть: одометрия с 0.1 проверена в HIL (Depot 10/10, потерь 0); менять одометрию без замера не стану |
+| Icp/MaxCorrespondenceDistance, VoxelSize | 0.1, 0.05 (rtabmap явные, одометрия по умолч. те же) | те же | без изменений |
+| Icp/Epsilon | 0 (по умолч.) | 0.001 | по умолчанию, не мерено |
+| Icp/Iterations, MaxRotation | 30, 0.78 (по умолч.) | те же | по умолчанию |
+| Icp/MaxTranslation | 0.2 (по умолч.) | 0.3 | по умолчанию, не мерено |
+| Icp/PointToPlane | true (по умолч. при libpointmatcher) | false | по умолчанию true: так проходили все HIL-прогоны §9 |
+| Mem/IncrementalMemory, Mem/InitWMWithAllNodes | ставит launch из `localization:=` | true / false | launch, без явного ключа |
+| Mem/LaserScanNormalK, Mem/STMSize | 0, 10 (по умолч.) | те же | по умолчанию |
+| **Mem/BinDataKept** | true (по умолч.) | false | **true**. По коду для лидара разницы нет: при false в базе остаются сканы, теряются только картинки (`Memory.cpp`, ветка «just compress user data and laser scan»), а картинок на Main Pi нет. HIL подтвердил: сканы в базе есть, картинок нет в обоих вариантах |
+| Mem/MaxNodes | нет такого параметра | 100 | выбросить. В rtabmap его нет, предел рабочей памяти задаёт `Rtabmap/MemoryThr`. Комментарий в ini про Zenoh описывал параметр, который ни на что не влиял |
+| Mem/NotLinkedNodesKept | true (по умолч.) | false | по умолчанию. Боевая база не растёт в localization: `stat` 06.11 — mtime 04.11 18:07, хотя rtabmap перезапускался 06.11 |
+| Kp/MaxFeatures | −1 (ROS-параметр) / 500 (база) | 200 | не ставить: визуальных признаков нет, камер на Main Pi нет |
+| Odom/ResetCountdown | icp_odometry 1 (явный, #4503) | 1 | явный 1 в `ICP_ODOMETRY_PARAMS` |
+| Optimizer/Strategy, GravitySigma | 1, 0 (явные) | те же | явные, без изменений |
+| Optimizer/Iterations, Epsilon | 20, 1e-5 (по умолч.) | 30, 1e-4 | по умолчанию, не мерено |
+| **Optimizer/Robust** | false (по умолч.) | true | **false**: HIL-вариант ниже не дал выигрыша |
+| RGBD/NeighborLinkRefining, OptimizeFromGraphEnd | false, false (по умолч.) | те же | по умолчанию |
+| RGBD/OptimizeMaxError | 5.0 (явный) | 5.0 | явный |
+| **RGBD/ProximityBySpace** | true (по умолч.) | false | **true**. Без камер это единственный способ привязать позу к карте: петли rtabmap ищет по визуальным словам, а их нет. В HIL при false — 0 связей proximity, поправка карты 0 (ниже) |
+| RGBD/ProximityPathMaxNeighbors | 10 | 10 | по умолчанию |
+| Reg/Force3DoF | rtabmap true (явный), icp_odometry false (по умолч.) | true | как есть: одометрия по 2D-скану, проверена в HIL |
+| Reg/Strategy | 1 (явный) | 1 | явный |
+
+Итог: **значения параметров не меняются**. После деплоя все ключи старого ini в `ros2 param get` те же,
+что до него. Исключение — ключи режима mapping/localization: их ставит launch.
+
+**HIL: «как есть» против «как хотел ini» по трём опасным параметрам** [измерено 06.11; сим с калибровкой
+поворота — PR `fix/4495-sim-turn-calibration`, §9.5; вариант = `Mem/BinDataKept=false`, `Optimizer/Robust=true`, `RGBD/ProximityBySpace=false`;
+`ros2 param get` подтвердил: `false`, `true`, `false`]:
+
+| | как есть (этот PR) | вариант ini |
+|---|---|---|
+| Depot M1–M5, R1–R5, свежая карта | 10/10, ошибка на цели 0.18–0.32 м | 10/10, ошибка 0.19–0.31 м, но **R1 — 330 с, 7 стопов защиты, 11 восстановлений** (как есть — 73 с, 0 и 0) |
+| Depot, ошибка позы p50 / p95 / max | 0.011 / 0.022 / 0.035 м, курс до 5.4° | 0.011 / 0.023 / 0.037 м, курс до 5.8° |
+| Depot, потери ICP | 0 из 6564 | 0 из 8015 |
+| Depot, связи в базе: соседние / proximity | 465 / **1173** | 480 / **0** |
+| Depot, поправка карты `map→icp_odom` | до 0.02 м | 0 (карта не корректирует ни разу) |
+| Polygon, проёмы 0.90–1.10 | круг 1 — 7/8; круг 2 — ✗ на первом (0.90 восток); 0.90 восток со спавна 4 из 5 (§9.5) | один круг — 7/8: запад 0.90 ✗, защита у косяка, точка `(+0.48, +0.33)` |
+| Polygon, связи соседние / proximity | 123 / 147 | 118 / **0** |
+| Размер базы и сканы | Depot 57.6 МБ, сканы 1.37 МБ, картинок нет | 64.6 МБ (прогон длиннее), сканы 1.60 МБ, картинок нет |
+
+В HIL поза держится и без proximity: после калибровки поворота ICP-одометрия почти не ошибается. Но
+опасная часть этого варианта — режим localization на роботе. Там новых узлов нет, и привязка к готовой
+карте идёт только через proximity [по коду: без картинок нет визуальных слов для петель]. В localization
+вариант ini не мерян, и с `ProximityBySpace=false` я его не включаю. Ini «хотел» эти значения с марта
+(коммиты `c27c10d56`, `b0857880e`), но они ни разу не применялись, а робот всё это время ездил на тех, что
+сейчас.
+
+**Проверка после деплоя** (Main Pi, только чтение):
+```bash
+ssh ros2@10.1.1.10 'docker logs rtabmap 2>&1 | grep -E "patch_rtabmap|Section \"Core\"|config_path"'
+#   ждём: «Patched … params=True», строки про Section "Core" нет, «config_path = » пустой
+ssh ros2@10.1.1.10 'docker exec rtabmap /ros_scripts/ros_with_namespace.sh bash -c "source /opt/ros/humble/setup.bash;
+  for k in Grid/Sensor Icp/CorrespondenceRatio RGBD/OptimizeMaxError Optimizer/Strategy RGBD/ProximityBySpace Optimizer/Robust Mem/BinDataKept;
+  do echo -n \"rtabmap \$k: \"; ros2 param get /rtabmap/rtabmap \$k | grep -m1 value; done;
+  echo -n \"icp_odometry Odom/ResetCountdown: \"; ros2 param get /rtabmap/icp_odometry Odom/ResetCountdown | grep -m1 value"'
+#   ждём: 0, 0.05, 5.0, 1, true, false, true; icp_odometry: 1
+```
+
+Raw (машина оператора, `scratchpad/rtabini/`): `rtabmap.launch.orig.py` (из образа робота),
+`rtabmap.launch.patched.py` (на роботе), `rtabmap.launch.new.py` (новый патч), `paramget_live.txt`, `table.md`,
+исходники `Parameters.cpp`, `Parameters.h`, `Memory.cpp`, `OdometryROS.cpp`, `CoreWrapper.cpp` с GitHub по тегам.
+HIL — `scratchpad/calib4495/`: `paramget_hil_final.txt`, `gap_variant/`, `poses_depot_{final,variant}.csv`.
+Bag: песочница, `/home/ros2/rob_box_hilvideo/out/shisyun_{calf,calv}/`; `calf.analyze.txt` и `calv.analyze.txt`
+лежат в `/home/ros2/shisyun_locdrift/`. CAN — как в §9.5: `COMMANDS {}`.
