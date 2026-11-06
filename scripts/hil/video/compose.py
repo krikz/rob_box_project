@@ -17,6 +17,9 @@ from pathlib import Path
 import numpy as np
 from PIL import Image, ImageDraw, ImageFont
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from pip_placement import PIP_H, PIP_W, PipPlacer  # noqa: E402
+
 out = Path(sys.argv[1])
 speed = float(sys.argv[2])
 fps = float(sys.argv[3])
@@ -88,6 +91,7 @@ def label_for(t):
 
 
 nout = int((t1 - t0) / (speed / fps))
+placer = PipPlacer(fps)
 for k in range(nout):
     t = t0 + k * speed / fps
     fi = int(round(a * t + b))
@@ -122,6 +126,8 @@ for k in range(nout):
         d.ellipse([gx - 9, gy - 9, gx + 9, gy + 9], outline=col, width=3)
         d.text((gx + 11, gy - 24), g["name"], fill=col, font=fsm)
     j = bisect.bisect_right(pt, t) - 1
+    robot_px = w2p(poses[j][1], poses[j][2]) if j >= 0 else (-1e4, -1e4)
+    pip_x, pip_y, pip_a = placer.update(*robot_px)
     if j >= 0:
         trail = [w2p(p[1], p[2]) for p in poses[max(0, j - 600) : j + 1 : 3]]  # noqa: E203
         if len(trail) > 1:
@@ -132,10 +138,14 @@ for k in range(nout):
         d.line([rx, ry, hx, hy], fill=(0, 0, 0, 255), width=3)
     img = Image.alpha_composite(top, ov).convert("RGB")
     # 3D-вид в углу
-    pip = ch.resize((480, 270))
-    img.paste(pip, (W - 480 - 12, H - 270 - 60))
+    pip = ch.resize((PIP_W, PIP_H))
+    frame = Image.new("RGBA", (PIP_W + 4, PIP_H + 4), (255, 255, 255, 255))  # белая окантовка 2 пикс.
+    frame.paste(pip, (2, 2))
+    if pip_a < 1.0:
+        frame.putalpha(int(round(255 * pip_a)))
+    if pip_a > 0:
+        img.paste(frame, (pip_x - 2, pip_y - 2), frame)
     dr = ImageDraw.Draw(img)
-    dr.rectangle([W - 480 - 14, H - 270 - 62, W - 10, H - 58], outline=(255, 255, 255), width=2)
     # плашка
     dr.rectangle([0, H - 48, W, H], fill=(0, 0, 0))
     g = label_for(t)
