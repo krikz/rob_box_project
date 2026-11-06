@@ -24,8 +24,9 @@
 #   REF        (default develop)  — ветка, с которой берётся workflow+сценарии
 #   ACTS       (default all)      — список актов через запятую
 #   START_FROM_ACT (default пусто) — пропустить акты до N (как в манифесте: 5, 2b ...). Метки шагов пропущенных
-#              актов берутся из их сценариев и идут в prior_steps как OK (PRIOR_STEPS_ASSUMED, default OK), чтобы
-#              requires работали; первый запускаемый акт получает фазу first (включает режим e2e, стирает e2e-БД).
+#              актов берутся из их сценариев и идут в prior_steps как RESUMED (PRIOR_STEPS_ASSUMED, default RESUMED, #4478):
+#              шаг с requires на метку пропущенного акта получает SKIP resume:<метка> (факты акта недоступны, e2e-БД
+#              стёрта), а не ложный FAIL; PRIOR_STEPS_ASSUMED=OK вернёт старое «считать пройденными»; первый запускаемый акт получает фазу first (включает режим e2e, стирает e2e-БД).
 #   Диспатч workflow - scripts/dev/gh-workflow-dispatch.sh (REST, повтор при 5xx; #4476), ошибка идёт в лог марафона.
 #   REPORT     (default tests/e2e/_artifacts/night_<UTC>/)
 #   POLL_SEC   (default 60)       — период опроса статуса
@@ -110,7 +111,7 @@ log() { printf '[night %s] %s\n' "$(date -u +%H:%M:%S)" "$*"; }
 # --- какие акты гоняем ------------------------------------------------------
 ACTS_FILTER="${ACTS:-}"
 START_FROM_ACT="${START_FROM_ACT:-}"
-PRIOR_STEPS_ASSUMED="${PRIOR_STEPS_ASSUMED:-OK}"
+PRIOR_STEPS_ASSUMED="${PRIOR_STEPS_ASSUMED:-RESUMED}"
 DISPATCH_SH="${DISPATCH_SH:-$ROOT/scripts/dev/gh-workflow-dispatch.sh}"
 
 # Манифест читаем питоном (jq на билд-машинах есть не всегда, python3 — есть).
