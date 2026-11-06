@@ -658,9 +658,12 @@ def _on_callback(bot, state_path, state, update_id, callback, runner, out) -> in
             out(f"занято: {callback.get('data')}")
             return 1
         # Подтверждение — первым делом, до любой работы: кнопка перестаёт крутиться сразу.
-        bot.answer_callback(callback_id, "Делаю…")
+        received = time.monotonic()
+        answered = bot.answer_callback(callback_id, "Делаю…")
+        answer_ms = int((time.monotonic() - received) * 1000)
         _with_state(state_path, state, lambda cur: _advance_offset(cur, update_id))
-        out(f"обработано: {callback.get('data')} → в работу")
+        status = "ok" if (answered or {}).get("ok") else f"ошибка: {(answered or {}).get('description')}"
+        out(f"обработано: {callback.get('data')} → в работу; «Делаю…» за {answer_ms} мс ({status})")
         import studio_jobs as jobs
 
         runner.submit(key, jobs.refine_job, bot, state_path, item_id, action, message.get("message_id"), out)

@@ -14,6 +14,7 @@ from __future__ import annotations
 import json
 import os
 import subprocess
+import time
 from pathlib import Path
 from typing import Optional
 
@@ -139,8 +140,18 @@ def request_material(post_id: str, what: str) -> str:
 def refine_job(bot, state_path: Path, post_id: str, action: str, reply_to: Optional[int] = None, out=print) -> bool:
     """Кнопки «Короче/Проще/Подача/Медиа»: индикатор шагов, работа, правка черновика на месте."""
     chat_id = cs.SHIFU_CHAT_ID
+    started = time.monotonic()
     progress = sp.Progress(bot, chat_id, f"Черновик {post_id}: {REFINE_LABELS.get(action, action)}", reply_to=reply_to)
     progress.step("Беру черновик и факты сессии")
+    ok = _refine(bot, state_path, post_id, action, progress, chat_id, out)
+    out(
+        f"пост {post_id}: {action} → {'готово' if ok else 'не вышло'} за {time.monotonic() - started:.1f} с "
+        f"(индикатор message_id={progress.message_id}, правок {progress.edits})"
+    )
+    return ok
+
+
+def _refine(bot, state_path: Path, post_id: str, action: str, progress, chat_id: int, out) -> bool:
     record = (st.load_state(state_path).get("posts") or {}).get(post_id) or {}
     if not record.get("body_html"):
         progress.fail("черновика нет в состоянии студии — пришлю новый со следующей сессией")
@@ -156,11 +167,8 @@ def refine_job(bot, state_path: Path, post_id: str, action: str, reply_to: Optio
     own = _own_facts(record, facts)
     progress.note(f"Беру черновик и факты сессии: своих {len(own)} из {len(facts)}")
     if action == cs.ACTION_MEDIA:
-        ok = _refine_media(bot, state_path, record, facts, progress, chat_id)
-    else:
-        ok = _refine_text(bot, state_path, record, own or facts, action, progress, chat_id)
-    out(f"пост {post_id}: {action} → {'готово' if ok else 'не вышло'}")
-    return ok
+        return _refine_media(bot, state_path, record, facts, progress, chat_id)
+    return _refine_text(bot, state_path, record, own or facts, action, progress, chat_id)
 
 
 def _refine_media(bot, state_path: Path, record: dict, facts: list, progress, chat_id: int) -> bool:
@@ -276,6 +284,7 @@ def draft_job(
         return False
     cs.register_post(state_path, post)
     progress.finish(f"Готово: черновик {post['id']} ниже, кнопки под ним")
+    out(f"индикатор message_id={progress.message_id}, черновик message_id={post.get('message_id')}")
     return True
 
 
