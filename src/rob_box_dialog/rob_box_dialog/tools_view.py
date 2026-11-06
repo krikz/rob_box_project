@@ -39,7 +39,7 @@ def groups_for(snapshot: SessionSnapshot, text: str, carry: Sequence[str] = (),
     не видел ``get_battery_level``, и LLM отвечала «заряд мне не виден» (run 39849541397).
     """
     named = _under_music(snapshot, text, _named(text, "stems")) | set(asked_groups(asked))
-    named = _faces_for(agent, text, named)
+    named = _faces_for(agent, text, named, carry)
     scene = ({"music"} if snapshot.music_playing else set()) - named
     weak = _named(text, "weak") - named - scene
     if not named | scene | weak:
@@ -48,11 +48,15 @@ def groups_for(snapshot: SessionSnapshot, text: str, carry: Sequence[str] = (),
     return _ordered(named) + _ordered(scene) + _ordered(weak)
 
 
-def _faces_for(agent: str, text: str, named: set) -> set:
-    """Группа ``faces`` (#4469): id лица (8 hex) открывает её без слов; агенту без её тулов (голос) - не открывается,
+def _faces_for(agent: str, text: str, named: set, carry: Sequence[str] = ()) -> set:
+    """Группа ``faces`` (#4469): id лица (8 hex) открывает её без слов; реплика без слов других групп после хода с
+    тулами faces («ну пришли их», «а ещё?») оставляет её в срезе (``carry``, #4505); агенту без её тулов (голос) - не
+    открывается,
     чтобы пустая группа не вытесняла статус по умолчанию."""
     if kn.FACE_ID_RE.search(text):
         named = named | {kn.FACES_GROUP}
+    if not named and kn.FACES_GROUP in carry:
+        named = {kn.FACES_GROUP}
     if kn.FACES_GROUP in named and not set(kn.TOOL_GROUPS[kn.FACES_GROUP].tools) & set(tools_for(agent_spec(agent))):
         named = named - {kn.FACES_GROUP}
     return named

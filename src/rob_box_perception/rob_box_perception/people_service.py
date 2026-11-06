@@ -158,7 +158,10 @@ class PeopleService:
         jpeg = fit_jpeg(raw) if raw else None
         if not jpeg:
             return _refuse("no_snapshot")
-        return Reply(True, "", {"id": full[:8], "size": len(jpeg)}, jpeg)
+        person = next((p for p in self._store.people() if p["person_id"] == full), {})
+        # имя и кличка - от владельца (FaceStore): подпись снимка строит тул по ним, а не по пустому ответу (#4505)
+        return Reply(True, "", {"id": full[:8], "size": len(jpeg), "name": person.get("name"),
+                                "epithet": person.get("epithet")}, jpeg)
 
     def _set_name(self, query: str, name: str) -> Reply:
         clean = " ".join((name or "").split())

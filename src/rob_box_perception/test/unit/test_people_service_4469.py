@@ -112,8 +112,19 @@ def test_photo_returns_the_snapshot_bytes_not_a_path(tmp_path):
 
     reply = ps.PeopleService(store).handle(ps.OP_PHOTO, person_id=pid[:8])
 
-    assert reply.ok and reply.jpeg == b"jpeg" and reply.data == {"id": pid[:8], "size": 4}
+    assert reply.ok and reply.jpeg == b"jpeg" and reply.data == {"id": pid[:8], "size": 4, "name": None, "epithet": None}
     assert "photo_path" not in reply.data
+
+
+def test_photo_carries_the_owners_name_for_the_caption(tmp_path):
+    """#4505: подпись снимка строится по name/epithet из ответа владельца, а не «без имени» у всех."""
+    store = _store(tmp_path)
+    pid = _met(store, 0)
+    assert store.attach_name(pid, "Денчик")
+
+    reply = ps.PeopleService(store).handle(ps.OP_PHOTO, person_id=pid[:8])
+
+    assert reply.ok and reply.data["name"] == "Денчик" and "epithet" in reply.data
 
 
 def test_big_snapshot_is_recompressed_under_the_limit(tmp_path):
