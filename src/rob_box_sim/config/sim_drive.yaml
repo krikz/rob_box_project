@@ -1,0 +1,15 @@
+# Эффективная колея РОББОКС в Gazebo (#4495). Только сим: поверх боевого
+# docker/main/config/controllers/controller_manager.yaml (второй <parameters> плагина
+# gz_ros2_control, src/rob_box_description/urdf/rob_box_ros2_control.xacro).
+#
+# На полу мастерской скид-стир проскальзывает так, что эффективная колея 1.11 м
+# (калибровка 28.02, controller_manager.yaml). Эту калибровку не трогаем: она верна
+# для живого робота. В Gazebo колёса (цилиндры, трение вдоль оси колеса — fdir1 в
+# rob_box.xacro) проскальзывают меньше: с колеёй 1.11 правда поворачивалась в
+# 2.055 раза больше колёсной одометрии на всех скоростях 0.3–1.0 рад/с в обе стороны
+# (замер 06.11, rob_box_sim.turn_calibration). Эффективная колея сима —
+# 1.11 / 2.055 ≈ 0.540 м: тогда разворот, который одометрия считает за 360°,
+# в правде Gazebo тоже 360°. Проверка — python3 -m rob_box_sim.turn_calibration.
+diff_drive_controller:
+  ros__parameters:
+    wheel_separation: 0.540
