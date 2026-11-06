@@ -18,5 +18,10 @@
       "label": "на восток, считая все попытки; запад 2 из 3",
       "source": "docs/research/2026-11-05-nav2-hil-tuning.md §8"
     }
-  ]
+  ],
+  "background": {
+    "slug": "bg-doorway",
+    "prompt": "Abstract narrow doorway gap between two tall dark panels, a soft cyan beam of light through the opening, minimal geometric",
+    "seed": 4
+  }
 }

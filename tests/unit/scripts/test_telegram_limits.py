@@ -111,8 +111,16 @@ def test_send_draft_goes_to_private_chat_not_channel(tmp_path):
     assert datetime(2026, 1, 1, tzinfo=timezone.utc)
 
 
-def test_preview_all_survives_pending_media_placeholder():
+def test_preview_all_survives_pending_media_placeholder(tmp_path):
+    queue = tmp_path / "queue"
+    queue.mkdir()
+    (queue / "002-x.md").write_text(
+        "---\nstatus: draft\nmedia: docs/channel/media/none.mp4\nmedia_pending: ждём MP4\n"
+        "not_before: 2026-11-10T10:00:00Z\nmessage_id:\nhashtags: #роббокс #дневник\n---\n"
+        "<b>x</b> #роббокс #дневник\n",
+        "utf-8",
+    )
     out = []
-    rc = channel_post.preview_all(REPO / "docs" / "channel" / "queue", REPO, out=out.append)
-    assert rc == 1  # заглушка поста 002 честно считается проблемой
+    rc = channel_post.preview_all(queue, tmp_path, out=out.append)
+    assert rc == 1  # заглушка медиа честно считается проблемой
     assert any("НЕТ ФАЙЛА" in line for line in out)

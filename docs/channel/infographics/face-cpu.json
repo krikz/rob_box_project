@@ -19,5 +19,10 @@
       "source": "issue #3733, комментарии координатора от 05.11 и 06.11",
       "status": "ok"
     }
-  ]
+  ],
+  "background": {
+    "slug": "bg-led",
+    "prompt": "Abstract grid of tiny glowing LED dots, rainbow pixel gradients, soft bokeh, dark background",
+    "seed": 3
+  }
 }

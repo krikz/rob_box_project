@@ -16,10 +16,23 @@ import json
 import sys
 from pathlib import Path
 
-from PIL import Image, ImageDraw
+from PIL import Image
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from make_channel_media import BG, CYAN, DIM, GREEN, PANEL, RAINBOW, font  # noqa: E402
+import channel_bg  # noqa: E402
+from make_channel_media import (  # noqa: E402
+    BG,
+    CYAN,
+    DIM,
+    GREEN,
+    PANEL,
+    RAINBOW,
+    LayoutError,
+    RecordingDraw,
+    draw_footer,
+    font,
+    wrap,
+)
 
 SIZES = {"card": (1000, 560), "wide": (1280, 720)}
 RED = (248, 113, 113)
@@ -84,23 +97,13 @@ def mix(color, alpha: float, base=PANEL):
     return tuple(int(base[k] + (color[k] - base[k]) * alpha) for k in range(3))
 
 
-def wrap(d: ImageDraw.ImageDraw, text: str, fnt, width: int) -> list:
-    lines, cur = [], ""
-    for word in text.split():
-        trial = (cur + " " + word).strip()
-        if d.textlength(trial, font=fnt) <= width or not cur:
-            cur = trial
-        else:
-            lines.append(cur)
-            cur = word
-    return lines + ([cur] if cur else [])
-
-
-def base_canvas(spec: dict, size: tuple):
+def base_canvas(spec: dict, size: tuple, boxes: list | None = None, bg=None):
     w, h = size
     img = Image.new("RGB", size, BG)
-    d = ImageDraw.Draw(img)
+    d = RecordingDraw(img, boxes)
     d.rounded_rectangle([40, 40, w - 40, h - 40], radius=28, fill=PANEL)
+    if bg is not None:  # декоративная подложка, уже затемнённая и размытая (channel_bg.finish)
+        channel_bg.apply_background(img, bg)
     for c in range((w - 2 * MARGIN) // 27):  # полоска светодиодов — тот же приём, что у обложек
         x = MARGIN + c * 27
         d.ellipse([x, 78, x + 14, 92], fill=RAINBOW[c % len(RAINBOW)] if c % 3 else (40, 42, 50))
@@ -109,11 +112,7 @@ def base_canvas(spec: dict, size: tuple):
         for i, ln in enumerate(wrap(d, spec["subtitle"], font(22), w - 2 * MARGIN)[:2]):
             d.text((MARGIN, 172 + i * 28), ln, font=font(22), fill=DIM)
     src = "Источник: " + "; ".join(sources_of(spec))
-    sf = font(17)
-    lines = wrap(d, src, sf, w - 2 * MARGIN - 150)[:2]
-    for i, ln in enumerate(lines):
-        d.text((MARGIN, h - 112 + i * 24), ln, font=sf, fill=DIM)
-    d.text((w - MARGIN - 130, h - 112), "РОББОКС", font=font(24), fill=GREEN)
+    draw_footer(d, src, size, (17, 15, 14), 24, h - 96, GREEN)
     return img, d
 
 
@@ -123,7 +122,10 @@ def draw_numbers(d, spec, size, reveal):
     for i, it in enumerate(items):
         a = reveal - i
         x = MARGIN + i * col
-        d.text((x, 230), str(it["value"]), font=font(84 if len(items) < 4 else 68), fill=mix(GREEN, a))
+        size = 84 if len(items) < 4 else 68
+        while size > 40 and d.textlength(str(it["value"]), font=font(size)) > col - 30:  # число не лезет в соседа
+            size -= 4
+        d.text((x, 230), str(it["value"]), font=font(size), fill=mix(GREEN, a))
         for j, ln in enumerate(wrap(d, it["label"], font(22), col - 30)[:4]):
             d.text((x, 335 + j * 28), ln, font=font(22), fill=mix(TEXT, a))
 
@@ -158,9 +160,10 @@ def draw_nodes(d, spec, size, reveal):
         y = 300
         for it in node.get("items", []):
             for ln in wrap(d, it, font(20), bw - 36):
-                if y < 430:
-                    d.text((x + 18, y), ln, font=font(20), fill=mix(TEXT, a))
-                    y += 26
+                if y + 26 > 436:
+                    raise LayoutError(f"nodes: {node['name']}: строки не помещаются в рамку узла")
+                d.text((x + 18, y), ln, font=font(20), fill=mix(TEXT, a))
+                y += 26
 
 
 def draw_before_after(d, spec, size, reveal):
@@ -195,10 +198,15 @@ DRAWERS = {
 }
 
 
-def render(spec: dict, size_name: str = "card", reveal: float = 99.0) -> Image.Image:
+def render(
+    spec: dict, size_name: str = "card", reveal: float = 99.0, boxes: list | None = None, bg_loader=None
+) -> Image.Image:
     validate_spec(spec)
     size = SIZES[size_name]
-    img, d = base_canvas(spec, size)
+    bg = None
+    if spec.get("background"):
+        bg = (bg_loader or channel_bg.load_background)(spec["background"])
+    img, d = base_canvas(spec, size, boxes, bg)
     DRAWERS[spec["template"]](d, spec, size, reveal)
     return img
 
@@ -232,7 +240,7 @@ def main() -> int:
             render_gif(spec, args.out, args.size)
         else:
             render(spec, args.size).save(args.out, optimize=True)
-    except SpecError as e:
+    except (SpecError, LayoutError, channel_bg.BackgroundError) as e:
         print(f"{args.spec}: {e}")
         return 1
     print(f"{args.out}: {args.out.stat().st_size} байт")
