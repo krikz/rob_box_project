@@ -107,7 +107,7 @@ def _dt(value: str) -> Optional[datetime]:
 
 
 def parse_post(path: Path) -> Post:
-    text = path.read_text(encoding="utf-8")
+    text = path.read_text(encoding="utf-8").replace("\r\n", "\n")  # CRLF после checkout на Windows
     if not text.startswith("---\n"):
         raise ValueError(f"{path.name}: нет front matter")
     head, _, body = text[4:].partition("\n---\n")
@@ -298,7 +298,7 @@ class RobotTransport:
 
 def set_front_matter(path: Path, **updates) -> None:
     """Меняет значения ключей front matter, остальное не трогает."""
-    text = path.read_text(encoding="utf-8")
+    text = path.read_text(encoding="utf-8").replace("\r\n", "\n")
     head, sep, body = text[4:].partition("\n---\n")
     lines = []
     seen = set()

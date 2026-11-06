@@ -24,7 +24,7 @@ TITLE_LIMIT, DESCRIPTION_LIMIT = 128, 255
 
 
 def read_profile(repo_root: Path) -> dict:
-    text = (repo_root / "docs" / "channel" / "profile.md").read_text(encoding="utf-8")
+    text = (repo_root / "docs" / "channel" / "profile.md").read_text(encoding="utf-8").replace("\r\n", "\n")
     meta = {}
     for line in text[4:].partition("\n---\n")[0].splitlines():
         key, _, value = line.partition(":")

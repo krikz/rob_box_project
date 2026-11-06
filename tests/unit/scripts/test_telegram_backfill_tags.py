@@ -98,3 +98,12 @@ def test_backfill_dry_run_sends_and_sleeps_nothing(tmp_path):
     )
     assert rc == 0
     assert [p.status for p in lib.load_queue(tmp_path)] == ["approved", "approved"]
+
+
+def test_crlf_files_after_windows_checkout_are_parsed(tmp_path):
+    path = write_post(tmp_path, 1)
+    path.write_bytes(path.read_text(encoding="utf-8").replace("\n", "\r\n").encode("utf-8"))
+    post = lib.parse_post(path)
+    assert post.status == "approved" and post.hashtags == ["#роббокс", "#дневник"]
+    lib.set_front_matter(path, status="posted")
+    assert lib.parse_post(path).status == "posted"
