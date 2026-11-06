@@ -2,9 +2,10 @@
 status: posted
 media: docs/channel/media/code-decides.png
 not_before: 2026-11-26T10:00:00Z
-message_id: 14
+message_id: 25
 hashtags: #честность #какэтоработает #голос
-posted_at: 2026-11-06T08:58:48.937838+00:00
+posted_at: 2026-11-06T10:24:06.925495+00:00
+extra_message_ids: 
 ---
 🧠 <b>«Код решает, LLM говорит»</b>
 

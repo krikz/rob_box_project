@@ -2,9 +2,10 @@
 status: posted
 media: docs/assets/animations/thinking_orbit.gif
 not_before: 2026-11-19T10:00:00Z
-message_id: 11
+message_id: 22
 hashtags: #люди #голос #какэтоработает
-posted_at: 2026-11-06T08:57:35.183662+00:00
+posted_at: 2026-11-06T10:22:54.888689+00:00
+extra_message_ids: 
 ---
 🏷 <b>Кличка вместо «человек без имени»</b>
 

@@ -2,9 +2,10 @@
 status: posted
 media: docs/channel/media/nodes.png
 not_before: 2026-12-01T10:00:00Z
-message_id: 16
+message_id: 27
 hashtags: #железо #raspberrypi #какэтоработает
-posted_at: 2026-11-06T08:59:39.279109+00:00
+posted_at: 2026-11-06T10:24:56.558338+00:00
+extra_message_ids: 
 ---
 🧩 <b>Три Raspberry Pi — три узла</b>
 
