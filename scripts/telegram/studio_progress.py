@@ -89,6 +89,9 @@ class Progress:
         self._last = 0.0
         self.action = ChatAction(bot, chat_id)
         self.edits = 0
+        # Причина неудачи для журнала и state.posts[id].last_error (#4513): раньше она была только
+        # в индикаторе у Шифу, а в логе — «не вышло за 13.5 с» без слова о том, почему.
+        self.failure: Optional[dict] = None
 
     # ------------------------------------------------------------------ шаги
 
@@ -124,6 +127,7 @@ class Progress:
             failed = self.steps[-1][1]
         else:
             self.steps.append(["✗", "работа"])
+        self.failure = {"step": failed, "reason": reason}
         self.footer = f"<b>Не вышло</b> на шаге «{esc(failed)}»: {esc(reason)}"
         self.action.stop()
         self._render()

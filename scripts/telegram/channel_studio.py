@@ -49,7 +49,10 @@ ACTION_SHORTER = "shorter"  # «Короче»
 ACTION_SIMPLER = "simpler"  # «Проще»
 ACTION_ANGLE = "angle"  # «Подача»
 ACTION_MEDIA = "media"  # «Медиа»
-ACTION_FREEFORM = "edit"  # свободный текст Шифу к черновику (не кнопка)
+ACTION_ANIMATE = "animate"  # «Анимация»: GIF ≤ 2 МБ (studio_motion, #4513)
+ACTION_VIDEO = "video"  # «Видео»: MP4 ≤ 50 МБ по просьбе Шифу или кнопке-предложению моста (#4513)
+ACTION_FREEFORM = "edit"  # свободный текст Шифу к черновику (кнопкой — только «к какому черновику?»)
+ACTION_FILE = "file"  # файл от Шифу в черновик (кнопкой — только «к какому черновику?»)
 
 # Чем переделать пост по кнопке Шифу (решение Шифу, 06.11).
 REFINE_INSTRUCTIONS = {
@@ -59,7 +62,16 @@ REFINE_INSTRUCTIONS = {
 }
 
 IDEA_ACTIONS = (ACTION_TAKE, ACTION_DISCUSS, ACTION_SKIP)
-REFINE_ACTIONS = (ACTION_SHORTER, ACTION_SIMPLER, ACTION_ANGLE, ACTION_MEDIA)
+REFINE_ACTIONS = (
+    ACTION_SHORTER,
+    ACTION_SIMPLER,
+    ACTION_ANGLE,
+    ACTION_MEDIA,
+    ACTION_ANIMATE,
+    ACTION_VIDEO,
+    ACTION_FREEFORM,
+    ACTION_FILE,
+)
 POST_ACTIONS = (ACTION_PUBLISH, ACTION_REJECT) + REFINE_ACTIONS
 
 # Личка Шифу: сюда студия шлёт идеи и черновики, отсюда приходят кнопки и ответы.
@@ -235,6 +247,30 @@ class StudioBot:
             params["reply_markup"] = keyboard
         return self._post("editMessageMedia", params, files={"file": str(path)}, timeout=max(self.timeout, 180))
 
+    def get_file(self, file_id: str) -> dict:
+        """getFile: путь файла на серверах Telegram (ботам — до 20 МБ)."""
+        return self._post("getFile", {"file_id": file_id})
+
+    def download_file(self, file_path: str, dest: Path) -> str:
+        """Скачать файл по пути из getFile. Пустая строка — успех. URL с токеном наружу не печатается."""
+        try:
+            import requests  # локальный импорт: сеть нужна только вживую
+        except ImportError:
+            return "нет модуля requests"
+        url = f"https://api.telegram.org/file/bot{self.token}/{file_path}"
+        part = Path(dest).with_suffix(Path(dest).suffix + ".part")
+        try:
+            with (self._session or requests).get(url, stream=True, timeout=max(self.timeout, 120)) as response:
+                if response.status_code != 200:
+                    return f"HTTP {response.status_code}"
+                with open(part, "wb") as handle:
+                    for chunk in response.iter_content(1 << 16):
+                        handle.write(chunk)
+        except Exception as e:  # noqa: BLE001 — не печатать URL: в нём токен
+            return f"ERR {type(e).__name__}"
+        part.replace(dest)
+        return ""
+
     def edit_message_caption(
         self, chat_id: int, message_id: int, caption: str, keyboard: Optional[dict] = None
     ) -> dict:
@@ -295,6 +331,7 @@ def post_keyboard(post_id: str) -> dict:
             [
                 {"text": "Подача", "callback_data": f"studio:post:{post_id}:{ACTION_ANGLE}"},
                 {"text": "Медиа", "callback_data": f"studio:post:{post_id}:{ACTION_MEDIA}"},
+                {"text": "Анимация", "callback_data": f"studio:post:{post_id}:{ACTION_ANIMATE}"},
             ],
             [
                 {"text": "Опубликовать", "callback_data": f"studio:post:{post_id}:{ACTION_PUBLISH}"},
@@ -448,6 +485,8 @@ def apply_post_action(state: dict, post_id: str, action: str) -> str:
             ACTION_SIMPLER: "Проще — переделываю.",
             ACTION_ANGLE: "Меняю подачу — переделываю.",
             ACTION_MEDIA: "Меняю медиа.",
+            ACTION_ANIMATE: "Делаю анимацию.",
+            ACTION_VIDEO: "Собираю видео.",
         }.get(action, "Переделываю.")
     record = posts.setdefault(post_id, {})
     if action == ACTION_PUBLISH:
@@ -623,31 +662,10 @@ def poll_once(
         if callback:
             handled += _on_callback(bot, state_path, state, update_id, callback, runner, out)
             continue
-        message = update.get("message")
-        note, draft_id = _with_state(state_path, state, lambda cur: _take_message(cur, update_id, message))
-        if note:
-            out(f"сообщение от Шифу: {note[:60]}")
-            handled += 1
-            if draft_id:
-                _edit_by_message(bot, state_path, draft_id, note, message, runner, out)
-            else:
-                runner.submit("reply", reply_to_shifu, bot, state_path, note, out)
+        import studio_messages
+
+        handled += studio_messages.route(bot, state_path, state, update_id, update.get("message"), runner, out)
     return handled
-
-
-def _take_message(state: dict, update_id: int, message: Optional[dict]) -> tuple:
-    """Сдвинуть смещение, сохранить текст Шифу и найти черновик, к которому он относится."""
-    _advance_offset(state, update_id)
-    note = capture_message(state, message) if message else ""
-    if not note:
-        return "", ""
-    reply_to = ((message or {}).get("reply_to_message") or {}).get("message_id")
-    if not reply_to:
-        # Без reply текст — разговор, а не правка: «ок, ищи данные» не должно переписывать пост.
-        return note, ""
-    found = active_draft(state, reply_to)
-    matched = found and (state.get("posts") or {}).get(found, {}).get("message_id") == reply_to
-    return note, found if matched else ""
 
 
 def active_draft(state: dict, reply_to: Optional[int] = None) -> str:
@@ -670,19 +688,6 @@ def active_draft(state: dict, reply_to: Optional[int] = None) -> str:
     if not drafts:
         return ""
     return max(drafts, key=lambda item: item[1].get("message_id") or 0)[0]
-
-
-def _edit_by_message(bot, state_path: Path, draft_id: str, note: str, message: dict, runner, out) -> None:
-    """Свободный текст Шифу → правка черновика на месте, с индикатором шагов."""
-    key = f"post:{draft_id}"
-    if not runner.claim(key):
-        bot.send_message(SHIFU_CHAT_ID, "Уже правлю этот черновик — пришли правку, когда закончу.", parse_mode=None)
-        return
-    import studio_jobs as jobs
-
-    runner.submit(
-        key, jobs.refine_job, bot, state_path, draft_id, ACTION_FREEFORM, message.get("message_id"), out, note
-    )
 
 
 def _parse_callback(callback: dict) -> tuple:
@@ -714,9 +719,31 @@ def _on_callback(bot, state_path, state, update_id, callback, runner, out) -> in
         _with_state(state_path, state, lambda cur: _advance_offset(cur, update_id))
         status = "ok" if (answered or {}).get("ok") else f"ошибка: {(answered or {}).get('description')}"
         out(f"обработано: {callback.get('data')} → в работу; «Делаю…» за {answer_ms} мс ({status})")
+        pending = _with_state(state_path, state, lambda cur: _take_pending(cur, action))
+        if action == ACTION_FILE:
+            import studio_inbox
+
+            if not pending.get("media"):
+                runner.submit(key, _say, bot, "Файл, о котором спрашивал, уже не найти — пришли его ещё раз.")
+                return 1
+            runner.submit(
+                key, studio_inbox.attach_job, bot, state_path, item_id, pending["media"],
+                pending.get("text", ""), pending.get("message_id"), out,
+            )  # fmt: skip
+            return 1
         import studio_jobs as jobs
 
-        runner.submit(key, jobs.refine_job, bot, state_path, item_id, action, message.get("message_id"), out)
+        runner.submit(
+            key,
+            jobs.refine_job,
+            bot,
+            state_path,
+            item_id,
+            action,
+            message.get("message_id"),
+            out,
+            pending.get("text", ""),
+        )
         return 1
 
     def _decide(cur: dict) -> str:
@@ -734,6 +761,19 @@ def _on_callback(bot, state_path, state, update_id, callback, runner, out) -> in
     elif kind == "idea" and from_shifu and action == ACTION_DISCUSS:
         runner.submit(f"idea:{item_id}", discuss_idea, bot, state_path, item_id, out)
     return 1
+
+
+def _take_pending(state: dict, action: str) -> dict:
+    """Просьба, которую студия переспросила кнопками «к какому черновику?», — забрать один раз."""
+    pending = state.get("pending_request") or {}
+    if pending.get("action") != action:
+        return {}
+    state.pop("pending_request", None)
+    return pending
+
+
+def _say(bot, text: str) -> None:
+    bot.send_message(SHIFU_CHAT_ID, text, parse_mode=None)
 
 
 def discuss_idea(bot: StudioBot, state_path: Path, idea_id: str, out=print) -> bool:
@@ -786,8 +826,12 @@ def discuss_idea(bot: StudioBot, state_path: Path, idea_id: str, out=print) -> b
 
 
 def capture_message(state: dict, message: dict) -> str:
-    """Сохранить текстовое сообщение Шифу в состояние (фаза обсуждения)."""
-    text = (message.get("text") or "").strip()
+    """Сохранить сообщение Шифу в состояние (фаза обсуждения): текст или подпись медиа.
+
+    У медиа-сообщений Bot API кладёт текст в ``caption``, а не в ``text`` (#4513: видео с подписью
+    студия молча пропускала).
+    """
+    text = (message.get("text") or message.get("caption") or "").strip()
     if not text:
         return ""
     chat = message.get("chat") or {}
@@ -808,19 +852,27 @@ def reply_to_shifu(bot: StudioBot, state_path: Path, text: str, out=print) -> bo
     placeholder = bot.send_message(SHIFU_CHAT_ID, "Думаю над твоим вопросом…")
     message_id = (placeholder.get("result") or {}).get("message_id") if placeholder.get("ok") else None
     idea = discussed_idea(state)
-    answer = run_reply_agent(text, idea)
+    answer, offer = split_reply(run_reply_agent(text, idea))
     if not answer:
         answer = "Не смог ответить сейчас — модель не дала ответа, который прошёл бы проверку."
     draft = active_draft(state)
-    if draft:
+    buttons = None
+    if draft and offer:
+        # Модель предлагает действие полем offer, кнопку строит код (#4513: «можно» без кнопки — пустое обещание).
+        buttons = keyboard([[{"text": OFFER_LABELS[offer], "callback_data": f"studio:post:{draft}:{offer}"}]])
+        answer += f"\n\nКнопка ниже сделает это с черновиком {draft}."
+    elif draft:
         # Подсказку строит код, а не модель: как править черновик — знает студия, а не LLM.
         answer += (
-            f"\n\nЧтобы поправить черновик {draft}, ответь на него (reply) своими словами — правка встанет на место."
+            f"\n\nПросьбу к черновику {draft} («короче», «анимацию», «ролик до/после», «убери …») пиши прямо сюда — "
+            "студия сделает её на месте."
         )
+    elif offer:
+        answer += "\n\nЧерновика на обсуждении нет — делать это не над чем."
     if message_id:
-        bot.edit_message_text(SHIFU_CHAT_ID, message_id, answer, parse_mode=None)
+        bot.edit_message_text(SHIFU_CHAT_ID, message_id, answer, keyboard=buttons, parse_mode=None)
     else:
-        bot.send_message(SHIFU_CHAT_ID, answer, parse_mode=None)
+        bot.send_message(SHIFU_CHAT_ID, answer, keyboard=buttons, parse_mode=None)
 
     def _apply(current: dict) -> None:
         # Ответ агента тоже в историю: следующий вопрос должен видеть, что уже обсудили.
@@ -835,6 +887,29 @@ def reply_to_shifu(bot: StudioBot, state_path: Path, text: str, out=print) -> bo
     return True
 
 
+OFFER_LABELS = {
+    ACTION_SHORTER: "Короче",
+    ACTION_SIMPLER: "Проще",
+    ACTION_ANGLE: "Подача",
+    ACTION_MEDIA: "Медиа",
+    ACTION_ANIMATE: "Анимация",
+    ACTION_VIDEO: "Видео",
+}
+
+
+def split_reply(raw: str) -> tuple:
+    """Вывод studio_reply.py --json → (ответ, предложение). Простой текст — ответ без предложения."""
+    raw = (raw or "").strip()
+    if raw.startswith("{"):
+        try:
+            data = json.loads(raw)
+        except ValueError:
+            return raw, ""
+        offer = data.get("offer") if data.get("offer") in OFFER_LABELS else ""
+        return str(data.get("answer") or "").strip(), offer
+    return raw, ""
+
+
 def discussed_idea(state: dict) -> dict:
     """Идея, которая сейчас на обсуждении: последняя со статусом discuss."""
     for idea in reversed(state.get("ideas") or []):
@@ -846,7 +921,7 @@ def discussed_idea(state: dict) -> dict:
 def run_reply_agent(text: str, idea: dict) -> str:
     """Ответ модели без инструментов (studio_reply.py: MiniMax по схеме {"answer"}, проверка кодом)."""
     script = Path(__file__).with_name("studio_reply.py")
-    cmd = ["python3", str(script), "--message", text]
+    cmd = ["python3", str(script), "--message", text, "--json"]
     if idea.get("id"):
         cmd += ["--idea-id", idea["id"]]
     try:
@@ -1095,6 +1170,7 @@ def send_post(bot: StudioBot, post: dict, chat_id: int, out=print) -> int:
     if message_id:
         post["message_id"] = message_id
     post["message_kind"] = kind
+    post["active_at"] = time.time()  # «черновик трогали»: studio_intent.target выбирает свежий
     out(f"черновик {post_id} отправлен ({kind})")
     return message_id or 1
 
@@ -1187,7 +1263,17 @@ def register_post(state_path: Path, post: dict) -> None:
 
 
 # Поля черновика, которые переносятся из post.json в состояние.
-POST_FIELDS = ("tags", "media_ref", "media_path", "media_choice", "fact_keys", "show", "message_id", "message_kind")
+POST_FIELDS = (
+    "tags",
+    "media_ref",
+    "media_path",
+    "media_choice",
+    "fact_keys",
+    "show",
+    "message_id",
+    "message_kind",
+    "active_at",
+)
 
 
 def main() -> int:

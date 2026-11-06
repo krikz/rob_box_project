@@ -558,4 +558,4 @@ def test_free_text_without_reply_is_conversation_not_edit(run_env, monkeypatch):
     studio.poll_once(bot, path, timeout=0, out=lambda _m: None)
     final = [c[1] for c in bot.calls if c[0] in ("sendMessage", "editMessageText")][-1]
     assert final.startswith("Нужен файл с замером.")
-    assert "ответь на него (reply)" in final and "p1" in final
+    assert "пиши прямо сюда" in final and "p1" in final

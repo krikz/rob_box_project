@@ -163,7 +163,7 @@ def test_post_keyboard_has_publish_and_reject():
     rows = [[b["callback_data"] for b in row] for row in kb["inline_keyboard"]]
     # Решение Шифу (06.11): сначала кнопки итерации текста, решение — последней строкой.
     assert rows[0] == ["studio:post:001:shorter", "studio:post:001:simpler"]
-    assert rows[1] == ["studio:post:001:angle", "studio:post:001:media"]
+    assert rows[1] == ["studio:post:001:angle", "studio:post:001:media", "studio:post:001:animate"]
     assert rows[2] == ["studio:post:001:publish", "studio:post:001:reject"]
 
 

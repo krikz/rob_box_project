@@ -63,7 +63,12 @@ SYSTEM_PROMPT = (
     "чего не хватает. Не выдумывай цифры и имена.\n"
     "Ты только отвечаешь словами: ты НЕ ищешь, НЕ запускаешь, НЕ скачиваешь и НЕ обещаешь это сделать — "
     "таких возможностей у тебя нет. Нужны данные или файл — назови, какие именно; их кладёт координатор "
-    "в docs/channel/media/ через PR.\n"
+    "в docs/channel/media/ через PR, или Шифу присылает файл в личку.\n"
+    "Действия над черновиком делает студия по кнопкам, а не ты. Если к вопросу подходит одно из них — "
+    "предложи его полем offer (кнопку покажет код), а в тексте НЕ пиши «сделаю», «можно сделать», «запущу»: "
+    "shorter — короче, simpler — проще, angle — другая подача, media — другая картинка, "
+    "animate — анимация (GIF), video — ролик (MP4, например «до/после» по записям прогонов). "
+    "Чего нет в этом списке, студия не умеет — так и скажи: «так пока не умею».\n"
     "Ответ — только текст ответа, без вступлений вроде «Конечно» и без markdown-заголовков. "
     "Без разметки: Telegram сам покажет текст как есть."
 )
@@ -126,19 +131,31 @@ def build_prompt(message: str, idea: dict, state: dict) -> str:
     lines.append("")
     lines.append(f"Вопрос Шифу: {message}")
     lines.append("")
-    lines.append('Верни СТРОГО JSON: {"answer": "текст ответа"}')
+    lines.append(
+        'Верни СТРОГО JSON: {"answer": "текст ответа", "offer": "none|shorter|simpler|angle|media|animate|video"}'
+    )
     return "\n".join(lines)
+
+
+# Что модель может предложить кнопкой (узкая схема, ADR-0148): действие делает код, модель только предлагает.
+OFFERS = ("shorter", "simpler", "angle", "media", "animate", "video")
 
 
 def ask_model(prompt: str, timeout: int = 120, call=None) -> str:
     """Ответ модели без инструментов. Пустая строка — модель не ответила или схема не та."""
+    return ask_model_full(prompt, timeout, call)[0]
+
+
+def ask_model_full(prompt: str, timeout: int = 120, call=None) -> tuple:
+    """(ответ, предложение кнопкой). Предложение вне OFFERS отбрасывается кодом."""
     if call is None:
         import studio_text
 
         call = studio_text.call_minimax
     result = call(prompt, timeout=timeout)
     answer = result.get("answer") if isinstance(result, dict) else None
-    return answer.strip() if isinstance(answer, str) else ""
+    offer = result.get("offer") if isinstance(result, dict) else None
+    return (answer.strip() if isinstance(answer, str) else ""), (offer if offer in OFFERS else "")
 
 
 def strip_log_noise(text: str) -> str:
@@ -192,12 +209,14 @@ def main() -> int:
     ap.add_argument("--idea-id", default="", help="id идеи, если нужно обсудить конкретную")
     ap.add_argument("--state", type=Path, default=DEFAULT_STATE)
     ap.add_argument("--timeout", type=int, default=120)
+    ap.add_argument("--json", action="store_true", help='вывод {"answer", "offer"}: кнопку строит вызывающий')
     args = ap.parse_args()
 
     state = load_state(args.state)
     idea = discussed_idea(state, args.idea_id)
     prompt = build_prompt(args.message, idea, state)
-    answer = clean_answer(ask_model(prompt, timeout=args.timeout))
+    raw, offer = ask_model_full(prompt, timeout=args.timeout)
+    answer = clean_answer(raw)
     if not answer:
         print("Модель не ответила. Попробуем позже — идея осталась на обсуждении.", file=sys.stderr)
         return 1
@@ -206,6 +225,9 @@ def main() -> int:
         # Плохой ответ в чат не отправляем: лучше тишина, чем внутренний IP в посте.
         print(f"Ответ не прошёл проверку: {'; '.join(problems)}", file=sys.stderr)
         return 2
+    if args.json:
+        print(json.dumps({"answer": answer, "offer": offer}, ensure_ascii=False))
+        return 0
     print(answer)
     return 0
 
