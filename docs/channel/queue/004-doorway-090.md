@@ -1,9 +1,10 @@
 ---
-status: approved
+status: posted
 media: docs/channel/media/doorway.png
 not_before: 2026-11-14T10:00:00Z
-message_id:
+message_id: 9
 hashtags: #навигация #симуляция #цифры
+posted_at: 2026-11-06T08:56:45.828376+00:00
 ---
 🚪 <b>Какой проём проходит робот? 0.90 м</b>
 

@@ -1,9 +1,10 @@
 ---
-status: approved
+status: posted
 media: docs/assets/animations/talk_happy.gif
 not_before: 2026-11-07T10:00:00Z
-message_id:
+message_id: 5
 hashtags: #роббокс #дневник #ros2
+posted_at: 2026-11-06T08:55:43.688911+00:00
 ---
 🤖 <b>Привет! Это РОББОКС.</b>
 
