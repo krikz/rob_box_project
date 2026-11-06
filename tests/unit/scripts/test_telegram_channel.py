@@ -219,18 +219,128 @@ def test_post_with_pending_media_is_never_published(queue, tmp_path):
     assert lib.parse_post(path).status == "approved"
 
 
-def test_extra_infographic_is_sent_after_main_post(queue, tmp_path):
+def _fake_convert(gif):
+    out = gif.with_suffix(".mp4")
+    out.write_bytes(b"mp4")
+    return out
+
+
+def _album_files(tmp_path):
     (tmp_path / "a.gif").write_bytes(b"GIF89a")
     Image = pytest.importorskip("PIL.Image")
 
     Image.new("RGB", (100, 60)).save(tmp_path / "i.png")
-    make_post(queue, 1, media="a.gif", extra_media="i.png")
+
+
+def test_extra_media_goes_as_one_album_with_caption_on_first(queue, tmp_path, monkeypatch):
+    _album_files(tmp_path)
+    monkeypatch.setattr(lib, "gif_to_mp4", _fake_convert)
+    monkeypatch.setattr(lib.build_album_request, "__defaults__", (lib.CHANNEL_ID, _fake_convert))
+    path = make_post(queue, 1, media="a.gif", extra_media="i.png")
     calls = []
 
     def transport(method, params, media):
-        calls.append((method, params, media.name if media else None))
-        return {"ok": True, "message_id": 5}
+        calls.append((method, params, media))
+        return {"ok": True, "message_ids": [5, 6]}
 
     assert channel_post.run(queue, tmp_path, T0, transport, dry_run=False, out=lambda s: None) == 0
-    assert [c[0] for c in calls] == ["sendAnimation", "sendPhoto"]
-    assert "caption" not in calls[1][1] and calls[1][2] == "i.png"
+    assert len(calls) == 1 and calls[0][0] == "sendMediaGroup"
+    items = calls[0][1]["media"]
+    assert [i["type"] for i in items] == ["video", "photo"]  # GIF стал video, animation в альбоме нельзя
+    assert "caption" in items[0] and items[0]["parse_mode"] == "HTML" and "caption" not in items[1]
+    assert [m.name for m in calls[0][2]] == ["a.mp4", "i.png"]
+    post = lib.parse_post(path)
+    assert (post.status, post.message_id, post.extra_message_ids) == ("posted", 5, [6])
+
+
+def test_gif_to_mp4_runs_ffmpeg_with_safe_flags(tmp_path, monkeypatch):
+    gif = tmp_path / "x.gif"
+    gif.write_bytes(b"GIF89a")
+    seen = {}
+
+    def fake_run(cmd, **kw):
+        seen["cmd"] = cmd
+        return None
+
+    monkeypatch.setattr(lib.subprocess, "run", fake_run)
+    out = lib.gif_to_mp4(gif, tmp_path / "w")
+    cmd = seen["cmd"]
+    assert out == tmp_path / "w" / "x.mp4" and cmd[0] == "ffmpeg" and "-an" in cmd
+    assert cmd[cmd.index("-c:v") + 1] == "libx264" and cmd[cmd.index("-pix_fmt") + 1] == "yuv420p"
+    assert "trunc(iw/2)*2" in cmd[cmd.index("-vf") + 1]
+
+
+def test_post_without_extra_media_is_sent_as_before(queue, tmp_path):
+    (tmp_path / "a.gif").write_bytes(b"GIF89a")
+    (tmp_path / "v.mp4").write_bytes(b"mp4")
+    make_post(queue, 1, media="a.gif")
+    make_post(queue, 2, media="v.mp4")
+    posts = lib.load_queue(queue)
+    assert lib.build_publish_request(posts[0], tmp_path)[0] == "sendAnimation"
+    assert lib.build_publish_request(posts[1], tmp_path)[0] == "sendVideo"
+
+
+def test_album_limits_and_exec_whitelist():
+    assert lib.ALBUM_MIN == 2 and lib.ALBUM_MAX == 10 and lib.CAPTION_LIMIT == 1024
+    exec_src = (REPO / "scripts" / "telegram" / "channel_exec.py").read_text(encoding="utf-8")
+    for method in ("sendMediaGroup", "sendVideo", "deleteMessage"):
+        assert f'"{method}"' in exec_src
+
+
+def _posted(queue, num, mid, extra=""):
+    return make_post(
+        queue, num, status="posted", message_id=str(mid), posted_at="2026-11-06T08:00:00Z", extra_message_ids=extra
+    )
+
+
+def test_republish_deletes_ids_incl_extra_then_republishes_in_order(queue, tmp_path):
+    (tmp_path / "a.gif").write_bytes(b"GIF89a")
+    _posted(queue, 1, 5)
+    _posted(queue, 2, 7)
+    _posted(queue, 3, 9)
+    calls = []
+
+    def transport(method, params, media):
+        calls.append((method, params.get("message_id")))
+        return {"ok": True, "message_id": 100 + len(calls)}
+
+    rc = channel_post.republish_from(
+        queue, tmp_path, 2, {2: [8]}, transport, False, pause_s=0, sleep=lambda s: None, out=lambda s: None
+    )
+    assert rc == 0
+    assert calls[:3] == [("deleteMessage", 7), ("deleteMessage", 8), ("deleteMessage", 9)]
+    assert [c[0] for c in calls[3:]] == ["sendMessage", "sendMessage"]
+    posts = {p.name[:3]: p for p in lib.load_queue(queue)}
+    assert posts["001"].message_id == 5  # ниже N не трогаем
+    assert (posts["002"].status, posts["002"].message_id) == ("posted", 104)
+
+
+def test_republish_stops_when_delete_fails_and_publishes_nothing(queue, tmp_path):
+    _posted(queue, 2, 7)
+    _posted(queue, 3, 9)
+    calls = []
+    out = []
+
+    def transport(method, params, media):
+        calls.append(method)
+        return {"ok": False, "description": "message can't be deleted"}
+
+    rc = channel_post.republish_from(queue, tmp_path, 2, {}, transport, False, out=out.append)
+    assert rc == 1 and calls == ["deleteMessage"]
+    assert any("не вышел" in line for line in out)
+    assert lib.parse_post(queue / "002-p.md").message_id == 7  # ничего не сброшено
+
+
+def test_republish_dry_run_sends_nothing_and_changes_nothing(queue, tmp_path):
+    _posted(queue, 2, 7)
+    before = (queue / "002-p.md").read_text(encoding="utf-8")
+    out = []
+    rc = channel_post.republish_from(queue, tmp_path, 2, {2: [8]}, lambda *a: pytest.fail("сеть"), True, out=out.append)
+    assert rc == 0 and (queue / "002-p.md").read_text(encoding="utf-8") == before
+    assert any("deleteMessage 8" in line for line in out) and any("sendMessage" in line for line in out)
+
+
+def test_parse_extra_ids():
+    assert channel_post.parse_extra_ids(["3:8", "4:1,2"]) == {3: [8], 4: [1, 2]}
+    with pytest.raises(ValueError):
+        channel_post.parse_extra_ids(["x"])

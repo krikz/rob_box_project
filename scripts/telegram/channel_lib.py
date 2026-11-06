@@ -11,6 +11,7 @@ import json
 import re
 import shlex
 import subprocess
+import tempfile
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -66,7 +67,10 @@ PHOTO_MAX_RATIO = 20
 ANIMATION_MAX_BYTES = 50 * 1024 * 1024
 GIF_PROJECT_MAX_BYTES = 2 * 1024 * 1024
 DRAFT_CHAT_ID = 495039871  # личка Шифу с ботом робота (как в tgsend.sh)
-ANIMATION_EXT = {".gif", ".mp4"}
+ANIMATION_EXT = {".gif"}
+VIDEO_EXT = {".mp4"}
+VIDEO_MAX_BYTES = 50 * 1024 * 1024  # sendVideo / InputMediaVideo при загрузке файлом
+ALBUM_MIN, ALBUM_MAX = 2, 10  # sendMediaGroup: "must include 2-10 items"
 PHOTO_EXT = {".png", ".jpg", ".jpeg"}
 # Приватность: внутренние адреса и токены в канал не попадают никогда.
 FORBIDDEN = [
@@ -75,8 +79,8 @@ FORBIDDEN = [
     (re.compile(r"\d{8,}:[A-Za-z0-9_-]{30,}"), "токен бота"),
 ]
 
-# Тип отправки: (метод Bot API, поле с файлом)
-Transport = Callable[[str, dict, Optional[Path]], dict]
+# Отправка: (метод Bot API, параметры, файл | список файлов для альбома | None) -> ответ контейнера
+Transport = Callable[[str, dict, object], dict]
 
 
 @dataclass
@@ -89,7 +93,8 @@ class Post:
     posted_at: Optional[datetime]
     hashtags: list = field(default_factory=list)
     body: str = ""
-    extra_media: str = ""  # вторая картинка (инфографика): уходит сразу после основного поста, без подписи
+    extra_media: str = ""  # вторая картинка (инфографика): уходит в одном альбоме с основным медиа, подпись на первом
+    extra_message_ids: list = field(default_factory=list)  # message_id остальных сообщений альбома (без первого)
     pending: list = field(
         default_factory=list
     )  # чего ещё не хватает (media_pending, extra_pending): блокирует публикацию
@@ -131,6 +136,7 @@ def parse_post(path: Path) -> Post:
         hashtags=meta.get("hashtags", "").split(),
         body=body.strip(),
         extra_media=meta.get("extra_media", ""),
+        extra_message_ids=[int(x) for x in meta.get("extra_message_ids", "").replace(",", " ").split()],
         pending=[meta[k] for k in ("media_pending", "extra_pending") if meta.get(k)],
     )
 
@@ -205,6 +211,10 @@ def media_problems(media: Path, label: str) -> list:
         if max(width, height) > PHOTO_MAX_RATIO * min(width, height):
             out.append(f"соотношение сторон больше {PHOTO_MAX_RATIO}:1 (sendPhoto)")
         return out
+    if ext in VIDEO_EXT:
+        if size > VIDEO_MAX_BYTES:
+            return [f"видео {size} байт больше 50 МБ (sendVideo)"]
+        return []
     if ext in ANIMATION_EXT:
         if size > ANIMATION_MAX_BYTES:
             return [f"анимация {size} байт больше 50 МБ (sendAnimation)"]
@@ -240,6 +250,7 @@ def validate(post: Post, repo_root: Path) -> list:
         problems += media_problems(repo_root / post.media, post.media)
     if post.extra_media:
         problems += media_problems(repo_root / post.extra_media, post.extra_media)
+    problems += album_problems(post)
     problems += [f"не готово: {item}" for item in post.pending]
     return problems
 
@@ -253,19 +264,95 @@ def build_request(post: Post, repo_root: Path, chat_id: int = CHANNEL_ID) -> tup
         return "sendMessage", params, None
     media = repo_root / post.media
     params["caption"] = post.body
-    if media.suffix.lower() in ANIMATION_EXT:
+    ext = media.suffix.lower()
+    if ext in VIDEO_EXT:
+        params["supports_streaming"] = True
+        return "sendVideo", params, media
+    if ext in ANIMATION_EXT:
         return "sendAnimation", params, media
     return "sendPhoto", params, media
 
 
-def build_extra_request(post: Post, repo_root: Path, chat_id: int = CHANNEL_ID) -> Optional[tuple]:
-    """Вторая картинка поста (инфографика): sendPhoto без подписи; None, если её нет."""
+def gif_to_mp4(gif: Path, workdir: Optional[Path] = None) -> Path:
+    """GIF -> MP4 для альбома: sendMediaGroup не принимает animation, только photo/video/document/audio.
+
+    h264, yuv420p, без звука, чётные размеры (иначе libx264 с yuv420p откажет).
+    """
+    workdir = workdir or Path(tempfile.gettempdir()) / "channel_album"
+    workdir.mkdir(parents=True, exist_ok=True)
+    out = workdir / (gif.stem + ".mp4")
+    cmd = [
+        "ffmpeg", "-y", "-loglevel", "error", "-i", str(gif), "-an",
+        "-c:v", "libx264", "-pix_fmt", "yuv420p",
+        "-vf", "scale=trunc(iw/2)*2:trunc(ih/2)*2",
+        "-movflags", "+faststart", str(out),
+    ]  # fmt: skip
+    subprocess.run(cmd, check=True, timeout=120)
+    return out
+
+
+def album_problems(post: Post) -> list:
+    """Лимиты sendMediaGroup (Bot API, проверено 06.11.2026): 2-10 элементов, подпись 0-1024."""
     if not post.extra_media:
-        return None
-    return "sendPhoto", {"chat_id": chat_id}, repo_root / post.extra_media
+        return []
+    if not post.media:
+        return ["extra_media без основного media: альбому нужно 2-10 элементов"]
+    return []
 
 
-FILE_FIELD = {"sendAnimation": "animation", "sendPhoto": "photo", "setChatPhoto": "photo"}
+def build_album_request(
+    post: Post,
+    repo_root: Path,
+    chat_id: int = CHANNEL_ID,
+    convert: Optional[Callable[[Path], Path]] = None,
+) -> tuple:
+    """sendMediaGroup: основное медиа + extra_media одним альбомом, подпись на первом элементе.
+
+    GIF в альбоме нельзя (animation не входит в InputMedia*), поэтому он конвертируется в MP4 и идёт как video.
+    Возвращает (метод, параметры, список файлов); элементы media ссылаются на файлы как attach://f0, attach://f1.
+    """
+    files, items = [], []
+    for i, rel in enumerate([post.media, post.extra_media]):
+        path = repo_root / rel
+        if path.suffix.lower() in ANIMATION_EXT:
+            path = (convert or gif_to_mp4)(path)
+        is_video = path.suffix.lower() in VIDEO_EXT
+        item = {"type": "video" if is_video else "photo", "media": f"attach://f{i}"}
+        if is_video:
+            item["supports_streaming"] = True
+        if i == 0:
+            item["caption"] = post.body
+            item["parse_mode"] = "HTML"
+        files.append(path)
+        items.append(item)
+    if not ALBUM_MIN <= len(items) <= ALBUM_MAX:
+        raise ValueError(f"в альбоме {len(items)} элементов, нужно {ALBUM_MIN}-{ALBUM_MAX}")
+    return "sendMediaGroup", {"chat_id": chat_id, "media": items}, files
+
+
+def build_publish_request(
+    post: Post, repo_root: Path, chat_id: int = CHANNEL_ID, convert: Optional[Callable[[Path], Path]] = None
+) -> tuple:
+    """Что уходит в Telegram: альбом, если есть extra_media, иначе одно сообщение. Решает код, не вызывающий."""
+    if post.extra_media:
+        return build_album_request(post, repo_root, chat_id, convert)
+    return build_request(post, repo_root, chat_id)
+
+
+def sent_ids(result: dict) -> list:
+    """message_id всех сообщений ответа (альбом даёт несколько)."""
+    ids = result.get("message_ids")
+    if ids:
+        return [int(x) for x in ids]
+    return [int(result["message_id"])] if result.get("message_id") else []
+
+
+FILE_FIELD = {
+    "sendAnimation": "animation",
+    "sendVideo": "video",
+    "sendPhoto": "photo",
+    "setChatPhoto": "photo",
+}
 
 
 class RobotTransport:
@@ -281,9 +368,16 @@ class RobotTransport:
         scp = ["scp", "-q", "-o", "BatchMode=yes"]
         request = {"method": method, "params": params, "file": None}
         subprocess.run(scp + [str(self.executor), f"{self.robot}:/tmp/channel_exec.py"], check=True, timeout=60)
-        if media is not None:
+        if isinstance(media, list):  # альбом: поля f0, f1, ... совпадают с attach://fN в params["media"]
+            request["files"] = []
+            for i, item in enumerate(media):
+                tmp = f"/tmp/channel_media_{i}{item.suffix.lower()}"
+                subprocess.run(scp + [str(item), f"{self.robot}:{tmp}"], check=True, timeout=180)
+                remote.append(f"docker cp {shlex.quote(tmp)} telegram-bot:{shlex.quote(tmp)}")
+                request["files"].append({"field": f"f{i}", "path": tmp})
+        elif media is not None:
             tmp = f"/tmp/channel_media{media.suffix.lower()}"
-            subprocess.run(scp + [str(media), f"{self.robot}:{tmp}"], check=True, timeout=120)
+            subprocess.run(scp + [str(media), f"{self.robot}:{tmp}"], check=True, timeout=180)
             remote.append(f"docker cp {shlex.quote(tmp)} telegram-bot:{shlex.quote(tmp)}")
             request["file"] = {"field": FILE_FIELD[method], "path": tmp}
         remote.append("docker exec -i telegram-bot python3 /tmp/channel_exec.py")
@@ -294,6 +388,10 @@ class RobotTransport:
             return json.loads(done.stdout.strip().splitlines()[-1])
         except (IndexError, ValueError):
             return {"ok": False, "description": f"нет ответа от контейнера (код {done.returncode})"}
+
+
+def number_of(post: Post) -> int:
+    return int(post.name[:3])
 
 
 def set_front_matter(path: Path, **updates) -> None:
@@ -315,12 +413,19 @@ def set_front_matter(path: Path, **updates) -> None:
     path.write_text("---\n" + "\n".join(lines) + sep + body, encoding="utf-8")
 
 
-def describe(method: str, params: dict, media: Optional[Path]) -> str:
+def describe(method: str, params: dict, media) -> str:
     """Что будет отправлено — для --dry-run (без токена, он сюда не попадает)."""
     out = [f"  метод:  {method}", f"  чат:    {params.get('chat_id')}"]
-    if media is not None:
-        out.append(f"  файл:   {media} (" + (f"{media.stat().st_size} байт)" if media.exists() else "НЕТ ФАЙЛА)"))
-    text = params.get("caption") or params.get("text") or params.get("title") or params.get("description")
+    for item in media if isinstance(media, list) else ([media] if media is not None else []):
+        out.append(f"  файл:   {item} (" + (f"{item.stat().st_size} байт)" if item.exists() else "НЕТ ФАЙЛА)"))
+    items = params.get("media")
+    if items:
+        out.append("  элементы альбома: " + ", ".join(i["type"] for i in items) + " (подпись на первом)")
+        text = items[0].get("caption")
+    else:
+        text = params.get("caption") or params.get("text") or params.get("title") or params.get("description")
+    if "message_id" in params:
+        out.append(f"  message_id: {params['message_id']}")
     if text is not None:
         out.append("  текст:")
         out.extend("    | " + line for line in str(text).splitlines())

@@ -25,6 +25,9 @@
 | Подпись к медиа | 0–1024 знаков после разбора сущностей | то же, лимит 1024 при `media` |
 | Фото `sendPhoto` | ≤ 10 МБ; ширина+высота ≤ 10000; соотношение сторон ≤ 20:1 | `media_problems` |
 | Анимация `sendAnimation` | ≤ 50 МБ; в проекте GIF ≤ 2 МБ | `media_problems` |
+| Видео `sendVideo` (`.mp4`) | ≤ 50 МБ | `media_problems` |
+| Альбом `sendMediaGroup` (пост с `extra_media`) | 2–10 элементов, подпись 0–1024 на первом; только photo/video/document/audio, поэтому GIF уходит как MP4 (ffmpeg, h264, yuv420p, без звука, чётные стороны) | `build_album_request`, `gif_to_mp4` |
+| Удаление `deleteMessage` | только сообщения моложе 48 ч; `channel_post.py --republish-from N [--extra-ids N:ID]` останавливается на первой ошибке | `republish_from` |
 | Название канала | 1–128 знаков | `channel_setup.plan` |
 | Описание канала | 0–255 знаков | `channel_setup.plan` |
 | Закреп `pinChatMessage` | боту нужно `can_edit_messages` (канал); `disable_notification` — без уведомления | параметр `disable_notification: true` |

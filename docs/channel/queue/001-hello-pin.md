@@ -21,5 +21,6 @@ posted_at: 2026-11-06T08:55:43.688911+00:00
 
 Код: github.com/krikz/rob_box_project
 Светодиодная библиотека: github.com/krikz/ros2leds
+Драйвер моторов VESC по CAN: github.com/krikz/vesc_nexus
 
 #роббокс #дневник #ros2

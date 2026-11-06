@@ -10,6 +10,8 @@
     python -X utf8 scripts/telegram/channel_post.py                   # боевой режим
     python -X utf8 scripts/telegram/channel_post.py --backfill        # разово: все approved подряд (пустой канал)
     python -X utf8 scripts/telegram/channel_post.py --send-draft 3    # заготовка поста 003 в личку Шифу
+    python -X utf8 scripts/telegram/channel_post.py --republish-from 2 --extra-ids 3:8 [--dry-run]
+        # чистка канала: deleteMessage у постов >= 2 (с доп. сообщениями), затем публикация заново по порядку
 
 Правила — docs/process/telegram-channel.md. Токен остаётся в контейнере.
 """
@@ -57,25 +59,22 @@ def publish_post(post: lib.Post, repo_root: Path, now: datetime, transport, dry_
         for p in problems:
             out(f"  - {p}")
         return False
-    method, params, media = lib.build_request(post, repo_root)
+    method, params, media = lib.build_publish_request(post, repo_root)
     out(f"{'DRY-RUN: было бы отправлено' if dry_run else 'Отправляю'} {post.name}")
     out(lib.describe(method, params, media))
-    extra = lib.build_extra_request(post, repo_root)
-    if extra is not None:
-        out("  затем отдельным сообщением без подписи:")
-        out(lib.describe(*extra))
     if dry_run:
         return True
     result = transport(method, params, media)
-    if not result.get("ok") or not result.get("message_id"):
+    ids = lib.sent_ids(result) if result.get("ok") else []
+    if not ids:
         out(f"Telegram не принял пост: {result.get('description')}")
         return False
-    lib.set_front_matter(post.path, status="posted", message_id=result["message_id"], posted_at=now.isoformat())
-    if extra is not None:
-        extra_result = transport(*extra)
-        if not extra_result.get("ok"):
-            out(f"ВНИМАНИЕ: основной пост ушёл, а картинка к нему нет: {extra_result.get('description')}")
-    out(f"Опубликовано, message_id={result['message_id']}; {post.name} помечен posted (закоммить правку)")
+    updates = {"status": "posted", "message_id": ids[0], "posted_at": now.isoformat()}
+    if len(ids) > 1:
+        updates["extra_message_ids"] = ",".join(str(i) for i in ids[1:])
+    lib.set_front_matter(post.path, **updates)
+    shown = f"{ids[0]} + {ids[1:]}" if len(ids) > 1 else str(ids[0])
+    out(f"Опубликовано, message_id={shown}; {post.name} помечен posted (закоммить правку)")
     return True
 
 
@@ -113,16 +112,99 @@ def backfill(
     return 0
 
 
+def parse_extra_ids(items: list) -> dict:
+    """`3:8` или `3:8,9` (номер поста : message_id доп. сообщений), флаг можно повторять."""
+    out: dict = {}
+    for item in items or []:
+        for chunk in item.split(";"):
+            num, _, ids = chunk.partition(":")
+            if not num.strip().isdigit() or not ids.strip():
+                raise ValueError(f"--extra-ids ждёт N:ID[,ID], а не {chunk!r}")
+            out.setdefault(int(num), []).extend(int(x) for x in ids.replace(",", " ").split())
+    return out
+
+
+def republish_from(
+    queue_dir: Path,
+    repo_root: Path,
+    first: int,
+    extra_ids: dict,
+    transport,
+    dry_run: bool,
+    pause_s: float = BACKFILL_PAUSE_S,
+    sleep=time.sleep,
+    clock=lambda: datetime.now(timezone.utc),
+    out=print,
+) -> int:
+    """Чистка канала: удалить опубликованные посты с номерами >= first (с доп. сообщениями) и выложить заново.
+
+    deleteMessage работает только для сообщений моложе 48 ч: не вышло удалить — стоп и ошибка, ничего не
+    публикуется. Сначала проверяются ВСЕ посты к публикации. Пост, у которого удалено всё, сбрасывается в approved
+    (message_id, extra_message_ids и posted_at очищаются), поэтому повторный запуск продолжит с места остановки.
+    """
+    posts = [p for p in lib.load_queue(queue_dir) if lib.number_of(p) >= first]
+    to_publish = [p for p in posts if p.status in ("approved", "posted")]
+    bad = {p.name: lib.validate(p, repo_root) for p in to_publish}
+    bad = {k: v for k, v in bad.items() if v}
+    if bad:
+        for name, problems in bad.items():
+            out(f"{name}: не перезаливаю, проблемы: " + "; ".join(problems))
+        return 1
+    for p in posts:
+        if p.status == "draft":
+            out(f"{p.name}: draft, пропускаю")
+    doomed = []
+    for p in to_publish:
+        if p.status != "posted":
+            continue
+        ids = ([p.message_id] if p.message_id else []) + p.extra_message_ids + extra_ids.get(lib.number_of(p), [])
+        ids = list(dict.fromkeys(ids))
+        if not ids:
+            out(f"{p.name}: posted, но message_id неизвестен: не знаю, что удалять")
+            return 1
+        doomed.append((p, ids))
+    for num in extra_ids:
+        if not any(lib.number_of(p) == num for p, _ in doomed):
+            out(f"--extra-ids {num}: поста {num:03d} среди опубликованных (posted) с номером >= {first} нет")
+            return 1
+    for p, ids in doomed:
+        for mid in ids:
+            params = {"chat_id": lib.CHANNEL_ID, "message_id": mid}
+            out(f"{'DRY-RUN: было бы удалено' if dry_run else 'Удаляю'} {p.name}: deleteMessage {mid}")
+            if dry_run:
+                continue
+            result = transport("deleteMessage", params, None)
+            if not result.get("ok"):
+                out(
+                    f"deleteMessage {mid} ({p.name}) не вышел: {result.get('description')}. "
+                    "Останавливаюсь (удалять можно только сообщения моложе 48 ч); публикации не было."
+                )
+                return 1
+        if not dry_run:
+            lib.set_front_matter(p.path, status="approved", message_id="", extra_message_ids="", posted_at="")
+    if dry_run:
+        # публикуем по свежему состоянию: у posted-постов в dry-run файл не менялся, показываем те же запросы
+        for p in to_publish:
+            method, params, media = lib.build_publish_request(p, repo_root)
+            out(f"DRY-RUN: было бы отправлено {p.name}")
+            out(lib.describe(method, params, media))
+        return 0
+    fresh = [p for p in lib.load_queue(queue_dir) if lib.number_of(p) >= first and p.status == "approved"]
+    for i, post in enumerate(fresh):
+        if not publish_post(post, repo_root, clock(), transport, dry_run, out):
+            return 1
+        if i < len(fresh) - 1:
+            out(f"пауза {pause_s:g} с")
+            sleep(pause_s)
+    return 0
+
+
 def preview_all(queue_dir: Path, repo_root: Path, out=print) -> int:
     bad = 0
     for post in lib.load_queue(queue_dir):
         out(f"=== {post.name} [{post.status}] не раньше {post.not_before.isoformat()}")
-        method, params, media = lib.build_request(post, repo_root)
+        method, params, media = lib.build_publish_request(post, repo_root)
         out(lib.describe(method, params, media))
-        extra = lib.build_extra_request(post, repo_root)
-        if extra is not None:
-            out("  затем отдельным сообщением без подписи:")
-            out(lib.describe(*extra))
         problems = lib.validate(post, repo_root)
         for p in problems:
             out(f"  !! {p}")
@@ -157,10 +239,7 @@ def send_draft(
         f"(«Скрыть имя автора»), затем долгий тап по кнопке отправки → «Отправить позже» на "
         f"{slot:%d.%m.%Y %H:%M} (GMT+1). Когда поставишь время, скажи координатору: он пометит пост posted."
     )
-    steps = [lib.build_request(post, repo_root, chat_id=lib.DRAFT_CHAT_ID)]
-    extra = lib.build_extra_request(post, repo_root, chat_id=lib.DRAFT_CHAT_ID)
-    if extra is not None:
-        steps.append(extra)
+    steps = [lib.build_publish_request(post, repo_root, chat_id=lib.DRAFT_CHAT_ID)]
     steps.append(("sendMessage", {"chat_id": lib.DRAFT_CHAT_ID, "text": note}, None))
     for method, params, media in steps:
         out(f"{'DRY-RUN: было бы отправлено Шифу' if dry_run else 'Шлю Шифу'}")
@@ -186,6 +265,19 @@ def main() -> int:
         action="store_true",
         help="разовое наполнение пустого канала: все approved подряд с паузой ~20 с, без правила 48 ч и not_before",
     )
+    ap.add_argument(
+        "--republish-from",
+        type=int,
+        metavar="N",
+        help="удалить (deleteMessage, моложе 48 ч) опубликованные посты с номерами >= N с их доп. сообщениями "
+        "и выложить заново по порядку, как --backfill",
+    )
+    ap.add_argument(
+        "--extra-ids",
+        action="append",
+        metavar="N:ID[,ID]",
+        help="message_id доп. сообщений поста N, если их нет в front matter (extra_message_ids); флаг можно повторять",
+    )
     ap.add_argument("--queue", type=Path, default=REPO / "docs" / "channel" / "queue")
     ap.add_argument("--now", help="подменить текущее время (ISO, UTC) — для проверки расписания")
     ap.add_argument("--robot", default="ros2@10.1.1.22")
@@ -193,6 +285,11 @@ def main() -> int:
     if args.send_draft is not None:
         transport = None if args.dry_run else lib.RobotTransport(args.robot)
         return send_draft(args.queue, REPO, args.send_draft, transport, args.dry_run)
+    if args.republish_from is not None:
+        transport = None if args.dry_run else lib.RobotTransport(args.robot)
+        return republish_from(
+            args.queue, REPO, args.republish_from, parse_extra_ids(args.extra_ids), transport, args.dry_run
+        )
     if args.backfill:
         transport = None if args.dry_run else lib.RobotTransport(args.robot)
         return backfill(args.queue, REPO, transport, args.dry_run)
