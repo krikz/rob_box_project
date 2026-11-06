@@ -28,6 +28,10 @@ sys.path.insert(0, str(REPO_ROOT / "scripts" / "telegram"))
 import channel_lib as lib  # noqa: E402
 
 DEFAULT_MODEL = "MiniMax-M3.1-Flash"
+# Черновик уходит подписью к картинке: лимит Telegram 1024 знака после разбора разметки.
+# Модели даём запас — заголовок черновика тоже займёт место в подписи.
+CAPTION_TARGET = 900
+WHY_LIMIT = 300  # поле why: короткое «почему так» для индикатора студии
 API_URL = "https://api.minimax.io/v1/chat/completions"
 
 # Модели MiniMax и их «мышление» (проверено вживую 06.11.2026, см. также
@@ -1074,8 +1078,9 @@ def validate_post(
     problems = check_against_facts(body, facts, own_facts=own_facts)
     if not body.strip():
         problems.append("пустой текст")
-    if not 2 <= len(tags) <= 5:
-        problems.append(f"хештегов {len(tags)}, нужно 2–5")
+    # Пределы — из channel_lib: публикатор проверяет те же 2–4, иначе одобренный пост упал бы в очереди.
+    if not lib.MIN_TAGS <= len(tags) <= lib.MAX_TAGS:
+        problems.append(f"хештегов {len(tags)}, нужно {lib.MIN_TAGS}–{lib.MAX_TAGS}")
     for tag in tags:
         if tag not in lib.TAG_DICTIONARY:
             problems.append(f"хештег {tag} не в словаре канала")
@@ -1110,17 +1115,27 @@ def build_post_prompt(idea: dict, facts: list, rules: str, instruction: str = ""
         f"ФАКТЫ:\n{extract_fact_text(facts)}\n\n"
     )
     if instruction:
+        current = idea.get("current_body") or ""
+        if current:
+            head += f"ТЕКУЩИЙ ТЕКСТ ПОСТА:\n{current}\n\n"
         head += f"ПРАВКА ТЕКСТА (это правка того же поста, а не новый пост): {instruction}\n\n"
     tail = (
         "Верни СТРОГО JSON:\n"
-        '{"body_html": "текст поста", "tags": ["#роббокс"]}\n\n'
+        '{"body_html": "текст поста", "tags": ["#роббокс"], "why": "почему такая подача"}\n\n'
         "Требования к body_html: Telegram HTML разрешает только теги "
         "b, strong, i, em, u, ins, s, strike, del, a, code, pre, blockquote, tg-spoiler, tg-emoji. "
         "Других тегов быть не должно: ни <br>, ни <ul>, ни <li>, ни <ol>, ни <p>, ни <h1>. "
         "Абзацы разделяй переводом строки, список — строками с «-». "
-        "Тег <a> со ссылкой на источник разрешён. "
-        "Цель 400–700 знаков; хештеги только из словаря канала; "
-        "никаких внутренних IP, лиц людей и ключей."
+        "Оформление (rich text там, где уместно): первая строка — <b>короткий тезис</b>; "
+        "технические имена (файлы, параметры, узлы) — в <code>; детали и «как проверяли» — в одной "
+        "<blockquote expandable>…</blockquote> (раскрывающаяся цитата; цитаты не вкладываются); "
+        'ссылка на источник — <a href="https://github.com/krikz/rob_box_project/pull/N">PR #N</a>. '
+        "Без эмодзи-цепочек и восклицаний. "
+        f"Весь текст вместе с хештегами — не больше {CAPTION_TARGET} знаков: пост уходит подписью к "
+        "картинке (лимит Telegram 1024). Хештеги — 2–4, только из словаря канала, последней строкой. "
+        "Никаких внутренних IP, лиц людей и ключей.\n"
+        f"why — до {WHY_LIMIT} знаков обычного текста без разметки: какую подачу выбрал и на какие "
+        "факты опирался. В why тоже только числа и имена из фактов."
     )
     return head + tail
 
@@ -1131,8 +1146,15 @@ def produce_post(
     model: str = DEFAULT_MODEL,
     repo_root: Path = REPO_ROOT,
     instruction: str = "",
+    has_media: Optional[bool] = None,
 ) -> dict:
-    """Произвести пост по согласованной идее: модель пишет, код проверяет."""
+    """Произвести пост по согласованной идее: модель пишет, код проверяет.
+
+    has_media=None — по media_ref идеи. Студия шлёт черновик всегда с картинкой
+    (решение Шифу 06.11) и передаёт True: тогда лимит — подпись 1024 знака.
+    """
+    if has_media is None:
+        has_media = bool(idea.get("media_ref"))
     prompt = build_post_prompt(idea, facts, load_rules(repo_root), instruction=instruction)
     result = call_minimax(prompt, model=model)
     if "error" in result:
@@ -1141,19 +1163,55 @@ def produce_post(
     tags = result.get("tags") or []
     if not tags:
         tags = lib.extract_tags(body)
-    problems = validate_post(
-        body,
-        tags,
-        facts,
-        has_media=bool(idea.get("media_ref")),
-        own_facts=facts if idea.get("fact_keys") else None,
-    )
+    own = facts if idea.get("fact_keys") else None
+    problems = validate_post(body, tags, facts, has_media=has_media, own_facts=own)
+    raw_why = result.get("why")
+    why = raw_why.strip() if isinstance(raw_why, str) else ""
+    why_problems = check_why(why, facts, own_facts=own)
     return {
         "body_html": body,
         "tags": tags,
         "problems": problems,
         "ok": not problems,
+        # Поле why уходит Шифу только проверенным кодом; не прошло — выкидываем и говорим почему.
+        "why": "" if why_problems else why,
+        "why_problems": why_problems,
+        "checks": fact_checks(body, problems),
+        "model": model,
     }
+
+
+def fact_checks(body: str, problems: list) -> dict:
+    """Счёт проверки для индикатора: сколько чисел в тексте и сколько из них по фактам.
+
+    Счёт строит код из результата check_against_facts — модель его не пишет.
+    """
+    plain = re.sub(r"<[^>]+>", " ", body)
+    numbers = len(NUMBER_RE.findall(plain))
+    bad_numbers = sum(1 for p in problems if p.startswith(("число «", "идентификатор прогона")))
+    bad_names = sum(1 for p in problems if p.startswith("имя «"))
+    return {
+        "numbers": numbers,
+        "numbers_ok": max(numbers - bad_numbers, 0),
+        "names_bad": bad_names,
+        "length": lib.visible_length(body),
+    }
+
+
+def check_why(why: str, facts: list, own_facts: Optional[list] = None) -> list:
+    """Проверка поля why: длина, без разметки, без ключей, числа и имена — по фактам."""
+    if not why:
+        return []
+    problems = []
+    if len(why) > WHY_LIMIT:
+        problems.append(f"why {len(why)} знаков, лимит {WHY_LIMIT}")
+    if re.search(r"<[^>]+>", why):
+        problems.append("в why разметка")
+    for pattern, what in lib.FORBIDDEN:
+        if pattern.search(why):
+            problems.append(f"в why {what}")
+    problems += [f"why: {p}" for p in check_against_facts(why, facts, own_facts=own_facts)]
+    return problems
 
 
 def main() -> int:

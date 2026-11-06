@@ -116,7 +116,6 @@ PY
 fi
 
 FACTS="$WORK/facts.json"
-POST="$WORK/ideas.json"
 
 echo "[studio-session] 1/3 собираю факты"
 python3 scripts/telegram/studio_facts.py --no-save --state "$STUDIO_REPO/docker/studio/state.json" > "$FACTS"
@@ -136,20 +135,20 @@ if [ "$VISIBLE" = "0" ]; then
     exit 0
 fi
 
-echo "[studio-session] 2/3 собираю готовый пост (MiniMax) и проверяю кодом"
-if ! python3 scripts/telegram/studio_draft.py --facts "$FACTS" --out "$POST"; then
-    echo "[studio-session] пост не собрался или не прошёл проверку — Шифу ничего не шлю"
+echo "[studio-session] 2/2 готовый пост: текст (MiniMax) → проверка кодом → медиа → Шифу"
+# Один шаг с индикатором: Шифу видит этапы в одном сообщении, черновик приходит с графикой.
+# Не собралось — индикатор показывает, на каком шаге и почему; сессия выходит с кодом 1.
+if ! python3 scripts/telegram/channel_studio.py --state "$STUDIO_REPO/docker/studio/state.json" \
+    draft --facts "$FACTS"; then
+    echo "[studio-session] черновик не собран или не отправлен — причина в индикаторе у Шифу"
     exit 1
 fi
-
-echo "[studio-session] 3/3 шлю готовый пост Шифу"
-python3 scripts/telegram/channel_studio.py --state "$STUDIO_REPO/docker/studio/state.json" \
-    post "$POST"
 
 # Метку сессии двигаем только после успешной отправки: иначе пропавшая сессия потеряла бы факты.
 # Пишем через studio_state: там атомарная запись и блокировка, а в этом heredoc
 # state.json переписывался целиком мимо обоих — и затирал правки опроса.
-python3 - "$STUDIO_REPO/docker/studio/state.json" <<'PY'
+# Второй аргумент — каталог модулей: без него sys.argv[2] падал IndexError и метка не двигалась.
+python3 - "$STUDIO_REPO/docker/studio/state.json" "$STUDIO_REPO/scripts/telegram" <<'PY'
 import sys
 from datetime import datetime, timezone
 

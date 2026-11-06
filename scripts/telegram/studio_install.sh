@@ -80,3 +80,23 @@ for job in spec.get("jobs", []):
     print(f"  {job.get('name')}: {job.get('schedule')} {job.get('timezone', '')} → {job.get('script')}")
 PYEOF
 fi
+
+# Кнопки Шифу — постоянный сервис, а не крон (Шифу 06.11: «нажал — а оно уходит курить»).
+# Юнит берётся из репо, @REPO_ROOT@ заменяется на корень клона.
+UNIT_SRC="$REPO_ROOT/docker/studio/studio-watch.service"
+UNIT_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user"
+if [ -f "$UNIT_SRC" ]; then
+    mkdir -p "$UNIT_DIR"
+    sed "s#@REPO_ROOT@#$REPO_ROOT#g" "$UNIT_SRC" > "$UNIT_DIR/studio-watch.service.tmp.$$"
+    mv -f "$UNIT_DIR/studio-watch.service.tmp.$$" "$UNIT_DIR/studio-watch.service"
+    echo "[studio-install] юнит: $UNIT_DIR/studio-watch.service"
+    if [ "${STUDIO_ENABLE_SERVICE:-0}" = "1" ]; then
+        systemctl --user daemon-reload
+        systemctl --user enable --now studio-watch.service
+        systemctl --user restart studio-watch.service
+        echo "[studio-install] сервис studio-watch включён и перезапущен"
+    else
+        echo "[studio-install] включить: systemctl --user daemon-reload && systemctl --user enable --now studio-watch"
+    fi
+    echo "[studio-install] крон «studio: опрос кнопок» должен быть снят: hermes --profile studio cron list"
+fi

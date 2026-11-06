@@ -69,11 +69,22 @@ def build_post(facts: list, model: str = st.DEFAULT_MODEL, repo_root: Path = st.
         "media_ref": pick_media(facts),
         "fact_keys": [fact.get("key")] if fact.get("key") else [],
     }
-    produced = st.produce_post(idea, [fact], model=model, repo_root=repo_root)
+    # Черновик уходит всегда с картинкой (решение Шифу 06.11): лимит — подпись 1024 знака.
+    produced = st.produce_post(idea, [fact], model=model, repo_root=repo_root, has_media=True)
+    attempts = 1
+    if not produced.get("error") and not produced.get("ok"):
+        # Бриф: «не прошло — один повтор с причиной». Причину строит код (problems).
+        reason = "; ".join((produced.get("problems") or [])[:4])
+        instruction = f"Прошлая версия не прошла проверку кодом: {reason}. Исправь именно это."
+        idea["current_body"] = produced.get("body_html") or ""
+        produced = st.produce_post(
+            idea, [fact], model=model, repo_root=repo_root, instruction=instruction, has_media=True
+        )
+        attempts = 2
     if produced.get("error"):
-        return {"error": produced["error"]}
+        return {"error": produced["error"], "attempts": attempts}
     if not produced.get("ok"):
-        return {"error": "не прошёл проверку", "problems": produced.get("problems") or []}
+        return {"error": "не прошёл проверку", "problems": produced.get("problems") or [], "attempts": attempts}
     return {
         "title": title,
         "body_html": produced.get("body_html") or "",
@@ -82,7 +93,25 @@ def build_post(facts: list, model: str = st.DEFAULT_MODEL, repo_root: Path = st.
         "fact_keys": idea["fact_keys"],
         "show": claim,
         "source": fact.get("source", ""),
+        "why": produced.get("why") or "",
+        "why_problems": produced.get("why_problems") or [],
+        "checks": produced.get("checks") or {},
+        "model": produced.get("model") or model,
+        "attempts": attempts,
     }
+
+
+def post_id_for(post: dict, day: str = "") -> str:
+    """Идентификатор поста задаёт код: p<день>-<NNN> по стабильному хэшу источника и темы.
+
+    hash() в Python рандомизируется между процессами — поэтому md5.
+    """
+    if not day:
+        from datetime import datetime, timezone
+
+        day = os.environ.get("STUDIO_POST_DATE") or datetime.now(timezone.utc).strftime("%Y%m%d")
+    digest = hashlib.md5((post.get("source", "") + post.get("title", "")).encode("utf-8")).hexdigest()
+    return f"p{day}-{int(digest[:6], 16) % 900 + 100}"
 
 
 def main() -> int:
@@ -104,16 +133,8 @@ def main() -> int:
         print(f"пост не собран: {post.get('error')} {post.get('problems') or ''}", file=sys.stderr)
         return 1
 
-    day = os.environ.get("STUDIO_POST_DATE") or ""
-    if not day:
-        from datetime import datetime, timezone
-
-        day = datetime.now(timezone.utc).strftime("%Y%m%d")
     # Идентификатор задаёт код, а не модель: у поста должен быть один id.
-    # Хэш стабильный: hash() в Python рандомизируется между процессами,
-    # и id поста менялся бы от запуска к запуску.
-    digest = hashlib.md5((post.get("source", "") + post.get("title", "")).encode("utf-8")).hexdigest()
-    post_id = f"p{day}-{int(digest[:6], 16) % 900 + 100}"
+    post_id = post_id_for(post)
     post["id"] = post_id
     post["status"] = "draft"
 

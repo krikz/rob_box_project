@@ -71,6 +71,11 @@ def ensure_develop_worktree(root: Optional[Path] = None, out=print) -> Optional[
         out(f"[studio-develop] worktree создан: {path}")
         return path
 
+    # reset --hard и clean -fd — только в отдельном worktree. Если путь указывает на сам клон
+    # студии (или на обычный клон, где .git — каталог), сброс стёр бы рабочую ветку и state.
+    if path == root.resolve() or not (path / ".git").is_file():
+        out(f"[studio-develop] {path} — не отдельный worktree (это клон или .git-каталог) — не трогаю")
+        return None
     checked = _git(["checkout", "--detach", "origin/develop"], cwd=path)
     if checked.returncode != 0:
         out(f"[studio-develop] checkout не удался: {checked.stderr.strip()[:160]}")

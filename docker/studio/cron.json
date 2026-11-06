@@ -1,14 +1,7 @@
 {
-  "comment": "Расписание кронов студии. Время — Шифу (GMT+1): 0 10 UTC = 11:00 GMT+1.",
+  "comment": "Расписание кронов студии. Время — Шифу (GMT+1): 0 10 UTC = 11:00 GMT+1. Кнопки Шифу — НЕ крон, а сервис studio-watch (docker/studio/studio-watch.service): крон заставлял нажатие ждать следующего тика.",
   "profile": "studio",
   "jobs": [
-    {
-      "name": "studio: опрос кнопок",
-      "schedule": "* * * * *",
-      "timezone": "UTC",
-      "script": "studio_poll.sh",
-      "note": "каждую минуту: кнопка — это интерфейс, ждать минуты нельзя"
-    },
     {
       "name": "studio: публикация поста",
       "schedule": "0 10 * * 2,4,6",
@@ -22,6 +15,20 @@
       "timezone": "UTC",
       "script": "studio_session.sh",
       "note": "02:00Z = 03:00 GMT+1"
+    }
+  ],
+  "services": [
+    {
+      "name": "studio-watch",
+      "unit": "docker/studio/studio-watch.service",
+      "note": "постоянный long-poll getUpdates (50 с): кнопки и сообщения Шифу, ответ на нажатие сразу"
+    }
+  ],
+  "removed": [
+    {
+      "name": "studio: опрос кнопок",
+      "was": "* * * * * → studio_poll.sh",
+      "why": "06.11: крон держал нажатие до следующего тика; заменён сервисом studio-watch"
     }
   ]
 }
