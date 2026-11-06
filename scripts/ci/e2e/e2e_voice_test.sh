@@ -2120,28 +2120,35 @@ step_recover() {  # $1=label $2=text $3=voice $4=safe
     step_wait_after_play "$BEFORE" 0
 }
 
-# step_wake_replay LABEL SAFE — решение Шифу 28.10 (n210, Гриша): вейк потерян (no_wake), а «Робот!» тем же голосом STT
-# потерял так же (или восстановление no_wake шагу не разрешено) -- фраза шага звучит ещё раз, ОДИН раз за шаг, если шаг
-# просит ``wake_replay`` в ``recover`` (e2e_events.WAKE_REPLAY). Ретрай именно на промах вейка: хода по фразе не было
-# (судья e2e_events.py: no_wake), состояние робота не менялось -- не повтор неверного ответа (его ретраит
-# retry_acceptance, и только если шаг состояние не менял, #2902). В лог акта -- E2E_RECOVER wake_replay <шаг>, итог
-# шага -- «OK recovered_wake_replay», не чистый OK. Выход как у step_recover: E2E_WAIT_RC/E2E_REPLY_* последнего
-# ожидания, BEFORE -- начало его окна.
+# step_wake_replay LABEL SAFE -- решение Шифу 06.11 (глухота вейка): ОДНО правило для любого шага с вейком -- при no_wake
+# (фраза принята без вейка и ушла в бэклог, хода не было) фраза шага звучит ещё раз, ВСЕГО до E2E_WAKE_MAX_ATTEMPTS попыток
+# (e2e_events.WAKE_MAX_ATTEMPTS, считая первую). Решает код e2e_events.py (``wake-retry``): повтор разрешён и шагу,
+# запретившему recover (это глухота STT, а не ответ робота); повтора НЕТ, если ход был, шаг сам проверяет вейк
+# (expect: backlog), перебивает речь (barge_in) или попытки кончились. Номер попытки -- E2E_STEP_WAKE_ATTEMPT (на шаг,
+# через retry_acceptance), в отчёте шага -- wake_attempt=N/3. В лог акта -- E2E_RECOVER wake_replay <шаг>, итог шага,
+# прошедшего на 2-й/3-й попытке, -- «OK recovered_wake_replay», не чистый OK. Выход как у step_recover:
+# E2E_WAIT_RC/E2E_REPLY_* последнего ожидания, BEFORE -- начало его окна.
 step_wake_replay() {  # $1=label $2=safe
-    local label="$1" safe="$2"
-    recover_allowed wake_replay || return 0
-    if [ -n "${E2E_STEP_WAKE_REPLAYED:-}" ]; then
-        log "STEP ${label}: no_wake -- фраза шага уже повторялась (wake_replay), второго повтора нет"
-        return 0
-    fi
-    E2E_STEP_WAKE_REPLAYED=1
-    E2E_STEP_RECOVERED="wake_replay"
-    recover_mark wake_replay "$label" "replay=1 after=${E2E_REPLY_AFTER:-?}s"
-    BEFORE="$(${ROBOT_SSH} "date -u +%Y-%m-%dT%H:%M:%SZ" 2>/dev/null || date -u +%Y-%m-%dT%H:%M:%SZ)"
-    E2E_LAST_PLAY_SINCE="$BEFORE"
-    log "STEP ${label}: вейк потерян и «Робот!» не помог -- фраза шага ещё раз (wake_replay)"
-    play_eq_wav "$OUT_DIR/cmd_${safe}_eq.wav"
-    step_wait_after_play "$BEFORE" 0
+    local label="$1" safe="$2" out attempt
+    while [ "${E2E_WAIT_RC:-0}" = "4" ] && [ "${E2E_REPLY_VERDICT:-}" = "no_wake" ]; do
+        attempt="${E2E_STEP_WAKE_ATTEMPT:-1}"
+        out="$(python3 "$(_events_py)" wake-retry --expect "${expect:-cycle}" --verdict "${E2E_REPLY_VERDICT:-}"             --attempt "$attempt" --text "${text:-}" --barge-in "${_barge_mode:-0}")"
+        if [ "$(printf '%s
+' "$out" | _ev_kv retry)" != "1" ]; then
+            log "STEP ${label}: no_wake -- повтора фразы нет ($(printf '%s
+' "$out" | _ev_kv reason), wake_attempt=${attempt}/${E2E_WAKE_MAX_ATTEMPTS})"
+            return 0
+        fi
+        E2E_STEP_WAKE_ATTEMPT=$((attempt + 1))
+        E2E_STEP_WAKE_REPLAYED=1
+        E2E_STEP_RECOVERED="wake_replay"
+        recover_mark wake_replay "$label" "wake_attempt=${E2E_STEP_WAKE_ATTEMPT}/${E2E_WAKE_MAX_ATTEMPTS} after=${E2E_REPLY_AFTER:-?}s"
+        BEFORE="$(${ROBOT_SSH} "date -u +%Y-%m-%dT%H:%M:%SZ" 2>/dev/null || date -u +%Y-%m-%dT%H:%M:%SZ)"
+        E2E_LAST_PLAY_SINCE="$BEFORE"
+        log "STEP ${label}: вейк потерян -- фраза шага ещё раз (wake_attempt=${E2E_STEP_WAKE_ATTEMPT}/${E2E_WAKE_MAX_ATTEMPTS})"
+        play_eq_wav "$OUT_DIR/cmd_${safe}_eq.wav"
+        step_wait_after_play "$BEFORE" 0
+    done
 }
 
 # step_stt_replay LABEL SAFE — #4196 (n411/n506 марафона-3: STT «говори» -> «гарри», «темп» исказил): ход БЫЛ, но принятая
@@ -2497,6 +2504,9 @@ run_step() {  # $1=text $2=voice $3=step_label $4=expect_kind(cycle|wake-gated|b
     # НЕ переигрываем paplay, пока не убедимся, что акцепта правда не было —
     # только продолжаем ждать/перечитывать логи ТОГО ЖЕ окна.
     local attempt reaction rc accepted_before=""
+    : "${E2E_STEP_WAKE_ATTEMPT:=1}"   # wake_attempt шага (06.11); сброс -- на старте шага в scenario-цикле
+    # Потолок попыток -- одна константа e2e_events.WAKE_MAX_ATTEMPTS (не копия числа в bash).
+    [ -n "${E2E_WAKE_MAX_ATTEMPTS:-}" ] || E2E_WAKE_MAX_ATTEMPTS="$(python3 "$(_events_py)" wake-retry --verdict "" | _ev_kv max)"
     reaction=0
     for attempt in $(seq 1 "$E2E_MAX_ATTEMPTS"); do
         if [ -n "$accepted_before" ]; then
@@ -2530,7 +2540,7 @@ run_step() {  # $1=text $2=voice $3=step_label $4=expect_kind(cycle|wake-gated|b
         step_wait_after_play "$BEFORE" "$_barge_mode"
         # #3989: до хода не дошло (вейк потерян / тишина) -- одно восстановление шага, если оно ему разрешено.
         [ "${E2E_WAIT_RC:-0}" = "4" ] && step_recover "$label" "$text" "$voice" "$safe"
-        # Решение Шифу 28.10 (n210): вейк так и не пробился -- шаг, которому разрешён wake_replay, повторяет свою фразу.
+        # Решение Шифу 06.11: вейк так и не пробился -- фраза шага звучит ещё раз, всего до E2E_WAKE_MAX_ATTEMPTS попыток.
         [ "${E2E_WAIT_RC:-0}" = "4" ] && [ "${E2E_REPLY_VERDICT:-}" = "no_wake" ] && step_wake_replay "$label" "$safe"
         # #4196: ход был, но STT исказил ключевое слово фразы шага (поле stt_keys) -- шаг с stt_replay играет фразу ещё раз.
         [ "${E2E_WAIT_RC:-0}" = "0" ] && step_stt_replay "$label" "$safe"
@@ -2549,7 +2559,7 @@ run_step() {  # $1=text $2=voice $3=step_label $4=expect_kind(cycle|wake-gated|b
                     else
                         log "STEP ${label}: ❌ ход проглотила тишина (stage=silenced): робот в тишине с прошлого шага/акта -- повторов нет"
                     fi
-                    emit_step "${label} FAIL turn_${E2E_REPLY_VERDICT}${E2E_STEP_RECOVERED:+ after_recover_${E2E_STEP_RECOVERED}} (${E2E_REPLY_REASON:--})"
+                    emit_step "${label} FAIL turn_${E2E_REPLY_VERDICT}${E2E_STEP_RECOVERED:+ after_recover_${E2E_STEP_RECOVERED}}${E2E_STEP_WAKE_ATTEMPT:+ wake_attempt=${E2E_STEP_WAKE_ATTEMPT}/${E2E_WAKE_MAX_ATTEMPTS}} (${E2E_REPLY_REASON:--})"
                     mark_fail_kind no_reaction
                     return 1 ;;
                 *)
@@ -2817,6 +2827,26 @@ def recovered_kind(rec):
 
 recovered = [l for l in order if recovered_kind(steps[l])]
 
+
+def wake_attempt(rec):
+    """06.11: «OK ... wake_attempt=N/M» -- с какой попытки фразы шага прошёл вейк; None -- шаг не считал попытки."""
+    if (rec.get("status") or "").upper() != "OK":
+        return None
+    for w in (rec.get("detail") or "").split():
+        if w.startswith("wake_attempt="):
+            try:
+                return int(w.split("=", 1)[1].split("/", 1)[0])
+            except ValueError:
+                return None
+    return None
+
+
+wake_by_attempt = {}
+for l in order:
+    n = wake_attempt(steps[l])
+    if n:
+        wake_by_attempt[n] = wake_by_attempt.get(n, 0) + 1
+
 acceptance = read_json("acceptance.json") or {}
 audio = read_json("audio_metrics.json") or {}
 baseline = read_json("baseline_diff.json") or {}
@@ -2834,6 +2864,7 @@ summary = {
         "skip": counts["SKIP"],
         "recovered": len(recovered),
         "recovered_labels": recovered,
+        "wake_attempts": {str(k): v for k, v in sorted(wake_by_attempt.items())},
         "failed_labels": [
             l for l in order if (steps[l].get("status") or "").upper() == "FAIL"
         ],
@@ -2877,6 +2908,8 @@ if st["failed_labels"]:
     print(">>> E2E_SUMMARY failed: %s" % ", ".join(st["failed_labels"]))
 if recovered:
     print(">>> E2E_SUMMARY recovered: %s" % ", ".join("%s(%s)" % (l, recovered_kind(steps[l])) for l in recovered))
+print(">>> E2E_SUMMARY wake_attempts: passed on 1st=%d, 2nd=%d, 3rd=%d"
+      % (wake_by_attempt.get(1, 0), wake_by_attempt.get(2, 0), wake_by_attempt.get(3, 0)))
 print(">>> E2E_SUMMARY act_recover=%s" % (",".join(summary["act_recover"]) or "-"))
 if summary["audio"]["error"]:
     print(">>> E2E_SUMMARY audio metrics: %s" % summary["audio"]["error"])
@@ -3204,6 +3237,7 @@ elif [ -n "$SCENARIO_FILE" ]; then
         E2E_STEP_RECOVER_KINDS="$(step_recover_kinds "$label")"
         E2E_STEP_RECOVERED=""
         E2E_STEP_WAKE_REPLAYED=""
+        E2E_STEP_WAKE_ATTEMPT=""
         E2E_STEP_STT_REPLAYED=""
         # retry_acceptance = доп. попытки при FAIL patterns/acceptance.
         # Нужно для dj01: LLM недетерминирован — если renardo не запустился
@@ -3430,12 +3464,13 @@ sys.stdout.write(robot_speech(sys.stdin.read()))
             # issue #3989 — то же про восстановление харнессом (E2E_RECOVER): «OK recovered_<вид>», не чистый OK;
             # сводка считает такие шаги отдельно (recovered=N).
             _recovered="${E2E_STEP_RECOVERED:+recovered_${E2E_STEP_RECOVERED}}"
+            _wake_att="${E2E_STEP_WAKE_ATTEMPT:+ wake_attempt=${E2E_STEP_WAKE_ATTEMPT}/${E2E_WAKE_MAX_ATTEMPTS}}"
             [ -n "$_recovered" ] && log "STEP ${label}: итог — ✅ OK после восстановления харнессом (${E2E_STEP_RECOVERED}, см. E2E_RECOVER выше) — не чистый PASS (#3989)"
             if [ "$attempt_n" -gt 0 ]; then
                 log "STEP ${label}: итог — ✅ OK с попытки $((attempt_n + 1))/$((retry_acceptance + 1)); прежние попытки провалились: ${acc_fail_history:-паттерны шага}"
-                emit_step "${label} OK ${_recovered:+${_recovered} }after_retry=${attempt_n}"
+                emit_step "${label} OK ${_recovered:+${_recovered} }after_retry=${attempt_n}${_wake_att}"
             else
-                emit_step "${label} OK${_recovered:+ ${_recovered}}"
+                emit_step "${label} OK${_recovered:+ ${_recovered}}${_wake_att}"
             fi
         else
             PASS=0
