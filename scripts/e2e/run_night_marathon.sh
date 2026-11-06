@@ -337,7 +337,7 @@ while IFS=$'\t' read -r a_n a_title a_stab a_steps a_scn a_acc a_phase a_hold; d
 
     # #4476: REST через scripts/dev/gh-workflow-dispatch.sh (`gh workflow run` отдавал HTTP 500); stderr хелпера
     # (HTTP-код и тело ответа) идёт в лог марафона, не в /dev/null.
-    if ! "$DISPATCH_SH" "$WORKFLOW" "$REF" \
+    if ! bash "$DISPATCH_SH" "$WORKFLOW" "$REF" \
             environment=test \
             scenario_file="$a_scn" \
             acceptance_file="$a_acc" \
