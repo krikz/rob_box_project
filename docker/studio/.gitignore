@@ -12,3 +12,6 @@ state.json.lock
 # Рабочие файлы сессии анализа: факты, идеи, отфильтрованный список на отправку.
 run/
 ideas_to_send.json
+state.json.bak
+*.tmp
+*.lock

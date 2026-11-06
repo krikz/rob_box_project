@@ -27,7 +27,7 @@ import sys
 import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Callable, Optional
+from typing import Optional
 
 import channel_lib as lib
 import studio_state as st
@@ -43,9 +43,20 @@ ACTION_DISCUSS = "discuss"  # «Обсудить»
 ACTION_SKIP = "skip"  # «Мимо»
 ACTION_PUBLISH = "publish"  # «Опубликовать»
 ACTION_REJECT = "reject"  # «Отклонить»
+ACTION_SHORTER = "shorter"  # «Короче»
+ACTION_SIMPLER = "simpler"  # «Проще»
+ACTION_ANGLE = "angle"  # «Подача»
+ACTION_MEDIA = "media"  # «Медиа»
+
+# Чем переделать пост по кнопке Шифу (решение Шифу, 06.11).
+REFINE_INSTRUCTIONS = {
+    ACTION_SHORTER: "Сделай текст заметно короче: убери вводные и детали, остав суть.",
+    ACTION_SIMPLER: "Упрости язык: короткие фразы, без терминов, как будто объясняешь другу.",
+    ACTION_ANGLE: "Смени угол подачи: начни с другого факта и покажи другую сторону.",
+}
 
 IDEA_ACTIONS = (ACTION_TAKE, ACTION_DISCUSS, ACTION_SKIP)
-POST_ACTIONS = (ACTION_PUBLISH, ACTION_REJECT)
+POST_ACTIONS = (ACTION_PUBLISH, ACTION_REJECT, ACTION_SHORTER, ACTION_SIMPLER, ACTION_ANGLE, ACTION_MEDIA)
 
 # Личка Шифу: сюда студия шлёт идеи и черновики, отсюда приходят кнопки и ответы.
 SHIFU_CHAT_ID = int(os.environ.get("TG_SHIFU_CHAT_ID", "495039871"))
@@ -189,12 +200,26 @@ def idea_keyboard(idea_id: str) -> dict:
 
 
 def post_keyboard(post_id: str) -> dict:
+    """Кнопки черновика: итерация текста, медиа и решение.
+
+    Решение Шифу (06.11): на обсуждение приходит готовый пост, дальше
+    он крутится кнопками — «короче», «проще», «подача», «медиа» — и
+    правится на месте, без новых сообщений.
+    """
     return keyboard(
         [
             [
+                {"text": "Короче", "callback_data": f"studio:post:{post_id}:{ACTION_SHORTER}"},
+                {"text": "Проще", "callback_data": f"studio:post:{post_id}:{ACTION_SIMPLER}"},
+            ],
+            [
+                {"text": "Подача", "callback_data": f"studio:post:{post_id}:{ACTION_ANGLE}"},
+                {"text": "Медиа", "callback_data": f"studio:post:{post_id}:{ACTION_MEDIA}"},
+            ],
+            [
                 {"text": "Опубликовать", "callback_data": f"studio:post:{post_id}:{ACTION_PUBLISH}"},
                 {"text": "Отклонить", "callback_data": f"studio:post:{post_id}:{ACTION_REJECT}"},
-            ]
+            ],
         ]
     )
 
@@ -215,11 +240,17 @@ def apply_idea_action(state: dict, idea_id: str, action: str) -> str:
             "Напиши одной строкой, о какой речь, и я подниму её заново."
         )
     if action == ACTION_TAKE:
+        # Отклонённый пост не воскрешается: «Отклонить» → «Берём» → «Опубликовать»
+        # не должен вернуть его в очередь.
+        rejected = state.get("posts", {}).get(f"{idea_id}-post", {}).get("status") == "rejected"
+        if rejected:
+            return f"Пост идеи {idea_id} был отклонён — вернуть его в публикацию нельзя."
         idea["status"] = "agreed"
         idea["agreed_at"] = _now()
         # Что именно согласовано: без этой записи через месяц не вспомнить,
         # о чём договорились, когда идея бралась в работу.
         idea["agreement"] = (
+            f"взято кнопкой «Берём» (Шифу подтвердил идею, текст ещё не согласован): "
             f"согласовано: {idea.get('title', '')}; "
             f"показать: {idea.get('show') or 'не сказано'}; "
             f"срок: {idea.get('deadline') or 'не назван'}"
@@ -270,10 +301,11 @@ def _queue_number(queue_dir: Path, post_id: str = "") -> int:
     """
     used = set()
     for post in queue_dir.glob("*.md"):
-        try:
-            used.add(int(post.name[:3]))
-        except ValueError:
-            continue
+        # Ведущие цифры имени, а не первые три символа: "1000-post.md" даёт
+        # int("100") = 100, и следующий номер снова становится тысячей.
+        match = re.match(r"(\d+)", post.name)
+        if match:
+            used.add(int(match.group(1)))
     number = max(used) + 1 if used else 1
     # Минимум 900: номера develop живут в сотнях, наши — в тысячах, чтобы
     # никогда не пересечься.
@@ -317,10 +349,181 @@ def queue_post(post: dict, queue_dir: Path, now: Optional[datetime] = None) -> O
     return path
 
 
+def load_run_facts() -> list:
+    """Факты последней сессии — из файла, который собрала studio_facts."""
+    path = Path(os.environ.get("STUDIO_FACTS", REPO / "docker" / "studio" / "run" / "facts.json"))
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return []
+    return data.get("visible_facts") or data.get("facts") or []
+
+
+def request_material(bot: StudioBot, post: dict, what: str, out=print) -> str:
+    """Нужного материала нет: говорим об этом Шифу и заводим issue.
+
+    Бриф требует именно issue: координатор кладёт файл в
+    docs/channel/media/ через PR, а студия сама нигде не ищет.
+    """
+    title = f"материал для канала: {what}"
+    body = (
+        f"Посту студии не хватает материала.\n\n"
+        f"Что нужно: {what}\n"
+        f"Пост: {post.get('id', '')}\n"
+        f"Идея: {post.get('title', '')}\n\n"
+        f"Материал ждём в docs/channel/media/ — координатор кладёт его через PR, "
+        f"студия берёт свежие материалы из worktree на origin/develop."
+    )
+    created = ""
+    try:
+        done = subprocess.run(
+            [
+                "gh",
+                "issue",
+                "create",
+                "--repo",
+                "GH_REPO",
+                "--title",
+                title,
+                "--body",
+                body,
+            ],
+            capture_output=True,
+            text=True,
+            timeout=120,
+            check=False,
+        )
+        if done.returncode == 0:
+            created = (done.stdout or "").strip().splitlines()[-1]
+        else:
+            out(f"issue не создан: {(done.stderr or '').strip()[:120]}")
+    except (OSError, subprocess.TimeoutExpired):
+        out("issue не создан: gh недоступен")
+    notice = f"Нужен файл: {what}."
+    if created:
+        notice += f" Завёл issue: {created}"
+    else:
+        notice += " Issue создать не вышло — скажи координатору вручную."
+    bot.send_message(SHIFU_CHAT_ID, notice)
+    return notice
+
+
+def refine_post(bot: StudioBot, state_path: Path, post_id: str, action: str, out=print) -> str:
+    """Переделать пост по кнопке Шифу и обновить сообщение на месте.
+
+    Текст правится по кнопке «короче»/«проще»/«подача», медиа — по кнопке
+    «медиа». Всё это медленная работа (модель зовётся по HTTP), поэтому
+    выполняется ВНЕ блокировки состояния.
+    """
+    state = st.load_state(state_path)
+    record = (state.get("posts") or {}).get(post_id)
+    if not record:
+        return f"Пост {post_id} не найден — возможно, список обновился."
+
+    facts = load_run_facts()
+    if not facts:
+        return f"Пост {post_id}: факты сессии недоступны, переделать не из чего."
+
+    if action == ACTION_MEDIA:
+        media = [f for f in facts if f.get("kind") == "media" and f.get("source")]
+        if not media:
+            return request_material(bot, record, "картинка или видео к посту", out=out)
+        used = {record.get("media_ref")}
+        options = [f for f in media if f.get("source") not in used] or media
+        chosen = options[0]
+        record["media_ref"] = chosen.get("source")
+        _save_post(state_path, record)
+        message = _edit_post(bot, record, out=out)
+        return f"Медиа: {chosen.get('source')}. {message}"
+
+    instruction = REFINE_INSTRUCTIONS.get(action)
+    if not instruction:
+        return f"Неизвестное действие {action}."
+
+    own = [f for f in facts if f.get("key") in set(record.get("fact_keys") or [])] or facts
+    idea = {
+        "title": record.get("title", ""),
+        "show": record.get("show") or record.get("title", ""),
+        "deadline": record.get("deadline", ""),
+        "media_ref": record.get("media_ref", ""),
+        "fact_keys": record.get("fact_keys") or [],
+    }
+    produced = _produce(idea, own, instruction=instruction)
+    if produced.get("error"):
+        out(f"пост {post_id}: переделка не вышла: {produced.get('error')}")
+        return f"Пост {post_id}: переделать не вышло ({produced.get('error')})."
+    problems = produced.get("problems") or []
+    if problems:
+        out(f"пост {post_id}: переделка не прошла проверку: {problems}")
+        return f"Пост {post_id}: новая версия не прошла проверку ({'; '.join(problems[:2])})."
+    record["body_html"] = produced.get("body_html") or record.get("body_html", "")
+    if produced.get("tags"):
+        record["tags"] = produced["tags"]
+    _save_post(state_path, record)
+    message = _edit_post(bot, record, out=out)
+    return f"Готово: {message}"
+
+
+def _produce(idea: dict, facts: list, instruction: str = "") -> dict:
+    """Позвать генератор текста (studio_text) и вернуть результат."""
+    script = Path(__file__).with_name("studio_text.py")
+    tmp_dir = Path(os.environ.get("STUDIO_TMP", REPO / "docker" / "studio" / "run"))
+    tmp_dir.mkdir(parents=True, exist_ok=True)
+    idea_path = tmp_dir / "idea-refine.json"
+    idea_path.write_text(json.dumps(idea, ensure_ascii=False), encoding="utf-8")
+    cmd = ["python3", str(script), "--produce", str(idea_path)]
+    if instruction:
+        cmd += ["--instruction", instruction]
+    try:
+        done = subprocess.run(cmd, capture_output=True, text=True, timeout=400, check=False)
+    except (OSError, subprocess.TimeoutExpired):
+        return {"error": "генератор не ответил"}
+    try:
+        return json.loads(done.stdout or "{}")
+    except ValueError:
+        return {"error": "генератор вернул не JSON"}
+
+
+def _save_post(state_path: Path, record: dict) -> None:
+    """Записать пост в состояние, не затирая остальное."""
+
+    def _apply(current: dict) -> None:
+        current.setdefault("posts", {})[record["id"]] = record
+
+    with st.state_transaction(state_path) as current:
+        _apply(current)
+
+
+def _edit_post(bot: StudioBot, record: dict, out=print) -> str:
+    """Обновить сообщение с постом на месте."""
+    post_id = str(record.get("id") or "")
+    message_id = record.get("message_id")
+    body = record.get("body_html") or ""
+    title = escape_html(record.get("title", ""))
+    text = f"<b>Черновик {post_id}</b>" + (f": {title}" if title else "") + "\n\n" + body
+    if not message_id:
+        out(f"пост {post_id}: нет message_id — правлю новым сообщением")
+        bot.send_message(SHIFU_CHAT_ID, text, keyboard=post_keyboard(post_id))
+        return "прислал новым сообщением."
+    result = bot.edit_message_text(SHIFU_CHAT_ID, message_id, text, keyboard=post_keyboard(post_id))
+    if not result.get("ok"):
+        out(f"пост {post_id}: правка не удалась: {result.get('description')}")
+        return "правка не удалась, Telegram не принял."
+    return "поправил на месте."
+
+
 def apply_post_action(state: dict, post_id: str, action: str) -> str:
     """Применить решение по посту к состоянию. Возвращает текст ответа Шифу."""
     posts = state.setdefault("posts", {})
     record = posts.setdefault(post_id, {})
+    if action in (ACTION_SHORTER, ACTION_SIMPLER, ACTION_ANGLE, ACTION_MEDIA):
+        # Переделка идёт вне блокировки состояния: модель зовётся по HTTP.
+        return {
+            ACTION_SHORTER: "Короче — переделываю.",
+            ACTION_SIMPLER: "Проще — переделываю.",
+            ACTION_ANGLE: "Меняю подачу — переделываю.",
+            ACTION_MEDIA: "Смотрю медиа.",
+        }.get(action, "Переделываю.")
     if action == ACTION_PUBLISH:
         if record.get("status") == "rejected":
             return f"Пост {post_id} уже отклонён — вернуть его в публикацию можно только новой идеей."
@@ -330,12 +533,21 @@ def apply_post_action(state: dict, post_id: str, action: str) -> str:
         queue_dir = Path(os.environ.get("STUDIO_QUEUE_DIR", REPO / "docs" / "channel" / "queue"))
         # Повторное нажатие не должно плодить файлы: тот же пост — тот же файл.
         existing = record.get("queue_file")
-        if existing and Path(existing).exists():
+        if existing:
+            # Пост уже становился в очередь. Второй файл не создаём НИКОГДА:
+            # иначе «Опубликовать» дважды дал бы два поста в канале. Если файл
+            # исчез — сообщаем об этом, но не плодим замену молча.
             record["status"] = "approved"
             slot = next_slot()
+            if Path(existing).exists():
+                return (
+                    f"Пост {post_id} уже одобрен и стоит в очереди — нового поста не будет. "
+                    f"Слот {slot.strftime('%d.%m в %H:%M')} (по GMT+1)."
+                )
             return (
-                f"Пост {post_id} уже одобрен и стоит в очереди — нового поста не создаю. "
-                f"Слот {slot.strftime('%d.%m в %H:%M')} (по GMT+1)."
+                f"Пост {post_id} уже был одобрен и стоял в очереди ({existing}), "
+                f"но файла на месте нет. Второй файл не создаю — публикация должна быть одна. "
+                f"Нужна ручная проверка очереди."
             )
         path = queue_post(record, queue_dir)
         if path is None:
@@ -403,11 +615,14 @@ def poll_once(bot: StudioBot, state_path: Path, timeout: int = 30, out=print, st
     else:
         handled, actions = _poll_cycle(bot, state, state_path, timeout=timeout, out=out)
         st.save_state(state_path, state)
-    for action, item_id in actions:
+    for action, item_id, *rest in actions:
+        item_action = rest[0] if rest else ""
         if action == "discuss":
             discuss_idea(bot, state_path, item_id, out=out)
         elif action == "take":
             produce_post_for_idea(bot, state_path, item_id, out=out)
+        elif action == "refine":
+            refine_post(bot, state_path, item_id, item_action, out=out)
         elif action == "reply":
             reply_to_shifu(bot, state_path, item_id, out=out)
     return handled
@@ -445,6 +660,8 @@ def _poll_cycle(bot: StudioBot, state: dict, state_path: Path, timeout: int = 30
                 actions.append(("take", data.split(":")[2]))
             elif data.startswith("studio:idea:") and data.endswith(":discuss"):
                 actions.append(("discuss", data.split(":")[2]))
+            elif data.startswith("studio:post:"):
+                actions.append(("refine", data.split(":")[2], data.split(":")[3]))
             continue
         message = update.get("message")
         if message:
@@ -575,7 +792,6 @@ def watch(bot: StudioBot, state_path: Path, timeout: int = 30, once: bool = Fals
     """Цикл long-poll. once=True — один проход (для cron)."""
     total = 0
     while True:
-        state = st.load_state(state_path)
         total += poll_once(bot, state_path, timeout=timeout, out=out)
         if once:
             return total
@@ -631,6 +847,10 @@ def produce_post_for_idea(bot: StudioBot, state_path: Path, idea_id: str, out=pr
     idea = find_idea(state, idea_id)
     if idea is None:
         out(f"идея {idea_id} не найдена — производство пропущено")
+    # Текст пишется только по согласованной идее.
+    if idea.get("status") != "agreed":
+        out(f"идея {idea_id} не согласована (статус {idea.get('status')!r}) — производство пропущено")
+        return False
         return False
     script = Path(__file__).with_name("studio_text.py")
     facts_path = Path(os.environ.get("STUDIO_FACTS", REPO / "docker" / "studio" / "run" / "facts.json"))
@@ -659,6 +879,15 @@ def produce_post_for_idea(bot: StudioBot, state_path: Path, idea_id: str, out=pr
         out(f"идея {idea_id}: пост не прошёл проверку: {post.get('problems')}")
         return False
     post_id = f"{idea_id}-post"
+    # Пост уже мог быть одобрен и стоять в очереди. Перезаписывать запись
+    # нельзя: теряется queue_file, и «Опубликовать» создаст второй файл.
+    existing = state.get("posts", {}).get(post_id) or {}
+    if existing.get("queue_file"):
+        out(f"идея {idea_id}: пост уже в очереди ({existing['queue_file']}) — второй не делаю")
+        return False
+    if existing.get("status") == "rejected":
+        out(f"идея {idea_id}: пост отклонён — заново не собираю")
+        return False
     record = {
         "id": post_id,
         "status": "proposed",
@@ -668,6 +897,9 @@ def produce_post_for_idea(bot: StudioBot, state_path: Path, idea_id: str, out=pr
         "media_ref": idea.get("media_ref", ""),
         "fact_keys": idea.get("fact_keys") or [],
     }
+    for key in ("queue_file", "message_id"):
+        if existing.get(key):
+            record[key] = existing[key]
 
     def _apply(current: dict) -> None:
         current.setdefault("posts", {})[post_id] = record
@@ -677,9 +909,23 @@ def produce_post_for_idea(bot: StudioBot, state_path: Path, idea_id: str, out=pr
 
     with st.state_transaction(state_path) as current:
         _apply(current)
-    send_post(bot, record, SHIFU_CHAT_ID)
+    sent = send_post(bot, record, SHIFU_CHAT_ID)
+    if not sent:
+        # Честный отчёт: черновик не ушёл — Шифу об этом должен знать.
+        out(f"идея {idea_id}: пост собран, но черновик НЕ отправлен — Telegram не принял")
+        return False
     out(f"идея {idea_id}: пост готов и отправлен с кнопками")
     return True
+
+
+def escape_html(text: str) -> str:
+    """Экранировать текст для Telegram HTML.
+
+    Заголовок черновика приходит от модели и может содержать «<» или «&».
+    Без экранирования Telegram отклонил бы сообщение целиком — Шифу увидел бы
+    пустоту вместо поста.
+    """
+    return (text or "").replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
 
 
 def send_post(bot: StudioBot, post: dict, chat_id: int, out=print) -> int:
@@ -689,14 +935,19 @@ def send_post(bot: StudioBot, post: dict, chat_id: int, out=print) -> int:
         out("у поста нет id")
         return 0
     body = post.get("body_html") or post.get("body") or ""
-    title = post.get("title", "")
+    title = escape_html(post.get("title", ""))
     text = f"<b>Черновик {post_id}</b>" + (f": {title}" if title else "") + "\n\n" + body
     result = bot.send_message(chat_id, text, keyboard=post_keyboard(post_id))
     if not result.get("ok"):
         out(f"черновик не отправлен: {result.get('description')}")
         return 0
+    # message_id нужен для правки на месте: по кнопке «короче» текст меняется
+    # в том же сообщении, а не приходит новым.
+    message_id = (result.get("result") or {}).get("message_id")
+    if message_id:
+        post["message_id"] = message_id
     out(f"черновик {post_id} отправлен")
-    return 1
+    return message_id or 1
 
 
 def filming_requests(idea: dict) -> str:
@@ -774,9 +1025,13 @@ def register_post(state_path: Path, post: dict) -> None:
     state = st.load_state(state_path)
     posts = state.setdefault("posts", {})
     record = posts.setdefault(post_id, {})
+    record.setdefault("id", post_id)
     record.setdefault("status", "proposed")
     record.setdefault("title", post.get("title", ""))
     record.setdefault("body_html", post.get("body_html", "") or post.get("body", ""))
+    for key in ("tags", "media_ref", "fact_keys", "show", "message_id"):
+        if post.get(key):
+            record[key] = post[key]
     st.save_state(state_path, state)
 
 
@@ -837,6 +1092,10 @@ def main() -> int:
         post = data.get("post", data) if isinstance(data, dict) else data
         register_post(state_path, post)
         sent = send_post(bot, post, args.chat_id)
+        if sent:
+            # message_id появился только после отправки — без него правка
+            # «короче» не найдёт сообщение и пошлёт новое.
+            register_post(state_path, post)
         return 0 if sent else 1
     return 0
 

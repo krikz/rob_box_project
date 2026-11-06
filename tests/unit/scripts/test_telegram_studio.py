@@ -1,6 +1,5 @@
 """Студия канала: прямой транспорт, кнопки, состояние. Сеть замокана."""
 
-import json
 import sys
 from pathlib import Path
 
@@ -161,8 +160,11 @@ def test_idea_keyboard_has_three_buttons():
 
 def test_post_keyboard_has_publish_and_reject():
     kb = studio.post_keyboard("001")
-    row = kb["inline_keyboard"][0]
-    assert [b["callback_data"] for b in row] == ["studio:post:001:publish", "studio:post:001:reject"]
+    rows = [[b["callback_data"] for b in row] for row in kb["inline_keyboard"]]
+    # Решение Шифу (06.11): сначала кнопки итерации текста, решение — последней строкой.
+    assert rows[0] == ["studio:post:001:shorter", "studio:post:001:simpler"]
+    assert rows[1] == ["studio:post:001:angle", "studio:post:001:media"]
+    assert rows[2] == ["studio:post:001:publish", "studio:post:001:reject"]
 
 
 def test_callback_data_fits_telegram_limit():
@@ -358,7 +360,8 @@ def test_send_post_with_publish_button():
     bot = RecordingBot()
     post = {"id": "001", "title": "черновик", "body_html": "<b>текст</b> #роббокс"}
     assert studio.send_post(bot, post, 495039871) == 1
-    assert "studio:post:001:publish" == bot.sent[0]["keyboard"]["inline_keyboard"][0][0]["callback_data"]
+    buttons = [b["callback_data"] for row in bot.sent[0]["keyboard"]["inline_keyboard"] for b in row]
+    assert "studio:post:001:publish" in buttons
 
 
 # --------------------------------------------------------------------------- секреты не в git

@@ -9,8 +9,6 @@
 import sys
 from pathlib import Path
 
-import pytest
-
 REPO = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(REPO / "scripts" / "telegram"))
 
@@ -36,9 +34,6 @@ def test_facts_module_runs_and_returns_facts(tmp_path):
     state = tmp_path / "state.json"
     buf = io.StringIO()
     with contextlib.redirect_stdout(buf):
-        import argparse
-
-        args = argparse.Namespace(repo=None, state=state, since=None, no_save=True)
         try:
             facts_mod.main.__wrapped__ if hasattr(facts_mod.main, "__wrapped__") else None
         except AttributeError:

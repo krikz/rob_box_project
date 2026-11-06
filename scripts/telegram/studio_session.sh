@@ -78,8 +78,45 @@ PY
     fi
 fi
 
+# Лимит частоты по метке последней сессии. Раньше считали только по
+# последней публикации: без публикаций список уходил каждый день, и Шифу
+# получал сообщения чаще, чем договаривались.
+LAST_SESSION=$(python3 - "$STUDIO_REPO/docker/studio/state.json" "$STUDIO_REPO/scripts/telegram" <<'PY'
+import json
+import sys
+
+try:
+    with open(sys.argv[1], encoding="utf-8") as handle:
+        print(json.load(handle).get("last_session") or "")
+except (OSError, ValueError):
+    print("")
+PY
+)
+
+if [ -n "$LAST_SESSION" ]; then
+    SESSION_SOON=$(python3 - "$LAST_SESSION" <<'PY'
+import sys
+from datetime import datetime, timezone
+
+try:
+    last = datetime.fromisoformat(sys.argv[1])
+except ValueError:
+    print("no")
+    raise SystemExit(0)
+if last.tzinfo is None:
+    last = last.replace(tzinfo=timezone.utc)
+hours = (datetime.now(timezone.utc) - last).total_seconds() / 3600
+print("yes" if hours < 48 else "no")
+PY
+)
+    if [ "$SESSION_SOON" = "yes" ]; then
+        echo "[studio-session] с прошлой сессии не прошло 48 ч — молчу"
+        exit 0
+    fi
+fi
+
 FACTS="$WORK/facts.json"
-IDEAS="$WORK/ideas.json"
+POST="$WORK/ideas.json"
 
 echo "[studio-session] 1/3 собираю факты"
 python3 scripts/telegram/studio_facts.py --no-save --state "$STUDIO_REPO/docker/studio/state.json" > "$FACTS"
@@ -99,40 +136,15 @@ if [ "$VISIBLE" = "0" ]; then
     exit 0
 fi
 
-echo "[studio-session] 2/3 пишу идеи (MiniMax) и проверяю кодом"
-if ! python3 scripts/telegram/studio_text.py --facts "$FACTS" --out "$IDEAS" > /dev/null; then
-    echo "[studio-session] модель не ответила или текст не прошёл проверку — молчу"
+echo "[studio-session] 2/3 собираю готовый пост (MiniMax) и проверяю кодом"
+if ! python3 scripts/telegram/studio_draft.py --facts "$FACTS" --out "$POST"; then
+    echo "[studio-session] пост не собрался или не прошёл проверку — Шифу ничего не шлю"
     exit 1
 fi
 
-OK_IDEAS=$(python3 - "$IDEAS" <<'PY'
-import json
-import sys
-
-with open(sys.argv[1], encoding="utf-8") as handle:
-    print(sum(1 for i in json.load(handle).get("ideas", []) if i.get("ok")))
-PY
-)
-echo "[studio-session] идей прошли проверку: $OK_IDEAS"
-if [ "$OK_IDEAS" = "0" ]; then
-    echo "[studio-session] ни одна идея не прошла проверку — молчу"
-    exit 0
-fi
-
-# Шифу уходят только проверенные идеи.
-python3 - "$IDEAS" "$STUDIO_REPO/docker/studio/ideas_to_send.json" <<'PY'
-import json
-import sys
-
-data = json.load(open(sys.argv[1]))
-good = [i for i in data.get("ideas", []) if i.get("ok")]
-json.dump({"ideas": good}, open(sys.argv[2], "w"), ensure_ascii=False, indent=2)
-print(f"  к отправке: {len(good)}")
-PY
-
-echo "[studio-session] 3/3 шлю идеи Шифу"
+echo "[studio-session] 3/3 шлю готовый пост Шифу"
 python3 scripts/telegram/channel_studio.py --state "$STUDIO_REPO/docker/studio/state.json" \
-    ideas "$STUDIO_REPO/docker/studio/ideas_to_send.json"
+    post "$POST"
 
 # Метку сессии двигаем только после успешной отправки: иначе пропавшая сессия потеряла бы факты.
 # Пишем через studio_state: там атомарная запись и блокировка, а в этом heredoc
@@ -141,7 +153,7 @@ python3 - "$STUDIO_REPO/docker/studio/state.json" <<'PY'
 import sys
 from datetime import datetime, timezone
 
-sys.path.insert(0, "/home/builder/hermes-share/rob_box_project/scripts/telegram")
+sys.path.insert(0, sys.argv[2])
 import studio_state as st
 
 path = sys.argv[1]

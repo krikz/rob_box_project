@@ -257,9 +257,9 @@ def validate(post: Post, repo_root: Path) -> list:
     if not MIN_TAGS <= len(post.hashtags) <= MAX_TAGS:
         problems.append(f"хэштегов {len(post.hashtags)}, нужно {MIN_TAGS}–{MAX_TAGS}")
     if post.media:
-        problems += media_problems(repo_root / post.media, post.media)
+        problems += media_problems(resolve_media(repo_root, post.media), post.media)
     if post.extra_media:
-        problems += media_problems(repo_root / post.extra_media, post.extra_media)
+        problems += media_problems(resolve_media(repo_root, post.extra_media), post.extra_media)
     problems += album_problems(post)
     problems += [f"не готово: {item}" for item in post.pending]
     return problems
@@ -278,6 +278,23 @@ def extract_tags(body: str) -> list:
     return found
 
 
+def resolve_media(repo_root: Path, media: str) -> Path:
+    """Найти файл материала: сначала в клоне, потом в worktree на develop.
+
+    Свежие материалы лежат в develop и в рабочей ветке студии их ещё нет.
+    Публикатор берёт файл оттуда, где он есть, — иначе пост ушёл бы без
+    картинки, а это молчаливая потеря материала.
+    """
+    path = repo_root / media
+    if path.exists():
+        return path
+    develop = Path(os.environ.get("STUDIO_DEVELOP_WORKTREE", repo_root.parent / "rob_box_develop"))
+    candidate = develop / media
+    if candidate.exists():
+        return candidate
+    return path
+
+
 def build_request(post: Post, repo_root: Path, chat_id: int = CHANNEL_ID) -> tuple:
     """(метод Bot API, параметры, файл или None) для поста."""
     params = {"chat_id": chat_id, "parse_mode": "HTML"}
@@ -285,7 +302,7 @@ def build_request(post: Post, repo_root: Path, chat_id: int = CHANNEL_ID) -> tup
         params["text"] = post.body
         params["link_preview_options"] = {"is_disabled": True}
         return "sendMessage", params, None
-    media = repo_root / post.media
+    media = resolve_media(repo_root, post.media)
     params["caption"] = post.body
     ext = media.suffix.lower()
     if ext in VIDEO_EXT:
@@ -336,7 +353,7 @@ def build_album_request(
     """
     files, items = [], []
     for i, rel in enumerate([post.media, post.extra_media]):
-        path = repo_root / rel
+        path = resolve_media(repo_root, rel)
         if path.suffix.lower() in ANIMATION_EXT:
             path = (convert or gif_to_mp4)(path)
         is_video = path.suffix.lower() in VIDEO_EXT

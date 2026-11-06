@@ -22,6 +22,7 @@ import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
+import studio_develop as develop
 import studio_state as st
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -292,6 +293,82 @@ def collect_runs(repo: str, since: str) -> list:
     return facts
 
 
+def collect_new_files_by_git(repo_root: Path, since: str) -> list:
+    """Новые файлы по истории git, а не по mtime.
+
+    В worktree на develop у всех файлов mtime равен моменту checkout — «новыми»
+    выглядели бы все разом. История git отвечает честно: файл нов, если он
+    добавлен после отметки прошлой сессии.
+    """
+    facts = []
+    tracked = (
+        ("docs/adr", ("*.md",)),
+        ("docs/channel/media", ("*.png", "*.jpg", "*.gif", "*.mp4")),
+        ("docs/assets/hil", ("*.gif", "*.mp4")),
+    )
+    done = subprocess.run(
+        [
+            "git",
+            "log",
+            f"--since={since}",
+            "--name-status",
+            "--pretty=format:",
+            "--diff-filter=A",
+        ],
+        cwd=str(repo_root),
+        capture_output=True,
+        text=True,
+        timeout=120,
+        check=False,
+    )
+    if done.returncode != 0:
+        return facts
+    added = []
+    for line in done.stdout.splitlines():
+        parts = line.split("\t")
+        if len(parts) >= 2 and parts[0].startswith("A"):
+            added.append(parts[-1].strip())
+    for path_text in sorted(set(added)):
+        path = repo_root / path_text
+        if not path.is_file():
+            continue
+        if path_text == "docs/shifu-decisions.md":
+            facts.append(
+                {
+                    "kind": "decisions",
+                    "claim": "Обновились решения Шифу (docs/shifu-decisions.md)",
+                    "source": "docs/shifu-decisions.md",
+                    "visible": True,
+                }
+            )
+            continue
+        for media_dir, patterns in tracked:
+            if not path_text.startswith(media_dir + "/"):
+                continue
+            if not any(path.match(pattern) for pattern in patterns):
+                continue
+            facts.append(
+                {
+                    "kind": "media",
+                    "claim": f"Новое медиа: {path_text}",
+                    "source": path_text,
+                    "visible": True,
+                }
+            )
+            break
+        else:
+            if path_text.startswith("docs/adr/") and path_text.endswith(".md"):
+                facts.append(
+                    {
+                        "kind": "adr",
+                        "claim": f"Новый ADR: {Path(path_text).name}",
+                        "source": path_text,
+                        "visible": True,
+                    }
+                )
+    return facts
+
+
 def collect_new_files(repo_root: Path, since: str) -> list:
     """Новые ADR, записи в shifu-decisions.md и медиа в репозитории."""
     facts = []
@@ -388,7 +465,15 @@ def main() -> int:
     facts += collect_merged_prs(args.repo, since)
     facts += collect_closed_issues(args.repo, since)
     facts += collect_runs(args.repo, since[:10])
-    facts += collect_new_files(REPO_ROOT, since)
+    # Факты о файлах и медиа читаются из worktree на origin/develop: рабочая ветка
+    # студии свежих материалов не содержит (требование координатора, 06.11).
+    source_root = develop.ensure_develop_worktree(REPO_ROOT, out=lambda _m: None) or REPO_ROOT
+    facts += collect_new_files_by_git(source_root, since)
+    if source_root == REPO_ROOT:
+        # Без worktree develop приходится смотреть на mtime — но там у всех файлов
+        # время выставлено заново, и «новыми» вышли бы все разом. Поэтому mtime-сбор
+        # работает только когда worktree недоступен.
+        facts += collect_new_files(source_root, since)
 
     state = st.load_state(args.state)
     # Ключ каждому факту: по нему видно, что событие уже показано.
@@ -398,7 +483,7 @@ def main() -> int:
     # Что уже закрыто — не предлагаем снова.
     closed = st.covered_keys(state)
     # Что уже рассказано в опубликованных постах — тоже не предлагаем.
-    closed |= covered_from_posts(REPO_ROOT / "docs" / "channel" / "queue", facts)
+    closed |= covered_from_posts(source_root / "docs" / "channel" / "queue", facts)
     # Что предлагали, но не показали — возвращаем: событие не должно потеряться.
     for fact in st.pending_facts(state):
         key = fact.get("key")
