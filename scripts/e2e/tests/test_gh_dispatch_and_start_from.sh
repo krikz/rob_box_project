@@ -78,7 +78,7 @@ posts="$(grep -c 'dispatches' "$GH_STUB_LOG")"
 first="$(grep 'dispatches' "$GH_STUB_LOG" | head -1)"
 case "$first" in *"night_marathon_act9_"*) ok "первый диспатч - акт 9" ;; *) bad "первый диспатч не акт 9: $first" ;; esac
 case "$first" in *"inputs[e2e_marathon_phase]=first"*) ok "фаза первого акта - first" ;; *) bad "фаза не first: $first" ;; esac
-case "$first" in *"n101_"*"=OK"*) ok "prior_steps содержит метки актов 1.. как OK" ;; *) bad "prior_steps без меток акта 1: $first" ;; esac
+case "$first" in *"n101_"*"=RESUMED"*) ok "prior_steps содержит метки актов 1.. как RESUMED (#4478)" ;; *) bad "prior_steps без меток акта 1: $first" ;; esac
 case "$first" in *"night_marathon_act5_"*|*"scenario_file]=.github/e2e/scenarios/night/night_marathon_act1_"*) bad "пропущенный акт ушёл в диспатч" ;; *) ok "пропущенные акты не диспатчатся" ;; esac
 second="$(grep 'dispatches' "$GH_STUB_LOG" | tail -1)"
 case "$second" in *"inputs[e2e_marathon_phase]=last"*) ok "акт 10 - last" ;; *) bad "акт 10 не last: $second" ;; esac

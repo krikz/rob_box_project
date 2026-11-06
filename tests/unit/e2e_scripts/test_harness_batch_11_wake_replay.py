@@ -128,13 +128,16 @@ class TestGeneratedScenario:
             for label, s in ALL_STEPS.items()
             if s["voice"] in gen.WAKE_FRAGILE_VOICES and gen.has_wake_start(s["text"])
         }
-        assert asking == fragile
+        assert asking == fragile | {"n101_wake_cold_start"}  # #4481: холодный старт, один повтор фразы
 
     def test_act_that_forbids_the_wake_recovery_has_no_fragile_wake_step(self):
         """Акт 1 проверяет САМ вейк (recover=[silenced]): шаг с recover на уровне шага перекрыл бы запрет акта."""
         for act in gen.ACTS:
             if act["recover"] is not None and "no_wake" not in act["recover"]:
-                assert not [s["label"] for s in act["steps"] if "recover" in s], act["n"]
+                # #4481: n101 -- повтор фразы (wake_replay) без no_wake, запрет акта на «Робот!» цел
+                own = [s for s in act["steps"] if "recover" in s]
+                assert all("no_wake" not in s["recover"] for s in own), act["n"]
+                assert {s["label"] for s in own} <= {"n101_wake_cold_start"}, act["n"]
 
     def test_json_on_disk_carries_the_field(self):
         act2 = json.loads((NIGHT / "night_marathon_act2_acquaintance_v1.json").read_text(encoding="utf-8"))

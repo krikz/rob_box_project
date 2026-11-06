@@ -690,6 +690,10 @@ REQUIRES_FIELD = "requires"
 _LABEL_RE = re.compile(r"[A-Za-z][A-Za-z0-9_]*")
 #: Итог шага, при котором зависимый шаг играется (``OK`` и ``OK recovered_*``: шаг прошёл, пусть и после восстановления).
 REQUIRES_OK = "OK"
+#: Статус источника, пропущенного резюме марафона (``START_FROM_ACT``, #4478): акт не играли, факты (память, профили)
+#: недоступны -- зависимый шаг SKIP ``resume:<метка>``, а не ложный FAIL. Не OK и не FAIL: раннер ставит его в prior_steps.
+REQUIRES_RESUMED = "RESUMED"
+RESUME_SKIP_REASON = "резюме: факты пропущенных актов недоступны"
 
 
 def requires(step: Mapping[str, Any]) -> Tuple[str, ...]:
@@ -757,6 +761,8 @@ def requires_verdict(labels: Tuple[str, ...], current: Mapping[str, str], prior:
         status = current.get(label) or prior.get(label)
         if status is None:
             unknown.append(label)
+        elif status == REQUIRES_RESUMED:
+            return {"skip": f"resume:{label}", "evidence": RESUME_SKIP_REASON, "unknown": ",".join(unknown) or "-"}
         elif status != REQUIRES_OK:
             return {"skip": f"requires:{label}", "evidence": f"итог {label} -- {status}", "unknown": ",".join(unknown) or "-"}
     return {"skip": "-", "evidence": "-", "unknown": ",".join(unknown) or "-"}
