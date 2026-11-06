@@ -34,6 +34,50 @@ fi
 cd "$STUDIO_REPO"
 mkdir -p "$WORK"
 
+# Лимит частоты: бриф требует не чаще одного поста в 2–3 дня. Публикатор держит
+# правило 48 часов для выхода в канал, но и предлагать новые идеи раньше бессмысленно:
+# они всё равно не выйдут, а Шифу получит лишние сообщения.
+LAST_POST=$(python3 - "$STUDIO_REPO/docs/channel/queue" <<'PY'
+import pathlib
+import re
+import sys
+
+queue = pathlib.Path(sys.argv[1])
+stamps = []
+for post in queue.glob("*.md"):
+    try:
+        text = post.read_text(encoding="utf-8")
+    except OSError:
+        continue
+    match = re.search(r"^posted_at:\s*(\S+)", text, re.M)
+    if match:
+        stamps.append(match.group(1))
+print(max(stamps) if stamps else "")
+PY
+)
+
+if [ -n "$LAST_POST" ]; then
+    TOO_SOON=$(python3 - "$LAST_POST" <<'PY'
+import sys
+from datetime import datetime, timedelta, timezone
+
+try:
+    last = datetime.fromisoformat(sys.argv[1])
+except ValueError:
+    print("no")
+    raise SystemExit(0)
+if last.tzinfo is None:
+    last = last.replace(tzinfo=timezone.utc)
+hours = (datetime.now(timezone.utc) - last).total_seconds() / 3600
+print("yes" if hours < 48 else "no")
+PY
+)
+    if [ "$TOO_SOON" = "yes" ]; then
+        echo "[studio-session] последний пост выходит совсем недавно — молчу до окна в 48 ч"
+        exit 0
+    fi
+fi
+
 FACTS="$WORK/facts.json"
 IDEAS="$WORK/ideas.json"
 
@@ -91,17 +135,17 @@ python3 scripts/telegram/channel_studio.py --state "$STUDIO_REPO/docker/studio/s
     ideas "$STUDIO_REPO/docker/studio/ideas_to_send.json"
 
 # Метку сессии двигаем только после успешной отправки: иначе пропавшая сессия потеряла бы факты.
+# Пишем через studio_state: там атомарная запись и блокировка, а в этом heredoc
+# state.json переписывался целиком мимо обоих — и затирал правки опроса.
 python3 - "$STUDIO_REPO/docker/studio/state.json" <<'PY'
-import json
 import sys
 from datetime import datetime, timezone
 
+sys.path.insert(0, "/home/builder/hermes-share/rob_box_project/scripts/telegram")
+import studio_state as st
+
 path = sys.argv[1]
-try:
-    state = json.load(open(path))
-except (OSError, ValueError):
-    state = {}
-state["last_session"] = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-json.dump(state, open(path, "w"), ensure_ascii=False, indent=2)
+with st.state_transaction(path) as state:
+    state["last_session"] = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 print("  метка сессии обновлена")
 PY

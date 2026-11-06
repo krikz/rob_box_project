@@ -1,8 +1,14 @@
 """Ответ студии на вопрос Шифу в личке.
 
 Фаза обсуждения: Шифу нажал «Обсудить» и задал вопрос. На вопрос должен отвечать агент,
-а не скрипт. Агент запускается одноразово (hermes -z) в профиле studio: у него есть
-инструменты, репозиторий и правила канала.
+а не скрипт. Агент запускается одноразово (hermes -z) в профиле studio.
+
+Безопасность ответа (ADR-0148: код решает, модель говорит):
+  * агенту НЕ достаётся токен бота студии — иначе агент с инструментами мог бы
+    сам опубликовать пост в канал (минуя одобрение Шифу);
+  * инструменты ограничены: ни terminal, ни cron — только чтение файлов и веб;
+  * ответ проверяется кодом: без html-разметки, без внутренних IP и ключей,
+    ограниченной длины; из stdout берётся только текст ответа, не хвост лога.
 
 Контекст берём из state.json: идея на обсуждении и её факты — чтобы агент отвечал
 по тому же, о чём идёт речь, и не выдумывал.
@@ -15,6 +21,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -22,6 +29,29 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_STATE = REPO_ROOT / "docker" / "studio" / "state.json"
 DEFAULT_PROFILE = "studio"
+
+# Тулсеты агента: чтение файлов и веб. Без terminal — иначе агент может выполнить
+# публикацию в канал сам, минуя кнопку «Опубликовать».
+AGENT_TOOLSETS = "file,web"
+
+# Переменные, которых агент не должен видеть: с ними он может публиковать в канал.
+SECRET_ENV_BLOCKLIST = (
+    "TG_STUDIO_BOT_TOKEN",
+    "TG_BOT_TOKEN",
+    "TG_CHANNEL_TOKEN",
+)
+
+MAX_ANSWER_CHARS = 900
+MIN_ANSWER_CHARS = 2
+
+# Внутренние адреса и ключи в ответе — не место.
+FORBIDDEN = (
+    (re.compile(r"\b10\.1\.1\.\d{1,3}\b"), "внутренний IP"),
+    (re.compile(r"\b192\.168\.\d{1,3}\.\d{1,3}\b"), "внутренний IP"),
+    (re.compile(r"\bsk-[A-Za-z0-9_-]{20,}"), "ключ API"),
+    (re.compile(r"\bgh[pousr]_[A-Za-z0-9]{20,}"), "токен GitHub"),
+    (re.compile(r"\bAAG[A-Za-z0-9_-]{30,}"), "токен бота"),
+)
 
 SYSTEM_PROMPT = (
     "Ты — студия Telegram-канала @robbox_project (проект робота РОББОКС). "
@@ -32,7 +62,8 @@ SYSTEM_PROMPT = (
     "Если вопрос длинный и по делу — ответь по сути и предложи один следующий шаг.\n"
     "Опирайся только на факты идеи и на репозиторий. Если данных не хватает — скажи прямо, "
     "чего не хватает. Не выдумывай цифры и имена.\n"
-    "Ответ — только текст ответа, без вступлений вроде «Конечно» и без markdown-заголовков."
+    "Ответ — только текст ответа, без вступлений вроде «Конечно» и без markdown-заголовков. "
+    "Без разметки: Telegram сам покажет текст как есть."
 )
 
 
@@ -97,21 +128,71 @@ def build_prompt(message: str, idea: dict, state: dict) -> str:
     return "\n".join(lines)
 
 
+def clean_env() -> dict:
+    """Окружение для агента без токена бота студии."""
+    import os
+
+    env = dict(os.environ)
+    for name in SECRET_ENV_BLOCKLIST:
+        env.pop(name, None)
+    return env
+
+
 def ask_agent(prompt: str, profile: str = DEFAULT_PROFILE, timeout: int = 300) -> str:
     """Одноразовый запуск агента профиля. Пустой ответ — значит агент не справился."""
-    cmd = ["hermes", "--profile", profile, "-z", prompt]
+    cmd = ["hermes", "--profile", profile, "-t", AGENT_TOOLSETS, "-z", prompt]
     try:
-        done = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+        done = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, env=clean_env())
     except subprocess.TimeoutExpired:
         return ""
     except OSError:
         return ""
-    text = (done.stdout or "").strip()
-    if not text:
-        text = (done.stderr or "").strip()
-    # Агент мог отдать хвост лога — берём последнюю непустую строку как ответ.
-    lines = [line.strip() for line in text.splitlines() if line.strip()]
-    return lines[-1] if lines else ""
+    # Ответ — только stdout. stderr в чат не идёт: там может быть хвост лога
+    # или предупреждение, а Шифу должен получить ответ, а не мусор.
+    return (done.stdout or "").strip()
+
+
+def strip_log_noise(text: str) -> str:
+    """Убрать служебные строки, которые агент печатает вместе с ответом."""
+    lines = []
+    for raw in text.splitlines():
+        line = raw.strip()
+        if not line:
+            continue
+        lowered = line.lower()
+        if lowered.startswith(("hermes:", "warning:", "error:", "traceback", "usage:", "session")):
+            continue
+        if line.startswith(("╭", "│", "╰", "─", "┌", "└")):
+            continue
+        lines.append(line)
+    return "\n".join(lines).strip()
+
+
+def clean_answer(text: str) -> str:
+    """Привести ответ к виду, безопасному для отправки в Telegram.
+
+    Убираем разметку (ответ идёт обычным текстом), режем лишнее и проверяем,
+    что в нём нет внутренних адресов и ключей.
+    """
+    answer = strip_log_noise(text)
+    # html-теги в ответе агента — мусор: текст отправляется как есть.
+    answer = re.sub(r"<[^>]+>", "", answer)
+    answer = re.sub(r"[`*_]{1,3}", "", answer)
+    answer = answer.strip()
+    if len(answer) > MAX_ANSWER_CHARS:
+        answer = answer[:MAX_ANSWER_CHARS].rsplit(" ", 1)[0] + "…"
+    return answer
+
+
+def answer_problems(answer: str) -> list:
+    """Проблемы ответа, из-за которых его нельзя отправлять Шифу."""
+    problems = []
+    if len(answer) < MIN_ANSWER_CHARS:
+        problems.append("ответ слишком короткий")
+    for pattern, what in FORBIDDEN:
+        if pattern.search(answer):
+            problems.append(f"в ответе {what}")
+    return problems
 
 
 def main() -> int:
@@ -126,10 +207,15 @@ def main() -> int:
     state = load_state(args.state)
     idea = discussed_idea(state, args.idea_id)
     prompt = build_prompt(args.message, idea, state)
-    answer = ask_agent(prompt, profile=args.profile, timeout=args.timeout)
+    answer = clean_answer(ask_agent(prompt, profile=args.profile, timeout=args.timeout))
     if not answer:
         print("Агент не ответил. Попробуем позже — идея осталась на обсуждении.", file=sys.stderr)
         return 1
+    problems = answer_problems(answer)
+    if problems:
+        # Плохой ответ в чат не отправляем: лучше тишина, чем внутренний IP в посте.
+        print(f"Ответ не прошёл проверку: {'; '.join(problems)}", file=sys.stderr)
+        return 2
     print(answer)
     return 0
 

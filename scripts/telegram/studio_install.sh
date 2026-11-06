@@ -14,11 +14,13 @@
 # Запуск: bash scripts/telegram/studio_install.sh
 set -euo pipefail
 
+# Корень репозитория: из расположения этого скрипта, а не зашитый путь.
+# Зашитый /home/builder ломался бы на другой машине и после переезда клона.
 REPO_ROOT="${REPO_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)}"
 PROFILE="${STUDIO_PROFILE:-studio}"
 # HERMES_HOME в окружении Hermes указывает на папку ПРОФИЛЯ, а не на корень,
 # поэтому корень берём явно: профили лежат в ~/.hermes/profiles/<имя>.
-GLOBAL_HOME="${STUDIO_HERMES_HOME:-/home/builder/.hermes}"
+GLOBAL_HOME="${STUDIO_HERMES_HOME:-$HOME/.hermes}"
 SCRIPTS_DIR="$GLOBAL_HOME/profiles/$PROFILE/scripts"
 SRC_DIR="$REPO_ROOT/scripts/telegram"
 
@@ -38,6 +40,9 @@ for name in "${SCRIPTS[@]}"; do
     # Пишем во временный файл и переименовываем, а не перезаписываем на месте.
     # Если в профиле ещё лежит hardlink на исходник, запись «>» идёт через общий
     # inode — и обёртка записывается в САМ РЕПОЗИТОРИЙ. Одно «rm» и «mv» этого не дают.
+    #
+    # Контрольную сумму исходника снимаем ДО записи: после записи уже нечем
+    # проверить, что исходник не пострадал.
     before=$(cksum "$src" | cut -d' ' -f1,2)
     tmp="$dst.tmp.$$"
     cat > "$tmp" <<EOF
@@ -59,3 +64,19 @@ done
 
 echo "[studio-install] готово: ${#SCRIPTS[@]} обёрток в профиле $PROFILE"
 echo "[studio-install] правки скриптов видны сразу — перераскладка не нужна"
+
+# Расписание кронов лежит в репозитории (docker/studio/cron.json) — это
+# источник истины, а не строчка в runbook.
+CRON_SPEC="$REPO_ROOT/docker/studio/cron.json"
+if [ -f "$CRON_SPEC" ]; then
+    echo "[studio-install] расписание кронов: $CRON_SPEC"
+    python3 - "$CRON_SPEC" <<'PYEOF'
+import json
+import sys
+
+with open(sys.argv[1], encoding="utf-8") as handle:
+    spec = json.load(handle)
+for job in spec.get("jobs", []):
+    print(f"  {job.get('name')}: {job.get('schedule')} {job.get('timezone', '')} → {job.get('script')}")
+PYEOF
+fi

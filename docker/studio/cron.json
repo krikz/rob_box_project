@@ -1,0 +1,27 @@
+{
+  "comment": "Расписание кронов студии. Время — Шифу (GMT+1): 0 10 UTC = 11:00 GMT+1.",
+  "profile": "studio",
+  "jobs": [
+    {
+      "name": "studio: опрос кнопок",
+      "schedule": "* * * * *",
+      "timezone": "UTC",
+      "script": "studio_poll.sh",
+      "note": "каждую минуту: кнопка — это интерфейс, ждать минуты нельзя"
+    },
+    {
+      "name": "studio: публикация поста",
+      "schedule": "0 10 * * 2,4,6",
+      "timezone": "UTC",
+      "script": "studio_publish.sh",
+      "note": "10:00Z = 11:00 GMT+1, вторник/четверг/суббота"
+    },
+    {
+      "name": "studio: сессия анализа",
+      "schedule": "0 2 * * *",
+      "timezone": "UTC",
+      "script": "studio_session.sh",
+      "note": "02:00Z = 03:00 GMT+1"
+    }
+  ]
+}

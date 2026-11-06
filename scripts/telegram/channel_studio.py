@@ -96,11 +96,16 @@ class StudioBot:
                 "ok": bool(payload.get("ok")),
                 "result": payload.get("result"),
                 "description": payload.get("description", ""),
+                "error_code": payload.get("error_code"),
             }
             if last["ok"]:
                 return last
-            description = last.get("description") or ""
-            if "429" not in description and "409" not in description:
+            # 429 — Telegram просит подождать, 409 — конфликт long-poll (два получателя).
+            # Код ошибки смотрим в error_code: в описании Telegram пишет «Conflict:
+            # terminated by other getUpdates request», и цифры «409» там нет — по описанию
+            # ретрай не срабатывал, и опрос молча возвращал «новых апдейтов нет».
+            code = last.get("error_code")
+            if code not in (429, 409):
                 return last
             if attempt == 2:
                 break
@@ -141,8 +146,17 @@ class StudioBot:
             params["reply_markup"] = keyboard
         return self._post("sendMessage", params)
 
-    def edit_message_text(self, chat_id: int, message_id: int, text: str, keyboard: Optional[dict] = None) -> dict:
-        params = {"chat_id": chat_id, "message_id": message_id, "text": text, "parse_mode": "HTML"}
+    def edit_message_text(
+        self,
+        chat_id: int,
+        message_id: int,
+        text: str,
+        keyboard: Optional[dict] = None,
+        parse_mode: Optional[str] = "HTML",
+    ) -> dict:
+        params = {"chat_id": chat_id, "message_id": message_id, "text": text}
+        if parse_mode:
+            params["parse_mode"] = parse_mode
         if keyboard:
             params["reply_markup"] = keyboard
         return self._post("editMessageText", params)
@@ -196,15 +210,25 @@ def apply_idea_action(state: dict, idea_id: str, action: str) -> str:
         )
     if action == ACTION_TAKE:
         idea["status"] = "agreed"
+        idea["agreed_at"] = _now()
+        # Что именно согласовано: без этой записи через месяц не вспомнить,
+        # о чём договорились, когда идея бралась в работу.
+        idea["agreement"] = (
+            f"согласовано: {idea.get('title', '')}; "
+            f"показать: {idea.get('show') or 'не сказано'}; "
+            f"срок: {idea.get('deadline') or 'не назван'}"
+        )
         # Идея взята в работу, но событие ещё не показано: факт остаётся в ожидании
         # и закроется только после публикации поста. Иначе неудавшийся пост съел бы
         # событие навсегда — это и есть «пропуск».
         return f"Идея {idea_id} взята в работу: «{idea.get('title', '')}». Собираю материал и пришлю черновик."
     if action == ACTION_DISCUSS:
         idea["status"] = "discuss"
+        # Кнопка «Обсудить» должна дать живой ответ, а не только сменить статус:
+        # иначе Шифу жмёт кнопку и видит пустоту, пока сам не напишет вопрос.
         return (
-            f"Обсуждаем идею {idea_id}: «{idea.get('title', '')}». Напишите, что поправить в подаче "
-            f"и что показать — учту в черновике."
+            f"Обсуждаем идею {idea_id}: «{idea.get('title', '')}». Сейчас разберу её по фактам "
+            f"и спрошу, что показать — пишите, что поправить в подаче."
         )
     if action == ACTION_SKIP:
         idea["status"] = "rejected"
@@ -231,17 +255,23 @@ def next_slot(now: Optional[datetime] = None) -> datetime:
     return now + timedelta(days=7)
 
 
-def _queue_number(queue_dir: Path) -> int:
-    """Следующий свободный номер поста в очереди (001, 002, …)."""
+def _queue_number(queue_dir: Path, post_id: str = "") -> int:
+    """Следующий свободный номер поста в очереди (001, 002, …).
+
+    Номер берётся с запасом относительно уже существующих файлов и не должен
+    совпадать с номерами в develop: каталог очереди общий для машины студии и
+    репозитория, и одинаковые имена означали бы два разных поста с одним номером.
+    """
     used = set()
     for post in queue_dir.glob("*.md"):
         try:
             used.add(int(post.name[:3]))
         except ValueError:
             continue
-    number = 1
-    while number in used:
-        number += 1
+    number = max(used) + 1 if used else 1
+    # Минимум 900: номера develop живут в сотнях, наши — в тысячах, чтобы
+    # никогда не пересечься.
+    number = max(number, 900)
     return number
 
 
@@ -262,7 +292,7 @@ def queue_post(post: dict, queue_dir: Path, now: Optional[datetime] = None) -> O
     if not tags:
         return None
     queue_dir.mkdir(parents=True, exist_ok=True)
-    number = _queue_number(queue_dir)
+    number = _queue_number(queue_dir, post_id)
     slug = re.sub(r"[^a-z0-9]+", "-", (post.get("title") or post_id).lower()).strip("-")[:40] or "post"
     path = queue_dir / f"{number:03d}-{slug}.md"
     slot = next_slot(now)
@@ -286,17 +316,25 @@ def apply_post_action(state: dict, post_id: str, action: str) -> str:
     posts = state.setdefault("posts", {})
     record = posts.setdefault(post_id, {})
     if action == ACTION_PUBLISH:
+        if record.get("status") == "rejected":
+            return f"Пост {post_id} уже отклонён — вернуть его в публикацию можно только новой идеей."
         record["status"] = "approved"
         # Одобрение без действия — обещание в пустоту: кладём пост в очередь канала,
         # откуда его заберёт публикатор (studio_publish.sh).
         queue_dir = Path(os.environ.get("STUDIO_QUEUE_DIR", REPO / "docs" / "channel" / "queue"))
+        # Повторное нажатие не должно плодить файлы: тот же пост — тот же файл.
+        existing = record.get("queue_file")
+        if existing and Path(existing).exists():
+            record["status"] = "approved"
+            slot = next_slot()
+            return (
+                f"Пост {post_id} уже одобрен и стоит в очереди — нового поста не создаю. "
+                f"Слот {slot.strftime('%d.%m в %H:%M')} (по GMT+1)."
+            )
         path = queue_post(record, queue_dir)
         if path is None:
             record["status"] = "rejected"
-            return (
-                f"Пост {post_id} не встал в очередь: в нём нет текста или хештегов. "
-                f"Поправлю и пришлю заново."
-            )
+            return f"Пост {post_id} не встал в очередь: в нём нет текста или хештегов. " f"Поправлю и пришлю заново."
         slot = next_slot()
         record["queue_file"] = str(path)
         # Событие закрыто: пост одобрен и поставлен в очередь. До этого факт висел
@@ -319,12 +357,16 @@ def handle_callback(state: dict, callback: dict) -> str:
     Нажатие обрабатывается только от Шифу: бот доступен по ссылке, и чужие нажатия
     не должны ни менять статус идеи, ни получать ответ от студии.
     """
-    data = (callback.get("data") or "")
+    data = callback.get("data") or ""
     match = CALLBACK_RE.match(data)
     if not match:
         return "Непонятная кнопка."
     sender = (callback.get("from") or {}).get("id")
-    if sender is not None and int(sender) != SHIFU_CHAT_ID:
+    # Нажатие без from — не от Шифу: пропускать нельзя, иначе анонимный вызов
+    # менял бы статус идеи.
+    if sender is None:
+        return "Эта кнопка не для тебя."
+    if int(sender) != SHIFU_CHAT_ID:
         return "Эта кнопка не для тебя."
     kind, item_id, action = match.groups()
     if kind == "idea":
@@ -342,25 +384,45 @@ def handle_callback(state: dict, callback: dict) -> str:
 def poll_once(bot: StudioBot, state_path: Path, timeout: int = 30, out=print, state=None) -> int:
     """Один проход getUpdates: разобрать апдейты, сдвинуть offset, сохранить состояние.
 
-    Состояние читается и пишется под блокировкой файла: иначе опрос кнопок и
-    сессия анализа затирали бы друг друга. Переданное состояние (тесты)
-    используется как есть и сохраняется в файл.
+    Быстрая часть (разбор апдейтов, смена статусов) идёт под блокировкой файла:
+    иначе опрос кнопок и сессия анализа затирали бы друг друга.
+
+    Медленная часть (ответ агента, производство поста) идёт ВНЕ блокировки.
+    Агент думает десятки секунд, а держать файл состояния запертым всё это время
+    нельзя: за это время опрос успел бы затереть то, что агент уже записал.
     """
     if state is None:
         with st.state_transaction(state_path) as current:
-            return _poll_cycle(bot, current, state_path, timeout=timeout, out=out)
-    handled = _poll_cycle(bot, state, state_path, timeout=timeout, out=out)
-    st.save_state(state_path, state)
+            handled, actions = _poll_cycle(bot, current, state_path, timeout=timeout, out=out)
+    else:
+        handled, actions = _poll_cycle(bot, state, state_path, timeout=timeout, out=out)
+        st.save_state(state_path, state)
+    for action, item_id in actions:
+        if action == "discuss":
+            discuss_idea(bot, state_path, item_id, out=out)
+        elif action == "take":
+            produce_post_for_idea(bot, state_path, item_id, out=out)
+        elif action == "reply":
+            reply_to_shifu(bot, state_path, item_id, out=out)
     return handled
 
 
-def _poll_cycle(bot: StudioBot, state: dict, state_path: Path, timeout: int = 30, out=print) -> int:
-    """Разбор апдейтов внутри уже запертого состояния."""
+def _poll_cycle(bot: StudioBot, state: dict, state_path: Path, timeout: int = 30, out=print):
+    """Разбор апдейтов внутри уже запертого состояния.
+
+    Возвращает (сколько обработано, список отложенных действий). Действия с агентом
+    выполняет вызывающий — вне блокировки.
+    """
     updates = bot.get_updates(state.get("offset", 0), timeout=timeout)
     handled = 0
+    actions = []
     for update in updates:
         update_id = update.get("update_id", 0)
         state["offset"] = max(state.get("offset", 0), update_id + 1)
+        # Смещение двигаем СРАЗУ и пишем на диск: апдейт уже забрали у Telegram,
+        # и если обработка упадёт (или агент зависнет), нажатие не потеряется —
+        # Telegram его больше не отдаст.
+        st.save_state(state_path, state)
         callback = update.get("callback_query")
         if callback:
             answer = handle_callback(state, callback)
@@ -371,14 +433,12 @@ def _poll_cycle(bot: StudioBot, state: dict, state_path: Path, timeout: int = 30
                 bot.send_message(chat_id, answer)
             out(f"обработано: {callback.get('data')} → {answer}")
             handled += 1
-            # «Берём» — только теперь пишется текст поста (порядок брифа):
-            # идея согласована → производство → черновик с кнопками «Опубликовать/Отклонить».
+            # «Берём» и «Обсудить» требуют агента — это делается вне блокировки.
             data = callback.get("data") or ""
             if data.startswith("studio:idea:") and data.endswith(":take"):
-                idea_id = data.split(":")[2]
-                idea = find_idea(state, idea_id)
-                if idea and idea.get("status") == "agreed" and not idea.get("post_body"):
-                    produce_and_send(bot, state, idea, out=out)
+                actions.append(("take", data.split(":")[2]))
+            elif data.startswith("studio:idea:") and data.endswith(":discuss"):
+                actions.append(("discuss", data.split(":")[2]))
             continue
         message = update.get("message")
         if message:
@@ -386,9 +446,58 @@ def _poll_cycle(bot: StudioBot, state: dict, state_path: Path, timeout: int = 30
             note = capture_message(state, message)
             if note:
                 out(f"сообщение от Шифу: {note[:60]}")
-                reply_to_shifu(bot, state, note, out=out)
+                actions.append(("reply", note))
                 handled += 1
-    return handled
+    return handled, actions
+
+
+def discuss_idea(bot: StudioBot, state_path: Path, idea_id: str, out=print) -> bool:
+    """Разобрать идею с Шифу прямо по кнопке «Обсудить».
+
+    Шифу жмёт кнопку и ждёт ответа — значит ответ должен быть сразу: сначала
+    «Думаю…», потом в этом же сообщении разбор идеи от агента. Без этого кнопка
+    выглядит как «ничего не произошло», и Шифу жмёт её ещё раз.
+
+    Агент думает вне блокировки состояния; в файл пишем уже готовый ответ.
+    """
+    state = st.load_state(state_path)
+    idea = find_idea(state, idea_id)
+    if idea is None:
+        out(f"идея {idea_id} не найдена — разбор пропущен")
+        return False
+    title = idea.get("title", "")
+    facts = idea.get("facts") or []
+    show = idea.get("show") or ""
+    placeholder = bot.send_message(SHIFU_CHAT_ID, "Думаю над идеей…")
+    message_id = (placeholder.get("result") or {}).get("message_id") if placeholder.get("ok") else None
+    question = (
+        f"Шифу нажал «Обсудить» на идее {idea_id}: «{title}». "
+        f"Факты идеи: {facts}. Что показать: {show or 'не сказано'}. "
+        f"Разбери идею по фактам и задай Шифу два уточняющих вопроса: "
+        f"что важно подчеркнуть и какой материал нужен. Ответ — коротко, в Telegram."
+    )
+    answer = run_reply_agent(question, idea)
+    if not answer:
+        answer = (
+            f"Идея {idea_id} — «{title}». Что показать в посте и какую мысль "
+            f"подчеркнуть? Напишите в двух словах, соберу черновик."
+        )
+    # Ответ агента — обычный текст: parse_mode=None. С HTML-разметкой текст с «<» или «&»
+    # Telegram не отправил бы вовсе (ошибка парсинга), и Шифу увидел бы пустоту.
+    if message_id:
+        edited = bot.edit_message_text(SHIFU_CHAT_ID, message_id, answer, parse_mode=None)
+        if not edited.get("ok"):
+            bot.send_message(SHIFU_CHAT_ID, answer, parse_mode=None)
+    else:
+        bot.send_message(SHIFU_CHAT_ID, answer, parse_mode=None)
+
+    def _apply(current: dict) -> None:
+        current.setdefault("messages", []).append({"at": None, "role": "studio", "text": answer[:2000]})
+
+    with st.state_transaction(state_path) as current:
+        _apply(current)
+    out(f"идея {idea_id}: разбор отправлен")
+    return True
 
 
 def capture_message(state: dict, message: dict) -> str:
@@ -405,11 +514,12 @@ def capture_message(state: dict, message: dict) -> str:
     return text
 
 
-def reply_to_shifu(bot: StudioBot, state: dict, text: str, out=print) -> bool:
+def reply_to_shifu(bot: StudioBot, state_path: Path, text: str, out=print) -> bool:
     """Ответить Шифу на его вопрос: агент думает, сообщение редактируется ответом.
 
     Так видно, что студия работает: сначала «Думаю…», потом в этом же сообщении ответ.
     """
+    state = st.load_state(state_path)
     placeholder = bot.send_message(SHIFU_CHAT_ID, "Думаю над твоим вопросом…")
     message_id = (placeholder.get("result") or {}).get("message_id") if placeholder.get("ok") else None
     idea = discussed_idea(state)
@@ -417,14 +527,19 @@ def reply_to_shifu(bot: StudioBot, state: dict, text: str, out=print) -> bool:
     if not answer:
         answer = "Не смог ответить сейчас — идея осталась на обсуждении, спрошу позже."
     if message_id:
-        bot.edit_message_text(SHIFU_CHAT_ID, message_id, answer)
+        bot.edit_message_text(SHIFU_CHAT_ID, message_id, answer, parse_mode=None)
     else:
-        bot.send_message(SHIFU_CHAT_ID, answer)
-    # Ответ агента тоже в историю: следующий вопрос должен видеть, что уже обсудили.
-    state.setdefault("messages", []).append({"at": None, "role": "studio", "text": answer[:2000]})
-    for note in state.get("messages", []):
-        if note.get("text") == text and note.get("role", "shifu") == "shifu" and not note.get("answered"):
-            note["answered"] = True
+        bot.send_message(SHIFU_CHAT_ID, answer, parse_mode=None)
+
+    def _apply(current: dict) -> None:
+        # Ответ агента тоже в историю: следующий вопрос должен видеть, что уже обсудили.
+        current.setdefault("messages", []).append({"at": None, "role": "studio", "text": answer[:2000]})
+        for note in current.get("messages", []):
+            if note.get("text") == text and note.get("role", "shifu") == "shifu" and not note.get("answered"):
+                note["answered"] = True
+
+    with st.state_transaction(state_path) as current:
+        _apply(current)
     out(f"ответ отправлен: {answer[:60]}")
     return True
 
@@ -501,14 +616,19 @@ def send_ideas(bot: StudioBot, ideas: list, chat_id: int, out=print) -> int:
     return sent
 
 
-def produce_and_send(bot: StudioBot, state: dict, idea: dict, out=print) -> bool:
+def produce_post_for_idea(bot: StudioBot, state_path: Path, idea_id: str, out=print) -> bool:
     """Произвести пост по взятой идее и прислать черновик с кнопками.
 
     Порядок брифа: идея согласована → и только теперь пишется текст.
     """
+    state = st.load_state(state_path)
+    idea = find_idea(state, idea_id)
+    if idea is None:
+        out(f"идея {idea_id} не найдена — производство пропущено")
+        return False
     script = Path(__file__).with_name("studio_text.py")
     facts_path = Path(os.environ.get("STUDIO_FACTS", REPO / "docker" / "studio" / "run" / "facts.json"))
-    idea_path = Path(os.environ.get("STUDIO_TMP", REPO / "docker" / "studio" / "run")) / f"idea-{idea.get('id')}.json"
+    idea_path = Path(os.environ.get("STUDIO_TMP", REPO / "docker" / "studio" / "run")) / f"idea-{idea_id}.json"
     try:
         idea_path.parent.mkdir(parents=True, exist_ok=True)
         idea_path.write_text(json.dumps(idea, ensure_ascii=False), encoding="utf-8")
@@ -519,23 +639,22 @@ def produce_and_send(bot: StudioBot, state: dict, idea: dict, out=print) -> bool
             timeout=400,
         )
     except (OSError, subprocess.TimeoutExpired):
-        out(f"идея {idea.get('id')}: производство не запустилось")
+        out(f"идея {idea_id}: производство не запустилось")
         return False
     try:
         post = json.loads(done.stdout or "{}")
     except ValueError:
-        out(f"идея {idea.get('id')}: производство вернуло не JSON")
+        out(f"идея {idea_id}: производство вернуло не JSON")
         return False
     if post.get("error") or not post.get("body_html"):
-        out(f"идея {idea.get('id')}: пост не получился: {post.get('error') or 'пустой текст'}")
+        out(f"идея {idea_id}: пост не получился: {post.get('error') or 'пустой текст'}")
         return False
     if not post.get("ok"):
-        out(f"идея {idea.get('id')}: пост не прошёл проверку: {post.get('problems')}")
+        out(f"идея {idea_id}: пост не прошёл проверку: {post.get('problems')}")
         return False
-    idea["post_body"] = post["body_html"]
-    idea["post_tags"] = post.get("tags") or []
-    post_id = f"{idea.get('id')}-post"
-    state.setdefault("posts", {})[post_id] = {
+    post_id = f"{idea_id}-post"
+    record = {
+        "id": post_id,
         "status": "proposed",
         "title": idea.get("title", ""),
         "body_html": post["body_html"],
@@ -543,8 +662,17 @@ def produce_and_send(bot: StudioBot, state: dict, idea: dict, out=print) -> bool
         "media_ref": idea.get("media_ref", ""),
         "fact_keys": idea.get("fact_keys") or [],
     }
-    send_post(bot, state["posts"][post_id], SHIFU_CHAT_ID)
-    out(f"идея {idea.get('id')}: пост готов и отправлен с кнопками")
+
+    def _apply(current: dict) -> None:
+        current.setdefault("posts", {})[post_id] = record
+        target = find_idea(current, idea_id)
+        if target is not None:
+            target["post_body"] = post["body_html"]
+
+    with st.state_transaction(state_path) as current:
+        _apply(current)
+    send_post(bot, record, SHIFU_CHAT_ID)
+    out(f"идея {idea_id}: пост готов и отправлен с кнопками")
     return True
 
 
@@ -563,6 +691,22 @@ def send_post(bot: StudioBot, post: dict, chat_id: int, out=print) -> int:
         return 0
     out(f"черновик {post_id} отправлен")
     return 1
+
+
+def filming_requests(idea: dict) -> str:
+    """Идея требует съёмки — по ней нужна заявка, а не только пост.
+
+    По брифу: если показать нечего, студия просит съёмку. Тут — тот случай, когда
+    модель прямо пишет, что материала нет.
+    """
+    show = (idea.get("show") or "").lower()
+    media = (idea.get("media_ref") or "").strip()
+    if media:
+        return ""
+    for marker in ("съёмк", "снимк", "запис", "видео нужно", "нужен ролик", "нужен гиф"):
+        if marker in show:
+            return idea.get("title", "")
+    return ""
 
 
 def register_ideas(state_path: Path, ideas: list) -> int:
@@ -606,6 +750,13 @@ def register_ideas(state_path: Path, ideas: list) -> int:
                 if not existing.get("fact_keys"):
                     existing["fact_keys"] = idea.get("fact_keys") or []
             st.save_pending(state, idea.get("fact_dicts") or [])
+            # Заявки на съёмку копятся отдельным списком: их видно и в runbook,
+            # и в отчёте сессии — иначе про «нужна съёмка» забывают.
+            request = filming_requests(idea)
+            if request:
+                requests = state.setdefault("filming_requests", [])
+                if request not in requests:
+                    requests.append(request)
     return added
 
 

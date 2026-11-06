@@ -35,11 +35,25 @@ def default_state() -> dict:
 
 
 def load_state(path: Path) -> dict:
-    """Прочитать состояние. Битый или отсутствующий файл — состояние по умолчанию."""
+    """Прочитать состояние.
+
+    Битый файл — не «offset: 0»: это значило бы, что студия начнёт заново
+    обрабатывать всю ленту апдейтов и пришлёт Шифу старые идеи по второму кругу.
+    Поэтому при битом файле берём последнюю резервную копию, и только если её нет —
+    честно отвечаем «состояния нет» (пустой offset), но НЕ притворяемся, что
+    всё обработано.
+    """
+    path = Path(path)
     try:
-        state = json.loads(Path(path).read_text(encoding="utf-8"))
+        state = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, ValueError):
-        return default_state()
+        backup = path.with_suffix(path.suffix + ".bak")
+        try:
+            state = json.loads(backup.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return default_state()
+        state["_restored_from_backup"] = True
+        return state
     if not isinstance(state, dict):
         return default_state()
     state.setdefault("offset", 0)
@@ -47,9 +61,20 @@ def load_state(path: Path) -> dict:
 
 
 def save_state(path: Path, state: dict) -> None:
-    """Сохранить состояние атомарно: временный файл + переименование."""
+    """Сохранить состояние атомарно: временный файл + переименование.
+
+    Перед записью копия предыдущего состояния: если файл испортится (сбой диска,
+    правка руками), студия поднимется с последнего known-good, а не начнёт
+    обрабатывать всю лену заново.
+    """
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
+    if path.exists():
+        try:
+            backup = path.with_suffix(path.suffix + ".bak")
+            backup.write_text(path.read_text(encoding="utf-8"), encoding="utf-8")
+        except OSError:
+            pass
     tmp = path.with_suffix(path.suffix + ".tmp")
     tmp.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
     tmp.replace(path)
@@ -61,17 +86,23 @@ def state_transaction(path: Path) -> Iterator[dict]:
 
     Блокировка держится на всём цикле чтения-изменения-записи: иначе два процесса
     (опрос кнопок и сессия анализа) читают одно состояние и затирают друг друга.
+
+    Состояние сохраняется ДАЖЕ если обработка упала. Иначе апдейт, который уже
+    забрали у Telegram, терялся бы навсегда: смещение не сдвинулось, а апдейт
+    Telegram больше не отдаст. Поэтому смещение двигаем сразу, а не в конце цикла.
     """
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     lock_path = path.with_suffix(path.suffix + ".lock")
     with open(lock_path, "a+") as lock:
         fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
+        state = load_state(path)
         try:
-            state = load_state(path)
             yield state
-            save_state(path, state)
         finally:
+            # Смещение обязано уехать даже после ошибки: апдейт уже забран у Telegram
+            # и больше не будет отдан. Поэтому состояние пишется в finally.
+            save_state(path, state)
             fcntl.flock(lock.fileno(), fcntl.LOCK_UN)
 
 

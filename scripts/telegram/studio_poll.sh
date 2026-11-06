@@ -11,7 +11,9 @@ set -euo pipefail
 
 STUDIO_REPO="${STUDIO_REPO:-/home/builder/hermes-share/rob_box_project}"
 SECRETS="$STUDIO_REPO/docker/studio/.env.secrets"
-TIMEOUT="${STUDIO_TIMEOUT:-25}"
+# Long-poll на 50 с: при кроне раз в минуту бот слушает почти непрерывно,
+# и кнопка отвечает за секунды, а не за минуты.
+TIMEOUT="${STUDIO_TIMEOUT:-50}"
 
 if [ ! -f "$SECRETS" ]; then
     echo "[studio-poll] FATAL: нет файла секретов: $SECRETS" >&2

@@ -49,6 +49,7 @@ def thinking_params(model: str) -> dict:
         return {"thinking": {"type": "disabled"}}
     return {"reasoning_effort": DEFAULT_REASONING_EFFORT}
 
+
 # Числа в тексте: «48 часов», «3 попытки», «99.5%». Дробные и проценты — отдельно.
 NUMBER_RE = re.compile(r"\d+(?:[.,]\d+)?")
 # Имена собственные — только технические: латиница в CamelCase (Nav2, RTABMap) или
@@ -80,10 +81,45 @@ STOP_PROPER = {
     "FIXME",
 }
 
-# Кириллические имена: заглавная буква ВНУТРИ предложения — это имя (человек, компания).
-# Начало предложения и начало строки — обычное слово (в посте абзацы идут строками),
-# поэтому такие слова не считаем именами.
-CYRILLIC_NAME_RE = re.compile(r"(?<![.!?…][ \t\n])(?<![.!?…]\n)(?<!^)(?<!\n)\b[А-ЯЁ][а-яё]{2,}\b")
+# Кириллические имена: любая заглавная кириллица вне стоп-слов — кандидат в имя.
+# Имя может стоять в начале фразы («Саша проверил…») — это самое естественное
+# место для имени, поэтому начало предложения не даёт права её пропустить.
+# Ложные срабатывания отсекаются стоп-словами (STOP_CYRILLIC) и фактами.
+CYRILLIC_NAME_RE = re.compile(r"\b[А-ЯЁ][а-яё]{2,}\b")
+
+# Окончания, по которым видно, что слово — обычное глагольное слово, а не имя.
+# Без этого фильтра каждое предложение поста начиналось бы с «ложного имени»
+# («Проверяем», «Работает», «Сделали») и пост отклонялся бы впустую.
+VERBISH_ENDINGS = (
+    "ем",
+    "ём",
+    "ли",
+    "ет",
+    "ит",
+    "ат",
+    "ят",
+    "ут",
+    "ют",
+    "но",
+    "емся",
+    "лся",
+    "лась",
+    "лось",
+    "ать",
+    "ять",
+    "ить",
+    "ешь",
+    "ите",
+    "ают",
+    "яют",
+    "уем",
+    "аем",
+    "яем",
+    "ло",
+    "ла",
+    "ны",
+    "ем",
+)
 
 # Слова канала, которые всегда с заглавной и не являются именами.
 STOP_CYRILLIC = {
@@ -155,7 +191,6 @@ STOP_CYRILLIC = {
     "Правило",
     "Правила",
     "Смысл",
-    "Суть",
     "Вывод",
     "Причина",
     "Причины",
@@ -165,7 +200,6 @@ STOP_CYRILLIC = {
     "Ремонт",
     "Прогон",
     "Прогоны",
-    "Замер",
     "Шаг",
     "Шаги",
     "Слоты",
@@ -188,9 +222,7 @@ STOP_CYRILLIC = {
     "Файлы",
     "Строка",
     "Строки",
-    "Правило",
     "Порядок",
-    "Смысл",
     "Задача",
     "Задачи",
     "Вопрос",
@@ -210,18 +242,189 @@ STOP_CYRILLIC = {
     "Проверили",
     "Изменение",
     "Изменения",
-    "Проверка",
     "Оговорка",
     "Оговорки",
     "Пример",
     "Примеры",
-    "Суть",
     "Мысль",
     "Мысли",
     "Сводка",
     "Итог",
     "Итоги",
-    "Сводка",
+    "Также",
+    "Кроме",
+    "После",
+    "Перед",
+    "Между",
+    "Через",
+    "Вместо",
+    "Согласно",
+    "Благодаря",
+    "Наконец",
+    "Однако",
+    "Хотя",
+    "Пока",
+    "Потому",
+    "Проверяем",
+    "Проверим",
+    "Работали",
+    "Сделали",
+    "Сделаем",
+    "Поставили",
+    "Добавили",
+    "Изменили",
+    "Настроили",
+    "Убрали",
+    "Поняли",
+    "Починили",
+    "Идём",
+    "Идем",
+    "Пошли",
+    "Ждём",
+    "Ждем",
+    "Начали",
+    "Закончили",
+    "Продолжили",
+    "Повторили",
+    "Получилось",
+    "Вышло",
+    "Выходит",
+    "Кажется",
+    "Похоже",
+    "Значит",
+    "Сразу",
+    "Правда",
+    "Честно",
+    "Кстати",
+    "Сначала",
+    "Затем",
+    "Сегодня",
+    "Вчера",
+    "Завтра",
+    "Утром",
+    "Вечером",
+    "Днём",
+    "Ночью",
+    "Отдельно",
+    "Почти",
+    "Кто",
+    "Куда",
+    "Откуда",
+    "Сколько",
+    "Какой",
+    "Какая",
+    "Какие",
+    "Чей",
+    "Чья",
+    "Мой",
+    "Твой",
+    "Ваш",
+    "Им",
+    "Ему",
+    "Ей",
+    "Все",
+    "Всё",
+    "Каждый",
+    "Каждая",
+    "Любой",
+    "Любая",
+    "Самый",
+    "Самая",
+    "Первое",
+    "Первая",
+    "Второе",
+    "Третье",
+    "Новое",
+    "Новая",
+    "Старый",
+    "Старая",
+    "Свежий",
+    "Свежая",
+    "Дальше",
+    "Сперва",
+    "Два",
+    "Три",
+    "Десять",
+    "Сто",
+    "Мало",
+    "Много",
+    "Больше",
+    "Меньше",
+    "Хорошо",
+    "Плохо",
+    "Быстро",
+    "Медленно",
+    "Легко",
+    "Сложно",
+    "Просто",
+    "Понятно",
+    "Странно",
+    "Жаль",
+    "Зато",
+    "Ну",
+    "А",
+    "И",
+    "Но",
+    "Или",
+    "Чтобы",
+    "Без",
+    "При",
+    "Про",
+    "Из",
+    "По",
+    "На",
+    "За",
+    "К",
+    "О",
+    "У",
+    "С",
+    "В",
+    "Во",
+    "Со",
+    "От",
+    "До",
+    "Ты",
+    "Вы",
+    "Этот",
+    "Эта",
+    "Эти",
+    "Такой",
+    "Такая",
+    "Сам",
+    "Всю",
+    "Сюда",
+    "Туда",
+    "Оттуда",
+    "Вслух",
+    "Против",
+    "Около",
+    "Вдруг",
+    "Вроде",
+    "Едва",
+    "Чуть",
+    "Совсем",
+    "Довольно",
+    "Слишком",
+    "Очень",
+    "Крайне",
+    "Весь",
+    "Вся",
+    "Другой",
+    "Другая",
+    "Другие",
+    "Первый",
+    "Второй",
+    "Третий",
+    "Нынешний",
+    "Текущий",
+    "Новый",
+    "Команда",
+    "Команды",
+    "Кейс",
+    "Кейсы",
+    "Штука",
+    "Человек",
+    "Люди",
 }
 
 
@@ -330,8 +533,12 @@ def _fact_numbers(fact: dict) -> set:
             *(fact.get("evidence", []) or []),
         ]
     )
-    # Даты — не числа утверждения.
+    # Даты и метки времени — не числа утверждения. Метку времени надо убирать
+    # целиком: «2026-11-06T12:30Z» иначе оставляет «12» и «30», и они
+    # legitimировали бы «12 м» в тексте.
+    text = re.sub(r"\b\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2})?Z?\b", " ", text)
     text = re.sub(r"\b\d{4}-\d{2}-\d{2}\b", " ", text)
+    text = re.sub(r"\b\d{2}:\d{2}\b", " ", text)
     numbers = set()
     for match in NUMBER_RE.findall(text):
         digits = match.replace(",", "").replace(".", "")
@@ -347,15 +554,21 @@ def _fact_refs(fact: dict) -> set:
     return set(re.findall(r"#(\d{1,6})\b", fact.get("source") or ""))
 
 
-def check_against_facts(body: str, facts: list) -> list:
-    """Каждое число и имя собственное в тексте должно быть среди фактов."""
+def check_against_facts(body: str, facts: list, own_facts: Optional[list] = None) -> list:
+    """Каждое число и имя собственное в тексте должно быть среди фактов.
+
+    own_facts — факты конкретной идеи (её post_id). Если он передан, сверка идёт
+    только с ними: число из чужого факта того же поста не должно legitimировать
+    утверждение. Иначе — со всеми переданными фактами.
+    """
+    scope = own_facts if own_facts else facts
     problems = []
     # HTML убираем: атрибуты (<a href="...">) — не имена собственные, а синтаксис разметки.
     plain = re.sub(r"<[^>]+>", " ", body)
 
     allowed = set()
     refs = set()
-    for fact in facts:
+    for fact in scope:
         allowed |= _fact_numbers(fact)
         refs |= _fact_refs(fact)
     for match in NUMBER_RE.findall(plain):
@@ -370,7 +583,7 @@ def check_against_facts(body: str, facts: list) -> list:
     blob = " ".join(
         [
             part
-            for fact in facts
+            for fact in scope
             for part in [fact.get("claim", "") or "", fact.get("source", "") or "", *(fact.get("evidence", []) or [])]
         ]
     ).lower()
@@ -383,7 +596,11 @@ def check_against_facts(body: str, facts: list) -> list:
     for match in CYRILLIC_NAME_RE.findall(plain):
         if match in STOP_CYRILLIC:
             continue
-        if match.lower() not in blob:
+        lowered = match.lower()
+        # Обычное глагольное слово — не имя: «Проверяем», «Сделали», «Работает».
+        if lowered.endswith(VERBISH_ENDINGS):
+            continue
+        if lowered not in blob:
             problems.append(f"имя «{match}» не найдено среди фактов")
     return problems
 
@@ -446,6 +663,10 @@ def validate_idea(idea: dict, facts: list) -> list:
         )
         if not known:
             problems.append(f"источник «{claim[:40]}» не найден среди фактов")
+    title = (idea.get("title") or "").strip()
+    if title:
+        # Заголовок — тоже текст для читателя: имя или ключ в нём недопустимы.
+        problems += check_against_facts(title, facts)
     if not (idea.get("show") or "").strip():
         problems.append("не сказано, что показать")
     if not (idea.get("deadline") or "").strip():
@@ -453,9 +674,19 @@ def validate_idea(idea: dict, facts: list) -> list:
     return problems
 
 
-def validate_post(body: str, tags: list, facts: list, has_media: bool = False) -> list:
-    """Проверка готового поста кодом: факты, лимиты, разметка, теги, приватность."""
-    problems = check_against_facts(body, facts)
+def validate_post(
+    body: str,
+    tags: list,
+    facts: list,
+    has_media: bool = False,
+    own_facts: Optional[list] = None,
+) -> list:
+    """Проверка готового поста кодом: факты, лимиты, разметка, теги, приватность.
+
+    own_facts — факты именно этой идеи: сверка идёт только с ними, иначе число
+    из чужого факта того же поста legitimировало бы выдумку.
+    """
+    problems = check_against_facts(body, facts, own_facts=own_facts)
     if not body.strip():
         problems.append("пустой текст")
     if not 2 <= len(tags) <= 5:
@@ -512,7 +743,13 @@ def produce_post(idea: dict, facts: list, model: str = DEFAULT_MODEL, repo_root:
     tags = result.get("tags") or []
     if not tags:
         tags = lib.extract_tags(body)
-    problems = validate_post(body, tags, facts, has_media=bool(idea.get("media_ref")))
+    problems = validate_post(
+        body,
+        tags,
+        facts,
+        has_media=bool(idea.get("media_ref")),
+        own_facts=facts if idea.get("fact_keys") else None,
+    )
     return {
         "body_html": body,
         "tags": tags,
@@ -569,9 +806,7 @@ def main() -> int:
         idea["fact_keys"] = match_fact_keys(idea, visible_facts)
         # Полные факты идеи: нужны, чтобы поставить событие в ожидание
         # (иначе оно предлагалось бы снова каждую сессию).
-        idea["fact_dicts"] = [
-            f for f in visible_facts if f.get("key") in set(idea["fact_keys"])
-        ]
+        idea["fact_dicts"] = [f for f in visible_facts if f.get("key") in set(idea["fact_keys"])]
         problems = validate_idea(idea, visible_facts)
         idea["problems"] = problems
         idea["ok"] = not problems

@@ -15,13 +15,14 @@ from __future__ import annotations
 
 import argparse
 import json
-import studio_state as st
 import os
 import re
 import subprocess
 import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+
+import studio_state as st
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_REPO = "krikz/rob_box_project"
@@ -342,6 +343,11 @@ def collect_new_files(repo_root: Path, since: str) -> list:
     return facts
 
 
+def load_state(path: Path) -> dict:
+    """Совместимость: состояние читает общий модуль studio_state."""
+    return st.load_state(path)
+
+
 def _unused_load_state(path: Path) -> dict:
     if not path.exists():
         return {}
@@ -373,7 +379,7 @@ def main() -> int:
     ap.add_argument("--no-save", action="store_true", help="не обновлять метку сессии (пробный запуск)")
     args = ap.parse_args()
 
-    state = load_state(args.state)
+    state = st.load_state(args.state)
     since = args.since or state.get("last_session")
     if not since:
         since = (datetime.now(timezone.utc) - timedelta(days=1)).strftime("%Y-%m-%dT%H:%M:%SZ")
@@ -384,7 +390,7 @@ def main() -> int:
     facts += collect_runs(args.repo, since[:10])
     facts += collect_new_files(REPO_ROOT, since)
 
-    state = load_state(args.state)
+    state = st.load_state(args.state)
     # Ключ каждому факту: по нему видно, что событие уже показано.
     for fact in facts:
         fact["key"] = fact_key(fact)

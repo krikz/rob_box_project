@@ -167,10 +167,7 @@ def test_post_keyboard_has_publish_and_reject():
 
 def test_callback_data_fits_telegram_limit():
     # Telegram ограничивает callback_data 64 байтами
-    for data in [
-        b["callback_data"]
-        for b in studio.idea_keyboard("x" * 32)["inline_keyboard"][0]
-    ]:
+    for data in [b["callback_data"] for b in studio.idea_keyboard("x" * 32)["inline_keyboard"][0]]:
         assert len(data.encode()) <= 64
 
 
@@ -180,14 +177,20 @@ def test_callback_data_fits_telegram_limit():
 )
 def test_idea_actions_change_status(action, expected):
     state = {"ideas": [{"id": "i1", "title": "идея", "status": "proposed"}]}
-    answer = studio.handle_callback(state, {"data": f"studio:idea:i1:{action}"})
+    answer = studio.handle_callback(
+        state,
+        {"data": f"studio:idea:i1:{action}", "from": {"id": studio.SHIFU_CHAT_ID}},
+    )
     assert state["ideas"][0]["status"] == expected
     assert answer
 
 
 def test_unknown_idea_is_reported():
     state = {"ideas": []}
-    answer = studio.handle_callback(state, {"data": "studio:idea:i9:take"})
+    answer = studio.handle_callback(
+        state,
+        {"data": "studio:idea:i9:take", "from": {"id": studio.SHIFU_CHAT_ID}},
+    )
     # Ответ должен быть человеческим, а не служебным: в чате это видит Шифу.
     assert "нет в списке" in answer
     assert "Напиши" in answer
@@ -198,7 +201,10 @@ def test_post_publish_marks_approved(tmp_path, monkeypatch):
     queue = tmp_path / "queue"
     monkeypatch.setenv("STUDIO_QUEUE_DIR", str(queue))
     state = {"posts": {}}
-    studio.handle_callback(state, {"data": "studio:post:001:publish"})
+    studio.handle_callback(
+        state,
+        {"data": "studio:post:001:publish", "from": {"id": studio.SHIFU_CHAT_ID}},
+    )
     # Поста без текста в очередь не встать не может — студия честно это говорит.
     assert state["posts"]["001"]["status"] == "rejected"
 
@@ -217,7 +223,10 @@ def test_post_publish_puts_post_into_queue(tmp_path, monkeypatch):
             }
         }
     }
-    answer = studio.handle_callback(state, {"data": "studio:post:001:publish"})
+    answer = studio.handle_callback(
+        state,
+        {"data": "studio:post:001:publish", "from": {"id": studio.SHIFU_CHAT_ID}},
+    )
     assert state["posts"]["001"]["status"] == "approved"
     files = list(queue.glob("*.md"))
     assert files, "пост не попал в очередь"
@@ -230,19 +239,31 @@ def test_post_publish_puts_post_into_queue(tmp_path, monkeypatch):
 
 def test_post_reject_marks_rejected():
     state = {"posts": {}}
-    studio.handle_callback(state, {"data": "studio:post:001:reject"})
+    studio.handle_callback(
+        state,
+        {"data": "studio:post:001:reject", "from": {"id": studio.SHIFU_CHAT_ID}},
+    )
     assert state["posts"]["001"]["status"] == "rejected"
 
 
 def test_garbage_callback_is_ignored():
     state = {"ideas": [], "posts": {}}
-    assert studio.handle_callback(state, {"data": "что-то"}) == "Непонятная кнопка."
+    assert (
+        studio.handle_callback(
+            state,
+            {"data": "что-то", "from": {"id": studio.SHIFU_CHAT_ID}},
+        )
+        == "Непонятная кнопка."
+    )
 
 
 def test_callback_with_wrong_kind_is_rejected():
     state = {"ideas": [], "posts": {}}
     # take — это действие идеи, посту оно не полагается
-    answer = studio.handle_callback(state, {"data": "studio:post:001:take"})
+    answer = studio.handle_callback(
+        state,
+        {"data": "studio:post:001:take", "from": {"id": studio.SHIFU_CHAT_ID}},
+    )
     assert "Непонятное действие" in answer
     assert "posts" not in state or state["posts"] == {}
 
@@ -279,6 +300,7 @@ def test_poll_once_handles_callback_and_advances_offset(tmp_path):
                 "callback_query": {
                     "id": "cb1",
                     "data": "studio:idea:i1:take",
+                    "from": {"id": studio.SHIFU_CHAT_ID},
                     "message": {"chat": {"id": 495039871}},
                 },
             }

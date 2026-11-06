@@ -85,7 +85,9 @@ def test_publish_closes_facts(tmp_path, monkeypatch):
     monkeypatch.setenv("STUDIO_QUEUE_DIR", str(tmp_path / "queue"))
     state = {
         "ideas": [],
-        "posts": {"001": {"status": "proposed", "fact_keys": ["pr:4503"], "body_html": "текст #роббокс", "tags": ["#роббокс"]}},
+        "posts": {
+            "001": {"status": "proposed", "fact_keys": ["pr:4503"], "body_html": "текст #роббокс", "tags": ["#роббокс"]}
+        },
     }
     studio.apply_post_action(state, "001", studio.ACTION_PUBLISH)
     assert "pr:4503" in state.get("covered", {}) or state["posts"]["001"]["status"] == "rejected"

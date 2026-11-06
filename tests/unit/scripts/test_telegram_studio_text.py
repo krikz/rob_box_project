@@ -11,7 +11,6 @@ sys.path.insert(0, str(REPO / "scripts" / "telegram"))
 import studio_facts as facts_mod  # noqa: E402
 import studio_text as text_mod  # noqa: E402
 
-
 # --------------------------------------------------------------------------- выбор модели
 
 
@@ -250,7 +249,12 @@ def test_api_key_in_text_is_rejected():
 
 def test_idea_without_show_or_deadline_is_rejected():
     """По брифу у идеи есть «что показать» и «примерный срок»."""
-    idea = {"title": "Тема", "facts": ["Сторож локализации не считает потерю опоры успехом"], "show": "", "deadline": ""}
+    idea = {
+        "title": "Тема",
+        "facts": ["Сторож локализации не считает потерю опоры успехом"],
+        "show": "",
+        "deadline": "",
+    }
     problems = text_mod.validate_idea(idea, make_facts())
     assert any("что показать" in p for p in problems)
     assert any("срок" in p for p in problems)

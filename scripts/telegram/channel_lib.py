@@ -85,6 +85,7 @@ FORBIDDEN = [
     (re.compile(r"\beyJ[A-Za-z0-9_-]{20,}"), "секрет в JWT-виде"),
 ]
 
+
 # Отправка: (метод Bot API, параметры, файл | список файлов для альбома | None) -> ответ контейнера
 class Transport(Protocol):
     """Куда уходит пост. Реализации: RobotTransport (через робота) и DirectTransport (через токен студии)."""
