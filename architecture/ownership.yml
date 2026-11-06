@@ -291,6 +291,15 @@ topics:
     # сегмент фразы с вейком (partial/final); решает диалог: ясная стоп-команда - SpeechCancel по эпохе
     writers_allowed: [stt_node]
     readers: [dialog_node]
+  /dialog/reply_window:
+    owner: dialog_node
+    type: std_msgs/Float32
+    status: live
+    introduced_by: "#4509"
+    # окно ответа на приветствие (greeting_window): сколько секунд открыто, 0 - закрыто; stt_node при открытом окне
+    # пускает фразу из эхо-окна на сверку словами (echo_window.REPLY), а не молчит
+    writers_allowed: [dialog_node]
+    readers: [stt_node]
   /dialog/intent:
     owner: dialog_node
     type: rob_box_dialog_msgs/Intent

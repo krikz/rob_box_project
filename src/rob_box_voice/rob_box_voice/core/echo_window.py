@@ -34,6 +34,14 @@
 изменения профилей исполняет только по вердикту «человек» (:class:`EchoVerdicts`) — эхо профиль не заводит и не
 растит.
 
+Окно ответа (#4509, живой робот 06.11): робот поздоровался, человек ответил сразу — голос звучал только в эхо-окне, и
+ответ выбрасывался как эхо. Владелец окна ответа (``dialog_node``, ``greeting_window``) шлёт событие
+:data:`REPLY_WINDOW_TOPIC` — сколько секунд окно открыто. Пока оно открыто, фраза из эхо-окна не молчит, а идёт на
+сверку словами (:data:`REPLY`): эхо — только если её слова повторяют речь робота; короткой фразе для этого хватает всех
+её слов по порядку (:func:`echo_of`, ``strict``). Речь робота сверяется с последними репликами по одной и со склейкой
+соседних (:data:`ECHO_JOIN_LINES`): эхо «Скажи, что именно сделать, и я тебя не забуду» — хвост одной реплики и
+начало следующей.
+
 Длина окна — одна константа знания ``knowledge.IDENTITY_MIC_GRACE_S`` (дефолт параметра ``stt_node.tts_grace_s``).
 """
 
@@ -70,6 +78,8 @@ SPEECH, GRACE, FREE = "speech", "grace", "free"
 #: Вердикты :meth:`EchoWindow.admit`.
 PASS = "pass"
 STOP_ONLY = "stop_only"  # голос звучал только в эхо-окне после речи робота
+#: Голос звучал только в эхо-окне, но открыто окно ответа (#4509): фраза идёт, если не эхо словами (строгая сверка).
+REPLY = "reply_window"
 SHORT_STOP_ONLY = "short_stop_only"  # короткая фраза при звучащей речи (hardware-AEC)
 DROP_SPEAKING = "drop_speaking"
 #: Вердикты, после которых фраза идёт дальше только как ясный стоп с вейком (``Admission.keeps``).
@@ -87,6 +97,9 @@ CHUNK_GAP_S = 1.0
 ECHO_MIN_WORDS = 3
 #: Доля слов фразы, совпавших с репликой робота: запас на ошибки STT в эхе (7 из 9 слов — эхо).
 ECHO_WORD_SHARE = 0.6
+#: Склейка (#4509): эхо бывает хвостом одной реплики робота и началом следующей, поэтому фраза сверяется ещё и со
+#: склейкой подряд идущих реплик, звучавших рядом с ней (окно по времени даёт журнал), — не больше стольких.
+ECHO_JOIN_LINES = 3
 #: Сколько последних реплик робота помнит журнал речи.
 JOURNAL_SIZE = 32
 #: Изменения профилей по фразе рядом с речью робота ждут вердикта ``stt_node`` не дольше (распознавание с повтором и
@@ -104,6 +117,9 @@ VERDICT_TICK_S = 1.0
 HUMAN, ECHO, NO_VERDICT = "human", "echo", "no_verdict"
 
 VAD_TOPIC = "/audio/vad"
+#: Событие владельца окна ответа (``dialog_node``: окно ответа на приветствие, #4509): ``std_msgs/Float32`` — сколько
+#: секунд окно ещё открыто, ``0`` — закрыто.
+REPLY_WINDOW_TOPIC = "/dialog/reply_window"
 #: Фраза ReSpeaker, признанная эхом речи робота (``Utterance``): её слушает биометрия (#4145).
 ECHO_TOPIC = "/voice/stt/echo"
 #: Фраза человека, ушедшая в диалог: для биометрии — вердикт «не эхо».
@@ -148,23 +164,47 @@ class Echo:
     speech_id: str = ""
 
 
+def _lines(spoken: Sequence[Spoken]) -> Tuple[Spoken, ...]:
+    """С чем сверять фразу: каждая реплика робота и склейки подряд идущих (до :data:`ECHO_JOIN_LINES`, #4509)."""
+    said = tuple(s for s in spoken if s.text)
+    joined = tuple(
+        Spoken("+".join(s.speech_id for s in said[i:j]), " ".join(s.text for s in said[i:j]))
+        for i in range(len(said))
+        for j in range(i + 2, min(i + ECHO_JOIN_LINES, len(said)) + 1)
+    )
+    return tuple(spoken) + joined
+
+
+def _repeats(same: int, total: int, strict: bool) -> bool:
+    """Слов совпало достаточно для эха: :data:`ECHO_MIN_WORDS` и доля :data:`ECHO_WORD_SHARE`; ``strict`` (окно
+    ответа, #4509) — ещё и короткая фраза, все слова которой идут в речи робота по порядку."""
+    if same >= ECHO_MIN_WORDS and same >= ECHO_WORD_SHARE * total:
+        return True
+    return strict and 0 < total == same
+
+
 def echo_of(
-    text: str, spoken: Sequence[Spoken], wake_words: Sequence[str] = ()
+    text: str,
+    spoken: Sequence[Spoken],
+    wake_words: Sequence[str] = (),
+    strict: bool = False,
 ) -> Optional[Echo]:
     """Реплика робота, чьи слова фраза в основном повторяет (#4145); ``None`` — не эхо, фраза идёт как раньше.
 
     Эхо — не меньше :data:`ECHO_MIN_WORDS` слов фразы идут в реплике по порядку и это не меньше
     :data:`ECHO_WORD_SHARE` её слов; нормализация слов одна — :mod:`rob_box_dialog.words`. Вейк во фразе, которого
     нет в реплике робота, — голос человека, не эхо: с такой репликой фраза не сверяется (ревью #4161: «робот а ты
-    что» во время длинной речи совпадала служебными словами 3 из 4).
+    что» во время длинной речи совпадала служебными словами 3 из 4). Реплика — и склейка соседних реплик
+    (:func:`_lines`, #4509). ``strict`` — фраза из эхо-окна при открытом окне ответа: эхо и короткая фраза, целиком
+    повторяющая речь робота («добрый вечер» после «…Добрый вечер.»).
     """
     total = len(name_tokens(text))
     woken = bool(wake_words) and has_wake_word(text, wake_words)
-    for said in spoken:
+    for said in _lines(spoken):
         if woken and not has_wake_word(said.text, wake_words):
             continue
         same = words_in_order(text, said.text)
-        if same >= ECHO_MIN_WORDS and same >= ECHO_WORD_SHARE * total:
+        if _repeats(same, total, strict):
             return Echo(
                 f"🔁 [echo] фраза совпадает с речью робота speech_id={said.speech_id} — не беру "
                 f"(слов {same}/{total}: {text!r})",
@@ -276,7 +316,8 @@ class Admission:
         * ясный стоп с вейком (:func:`stop_passes`) идёт всегда — «стоп важнее»;
         * слова фразы в основном повторяют реплику робота, звучавшую рядом с ней (:func:`echo_of`, #4145) — эхо;
           фраза человека, не совпадающая со словами робота, и фраза с вейком, которого робот не говорил, идут как
-          раньше (бэклог, перебивание).
+          раньше (бэклог, перебивание); фраза из эхо-окна при открытом окне ответа (:data:`REPLY`, #4509) сверяется
+          строго.
 
         Промежуточным результатам STT хватает :meth:`keeps`: по partial с вейком диалог рвёт речь, только если это
         ясный стоп, а он проходит и здесь.
@@ -286,7 +327,7 @@ class Admission:
             return Echo(self.echo_note(text, duration_s))
         if stop_passes(text, wake_words):
             return None
-        return echo_of(text, self.spoken, wake_words)
+        return echo_of(text, self.spoken, wake_words, strict=self.verdict == REPLY)
 
 
 def _no_echo_sink(utterance_id: str, text: str) -> None:
@@ -321,6 +362,15 @@ class EchoWindow:
         self._open: Optional[Set[str]] = None
         self._closed: Set[str] = set()
         self._last: Tuple[float, FrozenSet[str]] = (float("-inf"), frozenset())
+        self._reply_until = float("-inf")
+
+    def on_reply_window(self, seconds: float) -> None:
+        """Событие владельца окна ответа (:data:`REPLY_WINDOW_TOPIC`): окно открыто ещё ``seconds`` (``0`` — закрыто)."""
+        self._reply_until = self._clock() + max(0.0, float(seconds))
+
+    def reply_open(self) -> bool:
+        """Открыто ли окно ответа (#4509): фраза из эхо-окна тогда сверяется словами, а не молчит."""
+        return self._clock() < self._reply_until
 
     def where(self) -> str:
         """Где мы сейчас: говорит робот, эхо-окно после его речи или тишина."""
@@ -371,6 +421,7 @@ class EchoWindow:
             speaking=self.speaking,
             duration_s=duration_s,
             aec_mode=self.aec_mode,
+            reply_open=self.reply_open(),
         )
         if FREE not in heard:
             return replace(admission, spoken=self.journal.sounded(duration_s))
@@ -382,14 +433,26 @@ OPEN = Admission(PASS)
 
 
 def decide(
-    heard: AbstractSet[str], *, speaking: bool, duration_s: float, aec_mode: str
+    heard: AbstractSet[str],
+    *,
+    speaking: bool,
+    duration_s: float,
+    aec_mode: str,
+    reply_open: bool = False,
 ) -> Admission:
-    """Вердикт по местам голоса фразы ``heard`` и речи робота сейчас (``speaking``)."""
+    """Вердикт по местам голоса фразы ``heard`` и речи робота сейчас (``speaking``). ``reply_open`` — открыто окно
+    ответа (#4509): фраза из эхо-окна идёт на строгую сверку словами (:data:`REPLY`), а не молчит."""
     software = aec_mode == "software"
     if software and speaking:
         return Admission(
             DROP_SPEAKING,
             f"🔇 [software AEC] Игнор фразы {duration_s:.2f}с: робот говорит",
+        )
+    if heard and set(heard) <= {GRACE} and reply_open:
+        return Admission(
+            REPLY,
+            f"💬 [issue 989/#4509] Фраза {duration_s:.2f}с звучала в эхо-окне, а окно ответа открыто — распознаю, "
+            "эхо отсею словами",
         )
     if heard and set(heard) <= {GRACE}:
         return Admission(
@@ -425,11 +488,13 @@ def watch(
     aec_mode: str,
     vad_type: Any,
     clock: Callable[[], float] = time.monotonic,
+    reply_type: Any = None,
 ) -> EchoWindow:
     """Подписать узел на речь робота (``SpeechRequest`` — текст, ``SpeechEvent`` — звучание) и ``/audio/vad``; эхо —
     в :data:`ECHO_TOPIC`. Вернуть эхо-окно узла.
 
-    ``vad_type`` — ``std_msgs.msg.Bool`` (модуль ROS-сообщений не тянет); текст реплики без SSML — тот же
+    ``vad_type`` — ``std_msgs.msg.Bool``, ``reply_type`` — ``std_msgs.msg.Float32`` события окна ответа
+    (:data:`REPLY_WINDOW_TOPIC`, #4509; ``None`` — не слушать): модуль ROS-сообщений не тянет. Текст реплики без SSML — тот же
     ``speech_owner.plain_text``, что у владельца речи (импорт здесь: модуль тянет ``std_msgs``).
     """
     from rob_box_voice.core.speech_owner import plain_text
@@ -465,6 +530,13 @@ def watch(
     node.create_subscription(
         vad_type, VAD_TOPIC, lambda msg: window.on_vad(bool(msg.data)), _QOS_DEPTH
     )
+    if reply_type is not None:
+        node.create_subscription(
+            reply_type,
+            REPLY_WINDOW_TOPIC,
+            lambda msg: window.on_reply_window(float(msg.data)),
+            _QOS_DEPTH,
+        )
     return window
 
 

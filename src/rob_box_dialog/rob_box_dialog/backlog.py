@@ -115,9 +115,14 @@ class Backlog:
     def pickup(self, heard: Heard) -> List[Heard]:
         """Голое «робот» (В12): забрать все свежие фразы и примыкающие к ним куски рассказа, по порядку; свежего
         нет — последнюю фразу окна ``BACKLOG_PICKUP_S`` и её куски. Подхват тоже считается «слышал»; подхваченное
-        уходит из бэклога, но остаётся в сводке голосов окна (:meth:`background_summary`)."""
+        уходит из бэклога, но остаётся в сводке голосов окна (:meth:`background_summary`).
+
+        Фразы, прозвучавшие до последнего адресованного хода (:meth:`note_addressed`), не подхватываются и свежими
+        (#4509): тот ход видел их в снимке (``recent_unaddressed``, ``background_since_reply``) и на них уже ответил —
+        второй подхват давал второй ответ на то же («я не забыл» → ответ, «Роберт» → ещё ответ)."""
         self._prune(heard.t)
-        fresh = [i for i, e in enumerate(self._entries) if 0.0 <= heard.t - e.t <= BACKLOG_FRESH_S]
+        fresh = [i for i, e in enumerate(self._entries)
+                 if e.t > self._addressed_t and 0.0 <= heard.t - e.t <= BACKLOG_FRESH_S]
         fresh = fresh or self._last_unheard(heard.t)
         if not fresh:
             return []

@@ -534,17 +534,21 @@ def greeting_open(frame: Optional[SceneFrame]) -> bool:
 
 
 def answer_to_greeting(frame: Optional[SceneFrame], heard: Any) -> str:
-    """Фраза без вейка после приветствия при встрече (решение Шифу 21.10): окно ``REPLY_WINDOW_S`` открыто, и
-    это либо ответ по грамматике приветствия (``"grammar"``), либо лицо приветствованного в кадре в момент фразы
-    (``"face"``; канал лица надёжен). DOA — не условие. Иначе ``""`` (бэклог)."""
+    """Фраза без вейка после приветствия при встрече (решение Шифу 21.10, уточнено 06.11 в #4509): окно
+    ``REPLY_WINDOW_S`` открыто — ответ. Лицо в кадре не условие (человек отвечает, повернувшись к роботу не лицом),
+    DOA тоже; окно идёт с конца приветствия (``in_grace``): эхо приветствия отсеивает ``stt_node`` словами по событию
+    окна ответа (``echo_window.REPLY_WINDOW_TOPIC``). Признак для лога: ``"grammar"`` (похоже на ответ на
+    приветствие), ``"face"`` (приветствованный в кадре) или ``"voice"`` (только голос). Окно закрыто — ``""``
+    (бэклог)."""
     if not greeting_open(frame) or not kn.GREETING_REPLY_WITHOUT_WAKE:
         return ""
-    if not in_reply_window(frame.payload["asked_at"], getattr(heard, "t", 0.0)):
+    text = str(getattr(heard, "text", "") or "").strip()
+    if not text or not in_reply_window(frame.payload["asked_at"], getattr(heard, "t", 0.0), in_grace=True):
         return ""
-    if is_greeting_reply(str(getattr(heard, "text", "") or "")):
+    if is_greeting_reply(text):
         return "grammar"
     name = str(frame.payload.get("name") or "").lower()
-    return "face" if name and name in (getattr(heard, "faces", ()) or ()) else ""
+    return "face" if name and name in (getattr(heard, "faces", ()) or ()) else "voice"
 
 
 def trusted_voice(heard: Any) -> str:
