@@ -1,4 +1,4 @@
-"""face_node: panels on /panel_image (one publisher, frame_id = group, only changed panels)."""
+"""face_node: panels on /panel_image (one publisher, one Image per frame, frame_id = changed groups)."""
 
 from __future__ import annotations
 
@@ -7,9 +7,9 @@ import types
 import pytest
 
 from rob_box_animations.face.layout import GROUP_SIZE
-from rob_box_animations.face.scene import Scene
+from rob_box_animations.face.scene import FaceContext, Scene
 from rob_box_animations.face.states import SCENES
-from rob_box_animations.face_node import PanelPublisher
+from rob_box_animations.face_node import FULL_REFRESH_S, PanelPublisher
 
 
 class _FakeNode:
@@ -30,22 +30,73 @@ class _FakeNode:
         return types.SimpleNamespace(now=lambda: types.SimpleNamespace(to_msg=Time))
 
 
-def test_one_publisher_all_groups_first_then_only_changes():
+def _groups_of(msg):
+    return msg.header.frame_id.split(',')
+
+
+def test_one_publisher_one_message_per_frame_then_only_changes():
     node = _FakeNode()
     panels = PanelPublisher(node, full_refresh_s=1.0)
     scene = Scene(SCENES['sleep'])
     panels.publish(scene.frame(0.0), 100.0)
     assert [p.topic for p in node.pubs] == ['/panel_image']
-    first = node.pubs[0].sent
-    assert sorted(m.header.frame_id for m in first) == sorted(GROUP_SIZE)
-    for m in first:
-        w, h = GROUP_SIZE[m.header.frame_id]
-        assert (m.width, m.height, m.encoding, m.step, len(m.data)) == (w, h, 'rgb8', w * 3, w * h * 3)
-    n = len(first)
+    sent = node.pubs[0].sent
+    assert len(sent) == 1                                # the whole first frame is ONE message
+    (m,) = sent
+    assert sorted(_groups_of(m)) == sorted(GROUP_SIZE)
+    pixels = sum(w * h for w, h in GROUP_SIZE.values())
+    assert (m.width, m.height, m.encoding, m.step, len(m.data)) == (pixels, 1, 'rgb8', pixels * 3, pixels * 3)
     panels.publish(scene.frame(0.0), 100.04)            # same picture -> nothing sent
-    assert len(first) == n
+    assert len(sent) == 1
     panels.publish(scene.frame(0.0), 101.1)             # once a second everything again
-    assert len(first) == 2 * n
+    assert len(sent) == 2 and sorted(_groups_of(sent[1])) == sorted(GROUP_SIZE)
+
+
+def test_message_data_is_the_groups_wire_images_back_to_back():
+    from rob_box_animations.face.face import to_wire
+    from rob_box_animations.face.layout import GROUP_OF
+    node = _FakeNode()
+    panels = PanelPublisher(node)
+    frame = Scene(SCENES['music_shades']).frame(0.3, FaceContext(bpm=118))
+    panels.publish(frame, 100.0)
+    (m,) = node.pubs[0].sent
+    want = {GROUP_OF[p]: to_wire(a).tobytes() for p, a in frame.panels().items()}
+    off = 0
+    for g in _groups_of(m):
+        n = GROUP_SIZE[g][0] * GROUP_SIZE[g][1] * 3
+        assert bytes(m.data[off:off + n]) == want[g], g
+        off += n
+    assert off == len(m.data)
+
+
+def test_static_scene_publishes_nothing_after_the_first_frame():
+    """#3733: a still face costs only the first frame and the slow pulse; 10 s at 25 fps."""
+    node = _FakeNode()
+    panels = PanelPublisher(node)
+    frame = Scene(SCENES['sleep']).frame(0.0)
+    for i in range(250):
+        panels.publish(frame, 100.0 + i / 25.0)
+    seconds = 250 / 25.0
+    assert len(node.pubs[0].sent) <= 1 + seconds / FULL_REFRESH_S     # first frame + one pulse per period
+
+
+def test_animated_scene_is_one_message_per_frame():
+    node = _FakeNode()
+    panels = PanelPublisher(node, full_refresh_s=1e9)
+    scene = Scene(SCENES['music_shades'])
+    ctx = FaceContext(bpm=118)
+    first = scene.frame(0.0, ctx)
+    panels.publish(first, 100.0)
+    before = len(node.pubs[0].sent)
+    changed, prev = 0, first
+    for i in range(1, 51):
+        f = scene.frame(i / 25.0, ctx)
+        panels.publish(f, 100.0 + i / 25.0)
+        changed += any(a.tobytes() != b.tobytes() for a, b in zip(f.panels().values(), prev.panels().values()))
+        prev = f
+    assert changed > 0
+    assert len(node.pubs[0].sent) - before == changed    # one message per changed frame, none for a repeat
+    assert panels.messages == len(node.pubs[0].sent)
 
 
 def test_node_wires_inputs_and_timers():
