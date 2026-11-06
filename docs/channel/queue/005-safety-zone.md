@@ -1,9 +1,9 @@
 ---
-status: draft
+status: approved
 media: docs/assets/animations/roadworks_beacon.gif
 not_before: 2026-11-17T10:00:00Z
 message_id:
-hashtags: #безопасность
+hashtags: #безопасность #навигация #какэтоработает
 ---
 🚧 <b>Зона безопасности по лидару</b>
 
@@ -13,4 +13,4 @@ hashtags: #безопасность
 
 На гифке — анимация лица «дорожные работы».
 
-#безопасность
+#безопасность #навигация #какэтоработает

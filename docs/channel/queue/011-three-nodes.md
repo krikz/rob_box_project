@@ -1,9 +1,9 @@
 ---
-status: draft
+status: approved
 media: docs/channel/media/nodes.png
 not_before: 2026-12-01T10:00:00Z
 message_id:
-hashtags: #железо
+hashtags: #железо #raspberrypi #какэтоработает
 ---
 🧩 <b>Три Raspberry Pi — три узла</b>
 
@@ -15,4 +15,4 @@ hashtags: #железо
 
 Список контейнеров взят из compose-файлов в репозитории; адреса сети не публикуем.
 
-#железо
+#железо #raspberrypi #какэтоработает

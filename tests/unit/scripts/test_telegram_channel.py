@@ -18,11 +18,17 @@ T0 = datetime(2026, 11, 10, 10, 0, tzinfo=UTC)
 
 
 def make_post(queue: Path, num: int, status="approved", not_before="2026-11-10T10:00:00Z", media="", **extra):
-    meta = {"status": status, "media": media, "not_before": not_before, "message_id": "", "hashtags": "#тест"}
+    meta = {
+        "status": status,
+        "media": media,
+        "not_before": not_before,
+        "message_id": "",
+        "hashtags": "#роббокс #дневник",
+    }
     meta.update(extra)
     head = "\n".join(f"{k}: {v}" for k, v in meta.items())
     path = queue / f"{num:03d}-p.md"
-    path.write_text(f"---\n{head}\n---\n<b>Пост {num}</b> #тест\n", encoding="utf-8")
+    path.write_text(f"---\n{head}\n---\n<b>Пост {num}</b> #роббокс #дневник\n", encoding="utf-8")
     return path
 
 
@@ -136,13 +142,11 @@ def test_validate_caption_limit_and_html(queue, tmp_path):
     assert any("лимит" in p for p in problems) and any("div" in p for p in problems)
 
 
-def test_real_queue_is_valid_and_only_pin_may_be_approved():
+def test_real_queue_is_valid_and_unfinished_posts_stay_draft():
     posts = lib.load_queue(REPO / "docs" / "channel" / "queue")
     assert 8 <= len(posts) <= 11
     for post in posts:
-        if post.name.startswith("001-"):  # закреп одобрен Шифу к боевому запуску channel_setup.py
-            assert post.status in ("draft", "approved")
-        else:
+        if post.pending:  # пост с заглушкой медиа нельзя одобрять
             assert post.status == "draft", post.name
         problems = lib.validate(post, REPO)
         if post.pending:  # заглушка медиа: единственное, что допустимо — «не готово» и отсутствие файла
@@ -170,7 +174,7 @@ def test_setup_refuses_live_without_approved_pin(tmp_path):
     shutil.copytree(REPO / "docs" / "channel", tmp_path / "docs" / "channel")
     shutil.copytree(REPO / "docs" / "assets" / "animations", tmp_path / "docs" / "assets" / "animations")
     pin = tmp_path / "docs" / "channel" / "queue" / "001-hello-pin.md"
-    pin.write_text(pin.read_text(encoding="utf-8").replace("status: approved", "status: draft", 1), encoding="utf-8")
+    lib.set_front_matter(pin, status="draft")
     rc = channel_setup.run(tmp_path, lambda *a: pytest.fail("сеть без одобрения"), dry_run=False, out=lambda s: None)
     assert rc == 1
 
@@ -180,6 +184,8 @@ def test_setup_live_runs_all_steps_and_marks_pin_posted(tmp_path):
 
     shutil.copytree(REPO / "docs" / "channel", tmp_path / "docs" / "channel")
     shutil.copytree(REPO / "docs" / "assets" / "animations", tmp_path / "docs" / "assets" / "animations")
+    pin = tmp_path / "docs" / "channel" / "queue" / "001-hello-pin.md"
+    lib.set_front_matter(pin, status="approved", message_id="")
     calls = []
 
     def transport(method, params, media):

@@ -1,9 +1,9 @@
 ---
-status: draft
+status: approved
 media: docs/assets/hil/polygon.gif
 not_before: 2026-11-21T10:00:00Z
 message_id:
-hashtags: #симуляция
+hashtags: #симуляция #ros2 #какэтоработает
 ---
 🧪 <b>Робот «ездит» в Gazebo, пока стоит в мастерской</b>
 
@@ -13,4 +13,4 @@ HIL — это когда стек настоящего робота (Nav2, RTAB
 
 Подробности: docs/research/2026-11-04-hil-robot-on-gazebo-data.md в репозитории.
 
-#симуляция
+#симуляция #ros2 #какэтоработает

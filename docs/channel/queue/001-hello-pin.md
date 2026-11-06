@@ -3,7 +3,7 @@ status: approved
 media: docs/assets/animations/talk_happy.gif
 not_before: 2026-11-07T10:00:00Z
 message_id:
-hashtags: #роббокс
+hashtags: #роббокс #дневник #ros2
 ---
 🤖 <b>Привет! Это РОББОКС.</b>
 
@@ -21,4 +21,4 @@ hashtags: #роббокс
 Код: github.com/krikz/rob_box_project
 Светодиодная библиотека: github.com/krikz/ros2leds
 
-#роббокс
+#роббокс #дневник #ros2

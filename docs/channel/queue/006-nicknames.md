@@ -1,9 +1,9 @@
 ---
-status: draft
+status: approved
 media: docs/assets/animations/thinking_orbit.gif
 not_before: 2026-11-19T10:00:00Z
 message_id:
-hashtags: #люди
+hashtags: #люди #голос #какэтоработает
 ---
 🏷 <b>Кличка вместо «человек без имени»</b>
 
@@ -15,4 +15,4 @@ hashtags: #люди
 
 Лица людей и клички реальных людей в канале не публикуем, поэтому — без примеров и фото.
 
-#люди
+#люди #голос #какэтоработает

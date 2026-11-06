@@ -21,6 +21,25 @@ MIN_GAP = timedelta(hours=48)
 CAPTION_LIMIT = 1024
 MESSAGE_LIMIT = 4096
 STATUSES = ("draft", "approved", "posted")
+# Словарь хэштегов канала (docs/process/telegram-channel.md): тематические и рубрики. Новый тег — сначала сюда.
+TOPIC_TAGS = {
+    "#роббокс",
+    "#навигация",
+    "#симуляция",
+    "#железо",
+    "#светодиоды",
+    "#голос",
+    "#музыка",
+    "#безопасность",
+    "#тесты",
+    "#opensource",
+    "#ros2",
+    "#raspberrypi",
+    "#люди",
+}
+RUBRIC_TAGS = {"#дневник", "#какэтоработает", "#цифры", "#честность"}
+TAG_DICTIONARY = TOPIC_TAGS | RUBRIC_TAGS
+MIN_TAGS, MAX_TAGS = 2, 4
 # Telegram HTML (Bot API, «Formatting options»): b, i, u, s, tg-spoiler, a, tg-emoji, code, pre, blockquote
 # (в т.ч. `<blockquote expandable>`); blockquote не вкладываются.
 ALLOWED_TAGS = {
@@ -211,6 +230,12 @@ def validate(post: Post, repo_root: Path) -> list:
     for tag in post.hashtags:
         if tag not in post.body:
             problems.append(f"хэштега {tag} нет в тексте")
+        if tag not in TAG_DICTIONARY:
+            problems.append(f"хэштега {tag} нет в словаре канала")
+    for tag in sorted(set(re.findall(r"(?<![\w&])#[^\W\d]\w*", post.body)) - set(post.hashtags)):
+        problems.append(f"в тексте тег {tag}, которого нет в hashtags поста")
+    if not MIN_TAGS <= len(post.hashtags) <= MAX_TAGS:
+        problems.append(f"хэштегов {len(post.hashtags)}, нужно {MIN_TAGS}–{MAX_TAGS}")
     if post.media:
         problems += media_problems(repo_root / post.media, post.media)
     if post.extra_media:
