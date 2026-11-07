@@ -20,6 +20,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 import subprocess
@@ -34,18 +35,30 @@ import studio_media as smedia
 import studio_render as render
 
 REPO = Path(__file__).resolve().parents[2]
-TEMPLATES = ("side_by_side", "top_view", "animated_card", "timeline")
+TEMPLATES = ("compare", "top_view", "animated_card", "timeline")
+# Семейство «сравнение двух прогонов»: раскладка и ориентация — параметры,
+# а не отдельные шаблоны. Так студия сама собирает и «бок о бок», и
+# «до сверху, после снизу», и то же самое в вертикальном кадре (Шифу, 07.11).
+LAYOUTS = ("side_by_side", "stacked")
+ORIENTATIONS = ("landscape", "portrait")
 TEMPLATE_HELP = {
-    "side_by_side": "два прогона бок о бок: где робот на самом деле и где думает, ошибка позы на кадре",
+    "compare": "два прогона: рядом (side_by_side) или стопкой (stacked — «до» сверху, «после» снизу); "
+    "кадр горизонтальный (landscape) или вертикальный (portrait)",
     "top_view": "вид сверху на карту rtabmap с врезкой 3D-камеры (кадры прогона)",
     "animated_card": "карточка «было → стало» с цифрами ошибки позы, посчитанными по прогонам",
     "timeline": "таймлайн влитых PR сессии, строки появляются по очереди",
 }
 COMPARE_MARKERS = ("до/после", "до и после", "до-после", "бок о бок", "было/стало", "было и стало", "сравн")
 TOP_MARKERS = ("сверху", "камер", "карт")
+# Просьба Шифу (07.11): «видео вертикальным, чтобы до было сверху, а после снизу».
+# «сверху» отдельно — это вид сверху (top_view); стопка — только когда есть и «снизу».
+VERTICAL_MARKERS = ("вертикаль", "вертикальн", "столбик", "стопкой", "в столбик", "сверху и снизу")
+STACK_MARKERS = ("стопкой", "столбиком", "в столбик", "сверху и снизу")
+COMPARE_RE = re.compile(r"до\s+и\s+после|до[^\w]{0,3}после|после[^\w]{0,3}до|до\s+сверху|до\s+был[оа]")
 TITLE_MAX = 90
 MP4_SIZE, MP4_FPS, MP4_SECONDS, HOLD_SECONDS = (1280, 720), 20, 30, 3
 GIF_SIZE, GIF_FPS, GIF_SECONDS = (640, 360), 10, 14
+MP4_VERTICAL_SIZE, GIF_VERTICAL_SIZE = (720, 1280), (360, 640)
 TOP_MAX_FRAMES = 240  # кадров вида сверху: каждый кадр — два scp (вид сверху и камера)
 
 
@@ -57,7 +70,7 @@ def feasible(record: dict, facts: list, catalog: list) -> list:
     poses = [item for item in catalog if item.get("kind") == "poses"]
     out = []
     if len(poses) >= 2:
-        out.append("side_by_side")
+        out.append("compare")
     if any(item.get("kind") == "frames" for item in catalog):
         out.append("top_view")
     if poses:
@@ -76,24 +89,76 @@ def plan_by_code(record: dict, request: str, catalog: list, options: list) -> Op
     text = _context(record, request)
     topic = material.topic_of(text)
     low = (request or "").lower()
-    if "top_view" in options and any(m in low for m in TOP_MARKERS) and not any(m in low for m in COMPARE_MARKERS):
+    # Раскладка и ориентация — по словам Шифу. «Сверху» само по себе — это вид
+    # сверху (top_view); стопка — только если есть и «снизу» (Шифу, 07.11).
+    stacked = any(m in low for m in STACK_MARKERS) or ("сверху" in low and "снизу" in low)
+    portrait = any(m in low for m in VERTICAL_MARKERS)
+    layout = "stacked" if stacked else "side_by_side"
+    orientation = "portrait" if portrait else "landscape"
+    wants_compare = any(m in low for m in COMPARE_MARKERS) or bool(COMPARE_RE.search(low))
+    if "compare" in options and (wants_compare or stacked or portrait):
+        pair = material.pair_for(topic, catalog) if topic else []
+        runs = pair or _default_runs("compare", catalog)
+        if len(runs) >= 2:
+            title = material.TOPICS[topic]["title"] if topic and topic in material.TOPICS else (record.get("title") or "РОББОКС")
+            return {"template": "compare", "runs": runs, "layout": layout, "orientation": orientation, "title": title}
+    if (
+        "top_view" in options
+        and any(m in low for m in TOP_MARKERS)
+        and not wants_compare
+        and not stacked
+        and not portrait
+    ):
         return {"template": "top_view", "runs": [material.TOP_RUN], "title": "РОББОКС в Gazebo: склад Depot"}
     pair = material.pair_for(topic, catalog) if topic else []
-    if pair and "side_by_side" in options:
-        return {"template": "side_by_side", "runs": pair, "title": material.TOPICS[topic]["title"]}
+    if pair and "compare" in options:
+        return {
+            "template": "compare",
+            "runs": pair,
+            "layout": layout,
+            "orientation": orientation,
+            "title": material.TOPICS[topic]["title"],
+        }
     if len(options) == 1:
         only = options[0]
         runs = _default_runs(only, catalog)
-        return {"template": only, "runs": runs, "title": record.get("title") or "РОББОКС"}
+        return {
+            "template": only,
+            "runs": runs,
+            "layout": layout,
+            "orientation": orientation,
+            "title": record.get("title") or "РОББОКС",
+        }
     return None
 
 
 def _default_runs(template: str, catalog: list) -> list:
     if template == "top_view":
         return [material.TOP_RUN]
-    if template in ("side_by_side", "animated_card"):
+    if template in ("compare", "animated_card"):
         return [item["id"] for item in catalog if item.get("kind") == "poses"][:2]
     return []
+
+
+def normalize_plan(plan: dict) -> dict:
+    """Единый вид плана: шаблон, прогоны, раскладка, ориентация, заголовок.
+
+    Старое имя шаблона «side_by_side» — это «compare» с боковой раскладкой
+    в горизонтальном кадре (планы из состояния и от модели).
+    """
+    out = dict(plan or {})
+    template = str(out.get("template") or "")
+    if template == "side_by_side":
+        out["template"] = "compare"
+    elif template == "compare":
+        out["template"] = "compare"
+    out.setdefault("layout", "side_by_side")
+    out.setdefault("orientation", "landscape")
+    if out.get("layout") not in LAYOUTS:
+        out["layout"] = "side_by_side"
+    if out.get("orientation") not in ORIENTATIONS:
+        out["orientation"] = "landscape"
+    return out
 
 
 def validate_plan(plan: dict, options: list, catalog: list) -> list:
@@ -101,6 +166,7 @@ def validate_plan(plan: dict, options: list, catalog: list) -> list:
     problems = []
     if not isinstance(plan, dict):
         return ["план не JSON-объект"]
+    plan = normalize_plan(plan)
     template = plan.get("template")
     if template == "none":
         return []
@@ -110,14 +176,19 @@ def validate_plan(plan: dict, options: list, catalog: list) -> list:
     runs = plan.get("runs") or []
     if not isinstance(runs, list) or any(r not in kinds for r in runs):
         problems.append(f"прогоны {runs!r} не из каталога")
-    elif template == "side_by_side" and (
+    elif template == "compare" and (
         len(runs) != 2 or len(set(runs)) != 2 or {kinds[r] for r in runs} != {"poses"}
     ):
-        problems.append("side_by_side: нужно ровно два разных прогона с позой")
+        problems.append("compare: нужно ровно два разных прогона с позой")
     elif template == "animated_card" and not (1 <= len(runs) <= 2 and all(kinds[r] == "poses" for r in runs)):
         problems.append("animated_card: нужен один или два прогона с позой")
     elif template == "top_view" and [kinds.get(r) for r in runs] != ["frames"]:
         problems.append("top_view: нужен один прогон с кадрами камер")
+    if template == "compare":
+        if plan.get("layout") not in LAYOUTS:
+            problems.append(f"раскладка {plan.get('layout')!r} не из {LAYOUTS}")
+        if plan.get("orientation") not in ORIENTATIONS:
+            problems.append(f"ориентация {plan.get('orientation')!r} не из {ORIENTATIONS}")
     title = plan.get("title")
     if not isinstance(title, str) or not title.strip() or len(title) > TITLE_MAX or "<" in title:
         problems.append(f"заголовок пустой, длиннее {TITLE_MAX} знаков или с разметкой")
@@ -133,11 +204,14 @@ def plan_prompt(record: dict, request: str, options: list, catalog: list, fmt: s
         "Возможные шаблоны:",
         *[f"- {name}: {TEMPLATE_HELP[name]}" for name in options],
         "- none: ни один шаблон не подходит к теме поста",
+        "Раскладка (layout) для compare: side_by_side — рядом, stacked — стопкой, «до» сверху, «после» снизу.",
+        "Ориентация (orientation) для compare: landscape — горизонтальный кадр, portrait — вертикальный.",
         "Прогоны (id — подпись — что внутри):",
         *[f"- {item['id']} — {item['label']} — {item['kind']}" for item in catalog],
         f"Черновик: {re.sub(r'<[^>]+>', '', record.get('body_html') or '')[:1200]}",
         f"Просьба Шифу: {request or 'не сказано'}",
-        'Верни СТРОГО JSON: {"template": "...", "runs": ["id", ...], "title": "заголовок ролика до 90 знаков"}',
+        'Верни СТРОГО JSON: {"template": "...", "runs": ["id", ...], "layout": "...", "orientation": "...", '
+        '"title": "заголовок ролика до 90 знаков"}. Для шаблонов кроме compare layout и orientation не нужны.',
     ]
     return "\n".join(lines)
 
@@ -162,7 +236,9 @@ def choose_plan(record: dict, request: str, facts: list, catalog: list, fmt: str
         return None, "план модели не прошёл проверку: " + "; ".join(problems)
     if answer.get("template") == "none":
         return None, "модель сказала: ни один шаблон не подходит к теме поста"
-    return {k: answer[k] for k in ("template", "runs", "title")}, f"выбрала модель из {options}, план проверен кодом"
+    plan = normalize_plan(answer)
+    why = f"выбрала модель из {options}, план проверен кодом"
+    return {k: plan[k] for k in ("template", "runs", "layout", "orientation", "title")}, why
 
 
 # --------------------------------------------------------------------------- монтаж
@@ -208,30 +284,52 @@ def _labels(catalog: list) -> dict:
     return {item["id"]: item["label"] for item in catalog}
 
 
-def build_side_by_side(plan: dict, fmt: str, ctx: Context, catalog: list) -> tuple:
+def build_compare(plan: dict, fmt: str, ctx: Context, catalog: list) -> tuple:
+    """Сравнение двух прогонов: рядом или стопкой, горизонт или вертикаль.
+
+    Раскладку и ориентацию выбирает код (по словам Шифу) или модель — студия
+    собирает и «бок о бок», и «до сверху, после снизу» в вертикальном кадре
+    без нового шаблона (Шифу, 07.11).
+    """
     import pose_anim
 
+    plan = normalize_plan(plan)
     runs = []
     for run_id in plan["runs"]:
         run, reason = _load_run(ctx, run_id, _labels(catalog).get(run_id, run_id))
         if run is None:
             return None, reason
         runs.append(run)
-    size, fps, seconds = (MP4_SIZE, MP4_FPS, MP4_SECONDS) if fmt == "mp4" else (GIF_SIZE, GIF_FPS, GIF_SECONDS)
+    portrait = plan["orientation"] == "portrait"
+    if fmt == "mp4":
+        size = MP4_VERTICAL_SIZE if portrait else MP4_SIZE
+        fps, seconds = MP4_FPS, MP4_SECONDS
+    else:
+        size = GIF_VERTICAL_SIZE if portrait else GIF_SIZE
+        fps, seconds = GIF_FPS, GIF_SECONDS
     hold = HOLD_SECONDS * fps
     frames = seconds * fps + hold
+    stacked = plan["layout"] == "stacked"
 
     def make():
+        if stacked:
+            return pose_anim.stacked_frames(runs, plan["title"], frames, size=size, hold=hold, font_hint=size[0])
         return pose_anim.side_by_side_frames(runs, plan["title"], frames, size=size, hold=hold)
 
-    return _encode(make, fmt, size, fps, ctx, f"{ctx.record['id']}-side-by-side")
+    stem = f"{ctx.record['id']}-{plan['layout']}-{plan['orientation']}"
+    music = plan.get("music")
+    if music and not Path(str(music)).exists():
+        music = None
+    if music:
+        ctx.progress.note(f"Накладываю трек: {Path(str(music)).name}")
+    return _encode(make, fmt, size, fps, ctx, stem, music=music)
 
 
-def _encode(make: Callable, fmt: str, size: tuple, fps: int, ctx: Context, stem: str) -> tuple:
+def _encode(make: Callable, fmt: str, size: tuple, fps: int, ctx: Context, stem: str, music=None) -> tuple:
     out = ctx.work / f"{stem}.{fmt}"
     ctx.progress.step(f"Монтирую {'MP4' if fmt == 'mp4' else 'GIF'} на builder", "record_video")
     if fmt == "mp4":
-        path, reason, note = render.fit_mp4(make, size, fps, out, popen=ctx.popen)
+        path, reason, note = render.fit_mp4(make, size, fps, out, popen=ctx.popen, music=music)
     else:
         path, reason, note = render.fit_gif(make, out, fps)
     if path is None:
@@ -411,7 +509,8 @@ def _mp4_frames_to_gif(frames_dir: Path, ctx: Context) -> tuple:
 
 
 BUILDERS = {
-    "side_by_side": build_side_by_side,
+    "compare": build_compare,
+    "side_by_side": build_compare,  # старое имя шаблона
     "top_view": build_top_view,
     "animated_card": build_card,
     "timeline": build_timeline,
@@ -441,3 +540,30 @@ def build(plan: dict, fmt: str, ctx: Context, catalog: list) -> tuple:
 
 def describe(plan: dict) -> str:
     return json.dumps({k: plan.get(k) for k in ("template", "runs")}, ensure_ascii=False)
+
+
+def fingerprint(plan: dict, fmt: str, catalog: list) -> str:
+    """Отпечаток входов сборки: тот же план и тот же материал → тот же ролик.
+
+    Нужен, чтобы не пересобирать ролик заново на каждое нажатие «Видео»:
+    сборка занимает ~50 с, а материал и план между нажатиями не меняются
+    (жалоба Шифу, 07.11). Смена шаблона, раскладки, ориентации, прогона,
+    формата или материала меняет отпечаток — тогда ролик соберётся заново.
+    """
+    plan = normalize_plan(plan)
+    runs = [str(r) for r in (plan.get("runs") or [])]
+    kinds = {str(i.get("id")): str(i.get("kind") or "") for i in catalog or []}
+    payload = json.dumps(
+        {
+            "template": str(plan.get("template") or ""),
+            "layout": str(plan.get("layout") or ""),
+            "orientation": str(plan.get("orientation") or ""),
+            "runs": runs,
+            "fmt": str(fmt),
+            "material": [[run, kinds.get(run, "")] for run in runs],
+            "music": str(plan.get("music") or ""),
+        },
+        ensure_ascii=False,
+        sort_keys=True,
+    )
+    return hashlib.sha1(payload.encode("utf-8")).hexdigest()

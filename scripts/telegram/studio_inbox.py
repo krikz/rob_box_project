@@ -21,11 +21,10 @@ from pathlib import Path
 from typing import Optional
 
 BOT_FILE_LIMIT = 20 * 1024 * 1024  # Bot API getFile: «bots can download files of up to 20MB»
-MEDIA_FIELDS = ("video", "animation", "document", "photo")
+MEDIA_FIELDS = ("video", "animation", "audio", "document", "photo")
 UNSUPPORTED = {
     "sticker": "стикер",
     "voice": "голосовое",
-    "audio": "аудио",
     "video_note": "кружок",
     "contact": "контакт",
     "location": "место",
@@ -33,7 +32,7 @@ UNSUPPORTED = {
     "poll": "опрос",
     "dice": "кубик",
 }
-DEFAULT_EXT = {"video": ".mp4", "animation": ".mp4", "photo": ".jpg", "document": ".bin"}
+DEFAULT_EXT = {"video": ".mp4", "animation": ".mp4", "photo": ".jpg", "document": ".bin", "audio": ".mp3"}
 SAFE_RE = re.compile(r"[^A-Za-z0-9А-Яа-яЁё_.-]+")
 PRIVACY_NOTE = "материал от Шифу: перед публикацией проверить людей на кадре (лица мастерской — только с согласия)"
 
@@ -128,6 +127,17 @@ def attach_job(bot, state_path: Path, post_id: str, media: dict, caption: str, m
     progress.note(f"Получил файл {path.name} ({mb(path.stat().st_size)}): лежит в run/media/inbox/")
     if caption:
         progress.note(f"Подпись: «{caption[:120]}»")
+    # Трек (MP3) — не медиа поста, а звук под ролик. Запоминаем его, чтобы
+    # монтаж положил его на видео, а бот больше не просил прислать заново
+    # (Шифу: «нуб музычку надо наложить на водосик», 07.11).
+    if media.get("kind") == "audio":
+        with cs.st.state_transaction(state_path) as current:
+            current["music"] = {"path": str(path), "name": path.name, "size": path.stat().st_size}
+        progress.finish(
+            f"Приняли трек {path.name} ({mb(path.stat().st_size)}). Накладываю на ролик — "
+            f"скажи «наложи трек», если не так"
+        )
+        return _done(state_path, post_id, "file", progress, started, out, ok=True)
     if not post_id:
         progress.finish(f"Получил файл {path.name}. Черновика на обсуждении нет — положил в inbox, возьму в следующий")
         return _done(state_path, post_id, "file", progress, started, out, ok=True)

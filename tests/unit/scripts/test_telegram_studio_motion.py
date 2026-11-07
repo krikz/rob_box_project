@@ -67,6 +67,10 @@ class Bot:
         self.calls.append(("editMessageMedia", str(path), message_id, keyboard))
         return {"ok": True}
 
+    def send_media(self, chat_id, path, caption="", keyboard=None, above=False):
+        self.calls.append(("sendMedia", str(path), caption))
+        return {"ok": True, "result": {"message_id": 601}}
+
     def send_chat_action(self, chat_id, action):
         self.calls.append(("sendChatAction", action))
         return {"ok": True}
@@ -364,11 +368,35 @@ CATALOG = [
 ]
 
 
-def test_drift_post_gets_side_by_side_by_code_rule():
+def test_drift_post_gets_compare_by_code_rule():
     record = {"id": "p", "title": "rtabmap", "body_html": "один источник параметров (#4495)"}
-    plan, why = video.choose_plan(record, "сделай анимацию", [], CATALOG, "gif", ask=lambda *a, **k: pytest.fail())
-    assert plan["template"] == "side_by_side" and plan["runs"] == ["shisyun_s1", "shisyun_s2"]
+    plan, why = video.choose_plan(record, "сделай анимацию", [], CATALOG, "gif", ask=lambda *a, **k: None)
+    assert plan["template"] == "compare" and plan["runs"] == ["shisyun_s1", "shisyun_s2"]
     assert "код" in why
+
+
+def test_vertical_request_picks_stacked_portrait():
+    """Просьба «вертикальным, до сверху, после снизу» — стопка в вертикальном кадре."""
+    record = {"id": "p", "title": "rtabmap", "body_html": "локализация (#4495)"}
+    request = "сделай видео вертикальным чтобы до было сверху а после снизу"
+    plan, _why = video.choose_plan(record, request, [], CATALOG, "mp4", ask=lambda *a, **k: None)
+    assert plan["template"] == "compare"
+    assert plan["layout"] == "stacked" and plan["orientation"] == "portrait"
+    assert plan["runs"] == ["shisyun_s1", "shisyun_s2"]
+
+
+def test_top_view_request_still_goes_to_top_view():
+    """«Сверху» без «снизу» — по-прежнему вид сверху, а не стопка."""
+    record = {"id": "p", "title": "rtabmap", "body_html": "локализация (#4495)"}
+    plan, _why = video.choose_plan(record, "вид сверху на карту", [], CATALOG, "mp4", ask=lambda *a, **k: None)
+    assert plan["template"] == "top_view"
+
+
+def test_legacy_template_name_is_understood():
+    """Старое имя шаблона из старых планов — это compare с боковой раскладкой."""
+    plan = video.normalize_plan({"template": "side_by_side", "runs": ["a", "b"], "title": "t"})
+    assert plan["template"] == "compare"
+    assert plan["layout"] == "side_by_side" and plan["orientation"] == "landscape"
 
 
 def test_model_plan_is_validated_against_catalog():
@@ -432,10 +460,10 @@ def test_animate_builds_gif_and_edits_same_draft(env, monkeypatch):
     assert media and media[0][2] == 77 and media[0][1].endswith(".gif")
     assert Path(media[0][1]).stat().st_size <= render.GIF_LIMIT
     record = st.load_state(path)["posts"]["p1"]
-    assert record["last_motion"]["template"] == "side_by_side" and record["last_motion"]["format"] == "gif"
+    assert record["last_motion"]["template"] == "compare" and record["last_motion"]["format"] == "gif"
     assert any(r.endswith("shisyun_s1/maprec/poses.csv") for r in gate.fetched)
     progress = bot.texts()[-1]
-    assert "Прогон shisyun_s1: 60 строк позы" in progress and "Готово: анимация в черновике" in progress
+    assert "Прогон shisyun_s1: 60 строк позы" in progress and "Готово: анимация в чате" in progress
 
 
 class FakeProc:
