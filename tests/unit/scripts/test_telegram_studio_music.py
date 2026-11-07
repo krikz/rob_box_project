@@ -151,7 +151,19 @@ def test_ffmpeg_command_gets_audio_track(tmp_path):
         def wait(self):
             return 0
 
-    frames = [__import__("PIL.Image", fromlist=["Image"]).new("RGB", (8, 8), "black")]
+    # Кадр — подставка: тест проверяет команду ffmpeg, а не картинку. PIL в
+    # офлайн-окружении CI нет (ModuleNotFoundError), поэтому не нужен.
+    class FakeFrame:
+        def convert(self, _mode):
+            return self
+
+        def resize(self, _size):
+            return self
+
+        def tobytes(self):
+            return b"\x00" * (8 * 8 * 3)
+
+    frames = [FakeFrame()]
     out = tmp_path / "v.mp4"
     reason = render.encode_mp4(frames, (8, 8), 5, out, popen=FakeProc, music=Path("/tmp/t.mp3"))
     assert reason == ""
