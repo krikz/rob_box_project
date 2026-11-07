@@ -151,3 +151,5 @@ slices:
     - people_list
     - person_photo
     - name_person
+    - find_similar
+    - merge_people

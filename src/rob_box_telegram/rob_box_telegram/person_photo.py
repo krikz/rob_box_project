@@ -14,14 +14,18 @@ from typing import Any, Callable, Optional, Tuple
 
 PEOPLE_SERVICE = "/perception/people"
 OP_PHOTO = 1
+#: Коллаж «найди похожих» (#4469): последний, который собрал владелец для этого лица.
+OP_COLLAGE = 5
+COLLAGE_KIND = "collage"
 #: Сколько бот ждёт снимок от владельца: JPEG до 200 КБ через сеть между Pi.
 CALL_TIMEOUT_S = 8.0
 _ID_RE = re.compile(r"[0-9a-f]{8}")
 #: Подпись снимка в Telegram - до 1024 знаков; наша короче, это страховка.
 CAPTION_MAX = 200
 
-#: ``fetch(id)`` -> ``(ok, reason, jpeg)``; блокирует поток, звать из executor. В тестах подменяется.
-Fetch = Callable[[str], Tuple[bool, str, bytes]]
+#: ``fetch(id)`` или ``fetch(id, op)`` -> ``(ok, reason, jpeg)``; блокирует поток, звать из executor. По умолчанию ``op`` -
+#: снимок лица (``OP_PHOTO``), у коллажа - ``OP_COLLAGE``. В тестах подменяется.
+Fetch = Callable[..., Tuple[bool, str, bytes]]
 
 #: Причина отказа владельца -> строка в чат (по-русски, без выдумок).
 REFUSALS = {
@@ -29,6 +33,7 @@ REFUSALS = {
     "no_snapshot": "У этого лица нет снимка.",
     "person_not_found": "Такого лица уже нет в базе.",
     "owner_unavailable": "Владелец лиц (Vision Pi) не ответил, снимок не получил.",
+    "no_collage": "Коллажа для этого лица у владельца нет.",
 }
 REFUSAL_DEFAULT = "Снимок получить не удалось."
 
@@ -47,10 +52,19 @@ def parse_payload(text: str) -> Optional[Tuple[str, str]]:
     return pid, str(data.get("caption") or "")[:CAPTION_MAX]
 
 
+def payload_op(text: str) -> int:
+    """Что забрать у владельца по тексту ``DialogOutput(kind=photo)``: коллаж (``kind=collage``) или снимок лица."""
+    try:
+        data = json.loads(text)
+    except (TypeError, ValueError):
+        return OP_PHOTO
+    return OP_COLLAGE if isinstance(data, dict) and data.get("kind") == COLLAGE_KIND else OP_PHOTO
+
+
 def ros_fetch(node: Any) -> Fetch:
     """Запрос снимка у владельца по ROS: клиент один на ноду; нет сервиса или ответа - ``owner_unavailable``."""
 
-    def fetch(person_id: str) -> Tuple[bool, str, bytes]:
+    def fetch(person_id: str, op: int = OP_PHOTO) -> Tuple[bool, str, bytes]:
         from rob_box_perception_msgs.srv import People  # noqa: PLC0415 - ROS-типы только в рантайме ноды
 
         clients = node.__dict__.setdefault("_people_photo_clients", {})
@@ -60,7 +74,7 @@ def ros_fetch(node: Any) -> Fetch:
         if not client.service_is_ready():
             return False, "owner_unavailable", b""
         request = People.Request()
-        request.op, request.person_id = OP_PHOTO, person_id
+        request.op, request.person_id = op, person_id
         future, done = client.call_async(request), threading.Event()
         future.add_done_callback(lambda _f: done.set())
         if not done.wait(CALL_TIMEOUT_S):

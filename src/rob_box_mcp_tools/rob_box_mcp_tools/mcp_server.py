@@ -128,6 +128,8 @@ from .tools import (
     PeopleListTool,
     PersonPhotoTool,
     NamePersonTool,
+    FindSimilarTool,
+    MergePeopleTool,
 )
 
 # Issue #1392 / ADR-0158 — library of generated tracks (cache) + music_library tool.
@@ -942,6 +944,8 @@ class MCPServer(Node):
         self.registry.register(PeopleListTool(self))
         self.registry.register(PersonPhotoTool(self))
         self.registry.register(NamePersonTool(self))
+        self.registry.register(FindSimilarTool(self))
+        self.registry.register(MergePeopleTool(self))
 
         # Memory tools (долгосрочная память + семантический поиск)
         self.registry.register(MemorySaveTool(self))
