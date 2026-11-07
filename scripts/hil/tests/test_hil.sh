@@ -95,7 +95,7 @@ case "$1" in
         esac ;;
     ps)
         case "$*" in
-            *working_dir=*) for s in ros2-control lslidar robot-state-publisher twist-mux proximity-guard rtabmap imu-filter nav2 oak-d ceiling-camera voice-assistant; do
+            *working_dir=*) for s in ros2-control lslidar robot-state-publisher twist-mux proximity-guard followpath-watchdog rtabmap imu-filter nav2 oak-d ceiling-camera voice-assistant; do
                                 echo "$s ghcr.io/krikz/rob_box:$s-humble-dev-abc"; done ;;
         esac ;;
     compose)
@@ -169,7 +169,7 @@ L_STOPSSH=$(line_of "remote_pi.sh 'stop'" "$WORK/ssh.log")
 L_STOPM=$(line_of "docker stop --time 20 ros2-control" "$WORK/docker.log")
 check "on: ros2-control и lslidar остановлены" 'grep -q "stop --time 20 ros2-control" "$WORK/docker.log" && grep -q "stop --time 20 lslidar" "$WORK/docker.log"'
 check "on: oak-d и ceiling-camera остановлены" 'grep -q "stop --time 20 oak-d" "$WORK/docker.log" && grep -q "stop --time 20 ceiling-camera" "$WORK/docker.log"'
-L_SIMTIME=$(line_of "main.hil.yaml up -d --no-deps --pull never robot-state-publisher twist-mux proximity-guard rtabmap imu-filter nav2" "$WORK/docker.log")
+L_SIMTIME=$(line_of "main.hil.yaml up -d --no-deps --pull never robot-state-publisher twist-mux proximity-guard followpath-watchdog rtabmap imu-filter nav2" "$WORK/docker.log")
 L_SIMUP=$(line_of "compose.hil.yaml up -d --no-build zenoh-router gazebo" "$WORK/docker.log")
 check "on: шесть сервисов пересозданы с compose.hil.yaml и --no-deps" '[ -n "$L_SIMTIME" ]'
 check "on: порядок замок → stop моторов → sim time → сим" \
@@ -209,7 +209,7 @@ run_hil on >/dev/null
 run_hil off; rc=$?
 check "off: выход 0 (rc=$rc)" '[ "$rc" -eq 0 ]' || cat "$WORK/out.log"
 L_DOWN=$(line_of "compose.hil.yaml down" "$WORK/docker.log")
-L_BACK=$(line_of "up -d --no-deps --pull never robot-state-publisher twist-mux proximity-guard rtabmap imu-filter nav2 ros2-control lslidar" "$WORK/docker.log")
+L_BACK=$(line_of "up -d --no-deps --pull never robot-state-publisher twist-mux proximity-guard followpath-watchdog rtabmap imu-filter nav2 ros2-control lslidar" "$WORK/docker.log")
 check "off: сим гаснет до возврата ros2-control" '[ -n "$L_DOWN" ] && [ -n "$L_BACK" ] && [ "$L_DOWN" -lt "$L_BACK" ]'
 check "off: возврат без compose.hil.yaml, sim time снят" \
     '! grep -E "main.hil.yaml up" "$WORK/docker.log" && [ ! -f "$WORK/state/nav2.simt" ] && [ "$(cat "$WORK/state/ros2-control")" = running ]'
