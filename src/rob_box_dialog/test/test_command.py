@@ -551,11 +551,20 @@ def test_model_voices_of_a_tale_are_replaced_by_the_code_4084():
     assert cmd.perform.voice_per_segment == ("", "zahar", "zahar") and cmd.dropped == ("perform.voice_per_segment",)
 
 
-def test_role_outside_the_cast_is_a_violation_with_the_cast_names_4084():
+def test_role_outside_the_cast_joins_the_cast_4084():
+    """С 07.11 (колонка, анекдот с «Продавцом» вне cast) герой вне cast вписывается в cast кодом - один голос на
+    героя (#4084) сохраняется; раньше это было нарушением, и модель повторяла его на ремонте."""
     raw = {"perform": {"kind": "tale", "segments": TALE_SEGMENTS, "cast": [{"name": "Волк", "gender": "male"}],
                        "role_per_segment": ["", "Волк", "Бабушка"]}}
+    cmd = ok(raw, busy=POOL)
+    assert [r.name for r in cmd.perform.cast] == ["Волк", "Бабушка"] and "perform.cast+'Бабушка'" in cmd.dropped
+
+
+def test_roles_without_any_cast_is_a_violation_with_the_cast_names_4084():
+    """Без cast героев код не выдумывает: роли басни без cast - нарушение с подсказкой модели."""
+    raw = {"perform": {"kind": "poem", "segments": TALE_SEGMENTS, "role_per_segment": ["", "Волк", "Бабушка"]}}
     res = bad(raw, "bad_cast", busy=POOL)
-    assert res.violations[0].allowed == ("Волк", "") and "Бабушка" in res.violations[0].detail
+    assert res.violations[0].allowed == ("",) and "Волк" in res.violations[0].detail
     assert "только name героя из cast" in cm.explain(res)
 
 
