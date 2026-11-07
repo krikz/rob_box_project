@@ -336,6 +336,19 @@ class RosProbe:
                 return types[0]
         return None
 
+    def topic_types(self, topic: str) -> List[str]:
+        """Все типы, под которыми топик есть в графе (обычно один)."""
+        for name, types in self.topics():
+            if name == topic:
+                return list(types)
+        return []
+
+    def subscribers_count(self, topic: str) -> int:
+        try:
+            return len(self._node.get_subscriptions_info_by_topic(topic))
+        except Exception:  # noqa: BLE001
+            return 0
+
     def _publisher_qos(self, topic: str) -> Any:
         try:
             infos = self._node.get_publishers_info_by_topic(topic)

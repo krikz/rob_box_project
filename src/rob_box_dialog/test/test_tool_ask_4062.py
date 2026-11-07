@@ -353,14 +353,17 @@ def test_without_a_question_these_words_do_not_open_the_library():
     assert "music_library" in [t.name for t in available_tools(snap, text="да, удаляй", asked=("music_library",))]
 
 
-def test_model_confirming_by_itself_closes_the_window():
-    """Модель сама позвала тот же вызов с ``confirm`` (ответ не по грамматике) - исход закрывает окно: следующее «да»
-    ничего не подтверждает кодом."""
+def test_model_cannot_confirm_by_itself_code_strips_confirm_and_the_tool_asks_again():
+    """Модель сама позвала тот же вызов с ``confirm`` (ответ не по грамматике): код снимает ``confirm`` от модели
+    (``turn.unconfirmed_by_model``, ревью #4525), трек остаётся, тул спрашивает снова - необратимое подтверждает только
+    человек. Раньше этот тест требовал обратного (удаление по слову модели) - это и был обход."""
     confirm = ToolCall("music_library", {"action": "delete", "track_id": "t-1", "confirm": True})
     engine, ports, library = _asked_to_delete([Answer(Command(actions=(confirm,)), "deepseek")])
     _run(engine, "удаляй его раз решили")
-    assert "t-1" not in library.tracks and ports.said[-1] == (DELETED, NEUTRAL)
-    assert tool_ask.pending(engine.session) is None
+    assert DELETED not in [text for text, _ in ports.said]
+    assert "t-1" in library.tracks
+    asked = tool_ask.pending(engine.session)
+    assert asked is not None and asked.args["track_id"] == "t-1" and "confirm" not in asked.args
 
 
 def test_new_session_drops_the_question():

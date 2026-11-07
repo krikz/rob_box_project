@@ -3,12 +3,15 @@
 ros_admin.py - админские тулы ЧТЕНИЯ ROS-графа (issue #4516, шаг 1; решение Шифу 06.11: «Телега - считай админка»).
 
 Срез ``operator.admin``: тулы видны ТАРС (оператору) и пульту Telegram (``telegram_visible``), голосу Личности не даны.
-Публикации в топики здесь НЕТ (шаг 2, с предохранителем).
+Публикация в топики - :class:`TopicPublishTool` (шаг 2а, #4516): только через предохранитель
+:mod:`rob_box_mcp_tools.topic_publish`, БЕЗ движения.
 
 * :class:`RosListTool` - ``ros_list(kind, filter)``: топики или сервисы с типами.
 * :class:`TopicEchoTool` - ``topic_echo(topic, count, timeout_s)``: до 5 сообщений, текст обрезан и пропущен через
   редактор секретов; картинки/облака точек - только сводка (тип, размер, частота).
 * :class:`TopicStatsTool` - ``topic_stats(topic, window_s)``: ``hz`` и ``bw`` за окно ≤ 10 с.
+* :class:`TopicPublishTool` - ``topic_publish(topic, fields, count, confirm)``: публикация с предохранителем в коде
+  (запрет движения, приводов, навигации и служебных топиков по имени и типу, проверка полей по интерфейсу, журнал).
 * :class:`VescTelemetryTool` - ``vesc_telemetry()``: напряжение/ток/обороты/температуры колёс из ROS
   (``/dynamic_joint_states``), НЕ с CAN; чего в ROS нет, о том тул прямо говорит.
 
@@ -21,6 +24,7 @@ from __future__ import annotations
 from typing import Any, Dict, List, Optional
 
 from .. import ros_introspect as ri
+from .. import topic_publish as tp
 from ..base import MCPTool, MCPToolParameter, MCPToolResult, ToolExecutionType
 from .operator_admin import _sanitize_text
 
@@ -379,3 +383,84 @@ class VescTelemetryTool(MCPTool):
         report = ri.vesc_report(ri.vesc_from_joint_states(*got))
         data: Dict[str, Any] = {"status": "done", "source": ri.JOINT_STATES_TOPIC, **report}
         return MCPToolResult(success=True, message=ri.vesc_message(report), data=data)
+
+
+class TopicPublishTool(MCPTool):
+    """Опубликовать сообщение в топик ROS через предохранитель (без движения)."""
+
+    def __init__(self, node: Any = None, journal: Optional[tp.Journal] = None) -> None:
+        super().__init__(node)
+        self._journal = journal or tp.Journal()
+
+    @property
+    def name(self) -> str:
+        return "topic_publish"
+
+    @property
+    def llm_visible(self) -> bool:
+        return False
+
+    @property
+    def slice(self) -> str:
+        return "operator.admin"
+
+    @property
+    def telegram_visible(self) -> bool:
+        return True
+
+    @property
+    def execution_type(self) -> ToolExecutionType:
+        return ToolExecutionType.MEDIUM
+
+    @property
+    def description(self) -> str:
+        return (
+            "Опубликовать сообщение в существующий топик ROS 2 (аналог ros2 topic pub, до 5 раз). Звать на «опубликуй "
+            "в топик /x ...», «отправь в топик ...». Тип сообщения берёт код из графа, поля - объектом "
+            "{поле: значение} "
+            "строго по интерфейсу типа. Топики движения, приводов, навигации и служебные публиковать нельзя: код "
+            "откажет. Без confirm тул только спрашивает, confirm=true - после «да» человека. Фразу «Опубликовал ...» "
+            "или причину отказа говорит код по факту: не пиши «опубликовал» сам."
+        )
+
+    @property
+    def parameters(self) -> List[MCPToolParameter]:
+        return [
+            MCPToolParameter(
+                name="topic",
+                type="string",
+                required=True,
+                description="Полное имя существующего топика с ведущим слэшем, например /animations/trigger.",
+            ),
+            MCPToolParameter(
+                name="fields",
+                type="object",
+                required=True,
+                description='Поля сообщения {имя поля: значение}, например {"data": "hello"}; значения строго того '
+                "типа, что в интерфейсе (число - числом, строка - строкой, вложенное - объектом).",
+            ),
+            MCPToolParameter(
+                name="count",
+                type="integer",
+                required=False,
+                description="Сколько раз опубликовать (1-5, по умолчанию 1).",
+            ),
+            MCPToolParameter(
+                name="confirm",
+                type="boolean",
+                required=False,
+                default=False,
+                description="true - только после того, как человек ответил «да» на вопрос «Публикую ...?» "
+                "(его задаёт сам тул ответом needs_publish_confirmation).",
+            ),
+        ]
+
+    def execute(
+        self, topic: str, fields: Any = None, count: Any = None, confirm: Any = False, **_: Any
+    ) -> MCPToolResult:
+        probe = ri.RosProbe(self.node)
+        guard = tp.TopicPublishGuard(probe, tp.RclpyPublisher(self.node), self._journal, _sanitize_text)
+        outcome = guard.run(topic, fields if fields is not None else {}, count, confirm is True or confirm == "true")
+        if outcome.done:
+            return MCPToolResult(success=True, message=outcome.text, data=outcome.data)
+        return MCPToolResult(success=False, error=outcome.text, message=outcome.text, data=outcome.data)
