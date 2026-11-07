@@ -676,9 +676,16 @@ tools(56): clear_waypoints, compose_music, ..., stop_music, ...
 | `scripts/agent_flow/tests/test_e2e_process_robot_busy_gate.sh` | тест гейта G3.5 (робот занят) |
 | `scripts/ci/e2e/e2e_tool_match.py` | «тул вызван» vs «тул доступен» (§8.5) |
 | `tests/unit/e2e_scripts/test_e2e_tool_match.py` | тесты матчера на живых логах |
+| `scripts/e2e/archive_e2e_artifacts.py` | архив артефактов прогонов `L-E2E Voice Test` (#4512) |
 
 Файлы актов **генерируются**. Правка руками переживёт ровно до следующего
 запуска генератора.
+
+### Архив артефактов прогонов (#4512)
+
+Артефакты GitHub Actions живут недолго: logs и timing — 7 дней, artifacts — 14, model — 30. После каждого марафона сохраняй их:
+`python -X utf8 scripts/e2e/archive_e2e_artifacts.py --root <каталог вне репо> --since YYYY-MM-DD` (`--dry-run` — только список и сумма МБ).
+Скачанное пропускается, код возврата ненулевой при любой ошибке. Архив **не кладётся в репо**: в логах реплики живых людей (поэтому `recording` скрипт не берёт).
 
 
 ## Ожидание событий и намеренное перебивание (#3857)
