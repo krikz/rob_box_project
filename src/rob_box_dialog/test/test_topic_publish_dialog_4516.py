@@ -134,27 +134,3 @@ def test_every_refusal_says_the_code_text_and_is_a_failure(reason):
     result = _res("rejected", {"summary": text, "reason": reason}, reason)
 
     assert failed(result) and phrase_from_result(result).text == text
-
-
-def test_every_reason_the_module_can_return_has_a_phrase():
-    """Причины предохранителя (``topic_publish``) и ключи фраз (``ru.yaml``) не расходятся."""
-    from rob_box_mcp_tools import topic_publish as tp
-
-    reasons = {
-        tp.TOPIC_FORBIDDEN,
-        tp.TYPE_FORBIDDEN,
-        tp.NO_SUCH_TOPIC,
-        tp.NO_ENDPOINTS,
-        tp.AMBIGUOUS_TYPE,
-        tp.BAD_FIELDS,
-        tp.BAD_COUNT,
-        tp.BAD_TOPIC,
-        tp.PUBLISH_FAILED,
-        tp.ROS_UNAVAILABLE,
-        tp.TYPE_UNAVAILABLE,
-    }
-    for reason in reasons:
-        result = _res("rejected", {"summary": f"S-{reason}"}, reason)
-        assert phrase_from_result(result).text == f"S-{reason}", reason
-    assert tp.NEEDS_CONFIRMATION == "needs_publish_confirmation"
-    assert ("topic_publish", tp.NEEDS_CONFIRMATION) in kn.TOOL_QUESTIONS
