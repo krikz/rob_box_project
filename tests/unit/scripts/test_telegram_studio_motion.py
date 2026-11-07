@@ -116,8 +116,10 @@ def _draft(path, post_id="p1", message_id=77, **extra):
     record = {
         "id": post_id,
         "status": "proposed",
-        "title": "rtabmap: один источник параметров",
-        "body_html": "<b>У RTAB-Map один источник параметров</b> (#4495) #роббокс #дневник",
+        # Пост про замер дрейфа локализации: ролик «до/после» — его тема.
+        # Пост про конфиг параметров ролика не получает (Шифу, 07.11).
+        "title": "локализация: сброс ICP-одометрии после потери",
+        "body_html": "<b>Потеря опоры и дрейф локализации</b> (#4503) #роббокс #дневник",
         "tags": ["#роббокс", "#дневник"],
         "fact_keys": ["pr:4507"],
         "message_id": message_id,
@@ -369,10 +371,23 @@ CATALOG = [
 
 
 def test_drift_post_gets_compare_by_code_rule():
-    record = {"id": "p", "title": "rtabmap", "body_html": "один источник параметров (#4495)"}
+    """Пост про сам замер дрейфа локализации — ролик «до/после»."""
+    record = {"id": "p", "title": "локализация", "body_html": "сброс ICP-одометрии после потери (#4503)"}
     plan, why = video.choose_plan(record, "сделай анимацию", [], CATALOG, "gif", ask=lambda *a, **k: None)
+    assert plan is not None
     assert plan["template"] == "compare" and plan["runs"] == ["shisyun_s1", "shisyun_s2"]
     assert "код" in why
+
+
+def test_config_post_does_not_get_drift_video():
+    """Пост про конфиг параметров — не про замер: ролик «до/после» ему не подходит.
+
+    Шифу (07.11): «текст не соответствует видео» — к посту про конфиг висело
+    видео с замером дрейфа.
+    """
+    record = {"id": "p", "title": "rtabmap", "body_html": "один источник параметров (#4495)"}
+    plan, _why = video.choose_plan(record, "сделай анимацию", [], CATALOG, "gif", ask=lambda *a, **k: None)
+    assert plan is None, "ролик про дрейф не должен подходить к посту про конфиг"
 
 
 def test_vertical_request_picks_stacked_portrait():

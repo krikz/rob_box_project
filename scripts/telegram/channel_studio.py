@@ -875,10 +875,24 @@ def reply_to_shifu(bot: StudioBot, state_path: Path, text: str, out=print) -> bo
     placeholder = bot.send_message(SHIFU_CHAT_ID, "Думаю над твоим вопросом…")
     message_id = (placeholder.get("result") or {}).get("message_id") if placeholder.get("ok") else None
     idea = discussed_idea(state)
+    # Если есть пост на обсуждении — говорим о нём: он и есть «текущий
+    # черновик». Раньше бот показывал текст отдельной идеи, а в канал уходил
+    # другой объект — Шифу думал, что текст «подменили» (07.11).
+    post = active_draft(state)
+    if post:
+      record = (state.get("posts") or {}).get(post) or {}
+      if record.get("body_html"):
+          idea = dict(
+              idea,
+              id=post,
+              title=record.get("title") or idea.get("title"),
+              body_html=record.get("body_html"),
+              facts=record.get("fact_keys") or idea.get("facts") or [],
+          )
     answer, offer = split_reply(run_reply_agent(text, idea))
     if not answer:
         answer = "Не смог ответить сейчас — модель не дала ответа, который прошёл бы проверку."
-    draft = active_draft(state)
+    draft = post or active_draft(state)
     buttons = None
     if draft and offer:
         # Модель предлагает действие полем offer, кнопку строит код (#4513).
