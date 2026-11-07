@@ -619,7 +619,8 @@ def validate(cmd: Result, available_tools: Collection[str], session: Any = None,
     # подложка: сначала вид без просьбы о музыке теряет её, потом путь пения подгоняет остальное;
     # число лиц по сегментам правит другое поле выступления и идёт последним, порядок с подложкой не важен
     cmd = _fit_sing_backing(_drop_default_backing(cmd, form), form)
-    cmd = _fit_expression_count(_fit_segments(cmd))  # пустые сегменты и длина ролей - до лиц: лица по числу сегментов
+    # пустые сегменты, длина ролей и герои вне cast - до лиц: лица по числу сегментов
+    cmd = _fit_expression_count(_fit_foreign_roles(_fit_segments(cmd)))
     cmd = _voice_roles(cmd, busy)
     agent = getattr(session, "agent", None) or kn.AGENTS[0]
     # тулы, закрытые путём пения, судит _check_sing своим нарушением: не «тула нет в срезе» — мост его не расширяет
@@ -1180,6 +1181,36 @@ def _fit_segments(cmd: Command) -> Command:
         notes.append(f"perform.role_per_segment[{len(roles)}->{len(fitted)}]")
         perf = replace(perf, role_per_segment=fitted)
     return replace(cmd, perform=perf, dropped=cmd.dropped + tuple(notes)) if notes else cmd
+
+
+def _fit_foreign_roles(cmd: Command) -> Command:
+    """Реплика героя, которого нет в ``cast``, не валит выступление (колонка 07.11: анекдот с ``cast`` [Мужик, Попугай]
+    и репликой «Продавец» - ``bad_cast``, на повторе то же, прозвучало «Не понял, как это сделать»). Код вписывает
+    героя в ``cast`` (пол не задан - подойдёт любой голос), пока героев не больше ``PERFORM_CAST_MAX``; дальше реплика
+    уходит рассказчику. Поправки - в ``dropped`` (``perform.cast+'Продавец'``). Без ``cast`` сказка по-прежнему
+    ``tale_without_cast`` (:func:`.cast.problem`): героев целиком код не выдумывает."""
+    perf = cmd.perform
+    if perf is None or perf.cast is None or not perf.role_per_segment or not perform_cast.has_roles(perf.kind):
+        return cmd
+    cast = list(perf.cast)
+    known = {perform_cast.role_key(role.name) for role in cast} | {""}
+    roles = list(perf.role_per_segment)
+    notes: List[str] = []
+    for i, name in enumerate(roles):
+        key = perform_cast.role_key(name)
+        if key in known:
+            continue
+        if len({perform_cast.role_key(role.name) for role in cast}) < kn.PERFORM_CAST_MAX:
+            cast.append(Role(str(name).strip()))
+            known.add(key)
+            notes.append(f"perform.cast+{str(name).strip()!r}")
+        else:
+            roles[i] = ""
+            notes.append(f"perform.role_per_segment[{i}]={str(name).strip()!r}->рассказчик")
+    if not notes:
+        return cmd
+    perf = replace(perf, cast=tuple(cast), role_per_segment=tuple(roles))
+    return replace(cmd, perform=perf, dropped=cmd.dropped + tuple(notes))
 
 
 def _fit_expression_count(cmd: Command) -> Command:
