@@ -725,8 +725,8 @@ TOOL_CLASSES: Mapping[str, str] = MappingProxyType({
         "container_status", "estimate_tts_duration", "faq_search", "get_battery_level", "get_current_pose",
         "get_current_time", "get_music_state", "get_perception_context", "get_robot_status", "get_sound_info",
         "list_maps", "list_tts_voices", "list_waypoints", "listen_for_response", "lookup_melody", "memory_context",
-        "memory_search", "people_list", "person_photo", "read_logs", "ros2_node_status", "search_melody",
-        "search_web", "show_metrics",
+        "memory_search", "people_list", "person_photo", "read_logs", "ros2_node_status", "ros_list", "search_melody",
+        "search_web", "show_metrics", "topic_echo", "topic_stats", "vesc_telemetry",
     )},
     **{t: "action.local" for t in (
         "add_music_material", "clear_waypoints", "delete_map", "delete_waypoint", "find_similar", "memory_save",
@@ -1118,6 +1118,21 @@ FACE_ID_RE = re.compile(r"(?<![0-9a-f])[0-9a-f]{8}(?![0-9a-f])", re.IGNORECASE)
 #: Группа пульта по лицам; у голоса её тулов нет (``llm_visible=False``).
 FACES_GROUP = "faces"
 
+#: Слова про граф ROS (группа ``ros_graph``, #4516): топики, сервисы, замер частоты и полосы. «сервис» общее слово
+#: (группа ``containers``) и сюда не входит: сервисы ROS открывают только пары «сервисы ros».
+ROS_GRAPH_STEMS: Tuple[str, ...] = (
+    "топик", "topic", "частот", "герц", "hz", "полос", "пропускн", "bandwidth", "bw", "сервисы ros", "сервисов ros",
+    "сервисы рос", "сервисов рос", "service",
+)
+#: Слова про телеметрию VESC и колёс (группа ``vesc``, #4516).
+VESC_STEMS: Tuple[str, ...] = (
+    "vesc", "веск", "весц", "колёс", "колес", "мотор", "напряжен", "вольт", "температур", "обороты", "оборотов",
+    "rpm", "ток ", "токи", "токе", "ампер",
+)
+#: Группы только для тех, чьи тулы в срезе агента (пульт TG и ТАРС): голосу (``llm_visible=False``) они не открываются, а
+#: «какое напряжение» голосом остаётся про батарею (``status``), а не про пустую группу.
+AGENT_SCOPED_GROUPS: Tuple[str, ...] = (FACES_GROUP, "ros_graph", "vesc")
+
 #: Группы по приоритету: при пересечении групп срез режется по этому порядку (``TOOLS_VISIBLE_MAX``). Голос —
 #: только по явной голосовой просьбе (LLM сама меняла голос посреди сказки, а голос персистентный, PR-4).
 TOOL_GROUPS: Mapping[str, ToolGroup] = MappingProxyType({
@@ -1198,6 +1213,9 @@ TOOL_GROUPS: Mapping[str, ToolGroup] = MappingProxyType({
     "logs": ToolGroup(("лог",), ("read_logs",)),
     "nodes": ToolGroup(("нод", "ros"), ("ros2_node_status",)),
     "containers": ToolGroup(("контейнер", "сервис", "докер", "docker"), ("container_status",)),
+    # #4516 (Шифу 06.11: «Телега - считай админка»): граф ROS и VESC для пульта TG и ТАРС; у голоса тулов нет
+    "ros_graph": ToolGroup(ROS_GRAPH_STEMS, ("ros_list", "topic_echo", "topic_stats")),
+    "vesc": ToolGroup(VESC_STEMS, ("vesc_telemetry",)),
     # #4297 (живой 03.11 «как сеть»): слов сети в таблице не было, срез оставался без данных, модель трижды звала тул
     # вне среза (``tool_not_available``). Данные о сети есть у двух тулов: ``internet_available`` в
     # ``get_perception_context`` и опрос целей Prometheus (``show_metrics``: ``services_up``, задержки LLM/STT/TTS).
