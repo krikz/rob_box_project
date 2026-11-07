@@ -78,7 +78,7 @@ RUN apt-get update && apt-get install -y debconf-utils \
     ros-${ROS_DISTRO}-sensor-msgs \
     ros-${ROS_DISTRO}-geometry-msgs \
     ros-${ROS_DISTRO}-nav-msgs \
-    ros-${ROS_DISTRO}-nav2-msgs     # #4516: /dynamic_joint_states (control_msgs/DynamicJointState) читают тулы ros_admin в voice-assistant
+    ros-${ROS_DISTRO}-nav2-msgs \
     ros-${ROS_DISTRO}-control-msgs \
     ros-${ROS_DISTRO}-rtabmap-msgs \
     ros-${ROS_DISTRO}-ament-cmake \
