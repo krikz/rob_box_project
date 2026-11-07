@@ -78,6 +78,8 @@ __all__ = [
     "PeopleListTool",
     "PersonPhotoTool",
     "NamePersonTool",
+    "FindSimilarTool",
+    "MergePeopleTool",
     # Memory tools
     "MemorySaveTool",
     "MemorySearchTool",

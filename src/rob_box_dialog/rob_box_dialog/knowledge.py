@@ -729,7 +729,8 @@ TOOL_CLASSES: Mapping[str, str] = MappingProxyType({
         "search_web", "show_metrics",
     )},
     **{t: "action.local" for t in (
-        "add_music_material", "clear_waypoints", "delete_map", "delete_waypoint", "memory_save", "name_person",
+        "add_music_material", "clear_waypoints", "delete_map", "delete_waypoint", "find_similar", "memory_save",
+        "merge_people", "name_person",
         "play_animation", "save_waypoint", "set_music_volume", "set_pitch", "set_speed", "set_tts_provider", "set_voice",
         "set_volume",
     )},
@@ -1110,7 +1111,7 @@ WAYPOINT_SAVE_OBJECTS: Tuple[str, ...] = ("мест", "точк", "здесь", 
 #: Слова про лица и людей (группа ``faces``, #4469): основы по левой границе слова.
 FACES_STEMS: Tuple[str, ...] = (
     "лиц", "имя", "имени", "назови", "назвать", "назов", "зовут", "кто это", "людей", "люди", "кличк", "фото",
-    "снимок", "снимк", "незнаком",
+    "снимок", "снимк", "незнаком", "похож", "дубл", "склей", "склеи", "слей", "объедин",
 )
 #: id лица в реплике: 8 hex целым словом. Структура, а не грамматика музыки (мораторий #3132 не касается).
 FACE_ID_RE = re.compile(r"(?<![0-9a-f])[0-9a-f]{8}(?![0-9a-f])", re.IGNORECASE)
@@ -1177,7 +1178,7 @@ TOOL_GROUPS: Mapping[str, ToolGroup] = MappingProxyType({
     # ``memory_save`` (``rejected no_person``). Пульт по лицам видит только чат (``telegram_visible``): у голоса
     # ``llm_visible=False``, срез голоса не меняется (``tools_view.groups_for(agent=...)``). Голое «покажи» основой не
     # берём («покажи CPU», «покажи кухню»): «покажи лица» открывает «лиц». id лица (8 hex) открывает группу без слов
-    "faces": ToolGroup(FACES_STEMS, ("people_list", "person_photo", "name_person")),
+    "faces": ToolGroup(FACES_STEMS, ("people_list", "person_photo", "name_person", "find_similar", "merge_people")),
     "sound": ToolGroup(SOUND_STEMS, ("play_sound", "get_sound_info")),
     # анимация всегда видна (``TOOLS_ALWAYS``); группа — чтобы просьба «покажи анимацию …» была командой (В17)
     # глаголы восприятия («посмотри налево») — взгляд лица, а не движение базы (``MOTION_VERB_STEMS``);
@@ -1674,6 +1675,9 @@ TOOL_PHRASES: Mapping[str, Mapping[str, Any]] = MappingProxyType({
     # имя лицу (#4469): «Готово: лицо fff371fe теперь Кирилл.» - шаблон по данным владельца лиц (``id``, ``stored_name`` -
     # имя, прочитанное из базы после записи, ``previous_name``), а не слова модели
     "name_person": MappingProxyType({"done": ByData(("previous_name",), {(None,): "people.named"}, "people.renamed")}),
+    # найди похожих и склейка (#4469): обе фразы строит код из данных владельца (поле ``summary``), не модель
+    "find_similar": MappingProxyType({"done": "people.similar"}),
+    "merge_people": MappingProxyType({"done": "people.merged"}),
     "set_voice": MappingProxyType({"done": VOICE_DONE, "rejected": VOICE_FAILED, "timeout": "voice.timeout"}),
     "set_tts_provider": MappingProxyType({"done": VOICE_DONE, "rejected": VOICE_FAILED, "timeout": "voice.timeout"}),
     # звук - не музыка: класс action.media, но фраза о SoundEvent, а не «Включаю музыку»
@@ -1746,6 +1750,10 @@ TOOL_QUESTIONS: Mapping[Tuple[str, str], ToolQuestion] = MappingProxyType({
     (LIBRARY_TOOL, "needs_confirmation"): ToolQuestion(
         {"confirm": True}, ("удал", "сотр", "стир"), ("песн", "трек", "композиц", "библиотек"),
         "music.library_delete_kept"),
+    # склейка дублей лиц (#4469): подтверждение одной строкой («Склеиваю 3 записи в «Имя» (id)?»), текст вопроса -
+    # из данных тула (``question``), «да» исполняет код тем же вызовом с ``confirm``; «нет» - фраза ``declined``
+    ("merge_people", "needs_merge_confirmation"): ToolQuestion(
+        {"confirm": True}, ("склей", "склеи", "слей", "объедин"), ("запис", "лиц", "дубл"), "people.merge_kept"),
 })
 #: Ответ на вопрос тула (``tool_ask.answer``): реплика ЦЕЛИКОМ из этих слов, глагола и предмета вопроса
 #: (:class:`ToolQuestion`) и служебных :data:`TOOL_ANSWER_FILLER`. Есть слово «нет» - отказ (необратимое не делаем по
@@ -1789,9 +1797,14 @@ class OwnerText:
 OUTCOME_OWNER_TEXT: Mapping[str, OwnerText] = MappingProxyType({
     **{tool: OwnerText(whole="source_message", note="source_note") for tool in ("request_music", "generate_music")},
     "dj_set": OwnerText(note="source_note")})
-#: Тул пульта Telegram, чей успех уносит в чат картинку (#4469): ``photo_id`` - id лица, ``caption`` - подпись; чат шлёт
-#: ``DialogOutput(kind=photo)`` с id, снимок бот забирает у владельца лиц (``/perception/people``) байтами.
+#: Тулы пульта Telegram, чей успех уносит в чат картинку (#4469): ``photo_id`` - id лица, ``caption`` - подпись; чат шлёт
+#: ``DialogOutput(kind=photo)`` с id, картинку бот забирает у владельца лиц (``/perception/people``) байтами. У
+#: ``find_similar`` в данных ещё ``photo_kind=collage``: это коллаж кандидатов, а не снимок лица.
 PHOTO_TOOL = "person_photo"
+COLLAGE_TOOL = "find_similar"
+PHOTO_TOOLS: Tuple[str, ...] = (PHOTO_TOOL, COLLAGE_TOOL)
+#: Значение ``photo_kind`` у коллажа (и поле ``op`` в тексте ``DialogOutput(kind=photo)``).
+COLLAGE_KIND = "collage"
 #: Действия, чей успех - сам себе доказательство: фразы об исходе done нет (§4.1; Шифу 21.10: «включил щелчок и ещё
 #: сказал, что он заиграл, бред же»). Неудача (rejected/timeout) говорится одной фразой кода. Исключение - звукоподражание
 #: (:data:`SOUND_IMITATIONS`).

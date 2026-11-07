@@ -385,6 +385,34 @@ TOOL_CATALOG_DATA: tuple[dict[str, Any], ...] = (   {   'llm_visible': True,
                          'required': ['query'],
                          'accepts_kwargs': False},
         'skill': ('knowledge',)},
+    {   'llm_visible': False,
+        'operator_visible': False,
+        'read_only': True,
+        'destructive': True,
+        'idempotent': False,
+        'starts_music': False,
+        'execution_type': 'medium',
+        'event_source': 'srv:/perception/people',
+        'telegram_visible': True,
+        'name': 'find_similar',
+        'description': 'Найти в базе лиц записи, похожие на данное (дубли одного '
+                       'человека): код сравнивает лица, ты не решаешь, кто похож. В '
+                       'чат уходит ОДИН коллаж: снимки с крупными номерами 1, 2, 3…, '
+                       'под каждым id и сходство; дубли с тем же именем первыми. Звать '
+                       'на «найди похожих», «найди дубли 71cda108». id - 8 знаков '
+                       '0-9a-f из people_list. Дальше человек пишет номера («1, 3, 5 - '
+                       'да», «все, кроме 2»): склей их тулом merge_people, номера не '
+                       'переводи в id сам. Коллаж отправляет код после вызова.',
+        'parameters': {   'type': 'object',
+                          'properties': {   'id': {   'type': 'string',
+                                                      'description': 'id лица, для '
+                                                                     'которого ищем '
+                                                                     'дубли: 8 знаков '
+                                                                     '0-9a-f.'}},
+                          'required': ['id'],
+                          'additionalProperties': False},
+        'signature': {'params': ['id'], 'required': ['id'], 'accepts_kwargs': False},
+        'skill': ()},
     {   'llm_visible': True,
         'operator_visible': False,
         'read_only': False,
@@ -1000,6 +1028,83 @@ TOOL_CATALOG_DATA: tuple[dict[str, Any], ...] = (   {   'llm_visible': True,
                           'additionalProperties': False},
         'signature': {'params': [], 'required': [], 'accepts_kwargs': True},
         'skill': ('memory',)},
+    {   'llm_visible': False,
+        'operator_visible': False,
+        'read_only': False,
+        'destructive': True,
+        'idempotent': False,
+        'starts_music': False,
+        'execution_type': 'medium',
+        'event_source': 'srv:/perception/people',
+        'telegram_visible': True,
+        'name': 'merge_people',
+        'description': 'Склеить дубли лица: записи с номерами последнего коллажа '
+                       'find_similar вливаются в target. Звать, когда человек ответил '
+                       'на коллаж номерами: «1, 3, 5 - да» -> numbers=[1,3,5]; «все, '
+                       'кроме 2» -> all_except=[2]. Передай ровно одно из двух. Номера '
+                       '- с коллажа, id ты не подставляешь: перевод в id делает код и '
+                       'откажет, если коллажа нет или номер не из него. Без confirm '
+                       'тул только спрашивает (needs_merge_confirmation), confirm=true '
+                       '- после «да» человека. Слияние делает владелец базы с бэкапом, '
+                       'а фразу «склеено N, теперь у … M снимков» говорит код по его '
+                       'ответу: не пиши «склеил» сам.',
+        'parameters': {   'type': 'object',
+                          'properties': {   'target': {   'type': 'string',
+                                                          'description': 'id лица, в '
+                                                                         'которое '
+                                                                         'склеиваем '
+                                                                         '(то, для '
+                                                                         'которого '
+                                                                         'делали '
+                                                                         'коллаж): 8 '
+                                                                         'знаков.'},
+                                            'numbers': {   'type': 'array',
+                                                           'description': 'Номера '
+                                                                          'коллажа, '
+                                                                          'которые '
+                                                                          'склеить '
+                                                                          '(человек '
+                                                                          'сказал «1, '
+                                                                          '3, 5 - '
+                                                                          'да»).',
+                                                           'items': {   'type': 'integer',
+                                                                        'description': 'Номер '
+                                                                                       'с '
+                                                                                       'коллажа.'}},
+                                            'all_except': {   'type': 'array',
+                                                              'description': 'Склеить '
+                                                                             'все '
+                                                                             'номера '
+                                                                             'коллажа, '
+                                                                             'кроме '
+                                                                             'этих '
+                                                                             '(«все, '
+                                                                             'кроме '
+                                                                             '2»).',
+                                                              'items': {   'type': 'integer',
+                                                                           'description': 'Номер '
+                                                                                          'с '
+                                                                                          'коллажа.'}},
+                                            'confirm': {   'type': 'boolean',
+                                                           'description': 'true - '
+                                                                          'только '
+                                                                          'после того, '
+                                                                          'как человек '
+                                                                          'ответил '
+                                                                          '«да» на '
+                                                                          'вопрос '
+                                                                          '«Склеиваю '
+                                                                          '…?» (его '
+                                                                          'задаёт сам '
+                                                                          'тул ответом '
+                                                                          'needs_merge_confirmation).',
+                                                           'default': False}},
+                          'required': ['target'],
+                          'additionalProperties': False},
+        'signature': {   'params': ['target', 'numbers', 'all_except', 'confirm'],
+                         'required': ['target'],
+                         'accepts_kwargs': True},
+        'skill': ()},
     {   'llm_visible': True,
         'operator_visible': False,
         'read_only': False,

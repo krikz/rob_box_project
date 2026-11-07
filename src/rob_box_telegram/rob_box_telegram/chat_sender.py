@@ -141,7 +141,9 @@ class ChatSender:
         лиц (в потоке: вызов блокирует). Отказ владельца - честная строка с его причиной, а не тишина."""
         await self._end(chat_id)
         parsed = person_photo.parse_payload(payload)
-        ok, reason, data = (await asyncio.to_thread(fetch, parsed[0])) if parsed else (False, "bad_id", b"")
+        op = person_photo.payload_op(payload)
+        args = () if parsed is None else (parsed[0],) if op == person_photo.OP_PHOTO else (parsed[0], op)  # коллаж - с op
+        ok, reason, data = (await asyncio.to_thread(fetch, *args)) if parsed else (False, "bad_id", b"")
         if not (ok and data):
             self._log.warning("снимок лица не отправлен chat=%s: %s", chat_id, reason or "пустой ответ")
             text = person_photo.REFUSALS.get(reason, person_photo.REFUSAL_DEFAULT)
