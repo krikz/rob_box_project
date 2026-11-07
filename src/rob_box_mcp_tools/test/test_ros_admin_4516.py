@@ -286,6 +286,34 @@ def test_vesc_tool_refuses_when_ros_control_is_silent(monkeypatch):
     assert not result.success and "ros2_control" in result.message
 
 
+def _missing_type(self, *args, **kwargs):
+    raise ri.TypeUnavailable("control_msgs/msg/DynamicJointState")
+
+
+def test_load_message_type_turns_missing_package_into_type_unavailable(monkeypatch):
+    fake = SimpleNamespace(get_message=Mock(side_effect=ModuleNotFoundError("No module named 'control_msgs'")))
+    monkeypatch.setitem(sys.modules, "rosidl_runtime_py", SimpleNamespace(utilities=fake))
+    monkeypatch.setitem(sys.modules, "rosidl_runtime_py.utilities", fake)
+    with pytest.raises(ri.TypeUnavailable) as caught:
+        ri.load_message_type("control_msgs/msg/DynamicJointState")
+    assert "не установлен на этом узле" in caught.value.message()
+
+
+def test_ros_admin_tools_refuse_honestly_when_message_type_is_not_installed(monkeypatch):
+    monkeypatch.setattr(ri.RosProbe, "collect", _missing_type)
+    monkeypatch.setattr(ri.RosProbe, "read_joint_states", _missing_type)
+    node = make_node(topics=[("/dynamic_joint_states", ["control_msgs/msg/DynamicJointState"])])
+    for tool, args in (
+        (ros_admin.TopicEchoTool(node), ("/dynamic_joint_states",)),
+        (ros_admin.TopicStatsTool(node), ("/dynamic_joint_states",)),
+        (ros_admin.VescTelemetryTool(node), ()),
+    ):
+        result = tool.execute(*args)
+        assert not result.success
+        assert result.data["status"] == "rejected" and result.data["reason"] == ri.TYPE_UNAVAILABLE
+        assert "не установлен на этом узле" in result.message and "control_msgs/msg/DynamicJointState" in result.message
+
+
 # ---------------------------------------------------------- read_logs не отдаёт секреты (проверка, не новый код)
 
 
