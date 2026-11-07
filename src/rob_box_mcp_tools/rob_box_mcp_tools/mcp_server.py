@@ -126,6 +126,10 @@ from .tools import (
     SayAloudTool,
     SayTool,
     PeopleListTool,
+    RosListTool,
+    TopicEchoTool,
+    TopicStatsTool,
+    VescTelemetryTool,
     PersonPhotoTool,
     NamePersonTool,
     FindSimilarTool,
@@ -934,6 +938,11 @@ class MCPServer(Node):
         self.registry.register(Ros2NodeStatusTool(self))
         self.registry.register(ReadLogsTool(self))
         self.registry.register(ContainerStatusTool(self))
+        # #4516 — чтение ROS-графа для пульта TG и ТАРС (срез operator.admin): топики/сервисы, echo, hz/bw, VESC из ROS.
+        self.registry.register(RosListTool(self))
+        self.registry.register(TopicEchoTool(self))
+        self.registry.register(TopicStatsTool(self))
+        self.registry.register(VescTelemetryTool(self))
         # Issue #3305 — ``say``: голос оператора (ТАРС). Публикует SSML в
         # /voice/tts/request (нужен только node.create_publisher). Без
         # регистрации /mcp/execute отвечал «unknown tool».

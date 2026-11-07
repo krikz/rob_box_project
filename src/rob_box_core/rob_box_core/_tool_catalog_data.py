@@ -88,6 +88,7 @@ TOOL_CATALOG_DATA: tuple[dict[str, Any], ...] = (   {   'llm_visible': True,
         'execution_type': 'medium',
         'event_source': '',
         'name': 'container_status',
+        'telegram_visible': True,
         'description': 'Получить статус контейнеров (restart-count, CPU, RAM, uptime) '
                        'через Prometheus/cAdvisor. Используй когда нужно проверить '
                        "здоровье контейнеров ('покажи состояние voice-assistant').",
@@ -1799,6 +1800,7 @@ TOOL_CATALOG_DATA: tuple[dict[str, Any], ...] = (   {   'llm_visible': True,
         'execution_type': 'medium',
         'event_source': '',
         'name': 'read_logs',
+        'telegram_visible': True,
         'description': 'Получить логи конкретной ROS2-ноды или контейнера. Используй '
                        "когда нужно посмотреть почему нода не работает ('покажи логи "
                        "stt_node', 'что в логах voice-assistant').",
@@ -1987,6 +1989,7 @@ TOOL_CATALOG_DATA: tuple[dict[str, Any], ...] = (   {   'llm_visible': True,
         'execution_type': 'medium',
         'event_source': '',
         'name': 'ros2_node_status',
+        'telegram_visible': True,
         'description': 'Получить статус ROS2-нод робота (active/missing/failed). '
                        'Используй когда нужно понять, поднялась ли нода (например, '
                        "'нода stt_node не работает' или 'проверь audio_node').",
@@ -2012,6 +2015,42 @@ TOOL_CATALOG_DATA: tuple[dict[str, Any], ...] = (   {   'llm_visible': True,
                           'required': [],
                           'additionalProperties': False},
         'signature': {'params': ['nodes'], 'required': [], 'accepts_kwargs': False},
+        'skill': ()},
+    {   'llm_visible': False,
+        'operator_visible': True,
+        'read_only': True,
+        'destructive': True,
+        'idempotent': False,
+        'starts_music': False,
+        'execution_type': 'medium',
+        'event_source': '',
+        'name': 'ros_list',
+        'telegram_visible': True,
+        'description': 'Список топиков или сервисов ROS 2 с типами сообщений. Звать на '
+                       '«какие есть топики», «покажи сервисы», «какие топики про '
+                       'лидар». Пересказывай данные результата, ничего не добавляй.',
+        'parameters': {   'type': 'object',
+                          'properties': {   'kind': {   'type': 'string',
+                                                        'description': 'topics - '
+                                                                       'топики (по '
+                                                                       'умолчанию); '
+                                                                       'services - '
+                                                                       'сервисы.',
+                                                        'enum': ['topics', 'services']},
+                                            'filter': {   'type': 'string',
+                                                          'description': 'Подстрока '
+                                                                         'имени или '
+                                                                         'типа '
+                                                                         '(например '
+                                                                         'lidar, '
+                                                                         'Twist); '
+                                                                         'пусто - '
+                                                                         'всё.'}},
+                          'required': [],
+                          'additionalProperties': False},
+        'signature': {   'params': ['kind', 'filter'],
+                         'required': [],
+                         'accepts_kwargs': False},
         'skill': ()},
     {   'llm_visible': True,
         'operator_visible': False,
@@ -2478,6 +2517,7 @@ TOOL_CATALOG_DATA: tuple[dict[str, Any], ...] = (   {   'llm_visible': True,
                        "/ rate(voice_llm_request_duration_seconds_count[5m])' — "
                        "задержка LLM. Простые слова ('cpu', 'память', 'latency') тоже "
                        'принимаются — они резолвятся по живому каталогу метрик.',
+        'telegram_visible': True,
         'parameters': {   'type': 'object',
                           'properties': {   'query': {   'type': 'string',
                                                          'description': 'PromQL-выражение '
@@ -2757,4 +2797,104 @@ TOOL_CATALOG_DATA: tuple[dict[str, Any], ...] = (   {   'llm_visible': True,
                           'required': [],
                           'additionalProperties': False},
         'signature': {'params': [], 'required': [], 'accepts_kwargs': False},
-        'skill': ('navigation',)})
+        'skill': ('navigation',)},
+    {   'llm_visible': False,
+        'operator_visible': True,
+        'read_only': True,
+        'destructive': True,
+        'idempotent': False,
+        'starts_music': False,
+        'execution_type': 'medium',
+        'event_source': '',
+        'name': 'topic_echo',
+        'telegram_visible': True,
+        'description': 'Прочитать из топика ROS 2 одно сообщение или до 5 (аналог ros2 '
+                       'topic echo). Звать на «что в топике /battery_state», «покажи 3 '
+                       'сообщения из /odom». Картинки и облака точек не отдаются '
+                       'содержимым, только сводкой. Текст обрезается. Пересказывай '
+                       'данные результата, числа не выдумывай.',
+        'parameters': {   'type': 'object',
+                          'properties': {   'topic': {   'type': 'string',
+                                                         'description': 'Полное имя '
+                                                                        'топика с '
+                                                                        'ведущим '
+                                                                        'слэшем, '
+                                                                        'например '
+                                                                        '/battery_state.'},
+                                            'count': {   'type': 'integer',
+                                                         'description': 'Сколько '
+                                                                        'сообщений '
+                                                                        'прочитать '
+                                                                        '(1-5, по '
+                                                                        'умолчанию '
+                                                                        '1).'},
+                                            'timeout_s': {   'type': 'number',
+                                                             'description': 'Сколько '
+                                                                            'секунд '
+                                                                            'ждать (до '
+                                                                            '10, по '
+                                                                            'умолчанию '
+                                                                            '5).'}},
+                          'required': ['topic'],
+                          'additionalProperties': False},
+        'signature': {   'params': ['topic', 'count', 'timeout_s'],
+                         'required': ['topic'],
+                         'accepts_kwargs': False},
+        'skill': ()},
+    {   'llm_visible': False,
+        'operator_visible': True,
+        'read_only': True,
+        'destructive': True,
+        'idempotent': False,
+        'starts_music': False,
+        'execution_type': 'medium',
+        'event_source': '',
+        'name': 'topic_stats',
+        'telegram_visible': True,
+        'description': 'Замерить частоту (hz) и полосу (bw) топика ROS 2 за окно до 10 '
+                       'секунд. Звать на «какая частота у /scan», «померяй hz камеры», '
+                       '«сколько байт в секунду идёт по /odom». Числа в ответе '
+                       'посчитал код: называй их как есть, не округляй и не '
+                       'придумывай.',
+        'parameters': {   'type': 'object',
+                          'properties': {   'topic': {   'type': 'string',
+                                                         'description': 'Полное имя '
+                                                                        'топика с '
+                                                                        'ведущим '
+                                                                        'слэшем, '
+                                                                        'например '
+                                                                        '/scan.'},
+                                            'window_s': {   'type': 'number',
+                                                            'description': 'Окно '
+                                                                           'замера в '
+                                                                           'секундах '
+                                                                           '(до 10, по '
+                                                                           'умолчанию '
+                                                                           '5).'}},
+                          'required': ['topic'],
+                          'additionalProperties': False},
+        'signature': {   'params': ['topic', 'window_s'],
+                         'required': ['topic'],
+                         'accepts_kwargs': False},
+        'skill': ()},
+    {   'llm_visible': False,
+        'operator_visible': True,
+        'read_only': True,
+        'destructive': True,
+        'idempotent': False,
+        'starts_music': False,
+        'execution_type': 'medium',
+        'event_source': '',
+        'name': 'vesc_telemetry',
+        'telegram_visible': True,
+        'description': 'Телеметрия моторов-колёс (VESC): напряжение, ток, обороты, '
+                       'температура FET и мотора по каждому колесу, из ROS. Звать на '
+                       '«что с vesc», «напряжение на колёсах», «температура моторов». '
+                       'Чего в ROS нет, результат называет прямо: не додумывай такие '
+                       'числа.',
+        'parameters': {   'type': 'object',
+                          'properties': {},
+                          'required': [],
+                          'additionalProperties': False},
+        'signature': {'params': [], 'required': [], 'accepts_kwargs': False},
+        'skill': ()})

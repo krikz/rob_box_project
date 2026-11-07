@@ -197,6 +197,11 @@ class Ros2NodeStatusTool(MCPTool):
         return False
 
     @property
+    def telegram_visible(self) -> bool:
+        # #4516: пульт Telegram - админка (решение Шифу 06.11): те же тулы чтения, что у ТАРС
+        return True
+
+    @property
     def slice(self) -> str:
         # срез ``operator.admin`` (slice_policy.yaml): по нему тул виден оператору (ADR-0150 §9.3, PR-13b)
         return "operator.admin"
@@ -364,6 +369,11 @@ class ReadLogsTool(MCPTool):
     def llm_visible(self) -> bool:
         # ТАРС-только (ADR-0051 §6, #2001): личность эти тулы не видит.
         return False
+
+    @property
+    def telegram_visible(self) -> bool:
+        # #4516: пульт Telegram - админка (решение Шифу 06.11): те же тулы чтения, что у ТАРС
+        return True
 
     @property
     def slice(self) -> str:
@@ -553,6 +563,11 @@ class ContainerStatusTool(MCPTool):
     def llm_visible(self) -> bool:
         # ТАРС-только (ADR-0051 §6, #2001): личность эти тулы не видит.
         return False
+
+    @property
+    def telegram_visible(self) -> bool:
+        # #4516: пульт Telegram - админка (решение Шифу 06.11): те же тулы чтения, что у ТАРС
+        return True
 
     @property
     def slice(self) -> str:
@@ -885,6 +900,11 @@ class ShowMetricsTool(MCPTool):
                 default="prometheus",
             ),
         ]
+
+    @property
+    def telegram_visible(self) -> bool:
+        # #4516: пульт Telegram - админка (решение Шифу 06.11): те же тулы чтения, что у ТАРС
+        return True
 
     @property
     def slice(self) -> str:

@@ -22,6 +22,7 @@ from .sound import *
 from .say import *  # AV-21: operator-agent minimal TTS (no emotion/animation)
 from .dialogue import *
 from .memory import *
+from .ros_admin import *  # #4516: чтение ROS-графа и VESC для пульта TG и ТАРС (operator.admin)
 from .people import *  # #4469: пульт Telegram по лицам (people_list, person_photo, name_person)
 try:
     # music.py тянет rob_box_music и движок v2 (engine/), которые доступны
@@ -101,4 +102,9 @@ __all__ = [
     # запрос в /avatar/tars/panel_request; URL собирает TarsPanelDispatcher
     # в rob_box_supervisor и публикует в /avatar/tars/panel_url.
     "ShowMetricsTool",
+    # #4516: чтение ROS-графа (ros_list, topic_echo, topic_stats) и VESC из ROS
+    "RosListTool",
+    "TopicEchoTool",
+    "TopicStatsTool",
+    "VescTelemetryTool",
 ]

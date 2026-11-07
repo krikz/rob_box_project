@@ -57,9 +57,9 @@ def _faces_for(agent: str, text: str, named: set, carry: Sequence[str] = ()) -> 
         named = named | {kn.FACES_GROUP}
     if not named and kn.FACES_GROUP in carry:
         named = {kn.FACES_GROUP}
-    if kn.FACES_GROUP in named and not set(kn.TOOL_GROUPS[kn.FACES_GROUP].tools) & set(tools_for(agent_spec(agent))):
-        named = named - {kn.FACES_GROUP}
-    return named
+    # группы пульта (``AGENT_SCOPED_GROUPS``: лица, граф ROS, VESC - #4469, #4516) без тулов у агента не открываются
+    own = set(tools_for(agent_spec(agent)))
+    return {g for g in named if g not in kn.AGENT_SCOPED_GROUPS or set(kn.TOOL_GROUPS[g].tools) & own}
 
 
 def asked_groups(tools: Sequence[str]) -> Tuple[str, ...]:
