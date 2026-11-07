@@ -2843,6 +2843,77 @@ TOOL_CATALOG_DATA: tuple[dict[str, Any], ...] = (   {   'llm_visible': True,
         'skill': ()},
     {   'llm_visible': False,
         'operator_visible': True,
+        'read_only': False,
+        'destructive': True,
+        'idempotent': False,
+        'starts_music': False,
+        'execution_type': 'medium',
+        'event_source': '',
+        'name': 'topic_publish',
+        'telegram_visible': True,
+        'description': 'Опубликовать сообщение в существующий топик ROS 2 (аналог ros2 '
+                       'topic pub, до 5 раз). Звать на «опубликуй в топик /x ...», '
+                       '«отправь в топик ...». Тип сообщения берёт код из графа, поля '
+                       '- объектом {поле: значение} строго по интерфейсу типа. Топики '
+                       'движения, приводов, навигации и служебные публиковать нельзя: '
+                       'код откажет. Без confirm тул только спрашивает, confirm=true - '
+                       'после «да» человека. Фразу «Опубликовал ...» или причину '
+                       'отказа говорит код по факту: не пиши «опубликовал» сам.',
+        'parameters': {   'type': 'object',
+                          'properties': {   'topic': {   'type': 'string',
+                                                         'description': 'Полное имя '
+                                                                        'существующего '
+                                                                        'топика с '
+                                                                        'ведущим '
+                                                                        'слэшем, '
+                                                                        'например '
+                                                                        '/animations/trigger.'},
+                                            'fields': {   'type': 'object',
+                                                          'description': 'Поля '
+                                                                         'сообщения '
+                                                                         '{имя поля: '
+                                                                         'значение}, '
+                                                                         'например '
+                                                                         '{"data": '
+                                                                         '"hello"}; '
+                                                                         'значения '
+                                                                         'строго того '
+                                                                         'типа, что в '
+                                                                         'интерфейсе '
+                                                                         '(число - '
+                                                                         'числом, '
+                                                                         'строка - '
+                                                                         'строкой, '
+                                                                         'вложенное - '
+                                                                         'объектом).'},
+                                            'count': {   'type': 'integer',
+                                                         'description': 'Сколько раз '
+                                                                        'опубликовать '
+                                                                        '(1-5, по '
+                                                                        'умолчанию '
+                                                                        '1).'},
+                                            'confirm': {   'type': 'boolean',
+                                                           'description': 'true - '
+                                                                          'только '
+                                                                          'после того, '
+                                                                          'как человек '
+                                                                          'ответил '
+                                                                          '«да» на '
+                                                                          'вопрос '
+                                                                          '«Публикую '
+                                                                          '...?» (его '
+                                                                          'задаёт сам '
+                                                                          'тул ответом '
+                                                                          'needs_publish_confirmation).',
+                                                           'default': False}},
+                          'required': ['topic', 'fields'],
+                          'additionalProperties': False},
+        'signature': {   'params': ['topic', 'fields', 'count', 'confirm'],
+                         'required': ['topic'],
+                         'accepts_kwargs': True},
+        'skill': ()},
+    {   'llm_visible': False,
+        'operator_visible': True,
         'read_only': True,
         'destructive': True,
         'idempotent': False,

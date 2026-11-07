@@ -730,7 +730,7 @@ TOOL_CLASSES: Mapping[str, str] = MappingProxyType({
     )},
     **{t: "action.local" for t in (
         "add_music_material", "clear_waypoints", "delete_map", "delete_waypoint", "find_similar", "memory_save",
-        "merge_people", "name_person",
+        "merge_people", "name_person", "topic_publish",
         "play_animation", "save_waypoint", "set_music_volume", "set_pitch", "set_speed", "set_tts_provider", "set_voice",
         "set_volume",
     )},
@@ -1124,6 +1124,12 @@ ROS_GRAPH_STEMS: Tuple[str, ...] = (
     "топик", "topic", "частот", "герц", "hz", "полос", "пропускн", "bandwidth", "bw", "сервисы ros", "сервисов ros",
     "сервисы рос", "сервисов рос", "service",
 )
+#: Слова про публикацию в топик (группа ``publish``, #4516 шаг 2а): основы глагола и «в топик». Группа открывается
+#: только тем, у кого есть тул ``topic_publish`` (пульт TG и ТАРС); голосу она не даётся.
+PUBLISH_STEMS: Tuple[str, ...] = (
+    "опубликуй", "опубликов", "публикац", "публикуй", "отправь в топик", "отправить в топик", "шли в топик",
+    "пошли в топик", "отправь сообщение в", "pub ", "publish",
+)
 #: Слова про телеметрию VESC и колёс (группа ``vesc``, #4516).
 VESC_STEMS: Tuple[str, ...] = (
     "vesc", "веск", "весц", "колёс", "колес", "мотор", "напряжен", "вольт", "температур", "обороты", "оборотов",
@@ -1131,7 +1137,7 @@ VESC_STEMS: Tuple[str, ...] = (
 )
 #: Группы только для тех, чьи тулы в срезе агента (пульт TG и ТАРС): голосу (``llm_visible=False``) они не открываются, а
 #: «какое напряжение» голосом остаётся про батарею (``status``), а не про пустую группу.
-AGENT_SCOPED_GROUPS: Tuple[str, ...] = (FACES_GROUP, "ros_graph", "vesc")
+AGENT_SCOPED_GROUPS: Tuple[str, ...] = (FACES_GROUP, "ros_graph", "vesc", "publish")
 
 #: Группы по приоритету: при пересечении групп срез режется по этому порядку (``TOOLS_VISIBLE_MAX``). Голос —
 #: только по явной голосовой просьбе (LLM сама меняла голос посреди сказки, а голос персистентный, PR-4).
@@ -1216,6 +1222,7 @@ TOOL_GROUPS: Mapping[str, ToolGroup] = MappingProxyType({
     # #4516 (Шифу 06.11: «Телега - считай админка»): граф ROS и VESC для пульта TG и ТАРС; у голоса тулов нет
     "ros_graph": ToolGroup(ROS_GRAPH_STEMS, ("ros_list", "topic_echo", "topic_stats")),
     "vesc": ToolGroup(VESC_STEMS, ("vesc_telemetry",)),
+    "publish": ToolGroup(PUBLISH_STEMS, ("topic_publish",)),
     # #4297 (живой 03.11 «как сеть»): слов сети в таблице не было, срез оставался без данных, модель трижды звала тул
     # вне среза (``tool_not_available``). Данные о сети есть у двух тулов: ``internet_available`` в
     # ``get_perception_context`` и опрос целей Prometheus (``show_metrics``: ``services_up``, задержки LLM/STT/TTS).
@@ -1696,6 +1703,8 @@ TOOL_PHRASES: Mapping[str, Mapping[str, Any]] = MappingProxyType({
     # найди похожих и склейка (#4469): обе фразы строит код из данных владельца (поле ``summary``), не модель
     "find_similar": MappingProxyType({"done": "people.similar"}),
     "merge_people": MappingProxyType({"done": "people.merged"}),
+    # публикация в топик (#4516, шаг 2а): «Опубликовал в /x (тип) 1 раз, подписчиков 2.» строит код по факту (поле ``summary``)
+    "topic_publish": MappingProxyType({"done": "publish.done"}),
     "set_voice": MappingProxyType({"done": VOICE_DONE, "rejected": VOICE_FAILED, "timeout": "voice.timeout"}),
     "set_tts_provider": MappingProxyType({"done": VOICE_DONE, "rejected": VOICE_FAILED, "timeout": "voice.timeout"}),
     # звук - не музыка: класс action.media, но фраза о SoundEvent, а не «Включаю музыку»
@@ -1772,6 +1781,10 @@ TOOL_QUESTIONS: Mapping[Tuple[str, str], ToolQuestion] = MappingProxyType({
     # из данных тула (``question``), «да» исполняет код тем же вызовом с ``confirm``; «нет» - фраза ``declined``
     ("merge_people", "needs_merge_confirmation"): ToolQuestion(
         {"confirm": True}, ("склей", "склеи", "слей", "объедин"), ("запис", "лиц", "дубл"), "people.merge_kept"),
+    # публикация в топик (#4516): «Публикую в /x (тип) {...}, 1 раз? Скажи «да, публикуй»», «да» исполняет код
+    ("topic_publish", "needs_publish_confirmation"): ToolQuestion(
+        {"confirm": True}, ("публикуй", "опубликуй", "отправь", "шли", "отправляй"), ("топик", "сообщен", "публикац"),
+        "publish.kept"),
 })
 #: Ответ на вопрос тула (``tool_ask.answer``): реплика ЦЕЛИКОМ из этих слов, глагола и предмета вопроса
 #: (:class:`ToolQuestion`) и служебных :data:`TOOL_ANSWER_FILLER`. Есть слово «нет» - отказ (необратимое не делаем по

@@ -106,5 +106,6 @@ __all__ = [
     "RosListTool",
     "TopicEchoTool",
     "TopicStatsTool",
+    "TopicPublishTool",  # #4516 шаг 2а: публикация с предохранителем
     "VescTelemetryTool",
 ]

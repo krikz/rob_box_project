@@ -254,7 +254,7 @@ def test_telegram_visible_tools_are_registered_and_hidden_from_personality(catal
     assert chat_only == {
         "say_aloud", "people_list", "person_photo", "name_person", "find_similar", "merge_people",
         "read_logs", "ros2_node_status", "container_status", "show_metrics", "ros_list", "topic_echo", "topic_stats",
-        "vesc_telemetry"}
+        "topic_publish", "vesc_telemetry"}
     assert chat_only <= _registered_tool_names()
     assert not [entry.name for entry in catalog if entry.telegram_visible and entry.llm_visible]
 
