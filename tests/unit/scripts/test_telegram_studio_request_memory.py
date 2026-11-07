@@ -15,6 +15,8 @@ REPO = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(REPO / "scripts" / "telegram"))
 
 import channel_studio as cs  # noqa: E402
+import studio_intent as intent  # noqa: E402
+import studio_jobs as jobs  # noqa: E402
 import studio_messages as messages  # noqa: E402
 import studio_state as st  # noqa: E402
 
@@ -49,6 +51,29 @@ class Bot:
     def send_media(self, chat_id, path, caption="", keyboard=None, above=False):
         self.calls.append(("sendMedia", str(path), caption))
         return {"ok": True, "result": {"message_id": 777}}
+
+
+class Progress:
+    def __init__(self):
+        self.steps = []
+        self.notes = []
+        self.finished = None
+        self.failed = None
+
+    def step(self, text, action="typing"):
+        self.steps.append(text)
+
+    def note(self, text):
+        self.notes.append(text)
+
+    def set_why(self, why):
+        pass
+
+    def finish(self, text="Готово"):
+        self.finished = text
+
+    def fail(self, reason):
+        self.failed = reason
 
 
 class Runner:
@@ -129,6 +154,43 @@ def test_offer_button_remembers_request_through_the_real_router(tmp_path, monkey
     assert keyboard, "бот не предложил кнопку"
     labels = [b["text"] for row in keyboard[0]["inline_keyboard"] for b in row]
     assert "Видео" in labels
+
+
+def test_words_ask_for_the_post_are_recognised():
+    """«Пришли мне собранный пост» — это действие «прислать пост», а не «ролик»."""
+    assert intent.classify("Так теперь пришли мне собранный пост") == intent.ACTION_POST
+    assert intent.classify("покажи пост") == intent.ACTION_POST
+    assert intent.classify("пришли черновик") == intent.ACTION_POST
+
+
+def test_post_action_sends_built_post_with_media(tmp_path):
+    """«Пришли пост» — студия присылает собранный черновик с его медиа."""
+    video = tmp_path / "p1.mp4"
+    video.write_bytes(b"x" * 128)
+    record = {
+        "id": "p1",
+        "body_html": "<b>Локализация</b> (#4495)",
+        "media_path": str(video),
+        "message_id": 77,
+    }
+    bot = Bot()
+    progress = Progress()
+    assert jobs._refine_post(bot, tmp_path / "state.json", record, progress, 495039871) is True
+    media = [c for c in bot.calls if c[0] == "sendMedia"]
+    assert media, "пост не прислали"
+    assert media[0][1] == str(video)
+    assert "Локализация" in media[0][2]
+    assert progress.finished and "Готово" in progress.finished
+
+
+def test_post_action_sends_text_when_no_media(tmp_path):
+    """Без медиа пост присылается текстом."""
+    record = {"id": "p1", "body_html": "<b>Локализация</b> (#4495)", "message_id": 77}
+    bot = Bot()
+    progress = Progress()
+    assert jobs._refine_post(bot, tmp_path / "state.json", record, progress, 495039871) is True
+    texts = [c for c in bot.calls if c[0] == "sendMessage"]
+    assert texts and "Локализация" in texts[0][1]
 
 
 def test_wish_is_used_when_button_pressed_without_request(tmp_path):

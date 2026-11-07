@@ -53,6 +53,7 @@ ACTION_ANIMATE = "animate"  # «Анимация»: GIF ≤ 2 МБ (studio_motio
 ACTION_VIDEO = "video"  # «Видео»: MP4 ≤ 50 МБ по просьбе Шифу или кнопке-предложению моста (#4513)
 ACTION_FREEFORM = "edit"  # свободный текст Шифу к черновику (кнопкой — только «к какому черновику?»)
 ACTION_FILE = "file"  # файл от Шифу в черновик (кнопкой — только «к какому черновику?»)
+ACTION_POST = "post"  # «Пришли пост»: прислать собранный черновик (текст + медиа) в чат
 
 # Чем переделать пост по кнопке Шифу (решение Шифу, 06.11).
 REFINE_INSTRUCTIONS = {
@@ -63,6 +64,7 @@ REFINE_INSTRUCTIONS = {
 
 IDEA_ACTIONS = (ACTION_TAKE, ACTION_DISCUSS, ACTION_SKIP)
 REFINE_ACTIONS = (
+    ACTION_POST,
     ACTION_SHORTER,
     ACTION_SIMPLER,
     ACTION_ANGLE,
@@ -921,6 +923,7 @@ def reply_to_shifu(bot: StudioBot, state_path: Path, text: str, out=print) -> bo
 
 
 OFFER_LABELS = {
+    ACTION_POST: "Пришли пост",
     ACTION_SHORTER: "Короче",
     ACTION_SIMPLER: "Проще",
     ACTION_ANGLE: "Подача",

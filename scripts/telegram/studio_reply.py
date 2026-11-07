@@ -69,6 +69,7 @@ SYSTEM_PROMPT = (
     "предложи его полем offer (кнопку покажет код), а в тексте НЕ пиши «сделаю», «можно сделать», «запущу»: "
     "shorter — короче, simpler — проще, angle — другая подача, media — другая картинка, "
     "animate — анимация (GIF), video — ролик (MP4, например «до/после» по записям прогонов). "
+    "post — прислать собранный пост целиком: текст и медиа (ролик, картинку).\n"
     "Чего нет в этом списке, студия не умеет — так и скажи: «так пока не умею».\n"
     "Ответ — только текст ответа, без вступлений вроде «Конечно» и без markdown-заголовков. "
     "Без разметки: Telegram сам покажет текст как есть."
@@ -138,13 +139,14 @@ def build_prompt(message: str, idea: dict, state: dict) -> str:
     lines.append(f"Вопрос Шифу: {message}")
     lines.append("")
     lines.append(
-        'Верни СТРОГО JSON: {"answer": "текст ответа", "offer": "none|shorter|simpler|angle|media|animate|video"}'
+        'Верни СТРОГО JSON: {"answer": "текст ответа", '
+        '"offer": "none|shorter|simpler|angle|media|animate|video|post"}'
     )
     return "\n".join(lines)
 
 
 # Что модель может предложить кнопкой (узкая схема, ADR-0148): действие делает код, модель только предлагает.
-OFFERS = ("shorter", "simpler", "angle", "media", "animate", "video")
+OFFERS = ("shorter", "simpler", "angle", "media", "animate", "video", "post")
 
 
 def ask_model(prompt: str, timeout: int = 120, call=None) -> str:
