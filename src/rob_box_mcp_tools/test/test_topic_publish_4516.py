@@ -632,6 +632,9 @@ def test_unwritable_journal_does_not_hide_it_the_log_line_stays_and_the_result_s
 
     assert out.done and out.data["journal"] == "log_only"
     assert any("TOPIC_PUBLISH_AUDIT" in r.getMessage() for r in caplog.records)
+    assert out.text.endswith(tp.JOURNAL_WARNING) and out.data["summary"] == out.text and out.data["warning"]
+    warned = [r for r in caplog.records if r.levelname == "WARNING" and "журнал" in r.getMessage()]
+    assert len(warned) >= 2  # и сбой записи файла, и предупреждение о log_only
 
 
 def test_journal_row_is_in_the_container_log_too(tmp_path, caplog):

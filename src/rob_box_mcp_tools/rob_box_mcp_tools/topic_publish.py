@@ -48,6 +48,7 @@ JOURNAL_MAX_BYTES = 10 * 1024 * 1024
 JOURNAL_DIR_ENV = "ROB_BOX_ADMIN_AUDIT_DIR"
 JOURNAL_DIR_DEFAULT = "/var/log/rob_box_admin"
 JOURNAL_FILE = "topic_publish.jsonl"
+JOURNAL_WARNING = "Предупреждение: журнал в файл не записан, запись только в логе."
 
 # Категории запрета: ключ -> как о нём говорит фраза отказа.
 MOTION, DRIVES, NAV, SYSTEM = "motion", "drives", "nav", "system"
@@ -407,7 +408,7 @@ class Journal:
                     fh.write(line + "\n")
             return True
         except OSError as exc:
-            self._logger.error("topic_publish: журнал в файл не записан (%s): %s", self.path, exc)
+            self._logger.warning("topic_publish: журнал в файл не записан (%s): %s", self.path, exc)
             return False
 
     def _rotate(self) -> None:
@@ -563,6 +564,11 @@ class TopicPublishGuard:
             }
         )
         outcome.data["journal"] = "file" if written else "log_only"
+        if not written:
+            outcome.data["warning"] = JOURNAL_WARNING
+            outcome.text = f"{outcome.text} {JOURNAL_WARNING}"
+            outcome.data["summary"] = outcome.text
+            LOG.warning("topic_publish: %s (%s, %s)", JOURNAL_WARNING, ctx.get("topic"), outcome.reason or "ok")
         return outcome
 
     # --- проверки -------------------------------------------------------------------------------------------

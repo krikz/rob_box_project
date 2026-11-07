@@ -79,6 +79,7 @@ import random
 import time
 import uuid
 from dataclasses import dataclass, field, fields, replace
+from types import MappingProxyType
 from typing import (Any, Awaitable, Callable, Collection, Dict, FrozenSet, Iterable, List, Mapping, Optional, Protocol,
                     Sequence, Tuple)
 
@@ -1068,12 +1069,31 @@ def considered(engine: "TurnEngine", turn: "_Turn", cmd: Command, last: bool) ->
     состоянии без данных, когда вернуть команду модели уже нельзя (:func:`unnamed_without_retry`,
     :func:`unclaimed_without_retry`)."""
     log, snapshot = engine._log, pickup_parties.own_snapshot(engine.session.snapshot, turn.speaker)
+    cmd = unconfirmed_by_model(log, turn, cmd)
     cmd = unasked_aloud(log, turn, snapshot.agent, cmd)
     fresh = capped(log, turn, counted_in_full(log, turn, unreread(log, turn, unrepeated(log, turn, cmd))))
     fresh = switched_theme(log, snapshot, turn, fresh)  # просьба сменить тему сета - действием кода (#4347)
     names = foreign_keys(engine.log.window(exclude=turn.turn_id), turn, fresh, snapshot)
     fresh = unnamed_without_retry(log, turn, fresh, names, last)
     return unclaimed_without_retry(log, turn, fresh, snapshot.agent, last), names
+
+
+def unconfirmed_by_model(log: Any, turn: "_Turn", cmd: Command) -> Command:
+    """Вызовы МОДЕЛИ тулов с вопросом (``knowledge.TOOL_QUESTIONS``) идут без ключей подтверждения
+    (``ToolQuestion.confirm``): «да» человека не заменить словом модели, тул обязан спросить. Подтверждённый вызов
+    приходит только через ``tool_ask`` (``Asked.confirmed()``, код) и сюда не попадает. Решает таблица, не имена."""
+    confirm_keys: dict = {}
+    for (tool, _), question in kn.TOOL_QUESTIONS.items():
+        confirm_keys.setdefault(tool, set()).update(question.confirm)
+    fixed, changed = [], False
+    for call in cmd.actions:
+        keys = confirm_keys.get(call.tool, set()) & set(call.args)
+        if keys:
+            log.warning(f"{LOG_MARK} confirm от модели снят: {call.tool} {sorted(keys)} turn={turn.turn_id}")
+            call = replace(call, args=MappingProxyType({k: v for k, v in call.args.items() if k not in keys}))
+            changed = True
+        fixed.append(call)
+    return replace(cmd, actions=tuple(fixed)) if changed else cmd
 
 
 def aloud_asked(text: str) -> bool:
