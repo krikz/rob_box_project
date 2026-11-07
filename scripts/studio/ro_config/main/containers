@@ -13,3 +13,4 @@ perception
 nav2
 teleop
 proximity-guard
+followpath-watchdog

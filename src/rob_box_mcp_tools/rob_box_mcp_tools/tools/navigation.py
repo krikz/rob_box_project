@@ -44,6 +44,7 @@ from ..core.action_outcome import (
     nav_outcome,
     start_distance,
 )
+from rob_box_core.follow_path_halt import FOLLOW_PATH_CANCEL_SRV, NAV_CMD_VEL_TOPIC, ZERO_TWIST_REPEATS
 from rob_box_dialog import knowledge as kn
 from ..localization_watch import LocalizationWatch
 from ..map_pose import LEGACY_WAYPOINT_FRAME, MapPose
@@ -56,15 +57,15 @@ _CANCEL_ALL_TIMEOUT_SEC = 5.0
 # ``halt()`` отменяет только цель с handle. Запрос цели уже ушёл: controller_server принимает
 # её позже и ведёт робота, хотя NavigateToPose давно ABORTED. Поэтому при любом исходе ≠ успех
 # наш слой сам гасит контроллер: отмена всех целей ``follow_path`` + нулевой ``cmd_vel``.
-_FOLLOW_PATH_CANCEL_SRV = "/follow_path/_action/cancel_goal"
+_FOLLOW_PATH_CANCEL_SRV = FOLLOW_PATH_CANCEL_SRV
 _FOLLOW_PATH_CANCEL_LABEL = "controller_server follow_path cancel_goal"
-_NAV_CMD_VEL_TOPIC = "/cmd_vel"  # выход controller_server → twist_mux (вход navigation, priority 10)
+_NAV_CMD_VEL_TOPIC = NAV_CMD_VEL_TOPIC  # выход controller_server → twist_mux (вход navigation, priority 10)
 _HALT_CANCEL_TIMEOUT_SEC = 2.0
 # Второй раунд ловит позднее подтверждение: запрос FollowPath мог дойти до сервера уже после
 # нашей первой отмены (отмена «всех» гасит только цели, принятые к моменту отмены).
 _HALT_ROUNDS_ON_FAILURE = 2
 _HALT_ROUND_GAP_SEC = 1.0
-_ZERO_TWIST_REPEATS = 3
+_ZERO_TWIST_REPEATS = ZERO_TWIST_REPEATS
 
 
 def _nav_failure(kind: str, status: Optional[int] = None) -> MCPToolResult:
