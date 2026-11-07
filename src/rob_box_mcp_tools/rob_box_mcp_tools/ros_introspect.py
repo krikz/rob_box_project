@@ -43,13 +43,36 @@ BULK_TYPE_MARKERS: Tuple[str, ...] = (
     "SpatialDetection",
 )
 #: Причины отказа тулов чтения (машинные ключи; текст для человека строит код).
-NO_SUCH_TOPIC, NO_PUBLISHERS, NO_MESSAGES, ROS_UNAVAILABLE, BAD_TOPIC = (
+NO_SUCH_TOPIC, NO_PUBLISHERS, NO_MESSAGES, ROS_UNAVAILABLE, BAD_TOPIC, TYPE_UNAVAILABLE = (
     "no_such_topic",
     "no_publishers",
     "no_messages",
     "ros_unavailable",
     "bad_topic",
+    "type_unavailable",
 )
+
+
+class TypeUnavailable(Exception):
+    """Пакета с типом сообщения нет в образе этого узла (``ModuleNotFoundError: control_msgs`` и подобное)."""
+
+    def __init__(self, type_name: str) -> None:
+        super().__init__(type_name)
+        self.type_name = type_name
+
+    def message(self) -> str:
+        return f"Тип {self.type_name} не установлен на этом узле: читать такой топик здесь нечем."
+
+
+def load_message_type(type_name: str) -> Any:
+    """Класс сообщения по имени типа; нет пакета с типом - :class:`TypeUnavailable`, а не сырое исключение."""
+    from rosidl_runtime_py.utilities import get_message  # noqa: PLC0415 - rclpy только в рантайме ноды
+
+    try:
+        return get_message(type_name)
+    except (ImportError, AttributeError, LookupError, ValueError) as exc:
+        raise TypeUnavailable(type_name) from exc
+
 
 _TOPIC_RE = re.compile(r"^/[A-Za-z0-9_/]+$")
 
@@ -339,7 +362,6 @@ class RosProbe:
         размер (замер ``bw`` картинок не копит гигабайты в памяти). Кадр крупнее :data:`BULK_MESSAGE_BYTES` байты не
         хранит ни при каком ``keep_raw``: содержимое такого сообщения в ответ не идёт."""
         from rclpy.qos import qos_profile_sensor_data  # noqa: PLC0415 - rclpy только в рантайме ноды
-        from rosidl_runtime_py.utilities import get_message  # noqa: PLC0415
 
         samples: List[Sample] = []
         done = threading.Event()
@@ -351,8 +373,9 @@ class RosProbe:
             if len(samples) >= count:
                 done.set()
 
+        msg_type = load_message_type(type_name)
         qos = self._publisher_qos(topic) or qos_profile_sensor_data
-        sub = self._node.create_subscription(get_message(type_name), topic, on_raw, qos, raw=True)
+        sub = self._node.create_subscription(msg_type, topic, on_raw, qos, raw=True)
         try:
             done.wait(timeout=timeout_s)
         finally:
@@ -364,17 +387,15 @@ class RosProbe:
         """Сообщение текстом (YAML); битое - честная пометка вместо молчания."""
         from rclpy.serialization import deserialize_message  # noqa: PLC0415
         from rosidl_runtime_py import message_to_yaml  # noqa: PLC0415
-        from rosidl_runtime_py.utilities import get_message  # noqa: PLC0415
 
         try:
-            return message_to_yaml(deserialize_message(raw, get_message(type_name))).strip()
+            return message_to_yaml(deserialize_message(raw, load_message_type(type_name))).strip()
         except Exception as exc:  # noqa: BLE001
             return f"[не удалось разобрать сообщение: {type(exc).__name__}]"
 
     def read_joint_states(self, timeout_s: float = 2.0) -> Optional[Tuple[Sequence[str], Sequence[Any]]]:
         """Одно сообщение ``/dynamic_joint_states`` -> ``(joint_names, interface_values)`` или ``None``."""
         from rclpy.serialization import deserialize_message  # noqa: PLC0415
-        from rosidl_runtime_py.utilities import get_message  # noqa: PLC0415
 
         type_name = self.topic_type(JOINT_STATES_TOPIC)
         if type_name is None:
@@ -382,5 +403,5 @@ class RosProbe:
         samples = self.collect(JOINT_STATES_TOPIC, type_name, 1, timeout_s)
         if not samples:
             return None
-        msg = deserialize_message(samples[0].raw, get_message(type_name))
+        msg = deserialize_message(samples[0].raw, load_message_type(type_name))
         return list(msg.joint_names), list(msg.interface_values)

@@ -37,6 +37,11 @@ def _probe_or_none(node: Any) -> Optional[ri.RosProbe]:
     return probe if probe.available() else None
 
 
+def _type_refusal(exc: ri.TypeUnavailable) -> MCPToolResult:
+    """Типа сообщения нет в образе узла - честный отказ вместо исключения (live-проверка #4516: ``control_msgs``)."""
+    return _rejected(ri.TYPE_UNAVAILABLE, exc.message(), type=exc.type_name)
+
+
 _NO_ROS = "ROS на этом узле недоступен: ноды с rclpy нет, читать граф нечем."
 
 
@@ -183,7 +188,10 @@ class TopicEchoTool(MCPTool):
             return refusal
         n = ri.clamp_int(count, 1, ri.ECHO_COUNT_MAX)
         wait = ri.clamp_seconds(timeout_s, 5.0, ri.ECHO_TIMEOUT_MAX_S)
-        samples = probe.collect(topic, type_name, n, wait)
+        try:
+            samples = probe.collect(topic, type_name, n, wait)
+        except ri.TypeUnavailable as exc:
+            return _type_refusal(exc)
         if not samples:
             return _rejected(
                 ri.NO_MESSAGES,
@@ -303,7 +311,10 @@ class TopicStatsTool(MCPTool):
         if refusal is not None:
             return refusal
         window = ri.clamp_seconds(window_s, ri.RATE_WINDOW_DEFAULT_S, ri.RATE_WINDOW_MAX_S)
-        samples = probe.collect(topic, type_name, 1_000_000, window, keep_raw=False)
+        try:
+            samples = probe.collect(topic, type_name, 1_000_000, window, keep_raw=False)
+        except ri.TypeUnavailable as exc:
+            return _type_refusal(exc)
         stats = ri.RateMeter([(s.at, s.size) for s in samples]).summary(window)
         return MCPToolResult(
             success=True,
@@ -355,7 +366,10 @@ class VescTelemetryTool(MCPTool):
         probe = _probe_or_none(self.node)
         if probe is None:
             return _rejected(ri.ROS_UNAVAILABLE, _NO_ROS)
-        got = probe.read_joint_states()
+        try:
+            got = probe.read_joint_states()
+        except ri.TypeUnavailable as exc:
+            return _type_refusal(exc)
         if got is None:
             return _rejected(
                 ri.NO_MESSAGES,
