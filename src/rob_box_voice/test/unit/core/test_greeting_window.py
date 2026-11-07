@@ -62,10 +62,15 @@ def test_hello_5s_after_the_greeting_is_a_turn_without_wake():
     assert _decide(clock, node, "привет", 5.0) == Addressed("привет", address.GREETING_REPLY)
 
 
-def test_foreign_phrase_with_greeted_face_out_of_frame_goes_to_backlog():
+def test_4509_phrase_with_greeted_face_out_of_frame_is_a_turn_too():
+    """#4509 (Шифу 06.11): лицо в кадре не условие — ответ без лица приветствованного («faces=0») тоже ход."""
     clock = _Clock()
     node = _greeted(clock)
-    assert _decide(clock, node, FOREIGN, 5.0, faces=("ольга",)) == NotAddressed(address.NO_WAKE)
+    assert _decide(clock, node, FOREIGN, 5.0, faces=("ольга",)) == Addressed(FOREIGN, address.GREETING_REPLY)
+    clock.t -= 5.0
+    node = _greeted(clock)
+    said = "Я не забыл про тебя, говорю."
+    assert _decide(clock, node, said, 5.0) == Addressed(said, address.GREETING_REPLY)
 
 
 def test_same_phrase_with_greeted_face_in_frame_is_a_turn():
@@ -81,14 +86,15 @@ def test_after_20s_it_is_backlog_even_for_hello():
     assert node._session.snapshot.top("GreetingReply") is None, "кадр истёк и снят"
 
 
-def test_window_closed_while_greeting_is_still_speaking_and_in_mic_grace():
+def test_window_closed_while_greeting_is_still_speaking_and_open_from_its_end():
+    """Пока приветствие звучит — окна нет. С его конца — есть, и в грейсе микрофона тоже (#4509: ответ сразу после
+    приветствия терялся; эхо приветствия в грейсе отсеивает ``stt_node`` словами по событию окна ответа)."""
     clock = _Clock()
     node = _node(clock)
     gw.open_window(node, "p1", "Денис", "g1")
     assert _decide(clock, node, "привет", 3.0) == NotAddressed(address.NO_WAKE)  # речь не договорена
     gw.on_speech_event(node, _FINISHED, "g1", "personality")
-    assert _decide(clock, node, "привет", 1.0) == NotAddressed(address.NO_WAKE)  # микрофон глух после речи
-    assert _decide(clock, node, "привет", 2.0) == Addressed("привет", address.GREETING_REPLY)
+    assert _decide(clock, node, "привет", 1.0) == Addressed("привет", address.GREETING_REPLY)
 
 
 def test_first_addressed_phrase_takes_the_window_and_logs():

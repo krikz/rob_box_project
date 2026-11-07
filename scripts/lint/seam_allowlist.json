@@ -1,6 +1,7 @@
 {
   "version": 1,
   "publishers_without_local_subscriber": {
+    "/diff_drive_controller/cmd_vel_unstamped": "Подписчик — diff_drive_controller (ros2_controllers, внешний C++), вход моторов; на роботе в него пишет twist_mux (docker/main/scripts/twist_mux/start_twist_mux.sh). Публикует ещё замер привода сима src/rob_box_sim/rob_box_sim/turn_calibration.py (#4495): только в контейнере gazebo, где контроллер — Gazebo.",
     "/cmd_vel_voice": "Потребитель — twist_mux (внешний скомпилированный ROS2-узел, не Python/не в src/), арбитрирует источники скорости. Конфиг: docker/main/config/twist_mux/twist_mux.yaml.",
     "/cmd_vel_web": "Потребитель — twist_mux, см. /cmd_vel_voice. Конфиг: docker/main/config/twist_mux/twist_mux.yaml (topic: cmd_vel_web).",
     "cmd_vel_emergency": "Потребитель — twist_mux, см. /cmd_vel_voice. Конфиг: docker/main/config/twist_mux/twist_mux.yaml (topic: cmd_vel_emergency).",
@@ -31,6 +32,7 @@
     "/scan": "Публикует lidar-драйвер (lslidar, внешний пакет, не в src/). Конфиг: docker/main/config/lslidar/lsx10_custom.yaml.",
     "/cmd_vel": "Публикуют Nav2 controller_server и behavior_server (внешний C++-стек, не в src/), конфиг docker/main/config/nav2/nav2_params.yaml. Подписчики: twist_mux (внешний) и стенд сима src/rob_box_sim/rob_box_sim/nav_bench.py (метрика колебаний, шаг 4 docs/research/2026-11-04-gazebo-sim-navigation.md).",
     "/sim/ground_truth/odom": "Только сим: публикует ros_gz_bridge (внешний C++) из плагина Gazebo OdometryPublisher, мост src/rob_box_sim/config/bridge.yaml. Подписчик — стенд сима src/rob_box_sim/rob_box_sim/nav_bench.py (истинная поза для метрик).",
+    "/diff_drive_controller/odom": "Только сим и робот: публикует diff_drive_controller (ros2_controllers, внешний C++; на роботе — ros2-control, в симе — gz_ros2_control), конфиг docker/main/config/controllers/controller_manager.yaml. Подписчик — замер привода сима src/rob_box_sim/rob_box_sim/turn_calibration.py (#4495).",
     "/cmd_vel_nav": "Публикует Nav2 controller_server (внешний C++), когда NAV2_SMOOTH_CMD_VEL=true переназначает его cmd_vel → cmd_vel_nav (docker/main/scripts/nav2/start_nav2_direct.sh; включает профиль docker/sim, на роботе выключено). Подписчики: velocity_smoother (внешний) и стенд сима src/rob_box_sim/rob_box_sim/nav_bench.py (колебания до smoother-а, шаг 6).",
     "/camera/camera/color/image_raw": "ADR-0104 (issue #2531): публикует OAK-D камера в реальном launch (oakd_with_apriltag.launch.py, namespace='camera', i_rs_compat:true → rgb→color). Подписка в новом шве «Взгляд» (src/rob_box_perception/rob_box_perception/gaze.py:OakDSource). Заменяет старый /oak/rgb/image_raw/compressed, который не публикуется в текущей конфигурации (i_publish_compressed:false).",
     "/camera/camera/color/image_raw/compressed": "Публикует камера-контейнер oak-d (внешний драйвер, не Python/не в src/). Используется quest_node.py:1918 и telegram_node.py:101 (rear-camera feed в шлем и Telegram). См. docker/vision/scripts/monitor_camera_startup.sh, realtime_monitor.sh.",
@@ -39,8 +41,11 @@
     "/camera/camera/depth/image_rect_raw/compressedDepth": "Публикует depth-камера oak-d (внешний драйвер depthai_ros, не Python/не в src/). Используется quest_node для проброса кадров глубины в WS-клиент Quest (issue #2138.B fix #2138.B: camera_oak_depth был объявлен как CAMERA_DIRECT через depthai SDK в rob-box-quest, но depthai в этом образе нет — capture-поток падал с 'thread exits', панель глубины в шлеме была пустой. Берём кадры напрямую из ROS-топика, как ceiling и rear). Тот же топик уже используется telegram_node:101 (camera_depth_topic).",
     "/camera/camera/depth/image_rect_raw": "Публикует внешний драйвер depthai_ros_driver в контейнере oak-d (C++, не в src/): выровненная по RGB глубина 16UC1 (мм), конфиг docker/vision/config/oak-d/oak_d_config.yaml (i_rs_compat:true → stereo→depth, i_align_depth:true, 1280x720). Подписчик — шов «Взгляд» gaze.OakDSource (src/rob_box_perception/rob_box_perception/gaze.py), ADR-0138 §2.4. Тот же издатель, что у /camera/camera/depth/image_rect_raw/compressedDepth (image_transport).",
     "/camera/camera/color/camera_info": "Публикует внешний драйвер depthai_ros_driver в контейнере oak-d (C++, не в src/): intrinsics RGB-камеры, конфиг docker/vision/config/oak-d/oak_d_config.yaml (i_rs_compat:true → rgb→color). Подписчик — шов «Взгляд» gaze.OakDSource (src/rob_box_perception/rob_box_perception/gaze.py), ADR-0138 §2.4; тот же топик remap-ится в apriltag_node (docker/vision/config/oak-d/launch/oakd_with_apriltag.launch.py).",
+    "/navigate_to_pose/_action/status": "Публикует bt_navigator (внешний Nav2, C++, не в src/): статусы целей NavigateToPose (action_msgs/GoalStatusArray). Подписчик — сторож сирот FollowPath (src/rob_box_teleop/rob_box_teleop/followpath_watchdog_node.py, #4458).",
+    "/follow_path/_action/status": "Публикует controller_server (внешний Nav2, C++, не в src/): статусы целей FollowPath, см. /navigate_to_pose/_action/status. Подписчик — сторож сирот FollowPath (#4458).",
     "/rtabmap/grid_prob_map": "Публикует rtabmap_ros (внешний ROS2-пакет SLAM, не в src/).",
     "/rtabmap/localization_pose": "Публикует rtabmap_ros, см. /rtabmap/grid_prob_map.",
+    "/rtabmap/info": "Публикует rtabmap_ros (узел rtabmap, статистика rtabmap_msgs/Info), см. /rtabmap/grid_prob_map. Подписчик — сторож локализации навигационных тулов (src/rob_box_mcp_tools/rob_box_mcp_tools/localization_watch.py, #4495): Loop/MapToOdom_* на время поездки.",
     "/rtabmap/map": "Публикует rtabmap_ros, см. /rtabmap/grid_prob_map.",
     "/plan": "Публикует nav2 planner_server (внешний пакет, не в src/) — глобальный план, топик `plan` без namespace. Запуск: docker/main/scripts/nav2/start_nav2_direct.sh. Потребитель — quest_node nav_path (issue #3151).",
     "/rosout": "Встроенный топик логов ROS2 — публикуется рантаймом rclpy/rclcpp у КАЖДОГО узла автоматически, никогда через явный create_publisher(...). Подписчики (health_monitor.py, context_aggregator_node.py) легитимны.",
@@ -48,5 +53,7 @@
     "/device/snapshot": "Публикует ESP32 sensor hub (прошивка/железо, вне Python-скана src/; моста-агента больше нет, ADR-0159 §1.4). Единственная попытка ROS-моста в этом репо (context_aggregator_node.py, DeviceSnapshot) закомментирована — не источник, просто мёртвый код рядом. Реальные потребители: quest_node.py (battery JSON) и rob_box_supervisor/arbiter_node.py.",
     "~/scene": "Отладочный вход face_node (src/rob_box_animations/rob_box_animations/face_node.py): оператор показывает сцену руками — `ros2 topic pub --once /face_node/scene std_msgs/msg/String \"{data: 'happy:5'}\"`. Писателя в коде нет и не будет."
   },
-  "action_tools_without_event_source": {}
+  "action_tools_without_event_source": {
+    "topic_publish": "Публикация синхронная: сам тул (rob_box_mcp_tools/topic_publish.py) публикует и в том же вызове читает у издателя число сопоставленных подписчиков, фразу «Опубликовал … подписчиков N» строит по этому факту. Отдельного владельца со своим событием нет, ждать нечего (#4516)."
+  }
 }

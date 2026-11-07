@@ -126,3 +126,27 @@ def test_hil_points_gz_ros2_control_at_sim_rsp():
 def test_real_robot_urdf_ignores_hil_arg():
     golden = _strip_banner(GOLDEN.read_text(encoding="utf-8"))
     assert _xacro("sim_robot_param_node:=/sim/robot_state_publisher") == golden
+
+
+SIM_DRIVE_YAML = "/ws/install/rob_box_sim/share/rob_box_sim/config/sim_drive.yaml"
+
+
+def test_sim_overlays_drive_yaml_after_robot_controllers(sim_urdf):
+    """#4495: поверх боевого controller_manager.yaml — колея сима; порядок важен (позже — сильнее)."""
+    gz_plugin = sim_urdf.find("./gazebo/plugin[@filename='gz_ros2_control-system']")
+    assert [p.text for p in gz_plugin.findall("parameters")] == ["/tmp/cm.yaml", SIM_DRIVE_YAML]
+    src = PKG.parent / "rob_box_sim" / "config" / "sim_drive.yaml"
+    assert src.is_file(), "sim_drive.yaml должен лежать в rob_box_sim/config (ставится в share)"
+
+
+def test_sim_wheel_friction_follows_wheel_axis(sim_urdf):
+    """#4495: без fdir1 пирамида трения привязана к миру и разворот зависит от курса."""
+    wheels = [g for g in sim_urdf.findall("gazebo") if (g.get("reference") or "").endswith("_wheel")]
+    assert len(wheels) == 4
+    for g in wheels:
+        assert g.findtext("fdir1") == "0 0 1", g.get("reference")
+
+
+def test_real_robot_urdf_ignores_sim_drive_arg():
+    golden = _strip_banner(GOLDEN.read_text(encoding="utf-8"))
+    assert _xacro("sim_drive_yaml:=/tmp/x.yaml") == golden

@@ -14,7 +14,7 @@
 #   3b. Sound: снапшот боевого `SELECT * FROM maps` (только чтение) в HIL_MAPS_SNAPSHOT;
 #      voice-assistant пересоздаётся с docker/sound/compose.hil.yaml — реестр карт и точек
 #      (maps/waypoints) в отдельном файле HIL_WAYPOINT_DB, остальная память боевая (#4392);
-#   4. Main: robot-state-publisher, twist-mux, proximity-guard, rtabmap, imu-filter, nav2 пересоздаются
+#   4. Main: robot-state-publisher, twist-mux, proximity-guard, followpath-watchdog, rtabmap, imu-filter, nav2 пересоздаются
 #      с USE_SIM_TIME=true и картой HIL_MAPS_DIR (docker/main/compose.hil.yaml, --no-deps);
 #   5. песочница: zenoh-router + gazebo из docker/sim/compose.hil.yaml под ID робота.
 #      В контейнере gazebo сторож (docker/sim/hil_run.sh): при живом /controller_manager
@@ -44,7 +44,7 @@ SSH_OPTS=(-o BatchMode=yes -o ConnectTimeout=10 -o ServerAliveInterval=5 -o Serv
 
 MAIN_STOP=(ros2-control lslidar)
 VISION_STOP=(oak-d ceiling-camera)
-MAIN_SIM_TIME=(robot-state-publisher twist-mux proximity-guard rtabmap imu-filter nav2)
+MAIN_SIM_TIME=(robot-state-publisher twist-mux proximity-guard followpath-watchdog rtabmap imu-filter nav2)
 SIM_SERVICES=(zenoh-router gazebo)
 # Сервис и контейнер Sound Pi с mcp_server — владельцем реестра карт и точек (WaypointStore).
 SOUND_SWITCH=(voice-assistant)

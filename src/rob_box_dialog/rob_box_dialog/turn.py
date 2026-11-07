@@ -79,6 +79,7 @@ import random
 import time
 import uuid
 from dataclasses import dataclass, field, fields, replace
+from types import MappingProxyType
 from typing import (Any, Awaitable, Callable, Collection, Dict, FrozenSet, Iterable, List, Mapping, Optional, Protocol,
                     Sequence, Tuple)
 
@@ -96,7 +97,7 @@ from rob_box_dialog import theme_switch
 from rob_box_dialog import phrases
 from rob_box_dialog import tool_ask
 from rob_box_dialog import track_ref
-from rob_box_dialog.address import BARE_WAKE, Addressed
+from rob_box_dialog.address import GREETING_WAKE, WORDLESS, Addressed
 from rob_box_dialog.agents import agent_spec, allows_tier1, tools_for
 from rob_box_dialog.command import (Command, Expression, Form, Invalid, Performance, Result, ToolCall, current_form,
                                     explain, fit_speech, loud_actions, turn_form)
@@ -113,7 +114,7 @@ from rob_box_dialog.respond import (ActionResult, asks, audible, classed, failed
 from rob_box_dialog.session import Session, SessionSnapshot, SpeakerRef
 from rob_box_dialog.speaker_adapter import asks_recognized, known_voice_registers, recognition_reply, speaker_block
 from rob_box_dialog.window_reset import WindowGuard, reset_if_idle, reset_window
-from rob_box_dialog.words import asks_question, asks_to_listen, music_stop_claimed, same_stop_rest
+from rob_box_dialog.words import asks_question, asks_to_listen, has_form, music_stop_claimed, same_stop_rest
 from rob_box_dialog.tools_view import (available_tools, catalogs_asked, music_asked, needs_words, robot_asked,
                                        show_asked, voice_asked, voice_named)
 from rob_box_dialog.turn_log import (PERFORM_STARTED, TOOL, USER, TurnAggregate, TurnLog, phrase_label, results_of,
@@ -259,6 +260,7 @@ class _Turn:
     unvoiced: Tuple[ActionResult, ...] = ()  # исходы действий хода, о которых код ещё не сказал (Tier-1 стоп молчит)
     seen: Tuple[Mapping[str, Any], ...] = ()  # ``recent_actions`` снимка хода: данные, что модель видела до хода
     read: Tuple[ToolCall, ...] = ()  # исполненные в ходе вызовы ``query``: повтор не исполняется (:func:`unreread`)
+    called: Tuple[str, ...] = ()  # тулы, вызванные в ходе: ``faces`` переносится на следующий ход (#4505)
     capped: Tuple[ToolCall, ...] = ()  # вызовы сверх ``ACTIONS_MAX``, не исполненные кодом (:func:`capped`, #4391)
     #: Подхват: собеседник хода по правам — автор фразы (``pickup_parties.pickup_speaker``); ``None`` — сессии.
     speaker: Optional[SpeakerRef] = None
@@ -309,7 +311,7 @@ def user_text(turn: "_Turn") -> str:
 def log_pickup(log: Any, addressed: Addressed, turn: "_Turn") -> None:
     """Голое «робот»: строка подхвата — сколько фраз, чьи, в каком ходе (``n=0`` — бэклог пуст или фразы старше
     окна, ход — только рефлекс)."""
-    if addressed.pickup or addressed.source == BARE_WAKE:
+    if addressed.pickup or addressed.source in WORDLESS:
         speakers = ",".join(who for who, _ in turn.heard) or "-"
         log.info(f"{PICKUP_MARK} n={len(turn.heard)} speakers={speakers} turn={turn.turn_id}")
 
@@ -825,6 +827,19 @@ def answer_listen_only(engine: "TurnEngine", turn: "_Turn") -> bool:
     return True
 
 
+def wordless(engine: "TurnEngine", turn: "_Turn") -> bool:
+    """Ход без слов человека — модели нечего отвечать, ход кончается без LLM. Голое «робот» — рефлекс (лицо, кольцо);
+    голое «робот» в окне ответа на приветствие (``GREETING_WAKE``, #4509) — ещё и «Слушаю.» кодом: человека позвал
+    робот, молча закрытый ход оставлял его без ответа. ``False`` — у хода есть текст, он идёт дальше."""
+    if turn.source == GREETING_WAKE:
+        turn.stage, turn.reason = "done", kn.LISTEN_ONLY_PHRASE
+        engine._log.info(f"{LOG_MARK} голое «робот» в окне ответа на приветствие → «слушаю» кодом, LLM не зовётся "
+                         f"turn={turn.turn_id}")
+        engine._say(turn, phrases.text(kn.LISTEN_ONLY_PHRASE))
+        return True
+    return turn.source in WORDLESS or not turn.text
+
+
 async def understand(engine: "TurnEngine", turn: "_Turn", snap: SessionSnapshot) -> None:
     """Ход к LLM (``TurnEngine._understand``), если его не проглотила тишина (:func:`hold_silence`) и на него не ответил
     код (:func:`answer_listen_only`, :func:`answer_recognized`), — в форме команды хода (:func:`command_form`):
@@ -1054,6 +1069,8 @@ def considered(engine: "TurnEngine", turn: "_Turn", cmd: Command, last: bool) ->
     состоянии без данных, когда вернуть команду модели уже нельзя (:func:`unnamed_without_retry`,
     :func:`unclaimed_without_retry`)."""
     log, snapshot = engine._log, pickup_parties.own_snapshot(engine.session.snapshot, turn.speaker)
+    cmd = unconfirmed_by_model(log, turn, cmd)
+    cmd = unasked_aloud(log, turn, snapshot.agent, cmd)
     fresh = capped(log, turn, counted_in_full(log, turn, unreread(log, turn, unrepeated(log, turn, cmd))))
     fresh = switched_theme(log, snapshot, turn, fresh)  # просьба сменить тему сета - действием кода (#4347)
     names = foreign_keys(engine.log.window(exclude=turn.turn_id), turn, fresh, snapshot)
@@ -1061,18 +1078,72 @@ def considered(engine: "TurnEngine", turn: "_Turn", cmd: Command, last: bool) ->
     return unclaimed_without_retry(log, turn, fresh, snapshot.agent, last), names
 
 
+def unconfirmed_by_model(log: Any, turn: "_Turn", cmd: Command) -> Command:
+    """Вызовы МОДЕЛИ тулов с вопросом (``knowledge.TOOL_QUESTIONS``) идут без ключей подтверждения
+    (``ToolQuestion.confirm``): «да» человека не заменить словом модели, тул обязан спросить. Подтверждённый вызов
+    приходит только через ``tool_ask`` (``Asked.confirmed()``, код) и сюда не попадает. Решает таблица, не имена."""
+    confirm_keys: dict = {}
+    for (tool, _), question in kn.TOOL_QUESTIONS.items():
+        confirm_keys.setdefault(tool, set()).update(question.confirm)
+    fixed, changed = [], False
+    for call in cmd.actions:
+        keys = confirm_keys.get(call.tool, set()) & set(call.args)
+        if keys:
+            log.warning(f"{LOG_MARK} confirm от модели снят: {call.tool} {sorted(keys)} turn={turn.turn_id}")
+            call = replace(call, args=MappingProxyType({k: v for k, v in call.args.items() if k not in keys}))
+            changed = True
+        fixed.append(call)
+    return replace(cmd, actions=tuple(fixed)) if changed else cmd
+
+
+def aloud_asked(text: str) -> bool:
+    """Человек явно просил озвучить («скажи вслух», «озвучь», «произнеси», «через робота»): ``tools_view.robot_asked``
+    плюс :data:`knowledge.CHAT_ALOUD_EXTRA_FORMS`. Решает слова человека, не модель."""
+    return robot_asked(text) or has_form(text or "", kn.CHAT_ALOUD_EXTRA_FORMS)
+
+
+def unasked_aloud(log: Any, turn: "_Turn", agent: str, cmd: Command) -> Command:
+    """Чат Telegram: ``say_aloud`` исполняется только при явной просьбе озвучить (:func:`aloud_asked`, #4505): ответ
+    в чат - текстом, динамики робота молчат. Иначе код отбрасывает действие и пишет причину в лог. Подхват бэклога и
+    другие агенты не затрагиваются."""
+    if agent != kn.TEXT_CHANNEL_AGENT or turn.pickup or aloud_asked(turn.text):
+        return cmd
+    dropped = tuple(a for a in cmd.actions if a.tool == kn.ALOUD_TOOL)
+    if not dropped:
+        return cmd
+    log.info(f"{LOG_MARK} {kn.ALOUD_TOOL} отброшен: человек не просил озвучить (ответ - текстом в чат) "
+             f"turn={turn.turn_id}")
+    return replace(cmd, actions=tuple(a for a in cmd.actions if a not in dropped))
+
+
 def capped(log: Any, turn: "_Turn", cmd: Command) -> Command:
     """Команда не больше ``knowledge.ACTIONS_MAX`` действий: первые по порядку модели исполняются, остальные - нет, и
     код их запоминает в ходе (``_Turn.capped``), чтобы назвать (:func:`capped_phrase`), а не выбросить молча (#4391,
     HIL 04.11: четвёртая точка из «удали четыре точки» осталась, а прозвучало «Готово.»). Принять модель может больше
     (``ACTIONS_ACCEPT_MAX``): потолок исполнения решает код здесь, а не модель урезанием просьбы."""
-    if len(cmd.actions) <= kn.ACTIONS_MAX:
+    kept, rest, photos = [], [], 0
+    for call in cmd.actions:  # снимки лиц - свой потолок ``PHOTOS_MAX`` (#4505), остальное - ``ACTIONS_MAX``
+        photo = call.tool == kn.PHOTO_TOOL
+        if photo and photos < kn.PHOTOS_MAX:
+            photos += 1
+            kept.append(call)
+        elif not photo and len(kept) - photos < kn.ACTIONS_MAX:
+            kept.append(call)
+        else:
+            rest.append(call)
+    if not rest:
         return cmd
-    kept, rest = cmd.actions[:kn.ACTIONS_MAX], cmd.actions[kn.ACTIONS_MAX:]
-    turn.capped += rest
-    log.warning(f"{LOG_MARK} действий {len(cmd.actions)} > {kn.ACTIONS_MAX}: не исполнены "
-                f"{[(a.tool, dict(a.args)) for a in rest]} turn={turn.turn_id}")
+    turn.capped += tuple(rest)
+    log.warning(f"{LOG_MARK} действий {len(cmd.actions)} сверх потолка ({kn.ACTIONS_MAX}, снимков {kn.PHOTOS_MAX}): "
+                f"не исполнены {[(a.tool, dict(a.args)) for a in rest]} turn={turn.turn_id}")
+    kept = tuple(kept)
     return replace(cmd, actions=kept)
+
+
+def carried_groups(called: Sequence[str]) -> Tuple[str, ...]:
+    """Группы тулов, что переходят на следующий ход: ``faces`` - если в этом ходе звали её тулы. «Ну пришли их», «а
+    ещё?» слов группы не содержат, а продолжают разговор про лица (#4505); решает код по вызванным тулам, не слова."""
+    return (kn.FACES_GROUP,) if set(called) & set(kn.TOOL_GROUPS[kn.FACES_GROUP].tools) else ()
 
 
 def capped_phrase(turn: "_Turn") -> str:
@@ -2023,6 +2094,8 @@ class TurnEngine:
         self._generated = track_ref.GeneratedTopic(clock)  # тема последнего заказа генерации: «песня про енота» (n707)
         #: Правки звучащего счёта (:func:`count_edit`): ``speech_id`` старого счёта → (ход, правка, голос, эмоция).
         self._count_edits: Dict[str, Tuple[Any, str, Optional[str], Optional[str]]] = {}
+        #: Источник прошлого хода и группы, что переносятся на следующий ход того же источника (:func:`carried_groups`).
+        self._carry: Tuple[str, Tuple[str, ...]] = ("", ())
 
     def reset_window(self, reason: str) -> None:
         """Сброс окна по смене режима e2e (#4258); хост зовёт в потоке цикла ходов."""
@@ -2047,7 +2120,7 @@ class TurnEngine:
         log_stt_fixes(self._log, addressed, turn)
         self._event("user", turn, text=turn.text, data={"source": turn.source})
         self._ports.stage(turn.turn_id, turn.epoch, "addressed", "started", source=turn.source)
-        if addressed.source == BARE_WAKE or not turn.text:
+        if wordless(self, turn):
             return self._finish(turn)
         work = turn_work(self, turn, snap)
         try:
@@ -2124,7 +2197,9 @@ class TurnEngine:
         """Команда модели: ≤ ``LLM_QUERY_ITERATIONS_MAX`` итераций ``query``, затем действия и/или речь; последняя без
         слов после запроса - ещё ≤ ``SPEECH_PUSHES_MAX`` вызовов за словами (:func:`_push_for_words`)."""
         self._ports.stage(turn.turn_id, turn.epoch, "thinking", "started")
-        offered = available_tools(snap, None, snap.agent, turn.text, asked=tool_ask.asked_tools(self.session))
+        carry = self._carry[1] if self._carry[0] == turn.source else ()
+        offered = available_tools(snap, None, snap.agent, turn.text, carry=carry,
+                                  asked=tool_ask.asked_tools(self.session))
         tools = form_tools(offered, current_form(), snap.agent)
         messages: List[Any] = self._messages(turn, snap)
         for iteration in range(kn.LLM_QUERY_ITERATIONS_MAX + 1 + kn.SPEECH_PUSHES_MAX):  # + повторы за словами
@@ -2210,6 +2285,7 @@ class TurnEngine:
         actions = track_ref.bind_last_generated(actions, turn.text, self._generated.stems())
         cls = kn.call_class(actions[0].tool, actions[0].args)
         turn.waiting = cls
+        turn.called += tuple(a.tool for a in actions)
         turn.replacing = orders_over_music(self.session.snapshot, actions)
         self._ports.stage(turn.turn_id, turn.epoch, "executing", "started", cls=cls)
         # свой срок класса целиком (исполнитель закроет честным timeout), а не остаток хода после LLM и его повтора
@@ -2284,6 +2360,7 @@ class TurnEngine:
         self._event("turn", turn, data={**{k: v for k, v in vars(agg).items() if k != "turn_id"},
                                         "reason": turn.reason, "source": turn.source})
         self._window.touch(self._clock())  # долгий ход (выступление) пауза не считается
+        self._carry = (turn.source, carried_groups(turn.called))
         return agg
 
     def _event(self, kind: str, turn: _Turn, text: str = "", data: Optional[Mapping[str, Any]] = None) -> None:

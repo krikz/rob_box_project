@@ -79,6 +79,7 @@ RUN apt-get update && apt-get install -y debconf-utils \
     ros-${ROS_DISTRO}-geometry-msgs \
     ros-${ROS_DISTRO}-nav-msgs \
     ros-${ROS_DISTRO}-nav2-msgs \
+    ros-${ROS_DISTRO}-control-msgs \
     ros-${ROS_DISTRO}-rtabmap-msgs \
     ros-${ROS_DISTRO}-ament-cmake \
     ros-${ROS_DISTRO}-rosidl-default-generators \

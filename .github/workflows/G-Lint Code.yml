@@ -792,6 +792,15 @@ jobs:
           bash scripts/hil/tests/test_hil.sh
           shellcheck scripts/hil/hil.sh scripts/hil/remote_pi.sh scripts/hil/hil.conf             scripts/hil/tests/test_hil.sh scripts/deploy/check_hil_lock.sh docker/sim/hil_run.sh
 
+      # Issue #4492: ключ студии канала на хостах — только чтение через forced command.
+      # Тест гоняет гейт с фейковыми docker/scp/git: разрешённое проходит, обходы
+      # (../, симлинк, ; && | $() кавычки, scp -t, docker exec, длинный N, /data) отбиваются.
+      - name: Studio read-only gate (issue #4492)
+        run: |
+          bash scripts/studio/tests/test_studio_ro_gate.sh
+          shellcheck scripts/studio/studio_ro_gate.sh scripts/studio/install_ro_key.sh \
+            scripts/studio/tests/test_studio_ro_gate.sh
+
       - name: Lint shell scripts
         run: |
           echo "::group::ShellCheck"

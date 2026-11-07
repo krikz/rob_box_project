@@ -25,6 +25,7 @@ setup(
         'console_scripts': [
             'joystick_control_node = rob_box_teleop.joystick_control_node:main',
             'proximity_guard_node = rob_box_teleop.proximity_guard_node:main',
+            'followpath_watchdog_node = rob_box_teleop.followpath_watchdog_node:main',
         ],
     },
 )

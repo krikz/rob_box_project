@@ -50,7 +50,7 @@ import rclpy
 from rclpy.node import Node
 from rclpy.qos import DurabilityPolicy, HistoryPolicy, QoSProfile, ReliabilityPolicy
 from rcl_interfaces.msg import SetParametersResult
-from std_msgs.msg import String
+from std_msgs.msg import Float32, String
 
 from rob_box_core import speech_client
 from rob_box_core.e2e_mode import E2EModeFollower
@@ -87,7 +87,7 @@ from rob_box_llm.provider import LLMSettings
 from rob_box_voice.observability import is_metrics_enabled, start_metrics_server
 from rob_box_mcp_tools.voice_request import REQUEST_TOPIC as VOICE_REQUEST_TOPIC
 
-from .core import greeting_window, identity_question
+from .core import echo_window, greeting_window, identity_question
 from .core import dialog_v2_parity as parity
 from .core import plan_host
 from .core.dialog_metrics import llm_metrics, record_interrupt
@@ -228,6 +228,13 @@ def voice_turn_context(speakers: Any, uid: str, text: str) -> Dict[str, Any]:
 def _voice_name(speakers: Any, uid: str) -> Optional[str]:
     """Имя, под которым биометрия уверенно узнала голос фразы ``uid``; результата нет или голос не уверенный - ``None``."""
     return confident_name(speakers.peek(uid))
+
+
+def publish_seconds(pub: Any, seconds: float) -> None:
+    """Событие окна ответа (``echo_window.REPLY_WINDOW_TOPIC``, #4509): окно открыто ещё ``seconds``, ``0`` — закрыто."""
+    msg = Float32()
+    msg.data = float(seconds)
+    pub.publish(msg)
 
 
 def robot_voice_changed(msg: Any) -> bool:
@@ -376,6 +383,8 @@ class DialogNode(Node):
         self._shift = ShiftLog()  # журнал смены (#4076): живёт дольше сессии разговора
         self._session.subscribe(self._shift.observe)
         self._voice_pub = self.create_publisher(String, VOICE_REQUEST_TOPIC, 10)
+        reply_pub = self.create_publisher(Float32, echo_window.REPLY_WINDOW_TOPIC, 10)  # окно ответа → stt_node (#4509)
+        self.announce_reply_window = functools.partial(publish_seconds, reply_pub)
         self._scenes = SceneDirector(self._session, self._restore_voice, robot_default_voice())
         self._wake = load_wake_words(str(self.get_parameter("wake_words_path").value))[0]
         self._backlog = Backlog()

@@ -1,11 +1,11 @@
+from importlib.util import module_from_spec, spec_from_file_location
 from pathlib import Path
 
 import yaml
 
-
 REPO_ROOT = Path(__file__).resolve().parents[2]
 MAIN_COMPOSE = REPO_ROOT / "docker/main/docker-compose.yaml"
-RTABMAP_YAML = REPO_ROOT / "docker/main/config/rtabmap/rtabmap.yaml"
+PATCH = REPO_ROOT / "docker/main/scripts/rtabmap/patch_rtabmap_launch.py"
 
 
 def test_main_rtabmap_compose_has_no_camera_runtime_topics():
@@ -23,14 +23,18 @@ def test_main_rtabmap_compose_has_no_camera_runtime_topics():
     assert "depth:=false" in command
 
 
-def test_rtabmap_yaml_is_aligned_with_lidar_only_runtime():
-    config = yaml.safe_load(RTABMAP_YAML.read_text(encoding="utf-8"))
-    params = config["/rtabmap/rtabmap"]["ros__parameters"]
+def test_rtabmap_params_are_lidar_only():
+    """Параметры rtabmap — только в patch_rtabmap_launch.py (#4495): сетка из лидара, камер нет."""
+    spec = spec_from_file_location("patch_rtabmap_launch", PATCH)
+    module = module_from_spec(spec)
+    spec.loader.exec_module(module)
+    compose = yaml.safe_load(MAIN_COMPOSE.read_text(encoding="utf-8"))
+    command = compose["services"]["rtabmap"]["command"]
 
-    assert params["subscribe_scan"] is True
-    assert params["subscribe_rgbd"] is False
-    assert params["subscribe_depth"] is False
-    assert params["Grid/Sensor"] == "0"
+    assert "subscribe_scan:=true" in command
+    assert "subscribe_rgbd:=false" in command
+    assert "depth:=false" in command
+    assert module.RTABMAP_PARAMS["Grid/Sensor"] == "0"
 
 
 def _env(service: dict) -> dict:

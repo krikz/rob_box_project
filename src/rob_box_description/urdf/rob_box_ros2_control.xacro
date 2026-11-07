@@ -18,6 +18,10 @@
   <!-- боевой RSP с URDF VESC, поэтому сим задаёт свой узел, например                     -->
   <!-- /sim/robot_state_publisher (src/rob_box_sim/launch/sim.launch.py, hil:=true).      -->
   <xacro:arg name="sim_robot_param_node" default=""/>
+  <!-- Сим: второй файл параметров поверх controllers_yaml — эффективная колея Gazebo   -->
+  <!-- (#4495). Путь — внутри контейнера gazebo (docker/sim/Dockerfile ставит rob_box_sim -->
+  <!-- в /ws/install). Порядок важен: файл позже — его параметры сильнее.              -->
+  <xacro:arg name="sim_drive_yaml" default="/ws/install/rob_box_sim/share/rob_box_sim/config/sim_drive.yaml"/>
   <xacro:unless value="${is_sim}">
   <ros2_control name="VescSystem" type="system">
     <hardware>
@@ -173,6 +177,7 @@
   <gazebo>
     <plugin filename="gz_ros2_control-system" name="gz_ros2_control::GazeboSimROS2ControlPlugin">
       <parameters>$(arg controllers_yaml)</parameters>
+      <parameters>$(arg sim_drive_yaml)</parameters>
       <xacro:if value="${'$(arg sim_robot_param_node)' != ''}">
       <robot_param_node>$(arg sim_robot_param_node)</robot_param_node>
       </xacro:if>

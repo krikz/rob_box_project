@@ -86,11 +86,18 @@ def main() -> int:
     ap.add_argument("--dry-run", action="store_true")
     ap.add_argument("--shifu-approved", action="store_true", help="Шифу сказал «да» на оформление и закреп")
     ap.add_argument("--robot", default="ros2@10.1.1.22")
+    ap.add_argument(
+        "--transport",
+        choices=("robot", "direct"),
+        default="robot",
+        help="robot — через контейнер telegram-bot на Sound Pi (по умолчанию); direct — через токен студии "
+        "(TG_STUDIO_BOT_TOKEN)",
+    )
     args = ap.parse_args()
     if not args.dry_run and not args.shifu_approved:
         print("Боевой запуск только с --shifu-approved (одобрение Шифу). Для проверки — --dry-run.")
         return 2
-    return run(REPO, None if args.dry_run else lib.RobotTransport(args.robot), args.dry_run)
+    return run(REPO, None if args.dry_run else lib.make_transport(args.transport, args.robot), args.dry_run)
 
 
 if __name__ == "__main__":

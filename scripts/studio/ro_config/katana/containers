@@ -1,0 +1,12 @@
+# Пример конфига гейта студии (scripts/studio/studio_ro_gate.sh); install_ro_key.sh кладёт его в ~/.config/studio_ro/.
+# Один элемент на строку, # — комментарий. Пути абсолютные; несуществующие гейт молча пропускает.
+# /data (лица, голоса, speakers.db) сюда НЕ включать: гейт всё равно отобьёт его жёстким запретом.
+# Раннеры CI (myoung34/github-runner): какие job шли и чем кончились.
+build-github-runner-1
+build-github-runner-2
+build-github-runner-3
+build-github-runner-4
+build-github-runner-5
+build-github-runner-6
+build-github-runner-7
+build-github-runner-8

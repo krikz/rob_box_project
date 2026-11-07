@@ -725,11 +725,12 @@ TOOL_CLASSES: Mapping[str, str] = MappingProxyType({
         "container_status", "estimate_tts_duration", "faq_search", "get_battery_level", "get_current_pose",
         "get_current_time", "get_music_state", "get_perception_context", "get_robot_status", "get_sound_info",
         "list_maps", "list_tts_voices", "list_waypoints", "listen_for_response", "lookup_melody", "memory_context",
-        "memory_search", "people_list", "person_photo", "read_logs", "ros2_node_status", "search_melody",
-        "search_web", "show_metrics",
+        "memory_search", "people_list", "person_photo", "read_logs", "ros2_node_status", "ros_list", "search_melody",
+        "search_web", "show_metrics", "topic_echo", "topic_stats", "vesc_telemetry",
     )},
     **{t: "action.local" for t in (
-        "add_music_material", "clear_waypoints", "delete_map", "delete_waypoint", "memory_save", "name_person",
+        "add_music_material", "clear_waypoints", "delete_map", "delete_waypoint", "find_similar", "memory_save",
+        "merge_people", "name_person", "topic_publish",
         "play_animation", "save_waypoint", "set_music_volume", "set_pitch", "set_speed", "set_tts_provider", "set_voice",
         "set_volume",
     )},
@@ -1110,12 +1111,33 @@ WAYPOINT_SAVE_OBJECTS: Tuple[str, ...] = ("мест", "точк", "здесь", 
 #: Слова про лица и людей (группа ``faces``, #4469): основы по левой границе слова.
 FACES_STEMS: Tuple[str, ...] = (
     "лиц", "имя", "имени", "назови", "назвать", "назов", "зовут", "кто это", "людей", "люди", "кличк", "фото",
-    "снимок", "снимк", "незнаком",
+    "снимок", "снимк", "незнаком", "похож", "дубл", "склей", "склеи", "слей", "объедин",
 )
 #: id лица в реплике: 8 hex целым словом. Структура, а не грамматика музыки (мораторий #3132 не касается).
 FACE_ID_RE = re.compile(r"(?<![0-9a-f])[0-9a-f]{8}(?![0-9a-f])", re.IGNORECASE)
 #: Группа пульта по лицам; у голоса её тулов нет (``llm_visible=False``).
 FACES_GROUP = "faces"
+
+#: Слова про граф ROS (группа ``ros_graph``, #4516): топики, сервисы, замер частоты и полосы. «сервис» общее слово
+#: (группа ``containers``) и сюда не входит: сервисы ROS открывают только пары «сервисы ros».
+ROS_GRAPH_STEMS: Tuple[str, ...] = (
+    "топик", "topic", "частот", "герц", "hz", "полос", "пропускн", "bandwidth", "bw", "сервисы ros", "сервисов ros",
+    "сервисы рос", "сервисов рос", "service",
+)
+#: Слова про публикацию в топик (группа ``publish``, #4516 шаг 2а): основы глагола и «в топик». Группа открывается
+#: только тем, у кого есть тул ``topic_publish`` (пульт TG и ТАРС); голосу она не даётся.
+PUBLISH_STEMS: Tuple[str, ...] = (
+    "опубликуй", "опубликов", "публикац", "публикуй", "отправь в топик", "отправить в топик", "шли в топик",
+    "пошли в топик", "отправь сообщение в", "pub ", "publish",
+)
+#: Слова про телеметрию VESC и колёс (группа ``vesc``, #4516).
+VESC_STEMS: Tuple[str, ...] = (
+    "vesc", "веск", "весц", "колёс", "колес", "мотор", "напряжен", "вольт", "температур", "обороты", "оборотов",
+    "rpm", "ток ", "токи", "токе", "ампер",
+)
+#: Группы только для тех, чьи тулы в срезе агента (пульт TG и ТАРС): голосу (``llm_visible=False``) они не открываются, а
+#: «какое напряжение» голосом остаётся про батарею (``status``), а не про пустую группу.
+AGENT_SCOPED_GROUPS: Tuple[str, ...] = (FACES_GROUP, "ros_graph", "vesc", "publish")
 
 #: Группы по приоритету: при пересечении групп срез режется по этому порядку (``TOOLS_VISIBLE_MAX``). Голос —
 #: только по явной голосовой просьбе (LLM сама меняла голос посреди сказки, а голос персистентный, PR-4).
@@ -1177,7 +1199,7 @@ TOOL_GROUPS: Mapping[str, ToolGroup] = MappingProxyType({
     # ``memory_save`` (``rejected no_person``). Пульт по лицам видит только чат (``telegram_visible``): у голоса
     # ``llm_visible=False``, срез голоса не меняется (``tools_view.groups_for(agent=...)``). Голое «покажи» основой не
     # берём («покажи CPU», «покажи кухню»): «покажи лица» открывает «лиц». id лица (8 hex) открывает группу без слов
-    "faces": ToolGroup(FACES_STEMS, ("people_list", "person_photo", "name_person")),
+    "faces": ToolGroup(FACES_STEMS, ("people_list", "person_photo", "name_person", "find_similar", "merge_people")),
     "sound": ToolGroup(SOUND_STEMS, ("play_sound", "get_sound_info")),
     # анимация всегда видна (``TOOLS_ALWAYS``); группа — чтобы просьба «покажи анимацию …» была командой (В17)
     # глаголы восприятия («посмотри налево») — взгляд лица, а не движение базы (``MOTION_VERB_STEMS``);
@@ -1197,6 +1219,10 @@ TOOL_GROUPS: Mapping[str, ToolGroup] = MappingProxyType({
     "logs": ToolGroup(("лог",), ("read_logs",)),
     "nodes": ToolGroup(("нод", "ros"), ("ros2_node_status",)),
     "containers": ToolGroup(("контейнер", "сервис", "докер", "docker"), ("container_status",)),
+    # #4516 (Шифу 06.11: «Телега - считай админка»): граф ROS и VESC для пульта TG и ТАРС; у голоса тулов нет
+    "ros_graph": ToolGroup(ROS_GRAPH_STEMS, ("ros_list", "topic_echo", "topic_stats")),
+    "vesc": ToolGroup(VESC_STEMS, ("vesc_telemetry",)),
+    "publish": ToolGroup(PUBLISH_STEMS, ("topic_publish",)),
     # #4297 (живой 03.11 «как сеть»): слов сети в таблице не было, срез оставался без данных, модель трижды звала тул
     # вне среза (``tool_not_available``). Данные о сети есть у двух тулов: ``internet_available`` в
     # ``get_perception_context`` и опрос целей Prometheus (``show_metrics``: ``services_up``, задержки LLM/STT/TTS).
@@ -1578,6 +1604,9 @@ NAV_UNKNOWN_TARGET = "unknown_target"
 NAV_FAILURE_OUTCOMES: Tuple[str, ...] = (
     "aborted", "canceled", "timeout", "rejected", "no_response", "server_unavailable", "unknown_status",
     NAV_UNKNOWN_TARGET,
+    # #4495: Nav2 ответил успехом, но поза на карте за поездку потеряла опору (лидарная одометрия потеряна или карта
+    # прыгнула): не «приехал», а «не уверен, где я» (rob_box_mcp_tools.core.localization_check).
+    "localization_lost",
 )
 NAV_DONE = ByData((NAV_ARRIVAL_FIELD,), {
     (NAV_ALREADY_THERE,): "motion.already_there", (NAV_ARRIVED,): "motion.arrived",
@@ -1671,6 +1700,11 @@ TOOL_PHRASES: Mapping[str, Mapping[str, Any]] = MappingProxyType({
     # имя лицу (#4469): «Готово: лицо fff371fe теперь Кирилл.» - шаблон по данным владельца лиц (``id``, ``stored_name`` -
     # имя, прочитанное из базы после записи, ``previous_name``), а не слова модели
     "name_person": MappingProxyType({"done": ByData(("previous_name",), {(None,): "people.named"}, "people.renamed")}),
+    # найди похожих и склейка (#4469): обе фразы строит код из данных владельца (поле ``summary``), не модель
+    "find_similar": MappingProxyType({"done": "people.similar"}),
+    "merge_people": MappingProxyType({"done": "people.merged"}),
+    # публикация в топик (#4516, шаг 2а): «Опубликовал в /x (тип) 1 раз, подписчиков 2.» строит код по факту (поле ``summary``)
+    "topic_publish": MappingProxyType({"done": "publish.done"}),
     "set_voice": MappingProxyType({"done": VOICE_DONE, "rejected": VOICE_FAILED, "timeout": "voice.timeout"}),
     "set_tts_provider": MappingProxyType({"done": VOICE_DONE, "rejected": VOICE_FAILED, "timeout": "voice.timeout"}),
     # звук - не музыка: класс action.media, но фраза о SoundEvent, а не «Включаю музыку»
@@ -1743,6 +1777,14 @@ TOOL_QUESTIONS: Mapping[Tuple[str, str], ToolQuestion] = MappingProxyType({
     (LIBRARY_TOOL, "needs_confirmation"): ToolQuestion(
         {"confirm": True}, ("удал", "сотр", "стир"), ("песн", "трек", "композиц", "библиотек"),
         "music.library_delete_kept"),
+    # склейка дублей лиц (#4469): подтверждение одной строкой («Склеиваю 3 записи в «Имя» (id)?»), текст вопроса -
+    # из данных тула (``question``), «да» исполняет код тем же вызовом с ``confirm``; «нет» - фраза ``declined``
+    ("merge_people", "needs_merge_confirmation"): ToolQuestion(
+        {"confirm": True}, ("склей", "склеи", "слей", "объедин"), ("запис", "лиц", "дубл"), "people.merge_kept"),
+    # публикация в топик (#4516): «Публикую в /x (тип) {...}, 1 раз? Скажи «да, публикуй»», «да» исполняет код
+    ("topic_publish", "needs_publish_confirmation"): ToolQuestion(
+        {"confirm": True}, ("публикуй", "опубликуй", "отправь", "шли", "отправляй"), ("топик", "сообщен", "публикац"),
+        "publish.kept"),
 })
 #: Ответ на вопрос тула (``tool_ask.answer``): реплика ЦЕЛИКОМ из этих слов, глагола и предмета вопроса
 #: (:class:`ToolQuestion`) и служебных :data:`TOOL_ANSWER_FILLER`. Есть слово «нет» - отказ (необратимое не делаем по
@@ -1786,9 +1828,14 @@ class OwnerText:
 OUTCOME_OWNER_TEXT: Mapping[str, OwnerText] = MappingProxyType({
     **{tool: OwnerText(whole="source_message", note="source_note") for tool in ("request_music", "generate_music")},
     "dj_set": OwnerText(note="source_note")})
-#: Тул пульта Telegram, чей успех уносит в чат картинку (#4469): ``photo_id`` - id лица, ``caption`` - подпись; чат шлёт
-#: ``DialogOutput(kind=photo)`` с id, снимок бот забирает у владельца лиц (``/perception/people``) байтами.
+#: Тулы пульта Telegram, чей успех уносит в чат картинку (#4469): ``photo_id`` - id лица, ``caption`` - подпись; чат шлёт
+#: ``DialogOutput(kind=photo)`` с id, картинку бот забирает у владельца лиц (``/perception/people``) байтами. У
+#: ``find_similar`` в данных ещё ``photo_kind=collage``: это коллаж кандидатов, а не снимок лица.
 PHOTO_TOOL = "person_photo"
+COLLAGE_TOOL = "find_similar"
+PHOTO_TOOLS: Tuple[str, ...] = (PHOTO_TOOL, COLLAGE_TOOL)
+#: Значение ``photo_kind`` у коллажа (и поле ``op`` в тексте ``DialogOutput(kind=photo)``).
+COLLAGE_KIND = "collage"
 #: Действия, чей успех - сам себе доказательство: фразы об исходе done нет (§4.1; Шифу 21.10: «включил щелчок и ещё
 #: сказал, что он заиграл, бред же»). Неудача (rejected/timeout) говорится одной фразой кода. Исключение - звукоподражание
 #: (:data:`SOUND_IMITATIONS`).
@@ -1838,6 +1885,9 @@ CHAT_ROBOT_ASK_FORMS: Tuple[str, ...] = (
     "роботом", "через робота", "вслух", "озвучь", "озвучи", "в колонки", "в динамики", "народ", "народу", "толпу",
     "толпе", "всем вокруг", "людям вокруг", "людям рядом",
 )
+#: Явные просьбы озвучить, которых нет в :data:`CHAT_ROBOT_ASK_FORMS` («произнеси»): вместе с ним открывают
+#: ``say_aloud`` в чате (:func:`turn.unasked_aloud`, #4505).
+CHAT_ALOUD_EXTRA_FORMS: Tuple[str, ...] = ("озвучьте", "произнеси", "произнесите")
 #: Слово из :data:`CHAT_ROBOT_ASK_FORMS`, названное ТЕМОЙ, а не просьбой (решение Шифу 28.10: справки - ответом в
 #: чат): сразу после этих слов оно - предмет разговора, не адресат и не канал («расскажи про народ», «статья о толпе»,
 #: «переведи слово вслух», «что значит выражение через робота»). Решает код по словам человека (``words.asks_robot_to_act``).
@@ -2678,8 +2728,10 @@ IDENTITY_MIC_GRACE_S = 2.5
 #: если фраза ПОХОЖА НА ОТВЕТ по грамматике (``reply_grammar``: имя, да/нет, отказ). DOA и голос — не условия (DOA в
 #: комнате прыгает у неподвижной колонки: 50° → 343°), только признаки в логе. Шифу отвергнет — ``False``.
 IDENTITY_ANSWER_WITHOUT_WAKE = True
-#: Окно после приветствия при встрече: фраза без вейка от приветствованного — ход (``source=greeting_reply``), если
-#: она по грамматике ответ на приветствие или лицо приветствованного в кадре. Шифу отвергнет — ``False``.
+#: Окно после приветствия при встрече: фраза без вейка, пока окно открыто, — ход (``source=greeting_reply``). Лицо в
+#: кадре не условие (Шифу 06.11, #4509: «достаточно открытого окна и голоса»); окно идёт с конца приветствия, эхо
+#: приветствия отсеивает ``stt_node`` словами (``echo_window.REPLY``). Голое «робот» в окне — «Слушаю.» кодом и окно
+#: заново (``address.GREETING_WAKE``). Шифу отвергнет — ``False``.
 GREETING_REPLY_WITHOUT_WAKE = True
 #: Ответ на приветствие/реплику: фраза начинается с одной из этих (нормализовано: нижний регистр, ё -> е).
 GREETING_REPLIES: Tuple[str, ...] = (
@@ -3417,7 +3469,11 @@ ACTIONS_MAX = 3
 #: Сколько действий модель может ПРИСЛАТЬ (``maxItems`` схемы, ``too_many_actions``) - больше исполняемого
 #: :data:`ACTIONS_MAX`, как речь 280/350 (``SPEECH_ACCEPT_MAX_CHARS``): просьба человека доходит до кода целиком, и
 #: лишнее видит код, а не теряет модель. Потолок исполнения этим не поднят.
-ACTIONS_ACCEPT_MAX = 8
+ACTIONS_ACCEPT_MAX = 10
+#: Потолок снимков лиц за ход (#4505: «пришли первые пять»): ``person_photo`` считается отдельно от
+#: :data:`ACTIONS_MAX` (это чтение, и ``turn.capped`` резал пять снимков до трёх). Лишнее код называет, а не
+#: выбрасывает молча. Единственное место потолка; принять модель может не меньше (:data:`ACTIONS_ACCEPT_MAX`).
+PHOTOS_MAX = 10
 #: Фраза кода о действиях сверх :data:`ACTIONS_MAX`: ``named`` - со слотом ``rest`` (что не сделано, словами аргументов
 #: вызова), без имён - общая.
 ACTIONS_CAPPED_PHRASE = "command.actions_capped"
@@ -3916,7 +3972,8 @@ def prompt_fragment(schema: Optional[Mapping[str, Any]] = None) -> str:
         ("voice", "- voice: голос этой реплики (имя голоса); голос робота не меняет."),
         ("ask", f"- ask: вопрос с ожиданием ответа, expects ∈ {_set(ASK_EXPECTS)}."),
         ("actions", f"- actions: вызовы тулов {{tool, args}} - все, о чём просил человек, не урезай: за ход код"
-                    f" исполнит первые {ACTIONS_MAX}, об остальных скажет сам; не больше одного на класс"
+                    f" исполнит первые {ACTIONS_MAX} (person_photo — до {PHOTOS_MAX} отдельно),"
+                    f" об остальных скажет сам; не больше одного на класс"
                     f" {' и '.join(SINGLE_ACTION_CLASSES)}."),
         ("perform", f"- perform: выступление kind ∈ {_set(kinds)}, {SEGMENTS_MIN}–{SEGMENTS_MAX} сегментов"
                     f" по ≤ {SEGMENT_MAX_CHARS} символов (куплет или абзац на сегмент), backing ∈ {_set(backings)};"

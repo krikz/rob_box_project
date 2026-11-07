@@ -237,6 +237,8 @@ services:
       - /opt/rob_box/models:/models:ro
       # VoiceMemory persistent storage
       - ./data/voice:/data
+      # Журнал записи в топики (#4516, topic_publish): JSONL с автором TG/ТАРС. Отдельный каталог, не /data с людьми.
+      - ./data/admin_audit:/var/log/rob_box_admin
       # Renardo samples — кладёт на хост Ресурсный пак (запись renardo-samples
       # в scripts/resource_pack/manifest.yaml), сюда приходят bind-mount'ом.
       # Путь ВНУТРИ контейнера не изменился. БЕЗ :ro, в отличие от
