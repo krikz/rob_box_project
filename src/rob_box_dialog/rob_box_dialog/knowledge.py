@@ -3210,9 +3210,13 @@ SEARCH_PROMISES: Mapping[str, MusicPromise] = MappingProxyType({
 #: не было и в срезе хода). Та же форма, что :data:`MUSIC_PROMISES`, но про прошедшее: речь говорит, что действие уже
 #: сделано, а тула, что его делает, в команде нет; валидатор команды (``command._check_done_claim``) сверяет по словам
 #: (``words.done_claims``). ``unless_before`` - здесь и для ``alone``: «уже удалил» (раньше, в прошлом ходе) и «не
-#: удалил» не утверждают сделанного сейчас. Музыки и памяти тут нет: «музыку выключил» после кодового стопа - правда
-#: (``MUSIC_PROMISES``), «запомнил» говорит код знакомства. Слова - целые, строчные, без «ё».
+#: удалил» не утверждают сделанного сейчас. Музыки тут нет: «музыку выключил» после кодового стопа - правда
+#: (``MUSIC_PROMISES``). Честное «запомнил» человека говорит код знакомства по результату ``register_speaker``, поэтому
+#: «запомнил, тебя зовут Саша» не утверждение; а вот «запомнил твой голос/лицо» и «так и буду тебя узнавать» без тула
+#: записи человека - пустое обещание (#4541, живой ход 08.11 07:00Z: «Голос, выходит, детский - так и буду тебя
+#: узнавать», ``actions=[]``). Слова - целые, строчные, без «ё».
 DONE_CLAIM_UNLESS_BEFORE: Tuple[str, ...] = ("уже", "не", "раньше", "ранее")
+PERSON_RECORD_TOOLS: Tuple[str, ...] = ("register_speaker", "name_person")
 DONE_CLAIMS: Mapping[str, MusicPromise] = MappingProxyType({
     "delete": MusicPromise(
         alone=("удалил", "удалила", "удалили", "удалено", "удалена", "удален", "удалены", "стер", "стерла", "стерли",
@@ -3224,6 +3228,18 @@ DONE_CLAIMS: Mapping[str, MusicPromise] = MappingProxyType({
                    "отметила", "записал", "записала"),
         near=("точк",),
         tools=("save_waypoint",),
+        unless_before=DONE_CLAIM_UNLESS_BEFORE),
+    # запомнить человека (#4541): подкрепляют голос (``register_speaker``) и лицо (``name_person``); ``memory_save``
+    # хранит факт текстом и узнавать человека не научит - его тут нет. «запомнил» + «точк» - ``waypoint_save`` выше
+    "remember_person": MusicPromise(
+        with_near=("запомнил", "запомнила"),
+        near=("голос", "лиц"),
+        tools=PERSON_RECORD_TOOLS,
+        unless_before=DONE_CLAIM_UNLESS_BEFORE),
+    "recognize_person": MusicPromise(
+        with_near=("буду", "будем"),
+        near=("узнава",),
+        tools=PERSON_RECORD_TOOLS,
         unless_before=DONE_CLAIM_UNLESS_BEFORE),
     "motion": MusicPromise(
         # «еду» - и «качу», и «вкусную еду»: формы без второго смысла
