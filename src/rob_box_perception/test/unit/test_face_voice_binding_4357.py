@@ -63,3 +63,26 @@ def test_speaking_face_binds_after_confirmations_and_resets_counter():
     for i in range(6):
         b.note_frame(20.0 + 0.5 * i, ['p1'], [0.7 if i % 2 else 0.9])
     assert b.judge('spk', 22.5).kind == fvb.PENDING  # после привязки счёт начинается заново
+
+
+def _judge_ratios(ratios, **judge_kw):
+    b = fvb.VoiceFaceBinding(window_sec=6.0)
+    for i, r in enumerate(ratios):
+        b.note_frame(0.5 * i, ['p1'], [r])
+    return b.judge('spk', 2.5, **judge_kw)
+
+
+def test_mouth_threshold_calibrated_on_robot_4538():
+    """Живые числа из #4538: разброс 0.076 (живое лицо) проходит порог, 0.042 (фото) — нет."""
+    assert fvb.DEFAULT_MIN_MOUTH_SPREAD == 0.06
+    live, photo = [1.0, 1.0, 1.0, 1.076], [1.0, 1.0, 1.0, 1.042]
+    assert abs(fvb.mouth_spread(live) - 0.076) < 1e-9
+    assert abs(fvb.mouth_spread(photo) - 0.042) < 1e-9
+    assert _judge_ratios(live, self_introduced=True).kind == fvb.BIND
+    assert _judge_ratios(photo, self_introduced=True).kind == fvb.NOT_SPEAKING
+
+
+def test_self_introduced_binds_at_once_ordinary_needs_confirmations():
+    ratios = [0.7, 0.9, 0.7, 0.9, 0.7, 0.9]
+    assert _judge_ratios(ratios, self_introduced=True).kind == fvb.BIND
+    assert _judge_ratios(ratios).kind == fvb.PENDING

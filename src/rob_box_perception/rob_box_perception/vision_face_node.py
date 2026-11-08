@@ -500,15 +500,15 @@ class VisionFaceNode(VisionHailoNode):
                 f'(speaker_id={speaker_id[:8]}, E2E-БД дикторов)'
             )
             return
-        # Issue #2748 — источник ``source="register"`` (speaker_id_node,
-        # момент регистрации) принимается НАРАВНЕ с обычным узнаванием:
-        # имя названо самим человеком, доверия к нему больше, чем к
-        # косинусу identify(). Доказательство «говорит это лицо» (issue
-        # #4357, ADR-0105 §3 п.4) не отличает источники — оно живёт внутри
-        # note_voice_identification() и остаётся строгим для ОБОИХ.
+        # Issue #2748 / #4538 — источник ``source="register"`` (speaker_id_node,
+        # момент регистрации): имя названо самим человеком, голос записан из
+        # этой фразы. Доказательство «говорит это лицо» (issue #4357) для неё
+        # то же (одно лицо, кадры, рот), но подтверждений нужно одно, а не
+        # три. Признак передаём структурно: решает код (ADR-0148).
+        self_introduced = str(getattr(msg, 'source', '') or '') == 'register'
         try:
             self._recognizer.note_voice_identification(
-                speaker_id=speaker_id, name=name
+                speaker_id=speaker_id, name=name, self_introduced=self_introduced
             )
         except Exception as exc:  # noqa: BLE001
             self.get_logger().warning(f'Слияние голос→лицо упало: {exc!r}')

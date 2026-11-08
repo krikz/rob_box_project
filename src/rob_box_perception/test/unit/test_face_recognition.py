@@ -625,6 +625,69 @@ def test_voice_merge_does_not_overwrite_other_name():
     assert log.has('warn', 'не перетираю')
 
 
+#: Рты по замеру #4538: фото — разброс ≈0.026 (≤ 0.042), живое лицо — ≈0.075 (как окно «Иван», 0.076).
+PHOTO_LIKE_MOUTH = tuple(r / 25 for r in (0.75, 0.76, 0.77, 0.78, 0.75, 0.77))
+LIVE_MOUTH = tuple(r / 25 for r in (0.70, 0.77, 0.83, 0.88, 0.80, 0.80))
+
+
+def _register_rec(store: FakeStore, **kw) -> FaceRecognizer:
+    return FaceRecognizer(embedder=FakeEmbedder(), store=store, tracker=FaceTracker(min_track_sec=1000.0), **kw)
+
+
+def test_voice_merge_register_phrase_binds_on_first_confirmation():
+    """Issue #4538: фраза регистрации + одно говорящее лицо — имя с первого раза."""
+    store = FakeStore()
+    rec = _register_rec(store)
+    end = _speak_window(rec, store, 'p1', 10.0, mouth=LIVE_MOUTH)
+
+    assert rec.note_voice_identification(speaker_id='spk-1', name='Иван', now=end, self_introduced=True) == 'p1'
+    assert store.attach_name_calls == [('p1', 'Иван', 'spk-1')]
+
+
+def test_voice_merge_register_phrase_with_photo_mouth_does_not_bind():
+    store = FakeStore()
+    rec = _register_rec(store)
+    end = _speak_window(rec, store, 'p1', 10.0, mouth=PHOTO_LIKE_MOUTH)
+
+    assert rec.note_voice_identification(speaker_id='spk-1', name='Иван', now=end, self_introduced=True) is None
+    assert store.attach_name_calls == []
+    assert rec.stats()['voice_merge_skip_not_speaking'] == 1
+
+
+def test_voice_merge_register_phrase_with_two_faces_does_not_bind():
+    store = FakeStore()
+    rec = _register_rec(store)
+    _speak_window(rec, store, 'p1', 10.0, mouth=LIVE_MOUTH)
+    end = _speak_window(rec, store, 'p2', 13.0, mouth=LIVE_MOUTH)
+
+    assert rec.note_voice_identification(
+        speaker_id='spk-1', name='Иван', now=end - 0.5, self_introduced=True) is None
+    assert store.attach_name_calls == []
+    assert rec.stats()['voice_merge_skip_multi_face'] == 1
+
+
+def test_voice_merge_ordinary_recognition_still_needs_three_confirmations():
+    store = FakeStore()
+    rec = _register_rec(store)
+    results = []
+    for t0 in (10.0, 20.0, 30.0):
+        end = _speak_window(rec, store, 'p1', t0, mouth=LIVE_MOUTH)
+        results.append(rec.note_voice_identification(speaker_id='spk-1', name='Иван', now=end))
+
+    assert results == [None, None, 'p1']
+
+
+def test_voice_merge_register_phrase_does_not_overwrite_other_name():
+    store = FakeStore()
+    store.binding_map = {'566331d3': ('Литвин', None)}
+    rec = _register_rec(store)
+    end = _speak_window(rec, store, '566331d3', 10.0, mouth=LIVE_MOUTH)
+
+    assert rec.note_voice_identification(speaker_id='1ae4b0ac', name='Иван', now=end, self_introduced=True) is None
+    assert store.attach_name_calls == []
+    assert rec.stats()['voice_merge_skip_named_other'] == 1
+
+
 def test_voice_merge_same_name_same_voice_is_allowed():
     tracker = FaceTracker(min_track_sec=1000.0)
     store = FakeStore()
