@@ -132,7 +132,7 @@ def _base_stats(**overrides: Any) -> Dict[str, Any]:
         'embed_failures': 0,
         'embed_skipped_budget': 0,
         'crop_rejected_total': 0,
-        'crop_rejected_by_reason': {'dark': 0, 'flat': 0, 'clipped': 0, 'blurry': 0},
+        'crop_rejected_by_reason': {'dark': 0, 'flat': 0, 'clipped_coverage': 0, 'clipped_top': 0, 'blurry': 0},
         'align_used_total': 0,
         'align_fallback_total': 0,
         'active_tracks': 0,
@@ -160,13 +160,20 @@ def _base_stats(**overrides: Any) -> Dict[str, Any]:
 
 def test_crop_reject_suffix_prints_only_nonzero_reasons():
     suffix = m._format_crop_reject_suffix(
-        {'dark': 0, 'flat': 0, 'clipped': 51, 'blurry': 8}
+        {'dark': 0, 'flat': 0, 'clipped_coverage': 3, 'clipped_top': 48, 'blurry': 8}
     )
-    assert suffix == ' (clipped=51 blurry=8)'
+    assert suffix == ' (clipped_coverage=3 clipped_top=48 blurry=8)'
+
+
+def test_crop_reject_suffix_shows_kept_by_landmarks_4544():
+    by = {'dark': 0, 'flat': 0, 'clipped_coverage': 0, 'clipped_top': 2, 'blurry': 0}
+    assert m._format_crop_reject_suffix(by, 17) == ' (clipped_top=2 clipped_kept_by_landmarks=17)'
+    assert m._format_crop_reject_suffix({}, 5) == ' (clipped_kept_by_landmarks=5)'
 
 
 def test_crop_reject_suffix_empty_when_all_zero():
-    assert m._format_crop_reject_suffix({'dark': 0, 'flat': 0, 'clipped': 0, 'blurry': 0}) == ''
+    zeros = {'dark': 0, 'flat': 0, 'clipped_coverage': 0, 'clipped_top': 0, 'blurry': 0}
+    assert m._format_crop_reject_suffix(zeros) == ''
 
 
 def test_crop_reject_suffix_empty_when_dict_empty():
@@ -224,7 +231,7 @@ def test_log_stats_reproduces_robot_incident_line():
         voice_merge_skip_no_face=1,
         voice_merge_skip_conflict=1,
         crop_rejected_total=59,
-        crop_rejected_by_reason={'dark': 0, 'flat': 0, 'clipped': 51, 'blurry': 8},
+        crop_rejected_by_reason={'dark': 0, 'flat': 0, 'clipped_coverage': 3, 'clipped_top': 48, 'blurry': 8},
         align_used_total=0,
         align_fallback_total=118,
         active_tracks=0,
@@ -253,7 +260,7 @@ def test_log_stats_reproduces_robot_incident_line():
     assert (
         '[лицо] режим=workshop встреч=3 узнано=0 новых=1 слияний=2 '
         '(пропуски: голос_не_опознан=2 нет_лица=1 конфликт_профилей=1) '
-        'ошибок_эмбеддинга=0 кропов_отброшено=59 (clipped=51 blurry=8) '
+        'ошибок_эмбеддинга=0 кропов_отброшено=59 (clipped_coverage=3 clipped_top=48 blurry=8) '
         'треков=0 | в базе: людей=3 с_именем=2 gallery_cohesion=н/д '
         'enroll_отклонено=0 прогрев=0/5 разрешено_неоднозначностей=0'
     ) == summary

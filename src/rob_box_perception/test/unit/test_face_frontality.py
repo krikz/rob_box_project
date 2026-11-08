@@ -137,6 +137,14 @@ def test_gate_skips_encounter_without_embedding():
     assert gate.level == 'warn'
 
 
+def test_gate_no_embedding_reason_is_honest_4544():
+    big = ff.encounter_gate(_Enc(None, [], max_face_px=120.0), _never_known, 32.0)
+    assert 'мельче' not in big.reason, 'крупное лицо не «мельче 32px»'
+    assert 'кропов_отброшено' in big.reason and '120px' in big.reason
+    small = ff.encounter_gate(_Enc(None, [], max_face_px=20.0), _never_known, 32.0)
+    assert 'мельче 32px' in small.reason and '20px' in small.reason
+
+
 def test_gate_records_frontal_stranger():
     gate = ff.encounter_gate(_Enc([1.0], [_Obs([1.0], _lm(TEMPLATE))]), _never_known, 32.0)
     assert gate.record

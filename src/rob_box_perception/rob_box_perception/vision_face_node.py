@@ -82,7 +82,7 @@ STATS_LOG_PERIOD_SEC = 60.0
 ALIGN_DEAD_WARNING_PERIOD_CALLS = 10
 
 
-def _format_crop_reject_suffix(by_reason: Dict[str, int]) -> str:
+def _format_crop_reject_suffix(by_reason: Dict[str, int], kept_by_landmarks: int = 0) -> str:
     """Суффикс причин отказа кропа для строки `[лицо]` (issue #2774, #2777).
 
     Тот же приём, что уже применён к ``voice_merge_skip_*`` в
@@ -93,7 +93,7 @@ def _format_crop_reject_suffix(by_reason: Dict[str, int]) -> str:
     быть «почти всё clipped геометрией» или «почти всё blurry», и это два
     разных фикса.
 
-    Названия причин (``dark``/``flat``/``clipped``/``blurry``) — те же
+    Названия причин (``dark``/``flat``/``clipped_coverage``/``clipped_top``/``blurry``) — те же
     английские ключи, что в ``FaceRecognizer._crop_rejected_by_reason``,
     в тестах (``test_face_recognition.py``) и, если появится, в CLI
     (issue #2775). Решение: НЕ переводить их на русский, хотя остальная
@@ -104,15 +104,18 @@ def _format_crop_reject_suffix(by_reason: Dict[str, int]) -> str:
 
     Args:
         by_reason: ``stats()['crop_rejected_by_reason']`` — уже
-            copy-дикт, порядок ключей (dark, flat, clipped, blurry)
+            copy-дикт, порядок ключей (dark, flat, clipped_coverage, clipped_top, blurry)
             наследуется от ``FaceRecognizer.__init__``.
 
     Returns:
         ``''``, если причин нет вовсе (все нули или пустой dict), иначе
-        `` (clipped=51 blurry=8)`` — с ведущим пробелом, чтобы вызывающий
+        `` (clipped_top=51 blurry=8)`` — с ведущим пробелом, чтобы вызывающий
         код мог просто конкатенировать к ``кропов_отброшено=N``.
     """
     active_reasons = [f'{reason}={count}' for reason, count in by_reason.items() if count]
+    if kept_by_landmarks:
+        # Issue #4544: не отказ, а сколько лиц у края кадра спасено воротами по точкам.
+        active_reasons.append(f'clipped_kept_by_landmarks={kept_by_landmarks}')
     if not active_reasons:
         return ''
     return ' (' + ' '.join(active_reasons) + ')'
@@ -560,7 +563,8 @@ class VisionFaceNode(VisionHailoNode):
         # что и skip_suffix выше, применена к отказу кропа: суффикс сам по
         # себе пустой, если crop_rejected_by_reason весь в нулях.
         crop_reject_suffix = _format_crop_reject_suffix(
-            stats.get('crop_rejected_by_reason', {}) or {}
+            stats.get('crop_rejected_by_reason', {}) or {},
+            stats.get('crop_kept_by_landmarks', 0),
         )
         self.get_logger().info(
             '[лицо] режим=%s встреч=%d узнано=%d новых=%d слияний=%d%s '
