@@ -1021,7 +1021,8 @@ def test_black_crop_rejected_reason_is_dark():
     reasons = rec.stats()['crop_rejected_by_reason']
     assert reasons['dark'] == 1
     assert reasons['flat'] == 0
-    assert reasons['clipped'] == 0
+    assert reasons['clipped_coverage'] == 0
+    assert reasons['clipped_top'] == 0
     assert reasons['blurry'] == 0
 
 
@@ -1055,7 +1056,7 @@ def test_top_clipped_crop_rejected_as_clipped():
     assert embedder.embed_calls == [], 'кроп, обрубленный сверху, не должен доезжать до ArcFace'
     s = rec.stats()
     assert s['crop_rejected_total'] == 1
-    assert s['crop_rejected_by_reason']['clipped'] == 1
+    assert s['crop_rejected_by_reason']['clipped_top'] == 1
     assert s['crop_rejected_by_reason']['dark'] == 0
 
 
@@ -1074,7 +1075,7 @@ def test_side_clipped_low_coverage_crop_rejected_as_clipped():
     rec.process(dets, frame, now=0.0)
 
     assert embedder.embed_calls == [], 'кроп с низким покрытием не должен доезжать до ArcFace'
-    assert rec.stats()['crop_rejected_by_reason']['clipped'] == 1
+    assert rec.stats()['crop_rejected_by_reason']['clipped_coverage'] == 1
 
 
 def test_fully_visible_face_not_rejected_by_geometry_gate():
@@ -1088,7 +1089,64 @@ def test_fully_visible_face_not_rejected_by_geometry_gate():
     rec.process(dets, frame, now=0.0)
 
     assert embedder.embed_calls == [1]
-    assert rec.stats()['crop_rejected_by_reason']['clipped'] == 0
+    r = rec.stats()['crop_rejected_by_reason']
+    assert r['clipped_coverage'] == 0 and r['clipped_top'] == 0
+
+
+# Issue #4544: лицо у края кадра, но глаза в кадре по точкам RetinaFace.
+# Порядок точек: глаза, нос, углы рта (10 чисел, normalized).
+LM_INSIDE = [0.45, 0.04, 0.55, 0.04, 0.50, 0.08, 0.46, 0.12, 0.54, 0.12]
+LM_EYES_ABOVE_FRAME = [0.45, -0.02, 0.55, -0.02, 0.50, 0.04, 0.46, 0.08, 0.54, 0.08]
+
+
+def _edge_det(landmarks=None, cx=0.5, cy=0.05):
+    det = make_detection(cx=cx, cy=cy, w=0.3, h=0.3)
+    if landmarks is not None:
+        det['landmarks'] = landmarks
+    return det
+
+
+def test_top_edge_face_with_landmarks_inside_frame_kept_4544():
+    embedder = FakeEmbedder()
+    rec = FaceRecognizer(embedder=embedder, store=FakeStore())
+    rec.process([_edge_det(LM_INSIDE)], make_frame(), now=0.0)
+
+    assert embedder.embed_calls == [1], 'глаза в кадре: кроп не отбракован, эмбеддинг считается'
+    s = rec.stats()
+    assert s['crop_rejected_total'] == 0
+    assert s['crop_kept_by_landmarks'] == 1
+
+
+def test_top_edge_face_without_landmarks_rejected_clipped_top_4544():
+    embedder = FakeEmbedder()
+    rec = FaceRecognizer(embedder=embedder, store=FakeStore())
+    rec.process([_edge_det()], make_frame(), now=0.0)
+
+    assert embedder.embed_calls == []
+    s = rec.stats()
+    assert s['crop_rejected_by_reason']['clipped_top'] == 1
+    assert s['crop_kept_by_landmarks'] == 0
+
+
+def test_top_edge_face_with_eyes_above_frame_rejected_clipped_top_4544():
+    embedder = FakeEmbedder()
+    rec = FaceRecognizer(embedder=embedder, store=FakeStore())
+    rec.process([_edge_det(LM_EYES_ABOVE_FRAME)], make_frame(), now=0.0)
+
+    assert embedder.embed_calls == []
+    s = rec.stats()
+    assert s['crop_rejected_by_reason']['clipped_top'] == 1
+    assert s['crop_kept_by_landmarks'] == 0
+
+
+def test_low_coverage_without_landmarks_rejected_clipped_coverage_4544():
+    embedder = FakeEmbedder()
+    rec = FaceRecognizer(embedder=embedder, store=FakeStore())
+    rec.process([_edge_det(cx=0.95, cy=0.5)], make_frame(), now=0.0)
+
+    assert embedder.embed_calls == []
+    r = rec.stats()['crop_rejected_by_reason']
+    assert r['clipped_coverage'] == 1 and r['clipped_top'] == 0
 
 
 def test_crop_geometry_thresholds_are_configurable():
@@ -1108,7 +1166,8 @@ def test_crop_geometry_thresholds_are_configurable():
     rec.process(dets, frame, now=0.0)
 
     assert embedder.embed_calls == [1], 'при min_crop_coverage=0/max_top_clip_frac=1 ворота открыты'
-    assert rec.stats()['crop_rejected_by_reason']['clipped'] == 0
+    r = rec.stats()['crop_rejected_by_reason']
+    assert r['clipped_coverage'] == 0 and r['clipped_top'] == 0
 
 
 # ============================================================================
