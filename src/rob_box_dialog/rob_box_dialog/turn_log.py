@@ -248,13 +248,53 @@ def _not_fillers(speech: Mapping[str, Tuple[str, str]], fillers: Set[str]) -> Tu
 
 
 def _tool_content(result: Any) -> Mapping[str, Any]:
+    """Исход тула для окна модели: ``data`` обрезано до ``kn.WINDOW_TOOL_DATA_CHARS``.
+
+    Полный ответ тула в окне не нужен, а стоит дорого: один поиск в интернете (5 результатов со сниппетами) —
+    ~4000 токенов и больше бюджета окна ``TURN_WINDOW_MAX_TOKENS``, после чего ``TurnLog.window`` выбрасывает
+    всю историю разговора целиком (живой замер 08.11 на колонке: ``окно после хода: записей 3, токенов 3994``,
+    и следующий ход модель видела без прошлого). Что искали и что вышло — в записи остаётся.
+    """
     data = dict(getattr(result, "data", None) or {})
     out: Dict[str, Any] = {"tool": result.tool, "status": result.status}
     if getattr(result, "reason", None):
         out["reason"] = result.reason
     if data:
-        out["data"] = data
+        out["data"] = _bounded_data(data, kn.WINDOW_TOOL_DATA_CHARS)
     return MappingProxyType(out)
+
+
+def _bounded_data(data: Mapping[str, Any], limit: int) -> Mapping[str, Any]:
+    """Сжатие ответа тула для окна: полный JSON не влезает — оставляем структуру, но короче.
+
+    Не режем текст посередине (модель получала бы битый JSON): у списков остаются первые
+    ``kn.WINDOW_TOOL_ITEMS`` элементов, у строк — первые ``kn.WINDOW_TOOL_TEXT_CHARS`` знаков,
+    в ``truncated`` видно, сколько было и сколько осталось. Совсем не влезло — плоский ``preview``.
+    """
+    text = json.dumps(data, ensure_ascii=False, separators=(",", ":"), default=_plain)
+    if len(text) <= limit:
+        return data
+    compact = dict(_compact(data))
+    compact["truncated"] = {"chars": len(text), "kept_items": kn.WINDOW_TOOL_ITEMS,
+                            "kept_text_chars": kn.WINDOW_TOOL_TEXT_CHARS}
+    squeezed = json.dumps(compact, ensure_ascii=False, separators=(",", ":"), default=_plain)
+    if len(squeezed) <= limit:
+        return MappingProxyType(compact)
+    return MappingProxyType({"truncated": {"chars": len(text)}, "preview": squeezed[:limit]})
+
+
+def _compact(value: Any) -> Any:
+    """Компактная копия данных тула: списки — первые ``WINDOW_TOOL_ITEMS``, строки — до ``WINDOW_TOOL_TEXT_CHARS``."""
+    if isinstance(value, str):
+        return value if len(value) <= kn.WINDOW_TOOL_TEXT_CHARS else value[:kn.WINDOW_TOOL_TEXT_CHARS] + "…"
+    if isinstance(value, Mapping):
+        return {key: _compact(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        head = [_compact(item) for item in value[: kn.WINDOW_TOOL_ITEMS]]
+        if len(value) > kn.WINDOW_TOOL_ITEMS:
+            head.append({"omitted": len(value) - kn.WINDOW_TOOL_ITEMS})
+        return head
+    return value
 
 
 #: Наблюдатель исходов (``TurnLog(on_outcome=...)``): исход как его отдал исполнитель (``ActionResult``, ``turn_id`` —
