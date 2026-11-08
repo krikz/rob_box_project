@@ -157,3 +157,52 @@ def test_4480_exhausted_retry_does_not_voice_the_volume_lie():
     _run(ports, "Робот, что там со звуком")
     assert ports.executed == []
     assert ports.said == [phrases.text(kn.DONE_CLAIM_PHRASE)] and VOLUME_LIE not in ports.said
+
+
+# ---------------------------------------------------------------------------------------------------------------
+# #4541: «так и буду тебя узнавать» без записи человека
+# ---------------------------------------------------------------------------------------------------------------
+
+REMEMBER_LIE = "Кирилл, принял! Голос, выходит, детский — так и буду тебя узнавать. Приятно познакомиться."
+PERSON_TOOLS = (*TOOLS, "register_speaker", "name_person")
+
+
+def test_4541_live_phrase_without_a_tool_is_a_violation():
+    assert done_claims(REMEMBER_LIE) == ("recognize_person",)
+    result = validate(parse({"speech": REMEMBER_LIE, "actions": []}), PERSON_TOOLS)
+    assert isinstance(result, Invalid) and result.reason == kn.VIOLATION_DONE_CLAIM
+    assert "register_speaker" in result.all[0].allowed
+
+
+@pytest.mark.parametrize("tool", kn.PERSON_RECORD_TOOLS)
+def test_4541_live_phrase_with_a_person_tool_is_not_a_violation(tool):
+    cmd = Command(speech=REMEMBER_LIE, actions=(ToolCall(tool, {"name": "Кирилл"}),))
+    assert unkept_done_claims(cmd) == ()
+
+
+def test_4541_memory_save_does_not_back_the_claim():
+    cmd = Command(speech=REMEMBER_LIE, actions=(ToolCall("memory_save", {}),))
+    assert unkept_done_claims(cmd) == ("recognize_person",)
+
+
+@pytest.mark.parametrize("text", ["Запомнил твой голос.", "Лицо твоё запомнила."])
+def test_4541_remembered_voice_or_face_without_a_tool_is_a_claim(text):
+    assert done_claims(text) == ("remember_person",)
+
+
+def test_4541_waypoint_save_is_unchanged():
+    text = "Запомнил точку кухня."
+    assert done_claims(text) == ("waypoint_save",)
+    assert unkept_done_claims(Command(speech=text, actions=(ToolCall("save_waypoint", {"name": "кухня"}),))) == ()
+    assert unkept_done_claims(Command(speech=text)) == ("waypoint_save",)
+
+
+@pytest.mark.parametrize("text", [
+    "Я тебя уже запомнил.",
+    "Ты меня запомнил?",
+    "Не запомнил твой голос: слишком тихо.",
+    "Я уже запомнила твоё лицо.",
+    "Не буду тебя узнавать, пока не представишься.",
+])
+def test_4541_not_a_claim(text):
+    assert done_claims(text) == ()
