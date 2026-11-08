@@ -937,12 +937,14 @@ class FaceRecognizer:
         speaker_id: str,
         name: str,
         now: Optional[float] = None,
+        self_introduced: bool = False,
     ) -> Optional[str]:
         """Привязать имя к лицу, когда голос опознал человека И доказано, что говорит это лицо.
 
         Одно лицо в кадре — не доказательство (issue #4357: фото на кресле получило имя Дэнчика, говорившего вне
         кадра). Вердикт строит :class:`~rob_box_perception.face_voice_binding.VoiceFaceBinding`: одно лицо всё
-        окно фразы, рот этого лица менялся, пара «голос — лицо» подтверждена несколькими фразами. Два и больше
+        окно фразы, рот этого лица менялся, пара «голос — лицо» подтверждена несколькими фразами (одной — если
+        ``self_introduced``: фраза регистрации, человек сам назвал имя, issue #4538). Два и больше
         лиц — слияния нет (ADR-0105 §3 п.4). Имя, которое у записи уже есть и отличается от голосового, голос не
         перетирает: его поставил человек (ручное переименование) или прошлое доказанное слияние.
 
@@ -953,6 +955,8 @@ class FaceRecognizer:
             speaker_id: стабильный биометрический id голоса.
             name: имя из голосового профиля.
             now: время для тестов.
+            self_introduced: имя названо самим человеком (``SpeakerResult.source == "register"``) — хватает одного
+                подтверждения; остальные условия вердикта и запрет перетирать чужое имя те же.
 
         Returns:
             ``person_id`` лицевой записи, если имя привязано; иначе ``None``.
@@ -963,7 +967,7 @@ class FaceRecognizer:
             # Голос не опознан (is_known=false) — сюда такой payload не доходит (vision_face_node фильтрует по
             # is_known и считает это VisionFaceNode._speaker_unknown_total): программная ошибка вызывающего.
             return None
-        verdict = self._binding.judge(speaker_id, ts)  # отказы вердикта он считает сам
+        verdict = self._binding.judge(speaker_id, ts, self_introduced=self_introduced)  # отказы вердикта он считает сам
         if verdict.kind != fvb.BIND:
             note = fvb.skip_note(verdict, speaker_id, name)
             if note:
