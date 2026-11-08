@@ -55,7 +55,7 @@ import time
 import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Sequence
 
 import numpy as np
 
@@ -260,6 +260,17 @@ def _cosine(a: np.ndarray, b: np.ndarray) -> float:
     (голосовой аналог) — дешевле перенормировать, чем завести отдельный
     режим "доверяю/не доверяю входу"."""
     return float(np.dot(_normalize(a), _normalize(b)))
+
+
+def _median_best_match(a: Sequence[np.ndarray], b: Sequence[np.ndarray]) -> Optional[float]:
+    """Медиана по векторам меньшей галереи от их лучшего совпадения в другой (issue #4541).
+
+    ``None`` - одна из галерей пуста, сравнивать не с чем. Вне ``FaceStore`` (ADR-0145: класс не растёт).
+    """
+    if not a or not b:
+        return None
+    small, big = (a, b) if len(a) <= len(b) else (b, a)
+    return float(statistics.median(max(_cosine(x, y) for y in big) for x in small))
 
 
 def _atomic_write_bytes(path: Path, data: bytes) -> None:
@@ -697,11 +708,7 @@ class FaceStore:
         независимая от текущей встречи проверка "это правда дубль" - см.
         комментарий над ``DEFAULT_DISAMBIGUATION_GAP``.
         """
-        if not a.embeddings or not b.embeddings:
-            return None
-        small, big = (a, b) if len(a.embeddings) <= len(b.embeddings) else (b, a)
-        best = [max(_cosine(x, y) for y in big.embeddings) for x in small.embeddings]
-        return float(statistics.median(best))
+        return _median_best_match(a.embeddings, b.embeddings)
 
     def _disambiguate(self, scored: List[tuple]) -> tuple:
         """issue #2771 - разрешить неоднозначность «безымянный дубль
