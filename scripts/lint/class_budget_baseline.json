@@ -1,7 +1,7 @@
 {
   "version": 1,
   "created": "2026-11-09",
-  "base_sha": "e3e57efb36f8749dc1654502363458af2d70ec0d",
+  "base_sha": "162e930bb5cd33fafbb655dc051f3d083c07b3d5",
   "limits": {
     "wmc": 80,
     "methods": 40
@@ -72,7 +72,7 @@
       "methods": 38
     },
     "src/rob_box_voice/rob_box_voice/tts_node.py:TTSNode": {
-      "wmc": 500,
+      "wmc": 498,
       "methods": 88
     },
     "src/rob_box_voice/rob_box_voice/utils/speaker_embeddings.py:SpeakerDatabase": {
