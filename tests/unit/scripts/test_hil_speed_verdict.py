@@ -148,19 +148,52 @@ def test_skipped_goal_is_not_judged_alone():
 
 def test_obstacle_verdict():
     base = good_goal(kind="obstacle", status="CANCELED_BY_BENCH", err_xy_m=9.0, name="OBST")
-    ok = dict(base, obstacle={"spawned": True, "stopped": True, "stop_gap_m": 0.31, "min_gap_m": 0.30})
-    assert sv.task_failures(ok) == []
-    close = dict(base, obstacle={"spawned": True, "stopped": True, "stop_gap_m": 0.12, "min_gap_m": 0.12})
-    assert any("подошёл к стенке на 0.120" in r for r in sv.task_failures(close))
-    # встал далеко, но по пути (торможение, манёвр) подходил ближе 0.20 — провал
-    swerve = dict(base, obstacle={"spawned": True, "stopped": True, "stop_gap_m": 1.0, "min_gap_m": 0.15})
-    assert any("подошёл к стенке" in r for r in sv.task_failures(swerve))
-    # не замер 0.5 с, но держался дальше 0.20 — не провал
-    around = dict(base, obstacle={"spawned": True, "stopped": False, "min_gap_m": 0.37})
-    assert sv.task_failures(around) == []
-    through = dict(base, obstacle={"spawned": True, "stopped": False, "min_gap_m": -0.01})
-    assert any("касание стенки" in r for r in sv.task_failures(through))
+    ob = {
+        "spawned": True,
+        "stopped": True,
+        "min_gap_m": 0.30,
+        "guard_margin_m": 0.10,
+        "guard_gap_m": 0.30,
+        "guard_limit_m": 0.20,
+    }
+    assert sv.task_failures(dict(base, obstacle=ob)) == []
+    # (б) в коридоре хода ближе 0.20 — провал
+    close = dict(ob, min_gap_m=0.12, guard_margin_m=-0.08, guard_gap_m=0.12, guard_limit_m=0.20)
+    assert any("по правилу защиты: зазор 0.120" in r for r in sv.task_failures(dict(base, obstacle=close)))
+    # (а) 0.16 м до торца сбоку, (б) запас против 0.08 положительный — не провал (#4631)
+    side = dict(ob, min_gap_m=0.16, guard_margin_m=0.08, guard_gap_m=0.16, guard_limit_m=0.08)
+    assert sv.task_failures(dict(base, obstacle=side)) == []
+    through = dict(ob, stopped=False, min_gap_m=-0.01)
+    assert any("касание стенки" in r for r in sv.task_failures(dict(base, obstacle=through)))
+    no_track = {"spawned": True, "min_gap_m": 0.3}
+    assert any("правилу защиты" in r for r in sv.task_failures(dict(base, obstacle=no_track)))
     assert sv.task_failures(dict(base, obstacle={"spawned": False})) == ["стенка не появилась"]
+
+
+def _approach(lateral_m, stop_x, v=0.25):
+    """Едем по +X к x=stop_x и стоим; стенка поперёк — по guard-модулю репо."""
+    out, t, x = [], 0.0, 0.0
+    while t < 12.0:
+        out.append((round(t, 2), x, lateral_m, 0.0))
+        x = min(stop_x, x + v * 0.1)
+        t += 0.1
+    return out
+
+
+def test_guard_rule_gap_corridor_vs_side():
+    guard = sv.load_guard()
+    _, body, th = guard
+    wall = sv.wall_ahead(sv.Pose2D(0, 0, 0), 2.0)  # ближняя грань на x = 0.3064 + 2.0, ширина 3 м по y
+    face = wall.cx - wall.sx / 2
+    # прямо на стенку, встал в 0.12 от неё: в коридоре хода, порог stop_m
+    r = sv.guard_rule_gap(_approach(0.0, face - body.x_max - 0.12), wall, 0.0, 99.0, guard)
+    assert r["guard_limit_m"] == pytest.approx(th.stop_m)
+    assert r["guard_gap_m"] == pytest.approx(0.12, abs=0.01) and r["guard_margin_m"] < 0
+    # проехал мимо торца стенки в 0.15 сбоку: порог side_stop_m, запас положительный
+    lateral = wall.cy + wall.sy / 2 + 0.15 - body.y_min
+    r = sv.guard_rule_gap(_approach(lateral, face + 1.0), wall, 0.0, 99.0, guard)
+    assert r["guard_limit_m"] == pytest.approx(th.side_stop_m)
+    assert r["guard_gap_m"] == pytest.approx(0.15, abs=0.01) and r["guard_margin_m"] > 0
 
 
 def test_run_verdict_cpu_and_missing_data():

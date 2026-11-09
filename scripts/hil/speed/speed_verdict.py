@@ -35,6 +35,12 @@ except ImportError:  # в репо (тесты, машина оператора)
 
 PASS, FAIL = "PASS", "FAIL"
 
+_PARENTS = Path(__file__).resolve().parents
+ROOT = _PARENTS[3] if len(_PARENTS) > 3 else _PARENTS[0]  # в контейнере сима файл лежит в /tmp/speed
+#: Правило защиты (#4438) берётся из её же модуля и footprint Nav2 — числа здесь не копируются.
+PROXIMITY_FILE = ROOT / "src" / "rob_box_teleop" / "rob_box_teleop" / "proximity.py"
+NAV2_PARAMS_FILE = ROOT / "docker" / "main" / "config" / "nav2" / "nav2_params.yaml"
+
 #: Сцена → класс места. ``open`` — открытый зал (Depot, внезапная стенка), ``tight`` — проёмы и угол.
 SCENE_CLASS = {"depot": "open", "polygon": "tight", "turn90": "tight"}
 
@@ -217,6 +223,91 @@ def _first_still(after, vs: Mapping[float, float], still_v: float, still_s: floa
     return None
 
 
+def load_guard():
+    """(модуль ``proximity``, корпус ``Body`` из footprint Nav2, ``Thresholds()``) — правило защиты как в узле."""
+    import importlib.util
+
+    import yaml
+
+    spec = importlib.util.spec_from_file_location("speed_proximity", PROXIMITY_FILE)
+    mod = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = mod
+    spec.loader.exec_module(mod)
+    body = mod.body_from_nav2_params(yaml.safe_load(NAV2_PARAMS_FILE.read_text(encoding="utf-8")))
+    return mod, body, mod.Thresholds()
+
+
+def box_outline(box: Box, step: float = 0.01) -> List[Tuple[float, float]]:
+    """Точки контура коробки в мире через ``step`` м — то, что видел бы лидар."""
+    corners = box.corners()
+    out: List[Tuple[float, float]] = []
+    for (x0, y0), (x1, y1) in zip(corners, corners[1:] + corners[:1]):
+        n = max(1, int(math.hypot(x1 - x0, y1 - y0) / step))
+        out += [(x0 + (x1 - x0) * i / n, y0 + (y1 - y0) * i / n) for i in range(n)]
+    return out
+
+
+def guard_rule_gap(
+    track: Sequence[Tuple[float, float, float, float]], wall: Box, t0: float, t1: float, guard=None
+) -> Dict[str, Optional[float]]:
+    """Зазор до стенки по правилу защиты (#4438) по правде (t, x, y, yaw) в окне [t0, t1].
+
+    Для каждой позы точки контура стенки переводятся в ``base_footprint``, порог каждой точки даёт
+    ``proximity.stop_limits`` (коридор хода — ``stop_m``, сбоку — ``side_stop_m``, разворот — ``spin_stop_m``),
+    скорость вдоль курса — по соседним позам правды. ``guard_margin_m`` — наименьший запас «зазор − порог»
+    (меньше 0 — правило нарушено), ``guard_gap_m`` и ``guard_limit_m`` — зазор и порог в этой точке.
+    """
+    import numpy as np
+
+    mod, body, th = guard or load_guard()
+    pts = np.array(box_outline(wall))
+    best: Optional[Tuple[float, float, float, float]] = None
+    for a, b in zip(track, track[1:]):
+        dt = b[0] - a[0]
+        if not (t0 <= b[0] <= t1) or dt <= 0:
+            continue
+        _, x, y, yaw = b
+        vx = ((b[1] - a[1]) * math.cos(yaw) + (b[2] - a[2]) * math.sin(yaw)) / dt
+        c, s = math.cos(yaw), math.sin(yaw)
+        dx, dy = pts[:, 0] - x, pts[:, 1] - y
+        local = np.column_stack([c * dx + s * dy, -s * dx + c * dy])
+        qx = np.clip(local[:, 0], body.x_min, body.x_max)
+        qy = np.clip(local[:, 1], body.y_min, body.y_max)
+        gaps = np.hypot(local[:, 0] - qx, local[:, 1] - qy)
+        limits = mod.stop_limits(body, local, vx, th)
+        i = int(np.argmin(gaps - limits))
+        cand = (float(gaps[i] - limits[i]), float(gaps[i]), float(limits[i]), b[0])
+        best = cand if best is None or cand[0] < best[0] else best
+    if best is None:
+        return {"guard_margin_m": None}
+    return {
+        "guard_margin_m": _r(best[0]),
+        "guard_gap_m": _r(best[1]),
+        "guard_limit_m": _r(best[2]),
+        "guard_t": _r(best[3], 2),
+    }
+
+
+def add_guard_rule(tasks: Sequence[Dict], track: Sequence[Tuple[float, float, float, float]], guard=None) -> None:
+    """Дописать в задачи стенки метрику (б) — зазор по правилу защиты — от появления стенки до конца задачи."""
+    for t in tasks:
+        ob = t.get("obstacle") or {}
+        if t.get("kind") != "obstacle" or not ob.get("spawned") or "wall" not in ob:
+            continue
+        wx, wy, wyaw = ob["wall"]
+        wall = wall_ahead(Pose2D(0.0, 0.0, 0.0), 0.0)  # размеры стенки — одни на весь набор
+        wall = Box(wall.name, wx, wy, wall.sx, wall.sy, wall.height, wyaw)
+        ob.update(guard_rule_gap(track, wall, ob["t_spawn"], t["t_start"] + t["sim_s"], guard))
+
+
+def read_track(path: Path) -> List[Tuple[float, float, float, float]]:
+    """``track.csv`` бенча (t, x, y, yaw) → список поз."""
+    if not path.exists():
+        return []
+    rows = path.read_text(encoding="utf-8").splitlines()[1:]
+    return [tuple(float(v) for v in r.split(",")) for r in rows if r.strip()]
+
+
 # ── вердикт ─────────────────────────────────────────────────────────────────
 
 
@@ -282,16 +373,16 @@ def _goal_failures(task: Mapping, crit: Criteria) -> List[str]:
 def _obstacle_failures(ob: Mapping, crit: Criteria) -> List[str]:
     if not ob.get("spawned"):
         return ["стенка не появилась"]
-    # Мерило — наименьший зазор после появления стенки: робот у стенки не всегда замирает на 0.5 с, он может
-    # встать, сдать назад и объехать (HIL 09.11: «остановка» через 5–16 с и 5–7 м пути), а ближе всего он
-    # подходит именно в торможении. Касание — частный случай зазора < 0.20.
+    # Две метрики (координатор, разбор #4631): (а) ``min_gap_m`` — наименьший зазор до любой точки стенки после
+    # её появления, для сведения; (б) ``guard_margin_m`` — запас по правилу защиты (#4438): в коридоре хода
+    # против ``stop_m`` 0.20, сбоку против ``side_stop_m`` 0.08. «Падает» — по (б) и по касанию.
     gap = ob.get("min_gap_m")
-    if gap is None:
-        return ["нет зазора до стенки"]
-    if gap < crit.contact_m:
+    if gap is not None and gap < crit.contact_m:
         return [f"касание стенки: {gap:.3f} м"]
-    if gap < crit.obstacle_gap_min_m:
-        return [f"подошёл к стенке на {gap:.3f} м < {crit.obstacle_gap_min_m}"]
+    if ob.get("guard_margin_m") is None:
+        return ["нет зазора по правилу защиты (track.csv)"]
+    if ob["guard_margin_m"] < 0:
+        return [f"по правилу защиты: зазор {ob['guard_gap_m']:.3f} м < порога {ob['guard_limit_m']:.2f}"]
     return []
 
 
@@ -438,7 +529,13 @@ def _num(s: str) -> float:
 def _cmd_run(a) -> int:
     tasks = json.loads(Path(a.result).read_text(encoding="utf-8")) if Path(a.result).exists() else []
     main = json.loads(Path(a.main).read_text(encoding="utf-8")) if Path(a.main).exists() else {}
+    add_guard_rule(tasks, read_track(Path(a.result).with_name("track.csv")))
     verdict, reasons = run_verdict(tasks, main)
+    # задачи с метрикой (б) — рядом с result.json, для таблицы
+    Path(a.result).with_name("verdict.json").write_text(
+        json.dumps({"verdict": verdict, "reasons": reasons, "tasks": tasks}, ensure_ascii=False, indent=1),
+        encoding="utf-8",
+    )
     print(f"VERDICT {a.scene} v={a.speed} rep={a.rep} {verdict}" + (": " + "; ".join(reasons) if reasons else ""))
     if a.ledger:
         row = {
