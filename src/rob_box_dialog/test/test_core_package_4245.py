@@ -59,7 +59,11 @@ def test_package_ships_core_and_bridge():
                  "rob_box_harness.core.assembly", "rob_box_voice.core.dialog_v2_ports",
                  "rob_box_voice.core.command_bridge", "rob_box_voice.core.voice_memory",
                  "rob_box_voice.core.speaker_memory", "rob_box_voice.tts_voice_registry",
-                 "rob_box_voice.core.music_player_state"):
+                 "rob_box_voice.core.music_player_state",
+                 # связка хода - пакет rob_box_dialog_host (ADR-0167 Ш1г-1); пути rob_box_voice выше - псевдонимы
+                 "rob_box_dialog_host.dialog_v2_ports", "rob_box_dialog_host.command_bridge",
+                 "rob_box_dialog_host.voice_memory", "rob_box_dialog_host.speaker_memory",
+                 "rob_box_dialog_host.tts_voice_registry", "rob_box_dialog_host.music_player_state"):
         assert must in names, must
     assert not [n for n in names if ".test." in f".{n}." or n.endswith("_node")], "тесты и ROS-ноды не в ядре"
 

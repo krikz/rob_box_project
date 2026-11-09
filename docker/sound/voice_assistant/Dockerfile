@@ -45,7 +45,7 @@ LABEL org.opencontainers.image.source="https://github.com/krikz/rob_box_project"
 
 # Рабочая директория
 WORKDIR /ws
-RUN mkdir -p src/rob_box_music src/rob_box_dialog src/rob_box_core src/rob_box_voice src/rob_box_mcp_tools src/rob_box_perception_msgs src/rob_box_harness src/rob_box_llm src/rob_box_supervisor_msgs src/rob_box_dialog_msgs
+RUN mkdir -p src/rob_box_music src/rob_box_dialog src/rob_box_dialog_host src/rob_box_core src/rob_box_voice src/rob_box_mcp_tools src/rob_box_perception_msgs src/rob_box_harness src/rob_box_llm src/rob_box_supervisor_msgs src/rob_box_dialog_msgs
 
 # ============================================================
 # ОПТИМИЗАЦИЯ СЛОЕВ ДЛЯ КЕШИРОВАНИЯ (dependencies → config → code)
@@ -57,6 +57,7 @@ COPY src/rob_box_voice/package.xml /ws/src/rob_box_voice/
 COPY src/rob_box_music/package.xml /ws/src/rob_box_music/
 # ADR-0150 PR-1: одна таблица знания диалога (вейк, тишина, громкость) — её импортируют voice и harness
 COPY src/rob_box_dialog/package.xml /ws/src/rob_box_dialog/
+COPY src/rob_box_dialog_host/package.xml /ws/src/rob_box_dialog_host/
 COPY src/rob_box_mcp_tools/package.xml /ws/src/rob_box_mcp_tools/
 COPY src/rob_box_harness/package.xml /ws/src/rob_box_harness/
 COPY src/rob_box_llm/package.xml /ws/src/rob_box_llm/
@@ -162,6 +163,7 @@ COPY src/rob_box_voice/setup.py /ws/src/rob_box_voice/
 COPY src/rob_box_voice/setup.cfg /ws/src/rob_box_voice/
 COPY src/rob_box_music/setup.py /ws/src/rob_box_music/
 COPY src/rob_box_dialog/setup.py /ws/src/rob_box_dialog/
+COPY src/rob_box_dialog_host/setup.py /ws/src/rob_box_dialog_host/
 COPY src/rob_box_mcp_tools/setup.py /ws/src/rob_box_mcp_tools/
 COPY src/rob_box_mcp_tools/setup.cfg /ws/src/rob_box_mcp_tools/
 COPY src/rob_box_harness/setup.py /ws/src/rob_box_harness/
@@ -180,6 +182,7 @@ COPY src/rob_box_core/config /ws/src/rob_box_core/config
 COPY src/rob_box_voice/resource /ws/src/rob_box_voice/resource
 COPY src/rob_box_music/resource /ws/src/rob_box_music/resource
 COPY src/rob_box_dialog/resource /ws/src/rob_box_dialog/resource
+COPY src/rob_box_dialog_host/resource /ws/src/rob_box_dialog_host/resource
 COPY src/rob_box_mcp_tools/resource /ws/src/rob_box_mcp_tools/resource
 COPY src/rob_box_harness/resource /ws/src/rob_box_harness/resource
 COPY src/rob_box_llm/resource /ws/src/rob_box_llm/resource
@@ -204,6 +207,8 @@ COPY src/rob_box_core/rob_box_core /ws/src/rob_box_core/rob_box_core
 COPY src/rob_box_voice/rob_box_voice /ws/src/rob_box_voice/rob_box_voice
 COPY src/rob_box_music/rob_box_music /ws/src/rob_box_music/rob_box_music
 COPY src/rob_box_dialog/rob_box_dialog /ws/src/rob_box_dialog/rob_box_dialog
+# ADR-0167 Ш1г: связка хода (мост команд, порты, память) - пакет ядра без ROS
+COPY src/rob_box_dialog_host/rob_box_dialog_host /ws/src/rob_box_dialog_host/rob_box_dialog_host
 COPY src/rob_box_mcp_tools/rob_box_mcp_tools /ws/src/rob_box_mcp_tools/rob_box_mcp_tools
 COPY src/rob_box_harness/rob_box_harness /ws/src/rob_box_harness/rob_box_harness
 COPY src/rob_box_llm/rob_box_llm /ws/src/rob_box_llm/rob_box_llm
@@ -289,7 +294,7 @@ RUN . /opt/ros/${ROS_DISTRO}/setup.sh && \
     rm -rf /opt/ros/${ROS_DISTRO}/share/*/cmake/*.cmake~ && \
     ldconfig && \
     colcon build \
-    --packages-select rob_box_core rob_box_music rob_box_dialog rob_box_mcp_tools rob_box_llm rob_box_harness rob_box_voice \
+    --packages-select rob_box_core rob_box_music rob_box_dialog rob_box_dialog_host rob_box_mcp_tools rob_box_llm rob_box_harness rob_box_voice \
     --cmake-args \
     -DCMAKE_BUILD_TYPE=Release \
     -DCMAKE_EXPORT_COMPILE_COMMANDS=ON

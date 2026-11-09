@@ -34,7 +34,7 @@ from typing import Any, Callable, Dict, Mapping, Optional, Tuple
 from rob_box_dialog.plan.sync import beat_heard_at
 from rob_box_music.model import BEATS_PER_BAR
 from rob_box_music.track_brief import track_brief
-from rob_box_voice.core.music_player_state import build_music_event_payload, build_music_state_payload
+from rob_box_dialog_host.music_player_state import build_music_event_payload, build_music_state_payload
 
 _LOG = logging.getLogger(__name__)
 

@@ -23,6 +23,7 @@ on:
       - 'src/rob_box_llm/**'
       - 'src/rob_box_harness/**'
       - 'src/rob_box_dialog/**'
+      - 'src/rob_box_dialog_host/**'
       - 'src/rob_box_music/rob_box_music/**'
       - 'src/rob_box_voice/rob_box_voice/core/**'
       - 'src/rob_box_voice/rob_box_voice/tts_voice_registry.py'
@@ -42,6 +43,7 @@ on:
       - 'src/rob_box_llm/**'
       - 'src/rob_box_harness/**'
       - 'src/rob_box_dialog/**'
+      - 'src/rob_box_dialog_host/**'
       - 'src/rob_box_music/rob_box_music/**'
       - 'src/rob_box_voice/rob_box_voice/core/**'
       - 'src/rob_box_voice/rob_box_voice/tts_voice_registry.py'
@@ -92,7 +94,7 @@ jobs:
       - name: Core tests from the installed package
         run: |
           set -o pipefail
-          for pkg in rob_box_dialog rob_box_core rob_box_llm; do
+          for pkg in rob_box_dialog rob_box_dialog_host rob_box_core rob_box_llm; do
             echo "::group::$pkg"
             # тестовые каталоги без __init__.py: в sys.path попадает только test/, ядро - из venv
             ( cd "src/$pkg" && "$VENV/bin/pytest" -v -p no:cacheprovider test )
