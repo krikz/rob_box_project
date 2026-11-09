@@ -92,8 +92,13 @@ def load_secret_key(text: str) -> SecretKey:
     if raw[2:4] != _KDF_NONE:
         raise SignatureError("секретный ключ зашифрован паролем: для CI нужен незашифрованный (minisign -G -W)")
     keynum, sk, chk = raw[54:62], raw[62:126], raw[126:158]
-    if hashlib.blake2b(_KEY_ALG + keynum + sk, digest_size=32).digest() != chk:
+    # Утилита minisign при -W контрольную сумму не считает (остаются нули) и при загрузке не проверяет;
+    # ненулевую проверяем. Главная проверка — открытая половина ключа выводится из seed.
+    if chk != bytes(32) and hashlib.blake2b(_KEY_ALG + keynum + sk, digest_size=32).digest() != chk:
         raise SignatureError("секретный ключ: не сошлась контрольная сумма")
+    derived = _ed25519().Ed25519PrivateKey.from_private_bytes(sk[:32]).public_key().public_bytes_raw()
+    if derived != sk[32:]:
+        raise SignatureError("секретный ключ: открытая половина не выводится из seed — файл испорчен")
     return SecretKey(keynum=keynum, seed=sk[:32], public=sk[32:])
 
 

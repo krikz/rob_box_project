@@ -48,6 +48,22 @@ def test_secret_key_checksum_is_checked():
         minisign.load_secret_key(broken)
 
 
+def test_cli_style_key_with_zero_checksum():
+    """`minisign -G -W` оставляет контрольную сумму нулями (CI 09.11 поймал это тестом совместимости)."""
+    import base64
+
+    secret_text, _ = minisign.generate_keypair()
+    head, body = secret_text.splitlines()[:2]
+    raw = bytearray(base64.b64decode(body))
+    raw[126:158] = bytes(32)
+    as_cli = head + "\n" + base64.b64encode(bytes(raw)).decode() + "\n"
+    assert minisign.load_secret_key(as_cli).seed == minisign.load_secret_key(secret_text).seed
+    raw[70] ^= 0xFF
+    broken = head + "\n" + base64.b64encode(bytes(raw)).decode() + "\n"
+    with pytest.raises(minisign.SignatureError, match="открытая половина"):
+        minisign.load_secret_key(broken)
+
+
 @pytest.mark.skipif(shutil.which("minisign") is None, reason="утилиты minisign нет на этой машине")
 def test_interop_with_minisign_cli(tmp_path):
     """Подпись этого модуля проверяет настоящий `minisign -V`, и наоборот (ключ -W, без пароля)."""
