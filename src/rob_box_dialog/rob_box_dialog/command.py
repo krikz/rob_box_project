@@ -994,8 +994,10 @@ def _check_speech_with_actions(cmd: Command, agent: str) -> None:
 
 
 def _speech_is_dropped(cmd: Command, agent: str) -> bool:
-    """``speech`` команды не прозвучит: рядом громкие действия без ``perform`` (:func:`_check_speech_with_actions`)."""
-    return bool(cmd.speech and loud_actions(cmd) and cmd.perform is None and agent != kn.TEXT_CHANNEL_AGENT)
+    """``speech`` команды не прозвучит: рядом громкие действия без ``perform`` (:func:`_check_speech_with_actions`).
+    Вереница (``action_chain.runs_as_chain``) - исключение: её ``speech`` звучит до шагов как план (ADR-0165 §3)."""
+    return bool(cmd.speech and loud_actions(cmd) and cmd.perform is None and agent != kn.TEXT_CHANNEL_AGENT
+                and not action_chain.runs_as_chain(cmd.actions))
 
 
 def unkept_promises(cmd: Command) -> Tuple[str, ...]:
@@ -1066,10 +1068,13 @@ def _check_done_claim(cmd: Command, agent: str) -> None:
     сделали бы слова правдой. Речь, что не прозвучит (:func:`_speech_is_dropped`), ничего не утверждает."""
     if _speech_is_dropped(cmd, agent):
         return
-    broken = unkept_done_claims(cmd)
+    # план вереницы звучит до шагов: «удалил» в нём - неправда, даже если тул в команде есть (ADR-0165 §3, §9.1)
+    chain = action_chain.runs_as_chain(cmd.actions)
+    broken = action_chain.plan_claims(cmd.speech) if chain else unkept_done_claims(cmd)
     if broken:
         tools = tuple(dict.fromkeys(t for kind in broken for t in kn.DONE_CLAIMS[kind].tools))
-        raise _Bad(kn.VIOLATION_DONE_CLAIM, f"speech утверждает {', '.join(broken)} без тула", tools)
+        where = "в плане до шагов" if chain else "без тула"
+        raise _Bad(kn.VIOLATION_DONE_CLAIM, f"speech утверждает {', '.join(broken)} {where}", tools)
 
 
 def _check_chain_mixed(cmd: Command) -> None:
@@ -1100,7 +1105,7 @@ def _check_ask(ask: Optional[Ask]) -> None:
 
 
 def _check_actions(actions: Tuple[ToolCall, ...], available: Collection[str], agent: str) -> None:
-    if len(actions) > kn.ACTIONS_ACCEPT_MAX:  # сверх исполняемого ACTIONS_MAX - не нарушение: лишнее называет ход
+    if len(actions) > kn.ACTIONS_ACCEPT_MAX:  # длину вереницы сверх этого судит тип задачи (action_chain.over_limit)
         raise _Bad("too_many_actions", f"{len(actions)} > {kn.ACTIONS_ACCEPT_MAX}")
     per_class: dict = {}
     for call in actions:

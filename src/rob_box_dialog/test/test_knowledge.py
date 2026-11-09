@@ -133,7 +133,7 @@ def _walk(schema):
 def test_command_schema_modes():
     schema = kn.command_schema("json")
     assert schema["properties"]["speech"]["maxLength"] == kn.SPEECH_MAX_CHARS
-    assert schema["properties"]["actions"]["maxItems"] == kn.ACTIONS_ACCEPT_MAX  # исполняет ход ACTIONS_MAX (#4391)
+    assert schema["properties"]["actions"]["maxItems"] == kn.ACTIONS_ACCEPT_MAX  # длинное - вереницей (ADR-0165)
     face = schema["properties"]["expression"]["properties"]["face"]["properties"]
     assert {k: tuple(v["enum"]) for k, v in face.items() if "enum" in v} == dict(kn.FACE_SCENE_SLOTS)
     for node in _walk(schema):
@@ -151,7 +151,7 @@ def test_prompt_fragment_names_every_enum_value():
     values = [*kn.EMOTIONS, *kn.GESTURES, *kn.EARCONS, *kn.PERFORM_KINDS, *kn.WHEN, *kn.ASK_EXPECTS, *kn.PASSED,
               *kn.ROLE_GENDERS, *(v for vs in kn.FACE_SCENE_SLOTS.values() for v in vs)]
     assert [v for v in values if v not in text] == []
-    assert str(kn.SPEECH_MAX_CHARS) in text and str(kn.ACTIONS_MAX) in text
+    assert str(kn.SPEECH_MAX_CHARS) in text and str(kn.ACTIONS_ACCEPT_MAX) in text and "по одному" in text
     # PR-7 ч.7c: об итоге действий говорит код; ответ по сути при действиях — perform; голос реплики; роли (#4084) —
     # герои и чья реплика, голоса им даёт код (поля voice_per_segment в схеме и в промпте нет)
     assert "скажет код" in text and "- voice:" in text and "voice_per_segment" not in text

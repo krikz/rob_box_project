@@ -81,7 +81,7 @@ from rob_box_dialog.profile import load_profile  # noqa: E402
 from rob_box_dialog.prompts import personality_prompt  # noqa: E402
 from rob_box_dialog.session import MusicStateRef, Session  # noqa: E402
 from rob_box_dialog.speaker_adapter import speaker_ref, voice_tag  # noqa: E402
-from rob_box_dialog.turn import ASK_MARK, LOG_MARK, TurnEngine, host_sections  # noqa: E402
+from rob_box_dialog.turn import ASK_MARK, LOG_MARK, TurnEngine, host_sections, settle  # noqa: E402
 from rob_box_llm.provider import ToolResult  # noqa: E402
 from rob_box_mcp_tools.voice_request import VoiceOutcome, outcome_data  # noqa: E402
 from rob_box_voice.core.dialog_v2_ports import CallCounter, V2Ports  # noqa: E402
@@ -1016,6 +1016,7 @@ class DryStand:
         await self._note_speaker(decision)
         with uv.installed(self.variant, offered, lambda: route.as_pair() if route is not None else None):
             agg = await self.engine.run(decision)
+            await settle(self.engine)  # вереница (ADR-0165) идёт после закрытия хода: шаг стенда ждёт её итог
         spoken_s = self.speech.settle(self.engine, kn.AGENTS[0])
         self.clock.advance(spoken_s)
         self.end_performances()

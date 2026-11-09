@@ -228,8 +228,9 @@ class Executor:
         if event.status == "pending" and event.event_ref:
             self._requests[event.event_ref] = request
         self._requests.pop(request.turn_id, None)
-        if self._stale_epoch(request, event):
-            return _result(request, OwnerEvent(request.turn_id, "cancelled", "stale_epoch"))
+        if self._stale_epoch(request, event):  # исход владельца до подмены - вереница засчитает доживший шаг честно
+            honest = {kn.STALE_OUTCOME_KEY: _result(request, event).status}
+            return _result(request, OwnerEvent(request.turn_id, "cancelled", "stale_epoch", MappingProxyType(honest)))
         return _result(request, event)
 
     def _start(self, request: ActionRequest, future: "asyncio.Future[OwnerEvent]") -> Optional["asyncio.Future[Any]"]:

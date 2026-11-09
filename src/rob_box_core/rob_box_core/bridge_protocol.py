@@ -1310,7 +1310,7 @@ VOICE_PIPELINE_DEFAULT_LANGUAGE: str = "ru"
 
 
 class VoiceInputMode(str, Enum):
-    """Параметр ``voice_input_mode`` на ``dialogue_node``.
+    """Параметр ``voice_input_mode`` на ``dialog_node``.
 
     Значения совпадают с ADR-0027 §3.4 + AV-22 (issue #1914, режим
     ``quest_command``). Сервер валидирует через
@@ -1328,7 +1328,7 @@ class VoiceInputMode(str, Enum):
 
 # Подмножество, которое клиент может прислать в ``voice_mode`` cmd
 # (Phase 2 уже на сервере, см. ws_server.py:1847). Внутренний
-# ``respeaker`` клиент НЕ ставит через wire — это default dialogue_node.
+# ``respeaker`` клиент НЕ ставит через wire — это default dialog_node.
 VOICE_WIRE_MODES: tuple[str, ...] = (
     "off",
     "passthrough",
