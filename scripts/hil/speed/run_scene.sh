@@ -139,6 +139,12 @@ mn "touch $stopf"
 for f in result.json track.csv pose_err.csv; do
     sb "docker exec $G cat /tmp/sp/$label/$f" >"$RES/$f" 2>/dev/null
 done
+# Ни одной задачи — сбой стенда (бенч не дождался Nav2 и т.п.), а не провал скорости: в журнал не пишем,
+# sweep.sh повторит тот же прогон.
+if ! grep -q '"name"' "$RES/result.json" 2>/dev/null; then
+    log "❌ стенд: в result.json нет задач — прогон не засчитан (bench.out)"
+    exit 9
+fi
 
 # 7. логи и замер Main
 sleep 3

@@ -361,6 +361,23 @@ class ObstacleState:
         return ob
 
 
+def _wait_nav2(nav, timeout_s: float = 180.0) -> None:
+    """Как ``waitUntilNav2Active``, но с пределом: сбой discovery не должен висеть до таймаута прогона (09.11:
+    19 мин «bt_navigator/get_state service not available» при активном nav2 на Main Pi)."""
+    from lifecycle_msgs.srv import GetState
+
+    cli = nav.create_client(GetState, "/bt_navigator/get_state")
+    end = time.monotonic() + timeout_s
+    while time.monotonic() < end:
+        if cli.wait_for_service(timeout_sec=2.0):
+            fut = cli.call_async(GetState.Request())
+            rclpy.spin_until_future_complete(nav, fut, timeout_sec=5.0)
+            if fut.result() is not None and fut.result().current_state.label == "active":
+                return
+    print(f"SPEEDBENCH_NO_NAV2 bt_navigator не active за {timeout_s:.0f} с", flush=True)
+    raise SystemExit(3)
+
+
 def controller_params(nav) -> dict:
     from rcl_interfaces.srv import GetParameters
 
@@ -403,7 +420,7 @@ def main() -> int:
     nav.set_parameters([Parameter("use_sim_time", Parameter.Type.BOOL, True)])
     rec = Recorder(nav, spawn)
     w0 = time.monotonic()
-    nav.waitUntilNav2Active(navigator="bt_navigator", localizer="bt_navigator")
+    _wait_nav2(nav)
     dl = time.monotonic() + 120
     while time.monotonic() < dl and not (rec.truth and rec.lookup("map", "base_footprint", None)):
         rclpy.spin_once(nav, timeout_sec=0.1)
