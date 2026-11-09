@@ -109,6 +109,17 @@ def activity(record: dict) -> float:
     return float(value) if isinstance(value, (int, float)) else 0.0
 
 
+def message_ids(record: dict) -> set:
+    """Сообщения, reply на которые — это reply на черновик: сам черновик и его ролик.
+
+    Разбор 08.11: ролик приходит отдельным сообщением, и ответ на него («оформи текст»)
+    не считался ответом на черновик — уходил в разговор, где модель только обещала.
+    """
+    ids = {record.get("message_id"), (record.get("last_motion") or {}).get("message_id")}
+    ids.discard(None)
+    return ids
+
+
 def target(state: dict, text: str = "", reply_to: Optional[int] = None, now: Optional[float] = None) -> tuple:
     """(id черновика, кандидаты). Черновик найден — кандидатов нет; не найден — переспросить кнопками.
 
@@ -117,7 +128,7 @@ def target(state: dict, text: str = "", reply_to: Optional[int] = None, now: Opt
     found = drafts(state)
     if reply_to:
         for post_id, record in found:
-            if record.get("message_id") == reply_to:
+            if reply_to in message_ids(record):
                 return post_id, []
     named = [post_id for post_id, _record in found if post_id in (text or "")]
     if len(named) == 1:

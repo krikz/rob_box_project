@@ -78,6 +78,7 @@ def refine_motion(
     # Тот же файл уже присылали — второй раз не шлём (Шифу: «так много видосов»).
     again = any(m in (request or "").lower() for m in ("пришли", "ещё раз", "еще раз", "повторно", "покажи снова"))
     already = last.get("delivered") == fingerprint and last.get("path") == str(path)
+    video_message_id = last.get("message_id") if already else None
     if already and not again:
         progress.note("Этот ролик уже присылан — второй раз не отправляю")
     else:
@@ -89,6 +90,8 @@ def refine_motion(
         if not sent.get("ok"):
             progress.fail(sent.get("description") or "Telegram не принял файл")
             return False
+        # reply на ролик — это reply на черновик (studio_intent.message_ids).
+        video_message_id = (sent.get("result") or {}).get("message_id")
     # Черновик приводим к тому же виду: правка не обязательна — видео уже доставлено.
     updated = dict(record, media_path=str(path), media_choice=choice)
     ok, why = jobs.update_draft(bot, updated, chat_id, new_media=path)
@@ -112,6 +115,7 @@ def refine_motion(
                 "path": str(path),
                 "fingerprint": fingerprint,
                 "delivered": fingerprint if not (already and not again) else last.get("delivered"),
+                "message_id": video_message_id,
             },
         },
     )

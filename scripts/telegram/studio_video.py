@@ -54,6 +54,9 @@ TOP_MARKERS = ("сверху", "камер", "карт")
 # «сверху» отдельно — это вид сверху (top_view); стопка — только когда есть и «снизу».
 VERTICAL_MARKERS = ("вертикаль", "вертикальн", "столбик", "стопкой", "в столбик", "сверху и снизу")
 STACK_MARKERS = ("стопкой", "столбиком", "в столбик", "сверху и снизу")
+# Обратные слова: только они меняют раскладку, которую Шифу уже выбрал для этого черновика.
+SIDE_MARKERS = ("рядом", "бок о бок", "слева", "справа")
+LANDSCAPE_MARKERS = ("горизонтальн", "альбомн", "широкий кадр")
 COMPARE_RE = re.compile(r"до\s+и\s+после|до[^\w]{0,3}после|после[^\w]{0,3}до|до\s+сверху|до\s+был[оа]")
 TITLE_MAX = 90
 MP4_SIZE, MP4_FPS, MP4_SECONDS, HOLD_SECONDS = (1280, 720), 20, 30, 3
@@ -80,8 +83,36 @@ def feasible(record: dict, facts: list, catalog: list) -> list:
     return out
 
 
+def _title(record: dict) -> str:
+    """Заголовок ролика из черновика — для читателя, без «PR #N влит в develop» (ролик идёт в канал)."""
+    return smedia.reader_title(record.get("title") or "") or "РОББОКС"
+
+
 def _context(record: dict, request: str) -> str:
     return " ".join(str(record.get(k) or "") for k in ("title", "show", "body_html")) + " " + (request or "")
+
+
+def remembered_layout(record: dict, low: str, stacked: bool, portrait: bool) -> tuple:
+    """(раскладка, ориентация): слова этой просьбы, иначе — то, что уже выбрано для черновика.
+
+    Разбор 08.11: «вертикально, до сверху, после снизу» собралось, а следующая просьба
+    «наложи на это вертикальное видео звук» дала «рядом» — раскладка решалась только
+    по словам последнего сообщения. Теперь выбранное держится, пока Шифу не скажет обратное.
+    """
+    last = record.get("last_motion") or {}
+    if stacked:
+        layout = "stacked"
+    elif any(m in low for m in SIDE_MARKERS):
+        layout = "side_by_side"
+    else:
+        layout = last.get("layout") if last.get("layout") in LAYOUTS else "side_by_side"
+    if portrait:
+        orientation = "portrait"
+    elif any(m in low for m in LANDSCAPE_MARKERS):
+        orientation = "landscape"
+    else:
+        orientation = last.get("orientation") if last.get("orientation") in ORIENTATIONS else "landscape"
+    return layout, orientation
 
 
 def plan_by_code(record: dict, request: str, catalog: list, options: list) -> Optional[dict]:
@@ -93,14 +124,13 @@ def plan_by_code(record: dict, request: str, catalog: list, options: list) -> Op
     # сверху (top_view); стопка — только если есть и «снизу» (Шифу, 07.11).
     stacked = any(m in low for m in STACK_MARKERS) or ("сверху" in low and "снизу" in low)
     portrait = any(m in low for m in VERTICAL_MARKERS)
-    layout = "stacked" if stacked else "side_by_side"
-    orientation = "portrait" if portrait else "landscape"
+    layout, orientation = remembered_layout(record, low, stacked, portrait)
     wants_compare = any(m in low for m in COMPARE_MARKERS) or bool(COMPARE_RE.search(low))
     if "compare" in options and (wants_compare or stacked or portrait):
         pair = material.pair_for(topic, catalog) if topic else []
         runs = pair or _default_runs("compare", catalog)
         if len(runs) >= 2:
-            title = material.TOPICS[topic]["title"] if topic and topic in material.TOPICS else (record.get("title") or "РОББОКС")
+            title = material.TOPICS[topic]["title"] if topic and topic in material.TOPICS else _title(record)
             return {"template": "compare", "runs": runs, "layout": layout, "orientation": orientation, "title": title}
     if (
         "top_view" in options
@@ -127,7 +157,7 @@ def plan_by_code(record: dict, request: str, catalog: list, options: list) -> Op
             "runs": runs,
             "layout": layout,
             "orientation": orientation,
-            "title": record.get("title") or "РОББОКС",
+            "title": _title(record),
         }
     return None
 
@@ -176,9 +206,7 @@ def validate_plan(plan: dict, options: list, catalog: list) -> list:
     runs = plan.get("runs") or []
     if not isinstance(runs, list) or any(r not in kinds for r in runs):
         problems.append(f"прогоны {runs!r} не из каталога")
-    elif template == "compare" and (
-        len(runs) != 2 or len(set(runs)) != 2 or {kinds[r] for r in runs} != {"poses"}
-    ):
+    elif template == "compare" and (len(runs) != 2 or len(set(runs)) != 2 or {kinds[r] for r in runs} != {"poses"}):
         problems.append("compare: нужно ровно два разных прогона с позой")
     elif template == "animated_card" and not (1 <= len(runs) <= 2 and all(kinds[r] == "poses" for r in runs)):
         problems.append("animated_card: нужен один или два прогона с позой")
@@ -192,8 +220,8 @@ def validate_plan(plan: dict, options: list, catalog: list) -> list:
     title = plan.get("title")
     if not isinstance(title, str) or not title.strip() or len(title) > TITLE_MAX or "<" in title:
         problems.append(f"заголовок пустой, длиннее {TITLE_MAX} знаков или с разметкой")
-    elif any(pattern.search(title) for pattern, _what in lib.FORBIDDEN):
-        problems.append("в заголовке запрещённое (адрес, ключ)")
+    elif any(pattern.search(title) for pattern, _what in lib.POST_FORBIDDEN):
+        problems.append("в заголовке запрещённое (адрес, ключ, номер PR, ветка, файл)")
     return problems
 
 

@@ -11,15 +11,13 @@
 
 from __future__ import annotations
 
-import re
-from typing import Optional
-
 import argparse
 import hashlib
 import json
 import os
 import sys
 from pathlib import Path
+from typing import Optional
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
@@ -47,54 +45,36 @@ def pick_fact(facts: list) -> dict:
     return facts[0] if facts else {}
 
 
-PR_RE = re.compile(r"#(\d+)")
-
-
-def pr_numbers(text: str) -> set:
-    """Номера PR из текста факта."""
-    return set(PR_RE.findall(text or ""))
-
-
-def fact_prs(fact: dict) -> set:
-    """Все номера PR, которые называет факт: из текста и из поля pr."""
-    found = pr_numbers(" ".join(str(fact.get(k) or "") for k in ("claim", "source")))
-    own = str(fact.get("pr") or "").strip()
-    if own:
-        found.add(own.lstrip("#"))
-    return found
-
-
 def pick_media(facts: list, fact: Optional[dict] = None) -> str:
-    """Материал поста — из его же факта.
+    """Материал поста — из его же факта или из того же PR (правило — ``studio_media.own_media``).
 
     Раньше бралась любая картинка сессии: пост про конфиг (#4507) получал
     график дрейфа из другой правки, и текст не соответствовал картинке
-    (Шифу, 07.11: «текст не соответствует видео»). Теперь материал берётся
-    только из факта самого поста или из того же PR.
+    (Шифу, 07.11: «текст не соответствует видео»).
     """
     if fact and fact.get("kind") == "media" and fact.get("source"):
         return fact["source"]
-    if not fact:
+    if not fact or not fact.get("key"):
         return ""
-    wanted = fact_prs(fact)
-    wanted.discard("")
-    for item in facts:
-        if item.get("kind") != "media" or not item.get("source"):
-            continue
-        if wanted & fact_prs(item):
-            return item["source"]
-    return ""
+    import studio_media
+
+    own = studio_media.own_media({"fact_keys": [fact["key"]]}, facts)
+    return own[0]["source"] if own else ""
 
 
-def build_post(facts: list, model: str = st.DEFAULT_MODEL, repo_root: Path = st.REPO_ROOT) -> dict:
+def build_post(
+    facts: list, model: str = st.DEFAULT_MODEL, repo_root: Path = st.REPO_ROOT, shifu_rules: Optional[list] = None
+) -> dict:
     """Собрать готовый пост: факт → идея → текст → проверка."""
     if not facts:
         return {"error": "нет фактов"}
     fact = pick_fact(facts)
     if not fact:
         return {"error": "нечего показывать"}
+    import studio_media
+
     claim = (fact.get("claim") or "").strip()
-    title = claim[:90].rstrip(" .,:;") if claim else "Что нового в проекте"
+    title = studio_media.reader_title(claim) if claim else "Что нового в проекте"
     idea = {
         "title": title,
         # «Что показать» — сам факт: пост не должен выдумывать сюжет.
@@ -102,6 +82,8 @@ def build_post(facts: list, model: str = st.DEFAULT_MODEL, repo_root: Path = st.
         "deadline": "",
         "media_ref": pick_media(facts, fact),
         "fact_keys": [fact.get("key")] if fact.get("key") else [],
+        # Правила Шифу к постам (studio_rules) — в задание каждого текста.
+        "shifu_rules": shifu_rules or [],
     }
     # Черновик уходит всегда с картинкой (решение Шифу 06.11): лимит — подпись 1024 знака.
     produced = st.produce_post(idea, [fact], model=model, repo_root=repo_root, has_media=True)

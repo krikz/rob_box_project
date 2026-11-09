@@ -101,11 +101,21 @@ def test_internal_ip_is_rejected():
 
 def test_valid_draft_passes():
     problems = text_mod.validate_post(
-        "В PR #4502 сторож локализации не считает потерю опоры успехом. #навигация #честность",
+        "Сторож локализации не считает потерю опоры успехом. #навигация #честность",
         ["#навигация", "#честность"],
         make_facts(),
     )
     assert problems == []
+
+
+def test_pr_number_in_post_is_rejected():
+    """Шифу 07.11: номера PR в посте не пишем — раньше этот текст считался образцовым."""
+    problems = text_mod.validate_post(
+        "В PR #4502 сторож локализации не считает потерю опоры успехом. #навигация #честность",
+        ["#навигация", "#честность"],
+        make_facts(),
+    )
+    assert any("номер PR" in p for p in problems)
 
 
 def test_tag_not_in_dictionary_is_rejected():

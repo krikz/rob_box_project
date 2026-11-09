@@ -6,8 +6,10 @@
   3. стикер, голосовое и прочее, что студия не принимает → «такое пока не умею», с перечнем, что умею;
   4. текст (или подпись) с просьбой о действии (studio_intent.classify) → работа над черновиком
      (studio_intent.target); черновиков несколько и неясно, над каким, → кнопки «к какому черновику?»;
-  5. reply на черновик без слова-действия → правка текста по его словам (как раньше);
-  6. остальное — вопрос: отвечает модель-мост (channel_studio.reply_to_shifu).
+  5. правило к постам («в постах не пиши про …», studio_rules) → код сохраняет его в состояние,
+     сам отвечает, что записал, и переписывает по нему черновик на обсуждении;
+  6. reply на черновик (или на его ролик) без слова-действия → правка текста по его словам;
+  7. остальное — вопрос: отвечает модель-мост (channel_studio.reply_to_shifu).
 """
 
 from __future__ import annotations
@@ -19,6 +21,7 @@ from typing import Optional
 import channel_studio as cs
 import studio_inbox as inbox
 import studio_intent as intent
+import studio_rules as rules
 
 CAN_DO = "текст, фото, видео, GIF и документы (до 20 МБ)"
 
@@ -50,6 +53,10 @@ def route(bot, state_path: Path, state: Optional[dict], update_id: int, message:
         _submit(runner, bot, key, (inbox.attach_job,) + args)
     elif kind == "action":
         _action(bot, state_path, decision, runner, out)
+    elif kind == "rule":
+        runner.submit("reply", cs._say, bot, decision["answer"])
+        if decision.get("post_id"):
+            _action(bot, state_path, decision, runner, out)
     else:
         runner.submit("reply", cs.reply_to_shifu, bot, state_path, decision["note"], out)
     return 1
@@ -70,14 +77,26 @@ def decide(state: dict, update_id: int, message: dict) -> dict:
         what = inbox.unsupported_kind(message) or "такое сообщение"
         answer = f"Получил {what}, но такое пока не умею принимать. Умею: {CAN_DO}."
         return dict(base, kind="unsupported", note=what, answer=answer)
+    if rules.is_rule(note):
+        return _decide_rule(state, base, reply_to)
     action = intent.classify(note)
     if not action:
         post_id, _candidates = intent.target(state, note, reply_to)
-        replied = reply_to and post_id and (state.get("posts") or {}).get(post_id, {}).get("message_id") == reply_to
+        replied = reply_to and post_id and reply_to in intent.message_ids((state.get("posts") or {}).get(post_id, {}))
         if not replied:
             return dict(base, kind="talk")
         action = intent.ACTION_EDIT
     return _decide_action(state, base, action, reply_to)
+
+
+def _decide_rule(state: dict, base: dict, reply_to: Optional[int]) -> dict:
+    """Правило к постам: сохраняет код; черновик на обсуждении переписывается по нему."""
+    rule, is_new = rules.remember(state, base["note"])
+    post_id, candidates = intent.target(state, base["note"], reply_to)
+    if candidates:
+        post_id = ""
+    answer = rules.reply_text(rule, is_new, post_id, len(rules.active(state)), several=bool(candidates))
+    return dict(base, kind="rule", action=cs.ACTION_FREEFORM, post_id=post_id, answer=answer)
 
 
 def _decide_file(state: dict, base: dict, media: dict, reply_to: Optional[int]) -> dict:

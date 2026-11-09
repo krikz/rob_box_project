@@ -22,6 +22,7 @@ import channel_lib as lib
 import channel_studio as cs
 import studio_media as smedia
 import studio_progress as sp
+import studio_rules
 import studio_state as st
 
 REPO = Path(__file__).resolve().parents[2]
@@ -73,7 +74,7 @@ def _check_line(checks: dict) -> str:
     return line
 
 
-def _produce(record: dict, facts: list, instruction: str) -> dict:
+def _produce(record: dict, facts: list, instruction: str, shifu_rules: Optional[list] = None) -> dict:
     """Переписать текст поста моделью; проверка — кодом (studio_text.produce_post)."""
     import studio_text
 
@@ -84,6 +85,7 @@ def _produce(record: dict, facts: list, instruction: str) -> dict:
         "media_ref": record.get("media_ref", ""),
         "fact_keys": record.get("fact_keys") or [],
         "current_body": record.get("body_html") or "",
+        "shifu_rules": shifu_rules or [],
     }
     has_media = record.get("message_kind") == "media" or bool(record.get("media_path"))
     return studio_text.produce_post(idea, facts, instruction=instruction, has_media=has_media)
@@ -309,7 +311,7 @@ def _refine_text(
     else:
         # Свободная правка Шифу: его слова — задание, факты и правила канала остаются в силе.
         instruction = f"Правка от Шифу: «{instruction[:500]}». Выполни её; числа и имена — только из фактов."
-    produced = _produce(record, facts, instruction)
+    produced = _produce(record, facts, instruction, studio_rules.active(st.load_state(state_path)))
     if produced.get("error"):
         progress.fail(str(produced["error"])[:200])
         return False
@@ -355,7 +357,7 @@ def draft_job(
     topic = studio_draft.pick_fact(facts)
     progress.note(f"Читаю факты сессии: {len(facts)}, тема — {topic.get('source', '?').split(' (')[0]}")
     progress.step(f"Пишу текст ({studio_draft.st.DEFAULT_MODEL})")
-    post = studio_draft.build_post(facts)
+    post = studio_draft.build_post(facts, shifu_rules=studio_rules.active(st.load_state(state_path)))
     if post.get("error"):
         problems = "; ".join((post.get("problems") or [])[:3])
         progress.fail(f"{post['error']}{': ' + problems if problems else ''} (попыток: {post.get('attempts', 1)})")

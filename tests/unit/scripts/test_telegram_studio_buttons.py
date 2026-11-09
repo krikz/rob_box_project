@@ -356,7 +356,7 @@ def test_draft_job_sends_progress_then_draft_with_media(run_env, monkeypatch):
     monkeypatch.setattr(
         studio_draft,
         "build_post",
-        lambda facts: {
+        lambda facts, **_kw: {
             "title": "Сторож",
             "body_html": "<b>Сторож</b> не врёт.\n<blockquote expandable>PR #4502</blockquote>\n#роббокс #навигация",
             "tags": ["#роббокс", "#навигация"],
@@ -521,7 +521,7 @@ def test_free_text_edits_latest_draft_in_place(run_env, monkeypatch):
     _draft(path, message_kind="media", media_path=str(run_env / "a.png"))
     seen = {}
 
-    def fake_produce(record, facts, instruction):
+    def fake_produce(record, facts, instruction, shifu_rules=None):
         seen["instruction"] = instruction
         return {
             "body_html": "<b>Сторож</b> честный. #роббокс #навигация",
