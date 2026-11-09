@@ -44,8 +44,11 @@ services:
       test: ["CMD-SHELL", "wget -qO- http://localhost:8000/@/local/router || exit 1"]
       interval: 5s
       timeout: 10s
-      retries: 20
-      start_period: 30s
+      # #4531: холодный старт без RTC (часы прыгают, eth0 поднимается позже docker).
+      # `compose up -d` ждёт healthy роутера один раз, поэтому окно большое:
+      # 60 с start_period + 30 x 5 с. Дальше повторяет юнит (host/sound/robbox-sound.service).
+      retries: 30
+      start_period: 60s
     labels:
       logging: "promtail"
 
