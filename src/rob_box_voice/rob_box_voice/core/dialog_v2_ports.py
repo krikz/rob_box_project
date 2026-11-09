@@ -356,27 +356,27 @@ class V2Ports:
         self._intent_pub.publish(fill_intent(Intent(), stop, epoch=epoch, turn_id=turn_id))
 
 
-def assemble_llm(chain: Sequence[str], counter: CallCounter, *, prompt_dir: Any, system_prompt_file: str,
+def assemble_llm(chain: Sequence[str], counter: CallCounter, *, prompt: str,
                  settings: Optional[LLMSettings] = None, agent: str = kn.AGENTS[0],
                  log: Callable[[str], None] = lambda line: None, busy: Optional[Callable[[], Busy]] = None) -> tuple:
     """LLM-цепочка v2 агента и его системный промпт: ``build_llm_chain`` с каждым провайдером в режиме команд моста
     (валидатор знает агента), вызовы считаются в ``counter``. Одна сборка для ROS-хоста ``dialog_node`` и сухого
-    стенда (``scripts/dialog/dry_marathon.py``, #3906): ответ модели строит та же цепочка, что на роботе."""
+    стенда (``scripts/dialog/dry_marathon.py``, #3906): ответ модели строит та же цепочка, что на роботе. ``prompt`` -
+    основа промпта агента, её даёт хост (Личность - ``rob_box_dialog.prompts`` с персоной профиля, ADR-0167 Ш1б-3)."""
     from rob_box_harness.core.assembly import AgentSpec, build_llm_chain  # noqa: PLC0415
 
     names = tuple(p.strip().lower() for p in chain if p.strip())
     bridge = wrapper_for(log=log, busy=busy or Busy, agent=agent)
-    spec = AgentSpec(name=agent, prompt_dir=prompt_dir, system_prompt_file=system_prompt_file, provider_chain=names,
-                     settings=settings, wrap_provider=counted_wrapper(bridge, counter))
-    return build_llm_chain(spec), system_prompt(spec, agent)
+    spec = AgentSpec(name=agent, provider_chain=names, settings=settings,
+                     wrap_provider=counted_wrapper(bridge, counter))
+    return build_llm_chain(spec), system_prompt(prompt, agent)
 
 
-def system_prompt(spec: Any, agent: str) -> str:
-    """Системный промпт агента: файл (персона и протокол хода) + правила из ``knowledge.PROMPT_RULES`` (PR-15 15-rule,
-    ADR-0148: правила модели живут в таблице знания, а не в тексте файла). Файла нет — промпта нет (агент не соберётся)."""
-    from rob_box_harness.core.assembly import load_system_prompt  # noqa: PLC0415
-
-    base = load_system_prompt(spec)
+def system_prompt(prompt: str, agent: str) -> str:
+    """Системный промпт агента: основа (персона и протокол хода) + правила из ``knowledge.PROMPT_RULES`` (PR-15 15-rule,
+    ADR-0148: правила модели живут в таблице знания, а не в тексте основы). Основы нет — промпта нет (агент не
+    соберётся)."""
+    base = prompt.strip()
     rules = kn.prompt_rules(agent)
     return f"{base}\n\n{rules}" if base and rules else base
 

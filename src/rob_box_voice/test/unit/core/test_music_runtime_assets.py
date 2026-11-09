@@ -2,6 +2,8 @@
 
 from pathlib import Path
 
+from rob_box_dialog import prompts
+
 
 # Resolve repo root by walking up the tree until we find the ``docker/`` and
 # ``src/`` siblings. This avoids brittle parents[N] indexing that breaks when
@@ -19,7 +21,8 @@ REPO_ROOT = _resolve_repo_root(_THIS_FILE)
 FOXDOT_INIT_PATH = REPO_ROOT / "docker" / "sound" / "voice_assistant" / "foxdot_init.sc"
 START_VOICE_ASSISTANT_PATH = REPO_ROOT / "docker" / "sound" / "scripts" / "voice_assistant" / "start_voice_assistant.sh"
 CUSTOM_SYNTHDEF_DIR = REPO_ROOT / "docker" / "sound" / "voice_assistant" / "custom_synthdefs"
-MASTER_PROMPT_PATH = REPO_ROOT / "src" / "rob_box_voice" / "prompts" / "master_prompt_compact.txt"
+#: Основа промпта Личности - данные ядра (ADR-0167 Ш1б-3); персона робота музыкальных правил не несёт.
+MASTER_PROMPT_PATH = Path(prompts.__file__).with_name(prompts.BASE_FILE)
 #: Музыкальные правила — в мастер-промпте (§5 MUSIC); фрагментов скиллов нет с ADR-0150 PR-6.
 COMPOSER_PROMPT_PATH = MASTER_PROMPT_PATH
 
