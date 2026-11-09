@@ -865,7 +865,14 @@ setup_vision_node() {
     fi
 
     # Hailo AI HAT (PCIe)
-    setup_hailo_ai_hat
+    if [ "${ROBBOX_SETUP_SKIP_HW:-0}" = 1 ]; then
+        log_warning "ROBBOX_SETUP_SKIP_HW=1: Hailo AI HAT пропущен (нужно железо)"
+    else
+        setup_hailo_ai_hat
+    fi
+
+    setup_docker_registry
+    setup_chrony_role vision
 
     # zram-своп: Vision Pi держит 13 контейнеров на 8 ГБ без свопа (#2621).
     # Функция общая — её можно звать и из setup_main_node, если Main Pi
@@ -874,11 +881,14 @@ setup_vision_node() {
 }
 
 setup_main_node() {
-    log_info "Настройка Main Pi..."
-    log_info "Main Pi будет управлять:"
-    log_info "  - Zenoh router (DDS мост)"
-    log_info "  - Navigation stack (в разработке)"
-    log_success "Базовая настройка завершена"
+    log_info "Настройка Main Pi: zenoh-роутер, навигация, ros2_control (CAN)..."
+    setup_docker_registry
+    # Main Pi — сервер времени для Vision и Sound (ADR-0137).
+    setup_chrony_role main
+    # CAN для VESC (host/main/install_host_scripts.sh → can-setup.service) ставится отдельно:
+    # без CAN-шилда юнит падает при каждой загрузке. На живом Main Pi он есть (замер 09.11).
+    log_info "CAN (VESC): sudo bash ~/rob_box_project/host/main/install_host_scripts.sh — только с CAN-шилдом"
+    log_success "Базовая настройка Main Pi завершена"
 }
 
 setup_sensor_hub() {
@@ -1032,13 +1042,15 @@ UDEVEOF
     log_success "udev-правило установлено/обновлено: $rule"
 }
 
-# Локальный registry на katana: на Vision Pi это insecure-registries в
-# daemon.json; на Sound Pi 19.10.2026 файл ставили руками.
-SOUND_LOCAL_REGISTRY="${SOUND_LOCAL_REGISTRY:-10.1.1.249:5000}"
-SOUND_DAEMON_JSON="${SOUND_DAEMON_JSON:-/etc/docker/daemon.json}"
+# Локальный registry на katana — insecure-registries в daemon.json. Нужен всем трём
+# ролям: compose тянет ${SERVICE_IMAGE_PREFIX}=10.1.1.249:5000/krikz/rob_box (docker/<роль>/.env).
+# До #4375 шаг был только у Sound Pi, а другого установщика daemon.json в репо нет (замер 09.11:
+# на всех трёх Pi в daemon.json есть 10.1.1.249:5000). SOUND_* принимаются как старые имена.
+LOCAL_REGISTRY="${LOCAL_REGISTRY:-${SOUND_LOCAL_REGISTRY:-10.1.1.249:5000}}"
+DAEMON_JSON="${DAEMON_JSON:-${SOUND_DAEMON_JSON:-/etc/docker/daemon.json}}"
 
-setup_sound_docker_registry() {
-    log_step "Docker: insecure-registry $SOUND_LOCAL_REGISTRY (daemon.json)"
+setup_docker_registry() {
+    log_step "Docker: insecure-registry $LOCAL_REGISTRY (daemon.json)"
     local tmp verdict
     tmp="$(mktemp)"
     # Python, а не sed: daemon.json может уже содержать чужие ключи
@@ -1047,7 +1059,7 @@ setup_sound_docker_registry() {
     # своего пользователя — root не открывает на запись чужой файл в /tmp
     # (fs.protected_regular=2 на Sound Pi, замер 20.10.2026), sudo нужен только
     # для install ниже.
-    if ! verdict="$(python3 - "$SOUND_DAEMON_JSON" "$SOUND_LOCAL_REGISTRY" "$tmp" << 'PYEOF'
+    if ! verdict="$(python3 - "$DAEMON_JSON" "$LOCAL_REGISTRY" "$tmp" << 'PYEOF'
 import json, os, sys
 path, registry, out = sys.argv[1:4]
 cfg = {}
@@ -1067,36 +1079,38 @@ else:
 PYEOF
     )"; then
         rm -f "$tmp"
-        log_error "$SOUND_DAEMON_JSON не прочитан или не разобран как JSON — не трогаю, поправьте руками"
+        log_error "$DAEMON_JSON не прочитан или не разобран как JSON — не трогаю, поправьте руками"
         return 1
     fi
     if [ "$verdict" = "unchanged" ]; then
         rm -f "$tmp"
-        log_success "$SOUND_LOCAL_REGISTRY уже в $SOUND_DAEMON_JSON — docker не перезапускаю"
+        log_success "$LOCAL_REGISTRY уже в $DAEMON_JSON — docker не перезапускаю"
         return 0
     fi
-    sudo mkdir -p "$(dirname "$SOUND_DAEMON_JSON")"
-    sudo install -m 0644 "$tmp" "$SOUND_DAEMON_JSON"
+    sudo mkdir -p "$(dirname "$DAEMON_JSON")"
+    sudo install -m 0644 "$tmp" "$DAEMON_JSON"
     rm -f "$tmp"
-    log_info "Записан $SOUND_DAEMON_JSON, перезапускаю docker (контейнеры на узле перезапустятся)..."
+    log_info "Записан $DAEMON_JSON, перезапускаю docker (контейнеры на узле перезапустятся)..."
     sudo systemctl restart docker
-    log_success "insecure-registries: $SOUND_LOCAL_REGISTRY"
+    log_success "insecure-registries: $LOCAL_REGISTRY"
 }
 
-# chrony на хосте (ADR-0137): Sound Pi — клиент Main Pi, как Vision Pi.
+# chrony на хосте (ADR-0137): Main Pi — сервер времени, Vision и Sound — его клиенты.
+# До #4375 шаг был только у Sound Pi (замер 09.11: chrony стоит на всех трёх, ставили руками).
 # Скрипт сам идемпотентен; его код 2/3 (не синхронизировано / chronyd не
 # отвечает) не должен ронять остальную настройку узла — только предупреждаем.
-setup_sound_chrony() {
-    log_step "Синхронизация времени: chrony --role sound"
+setup_chrony_role() {
+    local role="$1"
+    log_step "Синхронизация времени: chrony --role $role"
     local script="$HOME/rob_box_project/scripts/maintenance/setup_chrony.sh"
     if [ ! -f "$script" ]; then
         log_warning "$script не найден — chrony не настроен"
         return 0
     fi
-    if sudo bash "$script" --role sound; then
-        log_success "chrony настроен (role=sound)"
+    if sudo bash "$script" --role "$role"; then
+        log_success "chrony настроен (role=$role)"
     else
-        log_warning "setup_chrony.sh --role sound завершился с ошибкой — проверьте: bash $script --check"
+        log_warning "setup_chrony.sh --role $role завершился с ошибкой — проверьте: bash $script --check"
     fi
 }
 
@@ -1123,11 +1137,15 @@ setup_sound_node() {
         log_warning "alsa-utils не установился — диагностика звука только из контейнера"
     fi
 
-    setup_sound_network
-    setup_sound_boot_config
-    setup_sound_udev
-    setup_sound_docker_registry
-    setup_sound_chrony
+    if [ "${ROBBOX_SETUP_SKIP_HW:-0}" = 1 ]; then
+        log_warning "ROBBOX_SETUP_SKIP_HW=1: netplan, config.txt и udev Sound Pi пропущены (нужно железо)"
+    else
+        setup_sound_network
+        setup_sound_boot_config
+        setup_sound_udev
+    fi
+    setup_docker_registry
+    setup_chrony_role sound
 
     # Каталоги ресурсного пака — те же пути, что на Vision Pi, чтобы
     # docker/sound/docker-compose.yaml монтировал их без переименований
