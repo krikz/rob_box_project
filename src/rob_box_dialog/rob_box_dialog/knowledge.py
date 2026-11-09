@@ -3594,6 +3594,27 @@ CHAIN_PHRASES: Tuple[str, ...] = (
     *CHAIN_ITEM_PHRASES, CHAIN_DONE_PHRASE, CHAIN_STOPPED_PHRASE, CHAIN_TIMEOUT_PHRASE, CHAIN_TOO_LONG_PHRASE,
 )
 PHRASE_KEYS = PHRASE_KEYS + CHAIN_PHRASES
+#: Имя шага во фразах вереницы - строковый аргумент не длиннее стольких знаков (имя точки, слова запроса); длиннее
+#: (текст озвучки целиком) - не имя: шаг называет слово класса :data:`CHAIN_CLASS_NOUNS`.
+CHAIN_LABEL_MAX_CHARS = 40
+#: Шаг без имени (``clear_waypoints``, громкость, поездка по координатам) фразы называют словом его класса.
+CHAIN_CLASS_NOUNS: Mapping[str, str] = MappingProxyType({
+    "action.local": "настройка",
+    "action.media": "музыка",
+    "action.motion": "поездка",
+    "action.speak_aloud": "озвучка",
+})
+#: Статус шага вереницы, который не начинался (стоп, срок, несостоявшаяся поездка). Только внутри вереницы: исполнитель
+#: его не отдаёт, в :data:`ACTION_STATUSES` его нет (ADR-0165 §7).
+CHAIN_STEP_SKIPPED = "skipped"
+#: Нарушение: рядом с вереницей (оценка дольше :data:`CHAIN_PLAN_AFTER_S`) класс, которому рядом с ней нельзя
+#: (``ChainClass.alongside``: знакомство, выступление) - ADR-0165 §4.1. Повтор с подсказкой :data:`CHAIN_MIXED_HINT`.
+VIOLATION_CHAIN_MIXED = "chain_mixed"
+#: ``chain_mixed`` - только рядом с вереницей из стольких шагов и больше: один шаг (звук рядом с шуткой) - не
+#: вереница по шагам, а оценка сроком класса - верхняя граница (догадка: музыка стартует быстрее 10 с, не замерено).
+CHAIN_MIXED_MIN_STEPS = 2
+CHAIN_MIXED_HINT = ("знакомство (register_speaker) и выступление (perform) — отдельной командой, не вместе с длинной "
+                    "цепочкой действий: в этой команде оставь одно из двух")
 PERFORM_KINDS: Tuple[str, ...] = ("rap", "song", "tale", "poem")
 PERFORM_BACKINGS: Tuple[str, ...] = ("beat", "calm", "none")
 #: Подложка выступления по виду (решение Шифу 28.10: «на сказку необязательно музыку включать», «на анекдот

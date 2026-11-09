@@ -31,6 +31,7 @@ from types import MappingProxyType
 from typing import Any, Callable, Collection, Dict, FrozenSet, Iterator, List, Mapping, Optional, Sequence, Tuple, Union
 
 from rob_box_core.tool_catalog import get_tool
+from rob_box_dialog import action_chain
 from rob_box_dialog import cast as perform_cast
 from rob_box_dialog import knowledge as kn
 from rob_box_dialog import phrases
@@ -638,6 +639,7 @@ def validate(cmd: Result, available_tools: Collection[str], session: Any = None,
         lambda: _check_voice_promise(cmd, agent),
         lambda: _check_search_promise(cmd, agent),
         lambda: _check_done_claim(cmd, agent),
+        lambda: _check_chain_mixed(cmd),
         lambda: _check_args_without_action(cmd),
         lambda: _check_perform(cmd, busy),
         lambda: _check_sing(cmd, form),
@@ -1070,6 +1072,15 @@ def _check_done_claim(cmd: Command, agent: str) -> None:
         raise _Bad(kn.VIOLATION_DONE_CLAIM, f"speech утверждает {', '.join(broken)} без тула", tools)
 
 
+def _check_chain_mixed(cmd: Command) -> None:
+    """Знакомство или выступление рядом с длинной вереницей (``action_chain.mixed``, ADR-0165 §4.1): у них свой
+    собеседник и своя отмена, шагами вереницы они не бывают. Нарушение ``VIOLATION_CHAIN_MIXED`` - повтор с
+    подсказкой «отдельной командой»; рядом с короткой командой - как раньше."""
+    banned = action_chain.mixed(cmd)
+    if banned:
+        raise _Bad(kn.VIOLATION_CHAIN_MIXED, f"рядом с вереницей: {', '.join(banned)}")
+
+
 def _check_args_without_action(cmd: Command) -> None:
     """Модель положила аргументы действия на уровень команды, а самого действия нет (:func:`_lift_args` выбросил
     их целиком): она хотела действие, но не назвала тул - команда без него молча ничего не сделает. Нарушение
@@ -1374,6 +1385,7 @@ HINTS: Mapping[str, str] = MappingProxyType({
     kn.VIOLATION_VOICE_PROMISE: kn.VOICE_PROMISE_HINT,
     kn.VIOLATION_SEARCH_PROMISE: kn.SEARCH_PROMISE_HINT,
     kn.VIOLATION_DONE_CLAIM: kn.DONE_CLAIM_HINT,
+    kn.VIOLATION_CHAIN_MIXED: kn.CHAIN_MIXED_HINT,
     kn.VIOLATION_ARGS_WITHOUT_ACTION: "аргументы пишутся только внутри действия: {\"actions\": [{\"tool\": <тул>, "
                                       "\"args\": {...}}]}; на уровне команды их нет, и без тула ничего не сделано",
     "bad_ask": "у ask нужен text",
