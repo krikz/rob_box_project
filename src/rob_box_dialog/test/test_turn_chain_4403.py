@@ -159,7 +159,8 @@ def test_failed_local_step_does_not_stop_the_chain():
 
 
 def test_epoch_change_between_steps_starts_no_new_step_and_says_no_summary():
-    """Стоп (эпоха + 1) после первого шага: следующих запросов нет, итог после стопа - этап 4 (не звучит)."""
+    """Эпоха + 1 без стопа Tier-1 (сброс сессии) после первого шага: следующих запросов нет, итог не звучит. Стоп
+    Tier-1 и его итог «Остановился. …» - этап 4, ``test_turn_chain_stop_4403.py``."""
     session = Session("personality")
     ports = Ports([answer(deletes())], on_step=lambda n: session.replace_epoch() if n == 1 else None)
     run(engine_for(ports, session))

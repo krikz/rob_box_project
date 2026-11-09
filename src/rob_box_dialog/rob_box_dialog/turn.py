@@ -81,7 +81,7 @@ import uuid
 from dataclasses import dataclass, field, fields, replace
 from types import MappingProxyType
 from typing import (Any, Awaitable, Callable, Collection, Dict, FrozenSet, Iterable, List, Mapping, Optional, Protocol,
-                    Sequence, Set, Tuple)
+                    Sequence, Tuple)
 
 from rob_box_core.tool_catalog import get_tool
 from rob_box_core.utterance import Sink, Utterance
@@ -1880,34 +1880,80 @@ def start_chain(engine: "TurnEngine", turn: _Turn, cmd: Command, actions: Sequen
     engine._log.info(f"{LOG_MARK} вереница {chain.task}: шагов {len(chain.steps)}, оценка {chain.estimate_s:.0f} с, "
                      f"план {source} {[s.call.tool for s in chain.steps]} turn={turn.turn_id}")
     engine._say(turn, text, cmd.voice, cmd.expression.emotion)
-    task = asyncio.ensure_future(run_chain(engine, turn, chain, snap))
-    engine.chains.add(task)
-    task.add_done_callback(engine.chains.discard)
+    chain_run = ChainRun(turn)
+    task = asyncio.ensure_future(run_chain(engine, chain_run, chain, snap))
+    engine.chains[task] = chain_run
+    task.add_done_callback(lambda done: engine.chains.pop(done, None))
 
 
-async def run_chain(engine: "TurnEngine", turn: _Turn, chain: action_chain.Chain, snap: SessionSnapshot) -> None:
+@dataclass(eq=False)
+class ChainRun:
+    """Идущая вереница движка (ADR-0165 §6): ход её плана (его эпоха - эпоха вереницы) и эпоха стопа Tier-1, что её
+    погасил (``None`` - не гасили). Эпоха сессии ушла от эпохи хода без стопа (новая сессия, сброс окна) - вереница
+    тоже погашена, но итог не звучит."""
+
+    turn: _Turn
+    stop_epoch: Optional[int] = None
+
+
+def steer_chains(engine: "TurnEngine", kind: str, old: int, new: int) -> None:
+    """Перебивание Tier-1 (``TurnEngine._interrupt``: эпоха ``old`` → ``new``) и идущие вереницы эпохи ``old``: стоп
+    (``CHAIN_STOP_KINDS``: «стой», «хватит») гасит вереницу - эпоха остаётся старой, остаток ``skipped``, итог
+    звучит в эпохе стопа; «замолчи» и «хватит говорить» - нет: вереница идёт дальше в новой эпохе (решение Шифу В4,
+    объезд идёт молча), её шаги и итог - в ней."""
+    for chain_run in tuple(engine.chains.values()):
+        if chain_run.stop_epoch is not None or chain_run.turn.epoch != old:
+            continue
+        if kind in kn.CHAIN_STOP_KINDS:
+            chain_run.stop_epoch = new
+        else:
+            chain_run.turn.epoch = new
+        engine._log.info(f"{LOG_MARK} вереница {'гаснет' if chain_run.stop_epoch is not None else 'идёт дальше'}: "
+                         f"tier1 {kind} epoch {old}→{new} turn={chain_run.turn.turn_id}")
+
+
+def _halted(engine: "TurnEngine", chain_run: ChainRun) -> bool:
+    """Вереница погашена: эпоха сессии ушла от её эпохи (стоп Tier-1, новая сессия)."""
+    return engine.session.snapshot.epoch != chain_run.turn.epoch
+
+
+async def run_chain(engine: "TurnEngine", chain_run: ChainRun, chain: action_chain.Chain,
+                    snap: SessionSnapshot) -> None:
     """Шаги вереницы по одному в порядке модели (ADR-0165 §3, §6, §10): следующий уходит только после исхода
-    предыдущего; эпоха сессии сменилась (стоп, новая сессия) - новых шагов нет, остаток ``skipped``; провал поездки
-    гасит остаток. Доживший шаг после стопа засчитан по исходу владельца (``action_chain.step_status``). Итог - одна
-    фраза кода (``action_chain.summary``); после стопа и в тишине она не звучит, исходы шагов - в окне хода."""
+    предыдущего; вереница погашена (:func:`_halted`) - новых шагов нет, остаток ``skipped``; провал поездки гасит
+    остаток. Шаг, что шёл при стопе, засчитан по исходу владельца (``action_chain.step_status``, ``StepOutcome.cut``).
+    Шаги уходят в эпохе вереницы: после «замолчи» - в новой (:func:`steer_chains`). Итог - :func:`close_chain`."""
+    turn = chain_run.turn
     outcomes: List[action_chain.StepOutcome] = []
-    stopped = gone = False
+    gone = False
     for k, step in enumerate(chain.steps):
-        stopped = stopped or engine.session.snapshot.epoch != turn.epoch
-        if stopped or gone:
+        if gone or _halted(engine, chain_run):
             outcomes.append(action_chain.StepOutcome(step, kn.CHAIN_STEP_SKIPPED))
             continue
-        outcome = await _chain_step(engine, turn, step, snap, f"{turn.turn_id}/c{k}")
-        outcomes.append(outcome)
+        outcome = await _chain_step(engine, turn, step, replace(snap, epoch=turn.epoch), f"{turn.turn_id}/c{k}")
+        outcomes.append(replace(outcome, cut=_halted(engine, chain_run)))
         gone = outcome.status not in ("done", "pending") and kn.CHAIN_CLASSES[step.cls].stops_rest
-    said = action_chain.summary(outcomes, stopped=stopped)
-    quiet = stopped or engine.session.snapshot.epoch != turn.epoch or engine.session.snapshot.top("Silence") is not None
+    close_chain(engine, chain_run, outcomes)
+
+
+def close_chain(engine: "TurnEngine", chain_run: ChainRun, outcomes: Sequence[action_chain.StepOutcome]) -> None:
+    """Итог вереницы - одна фраза кода (``action_chain.summary``, ADR-0165 §7). После стопа Tier-1 - «Остановился. …»
+    в эпохе стопа (этап 4: ход вереницы переходит в неё, иначе владелец речи отбросил бы фразу старой эпохи); в
+    тишине (В4) или после новой сессии не звучит: строка журнала и метка ``CHAIN_UNVOICED_MARK`` в окне хода (после
+    новой сессии хода в окне нет - только журнал)."""
+    turn, now = chain_run.turn, engine.session.snapshot.epoch
+    said = action_chain.summary(outcomes, stopped=chain_run.stop_epoch is not None)
+    if chain_run.stop_epoch == now:
+        turn.epoch = now
+    quiet = turn.epoch != now or engine.session.snapshot.top("Silence") is not None
     engine._log.info(f"{LOG_MARK} вереница итог{' (не звучит)' if quiet else ''}: "
                      f"{[(o.step.call.tool, o.status) for o in outcomes]} «{said}» turn={turn.turn_id}")
-    if not quiet:
-        failed_any = any(o.status not in ("done", "pending") for o in outcomes)
-        engine._say(turn, said, None, "sad" if failed_any else None)
-        finish_stage(engine._ports, turn, engine.session.snapshot)
+    if quiet:
+        engine.log.mark(turn.turn_id, kn.CHAIN_UNVOICED_MARK.format(summary=said))
+        return
+    failed_any = any(o.status not in ("done", "pending") for o in outcomes)
+    engine._say(turn, said, None, "sad" if failed_any else None)
+    finish_stage(engine._ports, turn, engine.session.snapshot)
 
 
 async def _chain_step(engine: "TurnEngine", turn: _Turn, step: "action_chain.Step", snap: SessionSnapshot,
@@ -2142,7 +2188,7 @@ class TurnEngine:
         #: Источник прошлого хода и группы, что переносятся на следующий ход того же источника (:func:`carried_groups`).
         self._carry: Tuple[str, Tuple[str, ...]] = ("", ())
         #: Идущие вереницы (:func:`run_chain`): задача живёт после закрытия своего хода, ссылка держит её от сборщика.
-        self.chains: Set[Any] = set()
+        self.chains: Dict[Any, ChainRun] = {}
 
     def reset_window(self, reason: str) -> None:
         """Сброс окна по смене режима e2e (#4258); хост зовёт в потоке цикла ходов."""
@@ -2227,6 +2273,7 @@ class TurnEngine:
         if stop.stop_motion:
             self._ports.intent(turn.turn_id, turn.epoch, "stop_motion")
         old, turn.epoch = turn.epoch, self.session.replace_epoch()
+        steer_chains(self, stop.kind, old, turn.epoch)  # стоп гасит вереницу, «замолчи» - нет (ADR-0165 §6)
         self._log.info(f"{LOG_MARK} interrupt policy={stop.policy} kind={stop.kind} boundary={stop.speech_boundary} "
                        f"epoch {old}→{turn.epoch} keep={sorted(stop.keep)} turn={turn.turn_id}")
         return self.session.snapshot
@@ -2423,7 +2470,7 @@ class TurnEngine:
             self._log.warning(f"{LOG_MARK} e2e-событие {kind} не записано: {exc}")
 
 
-__all__ = ["ASK_MARK", "Answer", "settle", "start_chain", "run_chain", "LOG_MARK", "Ports", "RECENT_ACTIONS", "RECENT_UNADDRESSED", "BACKGROUND_SINCE_REPLY",
+__all__ = ["ASK_MARK", "Answer", "ChainRun", "close_chain", "settle", "start_chain", "steer_chains", "run_chain", "LOG_MARK", "Ports", "RECENT_ACTIONS", "RECENT_UNADDRESSED", "BACKGROUND_SINCE_REPLY",
            "BACKGROUND_SUMMARY", "SAD_FACE", "Shown", "TurnEngine", "answer_recognized", "command_face", "command_form", "done_expression",
            "asked_voice", "finish_stage", "hand_perform", "held_expression", "host_sections", "shown_face",
            "foreign_keys", "invalid_emotion", "outcome_phrase", "over_ordered_music", "owed_reason", "query_answer",
