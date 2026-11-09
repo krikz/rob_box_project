@@ -263,7 +263,6 @@ docker buildx build \
 ## 📖 Документация
 
 См. также:
-- [BUILD_OPTIMIZATION.md](../development/BUILD_OPTIMIZATION.md) — Полное руководство по оптимизации сборок
 - [DOCKER_STANDARDS.md](../development/DOCKER_STANDARDS.md) — Стандарты Docker в проекте
 - [CI_CD_PIPELINE.md](../CI_CD_PIPELINE.md) — Конфигурация GitHub Actions
 

@@ -1163,6 +1163,8 @@ jobs:
               steps.get("ok", "?"), steps.get("total", "?"),
               steps.get("fail", "?"), steps.get("skip", "?"),
           ))
+          if steps.get("stand_play_failed"):
+              print("| Сбой стенда (фраза не сыграна, PulseAudio) | %s шагов, не FAIL робота |" % steps["stand_play_failed"])
           print("| Синтез команд | %s |" % (summary.get("tts_provider") or "?"))
           if gate1.get("pass") is not None:
               print("| GATE-1 | %s — %s |" % (

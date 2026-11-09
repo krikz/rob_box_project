@@ -709,6 +709,15 @@ tools(56): clear_waypoints, compose_music, ..., stop_music, ...
 
 Поле шага `silent_ok: true` (или `expect: "silent_ok"`) — ход без речи допустим (`stage=done`, `SpeechEvent` нет).
 
+### Сбой стенда: фраза не сыграна (#4608)
+
+`play_eq_wav` проверяет код возврата `paplay` и строку `pa_context_connect() failed` в его выводе; при провале — до двух
+повторов (`E2E_PLAY_RETRIES`, пауза `E2E_PLAY_RETRY_PAUSE`). Не вышло — шаг получает `FAIL stand_play_failed (<причина>)`:
+это сбой стенда, роботу фраза не звучала, `no_accept` ему не пишется. Перед актом `stand_audio_preflight` (`pactl info`)
+проверяет PulseAudio: сервер не отвечает — акт не стартует, маркер `E2E_STAND_FAIL` (для актов 1–2 раннер останавливает марафон).
+Сводка акта считает такие шаги отдельно (`E2E_SUMMARY … stand_play_failed=N`, `summary.json` → `steps.stand_play_failed`,
+колонка **`stand_play_failed`** `summary.tsv`); в `fail` и `failed_labels` они не входят.
+
 ### Офлайн-вердикты сбоя хода (#4512)
 
 Шаг workflow «Turn-failure verdicts» гонит лог `voice-assistant` акта (`/tmp/voice_e2e_<run>.log`, шаг «Collect robot logs»,

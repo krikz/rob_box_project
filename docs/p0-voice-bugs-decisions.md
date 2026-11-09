@@ -53,7 +53,7 @@
 ## 5. Процессные изменения, зафиксированные в ретро
 
 - **Force-triage rule** (рекомендация (a) из ретро) уже реализована в `scripts/agent_flow/agent-flow-triage.sh` (Phase 4 force-triage для high-priority voice/operator-bugs) — коммит `5e90c2fd feat(agent-flow): Phase 4 force-triage + tests + ADR-0022 update` на ветке `z-{devops}/25a2b395-force-triage-priority-high` (этап 14.09, ещё не влит в develop на момент sync).
-- **Runbook для эскалации**: см. `docs/runbooks/stale-candidate-triage.md` § «Escalation: high-priority voice/operator-bug без agent:*-метки» (новый документ, заведён в этой же карточке `t_cf60f006`).
+- **Runbook для эскалации**: см. `docs/runbooks/stale-candidate-triage.md` (runbook удалён вместе с автоматикой, ADR-0162) § «Escalation: high-priority voice/operator-bug без agent:*-метки» (новый документ, заведён в этой же карточке `t_cf60f006`).
 
 ## 6. Источники
 

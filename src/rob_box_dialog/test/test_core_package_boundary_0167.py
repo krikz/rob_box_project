@@ -25,14 +25,9 @@ SRC = Path(__file__).resolve().parents[2]
 PYPROJECT = SRC.parent / "packaging" / "dialog-core" / "pyproject.toml"
 
 #: ``файл относительно src/<пакет>/`` → (число мест, почему ещё здесь и где закрывается).
-KNOWN_LEAKS = {
-    # Каталог голосов: share rob_box_voice (ament), иначе src/rob_box_voice/config чекаута; нет - запасной список.
-    # Каталог голосов - знание продукта (профиль), шаг Ш1б.
-    "rob_box_core/bridge_protocol.py": 2,
-    # Заглушка сообщений ROS для стенда без ROS: .msg из src/rob_box_dialog_msgs чекаута или вверх от cwd. Ядру без
-    # чекаута нужны свои описания сообщений - отдельный шаг Ш1а (данные заглушки в пакет).
-    "rob_box_core/msg_stub.py": 2,
-}
+#: Пусто с Ш1а-2: каталог пресетов стиля ушёл в профиль продукта (env ``ROB_BOX_VOICE_PRESETS_YAML``), описания
+#: сообщений заглушки - в данные пакета (``rob_box_core/dialog_msgs``).
+KNOWN_LEAKS: dict = {}
 
 _WALK_UP = re.compile(r"""^[rbu]*['"]\.\.['"]$""")
 _ROBOT_PATH = re.compile(r"""(^[rbu]*['"]/(migrations|config|ws|opt)\b)|docker/|/docker\b""")
