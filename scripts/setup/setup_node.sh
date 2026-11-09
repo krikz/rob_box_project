@@ -605,8 +605,8 @@ setup_autostart() {
     #   vision — setup_vision_pi.sh (Restart, health-timer); его же переставляет L: Deploy and Verify
     #            через reinstall_vision_pi_systemd.sh, поэтому зовём тот же скрипт, а не пишем свой;
     #   <роль> с файлом host/<роль>/robbox-<роль>.service в репо — ставим файл как есть
-    #            (sound: #4531, PR #4575); этот же каталог host/<роль>/ едет в бандле релиза (ADR-0168);
-    #   иначе (main сегодня) — простой юнит ниже.
+    #            (sound — #4531, main — host/main/robbox-main.service из develop); этот же каталог host/<роль>/ едет в бандле релиза (ADR-0168);
+    #   иначе — простой юнит ниже (запасной путь, если файла роли нет).
     if [ "$NODE_TYPE" = vision ] && [ -f "$repo/scripts/setup/reinstall_vision_pi_systemd.sh" ]; then
         log_info "Юнит Vision — из setup_vision_pi.sh (тот же, что ставит деплой)"
         bash "$repo/scripts/setup/reinstall_vision_pi_systemd.sh"
