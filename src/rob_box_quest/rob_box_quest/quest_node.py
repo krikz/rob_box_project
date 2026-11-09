@@ -756,7 +756,7 @@ class QuestBridge:
         Wire-режим (meta-quest-api.md §5) маппится в ``voice_input_mode``
         (ADR-0027 §3.4) и публикуется в /avatar/set_voice_mode. Собственно
         применяет параметр супервизор (ADR-0028 S5) — quest-сервер только
-        ретранслирует запрос и НЕ трогает dialogue_node напрямую.
+        ретранслирует запрос и НЕ трогает dialog_node напрямую.
         """
         if self._set_voice_mode_pub is None:
             return
@@ -768,7 +768,7 @@ class QuestBridge:
 
     # ── Шаг 4б (issue #1989, t_80e7aa1e): конфиг пайплайна грипа ───────
     # ADR-0087 (2026-09-09, вариант (a)): AV-28 §P7 set_voice_preset/
-    # set_voice_language (легаси style-путь на dialogue_node) удалены —
+    # set_voice_language (легаси style-путь на ноде v1) удалены —
     # ws_server больше не вызывает эти методы Bridge, публикация была
     # мёртвой (супервизор перестал подписываться на эти топики в том же
     # PR). voice_pipeline — единственный оставшийся канал стиля/языка,
@@ -1790,7 +1790,7 @@ class QuestNode(Node):
         # supervisor (_on_grip_voice_pipeline, supervisor_node.py:2634)
         # валидирует whitelist ещё раз и кладёт в self._pipeline_*.
         # Это ОТДЕЛЬНЫЙ топик от /avatar/set_voice_{preset,language} —
-        # те меняют voice_preset на dialogue_node (личность), этот —
+        # те меняют voice_preset на dialog_node (личность), этот —
         # _pipeline_* на супервизоре (грип-трансформация).
         self._voice_pipeline_pub = self.create_publisher(
             String, "/avatar/voice_pipeline", _RE
@@ -1933,7 +1933,7 @@ class QuestNode(Node):
         self._speaker_result_sub = self.create_subscription(
             SpeakerResult, "/voice/speaker/result", self._tars_status.on_speaker_result, 10
         )
-        # #3253 Ш3б: llm/wake-слова — latched-топики dialogue_node.
+        # #3253 Ш3б: llm/wake-слова — latched-топики dialog_node.
         _tars_latched = QoSProfile(
             reliability=ReliabilityPolicy.RELIABLE,
             history=HistoryPolicy.KEEP_LAST,
