@@ -32,10 +32,18 @@ if str(SCRIPTS) not in sys.path:
 
 import e2e_tool_match as etm  # noqa: E402
 from rob_box_dialog.address import VOICE, Addressed  # noqa: E402
+from rob_box_dialog.profile import load_profile  # noqa: E402
 from rob_box_dialog.session import Session  # noqa: E402
 from rob_box_dialog.speaker_adapter import asks_recognized, speaker_ref  # noqa: E402
 from rob_box_dialog.turn import TurnEngine  # noqa: E402
-from rob_box_dialog.words import strip_wake_word  # noqa: E402
+from rob_box_dialog.words import strip_wake_word as _strip  # noqa: E402
+
+#: Вейки - из профиля робота (ADR-0167 Ш1б-2б): у ядра своих нет, хост робота передаёт таблицу явно.
+ROBOT_WAKE = load_profile(ROOT / "docker" / "sound" / "config" / "assistant.yaml").wake_personality
+
+
+def strip_wake_word(text: str) -> str:
+    return _strip(text, ROBOT_WAKE)
 
 #: Шаги акта 2b, на которые отвечает код (вопрос узнавания), - остальные идут модели: память (n703, n707),
 #: самопредставление (n701, n705, n709), выбор из имён «кто говорит, я или Борис?» (n708 - кодом не покрыт).
@@ -105,7 +113,7 @@ class _Ports:
 def _code_turn(text: str, result: dict):
     """Ход шага: биометрия его фразы пришла раньше STT (собеседник сессии - по ней), ход берёт её по ``utterance_id``
     (#4141, как ``UtteranceSpeakerRegistry.resolve`` хоста)."""
-    session = Session("personality")
+    session = Session("personality", wake_words=ROBOT_WAKE)
     session.set_speaker(speaker_ref(result, now=1.0))
     ports = _Ports()
 
