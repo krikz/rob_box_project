@@ -27,7 +27,9 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "rob-box-dialog-core"
 # 0.2.0: профиль продукта format 2 (persona), промпт Личности - основа ядра с персоной профиля (ADR-0167 Ш1б-3).
-version = "0.2.0"
+# 0.3.0: белый список пресетов стиля моста (bridge_protocol.VOICE_PRESET_IDS / VOICE_LANGUAGES) - только из каталога
+#        продукта (env ROB_BOX_VOICE_PRESETS_YAML), без него пусто; запасного списка робота в ядре нет (ADR-0167 Ш1а-2).
+version = "0.3.0"
 description = "Ядро диалога РОББОКСа без ROS: ход, адресация, мост команд LLM, память (ADR-0150, ADR-0160 §8)"
 license = "MIT"
 requires-python = ">=3.10"
@@ -84,6 +86,6 @@ rob_box_mcp_tools = "../../src/rob_box_mcp_tools/rob_box_mcp_tools"
 "rob_box_dialog.phrases" = ["*.yaml"]
 "rob_box_dialog.prompts" = ["*.txt"]
 "rob_box_harness.core.data" = ["*.yaml"]
-"rob_box_core" = ["py.typed"]
+"rob_box_core" = ["py.typed", "dialog_msgs/*.msg"]
 "rob_box_core.migrations" = ["*.sql"]
 "rob_box_music" = ["data/*.json"]

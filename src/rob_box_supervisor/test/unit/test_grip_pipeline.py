@@ -19,7 +19,7 @@ Issue #2137 (регресс против §7.5) — грип говорит го
 
 Используем mock-rclpy из conftest.py. Реального LLM в тестах НЕТ: подменяем
 ``node._grip_llm`` заглушкой с async ``complete``. Загрузка пресетов идёт из
-source-tree ``src/rob_box_voice/config`` (resolve_voice_presets_path).
+профиля робота ``docker/sound/config/voice_presets.yaml`` (env ставит conftest.py).
 """
 from __future__ import annotations
 

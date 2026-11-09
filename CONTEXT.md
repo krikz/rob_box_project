@@ -193,8 +193,20 @@ _Avoid_: `DEFAULT_WAKE_WORDS` — удалён в Ш1б-2б (см. «Истор�
 вейк с реплики, получает её явно; это сверяет `tests/unit/dialog/test_wake_table_passed_0167.py`.
 
 **Данные ядра** — не-Python файлы, которыми владеет ядро диалога (фразы `rob_box_dialog/phrases`, поток миграций
-`rob_box_core.migrations`): ставятся с пакетом (`package-data`) и читаются через `importlib.resources`, а не по путям
-чекаута робота (ADR-0167 Ш1а). Код ядра путей вне пакета не строит — это сверяет `test_core_package_boundary_0167.py`.
+`rob_box_core.migrations`, зеркало `.msg` заглушки сообщений): ставятся с пакетом (`package-data`) и читаются через
+`importlib.resources`, а не по путям чекаута робота (ADR-0167 Ш1а). Код ядра путей вне пакета не строит — это сверяет
+`test_core_package_boundary_0167.py` (список известных дыр пуст с Ш1а-2).
+
+**Зеркало сообщений** — копия `.msg` пакета `rob_box_dialog_msgs` в данных ядра `rob_box_core/dialog_msgs/`: по ней
+`rob_box_core.msg_stub` строит заглушку `rob_box_dialog_msgs.msg` там, где rosidl нет (Windows, ядро из пакета). Владелец
+описаний — `rob_box_dialog_msgs`; зеркало сверяет байт в байт `src/rob_box_core/test/test_dialog_msgs_mirror_0167.py`.
+
+**Каталог пресетов стиля** — `voice_presets.yaml` продукта: пресеты пайплайна грипа (ключ, имя, промпт
+`voice_presets/<key>.txt`) и языки вывода. Знание продукта: у робота — в профиле рядом с `assistant.yaml`
+(`docker/sound/config`), путь хостам `quest` и `supervisor` даёт env `ROB_BOX_VOICE_PRESETS_YAML` (compose,
+`/config/voice_presets.yaml`). Из него `rob_box_core.bridge_protocol` строит белый список `VOICE_PRESET_IDS` /
+`VOICE_LANGUAGES`; без env список пуст, задан, но битый — `VoicePresetsError` (ADR-0167 Ш1а-2).
+_Avoid_: «каталог голосов» — это не голоса TTS, а стили переписывания речи оператора; `src/rob_box_voice/config/voice_presets.yaml` — перенесён в Ш1а-2.
 
 **Поток миграций** — нумерованные `NNN_*.sql` схемы SQLite памяти (`rob_box_core.migrations`): `stream()` по порядку,
 `apply()` — шаги новее `PRAGMA user_version`. Хост робота открывает `VoiceMemory` без потока (`migrations=()`, встроенная схема).

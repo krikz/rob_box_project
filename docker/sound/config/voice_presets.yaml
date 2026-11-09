@@ -6,45 +6,42 @@
 # произносит её вслух через TTS. Это НЕ диалог: LLM не отвечает
 # оператору, не задаёт вопросов, не добавляет фактов.
 #
-# Формат — данные, а не код: добавление седьмого пресета — это новая
-# строчка здесь + новый txt-файл промпта. Python-код dialogue_node
-# трогать НЕ нужно (см. декомпозицию AV-28, дочерняя карточка
-# t_b0b06e44 / t_dcfa6012).
+# Каталог пресетов стиля - знание продукта (ADR-0167 Ш1а-2): лежит в профиле робота рядом с assistant.yaml, у ядра
+# диалога своего каталога нет. Путь хосты получают из env ROB_BOX_VOICE_PRESETS_YAML (docker/sound/docker-compose.yaml:
+# quest, supervisor -> /config/voice_presets.yaml); без env ядро даёт пустой белый список (rob_box_core.bridge_protocol).
+#
+# Формат — данные, а не код: добавление пресета — это новая строчка здесь + новый txt-файл промпта.
 #
 # Конвенции:
 # - ключ пресета = технический id (lower-snake, ASCII): используется в
 #   API/ROS-параметре `voice_preset` и в HUD-индикаторе ST:<KEY>.
 # - `name` — русское название для UI (кнопка в панели режимов AV-18).
-# - `prompt_file` — путь относительно src/rob_box_voice/config/ (т.е.
-#   "presets/<key>.txt" лежит рядом с этим YAML).
+# - `prompt_file` — путь относительно каталога этого YAML
+#   ("voice_presets/<key>.txt" лежит рядом).
 #
-# Соседи по конфигурации (per-node ROS2 YAML):
-# - audio_node.yaml / dialog_node.yaml / tts_node.yaml — параметры
-#   соответствующих ROS2-нод; см. config/README.md.
-# - промпт Личности dialog_node — основа ядра rob_box_dialog/prompts/personality.txt + персона профиля робота
-#   docker/sound/config/persona.txt (ADR-0167 Ш1б-3)
-#   (НЕ для формализации, это другой режим).
+# Промпт Личности dialog_node — другой режим (основа ядра rob_box_dialog/prompts/personality.txt + персона профиля
+# робота persona.txt рядом, ADR-0167 Ш1б-3), не для формализации.
 
 # Список пресетов. Порядок = порядок в UI-секции «Стиль речи».
 presets:
   technical:
     name: "Технический"
-    prompt_file: presets/technical.txt
+    prompt_file: voice_presets/technical.txt
   street:
     name: "По понятиям"
-    prompt_file: presets/street.txt
+    prompt_file: voice_presets/street.txt
   caveman:
     name: "Пещерный"
-    prompt_file: presets/caveman.txt
+    prompt_file: voice_presets/caveman.txt
   business:
     name: "Деловой"
-    prompt_file: presets/business.txt
+    prompt_file: voice_presets/business.txt
   philosopher:
     name: "Философ"
-    prompt_file: presets/philosopher.txt
+    prompt_file: voice_presets/philosopher.txt
   lenin:
     name: "Ленин"
-    prompt_file: presets/lenin.txt
+    prompt_file: voice_presets/lenin.txt
   # «Перевод» — стиль, который НЕ стилизует: только чистит оговорки и
   # переводит реплику на выбранный язык. Нужен для случая «я просто хочу
   # говорить через робота на другом языке, без чужого голоса поверх моего».
@@ -52,7 +49,7 @@ presets:
   # на исходном языке (см. кнопку «Без стиля» в панели пайплайна).
   translate:
     name: "Перевод"
-    prompt_file: presets/translate.txt
+    prompt_file: voice_presets/translate.txt
 
 # Допустимые языки вывода. Ключ = значение ROS-параметра
 # voice_output_language (см. dialogue_node.py) и wire-поля `language`
