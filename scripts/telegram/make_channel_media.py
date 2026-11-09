@@ -11,6 +11,7 @@
 from __future__ import annotations
 
 import argparse
+import os
 from pathlib import Path
 
 from PIL import Image, ImageChops, ImageDraw, ImageFilter, ImageFont
@@ -22,7 +23,9 @@ CYAN = (34, 211, 238)
 DIM = (120, 128, 140)
 RAINBOW = [(168, 0, 255), (255, 0, 140), (255, 70, 20), (255, 200, 0), (120, 255, 0), (0, 230, 200), (20, 90, 255)]
 
-FONT_CANDIDATES = [
+# Шрифт лежит в репо (PT Sans Bold, SIL OFL 1.1, кириллица): раскладка не зависит от шрифтов окружения (#4626).
+REPO_FONT = Path(__file__).resolve().parents[2] / "assets" / "fonts" / "PTSans-Bold.ttf"
+SYSTEM_FONT_CANDIDATES = [
     "C:/Windows/Fonts/segoeuib.ttf",
     "C:/Windows/Fonts/arialbd.ttf",
     "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
@@ -30,10 +33,14 @@ FONT_CANDIDATES = [
 
 
 def font(size: int) -> ImageFont.FreeTypeFont:
-    for path in FONT_CANDIDATES:
-        if Path(path).exists():
-            return ImageFont.truetype(path, size)
-    raise SystemExit("нет шрифта с кириллицей: поставь DejaVu или Segoe UI")
+    """Шрифт репо; системный (Segoe/Arial/DejaVu) — только если задан CHANNEL_SYSTEM_FONT=1."""
+    if os.environ.get("CHANNEL_SYSTEM_FONT") == "1":
+        for path in SYSTEM_FONT_CANDIDATES:
+            if Path(path).exists():
+                return ImageFont.truetype(path, size)
+    if not REPO_FONT.exists():
+        raise SystemExit(f"нет шрифта репо: {REPO_FONT}")
+    return ImageFont.truetype(str(REPO_FONT), size)
 
 
 BADGE_TEXT = "РОББОКС"
