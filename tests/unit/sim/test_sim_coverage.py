@@ -26,6 +26,9 @@ from rob_box_sim.geometry2d import ROBOT_FOOTPRINT, Box, Footprint, signed_dista
 from rob_box_sim.map_check import OccupancyGrid
 
 RES = 0.05
+#: Тесты раскладки полос и метрики — в режиме «без проверки мест разворота» (сужение 0.336, как до #4560 п.1):
+#: они проверяют геометрию полос. Места разворота — tests/unit/sim/test_sim_coverage_turn.py.
+NO_TURN = {"turn_clearance_m": 0.0}
 
 
 def grid_from_boxes(x0, y0, x1, y1, boxes, res=RES, unknown_border=False):
@@ -129,7 +132,7 @@ def test_decompose_splits_around_obstacle():
 
 def test_empty_room_plan_covers_95_percent_of_coverable():
     grid = grid_from_boxes(0, 0, 10, 8, [])
-    space = coverage_space(grid, (1.0, 1.0))
+    space = coverage_space(grid, (1.0, 1.0), **NO_TURN)
     plan = plan_coverage(space)
     assert not plan.unreachable
     assert plan.lanes_dropped_short == 0
@@ -145,7 +148,7 @@ def test_racks_room_lanes_stay_clear_of_obstacles():
     racks = [box("r0", 5.0, 2.5, 6.0, 1.0), box("r1", 5.0, 5.0, 6.0, 1.0), box("c", 1.5, 6.5, 0.6, 0.6)]
     grid = grid_from_boxes(0, 0, 10, 8, racks)
     world = racks + walls(0, 0, 10, 8)
-    space = coverage_space(grid, (1.0, 1.0))
+    space = coverage_space(grid, (1.0, 1.0), **NO_TURN)
     plan = plan_coverage(space)
     assert len(plan.cells) > 1
     assert not plan.unreachable
@@ -198,9 +201,12 @@ def test_auto_axis_picks_faster_plan():
 
 def test_short_lanes_dropped_and_counted():
     grid = grid_from_boxes(0, 0, 0.95, 4, [])  # центры по x — около 0.2 м: полоса вдоль x короче 0.3
-    space = coverage_space(grid, (0.45, 1.0))
-    plan = plan_coverage(space, axis="x")
+    space = coverage_space(grid, (0.45, 1.0), **NO_TURN)
+    plan = plan_coverage(space, axis="x", cross=False)
     assert plan.lanes == 0 and plan.lanes_dropped_short > 0
+    # поперечный проход берёт такой коридор полосами вдоль y
+    crossed = plan_coverage(space, axis="x")
+    assert crossed.cross_lanes > 0 and all(abs(abs(p.yaw) - math.pi / 2) < 1e-9 for p in crossed.poses)
 
 
 def test_waypoint_step_adds_mid_poses():
@@ -215,7 +221,7 @@ def test_waypoint_step_adds_mid_poses():
 
 def test_depot_like_plan():
     grid, world = depot_like()
-    space = coverage_space(grid, (0.0, 0.0))
+    space = coverage_space(grid, (0.0, 0.0), **NO_TURN)
     plan = plan_coverage(space)
     assert not plan.unreachable
     assert _plan_coverage_pct(space, plan) >= 90.0

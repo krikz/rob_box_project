@@ -155,3 +155,9 @@ def test_finish_writes_summary_for_what_was_driven(coverage_run, tmp_path):
     assert "coverage_free=" in line
     assert (tmp_path / "cov" / "track.json").exists()
     assert any(p.name.startswith("coverage.") for p in (tmp_path / "cov").iterdir())
+
+
+def test_plan_knobs_reach_the_planner(coverage_run):
+    args = coverage_run.parse_args(["--turn-clearance", "0.69", "--no-cross", "--plan-only"])
+    assert args.turn_clearance == 0.69 and args.no_cross and args.plan_only
+    assert coverage_run.parse_args([]).turn_clearance is None  # умолчание — из coverage_plan
