@@ -6,7 +6,7 @@
 | Дата | 2026-11-09 |
 | Автор | Claude Code (воркер) по брифу координатора, карточка #4375 |
 | Родители | rbt_infra [ADR-0003](https://github.com/krikz/rbt_infra/blob/main/docs/adr/0003-robot-software-delivery.md) (pull-модель «传功», фазы A–D), [ADR-0001](https://github.com/krikz/rbt_infra/blob/main/docs/adr/0001-network-architecture.md) (сеть), [ADR-0002](https://github.com/krikz/rbt_infra/blob/main/docs/adr/0002-naming-school-spirit.md) (имена); ADR-0017 (zenoh REST `:8000`); ADR-0148; ADR-AF-0013 |
-| Решения Шифу | 09.11.2026, `docs/shifu-decisions.md` → `d-20261109-chuangong-python-minisign`: **агент — на Python**, **подпись релиза — minisign** (в ADR-0003 это были U5 и U6); `d-20261109-release-in-build-all`: **релиз собирать в `L: Build All Services`, если это не ломает работу** (В1) |
+| Решения Шифу | 09.11.2026, `docs/shifu-decisions.md` → `d-20261109-chuangong-python-minisign`: **агент — на Python**, **подпись релиза — minisign** (в ADR-0003 это были U5 и U6); `d-20261109-release-in-build`: **релиз собирать в `L: Build All Services`, если это не ломает работу** (В1) |
 | Карточка | #4375, итог обсуждения — комментарий 09.11 в карточке |
 
 Метки: **измерено** — есть вывод команды; **по коду** — прочитано; **оценка** — расчёт из измеренного.
@@ -107,7 +107,7 @@ systemd-таймеру раз в 5 минут.
    `05D4D489635AC556`); на Pi он ляжет в `/etc/chuangong/release.pub` через `install.sh --pubkey
    host/chuangong/keys/release.pub`. Секретный — только в секрете CI `CHUANGONG_SIGNING_KEY` (ставит координатор;
    в репо его нет; ADR-0003: приватный ключ в `miji/`).
-2. `L: Build All Services` — **сделано** (#4375, решение Шифу `d-20261109-release-in-build-all`): три последних шага
+2. `L: Build All Services` — **сделано** (#4375, решение Шифу `d-20261109-release-in-build`): три последних шага
    job'а `summary`, все с `continue-on-error: true`. Гейт пропускает релиз с `::warning::`, если нет секрета или
    не все три Pi собрались, и молча — не на develop. Дальше `release.py build --resolve-registry
    http://localhost:5000 --image-tag dev-<sha7> --docker-tag dev` → `sign` → `verify` открытым ключом из репо →
