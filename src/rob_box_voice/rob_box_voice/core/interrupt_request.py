@@ -3,7 +3,9 @@
 Раньше stt_node сам глушил речь (``SpeechCancel``) на любую фразу, начинавшуюся с вейка, — по префиксу
 («работает» начинается с «роб»), и диалог после этого глушил её второй раз. Теперь stt_node публикует
 ``/dialog/interrupt_request`` на каждый новый сегмент фразы с вейком (:class:`InterruptOffer`), а решает
-``dialogue_node`` (:class:`InterruptGate`): ясная стоп-команда (:func:`rob_box_dialog.words.stop_verdict`) —
+``dialog_node`` (``_on_interrupt`` → :func:`rob_box_dialog.interrupt.on_interrupt`; :class:`InterruptGate` —
+прежняя реализация этой стороны, у ``dialog_node`` потребителя нет): ясная стоп-команда
+(:func:`rob_box_dialog.words.stop_verdict`) —
 ``SpeechCancel`` по эпохе за доли миллисекунды кода; иначе речь продолжается, новая реплика встаёт после
 текущей (APPEND у tts_node; ``compose()`` — PR-7b). Спорный случай («спой песню про стоп») речь не рвёт —
 в v2 его не исполняют (``rob_box_dialog.interrupt``: ``disputed`` — не стоп).
@@ -68,7 +70,7 @@ class InterruptOffer:
 
 
 class InterruptGate:
-    """Сторона диалога v1: ``InterruptRequest`` → ясный стоп рвёт речь личности, остальное — нет.
+    """Прежняя сторона диалога (до v2): ``InterruptRequest`` → ясный стоп рвёт речь личности, остальное — нет.
 
     ``cancel(reason)`` — отмена речи личности текущей эпохи (``speech_client.cancel``); одна фраза рвёт речь
     не больше одного раза, сколько бы её сегментов ни пришло.
