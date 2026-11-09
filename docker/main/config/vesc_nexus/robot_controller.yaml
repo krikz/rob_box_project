@@ -5,7 +5,7 @@
 
 controller_manager:
   ros__parameters:
-    update_rate: 50  # Hz - должна совпадать с publish_rate в VESC config
+    update_rate: 50  # Hz - должна совпадать с publish_rate диффпривода (ниже); hardware-параметр publish_rate плагин игнорирует (#4587)
 
     # Список активных контроллеров
     use_sim_time: false
