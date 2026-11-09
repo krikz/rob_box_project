@@ -44,7 +44,7 @@
 2. Ключи в `authorized_keys` Main Pi, Vision Pi, Sound Pi и песочницы. Пароли нельзя.
 3. Образ `rob_box_sim:hil` на песочнице есть (тот же, что для `hil-video`). Новые модули `rob_box_sim`
    (план, вердикты, рекордер) едут копией из чекаута (`pylib`), образ пересобирать не нужно.
-4. Чекаут оператора — develop с влитым #4568 (`src/rob_box_sim/rob_box_sim/loc_metrics.py` есть).
+4. Чекаут оператора — develop с влитым #4568 (в пакете `rob_box_sim` есть модуль `loc_metrics`).
 5. На машине оператора — Python 3.11 с `numpy`, `PyYAML`, `Pillow` (анимации).
 
 ## 2. Запуск

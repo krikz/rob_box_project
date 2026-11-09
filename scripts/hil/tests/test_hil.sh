@@ -141,7 +141,9 @@ reset_state() {
 }
 
 run_hil() {  # run_hil "<cmd> [аргументы]" [VAR=val ...]
-    local cmd="$1"; shift
+    local cmd=()
+    read -r -a cmd <<<"$1"  # «restart rtabmap» — команда и аргументы
+    shift
     env PATH="$WORK/bin:$PATH" FAKE_SSH_LOG="$WORK/ssh.log" FAKE_DOCKER_LOG="$WORK/docker.log" \
         FAKE_STATE="$WORK/state" SIM_PREFIX=t-hil \
         HIL_MAIN_HOST=main HIL_VISION_HOST=vision HIL_SOUND_HOST=sound HIL_SANDBOX_HOST=sbx \
@@ -149,7 +151,7 @@ run_hil() {  # run_hil "<cmd> [аргументы]" [VAR=val ...]
         HIL_MAPS_SNAPSHOT="$WORK/sndstate/prod_maps.before.txt" \
         HIL_LOCK="$WORK/tmp/hil.lock" HIL_REMOTE_DIR="$WORK/remote" HIL_MAPS_DIR="$WORK/hilmaps" \
         HIL_SIM_PREFIX=t-hil HIL_WAIT_CM_S=5 \
-        "$@" bash "$HIL" $cmd > "$WORK/out.log" 2>&1  # $cmd без кавычек: «restart rtabmap» — два слова
+        "$@" bash "$HIL" "${cmd[@]}" > "$WORK/out.log" 2>&1
 }
 line_of() { grep -n -m1 -- "$1" "$2" | cut -d: -f1; }
 
