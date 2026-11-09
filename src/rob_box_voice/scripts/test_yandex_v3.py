@@ -229,8 +229,7 @@ def main():
         print("Воспроизведён правильный вариант без искажений")
 
     print()
-    print("🚀 Для записи датасета:")
-    print("   ./generate_dataset.sh 200")
+    print("🚀 Для записи датасета: record_yandex_voice.py --input <фразы> --output <каталог>")
     print("=" * 60)
 
     # Очистка
