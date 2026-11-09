@@ -110,7 +110,7 @@ export function renderHud(
 
 /**
  * Порядок языков вывода = порядок кнопок. Совпадает с ключами `languages`
- * в src/rob_box_voice/config/voice_presets.yaml и с VOICE_LANGUAGES в
+ * в docker/sound/config/voice_presets.yaml и с VOICE_LANGUAGES в
  * ws_server.py: расширение языка — правка всех трёх мест, иначе кнопка
  * будет ловить NACK.
  */

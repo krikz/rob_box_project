@@ -11,7 +11,6 @@
 import asyncio
 import json
 import time
-from pathlib import Path
 from typing import Any
 
 import pytest
@@ -1073,9 +1072,12 @@ async def test_voice_pipeline_payload_matches_supervisor_contract(
         # (/home/builder/.../.worktrees/t_80e7aa1e/...), из-за чего тест
         # мог пройти только на той машине, где был написан. Никто не
         # заметил, потому что CI тесты rob_box_quest не запускает.
-        # .../src/rob_box_quest/test/unit/server/test_...py → parents[4] = src/
-        src_root = Path(__file__).resolve().parents[4]
-        yaml_path = src_root / "rob_box_voice" / "config" / "voice_presets.yaml"
+        # Каталог пресетов - профиль робота (docker/sound/config, ADR-0167 Ш1а-2); путь тот же, что у моста
+        # (env ROB_BOX_VOICE_PRESETS_YAML, его ставит conftest.py).
+        from rob_box_core.bridge_protocol import voice_presets_path
+
+        yaml_path = voice_presets_path()
+        assert yaml_path, "conftest не задал ROB_BOX_VOICE_PRESETS_YAML"
         with open(yaml_path, "r", encoding="utf-8") as fh:
             yaml_data = yaml.safe_load(fh)
         yaml_presets = set((yaml_data.get("presets") or {}).keys())

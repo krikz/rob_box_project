@@ -209,3 +209,19 @@ def quest_node_mod():
                 sys.modules.pop(name, None)
             if cached is not None:
                 sys.modules["rob_box_quest.quest_node"] = cached
+
+
+# Каталог пресетов стиля - профиль робота (ADR-0167 Ш1а-2): у ядра своего нет, путь даёт хост через env (на роботе -
+# compose, /config/voice_presets.yaml). Тестам робота - тот же файл из чекаута (CI test_ws: ROB_BOX_REPO_ROOT).
+# Ставится при загрузке conftest - ДО импорта тестами rob_box_core.bridge_protocol (белый список читается при
+# импорте); сам conftest каталог не импортирует.
+import os as _os_presets  # noqa: E402 - блок в конце: выше идёт ROS-бутстрап
+from pathlib import Path as _Path_presets  # noqa: E402
+
+_os_presets.environ.setdefault(
+    "ROB_BOX_VOICE_PRESETS_YAML",
+    str(
+        _Path_presets(_os_presets.environ.get("ROB_BOX_REPO_ROOT") or _Path_presets(__file__).resolve().parents[4])
+        / "docker" / "sound" / "config" / "voice_presets.yaml"
+    ),
+)
