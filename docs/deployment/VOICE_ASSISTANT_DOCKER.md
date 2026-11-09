@@ -1,3 +1,4 @@
+<!-- stale-paths: ignore-file (описывает удалённое или старую раскладку; кандидат в архив или переписывание, ADR-0163) -->
 # Voice Assistant Docker Infrastructure - Summary
 
 ## Статус: ✅ Готово к сборке через GitHub Actions
@@ -73,7 +74,7 @@
   - `.gitignore` настроен
 
 ### 5. Startup Script
-- **Файл:** `docker/vision/scripts/start_voice_assistant.sh`
+- **Файл:** `docker/sound/scripts/voice_assistant/start_voice_assistant.sh`
 - **Функции:**
   - Проверка ReSpeaker USB device
   - Ожидание Zenoh router
@@ -94,7 +95,7 @@
   - Voice Assistant capabilities
   - Конфигурация и запуск
   - Troubleshooting
-- **Deployment Guide:** `docker/vision/DEPLOYMENT.md`
+- **Deployment Guide:** `docs/deployment/VISION_PI_DEPLOYMENT.md`
   - Инструкции по деплою на Vision Pi
   - CI/CD pipeline
   - Мониторинг и отладка
@@ -237,7 +238,7 @@ Vision Pi (Raspberry Pi 5)
 - **Package:** `src/rob_box_voice/README.md`
 - **Install:** `src/rob_box_voice/INSTALL.md`
 - **Docker:** `docker/vision/README.md`
-- **Deploy:** `docker/vision/DEPLOYMENT.md`
+- **Deploy:** `docs/deployment/VISION_PI_DEPLOYMENT.md`
 - **CI/CD:** `docs/CI_CD_PIPELINE.md`
 
 ---

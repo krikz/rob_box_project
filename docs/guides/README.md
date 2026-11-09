@@ -260,7 +260,7 @@ registry/factory → MiniMax TTS → валидный WAV.
 ### Перед началом работы:
 1. Проверьте питание всех компонентов
 2. Убедитесь что Ethernet между Pi работает
-3. Запустите базовую диагностику (`docker/scripts/diagnose_data_flow.sh`)
+3. Запустите базовую диагностику (`scripts/diagnostics/diagnose_data_flow.sh`)
 4. Проверьте что Zenoh router запущен на обоих Pi
 
 ### Первый запуск:

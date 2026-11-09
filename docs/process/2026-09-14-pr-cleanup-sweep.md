@@ -1,3 +1,4 @@
+<!-- stale-paths: ignore-file (снимок на дату: пути на момент написания) -->
 # 2026-09-14 — PR cleanup sweep (issue #2451)
 
 ## TL;DR

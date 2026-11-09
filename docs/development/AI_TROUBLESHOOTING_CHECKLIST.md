@@ -1,3 +1,4 @@
+<!-- stale-paths: ignore-file (описывает удалённое или старую раскладку; кандидат в архив или переписывание, ADR-0163) -->
 # 🐛 AI Troubleshooting Checklist
 
 **Purpose:** Systematic debugging checklist for common issues in rob_box project.

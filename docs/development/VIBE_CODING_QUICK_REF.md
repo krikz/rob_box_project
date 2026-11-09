@@ -1,3 +1,4 @@
+<!-- stale-paths: ignore-file (описывает удалённое или старую раскладку; кандидат в архив или переписывание, ADR-0163) -->
 # Quick Reference: Vibe Coding for AI Agents
 
 > **For AI/LLM agents working on Rob Box codebase**  

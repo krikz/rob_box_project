@@ -1,3 +1,4 @@
+<!-- stale-paths: ignore-file (описывает удалённое или старую раскладку; кандидат в архив или переписывание, ADR-0163) -->
 # Action Protocol — API Reference
 
 > Canonical source of truth: [`../schemas/action-protocol/openapi.yaml`](../schemas/action-protocol/openapi.yaml) (HTTP+JSON, OpenAPI 3.0.3).

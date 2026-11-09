@@ -1,3 +1,4 @@
+<!-- stale-paths: ignore-file (снимок на дату: пути на момент написания) -->
 # 🎉 AI Development Process Implementation - COMPLETE
 
 **Status:** ✅ ALL PHASES COMPLETE (13/13 items - 100%)

@@ -1,3 +1,4 @@
+<!-- stale-paths: ignore-file (описывает удалённое или старую раскладку; кандидат в архив или переписывание, ADR-0163) -->
 # Silero TTS GUI - Графический настройщик голоса
 
 ![Silero TTS GUI](https://img.shields.io/badge/Silero-TTS%20v4-blue) ![Python](https://img.shields.io/badge/Python-3.8+-green) ![GUI](https://img.shields.io/badge/GUI-Tkinter-orange) ![Star Wars](https://img.shields.io/badge/🎵-Imperial%20March-red)

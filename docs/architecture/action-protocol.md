@@ -1,3 +1,4 @@
+<!-- stale-paths: ignore-file (описывает удалённое или старую раскладку; кандидат в архив или переписывание, ADR-0163) -->
 # Action Protocol — Architecture Overview
 
 > Phase 4 deliverable. Companion to ADR-0011 (Action Protocol).

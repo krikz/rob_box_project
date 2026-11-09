@@ -257,4 +257,4 @@ fi
 **Дата:** 2025-11-10  
 **Связанные документы:** 
 - `ZENOH_ROUTER_PORT_CONFLICT_FIX_2025-11-10.md`
-- `scripts/diagnose_zenoh_port_conflict.sh`
+- `scripts/diagnostics/diagnose_zenoh_port_conflict.sh`

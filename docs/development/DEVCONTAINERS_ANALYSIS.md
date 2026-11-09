@@ -1,3 +1,4 @@
+<!-- stale-paths: ignore-file (снимок на дату: пути на момент написания) -->
 # DevContainers для rob_box_project - Идеи и Анализ
 
 ## Обзор концепции (из видео Articulated Robotics)

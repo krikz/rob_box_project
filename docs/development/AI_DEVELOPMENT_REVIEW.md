@@ -1,3 +1,4 @@
+<!-- stale-paths: ignore-file (снимок на дату: пути на момент написания) -->
 # AI-Assisted Development: Process Review & Improvements
 
 **Дата:** 2025-10-16  
