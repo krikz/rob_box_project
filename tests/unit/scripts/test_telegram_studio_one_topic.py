@@ -269,3 +269,40 @@ def test_publish_confirmation_names_the_draft_and_carries_publish_button():
     text, keyboard = bot.calls[0][1], bot.calls[0][2]
     assert "i20261106-1-post" in text and "Навигация" in text
     assert keyboard["inline_keyboard"][0][0]["callback_data"] == "studio:post:i20261106-1-post:publish"
+
+
+# --------------------------------------------------------------------------- 6. таймлайн без кухни (09.11)
+
+
+def _merged(number, title, day="06"):
+    return {
+        "kind": "merged_pr",
+        "claim": f"PR #{number} влит в develop: {title}",
+        "source": f"PR #{number} (https://github.com/krikz/rob_box_project/pull/{number})",
+        "merged_at": f"2026-11-{day}T12:00:00Z",
+        "key": f"pr:{number}",
+    }
+
+
+def test_timeline_picture_has_no_pr_numbers_or_develop():
+    """Картинка идёт в канал: ни в заголовке, ни в строках, ни в подвале нет PR и develop."""
+    facts = [
+        _merged(4502, "fix(nav): сторож локализации — не «приехал», если поза ушла (#4495)"),
+        _merged(4503, "fix(rtabmap): сброс ICP-одометрии после потери (#4495)"),
+    ]
+    spec = smedia.timeline_spec({"fact_keys": ["pr:4502"]}, facts)
+    assert spec is not None
+    shown = smedia.visible_text(spec)
+    assert all(smedia.is_public(text) for text in shown), shown
+    assert not any("PR" in text or "develop" in text for text in shown), shown
+    assert [ev["pr"] for ev in spec["events"]] == ["#4502", "#4503"]  # сверка с источником остаётся
+
+
+def test_timeline_line_with_repo_file_is_left_out():
+    """«…— patch_rtabmap_launch.py» — имя файла, на картинку такая строка не идёт."""
+    facts = [
+        _merged(4507, "fix(rtabmap): один источник параметров — patch_rtabmap_launch.py"),
+        _merged(4502, "fix(nav): сторож локализации — не «приехал», если поза ушла"),
+    ]
+    texts = [ev["text"] for ev in smedia.timeline_events(facts)]
+    assert texts == ["Сторож локализации — не «приехал», если поза ушла"]
