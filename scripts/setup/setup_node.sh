@@ -368,7 +368,17 @@ clone_repository() {
     log_step "Клонирование репозитория rob_box_project"
     
     REPO_DIR="$HOME/rob_box_project"
-    
+
+    # ROBBOX_SETUP_NO_GIT=1 — взять уже лежащую копию как есть (прогон в чистой ОС, проверка ветки).
+    if [ "${ROBBOX_SETUP_NO_GIT:-0}" = 1 ]; then
+        if [ -d "$REPO_DIR/scripts/setup" ]; then
+            log_warning "ROBBOX_SETUP_NO_GIT=1: $REPO_DIR не обновляю из GitHub"
+            return 0
+        fi
+        log_error "ROBBOX_SETUP_NO_GIT=1, но в $REPO_DIR нет копии репозитория"
+        exit 1
+    fi
+
     if [ -d "$REPO_DIR" ]; then
         log_warning "Репозиторий уже существует в $REPO_DIR"
         log_info "Обновляем до последней версии..."
@@ -600,7 +610,9 @@ Requires=docker.service
 Type=oneshot
 RemainAfterExit=yes
 WorkingDirectory=$DOCKER_COMPOSE_DIR
-ExecStart=/usr/bin/docker compose up -d
+# --pull never: старт при загрузке не зависит от сети и registry (образы кладёт деплой),
+# как в robbox-vision.service из setup_vision_pi.sh (его сверяет L: Deploy and Verify).
+ExecStart=/usr/bin/docker compose up -d --pull never
 ExecStop=/usr/bin/docker compose down
 User=$USER
 
@@ -1172,6 +1184,38 @@ setup_custom_node() {
 }
 
 # ═══════════════════════════════════════════════════════════════════════════
+# АГЕНТ ДОСТАВКИ CHUANGONG (ADR-0168, фаза B)
+# ═══════════════════════════════════════════════════════════════════════════
+# Ставит host/chuangong/install.sh: python3-yaml, python3-cryptography, код агента,
+# /opt/rob_box/releases, /var/lib/chuangong, /etc/chuangong/chuangong.env (режим observe), юниты.
+# Таймер НЕ включается, пока не задан ROBBOX_ENABLE_CHUANGONG=1. Включённый агент только смотрит
+# релиз в реестре и докладывает; ничего не скачивает и не переключает. Ключ проверки подписи —
+# CHUANGONG_PUBKEY_FILE (без него агент докладывает fetch_error: no_pubkey).
+
+setup_chuangong() {
+    case "$NODE_TYPE" in
+        main|vision|sound) ;;
+        *) return 0 ;;
+    esac
+    log_step "Агент доставки chuangong (ADR-0168, observe)"
+    local installer="$HOME/rob_box_project/host/chuangong/install.sh"
+    if [ ! -f "$installer" ]; then
+        log_warning "$installer не найден — агент не установлен"
+        return 0
+    fi
+    local robot_id
+    robot_id="$(sed -n 's/^ROBOT_ID=//p' "$DOCKER_COMPOSE_DIR/.env" 2>/dev/null | head -n 1)"
+    local args=(--node "$NODE_TYPE" --robot-id "${robot_id:-RBXU100001}")
+    [ "${ROBBOX_ENABLE_CHUANGONG:-0}" = 1 ] && args+=(--enable)
+    [ -n "${CHUANGONG_PUBKEY_FILE:-}" ] && args+=(--pubkey "$CHUANGONG_PUBKEY_FILE")
+    if sudo CHUANGONG_USER="$USER" bash "$installer" "${args[@]}"; then
+        log_success "chuangong установлен (таймер: $([ "${ROBBOX_ENABLE_CHUANGONG:-0}" = 1 ] && echo включён || echo не включён))"
+    else
+        log_warning "Установка chuangong завершилась с ошибкой — остальная настройка узла не затронута"
+    fi
+}
+
+# ═══════════════════════════════════════════════════════════════════════════
 # ИТОГОВАЯ ИНФОРМАЦИЯ
 # ═══════════════════════════════════════════════════════════════════════════
 
@@ -1262,6 +1306,7 @@ main() {
     install_robbox_aliases
     setup_autostart
     setup_node_specific
+    setup_chuangong
     
     # Итоги
     print_summary
