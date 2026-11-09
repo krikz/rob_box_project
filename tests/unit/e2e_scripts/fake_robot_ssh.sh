@@ -158,7 +158,7 @@ docker() {
                 source() { :; }
                 # python3 внутри «контейнера» (подписанный /mcp/execute, снимок /voice/music/state --
                 # issue #3871): ROS нет, поэтому rclpy/std_msgs/rob_box_mcp_tools -- фейки из
-                # ros_stubs/, а чистый парсер снимка -- НАСТОЯЩИЙ rob_box_voice.core.music_player_state.
+                # ros_stubs/, а чистый парсер снимка -- НАСТОЯЩИЙ rob_box_dialog_host.music_player_state.
                 # shellcheck disable=SC2329
                 python3() {
                     PYTHONIOENCODING=utf-8 PYTHONPATH="$_STUBS:$_VOICE_SRC${PYTHONPATH:+:$PYTHONPATH}" command python3 "$@"

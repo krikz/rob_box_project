@@ -37,9 +37,9 @@ from rob_box_dialog import tools_view  # noqa: E402
 from rob_box_dialog import turn as turn_mod  # noqa: E402
 from rob_box_llm.provider import LLMResponse, ProviderCapabilities, ToolCall  # noqa: E402
 from rob_box_llm.providers.fake import FakeLLMProvider  # noqa: E402
-from rob_box_voice.core import command_bridge  # noqa: E402
-from rob_box_voice.core.dialog_v2_ports import CallCounter, Counted  # noqa: E402
-from rob_box_voice.tts_voice_registry import PROVIDER_LABELS, PROVIDER_VOICES  # noqa: E402
+from rob_box_dialog_host import command_bridge  # noqa: E402
+from rob_box_dialog_host.dialog_v2_ports import CallCounter, Counted  # noqa: E402
+from rob_box_dialog_host.tts_voice_registry import PROVIDER_LABELS, PROVIDER_VOICES  # noqa: E402
 
 
 def command(args: dict) -> LLMResponse:

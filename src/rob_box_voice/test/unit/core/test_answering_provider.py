@@ -6,7 +6,7 @@
 
 from __future__ import annotations
 
-from rob_box_voice.core.dialog_v2_ports import answering_provider
+from rob_box_dialog_host.dialog_v2_ports import answering_provider
 
 
 def test_answering_provider_prefers_chain_answer_then_name() -> None:

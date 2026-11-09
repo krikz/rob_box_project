@@ -18,7 +18,7 @@ from rob_box_dialog.session import Session
 from rob_box_dialog.turn import _Turn, command_form
 from rob_box_llm.provider import LLMChunk, LLMMessage, LLMResponse, LLMSettings, ProviderCapabilities, ToolCall
 from rob_box_llm.providers.deepseek import DeepSeekProvider
-from rob_box_voice.core import command_bridge as cb
+from rob_box_dialog_host import command_bridge as cb
 
 DEEPSEEK_CAPS = DeepSeekProvider(api_key="test").capabilities
 SEGMENTS = ["Жил-был енот-механик в старом гараже.", "Чинил он всё на свете, даже дождь."]

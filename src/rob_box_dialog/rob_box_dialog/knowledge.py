@@ -1775,7 +1775,7 @@ TOOL_ANSWER_FILLER: Tuple[str, ...] = (
 @dataclass(frozen=True)
 class OwnerText:
     """Поля данных успешного исхода, где фразу кода построил сам владелец (ADR-0148: фразу строит код из результата;
-    порядок — как у ``rob_box_voice.core.media_phrases.launch_text`` v1): ``whole`` — реплика целиком вместо фразы
+    порядок — как у ``rob_box_dialog_host.media_phrases.launch_text`` v1): ``whole`` — реплика целиком вместо фразы
     исхода (трек кэша «Ставлю песню из сочинённого раньше …»), ``note`` — фраза перед фразой исхода (почему звучит не
     то, что просили: «Метал на синте играю ближайшим стилем — брейкбит.», «Сгенерировать сейчас не могу: …, играю
     своё.» — ``rob_box_music.source.route_note``).
@@ -4070,7 +4070,7 @@ PROMPT_RULES: Tuple[PromptRule, ...] = (
 
 def prompt_rules(agent: str) -> str:
     """Блок «RULES» системного промпта агента — из таблицы :data:`PROMPT_RULES` (не из файла промпта). Правил у агента
-    нет (оператор) — пустая строка. Собирает его одна точка: ``rob_box_voice.core.dialog_v2_ports.assemble_llm``."""
+    нет (оператор) — пустая строка. Собирает его одна точка: ``rob_box_dialog_host.dialog_v2_ports.assemble_llm``."""
     lines = [f"- {rule.text}" for rule in PROMPT_RULES if agent in rule.agents]
     return "# RULES\n" + "\n".join(lines) if lines else ""
 

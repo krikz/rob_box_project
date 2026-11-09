@@ -50,7 +50,7 @@ def test_robot_operator_rules_are_byte_for_byte_the_old_file():
 def test_full_prompts_are_built_on_the_same_rules():
     """Мост дописывает правила знания к промпту чата, хост ТАРС - раздел инструментов к правилам - как к старым
     файлам."""
-    ports = pytest.importorskip("rob_box_voice.core.dialog_v2_ports", reason="мосту нужен rob_box_llm")
+    ports = pytest.importorskip("rob_box_dialog_host.dialog_v2_ports", reason="мосту нужен rob_box_llm")
     full = ports.system_prompt(telegram_prompt(_profile().name), "telegram")
     assert full.startswith(GOLDEN_TELEGRAM.read_text(encoding="utf-8") + "\n\n")
     op = pytest.importorskip("rob_box_supervisor.operator_prompt", reason="нужен rob_box_supervisor")

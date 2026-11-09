@@ -12,7 +12,7 @@ from rob_box_dialog import phrases
 from rob_box_dialog.command import Command, Invalid
 from rob_box_llm.provider import LLMChunk, LLMMessage, LLMResponse, LLMSettings, ProviderCapabilities, ToolCall
 from rob_box_llm.providers.deepseek import DeepSeekProvider
-from rob_box_voice.core import command_bridge as cb
+from rob_box_dialog_host import command_bridge as cb
 
 DEEPSEEK_CAPS = DeepSeekProvider(api_key="test").capabilities
 N907 = ("Свежих материалов за неделю поиск дал мало. Важное: Роскосмос по просьбе NASA законсервирует "

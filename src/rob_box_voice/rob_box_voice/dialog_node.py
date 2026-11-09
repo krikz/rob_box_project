@@ -92,13 +92,13 @@ from .core import plan_host
 from . import robot_profile
 from .core.dialog_metrics import llm_metrics, record_interrupt
 from .core.backlog_voice import note_backlog_voice
-from .core.dialog_v2_ports import CallCounter, V2Ports, assemble_llm
-from .core.music_player_state import MUSIC_EVENT_TOPIC, MUSIC_STATE_TOPIC, parse_music_state
+from rob_box_dialog_host.dialog_v2_ports import CallCounter, V2Ports, assemble_llm
+from rob_box_dialog_host.music_player_state import MUSIC_EVENT_TOPIC, MUSIC_STATE_TOPIC, parse_music_state
 from .core.provider_reporter import ProviderStateReporter, on_provider_states, reporter_context
-from .core.speaker_memory import SpeakerMemory
+from rob_box_dialog_host.speaker_memory import SpeakerMemory
 from .core.turn_context import tts_voices
 from .core.utterance_speaker import UtteranceSpeakerRegistry
-from .tts_voice_registry import robot_default_voice
+from rob_box_dialog_host.tts_voice_registry import robot_default_voice
 from rob_box_dialog.music_state import MusicStateMemory
 from rob_box_dialog.window_reset import REASON_E2E_OFF, REASON_E2E_ON
 

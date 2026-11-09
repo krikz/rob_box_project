@@ -16,7 +16,7 @@ from rob_box_voice.core.media_router import (
     MediaRouter,
     MediaState,
 )
-from rob_box_voice.core.music_player_state import (
+from rob_box_dialog_host.music_player_state import (
     build_music_event_payload,
     build_music_state_payload,
     parse_music_event,

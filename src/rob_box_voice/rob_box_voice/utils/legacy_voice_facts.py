@@ -10,7 +10,7 @@ Issue #2751 (инвентаризация ``/data`` на Vision Pi), продо�
 только про ``MemoryStore``-факты (таблица ``facts`` в ``harness_voice.db``,
 модель scope/key/value). Живые пользовательские факты («не ем лук», «пью
 чай без сахара» и т. п.) копит СОВСЕМ ДРУГОЙ, более старый писатель —
-``rob_box_voice.core.voice_memory.VoiceMemory`` (через MCP-инструмент
+``rob_box_dialog_host.voice_memory.VoiceMemory`` (через MCP-инструмент
 ``memory_save``), пишущий в таблицу ``voice_facts`` БД инструментов
 (путь — ``rob_box_core.tools_db``; колонки ``speaker_id``, ``fact``,
 ``category`` — никакого отношения к scope/key модели харнесса).

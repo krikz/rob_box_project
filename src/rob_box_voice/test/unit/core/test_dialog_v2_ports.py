@@ -19,9 +19,9 @@ from rob_box_dialog.session import Session  # noqa: E402
 from rob_box_dialog.turn import TurnEngine  # noqa: E402
 import pytest  # noqa: E402
 from rob_box_llm.provider import LLMResponse, ToolResult  # noqa: E402
-from rob_box_voice.core import command_bridge  # noqa: E402
-from rob_box_voice.core.command_bridge import CommandResponse  # noqa: E402
-from rob_box_voice.core.dialog_v2_ports import (  # noqa: E402
+from rob_box_dialog_host import command_bridge  # noqa: E402
+from rob_box_dialog_host.command_bridge import CommandResponse  # noqa: E402
+from rob_box_dialog_host.dialog_v2_ports import (  # noqa: E402
     EMPTY, CallCounter, Counted, V2Ports, counted_wrapper, follow_for, result_of, stage_plan, tool_schema,
 )
 
@@ -232,7 +232,7 @@ def test_tier1_stop_publishes_stop_motion_intent_and_cancel():
 
 def test_assemble_llm_puts_every_provider_into_command_mode_and_counts_calls(monkeypatch):
     """#3906: одна сборка цепочки для ROS-хоста и сухого стенда: провайдер в режиме команд, основу промпта даёт хост."""
-    from rob_box_voice.core.dialog_v2_ports import assemble_llm
+    from rob_box_dialog_host.dialog_v2_ports import assemble_llm
 
     monkeypatch.setenv("DEEPSEEK_API_KEY", "dry-run-not-a-key")
     counter = CallCounter()
@@ -467,7 +467,7 @@ def test_4083_expression_duration_from_the_model_reaches_the_expression_request(
 def test_4083_show_queue_only_for_done_with_a_batch():
     from rob_box_dialog.turn import Shown
 
-    from rob_box_voice.core.dialog_v2_ports import show_queue
+    from rob_box_dialog_host.dialog_v2_ports import show_queue
 
     batch = Shown(emotion="happy", duration_s=6.0, then=(Shown(emotion="sad", duration_s=7.0),))
     assert [(at, p.emotion, p.ttl_ms) for at, p in show_queue("done", batch)] == [(6.0, "sad", 7000)]
@@ -552,7 +552,7 @@ def test_4083_queue_timer_outside_a_loop_is_a_thread_timer_that_cancels():
     """Вне asyncio-loop (стадия из ROS-потока) таймер очереди — поток-таймер с тем же ``cancel()``."""
     import threading
 
-    from rob_box_voice.core.dialog_v2_ports import _call_later
+    from rob_box_dialog_host.dialog_v2_ports import _call_later
 
     fired, late = threading.Event(), threading.Event()
     _call_later(0.01, fired.set)

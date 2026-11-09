@@ -39,7 +39,7 @@ import e2e_db  # noqa: E402
 import logparse  # noqa: E402
 from rob_box_dialog import knowledge as kn  # noqa: E402
 from rob_box_dialog import state_claim  # noqa: E402
-from rob_box_voice.core.media_phrases import LAUNCH_PHRASE_STEMS  # noqa: E402
+from rob_box_dialog_host.media_phrases import LAUNCH_PHRASE_STEMS  # noqa: E402
 
 # Тулы запуска музыки. lookup_melody/search_melody сюда не входят: это поиск роутера до хода (в 20.10 он промахнулся
 # на «голос надежного мужика»), а не попытка что-то запустить.

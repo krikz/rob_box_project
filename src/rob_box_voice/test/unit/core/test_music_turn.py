@@ -19,7 +19,7 @@ import json
 import pytest
 
 from rob_box_llm.provider import ToolCall, ToolResult
-from rob_box_voice.core.media_phrases import (
+from rob_box_dialog_host.media_phrases import (
     DJ_FAIL_TEXT,
     NOT_LAUNCHED_TEXT,
     REQUEST_FAIL_TEXT,
@@ -249,7 +249,7 @@ def test_sound_refused_busy_gives_one_phrase_the_sound_tools_not_nothing_played(
 
 
 def test_piece_asked_and_nothing_executed_is_still_nothing_played():
-    from rob_box_voice.core.media_phrases import NOT_PLAYED_TEXT
+    from rob_box_dialog_host.media_phrases import NOT_PLAYED_TEXT
 
     assert turn_reply(MusicTurn(), requested=False, voiced=0, piece=True) == NOT_PLAYED_TEXT
 

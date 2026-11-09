@@ -31,8 +31,8 @@ import dry_stand  # noqa: E402
 from rob_box_dialog import phrases  # noqa: E402
 from rob_box_llm.provider import LLMResponse, ProviderCapabilities, ToolCall  # noqa: E402
 from rob_box_llm.providers.fake import FakeLLMProvider  # noqa: E402
-from rob_box_voice.core import command_bridge  # noqa: E402
-from rob_box_voice.core.dialog_v2_ports import CallCounter, Counted  # noqa: E402
+from rob_box_dialog_host import command_bridge  # noqa: E402
+from rob_box_dialog_host.dialog_v2_ports import CallCounter, Counted  # noqa: E402
 
 #: Паттерн шагов стопа марафона (``gen_night_marathon``): стоп с НАСТОЯЩИМ id трека и причиной человека.
 STOP_PATTERN = re.compile(r"🎵 \[music\] stop track_id=[a-z0-9]\S* reason=user_stop")

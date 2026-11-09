@@ -19,7 +19,7 @@ import pytest
 _PACKAGE_ROOT = Path(__file__).resolve().parents[3]  # rob_box_voice/
 sys.path.insert(0, str(_PACKAGE_ROOT))
 
-from rob_box_voice.tts_voice_registry import (  # noqa: E402
+from rob_box_dialog_host.tts_voice_registry import (  # noqa: E402
     DEFAULT_VOICES,
     PROVIDER_VOICES,
     default_voice_for,

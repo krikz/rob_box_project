@@ -18,7 +18,7 @@ cleanup-флаг или живы TTS-батчи. Живой прогон 28.09 2
 Это не эвристика — переход «играл → не играет» виден в самих снимках.
 
 Раздел — данные (словарь), текст из него строит ``context.build_context``; снимок плеера — любой объект с полями
-``MusicPlayerState`` (``rob_box_voice.core.music_player_state``): пакет чистый и rob_box_voice не импортирует.
+``MusicPlayerState`` (``rob_box_dialog_host.music_player_state``): пакет чистый и rob_box_voice не импортирует.
 """
 
 from __future__ import annotations

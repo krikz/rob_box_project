@@ -92,7 +92,7 @@ class AgentSpec:
     wrap_provider: Callable[[Any], Any] = _same_provider
     """Обёртка каждого собранного провайдера цепочки ДО ``HealthAwareFallbackLLM`` (имя кэша здоровья — у
     обёрнутого). Personality так включает режим команд по capabilities провайдера (ADR-0150 §4.5,
-    ``rob_box_voice.core.command_bridge``); по умолчанию провайдер как есть."""
+    ``rob_box_dialog_host.command_bridge``); по умолчанию провайдер как есть."""
 
 
 def _resolve_provider_settings(

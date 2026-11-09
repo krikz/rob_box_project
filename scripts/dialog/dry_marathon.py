@@ -323,7 +323,7 @@ def role_busy(stand: DryStand) -> Any:
     """Каталог голосов ролей стенда, как ``plan_host.perform_busy`` у робота: русские голоса провайдера стенда без
     голоса робота (рассказчика), с полом; выступлений-хостов у стенда нет - ``cast`` и активного сегмента нет."""
     from rob_box_dialog.command import Busy  # noqa: PLC0415
-    from rob_box_voice.tts_voice_registry import default_voice_for, gender_of, role_voices_for  # noqa: PLC0415
+    from rob_box_dialog_host.tts_voice_registry import default_voice_for, gender_of, role_voices_for  # noqa: PLC0415
 
     provider = stand.voice_provider
     robot = stand.session.snapshot.voice.applied or default_voice_for(provider)
@@ -343,7 +343,7 @@ def build_real_stand(providers: Sequence[str], workdir: Path, deadline_s: Option
     каталог голосов ролей, как у робота (``plan_host.perform_busy``): код даёт героям выступления голоса, и
     валидатор сверяет число героев с каталогом; без него голоса сегментов не решаются (марафон - как было)."""
     from rob_box_llm.provider import LLMSettings  # noqa: PLC0415
-    from rob_box_voice.core.dialog_v2_ports import CallCounter, assemble_llm  # noqa: PLC0415
+    from rob_box_dialog_host.dialog_v2_ports import CallCounter, assemble_llm  # noqa: PLC0415
 
     relay, counter = LogRelay(), CallCounter()
     holder: List[DryStand] = []

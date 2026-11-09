@@ -438,7 +438,7 @@ plan.after.backing: ["этого бита"]
 plan.after.track: ["этого трека"]
 plan.after.motion: ["того, как доеду"]
 
-# --- музыка (тексты rob_box_voice.core.media_phrases и media_router — по ссылке, как есть) -------------------
+# --- музыка (тексты rob_box_dialog_host.media_phrases и media_router — по ссылке, как есть) -------------------
 music.dj_started: ["Включаю диджей-сет."]
 music.dj_started_persona: ["Я {persona}, включаю сет."]
 music.theme: ["Тема — {theme}."]

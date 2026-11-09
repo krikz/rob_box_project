@@ -16,7 +16,7 @@ from rob_box_dialog import knowledge as kn
 from rob_box_dialog.command import Invalid
 from rob_box_llm.provider import LLMMessage, LLMResponse, ToolCall
 from rob_box_llm.providers.deepseek import DeepSeekProvider
-from rob_box_voice.core import command_bridge as cb
+from rob_box_dialog_host import command_bridge as cb
 
 CAPS = DeepSeekProvider(api_key="test").capabilities
 TOOLS = [{"type": "function",

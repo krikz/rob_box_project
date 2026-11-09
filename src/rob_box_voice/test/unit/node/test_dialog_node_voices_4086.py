@@ -35,7 +35,7 @@ except ImportError:
 from rob_box_llm.provider import LLMResponse, ToolResult  # noqa: E402
 from rob_box_voice import dialog_node as dn  # noqa: E402
 from rob_box_voice.core.turn_context import tts_voices  # noqa: E402
-from rob_box_voice.tts_voice_registry import (  # noqa: E402
+from rob_box_dialog_host.tts_voice_registry import (  # noqa: E402
     PROVIDER_VOICES,
     VOICE_ALIASES,
     VOICE_METADATA,

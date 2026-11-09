@@ -25,8 +25,6 @@ on:
       - 'src/rob_box_dialog/**'
       - 'src/rob_box_dialog_host/**'
       - 'src/rob_box_music/rob_box_music/**'
-      - 'src/rob_box_voice/rob_box_voice/core/**'
-      - 'src/rob_box_voice/rob_box_voice/tts_voice_registry.py'
       - 'src/rob_box_mcp_tools/rob_box_mcp_tools/*.py'
       - 'src/rob_box_dialog_msgs/msg/**'
       - 'scripts/dialog/**'
@@ -45,8 +43,6 @@ on:
       - 'src/rob_box_dialog/**'
       - 'src/rob_box_dialog_host/**'
       - 'src/rob_box_music/rob_box_music/**'
-      - 'src/rob_box_voice/rob_box_voice/core/**'
-      - 'src/rob_box_voice/rob_box_voice/tts_voice_registry.py'
       - 'src/rob_box_mcp_tools/rob_box_mcp_tools/*.py'
       - 'src/rob_box_dialog_msgs/msg/**'
       - 'scripts/dialog/**'
@@ -112,7 +108,7 @@ jobs:
           "$VENV/bin/python" - <<'EOF'
           import sys
           sys.path.insert(0, "scripts/dialog")
-          import dry_stand, rob_box_dialog, rob_box_voice.core.dialog_v2_ports as ports
+          import dry_stand, rob_box_dialog, rob_box_dialog_host.dialog_v2_ports as ports
           assert dry_stand.core_installed()
           for m in (rob_box_dialog, ports):
               assert "/src/" not in m.__file__, m.__file__

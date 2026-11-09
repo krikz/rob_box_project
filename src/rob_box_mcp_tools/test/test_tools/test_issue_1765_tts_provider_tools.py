@@ -48,7 +48,7 @@ from rob_box_mcp_tools.tools.dialogue import (  # noqa: E402
     _validate_provider,
 )
 from rob_box_mcp_tools.voice_request import VoiceOutcome  # noqa: E402
-from rob_box_voice.tts_voice_registry import PROVIDER_VOICES  # noqa: E402
+from rob_box_dialog_host.tts_voice_registry import PROVIDER_VOICES  # noqa: E402
 
 
 def _published_payloads(tool, topic: str) -> list[dict]:

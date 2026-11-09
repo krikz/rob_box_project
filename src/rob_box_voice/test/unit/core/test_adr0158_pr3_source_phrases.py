@@ -7,7 +7,7 @@
 from __future__ import annotations
 
 from rob_box_voice.core.media_command_grammar import MediaIntent, parse_media_command
-from rob_box_voice.core.media_phrases import launch_text, source_error, source_phrase
+from rob_box_dialog_host.media_phrases import launch_text, source_error, source_phrase
 from rob_box_voice.core.media_router import MediaRouter, MediaState
 from rob_box_voice.core.music_turn import MusicTurn
 

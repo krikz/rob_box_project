@@ -15,7 +15,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
 
 from rob_box_voice import sing_synth  # noqa: E402
 from rob_box_voice.sing_synth import SingSynthError, synth_vocal_to_file  # noqa: E402
-from rob_box_voice.tts_voice_registry import (  # noqa: E402
+from rob_box_dialog_host.tts_voice_registry import (  # noqa: E402
     _YANDEX_ROLES,
     MINIMAX_EMOTIONS,
     PROVIDER_VOICES,

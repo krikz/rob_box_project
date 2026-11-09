@@ -187,7 +187,7 @@ def mock_ollama_embedder():
 @pytest.fixture
 def voice_memory(tmp_path, mock_ollama_embedder):
     """VoiceMemory with temp DB and mock embedder."""
-    from rob_box_voice.core.voice_memory import VoiceMemory
+    from rob_box_dialog_host.voice_memory import VoiceMemory
     return VoiceMemory(
         db_path=str(tmp_path / "test.db"),
         embedder=mock_ollama_embedder

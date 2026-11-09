@@ -34,7 +34,7 @@ from typing import Any, List, Mapping, Optional, Sequence
 from rob_box_core.music_tools import MUSIC_AUDIBLE_LYRICS_TOOLS as _LEGACY_MUSIC_TOOLS
 
 from .media_command_grammar import MediaIntent, parse_media_command
-from .media_phrases import (
+from rob_box_dialog_host.media_phrases import (
     DJ_FAIL_TEXT,
     NOT_LAUNCHED_TEXT,
     NOT_PLAYED_TEXT,

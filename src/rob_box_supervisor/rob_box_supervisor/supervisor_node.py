@@ -52,7 +52,7 @@ from std_msgs.msg import String as RosString
 # AV-27 / issue #1919 — импорт SoT голосов. Pure-Python, без rclpy —
 # безопасен в любом окружении. Используется в _apply_set_voice и
 # _on_preview_voice для валидации voice_id.
-from rob_box_voice.tts_voice_registry import voices_for as _voices_for
+from rob_box_dialog_host.tts_voice_registry import voices_for as _voices_for
 
 # Issue #2081 — единый источник истины для топиков avatar/command*.
 # До этого PR константы дублировались локально (см. ниже старые

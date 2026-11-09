@@ -106,7 +106,7 @@ from .core.voice_owner import attach_voice_owner
 # огибающая. Старых JSON-входов речи нет (PR-15 часть 15-core, #3711).
 from .core.speech_owner import SpeechOwner, owner_of
 from .core.speech_timing import PREFETCH_PROVIDER
-from .tts_voice_registry import known_provider, unsupported_language_notice
+from rob_box_dialog_host.tts_voice_registry import known_provider, unsupported_language_notice
 from .core import tts_stream
 
 # ADR-0145 §4 TTSNode step 1 — moved verbatim to ``utils/resample.py``
@@ -1789,7 +1789,7 @@ class TTSNode(Node):
         hint = payload.get("provider")
         explicit = isinstance(hint, str) and bool(hint.strip())
         try:
-            from .tts_voice_registry import voices_for as _voices_for  # noqa: PLC0415
+            from rob_box_dialog_host.tts_voice_registry import voices_for as _voices_for  # noqa: PLC0415
         except Exception:  # noqa: BLE001 — registry недоступен
             return None
         candidates = (str(hint).strip().lower(),) if explicit else ("yandex", "minimax", "silero")
@@ -3126,7 +3126,7 @@ class TTSNode(Node):
         if not chain:
             chain = TTSNode._chain_from_provider(getattr(self, "provider", "minimax"))
         try:
-            from .tts_voice_registry import effective_provider as _effective
+            from rob_box_dialog_host.tts_voice_registry import effective_provider as _effective
         except Exception:  # noqa: BLE001 — registry недоступен
             return chain[0] if chain else None
         return _effective(chain, self._provider_is_dead)
@@ -3165,7 +3165,7 @@ class TTSNode(Node):
         pub = getattr(self, "provider_state_pub", None)
         if pub is None:
             return  # тестовый stub без топика
-        from .tts_voice_registry import default_voice_for as _default_voice
+        from rob_box_dialog_host.tts_voice_registry import default_voice_for as _default_voice
 
         eff = _provider_for_state(self, provider, reason)
         if not eff:
@@ -3227,7 +3227,7 @@ class TTSNode(Node):
         pub = getattr(self, "voices_catalog_pub", None)
         if pub is None:
             return  # тестовый stub без топика
-        from .tts_voice_registry import voices_info_for as _voices_info
+        from rob_box_dialog_host.tts_voice_registry import voices_info_for as _voices_info
 
         voices = _voices_info(provider)
         payload = {
@@ -3683,7 +3683,7 @@ class TTSNode(Node):
         # "настроено на ноде" решаем здесь, на вызывающей стороне.
         _mm_requested = voice or getattr(self, "minimax_voice", None)
         try:
-            from .tts_voice_registry import resolve_voice as _resolve_voice
+            from rob_box_dialog_host.tts_voice_registry import resolve_voice as _resolve_voice
 
             _mm_voice, _mm_fell = _resolve_voice("minimax", _mm_requested)
         except Exception:  # noqa: BLE001 — registry недоступен
@@ -3797,7 +3797,7 @@ class TTSNode(Node):
         # фикса в _sap_synthesize_minimax выше (тот же паттерн).
         _yandex_requested = voice or getattr(self, "yandex_voice", None)
         try:
-            from .tts_voice_registry import resolve_voice as _resolve_voice
+            from rob_box_dialog_host.tts_voice_registry import resolve_voice as _resolve_voice
 
             _yandex_voice, _yandex_fell = _resolve_voice("yandex", _yandex_requested)
         except Exception:  # noqa: BLE001 — registry недоступен
@@ -3820,7 +3820,7 @@ class TTSNode(Node):
         # берём голос нужного языка (lea для de, john для en).
         if language:
             try:
-                from .tts_voice_registry import (
+                from rob_box_dialog_host.tts_voice_registry import (
                     language_of as _language_of,
                     voice_for_language as _voice_for_language,
                 )
@@ -3943,7 +3943,7 @@ class TTSNode(Node):
         # (живой через parameters_callback) > дефолт реестра.
         _silero_requested = voice or getattr(self, "silero_speaker", None)
         try:
-            from .tts_voice_registry import resolve_voice as _resolve_voice
+            from rob_box_dialog_host.tts_voice_registry import resolve_voice as _resolve_voice
 
             _silero_voice, _silero_fell = _resolve_voice("silero", _silero_requested)
         except Exception:  # noqa: BLE001 — registry недоступен
@@ -5389,7 +5389,7 @@ class TTSNode(Node):
         (issue #2183, причина 3 — "no silent degradation").
         """
         try:
-            from .tts_voice_registry import voices_for as _voices_for
+            from rob_box_dialog_host.tts_voice_registry import voices_for as _voices_for
 
             _known = voice in _voices_for(provider)
         except Exception:  # noqa: BLE001 — registry недоступен

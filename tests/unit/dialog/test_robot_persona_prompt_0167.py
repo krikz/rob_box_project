@@ -40,7 +40,7 @@ def test_robot_prompt_is_byte_for_byte_the_old_master_prompt():
 
 def test_robot_system_prompt_is_the_prompt_plus_knowledge_rules():
     """Мост дописывает правила знания к промпту так же, как к старому файлу: ``промпт + пустая строка + правила``."""
-    ports = pytest.importorskip("rob_box_voice.core.dialog_v2_ports", reason="мосту нужен rob_box_llm")
+    ports = pytest.importorskip("rob_box_dialog_host.dialog_v2_ports", reason="мосту нужен rob_box_llm")
     full = ports.system_prompt(_robot_prompt(), "personality")
     assert full.startswith(GOLDEN.read_text(encoding="utf-8") + "\n\n")
 

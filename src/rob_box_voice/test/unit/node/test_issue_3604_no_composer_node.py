@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import asyncio
 
-from rob_box_voice.core.media_phrases import (composer_missing_error, composer_missing_phrase,
+from rob_box_dialog_host.media_phrases import (composer_missing_error, composer_missing_phrase,
                                               composer_missing_text)
 from rob_box_voice.core.named_play import NamedPlayStatus, outcome_text, run_named_play
 

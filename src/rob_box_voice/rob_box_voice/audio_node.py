@@ -16,7 +16,7 @@ import threading
 import time
 from typing import Optional
 
-from .core.music_player_state import MUSIC_STATE_TOPIC, parse_music_state
+from rob_box_dialog_host.music_player_state import MUSIC_STATE_TOPIC, parse_music_state
 from .core.speech_split import publish_speech_chunks
 from .utils.audio_utils import find_respeaker_device, list_audio_devices, calculate_rms, calculate_db
 from .utils.respeaker_interface import ReSpeakerInterface

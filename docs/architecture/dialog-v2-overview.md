@@ -120,7 +120,7 @@ flowchart TD
 ### 1.4. Ход — `TurnEngine`
 
 Ход без ROS: `src/rob_box_dialog/rob_box_dialog/turn.py`. Транспорт — порты `V2Ports`
-(`src/rob_box_voice/rob_box_voice/core/dialog_v2_ports.py:170`).
+(`src/rob_box_dialog_host/rob_box_dialog_host/dialog_v2_ports.py:170`).
 
 1. `TurnEngine.run` (`turn.py:2108`): журнал хода, e2e-событие `user`, стадия `addressed` (рефлекс лица и кольца
    без LLM). Голое «робот» без подхвата заканчивается здесь (`wordless`, `turn.py:833`).
@@ -144,7 +144,7 @@ flowchart TD
   `knowledge.prompt_rules` (`dialog_v2_ports.py:374-383`). Сборка — `assemble_llm` → `build_llm_chain`
   (`dialog_v2_ports.py:359-371`, `src/rob_box_harness/rob_box_harness/core/assembly.py:152`): цепочка с учётом здоровья
   провайдеров, каждый провайдер обёрнут **режимом команд** моста.
-- **Мост команд** (`src/rob_box_voice/rob_box_voice/core/command_bridge.py:1-25`): форма запроса — по возможностям
+- **Мост команд** (`src/rob_box_dialog_host/rob_box_dialog_host/command_bridge.py:1-25`): форма запроса — по возможностям
   провайдера (`degrade.select_mode`, `src/rob_box_dialog/rob_box_dialog/degrade.py:57`): DeepSeek — тул `command` с
   `tool_choice=required`, MiniMax — тул без принуждения, иначе JSON. Ответ разбирает один парсер
   (`command.parse`, `src/rob_box_dialog/rob_box_dialog/command.py:273`) и валидатор (`command.validate`, `:596`).

@@ -84,11 +84,11 @@ from rob_box_dialog.speaker_adapter import speaker_ref, voice_tag  # noqa: E402
 from rob_box_dialog.turn import ASK_MARK, LOG_MARK, TurnEngine, host_sections, settle  # noqa: E402
 from rob_box_llm.provider import ToolResult  # noqa: E402
 from rob_box_mcp_tools.voice_request import VoiceOutcome, outcome_data  # noqa: E402
-from rob_box_voice.core.dialog_v2_ports import CallCounter, V2Ports  # noqa: E402
-from rob_box_voice.core.music_player_state import build_music_state_payload, parse_music_state  # noqa: E402
-from rob_box_voice.core.speaker_memory import SpeakerMemory  # noqa: E402
-from rob_box_voice.core.voice_memory import VoiceMemory  # noqa: E402
-from rob_box_voice.tts_voice_registry import (  # noqa: E402
+from rob_box_dialog_host.dialog_v2_ports import CallCounter, V2Ports  # noqa: E402
+from rob_box_dialog_host.music_player_state import build_music_state_payload, parse_music_state  # noqa: E402
+from rob_box_dialog_host.speaker_memory import SpeakerMemory  # noqa: E402
+from rob_box_dialog_host.voice_memory import VoiceMemory  # noqa: E402
+from rob_box_dialog_host.tts_voice_registry import (  # noqa: E402
     ROBOT_DEFAULT_PROVIDER, default_voice_for, providers_overview, robot_default_voice, voice_id_by_name, voices_for,
 )
 

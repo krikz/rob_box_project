@@ -74,7 +74,7 @@ nodes:
     # core/dialog_v2_ports.py; /dialog/plan_event публикует core/plan_host.py (планировщик ресурсов, PR-7b #3699;
     # до PR-15 15p #3711 файл числился за нодой v1)
     source: ["src/rob_box_dialog/rob_box_dialog/*.py", src/rob_box_voice/rob_box_voice/dialog_node.py,
-             src/rob_box_voice/rob_box_voice/core/dialog_v2_ports.py, src/rob_box_voice/rob_box_voice/core/plan_host.py]
+             src/rob_box_dialog_host/rob_box_dialog_host/dialog_v2_ports.py, src/rob_box_voice/rob_box_voice/core/plan_host.py]
   tts_node:
     owner: voice
     package: rob_box_voice
