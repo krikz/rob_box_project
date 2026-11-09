@@ -10,7 +10,7 @@
 
 Маркеры
 =======
-v2 (``dialog_engine: v2``):
+Маркеры диалога v2 (единственный движок):
 
 * ``✅ ПРИНЯТО (...)`` -- фраза принята STT;
 * ``📊 [turn] ... stage=done|failed|cancelled|silenced`` -- агрегат хода (``rob_box_dialog.turn_log.AGGREGATE_MARK``).
@@ -28,9 +28,6 @@ v2 (``dialog_engine: v2``):
   ``synthesized`` / ``started`` / ``progress`` открывают или ведут реплику, ``finished`` / ``cancelled`` /
   ``rejected`` закрывают её. Пара -- по ``speech_id``. Каждый куплет выступления -- отдельный ``SpeechRequest``
   со своим ``speech_id``, значит и свой ``SpeechEvent started``.
-
-v1: ``🔊 TTS: speech_id=<8>`` открывает реплику, ``Публикую TTS finished event: speech_id=<8>`` (и вариант
-``(ошибка)``) закрывает.
 
 В строке ``SpeechEvent`` нет ``turn_id`` и идентификатора выступления: «куплет именно этого выступления»
 отличить от обычной реплики по логу нельзя. Окно лога ограничено фразой шага, поэтому ``segment_started``
@@ -105,8 +102,6 @@ from typing import Any, Callable, Dict, List, Mapping, NamedTuple, Optional, Pat
 
 TS_RE = re.compile(r"\[(\d{9,}\.\d+)\]")
 SPEECH_V2 = re.compile(r"SpeechEvent (queued|synthesized|started|progress|finished|cancelled|rejected) speech_id=([0-9A-Za-z]+)")
-V1_OPEN = re.compile(r"🔊 TTS: speech_id=([0-9a-f]{8})")
-V1_CLOSE = re.compile(r"TTS finished event(?: \(ошибка\))?: speech_id=([0-9a-f]{8})")
 OPENING = frozenset({"queued", "synthesized", "started"})
 CLOSING = frozenset({"finished", "cancelled", "rejected"})
 TURN_RE = re.compile(r"📊 \[turn\].*?\bstage=(\w+)")
@@ -154,23 +149,16 @@ def split_input(text: str) -> Tuple[Optional[float], List[str]]:
         return None, lines
 
 
-def speech_event(line: str, engine: str) -> Optional[Tuple[str, str]]:
+def speech_event(line: str) -> Optional[Tuple[str, str]]:
     """``(вид, speech_id)`` события речи в строке или ``None``. Вид: queued/started/progress/finished/..."""
-    if engine == "v2":
-        found = SPEECH_V2.search(line)
-        return (found.group(1), found.group(2)) if found else None
-    opened = V1_OPEN.search(line)
-    if opened:
-        return "started", opened.group(1)
-    closed = V1_CLOSE.search(line)
-    return ("finished", closed.group(1)) if closed else None
+    found = SPEECH_V2.search(line)
+    return (found.group(1), found.group(2)) if found else None
 
 
 class Window:
     """Состояние окна лога: принято ли, закончен ли ход, какие реплики открыты."""
 
-    def __init__(self, engine: str, barge: bool = False) -> None:
-        self.engine = engine
+    def __init__(self, barge: bool = False) -> None:
         self.barge = barge
         self.accepted = False
         self.turn_done = False
@@ -194,7 +182,7 @@ class Window:
             self.accepted = True
         if self.accepted:
             self._after_accept(line)
-        event = speech_event(line, self.engine)
+        event = speech_event(line)
         if event:
             self._speech(event[0], event[1], _ts(line))
 
@@ -268,25 +256,25 @@ def _since(ts: Optional[float], now: Optional[float]) -> float:
     return gap if 0 <= gap <= MAX_SKEW_S else -1.0
 
 
-def scan(text: str, engine: str, barge: bool = False) -> Tuple[Window, Optional[float]]:
+def scan(text: str, barge: bool = False) -> Tuple[Window, Optional[float]]:
     now, lines = split_input(text)
-    window = Window(engine, barge)
+    window = Window(barge)
     for line in lines:
         window.feed(line)
     return window, now
 
 
-def _no_wake(window: Window, engine: str, waited: float) -> bool:
-    """v2: фраза принята, ушла в бэклог без вейка, хода нет -- и STT за :data:`NO_WAKE_SETTLE_S` его не начал."""
-    return engine == "v2" and window.no_wake and not window.busy() and waited >= NO_WAKE_SETTLE_S
+def _no_wake(window: Window, waited: float) -> bool:
+    """Фраза принята, ушла в бэклог без вейка, хода нет -- и STT за :data:`NO_WAKE_SETTLE_S` его не начал."""
+    return window.no_wake and not window.busy() and waited >= NO_WAKE_SETTLE_S
 
 
-def reply_verdict(window: Window, engine: str, silent_ok: bool, waited: float = 0.0, accept_window: float = 0.0,
+def reply_verdict(window: Window, silent_ok: bool, waited: float = 0.0, accept_window: float = 0.0,
                   now: Optional[float] = None, perform_ceiling: float = PERFORM_CEILING_S) -> str:
     """``done`` -- ответ состоялся и робот замолчал; ``nospeech`` -- ход закончен, речи не было (ждать льготу);
     ``silent`` -- ход закончен без речи и шаг это разрешает; ``failed`` / ``cancelled`` -- ход закончен сбоем /
-    отменой (v2, #3954: терминально, ждать нечего); ``no_wake`` / ``silenced`` -- до хода не дошло: фраза ушла в бэклог
-    без вейка / ход проглотила тишина (v2, #3989: терминально, харнесс решает о восстановлении шага; ``silent_ok`` их
+    отменой (#3954: терминально, ждать нечего); ``no_wake`` / ``silenced`` -- до хода не дошло: фраза ушла в бэклог
+    без вейка / ход проглотила тишина (#3989: терминально, харнесс решает о восстановлении шага; ``silent_ok`` их
     не прощает -- ответа на фразу шага не было); ``no_accept`` -- фразу STT не принял за ``accept_window`` секунд
     (переигрывать, не ждать потолок); ``perform_ceiling`` -- выступление идёт дольше ``perform_ceiling`` секунд от
     старта (терминально: повтор фразы заказал бы второе, #3971 R4); ``wait`` -- рано."""
@@ -294,19 +282,17 @@ def reply_verdict(window: Window, engine: str, silent_ok: bool, waited: float = 
         if accept_window > 0 and waited >= accept_window:
             return "no_accept"
         return "wait"
-    if _no_wake(window, engine, waited):
+    if _no_wake(window, waited):
         return "no_wake"
     if window.performing:
         return "perform_ceiling" if window.perform_for(now) >= perform_ceiling else "wait"
     if window.opened:
         return "wait"
-    if engine == "v2":
-        return _turn_verdict(window, silent_ok)
-    return "done" if window.ends else "wait"
+    return _turn_verdict(window, silent_ok)
 
 
 def _turn_verdict(window: Window, silent_ok: bool) -> str:
-    """v2: вердикт по концу хода. Ход, проглоченный тишиной, которую включил САМ шаг («хватит, замолчи, посчитай»:
+    """Вердикт по концу хода. Ход, проглоченный тишиной, которую включил САМ шаг («хватит, замолчи, посчитай»:
     ``tier1 kind=silence``, остаток фразы -- уже в тишине), -- не утечка, а ход без речи по просьбе шага."""
     if not window.turn_done:
         return "wait"
@@ -321,15 +307,15 @@ def _turn_verdict(window: Window, silent_ok: bool) -> str:
     return "silent" if silent_ok else "nospeech"
 
 
-def state(text: str, engine: str, silent_ok: bool, barge: bool = False, waited: float = 0.0,
+def state(text: str, silent_ok: bool, barge: bool = False, waited: float = 0.0,
           accept_window: float = 0.0, perform_ceiling: float = PERFORM_CEILING_S) -> Dict[str, object]:
     """Вердикт окна и счётчики для харнесса. ``performing=1`` -- идёт выступление: потолок ожидания харнесса --
     ``perform_ceiling`` (а не потолок ответа), судья сам скажет ``perform_ceiling`` по часам робота."""
-    window, now = scan(text, engine, barge)
+    window, now = scan(text, barge)
     live = window.open_live(now)
     if window.opened and live == 0:  # все открытые реплики протухли: говорящих нет
         window.opened.clear()
-    verdict = reply_verdict(window, engine, silent_ok, waited, accept_window, now, perform_ceiling)
+    verdict = reply_verdict(window, silent_ok, waited, accept_window, now, perform_ceiling)
     info = window.turn_info
     return {
         "reason": _reason(window, verdict, now), "llm_calls": info.get("llm_calls", "-"),
@@ -355,13 +341,13 @@ def _reason(window: Window, verdict: str = "", now: Optional[float] = None) -> s
     return window.turn_stage + (":" + ",".join(parts) if parts else "")
 
 
-def quiet(text: str, engine: str) -> Dict[str, object]:
-    window, now = scan(text, engine)
+def quiet(text: str) -> Dict[str, object]:
+    window, now = scan(text)
     return {"fetch": 0 if now is None else 1, "open": window.open_live(now),
             "quiet_for": f"{window.quiet_for(now):.2f}", "sig": f"{window.events}"}
 
 
-def anchor(text: str, engine: str, after: str, n: int) -> Dict[str, object]:
+def anchor(text: str, after: str, n: int) -> Dict[str, object]:
     """N-й ``SpeechEvent started`` (``speech_started``/``segment_started``) или N-я ``LLM REQUEST START``
     (``llm_request``) ПОСЛЕ первой принятой фразы окна. Метка времени -- из лога робота (0, если нет)."""
     now, lines = split_input(text)
@@ -372,7 +358,7 @@ def anchor(text: str, engine: str, after: str, n: int) -> Dict[str, object]:
             continue
         if not accepted:
             continue
-        hit, speech_id = _anchor_hit(line, engine, after)
+        hit, speech_id = _anchor_hit(line, after)
         if not hit:
             continue
         count += 1
@@ -383,10 +369,10 @@ def anchor(text: str, engine: str, after: str, n: int) -> Dict[str, object]:
     return {"fetch": 0 if now is None else 1, "found": 0, "ts": "0", "speech_id": "-", "now": f"{now or 0:.3f}"}
 
 
-def _anchor_hit(line: str, engine: str, after: str) -> Tuple[bool, Optional[str]]:
+def _anchor_hit(line: str, after: str) -> Tuple[bool, Optional[str]]:
     if after == "llm_request":
         return ("LLM REQUEST START" in line), None
-    event = speech_event(line, engine)
+    event = speech_event(line)
     if event and event[0] == "started":
         return True, event[1]
     return False, None
@@ -1052,13 +1038,13 @@ def _num(value: str) -> float:
 
 def _cmd_state(opts: Dict[str, str], flags: List[str]) -> int:
     ceiling = _num(opts["--perform-ceiling"]) or PERFORM_CEILING_S  # пусто/0 -- потолок по умолчанию
-    _emit(state(sys.stdin.read(), opts["engine"], "--silent-ok" in flags, "--barge" in flags, _num(opts["--waited"]),
+    _emit(state(sys.stdin.read(), "--silent-ok" in flags, "--barge" in flags, _num(opts["--waited"]),
                 _num(opts["--accept-window"]), ceiling))
     return 0
 
 
 def _cmd_quiet(opts: Dict[str, str], flags: List[str]) -> int:
-    _emit(quiet(sys.stdin.read(), opts["engine"]))
+    _emit(quiet(sys.stdin.read()))
     return 0
 
 
@@ -1067,7 +1053,7 @@ def _cmd_anchor(opts: Dict[str, str], flags: List[str]) -> int:
         n = max(1, int(opts["--n"]))
     except ValueError:
         n = 1
-    _emit(anchor(sys.stdin.read(), opts["engine"], opts["--after"], n))
+    _emit(anchor(sys.stdin.read(), opts["--after"], n))
     return 0
 
 
@@ -1268,7 +1254,7 @@ COMMANDS: Mapping[str, Callable[[Dict[str, str], List[str]], int]] = MappingProx
     "requires": _cmd_requires, "require": _cmd_require, "barewake": _cmd_barewake,
     "trackrefs": _cmd_trackrefs, "trackbind": _cmd_trackbind, "trackcheck": _cmd_trackcheck,
 })
-USAGE = ("usage: e2e_events.py state|quiet|anchor --engine v1|v2 [--silent-ok] [--barge] [--waited S --accept-window S]"
+USAGE = ("usage: e2e_events.py state|quiet|anchor [--silent-ok] [--barge] [--waited S --accept-window S]"
          " [--perform-ceiling S] [--after A --n N] | policy --scenario FILE | recovery [--kind K] | session < report.json"
          " | wake-retry --expect E --verdict V --attempt N --text T [--barge-in 1] | mark --kind K --where W [--detail D] | skips --scenario FILE | skip --scenario FILE --label L < log"
          " | compare --scenario FILE --label L [--since S < log] | stt --scenario FILE --label L --heard TEXT [--executed 0|1]"
@@ -1286,7 +1272,7 @@ def main(argv: List[str]) -> int:
             stream.reconfigure(encoding="utf-8", newline="\n" if stream is sys.stdout else None)
         except (AttributeError, ValueError):
             pass
-    opts = {"--engine": "v1", "--after": "speech_started", "--n": "1", "--waited": "0", "--accept-window": "0",
+    opts = {"--after": "speech_started", "--n": "1", "--waited": "0", "--accept-window": "0",
             "--scenario": "", "--kind": "", "--perform-ceiling": "", "--where": "", "--detail": "", "--label": "",
             "--since": "", "--heard": "", "--track": "", "--executed": "0", "--labels": "", "--steps": "",
             "--prior": "", "--expect": "", "--verdict": "", "--attempt": "", "--text": "", "--barge-in": "0"}
@@ -1294,7 +1280,6 @@ def main(argv: List[str]) -> int:
     for i, tok in enumerate(flags):
         if tok in opts and i + 1 < len(flags):
             opts[tok] = flags[i + 1]
-    opts["engine"] = "v2" if opts["--engine"] == "v2" else "v1"
     return COMMANDS[argv[1]](opts, flags)
 
 
