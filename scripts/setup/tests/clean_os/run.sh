@@ -38,6 +38,12 @@ echo "systemd: ${st:-нет ответа}" | tee "$OUT/systemd.txt"
 
 git -C "$REPO" -c core.autocrlf=false archive --format=tar --prefix=rob_box_project/ HEAD \
     | docker exec -i "$NAME" tar -x -C /home/ros2
+# OVERLAY_DIR — каталог с файлами поверх копии репо (пути от корня репо): сверка с ещё не влитой веткой
+# без копирования её файлов к себе. Пример: OVERLAY_DIR=/tmp/ov, где /tmp/ov/host/sound/robbox-sound.service.
+if [ -n "${OVERLAY_DIR:-}" ]; then
+    tar -C "$OVERLAY_DIR" -cf - . | docker exec -i "$NAME" tar -x -C /home/ros2/rob_box_project
+    echo "overlay: $(cd "$OVERLAY_DIR" && find . -type f | tr '\n' ' ')" | tee "$OUT/overlay.txt"
+fi
 docker exec "$NAME" chown -R ros2:ros2 /home/ros2/rob_box_project
 docker exec "$NAME" sh -c '. /etc/os-release; echo "$PRETTY_NAME $(uname -m)"; python3 --version' | tee "$OUT/os.txt"
 

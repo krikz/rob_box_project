@@ -598,8 +598,33 @@ setup_autostart() {
     log_step "Настройка автозапуска Docker контейнеров"
     
     SERVICE_FILE="/etc/systemd/system/$SERVICE_NAME.service"
-    
-    log_info "Создание systemd service..."
+    local repo="$HOME/rob_box_project"
+    local unit_src="$repo/host/$NODE_TYPE/$SERVICE_NAME.service"
+
+    # Откуда берётся юнит robbox-<роль>.service (#4375), один источник на роль:
+    #   vision — setup_vision_pi.sh (Restart, health-timer); его же переставляет L: Deploy and Verify
+    #            через reinstall_vision_pi_systemd.sh, поэтому зовём тот же скрипт, а не пишем свой;
+    #   <роль> с файлом host/<роль>/robbox-<роль>.service в репо — ставим файл как есть
+    #            (sound: #4531, PR #4575); этот же каталог host/<роль>/ едет в бандле релиза (ADR-0168);
+    #   иначе (main сегодня) — простой юнит ниже.
+    if [ "$NODE_TYPE" = vision ] && [ -f "$repo/scripts/setup/reinstall_vision_pi_systemd.sh" ]; then
+        log_info "Юнит Vision — из setup_vision_pi.sh (тот же, что ставит деплой)"
+        bash "$repo/scripts/setup/reinstall_vision_pi_systemd.sh"
+        log_success "Автозапуск настроен (robbox-vision.service + health-timer)"
+        return
+    fi
+    if [ -f "$unit_src" ]; then
+        log_info "Юнит из репо: host/$NODE_TYPE/$SERVICE_NAME.service"
+        grep -q "^User=$USER$" "$unit_src" \
+            || log_warning "в $unit_src пользователь не $USER — юнит ставится как есть, проверьте User= и пути"
+        sudo install -m 0644 "$unit_src" "$SERVICE_FILE"
+        sudo systemctl daemon-reload
+        sudo systemctl enable "$SERVICE_NAME.service"
+        log_success "Автозапуск настроен из $unit_src"
+        return
+    fi
+
+    log_info "Создание systemd service (в host/$NODE_TYPE/ своего юнита нет)..."
     sudo tee "$SERVICE_FILE" > /dev/null << SERVICEEOF
 [Unit]
 Description=ROBBOX $NODE_NAME Docker Containers
