@@ -53,6 +53,7 @@ ACTION_ANIMATE = "animate"  # «Анимация»: GIF ≤ 2 МБ (studio_motio
 ACTION_VIDEO = "video"  # «Видео»: MP4 ≤ 50 МБ по просьбе Шифу или кнопке-предложению моста (#4513)
 ACTION_FREEFORM = "edit"  # свободный текст Шифу к черновику (кнопкой — только «к какому черновику?»)
 ACTION_FILE = "file"  # файл от Шифу в черновик (кнопкой — только «к какому черновику?»)
+ACTION_POST = "post"  # «Пришли пост»: прислать собранный черновик (текст + медиа) в чат
 
 # Чем переделать пост по кнопке Шифу (решение Шифу, 06.11).
 REFINE_INSTRUCTIONS = {
@@ -63,6 +64,7 @@ REFINE_INSTRUCTIONS = {
 
 IDEA_ACTIONS = (ACTION_TAKE, ACTION_DISCUSS, ACTION_SKIP)
 REFINE_ACTIONS = (
+    ACTION_POST,
     ACTION_SHORTER,
     ACTION_SIMPLER,
     ACTION_ANGLE,
@@ -671,23 +673,17 @@ def poll_once(
 def active_draft(state: dict, reply_to: Optional[int] = None) -> str:
     """Черновик, к которому относится сообщение Шифу. Решает код, не модель (ADR-0148).
 
-    1. Ответ (reply) на сообщение черновика — правка именно этого черновика.
-    2. Иначе — последний черновик на обсуждении (status proposed, есть message_id): после
-       решения Шифу 06.11 обсуждение идёт над готовым постом, свободный текст — правка к нему.
-    Черновика нет — пустая строка, сообщение уходит в обычный ответ модели.
+    Правило одно — ``studio_intent.target``: reply на черновик (его сообщение, ролик или
+    присланный пост), единственный, только что показанный, единственный свежий. Неясно
+    какой или черновиков нет — пустая строка, сообщение уходит в обычный ответ модели.
+
+    Разбор 09.11: здесь было своё правило («черновик с самым большим message_id»), и на
+    «публикуем» после поста про навигацию кнопка ушла к черновику про диалог.
     """
-    drafts = [
-        (post_id, record)
-        for post_id, record in (state.get("posts") or {}).items()
-        if record.get("status") == "proposed" and record.get("message_id") and record.get("body_html")
-    ]
-    if reply_to:
-        for post_id, record in drafts:
-            if record.get("message_id") == reply_to:
-                return post_id
-    if not drafts:
-        return ""
-    return max(drafts, key=lambda item: item[1].get("message_id") or 0)[0]
+    import studio_intent
+
+    post_id, _candidates = studio_intent.target(state, "", reply_to)
+    return post_id
 
 
 def _parse_callback(callback: dict) -> tuple:
@@ -720,6 +716,10 @@ def _on_callback(bot, state_path, state, update_id, callback, runner, out) -> in
         status = "ok" if (answered or {}).get("ok") else f"ошибка: {(answered or {}).get('description')}"
         out(f"обработано: {callback.get('data')} → в работу; «Делаю…» за {answer_ms} мс ({status})")
         pending = _with_state(state_path, state, lambda cur: _take_pending(cur, action))
+        if not pending and action in (ACTION_VIDEO, ACTION_ANIMATE):
+            # Кнопку нажали без кнопки-предложения — берём свежую просьбу
+            # Шифу про ролик, иначе сборка уйдёт по умолчанию (07.11).
+            pending = _with_state(state_path, state, lambda cur: _take_wish(cur))
         if action == ACTION_FILE:
             import studio_inbox
 
@@ -761,6 +761,23 @@ def _on_callback(bot, state_path, state, update_id, callback, runner, out) -> in
     elif kind == "idea" and from_shifu and action == ACTION_DISCUSS:
         runner.submit(f"idea:{item_id}", discuss_idea, bot, state_path, item_id, out)
     return 1
+
+
+# Просьба про ролик: вертикальным, сверху-снизу, с музыкой, ролик, анимация.
+VIDEO_WISH_RE = re.compile(r"видео|ролик|анимац|музык|трек|звук|вертикал|сверху|снизу", re.IGNORECASE)
+WISH_TTL = 30 * 60  # просьба про ролик помнится полчаса
+
+
+def _take_wish(state: dict) -> dict:
+    """Свежая просьба Шифу про ролик — если кнопку нажали без предложения."""
+    wish = state.get("wish") or {}
+    if not wish.get("text"):
+        return {}
+    if time.time() - float(wish.get("at") or 0) > WISH_TTL:
+        state.pop("wish", None)
+        return {}
+    state.pop("wish", None)
+    return {"text": wish["text"]}
 
 
 def _take_pending(state: dict, action: str) -> dict:
@@ -852,13 +869,30 @@ def reply_to_shifu(bot: StudioBot, state_path: Path, text: str, out=print) -> bo
     placeholder = bot.send_message(SHIFU_CHAT_ID, "Думаю над твоим вопросом…")
     message_id = (placeholder.get("result") or {}).get("message_id") if placeholder.get("ok") else None
     idea = discussed_idea(state)
+    # Если есть пост на обсуждении — говорим о нём: он и есть «текущий
+    # черновик». Раньше бот показывал текст отдельной идеи, а в канал уходил
+    # другой объект — Шифу думал, что текст «подменили» (07.11).
+    post = active_draft(state)
+    if post:
+      record = (state.get("posts") or {}).get(post) or {}
+      if record.get("body_html"):
+          idea = dict(
+              idea,
+              id=post,
+              title=record.get("title") or idea.get("title"),
+              body_html=record.get("body_html"),
+              facts=record.get("fact_keys") or idea.get("facts") or [],
+          )
     answer, offer = split_reply(run_reply_agent(text, idea))
     if not answer:
         answer = "Не смог ответить сейчас — модель не дала ответа, который прошёл бы проверку."
-    draft = active_draft(state)
+    draft = post or active_draft(state)
     buttons = None
     if draft and offer:
-        # Модель предлагает действие полем offer, кнопку строит код (#4513: «можно» без кнопки — пустое обещание).
+        # Модель предлагает действие полем offer, кнопку строит код (#4513).
+        # Просьбу Шифу запоминаем: без неё кнопка собрала бы ролик по
+        # умолчанию, а он просил «вертикальным, до сверху, после снизу»
+        # (Шифу, 07.11: «чот оно меня пока не понимает»).
         buttons = keyboard([[{"text": OFFER_LABELS[offer], "callback_data": f"studio:post:{draft}:{offer}"}]])
         answer += f"\n\nКнопка ниже сделает это с черновиком {draft}."
     elif draft:
@@ -867,6 +901,8 @@ def reply_to_shifu(bot: StudioBot, state_path: Path, text: str, out=print) -> bo
             f"\n\nПросьбу к черновику {draft} («короче», «анимацию», «ролик до/после», «убери …») пиши прямо сюда — "
             "студия сделает её на месте."
         )
+    elif offer and any(r.get("status") == "proposed" for r in (state.get("posts") or {}).values()):
+        answer += "\n\nЧерновиков на обсуждении несколько — ответь на нужный, и студия сделает это с ним."
     elif offer:
         answer += "\n\nЧерновика на обсуждении нет — делать это не над чем."
     if message_id:
@@ -875,11 +911,20 @@ def reply_to_shifu(bot: StudioBot, state_path: Path, text: str, out=print) -> bo
         bot.send_message(SHIFU_CHAT_ID, answer, keyboard=buttons, parse_mode=None)
 
     def _apply(current: dict) -> None:
-        # Ответ агента тоже в историю: следующий вопрос должен видеть, что уже обсудили.
+        # Ответ агента тоже в историю: следующий вопрос должен видеть ход.
         current.setdefault("messages", []).append({"at": None, "role": "studio", "text": answer[:2000]})
         for note in current.get("messages", []):
             if note.get("text") == text and note.get("role", "shifu") == "shifu" and not note.get("answered"):
                 note["answered"] = True
+        if offer and draft:
+            # Просьбу, ради которой предложена кнопка, надо помнить: без неё
+            # нажатие собрало бы ролик по умолчанию, а Шифу просил «вертикальным,
+            # до сверху, после снизу» (07.11: «чот оно меня пока не понимает»).
+            current["pending_request"] = {"action": offer, "text": text, "at": time.time()}
+        if VIDEO_WISH_RE.search(text or ""):
+            # Свежая просьба про ролик: кнопка на самом черновике тоже должна
+            # её учитывать.
+            current["wish"] = {"text": text, "at": time.time()}
 
     with st.state_transaction(state_path) as current:
         _apply(current)
@@ -888,6 +933,7 @@ def reply_to_shifu(bot: StudioBot, state_path: Path, text: str, out=print) -> bo
 
 
 OFFER_LABELS = {
+    ACTION_POST: "Пришли пост",
     ACTION_SHORTER: "Короче",
     ACTION_SIMPLER: "Проще",
     ACTION_ANGLE: "Подача",

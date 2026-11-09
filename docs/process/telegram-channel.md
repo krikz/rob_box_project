@@ -12,6 +12,23 @@
 - Пост — один тезис. Длина: подпись ≤ 1024 знаков (лимит Telegram для медиа), текст без медиа ≤ 4096; цель 400–700.
 - Язык — русский, технические имена (Nav2, RTAB-Map, ADR-0148) как есть.
 
+## Чего в посте не пишем (решение Шифу 07.11.2026)
+
+Канал — про поведение робота. Внутренняя кухня проекта в постах не пишется:
+
+- **номера PR и issue** (`PR #4503`, `#4495`, ссылки на `github.com/…/pull/…`);
+- **имена веток** (`develop`, `z-architect/…`) и слова «ветка develop»;
+- **типы коммитов** (`fix(dialog)`, `feat(nav):`) — это заголовок коммита, не слово для читателя;
+- **файлы и пути репозитория** (`patch_rtabmap_launch.py`, `rtabmap.ini`,
+  `docs/…`, `scripts/…`).
+
+Проверяет код: `channel_lib.POST_FORBIDDEN` (приватность + `FORBIDDEN_INTERNAL`) — студия не даст
+модели это написать, публикатор не пропустит. Ответы студии Шифу в личке номера PR называть могут.
+Свои правила к постам Шифу пишет студии словами («в постах не пиши про …») — их хранит код
+(`studio_rules`, `state.rules`) и кладёт в задание каждого текста поста. Пишем о том, что изменилось для робота и
+для читателя: «робот перестал говорить „приехал“, когда потерял опору», а не
+«в `develop` влили PR #4502».
+
 ## Требования Telegram (проверено 06.11.2026, Bot API 10.3)
 
 Источники: [Bot API](https://core.telegram.org/bots/api), [changelog](https://core.telegram.org/bots/api-changelog),
@@ -53,7 +70,7 @@
 | `editMessageCaption` | editMessageCaption, подпись 0–1024 | «Короче/Проще/Подача» правят подпись черновика на месте | `studio_jobs.update_draft` |
 | `sendPhoto`/`sendAnimation`/`sendVideo` с подписью и `reply_markup` | sendPhoto (caption 0–1024, `parse_mode`) | черновик приходит одним сообщением: медиа + пост + кнопки | `StudioBot.send_media` |
 | `<blockquote expandable>` | Formatting options → HTML style; changelog 7.4 | детали поста и «почему так» студии свёрнуты в раскрывающуюся цитату | промпт `studio_text.build_post_prompt`, `Progress.text` |
-| `<b>`, `<code>`, `<a href>` | Formatting options → HTML style | тезис жирным, технические имена моноширинно, ссылка на PR | промпт поста |
+| `<b>`, `<code>`, `<a href>` | Formatting options → HTML style | тезис жирным, имена параметров и узлов моноширинно; ссылок на PR нет (решение Шифу 07.11) | промпт поста |
 | `reply_parameters` (`allow_sending_without_reply`) | ReplyParameters | индикатор отвечает на черновик, к которому нажата кнопка | `StudioBot.send_message(reply_to=…)` |
 | `link_preview_options` | LinkPreviewOptions (вместо `disable_web_page_preview`) | без превью ссылок в текстовых сообщениях | `StudioBot.send_message`, `channel_lib.build_request` |
 | `ResponseParameters.retry_after` | ResponseParameters: «number of seconds left to wait» при flood control | повтор после 429 через указанное время | `StudioBot._post` |
@@ -138,7 +155,7 @@
   даже без фото.
 - Никаких внутренних адресов и ключей: IP сети робота (`10.1.1.*`, `192.168.*`), токены, пароли, chat_id личных чатов,
   имена хостов. `channel_lib.validate` блокирует IP и токены, но глаза тоже включаем.
-- Номера карточек и PR можно, если в них нет персональных данных. Логи и скриншоты чистим до публикации.
+- Номера карточек и PR в посте не пишем (решение Шифу 07.11, раздел «Чего в посте не пишем»). Логи и скриншоты чистим до публикации.
 - Аватар, обложки и GIF — только из репо (собственные материалы проекта).
 
 ## Откуда брать материал

@@ -356,7 +356,7 @@ def test_draft_job_sends_progress_then_draft_with_media(run_env, monkeypatch):
     monkeypatch.setattr(
         studio_draft,
         "build_post",
-        lambda facts: {
+        lambda facts, **_kw: {
             "title": "Сторож",
             "body_html": "<b>Сторож</b> не врёт.\n<blockquote expandable>PR #4502</blockquote>\n#роббокс #навигация",
             "tags": ["#роббокс", "#навигация"],
@@ -502,16 +502,21 @@ def test_post_id_for_is_stable():
 # --------------------------------------------------------------------------- 8. свободный текст Шифу
 
 
-def test_active_draft_prefers_reply_then_latest():
+def test_active_draft_prefers_reply_then_freshest_and_does_not_guess():
+    """Правило одно с studio_intent.target. 09.11: «самый большой message_id» выбрал не тот черновик."""
+    now = time.time()
     state = {
         "posts": {
-            "old": {"status": "proposed", "message_id": 10, "body_html": "a"},
-            "new": {"status": "proposed", "message_id": 20, "body_html": "b"},
+            "old": {"status": "proposed", "message_id": 10, "body_html": "a", "active_at": now - 60},
+            "new": {"status": "proposed", "message_id": 20, "body_html": "b", "active_at": now - 5 * 3600},
             "done": {"status": "approved", "message_id": 30, "body_html": "c"},
         }
     }
-    assert studio.active_draft(state, reply_to=10) == "old"
-    assert studio.active_draft(state) == "new"
+    assert studio.active_draft(state, reply_to=20) == "new"
+    assert studio.active_draft(state) == "old"  # только что тронутый, а не с бо́льшим message_id
+    for record in state["posts"].values():
+        record.pop("active_at", None)
+    assert studio.active_draft(state) == ""  # неясно какой — не угадываем
     assert studio.active_draft({"posts": {}}) == ""
 
 
@@ -521,7 +526,7 @@ def test_free_text_edits_latest_draft_in_place(run_env, monkeypatch):
     _draft(path, message_kind="media", media_path=str(run_env / "a.png"))
     seen = {}
 
-    def fake_produce(record, facts, instruction):
+    def fake_produce(record, facts, instruction, shifu_rules=None):
         seen["instruction"] = instruction
         return {
             "body_html": "<b>Сторож</b> честный. #роббокс #навигация",

@@ -22,6 +22,7 @@ import channel_lib as lib
 import channel_studio as cs
 import studio_media as smedia
 import studio_progress as sp
+import studio_rules
 import studio_state as st
 
 REPO = Path(__file__).resolve().parents[2]
@@ -36,6 +37,8 @@ REFINE_LABELS = {
 }
 # Действия, которым не нужны факты сессии: ролик берёт материал с песочницы, а не из facts.json.
 NO_FACTS_ACTIONS = (cs.ACTION_ANIMATE, cs.ACTION_VIDEO)
+# «Пришли пост» — готовое, модель и факты не нужны.
+FACTS_FREE_ACTIONS = (cs.ACTION_POST,)
 GH_REPO = os.environ.get("STUDIO_GH_REPO", "krikz/rob_box_project")
 
 
@@ -71,7 +74,7 @@ def _check_line(checks: dict) -> str:
     return line
 
 
-def _produce(record: dict, facts: list, instruction: str) -> dict:
+def _produce(record: dict, facts: list, instruction: str, shifu_rules: Optional[list] = None) -> dict:
     """Переписать текст поста моделью; проверка — кодом (studio_text.produce_post)."""
     import studio_text
 
@@ -82,6 +85,7 @@ def _produce(record: dict, facts: list, instruction: str) -> dict:
         "media_ref": record.get("media_ref", ""),
         "fact_keys": record.get("fact_keys") or [],
         "current_body": record.get("body_html") or "",
+        "shifu_rules": shifu_rules or [],
     }
     has_media = record.get("message_kind") == "media" or bool(record.get("media_path"))
     return studio_text.produce_post(idea, facts, instruction=instruction, has_media=has_media)
@@ -102,12 +106,43 @@ def update_draft(bot, record: dict, chat_id: int, new_media: Optional[Path] = No
         result = bot.edit_message_caption(chat_id, message_id, caption, keyboard=keyboard)
     else:
         result = bot.edit_message_text(chat_id, message_id, caption, keyboard=keyboard)
+    if not result.get("ok"):
+        result = _edit_as_it_really_is(bot, record, chat_id, caption, keyboard, result)
     if result.get("ok"):
         return True, ""
     description = result.get("description") or "Telegram не принял правку"
     if "not modified" in description:
         return False, "новая версия совпала со старой — Telegram не меняет сообщение"
     return False, description
+
+
+def _edit_as_it_really_is(bot, record: dict, chat_id: int, caption: str, keyboard, failed: dict) -> dict:
+    """Запись говорит одно, а сообщение в Telegram другое — правим по тому, что там на деле.
+
+    Живая проверка 09.11: у i20261106-1-post в записи «media» (ролик пересадили вручную),
+    а в Telegram — текстовое сообщение; editMessageCaption: «there is no caption in the
+    message to edit». Есть медиа-файл — текстовое сообщение становится медиа с подписью,
+    нет — правим текст. Обратный случай — правим подпись. Фактический вид пишем в
+    ``record["message_kind"]`` (вызывающий сохраняет его).
+    """
+    description = (failed.get("description") or "").lower()
+    message_id = record.get("message_id")
+    if "no caption" in description:
+        path = smedia.resolve(record.get("media_path") or "")
+        if path is not None:
+            result = bot.edit_message_media(chat_id, message_id, path, caption=caption, keyboard=keyboard)
+            kind = "media"
+        else:
+            result = bot.edit_message_text(chat_id, message_id, caption, keyboard=keyboard)
+            kind = "text"
+    elif "no text" in description:
+        result = bot.edit_message_caption(chat_id, message_id, caption, keyboard=keyboard)
+        kind = "media"
+    else:
+        return failed
+    if result.get("ok"):
+        record["message_kind"] = kind
+    return result
 
 
 def save_fields(state_path: Path, post_id: str, fields: dict) -> None:
@@ -207,7 +242,7 @@ def _refine(
         progress.fail(f"черновик уже {'одобрен' if record['status'] == 'approved' else 'отклонён'} — не трогаю")
         return False
     facts = load_run_facts()
-    if not facts and action not in NO_FACTS_ACTIONS:
+    if not facts and action not in NO_FACTS_ACTIONS + FACTS_FREE_ACTIONS:
         progress.fail("факты сессии не найдены (docker/studio/run/facts.json)")
         return False
     own = _own_facts(record, facts)
@@ -218,7 +253,58 @@ def _refine(
         return studio_motion.refine_motion(bot, state_path, record, facts, action, progress, chat_id, instruction)
     if action == cs.ACTION_MEDIA:
         return _refine_media(bot, state_path, record, facts, progress, chat_id)
+    if action == cs.ACTION_POST:
+        return _refine_post(bot, state_path, record, progress, chat_id)
     return _refine_text(bot, state_path, record, own or facts, action, progress, chat_id, instruction)
+
+
+def _remember_post_message(state_path: Path, record: dict, sent: dict) -> None:
+    """Присланный пост — тоже сообщение черновика: reply на него и «публикуем» после него — про него.
+
+    Разбор 09.11: Шифу посмотрел присланный пост про навигацию и написал «публикуем», а студия
+    не знала, что это сообщение её черновика, и выбрала другой.
+    """
+    message_id = (sent.get("result") or {}).get("message_id")
+    if message_id:
+        save_fields(state_path, record["id"], {"post_message_id": message_id})
+
+
+def _refine_post(bot, state_path: Path, record: dict, progress, chat_id: int) -> bool:
+    """«Пришли пост» — прислать собранный черновик в чат: текст и его медиа.
+
+    Шифу (07.11, 23:37): «Так теперь пришли мне собранный пост» → бот отвечал
+    «я не могу сам отправить готовый файл» и предлагал собрать ролик заново.
+    Действия «прислать готовое» в студии не было — теперь есть.
+    """
+    import channel_lib as lib
+
+    body = (record.get("body_html") or record.get("body") or "").strip()
+    if not body:
+        progress.fail("у черновика нет текста — пришлю заново")
+        return False
+    media = record.get("media_path") or ""
+    path = Path(media) if media else None
+    if path is not None and not path.exists():
+        path = None
+    if path is not None:
+        caption = body[: lib.CAPTION_LIMIT]
+        progress.step(f"Присылаю пост с медиа: {path.name}", "upload_video")
+        sent = bot.send_media(chat_id, path, caption=caption)
+        if not sent.get("ok"):
+            progress.fail(sent.get("description") or "Telegram не принял файл")
+            return False
+        _remember_post_message(state_path, record, sent)
+        note = "" if len(body) <= lib.CAPTION_LIMIT else " (текст обрезан: не влезает в подпись)"
+        progress.finish(f"Готово: прислал пост с медиа {path.name}{note}")
+        return True
+    progress.step("Присылаю пост текстом", "typing")
+    sent = bot.send_message(chat_id, body[: lib.MESSAGE_LIMIT], parse_mode="HTML")
+    if not sent.get("ok"):
+        progress.fail(sent.get("description") or "Telegram не принял текст")
+        return False
+    _remember_post_message(state_path, record, sent)
+    progress.finish("Готово: прислал пост текстом")
+    return True
 
 
 def _refine_media(bot, state_path: Path, record: dict, facts: list, progress, chat_id: int) -> bool:
@@ -269,7 +355,7 @@ def _refine_text(
     else:
         # Свободная правка Шифу: его слова — задание, факты и правила канала остаются в силе.
         instruction = f"Правка от Шифу: «{instruction[:500]}». Выполни её; числа и имена — только из фактов."
-    produced = _produce(record, facts, instruction)
+    produced = _produce(record, facts, instruction, studio_rules.active(st.load_state(state_path)))
     if produced.get("error"):
         progress.fail(str(produced["error"])[:200])
         return False
@@ -287,7 +373,8 @@ def _refine_text(
     if not ok:
         progress.fail(reason)
         return False
-    _save_fields(state_path, record["id"], {"body_html": updated["body_html"], "tags": updated["tags"]})
+    fields = {"body_html": updated["body_html"], "tags": updated["tags"], "message_kind": updated.get("message_kind")}
+    _save_fields(state_path, record["id"], {k: v for k, v in fields.items() if v is not None})
     progress.finish("Готово: черновик поправлен на месте")
     return True
 
@@ -315,7 +402,7 @@ def draft_job(
     topic = studio_draft.pick_fact(facts)
     progress.note(f"Читаю факты сессии: {len(facts)}, тема — {topic.get('source', '?').split(' (')[0]}")
     progress.step(f"Пишу текст ({studio_draft.st.DEFAULT_MODEL})")
-    post = studio_draft.build_post(facts)
+    post = studio_draft.build_post(facts, shifu_rules=studio_rules.active(st.load_state(state_path)))
     if post.get("error"):
         problems = "; ".join((post.get("problems") or [])[:3])
         progress.fail(f"{post['error']}{': ' + problems if problems else ''} (попыток: {post.get('attempts', 1)})")

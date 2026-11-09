@@ -88,6 +88,21 @@ def _focus_order(facts: list, focus_keys: list) -> list:
     return own + related + [f for f in facts if f not in own and f not in related]
 
 
+def reader_title(claim: str, limit: int = 90) -> str:
+    """Заголовок для читателя из факта: без «PR #N влит в develop:» и типа коммита.
+
+    «PR #4507 влит в develop: fix(rtabmap): один источник параметров — …» →
+    «Один источник параметров — …». Такой заголовок может попасть на ролик, а
+    внутренняя кухня проекта в канал не идёт (Шифу, 07.11).
+    """
+    text = (claim or "").strip()
+    match = PR_CLAIM_RE.match(text)
+    if match:
+        text = CONVENTIONAL_RE.sub("", match.group(2)).strip()
+    text = text[:limit].rstrip(" .,:;")
+    return text[:1].upper() + text[1:]
+
+
 def timeline_events(facts: list, limit: int = TIMELINE_MAX, focus_keys: Optional[list] = None) -> list:
     """События таймлайна — из фактов «PR влит в develop». Дата и источник берутся из факта."""
     events = []
@@ -157,13 +172,52 @@ def render_timeline(post: dict, facts: list, out_dir: Path) -> tuple:
     return out, ""
 
 
-def options(post: dict, facts: list, repo_root: Path = REPO) -> list:
-    """Варианты медиа по порядку: готовое медиа поста, медиа из фактов, затем инфографика.
+PR_NUMBER_RE = re.compile(r"#(\d+)")
 
+
+def fact_prs(fact: dict) -> set:
+    """Все номера PR, которые называет факт: из текста, источника и поля ``pr``."""
+    text = " ".join(str(fact.get(k) or "") for k in ("claim", "source"))
+    found = set(PR_NUMBER_RE.findall(text))
+    own = str(fact.get("pr") or "").strip().lstrip("#")
+    if own:
+        found.add(own)
+    return found
+
+
+def own_media(post: dict, facts: list) -> list:
+    """Медиа-факты, которые принадлежат посту: его собственные или из того же PR.
+
+    Единственное место этого правила. Разбор 09.11: пост про диалог (#4555) получил
+    график дрейфа из другой правки (#4508): черновик сессии брал любую картинку
+    сессии, а правило «из того же PR» жило только в ``studio_draft.pick_media``.
+    """
+    keys = set(post.get("fact_keys") or [])
+    wanted = {key.split(":", 1)[1] for key in keys if key.startswith("pr:")}
+    for fact in facts:
+        if fact.get("key") in keys:
+            wanted |= fact_prs(fact)
+    wanted.discard("")
+    return [
+        fact
+        for fact in facts
+        if fact.get("kind") == "media" and fact.get("source") and (fact.get("key") in keys or wanted & fact_prs(fact))
+    ]
+
+
+def options(post: dict, facts: list, repo_root: Path = REPO) -> list:
+    """Варианты медиа по порядку: готовое медиа поста, его медиа из фактов, затем инфографика.
+
+    Медиа из фактов — только своё (``own_media``): чужая картинка к посту не подходит.
+    ``media_ref`` поста, который указывает на медиа-факт ДРУГОГО PR, — след старого выбора
+    (у p20261109-810 в записи остался график дрейфа из #4508): он тоже отбрасывается.
     Элемент — строка-ссылка на файл или ``"infographic:timeline"`` (рисуется по запросу).
     """
+    own = [f["source"] for f in own_media(post, facts)]
+    foreign = {f.get("source") for f in facts if f.get("kind") == "media"} - set(own)
+    ref = post.get("media_ref") or ""
     found = []
-    for ref in [post.get("media_ref") or ""] + [f.get("source") or "" for f in facts if f.get("kind") == "media"]:
+    for ref in ([ref] if ref not in foreign else []) + own:
         if ref and ref not in found and resolve(ref, repo_root) is not None and kind_of(Path(ref)):
             found.append(ref)
     if timeline_spec(post, facts) is not None:

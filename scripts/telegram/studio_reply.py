@@ -64,10 +64,12 @@ SYSTEM_PROMPT = (
     "Ты только отвечаешь словами: ты НЕ ищешь, НЕ запускаешь, НЕ скачиваешь и НЕ обещаешь это сделать — "
     "таких возможностей у тебя нет. Нужны данные или файл — назови, какие именно; их кладёт координатор "
     "в docs/channel/media/ через PR, или Шифу присылает файл в личку.\n"
+    "MP3-трек принимаем в личке и кладём под ролик; если трек уже принят, не проси его снова.\n"
     "Действия над черновиком делает студия по кнопкам, а не ты. Если к вопросу подходит одно из них — "
     "предложи его полем offer (кнопку покажет код), а в тексте НЕ пиши «сделаю», «можно сделать», «запущу»: "
     "shorter — короче, simpler — проще, angle — другая подача, media — другая картинка, "
     "animate — анимация (GIF), video — ролик (MP4, например «до/после» по записям прогонов). "
+    "post — прислать собранный пост целиком: текст и медиа (ролик, картинку).\n"
     "Чего нет в этом списке, студия не умеет — так и скажи: «так пока не умею».\n"
     "Ответ — только текст ответа, без вступлений вроде «Конечно» и без markdown-заголовков. "
     "Без разметки: Telegram сам покажет текст как есть."
@@ -123,6 +125,11 @@ def build_prompt(message: str, idea: dict, state: dict) -> str:
             lines.append(f"Текущий черновик идеи: {body[:1200]}")
     else:
         lines.append("Идея на обсуждении не указана — ответь по общему состоянию студии.")
+    music = (state or {}).get("music") or {}
+    if music.get("path"):
+        # Трек уже принят — бот не должен снова просить его прислать
+        # (Шифу: «ты что грнешь у тебя все есть», 07.11).
+        lines.append(f"Трек уже принят: {music.get('name') or music.get('path')} — накладываем на ролик.")
     history = conversation_history(state)
     if history:
         lines.append("")
@@ -132,13 +139,14 @@ def build_prompt(message: str, idea: dict, state: dict) -> str:
     lines.append(f"Вопрос Шифу: {message}")
     lines.append("")
     lines.append(
-        'Верни СТРОГО JSON: {"answer": "текст ответа", "offer": "none|shorter|simpler|angle|media|animate|video"}'
+        'Верни СТРОГО JSON: {"answer": "текст ответа", '
+        '"offer": "none|shorter|simpler|angle|media|animate|video|post"}'
     )
     return "\n".join(lines)
 
 
 # Что модель может предложить кнопкой (узкая схема, ADR-0148): действие делает код, модель только предлагает.
-OFFERS = ("shorter", "simpler", "angle", "media", "animate", "video")
+OFFERS = ("shorter", "simpler", "angle", "media", "animate", "video", "post")
 
 
 def ask_model(prompt: str, timeout: int = 120, call=None) -> str:

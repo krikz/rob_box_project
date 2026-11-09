@@ -85,6 +85,28 @@ FORBIDDEN = [
     (re.compile(r"\beyJ[A-Za-z0-9_-]{20,}"), "секрет в JWT-виде"),
 ]
 
+# Внутренняя кухня проекта в ПОСТАХ не пишется (Шифу, 07.11): канал — про
+# поведение робота, а не про PR-ы, ветки и файлы репозитория. Это правило текста
+# поста (студия не даёт модели такое написать, публикатор не пропустит), а не
+# приватность: ответы студии Шифу в личке и пояснение «почему так» номера PR
+# называть могут — там они нужны, чтобы понять, о каком черновике речь.
+COMMIT_TYPES = "feat|fix|docs|chore|refactor|test|perf|ci|style|build|revert"
+FORBIDDEN_INTERNAL = [
+    (re.compile(r"\bPR\s*#?\s*\d{3,5}\b", re.IGNORECASE), "номер PR"),
+    (re.compile(r"#\d{3,5}\b"), "номер PR или issue"),
+    (re.compile(r"\bissues?\s*#?\s*\d{3,5}\b", re.IGNORECASE), "номер issue"),
+    (re.compile(r"github\.com/\S+/(?:pull|issues)/\d+", re.IGNORECASE), "ссылка на PR или issue"),
+    (re.compile(r"\b(?:z-[a-z]+|feature|fix|feat|hotfix|revert|release)/[A-Za-z0-9._-]+"), "имя ветки"),
+    (re.compile(r"\bветк[аиуеой]\s+(?:develop|main|master)\b", re.IGNORECASE), "имя ветки"),
+    (re.compile(r"\bdevelop\b", re.IGNORECASE), "имя ветки"),
+    # Разбор 09.11: черновик p20261109-810 вышел с «<code>fix(dialog)</code>» — тип коммита, не слово для читателя.
+    (re.compile(rf"\b(?:{COMMIT_TYPES})(?:\([\w./-]+\))!?:|\b(?:{COMMIT_TYPES})\([\w./-]+\)"), "тип коммита"),
+    (re.compile(r"\b(?:docs|src|scripts|config|docker)/[\w./-]+"), "путь в репозитории"),
+    (re.compile(r"\b[\w./-]*\w+\.(?:py|yaml|yml|ini|json|toml|cfg|sh|cpp|hpp|launch|xml)\b"), "файл репозитория"),
+]
+# Что не попадает в текст поста: приватность и внутренняя кухня. Студия и публикатор проверяют одно и то же.
+POST_FORBIDDEN = FORBIDDEN + FORBIDDEN_INTERNAL
+
 
 # Отправка: (метод Bot API, параметры, файл | список файлов для альбома | None) -> ответ контейнера
 class Transport(Protocol):
@@ -244,7 +266,8 @@ def validate(post: Post, repo_root: Path) -> list:
     if not post.body.strip():
         problems.append("пустой текст")
     problems += html_problems(post.body)
-    for pattern, what in FORBIDDEN:
+    # Вышедшие до решения 07.11 посты (003 с «#4487») не переписываем: правило — для новых.
+    for pattern, what in FORBIDDEN if post.status == "posted" else POST_FORBIDDEN:
         if pattern.search(post.body):
             problems.append(f"в тексте {what}: публиковать нельзя")
     for tag in post.hashtags:

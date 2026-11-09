@@ -26,6 +26,7 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO_ROOT / "scripts" / "telegram"))
 
 import channel_lib as lib  # noqa: E402
+import studio_rules  # noqa: E402
 
 DEFAULT_MODEL = "MiniMax-M3.1-Flash"
 # Черновик уходит подписью к картинке: лимит Telegram 1024 знака после разбора разметки.
@@ -604,6 +605,29 @@ def load_rules(repo_root: Path) -> str:
     return text[:12000]
 
 
+def media_line(idea: dict) -> str:
+    """Что за медиа у поста — и про что оно, чтобы текст с ним не спорил.
+
+    Ролик «до/после» — это измерение дрейфа локализации (HIL). Если такое
+    медиа у поста, текст не должен утверждать, что нового замера нет
+    (Шифу, 07.11: «текст не соответствует видео»).
+    """
+    ref = str(idea.get("media_ref") or "")
+    choice = str(idea.get("media_choice") or "")
+    parts = []
+    if ref:
+        parts.append(ref)
+    if choice.startswith("compare:") or ":stacked" in choice or ":side_by_side" in choice:
+        parts.append("ролик «до/после» с замерами дрейфа локализации на складе Depot (HIL)")
+        parts.append(
+            "это измерение из песочницы — про него можно и нужно сказать в тексте, "
+            "и нельзя писать, что нового замера нет"
+        )
+    if not parts:
+        return "готового медиа нет"
+    return "; ".join(parts)
+
+
 def build_prompt(facts: list, rules: str, media_ref: str = "") -> str:
     """Промпт: только факты и правила, никаких просьб «придумай».
 
@@ -615,6 +639,9 @@ def build_prompt(facts: list, rules: str, media_ref: str = "") -> str:
         "факты ниже и правила канала. НИЧЕГО, чего нет в фактах, ты не пишешь: ни новых "
         "чисел, ни новых имён, ни предположений. Если фактов мало — верни пустой массив ideas.\n\n"
         f"ПРАВИЛА КАНАЛА:\n{rules}\n\n"
+        "В постах не пиши внутреннюю кухню проекта: номера PR и issue, имена "
+        "веток, файлы и пути репозитория. Пиши про то, что изменилось для "
+        "робота и для читателя.\n\n"
         f"ФАКТЫ (источник каждого обязателен):\n{extract_fact_text(facts)}\n\n"
         f"МЕДИА: {media_ref or 'готового медиа нет — в поле media_ref оставь пустым'}\n\n"
         "Верни СТРОГО JSON без пояснений:\n"
@@ -1091,7 +1118,7 @@ def validate_post(
     if length > limit:
         problems.append(f"текст {length} знаков, лимит {limit}")
     problems += lib.html_problems(body)
-    for pattern, what in lib.FORBIDDEN:
+    for pattern, what in lib.POST_FORBIDDEN:
         if pattern.search(body):
             problems.append(f"в тексте {what}")
     return problems
@@ -1108,10 +1135,11 @@ def build_post_prompt(idea: dict, facts: list, rules: str, instruction: str = ""
         "что не сказано в идее, добавлять нельзя — пиши только то, на что она "
         "и факты, на которые она опирается. НИЧЕГО, чего нет в идее или в фактах.\n"
         f"ПРАВИЛА КАНАЛА:\n{rules}\n\n"
+        f"{studio_rules.prompt_block(idea.get('shifu_rules') or [])}"
         f"ИДЕЯ: {idea.get('title', '')}\n"
         f"ЧТО ПОКАЗАТЬ: {idea.get('show', '')}\n"
         f"СРОК: {idea.get('deadline', '')}\n"
-        f"МЕДИА: {idea.get('media_ref') or 'готового медиа нет'}\n\n"
+        f"МЕДИА: {media_line(idea)}\n\n"
         f"ФАКТЫ:\n{extract_fact_text(facts)}\n\n"
     )
     if instruction:
@@ -1127,9 +1155,11 @@ def build_post_prompt(idea: dict, facts: list, rules: str, instruction: str = ""
         "Других тегов быть не должно: ни <br>, ни <ul>, ни <li>, ни <ol>, ни <p>, ни <h1>. "
         "Абзацы разделяй переводом строки, список — строками с «-». "
         "Оформление (rich text там, где уместно): первая строка — <b>короткий тезис</b>; "
-        "технические имена (файлы, параметры, узлы) — в <code>; детали и «как проверяли» — в одной "
-        "<blockquote expandable>…</blockquote> (раскрывающаяся цитата; цитаты не вкладываются); "
-        'ссылка на источник — <a href="https://github.com/krikz/rob_box_project/pull/N">PR #N</a>. '
+        "имена параметров и узлов, если без них не понять, — в <code>; детали и «как проверяли» — в одной "
+        "<blockquote expandable>…</blockquote> (раскрывающаяся цитата; цитаты не вкладываются). "
+        "Канал — про поведение робота: пиши, что изменилось для робота и для читателя. Номеров и ссылок "
+        "PR и issue, имён веток, типов коммитов вроде fix(...) и файлов репозитория в тексте НЕТ — "
+        "такой текст отбивает проверка кодом. "
         "Без эмодзи-цепочек и восклицаний. "
         f"Весь текст вместе с хештегами — не больше {CAPTION_TARGET} знаков: пост уходит подписью к "
         "картинке (лимит Telegram 1024). Хештеги — 2–4, только из словаря канала, последней строкой. "

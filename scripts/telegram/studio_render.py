@@ -10,7 +10,7 @@ from __future__ import annotations
 import subprocess
 import sys
 from pathlib import Path
-from typing import Callable, Iterable
+from typing import Callable, Iterable, Optional
 
 # Рисование кадров живёт рядом с инструментами HIL (scripts/hil/video/pose_anim.py).
 HIL_VIDEO = Path(__file__).resolve().parents[2] / "scripts" / "hil" / "video"
@@ -29,16 +29,32 @@ def mb(size: int) -> str:
 
 
 def encode_mp4(
-    frames: Iterable, size: tuple, fps: int, out: Path, crf: int = 23, popen: Callable = subprocess.Popen
+    frames: Iterable,
+    size: tuple,
+    fps: int,
+    out: Path,
+    crf: int = 23,
+    popen: Callable = subprocess.Popen,
+    music: Optional[Path] = None,
 ) -> str:
-    """Кадры PIL → H.264 MP4 через stdin ffmpeg (rawvideo), без PNG на диске. Пустая строка — успех."""
+    """Кадры PIL → H.264 MP4 через stdin ffmpeg (rawvideo), без PNG на диске. Пустая строка — получилось.
+
+    С треком (music) — вторая дорожка: аудио циклится, видео задаёт длину
+    («нуб-музыка на водосик», Шифу, 07.11).
+    """
     w, h = size
     cmd = [
         "ffmpeg", "-y", "-loglevel", "error",
         "-f", "rawvideo", "-pix_fmt", "rgb24", "-s", f"{w}x{h}", "-r", str(fps), "-i", "-",
-        "-c:v", "libx264", "-preset", "medium", "-crf", str(crf), "-pix_fmt", "yuv420p",
-        "-movflags", "+faststart", str(out),
     ]  # fmt: skip
+    if music is not None:
+        cmd += ["-stream_loop", "-1", "-i", str(music)]
+    cmd += [
+        "-c:v", "libx264", "-preset", "medium", "-crf", str(crf), "-pix_fmt", "yuv420p",
+    ]  # fmt: skip
+    if music is not None:
+        cmd += ["-c:a", "aac", "-b:a", "160k", "-shortest"]
+    cmd += ["-movflags", "+faststart", str(out)]
     try:
         proc = popen(cmd, stdin=subprocess.PIPE, stderr=subprocess.PIPE)
     except OSError as exc:
@@ -66,11 +82,19 @@ def encode_mp4(
     return ""
 
 
-def fit_mp4(make_frames: Callable, size: tuple, fps: int, out: Path, limit: int = MP4_LIMIT, popen=subprocess.Popen):
+def fit_mp4(
+    make_frames: Callable,
+    size: tuple,
+    fps: int,
+    out: Path,
+    limit: int = MP4_LIMIT,
+    popen=subprocess.Popen,
+    music: Optional[Path] = None,
+) -> tuple:
     """MP4 в пределах limit: (путь или None, причина, заметка о ступени)."""
     last = 0
     for crf in MP4_CRF:
-        reason = encode_mp4(make_frames(), size, fps, out, crf=crf, popen=popen)
+        reason = encode_mp4(make_frames(), size, fps, out, crf=crf, popen=popen, music=music)
         if reason:
             return None, reason, ""
         last = out.stat().st_size
