@@ -1,0 +1,7 @@
+# Тестовый профиль продукта «робот» для тестов ядра (ADR-0167 Ш1б): копия профиля робота
+# docker/sound/config/assistant.yaml и его таблицы вейков. Ядро вейков робота не знает (нейтральные умолчания);
+# тесты правил над речью робота грузят этот профиль фикстурой (test/conftest.py, test/robot_wake_fixture.py).
+# Таблицы сверяет с настоящим профилем робота tests/unit/dialog/test_robot_profile_fixture_0167.py.
+format: 1
+name: РОББОКС
+wake_words: wake_words.yaml

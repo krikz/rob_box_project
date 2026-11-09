@@ -23,7 +23,7 @@ ROOTS = (
     REPO / "src" / "rob_box_voice" / "rob_box_voice",
     REPO / "src" / "rob_box_mcp_tools" / "rob_box_mcp_tools",
     REPO / "src" / "rob_box_supervisor" / "rob_box_supervisor",
-    REPO / "scripts" / "dialog",
+    REPO / "scripts",
 )
 
 #: Функция → индекс позиционного аргумента с таблицей вейков (``None`` - только ключом ``wake_words``).
@@ -73,8 +73,8 @@ def _calls(path: Path) -> Iterator[Tuple[int, str]]:
         if not isinstance(node, ast.Call):
             continue
         name = getattr(node.func, "id", None) or getattr(node.func, "attr", None)
-        if name not in WAKE_PARAM:
-            continue
+        if name not in WAKE_PARAM or (name == "Session" and not isinstance(node.func, ast.Name)):
+            continue  # ``requests.Session()`` - не сессия диалога
         index = WAKE_PARAM[name]
         passed = any(k.arg == "wake_words" for k in node.keywords) or (
             isinstance(index, int) and len(node.args) > index

@@ -20,7 +20,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass, field, replace
-from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple, Union
+from typing import Any, Dict, Mapping, Optional, Sequence, Tuple, Union
 
 from rob_box_dialog.backlog import Backlog, Heard
 from rob_box_dialog.heard import repair
@@ -36,9 +36,6 @@ from rob_box_dialog.speaker_adapter import (
 from rob_box_dialog.knowledge import (
     ADDRESS_FILLER_WORDS,
     COORDINATOR_NAMES,
-    DEFAULT_OPERATOR_WAKE_WORDS,
-    DEFAULT_WAKE_WORDS,
-    resolve_wake_word_namespaces,
 )
 from rob_box_dialog.words import has_wake_word, music_stop_unwoken, slipped_wake_rest, strip_wake_word, wake_command
 
@@ -298,10 +295,3 @@ def log_label(msg: Any) -> str:
     if text and chat_id and getattr(msg, "source", "") == SOURCE_TELEGRAM:
         return f"[TG:{chat_id}] {text}"
     return text
-
-
-def wake_words(path: str = "", personality: Sequence[str] = ()) -> Tuple[List[str], List[str]]:
-    """Таблица вейков ``(personality, operator)``: из ``wake_words.yaml``, иначе — переданные, иначе — кода."""
-    return resolve_wake_word_namespaces(
-        path, personality_fallback=list(personality) or list(DEFAULT_WAKE_WORDS),
-        operator_fallback=DEFAULT_OPERATOR_WAKE_WORDS)

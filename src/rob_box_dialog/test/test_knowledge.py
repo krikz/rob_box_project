@@ -9,6 +9,7 @@ import yaml
 
 from rob_box_core.tool_catalog import TOOL_CATALOG
 from rob_box_dialog import knowledge as kn
+from robot_wake_fixture import ROBOT_OPERATOR_WAKE, ROBOT_RISKY, ROBOT_WAKE, WAKE_TABLE  # noqa: E402
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[3]
 #: Сцены процедурного лица (ADR-0150 PR-3a #3689: генератор переехал из tools/led_face_lab в пакет).
@@ -18,19 +19,20 @@ FACE = REPO_ROOT / "src" / "rob_box_animations" / "rob_box_animations" / "face"
 LAMPS = next((p for p in (REPO_ROOT / "src" / "ros2leds" / "led_matrix_effects" / "led_matrix_effects" / "lamps.py",
                           REPO_ROOT / "src" / "led_matrix_effects" / "led_matrix_effects" / "lamps.py") if p.is_file()),
              None)
-WAKE_YAML = REPO_ROOT / "docker" / "sound" / "config" / "wake_words.yaml"
+#: Таблица вейков тестового профиля робота (копия робота сверяется в tests/unit/dialog/test_robot_profile_fixture_0167).
+WAKE_YAML = WAKE_TABLE
 
 
-def test_wake_words_yaml_matches_code():
+def test_wake_table_loads_in_file_order_with_risky_last():
     data = yaml.safe_load(WAKE_YAML.read_text(encoding="utf-8"))
     plain = [w for w in data["personality"] if isinstance(w, str)]
     risky = [w["word"] for w in data["personality"] if isinstance(w, dict) and w.get("risky") is True]
-    assert plain == list(kn.DEFAULT_WAKE_WORDS)
-    assert risky == list(kn.RISKY_WAKE_WORDS)
+    assert plain == list(ROBOT_WAKE)
+    assert risky == list(ROBOT_RISKY)
     assert data["personality"][-len(risky):] == [{"word": w, "risky": True} for w in risky]  # рискованные — в конце
     assert data["risky_enabled"] is False  # В18: выключены по умолчанию
-    assert data["operator"] == list(kn.DEFAULT_OPERATOR_WAKE_WORDS)
-    expected = (list(kn.DEFAULT_WAKE_WORDS), list(kn.DEFAULT_OPERATOR_WAKE_WORDS))
+    assert data["operator"] == list(ROBOT_OPERATOR_WAKE)
+    expected = (list(ROBOT_WAKE), list(ROBOT_OPERATOR_WAKE))
     assert kn.resolve_wake_word_namespaces(str(WAKE_YAML)) == expected
 
 
@@ -39,7 +41,7 @@ def test_risky_wake_words_switch_on_with_one_line(tmp_path):
     path = tmp_path / "wake_words.yaml"
     path.write_text(text, encoding="utf-8")
     personality, _ = kn.resolve_wake_word_namespaces(str(path))
-    assert personality == list(kn.DEFAULT_WAKE_WORDS) + list(kn.RISKY_WAKE_WORDS)
+    assert personality == list(ROBOT_WAKE) + list(ROBOT_RISKY)
 
 
 def test_wake_words_loader_is_safe(tmp_path):
@@ -58,7 +60,7 @@ def test_wake_words_loader_keeps_file_order(tmp_path):
 
 
 def test_longer_wake_variants_come_before_their_prefixes():
-    words = kn.DEFAULT_WAKE_WORDS
+    words = ROBOT_WAKE
     for i, short in enumerate(words):
         for longer in words[i + 1:]:
             assert not longer.startswith(short), f"«{longer}» стоит после своего префикса «{short}»"
