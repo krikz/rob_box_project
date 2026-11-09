@@ -334,7 +334,9 @@ jobs:
               "cd ~/rob_box_project && \
                git fetch origin && \
                git checkout ${{ github.ref_name }} && \
-               git reset --hard origin/${{ github.ref_name }}" \
+               git reset --hard origin/${{ github.ref_name }} && \
+               git submodule sync --recursive && \
+               git submodule update --init --recursive" \
               && break
             echo "⚠️  Attempt $attempt failed, retrying in 5s..."
             sleep 5
@@ -594,7 +596,9 @@ jobs:
               "cd ~/rob_box_project && \
                git fetch origin && \
                git checkout ${{ github.ref_name }} && \
-               git reset --hard origin/${{ github.ref_name }}" \
+               git reset --hard origin/${{ github.ref_name }} && \
+               git submodule sync --recursive && \
+               git submodule update --init --recursive" \
               && break
             echo "⚠️  Attempt $attempt failed, retrying in 5s..."
             sleep 5
@@ -865,10 +869,27 @@ jobs:
               "cd ~/rob_box_project && \
                git fetch origin && \
                git checkout ${{ github.ref_name }} && \
-               git reset --hard origin/${{ github.ref_name }}" \
+               git reset --hard origin/${{ github.ref_name }} && \
+               git submodule sync --recursive && \
+               git submodule update --init --recursive" \
               && break
             echo "⚠️  Attempt $attempt failed, retrying in 5s..."
             sleep 5
+          done
+
+      # #4579: сабмодули после reset --hard должны стоять на записанных коммитах.
+      # Расхождение — предупреждение в итог деплоя, не падение.
+      - name: "[All Pi] Verify submodules at recorded commits (#4579)"
+        if: '!inputs.dry_run'
+        run: |
+          for pair in "Main:${{ env.main_pi_ip }}" "Vision:${{ env.vision_pi_ip }}" "Sound:${{ env.sound_pi_ip }}"; do
+            name="${pair%%:*}"; ip="${pair#*:}"
+            out=$(sshpass -p 'open' ssh $SSH_OPTS ros2@"$ip" "cd ~/rob_box_project && git submodule status" 2>&1) || true
+            echo "[$name Pi] git submodule status:"; echo "$out"
+            if echo "$out" | grep -qE '^[+U-]'; then
+              echo "::warning::[$name Pi] сабмодули не на записанных коммитах (#4579): $(echo "$out" | grep -E '^[+U-]' | tr '\n' ';')"
+              echo "⚠️ [$name Pi] сабмодули не на записанных коммитах (#4579)" >> "$GITHUB_STEP_SUMMARY"
+            fi
           done
 
       - name: "[Main Pi] .image-versions — из текущей ветки (реверт #1139 v2, 15.08)"
