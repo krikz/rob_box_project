@@ -38,7 +38,8 @@ export SIM_UID="${SIM_UID:-$(id -u)}" SIM_GID="${SIM_GID:-$(id -g)}"
 scenarios="$repo/src/rob_box_sim/scenarios/localization.yaml"
 mkdir -p "$root/dbs" "$root/runs"
 
-profiles=(--profile bench)
+# bench/locbench/tagreloc (профиль bench) запускаются явно по имени; в `up` без имён их нет.
+profiles=()
 log_services=(gazebo rtabmap)
 if [ "${SIM_CAMERA:-false}" = true ]; then
     profiles+=(--profile tags)
@@ -52,6 +53,10 @@ if [ "${SIM_RELOC:-false}" = true ]; then
 fi
 
 dc() { docker compose -p "$project" -f "$here/compose.yaml" -f "$here/compose.loc.yaml" "${profiles[@]}" "$@"; }
+# гасит весь свой проект, включая сервисы профилей (bench, tags, reloc)
+dc_down() {
+    docker compose -p "$project" -f "$here/compose.yaml" -f "$here/compose.loc.yaml" --profile bench --profile tags --profile reloc down -v --remove-orphans > /dev/null 2>&1
+}
 
 die() { echo "❌ $*" >&2; exit 1; }
 
@@ -104,7 +109,7 @@ cmd_map() {  # <метка> <мир>
     export SIM_SPAWN_X=0.0 SIM_SPAWN_Y=0.0 SIM_SPAWN_YAW=0.0
     echo "=== map $label: $world ($(date -u +%FT%TZ)) camera=${SIM_CAMERA:-false} var=${SIM_TAG_LINEAR_VARIANCE:-default}"
     dc up -d --no-build
-    wait_healthy "$SIM_PREFIX-nav2" || { dc ps -a; dc down -v; die "$label: nav2 не стал healthy"; }
+    wait_healthy "$SIM_PREFIX-nav2" || { dc ps -a; dc_down; die "$label: nav2 не стал healthy"; }
     dc run --rm --no-deps bench /ros_scripts/ros_with_namespace.sh python3 -m rob_box_sim.nav_bench \
         --world "$world" --scenarios /ws/install/rob_box_sim/share/rob_box_sim/scenarios/mapping.yaml \
         --label "$label" > "$run/bench.log" 2>&1 || echo "⚠️  $label: nav_bench rc≠0 ($run/bench.log)"
@@ -112,7 +117,7 @@ cmd_map() {  # <метка> <мир>
     # rtabmap пишет базу (и последнюю позу) при остановке
     docker stop -t 60 "$SIM_PREFIX-rtabmap" > /dev/null
     dc logs --no-color --tail 600 "${log_services[@]}" > "$run/stack.log" 2>&1 || true
-    dc down -v > /dev/null 2>&1
+    dc_down
     [ -s "$run/maps/rtabmap.db" ] || die "$label: rtabmap.db не записана"
     cp "$run/maps/rtabmap.db" "$root/dbs/$label.db"
     local truth="$run/results/${world}_home_truth.csv"
@@ -150,7 +155,7 @@ cmd_loc() {  # <метка> <мир> <база> <сценарий>
     grep '^\[loc\] RESULT' "$run/locbench.log" | cut -c1-400 || true
     dc logs --no-color --tail 600 "${log_services[@]}" > "$run/stack.log" 2>&1 || true
     grep -E 'last localization|correction|Rtabmap.cpp.*(Localization|rejected)' "$run/stack.log" | head -5 || true
-    dc down -v > /dev/null 2>&1
+    dc_down
 }
 
 case "${1:-}" in
