@@ -1,14 +1,19 @@
 #!/usr/bin/env python3
-"""Обход покрытием в HIL (#4560): карта → план полос → цели NavigateToPose по одной → итог покрытия.
+"""Обход покрытием в HIL (#4560): карта → план полос → полоса одной целью NavigateThroughPoses → итог покрытия.
 
 Рядом с route.py (тот же лог: TRACK по /sim/ground_truth/odom, GOAL_START/GOAL_END, EM_ON/EM_OFF по
 /cmd_vel_emergency, RECOVERY) и запускается так же — в контейнере rob-box-hil-gazebo (runcoverage.sh).
 План и метрика — чистые модули rob_box_sim.coverage_plan / coverage_metric (тесты
 tests/unit/sim/test_sim_coverage.py); здесь только ROS и порядок действий.
 
-Недостижимую позу (ABORTED/REJECTED/TIMEOUT) пропускаем и считаем; после --max-fail неудач подряд
+Полоса (позы одной полосы плана: start → промежуточные → end) уходит одной целью NavigateThroughPoses —
+робот не тормозит в каждой позе (HIL Depot 09.11, попытка 3: позами по одной средняя 0.06 м/с, в движении
+59 % времени). Таймаут полосы — ``--timeout`` на позу × поз + путь / потолок скорости Nav2. ``--per-pose`` —
+по-старому, NavigateToPose на каждую позу.
+
+Неудачную цель (ABORTED/REJECTED/TIMEOUT) пропускаем и считаем; после --max-fail неудач подряд
 обход останавливается (робот застрял — дальше только таймауты). Итоговую строку COVERAGE_DONE строит
-coverage_metric.run_summary по исходам целей и треку истинной позы.
+coverage_metric.run_summary по исходам целей и треку истинной позы (покрытие, время в движении, скорость).
 
 SIGINT/SIGTERM: текущая цель отменяется (INTERRUPTED), остаток — NOT_SENT, во вход Nav2 /cmd_vel — нулевая
 скорость, COVERAGE_DONE пишется по пройденному со stop=interrupted_SIGINT. Второй сигнал — выход сразу.
@@ -30,13 +35,21 @@ from rob_box_sim.coverage_metric import (
     coverage_result,
     coverage_rgb,
     covered_mask,
+    motion_stats,
     plan_track,
     run_summary,
     write_image,
 )
-from rob_box_sim.coverage_plan import coverage_space, plan_coverage, plan_summary, plan_to_json, save_grid_npz
+from rob_box_sim.coverage_plan import (
+    SPEED_MPS,
+    coverage_space,
+    plan_coverage,
+    plan_summary,
+    plan_to_json,
+    save_grid_npz,
+)
 from rob_box_sim.map_check import grab_map
-from route import Mon, run_goal, ts, wait_ready
+from route import Mon, run_goal, run_lane, through_poses_client, ts, wait_ready
 
 
 class CoverageMon(Mon):
@@ -74,7 +87,8 @@ def parse_args(argv):
     )
     ap.add_argument("--no-cross", action="store_true", help="без поперечного прохода по торцам у препятствий")
     ap.add_argument("--waypoint-step", type=float, default=0.0, help="промежуточные позы на полосе, м (0 — нет)")
-    ap.add_argument("--timeout", type=float, default=120.0, help="таймаут на позу, с стены")
+    ap.add_argument("--timeout", type=float, default=45.0, help="таймаут на позу, с стены (полоса: × поз + путь)")
+    ap.add_argument("--per-pose", action="store_true", help="NavigateToPose на каждую позу вместо полосы целиком")
     ap.add_argument("--max-fail", type=int, default=5, help="столько неудач подряд — стоп")
     ap.add_argument("--max-poses", type=int, default=0, help="ограничить число поз (0 — все)")
     ap.add_argument("--plan-only", action="store_true", help="только план и картинка, без езды")
@@ -130,19 +144,56 @@ def _stop_reason(stop, fails, max_fail):
     return f"{max_fail}_failures_in_row" if fails >= max_fail else ""
 
 
-def drive(n, cl, poses, timeout, max_fail, stop=None):
-    """Позы по одной; вернуть (исходы, причина остановки). «Стоп» — по счёту неудач подряд или по сигналу."""
+def lanes_of(poses):
+    """Позы плана → полосы: подряд идущие позы одной полосы (cell, lane) — одна группа."""
+    out = []
+    for p in poses:
+        if out and (out[-1][-1].cell, out[-1][-1].lane) == (p.cell, p.lane):
+            out[-1].append(p)
+        else:
+            out.append([p])
+    return out
+
+
+def lane_timeout(group, here, per_pose_s, speed_mps=SPEED_MPS):
+    """Таймаут полосы, с: ``per_pose_s`` на позу + путь (от ``here`` через все позы) на потолке скорости Nav2."""
+    pts = ([here] if here is not None else []) + [(p.x, p.y) for p in group]
+    path_m = sum(math.dist(a, b) for a, b in zip(pts, pts[1:]))
+    return per_pose_s * len(group) + path_m / speed_mps
+
+
+def _xy_yaw(p):
+    return round(p.x, 3), round(p.y, 3), round(math.degrees(p.yaw), 1)
+
+
+def _send(n, cl, k, group, timeout, stop_fn, here):
+    """Одна цель: поза (NavigateToPose) или полоса (NavigateThroughPoses). Вернуть GoalOutcome."""
+    p = group[0]
+    if len(group) == 1:
+        name = f"p{k:04d}_c{p.cell}l{p.lane}{p.kind[0]}"
+        raw, em = run_goal(n, cl, name, *_xy_yaw(p), timeout, stop=stop_fn)
+        return GoalOutcome.from_route(name, raw, em)
+    name = f"L{k:04d}_c{p.cell}l{p.lane}"
+    t = lane_timeout(group, here, timeout)
+    raw, em, left = run_lane(n, cl, name, [_xy_yaw(q) for q in group], t, stop=stop_fn)
+    return GoalOutcome.from_route(name, raw, em, poses=len(group), remaining=left)
+
+
+def drive(n, cl, poses, timeout, max_fail, stop=None, lanes=False):
+    """Цели по одной; вернуть (исходы, причина остановки). «Стоп» — по счёту неудач подряд или по сигналу.
+
+    ``lanes`` — полоса одной целью (``cl`` — клиент NavigateThroughPoses), иначе поза одной целью.
+    """
     stop = stop or StopSignal()
-    outcomes, fails = [], 0
-    for k, p in enumerate(poses):
+    groups = lanes_of(poses) if lanes else [[p] for p in poses]
+    outcomes, fails, here = [], 0, None
+    for k, group in enumerate(groups):
         why = _stop_reason(stop, fails, max_fail)
         if why:
-            outcomes += [GoalOutcome(f"p{j:04d}", "NOT_SENT") for j in range(k, len(poses))]
+            outcomes += [GoalOutcome.not_sent(f"g{j:04d}", len(g)) for j, g in enumerate(groups[k:], k)]
             return outcomes, why
-        name = f"p{k:04d}_c{p.cell}l{p.lane}{p.kind[0]}"
-        xy_yaw = (round(p.x, 3), round(p.y, 3), round(math.degrees(p.yaw), 1))
-        result, em = run_goal(n, cl, name, *xy_yaw, timeout, stop=lambda: bool(stop.name))
-        outcomes.append(GoalOutcome.from_route(name, result, em))
+        outcomes.append(_send(n, cl, k, group, timeout, lambda: bool(stop.name), here))
+        here = (group[-1].x, group[-1].y)
         fails = 0 if outcomes[-1].succeeded else fails + 1
     return outcomes, f"interrupted_{stop.name}" if stop.name else ""
 
@@ -163,7 +214,7 @@ def finish(out, n, grid, space, outcomes, stop, sim0):
     out.mkdir(parents=True, exist_ok=True)
     img = write_image(out / "coverage.png", coverage_rgb(space, cov_mask, _known(grid)))
     (out / "track.json").write_text(json.dumps(n.track), encoding="utf-8")
-    line = f"{ts()} {run_summary(outcomes, cov, n.simt() - sim0, stop)} image={img}"
+    line = f"{ts()} {run_summary(outcomes, cov, n.simt() - sim0, stop, motion_stats(n.track))} image={img}"
     print(line, flush=True)
     return line
 
@@ -184,6 +235,8 @@ def main(argv=None):
     stop = StopSignal().install()
     n = CoverageMon()
     cl = None if args.plan_only else wait_ready(n)
+    if cl is not None and not args.per_pose:
+        cl = through_poses_client(n)
     t_end = time.time() + 15
     while n.gt is None and time.time() < t_end:
         rclpy.spin_once(n, timeout_sec=0.1)
@@ -207,7 +260,7 @@ def main(argv=None):
     poses = plan.poses[: args.max_poses] if args.max_poses else plan.poses
     n.track.clear()
     sim0 = n.simt()
-    outcomes, why = drive(n, cl, poses, args.timeout, args.max_fail, stop)
+    outcomes, why = drive(n, cl, poses, args.timeout, args.max_fail, stop, lanes=not args.per_pose)
     if stop.name:
         halt(n)
     finish(args.out, n, grid, space, outcomes, why, sim0)
