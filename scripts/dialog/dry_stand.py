@@ -102,6 +102,11 @@ def robot_wake() -> List[str]:
     return list(load_profile(ROBOT_PROFILE).wake_personality)
 
 
+def robot_owners() -> Tuple[str, ...]:
+    """Владельцы тулов из профиля робота (ADR-0167 Ш1в): срез тулов стенда - как у ``dialog_node``."""
+    return load_profile(ROBOT_PROFILE).owners
+
+
 def robot_prompt() -> str:
     """Промпт Личности робота без правил знания: основа ядра с персоной профиля робота (ADR-0167 Ш1б-3), как у
     ``dialog_node``; нет или битый профиль - ``ProfileError``."""
@@ -851,7 +856,7 @@ class DryStand:
         self.speech = FakeSpeech(self.emit)
         #: Выступления хода, взятые фейковым владельцем (:meth:`DryPorts.perform`): ``(turn_id, сегментов)``.
         self.performed: List[Tuple[str, int]] = []
-        self.session = Session(kn.AGENTS[0], clock=self.clock.now, wake_words=self.wake)
+        self.session = Session(kn.AGENTS[0], clock=self.clock.now, wake_words=self.wake, owners=robot_owners())
         self.backlog = Backlog()
         self.music_mem = MusicStateMemory()
         self.library = FakeLibrary(self.clock)

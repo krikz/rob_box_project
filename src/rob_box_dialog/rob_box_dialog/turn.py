@@ -463,15 +463,15 @@ async def sing_route(engine: "TurnEngine", turn: "_Turn", snap: SessionSnapshot)
         return ""
 
 
-def form_tools(tools: Sequence[Any], form: Form, agent: str) -> Tuple[Any, ...]:
+def form_tools(tools: Sequence[Any], form: Form, agent: str, owners: Optional[Sequence[str]] = None) -> Tuple[Any, ...]:
     """Тулы хода в форме пути пения: закрытые путём убраны, тул, который путь требует (``generate_music``), добавлен,
-    если его срезала обрезка по ``TOOLS_VISIBLE_MAX`` (а агенту он доступен)."""
+    если его срезала обрезка по ``TOOLS_VISIBLE_MAX`` (а агенту он доступен при владельцах продукта ``owners``)."""
     sing = form.sing_form
     if sing is None:
         return tuple(tools)
     kept = [t for t in tools if t.name not in sing.closed_tools]
     need = sing.needs_tool
-    if need and need not in {t.name for t in kept} and need in tools_for(agent_spec(agent)):
+    if need and need not in {t.name for t in kept} and need in tools_for(agent_spec(agent), owners):
         kept.append(get_tool(need))
     return tuple(kept)
 
@@ -523,7 +523,7 @@ def catalog_owed(snapshot: SessionSnapshot, turn: "_Turn", cmd: Command) -> str:
     человека и структуре команды, не по тексту ответа (ADR-0148)."""
     if cmd.ask is not None or cmd.perform is not None or cmd.passed:
         return ""
-    available = tools_for(agent_spec(snapshot.agent))
+    available = tools_for(agent_spec(snapshot.agent), snapshot.owners)
     for key in catalogs_asked(turn.text):
         catalog = kn.CATALOGS[key]
         read = any(r.tool == catalog.tool for r in turn.queried) or any(a.tool == catalog.tool for a in cmd.actions)
@@ -2204,7 +2204,7 @@ class TurnEngine:
         carry = self._carry[1] if self._carry[0] == turn.source else ()
         offered = available_tools(snap, None, snap.agent, turn.text, carry=carry,
                                   asked=tool_ask.asked_tools(self.session))
-        tools = form_tools(offered, current_form(), snap.agent)
+        tools = form_tools(offered, current_form(), snap.agent, snap.owners)
         messages: List[Any] = self._messages(turn, snap)
         for iteration in range(kn.LLM_QUERY_ITERATIONS_MAX + 1 + kn.SPEECH_PUSHES_MAX):  # + повторы за словами
             last = iteration >= kn.LLM_QUERY_ITERATIONS_MAX

@@ -538,3 +538,14 @@ def _record_dialog_control_unless_test_uses_client():
 
     with patch.object(supervisor_node, "_dialogue_control_publisher", lambda _node: DialogControlRecorder()):
         yield
+
+
+@pytest.fixture(autouse=True)
+def _robot_tool_owners(monkeypatch):
+    """Срез тулов без переданных владельцев - на владельцах профиля робота, как у хоста ТАРС, который всегда передаёт их
+    из профиля (ядро без профиля - без тулов продукта, ADR-0167 Ш1в)."""
+    from rob_box_dialog import owners as ow  # noqa: PLC0415
+    from rob_box_dialog.profile import load_profile  # noqa: PLC0415
+
+    root = _Path_presets(_os_presets.environ.get("ROB_BOX_REPO_ROOT") or _Path_presets(__file__).resolve().parents[4])
+    monkeypatch.setattr(ow, "OWNERS_WITHOUT_PROFILE", load_profile(root / "docker/sound/config/assistant.yaml").owners)

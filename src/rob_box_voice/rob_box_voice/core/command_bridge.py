@@ -299,10 +299,11 @@ class CommandModeLLM(LLMProvider):
     """Провайдер цепочки, отвечающий командой; имя, возможности и здоровье — у обёрнутого (имя кэша то же)."""
 
     def __init__(self, inner: Any, log: Log = _no_log, busy: Callable[[], Busy] = Busy,
-                 agent: str = kn.AGENTS[0]) -> None:
+                 agent: str = kn.AGENTS[0], owners: Optional[Sequence[str]] = None) -> None:
         self._inner = inner
         self._busy = busy
         self._agent = agent
+        self._owners = None if owners is None else tuple(owners)
         self.name = getattr(inner, "name", type(inner).__name__)
         self.mode: CommandMode = select_mode(inner.capabilities)
         self._log = log
@@ -352,7 +353,7 @@ class CommandModeLLM(LLMProvider):
         result = self._judged(response, available)
         if widen and isinstance(result, Invalid):
             names = widen_for([v.detail for v in result.all if v.reason == "tool_not_available"], self._agent,
-                              sorted(available))
+                              sorted(available), self._owners)
             if names:
                 raise _Widen(names)
         left = {False: kn.COMMAND_RETRIES_MAX, True: kn.SPEECH_COMPACT_TURNS}  # счёт повторов: общий и на длину
@@ -418,13 +419,13 @@ class CommandModeLLM(LLMProvider):
 
 
 def wrapper_for(log: Log = _no_log, busy: Callable[[], Busy] = Busy,
-                agent: str = kn.AGENTS[0]) -> Callable[[Any], Any]:
+                agent: str = kn.AGENTS[0], owners: Optional[Sequence[str]] = None) -> Callable[[Any], Any]:
     """Обёртка провайдера для ``AgentSpec.wrap_provider``: каждый провайдер цепочки — в режим команд (v2 отвечает
     только командой); ``busy`` — что занято сейчас (выступление) для валидатора команды, ``agent`` — чьи команды
-    проверяются."""
+    проверяются, ``owners`` — владельцы тулов продукта (расширение среза не открывает тул чужого владельца)."""
 
     def wrap(provider: Any) -> Any:
-        wrapped = CommandModeLLM(provider, log, busy, agent)
+        wrapped = CommandModeLLM(provider, log, busy, agent, owners)
         log(f"{COMMAND_LOG_MARK} provider={wrapped.name} mode={wrapped.mode} (по capabilities адаптера)")
         return wrapped
 

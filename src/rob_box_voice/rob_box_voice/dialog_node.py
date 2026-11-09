@@ -182,7 +182,7 @@ def build_llm(node: Any, counter: CallCounter, agent: str = kn.AGENTS[0]) -> tup
     raw = str(node.get_parameter(f"{prefix}llm_providers").value)
     return assemble_llm(raw.split(","), counter, prompt=agent_prompt(node, agent),
                         settings=_settings(node, prefix), agent=agent, log=node.get_logger().info,
-                        busy=lambda: plan_host.perform_busy(node))
+                        busy=lambda: plan_host.perform_busy(node), owners=node.product_profile.owners)
 
 
 #: Скрытый контекст хода для MCP-тулов (``llm_adapter.TURN_CONTEXT_ARGS``): ``heard_text`` — реплика хода (опора
@@ -353,7 +353,8 @@ def build_chats(node: Any, tools: Any, intent_pub: Any, wake: Any, hold: Any = l
     chat_tools = build_chat_tools(node, tools)
 
     def make_engine(chat_id: int) -> TurnEngine:
-        session = Session(kn.TEXT_CHANNEL_AGENT, clock=time.time, session_id=channel_ref(chat_id), wake_words=wake)
+        session = Session(kn.TEXT_CHANNEL_AGENT, clock=time.time, session_id=channel_ref(chat_id), wake_words=wake,
+                          owners=node.product_profile.owners)
         base = V2Ports(node, llm, counter, chat_tools, agent=kn.TEXT_CHANNEL_AGENT, intent_pub=intent_pub, log=log,
                        epoch=lambda: session.snapshot.epoch, on_ask=llm_metrics(llm))
         ports = ChatPorts(base, chat_id, send, log, hold, robot, progress)
@@ -382,10 +383,12 @@ class DialogNode(Node):
         self._turn_lock = asyncio.Lock()
         self._turns = TurnsInFlight()
         self._session_pub = self.create_publisher(SessionState, identity_question.SESSION_TOPIC, _LATCHED)
-        # Вейки и персона - из профиля робота (ADR-0167 Ш1б): таблица одна на адресацию, сессию и правила хода.
+        # Вейки, персона и владельцы тулов - из профиля робота (ADR-0167 Ш1б, Ш1в): таблица одна на адресацию, сессию
+        # и правила хода; владельцы - на срез тулов сессии и мост команд.
         self.product_profile = robot_profile.load(str(self.get_parameter("profile_path").value))
         self._wake = list(self.product_profile.wake_personality)
-        self._session = Session("personality", clock=time.time, wake_words=self._wake)
+        self._session = Session("personality", clock=time.time, wake_words=self._wake,
+                                owners=self.product_profile.owners)
         self._session.subscribe(functools.partial(identity_question.publish, self))
         self._shift = ShiftLog()  # журнал смены (#4076): живёт дольше сессии разговора
         self._session.subscribe(self._shift.observe)

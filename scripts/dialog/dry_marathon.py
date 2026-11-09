@@ -35,7 +35,7 @@ from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 _HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(_HERE))
 
-from dry_stand import REPO, DryStand, new_workdir, robot_prompt  # noqa: E402
+from dry_stand import REPO, DryStand, new_workdir, robot_owners, robot_prompt  # noqa: E402
 
 sys.path.insert(0, str(REPO / "scripts" / "ci" / "e2e"))
 import e2e_tool_match as etm  # noqa: E402
@@ -349,7 +349,8 @@ def build_real_stand(providers: Sequence[str], workdir: Path, deadline_s: Option
     holder: List[DryStand] = []
     busy = (lambda: role_busy(holder[0])) if role_voices else None  # зовётся в ходе - стенд уже собран
     llm, system = assemble_llm(providers, counter, prompt=robot_prompt(),
-                               settings=LLMSettings(model=model) if model else None, log=relay, busy=busy)
+                               settings=LLMSettings(model=model) if model else None, log=relay, busy=busy,
+                               owners=robot_owners())
     if system_patch:
         system = system_patch(system)
     stand = DryStand(llm, counter, system, workdir, variant=variant, router=router, memory_path=memory_path,

@@ -30,7 +30,9 @@ name = "rob-box-dialog-core"
 # 0.3.0: белый список пресетов стиля моста (bridge_protocol.VOICE_PRESET_IDS / VOICE_LANGUAGES) - только из каталога
 #        продукта (env ROB_BOX_VOICE_PRESETS_YAML), без него пусто; запасного списка робота в ядре нет (ADR-0167 Ш1а-2).
 # 0.4.0: профиль format 3 (operator_persona); промпты чата Telegram и агента-оператора - основы ядра (ADR-0167 Ш1б-4).
-version = "0.4.0"
+# 0.5.0: профиль format 4 (owners): набор тулов модели - по владельцам продукта (rob_box_dialog.owners), без профиля -
+#        ни одного тула продукта; harness: load_system_prompt и AgentSpec.prompt_dir/system_prompt_file удалены (Ш1в).
+version = "0.5.0"
 description = "Ядро диалога РОББОКСа без ROS: ход, адресация, мост команд LLM, память (ADR-0150, ADR-0160 §8)"
 license = "MIT"
 requires-python = ">=3.10"
