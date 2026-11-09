@@ -108,6 +108,19 @@ mn "mkdir -p $maps && cd ~/rob_box_project/docker/main && HIL_MAPS_DIR=$maps HIL
 mn "docker inspect -f '{{range .Config.Env}}{{println .}}{{end}}' nav2 | grep -E 'NAV2_PARAMS_OVERLAYS|USE_SIM_TIME'" >>"$RES/run.log" 2>&1
 # 3–4. сим вверх со спавном сцены, ровно один /controller_manager. Сторож gazebo отказывает, пока не видит
 # /robot_state_publisher робота (Main только что пересоздан) — тогда gazebo выходит, и пробуем ещё раз.
+# Оба контроллера сима активны. 09.11 в Depot joint_state_broadcaster падал «Switch controller timed out»:
+# odom→base_footprint на Main не появлялся, Nav2 не поднимался 7 мин — такой сим пересоздаём сразу.
+sim_controllers_ok() {
+    local ok bad
+    for _ in $(seq 1 12); do
+        ok=$(sb "docker logs $G 2>&1 | grep -c 'Configured and activated'")
+        bad=$(sb "docker logs $G 2>&1 | grep -cE 'Failed to activate controller|spawner.*process has died'")
+        [ "${bad:-0}" -gt 0 ] && { log "контроллер сима не активировался (spawner) — пересоздаю сим"; return 1; }
+        [ "${ok:-0}" -ge 2 ] && return 0
+        sleep 5
+    done
+    log "контроллеры сима не активны за 60 с — пересоздаю сим"; return 1
+}
 sim_up() {
     local st gz cm
     st=$(mn "docker inspect -f '{{.State.Status}}' ros2-control 2>/dev/null || echo absent")
@@ -117,7 +130,7 @@ sim_up() {
         gz=$(sb "docker inspect -f '{{.State.Status}}' $G 2>/dev/null || echo absent")
         case "$gz" in running*) ;; *) log "gazebo не работает ($gz)"; sb "docker logs --tail 5 $G" >>"$RES/run.log" 2>&1; return 1 ;; esac
         cm=$(sb "docker exec $G /entrypoint.sh python3 -m rob_box_sim.hil count --settle 3 2>/dev/null | grep -E '^[0-9]+$' | tail -n 1")
-        [ "$cm" = 1 ] && return 0
+        [ "$cm" = 1 ] && { sim_controllers_ok; return $?; }
         if [ -n "$cm" ] && [ "$cm" != 0 ]; then log "❌ /controller_manager=$cm — гашу сим"; sb "$SIMDC rm -sf gazebo"; exit 7; fi
         sleep 5
     done
