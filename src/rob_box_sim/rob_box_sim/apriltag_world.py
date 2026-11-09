@@ -31,10 +31,82 @@ from dataclasses import dataclass
 from pathlib import Path
 
 # ── формат tag36h11 (AprilRobotics/apriltag tag36h11.c) ───────────────────────
-TAG36H11_BIT_X = (1, 2, 3, 4, 5, 2, 3, 4, 3, 6, 6, 6, 6, 6, 5, 5, 5, 4,
-                  6, 5, 4, 3, 2, 5, 4, 3, 4, 1, 1, 1, 1, 1, 2, 2, 2, 3)
-TAG36H11_BIT_Y = (1, 1, 1, 1, 1, 2, 2, 2, 3, 1, 2, 3, 4, 5, 2, 3, 4, 3,
-                  6, 6, 6, 6, 6, 5, 5, 5, 4, 6, 5, 4, 3, 2, 5, 4, 3, 4)
+TAG36H11_BIT_X = (
+    1,
+    2,
+    3,
+    4,
+    5,
+    2,
+    3,
+    4,
+    3,
+    6,
+    6,
+    6,
+    6,
+    6,
+    5,
+    5,
+    5,
+    4,
+    6,
+    5,
+    4,
+    3,
+    2,
+    5,
+    4,
+    3,
+    4,
+    1,
+    1,
+    1,
+    1,
+    1,
+    2,
+    2,
+    2,
+    3,
+)
+TAG36H11_BIT_Y = (
+    1,
+    1,
+    1,
+    1,
+    1,
+    2,
+    2,
+    2,
+    3,
+    1,
+    2,
+    3,
+    4,
+    5,
+    2,
+    3,
+    4,
+    3,
+    6,
+    6,
+    6,
+    6,
+    6,
+    5,
+    5,
+    5,
+    4,
+    6,
+    5,
+    4,
+    3,
+    2,
+    5,
+    4,
+    3,
+    4,
+)
 TAG36H11_NBITS = 36
 TAG36H11_WIDTH_AT_BORDER = 8
 TAG36H11_TOTAL_WIDTH = 10
@@ -103,8 +175,11 @@ def png_gray(cells: list[list[int]], px_per_cell: int = PX_PER_CELL) -> bytes:
         return struct.pack(">I", len(data)) + kind + data + struct.pack(">I", zlib.crc32(kind + data) & 0xFFFFFFFF)
 
     ihdr = struct.pack(">IIBBBBB", width, height, 8, 0, 0, 0, 0)
-    return b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", ihdr) + chunk(b"IDAT", zlib.compress(b"".join(rows), 9)) + chunk(
-        b"IEND", b""
+    return (
+        b"\x89PNG\r\n\x1a\n"
+        + chunk(b"IHDR", ihdr)
+        + chunk(b"IDAT", zlib.compress(b"".join(rows), 9))
+        + chunk(b"IEND", b"")
     )
 
 

@@ -117,7 +117,7 @@ def test_tagreloc_prototype_is_opt_in_and_uses_world_tag_faces():
     params = dict(a.split(":=", 1) for a in cmd if ":=" in a)
     assert params["enabled"] == "true"
     flat = [float(v) for v in params["tags"].strip("[]").split(",")]
-    rows = [flat[i:i + 5] for i in range(0, len(flat), 5)]
+    rows = [flat[i : i + 5] for i in range(0, len(flat), 5)]
     assert [int(r[0]) for r in rows] == [t.tag_id for t in POLYGON_TAGS]
     for row, tag in zip(rows, POLYGON_TAGS):
         face = (tag.x + math.cos(tag.yaw) * TAG_THICK_M / 2, tag.y + math.sin(tag.yaw) * TAG_THICK_M / 2)

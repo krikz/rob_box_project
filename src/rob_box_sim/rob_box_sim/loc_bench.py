@@ -31,7 +31,6 @@ import time
 from pathlib import Path
 
 import yaml
-
 from rob_box_sim.loc_metrics import Sample, Tolerance, kidnap_time, run_metrics
 
 DEFAULT_SCENARIOS = "/ws/install/rob_box_sim/share/rob_box_sim/scenarios/localization.yaml"
@@ -181,8 +180,9 @@ def main(argv: list[str] | None = None) -> int:
     tol = Tolerance(**sc.get("tolerance", {}))
     args.out.mkdir(parents=True, exist_ok=True)
     rclpy.init()
-    node = rclpy.create_node("sim_loc_bench", parameter_overrides=[
-        Parameter("use_sim_time", Parameter.Type.BOOL, True)])
+    node = rclpy.create_node(
+        "sim_loc_bench", parameter_overrides=[Parameter("use_sim_time", Parameter.Type.BOOL, True)]
+    )
     rec = LocRecorder(node, args.rate)
     while rec.now() <= 0:
         rclpy.spin_once(node, timeout_sec=0.1)

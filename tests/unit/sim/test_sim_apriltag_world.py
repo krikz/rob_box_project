@@ -15,9 +15,9 @@ import zlib
 from pathlib import Path
 
 import pytest
+from rob_box_sim.world_sdf import boxes_from_sdf
 
 from rob_box_sim import apriltag_world as aw
-from rob_box_sim.world_sdf import boxes_from_sdf
 
 REPO = Path(__file__).resolve().parents[3]
 WORLDS = REPO / "src" / "rob_box_sim" / "worlds"
@@ -27,9 +27,9 @@ def _read_png_gray(data: bytes) -> list[list[int]]:
     assert data[:8] == b"\x89PNG\r\n\x1a\n"
     pos, idat, w = 8, b"", 0
     while pos < len(data):
-        (n,), kind = struct.unpack(">I", data[pos:pos + 4]), data[pos + 4:pos + 8]
-        body = data[pos + 8:pos + 8 + n]
-        assert zlib.crc32(kind + body) & 0xFFFFFFFF == struct.unpack(">I", data[pos + 8 + n:pos + 12 + n])[0]
+        (n,), kind = struct.unpack(">I", data[pos : pos + 4]), data[pos + 4 : pos + 8]
+        body = data[pos + 8 : pos + 8 + n]
+        assert zlib.crc32(kind + body) & 0xFFFFFFFF == struct.unpack(">I", data[pos + 8 + n : pos + 12 + n])[0]
         if kind == b"IHDR":
             w, h, depth, color = struct.unpack(">IIBB", body[:10])
             assert (depth, color) == (8, 0)
@@ -37,7 +37,7 @@ def _read_png_gray(data: bytes) -> list[list[int]]:
             idat += body
         pos += 12 + n
     raw = zlib.decompress(idat)
-    rows = [raw[i * (w + 1):(i + 1) * (w + 1)] for i in range(len(raw) // (w + 1))]
+    rows = [raw[i * (w + 1) : (i + 1) * (w + 1)] for i in range(len(raw) // (w + 1))]
     assert all(r[0] == 0 for r in rows)
     return [list(r[1:]) for r in rows]
 
@@ -71,7 +71,7 @@ def test_codes_are_far_apart():
     """Пара тегов на стенде не должна путаться: расстояние Хэмминга tag36h11 ≥ 11."""
     codes = list(aw.TAG36H11_CODES.values())
     for i, a in enumerate(codes):
-        for b in codes[i + 1:]:
+        for b in codes[i + 1 :]:
             assert bin(a ^ b).count("1") >= 11
 
 
@@ -111,9 +111,7 @@ def test_committed_tag_world_and_textures_equal_generator(tmp_path):
         committed = (WORLDS / path.relative_to(tmp_path)).read_bytes()
         if path.suffix == ".sdf":  # текст: на Windows чекаут бывает с CRLF
             committed = committed.replace(b"\r\n", b"\n")
-        assert committed == path.read_bytes(), (
-            f"перегенерируй: python3 -m rob_box_sim.apriltag_world {WORLDS}"
-        )
+        assert committed == path.read_bytes(), f"перегенерируй: python3 -m rob_box_sim.apriltag_world {WORLDS}"
 
 
 def test_tag_world_keeps_polygon_walls():

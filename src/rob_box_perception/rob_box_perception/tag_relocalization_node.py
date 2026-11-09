@@ -30,7 +30,7 @@ def _tags_from_flat(flat) -> dict:
     flat = list(flat)
     if len(flat) % 5:
         raise ValueError(f"tags: длина {len(flat)} не кратна 5 (id, x, y, z, normal_yaw)")
-    return parse_tags([flat[i:i + 5] for i in range(0, len(flat), 5)])
+    return parse_tags([flat[i : i + 5] for i in range(0, len(flat), 5)])
 
 
 def main(argv=None) -> int:
@@ -63,11 +63,16 @@ def main(argv=None) -> int:
         node.destroy_node()
         rclpy.shutdown()
         return 0
-    reloc = TagRelocalizer(RelocalizerConfig(
-        tags=_tags_from_flat(p["tags"]), max_range_m=float(p["max_range_m"]),
-        min_consistent=int(p["min_consistent"]), correct_if_m=float(p["correct_if_m"]),
-        correct_if_deg=float(p["correct_if_deg"]), cooldown_s=float(p["cooldown_s"]),
-    ))
+    reloc = TagRelocalizer(
+        RelocalizerConfig(
+            tags=_tags_from_flat(p["tags"]),
+            max_range_m=float(p["max_range_m"]),
+            min_consistent=int(p["min_consistent"]),
+            correct_if_m=float(p["correct_if_m"]),
+            correct_if_deg=float(p["correct_if_deg"]),
+            cooldown_s=float(p["cooldown_s"]),
+        )
+    )
     tf = Buffer()
     TransformListener(tf, node)
     pub = node.create_publisher(PoseWithCovarianceStamped, p["topic"], 10)
@@ -103,12 +108,14 @@ def main(argv=None) -> int:
             out.pose.pose.position.x, out.pose.pose.position.y = d.pose[0], d.pose[1]
             out.pose.pose.orientation.z = math.sin(d.pose[2] / 2)
             out.pose.pose.orientation.w = math.cos(d.pose[2] / 2)
-            out.pose.covariance[0] = out.pose.covariance[7] = 0.05 ** 2
+            out.pose.covariance[0] = out.pose.covariance[7] = 0.05**2
             out.pose.covariance[35] = math.radians(3.0) ** 2
             pub.publish(out)
             err = "нет оценки" if d.error_m is None else f"{d.error_m:.2f} м / {d.error_deg:.1f}°"
-            log.info(f"тег {d.tag_id}: поза по тегу ({d.pose[0]:.2f}, {d.pose[1]:.2f}, "
-                     f"{math.degrees(d.pose[2]):.0f}°), расхождение с rtabmap {err} → initialpose")
+            log.info(
+                f"тег {d.tag_id}: поза по тегу ({d.pose[0]:.2f}, {d.pose[1]:.2f}, "
+                f"{math.degrees(d.pose[2]):.0f}°), расхождение с rtabmap {err} → initialpose"
+            )
 
     node.create_subscription(AprilTagDetectionArray, "/detections", on_detections, 10)
     try:

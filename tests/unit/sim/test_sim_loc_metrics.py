@@ -5,7 +5,6 @@ from __future__ import annotations
 import math
 
 import pytest
-
 from rob_box_sim.loc_metrics import (
     Sample,
     Tolerance,

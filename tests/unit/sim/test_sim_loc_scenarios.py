@@ -11,10 +11,10 @@ from pathlib import Path
 
 import pytest
 import yaml
-
-from rob_box_sim import loc_bench
 from rob_box_sim.geometry2d import ROBOT_FOOTPRINT, Pose2D, clearance
 from rob_box_sim.world_sdf import load_world_boxes
+
+from rob_box_sim import loc_bench
 
 REPO = Path(__file__).resolve().parents[3]
 SCEN = REPO / "src" / "rob_box_sim" / "scenarios"

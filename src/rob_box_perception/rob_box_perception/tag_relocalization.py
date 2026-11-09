@@ -159,28 +159,40 @@ class TagRelocalizer:
             return None
         pose = base_pose_from_tag(cfg.tags[tag_id], base_tag)
         self._recent = [r for r in self._recent if t - r[0] <= cfg.window_s] + [(t, tag_id, pose)]
-        if len(self._recent) < cfg.min_consistent:
+        mean = self._consistent_mean()
+        if mean is None:
             return None
-        last = [p for _, _, p in self._recent[-cfg.min_consistent:]]
-        mean = _mean_pose(last)
-        if any(math.hypot(p[0] - mean[0], p[1] - mean[1]) > cfg.spread_m for p in last):
-            return None
-        if any(abs(math.degrees(_wrap(p[2] - mean[2]))) > cfg.spread_deg for p in last):
-            return None
-        if estimate is None:
-            err_m = err_deg = None
-            wrong = True
-        else:
-            err_m = math.hypot(estimate[0] - mean[0], estimate[1] - mean[1])
-            err_deg = abs(math.degrees(_wrap(estimate[2] - mean[2])))
-            wrong = err_m > cfg.correct_if_m or err_deg > cfg.correct_if_deg
-        if not wrong:
+        err_m, err_deg = _discrepancy(estimate, mean)
+        if err_m is not None and err_m <= cfg.correct_if_m and err_deg <= cfg.correct_if_deg:
             return Decision("agree", tag_id, mean, err_m, err_deg)
         if self._last_correct_t is not None and t - self._last_correct_t < cfg.cooldown_s:
             return None
         self._last_correct_t = t
         self._recent.clear()
         return Decision("correct", tag_id, mean, err_m, err_deg)
+
+    def _consistent_mean(self) -> Optional[Pose2]:
+        """Средняя поза последних ``min_consistent`` оценок, если они согласны; иначе None."""
+        cfg = self.config
+        if len(self._recent) < cfg.min_consistent:
+            return None
+        last = [p for _, _, p in self._recent[-cfg.min_consistent :]]
+        mean = _mean_pose(last)
+        if any(math.hypot(p[0] - mean[0], p[1] - mean[1]) > cfg.spread_m for p in last):
+            return None
+        if any(abs(math.degrees(_wrap(p[2] - mean[2]))) > cfg.spread_deg for p in last):
+            return None
+        return mean
+
+
+def _discrepancy(estimate: Optional[Pose2], pose: Pose2) -> Tuple[Optional[float], Optional[float]]:
+    """(м, градусы) между оценкой rtabmap и позой по тегу; (None, None) — оценки нет."""
+    if estimate is None:
+        return None, None
+    return (
+        math.hypot(estimate[0] - pose[0], estimate[1] - pose[1]),
+        abs(math.degrees(_wrap(estimate[2] - pose[2]))),
+    )
 
 
 def _mean_pose(poses: Sequence[Pose2]) -> Pose2:
