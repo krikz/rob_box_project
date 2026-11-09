@@ -2,10 +2,10 @@
 # #4354 A3). Две копии: docker/sound/config/voice_assistant/ (живой) и src/rob_box_voice/config/ —
 # менять синхронно (сверяет src/rob_box_voice/test/test_yaml_param_consistency.py).
 #
-# Ключи API провайдеров — из окружения (как у dialogue_node), в yaml их нет.
+# Ключи API провайдеров — из окружения (как у остальных нод), в yaml их нет.
 dialog_node:
   ros__parameters:
-    metrics_port: 9100  # #4328 - Prometheus /metrics endpoint (prometheus.yml: dialogue_node)
+    metrics_port: 9100  # #4328 - Prometheus /metrics endpoint (prometheus.yml: dialog_node)
     # Цепочка LLM: первый — основной, дальше — фолбеки; все в режиме команд (command_bridge).
     llm_providers: "deepseek,minimax"
     # Профиль продукта робота (ADR-0167 Ш1б): docker/sound/config/assistant.yaml → вейки wake_words.yaml и персона
