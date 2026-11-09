@@ -293,6 +293,19 @@ def collect_runs(repo: str, since: str) -> list:
     return facts
 
 
+PR_RE = re.compile(r"#(\d+)")
+
+
+def pr_of(subject: str) -> str:
+    """Номер PR из темы коммита.
+
+    В конвенции репозитория номер PR — последний в скобках: «… (#4495) (#4508)»
+    — тут PR это #4508, а #4495 — общий epic. Пусто — если PR не упомянут.
+    """
+    found = PR_RE.findall(subject or "")
+    return found[-1] if found else ""
+
+
 def collect_new_files_by_git(repo_root: Path, since: str) -> list:
     """Новые файлы по истории git, а не по mtime.
 
@@ -312,7 +325,7 @@ def collect_new_files_by_git(repo_root: Path, since: str) -> list:
             "log",
             f"--since={since}",
             "--name-status",
-            "--pretty=format:",
+            "--pretty=format:%x00%s",
             "--diff-filter=A",
         ],
         cwd=str(repo_root),
@@ -323,12 +336,17 @@ def collect_new_files_by_git(repo_root: Path, since: str) -> list:
     )
     if done.returncode != 0:
         return facts
-    added = []
+    added = {}  # путь → тема коммита (из неё берём номер PR)
+    subject = ""
     for line in done.stdout.splitlines():
+        if "\x00" in line:  # начало коммита: тема сообщения
+            subject = line.split("\x00", 1)[1].strip()
+            continue
         parts = line.split("\t")
         if len(parts) >= 2 and parts[0].startswith("A"):
-            added.append(parts[-1].strip())
-    for path_text in sorted(set(added)):
+            path_text = parts[-1].strip()
+            added.setdefault(path_text, subject)
+    for path_text in sorted(added):
         path = repo_root / path_text
         if not path.is_file():
             continue
@@ -352,6 +370,7 @@ def collect_new_files_by_git(repo_root: Path, since: str) -> list:
                     "kind": "media",
                     "claim": f"Новое медиа: {path_text}",
                     "source": path_text,
+                    "pr": pr_of(added.get(path_text, "")),
                     "visible": True,
                 }
             )

@@ -11,6 +11,9 @@
 
 from __future__ import annotations
 
+import re
+from typing import Optional
+
 import argparse
 import hashlib
 import json
@@ -44,11 +47,42 @@ def pick_fact(facts: list) -> dict:
     return facts[0] if facts else {}
 
 
-def pick_media(facts: list) -> str:
-    """Взять готовый материал из develop, если он есть."""
-    for fact in facts:
-        if fact.get("kind") == "media" and fact.get("source"):
-            return fact["source"]
+PR_RE = re.compile(r"#(\d+)")
+
+
+def pr_numbers(text: str) -> set:
+    """Номера PR из текста факта."""
+    return set(PR_RE.findall(text or ""))
+
+
+def fact_prs(fact: dict) -> set:
+    """Все номера PR, которые называет факт: из текста и из поля pr."""
+    found = pr_numbers(" ".join(str(fact.get(k) or "") for k in ("claim", "source")))
+    own = str(fact.get("pr") or "").strip()
+    if own:
+        found.add(own.lstrip("#"))
+    return found
+
+
+def pick_media(facts: list, fact: Optional[dict] = None) -> str:
+    """Материал поста — из его же факта.
+
+    Раньше бралась любая картинка сессии: пост про конфиг (#4507) получал
+    график дрейфа из другой правки, и текст не соответствовал картинке
+    (Шифу, 07.11: «текст не соответствует видео»). Теперь материал берётся
+    только из факта самого поста или из того же PR.
+    """
+    if fact and fact.get("kind") == "media" and fact.get("source"):
+        return fact["source"]
+    if not fact:
+        return ""
+    wanted = fact_prs(fact)
+    wanted.discard("")
+    for item in facts:
+        if item.get("kind") != "media" or not item.get("source"):
+            continue
+        if wanted & fact_prs(item):
+            return item["source"]
     return ""
 
 
@@ -66,7 +100,7 @@ def build_post(facts: list, model: str = st.DEFAULT_MODEL, repo_root: Path = st.
         # «Что показать» — сам факт: пост не должен выдумывать сюжет.
         "show": claim,
         "deadline": "",
-        "media_ref": pick_media(facts),
+        "media_ref": pick_media(facts, fact),
         "fact_keys": [fact.get("key")] if fact.get("key") else [],
     }
     # Черновик уходит всегда с картинкой (решение Шифу 06.11): лимит — подпись 1024 знака.

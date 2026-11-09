@@ -604,6 +604,27 @@ def load_rules(repo_root: Path) -> str:
     return text[:12000]
 
 
+def media_line(idea: dict) -> str:
+    """Что за медиа у поста — и про что оно, чтобы текст с ним не спорил.
+
+    Ролик «до/после» — это измерение дрейфа локализации (HIL). Если такое
+    медиа у поста, текст не должен утверждать, что нового замера нет
+    (Шифу, 07.11: «текст не соответствует видео»).
+    """
+    ref = str(idea.get("media_ref") or "")
+    choice = str(idea.get("media_choice") or "")
+    parts = []
+    if ref:
+        parts.append(ref)
+    if choice.startswith("compare:") or ":stacked" in choice or ":side_by_side" in choice:
+        parts.append("ролик «до/после» с замерами дрейфа локализации на складе Depot (HIL)")
+        parts.append("это измерение из песочницы — про него можно и нужно сказать в тексте, "
+                     "и нельзя писать, что нового замера нет")
+    if not parts:
+        return "готового медиа нет"
+    return "; ".join(parts)
+
+
 def build_prompt(facts: list, rules: str, media_ref: str = "") -> str:
     """Промпт: только факты и правила, никаких просьб «придумай».
 
@@ -1111,7 +1132,7 @@ def build_post_prompt(idea: dict, facts: list, rules: str, instruction: str = ""
         f"ИДЕЯ: {idea.get('title', '')}\n"
         f"ЧТО ПОКАЗАТЬ: {idea.get('show', '')}\n"
         f"СРОК: {idea.get('deadline', '')}\n"
-        f"МЕДИА: {idea.get('media_ref') or 'готового медиа нет'}\n\n"
+        f"МЕДИА: {media_line(idea)}\n\n"
         f"ФАКТЫ:\n{extract_fact_text(facts)}\n\n"
     )
     if instruction:

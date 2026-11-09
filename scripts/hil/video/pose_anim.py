@@ -357,6 +357,43 @@ def side_by_side_frames(
         yield img
 
 
+def stacked_frames(
+    runs: list, title: str, frames: int, size: tuple = (720, 1280), hold: int = 0, font_hint: Optional[int] = None
+) -> Iterator[Image.Image]:
+    """Кадры ролика «до/после» стопкой: «до» сверху, «после» снизу.
+
+    Просьба Шифу (07.11): «видео вертикальным, чтобы до было сверху, а
+    после снизу». Кадр вертикальный (720×1280), прогоны друг под другом, у
+    обоих один масштаб по осям — как в горизонтальном варианте.
+    """
+    w, h = size
+    span = max(run.span for run in runs)
+    world = bounds([run.rows for run in runs])
+    top_err = max([run.stats.get("max_error", 0.0) for run in runs] + [1.0])
+    count = len(runs)
+    head = int(h * 0.13)
+    strip = int(h * 0.075)
+    gap = int(h * 0.02)
+    body = h - head - strip - 46 - gap * (count + 1)
+    panel_h = max(60, (body - count * strip) // count)
+    views = []
+    for i in range(count):
+        top = head + gap + i * (panel_h + strip + gap)
+        views.append(Viewport(world, (30, top, w - 30, top + panel_h)))
+    moving = max(1, frames - hold)
+    for k in range(frames):
+        t_rel = span * min(k, moving - 1) / max(1, moving - 1)
+        img = Image.new("RGB", size, BG)
+        draw = ImageDraw.Draw(img)
+        draw.text((30, 16), title, font=font(max(18, w // 26), bold=True), fill=TEXT)
+        legend = "зелёный — где робот на самом деле (Gazebo), красный — оценка"
+        draw.text((30, 16 + h // 40), legend, font=font(max(12, w // 46)), fill=DIM)
+        for run, view in zip(runs, views):
+            _draw_run(img, run, view, t_rel, (w, h), span, top_err, strip, font_hint=font_hint or w)
+        draw.text((30, h - 34), f"t = {t_rel:5.0f} с от начала движения", font=font(max(12, w // 46)), fill=DIM)
+        yield img
+
+
 def meters(value: Optional[float]) -> str:
     """«11.9 м» / «0.08 м»: меньше метра — с сотыми, чтобы «после» не читалось как ровный ноль."""
     if value is None:
@@ -364,14 +401,19 @@ def meters(value: Optional[float]) -> str:
     return f"{value:.1f} м" if value >= 1.0 else f"{value:.2f} м"
 
 
-def _draw_run(img, run: Run, view: Viewport, t_rel: float, size: tuple, span: float, top_err: float, strip: int):
+def _draw_run(
+    img, run: Run, view: Viewport, t_rel: float, size: tuple, span: float, top_err: float, strip: int, font_hint=None
+):
     t_abs = run.start + t_rel
     upto = index_at(run.rows, t_abs)
     draw_panel(img, view, run.rows, upto, run.layer(t_abs, view, size))
     x0, y0, x1, y1 = view.box
     draw = ImageDraw.Draw(img)
-    small = font(max(12, size[1] // 40))
-    draw.text((x0 + 8, y0 + 6), run.label, font=font(max(14, size[1] // 34), bold=True), fill=TEXT)
+    # Шрифты — по ширине панели: в вертикальном кадре высота большая, а текст
+    # всё равно должен помещаться по ширине (Шифу, 07.11).
+    hint = font_hint or size[1]
+    small = font(max(12, hint // 40))
+    draw.text((x0 + 8, y0 + 6), run.label, font=font(max(14, hint // 34), bold=True), fill=TEXT)
     row = run.rows[upto] if upto >= 0 else None
     err = row.error if row is not None else None
     if err is None:

@@ -36,6 +36,8 @@ REFINE_LABELS = {
 }
 # Действия, которым не нужны факты сессии: ролик берёт материал с песочницы, а не из facts.json.
 NO_FACTS_ACTIONS = (cs.ACTION_ANIMATE, cs.ACTION_VIDEO)
+# «Пришли пост» — готовое, модель и факты не нужны.
+FACTS_FREE_ACTIONS = (cs.ACTION_POST,)
 GH_REPO = os.environ.get("STUDIO_GH_REPO", "krikz/rob_box_project")
 
 
@@ -207,7 +209,7 @@ def _refine(
         progress.fail(f"черновик уже {'одобрен' if record['status'] == 'approved' else 'отклонён'} — не трогаю")
         return False
     facts = load_run_facts()
-    if not facts and action not in NO_FACTS_ACTIONS:
+    if not facts and action not in NO_FACTS_ACTIONS + FACTS_FREE_ACTIONS:
         progress.fail("факты сессии не найдены (docker/studio/run/facts.json)")
         return False
     own = _own_facts(record, facts)
@@ -218,7 +220,45 @@ def _refine(
         return studio_motion.refine_motion(bot, state_path, record, facts, action, progress, chat_id, instruction)
     if action == cs.ACTION_MEDIA:
         return _refine_media(bot, state_path, record, facts, progress, chat_id)
+    if action == cs.ACTION_POST:
+        return _refine_post(bot, state_path, record, progress, chat_id)
     return _refine_text(bot, state_path, record, own or facts, action, progress, chat_id, instruction)
+
+
+def _refine_post(bot, state_path: Path, record: dict, progress, chat_id: int) -> bool:
+    """«Пришли пост» — прислать собранный черновик в чат: текст и его медиа.
+
+    Шифу (07.11, 23:37): «Так теперь пришли мне собранный пост» → бот отвечал
+    «я не могу сам отправить готовый файл» и предлагал собрать ролик заново.
+    Действия «прислать готовое» в студии не было — теперь есть.
+    """
+    import channel_lib as lib
+
+    body = (record.get("body_html") or record.get("body") or "").strip()
+    if not body:
+        progress.fail("у черновика нет текста — пришлю заново")
+        return False
+    media = record.get("media_path") or ""
+    path = Path(media) if media else None
+    if path is not None and not path.exists():
+        path = None
+    if path is not None:
+        caption = body[: lib.CAPTION_LIMIT]
+        progress.step(f"Присылаю пост с медиа: {path.name}", "upload_video")
+        sent = bot.send_media(chat_id, path, caption=caption)
+        if not sent.get("ok"):
+            progress.fail(sent.get("description") or "Telegram не принял файл")
+            return False
+        note = "" if len(body) <= lib.CAPTION_LIMIT else " (текст обрезан: не влезает в подпись)"
+        progress.finish(f"Готово: прислал пост с медиа {path.name}{note}")
+        return True
+    progress.step("Присылаю пост текстом", "typing")
+    sent = bot.send_message(chat_id, body[: lib.MESSAGE_LIMIT], parse_mode="HTML")
+    if not sent.get("ok"):
+        progress.fail(sent.get("description") or "Telegram не принял текст")
+        return False
+    progress.finish("Готово: прислал пост текстом")
+    return True
 
 
 def _refine_media(bot, state_path: Path, record: dict, facts: list, progress, chat_id: int) -> bool:

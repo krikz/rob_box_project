@@ -192,10 +192,44 @@ def test_media_from_develop_is_visible_in_facts():
 
 
 def test_draft_picks_fact_and_media():
-    """Черновик строится из факта и берёт материал, если он есть."""
+    """Черновик строится из факта; материал — из материала того же факта."""
     fact = draft.pick_fact(FACTS)
     assert fact["kind"] == "merged_pr"
-    assert draft.pick_media(FACTS) == "docs/channel/media/a.png"
+    assert draft.pick_media(FACTS, fact) == ""
+
+
+def test_media_of_another_pr_is_not_taken():
+    """Картинка из другой правки к посту не цепляется (Шифу, 07.11)."""
+    facts = [
+        {"kind": "merged_pr", "claim": "PR #4507 влит в develop (#4495)", "source": "PR #4507", "key": "k1"},
+        {"kind": "media", "claim": "Новое медиа: график", "source": "docs/channel/media/a.png", "pr": "4508"},
+    ]
+    fact = facts[0]
+    assert draft.pick_media(facts, fact) == ""
+
+
+def test_media_of_same_pr_is_taken():
+    """Картинка из той же правки — берётся."""
+    facts = [
+        {"kind": "merged_pr", "claim": "PR #4508 влит в develop (#4495)", "source": "PR #4508", "key": "k1"},
+        {"kind": "media", "claim": "Новое медиа: график", "source": "docs/channel/media/a.png", "pr": "4508"},
+    ]
+    assert draft.pick_media(facts, facts[0]) == "docs/channel/media/a.png"
+
+
+def test_media_fact_carries_its_pr():
+    """Факт-медиа помнит, из какой правки он пришёл."""
+    facts = [
+        {"kind": "merged_pr", "claim": "PR #4508 влит в develop (#4495)", "source": "PR #4508", "key": "k1"},
+        {
+            "kind": "media",
+            "claim": "Новое медиа: docs/channel/media/a.png",
+            "source": "docs/channel/media/a.png",
+            "pr": "4508",
+            "key": "k2",
+        },
+    ]
+    assert draft.pick_media(facts, facts[0]) == "docs/channel/media/a.png"
 
 
 def test_post_id_is_stable():
