@@ -93,6 +93,28 @@ ssh ros2@10.1.1.250 'grep -E "GOAL_END|RECOV|EM_ON|TIMEOUT" /home/ros2/rob_box_h
 - «STATUS_SUCCEEDED» говорит про карту, а не про мир. Сверяй `err=` в `GOAL_END` (истинная поза против цели).
   Ошибка позы rtabmap/ICP видна в `maprec/poses.csv` (колонки `t,tx,ty,tyaw,ex,ey,eyaw`).
 
+### 3a. Обход покрытием («пылесос», #4560) [код; на складе ещё не прогонялся]
+
+После картографии (карта `/rtabmap/map` уже есть) вместо `runvideo.sh` — `runcoverage.sh`. Модули плана
+и метрики берутся из `pylib/` копии (кладёт `sandbox_prep.sh`), а не из образа.
+
+```bash
+# сначала только план: out/coverage/plan.png, plan.json, строка PLAN и UNREACHABLE в out/coverage.log
+ssh ros2@10.1.1.250 'cd /home/ros2/rob_box_hilvideo && ./runcoverage.sh --plan-only'
+# обход (можно --max-poses 20 для пробы); конец — строка COVERAGE_DONE
+ssh ros2@10.1.1.250 'cd /home/ros2/rob_box_hilvideo && (nohup ./runcoverage.sh > out/runcoverage.out 2>&1 < /dev/null &)'
+ssh ros2@10.1.1.250 'grep -E "PLAN|UNREACHABLE|GOAL_END|EM_ON|COVERAGE_" /home/ros2/rob_box_hilvideo/out/coverage.log'
+```
+
+- Лог в формате `route.py` (TRACK, GOAL_START/GOAL_END, EM_ON/EM_OFF, RECOVERY). Недостижимую позу исполнитель
+  пропускает и считает; после `--max-fail` (5) неудач подряд останавливается, остаток — `NOT_SENT`.
+- Пересчёт покрытия по логу без ROS: `python3 -m rob_box_sim.coverage_metric out/coverage/plan_map.npz
+  out/coverage.log --out cov.png` (зелёное — покрыто, красное — пропущено, оранжевое — свободно, но корпусу
+  недоступно: запас padding, узкие места, пол за проходом уже габарита).
+- Ручки: `--spacing` (0.55 м), `--axis auto|x|y`, `--waypoint-step` (промежуточные позы на полосе, 0 — нет),
+  `--timeout` на позу (120 с стены). Ось при `auto` код выбирает по оценке времени: путь / 0.3 м/с + 5 с на позу
+  (5 с — догадка, уточнить по прогону).
+
 ## 4. Запись видов
 
 Камеры пишут PNG сами (`<save enabled="true">`) в `out/frames/video_top` и `video_chase`, по sim time.
