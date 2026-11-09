@@ -3471,6 +3471,129 @@ PHOTOS_MAX = 10
 ACTIONS_CAPPED_PHRASE = "command.actions_capped"
 ACTIONS_CAPPED_NAMED_PHRASE = "command.actions_capped.named"
 PHRASE_KEYS = PHRASE_KEYS + (ACTIONS_CAPPED_PHRASE, ACTIONS_CAPPED_NAMED_PHRASE)
+
+# ---------------------------------------------------------------------------------------------------------------
+# Вереница действий (ADR-0165, #4403): данные этапа 1. Ход их пока не читает - потолок исполнения прежний
+# (:data:`ACTIONS_MAX`); модуль ``action_chain`` (этап 2) и раннер шагов (этап 3) берут знание отсюда.
+# ---------------------------------------------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class ChainClass:
+    """Как класс действия идёт в веренице (ADR-0165 §4.1). Шаги вереницы всегда по одному, по порядку модели.
+
+    ``step`` — класс бывает шагом вереницы. ``alongside`` — класс может стоять в одной команде с длинной вереницей:
+    ``query`` шагом не бывает, но остаётся в query-цикле хода до фразы плана; ``identity`` и ``perform`` — нет
+    (нарушение ``chain_mixed``, этап 2). ``single`` — не больше одного шага класса на вереницу. ``stops_rest`` —
+    провал шага (``rejected``/``timeout``/``cancelled``) отменяет остаток: где робот после несостоявшейся поездки,
+    неизвестно (§10)."""
+
+    step: bool
+    alongside: bool
+    single: bool = False
+    stops_rest: bool = False
+
+
+#: Класс действия → правило вереницы; полноту против :data:`ACTION_CLASSES` держит тест.
+CHAIN_CLASSES: Mapping[str, ChainClass] = MappingProxyType({
+    "query": ChainClass(step=False, alongside=True),
+    "action.local": ChainClass(step=True, alongside=True),
+    "action.media": ChainClass(step=True, alongside=True, single=True),
+    "action.motion": ChainClass(step=True, alongside=True, stops_rest=True),
+    "action.identity": ChainClass(step=False, alongside=False),
+    "action.speak_aloud": ChainClass(step=True, alongside=True, single=True),
+    "action.perform": ChainClass(step=False, alongside=False),
+})
+#: Фраза плана звучит, только если вереница займёт дольше стольких секунд (решение Шифу В1, 05.11); короче —
+#: короткая команда: действия, потом фраза итога, как сейчас.
+CHAIN_PLAN_AFTER_S = 5.0
+#: Ожидаемая длительность шага по классу, с. Пусто до замеров HIL (этап 6): класса нет — оценка берёт срок класса
+#: (``ACTION_CLASSES[cls].timeout_s``), а это верхняя граница — план прозвучит чаще, чем надо (ADR-0165 §4).
+CHAIN_EXPECTED_S: Mapping[str, float] = MappingProxyType({})
+#: Кто говорит фразу плана: ``model`` — речь команды под проверкой ``done_claim`` (решение Шифу В2), ``code`` — план
+#: кода из действий (:data:`CHAIN_VERBS`). Проверка начнёт пропускать ложь — переключить здесь («если будут
+#: проблемы — перейдём на фразу кода»). У ``model`` план кода остаётся запасным: речь пуста или не прошла проверку.
+CHAIN_PLAN_SOURCES: Tuple[str, ...] = ("model", "code")
+CHAIN_PLAN_BY = "model"
+#: Поездка - шаг, который везёт робота к цели; по их числу код отличает маршрут от поручения. Прочие тулы
+#: ``action.motion`` (карта, остановка навигации) поездкой не считаются.
+CHAIN_TRIP_TOOLS: Tuple[str, ...] = MOTION_TOOLS
+
+
+@dataclass(frozen=True)
+class ChainTask:
+    """Лимиты типа задачи (ADR-0165 §5, решение Шифу В3: у каждого типа свои). ``steps_max`` — шагов в веренице;
+    ``trips_max`` — поездок (:data:`CHAIN_TRIP_TOOLS`), ``None`` — ограничены только ``steps_max``; ``term_s`` —
+    срок всей вереницы, ``None`` — сумма сроков классов шагов (своего числа нет до замеров HIL). Вышла за лимит —
+    вереница не начинается, код говорит :data:`CHAIN_TOO_LONG_PHRASE`."""
+
+    steps_max: int
+    trips_max: Optional[int]
+    term_s: Optional[float]
+
+
+#: Типы задач вереницы. Тип определяет код по действиям: поездок больше, чем ``trips_max`` поручения, — маршрут.
+#: Миссия (задача на часы) — не вереница одной команды, а свой режим сессии (ADR-0165 этап 8), здесь её нет.
+CHAIN_ERRAND = "errand"
+CHAIN_ROUTE = "route"
+#: Маршрут до замеров HIL — не длиннее восьми действий (решение Шифу В9-а, Telegram 05.11 09:52 UTC, #4403).
+#: Число поездок и общий срок маршрута — после замеров (этап 6).
+CHAIN_ROUTE_ACTIONS_MAX = 8
+CHAIN_TASKS: Mapping[str, ChainTask] = MappingProxyType({
+    # одна команда, несколько шагов рядом: удалить точки, съездить и вернуться
+    CHAIN_ERRAND: ChainTask(steps_max=ACTIONS_ACCEPT_MAX, trips_max=1, term_s=None),
+    # несколько поездок: объезд точек
+    CHAIN_ROUTE: ChainTask(steps_max=CHAIN_ROUTE_ACTIONS_MAX, trips_max=None, term_s=None),
+})
+
+
+@dataclass(frozen=True)
+class ChainVerb:
+    """Ключи фраз шагов одного глагола (``phrases/ru.yaml``, слот ``{items}`` — имена шагов словами аргументов):
+    ``plan`` — фраза плана кода, до события («Удаляю: хил-один, хил-два.»; утверждать сделанное ей нельзя — тест
+    ``done_claims``); ``did`` — сделанные шаги в итоге; ``missed`` — не сделанные, причину говорит фраза владельца."""
+
+    plan: str
+    did: str
+    missed: str
+
+
+def _chain_verb(name: str) -> ChainVerb:
+    return ChainVerb(f"chain.plan.{name}", f"chain.did.{name}", f"chain.missed.{name}")
+
+
+#: Глагол шага, у которого своего в :data:`CHAIN_VERBS` нет.
+CHAIN_VERB_DEFAULT = _chain_verb("generic")
+_CHAIN_DELETE, _CHAIN_SAVE = _chain_verb("delete"), _chain_verb("save")
+#: Тул шага → глагол фраз плана и итога (ADR-0165 §3: «глагол — по тулу, таблица в knowledge»). Здесь только тулы,
+#: которых строковый аргумент называет человеку (имя точки, факт, запрос музыки); остальные -
+#: :data:`CHAIN_VERB_DEFAULT`.
+CHAIN_VERBS: Mapping[str, ChainVerb] = MappingProxyType({
+    "delete_waypoint": _CHAIN_DELETE,
+    "delete_map": _CHAIN_DELETE,
+    "save_waypoint": _CHAIN_SAVE,
+    "memory_save": _CHAIN_SAVE,
+    "navigate_to_waypoint": _chain_verb("trip"),
+    "request_music": _chain_verb("music"),
+})
+#: Итог вереницы (§7): начало фразы по исходу, дальше - сделанные и не сделанные шаги фразами :data:`CHAIN_VERBS`.
+CHAIN_DONE_PHRASE = "chain.done"
+CHAIN_STOPPED_PHRASE = "chain.stopped"
+CHAIN_TIMEOUT_PHRASE = "chain.timeout"
+#: Шаги, что не начинались (``skipped``): после стопа или срока - общая фраза, после несостоявшейся поездки - своя.
+CHAIN_SKIPPED_PHRASE = "chain.skipped"
+CHAIN_MOTION_FAILED_PHRASE = "chain.motion_failed"
+#: Вереница вышла за лимит своего типа (:data:`CHAIN_TASKS`) и не начинается.
+CHAIN_TOO_LONG_PHRASE = "chain.too_long"
+#: Фразы с именами шагов (слот ``{items}``); остальные фразы вереницы слотов не имеют.
+CHAIN_ITEM_PHRASES: Tuple[str, ...] = tuple(dict.fromkeys((
+    *(key for verb in (CHAIN_VERB_DEFAULT, *CHAIN_VERBS.values()) for key in (verb.plan, verb.did, verb.missed)),
+    CHAIN_SKIPPED_PHRASE, CHAIN_MOTION_FAILED_PHRASE,
+)))
+CHAIN_PHRASES: Tuple[str, ...] = (
+    *CHAIN_ITEM_PHRASES, CHAIN_DONE_PHRASE, CHAIN_STOPPED_PHRASE, CHAIN_TIMEOUT_PHRASE, CHAIN_TOO_LONG_PHRASE,
+)
+PHRASE_KEYS = PHRASE_KEYS + CHAIN_PHRASES
 PERFORM_KINDS: Tuple[str, ...] = ("rap", "song", "tale", "poem")
 PERFORM_BACKINGS: Tuple[str, ...] = ("beat", "calm", "none")
 #: Подложка выступления по виду (решение Шифу 28.10: «на сказку необязательно музыку включать», «на анекдот
