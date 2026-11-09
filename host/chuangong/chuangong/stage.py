@@ -48,9 +48,12 @@ class DockerCli:
         self.timeout_s = timeout_s
 
     def _run(self, *args: str, timeout: float = 30.0) -> subprocess.CompletedProcess:
-        return subprocess.run(
-            ["docker", *args], capture_output=True, text=True, timeout=timeout, stdin=subprocess.DEVNULL
-        )
+        try:
+            return subprocess.run(
+                ["docker", *args], capture_output=True, text=True, timeout=timeout, stdin=subprocess.DEVNULL
+            )
+        except (OSError, subprocess.TimeoutExpired) as exc:  # нет docker CLI, нет доступа, завис
+            return subprocess.CompletedProcess(["docker", *args], 127, "", f"docker {args[0]}: {exc}")
 
     def image_present(self, ref: str) -> bool:
         return self._run("image", "inspect", "--format", "{{.Id}}", ref).returncode == 0
