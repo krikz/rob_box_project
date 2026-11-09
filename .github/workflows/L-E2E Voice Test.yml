@@ -777,6 +777,7 @@ jobs:
             else
               echo "❌ SQLite: в voice_facts нет ни одного факта — память не сохранила ничего"
               FAIL="${FAIL:+$FAIL,}no-sqlite-facts"
+            fi
           fi
           echo "--- acceptance evidence ---"
           cat "$ACCEPT_FILE"

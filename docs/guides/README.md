@@ -229,7 +229,7 @@ registry/factory → MiniMax TTS → валидный WAV.
 - Системная информация
 
 ### [INTERNAL_DIALOGUE_USAGE.md](INTERNAL_DIALOGUE_USAGE.md)
-⚠️ **УСТАРЕЛО** - см. [architecture/INTERNAL_DIALOGUE_VOICE_ASSISTANT.md](../architecture/INTERNAL_DIALOGUE_VOICE_ASSISTANT.md)
+⚠️ **УСТАРЕЛО** - см. [architecture/dialog-v2-overview.md](../architecture/dialog-v2-overview.md)
 
 ## 🔗 Связанные документы
 

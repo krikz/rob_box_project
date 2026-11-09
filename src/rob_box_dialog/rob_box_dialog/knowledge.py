@@ -2736,7 +2736,7 @@ STARTUP_NODE_PARTS: Dict[str, str] = {
     "/audio_node": "audio", "/stt_node": "stt", "/tts_node": "tts", "/context_aggregator": "context",
     "/camera/camera": "camera", "/lslidar_driver_node": "lidar", "/rtabmap/rtabmap": "slam",
 }
-STARTUP_DIALOG_NODES: Tuple[str, ...] = ("/dialog_node", "/dialogue_node", "/dialog_node|/dialogue_node")
+STARTUP_DIALOG_NODES: Tuple[str, ...] = ("/dialog_node",)
 PHRASE_KEYS = PHRASE_KEYS + (
     *(f"startup.{kind}" for kind in ("ready", "voice_only", "partial", "unknown", "and")),
     *(f"startup.part.{part}" for part in (*sorted(set(STARTUP_NODE_PARTS.values())), "llm", "other")),
