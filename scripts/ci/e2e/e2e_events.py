@@ -212,7 +212,7 @@ class Window:
             return
         self.turn_done, self.turn_stage = True, stage
         self.turn_info = {k: v for k, v in (m.groups() for m in re.finditer(r"\b(status|reason|llm_calls)=(\S+)", line))
-                          if k in TURN_FIELDS}
+                          if k in TURN_FIELDS and v != "-"}  # ``reason=-`` (#4512): причины нет - поля нет
 
     def _speech(self, kind: str, speech_id: str, ts: Optional[float]) -> None:
         self.events += 1
