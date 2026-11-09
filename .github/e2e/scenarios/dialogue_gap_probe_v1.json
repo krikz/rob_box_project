@@ -71,7 +71,7 @@
       "label": "gp06_tts_provider_switch",
       "voice": "anton",
       "text": "Робот, переключись на синтезатор яндекса и скажи проверка связи",
-      "patterns": ["speak_text"],
+      "patterns": ["SpeechEvent started speech_id"],
       "acceptance": {
         "expected_tool_calls": [],
         "must_not_call": [],
@@ -82,11 +82,11 @@
       "label": "gp07_foreign_language_output",
       "voice": "anton",
       "text": "Робот, скажи по-китайски фразу всем привет",
-      "patterns": ["speak_text"],
+      "patterns": ["SpeechEvent started speech_id"],
       "acceptance": {
-        "expected_tool_calls": ["speak_text"],
+        "expected_tool_calls": [],
         "must_not_call": [],
-        "_comment": "ЗОНД §3.2/§3.6 спека (язык вывода) против tts_text_guard: чанк с >10% «чужой» письменности сейчас НЕ ПРОИЗНОСИТСЯ ВООБЩЕ (issue #1709). Ожидание: speak_text вызовется, но в логе будет отбраковка по guard и тишина в динамике. Падение/тишина = §3.2 физически заблокирован, нужна карточка W6-4/W6-5."
+        "_comment": "ЗОНД §3.2/§3.6 спека (язык вывода) против tts_text_guard: чанк с >10% «чужой» письменности сейчас НЕ ПРОИЗНОСИТСЯ ВООБЩЕ (issue #1709). Ожидание: речь начнётся (SpeechEvent started), но в логе будет отбраковка по guard и тишина в динамике. Падение/тишина = §3.2 физически заблокирован, нужна карточка W6-4/W6-5."
       }
     },
     {
@@ -126,9 +126,9 @@
       "label": "gp11_merge_non_song",
       "voice": "anton",
       "text": "Робот, посчитай вслух от одного до двадцати не торопясь",
-      "patterns": ["speak_text"],
+      "patterns": ["SpeechEvent started speech_id"],
       "acceptance": {
-        "expected_tool_calls": ["speak_text"],
+        "expected_tool_calls": [],
         "must_not_call": [],
         "_comment": "Подготовка к gp12: нужен длинный многосегментный вывод, но НЕ песня — issue #968 проверялся только на песне."
       }

@@ -41,37 +41,36 @@ def stamped(name, now=1_790_000_100.0):
 
 class TestFailedTurnIsTheEndOfTheTurn:
     def test_n209_failed_turn_is_failed_verdict_with_reason(self):
-        st = e2e_events.state(stamped("n209_failed_turn.log"), "v2", False)
+        st = e2e_events.state(stamped("n209_failed_turn.log"), False)
         assert st["verdict"] == "failed"
         assert st["reason"] == "failed:status=failed" and st["llm_calls"] == "3"
 
     def test_failed_stays_failed_even_for_silent_ok_step(self):
-        assert e2e_events.state(stamped("n209_failed_turn.log"), "v2", True)["verdict"] == "failed"
+        assert e2e_events.state(stamped("n209_failed_turn.log"), True)["verdict"] == "failed"
 
     def test_n109_reply_without_tts_finished_is_done(self):
         assert "TTS finished" not in fixture("n109_reply_without_tts_finished.log")
-        st = e2e_events.state(stamped("n109_reply_without_tts_finished.log"), "v2", False)
+        st = e2e_events.state(stamped("n109_reply_without_tts_finished.log"), False)
         assert st["verdict"] == "done"
 
     def test_failed_while_speech_open_waits_for_the_speech(self):
         text = stamped("n209_failed_turn.log") + (
             "[tts_node-7] [INFO] [1790000099.00] [tts_node]: 🗣️ SpeechEvent started speech_id=feedbeef "
             "agent=personality epoch=3 text_len=9\n")
-        assert e2e_events.state(text, "v2", False)["verdict"] == "wait"
+        assert e2e_events.state(text, False)["verdict"] == "wait"
 
     def test_cancelled_ends_turn_but_not_for_the_barging_step(self):
         log = ("[stt_node-5] [INFO] [1789999990.00] [stt_node]: ✅ ПРИНЯТО (respeaker): робот стоп\n"
                "[dialog_node-3] [INFO] [1789999995.00] [dialog_node]: 📊 [turn] turn_id=old epoch=1 agent=personality "
                "stage=cancelled status=cancelled latency_ms=1 llm_calls=1 llm_provider=deepseek tokens=1\n")
         feed = "1790000000.00\n" + log
-        assert e2e_events.state(feed, "v2", False)["verdict"] == "cancelled"
-        assert e2e_events.state(feed, "v2", False, barge=True)["verdict"] == "wait"
+        assert e2e_events.state(feed, False)["verdict"] == "cancelled"
+        assert e2e_events.state(feed, False, barge=True)["verdict"] == "wait"
 
     def test_no_accept_after_window_but_not_before(self):
         feed = "1790000000.00\n"
-        assert e2e_events.state(feed, "v2", False, waited=5, accept_window=15)["verdict"] == "wait"
-        assert e2e_events.state(feed, "v2", False, waited=15, accept_window=15)["verdict"] == "no_accept"
-        assert e2e_events.state(feed, "v1", False, waited=99, accept_window=0)["verdict"] == "wait"
+        assert e2e_events.state(feed, False, waited=5, accept_window=15)["verdict"] == "wait"
+        assert e2e_events.state(feed, False, waited=15, accept_window=15)["verdict"] == "no_accept"
 
 
 def _reply_after(out):
