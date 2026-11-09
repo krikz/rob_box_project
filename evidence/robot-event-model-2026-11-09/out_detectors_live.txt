@@ -1,0 +1,10 @@
+живые: событий 3892, ходов 210 ({'telegram': 93, 'personality': 117}), отклонённых STT 364, без вейка 1687
+живые: окно 06.11 02:24 – 09.11 18:35 UTC
+     2  deaf       stt_rejected=3
+     1  deaf       stt_rejected=3,stt_error=1
+     2  deaf       stt_rejected=3,stt_error=3
+     1  deaf       stt_rejected=3,stt_error=3,no_wake=1
+     1  deaf       stt_rejected=3,stt_error=3,no_wake=2
+     2  deaf       stt_rejected=3,stt_error=3,no_wake=3
+     4  no_speech  empty
+  стадия/статус ходов без речи: {('addressed', 'finished'): 4}

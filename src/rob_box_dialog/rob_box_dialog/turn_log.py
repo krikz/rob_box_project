@@ -136,11 +136,15 @@ class TurnAggregate:
     llm_calls: int = 0
     llm_provider: str = ""
     tokens: int = 0
+    #: код итога хода (``turn.reason``: ``silenced``, ``interrupt``, ``deadline``, ``query_fallback:…``); у обычного
+    #: ответа пуст -- в строке ``-``. Известный коду, не новая логика (#4512)
+    reason: str = ""
 
     def log_line(self) -> str:
         return (f"{AGGREGATE_MARK} turn_id={self.turn_id} epoch={self.epoch} agent={self.agent} stage={self.stage} "
                 f"status={self.status} latency_ms={self.latency_ms} llm_calls={self.llm_calls} "
-                f"llm_provider={self.llm_provider or '-'} tokens={self.tokens}")
+                f"llm_provider={self.llm_provider or '-'} tokens={self.tokens} "
+                f"reason={'_'.join(self.reason.split()) or '-'}")
 
 
 @dataclass

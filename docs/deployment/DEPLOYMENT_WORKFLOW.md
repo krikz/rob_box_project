@@ -708,7 +708,7 @@ Workflow подтягивает образы из `ghcr.io/krikz/rob_box`.
 
 - **CI/CD Pipeline:** `docs/CI_CD_PIPELINE.md`
 - **Docker Standards:** `docs/development/DOCKER_STANDARDS.md`
-- **Deployment Guide:** `docker/vision/DEPLOYMENT.md`
+- **Deployment Guide:** `docs/deployment/VISION_PI_DEPLOYMENT.md`
 - **Troubleshooting:** `docs/TROUBLESHOOTING.md`
 
 ---

@@ -46,7 +46,8 @@ issue #2192):
     * ``FLOORS`` — два независимых ресурса блокировки.
     * ``ERRORS`` — коды ``ERROR.code`` (строковые константы).
     * ``VOICE_PRESETS`` / ``VOICE_LANGUAGES`` — whitelist для
-      AV-28 §P7 (стиль речи + язык вывода LLM-формализации).
+      AV-28 §P7 (стиль речи + язык вывода LLM-формализации); каталог
+      даёт продукт (env ``ROB_BOX_VOICE_PRESETS_YAML``), без него пусто.
     * ``FRAME_TYPES`` — имена/числа из meta-quest-api.md §3 (для
       reference и conformance-тестов).
 
@@ -81,7 +82,6 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass, field
 from enum import Enum
-from pathlib import Path
 from types import MappingProxyType
 from typing import Any, Mapping, Optional
 
@@ -1241,126 +1241,57 @@ ERROR_SPECS: tuple[ErrorCodeSpec, ...] = (
 # === AV-28 §P7: voice presets and languages ================================
 
 
-# Синхронизирован с ``src/rob_box_voice/config/voice_presets.yaml`` и
-# meta-quest-api.md §P7. Расширение пресетов = правка YAML; voice-vr 21
-# / ADR-0080 §2.7 — Python-тупла ниже служит FALLBACK'ом на случай
-# недоступности yaml (CI-минимум без зависимости на пакет rob_box_voice),
-# а живой список загружается из yaml через ``_load_voice_lists_from_yaml``
-# ниже. Тот же приём для VOICE_LANGUAGES.
-_VOICE_PRESET_IDS_FALLBACK: tuple[str, ...] = (
-    "technical",
-    "street",
-    "caveman",
-    "business",
-    "philosopher",
-    "lenin",
-    # Нейтральный пресет: не стилизует, только чистит оговорки
-    # и переводит на выбранный язык.
-    "translate",
-)
-
-# Языки вывода LLM-формализатора (аудит панели пайплайна, AV-28 §P7).
-# Ключи languages: в voice_presets.yaml — источник истины.
-_VOICE_LANGUAGES_FALLBACK: tuple[str, ...] = ("ru", "en", "fr", "de", "zh", "hi")
+# Каталог пресетов стиля речи (AV-28 §P7) - знание продукта, а не ядра (ADR-0167 Ш1а-2). Продукт держит его в своём
+# профиле (у робота - ``docker/sound/config/voice_presets.yaml`` рядом с ``assistant.yaml``) и даёт хостам путь через
+# env :data:`VOICE_PRESETS_ENV` (у робота - compose сервисов ``quest`` и ``supervisor``). Своего каталога и поиска
+# файлов у ядра нет: без env белый список пуст - мост принимает только «без стиля» (пустой ``preset``).
+# ADR-0080 §2.7 «один белый список»: файл продукта → эти константы → ``ws_server`` / ``supervisor_node`` (re-export).
+VOICE_PRESETS_ENV = "ROB_BOX_VOICE_PRESETS_YAML"
 
 
-def _resolve_voice_presets_yaml_path() -> Optional[str]:
-    """Найти ``voice_presets.yaml`` пакета ``rob_box_voice``.
+class VoicePresetsError(ValueError):
+    """Путь к каталогу пресетов задан, а прочитать его нельзя: нет файла, не YAML, нет секции."""
 
-    Порядок (одинаков с :func:`rob_box_supervisor.grip_pipeline.resolve_voice_presets_path`,
-    чтобы константор и grip-пайплайн читали один файл):
 
-      0. env ``ROB_BOX_VOICE_PRESETS_YAML`` — override для тестов /
-         staging (если задан, используется как есть, без проверки
-         существования через ``isfile``);
-      1. ament share ``rob_box_voice/config/voice_presets.yaml`` (робот);
-      2. source-tree ``<repo>/src/rob_box_voice/config/voice_presets.yaml``
-         (colcon symlink / unit-тесты).
+def voice_presets_path() -> Optional[str]:
+    """Путь к каталогу пресетов продукта: env :data:`VOICE_PRESETS_ENV`; не задан или пуст - ``None``."""
+    return os.environ.get(VOICE_PRESETS_ENV, "").strip() or None
 
-    ``None`` — файл нигде не найден → останется FALLBACK.
-    """
-    env_override = os.environ.get("ROB_BOX_VOICE_PRESETS_YAML")
-    if env_override:
-        return env_override
+
+def _voice_sections(path: str) -> tuple[Any, Any]:
+    import yaml  # noqa: PLC0415 — лениво: bridge_protocol импортится без yaml, пока каталог не задан
+
     try:
-        from ament_index_python.packages import (  # noqa: PLC0415
-            get_package_share_directory,
-        )
-
-        share = os.path.join(
-            get_package_share_directory("rob_box_voice"),
-            "config",
-            "voice_presets.yaml",
-        )
-        if os.path.isfile(share):
-            return share
-    except Exception:  # noqa: BLE001 — нет ament (CI / unit-тесты / не-colcon)
-        pass
-    # Source-tree fallback. bridge_protocol живёт в
-    # ``<repo>/src/rob_box_core/rob_box_core/bridge_protocol.py``,
-    # поэтому идём через parents[2] (== ``src/``) + rob_box_voice/config/.
-    # ВНИМАНИЕ: было ``parents[3]`` (== repo root) — off-by-one, из-за
-    # которого source-tree fallback никогда не находил файл в среде без
-    # ament (голый ``pytest`` без colcon) и тихо откатывался на
-    # FALLBACK-туплу. Индекс должен совпадать с
-    # ``grip_pipeline.resolve_voice_presets_path`` (``parents[2]`` там же,
-    # т.к. оба модуля лежат на одной глубине ``src/<pkg>/<pkg>/*.py``).
-    source = (
-        Path(__file__).resolve().parents[2]
-        / "rob_box_voice"
-        / "config"
-        / "voice_presets.yaml"
-    )
-    return str(source) if source.is_file() else None
-
-
-def _load_voice_lists_from_yaml() -> tuple[tuple[str, ...], tuple[str, ...]]:
-    """Прочитать ключи ``presets`` и ``languages`` из voice_presets.yaml.
-
-    Возвращает ``(preset_ids, language_ids)``. На любой ошибке (нет
-    файла, битый yaml, не-dict, отсутствует секция) — возвращает
-    FALLBACK-туплы. Без side-effects (warning не пишем — модуль импортится
-    часто, и шум в conftest не нужен; регрессию ловит DoD-тест
-    ``TestVoiceConfigYamlDrivesWhitelist``).
-    """
-    path = _resolve_voice_presets_yaml_path()
-    if path is None:
-        return _VOICE_PRESET_IDS_FALLBACK, _VOICE_LANGUAGES_FALLBACK
-    try:
-        import yaml  # noqa: PLC0415 — лениво: bridge_protocol импортится без yaml
-
         with open(path, "r", encoding="utf-8") as fh:
             data = yaml.safe_load(fh)
-    except Exception:  # noqa: BLE001
-        return _VOICE_PRESET_IDS_FALLBACK, _VOICE_LANGUAGES_FALLBACK
+    except (OSError, UnicodeDecodeError, yaml.YAMLError) as exc:
+        raise VoicePresetsError(f"каталог пресетов {path}: не читается ({exc})") from exc
     if not isinstance(data, dict):
-        return _VOICE_PRESET_IDS_FALLBACK, _VOICE_LANGUAGES_FALLBACK
-    raw_presets = data.get("presets")
-    if isinstance(raw_presets, dict) and raw_presets:
-        preset_ids = tuple(str(k) for k in raw_presets.keys())
-    else:
-        preset_ids = _VOICE_PRESET_IDS_FALLBACK
-    raw_languages = data.get("languages")
-    if isinstance(raw_languages, dict) and raw_languages:
-        language_ids = tuple(str(k).lower() for k in raw_languages.keys())
-    elif isinstance(raw_languages, list) and raw_languages:
-        # Совместимость со старым списочным форматом (см. коммент в yaml).
-        language_ids = tuple(str(x).lower() for x in raw_languages)
-    else:
-        language_ids = _VOICE_LANGUAGES_FALLBACK
-    return preset_ids, language_ids
+        raise VoicePresetsError(f"каталог пресетов {path}: ждали словарь, а там {type(data).__name__}")
+    return data.get("presets"), data.get("languages")
 
 
-# Финальные публичные константы: при импорте модуля пытаемся
-# прочитать voice_presets.yaml; на неудаче — FALLBACK. Это и есть
-# ADR-0080 §2.7 «один белый список»: yaml → константор → ws_server.
-# (Python-тупла перестала быть SoT — она страховка на случай CI без yaml.)
+def load_voice_lists(path: Optional[str]) -> tuple[tuple[str, ...], tuple[str, ...]]:
+    """``(preset_ids, language_ids)`` из каталога пресетов ``path``: ключи секций ``presets`` и ``languages``.
+
+    ``None`` - нейтрально, ``((), ())``. Путь задан, а файла нет, он битый или секция пуста -
+    :class:`VoicePresetsError`: молча пустой список при заданном пути оставил бы панель шлема без стилей без единой
+    строки в логе. Языки допускают и старый списочный формат (``languages: [ru, en]``).
+    """
+    if path is None:
+        return (), ()
+    raw_presets, raw_languages = _voice_sections(path)
+    if not isinstance(raw_presets, dict) or not raw_presets:
+        raise VoicePresetsError(f"каталог пресетов {path}: нет непустой секции presets")
+    if not isinstance(raw_languages, (dict, list)) or not raw_languages:
+        raise VoicePresetsError(f"каталог пресетов {path}: нет непустой секции languages")
+    return tuple(str(k) for k in raw_presets), tuple(str(k).lower() for k in raw_languages)
+
+
+# Финальные публичные константы: читаются один раз при импорте (новый процесс - новое чтение файла).
 VOICE_PRESET_IDS: tuple[str, ...]
 VOICE_LANGUAGES: tuple[str, ...]
-_VOICE_PRESET_IDS_RESOLVED, _VOICE_LANGUAGES_RESOLVED = _load_voice_lists_from_yaml()
-VOICE_PRESET_IDS = _VOICE_PRESET_IDS_RESOLVED
-VOICE_LANGUAGES = _VOICE_LANGUAGES_RESOLVED
-del _VOICE_PRESET_IDS_RESOLVED, _VOICE_LANGUAGES_RESOLVED
+VOICE_PRESET_IDS, VOICE_LANGUAGES = load_voice_lists(voice_presets_path())
 
 
 # Дефолтный язык grip-пайплайна до первой синхронизации с панели.
@@ -1379,7 +1310,7 @@ VOICE_PIPELINE_DEFAULT_LANGUAGE: str = "ru"
 
 
 class VoiceInputMode(str, Enum):
-    """Параметр ``voice_input_mode`` на ``dialogue_node``.
+    """Параметр ``voice_input_mode`` на ``dialog_node``.
 
     Значения совпадают с ADR-0027 §3.4 + AV-22 (issue #1914, режим
     ``quest_command``). Сервер валидирует через
@@ -1397,7 +1328,7 @@ class VoiceInputMode(str, Enum):
 
 # Подмножество, которое клиент может прислать в ``voice_mode`` cmd
 # (Phase 2 уже на сервере, см. ws_server.py:1847). Внутренний
-# ``respeaker`` клиент НЕ ставит через wire — это default dialogue_node.
+# ``respeaker`` клиент НЕ ставит через wire — это default dialog_node.
 VOICE_WIRE_MODES: tuple[str, ...] = (
     "off",
     "passthrough",
@@ -1502,6 +1433,10 @@ __all__ = (
     "ERROR_SPECS",
     "VOICE_PRESET_IDS",
     "VOICE_LANGUAGES",
+    "VOICE_PRESETS_ENV",
+    "VoicePresetsError",
+    "voice_presets_path",
+    "load_voice_lists",
     "VOICE_PIPELINE_DEFAULT_LANGUAGE",
     "VOICE_WIRE_MODES",
     "TOPIC_IDS",

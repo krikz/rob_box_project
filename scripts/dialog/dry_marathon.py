@@ -35,14 +35,13 @@ from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 _HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(_HERE))
 
-from dry_stand import REPO, DryStand, new_workdir  # noqa: E402
+from dry_stand import REPO, DryStand, new_workdir, robot_prompt  # noqa: E402
 
 sys.path.insert(0, str(REPO / "scripts" / "ci" / "e2e"))
 import e2e_tool_match as etm  # noqa: E402
 
 SCENARIOS = REPO / ".github" / "e2e" / "scenarios" / "night"
 MANIFEST = SCENARIOS / "night_marathon_manifest.json"
-PROMPT_DIR = REPO / "src" / "rob_box_voice" / "prompts"
 #: Один шаг тратит не больше стольких вызовов LLM (итерации ``query`` + повтор моста): запас до стопа по бюджету.
 STEP_CALLS_RESERVE = 8
 
@@ -349,8 +348,7 @@ def build_real_stand(providers: Sequence[str], workdir: Path, deadline_s: Option
     relay, counter = LogRelay(), CallCounter()
     holder: List[DryStand] = []
     busy = (lambda: role_busy(holder[0])) if role_voices else None  # зовётся в ходе - стенд уже собран
-    llm, system = assemble_llm(providers, counter, prompt_dir=PROMPT_DIR,
-                               system_prompt_file="master_prompt_compact.txt",
+    llm, system = assemble_llm(providers, counter, prompt=robot_prompt(),
                                settings=LLMSettings(model=model) if model else None, log=relay, busy=busy)
     if system_patch:
         system = system_patch(system)

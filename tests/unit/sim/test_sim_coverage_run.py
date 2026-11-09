@@ -5,12 +5,15 @@
 """
 
 import importlib
+import math
+import signal
 import sys
 import types
 from pathlib import Path
 
 import pytest
-from rob_box_sim.coverage_plan import CoveragePose
+from rob_box_sim.coverage_plan import CoveragePose, coverage_space
+from rob_box_sim.map_check import OccupancyGrid
 
 VIDEO_DIR = Path(__file__).resolve().parents[3] / "scripts" / "hil" / "video"
 ROS_MODULES = (
@@ -38,7 +41,11 @@ def coverage_run(monkeypatch):
     sys.modules["rclpy.parameter"].Parameter = object
     sys.modules["action_msgs.msg"].GoalStatus = type("GoalStatus", (), {"STATUS_SUCCEEDED": 4, "STATUS_ABORTED": 6})
     sys.modules["geometry_msgs.msg"].Twist = object
+    sys.modules["geometry_msgs.msg"].PoseStamped = object
     sys.modules["nav2_msgs.action"].NavigateToPose = object
+    sys.modules["nav2_msgs.action"].NavigateThroughPoses = object
+    sys.modules["nav2_msgs.action"].FollowPath = object
+    sys.modules["nav_msgs.msg"].Path = object
     sys.modules["nav_msgs.msg"].Odometry = object
     monkeypatch.syspath_prepend(str(VIDEO_DIR))
     for name in ("route", "coverage_run"):
@@ -57,7 +64,7 @@ def test_drive_skips_failures_and_stops_after_max_fail(coverage_run, monkeypatch
     results = iter(["SUCCEEDED", "ABORTED", "SUCCEEDED", "TIMEOUT", "REJECTED", "ABORTED"])
     sent = []
 
-    def fake_run_goal(n, cl, name, x, y, yaw, timeout):
+    def fake_run_goal(n, cl, name, x, y, yaw, timeout, stop=None):
         sent.append((name, x, yaw, timeout))
         return next(results), 1 if name.startswith("p0001") else 0
 
@@ -73,7 +80,7 @@ def test_drive_skips_failures_and_stops_after_max_fail(coverage_run, monkeypatch
 
 def test_drive_runs_whole_plan_when_failures_are_sparse(coverage_run, monkeypatch):
     monkeypatch.setattr(
-        coverage_run, "run_goal", lambda *a: ("ABORTED" if a[2].startswith("p0002") else "SUCCEEDED", 0)
+        coverage_run, "run_goal", lambda *a, **kw: ("ABORTED" if a[2].startswith("p0002") else "SUCCEEDED", 0)
     )
     outcomes, stop = coverage_run.drive(None, None, _poses(5), timeout=1.0, max_fail=2)
     assert stop == ""
@@ -86,3 +93,259 @@ def test_moved_thins_track(coverage_run):
     assert coverage_run._moved(a, (0.1, 0.03, 0.0, 0.0))
     assert coverage_run._moved(a, (0.1, 0.0, 0.0, 0.05))
     assert coverage_run._moved(a, (1.5, 0.0, 0.0, 0.0))
+
+
+def test_drive_counts_real_route_statuses(coverage_run, monkeypatch):
+    """HIL Depot 09.11: run_goal отдаёт имена GoalStatus (STATUS_SUCCEEDED), а сравнение было с SUCCEEDED —
+    20 успехов подряд засчитались неудачами и обход встал по 20_failures_in_row."""
+    results = iter(["STATUS_SUCCEEDED"] * 4 + ["STATUS_ABORTED", "TIMEOUT", "STATUS_SUCCEEDED"])
+    monkeypatch.setattr(coverage_run, "run_goal", lambda *a, **kw: (next(results), 0))
+    outcomes, stop = coverage_run.drive(None, None, _poses(7), timeout=1.0, max_fail=3)
+    assert stop == ""
+    assert [o.result for o in outcomes] == ["SUCCEEDED"] * 4 + ["ABORTED", "TIMEOUT", "SUCCEEDED"]
+    assert sum(o.succeeded for o in outcomes) == 5
+
+
+def test_route_status_names_are_goal_status_names(coverage_run):
+    """Исход run_goal для завершённой цели — имя из GoalStatus; нормализация снимает ровно этот префикс."""
+    route = sys.modules["route"]
+    assert route.STATUS[4] == "STATUS_SUCCEEDED" and route.STATUS[6] == "STATUS_ABORTED"
+    assert coverage_run.GoalOutcome.from_route("g", route.STATUS[4]).result == "SUCCEEDED"
+
+
+def test_signal_cancels_current_goal_and_marks_the_rest_not_sent(coverage_run, monkeypatch):
+    stop = coverage_run.StopSignal()
+    asked = []
+
+    def fake_run_goal(n, cl, name, x, y, yaw, timeout, stop=None):
+        asked.append(stop())
+        if name.startswith("p0001"):
+            sig(signal.SIGINT)  # оператор нажал Ctrl+C посреди второй цели
+            assert stop(), "run_goal должен видеть флаг и отменить цель"
+            return "INTERRUPTED", 0
+        return "STATUS_SUCCEEDED", 0
+
+    sig = stop
+    monkeypatch.setattr(coverage_run, "run_goal", fake_run_goal)
+    outcomes, why = coverage_run.drive(None, None, _poses(5), timeout=1.0, max_fail=3, stop=stop)
+    assert why == "interrupted_SIGINT"
+    assert [o.result for o in outcomes] == ["SUCCEEDED", "INTERRUPTED", "NOT_SENT", "NOT_SENT", "NOT_SENT"]
+    assert asked == [False, False]
+
+
+def test_second_signal_exits_at_once(coverage_run):
+    stop = coverage_run.StopSignal()
+    stop(signal.SIGTERM)
+    assert stop.name == "SIGTERM"
+    with pytest.raises(KeyboardInterrupt):
+        stop(signal.SIGINT)
+
+
+def test_signal_before_first_goal_sends_nothing(coverage_run, monkeypatch):
+    stop = coverage_run.StopSignal()
+    stop(signal.SIGTERM)
+    monkeypatch.setattr(coverage_run, "run_goal", lambda *a, **kw: pytest.fail("цель после сигнала"))
+    outcomes, why = coverage_run.drive(None, None, _poses(3), timeout=1.0, max_fail=3, stop=stop)
+    assert why == "interrupted_SIGTERM" and {o.result for o in outcomes} == {"NOT_SENT"}
+
+
+def test_finish_writes_summary_for_what_was_driven(coverage_run, tmp_path):
+    grid = OccupancyGrid(80, 60, 0.05, 0.0, 0.0, [0] * 4800)
+    space = coverage_space(grid, (1.0, 1.0))
+    node = types.SimpleNamespace(track=[(0.0, 1.0, 1.0, 0.0), (1.0, 1.5, 1.0, 0.0)], simt=lambda: 12.5)
+    outcomes = [coverage_run.GoalOutcome("p0000", "SUCCEEDED"), coverage_run.GoalOutcome("p0001", "INTERRUPTED")]
+    line = coverage_run.finish(tmp_path / "cov", node, grid, space, outcomes, "interrupted_SIGINT", 2.5)
+    assert "COVERAGE_DONE goals=2 succeeded=1 skipped=1 (INTERRUPTED=1)" in line
+    assert "stop=interrupted_SIGINT interrupted=yes" in line and "sim_s=10.0" in line
+    assert "coverage_free=" in line
+    assert (tmp_path / "cov" / "track.json").exists()
+    assert any(p.name.startswith("coverage.") for p in (tmp_path / "cov").iterdir())
+
+
+def test_plan_knobs_reach_the_planner(coverage_run):
+    args = coverage_run.parse_args(["--turn-clearance", "0.69", "--no-cross", "--plan-only"])
+    assert args.turn_clearance == 0.69 and args.no_cross and args.plan_only
+    assert coverage_run.parse_args([]).turn_clearance is None  # умолчание — из coverage_plan
+
+
+# ── полоса одной целью NavigateThroughPoses (попытка 3 на Depot: 0.06 м/с позами по одной) ────────────
+
+
+def _lanes(*sizes):
+    """Позы нескольких полос: размеры полос → CoveragePose подряд, x растёт на 1 м."""
+    out, x = [], 0.0
+    for lane, n in enumerate(sizes):
+        for k in range(n):
+            kind = "start" if k == 0 else "end" if k == n - 1 else "mid"
+            out.append(CoveragePose(x, float(lane), 0.0, 0, lane, kind))
+            x += 1.0
+    return out
+
+
+def test_lanes_of_groups_consecutive_poses_of_one_lane(coverage_run):
+    groups = coverage_run.lanes_of(_lanes(2, 3, 2))
+    assert [len(g) for g in groups] == [2, 3, 2]
+    assert {(p.cell, p.lane) for p in groups[1]} == {(0, 1)}
+
+
+def test_drive_sends_each_lane_as_one_goal_and_counts_poses_honestly(coverage_run, monkeypatch):
+    sent = []
+    # настоящие исходы route: имя GoalStatus, TIMEOUT; третье — сколько точек осталось по feedback Nav2
+    results = iter(
+        [("STATUS_SUCCEEDED", 0, 1), ("STATUS_ABORTED", 2, 2), ("TIMEOUT", 0, 3), ("STATUS_SUCCEEDED", 1, 1)]
+    )
+
+    def fake_run_lane(n, cl, name, poses, timeout, stop=None):
+        sent.append((name, len(poses), round(timeout, 3)))
+        return next(results)
+
+    monkeypatch.setattr(coverage_run, "run_lane", fake_run_lane)
+    monkeypatch.setattr(coverage_run, "run_goal", lambda *a, **kw: pytest.fail("полоса не должна идти позами"))
+    outcomes, stop = coverage_run.drive(None, None, _lanes(2, 4, 3, 2), timeout=45.0, max_fail=3, lanes=True)
+    assert stop == ""
+    assert [o.name for o in outcomes] == ["L0000_c0l0", "L0001_c0l1", "L0002_c0l2", "L0003_c0l3"]
+    assert [o.result for o in outcomes] == ["SUCCEEDED", "ABORTED", "TIMEOUT", "SUCCEEDED"]
+    assert [(o.poses, o.passed) for o in outcomes] == [(2, 2), (4, 2), (3, 0), (2, 2)]
+    assert [o.em_episodes for o in outcomes] == [0, 2, 0, 1]
+    # таймаут полосы: 45 с на позу + путь на потолке Nav2 0.15 м/с; у первой полосы пути «от» нет
+    speed = coverage_run.SPEED_MPS
+    assert sent[0] == ("L0000_c0l0", 2, round(45.0 * 2 + 1.0 / speed, 3))
+    assert sent[1] == ("L0001_c0l1", 4, round(45.0 * 4 + (2**0.5 + 3.0) / speed, 3))
+
+
+def test_lane_failures_in_row_stop_and_not_sent_keeps_pose_count(coverage_run, monkeypatch):
+    monkeypatch.setattr(coverage_run, "run_lane", lambda *a, **kw: ("STATUS_ABORTED", 0, 2))
+    outcomes, stop = coverage_run.drive(None, None, _lanes(2, 2, 3, 2), timeout=1.0, max_fail=2, lanes=True)
+    assert stop == "2_failures_in_row"
+    assert [o.result for o in outcomes] == ["ABORTED", "ABORTED", "NOT_SENT", "NOT_SENT"]
+    assert sum(o.poses for o in outcomes) == 9 and sum(o.passed for o in outcomes) == 0
+
+
+def test_signal_during_lane_cancels_it(coverage_run, monkeypatch):
+    stop = coverage_run.StopSignal()
+
+    def fake_run_lane(n, cl, name, poses, timeout, stop=None):
+        sig(signal.SIGTERM)
+        assert stop()
+        return "INTERRUPTED", 0, 1
+
+    sig = stop
+    monkeypatch.setattr(coverage_run, "run_lane", fake_run_lane)
+    outcomes, why = coverage_run.drive(None, None, _lanes(3, 2), timeout=1.0, max_fail=3, stop=stop, lanes=True)
+    assert why == "interrupted_SIGTERM"
+    assert [(o.result, o.poses, o.passed) for o in outcomes] == [("INTERRUPTED", 3, 2), ("NOT_SENT", 2, 0)]
+
+
+def test_default_timeout_is_45_s_and_lanes_by_default(coverage_run):
+    args = coverage_run.parse_args([])
+    assert args.timeout == 45.0 and not args.per_pose
+    assert coverage_run.parse_args(["--per-pose"]).per_pose
+
+
+def test_finish_reports_motion(coverage_run, tmp_path):
+    grid = OccupancyGrid(80, 60, 0.05, 0.0, 0.0, [0] * 4800)
+    space = coverage_space(grid, (1.0, 1.0))
+    # 10 с едет 0.1 м/с, потом 10 с стоит (точка раз в секунду, как прореживает CoverageMon)
+    track = [(float(t), 1.0 + 0.1 * t, 1.0, 0.0) for t in range(11)] + [(10.0 + t, 2.0, 1.0, 0.0) for t in range(1, 11)]
+    node = types.SimpleNamespace(track=track, simt=lambda: 20.0)
+    outcomes = [coverage_run.GoalOutcome.from_route("L0000", "STATUS_SUCCEEDED", poses=2, remaining=1)]
+    line = coverage_run.finish(tmp_path, node, grid, space, outcomes, "", 0.0)
+    assert "goals=1 succeeded=1" in line and "poses=2 poses_passed=2" in line
+    assert "moving_s=10.0 moving_pct=50.0% moved_m=1.0 avg_mps=0.050 moving_mps=0.100" in line
+
+
+# ── проход по периметру (#4607): подъезд NavigateToPose + путь FollowPath ─────────────────────────────
+
+
+def _pplan(n):
+    """План периметра из ``n`` нырков по 3 точки, все вперёд."""
+    from rob_box_sim.coverage_perimeter import PerimeterPlan, PerimeterStrip
+
+    strips = [
+        PerimeterStrip("x", -1, ((0.0, k, 0.0), (1.0, k - 0.1, 0.0), (2.0, k, 0.0)), 1.0, 0.1, True, True)
+        for k in range(n)
+    ]
+    return PerimeterPlan(0.4125, strips, [(k, True) for k in range(n)])
+
+
+def _fake_follow(results, sent):
+    def run_follow(n, cl, name, path, timeout, stop=None):
+        sent.append((name, len(path), round(timeout, 2)))
+        return next(results)
+
+    return run_follow
+
+
+def test_perimeter_strip_is_approach_then_follow_path(coverage_run, monkeypatch):
+    goals, follows = [], []
+
+    def fake_run_goal(n, cl, name, x, y, yaw, timeout, stop=None):
+        goals.append((name, x, y, yaw))
+        return "STATUS_SUCCEEDED", 0
+
+    monkeypatch.setattr(coverage_run, "run_goal", fake_run_goal)
+    monkeypatch.setattr(coverage_run, "run_follow", _fake_follow(iter([("STATUS_SUCCEEDED", 0)] * 2), follows))
+    outcomes, why = coverage_run.drive_perimeter(None, "nav", "follow", _pplan(2), timeout=45.0, max_fail=3)
+    assert why == ""
+    assert [o.name for o in outcomes] == ["P0000a", "P0000f", "P0001a", "P0001f"]
+    assert goals[1] == ("P0001a", 0.0, 1.0, 0.0)  # подъезд — к первой точке пути с её курсом
+    length = 2 * math.hypot(1.0, 0.1)
+    assert follows[0] == ("P0000f", 3, round(45.0 + length / coverage_run.SPEED_MPS, 2))
+
+
+def test_failed_approach_does_not_send_the_path(coverage_run, monkeypatch):
+    """Подъезд не удался — путь не шлётся: DWB поехал бы к пути оттуда, где робот стоит (может, у стены)."""
+    results = iter(["STATUS_ABORTED", "STATUS_SUCCEEDED"])
+    monkeypatch.setattr(coverage_run, "run_goal", lambda *a, **kw: (next(results), 0))
+    follows = []
+    monkeypatch.setattr(coverage_run, "run_follow", _fake_follow(iter([("STATUS_ABORTED", 2)]), follows))
+    outcomes, why = coverage_run.drive_perimeter(None, None, None, _pplan(2), timeout=1.0, max_fail=2)
+    assert [o.result for o in outcomes] == ["ABORTED", "NOT_SENT", "SUCCEEDED", "ABORTED"]
+    assert [f[0] for f in follows] == ["P0001f"] and outcomes[3].em_episodes == 2
+    assert why == ""  # неудачи подряд считаются в начале следующего нырка, а нырков больше нет
+
+
+def test_perimeter_failures_in_row_stop_and_rest_not_sent(coverage_run, monkeypatch):
+    monkeypatch.setattr(coverage_run, "run_goal", lambda *a, **kw: ("STATUS_ABORTED", 0))
+    outcomes, why = coverage_run.drive_perimeter(None, None, None, _pplan(4), timeout=1.0, max_fail=2)
+    assert why == "2_failures_in_row"
+    assert [o.result for o in outcomes] == ["ABORTED", "NOT_SENT"] * 2 + ["NOT_SENT"] * 4
+    assert [o.name for o in outcomes][-2:] == ["P0003a", "P0003f"]
+
+
+def test_signal_during_follow_cancels_and_marks_rest(coverage_run, monkeypatch):
+    stop = coverage_run.StopSignal()
+    monkeypatch.setattr(coverage_run, "run_goal", lambda *a, **kw: ("STATUS_SUCCEEDED", 0))
+
+    def fake_follow(n, cl, name, path, timeout, stop=None):
+        sig(signal.SIGINT)
+        assert stop()
+        return "INTERRUPTED", 0
+
+    sig = stop
+    monkeypatch.setattr(coverage_run, "run_follow", fake_follow)
+    outcomes, why = coverage_run.drive_perimeter(None, None, None, _pplan(2), timeout=1.0, max_fail=3, stop=stop)
+    assert why == "interrupted_SIGINT"
+    assert [o.result for o in outcomes] == ["SUCCEEDED", "INTERRUPTED", "NOT_SENT", "NOT_SENT"]
+
+
+def test_snake_stop_leaves_perimeter_not_sent(coverage_run, monkeypatch):
+    monkeypatch.setattr(coverage_run, "drive", lambda *a, **kw: ([coverage_run.GoalOutcome("L0", "ABORTED")], "5_x"))
+    monkeypatch.setattr(coverage_run, "drive_perimeter", lambda *a, **kw: pytest.fail("нырки после остановки"))
+    node = types.SimpleNamespace(track=[(0.0, 0.0, 0.0, 0.0)])
+    args = coverage_run.parse_args(["--perimeter"])
+    snake, perim, why, k0 = coverage_run._drive_all(node, (None, None, None), args, [], _pplan(2), None)
+    assert why == "5_x" and k0 == 1
+    assert [o.result for o in perim] == ["NOT_SENT"] * 4
+
+
+def test_perimeter_only_skips_the_snake(coverage_run, monkeypatch):
+    monkeypatch.setattr(coverage_run, "drive", lambda *a, **kw: pytest.fail("змейка при --perimeter-only"))
+    monkeypatch.setattr(
+        coverage_run, "drive_perimeter", lambda *a, **kw: ([coverage_run.GoalOutcome("P0000a", "OK")], "")
+    )
+    node = types.SimpleNamespace(track=[])
+    args = coverage_run.parse_args(["--perimeter-only", "--wall-offset", "0.45"])
+    assert args.wall_offset == 0.45 and not args.perimeter
+    snake, perim, why, k0 = coverage_run._drive_all(node, (None, None, None), args, [], _pplan(1), None)
+    assert snake == [] and [o.name for o in perim] == ["P0000a"] and k0 == 0

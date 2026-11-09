@@ -8,7 +8,7 @@ LED-кольцо) и TTL-USB конвертер сенсорного хаба.
 | `zenoh-router` (`zenoh-router-sound`) | — | общий шаблон из `../common`; `connect` на Main и на Vision (вариант Б) |
 | `voice-assistant`, `supercollider` | — | перенесены из `docker/vision` (`voice-action-server` удалён в ADR-0150 PR-7c ч.4в) |
 | `supervisor` (`avatar-supervisor`, ТАРС) | — | перенесён из `docker/vision` (ADR-0159 В8): пишет в тот же `data/voice/harness_voice.db`, что и `voice-assistant` |
-| `avatar-arbiter` | — | волна 2 (PR-7, В9, решение Шифу 20.10): образ `supervisor`, скрипт `scripts/supervisor/start_arbiter.sh` рядом со `start_supervisor.sh` |
+| `avatar-arbiter` | — | волна 2 (PR-7, В9, решение Шифу 20.10): образ `supervisor`, скрипт `docker/sound/scripts/supervisor/start_arbiter.sh` рядом со `start_supervisor.sh` |
 | `quest` (`rob-box-quest`) | — | волна 2: WebXR-консоль Meta Quest, Caddy на `:443`/`:8443`, WS `:8766`; именованный том `quest-certs` (на Sound — новый, пустой) |
 | `telegram-bot` | — | волна 2: операторский Telegram-интерфейс, метрики `:9101`; галерея лиц `data/faces` — копия-снимок (синхронизация — #3655) |
 | `sensor-bridge` | `sensors` | образ `perception`, нода `perception_bridge`, `/dev/sensor_hub` |

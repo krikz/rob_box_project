@@ -341,7 +341,7 @@ services:
 
 ```bash
 # Автоматически определить ветку и установить правильный IMAGE_TAG
-source scripts/set-docker-tags.sh
+source scripts/build/set-docker-tags.sh
 
 # Или вручную установить нужный тег
 export IMAGE_TAG=dev  # или latest, test, rc-1.0.0
@@ -604,7 +604,7 @@ gh secret list
 ```bash
 # Автоматическая настройка на основе текущей ветки
 cd /path/to/rob_box_project
-source scripts/set-docker-tags.sh
+source scripts/build/set-docker-tags.sh
 
 # Проверить что IMAGE_TAG установлен правильно
 echo $IMAGE_TAG
@@ -685,7 +685,7 @@ SKIP — это не «прошло»: `uses:`-шаги, шаги с `${{ }}` и
 
 ```bash
 # 1. Настроить теги для текущей ветки
-source scripts/set-docker-tags.sh
+source scripts/build/set-docker-tags.sh
 
 # 2. Собрать образ для x86_64 (быстрая разработка)
 make build SERVICE=voice-assistant BUILD_FLAGS="--platform linux/amd64 --no-push"
@@ -718,7 +718,7 @@ ssh ros2@10.1.1.22
 cd ~/rob_box_project
 
 # 3. Настроить теги
-source scripts/set-docker-tags.sh
+source scripts/build/set-docker-tags.sh
 
 # 4. Собрать образ локально (нативный ARM64)
 make build SERVICE=voice-assistant
@@ -735,7 +735,7 @@ docker logs -f voice-assistant
 
 ```bash
 # Production (main branch images)
-source scripts/set-docker-tags.sh  # автоматически определит main
+source scripts/build/set-docker-tags.sh  # автоматически определит main
 cd docker/vision && docker-compose pull && docker-compose up -d
 
 # Development (develop branch images)
@@ -984,6 +984,6 @@ docker exec build-apt-cache rm -rf /var/cache/apt-cacher-ng/*
 ## Дополнительная информация
 
 - **Docker README:** `docker/vision/README.md`
-- **Deployment Guide:** `docker/vision/DEPLOYMENT.md`
+- **Deployment Guide:** `docs/deployment/VISION_PI_DEPLOYMENT.md`
 - **Architecture:** `docs/ARCHITECTURE.md`
 - **Build Machine:** `docker/build/README.md`, `docker/build/QUICKSTART.md`

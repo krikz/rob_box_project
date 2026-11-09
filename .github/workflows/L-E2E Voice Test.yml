@@ -290,7 +290,8 @@ jobs:
           sshpass -e scp -o StrictHostKeyChecking=no scripts/ci/e2e/e2e_audio_metrics.py ros2@10.1.1.249:/tmp/e2e_audio_metrics.py
           sshpass -e scp -o StrictHostKeyChecking=no scripts/ci/e2e/e2e_baseline_diff.py ros2@10.1.1.249:/tmp/e2e_baseline_diff.py
           sshpass -e scp -o StrictHostKeyChecking=no scripts/ci/e2e/e2e_events.py ros2@10.1.1.249:/tmp/e2e_events.py
-          sshpass -e ssh -o StrictHostKeyChecking=no ros2@10.1.1.249 "ls -la /tmp/e2e_voice_test.sh /tmp/e2e_voice_lib.sh /tmp/e2e_voice_wake_gate.sh /tmp/e2e_tool_match.py /tmp/e2e_audio_metrics.py /tmp/e2e_baseline_diff.py /tmp/e2e_events.py && echo HARNESS_PUSHED"
+          sshpass -e scp -o StrictHostKeyChecking=no scripts/ci/e2e/dialog_db_summary.py ros2@10.1.1.249:/tmp/dialog_db_summary.py
+          sshpass -e ssh -o StrictHostKeyChecking=no ros2@10.1.1.249 "ls -la /tmp/e2e_voice_test.sh /tmp/e2e_voice_lib.sh /tmp/e2e_voice_wake_gate.sh /tmp/e2e_tool_match.py /tmp/e2e_audio_metrics.py /tmp/e2e_baseline_diff.py /tmp/e2e_events.py /tmp/dialog_db_summary.py && echo HARNESS_PUSHED"
           # CRLF sanitization (single-line): отрезаем \r и \n от начала/конца.
           # Внутри значения CR/LF недопустимы для имён файлов/путей.
           SCENARIO_FILE_CLEAN=$(printf '%s' "$SCENARIO_FILE" | tr -d '\r\n')
@@ -819,6 +820,21 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
           echo "TIMING_JSON_FILE=/tmp/e2e_timing.json" >> "$GITHUB_ENV"
 
+      # #4512 (шаг 1 PR #4603): офлайн-вердикты детекторов сбоя хода («робот глух», «ход без речи») по логу акта.
+      # Репо публичное: в артефакт и сводку идут только счётчики и коды причин, без текстов реплик.
+      # Отчёт не красит акт (continue-on-error, rc всегда 0).
+      - name: Turn-failure verdicts (offline, no texts)
+        if: ${{ always() }}
+        continue-on-error: true
+        run: |
+          RID="${{ github.run_id }}"
+          python3 scripts/ci/e2e/turn_failures_summary.py "/tmp/voice_e2e_${RID}.log" /tmp/e2e_turn_failures.json \
+            | tee /tmp/e2e_turn_failures.txt || echo '{"error":"turn_failures_summary failed"}' > /tmp/e2e_turn_failures.json
+          {
+            echo "### Сбои хода (детекторы #4512)"
+            cat /tmp/e2e_turn_failures.txt
+          } >> "$GITHUB_STEP_SUMMARY"
+
       # Issue #1381: артефакты должны прикладываться даже при FAIL (no-reaction).
       # Сначала тянем всё что есть на build-machine (249) в локальный кэш на runner,
       # затем upload читает уже локальные файлы. Все шаги с if: always().
@@ -963,6 +979,10 @@ jobs:
           if [ -f /tmp/e2e_timing.json ]; then
             cp -f /tmp/e2e_timing.json "$ART_DIR/timing.json"
           fi
+          # turn_failures.json (#4512): счётчики вердиктов детекторов хода, без текстов.
+          if [ -f /tmp/e2e_turn_failures.json ]; then
+            cp -f /tmp/e2e_turn_failures.json "$ART_DIR/turn_failures.json"
+          fi
 
           echo "ART_DIR=$ART_DIR" >> "$GITHUB_ENV"
           echo "=== collected e2e_artifacts_${RID}/ contents ==="
@@ -1074,7 +1094,9 @@ jobs:
         continue-on-error: true
         with:
           name: e2e-voice-timing-${{ github.run_id }}
-          path: /tmp/e2e_timing.json
+          path: |
+            /tmp/e2e_timing.json
+            /tmp/e2e_turn_failures.json
           retention-days: 7
           if-no-files-found: ignore
 
@@ -1141,6 +1163,8 @@ jobs:
               steps.get("ok", "?"), steps.get("total", "?"),
               steps.get("fail", "?"), steps.get("skip", "?"),
           ))
+          if steps.get("stand_play_failed"):
+              print("| Сбой стенда (фраза не сыграна, PulseAudio) | %s шагов, не FAIL робота |" % steps["stand_play_failed"])
           print("| Синтез команд | %s |" % (summary.get("tts_provider") or "?"))
           if gate1.get("pass") is not None:
               print("| GATE-1 | %s — %s |" % (

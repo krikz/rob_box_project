@@ -906,6 +906,30 @@ warm_act_audio_path() {  # $1=каталог для временного wav
     return 0
 }
 
+# stand_audio_preflight -- #4608: PulseAudio-сервер стенда отвечает (`pactl info`) ДО акта. Не отвечает (пустой вывод,
+# rc!=0 или `pa_context_connect() failed`) -- до E2E_PREFLIGHT_TRIES проб с паузой, затем rc=1: акт не стартует. Нет самого
+# pactl -- проба неприменима (rc=0, предупреждение): провал воспроизведения поймает play_eq_wav.
+stand_audio_preflight() {
+    local tries="${E2E_PREFLIGHT_TRIES:-3}" try=1 out rc
+    if ! command -v pactl >/dev/null 2>&1; then
+        echo ">>> PREFLIGHT pulse: pactl не найден -- проба пропущена"
+        return 0
+    fi
+    while :; do
+        out="$(pactl info 2>&1)"; rc=$?
+        if [ "$rc" = "0" ] && [ -n "$out" ] && ! printf '%s' "$out" | grep -q 'pa_context_connect() failed'; then
+            echo ">>> PREFLIGHT pulse: OK"
+            return 0
+        fi
+        echo ">>> PREFLIGHT pulse: сервер не отвечает (проба ${try}/${tries}, rc=${rc}): $(printf '%s' "$out" | head -n 1)"
+        [ "$try" -ge "$tries" ] && break
+        try=$(( try + 1 ))
+        sleep "${E2E_PREFLIGHT_PAUSE:-3}"
+    done
+    echo ">>> PREFLIGHT pulse: FAIL -- PulseAudio стенда недоступен, акт не стартует"
+    return 1
+}
+
 # wait_robot_quiet -- v2: «робот ещё говорит» = SpeechEvent started/queued без пары finished/
 # cancelled/rejected (по speech_id; «протухшие» без событий > 60 с не считаются). Тихо --
 # +2 с после последнего события речи. Пишет E2E_STEP_SILENCE_SEC. rc=0 тихо, rc=1 потолок.
@@ -1387,6 +1411,35 @@ DBPY
     [ -n "$summary" ] || summary="сводки нет (разбор не уложился в ${wait_s} с либо упал)"
     log "🗄️ e2e-БД дикторов скопирована (только чтение): ${tarf} ($(wc -c < "$tarf" | tr -d ' ') байт), строки: ${summary}"
     echo "E2E_SPEAKER_DB copied ${tarf}"
+}
+
+# --- issue #4512 -- e2e-БД ходов (dialog_events_<run>.db) в OUT_DIR акта ----------------------------------------
+# БД лежит в /tmp контейнера voice-assistant (e2e_voice_test.sh: E2E_DIALOG_DB_PATH), деплой пересоздаёт контейнер --
+# ни одна не сохранилась. Копия -- тем же способом, что e2e-БД дикторов: ОДИН ssh, tar файла БД и его -wal/-shm
+# (согласованное состояние без sqlite3 CLI, которого в образе нет), только чтение.
+# Репо ПУБЛИЧНОЕ, а в БД тексты реплик людей, поэтому tar остаётся на билд-машине (в OUT_DIR, upload-паттерны
+# workflow его не берут), а в артефакт уходит только dialog_events_e2e_db.json без текстов (dialog_db_summary.py).
+collect_e2e_dialog_db() {  # $1 = каталог артефактов акта; из trap EXIT, всегда rc=0
+    local dir="$1" db="${E2E_DIALOG_DB_PATH:-}" wait_s="${E2E_DIALOG_DB_TIMEOUT:-60}" base tarf remote summary rc
+    [ "${E2E_ACT_STARTED:-0}" = "1" ] || return 0
+    case "$db" in
+        /data | /data/* | "") log "❌ e2e-БД ходов: путь '${db}' пуст или в боевой /data — не копирую"; return 0 ;;
+    esac
+    base="${db##*/}"
+    tarf="${dir}/dialog_events_e2e_db.tar"
+    remote="cd '${db%/*}' && f=\$(ls -- '${base}' '${base}-wal' '${base}-shm' 2>/dev/null); [ -n \"\$f\" ] && tar -cf - \$f"
+    timeout "$wait_s" ${ROBOT_SSH} "docker exec voice-assistant sh -c $(printf '%q' "$remote")" > "$tarf" 2>/dev/null
+    rc=$?
+    if [ "$rc" = "124" ] || [ ! -s "$tarf" ]; then
+        rm -f "$tarf"
+        log "🗄️ e2e-БД ходов: копии нет (rc=${rc}: ssh не ответил за ${wait_s} с либо в контейнере нет ${db})"
+        echo "E2E_DIALOG_DB none"
+        return 0
+    fi
+    summary="$(timeout "$wait_s" python3 "$(dirname "${BASH_SOURCE[0]}")/dialog_db_summary.py" "$tarf" "$base" "${dir}/dialog_events_e2e_db.json" 2>/dev/null)"
+    [ -n "$summary" ] || summary="сводки нет (разбор не уложился в ${wait_s} с либо упал)"
+    log "🗄️ e2e-БД ходов скопирована (только чтение): ${tarf} ($(wc -c < "$tarf" | tr -d ' ') байт), ${summary}"
+    echo "E2E_DIALOG_DB copied ${tarf}"
 }
 
 restore_robot_tts_default() {

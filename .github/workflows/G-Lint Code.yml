@@ -73,6 +73,13 @@ jobs:
         run: |
           python scripts/lint/temp_adr0148_check.py
 
+      # ADR-0166: протухшие пути в живых документах. Пути scripts/ docker/ src/ .github/ в docs/**/*.md и README*.md
+      # обязаны существовать; docs/adr, docs/research, датированные планы и файлы с меткой stale-paths: ignore-file
+      # не проверяются. Hard gate.
+      - name: Doc paths guard
+        run: |
+          python -X utf8 scripts/lint/doc_paths_check.py
+
       # issue #2232: сторож против повторения дыры «пакет с тестами есть,
       # в CI не запускается». Сверяет, что каждый src/rob_box_*/test/
       # реально упомянут в G-Run Tests.yml. Без этого шага сам сторож

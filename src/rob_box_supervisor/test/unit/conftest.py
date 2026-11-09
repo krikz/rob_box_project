@@ -22,6 +22,20 @@ import types
 from typing import Any
 from unittest.mock import MagicMock
 
+# Каталог пресетов стиля - профиль робота (ADR-0167 Ш1а-2): у ядра своего нет, путь даёт хост через env (на роботе -
+# compose, /config/voice_presets.yaml). Тестам робота - тот же файл из чекаута (CI test_ws: ROB_BOX_REPO_ROOT).
+# Ставится ДО импорта rob_box_core.bridge_protocol: белый список читается при импорте.
+import os as _os_presets
+from pathlib import Path as _Path_presets
+
+_os_presets.environ.setdefault(
+    "ROB_BOX_VOICE_PRESETS_YAML",
+    str(
+        _Path_presets(_os_presets.environ.get("ROB_BOX_REPO_ROOT") or _Path_presets(__file__).resolve().parents[4])
+        / "docker" / "sound" / "config" / "voice_presets.yaml"
+    ),
+)
+
 
 def _install_ros_mocks() -> None:  # noqa: C901 — test infra helpers grow with IDL mocks
     # ── rclpy package + sub-modules ───────────────────────────────────

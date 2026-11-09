@@ -1,3 +1,4 @@
+<!-- stale-paths: ignore-file (описывает удалённое или старую раскладку; кандидат в архив или переписывание, ADR-0163) -->
 # E2E Voice Golden Recordings
 
 Каталог эталонных .wav файлов для **baseline comparison** (issue #1396, артефакт `e2e-voice-baseline-diff-<run_id>.json`).

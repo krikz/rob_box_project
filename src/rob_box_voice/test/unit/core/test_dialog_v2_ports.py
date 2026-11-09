@@ -230,15 +230,14 @@ def test_tier1_stop_publishes_stop_motion_intent_and_cancel():
     assert node.pubs["/voice/speech/cancel"].sent
 
 
-def test_assemble_llm_puts_every_provider_into_command_mode_and_counts_calls(monkeypatch, tmp_path):
-    """#3906: одна сборка цепочки для ROS-хоста и сухого стенда: провайдер в режиме команд, промпт из файла."""
+def test_assemble_llm_puts_every_provider_into_command_mode_and_counts_calls(monkeypatch):
+    """#3906: одна сборка цепочки для ROS-хоста и сухого стенда: провайдер в режиме команд, основу промпта даёт хост."""
     from rob_box_voice.core.dialog_v2_ports import assemble_llm
 
     monkeypatch.setenv("DEEPSEEK_API_KEY", "dry-run-not-a-key")
-    (tmp_path / "prompt.txt").write_text("Ты робот.\n", encoding="utf-8")
     counter = CallCounter()
-    llm, system = assemble_llm(["deepseek", " "], counter, prompt_dir=tmp_path, system_prompt_file="prompt.txt")
-    # промпт агента = файл + правила из knowledge.PROMPT_RULES (PR-15 15-rule, #3711)
+    llm, system = assemble_llm(["deepseek", " "], counter, prompt="Ты робот.\n")
+    # промпт агента = основа + правила из knowledge.PROMPT_RULES (PR-15 15-rule, #3711)
     assert system == "Ты робот.\n\n" + kn.prompt_rules("personality")
     assert llm.name == "deepseek" and llm.mode in ("tool_choice", "json_mode", "tool_offered")
     assert counter.calls == 0
