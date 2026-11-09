@@ -31,6 +31,20 @@ GOALS = [  # Depot; M — картография (карта пуста), R — 
     ("R7", -10.5, 0.0, 180),
 ]
 TIMEOUT = 200.0
+
+
+def load_goals(path):
+    """Цели из файла точек мира (``goals:`` с name/x/y/yaw в радианах, напр. building.goals.yaml)."""
+    import yaml
+
+    with open(path, encoding="utf-8") as f:
+        doc = yaml.safe_load(f)
+    return [
+        (g["name"], float(g["x"]), float(g["y"]), round(math.degrees(float(g.get("yaw", 0.0))), 1))
+        for g in doc["goals"]
+    ]
+
+
 STATUS = {v: k for k, v in GoalStatus.__dict__.items() if k.startswith("STATUS_")}
 
 
@@ -101,8 +115,13 @@ def main():
         rclpy.spin_once(n, timeout_sec=0.1)
     cl = ActionClient(n, NavigateToPose, "/navigate_to_pose")
     assert cl.wait_for_server(timeout_sec=60), "нет /navigate_to_pose"
-    order = sys.argv[1:] or [g[0] for g in GOALS]
-    for name, x, y, yaw in [g for g in GOALS if g[0] in order]:
+    # ROUTE_GOALS_FILE=/sim_worlds/building.goals.yaml — точки мира вместо GOALS (Depot); порядок — как в argv.
+    goals = load_goals(os.environ["ROUTE_GOALS_FILE"]) if os.environ.get("ROUTE_GOALS_FILE") else GOALS
+    by_name = {g[0]: g for g in goals}
+    order = sys.argv[1:] or [g[0] for g in goals]
+    unknown = [n for n in order if n not in by_name]
+    assert not unknown, f"нет целей {unknown}; есть {sorted(by_name)}"
+    for name, x, y, yaw in [by_name[n] for n in order]:
         n.recoveries = 0
         em0 = n.em_episodes
         g = NavigateToPose.Goal()

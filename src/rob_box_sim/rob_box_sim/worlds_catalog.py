@@ -17,6 +17,7 @@ import sys
 from dataclasses import dataclass
 from pathlib import Path
 
+from rob_box_sim import building_floor
 from rob_box_sim.geometry2d import ROBOT_FOOTPRINT, Box
 from rob_box_sim.world_sdf import render_world
 
@@ -54,9 +55,11 @@ class World:
     name: str
     description: str
     boxes: tuple[Box, ...]
+    single_link: bool = False  # большой мир: все коробки одним звеном (world_sdf._single_link)
+    goals: str | None = None  # текст файла ``<имя>.goals.yaml`` рядом с миром (точки-цели)
 
     def sdf(self) -> str:
-        return render_world(self.name, self.boxes, self.description)
+        return render_world(self.name, self.boxes, self.description, single_link=self.single_link)
 
 
 # Проходы полигона: (x перегородки, ширина проёма). Проём подбирался под круг
@@ -206,7 +209,19 @@ def dead_end() -> World:
     )
 
 
-CATALOG = {w.name: w for w in (polygon(), turn90(), corridor(), low_obstacle(), dead_end())}
+def building() -> World:
+    """Этаж учебного корпуса (#4468): план и точки-кабинеты — rob_box_sim.building_floor."""
+    bf = building_floor
+    return World(
+        "building",
+        bf.description(),
+        tuple(bf.floor_boxes()),
+        single_link=True,
+        goals=bf.goals_yaml("building", bf.named_points()),
+    )
+
+
+CATALOG = {w.name: w for w in (polygon(), turn90(), corridor(), low_obstacle(), dead_end(), building())}
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -219,6 +234,10 @@ def main(argv: list[str] | None = None) -> int:
         path = out / f"{world.name}.sdf"
         path.write_text(world.sdf(), encoding="utf-8", newline="\n")
         print(f"{path}: {len(world.boxes)} коробок")
+        if world.goals is not None:
+            goals = out / f"{world.name}.goals.yaml"
+            goals.write_text(world.goals, encoding="utf-8", newline="\n")
+            print(f"{goals}: точки-цели")
     return 0
 
 
