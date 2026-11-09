@@ -59,7 +59,7 @@
       "wmc": 125,
       "methods": 24
     },
-    "src/rob_box_voice/rob_box_voice/core/voice_memory.py:VoiceMemory": {
+    "src/rob_box_dialog_host/rob_box_dialog_host/voice_memory.py:VoiceMemory": {
       "wmc": 142,
       "methods": 31
     },

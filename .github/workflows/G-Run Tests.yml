@@ -425,6 +425,21 @@ jobs:
             || { echo "❌ rob_box_dialog FAILED"; exit 1; }
           echo "✅ rob_box_dialog passed"
 
+          # rob_box_dialog_host (ADR-0167 Ш1г): связка хода ядра без ROS - мост команд, порты, память. Тесты
+          # переезда (псевдонимы старых путей rob_box_voice); тесты самих модулей пока в rob_box_voice/test.
+          HOST_DIR="${{ github.workspace }}/test_ws/src/rob_box_dialog_host"
+          echo "=== pytest: rob_box_dialog_host (timeout 120s) ==="
+          ( cd "$HOST_DIR" && PYTHONPATH=".:$PYTHONPATH" timeout 120 python3 -m pytest \
+              -p no:launch_testing \
+              -p no:ament_flake8 -p no:ament_pep257 \
+              -p no:ament_copyright -p no:ament_xmllint \
+              -p no:ament_lint -p no:colcon_core \
+              --tb=short --no-header -v \
+              --junitxml "${{ github.workspace }}/test_ws/build/rob_box_dialog_host/pytest.xml" \
+              test/ ) \
+            || { echo "❌ rob_box_dialog_host FAILED"; exit 1; }
+          echo "✅ rob_box_dialog_host passed"
+
           # rob_box_supervisor: тесты в test/unit/ (issue #2232: conftest.py
           # ставит mock-rclpy + std_srvs; без rclpy CI-окружения тесты
           # импортируют supervisor_node через stub).

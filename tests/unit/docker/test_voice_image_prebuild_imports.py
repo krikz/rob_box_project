@@ -31,5 +31,5 @@ def test_dialog_sources_copied_before_script_runs():
     lines = DOCKERFILE.read_text(encoding="utf8").splitlines()
     run = next(i for i, l in enumerate(lines) if l.startswith("RUN python3 /tmp/fix_brass_scd.py"))
     before = "\n".join(lines[:run])
-    for pkg in ("rob_box_core", "rob_box_dialog", "rob_box_voice"):
+    for pkg in ("rob_box_core", "rob_box_dialog", "rob_box_dialog_host", "rob_box_voice"):
         assert "COPY src/%s/%s " % (pkg, pkg) in before, pkg

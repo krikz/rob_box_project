@@ -11,13 +11,13 @@
 # pyproject.toml, поэтому sdist (python -m build --sdist) их не унесёт — колесо собирать из чекаута.
 #
 # Состав:
-#   * целиком: rob_box_core, rob_box_llm, rob_box_harness, rob_box_dialog и rob_box_music (чистая модель музыки:
-#     её знание читают фразы медиа);
-#   * связка хода из rob_box_voice (ADR-0160 §8): мост команд, порты диалога, память, каталог голосов, состояние
-#     музыки — и их чистые зависимости (разбор команд движения, фразы медиа);
+#   * целиком: rob_box_core, rob_box_llm, rob_box_harness, rob_box_dialog, rob_box_dialog_host (связка хода: мост
+#     команд, порты диалога, память, каталог голосов, состояние музыки, разбор команд движения, фразы медиа —
+#     ADR-0167 Ш1г) и rob_box_music (чистая модель музыки: её знание читают фразы медиа);
+#   * старые пути связки rob_box_voice.core.* / rob_box_voice.tts_voice_registry — временные псевдонимы до Ш1г-2;
 #   * из rob_box_mcp_tools — событие владельца и форма запроса голоса (voice_request).
 # Пакеты rob_box_voice и rob_box_mcp_tools здесь НЕПОЛНЫЕ: ставить это ядро в одно окружение с полным
-# ROS-пакетом нельзя (робот так и не делает — у него colcon). Следующий шаг — перенести связку к ядру (#4245).
+# ROS-пакетом нельзя (робот так и не делает — у него colcon). Ш1г-2 переводит импорты на rob_box_dialog_host.
 # Список модулей сверяет тест src/rob_box_dialog/test/test_core_package_4245.py: каждый — без ROS на верхнем уровне.
 
 [build-system]
@@ -32,7 +32,8 @@ name = "rob-box-dialog-core"
 # 0.4.0: профиль format 3 (operator_persona); промпты чата Telegram и агента-оператора - основы ядра (ADR-0167 Ш1б-4).
 # 0.5.0: профиль format 4 (owners): набор тулов модели - по владельцам продукта (rob_box_dialog.owners), без профиля -
 #        ни одного тула продукта; harness: load_system_prompt и AgentSpec.prompt_dir/system_prompt_file удалены (Ш1в).
-version = "0.5.0"
+# 0.6.0: связка хода - пакет rob_box_dialog_host (ADR-0167 Ш1г-1); старые пути rob_box_voice - псевдонимы.
+version = "0.6.0"
 description = "Ядро диалога РОББОКСа без ROS: ход, адресация, мост команд LLM, память (ADR-0150, ADR-0160 §8)"
 license = "MIT"
 requires-python = ">=3.10"
@@ -55,6 +56,7 @@ test = [
 [tool.setuptools]
 zip-safe = false
 py-modules = [
+    # временные псевдонимы старых путей (ADR-0167 Ш1г-1, удаляет Ш1г-2)
     "rob_box_voice.core.command_bridge",
     "rob_box_voice.core.command_intent",
     "rob_box_voice.core.command_parser",
@@ -76,9 +78,10 @@ where = [
     "../../src/rob_box_llm",
     "../../src/rob_box_harness",
     "../../src/rob_box_dialog",
+    "../../src/rob_box_dialog_host",
     "../../src/rob_box_music",
 ]
-include = ["rob_box_core*", "rob_box_llm*", "rob_box_harness*", "rob_box_dialog*", "rob_box_music*"]
+include = ["rob_box_core*", "rob_box_llm*", "rob_box_harness*", "rob_box_dialog*", "rob_box_music*"]  # dialog* - и _host
 exclude = ["*.test", "*.test.*"]
 
 [tool.setuptools.package-dir]

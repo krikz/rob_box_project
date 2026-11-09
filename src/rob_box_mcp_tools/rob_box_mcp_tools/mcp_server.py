@@ -50,7 +50,7 @@ from rob_box_harness.memory import InMemoryStore
 from rob_box_music import knowledge as music_kn
 from rob_box_music.diversity import MusicHistory
 
-from rob_box_voice.core.music_player_state import (
+from rob_box_dialog_host.music_player_state import (
     MUSIC_EVENT_TOPIC,
     MUSIC_STATE_TOPIC,
     MusicEventLog,

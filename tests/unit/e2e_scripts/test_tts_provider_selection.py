@@ -165,8 +165,8 @@ class TestMapTtsVoice:
         registry = (
             REPO_ROOT
             / "src"
-            / "rob_box_voice"
-            / "rob_box_voice"
+            / "rob_box_dialog_host"  # ADR-0167 Ш1г-1
+            / "rob_box_dialog_host"
             / "tts_voice_registry.py"
         ).read_text(encoding="utf-8")
         for voice in SCENARIO_VOICES:
