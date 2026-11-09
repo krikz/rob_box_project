@@ -6,13 +6,14 @@ import logging
 
 import pytest
 
+from rob_box_dialog import action_chain
 from rob_box_dialog import knowledge as kn
 from rob_box_dialog.address import SOURCE_TELEGRAM, Addressed
 from rob_box_dialog.command import Command, ToolCall
 from rob_box_dialog.respond import ActionResult
 from rob_box_dialog.session import Session
 from rob_box_dialog.tools_view import available_tools, groups_for
-from rob_box_dialog.turn import Answer, TurnEngine, capped, carried_groups, unasked_aloud
+from rob_box_dialog.turn import Answer, TurnEngine, carried_groups, unasked_aloud
 
 FACES = {"people_list", "person_photo", "name_person"}
 LOG = logging.getLogger("t4505")
@@ -20,7 +21,7 @@ LOG = logging.getLogger("t4505")
 
 class _Turn:
     def __init__(self, text="", pickup=False):
-        self.text, self.pickup, self.turn_id, self.capped = text, pickup, "t1", ()
+        self.text, self.pickup, self.turn_id = text, pickup, "t1"
         self.wake_words = None  # таблица вейков хода (``turn._Turn.wake_words``): сессия теста без профиля
 
 
@@ -77,36 +78,22 @@ def _run(engine, text):
     asyncio.run(engine.run(Addressed(text, SOURCE_TELEGRAM)))
 
 
-# --- 4. потолок снимков ---------------------------------------------------------------------------------------
+# --- 4. снимки лиц: чтение, не вереница -----------------------------------------------------------------------
 
 
 def _photos(n):
     return tuple(ToolCall("person_photo", {"id": f"{i:08x}"}) for i in range(n))
 
 
-def test_ten_photos_are_all_executed_and_the_eleventh_is_named():
-    turn = _Turn()
-    kept = capped(LOG, turn, Command(actions=_photos(kn.PHOTOS_MAX + 1)))
-    assert len(kept.actions) == kn.PHOTOS_MAX and len(turn.capped) == 1
+def test_photos_are_reads_and_never_a_chain():
+    """Потолка «три за ход» больше нет (ADR-0165 этап 3): снимки - ``query``, команда с ними идёт разом, как раньше."""
+    assert not action_chain.runs_as_chain(_photos(5))
+    deletes = tuple(ToolCall("delete_waypoint", {"name": f"т{i}"}) for i in range(5))
+    assert not action_chain.runs_as_chain(_photos(5) + deletes)
 
 
-def test_five_photos_are_not_cut_to_the_actions_limit():
-    turn = _Turn()
-    assert kn.PHOTOS_MAX > kn.ACTIONS_MAX
-    kept = capped(LOG, turn, Command(actions=_photos(5)))
-    assert len(kept.actions) == 5 and not turn.capped
-
-
-def test_photos_do_not_eat_the_budget_of_other_actions():
-    turn = _Turn()
-    others = tuple(ToolCall("delete_waypoint", {"name": f"т{i}"}) for i in range(kn.ACTIONS_MAX + 1))
-    kept = capped(LOG, turn, Command(actions=_photos(5) + others))
-    assert sum(a.tool == "person_photo" for a in kept.actions) == 5
-    assert sum(a.tool == "delete_waypoint" for a in kept.actions) == kn.ACTIONS_MAX and len(turn.capped) == 1
-
-
-def test_the_model_may_send_as_many_photos_as_the_ceiling():
-    assert kn.ACTIONS_ACCEPT_MAX >= kn.PHOTOS_MAX
+def test_the_model_may_send_ten_photos():
+    assert kn.ACTIONS_ACCEPT_MAX >= 10
 
 
 # --- 3. перенос группы faces ----------------------------------------------------------------------------------

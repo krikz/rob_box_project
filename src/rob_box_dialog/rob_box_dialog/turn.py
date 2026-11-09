@@ -81,7 +81,7 @@ import uuid
 from dataclasses import dataclass, field, fields, replace
 from types import MappingProxyType
 from typing import (Any, Awaitable, Callable, Collection, Dict, FrozenSet, Iterable, List, Mapping, Optional, Protocol,
-                    Sequence, Tuple)
+                    Sequence, Set, Tuple)
 
 from rob_box_core.tool_catalog import get_tool
 from rob_box_core.utterance import Sink, Utterance
@@ -97,6 +97,7 @@ from rob_box_dialog import theme_switch
 from rob_box_dialog import phrases
 from rob_box_dialog import tool_ask
 from rob_box_dialog import track_ref
+from rob_box_dialog import action_chain
 from rob_box_dialog.address import GREETING_WAKE, WORDLESS, Addressed
 from rob_box_dialog.agents import agent_spec, allows_tier1, tools_for
 from rob_box_dialog.command import (Command, Expression, Form, Invalid, Performance, Result, ToolCall, current_form,
@@ -110,7 +111,7 @@ from rob_box_dialog.heard import HEARD_MARK
 from rob_box_dialog.interrupt import Interrupt, interrupt_for, stop_music_calls, stops_music
 from rob_box_dialog.music_state import after_stop
 from rob_box_dialog.respond import (ActionResult, asks, audible, classed, failed, join, outcome_emotion,
-                                    reconcile_stops)
+                                    phrase_from_result, reconcile_stops)
 from rob_box_dialog.session import Session, SessionSnapshot, SpeakerRef
 from rob_box_dialog.speaker_adapter import asks_recognized, known_voice_registers, recognition_reply, speaker_block
 from rob_box_dialog.window_reset import WindowGuard, reset_if_idle, reset_window
@@ -261,7 +262,6 @@ class _Turn:
     seen: Tuple[Mapping[str, Any], ...] = ()  # ``recent_actions`` снимка хода: данные, что модель видела до хода
     read: Tuple[ToolCall, ...] = ()  # исполненные в ходе вызовы ``query``: повтор не исполняется (:func:`unreread`)
     called: Tuple[str, ...] = ()  # тулы, вызванные в ходе: ``faces`` переносится на следующий ход (#4505)
-    capped: Tuple[ToolCall, ...] = ()  # вызовы сверх ``ACTIONS_MAX``, не исполненные кодом (:func:`capped`, #4391)
     #: Подхват: собеседник хода по правам — автор фразы (``pickup_parties.pickup_speaker``); ``None`` — сессии.
     speaker: Optional[SpeakerRef] = None
     pickup_view: Mapping[str, Any] = field(default_factory=dict)  # раздел ``backlog_pickup``: кто и что сказал
@@ -1074,7 +1074,7 @@ def considered(engine: "TurnEngine", turn: "_Turn", cmd: Command, last: bool) ->
     log, snapshot = engine._log, pickup_parties.own_snapshot(engine.session.snapshot, turn.speaker)
     cmd = unconfirmed_by_model(log, turn, cmd)
     cmd = unasked_aloud(log, turn, snapshot.agent, cmd)
-    fresh = capped(log, turn, counted_in_full(log, turn, unreread(log, turn, unrepeated(log, turn, cmd))))
+    fresh = counted_in_full(log, turn, unreread(log, turn, unrepeated(log, turn, cmd)))
     fresh = switched_theme(log, snapshot, turn, fresh)  # просьба сменить тему сета - действием кода (#4347)
     names = foreign_keys(engine.log.window(exclude=turn.turn_id), turn, fresh, snapshot)
     fresh = unnamed_without_retry(log, turn, fresh, names, last)
@@ -1119,57 +1119,10 @@ def unasked_aloud(log: Any, turn: "_Turn", agent: str, cmd: Command) -> Command:
     return replace(cmd, actions=tuple(a for a in cmd.actions if a not in dropped))
 
 
-def capped(log: Any, turn: "_Turn", cmd: Command) -> Command:
-    """Команда не больше ``knowledge.ACTIONS_MAX`` действий: первые по порядку модели исполняются, остальные - нет, и
-    код их запоминает в ходе (``_Turn.capped``), чтобы назвать (:func:`capped_phrase`), а не выбросить молча (#4391,
-    HIL 04.11: четвёртая точка из «удали четыре точки» осталась, а прозвучало «Готово.»). Принять модель может больше
-    (``ACTIONS_ACCEPT_MAX``): потолок исполнения решает код здесь, а не модель урезанием просьбы."""
-    kept, rest, photos = [], [], 0
-    for call in cmd.actions:  # снимки лиц - свой потолок ``PHOTOS_MAX`` (#4505), остальное - ``ACTIONS_MAX``
-        photo = call.tool == kn.PHOTO_TOOL
-        if photo and photos < kn.PHOTOS_MAX:
-            photos += 1
-            kept.append(call)
-        elif not photo and len(kept) - photos < kn.ACTIONS_MAX:
-            kept.append(call)
-        else:
-            rest.append(call)
-    if not rest:
-        return cmd
-    turn.capped += tuple(rest)
-    log.warning(f"{LOG_MARK} действий {len(cmd.actions)} сверх потолка ({kn.ACTIONS_MAX}, снимков {kn.PHOTOS_MAX}): "
-                f"не исполнены {[(a.tool, dict(a.args)) for a in rest]} turn={turn.turn_id}")
-    kept = tuple(kept)
-    return replace(cmd, actions=kept)
-
-
 def carried_groups(called: Sequence[str]) -> Tuple[str, ...]:
     """Группы тулов, что переходят на следующий ход: ``faces`` - если в этом ходе звали её тулы. «Ну пришли их», «а
     ещё?» слов группы не содержат, а продолжают разговор про лица (#4505); решает код по вызванным тулам, не слова."""
     return (kn.FACES_GROUP,) if set(called) & set(kn.TOOL_GROUPS[kn.FACES_GROUP].tools) else ()
-
-
-def capped_phrase(turn: "_Turn") -> str:
-    """Фраза кода о вызовах сверх потолка (:func:`capped`), которые так и не исполнены в этом ходе (на следующей
-    итерации модель могла прислать их снова - тогда исполнены и не называются): словами аргументов вызова («хил-окно»),
-    у вызова без строкового аргумента - общая фраза. Нечего назвать - ``""``."""
-    left = [c for c in turn.capped if not any(c.tool == a.tool and dict(c.args) == dict(a.args) for a in turn.acted)]
-    if not left:
-        return ""
-    labels = [_call_label(c) for c in left]
-    if all(labels):
-        return phrases.text(kn.ACTIONS_CAPPED_NAMED_PHRASE, rest=", ".join(dict.fromkeys(labels)))
-    return phrases.text(kn.ACTIONS_CAPPED_PHRASE)
-
-
-def one_phrase(outcome: Optional[str], over: str) -> Tuple[Optional[str], str]:
-    """Общее «Готово.» и пояснение о недоделанном (:func:`capped_phrase`) подряд - одна фраза: пояснение (#4406)."""
-    return (None if over and outcome == phrases.text("local.done") else outcome), over
-
-
-def _call_label(call: ToolCall) -> str:
-    """Чем вызов назвать человеку: первое непустое строковое значение аргументов (имя точки, запрос); нет - ``""``."""
-    return next((v.strip() for v in call.args.values() if isinstance(v, str) and v.strip()), "")
 
 
 def switched_theme(log: Any, snapshot: SessionSnapshot, turn: "_Turn", cmd: Command) -> Command:
@@ -1579,6 +1532,10 @@ async def _close_invalid(engine: "TurnEngine", turn: _Turn, invalid: Invalid, sn
     invalid = replace(invalid, salvage=theme_switch.salvage_with_switch(
         engine.session.snapshot.top("DJ") is not None, turn.text, invalid.salvage, turn.acted))
     log.warning(f"{LOG_MARK} невалидная команда {why} → допустимых действий {len(invalid.salvage)}, итог скажет код")
+    if action_chain.runs_as_chain(invalid.salvage):  # повтор не помог - вереница с планом кода (ADR-0165 §3)
+        start_chain(engine, turn, Command(expression=expression or Expression()), invalid.salvage, snap)
+        turn.reason = f"chain_salvaged:{why}"[:60]
+        return None
     results = await engine._execute(turn, invalid.salvage, snap)
     if engine._stale(turn, "results"):
         return None
@@ -1882,6 +1839,90 @@ def action_term(actions: Sequence[ToolCall]) -> float:
     return max(deadline_s(kn.call_class(a.tool, a.args)) for a in actions) + kn.ACTION_GRACE_S
 
 
+def close_passed(engine: "TurnEngine", turn: _Turn, cmd: Command) -> None:
+    """Модель выбрала промолчать (``passed``). Решение Шифу 22.10: на адресованную реплику (вейк, окно ответа,
+    Telegram) молчать нельзя — код мычит; ``passed`` из бэклога (подхват накопленного) — тихо."""
+    turn.reason = "passed"
+    engine._log.info(f"{LOG_MARK} passed={cmd.passed} addressed={not turn.pickup}")
+    if voices_passed(turn.pickup, engine.session.snapshot):
+        engine._say(turn, engine._pick(kn.PASSED_ADDRESSED_PHRASE))
+
+
+def request_ref(turn: _Turn, ref: Optional[str]) -> str:
+    """``turn_id`` запросов к владельцам: свой у шага вереницы (``<ход>/c<k>``), иначе - ход."""
+    return ref or turn.turn_id
+
+
+async def settle(engine: "TurnEngine") -> None:
+    """Дождаться всех идущих верениц движка (тесты, сухой стенд): ход закрыт после фразы плана, шаги идут дальше."""
+    import asyncio  # noqa: PLC0415 — asyncio тянет socket: импорт пакета чистый (test_purity)
+
+    while engine.chains:
+        await asyncio.gather(*tuple(engine.chains), return_exceptions=True)
+
+
+def start_chain(engine: "TurnEngine", turn: _Turn, cmd: Command, actions: Sequence[ToolCall],
+                snap: SessionSnapshot) -> None:
+    """Вереница (ADR-0165 §3): фраза плана - речь модели, если она есть и ничего не утверждает сделанным, иначе план
+    кода; ход на этом закрыт (новые реплики принимаются), шаги идут задачей :func:`run_chain`. Вереница за лимитом
+    своего типа задачи не начинается - фраза кода (§5)."""
+    import asyncio  # noqa: PLC0415 — asyncio тянет socket: импорт пакета чистый (test_purity)
+
+    chain = action_chain.chain_of(actions)
+    turn.stage, turn.status, turn.reason = "done", "done", turn.reason or "chain"
+    turn.expression = command_face(cmd.expression, (), turn.text, earlier=turn.expression)
+    if action_chain.over_limit(chain):
+        engine._log.warning(f"{LOG_MARK} вереница за лимитом {chain.task}: шагов {len(chain.steps)}, поездок "
+                            f"{chain.trips} - не начинается turn={turn.turn_id}")
+        engine._say(turn, phrases.text(kn.CHAIN_TOO_LONG_PHRASE), None, "sad")
+        return
+    source, text = action_chain.plan(chain, cmd.speech)
+    engine._log.info(f"{LOG_MARK} вереница {chain.task}: шагов {len(chain.steps)}, оценка {chain.estimate_s:.0f} с, "
+                     f"план {source} {[s.call.tool for s in chain.steps]} turn={turn.turn_id}")
+    engine._say(turn, text, cmd.voice, cmd.expression.emotion)
+    task = asyncio.ensure_future(run_chain(engine, turn, chain, snap))
+    engine.chains.add(task)
+    task.add_done_callback(engine.chains.discard)
+
+
+async def run_chain(engine: "TurnEngine", turn: _Turn, chain: action_chain.Chain, snap: SessionSnapshot) -> None:
+    """Шаги вереницы по одному в порядке модели (ADR-0165 §3, §6, §10): следующий уходит только после исхода
+    предыдущего; эпоха сессии сменилась (стоп, новая сессия) - новых шагов нет, остаток ``skipped``; провал поездки
+    гасит остаток. Доживший шаг после стопа засчитан по исходу владельца (``action_chain.step_status``). Итог - одна
+    фраза кода (``action_chain.summary``); после стопа и в тишине она не звучит, исходы шагов - в окне хода."""
+    outcomes: List[action_chain.StepOutcome] = []
+    stopped = gone = False
+    for k, step in enumerate(chain.steps):
+        stopped = stopped or engine.session.snapshot.epoch != turn.epoch
+        if stopped or gone:
+            outcomes.append(action_chain.StepOutcome(step, kn.CHAIN_STEP_SKIPPED))
+            continue
+        outcome = await _chain_step(engine, turn, step, snap, f"{turn.turn_id}/c{k}")
+        outcomes.append(outcome)
+        gone = outcome.status not in ("done", "pending") and kn.CHAIN_CLASSES[step.cls].stops_rest
+    said = action_chain.summary(outcomes, stopped=stopped)
+    quiet = stopped or engine.session.snapshot.epoch != turn.epoch or engine.session.snapshot.top("Silence") is not None
+    engine._log.info(f"{LOG_MARK} вереница итог{' (не звучит)' if quiet else ''}: "
+                     f"{[(o.step.call.tool, o.status) for o in outcomes]} «{said}» turn={turn.turn_id}")
+    if not quiet:
+        failed_any = any(o.status not in ("done", "pending") for o in outcomes)
+        engine._say(turn, said, None, "sad" if failed_any else None)
+        finish_stage(engine._ports, turn, engine.session.snapshot)
+
+
+async def _chain_step(engine: "TurnEngine", turn: _Turn, step: "action_chain.Step", snap: SessionSnapshot,
+                      ref: str) -> "action_chain.StepOutcome":
+    """Один шаг вереницы через исполнитель хода (``TurnEngine._execute``: окно, события, вопрос тула) со своим ``ref``
+    запроса. Срок хода шагу не мешает: шаг получает срок своего класса (``TurnDeadline.grant``)."""
+    try:
+        [result] = await engine._execute(turn, (step.call,), snap, ref=ref)
+    except DeadlineExpired:
+        return action_chain.StepOutcome(step, "timeout")
+    status = action_chain.step_status(result.status, result.reason, result.data)
+    told = phrase_from_result(result) if status not in ("done", "pending") else None
+    return action_chain.StepOutcome(step, status, told.text if told is not None else "")
+
+
 def say_late(engine: "TurnEngine", result: ActionResult) -> None:
     """Итог действия после закрытия его хода (``Executor.on_late``): фраза кода по событию владельца, если класс из
     ``LATE_SPOKEN_CLASSES`` (музыка заиграла после ``timeout`` - «Включаю музыку.»); тихие успехи и чужие классы
@@ -2100,6 +2141,8 @@ class TurnEngine:
         self._count_edits: Dict[str, Tuple[Any, str, Optional[str], Optional[str]]] = {}
         #: Источник прошлого хода и группы, что переносятся на следующий ход того же источника (:func:`carried_groups`).
         self._carry: Tuple[str, Tuple[str, ...]] = ("", ())
+        #: Идущие вереницы (:func:`run_chain`): задача живёт после закрытия своего хода, ссылка держит её от сборщика.
+        self.chains: Set[Any] = set()
 
     def reset_window(self, reason: str) -> None:
         """Сброс окна по смене режима e2e (#4258); хост зовёт в потоке цикла ходов."""
@@ -2234,18 +2277,16 @@ class TurnEngine:
         (:func:`unrepeated`)."""
         turn.stage = "done"
         if cmd.passed:
-            turn.reason = "passed"
-            self._log.info(f"{LOG_MARK} passed={cmd.passed} addressed={not turn.pickup}")
-            # Решение Шифу 22.10: на адресованную реплику (вейк, окно ответа, Telegram) молчать нельзя — код мычит;
-            # passed из бэклога (подхват накопленного) — тихо.
-            if voices_passed(turn.pickup, self.session.snapshot):
-                self._say(turn, self._pick(kn.PASSED_ADDRESSED_PHRASE))
+            close_passed(self, turn, cmd)
             return None
         fresh, names = considered(self, turn, cmd, last)
         owed = owed_now(self.session.snapshot, turn, cmd, fresh, names, last)
         if owed:
             return await _answer_owed(self, turn, fresh, snap, last, owed)
         runnable = _runnable(fresh.actions, last)
+        if action_chain.runs_as_chain(runnable):  # два и больше шагов: план, ход закрыт, шаги - вереницей (ADR-0165)
+            start_chain(self, turn, fresh, runnable, snap)
+            return None
         results = await self._execute(turn, runnable, snap)
         if self._stale(turn, "results"):
             return None
@@ -2264,10 +2305,8 @@ class TurnEngine:
         turn.expression = command_face(cmd.expression, results, turn.text, earlier=turn.expression)
         outcome = _spoken_outcome(cmd, unsaid_stops(turn, results), self.session.snapshot.agent, self.log.performing())
         outcome = replace_timeout_outcome(self, turn, results, outcome)  # прежний сет звучит - не «не заиграла» (#4479)
-        outcome, over = one_phrase(outcome, capped_phrase(turn))
         if outcome:  # провал - грустно, вопрос тула («Удалить «X»?») - эмоцией вопроса, иначе лицом модели
             self._say(turn, outcome, None, outcome_emotion(results, cmd.expression.emotion))
-        self._say(turn, over)  # сверх потолка действий - не молча (#4391)
         cmd = count_edit(self, turn, cmd)  # правка звучащего счёта: продолжение, а не счёт с начала (#4207)
         asked = over_ordered_music(asked_voice(cmd), results)  # голос и подложка, о которых просил человек
         owned, refusal = hand_perform(self._ports, turn.turn_id, turn.epoch, asked, self._log)
@@ -2282,7 +2321,9 @@ class TurnEngine:
             said, emotion = _close_unread(turn, results)
             self._say(turn, said, None, emotion)
 
-    async def _execute(self, turn: _Turn, actions: Sequence[ToolCall], snap: SessionSnapshot) -> List[ActionResult]:
+    async def _execute(self, turn: _Turn, actions: Sequence[ToolCall], snap: SessionSnapshot,
+                       ref: Optional[str] = None) -> List[ActionResult]:
+        """Действия владельцам разом; ``ref`` - свой ``turn_id`` запросов (шаг вереницы: ``<ход>/c<k>``), иначе ход."""
         if not actions:
             return []
         # «эта песня» / «песня про <тему заказа>» - сочинённая только что (#4216, М11 n707): ссылку ставит код
@@ -2295,7 +2336,7 @@ class TurnEngine:
         # свой срок класса целиком (исполнитель закроет честным timeout), а не остаток хода после LLM и его повтора
         turn.deadline.grant(action_term(actions))
         now = pickup_parties.own_snapshot(self.session.snapshot, turn.speaker)  # подхват: собеседник - автор фразы
-        run = execute_for_speaker(self._ports, actions, snap, now, turn.turn_id, self._log)
+        run = execute_for_speaker(self._ports, actions, snap, now, request_ref(turn, ref), self._log)
         results = pickup_parties.intro_reasons(await turn.deadline.wait(run, "actions"), turn.pickup_view)
         self._generated.note(actions, results)
         turn.music_stopped, results = reconcile_stops(turn.music_stopped, results)  # фраза стопа - правда о ходе
@@ -2382,7 +2423,7 @@ class TurnEngine:
             self._log.warning(f"{LOG_MARK} e2e-событие {kind} не записано: {exc}")
 
 
-__all__ = ["ASK_MARK", "Answer", "LOG_MARK", "Ports", "RECENT_ACTIONS", "RECENT_UNADDRESSED", "BACKGROUND_SINCE_REPLY",
+__all__ = ["ASK_MARK", "Answer", "settle", "start_chain", "run_chain", "LOG_MARK", "Ports", "RECENT_ACTIONS", "RECENT_UNADDRESSED", "BACKGROUND_SINCE_REPLY",
            "BACKGROUND_SUMMARY", "SAD_FACE", "Shown", "TurnEngine", "answer_recognized", "command_face", "command_form", "done_expression",
            "asked_voice", "finish_stage", "hand_perform", "held_expression", "host_sections", "shown_face",
            "foreign_keys", "invalid_emotion", "outcome_phrase", "over_ordered_music", "owed_reason", "query_answer",

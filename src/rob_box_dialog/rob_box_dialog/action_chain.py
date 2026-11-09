@@ -1,9 +1,9 @@
 """Вереница действий (ADR-0165, #4403): команда модели → шаги, оценка времени и тип задачи, фразы плана и итога.
 
 Чистый модуль без портов и часов. Знание (классы в веренице, лимиты типов задач, глаголы фраз) - в ``knowledge``
-(``CHAIN_*``), тексты - ``phrases/ru.yaml`` (``chain.*``). Этап 2 (§13): ход вереницу ещё не исполняет; из этого
-модуля читает только валидатор команды (:func:`mixed` → нарушение ``chain_mixed``). Раннер шагов, фраза плана в
-ходе и итог по исходам - этап 3.
+(``CHAIN_*``), тексты - ``phrases/ru.yaml`` (``chain.*``). Из этого
+модуля читают валидатор команды (:func:`runs_as_chain`, :func:`mixed`, :func:`plan_claims`) и раннер шагов хода
+(``turn.run_chain``: план, шаги по одному, итог).
 
 Имя не ``chain``: «цепочка» в коде - цепочка провайдеров LLM (``status_feed.describe_chain``).
 """
@@ -11,7 +11,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Dict, List, Optional, Sequence, Tuple
+from typing import TYPE_CHECKING, Any, Dict, List, Mapping, Optional, Sequence, Tuple
 
 from rob_box_core.tool_catalog import get_tool
 from rob_box_dialog import knowledge as kn
@@ -23,6 +23,9 @@ if TYPE_CHECKING:  # command импортирует этот модуль (ва�
 
 #: Исход шага «сделано»; остальные исходы исполнителя (``rejected``, ``timeout``, ``cancelled``) - «не сделано».
 _DONE = "done"
+#: Шаг начат, итог придёт позже (озвучка ``say_aloud``: «Озвучил (N с)» скажет её поздний итог): в итоге вереницы его
+#: нет - ни «сделал», ни «не сделал».
+_PENDING = "pending"
 
 
 @dataclass(frozen=True)
@@ -127,9 +130,49 @@ def over_limit(chain: Chain) -> bool:
     )
 
 
+def _stays_short(known: Sequence["ToolCall"]) -> bool:
+    """В команде ``query`` (данные идут модели - query-цикл хода до плана, §4.1) или тул с вопросом подтверждения
+    (``TOOL_QUESTIONS``: удаление трека, склейка лиц, публикация в топик - вопрос ждёт ответа человека в ходе, а не
+    посреди вереницы)."""
+    asking = {tool for tool, _ in kn.TOOL_QUESTIONS}
+    return any(kn.call_class(call.tool, call.args) == "query" or call.tool in asking for call in known)
+
+
+def _crowded(steps: Sequence[Step]) -> bool:
+    """Два шага класса «один на вереницу» (``ChainClass.single``: два стопа музыки одной командой) - одно действие
+    владельца, а не вереница: команда идёт, как раньше."""
+    counts: Dict[str, int] = {}
+    for step in steps:
+        counts[step.cls] = counts.get(step.cls, 0) + 1
+    return any(n > 1 and kn.CHAIN_CLASSES[cls].single for cls, n in counts.items())
+
+
+def runs_as_chain(actions: Sequence["ToolCall"]) -> bool:
+    """Команда идёт вереницей (ADR-0165 §4): шагов без тихих (``QUIET_WITH_SPEECH_TOOLS``: «Привет, Саша!» +
+    ``memory_save`` - ответ, а не план) не меньше ``CHAIN_MIN_STEPS``, оценка дольше ``CHAIN_PLAN_AFTER_S``, и среди них
+    поездка или их больше ``CHAIN_SHORT_STEPS_MAX``. Иначе - короткая команда, как раньше: один шаг (решение
+    координатора 09.11) и до трёх быстрых действий без поездки (таблица §4) исполняются разом, итог - фраза исхода."""
+    known = _known(actions)
+    if _stays_short(known):
+        return False
+    chain = chain_of(known)
+    loud = [step for step in chain.steps if step.call.tool not in kn.QUIET_WITH_SPEECH_TOOLS]
+    if len(loud) < kn.CHAIN_MIN_STEPS or _crowded(chain.steps) or not chain.long:
+        return False
+    return chain.trips > 0 or len(loud) > kn.CHAIN_SHORT_STEPS_MAX
+
+
+def step_status(status: str, reason: Optional[str], data: Mapping[str, Any]) -> str:
+    """Исход шага для итога: ``cancelled{stale_epoch}`` с исходом владельца до подмены (``STALE_OUTCOME_KEY``) -
+    этот исход. Непрерываемый шаг дожил до конца после стопа: точка удалена - «удалил» (ADR-0165 §6)."""
+    if status == "cancelled" and reason == "stale_epoch":
+        return str(data.get(kn.STALE_OUTCOME_KEY) or status)
+    return status
+
+
 def mixed(cmd: "Command") -> Tuple[str, ...]:
     """Классы команды, которым рядом с длинной вереницей нельзя (``ChainClass.alongside``: знакомство, выступление).
-    Вереница короткая или из одного шага (``CHAIN_MIXED_MIN_STEPS``) - ``()``: команда идёт как сейчас (ADR-0165 §4.1,
+    Вереница короткая или из одного шага (``CHAIN_MIN_STEPS``) - ``()``: команда идёт как сейчас (ADR-0165 §4.1,
     нарушение ``chain_mixed``). Один шаг по оценке сроком класса бывает «долгим» (звук - 10 с), а «звук и шутка»
     (``play_sound`` + ``perform``) - законная команда живого прогона."""
     classes = [kn.call_class(call.tool, call.args) for call in _known(cmd.actions)]
@@ -137,7 +180,7 @@ def mixed(cmd: "Command") -> Tuple[str, ...]:
         classes.append("action.perform")
     banned = tuple(dict.fromkeys(cls for cls in classes if not kn.CHAIN_CLASSES[cls].alongside))
     chain = chain_of(cmd.actions)
-    if not banned or len(chain.steps) < kn.CHAIN_MIXED_MIN_STEPS or not chain.long:
+    if not banned or len(chain.steps) < kn.CHAIN_MIN_STEPS or not chain.long:
         return ()
     return banned
 
@@ -180,15 +223,28 @@ def _head(outcomes: Sequence[StepOutcome], stopped: bool, timed_out: bool) -> Op
         return kn.CHAIN_STOPPED_PHRASE
     if timed_out:
         return kn.CHAIN_TIMEOUT_PHRASE
-    return kn.CHAIN_DONE_PHRASE if all(o.status == _DONE for o in outcomes) else None
+    return kn.CHAIN_DONE_PHRASE if all(o.status in (_DONE, _PENDING) for o in outcomes) else None
 
 
 def _skipped_phrase(outcomes: Sequence[StepOutcome]) -> str:
     """Остаток после несостоявшейся поездки - «Дальше не еду», иначе (стоп, срок) - «Не стал»."""
     motion_failed = any(
-        o.status not in (_DONE, kn.CHAIN_STEP_SKIPPED) and kn.CHAIN_CLASSES[o.step.cls].stops_rest for o in outcomes
+        o.status not in (_DONE, _PENDING, kn.CHAIN_STEP_SKIPPED) and kn.CHAIN_CLASSES[o.step.cls].stops_rest
+        for o in outcomes
     )
     return kn.CHAIN_MOTION_FAILED_PHRASE if motion_failed else kn.CHAIN_SKIPPED_PHRASE
+
+
+def _reason(outcome: StepOutcome) -> str:
+    """Фраза владельца о причине без начала, которое уже сказала фраза «не сделал» шага: «Не доехал: навигация
+    прервалась.» после «Не доехал: спальня.» - «Навигация прервалась.»."""
+    verb = kn.CHAIN_VERBS.get(outcome.step.call.tool, kn.CHAIN_VERB_DEFAULT)
+    head = phrases.text(verb.missed, items="\x00").split("\x00")[0].strip()
+    note = outcome.note.strip()
+    if head and note.startswith(head) and note[len(head) :].strip():
+        rest = note[len(head) :].strip()
+        return rest[0].upper() + rest[1:]
+    return note
 
 
 def summary(outcomes: Sequence[StepOutcome], stopped: bool = False, timed_out: bool = False) -> str:
@@ -197,11 +253,11 @@ def summary(outcomes: Sequence[StepOutcome], stopped: bool = False, timed_out: b
     head = _head(outcomes, stopped, timed_out)
     done = [o.step for o in outcomes if o.status == _DONE]
     skipped = [o.step for o in outcomes if o.status == kn.CHAIN_STEP_SKIPPED]
-    missed = [o for o in outcomes if o.status not in (_DONE, kn.CHAIN_STEP_SKIPPED)]
+    missed = [o for o in outcomes if o.status not in (_DONE, _PENDING, kn.CHAIN_STEP_SKIPPED)]
     parts = [phrases.text(head)] if head else []
     parts += _grouped(done, "did")
     parts += _grouped([o.step for o in missed], "missed")
-    parts += list(dict.fromkeys(o.note for o in missed if o.note))
+    parts += list(dict.fromkeys(_reason(o) for o in missed if o.note))
     if skipped:
         parts.append(phrases.text(_skipped_phrase(outcomes), items=", ".join(dict.fromkeys(map(_item, skipped)))))
     return " ".join(parts)
@@ -218,7 +274,9 @@ __all__ = [
     "over_limit",
     "plan",
     "plan_claims",
+    "runs_as_chain",
     "step_label",
+    "step_status",
     "summary",
     "task_of",
 ]
