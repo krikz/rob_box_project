@@ -23,7 +23,7 @@ NAME="robbox-clean-os-${ROLE}-${ARCH}-$$"
 IMG="robbox-clean-os:${BASE//[:\/]/-}-${ARCH}"
 mkdir -p "$OUT"
 
-docker build -q --platform "$PLATFORM" --build-arg "BASE=$BASE" -t "$IMG" "$HERE" >"$OUT/build.log" 2>&1 \
+docker build --progress=plain --platform "$PLATFORM" --build-arg "BASE=$BASE" -t "$IMG" "$HERE" >"$OUT/build.log" 2>&1 \
     || { echo "сборка образа упала, см. $OUT/build.log"; exit 2; }
 docker run -d --name "$NAME" --platform "$PLATFORM" --privileged --cgroupns=host \
     -v /sys/fs/cgroup:/sys/fs/cgroup:rw --tmpfs /run --tmpfs /run/lock "$IMG" >/dev/null || exit 2
