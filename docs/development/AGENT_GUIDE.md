@@ -150,9 +150,8 @@ Node(
    - "Проверил что контейнер запущен - `docker ps` показывает voice-assistant"
    - "Посмотрел логи - `docker logs voice-assistant` показывает RuntimeError"
 
-5. **Используй AI Context Map:**
-   - Открой 1-2 релевантных файла ПЕРЕД запросом
-   - Смотри `docs/development/AI_CONTEXT_MAP.md` для подсказок
+5. **Давай контекст:**
+   - Открой 1-2 релевантных файла ПЕРЕД запросом; карта документов — `docs/README.md`
 
 6. **Разбивай на шаги если сложно:**
    ```
@@ -304,13 +303,12 @@ docker/
 - Restart контейнера занимает 2-5 секунд
 - Volumes позволяют применять изменения мгновенно
 
-**См. подробности:** `BUILD_OPTIMIZATION.md`
+**См. подробности:** `DOCKER_STANDARDS.md`
 
 ### 📖 Полная документация
 
 **Перед любыми изменениями Docker конфигурации читай:**
 - `DOCKER_STANDARDS.md` - детальные стандарты, примеры, workflow
-- `BUILD_OPTIMIZATION.md` - правила оптимизации сборки образов
 - `CI_CD_PIPELINE.md` - автоматизация сборки через GitHub Actions
 
 ---
@@ -1113,7 +1111,6 @@ wsl sshpass -p 'open' ssh -o StrictHostKeyChecking=no ros2@10.1.1.20 'docker ps'
 Текущая документация актуальна и хорошо структурирована:
 - **SYSTEM_OVERVIEW.md** - архитектура системы
 - **TROUBLESHOOTING.md** - решение проблем
-- **BUILD_OPTIMIZATION.md** - оптимизация системы
 - **QUICK_START.md** - быстрый старт
 
 ---

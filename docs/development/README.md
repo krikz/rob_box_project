@@ -8,15 +8,10 @@
 **Промпты специализированных AI-агентов**
 
 - `docs-agent.md` — документация (этот агент)
-- `navigation-agent.md` — Nav2, SLAM, одометрия
-- `backend-agent.md` — REST API, FastAPI, база данных
-- `voice-agent.md` — speech-to-text, TTS, LLM
-- `frontend-agent.md` — React веб-интерфейс
-- `devops-agent.md` — Docker, CI/CD, деплой
-- `security-agent.md` — безопасность, секреты, TLS
-- `git-agent.md` — коммиты, PR, ветки
-- `scenarios-agent.md` — сценарии доставки, логика
+- `product-manager-agent.md` — приоритизация бэклога
 - `structure-agent.md` — архитектура кода, рефакторинг
+
+Шаблонные «доменные» промты (backend, voice, navigation и др.) удалены (ADR-0163): процесс — `docs/process/claude-coordinator-robot-flow.md`.
 
 ### [AGENT_GUIDE.md](AGENT_GUIDE.md) ⭐
 **Руководство для AI агентов**
@@ -41,32 +36,6 @@
 - Development workflow и troubleshooting
 - Quick reference для частых задач
 
-### [CODE_REVIEW_SUMMARY.md](CODE_REVIEW_SUMMARY.md) 🆕
-**Краткое резюме code review (Oct 2025)**
-
-- Статус проекта: Production-Ready (79%)
-- Ключевые находки и сильные стороны
-- Оценки по компонентам
-- Приоритетные действия
-- Влияние на AI-ассистентов
-
-### [CODE_REVIEW_2025-10.md](CODE_REVIEW_2025-10.md) 🆕
-**Полный code review проекта (Oct 2025)**
-
-- Executive summary
-- Детальный анализ 10 компонентов
-- Code quality metrics
-- Примеры кода с улучшениями
-- Next steps и рекомендации
-
-### [IMPROVEMENT_RECOMMENDATIONS.md](IMPROVEMENT_RECOMMENDATIONS.md) 🆕
-**Практические рекомендации по улучшению**
-
-- High/Medium/Low priority рекомендации
-- Конкретные примеры реализации
-- Plan внедрения по неделям
-- Ожидаемые метрики улучшения
-
 ### [DOCKER_STANDARDS.md](DOCKER_STANDARDS.md)
 **Стандарты Docker проекта**
 
@@ -77,24 +46,6 @@
 - Dependencies и зависимости
 - Best practices
 
-### [BUILD_OPTIMIZATION.md](BUILD_OPTIMIZATION.md)
-**Оптимизация времени выполнения**
-
-- Оптимизация OAK-D камеры
-- Оптимизация RTAB-Map SLAM
-- Настройка DDS (CycloneDDS/Zenoh)
-- Оптимизация сети между Pi
-- Снижение CPU/RAM нагрузки
-
-### [DOCKER_BUILD_OPTIMIZATION.md](DOCKER_BUILD_OPTIMIZATION.md)
-**Оптимизация процесса сборки Docker**
-
-- Оптимизация Dockerfile структуры
-- Кэширование слоев
-- Multi-stage builds
-- GitHub Actions cache
-- Ускорение CI/CD сборок
-
 ### [LOCAL_BUILD.md](LOCAL_BUILD.md)
 **Локальная сборка Docker образов**
 
@@ -103,33 +54,6 @@
 - Тестирование образов локально
 - Отладка Dockerfile
 - Push в registry
-
-### [DOCKER_BUILD_FIXES.md](DOCKER_BUILD_FIXES.md)
-**Исправления ошибок сборки**
-
-- Типичные проблемы Docker builds
-- Решения для apriltag/lslidar
-- Memory/CPU лимиты
-- Networking issues
-- Package conflicts
-
-### [VOICE_ASSISTANT_BUILD_FIX.md](VOICE_ASSISTANT_BUILD_FIX.md)
-**Исправления Voice Assistant**
-
-- Ошибки компиляции Python packages
-- ONNX Runtime для ARM64
-- DeepSeek API интеграция
-- TTS/STT модели deployment
-- Audio драйверы (ReSpeaker)
-
-### [DEVCONTAINERS_ANALYSIS.md](DEVCONTAINERS_ANALYSIS.md)
-**Анализ devcontainers**
-
-- VS Code devcontainer конфигурация
-- ROS 2 development environment
-- Extensions и инструменты
-- Debugging setup
-- Remote development
 
 ### [LINTING_GUIDE.md](LINTING_GUIDE.md)
 **Руководство по линтингу**
@@ -150,20 +74,7 @@
 - Testing conventions
 
 ### [TESTING_GUIDE.md](TESTING_GUIDE.md)
-**Руководство по тестированию**
-
-- Unit тесты (pytest, unittest)
-- Integration тесты
-- Launch тесты ROS 2
-- Mock объекты и fixtures
-- CI/CD тестирование
-
-### AI Development Reports
-Отчеты о разработке с использованием AI:
-- [**AI_CONTEXT_MAP.md**](AI_CONTEXT_MAP.md) - Карта контекста проекта для AI
-- [**AI_DEVELOPMENT_COMPLETE.md**](AI_DEVELOPMENT_COMPLETE.md) - Завершенные AI сессии
-- [**AI_DEVELOPMENT_REVIEW.md**](AI_DEVELOPMENT_REVIEW.md) - Обзор AI разработки
-- [**AI_TROUBLESHOOTING_CHECKLIST.md**](AI_TROUBLESHOOTING_CHECKLIST.md) - Чеклист диагностики для AI
+**Тесты** — устаревшая заглушка; актуально — `AGENTS.md` (гарды до пуша) и `TEST_COVERAGE_STRATEGY.md`.
 
 ## 🔧 Инструменты разработки
 
