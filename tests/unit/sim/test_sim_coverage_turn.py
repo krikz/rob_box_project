@@ -14,7 +14,9 @@ import yaml
 from rob_box_sim.coverage_metric import coverage_result, covered_mask, plan_track
 from rob_box_sim.coverage_plan import (
     GUARD_STOP_M,
+    NAV2_MAX_VEL_X,
     NAV2_PADDING_M,
+    SPEED_MPS,
     circumscribed_radius,
     clear_disc,
     coverage_space,
@@ -73,10 +75,11 @@ def test_guard_stop_mirrors_proximity_thresholds():
     assert GUARD_STOP_M == Thresholds().stop_m
 
 
-def test_padding_mirrors_nav2_params():
+def test_padding_and_speed_mirror_nav2_params():
     doc = yaml.safe_load((REPO / "docker" / "main" / "config" / "nav2" / "nav2_params.yaml").read_text("utf-8"))
     for costmap in ("local_costmap", "global_costmap"):
         assert doc[costmap][costmap]["ros__parameters"]["footprint_padding"] == NAV2_PADDING_M
+    assert doc["controller_server"]["ros__parameters"]["FollowPath"]["max_vel_x"] == NAV2_MAX_VEL_X == SPEED_MPS
 
 
 # ── круг свободы ─────────────────────────────────────────────────────────────

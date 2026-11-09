@@ -288,7 +288,9 @@ def test_run_summary_is_built_from_outcomes():
         GoalOutcome("e", "NOT_SENT"),
     ]
     line = run_summary(outcomes, cov, 123.45, "5_failures_in_row")
-    assert line.startswith("COVERAGE_DONE poses=5 succeeded=2 skipped=2 (ABORTED=1, TIMEOUT=1) not_sent=1 ")
+    assert line.startswith(
+        "COVERAGE_DONE goals=5 succeeded=2 skipped=2 (ABORTED=1, TIMEOUT=1) not_sent=1 poses=5 poses_passed=2 "
+    )
     assert "stop=5_failures_in_row interrupted=no" in line
     assert "em_episodes=3" in line and "sim_s=123.5" in line and "coverage=100.0%" in line
     # от всего свободного пола — меньше: у стен корпус не дотягивается
@@ -321,3 +323,15 @@ def test_run_summary_marks_interrupted_and_counts_route_statuses():
     assert "succeeded=1 skipped=2 (ABORTED=1, INTERRUPTED=1) not_sent=1" in line
     assert "stop=interrupted_SIGINT interrupted=yes" in line
     assert "STATUS_" not in line
+
+
+def test_motion_stats_counts_moving_time_and_skips_gaps():
+    from rob_box_sim.coverage_metric import motion_stats
+
+    track = [(0.0, 0.0, 0.0, 0.0), (1.0, 0.1, 0.0, 0.0), (2.0, 0.1, 0.0, 0.0), (3.0, 0.1, 0.0, 0.5)]
+    track += [(30.0, 5.0, 0.0, 0.5)]  # разрыв лога 27 с — не движение
+    m = motion_stats(track)
+    assert m.moving_s == pytest.approx(2.0)  # 0→1 едет, 1→2 стоит, 2→3 крутится
+    assert m.moved_m == pytest.approx(0.1)
+    assert m.avg_mps(30.0) == pytest.approx(0.1 / 30.0) and m.moving_mps() == pytest.approx(0.05)
+    assert motion_stats([]).moving_mps() is None

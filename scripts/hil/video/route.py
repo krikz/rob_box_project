@@ -1,5 +1,8 @@
 #!/usr/bin/env python3
-"""Маршрут из целей NavigateToPose по одной; лог: sim time, номер кадра камеры, поза gt, стопы защиты."""
+"""Маршрут из целей NavigateToPose по одной; лог: sim time, номер кадра камеры, поза gt, стопы защиты.
+
+``run_lane`` — несколько точек одной целью NavigateThroughPoses (полоса обхода покрытием, #4560).
+"""
 import datetime
 import math
 import os
@@ -8,8 +11,8 @@ import time
 
 import rclpy
 from action_msgs.msg import GoalStatus
-from geometry_msgs.msg import Twist
-from nav2_msgs.action import NavigateToPose
+from geometry_msgs.msg import PoseStamped, Twist
+from nav2_msgs.action import NavigateThroughPoses, NavigateToPose
 from nav_msgs.msg import Odometry
 from rclpy.action import ActionClient
 from rclpy.node import Node
@@ -72,6 +75,7 @@ class Mon(Node):
         self.em_on = False
         self.em_episodes = 0
         self.recoveries = 0
+        self.poses_remaining = 0
         self.create_subscription(Odometry, "/sim/ground_truth/odom", self.on_gt, 10)
         self.create_subscription(Twist, "/cmd_vel_emergency", self.on_em, 10)
         self.create_timer(0.2, self.tick)
@@ -105,6 +109,9 @@ class Mon(Node):
         if r is not None and r != self.recoveries:
             self.recoveries = r
             print(f"{ts()} RECOVERY n={r} sim={self.simt():.2f}", flush=True)
+        left = getattr(fb.feedback, "number_of_poses_remaining", None)
+        if left is not None:
+            self.poses_remaining = left
 
 
 def wait_ready(n):
@@ -114,6 +121,13 @@ def wait_ready(n):
         rclpy.spin_once(n, timeout_sec=0.1)
     cl = ActionClient(n, NavigateToPose, "/navigate_to_pose")
     assert cl.wait_for_server(timeout_sec=60), "нет /navigate_to_pose"
+    return cl
+
+
+def through_poses_client(n):
+    """Клиент /navigate_through_poses (до 60 с)."""
+    cl = ActionClient(n, NavigateThroughPoses, "/navigate_through_poses")
+    assert cl.wait_for_server(timeout_sec=60), "нет /navigate_through_poses"
     return cl
 
 
@@ -139,26 +153,28 @@ def _wait_result(n, gh, timeout, stop=None):
     return STATUS.get(res.result().status, res.result().status)
 
 
-def run_goal(n, cl, name, x, y, yaw, timeout=TIMEOUT, stop=None):
-    """Одна цель NavigateToPose (yaw в градусах): GOAL_START/GOAL_END в лог; вернуть (итог, эпизоды защиты).
+def _pose(x, y, yaw):
+    """Поза в map (yaw в градусах)."""
+    p = PoseStamped()
+    p.header.frame_id = "map"
+    p.pose.position.x, p.pose.position.y = x, y
+    p.pose.orientation.z = math.sin(math.radians(yaw) / 2)
+    p.pose.orientation.w = math.cos(math.radians(yaw) / 2)
+    return p
 
-    ``stop()`` → True (сигнал оператора) — цель отменяется, итог ``INTERRUPTED``.
-    """
+
+def _send(n, cl, name, goal, target, last_xy, timeout, stop):
+    """Отправить цель, дождаться итога, GOAL_START/GOAL_END в лог; вернуть (итог, эпизоды защиты)."""
     n.recoveries = 0
     em0 = n.em_episodes
-    g = NavigateToPose.Goal()
-    g.pose.header.frame_id = "map"
-    g.pose.pose.position.x, g.pose.pose.position.y = x, y
-    g.pose.pose.orientation.z = math.sin(math.radians(yaw) / 2)
-    g.pose.pose.orientation.w = math.cos(math.radians(yaw) / 2)
     s_sim, s_fr = n.simt(), nframes()
-    print(f"{ts()} GOAL_START {name} target=({x},{y},{yaw}) sim={s_sim:.2f} frame={s_fr} gt={n.gt}", flush=True)
-    fut = cl.send_goal_async(g, feedback_callback=n.on_fb)
+    print(f"{ts()} GOAL_START {name} target={target} sim={s_sim:.2f} frame={s_fr} gt={n.gt}", flush=True)
+    fut = cl.send_goal_async(goal, feedback_callback=n.on_fb)
     rclpy.spin_until_future_complete(n, fut, timeout_sec=10)
     gh = fut.result()
     result = "REJECTED" if gh is None or not gh.accepted else _wait_result(n, gh, timeout, stop)
     e_sim, e_fr = n.simt(), nframes()
-    err = math.dist(n.gt[:2], (x, y)) if n.gt else float("nan")
+    err = math.dist(n.gt[:2], last_xy) if n.gt else float("nan")
     em = n.em_episodes - em0
     print(
         f"{ts()} GOAL_END {name} result={result} sim={e_sim:.2f} frame={e_fr} dur_sim={e_sim - s_sim:.1f} "
@@ -166,6 +182,32 @@ def run_goal(n, cl, name, x, y, yaw, timeout=TIMEOUT, stop=None):
         flush=True,
     )
     return result, em
+
+
+def run_goal(n, cl, name, x, y, yaw, timeout=TIMEOUT, stop=None):
+    """Одна цель NavigateToPose (yaw в градусах): GOAL_START/GOAL_END в лог; вернуть (итог, эпизоды защиты).
+
+    ``stop()`` → True (сигнал оператора) — цель отменяется, итог ``INTERRUPTED``.
+    """
+    g = NavigateToPose.Goal()
+    g.pose = _pose(x, y, yaw)
+    return _send(n, cl, name, g, f"({x},{y},{yaw})", (x, y), timeout, stop)
+
+
+def run_lane(n, cl, name, poses, timeout, stop=None):
+    """Точки ``poses`` [(x, y, yaw°)] одной целью NavigateThroughPoses: робот не тормозит в каждой.
+
+    Вернуть (итог, эпизоды защиты, осталось точек). Осталось — последний feedback Nav2
+    ``number_of_poses_remaining``: пройденную точку убирает RemovePassedGoals (navigate_through_poses.xml,
+    радиус 0.35 м), последнюю — только успех. Сколько пройдено, считает ``GoalOutcome.from_route``.
+    """
+    g = NavigateThroughPoses.Goal()
+    g.poses = [_pose(*p) for p in poses]
+    n.poses_remaining = len(poses)
+    target = "[" + " ".join(f"({x},{y},{yaw})" for x, y, yaw in poses) + "]"
+    result, em = _send(n, cl, name, g, target, poses[-1][:2], timeout, stop)
+    print(f"{ts()} LANE_FEEDBACK {name} poses={len(poses)} remaining={n.poses_remaining}", flush=True)
+    return result, em, n.poses_remaining
 
 
 def main():
