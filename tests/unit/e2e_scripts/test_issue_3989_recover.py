@@ -383,7 +383,7 @@ def test_scenario_loop_marks_recovered_step_and_summary_counts_it(tmp_path):
     assert "E2E_STEP n301_wake_open OK recovered_no_wake" in out, (out, err)
     assert "E2E_STEP n302_plain OK" in out.splitlines()
     assert "KINDS[n301_wake_open]=no_wake,silenced" in out
-    assert re.search(r"E2E_SUMMARY verdict=PASS steps=2/2 ok fail=0 skip=0 recovered=1 ", out), out
+    assert re.search(r"E2E_SUMMARY verdict=PASS steps=2/2 ok fail=0 skip=0 stand_play_failed=0 recovered=1 ", out), out
     assert "E2E_SUMMARY act_recover=music" in out
     summary = json.loads((out_dir / "summary.json").read_text(encoding="utf-8"))
     assert summary["steps"]["recovered"] == 1 and summary["steps"]["recovered_labels"] == ["n301_wake_open"]
@@ -714,7 +714,7 @@ def test_marathon_summary_value_reads_harness_summary(tmp_path):
 
 def test_marathon_summary_tsv_has_recovered_column():
     src = (MARATHON / "run_night_marathon.sh").read_text(encoding="utf-8")
-    assert "printf 'act\\ttitle\\tstability\\tsteps\\trun_id\\tconclusion\\turl\\trecovered\\tact_recover\\n'" in src
+    assert "printf 'act\\ttitle\\tstability\\tsteps\\trun_id\\tconclusion\\turl\\trecovered\\tact_recover\\tstand_play_failed\\n'" in src
     assert 'marathon_summary_value "$act_log" recovered' in src
     # лог акта забирается ДО строки сводки: иначе колонку не из чего заполнить
     assert src.index('gh run view "$run_id" --repo "$REPO_SLUG" --log') < \

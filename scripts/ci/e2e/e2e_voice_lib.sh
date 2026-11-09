@@ -906,6 +906,30 @@ warm_act_audio_path() {  # $1=каталог для временного wav
     return 0
 }
 
+# stand_audio_preflight -- #4608: PulseAudio-сервер стенда отвечает (`pactl info`) ДО акта. Не отвечает (пустой вывод,
+# rc!=0 или `pa_context_connect() failed`) -- до E2E_PREFLIGHT_TRIES проб с паузой, затем rc=1: акт не стартует. Нет самого
+# pactl -- проба неприменима (rc=0, предупреждение): провал воспроизведения поймает play_eq_wav.
+stand_audio_preflight() {
+    local tries="${E2E_PREFLIGHT_TRIES:-3}" try=1 out rc
+    if ! command -v pactl >/dev/null 2>&1; then
+        echo ">>> PREFLIGHT pulse: pactl не найден -- проба пропущена"
+        return 0
+    fi
+    while :; do
+        out="$(pactl info 2>&1)"; rc=$?
+        if [ "$rc" = "0" ] && [ -n "$out" ] && ! printf '%s' "$out" | grep -q 'pa_context_connect() failed'; then
+            echo ">>> PREFLIGHT pulse: OK"
+            return 0
+        fi
+        echo ">>> PREFLIGHT pulse: сервер не отвечает (проба ${try}/${tries}, rc=${rc}): $(printf '%s' "$out" | head -n 1)"
+        [ "$try" -ge "$tries" ] && break
+        try=$(( try + 1 ))
+        sleep "${E2E_PREFLIGHT_PAUSE:-3}"
+    done
+    echo ">>> PREFLIGHT pulse: FAIL -- PulseAudio стенда недоступен, акт не стартует"
+    return 1
+}
+
 # wait_robot_quiet -- v2: «робот ещё говорит» = SpeechEvent started/queued без пары finished/
 # cancelled/rejected (по speech_id; «протухшие» без событий > 60 с не считаются). Тихо --
 # +2 с после последнего события речи. Пишет E2E_STEP_SILENCE_SEC. rc=0 тихо, rc=1 потолок.
