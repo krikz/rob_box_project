@@ -49,6 +49,14 @@ case "$scene" in
     *) echo "сцена '$scene': polygon | turn90 | depot" >&2; exit 2 ;;
 esac
 read -r SX SY SYAW <<<"$spawn"
+# Таймауты целей рассчитаны на 0.15 м/с и выше; ниже — растягиваются в 0.15/v раз, чтобы медленный робот не
+# падал по таймауту набора (Depot: 20 м на 0.1 м/с — 200 с хода при таймауте 240).
+if [ "$speed" != base ]; then
+    tasks=$(python -c "
+import re, sys
+k = max(1.0, 0.15 / float(sys.argv[2]))
+print(re.sub(r'@(\d+(?:\.\d+)?)', lambda m: '@%d' % round(float(m.group(1)) * k), sys.argv[1]))" "$tasks" "$speed")
+fi
 if [ "$world" = depot ]; then
     sim_cmd="python3 /mkdepot.py && exec /hil_run.sh world:=/sim_video/world.sdf x:=$SX y:=$SY yaw:=$SYAW"
 else
