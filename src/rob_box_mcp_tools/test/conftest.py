@@ -190,6 +190,21 @@ class MockNode:
 # ============================================================
 
 
+_ROBOT_PROFILE = Path(os.environ.get("ROB_BOX_REPO_ROOT") or _SRC_DIR.parent) / "docker/sound/config/assistant.yaml"
+
+
+@pytest.fixture(autouse=True)
+def _robot_tool_owners(monkeypatch):
+    """Срез тулов хода без переданных владельцев - на владельцах профиля робота, как у хостов робота, которые всегда
+    передают их из профиля (ядро без профиля - без тулов продукта, ADR-0167 Ш1в). Нет профиля в чекауте - не трогаем."""
+    if not _ROBOT_PROFILE.is_file():
+        return
+    from rob_box_dialog import owners as ow  # noqa: PLC0415
+    from rob_box_dialog.profile import load_profile  # noqa: PLC0415
+
+    monkeypatch.setattr(ow, "OWNERS_WITHOUT_PROFILE", load_profile(_ROBOT_PROFILE).owners)
+
+
 @pytest.fixture
 def mock_node():
     """Фикстура для мок ROS 2 ноды."""
