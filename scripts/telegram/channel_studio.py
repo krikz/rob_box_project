@@ -411,6 +411,18 @@ def next_slot(now: Optional[datetime] = None) -> datetime:
     return now + timedelta(days=7)
 
 
+def queued_slot(path: Path) -> Optional[datetime]:
+    """Срок поста — из его файла очереди (not_before), а не «ближайший слот сейчас».
+
+    Разбор 09.11: на повторное «Опубликовать» студия называла ближайший слот на момент нажатия —
+    в среду сказала бы «четверг», хотя пост выйдет во вторник.
+    """
+    try:
+        return lib.parse_post(path).not_before
+    except (OSError, ValueError):
+        return None
+
+
 def _queue_number(queue_dir: Path, post_id: str = "") -> int:
     """Следующий свободный номер поста в очереди (001, 002, …).
 
@@ -505,29 +517,28 @@ def apply_post_action(state: dict, post_id: str, action: str) -> str:
             # иначе «Опубликовать» дважды дал бы два поста в канале. Если файл
             # исчез — сообщаем об этом, но не плодим замену молча.
             record["status"] = "approved"
-            slot = next_slot()
             if Path(existing).exists():
-                return (
-                    f"Пост {post_id} уже одобрен и стоит в очереди — нового поста не будет. "
-                    f"Слот {slot.strftime('%d.%m в %H:%M')} (по GMT+1)."
-                )
+                slot = queued_slot(Path(existing))
+                when = f"Выйдет {lib.slot_text(slot)}." if slot else "Срок в файле очереди не прочитал — проверь его."
+                return f"Пост {post_id} уже одобрен и стоит в очереди — нового поста не будет. {when}"
             return (
                 f"Пост {post_id} уже был одобрен и стоял в очереди ({existing}), "
                 f"но файла на месте нет. Второй файл не создаю — публикация должна быть одна. "
                 f"Нужна ручная проверка очереди."
             )
-        path = queue_post(record, queue_dir)
+        now = datetime.now(timezone.utc)
+        path = queue_post(record, queue_dir, now=now)
         if path is None:
             record["status"] = "rejected"
             return f"Пост {post_id} не встал в очередь: в нём нет текста или хештегов. " f"Поправлю и пришлю заново."
-        slot = next_slot()
+        slot = queued_slot(path) or next_slot(now)
         record["queue_file"] = str(path)
+        record["not_before"] = slot.strftime("%Y-%m-%dT%H:%M:%SZ")
         # Событие закрыто: пост одобрен и поставлен в очередь. До этого факт висел
         # в ожидании, и его можно было предложить снова.
         st.mark_covered(state, set(record.get("fact_keys") or []), post_id, _now())
         return (
-            f"Пост {post_id} одобрен — он в очереди канала, выйдет в слот "
-            f"{slot.strftime('%d.%m в %H:%M')} (по GMT+1)."
+            f"Пост {post_id} одобрен — он в очереди канала, выйдет в слот {lib.slot_text(slot)}."
         )
     if action == ACTION_REJECT:
         record["status"] = "rejected"

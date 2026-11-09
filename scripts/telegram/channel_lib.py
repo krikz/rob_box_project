@@ -73,6 +73,16 @@ VIDEO_EXT = {".mp4"}
 VIDEO_MAX_BYTES = 50 * 1024 * 1024  # sendVideo / InputMediaVideo при загрузке файлом
 ALBUM_MIN, ALBUM_MAX = 2, 10  # sendMediaGroup: "must include 2-10 items"
 PHOTO_EXT = {".png", ".jpg", ".jpeg"}
+# Время для Шифу — GMT+1 (решение 27.10). Слоты и not_before считаются в UTC; в тексте Шифу —
+# только через slot_text, иначе час по UTC уходит с подписью «по GMT+1» (09.11: «10:00» вместо 11:00).
+SHIFU_TZ = timezone(timedelta(hours=1), "GMT+1")
+
+
+def slot_text(moment: datetime) -> str:
+    """«10.11 в 11:00 по GMT+1» — момент (aware, любой пояс) словами для Шифу."""
+    return moment.astimezone(SHIFU_TZ).strftime("%d.%m в %H:%M") + " по GMT+1"
+
+
 # Приватность: внутренние адреса и токены в канал не попадают никогда.
 FORBIDDEN = [
     (re.compile(r"\b10\.1\.1\.\d{1,3}\b"), "внутренний IP"),

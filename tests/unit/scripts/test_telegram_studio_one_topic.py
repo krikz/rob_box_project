@@ -351,3 +351,33 @@ def test_sent_post_carries_draft_buttons_and_becomes_the_draft_message(run_env):
     saved = st.load_state(path)["posts"]["p1"]
     assert saved["message_id"] != 77 and 77 in saved["old_message_ids"]
     assert intent.message_ids(saved) >= {77, saved["message_id"]}
+
+
+# --------------------------------------------------------------------------- 8. время слота для Шифу (09.11)
+
+
+def test_slot_is_told_in_gmt_plus_1_not_utc_hour():
+    """09.11: «выйдет в слот 10.11 в 10:00 (по GMT+1)» — час по UTC с подписью GMT+1; верно 11:00."""
+    from datetime import datetime, timezone
+
+    assert lib.slot_text(datetime(2026, 11, 10, 10, 0, tzinfo=timezone.utc)) == "10.11 в 11:00 по GMT+1"
+
+
+def test_publish_answer_names_the_real_slot_and_repeat_reads_it_from_queue(tmp_path, monkeypatch):
+    """Ответ «одобрен» — по сроку файла очереди; повторное нажатие называет тот же срок, а не «ближайший сейчас»."""
+    monkeypatch.setenv("STUDIO_QUEUE_DIR", str(tmp_path / "queue"))
+    record = {
+        "id": "p1",
+        "status": "proposed",
+        "title": "Навигация",
+        "body_html": "<b>Навигация</b> честная. #роббокс #навигация",
+        "tags": ["#роббокс", "#навигация"],
+        "message_id": 77,
+    }
+    state = {"posts": {"p1": record}}
+    first = studio.apply_post_action(state, "p1", studio.ACTION_PUBLISH)
+    slot = studio.queued_slot(__import__("pathlib").Path(record["queue_file"]))
+    assert slot.hour == 10 and lib.slot_text(slot).endswith("в 11:00 по GMT+1")
+    assert lib.slot_text(slot) in first
+    again = studio.apply_post_action(state, "p1", studio.ACTION_PUBLISH)
+    assert "уже одобрен" in again and lib.slot_text(slot) in again
