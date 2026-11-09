@@ -37,10 +37,12 @@ def test_fixture_profile_is_the_robot_profile():
         fixture.wake_operator,
         fixture.persona,
         fixture.operator_persona,
+        fixture.owners,
     ) == (
         robot.name,
         robot.wake_personality,
         robot.wake_operator,
         robot.persona,
         robot.operator_persona,
+        robot.owners,
     )

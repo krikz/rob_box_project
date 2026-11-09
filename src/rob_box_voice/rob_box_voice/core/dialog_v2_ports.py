@@ -358,15 +358,17 @@ class V2Ports:
 
 def assemble_llm(chain: Sequence[str], counter: CallCounter, *, prompt: str,
                  settings: Optional[LLMSettings] = None, agent: str = kn.AGENTS[0],
-                 log: Callable[[str], None] = lambda line: None, busy: Optional[Callable[[], Busy]] = None) -> tuple:
+                 log: Callable[[str], None] = lambda line: None, busy: Optional[Callable[[], Busy]] = None,
+                 owners: Optional[Sequence[str]] = None) -> tuple:
     """LLM-цепочка v2 агента и его системный промпт: ``build_llm_chain`` с каждым провайдером в режиме команд моста
     (валидатор знает агента), вызовы считаются в ``counter``. Одна сборка для ROS-хоста ``dialog_node`` и сухого
     стенда (``scripts/dialog/dry_marathon.py``, #3906): ответ модели строит та же цепочка, что на роботе. ``prompt`` -
-    основа промпта агента, её даёт хост (Личность - ``rob_box_dialog.prompts`` с персоной профиля, ADR-0167 Ш1б-3)."""
+    основа промпта агента, её даёт хост (Личность - ``rob_box_dialog.prompts`` с персоной профиля, ADR-0167 Ш1б-3);
+    ``owners`` - владельцы тулов продукта из того же профиля (мост не расширяет срез тулом чужого владельца, Ш1в)."""
     from rob_box_harness.core.assembly import AgentSpec, build_llm_chain  # noqa: PLC0415
 
     names = tuple(p.strip().lower() for p in chain if p.strip())
-    bridge = wrapper_for(log=log, busy=busy or Busy, agent=agent)
+    bridge = wrapper_for(log=log, busy=busy or Busy, agent=agent, owners=owners)
     spec = AgentSpec(name=agent, provider_chain=names, settings=settings,
                      wrap_provider=counted_wrapper(bridge, counter))
     return build_llm_chain(spec), system_prompt(prompt, agent)

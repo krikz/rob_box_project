@@ -12,6 +12,7 @@ from pathlib import Path
 import pytest
 
 from rob_box_dialog import knowledge as kn
+from rob_box_dialog import owners as ow
 from rob_box_dialog import profile as pf
 from rob_box_dialog.prompts import (
     Persona,
@@ -39,8 +40,11 @@ def _write(
     return tmp_path / "assistant.yaml"
 
 
-KEYS = "wake_words: wake_words.yaml\npersona: persona.txt\noperator_persona: operator_persona.txt\n"
-GOOD = "format: 3\nname: Ассистент\n" + KEYS
+KEYS = (
+    "wake_words: wake_words.yaml\npersona: persona.txt\noperator_persona: operator_persona.txt\n"
+    "owners: [speech, music]\n"
+)
+GOOD = "format: 4\nname: Ассистент\n" + KEYS
 
 
 def test_load_good_profile_by_file_and_by_dir(tmp_path):
@@ -49,7 +53,9 @@ def test_load_good_profile_by_file_and_by_dir(tmp_path):
         got = pf.load_profile(path)
         persona = Persona("You are Ассистент.", "- Friendly and brief.")
         operator = Persona("Ты — Пульт, оператор Ассистента.", "Будь краток.")
-        assert got == pf.ProductProfile("Ассистент", ("эй ассистент",), ("пульт",), persona, operator, root=tmp_path)
+        assert got == pf.ProductProfile(
+            "Ассистент", ("эй ассистент",), ("пульт",), persona, operator, owners=("speech", "music"), root=tmp_path
+        )
         assert not got.neutral
 
 
@@ -60,6 +66,7 @@ def test_no_path_gives_neutral_defaults_and_says_so():
     assert got.name == "" and got.wake_personality == () and got.wake_operator == ()
     assert got.persona == neutral_persona()
     assert got.operator_persona == neutral_operator_persona()
+    assert got.owners == (), "без профиля - ни одного владельца тулов продукта"
     assert lines == [pf.NO_PROFILE_LOG]
     assert has_wake_word("который час", got.wake_personality), "без вейков ядро в режиме «адресовано всё»"
 
@@ -77,21 +84,35 @@ def test_neutral_defaults_name_no_product():
 @pytest.mark.parametrize(
     "text, why",
     [
-        ("format: 3\nname: Ассистент\npersona: persona.txt\noperator_persona: o.txt\n", "нет ключей ['wake_words']"),
         (
-            "format: 3\nname: Ассистент\nwake_words: wake_words.yaml\noperator_persona: o.txt\n",
+            "format: 4\nname: Ассистент\npersona: persona.txt\noperator_persona: o.txt\nowners: []\n",
+            "нет ключей ['wake_words']",
+        ),
+        (
+            "format: 4\nname: Ассистент\nwake_words: wake_words.yaml\noperator_persona: o.txt\nowners: []\n",
             "нет ключей ['persona']",
         ),
-        ("format: 3\nname: Ассистент\nwake_words: wake_words.yaml\npersona: persona.txt\n", "['operator_persona']"),
+        (
+            "format: 4\nname: Ассистент\nwake_words: wake_words.yaml\npersona: persona.txt\nowners: []\n",
+            "['operator_persona']",
+        ),
+        (
+            "format: 4\nname: Ассистент\nwake_words: wake_words.yaml\npersona: persona.txt\noperator_persona: o.txt\n",
+            "['owners']",
+        ),
         ("format: 1\nname: Ассистент\nwake_words: wake_words.yaml\n", "format 1 устарел"),
         ("format: 2\nname: А\nwake_words: wake_words.yaml\npersona: persona.txt\n", "format 2 устарел"),
-        ("format: 4\nname: А\n" + KEYS, "format 4"),
-        ("format: 3\nname: ''\n" + KEYS, "name"),
-        ("format: 3\nname: А\n" + KEYS + "wake: x\n", "лишние ключи ['wake']"),
-        ("format: 3\nname: А\n" + KEYS.replace("wake_words.yaml", "nope.yaml"), "таблицы вейков"),
-        ("format: 3\nname: А\n" + KEYS.replace("persona: persona.txt", "persona: ''"), "persona - имя файла"),
-        ("format: 3\nname: А\n" + KEYS.replace("persona: persona.txt", "persona: nope.txt"), "файла персоны"),
-        ("format: 3\nname: А\n" + KEYS.replace("operator_persona.txt", "nope.txt"), "(operator_persona) нет"),
+        ("format: 3\nname: А\n" + KEYS, "format 3 устарел - с format 4 профиль несёт owners"),
+        ("format: 5\nname: А\n" + KEYS, "format 5"),
+        ("format: 4\nname: ''\n" + KEYS, "name"),
+        ("format: 4\nname: А\n" + KEYS + "wake: x\n", "лишние ключи ['wake']"),
+        ("format: 4\nname: А\n" + KEYS.replace("wake_words.yaml", "nope.yaml"), "таблицы вейков"),
+        ("format: 4\nname: А\n" + KEYS.replace("persona: persona.txt", "persona: ''"), "persona - имя файла"),
+        ("format: 4\nname: А\n" + KEYS.replace("persona: persona.txt", "persona: nope.txt"), "файла персоны"),
+        ("format: 4\nname: А\n" + KEYS.replace("operator_persona.txt", "nope.txt"), "(operator_persona) нет"),
+        ("format: 4\nname: А\n" + KEYS.replace("[speech, music]", "speech"), "owners - список имён владельцев"),
+        ("format: 4\nname: А\n" + KEYS.replace("[speech, music]", "[speech, camera]"), "незнакомые ['camera']"),
+        ("format: 4\nname: А\n" + KEYS.replace("[speech, music]", "[music, music]"), "повторы ['music']"),
         ("- 1\n- 2\n", "ждали словарь"),
         ("format: [1\n", "не читается как YAML"),
     ],
@@ -118,13 +139,20 @@ def test_broken_persona_is_an_error(tmp_path):
 
 
 def test_test_robot_profile_loads():
-    """Тестовый профиль робота (``fixtures/robot_profile``) - корректный профиль формата 3."""
+    """Тестовый профиль робота (``fixtures/robot_profile``) - корректный профиль формата 4 со всеми портами ядра."""
     got = pf.load_profile(FIXTURE)
     personality, operator = kn.resolve_wake_word_namespaces(str(FIXTURE / "wake_words.yaml"))
     assert got.name == "РОББОКС" and not got.neutral
     assert got.persona.identity.startswith("You are РОББОКС")
     assert got.operator_persona.identity.startswith("Ты — ТАРС")
     assert list(got.wake_personality) == personality and list(got.wake_operator) == operator
+    assert set(got.owners) == set(ow.OWNERS), "у робота есть все владельцы тулов ядра"
+
+
+def test_empty_owners_is_a_product_without_tools(tmp_path):
+    """``owners: []`` - честный продукт без тулов, а не ошибка."""
+    got = pf.load_profile(_write(tmp_path, GOOD.replace("[speech, music]", "[]")))
+    assert got.owners == ()
 
 
 def test_core_knows_no_product_wake_words(neutral_core):

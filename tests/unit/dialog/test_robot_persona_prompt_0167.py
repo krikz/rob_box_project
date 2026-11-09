@@ -83,7 +83,8 @@ def test_stand_builds_the_same_prompt():
 def test_robot_profile_without_persona_does_not_start(tmp_path):
     (tmp_path / "wake_words.yaml").write_text((CONFIG / "wake_words.yaml").read_text(encoding="utf-8"), "utf-8")
     (tmp_path / "assistant.yaml").write_text(
-        "format: 3\nname: РОББОКС\nwake_words: wake_words.yaml\npersona: persona.txt\noperator_persona: o.txt\n",
+        "format: 4\nname: РОББОКС\nwake_words: wake_words.yaml\npersona: persona.txt\noperator_persona: o.txt\n"
+        "owners: [speech]\n",
         encoding="utf-8",
     )
     with pytest.raises(ProfileError, match="файла персоны"):

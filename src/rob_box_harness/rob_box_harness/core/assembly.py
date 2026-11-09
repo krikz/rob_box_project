@@ -1,8 +1,10 @@
 """Сборка LLM-цепочки агента по :class:`AgentSpec` (ADR-0083; цикл v1 ``AgentCore`` и ``build_agent`` удалены, #4354 A3b).
 
 Диалог v2 (``dialog_node``, ТАРС ``operator_turns``) берёт отсюда :func:`build_llm_chain` (``HealthAwareFallbackLLM``
-с общим на машину кэшем здоровья) и :func:`load_system_prompt`. Расхождения между агентами раскладываются по полям
-спека, а не по веткам ``if spec.name == ...``.
+с общим на машину кэшем здоровья). Системный промпт собирает хост из основы ядра и персоны профиля
+(``rob_box_dialog.prompts``, ADR-0167 Ш1б): загрузчик промпта из файла (``load_system_prompt``, поля ``prompt_dir`` /
+``system_prompt_file``) удалён в Ш1в - его никто не звал. Расхождения между агентами раскладываются по полям спека, а не
+по веткам ``if spec.name == ...``.
 """
 
 from __future__ import annotations
@@ -56,13 +58,6 @@ class AgentSpec:
     name: str
     """``"personality"`` или ``"operator"`` — значение колонки ``agent``."""
 
-    prompt_dir: Path | None = None
-    """Каталог, где лежит ``<system_prompt_file>`` (для :func:`load_system_prompt`). Агент, чей промпт собирает
-    хост (Личность: основа ядра с персоной профиля, ADR-0167 Ш1б-3), его не задаёт."""
-
-    system_prompt_file: str = ""
-    """Имя ``.txt`` внутри ``prompt_dir`` (system_prompt)."""
-
     # ── LLM (частично общее — см. ADR-0083 §2.3) ────────────────
     provider_chain: tuple[str, ...] = ("deepseek",)
     """Упорядоченный список имён провайдеров (``minimax``, ``deepseek``,
@@ -98,36 +93,6 @@ class AgentSpec:
     """Обёртка каждого собранного провайдера цепочки ДО ``HealthAwareFallbackLLM`` (имя кэша здоровья — у
     обёрнутого). Personality так включает режим команд по capabilities провайдера (ADR-0150 §4.5,
     ``rob_box_voice.core.command_bridge``); по умолчанию провайдер как есть."""
-
-
-# ── Prompt loader ───────────────────────────────────────────────────
-
-
-def load_system_prompt(spec: AgentSpec) -> str:
-    """Прочитать ``prompt_dir / system_prompt_file``.
-
-    Пустой/битый файл → возврат ``""`` (явный «нет промпта — нет агента»).
-    Делает best-effort: если ``prompt_dir`` не существует, логирует
-    и возвращает ``""`` — тот же контракт, что был у
-    ``dialogue_node._load_system_prompt`` (нода не падает на отсутствии
-    промпта, чтобы не валить старт робота).
-    """
-    if not spec.prompt_dir or not spec.prompt_dir.is_dir():
-        _logger.warning(
-            "[assembly] prompt_dir missing for %s: %s",
-            spec.name,
-            spec.prompt_dir,
-        )
-        return ""
-    path = spec.prompt_dir / spec.system_prompt_file
-    try:
-        return path.read_text(encoding="utf-8").strip()
-    except OSError as exc:
-        _logger.warning(
-            "[assembly] system prompt unreadable for %s: %s (%s)",
-            spec.name, path, exc,
-        )
-        return ""
 
 
 def _resolve_provider_settings(
@@ -285,5 +250,4 @@ def _with_checkers(
 __all__ = [
     "AgentSpec",
     "build_llm_chain",
-    "load_system_prompt",
 ]

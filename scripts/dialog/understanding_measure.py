@@ -50,7 +50,7 @@ import live_compare  # noqa: E402
 import understanding_metrics as um  # noqa: E402
 import understanding_report as ur  # noqa: E402
 import understanding_variants as uv  # noqa: E402
-from dry_stand import REPO, DryStand, new_workdir  # noqa: E402
+from dry_stand import REPO, DryStand, new_workdir, robot_owners  # noqa: E402
 from env_files import load_env_files  # noqa: E402
 from rob_box_dialog import knowledge as kn  # noqa: E402
 from rob_box_dialog.words import strip_wake_word  # noqa: E402
@@ -206,7 +206,7 @@ def fake_stand(rule: Callable[[List[Any], List[str]], Dict[str, Any]], workdir: 
     inner = FakeLLMProvider(on_complete=on_complete, name="deepseek",
                             capabilities=ProviderCapabilities(tools=True, tool_choice=True))
     relay = dm.LogRelay()
-    llm = command_bridge.wrapper_for(log=relay)(Counted(inner, counter))
+    llm = command_bridge.wrapper_for(log=relay, owners=robot_owners())(Counted(inner, counter))
     stand = DryStand(llm, counter, "Ты робот.", workdir, variant=variant, router=router, memory_path=memory_path,
                      clock=clock)
     relay.target = stand

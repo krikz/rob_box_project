@@ -3,20 +3,23 @@
 Профиль - каталог продукта с ``assistant.yaml`` и файлами рядом; лежит в репо продукта, ядро его только читает.
 Формат версии :data:`FORMAT`::
 
-    format: 3
+    format: 4
     name: РОББОКС                              # имя продукта (как он себя называет; его же берёт чат Telegram)
     wake_words: wake_words.yaml                # таблица вейков рядом с профилем (формат ядра: personality / operator)
     persona: persona.txt                       # персона Личности рядом с профилем (формат - rob_box_dialog.prompts)
     operator_persona: operator_persona.txt     # персона агента-оператора (у робота - ТАРС), тот же формат
+    owners: [speech, memory, music, ...]       # владельцы тулов продукта (порты ядра - rob_box_dialog.owners)
 
 Формат 2 (Ш1б-3) добавил обязательный ``persona``: имя и характер ушли из промпта ядра в профиль. Формат 3 (Ш1б-4) -
-обязательный ``operator_persona``: имя и характер оператора ушли из промпта хоста оператора. Профиль старого формата
-нужной персоны не несёт - это ошибка с подсказкой, а не нейтральная персона: робот со старым профилем молча стал бы
-безымянным ассистентом (или ТАРС - безымянным оператором).
+обязательный ``operator_persona``: имя и характер оператора ушли из промпта хоста оператора. Формат 4 (Ш1в) -
+обязательный ``owners``: какие тулы видит модель, решают владельцы продукта, а не каталог ядра целиком. Профиль старого
+формата нужного поля не несёт - это ошибка с подсказкой, а не нейтральное умолчание: робот со старым профилем молча стал
+бы безымянным ассистентом (или ТАРС - безымянным оператором, или ход - без тулов).
 
 Три случая, решает :func:`resolve_profile`:
 
-* путь не задан - :data:`NEUTRAL`, нейтральные умолчания ядра: без имени, без вейков, нейтральные персоны. Пустая
+* путь не задан - :data:`NEUTRAL`, нейтральные умолчания ядра: без имени, без вейков, нейтральные персоны, без
+  владельцев (модель не видит ни одного тула продукта). Пустая
   таблица вейков - режим «без вейка» (``words.has_wake_word``: адресовано всё) - честное поведение консоли без
   продукта: она отвечает на каждую реплику, а не молчит в ожидании чужого имени. Строку лога об этом строит код
   (:data:`NO_PROFILE_LOG`);
@@ -35,20 +38,26 @@ from pathlib import Path
 from typing import Any, Callable, Mapping, Optional, Tuple
 
 from rob_box_dialog.knowledge import WAKE_NAMESPACES, load_wake_word_namespaces
+from rob_box_dialog.owners import OWNERS, OWNERS_WITHOUT_PROFILE
 from rob_box_dialog.prompts import Persona, neutral_operator_persona, neutral_persona, parse_persona
 
 #: Версия формата ``assistant.yaml``. Ломка формата - новая версия и мажор пакета ядра (ADR-0167 §2.4).
-FORMAT = 3
+FORMAT = 4
 #: Имя файла профиля в каталоге продукта.
 PROFILE_FILE = "assistant.yaml"
 #: Ключи формата: обязательные и необязательные. Чужой ключ - ошибка (опечатка не должна молча выключать вейки).
-REQUIRED_KEYS: Tuple[str, ...] = ("format", "name", "wake_words", "persona", "operator_persona")
+REQUIRED_KEYS: Tuple[str, ...] = ("format", "name", "wake_words", "persona", "operator_persona", "owners")
 #: Старые форматы - ошибка с подсказкой, что в них не хватает.
-OUTDATED: Mapping[int, str] = {1: "persona и operator_persona", 2: "operator_persona"}
+OUTDATED: Mapping[int, str] = {
+    1: "persona, operator_persona и owners",
+    2: "operator_persona и owners",
+    3: "owners (владельцы тулов продукта, порты ядра - rob_box_dialog.owners.OWNERS)",
+}
 OPTIONAL_KEYS: Tuple[str, ...] = ()
 #: Строка лога «профиля нет» - одна на все хосты.
 NO_PROFILE_LOG = (
-    "профиль продукта не задан - умолчания ядра: без имени, нейтральная персона, вейк выключен (адресовано всё)"
+    "профиль продукта не задан - умолчания ядра: без имени, нейтральная персона, вейк выключен (адресовано всё),"
+    " без владельцев тулов (модель тулов продукта не видит)"
 )
 
 
@@ -65,6 +74,8 @@ class ProductProfile:
     wake_operator: Tuple[str, ...]
     persona: Persona
     operator_persona: Persona
+    #: Владельцы тулов продукта (порты :data:`rob_box_dialog.owners.OWNERS`), порядок профиля.
+    owners: Tuple[str, ...] = OWNERS_WITHOUT_PROFILE
     root: Optional[Path] = None
 
     @property
@@ -120,6 +131,19 @@ def _check_keys(file: Path, data: Mapping[str, Any]) -> None:
             raise ProfileError(f"профиль продукта {file}: {key} - имя файла {what} рядом с профилем")
 
 
+def _owners(file: Path, value: Any) -> Tuple[str, ...]:
+    """Владельцы тулов профиля: список имён портов ядра без повторов (пустой - продукт без тулов, честно)."""
+    if not isinstance(value, list) or not all(isinstance(o, str) for o in value):
+        raise ProfileError(f"профиль продукта {file}: owners - список имён владельцев, порты ядра: {list(OWNERS)}")
+    unknown = [o for o in value if o not in OWNERS]
+    twice = sorted({o for o in value if value.count(o) > 1})
+    if unknown or twice:
+        raise ProfileError(
+            f"профиль продукта {file}: owners - незнакомые {unknown}, повторы {twice}; порты ядра: {list(OWNERS)}"
+        )
+    return tuple(value)
+
+
 def _wake_table(file: Path, name: str) -> Tuple[Tuple[str, ...], Tuple[str, ...]]:
     table_file = file.parent / name
     if not table_file.is_file():
@@ -152,6 +176,7 @@ def load_profile(path: "str | os.PathLike[str]") -> ProductProfile:
         wake_operator=operator,
         persona=_persona(file, data["persona"]),
         operator_persona=_persona(file, data["operator_persona"], "operator_persona"),
+        owners=_owners(file, data["owners"]),
         root=file.parent,
     )
 

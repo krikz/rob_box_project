@@ -61,7 +61,7 @@ def session(node: Any) -> Session:
     """Сессия ноды (лениво — для нод из тестов через ``object.__new__``); изменения — в ``/dialog/session``."""
     current = getattr(node, "_session", None)
     if current is None:
-        current = node._session = Session("personality", clock=time.time, wake_words=_wake(node))
+        current = node._session = Session("personality", clock=time.time, wake_words=_wake(node), owners=_owners(node))
         current.subscribe(lambda event: publish(node, event))
     return current
 
@@ -69,6 +69,13 @@ def session(node: Any) -> Session:
 def _wake(node: Any) -> Any:
     """Таблица вейков личности хоста (``dialog_node._wake``, профиль продукта); у нод тестов без неё - ``None``."""
     return getattr(node, "_wake", None)
+
+
+def _owners(node: Any) -> Any:
+    """Владельцы тулов хоста (``dialog_node.product_profile.owners``, ADR-0167 Ш1в); у нод тестов без профиля -
+    ``None``."""
+    profile = getattr(node, "product_profile", None)
+    return None if profile is None else profile.owners
 
 
 def set_speaker(node: Any, ref: SpeakerRef) -> None:

@@ -114,3 +114,16 @@ def test_dictionary_text_lists_every_primary_alias() -> None:
     text = metric_dictionary_text()
     for key, *_rest in METRIC_DICTIONARY:
         assert f"'{key}'" in text
+
+
+def test_tools_section_names_only_tools_of_the_product_owners() -> None:
+    """ADR-0167 Ш1в: раздел инструментов - только тулы владельцев профиля. У робота (все порты) - весь реестр
+    оператора; у продукта без пульта ROS и VESC их тулов нет; без владельцев - ни одного тула, без пустой строки."""
+    robot = load_profile(_PROFILE).owners
+    assert operator_prompt(_rules(), owners=robot) == operator_prompt(_rules(), operator_visible_tools())
+    small = operator_prompt(_rules(), owners=("speech", "memory"))
+    assert not _named(small) & {"ros_list", "topic_echo", "topic_publish", "vesc_telemetry", "navigate_to_waypoint"}
+    assert {"say", "memory_save", "set_voice"} <= _named(small)
+    neutral = operator_prompt(_rules(), owners=())
+    assert TOOLS_HEADER in neutral and "Общие инструменты робота: ." not in neutral
+    assert _named(neutral[neutral.index(TOOLS_HEADER):]) == set()

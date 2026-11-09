@@ -18,6 +18,8 @@ PROFILE = Path(__file__).resolve().parents[3] / "docker" / "sound" / "config" / 
 _PROFILE = load_profile(PROFILE)
 ROBOT_WAKE: Tuple[str, ...] = _PROFILE.wake_personality
 ROBOT_OPERATOR_WAKE: Tuple[str, ...] = _PROFILE.wake_operator
+#: Владельцы тулов профиля робота (ADR-0167 Ш1в): умолчание среза тулов на время теста (conftest).
+ROBOT_OWNERS: Tuple[str, ...] = _PROFILE.owners
 ROBOT_RISKY: Tuple[str, ...] = tuple(
     item["word"]
     for item in yaml.safe_load((PROFILE.parent / "wake_words.yaml").read_text(encoding="utf-8"))["personality"]
