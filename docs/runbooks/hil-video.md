@@ -171,6 +171,11 @@ rm "$STAND_LOCK"                            # замок стенда; напи�
   рядами ящиков и стеллажей шириной около 1.7 м. Колонны здания в 3D-виде заслоняют обзор.
 - Другие миры Fuel: AWS RoboMaker Small House, офис, больница (лицензии проверять на карточке модели в Fuel;
   Apache-2.0 и CC-BY подходят). Не проверялись.
+- Большое здание — свой мир `building` (#4468, `rob_box_sim.building_floor`): этаж 58 × 15 м, 20 кабинетов,
+  стены с collision, в репо. Готовые миры разобраны в PR шага 1 карточки #4468. Запуск — `HIL_SIM_WORLD=building`
+  (обычный `compose.hil.yaml`, без Depot), точки-кабинеты — `ROUTE_GOALS_FILE=/sim_worlds/building.goals.yaml
+  ./runvideo.sh aud_101 dean …` (имена из файла, порядок — как в аргументах). В Gazebo ещё не запускался [код].
+  План с точками: `docs/runbooks/img/hil-building-plan.png` (коробки, прочитанные из `building.sdf`).
 
 ## 8. Чего не делать
 
