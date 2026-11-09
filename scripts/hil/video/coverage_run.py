@@ -66,6 +66,13 @@ def parse_args(argv):
     ap.add_argument("--axis", default="auto", choices=("auto", "x", "y"))
     ap.add_argument("--spacing", type=float, default=0.55, help="шаг полос, м")
     ap.add_argument("--erosion", type=float, default=None, help="полусторона сужения, м (умолч. 0.3364)")
+    ap.add_argument(
+        "--turn-clearance",
+        type=float,
+        default=None,
+        help="до занятого в точке разворота, м (умолч. 0.66: описанный радиус + стоп защиты + padding; 0 — нет)",
+    )
+    ap.add_argument("--no-cross", action="store_true", help="без поперечного прохода по торцам у препятствий")
     ap.add_argument("--waypoint-step", type=float, default=0.0, help="промежуточные позы на полосе, м (0 — нет)")
     ap.add_argument("--timeout", type=float, default=120.0, help="таймаут на позу, с стены")
     ap.add_argument("--max-fail", type=int, default=5, help="столько неудач подряд — стоп")
@@ -185,8 +192,14 @@ def main(argv=None):
         print(f"{ts()} COVERAGE_FAIL нет карты {args.map_topic} или истинной позы", flush=True)
         rclpy.shutdown()
         return 2
-    space = coverage_space(grid, n.gt[:2], erosion_m=args.erosion)
-    plan = plan_coverage(space, axis=args.axis, lane_spacing_m=args.spacing, waypoint_step_m=args.waypoint_step)
+    space = coverage_space(grid, n.gt[:2], erosion_m=args.erosion, turn_clearance_m=args.turn_clearance)
+    plan = plan_coverage(
+        space,
+        axis=args.axis,
+        lane_spacing_m=args.spacing,
+        waypoint_step_m=args.waypoint_step,
+        cross=not args.no_cross,
+    )
     _write_plan(args.out, grid, space, plan)
     if args.plan_only:
         rclpy.shutdown()
