@@ -175,6 +175,23 @@ def test_rule_rewrites_the_draft_with_rule_in_the_prompt(run_env, monkeypatch): 
     assert st.load_state(path)["rules"][0]["text"] == " ".join(RULE.split())
 
 
+def test_text_draft_recorded_as_media_is_edited_as_it_really_is(tmp_path):
+    """Живая проверка 09.11: запись «media», а в Telegram текст — правка не падает, сообщение получает ролик."""
+    clip = tmp_path / "clip.mp4"
+    clip.write_bytes(b"mp4")
+
+    class RealTextMessage(Bot):
+        def edit_message_caption(self, chat_id, message_id, caption, keyboard=None):
+            self.calls.append(("editMessageCaption", caption, message_id))
+            return {"ok": False, "description": "Bad Request: there is no caption in the message to edit"}
+
+    bot = RealTextMessage()
+    record = {"id": "p1", "message_id": 77, "message_kind": "media", "media_path": str(clip), "body_html": "x"}
+    assert jobs.update_draft(bot, record, SHIFU) == (True, "")
+    assert [c for c in bot.calls if c[0] == "editMessageMedia" and c[1] == str(clip) and c[2] == 77]
+    assert record["message_kind"] == "media"
+
+
 # --------------------------------------------------------------------------- 4. раскладка и reply на ролик
 
 

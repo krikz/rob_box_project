@@ -106,12 +106,43 @@ def update_draft(bot, record: dict, chat_id: int, new_media: Optional[Path] = No
         result = bot.edit_message_caption(chat_id, message_id, caption, keyboard=keyboard)
     else:
         result = bot.edit_message_text(chat_id, message_id, caption, keyboard=keyboard)
+    if not result.get("ok"):
+        result = _edit_as_it_really_is(bot, record, chat_id, caption, keyboard, result)
     if result.get("ok"):
         return True, ""
     description = result.get("description") or "Telegram не принял правку"
     if "not modified" in description:
         return False, "новая версия совпала со старой — Telegram не меняет сообщение"
     return False, description
+
+
+def _edit_as_it_really_is(bot, record: dict, chat_id: int, caption: str, keyboard, failed: dict) -> dict:
+    """Запись говорит одно, а сообщение в Telegram другое — правим по тому, что там на деле.
+
+    Живая проверка 09.11: у i20261106-1-post в записи «media» (ролик пересадили вручную),
+    а в Telegram — текстовое сообщение; editMessageCaption: «there is no caption in the
+    message to edit». Есть медиа-файл — текстовое сообщение становится медиа с подписью,
+    нет — правим текст. Обратный случай — правим подпись. Фактический вид пишем в
+    ``record["message_kind"]`` (вызывающий сохраняет его).
+    """
+    description = (failed.get("description") or "").lower()
+    message_id = record.get("message_id")
+    if "no caption" in description:
+        path = smedia.resolve(record.get("media_path") or "")
+        if path is not None:
+            result = bot.edit_message_media(chat_id, message_id, path, caption=caption, keyboard=keyboard)
+            kind = "media"
+        else:
+            result = bot.edit_message_text(chat_id, message_id, caption, keyboard=keyboard)
+            kind = "text"
+    elif "no text" in description:
+        result = bot.edit_message_caption(chat_id, message_id, caption, keyboard=keyboard)
+        kind = "media"
+    else:
+        return failed
+    if result.get("ok"):
+        record["message_kind"] = kind
+    return result
 
 
 def save_fields(state_path: Path, post_id: str, fields: dict) -> None:
@@ -329,7 +360,8 @@ def _refine_text(
     if not ok:
         progress.fail(reason)
         return False
-    _save_fields(state_path, record["id"], {"body_html": updated["body_html"], "tags": updated["tags"]})
+    fields = {"body_html": updated["body_html"], "tags": updated["tags"], "message_kind": updated.get("message_kind")}
+    _save_fields(state_path, record["id"], {k: v for k, v in fields.items() if v is not None})
     progress.finish("Готово: черновик поправлен на месте")
     return True
 
