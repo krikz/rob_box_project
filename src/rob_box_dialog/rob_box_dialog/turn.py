@@ -265,6 +265,8 @@ class _Turn:
     #: Подхват: собеседник хода по правам — автор фразы (``pickup_parties.pickup_speaker``); ``None`` — сессии.
     speaker: Optional[SpeakerRef] = None
     pickup_view: Mapping[str, Any] = field(default_factory=dict)  # раздел ``backlog_pickup``: кто и что сказал
+    #: Таблица вейков личности (``SessionSnapshot.wake_words``, профиль продукта): ей снимают вейк с реплики хода.
+    wake_words: Optional[Tuple[str, ...]] = None
 
 
 def picked_heard(addressed: Addressed) -> Tuple[Tuple[str, str], ...]:
@@ -504,7 +506,8 @@ def sound_owed(snapshot: SessionSnapshot, turn: "_Turn", cmd: Command) -> bool:
     Звук на ПРОСЬБУ («включи какой-нибудь звук») - законный ответ без слов: здесь ``asks_question`` ложно. Слов ждут
     там же, где :func:`words_owed` (:func:`speaks_aloud`); лицо по просьбе (``tools_view.show_asked``) - не трогаем.
     Решает код по структуре команды и реплике человека, а не по тексту ответа модели (ADR-0148)."""
-    if not turn.queried or not speaks_aloud(snapshot) or show_asked(turn.text) or not asks_question(turn.text):
+    asked = asks_question(turn.text, turn.wake_words)
+    if not turn.queried or not speaks_aloud(snapshot) or show_asked(turn.text) or not asked:
         return False
     if cmd.speech or cmd.ask is not None or cmd.perform is not None or cmd.passed:
         return False
@@ -1096,17 +1099,17 @@ def unconfirmed_by_model(log: Any, turn: "_Turn", cmd: Command) -> Command:
     return replace(cmd, actions=tuple(fixed)) if changed else cmd
 
 
-def aloud_asked(text: str) -> bool:
+def aloud_asked(text: str, wake_words: Optional[Sequence[str]] = None) -> bool:
     """Человек явно просил озвучить («скажи вслух», «озвучь», «произнеси», «через робота»): ``tools_view.robot_asked``
     плюс :data:`knowledge.CHAT_ALOUD_EXTRA_FORMS`. Решает слова человека, не модель."""
-    return robot_asked(text) or has_form(text or "", kn.CHAT_ALOUD_EXTRA_FORMS)
+    return robot_asked(text, wake_words) or has_form(text or "", kn.CHAT_ALOUD_EXTRA_FORMS)
 
 
 def unasked_aloud(log: Any, turn: "_Turn", agent: str, cmd: Command) -> Command:
     """Чат Telegram: ``say_aloud`` исполняется только при явной просьбе озвучить (:func:`aloud_asked`, #4505): ответ
     в чат - текстом, динамики робота молчат. Иначе код отбрасывает действие и пишет причину в лог. Подхват бэклога и
     другие агенты не затрагиваются."""
-    if agent != kn.TEXT_CHANNEL_AGENT or turn.pickup or aloud_asked(turn.text):
+    if agent != kn.TEXT_CHANNEL_AGENT or turn.pickup or aloud_asked(turn.text, turn.wake_words):
         return cmd
     dropped = tuple(a for a in cmd.actions if a.tool == kn.ALOUD_TOOL)
     if not dropped:
@@ -1655,7 +1658,7 @@ def robot_owed(snapshot: SessionSnapshot, turn: "_Turn", cmd: Command) -> bool:
     face = cmd.expression
     if cmd.actions or cmd.perform is not None or cmd.passed or shows(face.emotion, face.gesture, face.face):
         return False
-    return robot_asked(turn.text)
+    return robot_asked(turn.text, turn.wake_words)
 
 
 def owed_reason(snapshot: SessionSnapshot, turn: "_Turn", cmd: Command, names: Collection[str] = ()) -> str:
@@ -1667,7 +1670,7 @@ def owed_reason(snapshot: SessionSnapshot, turn: "_Turn", cmd: Command, names: C
     состоянии подсистемы робота без данных о ней (:func:`unbacked_claims`)."""
     if words_owed(snapshot, turn.text, cmd) or read_owed(snapshot, turn, cmd):
         return kn.VIOLATION_SILENT_ANSWER
-    if known_voice_registers(turn_speaker(snapshot, turn), turn.text, cmd.actions):
+    if known_voice_registers(turn_speaker(snapshot, turn), turn.text, cmd.actions, wake_words=turn.wake_words):
         return kn.VIOLATION_KNOWN_VOICE_REGISTER
     if sound_owed(snapshot, turn, cmd):
         return kn.VIOLATION_SOUND_ANSWER
@@ -1817,7 +1820,8 @@ async def _answer_owed(engine: "TurnEngine", turn: _Turn, cmd: Command, snap: Se
     # лицо команды, как и её анимация, показывается — говорит код; последняя итерация после запроса - сначала
     # повтор за словами (:func:`_push_for_words`); ответ без данных тула (``_Owed.reads``) - тул читает код сам
     salvage = (ToolCall(owed.reads),) if owed.reads else cmd.actions
-    needless = known_voice_registers(turn_speaker(engine.session.snapshot, turn), turn.text, salvage)
+    needless = known_voice_registers(turn_speaker(engine.session.snapshot, turn), turn.text, salvage,
+                                     wake_words=turn.wake_words)
     salvage = tuple(a for a in salvage if all(a is not n for n in needless))  # регистрировать нечего (М13 n211)
     return await _close_invalid(engine, turn, Invalid(reason, salvage=salvage), snap, cmd.expression)
 
@@ -2113,7 +2117,7 @@ class TurnEngine:
                      TurnDeadline(self._deadline_s, clock=self._clock), pickup=addressed.pickup,
                      heard=picked_heard(addressed), recent=recent_section(addressed),
                      background=background_section(addressed), background_summary=addressed.background_summary,
-                     command=addressed.command, speaker=speaker, pickup_view=view,
+                     command=addressed.command, speaker=speaker, pickup_view=view, wake_words=snap.wake_words,
                      utterance_id=addressed.utterance_id)
         self.log.begin(turn.turn_id, turn.epoch, turn.text, speaker_label(snap.speaker), turn.heard)
         log_pickup(self._log, addressed, turn)
@@ -2282,7 +2286,7 @@ class TurnEngine:
         if not actions:
             return []
         # «эта песня» / «песня про <тему заказа>» - сочинённая только что (#4216, М11 n707): ссылку ставит код
-        actions = track_ref.bind_last_generated(actions, turn.text, self._generated.stems())
+        actions = track_ref.bind_last_generated(actions, turn.text, self._generated.stems(), wake_words=turn.wake_words)
         cls = kn.call_class(actions[0].tool, actions[0].args)
         turn.waiting = cls
         turn.called += tuple(a.tool for a in actions)

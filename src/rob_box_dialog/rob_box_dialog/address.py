@@ -125,27 +125,27 @@ def _collapse_repeated_wake(rest: str, wake_words: Sequence[str]) -> str:
     return "" if left != rest and is_bare(left) else rest
 
 
-def _yes_no_in_window(frame: Optional[SceneFrame], text: str, t: float) -> bool:
+def _yes_no_in_window(frame: Optional[SceneFrame], text: str, t: float, wake_words: Sequence[str]) -> bool:
     """Окно вопроса да/нет открыто и фраза — «да» или «нет». Окно — с конца вопроса, грейс микрофона включён
     (``in_grace``): целое «да»/«нет» эхом «Сейчас играет …, выключить и зачитать?» не бывает, а кадр
     открыт только после ``SpeechEvent finished`` вопроса."""
     if frame is None or not in_reply_window(frame.payload.get("asked_at"), t, in_grace=True):
         return False
-    reply = classify_reply(text or "", asks_name=False)
+    reply = classify_reply(text or "", asks_name=False, wake_words=wake_words)
     return reply is not None and reply.kind in (YES, NO)
 
 
 def _wakeless_reply(text: str, heard: Heard, question: Optional[SceneFrame],
                     greeting: Optional[SceneFrame], ask: Optional[SceneFrame] = None,
-                    music_playing: bool = False) -> Decision:
+                    music_playing: bool = False, wake_words: Sequence[str] = ()) -> Decision:
     """Фраза без вейка: ответ на вопрос об имени (В17(б)), ответ на приветствие, «да»/«нет» на вопрос
     выступления (О9′), стоп музыки, пока она играет (М11 n511: «врубай все глуши музыку» - вейк потерян под
     музыкой; ход - только команда стопа, собранная кодом, ``words.music_stop_unwoken``), или не адресована."""
-    if text and answer_to_question(question, heard) is not None:
+    if text and answer_to_question(question, heard, wake_words=wake_words) is not None:
         return Addressed(text, IDENTITY_ANSWER)
-    if text and answer_to_greeting(greeting, heard):
+    if text and answer_to_greeting(greeting, heard, wake_words=wake_words):
         return Addressed(text, GREETING_REPLY)
-    if text and _yes_no_in_window(ask, text, heard.t):
+    if text and _yes_no_in_window(ask, text, heard.t, wake_words):
         return Addressed(text, PERFORM_ANSWER)
     stop = music_stop_unwoken(text) if music_playing else None
     if stop:
@@ -209,10 +209,11 @@ def _decide(heard: Heard, backlog: Optional[Backlog], wake_words: Sequence[str],
     rest = (strip_wake_word(text, wake_words) if woken
             else slipped_wake_rest(text, wake_words, music_playing=music_playing))
     if rest is None:
-        return _wakeless_reply(text, heard, question, greeting, ask, music_playing)
+        return _wakeless_reply(text, heard, question, greeting, ask, music_playing, wake_words)
     if woken:
         rest = _collapse_repeated_wake(rest, wake_words)
-    if is_bare(rest) and _yes_no_in_window(ask, rest, heard.t):  # «Робот, да» — ответ на вопрос, не голый вейк
+    # «Робот, да» — ответ на вопрос, не голый вейк
+    if is_bare(rest) and _yes_no_in_window(ask, rest, heard.t, wake_words):
         return Addressed(rest, PERFORM_ANSWER)
     return _greeting_wake(_woken(rest, heard, backlog, _command(text, rest, wake_words) if woken else ""), greeting)
 

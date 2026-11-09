@@ -68,13 +68,13 @@ def refers_to_last_generated(text: str) -> bool:
     return False
 
 
-def names_generated_topic(text: str, topic: Sequence[str]) -> bool:
+def names_generated_topic(text: str, topic: Sequence[str], wake_words: Optional[Sequence[str]] = None) -> bool:
     """Реплика говорит о песне и называет тему последнего заказа (``topic`` - основы :func:`topic_stems` его ``theme``):
     «расскажи про песню про енота» при заказе «про енота-механика». Вейк-слово - обращение, а не тема («Робот, включи
     песню» при песне «про робота» - не она); «вчерашняя/другая песня про енота» - не свежая."""
     if not topic:
         return False
-    tokens = name_tokens(strip_wake_word(text))
+    tokens = name_tokens(strip_wake_word(text, wake_words))
     if not any(w.startswith(_NOUNS) for w in tokens) or any(w.startswith(_OLDER) for w in tokens):
         return False
     said = topic_stems(" ".join(tokens))
@@ -104,14 +104,15 @@ class GeneratedTopic:
         return noted[0]
 
 
-def bind_last_generated(actions: Sequence[ToolCall], text: str, topic: Sequence[str] = ()) -> Tuple[ToolCall, ...]:
+def bind_last_generated(actions: Sequence[ToolCall], text: str, topic: Sequence[str] = (), *,
+                        wake_words: Optional[Sequence[str]] = None) -> Tuple[ToolCall, ...]:
     """Вызовы с ссылкой ``track_ref=last_generated`` там, где реплика (``text``) говорит «эта песня» или называет тему
     последнего заказа генерации (``topic``, :meth:`GeneratedTopic.stems`), и действие берёт id трека
     (:data:`REF_ACTIONS`); остальные вызовы - как были. Что бы модель ни написала в ``track_id``, тул заменит его id
     свежего сочинённого трека; свежего нет - останется её ``track_id``."""
     if not any(a.tool == kn.LIBRARY_TOOL for a in actions):
         return tuple(actions)
-    if not refers_to_last_generated(text) and not names_generated_topic(text, topic):
+    if not refers_to_last_generated(text) and not names_generated_topic(text, topic, wake_words):
         return tuple(actions)
     return tuple(_ref(a) if _takes_ref(a) else a for a in actions)
 

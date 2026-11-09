@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
-from typing import List, Optional
+from typing import List, Optional, Sequence
 
 from rob_box_dialog import knowledge as kn
 from rob_box_dialog.words import introduced_name, nominative_name, strip_wake_word
@@ -65,10 +65,10 @@ def _bare_name(words: List[str]) -> Optional[str]:
     return words[0]
 
 
-def classify_reply(text: str, *, asks_name: bool = True) -> Optional[Reply]:
+def classify_reply(text: str, *, asks_name: bool = True, wake_words: Optional[Sequence[str]] = None) -> Optional[Reply]:
     """Вид ответа во фразе или ``None`` (не похоже на ответ). ``asks_name`` — вопрос «как тебя зовут?» (иначе голое имя
     ответом не считается: на «Саша, это ты?» отвечают да/нет)."""
-    words = _words(strip_wake_word(text or ""))
+    words = _words(strip_wake_word(text or "", wake_words))
     if not words:
         return None
     joined = " ".join(words)
@@ -82,11 +82,12 @@ def classify_reply(text: str, *, asks_name: bool = True) -> Optional[Reply]:
     return Reply(NAME, _display(named)) if named else None
 
 
-def classify_same(text: str, *, max_words: Optional[int] = kn.REPLY_SAME_MAX_WORDS) -> Optional[bool]:
+def classify_same(text: str, *, max_words: Optional[int] = kn.REPLY_SAME_MAX_WORDS,
+                  wake_words: Optional[Sequence[str]] = None) -> Optional[bool]:
     """Ответ на «вы разные люди или это ты?»: ``True`` — один человек, ``False`` — разные, ``None`` — не понять
     (оба сигнала сразу — «не тот самый» — тоже ``None``: склеить потом можно, разлепить нечем). Фраза длиннее
     ``max_words`` — не ответ (без вейка чужой разговор с «это я» внутри); ``None`` — без предела (фраза адресована)."""
-    words = _words(strip_wake_word(text or ""))
+    words = _words(strip_wake_word(text or "", wake_words))
     if not words or (max_words is not None and len(words) > max_words):
         return None
     padded = f" {' '.join(words)} "
@@ -123,10 +124,10 @@ def _correction(words: List[str]) -> Optional[Rename]:
     return None
 
 
-def classify_rename(text: str) -> Optional[Rename]:
+def classify_rename(text: str, *, wake_words: Optional[Sequence[str]] = None) -> Optional[Rename]:
     """Человек просит звать его иначе (решение Шифу 21.10: ошибку STT в имени исправляют фразой) или ``None``.
     Решать, чье это имя менять, — не здесь: только по уверенному голосу (``speaker_adapter.rename_step``)."""
-    words = _words(strip_wake_word(text or ""))
+    words = _words(strip_wake_word(text or "", wake_words))
     corrected = _correction(words)
     if corrected is not None:
         return corrected

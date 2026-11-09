@@ -341,7 +341,8 @@ def question_open(frame: Optional[SceneFrame]) -> bool:
     return frame is not None and frame.kind == "Identity" and frame.payload.get("asked_at") is not None
 
 
-def answer_to_question(frame: Optional[SceneFrame], heard: Any) -> Optional[Reply]:
+def answer_to_question(frame: Optional[SceneFrame], heard: Any, *,
+                       wake_words: Optional[Sequence[str]] = None) -> Optional[Reply]:
     """Фраза без вейка — ответ на вопрос робота (В17(б), решение Шифу 21.10): кадр ``Identity`` жив (TTL — у сессии),
     фраза пришла после открытия окна (``asked_at`` = конец вопроса + грейс микрофона), не позже ``IDENTITY_TTL_S``,
     и ПОХОЖА НА ОТВЕТ по грамматике (:func:`reply_grammar.classify_reply`: имя, да/нет, отказ). DOA и голос — не
@@ -351,20 +352,21 @@ def answer_to_question(frame: Optional[SceneFrame], heard: Any) -> Optional[Repl
         return None
     if not in_reply_window(frame.payload["asked_at"], getattr(heard, "t", 0.0)):
         return None
-    return question_reply(str(frame.payload.get("kind") or ""), str(getattr(heard, "text", "") or ""))
+    return question_reply(str(frame.payload.get("kind") or ""), str(getattr(heard, "text", "") or ""),
+                          wake_words=wake_words)
 
 
-def question_reply(kind: str, text: str) -> Optional[Reply]:
+def question_reply(kind: str, text: str, *, wake_words: Optional[Sequence[str]] = None) -> Optional[Reply]:
     """Похожа ли фраза на ответ на вопрос вида ``kind`` (кадр ``Identity``): на вопрос склейки (``IDENTITY_MERGE_KINDS``)
     — «это я»/«мы разные» (``YES``/``NO``) или да/нет; на вопрос об имени — имя/да/нет/отказ."""
-    rename = classify_rename(text)
+    rename = classify_rename(text, wake_words=wake_words)
     if rename is not None:  # «меня зовут не X, а Y» — ответ-имя, а не «Не»
         return Reply(NAME, rename.name)
     if kind in kn.IDENTITY_MERGE_KINDS + (kn.IDENTITY_SAME_VOICE_KIND,):
-        same = classify_same(text)
+        same = classify_same(text, wake_words=wake_words)
         if same is not None:
             return Reply(YES if same else NO)
-    return classify_reply(text, asks_name=kind in kn.IDENTITY_ASKS_NAME)
+    return classify_reply(text, asks_name=kind in kn.IDENTITY_ASKS_NAME, wake_words=wake_words)
 
 
 def merge_plan(ack: Mapping[str, Any], question: str) -> Dict[str, Any]:
@@ -377,22 +379,23 @@ def merge_plan(ack: Mapping[str, Any], question: str) -> Dict[str, Any]:
             "known_id": str(other.get("speaker_id") or ""), "known_name": str(other.get("name") or "")}
 
 
-def said_same(plan: Mapping[str, Any], text: str) -> Optional[bool]:
+def said_same(plan: Mapping[str, Any], text: str, *, wake_words: Optional[Sequence[str]] = None) -> Optional[bool]:
     """Что человек СКАЗАЛ на вопрос «один человек или двое?»: ``True`` — один, ``False`` — разные, ``None`` — не понять.
     Голое да/нет — ответ только на ``twin`` («Ты тот самый X?») и ``same_voice``; на ``conflict`` вопрос двойной."""
-    same = classify_same(text, max_words=None)
+    same = classify_same(text, max_words=None, wake_words=wake_words)
     if same is None and plan.get("kind") in ("twin", kn.IDENTITY_SAME_VOICE_KIND):
-        reply = classify_reply(text, asks_name=False)
+        reply = classify_reply(text, asks_name=False, wake_words=wake_words)
         same = {YES: True, NO: False}.get(reply.kind) if reply is not None else None
     return same
 
 
-def merge_answer(plan: Mapping[str, Any], text: str, speaker: Mapping[str, Any]) -> Tuple[Optional[bool], bool]:
+def merge_answer(plan: Mapping[str, Any], text: str, speaker: Mapping[str, Any], *,
+                 wake_words: Optional[Sequence[str]] = None) -> Tuple[Optional[bool], bool]:
     """Решение по ответу на вопрос склейки: ``(same, speaker_ok)``. ``same`` — ``True`` склеить, ``False`` — разные,
     ``None`` — не понять (:func:`said_same`).
     «Да» засчитывается, только если ответил один из двух профилей (``speaker`` — результат биометрии ЭТОЙ фразы,
     ): посторонний голос чужую склейку не подтверждает. Длина фразы не ограничена: её уже приняли как ответ."""
-    same = said_same(plan, text)
+    same = said_same(plan, text, wake_words=wake_words)
     current = str(speaker.get("speaker_id") or "") if speaker.get("is_known") else ""
     speaker_ok = bool(current) and current in (plan.get("new_id"), plan.get("known_id"))
     return (None if same and not speaker_ok else same), speaker_ok
@@ -432,21 +435,22 @@ def confident_name(speaker: Optional[Mapping[str, Any]]) -> Optional[str]:
     return str(speaker["name"])
 
 
-def named_self(text: str) -> Optional[str]:
+def named_self(text: str, *, wake_words: Optional[Sequence[str]] = None) -> Optional[str]:
     """Имя, которым человек назвал СЕБЯ в реплике, или ``None``: просьба звать иначе (``classify_rename``: «зови меня
     Y», «запомни меня как Y», «меня зовут не X, а Y») или представление (``words.self_intro_name``: «меня зовут Y», «я
     Y», «привет, я Y»). Новой грамматики нет - обе уже решают, что реплика называет говорящего."""
-    rename = classify_rename(text)
+    rename = classify_rename(text, wake_words=wake_words)
     return rename.name if rename is not None else self_intro_name(text)
 
 
-def known_voice_registers(speaker: Optional[SpeakerRef], text: str, actions: Iterable[Any]) -> Tuple[Any, ...]:
+def known_voice_registers(speaker: Optional[SpeakerRef], text: str, actions: Iterable[Any], *,
+                          wake_words: Optional[Sequence[str]] = None) -> Tuple[Any, ...]:
     """Вызовы ``register_speaker`` команды, которым нечего записать (``knowledge.VIOLATION_KNOWN_VOICE_REGISTER``):
     имя собеседника подтверждено (``confirmed``), модель регистрирует ЭТО ЖЕ имя, а себя человек в реплике не называл
     (:func:`named_self`). М13 n211: «перечисли всех, кого ты сегодня запомнил по голосу» голосом Саши →
     ``register_speaker(name="Саша")`` вместо ответа. Представился («я Саша, чиню технику», акт 2b n701) - вызов законен:
     владелец голосов ответит «уже знаю»; другое имя - судит гейт регистрации (``not_self_introduction``)."""
-    if speaker is None or speaker.name_state != NAME_CONFIRMED or named_self(text):
+    if speaker is None or speaker.name_state != NAME_CONFIRMED or named_self(text, wake_words=wake_words):
         return ()
     return tuple(a for a in actions if a.tool == kn.NAME_OWNER_TOOL and same_name(a.args.get("name"), speaker.name))
 
@@ -492,18 +496,19 @@ def rename_step(rename: Optional[Rename], speaker: Mapping[str, Any]) -> Optiona
                         rename=(str(speaker["speaker_id"]), rename.name))
 
 
-def same_voice_step(plan: Mapping[str, Any], text: str) -> IdentityStep:
+def same_voice_step(plan: Mapping[str, Any], text: str, *, wake_words: Optional[Sequence[str]] = None) -> IdentityStep:
     """Ответ на ``identity.same_voice``: «это я» — согласие; «мы разные» и прочее — голос один, второй записи нет."""
-    if said_same(plan, text):
+    if said_same(plan, text, wake_words=wake_words):
         return IdentityStep(phrases.text("identity.same_voice_ok", name=plan.get("known_name")))
     return IdentityStep(phrases.text("identity.one_voice", name=plan.get("new_name")))
 
 
-def merge_step(plan: Mapping[str, Any], text: str, speaker: Mapping[str, Any]) -> IdentityStep:
+def merge_step(plan: Mapping[str, Any], text: str, speaker: Mapping[str, Any], *,
+               wake_words: Optional[Sequence[str]] = None) -> IdentityStep:
     """Ответ на вопрос склейки: «это я» тем же голосом — склейка ``new → known``; «это я», а голос неуверенный
     (короткий ответ) — просьба шаблона вместо «Не понял ответ»; остальное — :func:`merge_answer`."""
-    same, _ = merge_answer(plan, text, speaker)
-    if same is None and said_same(plan, text) and voice_certainty(speaker) == VOICE_UNSURE:
+    same, _ = merge_answer(plan, text, speaker, wake_words=wake_words)
+    if same is None and said_same(plan, text, wake_words=wake_words) and voice_certainty(speaker) == VOICE_UNSURE:
         return template_step("merge", str(plan.get("known_name") or plan.get("new_name") or ""), plan)
     return IdentityStep(merge_phrase(plan, same), merge=_merge_ids(plan) if same is True else ())
 
@@ -533,7 +538,7 @@ def greeting_open(frame: Optional[SceneFrame]) -> bool:
     return frame is not None and frame.kind == "GreetingReply" and frame.payload.get("asked_at") is not None
 
 
-def answer_to_greeting(frame: Optional[SceneFrame], heard: Any) -> str:
+def answer_to_greeting(frame: Optional[SceneFrame], heard: Any, *, wake_words: Optional[Sequence[str]] = None) -> str:
     """Фраза без вейка после приветствия при встрече (решение Шифу 21.10, уточнено 06.11 в #4509): окно
     ``REPLY_WINDOW_S`` открыто — ответ. Лицо в кадре не условие (человек отвечает, повернувшись к роботу не лицом),
     DOA тоже; окно идёт с конца приветствия (``in_grace``): эхо приветствия отсеивает ``stt_node`` словами по событию
@@ -545,7 +550,7 @@ def answer_to_greeting(frame: Optional[SceneFrame], heard: Any) -> str:
     text = str(getattr(heard, "text", "") or "").strip()
     if not text or not in_reply_window(frame.payload["asked_at"], getattr(heard, "t", 0.0), in_grace=True):
         return ""
-    if is_greeting_reply(text):
+    if is_greeting_reply(text, wake_words):
         return "grammar"
     name = str(frame.payload.get("name") or "").lower()
     return "face" if name and name in (getattr(heard, "faces", ()) or ()) else "voice"

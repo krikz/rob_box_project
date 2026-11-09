@@ -129,7 +129,7 @@ def begin_turn(node: Any, user_input: str) -> None:
     """Tier-1 плана по словам человека этого хода («а потом …»)."""
     planner = _planner(node)
     if planner is not None:
-        planner.begin_turn(user_input)
+        planner.begin_turn(user_input, getattr(node, "_wake", None))
 
 
 def on_speech(node: Any, msg: SpeechEvent) -> None:
