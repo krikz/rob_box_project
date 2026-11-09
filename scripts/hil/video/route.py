@@ -51,8 +51,8 @@ def yaw_of(q):
 
 
 class Mon(Node):
-    def __init__(self):
-        super().__init__("shidi_route", parameter_overrides=[Parameter("use_sim_time", Parameter.Type.BOOL, True)])
+    def __init__(self, name="shidi_route"):
+        super().__init__(name, parameter_overrides=[Parameter("use_sim_time", Parameter.Type.BOOL, True)])
         self.gt = None
         self.em_last = 0.0
         self.em_on = False
@@ -93,54 +93,65 @@ class Mon(Node):
             print(f"{ts()} RECOVERY n={r} sim={self.simt():.2f}", flush=True)
 
 
-def main():
-    rclpy.init()
-    n = Mon()
+def wait_ready(n):
+    """Ждать истинную позу и /clock (до 15 с), затем сервер /navigate_to_pose (до 60 с)."""
     t_end = time.time() + 15
     while (n.gt is None or n.simt() == 0) and time.time() < t_end:
         rclpy.spin_once(n, timeout_sec=0.1)
     cl = ActionClient(n, NavigateToPose, "/navigate_to_pose")
     assert cl.wait_for_server(timeout_sec=60), "нет /navigate_to_pose"
+    return cl
+
+
+def _wait_result(n, gh, timeout):
+    res = gh.get_result_async()
+    w0 = time.time()
+    while not res.done():
+        rclpy.spin_once(n, timeout_sec=0.05)
+        if time.time() - w0 > timeout:
+            print(f"{ts()} TIMEOUT cancel", flush=True)
+            c = gh.cancel_goal_async()
+            rclpy.spin_until_future_complete(n, c, timeout_sec=5)
+            t1 = time.time()
+            while not res.done() and time.time() - t1 < 5:
+                rclpy.spin_once(n, timeout_sec=0.05)
+            return "TIMEOUT"
+    return STATUS.get(res.result().status, res.result().status)
+
+
+def run_goal(n, cl, name, x, y, yaw, timeout=TIMEOUT):
+    """Одна цель NavigateToPose (yaw в градусах): GOAL_START/GOAL_END в лог; вернуть (итог, эпизоды защиты)."""
+    n.recoveries = 0
+    em0 = n.em_episodes
+    g = NavigateToPose.Goal()
+    g.pose.header.frame_id = "map"
+    g.pose.pose.position.x, g.pose.pose.position.y = x, y
+    g.pose.pose.orientation.z = math.sin(math.radians(yaw) / 2)
+    g.pose.pose.orientation.w = math.cos(math.radians(yaw) / 2)
+    s_sim, s_fr = n.simt(), nframes()
+    print(f"{ts()} GOAL_START {name} target=({x},{y},{yaw}) sim={s_sim:.2f} frame={s_fr} gt={n.gt}", flush=True)
+    fut = cl.send_goal_async(g, feedback_callback=n.on_fb)
+    rclpy.spin_until_future_complete(n, fut, timeout_sec=10)
+    gh = fut.result()
+    result = "REJECTED" if gh is None or not gh.accepted else _wait_result(n, gh, timeout)
+    e_sim, e_fr = n.simt(), nframes()
+    err = math.dist(n.gt[:2], (x, y)) if n.gt else float("nan")
+    em = n.em_episodes - em0
+    print(
+        f"{ts()} GOAL_END {name} result={result} sim={e_sim:.2f} frame={e_fr} dur_sim={e_sim - s_sim:.1f} "
+        f"err={err:.3f} em_episodes={em} recoveries={n.recoveries} gt={n.gt}",
+        flush=True,
+    )
+    return result, em
+
+
+def main():
+    rclpy.init()
+    n = Mon()
+    cl = wait_ready(n)
     order = sys.argv[1:] or [g[0] for g in GOALS]
     for name, x, y, yaw in [g for g in GOALS if g[0] in order]:
-        n.recoveries = 0
-        em0 = n.em_episodes
-        g = NavigateToPose.Goal()
-        g.pose.header.frame_id = "map"
-        g.pose.pose.position.x, g.pose.pose.position.y = x, y
-        g.pose.pose.orientation.z = math.sin(math.radians(yaw) / 2)
-        g.pose.pose.orientation.w = math.cos(math.radians(yaw) / 2)
-        s_sim, s_fr = n.simt(), nframes()
-        print(f"{ts()} GOAL_START {name} target=({x},{y},{yaw}) sim={s_sim:.2f} frame={s_fr} gt={n.gt}", flush=True)
-        fut = cl.send_goal_async(g, feedback_callback=n.on_fb)
-        rclpy.spin_until_future_complete(n, fut, timeout_sec=10)
-        gh = fut.result()
-        if not gh.accepted:
-            result = "REJECTED"
-        else:
-            res = gh.get_result_async()
-            w0 = time.time()
-            result = None
-            while not res.done():
-                rclpy.spin_once(n, timeout_sec=0.05)
-                if time.time() - w0 > TIMEOUT:
-                    print(f"{ts()} TIMEOUT cancel", flush=True)
-                    c = gh.cancel_goal_async()
-                    rclpy.spin_until_future_complete(n, c, timeout_sec=5)
-                    t1 = time.time()
-                    while not res.done() and time.time() - t1 < 5:
-                        rclpy.spin_once(n, timeout_sec=0.05)
-                    result = "TIMEOUT"
-                    break
-            if result is None:
-                result = STATUS.get(res.result().status, res.result().status)
-        e_sim, e_fr = n.simt(), nframes()
-        err = math.dist(n.gt[:2], (x, y))
-        print(
-            f"{ts()} GOAL_END {name} result={result} sim={e_sim:.2f} frame={e_fr} dur_sim={e_sim - s_sim:.1f} "
-            f"err={err:.3f} em_episodes={n.em_episodes - em0} recoveries={n.recoveries} gt={n.gt}",
-            flush=True,
-        )
+        run_goal(n, cl, name, x, y, yaw)
         t1 = time.time()
         while time.time() - t1 < 1.5:
             rclpy.spin_once(n, timeout_sec=0.05)
