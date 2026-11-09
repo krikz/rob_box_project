@@ -140,7 +140,7 @@ flowchart TD
 ### 1.5. Модель — команда, а не свободный текст
 
 - Цепочка LLM Личности — параметр `llm_providers` (`docker/sound/config/voice_assistant/dialog_node.yaml`:
-  `deepseek,minimax`), промпт — `src/rob_box_voice/prompts/master_prompt_compact.txt` плюс правила из
+  `deepseek,minimax`), промпт — основа `src/rob_box_dialog/rob_box_dialog/prompts/personality.txt` с персоной из профиля робота (`docker/sound/config/persona.txt`, ADR-0167 Ш1б-3) плюс правила из
   `knowledge.prompt_rules` (`dialog_v2_ports.py:374-383`). Сборка — `assemble_llm` → `build_llm_chain`
   (`dialog_v2_ports.py:359-371`, `src/rob_box_harness/rob_box_harness/core/assembly.py:152`): цепочка с учётом здоровья
   провайдеров, каждый провайдер обёрнут **режимом команд** моста.
