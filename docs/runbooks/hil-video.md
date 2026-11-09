@@ -116,6 +116,16 @@ ssh ros2@10.1.1.250 'grep -E "PLAN|UNREACHABLE|GOAL_END|EM_ON|COVERAGE_" /home/r
 
 - Лог в формате `route.py` (TRACK, GOAL_START/GOAL_END, EM_ON/EM_OFF, RECOVERY). Недостижимую позу исполнитель
   пропускает и считает; после `--max-fail` (5) неудач подряд останавливается, остаток — `NOT_SENT`.
+- Итог `COVERAGE_DONE`: `coverage=` — доля **покрываемого** пола (до чего корпус дотягивается из достижимых
+  центров) под корпусом по правде Gazebo; `coverage_free=` — доля **всего свободного** пола карты (с узкими
+  местами и полосой у стен). Первая говорит, как исполнен план, вторая — сколько склада реально проехано.
+  В строке `PLAN` то же для плана: `plan_coverage` и `plan_coverage_free`. Исходы целей — короткие имена
+  (`SUCCEEDED`, `ABORTED`, `TIMEOUT`, `INTERRUPTED`…): `STATUS_*` из `route.run_goal` нормализует
+  `GoalOutcome.from_route` (09.11 без этого 20 успехов засчитались неудачами).
+- **Остановить обход**: `docker exec rob-box-hil-gazebo pkill -INT -f 'python3 -u /coverage_run.py'` (или
+  `-TERM`). Исполнитель отменяет текущую цель (`INTERRUPTED cancel` в логе, исход `INTERRUPTED`), шлёт нулевую
+  скорость в `/cmd_vel` (`HALT`), остаток — `NOT_SENT`, и пишет `COVERAGE_DONE … stop=interrupted_SIGINT
+  interrupted=yes` по пройденному. Второй сигнал — выход сразу, без итога.
 - Пересчёт покрытия по логу без ROS: `python3 -m rob_box_sim.coverage_metric out/coverage/plan_map.npz
   out/coverage.log --out cov.png` (зелёное — покрыто, красное — пропущено, оранжевое — свободно, но корпусу
   недоступно: запас padding, узкие места, пол за проходом уже габарита).

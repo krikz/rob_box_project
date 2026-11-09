@@ -117,24 +117,33 @@ def wait_ready(n):
     return cl
 
 
-def _wait_result(n, gh, timeout):
+def _cancel(n, gh, res, why):
+    print(f"{ts()} {why} cancel", flush=True)
+    c = gh.cancel_goal_async()
+    rclpy.spin_until_future_complete(n, c, timeout_sec=5)
+    t1 = time.time()
+    while not res.done() and time.time() - t1 < 5:
+        rclpy.spin_once(n, timeout_sec=0.05)
+    return why
+
+
+def _wait_result(n, gh, timeout, stop=None):
     res = gh.get_result_async()
     w0 = time.time()
     while not res.done():
         rclpy.spin_once(n, timeout_sec=0.05)
+        if stop is not None and stop():
+            return _cancel(n, gh, res, "INTERRUPTED")
         if time.time() - w0 > timeout:
-            print(f"{ts()} TIMEOUT cancel", flush=True)
-            c = gh.cancel_goal_async()
-            rclpy.spin_until_future_complete(n, c, timeout_sec=5)
-            t1 = time.time()
-            while not res.done() and time.time() - t1 < 5:
-                rclpy.spin_once(n, timeout_sec=0.05)
-            return "TIMEOUT"
+            return _cancel(n, gh, res, "TIMEOUT")
     return STATUS.get(res.result().status, res.result().status)
 
 
-def run_goal(n, cl, name, x, y, yaw, timeout=TIMEOUT):
-    """Одна цель NavigateToPose (yaw в градусах): GOAL_START/GOAL_END в лог; вернуть (итог, эпизоды защиты)."""
+def run_goal(n, cl, name, x, y, yaw, timeout=TIMEOUT, stop=None):
+    """Одна цель NavigateToPose (yaw в градусах): GOAL_START/GOAL_END в лог; вернуть (итог, эпизоды защиты).
+
+    ``stop()`` → True (сигнал оператора) — цель отменяется, итог ``INTERRUPTED``.
+    """
     n.recoveries = 0
     em0 = n.em_episodes
     g = NavigateToPose.Goal()
@@ -147,7 +156,7 @@ def run_goal(n, cl, name, x, y, yaw, timeout=TIMEOUT):
     fut = cl.send_goal_async(g, feedback_callback=n.on_fb)
     rclpy.spin_until_future_complete(n, fut, timeout_sec=10)
     gh = fut.result()
-    result = "REJECTED" if gh is None or not gh.accepted else _wait_result(n, gh, timeout)
+    result = "REJECTED" if gh is None or not gh.accepted else _wait_result(n, gh, timeout, stop)
     e_sim, e_fr = n.simt(), nframes()
     err = math.dist(n.gt[:2], (x, y)) if n.gt else float("nan")
     em = n.em_episodes - em0

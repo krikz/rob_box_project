@@ -108,7 +108,13 @@ class CoverageResult:
 
     @property
     def pct(self) -> float | None:
+        """Доля «покрываемого» (то, до чего корпус дотягивается из достижимых центров) под корпусом, %."""
         return round(100.0 * self.covered_m2 / self.coverable_m2, 2) if self.coverable_m2 > 0 else None
+
+    @property
+    def free_pct(self) -> float | None:
+        """Доля всего свободного пола карты под корпусом, %: сюда входит и то, куда корпус не пролезает."""
+        return round(100.0 * self.free_covered_m2 / self.free_m2, 2) if self.free_m2 > 0 else None
 
 
 def coverage_result(space: CoverageSpace, covered: np.ndarray) -> CoverageResult:
@@ -147,20 +153,43 @@ class GoalOutcome:
     result: str  # SUCCEEDED | ABORTED | CANCELED | TIMEOUT | REJECTED | NOT_SENT
     em_episodes: int = 0
 
+    @classmethod
+    def from_route(cls, name: str, raw: object, em_episodes: int = 0) -> "GoalOutcome":
+        """Исход ``route.run_goal`` → короткое имя: ``STATUS_SUCCEEDED`` (имя из ``GoalStatus``) → ``SUCCEEDED``.
+
+        Одно место правды: HIL Depot 09.11 (#4560) — 20 успехов подряд засчитались неудачами, потому что
+        ``run_goal`` отдаёт ``STATUS_*``, а сравнение было с ``SUCCEEDED``. Лог ``GOAL_END`` не меняется.
+        """
+        s = str(raw)
+        return cls(name, s[len("STATUS_") :] if s.startswith("STATUS_") else s, em_episodes)
+
+    @property
+    def succeeded(self) -> bool:
+        return self.result == "SUCCEEDED"
+
+
+def _pct(v: float | None) -> str:
+    return "n/a" if v is None else f"{v:.1f}%"
+
 
 def run_summary(outcomes: Sequence[GoalOutcome], cov: CoverageResult, sim_s: float, stop_reason: str = "") -> str:
-    """Итоговая строка обхода: числа только из исходов и метрики."""
+    """Итоговая строка обхода: числа только из исходов и метрики.
+
+    ``coverage`` — от покрываемого (``coverable_m2``), ``coverage_free`` — от всего свободного пола
+    (``free_m2``). ``interrupted`` — обход прерван сигналом (``stop=interrupted_SIGINT``), итог по пройденному.
+    """
     by = Counter(o.result for o in outcomes)
-    ok = by.pop("SUCCEEDED", 0)
+    ok = sum(o.succeeded for o in outcomes)
+    by.pop("SUCCEEDED", None)
     not_sent = by.pop("NOT_SENT", 0)
     failed = ", ".join(f"{k}={v}" for k, v in sorted(by.items())) or "-"
-    pct = "n/a" if cov.pct is None else f"{cov.pct:.1f}%"
+    stop = stop_reason or "end_of_plan"
     return (
         f"COVERAGE_DONE poses={len(outcomes)} succeeded={ok} skipped={sum(by.values())} ({failed}) "
-        f"not_sent={not_sent} stop={stop_reason or 'end_of_plan'} "
+        f"not_sent={not_sent} stop={stop} interrupted={'yes' if stop.startswith('interrupted') else 'no'} "
         f"em_episodes={sum(o.em_episodes for o in outcomes)} sim_s={sim_s:.1f} "
-        f"coverage={pct} covered_m2={cov.covered_m2:.1f} coverable_m2={cov.coverable_m2:.1f} "
-        f"free_covered_m2={cov.free_covered_m2:.1f} free_m2={cov.free_m2:.1f}"
+        f"coverage={_pct(cov.pct)} covered_m2={cov.covered_m2:.1f} coverable_m2={cov.coverable_m2:.1f} "
+        f"coverage_free={_pct(cov.free_pct)} free_covered_m2={cov.free_covered_m2:.1f} free_m2={cov.free_m2:.1f}"
     )
 
 
@@ -225,7 +254,8 @@ def main(argv: list[str] | None = None) -> int:
     res = coverage_result(space, covered)
     known = np.asarray(grid.data).reshape(grid.height, grid.width) >= 0
     img = write_image(args.out, coverage_rgb(space, covered, known))
-    print(json.dumps({**res.__dict__, "pct": res.pct, "samples": len(track), "image": str(img)}, ensure_ascii=False))
+    out = {**res.__dict__, "pct": res.pct, "free_pct": res.free_pct, "samples": len(track), "image": str(img)}
+    print(json.dumps(out, ensure_ascii=False))
     return 0
 
 
