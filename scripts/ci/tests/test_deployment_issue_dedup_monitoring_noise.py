@@ -7,9 +7,10 @@
 
 — слово «Error» в тексте INFO-строки не делает её ошибкой, а на Raspberry Pi DMI
 нет никогда. Плюс две известные проблемы мониторинга, у которых уже есть свои
-issue (#3664 п.2 — cadvisor слеп на Docker 29; #3659 — promtail со старым
-клиентом Docker API): они понижены с critical до warning (видны в отчёте, но
-deploy-issue не заводят).
+issue (#3659 — promtail со старым клиентом Docker API): она понижена с critical
+до warning (видна в отчёте, но deploy-issue не заводит). Слепота cadvisor на
+Docker 29 (#3664 п.2) вылечена cadvisor v0.60.6 (#4336) — её понижение снято, рецидив
+снова critical.
 
 Строки ниже — настоящие (из Deploy and Verify run 39322722203 и issue #3659);
 синтетические только 64-символьные id контейнеров, которые в issue обрезаны.
@@ -134,9 +135,9 @@ def test_klog_regexp_requires_the_full_klog_header() -> None:
 
 
 @pytest.mark.parametrize("scope", ["vision", "sound"])
-def test_cadvisor_layer_id_error_is_demoted_to_warning(scope: str) -> None:
-    assert critical(LAYER_ID_LINE, scope) is None
-    assert warning(LAYER_ID_LINE, scope) == LAYER_ID_LINE
+def test_cadvisor_layer_id_error_is_critical_again_after_3664_fix(scope: str) -> None:
+    # #3664 п.2 вылечен (cadvisor v0.60.6): рецидив «слепоты» больше не прячется как warning.
+    assert critical(LAYER_ID_LINE, scope) == LAYER_ID_LINE
 
 
 @pytest.mark.parametrize("scope", SCOPES)
@@ -178,7 +179,7 @@ def test_old_docker_client_error_outside_promtail_discovery_stays_critical() -> 
 
 def test_known_monitoring_issues_do_not_mask_real_error_in_the_same_log() -> None:
     real = "[ERROR] [1729371000.123] [vision_hailo_node]: HEF loader failed: HailoRTStatusException(63)"
-    logs = "\n".join([LAYER_ID_LINE, PROMTAIL_OLD_CLIENT_LINE, GCE_INFO_LINES["vision"], real])
+    logs = "\n".join([PROMTAIL_OLD_CLIENT_LINE, GCE_INFO_LINES["vision"], real])
 
     assert critical(logs, "vision") == real
 
