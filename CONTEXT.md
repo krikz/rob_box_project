@@ -575,6 +575,10 @@ _Не путать_ с приватностью (`channel_lib.FORBIDDEN`: IP, к
 **Канал** — линия релизов (`dev`, потом `test`, `stable`). **Указатель канала** — тег `krikz/rob_box/release:<канал>`
 в реестре на текущий релиз канала; сдвинуть его — промоушен.
 
+**Ключ подписи релиза** — пара minisign Ed25519. Открытая половина — в репо, `host/chuangong/keys/release.pub`
+(на Pi — `/etc/chuangong/release.pub`); закрытая — только секрет CI `CHUANGONG_SIGNING_KEY`, в репо её нет.
+Релиз подписывают последние шаги `L: Build All Services` (ADR-0168 §5 п. 2).
+
 **Бандл роли** — `bundle-<роль>-<релиз>.tar.gz`: отслеживаемые git файлы роли (compose, config, scripts, `host/<роль>`
 и всё, на что compose ссылается через `../`). Секретов в бандле нет: `.env.secrets` остаётся на хосте.
 

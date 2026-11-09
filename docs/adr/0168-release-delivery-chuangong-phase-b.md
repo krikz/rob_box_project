@@ -6,7 +6,7 @@
 | Дата | 2026-11-09 |
 | Автор | Claude Code (воркер) по брифу координатора, карточка #4375 |
 | Родители | rbt_infra [ADR-0003](https://github.com/krikz/rbt_infra/blob/main/docs/adr/0003-robot-software-delivery.md) (pull-модель «传功», фазы A–D), [ADR-0001](https://github.com/krikz/rbt_infra/blob/main/docs/adr/0001-network-architecture.md) (сеть), [ADR-0002](https://github.com/krikz/rbt_infra/blob/main/docs/adr/0002-naming-school-spirit.md) (имена); ADR-0017 (zenoh REST `:8000`); ADR-0148; ADR-AF-0013 |
-| Решения Шифу | 09.11.2026, `docs/shifu-decisions.md` → `d-20261109-chuangong-python-minisign`: **агент — на Python**, **подпись релиза — minisign** (в ADR-0003 это были U5 и U6) |
+| Решения Шифу | 09.11.2026, `docs/shifu-decisions.md` → `d-20261109-chuangong-python-minisign`: **агент — на Python**, **подпись релиза — minisign** (в ADR-0003 это были U5 и U6); `d-20261109-release-in-build-all`: **релиз собирать в `L: Build All Services`, если это не ломает работу** (В1) |
 | Карточка | #4375, итог обсуждения — комментарий 09.11 в карточке |
 
 Метки: **измерено** — есть вывод команды; **по коду** — прочитано; **оценка** — расчёт из измеренного.
@@ -58,7 +58,7 @@
   Текущие файлы в репо не трогаются.
 
 Команды: `build`, `sign`, `verify` (подпись + схема + sha256 бандлов), `image-versions`, `publish` (стандартный
-Distribution API, без oras). **В `L: Build` не подключено** — это следующий шаг с согласия Шифу (§5).
+Distribution API, без oras). В `L: Build All Services` подключено последними шагами job'а `summary` (§5 п. 2).
 
 ## 3. Агент `chuangong` — `host/chuangong/`
 
@@ -102,10 +102,20 @@ systemd-таймеру раз в 5 минут.
 
 ## 5. Как включить (не сделано, каждый шаг — с согласия Шифу)
 
-1. Ключ подписи: `minisign -G -W -p release.pub -s release.key`; секретный — в секрет CI (`CHUANGONG_SIGNING_KEY`),
-   публичный — на Pi в `/etc/chuangong/release.pub` (ADR-0003: приватный ключ в `miji/`).
-2. `L: Build All Services`: после сборки — `release.py build --resolve-registry http://localhost:5000` → `sign` →
-   `publish` в registry katana (имя релиза — открытый вопрос В3).
+1. Ключ подписи — **сделано** (#4375): пара сгенерирована `chuangong.minisign.generate_keypair()` (формат
+   `minisign -G -W`, без пароля). Открытый ключ — в репо, `host/chuangong/keys/release.pub` (key id
+   `05D4D489635AC556`); на Pi он ляжет в `/etc/chuangong/release.pub` через `install.sh --pubkey
+   host/chuangong/keys/release.pub`. Секретный — только в секрете CI `CHUANGONG_SIGNING_KEY` (ставит координатор;
+   в репо его нет; ADR-0003: приватный ключ в `miji/`).
+2. `L: Build All Services` — **сделано** (#4375, решение Шифу `d-20261109-release-in-build-all`): три последних шага
+   job'а `summary`, все с `continue-on-error: true`. Гейт пропускает релиз с `::warning::`, если нет секрета или
+   не все три Pi собрались, и молча — не на develop. Дальше `release.py build --resolve-registry
+   http://localhost:5000 --image-tag dev-<sha7> --docker-tag dev` → `sign` → `verify` открытым ключом из репо →
+   `publish` в registry katana: `krikz/rob_box/release:<релиз>` и тег канала `dev`. Имя релиза пока
+   `dev-<sha7>-<номер run'а>` (вопрос В3 открыт). Провал шагов не красит сборку; `.image-versions.*`, деплой и
+   робот не меняются. Бандл ролей берётся из коммита сборки, поэтому `.image-versions.dev` в нём — с прошлой
+   сборки; истина об образах — digest в `release.yaml`. Откат — удалить три шага. Гард:
+   `scripts/ci/tests/test_build_all_release_step.py`.
 3. Установка агента на три Pi: `host/chuangong/install.sh --node <роль>` (его зовёт и `setup_node.sh` для
    main/vision/sound) ставит `python3-yaml`, `python3-cryptography`, код в `/opt/rob_box/chuangong`, обёртку
    `/usr/local/bin/chuangong`, каталоги, `/etc/chuangong/chuangong.env` (observe) и юниты. Таймер включается
@@ -135,9 +145,9 @@ systemd-таймеру раз в 5 минут.
 - Фаза C целиком: `current`/`previous`, симлинк, `compose down/up`, миграции, verify, откат, `biguan`/`chuguan`,
   дорога на док, prune, самообновление агента, `update/rollback/cancel` и тикет при провале в `F: Update Robot`.
 - Фаза A: имена вместо `10.1.1.x`, реестр по https, ssh по ключам в `L: Deploy and Verify`, WireGuard, `robot.env`.
-- Подключение к `L: Build`, установка на Pi, ключ подписи, потребитель метрики (§5).
-- `L: Deploy and Verify`, `L: Build All Services`, `scripts/deploy/*`, `hotpatch.sh`, compose и конфиги ролей —
-  без изменений. Единственная правка существующего workflow — шаг тестов в `G: Lint Code`.
+- Установка на Pi, потребитель метрики (§5). Подключение к `L: Build All Services` и ключ подписи — сделаны (§5 п. 1–2).
+- `L: Deploy and Verify`, `scripts/deploy/*`, `hotpatch.sh`, compose и конфиги ролей — без изменений. Правки
+  существующих workflow — шаг тестов в `G: Lint Code` и шаги релиза в конце `L: Build All Services` (§5 п. 2).
 
 ## 8. Открытые вопросы Шифу
 
@@ -158,7 +168,7 @@ systemd-таймеру раз в 5 минут.
 
 | # | Вопрос |
 |---|---|
-| В1 | Когда подключать `release.py` к `L: Build All Services` и заводить секрет CI с ключом подписи? |
+| ~~В1~~ | ~~Когда подключать `release.py` к `L: Build All Services`?~~ — **решено Шифу 09.11: подключить, если не ломает работу** (§5 п. 2) |
 | В2 | Чем снимать `metrics.prom`: node_exporter textfile на каждой Pi или сразу Alloy (ADR-0001)? |
 | В3 | Имя релиза: дата и номер (`2026.11.09-1`, как в ADR-0003) или от коммита (`dev-b704404`)? |
 | В4 | Узкое хранилище zenoh на `robots/*/ops/chuangong/**` в роутере Main Pi — заводить или ждать тика агента? |

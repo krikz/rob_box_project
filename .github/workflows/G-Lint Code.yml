@@ -260,6 +260,7 @@ jobs:
           pip install cryptography
           python -m pytest scripts/build/tests/test_release.py host/chuangong/tests \
             scripts/setup/tests/test_setup_node_wifi_psk.py \
+            scripts/ci/tests/test_build_all_release_step.py \
             -v \
             -o addopts="" \
             -p no:cacheprovider
