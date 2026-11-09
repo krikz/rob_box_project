@@ -44,7 +44,7 @@ import time
 import uuid
 from pathlib import Path
 from types import MappingProxyType
-from typing import Any, Awaitable, Callable, Dict, List, Mapping, Optional
+from typing import Any, Awaitable, Callable, Dict, List, Mapping, Optional, Sequence
 
 import rclpy
 from rclpy.node import Node
@@ -212,14 +212,15 @@ async def in_tool_turn(context: Mapping[str, Any], work: Awaitable[Any]) -> Any:
     return await work
 
 
-def voice_turn_context(speakers: Any, uid: str, text: str) -> Dict[str, Any]:
+def voice_turn_context(speakers: Any, uid: str, text: str,
+                       wake_words: Optional[Sequence[str]] = None) -> Dict[str, Any]:
     """Контекст хода голосом для MCP-тулов (``tool_turn_context``): реплика и её id, а для гейта ``register_speaker``
     (#2925, ADR-0127 §8) - как человек назвал себя в реплике (``self_intro_name``, код по её словам) и кем голос ЭТОЙ
     реплики уверенно узнан (``known_speaker_name``, из реестра биометрии по ``utterance_id``, читается при вызове тула:
     биометрия приходит, пока идёт LLM). Без этого гейт в v2 молчал и «запомни, что Саша любит чай» голосом Нины
     переименовывало бы живой профиль (#4054). Ход чата Telegram ключей гейта не получает: диктора-голоса у него нет."""
     context: Dict[str, Any] = {"utterance_id": uid or None, "heard_text": text}
-    intro = named_self(text)
+    intro = named_self(text, wake_words=wake_words)
     if intro:
         context["self_intro_name"] = intro
     if uid:
@@ -351,7 +352,7 @@ def build_chats(node: Any, tools: Any, intent_pub: Any, wake: Any, hold: Any = l
     chat_tools = build_chat_tools(node, tools)
 
     def make_engine(chat_id: int) -> TurnEngine:
-        session = Session(kn.TEXT_CHANNEL_AGENT, clock=time.time, session_id=channel_ref(chat_id))
+        session = Session(kn.TEXT_CHANNEL_AGENT, clock=time.time, session_id=channel_ref(chat_id), wake_words=wake)
         base = V2Ports(node, llm, counter, chat_tools, agent=kn.TEXT_CHANNEL_AGENT, intent_pub=intent_pub, log=log,
                        epoch=lambda: session.snapshot.epoch, on_ask=llm_metrics(llm))
         ports = ChatPorts(base, chat_id, send, log, hold, robot, progress)
@@ -380,7 +381,9 @@ class DialogNode(Node):
         self._turn_lock = asyncio.Lock()
         self._turns = TurnsInFlight()
         self._session_pub = self.create_publisher(SessionState, identity_question.SESSION_TOPIC, _LATCHED)
-        self._session = Session("personality", clock=time.time)
+        # Вейки - из профиля робота (ADR-0167 Ш1б): таблица одна на адресацию, сессию и правила хода.
+        self._wake = list(load_profile(str(self.get_parameter("profile_path").value)).wake_personality)
+        self._session = Session("personality", clock=time.time, wake_words=self._wake)
         self._session.subscribe(functools.partial(identity_question.publish, self))
         self._shift = ShiftLog()  # журнал смены (#4076): живёт дольше сессии разговора
         self._session.subscribe(self._shift.observe)
@@ -388,7 +391,6 @@ class DialogNode(Node):
         reply_pub = self.create_publisher(Float32, echo_window.REPLY_WINDOW_TOPIC, 10)  # окно ответа → stt_node (#4509)
         self.announce_reply_window = functools.partial(publish_seconds, reply_pub)
         self._scenes = SceneDirector(self._session, self._restore_voice, robot_default_voice())
-        self._wake = list(load_profile(str(self.get_parameter("profile_path").value)).wake_personality)
         self._backlog = Backlog()
         self._speakers = UtteranceSpeakerRegistry()
         self._music = MusicStateMemory()
@@ -479,7 +481,7 @@ class DialogNode(Node):
             return
         greeting_window.take_reply(self, decision.source, heard)  # окно после приветствия снимает первая фраза
         self._interrupt(decision.text, uid, "utterance")
-        turn = in_tool_turn(voice_turn_context(self._speakers, uid, decision.text), self._turn(decision))
+        turn = in_tool_turn(voice_turn_context(self._speakers, uid, decision.text, self._wake), self._turn(decision))
         self.last_turn = self._turns.add(asyncio.run_coroutine_threadsafe(turn, self._loop), uid)
 
     def _on_chat(self, chat_id: int, text: str, now: float) -> None:

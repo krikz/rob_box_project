@@ -11,7 +11,7 @@ import time
 import uuid
 from dataclasses import dataclass, field, replace
 from types import MappingProxyType
-from typing import Any, Callable, List, Mapping, Optional, Tuple
+from typing import Any, Callable, List, Mapping, Optional, Sequence, Tuple
 
 from rob_box_core.speaker_wire import NAME_CONFIRMED, NAME_CONTESTED, NAME_TENTATIVE, NAME_UNKNOWN
 from rob_box_dialog import knowledge as kn
@@ -96,6 +96,9 @@ class SessionSnapshot:
     speaking: bool = False
     #: Последний канал громкости, который трогали (``knowledge.VOLUME_CHANNELS``): «громче» в тишине — он.
     volume_channel: str = "tts"
+    #: Таблица вейков личности из профиля продукта (ADR-0167 Ш1б): ей правила снимают вейк с реплики (грамматика
+    #: Tier-1, ответы на вопросы, перебивание). Ставит хост при создании сессии; ``None`` - хост не передал.
+    wake_words: Optional[Tuple[str, ...]] = None
 
     def top(self, kind: str) -> Optional[SceneFrame]:
         """Верхний кадр этого вида или ``None``."""
@@ -129,14 +132,16 @@ class Session:
     """Владелец сессии одного агента. Писать в неё может только код через эти методы."""
 
     def __init__(self, agent: str, clock: Callable[[], float] = time.monotonic,
-                 session_id: Optional[str] = None) -> None:
-        """``session_id`` — имя сессии канала (телеграм: ``telegram:<chat_id>``, §9.2); ``None`` — новое uuid."""
+                 session_id: Optional[str] = None, wake_words: Optional[Sequence[str]] = None) -> None:
+        """``session_id`` — имя сессии канала (телеграм: ``telegram:<chat_id>``, §9.2); ``None`` — новое uuid.
+        ``wake_words`` — таблица вейков личности из профиля продукта (``profile.ProductProfile.wake_personality``)."""
         if agent not in kn.AGENTS:
             raise ValueError(f"Session: agent must be one of {kn.AGENTS}, got {agent!r}")
         self._clock = clock
         self._listeners: List[Listener] = []
         self._snap = SessionSnapshot(agent=agent, session_id=session_id or uuid.uuid4().hex, epoch=0,
-                                     started_at=clock())
+                                     started_at=clock(),
+                                     wake_words=None if wake_words is None else tuple(wake_words))
 
     @property
     def snapshot(self) -> SessionSnapshot:

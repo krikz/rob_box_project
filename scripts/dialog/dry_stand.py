@@ -844,7 +844,7 @@ class DryStand:
         self.speech = FakeSpeech(self.emit)
         #: Выступления хода, взятые фейковым владельцем (:meth:`DryPorts.perform`): ``(turn_id, сегментов)``.
         self.performed: List[Tuple[str, int]] = []
-        self.session = Session(kn.AGENTS[0], clock=self.clock.now)
+        self.session = Session(kn.AGENTS[0], clock=self.clock.now, wake_words=self.wake)
         self.backlog = Backlog()
         self.music_mem = MusicStateMemory()
         self.library = FakeLibrary(self.clock)

@@ -92,7 +92,7 @@ def interrupt_for(command: Optional[Tier1Command], text: str, snapshot: SessionS
     """Перебивание по уже разобранной Tier-1 команде (ход) — то же решение, что :func:`on_interrupt`."""
     if command is None or command.disputed or command.kind not in _STOP_KINDS:
         return NO_INTERRUPT
-    halt = policy_word(text, wake_words) == HALT
+    halt = policy_word(text, snapshot.wake_words if wake_words is None else wake_words) == HALT
     cancel = frozenset(c for c in _ALL if not survives(c)) | (frozenset({"action.motion"}) if halt else frozenset())
     return Interrupt(policy=HALT if halt else STOP, kind=command.kind,
                      speech_boundary="now" if halt else "as_requested", perform=HALT if halt else STOP,
