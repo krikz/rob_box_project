@@ -19,7 +19,7 @@ from rob_box_dialog.session import Session  # noqa: E402
 from rob_box_dialog.turn import TurnEngine  # noqa: E402
 import pytest  # noqa: E402
 from rob_box_llm.provider import LLMResponse, ToolResult  # noqa: E402
-from rob_box_voice.core import command_bridge  # noqa: E402
+from rob_box_dialog_host import command_bridge  # noqa: E402
 from rob_box_dialog_host.command_bridge import CommandResponse  # noqa: E402
 from rob_box_dialog_host.dialog_v2_ports import (  # noqa: E402
     EMPTY, CallCounter, Counted, V2Ports, counted_wrapper, follow_for, result_of, stage_plan, tool_schema,

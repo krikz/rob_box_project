@@ -17,7 +17,10 @@ HOST = REPO / "src" / "rob_box_dialog_host" / "rob_box_dialog_host"
 VOICE = REPO / "src" / "rob_box_voice" / "rob_box_voice"
 MOVED = ("command_bridge", "command_intent", "command_parser", "dialog_v2_ports", "faq_store", "media_phrases",
          "music_player_state", "speaker_memory", "voice_memory")
-OLD = re.compile(r"rob_box_voice\.core\.(%s)(?![\w])|rob_box_voice\.tts_voice_registry(?![\w])" % "|".join(MOVED))
+OLD = re.compile(
+    r"rob_box_voice\.core\.(%(m)s)(?![\w])|rob_box_voice\.tts_voice_registry(?![\w])"
+    r"|from rob_box_voice(\.core)? import [^\n#]*\b(%(m)s|tts_voice_registry)\b" % {"m": "|".join(MOVED)}
+)
 #: Где ищем старые пути: код, тесты, скрипты и CI (история - ADR, планы, отчёты, evidence - как написана).
 ROOTS = ("src", "scripts", "tests", ".github", "docker", "packaging")
 
