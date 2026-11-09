@@ -708,3 +708,12 @@ tools(56): clear_waypoints, compose_music, ..., stop_music, ...
 Якорь считается в логе предыдущей фразы шага (после её `ПРИНЯТО`): N-й `SpeechEvent started` либо N-я `🔎 LLM REQUEST START`; играем через `delay_sec` по часам робота. Предыдущий шаг ждёт не конца ответа, а этого якоря. Не наступил за потолок — `SKIP barge_in_anchor_missing` (не PASS). `segment_started` считает N-й `SpeechEvent started` окна фразы: в строке лога нет `turn_id`/id выступления, отличить куплет от обычной реплики по логу нельзя.
 
 Поле шага `silent_ok: true` (или `expect: "silent_ok"`) — ход без речи допустим (`stage=done`, `SpeechEvent` нет).
+
+### Сбой стенда: фраза не сыграна (#4608)
+
+`play_eq_wav` проверяет код возврата `paplay` и строку `pa_context_connect() failed` в его выводе; при провале — до двух
+повторов (`E2E_PLAY_RETRIES`, пауза `E2E_PLAY_RETRY_PAUSE`). Не вышло — шаг получает `FAIL stand_play_failed (<причина>)`:
+это сбой стенда, роботу фраза не звучала, `no_accept` ему не пишется. Перед актом `stand_audio_preflight` (`pactl info`)
+проверяет PulseAudio: сервер не отвечает — акт не стартует, маркер `E2E_STAND_FAIL` (для актов 1–2 раннер останавливает марафон).
+Сводка акта считает такие шаги отдельно (`E2E_SUMMARY … stand_play_failed=N`, `summary.json` → `steps.stand_play_failed`,
+колонка **`stand_play_failed`** `summary.tsv`); в `fail` и `failed_labels` они не входят.

@@ -104,7 +104,8 @@ SUMMARY="$REPORT/summary.tsv"
 # #3989: recovered — шагов, прошедших после восстановления харнессом (не чистый PASS); act_recover — что харнесс
 # чинил на старте акта (утечка прошлого акта: music, silenced — те же виды, что в маркере
 # «E2E_RECOVER <вид> at_act_start», e2e_events.ACT_RECOVERY). Оба — из строки E2E_SUMMARY лога акта.
-printf 'act\ttitle\tstability\tsteps\trun_id\tconclusion\turl\trecovered\tact_recover\n' > "$SUMMARY"
+# #4608: stand_play_failed — шагов, где харнесс не смог сыграть фразу (PulseAudio стенда): сбой стенда, не FAIL робота.
+printf 'act\ttitle\tstability\tsteps\trun_id\tconclusion\turl\trecovered\tact_recover\tstand_play_failed\n' > "$SUMMARY"
 
 log() { printf '[night %s] %s\n' "$(date -u +%H:%M:%S)" "$*"; }
 
@@ -349,7 +350,7 @@ while IFS=$'\t' read -r a_n a_title a_stab a_steps a_scn a_acc a_phase a_hold; d
             ${HOLD_VALUES[@]+"${HOLD_VALUES[@]}"} \
             2> >(while IFS= read -r _l; do log "  dispatch: $_l"; done); then
         log "  ❌ dispatch не прошёл (акт $a_n) — пропускаю"
-        printf '%s\t%s\t%s\t%s\t-\tdispatch_failed\t-\t-\t-\n' \
+        printf '%s\t%s\t%s\t%s\t-\tdispatch_failed\t-\t-\t-\t-\n' \
             "$a_n" "$a_title" "$a_stab" "$a_steps" >> "$SUMMARY"
         overall=1
         continue
@@ -367,7 +368,7 @@ while IFS=$'\t' read -r a_n a_title a_stab a_steps a_scn a_acc a_phase a_hold; d
     done
     if [ -z "$run_id" ]; then
         log "  ⚠️ run_id не определился — акт запущен, но статус не отследить"
-        printf '%s\t%s\t%s\t%s\t-\tunknown\t-\t-\t-\n' \
+        printf '%s\t%s\t%s\t%s\t-\tunknown\t-\t-\t-\t-\n' \
             "$a_n" "$a_title" "$a_stab" "$a_steps" >> "$SUMMARY"
         overall=1
         continue
@@ -402,14 +403,17 @@ while IFS=$'\t' read -r a_n a_title a_stab a_steps a_scn a_acc a_phase a_hold; d
     gh run view "$run_id" --repo "$REPO_SLUG" --log > "$act_log" 2>/dev/null || true
     recovered="$(marathon_summary_value "$act_log" recovered)"
     act_recover="$(marathon_summary_value "$act_log" act_recover)"
+    stand_play_failed="$(marathon_summary_value "$act_log" stand_play_failed)"
     _act_steps="$(marathon_step_statuses "$act_log")"
     [ -n "$_act_steps" ] && PRIOR_STEPS="${PRIOR_STEPS:+$PRIOR_STEPS,}$_act_steps"
     [ "$recovered" != "-" ] && [ "$recovered" != "0" ] \
         && log "  восстановлено харнессом шагов: $recovered (OK recovered_*, не чистый PASS)"
     [ "$act_recover" != "-" ] && log "  на старте акта харнесс чинил утечку прошлого акта: $act_recover"
 
-    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
-        "$a_n" "$a_title" "$a_stab" "$a_steps" "$run_id" "$conclusion" "$url" "$recovered" "$act_recover" >> "$SUMMARY"
+    [ "$stand_play_failed" != "-" ] && [ "$stand_play_failed" != "0" ] \
+        && log "  ⚠️ сбой СТЕНДА: фраз не сыграно (PulseAudio) в $stand_play_failed шагах — это не FAIL робота (#4608)"
+    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+        "$a_n" "$a_title" "$a_stab" "$a_steps" "$run_id" "$conclusion" "$url" "$recovered" "$act_recover" "$stand_play_failed" >> "$SUMMARY"
 
     [ "$conclusion" != "success" ] && overall=1
 
@@ -428,8 +432,8 @@ while IFS=$'\t' read -r a_n a_title a_stab a_steps a_scn a_acc a_phase a_hold; d
     # ровно на фиче — останавливать там марафон было бы ошибкой.
     if [ "$STOP_ON_FOUNDATION_FAIL" = "1" ] && [ "$conclusion" != "success" ] \
        && { [ "$a_n" = "1" ] || [ "$a_n" = "2" ]; }; then
-        if marathon_has_marker "$act_log" 'E2E_NO_REACTION|E2E_INFRA_FAIL'; then
-            log "❌ фундаментальный акт $a_n не отвечает (no_reaction/infra) — останавливаю марафон"
+        if marathon_has_marker "$act_log" 'E2E_NO_REACTION|E2E_INFRA_FAIL|E2E_STAND_FAIL'; then
+            log "❌ фундаментальный акт $a_n не отвечает (no_reaction/infra/stand) — останавливаю марафон"
             log "   (STOP_ON_FOUNDATION_FAIL=0 чтобы продолжать вопреки)"
             break
         fi
