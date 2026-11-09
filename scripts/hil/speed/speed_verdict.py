@@ -433,7 +433,10 @@ def next_speed(
     С ``start``; провал → половина (до сетки ``step``); есть «проходит» и «падает» выше — середина между
     ними по сетке, пока разрыв > ``step``. Незаконченная точка (PENDING) — её и доделать.
     """
-    pending = sorted(v for v, s in verdicts.items() if s == "PENDING")
+    top_pass = max((v for v, s in verdicts.items() if s == PASS), default=-1.0)
+    # незаконченная точка ниже уже проходящей границы не меняет — её не доделываем
+    pending = sorted(v for v, s in verdicts.items() if s == "PENDING" and v > top_pass)
+    verdicts = {v: s for v, s in verdicts.items() if s != "PENDING"}
     if pending:
         return pending[0], "точка не досчитана"
     passes = sorted(v for v, s in verdicts.items() if s == PASS)
@@ -488,12 +491,13 @@ def next_run(ledger: Sequence[Mapping], cls: str, speed: float, crit: Criteria =
 
 def step(ledger: Sequence[Mapping], cls: str, start: float = 1.0) -> Tuple[Optional[float], Optional[str], int, str]:
     """Следующий прогон дихотомии класса: (скорость, сцена, повтор, пояснение); скорость None — граница найдена."""
-    speeds_seen = sorted({round(r["speed"], 3) for r in ledger if SCENE_CLASS.get(r["scene"]) == cls})
-    for v in speeds_seen:
+    verdicts = point_verdicts(ledger, cls)
+    top_pass = max((v for v, s in verdicts.items() if s == PASS), default=-1.0)
+    for v in sorted(v for v in verdicts if v > top_pass):  # ниже проходящей точки доделывать нечего
         nr = next_run(ledger, cls, v)
         if nr:
             return v, nr[0], nr[1], "доделать точку"
-    v, why = next_speed(point_verdicts(ledger, cls), start=start)
+    v, why = next_speed(verdicts, start=start)
     if v is None:
         return None, None, 0, why
     scene, rep = next_run(ledger, cls, v) or (class_scenes(cls)[0], 1)

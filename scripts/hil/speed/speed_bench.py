@@ -361,7 +361,7 @@ class ObstacleState:
         return ob
 
 
-def _wait_nav2(nav, timeout_s: float = 180.0) -> None:
+def _wait_nav2(nav, timeout_s: float = 420.0) -> None:
     """Как ``waitUntilNav2Active``, но с пределом: сбой discovery не должен висеть до таймаута прогона (09.11:
     19 мин «bt_navigator/get_state service not available» при активном nav2 на Main Pi)."""
     from lifecycle_msgs.srv import GetState

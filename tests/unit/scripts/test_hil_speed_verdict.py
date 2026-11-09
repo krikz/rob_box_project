@@ -276,3 +276,9 @@ def test_cli_run_writes_ledger(tmp_path):
     assert rc == 0
     rows = [json.loads(x) for x in led.read_text(encoding="utf-8").splitlines()]
     assert rows == [{"speed": 0.5, "scene": "turn90", "rep": 1, "label": "", "verdict": "PASS", "reasons": []}]
+
+
+def test_unfinished_point_below_a_passing_one_is_not_redone():
+    led = [row(0.1, "depot", "PASS"), row(0.25, "depot", "PASS"), row(0.25, "depot", "PASS", 2)]
+    led += [row(0.5, "depot", "PASS"), row(0.5, "depot", "FAIL", 2)]
+    assert sv.step(led, "open")[:3] == (0.35, "depot", 1)
