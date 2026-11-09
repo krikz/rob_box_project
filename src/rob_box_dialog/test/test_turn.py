@@ -20,6 +20,7 @@ from rob_box_dialog.session import MusicStateRef, SceneFrame, Session, SpeakerRe
 from rob_box_dialog.turn import (RECENT_ACTIONS, Answer, TurnEngine, done_expression, finish_stage, outcome_phrase,
                                  stop_performance, tier1_actions, tier1_of, words_owed)
 from rob_box_dialog.grammar import Tier1Command
+from robot_wake_fixture import ROBOT_WAKE  # noqa: E402 — тестовый профиль робота
 
 
 class Ports:
@@ -342,7 +343,7 @@ def test_4020_n709_stop_form_stops_music_by_code_then_the_rest_goes_to_llm():
 
 def _heard_turn(engine, text):
     """Реплика с микрофона целиком через адресацию (``address.decide``), как в ноде, — затем ход."""
-    addressed = decide(Heard(text, t=100.0), Backlog(), kn.DEFAULT_WAKE_WORDS)
+    addressed = decide(Heard(text, t=100.0), Backlog(), ROBOT_WAKE)
     assert isinstance(addressed, Addressed)
     return _run_addressed(engine, addressed)
 

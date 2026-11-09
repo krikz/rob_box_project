@@ -1075,7 +1075,9 @@ class MCPServer(Node):
         ollama_url = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
 
         try:
-            self.voice_memory = _VoiceMemory(db_path=db_path, ollama_base_url=ollama_url)
+            # migrations=(): встроенная схема, как на роботе всегда (поток ядра на БД инструментов не годится -
+            # KNOWN GAP в VoiceMemory.__init__); тот же выбор при переключении e2e ниже.
+            self.voice_memory = _VoiceMemory(db_path=db_path, ollama_base_url=ollama_url, migrations=())
             # Issue #2781 — запоминаем боевой путь/ollama_url, чтобы
             # _apply_e2e_mode мог переоткрыть VoiceMemory на e2e_db_path и
             # вернуться обратно, не завися от переменных окружения второй раз.
@@ -1193,6 +1195,7 @@ class MCPServer(Node):
                 self.voice_memory = _VoiceMemory(
                     db_path=target_path,
                     ollama_base_url=self._voice_memory_ollama_url,
+                    migrations=(),
                 )
                 self._voice_memory_e2e_mode_active = enabled
                 if old_memory is not None:

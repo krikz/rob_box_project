@@ -20,12 +20,12 @@ import pytest
 
 from rob_box_core.msg_stub import install_dialog_msgs_stub
 from rob_box_dialog import knowledge as kn
-from rob_box_dialog.words import DEFAULT_WAKE_WORDS
 from rob_box_voice.core import echo_window as ew
+from voice_robot_wake import ROBOT_WAKE  # noqa: E402 — тестовый профиль робота
 
 M = install_dialog_msgs_stub()
 
-WAKE = list(DEFAULT_WAKE_WORDS)
+WAKE = list(ROBOT_WAKE)
 GRACE_S = 2.5
 GREETING, GREETING_ID = "О, Денчик! А я уж думал, ты про меня забыл. Добрый вечер.", "70e67229"
 MIRROR = "Добрый вечер."

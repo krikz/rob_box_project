@@ -105,10 +105,10 @@ alias rbstart-all='cd ~/rob_box_project/docker/vision && docker compose up -d; c
 
 ```bash
 # Проверка статуса с деталями
-alias rbcheck='~/rob_box_project/docker/diagnose_data_flow.sh'
+alias rbcheck='~/rob_box_project/scripts/diagnostics/diagnose_data_flow.sh'
 
 # Системный мониторинг
-alias rbmonitor='~/rob_box_project/docker/monitor_system.sh'
+alias rbmonitor='~/rob_box_project/scripts/diagnostics/monitor_system.sh'
 
 # Проверка проблемных контейнеров (постоянно рестартующихся)
 alias rbfailing='docker ps -a --filter "status=restarting" --format "table {{.Names}}\t{{.Status}}"'

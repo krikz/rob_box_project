@@ -133,11 +133,11 @@ def close(session: Session) -> None:
     session.pop_scene(kn.TOOL_ASK_SCENE)
 
 
-def answer(text: str, question: kn.ToolQuestion) -> Optional[bool]:
+def answer(text: str, question: kn.ToolQuestion, wake_words: Optional[Sequence[str]] = None) -> Optional[bool]:
     """Ответ на вопрос тула по закрытой грамматике (``knowledge.TOOL_ANSWER_*``): реплика без вейка целиком из слов
     «да»/«нет», глагола и предмета вопроса и служебных. Есть «нет» — ``False``; иначе «да» или глагол — ``True``;
     лишнее слово или ни «да», ни глагола — ``None`` (не ответ: решает LLM)."""
-    kinds = [_kind(_norm(w), question) for w in _TOKEN.findall(strip_wake_word(text or ""))]
+    kinds = [_kind(_norm(w), question) for w in _TOKEN.findall(strip_wake_word(text or "", wake_words))]
     if not kinds or None in kinds:
         return None
     if "no" in kinds:
@@ -167,7 +167,7 @@ def reply(session: Session, text: str, source: str) -> Optional[Reply]:
     asked = pending(session) if source in ANSWER_SOURCES else None
     if asked is None:
         return None
-    verdict = answer(text, asked.question)
+    verdict = answer(text, asked.question, session.snapshot.wake_words)
     return Reply(asked, verdict) if verdict is not None else None
 
 

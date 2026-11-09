@@ -14,7 +14,8 @@ Two stores:
   voice_turns      -- every user/assistant exchange (+ FTS5 index + optional vec)
   voice_facts      -- user preferences / habits / names (persists across sessions)
 
-Schema managed via migrations/002_voice_memory.sql (run at init).
+Schema: the migration stream of the core package (``rob_box_core.migrations``, 002_voice_memory.sql and on),
+applied at init; ``migrations=()`` keeps the inline schema (what the robot runs, see ``__init__``).
 
 Usage in DialogueNode:
     from rob_box_voice.core.voice_memory import VoiceMemory
@@ -45,7 +46,9 @@ import struct
 import threading
 import time
 from datetime import datetime
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Sequence, Tuple
+
+from rob_box_core import migrations as core_migrations
 
 logger = logging.getLogger(__name__)
 
@@ -170,7 +173,7 @@ class VoiceMemory:
         self,
         db_path: str,
         session_id: Optional[str] = None,
-        migrations_dir: Optional[str] = None,
+        migrations: Optional[Sequence[core_migrations.Migration]] = None,
         ollama_base_url: Optional[str] = None,
         ollama_model: str = OllamaEmbedder.DEFAULT_MODEL,
         ollama_timeout: float = 5.0,
@@ -179,7 +182,8 @@ class VoiceMemory:
         Args:
             db_path:          Absolute path to SQLite file (created if missing).
             session_id:       Current session tag. Defaults to "YYYYMMDD_HHMMSS".
-            migrations_dir:   Override path to migrations/ directory.
+            migrations:       Migration stream; ``None`` -- the core package stream
+                              (``rob_box_core.migrations.stream()``), ``()`` -- none, inline schema only.
             ollama_base_url:  Ollama HTTP base URL.
                               Default: env OLLAMA_BASE_URL or "http://localhost:11434".
             ollama_model:     Ollama embedding model. Default: "nomic-embed-text".
@@ -199,35 +203,21 @@ class VoiceMemory:
             self.conn.execute("PRAGMA journal_mode = WAL")
             self.conn.execute("PRAGMA synchronous = NORMAL")
 
-        # Resolve migrations dir (4 levels up from core/ -> project root/migrations)
+        # Which stream. ``None`` -> the core package stream (``rob_box_core.migrations``, package data:
+        # ADR-0167 Ш1а; it used to be ``migrations/`` at the checkout root, found 4 levels up from here).
         #
-        # 🔴 KNOWN GAP (live 01.09): this only lands on a real
-        # ``migrations/`` directory when running from the SOURCE tree.
-        # Under the ROS2-installed layout deployed to the robot, this file
-        # lives at ``.../rob_box_voice/lib/python3.*/site-packages/
-        # rob_box_voice/core/voice_memory.py`` — 4 levels up lands on a
-        # nonexistent path, so ``_run_migrations`` silently falls back to
-        # ``_create_schema_inline`` (a no-op against the pre-existing DB).
-        # Pointing this at the deployment's shared ``/migrations`` mount
-        # instead was tried and reverted: that directory is a single
-        # numbered stream covering SEVERAL unrelated databases (waypoints,
-        # music library, github presets...), and running it wholesale
-        # against the tools DB hit a non-idempotent ``ALTER TABLE
-        # ... ADD COLUMN type`` in ``006_music_github_presets.sql`` —
-        # "duplicate column name: type" — because an earlier migration in
-        # that SAME stream had already added it via a different table.
-        # ``_ensure_speaker_id_columns`` below is the narrow, actually-safe
-        # fix: it repairs exactly the missing column this class needs,
-        # regardless of which schema-setup path ran.
-        if migrations_dir:
-            self.migrations_dir = migrations_dir
-        else:
-            self.migrations_dir = os.path.normpath(
-                os.path.join(
-                    os.path.dirname(__file__),
-                    "..", "..", "..", "..", "migrations",
-                )
-            )
+        # 🔴 KNOWN GAP (live 01.09): on the robot the old 4-levels-up path never existed in the ROS2-installed
+        # layout (``.../site-packages/rob_box_voice/core/``), so the robot has always run the INLINE schema
+        # (``_create_schema_inline``, a no-op against the pre-existing DB). Running the full stream against the
+        # tools DB was tried and reverted: the stream covers SEVERAL unrelated databases (waypoints, music library,
+        # github presets...) and hit a non-idempotent ``ALTER TABLE ... ADD COLUMN type`` in
+        # ``006_music_github_presets.sql`` -- "duplicate column name: type". The robot host (``mcp_server``)
+        # therefore passes ``migrations=()`` explicitly: same inline schema as before the move.
+        # ``_ensure_speaker_id_columns`` below is the narrow, actually-safe fix: it repairs exactly the missing
+        # column this class needs, regardless of which schema-setup path ran.
+        self.migrations: Tuple[core_migrations.Migration, ...] = (
+            core_migrations.stream() if migrations is None else tuple(migrations)
+        )
 
         # Must run BEFORE _run_migrations(): on a pre-existing DB missing
         # the column, _create_schema_inline()'s own script fails with
@@ -262,30 +252,14 @@ class VoiceMemory:
     # ------------------------------------------------------------------
 
     def _run_migrations(self) -> None:
-        """Apply pending SQL migrations (tracked by PRAGMA user_version)."""
-        if not os.path.isdir(self.migrations_dir):
+        """Apply pending SQL migrations (tracked by PRAGMA user_version); no stream -- inline schema."""
+        if not self.migrations:
             self._create_schema_inline()
             return
-
-        with self.lock:
-            current = self.conn.execute("PRAGMA user_version").fetchone()[0]
-
-        for fname in sorted(f for f in os.listdir(self.migrations_dir) if f.endswith(".sql")):
-            try:
-                ver = int(fname.split("_", 1)[0])
-            except ValueError:
-                continue
-            if ver <= current:
-                continue
-            sql_path = os.path.join(self.migrations_dir, fname)
-            with open(sql_path, "r", encoding="utf-8") as fh:
-                sql = fh.read()
-            with self.lock, self.conn:
-                self.conn.executescript(sql)
-                self.conn.execute(f"PRAGMA user_version = {ver}")
+        core_migrations.apply(self.conn, self.migrations, self.lock)
 
     def _create_schema_inline(self) -> None:
-        """Fallback schema when migrations/ is absent."""
+        """Schema without the migration stream (``migrations=()``: the robot host)."""
         schema = """
         CREATE TABLE IF NOT EXISTS voice_turns (
             id         INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -342,7 +316,7 @@ class VoiceMemory:
         ``009_voice_memory_speaker_id.sql`` adds ``speaker_id`` to
         ``voice_turns``/``voice_facts`` via a plain (non-idempotent)
         ``ALTER TABLE``, but ``_run_migrations`` never actually reaches it
-        on the deployed robot (see the comment on ``migrations_dir``
+        on the deployed robot (see the comment on ``self.migrations``
         above) — every DB created before this column existed stays
         without it forever, and every query referencing ``speaker_id``
         (nearly all of them — see ``search``/``save_fact``/``save_turn``)
@@ -355,7 +329,7 @@ class VoiceMemory:
         checked via ``PRAGMA table_info`` (so it is a true no-op on a
         database that already has it, unlike the migration's raw
         ``ALTER TABLE``) — see the ``006_music_github_presets.sql``
-        incident in the ``migrations_dir`` comment for why running the
+        incident in the ``self.migrations`` comment for why running the
         full shared migration stream against this DB is NOT safe.
         """
         with self.lock:

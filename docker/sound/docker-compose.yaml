@@ -44,8 +44,11 @@ services:
       test: ["CMD-SHELL", "wget -qO- http://localhost:8000/@/local/router || exit 1"]
       interval: 5s
       timeout: 10s
-      retries: 20
-      start_period: 30s
+      # #4531: холодный старт без RTC (часы прыгают, eth0 поднимается позже docker).
+      # `compose up -d` ждёт healthy роутера один раз, поэтому окно большое:
+      # 60 с start_period + 30 x 5 с. Дальше повторяет юнит (host/sound/robbox-sound.service).
+      retries: 30
+      start_period: 60s
     labels:
       logging: "promtail"
 
@@ -254,8 +257,6 @@ services:
       - sc_synthdefs:/root/.local/share/SuperCollider/synthdefs
       # Renardo/FoxDot reference documentation for MusicSkill LLM context
       - ./config/RENARDO_REFERENCE.md:/renardo_ref/RENARDO_REFERENCE.md:ro
-      # DB migrations (applied idempotently at startup by WaypointStore, FAQStore, etc.)
-      - ../../migrations:/migrations:ro
     mem_limit: 5g  # Voice Assistant + Animations
     memswap_limit: 6g  # RAM 5 GB + swap до 1 GB (issue #2676, ADR-0122)
     # 5 GiB (↑ с 4 GiB после #2676) потому что при cold-start всех 9 нод

@@ -132,13 +132,13 @@ def silent_asked(text: str) -> bool:
     return has_form(text or "", kn.SILENT_SHOW_FORMS) and has_word(text or "", kn.FACE_SHOW_STEMS)
 
 
-def robot_asked(text: str) -> bool:
+def robot_asked(text: str, wake_words: Optional[Sequence[str]] = None) -> bool:
     """Просил ли человек в чате сделать это РОБОТОМ: форма из
     ``knowledge.CHAT_ROBOT_ASK_FORMS`` («покекай роботом», «через робота», «вслух», «развлекай народ»), не названная темой,
     и реплика не справка («Как управлять роботом?», «Почему детям полезно читать вслух?»,
     «найди, что пишет народ» - ответ в чат, робот ничего не делает). Целыми словами: «робота-курьера» - не «через
     робота». Решение - ``words.asks_robot_to_act``, таблицы - ``knowledge``."""
-    return asks_robot_to_act(text or "")
+    return asks_robot_to_act(text or "", wake_words)
 
 
 def show_asked(text: str) -> bool:

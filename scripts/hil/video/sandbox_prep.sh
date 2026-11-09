@@ -27,7 +27,8 @@ tar cf - -C scripts/hil/video . | "${SSH[@]}" "$HOST" "tar xf - -C '$DIR'"
 "${SSH[@]}" "$HOST" "mkdir -p '$DIR/pylib'" </dev/null
 tar cf - -C src/rob_box_sim --exclude=__pycache__ rob_box_sim | "${SSH[@]}" "$HOST" "tar xf - -C '$DIR/pylib'"
 # 3. CRLF: на Windows git отдаёт .sh/.py с \r, и ros_with_namespace.sh падает «/bin/bash^M: bad interpreter» (код 127)
-"${SSH[@]}" "$HOST" "cd '$DIR' && find . -path ./fuel -prune -o -type f \( -name '*.sh' -o -name '*.py' -o -name '*.yaml' -o -name '*.json5' -o -name '*.sdf' \) -exec sed -i 's/\r\$//' {} +" </dev/null
+# fix_crlf.sh (приехал в шаге 2, сам может быть с \r) обходит out* (файлы root из контейнера) и fuel.
+"${SSH[@]}" "$HOST" "tr -d '\r' < '$DIR/fix_crlf.sh' | bash -s -- '$DIR'"
 # 4. Depot из Fuel (82 МБ), один раз
 "${SSH[@]}" "$HOST" "test -f '$DIR/fuel/Depot/model.sdf' || (mkdir -p '$DIR/fuel/Depot' && cd '$DIR/fuel/Depot' \
     && curl -fsSL -m 600 -o d.zip 'https://fuel.gazebosim.org/1.0/OpenRobotics/models/Depot/$VER/Depot.zip' \

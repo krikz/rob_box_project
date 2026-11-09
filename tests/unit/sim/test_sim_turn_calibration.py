@@ -69,3 +69,67 @@ def test_format_row_shows_degrees_and_status():
 def test_sim_drive_overrides_only_wheel_separation():
     sim = yaml.safe_load(SIM_DRIVE.read_text(encoding="utf-8"))
     assert sim == {"diff_drive_controller": {"ros__parameters": {"wheel_separation": pytest.approx(0.540)}}}
+
+
+# ── Центр вращения и ошибка одометрии по позиции (#4377, #4475) ──────────────
+
+
+def _spin_about(cx_body: float, cy_body: float, turn: float = 2 * math.pi, n: int = 120):
+    """Правда разворота вокруг точки корпуса (cx, cy): base_footprint стартует в (1, 2), курс 0.3."""
+    x0, y0, yaw0 = 1.0, 2.0, 0.3
+    # центр в мире неподвижен
+    wx = x0 + math.cos(yaw0) * cx_body - math.sin(yaw0) * cy_body
+    wy = y0 + math.sin(yaw0) * cx_body + math.cos(yaw0) * cy_body
+    poses = []
+    for k in range(n + 1):
+        yaw = yaw0 + turn * k / n
+        x = wx - (math.cos(yaw) * cx_body - math.sin(yaw) * cy_body)
+        y = wy - (math.sin(yaw) * cx_body + math.cos(yaw) * cy_body)
+        poses.append((x, y, tc.wrap_pi(yaw)))
+    return poses
+
+
+def test_rotation_center_rear_axle_as_measured_in_hil():
+    """HIL 09.11: сим-шасси крутится вокруг задней оси (x −0.144), а не вокруг base_footprint."""
+    c = tc.rotation_center(_spin_about(-0.144, 0.0))
+    assert c is not None
+    assert c.x == pytest.approx(-0.144, abs=1e-6) and c.y == pytest.approx(0.0, abs=1e-6)
+    assert c.spread < 1e-6 and c.pairs > 50
+
+
+def test_rotation_center_on_base_footprint_is_zero():
+    c = tc.rotation_center(_spin_about(0.0, 0.0, turn=-2 * math.pi))
+    assert c is not None and math.hypot(c.x, c.y) < 1e-6
+
+
+def test_rotation_center_needs_enough_turn():
+    assert tc.rotation_center(_spin_about(-0.1, 0.0, turn=0.3)) is None
+    assert tc.rotation_center([]) is None
+
+
+def test_odom_position_error_open_loop_misses_pivot_translation():
+    """open_loop одометрия стоит на месте, а base_footprint ходит по кругу радиуса 0.144:
+    наибольшее расхождение — диаметр 0.288 м (замер HIL 09.11 — 0.287 м)."""
+    truth = _spin_about(-0.144, 0.0)
+    odom = [(0.0, 0.0, tc.wrap_pi(t[2] - 0.3)) for t in truth]
+    assert tc.odom_position_error(list(zip(truth, odom))) == pytest.approx(0.288, abs=1e-3)
+
+
+def test_odom_position_error_zero_when_odom_follows_truth_in_other_frame():
+    truth = _spin_about(-0.144, 0.0)
+    # одометрия = та же траектория в системе, повёрнутой и сдвинутой относительно мира
+    odom = []
+    for x, y, yaw in truth:
+        dx, dy = x - 1.0, y - 2.0
+        c, s = math.cos(-0.3), math.sin(-0.3)
+        odom.append((c * dx - s * dy, s * dx + c * dy, tc.wrap_pi(yaw - 0.3)))
+    assert tc.odom_position_error(list(zip(truth, odom))) < 1e-9
+
+
+def test_turn_row_reports_center_when_known():
+    v = tc.turn_verdict(0.6, odom_rad=2 * math.pi, truth_rad=2 * math.pi)
+    assert "центр" not in tc.format_row(v)
+    from dataclasses import replace
+
+    row = tc.format_row(replace(v, center_x=-0.144, center_y=0.0, center_spread=0.001, odom_pos_err=0.287))
+    assert "(-0.144, +0.000)" in row and "0.287 м" in row

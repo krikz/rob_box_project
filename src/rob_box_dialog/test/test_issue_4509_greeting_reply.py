@@ -22,8 +22,9 @@ from rob_box_dialog.backlog import Backlog, Heard
 from rob_box_dialog.session import Session
 from rob_box_dialog.speaker_adapter import answer_to_greeting, greeting_frame
 from rob_box_dialog.turn import TurnEngine
+from robot_wake_fixture import ROBOT_WAKE  # noqa: E402 — тестовый профиль робота
 
-WAKES = kn.DEFAULT_WAKE_WORDS
+WAKES = ROBOT_WAKE
 #: Конец приветствия (``SpeechEvent finished``).
 GREETED_AT = 1000.0
 

@@ -16,7 +16,8 @@ from pathlib import Path
 
 import pytest
 
-from rob_box_voice.core.dialogue_text import DEFAULT_WAKE_WORDS, has_wake_word
+from rob_box_voice.core.dialogue_text import has_wake_word
+from voice_robot_wake import ROBOT_WAKE  # noqa: E402 — тестовый профиль робота
 
 # Историческая потеря (9ca7fb29, 21.02) + STT-искажения из e2e-исследования:
 # канонический список — ВСЕ варианты, которые должны давать ПРИНЯТО.
@@ -64,10 +65,10 @@ class TestWakeWordSync:
     @pytest.mark.parametrize("word", CANONICAL_WAKE_WORDS)
     def test_every_canonical_variant_is_accepted(self, word: str) -> None:
         text = f"{word} расскажи анекдот"
-        assert has_wake_word(text.lower(), DEFAULT_WAKE_WORDS) is True
+        assert has_wake_word(text.lower(), ROBOT_WAKE) is True
 
     def test_dialogue_text_defaults_cover_all_canonical(self) -> None:
-        assert set(CANONICAL_WAKE_WORDS) <= set(DEFAULT_WAKE_WORDS)
+        assert set(CANONICAL_WAKE_WORDS) <= set(ROBOT_WAKE)
 
     # ``test_yaml_wake_words_match_canonical`` lived here and asserted that
     # four YAMLs each carried a matching copy of the list. It guarded the
@@ -75,6 +76,6 @@ class TestWakeWordSync:
     # the node code defaults sat at 13 spellings while these YAMLs had 21,
     # and the e2e config had the stale 13, so the test rig could not hear
     # eight spellings the robot could. The list now exists once, in
-    # ``dialogue_text.DEFAULT_WAKE_WORDS``; that no YAML re-declares it is
+    # ``ROBOT_WAKE``; that no YAML re-declares it is
     # checked by ``test_wake_words_are_declared_exactly_once``
     # (test/unit/core/test_dialogue_state_paths.py).

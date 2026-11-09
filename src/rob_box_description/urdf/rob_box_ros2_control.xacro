@@ -29,10 +29,7 @@
       
       <!-- CAN Interface Configuration -->
       <param name="can_interface">can0</param>
-      <param name="publish_rate">50.0</param>
       
-      <!-- Default wheel radius: 9" колёса с редукторами, замер 2026-02-23 -->
-      <param name="wheel_radius">0.1143</param>
       
       <!-- Передаточное число редуктора (motor_rps / gear_ratio = wheel_rps) -->
       <!-- Эмпирическая калибровка 2026-02-27: физ. редуктор 5:1, но max_rps=6.5 -->

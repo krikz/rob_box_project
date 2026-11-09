@@ -21,6 +21,7 @@ LOG = logging.getLogger("t4505")
 class _Turn:
     def __init__(self, text="", pickup=False):
         self.text, self.pickup, self.turn_id, self.capped = text, pickup, "t1", ()
+        self.wake_words = None  # таблица вейков хода (``turn._Turn.wake_words``): сессия теста без профиля
 
 
 class Ports:

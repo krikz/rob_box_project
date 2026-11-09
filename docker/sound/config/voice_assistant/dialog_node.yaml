@@ -9,7 +9,8 @@ dialog_node:
     # Цепочка LLM: первый — основной, дальше — фолбеки; все в режиме команд (command_bridge).
     llm_providers: "deepseek,minimax"
     system_prompt_file: "master_prompt_compact.txt"
-    wake_words_path: "/config/wake_words.yaml"
+    # Профиль продукта робота (ADR-0167 Ш1б): docker/sound/config/assistant.yaml → вейки wake_words.yaml рядом.
+    profile_path: "/config/assistant.yaml"
     temperature: 0.0
     max_tokens: 0
     # Телеграм-агент (ADR-0150 §9.2, PR-12a #3706): своя цепочка и персона чата; бывшие мёртвые llm_* из

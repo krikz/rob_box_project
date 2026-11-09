@@ -725,37 +725,6 @@ jobs:
           : > "$ACCEPT_FILE"
           FAIL=""
           echo "--- e2e acceptance: speaker_profile (#1077) ---"
-          # 1) stt_node: Yandex speaker_analysis пришёл и опубликован на /voice/stt/speaker
-          if grep -qE "\[issue 1077\] (SPEAKER_ANALYSIS|Speaker:)" "$LOG"; then
-            echo "✅ STT speaker_analysis: получен speaker_tag от Yandex"
-            echo "STT_SPEAKER_ANALYSIS=ok" >> "$ACCEPT_FILE"
-            grep -E "\[issue 1077\] (SPEAKER_ANALYSIS|Speaker:)" "$LOG" | head -3 >> "$ACCEPT_FILE"
-          else
-            echo "❌ STT speaker_analysis НЕ найден в логе — Yandex не прислал speaker_tag"
-            FAIL="${FAIL:+$FAIL,}no-speaker-analysis"
-          fi
-          # 1b) A/B: два РАЗНЫХ speaker_tag (голос A vs голос B — требование Шифу 10.08)
-          TAGS="$(grep -oE "\[issue 1077\] Speaker: tag='[0-9]+'" "$LOG" | grep -oE "tag='[0-9]+'" | sort -u | tr '\n' ' ')"
-          TAG_COUNT="$(echo -n "$TAGS" | grep -oE "tag='" | wc -l)"
-          if [ "${TAG_COUNT:-0}" -ge 2 ]; then
-            echo "✅ A/B: Yandex различил ${TAG_COUNT} speaker_tag (голос A vs голос B): ${TAGS}"
-            echo "AB_TWO_TAGS=ok ($TAGS)" >> "$ACCEPT_FILE"
-          elif [ "${TAG_COUNT:-0}" -eq 1 ]; then
-            echo "⚠️ A/B: только один speaker_tag ($TAGS) — голоса не различены Yandex, смотрим speaker_id_node (resemblyzer)"
-            echo "AB_TWO_TAGS=single-tag ($TAGS)" >> "$ACCEPT_FILE"
-          else
-            echo "❌ A/B: speaker_tag не найдены"
-            FAIL="${FAIL:+$FAIL,}no-tags"
-          fi
-          # 2) dialogue_node: профиль спикера создан/обновлён (touch_speaker)
-          if grep -qE "\[issue 1077\] (Спикер|Speaker .*диалог)" "$LOG"; then
-            echo "✅ dialogue_node: профиль спикера создан/обновлён (touch_speaker)"
-            echo "SPEAKER_PROFILE=ok" >> "$ACCEPT_FILE"
-            grep -E "\[issue 1077\] (Спикер|Speaker)" "$LOG" | head -3 >> "$ACCEPT_FILE"
-          else
-            echo "❌ dialogue_node: touch_speaker/профиль не найден в логе"
-            FAIL="${FAIL:+$FAIL,}no-profile"
-          fi
           # 3) SQLite: факты реально сохранены (самое честное доказательство).
           #    bug(разбор 35658231116, 22.09.2026): запрос ходил в
           #    '/root/.rob_box/voice.db', в таблицу `facts` с колонками

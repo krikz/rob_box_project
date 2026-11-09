@@ -33,8 +33,6 @@ from typing import Dict, List, Tuple, Optional
 from dataclasses import dataclass
 from enum import Enum
 
-from rob_box_dialog.knowledge import DEFAULT_WAKE_WORDS
-
 
 class IntentType(Enum):
     """Command intent types."""
@@ -93,11 +91,11 @@ class CommandParser:
         Initialize CommandParser.
 
         Args:
-            wake_words: List of wake words to remove (default: the one table,
-                ``rob_box_dialog.knowledge.DEFAULT_WAKE_WORDS``)
+            wake_words: List of wake words to remove: the product profile's wake table
+                (``rob_box_dialog.profile``); none given - nothing is removed (core neutral default)
             confidence_base: Base confidence score for matches (default: 0.8)
         """
-        self.wake_words = wake_words or list(DEFAULT_WAKE_WORDS)
+        self.wake_words = list(wake_words or ())
         self.confidence_base = confidence_base
         self.patterns = self._build_default_patterns()
 

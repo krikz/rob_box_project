@@ -6,6 +6,9 @@ setup(
     name=package_name,
     version="0.1.0",
     packages=find_packages(exclude=["test"]),
+    # Поток миграций SQLite (rob_box_core/migrations/*.sql) читается через importlib.resources - это package_data,
+    # иначе в install-дерево робота (colcon без --symlink-install) файлы не попадут (ADR-0167 Ш1а).
+    package_data={"rob_box_core.migrations": ["*.sql"]},
     data_files=[
         ("share/ament_index/resource_index/packages", ["resource/" + package_name]),
         ("share/" + package_name, ["package.xml"]),

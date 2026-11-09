@@ -256,10 +256,9 @@ def real_factory(args: argparse.Namespace, jev: Optional[Callable[[], Any]]) -> 
 def fake_factory(corpus: Dict[str, Any], blind: bool,
                  extra: Sequence[Tuple[str, Dict[str, Any]]] = ()) -> StandFactory:
     def make(variant: str) -> Tuple[DryStand, Any]:
-        from dry_stand import WAKE_WORDS_YAML  # noqa: PLC0415
-        from rob_box_dialog.address import wake_words  # noqa: PLC0415
+        from dry_stand import robot_wake  # noqa: PLC0415
 
-        oracle = Oracle(corpus, wake_words(str(WAKE_WORDS_YAML))[0], extra)
+        oracle = Oracle(corpus, robot_wake(), extra)
         router = OracleRouter(oracle) if variant == uv.C else None
         return fake_stand(oracle_rule(oracle, blind), new_workdir("understanding_fake_"), variant, router), router
 

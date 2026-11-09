@@ -10,8 +10,6 @@ from __future__ import annotations
 from typing import Sequence
 
 from rob_box_dialog.knowledge import (
-    DEFAULT_OPERATOR_WAKE_WORDS,
-    DEFAULT_WAKE_WORDS,
     SILENCE_WORDS,
     UNSILENCE_WORDS,
     load_wake_word_namespaces,
@@ -35,8 +33,6 @@ def is_unsilence_command(text_lower: str, commands: Sequence[str] | None = None)
 
 
 __all__ = [
-    "DEFAULT_WAKE_WORDS",
-    "DEFAULT_OPERATOR_WAKE_WORDS",
     "DEFAULT_SILENCE_COMMANDS",
     "DEFAULT_UNSILENCE_COMMANDS",
     "has_wake_word",

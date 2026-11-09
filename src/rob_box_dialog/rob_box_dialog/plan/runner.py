@@ -57,9 +57,10 @@ class PlanRunner:
         """Tier-1 переопределение политики хода (ключ ``TIER1_POLICY``) или ``None``."""
         return self._hint
 
-    def begin_turn(self, utterance: str = "") -> None:
-        """Граница хода: Tier-1 по словам человека этого хода («а потом …» → APPEND)."""
-        self._hint = policy_word(utterance) if utterance else None
+    def begin_turn(self, utterance: str = "", wake_words: Optional[Sequence[str]] = None) -> None:
+        """Граница хода: Tier-1 по словам человека этого хода («а потом …» → APPEND); ``wake_words`` — таблица вейков
+        личности из профиля продукта (снимается с реплики)."""
+        self._hint = policy_word(utterance, wake_words) if utterance else None
 
     def changed(self) -> None:
         """Снимок владельцев обновился (из любого потока): разбудить ожидающих."""

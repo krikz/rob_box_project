@@ -1,7 +1,7 @@
 {
   "version": 1,
-  "created": "2026-11-08",
-  "base_sha": "f4677b8d59474bb15cf09bb55b1701a8cb59fd94",
+  "created": "2026-11-09",
+  "base_sha": "162e930bb5cd33fafbb655dc051f3d083c07b3d5",
   "limits": {
     "wmc": 80,
     "methods": 40
@@ -59,12 +59,8 @@
       "wmc": 125,
       "methods": 24
     },
-    "src/rob_box_voice/rob_box_voice/core/faq_store.py:FAQStore": {
-      "wmc": 91,
-      "methods": 16
-    },
     "src/rob_box_voice/rob_box_voice/core/voice_memory.py:VoiceMemory": {
-      "wmc": 150,
+      "wmc": 142,
       "methods": 31
     },
     "src/rob_box_voice/rob_box_voice/speaker_id_node.py:SpeakerIdNode": {
@@ -76,7 +72,7 @@
       "methods": 38
     },
     "src/rob_box_voice/rob_box_voice/tts_node.py:TTSNode": {
-      "wmc": 500,
+      "wmc": 498,
       "methods": 88
     },
     "src/rob_box_voice/rob_box_voice/utils/speaker_embeddings.py:SpeakerDatabase": {

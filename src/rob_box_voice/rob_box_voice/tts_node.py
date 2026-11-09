@@ -643,6 +643,37 @@ def chain_for_requested(provider: str, current_chain: list[str]) -> list[str]:
     return TTSNode._normalize_provider_chain([provider] + rest)
 
 
+def refuse_unsupported_script(node, text: str, speech_id: str, chunk_data: dict, dialogue_id) -> bool:
+    """Issue #1709/#3728: текст в письменности, которую выбранный провайдер не читает, не синтезируем.
+
+    Warning с ПОЛНЫМ текстом и ``finished(success=False, error="unsupported_script")``, чтобы ждущий не висел.
+    ``True`` — реплика отклонена (вызывающий возвращается).
+    """
+    provider = node._effective_provider()
+    if not _tts_guard_should_skip(text, provider=provider):
+        return False
+    report = _tts_guard_analyze(text, provider)
+    node.get_logger().warn(
+        "🚫 [issue 1709] TTS пропущен — неподдерживаемая "
+        f"письменность: {_tts_guard_describe(report)}, "
+        f"speech_id={speech_id[:8]}, "
+        f"voice={chunk_data.get('voice') or 'default'}, "
+        f"text={text!r}"
+    )
+    publish_finished = getattr(node, "_publish_tts_finished", None)
+    if publish_finished is not None:
+        publish_finished(
+            speech_id,
+            success=False,
+            error="unsupported_script",
+            batch_id=chunk_data.get("batch_id"),
+            batch_index=chunk_data.get("batch_index"),
+            batch_total=chunk_data.get("batch_total"),
+            dialogue_id=dialogue_id,
+        )
+    return True
+
+
 class TTSNode(Node):
     """ROS2 нода для синтеза речи с YandexSpeechKit + Silero fallback + MiniMax (opt-in)."""
 
@@ -1982,26 +2013,7 @@ class TTSNode(Node):
             # speech_id). Логируем WARNING с ПОЛНЫМ текстом и публикуем
             # finished(success=False), чтобы speak_text не висел в ожидании.
             # #3728: решает возможность ВЫБРАННОГО провайдера (MiniMax читает CJK, Yandex/Silero нет).
-            if _tts_guard_should_skip(text, provider=self._effective_provider()):
-                _report = _tts_guard_analyze(text, self._effective_provider())
-                self.get_logger().warn(
-                    "🚫 [issue 1709] TTS пропущен — неподдерживаемая "
-                    f"письменность: {_tts_guard_describe(_report)}, "
-                    f"speech_id={speech_id[:8]}, "
-                    f"voice={chunk_data.get('voice') or 'default'}, "
-                    f"text={text!r}"
-                )
-                _publish_finished = getattr(self, "_publish_tts_finished", None)
-                if _publish_finished is not None:
-                    _publish_finished(
-                        speech_id,
-                        success=False,
-                        error="unsupported_script",
-                        batch_id=chunk_data.get("batch_id"),
-                        batch_index=chunk_data.get("batch_index"),
-                        batch_total=chunk_data.get("batch_total"),
-                        dialogue_id=dialogue_id,
-                    )
+            if refuse_unsupported_script(self, text, speech_id, chunk_data, dialogue_id):
                 return
 
             # Issue #980 — carry batch_id/batch_index/batch_total from the

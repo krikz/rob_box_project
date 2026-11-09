@@ -4,18 +4,12 @@ from rob_box_dialog import knowledge as kn
 from rob_box_dialog.address import decide
 from rob_box_dialog.backlog import Backlog, Heard, pickup_summary, same_direction
 from rob_box_dialog.knowledge import (
-    BACKGROUND_MAX_PHRASES,
-    BACKGROUND_PHRASE_MAX_CHARS,
-    BACKGROUND_WINDOW_S,
-    BACKLOG_FRESH_S,
-    BACKLOG_MAX_ENTRIES,
-    BACKLOG_PICKUP_MAX,
-    BACKLOG_PICKUP_S,
-    BACKLOG_TTL_S,
-    DEFAULT_WAKE_WORDS,
+    BACKGROUND_MAX_PHRASES, BACKGROUND_PHRASE_MAX_CHARS, BACKGROUND_WINDOW_S, BACKLOG_FRESH_S, BACKLOG_MAX_ENTRIES,
+    BACKLOG_PICKUP_MAX, BACKLOG_PICKUP_S, BACKLOG_TTL_S,
 )
 from rob_box_dialog.speaker_adapter import VoiceTag, voice_tag
 from rob_box_dialog.turn import background_section, recent_section
+from robot_wake_fixture import ROBOT_WAKE  # noqa: E402 — тестовый профиль робота
 
 
 def _h(text, t, doa=None, person="", voice_s=0.0, faces=("f1",)):
@@ -235,7 +229,7 @@ def test_author_of_a_backlog_phrase_reaches_the_wake_turn_snapshot_4145():
     backlog.add(Heard(text="включи что нибудь весёлое", t=95.0, voice_s=3.0, utterance_id="u-bg"))
     backlog.note_voice("u-bg", voice_tag(_AUTHORS[1][1]))
     wake = Heard(text="Робот, ну что скажешь", t=100.0, voice_s=3.0, person_ref="spk-76b59285")
-    (recent,) = recent_section(decide(wake, backlog, list(DEFAULT_WAKE_WORDS)))
+    (recent,) = recent_section(decide(wake, backlog, list(ROBOT_WAKE)))
     assert recent["text"] == "включи что нибудь весёлое"
     assert recent["speaker_id"] == "spk-76b59285" and recent["same_as_caller"] is True
     # имени нет — вслух не называем, но голос свой: «запомнен», не «незнакомый» (#4314 n211); автор известен по id
@@ -250,7 +244,7 @@ def test_two_nameless_voices_in_the_background_differ_by_author_id_4161():
         backlog.add(Heard(text=f"фраза {uid}", t=90.0 + i, voice_s=3.0, utterance_id=uid))
         backlog.note_voice(uid, voice_tag({"is_known": True, "speaker_id": sid, "epithet": "Гость", "confidence": 0.8}))
     wake = Heard(text="Робот, кто тут говорил", t=100.0, voice_s=3.0)
-    section = background_section(decide(wake, backlog, list(DEFAULT_WAKE_WORDS)))
+    section = background_section(decide(wake, backlog, list(ROBOT_WAKE)))
     assert [(p["who"], p["speaker_id"]) for p in section] == [(kn.NAMELESS_SPEAKER_LABEL, "spk-a"),
                                                               (kn.NAMELESS_SPEAKER_LABEL, "spk-b")]
 
@@ -317,7 +311,7 @@ def test_background_summary_reaches_the_turn_snapshot_as_data_4212():
     backlog = Backlog()
     _voice_phrase(backlog, "u1", 90.0, {"is_known": True, "speaker_id": "spk-a", "name": "Саша", "confidence": 0.9})
     _voice_phrase(backlog, "u2", 92.0, {"is_known": True, "speaker_id": "spk-b", "epithet": "Гость", "confidence": 0.8})
-    out = decide(Heard(text="Робот, сколько вас было", t=100.0, voice_s=3.0), backlog, list(DEFAULT_WAKE_WORDS))
+    out = decide(Heard(text="Робот, сколько вас было", t=100.0, voice_s=3.0), backlog, list(ROBOT_WAKE))
     assert out.background_summary == {
         "voices": 2, "caller_included": False, "known": ["Саша"], "unknown": 1}
     ctx = build_context({"background_since_reply": list(background_section(out)),
