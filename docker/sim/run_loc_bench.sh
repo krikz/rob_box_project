@@ -14,6 +14,7 @@
 #       Результаты: $SIM_LOC_ROOT/runs/<метка>/results/<метка>.json, _poses.csv, логи.
 #
 # Камера и теги: SIM_CAMERA=true (+ мир polygon_tags) включает камеру и apriltag_node.
+# SIM_RELOC=true (только loc, с камерой) — прототип варианта B, сервис tagreloc.
 # Остальные переменные compose (SIM_TAG_LINEAR_VARIANCE, SIM_APRILTAG_SIZE, SIM_CAMERA_YAW_ERROR)
 # берутся из окружения как есть.
 #
@@ -42,6 +43,12 @@ log_services=(gazebo rtabmap)
 if [ "${SIM_CAMERA:-false}" = true ]; then
     profiles+=(--profile tags)
     log_services+=(apriltag)
+fi
+# Прототип варианта B (тег → /rtabmap/initialpose), только с камерой: SIM_RELOC=true
+if [ "${SIM_RELOC:-false}" = true ]; then
+    [ "${SIM_CAMERA:-false}" = true ] || { echo "❌ SIM_RELOC=true без SIM_CAMERA=true" >&2; exit 1; }
+    profiles+=(--profile reloc)
+    log_services+=(tagreloc)
 fi
 
 dc() { docker compose -p "$project" -f "$here/compose.yaml" -f "$here/compose.loc.yaml" "${profiles[@]}" "$@"; }
@@ -123,9 +130,10 @@ cmd_loc() {  # <метка> <мир> <база> <сценарий>
     read -r sx sy syaw < <(spawn_for "$scenario" "$root/dbs/$db.end")
     export SIM_WORLD="$world" SIM_MAPS_DIR="$run/maps" SIM_RESULTS_DIR="$run/results" SIM_RTABMAP_MODE=localization
     export SIM_SPAWN_X="$sx" SIM_SPAWN_Y="$sy" SIM_SPAWN_YAW="$syaw" SIM_LOC_SCENARIO="$scenario" SIM_LOC_LABEL="$label"
-    echo "=== loc $label: $world db=$db $scenario spawn=($sx, $sy, $syaw) ($(date -u +%FT%TZ)) camera=${SIM_CAMERA:-false}"
+    echo "=== loc $label: $world db=$db $scenario spawn=($sx, $sy, $syaw) ($(date -u +%FT%TZ)) camera=${SIM_CAMERA:-false} reloc=${SIM_RELOC:-false}"
     local services=(gazebo robot-state-publisher twist-mux imu-filter rtabmap)
     [ "${SIM_CAMERA:-false}" = true ] && services+=(apriltag)
+    [ "${SIM_RELOC:-false}" = true ] && services+=(tagreloc)
     dc up -d --no-build "${services[@]}"
     dc run --rm --no-deps locbench > "$run/locbench.log" 2>&1 &
     local pid=$! kid="$run/results/$label.kidnap"

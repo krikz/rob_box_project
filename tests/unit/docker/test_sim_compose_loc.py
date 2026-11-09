@@ -12,11 +12,13 @@ Docker не нужен: проверяется то, что запустит doc
 from __future__ import annotations
 
 import re
+import sys
 from pathlib import Path
 
 from test_sim_compose import MAIN_COMPOSE, SIM, SIM_COMPOSE, _env, _interpolate, _load
 
 REPO = Path(__file__).resolve().parents[3]
+sys.path.insert(0, str(REPO / "src" / "rob_box_sim"))
 VISION = REPO / "docker" / "vision"
 LOC = _load(SIM / "compose.loc.yaml")["services"]
 
@@ -81,7 +83,7 @@ def test_tag_variance_flag_only_in_sim():
 
 
 def test_loc_overlay_moves_only_maps_and_adds_locbench():
-    assert set(LOC) == {"rtabmap", "nav2", "locbench"}
+    assert set(LOC) == {"rtabmap", "nav2", "locbench", "tagreloc"}
     for name in ("rtabmap", "nav2"):
         assert set(LOC[name]) <= {"volumes", "stop_grace_period"}, name
         (vol,) = LOC[name]["volumes"]
@@ -100,3 +102,24 @@ def test_loc_runner_is_lf_and_uses_only_its_project():
     assert 'SIM_PREFIX="${SIM_PREFIX:-rob-box-sim-loc}"' in src
     # гасит только свой compose-проект
     assert "docker rm" not in src and "docker kill" not in src
+
+
+def test_tagreloc_prototype_is_opt_in_and_uses_world_tag_faces():
+    """Вариант B — только профиль reloc; позы тегов = лицевые грани тегов мира polygon_tags."""
+    import math
+
+    from rob_box_sim.apriltag_world import POLYGON_TAGS, TAG_THICK_M  # noqa: E402
+
+    svc = LOC["tagreloc"]
+    assert svc["profiles"] == ["reloc"]
+    cmd = svc["command"]
+    assert cmd[1:4] == ["python3", "-m", "rob_box_perception.tag_relocalization_node"]
+    params = dict(a.split(":=", 1) for a in cmd if ":=" in a)
+    assert params["enabled"] == "true"
+    flat = [float(v) for v in params["tags"].strip("[]").split(",")]
+    rows = [flat[i:i + 5] for i in range(0, len(flat), 5)]
+    assert [int(r[0]) for r in rows] == [t.tag_id for t in POLYGON_TAGS]
+    for row, tag in zip(rows, POLYGON_TAGS):
+        face = (tag.x + math.cos(tag.yaw) * TAG_THICK_M / 2, tag.y + math.sin(tag.yaw) * TAG_THICK_M / 2)
+        assert row[1:3] == [round(face[0], 3), round(face[1], 3)], tag.name
+        assert row[3] == tag.z and abs(row[4] - tag.yaw) < 1e-5

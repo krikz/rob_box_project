@@ -37,3 +37,31 @@ services:
       - --label
       - ${SIM_LOC_LABEL:-loc}
     depends_on: !reset []
+
+  # Прототип варианта B (#4346): тег с известной позой → /rtabmap/initialpose.
+  # Профиль reloc, на роботе не запускается. Позы тегов — лицевые грани тегов мира
+  # polygon_tags (rob_box_sim.apriltag_world.POLYGON_TAGS; сверяет tests/unit/docker/test_sim_compose_loc.py):
+  # id, x, y, z, куда смотрит лицо.
+  tagreloc:
+    extends:
+      file: compose.yaml
+      service: bench
+    container_name: ${SIM_PREFIX:-rob-box-sim}-tagreloc
+    profiles: ["reloc"]
+    environment:
+      PYTHONPATH: /perception_src
+    volumes:
+      - ../../src/rob_box_perception:/perception_src:ro
+    command:
+      - /ros_scripts/ros_with_namespace.sh
+      - python3
+      - -m
+      - rob_box_perception.tag_relocalization_node
+      - --ros-args
+      - -p
+      - enabled:=true
+      - -p
+      - use_sim_time:=true
+      - -p
+      - "tags:=[21.0, 1.948, 1.0, 0.55, 3.141593, 22.0, -1.448, -1.0, 0.55, 0.0, 23.0, 10.448, 1.0, 0.55, 3.141593]"
+    depends_on: !reset []
