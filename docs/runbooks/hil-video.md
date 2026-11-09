@@ -85,9 +85,17 @@ ssh ros2@10.1.1.250 'grep -E "GOAL_END|RECOV|EM_ON|TIMEOUT" /home/ros2/rob_box_h
 и печатает `GOAL_START/GOAL_END` с sim time, номером кадра камеры, истинной позой, ошибкой до цели,
 числом стопов защиты (эпизоды `/cmd_vel_emergency`) и восстановлений. Список целей — `GOALS` в начале `route.py`.
 
+Камеры и RTF: `CAMERAS=1|0` (по умолчанию 1 у `runvideo.sh`, **0** у `runcoverage.sh`). Подписчики камер заставляют
+сенсор рендерить, на программном рендере песочницы RTF падает до 0.33–0.34; без них RTF 1.0 [измерено 09.11].
+Ролик пылесоса строится из TRACK-лога (`pose_anim.py`), кадры камер ему не нужны. При `CAMERAS=0` скрипт ещё
+гасит подписчиков прошлого прогона. В контейнере процесс подписчика называется `ign-transport-topic`, а не
+`ign topic`: гасить `pkill -f ign-transport-topic` (скрипты так и делают). `CAMERAS=1 ./runcoverage.sh` вернёт камеры.
+
 Подводные камни:
 
 - Печать через `| grep > файл` буферизуется: нужен `grep --line-buffered` (в скрипте есть).
+- `sandbox_prep.sh` не падает на файлах root в `out/` (контейнеры пишут туда от root): CRLF-шаг (`fix_crlf.sh`)
+  обходит `out*` и `fuel`, и шаги 4–5 (Depot, `patch_compose.py`) выполняются.
 - Остановить прогон: `docker exec rob-box-hil-gazebo pkill -f /route.py`. **Не** `pkill -f runvideo.sh` через
   ssh: шаблон совпадёт с самой ssh-командой и сессия оборвётся.
 - «STATUS_SUCCEEDED» говорит про карту, а не про мир. Сверяй `err=` в `GOAL_END` (истинная поза против цели).
