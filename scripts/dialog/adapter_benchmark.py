@@ -44,7 +44,7 @@ from typing import Any, Mapping, Sequence
 import yaml
 
 REPO = Path(__file__).resolve().parents[2]
-_PACKAGES = ("rob_box_dialog", "rob_box_llm", "rob_box_core", "rob_box_harness", "rob_box_voice")
+_PACKAGES = ("rob_box_dialog", "rob_box_dialog_host", "rob_box_llm", "rob_box_core", "rob_box_harness", "rob_box_voice")
 for _p in (*(REPO / "src" / p for p in _PACKAGES), REPO):  # REPO первым: у rob_box_voice свой каталог scripts/
     sys.path.insert(0, str(_p))
 
