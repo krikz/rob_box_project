@@ -1,6 +1,11 @@
 <!--
   Behavior Tree для следования через несколько точек (waypoints)
   Navigate Through Poses with Replanning
+
+  RemovePassedGoals (как в дефолтном дереве Nav2): пройденная точка (ближе radius) уходит из списка,
+  иначе перепланирование раз в секунду ведёт путь через уже пройденные точки и робот возвращается
+  к ним. Нужен обходу покрытием (#4560): полоса уходит одной целью NavigateThroughPoses.
+  radius 0.35 > xy_goal_tolerance 0.25; последнюю точку узел не убирает.
 -->
 <root main_tree_to_execute="MainTree">
   <BehaviorTree ID="MainTree">
@@ -8,7 +13,10 @@
       <PipelineSequence name="NavigateWithReplanning">
         <RateController hz="1.0">
           <RecoveryNode number_of_retries="1" name="ComputePathThroughPoses">
-            <ComputePathThroughPoses goals="{goals}" path="{path}" planner_id="GridBased"/>
+            <ReactiveSequence>
+              <RemovePassedGoals input_goals="{goals}" output_goals="{goals}" radius="0.35" robot_base_frame="base_footprint"/>
+              <ComputePathThroughPoses goals="{goals}" path="{path}" planner_id="GridBased"/>
+            </ReactiveSequence>
             <ClearEntireCostmap name="ClearGlobalCostmap-Context" service_name="global_costmap/clear_entirely_global_costmap"/>
           </RecoveryNode>
         </RateController>

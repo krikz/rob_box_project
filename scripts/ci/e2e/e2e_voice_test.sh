@@ -1148,7 +1148,7 @@ if missing_expected and tts_finished_count >= 1:
             f"skipped: {', '.join(likely_voice_skipped)}. "
             f"LLM сделал verbal-only answer (RULE #MUSIC для stop_music / "
             f"RULE #VOICE-MULTI для multi-voice могут не enforce). "
-            f"Проверь master_prompt_compact.txt и/или добавь explicit "
+            f"Проверь промпт Личности (prompts/personality.txt ядра + persona.txt) и/или добавь explicit "
             f"tool-call enforcement в LLM-system reminder."
         )
         # Не добавляем к failures (это hint, не блокер GATE-1), но логируем
@@ -3096,7 +3096,7 @@ if [ -n "$SCENARIO_FILE" ] && [ "$E2E_PRESYNTH_FAILED" != "1" ]; then
     # shellcheck disable=SC2086  # список параметров -- слова
     remember_node_params /tts_node $E2E_TTS_PROSODY_PARAMS
 fi
-trap 'restore_robot_tts_default; restore_node_params; leave_e2e_mode; deactivate_e2e_dialog_db; collect_e2e_speaker_db "$OUT_DIR" "${SCENARIO_FILE:-}"; stop_recording' EXIT
+trap 'restore_robot_tts_default; restore_node_params; leave_e2e_mode; deactivate_e2e_dialog_db; collect_e2e_dialog_db "$OUT_DIR"; collect_e2e_speaker_db "$OUT_DIR" "${SCENARIO_FILE:-}"; stop_recording' EXIT
 
 # Issue #2890 — изоляция акта ДО первого шага: e2e-БД дикторов (#2750),
 # e2e-память фактов (#2781) и окно диалога dialog_node. См. isolate_act_start.

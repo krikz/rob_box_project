@@ -1,5 +1,7 @@
 from pathlib import Path
 
+from rob_box_dialog import prompts
+
 """Static regression guard for issue #982.
 
 Issue #982: the LLM prompt regressed to the pre-v37 wording (commit
@@ -20,11 +22,8 @@ Run with::
 """
 
 
-MASTER_PROMPT = (
-    Path(__file__).resolve().parents[2]
-    / "prompts"
-    / "master_prompt_compact.txt"
-)
+#: Промпт Личности - основа ядра (ADR-0167 Ш1б-3); персона робота правил музыки не несёт.
+MASTER_PROMPT = Path(prompts.__file__).with_name(prompts.BASE_FILE)
 
 
 def _read(prompt_path: Path) -> str:

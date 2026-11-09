@@ -108,7 +108,13 @@ class CoverageResult:
 
     @property
     def pct(self) -> float | None:
+        """Доля «покрываемого» (то, до чего корпус дотягивается из достижимых центров) под корпусом, %."""
         return round(100.0 * self.covered_m2 / self.coverable_m2, 2) if self.coverable_m2 > 0 else None
+
+    @property
+    def free_pct(self) -> float | None:
+        """Доля всего свободного пола карты под корпусом, %: сюда входит и то, куда корпус не пролезает."""
+        return round(100.0 * self.free_covered_m2 / self.free_m2, 2) if self.free_m2 > 0 else None
 
 
 def coverage_result(space: CoverageSpace, covered: np.ndarray) -> CoverageResult:
@@ -143,24 +149,126 @@ def plan_track(poses: Sequence, speed_mps: float = 0.3, step_m: float = 0.05) ->
 
 @dataclass(frozen=True)
 class GoalOutcome:
+    """Исход одной цели: позы по одной (NavigateToPose) или полоса (NavigateThroughPoses, ``poses`` > 1)."""
+
     name: str
-    result: str  # SUCCEEDED | ABORTED | CANCELED | TIMEOUT | REJECTED | NOT_SENT
+    result: str  # SUCCEEDED | ABORTED | CANCELED | TIMEOUT | REJECTED | INTERRUPTED | NOT_SENT
     em_episodes: int = 0
+    poses: int = 1  # сколько поз плана в цели
+    passed: int | None = None  # из них пройдено; не задано — успех: все, иначе 0
+
+    def __post_init__(self) -> None:
+        if self.passed is None:
+            object.__setattr__(self, "passed", self.poses if self.succeeded else 0)
+
+    @classmethod
+    def from_route(
+        cls, name: str, raw: object, em_episodes: int = 0, poses: int = 1, remaining: int | None = None
+    ) -> "GoalOutcome":
+        """Исход ``route.run_goal`` / ``run_lane`` → короткое имя: ``STATUS_SUCCEEDED`` → ``SUCCEEDED``.
+
+        Одно место правды: HIL Depot 09.11 (#4560) — 20 успехов подряд засчитались неудачами, потому что
+        ``run_goal`` отдаёт ``STATUS_*``, а сравнение было с ``SUCCEEDED``. Лог ``GOAL_END`` не меняется.
+        Пройдено поз: успех — все; иначе ``poses − remaining`` (последний feedback Nav2), без feedback — 0.
+        """
+        s = str(raw)
+        result = s[len("STATUS_") :] if s.startswith("STATUS_") else s
+        passed = None if remaining is None else min(poses, max(0, poses - remaining))
+        out = cls(name, result, em_episodes, poses, passed)
+        return cls(name, result, em_episodes, poses) if out.succeeded else out
+
+    @classmethod
+    def not_sent(cls, name: str, poses: int = 1) -> "GoalOutcome":
+        return cls(name, "NOT_SENT", 0, poses, 0)
+
+    @property
+    def succeeded(self) -> bool:
+        return self.result == "SUCCEEDED"
 
 
-def run_summary(outcomes: Sequence[GoalOutcome], cov: CoverageResult, sim_s: float, stop_reason: str = "") -> str:
-    """Итоговая строка обхода: числа только из исходов и метрики."""
+# ── Движение по треку ────────────────────────────────────────────────────────
+
+#: «В движении» между соседними точками трека: быстрее по ходу или по курсу (пороги «в движении» защиты,
+#: rob_box_teleop.proximity.Thresholds moving_v / moving_w). Разрыв трека длиннее — не считается.
+MOVING_MPS = 0.03
+MOVING_RADPS = 0.10
+MOVING_MAX_DT_S = 5.0
+
+
+@dataclass(frozen=True)
+class MotionStats:
+    moving_s: float  # время в движении по треку, с sim
+    moved_m: float  # путь в движении, м
+
+    def avg_mps(self, sim_s: float) -> float | None:
+        """Средняя скорость за весь обход: путь / время обхода (с остановками и таймаутами)."""
+        return self.moved_m / sim_s if sim_s > 0 else None
+
+    def moving_mps(self) -> float | None:
+        """Средняя скорость в движении."""
+        return self.moved_m / self.moving_s if self.moving_s > 0 else None
+
+
+def motion_stats(track: Sequence[TrackPoint]) -> MotionStats:
+    """Время в движении и путь по треку истинной позы (t, x, y, yaw рад)."""
+    moving_s = moved_m = 0.0
+    for a, b in zip(track, track[1:]):
+        dt = b[0] - a[0]
+        if dt <= 0 or dt > MOVING_MAX_DT_S:
+            continue
+        ds = math.hypot(b[1] - a[1], b[2] - a[2])
+        dyaw = abs(math.atan2(math.sin(b[3] - a[3]), math.cos(b[3] - a[3])))
+        if ds / dt >= MOVING_MPS or dyaw / dt >= MOVING_RADPS:
+            moving_s += dt
+            moved_m += ds
+    return MotionStats(moving_s, moved_m)
+
+
+def _pct(v: float | None) -> str:
+    return "n/a" if v is None else f"{v:.1f}%"
+
+
+def _num(v: float | None, fmt: str) -> str:
+    return "n/a" if v is None else format(v, fmt)
+
+
+def _motion(motion: MotionStats | None, sim_s: float) -> str:
+    if motion is None:
+        return ""
+    share = 100.0 * motion.moving_s / sim_s if sim_s > 0 else None
+    return (
+        f" moving_s={motion.moving_s:.1f} moving_pct={_pct(share)} moved_m={motion.moved_m:.1f} "
+        f"avg_mps={_num(motion.avg_mps(sim_s), '.3f')} moving_mps={_num(motion.moving_mps(), '.3f')}"
+    )
+
+
+def run_summary(
+    outcomes: Sequence[GoalOutcome],
+    cov: CoverageResult,
+    sim_s: float,
+    stop_reason: str = "",
+    motion: MotionStats | None = None,
+) -> str:
+    """Итоговая строка обхода: числа только из исходов, метрики и трека.
+
+    ``goals`` — целей (поз или полос), ``poses``/``poses_passed`` — поз плана в них и пройдено.
+    ``coverage`` — от покрываемого (``coverable_m2``), ``coverage_free`` — от всего свободного пола
+    (``free_m2``). ``interrupted`` — обход прерван сигналом (``stop=interrupted_SIGINT``), итог по пройденному.
+    ``moving_*`` / ``avg_mps`` — время в движении и средние скорости по треку истинной позы.
+    """
     by = Counter(o.result for o in outcomes)
-    ok = by.pop("SUCCEEDED", 0)
+    ok = sum(o.succeeded for o in outcomes)
+    by.pop("SUCCEEDED", None)
     not_sent = by.pop("NOT_SENT", 0)
     failed = ", ".join(f"{k}={v}" for k, v in sorted(by.items())) or "-"
-    pct = "n/a" if cov.pct is None else f"{cov.pct:.1f}%"
+    stop = stop_reason or "end_of_plan"
     return (
-        f"COVERAGE_DONE poses={len(outcomes)} succeeded={ok} skipped={sum(by.values())} ({failed}) "
-        f"not_sent={not_sent} stop={stop_reason or 'end_of_plan'} "
-        f"em_episodes={sum(o.em_episodes for o in outcomes)} sim_s={sim_s:.1f} "
-        f"coverage={pct} covered_m2={cov.covered_m2:.1f} coverable_m2={cov.coverable_m2:.1f} "
-        f"free_covered_m2={cov.free_covered_m2:.1f} free_m2={cov.free_m2:.1f}"
+        f"COVERAGE_DONE goals={len(outcomes)} succeeded={ok} skipped={sum(by.values())} ({failed}) "
+        f"not_sent={not_sent} poses={sum(o.poses for o in outcomes)} poses_passed={sum(o.passed for o in outcomes)} "
+        f"stop={stop} interrupted={'yes' if stop.startswith('interrupted') else 'no'} "
+        f"em_episodes={sum(o.em_episodes for o in outcomes)} sim_s={sim_s:.1f}{_motion(motion, sim_s)} "
+        f"coverage={_pct(cov.pct)} covered_m2={cov.covered_m2:.1f} coverable_m2={cov.coverable_m2:.1f} "
+        f"coverage_free={_pct(cov.free_pct)} free_covered_m2={cov.free_covered_m2:.1f} free_m2={cov.free_m2:.1f}"
     )
 
 
@@ -225,7 +333,8 @@ def main(argv: list[str] | None = None) -> int:
     res = coverage_result(space, covered)
     known = np.asarray(grid.data).reshape(grid.height, grid.width) >= 0
     img = write_image(args.out, coverage_rgb(space, covered, known))
-    print(json.dumps({**res.__dict__, "pct": res.pct, "samples": len(track), "image": str(img)}, ensure_ascii=False))
+    out = {**res.__dict__, "pct": res.pct, "free_pct": res.free_pct, "samples": len(track), "image": str(img)}
+    print(json.dumps(out, ensure_ascii=False))
     return 0
 
 

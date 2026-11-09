@@ -1389,6 +1389,35 @@ DBPY
     echo "E2E_SPEAKER_DB copied ${tarf}"
 }
 
+# --- issue #4512 -- e2e-БД ходов (dialog_events_<run>.db) в OUT_DIR акта ----------------------------------------
+# БД лежит в /tmp контейнера voice-assistant (e2e_voice_test.sh: E2E_DIALOG_DB_PATH), деплой пересоздаёт контейнер --
+# ни одна не сохранилась. Копия -- тем же способом, что e2e-БД дикторов: ОДИН ssh, tar файла БД и его -wal/-shm
+# (согласованное состояние без sqlite3 CLI, которого в образе нет), только чтение.
+# Репо ПУБЛИЧНОЕ, а в БД тексты реплик людей, поэтому tar остаётся на билд-машине (в OUT_DIR, upload-паттерны
+# workflow его не берут), а в артефакт уходит только dialog_events_e2e_db.json без текстов (dialog_db_summary.py).
+collect_e2e_dialog_db() {  # $1 = каталог артефактов акта; из trap EXIT, всегда rc=0
+    local dir="$1" db="${E2E_DIALOG_DB_PATH:-}" wait_s="${E2E_DIALOG_DB_TIMEOUT:-60}" base tarf remote summary rc
+    [ "${E2E_ACT_STARTED:-0}" = "1" ] || return 0
+    case "$db" in
+        /data | /data/* | "") log "❌ e2e-БД ходов: путь '${db}' пуст или в боевой /data — не копирую"; return 0 ;;
+    esac
+    base="${db##*/}"
+    tarf="${dir}/dialog_events_e2e_db.tar"
+    remote="cd '${db%/*}' && f=\$(ls -- '${base}' '${base}-wal' '${base}-shm' 2>/dev/null); [ -n \"\$f\" ] && tar -cf - \$f"
+    timeout "$wait_s" ${ROBOT_SSH} "docker exec voice-assistant sh -c $(printf '%q' "$remote")" > "$tarf" 2>/dev/null
+    rc=$?
+    if [ "$rc" = "124" ] || [ ! -s "$tarf" ]; then
+        rm -f "$tarf"
+        log "🗄️ e2e-БД ходов: копии нет (rc=${rc}: ssh не ответил за ${wait_s} с либо в контейнере нет ${db})"
+        echo "E2E_DIALOG_DB none"
+        return 0
+    fi
+    summary="$(timeout "$wait_s" python3 "$(dirname "${BASH_SOURCE[0]}")/dialog_db_summary.py" "$tarf" "$base" "${dir}/dialog_events_e2e_db.json" 2>/dev/null)"
+    [ -n "$summary" ] || summary="сводки нет (разбор не уложился в ${wait_s} с либо упал)"
+    log "🗄️ e2e-БД ходов скопирована (только чтение): ${tarf} ($(wc -c < "$tarf" | tr -d ' ') байт), ${summary}"
+    echo "E2E_DIALOG_DB copied ${tarf}"
+}
+
 restore_robot_tts_default() {
     # #4027: скорость и тон возвращает restore_node_params (идёт в trap EXIT следом), здесь -- только голос.
     [ -n "${E2E_RUN_BEFORE:-}" ] || return 0

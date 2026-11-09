@@ -26,6 +26,9 @@ from rob_box_sim.geometry2d import ROBOT_FOOTPRINT, Box, Footprint, signed_dista
 from rob_box_sim.map_check import OccupancyGrid
 
 RES = 0.05
+#: Тесты раскладки полос и метрики — в режиме «без проверки мест разворота» (сужение 0.336, как до #4560 п.1):
+#: они проверяют геометрию полос. Места разворота — tests/unit/sim/test_sim_coverage_turn.py.
+NO_TURN = {"turn_clearance_m": 0.0}
 
 
 def grid_from_boxes(x0, y0, x1, y1, boxes, res=RES, unknown_border=False):
@@ -129,7 +132,7 @@ def test_decompose_splits_around_obstacle():
 
 def test_empty_room_plan_covers_95_percent_of_coverable():
     grid = grid_from_boxes(0, 0, 10, 8, [])
-    space = coverage_space(grid, (1.0, 1.0))
+    space = coverage_space(grid, (1.0, 1.0), **NO_TURN)
     plan = plan_coverage(space)
     assert not plan.unreachable
     assert plan.lanes_dropped_short == 0
@@ -145,7 +148,7 @@ def test_racks_room_lanes_stay_clear_of_obstacles():
     racks = [box("r0", 5.0, 2.5, 6.0, 1.0), box("r1", 5.0, 5.0, 6.0, 1.0), box("c", 1.5, 6.5, 0.6, 0.6)]
     grid = grid_from_boxes(0, 0, 10, 8, racks)
     world = racks + walls(0, 0, 10, 8)
-    space = coverage_space(grid, (1.0, 1.0))
+    space = coverage_space(grid, (1.0, 1.0), **NO_TURN)
     plan = plan_coverage(space)
     assert len(plan.cells) > 1
     assert not plan.unreachable
@@ -198,9 +201,12 @@ def test_auto_axis_picks_faster_plan():
 
 def test_short_lanes_dropped_and_counted():
     grid = grid_from_boxes(0, 0, 0.95, 4, [])  # центры по x — около 0.2 м: полоса вдоль x короче 0.3
-    space = coverage_space(grid, (0.45, 1.0))
-    plan = plan_coverage(space, axis="x")
+    space = coverage_space(grid, (0.45, 1.0), **NO_TURN)
+    plan = plan_coverage(space, axis="x", cross=False)
     assert plan.lanes == 0 and plan.lanes_dropped_short > 0
+    # поперечный проход берёт такой коридор полосами вдоль y
+    crossed = plan_coverage(space, axis="x")
+    assert crossed.cross_lanes > 0 and all(abs(abs(p.yaw) - math.pi / 2) < 1e-9 for p in crossed.poses)
 
 
 def test_waypoint_step_adds_mid_poses():
@@ -215,7 +221,7 @@ def test_waypoint_step_adds_mid_poses():
 
 def test_depot_like_plan():
     grid, world = depot_like()
-    space = coverage_space(grid, (0.0, 0.0))
+    space = coverage_space(grid, (0.0, 0.0), **NO_TURN)
     plan = plan_coverage(space)
     assert not plan.unreachable
     assert _plan_coverage_pct(space, plan) >= 90.0
@@ -282,6 +288,50 @@ def test_run_summary_is_built_from_outcomes():
         GoalOutcome("e", "NOT_SENT"),
     ]
     line = run_summary(outcomes, cov, 123.45, "5_failures_in_row")
-    assert line.startswith("COVERAGE_DONE poses=5 succeeded=2 skipped=2 (ABORTED=1, TIMEOUT=1) not_sent=1 ")
-    assert "stop=5_failures_in_row" in line
+    assert line.startswith(
+        "COVERAGE_DONE goals=5 succeeded=2 skipped=2 (ABORTED=1, TIMEOUT=1) not_sent=1 poses=5 poses_passed=2 "
+    )
+    assert "stop=5_failures_in_row interrupted=no" in line
     assert "em_episodes=3" in line and "sim_s=123.5" in line and "coverage=100.0%" in line
+    # от всего свободного пола — меньше: у стен корпус не дотягивается
+    assert f"coverage_free={cov.free_pct:.1f}%" in line and cov.free_pct < 100.0
+
+
+def test_coverage_has_two_bases_coverable_and_free():
+    # комната 6×4 и закуток за проходом 0.5 м: он свободен, но корпусу недоступен
+    wall = [box("wall_s", 4.0, 0.9, 0.2, 1.8), box("wall_n", 4.0, 3.15, 0.2, 1.7)]
+    grid = grid_from_boxes(0, 0, 6, 4, wall)
+    space = coverage_space(grid, (1.0, 1.0))
+    res = coverage_result(space, space.coverable.copy())
+    assert res.pct == 100.0
+    assert res.free_m2 > res.coverable_m2
+    assert res.free_pct == pytest.approx(100.0 * res.coverable_m2 / res.free_m2, abs=0.01)
+    assert coverage_result(space, np.zeros_like(space.free)).free_pct == 0.0
+
+
+def test_run_summary_marks_interrupted_and_counts_route_statuses():
+    grid = grid_from_boxes(0, 0, 4, 4, [])
+    space = coverage_space(grid, (1.0, 1.0))
+    cov = coverage_result(space, np.zeros_like(space.free))
+    outcomes = [
+        GoalOutcome.from_route("a", "STATUS_SUCCEEDED"),
+        GoalOutcome.from_route("b", "STATUS_ABORTED", 2),
+        GoalOutcome.from_route("c", "INTERRUPTED"),
+        GoalOutcome("d", "NOT_SENT"),
+    ]
+    line = run_summary(outcomes, cov, 1.0, "interrupted_SIGINT")
+    assert "succeeded=1 skipped=2 (ABORTED=1, INTERRUPTED=1) not_sent=1" in line
+    assert "stop=interrupted_SIGINT interrupted=yes" in line
+    assert "STATUS_" not in line
+
+
+def test_motion_stats_counts_moving_time_and_skips_gaps():
+    from rob_box_sim.coverage_metric import motion_stats
+
+    track = [(0.0, 0.0, 0.0, 0.0), (1.0, 0.1, 0.0, 0.0), (2.0, 0.1, 0.0, 0.0), (3.0, 0.1, 0.0, 0.5)]
+    track += [(30.0, 5.0, 0.0, 0.5)]  # разрыв лога 27 с — не движение
+    m = motion_stats(track)
+    assert m.moving_s == pytest.approx(2.0)  # 0→1 едет, 1→2 стоит, 2→3 крутится
+    assert m.moved_m == pytest.approx(0.1)
+    assert m.avg_mps(30.0) == pytest.approx(0.1 / 30.0) and m.moving_mps() == pytest.approx(0.05)
+    assert motion_stats([]).moving_mps() is None

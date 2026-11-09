@@ -13,25 +13,31 @@ import pytest
 
 from rob_box_dialog import knowledge as kn
 from rob_box_dialog import profile as pf
+from rob_box_dialog.prompts import Persona, neutral_persona, personality_prompt
 from rob_box_dialog.words import has_wake_word
 
 FIXTURE = Path(__file__).resolve().parent / "fixtures" / "robot_profile"
 
 
-def _write(tmp_path, text, wake="personality:\n  - эй ассистент\noperator:\n  - пульт\n"):
+PERSONA = "You are Ассистент.\n\n- Friendly and brief.\n"
+
+
+def _write(tmp_path, text, wake="personality:\n  - эй ассистент\noperator:\n  - пульт\n", persona=PERSONA):
     (tmp_path / "wake_words.yaml").write_text(wake, encoding="utf-8")
+    (tmp_path / "persona.txt").write_text(persona, encoding="utf-8")
     (tmp_path / "assistant.yaml").write_text(text, encoding="utf-8")
     return tmp_path / "assistant.yaml"
 
 
-GOOD = "format: 1\nname: Ассистент\nwake_words: wake_words.yaml\n"
+GOOD = "format: 2\nname: Ассистент\nwake_words: wake_words.yaml\npersona: persona.txt\n"
 
 
 def test_load_good_profile_by_file_and_by_dir(tmp_path):
     file = _write(tmp_path, GOOD)
     for path in (file, tmp_path):
         got = pf.load_profile(path)
-        assert got == pf.ProductProfile("Ассистент", ("эй ассистент",), ("пульт",), root=tmp_path)
+        persona = Persona("You are Ассистент.", "- Friendly and brief.")
+        assert got == pf.ProductProfile("Ассистент", ("эй ассистент",), ("пульт",), persona, root=tmp_path)
         assert not got.neutral
 
 
@@ -40,6 +46,7 @@ def test_no_path_gives_neutral_defaults_and_says_so():
     got = pf.resolve_profile("", lines.append)
     assert got is pf.NEUTRAL and got.neutral
     assert got.name == "" and got.wake_personality == () and got.wake_operator == ()
+    assert got.persona == neutral_persona()
     assert lines == [pf.NO_PROFILE_LOG]
     assert has_wake_word("который час", got.wake_personality), "без вейков ядро в режиме «адресовано всё»"
 
@@ -47,16 +54,23 @@ def test_no_path_gives_neutral_defaults_and_says_so():
 def test_neutral_defaults_name_no_product():
     words = " ".join(pf.NEUTRAL.wake_personality + pf.NEUTRAL.wake_operator) + pf.NEUTRAL.name
     assert "робот" not in words.lower() and "роббокс" not in words.lower()
+    persona = pf.NEUTRAL.persona.identity + pf.NEUTRAL.persona.character
+    assert "роббокс" not in persona.lower() and "rover" not in persona.lower()
+    assert "роббокс" not in personality_prompt(pf.NEUTRAL.persona).lower()
 
 
 @pytest.mark.parametrize(
     "text, why",
     [
-        ("format: 1\nname: Ассистент\n", "нет ключей ['wake_words']"),
-        ("format: 2\nname: Ассистент\nwake_words: wake_words.yaml\n", "format 2"),
-        ("format: 1\nname: ''\nwake_words: wake_words.yaml\n", "name"),
-        ("format: 1\nname: А\nwake_words: wake_words.yaml\nwake: x\n", "лишние ключи ['wake']"),
-        ("format: 1\nname: А\nwake_words: nope.yaml\n", "таблицы вейков"),
+        ("format: 2\nname: Ассистент\npersona: persona.txt\n", "нет ключей ['wake_words']"),
+        ("format: 2\nname: Ассистент\nwake_words: wake_words.yaml\n", "нет ключей ['persona']"),
+        ("format: 1\nname: Ассистент\nwake_words: wake_words.yaml\n", "format 1 устарел"),
+        ("format: 3\nname: А\nwake_words: wake_words.yaml\npersona: persona.txt\n", "format 3"),
+        ("format: 2\nname: ''\nwake_words: wake_words.yaml\npersona: persona.txt\n", "name"),
+        ("format: 2\nname: А\nwake_words: wake_words.yaml\npersona: p.txt\nwake: x\n", "лишние ключи ['wake']"),
+        ("format: 2\nname: А\nwake_words: nope.yaml\npersona: persona.txt\n", "таблицы вейков"),
+        ("format: 2\nname: А\nwake_words: wake_words.yaml\npersona: ''\n", "persona - имя файла"),
+        ("format: 2\nname: А\nwake_words: wake_words.yaml\npersona: nope.txt\n", "файла персоны"),
         ("- 1\n- 2\n", "ждали словарь"),
         ("format: [1\n", "не читается как YAML"),
     ],
@@ -74,11 +88,18 @@ def test_missing_file_and_empty_wake_table_are_errors(tmp_path):
         pf.load_profile(_write(tmp_path, GOOD, wake="operator:\n  - пульт\n"))
 
 
+def test_broken_persona_is_an_error(tmp_path):
+    for persona in ("", "You are Ассистент.\n", "\n\n- Friendly.\n"):
+        with pytest.raises(pf.ProfileError, match="два блока"):
+            pf.load_profile(_write(tmp_path, GOOD, persona=persona))
+
+
 def test_test_robot_profile_loads():
-    """Тестовый профиль робота (``fixtures/robot_profile``) - корректный профиль формата 1."""
+    """Тестовый профиль робота (``fixtures/robot_profile``) - корректный профиль формата 2."""
     got = pf.load_profile(FIXTURE)
     personality, operator = kn.resolve_wake_word_namespaces(str(FIXTURE / "wake_words.yaml"))
     assert got.name == "РОББОКС" and not got.neutral
+    assert got.persona.identity.startswith("You are РОББОКС")
     assert list(got.wake_personality) == personality and list(got.wake_operator) == operator
 
 

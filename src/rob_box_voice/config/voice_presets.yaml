@@ -21,7 +21,8 @@
 # Соседи по конфигурации (per-node ROS2 YAML):
 # - audio_node.yaml / dialog_node.yaml / tts_node.yaml — параметры
 #   соответствующих ROS2-нод; см. config/README.md.
-# - master_prompt_compact.txt — основной диалоговый промпт dialog_node (Личность v2)
+# - промпт Личности dialog_node — основа ядра rob_box_dialog/prompts/personality.txt + персона профиля робота
+#   docker/sound/config/persona.txt (ADR-0167 Ш1б-3)
 #   (НЕ для формализации, это другой режим).
 
 # Список пресетов. Порядок = порядок в UI-секции «Стиль речи».

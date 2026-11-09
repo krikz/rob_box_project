@@ -1,35 +1,43 @@
 """Мастер-промпт — персона и протокол хода, а не свод правил (ADR-0150 §7.3, A5; ADR-0148; #3696; PR-15 15-rule #3711).
 
 Знание о тулах живёт в их схемах (видны только тулы среза хода), данные — в снимке хода, правила модели — в таблице
-``knowledge.PROMPT_RULES`` (в файле промпта их нет). Системный промпт агента — файл + правила — обязан влезать в бюджет
-системного блока ``knowledge.CONTEXT_BUDGET_TOKENS["system"]``.
+``knowledge.PROMPT_RULES`` (в основе промпта их нет). Системный промпт агента — основа + правила — обязан влезать в
+бюджет системного блока ``knowledge.CONTEXT_BUDGET_TOKENS["system"]``. Основа Личности — данные ядра с персоной
+профиля робота (ADR-0167 Ш1б-3), основа телеграма — свой файл.
 """
 
 from pathlib import Path
-from types import SimpleNamespace
 
 import pytest
 
 from rob_box_core.token_estimate import estimate_tokens
 from rob_box_dialog import knowledge as kn
 from rob_box_dialog.context import SNAPSHOT_TAG
+from rob_box_dialog.profile import load_profile
+from rob_box_dialog.prompts import personality_prompt
 from rob_box_voice.core.dialog_v2_ports import system_prompt
 
-PROMPTS = Path(__file__).resolve().parents[2] / "prompts"
-FILES = {"personality": "master_prompt_compact.txt", "telegram": "telegram_chat_prompt.txt"}
+PACKAGE = Path(__file__).resolve().parents[2]
+PROFILE = PACKAGE.parent.parent / "docker" / "sound" / "config" / "assistant.yaml"
+AGENTS = ("personality", "telegram")
+
+
+def _base(agent: str) -> str:
+    if agent == "personality":
+        return personality_prompt(load_profile(PROFILE).persona)
+    return (PACKAGE / "prompts" / "telegram_chat_prompt.txt").read_text(encoding="utf-8")
 
 
 def _system(agent: str) -> str:
-    spec = SimpleNamespace(name=agent, prompt_dir=PROMPTS, system_prompt_file=FILES[agent])
-    return system_prompt(spec, agent)
+    return system_prompt(_base(agent), agent)
 
 
-@pytest.mark.parametrize("agent", sorted(FILES))
+@pytest.mark.parametrize("agent", AGENTS)
 def test_system_prompt_fits_the_system_block_budget(agent):
     assert estimate_tokens(_system(agent)) <= kn.CONTEXT_BUDGET_TOKENS["system"]
 
 
-@pytest.mark.parametrize("agent", sorted(FILES))
+@pytest.mark.parametrize("agent", AGENTS)
 def test_system_prompt_carries_every_rule_of_the_agent_from_knowledge(agent):
     """Правила агента берутся из таблицы знания и приходят в промпт целиком, в её порядке."""
     system = _system(agent)
@@ -39,13 +47,13 @@ def test_system_prompt_carries_every_rule_of_the_agent_from_knowledge(agent):
     assert [system.index(text) for text in rules] == sorted(system.index(text) for text in rules)
 
 
-@pytest.mark.parametrize("agent", sorted(FILES))
+@pytest.mark.parametrize("agent", AGENTS)
 def test_system_prompt_teaches_no_pause_tags(agent):
     """Модель пишет голый текст, паузы ставит код (ADR-0160 §2.1, #4238): тега паузы в системном промпте нет."""
     assert "<break" not in _system(agent)
 
 
-@pytest.mark.parametrize("agent", sorted(FILES))
+@pytest.mark.parametrize("agent", AGENTS)
 def test_system_prompt_teaches_no_speech_tool_of_v1(agent):
     """Речь v2 — поле ``speech`` команды (#4354 B1): тулы-каналы речи v1 (``knowledge.SPEECH_CHANNEL_TOOLS``) системный
     промпт агента не называет — форму ответа несёт только фрагмент knowledge, который дописывает мост."""
