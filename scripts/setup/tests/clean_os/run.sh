@@ -36,7 +36,7 @@ for _ in $(seq 1 60); do
 done
 echo "systemd: ${st:-нет ответа}" | tee "$OUT/systemd.txt"
 
-git -C "$REPO" archive --format=tar --prefix=rob_box_project/ HEAD \
+git -C "$REPO" -c core.autocrlf=false archive --format=tar --prefix=rob_box_project/ HEAD \
     | docker exec -i "$NAME" tar -x -C /home/ros2
 docker exec "$NAME" chown -R ros2:ros2 /home/ros2/rob_box_project
 docker exec "$NAME" sh -c '. /etc/os-release; echo "$PRETTY_NAME $(uname -m)"; python3 --version' | tee "$OUT/os.txt"
