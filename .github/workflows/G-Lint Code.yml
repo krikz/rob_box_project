@@ -243,6 +243,19 @@ jobs:
             -o addopts="" \
             -p no:cacheprovider
 
+      # ADR-0168 (#4375): релиз как артефакт (scripts/build/release.py) и агент chuangong (host/chuangong), фаза B.
+      # Без сети и Docker: реестр, docker и zenoh — фейки. minisign из apt нужен только тесту совместимости
+      # подписи с настоящей утилитой; не поставился — тест пропускается с причиной в выводе -v.
+      - name: Release delivery self-tests (ADR-0168, #4375)
+        run: |
+          sudo apt-get update -qq && sudo apt-get install -y -qq --no-install-recommends minisign \
+            || echo "::warning::minisign не поставился — тест совместимости подписи пропущен"
+          pip install cryptography
+          python -m pytest scripts/build/tests/test_release.py host/chuangong/tests \
+            -v \
+            -o addopts="" \
+            -p no:cacheprovider
+
       # issue #2280 acceptance / docs/plans/2026-09-15-service-manifest.md
       # §1.7: этот regression-guard уже существовал (393 строки, 10
       # тестов на build-job), но НИ РАЗУ не был подключён к CI — ровно
