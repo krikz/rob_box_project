@@ -209,10 +209,15 @@ def options(post: dict, facts: list, repo_root: Path = REPO) -> list:
     """Варианты медиа по порядку: готовое медиа поста, его медиа из фактов, затем инфографика.
 
     Медиа из фактов — только своё (``own_media``): чужая картинка к посту не подходит.
+    ``media_ref`` поста, который указывает на медиа-факт ДРУГОГО PR, — след старого выбора
+    (у p20261109-810 в записи остался график дрейфа из #4508): он тоже отбрасывается.
     Элемент — строка-ссылка на файл или ``"infographic:timeline"`` (рисуется по запросу).
     """
+    own = [f["source"] for f in own_media(post, facts)]
+    foreign = {f.get("source") for f in facts if f.get("kind") == "media"} - set(own)
+    ref = post.get("media_ref") or ""
     found = []
-    for ref in [post.get("media_ref") or ""] + [f["source"] for f in own_media(post, facts)]:
+    for ref in ([ref] if ref not in foreign else []) + own:
         if ref and ref not in found and resolve(ref, repo_root) is not None and kind_of(Path(ref)):
             found.append(ref)
     if timeline_spec(post, facts) is not None:

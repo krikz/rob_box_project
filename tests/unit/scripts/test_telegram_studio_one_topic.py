@@ -62,6 +62,13 @@ def test_session_draft_does_not_take_media_of_another_pr(tmp_path):
     assert variants[0] == str(tmp_path / "dialog-window.png")
 
 
+def test_stale_foreign_media_ref_of_old_draft_is_dropped(tmp_path):
+    """Запись p20261109-810 уже хранит чужой media_ref (дрейф #4508) — кнопка «Медиа» его не вернёт."""
+    facts = _session_facts(tmp_path)
+    post = {"fact_keys": ["pr:4555"], "media_ref": str(tmp_path / "locdrift-before-after.png")}
+    assert str(tmp_path / "locdrift-before-after.png") not in smedia.options(post, facts)
+
+
 def test_post_without_own_media_gets_no_foreign_picture(tmp_path):
     """Своего медиа нет — чужое не подставляется (дальше только инфографика или без картинки)."""
     facts = [f for f in _session_facts(tmp_path) if f["key"] != "media:own"]
