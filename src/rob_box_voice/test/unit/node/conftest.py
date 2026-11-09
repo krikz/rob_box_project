@@ -150,3 +150,21 @@ def _install_ros_mocks():
 
 
 _install_ros_mocks()
+
+
+import pytest  # noqa: E402
+
+#: Профиль продукта робота (ADR-0167 Ш1б) в чекауте; в контейнере тот же файл - ``/config/assistant.yaml``.
+ROBOT_PROFILE = _Path(__file__).resolve().parents[5] / "docker" / "sound" / "config" / "assistant.yaml"
+
+
+@pytest.fixture(autouse=True)
+def _robot_profile(monkeypatch):
+    """``dialog_node`` грузит профиль робота строго (``profile_path``, по умолчанию ``/config/assistant.yaml``): в
+    тестах хоста робота - тот же профиль из чекаута, как ``/config`` в контейнере. Без него нода не стартует."""
+    declare = _FakeNode.declare_parameter
+
+    def with_robot_profile(self, name, default=None):
+        return declare(self, name, str(ROBOT_PROFILE) if name == "profile_path" else default)
+
+    monkeypatch.setattr(_FakeNode, "declare_parameter", with_robot_profile)

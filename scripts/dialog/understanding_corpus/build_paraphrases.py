@@ -151,10 +151,9 @@ def load_base() -> Dict[str, Any]:
 
 
 def wake_table() -> List[str]:
-    from dry_stand import WAKE_WORDS_YAML  # noqa: PLC0415
-    from rob_box_dialog.address import wake_words  # noqa: PLC0415
+    from dry_stand import robot_wake  # noqa: PLC0415
 
-    return list(wake_words(str(WAKE_WORDS_YAML))[0])
+    return robot_wake()
 
 
 def plan(base: Dict[str, Any], wakes: Sequence[str]) -> Tuple[List[Dict[str, Any]], List[Dict[str, str]]]:

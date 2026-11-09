@@ -71,12 +71,13 @@ import understanding_variants as uv  # noqa: E402
 from rob_box_core.speaker_wire import SOURCE_ENROLL  # noqa: E402
 from rob_box_dialog import knowledge as kn  # noqa: E402
 from rob_box_dialog.address import (  # noqa: E402
-    BARE_WAKE, Addressed, NotAddressed, decide_in_session, heard_from, log_label, wake_words,
+    BARE_WAKE, Addressed, NotAddressed, decide_in_session, heard_from, log_label,
 )
 from rob_box_dialog.backlog import Backlog  # noqa: E402
 from rob_box_dialog.e2e_events import inside_robot_data, open_events  # noqa: E402
 from rob_box_dialog.memory import profiled_person  # noqa: E402
 from rob_box_dialog.music_state import MusicStateMemory  # noqa: E402
+from rob_box_dialog.profile import load_profile  # noqa: E402
 from rob_box_dialog.session import MusicStateRef, Session  # noqa: E402
 from rob_box_dialog.speaker_adapter import speaker_ref, voice_tag  # noqa: E402
 from rob_box_dialog.turn import ASK_MARK, LOG_MARK, TurnEngine, host_sections  # noqa: E402
@@ -90,7 +91,16 @@ from rob_box_voice.tts_voice_registry import (  # noqa: E402
     ROBOT_DEFAULT_PROVIDER, default_voice_for, providers_overview, robot_default_voice, voice_id_by_name, voices_for,
 )
 
-WAKE_WORDS_YAML = REPO / "docker" / "sound" / "config" / "wake_words.yaml"
+#: Профиль продукта робота (ADR-0167 Ш1б): стенд робота без него не стартует - нейтральные умолчания ядра (вейк
+#: выключен, адресовано всё) спрятали бы ошибку адресации, которую стенд и должен ловить.
+ROBOT_PROFILE = REPO / "docker" / "sound" / "config" / "assistant.yaml"
+
+
+def robot_wake() -> List[str]:
+    """Вейки личности из профиля робота (:data:`ROBOT_PROFILE`); нет или битый профиль - ``ProfileError``."""
+    return list(load_profile(ROBOT_PROFILE).wake_personality)
+
+
 #: Скорость речи человека/робота для модели времени, символов в секунду (живой замер ≈ 13–16).
 SPEECH_CPS = 14.0
 #: Пауза харнесса между шагами, с: шаг ждёт конца речи робота + паузу. Фраза в бэклог ждёт только маркер бэклога: по
@@ -818,7 +828,7 @@ class DryStand:
         self.counter = counter
         self.llm = llm
         self.system_prompt = system_prompt
-        self.wake = list(wake) if wake is not None else wake_words(str(WAKE_WORDS_YAML))[0]
+        self.wake = list(wake) if wake is not None else robot_wake()
         self.speakers = FakeSpeakers()
         self.phrase_voices: Dict[str, Mapping[str, Any]] = {}  # биометрия фразы по её id (реестр хоста, #4141)
         self.voice_provider = ROBOT_DEFAULT_PROVIDER

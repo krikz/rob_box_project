@@ -61,13 +61,13 @@ from rob_box_dialog import knowledge as kn
 from rob_box_dialog.address import BARE_WAKE, HELD, Addressed, NotAddressed, decide_in_session, heard_from
 from rob_box_dialog.address import log_label
 from rob_box_dialog.address import person_ref_from
-from rob_box_dialog.address import wake_words as load_wake_words
 from rob_box_dialog.backlog import Backlog
 from rob_box_dialog.chats import LOG_MARK as CHAT_LOG_MARK, PROGRESS_KIND, ChatPorts, ChatTurns, channel_ref
 from rob_box_dialog.e2e_events import open_events
 from rob_box_dialog.execute import transport_timeouts
 from rob_box_dialog.interrupt import TurnsInFlight, on_interrupt
 from rob_box_dialog.memory import profiled_person
+from rob_box_dialog.profile import load_profile
 from rob_box_dialog.pickup_parties import rights_speaker
 from rob_box_dialog.voice_warmth import WarmVoices
 from rob_box_dialog.respond import ActionResult
@@ -114,7 +114,9 @@ def declare_params(node: Any) -> None:
     node.declare_parameter("metrics_port", 9100)  # Prometheus-экспортер (#4328); 0 - выключен
     node.declare_parameter("llm_providers", "deepseek,minimax")
     node.declare_parameter("system_prompt_file", "master_prompt_compact.txt")
-    node.declare_parameter("wake_words_path", "/config/wake_words.yaml")
+    # Профиль продукта (ADR-0167 Ш1б): робот без своего профиля не стартует - нейтральных умолчаний ядра (вейк
+    # выключен) роботу нельзя, он отвечал бы на каждую фразу мастерской.
+    node.declare_parameter("profile_path", "/config/assistant.yaml")
     node.declare_parameter("temperature", 0.0)
     node.declare_parameter("max_tokens", 0)
     # Номинальный провайдер TTS, пока tts_node не сказал фактический (паузы MiniMax выступления, #3901).
@@ -386,7 +388,7 @@ class DialogNode(Node):
         reply_pub = self.create_publisher(Float32, echo_window.REPLY_WINDOW_TOPIC, 10)  # окно ответа → stt_node (#4509)
         self.announce_reply_window = functools.partial(publish_seconds, reply_pub)
         self._scenes = SceneDirector(self._session, self._restore_voice, robot_default_voice())
-        self._wake = load_wake_words(str(self.get_parameter("wake_words_path").value))[0]
+        self._wake = list(load_profile(str(self.get_parameter("profile_path").value)).wake_personality)
         self._backlog = Backlog()
         self._speakers = UtteranceSpeakerRegistry()
         self._music = MusicStateMemory()
