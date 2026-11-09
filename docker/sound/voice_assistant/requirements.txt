@@ -106,9 +106,9 @@ scikit-learn
 # Issue #1101 — runtime pin: resemblyzer 0.1.4 → librosa → numba импортирует
 # `coverage.types` (Tracer API). Debian Bullseye ships coverage 6.2 без
 # `types` submodule → AttributeError: module 'coverage' has no attribute
-# 'types' → embed_audio returns None. Pin coverage>=7.17.0 (где types.Tracer
+# 'types' → embed_audio returns None. Pin coverage>=7.17.2 (где types.Tracer
 # сохранён). Также pin pyyaml>=6.0.3 (resemblyzer models.yaml требует C-парсер).
-coverage>=7.17.0
+coverage>=7.17.2
 pyyaml>=6.0.3
 
 # =============================================================================
@@ -125,7 +125,7 @@ yandex-cloud-ml-sdk  # Yandex Cloud TTS/STT gRPC API v3 (anton voice!)
 # Dialogue system: OpenAI Agents SDK (wraps DeepSeek/Qwen via base_url)
 # Used in: rob_box_voice/dialogue_node.py
 # =============================================================================
-openai>=3.42.1,<4.0.0
+openai>=3.46.0,<4.0.0
 openai-agents>=0.24.0,<1.0.0
 # =============================================================================
 # Music synthesis: Renardo (Python FoxDot successor) + SuperCollider via OSC
