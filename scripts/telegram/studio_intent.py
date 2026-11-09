@@ -32,6 +32,29 @@ ACTION_WORDS = (
     # кнопку «пришли пост» к чужому черновику. Публикация словами — первая: «публикуем видео»
     # — это публикация, а не новый ролик. Решение всё равно кнопкой (studio_messages).
     (ACTION_PUBLISH, ("публику", "опубликуй", "опубликуем", "опубликовать", "выпускай")),
+    # Разбор 09.11, 09:17 UTC: «блин где этот пост? … прислал его для просмотра с видосом» собрало НОВЫЙ
+    # ролик — «видос» стоял раньше. Просьба показать пост — раньше видео: пост и так приходит с роликом.
+    (
+        ACTION_POST,
+        (
+            "пришли пост",
+            "пришли мне пост",
+            "пришли черновик",
+            "покажи пост",
+            "покажи черновик",
+            "собранный пост",
+            "готовый пост",
+            "перешли пост",
+            "скинь пост",
+            "пост целиком",
+            "где пост",
+            "где этот пост",
+            "где мой пост",
+            "где наш пост",
+            "пришли его ещё",
+            "пришли его еще",
+        ),
+    ),
     (
         ACTION_VIDEO,
         (
@@ -49,21 +72,6 @@ ACTION_WORDS = (
         ),
     ),
     (ACTION_ANIMATE, ("анимац", "анимир", "гифк", "гиф ", "gif", "оживи")),
-    (
-        ACTION_POST,
-        (
-            "пришли пост",
-            "пришли мне пост",
-            "пришли черновик",
-            "покажи пост",
-            "покажи черновик",
-            "собранный пост",
-            "готовый пост",
-            "перешли пост",
-            "скинь пост",
-            "пост целиком",
-        ),
-    ),
     (ACTION_MEDIA, ("картинк", "медиа", "другое фото", "другую фот", "инфографик", "изображени", "графику")),
     (ACTION_SHORTER, ("короче", "сократи", "покороче")),
     (ACTION_SIMPLER, ("проще", "попроще", "упрости")),
@@ -128,8 +136,41 @@ def message_ids(record: dict) -> set:
     не считался ответом на черновик — уходил в разговор, где модель только обещала.
     """
     ids = {record.get("message_id"), (record.get("last_motion") or {}).get("message_id"), record.get("post_message_id")}
+    ids.update(record.get("old_message_ids") or [])
     ids.discard(None)
     return ids
+
+
+QUOTE_MIN = 20  # знаков: короче — слишком легко совпасть случайно
+
+
+def _plain(text: str) -> str:
+    """Текст без HTML-тегов, в нижнем регистре, с одиночными пробелами."""
+    out, inside = [], False
+    for char in text or "":
+        if char == "<":
+            inside = True
+        elif char == ">" and inside:
+            inside = False
+            out.append(" ")
+        elif not inside:
+            out.append(char)
+    return " ".join("".join(out).lower().split())
+
+
+def quotes(text: str, record: dict) -> bool:
+    """Шифу вставил в сообщение заголовок или первую строку черновика — речь о нём.
+
+    Разбор 09.11: «блин где этот пост?» с вставленным текстом поста про навигацию ушло к черновику
+    про диалог — тот был «тронут последним». Цитата однозначнее свежести.
+    """
+    low = _plain(text)
+    first_line = (record.get("body_html") or "").strip().splitlines()[0] if record.get("body_html") else ""
+    for piece in (record.get("title") or "", first_line):
+        piece = _plain(piece)
+        if len(piece) >= QUOTE_MIN and piece in low:
+            return True
+    return False
 
 
 def target(state: dict, text: str = "", reply_to: Optional[int] = None, now: Optional[float] = None) -> tuple:
@@ -145,6 +186,9 @@ def target(state: dict, text: str = "", reply_to: Optional[int] = None, now: Opt
     named = [post_id for post_id, _record in found if post_id in (text or "")]
     if len(named) == 1:
         return named[0], []
+    quoted = [post_id for post_id, record in found if quotes(text, record)]
+    if len(quoted) == 1:
+        return quoted[0], []
     if not found:
         return "", []
     if len(found) == 1:

@@ -258,15 +258,19 @@ def _refine(
     return _refine_text(bot, state_path, record, own or facts, action, progress, chat_id, instruction)
 
 
-def _remember_post_message(state_path: Path, record: dict, sent: dict) -> None:
-    """Присланный пост — тоже сообщение черновика: reply на него и «публикуем» после него — про него.
+def _remember_post_message(state_path: Path, record: dict, sent: dict, kind: str) -> None:
+    """Присланный пост становится сообщением черновика: кнопки под ним, правки — в него.
 
-    Разбор 09.11: Шифу посмотрел присланный пост про навигацию и написал «публикуем», а студия
-    не знала, что это сообщение её черновика, и выбрала другой.
+    Разбор 09.11: пост про навигацию пришёл без кнопок, «Опубликовать» осталась под сообщением
+    черновика от 08.11 далеко вверху; «публикуем» в ответ на пост студия не связала с черновиком.
+    Старое сообщение остаётся в ``old_message_ids`` — reply на него тоже про этот черновик.
     """
     message_id = (sent.get("result") or {}).get("message_id")
-    if message_id:
-        save_fields(state_path, record["id"], {"post_message_id": message_id})
+    if not message_id:
+        return
+    old = [m for m in (record.get("old_message_ids") or []) + [record.get("message_id")] if m]
+    fields = {"message_id": message_id, "message_kind": kind, "post_message_id": message_id, "old_message_ids": old}
+    save_fields(state_path, record["id"], fields)
 
 
 def _refine_post(bot, state_path: Path, record: dict, progress, chat_id: int) -> bool:
@@ -289,20 +293,22 @@ def _refine_post(bot, state_path: Path, record: dict, progress, chat_id: int) ->
     if path is not None:
         caption = body[: lib.CAPTION_LIMIT]
         progress.step(f"Присылаю пост с медиа: {path.name}", "upload_video")
-        sent = bot.send_media(chat_id, path, caption=caption)
+        sent = bot.send_media(chat_id, path, caption=caption, keyboard=cs.post_keyboard(record["id"]))
         if not sent.get("ok"):
             progress.fail(sent.get("description") or "Telegram не принял файл")
             return False
-        _remember_post_message(state_path, record, sent)
+        _remember_post_message(state_path, record, sent, "media")
         note = "" if len(body) <= lib.CAPTION_LIMIT else " (текст обрезан: не влезает в подпись)"
         progress.finish(f"Готово: прислал пост с медиа {path.name}{note}")
         return True
     progress.step("Присылаю пост текстом", "typing")
-    sent = bot.send_message(chat_id, body[: lib.MESSAGE_LIMIT], parse_mode="HTML")
+    sent = bot.send_message(
+        chat_id, body[: lib.MESSAGE_LIMIT], keyboard=cs.post_keyboard(record["id"]), parse_mode="HTML"
+    )
     if not sent.get("ok"):
         progress.fail(sent.get("description") or "Telegram не принял текст")
         return False
-    _remember_post_message(state_path, record, sent)
+    _remember_post_message(state_path, record, sent, "text")
     progress.finish("Готово: прислал пост текстом")
     return True
 

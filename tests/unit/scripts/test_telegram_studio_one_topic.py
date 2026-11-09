@@ -306,3 +306,48 @@ def test_timeline_line_with_repo_file_is_left_out():
     ]
     texts = [ev["text"] for ev in smedia.timeline_events(facts)]
     assert texts == ["Сторож локализации — не «приехал», если поза ушла"]
+
+
+# --------------------------------------------------------------------------- 7. «где этот пост?» (09.11, 09:17 UTC)
+
+WHERE_IS_POST = (
+    "блин где этот пост?\nНавигация перестала считать потерю опоры обычным прибытием\n\n"
+    "После потери опоры робот теперь сбрасывает ICP-одометрию с параметром Odom/ResetCountdown=1.\n\n"
+    "ты же мне прислал его для просмотре с видосом уже где он????"
+)
+
+
+def test_where_is_the_post_is_send_post_not_new_video():
+    """«…прислал его с видосом, где он?» — прислать пост, а не собирать новый ролик."""
+    assert intent.classify(WHERE_IS_POST) == intent.ACTION_POST
+    assert intent.classify("сделай видео до/после") == intent.ACTION_VIDEO
+
+
+def test_quoted_post_text_beats_freshness():
+    """Вставленный текст поста про навигацию — это он, хотя черновик про диалог тронут позже."""
+    import time
+
+    now = time.time()
+    state = _two_drafts(now)
+    state["posts"]["i20261106-1-post"]["active_at"] = now - 40 * 60
+    state["posts"]["p20261109-810"]["active_at"] = now - 60
+    assert intent.target(state, WHERE_IS_POST) == ("i20261106-1-post", [])
+    assert intent.target(state, "так что с этим материалом он готов?")[0] == "p20261109-810"
+
+
+def test_sent_post_carries_draft_buttons_and_becomes_the_draft_message(run_env):  # noqa: F811
+    """Пост приходит с кнопками черновика; правки и reply идут к нему, старое сообщение тоже узнаётся."""
+    path = run_env / "state.json"
+    clip = run_env / "clip.mp4"
+    clip.write_bytes(b"mp4")
+    record = _draft(path, message_kind="media", media_path=str(clip))
+    bot = Bot()
+    progress = type("P", (), {"step": lambda *a, **k: None, "finish": lambda *a, **k: None, "fail": lambda *a: None})()
+    assert jobs._refine_post(bot, path, record, progress, SHIFU)
+    sent = [c for c in bot.calls if c[0] == "sendMedia"][0]
+    assert any(
+        b["callback_data"] == "studio:post:p1:publish" for row in sent[3]["inline_keyboard"] for b in row
+    ), "под присланным постом есть «Опубликовать»"
+    saved = st.load_state(path)["posts"]["p1"]
+    assert saved["message_id"] != 77 and 77 in saved["old_message_ids"]
+    assert intent.message_ids(saved) >= {77, saved["message_id"]}
