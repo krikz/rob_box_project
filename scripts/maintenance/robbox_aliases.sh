@@ -5,11 +5,11 @@
 # Полезные алиасы для работы с системой РОББОКС
 #
 # Установка:
-#   source ~/rob_box_project/scripts/robbox_aliases.sh
+#   source ~/rob_box_project/scripts/maintenance/robbox_aliases.sh
 #
 # Или добавить в ~/.bashrc:
-#   if [ -f ~/rob_box_project/scripts/robbox_aliases.sh ]; then
-#       source ~/rob_box_project/scripts/robbox_aliases.sh
+#   if [ -f ~/rob_box_project/scripts/maintenance/robbox_aliases.sh ]; then
+#       source ~/rob_box_project/scripts/maintenance/robbox_aliases.sh
 #   fi
 # ═══════════════════════════════════════════════════════════════════════════
 
@@ -60,8 +60,8 @@ alias rbstart-all='cd ~/rob_box_project/docker/vision && docker compose up -d; c
 # 🔍 МОНИТОРИНГ И ДИАГНОСТИКА
 # ═══════════════════════════════════════════════════════════════════════════
 
-alias rbcheck='~/rob_box_project/docker/diagnose_data_flow.sh'
-alias rbmonitor='~/rob_box_project/docker/monitor_system.sh'
+alias rbcheck='~/rob_box_project/scripts/diagnostics/diagnose_data_flow.sh'
+alias rbmonitor='~/rob_box_project/scripts/diagnostics/monitor_system.sh'
 alias rbfailing='docker ps -a --filter "status=restarting" --format "table {{.Names}}\t{{.Status}}"'
 alias rbresources='docker stats --no-stream'
 

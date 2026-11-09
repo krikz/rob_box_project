@@ -13,7 +13,7 @@ YELLOW='\033[1;33m'
 NC='\033[0m'
 
 PROJECT_DIR="$HOME/rob_box_project"
-ALIASES_FILE="$PROJECT_DIR/scripts/robbox_aliases.sh"
+ALIASES_FILE="$PROJECT_DIR/scripts/maintenance/robbox_aliases.sh"
 
 echo -e "${CYAN}╔═══════════════════════════════════════════════════════════════════════════╗${NC}"
 echo -e "${CYAN}║                  🤖 РОББОКС - Установка Bash Aliases                     ║${NC}"
@@ -75,8 +75,8 @@ cat >> "$SHELL_CONFIG" << 'EOF'
 # ═══════════════════════════════════════════════════════════════════════════
 # 🤖 РОББОКС Bash Aliases
 # ═══════════════════════════════════════════════════════════════════════════
-if [ -f ~/rob_box_project/scripts/robbox_aliases.sh ]; then
-    source ~/rob_box_project/scripts/robbox_aliases.sh
+if [ -f ~/rob_box_project/scripts/maintenance/robbox_aliases.sh ]; then
+    source ~/rob_box_project/scripts/maintenance/robbox_aliases.sh
 fi
 EOF
 
