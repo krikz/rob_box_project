@@ -47,6 +47,7 @@ check() { if eval "$2"; then ok "$1"; else ko "$1"; fi; }
 
 # ── 1. синтаксис ──────────────────────────────────────────────────────────
 for f in scripts/hil/hil.sh scripts/hil/remote_pi.sh scripts/hil/hil.conf \
+         scripts/hil/video/fix_crlf.sh scripts/hil/video/runvideo.sh scripts/hil/video/runcoverage.sh scripts/hil/video/sandbox_prep.sh \
          scripts/deploy/check_hil_lock.sh docker/sim/hil_run.sh docker/main/update_and_restart.sh; do
     if bash -n "$REPO_ROOT/$f"; then ok "bash -n $f"; else ko "bash -n $f"; fi
 done
@@ -115,7 +116,7 @@ case "$1" in
             if [ "$verb" = up ]; then echo running > "$S/${SIM_PREFIX}-gazebo"; else rm -f "$S/${SIM_PREFIX}-gazebo"; fi
         elif [ "$verb" = up ]; then
             for s in "${svcs[@]}"; do
-                echo running > "$S/$s"
+                if [ -f "$S/$s.broken" ]; then echo restarting > "$S/$s"; else echo running > "$S/$s"; fi
                 if [ "$hil" = 1 ]; then echo true > "$S/$s.simt"; else rm -f "$S/$s.simt"; fi
                 if [ "$snd" = 1 ]; then printf '%s\n' "${HIL_WAYPOINT_DB:?compose.hil.yaml Sound без HIL_WAYPOINT_DB}" > "$S/$s.wpdb"; else rm -f "$S/$s.wpdb"; fi
             done
@@ -344,6 +345,96 @@ check "hil.conf: Sound Pi ssh ros2@10.1.1.22, реестр HIL под /data/hil/
     'grep -q "HIL_SOUND_HOST:=ros2@10.1.1.22}" "$REPO_ROOT/scripts/hil/hil.conf" && grep -q "HIL_WAYPOINT_DB:=/data/hil/waypoints.db}" "$REPO_ROOT/scripts/hil/hil.conf"'
 check "env WAYPOINT_DB_PATH — то же имя, что rob_box_core.tools_db.WAYPOINT_DB_ENV" \
     'grep -q "^WAYPOINT_DB_ENV = \"WAYPOINT_DB_PATH\"" "$REPO_ROOT/src/rob_box_core/rob_box_core/tools_db.py"'
+
+# ── 9. off: сервис сломан ещё до on (followpath-watchdog в Restarting) ────────
+broken_before() {  # broken_before <сервис>: Restarting и до on, и после compose up
+    echo restarting > "$WORK/state/$1"; : > "$WORK/state/$1.broken"
+}
+reset_state
+broken_before followpath-watchdog
+run_hil on; rc=$?
+check "on со сломанным followpath-watchdog: выход 0 (rc=$rc), состояние «до» записано" \
+    '[ "$rc" -eq 0 ] && grep -qx "followpath-watchdog restarting" "$WORK/remote/pre_on_state.txt" && grep -qx "nav2 running" "$WORK/remote/pre_on_state.txt" && grep -qx "voice-assistant running" "$WORK/remote/pre_on_state.txt" && grep -qx "oak-d running" "$WORK/remote/pre_on_state.txt"'
+run_hil off; rc=$?
+check "off: сервис сломан и до on — предупреждение, выход 0 (rc=$rc), замок снят, реестр сверен" \
+    '[ "$rc" -eq 0 ] && grep -q "followpath-watchdog restarting.*⚠️.*до on было: restarting" "$WORK/out.log" && grep -q "нерабочих и до on: 1" "$WORK/out.log" && [ ! -e "$WORK/tmp/hil.lock" ] && grep -q "SELECT \* FROM maps) за HIL не изменился" "$WORK/out.log" && [ ! -e "$WORK/remote/pre_on_state.txt" ]'
+# сервис работал до on, после off не работает — провал, замок остаётся, реестр всё равно сверен
+reset_state
+run_hil on >/dev/null
+: > "$WORK/state/nav2.broken"
+run_hil off; rc=$?
+check "off: nav2 работал до on, после off Restarting — провал (rc=$rc), замок оставлен, реестр сверен" \
+    '[ "$rc" -ne 0 ] && grep -q "nav2 restarting.*❌" "$WORK/out.log" && [ -e "$WORK/tmp/hil.lock" ] && grep -q "SELECT \* FROM maps) за HIL не изменился" "$WORK/out.log"'
+# сломан до on и поправился сам — это ok
+reset_state
+broken_before followpath-watchdog
+run_hil on >/dev/null
+rm -f "$WORK/state/followpath-watchdog.broken"
+run_hil off; rc=$?
+check "off: сервис, сломанный до on, снова работает — ok без предупреждения (rc=$rc)" \
+    '[ "$rc" -eq 0 ] && ! grep -q "нерабочих и до on" "$WORK/out.log" && [ ! -e "$WORK/tmp/hil.lock" ]'
+# изменение боевого maps при сломанном-до-on сервисе: выход 3, замок снят
+reset_state
+broken_before followpath-watchdog
+run_hil on >/dev/null
+printf '%s\n' '1|aaaa-1111|мастерская|1793000000.0|0' > "$WORK/state/prod_maps"
+run_hil off; rc=$?
+check "off: предупреждение + изменённый maps → выход 3 (rc=$rc), замок снят" '[ "$rc" -eq 3 ] && [ ! -e "$WORK/tmp/hil.lock" ]'
+
+# ── 10. sandbox_prep: fix_crlf.sh не заходит в out*/fuel и не падает на чужих файлах ──
+FIX="$REPO_ROOT/scripts/hil/video/fix_crlf.sh"
+CR=$'\r'
+has_cr() { [ "$(tr -d '\r' < "$1" | wc -c)" -ne "$(wc -c < "$1")" ]; }
+T="$WORK/crlf"; rm -rf "$T"; mkdir -p "$T/out/shisyun_s1/bag" "$T/fuel/Depot" "$T/sub"
+printf 'a%s\nb%s\n' "$CR" "$CR" > "$T/run.sh"
+printf 'a%s\n' "$CR" > "$T/sub/x.py"
+printf 'a%s\n' "$CR" > "$T/out/shisyun_s1/bag/other.sh"
+printf 'a%s\n' "$CR" > "$T/fuel/Depot/m.sdf"
+chmod 444 "$T/out/shisyun_s1/bag/other.sh"; chmod 555 "$T/out/shisyun_s1/bag" "$T/out/shisyun_s1" "$T/out"
+bash "$FIX" "$T"; rc=$?
+check "fix_crlf: выход 0 при недоступном out/ (rc=$rc)" '[ "$rc" -eq 0 ]'
+check "fix_crlf: CRLF в run.sh и sub/x.py убраны" '! has_cr "$T/run.sh" && ! has_cr "$T/sub/x.py"'
+check "fix_crlf: out/ и fuel/ не тронуты" 'has_cr "$T/out/shisyun_s1/bag/other.sh" && has_cr "$T/fuel/Depot/m.sdf"'
+chmod -R u+rwx "$T"
+if [ "$(id -u)" != 0 ]; then
+    printf 'a%s\n' "$CR" > "$T/sub/ro.sh"; chmod 444 "$T/sub/ro.sh"; chmod 555 "$T/sub"
+    bash "$FIX" "$T"; rc=$?
+    check "fix_crlf: файл в каталоге без записи не роняет прогон (rc=$rc)" '[ "$rc" -eq 0 ]'
+    chmod -R u+rwx "$T"
+else
+    echo "SKIP: fix_crlf с недоступным каталогом (root)"
+fi
+check "sandbox_prep.sh вызывает fix_crlf.sh, не голый find" \
+    'grep -q "fix_crlf.sh" "$REPO_ROOT/scripts/hil/video/sandbox_prep.sh" && ! grep -q "find \. -path \./fuel" "$REPO_ROOT/scripts/hil/video/sandbox_prep.sh"'
+
+# ── 11. CAMERAS у runvideo.sh / runcoverage.sh ────────────────────────────
+mkdir -p "$WORK/vbin" "$WORK/vdir/out"
+cat > "$WORK/vbin/docker" <<'EOF'
+#!/usr/bin/env bash
+echo "docker $*" >> "$VLOG"
+exit 0
+EOF
+chmod +x "$WORK/vbin/docker"
+run_video() {  # run_video <скрипт> [VAR=val ...]; лог docker — $WORK/vlog.txt
+    local sc="$1"; shift
+    : > "$WORK/vlog.txt"
+    env PATH="$WORK/vbin:$PATH" VLOG="$WORK/vlog.txt" VIDEO_DIR="$WORK/vdir" SETTLE_S=0 STOP_S=0 "$@" \
+        bash "$REPO_ROOT/scripts/hil/video/$sc" > "$WORK/vout.txt" 2>&1
+}
+run_video runvideo.sh; rc=$?
+check "runvideo.sh по умолчанию CAMERAS=1: подписчики запущены, в конце убиты по ign-transport-topic (rc=$rc)" \
+    '[ "$rc" -eq 0 ] && grep -q "ign topic -e -t /sim/video/video_top" "$WORK/vlog.txt" && grep -q "pkill -f ign-transport-topic" "$WORK/vlog.txt" && grep -qx "CAMERAS=1" "$WORK/vout.txt"'
+run_video runvideo.sh CAMERAS=0; rc=$?
+check "runvideo.sh CAMERAS=0: подписчиков камер нет (rc=$rc)" \
+    '[ "$rc" -eq 0 ] && ! grep -q "ign topic" "$WORK/vlog.txt" && grep -qx "CAMERAS=0" "$WORK/vout.txt"'
+run_video runcoverage.sh; rc=$?
+check "runcoverage.sh по умолчанию CAMERAS=0: подписчиков нет, старые гасятся (rc=$rc)" \
+    '[ "$rc" -eq 0 ] && ! grep -q "ign topic" "$WORK/vlog.txt" && grep -q "pkill -f ign-transport-topic" "$WORK/vlog.txt" && grep -qx "CAMERAS=0" "$WORK/vout.txt"'
+run_video runcoverage.sh CAMERAS=1; rc=$?
+check "runcoverage.sh CAMERAS=1: подписчики запущены (rc=$rc)" \
+    '[ "$rc" -eq 0 ] && grep -q "ign topic -e -t /sim/video/video_chase" "$WORK/vlog.txt"'
+run_video runvideo.sh CAMERAS=2; rc=$?
+check "runvideo.sh CAMERAS=2: отказ, docker не вызывался (rc=$rc)" '[ "$rc" -eq 2 ] && [ ! -s "$WORK/vlog.txt" ]'
 
 # ── 7. замок в деплое ─────────────────────────────────────────────────────
 fake_free() { echo HIL_FREE; }
