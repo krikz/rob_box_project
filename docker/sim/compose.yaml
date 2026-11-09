@@ -33,8 +33,17 @@
 #   SIM_DRI_CARD       DRM-карта для EGL Gazebo    (/dev/dri/card0)
 #   SIM_DRI_RENDER     render-node                 (/dev/dri/renderD128)
 #   SIM_WORLD          мир из src/rob_box_sim/worlds без .sdf (polygon):
-#                      polygon | turn90 | corridor | low_obstacle | dead_end | building |
+#                      polygon | polygon_tags | turn90 | corridor | low_obstacle | dead_end | building |
 #                      local/<мир из карты робота>
+#   SIM_SPAWN_X/_Y/_YAW поза спавна робота в мире (0 0 0)
+#   SIM_CAMERA         true — камера OAK-D в URDF и мост картинки (false: рендер дорог, RTF)
+#   SIM_CAMERA_YAW_ERROR  поворот оси камеры относительно URDF, рад (0) — гипотеза калибровки, #4346
+#   SIM_APRILTAG_SIZE  size apriltag_node, м (0.119 — как на роботе; 0.16 — как до 11.03.2026)
+#   SIM_TAG_LINEAR_VARIANCE  вес тега в графе rtabmap (пусто — 0.0001 из rtabmap.launch.py)
+#
+# Теги (#4346): мир polygon_tags + SIM_CAMERA=true + профиль tags (apriltag_node):
+#   SIM_WORLD=polygon_tags SIM_CAMERA=true docker compose -f docker/sim/compose.yaml --profile tags up -d
+# Стенд локализации после перезапуска — docker/sim/run_loc_bench.sh.
 #
 # rtabmap, как на роботе, стартует в localization (start_rtabmap.sh).
 # SIM_RTABMAP_MODE=mapping — старт сразу в картографии с пустой базой (видео
@@ -52,6 +61,9 @@ x-sim-env: &sim_env
   # В симе IMU включён явно (боевой compose по умолчанию его выключает, 04.11).
   # Пусто в окружении compose (RTABMAP_IMU_TOPIC=) — прогон без IMU.
   RTABMAP_IMU_TOPIC: ${RTABMAP_IMU_TOPIC-/imu/data}
+  # Камера OAK-D в сим-URDF (rob_box.xacro читает их через $(optenv ...)), #4346.
+  SIM_CAMERA: ${SIM_CAMERA:-false}
+  SIM_CAMERA_YAW_ERROR: ${SIM_CAMERA_YAW_ERROR:-0}
   # Образы робота — aarch64; в amd64-образе каталог библиотек x86_64-linux-gnu.
   LD_LIBRARY_PATH: /opt/ros/humble/opt/zenoh_cpp_vendor/lib:/opt/ros/humble/lib/x86_64-linux-gnu:/opt/ros/humble/lib
 
@@ -106,6 +118,10 @@ services:
       - rob_box_sim
       - sim.launch.py
       - world:=/sim_worlds/${SIM_WORLD:-polygon}.sdf
+      - camera:=${SIM_CAMERA:-false}
+      - x:=${SIM_SPAWN_X:-0.0}
+      - y:=${SIM_SPAWN_Y:-0.0}
+      - yaw:=${SIM_SPAWN_YAW:-0.0}
     depends_on:
       - zenoh-router
       - robot-state-publisher
@@ -140,6 +156,8 @@ services:
       # mapping — start_rtabmap.sh стартует с localization:=false и пустой базой
       # (--delete_db_on_start), как StartMapping с new_location; только при USE_SIM_TIME=true.
       RTABMAP_START_MODE: ${SIM_RTABMAP_MODE:-localization}
+      # Вес тега-ориентира (#4346): пусто — как на роботе (0.0001).
+      RTABMAP_SIM_TAG_LINEAR_VARIANCE: ${SIM_TAG_LINEAR_VARIANCE:-}
     volumes:
       - sim-maps:/maps
 
@@ -184,6 +202,55 @@ services:
       - rtabmap
       - imu-filter
       - twist-mux
+      - gazebo
+
+  # AprilTag, как в контейнере oak-d робота (docker/vision/config/oak-d/launch/
+  # oakd_with_apriltag.launch.py): тот же узел apriltag_node, тот же apriltag_config.yaml,
+  # выход /detections → rtabmap (tag_topic:=/detections). Отличия сима — только аргументами:
+  #   * image_transport raw: картинка Gazebo несжатая (на роботе — compressed по Zenoh);
+  #   * detector.decimate 1.0: кадр 640×360 вдвое меньше боевого 1280×720, где decimate 2.0, —
+  #     детектор видит столько же пикселей;
+  #   * size — SIM_APRILTAG_SIZE (0.119, как на роботе).
+  # Профиль tags: нужен мир с тегами (polygon_tags) и SIM_CAMERA=true.
+  apriltag:
+    <<: *sim_service
+    container_name: ${SIM_PREFIX:-rob-box-sim}-apriltag
+    profiles: ["tags"]
+    environment:
+      <<: *sim_env
+      RMW_IMPLEMENTATION: rmw_zenoh_cpp
+      ZENOH_SESSION_CONFIG_URI: /tmp/zenoh_session_config.json5
+      ROS_AUTOMATIC_DISCOVERY_RANGE: LOCALHOST
+    volumes:
+      - ../common/scripts:/ros_scripts:ro
+      - ../common/config:/common_config:ro
+      - ../vision/config/apriltag:/vision_config/apriltag:ro
+    command:
+      - /ros_scripts/ros_with_namespace.sh
+      - ros2
+      - run
+      - apriltag_ros
+      - apriltag_node
+      - --ros-args
+      - -r
+      - __node:=apriltag
+      - --params-file
+      - /vision_config/apriltag/apriltag_config.yaml
+      - -p
+      - image_transport:=raw
+      - -p
+      - detector.decimate:=1.0
+      - -p
+      - size:=${SIM_APRILTAG_SIZE:-0.119}
+      - -p
+      - use_sim_time:=true
+      - -r
+      - image_rect:=/camera/camera/color/image_raw
+      - -r
+      - camera_info:=/camera/camera/color/camera_info
+      - -r
+      - detections:=/detections
+    depends_on:
       - gazebo
 
   # Стенд сценариев навигации (rob_box_sim.nav_bench), шаг 4 плана. Не стартует

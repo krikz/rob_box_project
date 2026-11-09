@@ -64,6 +64,11 @@ RUN set -eux; \
 # ffmpeg — склейка кадров камер-сенсоров в mp4/gif (docker/sim/record_video.sh).
 RUN apt-get update && apt-get install -y --no-install-recommends ffmpeg     && rm -rf /var/lib/apt/lists/*
 
+# apriltag_ros — тот же apriltag_node, что в контейнере oak-d робота (стенд локализации #4346:
+# тег в мире, детекции в /detections → rtabmap). Отдельный слой: кэш слоёв выше не сбрасывается.
+RUN apt-get update && apt-get install -y --no-install-recommends ros-humble-apriltag-ros \
+    && rm -rf /var/lib/apt/lists/*
+
 WORKDIR /ws
 COPY src/rob_box_description /ws/src/rob_box_description
 COPY src/rob_box_sim /ws/src/rob_box_sim

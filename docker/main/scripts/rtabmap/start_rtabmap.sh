@@ -63,5 +63,23 @@ else
     echo "[start_rtabmap.sh] IMU off (RTABMAP_IMU_TOPIC пуст): ${IMU_ARGS[*]}"
 fi
 
+# ── Вес тега-ориентира в графе (#4346, стенд локализации): только сим ────────
+# RTABMAP_SIM_TAG_LINEAR_VARIANCE ставит только docker/sim (SIM_TAG_LINEAR_VARIANCE):
+# launch-аргумент tag_linear_variance → landmark_linear_variance узла rtabmap
+# (по умолчанию rtabmap.launch.py — 0.0001, σ = 1 см). На роботе переменной нет, команда прежняя.
+TAG_ARGS=()
+if [ -n "${RTABMAP_SIM_TAG_LINEAR_VARIANCE:-}" ]; then
+    if [ "$USE_SIM_TIME" != "true" ]; then
+        echo "❌ ОШИБКА: RTABMAP_SIM_TAG_LINEAR_VARIANCE допустим только с USE_SIM_TIME=true (сим)" >&2
+        exit 1
+    fi
+    if ! [[ "$RTABMAP_SIM_TAG_LINEAR_VARIANCE" =~ ^[0-9]+([.][0-9]+)?([eE][-+]?[0-9]+)?$ ]]; then
+        echo "❌ ОШИБКА: RTABMAP_SIM_TAG_LINEAR_VARIANCE='$RTABMAP_SIM_TAG_LINEAR_VARIANCE' — нужно число" >&2
+        exit 1
+    fi
+    TAG_ARGS=("tag_linear_variance:=$RTABMAP_SIM_TAG_LINEAR_VARIANCE")
+    echo "[start_rtabmap.sh] Sim tag variance: ${TAG_ARGS[*]}"
+fi
+
 echo "[start_rtabmap.sh] Launching with ${MODE_LAUNCH_ARGS[*]}: $*"
-exec "$@" "${IMU_ARGS[@]}" "${MODE_LAUNCH_ARGS[@]}" "${SIM_TIME_LAUNCH_ARGS[@]}"
+exec "$@" "${IMU_ARGS[@]}" "${MODE_LAUNCH_ARGS[@]}" "${TAG_ARGS[@]}" "${SIM_TIME_LAUNCH_ARGS[@]}"
