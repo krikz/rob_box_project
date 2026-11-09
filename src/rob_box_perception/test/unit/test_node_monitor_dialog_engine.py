@@ -1,7 +1,6 @@
 """Тесты ожидаемой ноды диалога в ``NodeAvailabilityMonitor`` (issue #3865, ADR-0150 PR-8).
 
-При ``dialog_engine: v2`` стартует ``/dialog_node``, ``/dialogue_node`` не запускается по замыслу; монитор не должен
-считать её упавшей (иначе ``get_perception_context`` вечно ``DEGRADED``). Без ROS: ``rclpy`` монитору нужен только для
+Нода диалога одна, ``/dialog_node`` (v1 ``/dialogue_node`` удалён, #4354 A5). Без ROS: ``rclpy`` монитору нужен только для
 аннотаций.
 
 Запуск:
@@ -15,8 +14,6 @@ import sys
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
-
-import pytest
 
 _PKG_ROOT = Path(__file__).resolve().parents[2]
 if str(_PKG_ROOT) not in sys.path:
@@ -41,52 +38,44 @@ def _check(monitor, active):
         monitor.check_nodes()
 
 
-@pytest.mark.parametrize('engine_node, other', [
-    ('/dialog_node', '/dialogue_node'),   # dialog_engine: v2
-    ('/dialogue_node', '/dialog_node'),   # dialog_engine: v1
-])
-def test_running_engine_node_is_the_expected_one(engine_node, other):
+def test_dialog_node_is_the_expected_one():
     monitor = _monitor()
-    _check(monitor, _OTHERS + [engine_node])
+    _check(monitor, _OTHERS + ['/dialog_node'])
 
     summary = monitor.get_status_summary()
     assert summary['failed_list'] == []
     assert summary['missing_list'] == []
-    assert engine_node in summary['active_list']
-    assert other not in monitor.node_status
-    assert other not in monitor.expected_nodes
+    assert '/dialog_node' in summary['active_list']
     assert summary['total'] == len(_OTHERS) + 1
 
 
-@pytest.mark.parametrize('engine_node', ['/dialog_node', '/dialogue_node'])
-def test_crash_of_running_engine_node_is_failed(engine_node):
+def test_dialogue_node_is_not_expected_anywhere():
+    """#4354 A5: ``/dialogue_node`` (v1) удалён, монитор его не ждёт и не помнит."""
     monitor = _monitor()
-    _check(monitor, _OTHERS + [engine_node])
-    _check(monitor, _OTHERS)
-
-    assert monitor.get_failed_nodes() == [engine_node]
-
-
-def test_dialog_node_never_seen_is_missing_under_combined_label():
-    monitor = _monitor()
-    _check(monitor, _OTHERS)
-
-    assert monitor.get_missing_nodes() == [node_monitor.DIALOG_NODES_LABEL]
-    assert monitor.get_failed_nodes() == []
-
-
-def test_engine_switch_drops_stale_entry_of_old_engine():
-    monitor = _monitor()
-    _check(monitor, _OTHERS + ['/dialogue_node'])
     _check(monitor, _OTHERS + ['/dialog_node'])
 
-    assert monitor.get_failed_nodes() == []
+    assert '/dialogue_node' not in monitor.expected_nodes
     assert '/dialogue_node' not in monitor.node_status
-    assert monitor.get_active_nodes().count('/dialog_node') == 1
+
+
+def test_crash_of_dialog_node_is_failed():
+    monitor = _monitor()
+    _check(monitor, _OTHERS + ['/dialog_node'])
+    _check(monitor, _OTHERS)
+
+    assert monitor.get_failed_nodes() == ['/dialog_node']
+
+
+def test_dialog_node_never_seen_is_missing():
+    monitor = _monitor()
+    _check(monitor, _OTHERS)
+
+    assert monitor.get_missing_nodes() == ['/dialog_node']
+    assert monitor.get_failed_nodes() == []
 
 
 def test_explicit_expected_nodes_are_honoured():
-    monitor = node_monitor.NodeAvailabilityMonitor(MagicMock(), ['/audio_node', '/dialogue_node'])
+    monitor = node_monitor.NodeAvailabilityMonitor(MagicMock(), ['/audio_node', '/dialog_node'])
     _check(monitor, ['/audio_node', '/dialog_node'])
 
     assert monitor.expected_nodes == ['/audio_node', '/dialog_node']
