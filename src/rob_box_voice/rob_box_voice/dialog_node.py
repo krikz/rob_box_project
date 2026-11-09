@@ -68,6 +68,7 @@ from rob_box_dialog.execute import transport_timeouts
 from rob_box_dialog.interrupt import TurnsInFlight, on_interrupt
 from rob_box_dialog.memory import profiled_person
 from rob_box_dialog.pickup_parties import rights_speaker
+from rob_box_dialog.prompts import personality_prompt
 from rob_box_dialog.voice_warmth import WarmVoices
 from rob_box_dialog.respond import ActionResult
 from rob_box_dialog.scenes import HOLD, RESET, RESUME, SceneDirector, apply_control
@@ -82,6 +83,7 @@ from rob_box_dialog_msgs.msg import InterruptRequest, ProviderStateArray, Sessio
 from rob_box_dialog_msgs.msg import SpeechEvent
 from rob_box_dialog_msgs.msg import Utterance as UtteranceMsg
 from rob_box_dialog_msgs.srv import DialogControl
+from rob_box_harness.core.assembly import AgentSpec, load_system_prompt
 from rob_box_llm.provider import LLMSettings
 from rob_box_voice.observability import is_metrics_enabled, start_metrics_server
 from rob_box_mcp_tools.voice_request import REQUEST_TOPIC as VOICE_REQUEST_TOPIC
@@ -113,9 +115,9 @@ def declare_params(node: Any) -> None:
     """Параметры ноды (``dialog_node.yaml``; ключи API — из окружения, как у ``dialogue_node``)."""
     node.declare_parameter("metrics_port", 9100)  # Prometheus-экспортер (#4328); 0 - выключен
     node.declare_parameter("llm_providers", "deepseek,minimax")
-    node.declare_parameter("system_prompt_file", "master_prompt_compact.txt")
     # Профиль продукта (ADR-0167 Ш1б): робот без своего профиля не стартует - нейтральных умолчаний ядра (вейк
-    # выключен) роботу нельзя, он отвечал бы на каждую фразу мастерской.
+    # выключен, персона без имени) роботу нельзя, он отвечал бы на каждую фразу мастерской. Промпт Личности - основа
+    # ядра с персоной профиля (Ш1б-3), своего файла промпта у Личности нет.
     node.declare_parameter("profile_path", robot_profile.path())  # /config/assistant.yaml (env ROB_BOX_PROFILE)
     node.declare_parameter("temperature", 0.0)
     node.declare_parameter("max_tokens", 0)
@@ -173,13 +175,21 @@ def start_metrics(node: Any) -> bool:
     return started
 
 
+def agent_prompt(node: Any, agent: str) -> str:
+    """Основа системного промпта агента: у Личности - основа ядра с персоной профиля робота (``node.product_profile``,
+    ADR-0167 Ш1б-3), у телеграма - свой файл ``telegram_system_prompt_file`` в share ``rob_box_voice``."""
+    if agent == kn.AGENTS[0]:
+        return personality_prompt(node.product_profile.persona)
+    file = str(node.get_parameter(f"{_prefix(agent)}system_prompt_file").value)
+    return load_system_prompt(AgentSpec(name=agent, prompt_dir=_prompt_dir(), system_prompt_file=file))
+
+
 def build_llm(node: Any, counter: CallCounter, agent: str = kn.AGENTS[0]) -> tuple:
     """LLM-цепочка v2 агента: тот же ``build_llm_chain``, все провайдеры — в режиме команд моста (валидатор знает
     агента), вызовы считаются. У каждого агента своя цепочка — своё здоровье провайдеров."""
     prefix = _prefix(agent)
     raw = str(node.get_parameter(f"{prefix}llm_providers").value)
-    return assemble_llm(raw.split(","), counter, prompt_dir=_prompt_dir(),
-                        system_prompt_file=str(node.get_parameter(f"{prefix}system_prompt_file").value),
+    return assemble_llm(raw.split(","), counter, prompt=agent_prompt(node, agent),
                         settings=_settings(node, prefix), agent=agent, log=node.get_logger().info,
                         busy=lambda: plan_host.perform_busy(node))
 
@@ -381,8 +391,9 @@ class DialogNode(Node):
         self._turn_lock = asyncio.Lock()
         self._turns = TurnsInFlight()
         self._session_pub = self.create_publisher(SessionState, identity_question.SESSION_TOPIC, _LATCHED)
-        # Вейки - из профиля робота (ADR-0167 Ш1б): таблица одна на адресацию, сессию и правила хода.
-        self._wake = list(robot_profile.load(str(self.get_parameter("profile_path").value)).wake_personality)
+        # Вейки и персона - из профиля робота (ADR-0167 Ш1б): таблица одна на адресацию, сессию и правила хода.
+        self.product_profile = robot_profile.load(str(self.get_parameter("profile_path").value))
+        self._wake = list(self.product_profile.wake_personality)
         self._session = Session("personality", clock=time.time, wake_words=self._wake)
         self._session.subscribe(functools.partial(identity_question.publish, self))
         self._shift = ShiftLog()  # журнал смены (#4076): живёт дольше сессии разговора

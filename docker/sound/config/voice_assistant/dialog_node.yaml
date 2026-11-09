@@ -8,8 +8,8 @@ dialog_node:
     metrics_port: 9100  # #4328 - Prometheus /metrics endpoint (prometheus.yml: dialogue_node)
     # Цепочка LLM: первый — основной, дальше — фолбеки; все в режиме команд (command_bridge).
     llm_providers: "deepseek,minimax"
-    system_prompt_file: "master_prompt_compact.txt"
-    # Профиль продукта робота (ADR-0167 Ш1б): docker/sound/config/assistant.yaml → вейки wake_words.yaml рядом.
+    # Профиль продукта робота (ADR-0167 Ш1б): docker/sound/config/assistant.yaml → вейки wake_words.yaml и персона
+    # persona.txt рядом; промпт Личности - основа ядра (rob_box_dialog.prompts) с этой персоной, файла промпта нет.
     profile_path: "/config/assistant.yaml"
     temperature: 0.0
     max_tokens: 0
