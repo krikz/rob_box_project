@@ -16,7 +16,6 @@ import pytest
 
 from rob_box_dialog.profile import ProfileError, load_profile
 from rob_box_dialog.prompts import base, personality_prompt
-from rob_box_voice.core.dialog_v2_ports import system_prompt
 
 REPO = Path(__file__).resolve().parents[3]
 CONFIG = REPO / "docker" / "sound" / "config"
@@ -41,7 +40,8 @@ def test_robot_prompt_is_byte_for_byte_the_old_master_prompt():
 
 def test_robot_system_prompt_is_the_prompt_plus_knowledge_rules():
     """Мост дописывает правила знания к промпту так же, как к старому файлу: ``промпт + пустая строка + правила``."""
-    full = system_prompt(_robot_prompt(), "personality")
+    ports = pytest.importorskip("rob_box_voice.core.dialog_v2_ports", reason="мосту нужен rob_box_llm")
+    full = ports.system_prompt(_robot_prompt(), "personality")
     assert full.startswith(GOLDEN.read_text(encoding="utf-8") + "\n\n")
 
 
