@@ -417,6 +417,14 @@ while IFS=$'\t' read -r a_n a_title a_stab a_steps a_scn a_acc a_phase a_hold; d
 
     [ "$conclusion" != "success" ] && overall=1
 
+    # #4512: вердикты детекторов сбоя хода по логу акта (шаг «Turn-failure verdicts»): только счётчики, без текстов
+    # (репо публичное). Отдельный turn_failures.tsv: колонки summary.tsv не трогаем. «unknown» -- событий в логе нет.
+    turn_failures="$(marathon_summary_value "$act_log" turn_failures)"
+    [ -f "$REPORT/turn_failures.tsv" ] || printf 'act\trun_id\tturn_failures\n' > "$REPORT/turn_failures.tsv"
+    printf '%s\t%s\t%s\n' "$a_n" "$run_id" "$turn_failures" >> "$REPORT/turn_failures.tsv"
+    [ "$turn_failures" != "-" ] && [ "$turn_failures" != "0" ] \
+        && log "  сбои хода по детекторам (offline, #4512): $turn_failures (deaf = робот глух, no_speech = ход без речи)"
+
     # Акты 1-2 — фундамент: без wake-word и без профилей голосов остальное
     # утонет в no_accept и диагностической ценности не даст.
     #
