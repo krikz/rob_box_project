@@ -717,3 +717,12 @@ tools(56): clear_waypoints, compose_music, ..., stop_music, ...
 проверяет PulseAudio: сервер не отвечает — акт не стартует, маркер `E2E_STAND_FAIL` (для актов 1–2 раннер останавливает марафон).
 Сводка акта считает такие шаги отдельно (`E2E_SUMMARY … stand_play_failed=N`, `summary.json` → `steps.stand_play_failed`,
 колонка **`stand_play_failed`** `summary.tsv`); в `fail` и `failed_labels` они не входят.
+
+### Офлайн-вердикты сбоя хода (#4512)
+
+Шаг workflow «Turn-failure verdicts» гонит лог `voice-assistant` акта (`/tmp/voice_e2e_<run>.log`, шаг «Collect robot logs»,
+окно 15 мин) через `scripts/dialog/turn_failures.py` (`scripts/ci/e2e/turn_failures_summary.py`): «робот глух» (`deaf`) и
+«ход без речи» (`no_speech`). В артефакт акта идёт `turn_failures.json` — только счётчики и коды причин, **без текстов реплик**
+(репо публичное); в лог — строка `E2E_SUMMARY turn_failures=deaf:N,no_speech:M` (`0` — сбоев нет, `unknown` — событий в логе
+нет, «0» было бы враньём). Раннер марафона читает её `marathon_summary_value` и пишет в `turn_failures.tsv` отчёта
+(колонки `act`, `run_id`, `turn_failures`). Вердикты — подсказка для разбора, акт не красят.

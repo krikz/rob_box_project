@@ -3,7 +3,7 @@
 Контракт заморожен в ``docs/plans/2026-09-02-avatar-worker-brief.md`` §3.3.
 Используется:
 
-* AV-22 (эта карточка) — **producer** в ``dialogue_node`` (режим
+* AV-22 (эта карточка) — **producer** в ``dialog_node`` (режим
   ``quest_command``) и в ``rob_box_telegram`` (``/cmd`` + ``/operator on``).
 * AV-21 (follow-up, ещё не сделан) — **consumer**: супервизор-агент
   подписан на ``/avatar/command`` и публикует ``/avatar/command_result``.

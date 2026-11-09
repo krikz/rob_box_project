@@ -109,18 +109,14 @@ JSON-полям: добавление новых полей — минор, уд
 
 ## 4. Семантика «личность молчит» (ADR-0028 S5)
 
-Пока супервизор-агент обрабатывает команду, `dialogue_node._voice_input_mode`
-выставляется в `agent_during_voice_mode` (default `"off"` —
-W3-1, §3.5 спека: «диалог off, полное управление оператора»).
-Свап через `_apply_voice_mode` + `_set_dialogue_param`; **try/finally**
-гарантирует восстановление предыдущего значения даже если LLM
-бросил исключение. См. `_voice_mode_swap()` в
-`AvatarSupervisor`.
+> **Устарело** (#4354): механизм v1 (`dialogue_node._voice_input_mode`, `_voice_mode_swap()`, `agent_during_voice_mode`) удалён вместе с нодой
+> `dialogue_node`. Как ход ТАРС устроен сейчас (тот же `TurnEngine`, `agent=operator`, реплика владельцу речи) — в
+> [`dialog-v2-overview.md`](dialog-v2-overview.md) §3.2.
 
 ## 5. Пример end-to-end
 
 ```
-[Telegram bot]                          [supervisor]              [dialogue_node]
+[Telegram bot]                          [supervisor]                [dialog_node]
     │                                        │                          │
     │ -- /avatar/command --                  │                          │
     │ {"source":"telegram","client_id":"u1", │                          │

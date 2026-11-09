@@ -3,18 +3,20 @@
 Профиль - каталог продукта с ``assistant.yaml`` и файлами рядом; лежит в репо продукта, ядро его только читает.
 Формат версии :data:`FORMAT`::
 
-    format: 2
-    name: РОББОКС               # имя продукта (как он себя называет)
-    wake_words: wake_words.yaml # таблица вейков рядом с профилем (формат ядра: personality / operator)
-    persona: persona.txt        # персона Личности рядом с профилем (формат - rob_box_dialog.prompts)
+    format: 3
+    name: РОББОКС                              # имя продукта (как он себя называет; его же берёт чат Telegram)
+    wake_words: wake_words.yaml                # таблица вейков рядом с профилем (формат ядра: personality / operator)
+    persona: persona.txt                       # персона Личности рядом с профилем (формат - rob_box_dialog.prompts)
+    operator_persona: operator_persona.txt     # персона агента-оператора (у робота - ТАРС), тот же формат
 
-Формат 2 (Ш1б-3) добавил обязательный ``persona``: имя и характер ушли из промпта ядра в профиль. Профиль формата 1
-персоны не несёт - это ошибка с подсказкой, а не нейтральная персона: робот со старым профилем молча стал бы
-безымянным ассистентом.
+Формат 2 (Ш1б-3) добавил обязательный ``persona``: имя и характер ушли из промпта ядра в профиль. Формат 3 (Ш1б-4) -
+обязательный ``operator_persona``: имя и характер оператора ушли из промпта хоста оператора. Профиль старого формата
+нужной персоны не несёт - это ошибка с подсказкой, а не нейтральная персона: робот со старым профилем молча стал бы
+безымянным ассистентом (или ТАРС - безымянным оператором).
 
 Три случая, решает :func:`resolve_profile`:
 
-* путь не задан - :data:`NEUTRAL`, нейтральные умолчания ядра: без имени, без вейков, нейтральная персона. Пустая
+* путь не задан - :data:`NEUTRAL`, нейтральные умолчания ядра: без имени, без вейков, нейтральные персоны. Пустая
   таблица вейков - режим «без вейка» (``words.has_wake_word``: адресовано всё) - честное поведение консоли без
   продукта: она отвечает на каждую реплику, а не молчит в ожидании чужого имени. Строку лога об этом строит код
   (:data:`NO_PROFILE_LOG`);
@@ -33,14 +35,16 @@ from pathlib import Path
 from typing import Any, Callable, Mapping, Optional, Tuple
 
 from rob_box_dialog.knowledge import WAKE_NAMESPACES, load_wake_word_namespaces
-from rob_box_dialog.prompts import Persona, neutral_persona, parse_persona
+from rob_box_dialog.prompts import Persona, neutral_operator_persona, neutral_persona, parse_persona
 
 #: Версия формата ``assistant.yaml``. Ломка формата - новая версия и мажор пакета ядра (ADR-0167 §2.4).
-FORMAT = 2
+FORMAT = 3
 #: Имя файла профиля в каталоге продукта.
 PROFILE_FILE = "assistant.yaml"
 #: Ключи формата: обязательные и необязательные. Чужой ключ - ошибка (опечатка не должна молча выключать вейки).
-REQUIRED_KEYS: Tuple[str, ...] = ("format", "name", "wake_words", "persona")
+REQUIRED_KEYS: Tuple[str, ...] = ("format", "name", "wake_words", "persona", "operator_persona")
+#: Старые форматы - ошибка с подсказкой, что в них не хватает.
+OUTDATED: Mapping[int, str] = {1: "persona и operator_persona", 2: "operator_persona"}
 OPTIONAL_KEYS: Tuple[str, ...] = ()
 #: Строка лога «профиля нет» - одна на все хосты.
 NO_PROFILE_LOG = (
@@ -60,6 +64,7 @@ class ProductProfile:
     wake_personality: Tuple[str, ...]
     wake_operator: Tuple[str, ...]
     persona: Persona
+    operator_persona: Persona
     root: Optional[Path] = None
 
     @property
@@ -68,7 +73,13 @@ class ProductProfile:
 
 
 #: Нейтральные умолчания ядра: без продукта.
-NEUTRAL = ProductProfile(name="", wake_personality=(), wake_operator=(), persona=neutral_persona())
+NEUTRAL = ProductProfile(
+    name="",
+    wake_personality=(),
+    wake_operator=(),
+    persona=neutral_persona(),
+    operator_persona=neutral_operator_persona(),
+)
 
 
 def _profile_file(path: "str | os.PathLike[str]") -> Path:
@@ -91,8 +102,11 @@ def _read_yaml(file: Path) -> Mapping[str, Any]:
 
 
 def _check_keys(file: Path, data: Mapping[str, Any]) -> None:
-    if data.get("format") == 1:
-        raise ProfileError(f"профиль продукта {file}: format 1 устарел - с format {FORMAT} профиль несёт persona")
+    if data.get("format") in OUTDATED:
+        raise ProfileError(
+            f"профиль продукта {file}: format {data['format']} устарел - с format {FORMAT} профиль несёт "
+            f"{OUTDATED[data['format']]}"
+        )
     missing = [k for k in REQUIRED_KEYS if k not in data]
     unknown = sorted(set(data) - set(REQUIRED_KEYS) - set(OPTIONAL_KEYS))
     if missing or unknown:
@@ -101,7 +115,7 @@ def _check_keys(file: Path, data: Mapping[str, Any]) -> None:
         raise ProfileError(f"профиль продукта {file}: format {data['format']!r}, ядро понимает {FORMAT}")
     if not isinstance(data["name"], str) or not data["name"].strip():
         raise ProfileError(f"профиль продукта {file}: name - непустая строка")
-    for key, what in (("wake_words", "таблицы вейков"), ("persona", "персоны")):
+    for key, what in (("wake_words", "таблицы вейков"), ("persona", "персоны"), ("operator_persona", "персоны")):
         if not isinstance(data[key], str) or not data[key].strip():
             raise ProfileError(f"профиль продукта {file}: {key} - имя файла {what} рядом с профилем")
 
@@ -116,10 +130,10 @@ def _wake_table(file: Path, name: str) -> Tuple[Tuple[str, ...], Tuple[str, ...]
     return tuple(table[WAKE_NAMESPACES[0]]), tuple(table.get(WAKE_NAMESPACES[1], ()))
 
 
-def _persona(file: Path, name: str) -> Persona:
+def _persona(file: Path, name: str, key: str = "persona") -> Persona:
     persona_file = file.parent / name
     if not persona_file.is_file():
-        raise ProfileError(f"профиль продукта {file}: файла персоны {persona_file} нет")
+        raise ProfileError(f"профиль продукта {file}: файла персоны {persona_file} ({key}) нет")
     try:
         return parse_persona(persona_file.read_text(encoding="utf-8"), str(persona_file))
     except (OSError, UnicodeDecodeError, ValueError) as exc:
@@ -137,6 +151,7 @@ def load_profile(path: "str | os.PathLike[str]") -> ProductProfile:
         wake_personality=personality,
         wake_operator=operator,
         persona=_persona(file, data["persona"]),
+        operator_persona=_persona(file, data["operator_persona"], "operator_persona"),
         root=file.parent,
     )
 
@@ -156,6 +171,7 @@ __all__ = [
     "FORMAT",
     "NEUTRAL",
     "NO_PROFILE_LOG",
+    "OUTDATED",
     "PROFILE_FILE",
     "ProductProfile",
     "ProfileError",
