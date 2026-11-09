@@ -429,8 +429,13 @@ jobs:
           pip install pytest-asyncio
           EXCLUDE=(
             # Исключения — только явно, с причиной (--deselect=<nodeid>).
-            # Сейчас пусто: gate1-тесты харнесса герметичны на фейк-роботе
+            # gate1-тесты харнесса герметичны на фейк-роботе
             # tests/unit/e2e_scripts/fake_robot_ssh.sh (PR #3214).
+            # Раскладка инфографик Telegram зависит от метрик шрифта (код ищет Segoe/Arial, на раннере
+            # DejaVu шире): до установки Pillow эти тесты молча skip-ались. Нужна отдельная карточка
+            # (шрифт в репо или допуск), пока deselect:
+            --deselect=tests/unit/scripts/test_telegram_infographic.py::test_real_examples_render_and_have_sources
+            --deselect="tests/unit/scripts/test_telegram_layout.py::test_real_infographics_have_clean_layout"
           )
           PYTHONPATH="src/rob_box_core" \
           python -m pytest tests/unit \
