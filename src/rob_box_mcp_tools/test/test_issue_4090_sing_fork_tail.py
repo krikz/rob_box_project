@@ -11,6 +11,7 @@ synth:breaks (code)``, а вслух — только «Включаю музы�
 
 import asyncio
 import logging
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -181,11 +182,12 @@ def test_elliptic_order_after_the_wake_word_is_the_same_with_or_without_a_comma(
     «Робот рэп под бит» — та же просьба, что «Робот, рэп под бит.»: клетка «синт + пение» кодом, без модели."""
     from rob_box_dialog.address import Addressed, decide
     from rob_box_dialog.backlog import Heard
-    from rob_box_dialog.knowledge import DEFAULT_WAKE_WORDS
+    from rob_box_dialog.profile import load_profile
     from rob_box_mcp_tools.engine.sing_route import SingRouteHost
     from rob_box_music.choice import DeterministicChooser
 
-    decision = decide(Heard(heard, 0.0), None, DEFAULT_WAKE_WORDS)
+    robot = Path(__file__).resolve().parents[3] / "docker" / "sound" / "config" / "assistant.yaml"  # профиль робота
+    decision = decide(Heard(heard, 0.0), None, load_profile(robot).wake_personality)
     assert isinstance(decision, Addressed) and decision.text.lower().startswith("рэп под бит"), decision
     host = SingRouteHost(DeterministicChooser(_NoModel()), lambda: [], lambda line: None)
     assert host(decision.text, (), False) == "live:rap"

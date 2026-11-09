@@ -8,7 +8,7 @@ without ROS dependencies.
 
 import pytest
 from rob_box_voice.core.command_parser import CommandParser, Command, IntentType
-from rob_box_dialog.knowledge import DEFAULT_WAKE_WORDS
+from voice_robot_wake import ROBOT_WAKE  # noqa: E402 — тестовый профиль робота
 
 
 class TestCommandParserInit:
@@ -18,8 +18,9 @@ class TestCommandParserInit:
         """Test default initialization."""
         parser = CommandParser()
 
-        # Вейк-слова по умолчанию — одна таблица знания (ADR-0150 PR-1), не своя копия.
-        assert parser.wake_words == list(DEFAULT_WAKE_WORDS)
+        # ADR-0167 Ш1б-2б: без таблицы профиля вейков нет (нейтральное ядро) - снимать нечего.
+        assert parser.wake_words == []
+        assert parser.remove_wake_word("робот иди вперед") == "робот иди вперед"
         assert parser.confidence_base == 0.8
         assert len(parser.patterns) > 0
 
@@ -41,28 +42,28 @@ class TestCommandParserWakeWords:
 
     def test_remove_wake_word_robot(self):
         """Test removing 'робот' wake word."""
-        parser = CommandParser()
+        parser = CommandParser(wake_words=list(ROBOT_WAKE))
 
         result = parser.remove_wake_word('робот иди вперед')
         assert result == 'иди вперед'
 
     def test_remove_wake_word_roboks(self):
         """Test removing 'робокс' wake word."""
-        parser = CommandParser()
+        parser = CommandParser(wake_words=list(ROBOT_WAKE))
 
         result = parser.remove_wake_word('робокс стоп')
         assert result == 'стоп'
 
     def test_remove_wake_word_with_punctuation(self):
         """Test removing wake word with punctuation."""
-        parser = CommandParser()
+        parser = CommandParser(wake_words=list(ROBOT_WAKE))
 
         result = parser.remove_wake_word('робот, иди к кухне')
         assert result == 'иди к кухне'
 
     def test_remove_wake_word_respects_word_boundary(self):
         """«роботы …» не начинается с вейка «робот»; голый вейк снимается целиком."""
-        parser = CommandParser()
+        parser = CommandParser(wake_words=list(ROBOT_WAKE))
 
         assert parser.remove_wake_word('роботы едут') == 'роботы едут'
         assert parser.remove_wake_word('робби, стоп') == 'стоп'
@@ -70,7 +71,7 @@ class TestCommandParserWakeWords:
 
     def test_remove_wake_word_no_wake_word(self):
         """Test text without wake word."""
-        parser = CommandParser()
+        parser = CommandParser(wake_words=list(ROBOT_WAKE))
 
         result = parser.remove_wake_word('иди вперед')
         assert result == 'иди вперед'
@@ -81,7 +82,7 @@ class TestCommandParserNavigate:
 
     def test_navigate_to_waypoint_by_name(self):
         """Test navigation to named waypoint."""
-        parser = CommandParser()
+        parser = CommandParser(wake_words=list(ROBOT_WAKE))
 
         command = parser.parse('иди к кухне')
 
@@ -91,7 +92,7 @@ class TestCommandParserNavigate:
 
     def test_navigate_to_waypoint_by_number(self):
         """Test navigation to numbered waypoint."""
-        parser = CommandParser()
+        parser = CommandParser(wake_words=list(ROBOT_WAKE))
 
         command = parser.parse('поезжай к точке 2')
 
@@ -101,7 +102,7 @@ class TestCommandParserNavigate:
 
     def test_navigate_direction_with_verb(self):
         """Test movement with direction and verb."""
-        parser = CommandParser()
+        parser = CommandParser(wake_words=list(ROBOT_WAKE))
 
         command = parser.parse('иди вперед')
 
@@ -111,7 +112,7 @@ class TestCommandParserNavigate:
 
     def test_navigate_direction_only(self):
         """Test movement with direction only."""
-        parser = CommandParser()
+        parser = CommandParser(wake_words=list(ROBOT_WAKE))
 
         command = parser.parse('вперед')
 
@@ -121,7 +122,7 @@ class TestCommandParserNavigate:
 
     def test_navigate_turn_with_verb(self):
         """Test turn with verb."""
-        parser = CommandParser()
+        parser = CommandParser(wake_words=list(ROBOT_WAKE))
 
         command = parser.parse('поверни направо')
 
@@ -130,7 +131,7 @@ class TestCommandParserNavigate:
 
     def test_navigate_turn_only(self):
         """Test turn without verb."""
-        parser = CommandParser()
+        parser = CommandParser(wake_words=list(ROBOT_WAKE))
 
         command = parser.parse('налево')
 
@@ -143,7 +144,7 @@ class TestCommandParserStop:
 
     def test_stop_command(self):
         """Test basic stop command."""
-        parser = CommandParser()
+        parser = CommandParser(wake_words=list(ROBOT_WAKE))
 
         command = parser.parse('стоп')
 
@@ -152,7 +153,7 @@ class TestCommandParserStop:
 
     def test_stop_halt(self):
         """Test halt command."""
-        parser = CommandParser()
+        parser = CommandParser(wake_words=list(ROBOT_WAKE))
 
         command = parser.parse('halt')
 
@@ -160,7 +161,7 @@ class TestCommandParserStop:
 
     def test_stop_ostanovis(self):
         """Test 'остановись' command."""
-        parser = CommandParser()
+        parser = CommandParser(wake_words=list(ROBOT_WAKE))
 
         command = parser.parse('остановись')
 
@@ -168,7 +169,7 @@ class TestCommandParserStop:
 
     def test_cancel_navigation(self):
         """Test cancel navigation."""
-        parser = CommandParser()
+        parser = CommandParser(wake_words=list(ROBOT_WAKE))
 
         command = parser.parse('отмени навигацию')
 
@@ -180,7 +181,7 @@ class TestCommandParserStatus:
 
     def test_status_where(self):
         """Test 'где ты' status query."""
-        parser = CommandParser()
+        parser = CommandParser(wake_words=list(ROBOT_WAKE))
 
         command = parser.parse('где ты')
 
@@ -189,7 +190,7 @@ class TestCommandParserStatus:
 
     def test_status_show(self):
         """Test 'покажи статус'."""
-        parser = CommandParser()
+        parser = CommandParser(wake_words=list(ROBOT_WAKE))
 
         command = parser.parse('покажи статус')
 
@@ -201,7 +202,7 @@ class TestCommandParserMap:
 
     def test_map_show(self):
         """Test 'покажи карту'."""
-        parser = CommandParser()
+        parser = CommandParser(wake_words=list(ROBOT_WAKE))
 
         command = parser.parse('покажи карту')
 
@@ -209,7 +210,7 @@ class TestCommandParserMap:
 
     def test_map_create(self):
         """Test 'создай карту'."""
-        parser = CommandParser()
+        parser = CommandParser(wake_words=list(ROBOT_WAKE))
 
         command = parser.parse('создай карту')
 
@@ -221,7 +222,7 @@ class TestCommandParserVision:
 
     def test_vision_what_see(self):
         """Test 'что видишь'."""
-        parser = CommandParser()
+        parser = CommandParser(wake_words=list(ROBOT_WAKE))
 
         command = parser.parse('что видишь')
 
@@ -229,7 +230,7 @@ class TestCommandParserVision:
 
     def test_vision_find(self):
         """Test 'найди объект'."""
-        parser = CommandParser()
+        parser = CommandParser(wake_words=list(ROBOT_WAKE))
 
         command = parser.parse('найди объект')
 
@@ -241,7 +242,7 @@ class TestCommandParserFollow:
 
     def test_follow_me(self):
         """Test 'следуй за мной'."""
-        parser = CommandParser()
+        parser = CommandParser(wake_words=list(ROBOT_WAKE))
 
         command = parser.parse('следуй за мной')
 
@@ -249,7 +250,7 @@ class TestCommandParserFollow:
 
     def test_follow_activate(self):
         """Test 'включи режим следования'."""
-        parser = CommandParser()
+        parser = CommandParser(wake_words=list(ROBOT_WAKE))
 
         command = parser.parse('включи режим следования')
 
@@ -261,7 +262,7 @@ class TestCommandParserUnknown:
 
     def test_unknown_command(self):
         """Test command that doesn't match any pattern."""
-        parser = CommandParser()
+        parser = CommandParser(wake_words=list(ROBOT_WAKE))
 
         command = parser.parse('непонятная команда')
 
@@ -271,7 +272,7 @@ class TestCommandParserUnknown:
 
     def test_empty_command(self):
         """Test empty command."""
-        parser = CommandParser()
+        parser = CommandParser(wake_words=list(ROBOT_WAKE))
 
         command = parser.parse('')
 
@@ -283,7 +284,7 @@ class TestCommandParserParse:
 
     def test_parse_with_wake_word(self):
         """Test parsing with wake word."""
-        parser = CommandParser()
+        parser = CommandParser(wake_words=list(ROBOT_WAKE))
 
         command = parser.parse('робот иди к кухне')
 
@@ -293,7 +294,7 @@ class TestCommandParserParse:
 
     def test_parse_without_wake_word(self):
         """Test parsing without wake word."""
-        parser = CommandParser()
+        parser = CommandParser(wake_words=list(ROBOT_WAKE))
 
         command = parser.parse('стоп')
 
@@ -302,7 +303,7 @@ class TestCommandParserParse:
 
     def test_parse_case_insensitive(self):
         """Test case insensitive parsing."""
-        parser = CommandParser()
+        parser = CommandParser(wake_words=list(ROBOT_WAKE))
 
         command1 = parser.parse('СТОП')
         command2 = parser.parse('стоп')
@@ -315,7 +316,7 @@ class TestCommandParserCustomization:
 
     def test_add_pattern(self):
         """Test adding custom pattern."""
-        parser = CommandParser()
+        parser = CommandParser(wake_words=list(ROBOT_WAKE))
 
         # Add custom pattern for STATUS
         parser.add_pattern(IntentType.STATUS, r'покажи\s+позицию', None)
@@ -326,7 +327,7 @@ class TestCommandParserCustomization:
 
     def test_get_patterns(self):
         """Test getting patterns for intent."""
-        parser = CommandParser()
+        parser = CommandParser(wake_words=list(ROBOT_WAKE))
 
         patterns = parser.get_patterns(IntentType.STOP)
 
@@ -335,7 +336,7 @@ class TestCommandParserCustomization:
 
     def test_get_patterns_nonexistent(self):
         """Test getting patterns for nonexistent intent."""
-        parser = CommandParser()
+        parser = CommandParser(wake_words=list(ROBOT_WAKE))
 
         patterns = parser.get_patterns(IntentType.UNKNOWN)
 
@@ -347,7 +348,7 @@ class TestCommandParserConfidence:
 
     def test_confidence_full_match(self):
         """Test confidence for full text match."""
-        parser = CommandParser()
+        parser = CommandParser(wake_words=list(ROBOT_WAKE))
 
         command = parser.parse('стоп')
 
@@ -356,7 +357,7 @@ class TestCommandParserConfidence:
 
     def test_confidence_partial_match(self):
         """Test confidence for partial match."""
-        parser = CommandParser()
+        parser = CommandParser(wake_words=list(ROBOT_WAKE))
 
         command = parser.parse('стоп и остановись')
 
@@ -370,7 +371,7 @@ class TestCommandParserEdgeCases:
 
     def test_whitespace_only(self):
         """Test whitespace only input."""
-        parser = CommandParser()
+        parser = CommandParser(wake_words=list(ROBOT_WAKE))
 
         command = parser.parse('   ')
 
@@ -378,7 +379,7 @@ class TestCommandParserEdgeCases:
 
     def test_special_characters(self):
         """Test input with special characters."""
-        parser = CommandParser()
+        parser = CommandParser(wake_words=list(ROBOT_WAKE))
 
         command = parser.parse('стоп!!!')
 
@@ -386,7 +387,7 @@ class TestCommandParserEdgeCases:
 
     def test_mixed_language(self):
         """Test mixed language input."""
-        parser = CommandParser()
+        parser = CommandParser(wake_words=list(ROBOT_WAKE))
 
         command = parser.parse('робот halt')
 
@@ -394,7 +395,7 @@ class TestCommandParserEdgeCases:
 
     def test_multiple_wake_words(self):
         """Test text with multiple wake words."""
-        parser = CommandParser()
+        parser = CommandParser(wake_words=list(ROBOT_WAKE))
 
         # Should remove first wake word only
         result = parser.remove_wake_word('робот робот стоп')

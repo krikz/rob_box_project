@@ -3,21 +3,22 @@
 import pytest
 
 from rob_box_dialog.knowledge import (
-    DEFAULT_WAKE_WORDS, MUSIC_AMBIGUOUS_STEMS, MUSIC_AMBIGUOUS_WORDS, MUSIC_MUTE_WORDS, MUSIC_OFF_WORDS, REACH_NEXT,
-    SILENCE_WORDS,
+    MUSIC_AMBIGUOUS_STEMS, MUSIC_AMBIGUOUS_WORDS, MUSIC_MUTE_WORDS, MUSIC_OFF_WORDS, REACH_NEXT, SILENCE_WORDS,
     STOP_LEAD_WORDS, STOP_WORDS, TIER1_POLICY, UNSILENCE_WORDS, VOLUME_CHANNEL_STEMS, VOLUME_LEVEL_WORDS,
-    VOLUME_DEGREE_WORDS, VOLUME_NOUN_STEMS, VOLUME_STEMS, WAKE_SLIP_ADDRESSEE, WAKE_SLIP_AMBIGUOUS, WAKE_SLIP_COMMAND_LEADS,
-    WAKE_SLIP_CUE_WINDOW, WAKE_SLIP_GATES, WAKE_SLIP_MORE_LEADS, WAKE_SLIP_NEVER, WAKE_SLIP_PLURAL, WAKE_SLIP_POLITE,
-    WAKE_SLIP_QUESTION_CUED_LEADS, WAKE_SLIP_QUESTION_LEADS, WAKE_SLIP_STOP_FORMS, WAKE_SLIP_STOP_WINDOW,
-    WAKE_SLIP_TWEAK_COMPARATIVE_ENDINGS, WAKE_SLIP_TWEAK_CUE_STEMS, WAKE_SLIP_TWEAK_ENDINGS, WAKE_SLIP_TWEAK_FORMS,
-    WAKE_SLIP_TWEAK_IMPERATIVE_ENDINGS, WAKE_SLIP_TWEAK_NOUN_STEMS, WAKE_SLIP_TWEAK_REQUEST_STEMS,
-    WAKE_SLIP_TWEAK_STEMS, WAKE_SLIP_VARIANTS,
+    VOLUME_DEGREE_WORDS, VOLUME_NOUN_STEMS, VOLUME_STEMS, WAKE_SLIP_ADDRESSEE, WAKE_SLIP_AMBIGUOUS,
+    WAKE_SLIP_COMMAND_LEADS, WAKE_SLIP_CUE_WINDOW, WAKE_SLIP_GATES, WAKE_SLIP_MORE_LEADS, WAKE_SLIP_NEVER,
+    WAKE_SLIP_PLURAL, WAKE_SLIP_POLITE, WAKE_SLIP_QUESTION_CUED_LEADS, WAKE_SLIP_QUESTION_LEADS, WAKE_SLIP_STOP_FORMS,
+    WAKE_SLIP_STOP_WINDOW, WAKE_SLIP_TWEAK_COMPARATIVE_ENDINGS, WAKE_SLIP_TWEAK_CUE_STEMS, WAKE_SLIP_TWEAK_ENDINGS,
+    WAKE_SLIP_TWEAK_FORMS, WAKE_SLIP_TWEAK_IMPERATIVE_ENDINGS, WAKE_SLIP_TWEAK_NOUN_STEMS,
+    WAKE_SLIP_TWEAK_REQUEST_STEMS, WAKE_SLIP_TWEAK_STEMS, WAKE_SLIP_VARIANTS,
 )
 from rob_box_dialog.words import (
     NO_SCOPE, STOP_CLEAR, STOP_DISPUTED, STOP_NONE, StopScope, asked_level, has_form, has_wake_word, has_word,
-    introduces_self, level_phrases, level_word, slipped_wake_rest, stop_command, stop_scope, stop_verdict, strip_wake_word,
+    introduces_self, level_phrases, level_word, slipped_wake_rest, stop_command, stop_scope, stop_verdict,
+    strip_wake_word,
     wake_command,
 )
+from robot_wake_fixture import ROBOT_WAKE  # noqa: E402 — тестовый профиль робота
 
 #: Фразы, обращённые к роботу (живые и e2e-искажения STT).
 WAKES = [
@@ -52,7 +53,7 @@ def test_wake_corpus_wakes(text):
 
 @pytest.mark.parametrize("text", ["рома покажи анимацию ускорения", "Роман, включи музыку", "роман расскажи анекдот"])
 def test_roma_and_roman_wake(text):
-    """23.10 Шифу: «рома»/«роман» — обычные вейки (DEFAULT_WAKE_WORDS), не корпус ложных вейков."""
+    """23.10 Шифу: «рома»/«роман» — обычные вейки (ROBOT_WAKE), не корпус ложных вейков."""
     assert has_wake_word(text)
 
 
@@ -121,7 +122,7 @@ def test_tier1_stop_words():
 
 
 def test_every_wake_word_is_found_alone_and_in_a_phrase():
-    for word in DEFAULT_WAKE_WORDS:
+    for word in ROBOT_WAKE:
         assert has_wake_word(word), word
         assert has_wake_word(f"{word}, расскажи анекдот"), word
 
@@ -709,7 +710,8 @@ MORE_TWEAK_WAKES = [
 #: Рассказ: «ещё» + слово правки + любое продолжение не из знаков (хвост ревью: REACH смотрел одно слово после «ещё»).
 MORE_TWEAK_STORIES = [
     "роботы ещё быстрее нас считают", "роботы ещё громче всех", "роботы снова тише воды", "роботы ещё чуть громче всех",
-    "роботы опять быстрее людей", "роботы ещё быстро учатся", "роботы ещё не умеют быстрее", "роботы ещё", "роботы ещё чуть",
+    "роботы опять быстрее людей", "роботы ещё быстро учатся", "роботы ещё не умеют быстрее", "роботы ещё",
+    "роботы ещё чуть",
     "роботы ещё темп", "роботы ещё скорость растёт",
 ]
 

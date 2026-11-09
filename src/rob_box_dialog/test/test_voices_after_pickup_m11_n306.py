@@ -10,14 +10,15 @@
 
 from rob_box_dialog.address import BACKLOG_PICKUP, decide
 from rob_box_dialog.backlog import Backlog, Heard
-from rob_box_dialog.knowledge import BACKGROUND_WINDOW_S, BACKLOG_TTL_S, DEFAULT_WAKE_WORDS
+from rob_box_dialog.knowledge import BACKGROUND_WINDOW_S, BACKLOG_TTL_S
 from rob_box_dialog.speaker_adapter import voice_tag
+from robot_wake_fixture import ROBOT_WAKE  # noqa: E402 — тестовый профиль робота
 
 SASHA = {"is_known": True, "speaker_id": "spk-sasha", "name": "Саша", "confidence": 0.9}
 BORIS = {"is_known": True, "speaker_id": "spk-boris", "name": "Борис", "confidence": 0.9}
 QUIET = {"is_known": True, "speaker_id": "spk-quiet", "epithet": "Тихий", "confidence": 0.8}
 COURIER = {"is_known": True, "speaker_id": "spk-courier", "epithet": "Сосед", "confidence": 0.8}
-WAKE = list(DEFAULT_WAKE_WORDS)
+WAKE = list(ROBOT_WAKE)
 
 
 def _say(backlog, uid, t, text, payload):

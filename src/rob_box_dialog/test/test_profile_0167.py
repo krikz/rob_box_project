@@ -15,10 +15,7 @@ from rob_box_dialog import knowledge as kn
 from rob_box_dialog import profile as pf
 from rob_box_dialog.words import has_wake_word
 
-REPO = Path(__file__).resolve().parents[3]
-ROBOT_PROFILE = REPO / "docker" / "sound" / "config" / "assistant.yaml"
-
-needs_robot = pytest.mark.skipif(not ROBOT_PROFILE.is_file(), reason="нет docker/ (окружение без профиля робота)")
+FIXTURE = Path(__file__).resolve().parent / "fixtures" / "robot_profile"
 
 
 def _write(tmp_path, text, wake="personality:\n  - эй ассистент\noperator:\n  - пульт\n"):
@@ -77,10 +74,28 @@ def test_missing_file_and_empty_wake_table_are_errors(tmp_path):
         pf.load_profile(_write(tmp_path, GOOD, wake="operator:\n  - пульт\n"))
 
 
-@needs_robot
-def test_robot_profile_gives_the_same_wake_table_hosts_read_before():
-    got = pf.load_profile(ROBOT_PROFILE)
-    personality, operator = kn.resolve_wake_word_namespaces(str(ROBOT_PROFILE.parent / "wake_words.yaml"))
-    assert got.name == "РОББОКС"
-    assert list(got.wake_personality) == personality == list(kn.DEFAULT_WAKE_WORDS)
-    assert list(got.wake_operator) == operator
+def test_test_robot_profile_loads():
+    """Тестовый профиль робота (``fixtures/robot_profile``) - корректный профиль формата 1."""
+    got = pf.load_profile(FIXTURE)
+    personality, operator = kn.resolve_wake_word_namespaces(str(FIXTURE / "wake_words.yaml"))
+    assert got.name == "РОББОКС" and not got.neutral
+    assert list(got.wake_personality) == personality and list(got.wake_operator) == operator
+
+
+def test_core_knows_no_product_wake_words(neutral_core):
+    """Вейки продукта - в его профиле: в таблице знания ядра нет ни вейков робота, ни их умолчания."""
+    assert kn.WAKE_WORDS_WITHOUT_PROFILE == ()
+    for gone in ("DEFAULT_WAKE_WORDS", "RISKY_WAKE_WORDS", "DEFAULT_OPERATOR_WAKE_WORDS"):
+        assert not hasattr(kn, gone), gone
+    assert kn.resolve_wake_word_namespaces(None) == ([], [])
+
+
+def test_rules_without_a_table_are_neutral(neutral_core):
+    """Хост не передал таблицу - ядро нейтрально: вейков нет, адресовано всё, снимать с реплики нечего."""
+    from rob_box_dialog import grammar, words
+    from rob_box_dialog.session import Session
+
+    snap = Session("personality", clock=lambda: 0.0).snapshot
+    assert words.has_wake_word("который час") and words.strip_wake_word("Робот, стоп") == "Робот, стоп"
+    assert words.slipped_wake_rest("роботу дали") is None
+    assert grammar.match("Робот, стоп", snap) is not None  # «стоп» и без снятого вейка - стоп

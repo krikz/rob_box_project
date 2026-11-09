@@ -1,8 +1,11 @@
-"""Таблица вейков из профиля робота даёт то же поведение правил, что вейки ядра по умолчанию (ADR-0167 Ш1б-2).
+"""Таблица вейков из профиля робота даёт то же поведение правил, что прежнее умолчание ядра (ADR-0167 Ш1б-2).
 
-Хосты робота теперь передают таблицу профиля явно (``Session(wake_words=...)``, ``dialog_node._wake``); до шага
-правила брали ``DEFAULT_WAKE_WORDS`` ядра молча. На корпусе реплик робота ответы правил с таблицей профиля и с
-умолчанием совпадают - то есть перенос вейков в профиль поведение робота не меняет.
+Хосты робота передают таблицу профиля явно (``Session(wake_words=...)``, ``dialog_node._wake``); до Ш1б-2б правила
+брали молча ``DEFAULT_WAKE_WORDS`` ядра - ровно эту таблицу (байт в байт, держал ``test_wake_words_yaml_matches_code``).
+Теперь умолчание ядра нейтрально (без вейков). Тест сравнивает ответы правил с явной таблицей профиля и с прежним
+умолчанием (умолчание ядра на время теста = таблица робота) на корпусе реплик робота: совпадают - перенос вейков
+в профиль поведение робота не меняет. Второй тест показывает, что без таблицы ядро ведёт себя иначе (нейтрально):
+поэтому хосты робота и обязаны её передавать.
 """
 
 from __future__ import annotations
@@ -12,6 +15,7 @@ from pathlib import Path
 import pytest
 
 from rob_box_dialog import grammar, interrupt, reply_grammar, tool_ask, track_ref
+from rob_box_dialog import knowledge as kn
 from rob_box_dialog import words as w
 from rob_box_dialog.profile import load_profile
 from rob_box_dialog.session import Session
@@ -73,15 +77,28 @@ def _rules(text, snap, wake):
     )
 
 
+@pytest.fixture()
+def old_core_default(monkeypatch, robot_wake):
+    """Умолчание ядра до Ш1б-2б: таблица вейков робота."""
+    monkeypatch.setattr(kn, "WAKE_WORDS_WITHOUT_PROFILE", tuple(robot_wake))
+
+
 @pytest.mark.parametrize("text", PHRASES)
-def test_profile_table_matches_core_default(text, robot_wake):
+def test_profile_table_matches_core_default(text, robot_wake, old_core_default):
     with_profile = Session("personality", clock=lambda: 0.0, wake_words=robot_wake).snapshot
     by_default = Session("personality", clock=lambda: 0.0).snapshot
     assert with_profile.wake_words == tuple(robot_wake)
     assert _rules(text, with_profile, robot_wake) == _rules(text, by_default, None)
 
 
-def test_tool_question_answer_reads_the_session_table(robot_wake):
+def test_without_a_table_the_core_is_neutral(robot_wake):
+    snap = Session("personality", clock=lambda: 0.0).snapshot
+    assert kn.WAKE_WORDS_WITHOUT_PROFILE == () and snap.wake_words is None
+    assert w.has_wake_word("который час") and not w.has_wake_word("который час", robot_wake)
+    assert w.strip_wake_word("Робот, который час") == "Робот, который час"
+
+
+def test_tool_question_answer_reads_the_session_table(robot_wake, old_core_default):
     question = next(iter(tool_ask.kn.TOOL_QUESTIONS.values()))
     for text in ("Робот, да", "Робот, нет", "да", "Роббокс, давай"):
         assert tool_ask.answer(text, question, robot_wake) == tool_ask.answer(text, question)

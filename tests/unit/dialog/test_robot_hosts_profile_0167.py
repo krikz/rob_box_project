@@ -47,8 +47,9 @@ def test_robot_profile_path_and_env(monkeypatch):
     assert robot_profile.path() == robot_profile.PATH
     monkeypatch.setenv(robot_profile.ENV, str(CONFIG / "assistant.yaml"))
     loaded = robot_profile.load()
-    assert loaded.name == "РОББОКС" and list(loaded.wake_personality) == list(kn.DEFAULT_WAKE_WORDS)
-    assert list(loaded.wake_operator) == list(kn.DEFAULT_OPERATOR_WAKE_WORDS)
+    personality, operator = kn.resolve_wake_word_namespaces(str(CONFIG / "wake_words.yaml"))
+    assert loaded.name == "РОББОКС" and list(loaded.wake_personality) == personality and "робот" in personality
+    assert list(loaded.wake_operator) == operator == ["тарс", "tars"]
 
 
 def test_robot_profile_is_strict(tmp_path, monkeypatch):

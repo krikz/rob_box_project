@@ -14,10 +14,10 @@ install_dialog_msgs_stub()
 from rob_box_dialog import address  # noqa: E402
 from rob_box_dialog.address import Addressed, NotAddressed, decide  # noqa: E402
 from rob_box_dialog.backlog import Heard  # noqa: E402
-from rob_box_dialog.knowledge import DEFAULT_WAKE_WORDS  # noqa: E402
 from rob_box_dialog.session import Session  # noqa: E402
 from rob_box_voice.core import greeting_window as gw  # noqa: E402
 from rob_box_voice.core.identity_question import publish  # noqa: E402
+from voice_robot_wake import ROBOT_WAKE  # noqa: E402 — тестовый профиль робота
 
 _FINISHED, _CANCELLED = 4, 5
 FOREIGN = "поселения происходили давайте я устрою наше время"
@@ -49,7 +49,7 @@ def _greeted(clock, name="Денис"):
 def _decide(clock, node, text, after_s, faces=()):
     clock.t += after_s
     heard = Heard(text=text, t=clock.t, source="respeaker", doa_deg=10.0, faces=frozenset(faces))
-    return decide(heard, None, DEFAULT_WAKE_WORDS, None, gw.window(node))
+    return decide(heard, None, ROBOT_WAKE, None, gw.window(node))
 
 
 def _logged(node, needle):
