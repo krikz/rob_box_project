@@ -62,8 +62,9 @@ Distribution API, без oras). **В `L: Build` не подключено** — 
 
 ## 3. Агент `chuangong` — `host/chuangong/`
 
-Python 3 stdlib + PyYAML + `cryptography`, без pip на хосте (на Main Pi есть Python 3.13.3, PyYAML 6.0.2,
-cryptography 43.0.0 — проверено координатором 09.11, read-only). Один тик (`python3 -m chuangong run`) по
+Python 3 stdlib + PyYAML + `cryptography`, без pip на хосте. Замер 09.11 (только чтение): Main Pi — Ubuntu 25.04,
+Python 3.13.3, PyYAML 6.0.2, cryptography 43.0.0; Vision и Sound — Ubuntu 24.04, Python 3.12.3, PyYAML 6.0.1,
+cryptography 41.0.7 (оба пакета из apt уже стоят). Один тик (`python3 -m chuangong run`) по
 systemd-таймеру раз в 5 минут.
 
 | Шаг | Что делает |
@@ -105,8 +106,11 @@ systemd-таймеру раз в 5 минут.
    публичный — на Pi в `/etc/chuangong/release.pub` (ADR-0003: приватный ключ в `miji/`).
 2. `L: Build All Services`: после сборки — `release.py build --resolve-registry http://localhost:5000` → `sign` →
    `publish` в registry katana (имя релиза — открытый вопрос В3).
-3. Установка агента на три Pi (расширение `setup_node.sh` только добавлением): копия `host/chuangong` в
-   `/opt/rob_box/chuangong`, `/etc/chuangong/chuangong.env` с узлом, юниты, `systemctl enable --now chuangong.timer`.
+3. Установка агента на три Pi: `host/chuangong/install.sh --node <роль>` (его зовёт и `setup_node.sh` для
+   main/vision/sound) ставит `python3-yaml`, `python3-cryptography`, код в `/opt/rob_box/chuangong`, обёртку
+   `/usr/local/bin/chuangong`, каталоги, `/etc/chuangong/chuangong.env` (observe) и юниты. Таймер включается
+   только `--enable` (или `ROBBOX_ENABLE_CHUANGONG=1` у `setup_node.sh`); проверка — `host/chuangong/check_install.sh`.
+   sudoers в фазе B не нужен. На живые Pi ещё не ставили.
 4. Потребитель `metrics.prom` (node_exporter textfile или Alloy, ADR-0001) — сейчас у файла потребителя нет.
 5. По желанию — узкое хранилище zenoh на `robots/*/ops/chuangong/**` в роутере Main Pi (правка конфига роли):
    `status` ответит сразу, а не после тика.
@@ -165,6 +169,6 @@ systemd-таймеру раз в 5 минут.
   в `observe` без риска для робота и увидеть, что он видит; формат и ключи zenoh — те, на которые потом встанут
   ритуал фазы C и `dianjiang`.
 - Цена: второй механизм рядом с деплоем на переходный период; ключ подписи в CI; зависимость агента от
-  `python3-cryptography` и `python3-yaml` на хосте (на Main Pi есть; Vision и Sound не проверены).
+  `python3-cryptography` и `python3-yaml` на хосте (есть на всех трёх Pi, замер 09.11).
 - Риски: `stage` без prune копит образы; GET статуса пуст без хранилища (подписка ждёт тика); сторонние образы не
   закреплены по digest.
