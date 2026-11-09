@@ -118,7 +118,7 @@ from rob_box_voice.observability import (
 )
 
 # Issue #2906 — значение поля ``purpose`` в /voice/speaker/register:
-# служебный рост галереи после словесного «да, это я» (dialogue_node
+# служебный рост галереи после словесного «да, это я» (dialog_node
 # ``_publish_confirmed_identity_growth``). Без поля — обычная регистрация
 # по просьбе человека/LLM (``register_speaker``). Отдельное поле, а не
 # отдельный топик: старый потребитель просто не видит ключа, а новый
@@ -237,7 +237,7 @@ def is_name_confident(
 
     Держим отдельно от классификации: часть вызывающего кода (и уже
     существующие тесты реплея с 23.09) нужен только булев исход, а
-    ``_publish_result``/``_handle_tentative_speaker`` в dialogue_node —
+    ``_publish_result``/``_handle_tentative_speaker`` в dialog_node —
     полная классификация (single/contested), чтобы решить, можно ли
     вообще упомянуть имя-гипотезу.
     """
@@ -706,7 +706,7 @@ class SpeakerIdNode(Node):
         # Issue #2863 — сколько РЕЧИ (voiced_sec после VAD) нужно, чтобы
         # «не узнал» считалось оценкой «это кто-то другой», а не «не смог
         # оценить». Ниже порога unknown публикуется с inconclusive=true, и
-        # потребители (mcp_server, dialogue_node) не сбрасывают текущего
+        # потребители (mcp_server, dialog_node) не сбрасывают текущего
         # узнанного диктора. Своего порога «достаточно для оценки» у
         # identify() не было: MIN_AUDIO_DURATION_SEC=0.3с — пол для самого
         # эмбеддинга по ОКНУ записи (комментарий там прямо говорит, что
@@ -751,7 +751,7 @@ class SpeakerIdNode(Node):
         # Issue #2440 — путь к harness-БД фактов (harness_voice.db). Нужен
         # шву идентичности для переноса ФАКТОВ профиля при склейке (дефект C:
         # раньше merge переносил только эмбеддинги в speakers.db, а факты
-        # оставались висеть под старым id). Тот же файл, что у dialogue_node
+        # оставались висеть под старым id). Тот же файл, что у dialog_node
         # (sqlite_db_path) — WAL допускает второе подключение на запись.
         self.declare_parameter("memory_db_path", "/data/harness_voice.db")
         # Issue #2751 — второй писатель фактов, вне шва идентичности:
@@ -771,7 +771,7 @@ class SpeakerIdNode(Node):
         self.declare_parameter("e2e_db_path", "/data/speakers.e2e.db")
         # Runtime-переключатель (см. докстринг модуля). Bool, а не топик —
         # семейный шаблон уже есть в репозитории (``e2e_session_reset_token``
-        # у dialogue_node, ``ros2 param set`` из E2E-харнесса): синхронный
+        # у dialog_node, ``ros2 param set`` из E2E-харнесса): синхронный
         # ответ вызывающему (успех/провал
         # виден тут же в exit-коде ``ros2 param set``), не требует своего
         # ROS-типа сообщения и не всплывает в seam_without_consumer как
@@ -851,7 +851,7 @@ class SpeakerIdNode(Node):
             f"gallery_warmup_size={gallery_warmup_size} "
             f"gallery_growth_session_gap_sec={self._growth_session_gap_sec}"
         )
-        # Issue #2750 — тот же шаблон, что dialogue_node (e2e_session_reset_token)
+        # Issue #2750 — тот же шаблон, что dialog_node (e2e_session_reset_token)
         # и tts_node (volume_db и др.): валидирующий Humble-колбэк, тело
         # которого делает синхронный побочный эффект (там — перечитать
         # громкость/скорость, здесь — переоткрыть БД). Не топик: топик с
@@ -890,7 +890,7 @@ class SpeakerIdNode(Node):
         #
         # Issue #2829 (ADR-0131 PR-2) — utterance_id добавлен четвёртым
         # полем: _on_register_request ищет эмбеддинг ИМЕННО той фразы, в
-        # которой человек назвал своё имя (переданный dialogue_node id
+        # которой человек назвал своё имя (переданный dialog_node id
         # текущего хода), а не "самый свежий за MAX_EMBED_AGE_SEC от кого
         # угодно" (см. _on_register_request).
         self._recent_embeddings: Deque[
@@ -901,7 +901,7 @@ class SpeakerIdNode(Node):
         # _pending_register_name) эмбеддинг фразы, если register_speaker
         # приехал чуть раньше, чем speaker_id_node успел досчитать
         # embedding для того же utterance_id (редкая гонка — обычно
-        # dialogue_node уже дождался ПОЛНОГО /voice/speaker/result этой же
+        # dialog_node уже дождался ПОЛНОГО /voice/speaker/result этой же
         # фразы через UtteranceSpeakerRegistry.resolve() ДО вызова LLM/tool,
         # так что эмбеддинг почти всегда уже здесь).
         self._REGISTER_UTTERANCE_WAIT_SEC: float = 1.5
@@ -1079,9 +1079,9 @@ class SpeakerIdNode(Node):
         utterance as 'Дэнчик'" -> registered 43s later, quite possibly a
         different person). That branch is REMOVED. Registration is now
         bound to the utterance_id of the phrase in which the person
-        introduced themselves -- supplied by dialogue_node (it already
+        introduced themselves -- supplied by dialog_node (it already
         knows the current turn's utterance_id, see
-        dialogue_node._current_turn_utterance_id / RegisterSpeakerTool).
+        ``dialog_node`` (id реплики хода) / RegisterSpeakerTool).
         No matching embedding (never arrived for that id, or it aged out
         of the 20-utterance ring buffer) -- honest register_error
         (#2769's path), never a silent "whoever speaks next" fallback.
@@ -1135,7 +1135,7 @@ class SpeakerIdNode(Node):
             return
 
         # Embedding not there YET -- speaker_id_node may still be running
-        # inference for this exact utterance (rare: dialogue_node's
+        # inference for this exact utterance (rare: dialog_node's
         # UtteranceSpeakerRegistry.resolve() for THIS utterance normally
         # already waited for the full /voice/speaker/result before the
         # LLM/tool call happened, so by the time this message arrives the
@@ -1154,7 +1154,7 @@ class SpeakerIdNode(Node):
     ) -> None:
         """Issue #2906 — рост галереи ПОДТВЕРЖДЁННОГО владельца.
 
-        Запрос приходит от dialogue_node после словесного «да, это я»
+        Запрос приходит от dialog_node после словесного «да, это я»
         (#2809/#2757). До этой правки он шёл тем же путём, что регистрация
         по просьбе LLM: ``_do_register`` → ``register_or_merge`` →
         гейт ``MIN_REGISTER_AUDIO_DURATION_SEC`` → короткий ответ «да, это
@@ -1297,7 +1297,7 @@ class SpeakerIdNode(Node):
         """Issue #2829 -- same ack shape as the #2769 too_short path
         (event: "register_error" on /voice/speaker/result), new error
         reasons for "no utterance context"/"utterance not found".
-        dialogue_node's existing handler (_on_speaker_result) already
+        dialog_node's existing handler (_on_speaker_result) already
         asks the person to repeat on ANY register_error reason (see
         PR-2's dialogue_node.py diff) -- no new UX branch needed there.
         """
@@ -1806,7 +1806,7 @@ class SpeakerIdNode(Node):
         колбэк, вызываемый ДО применения значения, обязан вернуть
         ``SetParametersResult``. Побочный эффект (переключение активной БД)
         прямо внутри валидатора — тот же компромисс, что уже живёт в
-        ``dialogue_node.parameters_callback`` (``e2e_session_reset_token``
+        ``dialog_node`` parameters callback (``e2e_session_reset_token``
         тут же сбрасывает сессию) и ``tts_node.parameters_callback``
         (``volume_db``/``pitch_shift``/voice-параметры применяются
         синхронно) — один и тот же ROS2-паттерн этого репозитория, не
@@ -1822,7 +1822,7 @@ class SpeakerIdNode(Node):
         сильнее и по существу: ``ros2 param set`` синхронный и возвращает
         успех/провал вызывающему в exit-коде, а ``e2e_mode`` объявлен
         (``declare_parameter``) — тот же приём, что ``e2e_session_reset_token``
-        у dialogue_node (``ros2 param set`` из E2E-харнесса).
+        у dialog_node (``ros2 param set`` из E2E-харнесса).
 
         Только ``e2e_mode``, ``name_confidence_band_high`` и
         ``name_confidence_min_gap`` имеют побочный эффект; остальные
@@ -2038,7 +2038,7 @@ class SpeakerIdNode(Node):
         LLM-тула register_speaker до диска: профиль НЕ создаётся, вместо
         обычного ack публикуется ``{"event": "register_error", "error":
         "too_short", ...}`` на тот же ``/voice/speaker/result`` (тем же
-        каналом, которым уходит ``event="registered"`` — dialogue_node
+        каналом, которым уходит ``event="registered"`` — dialog_node
         слушает оба и просит пользователя повторить фразу, см.
         ``_on_speaker_result``). Возвращает ``False`` в этом случае,
         ``True`` — если профиль реально создан/дополнен, чтобы вызывающий
@@ -2106,7 +2106,7 @@ class SpeakerIdNode(Node):
             self.get_logger().info(f"✅ Speaker '{name}' registered (id={sid[:8]})")
         # Issue #1787 — новый профиль сразу получает внутреннюю кличку.
         self._ensure_epithet(sid)
-        # Publish a registration-ack so dialogue_node can confirm verbally
+        # Publish a registration-ack so dialog_node can confirm verbally
         ack_payload = {
             "event": "registered",
             "name": name,
@@ -2115,7 +2115,7 @@ class SpeakerIdNode(Node):
             "utterance_id": utterance_id,
         }
         if outcome.name_conflict:
-            # ADR-0127 — dialogue_node получает повод переспросить («я уже
+            # ADR-0127 — dialog_node получает повод переспросить («я уже
             # знаю голос, похожий на твой — вы разные люди?»), а разбор
             # прогона получает машиночитаемый след конфликта.
             ack_payload["voice_conflict"] = {
@@ -2150,7 +2150,7 @@ class SpeakerIdNode(Node):
 
         # Issue #2748 — до этой правки нода НИЧЕГО не публиковала в момент
         # регистрации, КРОМЕ служебного ack выше (``event: "registered"``),
-        # который dialogue_node и
+        # который dialog_node и
         # rob_box_harness.encounter.voice_adapter.VoiceEncounterAdapter
         # намеренно трактуют как «не сигнал присутствия» (см. их код) — то
         # есть vision_face_node._on_speaker_result (гейт на
@@ -2158,7 +2158,7 @@ class SpeakerIdNode(Node):
         # и имя не долетало до лицевой записи, даже когда в кадре было
         # ровно одно лицо. Публикуем ВТОРЫМ, отдельным сообщением полноценный
         # SpeakerMatch с ``source="register"`` — по форме неотличимый от
-        # обычного identify()-результата (совместим с dialogue_node /
+        # обычного identify()-результата (совместим с dialog_node /
         # mcp_server / vision_face_node без правок их парсинга), но с
         # пометкой источника: имя названо самим человеком, доверия к нему
         # больше, чем к косинусу (issue #2747 — тот же самый голос сразу
@@ -2231,7 +2231,7 @@ class SpeakerIdNode(Node):
 
         Форма — обычный ``event="registered"`` (+ ``already_known``): все
         потребители его уже понимают (mcp_server держит этого диктора
-        текущим, dialogue_node молчит, vision_face_node не реагирует), и
+        текущим, dialog_node молчит, vision_face_node не реагирует), и
         ни один не сбрасывает диктора. Рост галереи — по правилам #2833:
         открывается growth-сессия владельца, дальнейшие фразы проходят тот
         же гейт ``_apply_growth_session`` (growth_owner_min_score, отрыв от
@@ -2338,7 +2338,7 @@ class SpeakerIdNode(Node):
 
         Issue #2748 — ``source`` — необязательная метка происхождения
         сигнала. Обычная идентификация по фразе её не ставит (совместимость
-        со старым форматом payload, который уже читают dialogue_node /
+        со старым форматом payload, который уже читают dialog_node /
         mcp_server / vision_face_node). ``source="register"`` ставит
         ``_do_register()`` — сигнал «имя названо человеком при регистрации»,
         а не «косинус посчитал похожим»; vision_face_node принимает его
@@ -2359,7 +2359,7 @@ class SpeakerIdNode(Node):
         issue #2771 — vision_face_node сливает лица только по
         подтверждённому имени, гипотеза до него доехать не должна), а
         payload получает три дополнительных поля-гипотезы для
-        dialogue_node (issue #2809, продолжение — переспрос):
+        dialog_node (issue #2809, продолжение — переспрос):
 
         * ``tentative_name`` — лучшая догадка биометрии (только при
           ``name_decision == "single"`` — при "contested" её нет НИКОГДА,
