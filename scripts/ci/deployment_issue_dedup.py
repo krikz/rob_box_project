@@ -50,7 +50,24 @@ CRITICAL_DEMOTED_TO_WARNING = [
     # promtail: то же сообщение от приложения, которое ходит в Docker SDK, —
     # настоящий сбой и остаётся critical.
     r"component=docker_discovery.*client version \d+\.\d+ is too old",
+    # tts_node помечает провайдера мёртвым на 30 с после ОДНОГО провала потока (issue #4540,
+    # run 42475127085: "💀 minimax помечен мёртвым на 30s (Exception: MiniMax stream: нет
+    # звука ...)"). Строку пишет сам tts_node уровнем WARN (tts_node.py:3046), речь в эти 30 с
+    # идёт запасным провайдером, а слово «Exception» — лишь тип пойманной ошибки в скобках.
+    # Узко: ровно 30s. Постоянный отказ (ключ/квота, 300 s) и растущий TTL серии сбоев
+    # остаются critical — это уже не «один сорвавшийся поток».
+    r"\[tts_node\]: 💀 \w+ помечен мёртвым на 30s \(",
 ]
+
+# Окно «proximity_guard стартовал слепым»: нода при старте первым тиком пишет ERROR «нет свежих
+# скана или одометрии» (инициализация _blind_logged=False, данные ещё не дошли), через 1-5 с
+# INFO «скан и одометрия идут — зона под контролем». Так в 23 из 24 деплоев карточек #4437,
+# #4484, #4521, #4540 (24-й оборвал замок HIL) — одна и та же строка тянула «🚨 Deploy issues» каждый день. Критичным
+# остаётся ТОЛЬКО то, что не оправилось: решает последняя из двух строк в дампе. Если после
+# ошибки зона снова не под контролем (лидар или одометрия реально пропали) — critical, как раньше.
+PROXIMITY_BLIND_RE = re.compile(r"\[proximity_guard\]: .*нет свежих скана или одометрии", re.IGNORECASE)
+PROXIMITY_RECOVERED_RE = re.compile(r"\[proximity_guard\]: .*скан и одометрия идут — зона под контролем", re.IGNORECASE)
+PROXIMITY_BLIND_DEMOTION = r"\[proximity_guard\]: .*нет свежих скана или одометрии"
 
 CRITICAL_EXCLUDE_COMMON = [
     r"without error",
@@ -431,7 +448,15 @@ CRITICAL_EXCLUDE_COMMON = [
     # path; this rule covers the `stt_attempt_metric ... reason=error`
     # INFO-level metric line that the multi-provider chain emits on
     # every fallback attempt regardless of the final outcome.
-    r"\[stt_attempt_metric\].*reason=error",
+    r"\[stt_attempt_metric\].*reason=(error|timeout)",
+    # promtail → Loki 429 при старте (issue #4484, runs 42288712543, 42302572515, 42312738687,
+    # 42319642931, 42324325313, 42335902952): свежий promtail-sound перечитывает /var/log с
+    # Offset:0 (positions лежат в /tmp контейнера) и первой же пачкой (~1 МБ, ~9000 строк)
+    # упирается в лимит ингеста Loki: `level=warn ... msg="error sending batch, will retry"
+    # status=429 ... Ingestion rate limit exceeded`. Это уровень warn самого promtail, пачка
+    # будет повторена; контейнеры здоровы. Узко: только статус 429 и фраза про лимит ингеста
+    # — другие ошибки отправки в Loki (5xx, connection refused) остаются как были.
+    r'msg="error sending batch, will retry" status=429 .*ingestion rate limit exceeded',
 ]
 CRITICAL_EXCLUDE_BY_SCOPE = {
     "main": [
@@ -694,6 +719,11 @@ WARNING_EXCLUDE_COMMON = [
     # (e.g. "файл не найден", "звук для триггера ... не
     # найден") stay visible to the operator.
     r"звук уже играет \(.*\), пропускаю",
+    # sound_node: `⚠️ Звук "ui_confirm" пропущен: busy (играет: button_click)` (issue #4437,
+    # #4484, #4521, #4540: в карточке почти каждого деплоя). Родня правилу выше: охрана
+    # наложения звуков в sound_node (звук уровня UI пропущен, пока доигрывает предыдущий),
+    # к здоровью деплоя отношения нет. Узко: слово «busy» и «играет:» из того же формата.
+    r'звук "[^"]+" пропущен: busy \(играет:',
     # mcp_server ComposeMusicTool exec failure (deploy run 34908172365,
     # 14.09 23:17, issue #2462 / z-{e2e}/test-round-395, kanban
     # t_db1a15c8): ``ComposeMusicTool._execute`` calls
@@ -944,7 +974,27 @@ def _critical_exclude_patterns(log_text: str, scope: str) -> list[str]:
     return patterns + CRITICAL_EXCLUDE_BY_SCOPE.get(scope, [])
 
 
-def _classify_error_like_line(line: str, exclude_patterns: Iterable[str]) -> str | None:
+def _proximity_guard_recovered(log_text: str) -> bool:
+    """True, если последнее состояние proximity_guard в дампе — «зона под контролем».
+
+    Нода пишет ERROR при каждом переходе в «слепой» режим и INFO при каждом возврате,
+    поэтому решает порядок строк: стартовая гонка (ERROR, затем INFO) — шум, ERROR без
+    возврата после него — настоящая потеря скана или одометрии.
+    """
+    state = None
+    for line in log_text.splitlines():
+        if PROXIMITY_BLIND_RE.search(line):
+            state = False
+        elif PROXIMITY_RECOVERED_RE.search(line):
+            state = True
+    return bool(state)
+
+
+def _classify_error_like_line(
+    line: str,
+    exclude_patterns: Iterable[str],
+    demoted_patterns: Iterable[str] = CRITICAL_DEMOTED_TO_WARNING,
+) -> str | None:
     """Серьёзность строки, похожей по тексту на ошибку: "critical" | "warning" | None.
 
     None — шум: текст не похож на ошибку, либо строка в исключениях, либо это
@@ -958,7 +1008,7 @@ def _classify_error_like_line(line: str, exclude_patterns: Iterable[str]) -> str
     level = _klog_level(line)
     if level == "I" or _matches_any(exclude_patterns, line):
         return None
-    if level == "W" or _matches_any(CRITICAL_DEMOTED_TO_WARNING, line):
+    if level == "W" or _matches_any(demoted_patterns, line):
         return "warning"
     return "critical"
 
@@ -969,9 +1019,12 @@ def extract_relevant_log_line(log_text: str, *, scope: str, severity: str) -> st
 
     lines = [line.strip() for line in log_text.splitlines() if line.strip()]
     critical_patterns = _critical_exclude_patterns(log_text, scope)
+    demoted = list(CRITICAL_DEMOTED_TO_WARNING)
+    if _proximity_guard_recovered(log_text):
+        demoted.append(PROXIMITY_BLIND_DEMOTION)
     if severity == "critical":
         for line in lines:
-            if _classify_error_like_line(line, critical_patterns) == "critical":
+            if _classify_error_like_line(line, critical_patterns, demoted) == "critical":
                 return line
         return None
 
@@ -982,7 +1035,7 @@ def extract_relevant_log_line(log_text: str, *, scope: str, severity: str) -> st
         # строки пропали бы из отчёта совсем, а не стали предупреждением.
         if not (
             WARNING_MATCH_RE.search(line)
-            or _classify_error_like_line(line, critical_patterns) == "warning"
+            or _classify_error_like_line(line, critical_patterns, demoted) == "warning"
         ):
             continue
         if _matches_any(patterns, line):
