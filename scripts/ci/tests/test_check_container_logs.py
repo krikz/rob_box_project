@@ -91,9 +91,9 @@ def test_healthy_cadvisor_info_klog_line_does_not_give_critical_finding():
         assert result["warning"] == 0 and result["findings"] == [], scope
 
 
-def test_cadvisor_blind_on_docker29_is_a_warning_finding_not_critical():
-    # Issue #3664 п.2 пока не починен (cadvisor слеп на containerd snapshotter): строка
-    # остаётся видна как warning, но critical_count == 0, и deploy-issue не заводится.
+def test_cadvisor_blind_on_docker29_is_critical_again_after_3664_fix():
+    # Issue #3664 п.2 вылечен (cadvisor v0.60.6, #4336): понижение снято, рецидив слепоты
+    # (containerd snapshotter не распознан) снова critical и заводит deploy-issue.
     layer = (
         "E1019 20:59:21.591612       1 manager.go:1116] Failed to create existing container: "
         "/system.slice/docker-782c.scope: failed to identify the read-write layer ID for container "
@@ -101,10 +101,8 @@ def test_cadvisor_blind_on_docker29_is_a_warning_finding_not_critical():
         "no such file or directory"
     )
     _, result = run({"cadvisor-sound": layer}, scope="sound")
-    assert result["critical"] == 0
-    assert result["warning"] == 1
-    assert [(f["severity"], f["kind"]) for f in result["findings"]] == [("warning", "warning_log")]
-    assert "=== cadvisor-sound WARNINGS ===" in "\n".join(result["report"])
+    assert result["critical"] == 1
+    assert result["findings"][0]["severity"] == "critical"
 
 
 def test_real_error_next_to_cadvisor_noise_is_still_critical():
