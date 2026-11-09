@@ -13,7 +13,9 @@ set -uo pipefail
 ROLE="${1:?роль: main|vision|sound}"
 BASE="${2:-ubuntu:25.04}"
 PLATFORM="${3:-linux/arm64}"
-HERE="$(cd "$(dirname "$0")" && pwd)"
+# pwd -W — путь вида D:/… в Git Bash на Windows (docker и git там — Windows-программы); на Linux — pwd.
+HERE="$(cd "$(dirname "$0")" && (pwd -W 2>/dev/null || pwd))"
+export MSYS_NO_PATHCONV=1
 REPO="$(git -C "$HERE" rev-parse --show-toplevel)"
 ARCH="${PLATFORM#linux/}"
 OUT="${OUT:-$PWD/clean_os_${ROLE}_${ARCH}}"
