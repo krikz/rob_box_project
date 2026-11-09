@@ -12,7 +12,7 @@
 # nav2_missed.txt, cpu.log, main.json, verdict.txt; строку вердикта — в $SPEED_OUT/ledger.jsonl.
 # Только ключи (BatchMode), пароли не используются.
 set -uo pipefail
-export MSYS_NO_PATHCONV=1
+export MSYS_NO_PATHCONV=1 PYTHONIOENCODING=utf-8
 
 scene="$1"; speed="$2"; rep="$3"
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
