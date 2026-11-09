@@ -4,11 +4,14 @@ import json
 
 import numpy as np
 import pytest
-from PIL import Image
-from rob_box_sim import coverage_anim as ca
 from rob_box_sim.coverage_metric import coverage_result, covered_mask, parse_track_log
 from rob_box_sim.coverage_plan import coverage_space, load_grid_npz, save_grid_npz
 from rob_box_sim.map_check import OccupancyGrid
+
+pytest.importorskip("PIL")  # в офлайн-CI Pillow нет; модуль — инструмент студии/разработчика
+
+from PIL import Image  # noqa: E402
+from rob_box_sim import coverage_anim as ca  # noqa: E402
 
 RES = 0.05
 
