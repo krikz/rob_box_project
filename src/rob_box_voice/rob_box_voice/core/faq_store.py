@@ -7,8 +7,9 @@ import sqlite3
 import struct
 import threading
 from datetime import datetime
-from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Sequence, Tuple
+
+from rob_box_core import migrations as core_migrations
 
 from .voice_memory import _SQLITE_VEC_AVAILABLE, OllamaEmbedder
 
@@ -91,7 +92,7 @@ class FAQStore:
     def __init__(
         self,
         db_path: str,
-        migrations_dir: Optional[str] = None,
+        migrations: Optional[Sequence[core_migrations.Migration]] = None,
         ollama_base_url: Optional[str] = None,
         ollama_model: str = OllamaEmbedder.DEFAULT_MODEL,
         ollama_timeout: float = 5.0,
@@ -108,10 +109,11 @@ class FAQStore:
             self.conn.execute("PRAGMA journal_mode = WAL")
             self.conn.execute("PRAGMA synchronous = NORMAL")
 
-        if migrations_dir:
-            self.migrations_dir = migrations_dir
-        else:
-            self.migrations_dir = self._find_migrations_dir()
+        # Поток миграций ядра (данные пакета ``rob_box_core.migrations``, ADR-0167 Ш1а). Раньше - монтирование
+        # ``/migrations`` в контейнер или ``migrations/`` вверх от файла; файлы те же, поток тот же.
+        self.migrations: Tuple[core_migrations.Migration, ...] = (
+            core_migrations.stream() if migrations is None else tuple(migrations)
+        )
 
         self._run_migrations()
         self._vec_loaded = self._load_vec_extension()
@@ -129,35 +131,8 @@ class FAQStore:
         if stored_dim and self._vec_loaded:
             self._ensure_vec_table(stored_dim)
 
-    @staticmethod
-    def _find_migrations_dir() -> str:
-        """Locate the project ``migrations/`` directory.
-
-        Resolution order:
-        1. ``/migrations`` — runtime mount in Docker.
-        2. Walk up from this source file looking for a ``migrations/`` sibling
-           of ``src/`` — works for both the development source tree and a
-           colcon-installed package (because colcon copies only ``src/``,
-           the relative layout is ``<root>/src/rob_box_voice/...``).
-        3. The legacy 4-level-up path, preserved for backwards compatibility.
-        """
-        _docker_mount = "/migrations"
-        if os.path.isdir(_docker_mount):
-            return _docker_mount
-
-        here = os.path.dirname(os.path.abspath(__file__))
-        for parent in [here, *Path(here).parents]:
-            candidate = os.path.join(parent, "migrations")
-            if os.path.isdir(candidate):
-                return candidate
-
-        # Legacy fallback (4 parents up from src/rob_box_voice/core/).
-        return os.path.normpath(
-            os.path.join(here, "..", "..", "..", "..", "migrations")
-        )
-
     def _run_migrations(self) -> None:
-        """Apply SQL migrations from ``migrations_dir`` in numeric filename order.
+        """Apply the migration stream (``self.migrations``) in numeric filename order.
 
         Each migration file is named ``NNN_*.sql`` and ``NNN`` is its version.
         We track the highest applied version via ``PRAGMA user_version``.
@@ -168,27 +143,7 @@ class FAQStore:
         migration runner itself propagates any other OperationalError so that
         genuine migration failures remain visible.
         """
-        with self.lock:
-            current = self.conn.execute("PRAGMA user_version").fetchone()[0]
-
-        if not os.path.isdir(self.migrations_dir):
-            return
-
-        for filename in sorted(
-            f for f in os.listdir(self.migrations_dir) if f.endswith(".sql")
-        ):
-            try:
-                version = int(filename.split("_", 1)[0])
-            except ValueError:
-                continue
-            if version <= current:
-                continue
-            sql_path = os.path.join(self.migrations_dir, filename)
-            with open(sql_path, "r", encoding="utf-8") as handle:
-                sql = handle.read()
-            with self.lock, self.conn:
-                self.conn.executescript(sql)
-                self.conn.execute(f"PRAGMA user_version = {version}")
+        core_migrations.apply(self.conn, self.migrations, self.lock)
 
     def _load_vec_extension(self) -> bool:
         if not _SQLITE_VEC_AVAILABLE or sqlite_vec is None:

@@ -43,42 +43,14 @@ import sqlite3
 import threading
 import time
 import uuid
-from pathlib import Path
 from typing import Dict, List, Optional
 
+from rob_box_core import migrations as core_migrations
 from rob_box_core.tools_db import waypoint_db_path
 
-
-# Path to 003_waypoints.sql relative to the package root.
-# At runtime inside the Docker container the migrations folder may not exist,
-# so we embed the DDL as a fallback.
-_MIGRATION_DIR = Path(__file__).resolve().parents[4] / "migrations"
-_MIGRATION_FILE = _MIGRATION_DIR / "003_waypoints.sql"
-
-_INLINE_DDL = """\
-CREATE TABLE IF NOT EXISTS maps (
-    id         INTEGER PRIMARY KEY AUTOINCREMENT,
-    map_id     TEXT    NOT NULL UNIQUE,
-    name       TEXT,
-    created_at REAL    NOT NULL,
-    is_active  INTEGER NOT NULL DEFAULT 0
-);
-CREATE INDEX IF NOT EXISTS idx_maps_active ON maps(is_active);
-
-CREATE TABLE IF NOT EXISTS waypoints (
-    id         INTEGER PRIMARY KEY AUTOINCREMENT,
-    map_id     TEXT    NOT NULL,
-    name       TEXT    NOT NULL,
-    x          REAL    NOT NULL,
-    y          REAL    NOT NULL,
-    theta      REAL    NOT NULL DEFAULT 0.0,
-    created_at REAL    NOT NULL,
-    updated_at REAL    NOT NULL,
-    UNIQUE(map_id, name),
-    FOREIGN KEY (map_id) REFERENCES maps(map_id) ON DELETE CASCADE
-);
-CREATE INDEX IF NOT EXISTS idx_wp_map ON waypoints(map_id);
-"""
+#: Схема карт и точек - шаг потока миграций ядра (данные пакета ``rob_box_core.migrations``, ADR-0167 Ш1а).
+#: Раньше файл искался в корне чекаута (``parents[4]``), а на роботе его там не было - шла копия DDL в коде.
+_MIGRATION_NAME = "003_waypoints.sql"
 
 
 def map_name_key(name: Optional[str]) -> str:
@@ -113,9 +85,7 @@ class WaypointStore:
 
     def _apply_migration(self) -> None:
         """Run 003_waypoints DDL (idempotent thanks to IF NOT EXISTS)."""
-        ddl = _INLINE_DDL
-        if _MIGRATION_FILE.exists():
-            ddl = _MIGRATION_FILE.read_text(encoding="utf-8")
+        ddl = core_migrations.script(_MIGRATION_NAME)
 
         with self._lock:
             cur = self._conn.cursor()
