@@ -1,0 +1,8 @@
+# Профиль продукта РОББОКС (ADR-0167 §2.4, шаг Ш1б): что делает ядро диалога этим роботом.
+# Формат и загрузчик - в ядре (rob_box_dialog.profile, format 1); профиль - у робота, ядро его только читает.
+# В контейнере voice-assistant каталог монтируется в /config (./config:/config:ro), хост: dialog_node profile_path.
+# Ключей провайдеров здесь нет и не будет - они в окружении.
+format: 1
+name: РОББОКС
+# Таблица вейков рядом с профилем: personality (ReSpeaker) и operator (шлем), формат ядра.
+wake_words: wake_words.yaml
