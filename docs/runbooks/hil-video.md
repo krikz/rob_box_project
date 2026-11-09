@@ -129,6 +129,12 @@ ssh ros2@10.1.1.250 'grep -E "PLAN|UNREACHABLE|GOAL_END|EM_ON|COVERAGE_" /home/r
 - Пересчёт покрытия по логу без ROS: `python3 -m rob_box_sim.coverage_metric out/coverage/plan_map.npz
   out/coverage.log --out cov.png` (зелёное — покрыто, красное — пропущено, оранжевое — свободно, но корпусу
   недоступно: запас padding, узкие места, пол за проходом уже габарита).
+- **Гифка прогона** (для Telegram, ≤ 2 МБ): `python3 -m rob_box_sim.coverage_anim out/coverage/plan_map.npz
+  out/coverage.log run.gif --plan out/coverage/plan.json` (`--frames 60`, `--max-mb 2`, `--scale 1`; `.mp4` вместо
+  `.gif` — через ffmpeg, если он есть). Зелёное — пол под корпусом по правде Gazebo, красное — ещё не покрыто,
+  красные кружки — стопы защиты (`EM_ON`), синие точки — позы плана; в подписи покрыто м² / покрываемое — из
+  `coverage_metric` (на последнем кадре совпадает с `covered_m2` в `COVERAGE_DONE`). Не влезает в лимит — кадры
+  прореживаются, потом картинка сжимается.
 - Ручки: `--spacing` (0.55 м), `--axis auto|x|y`, `--waypoint-step` (промежуточные позы на полосе, 0 — нет),
   `--timeout` на позу (120 с стены). Ось при `auto`: из планов, что накрывают не меньше 98 % лучшего, код берёт
   самый быстрый по оценке: путь / 0.3 м/с + 5 с на позу (5 с — догадка, уточнить по прогону).
