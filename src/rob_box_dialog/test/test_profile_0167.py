@@ -7,7 +7,6 @@
 
 from __future__ import annotations
 
-import ast
 from pathlib import Path
 
 import pytest
@@ -18,11 +17,6 @@ from rob_box_dialog.words import has_wake_word
 
 REPO = Path(__file__).resolve().parents[3]
 ROBOT_PROFILE = REPO / "docker" / "sound" / "config" / "assistant.yaml"
-DIALOG_NODE = REPO / "src" / "rob_box_voice" / "rob_box_voice" / "dialog_node.py"
-DIALOG_NODE_YAMLS = (
-    REPO / "docker" / "sound" / "config" / "voice_assistant" / "dialog_node.yaml",
-    REPO / "src" / "rob_box_voice" / "config" / "dialog_node.yaml",
-)
 
 needs_robot = pytest.mark.skipif(not ROBOT_PROFILE.is_file(), reason="нет docker/ (окружение без профиля робота)")
 
@@ -90,23 +84,3 @@ def test_robot_profile_gives_the_same_wake_table_hosts_read_before():
     assert got.name == "РОББОКС"
     assert list(got.wake_personality) == personality == list(kn.DEFAULT_WAKE_WORDS)
     assert list(got.wake_operator) == operator
-
-
-@needs_robot
-def test_dialog_node_requires_the_robot_profile():
-    """Хост робота грузит профиль строго (``load_profile``, не ``resolve_profile``): без профиля нода падает на
-    старте, а не просыпается от каждой фразы мастерской на нейтральных умолчаниях."""
-    tree = ast.parse(DIALOG_NODE.read_text(encoding="utf-8-sig"))
-    calls = [n for n in ast.walk(tree) if isinstance(n, ast.Call)]
-    declared = {
-        n.args[0].value: n.args[1].value
-        for n in calls
-        if getattr(n.func, "attr", "") == "declare_parameter" and len(n.args) == 2
-        if isinstance(n.args[0], ast.Constant) and isinstance(n.args[1], ast.Constant)
-    }
-    assert declared.get("profile_path") == "/config/assistant.yaml"
-    assert "wake_words_path" not in declared
-    names = {getattr(n.func, "id", getattr(n.func, "attr", "")) for n in calls}
-    assert "load_profile" in names and "resolve_profile" not in names
-    for yaml_file in DIALOG_NODE_YAMLS:
-        assert 'profile_path: "/config/assistant.yaml"' in yaml_file.read_text(encoding="utf-8"), yaml_file

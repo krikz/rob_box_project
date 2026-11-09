@@ -64,10 +64,7 @@ WAKE_PARAM: Dict[str, object] = {
 }
 
 #: ``файл относительно корня репо`` → число мест без таблицы (почему ещё здесь).
-KNOWN_IMPLICIT = {
-    # Сессия ТАРС (оператор): супервизор профиля продукта пока не читает - Ш1б-2б.
-    "src/rob_box_supervisor/rob_box_supervisor/operator_turns.py": 1,
-}
+KNOWN_IMPLICIT: Dict[str, int] = {}
 
 
 def _calls(path: Path) -> Iterator[Tuple[int, str]]:
