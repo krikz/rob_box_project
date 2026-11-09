@@ -42,7 +42,6 @@ import logging
 import threading
 import time
 import uuid
-from pathlib import Path
 from types import MappingProxyType
 from typing import Any, Awaitable, Callable, Dict, List, Mapping, Optional, Sequence
 
@@ -68,7 +67,7 @@ from rob_box_dialog.execute import transport_timeouts
 from rob_box_dialog.interrupt import TurnsInFlight, on_interrupt
 from rob_box_dialog.memory import profiled_person
 from rob_box_dialog.pickup_parties import rights_speaker
-from rob_box_dialog.prompts import personality_prompt
+from rob_box_dialog.prompts import personality_prompt, telegram_prompt
 from rob_box_dialog.voice_warmth import WarmVoices
 from rob_box_dialog.respond import ActionResult
 from rob_box_dialog.scenes import HOLD, RESET, RESUME, SceneDirector, apply_control
@@ -83,7 +82,6 @@ from rob_box_dialog_msgs.msg import InterruptRequest, ProviderStateArray, Sessio
 from rob_box_dialog_msgs.msg import SpeechEvent
 from rob_box_dialog_msgs.msg import Utterance as UtteranceMsg
 from rob_box_dialog_msgs.srv import DialogControl
-from rob_box_harness.core.assembly import AgentSpec, load_system_prompt
 from rob_box_llm.provider import LLMSettings
 from rob_box_voice.observability import is_metrics_enabled, start_metrics_server
 from rob_box_mcp_tools.voice_request import REQUEST_TOPIC as VOICE_REQUEST_TOPIC
@@ -124,9 +122,9 @@ def declare_params(node: Any) -> None:
     # Номинальный провайдер TTS, пока tts_node не сказал фактический (паузы MiniMax выступления, #3901).
     node.declare_parameter("tts_provider", "minimax")
     node.declare_parameter("e2e_db_path", "")
-    # Телеграм-агент (§9.2, PR-12a): своя цепочка и персона; значения — бывшие мёртвые llm_* telegram_bot.yaml (V27).
+    # Телеграм-агент (§9.2, PR-12a): своя цепочка; значения — бывшие мёртвые llm_* telegram_bot.yaml (V27). Промпт -
+    # основа ядра с именем продукта из профиля (ADR-0167 Ш1б-4), своего файла промпта у телеграма нет.
     node.declare_parameter("telegram_llm_providers", "deepseek,minimax")
-    node.declare_parameter("telegram_system_prompt_file", "telegram_chat_prompt.txt")
     node.declare_parameter("telegram_temperature", 0.7)
     node.declare_parameter("telegram_max_tokens", 0)
     # Стартовая фраза (#1003, перенос v1 #3912): через N с после старта; 0 — выкл; пустой текст — случайная фраза.
@@ -156,12 +154,6 @@ def _settings(node: Node, prefix: str = "") -> Optional[LLMSettings]:
     return LLMSettings(temperature=temperature or None, max_tokens=max_tokens or None)
 
 
-def _prompt_dir() -> Path:
-    from ament_index_python.packages import get_package_share_directory  # noqa: PLC0415
-
-    return Path(get_package_share_directory("rob_box_voice")) / "prompts"
-
-
 def start_metrics(node: Any) -> bool:
     """Prometheus-экспортер ноды на порту ``metrics_port`` (#4328, 9100; 0 - выключен), как у tts/stt/audio."""
     port = int(node.get_parameter("metrics_port").value or 0)
@@ -176,12 +168,11 @@ def start_metrics(node: Any) -> bool:
 
 
 def agent_prompt(node: Any, agent: str) -> str:
-    """Основа системного промпта агента: у Личности - основа ядра с персоной профиля робота (``node.product_profile``,
-    ADR-0167 Ш1б-3), у телеграма - свой файл ``telegram_system_prompt_file`` в share ``rob_box_voice``."""
+    """Основа системного промпта агента - из данных ядра и профиля робота (``node.product_profile``, ADR-0167): у
+    Личности - основа с персоной (Ш1б-3), у телеграма - основа чата с именем продукта (Ш1б-4)."""
     if agent == kn.AGENTS[0]:
         return personality_prompt(node.product_profile.persona)
-    file = str(node.get_parameter(f"{_prefix(agent)}system_prompt_file").value)
-    return load_system_prompt(AgentSpec(name=agent, prompt_dir=_prompt_dir(), system_prompt_file=file))
+    return telegram_prompt(node.product_profile.name)
 
 
 def build_llm(node: Any, counter: CallCounter, agent: str = kn.AGENTS[0]) -> tuple:

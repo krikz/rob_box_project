@@ -330,7 +330,7 @@ AgentCore = движок DialogCore
 
 | | личность | ТАРС |
 |---|---|---|
-| промпт | основа ядра `rob_box_dialog/prompts/personality.txt` + персона профиля `docker/sound/config/persona.txt` (ADR-0167 Ш1б-3) | `rob_box_supervisor/prompts/operator_system_prompt.txt` |
+| промпт | основа ядра `rob_box_dialog/prompts/personality.txt` + персона профиля `docker/sound/config/persona.txt` (ADR-0167 Ш1б-3) | основа ядра `rob_box_dialog/prompts/operator.txt` + персона оператора `docker/sound/config/operator_persona.txt` (ADR-0167 Ш1б-4) |
 | срез каталога | `core` + `personality.*` | всё то же + `operator.*` (§6) |
 | память | namespace `personality` | namespace `operator` — журнал (§5.4) |
 | история | своя | своя, личности не видна |

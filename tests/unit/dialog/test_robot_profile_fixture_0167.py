@@ -31,9 +31,16 @@ def test_fixture_wake_table_is_the_robot_wake_table():
 
 def test_fixture_profile_is_the_robot_profile():
     robot, fixture = load_profile(ROBOT), load_profile(FIXTURE)
-    assert (fixture.name, fixture.wake_personality, fixture.wake_operator, fixture.persona) == (
+    assert (
+        fixture.name,
+        fixture.wake_personality,
+        fixture.wake_operator,
+        fixture.persona,
+        fixture.operator_persona,
+    ) == (
         robot.name,
         robot.wake_personality,
         robot.wake_operator,
         robot.persona,
+        robot.operator_persona,
     )

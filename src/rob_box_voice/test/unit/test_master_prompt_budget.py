@@ -3,7 +3,7 @@
 Знание о тулах живёт в их схемах (видны только тулы среза хода), данные — в снимке хода, правила модели — в таблице
 ``knowledge.PROMPT_RULES`` (в основе промпта их нет). Системный промпт агента — основа + правила — обязан влезать в
 бюджет системного блока ``knowledge.CONTEXT_BUDGET_TOKENS["system"]``. Основа Личности — данные ядра с персоной
-профиля робота (ADR-0167 Ш1б-3), основа телеграма — свой файл.
+профиля робота (ADR-0167 Ш1б-3), основа телеграма — данные ядра с именем продукта из профиля (Ш1б-4).
 """
 
 from pathlib import Path
@@ -14,7 +14,7 @@ from rob_box_core.token_estimate import estimate_tokens
 from rob_box_dialog import knowledge as kn
 from rob_box_dialog.context import SNAPSHOT_TAG
 from rob_box_dialog.profile import load_profile
-from rob_box_dialog.prompts import personality_prompt
+from rob_box_dialog.prompts import personality_prompt, telegram_prompt
 from rob_box_voice.core.dialog_v2_ports import system_prompt
 
 PACKAGE = Path(__file__).resolve().parents[2]
@@ -23,9 +23,10 @@ AGENTS = ("personality", "telegram")
 
 
 def _base(agent: str) -> str:
+    profile = load_profile(PROFILE)
     if agent == "personality":
-        return personality_prompt(load_profile(PROFILE).persona)
-    return (PACKAGE / "prompts" / "telegram_chat_prompt.txt").read_text(encoding="utf-8")
+        return personality_prompt(profile.persona)
+    return telegram_prompt(profile.name)
 
 
 def _system(agent: str) -> str:

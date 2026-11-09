@@ -167,7 +167,8 @@ _Avoid_: «харнес» в значении всего ядра (`rob_box_harn
 
 **Профиль продукта** — всё, что делает ядро диалога конкретным продуктом (роботом, колонкой, чужим ассистентом):
 имя и характер, вейк-слова, провайдеры и голос, набор владельцев; лежит в репо продукта, ядро его только читает (ADR-0167 §2.4).
-Файл `assistant.yaml` (формат 2: `name`, `wake_words`, `persona`; формат 1 — ошибка с подсказкой), загрузчик
+Файл `assistant.yaml` (формат 3: `name`, `wake_words`, `persona`, `operator_persona`; форматы 1 и 2 — ошибка с
+подсказкой), загрузчик
 `rob_box_dialog.profile`; профиль робота — `docker/sound/config/assistant.yaml` (в контейнере `/config/assistant.yaml`).
 Задан, но битый — `ProfileError`.
 Хосты робота (`dialog_node`, `stt_node`, ТАРС) берут его через `rob_box_voice.robot_profile` (env `ROB_BOX_PROFILE`).
@@ -178,9 +179,19 @@ _Avoid_: «харнес» в значении всего ядра (`rob_box_harn
 (`rob_box_dialog.prompts.personality_prompt`, ADR-0167 Ш1б-3).
 _Avoid_: «мастер-промпт» как файл робота — `master_prompt_compact.txt` удалён в Ш1б-3 (см. «Историческое»).
 
-**Основа промпта** — системный промпт Личности без имени продукта (правила хода, текст речи, формат команды):
-данные ядра `rob_box_dialog/prompts/personality.txt`. Без профиля ядро берёт нейтральную персону
-`neutral_persona.txt` (без имени). Правила модели из `knowledge.PROMPT_RULES` дописывает мост (`dialog_v2_ports.system_prompt`).
+**Персона оператора** — кто агент-оператор продукта и откуда им управляют (у робота — ТАРС, Quest и Telegram): файл
+рядом с профилем (`operator_persona` в `assistant.yaml`, у робота `docker/sound/config/operator_persona.txt`), тот же
+формат, что у персоны продукта. Код ставит её блоки на места `{identity}` / `{character}` основы правил оператора
+(`rob_box_dialog.prompts.operator_rules`, ADR-0167 Ш1б-4); раздел инструментов дописывает хост ТАРС
+(`rob_box_supervisor.operator_prompt`). Без профиля — `neutral_operator_persona.txt` ядра (без имён).
+_Avoid_: `operator_system_prompt.txt` — файл ТАРС удалён в Ш1б-4.
+
+**Основа промпта** — системный промпт агента ядра без имени продукта (правила хода, текст речи, формат команды):
+данные ядра `rob_box_dialog/prompts/` — `personality.txt` (Личность), `telegram.txt` (чат Telegram, место `{name}` —
+`name` профиля, `telegram_prompt`), `operator.txt` (агент-оператор, места персоны оператора). Без профиля ядро берёт
+нейтральные персоны (`neutral_persona.txt`, `neutral_operator_persona.txt`); чату Telegram без имени продукта —
+ошибка. Правила модели из `knowledge.PROMPT_RULES` дописывает мост (`dialog_v2_ports.system_prompt`).
+_Avoid_: `telegram_chat_prompt.txt` — файл чата удалён в Ш1б-4.
 
 **Нейтральные умолчания ядра** — что ядро делает без профиля (`profile.NEUTRAL`): без имени, без вейков, нейтральная
 персона, то есть режим «вейк выключен, адресовано всё»; код пишет строку лога об этом. Хосты робота без профиля не стартуют.
