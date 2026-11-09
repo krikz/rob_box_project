@@ -45,6 +45,7 @@ ROBOT_WAKE = load_profile(ROOT / "docker" / "sound" / "config" / "assistant.yaml
 def strip_wake_word(text: str) -> str:
     return _strip(text, ROBOT_WAKE)
 
+
 #: Шаги акта 2b, на которые отвечает код (вопрос узнавания), - остальные идут модели: память (n703, n707),
 #: самопредставление (n701, n705, n709), выбор из имён «кто говорит, я или Борис?» (n708 - кодом не покрыт).
 BY_CODE = ("n702_sasha_recognized_no_question", "n706_boris_recognized_no_question",
