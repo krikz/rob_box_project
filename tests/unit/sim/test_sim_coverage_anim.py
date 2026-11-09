@@ -2,13 +2,19 @@
 
 import json
 
+import os
+
 import numpy as np
 import pytest
 from rob_box_sim.coverage_metric import coverage_result, covered_mask, parse_track_log
 from rob_box_sim.coverage_plan import coverage_space, load_grid_npz, save_grid_npz
 from rob_box_sim.map_check import OccupancyGrid
 
-pytest.importorskip("PIL")  # в офлайн-CI Pillow нет; модуль — инструмент студии/разработчика
+# Локально без Pillow — skip с причиной; в CI (CI=true) Pillow обязателен: иначе красный, а не молчаливый skip.
+if os.environ.get("CI"):
+    import PIL  # noqa: F401
+else:
+    pytest.importorskip("PIL", reason="Pillow не установлен (pip install pillow)")
 
 from PIL import Image  # noqa: E402
 from rob_box_sim import coverage_anim as ca  # noqa: E402
