@@ -2,33 +2,32 @@
 
 Промпт велел звать ``say`` и ``set_voice_preset``, которых в реестре не было, и молчал про ``show_metrics`` /
 ``get_perception_context``. С PR-13b (#3708) список инструментов в промпте строит код
-(:mod:`rob_box_supervisor.operator_prompt`) из реестра оператора ``operator_visible_tools()``; файл промпта держит
-только правила и ни одного имени тула — второй копии знания нет.
+(:mod:`rob_box_supervisor.operator_prompt`) из реестра оператора ``operator_visible_tools()``; правила (основа ядра
+с персоной оператора профиля робота, ADR-0167 Ш1б-4) держат ни одного имени тула — второй копии знания нет.
 """
 
 from __future__ import annotations
 
+import os
 import re
 from pathlib import Path
 
 import pytest
 
 from rob_box_core.tool_catalog import operator_visible_tools, tool_names
-from rob_box_supervisor.metrics_source import (
-    METRIC_DICTIONARY,
-    QUERY_ALIASES,
-    metric_dictionary_text,
-)
+from rob_box_dialog.profile import load_profile
+from rob_box_dialog.prompts import operator_rules
+from rob_box_supervisor.metrics_source import METRIC_DICTIONARY, QUERY_ALIASES, metric_dictionary_text
 from rob_box_supervisor.operator_prompt import CONFIRM_RULE, TOOLS_HEADER, operator_prompt
 
-_PROMPT = (
-    Path(__file__).resolve().parents[2] / "prompts" / "operator_system_prompt.txt"
+_PROFILE = (
+    Path(os.environ.get("ROB_BOX_REPO_ROOT") or Path(__file__).resolve().parents[4]) / "docker" / "sound" / "config"
 )
 _WORD_RE = re.compile(r"[a-z][a-z0-9_]*")
 
 
 def _rules() -> str:
-    return _PROMPT.read_text(encoding="utf-8")
+    return operator_rules(load_profile(_PROFILE).operator_persona)
 
 
 def _registry() -> set[str]:

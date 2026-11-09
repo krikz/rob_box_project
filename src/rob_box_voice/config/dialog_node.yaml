@@ -15,8 +15,8 @@ dialog_node:
     max_tokens: 0
     # Телеграм-агент (ADR-0150 §9.2, PR-12a #3706): своя цепочка и персона чата; бывшие мёртвые llm_* из
     # telegram_bot.yaml (V27): llm_provider=deepseek, llm_temperature=0.7. История — окно ходов knowledge.
+    # Промпт чата - основа ядра с name профиля (ADR-0167 Ш1б-4), файла промпта нет.
     telegram_llm_providers: "deepseek,minimax"
-    telegram_system_prompt_file: "telegram_chat_prompt.txt"
     telegram_temperature: 0.7
     telegram_max_tokens: 0
     # «Робот помнит собеседника» (#3919): профиль (счётчик диалогов) - harness_voice.db, как вёл v1; факты - voice_facts

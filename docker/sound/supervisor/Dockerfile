@@ -68,13 +68,8 @@ COPY src/rob_box_supervisor/resource   /ws/src/rob_box_supervisor/resource
 # ============================================================
 COPY src/rob_box_supervisor/rob_box_supervisor /ws/src/rob_box_supervisor/rob_box_supervisor
 
-# ============================================================
-# Шаг 3а: промпты оператора (issue #1988) — setup.py включает их в
-# data_files (share/.../prompts{,/skills}). Без этой копии colcon build
-# падает: "can't copy 'prompts/operator_system_prompt.txt': doesn't exist".
-# Как в perception/voice_assistant Dockerfile (промпты копируются в образ).
-# ============================================================
-COPY src/rob_box_supervisor/prompts /ws/src/rob_box_supervisor/prompts
+# Шаг 3а (промпты оператора) снят: промпта ТАРС в пакете нет - основа в ядре (rob_box_dialog), персона в профиле
+# робота /config/operator_persona.txt (ADR-0167 Ш1б-4).
 
 # ============================================================
 # Шаг 4: scripts (start_supervisor.sh)

@@ -1,10 +1,13 @@
 # Профиль продукта РОББОКС (ADR-0167 §2.4, шаг Ш1б): что делает ядро диалога этим роботом.
-# Формат и загрузчик - в ядре (rob_box_dialog.profile, format 2); профиль - у робота, ядро его только читает.
+# Формат и загрузчик - в ядре (rob_box_dialog.profile, format 3); профиль - у робота, ядро его только читает.
 # В контейнере voice-assistant каталог монтируется в /config (./config:/config:ro), хост: dialog_node profile_path.
 # Ключей провайдеров здесь нет и не будет - они в окружении.
-format: 2
+format: 3
 name: РОББОКС
 # Таблица вейков рядом с профилем: personality (ReSpeaker) и operator (шлем), формат ядра.
 wake_words: wake_words.yaml
 # Персона Личности (Ш1б-3): кто он и какой характер - в основу промпта ядра (rob_box_dialog.prompts) на свои места.
 persona: persona.txt
+# Персона агента-оператора ТАРС (Ш1б-4): кто он и откуда им управляют, заключительный абзац - в основу правил
+# оператора ядра (rob_box_dialog/prompts/operator.txt). Чат Telegram берёт имя продукта из name.
+operator_persona: operator_persona.txt

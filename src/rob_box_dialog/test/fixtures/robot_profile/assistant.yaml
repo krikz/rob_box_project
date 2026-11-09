@@ -2,7 +2,10 @@
 # docker/sound/config/assistant.yaml, его таблицы вейков и персоны. Ядро вейков и имени робота не знает (нейтральные
 # умолчания); тесты правил над речью робота грузят этот профиль фикстурой (test/conftest.py, test/robot_wake_fixture.py).
 # Копию сверяет с настоящим профилем робота tests/unit/dialog/test_robot_profile_fixture_0167.py.
-format: 2
+format: 3
 name: РОББОКС
 wake_words: wake_words.yaml
 persona: persona.txt
+# Персона агента-оператора ТАРС (Ш1б-4): кто он и откуда им управляют, заключительный абзац - в основу правил
+# оператора ядра (rob_box_dialog/prompts/operator.txt). Чат Telegram берёт имя продукта из name.
+operator_persona: operator_persona.txt
