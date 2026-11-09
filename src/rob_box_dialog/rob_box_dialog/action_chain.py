@@ -62,11 +62,14 @@ class Chain:
 @dataclass(frozen=True)
 class StepOutcome:
     """Исход шага для итога: статус исполнителя или ``CHAIN_STEP_SKIPPED`` (шаг не начинался); ``note`` - фраза
-    владельца о причине провала (``respond``), её итог говорит после «не сделал»."""
+    владельца о причине провала (``respond``), её итог говорит после «не сделал». ``cut`` - шаг шёл, когда стоп погасил
+    вереницу (ADR-0165 §6): его статус - исход владельца (``step_status``), а причины нет - исполнитель подменил исход
+    на ``cancelled{stale_epoch}``, и фраза владельца о нём («Остановился.») - о подмене, а не о шаге."""
 
     step: Step
     status: str
     note: str = ""
+    cut: bool = False
 
 
 def _trips(steps: Sequence[Step]) -> int:
@@ -226,8 +229,11 @@ def _head(outcomes: Sequence[StepOutcome], stopped: bool, timed_out: bool) -> Op
     return kn.CHAIN_DONE_PHRASE if all(o.status in (_DONE, _PENDING) for o in outcomes) else None
 
 
-def _skipped_phrase(outcomes: Sequence[StepOutcome]) -> str:
-    """Остаток после несостоявшейся поездки - «Дальше не еду», иначе (стоп, срок) - «Не стал»."""
+def _skipped_phrase(outcomes: Sequence[StepOutcome], stopped: bool) -> str:
+    """Остаток после несостоявшейся поездки - «Дальше не еду», иначе (стоп, срок) - «Не стал». Стоп погасил и поездку,
+    и остаток - «Не стал»: остаток отменил человек, а не провал поездки (ADR-0165 §12 HIL п. 3)."""
+    if stopped:
+        return kn.CHAIN_SKIPPED_PHRASE
     motion_failed = any(
         o.status not in (_DONE, _PENDING, kn.CHAIN_STEP_SKIPPED) and kn.CHAIN_CLASSES[o.step.cls].stops_rest
         for o in outcomes
@@ -249,7 +255,7 @@ def _reason(outcome: StepOutcome) -> str:
 
 def summary(outcomes: Sequence[StepOutcome], stopped: bool = False, timed_out: bool = False) -> str:
     """Итог вереницы кодом по исходам шагов (ADR-0165 §7, ADR-0148): начало по исходу, сделанные шаги, не сделанные и
-    причины их владельцев, не начатые. Одна реплика."""
+    причины их владельцев (кроме шага, что шёл при стопе: ``StepOutcome.cut``), не начатые. Одна реплика."""
     head = _head(outcomes, stopped, timed_out)
     done = [o.step for o in outcomes if o.status == _DONE]
     skipped = [o.step for o in outcomes if o.status == kn.CHAIN_STEP_SKIPPED]
@@ -257,9 +263,10 @@ def summary(outcomes: Sequence[StepOutcome], stopped: bool = False, timed_out: b
     parts = [phrases.text(head)] if head else []
     parts += _grouped(done, "did")
     parts += _grouped([o.step for o in missed], "missed")
-    parts += list(dict.fromkeys(_reason(o) for o in missed if o.note))
+    parts += list(dict.fromkeys(_reason(o) for o in missed if o.note and not o.cut))
     if skipped:
-        parts.append(phrases.text(_skipped_phrase(outcomes), items=", ".join(dict.fromkeys(map(_item, skipped)))))
+        items = ", ".join(dict.fromkeys(map(_item, skipped)))
+        parts.append(phrases.text(_skipped_phrase(outcomes, stopped), items=items))
     return " ".join(parts)
 
 
