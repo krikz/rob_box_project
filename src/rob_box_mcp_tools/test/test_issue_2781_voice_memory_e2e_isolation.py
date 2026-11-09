@@ -62,7 +62,7 @@ def _load_real_voice_memory_class():
     """
     src = (
         Path(__file__).resolve().parents[3]
-        / "src" / "rob_box_voice" / "rob_box_voice" / "core" / "voice_memory.py"
+        / "src" / "rob_box_dialog_host" / "rob_box_dialog_host" / "voice_memory.py"  # ADR-0167 Ш1г-1
     )
     spec = importlib.util.spec_from_file_location("_real_voice_memory_2781", src)
     mod = importlib.util.module_from_spec(spec)
