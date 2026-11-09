@@ -283,5 +283,35 @@ def test_run_summary_is_built_from_outcomes():
     ]
     line = run_summary(outcomes, cov, 123.45, "5_failures_in_row")
     assert line.startswith("COVERAGE_DONE poses=5 succeeded=2 skipped=2 (ABORTED=1, TIMEOUT=1) not_sent=1 ")
-    assert "stop=5_failures_in_row" in line
+    assert "stop=5_failures_in_row interrupted=no" in line
     assert "em_episodes=3" in line and "sim_s=123.5" in line and "coverage=100.0%" in line
+    # от всего свободного пола — меньше: у стен корпус не дотягивается
+    assert f"coverage_free={cov.free_pct:.1f}%" in line and cov.free_pct < 100.0
+
+
+def test_coverage_has_two_bases_coverable_and_free():
+    # комната 6×4 и закуток за проходом 0.5 м: он свободен, но корпусу недоступен
+    wall = [box("wall_s", 4.0, 0.9, 0.2, 1.8), box("wall_n", 4.0, 3.15, 0.2, 1.7)]
+    grid = grid_from_boxes(0, 0, 6, 4, wall)
+    space = coverage_space(grid, (1.0, 1.0))
+    res = coverage_result(space, space.coverable.copy())
+    assert res.pct == 100.0
+    assert res.free_m2 > res.coverable_m2
+    assert res.free_pct == pytest.approx(100.0 * res.coverable_m2 / res.free_m2, abs=0.01)
+    assert coverage_result(space, np.zeros_like(space.free)).free_pct == 0.0
+
+
+def test_run_summary_marks_interrupted_and_counts_route_statuses():
+    grid = grid_from_boxes(0, 0, 4, 4, [])
+    space = coverage_space(grid, (1.0, 1.0))
+    cov = coverage_result(space, np.zeros_like(space.free))
+    outcomes = [
+        GoalOutcome.from_route("a", "STATUS_SUCCEEDED"),
+        GoalOutcome.from_route("b", "STATUS_ABORTED", 2),
+        GoalOutcome.from_route("c", "INTERRUPTED"),
+        GoalOutcome("d", "NOT_SENT"),
+    ]
+    line = run_summary(outcomes, cov, 1.0, "interrupted_SIGINT")
+    assert "succeeded=1 skipped=2 (ABORTED=1, INTERRUPTED=1) not_sent=1" in line
+    assert "stop=interrupted_SIGINT interrupted=yes" in line
+    assert "STATUS_" not in line

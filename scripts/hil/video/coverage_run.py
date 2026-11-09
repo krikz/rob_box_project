@@ -10,16 +10,21 @@ tests/unit/sim/test_sim_coverage.py); здесь только ROS и поряд�
 обход останавливается (робот застрял — дальше только таймауты). Итоговую строку COVERAGE_DONE строит
 coverage_metric.run_summary по исходам целей и треку истинной позы.
 
+SIGINT/SIGTERM: текущая цель отменяется (INTERRUPTED), остаток — NOT_SENT, во вход Nav2 /cmd_vel — нулевая
+скорость, COVERAGE_DONE пишется по пройденному со stop=interrupted_SIGINT. Второй сигнал — выход сразу.
+
   python3 -u coverage_run.py --out /sim_video/coverage [--plan-only] [--spacing 0.55] [--axis auto]
 """
 import argparse
 import json
 import math
+import signal
 import sys
 import time
 from pathlib import Path
 
 import rclpy
+from geometry_msgs.msg import Twist
 from rob_box_sim.coverage_metric import (
     GoalOutcome,
     coverage_result,
@@ -75,8 +80,10 @@ def _write_plan(out, grid, space, plan):
     (out / "plan.json").write_text(json.dumps(plan_to_json(plan), ensure_ascii=False, indent=1), encoding="utf-8")
     cov = covered_mask(space, plan_track(plan.poses))
     img = write_image(out / "plan.png", coverage_rgb(space, cov, _known(grid)))
+    res = coverage_result(space, cov)
     print(
-        f"{ts()} {plan_summary(plan, space)} plan_coverage={coverage_result(space, cov).pct}% image={img}", flush=True
+        f"{ts()} {plan_summary(plan, space)} plan_coverage={res.pct}% plan_coverage_free={res.free_pct}% image={img}",
+        flush=True,
     )
     for c in plan.unreachable:
         print(
@@ -92,23 +99,82 @@ def _known(grid):
     return np.asarray(grid.data).reshape(grid.height, grid.width) >= 0
 
 
-def drive(n, cl, poses, timeout, max_fail):
-    """Позы по одной; вернуть (исходы, причина остановки). Решение «стоп» — по счёту неудач подряд."""
+class StopSignal:
+    """SIGINT/SIGTERM → флаг: текущую цель отменить, итог дописать по пройденному. Второй сигнал — выход сразу."""
+
+    def __init__(self):
+        self.name = ""
+
+    def __call__(self, signum, frame=None):
+        if self.name:
+            raise KeyboardInterrupt
+        self.name = signal.Signals(signum).name
+        print(f"{ts()} STOP_SIGNAL {self.name}: отменяю цель, итог по пройденному", flush=True)
+
+    def install(self):
+        for s in (signal.SIGINT, signal.SIGTERM):
+            signal.signal(s, self)
+        return self
+
+
+def _stop_reason(stop, fails, max_fail):
+    if stop.name:
+        return f"interrupted_{stop.name}"
+    return f"{max_fail}_failures_in_row" if fails >= max_fail else ""
+
+
+def drive(n, cl, poses, timeout, max_fail, stop=None):
+    """Позы по одной; вернуть (исходы, причина остановки). «Стоп» — по счёту неудач подряд или по сигналу."""
+    stop = stop or StopSignal()
     outcomes, fails = [], 0
     for k, p in enumerate(poses):
-        if fails >= max_fail:
+        why = _stop_reason(stop, fails, max_fail)
+        if why:
             outcomes += [GoalOutcome(f"p{j:04d}", "NOT_SENT") for j in range(k, len(poses))]
-            return outcomes, f"{max_fail}_failures_in_row"
+            return outcomes, why
         name = f"p{k:04d}_c{p.cell}l{p.lane}{p.kind[0]}"
-        result, em = run_goal(n, cl, name, round(p.x, 3), round(p.y, 3), round(math.degrees(p.yaw), 1), timeout)
-        outcomes.append(GoalOutcome(name, result, em))
-        fails = 0 if result == "SUCCEEDED" else fails + 1
-    return outcomes, ""
+        xy_yaw = (round(p.x, 3), round(p.y, 3), round(math.degrees(p.yaw), 1))
+        result, em = run_goal(n, cl, name, *xy_yaw, timeout, stop=lambda: bool(stop.name))
+        outcomes.append(GoalOutcome.from_route(name, result, em))
+        fails = 0 if outcomes[-1].succeeded else fails + 1
+    return outcomes, f"interrupted_{stop.name}" if stop.name else ""
+
+
+def halt(n, topic="/cmd_vel", times=5):
+    """Нулевая скорость во вход Nav2 у twist_mux: после отмены цели робот не доедет по старой команде."""
+    pub = n.create_publisher(Twist, topic, 10)
+    for _ in range(times):
+        pub.publish(Twist())
+        rclpy.spin_once(n, timeout_sec=0.1)
+    print(f"{ts()} HALT {topic} x{times}", flush=True)
+
+
+def finish(out, n, grid, space, outcomes, stop, sim0):
+    """Итог обхода по уже пройденному: картинка, трек, строка COVERAGE_DONE. Вернуть строку."""
+    cov_mask = covered_mask(space, n.track)
+    cov = coverage_result(space, cov_mask)
+    out.mkdir(parents=True, exist_ok=True)
+    img = write_image(out / "coverage.png", coverage_rgb(space, cov_mask, _known(grid)))
+    (out / "track.json").write_text(json.dumps(n.track), encoding="utf-8")
+    line = f"{ts()} {run_summary(outcomes, cov, n.simt() - sim0, stop)} image={img}"
+    print(line, flush=True)
+    return line
+
+
+def _init_ros():
+    """rclpy без своих обработчиков сигналов: иначе SIGINT гасит контекст, и отменить цель уже нечем."""
+    try:
+        from rclpy.signals import SignalHandlerOptions
+    except ImportError:
+        rclpy.init()
+        return
+    rclpy.init(signal_handler_options=SignalHandlerOptions.NO)
 
 
 def main(argv=None):
     args = parse_args(argv)
-    rclpy.init()
+    _init_ros()
+    stop = StopSignal().install()
     n = CoverageMon()
     cl = None if args.plan_only else wait_ready(n)
     t_end = time.time() + 15
@@ -128,12 +194,10 @@ def main(argv=None):
     poses = plan.poses[: args.max_poses] if args.max_poses else plan.poses
     n.track.clear()
     sim0 = n.simt()
-    outcomes, stop = drive(n, cl, poses, args.timeout, args.max_fail)
-    cov_mask = covered_mask(space, n.track)
-    cov = coverage_result(space, cov_mask)
-    img = write_image(args.out / "coverage.png", coverage_rgb(space, cov_mask, _known(grid)))
-    (args.out / "track.json").write_text(json.dumps(n.track), encoding="utf-8")
-    print(f"{ts()} {run_summary(outcomes, cov, n.simt() - sim0, stop)} image={img}", flush=True)
+    outcomes, why = drive(n, cl, poses, args.timeout, args.max_fail, stop)
+    if stop.name:
+        halt(n)
+    finish(args.out, n, grid, space, outcomes, why, sim0)
     rclpy.shutdown()
     return 0
 
