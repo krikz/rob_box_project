@@ -1555,6 +1555,8 @@ def test_silenced_turn_calls_no_llm_says_nothing_and_ends_with_silenced_stage(ca
     assert "thinking" not in [stage for stage, _, _ in ports.stages]
     assert any(kn.SILENCED_TURN_REASON in r.getMessage() and "посчитай до двадцати" in r.getMessage()
                for r in caplog.records)
+    assert any("📊 [turn]" in r.getMessage() and f"reason={kn.SILENCED_TURN_REASON}" in r.getMessage()
+               for r in caplog.records), "агрегат хода называет причину итога (#4512)"
 
 
 def test_silenced_replies_are_recorded_in_turn_log_for_after_unsilence():

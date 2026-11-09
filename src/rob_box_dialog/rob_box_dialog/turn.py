@@ -2359,10 +2359,10 @@ class TurnEngine:
         if face is not None:  # ответ одним лицом: без записи в окне реплика человека висит без ответа
             self.log.faced(turn.turn_id, face_label(face.emotion, face.gesture, face.face))
         agg = TurnAggregate(turn.turn_id, turn.epoch, self.session.snapshot.agent, turn.stage, turn.status,
-                            latency, turn.llm_calls, turn.provider, turn.tokens)
+                            latency, turn.llm_calls, turn.provider, turn.tokens, turn.reason)
         self._log.info(agg.log_line())
         self._event("turn", turn, data={**{k: v for k, v in vars(agg).items() if k != "turn_id"},
-                                        "reason": turn.reason, "source": turn.source})
+                                        "source": turn.source})
         self._window.touch(self._clock())  # долгий ход (выступление) пауза не считается
         self._carry = (turn.source, carried_groups(turn.called))
         return agg

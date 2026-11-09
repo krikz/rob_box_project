@@ -116,9 +116,25 @@ def test_aggregate_line_has_no_text():
                         llm_provider="deepseek", tokens=5120)
     line = agg.log_line()
     assert line == ("📊 [turn] turn_id=t1 epoch=2 agent=personality stage=done status=ok latency_ms=1834 "
-                    "llm_calls=1 llm_provider=deepseek tokens=5120")
+                    "llm_calls=1 llm_provider=deepseek tokens=5120 reason=-")
     assert set(vars(agg)) == {"turn_id", "epoch", "agent", "stage", "status", "latency_ms", "llm_calls",
-                              "llm_provider", "tokens"}
+                              "llm_provider", "tokens", "reason"}
+
+
+import pytest  # noqa: E402
+
+
+@pytest.mark.parametrize("reason,shown", [
+    ("silenced", "silenced"), ("interrupt", "interrupt"), ("deadline", "deadline"), ("provider", "provider"),
+    ("stale_epoch", "stale_epoch"), ("nothing_to_do", "nothing_to_do"),
+    ("query_fallback:ceiling", "query_fallback:ceiling"), ("recognized:known", "recognized:known"),
+    ("understand.listening", "understand.listening"), ("", "-"), ("two words", "two_words"),
+])
+def test_aggregate_line_carries_reason_without_spaces_4512(reason, shown):
+    """Итог хода назван в строке: ``reason=<код>`` на каждый исход; пусто - ``-``; пробела внутри нет."""
+    line = TurnAggregate("t1", 0, "personality", "done", "done", reason=reason).log_line()
+    assert line.endswith(f" reason={shown}")
+    assert len(line.split()) == 12, "метка (2 слова) и 10 полей: ни одно не раздвоилось пробелом"
 
 
 # -- исход выступления закрывает просьбу (#3973) -------------------------------------------------------------------
