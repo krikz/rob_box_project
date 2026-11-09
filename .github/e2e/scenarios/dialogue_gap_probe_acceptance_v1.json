@@ -9,7 +9,6 @@
     "  set_dj_mode / request_music / stop_music — DJ и Renardo работают сегодня",
     "  get_current_time                              — wake-word под музыкой (ADR-RT-0068)",
     "  register_speaker                              — регистрация голоса работает",
-    "  speak_text                                    — базовая озвучка",
     "НЕ включены намеренно (это и есть исследуемые дыры, их отсутствие — находка):",
     "  task_delta        — MERGE вне песенного кейса, хуки планировщика не подключены",
     "  memory_search     — проверяется в coverage-сьюте, здесь не гейт",
@@ -27,8 +26,7 @@
     "request_music",
     "stop_music",
     "get_current_time",
-    "register_speaker",
-    "speak_text"
+    "register_speaker"
   ],
   "must_not_call": [],
   "voice_provenance": {

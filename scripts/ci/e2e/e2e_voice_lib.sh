@@ -788,7 +788,7 @@ strip_llm_request_dump() {
 # 20 с окно лога + 15 с «тишины» по grep строк синтеза. Теперь харнесс каждые 2 с читает лог
 # робота и спрашивает e2e_events.py (решает код по маркерам, не оператор по таймеру):
 #   * ответ готов -- v2: ``📊 [turn] ... stage=done`` хода + все ``SpeechEvent`` реплик закрыты
-#     (finished/cancelled/rejected по speech_id); v1: ``Публикую TTS finished event`` по speech_id;
+#     (finished/cancelled/rejected по speech_id);
 #   * робот ещё говорит -- ``started`` без парного закрытия; после конца речи +2 с (хвост ReSpeaker);
 #   * потолок ожидания -- прежний E2E_REACTION_WINDOW / E2E_SILENCE_WAIT_MAX: в худшем случае
 #     поведение то же, что было. E2E_EVENT_WAITS=0 возвращает фиксированный sleep.
@@ -798,8 +798,8 @@ strip_llm_request_dump() {
 #     куплетами открытых реплик нет. Ждём конца выступления (``[perform] …: конец`` / ``PlanEvent block_end``), потолок --
 #     E2E_PERFORM_WAIT_MAX (по умолчанию e2e_events.PERFORM_CEILING_S, 240 с) от старта выступления, а не 40 с на
 #     попытку; не кончилось -- FAIL turn_perform_ceiling сразу, без повтора фразы (он заказал бы второе выступление).
-_E2E_EVENT_GREP='ПРИНЯТО|SpeechEvent|\[turn\]|LLM REQUEST START|TTS finished event|🔊 TTS:|\[backlog\] accumulated|tier1 kind=|выступление старт kind=|\[perform\] [^ ]*: конец|PlanEvent block_end block=perform-'
-_E2E_SPEECH_GREP='SpeechEvent|TTS finished event|🔊 TTS:'
+_E2E_EVENT_GREP='ПРИНЯТО|SpeechEvent|\[turn\]|LLM REQUEST START|\[backlog\] accumulated|tier1 kind=|выступление старт kind=|\[perform\] [^ ]*: конец|PlanEvent block_end block=perform-'
+_E2E_SPEECH_GREP='SpeechEvent'
 
 _events_py() { printf '%s' "${E2E_EVENTS_PY:-${SCRIPT_DIR_E2E:-.}/e2e_events.py}"; }
 
@@ -821,7 +821,7 @@ _ev_kv() {  # stdin = key=value строки; $1=key
 # Выступление (#3971 R4): пока оно идёт, потолок -- perform_ceiling судьи, а не E2E_REACTION_WINDOW; не кончилось --
 # rc=2, вердикт perform_ceiling (повтора фразы нет).
 # Пишет E2E_REPLY_AFTER (с), E2E_REPLY_VERDICT и E2E_REPLY_NO_SPEECH=1, если ход закончился без речи
-# (silent_ok шага либо льгота E2E_NO_SPEECH_GRACE; у v1 льгота ведёт к rc=0, как раньше).
+# (silent_ok шага либо льгота E2E_NO_SPEECH_GRACE).
 wait_reply_done() {
     local since="$1" barge_flag="" poll="${E2E_EVENT_POLL:-2}" ceiling="${E2E_REACTION_WINDOW:-40}"
     local accept_win reason performing limit
@@ -835,7 +835,7 @@ wait_reply_done() {
     t0="$(date +%s)"
     while :; do
         now="$(date +%s)"
-        out="$(_events_fetch "$since" "$_E2E_EVENT_GREP" | python3 "$(_events_py)" state --engine v2 $silent_flag $barge_flag --waited "$((now - t0))" --accept-window "$accept_win" --perform-ceiling "${E2E_PERFORM_WAIT_MAX:-0}")"
+        out="$(_events_fetch "$since" "$_E2E_EVENT_GREP" | python3 "$(_events_py)" state $silent_flag $barge_flag --waited "$((now - t0))" --accept-window "$accept_win" --perform-ceiling "${E2E_PERFORM_WAIT_MAX:-0}")"
         verdict="$(printf '%s\n' "$out" | _ev_kv verdict)"
         sig="$(printf '%s\n' "$out" | _ev_kv sig)"
         quiet="$(printf '%s\n' "$out" | _ev_kv quiet_for)"
@@ -914,7 +914,7 @@ wait_robot_quiet() {
     local t0 now out nopen sig quiet fetch prev_sig="" stable=0
     t0="$(date +%s)"
     while :; do
-        out="$(_events_fetch "${E2E_QUIET_LOOKBACK:-600s}" "$_E2E_SPEECH_GREP" | python3 "$(_events_py)" quiet --engine v2)"
+        out="$(_events_fetch "${E2E_QUIET_LOOKBACK:-600s}" "$_E2E_SPEECH_GREP" | python3 "$(_events_py)" quiet)"
         fetch="$(printf '%s\n' "$out" | _ev_kv fetch)"
         nopen="$(printf '%s\n' "$out" | _ev_kv open)"
         sig="$(printf '%s\n' "$out" | _ev_kv sig)"
@@ -954,7 +954,7 @@ wait_barge_anchor() {
     esac
     t0="$(date +%s)"
     while :; do
-        out="$(_events_fetch "$since" "$_E2E_EVENT_GREP" | python3 "$(_events_py)" anchor --engine v2 --after "$after" --n "${n:-1}")"
+        out="$(_events_fetch "$since" "$_E2E_EVENT_GREP" | python3 "$(_events_py)" anchor --after "$after" --n "${n:-1}")"
         if [ "$(printf '%s\n' "$out" | _ev_kv found)" = "1" ]; then
             E2E_ANCHOR_TS="$(printf '%s\n' "$out" | _ev_kv ts)"
             E2E_ANCHOR_ID="$(printf '%s\n' "$out" | _ev_kv speech_id)"

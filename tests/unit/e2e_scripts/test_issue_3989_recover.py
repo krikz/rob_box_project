@@ -81,49 +81,45 @@ REPLY = llm("{NOW-9}") + speech("started", "cccc3333", "{NOW-6}") + turn_done("{
 
 class TestVerdicts:
     def test_no_wake_is_final_after_settle(self):
-        st = e2e_events.state(_feed(N301), "v2", False, waited=e2e_events.NO_WAKE_SETTLE_S)
+        st = e2e_events.state(_feed(N301), False, waited=e2e_events.NO_WAKE_SETTLE_S)
         assert st["verdict"] == "no_wake" and st["reason"] == "no_wake"
 
     def test_no_wake_waits_settle_for_a_split_phrase(self):
-        assert e2e_events.state(_feed(N301), "v2", False, waited=1)["verdict"] == "wait"
+        assert e2e_events.state(_feed(N301), False, waited=1)["verdict"] == "wait"
 
     def test_no_wake_then_turn_is_not_no_wake(self):
         """STT порезал фразу: второй кусок начал ход -- судья ждёт ход, а не восстанавливает."""
         log = N301 + heard("робот", "{NOW-12}") + REPLY
-        assert e2e_events.state(_feed(log), "v2", False, waited=30)["verdict"] == "done"
+        assert e2e_events.state(_feed(log), False, waited=30)["verdict"] == "done"
         log = N301 + tier1("volume", "{NOW-12}")
-        assert e2e_events.state(_feed(log), "v2", False, waited=30)["verdict"] == "wait"
+        assert e2e_events.state(_feed(log), False, waited=30)["verdict"] == "wait"
 
     def test_backlog_before_accept_is_not_this_phrase(self):
         log = no_wake("{NOW-40}") + accept("{NOW-30}")
-        assert e2e_events.state(_feed(log), "v2", False, waited=30)["verdict"] == "wait"
+        assert e2e_events.state(_feed(log), False, waited=30)["verdict"] == "wait"
 
     def test_silenced_turn_is_final_at_once(self):
-        st = e2e_events.state(_feed(SILENCED_TURN), "v2", False)
+        st = e2e_events.state(_feed(SILENCED_TURN), False)
         assert st["verdict"] == "silenced" and st["reason"].startswith("silenced")
 
     def test_silenced_is_not_silent_ok(self):
         """silent_ok разрешает ход без речи, но проглоченный тишиной ход -- не ответ шага."""
-        assert e2e_events.state(_feed(SILENCED_TURN), "v2", True)["verdict"] == "silenced"
+        assert e2e_events.state(_feed(SILENCED_TURN), True)["verdict"] == "silenced"
 
     def test_step_that_engages_silence_is_not_recovery(self):
         """n805 «всё, хватит, замолчи»: шаг САМ включил тишину (tier1 kind=silence) -- это его проверка."""
         log = heard("робот всё хватит замолчи") + tier1("silence") + turn_stage("done")
-        assert e2e_events.state(_feed(log), "v2", True)["verdict"] == "silent"
+        assert e2e_events.state(_feed(log), True)["verdict"] == "silent"
 
     def test_rest_of_own_silence_command_is_not_a_leak(self):
         """«хватит, замолчи, посчитай»: остаток фразы после своего «замолчи» ход проглотил уже в тишине
         (turn._tier1_then_rest -> hold_silence, stage=silenced) -- ход без речи по просьбе шага, а не утечка."""
         log = heard("робот хватит замолчи и посчитай") + tier1("stop_all") + tier1("silence") + turn_stage("silenced")
-        assert e2e_events.state(_feed(log), "v2", True)["verdict"] == "silent"
-        assert e2e_events.state(_feed(log), "v2", False)["verdict"] == "nospeech"
-
-    def test_v1_judge_unchanged(self):
-        assert e2e_events.state(_feed(N301), "v1", False, waited=30)["verdict"] == "wait"
-        assert e2e_events.state(_feed(SILENCED_TURN), "v1", False)["verdict"] == "wait"
+        assert e2e_events.state(_feed(log), True)["verdict"] == "silent"
+        assert e2e_events.state(_feed(log), False)["verdict"] == "nospeech"
 
     def test_cli_state_reports_no_wake(self):
-        out = subprocess.run([sys.executable, str(EVENTS), "state", "--engine", "v2", "--waited", "9"],
+        out = subprocess.run([sys.executable, str(EVENTS), "state", "--waited", "9"],
                              input=_feed(N301), capture_output=True, text=True, encoding="utf-8").stdout
         assert "verdict=no_wake" in out.splitlines()
 

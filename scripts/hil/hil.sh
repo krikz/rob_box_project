@@ -24,6 +24,10 @@
 # off: сим гасится первым, затем на Main, Vision и Sound `docker compose up -d --no-deps` тех же
 #   сервисов с теми же образами (закреплены по работающим контейнерам), замок снимается;
 #   последним — сверка боевого `SELECT * FROM maps` со снапшотом on: изменился — выход 3.
+#   Состояние «до»: сразу после замка on пишет running|restarting|exited|absent каждого затрагиваемого
+#   сервиса в HIL_PRE_STATE (Main Pi). off сверяет с ним: сервис был нерабочим до on и таким остался —
+#   предупреждение, не провал; провал только у сервиса, который до on работал, а после off нет.
+#   Сверка реестра идёт всегда; замок снимается, если не провалился ни один бывший рабочий сервис.
 #
 # Настройки — scripts/hil/hil.conf (переопределяются переменными окружения или HIL_CONF).
 # Пароли не используются: ssh -o BatchMode=yes, нужен ключ в authorized_keys.
@@ -71,6 +75,40 @@ rpi() {  # rpi <host> <подкоманда> <аргументы>...
     local args=() a
     for a in "$@"; do args+=("$(q "$a")"); done
     rsh "$host" "bash $REMOTE_PI ${args[*]}"
+}
+
+# ── Состояние сервисов «до on» (решение «сломан до on → предупреждение» принимает код) ──
+
+# Снимок «имя статус» для всех сервисов, которые HIL останавливает или пересоздаёт.
+pre_state_snapshot() {
+    local line n st
+    {
+        rpi "$HIL_MAIN_HOST" state "${MAIN_STOP[@]}" "${MAIN_SIM_TIME[@]}"
+        rpi "$HIL_VISION_HOST" state "${VISION_STOP[@]}"
+        rpi "$HIL_SOUND_HOST" state "${SOUND_SWITCH[@]}"
+    } | while read -r line; do
+        [ -n "$line" ] || continue
+        # «имя статус USE_SIM_TIME=…» → «имя статус»
+        read -r n st _ <<<"$line"
+        printf '%s %s
+' "$n" "$st"
+    done
+}
+
+# PRE_STATE (текст «имя статус») → статус сервиса до on; нет записи — running (старое поведение: ждём работающим).
+pre_status_of() {
+    local name="$1" st
+    st=$(printf '%s
+' "${PRE_STATE:-}" | awk -v n="$name" '$1 == n { print $2; exit }')
+    printf '%s' "${st:-running}"
+}
+
+# svc_verdict <имя> <статус после off>: ok — работает; warn — не работает, но не работал и до on; fail — иначе.
+svc_verdict() {
+    local name="$1" after="$2" before
+    if [ "$after" = running ]; then echo ok; return 0; fi
+    before=$(pre_status_of "$name")
+    if [ "$before" = running ]; then echo fail; else echo warn; fi
 }
 
 # ── Проверки настроек (до любого действия) ────────────────────────────────
@@ -243,6 +281,14 @@ cmd_on() {
     who="HIL on since $(date -u +%FT%TZ) by ${USER:-${USERNAME:-?}}@$(hostname) sandbox=$HIL_SANDBOX_IP maps=$HIL_MAPS_DIR"
     rpi "$HIL_MAIN_HOST" lock-take "$HIL_LOCK" "$who" || die "HIL уже включён или замок остался: scripts/hil/hil.sh status / off"
 
+    log "состояние сервисов до on → $HIL_MAIN_HOST:$HIL_PRE_STATE"
+    local pre
+    pre=$(pre_state_snapshot) || die "не снято состояние сервисов до on; hil.sh off"
+    printf '%s
+' "$pre" | sed 's/^/    до on  /'
+    printf '%s
+' "$pre" | rput "$HIL_MAIN_HOST" /dev/stdin "$HIL_PRE_STATE" || die "не записано $HIL_PRE_STATE; hil.sh off"
+
     log "Main: останавливаю ${MAIN_STOP[*]} (моторы и лидар)"
     rpi "$HIL_MAIN_HOST" stop "${MAIN_STOP[@]}" || die "Main: не остановились ${MAIN_STOP[*]} — HIL не включён, замок стоит; разобраться и hil.sh off"
     log "Vision: останавливаю ${VISION_STOP[*]}"
@@ -343,45 +389,71 @@ cmd_off() {
         up -d --no-deps --pull never "${SOUND_SWITCH[@]}"
 
     # Каждый сервис: работает и без sim time. Строк должно прийти ровно столько, сколько сервисов.
-    local bad=0 line n=0 main_state vision_state sound_state wpdb
+    # Нерабочий сервис, который не работал и до on (PRE_STATE), — предупреждение, не провал.
+    local bad=0 warn=0 line n=0 main_state vision_state sound_state wpdb name st verdict
+    PRE_STATE=$(rsh "$HIL_MAIN_HOST" "cat $(q "$HIL_PRE_STATE") 2>/dev/null" || true)
+    if [ -n "$PRE_STATE" ]; then
+        log "состояние до on (из $HIL_MAIN_HOST:$HIL_PRE_STATE):"
+        printf '%s
+' "$PRE_STATE" | sed 's/^/    до on  /'
+    else
+        log "⚠️  $HIL_MAIN_HOST:$HIL_PRE_STATE нет (on не доходил до записи?) — все сервисы ждём работающими"
+    fi
     main_state=$(rpi "$HIL_MAIN_HOST" state "${MAIN_SIM_TIME[@]}" "${MAIN_STOP[@]}") || bad=1
     vision_state=$(rpi "$HIL_VISION_HOST" state "${VISION_STOP[@]}") || bad=1
     sound_state=$(rpi "$HIL_SOUND_HOST" state "${SOUND_SWITCH[@]}") || bad=1
     wpdb=$(rpi "$HIL_SOUND_HOST" env "${SOUND_SWITCH[0]}" WAYPOINT_DB_PATH) || bad=1
+    # check_line <метка> <строка state> <running-проверка: sim|wpdb|none>
+    check_line() {
+        local label="$1" l="$2" kind="$3"
+        read -r name st _ <<<"$l"
+        n=$((n + 1))
+        verdict=$(svc_verdict "$name" "$st")
+        case "$verdict" in
+            ok)
+                echo "  $label $l"
+                case "$kind" in
+                    sim) case "$l" in *" running USE_SIM_TIME=unset" | *" running USE_SIM_TIME=false") ;; *) bad=1 ;; esac ;;
+                    wpdb) [ "$wpdb" = unset ] || bad=1 ;;
+                esac ;;
+            warn)
+                warn=$((warn + 1))
+                echo "  $label $l  ⚠️  до on было: $(pre_status_of "$name"), не работает и сейчас — не провал off" ;;
+            *)
+                bad=1
+                echo "  $label $l  ❌ до on работал (running), после off — $st" ;;
+        esac
+    }
     while read -r line; do
         [ -n "$line" ] || continue
-        n=$((n + 1))
-        echo "  Sound  $line WAYPOINT_DB_PATH=$wpdb"
-        case "$line" in *" running "*) ;; *) bad=1 ;; esac
-        [ "$wpdb" = unset ] || bad=1
+        check_line "Sound " "$line WAYPOINT_DB_PATH=$wpdb" wpdb
     done <<<"$sound_state"
     while read -r line; do
         [ -n "$line" ] || continue
-        n=$((n + 1))
-        echo "  Main   $line"
-        case "$line" in
-            *" running USE_SIM_TIME=unset" | *" running USE_SIM_TIME=false") ;;
-            *) bad=1 ;;
-        esac
+        check_line "Main  " "$line" sim
     done <<<"$main_state"
     while read -r line; do
         [ -n "$line" ] || continue
-        n=$((n + 1))
-        echo "  Vision $line"
-        case "$line" in *" running "*) ;; *) bad=1 ;; esac
+        check_line "Vision" "$line" none
     done <<<"$vision_state"
     [ "$n" -eq $(( ${#MAIN_SIM_TIME[@]} + ${#MAIN_STOP[@]} + ${#VISION_STOP[@]} + ${#SOUND_SWITCH[@]} )) ] || bad=1
-    [ "$bad" = 0 ] || die "не всё вернулось (см. выше) — замок $HIL_LOCK оставлен"
 
-    # Сверка до снятия замка: результат в лог, но робот уже вернулся — замок снимается в любом случае.
+    # Сверка реестра — всегда, даже если сервис не вернулся: боевой maps читаем только на чтение.
     local reg=0
     sound_verify_maps || reg=$?
+    if [ "$bad" != 0 ]; then
+        die "не всё вернулось (см. выше: ❌) — замок $HIL_LOCK оставлен"
+    fi
+    rsh "$HIL_MAIN_HOST" "rm -f -- $(q "$HIL_PRE_STATE")" || true
     rpi "$HIL_MAIN_HOST" lock-release "$HIL_LOCK"
+    local tail_note=""
+    [ "$warn" = 0 ] || tail_note="; ⚠️  сервисов нерабочих и до on: $warn (см. ⚠️ выше, чинить отдельно)"
     case "$reg" in
-        0) log "✅ HIL выключен, робот в боевом режиме" ;;
-        3) printf '❌ %s\n' "HIL выключен, робот в боевом режиме, НО боевой реестр карт изменился за HIL (diff выше)" >&2
+        0) log "✅ HIL выключен, робот в боевом режиме$tail_note" ;;
+        3) printf '❌ %s
+' "HIL выключен, робот в боевом режиме$tail_note, НО боевой реестр карт изменился за HIL (diff выше)" >&2
            exit 3 ;;
-        *) log "✅ HIL выключен, робот в боевом режиме; ⚠️  боевой реестр карт НЕ сверен (см. выше)" ;;
+        *) log "✅ HIL выключен, робот в боевом режиме$tail_note; ⚠️  боевой реестр карт НЕ сверен (см. выше)" ;;
     esac
 }
 

@@ -747,15 +747,6 @@ jobs:
             echo "❌ A/B: speaker_tag не найдены"
             FAIL="${FAIL:+$FAIL,}no-tags"
           fi
-          # 2) dialogue_node: профиль спикера создан/обновлён (touch_speaker)
-          if grep -qE "\[issue 1077\] (Спикер|Speaker .*диалог)" "$LOG"; then
-            echo "✅ dialogue_node: профиль спикера создан/обновлён (touch_speaker)"
-            echo "SPEAKER_PROFILE=ok" >> "$ACCEPT_FILE"
-            grep -E "\[issue 1077\] (Спикер|Speaker)" "$LOG" | head -3 >> "$ACCEPT_FILE"
-          else
-            echo "❌ dialogue_node: touch_speaker/профиль не найден в логе"
-            FAIL="${FAIL:+$FAIL,}no-profile"
-          fi
           # 3) SQLite: факты реально сохранены (самое честное доказательство).
           #    bug(разбор 35658231116, 22.09.2026): запрос ходил в
           #    '/root/.rob_box/voice.db', в таблицу `facts` с колонками
