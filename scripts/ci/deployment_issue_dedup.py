@@ -37,12 +37,6 @@ KLOG_LINE_RE = re.compile(r"^([IWEF])\d{4} \d{2}:\d{2}:\d{2}\.\d+\s+\d+ \S+:\d+\
 # Когда проблема закрыта, строку отсюда нужно удалить — иначе рецидив будет молчать
 # как warning.
 CRITICAL_DEMOTED_TO_WARNING = [
-    # #3664 п.2: cadvisor v0.52.1 на Docker 29 с containerd snapshotter (Vision,
-    # Sound) ищет слой контейнера в image/overlayfs/layerdb/mounts, а там пусто —
-    # тысячи E-строк "Failed to create existing container ... failed to identify
-    # the read-write layer ID", поконтейнерных метрик нет. Лечится обновлением
-    # cadvisor (отдельная работа по #3664 п.2), деплой от этого не сломан.
-    r"failed to identify the read-write layer id",
     # #3659: promtail 2.9.2 (docker_sd) говорит с Docker API 1.42, а Docker 29
     # требует >= 1.44: "component=docker_discovery msg=\"Unable to refresh target
     # groups\" err=\"... client version 1.42 is too old ...\"". Логи контейнеров не

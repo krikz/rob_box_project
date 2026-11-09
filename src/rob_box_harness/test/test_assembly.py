@@ -118,17 +118,18 @@ def test_agent_spec_field_count_is_pinned(tmp_prompt_dirs: tuple[Path, Path]) ->
 def test_agent_spec_required_fields_have_no_default(
     tmp_prompt_dirs: tuple[Path, Path],
 ) -> None:
-    """``name`` / ``prompt_dir`` / ``system_prompt_file`` are mandatory —
-    they describe *which* agent we are. Everything else is optional and
-    can fall back to a sensible default."""
+    """``name`` is mandatory — it describes *which* agent we are. The prompt
+    file (``prompt_dir`` / ``system_prompt_file``) is optional since ADR-0167
+    Ш1б-3: the personality prompt is composed by the host (core base + the
+    product persona), only file-based agents set it; without it
+    :func:`load_system_prompt` returns ``""`` (no prompt — no agent)."""
     personality_dir, _ = tmp_prompt_dirs
     fields = AgentSpec.__dataclass_fields__
     assert "name" in fields
     assert fields["name"].default is dataclasses.MISSING
-    assert "prompt_dir" in fields
-    assert fields["prompt_dir"].default is dataclasses.MISSING
-    assert "system_prompt_file" in fields
-    assert fields["system_prompt_file"].default is dataclasses.MISSING
+    assert fields["prompt_dir"].default is None
+    assert fields["system_prompt_file"].default == ""
+    assert load_system_prompt(AgentSpec(name="personality")) == ""
 
 
 # ---------------------------------------------------------------------------

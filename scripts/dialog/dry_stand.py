@@ -78,6 +78,7 @@ from rob_box_dialog.e2e_events import inside_robot_data, open_events  # noqa: E4
 from rob_box_dialog.memory import profiled_person  # noqa: E402
 from rob_box_dialog.music_state import MusicStateMemory  # noqa: E402
 from rob_box_dialog.profile import load_profile  # noqa: E402
+from rob_box_dialog.prompts import personality_prompt  # noqa: E402
 from rob_box_dialog.session import MusicStateRef, Session  # noqa: E402
 from rob_box_dialog.speaker_adapter import speaker_ref, voice_tag  # noqa: E402
 from rob_box_dialog.turn import ASK_MARK, LOG_MARK, TurnEngine, host_sections  # noqa: E402
@@ -99,6 +100,12 @@ ROBOT_PROFILE = REPO / "docker" / "sound" / "config" / "assistant.yaml"
 def robot_wake() -> List[str]:
     """Вейки личности из профиля робота (:data:`ROBOT_PROFILE`); нет или битый профиль - ``ProfileError``."""
     return list(load_profile(ROBOT_PROFILE).wake_personality)
+
+
+def robot_prompt() -> str:
+    """Промпт Личности робота без правил знания: основа ядра с персоной профиля робота (ADR-0167 Ш1б-3), как у
+    ``dialog_node``; нет или битый профиль - ``ProfileError``."""
+    return personality_prompt(load_profile(ROBOT_PROFILE).persona)
 
 
 #: Скорость речи человека/робота для модели времени, символов в секунду (живой замер ≈ 13–16).

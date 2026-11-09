@@ -22,6 +22,9 @@
 | Loki: выгрузка строк | `python -X utf8 -I loki_pull.py loki_live.tsv "<regex>"` (два прохода, см. док §2) | — |
 | живые ходы из Loki | `python -X utf8 live.py <каталог выгрузки>` | `out_live.txt` |
 | прогоны и сроки артефактов | `gh run list --workflow 324736062 …`, `gh api …/runs/42142121516/artifacts` | `out_gh_runs.txt` |
+| детекторы сбоя хода (шаг 3) на архиве | `python -X utf8 detectors.py <архив>` | `out_detectors.txt` |
+| сетка порогов «робот глух» | `python -X utf8 detectors.py <архив> --grid` | `out_detectors_grid.txt` |
+| детекторы на живых строках Loki 06–09.11 | `python -X utf8 detectors.py <архив> --live <выгрузка>` (выгрузка — `loki_pull.py` с началом окна 06.11 01:19 UTC, фильтр в PR) | `out_detectors_live.txt` |
 | Sound Pi | `ssh -o BatchMode=yes ros2@10.1.1.22 'docker inspect voice-assistant …; ls /tmp/e2e_dialog'` | `out_sound_pi.txt` |
 
 Сопоставление шага и хода в `turns.py` — по тексту (difflib ≥ 0.6) внутри одного прогона. Логи соседних актов

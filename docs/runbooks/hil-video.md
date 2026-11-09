@@ -114,14 +114,24 @@ ssh ros2@10.1.1.250 'cd /home/ros2/rob_box_hilvideo && (nohup ./runcoverage.sh >
 ssh ros2@10.1.1.250 'grep -E "PLAN|UNREACHABLE|GOAL_END|EM_ON|COVERAGE_" /home/ros2/rob_box_hilvideo/out/coverage.log'
 ```
 
-- Лог в формате `route.py` (TRACK, GOAL_START/GOAL_END, EM_ON/EM_OFF, RECOVERY). Недостижимую позу исполнитель
-  пропускает и считает; после `--max-fail` (5) неудач подряд останавливается, остаток — `NOT_SENT`.
+- Лог в формате `route.py` (TRACK, GOAL_START/GOAL_END, EM_ON/EM_OFF, RECOVERY). Полоса (start → промежуточные →
+  end) уходит **одной целью `NavigateThroughPoses`** (`GOAL_START L0007_c3l2 target=[…]`, после `GOAL_END` —
+  `LANE_FEEDBACK … remaining=`): робот не тормозит в каждой позе. Позами по одной (`--per-pose`) на попытке 3
+  09.11 вышло 0.06 м/с и 59 % времени в движении. Пройденную точку убирает `RemovePassedGoals` в
+  `docker/main/config/nav2/behavior_trees/navigate_through_poses.xml` (радиус 0.35 м); **без деплоя этого
+  файла на Main Pi** (`L: Deploy and Verify`) Nav2 перепланирует через уже пройденные точки и возвращается к ним.
+  Таймаут полосы — `--timeout` (45 с) на позу × поз + путь / 0.15 м/с (потолок `max_vel_x` Nav2).
+  Неудачную цель исполнитель пропускает и считает; после `--max-fail` (5) неудач подряд останавливается,
+  остаток — `NOT_SENT`.
 - Итог `COVERAGE_DONE`: `coverage=` — доля **покрываемого** пола (до чего корпус дотягивается из достижимых
   центров) под корпусом по правде Gazebo; `coverage_free=` — доля **всего свободного** пола карты (с узкими
   местами и полосой у стен). Первая говорит, как исполнен план, вторая — сколько склада реально проехано.
   В строке `PLAN` то же для плана: `plan_coverage` и `plan_coverage_free`. Исходы целей — короткие имена
   (`SUCCEEDED`, `ABORTED`, `TIMEOUT`, `INTERRUPTED`…): `STATUS_*` из `route.run_goal` нормализует
-  `GoalOutcome.from_route` (09.11 без этого 20 успехов засчитались неудачами).
+  `GoalOutcome.from_route` (09.11 без этого 20 успехов засчитались неудачами). `goals=` — целей (полос),
+  `poses=`/`poses_passed=` — поз плана в них и пройдено (успех — все, иначе по feedback Nav2).
+  Движение по треку истинной позы: `moving_s`/`moving_pct` — время в движении (быстрее 0.03 м/с или 0.10 рад/с),
+  `moved_m` — путь, `avg_mps` — путь / всё время обхода, `moving_mps` — путь / время в движении.
 - **Остановить обход**: `docker exec rob-box-hil-gazebo pkill -INT -f 'python3 -u /coverage_run.py'` (или
   `-TERM`). Исполнитель отменяет текущую цель (`INTERRUPTED cancel` в логе, исход `INTERRUPTED`), шлёт нулевую
   скорость в `/cmd_vel` (`HALT`), остаток — `NOT_SENT`, и пишет `COVERAGE_DONE … stop=interrupted_SIGINT
@@ -130,8 +140,8 @@ ssh ros2@10.1.1.250 'grep -E "PLAN|UNREACHABLE|GOAL_END|EM_ON|COVERAGE_" /home/r
   out/coverage.log --out cov.png` (зелёное — покрыто, красное — пропущено, оранжевое — свободно, но корпусу
   недоступно: запас padding, узкие места, пол за проходом уже габарита).
 - Ручки: `--spacing` (0.55 м), `--axis auto|x|y`, `--waypoint-step` (промежуточные позы на полосе, 0 — нет),
-  `--timeout` на позу (120 с стены). Ось при `auto`: из планов, что накрывают не меньше 98 % лучшего, код берёт
-  самый быстрый по оценке: путь / 0.3 м/с + 5 с на позу (5 с — догадка, уточнить по прогону).
+  `--timeout` на позу (45 с стены), `--per-pose`. Ось при `auto`: из планов, что накрывают не меньше 98 % лучшего,
+  код берёт самый быстрый по оценке: путь / 0.15 м/с (`max_vel_x` Nav2) + 5 с на позу (5 с — догадка).
 - **Места разворота** (`--turn-clearance`, умолч. 0.66 м = описанный радиус 0.43 + стоп защиты 0.20 + padding
   0.03). Полоса сбоку идёт по сужению 0.336 (у стеллажа корпус в 3 см), а концы полос, где робот крутится,
   стоят только там, где до занятого ≥ 0.66 м. Строку вдоль внешней стены и тупик уже 1.32 м план не берёт:

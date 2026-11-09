@@ -45,6 +45,8 @@ from pathlib import Path
 
 import pytest
 
+from rob_box_dialog import prompts
+
 
 def _repo_root(start: Path) -> Path:
     for parent in [start, *start.parents]:
@@ -55,7 +57,8 @@ def _repo_root(start: Path) -> Path:
 
 REPO_ROOT = _repo_root(Path(__file__).resolve())
 FOXDOT_INIT = REPO_ROOT / "docker" / "sound" / "voice_assistant" / "foxdot_init.sc"
-MASTER_PROMPT = REPO_ROOT / "src" / "rob_box_voice" / "prompts" / "master_prompt_compact.txt"
+#: Основа промпта Личности - данные ядра (ADR-0167 Ш1б-3).
+MASTER_PROMPT = Path(prompts.__file__).with_name(prompts.BASE_FILE)
 COMPOSER_PROMPT = (
     REPO_ROOT / "src" / "rob_box_voice" / "prompts" / "skills" / "composer.txt"
 )

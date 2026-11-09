@@ -3,15 +3,21 @@
 Профиль - каталог продукта с ``assistant.yaml`` и файлами рядом; лежит в репо продукта, ядро его только читает.
 Формат версии :data:`FORMAT`::
 
-    format: 1
+    format: 2
     name: РОББОКС               # имя продукта (как он себя называет)
     wake_words: wake_words.yaml # таблица вейков рядом с профилем (формат ядра: personality / operator)
+    persona: persona.txt        # персона Личности рядом с профилем (формат - rob_box_dialog.prompts)
+
+Формат 2 (Ш1б-3) добавил обязательный ``persona``: имя и характер ушли из промпта ядра в профиль. Профиль формата 1
+персоны не несёт - это ошибка с подсказкой, а не нейтральная персона: робот со старым профилем молча стал бы
+безымянным ассистентом.
 
 Три случая, решает :func:`resolve_profile`:
 
-* путь не задан - :data:`NEUTRAL`, нейтральные умолчания ядра: без имени и без вейков. Пустая таблица вейков -
-  режим «без вейка» (``words.has_wake_word``: адресовано всё) - честное поведение консоли без продукта: она отвечает
-  на каждую реплику, а не молчит в ожидании чужого имени. Строку лога об этом строит код (:data:`NO_PROFILE_LOG`);
+* путь не задан - :data:`NEUTRAL`, нейтральные умолчания ядра: без имени, без вейков, нейтральная персона. Пустая
+  таблица вейков - режим «без вейка» (``words.has_wake_word``: адресовано всё) - честное поведение консоли без
+  продукта: она отвечает на каждую реплику, а не молчит в ожидании чужого имени. Строку лога об этом строит код
+  (:data:`NO_PROFILE_LOG`);
 * путь задан, а файла нет или он битый - :class:`ProfileError` с понятной причиной: молча откатиться к умолчаниям
   при сломанном профиле - значит запустить робота глухим к своему имени;
 * путь задан и файл цел - :class:`ProductProfile`.
@@ -27,16 +33,19 @@ from pathlib import Path
 from typing import Any, Callable, Mapping, Optional, Tuple
 
 from rob_box_dialog.knowledge import WAKE_NAMESPACES, load_wake_word_namespaces
+from rob_box_dialog.prompts import Persona, neutral_persona, parse_persona
 
 #: Версия формата ``assistant.yaml``. Ломка формата - новая версия и мажор пакета ядра (ADR-0167 §2.4).
-FORMAT = 1
+FORMAT = 2
 #: Имя файла профиля в каталоге продукта.
 PROFILE_FILE = "assistant.yaml"
 #: Ключи формата: обязательные и необязательные. Чужой ключ - ошибка (опечатка не должна молча выключать вейки).
-REQUIRED_KEYS: Tuple[str, ...] = ("format", "name", "wake_words")
+REQUIRED_KEYS: Tuple[str, ...] = ("format", "name", "wake_words", "persona")
 OPTIONAL_KEYS: Tuple[str, ...] = ()
 #: Строка лога «профиля нет» - одна на все хосты.
-NO_PROFILE_LOG = "профиль продукта не задан - умолчания ядра: без имени, вейк выключен (адресовано всё)"
+NO_PROFILE_LOG = (
+    "профиль продукта не задан - умолчания ядра: без имени, нейтральная персона, вейк выключен (адресовано всё)"
+)
 
 
 class ProfileError(ValueError):
@@ -50,6 +59,7 @@ class ProductProfile:
     name: str
     wake_personality: Tuple[str, ...]
     wake_operator: Tuple[str, ...]
+    persona: Persona
     root: Optional[Path] = None
 
     @property
@@ -58,7 +68,7 @@ class ProductProfile:
 
 
 #: Нейтральные умолчания ядра: без продукта.
-NEUTRAL = ProductProfile(name="", wake_personality=(), wake_operator=())
+NEUTRAL = ProductProfile(name="", wake_personality=(), wake_operator=(), persona=neutral_persona())
 
 
 def _profile_file(path: "str | os.PathLike[str]") -> Path:
@@ -81,6 +91,8 @@ def _read_yaml(file: Path) -> Mapping[str, Any]:
 
 
 def _check_keys(file: Path, data: Mapping[str, Any]) -> None:
+    if data.get("format") == 1:
+        raise ProfileError(f"профиль продукта {file}: format 1 устарел - с format {FORMAT} профиль несёт persona")
     missing = [k for k in REQUIRED_KEYS if k not in data]
     unknown = sorted(set(data) - set(REQUIRED_KEYS) - set(OPTIONAL_KEYS))
     if missing or unknown:
@@ -89,8 +101,9 @@ def _check_keys(file: Path, data: Mapping[str, Any]) -> None:
         raise ProfileError(f"профиль продукта {file}: format {data['format']!r}, ядро понимает {FORMAT}")
     if not isinstance(data["name"], str) or not data["name"].strip():
         raise ProfileError(f"профиль продукта {file}: name - непустая строка")
-    if not isinstance(data["wake_words"], str) or not data["wake_words"].strip():
-        raise ProfileError(f"профиль продукта {file}: wake_words - имя файла таблицы вейков рядом с профилем")
+    for key, what in (("wake_words", "таблицы вейков"), ("persona", "персоны")):
+        if not isinstance(data[key], str) or not data[key].strip():
+            raise ProfileError(f"профиль продукта {file}: {key} - имя файла {what} рядом с профилем")
 
 
 def _wake_table(file: Path, name: str) -> Tuple[Tuple[str, ...], Tuple[str, ...]]:
@@ -103,6 +116,16 @@ def _wake_table(file: Path, name: str) -> Tuple[Tuple[str, ...], Tuple[str, ...]
     return tuple(table[WAKE_NAMESPACES[0]]), tuple(table.get(WAKE_NAMESPACES[1], ()))
 
 
+def _persona(file: Path, name: str) -> Persona:
+    persona_file = file.parent / name
+    if not persona_file.is_file():
+        raise ProfileError(f"профиль продукта {file}: файла персоны {persona_file} нет")
+    try:
+        return parse_persona(persona_file.read_text(encoding="utf-8"), str(persona_file))
+    except (OSError, UnicodeDecodeError, ValueError) as exc:
+        raise ProfileError(f"профиль продукта {file}: {exc}") from exc
+
+
 def load_profile(path: "str | os.PathLike[str]") -> ProductProfile:
     """Прочитать профиль: ``path`` - файл ``assistant.yaml`` или каталог с ним. Любая беда - :class:`ProfileError`."""
     file = _profile_file(path)
@@ -110,7 +133,11 @@ def load_profile(path: "str | os.PathLike[str]") -> ProductProfile:
     _check_keys(file, data)
     personality, operator = _wake_table(file, data["wake_words"])
     return ProductProfile(
-        name=data["name"].strip(), wake_personality=personality, wake_operator=operator, root=file.parent
+        name=data["name"].strip(),
+        wake_personality=personality,
+        wake_operator=operator,
+        persona=_persona(file, data["persona"]),
+        root=file.parent,
     )
 
 

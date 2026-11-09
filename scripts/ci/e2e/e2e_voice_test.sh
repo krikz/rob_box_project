@@ -1148,7 +1148,7 @@ if missing_expected and tts_finished_count >= 1:
             f"skipped: {', '.join(likely_voice_skipped)}. "
             f"LLM сделал verbal-only answer (RULE #MUSIC для stop_music / "
             f"RULE #VOICE-MULTI для multi-voice могут не enforce). "
-            f"Проверь master_prompt_compact.txt и/или добавь explicit "
+            f"Проверь промпт Личности (prompts/personality.txt ядра + persona.txt) и/или добавь explicit "
             f"tool-call enforcement в LLM-system reminder."
         )
         # Не добавляем к failures (это hint, не блокер GATE-1), но логируем

@@ -56,10 +56,11 @@ class AgentSpec:
     name: str
     """``"personality"`` или ``"operator"`` — значение колонки ``agent``."""
 
-    prompt_dir: Path
-    """Каталог, где лежит ``<system_prompt_file>``."""
+    prompt_dir: Path | None = None
+    """Каталог, где лежит ``<system_prompt_file>`` (для :func:`load_system_prompt`). Агент, чей промпт собирает
+    хост (Личность: основа ядра с персоной профиля, ADR-0167 Ш1б-3), его не задаёт."""
 
-    system_prompt_file: str
+    system_prompt_file: str = ""
     """Имя ``.txt`` внутри ``prompt_dir`` (system_prompt)."""
 
     # ── LLM (частично общее — см. ADR-0083 §2.3) ────────────────
