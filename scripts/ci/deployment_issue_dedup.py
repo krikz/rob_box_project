@@ -449,6 +449,13 @@ CRITICAL_EXCLUDE_COMMON = [
     # INFO-level metric line that the multi-provider chain emits on
     # every fallback attempt regardless of the final outcome.
     r"\[stt_attempt_metric\].*reason=(error|timeout)",
+    # Эхо health_monitor (Main Pi, perception) WARN-строки stt_node про дедлайн облачного STT
+    # (issue #4484, run 42249624372, 06.11 16:14): `[WARN] stt_node (2s ago): ⚠️ [issue 1477]
+    # stream error: StatusCode.DEADLINE_EXCEEDED ...` — Yandex SpeechKit не уложился в срок,
+    # цепочка уходит на запасной провайдер. Слово «error» в тексте WARN-строки облачного таймаута
+    # не делает деплой больным. Узко: только DEADLINE_EXCEEDED у stt_node; другие коды gRPC
+    # (UNAUTHENTICATED, PERMISSION_DENIED) остаются critical.
+    r"\[warn\] stt_node \(\d+s ago\): .*stream error: statuscode\.deadline_exceeded",
     # promtail → Loki 429 при старте (issue #4484, runs 42288712543, 42302572515, 42312738687,
     # 42319642931, 42324325313, 42335902952): свежий promtail-sound перечитывает /var/log с
     # Offset:0 (positions лежат в /tmp контейнера) и первой же пачкой (~1 МБ, ~9000 строк)

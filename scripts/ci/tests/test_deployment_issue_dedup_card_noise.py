@@ -166,3 +166,20 @@ def test_sound_node_other_warning_stays_visible() -> None:
     line = '[sound_node-6] [WARN] [1793894035.5] [sound_node]: ⚠️ Звук "ui_confirm" не найден в каталоге'
 
     assert warning(line, "sound") == line
+
+
+# --- stt: эхо дедлайна облака в perception (run 42249624372, 06.11) --------------------
+
+STT_DEADLINE_ECHO = (
+    "[health_monitor-4]   [WARN] stt_node (2s ago): ⚠️ [issue 1477] stream error: StatusCode.DEADLINE_EXCEEDED D"
+)
+
+
+def test_stt_cloud_deadline_echo_is_not_critical() -> None:
+    assert critical(STT_DEADLINE_ECHO, "main") is None
+
+
+def test_stt_other_grpc_status_echo_stays_critical() -> None:
+    line = STT_DEADLINE_ECHO.replace("DEADLINE_EXCEEDED", "UNAUTHENTICATED")
+
+    assert critical(line, "main") == line
