@@ -209,8 +209,8 @@ def test_node_defaults_use_the_canonical_wake_words() -> None:
     from rob_box_voice.core.dialogue_text import DEFAULT_WAKE_WORDS
 
     assert DEFAULT_WAKE_WORDS, "the canonical list is empty"
-    # ADR-0150 PR-5: stt_node берёт таблицу у rob_box_dialog.address (своего имени списка нет).
-    for module, decl in (("stt_node.py", 'declare_parameter("wake_words", address.wake_words()[0])'),):
+    # ADR-0167 Ш1б: stt_node берёт таблицу из профиля робота (своего списка нет).
+    for module, decl in (("stt_node.py", 'declare_parameter("profile_path", robot_profile.path())'),):
         source = (
             REPO_ROOT / "src" / "rob_box_voice" / "rob_box_voice" / module
         ).read_text(encoding="utf-8")

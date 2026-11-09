@@ -67,7 +67,6 @@ from rob_box_dialog.e2e_events import open_events
 from rob_box_dialog.execute import transport_timeouts
 from rob_box_dialog.interrupt import TurnsInFlight, on_interrupt
 from rob_box_dialog.memory import profiled_person
-from rob_box_dialog.profile import load_profile
 from rob_box_dialog.pickup_parties import rights_speaker
 from rob_box_dialog.voice_warmth import WarmVoices
 from rob_box_dialog.respond import ActionResult
@@ -90,6 +89,7 @@ from rob_box_mcp_tools.voice_request import REQUEST_TOPIC as VOICE_REQUEST_TOPIC
 from .core import echo_window, greeting_window, identity_question
 from .core import dialog_v2_parity as parity
 from .core import plan_host
+from . import robot_profile
 from .core.dialog_metrics import llm_metrics, record_interrupt
 from .core.backlog_voice import note_backlog_voice
 from .core.dialog_v2_ports import CallCounter, V2Ports, assemble_llm
@@ -116,7 +116,7 @@ def declare_params(node: Any) -> None:
     node.declare_parameter("system_prompt_file", "master_prompt_compact.txt")
     # Профиль продукта (ADR-0167 Ш1б): робот без своего профиля не стартует - нейтральных умолчаний ядра (вейк
     # выключен) роботу нельзя, он отвечал бы на каждую фразу мастерской.
-    node.declare_parameter("profile_path", "/config/assistant.yaml")
+    node.declare_parameter("profile_path", robot_profile.path())  # /config/assistant.yaml (env ROB_BOX_PROFILE)
     node.declare_parameter("temperature", 0.0)
     node.declare_parameter("max_tokens", 0)
     # Номинальный провайдер TTS, пока tts_node не сказал фактический (паузы MiniMax выступления, #3901).
@@ -382,7 +382,7 @@ class DialogNode(Node):
         self._turns = TurnsInFlight()
         self._session_pub = self.create_publisher(SessionState, identity_question.SESSION_TOPIC, _LATCHED)
         # Вейки - из профиля робота (ADR-0167 Ш1б): таблица одна на адресацию, сессию и правила хода.
-        self._wake = list(load_profile(str(self.get_parameter("profile_path").value)).wake_personality)
+        self._wake = list(robot_profile.load(str(self.get_parameter("profile_path").value)).wake_personality)
         self._session = Session("personality", clock=time.time, wake_words=self._wake)
         self._session.subscribe(functools.partial(identity_question.publish, self))
         self._shift = ShiftLog()  # журнал смены (#4076): живёт дольше сессии разговора

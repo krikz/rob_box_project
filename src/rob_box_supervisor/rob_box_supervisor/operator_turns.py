@@ -195,6 +195,7 @@ def build_host(node: Any) -> Tuple[Any, Any]:
     from rob_box_dialog.turn import TurnEngine  # noqa: PLC0415
     from rob_box_dialog_msgs.msg import Intent, SpeechEvent  # noqa: PLC0415
     from rob_box_harness.core.assembly import AgentSpec, build_llm_chain, load_system_prompt  # noqa: PLC0415
+    from rob_box_voice import robot_profile  # noqa: PLC0415
     from rob_box_voice.core import command_bridge  # noqa: PLC0415
     from rob_box_voice.core.dialog_v2_ports import CallCounter, V2Ports, counted_wrapper  # noqa: PLC0415
 
@@ -210,7 +211,9 @@ def build_host(node: Any) -> Tuple[Any, Any]:
     spec = AgentSpec(name=OPERATOR, prompt_dir=node._resolve_prompts_dir() or Path(""),
                      system_prompt_file=node._system_prompt_file, provider_chain=chain,
                      settings=node._build_operator_llm_settings(), wrap_provider=counted_wrapper(bridge, counter))
-    session = Session(OPERATOR, clock=time.time)
+    # Таблица вейков личности - из профиля робота (ADR-0167 Ш1б), как у dialog_node: ей грамматика Tier-1 ТАРС
+    # снимает «Робот, …» с команды оператора. Нет профиля - ТАРС не поднимается (``_safe_build`` пишет причину).
+    session = Session(OPERATOR, clock=time.time, wake_words=robot_profile.load().wake_personality)
     # «стой» оператора (Tier-1) гасит и движение: интент ``stop_motion`` владельцу движения (command_node)
     intent_pub = node.create_publisher(Intent, "/dialog/intent", 10)
     base = V2Ports(node, build_llm_chain(spec), counter, tools, agent=OPERATOR, intent_pub=intent_pub, log=log,
