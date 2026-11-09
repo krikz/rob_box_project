@@ -10,6 +10,6 @@ cd "$DIR"
 find . \( -path ./fuel -o -path './out*' \) -prune -o -type f \
     \( -name '*.sh' -o -name '*.py' -o -name '*.yaml' -o -name '*.json5' -o -name '*.sdf' \) -print0 \
     | while IFS= read -r -d '' f; do
-        grep -q $'\r' "$f" 2>/dev/null || continue
+        tr -d '\r' < "$f" | cmp -s - "$f" && continue
         sed -i 's/\r$//' "$f" || echo "fix_crlf: не удалось исправить $f (нет прав?)" >&2
     done

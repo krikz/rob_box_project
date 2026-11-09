@@ -384,6 +384,7 @@ check "off: предупреждение + изменённый maps → вых�
 # ── 10. sandbox_prep: fix_crlf.sh не заходит в out*/fuel и не падает на чужих файлах ──
 FIX="$REPO_ROOT/scripts/hil/video/fix_crlf.sh"
 CR=$'\r'
+has_cr() { ! tr -d '\r' < "$1" | cmp -s - "$1"; }
 T="$WORK/crlf"; rm -rf "$T"; mkdir -p "$T/out/shisyun_s1/bag" "$T/fuel/Depot" "$T/sub"
 printf 'a%s\nb%s\n' "$CR" "$CR" > "$T/run.sh"
 printf 'a%s\n' "$CR" > "$T/sub/x.py"
@@ -392,8 +393,8 @@ printf 'a%s\n' "$CR" > "$T/fuel/Depot/m.sdf"
 chmod 444 "$T/out/shisyun_s1/bag/other.sh"; chmod 555 "$T/out/shisyun_s1/bag" "$T/out/shisyun_s1" "$T/out"
 bash "$FIX" "$T"; rc=$?
 check "fix_crlf: выход 0 при недоступном out/ (rc=$rc)" '[ "$rc" -eq 0 ]'
-check "fix_crlf: CRLF в run.sh и sub/x.py убраны" '! grep -q "$CR" "$T/run.sh" "$T/sub/x.py"'
-check "fix_crlf: out/ и fuel/ не тронуты" 'grep -q "$CR" "$T/out/shisyun_s1/bag/other.sh" && grep -q "$CR" "$T/fuel/Depot/m.sdf"'
+check "fix_crlf: CRLF в run.sh и sub/x.py убраны" '! has_cr "$T/run.sh" && ! has_cr "$T/sub/x.py"'
+check "fix_crlf: out/ и fuel/ не тронуты" 'has_cr "$T/out/shisyun_s1/bag/other.sh" && has_cr "$T/fuel/Depot/m.sdf"'
 chmod -R u+rwx "$T"
 if [ "$(id -u)" != 0 ]; then
     printf 'a%s\n' "$CR" > "$T/sub/ro.sh"; chmod 444 "$T/sub/ro.sh"; chmod 555 "$T/sub"
