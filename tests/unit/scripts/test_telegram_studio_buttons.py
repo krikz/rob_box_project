@@ -386,7 +386,8 @@ def test_draft_job_sends_progress_then_draft_with_media(run_env, monkeypatch):
 
 def test_timeline_events_come_from_merged_prs():
     events = smedia.timeline_events(FACTS, focus_keys=["pr:4503"])
-    assert events[0]["source"] == "PR #4503"
+    assert events[0]["pr"] == "#4503"  # номер — для сверки; в подвал картинки он не идёт
+    assert events[0]["source"] == smedia.TIMELINE_SOURCE
     assert events[0]["date"] == "06.11"
     assert "(#4495)" not in events[0]["text"]
 

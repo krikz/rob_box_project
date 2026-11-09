@@ -103,8 +103,23 @@ def reader_title(claim: str, limit: int = 90) -> str:
     return text[:1].upper() + text[1:]
 
 
+# Подвал картинки виден в канале: номеров PR там нет (решение Шифу 07.11). Номер PR остаётся в поле
+# ``pr`` события — для сверки и журнала, infographic.py его не рисует.
+TIMELINE_SOURCE = "журнал изменений РОББОКС"
+TIMELINE_TITLE = "Что изменилось у РОББОКСа"
+TIMELINE_SUBTITLE = "по датам: что поменялось в роботе"
+
+
+def is_public(text: str) -> bool:
+    """Текст можно показать в канале: без приватного и без внутренней кухни (channel_lib.POST_FORBIDDEN)."""
+    return not any(pattern.search(text or "") for pattern, _what in lib.POST_FORBIDDEN)
+
+
 def timeline_events(facts: list, limit: int = TIMELINE_MAX, focus_keys: Optional[list] = None) -> list:
-    """События таймлайна — из фактов «PR влит в develop». Дата и источник берутся из факта."""
+    """События таймлайна — из фактов «PR влит в develop». Дата берётся из факта, номер PR — в ``pr``.
+
+    Строка с кухней («один источник параметров — patch_rtabmap_launch.py») на картинку не идёт.
+    """
     events = []
     for fact in _focus_order(facts, focus_keys or []):
         if fact.get("kind") != "merged_pr":
@@ -114,8 +129,13 @@ def timeline_events(facts: list, limit: int = TIMELINE_MAX, focus_keys: Optional
         if not match or len(merged) < 10:
             continue
         number, title = match.groups()
-        text = CONVENTIONAL_RE.sub("", title)
-        events.append({"date": f"{merged[8:10]}.{merged[5:7]}", "text": _short(text), "source": f"PR #{number}"})
+        text = _short(CONVENTIONAL_RE.sub("", title))
+        if not is_public(text):
+            continue
+        text = text[:1].upper() + text[1:]
+        events.append(
+            {"date": f"{merged[8:10]}.{merged[5:7]}", "text": text, "source": TIMELINE_SOURCE, "pr": f"#{number}"}
+        )
         if len(events) >= limit:
             break
     return events
@@ -130,11 +150,19 @@ def timeline_spec(post: dict, facts: list) -> Optional[dict]:
     slug = next((BG_BY_TAG[t] for t in tags if t in BG_BY_TAG), BG_DEFAULT)
     return {
         "template": "timeline",
-        "title": "Что влито в develop",
-        "subtitle": "по влитым PR — источник каждой строки в подвале",
+        "title": TIMELINE_TITLE,
+        "subtitle": TIMELINE_SUBTITLE,
         "events": events,
         "background": {"slug": slug, "prompt": "cached studio background"},
     }
+
+
+def visible_text(spec: dict) -> list:
+    """Всё, что infographic.py напечатает на картинке: заголовки, строки событий, подвал."""
+    events = spec.get("events") or []
+    return [spec.get("title") or "", spec.get("subtitle") or ""] + [
+        str(ev.get(k) or "") for ev in events for k in ("date", "text", "source")
+    ]
 
 
 def _cached_background(cfg: dict):
@@ -152,6 +180,9 @@ def render_timeline(post: dict, facts: list, out_dir: Path) -> tuple:
     spec = timeline_spec(post, facts)
     if spec is None:
         return None, "влитых PR в фактах меньше двух — таймлайн не из чего рисовать"
+    hidden = [text for text in visible_text(spec) if not is_public(text)]
+    if hidden:
+        return None, f"на картинку попала бы внутренняя кухня: «{hidden[0][:60]}» — не рисую"
     try:
         import infographic
     except ImportError as exc:  # нет Pillow — честно говорим, что именно сломалось
