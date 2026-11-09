@@ -41,6 +41,9 @@ CURRENT_BRANCH=$(git branch --show-current)
 echo "   Текущая ветка: $CURRENT_BRANCH"
 git fetch origin
 git reset --hard origin/$CURRENT_BRANCH
+# #4579: сабмодули - на записанные коммиты (reset --hard их не трогает)
+git submodule sync --recursive
+git submodule update --init --recursive
 echo "✅ Код обновлен"
 echo ""
 
