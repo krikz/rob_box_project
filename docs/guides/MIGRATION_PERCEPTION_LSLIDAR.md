@@ -1,3 +1,4 @@
+<!-- stale-paths: ignore-file (описывает удалённое или старую раскладку; кандидат в архив или переписывание, ADR-0163) -->
 # Migration: Perception & LSLIDAR to Main Pi
 
 **Date:** 2025-10-24  
@@ -27,8 +28,8 @@ This migration moves the `perception` (internal dialogue) and `lslidar` (2D LiDA
   - `lslidar_headless_launch.py`
 
 ### Scripts
-- `docker/vision/scripts/perception/start_perception.sh` → `docker/main/scripts/perception/start_perception.sh`
-- `docker/vision/scripts/lslidar/start_lslidar.sh` → `docker/main/scripts/lslidar/start_lslidar.sh`
+- `docker/main/scripts/perception/start_perception.sh` → `docker/main/scripts/perception/start_perception.sh`
+- `docker/main/scripts/lslidar/start_lslidar.sh` → `docker/main/scripts/lslidar/start_lslidar.sh`
 
 ### Dependencies
 - `docker/vision/perception/requirements.txt` → `docker/main/perception/requirements.txt`

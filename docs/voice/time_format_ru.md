@@ -151,7 +151,7 @@ get_current_time tool, прочитай поле formatted_time дословно
   `formatted_time` присутствует, legacy поля сохранены, в message
   упомянуто, без арабских цифр.
 
-### Регрессия / prompt (`src/rob_box_voice/test/unit/node/test_issue_1777_time_format.py`)
+### Регрессия / prompt (`src/rob_box_voice/test/unit/node/test_issue_1777_time_format.py`) <!-- stale-paths: ignore -->
 * `TestPromptTimeFormatRule` (4) — RULE #TIME-FORMAT в промпте,
   упоминания tool/examples/✅❌/строка в §4.
 * `TestDynamicContextTimeReminder` (2, skip на 3.11+) —
@@ -159,7 +159,7 @@ get_current_time tool, прочитай поле formatted_time дословно
 * `TestPhraseTriggerContract` (2) — 5 триггеров покрыты RULE.
 
 ### E2E (отдельный процесс)
-Голосовой e2e (`scripts/e2e/e2e_voice_test.sh`) — TODO по плану,
+Голосовой e2e (`scripts/ci/e2e/e2e_voice_test.sh`) — TODO по плану,
 выполняется merge-gate → e2e-process после PR.
 
 ---

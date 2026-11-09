@@ -1,3 +1,4 @@
+<!-- stale-paths: ignore-file (снимок на дату: пути на момент написания) -->
 # Issue #2060 — Deploy issues on develop (staging) 2026-09-07: root-cause + premise obsolete
 
 **Reporter:** devops worker (t_daafaf23), 2026-09-15

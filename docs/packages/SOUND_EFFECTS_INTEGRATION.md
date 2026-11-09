@@ -1,3 +1,4 @@
+<!-- stale-paths: ignore-file (описывает удалённое или старую раскладку; кандидат в архив или переписывание, ADR-0163) -->
 # 🎵 Интеграция звуковых эффектов в Internal Dialogue
 
 Описание использования sound_pack для эмоционального выражения робота в системе Internal Dialogue.
@@ -131,7 +132,7 @@ critical_threshold: 10  # Ошибок для critical
 ### Launch файл (Docker)
 
 ```python
-# docker/vision/config/perception/internal_dialogue_docker.launch.py
+# src/rob_box_perception/launch/internal_dialogue_docker.launch.py
 
 Node(
     package='rob_box_perception',

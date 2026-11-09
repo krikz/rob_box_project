@@ -1,3 +1,4 @@
+<!-- stale-paths: ignore-file (снимок на дату: пути на момент написания) -->
 # Deploy-issue #2670 — round-423 test — диагностика товарища Шифу
 
 **Канал:** z-{e2e}/test-round-423 — `test` env — 2026-09-16 07:22 UTC

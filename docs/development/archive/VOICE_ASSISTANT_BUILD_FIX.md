@@ -1,3 +1,4 @@
+<!-- stale-paths: ignore-file (снимок на дату: пути на момент написания) -->
 # Voice Assistant Build Fix - audio_common Issues
 
 **Дата:** 2025-10-13  

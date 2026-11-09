@@ -1,3 +1,4 @@
+<!-- stale-paths: ignore-file (снимок на дату: пути на момент написания) -->
 # ROBBOX Voice System - Implementation Summary
 
 ## 🎯 Цель

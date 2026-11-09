@@ -1,3 +1,4 @@
+<!-- stale-paths: ignore-file (описывает удалённое или старую раскладку; кандидат в архив или переписывание, ADR-0163) -->
 # Docker Build Optimization Report
 
 Анализ текущего стека и рекомендации по оптимизации на основе Docker Best Practices.

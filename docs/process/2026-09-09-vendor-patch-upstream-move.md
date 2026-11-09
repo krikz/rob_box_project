@@ -1,3 +1,4 @@
+<!-- stale-paths: ignore-file (снимок на дату: пути на момент написания) -->
 # 2026-09-09 — vendor patch upstream-move problem (issue #2332)
 
 ## Context

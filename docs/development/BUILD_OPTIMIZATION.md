@@ -1,3 +1,4 @@
+<!-- stale-paths: ignore-file (описывает удалённое или старую раскладку; кандидат в архив или переписывание, ADR-0163) -->
 # Оптимизация сборки Docker образов
 
 ## Проблема
@@ -57,7 +58,7 @@ docker/
 │   │   ├── cyclonedds.xml         # → /config/cyclonedds.xml
 │   │   ├── zenoh_session_config.json5  # → /config/zenoh_session_config.json5
 │   │   └── rtabmap/               # Конфиги специфичные для rtabmap
-│   │       └── imu_filter_madgwick.yaml  # параметры rtabmap — scripts/rtabmap/patch_rtabmap_launch.py
+│   │       └── imu_filter_madgwick.yaml  # параметры rtabmap — docker/main/scripts/rtabmap/patch_rtabmap_launch.py
 │   ├── scripts/
 │   │   ├── rtabmap/
 │   │   │   └── start_rtabmap.sh   # → /scripts/start_rtabmap.sh

@@ -166,7 +166,7 @@ collector Prometheus):
 Для подключения к `node_exporter` textfile collector достаточно добавить
 `--collector.textfile.directory=/home/pi/.local/state` в флаги
 node_exporter и перезапустить его. Альтернативно — отдельный
-`prometheus-pushgateway` через `curl` (см. `scripts/monitoring/README.md`).
+`prometheus-pushgateway` через `curl` (см. `scripts/monitoring/robbox_vision_health_check.sh`).
 
 ## Где смотреть, если что-то не так с самим алерт-скриптом
 

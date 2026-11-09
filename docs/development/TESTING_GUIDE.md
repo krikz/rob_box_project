@@ -1,3 +1,4 @@
+<!-- stale-paths: ignore-file (описывает удалённое или старую раскладку; кандидат в архив или переписывание, ADR-0163) -->
 # 🧪 Testing Guide
 
 **Purpose:** Comprehensive guide for writing and running tests in rob_box_project.

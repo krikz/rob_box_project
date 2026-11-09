@@ -1,7 +1,7 @@
 # Различимость голосов TTS для resemblyzer — замер 22.09.2026
 
 Сырые данные к правке таблицы `map_tts_voice`
-(`.github/workflows/scripts/e2e_voice_lib.sh`) и к ADR-0127.
+(`scripts/ci/e2e/e2e_voice_lib.sh`) и к ADR-0127.
 
 **Инструмент:** `scripts/e2e/measure_tts_voice_distinctness.py`
 **Где запускалось:** контейнер `voice-assistant` на Vision Pi (10.1.1.21) —

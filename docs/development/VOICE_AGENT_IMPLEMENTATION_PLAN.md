@@ -1,3 +1,4 @@
+<!-- stale-paths: ignore-file (снимок на дату: пути на момент написания) -->
 # Voice Agent Implementation Plan
 
 ## Текущая Инфраструктура (Что УЖЕ Есть)

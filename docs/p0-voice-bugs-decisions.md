@@ -1,3 +1,4 @@
+<!-- stale-paths: ignore-file (снимок на дату: пути на момент написания) -->
 # P0 voice-bugs — Решения Шифу
 
 > **Источник истины по решениям Шифу (owner) для P0 voice/operator-bugs, которые

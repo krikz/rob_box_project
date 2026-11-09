@@ -1,3 +1,4 @@
+<!-- stale-paths: ignore-file (снимок на дату: пути на момент написания) -->
 # Recovery-Wave после watchdog-provider-quick fix
 
 **Ретро-карточка:** t_916ef347 (25.08 05:18 UTC)

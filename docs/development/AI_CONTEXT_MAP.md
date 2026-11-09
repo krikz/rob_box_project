@@ -1,3 +1,4 @@
+<!-- stale-paths: ignore-file (описывает удалённое или старую раскладку; кандидат в архив или переписывание, ADR-0163) -->
 # AI Context Map - Какие файлы открывать для разных задач
 
 **Назначение:** Этот файл помогает AI агенту быстро найти релевантные файлы для контекста при решении задач.
@@ -199,8 +200,8 @@
 **Файлы для контекста:**
 1. `docker/vision/docker-compose.yaml` (секция lslidar)
 2. `docker/vision/lslidar/Dockerfile`
-3. `docker/vision/config/lslidar/lsx10_custom.yaml`
-4. `docker/vision/scripts/lslidar/start_lslidar.sh`
+3. `docker/main/config/lslidar/lsx10_custom.yaml`
+4. `docker/main/scripts/lslidar/start_lslidar.sh`
 
 **Примеры задач:**
 - Лидар не найден

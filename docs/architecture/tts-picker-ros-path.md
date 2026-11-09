@@ -1,3 +1,4 @@
+<!-- stale-paths: ignore-file (описывает удалённое или старую раскладку; кандидат в архив или переписывание, ADR-0163) -->
 # TTS picker — ROS path: quest_node → TTS provider
 
 Issue: #1919 (AV-27) · Card: `t_5b9d5d0c` · ADR parent: ADR-0027 / ADR-0028

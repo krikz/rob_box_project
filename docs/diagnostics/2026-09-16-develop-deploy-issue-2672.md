@@ -1,3 +1,4 @@
+<!-- stale-paths: ignore-file (снимок на дату: пути на момент написания) -->
 # Issue #2672 — Deploy issues on develop (staging) 2026-09-16: infrastructure blocker, NOT regression
 
 **Reporter:** devops worker (t_35e811c6), 2026-09-16 09:50 UTC

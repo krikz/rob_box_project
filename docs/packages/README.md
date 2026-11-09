@@ -71,7 +71,7 @@ ROS 2 сообщения для ESP32 сенсорного хаба.
 ### led_matrix_driver
 Драйвер LED матриц для отображения анимаций.
 
-**Документация:** [`src/led_matrix_driver/`](../../src/led_matrix_driver/)
+**Документация:** [`src/ros2leds/`](../../src/led_matrix_driver/)
 
 ## 📝 Правила документации пакетов
 

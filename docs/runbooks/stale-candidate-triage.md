@@ -1,3 +1,4 @@
+<!-- stale-paths: ignore-file (описывает удалённое или старую раскладку; кандидат в архив или переписывание, ADR-0163) -->
 # Stale-candidate Triage Runbook
 
 > Операционный runbook для обработки issues, попавших под `stale-candidate`

@@ -249,7 +249,7 @@ backlog; **не** лезть сюда без согласования с Шиф�
 
 > **Порог: 10 минут без прогресса** с момента power-cycle → эскалация
 > Шифу (`@GOODWORKRINKZ` в issue #2648, плюс алерт в `#devops-oncall`
-> канал через `scripts/agent_flow/setup-devops-oncall.sh` —
+> канал (автоматика выведена, ADR-0162) —
 > `docs/runbooks/devops-oncall-channel.md`).
 
 Эскалация нужна, если:

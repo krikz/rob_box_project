@@ -1,3 +1,4 @@
+<!-- stale-paths: ignore-file (описывает удалённое или старую раскладку; кандидат в архив или переписывание, ADR-0163) -->
 # Deployment Guide - Vision Pi Services
 
 Инструкция по развёртыванию сервисов Vision Pi на Raspberry Pi 5.

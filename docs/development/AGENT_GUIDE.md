@@ -637,9 +637,9 @@ sshpass -p 'open' ssh ros2@10.1.1.22 \
 ## Инструментарий мониторинга и диагностики
 
 > ⚠️ **Устарело (проверено 2026-08-28):** почти все скрипты, перечисленные
-> ниже (`docker/monitor_system.sh`, `docker/vision/realtime_monitor.sh`,
-> `docker/diagnose_data_flow.sh`, `docker/vision/diagnose.sh`,
-> `docker/vision/force_publish.sh`, `docker/tune.sh`,
+> ниже (`scripts/diagnostics/monitor_system.sh`, `docker/vision/scripts/realtime_monitor.sh`,
+> `scripts/diagnostics/diagnose_data_flow.sh`, `docker/vision/scripts/diagnose.sh`,
+> `docker/vision/scripts/force_publish.sh`, `scripts/diagnostics/tune.sh`,
 > `docker/vision/config/start_*.sh`) в репозитории больше **не существуют**.
 > Актуальные стартовые скрипты сервисов — в `docker/main/scripts/<svc>/` и
 > `docker/vision/scripts/<svc>/`; в `docker/scripts/` — утилиты питания и CAN (`check_power_status.sh`,
@@ -650,8 +650,8 @@ sshpass -p 'open' ssh ros2@10.1.1.22 \
 
 ### 📊 Скрипты мониторинга (исторический снапшот, см. предупреждение выше)
 
-#### 1. `docker/monitor_system.sh` - Общий системный мониторинг
-**Местоположение**: `docker/monitor_system.sh`  
+#### 1. `scripts/diagnostics/monitor_system.sh` - Общий системный мониторинг
+**Местоположение**: `scripts/diagnostics/monitor_system.sh`  
 **Назначение**: Универсальный мониторинг CPU, памяти, сети, температуры для обоих Pi  
 **Использование**:
 ```bash
@@ -677,8 +677,8 @@ cd ~/rob_box_project/docker
 
 ---
 
-#### 2. `docker/vision/realtime_monitor.sh` - Real-time мониторинг камеры
-**Местоположение**: `docker/vision/realtime_monitor.sh`  
+#### 2. `docker/vision/scripts/realtime_monitor.sh` - Real-time мониторинг камеры
+**Местоположение**: `docker/vision/scripts/realtime_monitor.sh`  
 **Назначение**: Детальный мониторинг работы OAK-D камеры в реальном времени  
 **Использование**:
 ```bash
@@ -729,8 +729,8 @@ cd ~/rob_box_project/docker/vision
 
 ### 🔍 Скрипты диагностики
 
-#### 4. `docker/diagnose_data_flow.sh` - Диагностика связи между Pi
-**Местоположение**: `docker/diagnose_data_flow.sh`  
+#### 4. `scripts/diagnostics/diagnose_data_flow.sh` - Диагностика связи между Pi
+**Местоположение**: `scripts/diagnostics/diagnose_data_flow.sh`  
 **Назначение**: Проверка всего пути передачи данных: Vision Pi → Main Pi  
 **Использование**:
 ```bash
@@ -753,8 +753,8 @@ wsl bash ./diagnose_data_flow.sh
 
 ---
 
-#### 5. `docker/vision/diagnose.sh` - Диагностика камеры на Vision Pi
-**Местоположение**: `docker/vision/diagnose.sh`  
+#### 5. `docker/vision/scripts/diagnose.sh` - Диагностика камеры на Vision Pi
+**Местоположение**: `docker/vision/scripts/diagnose.sh`  
 **Назначение**: Быстрая проверка статуса камеры и топиков  
 **Использование**:
 ```bash
@@ -777,8 +777,8 @@ cd ~/rob_box_project/docker/vision
 
 ---
 
-#### 6. `docker/vision/force_publish.sh` - Принудительная публикация топиков
-**Местоположение**: `docker/vision/force_publish.sh`  
+#### 6. `docker/vision/scripts/force_publish.sh` - Принудительная публикация топиков
+**Местоположение**: `docker/vision/scripts/force_publish.sh`  
 **Назначение**: Отключение lazy publisher для OAK-D  
 **Использование**:
 ```bash
@@ -800,8 +800,8 @@ cd ~/rob_box_project/docker/vision
 
 ### 🔧 Скрипты настройки
 
-#### 7. `docker/tune.sh` - Настройка сетевых буферов (CycloneDDS)
-**Местоположение**: `docker/tune.sh`  
+#### 7. `scripts/diagnostics/tune.sh` - Настройка сетевых буферов (CycloneDDS)
+**Местоположение**: `scripts/diagnostics/tune.sh`  
 **Назначение**: Увеличение сетевых буферов для CycloneDDS  
 **Использование**:
 ```bash
@@ -865,14 +865,14 @@ cd ~/rob_box_project/docker/main
 
 ### 📝 Вспомогательные скрипты (в config/)
 
-#### 10. `docker/vision/config/start_oak_d.sh` - Старт камеры OAK-D
-**Местоположение**: `docker/vision/config/start_oak_d.sh`  
+#### 10. `docker/vision/scripts/oak-d/start_oak_d.sh` - Старт камеры OAK-D
+**Местоположение**: `docker/vision/scripts/oak-d/start_oak_d.sh`  
 **Назначение**: Запуск ноды OAK-D внутри контейнера  
 **Рекомендации**:
 - ✅ **ОСТАВИТЬ** - используется Dockerfile для запуска камеры
 
-#### 11. `docker/vision/config/start_apriltag.sh` - Старт AprilTag детекции
-**Местоположение**: `docker/vision/config/start_apriltag.sh`  
+#### 11. `docker/vision/scripts/apriltag/start_apriltag.sh` - Старт AprilTag детекции
+**Местоположение**: `docker/vision/scripts/apriltag/start_apriltag.sh`  
 **Назначение**: Запуск AprilTag детектора внутри контейнера  
 **Рекомендации**:
 - ✅ **ОСТАВИТЬ** - используется Dockerfile для запуска AprilTag
@@ -886,7 +886,7 @@ cd ~/rob_box_project/docker/main
 #### 1. `abd2629 - fixes`
 **Дата**: Последний коммит  
 **Изменения**:
-- Удален `docker/main/discovery/Dockerfile` (FastDDS discovery сервер больше не нужен)
+- Удален `docker/main/discovery/Dockerfile` (FastDDS discovery сервер больше не нужен) <!-- stale-paths: ignore -->
 - Обновлены `zenoh_router_config.json5` для Vision и Main Pi
 - Обновлены `docker-compose.yaml` для Vision и Main Pi
 
@@ -1006,8 +1006,8 @@ services:
 
 #### Router конфигурация (для обоих Pi)
 **Файлы**: 
-- `docker/vision/config/zenoh_router_config.json5`
-- `docker/main/config/zenoh_router_config.json5`
+- `docker/common/config/zenoh_router_config.json5`
+- `docker/common/config/zenoh_router_config.json5`
 
 **Ключевые параметры**:
 ```json5
@@ -1025,8 +1025,8 @@ services:
 
 #### Session конфигурация (для ROS 2 нод)
 **Файлы**:
-- `docker/vision/config/zenoh_session_config.json5`
-- `docker/main/config/zenoh_session_config.json5`
+- `docker/common/config/zenoh_session_config.json5`
+- `docker/common/config/zenoh_session_config.json5`
 
 **Ключевые параметры**:
 ```json5
@@ -1092,21 +1092,21 @@ wsl sshpass -p 'open' ssh -o StrictHostKeyChecking=no ros2@10.1.1.20 'docker ps'
 ## Рекомендации по скриптам
 
 ### ✅ ОСТАВИТЬ (критичные)
-1. **docker/monitor_system.sh** - универсальный мониторинг
-2. **docker/vision/realtime_monitor.sh** - детальный мониторинг камеры
-3. **docker/diagnose_data_flow.sh** - диагностика межплатной связи
-4. **docker/vision/diagnose.sh** - быстрая диагностика камеры
+1. **scripts/diagnostics/monitor_system.sh** - универсальный мониторинг
+2. **docker/vision/scripts/realtime_monitor.sh** - детальный мониторинг камеры
+3. **scripts/diagnostics/diagnose_data_flow.sh** - диагностика межплатной связи
+4. **docker/vision/scripts/diagnose.sh** - быстрая диагностика камеры
 5. **docker/vision/update_and_restart.sh** - deployment Vision Pi
 6. **docker/main/update_and_restart.sh** - deployment Main Pi
-7. **docker/vision/config/start_oak_d.sh** - запуск камеры (используется Dockerfile)
-8. **docker/vision/config/start_apriltag.sh** - запуск AprilTag (используется Dockerfile)
+7. **docker/vision/scripts/oak-d/start_oak_d.sh** - запуск камеры (используется Dockerfile)
+8. **docker/vision/scripts/apriltag/start_apriltag.sh** - запуск AprilTag (используется Dockerfile)
 
 ### ⚠️ УСТАРЕЛИ / ТРЕБУЮТ ПЕРЕСМОТРА
 1. **docker/vision/monitor_camera_startup.sh** - дублирует realtime_monitor.sh
    - Рекомендация: удалить или объединить с realtime_monitor.sh
-2. **docker/vision/force_publish.sh** - логика в update_and_restart.sh
+2. **docker/vision/scripts/force_publish.sh** - логика в update_and_restart.sh
    - Рекомендация: удалить, оставить как справочник
-3. **docker/tune.sh** - для CycloneDDS (больше не используется)
+3. **scripts/diagnostics/tune.sh** - для CycloneDDS (больше не используется)
    - Рекомендация: удалить, оставить в TROUBLESHOOTING.md как историю
 
 ### 📚 Документация

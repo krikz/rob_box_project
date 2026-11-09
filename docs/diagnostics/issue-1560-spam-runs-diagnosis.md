@@ -1,3 +1,4 @@
+<!-- stale-paths: ignore-file (снимок на дату: пути на момент написания) -->
 # Issue #1560 — develop build spam diagnosis
 
 **Reporter:** devops worker (t_9c5a0b3b), 23.08.2026

@@ -1,3 +1,4 @@
+<!-- stale-paths: ignore-file (снимок на дату: пути на момент написания) -->
 # Code Review Summary - Rob Box Project
 
 **Дата:** 20 октября 2025  

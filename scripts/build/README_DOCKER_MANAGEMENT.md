@@ -1,3 +1,4 @@
+<!-- stale-paths: ignore-file (описывает удалённое или старую раскладку; кандидат в архив или переписывание, ADR-0163) -->
 # Скрипты для управления Docker образами
 
 Этот каталог содержит утилиты для управления Docker образами проекта Rob Box.
@@ -11,7 +12,7 @@
 **Использование:**
 ```bash
 # Автоматическое определение ветки и установка тегов
-source scripts/set-docker-tags.sh
+source scripts/build/set-docker-tags.sh
 
 # После выполнения будут установлены переменные окружения:
 # - IMAGE_TAG (latest, dev, test, rc-X.Y.Z)
@@ -168,7 +169,7 @@ git pull
 git checkout -b feature/my-awesome-feature
 
 # 2. Настроить теги (автоматически установит IMAGE_TAG=test)
-source scripts/set-docker-tags.sh
+source scripts/build/set-docker-tags.sh
 
 # 3. Внести изменения в код
 # ... редактирование файлов ...
@@ -203,7 +204,7 @@ git checkout main
 git pull
 
 # Настроить теги для production (IMAGE_TAG=latest)
-source scripts/set-docker-tags.sh
+source scripts/build/set-docker-tags.sh
 
 # Скачать последние образы
 cd docker/vision
@@ -229,7 +230,7 @@ git checkout develop
 git pull
 
 # Настроить теги для development (IMAGE_TAG=dev)
-source scripts/set-docker-tags.sh
+source scripts/build/set-docker-tags.sh
 
 # Скачать и запустить dev образы
 cd docker/vision
@@ -247,7 +248,7 @@ docker-compose up -d
 cd /path/to/rob_box_project
 
 # Настроить теги
-source scripts/set-docker-tags.sh
+source scripts/build/set-docker-tags.sh
 
 # Собрать для x86_64 (быстро)
 ./scripts/local-build.sh voice-assistant linux/amd64
@@ -308,7 +309,7 @@ ERROR: pull access denied for ghcr.io/krikz/rob_box:voice-assistant-humble-wrong
 echo $IMAGE_TAG
 
 # Если пустой или неправильный - перезапустить скрипт
-source scripts/set-docker-tags.sh
+source scripts/build/set-docker-tags.sh
 
 # Проверить что .env файлы обновились
 cat docker/vision/.env | grep IMAGE_TAG
