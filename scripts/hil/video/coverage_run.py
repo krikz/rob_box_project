@@ -18,7 +18,13 @@ coverage_metric.run_summary по исходам целей и треку ист�
 SIGINT/SIGTERM: текущая цель отменяется (INTERRUPTED), остаток — NOT_SENT, во вход Nav2 /cmd_vel — нулевая
 скорость, COVERAGE_DONE пишется по пройденному со stop=interrupted_SIGINT. Второй сигнал — выход сразу.
 
-  python3 -u coverage_run.py --out /sim_video/coverage [--plan-only] [--spacing 0.55] [--axis auto]
+``--perimeter`` (#4607): после змейки — проход по периметру (rob_box_sim.coverage_perimeter). На каждый нырок две
+цели: подъезд к началу (NavigateToPose в место разворота) и сам путь целью FollowPath контроллера Nav2 — путь строит
+код, без разворота у стены и без заднего хода. Подъезд не удался — путь не шлётся (NOT_SENT): иначе DWB поехал бы
+к пути оттуда, где стоит. Итог нырков — строка PERIMETER_DONE (покрытие по треку до и после периметра);
+COVERAGE_DONE считает всё вместе. ``--perimeter-only`` — без езды змейкой (проба периметра).
+
+  python3 -u coverage_run.py --out /sim_video/coverage [--plan-only] [--spacing 0.55] [--axis auto] [--perimeter]
 """
 import argparse
 import json
@@ -29,7 +35,11 @@ import time
 from pathlib import Path
 
 import rclpy
+import route
 from geometry_msgs.msg import Twist
+from nav2_msgs.action import FollowPath
+from nav_msgs.msg import Path as NavPath
+from rclpy.action import ActionClient
 from rob_box_sim.coverage_metric import (
     GoalOutcome,
     coverage_result,
@@ -40,6 +50,7 @@ from rob_box_sim.coverage_metric import (
     run_summary,
     write_image,
 )
+from rob_box_sim.coverage_perimeter import perimeter_done, perimeter_summary, plan_perimeter, reverse_m, strips_to_json
 from rob_box_sim.coverage_plan import (
     SPEED_MPS,
     coverage_space,
@@ -49,7 +60,7 @@ from rob_box_sim.coverage_plan import (
     save_grid_npz,
 )
 from rob_box_sim.map_check import grab_map
-from route import Mon, run_goal, run_lane, through_poses_client, ts, wait_ready
+from route import Mon, _pose, run_goal, run_lane, through_poses_client, ts, wait_ready
 
 
 class CoverageMon(Mon):
@@ -92,6 +103,9 @@ def parse_args(argv):
     ap.add_argument("--max-fail", type=int, default=5, help="столько неудач подряд — стоп")
     ap.add_argument("--max-poses", type=int, default=0, help="ограничить число поз (0 — все)")
     ap.add_argument("--plan-only", action="store_true", help="только план и картинка, без езды")
+    ap.add_argument("--perimeter", action="store_true", help="после змейки — проход по периметру (#4607)")
+    ap.add_argument("--perimeter-only", action="store_true", help="только проход по периметру, змейкой не ехать")
+    ap.add_argument("--wall-offset", type=float, default=None, help="центр от стены на периметре, м (умолч. 0.4125)")
     return ap.parse_args(argv)
 
 
@@ -198,6 +212,67 @@ def drive(n, cl, poses, timeout, max_fail, stop=None, lanes=False):
     return outcomes, f"interrupted_{stop.name}" if stop.name else ""
 
 
+# ── Проход по периметру (#4607) ──────────────────────────────────────────────
+
+
+def follow_path_client(n):
+    """Клиент /follow_path контроллера Nav2 (до 60 с)."""
+    cl = ActionClient(n, FollowPath, "/follow_path")
+    assert cl.wait_for_server(timeout_sec=60), "нет /follow_path"
+    return cl
+
+
+def run_follow(n, cl, name, path, timeout, stop=None):
+    """Путь ``path`` [(x, y, yaw рад)] целью FollowPath (DWB, проверка по costmap); вернуть (итог, эпизоды защиты)."""
+    g = FollowPath.Goal()
+    g.path = NavPath()
+    g.path.header.frame_id = "map"
+    g.path.poses = [_pose(x, y, math.degrees(t)) for x, y, t in path]
+    g.controller_id = "FollowPath"
+    g.goal_checker_id = "general_goal_checker"
+    (x0, y0, _), (x1, y1, _) = path[0], path[-1]
+    target = f"path[{len(path)}] ({x0:.3f},{y0:.3f})->({x1:.3f},{y1:.3f})"
+    return route._send(n, cl, name, g, target, (x1, y1), timeout, stop)
+
+
+def path_length(path):
+    return sum(math.dist(a[:2], b[:2]) for a, b in zip(path, path[1:]))
+
+
+def _strip(n, nav, follow, name, path, timeout, stop_fn):
+    """Один нырок: подъезд к началу (место разворота), затем путь. Подъезд не удался — путь NOT_SENT."""
+    x, y, t = path[0]
+    raw, em = run_goal(n, nav, f"{name}a", round(x, 3), round(y, 3), round(math.degrees(t), 1), timeout, stop=stop_fn)
+    approach = GoalOutcome.from_route(f"{name}a", raw, em)
+    if not approach.succeeded:
+        return approach, GoalOutcome.not_sent(f"{name}f")
+    raw, em = run_follow(n, follow, f"{name}f", path, timeout + path_length(path) / SPEED_MPS, stop=stop_fn)
+    return approach, GoalOutcome.from_route(f"{name}f", raw, em)
+
+
+def drive_perimeter(n, nav, follow, pplan, timeout, max_fail, stop=None):
+    """Нырки по порядку плана; вернуть (исходы, причина остановки). Неудачный нырок (подъезд или путь) идёт в счёт
+    ``max_fail`` подряд, как цель змейки."""
+    stop = stop or StopSignal()
+    strips = pplan.driven()
+    outcomes, fails = [], 0
+    for idx, (k, path) in enumerate(strips):
+        why = _stop_reason(stop, fails, max_fail)
+        if why:
+            return outcomes + _not_sent_strips(pplan, idx), why
+        s = pplan.strips[k]
+        name = f"P{idx:04d}"
+        print(
+            f"{ts()} PERIM_STRIP {name} axis={s.axis} side={s.side:+d} path_m={s.length_m:.1f} "
+            f"dip_m={s.dip_max_m:.2f} gain_est_m2={s.gain_m2:.2f}",
+            flush=True,
+        )
+        pair = _strip(n, nav, follow, name, path, timeout, lambda: bool(stop.name))
+        outcomes += pair
+        fails = 0 if pair[1].succeeded else fails + 1
+    return outcomes, f"interrupted_{stop.name}" if stop.name else ""
+
+
 def halt(n, topic="/cmd_vel", times=5):
     """Нулевая скорость во вход Nav2 у twist_mux: после отмены цели робот не доедет по старой команде."""
     pub = n.create_publisher(Twist, topic, 10)
@@ -229,14 +304,62 @@ def _init_ros():
     rclpy.init(signal_handler_options=SignalHandlerOptions.NO)
 
 
+def _clients(n, args):
+    """(NavigateToPose, клиент цели змейки, FollowPath); None — где не нужен."""
+    if args.plan_only:
+        return None, None, None
+    nav = wait_ready(n)
+    lane = nav if args.per_pose or args.perimeter_only else through_poses_client(n)
+    follow = follow_path_client(n) if args.perimeter or args.perimeter_only else None
+    return nav, lane, follow
+
+
+def _plan_perimeter(args, space, plan):
+    """План периметра, perimeter.json и строка PERIMETER_PLAN; без ``--perimeter`` — None."""
+    if not (args.perimeter or args.perimeter_only):
+        return None
+    pplan = plan_perimeter(space, plan, wall_offset_m=args.wall_offset)
+    (args.out / "perimeter.json").write_text(json.dumps(strips_to_json(pplan)), encoding="utf-8")
+    print(f"{ts()} {perimeter_summary(pplan, space, plan)}", flush=True)
+    return pplan
+
+
+def _not_sent_strips(pplan, start=0):
+    return [GoalOutcome.not_sent(f"P{j:04d}{g}") for j in range(start, len(pplan.order)) for g in "af"]
+
+
+def _drive_all(n, clients, args, poses, pplan, stop):
+    """Змейка, затем периметр; вернуть (исходы змейки, исходы периметра, причина остановки, точек трека до периметра).
+
+    Змейка встала (неудачи подряд, сигнал) — нырки не едут, все NOT_SENT."""
+    nav, lane, follow = clients
+    snake, perim, why = [], [], ""
+    if not args.perimeter_only:
+        snake, why = drive(n, lane, poses, args.timeout, args.max_fail, stop, lanes=not args.per_pose)
+    k0 = len(n.track)
+    if pplan is not None:
+        if why:
+            perim = _not_sent_strips(pplan)
+        else:
+            perim, why = drive_perimeter(n, nav, follow, pplan, args.timeout, args.max_fail, stop)
+    return snake, perim, why, k0
+
+
+def _report_perimeter(n, space, perim, k0):
+    """Строка PERIMETER_DONE: исходы нырков и покрытие по треку истинной позы до периметра и после."""
+    before = coverage_result(space, covered_mask(space, n.track[:k0]))
+    after = coverage_result(space, covered_mask(space, n.track))
+    line = f"{ts()} {perimeter_done(perim, before, after, reverse_m(n.track[k0:]))}"
+    print(line, flush=True)
+    return line
+
+
 def main(argv=None):
     args = parse_args(argv)
     _init_ros()
     stop = StopSignal().install()
     n = CoverageMon()
-    cl = None if args.plan_only else wait_ready(n)
-    if cl is not None and not args.per_pose:
-        cl = through_poses_client(n)
+    clients = _clients(n, args)
     t_end = time.time() + 15
     while n.gt is None and time.time() < t_end:
         rclpy.spin_once(n, timeout_sec=0.1)
@@ -254,16 +377,19 @@ def main(argv=None):
         cross=not args.no_cross,
     )
     _write_plan(args.out, grid, space, plan)
+    pplan = _plan_perimeter(args, space, plan)
     if args.plan_only:
         rclpy.shutdown()
         return 0
     poses = plan.poses[: args.max_poses] if args.max_poses else plan.poses
     n.track.clear()
     sim0 = n.simt()
-    outcomes, why = drive(n, cl, poses, args.timeout, args.max_fail, stop, lanes=not args.per_pose)
+    snake, perim, why, k0 = _drive_all(n, clients, args, poses, pplan, stop)
     if stop.name:
         halt(n)
-    finish(args.out, n, grid, space, outcomes, why, sim0)
+    if pplan is not None:
+        _report_perimeter(n, space, perim, k0)
+    finish(args.out, n, grid, space, snake + perim, why, sim0)
     rclpy.shutdown()
     return 0
 
