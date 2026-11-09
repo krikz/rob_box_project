@@ -215,6 +215,7 @@ rm "$STAND_LOCK"                            # замок стенда; напи�
   (обычный `compose.hil.yaml`, без Depot), точки-кабинеты — `ROUTE_GOALS_FILE=/sim_worlds/building.goals.yaml
   ./runvideo.sh aud_101 dean …` (имена из файла, порядок — как в аргументах). В Gazebo ещё не запускался [код].
   План с точками: `docs/runbooks/img/hil-building-plan.png` (коробки, прочитанные из `building.sdf`).
+  Полный прогон (карта, маршрут, локализация) одной командой — `docs/runbooks/hil-building.md`.
 
 ## 8. Чего не делать
 
