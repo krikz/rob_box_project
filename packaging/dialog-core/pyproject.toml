@@ -83,4 +83,5 @@ rob_box_mcp_tools = "../../src/rob_box_mcp_tools/rob_box_mcp_tools"
 "rob_box_dialog.phrases" = ["*.yaml"]
 "rob_box_harness.core.data" = ["*.yaml"]
 "rob_box_core" = ["py.typed"]
+"rob_box_core.migrations" = ["*.sql"]
 "rob_box_music" = ["data/*.json"]
