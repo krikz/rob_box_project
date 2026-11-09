@@ -151,9 +151,15 @@ def test_obstacle_verdict():
     ok = dict(base, obstacle={"spawned": True, "stopped": True, "stop_gap_m": 0.31, "min_gap_m": 0.30})
     assert sv.task_failures(ok) == []
     close = dict(base, obstacle={"spawned": True, "stopped": True, "stop_gap_m": 0.12, "min_gap_m": 0.12})
-    assert any("зазор после остановки" in r for r in sv.task_failures(close))
+    assert any("подошёл к стенке на 0.120" in r for r in sv.task_failures(close))
+    # встал далеко, но по пути (торможение, манёвр) подходил ближе 0.20 — провал
+    swerve = dict(base, obstacle={"spawned": True, "stopped": True, "stop_gap_m": 1.0, "min_gap_m": 0.15})
+    assert any("подошёл к стенке" in r for r in sv.task_failures(swerve))
+    # не замер 0.5 с, но держался дальше 0.20 — не провал
+    around = dict(base, obstacle={"spawned": True, "stopped": False, "min_gap_m": 0.37})
+    assert sv.task_failures(around) == []
     through = dict(base, obstacle={"spawned": True, "stopped": False, "min_gap_m": -0.01})
-    assert any("не остановился" in r for r in sv.task_failures(through))
+    assert any("касание стенки" in r for r in sv.task_failures(through))
     assert sv.task_failures(dict(base, obstacle={"spawned": False})) == ["стенка не появилась"]
 
 

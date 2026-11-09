@@ -282,14 +282,17 @@ def _goal_failures(task: Mapping, crit: Criteria) -> List[str]:
 def _obstacle_failures(ob: Mapping, crit: Criteria) -> List[str]:
     if not ob.get("spawned"):
         return ["стенка не появилась"]
-    if not ob.get("stopped"):
-        return [f"не остановился перед стенкой (мин. зазор {ob.get('min_gap_m')} м)"]
-    out = []
-    if ob["stop_gap_m"] < crit.obstacle_gap_min_m:
-        out.append(f"зазор после остановки {ob['stop_gap_m']:.3f} м < {crit.obstacle_gap_min_m}")
-    if ob.get("min_gap_m") is not None and ob["min_gap_m"] < crit.contact_m:
-        out.append(f"касание стенки: {ob['min_gap_m']:.3f} м")
-    return out
+    # Мерило — наименьший зазор после появления стенки: робот у стенки не всегда замирает на 0.5 с, он может
+    # встать, сдать назад и объехать (HIL 09.11: «остановка» через 5–16 с и 5–7 м пути), а ближе всего он
+    # подходит именно в торможении. Касание — частный случай зазора < 0.20.
+    gap = ob.get("min_gap_m")
+    if gap is None:
+        return ["нет зазора до стенки"]
+    if gap < crit.contact_m:
+        return [f"касание стенки: {gap:.3f} м"]
+    if gap < crit.obstacle_gap_min_m:
+        return [f"подошёл к стенке на {gap:.3f} м < {crit.obstacle_gap_min_m}"]
+    return []
 
 
 def run_verdict(tasks: Sequence[Mapping], main: Mapping, crit: Criteria = CRITERIA) -> Tuple[str, List[str]]:
