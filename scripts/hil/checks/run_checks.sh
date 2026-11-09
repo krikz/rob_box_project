@@ -162,7 +162,7 @@ zone_run() {  # zone_run <каталог>: наезд + raw (общая част
     mkdir -p "$d"
     t0=$(iso_now)
     guard_env >"$d/env.txt"
-    expr_capture "$d/expr.log" 120 &
+    expr_capture "$d/expr.log" 90 &
     epid=$!
     probe "$d/probe.log" wall --speed "$WALL_SPEED"
     sleep 5

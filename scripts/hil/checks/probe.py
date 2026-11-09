@@ -41,7 +41,15 @@ GT_TOPIC = "/sim/ground_truth/odom"
 SCAN_TOPIC = "/scan"
 MAP_FRAME, BASE_FRAME = "map", "base_footprint"
 CONTROLLER_ID, GOAL_CHECKER_ID = "FollowPath", "general_goal_checker"  # nav2_params.yaml controller_server
-STATUS = {v: k.replace("STATUS_", "", 1) for k, v in GoalStatus.__dict__.items() if k.startswith("STATUS_")}
+STATUS = {
+    GoalStatus.STATUS_UNKNOWN: "UNKNOWN",
+    GoalStatus.STATUS_ACCEPTED: "ACCEPTED",
+    GoalStatus.STATUS_EXECUTING: "EXECUTING",
+    GoalStatus.STATUS_CANCELING: "CANCELING",
+    GoalStatus.STATUS_SUCCEEDED: "SUCCEEDED",
+    GoalStatus.STATUS_CANCELED: "CANCELED",
+    GoalStatus.STATUS_ABORTED: "ABORTED",
+}
 CMD_HZ = 10.0
 #: Файл-сигнал «хватит слушать» для ``watch`` (в контейнере; старый удаляется на старте пробы).
 STOP_FILE = "/tmp/hil_probe.stop"
@@ -85,10 +93,13 @@ class Probe(Node):
         self.create_subscription(LaserScan, SCAN_TOPIC, self.on_scan, 10)
         self.teleop = self.create_publisher(Twist, TELEOP_TOPIC, 10)
         self.create_timer(0.2, self.tick)
-        import tf2_ros  # noqa: PLC0415
+        try:  # TF нужен только orphan и nav --ahead; без tf2_ros они честно пишут ERROR, остальное работает
+            import tf2_ros  # noqa: PLC0415
 
-        self.tf = tf2_ros.Buffer()
-        self.tf_listener = tf2_ros.TransformListener(self.tf, self)
+            self.tf = tf2_ros.Buffer()
+            self.tf_listener = tf2_ros.TransformListener(self.tf, self)
+        except ImportError:
+            self.tf = None
 
     def simt(self):
         return self.get_clock().now().nanoseconds / 1e9
@@ -165,6 +176,8 @@ class Probe(Node):
     def pose_in_map(self):
         import rclpy.time  # noqa: PLC0415
 
+        if self.tf is None:
+            raise RuntimeError("нет tf2_ros в контейнере")
         tf = self.tf.lookup_transform(MAP_FRAME, BASE_FRAME, rclpy.time.Time())
         t, q = tf.transform.translation, tf.transform.rotation
         return t.x, t.y, yaw_of(q)

@@ -50,6 +50,8 @@ PHRASE_WINDOW_S = 30.0
 #: Писк и голос защиты после входа в «стоп» (с, стена; часы Main и Sound Pi разные — запас).
 BEEP_LAG_S = 2.0
 SPEECH_LAG_S = 6.0
+#: Нет ни одной строки пробы: не стартовала или упала (traceback — в probe.log).
+NO_PROBE = "в probe.log нет строк пробы — не стартовала или упала, см. файл"
 #: Тулы навигации, исход которых озвучивает класс ``action.motion``.
 NAV_TOOLS = ("navigate_to_coordinates", "navigate_to_waypoint", "move_direction")
 
@@ -309,7 +311,7 @@ def v_orphan_synthetic(probe: Sequence[Event], watchdog: Sequence[Event], grace_
     """#4458: своя цель FollowPath после отменённой NavigateToPose (сирота нарочно) гасится сторожем за ``grace_s``."""
     sc = ("#4458", "orphan")
     if not probe:
-        return Verdict(*sc, NO_DATA, ("лог пробы пуст",))
+        return Verdict(*sc, NO_DATA, (NO_PROBE,))
     skip = kinds(probe, "ORPHAN_SKIP", "ERROR")
     if skip:
         return Verdict(*sc, NOT_TRIGGERED, tuple(f"{e.kind} {e.text}" for e in skip))
@@ -343,7 +345,7 @@ def v_orphan_natural(probe: Sequence[Event], watchdog: Sequence[Event], grace_s:
     Сирота не возникла — NOT_TRIGGERED: сторож не проверен."""
     sc = ("#4435", "orphan_natural")
     if not probe:
-        return Verdict(*sc, NO_DATA, ("лог пробы пуст",))
+        return Verdict(*sc, NO_DATA, (NO_PROBE,))
     bad, terminal = halt_violations(probe, grace_s)
     result = kinds(probe, "NAV_RESULT")
     facts = [f"итог цели: {result[0].fields.get('status') if result else 'нет'}"]
@@ -374,7 +376,7 @@ def v_tool_halt(probe: Sequence[Event], grace_s: float) -> Verdict:
     """#4435/#4456: после провала цели тула навигации (из диалога) через ``grace_s`` нет FollowPath и mux = 0."""
     sc = ("#4435", "tool_halt")
     if not probe:
-        return Verdict(*sc, NO_DATA, ("лог пробы пуст",))
+        return Verdict(*sc, NO_DATA, (NO_PROBE,))
     bad, terminal = halt_violations(probe, grace_s)
     if bad:
         return Verdict(*sc, FAIL, tuple(bad))
@@ -507,7 +509,7 @@ def v_zone(run: ZoneRun, px) -> Verdict:
     писк, «Осторожно!» и маячок (Шифу 04.11: «звучат вместе и согласованно»)."""
     sc = ("#4365", "zone")
     if not run.probe:
-        return Verdict(*sc, NO_DATA, ("лог пробы пуст",))
+        return Verdict(*sc, NO_DATA, (NO_PROBE,))
     skipped = kinds(run.probe, "WALL_NOT_FOUND", "ROTATE_FAIL", "ERROR")
     if skipped:
         return Verdict(*sc, NOT_TRIGGERED, tuple(e.kind + " " + e.text for e in skipped))
@@ -555,7 +557,7 @@ def v_guard_sound(run: ZoneRun, px, mode: str, env_text: str) -> Verdict:
     защиты, а стоп и маячок работают."""
     sc = ("#4470", f"guard_sound_{mode}")
     if not run.probe:
-        return Verdict(*sc, NO_DATA, ("лог пробы пуст",))
+        return Verdict(*sc, NO_DATA, (NO_PROBE,))
     env = dict(re.findall(r"(\w+)=(\S+)", env_text))
     facts = [
         f"env proximity-guard: HIL_GUARD_SOUND={env.get(px.GUARD_SOUND_ENV, 'unset')} "
