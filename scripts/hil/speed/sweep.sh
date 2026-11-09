@@ -8,6 +8,8 @@
 set -uo pipefail
 export MSYS_NO_PATHCONV=1
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# Windows-python не понимает /d/… при MSYS_NO_PATHCONV=1
+PYHERE="$(cygpath -m "$HERE" 2>/dev/null || echo "$HERE")"
 : "${SPEED_OUT:?SPEED_OUT — каталог результатов}"
 : "${SPEED_START:=1.0}"
 classes=("$@")
@@ -15,7 +17,7 @@ classes=("$@")
 for cls in "${classes[@]}"; do
     while :; do
         [ -f "$SPEED_OUT/STOP" ] && { echo "SWEEP_STOPPED $(date -u +%FT%TZ)"; exit 0; }
-        line=$(python "$HERE/speed_verdict.py" next --ledger "$SPEED_OUT/ledger.jsonl" --cls "$cls" --start "$SPEED_START")
+        line=$(python "$PYHERE/speed_verdict.py" next --ledger "$SPEED_OUT/ledger.jsonl" --cls "$cls" --start "$SPEED_START")
         echo "$(date -u +%H:%M:%SZ) $line"
         read -r _ _ v scene rep _ <<<"$line"
         [ "$v" = DONE ] && break

@@ -16,6 +16,8 @@ export MSYS_NO_PATHCONV=1
 
 scene="$1"; speed="$2"; rep="$3"
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# Windows-python не понимает /d/… при MSYS_NO_PATHCONV=1
+PYHERE="$(cygpath -m "$HERE" 2>/dev/null || echo "$HERE")"
 : "${SPEED_OUT:?SPEED_OUT — каталог результатов на машине оператора}"
 : "${SPEED_MAIN:=ros2@10.1.1.10}"
 : "${SPEED_SANDBOX:=ros2@10.1.1.250}"
@@ -72,8 +74,9 @@ EOF
     ssh "${SSHO[@]}" "$SPEED_MAIN" "mkdir -p /tmp/hil/nav2tune && cat > /tmp/hil/nav2tune/speed.yaml" <"$RES/speed.yaml"
     overlay="/nav2tune/speed.yaml"
 fi
-ssh "${SSHO[@]}" "$SPEED_MAIN" "cat > /tmp/hil/nav2tune.compose.yaml" <"$HERE/nav2tune.compose.yaml"
-ssh "${SSHO[@]}" "$SPEED_SANDBOX" "mkdir -p /home/ros2/shidi-speed && cat > /home/ros2/shidi-speed/sim_spawn.compose.yaml" \
+# CRLF из чекаута на Windows срезается на той стороне (tr -d '\r')
+ssh "${SSHO[@]}" "$SPEED_MAIN" "tr -d '\r' > /tmp/hil/nav2tune.compose.yaml" <"$HERE/nav2tune.compose.yaml"
+ssh "${SSHO[@]}" "$SPEED_SANDBOX" "mkdir -p /home/ros2/shidi-speed && tr -d '\r' > /home/ros2/shidi-speed/sim_spawn.compose.yaml" \
     <"$HERE/sim_spawn.compose.yaml"
 
 mn "test -f /tmp/hil.lock" || { log "❌ HIL не включён (/tmp/hil.lock нет)"; exit 2; }
@@ -95,21 +98,30 @@ T0=$(mn "date -u +%Y-%m-%dT%H:%M:%SZ")
 mn "mkdir -p $maps && cd ~/rob_box_project/docker/main && HIL_MAPS_DIR=$maps HIL_RTABMAP_MODE=mapping HIL_GUARD_SOUND=\${HIL_GUARD_SOUND:-on} NAV2TUNE_OVERLAYS='$overlay' docker compose -f docker-compose.yaml -f /tmp/hil/main.images.yaml -f /tmp/hil/main.hil.yaml $extra up -d --no-deps --pull never --force-recreate $MAINSVC" >>"$RES/run.log" 2>&1 \
     || { log "❌ Main: пересоздание не прошло"; exit 4; }
 mn "docker inspect -f '{{range .Config.Env}}{{println .}}{{end}}' nav2 | grep -E 'NAV2_PARAMS_OVERLAYS|USE_SIM_TIME'" >>"$RES/run.log" 2>&1
-# 3. сим вверх со спавном сцены
-st=$(mn "docker inspect -f '{{.State.Status}}' ros2-control 2>/dev/null || echo absent")
-case "$st" in running*) log "❌ ros2-control работает ($st) — сим не поднимаю"; exit 3 ;; esac
-sb "$SIMDC up -d --no-build gazebo" >>"$RES/run.log" 2>&1 || { log "❌ gazebo up"; exit 5; }
-# 4. ровно один /controller_manager
-ok=0
-for _ in $(seq 1 36); do
-    gz=$(sb "docker inspect -f '{{.State.Status}}' $G 2>/dev/null || echo absent")
-    case "$gz" in running*) ;; *) log "❌ gazebo не работает ($gz)"; sb "docker logs --tail 30 $G" >>"$RES/run.log" 2>&1; exit 6 ;; esac
-    cm=$(sb "docker exec $G /entrypoint.sh python3 -m rob_box_sim.hil count --settle 3 2>/dev/null | grep -E '^[0-9]+$' | tail -n 1")
-    if [ "$cm" = 1 ]; then ok=1; break; fi
-    if [ -n "$cm" ] && [ "$cm" != 0 ]; then log "❌ /controller_manager=$cm — гашу сим"; sb "$SIMDC rm -sf gazebo"; exit 7; fi
-    sleep 5
+# 3–4. сим вверх со спавном сцены, ровно один /controller_manager. Сторож gazebo отказывает, пока не видит
+# /robot_state_publisher робота (Main только что пересоздан) — тогда gazebo выходит, и пробуем ещё раз.
+sim_up() {
+    local st gz cm
+    st=$(mn "docker inspect -f '{{.State.Status}}' ros2-control 2>/dev/null || echo absent")
+    case "$st" in running*) log "❌ ros2-control работает ($st) — сим не поднимаю"; exit 3 ;; esac
+    sb "$SIMDC up -d --no-build gazebo" >>"$RES/run.log" 2>&1 || { log "❌ gazebo up"; exit 5; }
+    for _ in $(seq 1 36); do
+        gz=$(sb "docker inspect -f '{{.State.Status}}' $G 2>/dev/null || echo absent")
+        case "$gz" in running*) ;; *) log "gazebo не работает ($gz)"; sb "docker logs --tail 5 $G" >>"$RES/run.log" 2>&1; return 1 ;; esac
+        cm=$(sb "docker exec $G /entrypoint.sh python3 -m rob_box_sim.hil count --settle 3 2>/dev/null | grep -E '^[0-9]+$' | tail -n 1")
+        [ "$cm" = 1 ] && return 0
+        if [ -n "$cm" ] && [ "$cm" != 0 ]; then log "❌ /controller_manager=$cm — гашу сим"; sb "$SIMDC rm -sf gazebo"; exit 7; fi
+        sleep 5
+    done
+    log "❌ контроллер Gazebo не появился"; sb "$SIMDC rm -sf gazebo"; exit 8
+}
+sleep 15
+up=0
+for attempt in 1 2 3 4; do
+    if sim_up; then up=1; break; fi
+    log "повтор подъёма сима ($attempt)"; sb "$SIMDC rm -sf gazebo" >>"$RES/run.log" 2>&1; sleep 10
 done
-[ "$ok" = 1 ] || { log "❌ контроллер Gazebo не появился"; sb "$SIMDC rm -sf gazebo"; exit 8; }
+[ "$up" = 1 ] || { log "❌ сим не поднялся"; exit 6; }
 log "сим поднят, /controller_manager=1"
 
 # 5. замер Main Pi (load и docker stats раз в ~2 с) на всё время прогона
@@ -119,7 +131,7 @@ mn "rm -f $stopf; nohup bash -c 'end=\$((SECONDS+$SPEED_BENCH_TIMEOUT+120)); whi
 # 6. прогон
 sb "docker exec $G mkdir -p /tmp/speed" >>"$RES/run.log" 2>&1
 for f in speed_bench.py speed_verdict.py; do
-    ssh "${SSHO[@]}" "$SPEED_SANDBOX" "docker exec -i $G sh -c 'cat > /tmp/speed/$f'" <"$HERE/$f"
+    ssh "${SSHO[@]}" "$SPEED_SANDBOX" "docker exec -i $G sh -c 'tr -d \"\\\\r\" > /tmp/speed/$f'" <"$HERE/$f"
 done
 sb "docker exec $G /entrypoint.sh timeout $SPEED_BENCH_TIMEOUT python3 -u /tmp/speed/speed_bench.py --world $world --spawn $SX $SY $SYAW --vmax $vmax --tasks '$tasks' --label $label --out /tmp/sp/$label" >"$RES/bench.out" 2>&1
 log "bench rc=$?"
@@ -136,13 +148,13 @@ mn "docker logs --since $T0 nav2 2>&1 | grep -vE 'missed its desired rate'" >"$R
 missed=$(mn "docker logs --since $T0 nav2 2>&1 | grep -cE 'missed its desired rate'")
 mn "docker logs --since $T0 rtabmap 2>&1 | tail -100" >"$RES/rtabmap.log"
 echo "$missed" >"$RES/nav2_missed.txt"
-python "$HERE/speed_verdict.py" cpu "$RES/cpu.log" >"$RES/cpu.json"
+python "$PYHERE/speed_verdict.py" cpu "$RES/cpu.log" >"$RES/cpu.json"
 python - "$RES/cpu.json" "$missed" "$RES/main.json" <<'EOF'
 import json, sys
 d = json.load(open(sys.argv[1], encoding="utf-8"))
 d["nav2_missed"] = int(sys.argv[2] or 0)
 json.dump(d, open(sys.argv[3], "w", encoding="utf-8"), ensure_ascii=False)
 EOF
-python "$HERE/speed_verdict.py" run "$RES/result.json" "$RES/main.json" --speed "$([ "$speed" = base ] && echo 0.15 || echo "$speed")" \
+python "$PYHERE/speed_verdict.py" run "$RES/result.json" "$RES/main.json" --speed "$([ "$speed" = base ] && echo 0.15 || echo "$speed")" \
     --scene "$scene" --rep "$rep" --label "$label" --ledger "$SPEED_OUT/ledger${SPEED_LEDGER_SUFFIX:-}.jsonl" | tee "$RES/verdict.txt" | tee -a "$RES/run.log"
 log "стопов защиты (→ stop): $(grep -c '→ stop' "$RES/guard.log"); missed rate: $missed"

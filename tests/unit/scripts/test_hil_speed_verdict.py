@@ -120,13 +120,22 @@ def test_good_goal_passes():
         ({"pose_err": {"p95": 0.12}}, "ошибка позы p95"),
         ({"icp": {"longest_lost_run": 2}}, "срыв ICP"),
         ({"cmd_interval": {"p95": 0.15, "gaps": 0, "gaps_per_min": 0}}, "такт контроллера"),
-        ({"cmd_interval": {"p95": 0.06, "gaps": 5, "gaps_per_min": 3.0}}, "серии пропусков"),
         ({"min_clearance_m": -0.002}, "касание"),
     ],
 )
 def test_goal_failures(kw, needle):
     reasons = sv.task_failures(good_goal(**kw))
     assert any(needle in r for r in reasons), reasons
+
+
+def test_cmd_gap_series_counted_over_the_whole_run():
+    short = good_goal(cmd_interval={"p95": 0.06, "gaps": 1, "gaps_per_min": 9.3, "moving_s": 6.5})
+    long_ = good_goal(name="DE", cmd_interval={"p95": 0.06, "gaps": 0, "gaps_per_min": 0.0, "moving_s": 120.0})
+    # одна серия на 126.5 с движения — 0.47 в минуту: не провал, хотя короткая задача дала бы «9.3 в минуту»
+    assert sv.run_verdict([short, long_], MAIN_OK) == (sv.PASS, [])
+    many = good_goal(cmd_interval={"p95": 0.06, "gaps": 3, "gaps_per_min": 3.0, "moving_s": 60.0})
+    v, reasons = sv.run_verdict([many], MAIN_OK)
+    assert v == sv.FAIL and any("серии пропусков" in r for r in reasons)
 
 
 def test_single_icp_blip_with_reset_is_not_a_failure():

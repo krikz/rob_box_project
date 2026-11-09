@@ -251,11 +251,23 @@ def _cmd_failures(task: Mapping, crit: Criteria) -> List[str]:
     ci = task.get("cmd_interval") or {}
     if ci.get("p95") is not None and ci["p95"] > crit.cmd_p95_max_s:
         out.append(f"такт контроллера p95 {ci['p95']:.3f} с > {crit.cmd_p95_max_s}")
-    if ci.get("gaps_per_min", 0.0) > crit.cmd_gaps_per_min_max:
-        out.append(
-            f"серии пропусков /cmd_vel {ci['gaps']} ({ci['gaps_per_min']}/мин) > {crit.cmd_gaps_per_min_max}/мин"
-        )
     return out
+
+
+def run_cmd_gaps(tasks: Sequence[Mapping]) -> Tuple[int, float]:
+    """Серии пропусков ``/cmd_vel`` и секунды движения за весь прогон сцены (одна серия в 6 с короткой
+    задачи не должна считаться как «10 в минуту»)."""
+    gaps = sum((t.get("cmd_interval") or {}).get("gaps", 0) for t in tasks)
+    moving = sum((t.get("cmd_interval") or {}).get("moving_s", 0.0) for t in tasks)
+    return gaps, moving
+
+
+def _gap_failures(tasks: Sequence[Mapping], crit: Criteria) -> List[str]:
+    gaps, moving = run_cmd_gaps(tasks)
+    per_min = gaps / (moving / 60.0) if moving > 0 else 0.0
+    if per_min > crit.cmd_gaps_per_min_max:
+        return [f"серии пропусков /cmd_vel: {gaps} за {moving:.0f} с движения ({per_min:.2f}/мин)"]
+    return []
 
 
 def _goal_failures(task: Mapping, crit: Criteria) -> List[str]:
@@ -287,6 +299,7 @@ def run_verdict(tasks: Sequence[Mapping], main: Mapping, crit: Criteria = CRITER
         reasons.append("нет задач в result.json")
     for t in tasks:
         reasons += [f"{t.get('name')}: {r}" for r in task_failures(t, crit)]
+    reasons += _gap_failures(tasks, crit)
     cpu = (main.get("cpu") or {}).get("nav2") or {}
     if cpu.get("p95") is not None and cpu["p95"] > crit.nav2_cpu_p95_max:
         reasons.append(f"CPU nav2 p95 {cpu['p95']}% > {crit.nav2_cpu_p95_max}%")

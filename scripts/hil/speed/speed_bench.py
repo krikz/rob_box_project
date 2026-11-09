@@ -64,7 +64,7 @@ class Recorder:
         self.cmds: list[tuple[float, float]] = []  # wall t, v (контроллер на Pi крутится по стене)
         self.estop: list[float] = []
         self.pose_err: list[tuple[float, float]] = []  # t, ошибка м
-        self.pose_miss = 0
+        self.pose_miss: list[float] = []  # t кадров правды без TF на штамп
         self._next_pose_t = 0.0
         self._pose_i = 0
         nav.create_subscription(Odometry, "/sim/ground_truth/odom", self._on_truth, 50)
@@ -95,11 +95,25 @@ class Recorder:
             if t < self._next_pose_t:
                 continue
             self._next_pose_t = t + 0.1
-            m = self.lookup("map", "base_footprint", t)
+            m = self.map_pose_at(t)
             if m is None:
-                self.pose_miss += 1
+                self.pose_miss.append(t)
                 continue
             self.pose_err.append((t, sv.pose_error((x, y), self.spawn, m)))
+
+    def map_pose_at(self, t: float):
+        """``map → base_footprint`` на штамп ``t``. rtabmap шлёт ``map → icp_odom`` со штампом своего кадра
+        (реже скана), и цепочка на точный штамп часто не находится: тогда ``icp_odom → base_footprint`` на ``t``
+        (ICP 10 Гц + колёса 50 Гц) и поправка карты ``map → icp_odom`` последняя (она меняется медленно)."""
+        m = self.lookup("map", "base_footprint", t)
+        if m is not None:
+            return m
+        ib = self.lookup("icp_odom", "base_footprint", t)
+        mi = self.lookup("map", "icp_odom", None)
+        if ib is None or mi is None:
+            return None
+        p = Pose2D(*mi).compose(Pose2D(*ib))
+        return (p.x, p.y, p.yaw)
 
     def lookup(self, parent: str, child: str, t: float | None):
         stamp = Time() if t is None else Time(nanoseconds=int(t * 1e9))
@@ -281,7 +295,7 @@ class Runner:
             "min_clearance_m": None if math.isinf(clr) else round(clr, 3),
             "pose_err": {
                 **sv.spread_stats([e for t, e in self.rec.pose_err if t0 <= t <= t1]),
-                "miss": self.rec.pose_miss,
+                "miss": sum(1 for t in self.rec.pose_miss if t0 <= t <= t1),
             },
             "icp": {"frames": len(lost), "lost": total, "longest_lost_run": longest},
             "cmd_interval": sv.cmd_interval_stats([c for c in self.rec.cmds if w0 <= c[0] <= w1]),
