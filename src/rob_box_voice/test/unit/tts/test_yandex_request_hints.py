@@ -80,9 +80,9 @@ if _yandex_v3 is None or not hasattr(_yandex_v3, "tts_pb2"):
             SynthesizerStub=lambda *a, **kw: None
         )
 
-if "rob_box_voice.tts_node" in sys.modules:
-    del sys.modules["rob_box_voice.tts_node"]
-
+# #4526: модуль ``rob_box_voice.tts_node`` из sys.modules НЕ удаляем. Адаптер ``tts_providers.yandex`` его не
+# импортирует, а удаление на сборке оставляло test_tts_node_sink_routing с классом TTSNode без модуля в
+# sys.modules (``inspect.getsource`` -> «is a built-in class»).
 from rob_box_voice.tts_providers.yandex import YandexTTSProvider  # noqa: E402
 
 

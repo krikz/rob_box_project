@@ -409,7 +409,9 @@ def test_importing_tts_node_does_not_import_torch() -> None:
     if torch_mod is not None and isinstance(torch_mod, MagicMock):
         # The stub is in place. Re-import tts_node to verify it didn't
         # somehow trigger a real torch load.
-        sys.modules.pop("rob_box_voice.tts_node", None)
+        # Модуль, который уже держат другие тесты (TTSNode в test_tts_node_sink_routing), возвращаем на место:
+        # без него inspect.getsource(TTSNode) падает «is a built-in class» (#4526).
+        previous = sys.modules.pop("rob_box_voice.tts_node", None)
         try:
             importlib.import_module("rob_box_voice.tts_node")
         except Exception as exc:  # noqa: BLE001 — conftest stubs aren't perfect
@@ -418,6 +420,9 @@ def test_importing_tts_node_does_not_import_torch() -> None:
                 f"{exc} — likely a conftest stub gap. AST checks above "
                 f"are the authoritative regression for #2609."
             )
+        finally:
+            if previous is not None:
+                sys.modules["rob_box_voice.tts_node"] = previous
         # Re-check torch — should still be the MagicMock stub.
         torch_mod_after = sys.modules.get("torch")
         assert isinstance(torch_mod_after, MagicMock), (
