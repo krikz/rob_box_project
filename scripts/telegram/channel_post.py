@@ -20,7 +20,7 @@ from __future__ import annotations
 import argparse
 import sys
 import time
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
@@ -233,7 +233,7 @@ def send_draft(
         for p in problems:
             out(f"  - {p}")
         return 1
-    slot = post.not_before.astimezone(timezone(timedelta(hours=1)))
+    slot = post.not_before.astimezone(lib.SHIFU_TZ)
     note = (
         f"Заготовка {post.name}. Переслать в канал @robbox_project со скрытым именем отправителя "
         f"(«Скрыть имя автора»), затем долгий тап по кнопке отправки → «Отправить позже» на "
