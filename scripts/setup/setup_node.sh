@@ -966,14 +966,53 @@ setup_sensor_hub() {
 #      при изменении.
 #   7. chrony (--role sound): время ведёт Main Pi, как на Vision Pi (ADR-0137).
 
+# Пароль Wi-Fi бортовой сети (решение Шифу 09.11): не хранится ни в репо, ни в файле на хосте.
+# Его вводит человек в консоли (read -s, без эха, в лог не пишется). Без TTY (curl | bash) —
+# только через переменную окружения на один запуск: ROBBOX_WIFI_PSK=… bash setup_node.sh sound.
+# Пароль печатается в stdout (для подстановки), сообщения — в stderr.
+WIFI_SSID="${ROBBOX_WIFI_SSID:-ROS2}"
+
+read_wifi_psk() {
+    if [ -n "${ROBBOX_WIFI_PSK:-}" ]; then
+        printf '%s' "$ROBBOX_WIFI_PSK"
+        return 0
+    fi
+    if [ ! -t 0 ]; then
+        log_error "Нужен пароль Wi-Fi сети \"$WIFI_SSID\" для netplan, а терминала нет (curl | bash или без TTY)." >&2
+        log_error "Передайте его на один запуск, он нигде не сохранится:" >&2
+        log_error "  ROBBOX_WIFI_PSK='<пароль>' bash ~/rob_box_project/scripts/setup/setup_node.sh sound" >&2
+        log_error "(пробел перед командой не даст ей попасть в историю bash при HISTCONTROL=ignorespace)" >&2
+        return 1
+    fi
+    local psk=""
+    read -r -s -p "Пароль Wi-Fi сети \"$WIFI_SSID\" (ввод не отображается): " psk
+    echo "" >&2
+    if [ -z "$psk" ]; then
+        log_error "Пустой пароль — netplan не записан" >&2
+        return 1
+    fi
+    printf '%s' "$psk"
+}
+
+# Экранирование строки для YAML в двойных кавычках: \ и ".
+yaml_dq() {
+    local v="${1//\\/\\\\}"
+    printf '%s' "${v//\"/\\\"}"
+}
+
 setup_sound_network() {
     log_step "Настройка сети Sound Pi: eth0 (metric 100) + wlan0 (metric 600)"
 
-    local netplan_file="/etc/netplan/01-netcfg.yaml"
+    local netplan_file="${ROBBOX_NETPLAN_FILE:-/etc/netplan/01-netcfg.yaml}"
     if [ -f "$netplan_file" ] && sudo grep -q "route-metric: 100" "$netplan_file"; then
         log_info "$netplan_file уже содержит eth0 metric 100 — пропускаю"
     else
-        sudo tee "$netplan_file" > /dev/null << 'NETPLANEOF'
+        local psk_yaml ssid_yaml
+        psk_yaml="$(read_wifi_psk)" || return 1
+        psk_yaml="$(yaml_dq "$psk_yaml")"
+        ssid_yaml="$(yaml_dq "$WIFI_SSID")"
+        # umask 077: файл с паролем ни на миг не читаем для всех (раньше tee создавал его 0644, потом chmod).
+        (umask 077; sudo tee "$netplan_file" > /dev/null) << NETPLANEOF
 # ROBBOX Sound Pi (ADR-0159). Копия схемы Vision Pi:
 # eth0 — основной канал данных (metric 100), wlan0 — резерв/SSH (metric 600).
 # При подключённом кабеле весь трафик идёт через eth0, без кабеля — через wlan0.
@@ -994,13 +1033,14 @@ network:
       dhcp-identifier: mac
       optional: true
       access-points:
-        "ROS2":
-          password: "1234567890"
+        "${ssid_yaml}":
+          password: "${psk_yaml}"
       dhcp4-overrides:
         route-metric: 600
       nameservers:
         addresses: [8.8.8.8, 8.8.4.4]
 NETPLANEOF
+        unset psk_yaml
         sudo chmod 600 "$netplan_file"
         log_info "Применяю netplan (SSH по wlan0 не рвётся: адрес wlan0 не меняется)..."
         if sudo netplan apply; then
@@ -1338,4 +1378,7 @@ main() {
 }
 
 # Запуск главной функции с первым аргументом (тип узла)
-main "$1"
+# ROBBOX_SETUP_SOURCE_ONLY=1 — только определить функции (тесты: scripts/setup/tests/test_setup_node_wifi_psk.py).
+if [ "${ROBBOX_SETUP_SOURCE_ONLY:-0}" != 1 ]; then
+    main "$1"
+fi
