@@ -535,30 +535,39 @@ MOTDEOF
 install_robbox_aliases() {
     log_step "Установка РОББОКС Bash Aliases"
     
-    ALIASES_FILE="$HOME/rob_box_project/scripts/robbox_aliases.sh"
-    
+    # Файл переехал в scripts/maintenance/ — по старому пути scripts/robbox_aliases.sh шаг молча
+    # пропускался, и 09.11 ни на одной из трёх Pi строки алиасов в ~/.bashrc не было (замер #4375).
+    ALIASES_FILE="$HOME/rob_box_project/scripts/maintenance/robbox_aliases.sh"
+    touch "$HOME/.bashrc"
+
     # Проверка существования файла
     if [ ! -f "$ALIASES_FILE" ]; then
         log_warning "Файл алиасов не найден: $ALIASES_FILE"
         log_warning "Пропускаю установку алиасов..."
         return
     fi
-    
+
+    # Старая строка с несуществующим путём — переписать на новый.
+    if grep -q "rob_box_project/scripts/robbox_aliases.sh" "$HOME/.bashrc"; then
+        sed -i 's#rob_box_project/scripts/robbox_aliases.sh#rob_box_project/scripts/maintenance/robbox_aliases.sh#g' "$HOME/.bashrc"
+        log_info "Путь к алиасам в ~/.bashrc исправлен на scripts/maintenance/"
+    fi
+
     # Проверка, не установлены ли уже
-    if grep -q "robbox_aliases.sh" "$HOME/.bashrc"; then
+    if grep -q "scripts/maintenance/robbox_aliases.sh" "$HOME/.bashrc"; then
         log_success "РОББОКС aliases уже установлены!"
         return
     fi
-    
+
     log_info "Добавление РОББОКС aliases в .bashrc..."
-    
+
     cat >> "$HOME/.bashrc" << 'ALIASEOF'
 
 # ═══════════════════════════════════════════════════════════════════════════
 # 🤖 РОББОКС Bash Aliases
 # ═══════════════════════════════════════════════════════════════════════════
-if [ -f ~/rob_box_project/scripts/robbox_aliases.sh ]; then
-    source ~/rob_box_project/scripts/robbox_aliases.sh
+if [ -f ~/rob_box_project/scripts/maintenance/robbox_aliases.sh ]; then
+    source ~/rob_box_project/scripts/maintenance/robbox_aliases.sh
 fi
 ALIASEOF
     

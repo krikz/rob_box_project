@@ -5,11 +5,11 @@
 # Полезные алиасы для работы с системой РОББОКС
 #
 # Установка:
-#   source ~/rob_box_project/scripts/robbox_aliases.sh
+#   source ~/rob_box_project/scripts/maintenance/robbox_aliases.sh
 #
 # Или добавить в ~/.bashrc:
-#   if [ -f ~/rob_box_project/scripts/robbox_aliases.sh ]; then
-#       source ~/rob_box_project/scripts/robbox_aliases.sh
+#   if [ -f ~/rob_box_project/scripts/maintenance/robbox_aliases.sh ]; then
+#       source ~/rob_box_project/scripts/maintenance/robbox_aliases.sh
 #   fi
 # ═══════════════════════════════════════════════════════════════════════════
 

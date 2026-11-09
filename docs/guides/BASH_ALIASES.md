@@ -48,8 +48,8 @@ curl -fsSL https://raw.githubusercontent.com/krikz/rob_box_project/develop/scrip
 
 ```bash
 # Добавить РОББОКС алиасы
-if [ -f ~/rob_box_project/scripts/robbox_aliases.sh ]; then
-    source ~/rob_box_project/scripts/robbox_aliases.sh
+if [ -f ~/rob_box_project/scripts/maintenance/robbox_aliases.sh ]; then
+    source ~/rob_box_project/scripts/maintenance/robbox_aliases.sh
 fi
 ```
 
