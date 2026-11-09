@@ -197,7 +197,7 @@ def build_host(node: Any) -> Tuple[Any, Any]:
     from rob_box_harness.core.assembly import AgentSpec, build_llm_chain  # noqa: PLC0415
     from rob_box_voice import robot_profile  # noqa: PLC0415
     from rob_box_voice.core import command_bridge  # noqa: PLC0415
-    from rob_box_voice.core.dialog_v2_ports import CallCounter, V2Ports, counted_wrapper  # noqa: PLC0415
+    from rob_box_dialog_host.dialog_v2_ports import CallCounter, V2Ports, counted_wrapper  # noqa: PLC0415
 
     from rob_box_supervisor.operator_prompt import operator_prompt  # noqa: PLC0415
 

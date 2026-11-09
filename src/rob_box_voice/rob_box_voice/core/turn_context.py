@@ -7,7 +7,7 @@ from __future__ import annotations
 
 from typing import Any, List, Tuple
 
-from rob_box_voice.tts_voice_registry import ROBOT_DEFAULT_PROVIDER, default_voice_for, known_provider, named_voices_for
+from rob_box_dialog_host.tts_voice_registry import ROBOT_DEFAULT_PROVIDER, default_voice_for, known_provider, named_voices_for
 
 
 def tts_state(node: Any) -> Tuple[str, str]:

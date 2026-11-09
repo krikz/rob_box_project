@@ -363,7 +363,7 @@ async def bridge_turn(provider: LLMProvider, mode: str, extra: Mapping[str, Any]
     ``system_text`` — системный промпт (пусто — минимальный :data:`BRIDGE_PERSONA`); температура и лимит вывода —
     как в конфиге робота (без ``max_tokens`` MiniMax режет ответ на своём дефолте)."""
     from rob_box_harness.providers.reasoning import without_reasoning
-    from rob_box_voice.core.command_bridge import CommandModeLLM, judge
+    from rob_box_dialog_host.command_bridge import CommandModeLLM, judge
 
     wrapped = CommandModeLLM(provider)
     wrapped.mode = mode  # type: ignore[assignment]  # режим ячейки, а не select_mode

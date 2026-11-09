@@ -7,7 +7,7 @@ without ROS dependencies.
 """
 
 import pytest
-from rob_box_voice.core.command_parser import CommandParser, Command, IntentType
+from rob_box_dialog_host.command_parser import CommandParser, Command, IntentType
 from voice_robot_wake import ROBOT_WAKE  # noqa: E402 — тестовый профиль робота
 
 

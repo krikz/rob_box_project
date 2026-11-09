@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import pytest
 
-from rob_box_voice.tts_voice_registry import (PROVIDER_LABELS, PROVIDER_VOICES, VOICE_ALIASES, VOICE_METADATA,
+from rob_box_dialog_host.tts_voice_registry import (PROVIDER_LABELS, PROVIDER_VOICES, VOICE_ALIASES, VOICE_METADATA,
                                               named_voices_for, voice_display_name)
 
 

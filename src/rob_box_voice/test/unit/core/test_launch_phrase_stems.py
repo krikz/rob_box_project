@@ -7,7 +7,7 @@
 
 from __future__ import annotations
 
-from rob_box_voice.core.media_phrases import (
+from rob_box_dialog_host.media_phrases import (
     LAUNCH_PHRASE_STEMS,
     dj_started_text,
     piece_text,

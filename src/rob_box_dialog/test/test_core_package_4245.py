@@ -56,15 +56,12 @@ def _top_level_imports(path):
 def test_package_ships_core_and_bridge():
     names = {n for n, _ in _sources()}
     for must in ("rob_box_dialog.turn", "rob_box_core.utterance", "rob_box_llm.provider",
-                 "rob_box_harness.core.assembly", "rob_box_voice.core.dialog_v2_ports",
-                 "rob_box_voice.core.command_bridge", "rob_box_voice.core.voice_memory",
-                 "rob_box_voice.core.speaker_memory", "rob_box_voice.tts_voice_registry",
-                 "rob_box_voice.core.music_player_state",
-                 # связка хода - пакет rob_box_dialog_host (ADR-0167 Ш1г-1); пути rob_box_voice выше - псевдонимы
-                 "rob_box_dialog_host.dialog_v2_ports", "rob_box_dialog_host.command_bridge",
-                 "rob_box_dialog_host.voice_memory", "rob_box_dialog_host.speaker_memory",
-                 "rob_box_dialog_host.tts_voice_registry", "rob_box_dialog_host.music_player_state"):
+                 "rob_box_harness.core.assembly", "rob_box_dialog_host.dialog_v2_ports",
+                 "rob_box_dialog_host.command_bridge", "rob_box_dialog_host.voice_memory",
+                 "rob_box_dialog_host.speaker_memory", "rob_box_dialog_host.tts_voice_registry",
+                 "rob_box_dialog_host.music_player_state"):  # связка хода - пакет rob_box_dialog_host (Ш1г)
         assert must in names, must
+    assert not [n for n in names if n.startswith("rob_box_voice")], "rob_box_voice в ядре не ставится (Ш1г-2)"
     assert not [n for n in names if ".test." in f".{n}." or n.endswith("_node")], "тесты и ROS-ноды не в ядре"
 
 
@@ -100,7 +97,7 @@ def test_core_comes_from_package_not_checkout():
     import rob_box_dialog
     import rob_box_harness
     import rob_box_llm
-    import rob_box_voice.core.dialog_v2_ports as ports
+    import rob_box_dialog_host.dialog_v2_ports as ports
 
     where = {m.__name__: pathlib.Path(m.__file__).resolve() for m in
              (rob_box_core, rob_box_dialog, rob_box_harness, rob_box_llm, ports)}

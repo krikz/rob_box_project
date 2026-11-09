@@ -15,7 +15,7 @@ from rob_box_dialog import knowledge as kn
 from rob_box_dialog.context import SNAPSHOT_TAG
 from rob_box_dialog.profile import load_profile
 from rob_box_dialog.prompts import personality_prompt, telegram_prompt
-from rob_box_voice.core.dialog_v2_ports import system_prompt
+from rob_box_dialog_host.dialog_v2_ports import system_prompt
 
 PACKAGE = Path(__file__).resolve().parents[2]
 PROFILE = PACKAGE.parent.parent / "docker" / "sound" / "config" / "assistant.yaml"

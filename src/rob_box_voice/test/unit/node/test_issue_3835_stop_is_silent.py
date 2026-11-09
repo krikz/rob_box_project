@@ -15,7 +15,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from rob_box_voice.core.command_parser import Command, IntentType
+from rob_box_dialog_host.command_parser import Command, IntentType
 
 _STUBBED = ("rclpy", "rclpy.action", "std_msgs", "std_msgs.msg", "geometry_msgs", "geometry_msgs.msg",
             "nav2_msgs", "nav2_msgs.action")

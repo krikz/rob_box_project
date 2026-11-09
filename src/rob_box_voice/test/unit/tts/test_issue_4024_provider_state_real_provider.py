@@ -25,7 +25,7 @@ _install_all_mocks()
 
 from rob_box_voice.core.speech_timing import PREFETCH_PROVIDER, Presynth  # noqa: E402
 from rob_box_voice.tts_node import TTSNode  # noqa: E402
-from rob_box_voice.tts_voice_registry import known_provider  # noqa: E402
+from rob_box_dialog_host.tts_voice_registry import known_provider  # noqa: E402
 
 
 class _Bare:

@@ -24,8 +24,8 @@ from std_msgs.msg import String
 from geometry_msgs.msg import PoseStamped, Twist
 from nav2_msgs.action import NavigateToPose
 
-from rob_box_voice.core.command_intent import command_from_intent
-from rob_box_voice.core.command_parser import Command, IntentType
+from rob_box_dialog_host.command_intent import command_from_intent
+from rob_box_dialog_host.command_parser import Command, IntentType
 
 
 class CommandNode(Node):

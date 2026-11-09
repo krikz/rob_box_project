@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import pytest
 
-from rob_box_voice.core.media_phrases import NOT_PLAYED_TEXT
+from rob_box_dialog_host.media_phrases import NOT_PLAYED_TEXT
 from rob_box_voice.core.music_turn import MusicTurn, piece_requested, turn_reply
 
 

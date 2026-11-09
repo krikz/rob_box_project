@@ -24,7 +24,7 @@ from rob_box_dialog.command import Command, Invalid, parse, validate
 
 from rob_box_voice.core import plan_host
 from rob_box_voice.core.perform_host import PerformHost
-from rob_box_voice.tts_voice_registry import (
+from rob_box_dialog_host.tts_voice_registry import (
     PROVIDER_VOICES,
     ROLE_VOICE_LANGUAGE,
     VOICE_METADATA,

@@ -14,7 +14,7 @@ from rob_box_mcp_tools.engine.engine_tools import NOT_FOUND
 from rob_box_music import knowledge as kn
 from rob_box_music.diversity import MusicHistory
 from rob_box_music.works import SCORE, WorkCandidate
-from rob_box_voice.core.media_phrases import composer_missing_error, composer_missing_text
+from rob_box_dialog_host.media_phrases import composer_missing_error, composer_missing_text
 
 from .test_engine_session import _rig
 from .test_piece_fail_open import Scores, _material, _tools

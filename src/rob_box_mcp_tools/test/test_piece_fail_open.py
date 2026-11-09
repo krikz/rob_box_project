@@ -22,7 +22,7 @@ from rob_box_music.diversity import MusicHistory
 from rob_box_music.choice import DeterministicChooser, penalty, recency
 from rob_box_music.model import Key, PitchEvent
 from rob_box_music.works import SCORE, WorkCandidate, key_slot
-from rob_box_voice.core.media_phrases import launch_text, piece_text
+from rob_box_dialog_host.media_phrases import launch_text, piece_text
 from rob_box_voice.core.music_turn import Launch, ok_text
 
 from .test_engine_session import _rig, _started

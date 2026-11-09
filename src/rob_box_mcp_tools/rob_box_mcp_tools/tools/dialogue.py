@@ -30,7 +30,7 @@ from ..animations import (
 # rob_box_voice (чистый Python, без ROS). Ленивый импорт с fallback,
 # чтобы пакет оставался импортируемым без rob_box_voice (CI linter).
 try:
-    from rob_box_voice.tts_voice_registry import (
+    from rob_box_dialog_host.tts_voice_registry import (
         default_voice_for,
         providers_overview,
         resolve_voice,

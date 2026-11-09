@@ -3,7 +3,7 @@
 22.10 замер акта 1 (run 39849541397) шёл под DJ-сетом, запущенным из Telegram: во всех ходах
 ``<music_state>{"playing":"yes",...,"dj":"on"}``. Здесь исполняется НАСТОЯЩАЯ ``ensure_music_stopped_for_act``
 из ``e2e_voice_lib.sh`` и НАСТОЯЩИЙ python, который она отправляет в контейнер (подписанный /mcp/execute,
-разбор снимка настоящим ``rob_box_voice.core.music_player_state``); робот -- ``fake_robot_ssh.sh`` с
+разбор снимка настоящим ``rob_box_dialog_host.music_player_state``); робот -- ``fake_robot_ssh.sh`` с
 файловым «плеером» (``ros_stubs/``).
 
 Run:

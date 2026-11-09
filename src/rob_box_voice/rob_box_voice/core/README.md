@@ -66,7 +66,7 @@ if manager.should_respond(user_text):
 
 **Usage Example**:
 ```python
-from rob_box_voice.core.command_parser import CommandParser, IntentType
+from rob_box_dialog_host.command_parser import CommandParser, IntentType
 
 # Create parser
 parser = CommandParser()

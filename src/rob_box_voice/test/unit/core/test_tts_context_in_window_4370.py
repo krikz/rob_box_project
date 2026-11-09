@@ -18,7 +18,7 @@ from rob_box_dialog import knowledge as kn  # noqa: E402
 from rob_box_dialog.context import build_context  # noqa: E402
 
 from rob_box_voice.core import plan_host  # noqa: E402
-from rob_box_voice.tts_voice_registry import format_tts_context, voice_info_for  # noqa: E402
+from rob_box_dialog_host.tts_voice_registry import format_tts_context, voice_info_for  # noqa: E402
 
 
 def _node(provider: str = "minimax", applied: str | None = None) -> types.SimpleNamespace:

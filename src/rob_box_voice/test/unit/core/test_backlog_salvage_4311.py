@@ -17,7 +17,7 @@ from rob_box_dialog import knowledge as kn
 from rob_box_dialog.command import Command, Invalid
 from rob_box_llm.provider import LLMChunk, LLMMessage, LLMResponse, LLMSettings, ProviderCapabilities, ToolCall
 from rob_box_llm.providers import deepseek as ds
-from rob_box_voice.core import command_bridge as cb
+from rob_box_dialog_host import command_bridge as cb
 
 DEEPSEEK_CAPS = ds.DeepSeekProvider(api_key="test").capabilities
 N903_ACTIONS = [{"tool": "play_sound", "args": {"sound": "robot_alert"}},

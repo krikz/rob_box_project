@@ -41,7 +41,7 @@ from .tts_engines import (
     silero_apply_tts,
     yandex_collect_audio,
 )
-from .tts_voice_registry import SingPreset, sing_preset_for
+from rob_box_dialog_host.tts_voice_registry import SingPreset, sing_preset_for
 
 _log = logging.getLogger(__name__)
 

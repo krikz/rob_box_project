@@ -240,7 +240,7 @@ class GetMusicStateTool(MCPTool):
 
     def execute(self) -> MCPToolResult:
         """Сет идёт — его статус (``DjSetTool.status``); иначе дека (``PlayerOwner.now_playing``)."""
-        from rob_box_voice.core.media_phrases import NOTHING_PLAYING_TEXT, now_playing_track_text
+        from rob_box_dialog_host.media_phrases import NOTHING_PLAYING_TEXT, now_playing_track_text
 
         owner = getattr(self.node, "_player_owner", None)
         dj_set = getattr(self.node, "_dj_set_tool", None)

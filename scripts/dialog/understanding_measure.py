@@ -195,7 +195,7 @@ def fake_stand(rule: Callable[[List[Any], List[str]], Dict[str, Any]], workdir: 
     from rob_box_llm.provider import LLMResponse, ProviderCapabilities, ToolCall  # noqa: PLC0415
     from rob_box_llm.providers.fake import FakeLLMProvider  # noqa: PLC0415
     from rob_box_voice.core import command_bridge  # noqa: PLC0415
-    from rob_box_voice.core.dialog_v2_ports import CallCounter, Counted  # noqa: PLC0415
+    from rob_box_dialog_host.dialog_v2_ports import CallCounter, Counted  # noqa: PLC0415
 
     counter = CallCounter()
 

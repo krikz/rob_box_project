@@ -26,8 +26,8 @@ from rob_box_dialog.turn import TurnEngine  # noqa: E402
 from rob_box_llm.provider import LLMResponse, ToolCall, ToolResult  # noqa: E402
 from rob_box_llm.providers.deepseek import DeepSeekProvider  # noqa: E402
 from rob_box_voice.core import plan_host  # noqa: E402
-from rob_box_voice.core.command_bridge import CommandModeLLM  # noqa: E402
-from rob_box_voice.core.dialog_v2_ports import CallCounter, V2Ports  # noqa: E402
+from rob_box_dialog_host.command_bridge import CommandModeLLM  # noqa: E402
+from rob_box_dialog_host.dialog_v2_ports import CallCounter, V2Ports  # noqa: E402
 from rob_box_voice.core.perform_host import PerformHost  # noqa: E402
 
 TIME = type(M.SpeechEvent().stamp)

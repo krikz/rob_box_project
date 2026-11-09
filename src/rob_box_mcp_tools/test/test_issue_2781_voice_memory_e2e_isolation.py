@@ -50,10 +50,10 @@ def _load_real_voice_memory_class():
 
     Issue #2781 — ``test_mcp_server_speaker_result.py`` (collected in the
     same pytest session) permanently overwrites
-    ``sys.modules['rob_box_voice.core.voice_memory']`` with a bare stub
+    ``sys.modules['rob_box_dialog_host.voice_memory']`` with a bare stub
     class (no ``monkeypatch``, no cleanup — see that file's
     ``_load_mcp_server_module``), so a plain
-    ``from rob_box_voice.core.voice_memory import VoiceMemory`` here would
+    ``from rob_box_dialog_host.voice_memory import VoiceMemory`` here would
     silently resolve to whichever one collection order happened to import
     first. This test's entire point is proving facts land in the correct
     SQLite file, so it cannot risk running against a stub — load the
@@ -98,7 +98,7 @@ def _install_fake_mcp_server_dependencies(monkeypatch) -> None:
     копия — общий helper-модуль здесь не заводили, чтобы три теста файла не
     зависели друг от друга при правках).
 
-    Намеренно НЕ стабит ``rob_box_voice.core.voice_memory`` — этот тест
+    Намеренно НЕ стабит ``rob_box_dialog_host.voice_memory`` — этот тест
     использует НАСТОЯЩИЙ ``VoiceMemory``, чтобы проверить, что факты
     реально попадают в правильный SQLite-файл.
     """
@@ -199,9 +199,9 @@ def _load_mcp_server_module(monkeypatch):
     sys.modules[spec.name] = module
     spec.loader.exec_module(module)
     # Issue #2781 — cross-test-file pollution guard: ``mcp_server.py`` does
-    # ``from rob_box_voice.core.voice_memory import VoiceMemory as
+    # ``from rob_box_dialog_host.voice_memory import VoiceMemory as
     # _VoiceMemory`` at module scope, which resolves through
-    # ``sys.modules['rob_box_voice.core.voice_memory']``.
+    # ``sys.modules['rob_box_dialog_host.voice_memory']``.
     # ``test_mcp_server_speaker_result.py`` permanently replaces that cache
     # entry with a bare stub class (no ``monkeypatch``, no cleanup) so it
     # can import ``mcp_server.py`` without a real ``rob_box_voice``. When

@@ -19,7 +19,7 @@ from pathlib import Path
 from rob_box_dialog import knowledge as kn
 from rob_box_dialog import prompts
 from rob_box_dialog.speech_channel import ModeRequest
-from rob_box_voice.core import command_bridge as cb
+from rob_box_dialog_host import command_bridge as cb
 
 #: Промпт Личности - основа ядра (ADR-0167 Ш1б-3) с персоной профиля; правила хода - в основе.
 MASTER_PROMPT = Path(prompts.__file__).with_name(prompts.BASE_FILE)

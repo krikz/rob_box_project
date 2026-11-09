@@ -2,7 +2,7 @@
 
 ``PlayerOwner`` решает «что играет» только по событиям адаптера Renardo, а не по именам
 вызванных тулов (К1). Он один публикует latched ``/voice/music/state`` (контракт ADR-0141,
-``rob_box_voice.core.music_player_state``) и ``/voice/music/event``:
+``rob_box_dialog_host.music_player_state``) и ``/voice/music/event``:
 
 * ``started`` — из потока клока на фактической доле старта плееров, со снимком фазы
   (``phase_in_form`` должна быть 0, I9);

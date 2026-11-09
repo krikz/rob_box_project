@@ -21,7 +21,7 @@ from rob_box_dialog import knowledge as kn
 from rob_box_dialog.command import Command, parse, validate
 
 from rob_box_voice.core import plan_host
-from rob_box_voice.tts_voice_registry import (
+from rob_box_dialog_host.tts_voice_registry import (
     default_voice_for,
     gender_of,
     role_voices_for,
