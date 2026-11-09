@@ -673,23 +673,17 @@ def poll_once(
 def active_draft(state: dict, reply_to: Optional[int] = None) -> str:
     """Черновик, к которому относится сообщение Шифу. Решает код, не модель (ADR-0148).
 
-    1. Ответ (reply) на сообщение черновика — правка именно этого черновика.
-    2. Иначе — последний черновик на обсуждении (status proposed, есть message_id): после
-       решения Шифу 06.11 обсуждение идёт над готовым постом, свободный текст — правка к нему.
-    Черновика нет — пустая строка, сообщение уходит в обычный ответ модели.
+    Правило одно — ``studio_intent.target``: reply на черновик (его сообщение, ролик или
+    присланный пост), единственный, только что показанный, единственный свежий. Неясно
+    какой или черновиков нет — пустая строка, сообщение уходит в обычный ответ модели.
+
+    Разбор 09.11: здесь было своё правило («черновик с самым большим message_id»), и на
+    «публикуем» после поста про навигацию кнопка ушла к черновику про диалог.
     """
-    drafts = [
-        (post_id, record)
-        for post_id, record in (state.get("posts") or {}).items()
-        if record.get("status") == "proposed" and record.get("message_id") and record.get("body_html")
-    ]
-    if reply_to:
-        for post_id, record in drafts:
-            if record.get("message_id") == reply_to:
-                return post_id
-    if not drafts:
-        return ""
-    return max(drafts, key=lambda item: item[1].get("message_id") or 0)[0]
+    import studio_intent
+
+    post_id, _candidates = studio_intent.target(state, "", reply_to)
+    return post_id
 
 
 def _parse_callback(callback: dict) -> tuple:
@@ -907,6 +901,8 @@ def reply_to_shifu(bot: StudioBot, state_path: Path, text: str, out=print) -> bo
             f"\n\nПросьбу к черновику {draft} («короче», «анимацию», «ролик до/после», «убери …») пиши прямо сюда — "
             "студия сделает её на месте."
         )
+    elif offer and any(r.get("status") == "proposed" for r in (state.get("posts") or {}).values()):
+        answer += "\n\nЧерновиков на обсуждении несколько — ответь на нужный, и студия сделает это с ним."
     elif offer:
         answer += "\n\nЧерновика на обсуждении нет — делать это не над чем."
     if message_id:

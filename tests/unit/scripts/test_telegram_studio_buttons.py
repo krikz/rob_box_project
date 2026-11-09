@@ -502,16 +502,21 @@ def test_post_id_for_is_stable():
 # --------------------------------------------------------------------------- 8. свободный текст Шифу
 
 
-def test_active_draft_prefers_reply_then_latest():
+def test_active_draft_prefers_reply_then_freshest_and_does_not_guess():
+    """Правило одно с studio_intent.target. 09.11: «самый большой message_id» выбрал не тот черновик."""
+    now = time.time()
     state = {
         "posts": {
-            "old": {"status": "proposed", "message_id": 10, "body_html": "a"},
-            "new": {"status": "proposed", "message_id": 20, "body_html": "b"},
+            "old": {"status": "proposed", "message_id": 10, "body_html": "a", "active_at": now - 60},
+            "new": {"status": "proposed", "message_id": 20, "body_html": "b", "active_at": now - 5 * 3600},
             "done": {"status": "approved", "message_id": 30, "body_html": "c"},
         }
     }
-    assert studio.active_draft(state, reply_to=10) == "old"
-    assert studio.active_draft(state) == "new"
+    assert studio.active_draft(state, reply_to=20) == "new"
+    assert studio.active_draft(state) == "old"  # только что тронутый, а не с бо́льшим message_id
+    for record in state["posts"].values():
+        record.pop("active_at", None)
+    assert studio.active_draft(state) == ""  # неясно какой — не угадываем
     assert studio.active_draft({"posts": {}}) == ""
 
 

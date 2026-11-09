@@ -258,6 +258,17 @@ def _refine(
     return _refine_text(bot, state_path, record, own or facts, action, progress, chat_id, instruction)
 
 
+def _remember_post_message(state_path: Path, record: dict, sent: dict) -> None:
+    """Присланный пост — тоже сообщение черновика: reply на него и «публикуем» после него — про него.
+
+    Разбор 09.11: Шифу посмотрел присланный пост про навигацию и написал «публикуем», а студия
+    не знала, что это сообщение её черновика, и выбрала другой.
+    """
+    message_id = (sent.get("result") or {}).get("message_id")
+    if message_id:
+        save_fields(state_path, record["id"], {"post_message_id": message_id})
+
+
 def _refine_post(bot, state_path: Path, record: dict, progress, chat_id: int) -> bool:
     """«Пришли пост» — прислать собранный черновик в чат: текст и его медиа.
 
@@ -282,6 +293,7 @@ def _refine_post(bot, state_path: Path, record: dict, progress, chat_id: int) ->
         if not sent.get("ok"):
             progress.fail(sent.get("description") or "Telegram не принял файл")
             return False
+        _remember_post_message(state_path, record, sent)
         note = "" if len(body) <= lib.CAPTION_LIMIT else " (текст обрезан: не влезает в подпись)"
         progress.finish(f"Готово: прислал пост с медиа {path.name}{note}")
         return True
@@ -290,6 +302,7 @@ def _refine_post(bot, state_path: Path, record: dict, progress, chat_id: int) ->
     if not sent.get("ok"):
         progress.fail(sent.get("description") or "Telegram не принял текст")
         return False
+    _remember_post_message(state_path, record, sent)
     progress.finish("Готово: прислал пост текстом")
     return True
 

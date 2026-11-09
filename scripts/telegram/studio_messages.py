@@ -53,6 +53,8 @@ def route(bot, state_path: Path, state: Optional[dict], update_id: int, message:
         _submit(runner, bot, key, (inbox.attach_job,) + args)
     elif kind == "action":
         _action(bot, state_path, decision, runner, out)
+    elif kind == "confirm":
+        runner.submit("reply", _confirm, bot, decision)
     elif kind == "rule":
         runner.submit("reply", cs._say, bot, decision["answer"])
         if decision.get("post_id"):
@@ -124,7 +126,33 @@ def _decide_action(state: dict, base: dict, action: str, reply_to: Optional[int]
     if not post_id:
         answer = f"Понял: {label}. Но черновика на обсуждении нет — делать не над чем. Пришлю, как соберу новый."
         return dict(base, kind="nodraft", answer=answer)
+    if action == intent.ACTION_PUBLISH:
+        return dict(base, kind="confirm", action=action, post_id=post_id, title=_title(state, post_id))
     return dict(base, kind="action", action=action, post_id=post_id)
+
+
+def _title(state: dict, post_id: str) -> str:
+    record = (state.get("posts") or {}).get(post_id) or {}
+    return (record.get("title") or post_id)[:80]
+
+
+def _confirm(bot, decision: dict) -> None:
+    """«Публикуем» словами: код называет черновик и даёт кнопку, публикует кнопка (как у черновика).
+
+    Разбор 09.11: на «Отлично! публикуем!» модель ответила «Публикуем» — ничего не опубликовав —
+    и дала кнопку к другому черновику. Теперь ответ строит код и черновик назван прямо.
+    """
+    post_id = decision["post_id"]
+    text = (
+        f"Публикую черновик {post_id} «{decision['title']}»? Кнопка ниже ставит его в очередь канала "
+        "на ближайший слот (вт/чт/сб 11:00). Если не тот — ответь на нужный черновик словом «публикуем»."
+    )
+    keyboard = {
+        "inline_keyboard": [
+            [{"text": f"Опубликовать {post_id}", "callback_data": f"studio:post:{post_id}:{cs.ACTION_PUBLISH}"}]
+        ]
+    }
+    bot.send_message(cs.SHIFU_CHAT_ID, text, keyboard=keyboard, parse_mode=None)
 
 
 def _pick(state: dict, candidates: list, action: str) -> dict:

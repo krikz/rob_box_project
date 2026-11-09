@@ -209,3 +209,63 @@ def test_reply_to_the_video_is_reply_to_the_draft():
     record = {"status": "proposed", "message_id": 77, "body_html": "x", "last_motion": {"message_id": 106}}
     state = {"posts": {"p1": record, "p2": dict(record, message_id=78, last_motion={})}}
     assert intent.target(state, "оформи текст", reply_to=106) == ("p1", [])
+
+
+# --------------------------------------------------------------------------- 5. «публикуем» словами (09.11)
+
+
+def _two_drafts(now):
+    """Как на builder 09.11: пост про навигацию только что показан, черновик про диалог — с ночи."""
+    return {
+        "posts": {
+            "i20261106-1-post": {
+                "status": "proposed",
+                "title": "Навигация перестала считать потерю опоры обычным прибытием",
+                "message_id": 116,
+                "post_message_id": 128,
+                "body_html": "x",
+                "active_at": now - 5 * 60,
+            },
+            "p20261109-810": {
+                "status": "proposed",
+                "title": "Ответ тула больше не вытесняет историю из окна модели",
+                "message_id": 124,
+                "body_html": "y",
+                "active_at": now - 5 * 3600,
+            },
+        }
+    }
+
+
+def test_publish_words_are_an_action_not_a_talk():
+    assert intent.classify("Отлично! публикуем!") == intent.ACTION_PUBLISH
+    assert intent.classify("опубликуй его") == intent.ACTION_PUBLISH
+    assert intent.classify("пока не публикуй") == ""
+
+
+def test_publish_after_shown_post_targets_that_post_and_asks_by_button():
+    """«Отлично! публикуем!» после поста про навигацию — кнопка к нему, а не к черновику про диалог."""
+    import time
+
+    state = _two_drafts(time.time())
+    decision = messages.decide(state, 1, {"chat": {"id": SHIFU}, "text": "Отлично! публикуем!", "message_id": 130})
+    assert decision["kind"] == "confirm"
+    assert decision["post_id"] == "i20261106-1-post"
+    assert state["posts"]["i20261106-1-post"]["status"] == "proposed"  # словами не публикуем — только кнопкой
+
+
+def test_talk_and_actions_pick_the_same_draft():
+    """Одно правило «какой черновик»: разговор (active_draft) и действия (target) не расходятся."""
+    import time
+
+    state = _two_drafts(time.time())
+    assert studio.active_draft(state) == intent.target(state)[0] == "i20261106-1-post"
+    assert intent.target(state, reply_to=128) == ("i20261106-1-post", [])  # reply на присланный пост
+
+
+def test_publish_confirmation_names_the_draft_and_carries_publish_button():
+    bot = Bot()
+    messages._confirm(bot, {"post_id": "i20261106-1-post", "title": "Навигация"})
+    text, keyboard = bot.calls[0][1], bot.calls[0][2]
+    assert "i20261106-1-post" in text and "Навигация" in text
+    assert keyboard["inline_keyboard"][0][0]["callback_data"] == "studio:post:i20261106-1-post:publish"

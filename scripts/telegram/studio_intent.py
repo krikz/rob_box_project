@@ -24,9 +24,14 @@ ACTION_SIMPLER = "simpler"
 ACTION_ANGLE = "angle"
 ACTION_EDIT = "edit"
 ACTION_POST = "post"
+ACTION_PUBLISH = "publish"
 
 # Порядок важен: «ролик до/после» — видео, даже если там есть «картинка»; «анимацию» — раньше «медиа».
 ACTION_WORDS = (
+    # Разбор 09.11: «Отлично! публикуем!» ушло в разговор, модель ответила «Публикуем» и дала
+    # кнопку «пришли пост» к чужому черновику. Публикация словами — первая: «публикуем видео»
+    # — это публикация, а не новый ролик. Решение всё равно кнопкой (studio_messages).
+    (ACTION_PUBLISH, ("публику", "опубликуй", "опубликуем", "опубликовать", "выпускай")),
     (
         ACTION_VIDEO,
         (
@@ -66,6 +71,7 @@ ACTION_WORDS = (
     (ACTION_EDIT, ("перепиши", "поправь", "исправь", "переделай", "убери", "добавь", "замени", "допиши", "вычеркни")),
 )
 LABELS = {
+    ACTION_PUBLISH: "опубликовать",
     ACTION_POST: "прислать пост",
     ACTION_VIDEO: "видео",
     ACTION_ANIMATE: "анимация",
@@ -76,6 +82,10 @@ LABELS = {
     ACTION_EDIT: "правка текста",
 }
 ACTIVE_WINDOW = 6 * 3600  # с: черновик, тронутый за это время, считается «тем, о котором речь»
+# с: черновик, который студия показала только что, — «тот, о котором речь», если другие давно не трогали
+LAST_SHOWN_WINDOW = 30 * 60
+# «Не публикуй», «рано публиковать» — это не просьба опубликовать.
+PUBLISH_NEGATIONS = ("не публ", "не опубл", "рано публ", "погоди публ", "подожди публ")
 PICK_MAX = 4  # кнопок «к какому черновику?»
 
 
@@ -89,6 +99,8 @@ def classify(text: str) -> str:
             break
     for action, words in ACTION_WORDS:
         if any(word in low for word in words):
+            if action == ACTION_PUBLISH and any(neg in low for neg in PUBLISH_NEGATIONS):
+                return ""
             return action
     return ""
 
@@ -115,7 +127,7 @@ def message_ids(record: dict) -> set:
     Разбор 08.11: ролик приходит отдельным сообщением, и ответ на него («оформи текст»)
     не считался ответом на черновик — уходил в разговор, где модель только обещала.
     """
-    ids = {record.get("message_id"), (record.get("last_motion") or {}).get("message_id")}
+    ids = {record.get("message_id"), (record.get("last_motion") or {}).get("message_id"), record.get("post_message_id")}
     ids.discard(None)
     return ids
 
@@ -138,6 +150,11 @@ def target(state: dict, text: str = "", reply_to: Optional[int] = None, now: Opt
     if len(found) == 1:
         return found[0][0], []
     now = time.time() if now is None else now
+    # found отсортирован по свежести. Только что показанный черновик при давно не тронутых
+    # остальных — тот, о котором речь (09.11: Шифу смотрел пост про навигацию и написал «публикуем»).
+    fresh = [post_id for post_id, record in found if now - activity(record) <= LAST_SHOWN_WINDOW]
+    if len(fresh) == 1:
+        return fresh[0], []
     recent = [post_id for post_id, record in found if now - activity(record) <= ACTIVE_WINDOW]
     if len(recent) == 1:
         return recent[0], []
