@@ -820,6 +820,21 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
           echo "TIMING_JSON_FILE=/tmp/e2e_timing.json" >> "$GITHUB_ENV"
 
+      # #4512 (шаг 1 PR #4603): офлайн-вердикты детекторов сбоя хода («робот глух», «ход без речи») по логу акта.
+      # Репо публичное: в артефакт и сводку идут только счётчики и коды причин, без текстов реплик.
+      # Отчёт не красит акт (continue-on-error, rc всегда 0).
+      - name: Turn-failure verdicts (offline, no texts)
+        if: ${{ always() }}
+        continue-on-error: true
+        run: |
+          RID="${{ github.run_id }}"
+          python3 scripts/ci/e2e/turn_failures_summary.py "/tmp/voice_e2e_${RID}.log" /tmp/e2e_turn_failures.json \
+            | tee /tmp/e2e_turn_failures.txt || echo '{"error":"turn_failures_summary failed"}' > /tmp/e2e_turn_failures.json
+          {
+            echo "### Сбои хода (детекторы #4512)"
+            cat /tmp/e2e_turn_failures.txt
+          } >> "$GITHUB_STEP_SUMMARY"
+
       # Issue #1381: артефакты должны прикладываться даже при FAIL (no-reaction).
       # Сначала тянем всё что есть на build-machine (249) в локальный кэш на runner,
       # затем upload читает уже локальные файлы. Все шаги с if: always().
@@ -964,6 +979,10 @@ jobs:
           if [ -f /tmp/e2e_timing.json ]; then
             cp -f /tmp/e2e_timing.json "$ART_DIR/timing.json"
           fi
+          # turn_failures.json (#4512): счётчики вердиктов детекторов хода, без текстов.
+          if [ -f /tmp/e2e_turn_failures.json ]; then
+            cp -f /tmp/e2e_turn_failures.json "$ART_DIR/turn_failures.json"
+          fi
 
           echo "ART_DIR=$ART_DIR" >> "$GITHUB_ENV"
           echo "=== collected e2e_artifacts_${RID}/ contents ==="
@@ -1075,7 +1094,9 @@ jobs:
         continue-on-error: true
         with:
           name: e2e-voice-timing-${{ github.run_id }}
-          path: /tmp/e2e_timing.json
+          path: |
+            /tmp/e2e_timing.json
+            /tmp/e2e_turn_failures.json
           retention-days: 7
           if-no-files-found: ignore
 
