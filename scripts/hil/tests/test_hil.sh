@@ -384,7 +384,7 @@ check "off: предупреждение + изменённый maps → вых�
 # ── 10. sandbox_prep: fix_crlf.sh не заходит в out*/fuel и не падает на чужих файлах ──
 FIX="$REPO_ROOT/scripts/hil/video/fix_crlf.sh"
 CR=$'\r'
-has_cr() { ! tr -d '\r' < "$1" | cmp -s - "$1"; }
+has_cr() { [ "$(tr -d '\r' < "$1" | wc -c)" -ne "$(wc -c < "$1")" ]; }
 T="$WORK/crlf"; rm -rf "$T"; mkdir -p "$T/out/shisyun_s1/bag" "$T/fuel/Depot" "$T/sub"
 printf 'a%s\nb%s\n' "$CR" "$CR" > "$T/run.sh"
 printf 'a%s\n' "$CR" > "$T/sub/x.py"
