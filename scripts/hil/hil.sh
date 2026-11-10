@@ -5,6 +5,7 @@
 #   scripts/hil/hil.sh status   что сейчас: замок, контейнеры, sim time, /controller_manager
 #   scripts/hil/hil.sh on       включить HIL (робот на кирпичах!)
 #   scripts/hil/hil.sh off      вернуть робота как было (docker compose up -d)
+#   scripts/hil/hil.sh restart <сервис>...  пересоздать сервисы контура в работающем HIL (рестарт стека, #4468)
 #
 # on:
 #   1. проверки: ssh до четырёх машин, настройки, пути карт и реестра (не боевые), образ сима;
@@ -257,6 +258,13 @@ sim_down() {
     sim_compose down --timeout 20 || log "⚠️  compose down на песочнице вернул ошибку"
 }
 
+# ── Main Pi: контур навигации в HIL ───────────────────────────────────────
+
+# compose up сервисов контура (on и restart): sim time, карта HIL_MAPS_DIR, режим rtabmap HIL_RTABMAP_MODE.
+main_sim_up() {  # main_sim_up [флаги compose up] <сервисы>...
+    rsh "$HIL_MAIN_HOST" "cd $(q "$HIL_MAIN_DIR") && HIL_MAPS_DIR=$(q "$HIL_MAPS_DIR") HIL_RTABMAP_MODE=$(q "$HIL_RTABMAP_MODE") HIL_GUARD_SOUND=$(q "$HIL_GUARD_SOUND") docker compose -f docker-compose.yaml -f $(q "$HIL_REMOTE_DIR/main.images.yaml") -f $(q "$HIL_REMOTE_DIR/main.hil.yaml") up -d --no-deps --pull never $*"
+}
+
 # ── Команды ───────────────────────────────────────────────────────────────
 
 preflight() {
@@ -313,8 +321,7 @@ cmd_on() {
     log "Main: ${MAIN_SIM_TIME[*]} → USE_SIM_TIME=true, карта $HIL_MAPS_DIR ($HIL_RTABMAP_MODE)"
     rsh "$HIL_MAIN_HOST" "mkdir -p $(q "$HIL_MAPS_DIR")"
     rpi "$HIL_MAIN_HOST" pin "$HIL_MAIN_DIR" "$HIL_REMOTE_DIR/main.images.yaml"
-    rsh "$HIL_MAIN_HOST" "cd $(q "$HIL_MAIN_DIR") && HIL_MAPS_DIR=$(q "$HIL_MAPS_DIR") HIL_RTABMAP_MODE=$(q "$HIL_RTABMAP_MODE") HIL_GUARD_SOUND=$(q "$HIL_GUARD_SOUND") docker compose -f docker-compose.yaml -f $(q "$HIL_REMOTE_DIR/main.images.yaml") -f $(q "$HIL_REMOTE_DIR/main.hil.yaml") up -d --no-deps --pull never ${MAIN_SIM_TIME[*]}" \
-        || die "Main: пересоздание с sim time не прошло; hil.sh off"
+    main_sim_up "${MAIN_SIM_TIME[@]}" || die "Main: пересоздание с sim time не прошло; hil.sh off"
 
     # Перед стартом Gazebo: контроллер робота точно не работает.
     local st
@@ -355,6 +362,42 @@ cmd_on() {
     done
     log "HIL включён. Сторож в gazebo следит дальше (docker logs $HIL_SIM_PREFIX-gazebo | grep hil-guard)."
     cmd_status
+}
+
+# restart: пересоздать сервисы контура в работающем HIL — «рестарт стека» прогона здания (#4468). Карта — из
+# замка (maps=), не из окружения: другой каталог открыл бы чужую базу. Режим rtabmap — HIL_RTABMAP_MODE
+# (localization: mapping стирает базу на старте, --delete_db_on_start). Сначала docker stop --time
+# HIL_RESTART_STOP_S: rtabmap дописывает базу на остановке, обрыв через 10 с по умолчанию оставил бы её неполной.
+cmd_restart() {
+    [ "$#" -gt 0 ] || die "restart: какие сервисы? из ${MAIN_SIM_TIME[*]}"
+    local s lock
+    for s in "$@"; do
+        case " ${MAIN_SIM_TIME[*]} " in
+            *" $s "*) ;;
+            *) die "restart: '$s' не из контура HIL (${MAIN_SIM_TIME[*]})" ;;
+        esac
+    done
+    case " $* " in
+        *" rtabmap "*)
+            [ "$HIL_RTABMAP_MODE" != mapping ] \
+                || die "restart rtabmap в mapping сотрёт карту HIL (--delete_db_on_start); рестарт стека — HIL_RTABMAP_MODE=localization" ;;
+    esac
+    check_net
+    lock=$(rsh "$HIL_MAIN_HOST" "cat $(q "$HIL_LOCK") 2>/dev/null" || true)
+    case "$lock" in
+        "HIL on since "*) ;;
+        *) die "restart: HIL не включён (на $HIL_MAIN_HOST нет замка $HIL_LOCK) — сначала hil.sh on" ;;
+    esac
+    HIL_MAPS_DIR=$(printf '%s\n' "$lock" | sed -n 's/.* maps=\([^ ]*\).*/\1/p' | head -n 1)
+    [ -n "$HIL_MAPS_DIR" ] || die "restart: в замке нет maps= — каталог карты HIL не известен"
+    check_hil_paths
+    rsh "$HIL_MAIN_HOST" "test -f $(q "$HIL_REMOTE_DIR/main.images.yaml")" \
+        || die "restart: нет $HIL_REMOTE_DIR/main.images.yaml (образы закрепляет on) — hil.sh off и on"
+    push_helpers
+    log "Main: restart $* — stop (до $HIL_RESTART_STOP_S с), up: карта $HIL_MAPS_DIR, rtabmap $HIL_RTABMAP_MODE"
+    rsh "$HIL_MAIN_HOST" "docker stop --time $(q "$HIL_RESTART_STOP_S") $*" >/dev/null || die "Main: docker stop $* не прошёл"
+    main_sim_up --force-recreate "$@" || die "Main: пересоздание $* не прошло; hil.sh status"
+    rpi "$HIL_MAIN_HOST" state "$@"
 }
 
 cmd_off() {
@@ -497,5 +540,6 @@ case "${1:-}" in
     on) cmd_on ;;
     off) cmd_off ;;
     status) cmd_status ;;
-    *) sed -n '2,7p' "$0"; exit 2 ;;
+    restart) shift; cmd_restart "$@" ;;
+    *) sed -n '2,8p' "$0"; exit 2 ;;
 esac

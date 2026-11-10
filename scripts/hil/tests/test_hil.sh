@@ -48,6 +48,7 @@ check() { if eval "$2"; then ok "$1"; else ko "$1"; fi; }
 # ── 1. синтаксис ──────────────────────────────────────────────────────────
 for f in scripts/hil/hil.sh scripts/hil/remote_pi.sh scripts/hil/hil.conf \
          scripts/hil/video/fix_crlf.sh scripts/hil/video/runvideo.sh scripts/hil/video/runcoverage.sh scripts/hil/video/sandbox_prep.sh \
+         scripts/hil/building/run_building.sh scripts/hil/building/building_remote.sh \
          scripts/deploy/check_hil_lock.sh docker/sim/hil_run.sh docker/main/update_and_restart.sh; do
     if bash -n "$REPO_ROOT/$f"; then ok "bash -n $f"; else ko "bash -n $f"; fi
 done
@@ -139,8 +140,10 @@ reset_state() {
     : > "$WORK/ssh.log"; : > "$WORK/docker.log"
 }
 
-run_hil() {  # run_hil <cmd> [VAR=val ...]
-    local cmd="$1"; shift
+run_hil() {  # run_hil "<cmd> [аргументы]" [VAR=val ...]
+    local cmd=()
+    read -r -a cmd <<<"$1"  # «restart rtabmap» — команда и аргументы
+    shift
     env PATH="$WORK/bin:$PATH" FAKE_SSH_LOG="$WORK/ssh.log" FAKE_DOCKER_LOG="$WORK/docker.log" \
         FAKE_STATE="$WORK/state" SIM_PREFIX=t-hil \
         HIL_MAIN_HOST=main HIL_VISION_HOST=vision HIL_SOUND_HOST=sound HIL_SANDBOX_HOST=sbx \
@@ -148,7 +151,7 @@ run_hil() {  # run_hil <cmd> [VAR=val ...]
         HIL_MAPS_SNAPSHOT="$WORK/sndstate/prod_maps.before.txt" \
         HIL_LOCK="$WORK/tmp/hil.lock" HIL_REMOTE_DIR="$WORK/remote" HIL_MAPS_DIR="$WORK/hilmaps" \
         HIL_SIM_PREFIX=t-hil HIL_WAIT_CM_S=5 \
-        "$@" bash "$HIL" "$cmd" > "$WORK/out.log" 2>&1
+        "$@" bash "$HIL" "${cmd[@]}" > "$WORK/out.log" 2>&1
 }
 line_of() { grep -n -m1 -- "$1" "$2" | cut -d: -f1; }
 
@@ -380,6 +383,35 @@ run_hil on >/dev/null
 printf '%s\n' '1|aaaa-1111|мастерская|1793000000.0|0' > "$WORK/state/prod_maps"
 run_hil off; rc=$?
 check "off: предупреждение + изменённый maps → выход 3 (rc=$rc), замок снят" '[ "$rc" -eq 3 ] && [ ! -e "$WORK/tmp/hil.lock" ]'
+
+# ── 9b. restart: рестарт стека в работающем HIL (#4468) ──────────────────
+reset_state
+run_hil "restart rtabmap" HIL_RTABMAP_MODE=localization; rc=$?
+check "restart без HIL on: отказ (rc=$rc), ничего не остановлено и не поднято" \
+    '[ "$rc" -ne 0 ] && ! grep -q "stop" "$WORK/docker.log" && ! grep -q "compose" "$WORK/docker.log"'
+reset_state
+run_hil on >/dev/null
+: > "$WORK/docker.log"; : > "$WORK/ssh.log"
+run_hil "restart rtabmap" HIL_RTABMAP_MODE=localization HIL_MAPS_DIR="$WORK/other_maps"; rc=$?
+L_RSTOP=$(line_of "stop --time 60 rtabmap" "$WORK/docker.log")
+L_RUP=$(line_of "main.hil.yaml up -d --no-deps --pull never --force-recreate rtabmap" "$WORK/docker.log")
+check "restart rtabmap: выход 0 (rc=$rc), сначала docker stop --time 60, потом up --force-recreate только rtabmap" \
+    '[ "$rc" -eq 0 ] && [ -n "$L_RSTOP" ] && [ -n "$L_RUP" ] && [ "$L_RSTOP" -lt "$L_RUP" ] && ! grep -q "force-recreate rtabmap ." "$WORK/docker.log"' \
+    || cat "$WORK/out.log"
+check "restart: карта из замка (HIL_MAPS_DIR окружения не берётся), режим localization" \
+    'grep -qF "HIL_MAPS_DIR='"'"'$WORK/hilmaps'"'"'" "$WORK/ssh.log" && ! grep -qF "$WORK/other_maps" "$WORK/ssh.log" && grep -qF "HIL_RTABMAP_MODE='"'"'localization'"'"'" "$WORK/ssh.log"'
+check "restart: замок HIL на месте, ros2-control не поднимался" \
+    '[ -f "$WORK/tmp/hil.lock" ] && ! grep -E "up .*ros2-control" "$WORK/docker.log"'
+: > "$WORK/docker.log"
+run_hil "restart ros2-control" HIL_RTABMAP_MODE=localization; rc=$?
+check "restart ros2-control: отказ (не из контура HIL, rc=$rc), docker не вызывался" \
+    '[ "$rc" -ne 0 ] && [ ! -s "$WORK/docker.log" ]'
+run_hil "restart rtabmap" HIL_RTABMAP_MODE=bogus; rc=$?
+check "restart с HIL_RTABMAP_MODE=bogus: отказ (rc=$rc)" '[ "$rc" -ne 0 ] && [ ! -s "$WORK/docker.log" ]'
+run_hil "restart rtabmap"; rc=$?
+check "restart rtabmap в mapping (умолчание hil.conf): отказ — стёр бы карту (rc=$rc), docker не вызывался" \
+    '[ "$rc" -ne 0 ] && [ ! -s "$WORK/docker.log" ] && grep -q "delete_db_on_start" "$WORK/out.log"'
+run_hil off >/dev/null
 
 # ── 10. sandbox_prep: fix_crlf.sh не заходит в out*/fuel и не падает на чужих файлах ──
 FIX="$REPO_ROOT/scripts/hil/video/fix_crlf.sh"
