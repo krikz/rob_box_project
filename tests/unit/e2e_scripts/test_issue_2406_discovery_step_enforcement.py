@@ -92,6 +92,7 @@ TURN_VERBAL_ONLY = TOOLS_CATALOG + (
     "[dialogue_node-4] ✅ [turn] process_input returned: "
     "spoken='Приятно познакомиться, Саша!'[:60] "
     "tools=[] finish_reason='stop'\n"
+    "[tts_node-5] 🔊 TTS: text='Приятно познакомиться, Саша!'\n"
 )
 
 #: «Регресс #2406 наоборот»: tool вызван, НО ПОСЛЕ голосового ответа
@@ -101,6 +102,7 @@ TURN_VOICE_BEFORE_TOOL = TOOLS_CATALOG + (
     "[dialogue_node-4] ✅ [turn] process_input returned: "
     "spoken='Приятно познакомиться, Саша!'[:60] "
     "tools=[] finish_reason='stop'\n"
+    "[tts_node-5] 🔊 TTS: text='Приятно познакомиться, Саша!'\n"
     "[dialogue_node-4] 📤 Отправлен запрос b5119339: register_speaker\n"
     "[mcp_server-10] 📥 Запрос выполнения: register_speaker с параметрами "
     "{'name': 'Саша'}\n"
@@ -159,14 +161,17 @@ class TestFirstInvocationPosition:
 class TestFirstVoiceCyclePosition:
     """``first_voice_cycle_position(logs) → int | None``."""
 
-    def test_returns_position_on_spoken_marker(self) -> None:
+    def test_returns_position_on_speak_text_marker(self) -> None:
         pos = first_voice_cycle_position(TURN_TOOL_BEFORE_VOICE)
         assert pos is not None
         low = TURN_TOOL_BEFORE_VOICE.lower()
         # Маркер должен совпадать с префиксом low[pos:].
         assert low[pos:].startswith(
-            ("✅ [turn] process_input returned:", "'speak_text'", "инструмент speak_text выполнен", "tts finished")
+            ("🔊 tts:", "'speak_text'", "инструмент speak_text выполнен", "tts finished")
         )
+
+    def test_legacy_turn_result_is_not_a_voice_cycle(self) -> None:
+        assert first_voice_cycle_position("✅ [turn] process_input returned: spoken='x'[:60]") is None
 
     def test_returns_none_when_no_voice_cycle(self) -> None:
         assert first_voice_cycle_position(TOOLS_CATALOG) is None

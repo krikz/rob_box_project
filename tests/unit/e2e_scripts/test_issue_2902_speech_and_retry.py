@@ -19,9 +19,8 @@
     >>> ACCEPTANCE[n722_boris_intro_conflict] попытка 2/2: ❌ expected tool calls not invoked: ['register_speaker']; forbidden phrases spoken by robot: ['Приятно познакомиться'] …
     E2E_STEP n722_boris_intro_conflict FAIL
 
-1. ``robot_speech()`` считал речью ``spoken=`` хода, чей ответ заменён
-   переспросом и вслух НЕ звучал. Теперь ``spoken=`` — подстраховка по ходу:
-   только если у хода нет TTS/speak_text и нет маркера «не озвучено».
+1. ``robot_speech()`` учитывает только TTS/speak_text; исторический
+   ``spoken=`` удалённого движка не считается речью (#4354).
 2. Ретрай шага, изменившего состояние робота (регистрация принята, задан
    вопрос о личности, речь совпала с ``when_robot_asked`` следующего шага),
    запрещён: итог ``FAIL retry_blocked_state_changed`` одной строкой.
@@ -221,71 +220,11 @@ class TestSpeechIsWhatWasVoiced:
         pattern = N723["when_robot_asked"]
         assert re.search(pattern, tm.robot_speech(LOG_N722_ATTEMPT1), re.I)
 
-    def test_spoken_without_tts_is_still_speech(self):
-        """Подстраховка жива: TTS в окно не доехал, маркера нет — spoken=
-        считается речью, как раньше (строже, а не мягче)."""
+    def test_spoken_without_tts_is_not_speech(self):
+        """Канал v1 ``spoken='…'`` убран (#4354): речь -- только 🔊 TTS и speak_text; строка хода без TTS молчание."""
         tm = _tm()
         log = _turn("Привет, Борис, рад знакомству", [])
-        assert tm.keyword_hit(log, "Привет, Борис")
-
-    @pytest.mark.parametrize(
-        "marker_line",
-        [
-            REPLACED,
-            # Issue #2908 — ответ хода заменён просьбой повторить после
-            # отказа регистрации (dialogue_node._deliver_turn_result).
-            _l("dialogue_node", "INFO",
-               "🔁 [issue #2908] ответ хода заменён просьбой повторить "
-               "(регистрация 'Борис' отклонена: too_short): 'Привет, Борис'"),
-            _l("dialogue_node", "INFO",
-               "🔇 LLM completion marker — skip auto-TTS: 'Привет, Борис'"),
-            _l("dialogue_node", "INFO",
-               "🔇 [issue 988] speak_text called — final text skipped "
-               "(anti-duplicate): 'Привет, Борис'"),
-            _l("dialogue_node", "INFO",
-               "🔇 [issue 988] speak_text called in cycle — skipping auto-TTS "
-               "of final text: 'Привет, Борис'"),
-            _l("dialogue_node", "INFO",
-               "🔇 [DJ] переход #3 — свободный текст НЕ озвучиваю (речь только "
-               "через speak_text/хук): 'Привет, Борис'"),
-            _l("dialogue_node", "WARN",
-               "🤐 [issue 1882] planning-narration hard-mute: spoken matches "
-               "planning pattern, tools empty, speaking nothing (head='Привет, Борис')"),
-            _l("dialogue_node", "WARN",
-               "🔇 Служебный текст LLM не озвучиваем: '[SYSTEM] Привет, Борис'"),
-            _l("dialogue_node", "WARN",
-               "🏷️ [issue 2760] LLM написала вызов тула ТЕКСТОМ вместо "
-               "tool-call (head='Привет, Борис') — один ретрай, user_input='x', tools=[]"),
-            _l("dialogue_node", "WARN",
-               "🧾 [issue 2175] MiniMax regurgitates system-template в spoken "
-               "(head='Привет, Борис') — один ретрай, user_input='x', tools=[]"),
-            _l("dialogue_node", "INFO",
-               "🔇 [issue 2874] ответ хода не озвучиваю (ретрай/отзыв гуардом, "
-               "retry=True retracted=False): 'Привет, Борис'"),
-        ],
-        ids=["2828_replaced", "2908_register_retry", "done_marker", "988_short", "988_verbose", "dj",
-             "1882_planning", "service_text", "2760_markup", "2175_regurgitate",
-             "2874_retracted"],
-    )
-    def test_not_voiced_markers_drop_spoken(self, marker_line):
-        tm = _tm()
-        log = _turn("Привет, Борис, рад знакомству", []) + marker_line
-        assert not tm.keyword_hit(log, "Привет, Борис"), marker_line
-
-    def test_marker_is_scoped_to_its_turn(self):
-        """Маркер хода 2 не глушит spoken хода 1; #2888-вопрос, напечатанный
-        ДО строки результата хода 2, не глушит spoken хода 1."""
-        tm = _tm()
-        log = (
-            _turn("Привет, Борис, рад знакомству", [])
-            + _l("dialogue_node", "INFO",
-                 "👤 [issue #2888] identity question by robot: kind=tentative "
-                 "held_until_turn_end=True")
-            + _turn("Саша, это ты?", []) + REPLACED + _tts("Это ты, Саша?")
-        )
-        assert tm.keyword_hit(log, "Привет, Борис")
-        assert tm.keyword_hit(log, "Это ты, Саша")
-        assert not tm.keyword_hit(log, "Саша, это ты")
+        assert not tm.keyword_hit(log, "Привет, Борис")
 
     def test_tts_text_with_apostrophe_is_captured(self):
         """repr() берёт двойные кавычки, если в тексте апостроф — такую
@@ -303,7 +242,6 @@ class TestRetryBlockReason:
             LOG_N722_ATTEMPT1, N723["when_robot_asked"]
         )
         assert "registration accepted: 'Борис'" in reason
-        assert "identity question" in reason
         assert "when_robot_asked" in reason
 
     def test_rejected_registration_does_not_block(self):
@@ -321,6 +259,13 @@ class TestRetryBlockReason:
             log, N723["when_robot_asked"]
         )
         assert _tm().retry_block_reason(log, "") == ""
+
+    def test_legacy_identity_marker_does_not_change_state(self):
+        assert _tm().retry_block_reason(ASK_HELD + REPLACED, "") == ""
+
+    def test_unvoiced_next_question_does_not_block_retry(self):
+        log = _turn("Вы разные люди?", [])
+        assert _tm().retry_block_reason(log, N723["when_robot_asked"]) == ""
 
     def test_bad_pattern_is_not_a_crash(self):
         assert _tm().retry_block_reason(_tts("Привет"), "(") == ""
