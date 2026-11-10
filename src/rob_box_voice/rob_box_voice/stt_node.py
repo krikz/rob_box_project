@@ -239,6 +239,46 @@ from rob_box_voice.observability import (
     start_span,
 )
 
+
+def _normalize_provider_chain(chain, logger=None) -> list:
+    """Привести цепочку к инвариантам (аналог tts_node, issue #1083).
+
+    Инварианты:
+
+    * только известные провайдеры (:data:`KNOWN_STT_PROVIDERS`);
+    * без дубликатов, порядок первого вхождения сохраняется;
+    * ``vosk`` — всегда последний (офлайновый последний рубеж);
+    * пустая/битая цепочка → :data:`DEFAULT_STT_PROVIDER_CHAIN`.
+
+    Осознанное исключение: цепочка ровно из одного ``vosk`` —
+    легитимный офлайн-режим (робот в поле без сети), её не трогаем.
+
+    Функция модуля, а не метод :class:`STTNode`: ``self`` не использует
+    (class_budget, ADR-0145 — вынос из класса, #4645).
+    """
+    deduped: list = []
+    for name in chain or []:
+        name = str(name).strip().lower()
+        if name not in KNOWN_STT_PROVIDERS:
+            if name and logger is not None:
+                logger.warning(
+                    f"⚠️ stt_provider_chain: неизвестный провайдер "
+                    f"{name!r} — игнорирую "
+                    f"(известные: {sorted(KNOWN_STT_PROVIDERS)})"
+                )
+            continue
+        if name not in deduped:
+            deduped.append(name)
+    if not deduped:
+        return list(DEFAULT_STT_PROVIDER_CHAIN)
+    if deduped == [_LAST_RESORT_PROVIDER]:
+        return deduped
+    if _LAST_RESORT_PROVIDER in deduped:
+        deduped.remove(_LAST_RESORT_PROVIDER)
+    deduped.append(_LAST_RESORT_PROVIDER)
+    return deduped
+
+
 # ADR-0101 §3.3.5 / Issue #2536 / PR-E: «unclear cooldown» живёт в
 # едином OccasionGate (см. core/occasion.py). Импортируем типы на
 # уровне модуля: ``OccasionGate`` создаётся в ``__init__`` (default, если
@@ -1123,7 +1163,7 @@ class STTNode(Node):
         ``__init__`` в CC-бюджете 20, а дефолты цепочки и MiniMax сами по
         себе дают полтора десятка ветвей.
         """
-        self.provider_chain: list = self._normalize_provider_chain(
+        self.provider_chain: list = _normalize_provider_chain(
             [str(p) for p in (self.get_parameter("stt_provider_chain").value or [])],
             logger=self.get_logger(),
         )
@@ -1185,42 +1225,6 @@ class STTNode(Node):
         self._minimax_stt_lock = threading.Lock()
         self._minimax_stt_initialized = False
         self._last_effective_provider: Optional[str] = None
-
-    @staticmethod
-    def _normalize_provider_chain(chain, logger=None) -> list:
-        """Привести цепочку к инвариантам (аналог tts_node, issue #1083).
-
-        Инварианты:
-
-        * только известные провайдеры (:data:`KNOWN_STT_PROVIDERS`);
-        * без дубликатов, порядок первого вхождения сохраняется;
-        * ``vosk`` — всегда последний (офлайновый последний рубеж);
-        * пустая/битая цепочка → :data:`DEFAULT_STT_PROVIDER_CHAIN`.
-
-        Осознанное исключение: цепочка ровно из одного ``vosk`` —
-        легитимный офлайн-режим (робот в поле без сети), её не трогаем.
-        """
-        deduped: list = []
-        for name in chain or []:
-            name = str(name).strip().lower()
-            if name not in KNOWN_STT_PROVIDERS:
-                if name and logger is not None:
-                    logger.warning(
-                        f"⚠️ stt_provider_chain: неизвестный провайдер "
-                        f"{name!r} — игнорирую "
-                        f"(известные: {sorted(KNOWN_STT_PROVIDERS)})"
-                    )
-                continue
-            if name not in deduped:
-                deduped.append(name)
-        if not deduped:
-            return list(DEFAULT_STT_PROVIDER_CHAIN)
-        if deduped == [_LAST_RESORT_PROVIDER]:
-            return deduped
-        if _LAST_RESORT_PROVIDER in deduped:
-            deduped.remove(_LAST_RESORT_PROVIDER)
-        deduped.append(_LAST_RESORT_PROVIDER)
-        return deduped
 
     def _ensure_minimax_provider(self):
         """Лениво собрать MiniMax STT-клиент. ``None`` — провайдер не настроен.

@@ -296,7 +296,7 @@ def _make_stt_node_stub(**param_overrides):
     # ``stt_provider_chain`` — имя ROS-параметра, а нода хранит уже
     # нормализованную цепочку в ``provider_chain``; цикл выше про это не
     # знает, поэтому пересобираем её так же, как это делает __init__.
-    node.provider_chain = stt_node_module.STTNode._normalize_provider_chain(
+    node.provider_chain = stt_node_module._normalize_provider_chain(
         list(defaults["stt_provider_chain"])
     )
     # Mock publishers/subscribers/loggers
@@ -1432,9 +1432,9 @@ class TestProviderChainNormalization:
 
     @staticmethod
     def _normalize(chain, logger=None):
-        from rob_box_voice.stt_node import STTNode
+        from rob_box_voice.stt_node import _normalize_provider_chain
 
-        return STTNode._normalize_provider_chain(chain, logger=logger)
+        return _normalize_provider_chain(chain, logger=logger)
 
     def test_default_order_is_yandex_minimax_vosk(self):
         """Issue #2866: счёт Yandex пополнен — Yandex снова primary."""

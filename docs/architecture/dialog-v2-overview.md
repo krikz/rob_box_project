@@ -81,7 +81,7 @@ flowchart TD
 - Речь людей у робота берёт из `/audio/speech_audio` (`src/rob_box_voice/rob_box_voice/stt_node.py:500-502`); поток шлема
   оператора — из `/audio/quest_in` и `/audio/quest_wake` (`:507-515`).
 - Цепочка STT задана в `docker/sound/config/voice_assistant/stt_node.yaml` (`stt_provider_chain: [yandex, minimax,
-  vosk]`); Vosk — всегда последний, офлайн (`stt_node.py:1111-1119`, `_normalize_provider_chain` `:1182`).
+  vosk]`); Vosk — всегда последний, офлайн (`stt_node.py:1159`, `_normalize_provider_chain` — функция модуля `:243`).
 - Вейки берёт из профиля продукта: `wake_personality` и `wake_operator` (`stt_node.py:423-425`).
 - Единственный выход реплики Личности — типизированный `Utterance` в `/voice/stt/utterance` (`stt_node.py:542`).
   Фраза с вейком оператора («ТАРС») с шлема уходит в `/avatar/stt/result` (`stt_node.py:1017-1050`).
