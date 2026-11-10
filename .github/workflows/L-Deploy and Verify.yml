@@ -36,6 +36,11 @@ on:
         required: false
         default: false
         type: boolean
+      force_hil_unlock:
+        description: 'Пропустить проверку HIL-замка (осторожно: снимает лишь проверку, замок на Pi НЕ удаляется)'
+        required: false
+        type: boolean
+        default: false
       # Issue #1527: трейсинг «кто дёрнул workflow». Все скрипты/воркеры
       # используют твой GH_TOKEN, поэтому triggering_actor.login всегда = krikz.
       # Эти опциональные поля заполняются самими скриптами (agent-flow-*),
@@ -300,7 +305,7 @@ jobs:
       # карточку деплоя (карточка про сбой выкладки, а тут выкладки не было).
       - name: "[Main Pi] HIL lock (#4371)"
         id: hil_lock
-        if: '!inputs.dry_run'
+        if: '!inputs.dry_run && !inputs.force_hil_unlock'
         run: |
           rc=0
           bash scripts/deploy/check_hil_lock.sh             sshpass -p 'open' ssh -o LogLevel=ERROR $SSH_OPTS ros2@${{ env.main_pi_ip }} || rc=$?
