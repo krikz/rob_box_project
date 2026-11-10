@@ -64,9 +64,11 @@ jobs:
         run: |
           set -euo pipefail
           export PYTHONIOENCODING=utf-8 PYTHONDONTWRITEBYTECODE=1
+          # timeout_min — number в dispatch: допускает дробное (0.5), bash-arithmetic с float упал бы.
+          WAIT_S="$(python3 -c 'import sys; print(int(float(sys.argv[1]) * 60))' "$TIMEOUT_MIN")"
           python3 -m chuangong status \
             --robot-id "$ROBOT_ID" \
             --zenoh "$ZENOH_URL" \
             --release "$RELEASE" \
-            --wait-s "$(( TIMEOUT_MIN * 60 ))" \
+            --wait-s "$WAIT_S" \
             --summary "$GITHUB_STEP_SUMMARY"
