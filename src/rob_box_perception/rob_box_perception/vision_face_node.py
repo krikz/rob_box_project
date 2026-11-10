@@ -246,6 +246,8 @@ class VisionFaceNode(VisionHailoNode):
         self.declare_parameter('arcface_enabled', False)
         self.declare_parameter('arcface_hef_path', '')
         self.declare_parameter('face_store_root', '/data/faces')
+        # журнал промахов узнавания (#4469 п. 2); пусто - face_misses.jsonl рядом с каталогом лиц (/data)
+        self.declare_parameter('face_misses_path', '')
         self.declare_parameter('face_privacy_mode', 'workshop')
         # ЗАГЛУШКА до sweep по ADR-0123 §6 (issue #2771), не калиброванные
         # числа. Прежний дефолт 0.45 пускал чужих (тёща опознана как
@@ -470,7 +472,8 @@ class VisionFaceNode(VisionHailoNode):
             return None
         from rob_box_perception.people_service import PeopleService, serve
 
-        service = PeopleService(self._face_store)
+        misses = str(self.get_parameter('face_misses_path').value).strip() or None
+        service = PeopleService(self._face_store, misses_path=misses)
         return self.create_service(People, PEOPLE_SERVICE, lambda req, res: serve(service, req, res))
 
     def _on_speaker_result(self, msg: Any) -> None:
