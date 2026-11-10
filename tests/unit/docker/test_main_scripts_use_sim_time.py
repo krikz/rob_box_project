@@ -377,6 +377,55 @@ def test_nav2_bad_smoother_switch_fails_loudly():
     assert "NAV2_SMOOTH_CMD_VEL='yes'" in r.stdout
 
 
+# ── Зоны скорости: SpeedFilter включается только с маской (решение Шифу 10.11) ──
+# NAV2_SPEED_MASK_YAML ставит compose (по умолчанию пусто — зоны выключены, команды
+# узлов ровно как на роботе). Маска есть — к оверлеям добавляется speed_zones.yaml
+# и поднимаются публикаторы маски; маски нет — отказ, а не езда без ограничений.
+
+SPEED_MASK_NODES = [
+    "nav2_map_server map_server",
+    "nav2_map_server costmap_filter_info_server",
+    "nav2_lifecycle_manager lifecycle_manager",
+]
+# Имена нод в remap — отличают публикаторы маски от lifecycle_manager_navigation.
+SPEED_MASK_MARKERS = [
+    ("nav2_map_server map_server", "-r __node:=speed_mask_server"),
+    ("nav2_map_server costmap_filter_info_server", "-r __node:=costmap_filter_info_server"),
+    ("nav2_lifecycle_manager lifecycle_manager", "-r __node:=lifecycle_manager_speed_mask"),
+]
+
+
+def _is_speed_mask_line(line: str) -> bool:
+    return any(f"ros2 run {exe} " in line and marker in line for exe, marker in SPEED_MASK_MARKERS)
+
+
+def test_nav2_speed_zones_off_by_default():
+    r = run_script("nav2/start_nav2_direct.sh")
+    assert r.returncode == 0, r.stdout
+    assert not any(_is_speed_mask_line(line) for line in commands(r.stdout))
+
+
+def test_nav2_speed_zones_with_mask_adds_overlay_and_publishers():
+    mask = "/config/nav2/speed_mask.yaml"  # стенд считает /config/* существующим
+    r = run_script("nav2/start_nav2_direct.sh", {"NAV2_SPEED_MASK_YAML": mask})
+    assert r.returncode == 0, r.stdout
+    lines = commands(r.stdout)
+    assert len(lines) == len(NAV2_NODES) + 1 + len(SPEED_MASK_NODES)
+    for line in lines:
+        if _is_speed_mask_line(line):
+            continue
+        assert f"--params-file {PARAMS} --params-file /config/nav2/speed_zones.yaml " in line, line
+    for exe, marker in SPEED_MASK_MARKERS:
+        assert any(f"ros2 run {exe} " in line and marker in line for line in lines)
+
+
+def test_nav2_speed_zones_missing_mask_fails_loudly():
+    r = run_script("nav2/start_nav2_direct.sh", {"NAV2_SPEED_MASK_YAML": "/nonexistent/mask.yaml"})
+    assert r.returncode != 0
+    assert "NAV2_SPEED_MASK_YAML='/nonexistent/mask.yaml'" in r.stdout
+    assert not any(line.startswith("RUN: ros2 run") for line in r.stdout.splitlines())
+
+
 # ── Режим старта rtabmap: mapping только в симе (видео картографии) ─────────
 # RTABMAP_START_MODE ставит только docker/sim/compose.yaml (SIM_RTABMAP_MODE).
 # Без переменной и с localization — ровно команда робота (RTABMAP_EXPECTED).

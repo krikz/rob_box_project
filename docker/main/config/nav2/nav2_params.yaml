@@ -133,8 +133,12 @@ controller_server:
       # Курс по пути перед проёмом (HIL 05.11): при 24 / 0.15 DWB подводил корпус к проёму
       # 0.8–0.9 м наискось (до 21°), защита стопила по косяку. 48 / 0.325 (дефолт Nav2) —
       # точка на пути дальше носа, корпус входит по оси.
+      # forward_point_distance 0.325 → 0.20 (Г1, решение Шифу 10.11): «нос» PathAlign
+      # (конец траектории + 0.20) уходит внутрь допуска цели 0.25 и барьер стоянки у
+      # черты 0.325 исчезает (было 1–51 с, HIL 10.11, research/2026-11-05 §12).
+      # Риск входа в проём наискось проверен регрессом polygon/dead_end/turn90 в HIL.
       PathAlign.scale: 48.0
-      PathAlign.forward_point_distance: 0.325
+      PathAlign.forward_point_distance: 0.20
       GoalAlign.scale: 12.0  # Avoid in-place pre-alignment far away from the goal
       GoalDist.scale: 20.0
       PathDist.scale: 32.0  # было 25: ближе к линии пути (она идёт по центру проёма)

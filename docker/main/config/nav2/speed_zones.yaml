@@ -1,0 +1,31 @@
+# Зоны скорости (решение Шифу 10.11): оверлей nav2_params.yaml для штатного SpeedFilter Nav2.
+#
+# Подкладывается ``start_nav2_direct.sh`` ПОСЛЕ nav2_params.yaml, только когда задан
+# NAV2_SPEED_MASK_YAML — путь к yaml маски зон внутри контейнера (генератор:
+# ``python3 -m rob_box_sim.speed_zones``, маска пересчитывается после смены карты).
+# Сценарий HIL — scripts/hil/speed (run_scene.sh, SPEED_ZONES=1).
+#
+# Механика (Nav2 1.1.20): слой ``filter_mask`` local_costmap читает маску
+# (nav_msgs/OccupancyGrid в кадре ``map`` + CostmapFilterInfo от
+# ``costmap_filter_info_server``) и публикует nav2_msgs/SpeedLimit в /speed_limit при
+# смене зоны под роботом; controller_server подписан (speed_limit_topic) и ужимает
+# max_vel_x / max_speed_xy / max_vel_theta DWB пропорционально (только вниз).
+# Маска: 0 — без ограничения (открытый зал, базовая max_vel_x), 10 — 0.10 м/с
+# (коридор уже tight_width), 15 — 0.15 м/с (у стен ближе near_dist).
+# multiplier 0.01, base 0.0 (режим SPEED_FILTER_ABSOLUTE).
+controller_server:
+  ros__parameters:
+    # Штатная подписка controller_server на лимиты; топик публикует слой filter_mask
+    # (absolute — один и тот же с обеих сторон).
+    speed_limit_topic: "/speed_limit"
+
+local_costmap:
+  local_costmap:
+    ros__parameters:
+      plugins: ["voxel_layer", "inflation_layer", "filter_mask"]
+      filter_mask:
+        plugin: "nav2_costmap_2d::SpeedFilter"
+        filter_info_topic: "/costmap_filter_info"
+        mask_topic: "/speed_filter_mask"
+        speed_limit_topic: "/speed_limit"
+        transform_tolerance: 0.5

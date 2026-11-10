@@ -380,6 +380,9 @@ services:
       - ZENOH_SESSION_CONFIG_URI=/tmp/zenoh_session_config.json5  # Сгенерированный конфиг
       - *zenoh_listen_ip  # адрес локального роутера для session config
       - LD_LIBRARY_PATH=/opt/ros/humble/opt/zenoh_cpp_vendor/lib:/opt/ros/humble/lib/aarch64-linux-gnu:/opt/ros/humble/lib
+      # Зоны скорости (решение Шифу 10.11): путь к yaml маски SpeedFilter внутри контейнера.
+      # Пусто — зоны выключены (как раньше); задан — nav2 требует маску на месте (start_nav2_direct.sh).
+      - NAV2_SPEED_MASK_YAML=${NAV2_SPEED_MASK_YAML:-}
     volumes:
       - ./config:/config:ro
       - ../common/scripts:/ros_scripts:ro
