@@ -22,7 +22,7 @@ import pytest
 
 ROOT = Path(__file__).resolve().parents[3]
 E2E_LIB = ROOT / "scripts" / "ci" / "e2e" / "e2e_voice_lib.sh"
-REGISTRY = ROOT / "src" / "rob_box_voice" / "rob_box_voice" / "tts_voice_registry.py"
+REGISTRY = ROOT / "src" / "rob_box_dialog_host" / "rob_box_dialog_host" / "tts_voice_registry.py"  # ADR-0167 Ш1г-1
 
 #: Каст #3992 (docs/dialog/role_voices_biometrics_2026-10-26.md) и запасной женский голос #4038.
 CAST = {

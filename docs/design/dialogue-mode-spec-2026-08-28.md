@@ -166,7 +166,7 @@
 - `docs/plans/2026-08-20-voice-backlog-accumulator-design.md` — аккумулятор (детально).
 - `docs/design/LLM_VOICE_SELECTION_PROPOSAL.md` — голоса / `set_voice`.
 - `docs/plans/2026-08-27-quest-voice-passthrough-design.md` — рация + режимы оператора (архитектура).
-- `docs/architecture/INTERNAL_DIALOGUE_VOICE_ASSISTANT.md` — текущая архитектура.
+- `docs/architecture/dialog-v2-overview.md` — текущая архитектура.
 - `docs/analysis/voice-features-e2e-validation-2026-08-22.md` — карта голосовых фич (DJ, музыка, `set_voice`).
 - `docs/adr/0068-music-aware-intent-priority-gate.md` — wake-word под играющей музыкой (dj02).
 - `docs/adr/0027-meta-quest-ar-control.md`, `docs/adr/0028-avatar-supervisor.md` — wire-протокол и супервизор.

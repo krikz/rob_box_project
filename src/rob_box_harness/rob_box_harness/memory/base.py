@@ -101,7 +101,7 @@ class Waypoint:
 class FAQItem:
     """A single FAQ entry for an event.
 
-    Mirrors the shape used by ``rob_box_voice.core.faq_store``: an
+    Mirrors the shape used by ``rob_box_dialog_host.faq_store``: an
     ``event_id`` tag, a ``question``, an ``answer``, an optional
     ``category`` (defaults to ``"general"``) and an optional
     ``source`` reference (file path / URL).

@@ -2,7 +2,7 @@
 
 1. «Удали точки хил-вход, хил-кухня, хил-диван и хил-окно»: схема команды разрешала три действия, модель урезала
    просьбу сама, исполнено три, прозвучало «Готово.» - четвёртая точка осталась молча. Модель теперь шлёт всё
-   (``ACTIONS_ACCEPT_MAX``), код исполняет первые ``ACTIONS_MAX`` и называет остальное (``turn.capped``).
+   (``ACTIONS_ACCEPT_MAX``); с ADR-0165 (этап 3) четыре действия - вереница: план, шаги по одному, итог кодом.
 2. «Удали ещё точку хил-окно»: «ещё» между «удали» и «точку» - группа ``waypoints_edit`` не открылась, ``delete_waypoint``
    не было в срезе, модель сказала «Готово, хил-окно удалена.» без тула. Теперь группу открывают глагол и предмет по
    отдельности. Речь о сделанном без тула - отдельный PR (ждёт решения Шифу).
@@ -19,7 +19,7 @@ from rob_box_dialog.command import Command, Invalid, ToolCall, parse, validate
 from rob_box_dialog.respond import ActionResult
 from rob_box_dialog.session import Session
 from rob_box_dialog.tools_view import available_tools, requested_groups
-from rob_box_dialog.turn import Answer, TurnEngine
+from rob_box_dialog.turn import Answer, TurnEngine, settle
 
 POINTS = ("хил-вход", "хил-кухня", "хил-диван", "хил-окно")
 TOOLS = ("delete_waypoint", "clear_waypoints", "list_waypoints", "save_waypoint", "play_animation", "memory_save")
@@ -30,13 +30,13 @@ def _deletes(names=POINTS):
 
 
 # ---------------------------------------------------------------------------------------------------------------
-# 1. потолок действий: модель присылает всё, код исполняет ACTIONS_MAX и называет остальное
+# 1. модель присылает всё; больше трёх действий - вереница (ADR-0165), до трёх - разом, как раньше
 # ---------------------------------------------------------------------------------------------------------------
 
 
-def test_the_schema_accepts_more_actions_than_the_turn_executes():
+def test_the_schema_accepts_more_actions_than_a_short_command():
     schema = kn.command_schema("json")
-    assert schema["properties"]["actions"]["maxItems"] == kn.ACTIONS_ACCEPT_MAX > kn.ACTIONS_MAX
+    assert schema["properties"]["actions"]["maxItems"] == kn.ACTIONS_ACCEPT_MAX > kn.CHAIN_SHORT_STEPS_MAX
 
 
 def test_four_deletes_are_a_valid_command_with_all_four_actions():
@@ -58,6 +58,7 @@ class Ports:
         self.answers = list(answers)
         self.asked = []
         self.executed = []
+        self.batches = []
         self.said = []
 
     async def ask(self, messages, tools, timeout_s):
@@ -65,6 +66,7 @@ class Ports:
         return self.answers.pop(0)
 
     async def execute(self, actions, snapshot, turn_id):
+        self.batches.append(len(actions))
         out = []
         for n, call in enumerate(actions):
             self.executed.append((call.tool, dict(call.args)))
@@ -95,7 +97,12 @@ class Ports:
 def _run(ports, text):
     ids = iter(f"t{n}" for n in range(1, 100))
     engine = TurnEngine(Session("personality"), ports, system_prompt="Ты робот.", new_id=lambda: next(ids))
-    asyncio.run(engine.run(Addressed(text, VOICE)))
+
+    async def main():
+        await engine.run(Addressed(text, VOICE))
+        await settle(engine)  # вереница идёт после закрытия хода
+
+    asyncio.run(main())
     return engine
 
 
@@ -103,35 +110,37 @@ def _command(actions):
     return Command(actions=tuple(ToolCall(a["tool"], a["args"]) for a in actions))
 
 
-def test_hil_four_deletes_execute_three_and_the_code_names_the_fourth():
-    """HIL 04.11: четыре удаления - исполнены первые три, а четвёртое не молча: фраза кода называет «хил-окно»."""
+def test_hil_four_deletes_go_as_a_chain_with_a_plan_and_a_summary():
+    """HIL 04.11: четыре удаления - все четыре исполнены, по одному; сначала план кода (речи у модели нет), потом итог
+    кодом по исходам (ADR-0165 §3, §7)."""
     ports = Ports([Answer(_command(_deletes()), "deepseek")])
     _run(ports, "Робот, удали точки хил-вход, хил-кухня, хил-диван и хил-окно")
-    assert [args["name"] for _, args in ports.executed] == list(POINTS[:kn.ACTIONS_MAX])
-    capped = phrases.text(kn.ACTIONS_CAPPED_NAMED_PHRASE, rest="хил-окно")
-    assert ports.said[-1] == capped
-    assert "хил-окно" in ports.said[-1]
+    assert [args["name"] for _, args in ports.executed] == list(POINTS)
+    assert ports.batches == [1, 1, 1, 1]
+    items = ", ".join(POINTS)
+    assert ports.said == [phrases.text("chain.plan.delete", items=items),
+                          f"{phrases.text('chain.done')} {phrases.text('chain.did.delete', items=items)}"]
 
 
-def test_up_to_the_limit_nothing_extra_is_said():
-    ports = Ports([Answer(_command(_deletes(POINTS[:kn.ACTIONS_MAX])), "deepseek")])
+def test_up_to_three_deletes_run_at_once_as_before():
+    ports = Ports([Answer(_command(_deletes(POINTS[:kn.CHAIN_SHORT_STEPS_MAX])), "deepseek")])
     _run(ports, "Робот, удали точки хил-вход, хил-кухня, хил-диван")
-    assert len(ports.executed) == kn.ACTIONS_MAX
-    assert not any("столько не делаю" in s for s in ports.said)
+    assert ports.batches == [kn.CHAIN_SHORT_STEPS_MAX]
+    assert ports.said == [phrases.text("local.done")]
 
 
-def test_a_capped_call_without_a_string_argument_gets_the_general_phrase():
-    acts = [{"tool": "delete_waypoint", "args": {"name": n}} for n in POINTS[:kn.ACTIONS_MAX]]
+def test_a_chain_step_without_a_string_argument_is_named_by_its_class_word():
+    acts = [{"tool": "delete_waypoint", "args": {"name": n}} for n in POINTS[:kn.CHAIN_SHORT_STEPS_MAX]]
     acts.append({"tool": "clear_waypoints", "args": {}})
     ports = Ports([Answer(_command(acts), "deepseek")])
     _run(ports, "Робот, удали точки и очисти все точки")
-    assert ports.said[-1] == phrases.text(kn.ACTIONS_CAPPED_PHRASE)
+    assert ports.said[0].startswith(phrases.text("chain.plan.delete", items=", ".join(POINTS[:3])))
+    assert kn.CHAIN_CLASS_NOUNS["action.local"] in ports.said[0]
 
 
-def test_the_capped_phrases_are_in_the_catalog():
-    for key in (kn.ACTIONS_CAPPED_PHRASE, kn.ACTIONS_CAPPED_NAMED_PHRASE):
-        assert key in kn.PHRASE_KEYS
-        assert phrases.text(key, rest="хил-окно")
+def test_the_capped_phrases_are_gone():
+    assert not [k for k in phrases.catalog() if k.startswith("command.actions_capped")]
+    assert not hasattr(kn, "ACTIONS_MAX")
 
 
 # ---------------------------------------------------------------------------------------------------------------

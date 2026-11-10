@@ -24,7 +24,7 @@ from rob_box_mcp_tools.engine.engine_tools import DjSetTool, RequestMusicTool
 from rob_box_music import knowledge as kn
 from rob_box_music.choice import DeterministicChooser
 from rob_box_music.source import CoverWork, SourceAsk, source_ask
-from rob_box_voice.core.media_phrases import launch_text
+from rob_box_dialog_host.media_phrases import launch_text
 
 from .test_engine_session import _rig
 from .test_gen_library_cache import FakeProvider

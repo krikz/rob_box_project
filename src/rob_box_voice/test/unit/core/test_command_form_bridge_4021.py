@@ -21,8 +21,8 @@ from rob_box_dialog.turn import TurnEngine  # noqa: E402
 from rob_box_llm.provider import (LLMChunk, LLMMessage, LLMResponse, LLMSettings, ProviderCapabilities,  # noqa: E402
                                   ToolCall, ToolResult)
 from rob_box_llm.providers.deepseek import DeepSeekProvider  # noqa: E402
-from rob_box_voice.core import command_bridge as cb  # noqa: E402
-from rob_box_voice.core.dialog_v2_ports import CallCounter, V2Ports, counted_wrapper  # noqa: E402
+from rob_box_dialog_host import command_bridge as cb  # noqa: E402
+from rob_box_dialog_host.dialog_v2_ports import CallCounter, V2Ports, counted_wrapper  # noqa: E402
 
 DEEPSEEK_CAPS = DeepSeekProvider(api_key="test").capabilities
 ADDRESSED = Form(passed=False, voice=False)

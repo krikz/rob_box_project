@@ -287,7 +287,7 @@ class STTNode(Node):
     def __init__(self, *, occasion_gate: OccasionGate | None = None) -> None:
         # ADR-0101 §3.3.5 / Issue #2536 / PR-E: «unclear cooldown» идёт
         # через единый ``OccasionGate``. ``occasion_gate`` — optional kwarg:
-        # если передан (dialogue_node создаёт и прокидывает в ноду),
+        # если передан (dialog_node создаёт и прокидывает в ноду),
         # ``_maybe_speak_unclear`` спрашивает у gate (OccasionGate.may_speak)
         # и фиксирует ``mark_consumed``. Если НЕ передан (legacy-тесты /
         # standalone запуск) — создаём default-инстанс ниже с cooldown'ом
@@ -325,7 +325,7 @@ class STTNode(Node):
         # With 'hardware' mode the robot can be interrupted mid-speech.
         self.declare_parameter("aec_mode", "hardware")
 
-        # Wake words: адресация и перебивание (/dialog/interrupt_request). Должны совпадать с dialogue_node!
+        # Wake words: адресация и перебивание (/dialog/interrupt_request). Должны совпадать с dialog_node!
         # Один список на весь проект — rob_box_voice.core.dialogue_text.
         # Он же фолбек strip_wake_word, и его порядок неслучаен (длинные
         # варианты первыми, иначе «роб» съедает «роб бокс»). Копий было
@@ -1463,7 +1463,7 @@ class STTNode(Node):
 
         У TTS аналогичное состояние уезжает в топик
         ``/voice/tts/provider_state`` (issue #1229) — там у него четыре
-        потребителя (mcp_server, dialogue_node, quest_node, supervisor).
+        потребителя (mcp_server, dialog_node, quest_node, supervisor).
         У STT потребителя пока нет, а топик без потребителя — ровно то,
         что ловит сторож issue #2118, поэтому здесь только лог и
         персистентный файл. Появится потребитель — топик добавляется

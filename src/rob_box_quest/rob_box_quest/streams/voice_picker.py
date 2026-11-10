@@ -12,7 +12,7 @@
 dev-env без Docker — см. ``test_quest_bridge.py:_make_voice_bridge``).
 
 Почему ВАЛИДАЦИЯ ПО КЭШУ, а не по компайл-тайм реестру
-(``rob_box_voice.tts_voice_registry``):
+(``rob_box_dialog_host.tts_voice_registry``):
 
 * До фикса issue #2138 ``QuestBridge.set_voice`` ходил через
   ``voices_for(provider)`` из ``tts_voice_registry``. В образе

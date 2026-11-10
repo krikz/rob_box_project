@@ -80,8 +80,15 @@ def test_host_declares_the_robot_profile_and_loads_it_strictly(host):
 
 
 def test_operator_session_gets_the_robot_wake_table():
+    # Ш1б-4: профиль ТАРС грузит один раз (вейки сессии и персона оператора): ``profile = robot_profile.load()``.
+    tree = ast.parse(OPERATOR_TURNS.read_text(encoding="utf-8-sig"))
+    loads = [
+        n
+        for n in ast.walk(tree)
+        if isinstance(n, ast.Assign) and _src(n.value) == "robot_profile.load()" and _src(n.targets[0]) == "profile"
+    ]
+    assert len(loads) == 1
     sessions = [n for n in _calls(OPERATOR_TURNS) if _src(n.func) == "Session"]
     assert sessions and all(
-        any(k.arg == "wake_words" and _src(k.value) == "robot_profile.load().wake_personality" for k in s.keywords)
-        for s in sessions
+        any(k.arg == "wake_words" and _src(k.value) == "profile.wake_personality" for k in s.keywords) for s in sessions
     )

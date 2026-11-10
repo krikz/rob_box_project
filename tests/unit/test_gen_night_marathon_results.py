@@ -695,7 +695,7 @@ def _src(rel: str) -> str:
     ("src/rob_box_dialog/rob_box_dialog/phrases/ru.yaml", 'media.timeout: &not_started ["Музыка пока не заиграла."]'),
     ("src/rob_box_dialog/rob_box_dialog/phrases/ru.yaml",
      'perform.ask_replace_music: ["Сейчас играет {title}, выключить и зачитать?"]'),
-    ("src/rob_box_voice/rob_box_voice/core/dialog_v2_ports.py",
+    ("src/rob_box_dialog_host/rob_box_dialog_host/dialog_v2_ports.py",
      'f"🎭 [turn-v2] лицо команды на {stage}: emotion={plan.emotion}'),
     ("src/rob_box_voice/rob_box_voice/tts_node.py", 'f"🎚️ {param.name} изменён: {getattr(self, param.name):g}"'),
     ("src/rob_box_voice/rob_box_voice/speaker_id_node.py", "f\"👤 Speaker: '{match.name}' confidence={match.confidence:.3f} \""),
@@ -717,7 +717,7 @@ def _src(rel: str) -> str:
     # #4062: текст вопроса - одна фраза каталога (её берут и тул через media_phrases, и диалог v2 по причине)
     ("src/rob_box_dialog/rob_box_dialog/phrases/ru.yaml",
      'music.library_fail.needs_confirmation: ["Удалить {name}? Скажи «да, удаляй»."]'),
-    ("src/rob_box_voice/rob_box_voice/core/media_phrases.py",
+    ("src/rob_box_dialog_host/rob_box_dialog_host/media_phrases.py",
      'return _phrase("music.library_fail.needs_confirmation", name=f"«{title}»" if title else LIBRARY_UNNAMED)'),
     ("src/rob_box_dialog/rob_box_dialog/knowledge.py", 'LIBRARY_UNNAMED = "этот трек"'),
     ("src/rob_box_mcp_tools/rob_box_mcp_tools/tools/gen_library.py",

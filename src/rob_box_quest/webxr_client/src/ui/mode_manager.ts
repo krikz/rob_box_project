@@ -37,7 +37,7 @@ export interface ClientModeSnapshot {
 /**
  * AV-28 §P7: дефолтные значения UI (отображаются до того, как сервер
  * ответит списком пресетов). Совпадают с default_preset /
- * default_language в src/rob_box_voice/config/voice_presets.yaml.
+ * default_language в docker/sound/config/voice_presets.yaml.
  */
 export interface ClientModeDefaults {
   preset?: VoicePresetId;

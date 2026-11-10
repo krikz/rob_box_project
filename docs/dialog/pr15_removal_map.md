@@ -644,12 +644,12 @@ src/rob_box_voice/rob_box_voice/dialogue_node.py:3241
       3 src/rob_box_mcp_tools/rob_box_mcp_tools/waypoint_adapter.py
       2 src/rob_box_voice/rob_box_voice/utils/identity_seam.py
       2 src/rob_box_voice/rob_box_voice/core/voice_memory_init.py
-      2 src/rob_box_voice/rob_box_voice/core/voice_memory.py
+      2 src/rob_box_dialog_host/rob_box_dialog_host/voice_memory.py
       2 src/rob_box_music/rob_box_music/diversity.py
       2 src/rob_box_mcp_tools/rob_box_mcp_tools/core/rtttl_library.py
       2 src/rob_box_harness/rob_box_harness/memory/voice_memory_adapter.py
       1 src/rob_box_voice/rob_box_voice/dialog_node.py
-      1 src/rob_box_voice/rob_box_voice/core/speaker_memory.py
+      1 src/rob_box_dialog_host/rob_box_dialog_host/speaker_memory.py
       1 src/rob_box_music/rob_box_music/works.py
       1 src/rob_box_mcp_tools/rob_box_mcp_tools/waypoint_store.py
       1 src/rob_box_core/rob_box_core/e2e_mode.py

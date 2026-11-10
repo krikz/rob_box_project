@@ -21,6 +21,8 @@ WAKE_TABLE = PROFILE_DIR / "wake_words.yaml"
 _PROFILE = load_profile(PROFILE_DIR)
 ROBOT_WAKE: Tuple[str, ...] = _PROFILE.wake_personality
 ROBOT_OPERATOR_WAKE: Tuple[str, ...] = _PROFILE.wake_operator
+#: Владельцы тулов профиля робота (ADR-0167 Ш1в): умолчание среза тулов на время теста (conftest).
+ROBOT_OWNERS: Tuple[str, ...] = _PROFILE.owners
 ROBOT_RISKY: Tuple[str, ...] = tuple(
     item["word"]
     for item in yaml.safe_load(WAKE_TABLE.read_text(encoding="utf-8"))["personality"]

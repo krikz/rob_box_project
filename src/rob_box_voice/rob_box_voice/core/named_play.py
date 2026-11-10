@@ -29,7 +29,7 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, Awaitable, Callable, Dict, Mapping, Optional, Tuple
 
-from .media_phrases import composer_missing_phrase, launch_text, no_more_phrase, play_ok_text
+from rob_box_dialog_host.media_phrases import composer_missing_phrase, launch_text, no_more_phrase, play_ok_text
 
 LOOKUP_TOOL = "lookup_melody"
 REQUEST_TOOL = "request_music"

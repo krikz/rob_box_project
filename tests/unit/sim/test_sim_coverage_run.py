@@ -5,6 +5,7 @@
 """
 
 import importlib
+import math
 import signal
 import sys
 import types
@@ -43,6 +44,8 @@ def coverage_run(monkeypatch):
     sys.modules["geometry_msgs.msg"].PoseStamped = object
     sys.modules["nav2_msgs.action"].NavigateToPose = object
     sys.modules["nav2_msgs.action"].NavigateThroughPoses = object
+    sys.modules["nav2_msgs.action"].FollowPath = object
+    sys.modules["nav_msgs.msg"].Path = object
     sys.modules["nav_msgs.msg"].Odometry = object
     monkeypatch.syspath_prepend(str(VIDEO_DIR))
     for name in ("route", "coverage_run"):
@@ -249,3 +252,100 @@ def test_finish_reports_motion(coverage_run, tmp_path):
     line = coverage_run.finish(tmp_path, node, grid, space, outcomes, "", 0.0)
     assert "goals=1 succeeded=1" in line and "poses=2 poses_passed=2" in line
     assert "moving_s=10.0 moving_pct=50.0% moved_m=1.0 avg_mps=0.050 moving_mps=0.100" in line
+
+
+# ── проход по периметру (#4607): подъезд NavigateToPose + путь FollowPath ─────────────────────────────
+
+
+def _pplan(n):
+    """План периметра из ``n`` нырков по 3 точки, все вперёд."""
+    from rob_box_sim.coverage_perimeter import PerimeterPlan, PerimeterStrip
+
+    strips = [
+        PerimeterStrip("x", -1, ((0.0, k, 0.0), (1.0, k - 0.1, 0.0), (2.0, k, 0.0)), 1.0, 0.1, True, True)
+        for k in range(n)
+    ]
+    return PerimeterPlan(0.4125, strips, [(k, True) for k in range(n)])
+
+
+def _fake_follow(results, sent):
+    def run_follow(n, cl, name, path, timeout, stop=None):
+        sent.append((name, len(path), round(timeout, 2)))
+        return next(results)
+
+    return run_follow
+
+
+def test_perimeter_strip_is_approach_then_follow_path(coverage_run, monkeypatch):
+    goals, follows = [], []
+
+    def fake_run_goal(n, cl, name, x, y, yaw, timeout, stop=None):
+        goals.append((name, x, y, yaw))
+        return "STATUS_SUCCEEDED", 0
+
+    monkeypatch.setattr(coverage_run, "run_goal", fake_run_goal)
+    monkeypatch.setattr(coverage_run, "run_follow", _fake_follow(iter([("STATUS_SUCCEEDED", 0)] * 2), follows))
+    outcomes, why = coverage_run.drive_perimeter(None, "nav", "follow", _pplan(2), timeout=45.0, max_fail=3)
+    assert why == ""
+    assert [o.name for o in outcomes] == ["P0000a", "P0000f", "P0001a", "P0001f"]
+    assert goals[1] == ("P0001a", 0.0, 1.0, 0.0)  # подъезд — к первой точке пути с её курсом
+    length = 2 * math.hypot(1.0, 0.1)
+    assert follows[0] == ("P0000f", 3, round(45.0 + length / coverage_run.SPEED_MPS, 2))
+
+
+def test_failed_approach_does_not_send_the_path(coverage_run, monkeypatch):
+    """Подъезд не удался — путь не шлётся: DWB поехал бы к пути оттуда, где робот стоит (может, у стены)."""
+    results = iter(["STATUS_ABORTED", "STATUS_SUCCEEDED"])
+    monkeypatch.setattr(coverage_run, "run_goal", lambda *a, **kw: (next(results), 0))
+    follows = []
+    monkeypatch.setattr(coverage_run, "run_follow", _fake_follow(iter([("STATUS_ABORTED", 2)]), follows))
+    outcomes, why = coverage_run.drive_perimeter(None, None, None, _pplan(2), timeout=1.0, max_fail=2)
+    assert [o.result for o in outcomes] == ["ABORTED", "NOT_SENT", "SUCCEEDED", "ABORTED"]
+    assert [f[0] for f in follows] == ["P0001f"] and outcomes[3].em_episodes == 2
+    assert why == ""  # неудачи подряд считаются в начале следующего нырка, а нырков больше нет
+
+
+def test_perimeter_failures_in_row_stop_and_rest_not_sent(coverage_run, monkeypatch):
+    monkeypatch.setattr(coverage_run, "run_goal", lambda *a, **kw: ("STATUS_ABORTED", 0))
+    outcomes, why = coverage_run.drive_perimeter(None, None, None, _pplan(4), timeout=1.0, max_fail=2)
+    assert why == "2_failures_in_row"
+    assert [o.result for o in outcomes] == ["ABORTED", "NOT_SENT"] * 2 + ["NOT_SENT"] * 4
+    assert [o.name for o in outcomes][-2:] == ["P0003a", "P0003f"]
+
+
+def test_signal_during_follow_cancels_and_marks_rest(coverage_run, monkeypatch):
+    stop = coverage_run.StopSignal()
+    monkeypatch.setattr(coverage_run, "run_goal", lambda *a, **kw: ("STATUS_SUCCEEDED", 0))
+
+    def fake_follow(n, cl, name, path, timeout, stop=None):
+        sig(signal.SIGINT)
+        assert stop()
+        return "INTERRUPTED", 0
+
+    sig = stop
+    monkeypatch.setattr(coverage_run, "run_follow", fake_follow)
+    outcomes, why = coverage_run.drive_perimeter(None, None, None, _pplan(2), timeout=1.0, max_fail=3, stop=stop)
+    assert why == "interrupted_SIGINT"
+    assert [o.result for o in outcomes] == ["SUCCEEDED", "INTERRUPTED", "NOT_SENT", "NOT_SENT"]
+
+
+def test_snake_stop_leaves_perimeter_not_sent(coverage_run, monkeypatch):
+    monkeypatch.setattr(coverage_run, "drive", lambda *a, **kw: ([coverage_run.GoalOutcome("L0", "ABORTED")], "5_x"))
+    monkeypatch.setattr(coverage_run, "drive_perimeter", lambda *a, **kw: pytest.fail("нырки после остановки"))
+    node = types.SimpleNamespace(track=[(0.0, 0.0, 0.0, 0.0)])
+    args = coverage_run.parse_args(["--perimeter"])
+    snake, perim, why, k0 = coverage_run._drive_all(node, (None, None, None), args, [], _pplan(2), None)
+    assert why == "5_x" and k0 == 1
+    assert [o.result for o in perim] == ["NOT_SENT"] * 4
+
+
+def test_perimeter_only_skips_the_snake(coverage_run, monkeypatch):
+    monkeypatch.setattr(coverage_run, "drive", lambda *a, **kw: pytest.fail("змейка при --perimeter-only"))
+    monkeypatch.setattr(
+        coverage_run, "drive_perimeter", lambda *a, **kw: ([coverage_run.GoalOutcome("P0000a", "OK")], "")
+    )
+    node = types.SimpleNamespace(track=[])
+    args = coverage_run.parse_args(["--perimeter-only", "--wall-offset", "0.45"])
+    assert args.wall_offset == 0.45 and not args.perimeter
+    snake, perim, why, k0 = coverage_run._drive_all(node, (None, None, None), args, [], _pplan(1), None)
+    assert snake == [] and [o.name for o in perim] == ["P0000a"] and k0 == 0

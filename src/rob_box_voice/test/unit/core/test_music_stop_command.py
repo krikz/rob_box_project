@@ -109,7 +109,7 @@ class TestWatchdogStopReachesTheDialogueLive3108:
 
     def test_node_subscribes_to_the_server_music_state(self) -> None:
         # Issue #3133: имя топика — константа контракта (ADR-0141).
-        from rob_box_voice.core.music_player_state import MUSIC_STATE_TOPIC
+        from rob_box_dialog_host.music_player_state import MUSIC_STATE_TOPIC
 
         src = self._dialog_node_source()
         assert MUSIC_STATE_TOPIC == "/voice/music/state"

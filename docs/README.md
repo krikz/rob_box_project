@@ -15,6 +15,7 @@
 | Студия канала: бриф агенту на отдельной машине | [process/channel-studio-brief.md](process/channel-studio-brief.md) — сам настраивается, раз в сутки собирает материал, черновики Шифу на кнопку (#4492) |
 | Что за робот, быстрый старт | [README.md](../README.md), [guides/QUICK_START.md](guides/QUICK_START.md) |
 | Железо, батарея, сеть, три узла (Main / Vision / Sound Pi) | [architecture/HARDWARE.md](architecture/HARDWARE.md), [architecture/NETWORK_TOPOLOGY.md](architecture/NETWORK_TOPOLOGY.md) |
+| Как устроен диалог v2 целиком: микрофон → адресация → ход → речь → динамик | [architecture/dialog-v2-overview.md](architecture/dialog-v2-overview.md) |
 | Почему сделано так | [adr/](adr/) — решения |
 
 ## Основные каталоги
@@ -25,7 +26,7 @@
 | [architecture/](architecture/) | как система устроена **сейчас**: железо, сеть, контракты, топики. `meta-quest-api.md` читает тест | правка существующего файла; новый — только если темы нет |
 | [research/](research/) | исследования и замеры, `YYYY-MM-DD-<тема>.md`; `jev/scenarios/acceptance.yaml` читают тест и скрипт | новое исследование; сырые выводы — в корневой `evidence/` |
 | [plans/](plans/) | планы эпиков; `2026-09-15-service-manifest.md` — опора CI-гарда | план активного эпика; закрыт эпик — в архив |
-| [runbooks/](runbooks/) | как действовать: восстановление, cold-start, дежурство; [ролик из HIL](runbooks/hil-video.md), [HIL-проверки группы А](runbooks/hil-checks.md), [прогон здания в HIL](runbooks/hil-building.md), [доступ студии на чтение](runbooks/studio-ro-access.md), [рут Станции](runbooks/yandex-station-root.md), [Игорёк на колонке](runbooks/station-igor-install.md) | пошаговая инструкция «как сделать / починить» |
+| [runbooks/](runbooks/) | как действовать: восстановление, cold-start, дежурство; [ролик из HIL](runbooks/hil-video.md), [HIL-проверки группы А](runbooks/hil-checks.md), [прогон здания в HIL](runbooks/hil-building.md), [доступ студии на чтение](runbooks/studio-ro-access.md), [рут Станции](runbooks/yandex-station-root.md), [Игорёк на колонке](runbooks/station-igor-install.md), [смотритель логов](runbooks/log-watch.md) | пошаговая инструкция «как сделать / починить» |
 | [guides/](guides/) | руководства: настройка, запуск, провайдеры | руководство для человека |
 | [process/](process/) | как работаем (владелец — ADR-0162) | — |
 | [e2e/](e2e/) | марафон, сценарии e2e | (переедет в runbooks) |

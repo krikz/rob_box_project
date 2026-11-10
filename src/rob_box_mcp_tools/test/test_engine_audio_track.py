@@ -17,7 +17,7 @@ from rob_box_mcp_tools.engine.player_owner import PlayerOwner
 from rob_box_mcp_tools.engine.renardo_adapter import RenardoAdapter, audio_files
 from rob_box_music.model import AudioTrack
 from rob_box_music.render.audio import render_audio
-from rob_box_voice.core.media_phrases import library_play_text, now_playing_track_text
+from rob_box_dialog_host.media_phrases import library_play_text, now_playing_track_text
 
 from .test_engine_player_owner import FakeClock, FakePlayer
 

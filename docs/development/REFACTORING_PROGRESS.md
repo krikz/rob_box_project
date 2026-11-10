@@ -81,7 +81,7 @@
   - Speech-optimized formatting
 
 #### ✅ Module 3: CommandParser (commit 031d9a5)
-- **File**: `rob_box_voice/core/command_parser.py`
+- **File**: `rob_box_dialog_host/command_parser.py`
 - **LOC**: 307 (✅ <350)
 - **Tests**: 40+ unit tests (100% coverage)
 - **Features**:

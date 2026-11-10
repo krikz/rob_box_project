@@ -37,7 +37,7 @@ except ImportError:
 from rob_box_dialog_msgs.srv import DialogControl  # noqa: E402
 from rob_box_dialog.command import parse  # noqa: E402
 from rob_box_llm.provider import ToolResult  # noqa: E402
-from rob_box_voice.core.command_bridge import CommandResponse, for_turn  # noqa: E402
+from rob_box_dialog_host.command_bridge import CommandResponse, for_turn  # noqa: E402
 from rob_box_voice import dialog_node as dn  # noqa: E402
 
 TIME = type(M.TurnEvent().stamp)
@@ -746,7 +746,7 @@ def _remember(node, tmp_path, person="spk-boris"):
     """Память собеседника на файлах tmp: факт Бориса в ``voice_facts`` (куда пишет ``memory_save``)."""
     import sqlite3
 
-    from rob_box_voice.core.speaker_memory import SpeakerMemory
+    from rob_box_dialog_host.speaker_memory import SpeakerMemory
 
     facts = tmp_path / "voice_memory.db"
     conn = sqlite3.connect(facts)

@@ -37,9 +37,9 @@ from rob_box_dialog import tools_view  # noqa: E402
 from rob_box_dialog import turn as turn_mod  # noqa: E402
 from rob_box_llm.provider import LLMResponse, ProviderCapabilities, ToolCall  # noqa: E402
 from rob_box_llm.providers.fake import FakeLLMProvider  # noqa: E402
-from rob_box_voice.core import command_bridge  # noqa: E402
-from rob_box_voice.core.dialog_v2_ports import CallCounter, Counted  # noqa: E402
-from rob_box_voice.tts_voice_registry import PROVIDER_LABELS, PROVIDER_VOICES  # noqa: E402
+from rob_box_dialog_host import command_bridge  # noqa: E402
+from rob_box_dialog_host.dialog_v2_ports import CallCounter, Counted  # noqa: E402
+from rob_box_dialog_host.tts_voice_registry import PROVIDER_LABELS, PROVIDER_VOICES  # noqa: E402
 
 
 def command(args: dict) -> LLMResponse:
@@ -153,7 +153,7 @@ def test_3870_regression_music_scene_first_makes_step_red(make_env, monkeypatch)
     monkeypatch.setattr(tools_view, "groups_for", old_groups_for_music_first(tools_view.groups_for))
     # Страховка #3960 (тул вне среза → код открывает его группу и повторяет) прячет регресс среза: стенд проверяет
     # сам срез, поэтому откатываем и её — как было до #3960.
-    monkeypatch.setattr(command_bridge, "widen_for", lambda missing, agent, have: ())
+    monkeypatch.setattr(command_bridge, "widen_for", lambda missing, agent, have, owners=None: ())
     env = make_env(_battery_rule)
     env.stand.player.start("клубный трек")
     report = env.run(BATTERY)

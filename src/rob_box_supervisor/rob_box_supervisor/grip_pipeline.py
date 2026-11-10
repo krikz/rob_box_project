@@ -18,15 +18,13 @@
 ``tool_calls`` от модели в любом случае игнорируются: этот путь не имеет
 доступа к инструментам, поэтому даже «случайно поехали» невозможен.
 
-Модуль намеренно не зависит от rclpy и от ноды — он читает источник истины
-``voice_presets.yaml`` пакета ``rob_box_voice`` (пресеты, языки, дефолты) и
-собирает пару ``LLMMessage`` (system = секция промпта пресета, user =
-директива). Всё остальное (топики, состояние, публикация в TTS) — в
-``AvatarSupervisor`` (``supervisor_node.py``).
-
-Пока шаг 6 (удаление ``voice_input_mode``/формализатора из ``dialogue_node``)
-не сделан, загрузка yaml здесь — это зеркало ``dialogue_node._load_voice_presets``;
-после удаления дубля останется только этот модуль.
+Модуль намеренно не зависит от rclpy и от ноды — он читает каталог пресетов стиля
+продукта ``voice_presets.yaml`` (пресеты, языки, дефолты; у робота — в профиле
+``docker/sound/config`` рядом с ``assistant.yaml``, ADR-0167 Ш1а-2) и собирает пару
+``LLMMessage`` (system = секция промпта пресета, user = директива). Путь — тот же,
+что у белого списка моста: ``rob_box_core.bridge_protocol.voice_presets_path()``
+(env ``ROB_BOX_VOICE_PRESETS_YAML``). Всё остальное (топики, состояние, публикация
+в TTS) — в ``AvatarSupervisor`` (``supervisor_node.py``).
 """
 
 from __future__ import annotations
@@ -35,7 +33,7 @@ import os
 from pathlib import Path
 from typing import Any, Optional
 
-# Маркер EN-половины двуязычных prompt-файлов (``presets/<key>.txt``).
+# Маркер EN-половины двуязычных prompt-файлов (``voice_presets/<key>.txt``).
 # RU-часть идёт первой, EN-часть начинается со строки, содержащей этот маркер.
 _RU_EN_MARKER = "EN version"
 
@@ -51,36 +49,16 @@ MODE_STYLE = "style"
 
 
 def resolve_voice_presets_path() -> Optional[str]:
-    """Абсолютный путь к ``voice_presets.yaml`` пакета ``rob_box_voice``.
+    """Путь к каталогу пресетов продукта — тот же, что у белого списка моста.
 
-    Источник истины пресетов живёт в rob_box_voice (config/voice_presets.yaml),
-    а не в rob_box_supervisor. Порядок:
-      1. ament share ``rob_box_voice/config/voice_presets.yaml`` (робот);
-      2. source-tree ``<repo>/src/rob_box_voice/config/voice_presets.yaml``
-         (colcon symlink / unit-тесты).
-
-    ``None`` — файл нигде не найден (пайплайн честно уходит в дословный TTS).
+    Один источник пути: :func:`rob_box_core.bridge_protocol.voice_presets_path`
+    (env ``ROB_BOX_VOICE_PRESETS_YAML``; у робота compose даёт
+    ``/config/voice_presets.yaml``). ``None`` — каталог не задан (пайплайн
+    честно уходит в дословный TTS, а мост не принимает ни одного стиля).
     """
-    try:
-        from ament_index_python.packages import (  # noqa: PLC0415
-            get_package_share_directory,
-        )
+    from rob_box_core.bridge_protocol import voice_presets_path  # noqa: PLC0415
 
-        share = os.path.join(
-            get_package_share_directory("rob_box_voice"), "config", "voice_presets.yaml"
-        )
-        if os.path.isfile(share):
-            return share
-    except Exception:  # noqa: BLE001 — нет ament (unit-тесты / не-colcon)
-        pass
-    # Source-tree fallback: <repo>/src/rob_box_voice/config/voice_presets.yaml.
-    source = os.path.join(
-        str(Path(__file__).resolve().parents[2]),
-        "rob_box_voice",
-        "config",
-        "voice_presets.yaml",
-    )
-    return source if os.path.isfile(source) else None
+    return voice_presets_path()
 
 
 def _load_preset(key: Any, cfg: Any, base_dir: str) -> dict[str, Any]:

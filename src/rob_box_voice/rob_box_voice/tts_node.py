@@ -106,7 +106,7 @@ from .core.voice_owner import attach_voice_owner
 # огибающая. Старых JSON-входов речи нет (PR-15 часть 15-core, #3711).
 from .core.speech_owner import SpeechOwner, owner_of
 from .core.speech_timing import PREFETCH_PROVIDER
-from .tts_voice_registry import known_provider, unsupported_language_notice
+from rob_box_dialog_host.tts_voice_registry import known_provider, unsupported_language_notice
 from .core import tts_stream
 
 # ADR-0145 §4 TTSNode step 1 — moved verbatim to ``utils/resample.py``
@@ -194,7 +194,7 @@ except ImportError:  # pragma: no cover — only triggered if rob_box_llm not bu
 
 # Issue #2702 — общий health-кэш LLM-провайдеров (rob_box_harness.health).
 # тариф MiniMax общий для чата (LLM) и синтеза речи (T2A): если
-# dialogue_node/supervisor уже узнали «minimax unavailable (quota)»,
+# dialog_node/supervisor уже узнали «minimax unavailable (quota)»,
 # tts_node не должен повторно платить тем же честным HTTP-таймаутом —
 # он должен УВИДЕТЬ то же самое состояние и сразу пойти к следующему
 # провайдеру. Импорт мягкий (тот же паттерн, что у MiniMax выше): узел
@@ -718,7 +718,7 @@ class TTSNode(Node):
         # провайдера TTS (переживает рестарт контейнера; пустая строка =
         # отключено). tts_node пишет {provider, dead_until_ts, ...} при
         # смене «эффективного» провайдера (фолбек после квоты/сети);
-        # mcp_server/dialogue_node читают его через /voice/tts/provider_state,
+        # mcp_server/dialog_node читают его через /voice/tts/provider_state,
         # чтобы LLM-контекст и валидация голосов отражали РЕАЛЬНОГО
         # провайдера, а не номинального из параметра provider.
         self.declare_parameter("provider_state_file", "/data/tts_provider_state.json")
@@ -1306,7 +1306,7 @@ class TTSNode(Node):
         # в /voice/tts/set_provider; мы пересобираем provider_chain
         # (новый провайдер первым, остальные в исходном порядке, silero
         # всегда последним), чистим dead_until для нового провайдера и
-        # публикуем provider_state для dialogue_node/mcp_server (LLM
+        # публикуем provider_state для dialog_node/mcp_server (LLM
         # увидит нового провайдера в [TTS] строке контекста).
         # PR-4 ч.3: внешних писателей /voice/tts/set_provider больше нет - провайдера переключает VoiceOwner напрямую
         # (``_on_set_provider`` вызывается из ``/voice/tts/voice_request``).
@@ -1358,7 +1358,7 @@ class TTSNode(Node):
         # #4252 ч.2: String-топиков /voice/tts/state и /voice/tts/finished нет - начало и конец
         # реплики знает только SpeechEvent владельца речи (core/speech_owner.py).
         # Issue #1229 — фактический провайдер TTS (после фолбека). mcp_server
-        # и dialogue_node подписываются на этот топик, чтобы валидация голосов
+        # и dialog_node подписываются на этот топик, чтобы валидация голосов
         # и LLM-контекст [TTS] отражали РЕАЛЬНОГО провайдера, а не номинального
         # из параметра provider. Публикуется при старте (из персистентного
         # файла), при пометке провайдера мёртвым и после успешного синтеза.
@@ -1437,7 +1437,7 @@ class TTSNode(Node):
         #   «Сет запущен» поверх «Новый бит в стиле фанк», и обе фразы
         #   должны быть произнесены без обрыва середины первой.
         # * MAX: 8 chunk'ов в очереди — больше означает, что upstream
-        #   (dialogue_node / DJModeController) спамит, и пора залогировать
+        #   (dialog_node / DJModeController) спамит, и пора залогировать
         #   warning + drop лишние (без бесконечной памяти).
         self._pending_speech_queue: List[Dict[str, Any]] = []
 
@@ -1473,7 +1473,7 @@ class TTSNode(Node):
         self._voice_owner = attach_voice_owner(self)
 
         # Issue #1229 — публикуем фактического провайдера сразу при старте
-        # (значение из персистентного файла, если он есть). dialogue_node /
+        # (значение из персистентного файла, если он есть). dialog_node /
         # mcp_server получают корректный контекст ДО первого диалога.
         # голос из файла выбора (VoiceOwner.restore) - иначе контекст LLM до первого синтеза видит дефолт провайдера
         self._publish_provider_state("startup", voice=self._voice_owner.state.get("applied"))
@@ -1679,7 +1679,7 @@ class TTSNode(Node):
         Перестраиваем ``provider_chain`` так, чтобы запрошенный провайдер
         стал первым (Silero по-прежнему последним — инвариант issue #1083),
         чистим кэш «мёртвых» для него (юзер явно попросил — даём шанс),
-        и публикуем обновлённый ``provider_state`` для dialogue_node и
+        и публикуем обновлённый ``provider_state`` для dialog_node и
         mcp_server (LLM увидит нового провайдера в ``[TTS]`` строке
         следующего turn'а).
 
@@ -1747,7 +1747,7 @@ class TTSNode(Node):
             f"{payload.get('voice', '')!r})"
         )
 
-        # Перепубликуем provider_state — dialogue_node/mcp_server
+        # Перепубликуем provider_state — dialog_node/mcp_server
         # подхватят и обновят LLM-контекст [TTS].
         self._publish_provider_state(
             "set_provider" if switched else "set_provider_noop",
@@ -1789,7 +1789,7 @@ class TTSNode(Node):
         hint = payload.get("provider")
         explicit = isinstance(hint, str) and bool(hint.strip())
         try:
-            from .tts_voice_registry import voices_for as _voices_for  # noqa: PLC0415
+            from rob_box_dialog_host.tts_voice_registry import voices_for as _voices_for  # noqa: PLC0415
         except Exception:  # noqa: BLE001 — registry недоступен
             return None
         candidates = (str(hint).strip().lower(),) if explicit else ("yandex", "minimax", "silero")
@@ -2005,7 +2005,7 @@ class TTSNode(Node):
 
             # Issue #1709 — Unicode-script guard на ЕДИНСТВЕННОМ чокпоинте,
             # через который проходят ВСЕ TTS-запросы (и
-            # /voice/dialogue/response от dialogue_node, и /voice/tts/request
+            # /voice/dialogue/response от dialog_node, и /voice/tts/request
             # от speak_text). Если текст в основном состоит из букв
             # неподдерживаемых письменностей (иероглифы, деванагари,
             # арабица) — не синтезируем: провайдер бормочет нечитаемое
@@ -2891,7 +2891,7 @@ class TTSNode(Node):
         """
         # Issue #2702 — общий health-кэш (ключ провайдера "minimax" совпадает
         # с тем, что использует LLM-сторона в HealthAwareFallbackLLM/
-        # dialogue_node — тариф общий). Провайдеры, помеченные
+        # dialog_node — тариф общий). Провайдеры, помеченные
         # unavailable ОТТУДА, тоже пропускаются здесь (см. _provider_is_dead);
         # а падения minimax отсюда зеркалятся туда (см. _mark_provider_dead).
         self._shared_health_cache = TTSNode._build_shared_health_cache(
@@ -2915,7 +2915,7 @@ class TTSNode(Node):
 
         Issue #2702 — MiniMax дополнительно сверяется с ОБЩИМ health-кэшем
         (``_shared_health_cache``): тариф общий для LLM и T2A, поэтому
-        если dialogue_node/supervisor уже увидели quota-отказ, T2A не должен
+        если dialog_node/supervisor уже увидели quota-отказ, T2A не должен
         честно ждать свой собственный таймаут, чтобы узнать то же самое.
         Только чтение — запись в общий кэш происходит в
         :meth:`_mark_provider_dead`.
@@ -3075,7 +3075,7 @@ class TTSNode(Node):
     # tts_node — единственный, кто ЗНАЕТ фактического провайдера (после
     # фолбека из-за квоты/сети). Публикуем его состояние в /voice/tts/
     # provider_state: mcp_server (валидация голосов в speak_text/set_voice)
-    # и dialogue_node (LLM-контекст [TTS]) используют РЕАЛЬНОГО провайдера,
+    # и dialog_node (LLM-контекст [TTS]) используют РЕАЛЬНОГО провайдера,
     # а не номинального из параметра provider.
 
     def _load_persisted_provider_state(self) -> None:
@@ -3126,7 +3126,7 @@ class TTSNode(Node):
         if not chain:
             chain = TTSNode._chain_from_provider(getattr(self, "provider", "minimax"))
         try:
-            from .tts_voice_registry import effective_provider as _effective
+            from rob_box_dialog_host.tts_voice_registry import effective_provider as _effective
         except Exception:  # noqa: BLE001 — registry недоступен
             return chain[0] if chain else None
         return _effective(chain, self._provider_is_dead)
@@ -3165,7 +3165,7 @@ class TTSNode(Node):
         pub = getattr(self, "provider_state_pub", None)
         if pub is None:
             return  # тестовый stub без топика
-        from .tts_voice_registry import default_voice_for as _default_voice
+        from rob_box_dialog_host.tts_voice_registry import default_voice_for as _default_voice
 
         eff = _provider_for_state(self, provider, reason)
         if not eff:
@@ -3227,7 +3227,7 @@ class TTSNode(Node):
         pub = getattr(self, "voices_catalog_pub", None)
         if pub is None:
             return  # тестовый stub без топика
-        from .tts_voice_registry import voices_info_for as _voices_info
+        from rob_box_dialog_host.tts_voice_registry import voices_info_for as _voices_info
 
         voices = _voices_info(provider)
         payload = {
@@ -3303,7 +3303,7 @@ class TTSNode(Node):
             batch_started_at = _time.monotonic()
         elif batch_id is None:
             # Single-chunk legacy batch — still treated as a batch of size 1
-            # so dialogue_node gets exactly one ``batch_complete`` event.
+            # so dialog_node gets exactly one ``batch_complete`` event.
             batch_index = 1
             batch_total = 1
             batch_started_at = _time.monotonic()
@@ -3683,7 +3683,7 @@ class TTSNode(Node):
         # "настроено на ноде" решаем здесь, на вызывающей стороне.
         _mm_requested = voice or getattr(self, "minimax_voice", None)
         try:
-            from .tts_voice_registry import resolve_voice as _resolve_voice
+            from rob_box_dialog_host.tts_voice_registry import resolve_voice as _resolve_voice
 
             _mm_voice, _mm_fell = _resolve_voice("minimax", _mm_requested)
         except Exception:  # noqa: BLE001 — registry недоступен
@@ -3797,7 +3797,7 @@ class TTSNode(Node):
         # фикса в _sap_synthesize_minimax выше (тот же паттерн).
         _yandex_requested = voice or getattr(self, "yandex_voice", None)
         try:
-            from .tts_voice_registry import resolve_voice as _resolve_voice
+            from rob_box_dialog_host.tts_voice_registry import resolve_voice as _resolve_voice
 
             _yandex_voice, _yandex_fell = _resolve_voice("yandex", _yandex_requested)
         except Exception:  # noqa: BLE001 — registry недоступен
@@ -3820,7 +3820,7 @@ class TTSNode(Node):
         # берём голос нужного языка (lea для de, john для en).
         if language:
             try:
-                from .tts_voice_registry import (
+                from rob_box_dialog_host.tts_voice_registry import (
                     language_of as _language_of,
                     voice_for_language as _voice_for_language,
                 )
@@ -3943,7 +3943,7 @@ class TTSNode(Node):
         # (живой через parameters_callback) > дефолт реестра.
         _silero_requested = voice or getattr(self, "silero_speaker", None)
         try:
-            from .tts_voice_registry import resolve_voice as _resolve_voice
+            from rob_box_dialog_host.tts_voice_registry import resolve_voice as _resolve_voice
 
             _silero_voice, _silero_fell = _resolve_voice("silero", _silero_requested)
         except Exception:  # noqa: BLE001 — registry недоступен
@@ -4009,7 +4009,7 @@ class TTSNode(Node):
         else:
             self._publish_audio(self._prepare_audio_for_topic(audio_np, sample_rate))
         # Issue #1229 — после успешного синтеза публикуем фактического
-        # провайдера и голос: dialogue_node/mcp_server обновят контекст
+        # провайдера и голос: dialog_node/mcp_server обновят контекст
         # [TTS] и валидацию (LLM увидит голоса РЕАЛЬНОГО провайдера).
         if used_provider:
             publish = getattr(self, "_publish_provider_state", None)
@@ -5169,7 +5169,7 @@ class TTSNode(Node):
     # батчи ``dialogue_node._publish_response_batch``).
 
     #: Жёсткий предел отложенных chunk'ов в очереди. Больше — upstream
-    #: спамит (dialogue_node / DJModeController), и лучше залогировать
+    #: спамит (dialog_node / DJModeController), и лучше залогировать
     #: warning + drop, чем уйти в бесконечный рост памяти.
     _PENDING_SPEECH_QUEUE_MAX = 8
 
@@ -5232,7 +5232,7 @@ class TTSNode(Node):
         Логика:
           * ``_enqueue_pending_speech`` вернул True → chunk в очереди,
             публикуем ``_publish_tts_finished(success=True, queued=True)``
-            — upstream (mcp_server / dialogue_node) видит «chunk принят»
+            — upstream (mcp_server / dialog_node) видит «chunk принят»
             и не виснет в ожидании ``speak_text``. ``queued=True``
             подавляет ``batch_complete`` side-channel.
           * enqueue вернул False (overflow) → публикуем finished
@@ -5389,7 +5389,7 @@ class TTSNode(Node):
         (issue #2183, причина 3 — "no silent degradation").
         """
         try:
-            from .tts_voice_registry import voices_for as _voices_for
+            from rob_box_dialog_host.tts_voice_registry import voices_for as _voices_for
 
             _known = voice in _voices_for(provider)
         except Exception:  # noqa: BLE001 — registry недоступен

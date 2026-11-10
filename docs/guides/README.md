@@ -124,14 +124,6 @@
 - Обновление Docker образов
 - Тестирование интеграции
 
-### [MIGRATION_PERCEPTION_LSLIDAR.md](MIGRATION_PERCEPTION_LSLIDAR.md)
-**Миграция Perception & LSLIDAR на Main Pi**
-
-- Изменения в архитектуре
-- Перемещение сервисов
-- Обновление конфигурации
-- Проверка работоспособности
-
 ### [APRILTAG_INTEGRATION_QUICKREF.md](APRILTAG_INTEGRATION_QUICKREF.md)
 **AprilTag Integration - Quick Reference**
 
@@ -207,15 +199,6 @@ registry/factory → MiniMax TTS → валидный WAV.
 
 ## 🎨 Дополнительные возможности
 
-### [ANIMATION_EDITOR.md](ANIMATION_EDITOR.md)
-**Редактор LED анимаций**
-
-- Keyframe-based редактор
-- Одновременное редактирование всех панелей
-- Экспорт в YAML + PNG
-- Загрузка существующих анимаций
-- Автоконвертация из старого формата
-
 ### [VISION_PI_NETWORK_SETUP.md](VISION_PI_NETWORK_SETUP.md)
 **Настройка сети Vision Pi**
 
@@ -246,7 +229,7 @@ registry/factory → MiniMax TTS → валидный WAV.
 - Системная информация
 
 ### [INTERNAL_DIALOGUE_USAGE.md](INTERNAL_DIALOGUE_USAGE.md)
-⚠️ **УСТАРЕЛО** - см. [architecture/INTERNAL_DIALOGUE_VOICE_ASSISTANT.md](../architecture/INTERNAL_DIALOGUE_VOICE_ASSISTANT.md)
+⚠️ **УСТАРЕЛО** - см. [architecture/dialog-v2-overview.md](../architecture/dialog-v2-overview.md)
 
 ## 🔗 Связанные документы
 

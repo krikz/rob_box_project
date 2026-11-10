@@ -20,6 +20,7 @@ from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
 from .face_collage import TARGET_MARK, Tile, build_collage
+from .face_misses import MissJournal, default_journal_path
 from .face_merge import MERGE_MAX, SIMILAR_K_MAX, merge_people, similar_people
 from .face_store import MODE_EXHIBITION, FaceStore, best_snapshot_bytes
 
@@ -116,12 +117,14 @@ class PeopleService:
     """Операции пульта над ``FaceStore``; ``clock`` подменяется в тестах."""
 
     def __init__(self, store: FaceStore, clock: Callable[[], float] = time.time,
-                 backup_root: Optional[Path] = None) -> None:
+                 backup_root: Optional[Path] = None, misses_path: Optional[Path] = None) -> None:
         self._store = store
         self._clock = clock
         root = Path(store._root)
         #: Бэкап слияний - рядом с каталогом лиц, а не внутри: ``FaceStore`` читает подкаталоги корня как записи.
         self._backup_root = Path(backup_root) if backup_root is not None else root.with_name(root.name + "_backup")
+        #: Журнал промахов узнавания (#4469 п. 2): каждая склейка дописывает строки; путь из конфига ноды.
+        self._misses = MissJournal(Path(misses_path) if misses_path else default_journal_path(root))
         self._collages: Dict[str, bytes] = {}
 
     def handle(self, op: int, filter: str = "", person_id: str = "", name: str = "") -> Reply:
@@ -249,7 +252,7 @@ class PeopleService:
             return _refuse("same_person")
         if len(set(sources)) != len(sources):
             return _refuse("bad_ids")
-        outcome = merge_people(self._store, target, sources, self._backup_root, self._clock)
+        outcome = merge_people(self._store, target, sources, self._backup_root, self._clock, self._misses)
         if outcome is None or outcome.merged == 0:
             return _refuse("merge_failed")
         for pid in (target, *sources):

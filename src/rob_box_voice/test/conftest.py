@@ -40,14 +40,17 @@ _os.environ.setdefault("ROB_BOX_PROFILE", str(_ROBOT_PROFILE))
 import pytest  # noqa: E402
 
 from rob_box_dialog import knowledge as _kn  # noqa: E402
+from rob_box_dialog import owners as _ow  # noqa: E402
+from voice_robot_wake import ROBOT_OWNERS as _ROBOT_OWNERS  # noqa: E402
 from voice_robot_wake import ROBOT_WAKE as _ROBOT_WAKE  # noqa: E402
 
 
 @pytest.fixture(autouse=True)
 def _robot_wake_table(monkeypatch):
-    """Правила ядра без таблицы - на вейках робота, как у хоста робота, который всегда передаёт таблицу профиля
-    (ядро без профиля нейтрально, ADR-0167 §2.4)."""
+    """Правила ядра без таблицы - на вейках и владельцах тулов робота, как у хоста робота, который всегда передаёт
+    их из профиля (ядро без профиля нейтрально, ADR-0167 §2.4, Ш1в)."""
     monkeypatch.setattr(_kn, "WAKE_WORDS_WITHOUT_PROFILE", _ROBOT_WAKE)
+    monkeypatch.setattr(_ow, "OWNERS_WITHOUT_PROFILE", _ROBOT_OWNERS)
 
 
 # This file lives at test/conftest.py — ``test`` IS a Python package thanks

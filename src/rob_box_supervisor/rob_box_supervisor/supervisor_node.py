@@ -52,7 +52,7 @@ from std_msgs.msg import String as RosString
 # AV-27 / issue #1919 — импорт SoT голосов. Pure-Python, без rclpy —
 # безопасен в любом окружении. Используется в _apply_set_voice и
 # _on_preview_voice для валидации voice_id.
-from rob_box_voice.tts_voice_registry import voices_for as _voices_for
+from rob_box_dialog_host.tts_voice_registry import voices_for as _voices_for
 
 # Issue #2081 — единый источник истины для топиков avatar/command*.
 # До этого PR константы дублировались локально (см. ниже старые
@@ -472,15 +472,15 @@ class AvatarSupervisor(Node):
 
     # ── AGENT_* параметры (AV-21, ТАРС / issue #1988) ───────────────
     # ``agent_enabled`` гейт всего agent-прохода (default true — ТАРС
-    # работает сразу). ``system_prompt_file`` — имя файла в
-    # ``rob_box_supervisor/prompts/``. Параметр ``agent_during_voice_mode``
+    # работает сразу). Промпт ТАРС — основа ядра с персоной оператора
+    # профиля робота (ADR-0167 Ш1б-4), своего файла у супервизора нет.
+    # Параметр ``agent_during_voice_mode``
     # удалён вместе с ``voice_input_mode`` (ADR-0066 §6 / §6.7): теперь
     # во время обработки команды оператора супервизор ВСЕГДА шлёт
     # ``pause`` в ``/dialogue/control`` (и ``resume`` в finally). Если
     # клиенту нужен другой режим — он вызывает
     # ``/dialogue/control {action:...}`` напрямую (новый API).
     AGENT_ENABLED_PARAM = "agent_enabled"
-    SYSTEM_PROMPT_FILE_PARAM = "system_prompt_file"
 
     def __init__(self) -> None:
         super().__init__("avatar_supervisor")
@@ -549,9 +549,6 @@ class AvatarSupervisor(Node):
         # делает лишнего ввода-вывода. Инвариант тестов: enabled=false →
         # core не создаётся.
         self.declare_parameter(self.AGENT_ENABLED_PARAM, True)
-        self.declare_parameter(
-            self.SYSTEM_PROMPT_FILE_PARAM, "operator_system_prompt.txt"
-        )
         # Параметр ``agent_during_voice_mode`` удалён вместе с
         # ``voice_input_mode`` (ADR-0066 §6.7). Старое default-поведение
         # «pause личности на время обработки команды» теперь жёстко
@@ -593,10 +590,6 @@ class AvatarSupervisor(Node):
         self.declare_parameter("journal_max_age_s", 1800)
         self._agent_enabled: bool = bool(
             self.get_parameter(self.AGENT_ENABLED_PARAM).value
-        )
-        self._system_prompt_file: str = str(
-            self.get_parameter(self.SYSTEM_PROMPT_FILE_PARAM).value
-            or "operator_system_prompt.txt"
         )
         # Поле ``_agent_during_voice_mode`` удалено вместе с параметром
         # ``voice_input_mode`` (ADR-0066 §6.7). Старое поведение «поставь
@@ -2015,32 +2008,6 @@ class AvatarSupervisor(Node):
         except Exception as exc:  # noqa: BLE001
             self._log.warning(f"_build_operator_tools: build failed: {exc}")
             return None
-
-    @staticmethod
-    def _resolve_prompts_dir() -> Any:
-        """Каталог ``rob_box_supervisor/prompts`` (источник истины).
-
-        Порядок: ament share (установленный пакет) → source-tree
-        (colcon symlink / unit-тесты). Возвращает ``Path`` или ``None``.
-        Используется в ``operator_turns.build_host`` для построения
-        :class:`AgentSpec.prompt_dir` — ``load_system_prompt`` берёт
-        ``system_prompt_file`` отсюда (срезов скиллов нет, ADR-0150 PR-6).
-        """
-        from pathlib import Path  # noqa: PLC0415
-
-        try:
-            from ament_index_python.packages import (  # noqa: PLC0415
-                get_package_share_directory,
-            )
-
-            share = Path(get_package_share_directory("rob_box_supervisor")) / "prompts"
-            if share.is_dir():
-                return share
-        except Exception:  # noqa: BLE001 — нет ament (unit-тесты)
-            pass
-        # Source-tree: <repo>/src/rob_box_supervisor/prompts
-        source = Path(__file__).resolve().parents[1] / "prompts"
-        return source if source.is_dir() else None
 
     def _build_operator_journal(self) -> Any:
         """Журнал ТАРС (§5.4): лог изменений со схлопыванием повторов."""

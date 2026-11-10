@@ -29,11 +29,8 @@ setup(
         # Config files
         (os.path.join('share', package_name, 'config'),
             existing('config/*.yaml', 'config/*.json')),
-        # ADR-0066 §6.3 — voice style presets (config/presets/*.txt) теперь
-        # читаются ``grip_pipeline`` супервизора (а не нодой диалога), но
-        # install-share нужен — оставляем шаг data_files для ROS-share.
-        (os.path.join('share', package_name, 'config', 'presets'),
-            existing('config/presets/*.txt')),
+        # Пресеты стиля речи (voice_presets.yaml + voice_presets/*.txt) — в профиле робота docker/sound/config
+        # (ADR-0167 Ш1а-2), в share пакета их больше нет.
         # Prompts
         (os.path.join('share', package_name, 'prompts'),
             existing('prompts/*.txt', 'prompts/*.yaml')),

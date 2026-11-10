@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import pytest
 
-from rob_box_voice.core.voice_memory import VoiceMemory, query_words
+from rob_box_dialog_host.voice_memory import VoiceMemory, query_words
 
 SASHA = "spk-sasha"
 BORIS = "spk-boris"

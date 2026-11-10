@@ -126,7 +126,7 @@ wake_voice() {
 # Yandex и Silero на этом канале дают те же 0.8-0.9 внутри мужского/женского регистра: четвёрку не собирают.
 # Гендер: у Гриши и Валеры теперь женские голоса - реплики в сценариях обязаны быть в женском роде.
 #
-# Каталоги-источники — src/rob_box_voice/rob_box_voice/tts_voice_registry.py
+# Каталоги-источники — src/rob_box_dialog_host/rob_box_dialog_host/tts_voice_registry.py
 # (PROVIDER_VOICES). Голос, который уже native для провайдера, не трогаем:
 # так можно задать --voice aidar / --voice Russian_CrazyQueen напрямую.
 #
@@ -636,7 +636,7 @@ _e2e_tts_restore_py() {
     _e2e_mcp_client_py
     cat <<'TTSPY'
 provider = sys.argv[1]
-from rob_box_voice.tts_voice_registry import default_voice_for
+from rob_box_dialog_host.tts_voice_registry import default_voice_for
 voice = default_voice_for(provider)
 if not voice:
     print(json.dumps({"error": "no default voice for provider %r" % provider}))
@@ -657,7 +657,7 @@ TTSPY
 # под DJ-сет, запущенный из Telegram за час до того (во всех ходах
 # <music_state>{"playing":"yes",...,"dj":"on"}); харнесс перед актом делал только
 # сброс сессии диалога. Снимок берём у владельца плеера — latched /voice/music/state
-# (парсер и «играет» — rob_box_voice.core.music_player_state, не своя копия), стоп —
+# (парсер и «играет» — rob_box_dialog_host.music_player_state, не своя копия), стоп —
 # теми же подписанными тулами, что у голосового «хватит» (dj_set stop + stop_music).
 # Состояние читается маленьким рабочим процессом внутри voice-assistant (rclpy,
 # TRANSIENT_LOCAL), а не `ros2 topic echo` в сервисном контейнере (OOM).
@@ -667,7 +667,7 @@ _e2e_music_stop_py() {
     _e2e_mcp_client_py
     cat <<'MUSICPY'
 idle_timeout = float(sys.argv[1])
-from rob_box_voice.core.music_player_state import MUSIC_STATE_TOPIC, parse_music_state
+from rob_box_dialog_host.music_player_state import MUSIC_STATE_TOPIC, parse_music_state
 mcp = McpClient("e2e_music_precondition", "e2e-music-stop-")
 if not mcp.can_sign:
     print(json.dumps({"error": "no /mcp/execute secret to sign with"}))
@@ -904,6 +904,30 @@ warm_act_audio_path() {  # $1=каталог для временного wav
     fi
     sleep "$wait_s"
     return 0
+}
+
+# stand_audio_preflight -- #4608: PulseAudio-сервер стенда отвечает (`pactl info`) ДО акта. Не отвечает (пустой вывод,
+# rc!=0 или `pa_context_connect() failed`) -- до E2E_PREFLIGHT_TRIES проб с паузой, затем rc=1: акт не стартует. Нет самого
+# pactl -- проба неприменима (rc=0, предупреждение): провал воспроизведения поймает play_eq_wav.
+stand_audio_preflight() {
+    local tries="${E2E_PREFLIGHT_TRIES:-3}" try=1 out rc
+    if ! command -v pactl >/dev/null 2>&1; then
+        echo ">>> PREFLIGHT pulse: pactl не найден -- проба пропущена"
+        return 0
+    fi
+    while :; do
+        out="$(pactl info 2>&1)"; rc=$?
+        if [ "$rc" = "0" ] && [ -n "$out" ] && ! printf '%s' "$out" | grep -q 'pa_context_connect() failed'; then
+            echo ">>> PREFLIGHT pulse: OK"
+            return 0
+        fi
+        echo ">>> PREFLIGHT pulse: сервер не отвечает (проба ${try}/${tries}, rc=${rc}): $(printf '%s' "$out" | head -n 1)"
+        [ "$try" -ge "$tries" ] && break
+        try=$(( try + 1 ))
+        sleep "${E2E_PREFLIGHT_PAUSE:-3}"
+    done
+    echo ">>> PREFLIGHT pulse: FAIL -- PulseAudio стенда недоступен, акт не стартует"
+    return 1
 }
 
 # wait_robot_quiet -- v2: «робот ещё говорит» = SpeechEvent started/queued без пары finished/

@@ -188,7 +188,7 @@ def song_tags(request: SongRequest, tags_hint: str) -> Tuple[str, str]:
 
 def voice_label(provider: str, voice: str) -> str:
     """Имя голоса для фразы: ``display_name`` каталога, иначе id."""
-    from rob_box_voice.tts_voice_registry import voice_info_for
+    from rob_box_dialog_host.tts_voice_registry import voice_info_for
 
     info = voice_info_for(provider, voice)
     return str(info["display_name"]) if info else voice
@@ -206,7 +206,7 @@ def wait_text(provider: str, voice: str, bridge: bool) -> str:
 
 
 def done_text(result: SongResult) -> str:
-    from rob_box_voice.core.media_phrases import duration_text
+    from rob_box_dialog_host.media_phrases import duration_text
 
     return (f"Песня «{result.title}» готова, {duration_text(result.duration_s)}. "
             f"Пою {sung_by(result.provider, result.voice)}.")
@@ -227,7 +227,7 @@ def current_voice(provider: Optional[str], actual_voice: Optional[str] = None) -
         raise SongFailed("no_voice", "провайдер TTS ещё не известен")
     if actual_voice:
         return provider, actual_voice
-    from rob_box_voice.tts_voice_registry import default_voice_for
+    from rob_box_dialog_host.tts_voice_registry import default_voice_for
 
     return provider, default_voice_for(provider)
 
@@ -336,7 +336,7 @@ class SongStudio:
         provider, voice = self._voice()
         if provider == "silero":  # страховка: чойсер сюда не пускает (blocked)
             raise SongFailed("silero_voice", "Silero в этом процессе не грузим")
-        from rob_box_voice.tts_voice_registry import SingPresetUnknown, sing_preset_for
+        from rob_box_dialog_host.tts_voice_registry import SingPresetUnknown, sing_preset_for
 
         try:
             preset = sing_preset_for(provider, voice)

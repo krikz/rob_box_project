@@ -1775,7 +1775,7 @@ TOOL_ANSWER_FILLER: Tuple[str, ...] = (
 @dataclass(frozen=True)
 class OwnerText:
     """Поля данных успешного исхода, где фразу кода построил сам владелец (ADR-0148: фразу строит код из результата;
-    порядок — как у ``rob_box_voice.core.media_phrases.launch_text`` v1): ``whole`` — реплика целиком вместо фразы
+    порядок — как у ``rob_box_dialog_host.media_phrases.launch_text`` v1): ``whole`` — реплика целиком вместо фразы
     исхода (трек кэша «Ставлю песню из сочинённого раньше …»), ``note`` — фраза перед фразой исхода (почему звучит не
     то, что просили: «Метал на синте играю ближайшим стилем — брейкбит.», «Сгенерировать сейчас не могу: …, играю
     своё.» — ``rob_box_music.source.route_note``).
@@ -1945,7 +1945,9 @@ VIOLATION_DONE_CLAIM = "done_claim"
 DONE_CLAIM_HINT = ("в speech сказано, что действие уже сделано («удалил», «сохранил точку», «поехал»), а в actions нет"
                    " тула, что его делает: слова без действия - неправда. Нужно действие - положи тул в actions без"
                    " speech (о сделанном скажет код по результату); тула нет в перечне хода - не утверждай, а скажи,"
-                   " что сделать не можешь, или спроси в ask")
+                   " что сделать не можешь, или спроси в ask; у цепочки действий (больше трёх или с поездкой) speech"
+                   " звучит ДО них - это план («сейчас удалю четыре точки»), а не «удалил»: до действий ничего ещё не"
+                   " сделано")
 DONE_CLAIM_PHRASE = "command.done_claim"
 #: Счёт вслух до N, урезанный моделью, строит код (``counting.full_count``, #4314 К1, n802 М9: «от одного до сорока» -
 #: «Один… Десять.»). Глаголы просьбы о счёте (слово целиком, без «ё»).
@@ -2734,7 +2736,7 @@ STARTUP_NODE_PARTS: Dict[str, str] = {
     "/audio_node": "audio", "/stt_node": "stt", "/tts_node": "tts", "/context_aggregator": "context",
     "/camera/camera": "camera", "/lslidar_driver_node": "lidar", "/rtabmap/rtabmap": "slam",
 }
-STARTUP_DIALOG_NODES: Tuple[str, ...] = ("/dialog_node", "/dialogue_node", "/dialog_node|/dialogue_node")
+STARTUP_DIALOG_NODES: Tuple[str, ...] = ("/dialog_node",)
 PHRASE_KEYS = PHRASE_KEYS + (
     *(f"startup.{kind}" for kind in ("ready", "voice_only", "partial", "unknown", "and")),
     *(f"startup.part.{part}" for part in (*sorted(set(STARTUP_NODE_PARTS.values())), "llm", "other")),
@@ -3454,23 +3456,176 @@ SPEECH_MAX_CHARS = 280
 SPEECH_ACCEPT_MAX_CHARS = 350
 #: Имя голоса реплики/сегмента (``Command.voice``, ``Performance.voice_per_segment``) - как ``speak_text.voice``.
 VOICE_MAX_CHARS = 64
-#: Действий команды исполняется за ход не больше стольких (ADR-0150 §4.1: «до трёх действий»): первые по порядку модели.
-#: Остальные код не исполняет и называет сам (``turn.capped``, фраза :data:`ACTIONS_CAPPED_PHRASE`), а не выбрасывает
-#: молча (#4391, HIL 04.11: «удали четыре точки» - модель под потолок схемы урезала просьбу сама, прозвучало «Готово.»).
-ACTIONS_MAX = 3
-#: Сколько действий модель может ПРИСЛАТЬ (``maxItems`` схемы, ``too_many_actions``) - больше исполняемого
-#: :data:`ACTIONS_MAX`, как речь 280/350 (``SPEECH_ACCEPT_MAX_CHARS``): просьба человека доходит до кода целиком, и
-#: лишнее видит код, а не теряет модель. Потолок исполнения этим не поднят.
+#: Сколько действий модель может прислать (``maxItems`` схемы, ``too_many_actions``). Потолка исполнения «три за ход»
+#: больше нет (ADR-0165 §11, этап 3): два и больше шагов идут вереницей по одному (``action_chain``, ``turn.run_chain``),
+#: длину ограничивает тип задачи (:data:`CHAIN_TASKS`). Просьба человека доходит до кода целиком (#4391, HIL 04.11:
+#: «удали четыре точки» - модель под потолок схемы урезала просьбу сама, прозвучало «Готово.»).
 ACTIONS_ACCEPT_MAX = 10
-#: Потолок снимков лиц за ход (#4505: «пришли первые пять»): ``person_photo`` считается отдельно от
-#: :data:`ACTIONS_MAX` (это чтение, и ``turn.capped`` резал пять снимков до трёх). Лишнее код называет, а не
-#: выбрасывает молча. Единственное место потолка; принять модель может не меньше (:data:`ACTIONS_ACCEPT_MAX`).
-PHOTOS_MAX = 10
-#: Фраза кода о действиях сверх :data:`ACTIONS_MAX`: ``named`` - со слотом ``rest`` (что не сделано, словами аргументов
-#: вызова), без имён - общая.
-ACTIONS_CAPPED_PHRASE = "command.actions_capped"
-ACTIONS_CAPPED_NAMED_PHRASE = "command.actions_capped.named"
-PHRASE_KEYS = PHRASE_KEYS + (ACTIONS_CAPPED_PHRASE, ACTIONS_CAPPED_NAMED_PHRASE)
+
+# ---------------------------------------------------------------------------------------------------------------
+# Вереница действий (ADR-0165, #4403): знание вереницы - одно место; ``action_chain`` (чистый модуль), валидатор
+# команды и раннер шагов хода (``turn.run_chain``) берут его отсюда.
+# ---------------------------------------------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class ChainClass:
+    """Как класс действия идёт в веренице (ADR-0165 §4.1). Шаги вереницы всегда по одному, по порядку модели.
+
+    ``step`` — класс бывает шагом вереницы. ``alongside`` — класс может стоять в одной команде с длинной вереницей:
+    ``query`` шагом не бывает, но остаётся в query-цикле хода до фразы плана; ``identity`` и ``perform`` — нет
+    (нарушение ``chain_mixed``, этап 2). ``single`` — не больше одного шага класса на вереницу. ``stops_rest`` —
+    провал шага (``rejected``/``timeout``/``cancelled``) отменяет остаток: где робот после несостоявшейся поездки,
+    неизвестно (§10)."""
+
+    step: bool
+    alongside: bool
+    single: bool = False
+    stops_rest: bool = False
+
+
+#: Класс действия → правило вереницы; полноту против :data:`ACTION_CLASSES` держит тест.
+CHAIN_CLASSES: Mapping[str, ChainClass] = MappingProxyType({
+    "query": ChainClass(step=False, alongside=True),
+    "action.local": ChainClass(step=True, alongside=True),
+    "action.media": ChainClass(step=True, alongside=True, single=True),
+    "action.motion": ChainClass(step=True, alongside=True, stops_rest=True),
+    "action.identity": ChainClass(step=False, alongside=False),
+    "action.speak_aloud": ChainClass(step=True, alongside=True, single=True),
+    "action.perform": ChainClass(step=False, alongside=False),
+})
+#: Фраза плана звучит, только если вереница займёт дольше стольких секунд (решение Шифу В1, 05.11); короче —
+#: короткая команда: действия, потом фраза итога, как сейчас.
+CHAIN_PLAN_AFTER_S = 5.0
+#: Ожидаемая длительность шага по классу, с. Пусто до замеров HIL (этап 6): класса нет — оценка берёт срок класса
+#: (``ACTION_CLASSES[cls].timeout_s``), а это верхняя граница — план прозвучит чаще, чем надо (ADR-0165 §4).
+CHAIN_EXPECTED_S: Mapping[str, float] = MappingProxyType({})
+#: Кто говорит фразу плана: ``model`` — речь команды под проверкой ``done_claim`` (решение Шифу В2), ``code`` — план
+#: кода из действий (:data:`CHAIN_VERBS`). Проверка начнёт пропускать ложь — переключить здесь («если будут
+#: проблемы — перейдём на фразу кода»). У ``model`` план кода остаётся запасным: речь пуста или не прошла проверку.
+CHAIN_PLAN_SOURCES: Tuple[str, ...] = ("model", "code")
+CHAIN_PLAN_BY = "model"
+#: Поездка - шаг, который везёт робота к цели; по их числу код отличает маршрут от поручения. Прочие тулы
+#: ``action.motion`` (карта, остановка навигации) поездкой не считаются.
+CHAIN_TRIP_TOOLS: Tuple[str, ...] = MOTION_TOOLS
+
+
+@dataclass(frozen=True)
+class ChainTask:
+    """Лимиты типа задачи (ADR-0165 §5, решение Шифу В3: у каждого типа свои). ``steps_max`` — шагов в веренице;
+    ``trips_max`` — поездок (:data:`CHAIN_TRIP_TOOLS`), ``None`` — ограничены только ``steps_max``; ``term_s`` —
+    срок всей вереницы, ``None`` — сумма сроков классов шагов (своего числа нет до замеров HIL). Вышла за лимит —
+    вереница не начинается, код говорит :data:`CHAIN_TOO_LONG_PHRASE`."""
+
+    steps_max: int
+    trips_max: Optional[int]
+    term_s: Optional[float]
+
+
+#: Типы задач вереницы. Тип определяет код по действиям: поездок больше, чем ``trips_max`` поручения, — маршрут.
+#: Миссия (задача на часы) — не вереница одной команды, а свой режим сессии (ADR-0165 этап 8), здесь её нет.
+CHAIN_ERRAND = "errand"
+CHAIN_ROUTE = "route"
+#: Маршрут до замеров HIL — не длиннее восьми действий (решение Шифу В9-а, Telegram 05.11 09:52 UTC, #4403).
+#: Число поездок и общий срок маршрута — после замеров (этап 6).
+CHAIN_ROUTE_ACTIONS_MAX = 8
+CHAIN_TASKS: Mapping[str, ChainTask] = MappingProxyType({
+    # одна команда, несколько шагов рядом: удалить точки, съездить и вернуться
+    CHAIN_ERRAND: ChainTask(steps_max=ACTIONS_ACCEPT_MAX, trips_max=1, term_s=None),
+    # несколько поездок: объезд точек
+    CHAIN_ROUTE: ChainTask(steps_max=CHAIN_ROUTE_ACTIONS_MAX, trips_max=None, term_s=None),
+})
+
+
+@dataclass(frozen=True)
+class ChainVerb:
+    """Ключи фраз шагов одного глагола (``phrases/ru.yaml``, слот ``{items}`` — имена шагов словами аргументов):
+    ``plan`` — фраза плана кода, до события («Удаляю: хил-один, хил-два.»; утверждать сделанное ей нельзя — тест
+    ``done_claims``); ``did`` — сделанные шаги в итоге; ``missed`` — не сделанные, причину говорит фраза владельца."""
+
+    plan: str
+    did: str
+    missed: str
+
+
+def _chain_verb(name: str) -> ChainVerb:
+    return ChainVerb(f"chain.plan.{name}", f"chain.did.{name}", f"chain.missed.{name}")
+
+
+#: Глагол шага, у которого своего в :data:`CHAIN_VERBS` нет.
+CHAIN_VERB_DEFAULT = _chain_verb("generic")
+_CHAIN_DELETE, _CHAIN_SAVE = _chain_verb("delete"), _chain_verb("save")
+#: Тул шага → глагол фраз плана и итога (ADR-0165 §3: «глагол — по тулу, таблица в knowledge»). Здесь только тулы,
+#: которых строковый аргумент называет человеку (имя точки, факт, запрос музыки); остальные -
+#: :data:`CHAIN_VERB_DEFAULT`.
+CHAIN_VERBS: Mapping[str, ChainVerb] = MappingProxyType({
+    "delete_waypoint": _CHAIN_DELETE,
+    "delete_map": _CHAIN_DELETE,
+    "save_waypoint": _CHAIN_SAVE,
+    "memory_save": _CHAIN_SAVE,
+    "navigate_to_waypoint": _chain_verb("trip"),
+    "request_music": _chain_verb("music"),
+})
+#: Итог вереницы (§7): начало фразы по исходу, дальше - сделанные и не сделанные шаги фразами :data:`CHAIN_VERBS`.
+CHAIN_DONE_PHRASE = "chain.done"
+CHAIN_STOPPED_PHRASE = "chain.stopped"
+CHAIN_TIMEOUT_PHRASE = "chain.timeout"
+#: Шаги, что не начинались (``skipped``): после стопа или срока - общая фраза, после несостоявшейся поездки - своя.
+CHAIN_SKIPPED_PHRASE = "chain.skipped"
+CHAIN_MOTION_FAILED_PHRASE = "chain.motion_failed"
+#: Вереница вышла за лимит своего типа (:data:`CHAIN_TASKS`) и не начинается.
+CHAIN_TOO_LONG_PHRASE = "chain.too_long"
+#: Фразы с именами шагов (слот ``{items}``); остальные фразы вереницы слотов не имеют.
+CHAIN_ITEM_PHRASES: Tuple[str, ...] = tuple(dict.fromkeys((
+    *(key for verb in (CHAIN_VERB_DEFAULT, *CHAIN_VERBS.values()) for key in (verb.plan, verb.did, verb.missed)),
+    CHAIN_SKIPPED_PHRASE, CHAIN_MOTION_FAILED_PHRASE,
+)))
+CHAIN_PHRASES: Tuple[str, ...] = (
+    *CHAIN_ITEM_PHRASES, CHAIN_DONE_PHRASE, CHAIN_STOPPED_PHRASE, CHAIN_TIMEOUT_PHRASE, CHAIN_TOO_LONG_PHRASE,
+)
+PHRASE_KEYS = PHRASE_KEYS + CHAIN_PHRASES
+#: Имя шага во фразах вереницы - строковый аргумент не длиннее стольких знаков (имя точки, слова запроса); длиннее
+#: (текст озвучки целиком) - не имя: шаг называет слово класса :data:`CHAIN_CLASS_NOUNS`.
+CHAIN_LABEL_MAX_CHARS = 40
+#: Шаг без имени (``clear_waypoints``, громкость, поездка по координатам) фразы называют словом его класса.
+CHAIN_CLASS_NOUNS: Mapping[str, str] = MappingProxyType({
+    "action.local": "настройка",
+    "action.media": "музыка",
+    "action.motion": "поездка",
+    "action.speak_aloud": "озвучка",
+})
+#: Статус шага вереницы, который не начинался (стоп, срок, несостоявшаяся поездка). Только внутри вереницы: исполнитель
+#: его не отдаёт, в :data:`ACTION_STATUSES` его нет (ADR-0165 §7).
+CHAIN_STEP_SKIPPED = "skipped"
+#: Нарушение: рядом с вереницей (оценка дольше :data:`CHAIN_PLAN_AFTER_S`) класс, которому рядом с ней нельзя
+#: (``ChainClass.alongside``: знакомство, выступление) - ADR-0165 §4.1. Повтор с подсказкой :data:`CHAIN_MIXED_HINT`.
+VIOLATION_CHAIN_MIXED = "chain_mixed"
+#: Вереница - не меньше стольких шагов (не считая тихих :data:`QUIET_WITH_SPEECH_TOOLS`): один шаг - всегда короткая
+#: команда без фразы плана, как раньше (решение координатора 09.11 по этапу 3, Шифу может поменять; замер музыки в HIL -
+#: позже). Оценка сроком класса - верхняя граница: одна музыка (10 с) или одна поездка (120 с) иначе считались бы
+#: «долгими». То же - для ``chain_mixed``: «звук и шутка» (``play_sound`` + ``perform``) - законная команда.
+CHAIN_MIN_STEPS = 2
+#: Короткая команда без поездки - до стольких действий (ADR-0165 §4, таблица: «одно-три быстрых действия» - короткая):
+#: они исполняются разом и итог - фраза исхода, как раньше («говори ниже и медленнее», «удали три точки»). Больше или
+#: с поездкой - вереница с фразой плана. Оценка сроками классов без замеров (``CHAIN_EXPECTED_S`` пуст) этого не
+#: различает: две точки по 3 с - уже 6 с; число держит прежнее поведение простых ходов до замеров HIL.
+CHAIN_SHORT_STEPS_MAX = 3
+#: Ключ данных результата ``cancelled{stale_epoch}`` (``execute.Executor``): исход владельца до подмены. Вереница
+#: засчитывает доживший шаг честно (ADR-0165 §6: точка удалена после «стой» - «удалил», а не «отменил»).
+STALE_OUTCOME_KEY = "outcome"
+#: Виды Tier-1, что гасят вереницу (ADR-0165 §6, этап 4): «Робот, стой», «хватит», «стоп» (``stop_all``) - остаток
+#: отменён, итог «Остановился. …» звучит в эпохе стопа. Остальные перебивающие виды (``interrupt._STOP_KINDS``)
+#: вереницу не гасят: «замолчи» (``silence``, решение Шифу В4) - объезд идёт молча; «хватит говорить»
+#: (``stop_speech``) - гаснет речь, а движение и музыка и так идут (``interrupt``: «плеер музыки и движение — нет»),
+#: вереница - тоже (решение координатора по этапу 4, Шифу может поменять). Новая сессия - не стоп: вереница теряет
+#: свою эпоху, остаток отменён, итог не звучит (окно новой сессии чистое) - только строка журнала.
+CHAIN_STOP_KINDS: Tuple[str, ...] = ("stop_all",)
+#: Итог вереницы, который не прозвучал (тишина - решение Шифу В4), - метка-ответ в окне хода вереницы (ADR-0165 §7:
+#: «в тишине итог не звучит, но в окно и журнал идёт»): модель следующего хода видит, что сделано. После новой
+#: сессии хода вереницы в окне нет (``TurnLog.reset``) - метка не пишется.
+CHAIN_UNVOICED_MARK = WINDOW_ACTIONS_REPLY.format(actions="итог молча: {summary}")
+CHAIN_MIXED_HINT = ("знакомство (register_speaker) и выступление (perform) — отдельной командой, не вместе с длинной "
+                    "цепочкой действий: в этой команде оставь одно из двух")
 PERFORM_KINDS: Tuple[str, ...] = ("rap", "song", "tale", "poem")
 PERFORM_BACKINGS: Tuple[str, ...] = ("beat", "calm", "none")
 #: Подложка выступления по виду (решение Шифу 28.10: «на сказку необязательно музыку включать», «на анекдот
@@ -3915,7 +4070,7 @@ PROMPT_RULES: Tuple[PromptRule, ...] = (
 
 def prompt_rules(agent: str) -> str:
     """Блок «RULES» системного промпта агента — из таблицы :data:`PROMPT_RULES` (не из файла промпта). Правил у агента
-    нет (оператор) — пустая строка. Собирает его одна точка: ``rob_box_voice.core.dialog_v2_ports.assemble_llm``."""
+    нет (оператор) — пустая строка. Собирает его одна точка: ``rob_box_dialog_host.dialog_v2_ports.assemble_llm``."""
     lines = [f"- {rule.text}" for rule in PROMPT_RULES if agent in rule.agents]
     return "# RULES\n" + "\n".join(lines) if lines else ""
 
@@ -3959,14 +4114,15 @@ def prompt_fragment(schema: Optional[Mapping[str, Any]] = None) -> str:
         ("", "Ответ — одна команда (JSON-объект) с полями:"),
         ("speech", f"- speech: реплика человеку, ≤ {SPEECH_MAX_CHARS} символов. С actions speech не пиши (команда"
                    " невалидна): о результате действий скажет код по событию исполнителя; ответ по сути (шутка, стих) —"
-                   f" в perform. Исключение — тихие действия {', '.join(QUIET_WITH_SPEECH_TOOLS)}: speech с ними"
-                   " звучит."),
+                   f" в perform. Исключения: тихие действия {', '.join(QUIET_WITH_SPEECH_TOOLS)} — speech с ними"
+                   f" звучит; больше {CHAIN_SHORT_STEPS_MAX} других действий или поездка рядом с другим действием —"
+                   " speech звучит ДО них как короткий план («Сейчас уберу четыре точки.»), без слов о сделанном"
+                   " («удалил», «готово») — о сделанном скажет код."),
         ("voice", "- voice: голос этой реплики (имя голоса); голос робота не меняет."),
         ("ask", f"- ask: вопрос с ожиданием ответа, expects ∈ {_set(ASK_EXPECTS)}."),
-        ("actions", f"- actions: вызовы тулов {{tool, args}} - все, о чём просил человек, не урезай: за ход код"
-                    f" исполнит первые {ACTIONS_MAX} (person_photo — до {PHOTOS_MAX} отдельно),"
-                    f" об остальных скажет сам; не больше одного на класс"
-                    f" {' и '.join(SINGLE_ACTION_CLASSES)}."),
+        ("actions", f"- actions: вызовы тулов {{tool, args}} - все, о чём просил человек, не урезай (до"
+                    f" {ACTIONS_ACCEPT_MAX}); код исполнит их по одному в твоём порядке и сам скажет итог; не больше"
+                    f" одного на класс {' и '.join(SINGLE_ACTION_CLASSES)}."),
         ("perform", f"- perform: выступление kind ∈ {_set(kinds)}, {SEGMENTS_MIN}–{SEGMENTS_MAX} сегментов"
                     f" по ≤ {SEGMENT_MAX_CHARS} символов (куплет или абзац на сегмент), backing ∈ {_set(backings)};"
                     " вместо speech (speech при нём не пиши, даже с actions). Звучит и при actions: ответ по сути (сказка, стих, анекдот), не"

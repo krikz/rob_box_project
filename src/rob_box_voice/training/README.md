@@ -1,5 +1,7 @@
 # ROBBOX TTS Training
 
+> **09.11.2026:** скрипты `generate_dataset.sh`, `generate_phrases_deepseek.py`, `silero_tts_gui.py` и чат `robbox_chat*.py` удалены (решение Шифу 09.11, ADR-0145 §4): их никто не вызывал (чат и генератор фраз к тому же читали давно удалённые промпты). Шаги с ними ниже не выполнимы; запись (`record_yandex_voice.py`) и обучение остались.
+
 Обучение кастомной TTS модели для ROBBOX на Dell Precision 5540.
 
 ## Быстрый старт

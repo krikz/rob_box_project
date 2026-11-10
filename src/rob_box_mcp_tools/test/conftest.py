@@ -24,7 +24,7 @@ import pytest
 # том, что в каталоге worktree тул есть). На colcon/CI рядом этих каталогов
 # может не быть — тогда ничего не трогаем.
 _SRC_DIR = Path(__file__).resolve().parents[2]
-_SIBLINGS = ("rob_box_llm", "rob_box_harness", "rob_box_voice", "rob_box_core", "rob_box_dialog")
+_SIBLINGS = ("rob_box_llm", "rob_box_harness", "rob_box_voice", "rob_box_core", "rob_box_dialog", "rob_box_dialog_host")
 for _pkg in _SIBLINGS:
     _pkg_root = str(_SRC_DIR / _pkg)
     _present = Path(_pkg_root, _pkg, "__init__.py").is_file()
@@ -188,6 +188,21 @@ class MockNode:
 # ============================================================
 # Fixtures
 # ============================================================
+
+
+_ROBOT_PROFILE = Path(os.environ.get("ROB_BOX_REPO_ROOT") or _SRC_DIR.parent) / "docker/sound/config/assistant.yaml"
+
+
+@pytest.fixture(autouse=True)
+def _robot_tool_owners(monkeypatch):
+    """Срез тулов хода без переданных владельцев - на владельцах профиля робота, как у хостов робота, которые всегда
+    передают их из профиля (ядро без профиля - без тулов продукта, ADR-0167 Ш1в). Нет профиля в чекауте - не трогаем."""
+    if not _ROBOT_PROFILE.is_file():
+        return
+    from rob_box_dialog import owners as ow  # noqa: PLC0415
+    from rob_box_dialog.profile import load_profile  # noqa: PLC0415
+
+    monkeypatch.setattr(ow, "OWNERS_WITHOUT_PROFILE", load_profile(_ROBOT_PROFILE).owners)
 
 
 @pytest.fixture

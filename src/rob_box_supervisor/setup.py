@@ -9,13 +9,8 @@ setup(
     data_files=[
         ("share/ament_index/resource_index/packages", ["resource/" + package_name]),
         ("share/" + package_name, ["package.xml"]),
-        # issue #1988 — промпт оператора (ТАРС). Срезы operator.speech / operator.control удалены (ADR-0150 PR-6):
-        # их подгружала модель (такого механизма больше нет), и они называли несуществующие тулы
-        # (set_voice_preset, preview_voice, dialogue_pause). Читается через ament share (_resolve_prompts_dir).
-        (
-            "share/" + package_name + "/prompts",
-            ["prompts/operator_system_prompt.txt"],
-        ),
+        # Промпта оператора (ТАРС) в пакете больше нет: основа - данные ядра rob_box_dialog/prompts/operator.txt,
+        # персона - профиль робота docker/sound/config/operator_persona.txt (ADR-0167 Ш1б-4).
     ],
     install_requires=["setuptools", "msgpack>=1.0"],
     zip_safe=True,

@@ -17,7 +17,7 @@ from rob_box_mcp_tools.engine.search import ThemeHits
 from rob_box_mcp_tools.engine.engine_tools import SOURCE_DECLINED, DjSetTool, RequestMusicTool
 from rob_box_music.source import CacheTrack, SourceAsk, SourceContext, source_ask, source_candidates
 from rob_box_voice.sing_synth import synth_vocal_to_file
-from rob_box_voice.tts_voice_registry import sing_preset_for
+from rob_box_dialog_host.tts_voice_registry import sing_preset_for
 
 from .test_engine_session import _rig
 

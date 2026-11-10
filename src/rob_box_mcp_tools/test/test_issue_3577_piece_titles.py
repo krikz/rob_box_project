@@ -19,7 +19,7 @@ from rob_box_music import knowledge as kn
 from rob_box_music import works
 from rob_box_music.choice import DeterministicChooser, points
 from rob_box_music.works import TITLE_EXACT, WorkRef, WorkWord, hook_words
-from rob_box_voice.core.media_phrases import piece_text
+from rob_box_dialog_host.media_phrases import piece_text
 
 from rob_box_mcp_tools.core.rtttl_library import fix_mojibake, spoken_title
 from rob_box_mcp_tools.engine.piece import levels

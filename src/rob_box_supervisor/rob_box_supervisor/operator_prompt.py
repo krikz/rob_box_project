@@ -1,7 +1,8 @@
-"""Системный промпт ТАРС: правила из ``operator_system_prompt.txt`` + раздел инструментов, который строит код
-(ADR-0150 §9.3, #3298; PR-13b #3708).
+"""Системный промпт ТАРС: правила оператора + раздел инструментов, который строит код (ADR-0150 §9.3, #3298;
+PR-13b #3708). Правила - основа ядра ``rob_box_dialog/prompts/operator.txt`` с персоной оператора из профиля робота
+(``docker/sound/config/operator_persona.txt``, ADR-0167 Ш1б-4; ``rob_box_dialog.prompts.operator_rules``).
 
-Файл промпта держит только поведение (кто ТАРС, честность, краткость) и ни одного имени тула: имена, «что
+Правила держат только поведение (кто ТАРС, честность, краткость) и ни одного имени тула: имена, «что
 только у оператора», чем говорить вслух и словарь метрик — из реестра оператора
 (``rob_box_core.tool_catalog.operator_visible_tools``: срез ``operator.*`` + видимые Личности), из ``knowledge``
 (тулы речи) и ``metrics_source.METRIC_DICTIONARY``. Второй копии списка тулов нет — промпт не может назвать то,
@@ -12,10 +13,11 @@
 
 from __future__ import annotations
 
-from typing import Iterable, Tuple
+from typing import Iterable, List, Optional, Sequence, Tuple
 
 from rob_box_core.tool_catalog import ToolCatalogEntry, operator_visible_tools
 from rob_box_dialog import knowledge as kn
+from rob_box_dialog.owners import owned_tools
 from rob_box_supervisor.metrics_source import metric_dictionary_text
 
 #: Метрики панели TARS 2 называет тул ``show_metrics`` (его словарь — ``metrics_source``).
@@ -30,6 +32,11 @@ def _first_sentence(text: str) -> str:
     return head[:160]
 
 
+def _common_line(common: Sequence[str]) -> List[str]:
+    """Строка общих тулов; у продукта без них (нейтральное ядро, ADR-0167 Ш1в) строки нет, а не «…робота: .»."""
+    return ["Общие инструменты робота: " + ", ".join(common) + "."] if common else []
+
+
 def tools_section(entries: Iterable[ToolCatalogEntry]) -> str:
     """Раздел промпта об инструментах оператора из записей реестра: только те, что движок исполняет командой
     (``knowledge.TOOL_CLASSES``), без тулов «только кодом» (``TOOLS_CODE_ONLY``)."""
@@ -40,7 +47,7 @@ def tools_section(entries: Iterable[ToolCatalogEntry]) -> str:
     common = sorted(n for n in names - {e.name for e in own} if n not in kn.SPEECH_CHANNEL_TOOLS)
     lines = [TOOLS_HEADER]
     lines += [f"- {e.name} — {_first_sentence(e.description)}." for e in sorted(own, key=lambda e: e.name)]
-    lines.append("Общие инструменты робота: " + ", ".join(common) + ".")
+    lines += _common_line(common)
     if aloud:
         lines.append(f"Сказать вслух людям рядом — {aloud[0]} (голос робота; личность на это время молчит); "
                      f"{', '.join(kn.SPEECH_CHANNEL_TOOLS)} — инструмент личности, его не вызывай.")
@@ -50,12 +57,16 @@ def tools_section(entries: Iterable[ToolCatalogEntry]) -> str:
     return "\n".join(lines)
 
 
-def operator_prompt(rules: str, entries: Tuple[ToolCatalogEntry, ...] = ()) -> str:
-    """Промпт ТАРС: правила файла + раздел инструментов реестра (``entries`` пусто — реестр оператора каталога).
-    Пустые правила — пустой промпт (нет файла — нет агента, как у ``load_system_prompt``)."""
+def operator_prompt(rules: str, entries: Tuple[ToolCatalogEntry, ...] = (),
+                    owners: Optional[Sequence[str]] = None) -> str:
+    """Промпт ТАРС: правила + раздел инструментов реестра (``entries`` пусто — реестр оператора каталога, только тулы
+    владельцев продукта ``owners``: ``owners.owned_tools``, ADR-0167 Ш1в; ``None`` — умолчание ядра, без тулов).
+    Пустые правила — пустой промпт (нет правил — нет агента)."""
     if not rules.strip():
         return ""
-    return f"{rules.strip()}\n\n{tools_section(entries or operator_visible_tools())}"
+    own = owned_tools(owners)
+    registry = entries or tuple(e for e in operator_visible_tools() if e.name in own)
+    return f"{rules.strip()}\n\n{tools_section(registry)}"
 
 
 __all__ = ["CONFIRM_RULE", "METRICS_TOOL", "TOOLS_HEADER", "operator_prompt", "tools_section"]

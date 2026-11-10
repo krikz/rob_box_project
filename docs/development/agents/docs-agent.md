@@ -48,7 +48,6 @@ docs/
 │   ├── AGENT_GUIDE.md        # ⭐ гайд для AI агентов
 │   ├── DOCKER_STANDARDS.md   # правила Docker
 │   ├── PYTHON_STYLE_GUIDE.md # стиль Python кода
-│   ├── BUILD_OPTIMIZATION.md # оптимизация сборки
 │   ├── TESTING_GUIDE.md      # тестирование
 │   ├── LINTING_GUIDE.md      # линтинг
 │   └── agents/               # промпты саб-агентов

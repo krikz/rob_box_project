@@ -257,7 +257,7 @@ def _rejected(reason: str, error: str, **data) -> MCPToolResult:
 
 def _unsupported(kind: str, provider: str) -> MCPToolResult:
     """У активного провайдера нет регулировки (``kind`` = ``speed`` | ``pitch``): голос не менялся — так и говорим."""
-    from rob_box_voice.tts_voice_registry import PROVIDER_LABELS
+    from rob_box_dialog_host.tts_voice_registry import PROVIDER_LABELS
 
     what = {"speed": "скорости", "pitch": "тона"}[kind]
     return _rejected(f"{kind}_unsupported",

@@ -17,7 +17,7 @@ from __future__ import annotations
 
 import pytest
 
-from rob_box_voice.core.voice_memory import VoiceMemory
+from rob_box_dialog_host.voice_memory import VoiceMemory
 
 
 # ---------------------------------------------------------------------------

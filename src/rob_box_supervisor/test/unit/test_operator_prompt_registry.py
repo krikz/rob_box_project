@@ -2,33 +2,32 @@
 
 Промпт велел звать ``say`` и ``set_voice_preset``, которых в реестре не было, и молчал про ``show_metrics`` /
 ``get_perception_context``. С PR-13b (#3708) список инструментов в промпте строит код
-(:mod:`rob_box_supervisor.operator_prompt`) из реестра оператора ``operator_visible_tools()``; файл промпта держит
-только правила и ни одного имени тула — второй копии знания нет.
+(:mod:`rob_box_supervisor.operator_prompt`) из реестра оператора ``operator_visible_tools()``; правила (основа ядра
+с персоной оператора профиля робота, ADR-0167 Ш1б-4) держат ни одного имени тула — второй копии знания нет.
 """
 
 from __future__ import annotations
 
+import os
 import re
 from pathlib import Path
 
 import pytest
 
 from rob_box_core.tool_catalog import operator_visible_tools, tool_names
-from rob_box_supervisor.metrics_source import (
-    METRIC_DICTIONARY,
-    QUERY_ALIASES,
-    metric_dictionary_text,
-)
+from rob_box_dialog.profile import load_profile
+from rob_box_dialog.prompts import operator_rules
+from rob_box_supervisor.metrics_source import METRIC_DICTIONARY, QUERY_ALIASES, metric_dictionary_text
 from rob_box_supervisor.operator_prompt import CONFIRM_RULE, TOOLS_HEADER, operator_prompt
 
-_PROMPT = (
-    Path(__file__).resolve().parents[2] / "prompts" / "operator_system_prompt.txt"
+_PROFILE = (
+    Path(os.environ.get("ROB_BOX_REPO_ROOT") or Path(__file__).resolve().parents[4]) / "docker" / "sound" / "config"
 )
 _WORD_RE = re.compile(r"[a-z][a-z0-9_]*")
 
 
 def _rules() -> str:
-    return _PROMPT.read_text(encoding="utf-8")
+    return operator_rules(load_profile(_PROFILE).operator_persona)
 
 
 def _registry() -> set[str]:
@@ -115,3 +114,16 @@ def test_dictionary_text_lists_every_primary_alias() -> None:
     text = metric_dictionary_text()
     for key, *_rest in METRIC_DICTIONARY:
         assert f"'{key}'" in text
+
+
+def test_tools_section_names_only_tools_of_the_product_owners() -> None:
+    """ADR-0167 Ш1в: раздел инструментов - только тулы владельцев профиля. У робота (все порты) - весь реестр
+    оператора; у продукта без пульта ROS и VESC их тулов нет; без владельцев - ни одного тула, без пустой строки."""
+    robot = load_profile(_PROFILE).owners
+    assert operator_prompt(_rules(), owners=robot) == operator_prompt(_rules(), operator_visible_tools())
+    small = operator_prompt(_rules(), owners=("speech", "memory"))
+    assert not _named(small) & {"ros_list", "topic_echo", "topic_publish", "vesc_telemetry", "navigate_to_waypoint"}
+    assert {"say", "memory_save", "set_voice"} <= _named(small)
+    neutral = operator_prompt(_rules(), owners=())
+    assert TOOLS_HEADER in neutral and "Общие инструменты робота: ." not in neutral
+    assert _named(neutral[neutral.index(TOOLS_HEADER):]) == set()

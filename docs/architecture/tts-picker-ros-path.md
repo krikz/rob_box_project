@@ -8,7 +8,7 @@ Owner: architect (recon only — no production code)
 
 **Mechanism for `list_voices`:** direct in-process call from `tts_node` to the
 **built-in static catalogue** at
-`src/rob_box_voice/rob_box_voice/tts_voice_registry.py:40-67`
+`src/rob_box_dialog_host/rob_box_dialog_host/tts_voice_registry.py:40-67`
 (`PROVIDER_VOICES` at `:40` / `DEFAULT_VOICES` at `:62`). tts_node exposes the answer to the
 ROS graph as a new **latched topic** `/voice/tts/voices` published with
 `DurabilityPolicy.TRANSIENT_LOCAL` + `depth=1` (one-shot publish on
@@ -38,7 +38,7 @@ We considered three options. Trade-offs:
 |---|---|---|---|
 | **ROS service** (`/voice/tts/list_voices` srv) | requires new `rob_box_msgs` IDL; synchronous RPC; quest_node must block; failure → timeout chain through aiohttp | request/response contract; "fresh" on demand | ❌ rejected — adds a new IDL surface and synchronous coupling for a result that changes at most once per provider switch. |
 | **Topic** (latched `/voice/tts/voices`) | new publisher/subscriber wiring; quest_node must remember to (re)read on cache miss | cheap; works across nodes; survives quest_node restart (latched QoS); no IDL needed | ✅ chosen. |
-| **Direct cross-package call** (quest_node imports `rob_box_voice.tts_voice_registry`) | works (registry is pure Python, already shared with `rob_box_mcp_tools`) but breaks ADR-0028 layering (quest_node bypasses supervisor) | zero ROS plumbing | ❌ rejected for `set_voice` (must go via supervisor); accepted as **internal-to-tts_node** source only. |
+| **Direct cross-package call** (quest_node imports `rob_box_dialog_host.tts_voice_registry`) | works (registry is pure Python, already shared with `rob_box_mcp_tools`) but breaks ADR-0028 layering (quest_node bypasses supervisor) | zero ROS plumbing | ❌ rejected for `set_voice` (must go via supervisor); accepted as **internal-to-tts_node** source only. |
 
 The chosen topic pattern uses **transient-local durability** so quest_node
 gets the last-published payload on (re)connect. Note this is *not* the same
@@ -52,7 +52,7 @@ reconnects without a 5-min TTL wait.
 
 Two candidates exist. They are **not equivalent**:
 
-1. **`rob_box_voice.tts_voice_registry`** (provider names: `yandex|minimax|silero`,
+1. **`rob_box_dialog_host.tts_voice_registry`** (provider names: `yandex|minimax|silero`,
    `tts_voice_registry.py:40-67`). Pure-Python dict, importable from any
    package, **already used** by:
    - `ListTtsVoicesTool` for LLM context
@@ -170,7 +170,7 @@ the anchors are the symbol names, the numbers are a snapshot.
 - `TTSProviderFactory` + process-lifetime `_cache` dict → `tts_provider_registry.py:98,108,126-136` (`reset_cache` at `:134`)
 - `register_builtin_tts_providers` → `tts_provider_registry.py:139`
 - `MiniMaxTTSProvider.list_voices` override (static `_BUILTIN_VOICES`, **no upstream call** — comment names it the future HTTP override point) → `src/rob_box_llm/rob_box_llm/providers/minimax_tts.py:684`, catalogue at `:447`
-- Built-in registry (yandex/minimax/silero) → `src/rob_box_voice/rob_box_voice/tts_voice_registry.py:40` (`PROVIDER_VOICES`), `:62` (`DEFAULT_VOICES`), `:69` (`voices_for`), `:74` (`default_voice_for`), `:79` (`resolve_voice`)
+- Built-in registry (yandex/minimax/silero) → `src/rob_box_dialog_host/rob_box_dialog_host/tts_voice_registry.py:40` (`PROVIDER_VOICES`), `:62` (`DEFAULT_VOICES`), `:69` (`voices_for`), `:74` (`default_voice_for`), `:79` (`resolve_voice`)
 - tts_node imports `MiniMaxTTSProvider` (proves BaseTTSProvider reachable in tts_node) → `src/rob_box_voice/rob_box_voice/tts_node.py:112`; guarded import, `None` fallback at `:123`
 - tts_node publishes `/voice/tts/state` → `tts_node.py:1137`; `/voice/tts/provider_state` → `tts_node.py:1146-1148`
 - **No transient-local publisher exists in tts_node yet**: the only `durability=` in the file is `DurabilityPolicy.VOLATILE` for audio → `tts_node.py:1134`

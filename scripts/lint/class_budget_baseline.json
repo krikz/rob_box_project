@@ -1,7 +1,7 @@
 {
   "version": 1,
   "created": "2026-11-09",
-  "base_sha": "162e930bb5cd33fafbb655dc051f3d083c07b3d5",
+  "base_sha": "e8bfb4745f2e35100ee1ea6045a205fdeb7b546b",
   "limits": {
     "wmc": 80,
     "methods": 40
@@ -48,8 +48,8 @@
       "methods": 33
     },
     "src/rob_box_supervisor/rob_box_supervisor/supervisor_node.py:AvatarSupervisor": {
-      "wmc": 283,
-      "methods": 58
+      "wmc": 278,
+      "methods": 57
     },
     "src/rob_box_telegram/rob_box_telegram/supervisor_client.py:SupervisorClient": {
       "wmc": 133,
@@ -59,7 +59,7 @@
       "wmc": 125,
       "methods": 24
     },
-    "src/rob_box_voice/rob_box_voice/core/voice_memory.py:VoiceMemory": {
+    "src/rob_box_dialog_host/rob_box_dialog_host/voice_memory.py:VoiceMemory": {
       "wmc": 142,
       "methods": 31
     },

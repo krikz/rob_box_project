@@ -20,7 +20,7 @@ import dry_stand  # noqa: E402
 from rob_box_dialog import knowledge as kn  # noqa: E402
 from rob_box_dialog.profile import ProfileError, load_profile  # noqa: E402
 from rob_box_llm.providers.fake import FakeLLMProvider  # noqa: E402
-from rob_box_voice.core.dialog_v2_ports import CallCounter  # noqa: E402
+from rob_box_dialog_host.dialog_v2_ports import CallCounter  # noqa: E402
 
 
 def _stand(tmp_path):

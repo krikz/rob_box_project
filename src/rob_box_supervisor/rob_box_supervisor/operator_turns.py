@@ -188,16 +188,16 @@ def build_host(node: Any) -> Tuple[Any, Any]:
     (валидатор знает агента ``operator``), MCP-тулы оператора, ``V2Ports`` с исполнителем. ``(хост, None)``; сбой
     сборки — ``(None, None)`` (``agent_unavailable``, а не падение ноды)."""
     import time  # noqa: PLC0415
-    from pathlib import Path  # noqa: PLC0415
 
     from rob_box_dialog import knowledge as kn  # noqa: PLC0415
     from rob_box_dialog.session import Session  # noqa: PLC0415
     from rob_box_dialog.turn import TurnEngine  # noqa: PLC0415
     from rob_box_dialog_msgs.msg import Intent, SpeechEvent  # noqa: PLC0415
-    from rob_box_harness.core.assembly import AgentSpec, build_llm_chain, load_system_prompt  # noqa: PLC0415
+    from rob_box_dialog.prompts import operator_rules  # noqa: PLC0415
+    from rob_box_harness.core.assembly import AgentSpec, build_llm_chain  # noqa: PLC0415
     from rob_box_voice import robot_profile  # noqa: PLC0415
-    from rob_box_voice.core import command_bridge  # noqa: PLC0415
-    from rob_box_voice.core.dialog_v2_ports import CallCounter, V2Ports, counted_wrapper  # noqa: PLC0415
+    from rob_box_dialog_host import command_bridge  # noqa: PLC0415
+    from rob_box_dialog_host.dialog_v2_ports import CallCounter, V2Ports, counted_wrapper  # noqa: PLC0415
 
     from rob_box_supervisor.operator_prompt import operator_prompt  # noqa: PLC0415
 
@@ -207,13 +207,14 @@ def build_host(node: Any) -> Tuple[Any, Any]:
     log = node.get_logger().info
     chain = node._parse_provider_chain(node._param_str("llm_providers", kn.COMMAND_PROVIDERS_DEFAULT))
     counter = CallCounter()
-    bridge = command_bridge.wrapper_for(log=log, agent=OPERATOR)
-    spec = AgentSpec(name=OPERATOR, prompt_dir=node._resolve_prompts_dir() or Path(""),
-                     system_prompt_file=node._system_prompt_file, provider_chain=chain,
-                     settings=node._build_operator_llm_settings(), wrap_provider=counted_wrapper(bridge, counter))
-    # Таблица вейков личности - из профиля робота (ADR-0167 Ш1б), как у dialog_node: ей грамматика Tier-1 ТАРС
-    # снимает «Робот, …» с команды оператора. Нет профиля - ТАРС не поднимается (``_safe_build`` пишет причину).
-    session = Session(OPERATOR, clock=time.time, wake_words=robot_profile.load().wake_personality)
+    # Профиль робота (ADR-0167 Ш1б), как у dialog_node: таблица вейков личности - ей грамматика Tier-1 ТАРС снимает
+    # «Робот, …» с команды оператора; персона оператора - кто ТАРС (Ш1б-4); владельцы тулов - срез сессии, мост и
+    # раздел инструментов промпта (Ш1в). Нет профиля - ТАРС не поднимается (``_safe_build`` пишет причину).
+    profile = robot_profile.load()
+    bridge = command_bridge.wrapper_for(log=log, agent=OPERATOR, owners=profile.owners)
+    spec = AgentSpec(name=OPERATOR, provider_chain=chain, settings=node._build_operator_llm_settings(),
+                     wrap_provider=counted_wrapper(bridge, counter))
+    session = Session(OPERATOR, clock=time.time, wake_words=profile.wake_personality, owners=profile.owners)
     # «стой» оператора (Tier-1) гасит и движение: интент ``stop_motion`` владельцу движения (command_node)
     intent_pub = node.create_publisher(Intent, "/dialog/intent", 10)
     base = V2Ports(node, build_llm_chain(spec), counter, tools, agent=OPERATOR, intent_pub=intent_pub, log=log,
@@ -221,7 +222,8 @@ def build_host(node: Any) -> Tuple[Any, Any]:
     ports = OperatorPorts(base, log)
     base.on_late = ports.late
     node._operator_journal = node._build_operator_journal()
-    engine = TurnEngine(session, ports, system_prompt=operator_prompt(load_system_prompt(spec)),
+    engine = TurnEngine(session, ports,
+                        system_prompt=operator_prompt(operator_rules(profile.operator_persona), owners=profile.owners),
                         log=node.get_logger(),
                         sections=lambda _snap, _text: {"operator_journal": node._render_journal_context()})
     host = OperatorHost(engine, ports, base.executor, log)
@@ -230,7 +232,7 @@ def build_host(node: Any) -> Tuple[Any, Any]:
     node.create_subscription(SpeechEvent, "/voice/speech/event",
                              lambda msg: msg.agent == OPERATOR and host.on_speech(msg), 10)
     node.create_timer(5.0, host.tick)
-    log(f"{LOG_MARK} ТАРС на общем движке: providers={chain} prompt={node._system_prompt_file}")
+    log(f"{LOG_MARK} ТАРС на общем движке: providers={chain} prompt=operator_persona профиля {profile.root}")
     return (host, None)
 
 

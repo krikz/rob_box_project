@@ -367,6 +367,9 @@ services:
       # (PR #1618) → включаем active, чтобы супервизор применял voice_input_mode
       # (SetVoiceMode). Teleop-FSM/floors остаются Phase 2 (NOT_IMPLEMENTED).
       - AVATAR_SUPERVISOR_MODE=active
+      # Каталог пресетов стиля - профиль робота рядом с assistant.yaml (ADR-0167 Ш1а-2): белый список моста и промпты
+      # пайплайна грипа (grip_pipeline). Без env стилей нет: грип говорит дословно.
+      - ROB_BOX_VOICE_PRESETS_YAML=/config/voice_presets.yaml
       # issue #2184 — TarsPanelDispatcher ходит за метриками сам (Prometheus
       # /api/v1/query_range, Loki /loki/api/v1/query_range) и публикует ряды
       # точек в /avatar/tars/panel_data. Стек мониторинга живёт на katana,
@@ -509,6 +512,9 @@ services:
       - *zenoh_listen_ip  # адрес локального роутера для session config
       - ZENOH_ROUTER_CHECK_ATTEMPTS=10
       - PYTHONUNBUFFERED=1
+      # Каталог пресетов стиля - профиль робота рядом с assistant.yaml (ADR-0167 Ш1а-2); без env белый список моста
+      # пуст и ws_server отвечает voice_pipeline_nack на любой стиль.
+      - ROB_BOX_VOICE_PRESETS_YAML=/config/voice_presets.yaml
       - QUEST_HOST=${QUEST_HOST:-quest.rob_box.local}
       # IP в SAN самоподписанного сертификата (start_quest.sh): адрес eth0 Sound Pi.
       # Сертификат из тома quest-certs НЕ пересоздаётся, если файл уже есть.

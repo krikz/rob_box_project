@@ -40,7 +40,7 @@ def test_robot_prompt_is_byte_for_byte_the_old_master_prompt():
 
 def test_robot_system_prompt_is_the_prompt_plus_knowledge_rules():
     """Мост дописывает правила знания к промпту так же, как к старому файлу: ``промпт + пустая строка + правила``."""
-    ports = pytest.importorskip("rob_box_voice.core.dialog_v2_ports", reason="мосту нужен rob_box_llm")
+    ports = pytest.importorskip("rob_box_dialog_host.dialog_v2_ports", reason="мосту нужен rob_box_llm")
     full = ports.system_prompt(_robot_prompt(), "personality")
     assert full.startswith(GOLDEN.read_text(encoding="utf-8") + "\n\n")
 
@@ -66,7 +66,8 @@ def test_dialog_node_builds_the_personality_prompt_from_the_profile():
         for n in calls
         if getattr(n.func, "attr", "") == "declare_parameter" and n.args and isinstance(n.args[0], ast.Constant)
     }
-    assert "system_prompt_file" not in declared and "telegram_system_prompt_file" in declared
+    # Ш1б-4: и у телеграма своего файла промпта нет (основа ядра с name профиля).
+    assert "system_prompt_file" not in declared and "telegram_system_prompt_file" not in declared
     prompts = [ast.unparse(n.args[0]) for n in calls if ast.unparse(n.func) == "personality_prompt"]
     assert prompts == ["node.product_profile.persona"]
 
@@ -82,7 +83,9 @@ def test_stand_builds_the_same_prompt():
 def test_robot_profile_without_persona_does_not_start(tmp_path):
     (tmp_path / "wake_words.yaml").write_text((CONFIG / "wake_words.yaml").read_text(encoding="utf-8"), "utf-8")
     (tmp_path / "assistant.yaml").write_text(
-        "format: 2\nname: РОББОКС\nwake_words: wake_words.yaml\npersona: persona.txt\n", encoding="utf-8"
+        "format: 4\nname: РОББОКС\nwake_words: wake_words.yaml\npersona: persona.txt\noperator_persona: o.txt\n"
+        "owners: [speech]\n",
+        encoding="utf-8",
     )
     with pytest.raises(ProfileError, match="файла персоны"):
         load_profile(tmp_path)

@@ -423,10 +423,6 @@
       <!-- CAN ID в VESC Tool -->
       <param name="poles">30</param>
       <!-- Количество полюсов мотора -->
-      <param name="min_erpm">24</param>
-      <!-- Минимальный ERPM для движения -->
-      <param name="wheel_radius">0.1143</param>
-      <!-- Замер 2026-02-23: 9" с редуктором -->
       <param name="max_rps">16.1772</param>
       <!-- Калибровка 2026-02-28: ratio=1.22@0.2m/s×5s, max_rps=10×1.22 -->
     </joint>
@@ -442,9 +438,6 @@
       <state_interface name="position"/>
       <param name="can_id">94</param>
       <param name="poles">30</param>
-      <param name="min_erpm">24</param>
-      <param name="wheel_radius">0.1143</param>
-      <!-- Замер 2026-02-23: 9" с редуктором -->
       <param name="max_rps">16.1772</param>
       <!-- Калибровка 2026-02-28: ratio=1.22@0.2m/s×5s -->
     </joint>
@@ -460,9 +453,6 @@
       <state_interface name="position"/>
       <param name="can_id">81</param>
       <param name="poles">30</param>
-      <param name="min_erpm">24</param>
-      <param name="wheel_radius">0.1143</param>
-      <!-- Замер 2026-02-23: 9" с редуктором -->
       <param name="max_rps">16.1772</param>
       <!-- Калибровка 2026-02-28: ratio=1.22@0.2m/s×5s -->
     </joint>
@@ -478,9 +468,6 @@
       <state_interface name="position"/>
       <param name="can_id">124</param>
       <param name="poles">30</param>
-      <param name="min_erpm">24</param>
-      <param name="wheel_radius">0.1143</param>
-      <!-- Замер 2026-02-23: 9" с редуктором -->
       <param name="max_rps">16.1772</param>
       <!-- Калибровка 2026-02-28: ratio=1.22@0.2m/s×5s -->
     </joint>

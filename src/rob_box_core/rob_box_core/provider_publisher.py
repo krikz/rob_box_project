@@ -1,6 +1,6 @@
 """provider_publisher - писатель ``/voice/providers/state`` своего вида (ADR-0150 §8, PR-4 ч.2, #3693).
 
-Топик один (latched), писателей несколько (tts_node, stt_node, dialogue_node, mcp_server), каждый публикует только
+Топик один (latched), писателей несколько (tts_node, stt_node, dialog_node, mcp_server), каждый публикует только
 свои ``ProviderState`` и ПЕРЕИЗДАЁТ их раз в ``period_s``: поздний подписчик по transient_local получает не всех
 писателей (проверено на rmw_zenoh, PR #3729), поэтому корректность держится на переиздании, а подписчик считает
 запись без обновлений устаревшей (``rob_box_dialog.degrade.ProviderBoard``). Состояние - duck-тип с полями

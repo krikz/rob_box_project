@@ -2,7 +2,7 @@ from pathlib import Path
 
 import pytest
 
-from rob_box_voice.core.faq_store import FAQStore, _RU_STOPWORDS, _tokenize_fts
+from rob_box_dialog_host.faq_store import FAQStore, _RU_STOPWORDS, _tokenize_fts
 
 
 # ---------------------------------------------------------------------------

@@ -58,7 +58,7 @@ from .media_command_grammar import (
     extract_user_utterance,
     parse_media_command,
 )
-from .media_phrases import (
+from rob_box_dialog_host.media_phrases import (
     DJ_FAIL_TEXT,
     NOTHING_PLAYING_TEXT,
     REQUEST_FAIL_TEXT,

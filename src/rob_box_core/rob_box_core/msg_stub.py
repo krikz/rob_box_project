@@ -6,17 +6,24 @@
 зелёным. Здесь класс строится ИЗ ``.msg``-файла, поэтому набор полей, их
 значения по умолчанию и константы всегда совпадают с настоящим типом.
 
+Описания сообщений - данные ядра: зеркало ``.msg`` пакета ``rob_box_dialog_msgs`` в ``rob_box_core/dialog_msgs/``
+(``package-data``), читается через ``importlib.resources``. Ядро, поставленное пакетом без чекаута (ADR-0167 Ш1а-2),
+строит заглушку из своих файлов, а не ищет чекаут вверх от текущего каталога. Владелец описаний -
+``rob_box_dialog_msgs`` (по ним rosidl собирает настоящий тип); зеркало сверяет байт в байт
+``test/test_dialog_msgs_mirror_0167.py``.
+
 Только для тестов и инструментов; в рантайме робота не используется.
 """
 
 from __future__ import annotations
 
 import importlib
+import importlib.resources
 import re
 import sys
 import types
 from pathlib import Path
-from typing import Any, Callable, Dict, Optional
+from typing import Any, Callable, Dict, Optional, Union
 
 _SCALAR_DEFAULTS: Dict[str, Any] = {
     "bool": False,
@@ -85,13 +92,18 @@ def _class_from_msg(name: str, text: str, registry: Dict[str, type]) -> type:
                            "_FIELDS": tuple(fields)})
 
 
-def build_msg_module(msg_dir: Path, package: str, module_name: Optional[str] = None) -> types.ModuleType:
+#: Каталог ``.msg`` - путь на диске или каталог ресурсов пакета (``importlib.resources``).
+MsgDir = Union[Path, "importlib.resources.abc.Traversable"]
+
+
+def build_msg_module(msg_dir: MsgDir, package: str, module_name: Optional[str] = None) -> types.ModuleType:
     """Собрать модуль ``<package>.msg`` из каталога с ``*.msg``.
 
     Вложенные типы (``SceneFrame`` в ``SessionState``) разрешаются по имени:
     сообщения создаются в порядке зависимостей.
     """
-    texts = {p.stem: p.read_text(encoding="utf-8") for p in sorted(Path(msg_dir).glob("*.msg"))}
+    files = sorted((f for f in msg_dir.iterdir() if f.name.endswith(".msg")), key=lambda f: f.name)
+    texts = {f.name[: -len(".msg")]: f.read_text(encoding="utf-8") for f in files}
     registry: Dict[str, type] = {}
     pending = dict(texts)
     while pending:
@@ -115,21 +127,23 @@ def build_msg_module(msg_dir: Path, package: str, module_name: Optional[str] = N
     return module
 
 
-def dialog_msgs_dir() -> Path:
-    """Каталог ``.msg`` пакета ``rob_box_dialog_msgs``: рядом с исходниками ядра (чекаут), а у ядра, поставленного
-    пакетом (``packaging/dialog-core``, #4245), - в чекауте, из которого идёт прогон (вверх от текущего каталога).
-    Не нашли - ошибка: пустая заглушка без единого типа молча ломала бы тесты дальше по коду."""
-    cwd = Path.cwd().resolve()
-    candidates = [Path(__file__).resolve().parents[2] / "rob_box_dialog_msgs" / "msg"]
-    candidates += [base / "src" / "rob_box_dialog_msgs" / "msg" for base in (cwd, *cwd.parents)]
-    for msg_dir in candidates:
-        if any(msg_dir.glob("*.msg")):
-            return msg_dir
-    raise FileNotFoundError(f"нет .msg rob_box_dialog_msgs: искали {[str(c) for c in candidates[:2]]} и выше по cwd")
+#: Каталог зеркала ``.msg`` внутри пакета ``rob_box_core`` (``package-data``).
+DIALOG_MSGS_DATA = "dialog_msgs"
+
+
+def dialog_msgs_dir() -> MsgDir:
+    """Каталог ``.msg`` ``rob_box_dialog_msgs`` - данные пакета ядра (``rob_box_core/dialog_msgs``).
+
+    Пустой каталог - ошибка: пустая заглушка без единого типа молча ломала бы тесты дальше по коду (так бывает, если
+    пакет собран без ``package-data``)."""
+    msg_dir = importlib.resources.files("rob_box_core") / DIALOG_MSGS_DATA
+    if not msg_dir.is_dir() or not any(f.name.endswith(".msg") for f in msg_dir.iterdir()):
+        raise FileNotFoundError(f"нет .msg в данных пакета rob_box_core: {msg_dir} (package-data не поставлен?)")
+    return msg_dir
 
 
 def build_dialog_msgs_module() -> types.ModuleType:
-    """Заглушка ``rob_box_dialog_msgs.msg``, всегда построенная из ``.msg`` репозитория."""
+    """Заглушка ``rob_box_dialog_msgs.msg``, построенная из ``.msg`` в данных пакета ядра."""
     return build_msg_module(dialog_msgs_dir(), "rob_box_dialog_msgs")
 
 

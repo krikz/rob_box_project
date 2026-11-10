@@ -293,7 +293,7 @@ class MusicLibraryTool(MCPTool):
     # ── Действия ──────────────────────────────────────────────────────────
 
     def _list(self, limit: int = 20, sort_by: str = "recent", **_: Any) -> MCPToolResult:
-        from rob_box_voice.core.media_phrases import library_list_text
+        from rob_box_dialog_host.media_phrases import library_list_text
 
         result = self._library.list_tracks(limit=_clamp(limit, 20, 100), sort_by=sort_by)
         if not result.get("success"):
@@ -333,7 +333,7 @@ class MusicLibraryTool(MCPTool):
     def _rate(self, track_id: str = "", verdict: str = "", **_: Any) -> MCPToolResult:
         """Оценка кодом: рейтинг пишется в БД, фраза — из результата записи. Трек — названный, играющий сейчас
         на деке (``library_id`` фактов владельца) или последний игравший из кэша."""
-        from rob_box_voice.core.media_phrases import LIBRARY_NO_TRACK_TEXT, library_rate_text
+        from rob_box_dialog_host.media_phrases import LIBRARY_NO_TRACK_TEXT, library_rate_text
 
         if verdict not in _VERDICT_RATING:
             return MCPToolResult(success=False, error="для rate нужен verdict: like или dislike")
@@ -374,7 +374,7 @@ class MusicLibraryTool(MCPTool):
         """Необратимо: без вопроса человеку не удаляем (:class:`DeleteConfirmation`). Отказ - причина и данные вопроса
         (``track_id``, ``title``); текст вопроса - из каталога фраз (``media_phrases``), диалог v2 строит его сам по
         причине (#4062)."""
-        from rob_box_voice.core.media_phrases import library_delete_question_text, library_delete_text
+        from rob_box_dialog_host.media_phrases import library_delete_question_text, library_delete_text
 
         info = self._library.get_track_info(track_id)
         if not info.get("success"):

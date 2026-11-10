@@ -349,7 +349,7 @@ jobs:
 
 ## 📊 Metrics & Success Criteria
 
-**Phase 2 Goals (from AI_DEVELOPMENT_REVIEW.md):**
+**Phase 2 Goals:**
 
 | Metric | Before | Target | Current |
 |--------|--------|--------|---------|
@@ -392,8 +392,6 @@ jobs:
 ## 🔗 Related Documentation
 
 - [AGENT_GUIDE.md](./AGENT_GUIDE.md) - AI development guide
-- [AI_TROUBLESHOOTING_CHECKLIST.md](./AI_TROUBLESHOOTING_CHECKLIST.md) - Debug checklist
-- [AI_DEVELOPMENT_REVIEW.md](./AI_DEVELOPMENT_REVIEW.md) - Phase 2 roadmap
 - [CI_CD_PIPELINE.md](../CI_CD_PIPELINE.md) - GitHub Actions workflows
 
 ---
