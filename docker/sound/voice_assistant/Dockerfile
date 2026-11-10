@@ -255,8 +255,32 @@ COPY docker/sound/voice_assistant/custom_synthdefs /ws/custom_synthdefs
 # site-packages; rob_box_voice и rob_box_mcp_tools импортируют их оттуда.
 # Ставится ДО colcon: colcon собирает только ROS-хосты (rob_box_voice) и
 # полный ROS-пакет rob_box_mcp_tools, а ядро уже лежит в окружении.
-RUN pip3 install --no-cache-dir \
-    "rob-box-dialog-core @ git+https://github.com/krikz/rob_box_dialog_core@v0.7.2"
+#
+# Офлайн (issue #4651, риск-родитель #4548): self-hosted runner собирает без
+# гарантии сети (acceptance #2378, ADR-0100), а прямой pip по git+URL — её
+# сетевая точка: при инвалидации buildx-кеша слой падает офлайн → образ без
+# ядра → voice-assistant в restart-loop (инциденты 10.11: #4643). Поэтому:
+#   - wheel ядра кладётся в build context pre_build-хуком
+#     fetch_dialog_core_wheel (scripts/ci/fetch_dialog_core_wheel.sh) из
+#     /opt/rob_box/vendor (fallback /tmp) — офлайн-паттерн ADR-0089 Phase 1.5,
+#     как HailoRT у vision-hailo. wheel в git НЕ коммитим (wheels/*.whl в
+#     wheels/.gitignore; в git только .gitkeep + .gitignore, поэтому COPY
+#     отрабатывает и на чистом чекауте без хука).
+#   - wheel в контексте есть → ставим его (сеть не нужна);
+#     нет → fallback на git+URL — ПРЕЖНЕЕ поведение (без этого фикса).
+ARG DIALOG_CORE_VERSION=0.7.2
+COPY docker/sound/voice_assistant/wheels/ /tmp/core-wheels/
+RUN WHEEL="$(ls /tmp/core-wheels/rob_box_dialog_core-*.whl 2>/dev/null | head -n1 || true)" && \
+    if [ -n "$WHEEL" ]; then \
+        echo "Устанавливаю ядро диалога из локального wheel: $(basename "$WHEEL") (offline, issue #4651)"; \
+        pip3 install --no-cache-dir "$WHEEL"; \
+    else \
+        echo "Локальный wheel ядра не найден — fallback: git+URL (нужна сеть на runner'е)"; \
+        pip3 install --no-cache-dir \
+            "rob-box-dialog-core @ git+https://github.com/krikz/rob_box_dialog_core@v${DIALOG_CORE_VERSION}"; \
+    fi && \
+    python3 -c "import importlib.metadata as m; v = m.version('rob-box-dialog-core'); print('rob-box-dialog-core', v); assert v == '${DIALOG_CORE_VERSION}', f'ядро {v} != пин ${DIALOG_CORE_VERSION}'" && \
+    rm -rf /tmp/core-wheels
 
 # ============================================
 # 🚀 СБОРКА ROS2 ПАКЕТОВ

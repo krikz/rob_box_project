@@ -201,6 +201,13 @@ pis:
             # ADR-0150 PR-2 (#3687): типы диалога v2 собираются в этом образе.
             - paths: [src/rob_box_dialog_msgs]
               extensions: [".msg", ".srv", "CMakeLists.txt", "package.xml"]
+        # Императивный pre-build хук (issue #4651): wheel ядра диалога
+        # кладётся в build context из /opt/rob_box/vendor (fallback /tmp) —
+        # офлайн-паттерн ADR-0089 Phase 1.5 (как HailoRT). Без wheel Dockerfile
+        # ставит ядро fallback'ом git+URL (нужна сеть). Сознательно НЕ
+        # декларативные поля манифеста (план §2.5): маркер факта здесь,
+        # логика — scripts/ci/fetch_dialog_core_wheel.sh.
+        pre_build: fetch_dialog_core_wheel
         tag:
           ros_distro: true
         image_versions: VOICE_ASSISTANT_TAG

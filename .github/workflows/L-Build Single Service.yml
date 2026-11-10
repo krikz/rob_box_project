@@ -452,6 +452,17 @@ jobs:
             fi
           done
 
+      - name: Prepare dialog core wheel (voice_assistant only)
+        # Issue #4651: копия pre_build-хука fetch_dialog_core_wheel из
+        # docker/build-manifest.yaml / scripts/ci/fetch_dialog_core_wheel.sh
+        # (L-Build Pi Services.yml), оставлена здесь inline: манифест не
+        # покрывает Single Service (план
+        # docs/plans/2026-09-15-service-manifest.md §11 вопрос №2). Wheel ядра
+        # кладётся в build context; без wheel — предупреждение, Dockerfile
+        # ставит ядро fallback'ом git+URL (нужна сеть).
+        if: needs.prepare.outputs.service_name == 'voice_assistant'
+        run: bash scripts/ci/fetch_dialog_core_wheel.sh
+
       - name: Compute build-args for ${{ needs.prepare.outputs.service_name }}
         # Хендофф 2026-09-21 §8 (Phase 4): этот job раньше заканчивался
         # собственным `docker buildx build` мимо ./.github/actions/l-build-service —

@@ -1,0 +1,7 @@
+# Wheel ядра диалога (rob_box_dialog_core-<VERSION>-*.whl) — артефакт сборки
+# публичного krikz/rob_box_dialog_core, НЕ коммитим в git (issue #4651).
+# Кладётся в build-context pre_build-хуком scripts/ci/fetch_dialog_core_wheel.sh
+# из /opt/rob_box/vendor (fallback /tmp) на build-хосте — офлайн-паттерн
+# ADR-0089 Phase 1.5, как у vision-hailo/wheels. Без wheel Dockerfile
+# voice-assistant ставит ядро fallback'ом git+URL (нужна сеть).
+*.whl

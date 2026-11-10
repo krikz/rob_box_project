@@ -261,6 +261,15 @@ jobs:
         if: matrix.pre_build == 'fetch_hailort_wheel'
         run: bash scripts/ci/fetch_hailort_wheel.sh
 
+      - name: Run pre_build hook ${{ matrix.pre_build }}
+        # Issue #4651: офлайн-сборка sound-сервиса на ядре диалога — wheel
+        # ядра кладётся в build context; без wheel Dockerfile ставит ядро
+        # fallback'ом git+URL (нужна сеть). Хук без wheel НЕ падает
+        # (предупреждение в лог) — честное падение остаётся за слоем
+        # установки ядра в Dockerfile, чтобы режим «как раньше» не ломался.
+        if: matrix.pre_build == 'fetch_dialog_core_wheel'
+        run: bash scripts/ci/fetch_dialog_core_wheel.sh
+
       - name: Wait for msgs image
         # Только для сервисов с COPY --from=${MSGS_IMAGE}: образ собирает
         # параллельный job build-msgs, buildx без него упадёт на FROM.
@@ -323,6 +332,15 @@ jobs:
         if: matrix.pre_build == 'fetch_hailort_wheel'
         run: bash scripts/ci/fetch_hailort_wheel.sh
 
+      - name: Run pre_build hook ${{ matrix.pre_build }}
+        # Issue #4651: офлайн-сборка sound-сервиса на ядре диалога — wheel
+        # ядра кладётся в build context; без wheel Dockerfile ставит ядро
+        # fallback'ом git+URL (нужна сеть). Хук без wheel НЕ падает
+        # (предупреждение в лог) — честное падение остаётся за слоем
+        # установки ядра в Dockerfile, чтобы режим «как раньше» не ломался.
+        if: matrix.pre_build == 'fetch_dialog_core_wheel'
+        run: bash scripts/ci/fetch_dialog_core_wheel.sh
+
       - name: Wait for msgs image
         # Только для сервисов с COPY --from=${MSGS_IMAGE}: образ собирает
         # параллельный job build-msgs, buildx без него упадёт на FROM.
@@ -384,6 +402,15 @@ jobs:
         # (scripts/ci/fetch_hailort_wheel.sh), а не данные.
         if: matrix.pre_build == 'fetch_hailort_wheel'
         run: bash scripts/ci/fetch_hailort_wheel.sh
+
+      - name: Run pre_build hook ${{ matrix.pre_build }}
+        # Issue #4651: офлайн-сборка sound-сервиса на ядре диалога — wheel
+        # ядра кладётся в build context; без wheel Dockerfile ставит ядро
+        # fallback'ом git+URL (нужна сеть). Хук без wheel НЕ падает
+        # (предупреждение в лог) — честное падение остаётся за слоем
+        # установки ядра в Dockerfile, чтобы режим «как раньше» не ломался.
+        if: matrix.pre_build == 'fetch_dialog_core_wheel'
+        run: bash scripts/ci/fetch_dialog_core_wheel.sh
 
       - name: Wait for msgs image
         # Только для сервисов с COPY --from=${MSGS_IMAGE}: образ собирает

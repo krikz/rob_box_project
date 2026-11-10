@@ -36,9 +36,11 @@ parts/
 sdist/
 var/
 wheels/
-# Каталог колёс Hailo в git ради .gitkeep и своего .gitignore (колёса *.whl игнорирует он).
+# Каталоги колёс (Hailo, ядро диалога voice-assistant) в git ради .gitkeep и
+# своего .gitignore (колёса *.whl игнорирует он).
 # Файл из игнорируемого каталога git не возвращает — возвращаем каталог (ADR-0166 §8).
 !docker/vision/vision-hailo/wheels/
+!docker/sound/voice_assistant/wheels/
 *.egg-info/
 .installed.cfg
 *.egg
