@@ -22,6 +22,7 @@ import re
 from dataclasses import dataclass, field, replace
 from typing import Any, Dict, Mapping, Optional, Sequence, Tuple, Union
 
+from rob_box_core.stt_hypotheses import NO_HYPOTHESES, SttHypotheses, hypotheses_from_msg
 from rob_box_dialog.backlog import Backlog, Heard
 from rob_box_dialog.heard import repair
 from rob_box_dialog.reply_grammar import NO, YES, classify_reply
@@ -91,6 +92,9 @@ class Addressed:
     #: нему ход берёт голос ЭТОЙ фразы (ответ на «ты меня узнал?»). У подхвата бэклога и голого вейка - «»: текст
     #: хода не из этой фразы.
     utterance_id: str = ""
+    #: Гипотезы распознавания фразы хода (``Heard.hypotheses``, #4017 шаг C1) — у хода из самой фразы, как
+    #: ``utterance_id``; у подхвата и голого вейка — :data:`NO_HYPOTHESES`. Поведение по ним — шаг C2.
+    hypotheses: SttHypotheses = NO_HYPOTHESES
 
 
 @dataclass(frozen=True)
@@ -184,9 +188,9 @@ def _note_answered(decision: Decision, heard: Heard, backlog: Optional[Backlog])
 
 def _of_phrase(decision: Decision, heard: Heard) -> Decision:
     """Ход, текст которого — сама фраза ``heard`` (не подхват бэклога и не голый вейк), — с её ``utterance_id``: по нему
-    ход находит SpeakerResult этой фразы."""
+    ход находит SpeakerResult этой фразы; и с её гипотезами распознавания (#4017 шаг C1)."""
     if isinstance(decision, Addressed) and not decision.pickup and decision.source not in WORDLESS:
-        return replace(decision, utterance_id=heard.utterance_id)
+        return replace(decision, utterance_id=heard.utterance_id, hypotheses=heard.hypotheses)
     return decision
 
 
@@ -267,7 +271,8 @@ def _seconds(stamp: Any) -> float:
 
 
 def heard_from(msg: Any, *, now: float, doa: Any = None, person_ref: str = "", faces: Any = None) -> Heard:
-    """``Utterance`` → :class:`Heard`: время — конец фразы; направление (DOA) и лица в кадре — по окну её звучания."""
+    """``Utterance`` → :class:`Heard`: время — конец фразы; направление (DOA) и лица в кадре — по окну её звучания;
+    гипотезы распознавания — из полей ``confidence``/``alternatives`` (нет полей — неизвестны, #4017 шаг C1)."""
     started, ended = _seconds(getattr(msg, "started_at", None)), _seconds(getattr(msg, "ended_at", None))
     t = ended or now
     window = (started - VAD_TAIL_S, t)
@@ -275,7 +280,8 @@ def heard_from(msg: Any, *, now: float, doa: Any = None, person_ref: str = "", f
     seen = faces.during(*window) if (faces is not None and started) else frozenset()
     return Heard(text=(getattr(msg, "text", "") or "").strip(), t=t, source=getattr(msg, "source", "") or "",
                  doa_deg=doa_deg, person_ref=person_ref or "", voice_s=max(0.0, ended - started) if started else 0.0,
-                 faces=seen, utterance_id=str(getattr(msg, "utterance_id", "") or ""))
+                 faces=seen, utterance_id=str(getattr(msg, "utterance_id", "") or ""),
+                 hypotheses=hypotheses_from_msg(msg))
 
 
 def person_ref_from(registry: Any, utterance_id: Optional[str]) -> str:

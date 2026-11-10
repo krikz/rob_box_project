@@ -29,6 +29,7 @@ from dataclasses import dataclass, replace
 from typing import Any, Dict, FrozenSet, List, Mapping, Optional, Sequence
 
 from rob_box_core.speaker_wire import NAME_UNKNOWN
+from rob_box_core.stt_hypotheses import NO_HYPOTHESES, SttHypotheses
 from rob_box_dialog.doa import angle_diff_deg
 from rob_box_dialog.knowledge import (
     BACKGROUND_MAX_PHRASES,
@@ -63,6 +64,9 @@ class Heard:
     speaker_name: str = ""
     #: Что биометрия сказала о фразе (:meth:`Backlog.note_voice`); ``None`` — результат не пришёл.
     voice: Optional[VoiceTag] = None
+    #: Гипотезы распознавания сырого текста фразы (``Utterance.confidence``/``alternatives``, #4017 шаг C1):
+    #: уверенность STT и другие тексты; неизвестны — :data:`NO_HYPOTHESES`. Поведение по ним — шаг C2.
+    hypotheses: SttHypotheses = NO_HYPOTHESES
 
 
 def same_direction(a: Optional[float], b: Optional[float]) -> bool:

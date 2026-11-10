@@ -239,6 +239,46 @@ from rob_box_voice.observability import (
     start_span,
 )
 
+
+def _normalize_provider_chain(chain, logger=None) -> list:
+    """Привести цепочку к инвариантам (аналог tts_node, issue #1083).
+
+    Инварианты:
+
+    * только известные провайдеры (:data:`KNOWN_STT_PROVIDERS`);
+    * без дубликатов, порядок первого вхождения сохраняется;
+    * ``vosk`` — всегда последний (офлайновый последний рубеж);
+    * пустая/битая цепочка → :data:`DEFAULT_STT_PROVIDER_CHAIN`.
+
+    Осознанное исключение: цепочка ровно из одного ``vosk`` —
+    легитимный офлайн-режим (робот в поле без сети), её не трогаем.
+
+    Функция модуля, а не метод :class:`STTNode`: ``self`` не использует
+    (class_budget, ADR-0145 — вынос из класса, #4645).
+    """
+    deduped: list = []
+    for name in chain or []:
+        name = str(name).strip().lower()
+        if name not in KNOWN_STT_PROVIDERS:
+            if name and logger is not None:
+                logger.warning(
+                    f"⚠️ stt_provider_chain: неизвестный провайдер "
+                    f"{name!r} — игнорирую "
+                    f"(известные: {sorted(KNOWN_STT_PROVIDERS)})"
+                )
+            continue
+        if name not in deduped:
+            deduped.append(name)
+    if not deduped:
+        return list(DEFAULT_STT_PROVIDER_CHAIN)
+    if deduped == [_LAST_RESORT_PROVIDER]:
+        return deduped
+    if _LAST_RESORT_PROVIDER in deduped:
+        deduped.remove(_LAST_RESORT_PROVIDER)
+    deduped.append(_LAST_RESORT_PROVIDER)
+    return deduped
+
+
 # ADR-0101 §3.3.5 / Issue #2536 / PR-E: «unclear cooldown» живёт в
 # едином OccasionGate (см. core/occasion.py). Импортируем типы на
 # уровне модуля: ``OccasionGate`` создаётся в ``__init__`` (default, если
@@ -250,7 +290,8 @@ from rob_box_voice.core.occasion import (
     VerdictKind,
 )
 from rob_box_voice.core import echo_window  # noqa: E402 — как соседние импорты после блока try/except
-from rob_box_voice.core.stt_utterance import fill_respeaker_utterance, final_provider
+from rob_box_voice.core.stt_utterance import fill_respeaker_utterance, final_provider, phrase_hypotheses
+from rob_box_core.stt_hypotheses import NO_HYPOTHESES  # noqa: E402 — как соседние импорты
 from rob_box_voice.core.utterance_id import compute_utterance_id
 from rob_box_voice import robot_profile  # noqa: E402 — как соседние импорты
 from rob_box_voice.core.yandex_stt_segments import YandexSegmentCollector, text_kept_on_deadline
@@ -568,6 +609,9 @@ class STTNode(Node):
         # speaker_analysis). None для Vosk fallback. Сбрасывается на старте
         # каждой фразы в speech_audio_callback.
         self._last_speaker_tag: Optional[str] = None
+        # #4017 шаг C1 — гипотезы (уверенность, другие тексты) последнего
+        # прохода Yandex; в Utterance идут, только если фразу принял Yandex.
+        self._last_hypotheses = NO_HYPOTHESES
 
         # Issue #1160 — Prometheus metrics server (этап 1).
         # Порт 9111 — стандартный для stt_node (см. observability/__init__.py).
@@ -639,7 +683,10 @@ class STTNode(Node):
         )
         if exc.code() == grpc.StatusCode.DEADLINE_EXCEEDED:
             self._reset_yandex_channel()
-        return _map_grpc_error(exc, self.yandex_timeout_s, segments)
+        mapped = _map_grpc_error(exc, self.yandex_timeout_s, segments)
+        if isinstance(mapped, STTDeadlineFinal):
+            self._last_hypotheses = segments.hypotheses()
+        return mapped
 
     def _reset_yandex_channel(self) -> None:
         """Открыть новый канал Yandex STT сразу, старый отпустить в фоне (issue #2924, #4135).
@@ -818,6 +865,7 @@ class STTNode(Node):
         # _recognize_yandex заполнит его из speaker_analysis; Vosk fallback
         # (без speaker-анализа) оставит None — профиль не создаётся.
         self._last_speaker_tag = None
+        self._last_hypotheses = NO_HYPOTHESES  # #4017 C1: гипотезы — только этой фразы
         # Фиксируем старт фразы (окно «замолчал → акцепт»).
         self._phrase_started_at = time.monotonic()
 
@@ -1115,7 +1163,7 @@ class STTNode(Node):
         ``__init__`` в CC-бюджете 20, а дефолты цепочки и MiniMax сами по
         себе дают полтора десятка ветвей.
         """
-        self.provider_chain: list = self._normalize_provider_chain(
+        self.provider_chain: list = _normalize_provider_chain(
             [str(p) for p in (self.get_parameter("stt_provider_chain").value or [])],
             logger=self.get_logger(),
         )
@@ -1177,42 +1225,6 @@ class STTNode(Node):
         self._minimax_stt_lock = threading.Lock()
         self._minimax_stt_initialized = False
         self._last_effective_provider: Optional[str] = None
-
-    @staticmethod
-    def _normalize_provider_chain(chain, logger=None) -> list:
-        """Привести цепочку к инвариантам (аналог tts_node, issue #1083).
-
-        Инварианты:
-
-        * только известные провайдеры (:data:`KNOWN_STT_PROVIDERS`);
-        * без дубликатов, порядок первого вхождения сохраняется;
-        * ``vosk`` — всегда последний (офлайновый последний рубеж);
-        * пустая/битая цепочка → :data:`DEFAULT_STT_PROVIDER_CHAIN`.
-
-        Осознанное исключение: цепочка ровно из одного ``vosk`` —
-        легитимный офлайн-режим (робот в поле без сети), её не трогаем.
-        """
-        deduped: list = []
-        for name in chain or []:
-            name = str(name).strip().lower()
-            if name not in KNOWN_STT_PROVIDERS:
-                if name and logger is not None:
-                    logger.warning(
-                        f"⚠️ stt_provider_chain: неизвестный провайдер "
-                        f"{name!r} — игнорирую "
-                        f"(известные: {sorted(KNOWN_STT_PROVIDERS)})"
-                    )
-                continue
-            if name not in deduped:
-                deduped.append(name)
-        if not deduped:
-            return list(DEFAULT_STT_PROVIDER_CHAIN)
-        if deduped == [_LAST_RESORT_PROVIDER]:
-            return deduped
-        if _LAST_RESORT_PROVIDER in deduped:
-            deduped.remove(_LAST_RESORT_PROVIDER)
-        deduped.append(_LAST_RESORT_PROVIDER)
-        return deduped
 
     def _ensure_minimax_provider(self):
         """Лениво собрать MiniMax STT-клиент. ``None`` — провайдер не настроен.
@@ -1709,6 +1721,8 @@ class STTNode(Node):
         # закрыл стрим» — 23.09 этого не было в логе, и причину пришлось
         # выводить по косвенному признаку (не сработал ранний «бульк»).
         response_count = 0
+        # #4017 C1: оборванный стрим гипотез не оставляет (и чужих от прошлого прохода тоже).
+        self._last_hypotheses = NO_HYPOTHESES
         # Issue #2365 Phase 2: gRPC-ошибка стрима прилетает ЗДЕСЬ, при
         # итерации, а не на вызове RecognizeStreaming — тот лишь открывает
         # стрим. До 21.09.2026 цикл не был обёрнут, поэтому реальный код
@@ -1758,6 +1772,7 @@ class STTNode(Node):
             )
 
         final_text = segments.text()
+        self._last_hypotheses = segments.hypotheses()
         # Issue #1477 — телеметрия по фазе: partials/finals/eou;
         # #2891 — число склеенных сегментов; #2931 — события стрима на INFO:
         # без них «робот» из начала фразы пропал, а чем именно (partial без
@@ -1766,7 +1781,9 @@ class STTNode(Node):
         self.get_logger().info(
             f"📊 [#2931] yandex phase={phase} partials={partial_count} "
             f"eou={eou_events} segments={segments.segment_count} "
-            f"stream=[{segments.trace()}] final={final_text!r}"
+            f"stream=[{segments.trace()}] final={final_text!r} "
+            f"confidence_raw={list(segments.final_confidences)} "
+            f"hypotheses={self._last_hypotheses}"
         )
 
         result_text = None
@@ -1848,6 +1865,7 @@ class STTNode(Node):
                 now_s=time.time(),
                 speaker_tag=self._last_speaker_tag or "",
                 provider=provider,
+                hypotheses=phrase_hypotheses(provider, self._last_hypotheses),
             )
         )
         self.get_logger().info(f"📤 Опубликовал результат: {text}")
