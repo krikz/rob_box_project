@@ -283,14 +283,27 @@ def moving_mux(probe: Sequence[Event], since_sim: float, until_sim: float) -> Li
 def halt_violations(probe: Sequence[Event], grace_s: float) -> Tuple[List[str], List[Event]]:
     """Нарушения «провал цели → робот стоит»: для каждой NavigateToPose в ABORTED/CANCELED через ``grace_s`` (sim)
     нет активного FollowPath и нет ненулевой команды на выходе twist_mux до следующей цели.
+    Учитывает только цели, наблюдавшиеся активными в этой пробе, с полным окном grace до следующей цели.
     Возвращает (нарушения, терминальные события NavigateToPose)."""
     navs = kinds(probe, "NAV_STATUS")
-    terminal = [e for e in navs if e.fields.get("status") in TERMINAL_FAIL]
+    observed = set()
+    terminal = []
+    for e in navs:
+        goal = e.fields.get("goal")
+        if e.fields.get("status") in ACTIVE:
+            observed.add(goal)
+        elif e.fields.get("status") in TERMINAL_FAIL and goal in observed:
+            terminal.append(e)
+            observed.discard(goal)
     bad = []
+    checked = []
     for e in terminal:
         t0 = _sim(e) + grace_s
         nxt = [_sim(n) for n in navs if _sim(n) > _sim(e) and n.fields.get("status") in ACTIVE]
         t1 = min(nxt) if nxt else math.inf
+        if t1 <= t0:
+            continue
+        checked.append(e)
         active = follow_active_at(probe, t0)
         if active:
             bad.append(
@@ -304,7 +317,7 @@ def halt_violations(probe: Sequence[Event], grace_s: float) -> Tuple[List[str], 
                 f"после {e.fields.get('status')} (sim={_sim(e):.2f}) выход twist_mux ≠ 0: {len(moving)} команд, "
                 f"первая sim={_sim(m):.2f} v={m.fields.get('v')} w={m.fields.get('w')}"
             )
-    return bad, terminal
+    return bad, checked
 
 
 def v_orphan_synthetic(probe: Sequence[Event], watchdog: Sequence[Event], grace_s: float) -> Verdict:

@@ -173,6 +173,56 @@ def test_tool_halt_not_triggered_without_failure():
     assert vd.v_tool_halt(probe, 2.0).status == vd.NOT_TRIGGERED
 
 
+@pytest.mark.parametrize("verdict", [vd.v_tool_halt, lambda p, g: vd.v_orphan_natural(p, [], g)])
+def test_halt_ignores_replayed_terminal_before_current_goal(verdict):
+    """Ночь 09.11: transient-local CANCELED старой цели ошибочно обвинил новый FollowPath (#4435)."""
+    probe = vd.parse_probe(
+        [
+            pr(858.722, "NAV_STATUS", goal="3442e84f", status="CANCELED"),
+            pr(858.792, "NAV_STATUS", goal="89360a90", status="EXECUTING"),
+            pr(858.812, "FP_STATUS", goal="4070df4b", status="EXECUTING"),
+            pr(859.862, "FP_STATUS", goal="d15a7809", status="EXECUTING"),
+            pr(859.862, "FP_STATUS", goal="4070df4b", status="ABORTED"),
+            pr(860.8, "MUX", v="+0.15", w="+0.0"),
+            pr(918.272, "FP_STATUS", goal="d15a7809", status="SUCCEEDED"),
+            pr(918.302, "NAV_STATUS", goal="89360a90", status="SUCCEEDED"),
+            pr(918.302, "NAV_RESULT", status="SUCCEEDED"),
+        ]
+    )
+    assert verdict(probe, 2.0).status == vd.NOT_TRIGGERED
+
+
+def test_tool_halt_replayed_terminal_alone_is_not_a_checked_failure():
+    probe = vd.parse_probe([pr(0, "NAV_STATUS", goal="old", status="CANCELED")])
+    assert vd.v_tool_halt(probe, 2.0).status == vd.NOT_TRIGGERED
+
+
+def test_tool_halt_next_goal_before_grace_has_no_stop_window():
+    probe = _fail_then(
+        [
+            pr(10.1, "FP_STATUS", goal="f1", status="CANCELED"),
+            pr(10.2, "NAV_STATUS", goal="n2", status="EXECUTING"),
+            pr(10.3, "FP_STATUS", goal="f2", status="EXECUTING"),
+            pr(12.1, "MUX", v="+0.2", w="+0.0"),
+        ]
+    )
+    assert vd.v_tool_halt(probe, 2.0).status == vd.NOT_TRIGGERED
+
+
+def test_tool_halt_observed_failure_after_replay_still_fails_on_orphan():
+    probe = vd.parse_probe(
+        [
+            pr(0, "NAV_STATUS", goal="old", status="CANCELED"),
+            pr(0.1, "NAV_STATUS", goal="current", status="EXECUTING"),
+            pr(0.2, "FP_STATUS", goal="f1", status="EXECUTING"),
+            pr(1, "NAV_STATUS", goal="current", status="ABORTED"),
+            pr(4, "MUX", v="+0.15", w="+0.0"),
+        ]
+    )
+    assert vd.v_tool_halt(probe, 2.0).status == vd.FAIL
+    assert vd.v_orphan_natural(probe, [], 2.0).status == vd.FAIL
+
+
 GOAL = "0123456789abcdef0123456789abcdef"
 
 
