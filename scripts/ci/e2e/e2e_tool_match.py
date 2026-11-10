@@ -83,8 +83,8 @@ __all__ = ["TOOL_NAME_RE", "invocation_markers", "tool_invoked", "strip_llm_requ
 # (issue #2406 — verbal-only LLM answers на discovery/inquiry-шагах).
 # Все маркеры — lower-case: вызывающий сравнивает с логом в lower-case.
 VOICE_CYCLE_MARKERS = (
-    # Финальная строка dialogue_node после LLM/TTS цикла (есть spoken='...').
-    "✅ [turn] process_input returned:",
+    # TTS-запрос v2: финальный текст отправлен владельцу речи.
+    "🔊 tts:",
     # tool_calls перечисление (speak_text = голосовой ответ, не молчание).
     "'speak_text'",
     # mcp_server финальный ack по speak_text.
@@ -188,7 +188,7 @@ def first_voice_cycle_position(logs: str) -> int | None:
     Используется для assertion «discovery tool был вызван ДО первого
     голосового ответа» (issue #2406). Маркеры те же, что в soft-hint
     ``check_gate1_aggregate``: 'tts finished' / 'speak_text' в списке tools=
-    или финальная строка ``✅ [turn] process_input returned:``.
+    или TTS-запрос ``🔊 TTS:``.
     """
     low = logs.lower()
     return _first_marker_position(low, list(VOICE_CYCLE_MARKERS))
@@ -216,35 +216,8 @@ def first_voice_cycle_position(logs: str) -> int | None:
 # А шаг n207 при этом объявлен в сценарии как проверка связки
 # «голос → профиль → факты, а не просто вежливый ответ». Проверки не было.
 #
-# Лечение: ключевые слова ищутся ТОЛЬКО в том, что робот произнёс.
-# Три канала, все три реально встречаются в логе живого робота
-# (замер 22.09.2026, Vision Pi):
-#
-#   tts_node:    🔊 TTS: speech_id=..., voice=default, lang=default, text='Добрый день, Денис!'
-#   mcp_server:  📥 Запрос выполнения: speak_text с параметрами {'text': 'Лицо знакомое...', 'animation': 'happy'}
-#   dialogue_node: ✅ [turn] process_input returned: spoken='Привет! У меня всё отлично...'[:60]
-#
-# Третий канал обрезан до 60 символов — он идёт последним и нужен как
-# подстраховка, когда TTS не доехал (строка TTS ещё не легла в лог).
-#
-# Issue #2902 (E2E акт 2c, run 35912751803): третий канал — это текст LLM
-# ДО решения dialogue_node, а не то, что прозвучало. После #2828/#2888 ответ
-# хода часто ЗАМЕНЯЕТСЯ вопросом о личности:
-#
-#   dialogue_node: ✅ [turn] process_input returned: spoken='Здравствуй, Борис! Очень приятно познакомиться…'[:60]
-#   dialogue_node: 👥 [issue #2828] ответ хода заменён переспросом про личность: 'Здравствуй, Борис! Очень приятно позн…'
-#   tts_node:      🔊 TTS: … text='Твой голос очень похож на голос, который я …'
-#
-# Вслух прозвучал только вопрос, а must_not_say «Приятно познакомиться»
-# сработал по spoken= — ложный FAIL. Поэтому spoken= теперь подстраховка
-# ПО ХОДУ: ход — это отрезок лога от строки «process_input returned» до
-# следующей такой строки (ответ хода озвучивается/глушится ПОСЛЕ неё).
-# spoken= хода считается речью, только если в его отрезке
-#   * нет ни одной строки реального озвучивания (🔊 TTS / speak_text) —
-#     если TTS есть, речь берётся из TTS, это и есть «что прозвучало»;
-#   * нет маркера «этот ответ не озвучен» (_NOT_VOICED_MARKERS ниже).
-# Иначе (TTS в окне ещё не доехал, маркера нет) — spoken= считается речью,
-# как раньше: строже, а не мягче.
+# Ключевые слова ищутся только в TTS-запросах и вызовах speak_text.
+# Исторический spoken= из удалённого движка v1 не доказывает озвучивание (#4354).
 _VOICED_PATTERNS = (
     # 🔊 TTS: ... text='...'  — text идёт последним полем строки. repr()
     # берёт двойные кавычки, если в тексте есть апостроф: без второй ветки
@@ -255,44 +228,6 @@ _VOICED_PATTERNS = (
         r"speak_text с параметрами \{'text':\s*(?:'(.*?)'|\"(.*?)\")\s*[,}]"
     ),
 )
-# process_input returned: spoken='...'[:60]  /  🔍 [handle_result] spoken='...' (len=NN)
-_SPOKEN_FALLBACK_RE = re.compile(
-    r"spoken=(?:'(.*?)'|\"(.*?)\")(?:\[:\d+\]|\s*\(len=\d+\))"
-)
-#: Строка, открывающая отрезок хода (dialogue_node._run_turn).
-_TURN_RESULT_MARK = "process_input returned:"
-#: Подстроки строк лога, признающих «spoken= этого хода вслух НЕ звучал».
-#: Копии f-строк src/rob_box_voice/rob_box_voice/dialogue_node.py; все
-#: печатаются ПОСЛЕ «process_input returned» того же хода.
-_NOT_VOICED_MARKERS = (
-    # _deliver_turn_result (#2828): вместо ответа прозвучал переспрос. Сюда
-    # же сводятся придержанные вопросы #2747 («переспрашиваю про личность …
-    # held_until_turn_end=True») и #2888 («identity question by robot …
-    # held_until_turn_end=True»): они печатаются ДО строки результата
-    # (т.е. в отрезке прошлого хода), а замену фиксирует именно эта строка.
-    "ответ хода заменён переспросом про личность",
-    # _deliver_turn_result (#2908): вместо ответа прозвучала просьба
-    # повторить после отказа регистрации. НЕ маркер вопроса о личности
-    # (_IDENTITY_QUESTION_MARKERS) — ретрай такого шага по-прежнему можно.
-    "ответ хода заменён просьбой повторить",
-    # _handle_result: маркер завершения «done» вместо ответа.
-    "skip auto-TTS",
-    # #988: ответ уже прозвучал через speak_text — финальный текст не звучит.
-    "final text skipped (anti-duplicate)",
-    "skipping auto-TTS of final text",
-    # DJ-переход: свободный текст не озвучивается.
-    "свободный текст НЕ озвучиваю",
-    # #1882: внутренний монолог модели заглушён.
-    "planning-narration hard-mute",
-    # Служебка: [SYSTEM…]/[CRITICAL…] не озвучиваются.
-    "Служебный текст LLM не озвучиваем",
-    # #2760: вызов тула текстом — не озвучен, ушёл ретрай.
-    "вызов тула ТЕКСТОМ вместо tool-call",
-    # #2175: пересказ system-шаблона — не озвучен, ушёл ретрай.
-    "regurgitates system-template в spoken",
-    # #2874: ответ хода отозван гуардом / ход ушёл в синхронный ретрай.
-    "ответ хода не озвучиваю",
-)
 
 
 def _voiced_texts(line: str) -> list:
@@ -301,17 +236,6 @@ def _voiced_texts(line: str) -> list:
         for m in pat.finditer(line):
             out.append(m.group(1) if m.group(1) is not None else m.group(2))
     return out
-
-
-def _turn_segments(logs: str) -> list:
-    """Строки лога, нарезанные на отрезки ходов. Отрезок 0 — всё до первой
-    строки «process_input returned» (окно шага может начаться посреди хода)."""
-    segments: list = [[]]
-    for line in logs.splitlines():
-        if _TURN_RESULT_MARK in line:
-            segments.append([])
-        segments[-1].append(line)
-    return segments
 
 
 def robot_speech(logs: str) -> str:
@@ -326,21 +250,7 @@ def robot_speech(logs: str) -> str:
     """
     if not logs:
         return ""
-    voiced: list = []
-    fallback: list = []
-    for seg in _turn_segments(logs):
-        seg_voiced: list = []
-        for line in seg:
-            seg_voiced.extend(_voiced_texts(line))
-        voiced.extend(seg_voiced)
-        if seg_voiced or any(
-            mk in line for line in seg for mk in _NOT_VOICED_MARKERS
-        ):
-            continue
-        for line in seg:
-            for m in _SPOKEN_FALLBACK_RE.finditer(line):
-                fallback.append(m.group(1) if m.group(1) is not None else m.group(2))
-    return "\n".join(voiced + fallback)
+    return "\n".join(text for line in logs.splitlines() for text in _voiced_texts(line))
 
 
 #: Строка ``expected_keywords`` / ``must_not_say`` с этим префиксом -- регэксп по речи робота, а не подстроки.
@@ -636,35 +546,9 @@ def identify_failures(acc: dict, logs: str) -> list:
     return failures
 
 
-# ── Issue #2902: ретрай шага, который изменил состояние робота ───────────────
-#
-# E2E акт 2c, run 35912751803, шаг n722_boris_intro_conflict
-# (retry_acceptance: 1). Попытка 1: Борис зарегистрирован отдельным профилем
-# (ADR-0127), робот задал переспрос «Твой голос очень похож…». Попытка 2
-# проиграла ту же реплику «Меня зовут Борис…» поверх ЭТОГО состояния —
-# dialogue_node честно прочитал её как ответ на переспрос
-# («👥 [issue #2828] ответ на переспрос: …»), register_speaker не вызывался,
-# и шаг упал уже по другой причине. Ретрай проверял не то, что написано в
-# шаге.
-#
-# Почему запрет, а не сброс состояния перед повтором: откатить то, что
-# сделала попытка 1, харнессу нечем. Профиль лежит в speakers.db, а боевая
-# /data общая с живыми людьми — стирать её перед повтором нельзя; ожидание
-# ответа на переспрос живёт в памяти dialogue_node, ручки «забудь вопрос» у
-# ноды нет (а код нод этот фикс не трогает). Сброс «почти всего» дал бы
-# повтор поверх частично грязного состояния — то же враньё, только тише.
-#
-# Почему по уликам, а не по виду шага: ретрай регистрационного шага,
-# который ничего не изменил (регистрацию отклонили — no_utterance_context,
-# #2846), безопасен и полезен: LLM недетерминирована (04d4ba2f6). Запрещаем
-# ровно тогда, когда в логе попытки есть доказательство смены состояния.
-
-#: Робот задал вопрос о личности и ждёт ответа (dialogue_node.py).
-_IDENTITY_QUESTION_MARKERS = (
-    "[issue #2747] переспрашиваю про личность",
-    "[issue #2828] ответ хода заменён переспросом про личность",
-    "[issue #2888] identity question by robot",
-)
+# ── Issue #2902: не повторять шаг поверх изменённого состояния ──────────────
+# Принятая регистрация уже записана в БД. Озвученный вопрос следующего
+# шага меняет смысл повторной реплики. Харнесс не откатывает это состояние.
 
 
 def retry_block_reason(logs: str, next_when_robot_asked: str = "") -> str:
@@ -678,7 +562,6 @@ def retry_block_reason(logs: str, next_when_robot_asked: str = "") -> str:
 
     * регистрация голоса принята или склеена (профиль уже в базе — повтор
       проверял бы повторную регистрацию, а не первую);
-    * робот задал вопрос о личности (следующая реплика читается как ответ);
     * речь попытки совпала с ``when_robot_asked`` следующего шага — сценарий
       сам объявил этот вопрос сменой хода: следующий шаг на него отвечает.
     """
@@ -693,8 +576,6 @@ def retry_block_reason(logs: str, next_when_robot_asked: str = "") -> str:
         )
     if reg["merged"]:
         reasons.append("speaker registration merged into an existing profile")
-    if any(mk in logs for mk in _IDENTITY_QUESTION_MARKERS):
-        reasons.append("robot asked an identity question and awaits the answer")
     pattern = (next_when_robot_asked or "").strip()
     if pattern:
         try:
