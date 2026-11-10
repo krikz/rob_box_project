@@ -91,23 +91,30 @@ def _member_path(member: tarfile.TarInfo) -> PurePosixPath:
 
 
 def extract_bundle(archive: Path, dest: Path) -> int:
-    """Распаковать бандл в пустой `dest`: только обычные файлы и каталоги, без ссылок и выхода наружу."""
+    """Распаковать бандл в пустой `dest`: только обычные файлы и каталоги, без ссылок и выхода наружу.
+
+    Битый gzip/tar — StageError("bundle_unpack"), а не traceback: тик остаётся штатным stage_error."""
     total = 0
-    with tarfile.open(archive, "r:gz") as tf:
-        for member in tf:
-            rel = _member_path(member)
-            target = dest.joinpath(*rel.parts)
-            if member.isdir():
-                target.mkdir(parents=True, exist_ok=True)
-                continue
-            total += member.size
-            if total > MAX_BUNDLE_UNPACKED:
-                raise StageError("bundle_unsafe", f"распакованный бандл больше {MAX_BUNDLE_UNPACKED} байт")
-            target.parent.mkdir(parents=True, exist_ok=True)
-            src = tf.extractfile(member)
-            with target.open("wb") as fh:
-                shutil.copyfileobj(src, fh)
-            target.chmod(0o755 if member.mode & 0o111 else 0o644)
+    try:
+        with tarfile.open(archive, "r:gz") as tf:
+            for member in tf:
+                rel = _member_path(member)
+                target = dest.joinpath(*rel.parts)
+                if member.isdir():
+                    target.mkdir(parents=True, exist_ok=True)
+                    continue
+                total += member.size
+                if total > MAX_BUNDLE_UNPACKED:
+                    raise StageError("bundle_unsafe", f"распакованный бандл больше {MAX_BUNDLE_UNPACKED} байт")
+                target.parent.mkdir(parents=True, exist_ok=True)
+                src = tf.extractfile(member)
+                if src is None:
+                    raise StageError("bundle_unpack", f"элемент бандла {member.name!r} не читается")
+                with target.open("wb") as fh:
+                    shutil.copyfileobj(src, fh)
+                target.chmod(0o755 if member.mode & 0o111 else 0o644)
+    except tarfile.TarError as exc:
+        raise StageError("bundle_unpack", f"бандл не распаковывается: {exc}") from exc
     return total
 
 

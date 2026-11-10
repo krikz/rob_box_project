@@ -140,6 +140,40 @@ def test_substituted_bundle_blob_is_refused(tmp_path, world):
     assert not (cfg.releases_root / "2026.11.09-1").exists()
 
 
+def _republish_with_bundle(world, name: str, role: str, payload: bytes) -> None:
+    """Опубликовать релиз заново, заменив бандл роли (sha256 честный — из подписанного release.yaml)."""
+    import gzip
+
+    blob = gzip.compress(payload, mtime=0)
+    release = world.release_dict(name)
+    release["roles"][role]["bundle"] = {
+        "file": rf.bundle_file_name(role, name),
+        "sha256": rf.sha256_hex(blob),
+        "size": len(blob),
+    }
+    data = rf.dumps(release)
+    sig = minisign.sign(data, world.secret, f"release:{name}")
+    for r in rf.ROLES:
+        bundle = blob if r == role else world.bundles[r]
+        world.transport.blobs[digest_of(bundle)] = bundle
+    world.transport.blobs[digest_of(data)] = data
+    world.transport.blobs[digest_of(sig.encode())] = sig.encode()
+    manifest = rf.artifact_manifest(data, sig.encode(), release)
+    for ref in (name, release["channel"]):
+        world.transport.manifests[(rf.RELEASE_REPO, ref)] = manifest
+    world.release = release
+
+
+def test_bundle_that_is_not_a_tar_is_stage_error_not_crash(tmp_path, world):
+    _republish_with_bundle(world, "2026.11.09-1", "vision", b"not a tar at all")
+    cfg = _cfg(tmp_path, world, mode=Mode.STAGE)
+    rec = tick(cfg, _deps(world, FakeDocker()))
+
+    assert rec["state"] == "stage_error"
+    assert rec["reason"].startswith("bundle_unpack"), rec["reason"]
+    assert not (cfg.releases_root / "2026.11.09-1").exists()
+
+
 def test_failed_pull_is_reported_and_retried(tmp_path, world):
     cfg = _cfg(tmp_path, world, mode=Mode.STAGE)
     bad = world.images["vision"]["vision-svc1"]
