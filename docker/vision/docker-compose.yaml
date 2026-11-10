@@ -86,11 +86,18 @@ services:
     # Скобки в `[d]epthai` не дают pgrep найти собственный `sh -c`,
     # в командной строке которого тоже есть шаблон. start_period 60s даём
     # на холодный старт стека + USB-инициализацию DepthAI.
+    #
+    # #4532: процесса мало. Камеру переткнули — camera_node жив на мёртвом XLink
+    # (X_LINK_ERROR), кадров нет, а health был `healthy`, restarts=0. Теперь вторым
+    # условием heartbeat кадров (oak_frame_watchdog.py: подписка на топик кадров,
+    # порог OAK_FRAME_STALE_SEC=30 с, льгота OAK_START_GRACE_SEC=90 с после старта).
+    # Лечит сам сторож: без кадров он выходит, start_oak_d.sh гасит launch,
+    # `restart: unless-stopped` поднимает контейнер (autoheal в репо нет).
     healthcheck:
-      test: ["CMD-SHELL", "pgrep -f '[d]epthai_ros_driver/camera_node' || exit 1"]
+      test: ["CMD-SHELL", "pgrep -f '[d]epthai_ros_driver/camera_node' && python3 /scripts/oak_frame_watchdog.py check || exit 1"]
       interval: 30s
       timeout: 10s
-      start_period: 60s
+      start_period: 90s
       retries: 3
     labels:
       logging: "promtail"
