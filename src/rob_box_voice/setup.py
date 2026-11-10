@@ -40,10 +40,8 @@ setup(
     ],
     install_requires=[
         'setuptools',
-        # ADR-0167 Ш3: ядро диалога (rob_box_core, rob_box_harness и другие модули ядра)
-        # ставится pip-пакетом rob-box-dialog-core из krikz/rob_box_dialog_core по тегу,
-        # а не colcon'ом из src/ (см. docker/sound/voice_assistant/Dockerfile).
-        'rob-box-dialog-core>=0.7.0',
+        'rob_box_core>=0.1.0',
+        'rob_box_harness>=0.1.0',
     ],
     zip_safe=True,
     maintainer='krikz',

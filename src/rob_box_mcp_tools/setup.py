@@ -25,13 +25,7 @@ setup(
             ['resource/' + package_name]),
         ('share/' + package_name, ['package.xml']),
     ],
-    install_requires=[
-        'setuptools',
-        # ADR-0167 Ш3: rob_box_mcp_tools импортирует ядро (rob_box_core, rob_box_dialog,
-        # rob_box_dialog_host, rob_box_music, rob_box_harness, rob_box_llm) — оно ставится
-        # pip-пакетом rob-box-dialog-core по тегу, а не colcon'ом из src/.
-        'rob-box-dialog-core>=0.7.0',
-    ],
+    install_requires=['setuptools'],
     # Пакет читает свои ресурсы с диска (slice_policy.yaml) — из zip-egg
     # это работает не на всех путях установки, поэтому явно не zip-safe.
     zip_safe=False,
