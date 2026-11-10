@@ -31,5 +31,9 @@ def test_dialog_sources_copied_before_script_runs():
     lines = DOCKERFILE.read_text(encoding="utf8").splitlines()
     run = next(i for i, l in enumerate(lines) if l.startswith("RUN python3 /tmp/fix_brass_scd.py"))
     before = "\n".join(lines[:run])
-    for pkg in ("rob_box_core", "rob_box_dialog", "rob_box_dialog_host", "rob_box_voice"):
+    # ADR-0167 Ш3: ядро диалога (rob_box_core, rob_box_dialog, rob_box_dialog_host)
+    # больше не копируется из src/ — оно ставится pip-пакетом rob-box-dialog-core.
+    # fix_brass_scd.py импортирует только rob_box_voice.core.renardo_synthdef_patches
+    # (а тот — только re/pathlib, stdlib), поэтому из исходников нужен лишь rob_box_voice.
+    for pkg in ("rob_box_voice",):
         assert "COPY src/%s/%s " % (pkg, pkg) in before, pkg
