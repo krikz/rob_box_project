@@ -81,7 +81,7 @@ network:
       optional: true
       access-points:
         "ROS2":
-          password: "1234567890"
+          password: "<пароль Wi-Fi — вводится при настройке, в репо не хранится>"
       dhcp4-overrides:
         route-metric: 600  # Низкий приоритет
       nameservers:

@@ -5,13 +5,13 @@
 # Универсальный скрипт настройки узлов РОББОКС
 #
 # Использование:
-#   curl -fsSL https://raw.githubusercontent.com/krikz/rob_box_project/develop/scripts/setup_node.sh | bash
+#   curl -fsSL https://raw.githubusercontent.com/krikz/rob_box_project/develop/scripts/setup/setup_node.sh | bash
 #
 # Или с указанием типа узла:
-#   curl -fsSL https://raw.githubusercontent.com/krikz/rob_box_project/develop/scripts/setup_node.sh | bash -s vision
-#   curl -fsSL https://raw.githubusercontent.com/krikz/rob_box_project/develop/scripts/setup_node.sh | bash -s main
-#   curl -fsSL https://raw.githubusercontent.com/krikz/rob_box_project/develop/scripts/setup_node.sh | bash -s sensor-hub
-#   curl -fsSL https://raw.githubusercontent.com/krikz/rob_box_project/develop/scripts/setup_node.sh | bash -s sound
+#   curl -fsSL https://raw.githubusercontent.com/krikz/rob_box_project/develop/scripts/setup/setup_node.sh | bash -s vision
+#   curl -fsSL https://raw.githubusercontent.com/krikz/rob_box_project/develop/scripts/setup/setup_node.sh | bash -s main
+#   curl -fsSL https://raw.githubusercontent.com/krikz/rob_box_project/develop/scripts/setup/setup_node.sh | bash -s sensor-hub
+#   curl -fsSL https://raw.githubusercontent.com/krikz/rob_box_project/develop/scripts/setup/setup_node.sh | bash -s sound
 #
 # Что делает скрипт:
 #   1. Определяет тип узла (интерактивно или через параметр)
@@ -368,7 +368,17 @@ clone_repository() {
     log_step "Клонирование репозитория rob_box_project"
     
     REPO_DIR="$HOME/rob_box_project"
-    
+
+    # ROBBOX_SETUP_NO_GIT=1 — взять уже лежащую копию как есть (прогон в чистой ОС, проверка ветки).
+    if [ "${ROBBOX_SETUP_NO_GIT:-0}" = 1 ]; then
+        if [ -d "$REPO_DIR/scripts/setup" ]; then
+            log_warning "ROBBOX_SETUP_NO_GIT=1: $REPO_DIR не обновляю из GitHub"
+            return 0
+        fi
+        log_error "ROBBOX_SETUP_NO_GIT=1, но в $REPO_DIR нет копии репозитория"
+        exit 1
+    fi
+
     if [ -d "$REPO_DIR" ]; then
         log_warning "Репозиторий уже существует в $REPO_DIR"
         log_info "Обновляем до последней версии..."
@@ -535,30 +545,39 @@ MOTDEOF
 install_robbox_aliases() {
     log_step "Установка РОББОКС Bash Aliases"
     
-    ALIASES_FILE="$HOME/rob_box_project/scripts/robbox_aliases.sh"
-    
+    # Файл переехал в scripts/maintenance/ — по старому пути scripts/robbox_aliases.sh шаг молча
+    # пропускался, и 09.11 ни на одной из трёх Pi строки алиасов в ~/.bashrc не было (замер #4375).
+    ALIASES_FILE="$HOME/rob_box_project/scripts/maintenance/robbox_aliases.sh"
+    touch "$HOME/.bashrc"
+
     # Проверка существования файла
     if [ ! -f "$ALIASES_FILE" ]; then
         log_warning "Файл алиасов не найден: $ALIASES_FILE"
         log_warning "Пропускаю установку алиасов..."
         return
     fi
-    
+
+    # Старая строка с несуществующим путём — переписать на новый.
+    if grep -q "rob_box_project/scripts/robbox_aliases.sh" "$HOME/.bashrc"; then
+        sed -i 's#rob_box_project/scripts/robbox_aliases.sh#rob_box_project/scripts/maintenance/robbox_aliases.sh#g' "$HOME/.bashrc"
+        log_info "Путь к алиасам в ~/.bashrc исправлен на scripts/maintenance/"
+    fi
+
     # Проверка, не установлены ли уже
-    if grep -q "robbox_aliases.sh" "$HOME/.bashrc"; then
+    if grep -q "scripts/maintenance/robbox_aliases.sh" "$HOME/.bashrc"; then
         log_success "РОББОКС aliases уже установлены!"
         return
     fi
-    
+
     log_info "Добавление РОББОКС aliases в .bashrc..."
-    
+
     cat >> "$HOME/.bashrc" << 'ALIASEOF'
 
 # ═══════════════════════════════════════════════════════════════════════════
 # 🤖 РОББОКС Bash Aliases
 # ═══════════════════════════════════════════════════════════════════════════
-if [ -f ~/rob_box_project/scripts/robbox_aliases.sh ]; then
-    source ~/rob_box_project/scripts/robbox_aliases.sh
+if [ -f ~/rob_box_project/scripts/maintenance/robbox_aliases.sh ]; then
+    source ~/rob_box_project/scripts/maintenance/robbox_aliases.sh
 fi
 ALIASEOF
     
@@ -579,8 +598,33 @@ setup_autostart() {
     log_step "Настройка автозапуска Docker контейнеров"
     
     SERVICE_FILE="/etc/systemd/system/$SERVICE_NAME.service"
-    
-    log_info "Создание systemd service..."
+    local repo="$HOME/rob_box_project"
+    local unit_src="$repo/host/$NODE_TYPE/$SERVICE_NAME.service"
+
+    # Откуда берётся юнит robbox-<роль>.service (#4375), один источник на роль:
+    #   vision — setup_vision_pi.sh (Restart, health-timer); его же переставляет L: Deploy and Verify
+    #            через reinstall_vision_pi_systemd.sh, поэтому зовём тот же скрипт, а не пишем свой;
+    #   <роль> с файлом host/<роль>/robbox-<роль>.service в репо — ставим файл как есть
+    #            (sound — #4531, main — host/main/robbox-main.service из develop); этот же каталог host/<роль>/ едет в бандле релиза (ADR-0168);
+    #   иначе — простой юнит ниже (запасной путь, если файла роли нет).
+    if [ "$NODE_TYPE" = vision ] && [ -f "$repo/scripts/setup/reinstall_vision_pi_systemd.sh" ]; then
+        log_info "Юнит Vision — из setup_vision_pi.sh (тот же, что ставит деплой)"
+        bash "$repo/scripts/setup/reinstall_vision_pi_systemd.sh"
+        log_success "Автозапуск настроен (robbox-vision.service + health-timer)"
+        return
+    fi
+    if [ -f "$unit_src" ]; then
+        log_info "Юнит из репо: host/$NODE_TYPE/$SERVICE_NAME.service"
+        grep -q "^User=$USER$" "$unit_src" \
+            || log_warning "в $unit_src пользователь не $USER — юнит ставится как есть, проверьте User= и пути"
+        sudo install -m 0644 "$unit_src" "$SERVICE_FILE"
+        sudo systemctl daemon-reload
+        sudo systemctl enable "$SERVICE_NAME.service"
+        log_success "Автозапуск настроен из $unit_src"
+        return
+    fi
+
+    log_info "Создание systemd service (в host/$NODE_TYPE/ своего юнита нет)..."
     sudo tee "$SERVICE_FILE" > /dev/null << SERVICEEOF
 [Unit]
 Description=ROBBOX $NODE_NAME Docker Containers
@@ -591,7 +635,9 @@ Requires=docker.service
 Type=oneshot
 RemainAfterExit=yes
 WorkingDirectory=$DOCKER_COMPOSE_DIR
-ExecStart=/usr/bin/docker compose up -d
+# --pull never: старт при загрузке не зависит от сети и registry (образы кладёт деплой),
+# как в robbox-vision.service из setup_vision_pi.sh (его сверяет L: Deploy and Verify).
+ExecStart=/usr/bin/docker compose up -d --pull never
 ExecStop=/usr/bin/docker compose down
 User=$USER
 
@@ -856,7 +902,14 @@ setup_vision_node() {
     fi
 
     # Hailo AI HAT (PCIe)
-    setup_hailo_ai_hat
+    if [ "${ROBBOX_SETUP_SKIP_HW:-0}" = 1 ]; then
+        log_warning "ROBBOX_SETUP_SKIP_HW=1: Hailo AI HAT пропущен (нужно железо)"
+    else
+        setup_hailo_ai_hat
+    fi
+
+    setup_docker_registry
+    setup_chrony_role vision
 
     # zram-своп: Vision Pi держит 13 контейнеров на 8 ГБ без свопа (#2621).
     # Функция общая — её можно звать и из setup_main_node, если Main Pi
@@ -865,11 +918,14 @@ setup_vision_node() {
 }
 
 setup_main_node() {
-    log_info "Настройка Main Pi..."
-    log_info "Main Pi будет управлять:"
-    log_info "  - Zenoh router (DDS мост)"
-    log_info "  - Navigation stack (в разработке)"
-    log_success "Базовая настройка завершена"
+    log_info "Настройка Main Pi: zenoh-роутер, навигация, ros2_control (CAN)..."
+    setup_docker_registry
+    # Main Pi — сервер времени для Vision и Sound (ADR-0137).
+    setup_chrony_role main
+    # CAN для VESC (host/main/install_host_scripts.sh → can-setup.service) ставится отдельно:
+    # без CAN-шилда юнит падает при каждой загрузке. На живом Main Pi он есть (замер 09.11).
+    log_info "CAN (VESC): sudo bash ~/rob_box_project/host/main/install_host_scripts.sh — только с CAN-шилдом"
+    log_success "Базовая настройка Main Pi завершена"
 }
 
 setup_sensor_hub() {
@@ -910,14 +966,53 @@ setup_sensor_hub() {
 #      при изменении.
 #   7. chrony (--role sound): время ведёт Main Pi, как на Vision Pi (ADR-0137).
 
+# Пароль Wi-Fi бортовой сети (решение Шифу 09.11): не хранится ни в репо, ни в файле на хосте.
+# Его вводит человек в консоли (read -s, без эха, в лог не пишется). Без TTY (curl | bash) —
+# только через переменную окружения на один запуск: ROBBOX_WIFI_PSK=… bash setup_node.sh sound.
+# Пароль печатается в stdout (для подстановки), сообщения — в stderr.
+WIFI_SSID="${ROBBOX_WIFI_SSID:-ROS2}"
+
+read_wifi_psk() {
+    if [ -n "${ROBBOX_WIFI_PSK:-}" ]; then
+        printf '%s' "$ROBBOX_WIFI_PSK"
+        return 0
+    fi
+    if [ ! -t 0 ]; then
+        log_error "Нужен пароль Wi-Fi сети \"$WIFI_SSID\" для netplan, а терминала нет (curl | bash или без TTY)." >&2
+        log_error "Передайте его на один запуск, он нигде не сохранится:" >&2
+        log_error "  ROBBOX_WIFI_PSK='<пароль>' bash ~/rob_box_project/scripts/setup/setup_node.sh sound" >&2
+        log_error "(пробел перед командой не даст ей попасть в историю bash при HISTCONTROL=ignorespace)" >&2
+        return 1
+    fi
+    local psk=""
+    read -r -s -p "Пароль Wi-Fi сети \"$WIFI_SSID\" (ввод не отображается): " psk
+    echo "" >&2
+    if [ -z "$psk" ]; then
+        log_error "Пустой пароль — netplan не записан" >&2
+        return 1
+    fi
+    printf '%s' "$psk"
+}
+
+# Экранирование строки для YAML в двойных кавычках: \ и ".
+yaml_dq() {
+    local v="${1//\\/\\\\}"
+    printf '%s' "${v//\"/\\\"}"
+}
+
 setup_sound_network() {
     log_step "Настройка сети Sound Pi: eth0 (metric 100) + wlan0 (metric 600)"
 
-    local netplan_file="/etc/netplan/01-netcfg.yaml"
+    local netplan_file="${ROBBOX_NETPLAN_FILE:-/etc/netplan/01-netcfg.yaml}"
     if [ -f "$netplan_file" ] && sudo grep -q "route-metric: 100" "$netplan_file"; then
         log_info "$netplan_file уже содержит eth0 metric 100 — пропускаю"
     else
-        sudo tee "$netplan_file" > /dev/null << 'NETPLANEOF'
+        local psk_yaml ssid_yaml
+        psk_yaml="$(read_wifi_psk)" || return 1
+        psk_yaml="$(yaml_dq "$psk_yaml")"
+        ssid_yaml="$(yaml_dq "$WIFI_SSID")"
+        # umask 077: файл с паролем ни на миг не читаем для всех (раньше tee создавал его 0644, потом chmod).
+        (umask 077; sudo tee "$netplan_file" > /dev/null) << NETPLANEOF
 # ROBBOX Sound Pi (ADR-0159). Копия схемы Vision Pi:
 # eth0 — основной канал данных (metric 100), wlan0 — резерв/SSH (metric 600).
 # При подключённом кабеле весь трафик идёт через eth0, без кабеля — через wlan0.
@@ -938,13 +1033,14 @@ network:
       dhcp-identifier: mac
       optional: true
       access-points:
-        "ROS2":
-          password: "1234567890"
+        "${ssid_yaml}":
+          password: "${psk_yaml}"
       dhcp4-overrides:
         route-metric: 600
       nameservers:
         addresses: [8.8.8.8, 8.8.4.4]
 NETPLANEOF
+        unset psk_yaml
         sudo chmod 600 "$netplan_file"
         log_info "Применяю netplan (SSH по wlan0 не рвётся: адрес wlan0 не меняется)..."
         if sudo netplan apply; then
@@ -1023,13 +1119,15 @@ UDEVEOF
     log_success "udev-правило установлено/обновлено: $rule"
 }
 
-# Локальный registry на katana: на Vision Pi это insecure-registries в
-# daemon.json; на Sound Pi 19.10.2026 файл ставили руками.
-SOUND_LOCAL_REGISTRY="${SOUND_LOCAL_REGISTRY:-10.1.1.249:5000}"
-SOUND_DAEMON_JSON="${SOUND_DAEMON_JSON:-/etc/docker/daemon.json}"
+# Локальный registry на katana — insecure-registries в daemon.json. Нужен всем трём
+# ролям: compose тянет ${SERVICE_IMAGE_PREFIX}=10.1.1.249:5000/krikz/rob_box (docker/<роль>/.env).
+# До #4375 шаг был только у Sound Pi, а другого установщика daemon.json в репо нет (замер 09.11:
+# на всех трёх Pi в daemon.json есть 10.1.1.249:5000). SOUND_* принимаются как старые имена.
+LOCAL_REGISTRY="${LOCAL_REGISTRY:-${SOUND_LOCAL_REGISTRY:-10.1.1.249:5000}}"
+DAEMON_JSON="${DAEMON_JSON:-${SOUND_DAEMON_JSON:-/etc/docker/daemon.json}}"
 
-setup_sound_docker_registry() {
-    log_step "Docker: insecure-registry $SOUND_LOCAL_REGISTRY (daemon.json)"
+setup_docker_registry() {
+    log_step "Docker: insecure-registry $LOCAL_REGISTRY (daemon.json)"
     local tmp verdict
     tmp="$(mktemp)"
     # Python, а не sed: daemon.json может уже содержать чужие ключи
@@ -1038,7 +1136,7 @@ setup_sound_docker_registry() {
     # своего пользователя — root не открывает на запись чужой файл в /tmp
     # (fs.protected_regular=2 на Sound Pi, замер 20.10.2026), sudo нужен только
     # для install ниже.
-    if ! verdict="$(python3 - "$SOUND_DAEMON_JSON" "$SOUND_LOCAL_REGISTRY" "$tmp" << 'PYEOF'
+    if ! verdict="$(python3 - "$DAEMON_JSON" "$LOCAL_REGISTRY" "$tmp" << 'PYEOF'
 import json, os, sys
 path, registry, out = sys.argv[1:4]
 cfg = {}
@@ -1058,36 +1156,38 @@ else:
 PYEOF
     )"; then
         rm -f "$tmp"
-        log_error "$SOUND_DAEMON_JSON не прочитан или не разобран как JSON — не трогаю, поправьте руками"
+        log_error "$DAEMON_JSON не прочитан или не разобран как JSON — не трогаю, поправьте руками"
         return 1
     fi
     if [ "$verdict" = "unchanged" ]; then
         rm -f "$tmp"
-        log_success "$SOUND_LOCAL_REGISTRY уже в $SOUND_DAEMON_JSON — docker не перезапускаю"
+        log_success "$LOCAL_REGISTRY уже в $DAEMON_JSON — docker не перезапускаю"
         return 0
     fi
-    sudo mkdir -p "$(dirname "$SOUND_DAEMON_JSON")"
-    sudo install -m 0644 "$tmp" "$SOUND_DAEMON_JSON"
+    sudo mkdir -p "$(dirname "$DAEMON_JSON")"
+    sudo install -m 0644 "$tmp" "$DAEMON_JSON"
     rm -f "$tmp"
-    log_info "Записан $SOUND_DAEMON_JSON, перезапускаю docker (контейнеры на узле перезапустятся)..."
+    log_info "Записан $DAEMON_JSON, перезапускаю docker (контейнеры на узле перезапустятся)..."
     sudo systemctl restart docker
-    log_success "insecure-registries: $SOUND_LOCAL_REGISTRY"
+    log_success "insecure-registries: $LOCAL_REGISTRY"
 }
 
-# chrony на хосте (ADR-0137): Sound Pi — клиент Main Pi, как Vision Pi.
+# chrony на хосте (ADR-0137): Main Pi — сервер времени, Vision и Sound — его клиенты.
+# До #4375 шаг был только у Sound Pi (замер 09.11: chrony стоит на всех трёх, ставили руками).
 # Скрипт сам идемпотентен; его код 2/3 (не синхронизировано / chronyd не
 # отвечает) не должен ронять остальную настройку узла — только предупреждаем.
-setup_sound_chrony() {
-    log_step "Синхронизация времени: chrony --role sound"
+setup_chrony_role() {
+    local role="$1"
+    log_step "Синхронизация времени: chrony --role $role"
     local script="$HOME/rob_box_project/scripts/maintenance/setup_chrony.sh"
     if [ ! -f "$script" ]; then
         log_warning "$script не найден — chrony не настроен"
         return 0
     fi
-    if sudo bash "$script" --role sound; then
-        log_success "chrony настроен (role=sound)"
+    if sudo bash "$script" --role "$role"; then
+        log_success "chrony настроен (role=$role)"
     else
-        log_warning "setup_chrony.sh --role sound завершился с ошибкой — проверьте: bash $script --check"
+        log_warning "setup_chrony.sh --role $role завершился с ошибкой — проверьте: bash $script --check"
     fi
 }
 
@@ -1114,11 +1214,15 @@ setup_sound_node() {
         log_warning "alsa-utils не установился — диагностика звука только из контейнера"
     fi
 
-    setup_sound_network
-    setup_sound_boot_config
-    setup_sound_udev
-    setup_sound_docker_registry
-    setup_sound_chrony
+    if [ "${ROBBOX_SETUP_SKIP_HW:-0}" = 1 ]; then
+        log_warning "ROBBOX_SETUP_SKIP_HW=1: netplan, config.txt и udev Sound Pi пропущены (нужно железо)"
+    else
+        setup_sound_network
+        setup_sound_boot_config
+        setup_sound_udev
+    fi
+    setup_docker_registry
+    setup_chrony_role sound
 
     # Каталоги ресурсного пака — те же пути, что на Vision Pi, чтобы
     # docker/sound/docker-compose.yaml монтировал их без переименований
@@ -1142,6 +1246,38 @@ setup_custom_node() {
     log_info "Пользовательская настройка..."
     log_info "Вы можете настроить этот узел вручную"
     log_info "Репозиторий склонирован в ~/rob_box_project"
+}
+
+# ═══════════════════════════════════════════════════════════════════════════
+# АГЕНТ ДОСТАВКИ CHUANGONG (ADR-0168, фаза B)
+# ═══════════════════════════════════════════════════════════════════════════
+# Ставит host/chuangong/install.sh: python3-yaml, python3-cryptography, код агента,
+# /opt/rob_box/releases, /var/lib/chuangong, /etc/chuangong/chuangong.env (режим observe), юниты.
+# Таймер НЕ включается, пока не задан ROBBOX_ENABLE_CHUANGONG=1. Включённый агент только смотрит
+# релиз в реестре и докладывает; ничего не скачивает и не переключает. Ключ проверки подписи —
+# CHUANGONG_PUBKEY_FILE (без него агент докладывает fetch_error: no_pubkey).
+
+setup_chuangong() {
+    case "$NODE_TYPE" in
+        main|vision|sound) ;;
+        *) return 0 ;;
+    esac
+    log_step "Агент доставки chuangong (ADR-0168, observe)"
+    local installer="$HOME/rob_box_project/host/chuangong/install.sh"
+    if [ ! -f "$installer" ]; then
+        log_warning "$installer не найден — агент не установлен"
+        return 0
+    fi
+    local robot_id
+    robot_id="$(sed -n 's/^ROBOT_ID=//p' "$DOCKER_COMPOSE_DIR/.env" 2>/dev/null | head -n 1)"
+    local args=(--node "$NODE_TYPE" --robot-id "${robot_id:-RBXU100001}")
+    [ "${ROBBOX_ENABLE_CHUANGONG:-0}" = 1 ] && args+=(--enable)
+    [ -n "${CHUANGONG_PUBKEY_FILE:-}" ] && args+=(--pubkey "$CHUANGONG_PUBKEY_FILE")
+    if sudo CHUANGONG_USER="$USER" bash "$installer" "${args[@]}"; then
+        log_success "chuangong установлен (таймер: $([ "${ROBBOX_ENABLE_CHUANGONG:-0}" = 1 ] && echo включён || echo не включён))"
+    else
+        log_warning "Установка chuangong завершилась с ошибкой — остальная настройка узла не затронута"
+    fi
 }
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -1235,10 +1371,14 @@ main() {
     install_robbox_aliases
     setup_autostart
     setup_node_specific
+    setup_chuangong
     
     # Итоги
     print_summary
 }
 
 # Запуск главной функции с первым аргументом (тип узла)
-main "$1"
+# ROBBOX_SETUP_SOURCE_ONLY=1 — только определить функции (тесты: scripts/setup/tests/test_setup_node_wifi_psk.py).
+if [ "${ROBBOX_SETUP_SOURCE_ONLY:-0}" != 1 ]; then
+    main "$1"
+fi
