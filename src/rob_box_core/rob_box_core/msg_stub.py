@@ -32,7 +32,11 @@ _SCALAR_DEFAULTS: Dict[str, Any] = {
     "string": "",
 }
 _INT_TYPES = ("int8", "uint8", "int16", "uint16", "int32", "uint32", "int64", "uint64")
-_LINE = re.compile(r"^(?P<type>[\w/]+(?:\[\])?)\s+(?P<name>\w+)(?:\s*=\s*(?P<value>.+))?$")
+#: Строка ``.msg``: ``тип имя``, константа ``тип ИМЯ=значение`` или поле со значением по умолчанию
+#: ``тип имя значение`` (rosidl: ``float32 confidence -1.0``).
+_LINE = re.compile(
+    r"^(?P<type>[\w/]+(?:\[\])?)\s+(?P<name>\w+)(?:\s*=\s*(?P<value>.+)|\s+(?P<default>\S.*))?$"
+)
 
 
 def _parse_constant(type_name: str, raw: str) -> Any:
@@ -73,6 +77,9 @@ def _class_from_msg(name: str, text: str, registry: Dict[str, type]) -> type:
         type_name, field, value = match["type"], match["name"], match["value"]
         if value is not None:
             constants[field] = _parse_constant(type_name, value)
+        elif match["default"] is not None:
+            default = _parse_constant(type_name, match["default"])
+            fields[field] = lambda default=default: default
         else:
             fields[field] = _default_for(type_name, registry)
 

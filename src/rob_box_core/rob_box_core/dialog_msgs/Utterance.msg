@@ -21,3 +21,8 @@ builtin_interfaces/Time started_at
 builtin_interfaces/Time ended_at
 # Провайдер STT (yandex, vosk, telegram).
 string provider
+# Уверенность STT в лучшей гипотезе (text), 0..1; -1 - неизвестно (провайдер не дал, Telegram, оператор).
+# Значение по умолчанию: издатель без поля даёт -1, а не «ноль уверенности» (#4017 шаг C1).
+float32 confidence -1.0
+# Другие гипотезы текста фразы, лучшие первыми, без text; пусто - провайдер не дал (#4017 шаг C1).
+string[] alternatives
