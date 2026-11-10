@@ -42,9 +42,8 @@ import logging
 import threading
 import time
 import uuid
-from pathlib import Path
 from types import MappingProxyType
-from typing import Any, Awaitable, Callable, Dict, List, Mapping, Optional
+from typing import Any, Awaitable, Callable, Dict, List, Mapping, Optional, Sequence
 
 import rclpy
 from rclpy.node import Node
@@ -67,8 +66,8 @@ from rob_box_dialog.e2e_events import open_events
 from rob_box_dialog.execute import transport_timeouts
 from rob_box_dialog.interrupt import TurnsInFlight, on_interrupt
 from rob_box_dialog.memory import profiled_person
-from rob_box_dialog.profile import load_profile
 from rob_box_dialog.pickup_parties import rights_speaker
+from rob_box_dialog.prompts import personality_prompt, telegram_prompt
 from rob_box_dialog.voice_warmth import WarmVoices
 from rob_box_dialog.respond import ActionResult
 from rob_box_dialog.scenes import HOLD, RESET, RESUME, SceneDirector, apply_control
@@ -90,15 +89,16 @@ from rob_box_mcp_tools.voice_request import REQUEST_TOPIC as VOICE_REQUEST_TOPIC
 from .core import echo_window, greeting_window, identity_question
 from .core import dialog_v2_parity as parity
 from .core import plan_host
+from . import robot_profile
 from .core.dialog_metrics import llm_metrics, record_interrupt
 from .core.backlog_voice import note_backlog_voice
-from .core.dialog_v2_ports import CallCounter, V2Ports, assemble_llm
-from .core.music_player_state import MUSIC_EVENT_TOPIC, MUSIC_STATE_TOPIC, parse_music_state
+from rob_box_dialog_host.dialog_v2_ports import CallCounter, V2Ports, assemble_llm
+from rob_box_dialog_host.music_player_state import MUSIC_EVENT_TOPIC, MUSIC_STATE_TOPIC, parse_music_state
 from .core.provider_reporter import ProviderStateReporter, on_provider_states, reporter_context
-from .core.speaker_memory import SpeakerMemory
+from rob_box_dialog_host.speaker_memory import SpeakerMemory
 from .core.turn_context import tts_voices
 from .core.utterance_speaker import UtteranceSpeakerRegistry
-from .tts_voice_registry import robot_default_voice
+from rob_box_dialog_host.tts_voice_registry import robot_default_voice
 from rob_box_dialog.music_state import MusicStateMemory
 from rob_box_dialog.window_reset import REASON_E2E_OFF, REASON_E2E_ON
 
@@ -113,18 +113,18 @@ def declare_params(node: Any) -> None:
     """Параметры ноды (``dialog_node.yaml``; ключи API — из окружения, как у ``dialogue_node``)."""
     node.declare_parameter("metrics_port", 9100)  # Prometheus-экспортер (#4328); 0 - выключен
     node.declare_parameter("llm_providers", "deepseek,minimax")
-    node.declare_parameter("system_prompt_file", "master_prompt_compact.txt")
     # Профиль продукта (ADR-0167 Ш1б): робот без своего профиля не стартует - нейтральных умолчаний ядра (вейк
-    # выключен) роботу нельзя, он отвечал бы на каждую фразу мастерской.
-    node.declare_parameter("profile_path", "/config/assistant.yaml")
+    # выключен, персона без имени) роботу нельзя, он отвечал бы на каждую фразу мастерской. Промпт Личности - основа
+    # ядра с персоной профиля (Ш1б-3), своего файла промпта у Личности нет.
+    node.declare_parameter("profile_path", robot_profile.path())  # /config/assistant.yaml (env ROB_BOX_PROFILE)
     node.declare_parameter("temperature", 0.0)
     node.declare_parameter("max_tokens", 0)
     # Номинальный провайдер TTS, пока tts_node не сказал фактический (паузы MiniMax выступления, #3901).
     node.declare_parameter("tts_provider", "minimax")
     node.declare_parameter("e2e_db_path", "")
-    # Телеграм-агент (§9.2, PR-12a): своя цепочка и персона; значения — бывшие мёртвые llm_* telegram_bot.yaml (V27).
+    # Телеграм-агент (§9.2, PR-12a): своя цепочка; значения — бывшие мёртвые llm_* telegram_bot.yaml (V27). Промпт -
+    # основа ядра с именем продукта из профиля (ADR-0167 Ш1б-4), своего файла промпта у телеграма нет.
     node.declare_parameter("telegram_llm_providers", "deepseek,minimax")
-    node.declare_parameter("telegram_system_prompt_file", "telegram_chat_prompt.txt")
     node.declare_parameter("telegram_temperature", 0.7)
     node.declare_parameter("telegram_max_tokens", 0)
     # Стартовая фраза (#1003, перенос v1 #3912): через N с после старта; 0 — выкл; пустой текст — случайная фраза.
@@ -154,12 +154,6 @@ def _settings(node: Node, prefix: str = "") -> Optional[LLMSettings]:
     return LLMSettings(temperature=temperature or None, max_tokens=max_tokens or None)
 
 
-def _prompt_dir() -> Path:
-    from ament_index_python.packages import get_package_share_directory  # noqa: PLC0415
-
-    return Path(get_package_share_directory("rob_box_voice")) / "prompts"
-
-
 def start_metrics(node: Any) -> bool:
     """Prometheus-экспортер ноды на порту ``metrics_port`` (#4328, 9100; 0 - выключен), как у tts/stt/audio."""
     port = int(node.get_parameter("metrics_port").value or 0)
@@ -173,15 +167,22 @@ def start_metrics(node: Any) -> bool:
     return started
 
 
+def agent_prompt(node: Any, agent: str) -> str:
+    """Основа системного промпта агента - из данных ядра и профиля робота (``node.product_profile``, ADR-0167): у
+    Личности - основа с персоной (Ш1б-3), у телеграма - основа чата с именем продукта (Ш1б-4)."""
+    if agent == kn.AGENTS[0]:
+        return personality_prompt(node.product_profile.persona)
+    return telegram_prompt(node.product_profile.name)
+
+
 def build_llm(node: Any, counter: CallCounter, agent: str = kn.AGENTS[0]) -> tuple:
     """LLM-цепочка v2 агента: тот же ``build_llm_chain``, все провайдеры — в режиме команд моста (валидатор знает
     агента), вызовы считаются. У каждого агента своя цепочка — своё здоровье провайдеров."""
     prefix = _prefix(agent)
     raw = str(node.get_parameter(f"{prefix}llm_providers").value)
-    return assemble_llm(raw.split(","), counter, prompt_dir=_prompt_dir(),
-                        system_prompt_file=str(node.get_parameter(f"{prefix}system_prompt_file").value),
+    return assemble_llm(raw.split(","), counter, prompt=agent_prompt(node, agent),
                         settings=_settings(node, prefix), agent=agent, log=node.get_logger().info,
-                        busy=lambda: plan_host.perform_busy(node))
+                        busy=lambda: plan_host.perform_busy(node), owners=node.product_profile.owners)
 
 
 #: Скрытый контекст хода для MCP-тулов (``llm_adapter.TURN_CONTEXT_ARGS``): ``heard_text`` — реплика хода (опора
@@ -212,14 +213,15 @@ async def in_tool_turn(context: Mapping[str, Any], work: Awaitable[Any]) -> Any:
     return await work
 
 
-def voice_turn_context(speakers: Any, uid: str, text: str) -> Dict[str, Any]:
+def voice_turn_context(speakers: Any, uid: str, text: str,
+                       wake_words: Optional[Sequence[str]] = None) -> Dict[str, Any]:
     """Контекст хода голосом для MCP-тулов (``tool_turn_context``): реплика и её id, а для гейта ``register_speaker``
     (#2925, ADR-0127 §8) - как человек назвал себя в реплике (``self_intro_name``, код по её словам) и кем голос ЭТОЙ
     реплики уверенно узнан (``known_speaker_name``, из реестра биометрии по ``utterance_id``, читается при вызове тула:
     биометрия приходит, пока идёт LLM). Без этого гейт в v2 молчал и «запомни, что Саша любит чай» голосом Нины
     переименовывало бы живой профиль (#4054). Ход чата Telegram ключей гейта не получает: диктора-голоса у него нет."""
     context: Dict[str, Any] = {"utterance_id": uid or None, "heard_text": text}
-    intro = named_self(text)
+    intro = named_self(text, wake_words=wake_words)
     if intro:
         context["self_intro_name"] = intro
     if uid:
@@ -351,7 +353,8 @@ def build_chats(node: Any, tools: Any, intent_pub: Any, wake: Any, hold: Any = l
     chat_tools = build_chat_tools(node, tools)
 
     def make_engine(chat_id: int) -> TurnEngine:
-        session = Session(kn.TEXT_CHANNEL_AGENT, clock=time.time, session_id=channel_ref(chat_id))
+        session = Session(kn.TEXT_CHANNEL_AGENT, clock=time.time, session_id=channel_ref(chat_id), wake_words=wake,
+                          owners=node.product_profile.owners)
         base = V2Ports(node, llm, counter, chat_tools, agent=kn.TEXT_CHANNEL_AGENT, intent_pub=intent_pub, log=log,
                        epoch=lambda: session.snapshot.epoch, on_ask=llm_metrics(llm))
         ports = ChatPorts(base, chat_id, send, log, hold, robot, progress)
@@ -380,7 +383,12 @@ class DialogNode(Node):
         self._turn_lock = asyncio.Lock()
         self._turns = TurnsInFlight()
         self._session_pub = self.create_publisher(SessionState, identity_question.SESSION_TOPIC, _LATCHED)
-        self._session = Session("personality", clock=time.time)
+        # Вейки, персона и владельцы тулов - из профиля робота (ADR-0167 Ш1б, Ш1в): таблица одна на адресацию, сессию
+        # и правила хода; владельцы - на срез тулов сессии и мост команд.
+        self.product_profile = robot_profile.load(str(self.get_parameter("profile_path").value))
+        self._wake = list(self.product_profile.wake_personality)
+        self._session = Session("personality", clock=time.time, wake_words=self._wake,
+                                owners=self.product_profile.owners)
         self._session.subscribe(functools.partial(identity_question.publish, self))
         self._shift = ShiftLog()  # журнал смены (#4076): живёт дольше сессии разговора
         self._session.subscribe(self._shift.observe)
@@ -388,7 +396,6 @@ class DialogNode(Node):
         reply_pub = self.create_publisher(Float32, echo_window.REPLY_WINDOW_TOPIC, 10)  # окно ответа → stt_node (#4509)
         self.announce_reply_window = functools.partial(publish_seconds, reply_pub)
         self._scenes = SceneDirector(self._session, self._restore_voice, robot_default_voice())
-        self._wake = list(load_profile(str(self.get_parameter("profile_path").value)).wake_personality)
         self._backlog = Backlog()
         self._speakers = UtteranceSpeakerRegistry()
         self._music = MusicStateMemory()
@@ -479,7 +486,7 @@ class DialogNode(Node):
             return
         greeting_window.take_reply(self, decision.source, heard)  # окно после приветствия снимает первая фраза
         self._interrupt(decision.text, uid, "utterance")
-        turn = in_tool_turn(voice_turn_context(self._speakers, uid, decision.text), self._turn(decision))
+        turn = in_tool_turn(voice_turn_context(self._speakers, uid, decision.text, self._wake), self._turn(decision))
         self.last_turn = self._turns.add(asyncio.run_coroutine_threadsafe(turn, self._loop), uid)
 
     def _on_chat(self, chat_id: int, text: str, now: float) -> None:

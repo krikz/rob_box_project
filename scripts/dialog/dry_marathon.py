@@ -35,14 +35,13 @@ from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 _HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(_HERE))
 
-from dry_stand import REPO, DryStand, new_workdir  # noqa: E402
+from dry_stand import REPO, DryStand, new_workdir, robot_owners, robot_prompt  # noqa: E402
 
 sys.path.insert(0, str(REPO / "scripts" / "ci" / "e2e"))
 import e2e_tool_match as etm  # noqa: E402
 
 SCENARIOS = REPO / ".github" / "e2e" / "scenarios" / "night"
 MANIFEST = SCENARIOS / "night_marathon_manifest.json"
-PROMPT_DIR = REPO / "src" / "rob_box_voice" / "prompts"
 #: Один шаг тратит не больше стольких вызовов LLM (итерации ``query`` + повтор моста): запас до стопа по бюджету.
 STEP_CALLS_RESERVE = 8
 
@@ -324,7 +323,7 @@ def role_busy(stand: DryStand) -> Any:
     """Каталог голосов ролей стенда, как ``plan_host.perform_busy`` у робота: русские голоса провайдера стенда без
     голоса робота (рассказчика), с полом; выступлений-хостов у стенда нет - ``cast`` и активного сегмента нет."""
     from rob_box_dialog.command import Busy  # noqa: PLC0415
-    from rob_box_voice.tts_voice_registry import default_voice_for, gender_of, role_voices_for  # noqa: PLC0415
+    from rob_box_dialog_host.tts_voice_registry import default_voice_for, gender_of, role_voices_for  # noqa: PLC0415
 
     provider = stand.voice_provider
     robot = stand.session.snapshot.voice.applied or default_voice_for(provider)
@@ -344,14 +343,14 @@ def build_real_stand(providers: Sequence[str], workdir: Path, deadline_s: Option
     каталог голосов ролей, как у робота (``plan_host.perform_busy``): код даёт героям выступления голоса, и
     валидатор сверяет число героев с каталогом; без него голоса сегментов не решаются (марафон - как было)."""
     from rob_box_llm.provider import LLMSettings  # noqa: PLC0415
-    from rob_box_voice.core.dialog_v2_ports import CallCounter, assemble_llm  # noqa: PLC0415
+    from rob_box_dialog_host.dialog_v2_ports import CallCounter, assemble_llm  # noqa: PLC0415
 
     relay, counter = LogRelay(), CallCounter()
     holder: List[DryStand] = []
     busy = (lambda: role_busy(holder[0])) if role_voices else None  # зовётся в ходе - стенд уже собран
-    llm, system = assemble_llm(providers, counter, prompt_dir=PROMPT_DIR,
-                               system_prompt_file="master_prompt_compact.txt",
-                               settings=LLMSettings(model=model) if model else None, log=relay, busy=busy)
+    llm, system = assemble_llm(providers, counter, prompt=robot_prompt(),
+                               settings=LLMSettings(model=model) if model else None, log=relay, busy=busy,
+                               owners=robot_owners())
     if system_patch:
         system = system_patch(system)
     stand = DryStand(llm, counter, system, workdir, variant=variant, router=router, memory_path=memory_path,

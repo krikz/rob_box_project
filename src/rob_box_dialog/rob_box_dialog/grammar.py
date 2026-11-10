@@ -54,7 +54,7 @@ class Tier1Command:
 def match(text: str, snapshot: SessionSnapshot, voices: Voices = ()) -> Optional[Tier1Command]:
     """Tier-1 команда во фразе (вейк уже снят или ещё стоит — без разницы) или ``None``."""
     silenced = snapshot.top("Silence") is not None
-    body = strip_wake_word(text or "")
+    body = strip_wake_word(text or "", snapshot.wake_words)
     for rule in (_voice_step, _stop, _music_off, _new_session, _unsilence, _volume, _voice, _prosody, _answer, _show_queue,
                  _repeat):
         command = rule((text or "") if rule is _stop else body, snapshot, voices)
@@ -194,7 +194,7 @@ def _stop(text: str, snapshot: SessionSnapshot, _voices: Voices) -> Optional[Tie
     ``halt`` — стоп и движения) — тоже ``stop_all``, даже при названной речи. Оговорка «музыку оставь» без названной
     речи («стой, а музыку оставь», «хватит, бит не трогай») — ``stop_all``/``silence`` с ``args.keep_music``: гаснет всё,
     кроме музыки (движение — тоже). Покрытая охватом часть в ``rest`` не попадает."""
-    call = stop_command(text)
+    call = stop_command(text, snapshot.wake_words)
     if call.verdict not in (STOP_CLEAR, STOP_DISPUTED):
         return None
     scope = call.scope

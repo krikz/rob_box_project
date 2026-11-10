@@ -71,6 +71,7 @@ import sys
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parent.parent
 CATALOG_FILE = REPO_ROOT / "src" / "rob_box_core" / "rob_box_core" / "bridge_protocol.py"
+ROBOT_VOICE_PRESETS = REPO_ROOT / "docker" / "sound" / "config" / "voice_presets.yaml"
 OUT_FILE = (
     REPO_ROOT
     / "src" / "rob_box_quest" / "webxr_client" / "src" / "wire"
@@ -92,7 +93,11 @@ def _load_catalog_module():
     non-stdlib install_requires.
     """
     import importlib.util
+    import os
 
+    # Белый список стилей зеркала - каталог пресетов профиля робота (ADR-0167 Ш1а-2): у ядра своего нет, без env
+    # VOICE_PRESETS / VOICE_LANGUAGES вышли бы пустыми. Env, если задан, побеждает (как у хостов).
+    os.environ.setdefault("ROB_BOX_VOICE_PRESETS_YAML", str(ROBOT_VOICE_PRESETS))
     spec = importlib.util.spec_from_file_location(
         "rob_box_core.bridge_protocol", str(CATALOG_FILE)
     )

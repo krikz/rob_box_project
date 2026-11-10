@@ -7,12 +7,18 @@
 Только вид ``tempo``: тембр и ``develop`` без названной музыки бывают про лицо, свет и рассказ (``TrackEdit.bare``), их
 ворота не открывают — это отдельное решение."""
 
+from pathlib import Path
+
 import pytest
 
 from rob_box_dialog.knowledge import WAKE_SLIP_TWEAK_ENDINGS
+from rob_box_dialog.profile import load_profile
 from rob_box_dialog.words import slipped_wake_rest
 from rob_box_music import knowledge as kn
 
+#: Таблица вейков профиля робота (ADR-0167 Ш1б-2б): искажённый вейк судится по ней, у ядра своих вейков нет.
+ROBOT_WAKE = load_profile(Path(__file__).resolve().parents[3] / "docker" / "sound" / "config"
+                          / "assistant.yaml").wake_personality
 TEMPO_WORDS = tuple(dict.fromkeys(
     word for edit in kn.TRACK_EDITS.values() if edit.group == "tempo" for word in edit.words))
 
@@ -26,5 +32,5 @@ def test_every_tempo_edit_word_wakes_after_a_slipped_wake_under_music_only(entry
     """Запись таблицы - основа («ускор») или слово («быстрее»): хоть одна словоформа «запись + окончание» будит после
     «роботы» под музыкой, и ни одна не будит без музыки."""
     forms = [entry + ending for ending in WAKE_SLIP_TWEAK_ENDINGS]
-    assert any(slipped_wake_rest(f"роботы {form}", music_playing=True) for form in forms), entry
-    assert not any(slipped_wake_rest(f"роботы {form}") for form in forms), entry
+    assert any(slipped_wake_rest(f"роботы {form}", ROBOT_WAKE, music_playing=True) for form in forms), entry
+    assert not any(slipped_wake_rest(f"роботы {form}", ROBOT_WAKE) for form in forms), entry

@@ -16,10 +16,13 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import time
+from pathlib import Path
 from types import SimpleNamespace
 
 from rob_box_mcp_tools.engine.engine_tools import DjSetTool, RequestMusicTool
+from rob_box_voice import robot_profile
 from rob_box_voice.core.dialogue_text import strip_wake_word
 from rob_box_voice.core.media_router import MediaRouter, MediaState
 
@@ -62,11 +65,17 @@ def _tools(owner):
     return {"dj_set": dj, "request_music": RequestMusicTool(None, owner, dj, melodies=lambda ids: {})}
 
 
+#: Вейки - из профиля робота в чекауте (ADR-0167 Ш1б-2б): у ядра своих нет; env ROB_BOX_PROFILE подменяет путь.
+_PROFILE = os.environ.get(robot_profile.ENV, "").strip() or str(
+    Path(__file__).resolve().parents[3] / "docker" / "sound" / "config" / "assistant.yaml")
+_ROBOT_WAKE = robot_profile.load(_PROFILE).wake_personality
+
+
 def run(phrase: str) -> dict:
     owner = _Owner()
     tools = _tools(owner)
     t0 = time.perf_counter()
-    text = strip_wake_word(phrase)
+    text = strip_wake_word(phrase, _ROBOT_WAKE)
     plan = MediaRouter().route(text, MediaState())
     t_route = time.perf_counter() - t0
     row = {"phrase": phrase, "route_ms": round(t_route * 1000, 2)}

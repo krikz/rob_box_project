@@ -52,6 +52,21 @@ def test_one_publisher_one_message_per_frame_then_only_changes():
     assert len(sent) == 2 and sorted(_groups_of(sent[1])) == sorted(GROUP_SIZE)
 
 
+def test_single_group_frame_keeps_the_groups_own_shape_for_the_compositor_per_group_path():
+    """#4584: frame_id without a comma is read by the compositor as ONE group of its own width x height.
+    A 125x1 strip for main_display or 64x1 for a wheel was dropped with «Image size ... doesn't match group»
+    (20236 times in 3 h on the Vision Pi)."""
+    frame = Scene(SCENES['music_shades']).frame(0.3, FaceContext(bpm=118))
+    for panel, arr in frame.panels().items():
+        node = _FakeNode()
+        panels = PanelPublisher(node)
+        panels.publish(types.SimpleNamespace(panels=lambda panel=panel, arr=arr: {panel: arr}), 100.0)
+        (m,) = node.pubs[0].sent
+        (group,) = _groups_of(m)
+        w, h = GROUP_SIZE[group]
+        assert (m.width, m.height, m.step, len(m.data)) == (w, h, w * 3, w * h * 3), group
+
+
 def test_message_data_is_the_groups_wire_images_back_to_back():
     from rob_box_animations.face.face import to_wire
     from rob_box_animations.face.layout import GROUP_OF

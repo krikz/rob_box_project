@@ -44,7 +44,7 @@ def names(tools) -> list:
 
 
 def snapshot(*, music: bool = False, silence: bool = False):
-    session = Session(kn.AGENTS[0])
+    session = Session(kn.AGENTS[0], owners=dry_stand.robot_owners())  # срез - на владельцах профиля робота (Ш1в)
     if music:
         session.set_music(MusicStateRef("playing", track_id="t1", title="трек"))
     if silence:

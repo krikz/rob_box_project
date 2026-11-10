@@ -178,8 +178,8 @@ def _load_mcp_server_module():
         (f"{_PKG_NAME}.mcp_auth", {"RequestAuthenticator": _Auth}),
         (f"{_PKG_NAME}.waypoint_store", {"WaypointStore": type("WaypointStore", (), {})}),
         (f"{_PKG_NAME}.mapping_state", {"MappingState": _MappingState}),
-        ("rob_box_voice.core.voice_memory", {"VoiceMemory": type("VoiceMemory", (), {})}),
-        ("rob_box_voice.core.faq_store", {"FAQStore": type("FAQStore", (), {})}),
+        ("rob_box_dialog_host.voice_memory", {"VoiceMemory": type("VoiceMemory", (), {})}),
+        ("rob_box_dialog_host.faq_store", {"FAQStore": type("FAQStore", (), {})}),
         ("rob_box_voice.core.event_profile", {"load_event_profile": lambda *a, **kw: None}),
     ]:
         m = types.ModuleType(mod_name)
@@ -234,8 +234,8 @@ _SYS_MODULES_KEYS_TOUCHED_BY_BOOTSTRAP = (
     f"{_PKG_NAME}.waypoint_store",
     f"{_PKG_NAME}.mapping_state",
     f"{_PKG_NAME}.mcp_server",
-    "rob_box_voice.core.voice_memory",
-    "rob_box_voice.core.faq_store",
+    "rob_box_dialog_host.voice_memory",
+    "rob_box_dialog_host.faq_store",
     "rob_box_voice.core.event_profile",
 )
 

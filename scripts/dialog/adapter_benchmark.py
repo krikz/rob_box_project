@@ -44,7 +44,7 @@ from typing import Any, Mapping, Sequence
 import yaml
 
 REPO = Path(__file__).resolve().parents[2]
-_PACKAGES = ("rob_box_dialog", "rob_box_llm", "rob_box_core", "rob_box_harness", "rob_box_voice")
+_PACKAGES = ("rob_box_dialog", "rob_box_dialog_host", "rob_box_llm", "rob_box_core", "rob_box_harness", "rob_box_voice")
 for _p in (*(REPO / "src" / p for p in _PACKAGES), REPO):  # REPO первым: у rob_box_voice свой каталог scripts/
     sys.path.insert(0, str(_p))
 
@@ -253,8 +253,9 @@ BRIDGE_PERSONA = (
     "Ты голос робота Робби. К тебе обращаются словом «Робот»; фраза без него не тебе - промолчи (passed). "
     "Тулы действий: {tools}."
 )
-#: Боевой мастер-промпт робота (``system_prompt_file`` в ``dialogue_node.yaml``) — для ``--system-file``.
-MASTER_PROMPT = REPO / "src" / "rob_box_voice" / "prompts" / "master_prompt_compact.txt"
+#: Боевой промпт Личности для ``--system-file``: основа ядра с персоной профиля робота (ADR-0167 Ш1б-3); отдельного
+#: файла у робота нет - текст даёт ``dry_stand.robot_prompt()``, его и сохранить в файл.
+MASTER_PROMPT_HOWTO = "dry_stand.robot_prompt(), сохранённый в файл"
 #: Как у робота: ``minimax`` / ``deepseek`` в ``docker/sound/config/voice_assistant/dialogue_node.yaml``.
 ROBOT_TEMPERATURE, ROBOT_MAX_TOKENS = 0.7, 3000
 
@@ -362,7 +363,7 @@ async def bridge_turn(provider: LLMProvider, mode: str, extra: Mapping[str, Any]
     ``system_text`` — системный промпт (пусто — минимальный :data:`BRIDGE_PERSONA`); температура и лимит вывода —
     как в конфиге робота (без ``max_tokens`` MiniMax режет ответ на своём дефолте)."""
     from rob_box_harness.providers.reasoning import without_reasoning
-    from rob_box_voice.core.command_bridge import CommandModeLLM, judge
+    from rob_box_dialog_host.command_bridge import CommandModeLLM, judge
 
     wrapped = CommandModeLLM(provider)
     wrapped.mode = mode  # type: ignore[assignment]  # режим ячейки, а не select_mode
@@ -532,7 +533,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     ap.add_argument("--out", help="записать markdown в файл")
     ap.add_argument("--cells", help="путь моста: ячейки 'адаптер[:модель]/режим[/вариант]' через запятую")
     ap.add_argument("--retry-429", type=int, default=0, help="с --cells: повторов при 429 (паузы 10/20/30… с)")
-    ap.add_argument("--system-file", help=f"с --cells: системный промпт из файла (боевой — {MASTER_PROMPT.name})")
+    ap.add_argument("--system-file", help=f"с --cells: системный промпт из файла (боевой — {MASTER_PROMPT_HOWTO})")
     ap.add_argument("--raw", help="с --cells: JSONL, строка на ход (дописывается)")
     ap.add_argument("--json", help="с --cells/--rescore: сводка ячеек в JSON")
     ap.add_argument("--rescore", help="не звать LLM: сводка ячеек из JSONL прошлого прогона (--raw)")

@@ -4,8 +4,8 @@ import json
 
 from rob_box_core.msg_stub import install_dialog_msgs_stub
 
-from rob_box_voice.core.command_intent import KIND_BY_INTENT, command_from_intent, fill_intent
-from rob_box_voice.core.command_parser import Command, IntentType
+from rob_box_dialog_host.command_intent import KIND_BY_INTENT, command_from_intent, fill_intent
+from rob_box_dialog_host.command_parser import Command, IntentType
 
 Intent = install_dialog_msgs_stub().Intent
 

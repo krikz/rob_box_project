@@ -39,7 +39,7 @@ from rob_box_dialog.command import current_form  # noqa: E402
 from rob_box_dialog.plan.plan_events import PlanEvent  # noqa: E402
 from rob_box_dialog.command import parse  # noqa: E402
 from rob_box_llm.provider import ToolResult  # noqa: E402
-from rob_box_voice.core.command_bridge import CommandResponse, for_turn  # noqa: E402
+from rob_box_dialog_host.command_bridge import CommandResponse, for_turn  # noqa: E402
 from rob_box_voice import dialog_node as dn  # noqa: E402
 from rob_box_voice.core import plan_host  # noqa: E402
 

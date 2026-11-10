@@ -14,7 +14,7 @@ These tests pin the actual contract requested in the issue:
 
 from __future__ import annotations
 
-from rob_box_voice.core.voice_memory import VoiceMemory
+from rob_box_dialog_host.voice_memory import VoiceMemory
 
 
 def _memory(tmp_path) -> VoiceMemory:

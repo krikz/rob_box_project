@@ -13,10 +13,10 @@ from pathlib import Path
 import pytest
 import yaml
 
-from rob_box_dialog.words import DEFAULT_WAKE_WORDS
 from rob_box_voice.core import echo_window as ew
+from voice_robot_wake import ROBOT_WAKE  # noqa: E402 — тестовый профиль робота
 
-WAKE = list(DEFAULT_WAKE_WORDS)
+WAKE = list(ROBOT_WAKE)
 GRACE_S = 2.5
 
 

@@ -1,0 +1,9 @@
+# Набор «предельная скорость» (scripts/hil/speed): оверлей Nav2 на Main Pi без деплоя
+# (docs/research/2026-11-05-nav2-hil-tuning.md §5). Боевой nav2_params.yaml не трогается;
+# hil.sh off пересоздаёт nav2 без этого файла, и оверлей пропадает.
+services:
+  nav2:
+    environment:
+      - NAV2_PARAMS_OVERLAYS=${NAV2TUNE_OVERLAYS:?}
+    volumes:
+      - /tmp/hil/nav2tune:/nav2tune:ro

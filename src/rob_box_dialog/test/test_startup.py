@@ -63,8 +63,8 @@ def test_nothing_up_is_partial_listing_even_voice_not_voice_only() -> None:
     assert verdict.kind == "partial" and "stt" in verdict.down
 
 
-def test_dialog_node_and_alternatives_label_are_skipped() -> None:
-    r = _report(active=VOICE + REST, missing=["/dialog_node|/dialogue_node"])
+def test_dialog_node_is_skipped() -> None:
+    r = _report(active=VOICE + REST, missing=["/dialog_node"])
     assert assess(r).kind == "ready"
 
 

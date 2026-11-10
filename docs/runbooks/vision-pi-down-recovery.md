@@ -248,9 +248,8 @@ backlog; **не** лезть сюда без согласования с Шиф�
 ## Шаг 7 — Когда эскалация
 
 > **Порог: 10 минут без прогресса** с момента power-cycle → эскалация
-> Шифу (`@GOODWORKRINKZ` в issue #2648, плюс алерт в `#devops-oncall`
-> канал через `scripts/agent_flow/setup-devops-oncall.sh` —
-> `docs/runbooks/devops-oncall-channel.md`).
+> Шифу (`@GOODWORKRINKZ` в issue #2648; канал `#devops-oncall` и его
+> автоматика выведены, ADR-0162).
 
 Эскалация нужна, если:
 
@@ -318,11 +317,8 @@ tail -n 50 /var/log/e2e-orchestrator.log 2>/dev/null | grep -iE 'vision-pi|10\.1
   контейнеров; вероятный триггер текущего инцидента).
 - **OOM-ретро**: `docs/investigations/929-oom-findings-wip.md` (12.08,
   ретро-таблица OOM-событий voice-assistant).
-- **On-call канал**: `docs/runbooks/devops-oncall-channel.md` (для
-  алертов в `#devops-oncall` после Шага 7).
-- **Конвенция runbook'ов**: `docs/runbooks/stale-candidate-triage.md`,
-  `docs/runbooks/devops-oncall-channel.md` (структура TL;DR → шаги →
-  raw-evidence → эскалация → «связанные артефакты»).
+- **Конвенция runbook'ов**: структура TL;DR → шаги → raw-evidence →
+  эскалация → «связанные артефакты».
 - **Правило 13.08 + ADR-0018**: «Честный FAIL лучше красивого PASS» —
   если нельзя починить удалённо, **эскалировать**, а не выдавать
   желаемое за действительное.

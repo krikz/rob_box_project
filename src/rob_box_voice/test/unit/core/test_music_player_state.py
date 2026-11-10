@@ -2,7 +2,7 @@
 
 import json
 
-from rob_box_voice.core.music_player_state import (
+from rob_box_dialog_host.music_player_state import (
     STOPS_AT_GRACE_S,
     MusicPlayerState,
     build_music_state_payload,

@@ -74,7 +74,7 @@ class MemoryStore(abc.ABC):
 
     Adapters:
         - InMemoryStore (this module — tests + short-lived sessions)
-        - SQLiteVoiceMemory (existing — see ``rob_box_voice.core.voice_memory``)
+        - SQLiteVoiceMemory (existing — see ``rob_box_dialog_host.voice_memory``)
     """
 
     @abc.abstractmethod

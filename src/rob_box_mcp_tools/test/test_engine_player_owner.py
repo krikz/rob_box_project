@@ -14,7 +14,7 @@ from rob_box_mcp_tools.engine.player_owner import PlayerOwner
 from rob_box_mcp_tools.engine.renardo_adapter import MASTER_NODE, RenardoAdapter, osc_fail_detail
 from rob_box_mcp_tools.engine.renardo_runtime import RenardoRuntime
 from rob_box_music import knowledge as kn
-from rob_box_voice.core.music_player_state import parse_music_state
+from rob_box_dialog_host.music_player_state import parse_music_state
 
 pytestmark = pytest.mark.unit
 

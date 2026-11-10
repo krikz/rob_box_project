@@ -29,8 +29,8 @@ from test.unit.tts.conftest import _install_all_mocks  # noqa: E402
 
 _install_all_mocks()
 
-from rob_box_voice import tts_voice_registry as registry  # noqa: E402
-from rob_box_voice.tts_voice_registry import (  # noqa: E402
+from rob_box_dialog_host import tts_voice_registry as registry  # noqa: E402
+from rob_box_dialog_host.tts_voice_registry import (  # noqa: E402
     PROVIDER_VOICES,
     VOICE_METADATA,
     format_tts_context,

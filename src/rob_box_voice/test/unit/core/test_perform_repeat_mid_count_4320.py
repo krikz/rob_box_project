@@ -26,7 +26,7 @@ from rob_box_dialog import knowledge as kn
 from rob_box_dialog import phrases
 from rob_box_dialog.command import Command, Performance, ToolCall
 from rob_box_llm.provider import ToolResult
-from rob_box_voice.core import command_bridge as cb
+from rob_box_dialog_host import command_bridge as cb
 from rob_box_voice.core.perform_host import PerformHost
 
 M = install_dialog_msgs_stub()

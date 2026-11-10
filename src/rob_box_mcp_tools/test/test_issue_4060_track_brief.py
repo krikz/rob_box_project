@@ -21,7 +21,7 @@ from rob_box_mcp_tools.engine.search import ThemeHits
 from rob_box_mcp_tools.engine.engine_tools import DjSetTool
 from rob_box_music.source import cover_slot
 from rob_box_music.track_brief import track_brief
-from rob_box_voice.core.music_player_state import parse_music_state
+from rob_box_dialog_host.music_player_state import parse_music_state
 
 from .test_engine_reasoner import _wait
 from .test_engine_session import Log, _rig

@@ -11,7 +11,7 @@ import pytest
 from rob_box_mcp_tools.engine.engine_tools import NO_MORE, asks_more
 from rob_box_music import knowledge as kn
 from rob_box_music.diversity import MusicHistory
-from rob_box_voice.core.media_phrases import NO_MORE_REASON, no_more_phrase
+from rob_box_dialog_host.media_phrases import NO_MORE_REASON, no_more_phrase
 
 from .test_engine_session import _rig
 from .test_piece_fail_open import BACH, _tools

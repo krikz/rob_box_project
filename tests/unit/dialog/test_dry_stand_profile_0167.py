@@ -20,7 +20,7 @@ import dry_stand  # noqa: E402
 from rob_box_dialog import knowledge as kn  # noqa: E402
 from rob_box_dialog.profile import ProfileError, load_profile  # noqa: E402
 from rob_box_llm.providers.fake import FakeLLMProvider  # noqa: E402
-from rob_box_voice.core.dialog_v2_ports import CallCounter  # noqa: E402
+from rob_box_dialog_host.dialog_v2_ports import CallCounter  # noqa: E402
 
 
 def _stand(tmp_path):
@@ -30,7 +30,9 @@ def _stand(tmp_path):
 def test_stand_wake_is_the_robot_profile():
     assert dry_stand.ROBOT_PROFILE == REPO / "docker" / "sound" / "config" / "assistant.yaml"
     wake = dry_stand.robot_wake()
-    assert wake == list(load_profile(dry_stand.ROBOT_PROFILE).wake_personality) == list(kn.DEFAULT_WAKE_WORDS)
+    assert wake == list(load_profile(dry_stand.ROBOT_PROFILE).wake_personality)
+    personality, _ = kn.resolve_wake_word_namespaces(str(dry_stand.ROBOT_PROFILE.parent / "wake_words.yaml"))
+    assert wake == personality and "робот" in wake
 
 
 def test_stand_takes_its_wake_from_the_profile(tmp_path):

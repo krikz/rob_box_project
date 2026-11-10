@@ -9,7 +9,7 @@ from types import SimpleNamespace
 from rob_box_dialog import knowledge as kn
 from rob_box_dialog.context import build_context
 from rob_box_dialog.session import SpeakerRef
-from rob_box_voice.core.speaker_memory import SpeakerMemory
+from rob_box_dialog_host.speaker_memory import SpeakerMemory
 
 SURE = SpeakerRef(person_ref="spk-boris", name="Борис", name_state="confirmed")
 LOG = SimpleNamespace(info=lambda _m: None, warning=lambda _m: None)

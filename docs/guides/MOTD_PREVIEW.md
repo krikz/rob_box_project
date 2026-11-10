@@ -289,8 +289,8 @@ rbfix                # Попытка автоматического испра�
 Алиасы интегрируются с существующими диагностическими скриптами:
 
 ```bash
-rbcheck              # → ~/rob_box_project/docker/diagnose_data_flow.sh
-rbmonitor            # → ~/rob_box_project/docker/monitor_system.sh
+rbcheck              # → ~/rob_box_project/scripts/diagnostics/diagnose_data_flow.sh
+rbmonitor            # → ~/rob_box_project/scripts/diagnostics/monitor_system.sh
 ```
 
 ## Заключение

@@ -58,13 +58,12 @@ def test_mv02_matches_answer_in_mv01_voice_not_voice_change() -> None:
     assert not _hits(pats, CATALOG_DUMP)
 
 
-def test_mv03_requires_real_speak_text_and_set_voice() -> None:
+def test_mv03_requires_real_set_voice_and_no_v1_speak_text() -> None:
     step = _steps("voice_core_suite_v1.json")["mv03_skazka_raznymi_golosami"]
     assert "voice_used" not in step["patterns"]
     calls = step["acceptance"]["expected_tool_calls"]
-    # RULE #VOICE-MULTI: set_voice МЕЖДУ speak_text-фрагментами. Без
-    # speak_text реплики персонажей остаются в content и не звучат.
-    assert "set_voice" in calls and "speak_text" in calls
+    # Диалог v2: смена голоса -- тул set_voice; тула speak_text нет (речь -- command.speech), ожидать его нельзя (#4354 A5).
+    assert "set_voice" in calls and "speak_text" not in calls
 
 
 def test_log_lines_the_patterns_rely_on_still_exist_in_source() -> None:

@@ -252,6 +252,7 @@ from rob_box_voice.core.occasion import (
 from rob_box_voice.core import echo_window  # noqa: E402 — как соседние импорты после блока try/except
 from rob_box_voice.core.stt_utterance import fill_respeaker_utterance, final_provider
 from rob_box_voice.core.utterance_id import compute_utterance_id
+from rob_box_voice import robot_profile  # noqa: E402 — как соседние импорты
 from rob_box_voice.core.yandex_stt_segments import YandexSegmentCollector, text_kept_on_deadline
 
 # #1990 (оператор-agent 05) — источники аудио для wake-роутера (_process_audio).
@@ -286,7 +287,7 @@ class STTNode(Node):
     def __init__(self, *, occasion_gate: OccasionGate | None = None) -> None:
         # ADR-0101 §3.3.5 / Issue #2536 / PR-E: «unclear cooldown» идёт
         # через единый ``OccasionGate``. ``occasion_gate`` — optional kwarg:
-        # если передан (dialogue_node создаёт и прокидывает в ноду),
+        # если передан (dialog_node создаёт и прокидывает в ноду),
         # ``_maybe_speak_unclear`` спрашивает у gate (OccasionGate.may_speak)
         # и фиксирует ``mark_consumed``. Если НЕ передан (legacy-тесты /
         # standalone запуск) — создаём default-инстанс ниже с cooldown'ом
@@ -324,7 +325,7 @@ class STTNode(Node):
         # With 'hardware' mode the robot can be interrupted mid-speech.
         self.declare_parameter("aec_mode", "hardware")
 
-        # Wake words: адресация и перебивание (/dialog/interrupt_request). Должны совпадать с dialogue_node!
+        # Wake words: адресация и перебивание (/dialog/interrupt_request). Должны совпадать с dialog_node!
         # Один список на весь проект — rob_box_voice.core.dialogue_text.
         # Он же фолбек strip_wake_word, и его порядок неслучаен (длинные
         # варианты первыми, иначе «роб» съедает «роб бокс»). Копий было
@@ -332,12 +333,10 @@ class STTNode(Node):
         # dialogue_node.py лежало 13 вариантов, в четырёх YAML — 21, в
         # e2e-конфиге — те же 13. Тот самый класс ошибки, из-за которого
         # завели #1252 и заплатили #1734.
-        self.declare_parameter("wake_words", address.wake_words()[0])
-        # #1990 (оператор-agent 05) — SSoT wake-слов: config/wake_words.yaml
-        # (docker, монтируется в /config). Ключ wake_words остаётся фолбеком
-        # для dev-env/юнит-тестов без файла; wake_words_file при наличии
-        # переопределяет personality из файла (см. self.wake_words ниже).
-        self.declare_parameter("wake_words_file", "")
+        # #1990 / ADR-0167 Ш1б — таблица вейков (personality и operator) из профиля продукта робота
+        # (/config/assistant.yaml → wake_words.yaml рядом; env ROB_BOX_PROFILE). Кодовых вейков у робота больше нет:
+        # без профиля нода не стартует.
+        self.declare_parameter("profile_path", robot_profile.path())
 
         # Параметры fallback/retry (issue #979): единое место для таймаутов,
         # retry и правила коротких фраз. См. rob_box_voice/stt_fallback.py.
@@ -419,14 +418,11 @@ class STTNode(Node):
         if self.aec_mode not in ("software", "hardware"):
             self.get_logger().warning(f"⚠️ Неизвестный aec_mode '{self.aec_mode}', используется 'software'")
             self.aec_mode = "software"
-        self.wake_words: list = list(self.get_parameter("wake_words").value)
         # #1990 — разделяем namespace: personality (ReSpeaker, /voice/stt/utterance)
-        # и operator (wake-поток шлема, /avatar/stt/result). Источник — файл
-        # wake_words_file (SSoT); без файла — кодовые фолбеки (тот же список).
-        _wake_file = str(self.get_parameter("wake_words_file").value or "")
-        self.wake_words, self.operator_wake_words = address.wake_words(_wake_file, self.wake_words)
-        self.wake_words = list(self.wake_words)
-        self.operator_wake_words = list(self.operator_wake_words)
+        # и operator (wake-поток шлема, /avatar/stt/result). Источник — профиль робота.
+        _profile = robot_profile.load(str(self.get_parameter("profile_path").value or ""))
+        self.wake_words: list = list(_profile.wake_personality)
+        self.operator_wake_words: list = list(_profile.wake_operator)
         # #1990 — источник текущей обрабатываемой фразы (для barge-гейтов).
         self._active_source: str = _SRC_RESPEAKER
         # ADR-0076: последние STT-попытки (используется side-channel-сборщиком
@@ -1467,7 +1463,7 @@ class STTNode(Node):
 
         У TTS аналогичное состояние уезжает в топик
         ``/voice/tts/provider_state`` (issue #1229) — там у него четыре
-        потребителя (mcp_server, dialogue_node, quest_node, supervisor).
+        потребителя (mcp_server, dialog_node, quest_node, supervisor).
         У STT потребителя пока нет, а топик без потребителя — ровно то,
         что ловит сторож issue #2118, поэтому здесь только лог и
         персистентный файл. Появится потребитель — топик добавляется

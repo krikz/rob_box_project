@@ -17,7 +17,7 @@ install_dialog_msgs_stub()
 from rob_box_dialog.context import build_context  # noqa: E402
 
 from rob_box_voice.core import plan_host  # noqa: E402
-from rob_box_voice.tts_voice_registry import ANY_LANGUAGE, spoken_languages  # noqa: E402
+from rob_box_dialog_host.tts_voice_registry import ANY_LANGUAGE, spoken_languages  # noqa: E402
 
 
 def _node(provider: str, applied: str | None = None) -> types.SimpleNamespace:

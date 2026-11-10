@@ -1,0 +1,15 @@
+<all>	338759
+turn_id=	1136
+STT:	3674
+Получена фраза	3638
+ПРИНЯТО	3012
+ОТКЛОНЕНО	583
+[backlog] accumulated	2093
+tier1 kind	109
+[command]	2012
+[prompt]	1382
+SpeechEvent	10606
+Инструмент	1104
+[echo]	81
+#4135	38
+встреча	263

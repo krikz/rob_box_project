@@ -12,13 +12,13 @@ import re
 from dataclasses import dataclass, replace
 from typing import Any, Dict, FrozenSet, Optional, Sequence, Set, Tuple
 
+from rob_box_dialog import knowledge as _kn
 from rob_box_dialog.knowledge import (
     ASK_LEAD_SKIP,
     CHAT_REFERENCE_LEADS,
     CHAT_ROBOT_ACT_VERBS,
     CHAT_ROBOT_ASK_FORMS,
     CHAT_TOPIC_MARKERS,
-    DEFAULT_WAKE_WORDS,
     DONE_CLAIMS,
     INTRO_ADJECTIVE_ENDINGS,
     INTRO_GREETING_WORDS,
@@ -89,6 +89,12 @@ STOP_DISPUTED = "disputed"
 STOP_NONE = "none"
 
 
+def _wake_table(wake_words: Optional[Sequence[str]]) -> Tuple[str, ...]:
+    """Таблица вейков правила: переданная хостом (профиль продукта), иначе умолчание ядра - нейтральное, без вейков
+    (``knowledge.WAKE_WORDS_WITHOUT_PROFILE``, ADR-0167 §2.4). Читается в момент вызова."""
+    return _kn.WAKE_WORDS_WITHOUT_PROFILE if wake_words is None else tuple(wake_words)
+
+
 @functools.lru_cache(maxsize=64)
 def _pattern(words: Tuple[str, ...], tail: str) -> "re.Pattern[str]":
     alternation = "|".join(re.escape(w) for w in words)
@@ -97,7 +103,7 @@ def _pattern(words: Tuple[str, ...], tail: str) -> "re.Pattern[str]":
 
 def has_wake_word(text: str, wake_words: Optional[Sequence[str]] = None) -> bool:
     """Есть ли в ``text`` вейк-слово отдельным словом. Пустой список — режим «без вейка»: всё адресовано."""
-    words = DEFAULT_WAKE_WORDS if wake_words is None else tuple(wake_words)
+    words = _wake_table(wake_words)
     if not words:
         return True
     return bool(_pattern(words, _RIGHT).search(text or ""))
@@ -105,7 +111,7 @@ def has_wake_word(text: str, wake_words: Optional[Sequence[str]] = None) -> bool
 
 def strip_wake_word(text: str, wake_words: Optional[Sequence[str]] = None) -> str:
     """Убрать ПЕРВОЕ вейк-слово (в любом месте фразы) вместе с пунктуацией и пробелами после него."""
-    words = DEFAULT_WAKE_WORDS if wake_words is None else tuple(wake_words)
+    words = _wake_table(wake_words)
     if not words:
         return (text or "").strip()
     return _pattern(words, _RIGHT + r"[.,!?\s]*").sub("", text or "", count=1).strip()
@@ -203,7 +209,7 @@ def slipped_wake_rest(text: str, wake_words: Optional[Sequence[str]] = None, *,
     ``None``. Только первый токен; тишину это не снимает (остаток идёт обычным путём). Вызывать, когда
     :func:`has_wake_word` не нашёл настоящего вейка. Вейков нет в таблице — допуска нет. ``music_playing`` - играет ли
     музыка (``SessionSnapshot.music_playing``): открывает ворота правки музыки."""
-    words = DEFAULT_WAKE_WORDS if wake_words is None else tuple(wake_words)
+    words = _wake_table(wake_words)
     if not any(t in words for t in WAKE_SLIP_TARGETS):
         return None
     match = _TOKEN.search(text or "")
@@ -782,7 +788,7 @@ def stop_verdict(text: str, wake_words: Optional[Sequence[str]] = None) -> str:
 def stop_command(text: str, wake_words: Optional[Sequence[str]] = None) -> StopCall:
     """То же, что :func:`stop_verdict`, плюс стоп-слово, его охват (:func:`stop_scope`) и остаток команды после них
     (одна реализация разбора)."""
-    words = DEFAULT_WAKE_WORDS if wake_words is None else tuple(wake_words)
+    words = _wake_table(wake_words)
     part = _command_part(text, words)
     spans = [(m.group(0).lower(), m.end()) for m in _TOKEN.finditer(part)]
     tokens = [t for t, _ in spans]
@@ -801,7 +807,7 @@ def policy_word(text: str, wake_words: Optional[Sequence[str]] = None) -> Option
     Ясный стоп (:func:`stop_command`) — ``halt`` для форм «стой», иначе ``stop``; дальше «потом/после/когда
     закончишь» (``later``) и «прямо сейчас»/«сейчас» первым словом команды (``now``) — точными формами по границам
     слов: «последний» — не «после»."""
-    words = DEFAULT_WAKE_WORDS if wake_words is None else tuple(wake_words)
+    words = _wake_table(wake_words)
     stop = stop_command(text, words)
     if stop.verdict == STOP_CLEAR:
         halt = TIER1_POLICY["halt"].words
@@ -867,7 +873,7 @@ def wake_command(text: str, wake_words: Optional[Sequence[str]] = None) -> str:
     27.10: «четыре недели робот хватит читать а музыку оставь» под рэп). То же правило, что у :func:`stop_command`,
     — запасной разбор Tier-1 реплики с микрофона, когда фраза целиком не Tier-1 или спорна
     (``address.Addressed.command``, ``turn.tier1_of``)."""
-    words = DEFAULT_WAKE_WORDS if wake_words is None else tuple(wake_words)
+    words = _wake_table(wake_words)
     return _command_part(text, words).strip(" ,.!?;:-–—")
 
 

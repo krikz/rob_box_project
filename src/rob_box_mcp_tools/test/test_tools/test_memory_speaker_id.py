@@ -437,7 +437,7 @@ class TestSavedEventAndOneTable:
 
     @staticmethod
     def _node(tmp_path):
-        from rob_box_voice.core.voice_memory import VoiceMemory
+        from rob_box_dialog_host.voice_memory import VoiceMemory
 
         node = _FakeNode()
         node.voice_memory = VoiceMemory(db_path=str(tmp_path / "e2e_voice_memory.db"))  # отдельная БД, не /data

@@ -50,7 +50,7 @@ from rob_box_harness.memory import InMemoryStore
 from rob_box_music import knowledge as music_kn
 from rob_box_music.diversity import MusicHistory
 
-from rob_box_voice.core.music_player_state import (
+from rob_box_dialog_host.music_player_state import (
     MUSIC_EVENT_TOPIC,
     MUSIC_STATE_TOPIC,
     MusicEventLog,
@@ -163,8 +163,8 @@ from .engine.gen.provider import gen_provider_states
 from .perception_projection import project_perception_event
 
 try:
-    from rob_box_voice.core.voice_memory import VoiceMemory as _VoiceMemory
-    from rob_box_voice.core.faq_store import FAQStore as _FAQStore
+    from rob_box_dialog_host.voice_memory import VoiceMemory as _VoiceMemory
+    from rob_box_dialog_host.faq_store import FAQStore as _FAQStore
     from rob_box_voice.core.event_profile import load_event_profile as _load_event_profile
 except ImportError:
     _VoiceMemory = None  # type: ignore[assignment,misc]
@@ -575,7 +575,7 @@ class MCPServer(Node):
         # Issue #3133 / ADR-0141: плеер — владелец состояния музыки.
         # /voice/music/state — JSON-снимок {state, track_id, form_ends_at,
         # stops_at, dj, finished_track_id, ts}, контракт — модуль
-        # rob_box_voice.core.music_player_state. Latched (TRANSIENT_LOCAL,
+        # rob_box_dialog_host.music_player_state. Latched (TRANSIENT_LOCAL,
         # KEEP_LAST 1): перезапущенный audio_node/dialogue_node сразу
         # получает последний снимок, а не «ничего не играет» до тика.
         # Подписчики обязаны подписываться тоже TRANSIENT_LOCAL.

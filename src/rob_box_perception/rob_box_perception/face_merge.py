@@ -28,6 +28,7 @@ from typing import Any, Callable, Dict, List, Optional, Sequence
 
 import numpy as np
 
+from .face_misses import MissJournal, snapshot_misses
 from .face_store import FaceStore, _cosine, _medoid
 
 #: Потолок кандидатов коллажа: сетка 4x3 влезает в JPEG до 200 КБ и читается глазом.
@@ -130,12 +131,20 @@ def _attach_inherited_name(store: FaceStore, target: str, names: Sequence[Option
         store.attach_name(target, inherited)
 
 
+def _mergeable(known: Dict[str, Any], target: str, ids: Sequence[str]) -> bool:
+    """``target`` и все ``ids`` существуют, ``ids`` не пуст, без дублей и без самого ``target``."""
+    if target not in known or not ids or len(set(ids)) != len(ids) or target in ids:
+        return False
+    return all(i in known for i in ids)
+
+
 def merge_people(
     store: FaceStore,
     target: str,
     sources: Sequence[str],
     backup_root: Path,
     clock: Callable[[], float] = time.time,
+    misses: Optional[MissJournal] = None,
 ) -> Optional[MergeOutcome]:
     """Склеить записи ``sources`` в ``target``: бэкап, затем слияние по одной. Возвращает исход по данным хранилища
     или ``None``, если нечего склеивать (записи ``target`` нет, ``sources`` пуст, дубль или сам ``target`` в нём).
@@ -145,11 +154,15 @@ def merge_people(
     """
     ids = list(sources)
     known = {p["person_id"]: p["name"] for p in store.people()}
-    if target not in known or not ids or len(set(ids)) != len(ids) or target in ids or any(i not in known for i in ids):
+    if not _mergeable(known, target, ids):
         return None
     backup = backup_records(store, [target, *ids], backup_root, clock())
     names = [known[i] for i in ids]
+    # журнал промахов (#4469 п. 2): строки считаются ДО слияния, пишутся только по реально слитым записям
+    rows = snapshot_misses(store, target, ids, clock()) if misses is not None else []
     done = [i for i in ids if store.merge(target, i)]
+    if misses is not None:
+        misses.append([r for r in rows if r["merged_id"] in done])
     _attach_inherited_name(store, target, names)
     after = next((p for p in store.people() if p["person_id"] == target), None)
     return MergeOutcome(

@@ -75,7 +75,7 @@ def wait_text(genre: str, model: str, bridge: str, theme: str = "") -> str:
 
 def ready_text(result: InstrumentalResult, genre: str) -> str:
     """Фраза готовности — из фактов результата: название, тема заказа (если её нет в названии), стиль, длина."""
-    from rob_box_voice.core.media_phrases import duration_text
+    from rob_box_dialog_host.media_phrases import duration_text
 
     theme = result.theme if result.theme.lower() not in result.title.lower() else ""
     return (f"А вот новый трек «{result.title}»{_about(theme)}, {kn.GEN_STYLES[genre_key(genre)].name}, "

@@ -78,16 +78,17 @@ from rob_box_dialog.e2e_events import inside_robot_data, open_events  # noqa: E4
 from rob_box_dialog.memory import profiled_person  # noqa: E402
 from rob_box_dialog.music_state import MusicStateMemory  # noqa: E402
 from rob_box_dialog.profile import load_profile  # noqa: E402
+from rob_box_dialog.prompts import personality_prompt  # noqa: E402
 from rob_box_dialog.session import MusicStateRef, Session  # noqa: E402
 from rob_box_dialog.speaker_adapter import speaker_ref, voice_tag  # noqa: E402
-from rob_box_dialog.turn import ASK_MARK, LOG_MARK, TurnEngine, host_sections  # noqa: E402
+from rob_box_dialog.turn import ASK_MARK, LOG_MARK, TurnEngine, host_sections, settle  # noqa: E402
 from rob_box_llm.provider import ToolResult  # noqa: E402
 from rob_box_mcp_tools.voice_request import VoiceOutcome, outcome_data  # noqa: E402
-from rob_box_voice.core.dialog_v2_ports import CallCounter, V2Ports  # noqa: E402
-from rob_box_voice.core.music_player_state import build_music_state_payload, parse_music_state  # noqa: E402
-from rob_box_voice.core.speaker_memory import SpeakerMemory  # noqa: E402
-from rob_box_voice.core.voice_memory import VoiceMemory  # noqa: E402
-from rob_box_voice.tts_voice_registry import (  # noqa: E402
+from rob_box_dialog_host.dialog_v2_ports import CallCounter, V2Ports  # noqa: E402
+from rob_box_dialog_host.music_player_state import build_music_state_payload, parse_music_state  # noqa: E402
+from rob_box_dialog_host.speaker_memory import SpeakerMemory  # noqa: E402
+from rob_box_dialog_host.voice_memory import VoiceMemory  # noqa: E402
+from rob_box_dialog_host.tts_voice_registry import (  # noqa: E402
     ROBOT_DEFAULT_PROVIDER, default_voice_for, providers_overview, robot_default_voice, voice_id_by_name, voices_for,
 )
 
@@ -99,6 +100,17 @@ ROBOT_PROFILE = REPO / "docker" / "sound" / "config" / "assistant.yaml"
 def robot_wake() -> List[str]:
     """Вейки личности из профиля робота (:data:`ROBOT_PROFILE`); нет или битый профиль - ``ProfileError``."""
     return list(load_profile(ROBOT_PROFILE).wake_personality)
+
+
+def robot_owners() -> Tuple[str, ...]:
+    """Владельцы тулов из профиля робота (ADR-0167 Ш1в): срез тулов стенда - как у ``dialog_node``."""
+    return load_profile(ROBOT_PROFILE).owners
+
+
+def robot_prompt() -> str:
+    """Промпт Личности робота без правил знания: основа ядра с персоной профиля робота (ADR-0167 Ш1б-3), как у
+    ``dialog_node``; нет или битый профиль - ``ProfileError``."""
+    return personality_prompt(load_profile(ROBOT_PROFILE).persona)
 
 
 #: Скорость речи человека/робота для модели времени, символов в секунду (живой замер ≈ 13–16).
@@ -844,7 +856,7 @@ class DryStand:
         self.speech = FakeSpeech(self.emit)
         #: Выступления хода, взятые фейковым владельцем (:meth:`DryPorts.perform`): ``(turn_id, сегментов)``.
         self.performed: List[Tuple[str, int]] = []
-        self.session = Session(kn.AGENTS[0], clock=self.clock.now)
+        self.session = Session(kn.AGENTS[0], clock=self.clock.now, wake_words=self.wake, owners=robot_owners())
         self.backlog = Backlog()
         self.music_mem = MusicStateMemory()
         self.library = FakeLibrary(self.clock)
@@ -1004,6 +1016,7 @@ class DryStand:
         await self._note_speaker(decision)
         with uv.installed(self.variant, offered, lambda: route.as_pair() if route is not None else None):
             agg = await self.engine.run(decision)
+            await settle(self.engine)  # вереница (ADR-0165) идёт после закрытия хода: шаг стенда ждёт её итог
         spoken_s = self.speech.settle(self.engine, kn.AGENTS[0])
         self.clock.advance(spoken_s)
         self.end_performances()

@@ -180,7 +180,7 @@ loop у TestClient running).
 ## Файлы изменены
 
 ```
-src/rob_box_voice/rob_box_voice/tts_voice_registry.py
+src/rob_box_dialog_host/rob_box_dialog_host/tts_voice_registry.py
 src/rob_box_voice/rob_box_voice/tts_node.py
 src/rob_box_quest/rob_box_quest/server/ws_server.py
 src/rob_box_quest/rob_box_quest/quest_node.py

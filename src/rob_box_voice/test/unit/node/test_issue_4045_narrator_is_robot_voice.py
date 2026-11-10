@@ -34,7 +34,7 @@ except ImportError:
 
 from rob_box_voice import dialog_node as dn  # noqa: E402
 from rob_box_voice.core import plan_host  # noqa: E402
-from rob_box_voice.tts_voice_registry import default_voice_for, gender_of, role_voices_for  # noqa: E402
+from rob_box_dialog_host.tts_voice_registry import default_voice_for, gender_of, role_voices_for  # noqa: E402
 
 ALL_TOOLS = [t.name for t in TOOL_CATALOG]
 ROBOT = "Russian_ReliableMan"  # первый мужской голос каталога ролей MiniMax: именно его получал бы первый герой-мужчина

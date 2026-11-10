@@ -743,7 +743,7 @@ def test_publish_preview_voice_without_provider_still_emits():
 # ── issue #2138 — регресс «set_voice всегда tts_unreachable» ──────────────
 #
 # До фикса ``QuestBridge.set_voice`` валидировал ``voice_id`` через
-# компайл-тайм реестр ``rob_box_voice.tts_voice_registry``. В образе
+# компайл-тайм реестр ``rob_box_dialog_host.tts_voice_registry``. В образе
 # ``rob-box-quest`` пакета нет (конвенция «пакет должен оставаться
 # импортируемым без rob_box_voice»), и защищённый fallback возвращал
 # ``[]`` → ``set_voice`` ВСЕГДА отдавал ``tts_unreachable`` при живом TTS.
@@ -782,12 +782,12 @@ def test_quest_node_does_not_import_tts_voice_registry():
     for node in ast.walk(tree):
         if not isinstance(node, ast.ImportFrom):
             continue
-        if node.module != "rob_box_voice.tts_voice_registry":
+        if node.module != "rob_box_dialog_host.tts_voice_registry":
             continue
         bad_imports.append(ast.dump(node))
 
     assert not bad_imports, (
-        "quest_node.py НЕ должен импортировать rob_box_voice.tts_voice_registry — "
+        "quest_node.py НЕ должен импортировать rob_box_dialog_host.tts_voice_registry — "
         "пакет rob_box_voice отсутствует в образе rob-box-quest, и жёсткий/даже "
         "защищённый импорт — мёртвая ловушка. Валидация голосов теперь идёт по "
         "latched-кэшу /voice/tts/voices (см. streams.voice_picker.pick_voice, "
@@ -801,7 +801,7 @@ def test_quest_node_does_not_define_voices_for_fallback():
     собственный fallback ``_voices_for``.
 
     До фикса в файле был блок
-    ``try: from rob_box_voice.tts_voice_registry import voices_for as _voices_for
+    ``try: from rob_box_dialog_host.tts_voice_registry import voices_for as _voices_for
     except ImportError: def _voices_for(provider): return []``.
     Этот блок — корень #2138: на роботе fallback всегда возвращал ``[]``,
     и ``set_voice`` не пропускал ни одного голоса. После фикса валидация

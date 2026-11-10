@@ -45,21 +45,15 @@ LABEL org.opencontainers.image.source="https://github.com/krikz/rob_box_project"
 
 # Рабочая директория
 WORKDIR /ws
-RUN mkdir -p src/rob_box_music src/rob_box_dialog src/rob_box_core src/rob_box_voice src/rob_box_mcp_tools src/rob_box_perception_msgs src/rob_box_harness src/rob_box_llm src/rob_box_supervisor_msgs src/rob_box_dialog_msgs
+RUN mkdir -p src/rob_box_voice src/rob_box_mcp_tools src/rob_box_perception_msgs src/rob_box_supervisor_msgs src/rob_box_dialog_msgs
 
 # ============================================================
 # ОПТИМИЗАЦИЯ СЛОЕВ ДЛЯ КЕШИРОВАНИЯ (dependencies → config → code)
 # ============================================================
 
 # Шаг 1: Копируем package.xml для rosdep (зависимости меняются редко)
-COPY src/rob_box_core/package.xml /ws/src/rob_box_core/
 COPY src/rob_box_voice/package.xml /ws/src/rob_box_voice/
-COPY src/rob_box_music/package.xml /ws/src/rob_box_music/
-# ADR-0150 PR-1: одна таблица знания диалога (вейк, тишина, громкость) — её импортируют voice и harness
-COPY src/rob_box_dialog/package.xml /ws/src/rob_box_dialog/
 COPY src/rob_box_mcp_tools/package.xml /ws/src/rob_box_mcp_tools/
-COPY src/rob_box_harness/package.xml /ws/src/rob_box_harness/
-COPY src/rob_box_llm/package.xml /ws/src/rob_box_llm/
 
 # Шаг 2: установка ROS зависимостей через rosdep — УДАЛЁН (issue #2378, devops).
 #
@@ -157,32 +151,14 @@ COPY --from=msgs /ws/install/rob_box_dialog_msgs /ws/install/rob_box_dialog_msgs
 COPY --from=msgs /ws/install/rob_box_perception_msgs /ws/install/rob_box_perception_msgs
 
 # Шаг 3: Копируем setup.py и CMakeLists.txt (структура пакета меняется редко)
-COPY src/rob_box_core/setup.py /ws/src/rob_box_core/
 COPY src/rob_box_voice/setup.py /ws/src/rob_box_voice/
 COPY src/rob_box_voice/setup.cfg /ws/src/rob_box_voice/
-COPY src/rob_box_music/setup.py /ws/src/rob_box_music/
-COPY src/rob_box_dialog/setup.py /ws/src/rob_box_dialog/
 COPY src/rob_box_mcp_tools/setup.py /ws/src/rob_box_mcp_tools/
 COPY src/rob_box_mcp_tools/setup.cfg /ws/src/rob_box_mcp_tools/
-COPY src/rob_box_harness/setup.py /ws/src/rob_box_harness/
-COPY src/rob_box_harness/setup.cfg /ws/src/rob_box_harness/
-COPY src/rob_box_llm/setup.py /ws/src/rob_box_llm/
-COPY src/rob_box_llm/setup.cfg /ws/src/rob_box_llm/
 
 # Шаг 4: Копируем конфигурационные файлы и ресурсы
-COPY src/rob_box_core/resource /ws/src/rob_box_core/resource
-# Issue #2250: rob_box_core/setup.py data_files включает config/speech_segmentation.yaml
-# (issue #2199, PR #2211 voice-vr 14). Без COPY всей директории setup.py падает
-# при install с "error: can't copy 'config/speech_segmentation.yaml': doesn't exist".
-# Копируем директорию целиком (glob-стиль), а не конкретный файл — иначе любое
-# новое config/* сломает билд тем же путём (issue #2250, ретро #2211).
-COPY src/rob_box_core/config /ws/src/rob_box_core/config
 COPY src/rob_box_voice/resource /ws/src/rob_box_voice/resource
-COPY src/rob_box_music/resource /ws/src/rob_box_music/resource
-COPY src/rob_box_dialog/resource /ws/src/rob_box_dialog/resource
 COPY src/rob_box_mcp_tools/resource /ws/src/rob_box_mcp_tools/resource
-COPY src/rob_box_harness/resource /ws/src/rob_box_harness/resource
-COPY src/rob_box_llm/resource /ws/src/rob_box_llm/resource
 
 # Шаг 5: Копируем launch файлы и конфигурации
 COPY src/rob_box_voice/launch /ws/src/rob_box_voice/launch
@@ -200,13 +176,8 @@ ARG SOURCE_HASH=unknown
 RUN echo "Source hash: ${SOURCE_HASH}" > /tmp/.source_hash
 
 # Шаг 8: Копируем исходный код Python (меняется чаще всего - последний слой!)
-COPY src/rob_box_core/rob_box_core /ws/src/rob_box_core/rob_box_core
 COPY src/rob_box_voice/rob_box_voice /ws/src/rob_box_voice/rob_box_voice
-COPY src/rob_box_music/rob_box_music /ws/src/rob_box_music/rob_box_music
-COPY src/rob_box_dialog/rob_box_dialog /ws/src/rob_box_dialog/rob_box_dialog
 COPY src/rob_box_mcp_tools/rob_box_mcp_tools /ws/src/rob_box_mcp_tools/rob_box_mcp_tools
-COPY src/rob_box_harness/rob_box_harness /ws/src/rob_box_harness/rob_box_harness
-COPY src/rob_box_llm/rob_box_llm /ws/src/rob_box_llm/rob_box_llm
 
 # После копирования Python исходников можно переиспользовать patch helper для
 # ремонта broken Renardo SynthDef-ов в установленном пакете.
@@ -274,6 +245,19 @@ COPY src/rob_box_voice/scripts /ws/src/rob_box_voice/scripts
 COPY docker/sound/voice_assistant/foxdot_init.sc /ws/foxdot_init.sc
 COPY docker/sound/voice_assistant/custom_synthdefs /ws/custom_synthdefs
 
+# ============================================================
+# Шаг 10.5: ЯДРО ДИАЛОГА ИЗ ПУБЛИЧНОГО ПАКЕТА (ADR-0167 Ш3)
+# ============================================================
+# Ядро (rob_box_core, rob_box_llm, rob_box_harness, rob_box_dialog,
+# rob_box_dialog_host, rob_box_music + частичные rob_box_mcp_tools: owner_event,
+# voice_request, base) вынесено в krikz/rob_box_dialog_core и ставится pip'ом
+# по тегу, а НЕ colcon'ом из src/ (ADR-0167 §2.2 / §4 Ш3). Модули кладутся в
+# site-packages; rob_box_voice и rob_box_mcp_tools импортируют их оттуда.
+# Ставится ДО colcon: colcon собирает только ROS-хосты (rob_box_voice) и
+# полный ROS-пакет rob_box_mcp_tools, а ядро уже лежит в окружении.
+RUN pip3 install --no-cache-dir \
+    "rob-box-dialog-core @ git+https://github.com/krikz/rob_box_dialog_core@v0.7.1"
+
 # ============================================
 # 🚀 СБОРКА ROS2 ПАКЕТОВ
 # ============================================
@@ -289,7 +273,7 @@ RUN . /opt/ros/${ROS_DISTRO}/setup.sh && \
     rm -rf /opt/ros/${ROS_DISTRO}/share/*/cmake/*.cmake~ && \
     ldconfig && \
     colcon build \
-    --packages-select rob_box_core rob_box_music rob_box_dialog rob_box_mcp_tools rob_box_llm rob_box_harness rob_box_voice \
+    --packages-select rob_box_mcp_tools rob_box_voice \
     --cmake-args \
     -DCMAKE_BUILD_TYPE=Release \
     -DCMAKE_EXPORT_COMPILE_COMMANDS=ON

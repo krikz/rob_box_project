@@ -61,9 +61,21 @@ def session(node: Any) -> Session:
     """Сессия ноды (лениво — для нод из тестов через ``object.__new__``); изменения — в ``/dialog/session``."""
     current = getattr(node, "_session", None)
     if current is None:
-        current = node._session = Session("personality", clock=time.time)
+        current = node._session = Session("personality", clock=time.time, wake_words=_wake(node), owners=_owners(node))
         current.subscribe(lambda event: publish(node, event))
     return current
+
+
+def _wake(node: Any) -> Any:
+    """Таблица вейков личности хоста (``dialog_node._wake``, профиль продукта); у нод тестов без неё - ``None``."""
+    return getattr(node, "_wake", None)
+
+
+def _owners(node: Any) -> Any:
+    """Владельцы тулов хоста (``dialog_node.product_profile.owners``, ADR-0167 Ш1в); у нод тестов без профиля -
+    ``None``."""
+    profile = getattr(node, "product_profile", None)
+    return None if profile is None else profile.owners
 
 
 def set_speaker(node: Any, ref: SpeakerRef) -> None:
@@ -145,7 +157,7 @@ def take_answer(node: Any, source: str, heard: Any) -> None:
         return
     session(node).pop_scene("Identity")
     text = str(getattr(heard, "text", "") or "")
-    reply = question_reply(str(frame.payload.get("kind") or ""), text)
+    reply = question_reply(str(frame.payload.get("kind") or ""), text, wake_words=_wake(node))
     node._identity_answer = dict(frame.payload, reply=reply.kind if reply else "other", text=text)
     doa = getattr(heard, "doa_deg", None)
     azimuth = frame.payload.get("azimuth_deg")
@@ -164,7 +176,7 @@ def answer_name(node: Any, text: str) -> Optional[str]:
     asked = getattr(node, "_identity_answer", None)
     if not asked or asked.get("kind") not in ASKS_NAME:
         return None
-    reply = classify_reply(text)
+    reply = classify_reply(text, wake_words=_wake(node))
     known = reply is not None and reply.kind == NAME and reply.name.lower().replace("ё", "е") in KNOWN_FIRST_NAMES
     return reply.name if known else None
 
@@ -180,7 +192,8 @@ def identity_reply(node: Any) -> Optional[str]:
         node._identity_answer = None
         step = _answer_step(node, asked, _speaker(node))
     else:
-        step = rename_step(classify_rename(str(getattr(node, "_turn_heard_text", "") or "")), _turn_speaker(node))
+        heard = str(getattr(node, "_turn_heard_text", "") or "")
+        step = rename_step(classify_rename(heard, wake_words=_wake(node)), _turn_speaker(node))
         if step is not None:
             node.get_logger().info(
                 f"✏️ [#3801] смена имени фразой: rename={step.rename or '-'} шаблон={step.frame is not None} — 0 LLM")
@@ -197,7 +210,8 @@ def code_decides(node: Any, text: str) -> bool:
     asked = getattr(node, "_identity_answer", None)
     if asked and asked.get("kind") in kn.IDENTITY_CODED_KINDS:
         return True
-    return classify_rename(text) is not None and voice_certainty(_turn_speaker(node)) != VOICE_STRANGER
+    renames = classify_rename(text, wake_words=_wake(node)) is not None
+    return renames and voice_certainty(_turn_speaker(node)) != VOICE_STRANGER
 
 
 def _speaker(node: Any) -> Dict[str, Any]:
@@ -220,18 +234,18 @@ def _answer_step(node: Any, asked: Mapping[str, Any], speaker: Mapping[str, Any]
         f"({str(speaker.get('speaker_id') or 'unknown')[:8]})")
     if kind == kn.IDENTITY_VOICE_CHECK_KIND:
         return voice_check_step(asked, speaker)
-    renamed = rename_step(classify_rename(text), speaker)
+    renamed = rename_step(classify_rename(text, wake_words=_wake(node)), speaker)
     if renamed is not None:
         return renamed
     if kind == kn.IDENTITY_SAME_VOICE_KIND:
-        return same_voice_step(asked, text) if asked.get("reply") != "other" else None
+        return same_voice_step(asked, text, wake_words=_wake(node)) if asked.get("reply") != "other" else None
     return _merge_answer_step(node, asked, text, speaker)
 
 
 def _merge_answer_step(node: Any, asked: Mapping[str, Any], text: str,
                        speaker: Mapping[str, Any]) -> Optional[IdentityStep]:
     """Ответ на вопрос склейки (#2828): решение — ``speaker_adapter.merge_step``; фраза не по теме — ход обычный."""
-    same, speaker_ok = merge_answer(asked, text, speaker)
+    same, speaker_ok = merge_answer(asked, text, speaker, wake_words=_wake(node))
     if same is None and asked.get("reply") == "other":
         node.get_logger().info("👥 [issue #2828] вопрос склейки снят фразой не по теме — ничего не склеено")
         return None
@@ -243,7 +257,7 @@ def _merge_answer_step(node: Any, asked: Mapping[str, Any], text: str,
     node.get_logger().info(
         f"👥 [issue #2828] ответ на переспрос: same={same} kind={asked['kind']} new={asked['new_id'][:8]} "
         f"known={asked['known_id'][:8]} — фраза кодом, 0 LLM (#3765)")
-    return merge_step(asked, text, speaker)
+    return merge_step(asked, text, speaker, wake_words=_wake(node))
 
 
 def _apply(node: Any, step: IdentityStep) -> None:

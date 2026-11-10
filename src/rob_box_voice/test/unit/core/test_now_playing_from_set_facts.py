@@ -12,7 +12,7 @@ from rob_box_voice.core.media_router import (
     MediaState,
     media_state_from_snapshot,
 )
-from rob_box_voice.core.music_player_state import build_music_state_payload, parse_music_state
+from rob_box_dialog_host.music_player_state import build_music_state_payload, parse_music_state
 from rob_box_dialog.music_state import MusicStateMemory
 
 FACTS = {"enabled": True, "theme": "Марио, Тетрис, Аладдин", "track_no": 2, "tracks": 4, "melody": "Тетрис",

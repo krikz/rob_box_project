@@ -39,7 +39,7 @@ black .
 black --check .
 
 # Format specific file
-black src/rob_box_voice/audio_node.py
+black src/rob_box_voice/rob_box_voice/audio_node.py
 ```
 
 ### Import sorting

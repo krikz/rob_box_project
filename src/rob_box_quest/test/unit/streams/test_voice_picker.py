@@ -8,7 +8,7 @@
 §6 «Открытое» и task body t_0980642f):
 
 До фикса ``QuestBridge.set_voice`` валидировал ``voice_id`` через
-компайл-тайм реестр ``rob_box_voice.tts_voice_registry``. В образе
+компайл-тайм реестр ``rob_box_dialog_host.tts_voice_registry``. В образе
 ``rob-box-quest`` этого пакета нет (как и в mcp_tools — см. защищённый
 импорт с fallback ``[]``). В итоге на роботе ``voices_for(provider)``
 всегда возвращал пустой список → ``set_voice`` ВСЕГДА отдавал

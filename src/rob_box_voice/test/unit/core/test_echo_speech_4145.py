@@ -24,11 +24,12 @@ import pytest
 
 from rob_box_core import speech_client
 from rob_box_core.msg_stub import install_dialog_msgs_stub
-from rob_box_dialog.words import DEFAULT_WAKE_WORDS, words_in_order
+from rob_box_dialog.words import words_in_order
 from rob_box_voice.core import echo_window as ew
+from voice_robot_wake import ROBOT_WAKE  # noqa: E402 — тестовый профиль робота
 
 M = install_dialog_msgs_stub()
-WAKE = list(DEFAULT_WAKE_WORDS)
+WAKE = list(ROBOT_WAKE)
 GRACE_S = 2.5
 SPEECH_ID = "46fd3b27"
 #: Начало реплики агитации из карточки #4145 (полный текст — 369 символов, в карточке не приведён).

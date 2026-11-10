@@ -19,6 +19,7 @@ from rob_box_dialog.command import Command, Expression
 from rob_box_dialog.session import Session
 from rob_box_dialog.turn import Answer, TurnEngine
 from rob_box_dialog.words import asks_to_listen
+from robot_wake_fixture import ROBOT_WAKE  # noqa: E402 — тестовый профиль робота
 
 KETTLE = "Мы тут чайник поставили, минут через пять будет готов."
 LISTEN = "Мы тут сейчас немного пошумим, ты просто слушай и не вылезай."
@@ -61,10 +62,10 @@ class Ports:
 def _picked(background: str) -> Addressed:
     """Фоновая фраза без вейка в бэклог, через 20 с голое «Робот.» - решение адресации, как у ``dialog_node``."""
     backlog = Backlog()
-    first = decide(Heard(background, t=100.0), backlog, kn.DEFAULT_WAKE_WORDS)
+    first = decide(Heard(background, t=100.0), backlog, ROBOT_WAKE)
     assert not isinstance(first, Addressed), "фоновая фраза без вейка роботу не адресована"
     backlog.add(Heard(background, t=100.0))
-    picked = decide(Heard("Робот.", t=120.0), backlog, kn.DEFAULT_WAKE_WORDS)
+    picked = decide(Heard("Робот.", t=120.0), backlog, ROBOT_WAKE)
     assert isinstance(picked, Addressed) and picked.pickup and picked.source == BACKLOG_PICKUP
     return picked
 

@@ -296,7 +296,6 @@ WARNINGS=$(echo "$LOGS" | \
 
 ## 📚 Related Documentation
 
-- [AI Troubleshooting Checklist](../development/AI_TROUBLESHOOTING_CHECKLIST.md)
 - [Agent Guide](../development/AGENT_GUIDE.md)
 - [Deployment Workflow](../../.github/workflows/L-Deploy%20and%20Verify.yml)
 

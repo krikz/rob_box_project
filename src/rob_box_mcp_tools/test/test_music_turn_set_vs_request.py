@@ -14,8 +14,8 @@ import pytest
 
 from rob_box_mcp_tools.engine.classic import ClassicPick
 from rob_box_mcp_tools.engine.engine_tools import SET_PLAYING
-from rob_box_voice.core.media_phrases import SET_PLAYING_REASON
-from rob_box_voice.core.music_player_state import MusicEvent
+from rob_box_dialog_host.media_phrases import SET_PLAYING_REASON
+from rob_box_dialog_host.music_player_state import MusicEvent
 
 from .test_engine_request_music import _tools
 from .test_engine_session import _rig, _started
