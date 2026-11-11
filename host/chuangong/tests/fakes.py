@@ -90,9 +90,17 @@ class FakeDocker:
         self.pulled: list[str] = []
         self.running = list(running)
         self.hotpatched = list(hotpatched)
+        self.image_ids = {}
+        self.running_ids = []
 
     def image_present(self, ref):
         return ref in self.present
+
+    def image_id(self, ref):
+        return self.image_ids.get(ref) if ref in self.present else None
+
+    def running_image_ids(self):
+        return sorted(self.running_ids)
 
     def pull(self, ref):
         if ref in self.fail:

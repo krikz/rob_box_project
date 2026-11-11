@@ -23,11 +23,17 @@ class State(str, Enum):
     NO_RELEASE = "no_release"  # указателя канала в реестре нет
     AVAILABLE = "available"  # релиз найден и подпись верна, на диск не скачан (режим observe)
     STAGED = "staged"  # бандл и образы роли лежат на диске заранее
+    ADOPTION_PLANNED = "adoption_planned"  # C1 dry-run: доказательства current найдены, состояние не записано
+    ADOPTED = "adopted"  # установленный legacy-стек доказанно соответствует подписанному релизу
+    PREFLIGHT_PASSED = "preflight_passed"  # C1 dry-run: staged/signature, HIL, dirty, место и current проверены
+    ACTIVATION_PLANNED = "activation_planned"  # C1 dry-run: preflight пройден, переключение не выполнялось
+    ROLLBACK_PLANNED = "rollback_planned"  # C1 dry-run: previous проверен, переключение не выполнялось
+    BLOCKED = "blocked"  # машинная причина в reason, сырые факты в detail
     FETCH_ERROR = "fetch_error"  # реестр недоступен, подпись не прошла, release.yaml битый
     STAGE_ERROR = "stage_error"  # нет места, обрыв скачивания, бандл не сошёлся, pull упал — повтор на следующем тике
 
 
-ERROR_STATES = frozenset({State.FETCH_ERROR, State.STAGE_ERROR})
+ERROR_STATES = frozenset({State.BLOCKED, State.FETCH_ERROR, State.STAGE_ERROR})
 
 
 class Mode(str, Enum):
@@ -61,7 +67,7 @@ def new_record(robot_id: str, node: str, channel: str, mode: Mode, prev: dict[st
         "ts": now_iso(),
         "state": None,
         "reason": None,
-        # current/previous меняет только активация (фаза C); в фазе B это всегда null — робот на старом деплое.
+        # C1 adoption пишет доказанный current; dry-run activation/rollback историю не меняет.
         "current": prev.get("current"),
         "previous": prev.get("previous"),
         "staged": prev.get("staged"),

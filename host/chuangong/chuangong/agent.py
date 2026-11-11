@@ -33,6 +33,7 @@ class Config:
     pubkey: Path = Path("/etc/chuangong/release.pub")
     state_dir: Path = Path("/var/lib/chuangong")
     releases_root: Path = Path("/opt/rob_box/releases")
+    legacy_root: Path = Path("/home/ros2/rob_box_project")
     docker_root: Path = Path("/var/lib/docker")
     zenoh_url: str = "http://127.0.0.1:8000"
     mode: st.Mode = st.Mode.OBSERVE
@@ -75,13 +76,16 @@ class FetchError(RuntimeError):
         self.detail = detail
 
 
-def fetch_release(cfg: Config, registry: Registry) -> dict[str, Any] | None:
-    """Указатель канала → release.yaml с проверенной подписью. None — канала в реестре нет."""
+def fetch_release(cfg: Config, registry: Registry, ref: str | None = None) -> dict[str, Any] | None:
+    """Канал или точное имя → release.yaml с проверенной подписью. None — нет указателя канала."""
+    reference = ref or cfg.channel
     try:
-        _, manifest = registry.get_manifest(rf.RELEASE_REPO, cfg.channel)
+        _, manifest = registry.get_manifest(rf.RELEASE_REPO, reference)
     except RegistryError as exc:
         if "HTTP 404" in str(exc):
-            return None
+            if ref is None:
+                return None
+            raise FetchError("release_not_found", f"{rf.RELEASE_REPO}:{reference}: {exc}") from exc
         raise FetchError("registry_unreachable", str(exc)) from exc
     try:
         rel_layer = rf.find_layer(manifest, rf.MT_RELEASE)
@@ -102,7 +106,9 @@ def fetch_release(cfg: Config, registry: Registry) -> dict[str, Any] | None:
     except rf.ReleaseError as exc:
         raise FetchError("bad_release", str(exc)) from exc
     if release["channel"] != cfg.channel:
-        raise FetchError("wrong_channel", f"указатель {cfg.channel} ведёт на релиз канала {release['channel']}")
+        raise FetchError("wrong_channel", f"указатель {reference} ведёт на релиз канала {release['channel']}")
+    if ref is not None and release["release"] != ref:
+        raise FetchError("wrong_release", f"запрошен {ref}, артефакт содержит {release['release']}")
     return release
 
 

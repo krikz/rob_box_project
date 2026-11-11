@@ -34,6 +34,10 @@ class StageError(RuntimeError):
 class Docker(Protocol):
     def image_present(self, ref: str) -> bool: ...
 
+    def image_id(self, ref: str) -> str | None: ...
+
+    def running_image_ids(self) -> list[str]: ...
+
     def pull(self, ref: str) -> None: ...
 
     def running_images(self) -> list[str]: ...
@@ -56,7 +60,23 @@ class DockerCli:
             return subprocess.CompletedProcess(["docker", *args], 127, "", f"docker {args[0]}: {exc}")
 
     def image_present(self, ref: str) -> bool:
-        return self._run("image", "inspect", "--format", "{{.Id}}", ref).returncode == 0
+        return self.image_id(ref) is not None
+
+    def image_id(self, ref: str) -> str | None:
+        res = self._run("image", "inspect", "--format", "{{.Id}}", ref)
+        image_id = res.stdout.strip()
+        return image_id if res.returncode == 0 and image_id else None
+
+    def running_image_ids(self) -> list[str]:
+        res = self._run("ps", "--format", "{{.ID}}")
+        if res.returncode != 0:
+            return []
+        ids = []
+        for container in (line.strip() for line in res.stdout.splitlines() if line.strip()):
+            inspected = self._run("inspect", "--format", "{{.Image}}", container)
+            if inspected.returncode == 0 and inspected.stdout.strip():
+                ids.append(inspected.stdout.strip())
+        return sorted(set(ids))
 
     def pull(self, ref: str) -> None:
         res = self._run("pull", "--quiet", ref, timeout=self.timeout_s)
