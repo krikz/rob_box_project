@@ -1253,9 +1253,11 @@ setup_custom_node() {
 # ═══════════════════════════════════════════════════════════════════════════
 # Ставит host/chuangong/install.sh: python3-yaml, python3-cryptography, код агента,
 # /opt/rob_box/releases, /var/lib/chuangong, /etc/chuangong/chuangong.env (режим observe), юниты.
-# Таймер НЕ включается, пока не задан ROBBOX_ENABLE_CHUANGONG=1. Включённый агент только смотрит
-# релиз в реестре и докладывает; ничего не скачивает и не переключает. Ключ проверки подписи —
-# CHUANGONG_PUBKEY_FILE (без него агент докладывает fetch_error: no_pubkey).
+# Внедрение постоянное (решение Шифу): install.sh всегда вызывается с --enable, таймер включается
+# на каждом узле main|vision|sound — оператор передаёт только тип узла. Агент в режиме observe
+# только смотрит релиз в реестре и докладывает; ничего не скачивает и не переключает. Ключ
+# проверки подписи всегда берём из репо — host/chuangong/keys/release.pub (без ключа агент
+# докладывал бы fetch_error: no_pubkey).
 
 setup_chuangong() {
     case "$NODE_TYPE" in
@@ -1270,11 +1272,10 @@ setup_chuangong() {
     fi
     local robot_id
     robot_id="$(sed -n 's/^ROBOT_ID=//p' "$DOCKER_COMPOSE_DIR/.env" 2>/dev/null | head -n 1)"
-    local args=(--node "$NODE_TYPE" --robot-id "${robot_id:-RBXU100001}")
-    [ "${ROBBOX_ENABLE_CHUANGONG:-0}" = 1 ] && args+=(--enable)
-    [ -n "${CHUANGONG_PUBKEY_FILE:-}" ] && args+=(--pubkey "$CHUANGONG_PUBKEY_FILE")
+    local pubkey="$HOME/rob_box_project/host/chuangong/keys/release.pub"
+    local args=(--node "$NODE_TYPE" --robot-id "${robot_id:-RBXU100001}" --enable --pubkey "$pubkey")
     if sudo CHUANGONG_USER="$USER" bash "$installer" "${args[@]}"; then
-        log_success "chuangong установлен (таймер: $([ "${ROBBOX_ENABLE_CHUANGONG:-0}" = 1 ] && echo включён || echo не включён))"
+        log_success "chuangong установлен (таймер: включён, режим observe)"
     else
         log_warning "Установка chuangong завершилась с ошибкой — остальная настройка узла не затронута"
     fi
