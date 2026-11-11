@@ -1,12 +1,11 @@
 """Regression tests for ``robbox-vision.service`` systemd unit (cold-start contract).
 
-Issue #2610 + PR #2635 — после ребута Vision Pi systemd-юнит
+Issues #2610, #4533 — после ребута Vision Pi systemd-юнит
 ``robbox-vision.service`` ОБЯЗАН:
 
 1. Поднять весь compose-стек с локального кэша (``--pull never``),
    даже если katana build-registry offline.
-2. Best-effort pre-pull (``--ignore-pull-failures``), чтобы при
-   доступном registry сначала обновить локальный кэш, а потом стартовать.
+2. Не делать pre-pull: образы обновляет деплой, автозапуск не ждёт registry.
 3. Не падать на ``docker compose ps`` post-action — там нужен
    ``-`` префикс, чтобы диагностический вывод не валил unit.
 4. Рестартовать при сбое (``Restart=on-failure`` + ``RestartSec``
@@ -21,7 +20,8 @@ Issue #2610 + PR #2635 — после ребута Vision Pi systemd-юнит
 ``Restart=on-failure``) — тесты красные.
 
 Refs:
-    * issue #2610 — корневая проблема
+    * issue #2610 — запуск стека на локальном кэше
+    * issue #4533 — pre-pull задерживал холодный старт
     * PR #2635 — фикс юнита
     * ADR-0111 — ликвидация отдельного образа voice-resources (образа и его
       init-контейнера больше нет; Renardo-сэмплы кладёт на хост Ресурсный пак
@@ -110,31 +110,17 @@ def test_exec_start_does_not_use_pull_always() -> None:
 
 
 # --------------------------------------------------------------------------- #
-# 2. ExecStartPre: best-effort pull с --ignore-pull-failures
+# 2. ExecStartPre: нет pull из registry
 # --------------------------------------------------------------------------- #
 
 
-def test_exec_start_pre_is_best_effort_pull() -> None:
-    """``ExecStartPre`` обязан быть best-effort (``-`` prefix + ``--ignore-pull-failures``).
-
-    Если registry доступен — pre-pull обновит локальный кэш. Если
-    offline — не должен валить unit (Type=oneshot упадёт, а с ним
-    весь стек не поднимется).
-    """
+def test_exec_start_pre_does_not_pull_images() -> None:
+    """Автозапуск не ждёт registry: образы обновляет деплой (issue #4533)."""
     body = _extract_unit_template()
-    match = re.search(r"^ExecStartPre=(.+)$", body, re.MULTILINE)
-    assert match is not None, "ExecStartPre отсутствует — нет best-effort pull"
-    pre_cmd = match.group(1)
-    assert pre_cmd.startswith("-"), (
-        f"ExecStartPre должен начинаться с '-' (ignore-error), "
-        f"иначе ненулевой exit от pull уронит unit. Текущее: {pre_cmd!r}"
-    )
-    assert "pull" in pre_cmd.lower(), (
-        f"ExecStartPre должен вызывать 'docker compose pull'. Текущее: {pre_cmd!r}"
-    )
-    assert "--ignore-pull-failures" in pre_cmd, (
-        f"ExecStartPre должен игнорировать pull-фейлы (best-effort), иначе "
-        f"при недоступном registry unit опять упадёт. Текущее: {pre_cmd!r}"
+    pre_commands = re.findall(r"^ExecStartPre=(.+)$", body, re.MULTILINE)
+    assert not any("docker compose pull" in command for command in pre_commands), (
+        "ExecStartPre не должен вызывать docker compose pull: при недоступном "
+        f"registry это задерживает холодный старт. Текущие команды: {pre_commands!r}"
     )
 
 

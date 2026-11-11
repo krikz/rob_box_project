@@ -1,19 +1,12 @@
 """Regression tests for the systemd unit template embedded in
 ``scripts/setup/setup_vision_pi.sh``.
 
-Issue #2610 — ``robbox-vision.service`` падал после ребута, потому что:
+Issues #2610, #4533 — ``robbox-vision.service`` должен переживать холодный старт:
 
-* ``ExecStart=docker compose up -d`` без ``--pull never``, и registry
-  (``10.1.1.249:5000``, katana build-host) недоступен → весь стек
-  падает с ``no route to host`` → ``systemd exit 1``.
-* ``Type=oneshot`` без ``Restart=on-failure`` → после первого фейла
-  systemd больше не пытается, контейнеры не поднимаются вообще.
-
-Фикс (t_708c5c05):
-* ``ExecStartPre=-docker compose pull --ignore-pull-failures``
-  — best-effort обновление, не блокирует запуск.
-* ``ExecStart=docker compose up -d --pull never``
-  — гарантированный запуск на локальном кэше.
+* ``ExecStart=docker compose up -d --pull never`` запускает стек
+  на локальном кэше даже при недоступном registry.
+* ``Type=oneshot`` с ``Restart=on-failure`` повторяет запуск после сбоя.
+* Pre-pull запрещён: образы обновляет деплой, автозапуск не ждёт registry.
 * ``ExecStartPost=-docker compose ps --format json``
   — логирование итогов с exit-codes для диагностики.
 * ``Restart=on-failure`` + ``RestartSec=30``
@@ -23,13 +16,13 @@ Issue #2610 — ``robbox-vision.service`` падал после ребута, п
 
 Эти тесты извлекают heredoc-блок из ``setup_vision_pi.sh`` и проверяют,
 что все ключевые элементы фикса на месте и в правильных секциях.
-Если кто-то уберёт ``--pull never``, тест покраснеет — ровно то, что
-нам нужно как регрессионный guard.
+Если кто-то уберёт ``--pull never`` или вернёт pre-pull, тест покраснеет.
 
 Refs:
-    * issue #2610 — root cause
+    * issue #2610 — запуск стека на локальном кэше
+    * issue #4533 — pre-pull задерживал холодный старт
     * t_51c4b1a9 — разведка
-    * t_708c5c05 — этот фикс
+    * t_708c5c05 — исходный фикс
 """
 
 from __future__ import annotations
@@ -96,20 +89,13 @@ def test_unit_template_has_pull_never_in_exec_start() -> None:
     )
 
 
-def test_unit_template_has_best_effort_pull_in_exec_start_pre() -> None:
-    """ExecStartPre обязан быть best-effort (--ignore-pull-failures)."""
+def test_unit_template_has_no_registry_pull_in_exec_start_pre() -> None:
+    """Автозапуск не ждёт registry: образы обновляет деплой (issue #4533)."""
     body = _extract_unit_template()
-    match = re.search(r"^ExecStartPre=(.+)$", body, re.MULTILINE)
-    assert match is not None, "ExecStartPre отсутствует — нет best-effort pull"
-    pre_cmd = match.group(1)
-    # Префикс '-' разрешает ненулевой exit code (для oneshot это обязательно).
-    assert pre_cmd.startswith("-"), (
-        f"ExecStartPre должен начинаться с '-' (ignore-error), "
-        f"иначе ненулевой exit от pull уронит unit. Текущее: {pre_cmd!r}"
-    )
-    assert "--ignore-pull-failures" in pre_cmd, (
-        f"ExecStartPre должен игнорировать pull-фейлы (best-effort), иначе "
-        f"при недоступном registry unit опять упадёт. Текущее: {pre_cmd!r}"
+    pre_commands = re.findall(r"^ExecStartPre=(.+)$", body, re.MULTILINE)
+    assert not any("docker compose pull" in command for command in pre_commands), (
+        "ExecStartPre не должен вызывать docker compose pull: при недоступном "
+        f"registry это задерживает холодный старт. Текущие команды: {pre_commands!r}"
     )
 
 

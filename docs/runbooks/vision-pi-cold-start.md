@@ -57,9 +57,9 @@ ssh pi@vision-pi 'cat ~/.local/state/robbox_vision_health.prom'
 
 ### A. «Registry недоступен, docker pull падает»
 
-**Симптомы:** `ExecStartPre=-docker compose pull --ignore-pull-failures`
-вернул код ошибки; в journal видно `no such host`/`i/o timeout` для
-`ghcr.io` или build-host (katana, 10.1.1.249:5000).
+**Симптомы:** pull при деплое или ручном обновлении вернул ошибку;
+в выводе видно `no such host`/`i/o timeout` для `ghcr.io` или build-host
+(katana, 10.1.1.249:5000).
 
 **Что делать:**
 
@@ -67,10 +67,9 @@ ssh pi@vision-pi 'cat ~/.local/state/robbox_vision_health.prom'
    ```bash
    ssh pi@vision-pi 'docker compose pull 2>&1 | head -20'
    ```
-2. Если registry действительно лежит — это **ожидаемо**. `ExecStart`
-   использует `--pull never`, поэтому стек поднимется на локальном кэше.
-   Алерт false-positive: registry вернётся, следующий pull через
-   `update_and_restart.sh` подтянет свежее.
+2. Холодный старт не зависит от этой ошибки: `robbox-vision.service`
+   не делает pre-pull, а `ExecStart` использует `--pull never`, поэтому
+   стек поднимается на локальном кэше. Образы обновляет деплой.
 3. Если registry недоступен **долго** (>30 минут) — пинговать
    katana-владельца или проверить firewall.
 
