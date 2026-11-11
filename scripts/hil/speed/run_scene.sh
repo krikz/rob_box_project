@@ -2,8 +2,17 @@
 # Набор «предельная скорость» (решение Шифу 09.11): один прогон одной сцены на одной скорости в HIL.
 #
 #   scripts/hil/speed/run_scene.sh <сцена> <скорость|base> <повтор>
-#     сцена: polygon (проёмы 0.90–1.10 туда и обратно), turn90 (Г-поворот), depot (внезапная стенка + прямая 2×≈20 м)
-#     base — боевой nav2_params.yaml без оверлея (точка отсчёта)
+#     сцена: polygon (проёмы 0.90–1.10 туда и обратно), turn90 (Г-поворот), depot (внезапная стенка + прямая 2×≈20 м),
+#            dead_end_out (спавн → разворот к выходу), dead_end_back (из тупика назад)
+#     base — боевой nav2_params.yaml без оверлея скорости (точка отсчёта)
+#
+# Дополнительные оверлеи и зоны скорости (решение Шифу 10.11):
+#   SPEED_EXTRA_OVERLAYS='a.yaml b.yaml' — локальные yaml → /tmp/hil/nav2tune/, кладутся в Nav2 после speed.yaml;
+#   SPEED_ZONES=1 — включить зоны: маска SpeedFilter (world-режим из sdf сцены, либо SPEED_MASK_LOCAL/ SPEED_MASK_NPZ),
+#                 оверлей берётся из docker/main/config/nav2/speed_zones.yaml репо, публикаторы маски — docker exec
+#                 в контейнер nav2 (боевой checkout на Main Pi старый, штатный блок start_nav2_direct.sh недоступен).
+#   SPEED_MASK_LOCAL=<yaml> — готовая маска (pgm рядом), SPEED_MASK_NPZ=<npz> — снимок карты для depot (world-кадр).
+#   Для зон speed — базовая скорость зала (0.35): маска только понижает её у стен/в тесноте.
 #
 # HIL уже включён (scripts/hil/hil.sh on с HIL_SANDBOX_REPO=$SPEED_SANDBOX_DIR после sandbox_prep.sh).
 # Сброс позы: gazebo пересоздаётся со спавном сцены, на Main Pi пересоздаются сервисы с sim time
@@ -16,6 +25,11 @@ export MSYS_NO_PATHCONV=1 PYTHONIOENCODING=utf-8
 
 scene="$1"; speed="$2"; rep="$3"
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "$HERE/../../.." && pwd)"
+# Пути для локального python: под MSYS абсолютный /tmp и /d/… для Windows-python — это C:\tmp / несуществующий диск.
+# cygpath -m чинит; на Linux-машине оператора cygpath нет — путь остаётся как есть.
+py_path() { cygpath -m "$1" 2>/dev/null || printf '%s' "$1"; }
+REPO_ROOT_M="$(py_path "$REPO_ROOT")"
 # Windows-python не понимает /d/… при MSYS_NO_PATHCONV=1
 PYHERE="$(cygpath -m "$HERE" 2>/dev/null || echo "$HERE")"
 : "${SPEED_OUT:?SPEED_OUT — каталог результатов на машине оператора}"
@@ -46,7 +60,11 @@ case "$scene" in
         # полоса y=1.3 свободна от x −3 до 23 (карта покрытия 09.11: ±0.75 м без занятых клеток)
         world=depot; spawn="-2.5 1.3 0"
         tasks="o:OBST:22,1.3,0@200,3.0,1.5;g:DE:22,1.3,0@240;g:DW:-2,1.3,3.1416@300" ;;
-    *) echo "сцена '$scene': polygon | turn90 | depot" >&2; exit 2 ;;
+    dead_end_out)
+        world=dead_end; spawn="0 0 0"; tasks="g:turn_out:-2.5,0,3.1416@100" ;;
+    dead_end_back)
+        world=dead_end; spawn="-2.5 0 3.1416"; tasks="g:back_in:0,0,0@100" ;;
+    *) echo "сцена '$scene': polygon | turn90 | depot | dead_end_out | dead_end_back" >&2; exit 2 ;;
 esac
 read -r SX SY SYAW <<<"$spawn"
 # Таймауты целей рассчитаны на 0.15 м/с и выше; ниже — растягиваются в 0.15/v раз, чтобы медленный робот не
@@ -82,6 +100,53 @@ EOF
     ssh "${SSHO[@]}" "$SPEED_MAIN" "mkdir -p /tmp/hil/nav2tune && cat > /tmp/hil/nav2tune/speed.yaml" <"$RES/speed.yaml"
     overlay="/nav2tune/speed.yaml"
 fi
+# Дополнительные оверлеи (Г1, зоны): локальные файлы → /tmp/hil/nav2tune/ → Nav2 после speed.yaml.
+for f in ${SPEED_EXTRA_OVERLAYS:-}; do
+    base=$(basename "$f")
+    ssh "${SSHO[@]}" "$SPEED_MAIN" "mkdir -p /tmp/hil/nav2tune && cat > /tmp/hil/nav2tune/$base" <"$f"
+    overlay="$overlay /nav2tune/$base"
+    log "доп. оверлей: $f → /nav2tune/$base"
+done
+overlay="${overlay# }"
+# Зоны скорости: маска + оверлей конфигурации + публикаторы в контейнер nav2 (после его пересоздания).
+ZONES=0
+if [ "${SPEED_ZONES:-0}" = 1 ]; then
+    ZONES=1
+    mask_dir="$RES/mask"
+    mkdir -p "$mask_dir"
+    if [ -n "${SPEED_MASK_LOCAL:-}" ]; then
+        cp "$SPEED_MASK_LOCAL" "$mask_dir/speed_mask.yaml"
+        cp "$(dirname "$SPEED_MASK_LOCAL")/$(grep -m1 '^image:' "$SPEED_MASK_LOCAL" | awk '{print $2}')" "$mask_dir/"
+    else
+        map_pose="$SX $SY $SYAW"
+        case "$scene" in
+            depot)
+                npz="${SPEED_MASK_NPZ:-$SPEED_SANDBOX_DIR/out/coverage_plan_full/plan_map.npz}"
+                [ -f "$npz" ] || sb "cat $npz" >"$RES/plan_map.npz"
+                [ -f "$RES/plan_map.npz" ] || { log "❌ нет снимка карты $npz (SPEED_MASK_NPZ)"; exit 2; }
+                npz="$RES/plan_map.npz" ;;
+            *) npz="" ;;
+        esac
+        case "$scene" in
+            depot)
+                ( cd "$REPO_ROOT" && PYTHONPATH="$REPO_ROOT_M/src/rob_box_sim" python -m rob_box_sim.speed_zones map "$(py_path "$npz")" \
+                    --map-pose $map_pose --out "$(py_path "$mask_dir/speed_mask")" ) >>"$RES/run.log" 2>&1 ;;
+            *)
+                sdf="$REPO_ROOT/src/rob_box_sim/worlds/$world.sdf"
+                [ -f "$sdf" ] || { log "❌ нет sdf $sdf для маски зон"; exit 2; }
+                ( cd "$REPO_ROOT" && PYTHONPATH="$REPO_ROOT_M/src/rob_box_sim" python -m rob_box_sim.speed_zones world "$(py_path "$sdf")" \
+                    --map-pose $map_pose --out "$(py_path "$mask_dir/speed_mask")" ) >>"$RES/run.log" 2>&1 ;;
+        esac
+        [ -f "$mask_dir/speed_mask.yaml" ] || { log "❌ маска зон не создана (run.log)"; exit 2; }
+    fi
+    ssh "${SSHO[@]}" "$SPEED_MAIN" "mkdir -p /tmp/hil/nav2tune/mask && cat > /tmp/hil/nav2tune/mask/speed_mask.yaml" <"$mask_dir/speed_mask.yaml"
+    ssh "${SSHO[@]}" "$SPEED_MAIN" "cat > /tmp/hil/nav2tune/mask/speed_mask.pgm" <"$mask_dir/speed_mask.pgm"
+    ssh "${SSHO[@]}" "$SPEED_MAIN" "mkdir -p /tmp/hil/nav2tune && cat > /tmp/hil/nav2tune/zones.yaml" \
+        <"$REPO_ROOT/docker/main/config/nav2/speed_zones.yaml"
+    overlay="$overlay /nav2tune/zones.yaml"
+    overlay="${overlay# }"
+    log "зоны скорости: маска $mask_dir → /tmp/hil/nav2tune/mask, оверлей zones.yaml"
+fi
 # CRLF из чекаута на Windows срезается на той стороне (tr -d '\r')
 ssh "${SSHO[@]}" "$SPEED_MAIN" "tr -d '\r' > /tmp/hil/nav2tune.compose.yaml" <"$HERE/nav2tune.compose.yaml"
 ssh "${SSHO[@]}" "$SPEED_SANDBOX" "mkdir -p /home/ros2/shidi-speed && tr -d '\r' > /home/ros2/shidi-speed/sim_spawn.compose.yaml" \
@@ -106,17 +171,61 @@ T0=$(mn "date -u +%Y-%m-%dT%H:%M:%SZ")
 mn "mkdir -p $maps && cd ~/rob_box_project/docker/main && HIL_MAPS_DIR=$maps HIL_RTABMAP_MODE=mapping HIL_GUARD_SOUND=\${HIL_GUARD_SOUND:-on} NAV2TUNE_OVERLAYS='$overlay' docker compose -f docker-compose.yaml -f /tmp/hil/main.images.yaml -f /tmp/hil/main.hil.yaml $extra up -d --no-deps --pull never --force-recreate $MAINSVC" >>"$RES/run.log" 2>&1 \
     || { log "❌ Main: пересоздание не прошло"; exit 4; }
 mn "docker inspect -f '{{range .Config.Env}}{{println .}}{{end}}' nav2 | grep -E 'NAV2_PARAMS_OVERLAYS|USE_SIM_TIME'" >>"$RES/run.log" 2>&1
+# 2b. зоны скорости: публикаторы маски внутри контейнера nav2 (образ содержит nav2_map_server;
+#     на боевом checkout Main Pi штатного блока start_nav2_direct.sh ещё нет). Detached: живут
+#     до пересоздания nav2. lifecycle_manager (autostart) поднимает оба узла; маска и
+#     filter_info — latched: nav2 заберёт их в любой момент после активации.
+if [ "$ZONES" = 1 ]; then
+    mn "docker exec -d nav2 bash -c 'source /opt/ros/humble/setup.bash; ros2 run nav2_map_server map_server --ros-args -p use_sim_time:=true -r __node:=speed_mask_server -r map:=speed_filter_mask -p yaml_filename:=/nav2tune/mask/speed_mask.yaml & ros2 run nav2_map_server costmap_filter_info_server --ros-args -p use_sim_time:=true -r __node:=costmap_filter_info_server -p type:=2 -p base:=0.0 -p multiplier:=0.01 -p mask_topic:=/speed_filter_mask -p filter_info_topic:=/costmap_filter_info & ros2 run nav2_lifecycle_manager lifecycle_manager --ros-args -p use_sim_time:=true -r __node:=lifecycle_manager_speed_mask -p autostart:=true -p node_names:=[speed_mask_server,costmap_filter_info_server] & wait'" >>"$RES/run.log" 2>&1 \
+        || { log "❌ публикаторы маски не запустились"; exit 4; }
+    mask_ok=""
+    for _ in $(seq 1 12); do
+        mask_ok=$(mn "docker exec nav2 bash -lc 'source /opt/ros/humble/setup.bash && timeout 15 ros2 topic echo --once /speed_filter_mask >/dev/null 2>&1 && echo OK'" 2>/dev/null)
+        [ "$mask_ok" = OK ] && break
+        sleep 5
+    done
+    [ "$mask_ok" = OK ] || { log "❌ маска зон не опубликовалась за ~3 мин (docker logs nav2)"; exit 4; }
+    log "маска зон опубликована (latched): /speed_filter_mask + /costmap_filter_info"
+fi
 # 3–4. сим вверх со спавном сцены, ровно один /controller_manager. Сторож gazebo отказывает, пока не видит
 # /robot_state_publisher робота (Main только что пересоздан) — тогда gazebo выходит, и пробуем ещё раз.
 # Оба контроллера сима активны. 09.11 в Depot joint_state_broadcaster падал «Switch controller timed out»:
 # odom→base_footprint на Main не появлялся, Nav2 не поднимался 7 мин — такой сим пересоздаём сразу.
+# Число активных контроллеров сима. В выводе list_controllers ANSI-краски:
+# активное состояние — «[92mactive», неактивное — «[96minactive» (подстрока active есть
+# и там), поэтому матч по подстроке active с исключением inactive.
+sim_active_count() {
+    sb "docker exec $G /entrypoint.sh bash -lc 'ros2 control list_controllers --controller-manager /controller_manager 2>/dev/null'" \
+        | awk '/active/ && !/inactive/ { n++ } END { print n + 0 }'
+}
+# У Depot joint_state_broadcaster часто не влезает в 5-с окно switch: меши грузятся,
+# controller_manager не отвечает (§11.4). Контроллер остаётся сконфигурированным —
+# добиваем его вручную. Не сразу после спавна: мир ещё грузится, switch не проходит —
+# терпеливо повторяем, пока оба не станут active.
+sim_activate_jsb() {
+    local n i
+    for i in $(seq 1 6); do
+        sb "docker exec $G /entrypoint.sh bash -lc 'ros2 control switch_controllers --controller-manager /controller_manager --activate joint_state_broadcaster >/dev/null 2>&1'" || true
+        sleep 7
+        n=$(sim_active_count)
+        [ "${n:-0}" -ge 2 ] && return 0
+    done
+    return 1
+}
 sim_controllers_ok() {
-    local ok bad
+    local n bad
     for _ in $(seq 1 12); do
-        ok=$(sb "docker logs $G 2>&1 | grep -c 'Configured and activated'")
+        n=$(sim_active_count)
+        [ "${n:-0}" -ge 2 ] && return 0
         bad=$(sb "docker logs $G 2>&1 | grep -cE 'Failed to activate controller|spawner.*process has died'")
-        [ "${bad:-0}" -gt 0 ] && { log "контроллер сима не активировался (spawner) — пересоздаю сим"; return 1; }
-        [ "${ok:-0}" -ge 2 ] && return 0
+        if [ "${bad:-0}" -gt 0 ]; then
+            log "spawner не активировал контроллер — пробую ручной switch joint_state_broadcaster"
+            sim_activate_jsb
+            n=$(sim_active_count)
+            [ "${n:-0}" -ge 2 ] && return 0
+            log "ручной switch не помог — пересоздаю сим"
+            return 1
+        fi
         sleep 5
     done
     log "контроллеры сима не активны за 60 с — пересоздаю сим"; return 1
@@ -175,13 +284,13 @@ mn "docker logs --since $T0 nav2 2>&1 | grep -vE 'missed its desired rate'" >"$R
 missed=$(mn "docker logs --since $T0 nav2 2>&1 | grep -cE 'missed its desired rate'")
 mn "docker logs --since $T0 rtabmap 2>&1 | tail -100" >"$RES/rtabmap.log"
 echo "$missed" >"$RES/nav2_missed.txt"
-python "$PYHERE/speed_verdict.py" cpu "$RES/cpu.log" >"$RES/cpu.json"
-python - "$RES/cpu.json" "$missed" "$RES/main.json" <<'EOF'
+python "$PYHERE/speed_verdict.py" cpu "$(py_path "$RES/cpu.log")" >"$RES/cpu.json"
+python - "$(py_path "$RES/cpu.json")" "$missed" "$(py_path "$RES/main.json")" <<'EOF'
 import json, sys
 d = json.load(open(sys.argv[1], encoding="utf-8"))
 d["nav2_missed"] = int(sys.argv[2] or 0)
 json.dump(d, open(sys.argv[3], "w", encoding="utf-8"), ensure_ascii=False)
 EOF
-python "$PYHERE/speed_verdict.py" run "$RES/result.json" "$RES/main.json" --speed "$([ "$speed" = base ] && echo 0.15 || echo "$speed")" \
-    --scene "$scene" --rep "$rep" --label "$label" --ledger "$SPEED_OUT/ledger${SPEED_LEDGER_SUFFIX:-}.jsonl" | tee "$RES/verdict.txt" | tee -a "$RES/run.log"
+python "$PYHERE/speed_verdict.py" run "$(py_path "$RES/result.json")" "$(py_path "$RES/main.json")" --speed "$([ "$speed" = base ] && echo 0.15 || echo "$speed")" \
+    --scene "$scene" --rep "$rep" --label "$label" --ledger "$(py_path "$SPEED_OUT/ledger${SPEED_LEDGER_SUFFIX:-}.jsonl")" | tee "$RES/verdict.txt" | tee -a "$RES/run.log"
 log "стопов защиты (→ stop): $(grep -c '→ stop' "$RES/guard.log"); missed rate: $missed"

@@ -31,6 +31,25 @@ for overlay in "${OVERLAYS[@]}"; do
     fi
     PARAMS_ARGS+=(--params-file "$overlay")
 done
+# Зоны скорости (решение Шифу 10.11): штатный SpeedFilter Nav2 — оверлей
+# /config/nav2/speed_zones.yaml плюс публикаторы маски (ниже). Только когда задан
+# NAV2_SPEED_MASK_YAML — путь к yaml маски внутри контейнера. Генератор маски:
+# python3 -m rob_box_sim.speed_zones (маска пересчитывается после смены карты).
+# Маски нет, а переменная задана — не стартуем: ехать на базовой скорости без
+# ограничений зон небезопасно, и это должно быть видно, а не молчаливо.
+SPEED_ZONES_ON=false
+case "${NAV2_SPEED_MASK_YAML:-}" in
+    "") ;;
+    *)
+        if [ ! -f "$NAV2_SPEED_MASK_YAML" ]; then
+            echo "❌ ОШИБКА: NAV2_SPEED_MASK_YAML='$NAV2_SPEED_MASK_YAML' не найден в контейнере" >&2
+            exit 1
+        fi
+        SPEED_ZONES_ON=true
+        PARAMS_ARGS+=(--params-file /config/nav2/speed_zones.yaml)
+        echo "Зоны скорости: маска '$NAV2_SPEED_MASK_YAML' + оверлей /config/nav2/speed_zones.yaml"
+        ;;
+esac
 CONTROLLER_REMAP=()
 SMOOTHER_REMAP=()
 case "${NAV2_SMOOTH_CMD_VEL:-false}" in
@@ -133,6 +152,35 @@ ros2 run nav2_smoother smoother_server \
     -r __node:=smoother_server \
     -r /tf:=tf \
     -r /tf_static:=tf_static &
+
+# Публикаторы маски зон скорости: map_server (маска как «карта», mode scale в yaml)
+# и costmap_filter_info_server (type=SPEED_FILTER_ABSOLUTE, base 0.0, multiplier 0.01).
+# Оба узла lifecycle — поднимает свой lifecycle_manager (autostart).
+if [ "$SPEED_ZONES_ON" = true ]; then
+    ros2 run nav2_map_server map_server \
+        --ros-args \
+        "${SIM_TIME_ROS_ARGS[@]}" \
+        -r __node:=speed_mask_server \
+        -r map:=speed_filter_mask \
+        -r /tf:=tf \
+        -r /tf_static:=tf_static \
+        -p yaml_filename:="$NAV2_SPEED_MASK_YAML" &
+    ros2 run nav2_map_server costmap_filter_info_server \
+        --ros-args \
+        "${SIM_TIME_ROS_ARGS[@]}" \
+        -r __node:=costmap_filter_info_server \
+        -p type:=2 \
+        -p base:=0.0 \
+        -p multiplier:=0.01 \
+        -p mask_topic:=/speed_filter_mask \
+        -p filter_info_topic:=/costmap_filter_info &
+    ros2 run nav2_lifecycle_manager lifecycle_manager \
+        --ros-args \
+        "${SIM_TIME_ROS_ARGS[@]}" \
+        -r __node:=lifecycle_manager_speed_mask \
+        -p autostart:=true \
+        -p node_names:=[speed_mask_server,costmap_filter_info_server] &
+fi
 
 # Держим скрипт живым
 wait
