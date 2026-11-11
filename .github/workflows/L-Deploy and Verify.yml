@@ -36,6 +36,11 @@ on:
         required: false
         default: false
         type: boolean
+      force_hil_unlock:
+        description: 'Пропустить проверку HIL-замка (осторожно: снимает лишь проверку, замок на Pi НЕ удаляется)'
+        required: false
+        type: boolean
+        default: false
       # Issue #1527: трейсинг «кто дёрнул workflow». Все скрипты/воркеры
       # используют твой GH_TOKEN, поэтому triggering_actor.login всегда = krikz.
       # Эти опциональные поля заполняются самими скриптами (agent-flow-*),
@@ -142,6 +147,35 @@ jobs:
               echo "registry_display=Skipping pull (using existing local images)" >> $GITHUB_ENV
               ;;
           esac
+
+          # Issue #4653 (инцидент 10.11, run 42861316455): rerun этого
+          # workflow выкачал голые теги *-humble-latest из локального
+          # registry (teleop/ros2-control от 28.09, voice/supervisor от
+          # 20.10) → контейнеры пересоздались на старых образах → робот
+          # деградировал. Причина НЕ в механике rerun: GitHub честно
+          # повторяет inputs каждой попытки (все 5 attempt'ов run'а имели
+          # одинаковые env), а сам run был задиспатчен с
+          # environment=production (default формы) вместе с
+          # registry_source=local. Дальше цепочка по коду: production →
+          # IMAGE_TAG=latest (case выше), а шаги pull/start грузят
+          # .image-versions.${IMAGE_TAG} лишь при registry_source != 'local'
+          # («[… Pi] Pull Docker Images», условие '[ 'local' != 'local' ]')
+          # → compose разрешает образы в голый ${IMAGE_TAG} = latest.
+          # Голый latest локальный registry обновляет только релизная
+          # сборка с main; ежедневные develop-сборки пушат только dev-теги,
+          # поэтому latest там месяцами старше свежей сборки. Комбинация
+          # local+production недокументирована
+          # (docs/deployment/DEPLOYMENT_WORKFLOW.md: production → github/skip,
+          # local → staging/test) и ни одна автоматика её не использует.
+          # Rerun такого run молча повторил бы старьё снова — честный FAIL
+          # (ADR-0018) здесь, ДО любого SSH на Pi, вместо тихой деградации
+          # робота. Диспатч и rerun после этого гарда ведут себя одинаково:
+          # оба падают с понятной ошибкой, пока не выбрана документированная
+          # комбинация.
+          if [ "${{ inputs.registry_source }}" = "local" ] && [ "${{ inputs.environment }}" = "production" ]; then
+            echo "::error title=Issue #4653 — недопустимая комбинация параметров::registry_source=local + environment=production выкачает голые теги *-humble-latest из локального registry — их обновляет только релизная сборка с main (на момент инцидента им было ~6 недель). Деплой свежей develop-сборки: environment=staging (IMAGE_TAG=dev). Production: registry_source=github (ghcr) или registry_source=skip (рестарт без pull). Rerun этого run снова упадёт здесь — задиспатчь правильную комбинацию."
+            exit 1
+          fi
 
           echo "branch=${{ github.ref_name }}" >> $GITHUB_OUTPUT
           echo "timestamp=$(date -u '+%Y-%m-%d %H:%M:%S UTC')" >> $GITHUB_OUTPUT
@@ -295,10 +329,19 @@ jobs:
       # намеренно остановлен, а стек навигации едет по Gazebo. Деплой (down + up -d)
       # поднял бы моторы рядом со вторым /controller_manager. Шаг стоит ДО любых
       # остановок на Pi: при замке /tmp/hil.lock деплой падает с понятной ошибкой.
+      # Выход check_hil_lock.sh: 1 — замок HIL (намеренный отказ), 2 — Main Pi молчит
+      # (настоящий сбой). Замок пишем в output: «Deployment Summary» не заводит по нему
+      # карточку деплоя (карточка про сбой выкладки, а тут выкладки не было).
       - name: "[Main Pi] HIL lock (#4371)"
-        if: '!inputs.dry_run'
+        id: hil_lock
+        if: '!inputs.dry_run && !inputs.force_hil_unlock'
         run: |
-          bash scripts/deploy/check_hil_lock.sh             sshpass -p 'open' ssh -o LogLevel=ERROR $SSH_OPTS ros2@${{ env.main_pi_ip }}
+          rc=0
+          bash scripts/deploy/check_hil_lock.sh             sshpass -p 'open' ssh -o LogLevel=ERROR $SSH_OPTS ros2@${{ env.main_pi_ip }} || rc=$?
+          if [ "$rc" -eq 1 ]; then
+            echo "hil_locked=true" >> "$GITHUB_OUTPUT"
+          fi
+          exit "$rc"
 
       - name: Dry Run Notice
         if: inputs.dry_run
@@ -334,7 +377,9 @@ jobs:
               "cd ~/rob_box_project && \
                git fetch origin && \
                git checkout ${{ github.ref_name }} && \
-               git reset --hard origin/${{ github.ref_name }}" \
+               git reset --hard origin/${{ github.ref_name }} && \
+               git submodule sync --recursive && \
+               git submodule update --init --recursive" \
               && break
             echo "⚠️  Attempt $attempt failed, retrying in 5s..."
             sleep 5
@@ -594,7 +639,9 @@ jobs:
               "cd ~/rob_box_project && \
                git fetch origin && \
                git checkout ${{ github.ref_name }} && \
-               git reset --hard origin/${{ github.ref_name }}" \
+               git reset --hard origin/${{ github.ref_name }} && \
+               git submodule sync --recursive && \
+               git submodule update --init --recursive" \
               && break
             echo "⚠️  Attempt $attempt failed, retrying in 5s..."
             sleep 5
@@ -865,10 +912,27 @@ jobs:
               "cd ~/rob_box_project && \
                git fetch origin && \
                git checkout ${{ github.ref_name }} && \
-               git reset --hard origin/${{ github.ref_name }}" \
+               git reset --hard origin/${{ github.ref_name }} && \
+               git submodule sync --recursive && \
+               git submodule update --init --recursive" \
               && break
             echo "⚠️  Attempt $attempt failed, retrying in 5s..."
             sleep 5
+          done
+
+      # #4579: сабмодули после reset --hard должны стоять на записанных коммитах.
+      # Расхождение — предупреждение в итог деплоя, не падение.
+      - name: "[All Pi] Verify submodules at recorded commits (#4579)"
+        if: '!inputs.dry_run'
+        run: |
+          for pair in "Main:${{ env.main_pi_ip }}" "Vision:${{ env.vision_pi_ip }}" "Sound:${{ env.sound_pi_ip }}"; do
+            name="${pair%%:*}"; ip="${pair#*:}"
+            out=$(sshpass -p 'open' ssh $SSH_OPTS ros2@"$ip" "cd ~/rob_box_project && git submodule status" 2>&1) || true
+            echo "[$name Pi] git submodule status:"; echo "$out"
+            if echo "$out" | grep -qE '^[+U-]'; then
+              echo "::warning::[$name Pi] сабмодули не на записанных коммитах (#4579): $(echo "$out" | grep -E '^[+U-]' | tr '\n' ';')"
+              echo "⚠️ [$name Pi] сабмодули не на записанных коммитах (#4579)" >> "$GITHUB_STEP_SUMMARY"
+            fi
           done
 
       - name: "[Main Pi] .image-versions — из текущей ветки (реверт #1139 v2, 15.08)"
@@ -1543,7 +1607,13 @@ jobs:
           # Wait for Container Initialization is skipped when an earlier deploy step fails.
           # That is a deployment failure, not a user cancellation. Use job.status so
           # the existing issue creation step receives deploy_status=issues for failures.
-          if [ "${{ job.status }}" = "cancelled" ]; then
+          if [ "${{ steps.hil_lock.outputs.hil_locked }}" = "true" ]; then
+            echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+            echo "⏸️  DEPLOY SKIPPED: HIL включён (замок на Main Pi)"
+            echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+            echo "Выкладки не было, проверять нечего; карточку деплоя не трогаем (run красный сам по себе)."
+            echo "deploy_status=hil_locked" >> "$GITHUB_OUTPUT"
+          elif [ "${{ job.status }}" = "cancelled" ]; then
             echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
             echo "⚠️  DEPLOYMENT RUN CANCELLED OR SKIPPED"
             echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"

@@ -14,7 +14,7 @@ from rob_box_dialog.address import VOICE, Addressed
 from rob_box_dialog.command import Command, Invalid, ToolCall
 from rob_box_dialog.session import Session
 from rob_box_dialog.tools_view import available_tools, requested_groups
-from rob_box_dialog.turn import Answer, TurnEngine
+from rob_box_dialog.turn import Answer, TurnEngine, settle
 
 from test_actions_cap_4391 import Ports, _deletes
 
@@ -80,12 +80,18 @@ def test_the_phrase_list_waypoints_teaches_opens_the_slice_with_save_waypoint():
         assert "save_waypoint" in _slice(f"Робот, {phrase} хил-один"), phrase
 
 
-# -- «Готово.» + пояснение ----------------------------------------------------------------------------------------
+# -- «Готово.» отдельной фразой не звучит ----------------------------------------------------------------------
 
-def test_capped_turn_says_one_phrase_not_done_plus_explanation():
+def test_chain_says_plan_and_one_summary_not_a_bare_done():
+    """#4406: голое «Готово.» и пояснение подряд - две фразы. У вереницы (ADR-0165) - план и один итог кодом."""
     ports = Ports([Answer(Command(actions=tuple(ToolCall(a["tool"], a["args"]) for a in _deletes())), "deepseek")])
     ids = iter(f"t{n}" for n in range(1, 100))
     engine = TurnEngine(Session("personality"), ports, system_prompt="Ты робот.", new_id=lambda: next(ids))
-    asyncio.run(engine.run(Addressed("Робот, удали точки хил-вход, хил-кухня, хил-диван и хил-окно", VOICE)))
+
+    async def main():
+        await engine.run(Addressed("Робот, удали точки хил-вход, хил-кухня, хил-диван и хил-окно", VOICE))
+        await settle(engine)
+
+    asyncio.run(main())
     assert phrases.text("local.done") not in ports.said
-    assert ports.said == [phrases.text(kn.ACTIONS_CAPPED_NAMED_PHRASE, rest="хил-окно")]
+    assert len(ports.said) == 2 and ports.said[1].startswith(phrases.text(kn.CHAIN_DONE_PHRASE))

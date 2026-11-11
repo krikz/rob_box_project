@@ -17,7 +17,6 @@ docker/
 │   │   ├── zenoh_session_config.json5       # Общий для всех
 │   │   ├── cyclonedds.xml                   # Общий для всех
 │   │   ├── rtabmap/                         # Специфичные для rtabmap
-│   │   │   ├── rtabmap.yaml
 │   │   │   └── rtabmap_config.yaml
 │   │   └── robot_state_publisher/           # Специфичные для RSP
 │   │       └── (будущие конфиги)
@@ -252,7 +251,7 @@ docker/<env>/
 
 - `../../src/rob_box_description:/workspace/src/rob_box_description:ro` в `robot-state-publisher` — это source bind для URDF package, а не runtime-config и не runtime-script.
 - `config/monitoring/...` — это shared subsystem config для monitoring-стека, а не нарушение правила `config/<service>/...`.
-- Общие для всех Pi скрипты и шаблоны Zenoh (`ros_with_namespace.sh`, `zenoh-router/start_zenoh_router.sh`, `zenoh_{router,session}_config.json5`) лежат в `docker/common/{scripts,config}` и монтируются `../common/scripts:/ros_scripts:ro` и `../common/config:/common_config:ro` (ADR-0159 В4); узловые адреса — `ZENOH_LISTEN_IP`/`ZENOH_CONNECT_ENDPOINTS` в compose узла. `patch_rtabmap_launch.py` — скрипт одного сервиса, лежит в `scripts/rtabmap/`.
+- Общие для всех Pi скрипты и шаблоны Zenoh (`ros_with_namespace.sh`, `zenoh-router/start_zenoh_router.sh`, `zenoh_{router,session}_config.json5`) лежат в `docker/common/{scripts,config}` и монтируются `../common/scripts:/ros_scripts:ro` и `../common/config:/common_config:ro` (ADR-0159 В4); узловые адреса — `ZENOH_LISTEN_IP`/`ZENOH_CONNECT_ENDPOINTS` в compose узла. `patch_rtabmap_launch.py` — скрипт одного сервиса, лежит в `docker/main/scripts/rtabmap/`.
 
 ### 2. Правила volumes
 
@@ -289,7 +288,7 @@ volumes:
 ```dockerfile
 # ❌ НЕПРАВИЛЬНО: runtime-файлы не должны запекаться в образ
 COPY config/lslidar/lsx10_custom.yaml /config/lsx10_custom.yaml
-COPY scripts/lslidar/start_lslidar.sh /start_lslidar.sh
+COPY docker/main/scripts/lslidar/start_lslidar.sh /start_lslidar.sh
 COPY config/oak-d/launch/oakd_with_apriltag.launch.py /launch/oakd_with_apriltag.launch.py
 ```
 
@@ -528,9 +527,9 @@ depends_on:
 - `rtabmap/` - только Dockerfile
 
 ### Startup script в `scripts/<service>/`:
-- `scripts/robot_state_publisher/start_robot_state_publisher.sh`
-- `scripts/rtabmap/start_rtabmap.sh`
-- `scripts/lslidar/start_lslidar.sh`
+- `docker/main/scripts/robot_state_publisher/start_robot_state_publisher.sh`
+- `docker/main/scripts/rtabmap/start_rtabmap.sh`
+- `docker/main/scripts/lslidar/start_lslidar.sh`
 
 ### Service-specific config в `config/<service>/`:
 - `config/rtabmap/`

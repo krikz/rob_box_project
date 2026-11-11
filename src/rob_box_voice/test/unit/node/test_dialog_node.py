@@ -37,7 +37,7 @@ except ImportError:
 from rob_box_dialog_msgs.srv import DialogControl  # noqa: E402
 from rob_box_dialog.command import parse  # noqa: E402
 from rob_box_llm.provider import ToolResult  # noqa: E402
-from rob_box_voice.core.command_bridge import CommandResponse, for_turn  # noqa: E402
+from rob_box_dialog_host.command_bridge import CommandResponse, for_turn  # noqa: E402
 from rob_box_voice import dialog_node as dn  # noqa: E402
 
 TIME = type(M.TurnEvent().stamp)
@@ -190,7 +190,7 @@ def test_say_aloud_from_chat_confirms_by_the_finished_speech_event_not_by_the_re
     """PR-12b (#3707): в чат — текст истории; «Озвучил (N с)» — только когда владелец речи прислал ``finished``."""
     made = _aloud_node(monkeypatch)
     try:
-        made._on_utterance(_chat_utterance("сочини историю про робота и расскажи"))
+        made._on_utterance(_chat_utterance("сочини историю про робота и расскажи вслух"))
         made.last_chat_turn.result(timeout=10)
         assert made.test_chat_tools.calls == [("say_aloud", {"text": "Жил-был робот."})]
         assert [o.text for o in _published(made, "/dialog/output") if not o.kind] == ["Жил-был робот."]
@@ -210,7 +210,7 @@ def test_late_outcome_of_a_chat_action_fixes_the_chat_window_3960(monkeypatch):
     окне чата сменяется итогом владельца речи - модель следующего хода чата не видит «ещё звучит»."""
     made = _aloud_node(monkeypatch)
     try:
-        made._on_utterance(_chat_utterance("сочини историю про робота и расскажи"))
+        made._on_utterance(_chat_utterance("сочини историю про робота и расскажи вслух"))
         made.last_chat_turn.result(timeout=10)
         window = made._chats.engine(42).log.window
         assert [dict(e.content)["status"] for e in window() if e.role == "tool"] == ["pending"]
@@ -224,7 +224,7 @@ def test_late_outcome_of_a_chat_action_fixes_the_chat_window_3960(monkeypatch):
 def test_say_aloud_is_refused_while_the_operator_holds_the_robot(monkeypatch):
     made = _aloud_node(monkeypatch, hold=True)
     try:
-        made._on_utterance(_chat_utterance("расскажи историю"))
+        made._on_utterance(_chat_utterance("расскажи историю вслух"))
         made.last_chat_turn.result(timeout=10)
         assert made.test_chat_tools.calls == []
         assert "Не озвучил: оператор занял робота." in [o.text for o in _published(made, "/dialog/output") if not o.kind]
@@ -746,7 +746,7 @@ def _remember(node, tmp_path, person="spk-boris"):
     """Память собеседника на файлах tmp: факт Бориса в ``voice_facts`` (куда пишет ``memory_save``)."""
     import sqlite3
 
-    from rob_box_voice.core.speaker_memory import SpeakerMemory
+    from rob_box_dialog_host.speaker_memory import SpeakerMemory
 
     facts = tmp_path / "voice_memory.db"
     conn = sqlite3.connect(facts)

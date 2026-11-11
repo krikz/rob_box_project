@@ -80,7 +80,7 @@
 | **Новое** — реестр и фабрика         | `docs/architecture/stubs/tts_provider_registry.py` (см. §stubs) | `TTSProviderRegistry`, `TTSProviderFactory.create()`, `register_builtin_tts_providers()`    |
 | MiniMax-адаптер (текущий, не трогаем)| `src/rob_box_llm/rob_box_llm/providers/minimax_tts.py`              | `MiniMaxTTSProvider(TTSProvider)` — в P0.5 не мигрирует                                       |
 | Composition root (точка подключения) | `src/rob_box_voice/rob_box_voice/tts_node.py:_synthesize_and_play`  | `tts_node` сейчас хардкодит `MiniMaxTTSProvider`; **в P0.6** заменяется на `TTSProviderFactory.create(provider_name, config, registry)` |
-| CLI composition root (будущее)        | `src/rob_box_llm/rob_box_llm/tts_cli.py`                            | ещё не существует; ADR-0006 зафиксировал `MiniMaxTTSConfig` (pydantic-settings) для него     |
+| CLI composition root (будущее)        | `src/rob_box_llm/rob_box_llm/tts_cli.py`                            | ещё не существует; ADR-0006 зафиксировал `MiniMaxTTSConfig` (pydantic-settings) для него     | <!-- stale-paths: ignore -->
 
 ---
 

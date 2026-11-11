@@ -79,13 +79,14 @@ def _closed(snapshot: Any, caps: Any) -> bool:
     return snapshot.top("Silence") is not None or (caps is not None and not getattr(caps, "tools", True))
 
 
-def _allowed(agent: str) -> set:
-    return set(tools_for(agent_spec(agent))) | set(kn.SPEECH_CHANNEL_TOOLS)
+def _allowed(agent: str, owners: Optional[Sequence[str]] = None) -> set:
+    return set(tools_for(agent_spec(agent), owners)) | set(kn.SPEECH_CHANNEL_TOOLS)
 
 
-def _names(candidates: Sequence[str], agent: str, cap: Optional[int]) -> Tuple[ToolCatalogEntry, ...]:
+def _names(candidates: Sequence[str], agent: str, cap: Optional[int],
+           owners: Optional[Sequence[str]] = None) -> Tuple[ToolCatalogEntry, ...]:
     """Тулы по порядку кандидатов: доступные агенту, без движения базы, без повторов, не больше ``cap``."""
-    allowed, names = _allowed(agent), []
+    allowed, names = _allowed(agent, owners), []
     for name in candidates:
         if name in kn.MOTION_TOOLS or name not in allowed or name in names or (cap is not None and len(names) >= cap):
             continue
@@ -101,7 +102,7 @@ def full_slice() -> Slicer:
         if _closed(snapshot, caps):
             return ()
         grouped = tuple(t for group in kn.TOOL_GROUPS.values() for t in group.tools)
-        return _names(kn.TOOLS_ALWAYS + kn.ALOUD_TOOLS + grouped, agent, None)
+        return _names(kn.TOOLS_ALWAYS + kn.ALOUD_TOOLS + grouped, agent, None, snapshot.owners)
 
     return available
 
@@ -131,7 +132,7 @@ def routed_slice(route_of: RouteOf, wide: Slicer, narrow: Slicer) -> Slicer:
             return narrow(snapshot, caps, agent, "", carry, asked)
         scene = kn.TOOL_GROUPS["music"].tools if snapshot.music_playing and group != "music" else ()
         chosen = kn.TOOL_GROUPS[group].tools
-        return _names(kn.TOOLS_ALWAYS + kn.ALOUD_TOOLS + chosen + scene, agent, kn.TOOLS_VISIBLE_MAX)
+        return _names(kn.TOOLS_ALWAYS + kn.ALOUD_TOOLS + chosen + scene, agent, kn.TOOLS_VISIBLE_MAX, snapshot.owners)
 
     return available
 

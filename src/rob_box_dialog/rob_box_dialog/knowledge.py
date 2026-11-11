@@ -22,41 +22,11 @@ from typing import Any, Dict, FrozenSet, Iterable, List, Mapping, Optional, Sequ
 # Адресация (§4.2, решение В2: только по вейк-слову)
 # ---------------------------------------------------------------------------------------------------------------
 
-#: Вейк-слова личности. Порядок значим: ``strip_wake_word`` берёт первое совпадение альтернации, длинные и
-#: специфичные варианты стоят раньше коротких («роб» не должен съесть «роб бокс»). Искажения STT добавляются по
-#: логам e2e, не придумываются. В проде список читается из ``docker/sound/config/wake_words.yaml``
-#: (:func:`load_wake_word_namespaces`), здесь — тот же список байт-в-байт для dev и тестов (держит
-#: ``test/test_knowledge.py::test_wake_words_yaml_matches_code``).
-DEFAULT_WAKE_WORDS = (
-    "роб бокс",
-    "роббокс",
-    "робокос",
-    "rob box",
-    "робокс",
-    # искажения «робокс» у vosk/yandex (e2e ww01): замены гласной
-    "робэкс",
-    "робекс",
-    "робакс",
-    "рабокс",
-    "рубокс",
-    "роблокс",
-    "роберт",
-    "роббос",
-    "robbox",
-    # «Робота, про меня что помнишь?» — vosk слышит винительный падеж; стоит раньше «робот»
-    "робота",
-    "робот",
-    # «Робби, добрый вечер» — yandex перед звонкой согласной
-    "робби",
-    "робок",
-    "рабок",
-    "робак",
-    "рыбок",
-    "робик",
-    "робо",
-    "роман",
-    "рома"
-)
+#: Вейки личности, когда хост не передал таблицу (``wake_words=None``): нет - нейтральные умолчания ядра
+#: (ADR-0167 §2.4, ``profile.NEUTRAL``), режим «вейк выключен, адресовано всё» (``words.has_wake_word``). Вейки
+#: продукта - в его профиле (``assistant.yaml`` → таблица вейков); у робота - ``docker/sound/config/wake_words.yaml``.
+#: Порядок в таблице значим: ``strip_wake_word`` берёт первое совпадение альтернации, длинные варианты - раньше.
+WAKE_WORDS_WITHOUT_PROFILE: Tuple[str, ...] = ()
 #: Оговорка первого слова (23.10): Yandex на живом канале искажает ПЕРВОЕ слово «Робот, …» («роботу дали»,
 #: «работа тишина», «рада слушай дальше»), звук цел (pre-roll полный). Допуск — только для первого токена фразы
 #: и только к этим вейкам (если они есть в таблице вейков): Левенштейн ≤ 1 у слов до 5 букв, ≤ 2 у длиннее.
@@ -108,10 +78,8 @@ WAKE_SLIP_MORE_LEADS: Tuple[str, ...] = ("еще", "дальше", "снова",
 #: Сколько слов после ведущего смотрим в поисках знака обращения или темы: дальше связь с «работа» уже случайна.
 #: Сами ворота — :data:`WAKE_SLIP_GATES` — собраны ниже, после таблиц музыки и правки темпа: слова берутся оттуда.
 WAKE_SLIP_CUE_WINDOW = 6
-#: Рискованные вейки (решение В18): «бот»/«роб» — короткие и звучат внутри чужих фраз. В ``wake_words.yaml`` —
-#: записи ``risky: true``, по умолчанию выключены (``risky_enabled: false``); включаются одной строкой.
-#: Стоят в конце: «роб» не должен съесть «роб бокс».
-RISKY_WAKE_WORDS: Tuple[str, ...] = ("бот", "роб")
+#: Рискованные вейки (решение В18) - записи таблицы вейков ``{word: …, risky: true}``: берутся, только если в ней
+#: ``risky_enabled: true`` (:func:`load_wake_word_namespaces`). Сами слова - в профиле продукта.
 #: Голое «робот» (В12): после вейка нет слов, кроме этих, — фразы нет, это обращение «слушай».
 ADDRESS_FILLER_WORDS: Tuple[str, ...] = ("ну", "а", "эй", "слушай", "так", "вот", "это", "ой", "да", "давай")
 #: Бэклог неадресованных фраз (§7.3): живёт TTL. Голое «робот» забирает ВСЕ фразы не старше ``BACKLOG_FRESH_S``
@@ -155,8 +123,8 @@ FACE_HISTORY_S = 60.0
 ADDRESS_WAIT_S = 8.0
 #: Префикс обращения к координатору (Claude Code) в Telegram: такая реплика роботу не адресована.
 COORDINATOR_NAMES: Tuple[str, ...] = ("клод", "claude")
-#: Вейк агента оператора: слышит только микрофон шлема (namespace привязан к источнику аудио).
-DEFAULT_OPERATOR_WAKE_WORDS: Tuple[str, ...] = ("тарс", "tars")
+#: Пространства таблицы вейков: ``personality`` - речь в комнате, ``operator`` - вейк агента оператора, его слышит
+#: только микрофон шлема (namespace привязан к источнику аудио). Слова - в профиле продукта.
 WAKE_NAMESPACES: Tuple[str, ...] = ("personality", "operator")
 
 # ---------------------------------------------------------------------------------------------------------------
@@ -725,11 +693,12 @@ TOOL_CLASSES: Mapping[str, str] = MappingProxyType({
         "container_status", "estimate_tts_duration", "faq_search", "get_battery_level", "get_current_pose",
         "get_current_time", "get_music_state", "get_perception_context", "get_robot_status", "get_sound_info",
         "list_maps", "list_tts_voices", "list_waypoints", "listen_for_response", "lookup_melody", "memory_context",
-        "memory_search", "people_list", "person_photo", "read_logs", "ros2_node_status", "search_melody",
-        "search_web", "show_metrics",
+        "memory_search", "people_list", "person_photo", "read_logs", "ros2_node_status", "ros_list", "search_melody",
+        "search_web", "show_metrics", "topic_echo", "topic_stats", "vesc_telemetry",
     )},
     **{t: "action.local" for t in (
-        "add_music_material", "clear_waypoints", "delete_map", "delete_waypoint", "memory_save", "name_person",
+        "add_music_material", "clear_waypoints", "delete_map", "delete_waypoint", "find_similar", "memory_save",
+        "merge_people", "name_person", "topic_publish",
         "play_animation", "save_waypoint", "set_music_volume", "set_pitch", "set_speed", "set_tts_provider", "set_voice",
         "set_volume",
     )},
@@ -1110,12 +1079,33 @@ WAYPOINT_SAVE_OBJECTS: Tuple[str, ...] = ("мест", "точк", "здесь", 
 #: Слова про лица и людей (группа ``faces``, #4469): основы по левой границе слова.
 FACES_STEMS: Tuple[str, ...] = (
     "лиц", "имя", "имени", "назови", "назвать", "назов", "зовут", "кто это", "людей", "люди", "кличк", "фото",
-    "снимок", "снимк", "незнаком",
+    "снимок", "снимк", "незнаком", "похож", "дубл", "склей", "склеи", "слей", "объедин",
 )
 #: id лица в реплике: 8 hex целым словом. Структура, а не грамматика музыки (мораторий #3132 не касается).
 FACE_ID_RE = re.compile(r"(?<![0-9a-f])[0-9a-f]{8}(?![0-9a-f])", re.IGNORECASE)
 #: Группа пульта по лицам; у голоса её тулов нет (``llm_visible=False``).
 FACES_GROUP = "faces"
+
+#: Слова про граф ROS (группа ``ros_graph``, #4516): топики, сервисы, замер частоты и полосы. «сервис» общее слово
+#: (группа ``containers``) и сюда не входит: сервисы ROS открывают только пары «сервисы ros».
+ROS_GRAPH_STEMS: Tuple[str, ...] = (
+    "топик", "topic", "частот", "герц", "hz", "полос", "пропускн", "bandwidth", "bw", "сервисы ros", "сервисов ros",
+    "сервисы рос", "сервисов рос", "service",
+)
+#: Слова про публикацию в топик (группа ``publish``, #4516 шаг 2а): основы глагола и «в топик». Группа открывается
+#: только тем, у кого есть тул ``topic_publish`` (пульт TG и ТАРС); голосу она не даётся.
+PUBLISH_STEMS: Tuple[str, ...] = (
+    "опубликуй", "опубликов", "публикац", "публикуй", "отправь в топик", "отправить в топик", "шли в топик",
+    "пошли в топик", "отправь сообщение в", "pub ", "publish",
+)
+#: Слова про телеметрию VESC и колёс (группа ``vesc``, #4516).
+VESC_STEMS: Tuple[str, ...] = (
+    "vesc", "веск", "весц", "колёс", "колес", "мотор", "напряжен", "вольт", "температур", "обороты", "оборотов",
+    "rpm", "ток ", "токи", "токе", "ампер",
+)
+#: Группы только для тех, чьи тулы в срезе агента (пульт TG и ТАРС): голосу (``llm_visible=False``) они не открываются, а
+#: «какое напряжение» голосом остаётся про батарею (``status``), а не про пустую группу.
+AGENT_SCOPED_GROUPS: Tuple[str, ...] = (FACES_GROUP, "ros_graph", "vesc", "publish")
 
 #: Группы по приоритету: при пересечении групп срез режется по этому порядку (``TOOLS_VISIBLE_MAX``). Голос —
 #: только по явной голосовой просьбе (LLM сама меняла голос посреди сказки, а голос персистентный, PR-4).
@@ -1177,7 +1167,7 @@ TOOL_GROUPS: Mapping[str, ToolGroup] = MappingProxyType({
     # ``memory_save`` (``rejected no_person``). Пульт по лицам видит только чат (``telegram_visible``): у голоса
     # ``llm_visible=False``, срез голоса не меняется (``tools_view.groups_for(agent=...)``). Голое «покажи» основой не
     # берём («покажи CPU», «покажи кухню»): «покажи лица» открывает «лиц». id лица (8 hex) открывает группу без слов
-    "faces": ToolGroup(FACES_STEMS, ("people_list", "person_photo", "name_person")),
+    "faces": ToolGroup(FACES_STEMS, ("people_list", "person_photo", "name_person", "find_similar", "merge_people")),
     "sound": ToolGroup(SOUND_STEMS, ("play_sound", "get_sound_info")),
     # анимация всегда видна (``TOOLS_ALWAYS``); группа — чтобы просьба «покажи анимацию …» была командой (В17)
     # глаголы восприятия («посмотри налево») — взгляд лица, а не движение базы (``MOTION_VERB_STEMS``);
@@ -1197,6 +1187,10 @@ TOOL_GROUPS: Mapping[str, ToolGroup] = MappingProxyType({
     "logs": ToolGroup(("лог",), ("read_logs",)),
     "nodes": ToolGroup(("нод", "ros"), ("ros2_node_status",)),
     "containers": ToolGroup(("контейнер", "сервис", "докер", "docker"), ("container_status",)),
+    # #4516 (Шифу 06.11: «Телега - считай админка»): граф ROS и VESC для пульта TG и ТАРС; у голоса тулов нет
+    "ros_graph": ToolGroup(ROS_GRAPH_STEMS, ("ros_list", "topic_echo", "topic_stats")),
+    "vesc": ToolGroup(VESC_STEMS, ("vesc_telemetry",)),
+    "publish": ToolGroup(PUBLISH_STEMS, ("topic_publish",)),
     # #4297 (живой 03.11 «как сеть»): слов сети в таблице не было, срез оставался без данных, модель трижды звала тул
     # вне среза (``tool_not_available``). Данные о сети есть у двух тулов: ``internet_available`` в
     # ``get_perception_context`` и опрос целей Prometheus (``show_metrics``: ``services_up``, задержки LLM/STT/TTS).
@@ -1578,6 +1572,9 @@ NAV_UNKNOWN_TARGET = "unknown_target"
 NAV_FAILURE_OUTCOMES: Tuple[str, ...] = (
     "aborted", "canceled", "timeout", "rejected", "no_response", "server_unavailable", "unknown_status",
     NAV_UNKNOWN_TARGET,
+    # #4495: Nav2 ответил успехом, но поза на карте за поездку потеряла опору (лидарная одометрия потеряна или карта
+    # прыгнула): не «приехал», а «не уверен, где я» (rob_box_mcp_tools.core.localization_check).
+    "localization_lost",
 )
 NAV_DONE = ByData((NAV_ARRIVAL_FIELD,), {
     (NAV_ALREADY_THERE,): "motion.already_there", (NAV_ARRIVED,): "motion.arrived",
@@ -1671,6 +1668,11 @@ TOOL_PHRASES: Mapping[str, Mapping[str, Any]] = MappingProxyType({
     # имя лицу (#4469): «Готово: лицо fff371fe теперь Кирилл.» - шаблон по данным владельца лиц (``id``, ``stored_name`` -
     # имя, прочитанное из базы после записи, ``previous_name``), а не слова модели
     "name_person": MappingProxyType({"done": ByData(("previous_name",), {(None,): "people.named"}, "people.renamed")}),
+    # найди похожих и склейка (#4469): обе фразы строит код из данных владельца (поле ``summary``), не модель
+    "find_similar": MappingProxyType({"done": "people.similar"}),
+    "merge_people": MappingProxyType({"done": "people.merged"}),
+    # публикация в топик (#4516, шаг 2а): «Опубликовал в /x (тип) 1 раз, подписчиков 2.» строит код по факту (поле ``summary``)
+    "topic_publish": MappingProxyType({"done": "publish.done"}),
     "set_voice": MappingProxyType({"done": VOICE_DONE, "rejected": VOICE_FAILED, "timeout": "voice.timeout"}),
     "set_tts_provider": MappingProxyType({"done": VOICE_DONE, "rejected": VOICE_FAILED, "timeout": "voice.timeout"}),
     # звук - не музыка: класс action.media, но фраза о SoundEvent, а не «Включаю музыку»
@@ -1743,6 +1745,14 @@ TOOL_QUESTIONS: Mapping[Tuple[str, str], ToolQuestion] = MappingProxyType({
     (LIBRARY_TOOL, "needs_confirmation"): ToolQuestion(
         {"confirm": True}, ("удал", "сотр", "стир"), ("песн", "трек", "композиц", "библиотек"),
         "music.library_delete_kept"),
+    # склейка дублей лиц (#4469): подтверждение одной строкой («Склеиваю 3 записи в «Имя» (id)?»), текст вопроса -
+    # из данных тула (``question``), «да» исполняет код тем же вызовом с ``confirm``; «нет» - фраза ``declined``
+    ("merge_people", "needs_merge_confirmation"): ToolQuestion(
+        {"confirm": True}, ("склей", "склеи", "слей", "объедин"), ("запис", "лиц", "дубл"), "people.merge_kept"),
+    # публикация в топик (#4516): «Публикую в /x (тип) {...}, 1 раз? Скажи «да, публикуй»», «да» исполняет код
+    ("topic_publish", "needs_publish_confirmation"): ToolQuestion(
+        {"confirm": True}, ("публикуй", "опубликуй", "отправь", "шли", "отправляй"), ("топик", "сообщен", "публикац"),
+        "publish.kept"),
 })
 #: Ответ на вопрос тула (``tool_ask.answer``): реплика ЦЕЛИКОМ из этих слов, глагола и предмета вопроса
 #: (:class:`ToolQuestion`) и служебных :data:`TOOL_ANSWER_FILLER`. Есть слово «нет» - отказ (необратимое не делаем по
@@ -1765,7 +1775,7 @@ TOOL_ANSWER_FILLER: Tuple[str, ...] = (
 @dataclass(frozen=True)
 class OwnerText:
     """Поля данных успешного исхода, где фразу кода построил сам владелец (ADR-0148: фразу строит код из результата;
-    порядок — как у ``rob_box_voice.core.media_phrases.launch_text`` v1): ``whole`` — реплика целиком вместо фразы
+    порядок — как у ``rob_box_dialog_host.media_phrases.launch_text`` v1): ``whole`` — реплика целиком вместо фразы
     исхода (трек кэша «Ставлю песню из сочинённого раньше …»), ``note`` — фраза перед фразой исхода (почему звучит не
     то, что просили: «Метал на синте играю ближайшим стилем — брейкбит.», «Сгенерировать сейчас не могу: …, играю
     своё.» — ``rob_box_music.source.route_note``).
@@ -1786,9 +1796,14 @@ class OwnerText:
 OUTCOME_OWNER_TEXT: Mapping[str, OwnerText] = MappingProxyType({
     **{tool: OwnerText(whole="source_message", note="source_note") for tool in ("request_music", "generate_music")},
     "dj_set": OwnerText(note="source_note")})
-#: Тул пульта Telegram, чей успех уносит в чат картинку (#4469): ``photo_id`` - id лица, ``caption`` - подпись; чат шлёт
-#: ``DialogOutput(kind=photo)`` с id, снимок бот забирает у владельца лиц (``/perception/people``) байтами.
+#: Тулы пульта Telegram, чей успех уносит в чат картинку (#4469): ``photo_id`` - id лица, ``caption`` - подпись; чат шлёт
+#: ``DialogOutput(kind=photo)`` с id, картинку бот забирает у владельца лиц (``/perception/people``) байтами. У
+#: ``find_similar`` в данных ещё ``photo_kind=collage``: это коллаж кандидатов, а не снимок лица.
 PHOTO_TOOL = "person_photo"
+COLLAGE_TOOL = "find_similar"
+PHOTO_TOOLS: Tuple[str, ...] = (PHOTO_TOOL, COLLAGE_TOOL)
+#: Значение ``photo_kind`` у коллажа (и поле ``op`` в тексте ``DialogOutput(kind=photo)``).
+COLLAGE_KIND = "collage"
 #: Действия, чей успех - сам себе доказательство: фразы об исходе done нет (§4.1; Шифу 21.10: «включил щелчок и ещё
 #: сказал, что он заиграл, бред же»). Неудача (rejected/timeout) говорится одной фразой кода. Исключение - звукоподражание
 #: (:data:`SOUND_IMITATIONS`).
@@ -1838,6 +1853,9 @@ CHAT_ROBOT_ASK_FORMS: Tuple[str, ...] = (
     "роботом", "через робота", "вслух", "озвучь", "озвучи", "в колонки", "в динамики", "народ", "народу", "толпу",
     "толпе", "всем вокруг", "людям вокруг", "людям рядом",
 )
+#: Явные просьбы озвучить, которых нет в :data:`CHAT_ROBOT_ASK_FORMS` («произнеси»): вместе с ним открывают
+#: ``say_aloud`` в чате (:func:`turn.unasked_aloud`, #4505).
+CHAT_ALOUD_EXTRA_FORMS: Tuple[str, ...] = ("озвучьте", "произнеси", "произнесите")
 #: Слово из :data:`CHAT_ROBOT_ASK_FORMS`, названное ТЕМОЙ, а не просьбой (решение Шифу 28.10: справки - ответом в
 #: чат): сразу после этих слов оно - предмет разговора, не адресат и не канал («расскажи про народ», «статья о толпе»,
 #: «переведи слово вслух», «что значит выражение через робота»). Решает код по словам человека (``words.asks_robot_to_act``).
@@ -1927,7 +1945,9 @@ VIOLATION_DONE_CLAIM = "done_claim"
 DONE_CLAIM_HINT = ("в speech сказано, что действие уже сделано («удалил», «сохранил точку», «поехал»), а в actions нет"
                    " тула, что его делает: слова без действия - неправда. Нужно действие - положи тул в actions без"
                    " speech (о сделанном скажет код по результату); тула нет в перечне хода - не утверждай, а скажи,"
-                   " что сделать не можешь, или спроси в ask")
+                   " что сделать не можешь, или спроси в ask; у цепочки действий (больше трёх или с поездкой) speech"
+                   " звучит ДО них - это план («сейчас удалю четыре точки»), а не «удалил»: до действий ничего ещё не"
+                   " сделано")
 DONE_CLAIM_PHRASE = "command.done_claim"
 #: Счёт вслух до N, урезанный моделью, строит код (``counting.full_count``, #4314 К1, n802 М9: «от одного до сорока» -
 #: «Один… Десять.»). Глаголы просьбы о счёте (слово целиком, без «ё»).
@@ -2678,8 +2698,10 @@ IDENTITY_MIC_GRACE_S = 2.5
 #: если фраза ПОХОЖА НА ОТВЕТ по грамматике (``reply_grammar``: имя, да/нет, отказ). DOA и голос — не условия (DOA в
 #: комнате прыгает у неподвижной колонки: 50° → 343°), только признаки в логе. Шифу отвергнет — ``False``.
 IDENTITY_ANSWER_WITHOUT_WAKE = True
-#: Окно после приветствия при встрече: фраза без вейка от приветствованного — ход (``source=greeting_reply``), если
-#: она по грамматике ответ на приветствие или лицо приветствованного в кадре. Шифу отвергнет — ``False``.
+#: Окно после приветствия при встрече: фраза без вейка, пока окно открыто, — ход (``source=greeting_reply``). Лицо в
+#: кадре не условие (Шифу 06.11, #4509: «достаточно открытого окна и голоса»); окно идёт с конца приветствия, эхо
+#: приветствия отсеивает ``stt_node`` словами (``echo_window.REPLY``). Голое «робот» в окне — «Слушаю.» кодом и окно
+#: заново (``address.GREETING_WAKE``). Шифу отвергнет — ``False``.
 GREETING_REPLY_WITHOUT_WAKE = True
 #: Ответ на приветствие/реплику: фраза начинается с одной из этих (нормализовано: нижний регистр, ё -> е).
 GREETING_REPLIES: Tuple[str, ...] = (
@@ -2714,7 +2736,7 @@ STARTUP_NODE_PARTS: Dict[str, str] = {
     "/audio_node": "audio", "/stt_node": "stt", "/tts_node": "tts", "/context_aggregator": "context",
     "/camera/camera": "camera", "/lslidar_driver_node": "lidar", "/rtabmap/rtabmap": "slam",
 }
-STARTUP_DIALOG_NODES: Tuple[str, ...] = ("/dialog_node", "/dialogue_node", "/dialog_node|/dialogue_node")
+STARTUP_DIALOG_NODES: Tuple[str, ...] = ("/dialog_node",)
 PHRASE_KEYS = PHRASE_KEYS + (
     *(f"startup.{kind}" for kind in ("ready", "voice_only", "partial", "unknown", "and")),
     *(f"startup.part.{part}" for part in (*sorted(set(STARTUP_NODE_PARTS.values())), "llm", "other")),
@@ -2940,6 +2962,14 @@ PHRASE_KEYS = PHRASE_KEYS + (SHIFT_EMPTY_PHRASE, SHIFT_SUMMARY_PHRASE, *SHIFT_PA
 #: старые ходы выпадают целиком, ход не режется посередине.
 TURN_WINDOW_MAX_TURNS = 12
 TURN_WINDOW_MAX_TOKENS = 3000
+#: Сколько знаков ответа тула остаётся в окне модели (``turn_log._bounded_data``). Полный ответ поиска в интернете —
+#: ~4000 токенов, больше всего окна: после такого хода ``TurnLog.window`` выбрасывал историю разговора целиком
+#: (живой замер 08.11: «окно после хода: записей 3, токенов 3994», следующий ход — без прошлого).
+WINDOW_TOOL_DATA_CHARS = 800
+#: Сжатие ответа тула (``turn_log._compact``): сколько элементов списка и сколько знаков строки остаётся.
+#: 2 × 140 на типичном ответе поиска (5 результатов × сниппет) даёт ~670 знаков — влезает в бюджет выше.
+WINDOW_TOOL_ITEMS = 2
+WINDOW_TOOL_TEXT_CHARS = 140
 #: Срок давности окна: пауза между адресованными ходами дольше - окно и сессия сбрасываются кодом
 #: (``window_reset``). 30 мин - предложение карточки, не замерено: дольше паузы внутри разговора, короче ночи.
 DIALOG_WINDOW_IDLE_RESET_S = 1800.0
@@ -3158,9 +3188,13 @@ SEARCH_PROMISES: Mapping[str, MusicPromise] = MappingProxyType({
 #: не было и в срезе хода). Та же форма, что :data:`MUSIC_PROMISES`, но про прошедшее: речь говорит, что действие уже
 #: сделано, а тула, что его делает, в команде нет; валидатор команды (``command._check_done_claim``) сверяет по словам
 #: (``words.done_claims``). ``unless_before`` - здесь и для ``alone``: «уже удалил» (раньше, в прошлом ходе) и «не
-#: удалил» не утверждают сделанного сейчас. Музыки и памяти тут нет: «музыку выключил» после кодового стопа - правда
-#: (``MUSIC_PROMISES``), «запомнил» говорит код знакомства. Слова - целые, строчные, без «ё».
+#: удалил» не утверждают сделанного сейчас. Музыки тут нет: «музыку выключил» после кодового стопа - правда
+#: (``MUSIC_PROMISES``). Честное «запомнил» человека говорит код знакомства по результату ``register_speaker``, поэтому
+#: «запомнил, тебя зовут Саша» не утверждение; а вот «запомнил твой голос/лицо» и «так и буду тебя узнавать» без тула
+#: записи человека - пустое обещание (#4541, живой ход 08.11 07:00Z: «Голос, выходит, детский - так и буду тебя
+#: узнавать», ``actions=[]``). Слова - целые, строчные, без «ё».
 DONE_CLAIM_UNLESS_BEFORE: Tuple[str, ...] = ("уже", "не", "раньше", "ранее")
+PERSON_RECORD_TOOLS: Tuple[str, ...] = ("register_speaker", "name_person")
 DONE_CLAIMS: Mapping[str, MusicPromise] = MappingProxyType({
     "delete": MusicPromise(
         alone=("удалил", "удалила", "удалили", "удалено", "удалена", "удален", "удалены", "стер", "стерла", "стерли",
@@ -3172,6 +3206,18 @@ DONE_CLAIMS: Mapping[str, MusicPromise] = MappingProxyType({
                    "отметила", "записал", "записала"),
         near=("точк",),
         tools=("save_waypoint",),
+        unless_before=DONE_CLAIM_UNLESS_BEFORE),
+    # запомнить человека (#4541): подкрепляют голос (``register_speaker``) и лицо (``name_person``); ``memory_save``
+    # хранит факт текстом и узнавать человека не научит - его тут нет. «запомнил» + «точк» - ``waypoint_save`` выше
+    "remember_person": MusicPromise(
+        with_near=("запомнил", "запомнила"),
+        near=("голос", "лиц"),
+        tools=PERSON_RECORD_TOOLS,
+        unless_before=DONE_CLAIM_UNLESS_BEFORE),
+    "recognize_person": MusicPromise(
+        with_near=("буду", "будем"),
+        near=("узнава",),
+        tools=PERSON_RECORD_TOOLS,
         unless_before=DONE_CLAIM_UNLESS_BEFORE),
     "motion": MusicPromise(
         # «еду» - и «качу», и «вкусную еду»: формы без второго смысла
@@ -3410,19 +3456,176 @@ SPEECH_MAX_CHARS = 280
 SPEECH_ACCEPT_MAX_CHARS = 350
 #: Имя голоса реплики/сегмента (``Command.voice``, ``Performance.voice_per_segment``) - как ``speak_text.voice``.
 VOICE_MAX_CHARS = 64
-#: Действий команды исполняется за ход не больше стольких (ADR-0150 §4.1: «до трёх действий»): первые по порядку модели.
-#: Остальные код не исполняет и называет сам (``turn.capped``, фраза :data:`ACTIONS_CAPPED_PHRASE`), а не выбрасывает
-#: молча (#4391, HIL 04.11: «удали четыре точки» - модель под потолок схемы урезала просьбу сама, прозвучало «Готово.»).
-ACTIONS_MAX = 3
-#: Сколько действий модель может ПРИСЛАТЬ (``maxItems`` схемы, ``too_many_actions``) - больше исполняемого
-#: :data:`ACTIONS_MAX`, как речь 280/350 (``SPEECH_ACCEPT_MAX_CHARS``): просьба человека доходит до кода целиком, и
-#: лишнее видит код, а не теряет модель. Потолок исполнения этим не поднят.
-ACTIONS_ACCEPT_MAX = 8
-#: Фраза кода о действиях сверх :data:`ACTIONS_MAX`: ``named`` - со слотом ``rest`` (что не сделано, словами аргументов
-#: вызова), без имён - общая.
-ACTIONS_CAPPED_PHRASE = "command.actions_capped"
-ACTIONS_CAPPED_NAMED_PHRASE = "command.actions_capped.named"
-PHRASE_KEYS = PHRASE_KEYS + (ACTIONS_CAPPED_PHRASE, ACTIONS_CAPPED_NAMED_PHRASE)
+#: Сколько действий модель может прислать (``maxItems`` схемы, ``too_many_actions``). Потолка исполнения «три за ход»
+#: больше нет (ADR-0165 §11, этап 3): два и больше шагов идут вереницей по одному (``action_chain``, ``turn.run_chain``),
+#: длину ограничивает тип задачи (:data:`CHAIN_TASKS`). Просьба человека доходит до кода целиком (#4391, HIL 04.11:
+#: «удали четыре точки» - модель под потолок схемы урезала просьбу сама, прозвучало «Готово.»).
+ACTIONS_ACCEPT_MAX = 10
+
+# ---------------------------------------------------------------------------------------------------------------
+# Вереница действий (ADR-0165, #4403): знание вереницы - одно место; ``action_chain`` (чистый модуль), валидатор
+# команды и раннер шагов хода (``turn.run_chain``) берут его отсюда.
+# ---------------------------------------------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class ChainClass:
+    """Как класс действия идёт в веренице (ADR-0165 §4.1). Шаги вереницы всегда по одному, по порядку модели.
+
+    ``step`` — класс бывает шагом вереницы. ``alongside`` — класс может стоять в одной команде с длинной вереницей:
+    ``query`` шагом не бывает, но остаётся в query-цикле хода до фразы плана; ``identity`` и ``perform`` — нет
+    (нарушение ``chain_mixed``, этап 2). ``single`` — не больше одного шага класса на вереницу. ``stops_rest`` —
+    провал шага (``rejected``/``timeout``/``cancelled``) отменяет остаток: где робот после несостоявшейся поездки,
+    неизвестно (§10)."""
+
+    step: bool
+    alongside: bool
+    single: bool = False
+    stops_rest: bool = False
+
+
+#: Класс действия → правило вереницы; полноту против :data:`ACTION_CLASSES` держит тест.
+CHAIN_CLASSES: Mapping[str, ChainClass] = MappingProxyType({
+    "query": ChainClass(step=False, alongside=True),
+    "action.local": ChainClass(step=True, alongside=True),
+    "action.media": ChainClass(step=True, alongside=True, single=True),
+    "action.motion": ChainClass(step=True, alongside=True, stops_rest=True),
+    "action.identity": ChainClass(step=False, alongside=False),
+    "action.speak_aloud": ChainClass(step=True, alongside=True, single=True),
+    "action.perform": ChainClass(step=False, alongside=False),
+})
+#: Фраза плана звучит, только если вереница займёт дольше стольких секунд (решение Шифу В1, 05.11); короче —
+#: короткая команда: действия, потом фраза итога, как сейчас.
+CHAIN_PLAN_AFTER_S = 5.0
+#: Ожидаемая длительность шага по классу, с. Пусто до замеров HIL (этап 6): класса нет — оценка берёт срок класса
+#: (``ACTION_CLASSES[cls].timeout_s``), а это верхняя граница — план прозвучит чаще, чем надо (ADR-0165 §4).
+CHAIN_EXPECTED_S: Mapping[str, float] = MappingProxyType({})
+#: Кто говорит фразу плана: ``model`` — речь команды под проверкой ``done_claim`` (решение Шифу В2), ``code`` — план
+#: кода из действий (:data:`CHAIN_VERBS`). Проверка начнёт пропускать ложь — переключить здесь («если будут
+#: проблемы — перейдём на фразу кода»). У ``model`` план кода остаётся запасным: речь пуста или не прошла проверку.
+CHAIN_PLAN_SOURCES: Tuple[str, ...] = ("model", "code")
+CHAIN_PLAN_BY = "model"
+#: Поездка - шаг, который везёт робота к цели; по их числу код отличает маршрут от поручения. Прочие тулы
+#: ``action.motion`` (карта, остановка навигации) поездкой не считаются.
+CHAIN_TRIP_TOOLS: Tuple[str, ...] = MOTION_TOOLS
+
+
+@dataclass(frozen=True)
+class ChainTask:
+    """Лимиты типа задачи (ADR-0165 §5, решение Шифу В3: у каждого типа свои). ``steps_max`` — шагов в веренице;
+    ``trips_max`` — поездок (:data:`CHAIN_TRIP_TOOLS`), ``None`` — ограничены только ``steps_max``; ``term_s`` —
+    срок всей вереницы, ``None`` — сумма сроков классов шагов (своего числа нет до замеров HIL). Вышла за лимит —
+    вереница не начинается, код говорит :data:`CHAIN_TOO_LONG_PHRASE`."""
+
+    steps_max: int
+    trips_max: Optional[int]
+    term_s: Optional[float]
+
+
+#: Типы задач вереницы. Тип определяет код по действиям: поездок больше, чем ``trips_max`` поручения, — маршрут.
+#: Миссия (задача на часы) — не вереница одной команды, а свой режим сессии (ADR-0165 этап 8), здесь её нет.
+CHAIN_ERRAND = "errand"
+CHAIN_ROUTE = "route"
+#: Маршрут до замеров HIL — не длиннее восьми действий (решение Шифу В9-а, Telegram 05.11 09:52 UTC, #4403).
+#: Число поездок и общий срок маршрута — после замеров (этап 6).
+CHAIN_ROUTE_ACTIONS_MAX = 8
+CHAIN_TASKS: Mapping[str, ChainTask] = MappingProxyType({
+    # одна команда, несколько шагов рядом: удалить точки, съездить и вернуться
+    CHAIN_ERRAND: ChainTask(steps_max=ACTIONS_ACCEPT_MAX, trips_max=1, term_s=None),
+    # несколько поездок: объезд точек
+    CHAIN_ROUTE: ChainTask(steps_max=CHAIN_ROUTE_ACTIONS_MAX, trips_max=None, term_s=None),
+})
+
+
+@dataclass(frozen=True)
+class ChainVerb:
+    """Ключи фраз шагов одного глагола (``phrases/ru.yaml``, слот ``{items}`` — имена шагов словами аргументов):
+    ``plan`` — фраза плана кода, до события («Удаляю: хил-один, хил-два.»; утверждать сделанное ей нельзя — тест
+    ``done_claims``); ``did`` — сделанные шаги в итоге; ``missed`` — не сделанные, причину говорит фраза владельца."""
+
+    plan: str
+    did: str
+    missed: str
+
+
+def _chain_verb(name: str) -> ChainVerb:
+    return ChainVerb(f"chain.plan.{name}", f"chain.did.{name}", f"chain.missed.{name}")
+
+
+#: Глагол шага, у которого своего в :data:`CHAIN_VERBS` нет.
+CHAIN_VERB_DEFAULT = _chain_verb("generic")
+_CHAIN_DELETE, _CHAIN_SAVE = _chain_verb("delete"), _chain_verb("save")
+#: Тул шага → глагол фраз плана и итога (ADR-0165 §3: «глагол — по тулу, таблица в knowledge»). Здесь только тулы,
+#: которых строковый аргумент называет человеку (имя точки, факт, запрос музыки); остальные -
+#: :data:`CHAIN_VERB_DEFAULT`.
+CHAIN_VERBS: Mapping[str, ChainVerb] = MappingProxyType({
+    "delete_waypoint": _CHAIN_DELETE,
+    "delete_map": _CHAIN_DELETE,
+    "save_waypoint": _CHAIN_SAVE,
+    "memory_save": _CHAIN_SAVE,
+    "navigate_to_waypoint": _chain_verb("trip"),
+    "request_music": _chain_verb("music"),
+})
+#: Итог вереницы (§7): начало фразы по исходу, дальше - сделанные и не сделанные шаги фразами :data:`CHAIN_VERBS`.
+CHAIN_DONE_PHRASE = "chain.done"
+CHAIN_STOPPED_PHRASE = "chain.stopped"
+CHAIN_TIMEOUT_PHRASE = "chain.timeout"
+#: Шаги, что не начинались (``skipped``): после стопа или срока - общая фраза, после несостоявшейся поездки - своя.
+CHAIN_SKIPPED_PHRASE = "chain.skipped"
+CHAIN_MOTION_FAILED_PHRASE = "chain.motion_failed"
+#: Вереница вышла за лимит своего типа (:data:`CHAIN_TASKS`) и не начинается.
+CHAIN_TOO_LONG_PHRASE = "chain.too_long"
+#: Фразы с именами шагов (слот ``{items}``); остальные фразы вереницы слотов не имеют.
+CHAIN_ITEM_PHRASES: Tuple[str, ...] = tuple(dict.fromkeys((
+    *(key for verb in (CHAIN_VERB_DEFAULT, *CHAIN_VERBS.values()) for key in (verb.plan, verb.did, verb.missed)),
+    CHAIN_SKIPPED_PHRASE, CHAIN_MOTION_FAILED_PHRASE,
+)))
+CHAIN_PHRASES: Tuple[str, ...] = (
+    *CHAIN_ITEM_PHRASES, CHAIN_DONE_PHRASE, CHAIN_STOPPED_PHRASE, CHAIN_TIMEOUT_PHRASE, CHAIN_TOO_LONG_PHRASE,
+)
+PHRASE_KEYS = PHRASE_KEYS + CHAIN_PHRASES
+#: Имя шага во фразах вереницы - строковый аргумент не длиннее стольких знаков (имя точки, слова запроса); длиннее
+#: (текст озвучки целиком) - не имя: шаг называет слово класса :data:`CHAIN_CLASS_NOUNS`.
+CHAIN_LABEL_MAX_CHARS = 40
+#: Шаг без имени (``clear_waypoints``, громкость, поездка по координатам) фразы называют словом его класса.
+CHAIN_CLASS_NOUNS: Mapping[str, str] = MappingProxyType({
+    "action.local": "настройка",
+    "action.media": "музыка",
+    "action.motion": "поездка",
+    "action.speak_aloud": "озвучка",
+})
+#: Статус шага вереницы, который не начинался (стоп, срок, несостоявшаяся поездка). Только внутри вереницы: исполнитель
+#: его не отдаёт, в :data:`ACTION_STATUSES` его нет (ADR-0165 §7).
+CHAIN_STEP_SKIPPED = "skipped"
+#: Нарушение: рядом с вереницей (оценка дольше :data:`CHAIN_PLAN_AFTER_S`) класс, которому рядом с ней нельзя
+#: (``ChainClass.alongside``: знакомство, выступление) - ADR-0165 §4.1. Повтор с подсказкой :data:`CHAIN_MIXED_HINT`.
+VIOLATION_CHAIN_MIXED = "chain_mixed"
+#: Вереница - не меньше стольких шагов (не считая тихих :data:`QUIET_WITH_SPEECH_TOOLS`): один шаг - всегда короткая
+#: команда без фразы плана, как раньше (решение координатора 09.11 по этапу 3, Шифу может поменять; замер музыки в HIL -
+#: позже). Оценка сроком класса - верхняя граница: одна музыка (10 с) или одна поездка (120 с) иначе считались бы
+#: «долгими». То же - для ``chain_mixed``: «звук и шутка» (``play_sound`` + ``perform``) - законная команда.
+CHAIN_MIN_STEPS = 2
+#: Короткая команда без поездки - до стольких действий (ADR-0165 §4, таблица: «одно-три быстрых действия» - короткая):
+#: они исполняются разом и итог - фраза исхода, как раньше («говори ниже и медленнее», «удали три точки»). Больше или
+#: с поездкой - вереница с фразой плана. Оценка сроками классов без замеров (``CHAIN_EXPECTED_S`` пуст) этого не
+#: различает: две точки по 3 с - уже 6 с; число держит прежнее поведение простых ходов до замеров HIL.
+CHAIN_SHORT_STEPS_MAX = 3
+#: Ключ данных результата ``cancelled{stale_epoch}`` (``execute.Executor``): исход владельца до подмены. Вереница
+#: засчитывает доживший шаг честно (ADR-0165 §6: точка удалена после «стой» - «удалил», а не «отменил»).
+STALE_OUTCOME_KEY = "outcome"
+#: Виды Tier-1, что гасят вереницу (ADR-0165 §6, этап 4): «Робот, стой», «хватит», «стоп» (``stop_all``) - остаток
+#: отменён, итог «Остановился. …» звучит в эпохе стопа. Остальные перебивающие виды (``interrupt._STOP_KINDS``)
+#: вереницу не гасят: «замолчи» (``silence``, решение Шифу В4) - объезд идёт молча; «хватит говорить»
+#: (``stop_speech``) - гаснет речь, а движение и музыка и так идут (``interrupt``: «плеер музыки и движение — нет»),
+#: вереница - тоже (решение координатора по этапу 4, Шифу может поменять). Новая сессия - не стоп: вереница теряет
+#: свою эпоху, остаток отменён, итог не звучит (окно новой сессии чистое) - только строка журнала.
+CHAIN_STOP_KINDS: Tuple[str, ...] = ("stop_all",)
+#: Итог вереницы, который не прозвучал (тишина - решение Шифу В4), - метка-ответ в окне хода вереницы (ADR-0165 §7:
+#: «в тишине итог не звучит, но в окно и журнал идёт»): модель следующего хода видит, что сделано. После новой
+#: сессии хода вереницы в окне нет (``TurnLog.reset``) - метка не пишется.
+CHAIN_UNVOICED_MARK = WINDOW_ACTIONS_REPLY.format(actions="итог молча: {summary}")
+CHAIN_MIXED_HINT = ("знакомство (register_speaker) и выступление (perform) — отдельной командой, не вместе с длинной "
+                    "цепочкой действий: в этой команде оставь одно из двух")
 PERFORM_KINDS: Tuple[str, ...] = ("rap", "song", "tale", "poem")
 PERFORM_BACKINGS: Tuple[str, ...] = ("beat", "calm", "none")
 #: Подложка выступления по виду (решение Шифу 28.10: «на сказку необязательно музыку включать», «на анекдот
@@ -3867,7 +4070,7 @@ PROMPT_RULES: Tuple[PromptRule, ...] = (
 
 def prompt_rules(agent: str) -> str:
     """Блок «RULES» системного промпта агента — из таблицы :data:`PROMPT_RULES` (не из файла промпта). Правил у агента
-    нет (оператор) — пустая строка. Собирает его одна точка: ``rob_box_voice.core.dialog_v2_ports.assemble_llm``."""
+    нет (оператор) — пустая строка. Собирает его одна точка: ``rob_box_dialog_host.dialog_v2_ports.assemble_llm``."""
     lines = [f"- {rule.text}" for rule in PROMPT_RULES if agent in rule.agents]
     return "# RULES\n" + "\n".join(lines) if lines else ""
 
@@ -3911,13 +4114,15 @@ def prompt_fragment(schema: Optional[Mapping[str, Any]] = None) -> str:
         ("", "Ответ — одна команда (JSON-объект) с полями:"),
         ("speech", f"- speech: реплика человеку, ≤ {SPEECH_MAX_CHARS} символов. С actions speech не пиши (команда"
                    " невалидна): о результате действий скажет код по событию исполнителя; ответ по сути (шутка, стих) —"
-                   f" в perform. Исключение — тихие действия {', '.join(QUIET_WITH_SPEECH_TOOLS)}: speech с ними"
-                   " звучит."),
+                   f" в perform. Исключения: тихие действия {', '.join(QUIET_WITH_SPEECH_TOOLS)} — speech с ними"
+                   f" звучит; больше {CHAIN_SHORT_STEPS_MAX} других действий или поездка рядом с другим действием —"
+                   " speech звучит ДО них как короткий план («Сейчас уберу четыре точки.»), без слов о сделанном"
+                   " («удалил», «готово») — о сделанном скажет код."),
         ("voice", "- voice: голос этой реплики (имя голоса); голос робота не меняет."),
         ("ask", f"- ask: вопрос с ожиданием ответа, expects ∈ {_set(ASK_EXPECTS)}."),
-        ("actions", f"- actions: вызовы тулов {{tool, args}} - все, о чём просил человек, не урезай: за ход код"
-                    f" исполнит первые {ACTIONS_MAX}, об остальных скажет сам; не больше одного на класс"
-                    f" {' и '.join(SINGLE_ACTION_CLASSES)}."),
+        ("actions", f"- actions: вызовы тулов {{tool, args}} - все, о чём просил человек, не урезай (до"
+                    f" {ACTIONS_ACCEPT_MAX}); код исполнит их по одному в твоём порядке и сам скажет итог; не больше"
+                    f" одного на класс {' и '.join(SINGLE_ACTION_CLASSES)}."),
         ("perform", f"- perform: выступление kind ∈ {_set(kinds)}, {SEGMENTS_MIN}–{SEGMENTS_MAX} сегментов"
                     f" по ≤ {SEGMENT_MAX_CHARS} символов (куплет или абзац на сегмент), backing ∈ {_set(backings)};"
                     " вместо speech (speech при нём не пиши, даже с actions). Звучит и при actions: ответ по сути (сказка, стих, анекдот), не"
@@ -3980,8 +4185,8 @@ def load_wake_word_namespaces(path: "str | os.PathLike[str] | None") -> Dict[str
 
 def resolve_wake_word_namespaces(
     path: "str | os.PathLike[str] | None",
-    personality_fallback: Sequence[str] = DEFAULT_WAKE_WORDS,
-    operator_fallback: Sequence[str] = DEFAULT_OPERATOR_WAKE_WORDS,
+    personality_fallback: Sequence[str] = (),
+    operator_fallback: Sequence[str] = (),
 ) -> Tuple[List[str], List[str]]:
     """``(personality, operator)``: из файла, а где namespace нет — из переданных фолбеков (порядок важен)."""
     loaded = load_wake_word_namespaces(path)

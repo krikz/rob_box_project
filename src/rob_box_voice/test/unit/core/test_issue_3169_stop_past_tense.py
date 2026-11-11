@@ -27,7 +27,7 @@ from __future__ import annotations
 
 import pytest
 
-from rob_box_voice.core.command_parser import CommandParser, IntentType
+from rob_box_dialog_host.command_parser import CommandParser, IntentType
 from rob_box_voice.core.media_command_grammar import (
     MediaIntent,
     is_music_stop_command,

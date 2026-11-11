@@ -50,3 +50,9 @@ worlds:
       - {name: turn_out, x: -2.5, y: 0.0, yaw: 3.1416}
       - {name: back_in, x: 0.0, y: 0.0, yaw: 0.0}
       - {name: spin_180, x: 0.0, y: 0.0, yaw: 0.0, spin: 3.1416}
+
+  # Этаж учебного корпуса (#4468, worlds_catalog.building): 20 кабинетов, точки-кабинеты —
+  # файл генератора рядом с миром (rob_box_sim.building_floor). Порядок — объезд этажа.
+  building:
+    stop_on_failure: false
+    goals_from: building.goals.yaml

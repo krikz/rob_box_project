@@ -140,3 +140,8 @@ node_modules/
 src/rob_box_sim/worlds/local/
 docker/sim/results/
 docker/sim/video/
+# Карты rtabmap Main Pi (bind-mount ./maps:/maps, rtabmap.db) — данные робота, не репо (#4371)
+docker/main/maps/
+
+# Журнал промахов узнавания лиц (#4469): эмбеддинги людей, живёт только на роботе
+face_misses.jsonl

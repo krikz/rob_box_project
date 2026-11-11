@@ -96,12 +96,12 @@ CLASSIC_GENRES = ("classical", "folk")
 AUTO_STYLE = "auto"
 STYLE_CHOICES = (AUTO_STYLE, *kn.STYLES)
 #: Код отказа ``request_music``: сет запущен в этом же ходе и играет — заказ его не снимает. Сторона голоса
-#: строит по нему фразу (``rob_box_voice.core.media_phrases.SET_PLAYING_REASON``, равенство держит тест).
+#: строит по нему фразу (``rob_box_dialog_host.media_phrases.SET_PLAYING_REASON``, равенство держит тест).
 SET_PLAYING = "set_playing"
 #: Код отказа ``dj_set``: тема называет конкретные вещи, и ни одна не нашлась (#3493).
 NOT_FOUND = "not_found"
 #: Код отказа ``request_music``: просили «ещё <автор>», а всё подходящее уже играло (#3599); фразу строит код
-#: (``rob_box_voice.core.media_phrases.NO_MORE_REASON``, равенство держит тест).
+#: (``rob_box_dialog_host.media_phrases.NO_MORE_REASON``, равенство держит тест).
 NO_MORE = "no_more"
 #: Поле отказа ``request_music`` (``reason=not_found``): слова названия, как услышаны, когда код не понял, что названо
 #: (#4016, ``RequestSlots.doubt``); фраза — ``request_slots.doubt_text``, ни пьеса, ни песня по обрывку не ставятся.
@@ -443,15 +443,15 @@ def tool_result(data: Dict[str, Any], what: str) -> MCPToolResult:
     if data.get("ok"):
         return MCPToolResult(success=True, data=data)
     if data.get("composer_missing") and data.get("message"):  # назван композитор, пьес нет (#3604): фраза кода
-        from rob_box_voice.core.media_phrases import composer_missing_error
+        from rob_box_dialog_host.media_phrases import composer_missing_error
         return MCPToolResult(success=False, data=data, error=composer_missing_error(data["message"]))
     if data.get("reason") == NOT_FOUND and data.get("message"):  # отказ сета: фраза кода, её скажет голос
         return MCPToolResult(success=False, data=data, error=data["message"])
     if data.get("reason") == SOURCE_DECLINED and data.get("message"):  # отказ пути (ADR-0158): фраза кода
-        from rob_box_voice.core.media_phrases import source_error
+        from rob_box_dialog_host.media_phrases import source_error
         return MCPToolResult(success=False, data=data, error=source_error(data["message"]))
     if data.get("reason") == NO_MORE and data.get("message"):  # «больше нет» (#3599): фраза кода, её скажет голос
-        from rob_box_voice.core.media_phrases import no_more_error
+        from rob_box_dialog_host.media_phrases import no_more_error
         return MCPToolResult(success=False, data=data, error=no_more_error(data["message"]))
     return MCPToolResult(success=False, data=data, error=f"{what}: {data.get('reason')}")
 
@@ -1072,11 +1072,11 @@ def _classic_outcome(owner: Any, work: str, chosen: Tuple[Any, Dict[str, Any], L
     каталог её не подтвердил («спой раннинг ап дэд хилл» — чужая песня по названию, #4015)."""
     pick, played, reasons, count = chosen
     if pick is None and played.get("repeats"):  # просили «ещё», а всё подходящее уже играло
-        from rob_box_voice.core.media_phrases import no_more_text
+        from rob_box_dialog_host.media_phrases import no_more_text
         return {"ok": False, "found": True, "reason": NO_MORE, "query": work,
                 "message": no_more_text(work, played["repeats"][0])}
     if pick is None and played.get(COMPOSER_MISSING):  # композитор назван, его пьес нет: фраза кода (#3604)
-        from rob_box_voice.core.media_phrases import composer_missing_text
+        from rob_box_dialog_host.media_phrases import composer_missing_text
         return {"ok": False, "found": False, "reason": NOT_FOUND, "detail": "; ".join(reasons), "query": work,
                 "composer_missing": True,
                 "message": composer_missing_text(str(played.get("composer") or ""))}
@@ -1367,7 +1367,7 @@ def unstage(staged: Dict[str, Any]) -> Tuple[Any, bool, Dict[str, Any], Any]:
     program, once, row = staged.pop("program"), staged.pop("once"), staged.pop("history", {})
     model = staged.pop("track", None)
     if "played" in staged:
-        from rob_box_voice.core.media_phrases import launch_text
+        from rob_box_dialog_host.media_phrases import launch_text
         staged["message"] = launch_text("", staged)
     return program, once, row, model
 

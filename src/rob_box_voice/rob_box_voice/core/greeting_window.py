@@ -2,8 +2,14 @@
 
 Приветствие ушло в речь — кадр ``GreetingReply`` ждёт его конца (``SpeechEvent finished`` этой речи); окно
 ``REPLY_WINDOW_S`` (одна константа с вопросом об имени) открывается после конца речи + грейс микрофона и снимается
-первой адресованной голосовой фразой или по TTL. В окне фраза без вейка от приветствованного — ход
-(``address.GREETING_REPLY``, правило — ``speaker_adapter.answer_to_greeting``); иначе — бэклог.
+первой адресованной голосовой фразой или по TTL. В окне фраза без вейка — ход (``address.GREETING_REPLY``, правило —
+``speaker_adapter.answer_to_greeting``); иначе — бэклог. Голое «робот» в окне (``address.GREETING_WAKE``, #4509) окно
+не снимает, а открывает заново: робот говорит «Слушаю.» и ждёт ответа.
+
+Окно ответа знает и ``stt_node`` (#4509): владелец окна — этот модуль — шлёт событие ``echo_window.REPLY_WINDOW_TOPIC``
+(сколько секунд окно открыто, ``0`` — закрыто), и фраза из эхо-окна после приветствия не выбрасывается, а сверяется
+словами с речью робота. Публикатор события — ``node.announce_reply_window`` (его заводит ``dialog_node``; у ноды из
+тестов его нет — событие не шлётся).
 Функции, а не методы: ``DialogueNode`` в бюджете классов ADR-0145 расти не может.
 """
 
@@ -12,12 +18,29 @@ from __future__ import annotations
 from typing import Any, Optional
 
 from rob_box_dialog import knowledge as kn
+from rob_box_dialog.address import GREETING_WAKE
 from rob_box_dialog.speaker_adapter import greeting_frame, greeting_open
 from rob_box_voice.core.identity_question import session
 
 KIND = "GreetingReply"
 #: ``SpeechEvent.kind``: finished / cancelled / rejected.
 _FINISHED, _CANCELLED, _REJECTED = 4, 5, 7
+#: Сколько живёт открытое окно: грейс микрофона после речи + само окно ответа.
+_OPEN_TTL_S = float(kn.IDENTITY_MIC_GRACE_S + kn.REPLY_WINDOW_S)
+
+
+def _announce(node: Any, seconds: float) -> None:
+    """Событие окна ответа для ``stt_node`` (#4509): открыто ещё ``seconds``, ``0`` — закрыто."""
+    announce = getattr(node, "announce_reply_window", None)
+    if announce is not None:
+        announce(float(seconds))
+
+
+def _arm(node: Any) -> None:
+    """Открыть окно ответа сейчас: кадр с ``asked_at`` после грейса микрофона и событие для ``stt_node``."""
+    current = session(node)
+    current.arm_scene(KIND, _OPEN_TTL_S, {"asked_at": current.now() + kn.IDENTITY_MIC_GRACE_S})
+    _announce(node, _OPEN_TTL_S)
 
 
 def open_window(node: Any, person_ref: str, name: str, speech_id: str) -> None:
@@ -44,8 +67,7 @@ def on_speech_event(node: Any, kind: int, speech_id: str, agent: str) -> None:
         current.pop_scene(KIND)
         node.get_logger().info(f"💬 [reply-window] greeting {name}: кадр снят, приветствие не прозвучало (kind={kind})")
         return
-    current.arm_scene(KIND, float(kn.IDENTITY_MIC_GRACE_S + kn.REPLY_WINDOW_S),
-                      {"asked_at": current.now() + kn.IDENTITY_MIC_GRACE_S})
+    _arm(node)
     node.get_logger().info(
         f"💬 [reply-window] greeting {name}: окно открыто ttl={kn.REPLY_WINDOW_S}s "
         f"(микрофон после речи +{kn.IDENTITY_MIC_GRACE_S}s)")
@@ -60,13 +82,21 @@ def window(node: Any) -> Optional[Any]:
 
 
 def take_reply(node: Any, source: str, heard: Any) -> None:
-    """Адресованная голосовая фраза при открытом окне снимает кадр (первая же фраза, как у вопроса об имени)."""
+    """Адресованная голосовая фраза при открытом окне снимает кадр (первая же фраза, как у вопроса об имени). Голое
+    «робот» (``GREETING_WAKE``, #4509) — нет: робот говорит «Слушаю.», окно открывается заново."""
     frame = window(node)
     if frame is None or (getattr(heard, "source", "") or "respeaker") != "respeaker":
         return
+    name = frame.payload.get("name")
+    if source == GREETING_WAKE:
+        _arm(node)
+        node.get_logger().info(f"💬 [reply-window] greeting {name}: голое «робот» → «слушаю», окно открыто заново "
+                               f"ttl={kn.REPLY_WINDOW_S}s")
+        return
     session(node).pop_scene(KIND)
+    _announce(node, 0.0)
     node.get_logger().info(
-        f"💬 [reply-window] greeting {frame.payload.get('name')}: принят source={source} "
+        f"💬 [reply-window] greeting {name}: принят source={source} "
         f"text={str(getattr(heard, 'text', ''))[:60]!r}")
 
 

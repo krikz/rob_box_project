@@ -93,7 +93,11 @@ class PanelPublisher:
         if groups:
             msg = Image()
             msg.header.stamp, msg.header.frame_id = self._node.get_clock().now().to_msg(), ','.join(groups)
-            msg.width, msg.height, msg.encoding, msg.is_bigendian, msg.step = pixels, 1, 'rgb8', 0, pixels * 3
+            # One group: no comma in frame_id, so the compositor takes its per-group path and wants the group's own
+            # width x height (a 125x1 / 64x1 strip is dropped there with «Image size ... doesn't match group», #4584).
+            # Several groups: ``width`` = pixel count, ``height`` = 1 (multi-group frame).
+            width, height = GROUP_SIZE[groups[0]] if len(groups) == 1 else (pixels, 1)
+            msg.width, msg.height, msg.encoding, msg.is_bigendian, msg.step = width, height, 'rgb8', 0, width * 3
             msg.data = b''.join(chunks)
             self._pub.publish(msg)
             self.sent += len(groups)

@@ -52,6 +52,12 @@ max_pause 1200 мс). На КАЖДЫЙ сегмент сервер шлёт о�
 Какой из путей реально случился на роботе, показывает :meth:`trace` —
 короткая запись событий стрима для INFO-лога ``stt_node``.
 
+Гипотезы фразы (#4017 шаг C1, :meth:`YandexSegmentCollector.hypotheses`): уверенность —
+``alternatives[0].confidence`` каждого ``final`` (в proto v3: «Currently is not used», то есть обычно 0 →
+неизвестно), у фразы — наименьшая по сегментам и только если известна у каждого; кусок из partial
+уверенности не имеет. Другие тексты — ``alternatives[1:]`` сегмента, подставленные в фразу вместо его текста.
+Правила значений (−1, сколько альтернатив) — ``rob_box_core.stt_hypotheses``.
+
 Модуль не импортирует protobuf: ответы читаются duck-typing'ом, поэтому
 тестируется на ``SimpleNamespace`` без ``yandex``/``grpc``.
 """
@@ -59,7 +65,9 @@ max_pause 1200 мс). На КАЖДЫЙ сегмент сервер шлёт о�
 from __future__ import annotations
 
 import re
-from typing import List, Optional
+from typing import List, Optional, Tuple
+
+from rob_box_core.stt_hypotheses import CONFIDENCE_UNKNOWN, NO_HYPOTHESES, SttHypotheses, clean_confidence, hypotheses
 
 # Сколько символов текста события кладём в trace (INFO-лог не раздуваем).
 _TRACE_TEXT_CHARS = 24
@@ -83,6 +91,12 @@ def _first_alternative_text(update) -> str:
     """``alternatives[0].text`` из ``AlternativeUpdate`` или ``""``."""
     alt = _first_alternative(update)
     return (getattr(alt, "text", "") or "") if alt is not None else ""
+
+
+def _other_texts(update) -> Tuple[str, ...]:
+    """Тексты ``alternatives[1:]`` из ``AlternativeUpdate`` (непустые)."""
+    alternatives = list(getattr(update, "alternatives", None) or ())[1:]
+    return tuple(t for t in ((getattr(a, "text", "") or "").strip() for a in alternatives) if t)
 
 
 def _time_ms(alt, field: str) -> int:
@@ -128,15 +142,44 @@ class _Partial:
 
 
 class _Segment:
-    __slots__ = ("index", "final", "refined")
+    __slots__ = ("index", "final", "refined", "raw_confidence", "alt_texts")
 
-    def __init__(self, index: int, final: str) -> None:
+    def __init__(
+        self, index: int, final: str, raw_confidence: Optional[float] = None, alt_texts: Tuple[str, ...] = ()
+    ) -> None:
         self.index = index
         self.final = final
         self.refined: Optional[str] = None
+        # #4017 C1: сырой alternatives[0].confidence и другие тексты сервера — только у сегмента из своего
+        # непустого final; ``None`` — текст не от final сервера (partial), уверенности нет.
+        self.raw_confidence = raw_confidence
+        self.alt_texts = alt_texts
 
     def text(self) -> str:
         return (self.refined or self.final or "").strip()
+
+    @property
+    def confidence(self) -> float:
+        return CONFIDENCE_UNKNOWN if self.raw_confidence is None else clean_confidence(self.raw_confidence)
+
+
+def _final_segment(index: int, text: str, alt, update) -> _Segment:
+    """Сегмент из ``final``; уверенность и другие тексты — только если текст его собственный (не из partial)."""
+    if not text or alt is None or (getattr(alt, "text", "") or "").strip() != text:
+        return _Segment(index, text)
+    return _Segment(index, text, float(getattr(alt, "confidence", 0.0) or 0.0), _other_texts(update))
+
+
+def _phrase_hypotheses(segments: List[_Segment], parts: List[str], from_partials: bool) -> SttHypotheses:
+    """Гипотезы склеенной фразы ``parts`` (#4017 C1): уверенность — наименьшая по сегментам, если известна у каждого
+    и в фразе нет кусков из partial; другие тексты — фраза, где текст одного сегмента заменён его альтернативой."""
+    if not parts:
+        return NO_HYPOTHESES
+    texted = [seg for seg in segments if seg.text()]  # первые len(texted) кусков ``parts`` — их тексты, по порядку
+    values = [seg.confidence for seg in texted]
+    known = values and not from_partials and CONFIDENCE_UNKNOWN not in values
+    variants = [" ".join(parts[:i] + [alt] + parts[i + 1:]) for i, seg in enumerate(texted) for alt in seg.alt_texts]
+    return hypotheses(min(values) if known else CONFIDENCE_UNKNOWN, variants, text=" ".join(parts))
 
 
 def text_kept_on_deadline(
@@ -230,7 +273,7 @@ class YandexSegmentCollector:
                 "F#%d'%s'@%d-%d"
                 % (index, _short(text), start_ms, _time_ms(alt, "end_time_ms"))
             )
-        self._segments.append(_Segment(index, text))
+        self._segments.append(_final_segment(index, text, alt, getattr(response, "final", None)))
         self._last_final_end_ms = (
             _time_ms(alt, "end_time_ms") or self._last_final_end_ms
         )
@@ -311,6 +354,15 @@ class YandexSegmentCollector:
         """Склеенный текст всех непустых сегментов или ``None``."""
         parts = self._parts()
         return " ".join(parts) if parts else None
+
+    def hypotheses(self) -> SttHypotheses:
+        """Гипотезы склеенной фразы (#4017 C1, :func:`_phrase_hypotheses`); нет текста — :data:`NO_HYPOTHESES`."""
+        return _phrase_hypotheses(self._segments, self._parts(), bool(self._orphans or self._tail_partial()))
+
+    @property
+    def final_confidences(self) -> Tuple[float, ...]:
+        """Сырой ``alternatives[0].confidence`` каждого своего непустого ``final`` стрима — для INFO-лога."""
+        return tuple(seg.raw_confidence for seg in self._segments if seg.raw_confidence is not None)
 
     def text_if_utterance_closed(self) -> Optional[str]:
         """Текст, если сервер закрыл фразу: непустой final и EOU после него (#4175).

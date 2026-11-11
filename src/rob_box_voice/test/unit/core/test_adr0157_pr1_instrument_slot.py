@@ -21,7 +21,7 @@ from rob_box_voice.core.media_command_grammar import (
     instrument_in,
     parse_media_command,
 )
-from rob_box_voice.core.media_phrases import instrument_text, with_instrument
+from rob_box_dialog_host.media_phrases import instrument_text, with_instrument
 from rob_box_voice.core.music_turn import MusicTurn
 from rob_box_voice.core.named_play import NamedPlayStatus, outcome_text, run_named_play
 

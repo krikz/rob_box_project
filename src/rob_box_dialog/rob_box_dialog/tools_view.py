@@ -11,7 +11,8 @@ sound (таблицы — ``knowledge``). Открытый вопрос тула
 этого тула в срезе следующих ходов как названную. Голос (``set_voice`` /
 ``set_tts_provider``) виден только при явной голосовой просьбе в этой же реплике. Голый неслышимый ответ
 (анимация или одна ``expression`` без слов), когда ни лицо словами не просили (:func:`face_asked`), ни ответа без слов
-(:func:`silent_asked`), - :func:`needs_words`.
+(:func:`silent_asked`), - :func:`needs_words`. Тулы владельцев, которых у продукта нет (``SessionSnapshot.owners`` из
+профиля, ADR-0167 Ш1в), не попадают ни в срез, ни в расширение среза (:func:`widen_for`).
 """
 
 from __future__ import annotations
@@ -39,7 +40,7 @@ def groups_for(snapshot: SessionSnapshot, text: str, carry: Sequence[str] = (),
     не видел ``get_battery_level``, и LLM отвечала «заряд мне не виден» (run 39849541397).
     """
     named = _under_music(snapshot, text, _named(text, "stems")) | set(asked_groups(asked))
-    named = _faces_for(agent, text, named)
+    named = _faces_for(agent, text, named, carry, snapshot.owners)
     scene = ({"music"} if snapshot.music_playing else set()) - named
     weak = _named(text, "weak") - named - scene
     if not named | scene | weak:
@@ -48,14 +49,19 @@ def groups_for(snapshot: SessionSnapshot, text: str, carry: Sequence[str] = (),
     return _ordered(named) + _ordered(scene) + _ordered(weak)
 
 
-def _faces_for(agent: str, text: str, named: set) -> set:
-    """Группа ``faces`` (#4469): id лица (8 hex) открывает её без слов; агенту без её тулов (голос) - не открывается,
+def _faces_for(agent: str, text: str, named: set, carry: Sequence[str] = (),
+               owners: Optional[Sequence[str]] = None) -> set:
+    """Группа ``faces`` (#4469): id лица (8 hex) открывает её без слов; реплика без слов других групп после хода с
+    тулами faces («ну пришли их», «а ещё?») оставляет её в срезе (``carry``, #4505); агенту без её тулов (голос) - не
+    открывается,
     чтобы пустая группа не вытесняла статус по умолчанию."""
     if kn.FACE_ID_RE.search(text):
         named = named | {kn.FACES_GROUP}
-    if kn.FACES_GROUP in named and not set(kn.TOOL_GROUPS[kn.FACES_GROUP].tools) & set(tools_for(agent_spec(agent))):
-        named = named - {kn.FACES_GROUP}
-    return named
+    if not named and kn.FACES_GROUP in carry:
+        named = {kn.FACES_GROUP}
+    # группы пульта (``AGENT_SCOPED_GROUPS``: лица, граф ROS, VESC - #4469, #4516) без тулов у агента не открываются
+    own = set(tools_for(agent_spec(agent), owners))
+    return {g for g in named if g not in kn.AGENT_SCOPED_GROUPS or set(kn.TOOL_GROUPS[g].tools) & own}
 
 
 def asked_groups(tools: Sequence[str]) -> Tuple[str, ...]:
@@ -128,13 +134,13 @@ def silent_asked(text: str) -> bool:
     return has_form(text or "", kn.SILENT_SHOW_FORMS) and has_word(text or "", kn.FACE_SHOW_STEMS)
 
 
-def robot_asked(text: str) -> bool:
+def robot_asked(text: str, wake_words: Optional[Sequence[str]] = None) -> bool:
     """Просил ли человек в чате сделать это РОБОТОМ: форма из
     ``knowledge.CHAT_ROBOT_ASK_FORMS`` («покекай роботом», «через робота», «вслух», «развлекай народ»), не названная темой,
     и реплика не справка («Как управлять роботом?», «Почему детям полезно читать вслух?»,
     «найди, что пишет народ» - ответ в чат, робот ничего не делает). Целыми словами: «робота-курьера» - не «через
     робота». Решение - ``words.asks_robot_to_act``, таблицы - ``knowledge``."""
-    return asks_robot_to_act(text or "")
+    return asks_robot_to_act(text or "", wake_words)
 
 
 def show_asked(text: str) -> bool:
@@ -214,14 +220,16 @@ def motion_refusal(tool: str, text: str) -> Optional[str]:
     return phrases.text("motion.rejected.not_asked")
 
 
-def widen_for(missing: Sequence[str], agent: str, have: Sequence[str]) -> Tuple[str, ...]:
+def widen_for(missing: Sequence[str], agent: str, have: Sequence[str],
+              owners: Optional[Sequence[str]] = None) -> Tuple[str, ...]:
     """Тулы, которые код добавляет в запрос, когда модель позвала тул вне среза (``tool_not_available``): тул
     есть в реестре агента, а слова человека его группу не открыли («поставь ровный ритм» - живой прогон 23.10, акт 8).
     Открывается вся группа названного тула - по членству или по имени группы в имени тула (опечатка ``music_stop`` →
     группа ``music``); тула нет ни в группе, ни в реестре - ничего (выбор сужает код, угадывания по тексту нет).
     Не открываются: движение (только по глаголу человека, ``motion_named``) и голос (только по явной просьбе).
-    Уже видимые (``have``) не повторяются; порядок - как в группе, названный тул первым."""
-    allowed = set(tools_for(agent_spec(agent)))
+    Уже видимые (``have``) не повторяются; порядок - как в группе, названный тул первым. ``owners`` - владельцы
+    продукта (тул чужого владельца не открывается)."""
+    allowed = set(tools_for(agent_spec(agent), owners))
     opened: List[str] = []
     for tool in missing:
         opened.extend(n for n in _group_of(tool, allowed) if n not in have and n not in opened)
@@ -272,7 +280,7 @@ def available_tools(snapshot: SessionSnapshot, caps: Optional[Any] = None, agent
     """
     if snapshot.top("Silence") is not None or (caps is not None and not getattr(caps, "tools", True)):
         return ()
-    allowed = set(tools_for(agent_spec(agent))) | set(kn.SPEECH_CHANNEL_TOOLS)
+    allowed = set(tools_for(agent_spec(agent), snapshot.owners)) | set(kn.SPEECH_CHANNEL_TOOLS)
     names: List[str] = []
     drive = motion_named(text)
     grouped = tuple(t for g in groups_for(snapshot, text, carry, asked, agent) for t in kn.TOOL_GROUPS[g].tools)

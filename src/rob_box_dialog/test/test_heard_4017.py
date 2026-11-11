@@ -21,8 +21,9 @@ from rob_box_dialog.heard import HEARD_MARK, Repaired, repair
 from rob_box_dialog.session import MusicStateRef, Session
 from rob_box_dialog.turn import Answer, TurnEngine
 from rob_box_dialog.words import STOP_CLEAR, STOP_DISPUTED, STOP_NONE, stop_verdict
+from robot_wake_fixture import ROBOT_WAKE  # noqa: E402 — тестовый профиль робота
 
-WAKES = list(kn.DEFAULT_WAKE_WORDS)
+WAKES = list(ROBOT_WAKE)
 #: Живые строки STT марафона 23.10 (va_marathon.log) и что было сказано.
 N712 = "робот всох в глуши"  # 22:40:09.59, сценарий «Робот, всё, глуши.»
 N511 = "робот все глушу музыку у меня уши в трубочку"  # 22:14:39.70, «Робот, всё, глуши музыку, у меня уши в трубочку.»

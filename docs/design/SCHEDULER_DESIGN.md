@@ -1270,7 +1270,7 @@ Reflex-путь уже работает в develop-ветке (см. подтв�
 
 **Что есть в develop:**
 
-- `src/rob_box_voice/rob_box_voice/core/command_parser.py:110–123` — regex-паттерны для `IntentType.NAVIGATE` (строки 110–116) и `IntentType.STOP` (строки 119–121):
+- `src/rob_box_dialog_host/rob_box_dialog_host/command_parser.py:110–123` — regex-паттерны для `IntentType.NAVIGATE` (строки 110–116) и `IntentType.STOP` (строки 119–121):
   ```python
   (r'(двигайся|иди|поезжай|езжай|катись|двигай)\s+(вперед|вперёд|назад|влево|вправо)', 'direction'),
   (r'^(вперед|вперёд|назад)$', 'direction'),
@@ -1893,7 +1893,7 @@ Scheduler **не дублирует** `async_executor`. Использует е�
 - `src/rob_box_voice/rob_box_voice/dialogue_node.py` — `speak_text`, `_cancel_run` (`dialogue_node.py:3309`), `_on_tts_finished` (`dialogue_node.py:1291`), `_on_tts_batch_complete` (`dialogue_node.py:1379`), `_publish_music_cleanup` (`dialogue_node.py:3093`)
 - `src/rob_box_voice/rob_box_voice/core/speak_helpers.py` — `EffectAwaiterRegistry` (класс на `speak_helpers.py:184`), `_tts_events` dict (`speak_helpers.py:207`), `register_tts` (`speak_helpers.py:217`), `handle_tts_finished` (`speak_helpers.py:241`)
 - `src/rob_box_voice/rob_box_voice/tts_node.py` — публикация `tts/finished` по каждому чанку + `tts/batch_complete` после последнего (`_publish_tts_finished`, `tts_node.py:2783`; issue #980/#992)
-- `src/rob_box_voice/rob_box_voice/core/command_parser.py:110–123` — regex-паттерны `IntentType.NAVIGATE` и `IntentType.STOP` (§8.10.1)
+- `src/rob_box_dialog_host/rob_box_dialog_host/command_parser.py:110–123` — regex-паттерны `IntentType.NAVIGATE` и `IntentType.STOP` (§8.10.1)
 - `src/rob_box_voice/rob_box_voice/command_node.py:258` — `handle_stop()` отмена Nav2 goals через CancelGoal service (§8.10.1)
 - `src/rob_box_voice/rob_box_voice/command_node.py:302–324` — `handle_direction()` маппинг направлений в NavigateToPose (§8.10.1)
 - `src/rob_box_perception/rob_box_perception/context_aggregator_node.py:284` — «Команды движения НЕ добавляем в память» (§8.10.4)

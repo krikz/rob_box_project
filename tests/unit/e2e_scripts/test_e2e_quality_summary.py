@@ -144,6 +144,8 @@ class TestStepTally:
             "ok": 2,
             "fail": 1,
             "skip": 1,
+            "stand_play_failed": 0,  # #4608: фраза не сыграна (сбой стенда) -- отдельный счёт, тут таких нет
+            "stand_play_failed_labels": [],
             "recovered": 0,  # #3989: OK recovered_<вид> -- отдельный счёт, тут таких нет
             "recovered_labels": [],
             "wake_attempts": {},
@@ -383,3 +385,32 @@ class TestWorkflowSurfacesNumbers:
         step = next((s for s in steps if s.get("name") == name), None)
         assert step is not None, name
         assert "always()" in str(step.get("if", "")), name
+
+
+class TestStandPlayFailedTally:
+    """#4608: шаги `FAIL stand_play_failed` -- сбой стенда, считаются отдельно от FAIL робота."""
+
+    def test_stand_failures_are_not_robot_fails(self):
+        data = run_summary(
+            [
+                'emit_step "s1 OK"',
+                'emit_step "s2 FAIL stand_play_failed (pulse_connect_failed)"',
+                'emit_step "s3 FAIL stand_play_failed (pulse_connect_failed)"',
+                'emit_step "s4 FAIL no_accept"',
+            ]
+        )
+        st = data["steps"]
+        assert (st["total"], st["ok"], st["fail"], st["stand_play_failed"]) == (4, 1, 1, 2)
+        assert st["stand_play_failed_labels"] == ["s2", "s3"]
+        assert st["failed_labels"] == ["s4"]
+
+    def test_summary_line_carries_stand_count(self):
+        script = "\n".join(
+            [
+                STUBS, 'PASS=0', 'E2E_FAIL_KIND=stand', 'RUN_ID=t',
+                extract_function("emit_step"), extract_function("write_summary"),
+                'emit_step "s1 FAIL stand_play_failed (pulse_connect_failed)"', "write_summary", "",
+            ]
+        )
+        rc, out, err = run_bash(script)
+        assert re.search(r"E2E_SUMMARY verdict=FAIL steps=0/1 ok fail=0 skip=0 stand_play_failed=1 recovered=0", out), (out, err)

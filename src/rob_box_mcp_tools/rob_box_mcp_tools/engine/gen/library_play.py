@@ -40,7 +40,7 @@ def play_library_track(node: Any, library: Any, track_id: str, clock: Callable[[
     петлёй с кроссфейдом запускает он (``engine_tools.hold_start``), а не ``play(once=True)``."""
     from rob_box_music import knowledge as kn
     from rob_box_music.render.audio import render_audio
-    from rob_box_voice.core.media_phrases import library_play_text
+    from rob_box_dialog_host.media_phrases import library_play_text
 
     from ..engine_tools import confirmed
 

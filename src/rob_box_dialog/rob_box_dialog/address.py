@@ -20,19 +20,23 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass, field, replace
-from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple, Union
+from typing import Any, Dict, Mapping, Optional, Sequence, Tuple, Union
 
+from rob_box_core.stt_hypotheses import NO_HYPOTHESES, SttHypotheses, hypotheses_from_msg
 from rob_box_dialog.backlog import Backlog, Heard
 from rob_box_dialog.heard import repair
 from rob_box_dialog.reply_grammar import NO, YES, classify_reply
 from rob_box_dialog.session import SceneFrame
-from rob_box_dialog.speaker_adapter import answer_to_greeting, answer_to_question, attributed_person, in_reply_window
+from rob_box_dialog.speaker_adapter import (
+    answer_to_greeting,
+    answer_to_question,
+    attributed_person,
+    greeting_open,
+    in_reply_window,
+)
 from rob_box_dialog.knowledge import (
     ADDRESS_FILLER_WORDS,
     COORDINATOR_NAMES,
-    DEFAULT_OPERATOR_WAKE_WORDS,
-    DEFAULT_WAKE_WORDS,
-    resolve_wake_word_namespaces,
 )
 from rob_box_dialog.words import has_wake_word, music_stop_unwoken, slipped_wake_rest, strip_wake_word, wake_command
 
@@ -42,6 +46,10 @@ SOURCE_RESPEAKER, SOURCE_TELEGRAM, SOURCE_OPERATOR = "respeaker", "telegram", "o
 VOICE, BACKLOG_PICKUP, BARE_WAKE, IDENTITY_ANSWER = "voice", "backlog_pickup", "bare_wake", "identity_answer"
 #: Фраза без вейка в окне после приветствия при встрече.
 GREETING_REPLY = "greeting_reply"
+#: Голое «робот» в окне после приветствия, бэклог пуст (#4509): код говорит «Слушаю.», окно ответа открывается заново.
+GREETING_WAKE = "greeting_wake"
+#: Ходы без слов человека: текст хода не из фразы, у хода нет её ``utterance_id``.
+WORDLESS: Tuple[str, ...] = (BARE_WAKE, GREETING_WAKE)
 #: «Да»/«нет» без вейка в окне вопроса выступления о смене музыки (О9′).
 PERFORM_ANSWER = "perform_answer"
 #: Стоп музыки без вейка, пока музыка играет (М11 n511, #4030: вейк под музыкой теряется): ход - только этот стоп.
@@ -84,6 +92,9 @@ class Addressed:
     #: нему ход берёт голос ЭТОЙ фразы (ответ на «ты меня узнал?»). У подхвата бэклога и голого вейка - «»: текст
     #: хода не из этой фразы.
     utterance_id: str = ""
+    #: Гипотезы распознавания фразы хода (``Heard.hypotheses``, #4017 шаг C1) — у хода из самой фразы, как
+    #: ``utterance_id``; у подхвата и голого вейка — :data:`NO_HYPOTHESES`. Поведение по ним — шаг C2.
+    hypotheses: SttHypotheses = NO_HYPOTHESES
 
 
 @dataclass(frozen=True)
@@ -115,27 +126,27 @@ def _collapse_repeated_wake(rest: str, wake_words: Sequence[str]) -> str:
     return "" if left != rest and is_bare(left) else rest
 
 
-def _yes_no_in_window(frame: Optional[SceneFrame], text: str, t: float) -> bool:
+def _yes_no_in_window(frame: Optional[SceneFrame], text: str, t: float, wake_words: Sequence[str]) -> bool:
     """Окно вопроса да/нет открыто и фраза — «да» или «нет». Окно — с конца вопроса, грейс микрофона включён
     (``in_grace``): целое «да»/«нет» эхом «Сейчас играет …, выключить и зачитать?» не бывает, а кадр
     открыт только после ``SpeechEvent finished`` вопроса."""
     if frame is None or not in_reply_window(frame.payload.get("asked_at"), t, in_grace=True):
         return False
-    reply = classify_reply(text or "", asks_name=False)
+    reply = classify_reply(text or "", asks_name=False, wake_words=wake_words)
     return reply is not None and reply.kind in (YES, NO)
 
 
 def _wakeless_reply(text: str, heard: Heard, question: Optional[SceneFrame],
                     greeting: Optional[SceneFrame], ask: Optional[SceneFrame] = None,
-                    music_playing: bool = False) -> Decision:
+                    music_playing: bool = False, wake_words: Sequence[str] = ()) -> Decision:
     """Фраза без вейка: ответ на вопрос об имени (В17(б)), ответ на приветствие, «да»/«нет» на вопрос
     выступления (О9′), стоп музыки, пока она играет (М11 n511: «врубай все глуши музыку» - вейк потерян под
     музыкой; ход - только команда стопа, собранная кодом, ``words.music_stop_unwoken``), или не адресована."""
-    if text and answer_to_question(question, heard) is not None:
+    if text and answer_to_question(question, heard, wake_words=wake_words) is not None:
         return Addressed(text, IDENTITY_ANSWER)
-    if text and answer_to_greeting(greeting, heard):
+    if text and answer_to_greeting(greeting, heard, wake_words=wake_words):
         return Addressed(text, GREETING_REPLY)
-    if text and _yes_no_in_window(ask, text, heard.t):
+    if text and _yes_no_in_window(ask, text, heard.t, wake_words):
         return Addressed(text, PERFORM_ANSWER)
     stop = music_stop_unwoken(text) if music_playing else None
     if stop:
@@ -159,14 +170,27 @@ def decide(heard: Heard, backlog: Optional[Backlog], wake_words: Sequence[str],
     ``music_playing`` — играет ли музыка: под ней искажённый вейк пропускает и правку музыки («роботы ускорь темп»,
     ворота ``under_music`` в ``knowledge.WAKE_SLIP_GATES``). Ход из самой фразы помнит её id
     (``Addressed.utterance_id``, :func:`_of_phrase`)."""
-    return _of_phrase(_decide(heard, backlog, wake_words, question, greeting, ask, hold, music_playing), heard)
+    decision = _decide(heard, backlog, wake_words, question, greeting, ask, hold, music_playing)
+    _note_answered(decision, heard, backlog)
+    return _of_phrase(decision, heard)
+
+
+def _note_answered(decision: Decision, heard: Heard, backlog: Optional[Backlog]) -> None:
+    """Единственная точка отметки «ход ответил человеку» (#4509): фраза с текстом (вейк, ``greeting_reply``,
+    ответ на вопрос и т. п.) помечает бэклог до своего начала учтённым — фоновое до неё модель видит в снимке хода,
+    голое «робот» позже не должно подхватить его второй раз. «да»/«нет» на вопрос выступления бэклог не съедает
+    (#3772). Голый вейк и подхват отмечаются в ``Backlog.pickup``."""
+    if (backlog is not None and isinstance(decision, Addressed) and not decision.pickup
+            and decision.source not in WORDLESS + (PERFORM_ANSWER,)
+            and heard.source not in (SOURCE_TELEGRAM, SOURCE_OPERATOR)):
+        backlog.note_addressed(heard.t)
 
 
 def _of_phrase(decision: Decision, heard: Heard) -> Decision:
     """Ход, текст которого — сама фраза ``heard`` (не подхват бэклога и не голый вейк), — с её ``utterance_id``: по нему
-    ход находит SpeakerResult этой фразы."""
-    if isinstance(decision, Addressed) and not decision.pickup and decision.source != BARE_WAKE:
-        return replace(decision, utterance_id=heard.utterance_id)
+    ход находит SpeakerResult этой фразы; и с её гипотезами распознавания (#4017 шаг C1)."""
+    if isinstance(decision, Addressed) and not decision.pickup and decision.source not in WORDLESS:
+        return replace(decision, utterance_id=heard.utterance_id, hypotheses=heard.hypotheses)
     return decision
 
 
@@ -186,12 +210,21 @@ def _decide(heard: Heard, backlog: Optional[Backlog], wake_words: Sequence[str],
     rest = (strip_wake_word(text, wake_words) if woken
             else slipped_wake_rest(text, wake_words, music_playing=music_playing))
     if rest is None:
-        return _wakeless_reply(text, heard, question, greeting, ask, music_playing)
+        return _wakeless_reply(text, heard, question, greeting, ask, music_playing, wake_words)
     if woken:
         rest = _collapse_repeated_wake(rest, wake_words)
-    if is_bare(rest) and _yes_no_in_window(ask, rest, heard.t):  # «Робот, да» — ответ на вопрос, не голый вейк
+    # «Робот, да» — ответ на вопрос, не голый вейк
+    if is_bare(rest) and _yes_no_in_window(ask, rest, heard.t, wake_words):
         return Addressed(rest, PERFORM_ANSWER)
-    return _woken(rest, heard, backlog, _command(text, rest, wake_words) if woken else "")
+    return _greeting_wake(_woken(rest, heard, backlog, _command(text, rest, wake_words) if woken else ""), greeting)
+
+
+def _greeting_wake(decision: Addressed, greeting: Optional[SceneFrame]) -> Addressed:
+    """Голое «робот» при пустом бэклоге в открытом окне ответа на приветствие (#4509): не пустой ход, а
+    :data:`GREETING_WAKE` — человек зовёт робота ответить; рефлекс-ход молча закрывался (``pickup n=0``)."""
+    if decision.source == BARE_WAKE and greeting_open(greeting):
+        return replace(decision, source=GREETING_WAKE)
+    return decision
 
 
 def _command(text: str, rest: str, wake_words: Sequence[str]) -> str:
@@ -219,8 +252,6 @@ def _woken(rest: str, heard: Heard, backlog: Optional[Backlog], command: str = "
         said, after_wake = repair(rest), repair(command)
         recent = backlog.recent_unaddressed(heard) if backlog is not None else None
         since = backlog.background_since_reply(heard) if backlog is not None else []
-        if backlog is not None:
-            backlog.note_addressed(heard.t)  # фоновое до этой фразы модель видит в снимке хода: издалека не подхватывать
         return Addressed(said.text, VOICE, recent=(recent,) if recent else (), background=tuple(since),
                          background_summary=backlog.background_summary(heard) if backlog is not None else {},
                          command=after_wake.text, stt_fixes=said.fixes + after_wake.fixes)
@@ -240,7 +271,8 @@ def _seconds(stamp: Any) -> float:
 
 
 def heard_from(msg: Any, *, now: float, doa: Any = None, person_ref: str = "", faces: Any = None) -> Heard:
-    """``Utterance`` → :class:`Heard`: время — конец фразы; направление (DOA) и лица в кадре — по окну её звучания."""
+    """``Utterance`` → :class:`Heard`: время — конец фразы; направление (DOA) и лица в кадре — по окну её звучания;
+    гипотезы распознавания — из полей ``confidence``/``alternatives`` (нет полей — неизвестны, #4017 шаг C1)."""
     started, ended = _seconds(getattr(msg, "started_at", None)), _seconds(getattr(msg, "ended_at", None))
     t = ended or now
     window = (started - VAD_TAIL_S, t)
@@ -248,7 +280,8 @@ def heard_from(msg: Any, *, now: float, doa: Any = None, person_ref: str = "", f
     seen = faces.during(*window) if (faces is not None and started) else frozenset()
     return Heard(text=(getattr(msg, "text", "") or "").strip(), t=t, source=getattr(msg, "source", "") or "",
                  doa_deg=doa_deg, person_ref=person_ref or "", voice_s=max(0.0, ended - started) if started else 0.0,
-                 faces=seen, utterance_id=str(getattr(msg, "utterance_id", "") or ""))
+                 faces=seen, utterance_id=str(getattr(msg, "utterance_id", "") or ""),
+                 hypotheses=hypotheses_from_msg(msg))
 
 
 def person_ref_from(registry: Any, utterance_id: Optional[str]) -> str:
@@ -268,10 +301,3 @@ def log_label(msg: Any) -> str:
     if text and chat_id and getattr(msg, "source", "") == SOURCE_TELEGRAM:
         return f"[TG:{chat_id}] {text}"
     return text
-
-
-def wake_words(path: str = "", personality: Sequence[str] = ()) -> Tuple[List[str], List[str]]:
-    """Таблица вейков ``(personality, operator)``: из ``wake_words.yaml``, иначе — переданные, иначе — кода."""
-    return resolve_wake_word_namespaces(
-        path, personality_fallback=list(personality) or list(DEFAULT_WAKE_WORDS),
-        operator_fallback=DEFAULT_OPERATOR_WAKE_WORDS)

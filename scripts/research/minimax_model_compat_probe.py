@@ -52,10 +52,11 @@ from unittest.mock import MagicMock
 KEY = os.environ.get("MINIMAX_API_KEY", "")
 ONLY = {c for c in os.environ.get("PROBE_ONLY", "").split(",") if c}
 
-PROMPT_PATHS = (
-    "/ws/install/rob_box_voice/share/rob_box_voice/prompts/master_prompt_compact.txt",
-    os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "src",
-                 "rob_box_voice", "prompts", "master_prompt_compact.txt"),
+#: Профиль робота: в контейнере voice-assistant и в чекауте. Промпт Личности - основа ядра с его персоной
+#: (ADR-0167 Ш1б-3).
+PROFILE_PATHS = (
+    "/config/assistant.yaml",
+    os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "docker", "sound", "config", "assistant.yaml"),
 )
 SYSTEM_FALLBACK = "Ты — робот Робби. Отвечай коротко, по-русски."
 
@@ -80,10 +81,14 @@ def emit(tag: str, **fields: Any) -> None:
 
 
 def load_system_prompt() -> tuple[str, str]:
-    for path in PROMPT_PATHS:
+    try:
+        from rob_box_dialog.profile import load_profile
+        from rob_box_dialog.prompts import personality_prompt
+    except ImportError:
+        return SYSTEM_FALLBACK, "fallback"
+    for path in PROFILE_PATHS:
         if os.path.exists(path):
-            with open(path, encoding="utf-8") as fh:
-                return fh.read(), os.path.basename(path)
+            return personality_prompt(load_profile(path).persona), f"personality+{path}"
     return SYSTEM_FALLBACK, "fallback"
 
 

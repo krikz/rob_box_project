@@ -11,14 +11,13 @@ from rob_box_dialog.address import (
 )
 from rob_box_dialog.backlog import Backlog, Heard
 from rob_box_dialog.doa import DoaTrack
-from rob_box_dialog.knowledge import (
-    BACKGROUND_WINDOW_S, BACKLOG_PICKUP_S, BACKLOG_TTL_S, DEFAULT_WAKE_WORDS, RISKY_WAKE_WORDS,
-)
+from rob_box_dialog.knowledge import BACKGROUND_WINDOW_S, BACKLOG_PICKUP_S, BACKLOG_TTL_S
 from rob_box_dialog.session import MusicStateRef, Session
 from rob_box_dialog.speaker_adapter import VoiceTag
 from rob_box_dialog.turn import background_section
+from robot_wake_fixture import ROBOT_RISKY, ROBOT_WAKE  # noqa: E402 — тестовый профиль робота
 
-WAKES = list(DEFAULT_WAKE_WORDS)
+WAKES = list(ROBOT_WAKE)
 COMMANDS = [
     "включи музыку", "покажи анимацию ускорения", "который час", "расскажи анекдот", "сделай громче",
     "как тебя зовут", "спой песню про ежа", "поехали вперёд", "что ты видишь", "запомни меня",
@@ -60,17 +59,17 @@ def test_corpus_size_meets_a15():
 def test_risky_wake_words_work_only_when_enabled():
     assert decide(_heard("бот покажи анимацию"), None, WAKES) == NotAddressed(NO_WAKE)
     assert decide(_heard("роб покажи анимацию"), None, WAKES) == NotAddressed(NO_WAKE)
-    assert decide(_heard("бот покажи анимацию"), None, WAKES + list(RISKY_WAKE_WORDS)) == Addressed(
+    assert decide(_heard("бот покажи анимацию"), None, WAKES + list(ROBOT_RISKY)) == Addressed(
         "покажи анимацию", VOICE)
-    assert decide(_heard("роб покажи анимацию"), None, WAKES + list(RISKY_WAKE_WORDS)) == Addressed(
+    assert decide(_heard("роб покажи анимацию"), None, WAKES + list(ROBOT_RISKY)) == Addressed(
         "покажи анимацию", VOICE)
-    assert decide(_heard("у меня всё работает"), None, WAKES + list(RISKY_WAKE_WORDS)) == NotAddressed(NO_WAKE)
+    assert decide(_heard("у меня всё работает"), None, WAKES + list(ROBOT_RISKY)) == NotAddressed(NO_WAKE)
 
 
 @pytest.mark.parametrize("wake", ["рома", "роман"])
 def test_roma_and_roman_are_ordinary_wake_words(wake):
     """23.10 Шифу (коммиты 83fdeb913, 2dae40fee): «рома» и «роман» — обычные вейки, не рискованные (В18)."""
-    assert wake in DEFAULT_WAKE_WORDS and wake not in RISKY_WAKE_WORDS
+    assert wake in ROBOT_WAKE and wake not in ROBOT_RISKY
     assert decide(_heard(f"{wake} покажи анимацию"), None, WAKES) == Addressed("покажи анимацию", VOICE)
     assert decide(_heard(f"{wake}, включи музыку"), None, WAKES) == Addressed("включи музыку", VOICE)
 
@@ -255,12 +254,6 @@ def test_log_label_keeps_the_coordinator_contract():
     assert log_label(tg) == "[TG:42] Клод привет" and log_label(voice) == "робот привет"
 
 
-def test_wake_table_from_yaml_or_code():
-    personality, operator = address.wake_words()
-    assert personality == list(DEFAULT_WAKE_WORDS) and operator
-    assert address.wake_words("", ["робот"])[0] == ["робот"]
-
-
 def test_sources_match_utterance_msg():
     from rob_box_core.msg_stub import build_dialog_msgs_module
 
@@ -289,7 +282,7 @@ def _question(azimuth=90.0, asked_at=95.0, person="p1", kind="unknown"):
     (dict(t=100.0, doa=95.0), dict(azimuth=None), True),            # азимут вопроса неизвестен — не важен
 ])
 def test_answer_to_own_question_without_wake(heard, question, addressed):
-    decision = decide(_heard("меня зовут Гриша", **heard), None, DEFAULT_WAKE_WORDS, _question(**question))
+    decision = decide(_heard("меня зовут Гриша", **heard), None, ROBOT_WAKE, _question(**question))
     if addressed:
         assert decision == Addressed("меня зовут Гриша", address.IDENTITY_ANSWER)
     else:
@@ -309,13 +302,13 @@ def test_answer_to_own_question_without_wake(heard, question, addressed):
     ("Гриша пришёл вчера", 90.0, False),
 ])
 def test_wakeless_phrase_is_an_answer_only_when_it_looks_like_one(text, doa, addressed):
-    decision = decide(_heard(text, t=100.0, doa=doa), None, DEFAULT_WAKE_WORDS, _question())
+    decision = decide(_heard(text, t=100.0, doa=doa), None, ROBOT_WAKE, _question())
     assert decision == (Addressed(text, address.IDENTITY_ANSWER) if addressed else NotAddressed(address.NO_WAKE))
 
 
 def test_no_question_no_wake_is_not_addressed_and_wake_still_works():
-    assert decide(_heard("меня зовут Гриша", doa=90.0), None, DEFAULT_WAKE_WORDS, None) == NotAddressed(address.NO_WAKE)
-    with_wake = decide(_heard("робот меня зовут Гриша", doa=250.0), None, DEFAULT_WAKE_WORDS, _question())
+    assert decide(_heard("меня зовут Гриша", doa=90.0), None, ROBOT_WAKE, None) == NotAddressed(address.NO_WAKE)
+    with_wake = decide(_heard("робот меня зовут Гриша", doa=250.0), None, ROBOT_WAKE, _question())
     assert with_wake == Addressed("меня зовут Гриша", address.VOICE)
 
 
@@ -323,7 +316,7 @@ def test_flag_in_knowledge_turns_the_wakeless_answer_off(monkeypatch):
     from rob_box_dialog import knowledge as kn
 
     monkeypatch.setattr(kn, "IDENTITY_ANSWER_WITHOUT_WAKE", False)
-    decision = decide(_heard("меня зовут Гриша", t=100.0, doa=90.0), None, DEFAULT_WAKE_WORDS, _question())
+    decision = decide(_heard("меня зовут Гриша", t=100.0, doa=90.0), None, ROBOT_WAKE, _question())
     assert decision == NotAddressed(address.NO_WAKE)
 
 
@@ -337,7 +330,7 @@ def test_flag_in_knowledge_turns_the_wakeless_answer_off(monkeypatch):
     ("это я вчера включал тебе эту музыку", 100.0, False),  # длинная фраза с «это я» — чужой разговор
 ])
 def test_merge_question_answer_without_wake(text, t, addressed):
-    decision = decide(_heard(text, t=t, doa=90.0), None, DEFAULT_WAKE_WORDS, _question(kind="conflict"))
+    decision = decide(_heard(text, t=t, doa=90.0), None, ROBOT_WAKE, _question(kind="conflict"))
     assert decision == (Addressed(text, address.IDENTITY_ANSWER) if addressed else NotAddressed(address.NO_WAKE))
 
 
@@ -358,7 +351,7 @@ def _ask(asked_at=100.0):
     ("включи что-нибудь весёлое", 105.0, False),  # не ответ — чужой разговор
 ])
 def test_perform_question_yes_no_without_wake(text, t, addressed):
-    decision = decide(_heard(text, t=t), None, DEFAULT_WAKE_WORDS, ask=_ask())
+    decision = decide(_heard(text, t=t), None, ROBOT_WAKE, ask=_ask())
     assert decision == (Addressed(text, address.PERFORM_ANSWER) if addressed else NotAddressed(address.NO_WAKE))
 
 
@@ -376,14 +369,14 @@ def test_reply_window_bounds(t, in_grace, inside):
 
 
 def test_no_window_no_wakeless_answer():
-    assert decide(_heard("да", t=105.0), None, DEFAULT_WAKE_WORDS) == NotAddressed(address.NO_WAKE)
+    assert decide(_heard("да", t=105.0), None, ROBOT_WAKE) == NotAddressed(address.NO_WAKE)
 
 
 def test_wake_plus_yes_in_the_window_is_an_answer_not_a_bare_wake():
     """«Робот, да»: «да» — слово-заполнитель голого вейка, но в окне вопроса выступления это ответ."""
-    assert decide(_heard("Робот, да", t=105.0), None, DEFAULT_WAKE_WORDS, ask=_ask()) == Addressed(
+    assert decide(_heard("Робот, да", t=105.0), None, ROBOT_WAKE, ask=_ask()) == Addressed(
         "да", address.PERFORM_ANSWER)
-    assert decide(_heard("Робот, да", t=130.0), None, DEFAULT_WAKE_WORDS, ask=_ask()).source == address.BARE_WAKE
+    assert decide(_heard("Робот, да", t=130.0), None, ROBOT_WAKE, ask=_ask()).source == address.BARE_WAKE
 
 
 @pytest.mark.parametrize("ask", [None, _ask(asked_at=100.0)], ids=["no_window", "window_expired"])
@@ -392,7 +385,7 @@ def test_bare_wake_outside_the_perform_window_still_takes_the_backlog(ask, text)
     """#3772 (В12″): вне окна вопроса выступления голое «робот» (и «Робот, да» — «да» тут заполнитель) берёт
     бэклог, как без выступления."""
     backlog = _backlog_with("покажи анимацию ускорения", t=125.0, doa=90.0)
-    out = decide(_heard(text, t=130.0, doa=270.0), backlog, DEFAULT_WAKE_WORDS, ask=ask)
+    out = decide(_heard(text, t=130.0, doa=270.0), backlog, ROBOT_WAKE, ask=ask)
     assert (out.text, out.source) == ("покажи анимацию ускорения", BACKLOG_PICKUP)
     assert backlog.background_phrases(130.0) == 0
 
@@ -400,10 +393,10 @@ def test_bare_wake_outside_the_perform_window_still_takes_the_backlog(ask, text)
 def test_in_the_perform_window_yes_is_the_answer_and_bare_wake_still_takes_the_backlog():
     """В окне вопроса: «Робот, да» — ответ, бэклог не трогается; голое «Робот» — по-прежнему бэклог (#3772)."""
     backlog = _backlog_with("покажи анимацию ускорения", t=103.0, doa=90.0)
-    yes = decide(_heard("Робот, да", t=105.0), backlog, DEFAULT_WAKE_WORDS, ask=_ask())
+    yes = decide(_heard("Робот, да", t=105.0), backlog, ROBOT_WAKE, ask=_ask())
     assert yes == Addressed("да", address.PERFORM_ANSWER)
     assert backlog.background_phrases(105.0) == 1, "ответ на вопрос не съедает бэклог"
-    bare = decide(_heard("Робот", t=106.0, doa=270.0), backlog, DEFAULT_WAKE_WORDS, ask=_ask())
+    bare = decide(_heard("Робот", t=106.0, doa=270.0), backlog, ROBOT_WAKE, ask=_ask())
     assert (bare.text, bare.source) == ("покажи анимацию ускорения", BACKLOG_PICKUP)
 
 
@@ -412,10 +405,10 @@ def test_decide_in_session_reads_windows_and_hold_from_the_snapshot_frames():
     session = Session("personality", clock=lambda: 100.0)
     backlog = Backlog()
     plain = _heard("включи что-нибудь", t=100.0)
-    assert address.decide_in_session(plain, backlog, DEFAULT_WAKE_WORDS, session.snapshot) == decide(
-        plain, backlog, DEFAULT_WAKE_WORDS)
+    assert address.decide_in_session(plain, backlog, ROBOT_WAKE, session.snapshot) == decide(
+        plain, backlog, ROBOT_WAKE)
     session.push_scene("OperatorHold", "operator", ttl_s=60.0)
-    held = address.decide_in_session(_heard("робот привет", t=101.0), backlog, DEFAULT_WAKE_WORDS, session.snapshot)
+    held = address.decide_in_session(_heard("робот привет", t=101.0), backlog, ROBOT_WAKE, session.snapshot)
     assert held == NotAddressed(address.HELD)
 
 
@@ -557,7 +550,7 @@ def _session(music: str = "idle", dj: bool = False) -> Session:
 
 
 def _in_session(text, session):
-    return address.decide_in_session(_heard(text), Backlog(), DEFAULT_WAKE_WORDS, session.snapshot)
+    return address.decide_in_session(_heard(text), Backlog(), ROBOT_WAKE, session.snapshot)
 
 
 #: Живые фразы 27.10 и их остаток. 14:49 - инъекция под диджей-сетом (dev-0d94634), 09:26 - n506_faster (dev-d68a784).
@@ -654,14 +647,14 @@ def test_3975_decide_takes_music_from_the_flag_and_defaults_to_silence():
     ("роботы хватит", "хватит", ""),  # искажённый вейк первым словом (#3996)
 ])
 def test_4085_addressed_command_is_the_part_after_the_wake(text, rest, command):
-    decision = decide(_heard(text), Backlog(), DEFAULT_WAKE_WORDS)
+    decision = decide(_heard(text), Backlog(), ROBOT_WAKE)
     assert isinstance(decision, Addressed) and decision.source == VOICE
     assert (decision.text, decision.command) == (rest, command)
 
 
 def test_4085_telegram_text_has_no_separate_command():
     """Эхо речи робота — склейка микрофона: у Telegram и оператора текст хода и есть команда."""
-    decision = decide(_heard("скажи ему, робот, хватит", source="telegram"), None, DEFAULT_WAKE_WORDS)
+    decision = decide(_heard("скажи ему, робот, хватит", source="telegram"), None, ROBOT_WAKE)
     assert isinstance(decision, Addressed) and decision.command == ""
 
 

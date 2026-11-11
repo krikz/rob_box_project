@@ -12,6 +12,23 @@
 - Пост — один тезис. Длина: подпись ≤ 1024 знаков (лимит Telegram для медиа), текст без медиа ≤ 4096; цель 400–700.
 - Язык — русский, технические имена (Nav2, RTAB-Map, ADR-0148) как есть.
 
+## Чего в посте не пишем (решение Шифу 07.11.2026)
+
+Канал — про поведение робота. Внутренняя кухня проекта в постах не пишется:
+
+- **номера PR и issue** (`PR #4503`, `#4495`, ссылки на `github.com/…/pull/…`);
+- **имена веток** (`develop`, `z-architect/…`) и слова «ветка develop»;
+- **типы коммитов** (`fix(dialog)`, `feat(nav):`) — это заголовок коммита, не слово для читателя;
+- **файлы и пути репозитория** (`patch_rtabmap_launch.py`, `rtabmap.ini`,
+  `docs/…`, `scripts/…`).
+
+Проверяет код: `channel_lib.POST_FORBIDDEN` (приватность + `FORBIDDEN_INTERNAL`) — студия не даст
+модели это написать, публикатор не пропустит. Ответы студии Шифу в личке номера PR называть могут.
+Свои правила к постам Шифу пишет студии словами («в постах не пиши про …») — их хранит код
+(`studio_rules`, `state.rules`) и кладёт в задание каждого текста поста. Пишем о том, что изменилось для робота и
+для читателя: «робот перестал говорить „приехал“, когда потерял опору», а не
+«в `develop` влили PR #4502».
+
 ## Требования Telegram (проверено 06.11.2026, Bot API 10.3)
 
 Источники: [Bot API](https://core.telegram.org/bots/api), [changelog](https://core.telegram.org/bots/api-changelog),
@@ -35,11 +52,47 @@
 | HTML | теги `b i u s a code pre tg-spoiler tg-emoji blockquote` (и `<blockquote expandable>`); `blockquote` не вкладываются; `<`, `>`, `&` экранируются как `&lt; &gt; &amp;` | `html_problems`: незакрытые и перепутанные теги, вложенный blockquote, голые `< > &` |
 | MarkdownV2 | много спецсимволов требуют `\`-экранирования | не используем: только HTML |
 
-Что взято из свежих версий API: `link_preview_options` (`{"is_disabled": true}`, вместо устаревшего `disable_web_page_preview`)
-для текстовых постов; цитаты и раскрывающиеся цитаты (`<blockquote expandable>`) и `<tg-spoiler>` разрешены в разметке
-постов; `show_caption_above_media`, `protect_content`, `has_spoiler`, `message_effect_id` существуют, но по умолчанию
-не используем (в каналах их роль мала, эффекты — только личные чаты). Из 10.x для канала нового нет:
-`ephemeral_message_parameters`, Communities и `sendRichMessage` нам не нужны.
+### Фичи Bot API в студии и в постах (проверено 06.11.2026)
+
+Прочитаны первоисточники: [Bot API](https://core.telegram.org/bots/api) (версия 10.3 от 24.08.2026, верх страницы),
+[changelog](https://core.telegram.org/bots/api-changelog) (10.3, 10.2, 10.1, 10.0, 9.6, 9.5),
+[features](https://core.telegram.org/bots/features), [FAQ](https://core.telegram.org/bots/faq) (лимиты частоты).
+Ниже только то, что там написано; чего нет в документации — не используем.
+
+**Берём:**
+
+| Фича | Где в документации | Зачем у нас | Код |
+|---|---|---|---|
+| `answerCallbackQuery` сразу на нажатие | CallbackQuery, NOTE: клиент крутит индикатор, «until you call answerCallbackQuery» | «Делаю…» за доли секунды, кнопка не «уходит в себя» | `channel_studio._on_callback` |
+| `sendChatAction` (`typing`, `upload_photo`, `upload_video`) | sendChatAction: статус ≤ 5 с | «печатает…»/«отправляет фото…» по шагам; повтор каждые 4 с | `studio_progress.ChatAction` |
+| `editMessageText` одного сообщения | editMessageText | индикатор шагов студии правится на месте | `studio_progress.Progress` |
+| `editMessageMedia` + `attach://` | editMessageMedia: новый файл можно загрузить для не-inline сообщения; можно заменить текст на медиа | кнопка «Медиа» меняет картинку в том же черновике | `StudioBot.edit_message_media` |
+| `editMessageCaption` | editMessageCaption, подпись 0–1024 | «Короче/Проще/Подача» правят подпись черновика на месте | `studio_jobs.update_draft` |
+| `sendPhoto`/`sendAnimation`/`sendVideo` с подписью и `reply_markup` | sendPhoto (caption 0–1024, `parse_mode`) | черновик приходит одним сообщением: медиа + пост + кнопки | `StudioBot.send_media` |
+| `<blockquote expandable>` | Formatting options → HTML style; changelog 7.4 | детали поста и «почему так» студии свёрнуты в раскрывающуюся цитату | промпт `studio_text.build_post_prompt`, `Progress.text` |
+| `<b>`, `<code>`, `<a href>` | Formatting options → HTML style | тезис жирным, имена параметров и узлов моноширинно; ссылок на PR нет (решение Шифу 07.11) | промпт поста |
+| `reply_parameters` (`allow_sending_without_reply`) | ReplyParameters | индикатор отвечает на черновик, к которому нажата кнопка | `StudioBot.send_message(reply_to=…)` |
+| `link_preview_options` | LinkPreviewOptions (вместо `disable_web_page_preview`) | без превью ссылок в текстовых сообщениях | `StudioBot.send_message`, `channel_lib.build_request` |
+| `ResponseParameters.retry_after` | ResponseParameters: «number of seconds left to wait» при flood control | повтор после 429 через указанное время | `StudioBot._post` |
+| Частота: «в один чат не чаще сообщения в секунду» | FAQ, «My bot is hitting limits» | правки индикатора не чаще раза в 1,5 с | `studio_progress.MIN_INTERVAL` |
+
+**Знаем, но не берём (и почему):**
+
+- `show_caption_above_media` (sendPhoto/editMessageCaption) — поддержан в `StudioBot.send_media(above=True)`, но
+  по умолчанию выключен: подпись под картинкой привычнее для ленты канала.
+- `message_effect_id` — «for private chats only»: в канале не работает, в личке Шифу эффект не нужен.
+- `style` у кнопок (`danger`/`success`/`primary`, 9.4) и `disabled` (10.3) — не проверяли вживую в клиенте Шифу, не берём.
+- `tg-emoji` (custom emoji) — по документации только боты с купленным на Fragment именем или в личке, если у
+  владельца бота Premium. У бота студии этого нет.
+- `<tg-time>` / сущность `date_time` (9.5) — валидатор канала (`channel_lib.ALLOWED_TAGS`) этот тег пока не знает;
+  добавлять — отдельной правкой с тестом.
+- `sendMessageDraft` (стрим черновика, 9.5+; «temporary 30-second preview», только личный чат) — индикатор должен
+  оставаться в чате как журнал шагов, поэтому берём обычное сообщение с правкой.
+- `sendRichMessage` / `InputRichMessage` (10.1–10.3) — новый блочный формат. Публикатор канала и валидатор работают
+  с HTML; переход — отдельное решение, в этом PR не делается.
+- `sendMediaGroup` — используется публикатором для постов с `extra_media`; у черновика студии одно медиа: альбом
+  нельзя снабдить inline-кнопками.
+- Ephemeral messages и Communities (10.2–10.3) — про группы, к каналу и личке не относятся.
 
 ## Отложенные посты
 
@@ -102,7 +155,7 @@
   даже без фото.
 - Никаких внутренних адресов и ключей: IP сети робота (`10.1.1.*`, `192.168.*`), токены, пароли, chat_id личных чатов,
   имена хостов. `channel_lib.validate` блокирует IP и токены, но глаза тоже включаем.
-- Номера карточек и PR можно, если в них нет персональных данных. Логи и скриншоты чистим до публикации.
+- Номера карточек и PR в посте не пишем (решение Шифу 07.11, раздел «Чего в посте не пишем»). Логи и скриншоты чистим до публикации.
 - Аватар, обложки и GIF — только из репо (собственные материалы проекта).
 
 ## Откуда брать материал
@@ -146,7 +199,7 @@
   (`#A800FF #FF008C #FF4614 #FFC800 #78FF00 #00E6C8 #145AFF`), каждая третья погашена.
 - **Цвета:** акцент и «хорошо» — зелёный `#4ADE80`, схемы — голубой `#22D3EE`, «красное» — `#F87171`,
   основной текст `#EBEEF5`, второстепенный `#78808C`.
-- **Шрифт:** Segoe UI Bold (запасной — Arial Bold, DejaVu Sans Bold). Заголовок 40 px, крупные числа 68–92 px, подписи 22–24 px.
+- **Шрифт:** PT Sans Bold из репо (`assets/fonts/PTSans-Bold.ttf`, SIL OFL, лицензия рядом; системные Segoe/Arial/DejaVu — только при `CHANNEL_SYSTEM_FONT=1`). Заголовок 40 px, крупные числа 68–92 px, подписи 22–24 px.
 - **Подвал:** слева «Источник: …» (файл или issue, 17 px), справа зелёное «РОББОКС».
 - **Размеры:** `card` 1000×560 (по умолчанию), `wide` 1280×720; GIF ≤ 2 МБ. Аватар 640×640 с безопасной зоной в круге.
 - Анимация (подход vizavi-motion: собственный таймлайн, без внешних движков): элементы появляются по очереди, последний кадр держится 2–2.5 с.

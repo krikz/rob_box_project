@@ -121,6 +121,10 @@ def test_a_theme_named_by_the_human_still_orders_the_generation_as_before(tmp_pa
     with caplog.at_level(logging.INFO):
         data = dj.execute(action="start", style="rock", tracks=3, heard_text=phrase).data
     assert data["ok"] is True and "stranger" in data["theme"].lower()
+    # Заказ KIE уходит из фонового потока ``rbx-gen-set``: ждём его с таймаутом, а не читаем ``kie.jobs`` сразу (#4490).
+    deadline = time.monotonic() + 10.0
+    while not kie.jobs and time.monotonic() < deadline:
+        time.sleep(0.01)
     assert kie.jobs, "названная человеком тема перестала заказывать генерацию"
     assert any("generate:" in line for line in _routes(caplog))
     assert not any("догадка кода" in r.getMessage() for r in caplog.records)

@@ -121,10 +121,34 @@ command.search_promise: ["Поиск я не запускал — скажи е�
 # ...то же про сделанное: речь говорит «удалил», «сохранил точку», «поехал», а тула в команде нет
 # (knowledge.DONE_CLAIMS, #4391: «Готово, хил-окно удалена.» без delete_waypoint) - ничего не сделано, так и говорим.
 command.done_claim: ["Этого я не сделал — скажи ещё раз, что нужно."]
-# Действий в команде больше, чем код исполняет за ход (knowledge.ACTIONS_MAX, turn.capped, #4391): первые сделаны
-# (о них - фраза исхода), остальные названы словами аргументов вызова, а не выброшены молча.
-command.actions_capped.named: ["За один раз столько не делаю: {rest} — не сделал, повтори отдельно."]
-command.actions_capped: ["За один раз столько не делаю: остальное не сделал, повтори отдельно."]
+
+# --- вереница действий (ADR-0165, knowledge.CHAIN_*): план до шагов и итог по исходам — фразы кода (turn.run_chain) -
+# План кода — до первого шага: что робот сейчас сделает, без слов о сделанном (тест done_claims). {items} — имена
+# шагов словами аргументов вызова.
+chain.plan.generic: ["Делаю: {items}."]
+chain.plan.delete: ["Удаляю: {items}."]
+chain.plan.save: ["Запоминаю: {items}."]
+chain.plan.trip: ["Еду: {items}."]
+chain.plan.music: ["Включаю: {items}."]
+# Итог — по исходам шагов: сделано / не сделано (причину говорит фраза владельца) / не начинал.
+chain.did.generic: ["Сделал: {items}."]
+chain.did.delete: ["Удалил: {items}."]
+chain.did.save: ["Запомнил: {items}."]
+chain.did.trip: ["Доехал: {items}."]
+chain.did.music: ["Включил: {items}."]
+chain.missed.generic: ["Не вышло: {items}."]
+chain.missed.delete: ["Не удалил: {items}."]
+chain.missed.save: ["Не запомнил: {items}."]
+chain.missed.trip: ["Не доехал: {items}."]
+chain.missed.music: ["Не включил: {items}."]
+chain.skipped: ["Не стал: {items}."]
+# поездка не удалась — где робот, неизвестно, остаток отменён (ADR-0165 §10)
+chain.motion_failed: ["Дальше не еду: {items}."]
+chain.done: ["Готово."]
+chain.stopped: ["Остановился."]
+chain.timeout: ["Не успел за отведённое время."]
+# вереница длиннее лимита своего типа (поручение, маршрут) — не начинается
+chain.too_long: ["Это слишком долго за один раз — давай по частям."]
 # Под играющим сетом человек просит сменить тему, а стиль не назван и тула смены нет (#4347): тему код не угадывает.
 command.theme_switch_failed: ["Тему сета я не сменил — скажи ещё раз, в какой стиль свернуть."]
 # Счёт до N, урезанный моделью, строит код (counting.full_count); дальше COUNT_MAX не считает и говорит об этом.
@@ -155,6 +179,37 @@ local.rejected.ambiguous_id: ["Такому id отвечает больше о�
 local.rejected.bad_id: ["id лица — ровно 8 знаков 0-9a-f из списка лиц. Имя не записал."]
 local.rejected.bad_name: ["Такое имя не записываю: до 40 знаков, буквы, цифры, пробел, точка, дефис, апостроф."]
 local.rejected.owner_unavailable: ["База лиц на Vision Pi не отвечает — имя не записал."]
+# пульт по лицам (find_similar, merge_people, #4469): коллаж и склейка; текст «готово» и вопроса строит код тула
+# из данных владельца лиц (поля summary, question), здесь только оболочка и отказы с причиной
+people.similar: ["{summary}"]
+people.merged: ["{summary}"]
+people.merge_kept: ["Не склеиваю, записи остались как были."]
+local.rejected.needs_merge_confirmation: ["{question}"]
+# публикация в топик (#4516, шаг 2а): «Опубликовал ...» и причину отказа строит код тула (поля summary, question)
+publish.done: ["{summary}"]
+publish.kept: ["Не публикую, ничего не отправлено."]
+local.rejected.needs_publish_confirmation: ["{question}"]
+local.rejected.topic_forbidden: ["{summary}"]
+local.rejected.type_forbidden: ["{summary}"]
+local.rejected.no_such_topic: ["{summary}"]
+local.rejected.no_endpoints: ["{summary}"]
+local.rejected.ambiguous_type: ["{summary}"]
+local.rejected.bad_fields: ["{summary}"]
+local.rejected.bad_count: ["{summary}"]
+local.rejected.bad_topic: ["{summary}"]
+local.rejected.publish_failed: ["{summary}"]
+local.rejected.ros_unavailable: ["{summary}"]
+local.rejected.type_unavailable: ["{summary}"]
+local.rejected.exhibition_mode: ["В режиме выставки снимки лиц не отдаю, коллаж не собрать."]
+local.rejected.collage_failed: ["Коллаж собрать не удалось — склеивать не из чего."]
+local.rejected.no_collage: ["Коллажа нет: сначала скажи «найди похожих» про нужное лицо, потом выбери номера."]
+local.rejected.collage_mismatch: ["Последний коллаж был про другое лицо. Сделай «найди похожих» для этого лица заново."]
+local.rejected.bad_number: ["Такого номера на коллаже нет. Назови номера с картинки."]
+local.rejected.bad_selection: ["Не понял выбор: назови номера с коллажа («1, 3, 5») или «все, кроме 2»."]
+local.rejected.bad_ids: ["Нечего склеивать: нужны от одной до двенадцати записей."]
+local.rejected.same_person: ["Запись нельзя склеить саму с собой."]
+local.rejected.merge_failed: ["Склеить не вышло, записи остались как были."]
+local.rejected.merge_unconfirmed: ["База не подтвердила склейку, так что склеенным не считаю."]
 # set_speed / set_pitch: у активного провайдера нет такой регулировки - тул отказал с причиной
 # {speed,pitch}_unsupported, голос не менялся; без этих ключей говорилось общее «Не вышло.»
 local.rejected.speed_unsupported: ["У этого голоса скорость не регулируется — речь не изменилась."]
@@ -220,6 +275,7 @@ motion.not_reached.no_response: ["Не доехал до точки {target}: н
 motion.not_reached.server_unavailable: ["Не доехал до точки {target}: навигация недоступна."]
 motion.not_reached.unknown_status: ["Не уверен, что доехал до точки {target}: навигация не подтвердила прибытие."]
 motion.not_reached.unknown_target: ["Не знаю точку {target}."]
+motion.not_reached.localization_lost: ["Не уверен, что доехал до точки {target}: потерял, где нахожусь на карте."]
 # Стоп навигации (#3789, knowledge.STOP_TOOL_PHRASES): по виду отмены из данных тула, а не «Приехал.» класса.
 motion.stop.confirmed: ["Останавливаюсь."]
 motion.stop.idle: ["Я и так стою."]
@@ -321,6 +377,9 @@ chat.tool.play_animation: ["Показываю лицом…"]
 chat.tool.people_list: ["Смотрю лица…"]
 chat.tool.person_photo: ["Достаю снимок…"]
 chat.tool.name_person: ["Записываю имя…"]
+chat.tool.find_similar: ["Ищу похожих и собираю коллаж…"]
+chat.tool.merge_people: ["Склеиваю записи…"]
+chat.tool.topic_publish: ["Публикую в топик…"]
 chat.step.query: ["Смотрю данные…"]
 chat.step.action.local: ["Настраиваю…"]
 chat.step.action.media: ["Занимаюсь музыкой…"]
@@ -379,7 +438,7 @@ plan.after.backing: ["этого бита"]
 plan.after.track: ["этого трека"]
 plan.after.motion: ["того, как доеду"]
 
-# --- музыка (тексты rob_box_voice.core.media_phrases и media_router — по ссылке, как есть) -------------------
+# --- музыка (тексты rob_box_dialog_host.media_phrases и media_router — по ссылке, как есть) -------------------
 music.dj_started: ["Включаю диджей-сет."]
 music.dj_started_persona: ["Я {persona}, включаю сет."]
 music.theme: ["Тема — {theme}."]

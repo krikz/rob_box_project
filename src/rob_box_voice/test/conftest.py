@@ -30,6 +30,28 @@ from rob_box_core.msg_stub import install_dialog_msgs_stub  # noqa: E402
 
 install_dialog_msgs_stub()
 
+# ADR-0167 Ш1б: хосты робота (dialog_node, stt_node) грузят профиль продукта строго (``robot_profile.path()``,
+# в контейнере /config/assistant.yaml). В тестах - тот же профиль из чекаута; заданный снаружи env не трогаем.
+import os as _os  # noqa: E402
+
+_ROBOT_PROFILE = Path(__file__).resolve().parents[3] / "docker" / "sound" / "config" / "assistant.yaml"
+_os.environ.setdefault("ROB_BOX_PROFILE", str(_ROBOT_PROFILE))
+
+import pytest  # noqa: E402
+
+from rob_box_dialog import knowledge as _kn  # noqa: E402
+from rob_box_dialog import owners as _ow  # noqa: E402
+from voice_robot_wake import ROBOT_OWNERS as _ROBOT_OWNERS  # noqa: E402
+from voice_robot_wake import ROBOT_WAKE as _ROBOT_WAKE  # noqa: E402
+
+
+@pytest.fixture(autouse=True)
+def _robot_wake_table(monkeypatch):
+    """Правила ядра без таблицы - на вейках и владельцах тулов робота, как у хоста робота, который всегда передаёт
+    их из профиля (ядро без профиля нейтрально, ADR-0167 §2.4, Ш1в)."""
+    monkeypatch.setattr(_kn, "WAKE_WORDS_WITHOUT_PROFILE", _ROBOT_WAKE)
+    monkeypatch.setattr(_ow, "OWNERS_WITHOUT_PROFILE", _ROBOT_OWNERS)
+
 
 # This file lives at test/conftest.py — ``test`` IS a Python package thanks
 # to test/unit/__init__.py, so pytest will pick this up for any subdirectory.

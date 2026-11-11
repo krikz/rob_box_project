@@ -17,7 +17,7 @@ from rob_box_dialog.speech_channel import ModeRequest
 from rob_box_llm.provider import LLMChunk, LLMMessage, LLMResponse, LLMSettings, ProviderCapabilities, ToolCall
 from rob_box_llm.providers.deepseek import DeepSeekProvider
 from rob_box_llm.providers.minimax import MiniMaxProvider
-from rob_box_voice.core import command_bridge as cb
+from rob_box_dialog_host import command_bridge as cb
 
 DEEPSEEK_CAPS = DeepSeekProvider(api_key="test").capabilities
 MINIMAX_CAPS = MiniMaxProvider(api_key="test").capabilities

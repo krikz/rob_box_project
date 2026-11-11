@@ -14,7 +14,7 @@ from rob_box_harness.core.tool_registry import ToolRegistry
 from rob_box_mcp_tools.engine.search import ThemeHits
 from rob_box_mcp_tools.engine.engine_tools import DjSetTool, RequestMusicTool
 from rob_box_music import knowledge as kn
-from rob_box_voice.core.music_player_state import MusicEvent, MusicEventLog
+from rob_box_dialog_host.music_player_state import MusicEvent, MusicEventLog
 
 from .test_engine_session import _rig, _started
 

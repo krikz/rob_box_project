@@ -20,7 +20,7 @@ EVENT_TOPIC = "/voice/speech/event"
 WAIT_S = 4.0
 
 try:
-    from rob_box_voice.tts_voice_registry import (PROVIDER_LABELS, resolve_voice, robot_default_voice,
+    from rob_box_dialog_host.tts_voice_registry import (PROVIDER_LABELS, resolve_voice, robot_default_voice,
                                                   voice_display_name)
 except ImportError:  # pragma: no cover - минимальные окружения без rob_box_voice
     PROVIDER_LABELS: Dict[str, str] = {}

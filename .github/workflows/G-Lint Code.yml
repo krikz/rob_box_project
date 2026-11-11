@@ -73,6 +73,13 @@ jobs:
         run: |
           python scripts/lint/temp_adr0148_check.py
 
+      # ADR-0166: протухшие пути в живых документах. Пути scripts/ docker/ src/ .github/ в docs/**/*.md и README*.md
+      # обязаны существовать; docs/adr, docs/research, датированные планы и файлы с меткой stale-paths: ignore-file
+      # не проверяются. Hard gate.
+      - name: Doc paths guard
+        run: |
+          python -X utf8 scripts/lint/doc_paths_check.py
+
       # issue #2232: сторож против повторения дыры «пакет с тестами есть,
       # в CI не запускается». Сверяет, что каждый src/rob_box_*/test/
       # реально упомянут в G-Run Tests.yml. Без этого шага сам сторож
@@ -162,7 +169,8 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           # numpy: tests/unit/docker/test_animation_assets.py рендерит сцены лица (PR-3a #3689)
-          pip install black==24.4.2 flake8==7.0.0 isort==5.13.2 pyyaml pytest numpy
+          # pillow: tests/unit/sim/test_sim_coverage_anim.py (без неё модуль молча не собирался)
+          pip install black==24.4.2 flake8==7.0.0 isort==5.13.2 pyyaml pytest numpy pillow
 
       # Self-tests for cc_budget_refs (issue #2186): the guard's own
       # correctness must be protected the same way as seam_without_consumer
@@ -239,6 +247,21 @@ jobs:
       - name: Build-manifest generator self-tests (docs/plans/2026-09-15-service-manifest.md)
         run: |
           python -m pytest scripts/ci/tests/test_gen_build_matrix.py \
+            -v \
+            -o addopts="" \
+            -p no:cacheprovider
+
+      # ADR-0168 (#4375): релиз как артефакт (scripts/build/release.py) и агент chuangong (host/chuangong), фаза B.
+      # Без сети и Docker: реестр, docker и zenoh — фейки. minisign из apt нужен только тесту совместимости
+      # подписи с настоящей утилитой; не поставился — тест пропускается с причиной в выводе -v.
+      - name: Release delivery self-tests (ADR-0168, #4375)
+        run: |
+          sudo apt-get update -qq && sudo apt-get install -y -qq --no-install-recommends minisign \
+            || echo "::warning::minisign не поставился — тест совместимости подписи пропущен"
+          pip install cryptography
+          python -m pytest scripts/build/tests/test_release.py host/chuangong/tests \
+            scripts/setup/tests/test_setup_node_wifi_psk.py \
+            scripts/ci/tests/test_build_all_release_step.py \
             -v \
             -o addopts="" \
             -p no:cacheprovider
@@ -421,7 +444,7 @@ jobs:
           pip install pytest-asyncio
           EXCLUDE=(
             # Исключения — только явно, с причиной (--deselect=<nodeid>).
-            # Сейчас пусто: gate1-тесты харнесса герметичны на фейк-роботе
+            # gate1-тесты харнесса герметичны на фейк-роботе
             # tests/unit/e2e_scripts/fake_robot_ssh.sh (PR #3214).
           )
           PYTHONPATH="src/rob_box_core" \
@@ -475,7 +498,7 @@ jobs:
       - name: mcp_server voice_memory e2e isolation (issue #2781/#2890)
         run: |
           pip install httpx openai
-          PYTHONPATH="src/rob_box_harness:src/rob_box_llm:src/rob_box_core:src/rob_box_voice:src/rob_box_mcp_tools:src/rob_box_music:src/rob_box_dialog" \
+          PYTHONPATH="src/rob_box_harness:src/rob_box_llm:src/rob_box_core:src/rob_box_voice:src/rob_box_mcp_tools:src/rob_box_music:src/rob_box_dialog:src/rob_box_dialog_host" \
           python -m pytest src/rob_box_mcp_tools/test/test_issue_2781_voice_memory_e2e_isolation.py \
             -v \
             -o addopts="" \
@@ -791,6 +814,15 @@ jobs:
         run: |
           bash scripts/hil/tests/test_hil.sh
           shellcheck scripts/hil/hil.sh scripts/hil/remote_pi.sh scripts/hil/hil.conf             scripts/hil/tests/test_hil.sh scripts/deploy/check_hil_lock.sh docker/sim/hil_run.sh
+
+      # Issue #4492: ключ студии канала на хостах — только чтение через forced command.
+      # Тест гоняет гейт с фейковыми docker/scp/git: разрешённое проходит, обходы
+      # (../, симлинк, ; && | $() кавычки, scp -t, docker exec, длинный N, /data) отбиваются.
+      - name: Studio read-only gate (issue #4492)
+        run: |
+          bash scripts/studio/tests/test_studio_ro_gate.sh
+          shellcheck scripts/studio/studio_ro_gate.sh scripts/studio/install_ro_key.sh \
+            scripts/studio/tests/test_studio_ro_gate.sh
 
       - name: Lint shell scripts
         run: |

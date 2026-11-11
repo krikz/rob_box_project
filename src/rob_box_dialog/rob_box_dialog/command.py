@@ -31,6 +31,7 @@ from types import MappingProxyType
 from typing import Any, Callable, Collection, Dict, FrozenSet, Iterator, List, Mapping, Optional, Sequence, Tuple, Union
 
 from rob_box_core.tool_catalog import get_tool
+from rob_box_dialog import action_chain
 from rob_box_dialog import cast as perform_cast
 from rob_box_dialog import knowledge as kn
 from rob_box_dialog import phrases
@@ -619,7 +620,8 @@ def validate(cmd: Result, available_tools: Collection[str], session: Any = None,
     # подложка: сначала вид без просьбы о музыке теряет её, потом путь пения подгоняет остальное;
     # число лиц по сегментам правит другое поле выступления и идёт последним, порядок с подложкой не важен
     cmd = _fit_sing_backing(_drop_default_backing(cmd, form), form)
-    cmd = _fit_expression_count(_fit_segments(cmd))  # пустые сегменты и длина ролей - до лиц: лица по числу сегментов
+    # пустые сегменты, длина ролей и герои вне cast - до лиц: лица по числу сегментов
+    cmd = _fit_expression_count(_fit_foreign_roles(_fit_segments(cmd)))
     cmd = _voice_roles(cmd, busy)
     agent = getattr(session, "agent", None) or kn.AGENTS[0]
     # тулы, закрытые путём пения, судит _check_sing своим нарушением: не «тула нет в срезе» — мост его не расширяет
@@ -637,6 +639,7 @@ def validate(cmd: Result, available_tools: Collection[str], session: Any = None,
         lambda: _check_voice_promise(cmd, agent),
         lambda: _check_search_promise(cmd, agent),
         lambda: _check_done_claim(cmd, agent),
+        lambda: _check_chain_mixed(cmd),
         lambda: _check_args_without_action(cmd),
         lambda: _check_perform(cmd, busy),
         lambda: _check_sing(cmd, form),
@@ -991,8 +994,10 @@ def _check_speech_with_actions(cmd: Command, agent: str) -> None:
 
 
 def _speech_is_dropped(cmd: Command, agent: str) -> bool:
-    """``speech`` команды не прозвучит: рядом громкие действия без ``perform`` (:func:`_check_speech_with_actions`)."""
-    return bool(cmd.speech and loud_actions(cmd) and cmd.perform is None and agent != kn.TEXT_CHANNEL_AGENT)
+    """``speech`` команды не прозвучит: рядом громкие действия без ``perform`` (:func:`_check_speech_with_actions`).
+    Вереница (``action_chain.runs_as_chain``) - исключение: её ``speech`` звучит до шагов как план (ADR-0165 §3)."""
+    return bool(cmd.speech and loud_actions(cmd) and cmd.perform is None and agent != kn.TEXT_CHANNEL_AGENT
+                and not action_chain.runs_as_chain(cmd.actions))
 
 
 def unkept_promises(cmd: Command) -> Tuple[str, ...]:
@@ -1063,10 +1068,22 @@ def _check_done_claim(cmd: Command, agent: str) -> None:
     сделали бы слова правдой. Речь, что не прозвучит (:func:`_speech_is_dropped`), ничего не утверждает."""
     if _speech_is_dropped(cmd, agent):
         return
-    broken = unkept_done_claims(cmd)
+    # план вереницы звучит до шагов: «удалил» в нём - неправда, даже если тул в команде есть (ADR-0165 §3, §9.1)
+    chain = action_chain.runs_as_chain(cmd.actions)
+    broken = action_chain.plan_claims(cmd.speech) if chain else unkept_done_claims(cmd)
     if broken:
         tools = tuple(dict.fromkeys(t for kind in broken for t in kn.DONE_CLAIMS[kind].tools))
-        raise _Bad(kn.VIOLATION_DONE_CLAIM, f"speech утверждает {', '.join(broken)} без тула", tools)
+        where = "в плане до шагов" if chain else "без тула"
+        raise _Bad(kn.VIOLATION_DONE_CLAIM, f"speech утверждает {', '.join(broken)} {where}", tools)
+
+
+def _check_chain_mixed(cmd: Command) -> None:
+    """Знакомство или выступление рядом с длинной вереницей (``action_chain.mixed``, ADR-0165 §4.1): у них свой
+    собеседник и своя отмена, шагами вереницы они не бывают. Нарушение ``VIOLATION_CHAIN_MIXED`` - повтор с
+    подсказкой «отдельной командой»; рядом с короткой командой - как раньше."""
+    banned = action_chain.mixed(cmd)
+    if banned:
+        raise _Bad(kn.VIOLATION_CHAIN_MIXED, f"рядом с вереницей: {', '.join(banned)}")
 
 
 def _check_args_without_action(cmd: Command) -> None:
@@ -1088,7 +1105,7 @@ def _check_ask(ask: Optional[Ask]) -> None:
 
 
 def _check_actions(actions: Tuple[ToolCall, ...], available: Collection[str], agent: str) -> None:
-    if len(actions) > kn.ACTIONS_ACCEPT_MAX:  # сверх исполняемого ACTIONS_MAX - не нарушение: лишнее называет ход
+    if len(actions) > kn.ACTIONS_ACCEPT_MAX:  # длину вереницы сверх этого судит тип задачи (action_chain.over_limit)
         raise _Bad("too_many_actions", f"{len(actions)} > {kn.ACTIONS_ACCEPT_MAX}")
     per_class: dict = {}
     for call in actions:
@@ -1180,6 +1197,36 @@ def _fit_segments(cmd: Command) -> Command:
         notes.append(f"perform.role_per_segment[{len(roles)}->{len(fitted)}]")
         perf = replace(perf, role_per_segment=fitted)
     return replace(cmd, perform=perf, dropped=cmd.dropped + tuple(notes)) if notes else cmd
+
+
+def _fit_foreign_roles(cmd: Command) -> Command:
+    """Реплика героя, которого нет в ``cast``, не валит выступление (колонка 07.11: анекдот с ``cast`` [Мужик, Попугай]
+    и репликой «Продавец» - ``bad_cast``, на повторе то же, прозвучало «Не понял, как это сделать»). Код вписывает
+    героя в ``cast`` (пол не задан - подойдёт любой голос), пока героев не больше ``PERFORM_CAST_MAX``; дальше реплика
+    уходит рассказчику. Поправки - в ``dropped`` (``perform.cast+'Продавец'``). Без ``cast`` сказка по-прежнему
+    ``tale_without_cast`` (:func:`.cast.problem`): героев целиком код не выдумывает."""
+    perf = cmd.perform
+    if perf is None or perf.cast is None or not perf.role_per_segment or not perform_cast.has_roles(perf.kind):
+        return cmd
+    cast = list(perf.cast)
+    known = {perform_cast.role_key(role.name) for role in cast} | {""}
+    roles = list(perf.role_per_segment)
+    notes: List[str] = []
+    for i, name in enumerate(roles):
+        key = perform_cast.role_key(name)
+        if key in known:
+            continue
+        if len({perform_cast.role_key(role.name) for role in cast}) < kn.PERFORM_CAST_MAX:
+            cast.append(Role(str(name).strip()))
+            known.add(key)
+            notes.append(f"perform.cast+{str(name).strip()!r}")
+        else:
+            roles[i] = ""
+            notes.append(f"perform.role_per_segment[{i}]={str(name).strip()!r}->рассказчик")
+    if not notes:
+        return cmd
+    perf = replace(perf, cast=tuple(cast), role_per_segment=tuple(roles))
+    return replace(cmd, perform=perf, dropped=cmd.dropped + tuple(notes))
 
 
 def _fit_expression_count(cmd: Command) -> Command:
@@ -1343,6 +1390,7 @@ HINTS: Mapping[str, str] = MappingProxyType({
     kn.VIOLATION_VOICE_PROMISE: kn.VOICE_PROMISE_HINT,
     kn.VIOLATION_SEARCH_PROMISE: kn.SEARCH_PROMISE_HINT,
     kn.VIOLATION_DONE_CLAIM: kn.DONE_CLAIM_HINT,
+    kn.VIOLATION_CHAIN_MIXED: kn.CHAIN_MIXED_HINT,
     kn.VIOLATION_ARGS_WITHOUT_ACTION: "аргументы пишутся только внутри действия: {\"actions\": [{\"tool\": <тул>, "
                                       "\"args\": {...}}]}; на уровне команды их нет, и без тула ничего не сделано",
     "bad_ask": "у ask нужен text",

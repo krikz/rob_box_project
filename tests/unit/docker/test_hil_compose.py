@@ -121,7 +121,8 @@ def test_hil_gazebo_runs_under_guard():
 
 def test_main_overlay_touches_only_nav_loop():
     # + proximity-guard: звук защиты в HIL гасится флагом HIL_GUARD_SOUND (#4470)
-    assert set(MAIN_HIL) == set(NAV_SERVICES) | {"proximity-guard"}
+    # + followpath-watchdog (#4458): сторож сирот FollowPath считает таймаут по sim time
+    assert set(MAIN_HIL) == set(NAV_SERVICES) | {"proximity-guard", "followpath-watchdog"}
     assert "ros2-control" not in MAIN_HIL and "lslidar" not in MAIN_HIL
     for name, svc in MAIN_HIL.items():
         assert set(svc) <= {"environment", "volumes"}, name

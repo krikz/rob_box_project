@@ -16,10 +16,13 @@
    меняет. Точек нет — доказательства нет, привязки нет.
 3. **Повторилось.** Пункты 1–2 выполнились для той же пары «голос — лицо» в ``confirmations`` разных фразах,
    разнесённых не меньше чем на окно (окна не перекрываются — наблюдения независимы). Та же проверка с другим
-   лицом сбрасывает счёт.
+   лицом сбрасывает счёт. Исключение — фраза регистрации (``self_introduced=True``, ``SpeakerResult.source ==
+   "register"``: человек сам назвал имя, голос записан из этой фразы): ей хватает ОДНОГО подтверждения. Пункты 1–2
+   для неё не смягчаются.
 
-Пороги (``DEFAULT_*`` ниже) выбраны рассуждением, на роботе НЕ откалиброваны: измеренный разброс рта пишется в
-причину отказа (:attr:`BindingVerdict.detail`), по логу ``vision-face`` его можно сверить с живыми людьми и с фото.
+Порог рта (``DEFAULT_MIN_MOUTH_SPREAD``) взят по замеру на роботе (issue #4538); остальные пороги выбраны
+рассуждением. Измеренный разброс рта пишется в причину отказа (:attr:`BindingVerdict.detail`), по логу
+``vision-face`` его можно сверить с живыми людьми и с фото.
 
 Чистый модуль: ни ROS, ни хранилища; время передаёт вызывающий. Что делать с вердиктом (запись имени, запрет
 перезаписи чужого имени) решает ``FaceRecognizer.note_voice_identification``.
@@ -35,10 +38,10 @@ from typing import Any, Deque, Dict, List, Optional, Sequence, Tuple
 #: Сколько кадров окна должно содержать то самое лицо: тик ноды ~0.5 с, окно 6 с — до 12 кадров.
 DEFAULT_MIN_FRAMES = 4
 
-#: Минимальный разброс отношения «ширина рта / расстояние между глазами» за окно, доля медианы. Догадка: шум
-#: точек RetinaFace на лице ~150 px — пиксель-два на угол рта (единицы процентов), речь меняет ширину рта на
-#: десятки процентов. Не откалибровано на роботе.
-DEFAULT_MIN_MOUTH_SPREAD = 0.10
+#: Минимальный разброс отношения «ширина рта / расстояние между глазами» за окно, доля медианы. Замер на роботе
+#: 07–08.11.2026 (issue #4538): фото на кресле ≤ 0.042 (n=6), живое лицо 0.030–0.125 (n=13). Прежние 0.10 стояли
+#: выше медианы живого лица и резали людей (слияний=0 за 13 ч); 0.06 отсекает фото и пропускает живых.
+DEFAULT_MIN_MOUTH_SPREAD = 0.06
 
 #: Сколько независимых фраз должно подтвердить пару «голос — лицо», прежде чем имя ляжет в галерею.
 DEFAULT_CONFIRMATIONS = 3
@@ -165,14 +168,18 @@ class VoiceFaceBinding:
         while self._frames and ts - self._frames[0].ts > self._window:
             self._frames.popleft()
 
-    def judge(self, speaker_id: str, ts: float) -> BindingVerdict:
-        """Вердикт по голосу ``speaker_id``, опознанному в момент ``ts``; подтверждения и отказы считает здесь же."""
-        verdict = self._verdict(speaker_id, ts)
+    def judge(self, speaker_id: str, ts: float, *, self_introduced: bool = False) -> BindingVerdict:
+        """Вердикт по голосу ``speaker_id``, опознанному в момент ``ts``; подтверждения и отказы считает здесь же.
+
+        ``self_introduced`` — человек только что сам назвал имя (фраза регистрации): хватает одного подтверждения,
+        прочие условия (одно лицо, кадры, рот) те же.
+        """
+        verdict = self._verdict(speaker_id, ts, self_introduced)
         if verdict.kind != BIND:
             self.count(verdict.kind)
         return verdict
 
-    def _verdict(self, speaker_id: str, ts: float) -> BindingVerdict:
+    def _verdict(self, speaker_id: str, ts: float, self_introduced: bool = False) -> BindingVerdict:
         frames = [f for f in self._frames if ts - self._window <= f.ts <= ts]
         if not frames:
             return BindingVerdict(STALE)
@@ -183,7 +190,7 @@ class VoiceFaceBinding:
         if spread is None or spread < self._min_spread:
             shown = 'нет точек рта' if spread is None else f'{spread:.3f}'
             return BindingVerdict(NOT_SPEAKING, sole, f'рот={shown} < {self._min_spread:.2f}')
-        return self._confirm(speaker_id, sole, ts, spread)
+        return self._confirm(speaker_id, sole, ts, spread, 1 if self_introduced else self._confirmations)
 
     def _sole_person(self, frames: List[_Frame]) -> Any:
         """Единственная запись окна (``str``) или вердикт отказа: нет лица / не одно лицо."""
@@ -208,7 +215,7 @@ class VoiceFaceBinding:
         ]
         return mouth_spread(ratios)
 
-    def _confirm(self, speaker_id: str, person_id: str, ts: float, spread: float) -> BindingVerdict:
+    def _confirm(self, speaker_id: str, person_id: str, ts: float, spread: float, needed: int) -> BindingVerdict:
         prev = self._candidates.get(speaker_id)
         if prev is None or prev[0] != person_id:
             count, last = 1, ts
@@ -217,8 +224,8 @@ class VoiceFaceBinding:
         else:
             count, last = prev[1], prev[2]  # то же окно — не новое доказательство
         self._candidates[speaker_id] = (person_id, count, last)
-        detail = f'рот={spread:.3f} подтверждений {count}/{self._confirmations}'
-        if count < self._confirmations:
+        detail = f'рот={spread:.3f} подтверждений {count}/{needed}'
+        if count < needed:
             return BindingVerdict(PENDING, person_id, detail)
         self._candidates.pop(speaker_id, None)
         return BindingVerdict(BIND, person_id, detail)

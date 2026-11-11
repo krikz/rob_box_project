@@ -625,6 +625,69 @@ def test_voice_merge_does_not_overwrite_other_name():
     assert log.has('warn', 'не перетираю')
 
 
+#: Рты по замеру #4538: фото — разброс ≈0.026 (≤ 0.042), живое лицо — ≈0.075 (как окно «Иван», 0.076).
+PHOTO_LIKE_MOUTH = tuple(r / 25 for r in (0.75, 0.76, 0.77, 0.78, 0.75, 0.77))
+LIVE_MOUTH = tuple(r / 25 for r in (0.70, 0.77, 0.83, 0.88, 0.80, 0.80))
+
+
+def _register_rec(store: FakeStore, **kw) -> FaceRecognizer:
+    return FaceRecognizer(embedder=FakeEmbedder(), store=store, tracker=FaceTracker(min_track_sec=1000.0), **kw)
+
+
+def test_voice_merge_register_phrase_binds_on_first_confirmation():
+    """Issue #4538: фраза регистрации + одно говорящее лицо — имя с первого раза."""
+    store = FakeStore()
+    rec = _register_rec(store)
+    end = _speak_window(rec, store, 'p1', 10.0, mouth=LIVE_MOUTH)
+
+    assert rec.note_voice_identification(speaker_id='spk-1', name='Иван', now=end, self_introduced=True) == 'p1'
+    assert store.attach_name_calls == [('p1', 'Иван', 'spk-1')]
+
+
+def test_voice_merge_register_phrase_with_photo_mouth_does_not_bind():
+    store = FakeStore()
+    rec = _register_rec(store)
+    end = _speak_window(rec, store, 'p1', 10.0, mouth=PHOTO_LIKE_MOUTH)
+
+    assert rec.note_voice_identification(speaker_id='spk-1', name='Иван', now=end, self_introduced=True) is None
+    assert store.attach_name_calls == []
+    assert rec.stats()['voice_merge_skip_not_speaking'] == 1
+
+
+def test_voice_merge_register_phrase_with_two_faces_does_not_bind():
+    store = FakeStore()
+    rec = _register_rec(store)
+    _speak_window(rec, store, 'p1', 10.0, mouth=LIVE_MOUTH)
+    end = _speak_window(rec, store, 'p2', 13.0, mouth=LIVE_MOUTH)
+
+    assert rec.note_voice_identification(
+        speaker_id='spk-1', name='Иван', now=end - 0.5, self_introduced=True) is None
+    assert store.attach_name_calls == []
+    assert rec.stats()['voice_merge_skip_multi_face'] == 1
+
+
+def test_voice_merge_ordinary_recognition_still_needs_three_confirmations():
+    store = FakeStore()
+    rec = _register_rec(store)
+    results = []
+    for t0 in (10.0, 20.0, 30.0):
+        end = _speak_window(rec, store, 'p1', t0, mouth=LIVE_MOUTH)
+        results.append(rec.note_voice_identification(speaker_id='spk-1', name='Иван', now=end))
+
+    assert results == [None, None, 'p1']
+
+
+def test_voice_merge_register_phrase_does_not_overwrite_other_name():
+    store = FakeStore()
+    store.binding_map = {'566331d3': ('Литвин', None)}
+    rec = _register_rec(store)
+    end = _speak_window(rec, store, '566331d3', 10.0, mouth=LIVE_MOUTH)
+
+    assert rec.note_voice_identification(speaker_id='1ae4b0ac', name='Иван', now=end, self_introduced=True) is None
+    assert store.attach_name_calls == []
+    assert rec.stats()['voice_merge_skip_named_other'] == 1
+
+
 def test_voice_merge_same_name_same_voice_is_allowed():
     tracker = FaceTracker(min_track_sec=1000.0)
     store = FakeStore()
@@ -958,7 +1021,8 @@ def test_black_crop_rejected_reason_is_dark():
     reasons = rec.stats()['crop_rejected_by_reason']
     assert reasons['dark'] == 1
     assert reasons['flat'] == 0
-    assert reasons['clipped'] == 0
+    assert reasons['clipped_coverage'] == 0
+    assert reasons['clipped_top'] == 0
     assert reasons['blurry'] == 0
 
 
@@ -992,7 +1056,7 @@ def test_top_clipped_crop_rejected_as_clipped():
     assert embedder.embed_calls == [], 'кроп, обрубленный сверху, не должен доезжать до ArcFace'
     s = rec.stats()
     assert s['crop_rejected_total'] == 1
-    assert s['crop_rejected_by_reason']['clipped'] == 1
+    assert s['crop_rejected_by_reason']['clipped_top'] == 1
     assert s['crop_rejected_by_reason']['dark'] == 0
 
 
@@ -1011,7 +1075,7 @@ def test_side_clipped_low_coverage_crop_rejected_as_clipped():
     rec.process(dets, frame, now=0.0)
 
     assert embedder.embed_calls == [], 'кроп с низким покрытием не должен доезжать до ArcFace'
-    assert rec.stats()['crop_rejected_by_reason']['clipped'] == 1
+    assert rec.stats()['crop_rejected_by_reason']['clipped_coverage'] == 1
 
 
 def test_fully_visible_face_not_rejected_by_geometry_gate():
@@ -1025,7 +1089,64 @@ def test_fully_visible_face_not_rejected_by_geometry_gate():
     rec.process(dets, frame, now=0.0)
 
     assert embedder.embed_calls == [1]
-    assert rec.stats()['crop_rejected_by_reason']['clipped'] == 0
+    r = rec.stats()['crop_rejected_by_reason']
+    assert r['clipped_coverage'] == 0 and r['clipped_top'] == 0
+
+
+# Issue #4544: лицо у края кадра, но глаза в кадре по точкам RetinaFace.
+# Порядок точек: глаза, нос, углы рта (10 чисел, normalized).
+LM_INSIDE = [0.45, 0.04, 0.55, 0.04, 0.50, 0.08, 0.46, 0.12, 0.54, 0.12]
+LM_EYES_ABOVE_FRAME = [0.45, -0.02, 0.55, -0.02, 0.50, 0.04, 0.46, 0.08, 0.54, 0.08]
+
+
+def _edge_det(landmarks=None, cx=0.5, cy=0.05):
+    det = make_detection(cx=cx, cy=cy, w=0.3, h=0.3)
+    if landmarks is not None:
+        det['landmarks'] = landmarks
+    return det
+
+
+def test_top_edge_face_with_landmarks_inside_frame_kept_4544():
+    embedder = FakeEmbedder()
+    rec = FaceRecognizer(embedder=embedder, store=FakeStore())
+    rec.process([_edge_det(LM_INSIDE)], make_frame(), now=0.0)
+
+    assert embedder.embed_calls == [1], 'глаза в кадре: кроп не отбракован, эмбеддинг считается'
+    s = rec.stats()
+    assert s['crop_rejected_total'] == 0
+    assert s['crop_kept_by_landmarks'] == 1
+
+
+def test_top_edge_face_without_landmarks_rejected_clipped_top_4544():
+    embedder = FakeEmbedder()
+    rec = FaceRecognizer(embedder=embedder, store=FakeStore())
+    rec.process([_edge_det()], make_frame(), now=0.0)
+
+    assert embedder.embed_calls == []
+    s = rec.stats()
+    assert s['crop_rejected_by_reason']['clipped_top'] == 1
+    assert s['crop_kept_by_landmarks'] == 0
+
+
+def test_top_edge_face_with_eyes_above_frame_rejected_clipped_top_4544():
+    embedder = FakeEmbedder()
+    rec = FaceRecognizer(embedder=embedder, store=FakeStore())
+    rec.process([_edge_det(LM_EYES_ABOVE_FRAME)], make_frame(), now=0.0)
+
+    assert embedder.embed_calls == []
+    s = rec.stats()
+    assert s['crop_rejected_by_reason']['clipped_top'] == 1
+    assert s['crop_kept_by_landmarks'] == 0
+
+
+def test_low_coverage_without_landmarks_rejected_clipped_coverage_4544():
+    embedder = FakeEmbedder()
+    rec = FaceRecognizer(embedder=embedder, store=FakeStore())
+    rec.process([_edge_det(cx=0.95, cy=0.5)], make_frame(), now=0.0)
+
+    assert embedder.embed_calls == []
+    r = rec.stats()['crop_rejected_by_reason']
+    assert r['clipped_coverage'] == 1 and r['clipped_top'] == 0
 
 
 def test_crop_geometry_thresholds_are_configurable():
@@ -1045,7 +1166,8 @@ def test_crop_geometry_thresholds_are_configurable():
     rec.process(dets, frame, now=0.0)
 
     assert embedder.embed_calls == [1], 'при min_crop_coverage=0/max_top_clip_frac=1 ворота открыты'
-    assert rec.stats()['crop_rejected_by_reason']['clipped'] == 0
+    r = rec.stats()['crop_rejected_by_reason']
+    assert r['clipped_coverage'] == 0 and r['clipped_top'] == 0
 
 
 # ============================================================================

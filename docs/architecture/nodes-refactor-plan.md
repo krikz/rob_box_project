@@ -1,3 +1,4 @@
+<!-- stale-paths: ignore-file (снимок на дату: пути на момент написания) -->
 # План рефакторинга узлов dialog / persistent / telegram
 
 **Версия:** 1.0 (консолидация после P0)
@@ -300,7 +301,7 @@ class MemoryStore(abc.ABC):
 ```
 
 Реализации: `InMemoryStore` (P0 — shipped), `SQLiteVoiceMemory` (P1 —
-адаптер над существующим `rob_box_voice.core.voice_memory`).
+адаптер над существующим `rob_box_dialog_host.voice_memory`).
 
 ### 4.3 `Clock` (P0 — shipped)
 
@@ -837,7 +838,7 @@ sequenceDiagram
 **Действия**:
 1. `src/rob_box_core/adapters/sqlite_voice_memory.py`:
    - `class SQLiteVoiceMemory(MemoryStore)` — обёртка над
-     `rob_box_voice.core.voice_memory.VoiceMemory`.
+     `rob_box_dialog_host.voice_memory.VoiceMemory`.
 2. Round-trip тесты: `InMemoryStore` ↔ `SQLiteVoiceMemory` идентичны по API.
 3. **Не** трогаем существующий код `VoiceMemory` — это adapter в одну сторону.
 

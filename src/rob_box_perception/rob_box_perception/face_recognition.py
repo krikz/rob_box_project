@@ -84,7 +84,7 @@ reason` про ворота и ``face_tracker.py`` про скоринг): зд�
 порог «пускать/не пускать» (``DEFAULT_MIN_SHARPNESS``), там — не
 изменившееся слагаемое выбора лучшего из УЖЕ пропущенных кадров.
 
-Все причины отказа (``dark``/``flat``/``clipped``/``blurry``) считаются
+Все причины отказа (``dark``/``flat``/``clipped_coverage``/``clipped_top``/``blurry``) считаются
 в один словарь и отдаются в :meth:`stats` — issue #2749 и #2774 прямо
 требуют, чтобы этот фильтр был видимым, а не вторым тихим источником
 «почему робот меня не видит».
@@ -369,10 +369,14 @@ class FaceRecognizer:
         #: видимым» — тот же аргумент, что issue #2748 уже применило к
         #: причинам пропуска слияния с голосом ниже).
         self._crop_rejected_total = 0
+        #: Лица у края кадра, спасённые воротами по точкам (issue #4544): bbox+запас
+        #: вылез за кадр, но все 5 точек внутри — глаза на месте. Не отказ.
+        self._crop_kept_by_landmarks = 0
         self._crop_rejected_by_reason: Dict[str, int] = {
             'dark': 0,      # средняя яркость ниже min_crop_mean (issue #2749)
             'flat': 0,      # контраст p95-p5 ниже min_crop_contrast (issue #2749)
-            'clipped': 0,   # coverage/top-clip ниже порога (issue #2774)
+            'clipped_coverage': 0,  # coverage ниже порога (issue #2774, #4544)
+            'clipped_top': 0,       # верх срезан сильнее порога (issue #2774, #4544)
             'blurry': 0,    # sharpness ниже min_sharpness (issue #2774)
         }
 
@@ -530,24 +534,24 @@ class FaceRecognizer:
             # Ворота геометрии (issue #2774) — ДО вызова crop_face: если
             # запрошенный прямоугольник заведомо обрублен кадром, нет
             # смысла даже резать пиксели.
-            coverage, top_clip_frac = _crop_coverage(
-                bbox, self._crop_margin, frame_w, frame_h
+            verdict = _geometry_verdict(
+                bbox, detections[idx].get('landmarks'), self._crop_margin,
+                frame_w, frame_h, self._min_crop_coverage, self._max_top_clip_frac,
             )
-            if (
-                coverage < self._min_crop_coverage
-                or top_clip_frac > self._max_top_clip_frac
-            ):
-                self._reject_crop('clipped')
+            if verdict in ('clipped_coverage', 'clipped_top'):
+                self._reject_crop(verdict)
                 embed_crops.append(None)
                 snapshot_crops.append(None)
                 continue
+            if verdict == 'kept_by_landmarks':
+                self._crop_kept_by_landmarks += 1
 
             snap = crop_face(image, bbox, margin=self._crop_margin)
             if snap is None:
                 # Геометрия формально прошла, но crop_face всё равно не
                 # дал кропа (округление на границе пикселя) — тот же
                 # отказ по смыслу, что и явный клам выше.
-                self._reject_crop('clipped')
+                self._reject_crop('clipped_coverage')
                 embed_crops.append(None)
                 snapshot_crops.append(None)
                 continue
@@ -937,12 +941,14 @@ class FaceRecognizer:
         speaker_id: str,
         name: str,
         now: Optional[float] = None,
+        self_introduced: bool = False,
     ) -> Optional[str]:
         """Привязать имя к лицу, когда голос опознал человека И доказано, что говорит это лицо.
 
         Одно лицо в кадре — не доказательство (issue #4357: фото на кресле получило имя Дэнчика, говорившего вне
         кадра). Вердикт строит :class:`~rob_box_perception.face_voice_binding.VoiceFaceBinding`: одно лицо всё
-        окно фразы, рот этого лица менялся, пара «голос — лицо» подтверждена несколькими фразами. Два и больше
+        окно фразы, рот этого лица менялся, пара «голос — лицо» подтверждена несколькими фразами (одной — если
+        ``self_introduced``: фраза регистрации, человек сам назвал имя, issue #4538). Два и больше
         лиц — слияния нет (ADR-0105 §3 п.4). Имя, которое у записи уже есть и отличается от голосового, голос не
         перетирает: его поставил человек (ручное переименование) или прошлое доказанное слияние.
 
@@ -953,6 +959,8 @@ class FaceRecognizer:
             speaker_id: стабильный биометрический id голоса.
             name: имя из голосового профиля.
             now: время для тестов.
+            self_introduced: имя названо самим человеком (``SpeakerResult.source == "register"``) — хватает одного
+                подтверждения; остальные условия вердикта и запрет перетирать чужое имя те же.
 
         Returns:
             ``person_id`` лицевой записи, если имя привязано; иначе ``None``.
@@ -963,7 +971,7 @@ class FaceRecognizer:
             # Голос не опознан (is_known=false) — сюда такой payload не доходит (vision_face_node фильтрует по
             # is_known и считает это VisionFaceNode._speaker_unknown_total): программная ошибка вызывающего.
             return None
-        verdict = self._binding.judge(speaker_id, ts)  # отказы вердикта он считает сам
+        verdict = self._binding.judge(speaker_id, ts, self_introduced=self_introduced)  # отказы вердикта он считает сам
         if verdict.kind != fvb.BIND:
             note = fvb.skip_note(verdict, speaker_id, name)
             if note:
@@ -1020,6 +1028,8 @@ class FaceRecognizer:
             # Issue #2774 — разбивка причин, тем же аргументом, что и
             # voice_merge_skip_* выше: «отклонено=N» не говорит, ПОЧЕМУ.
             'crop_rejected_by_reason': dict(self._crop_rejected_by_reason),
+            # Issue #4544 — лица у края кадра, пропущенные по точкам (глаза в кадре).
+            'crop_kept_by_landmarks': self._crop_kept_by_landmarks,
             # Issue #2773 — как часто эмбеддер получил выровненный по
             # landmarks вход против фолбека на crop_face.
             'align_used_total': self._align_used_total,
@@ -1049,6 +1059,45 @@ def _iou_cxcywh(
         return 0.0
     union = max(0.0, a[2] * a[3]) + max(0.0, b[2] * b[3]) - inter
     return float(inter / union) if union > 0.0 else 0.0
+
+
+def _landmarks_inside_frame(landmarks: Any) -> bool:
+    """Все 5 точек лица (10 чисел, normalized) внутри кадра (issue #4544)."""
+    if landmarks is None:
+        return False
+    try:
+        pts = [float(v) for v in landmarks]
+    except (TypeError, ValueError):
+        return False
+    return len(pts) == 10 and all(0.0 <= v <= 1.0 for v in pts)
+
+
+def _geometry_verdict(
+    bbox: Tuple[float, float, float, float],
+    landmarks: Any,
+    margin: float,
+    frame_w: int,
+    frame_h: int,
+    min_coverage: float,
+    max_top_clip_frac: float,
+) -> str:
+    """Решение ворот геометрии (#2774, #4544): ``ok``/``kept_by_landmarks``/``clipped_top``/``clipped_coverage``.
+
+    Смысл ворот — не эмбеддить кроп БЕЗ ГЛАЗ. Вход эмбеддера — выравнивание по 5 точкам,
+    запас bbox нужен только снимку (``crop_face`` клампит сам). Поэтому, если все 5 точек
+    в кадре, обрубленный запас не повод для отказа. Нет точек или хоть одна вне кадра —
+    прежние пороги.
+    """
+    coverage, top_clip_frac = _crop_coverage(bbox, margin, frame_w, frame_h)
+    if top_clip_frac > max_top_clip_frac:
+        reason = 'clipped_top'
+    elif coverage < min_coverage:
+        reason = 'clipped_coverage'
+    else:
+        return 'ok'
+    if _landmarks_inside_frame(landmarks):
+        return 'kept_by_landmarks'
+    return reason
 
 
 def _crop_coverage(

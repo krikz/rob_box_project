@@ -310,7 +310,7 @@
 - Обсуждение — в issue
 
 **Документация проекта:**
-- `docs/architecture/INTERNAL_DIALOGUE_VOICE_ASSISTANT.md`
+- `docs/architecture/dialog-v2-overview.md`
 - `docs/development/AGENT_GUIDE.md`
 - `docs/development/PYTHON_STYLE_GUIDE.md`
 

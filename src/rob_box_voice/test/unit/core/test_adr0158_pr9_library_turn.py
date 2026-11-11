@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import json
 
-from rob_box_voice.core.media_phrases import (
+from rob_box_dialog_host.media_phrases import (
     LIBRARY_FAIL_TEXT,
     LIBRARY_NO_TRACK_TEXT,
     library_list_text,

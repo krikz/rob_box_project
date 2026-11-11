@@ -17,10 +17,12 @@ import re
 from pathlib import Path
 
 from rob_box_dialog import knowledge as kn
+from rob_box_dialog import prompts
 from rob_box_dialog.speech_channel import ModeRequest
-from rob_box_voice.core import command_bridge as cb
+from rob_box_dialog_host import command_bridge as cb
 
-MASTER_PROMPT = Path(__file__).resolve().parents[2] / "prompts" / "master_prompt_compact.txt"
+#: Промпт Личности - основа ядра (ADR-0167 Ш1б-3) с персоной профиля; правила хода - в основе.
+MASTER_PROMPT = Path(prompts.__file__).with_name(prompts.BASE_FILE)
 
 #: Цифра-потолок символов в тексте («150 characters», «max 200 символов»): паузы вида «150ms» не считаются.
 _CHAR_CAP = re.compile(r"\b\d{2,4}\s*(characters?|chars?|символ\w*|знак\w*)", flags=re.IGNORECASE)
@@ -29,7 +31,7 @@ _CHAR_CAP = re.compile(r"\b\d{2,4}\s*(characters?|chars?|символ\w*|зна�
 def test_personality_prompt_file_states_no_character_cap_of_its_own() -> None:
     """Потолок длины реплики модели называет только фрагмент knowledge, не файл промпта."""
     hits = _CHAR_CAP.findall(MASTER_PROMPT.read_text(encoding="utf-8"))
-    assert hits == [], f"master_prompt_compact.txt держит свою цифру длины: {hits!r}"
+    assert hits == [], f"{prompts.BASE_FILE} держит свою цифру длины: {hits!r}"
 
 
 def test_request_note_names_the_speech_cap_from_knowledge() -> None:

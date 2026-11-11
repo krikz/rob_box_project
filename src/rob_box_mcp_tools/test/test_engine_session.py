@@ -25,7 +25,7 @@ from rob_box_mcp_tools.engine.engine_tools import DjSetTool, library_melodies
 from rob_box_music import knowledge as kn
 from rob_box_music.set_plan import DEFAULT_TRACKS, MAX_TRACKS, seeded_plan
 from rob_box_music.theme import ThemeProfile
-from rob_box_voice.core.music_player_state import parse_music_state
+from rob_box_dialog_host.music_player_state import parse_music_state
 
 pytestmark = pytest.mark.unit
 

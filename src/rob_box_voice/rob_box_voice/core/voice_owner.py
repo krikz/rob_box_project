@@ -15,7 +15,7 @@ import os
 import types
 from typing import Any, Callable, Dict
 
-from ..tts_voice_registry import resolve_voice
+from rob_box_dialog_host.tts_voice_registry import resolve_voice
 
 PROVIDERS = ("yandex", "minimax", "silero")
 

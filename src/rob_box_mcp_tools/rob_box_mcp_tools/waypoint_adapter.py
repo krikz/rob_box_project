@@ -20,8 +20,8 @@ The robot ships two SQLite databases on ``/data`` with **incompatible
 This adapter is the **single public API for waypoint persistence** at
 the MCP layer. It reads & writes only through ``WaypointStore`` (which
 already owns the MCP-schema DDL — see
-``migrations/003_waypoints.sql`` and the inline DDL in
-``waypoint_store.py``). It exposes **two views** of the same data so
+``003_waypoints.sql`` of the core migration stream,
+``rob_box_core.migrations``). It exposes **two views** of the same data so
 existing and future callers don't have to know which file they're
 talking to:
 

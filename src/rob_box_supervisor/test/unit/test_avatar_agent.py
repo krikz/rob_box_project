@@ -169,8 +169,9 @@ class TestAvatarAgentTopology(unittest.TestCase):
         self.assertIn("/avatar/stt/result", topics)
 
     def test_agent_parameters_declared(self) -> None:
-        """Параметры ``agent_enabled`` / ``system_prompt_file`` объявлены
-        через ``declare_parameter``.
+        """Параметр ``agent_enabled`` объявлен через ``declare_parameter``;
+        ``system_prompt_file`` снят (ADR-0167 Ш1б-4: промпт ТАРС — основа ядра
+        с персоной оператора профиля робота, файла у супервизора нет).
 
         Параметр ``agent_during_voice_mode`` удалён вместе с
         ``voice_input_mode`` (ADR-0066 §6.7): пауза личности теперь
@@ -178,15 +179,10 @@ class TestAvatarAgentTopology(unittest.TestCase):
         resume в finally), переопределение через параметр больше не нужно.
         """
         self.assertTrue(self.node.has_parameter("agent_enabled"))
-        self.assertTrue(self.node.has_parameter("system_prompt_file"))
+        self.assertFalse(self.node.has_parameter("system_prompt_file"))
         self.assertFalse(
             self.node.has_parameter("agent_during_voice_mode"),
             "agent_during_voice_mode удалён (ADR-0066 §6.7)",
-        )
-        # default
-        self.assertEqual(
-            self.node.get_parameter("system_prompt_file").value,
-            "operator_system_prompt.txt",
         )
 
 

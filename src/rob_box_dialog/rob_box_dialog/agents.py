@@ -8,11 +8,12 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from types import MappingProxyType
-from typing import Callable, Mapping, Optional, Tuple
+from typing import Callable, Mapping, Optional, Sequence, Tuple
 
 from rob_box_core.tool_catalog import ToolCatalogEntry, llm_visible_tools, operator_visible_tools, telegram_visible_tools
 from rob_box_core.utterance import Sink
 from rob_box_dialog import knowledge as kn
+from rob_box_dialog.owners import owned_tools
 
 #: Группы закрытой грамматики Tier-1 (§4.2); разбор — ``grammar.py`` (PR-6). ``face`` — очередь показа лица
 #:: лицо есть только у Личности. ``repeat`` — «повтори»: повтор озвученной реплики, у Личности.
@@ -62,9 +63,13 @@ def allows_tier1(spec: AgentSpec, kind: str) -> bool:
     return TIER1_GROUPS.get(kind) in spec.grammar
 
 
-def tools_for(spec: AgentSpec) -> Tuple[str, ...]:
-    """Тулы среза агента, у которых есть класс действия и этот класс агенту доступен (``say`` — не Личности)."""
+def tools_for(spec: AgentSpec, owners: Optional[Sequence[str]] = None) -> Tuple[str, ...]:
+    """Тулы среза агента, у которых есть класс действия, этот класс агенту доступен (``say`` — не Личности) и владелец
+    тула есть у продукта (``owners`` профиля, ADR-0167 Ш1в; ``None`` — умолчание ядра
+    ``owners.OWNERS_WITHOUT_PROFILE``)."""
+    own = owned_tools(owners)
     return tuple(
         t.name for t in _VIEWS[spec.tools_view]()
-        if t.name in kn.TOOL_CLASSES and spec.name in kn.ACTION_CLASSES[kn.TOOL_CLASSES[t.name]].agents
+        if t.name in own and t.name in kn.TOOL_CLASSES
+        and spec.name in kn.ACTION_CLASSES[kn.TOOL_CLASSES[t.name]].agents
     )

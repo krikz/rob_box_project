@@ -129,7 +129,7 @@ export type VoiceWireMode = "off" | "passthrough" | "ttts_proxy" | "stt_llm" | "
 //
 // AV-28 §P7 (formalize-режим): preset теперь ссылается на стиль речи
 // (technical/street/caveman/business/philosopher/lenin) из
-// src/rob_box_voice/config/voice_presets.yaml. Сервер мапит его на
+// docker/sound/config/voice_presets.yaml. Сервер мапит его на
 // конкретный промпт dialogue_node. Чтобы не ломать старый контракт
 // "standard|friendly|...", принимаемый сервером, расширяем тип через
 // литеральный union (полный список) — TS-strict его примет.

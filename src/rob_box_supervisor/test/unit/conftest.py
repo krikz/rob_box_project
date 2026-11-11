@@ -22,6 +22,20 @@ import types
 from typing import Any
 from unittest.mock import MagicMock
 
+# Каталог пресетов стиля - профиль робота (ADR-0167 Ш1а-2): у ядра своего нет, путь даёт хост через env (на роботе -
+# compose, /config/voice_presets.yaml). Тестам робота - тот же файл из чекаута (CI test_ws: ROB_BOX_REPO_ROOT).
+# Ставится ДО импорта rob_box_core.bridge_protocol: белый список читается при импорте.
+import os as _os_presets
+from pathlib import Path as _Path_presets
+
+_os_presets.environ.setdefault(
+    "ROB_BOX_VOICE_PRESETS_YAML",
+    str(
+        _Path_presets(_os_presets.environ.get("ROB_BOX_REPO_ROOT") or _Path_presets(__file__).resolve().parents[4])
+        / "docker" / "sound" / "config" / "voice_presets.yaml"
+    ),
+)
+
 
 def _install_ros_mocks() -> None:  # noqa: C901 — test infra helpers grow with IDL mocks
     # ── rclpy package + sub-modules ───────────────────────────────────
@@ -524,3 +538,14 @@ def _record_dialog_control_unless_test_uses_client():
 
     with patch.object(supervisor_node, "_dialogue_control_publisher", lambda _node: DialogControlRecorder()):
         yield
+
+
+@pytest.fixture(autouse=True)
+def _robot_tool_owners(monkeypatch):
+    """Срез тулов без переданных владельцев - на владельцах профиля робота, как у хоста ТАРС, который всегда передаёт их
+    из профиля (ядро без профиля - без тулов продукта, ADR-0167 Ш1в)."""
+    from rob_box_dialog import owners as ow  # noqa: PLC0415
+    from rob_box_dialog.profile import load_profile  # noqa: PLC0415
+
+    root = _Path_presets(_os_presets.environ.get("ROB_BOX_REPO_ROOT") or _Path_presets(__file__).resolve().parents[4])
+    monkeypatch.setattr(ow, "OWNERS_WITHOUT_PROFILE", load_profile(root / "docker/sound/config/assistant.yaml").owners)

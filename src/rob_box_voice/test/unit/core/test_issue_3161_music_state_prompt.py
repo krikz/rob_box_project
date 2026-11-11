@@ -13,7 +13,7 @@
 
 from __future__ import annotations
 
-from rob_box_voice.core.music_player_state import (
+from rob_box_dialog_host.music_player_state import (
     STOPS_AT_GRACE_S,
     MusicPlayerState,
     parse_music_state,

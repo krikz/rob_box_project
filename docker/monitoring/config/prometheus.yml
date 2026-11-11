@@ -31,12 +31,12 @@ scrape_configs:
 
   # Issue #1160 — voice-assistant metrics (Sound Pi с ADR-0159, network_mode: host)
   # Каждая ROS2-нода биндит свой порт (см. rob_box_voice.observability):
-  # 9100 dialogue_node (LLM latency / fallback), 9110 tts_node,
+  # 9100 dialog_node (LLM latency / fallback), 9110 tts_node,
   # 9111 stt_node, 9112 speaker_id_node, 9113 audio_node.
   - job_name: 'voice-assistant'
     static_configs:
       - targets:
-          - '10.1.1.12:9100'  # dialogue_node
+          - '10.1.1.12:9100'  # dialog_node
           - '10.1.1.12:9110'  # tts_node
           - '10.1.1.12:9111'  # stt_node
           - '10.1.1.12:9112'  # speaker_id_node

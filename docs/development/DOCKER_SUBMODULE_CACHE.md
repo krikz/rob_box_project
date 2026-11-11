@@ -120,7 +120,7 @@ COPY src/ros2leds/led_matrix_driver /ws/src/led_matrix_driver
    ```
 
 4. **Обновите тест:**
-   Добавьте проверки в `scripts/test_submodule_cache_invalidation.sh`
+   Добавьте проверки в `scripts/testing/test_submodule_cache_invalidation.sh`
 
 ### ⚠️ Альтернативные подходы (не используются)
 

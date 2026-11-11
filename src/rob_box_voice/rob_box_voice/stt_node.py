@@ -33,7 +33,7 @@ from rob_box_core.provider_publisher import ProviderStatePublisher
 from .core.provider_health import stt_provider_states
 from .core.interrupt_request import InterruptOffer
 from .stt_hang_guard import HangGuard
-from std_msgs.msg import Bool, Int32, String
+from std_msgs.msg import Bool, Float32, Int32, String
 from vosk import KaldiRecognizer, Model
 
 # Pure-Python fallback/retry/short-phrase логика (issue #979).
@@ -239,6 +239,46 @@ from rob_box_voice.observability import (
     start_span,
 )
 
+
+def _normalize_provider_chain(chain, logger=None) -> list:
+    """Привести цепочку к инвариантам (аналог tts_node, issue #1083).
+
+    Инварианты:
+
+    * только известные провайдеры (:data:`KNOWN_STT_PROVIDERS`);
+    * без дубликатов, порядок первого вхождения сохраняется;
+    * ``vosk`` — всегда последний (офлайновый последний рубеж);
+    * пустая/битая цепочка → :data:`DEFAULT_STT_PROVIDER_CHAIN`.
+
+    Осознанное исключение: цепочка ровно из одного ``vosk`` —
+    легитимный офлайн-режим (робот в поле без сети), её не трогаем.
+
+    Функция модуля, а не метод :class:`STTNode`: ``self`` не использует
+    (class_budget, ADR-0145 — вынос из класса, #4645).
+    """
+    deduped: list = []
+    for name in chain or []:
+        name = str(name).strip().lower()
+        if name not in KNOWN_STT_PROVIDERS:
+            if name and logger is not None:
+                logger.warning(
+                    f"⚠️ stt_provider_chain: неизвестный провайдер "
+                    f"{name!r} — игнорирую "
+                    f"(известные: {sorted(KNOWN_STT_PROVIDERS)})"
+                )
+            continue
+        if name not in deduped:
+            deduped.append(name)
+    if not deduped:
+        return list(DEFAULT_STT_PROVIDER_CHAIN)
+    if deduped == [_LAST_RESORT_PROVIDER]:
+        return deduped
+    if _LAST_RESORT_PROVIDER in deduped:
+        deduped.remove(_LAST_RESORT_PROVIDER)
+    deduped.append(_LAST_RESORT_PROVIDER)
+    return deduped
+
+
 # ADR-0101 §3.3.5 / Issue #2536 / PR-E: «unclear cooldown» живёт в
 # едином OccasionGate (см. core/occasion.py). Импортируем типы на
 # уровне модуля: ``OccasionGate`` создаётся в ``__init__`` (default, если
@@ -250,8 +290,10 @@ from rob_box_voice.core.occasion import (
     VerdictKind,
 )
 from rob_box_voice.core import echo_window  # noqa: E402 — как соседние импорты после блока try/except
-from rob_box_voice.core.stt_utterance import fill_respeaker_utterance, final_provider
+from rob_box_voice.core.stt_utterance import fill_respeaker_utterance, final_provider, phrase_hypotheses
+from rob_box_core.stt_hypotheses import NO_HYPOTHESES  # noqa: E402 — как соседние импорты
 from rob_box_voice.core.utterance_id import compute_utterance_id
+from rob_box_voice import robot_profile  # noqa: E402 — как соседние импорты
 from rob_box_voice.core.yandex_stt_segments import YandexSegmentCollector, text_kept_on_deadline
 
 # #1990 (оператор-agent 05) — источники аудио для wake-роутера (_process_audio).
@@ -286,7 +328,7 @@ class STTNode(Node):
     def __init__(self, *, occasion_gate: OccasionGate | None = None) -> None:
         # ADR-0101 §3.3.5 / Issue #2536 / PR-E: «unclear cooldown» идёт
         # через единый ``OccasionGate``. ``occasion_gate`` — optional kwarg:
-        # если передан (dialogue_node создаёт и прокидывает в ноду),
+        # если передан (dialog_node создаёт и прокидывает в ноду),
         # ``_maybe_speak_unclear`` спрашивает у gate (OccasionGate.may_speak)
         # и фиксирует ``mark_consumed``. Если НЕ передан (legacy-тесты /
         # standalone запуск) — создаём default-инстанс ниже с cooldown'ом
@@ -324,7 +366,7 @@ class STTNode(Node):
         # With 'hardware' mode the robot can be interrupted mid-speech.
         self.declare_parameter("aec_mode", "hardware")
 
-        # Wake words: адресация и перебивание (/dialog/interrupt_request). Должны совпадать с dialogue_node!
+        # Wake words: адресация и перебивание (/dialog/interrupt_request). Должны совпадать с dialog_node!
         # Один список на весь проект — rob_box_voice.core.dialogue_text.
         # Он же фолбек strip_wake_word, и его порядок неслучаен (длинные
         # варианты первыми, иначе «роб» съедает «роб бокс»). Копий было
@@ -332,12 +374,10 @@ class STTNode(Node):
         # dialogue_node.py лежало 13 вариантов, в четырёх YAML — 21, в
         # e2e-конфиге — те же 13. Тот самый класс ошибки, из-за которого
         # завели #1252 и заплатили #1734.
-        self.declare_parameter("wake_words", address.wake_words()[0])
-        # #1990 (оператор-agent 05) — SSoT wake-слов: config/wake_words.yaml
-        # (docker, монтируется в /config). Ключ wake_words остаётся фолбеком
-        # для dev-env/юнит-тестов без файла; wake_words_file при наличии
-        # переопределяет personality из файла (см. self.wake_words ниже).
-        self.declare_parameter("wake_words_file", "")
+        # #1990 / ADR-0167 Ш1б — таблица вейков (personality и operator) из профиля продукта робота
+        # (/config/assistant.yaml → wake_words.yaml рядом; env ROB_BOX_PROFILE). Кодовых вейков у робота больше нет:
+        # без профиля нода не стартует.
+        self.declare_parameter("profile_path", robot_profile.path())
 
         # Параметры fallback/retry (issue #979): единое место для таймаутов,
         # retry и правила коротких фраз. См. rob_box_voice/stt_fallback.py.
@@ -419,14 +459,11 @@ class STTNode(Node):
         if self.aec_mode not in ("software", "hardware"):
             self.get_logger().warning(f"⚠️ Неизвестный aec_mode '{self.aec_mode}', используется 'software'")
             self.aec_mode = "software"
-        self.wake_words: list = list(self.get_parameter("wake_words").value)
         # #1990 — разделяем namespace: personality (ReSpeaker, /voice/stt/utterance)
-        # и operator (wake-поток шлема, /avatar/stt/result). Источник — файл
-        # wake_words_file (SSoT); без файла — кодовые фолбеки (тот же список).
-        _wake_file = str(self.get_parameter("wake_words_file").value or "")
-        self.wake_words, self.operator_wake_words = address.wake_words(_wake_file, self.wake_words)
-        self.wake_words = list(self.wake_words)
-        self.operator_wake_words = list(self.operator_wake_words)
+        # и operator (wake-поток шлема, /avatar/stt/result). Источник — профиль робота.
+        _profile = robot_profile.load(str(self.get_parameter("profile_path").value or ""))
+        self.wake_words: list = list(_profile.wake_personality)
+        self.operator_wake_words: list = list(_profile.wake_operator)
         # #1990 — источник текущей обрабатываемой фразы (для barge-гейтов).
         self._active_source: str = _SRC_RESPEAKER
         # ADR-0076: последние STT-попытки (используется side-channel-сборщиком
@@ -522,7 +559,10 @@ class STTNode(Node):
         # (PR-15 15-0b #3711). Эхо-окно после неё (#989, #4072) — по фронтам /audio/vad: фраза, чей голос звучал
         # только в окне, — эхо, из неё проходит лишь ясный стоп с вейком (core/echo_window.py). Журнал речи
         # (SpeechRequest — текст по speech_id) даёт фразе рядом с речью слова робота: их повтор — эхо (#4145).
-        self._echo = echo_window.watch(self, grace_s=self.tts_grace_s, aec_mode=self.aec_mode, vad_type=Bool)
+        # Открытое окно ответа (#4509, событие dialog_node) пускает фразу из эхо-окна на сверку словами.
+        self._echo = echo_window.watch(
+            self, grace_s=self.tts_grace_s, aec_mode=self.aec_mode, vad_type=Bool, reply_type=Float32
+        )
         # ADR-0150 PR-5 (#3694) — речь stt_node больше не глушит: на сегмент с вейком публикует
         # /dialog/interrupt_request, решает диалог (ясная стоп-команда — SpeechCancel по эпохе).
         # Направление на говорящего — DOA ReSpeaker, снятый во время речи (VAD), по окну фразы.
@@ -569,6 +609,9 @@ class STTNode(Node):
         # speaker_analysis). None для Vosk fallback. Сбрасывается на старте
         # каждой фразы в speech_audio_callback.
         self._last_speaker_tag: Optional[str] = None
+        # #4017 шаг C1 — гипотезы (уверенность, другие тексты) последнего
+        # прохода Yandex; в Utterance идут, только если фразу принял Yandex.
+        self._last_hypotheses = NO_HYPOTHESES
 
         # Issue #1160 — Prometheus metrics server (этап 1).
         # Порт 9111 — стандартный для stt_node (см. observability/__init__.py).
@@ -640,7 +683,10 @@ class STTNode(Node):
         )
         if exc.code() == grpc.StatusCode.DEADLINE_EXCEEDED:
             self._reset_yandex_channel()
-        return _map_grpc_error(exc, self.yandex_timeout_s, segments)
+        mapped = _map_grpc_error(exc, self.yandex_timeout_s, segments)
+        if isinstance(mapped, STTDeadlineFinal):
+            self._last_hypotheses = segments.hypotheses()
+        return mapped
 
     def _reset_yandex_channel(self) -> None:
         """Открыть новый канал Yandex STT сразу, старый отпустить в фоне (issue #2924, #4135).
@@ -819,6 +865,7 @@ class STTNode(Node):
         # _recognize_yandex заполнит его из speaker_analysis; Vosk fallback
         # (без speaker-анализа) оставит None — профиль не создаётся.
         self._last_speaker_tag = None
+        self._last_hypotheses = NO_HYPOTHESES  # #4017 C1: гипотезы — только этой фразы
         # Фиксируем старт фразы (окно «замолчал → акцепт»).
         self._phrase_started_at = time.monotonic()
 
@@ -884,8 +931,10 @@ class STTNode(Node):
         # Эхо собственной речи робота (core/echo_window.py): голос звучал только в эхо-окне (#4072), короткий обрывок
         # при речи (ревью #4122) или слова фразы повторяют звучавшую рядом реплику робота (#4145). Ясный стоп с вейком
         # идёт всегда; эхо — молча, без «не расслышал» (петля #989), не в диалог (ни бэклога, ни модели) и в
-        # /voice/stt/echo: биометрия не заводит и не растит из него профиль.
-        echo = admission.echo(text, self.wake_words, duration)
+        # /voice/stt/echo: биометрия не заводит и не растит из него профиль. В окне ответа (#4509) решают время, голос
+        # (узнан ли по имени — опознание биометрии уже пришло) и слова.
+        human = self._echo.human_voice(self._active_utterance_id)
+        echo = admission.echo(text, self.wake_words, duration, human_voice=human)
         if echo is not None:
             self.get_logger().info(echo.note)
             self._echo.publish_echo(self._active_utterance_id, text)
@@ -1114,7 +1163,7 @@ class STTNode(Node):
         ``__init__`` в CC-бюджете 20, а дефолты цепочки и MiniMax сами по
         себе дают полтора десятка ветвей.
         """
-        self.provider_chain: list = self._normalize_provider_chain(
+        self.provider_chain: list = _normalize_provider_chain(
             [str(p) for p in (self.get_parameter("stt_provider_chain").value or [])],
             logger=self.get_logger(),
         )
@@ -1176,42 +1225,6 @@ class STTNode(Node):
         self._minimax_stt_lock = threading.Lock()
         self._minimax_stt_initialized = False
         self._last_effective_provider: Optional[str] = None
-
-    @staticmethod
-    def _normalize_provider_chain(chain, logger=None) -> list:
-        """Привести цепочку к инвариантам (аналог tts_node, issue #1083).
-
-        Инварианты:
-
-        * только известные провайдеры (:data:`KNOWN_STT_PROVIDERS`);
-        * без дубликатов, порядок первого вхождения сохраняется;
-        * ``vosk`` — всегда последний (офлайновый последний рубеж);
-        * пустая/битая цепочка → :data:`DEFAULT_STT_PROVIDER_CHAIN`.
-
-        Осознанное исключение: цепочка ровно из одного ``vosk`` —
-        легитимный офлайн-режим (робот в поле без сети), её не трогаем.
-        """
-        deduped: list = []
-        for name in chain or []:
-            name = str(name).strip().lower()
-            if name not in KNOWN_STT_PROVIDERS:
-                if name and logger is not None:
-                    logger.warning(
-                        f"⚠️ stt_provider_chain: неизвестный провайдер "
-                        f"{name!r} — игнорирую "
-                        f"(известные: {sorted(KNOWN_STT_PROVIDERS)})"
-                    )
-                continue
-            if name not in deduped:
-                deduped.append(name)
-        if not deduped:
-            return list(DEFAULT_STT_PROVIDER_CHAIN)
-        if deduped == [_LAST_RESORT_PROVIDER]:
-            return deduped
-        if _LAST_RESORT_PROVIDER in deduped:
-            deduped.remove(_LAST_RESORT_PROVIDER)
-        deduped.append(_LAST_RESORT_PROVIDER)
-        return deduped
 
     def _ensure_minimax_provider(self):
         """Лениво собрать MiniMax STT-клиент. ``None`` — провайдер не настроен.
@@ -1462,7 +1475,7 @@ class STTNode(Node):
 
         У TTS аналогичное состояние уезжает в топик
         ``/voice/tts/provider_state`` (issue #1229) — там у него четыре
-        потребителя (mcp_server, dialogue_node, quest_node, supervisor).
+        потребителя (mcp_server, dialog_node, quest_node, supervisor).
         У STT потребителя пока нет, а топик без потребителя — ровно то,
         что ловит сторож issue #2118, поэтому здесь только лог и
         персистентный файл. Появится потребитель — топик добавляется
@@ -1708,6 +1721,8 @@ class STTNode(Node):
         # закрыл стрим» — 23.09 этого не было в логе, и причину пришлось
         # выводить по косвенному признаку (не сработал ранний «бульк»).
         response_count = 0
+        # #4017 C1: оборванный стрим гипотез не оставляет (и чужих от прошлого прохода тоже).
+        self._last_hypotheses = NO_HYPOTHESES
         # Issue #2365 Phase 2: gRPC-ошибка стрима прилетает ЗДЕСЬ, при
         # итерации, а не на вызове RecognizeStreaming — тот лишь открывает
         # стрим. До 21.09.2026 цикл не был обёрнут, поэтому реальный код
@@ -1757,6 +1772,7 @@ class STTNode(Node):
             )
 
         final_text = segments.text()
+        self._last_hypotheses = segments.hypotheses()
         # Issue #1477 — телеметрия по фазе: partials/finals/eou;
         # #2891 — число склеенных сегментов; #2931 — события стрима на INFO:
         # без них «робот» из начала фразы пропал, а чем именно (partial без
@@ -1765,7 +1781,9 @@ class STTNode(Node):
         self.get_logger().info(
             f"📊 [#2931] yandex phase={phase} partials={partial_count} "
             f"eou={eou_events} segments={segments.segment_count} "
-            f"stream=[{segments.trace()}] final={final_text!r}"
+            f"stream=[{segments.trace()}] final={final_text!r} "
+            f"confidence_raw={list(segments.final_confidences)} "
+            f"hypotheses={self._last_hypotheses}"
         )
 
         result_text = None
@@ -1847,6 +1865,7 @@ class STTNode(Node):
                 now_s=time.time(),
                 speaker_tag=self._last_speaker_tag or "",
                 provider=provider,
+                hypotheses=phrase_hypotheses(provider, self._last_hypotheses),
             )
         )
         self.get_logger().info(f"📤 Опубликовал результат: {text}")

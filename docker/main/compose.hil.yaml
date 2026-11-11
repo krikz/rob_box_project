@@ -36,6 +36,11 @@ services:
       - USE_SIM_TIME=true
       - HIL_GUARD_SOUND=${HIL_GUARD_SOUND:-on}
 
+  # Сторож «сирот» FollowPath (#4458): время sim, чтобы orphan_timeout_s шёл по /clock Gazebo.
+  followpath-watchdog:
+    environment:
+      - USE_SIM_TIME=true
+
   rtabmap:
     environment:
       - USE_SIM_TIME=true

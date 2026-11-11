@@ -1,3 +1,4 @@
+<!-- stale-paths: ignore-file (описывает удалённое или старую раскладку; кандидат в архив или переписывание, ADR-0163) -->
 # Ночной голосовой марафон — 131 шаг, 12 актов
 
 > **Дата:** 2026-09-10, обновлено 2026-10-27 (#3971, #3880: шаги судят по результату, каст #4038, восстановление
@@ -120,7 +121,7 @@ max-cos эмбеддингов ниже порога опознания 0.72; о
 Поэтому в акте 2 у Саши и Бориса суммарно 12–20 секунд речи каждая — но
 НЕ одной длинной репликой. До run 35658231116 это были **три** реплики
 по 12–25 секунд; выяснилось, что `audio_node` (`speech_max_duration: 15.0`
-в `docker/vision/config/voice_assistant/audio_node.yaml`) отбрасывает
+в `docker/sound/config/voice_assistant/audio_node.yaml`) отбрасывает
 любую фразу длиннее 15 секунд ДО STT (`❌ Речь отклонена: 17.37с`), и
 самые длинные из этих реплик до сценария не доезжали вообще. Поэтому
 каждая из трёх реплик разбита на 2–3 более коротких шага (`n201/n201b/n201c`,
@@ -676,9 +677,16 @@ tools(56): clear_waypoints, compose_music, ..., stop_music, ...
 | `scripts/agent_flow/tests/test_e2e_process_robot_busy_gate.sh` | тест гейта G3.5 (робот занят) |
 | `scripts/ci/e2e/e2e_tool_match.py` | «тул вызван» vs «тул доступен» (§8.5) |
 | `tests/unit/e2e_scripts/test_e2e_tool_match.py` | тесты матчера на живых логах |
+| `scripts/e2e/archive_e2e_artifacts.py` | архив артефактов прогонов `L-E2E Voice Test` (#4512) |
 
 Файлы актов **генерируются**. Правка руками переживёт ровно до следующего
 запуска генератора.
+
+### Архив артефактов прогонов (#4512)
+
+Артефакты GitHub Actions живут недолго: logs и timing — 7 дней, artifacts — 14, model — 30. После каждого марафона сохраняй их:
+`python -X utf8 scripts/e2e/archive_e2e_artifacts.py --root <каталог вне репо> --since YYYY-MM-DD` (`--dry-run` — только список и сумма МБ).
+Скачанное пропускается, код возврата ненулевой при любой ошибке. Архив **не кладётся в репо**: в логах реплики живых людей (поэтому `recording` скрипт не берёт).
 
 
 ## Ожидание событий и намеренное перебивание (#3857)
@@ -700,3 +708,21 @@ tools(56): clear_waypoints, compose_music, ..., stop_music, ...
 Якорь считается в логе предыдущей фразы шага (после её `ПРИНЯТО`): N-й `SpeechEvent started` либо N-я `🔎 LLM REQUEST START`; играем через `delay_sec` по часам робота. Предыдущий шаг ждёт не конца ответа, а этого якоря. Не наступил за потолок — `SKIP barge_in_anchor_missing` (не PASS). `segment_started` считает N-й `SpeechEvent started` окна фразы: в строке лога нет `turn_id`/id выступления, отличить куплет от обычной реплики по логу нельзя.
 
 Поле шага `silent_ok: true` (или `expect: "silent_ok"`) — ход без речи допустим (`stage=done`, `SpeechEvent` нет).
+
+### Сбой стенда: фраза не сыграна (#4608)
+
+`play_eq_wav` проверяет код возврата `paplay` и строку `pa_context_connect() failed` в его выводе; при провале — до двух
+повторов (`E2E_PLAY_RETRIES`, пауза `E2E_PLAY_RETRY_PAUSE`). Не вышло — шаг получает `FAIL stand_play_failed (<причина>)`:
+это сбой стенда, роботу фраза не звучала, `no_accept` ему не пишется. Перед актом `stand_audio_preflight` (`pactl info`)
+проверяет PulseAudio: сервер не отвечает — акт не стартует, маркер `E2E_STAND_FAIL` (для актов 1–2 раннер останавливает марафон).
+Сводка акта считает такие шаги отдельно (`E2E_SUMMARY … stand_play_failed=N`, `summary.json` → `steps.stand_play_failed`,
+колонка **`stand_play_failed`** `summary.tsv`); в `fail` и `failed_labels` они не входят.
+
+### Офлайн-вердикты сбоя хода (#4512)
+
+Шаг workflow «Turn-failure verdicts» гонит лог `voice-assistant` акта (`/tmp/voice_e2e_<run>.log`, шаг «Collect robot logs»,
+окно 15 мин) через `scripts/dialog/turn_failures.py` (`scripts/ci/e2e/turn_failures_summary.py`): «робот глух» (`deaf`) и
+«ход без речи» (`no_speech`). В артефакт акта идёт `turn_failures.json` — только счётчики и коды причин, **без текстов реплик**
+(репо публичное); в лог — строка `E2E_SUMMARY turn_failures=deaf:N,no_speech:M` (`0` — сбоев нет, `unknown` — событий в логе
+нет, «0» было бы враньём). Раннер марафона читает её `marathon_summary_value` и пишет в `turn_failures.tsv` отчёта
+(колонки `act`, `run_id`, `turn_failures`). Вердикты — подсказка для разбора, акт не красят.

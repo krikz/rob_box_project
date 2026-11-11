@@ -27,7 +27,7 @@ from rob_box_dialog.address import VOICE, Addressed  # noqa: E402
 from rob_box_dialog.command import Command  # noqa: E402
 from rob_box_dialog.session import Session  # noqa: E402
 from rob_box_dialog.turn import Answer, TurnEngine  # noqa: E402
-from rob_box_voice.core.dialog_v2_ports import CallCounter, V2Ports  # noqa: E402
+from rob_box_dialog_host.dialog_v2_ports import CallCounter, V2Ports  # noqa: E402
 from rob_box_voice.core.speech_owner import SpeechLedger, SpeechOwner  # noqa: E402
 
 TIME = type(M.SpeechEvent().stamp)

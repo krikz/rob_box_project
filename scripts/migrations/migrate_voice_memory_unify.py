@@ -48,7 +48,8 @@ from pathlib import Path
 # against ``--legacy`` (the legacy ``voice_memory.db`` keeps a single
 # marker row, see ADR-0055 §2.5).
 REPO_ROOT = Path(__file__).resolve().parents[2]
-MIGRATION_FILE = REPO_ROOT / "migrations" / "010_voice_memory_unify.sql"
+#: Поток миграций - данные пакета ядра (``rob_box_core.migrations``, ADR-0167 Ш1а), из чекаута - по этому пути.
+MIGRATION_FILE = REPO_ROOT / "src" / "rob_box_core" / "rob_box_core" / "migrations" / "010_voice_memory_unify.sql"
 
 
 def _table_counts(conn: sqlite3.Connection) -> dict[str, int]:

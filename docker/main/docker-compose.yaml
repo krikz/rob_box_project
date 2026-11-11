@@ -185,7 +185,8 @@ services:
       - database_path:=/maps/rtabmap.db
       - wait_for_transform:=0.5
       - use_sim_time:=false
-      - cfg:=/config/rtabmap/rtabmap.ini
+      # Параметры RTAB-Map (Grid/*, Icp/*, Odom/* …) — только в scripts/rtabmap/patch_rtabmap_launch.py
+      # (#4495). cfg:=rtabmap.ini удалён: rtabmap читает из ini лишь секцию [Core], файл не применялся.
       # Вокселизация cloud_map: уменьшает размер сообщения в ~100-1000x.
       # Предотвращает переполнение Zenoh TCP буфера при loop closure.
       # 0.3 = 3x крупнее вокселей чем 0.1 → ~27x меньше точек → ~27x меньший publish.
@@ -506,6 +507,41 @@ services:
     restart: unless-stopped
     healthcheck:
       test: ["CMD-SHELL", "pgrep -f proximity_guard_node || exit 1"]
+      interval: 10s
+      timeout: 5s
+      start_period: 20s
+      retries: 3
+    labels:
+      logging: "promtail"
+
+  # Сторож «сирот» FollowPath (#4458, после #4456): если последняя цель NavigateToPose завершена
+  # (ABORTED/CANCELED/SUCCEEDED), а FollowPath controller_server ещё активен дольше orphan_timeout_s
+  # (1.5 с) — отмена цели follow_path (по goal_id) и нулевой cmd_vel. Защита от любого источника цели
+  # (HIL-скрипты, Quest), не только наших тулов. Образ — teleop. Всегда в стеке (без профиля).
+  followpath-watchdog:
+    image: ${SERVICE_IMAGE_PREFIX:-ghcr.io/krikz/rob_box}:teleop-${ROS_DISTRO:-humble}-${IMAGE_TAG:-local}
+    container_name: followpath-watchdog
+    network_mode: host
+    environment:
+      - ROS_DOMAIN_ID=0
+      - RMW_IMPLEMENTATION=rmw_zenoh_cpp
+      - RUST_LOG=zenoh=info
+      - ROS_AUTOMATIC_DISCOVERY_RANGE=LOCALHOST
+      - ROBOT_ID=${ROBOT_ID}
+      - ZENOH_SESSION_CONFIG_URI=/tmp/zenoh_session_config.json5
+      - *zenoh_listen_ip  # адрес локального роутера для session config
+      - LD_LIBRARY_PATH=/opt/ros/humble/opt/zenoh_cpp_vendor/lib:/opt/ros/humble/lib/aarch64-linux-gnu:/opt/ros/humble/lib
+    volumes:
+      - ../common/scripts:/ros_scripts:ro
+      - ../common/config:/common_config:ro
+      - ./scripts/teleop:/scripts:ro
+    command: ["/ros_scripts/ros_with_namespace.sh", "/scripts/start_followpath_watchdog.sh"]
+    depends_on:
+      - zenoh-router
+      - nav2
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pgrep -f followpath_watchdog_node || exit 1"]
       interval: 10s
       timeout: 5s
       start_period: 20s

@@ -344,6 +344,76 @@ def test_logged_hil_stops_replayed_through_the_corridor_rule():
     assert kept["s5c_reverse_into_wall"] == (2, 2)
 
 
+# -- стенка у угла корпуса (#4631, HIL 09.11 «внезапная стенка», Depot, 0.25 м/с) -----------------------------------
+
+
+def box(cx, cy, sx, sy, yaw):
+    """Контур бокса Gazebo (центр, размеры по своим осям, поворот) точками мира через 1 см."""
+    c, s = math.cos(yaw), math.sin(yaw)
+    local = wall(-sx / 2.0, sx / 2.0, -sy / 2.0, sy / 2.0)
+    return np.column_stack((cx + c * local[:, 0] - s * local[:, 1], cy + s * local[:, 0] + c * local[:, 1]))
+
+
+#: Стенка из прогона ``depot_v0.25_r1_213959`` (``speed_bench.wall_ahead``: 0.2 × 3.0 м поперёк хода).
+HIL_4631_WALL = box(2.217, 2.526, 0.2, 3.0, 0.145)
+
+
+@pytest.mark.parametrize(
+    "pose,v,w",
+    [
+        ((1.69942, 1.23458, -0.98744), 0.034, 0.043),  # t = 199.5 с, зазор 0.195 м
+        ((1.72278, 1.20590, -0.96424), 0.042, 0.038),  # t = 200.5 с, зазор 0.173 м
+    ],
+)
+def test_hil_4631_wall_end_beside_the_path_is_a_jamb_not_a_stop(pose, v, w):
+    """#4631: правда Gazebo, поза и скорость из ``track.csv`` того прогона. Ближе 0.20 м к корпусу был ТОРЕЦ стенки:
+    впереди носа на 7–9 см и на 15–19 см левее борта — вне коридора хода. Робот объезжал стенку и проходил мимо торца,
+    как мимо косяка проёма 0.90 м (там до косяка 0.1475 м на сторону). Порог такой точки — ``side_stop_m``,
+    не ``stop_m`` (#4438): стоп по ней вернул бы стопы у косяков в проёмах (решение Шифу 05.11 — минимальный
+    проём 0.90 м)."""
+    pts = in_robot_frame(HIL_4631_WALL, *pose)
+    gaps = np.array([BODY.gap(x, y) for x, y in pts])
+    nearest = pts[int(np.argmin(gaps))]
+    assert TH.side_stop_m < gaps.min() < TH.stop_m
+    assert nearest[0] > BODY.x_max and nearest[1] > BODY.y_max + TH.corridor_margin_m  # впереди-слева, вне коридора
+    assert zone_at(HIL_4631_WALL, pose, v, w) == px.ZONE_WARN
+
+
+@pytest.mark.parametrize("w", [0.0, 0.3, -0.3])
+def test_wall_in_front_of_one_corner_stops_at_stop_m_straight_and_on_an_arc(w):
+    """Стенка перекрывает только левый угол корпуса (от y = 0.20 м влево): корпус на неё наедет — стоп с 0.20 м.
+    На дуге коридор прямого хода не отменяется: защита не слабее, чем при прямом ходе."""
+    for gap, zone in ((0.21, px.ZONE_WARN), (0.19, px.ZONE_STOP)):
+        corner_wall = wall(BODY.x_max + gap, BODY.x_max + gap + 0.1, 0.20, 2.0)
+        assert zone_at(corner_wall, (0.0, 0.0, 0.0), 0.15, w) == zone
+
+
+@pytest.mark.parametrize("w", [0.0, 0.05, -0.05])
+@pytest.mark.parametrize("yaw_deg", [0.0, 2.0, -2.0])
+def test_wall_alongside_at_the_coverage_perimeter_offset_never_stops(w, yaw_deg):
+    """Проход пылесоса по периметру (#4607, PR #4623): центр в 0.4125 м от стены (борт в 0.11 м), 0.25 м/с.
+    Стена сбоку вне коридора хода — стопа нет ни на прямой, ни при подруливании DWB."""
+    side = wall(-3.0, 3.0, 0.4125, 0.5125)
+    zones = {zone_at(side, (x, 0.0, math.radians(yaw_deg)), 0.25, w) for x in np.arange(-1.0, 1.0, 0.05)}
+    assert px.ZONE_STOP not in zones
+    assert px.ZONE_WARN in zones
+
+
+@pytest.mark.parametrize("w", [0.0, 0.15, -0.15])
+def test_doorway_090_centered_with_dwb_steering_never_stops(w):
+    """Проём 0.90 м по центру (минимальный проём, решение Шифу 05.11): косяк в 0.1475 м от борта. DWB подруливает
+    (HIL 05.11: w до ±0.15 в проёме) — стопа всё равно нет: косяк вне коридора хода и дальше ``side_stop_m``."""
+    door = doorway(1.0, 0.90)
+    zones = {zone_at(door, (x, 0.0, 0.0), 0.15, w) for x in np.arange(-0.5, 2.0, 0.02)}
+    assert px.ZONE_STOP not in zones
+
+
+def test_turning_in_place_at_the_hil_4b_distance_from_a_wall_never_stops():
+    """HIL 05.11 (4b): разворот w=±0.5 с центром в 0.61 м от стены — углы (радиус 0.43 м) до неё не достают."""
+    side = wall(-2.0, 2.0, 0.61, 0.71)
+    assert {zone_at(side, (0.0, 0.0, 0.0), 0.0, w) for w in (0.5, -0.5, 1.0)} <= {px.ZONE_CLEAR, px.ZONE_WARN}
+
+
 def test_thresholds_reject_side_or_spin_stop_beyond_stop():
     with pytest.raises(ValueError):
         px.Thresholds(side_stop_m=0.25)

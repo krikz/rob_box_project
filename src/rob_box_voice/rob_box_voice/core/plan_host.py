@@ -23,10 +23,10 @@ from rob_box_dialog.plan.runner import PlanRunner
 from rob_box_dialog_msgs.msg import PlanEvent as PlanEventMsg
 from rob_box_dialog_msgs.msg import SoundEvent, SpeechEvent
 
-from rob_box_voice.tts_voice_registry import gender_of, known_provider, role_voices_for, tts_context_fields
+from rob_box_dialog_host.tts_voice_registry import gender_of, known_provider, role_voices_for, tts_context_fields
 
 from . import perform_ask
-from .music_player_state import parse_music_event
+from rob_box_dialog_host.music_player_state import parse_music_event
 from .perform_host import TICK_S, PerformHost
 from .plan_tools import PlanToolExecutor
 from .turn_context import tts_state
@@ -129,7 +129,7 @@ def begin_turn(node: Any, user_input: str) -> None:
     """Tier-1 плана по словам человека этого хода («а потом …»)."""
     planner = _planner(node)
     if planner is not None:
-        planner.begin_turn(user_input)
+        planner.begin_turn(user_input, getattr(node, "_wake", None))
 
 
 def on_speech(node: Any, msg: SpeechEvent) -> None:

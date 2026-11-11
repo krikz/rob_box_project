@@ -93,7 +93,7 @@ docker buildx build \
   .
 ```
 
-> Отдельного образа `vesc_nexus` больше нет: `docker/main/vesc_nexus/Dockerfile`
+> Отдельного образа `vesc_nexus` больше нет: `docker/main/vesc_nexus/Dockerfile` <!-- stale-paths: ignore -->
 > удалён как мёртвый (см. `docs/plans/2026-09-15-builder-runtime-seam.md` §13.4).
 > `vesc_msgs` и `vesc_nexus` компилируются внутри `ros2_control`: апстрим отдаёт
 > не отдельную ноду, а pluginlib-плагин `hardware_interface`, который грузит

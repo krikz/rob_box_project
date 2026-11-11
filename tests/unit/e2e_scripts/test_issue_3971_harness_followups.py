@@ -77,36 +77,36 @@ TALE_BETWEEN_SEGMENTS = accept("{NOW-70}") + tale_start("{NOW-60}") + speech("st
 
 class TestPerformWait:
     def test_turn_done_between_segments_is_not_the_reply(self):
-        st = e2e_events.state(_feed(TALE_BETWEEN_SEGMENTS), "v2", False)
+        st = e2e_events.state(_feed(TALE_BETWEEN_SEGMENTS), False)
         assert st["verdict"] == "wait" and st["performing"] == 1 and st["open"] == 0
         assert st["perform_for"] == "60" and st["perform_ceiling"] == "240"
 
     @pytest.mark.parametrize("end", [tale_end("{NOW-5}"), block_end("{NOW-5}"), tale_end("{NOW-5}", "stopped")],
                              ids=["perform_end", "plan_block_end", "stopped"])
     def test_performance_end_releases_the_reply(self, end):
-        st = e2e_events.state(_feed(TALE_BETWEEN_SEGMENTS + end), "v2", False)
+        st = e2e_events.state(_feed(TALE_BETWEEN_SEGMENTS + end), False)
         assert st["verdict"] == "done" and st["performing"] == 0
 
     def test_performance_over_ceiling_is_final(self):
         log = accept("{NOW-260}") + tale_start("{NOW-250}") + turn_done("{NOW-245}")
-        st = e2e_events.state(_feed(log), "v2", False)
+        st = e2e_events.state(_feed(log), False)
         assert st["verdict"] == "perform_ceiling" and st["reason"] == "perform_unfinished:kind=tale,for=250s"
-        assert e2e_events.state(_feed(log), "v2", False, perform_ceiling=300.0)["verdict"] == "wait"
+        assert e2e_events.state(_feed(log), False, perform_ceiling=300.0)["verdict"] == "wait"
 
     def test_lines_merged_into_running_performance_do_not_open_a_new_one(self):
         """``'status': 'done'`` -- куплеты легли в идущее выступление (марафон 23.10 22:50:28): своего конца нет."""
         log = accept("{NOW-30}") + tale_start("{NOW-20}", "'status': 'done'") + speech("started", "s2s2s2s2", "{NOW-19}") \
             + turn_done("{NOW-18}") + speech("finished", "s2s2s2s2", "{NOW-10}")
-        assert e2e_events.state(_feed(log), "v2", False)["verdict"] == "done"
+        assert e2e_events.state(_feed(log), False)["verdict"] == "done"
 
     def test_previous_step_performance_is_not_this_step(self):
         """Старт до ПРИНЯТО этой фразы -- выступление прошлого шага, конец этого хода его не ждёт."""
         log = tale_start("{NOW-90}") + accept("{NOW-30}") + speech("started", "s3s3s3s3", "{NOW-25}") + \
             turn_done("{NOW-20}") + speech("finished", "s3s3s3s3", "{NOW-10}")
-        assert e2e_events.state(_feed(log), "v2", False)["verdict"] == "done"
+        assert e2e_events.state(_feed(log), False)["verdict"] == "done"
 
     def test_cli_state_reports_performance_and_takes_ceiling(self):
-        args = [sys.executable, str(EVENTS), "state", "--engine", "v2", "--perform-ceiling", "50"]
+        args = [sys.executable, str(EVENTS), "state", "--perform-ceiling", "50"]
         out = subprocess.run(args, input=_feed(TALE_BETWEEN_SEGMENTS), capture_output=True, text=True,
                              encoding="utf-8").stdout.splitlines()
         assert "verdict=perform_ceiling" in out and "performing=1" in out and "perform_ceiling=50" in out

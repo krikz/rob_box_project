@@ -50,7 +50,7 @@ import live_compare  # noqa: E402
 import understanding_metrics as um  # noqa: E402
 import understanding_report as ur  # noqa: E402
 import understanding_variants as uv  # noqa: E402
-from dry_stand import REPO, DryStand, new_workdir  # noqa: E402
+from dry_stand import REPO, DryStand, new_workdir, robot_owners  # noqa: E402
 from env_files import load_env_files  # noqa: E402
 from rob_box_dialog import knowledge as kn  # noqa: E402
 from rob_box_dialog.words import strip_wake_word  # noqa: E402
@@ -194,8 +194,8 @@ def fake_stand(rule: Callable[[List[Any], List[str]], Dict[str, Any]], workdir: 
     """Стенд с фейковым провайдером за НАСТОЯЩИМ мостом команд (как в ``tests/unit/dialog/test_dry_marathon.py``)."""
     from rob_box_llm.provider import LLMResponse, ProviderCapabilities, ToolCall  # noqa: PLC0415
     from rob_box_llm.providers.fake import FakeLLMProvider  # noqa: PLC0415
-    from rob_box_voice.core import command_bridge  # noqa: PLC0415
-    from rob_box_voice.core.dialog_v2_ports import CallCounter, Counted  # noqa: PLC0415
+    from rob_box_dialog_host import command_bridge  # noqa: PLC0415
+    from rob_box_dialog_host.dialog_v2_ports import CallCounter, Counted  # noqa: PLC0415
 
     counter = CallCounter()
 
@@ -206,7 +206,7 @@ def fake_stand(rule: Callable[[List[Any], List[str]], Dict[str, Any]], workdir: 
     inner = FakeLLMProvider(on_complete=on_complete, name="deepseek",
                             capabilities=ProviderCapabilities(tools=True, tool_choice=True))
     relay = dm.LogRelay()
-    llm = command_bridge.wrapper_for(log=relay)(Counted(inner, counter))
+    llm = command_bridge.wrapper_for(log=relay, owners=robot_owners())(Counted(inner, counter))
     stand = DryStand(llm, counter, "Ты робот.", workdir, variant=variant, router=router, memory_path=memory_path,
                      clock=clock)
     relay.target = stand
@@ -256,10 +256,9 @@ def real_factory(args: argparse.Namespace, jev: Optional[Callable[[], Any]]) -> 
 def fake_factory(corpus: Dict[str, Any], blind: bool,
                  extra: Sequence[Tuple[str, Dict[str, Any]]] = ()) -> StandFactory:
     def make(variant: str) -> Tuple[DryStand, Any]:
-        from dry_stand import WAKE_WORDS_YAML  # noqa: PLC0415
-        from rob_box_dialog.address import wake_words  # noqa: PLC0415
+        from dry_stand import robot_wake  # noqa: PLC0415
 
-        oracle = Oracle(corpus, wake_words(str(WAKE_WORDS_YAML))[0], extra)
+        oracle = Oracle(corpus, robot_wake(), extra)
         router = OracleRouter(oracle) if variant == uv.C else None
         return fake_stand(oracle_rule(oracle, blind), new_workdir("understanding_fake_"), variant, router), router
 

@@ -1,0 +1,30 @@
+шагов, где все PLAY харнесса упали: 16; фраз, полученных роботом в их окнах: 3
+прогонов с логом и шагами 77
+пороги: DEAF_REJECTED_MIN 3 DEAF_NO_WAKE_MIN None DEAF_WINDOW_S 60.0 SPEECH_GRACE_S 5.0
+     1  deaf       ложное на шаге OK
+     5  deaf       пропущено
+    16  deaf       пропущено (PLAY харнесса упал)
+     2  no_speech  поймано
+    47  шаги       FAIL -
+     1  шаги       FAIL cycle_unconfirmed_after_accept
+    16  шаги       FAIL no_accept
+     5  шаги       FAIL turn_no_wake
+     2  шаги       FAIL turn_nospeech
+     1  шаги       FAIL turn_silenced
+   744  шаги       OK -
+     3  шаги       OK after_retry=1
+    90  шаги       OK backlog
+     5  шаги       OK recovered_no_wake
+     1  шаги       OK recovered_silenced
+     2  шаги       SKIP NO_MUSIC_N310
+     3  шаги       SKIP NO_STOP_N511
+     1  шаги       SKIP barge_in_anchor_missing
+причины вердиктов (в окнах шагов):
+     1  deaf       stt_rejected
+     1  no_speech  sound_after_query
+     1  no_speech  tier1:stop_all
+шаги по ячейкам:
+  deaf | ложное на шаге OK: 41727590194:n721_nina_own_profile
+  deaf | пропущено: 41740604142:n511_stop_music 41952411224:n511_stop_music 42038546556:n305b_bare_robot_pickup 42038546556:n310_execute_backlog_lru 42121936813:n101_wake_cold_start
+  deaf | пропущено (PLAY харнесса упал): 41716741640:n101_wake_cold_start 41716741640:n102_session_reset 41716741640:n103_time 41716741640:n104_battery 41716741640:n105_status 41716741640:n106_alt_wake_roboks 41716741640:n107_command_intent_gate 41716741640:n108_perception 41716741640:n109_sound_info 41716741640:n110_silence_baseline 41725074704:n701_sasha_back_recognized 41725074704:n702_sasha_recognized_no_question 41725074704:n703_sasha_memory_from_act2 41725074704:n704_sasha_after_gap_no_question 41725074704:n705_boris_back_recognized 41725074704:n706_boris_recognized_no_question
+  no_speech | поймано: 41945071345:n109_sound_info 41974510126:n511_stop_music

@@ -53,7 +53,8 @@ _HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 _STUBS="$_HERE/ros_stubs"
 _SRC="$(cd "$_HERE/../../.." && pwd)/src"
 # rob_box_voice.core.__init__ тянет rob_box_dialog / rob_box_core (в контейнере они установлены).
-_VOICE_SRC="$_SRC/rob_box_voice:$_SRC/rob_box_dialog:$_SRC/rob_box_core"
+# ADR-0167 Ш1г: связка хода (парсер снимка плеера, каталог голосов) - в rob_box_dialog_host.
+_VOICE_SRC="$_SRC/rob_box_voice:$_SRC/rob_box_dialog_host:$_SRC/rob_box_dialog:$_SRC/rob_box_core"
 
 _unsupported() {
     echo "fake_robot_ssh: не поддержано: $*" >&2
@@ -157,7 +158,7 @@ docker() {
                 source() { :; }
                 # python3 внутри «контейнера» (подписанный /mcp/execute, снимок /voice/music/state --
                 # issue #3871): ROS нет, поэтому rclpy/std_msgs/rob_box_mcp_tools -- фейки из
-                # ros_stubs/, а чистый парсер снимка -- НАСТОЯЩИЙ rob_box_voice.core.music_player_state.
+                # ros_stubs/, а чистый парсер снимка -- НАСТОЯЩИЙ rob_box_dialog_host.music_player_state.
                 # shellcheck disable=SC2329
                 python3() {
                     PYTHONIOENCODING=utf-8 PYTHONPATH="$_STUBS:$_VOICE_SRC${PYTHONPATH:+:$PYTHONPATH}" command python3 "$@"

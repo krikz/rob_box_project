@@ -23,5 +23,5 @@
   `contradicts ADR-00XX (slug), but worth reopening because…`.
 - **ADR создаёшь** только когда все 3 критерия истинны (hard to reverse +
   surprising + real trade-off) — см. `.agents/skills/domain-modeling/SKILL.md`.
-- Номер ADR — через `bash scripts/agent_flow/validate_adr_namespace.sh` ДО
+- Номер ADR — через `bash scripts/lint/validate_adr_namespace.sh` ДО
   `gh pr create` (exit 0 = clean, exit 1 = collision).

@@ -1,3 +1,4 @@
+<!-- stale-paths: ignore-file (описывает удалённое или старую раскладку; кандидат в архив или переписывание, ADR-0163) -->
 # E2E-сценарий «Денис заходит в мастерскую» — спецификация
 
 > **Статус:** draft / не активный. Спецификация привязана к ADR-0102 §9.6
@@ -49,7 +50,7 @@ occasion=...)` → `_run_turn` → TTS-реплика «о, привет, Ден
 
 || Параметр | Где | Значение |
 |---|---|---|
-| `wake_words.yaml` в `personality` содержит «роб бокс» / «робот» | `docker/vision/config/wake_words.yaml` | ✅ (подтверждено, файл:1-50) |
+| `wake_words.yaml` в `personality` содержит «роб бокс» / «робот» | `docker/sound/config/wake_words.yaml` | ✅ (подтверждено, файл:1-50) |
 | `dialogue_node.yaml.startup_greeting_text` пустая или дефолтная | `docker/vision/config/voice_assistant/dialogue_node.yaml:132-134` | "Я на связи, все системы в норме!" (не пустая) — это **неважно** для сценария, но нужно знать: после деплоя прозвучит startup-реплика ДО теста, ждать её окончания |
 | `vision` реальный inference (не StubHEFLoader) | #2398 / #2531 (Взгляд) | ⏳ (PR-F требует реального кадра, иначе стаб-фильтр REFUSE) |
 | `stt_node` не в degraded mode (cold-start VAD) | ADR-0029 | пройти ≥5 минут от старта контейнера до теста |
@@ -260,7 +261,7 @@ ROS-сообщение). После принятия ADR-0103 и ADR-0102 §3.3 
       "git grep -c 'from rob_box_perception.core.event_detector import EventDetector' -- src/ | sort  # ≥ 2"
     ],
     "config": [
-      "docker/vision/config/wake_words.yaml содержит personality с 'роб бокс'",
+      "docker/sound/config/wake_words.yaml содержит personality с 'роб бокс'",
       "ROS_DOMAIN_ID совпадает у робота и harness"
     ],
     "runtime": [

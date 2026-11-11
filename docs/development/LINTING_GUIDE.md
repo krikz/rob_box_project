@@ -31,7 +31,7 @@
 
 ### Когда запускается
 
-**Workflow:** `.github/workflows/lint.yml`
+**Workflow:** `.github/workflows/G-Lint Code.yml`
 
 **Triggers:**
 - Push в `feature/**`, `develop`, `main` (если изменились `.py`, `.yaml`, `.yml`, `Dockerfile`)
@@ -81,7 +81,7 @@
 2. **Actions logs:**
    ```
    Python Linting → Black formatting check
-   └─ src/rob_box_voice/audio_node.py:42: Line too long (125 > 120)
+   └─ src/rob_box_voice/rob_box_voice/audio_node.py:42: Line too long (125 > 120)
    ```
 
 3. **Summary section:**
@@ -136,7 +136,7 @@ chmod +x /tmp/hadolint
 sudo mv /tmp/hadolint /usr/local/bin/hadolint
 
 # Check Dockerfile
-hadolint docker/main/zenoh_router/Dockerfile
+hadolint docker/main/teleop/Dockerfile
 
 # Check all Dockerfiles
 find docker/ -name "Dockerfile" -exec hadolint {} +
@@ -149,7 +149,7 @@ find docker/ -name "Dockerfile" -exec hadolint {} +
 sudo apt-get install shellcheck
 
 # Check script
-shellcheck scripts/setup_vision_pi.sh
+shellcheck scripts/setup/setup_vision_pi.sh
 
 # Check all scripts
 find scripts/ -name "*.sh" -exec shellcheck {} +
@@ -163,12 +163,12 @@ find scripts/ -name "*.sh" -exec shellcheck {} +
 
 **Problem:**
 ```
-src/rob_box_voice/audio_node.py:42: Line too long (125 > 120)
+src/rob_box_voice/rob_box_voice/audio_node.py:42: Line too long (125 > 120)
 ```
 
 **Fix:**
 ```bash
-black src/rob_box_voice/audio_node.py
+black src/rob_box_voice/rob_box_voice/audio_node.py
 ```
 
 Black автоматически разобьёт длинные строки.
@@ -179,7 +179,7 @@ Black автоматически разобьёт длинные строки.
 
 **Problem:**
 ```
-src/rob_box_voice/audio_node.py:10:1: F401 'time' imported but unused
+src/rob_box_voice/rob_box_voice/audio_node.py:10:1: F401 'time' imported but unused
 ```
 
 **Fix:** Удали неиспользуемый import:
@@ -198,7 +198,7 @@ import numpy as np
 
 **Problem:**
 ```
-src/rob_box_voice/audio_node.py:25:1: E302 expected 2 blank lines, found 1
+src/rob_box_voice/rob_box_voice/audio_node.py:25:1: E302 expected 2 blank lines, found 1
 ```
 
 **Fix:** Добавь пустую строку перед определением класса/функции:
@@ -227,7 +227,7 @@ ERROR: Imports are incorrectly sorted and/or formatted.
 
 **Fix:**
 ```bash
-isort src/rob_box_voice/audio_node.py
+isort src/rob_box_voice/rob_box_voice/audio_node.py
 ```
 
 isort автоматически отсортирует imports в правильном порядке:
@@ -262,7 +262,7 @@ command: >
 
 **Problem:**
 ```
-docker/main/zenoh_router/Dockerfile:10 DL3059 Multiple consecutive RUN instructions. Consider consolidation.
+docker/main/teleop/Dockerfile:10 DL3059 Multiple consecutive RUN instructions. Consider consolidation.
 ```
 
 **Fix:** Объедини RUN commands:
@@ -285,7 +285,7 @@ RUN apt-get update && \
 
 **Problem:**
 ```
-scripts/setup_vision_pi.sh:15:10: SC2086 Double quote to prevent globbing and word splitting.
+scripts/setup/setup_vision_pi.sh:15:10: SC2086 Double quote to prevent globbing and word splitting.
 ```
 
 **Fix:** Добавь кавычки:
@@ -330,8 +330,8 @@ ignored:
 
 ---
 
-### `.github/workflows/lint.yml`
-**Location:** `/home/ros2/rob_box_project/.github/workflows/lint.yml`
+### `.github/workflows/G-Lint Code.yml`
+**Location:** `/home/ros2/rob_box_project/.github/workflows/G-Lint Code.yml`
 
 **Purpose:** GitHub Actions workflow для CI/CD линтинга
 
@@ -349,7 +349,7 @@ jobs:
 
 ## 📊 Metrics & Success Criteria
 
-**Phase 2 Goals (from AI_DEVELOPMENT_REVIEW.md):**
+**Phase 2 Goals:**
 
 | Metric | Before | Target | Current |
 |--------|--------|--------|---------|
@@ -392,8 +392,6 @@ jobs:
 ## 🔗 Related Documentation
 
 - [AGENT_GUIDE.md](./AGENT_GUIDE.md) - AI development guide
-- [AI_TROUBLESHOOTING_CHECKLIST.md](./AI_TROUBLESHOOTING_CHECKLIST.md) - Debug checklist
-- [AI_DEVELOPMENT_REVIEW.md](./AI_DEVELOPMENT_REVIEW.md) - Phase 2 roadmap
 - [CI_CD_PIPELINE.md](../CI_CD_PIPELINE.md) - GitHub Actions workflows
 
 ---

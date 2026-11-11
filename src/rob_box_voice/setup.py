@@ -29,11 +29,8 @@ setup(
         # Config files
         (os.path.join('share', package_name, 'config'),
             existing('config/*.yaml', 'config/*.json')),
-        # ADR-0066 §6.3 — voice style presets (config/presets/*.txt) теперь
-        # читаются ``grip_pipeline`` супервизора (а не нодой диалога), но
-        # install-share нужен — оставляем шаг data_files для ROS-share.
-        (os.path.join('share', package_name, 'config', 'presets'),
-            existing('config/presets/*.txt')),
+        # Пресеты стиля речи (voice_presets.yaml + voice_presets/*.txt) — в профиле робота docker/sound/config
+        # (ADR-0167 Ш1а-2), в share пакета их больше нет.
         # Prompts
         (os.path.join('share', package_name, 'prompts'),
             existing('prompts/*.txt', 'prompts/*.yaml')),
@@ -43,8 +40,10 @@ setup(
     ],
     install_requires=[
         'setuptools',
-        'rob_box_core>=0.1.0',
-        'rob_box_harness>=0.1.0',
+        # ADR-0167 Ш3: ядро диалога (rob_box_core, rob_box_harness и другие модули ядра)
+        # ставится pip-пакетом rob-box-dialog-core из krikz/rob_box_dialog_core по тегу,
+        # а не colcon'ом из src/ (см. docker/sound/voice_assistant/Dockerfile).
+        'rob-box-dialog-core>=0.7.0',
     ],
     zip_safe=True,
     maintainer='krikz',

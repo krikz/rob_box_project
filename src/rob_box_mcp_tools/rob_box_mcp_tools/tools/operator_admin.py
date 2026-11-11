@@ -105,26 +105,6 @@ _DEFAULT_EXPECTED_NODES: List[str] = [
     "/lslidar_driver_node",
     "/rtabmap/rtabmap",
 ]
-# Нода диалога по флагу ``dialog_engine`` (rob_box_core.dialog_engine): v2 - ``/dialog_node``, v1 -
-# ``/dialogue_node``; стартует одна из двух. Зеркало ``DIALOG_NODES`` из perception/utils/node_monitor.py.
-_DIALOG_NODES = ("/dialog_node", "/dialogue_node")
-
-
-def _with_live_dialog_node(expected: List[str], present: Any) -> List[str]:
-    """Вместо любой ноды диалога в ``expected`` - та из :data:`_DIALOG_NODES`, что есть в ``present``.
-
-    Нет ни одной - первая (``/dialog_node``): оператор увидит её ``missing``, а не вымышленную пропажу
-    ``/dialogue_node`` на роботе с ``dialog_engine: v2``.
-    """
-    dialog = next((name for name in _DIALOG_NODES if name in present), _DIALOG_NODES[0])
-    resolved: List[str] = []
-    for name in expected:
-        name = dialog if name in _DIALOG_NODES else name
-        if name not in resolved:
-            resolved.append(name)
-    return resolved
-
-
 # ----------------------------------------------------------------------------
 # Helpers (HTTP + rclpy probe)
 # ----------------------------------------------------------------------------
@@ -197,6 +177,11 @@ class Ros2NodeStatusTool(MCPTool):
         return False
 
     @property
+    def telegram_visible(self) -> bool:
+        # #4516: пульт Telegram - админка (решение Шифу 06.11): те же тулы чтения, что у ТАРС
+        return True
+
+    @property
     def slice(self) -> str:
         # срез ``operator.admin`` (slice_policy.yaml): по нему тул виден оператору (ADR-0150 §9.3, PR-13b)
         return "operator.admin"
@@ -239,8 +224,6 @@ class Ros2NodeStatusTool(MCPTool):
     def execute(self, nodes: Optional[List[str]] = None) -> MCPToolResult:
         self.log_info("Запрос статуса ROS2-нод")
         expected = list(nodes) if nodes else list(_DEFAULT_EXPECTED_NODES)
-        # Явно заказанные оператором имена не подменяем - только дефолтный список.
-        resolve = _with_live_dialog_node if not nodes else (lambda names, _present: names)
 
         # 1. Прямой rclpy-probe — быстрее subprocess и не плодит процессов.
         live = _probe_ros_node_names(self.node)
@@ -248,7 +231,7 @@ class Ros2NodeStatusTool(MCPTool):
             # 2. Fallback — NodeAvailabilityMonitor уже хранит результаты
             # последнего цикла check_nodes(); используем их, чтобы не
             # блокировать вызов на subprocess ros2 node list.
-            monitor_state = self._collect_from_monitor(expected, resolve)
+            monitor_state = self._collect_from_monitor(expected)
             return MCPToolResult(
                 success=True,
                 data=monitor_state,
@@ -263,7 +246,6 @@ class Ros2NodeStatusTool(MCPTool):
         # Построить статус по live-списку: всё что есть — active,
         # чего нет — missing (без 'failed', т.к. один снапшот не отличает).
         live_set = set(live)
-        expected = resolve(expected, live_set)
         active = [n for n in expected if n in live_set]
         missing = [n for n in expected if n not in live_set]
         summary = {
@@ -286,7 +268,7 @@ class Ros2NodeStatusTool(MCPTool):
 
     # ------------------------------------------------------------------
 
-    def _collect_from_monitor(self, expected: List[str], resolve: Any = None) -> Dict[str, Any]:
+    def _collect_from_monitor(self, expected: List[str]) -> Dict[str, Any]:
         """Собрать состояние из ``NodeAvailabilityMonitor`` (если он есть).
 
         Если monitor не зарегистрирован в ноде (например, в юнит-тестах) —
@@ -316,8 +298,6 @@ class Ros2NodeStatusTool(MCPTool):
             }
 
         status = monitor.node_status
-        if resolve is not None:
-            expected = resolve(expected, status)
         active = [n for n in expected if status.get(n, {}).get("status") == "active"]
         failed = [n for n in expected if status.get(n, {}).get("status") == "failed"]
         missing = [n for n in expected if n not in status or status[n].get("status") == "missing"]
@@ -364,6 +344,11 @@ class ReadLogsTool(MCPTool):
     def llm_visible(self) -> bool:
         # ТАРС-только (ADR-0051 §6, #2001): личность эти тулы не видит.
         return False
+
+    @property
+    def telegram_visible(self) -> bool:
+        # #4516: пульт Telegram - админка (решение Шифу 06.11): те же тулы чтения, что у ТАРС
+        return True
 
     @property
     def slice(self) -> str:
@@ -553,6 +538,11 @@ class ContainerStatusTool(MCPTool):
     def llm_visible(self) -> bool:
         # ТАРС-только (ADR-0051 §6, #2001): личность эти тулы не видит.
         return False
+
+    @property
+    def telegram_visible(self) -> bool:
+        # #4516: пульт Telegram - админка (решение Шифу 06.11): те же тулы чтения, что у ТАРС
+        return True
 
     @property
     def slice(self) -> str:
@@ -885,6 +875,11 @@ class ShowMetricsTool(MCPTool):
                 default="prometheus",
             ),
         ]
+
+    @property
+    def telegram_visible(self) -> bool:
+        # #4516: пульт Telegram - админка (решение Шифу 06.11): те же тулы чтения, что у ТАРС
+        return True
 
     @property
     def slice(self) -> str:

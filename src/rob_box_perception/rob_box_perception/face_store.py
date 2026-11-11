@@ -49,12 +49,13 @@ import json
 import logging
 import os
 import shutil
+import statistics
 import threading
 import time
 import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Sequence
 
 import numpy as np
 
@@ -159,11 +160,11 @@ DEFAULT_GALLERY_WARMUP_SIZE = 5
 # Второе условие ("слипается", не просто "близко по одному кадру"):
 # кросс-сходство ГАЛЕРЕЙ безымянной и именованной записи (см.
 # ``_gallery_cross_similarity``) обязано само по себе пройти
-# ``identify_threshold``. Без этого условия правило могло бы сработать
-# на ЧУЖОМ человеке, который просто оказался на полпути между двумя
-# случайными записями в один-единственный момент (одна встреча - не
-# доказательство, что записи вообще похожи ДРУГ НА ДРУГА); риск
-# остаточный при малых галереях (см. докстринг ``_disambiguate`` и PR).
+# ``identify_threshold``. Считается МЕДИАНОЙ лучших совпадений векторов
+# меньшей галереи, а не максимумом по одной паре: issue #4541 - живой
+# случай, где одна пара 0.603 при пороге 0.60 «доказала» дубль у двух
+# разных людей (max 0.603, медиана 0.555). Риск остаточный при малых
+# галереях (1-2 вектора: медиана совпадает с максимумом).
 DEFAULT_DISAMBIGUATION_GAP = 0.10
 
 _META_FILENAME = 'meta.json'
@@ -259,6 +260,17 @@ def _cosine(a: np.ndarray, b: np.ndarray) -> float:
     (голосовой аналог) — дешевле перенормировать, чем завести отдельный
     режим "доверяю/не доверяю входу"."""
     return float(np.dot(_normalize(a), _normalize(b)))
+
+
+def _median_best_match(a: Sequence[np.ndarray], b: Sequence[np.ndarray]) -> Optional[float]:
+    """Медиана по векторам меньшей галереи от их лучшего совпадения в другой (issue #4541).
+
+    ``None`` - одна из галерей пуста, сравнивать не с чем. Вне ``FaceStore`` (ADR-0145: класс не растёт).
+    """
+    if not a or not b:
+        return None
+    small, big = (a, b) if len(a) <= len(b) else (b, a)
+    return float(statistics.median(max(_cosine(x, y) for y in big) for x in small))
 
 
 def _atomic_write_bytes(path: Path, data: bytes) -> None:
@@ -678,25 +690,25 @@ class FaceStore:
     def _gallery_cross_similarity(
         self, a: '_Record', b: '_Record',
     ) -> Optional[float]:
-        """Кросс-сходство ГАЛЕРЕЙ двух записей - максимум косинуса по всем
-        парам (вектор из ``a.embeddings``, вектор из ``b.embeddings``), тот
-        же приём ``max``, что ``_score_all``/докстринг там же: одна удачно
-        совпавшая пара ракурсов - уже достаточное свидетельство, что две
-        записи "слипаются" и, вероятно, описывают одного человека, а не
-        просто оказались случайно похожи в один конкретный момент.
+        """Кросс-сходство ГАЛЕРЕЙ двух записей - МЕДИАНА по векторам меньшей
+        галереи от их лучшего совпадения в другой галерее (issue #4541).
+
+        Раньше брался максимум по одной паре векторов: одна случайная пара
+        0.603 при пороге 0.60 «доказала» дубль. Живой замер #4541: у разных
+        людей лучшие совпадения векторов именованной галереи с чужой -
+        max 0.603, медиана 0.555. Дубль (один человек, две записи) даёт
+        высокое совпадение у БОЛЬШИНСТВА векторов, поэтому решает медиана, а
+        одна пара больше ничего не решает.
 
         ``None``, если у любой из записей нет ни одного эмбеддинга -
         сравнивать не с чем (тот же принцип, что ``_gallery_cohesion``:
         отсутствие измерения - не 0.0, а именно ``None``).
 
         Используется ТОЛЬКО ``_disambiguate`` (issue #2771) как вторая,
-        независимая от текущей встречи проверка "это правда дубль", а не
-        совпадение по одному неудачному кадру - см. докстринг
-        ``DEFAULT_DISAMBIGUATION_GAP`` про остаточный риск без неё.
+        независимая от текущей встречи проверка "это правда дубль" - см.
+        комментарий над ``DEFAULT_DISAMBIGUATION_GAP``.
         """
-        if not a.embeddings or not b.embeddings:
-            return None
-        return max(_cosine(x, y) for x in a.embeddings for y in b.embeddings)
+        return _median_best_match(a.embeddings, b.embeddings)
 
     def _disambiguate(self, scored: List[tuple]) -> tuple:
         """issue #2771 - разрешить неоднозначность «безымянный дубль
@@ -721,7 +733,8 @@ class FaceStore:
         3. Зазор между лучшим (безымянным) и этим именованным кандидатом
            не превышает ``disambiguation_gap``.
         4. Галереи безымянного и именованного кандидата «слипаются» -
-           ``_gallery_cross_similarity`` между ними сама проходит
+           ``_gallery_cross_similarity`` (медиана лучших совпадений
+           векторов, issue #4541, не одна пара) между ними сама проходит
            ``identify_threshold``. Это условие отделяет настоящий дубль
            («тот же человек, две записи») от совпадения по одной
            случайной встрече: без него можно было бы по ошибке присвоить

@@ -50,7 +50,7 @@ from rob_box_harness.memory import InMemoryStore
 from rob_box_music import knowledge as music_kn
 from rob_box_music.diversity import MusicHistory
 
-from rob_box_voice.core.music_player_state import (
+from rob_box_dialog_host.music_player_state import (
     MUSIC_EVENT_TOPIC,
     MUSIC_STATE_TOPIC,
     MusicEventLog,
@@ -68,6 +68,7 @@ from .engine.reasoner import DEADLINE_S as V2_REASONER_DEADLINE_S, SetReasoner
 from .engine.request_slots import harness_ask
 from .engine.engine_tools import DjSetTool, EditMusicTool, GenerateMusicTool, RequestMusicTool, music_busy
 from .registry import MCPToolRegistry
+from .topic_publish import execute_as
 from .tools import (
     NavigateToWaypointTool,
     NavigateToCoordinatesTool,
@@ -126,8 +127,15 @@ from .tools import (
     SayAloudTool,
     SayTool,
     PeopleListTool,
+    RosListTool,
+    TopicEchoTool,
+    TopicStatsTool,
+    TopicPublishTool,
+    VescTelemetryTool,
     PersonPhotoTool,
     NamePersonTool,
+    FindSimilarTool,
+    MergePeopleTool,
 )
 
 # Issue #1392 / ADR-0158 — library of generated tracks (cache) + music_library tool.
@@ -155,8 +163,8 @@ from .engine.gen.provider import gen_provider_states
 from .perception_projection import project_perception_event
 
 try:
-    from rob_box_voice.core.voice_memory import VoiceMemory as _VoiceMemory
-    from rob_box_voice.core.faq_store import FAQStore as _FAQStore
+    from rob_box_dialog_host.voice_memory import VoiceMemory as _VoiceMemory
+    from rob_box_dialog_host.faq_store import FAQStore as _FAQStore
     from rob_box_voice.core.event_profile import load_event_profile as _load_event_profile
 except ImportError:
     _VoiceMemory = None  # type: ignore[assignment,misc]
@@ -567,7 +575,7 @@ class MCPServer(Node):
         # Issue #3133 / ADR-0141: плеер — владелец состояния музыки.
         # /voice/music/state — JSON-снимок {state, track_id, form_ends_at,
         # stops_at, dj, finished_track_id, ts}, контракт — модуль
-        # rob_box_voice.core.music_player_state. Latched (TRANSIENT_LOCAL,
+        # rob_box_dialog_host.music_player_state. Latched (TRANSIENT_LOCAL,
         # KEEP_LAST 1): перезапущенный audio_node/dialogue_node сразу
         # получает последний снимок, а не «ничего не играет» до тика.
         # Подписчики обязаны подписываться тоже TRANSIENT_LOCAL.
@@ -932,6 +940,12 @@ class MCPServer(Node):
         self.registry.register(Ros2NodeStatusTool(self))
         self.registry.register(ReadLogsTool(self))
         self.registry.register(ContainerStatusTool(self))
+        # #4516 — чтение ROS-графа для пульта TG и ТАРС (срез operator.admin): топики/сервисы, echo, hz/bw, VESC из ROS.
+        self.registry.register(RosListTool(self))
+        self.registry.register(TopicEchoTool(self))
+        self.registry.register(TopicStatsTool(self))
+        self.registry.register(TopicPublishTool(self))  # шаг 2а: запись с предохранителем, без движения
+        self.registry.register(VescTelemetryTool(self))
         # Issue #3305 — ``say``: голос оператора (ТАРС). Публикует SSML в
         # /voice/tts/request (нужен только node.create_publisher). Без
         # регистрации /mcp/execute отвечал «unknown tool».
@@ -942,6 +956,8 @@ class MCPServer(Node):
         self.registry.register(PeopleListTool(self))
         self.registry.register(PersonPhotoTool(self))
         self.registry.register(NamePersonTool(self))
+        self.registry.register(FindSimilarTool(self))
+        self.registry.register(MergePeopleTool(self))
 
         # Memory tools (долгосрочная память + семантический поиск)
         self.registry.register(MemorySaveTool(self))
@@ -1059,7 +1075,9 @@ class MCPServer(Node):
         ollama_url = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
 
         try:
-            self.voice_memory = _VoiceMemory(db_path=db_path, ollama_base_url=ollama_url)
+            # migrations=(): встроенная схема, как на роботе всегда (поток ядра на БД инструментов не годится -
+            # KNOWN GAP в VoiceMemory.__init__); тот же выбор при переключении e2e ниже.
+            self.voice_memory = _VoiceMemory(db_path=db_path, ollama_base_url=ollama_url, migrations=())
             # Issue #2781 — запоминаем боевой путь/ollama_url, чтобы
             # _apply_e2e_mode мог переоткрыть VoiceMemory на e2e_db_path и
             # вернуться обратно, не завися от переменных окружения второй раз.
@@ -1177,6 +1195,7 @@ class MCPServer(Node):
                 self.voice_memory = _VoiceMemory(
                     db_path=target_path,
                     ollama_base_url=self._voice_memory_ollama_url,
+                    migrations=(),
                 )
                 self._voice_memory_e2e_mode_active = enabled
                 if old_memory is not None:
@@ -1347,7 +1366,8 @@ class MCPServer(Node):
             # ────────────────────────────────────────────────────────────
 
             # Выполнить инструмент
-            result = self.registry.execute(tool_name, **parameters)
+            # автор журнала записи в топики (#4516) - подписанный sender, не слова модели
+            result = execute_as(self.registry, sender, tool_name, parameters)
 
             # Опубликовать результат
             response = {"tool_name": tool_name, "request_id": request_id, "result": result.to_dict()}

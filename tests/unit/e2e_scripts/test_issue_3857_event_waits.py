@@ -66,14 +66,6 @@ def speech(kind, sid, ts, extra=""):
     return _l("tts_node", ts, "🗣️ SpeechEvent %s speech_id=%s agent=personality epoch=2 text_len=40 %s" % (kind, sid, extra))
 
 
-def v1_open(sid, ts):
-    return _l("tts_node", ts, "🔊 TTS: speech_id=%s, dialogue_id=None, text='привет'" % sid)
-
-
-def v1_close(sid, ts):
-    return _l("tts_node", ts, "📢 Публикую TTS finished event: speech_id=%s..., success=True, duration=3.1s" % sid)
-
-
 DONE_V2 = accept() + llm() + speech("started", "aaaa1111", "{NOW-25}") + turn_done() + \
     speech("finished", "aaaa1111", "{NOW-10}", "spoken_chars=40")
 SPEAKING_V2 = accept() + llm() + speech("started", "aaaa1111", "{NOW-5}") + turn_done("{NOW-4}")
@@ -92,77 +84,70 @@ def _feed(log_text, now=1_790_000_100.0):
 
 class TestEventsParsing:
     def test_v2_reply_done_when_turn_done_and_speech_closed(self):
-        st = e2e_events.state(_feed(DONE_V2), "v2", False)
+        st = e2e_events.state(_feed(DONE_V2), False)
         assert st["verdict"] == "done" and st["open"] == 0 and st["ends"] == 1
         assert float(st["quiet_for"]) == pytest.approx(10.0, abs=0.1)
 
     def test_v2_still_speaking_is_wait(self):
-        st = e2e_events.state(_feed(SPEAKING_V2), "v2", False)
+        st = e2e_events.state(_feed(SPEAKING_V2), False)
         assert st["verdict"] == "wait" and st["open"] == 1
 
     def test_v2_turn_not_done_is_wait_even_if_speech_finished(self):
         log = accept() + speech("started", "aaaa1111", "{NOW-25}") + speech("finished", "aaaa1111", "{NOW-10}")
-        assert e2e_events.state(_feed(log), "v2", False)["verdict"] == "wait"
+        assert e2e_events.state(_feed(log), False)["verdict"] == "wait"
 
     def test_v2_queued_without_start_counts_as_speaking(self):
         log = accept() + turn_done() + speech("queued", "bbbb2222", "{NOW-3}")
-        assert e2e_events.state(_feed(log), "v2", False)["verdict"] == "wait"
+        assert e2e_events.state(_feed(log), False)["verdict"] == "wait"
 
     def test_v2_stale_open_speech_is_not_speaking(self):
         log = accept("{NOW-300}") + speech("started", "aaaa1111", "{NOW-200}") + turn_done("{NOW-190}")
         # протухшая реплика не держит «робот говорит» (иначе шаг ждал бы потолок на каждом шаге)...
-        assert e2e_events.quiet(_feed(log), "v2")["open"] == 0
-        assert e2e_events.state(_feed(log), "v2", False)["open"] == 0
+        assert e2e_events.quiet(_feed(log))["open"] == 0
+        assert e2e_events.state(_feed(log), False)["open"] == 0
         # ...но и ответом на фразу не считается: reply_wait честно дойдёт до потолка
-        assert e2e_events.state(_feed(log), "v2", False)["verdict"] == "wait"
+        assert e2e_events.state(_feed(log), False)["verdict"] == "wait"
 
     def test_v2_turn_without_speech_is_nospeech_or_silent(self):
         log = accept() + turn_done()
-        assert e2e_events.state(_feed(log), "v2", False)["verdict"] == "nospeech"
-        assert e2e_events.state(_feed(log), "v2", True)["verdict"] == "silent"
+        assert e2e_events.state(_feed(log), False)["verdict"] == "nospeech"
+        assert e2e_events.state(_feed(log), True)["verdict"] == "silent"
 
     def test_v2_cancelled_foreign_speech_is_not_a_reply(self):
         # остановленная реплика прошлой фразы (started был ДО окна) -- не ответ на эту фразу
         log = accept() + speech("cancelled", "oldold01", "{NOW-25}") + turn_done()
-        assert e2e_events.state(_feed(log), "v2", False)["verdict"] == "nospeech"
+        assert e2e_events.state(_feed(log), False)["verdict"] == "nospeech"
 
     def test_v2_progress_does_not_close(self):
         log = accept() + speech("started", "aaaa1111", "{NOW-8}") + speech("progress", "aaaa1111", "{NOW-2}", "spoken_chars=5") + turn_done()
-        assert e2e_events.state(_feed(log), "v2", False)["verdict"] == "wait"
-
-    def test_v1_pairs_by_speech_id(self):
-        log = accept() + v1_open("5e1c2a9b", "{NOW-20}") + v1_open("7f3d1c2e", "{NOW-15}") + v1_close("5e1c2a9b", "{NOW-10}")
-        assert e2e_events.state(_feed(log), "v1", False)["verdict"] == "wait"
-        log += v1_close("7f3d1c2e", "{NOW-5}")
-        st = e2e_events.state(_feed(log), "v1", False)
-        assert st["verdict"] == "done" and st["ends"] == 2
+        assert e2e_events.state(_feed(log), False)["verdict"] == "wait"
 
     def test_fetch_failure_is_reported(self):
-        assert e2e_events.state("garbage line\n", "v2", False)["fetch"] == 0
+        assert e2e_events.state("garbage line\n", False)["fetch"] == 0
 
     def test_quiet_counts_only_live_open(self):
-        assert e2e_events.quiet(_feed(SPEAKING_V2), "v2")["open"] == 1
-        assert e2e_events.quiet(_feed(DONE_V2), "v2")["open"] == 0
+        assert e2e_events.quiet(_feed(SPEAKING_V2))["open"] == 1
+        assert e2e_events.quiet(_feed(DONE_V2))["open"] == 0
 
     def test_anchor_speech_started_n(self):
         log = accept() + speech("started", "aaaa1111", "{NOW-9}") + speech("finished", "aaaa1111", "{NOW-8}") + \
             speech("started", "bbbb2222", "{NOW-6}")
-        one = e2e_events.anchor(_feed(log), "v2", "speech_started", 1)
-        two = e2e_events.anchor(_feed(log), "v2", "segment_started", 2)
-        three = e2e_events.anchor(_feed(log), "v2", "speech_started", 3)
+        one = e2e_events.anchor(_feed(log), "speech_started", 1)
+        two = e2e_events.anchor(_feed(log), "segment_started", 2)
+        three = e2e_events.anchor(_feed(log), "speech_started", 3)
         assert one["found"] == 1 and one["speech_id"] == "aaaa1111" and float(one["ts"]) == pytest.approx(1_790_000_091.0)
         assert two["found"] == 1 and two["speech_id"] == "bbbb2222"
         assert three["found"] == 0
 
     def test_anchor_ignores_events_before_accept(self):
         log = speech("started", "old00001", "{NOW-40}") + accept() + llm()
-        assert e2e_events.anchor(_feed(log), "v2", "speech_started", 1)["found"] == 0
-        assert e2e_events.anchor(_feed(log), "v2", "llm_request", 1)["found"] == 1
+        assert e2e_events.anchor(_feed(log), "speech_started", 1)["found"] == 0
+        assert e2e_events.anchor(_feed(log), "llm_request", 1)["found"] == 1
 
     def test_anchor_llm_request_n(self):
         log = accept() + llm("{NOW-9}") + llm("{NOW-5}")
-        assert e2e_events.anchor(_feed(log), "v2", "llm_request", 2)["found"] == 1
-        assert e2e_events.anchor(_feed(log), "v2", "llm_request", 3)["found"] == 0
+        assert e2e_events.anchor(_feed(log), "llm_request", 2)["found"] == 1
+        assert e2e_events.anchor(_feed(log), "llm_request", 3)["found"] == 0
 
 
 # -- #3860: дамп LLM-запроса с launch-префиксом ------------------------------------------------------------

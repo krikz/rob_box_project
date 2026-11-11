@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import html
 import json
+import os
 import re
 import shlex
 import subprocess
@@ -15,7 +16,7 @@ import tempfile
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Callable, Optional
+from typing import Callable, Optional, Protocol
 
 CHANNEL_ID = -1004323185327
 MIN_GAP = timedelta(hours=48)
@@ -72,15 +73,56 @@ VIDEO_EXT = {".mp4"}
 VIDEO_MAX_BYTES = 50 * 1024 * 1024  # sendVideo / InputMediaVideo при загрузке файлом
 ALBUM_MIN, ALBUM_MAX = 2, 10  # sendMediaGroup: "must include 2-10 items"
 PHOTO_EXT = {".png", ".jpg", ".jpeg"}
+# Время для Шифу — GMT+1 (решение 27.10). Слоты и not_before считаются в UTC; в тексте Шифу —
+# только через slot_text, иначе час по UTC уходит с подписью «по GMT+1» (09.11: «10:00» вместо 11:00).
+SHIFU_TZ = timezone(timedelta(hours=1), "GMT+1")
+
+
+def slot_text(moment: datetime) -> str:
+    """«10.11 в 11:00 по GMT+1» — момент (aware, любой пояс) словами для Шифу."""
+    return moment.astimezone(SHIFU_TZ).strftime("%d.%m в %H:%M") + " по GMT+1"
+
+
 # Приватность: внутренние адреса и токены в канал не попадают никогда.
 FORBIDDEN = [
     (re.compile(r"\b10\.1\.1\.\d{1,3}\b"), "внутренний IP"),
     (re.compile(r"\b192\.168\.\d{1,3}\.\d{1,3}\b"), "внутренний IP"),
     (re.compile(r"\d{8,}:[A-Za-z0-9_-]{30,}"), "токен бота"),
+    (re.compile(r"\bsk-[A-Za-z0-9_-]{20,}"), "ключ API"),
+    (re.compile(r"\bgh[pousr]_[A-Za-z0-9]{20,}"), "токен GitHub"),
+    (re.compile(r"\bgithub_pat_[A-Za-z0-9_]{20,}"), "токен GitHub"),
+    (re.compile(r"\bAAG[A-Za-z0-9_-]{30,}"), "токен бота"),
+    (re.compile(r"\beyJ[A-Za-z0-9_-]{20,}"), "секрет в JWT-виде"),
 ]
 
+# Внутренняя кухня проекта в ПОСТАХ не пишется (Шифу, 07.11): канал — про
+# поведение робота, а не про PR-ы, ветки и файлы репозитория. Это правило текста
+# поста (студия не даёт модели такое написать, публикатор не пропустит), а не
+# приватность: ответы студии Шифу в личке и пояснение «почему так» номера PR
+# называть могут — там они нужны, чтобы понять, о каком черновике речь.
+COMMIT_TYPES = "feat|fix|docs|chore|refactor|test|perf|ci|style|build|revert"
+FORBIDDEN_INTERNAL = [
+    (re.compile(r"\bPR\s*#?\s*\d{3,5}\b", re.IGNORECASE), "номер PR"),
+    (re.compile(r"#\d{3,5}\b"), "номер PR или issue"),
+    (re.compile(r"\bissues?\s*#?\s*\d{3,5}\b", re.IGNORECASE), "номер issue"),
+    (re.compile(r"github\.com/\S+/(?:pull|issues)/\d+", re.IGNORECASE), "ссылка на PR или issue"),
+    (re.compile(r"\b(?:z-[a-z]+|feature|fix|feat|hotfix|revert|release)/[A-Za-z0-9._-]+"), "имя ветки"),
+    (re.compile(r"\bветк[аиуеой]\s+(?:develop|main|master)\b", re.IGNORECASE), "имя ветки"),
+    (re.compile(r"\bdevelop\b", re.IGNORECASE), "имя ветки"),
+    # Разбор 09.11: черновик p20261109-810 вышел с «<code>fix(dialog)</code>» — тип коммита, не слово для читателя.
+    (re.compile(rf"\b(?:{COMMIT_TYPES})(?:\([\w./-]+\))!?:|\b(?:{COMMIT_TYPES})\([\w./-]+\)"), "тип коммита"),
+    (re.compile(r"\b(?:docs|src|scripts|config|docker)/[\w./-]+"), "путь в репозитории"),
+    (re.compile(r"\b[\w./-]*\w+\.(?:py|yaml|yml|ini|json|toml|cfg|sh|cpp|hpp|launch|xml)\b"), "файл репозитория"),
+]
+# Что не попадает в текст поста: приватность и внутренняя кухня. Студия и публикатор проверяют одно и то же.
+POST_FORBIDDEN = FORBIDDEN + FORBIDDEN_INTERNAL
+
+
 # Отправка: (метод Bot API, параметры, файл | список файлов для альбома | None) -> ответ контейнера
-Transport = Callable[[str, dict, object], dict]
+class Transport(Protocol):
+    """Куда уходит пост. Реализации: RobotTransport (через робота) и DirectTransport (через токен студии)."""
+
+    def __call__(self, method: str, params: dict, media: object = None) -> dict: ...
 
 
 @dataclass
@@ -234,7 +276,8 @@ def validate(post: Post, repo_root: Path) -> list:
     if not post.body.strip():
         problems.append("пустой текст")
     problems += html_problems(post.body)
-    for pattern, what in FORBIDDEN:
+    # Вышедшие до решения 07.11 посты (003 с «#4487») не переписываем: правило — для новых.
+    for pattern, what in FORBIDDEN if post.status == "posted" else POST_FORBIDDEN:
         if pattern.search(post.body):
             problems.append(f"в тексте {what}: публиковать нельзя")
     for tag in post.hashtags:
@@ -247,12 +290,42 @@ def validate(post: Post, repo_root: Path) -> list:
     if not MIN_TAGS <= len(post.hashtags) <= MAX_TAGS:
         problems.append(f"хэштегов {len(post.hashtags)}, нужно {MIN_TAGS}–{MAX_TAGS}")
     if post.media:
-        problems += media_problems(repo_root / post.media, post.media)
+        problems += media_problems(resolve_media(repo_root, post.media), post.media)
     if post.extra_media:
-        problems += media_problems(repo_root / post.extra_media, post.extra_media)
+        problems += media_problems(resolve_media(repo_root, post.extra_media), post.extra_media)
     problems += album_problems(post)
     problems += [f"не готово: {item}" for item in post.pending]
     return problems
+
+
+def extract_tags(body: str) -> list:
+    """Хештеги из текста — по порядку появления, только из словаря канала.
+
+    Теги достаёт код, а не модель: модель часто забывает поле tags, а хештег в тексте
+    есть всегда. Так теги не могут разойтись с текстом и не могут быть чужими.
+    """
+    found = []
+    for match in re.findall(r"#[^\W\d]\w*", body):
+        if match in TAG_DICTIONARY and match not in found:
+            found.append(match)
+    return found
+
+
+def resolve_media(repo_root: Path, media: str) -> Path:
+    """Найти файл материала: сначала в клоне, потом в worktree на develop.
+
+    Свежие материалы лежат в develop и в рабочей ветке студии их ещё нет.
+    Публикатор берёт файл оттуда, где он есть, — иначе пост ушёл бы без
+    картинки, а это молчаливая потеря материала.
+    """
+    path = repo_root / media
+    if path.exists():
+        return path
+    develop = Path(os.environ.get("STUDIO_DEVELOP_WORKTREE", repo_root.parent / "rob_box_develop"))
+    candidate = develop / media
+    if candidate.exists():
+        return candidate
+    return path
 
 
 def build_request(post: Post, repo_root: Path, chat_id: int = CHANNEL_ID) -> tuple:
@@ -262,7 +335,7 @@ def build_request(post: Post, repo_root: Path, chat_id: int = CHANNEL_ID) -> tup
         params["text"] = post.body
         params["link_preview_options"] = {"is_disabled": True}
         return "sendMessage", params, None
-    media = repo_root / post.media
+    media = resolve_media(repo_root, post.media)
     params["caption"] = post.body
     ext = media.suffix.lower()
     if ext in VIDEO_EXT:
@@ -313,7 +386,7 @@ def build_album_request(
     """
     files, items = [], []
     for i, rel in enumerate([post.media, post.extra_media]):
-        path = repo_root / rel
+        path = resolve_media(repo_root, rel)
         if path.suffix.lower() in ANIMATION_EXT:
             path = (convert or gif_to_mp4)(path)
         is_video = path.suffix.lower() in VIDEO_EXT
@@ -355,6 +428,78 @@ FILE_FIELD = {
 }
 
 
+def _as_path(item: object) -> Path:
+    """Медиа — всегда путь. Тип object в сигнатуре транспорта требует сузить его здесь, а не молча."""
+    if isinstance(item, Path):
+        return item
+    if isinstance(item, str):
+        return Path(item)
+    raise TypeError(f"медиа должно быть путём, а не {type(item).__name__}")
+
+
+class DirectTransport:
+    """Прямые вызовы Bot API с токеном студии (TG_STUDIO_BOT_TOKEN).
+
+    Нужен там, где робот недоступен: студия контента живёт на отдельной машине, а канал ведёт отдельный бот
+    (@robboxcontentbot). Токен приходит из окружения и наружу не печатается: в сообщениях об ошибках URL
+    вырезается, как и в channel_exec.py.
+
+    Ответ приводится к тому же виду, что у RobotTransport: {"ok", "message_id", "message_ids", "description"}.
+    """
+
+    def __init__(self, token: Optional[str] = None, timeout: int = 180, session=None):
+        self.token = token or os.environ.get("TG_STUDIO_BOT_TOKEN", "")
+        if not self.token:
+            raise RuntimeError("TG_STUDIO_BOT_TOKEN не задан: студии нужен свой бот, токен робота не подходит")
+        self.timeout = timeout
+        self._session = session
+
+    def _post(self, method: str, params: dict, files: list) -> dict:
+        url = f"https://api.telegram.org/bot{self.token}/{method}"
+        data = {k: (json.dumps(v) if isinstance(v, (bool, dict, list)) else v) for k, v in params.items()}
+        session = self._session
+        if session is None:
+            import requests  # локальный импорт: requests нужен только для живой отправки
+
+            session = requests.Session()
+        try:
+            if files:
+                handles = [(f["field"], open(f["path"], "rb")) for f in files]
+                try:
+                    r = session.post(url, data=data, files=dict(handles), timeout=self.timeout)
+                finally:
+                    for _, fh in handles:
+                        fh.close()
+            else:
+                r = session.post(url, json=params, timeout=self.timeout)
+            payload = r.json()
+        except Exception as e:  # не печатать URL: в нём токен
+            return {"ok": False, "description": f"ERR {type(e).__name__}"}
+        result = payload.get("result")
+        if isinstance(result, list):  # sendMediaGroup: массив Message
+            ids = [m.get("message_id") for m in result if isinstance(m, dict)]
+        elif isinstance(result, dict):
+            ids = [result.get("message_id")]
+        else:
+            ids = []
+        ids = [i for i in ids if i]
+        return {
+            "ok": bool(payload.get("ok")),
+            "message_id": ids[0] if ids else None,
+            "message_ids": ids,
+            "description": payload.get("description", ""),
+        }
+
+    def __call__(self, method: str, params: dict, media: object = None) -> dict:
+        if isinstance(media, list):  # альбом: поля f0, f1, ... совпадают с attach://fN в params["media"]
+            files = [{"field": f"f{i}", "path": str(item)} for i, item in enumerate(media)]
+        elif media is not None:
+            files = [{"field": FILE_FIELD.get(method, "document"), "path": str(media)}]
+        else:
+            files = []
+        return self._post(method, params, files)
+
+
 class RobotTransport:
     """Вызов Bot API из контейнера telegram-bot на Sound Pi: токен в окружении контейнера."""
 
@@ -362,7 +507,7 @@ class RobotTransport:
         self.robot = robot
         self.executor = executor or Path(__file__).with_name("channel_exec.py")
 
-    def __call__(self, method: str, params: dict, media: Optional[Path] = None) -> dict:
+    def __call__(self, method: str, params: dict, media: object = None) -> dict:
         ssh = ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=10", self.robot]
         remote = ["docker cp /tmp/channel_exec.py telegram-bot:/tmp/channel_exec.py"]
         scp = ["scp", "-q", "-o", "BatchMode=yes"]
@@ -371,12 +516,12 @@ class RobotTransport:
         if isinstance(media, list):  # альбом: поля f0, f1, ... совпадают с attach://fN в params["media"]
             request["files"] = []
             for i, item in enumerate(media):
-                tmp = f"/tmp/channel_media_{i}{item.suffix.lower()}"
+                tmp = f"/tmp/channel_media_{i}{_as_path(item).suffix.lower()}"
                 subprocess.run(scp + [str(item), f"{self.robot}:{tmp}"], check=True, timeout=180)
                 remote.append(f"docker cp {shlex.quote(tmp)} telegram-bot:{shlex.quote(tmp)}")
                 request["files"].append({"field": f"f{i}", "path": tmp})
         elif media is not None:
-            tmp = f"/tmp/channel_media{media.suffix.lower()}"
+            tmp = f"/tmp/channel_media{_as_path(media).suffix.lower()}"
             subprocess.run(scp + [str(media), f"{self.robot}:{tmp}"], check=True, timeout=180)
             remote.append(f"docker cp {shlex.quote(tmp)} telegram-bot:{shlex.quote(tmp)}")
             request["file"] = {"field": FILE_FIELD[method], "path": tmp}
@@ -388,6 +533,18 @@ class RobotTransport:
             return json.loads(done.stdout.strip().splitlines()[-1])
         except (IndexError, ValueError):
             return {"ok": False, "description": f"нет ответа от контейнера (код {done.returncode})"}
+
+
+def make_transport(kind: str = "robot", robot: str = "ros2@10.1.1.22", token: Optional[str] = None):
+    """Транспорт по имени: robot — через контейнер робота на Sound Pi, direct — через токен студии.
+
+    robot остаётся умолчанием: студия и робот ведут канал по-разному, но старый путь не должен ломаться.
+    """
+    if kind == "direct":
+        return DirectTransport(token)
+    if kind == "robot":
+        return RobotTransport(robot)
+    raise ValueError(f"неизвестный транспорт {kind!r}: нужен robot или direct")
 
 
 def number_of(post: Post) -> int:

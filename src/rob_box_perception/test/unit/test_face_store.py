@@ -450,6 +450,71 @@ class TestDisambiguateNamedBeatsDuplicate:
         assert dup_summary['embeddings'] == 1
         assert store.stats()['disambig_named_total'] == 1
 
+    def test_single_close_pair_is_not_a_duplicate_issue_4541(self, tmp_path):
+        """issue #4541: живой случай «Кирилл» 0.667 против чужой безымянной
+        записи 0.719. Из векторов именованной галереи лишь ОДИН близок
+        (>= identify_threshold) к безымянной, остальные далеки (медиана
+        ниже порога) - раньше максимум по одной паре «доказывал» дубль и
+        встреча уходила именованной записи. Теперь решает медиана:
+        победитель - безымянная запись, ``disambiguated=False``."""
+        named_dir, named_pid = self._standalone_person(
+            tmp_path, 'named', [0.0, 0.1, 0.2, 0.3, 1.5], name='Кирилл',
+        )
+        other_dir, other_pid = self._standalone_person(
+            tmp_path, 'other', [1.3, 2.3, 2.4, 2.5, 2.6, 2.7],
+        )
+        store = self._combined_store(
+            tmp_path, [(named_dir, named_pid), (other_dir, other_pid)],
+            identify_threshold=0.6, enroll_threshold=0.99,
+            disambiguation_gap=0.10,
+        )
+        # noqa: SLF001 - тест внутренностей намеренно
+        cross = store._gallery_cross_similarity(
+            store._records[other_pid], store._records[named_pid],
+        )
+        pair_max = max(
+            float(np.dot(x, y))
+            for x in store._records[other_pid].embeddings
+            for y in store._records[named_pid].embeddings
+        )
+        assert pair_max >= 0.6, 'сетап: одна пара обязана пройти порог'
+        assert cross < 0.6, 'сетап: медиана обязана остаться ниже порога'
+
+        match = store.record_encounter(_combo(1.0))
+
+        assert match.disambiguated is False
+        assert match.person_id == other_pid
+        assert match.name is None
+        assert store.stats()['disambig_named_total'] == 0
+
+    def test_real_duplicate_majority_of_pairs_still_merges_issue_4541(
+        self, tmp_path,
+    ):
+        """Настоящий дубль: у БОЛЬШИНСТВА векторов меньшей (именованной)
+        галереи есть близкая пара в безымянной - медиана >= порога,
+        правило срабатывает, как раньше."""
+        named_dir, named_pid = self._standalone_person(
+            tmp_path, 'named', [0.0, 0.15, 0.3, 0.5, 1.0], name='Кирилл',
+        )
+        dup_dir, dup_pid = self._standalone_person(
+            tmp_path, 'dup', [1.6, 1.2, 0.9, 0.4, 0.1, 1.4],
+        )
+        store = self._combined_store(
+            tmp_path, [(named_dir, named_pid), (dup_dir, dup_pid)],
+            identify_threshold=0.6, enroll_threshold=0.99,
+            disambiguation_gap=0.10,
+        )
+        cross = store._gallery_cross_similarity(
+            store._records[dup_pid], store._records[named_pid],
+        )
+        assert cross >= 0.6, 'сетап: галереи слипаются по медиане'
+
+        match = store.record_encounter(_combo(1.35))
+
+        assert match.disambiguated is True
+        assert match.person_id == named_pid
+        assert match.name == 'Кирилл'
+
     def test_identify_also_reports_disambiguation(self, tmp_path):
         """identify() (read-only) обязан согласовываться с
         record_encounter — иначе диагностика (Telegram/health) и реальное

@@ -30,9 +30,9 @@ from rob_box_dialog.command import Command  # noqa: E402
 from rob_box_dialog.deadline import ProviderFailed  # noqa: E402
 from rob_box_llm.errors import ProviderError  # noqa: E402
 from rob_box_voice import dialog_node as dn  # noqa: E402
-from rob_box_voice.core.command_bridge import CommandResponse  # noqa: E402
+from rob_box_dialog_host.command_bridge import CommandResponse  # noqa: E402
 from rob_box_voice.core.dialog_metrics import llm_metrics, record_interrupt  # noqa: E402
-from rob_box_voice.core.dialog_v2_ports import CallCounter, V2Ports  # noqa: E402
+from rob_box_dialog_host.dialog_v2_ports import CallCounter, V2Ports  # noqa: E402
 
 
 def _value(name: str, **labels: str) -> float:

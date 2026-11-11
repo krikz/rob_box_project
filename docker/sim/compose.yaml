@@ -33,7 +33,8 @@
 #   SIM_DRI_CARD       DRM-карта для EGL Gazebo    (/dev/dri/card0)
 #   SIM_DRI_RENDER     render-node                 (/dev/dri/renderD128)
 #   SIM_WORLD          мир из src/rob_box_sim/worlds без .sdf (polygon):
-#                      polygon | turn90 | corridor | low_obstacle | local/<мир из карты робота>
+#                      polygon | turn90 | corridor | low_obstacle | dead_end | building |
+#                      local/<мир из карты робота>
 #
 # rtabmap, как на роботе, стартует в localization (start_rtabmap.sh).
 # SIM_RTABMAP_MODE=mapping — старт сразу в картографии с пустой базой (видео

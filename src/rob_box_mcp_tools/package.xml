@@ -27,6 +27,8 @@
   <depend>rob_box_core</depend>
   <!-- ADR-0150 PR-3c: play_animation(face=...) - схема и проверка сцены лица в rob_box_dialog.face_scene -->
   <depend>rob_box_dialog</depend>
+  <!-- ADR-0167 Ш1г: фразы медиа, состояние плеера, каталог голосов, память - связка хода ядра -->
+  <exec_depend>rob_box_dialog_host</exec_depend>
   <!-- ADR-0149 PR-1b: офлайн-симулятор событий и разбор play() живут в rob_box_music -->
   <depend>rob_box_music</depend>
 

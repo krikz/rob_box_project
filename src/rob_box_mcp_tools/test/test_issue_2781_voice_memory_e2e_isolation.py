@@ -25,6 +25,10 @@ Issue #2781 — изоляция БД дикторов (#2750, починена 
 НАСТОЯЩИЙ пакет, потому что тест обязан доказать, что факты реально
 попадают в правильный SQLite-файл, а не просто дергают мок).
 
+Схема - как у хоста робота: ``mcp_server`` открывает ``VoiceMemory(migrations=())`` (встроенная схема, без
+потока ядра - KNOWN GAP в ``VoiceMemory.__init__``), и прямые открытия в тестах - так же: БД, созданная встроенной
+схемой, под потоком упала бы на ``ALTER`` из 009 (ADR-0167 Ш1а).
+
 Run:
   python -m pytest src/rob_box_mcp_tools/test/test_issue_2781_voice_memory_e2e_isolation.py -q --no-cov
 """
@@ -46,10 +50,10 @@ def _load_real_voice_memory_class():
 
     Issue #2781 — ``test_mcp_server_speaker_result.py`` (collected in the
     same pytest session) permanently overwrites
-    ``sys.modules['rob_box_voice.core.voice_memory']`` with a bare stub
+    ``sys.modules['rob_box_dialog_host.voice_memory']`` with a bare stub
     class (no ``monkeypatch``, no cleanup — see that file's
     ``_load_mcp_server_module``), so a plain
-    ``from rob_box_voice.core.voice_memory import VoiceMemory`` here would
+    ``from rob_box_dialog_host.voice_memory import VoiceMemory`` here would
     silently resolve to whichever one collection order happened to import
     first. This test's entire point is proving facts land in the correct
     SQLite file, so it cannot risk running against a stub — load the
@@ -58,7 +62,7 @@ def _load_real_voice_memory_class():
     """
     src = (
         Path(__file__).resolve().parents[3]
-        / "src" / "rob_box_voice" / "rob_box_voice" / "core" / "voice_memory.py"
+        / "src" / "rob_box_dialog_host" / "rob_box_dialog_host" / "voice_memory.py"  # ADR-0167 Ш1г-1
     )
     spec = importlib.util.spec_from_file_location("_real_voice_memory_2781", src)
     mod = importlib.util.module_from_spec(spec)
@@ -94,7 +98,7 @@ def _install_fake_mcp_server_dependencies(monkeypatch) -> None:
     копия — общий helper-модуль здесь не заводили, чтобы три теста файла не
     зависели друг от друга при правках).
 
-    Намеренно НЕ стабит ``rob_box_voice.core.voice_memory`` — этот тест
+    Намеренно НЕ стабит ``rob_box_dialog_host.voice_memory`` — этот тест
     использует НАСТОЯЩИЙ ``VoiceMemory``, чтобы проверить, что факты
     реально попадают в правильный SQLite-файл.
     """
@@ -195,9 +199,9 @@ def _load_mcp_server_module(monkeypatch):
     sys.modules[spec.name] = module
     spec.loader.exec_module(module)
     # Issue #2781 — cross-test-file pollution guard: ``mcp_server.py`` does
-    # ``from rob_box_voice.core.voice_memory import VoiceMemory as
+    # ``from rob_box_dialog_host.voice_memory import VoiceMemory as
     # _VoiceMemory`` at module scope, which resolves through
-    # ``sys.modules['rob_box_voice.core.voice_memory']``.
+    # ``sys.modules['rob_box_dialog_host.voice_memory']``.
     # ``test_mcp_server_speaker_result.py`` permanently replaces that cache
     # entry with a bare stub class (no ``monkeypatch``, no cleanup) so it
     # can import ``mcp_server.py`` without a real ``rob_box_voice``. When
@@ -223,7 +227,7 @@ def node(monkeypatch, tmp_path):
     instance._voice_memory_e2e_mode_active = False
     instance._voice_memory_ollama_url = None
     instance._voice_memory_lock = threading.Lock()
-    instance.voice_memory = VoiceMemory(db_path=prod_path)
+    instance.voice_memory = VoiceMemory(migrations=(), db_path=prod_path)
     instance.get_logger = MagicMock(return_value=MagicMock())
 
     yield instance, module
@@ -237,7 +241,7 @@ def test_enable_switches_off_prod_db_without_touching_it(node):
     instance.voice_memory.close()
 
     # Переоткрываем узел на боевой (как это делает __init__/_init_voice_memory).
-    instance.voice_memory = VoiceMemory(db_path=instance._voice_memory_prod_db_path)
+    instance.voice_memory = VoiceMemory(migrations=(), db_path=instance._voice_memory_prod_db_path)
 
     result = _owner_says(instance, True)
 
@@ -246,7 +250,7 @@ def test_enable_switches_off_prod_db_without_touching_it(node):
     assert instance.voice_memory.db_path == instance._voice_memory_e2e_db_path
 
     # Боевая БД физически не тронута: открываем её НАПРЯМУЮ.
-    prod_check = VoiceMemory(db_path=instance._voice_memory_prod_db_path)
+    prod_check = VoiceMemory(migrations=(), db_path=instance._voice_memory_prod_db_path)
     try:
         facts = [f["fact"] for f in prod_check.get_facts()]
         assert any("кофе без сахара" in f for f in facts)
@@ -263,7 +267,7 @@ def test_marathon_facts_never_reach_prod_db(node):
     instance.voice_memory.save_fact("Саша не ест лук, даже жареный")
     instance.voice_memory.save_fact("Борис — друг Саши, приходит раз в неделю с пиццей")
 
-    prod_check = VoiceMemory(db_path=instance._voice_memory_prod_db_path)
+    prod_check = VoiceMemory(migrations=(), db_path=instance._voice_memory_prod_db_path)
     try:
         assert prod_check.get_facts() == [], (
             "факты каста ночного марафона попали в боевую voice_memory.db — "
@@ -272,7 +276,7 @@ def test_marathon_facts_never_reach_prod_db(node):
     finally:
         prod_check.close()
 
-    e2e_check = VoiceMemory(db_path=instance._voice_memory_e2e_db_path)
+    e2e_check = VoiceMemory(migrations=(), db_path=instance._voice_memory_e2e_db_path)
     try:
         facts = {f["fact"] for f in e2e_check.get_facts()}
         assert "Саша не ест лук, даже жареный" in facts
@@ -299,7 +303,7 @@ def test_enable_wipes_leftover_e2e_file_from_previous_marathon(node):
     e2e-базу при каждом включении — оператор не должен полагаться на
     дисциплину вызывающего кода."""
     instance, _module = node
-    stale = VoiceMemory(db_path=instance._voice_memory_e2e_db_path)
+    stale = VoiceMemory(migrations=(), db_path=instance._voice_memory_e2e_db_path)
     stale.save_fact("призрак с прошлого марафона")
     stale.close()
 
@@ -371,7 +375,7 @@ def test_search_finds_marathon_fact_only_in_e2e_db_not_prod(node):
     assert any(h["kind"] == "fact" and "чай" in h["content"] for h in hits)
 
     # В боевую БД факт не попал вовсе.
-    prod_check = VoiceMemory(db_path=instance._voice_memory_prod_db_path)
+    prod_check = VoiceMemory(migrations=(), db_path=instance._voice_memory_prod_db_path)
     try:
         assert prod_check.search("чай", limit=5) == [], (
             "e2e-факт нашёлся в боевой БД поиском — изоляция search() сломана"

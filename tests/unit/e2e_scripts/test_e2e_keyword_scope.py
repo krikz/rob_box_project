@@ -53,11 +53,11 @@ LIVE_LOG = (
 
 
 class TestRobotSpeech:
-    def test_extracts_all_three_channels(self):
+    def test_extracts_only_voiced_channels(self):
         speech = robot_speech(LIVE_LOG)
         assert "Добрый день, Денис!" in speech          # 🔊 TTS: ... text='...'
         assert "Лицо знакомое" in speech                # speak_text с параметрами
-        assert "Привет! У меня всё отлично" in speech   # spoken='...'[:60]
+        assert "Привет! У меня всё отлично" not in speech  # v1 spoken= не озвучен
 
     def test_excludes_user_input_and_speaker_label(self):
         speech = robot_speech(robot_speech_input := LIVE_LOG)

@@ -36,7 +36,7 @@ _install_all_mocks()
 from rob_box_core.msg_stub import install_dialog_msgs_stub  # noqa: E402
 from rob_box_voice.core.speech_owner import chunk_from_request  # noqa: E402
 from rob_box_voice.tts_node import TTSNode  # noqa: E402
-from rob_box_voice.tts_voice_registry import unsupported_language_notice  # noqa: E402
+from rob_box_dialog_host.tts_voice_registry import unsupported_language_notice  # noqa: E402
 from test.unit.tts.test_voice_selection import _playback_node  # noqa: E402
 
 
@@ -117,7 +117,7 @@ def test_capability_is_derived_from_the_voice_catalog() -> None:
     Ровно так разъехались whitelist'ы AV-28 (см. 84bfb2f7): один и тот же
     список в четырёх местах, три отстали.
     """
-    from rob_box_voice.tts_voice_registry import languages_for
+    from rob_box_dialog_host.tts_voice_registry import languages_for
 
     assert languages_for("yandex") == {"ru", "en", "de"}
     assert languages_for("silero") == {"ru"}

@@ -209,15 +209,18 @@ def encounter_gate(
       не пишем: новая запись по такой Встрече не рождается.
     """
     if encounter.embedding is None:
-        # Трек дожил до Встречи, но ни один кадр не дал эмбеддинга
-        # (мелкое лицо / ArcFace в degraded). Выдумывать «кого-то» нельзя.
+        # Трек дожил до Встречи, но ни один кадр не дал эмбеддинга. Причину строим из
+        # известного (issue #4544): размер лица встречи; про отброшенные кропы — в сводке.
+        if encounter.max_face_px < min_embed_px:
+            cause = f'лицо мельче {min_embed_px:.0f}px (max {encounter.max_face_px:.0f}px)'
+        else:
+            cause = (
+                f'лицо {encounter.max_face_px:.0f}px крупнее порога {min_embed_px:.0f}px, '
+                f'но нет ни одного годного кропа: причины — кропов_отброшено в сводке [лицо]'
+            )
         return EncounterGate(
             record=False, level='warn',
-            reason=(
-                f'Встреча track={encounter.track_id} без эмбеддинга — '
-                f'запись пропущена (лицо мельче {min_embed_px:.0f}px '
-                f'или ArcFace недоступен).'
-            ),
+            reason=f'Встреча track={encounter.track_id} без эмбеддинга — запись пропущена ({cause}).',
         )
     birth = new_record_decision(encounter.best)
     if birth.allowed or identify(encounter.embedding) is not None:

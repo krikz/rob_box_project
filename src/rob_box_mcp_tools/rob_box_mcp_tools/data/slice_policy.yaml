@@ -41,6 +41,8 @@ senders:
     - core
     - personality
     - telegram
+    # #4516: пульт Telegram - админка (Шифу 06.11): читает то же, что ТАРС (логи, ноды, контейнеры, топики, VESC)
+    - operator.admin
 
   # Harness (AgentCore) — LLM-каркас в тестовой/дебаг-ноде. По правам
   # совпадает с личностью (карта та же); отдельный sender — чтобы
@@ -143,6 +145,13 @@ slices:
     # (тот же ToolSpec, но handler иной), поэтому добавление сюда
     # открывает операторский send'ер на MCP-путь ``/mcp/execute``.
     - show_metrics
+    # #4516 (шаг 1, только чтение): граф ROS и VESC из ROS; общий набор для пульта TG и ТАРС
+    - ros_list
+    - topic_echo
+    - topic_stats
+    # #4516 шаг 2а: запись в топики через предохранитель (без движения); автор в журнале - TG или ТАРС
+    - topic_publish
+    - vesc_telemetry
 
   # ── TELEGRAM: озвучка динамиками из чата (ADR-0150 §9.2.3). Тишина Личности ей не мешает (решение О2).
   telegram:
@@ -151,3 +160,5 @@ slices:
     - people_list
     - person_photo
     - name_person
+    - find_similar
+    - merge_people

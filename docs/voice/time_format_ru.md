@@ -9,7 +9,7 @@
 | Статус | Accepted (issue #1777, формат-гайд внедрён) |
 | Контекст | Kanban task `t_5a8379b7`, upstream `t_cd414361` (разведка) |
 | Реализация | `src/rob_box_mcp_tools/.../tools/system.py` (`format_time_ru`, `GetCurrentTimeTool`) |
-| Prompt | `src/rob_box_voice/prompts/master_prompt_compact.txt` §1 «RULE #TIME-FORMAT» |
+| Prompt | файл `master_prompt_compact.txt` удалён в #4600; правила `RULE #TIME-FORMAT` в текущей основе промпта нет (grep 09.11) — время словами строит код тула |
 | Dynamic context | `dialogue_node._build_dynamic_system_context()` — `<reminder>` про `get_current_time` |
 | Тесты | `test/test_tools/test_get_current_time.py` (22 unit), `test/unit/node/test_issue_1777_time_format.py` (8 unit, 3 skipped на 3.11+) |
 
@@ -122,7 +122,7 @@ LLM читает `data.formatted_time` и подставляет в `speak_text`
 * ❌ `speak_text("Двадцать два часа тридцать семь минут")` — раздуто
 
 Полный блок — `RULE #TIME-FORMAT` в
-`src/rob_box_voice/prompts/master_prompt_compact.txt` §1 (выше
+старом `master_prompt_compact.txt` (удалён в #4600; в текущей основе промпта правила нет, выше
 `RULE #VOICE`).
 
 ---
@@ -151,7 +151,7 @@ get_current_time tool, прочитай поле formatted_time дословно
   `formatted_time` присутствует, legacy поля сохранены, в message
   упомянуто, без арабских цифр.
 
-### Регрессия / prompt (`src/rob_box_voice/test/unit/node/test_issue_1777_time_format.py`)
+### Регрессия / prompt (`src/rob_box_voice/test/unit/node/test_issue_1777_time_format.py`) <!-- stale-paths: ignore -->
 * `TestPromptTimeFormatRule` (4) — RULE #TIME-FORMAT в промпте,
   упоминания tool/examples/✅❌/строка в §4.
 * `TestDynamicContextTimeReminder` (2, skip на 3.11+) —
@@ -159,7 +159,7 @@ get_current_time tool, прочитай поле formatted_time дословно
 * `TestPhraseTriggerContract` (2) — 5 триггеров покрыты RULE.
 
 ### E2E (отдельный процесс)
-Голосовой e2e (`scripts/e2e/e2e_voice_test.sh`) — TODO по плану,
+Голосовой e2e (`scripts/ci/e2e/e2e_voice_test.sh`) — TODO по плану,
 выполняется merge-gate → e2e-process после PR.
 
 ---

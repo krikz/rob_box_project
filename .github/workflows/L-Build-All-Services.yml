@@ -232,3 +232,75 @@ jobs:
 
           echo ""
           echo "🚀 Next: On Raspberry Pi, set IMAGE_TAG=local and pull from 10.1.1.5:5000"
+
+      # === Подписанный релиз (ADR-0168 §5 п. 2, #4375; решение Шифу 09.11: «если это нам не сломает работу») ===
+      # Три шага ниже — ПОСЛЕДНИЕ в последнем job'е и все с continue-on-error: провал релиза не красит
+      # Build All и ничего не меняет для L: Deploy and Verify (деплой берёт .image-versions.* как раньше,
+      # release.py их не трогает). На робота ничего не ставится: релиз только кладётся в registry katana
+      # (`krikz/rob_box/release:<релиз>` и тег канала `dev`); агент chuangong на Pi не установлен.
+      # Откат — удалить эти три шага. Гард: scripts/ci/tests/test_build_all_release_step.py.
+      - name: "Release: gate (ADR-0168)"
+        id: release-gate
+        if: ${{ !cancelled() }}
+        continue-on-error: true
+        env:
+          HAS_SIGNING_KEY: ${{ secrets.CHUANGONG_SIGNING_KEY != '' }}
+          GH_REF: ${{ github.ref }}
+          MAIN_RESULT: ${{ needs.build-main-services.result }}
+          SOUND_RESULT: ${{ needs.build-sound-services.result }}
+          VISION_RESULT: ${{ needs.build-vision-services.result }}
+        run: |
+          echo "enabled=false" >> "$GITHUB_OUTPUT"
+          if [ "${GH_REF}" != "refs/heads/develop" ]; then
+            echo "Релиз собирается только с develop (канал dev); ref=${GH_REF} — пропуск."
+            exit 0
+          fi
+          if [ "${MAIN_RESULT}" != "success" ] || [ "${SOUND_RESULT}" != "success" ] || [ "${VISION_RESULT}" != "success" ]; then
+            echo "::warning::Релиз не собран: сборка Pi не вся зелёная (main=${MAIN_RESULT} sound=${SOUND_RESULT} vision=${VISION_RESULT})."
+            exit 0
+          fi
+          if [ "${HAS_SIGNING_KEY}" != "true" ]; then
+            echo "::warning::Релиз не собран: нет секрета CHUANGONG_SIGNING_KEY (ключ подписи minisign, ADR-0168 §5)."
+            exit 0
+          fi
+          echo "enabled=true" >> "$GITHUB_OUTPUT"
+
+      - name: "Release: checkout (ADR-0168)"
+        if: ${{ !cancelled() && steps.release-gate.outputs.enabled == 'true' }}
+        continue-on-error: true
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          submodules: false
+          clean: true
+
+      - name: "Release: build, sign, publish (ADR-0168)"
+        if: ${{ !cancelled() && steps.release-gate.outputs.enabled == 'true' }}
+        continue-on-error: true
+        env:
+          CHUANGONG_SIGNING_KEY: ${{ secrets.CHUANGONG_SIGNING_KEY }}
+        run: |
+          set -euo pipefail
+          # Зависимости release.py: PyYAML и cryptography (minisign на Ed25519). Без них — честный провал шага.
+          python3 -c "import yaml, cryptography" 2>/dev/null \
+            || python3 -m pip install --quiet --no-cache-dir --user pyyaml cryptography \
+            || python3 -m pip install --quiet --no-cache-dir --user --break-system-packages pyyaml cryptography
+          SHORT_SHA="${GITHUB_SHA::7}"
+          IMAGE_TAG="dev-${SHORT_SHA}"
+          # Имя релиза — открытый вопрос Шифу В3 (ADR-0168 §8); пока «SHA-тег сборки + номер run'а».
+          RELEASE="${IMAGE_TAG}-${GITHUB_RUN_NUMBER}"
+          OUT="${RUNNER_TEMP}/release-${GITHUB_RUN_ID}"
+          rm -rf -- "${OUT}"
+          python3 scripts/build/release.py build --release "${RELEASE}" --channel dev \
+            --image-tag "${IMAGE_TAG}" --docker-tag dev --git "${SHORT_SHA}" \
+            --resolve-registry "http://${LOCAL_REGISTRY}" --out "${OUT}"
+          python3 scripts/build/release.py sign --dir "${OUT}"
+          python3 scripts/build/release.py verify --dir "${OUT}" --pubkey host/chuangong/keys/release.pub
+          DIGEST="$(python3 scripts/build/release.py publish --dir "${OUT}" --registry "http://${LOCAL_REGISTRY}")"
+          echo "Релиз ${RELEASE} опубликован: ${LOCAL_REGISTRY}/krikz/rob_box/release:${RELEASE} (и :dev), ${DIGEST}"
+          {
+            echo "### Release (ADR-0168)"
+            echo ""
+            echo "\`krikz/rob_box/release:${RELEASE}\` → \`:dev\`, \`${DIGEST}\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+          rm -rf -- "${OUT}"

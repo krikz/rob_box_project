@@ -76,7 +76,16 @@ def test_prod_voice_result_is_merged_into_face():
     node = _FakeNode()
     m.VisionFaceNode._on_speaker_result(node, _msg(name='Денис'))
     node._recognizer.note_voice_identification.assert_called_once_with(
-        speaker_id='c8fd47c4aaaa', name='Денис'
+        speaker_id='c8fd47c4aaaa', name='Денис', self_introduced=False
+    )
+
+
+def test_register_source_marks_voice_as_self_introduced():
+    """Issue #4538: ``source='register'`` доходит до распознавателя структурным признаком."""
+    node = _FakeNode()
+    m.VisionFaceNode._on_speaker_result(node, _msg(name='Иван', source='register'))
+    node._recognizer.note_voice_identification.assert_called_once_with(
+        speaker_id='c8fd47c4aaaa', name='Иван', self_introduced=True
     )
 
 

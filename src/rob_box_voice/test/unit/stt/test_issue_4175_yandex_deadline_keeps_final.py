@@ -26,6 +26,7 @@ from unittest.mock import MagicMock
 import pytest
 
 from rob_box_core.msg_stub import install_dialog_msgs_stub
+from rob_box_core.stt_hypotheses import NO_HYPOTHESES, SttHypotheses
 from rob_box_voice.core.yandex_stt_segments import YandexSegmentCollector, text_kept_on_deadline
 from rob_box_voice.stt_fallback import (
     NOTE_DEADLINE_FINAL,
@@ -285,6 +286,25 @@ def test_phase_raises_deadline_final_with_text_when_utterance_closed(stt_node_mo
     # Канал по-прежнему пересоздаётся (#2924): зависший стрим - не повод держать то же соединение.
     assert any("пересоздаю канал Yandex STT" in m for m in lines), lines
     assert any("stream=[" in m and "F#0" in m and " E " in m for m in lines), lines  # трасса стрима осталась в логе
+
+
+@pytest.mark.parametrize("closed", [True, False], ids=["closed-final", "incomplete-final"])
+def test_deadline_hypotheses_belong_only_to_the_accepted_final(stt_node_module, log_lines, closed):
+    logger, _lines = log_lines
+    node = _node(stt_node_module, logger, chain=["yandex"])
+    final = _event("final", PHRASE)
+    final.final.alternatives[0].confidence = 0.83
+    final.final.alternatives.append(SimpleNamespace(text="робот мы тут немного пошумим"))
+    events = [final, _event("eou_update")] if closed else [final]
+    node._last_hypotheses = SttHypotheses(0.99, ("прошлая фраза",))
+    node.yandex_stub = _stub(events, error=_RpcError("DEADLINE_EXCEEDED"))
+
+    with pytest.raises(STTTimeoutError) as caught:
+        node._recognize_yandex_phase(AUDIO, phase="REAL_TIME", enable_speech_analysis=True)
+
+    assert isinstance(caught.value, STTDeadlineFinal) == closed
+    expected = SttHypotheses(0.83, ("робот мы тут немного пошумим",)) if closed else NO_HYPOTHESES
+    assert node._last_hypotheses == expected
 
 
 @pytest.mark.parametrize(

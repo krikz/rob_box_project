@@ -92,7 +92,7 @@ def _run(coro):
 def test_story_goes_to_chat_and_confirmation_follows_the_finished_event():
     host = Host(_story_command())
 
-    _run(host.ask("сочини историю про робота и расскажи", then=[_event(KIND_FINISHED, seconds=11.6)]))
+    _run(host.ask("сочини историю про робота и расскажи вслух", then=[_event(KIND_FINISHED, seconds=11.6)]))
 
     assert [r.args["text"] for r in host.base.requests] == [STORY]
     assert host.sent == [("telegram:1", STORY), ("telegram:1", "Озвучил (12 с).")]
@@ -101,7 +101,7 @@ def test_story_goes_to_chat_and_confirmation_follows_the_finished_event():
 def test_no_confirmation_before_the_event_only_the_story():
     host = Host(_story_command())
 
-    _run(host.ask("расскажи историю"))
+    _run(host.ask("расскажи историю вслух"))
 
     assert host.sent == [("telegram:1", STORY)]
 
@@ -109,7 +109,7 @@ def test_no_confirmation_before_the_event_only_the_story():
 def test_rejected_late_event_says_the_owner_reason_not_a_success():
     host = Host(_story_command())
 
-    _run(host.ask("расскажи историю", then=[_event(KIND_REJECTED, reason="unsupported_script")]))
+    _run(host.ask("расскажи историю вслух", then=[_event(KIND_REJECTED, reason="unsupported_script")]))
 
     assert host.sent[-1] == ("telegram:1", "Не озвучил: выбранный голос не читает эти буквы.")
 
@@ -117,7 +117,7 @@ def test_rejected_late_event_says_the_owner_reason_not_a_success():
 def test_cancelled_late_event_says_interrupted():
     host = Host(_story_command())
 
-    _run(host.ask("расскажи историю", then=[_event(KIND_CANCELLED)]))
+    _run(host.ask("расскажи историю вслух", then=[_event(KIND_CANCELLED)]))
 
     assert host.sent[-1] == ("telegram:1", "Не озвучил: перебили.")
 
@@ -125,7 +125,7 @@ def test_cancelled_late_event_says_interrupted():
 def test_immediate_rejection_of_the_owner_is_reported_by_code():
     host = Host(_story_command(), reply=("rejected", "busy"))
 
-    _run(host.ask("расскажи историю"))
+    _run(host.ask("расскажи историю вслух"))
 
     assert host.sent[0] == ("telegram:1", "Не озвучил: динамики заняты.")
     assert host.sent[1] == ("telegram:1", STORY)
@@ -134,7 +134,7 @@ def test_immediate_rejection_of_the_owner_is_reported_by_code():
 def test_operator_hold_rejects_without_asking_the_speech_owner():
     host = Host(_story_command(), hold=True)
 
-    _run(host.ask("расскажи историю"))
+    _run(host.ask("расскажи историю вслух"))
 
     assert host.base.requests == []
     assert host.sent[0] == ("telegram:1", "Не озвучил: оператор занял робота.")
@@ -146,7 +146,7 @@ def test_user_silence_of_personality_does_not_block_say_aloud():
     personality.push_scene("Silence", "user")
     host = Host(_story_command(), hold=personality.snapshot.top("OperatorHold") is not None)
 
-    _run(host.ask("расскажи историю", then=[_event(KIND_FINISHED, seconds=5)]))
+    _run(host.ask("расскажи историю вслух", then=[_event(KIND_FINISHED, seconds=5)]))
 
     assert personality.snapshot.top("Silence") is not None
     assert len(host.base.requests) == 1
@@ -156,7 +156,7 @@ def test_user_silence_of_personality_does_not_block_say_aloud():
 def test_foreign_and_non_final_speech_events_are_ignored():
     host = Host(_story_command())
 
-    results = _run(host.ask("расскажи историю", then=[_event(KIND_STARTED), _event(KIND_FINISHED, "other-id")]))
+    results = _run(host.ask("расскажи историю вслух", then=[_event(KIND_STARTED), _event(KIND_FINISHED, "other-id")]))
 
     assert results == [False, False]
     assert host.sent == [("telegram:1", STORY)]
@@ -177,7 +177,7 @@ def test_no_answer_event_gives_an_honest_dont_know_after_the_ceiling():
     host = Host(_story_command())
 
     async def scenario():
-        await host.ask("расскажи историю")
+        await host.ask("расскажи историю вслух")
         host.chats.tick()  # обещание замечено в момент 0
         host.now = kn.SPEECH_RESULT_CEILING_S - 1
         host.chats.tick()
@@ -198,7 +198,7 @@ def test_started_event_with_duration_shortens_the_wait_to_duration_plus_slack():
     host = Host(_story_command())
 
     async def scenario():
-        await host.ask("расскажи историю")
+        await host.ask("расскажи историю вслух")
         started = _event(KIND_STARTED)
         started.duration_ms = 10000
         host.chats.on_speech(started)
@@ -215,7 +215,7 @@ def test_finished_event_cancels_the_wait():
     host = Host(_story_command())
 
     async def scenario():
-        await host.ask("расскажи историю", then=[_event(KIND_FINISHED, seconds=3)])
+        await host.ask("расскажи историю вслух", then=[_event(KIND_FINISHED, seconds=3)])
         host.now = 1000
         host.chats.tick()
         await asyncio.sleep(0)

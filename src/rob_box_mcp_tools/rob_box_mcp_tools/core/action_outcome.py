@@ -33,6 +33,8 @@ NAV_REJECTED = "rejected"
 NAV_NO_RESPONSE = "no_response"
 NAV_SERVER_UNAVAILABLE = "server_unavailable"
 NAV_UNKNOWN_STATUS = "unknown_status"
+#: Nav2 ответил успехом, но поза на карте за поездку потеряла опору (#4495, ``core.localization_check``).
+NAV_LOCALIZATION_LOST = "localization_lost"
 
 # Виды исхода вызова сервиса.
 SVC_OK = "ok"
@@ -71,6 +73,10 @@ _NAV_FAILURES = {
     NAV_REJECTED: ("Nav2 отклонил цель", "Цель недостижима"),
     NAV_NO_RESPONSE: ("Nav2 не ответил на цель", "Навигация недоступна"),
     NAV_SERVER_UNAVAILABLE: ("Nav2 action server недоступен", "Навигация недоступна"),
+    NAV_LOCALIZATION_LOST: (
+        "Nav2 ответил SUCCEEDED, но локализация за поездку потеряна (#4495)",
+        "Не уверен, что доехал: потерял, где нахожусь на карте",
+    ),
 }
 
 

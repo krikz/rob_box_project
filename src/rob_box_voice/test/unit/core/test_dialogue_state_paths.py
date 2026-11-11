@@ -183,7 +183,7 @@ def test_wake_words_are_declared_exactly_once() -> None:
     случился с wake_words (issue #1252, два YAML, разъехались) и который и
     породил issue #1734».
 
-    `rob_box_voice.core.dialogue_text.DEFAULT_WAKE_WORDS` is the one list,
+    The robot profile's wake table (`docker/sound/config/wake_words.yaml`, ADR-0167 Ш1б) is the one list,
     and its order matters — `strip_wake_word` alternates leftmost-first, so
     «роб» must come after «роб бокс».
     """
@@ -195,7 +195,7 @@ def test_wake_words_are_declared_exactly_once() -> None:
                     offenders[f"{path.name}:{node}"] = params["wake_words"]
     assert not offenders, (
         "wake_words re-declared in YAML — the list lives in "
-        "rob_box_voice.core.dialogue_text.DEFAULT_WAKE_WORDS and nowhere "
+        "the robot profile (docker/sound/config/wake_words.yaml) and nowhere "
         f"else: {sorted(offenders)}"
     )
 
@@ -206,11 +206,11 @@ def test_node_defaults_use_the_canonical_wake_words() -> None:
     PR-15 (#3711, part 15p): the v1 dialogue node is gone; `dialog_node` (v2)
     reads the wake words from `wake_words.yaml` through `rob_box_dialog.address`.
     """
-    from rob_box_voice.core.dialogue_text import DEFAULT_WAKE_WORDS
+    from voice_robot_wake import ROBOT_WAKE
 
-    assert DEFAULT_WAKE_WORDS, "the canonical list is empty"
-    # ADR-0150 PR-5: stt_node берёт таблицу у rob_box_dialog.address (своего имени списка нет).
-    for module, decl in (("stt_node.py", 'declare_parameter("wake_words", address.wake_words()[0])'),):
+    assert ROBOT_WAKE, "the canonical list is empty"
+    # ADR-0167 Ш1б: stt_node берёт таблицу из профиля робота (своего списка нет).
+    for module, decl in (("stt_node.py", 'declare_parameter("profile_path", robot_profile.path())'),):
         source = (
             REPO_ROOT / "src" / "rob_box_voice" / "rob_box_voice" / module
         ).read_text(encoding="utf-8")

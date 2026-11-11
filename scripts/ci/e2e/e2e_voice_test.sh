@@ -838,7 +838,10 @@ mark_fail_kind() {  # $1=kind
         infra)       [ "$E2E_FAIL_KIND" = "feature" ] || E2E_FAIL_KIND="infra" ;;
         llm_error)   { [ "$E2E_FAIL_KIND" = "feature" ] || [ "$E2E_FAIL_KIND" = "infra" ]; } || E2E_FAIL_KIND="llm_error" ;;
         synth)       { [ "$E2E_FAIL_KIND" = "feature" ] || [ "$E2E_FAIL_KIND" = "infra" ] || [ "$E2E_FAIL_KIND" = "llm_error" ]; } || E2E_FAIL_KIND="synth" ;;
-        no_reaction) [ -z "$E2E_FAIL_KIND" ] && E2E_FAIL_KIND="no_reaction" ;;
+        # stand (#4608) — сбой СТЕНДА (PulseAudio на машине воспроизведения): фраза не сыграна или сервер звука
+        # недоступен. Робот тут не виноват и не судится; ниже synth, выше no_reaction (слабый дефолт).
+        stand)       { [ "$E2E_FAIL_KIND" = "feature" ] || [ "$E2E_FAIL_KIND" = "infra" ] || [ "$E2E_FAIL_KIND" = "llm_error" ] || [ "$E2E_FAIL_KIND" = "synth" ]; } || E2E_FAIL_KIND="stand" ;;
+        no_reaction) { [ -z "$E2E_FAIL_KIND" ] || [ "$E2E_FAIL_KIND" = "stand" ]; } && E2E_FAIL_KIND="${E2E_FAIL_KIND:-no_reaction}" ;;
     esac
 }
 
@@ -1148,7 +1151,7 @@ if missing_expected and tts_finished_count >= 1:
             f"skipped: {', '.join(likely_voice_skipped)}. "
             f"LLM сделал verbal-only answer (RULE #MUSIC для stop_music / "
             f"RULE #VOICE-MULTI для multi-voice могут не enforce). "
-            f"Проверь master_prompt_compact.txt и/или добавь explicit "
+            f"Проверь промпт Личности (prompts/personality.txt ядра + persona.txt) и/или добавь explicit "
             f"tool-call enforcement в LLM-system reminder."
         )
         # Не добавляем к failures (это hint, не блокер GATE-1), но логируем
@@ -2053,9 +2056,39 @@ eq_command_wav() {  # $1=синтезированный wav $2=wav для кол
 
 # play_eq_wav WAV — громкость динамика 100% (по умолчанию; явный >100% доступен через inputs.volume в workflow,
 # e.g. -f volume=120) и реплика в колонку.
+#
+# #4608: результат paplay проверяется (код возврата + `pa_context_connect() failed` в выводе). Провал -- до
+# E2E_PLAY_RETRIES повторов (по умолчанию 2) с паузой E2E_PLAY_RETRY_PAUSE; не вышло -- E2E_PLAY_FAILED=1,
+# E2E_PLAY_FAIL_REASON и rc=1: вызывающий шаг краснеет `FAIL stand_play_failed` (сбой стенда, не «робот не принял
+# фразу»). Раньше PLAY_FAIL только печатался, и 16 шагов с мёртвым PulseAudio записались роботу как no_accept.
 play_eq_wav() {  # $1=wav после eq_command_wav
+    E2E_PLAY_FAILED=0
+    E2E_PLAY_FAIL_REASON=""
     pactl set-sink-volume @DEFAULT_SINK@ 100% 2>/dev/null || true
-    paplay "$1" && log "  PLAY_DONE" || log "  PLAY_FAIL"
+    local try=1 max=$(( ${E2E_PLAY_RETRIES:-2} + 1 )) out rc reason
+    while :; do
+        out="$(paplay "$1" 2>&1)"; rc=$?
+        if [ "$rc" = "0" ] && ! printf '%s' "$out" | grep -q 'pa_context_connect() failed'; then
+            log "  PLAY_DONE"
+            return 0
+        fi
+        if printf '%s' "$out" | grep -q 'pa_context_connect() failed'; then reason="pulse_connect_failed"; else reason="paplay_rc=${rc}"; fi
+        log "  PLAY_FAIL (попытка ${try}/${max}, ${reason}): $(printf '%s' "$out" | head -n 1)"
+        [ "$try" -ge "$max" ] && break
+        try=$(( try + 1 ))
+        sleep "${E2E_PLAY_RETRY_PAUSE:-3}"
+    done
+    E2E_PLAY_FAILED=1
+    E2E_PLAY_FAIL_REASON="$reason"
+    return 1
+}
+
+# step_stand_play_failed LABEL -- шаг не может судиться: фраза не сыграна (#4608). Итог шага `FAIL stand_play_failed`,
+# причина FAIL -- stand (маркер E2E_STAND_FAIL). Сводка считает такие шаги отдельно от сбоев робота.
+step_stand_play_failed() {  # $1=label
+    log "STEP $1: ❌ фраза не сыграна (${E2E_PLAY_FAIL_REASON:-?}) после ${E2E_PLAY_RETRIES:-2} повторов -- сбой СТЕНДА, роботу фраза не звучала"
+    emit_step "$1 FAIL stand_play_failed (${E2E_PLAY_FAIL_REASON:-?})"
+    mark_fail_kind stand
 }
 
 # phrase_eq_wav TEXT VOICE BASE — синтез фразы восстановления (тот же synth_command с кэшем, что у фраз шага) в
@@ -2458,7 +2491,7 @@ run_step() {  # $1=text $2=voice $3=step_label $4=expect_kind(cycle|wake-gated|b
         for battempt in $(seq 1 "$E2E_MAX_ATTEMPTS"); do
             BEFORE="$(${ROBOT_SSH} "date -u +%Y-%m-%dT%H:%M:%SZ" 2>/dev/null || date -u +%Y-%m-%dT%H:%M:%SZ)"
             log "STEP ${label}: PLAY backlog attempt ${battempt}/${E2E_MAX_ATTEMPTS}"
-            play_eq_wav "$OUT_DIR/cmd_${safe}_eq.wav"
+            play_eq_wav "$OUT_DIR/cmd_${safe}_eq.wav" || { step_stand_play_failed "$label"; return 1; }
             # issue #3857: опрос маркера каждые 2 с до потолка, а не слепой sleep 40 с.
             local _bt0 _bfound=1
             _bt0="$(date +%s)"
@@ -2504,6 +2537,7 @@ run_step() {  # $1=text $2=voice $3=step_label $4=expect_kind(cycle|wake-gated|b
     # НЕ переигрываем paplay, пока не убедимся, что акцепта правда не было —
     # только продолжаем ждать/перечитывать логи ТОГО ЖЕ окна.
     local attempt reaction rc accepted_before=""
+    E2E_PLAY_FAILED=0   # #4608: провал воспроизведения -- отдельный вердикт шага stand_play_failed
     : "${E2E_STEP_WAKE_ATTEMPT:=1}"   # wake_attempt шага (06.11); сброс -- на старте шага в scenario-цикле
     # Потолок попыток -- одна константа e2e_events.WAKE_MAX_ATTEMPTS (не копия числа в bash).
     [ -n "${E2E_WAKE_MAX_ATTEMPTS:-}" ] || E2E_WAKE_MAX_ATTEMPTS="$(python3 "$(_events_py)" wake-retry --verdict "" | _ev_kv max)"
@@ -2535,7 +2569,7 @@ run_step() {  # $1=text $2=voice $3=step_label $4=expect_kind(cycle|wake-gated|b
                 ensure_outdir
                 eq_command_wav "$OUT_DIR/cmd_${safe}.wav" "$OUT_DIR/cmd_${safe}_eq.wav"
             fi
-            play_eq_wav "$OUT_DIR/cmd_${safe}_eq.wav"
+            play_eq_wav "$OUT_DIR/cmd_${safe}_eq.wav" || { step_stand_play_failed "$label"; return 1; }
         fi
         step_wait_after_play "$BEFORE" "$_barge_mode"
         # #3989: до хода не дошло (вейк потерян / тишина) -- одно восстановление шага, если оно ему разрешено.
@@ -2544,6 +2578,8 @@ run_step() {  # $1=text $2=voice $3=step_label $4=expect_kind(cycle|wake-gated|b
         [ "${E2E_WAIT_RC:-0}" = "4" ] && [ "${E2E_REPLY_VERDICT:-}" = "no_wake" ] && step_wake_replay "$label" "$safe"
         # #4196: ход был, но STT исказил ключевое слово фразы шага (поле stt_keys) -- шаг с stt_replay играет фразу ещё раз.
         [ "${E2E_WAIT_RC:-0}" = "0" ] && step_stt_replay "$label" "$safe"
+        # #4608: повтор/восстановление не удалось сыграть -- это сбой стенда, а не вердикт робота по шагу.
+        [ "${E2E_PLAY_FAILED:-0}" = "1" ] && { step_stand_play_failed "$label"; return 1; }
 
         if [ "$E2E_WAIT_MODE" = "event" ]; then
             # #3954: v2 -- ОДИН судья, e2e_events.py (ПРИНЯТО + `📊 [turn]` + SpeechEvent). check_cycle с его
@@ -2810,9 +2846,17 @@ try:
 except OSError:
     pass
 
+def stand_failed(rec):
+    """#4608: «FAIL stand_play_failed …» -- фраза не сыграна, сбой стенда; не FAIL робота."""
+    return (rec.get("status") or "").upper() == "FAIL" and "stand_play_failed" in (rec.get("detail") or "").split()
+
+
+stand_labels = [l for l in order if stand_failed(steps[l])]
 counts = {"OK": 0, "FAIL": 0, "SKIP": 0}
 for label in order:
     status = (steps[label].get("status") or "").upper()
+    if label in stand_labels:
+        continue
     if status in counts:
         counts[status] += 1
 total = len(order)
@@ -2862,11 +2906,13 @@ summary = {
         "ok": counts["OK"],
         "fail": counts["FAIL"],
         "skip": counts["SKIP"],
+        "stand_play_failed": len(stand_labels),
+        "stand_play_failed_labels": stand_labels,
         "recovered": len(recovered),
         "recovered_labels": recovered,
         "wake_attempts": {str(k): v for k, v in sorted(wake_by_attempt.items())},
         "failed_labels": [
-            l for l in order if (steps[l].get("status") or "").upper() == "FAIL"
+            l for l in order if (steps[l].get("status") or "").upper() == "FAIL" and l not in stand_labels
         ],
     },
     # #3989/#4027: что харнесс чинил на старте акта (утечка прошлого акта): music, silenced (виды recover_mark).
@@ -2901,11 +2947,13 @@ with open(os.path.join(out_dir, "summary.json"), "w", encoding="utf-8") as fh:
     fh.write("\n")
 
 st = summary["steps"]
-print(">>> E2E_SUMMARY verdict=%s steps=%d/%d ok fail=%d skip=%d recovered=%d provider=%s"
-      % (summary["verdict"], st["ok"], st["total"], st["fail"], st["skip"], st["recovered"],
+print(">>> E2E_SUMMARY verdict=%s steps=%d/%d ok fail=%d skip=%d stand_play_failed=%d recovered=%d provider=%s"
+      % (summary["verdict"], st["ok"], st["total"], st["fail"], st["skip"], st["stand_play_failed"], st["recovered"],
          summary["tts_provider"] or "?"))
 if st["failed_labels"]:
     print(">>> E2E_SUMMARY failed: %s" % ", ".join(st["failed_labels"]))
+if stand_labels:
+    print(">>> E2E_SUMMARY stand_play_failed (сбой стенда, не робота): %s" % ", ".join(stand_labels))
 if recovered:
     print(">>> E2E_SUMMARY recovered: %s" % ", ".join("%s(%s)" % (l, recovered_kind(steps[l])) for l in recovered))
 print(">>> E2E_SUMMARY wake_attempts: passed on 1st=%d, 2nd=%d, 3rd=%d"
@@ -3056,6 +3104,13 @@ TTSJSON
 if [ -n "$SCENARIO_FILE" ] && [ "$E2E_PRESYNTH" = "1" ]; then
     presynth_scenario "$SCENARIO_FILE" || E2E_PRESYNTH_FAILED=1
 fi
+# #4608 — предполётная проверка PulseAudio стенда: сервер звука недоступен -- акт не начинается (робот не тронут),
+# честный E2E_STAND_FAIL вместо десятка шагов no_accept.
+if [ "$E2E_PRESYNTH_FAILED" != "1" ] && ! stand_audio_preflight; then
+    E2E_PRESYNTH_FAILED=1
+    E2E_STAND_PREFLIGHT_FAILED=1
+    mark_fail_kind stand
+fi
 # Issue #3989 — восстановление шагов: поле recover сценария разбирается ДО записи и изоляции (ошибка схемы —
 # E2E_FATAL, робот не тронут); фразы восстановления — в кэш синтеза вместе с фразами акта.
 if [ -n "$SCENARIO_FILE" ] && [ "$E2E_PRESYNTH_FAILED" != "1" ]; then
@@ -3096,7 +3151,7 @@ if [ -n "$SCENARIO_FILE" ] && [ "$E2E_PRESYNTH_FAILED" != "1" ]; then
     # shellcheck disable=SC2086  # список параметров -- слова
     remember_node_params /tts_node $E2E_TTS_PROSODY_PARAMS
 fi
-trap 'restore_robot_tts_default; restore_node_params; leave_e2e_mode; deactivate_e2e_dialog_db; collect_e2e_speaker_db "$OUT_DIR" "${SCENARIO_FILE:-}"; stop_recording' EXIT
+trap 'restore_robot_tts_default; restore_node_params; leave_e2e_mode; deactivate_e2e_dialog_db; collect_e2e_dialog_db "$OUT_DIR"; collect_e2e_speaker_db "$OUT_DIR" "${SCENARIO_FILE:-}"; stop_recording' EXIT
 
 # Issue #2890 — изоляция акта ДО первого шага: e2e-БД дикторов (#2750),
 # e2e-память фактов (#2781) и окно диалога dialog_node. См. isolate_act_start.
@@ -3126,7 +3181,11 @@ PASS=1
 if [ "$E2E_PRESYNTH_FAILED" = "1" ]; then
     # Issue #3875: пред-синтез провален (E2E_INFRA_FAIL synth уже выведен) — шаги не играем.
     PASS=0
-    log "акт не начат: пред-синтез фраз не удался (см. PRESYNTH выше)"
+    if [ "${E2E_STAND_PREFLIGHT_FAILED:-0}" = "1" ]; then
+        log "акт не начат: PulseAudio стенда недоступен (см. PREFLIGHT выше) -- сбой стенда, робот не судится"
+    else
+        log "акт не начат: пред-синтез фраз не удался (см. PRESYNTH выше)"
+    fi
 elif [ -n "$SCENARIO_FILE" ]; then
     # scenario.json: {"steps":[{"text":"...","voice":"anton","label":"s1",
     #           "patterns":["save_speaker_profile"],
@@ -3643,13 +3702,15 @@ else
     #   E2E_FEATURE_FAIL — робот ответил, но фича-ассерт (patterns/
     #                      acceptance/GATE-1) не выполнен → баг кода
     #   E2E_LLM_ERROR    — LLM/TTS вернул ошибку (не квота/fallback)
-    #   E2E_INFRA_FAIL   — синтез/воспроизведение упали на билд-машине
+    #   E2E_INFRA_FAIL   — синтез упал на билд-машине
+    #   E2E_STAND_FAIL   — PulseAudio стенда: фраза не сыграна / сервер звука недоступен (#4608)
     #   E2E_NO_REACTION  — робот не ответил (дефолт, самый слабый сигнал)
     fail_marker=""
     case "${E2E_FAIL_KIND:-no_reaction}" in
         feature)    fail_marker="E2E_FEATURE_FAIL" ;;
         llm_error)  fail_marker="E2E_LLM_ERROR" ;;
         synth)      fail_marker="E2E_INFRA_FAIL" ;;
+        stand)      fail_marker="E2E_STAND_FAIL" ;;   # #4608: PulseAudio стенда, робот не судился
         *)          fail_marker="E2E_NO_REACTION" ;;
     esac
     echo "$fail_marker"

@@ -16,15 +16,19 @@ import re
 import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
+from .face_collage import TARGET_MARK, Tile, build_collage
+from .face_misses import MissJournal, default_journal_path
+from .face_merge import MERGE_MAX, SIMILAR_K_MAX, merge_people, similar_people
 from .face_store import MODE_EXHIBITION, FaceStore, best_snapshot_bytes
 
 #: Потолок снимка в ответе: байты идут через zenoh между Pi, большое пережимается на Vision.
 PHOTO_MAX_BYTES = 200 * 1024
 
 #: Значения ``People.srv`` ``op`` (зеркало констант .srv: модуль не импортирует ROS-типы).
-OP_LIST, OP_PHOTO, OP_SET_NAME = 0, 1, 2
+OP_LIST, OP_PHOTO, OP_SET_NAME, OP_SIMILAR, OP_MERGE, OP_COLLAGE = 0, 1, 2, 3, 4, 5
 
 #: Фильтр списка - перечисление, а не свободный текст.
 FILTERS = ("all", "unnamed", "today")
@@ -38,8 +42,11 @@ _ID_RE = re.compile(r"[0-9a-f][0-9a-f\-]{7,35}")
 
 REASONS = (
     "bad_filter", "bad_id", "bad_name", "person_not_found", "ambiguous_id", "exhibition_mode", "no_snapshot",
-    "bad_op", "store_error",
+    "bad_op", "store_error", "bad_ids", "same_person", "merge_failed", "collage_failed", "no_collage",
 )
+#: Сколько последних коллажей держит владелец (по одному на искомое лицо): бот забирает картинку отдельным
+#: запросом ``OP_COLLAGE``, и это ровно тот коллаж, номера которого получил тул (пересчёт дал бы другой порядок).
+COLLAGES_KEPT = 8
 
 
 @dataclass(frozen=True)
@@ -109,9 +116,16 @@ def _row(person: Dict[str, Any]) -> Dict[str, Any]:
 class PeopleService:
     """Операции пульта над ``FaceStore``; ``clock`` подменяется в тестах."""
 
-    def __init__(self, store: FaceStore, clock: Callable[[], float] = time.time) -> None:
+    def __init__(self, store: FaceStore, clock: Callable[[], float] = time.time,
+                 backup_root: Optional[Path] = None, misses_path: Optional[Path] = None) -> None:
         self._store = store
         self._clock = clock
+        root = Path(store._root)
+        #: Бэкап слияний - рядом с каталогом лиц, а не внутри: ``FaceStore`` читает подкаталоги корня как записи.
+        self._backup_root = Path(backup_root) if backup_root is not None else root.with_name(root.name + "_backup")
+        #: Журнал промахов узнавания (#4469 п. 2): каждая склейка дописывает строки; путь из конфига ноды.
+        self._misses = MissJournal(Path(misses_path) if misses_path else default_journal_path(root))
+        self._collages: Dict[str, bytes] = {}
 
     def handle(self, op: int, filter: str = "", person_id: str = "", name: str = "") -> Reply:
         """Выполнить операцию ``op`` (``OP_*``); неизвестная - отказ ``bad_op``."""
@@ -121,6 +135,12 @@ class PeopleService:
             return self._photo(person_id)
         if op == OP_SET_NAME:
             return self._set_name(person_id, name)
+        if op == OP_SIMILAR:
+            return self._similar(person_id)
+        if op == OP_COLLAGE:
+            return self._collage(person_id)
+        if op == OP_MERGE:
+            return self._merge(person_id, filter)  # id источников - в поле ``filter`` (через запятую), .srv не меняем
         return _refuse("bad_op")
 
     def _list(self, flt: str) -> Reply:
@@ -158,7 +178,10 @@ class PeopleService:
         jpeg = fit_jpeg(raw) if raw else None
         if not jpeg:
             return _refuse("no_snapshot")
-        return Reply(True, "", {"id": full[:8], "size": len(jpeg)}, jpeg)
+        person = next((p for p in self._store.people() if p["person_id"] == full), {})
+        # имя и кличка - от владельца (FaceStore): подпись снимка строит тул по ним, а не по пустому ответу (#4505)
+        return Reply(True, "", {"id": full[:8], "size": len(jpeg), "name": person.get("name"),
+                                "epithet": person.get("epithet")}, jpeg)
 
     def _set_name(self, query: str, name: str) -> Reply:
         clean = " ".join((name or "").split())
@@ -172,6 +195,71 @@ class PeopleService:
             return _refuse("person_not_found")  # запись исчезла между проверкой и записью
         stored = next((p.get("name") for p in self._store.people() if p["person_id"] == full), None)
         return Reply(True, "", {"id": full[:8], "name": stored, "previous_name": before})
+
+    def _similar(self, query: str) -> Reply:
+        """Кандидаты на склейку и коллаж (его картинку забирает ``OP_COLLAGE``): сходство считает код (``face_merge``)."""
+        if self._store.mode == MODE_EXHIBITION:  # снимки лиц режим выставки наружу не отдаёт (ADR-0123)
+            return _refuse("exhibition_mode")
+        full = self._resolve(query)
+        if isinstance(full, Reply):
+            return full
+        found = similar_people(self._store, full, SIMILAR_K_MAX)
+        person = next((p for p in self._store.people() if p["person_id"] == full), {})
+        head = {"id": full[:8], "name": person.get("name"), "candidates": []}
+        if not found:
+            return Reply(True, "", head)
+        tiles = [Tile(TARGET_MARK, full[:8], None, best_snapshot_bytes(self._store, full))]
+        tiles += [Tile(str(n), c.person_id[:8], c.similarity, best_snapshot_bytes(self._store, c.person_id))
+                  for n, c in enumerate(found, 1)]
+        raw = build_collage(tiles)
+        jpeg = fit_jpeg(raw) if raw else None
+        if not jpeg:
+            return _refuse("collage_failed")
+        self._collages.pop(full, None)
+        self._collages[full] = jpeg
+        while len(self._collages) > COLLAGES_KEPT:
+            self._collages.pop(next(iter(self._collages)))
+        head["candidates"] = [{"n": n, "id": c.person_id[:8], "name": c.name, "similarity": round(c.similarity, 3),
+                               "same_name": c.same_name} for n, c in enumerate(found, 1)]
+        head["size"] = len(jpeg)
+        return Reply(True, "", head)
+
+    def _collage(self, query: str) -> Reply:
+        """Последний коллаж этого лица байтами: тот, чьи номера получил тул (``OP_SIMILAR``)."""
+        full = self._resolve(query)
+        if isinstance(full, Reply):
+            return full
+        jpeg = self._collages.get(full)
+        if not jpeg:
+            return _refuse("no_collage")
+        return Reply(True, "", {"id": full[:8], "size": len(jpeg)}, jpeg)
+
+    def _merge(self, target_query: str, ids: str) -> Reply:
+        """Склейка ``ids`` (8 знаков через запятую) в ``target``: id проверяются по записям, бэкап - до операции."""
+        parts = [part.strip() for part in (ids or "").split(",") if part.strip()]
+        if not parts or len(parts) > MERGE_MAX:
+            return _refuse("bad_ids")
+        target = self._resolve(target_query)
+        if isinstance(target, Reply):
+            return target
+        sources: List[str] = []
+        for part in parts:
+            full = self._resolve(part)
+            if isinstance(full, Reply):
+                return full
+            sources.append(full)
+        if target in sources:
+            return _refuse("same_person")
+        if len(set(sources)) != len(sources):
+            return _refuse("bad_ids")
+        outcome = merge_people(self._store, target, sources, self._backup_root, self._clock, self._misses)
+        if outcome is None or outcome.merged == 0:
+            return _refuse("merge_failed")
+        for pid in (target, *sources):
+            self._collages.pop(pid, None)  # слитых записей нет, коллаж этого лица устарел
+        return Reply(True, "", {"id": target[:8], "merged": outcome.merged, "name": outcome.name,
+                                "gallery": outcome.gallery, "backup": outcome.backup_dir,
+                                "merged_ids": [i[:8] for i in outcome.merged_ids]})
 
 
 def serve(service: PeopleService, request: Any, response: Any) -> Any:
@@ -187,5 +275,6 @@ def serve(service: PeopleService, request: Any, response: Any) -> Any:
     return response
 
 
-__all__ = ["FILTERS", "LIST_MAX", "NAME_MAX", "OP_LIST", "OP_PHOTO", "OP_SET_NAME", "PeopleService", "REASONS", "Reply",
+__all__ = ["FILTERS", "LIST_MAX", "NAME_MAX", "OP_COLLAGE", "OP_LIST", "OP_MERGE", "OP_PHOTO", "OP_SET_NAME", "OP_SIMILAR",
+           "PeopleService", "REASONS", "Reply",
            "PHOTO_MAX_BYTES", "day_start", "fit_jpeg", "serve", "valid_name"]
