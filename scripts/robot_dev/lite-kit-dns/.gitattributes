@@ -1,0 +1,5 @@
+# Два файла ниже участвуют в sha256-проверке применения патча и должны
+# храниться в git байт-в-байт (CRLF). Без -text core.autocrlf=true
+# нормализует их в LF и хеши перестанут сходиться.
+fixtures/equasar_server.py.bak-20261108 -text
+equasar_server.py.dns.patch -text
