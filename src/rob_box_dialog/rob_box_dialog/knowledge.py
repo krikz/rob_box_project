@@ -1685,8 +1685,11 @@ TOOL_PHRASES: Mapping[str, Mapping[str, Any]] = MappingProxyType({
     }),
     # стоп сета - то же, что стоп музыки, а не «Включаю музыку.» старта; платная генерация - фраза ожидания
     "dj_set": MappingProxyType({"done": DJ_DONE, "rejected": DJ_STOP_FAIL}),
-    "request_music": MappingProxyType({"done": GEN_WAIT}),
-    "generate_music": MappingProxyType({"done": GEN_WAIT}),
+    # отказ пути (#4015): настоящая причина уже построена кодом музыки в ``message``; без неё - общий отказ класса
+    "request_music": MappingProxyType({
+        "done": GEN_WAIT, "rejected": ByData(("message",), {(None,): "media.rejected"}, "music.edit_said")}),
+    "generate_music": MappingProxyType({
+        "done": GEN_WAIT, "rejected": ByData(("message",), {(None,): "media.rejected"}, "music.edit_said")}),
     # библиотека (CLASS_BY_ARG): правка - фраза о ней, не «Включаю музыку»; list/search/info - query, фразы кода нет
     LIBRARY_TOOL: MappingProxyType({
         "done": ByData(("action", "verdict"), {
