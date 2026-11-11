@@ -26,7 +26,7 @@
 | [architecture/](architecture/) | как система устроена **сейчас**: железо, сеть, контракты, топики. `meta-quest-api.md` читает тест | правка существующего файла; новый — только если темы нет |
 | [research/](research/) | исследования и замеры, `YYYY-MM-DD-<тема>.md`; `jev/scenarios/acceptance.yaml` читают тест и скрипт | новое исследование; сырые выводы — в корневой `evidence/` |
 | [plans/](plans/) | планы эпиков; `2026-09-15-service-manifest.md` — опора CI-гарда | план активного эпика; закрыт эпик — в архив |
-| [runbooks/](runbooks/) | как действовать: восстановление, cold-start, дежурство; [ролик из HIL](runbooks/hil-video.md), [HIL-проверки группы А](runbooks/hil-checks.md), [прогон здания в HIL](runbooks/hil-building.md), [доступ студии на чтение](runbooks/studio-ro-access.md), [рут Станции](runbooks/yandex-station-root.md), [Игорёк на колонке](runbooks/station-igor-install.md), [смотритель логов](runbooks/log-watch.md) | пошаговая инструкция «как сделать / починить» |
+| [runbooks/](runbooks/) | как действовать: восстановление, cold-start, дежурство; [ролик из HIL](runbooks/hil-video.md), [HIL-проверки группы А](runbooks/hil-checks.md), [прогон здания в HIL](runbooks/hil-building.md), [живые проверки](runbooks/live-verification.md), [доступ студии на чтение](runbooks/studio-ro-access.md), [рут Станции](runbooks/yandex-station-root.md), [Игорёк на колонке](runbooks/station-igor-install.md), [смотритель логов](runbooks/log-watch.md) | пошаговая инструкция «как сделать / починить» |
 | [guides/](guides/) | руководства: настройка, запуск, провайдеры | руководство для человека |
 | [process/](process/) | как работаем (владелец — ADR-0162) | — |
 | [e2e/](e2e/) | марафон, сценарии e2e | (переедет в runbooks) |
