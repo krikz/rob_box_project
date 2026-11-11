@@ -218,6 +218,10 @@ class Ports(Protocol):
         (:func:`stop_performance`)."""
         ...
 
+    def answer_perform(self, yes: bool) -> bool:
+        """Ответ «да/нет» на вопрос выступления о замене играющей музыки; ``True`` — выступление ждало ответа."""
+        ...
+
     def intent(self, turn_id: str, epoch: int, kind: str) -> None: ...
 
     def perform(self, turn_id: str, epoch: int, perf: Performance, edit: bool) -> Optional[Mapping[str, Any]]:
@@ -384,6 +388,17 @@ def stop_performance(ports: Any, how: str, keep_backing: bool = False) -> bool:
     if keep_backing and _accepts(stop, "keep_backing"):
         return bool(stop(how, keep_backing=True))
     return bool(stop(how))
+
+
+def answer_performance(engine: "TurnEngine", command: Tier1Command, snap: SessionSnapshot) -> None:
+    """Ответ на вопрос выступления — его владельцу; кадр и ``pending_ask`` снимаются вместе."""
+    if command.kind != "answer" or snap.top("PerformAsk") is None:
+        return
+    yes = command.args.get("value") == "yes"
+    taken = engine._ports.answer_perform(yes)
+    engine.session.pop_scene("PerformAsk")
+    engine.session.set_pending_ask(None)
+    engine._log.info(f"{LOG_MARK} answer {'да' if yes else 'нет'} → выступление: {taken}")
 
 
 def _accepts(fn: Callable[..., Any], name: str) -> bool:
@@ -2245,6 +2260,7 @@ class TurnEngine:
         Политика перебивания читает тот же текст, по которому сработал ``command`` (``parsed``, :func:`tier1_of`)."""
         self._log.info(f"{LOG_MARK} tier1 kind={command.kind} args={dict(command.args)} turn={turn.turn_id}")
         turn.stage = "done"
+        answer_performance(self, command, snap)
         actions = tier1_actions(command, snap)
         stop = interrupt_for(command, parsed, snap)
         if stop.interrupts:
