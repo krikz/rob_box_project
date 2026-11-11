@@ -427,6 +427,22 @@ def test_cancel_drops_held_presynth(setup):
     assert owner.claim_presynth("sid-1") is None
 
 
+def test_late_commit_after_presynth_cancel_stays_cancelled(setup):
+    """#4342: ``commit=true``, пришедший после отмены старого сегмента, не заводит его заново для звучания."""
+    node, owner, _ = setup
+    _presynth_node(node)
+    node.subs["/voice/speech/request"](_request(commit=False))
+    node.subs["/voice/speech/cancel"](M.SpeechCancel(speech_id="sid-1", epoch=0, agent="personality"))
+
+    node.subs["/voice/speech/request"](_request(commit=True))
+    (chunk,) = node.chunks
+    owner.admit(chunk, "sid-1")  # следующий шаг настоящего tts_node.dialogue_callback
+
+    assert owner.is_cancelled("sid-1")
+    assert not owner.started("sid-1", np.zeros((160, 2)), 16000)
+    assert "started" not in _kinds(node)
+
+
 def test_cancel_while_presynth_waits_in_pool_skips_synthesis(setup):
     """#3834: отменённый в очереди пула сегмент не идёт в (платный) синтез и закрывается ``cancelled``."""
     node, owner, _ = setup
