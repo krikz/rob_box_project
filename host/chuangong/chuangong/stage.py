@@ -34,6 +34,10 @@ class StageError(RuntimeError):
 class Docker(Protocol):
     def image_present(self, ref: str) -> bool: ...
 
+    def image_id(self, ref: str) -> str | None: ...
+
+    def running_compose_image_ids(self) -> dict[str, list[str]]: ...
+
     def pull(self, ref: str) -> None: ...
 
     def running_images(self) -> list[str]: ...
@@ -56,7 +60,43 @@ class DockerCli:
             return subprocess.CompletedProcess(["docker", *args], 127, "", f"docker {args[0]}: {exc}")
 
     def image_present(self, ref: str) -> bool:
-        return self._run("image", "inspect", "--format", "{{.Id}}", ref).returncode == 0
+        return self.image_id(ref) is not None
+
+    def image_id(self, ref: str) -> str | None:
+        res = self._run("image", "inspect", "--format", "{{.Id}}", ref)
+        image_id = res.stdout.strip()
+        return image_id if res.returncode == 0 and image_id else None
+
+    def running_compose_image_ids(self) -> dict[str, list[str]]:
+        res = self._run("ps", "--format", "{{.ID}}")
+        if res.returncode != 0:
+            error = res.stderr.strip() or res.stdout.strip() or f"docker ps exited {res.returncode}"
+            raise StageError("compose_probe_failed", error, service="unknown", container="docker ps", error=error)
+        services: dict[str, list[str]] = {}
+        for container in (line.strip() for line in res.stdout.splitlines() if line.strip()):
+            inspected = self._run(
+                "inspect", "--format", '{{index .Config.Labels "com.docker.compose.service"}} {{.Image}}', container
+            )
+            if inspected.returncode != 0:
+                error = (
+                    inspected.stderr.strip()
+                    or inspected.stdout.strip()
+                    or f"docker inspect exited {inspected.returncode}"
+                )
+                raise StageError("compose_probe_failed", error, service="unknown", container=container, error=error)
+            raw = inspected.stdout.strip()
+            service, separator, image_id = raw.rpartition(" ")
+            if not separator or not image_id:
+                raise StageError(
+                    "compose_probe_failed",
+                    f"unexpected docker inspect output: {raw!r}",
+                    service=service or "unknown",
+                    container=container,
+                    error=f"unexpected docker inspect output: {raw!r}",
+                )
+            if service != "<no value>":
+                services.setdefault(service, []).append(image_id)
+        return {service: sorted(ids) for service, ids in services.items()}
 
     def pull(self, ref: str) -> None:
         res = self._run("pull", "--quiet", ref, timeout=self.timeout_s)

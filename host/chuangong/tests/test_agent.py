@@ -48,7 +48,7 @@ def test_observe_reports_available_and_writes_only_state_dir(tmp_path, world):
     assert rec["legacy_running"] == ["10.1.1.249:5000/krikz/rob_box:oak-d-humble-dev"]
     assert _files_under(tmp_path / "opt") == []
     assert docker.pulled == []
-    assert sorted(_files_under(cfg.state_dir)) == ["metrics.prom", "state.json"]
+    assert sorted(_files_under(cfg.state_dir)) == [".lock", "metrics.prom", "state.json"]
     assert json.loads(cfg.state_file.read_text(encoding="utf-8"))["state"] == "available"
     assert zenoh.puts[0][0] == "robots/RBXU100001/ops/chuangong/state/vision"
     metrics = cfg.metrics_file.read_text(encoding="utf-8")

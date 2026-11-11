@@ -1,6 +1,7 @@
-"""Состояние агента chuangong: перечень состояний, ключи zenoh, запись state.json, метрика rbx_release_info.
+"""Состояние агента chuangong: перечень состояний, ключи zenoh, state.json, метрика и lock записи.
 
-Фразы о состоянии строит код из этих полей (ADR-0148): наблюдатель workflow печатает их как есть.
+Фразы о состоянии строит код из этих полей (ADR-0148): наблюдатель workflow печатает их как есть. Таймер и
+adoption сериализуют read-check-write через `write_lock`; dry-run lock не создаёт.
 """
 
 from __future__ import annotations
@@ -8,6 +9,9 @@ from __future__ import annotations
 import json
 import os
 import tempfile
+import time
+from collections.abc import Iterator
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from enum import Enum
 from pathlib import Path
@@ -19,15 +23,54 @@ STATE_SCHEMA = 1
 NODES = ("main", "vision", "sound")
 
 
+@contextmanager
+def write_lock(state_dir: Path) -> Iterator[None]:
+    """Сериализация read-check-write состояния между таймером и adoption; файл не удаляется после unlock."""
+    state_dir.mkdir(parents=True, exist_ok=True)
+    with (state_dir / ".lock").open("a+b") as fh:
+        fh.seek(0, os.SEEK_END)
+        if fh.tell() == 0:
+            fh.write(b"\0")
+            fh.flush()
+        fh.seek(0)
+        if os.name == "nt":
+            import msvcrt
+
+            while True:
+                try:
+                    msvcrt.locking(fh.fileno(), msvcrt.LK_LOCK, 1)
+                    break
+                except OSError:
+                    time.sleep(0.05)
+        else:
+            import fcntl
+
+            fcntl.flock(fh.fileno(), fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fh.seek(0)
+            if os.name == "nt":
+                msvcrt.locking(fh.fileno(), msvcrt.LK_UNLCK, 1)
+            else:
+                fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
+
+
 class State(str, Enum):
     NO_RELEASE = "no_release"  # указателя канала в реестре нет
     AVAILABLE = "available"  # релиз найден и подпись верна, на диск не скачан (режим observe)
     STAGED = "staged"  # бандл и образы роли лежат на диске заранее
+    ADOPTION_PLANNED = "adoption_planned"  # C1 dry-run: доказательства current найдены, состояние не записано
+    ADOPTED = "adopted"  # установленный legacy-стек доказанно соответствует подписанному релизу
+    PREFLIGHT_PASSED = "preflight_passed"  # C1 dry-run: staged/signature, HIL, dirty, место и current проверены
+    ACTIVATION_PLANNED = "activation_planned"  # C1 dry-run: preflight пройден, переключение не выполнялось
+    ROLLBACK_PLANNED = "rollback_planned"  # C1 dry-run: previous проверен, переключение не выполнялось
+    BLOCKED = "blocked"  # машинная причина в reason, сырые факты в detail
     FETCH_ERROR = "fetch_error"  # реестр недоступен, подпись не прошла, release.yaml битый
     STAGE_ERROR = "stage_error"  # нет места, обрыв скачивания, бандл не сошёлся, pull упал — повтор на следующем тике
 
 
-ERROR_STATES = frozenset({State.FETCH_ERROR, State.STAGE_ERROR})
+ERROR_STATES = frozenset({State.BLOCKED, State.FETCH_ERROR, State.STAGE_ERROR})
 
 
 class Mode(str, Enum):
@@ -61,7 +104,7 @@ def new_record(robot_id: str, node: str, channel: str, mode: Mode, prev: dict[st
         "ts": now_iso(),
         "state": None,
         "reason": None,
-        # current/previous меняет только активация (фаза C); в фазе B это всегда null — робот на старом деплое.
+        # C1 adoption пишет доказанный current; dry-run activation/rollback историю не меняет.
         "current": prev.get("current"),
         "previous": prev.get("previous"),
         "staged": prev.get("staged"),
