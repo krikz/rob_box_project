@@ -1671,15 +1671,16 @@ def foreign_keys(window: Sequence[Any], turn: "_Turn", cmd: Command, snapshot: S
     """Имена, которыми нельзя обращаться к собеседнику хода: собеседник неподтверждён
     (:func:`foreign_name.unconfirmed`), а имена, которые модель видела в разговоре, - авторы реплик окна, подхвата и
     фона, лица в кадре из прочитанного в ходе (:func:`foreign_name.face_names`, #4388); ключи -
-    :func:`foreign_name.name_keys`.
+    :func:`foreign_name.name_keys`. У подтверждённого собеседника чужие имена лиц тоже запрещены: его имя даёт профиль,
+    не камера.
     Не считаются названные самим человеком в этой реплике и им же в ``register_speaker`` команды: «меня зовут Гриша» -
     ответ «Понял, Гриша» честен.
     Лица в кадре берутся и без снимка собеседника (:func:`foreign_name.named`: фраза без биометрии - инъекция, первая
     после рестарта): лицо в кадре не говорящий, пока голос не подтвердил имя (#4388, живой 05.11)."""
     speaker = snapshot.speaker
-    if foreign_name.named(speaker):
-        return frozenset()
     seen = list(foreign_name.face_names((*turn.seen, *turn.queried)))
+    if foreign_name.named(speaker):
+        return foreign_name.name_keys(seen) - foreign_name.name_keys([speaker.name])
     if foreign_name.unconfirmed(speaker):
         seen += [e.speaker for e in window if e.role == USER] + [who for who, _ in turn.heard]
         seen += [str(p.get("who") or "") for p in (*turn.recent, *turn.background)]
