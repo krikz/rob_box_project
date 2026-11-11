@@ -148,6 +148,35 @@ jobs:
               ;;
           esac
 
+          # Issue #4653 (инцидент 10.11, run 42861316455): rerun этого
+          # workflow выкачал голые теги *-humble-latest из локального
+          # registry (teleop/ros2-control от 28.09, voice/supervisor от
+          # 20.10) → контейнеры пересоздались на старых образах → робот
+          # деградировал. Причина НЕ в механике rerun: GitHub честно
+          # повторяет inputs каждой попытки (все 5 attempt'ов run'а имели
+          # одинаковые env), а сам run был задиспатчен с
+          # environment=production (default формы) вместе с
+          # registry_source=local. Дальше цепочка по коду: production →
+          # IMAGE_TAG=latest (case выше), а шаги pull/start грузят
+          # .image-versions.${IMAGE_TAG} лишь при registry_source != 'local'
+          # («[… Pi] Pull Docker Images», условие '[ 'local' != 'local' ]')
+          # → compose разрешает образы в голый ${IMAGE_TAG} = latest.
+          # Голый latest локальный registry обновляет только релизная
+          # сборка с main; ежедневные develop-сборки пушат только dev-теги,
+          # поэтому latest там месяцами старше свежей сборки. Комбинация
+          # local+production недокументирована
+          # (docs/deployment/DEPLOYMENT_WORKFLOW.md: production → github/skip,
+          # local → staging/test) и ни одна автоматика её не использует.
+          # Rerun такого run молча повторил бы старьё снова — честный FAIL
+          # (ADR-0018) здесь, ДО любого SSH на Pi, вместо тихой деградации
+          # робота. Диспатч и rerun после этого гарда ведут себя одинаково:
+          # оба падают с понятной ошибкой, пока не выбрана документированная
+          # комбинация.
+          if [ "${{ inputs.registry_source }}" = "local" ] && [ "${{ inputs.environment }}" = "production" ]; then
+            echo "::error title=Issue #4653 — недопустимая комбинация параметров::registry_source=local + environment=production выкачает голые теги *-humble-latest из локального registry — их обновляет только релизная сборка с main (на момент инцидента им было ~6 недель). Деплой свежей develop-сборки: environment=staging (IMAGE_TAG=dev). Production: registry_source=github (ghcr) или registry_source=skip (рестарт без pull). Rerun этого run снова упадёт здесь — задиспатчь правильную комбинацию."
+            exit 1
+          fi
+
           echo "branch=${{ github.ref_name }}" >> $GITHUB_OUTPUT
           echo "timestamp=$(date -u '+%Y-%m-%d %H:%M:%S UTC')" >> $GITHUB_OUTPUT
 
