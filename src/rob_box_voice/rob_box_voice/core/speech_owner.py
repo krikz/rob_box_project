@@ -157,12 +157,14 @@ class SpeechRecord:
 
 
 class SpeechLedger:
-    """Журнал живых реплик: эпохи, отмена, произнесённые символы."""
+    """Журнал живых реплик: эпохи, отмена, произнесённые символы. Отметка отмены переживает закрытие пред-синтеза,
+    чтобы опоздавший ``commit=true`` того же ``speech_id`` не вернул заменённый сегмент на звучание (#4342)."""
 
     def __init__(self, clock: Callable[[], float] = time.monotonic) -> None:
         self._clock = clock
         self._lock = threading.Lock()
         self._records: Dict[str, SpeechRecord] = {}
+        self._cancelled_ids: Dict[str, float] = {}
 
     def admit(self, speech_id: str, meta: SpeechMeta, text: str) -> SpeechRecord:
         """Завести запись. Устаревшие эпохи здесь не отбрасываются: эпоху агента
@@ -172,7 +174,12 @@ class SpeechLedger:
         with self._lock:
             for sid in [s for s, r in self._records.items() if now - r.touched > STALE_RECORD_S]:
                 del self._records[sid]
-            rec = SpeechRecord(speech_id, meta, len(text), sentence_ends(text), touched=now)
+            for sid in [s for s, when in self._cancelled_ids.items() if now - when > STALE_RECORD_S]:
+                del self._cancelled_ids[sid]
+            rec = SpeechRecord(speech_id, meta, len(text), sentence_ends(text), touched=now,
+                               cancelled=speech_id in self._cancelled_ids)
+            if rec.cancelled:
+                rec.wake.set()
             self._records[speech_id] = rec
             return rec
 
@@ -194,20 +201,27 @@ class SpeechLedger:
         По ``speech_id`` - ровно её; иначе - реплики агента (``*`` - любого) с
         эпохой не новее ``epoch``, кроме непрерываемых.
         """
+        now = self._clock()
         with self._lock:
             if speech_id:
                 hit = [self._records[speech_id]] if speech_id in self._records else []
+                self._cancelled_ids[speech_id] = now
             else:
                 hit = [r for r in self._records.values()
                        if agent in (ANY_AGENT, r.meta.agent) and r.meta.epoch <= epoch and r.meta.interruptible]
             for rec in hit:
                 rec.cancelled = True
                 rec.wake.set()  # прервать ожидание ``at``
+                self._cancelled_ids[rec.speech_id] = now
             return hit
 
     def is_cancelled(self, speech_id: Optional[str]) -> bool:
-        rec = self.get(speech_id)
-        return bool(rec and rec.cancelled)
+        with self._lock:
+            rec = self._records.get(speech_id or "")
+            cancelled_at = self._cancelled_ids.get(speech_id or "")
+            return bool(rec and rec.cancelled) or (
+                cancelled_at is not None and self._clock() - cancelled_at <= STALE_RECORD_S
+            )
 
     def spoken_chars(self, rec: SpeechRecord) -> int:
         """Сколько символов прозвучало - доля текста по доле времени воспроизведения."""
