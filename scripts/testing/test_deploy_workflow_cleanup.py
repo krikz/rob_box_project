@@ -87,10 +87,11 @@ def test_deploy_pull_ignores_compose_pull_policy():
         assert "--policy always" in line, f"pull без --policy always: {line.strip()}"
 
 
-def test_vision_autostart_pull_ignores_compose_pull_policy():
+def test_vision_autostart_does_not_pull_from_registry():
+    """Issue #4533: автозапуск использует локальный кэш, обновление — через деплой."""
     setup = (Path(__file__).resolve().parents[2] / "scripts/setup/setup_vision_pi.sh").read_text(encoding="utf-8")
     exec_pre = [line for line in setup.splitlines() if line.startswith("ExecStartPre=") and "compose pull" in line]
-    assert exec_pre and all("--policy always" in line for line in exec_pre)
+    assert not exec_pre, f"autostart не должен ждать registry: {exec_pre}"
 
 
 # ── ADR-0159: Sound Pi как третий узел деплоя ───────────────────────────────────
