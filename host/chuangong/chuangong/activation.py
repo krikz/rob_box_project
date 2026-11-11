@@ -1,13 +1,15 @@
 """C1: adoption доказанного current и детерминированный dry-run activation/rollback.
 
 Здесь нет compose down/up, смены symlink, миграций или анимации. Только явный `adopt(apply=True)` меняет
-state.json: он записывает current/previous после сравнения legacy-файлов и запущенных image ID с подписанным
-релизом. Activation и rollback возвращают план с `execute=false`, не меняя историю.
+state.json: он записывает current/previous после сравнения legacy-файлов и точной compose-матрицы
+service → container → image ID с подписанным релизом. Activation и rollback возвращают план с `execute=false`,
+health остаётся `not_verified`, история не меняется.
 """
 
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Protocol
 
@@ -30,7 +32,7 @@ class HealthCheck(Protocol):
 
 class DryRunHealthCheck:
     def check(self, role: str, release: str, dry_run: bool) -> HealthResult:
-        return HealthResult("planned", f"health-check {role}/{release}: dry_run={dry_run}")
+        return HealthResult("not_verified", f"health not executed in dry-run: {role}/{release}")
 
 
 def _blocked(record: dict[str, Any], reason: str, detail: Any) -> dict[str, Any]:
@@ -128,6 +130,15 @@ class ActivationMachine:
                 {"current": current, "previous": record["previous"], "requested": release_name},
             )
         staged = self.cfg.releases_root / release_name / self.cfg.node
+        compose_dir = self.cfg.legacy_root / "docker" / self.cfg.node
+        overrides = sorted(
+            path.relative_to(self.cfg.legacy_root).as_posix()
+            for pattern in ("*override*.yaml", "*override*.yml")
+            for path in compose_dir.glob(pattern)
+            if path.is_file()
+        )
+        if overrides:
+            return _blocked(record, "compose_override_present", overrides)
         mismatches = _legacy_mismatches(staged, self.cfg.legacy_root)
         if mismatches:
             return _blocked(record, "legacy_bundle_mismatch", mismatches)
@@ -136,23 +147,23 @@ class ActivationMachine:
             service: self.deps.docker.image_id(ref)
             for service, ref in release["roles"][self.cfg.node]["images"].items()
         }
-        expected = sorted(image_id for image_id in image_ids.values() if image_id)
-        if len(expected) != len(image_ids):
+        if any(image_id is None for image_id in image_ids.values()):
             return _blocked(record, "release_image_id_unavailable", image_ids)
-        running = self.deps.docker.running_image_ids()
-        missing = sorted(set(expected) - set(running))
-        if missing:
+        running = self.deps.docker.running_compose_image_ids()
+        if set(running) != set(image_ids) or any(
+            running.get(service) != [image_id] for service, image_id in image_ids.items()
+        ):
             return _blocked(
                 record,
-                "release_images_not_running",
-                {"expected_image_ids": expected, "running_image_ids": running, "missing_image_ids": missing},
+                "compose_services_mismatch",
+                {"expected_services": image_ids, "running_services": running},
             )
 
         evidence = {
             "staged": str(staged),
             "legacy_root": str(self.cfg.legacy_root),
             "image_ids": image_ids,
-            "running_image_ids": running,
+            "compose_services": running,
         }
         record["adoption"] = {"release": release_name, "git": release.get("git"), "evidence": evidence}
         previous = record["previous"] if current == release_name else None
@@ -164,6 +175,35 @@ class ActivationMachine:
         record["previous"] = previous
         record["state"] = st.State.ADOPTED.value
         return report(self.cfg, self.deps, record)
+
+    @staticmethod
+    def _created(release: dict[str, Any]) -> datetime:
+        raw = release.get("created")
+        if not isinstance(raw, str):
+            raise ValueError("created отсутствует в подписанном release.yaml")
+        created = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+        if created.tzinfo is None:
+            raise ValueError(f"created без часового пояса: {raw}")
+        return created
+
+    def _compat_block(self, record: dict[str, Any], release: dict[str, Any]) -> dict[str, Any] | None:
+        minimum = release["compat"]["min_previous"]
+        current = record["current"]
+        if minimum is None or current == minimum:
+            return None
+        detail = {"current": current, "min_previous": minimum}
+        try:
+            current_release = fetch_release(self.cfg, self.deps.registry, ref=current)
+            minimum_release = fetch_release(self.cfg, self.deps.registry, ref=minimum)
+            if current_release is None or minimum_release is None:
+                raise ValueError("подписанный манифест current/min_previous недоступен")
+            current_created = self._created(current_release)
+            minimum_created = self._created(minimum_release)
+        except (FetchError, ValueError) as exc:
+            return _blocked(record, "compat_unproven", {**detail, "error": str(exc)})
+        if current_created < minimum_created:
+            return _blocked(record, "compat_min_previous", detail)
+        return None
 
     def _prepare_activation(self, release_name: str) -> tuple[dict[str, Any], dict[str, Any] | None]:
         record = self._record()
@@ -177,6 +217,9 @@ class ActivationMachine:
             return _blocked(record, "current_unproven", history), None
         if record["current"] == release_name:
             return _blocked(record, "already_current", history), None
+        compat_block = self._compat_block(record, release)
+        if compat_block is not None:
+            return compat_block, None
         return record, release
 
     def preflight(self, release_name: str) -> dict[str, Any]:
@@ -218,8 +261,10 @@ class ActivationMachine:
         target = release["release"]
         health = self.health.check(self.cfg.node, target, dry_run=True)
         record["health"] = asdict(health)
-        if health.status not in ("planned", "healthy"):
+        if health.status == "unhealthy":
             return _blocked(record, "health_check_failed", health.detail)
+        if health.status != "not_verified":
+            return _blocked(record, "health_check_not_verified", asdict(health))
         record["plan"] = [
             {
                 "op": "activate",

@@ -650,8 +650,9 @@ digest. Ничего не переключает. _Не путать_ с акт�
 проверка подписи minisign, stage, отчёт в `robots/<id>/ops/chuangong/state/<узел>`. Реального переключения стеков нет.
 
 **Adoption** — доказательство того, что уже установленный legacy-стек соответствует подписанному релизу: совпали файлы
-бандла и image ID управляемых контейнеров. Только после этого агент записывает `current`; при первом adoption
-`previous=null`. Mutable `external_images` без digest делают adoption `blocked(external_images_unpinned)`.
+бандла и точная compose-матрица service → container → image ID. Только после этого агент записывает `current`; при первом
+adoption `previous=null`. Mutable `external_images`, compose override и лишний/старый управляемый контейнер делают
+adoption `blocked` с машинной причиной.
 
 **biguan / chuguan** (闭关 / 出关, «затвор» / «выход из затвора») — состояние робота во время ритуала обновления и
 выход из него (фаза C, rbt_infra ADR-0003 §4.3). Имена зарезервированы, кода нет.

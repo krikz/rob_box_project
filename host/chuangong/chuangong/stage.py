@@ -36,7 +36,7 @@ class Docker(Protocol):
 
     def image_id(self, ref: str) -> str | None: ...
 
-    def running_image_ids(self) -> list[str]: ...
+    def running_compose_image_ids(self) -> dict[str, list[str]]: ...
 
     def pull(self, ref: str) -> None: ...
 
@@ -67,16 +67,19 @@ class DockerCli:
         image_id = res.stdout.strip()
         return image_id if res.returncode == 0 and image_id else None
 
-    def running_image_ids(self) -> list[str]:
+    def running_compose_image_ids(self) -> dict[str, list[str]]:
         res = self._run("ps", "--format", "{{.ID}}")
         if res.returncode != 0:
-            return []
-        ids = []
+            return {}
+        services: dict[str, list[str]] = {}
         for container in (line.strip() for line in res.stdout.splitlines() if line.strip()):
-            inspected = self._run("inspect", "--format", "{{.Image}}", container)
-            if inspected.returncode == 0 and inspected.stdout.strip():
-                ids.append(inspected.stdout.strip())
-        return sorted(set(ids))
+            inspected = self._run(
+                "inspect", "--format", '{{index .Config.Labels "com.docker.compose.service"}} {{.Image}}', container
+            )
+            service, separator, image_id = inspected.stdout.strip().rpartition(" ")
+            if inspected.returncode == 0 and separator and service != "<no value>" and image_id:
+                services.setdefault(service, []).append(image_id)
+        return {service: sorted(ids) for service, ids in services.items()}
 
     def pull(self, ref: str) -> None:
         res = self._run("pull", "--quiet", ref, timeout=self.timeout_s)

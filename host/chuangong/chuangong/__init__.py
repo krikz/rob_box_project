@@ -14,4 +14,4 @@
 Переключения symlink `current`, `compose down/up` и миграций по-прежнему НЕТ.
 """
 
-AGENT_VERSION = "0.2.0"
+AGENT_VERSION = "0.2.1"
