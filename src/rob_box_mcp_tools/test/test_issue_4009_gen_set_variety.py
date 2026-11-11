@@ -146,6 +146,46 @@ def test_two_pieces_six_slots_repeat_only_after_variants_other_slots_and_reserve
     assert ["(repeat," in line for line in lines] == [False] * 4 + [True] * 2
 
 
+def test_two_pieces_six_slots_stop_cover_round_and_repeat_only_after_style_failure(tmp_path, caplog):
+    """M<N: два произведения дают по задаче с двумя вариантами, а не новый платный круг A/B; остаток сета идёт по
+    существующему пути стиля. Если и он не сгенерировался, только последние слоты — честный ``repeat``."""
+    from types import SimpleNamespace
+
+    from rob_box_mcp_tools.engine.gen.provider import GenUnavailable
+    from rob_box_music.choice import DeterministicChooser
+
+    lib = _lib(tmp_path)
+    maker = gs.GenSetMaker(Kie(), lambda: lib, DeterministicChooser(),
+                           cover=SimpleNamespace(ready=lambda: True))
+    routes = maker.router.route_slots([CLUB] * 6, works=[A, B])
+    assert [r.work for r in routes] == [A, B, A, B, None, None]
+    assert [r.id for r in routes] == ["generate:cover:V6"] * 4 + ["generate:instrumental:V6"] * 2
+
+    calls = []
+
+    def make(work, ask, spent):
+        calls.append(work)
+        task = f"C{len(calls)}"
+        ids = tuple(_cover(lib, work, ask.genre, task, v, title=f"{work.title} {v}") for v in range(2))
+        return CoverResult(ids[0], "", task, 12.0, track_ids=ids)
+
+    plan = gs.SetRoutes(("club",) * 6, tuple(routes), theme_covers=((A, ()), (B, ())))
+    said = []
+    gen = gs.GenSet(provider=Kie(fail=GenUnavailable("provider_down", "test double")), library=lib, ask=CLUB,
+                    genre="club", theme="", set_id="gen-diversity", bpm=120, tracks=6, cache=[], keys=plan.keys(),
+                    covers=gs.SetCovers(plan.covers(), make, plan.pieces()), speak=said.append,
+                    spawn=lambda fn: fn(), run=fake_ffmpeg)
+    with caplog.at_level(logging.INFO):
+        tracks = [gen.next_track(no, "AB"[(no - 1) % 2]) for no in range(1, 7)]
+    assert calls == [A, B]
+    assert _hows(gen, tracks) == ["ok"] * 4 + ["repeat"] * 2
+    assert len(set(_ids(gen, tracks)[:4])) == 4
+    first = gen._items[tracks[4].track_id][0]  # noqa: SLF001
+    assert said == [gs.failed_text("club", "provider_down"), gs.repeat_text(first, "provider_down")]
+    repeats = [r.message for r in caplog.records if r.message.startswith("🔁 [gen set]")]
+    assert len(repeats) == 2 and all("(provider_down;" in line for line in repeats)
+
+
 def test_without_reserve_repeat_is_still_the_last_step_and_names_its_reason():
     """Запаса нет: готовый трек другого слота раньше повтора; повтор — давнее сыгранное, не сосед по задаче."""
     a0, a1 = gs.SetItem("a0", "A", "a", genre="x"), gs.SetItem("a1", "A", "a", genre="x")

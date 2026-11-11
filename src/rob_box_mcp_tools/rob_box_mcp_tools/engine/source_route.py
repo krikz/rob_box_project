@@ -182,7 +182,7 @@ class SourceRouter:
         for no, ask in enumerate(asks, 1):
             if seconds and no > minimum and (end >= seconds - kn.SET_FILL_SLACK_S or ledger.tasks_full()):
                 break
-            work = ledger.work_for()
+            work = ledger.work_for(ask)
             ctx, free = ledger.context(ask, work)
             options, reason = set_candidates(ask, ctx, work)
             route = choose_route(ask, ctx, self._chooser, work=work, for_set=True)
@@ -217,7 +217,8 @@ class SetLedger:
     """Учёт пути сета по трекам: взятые треки кэша, потраченное заказами (вычитается из лимитов дня и сета) и
     запасные вторые варианты задач по ключу слота (задача — 2 варианта: следующий трек того же ключа бесплатен).
     Каверы темы (В16, Шифу 14.10 «одни и те же треки ставит»): у каждого произведения свой ключ ``cover|стиль|пьеса``,
-    произведение трека — наименее игранное в сете и не то же, что у соседа; первый проход — по порядку темы."""
+    произведение трека — наименее игранное в сете и не то же, что у соседа; первый проход — по порядку темы. После
+    задачи и её второго варианта новый круг не заказывается: остаток сета идёт по пути стиля (#4009)."""
 
     def __init__(self, base: SourceContext, theme_tags: str = "", works: Sequence[CoverWork] = (),
                  theme_named: bool = True) -> None:
@@ -234,12 +235,15 @@ class SetLedger:
         """Задач генерации заказано ``GEN_SET_MAX_TASKS``, запасного варианта нет: следующий трек заказать нечем."""
         return round(self.spent / self._cost) >= kn.GEN_SET_MAX_TASKS and not any(self._spare.values())
 
-    def work_for(self) -> Optional[CoverWork]:
-        """Произведение кавера трека: реже всех сыгранное в сете (ничья — порядок темы), не сосед — пока есть другое;
-        его второй вариант задачи берётся этим же ключом (:meth:`context`). Произведений нет — ``None``."""
-        if not self._works:
+    def work_for(self, ask: SourceAsk) -> Optional[CoverWork]:
+        """Произведение кавера трека: реже всех сыгранное в сете (ничья — порядок темы), не сосед — пока есть другое.
+        Его задача в этом стиле заказывается один раз; когда израсходован и второй вариант, произведение больше не
+        выбирается (#4009: M<N не превращается в новые круги A/B). Доступных произведений нет — ``None``, путь стиля."""
+        available = [w for w in self._works
+                     if self._spare.get(self._key(ask, w), 0) > 0 or self._key(ask, w) not in self._spare]
+        if not available:
             return None
-        others = [w for w in self._works if w != self._last] or list(self._works)
+        others = [w for w in available if w != self._last] or available
         return min(others, key=lambda w: (self._plays[w], self._works.index(w)))
 
     def _key(self, ask: SourceAsk, work: Optional[CoverWork]) -> str:
