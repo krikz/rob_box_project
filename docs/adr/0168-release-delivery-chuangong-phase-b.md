@@ -118,8 +118,10 @@ systemd-таймеру раз в 5 минут.
    `scripts/ci/tests/test_build_all_release_step.py`.
 3. Установка агента на три Pi: `host/chuangong/install.sh --node <роль>` (его зовёт и `setup_node.sh` для
    main/vision/sound) ставит `python3-yaml`, `python3-cryptography`, код в `/opt/rob_box/chuangong`, обёртку
-   `/usr/local/bin/chuangong`, каталоги, `/etc/chuangong/chuangong.env` (observe) и юниты. Таймер включается
-   только `--enable` (или `ROBBOX_ENABLE_CHUANGONG=1` у `setup_node.sh`); проверка — `host/chuangong/check_install.sh`.
+   `/usr/local/bin/chuangong`, каталоги, `/etc/chuangong/chuangong.env` (observe) и юниты. Таймер по-прежнему
+   включается только флагом `--enable`, но `setup_node.sh` передаёт его всегда — внедрение постоянное: вызов
+   идёт с `--enable` и `--pubkey host/chuangong/keys/release.pub` из репо, отдельные env (`ROBBOX_ENABLE_CHUANGONG`,
+   `CHUANGONG_PUBKEY_FILE`) оператору не нужны; проверка — `host/chuangong/check_install.sh`.
    sudoers в фазе B не нужен. На живые Pi ещё не ставили.
 4. Потребитель `metrics.prom` (node_exporter textfile или Alloy, ADR-0001) — сейчас у файла потребителя нет.
 5. По желанию — узкое хранилище zenoh на `robots/*/ops/chuangong/**` в роутере Main Pi (правка конфига роли):
