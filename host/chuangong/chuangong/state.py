@@ -1,6 +1,7 @@
-"""Состояние агента chuangong: перечень состояний, ключи zenoh, запись state.json, метрика rbx_release_info.
+"""Состояние агента chuangong: перечень состояний, ключи zenoh, state.json, метрика и lock записи.
 
-Фразы о состоянии строит код из этих полей (ADR-0148): наблюдатель workflow печатает их как есть.
+Фразы о состоянии строит код из этих полей (ADR-0148): наблюдатель workflow печатает их как есть. Таймер и
+adoption сериализуют read-check-write через `write_lock`; dry-run lock не создаёт.
 """
 
 from __future__ import annotations
@@ -8,6 +9,9 @@ from __future__ import annotations
 import json
 import os
 import tempfile
+import time
+from collections.abc import Iterator
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from enum import Enum
 from pathlib import Path
@@ -17,6 +21,39 @@ from . import AGENT_VERSION
 
 STATE_SCHEMA = 1
 NODES = ("main", "vision", "sound")
+
+
+@contextmanager
+def write_lock(state_dir: Path) -> Iterator[None]:
+    """Сериализация read-check-write состояния между таймером и adoption; файл не удаляется после unlock."""
+    state_dir.mkdir(parents=True, exist_ok=True)
+    with (state_dir / ".lock").open("a+b") as fh:
+        fh.seek(0, os.SEEK_END)
+        if fh.tell() == 0:
+            fh.write(b"\0")
+            fh.flush()
+        fh.seek(0)
+        if os.name == "nt":
+            import msvcrt
+
+            while True:
+                try:
+                    msvcrt.locking(fh.fileno(), msvcrt.LK_LOCK, 1)
+                    break
+                except OSError:
+                    time.sleep(0.05)
+        else:
+            import fcntl
+
+            fcntl.flock(fh.fileno(), fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fh.seek(0)
+            if os.name == "nt":
+                msvcrt.locking(fh.fileno(), msvcrt.LK_UNLCK, 1)
+            else:
+                fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
 
 
 class State(str, Enum):

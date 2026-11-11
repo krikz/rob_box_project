@@ -446,3 +446,243 @@ def test_cli_exposes_c1_commands(command):
     with pytest.raises(SystemExit) as exc:
         main([command, "--help"])
     assert exc.value.code == 0
+
+
+def test_adoption_blocks_partial_compose_probe_error(tmp_path, world):
+    cfg = _cfg(tmp_path, world)
+    docker = FakeDocker()
+    deps = _deps(world, docker)
+    _remove_external_images(world)
+    _stage(cfg, deps, world.release)
+    _match_legacy_and_images(cfg, world, docker)
+    service = next(iter(world.images[cfg.node]))
+    docker.compose_images[service].append("image-old")
+    docker.compose_probe_errors[service] = "docker inspect: permission denied"
+
+    rec = _machine(cfg, deps).adopt(world.release["release"], apply=True)
+
+    assert rec["state"] == "blocked" and rec["reason"] == "compose_probe_failed"
+    assert rec["detail"] == {
+        "service": service,
+        "container": f"{service}-old",
+        "error": "docker inspect: permission denied",
+    }
+    assert not cfg.state_file.exists()
+
+
+def test_docker_cli_compose_probe_failure_has_raw_detail():
+    import subprocess
+
+    from chuangong.stage import DockerCli, StageError
+
+    docker = DockerCli()
+    responses = {
+        ("ps", "--format", "{{.ID}}"): subprocess.CompletedProcess([], 0, "c-new\nc-old\n", ""),
+        (
+            "inspect",
+            "--format",
+            '{{index .Config.Labels "com.docker.compose.service"}} {{.Image}}',
+            "c-new",
+        ): subprocess.CompletedProcess([], 0, "vision-svc1 sha256:new\n", ""),
+        (
+            "inspect",
+            "--format",
+            '{{index .Config.Labels "com.docker.compose.service"}} {{.Image}}',
+            "c-old",
+        ): subprocess.CompletedProcess([], 1, "", "permission denied"),
+    }
+    docker._run = lambda *args, timeout=30.0: responses[args]
+
+    with pytest.raises(StageError) as exc:
+        docker.running_compose_image_ids()
+    assert exc.value.reason == "compose_probe_failed"
+    assert exc.value.extra == {"service": "unknown", "container": "c-old", "error": "permission denied"}
+
+
+def test_adoption_and_tick_are_serialized(tmp_path, world, monkeypatch):
+    import queue
+    import threading
+    from contextlib import contextmanager
+
+    from chuangong.agent import tick
+
+    cfg = _cfg(tmp_path, world)
+    docker = FakeDocker()
+    deps = _deps(world, docker)
+    _remove_external_images(world)
+    _stage(cfg, deps, world.release)
+    _match_legacy_and_images(cfg, world, docker)
+    _save_history(cfg, None)
+    original_lock = getattr(st, "write_lock", None)
+    original_load, original_save = st.load, st.save
+    events = queue.Queue()
+    adoption_save_started = threading.Event()
+    allow_adoption_save = threading.Event()
+    timer_loaded = threading.Event()
+    errors = []
+
+    @contextmanager
+    def tracked_lock(state_dir):
+        if threading.current_thread().name == "timer":
+            events.put("timer_lock_attempt")
+        if original_lock is None:
+            yield
+        else:
+            with original_lock(state_dir):
+                yield
+
+    def tracked_load(path):
+        if threading.current_thread().name == "timer":
+            timer_loaded.set()
+            events.put("timer_loaded")
+        return original_load(path)
+
+    def tracked_save(path, record):
+        if threading.current_thread().name == "adoption" and path == cfg.state_file:
+            adoption_save_started.set()
+            if not allow_adoption_save.wait(5):
+                raise TimeoutError("test did not release adoption save")
+        return original_save(path, record)
+
+    monkeypatch.setattr(st, "write_lock", tracked_lock, raising=False)
+    monkeypatch.setattr(st, "load", tracked_load)
+    monkeypatch.setattr(st, "save", tracked_save)
+
+    def run_adoption():
+        try:
+            _machine(cfg, deps).adopt(world.release["release"], apply=True)
+        except Exception as exc:
+            errors.append(exc)
+
+    def run_tick():
+        try:
+            tick(cfg, deps)
+        except Exception as exc:
+            errors.append(exc)
+        finally:
+            events.put("timer_finished")
+
+    adoption = threading.Thread(target=run_adoption, name="adoption")
+    timer = threading.Thread(target=run_tick, name="timer")
+    adoption.start()
+    assert adoption_save_started.wait(5)
+    timer.start()
+    try:
+        assert events.get(timeout=5) == "timer_lock_attempt"
+        assert not timer_loaded.is_set()
+    finally:
+        allow_adoption_save.set()
+        adoption.join(5)
+        timer.join(5)
+    assert not adoption.is_alive() and not timer.is_alive()
+    assert errors == []
+    assert json.loads(cfg.state_file.read_text(encoding="utf-8"))["current"] == world.release["release"]
+
+
+def test_state_lock_is_released_after_exception(tmp_path):
+    import threading
+
+    lock = getattr(st, "write_lock", None)
+    assert lock is not None
+    acquired = threading.Event()
+
+    with pytest.raises(RuntimeError, match="boom"):
+        with lock(tmp_path / "state"):
+            raise RuntimeError("boom")
+
+    def acquire_again():
+        with lock(tmp_path / "state"):
+            acquired.set()
+
+    thread = threading.Thread(target=acquire_again)
+    thread.start()
+    assert acquired.wait(5)
+    thread.join(5)
+    assert not thread.is_alive()
+
+
+def test_adoption_dry_run_has_no_lock_or_state_side_effects(tmp_path, world):
+    cfg = _cfg(tmp_path, world)
+    docker = FakeDocker()
+    deps = _deps(world, docker)
+    _remove_external_images(world)
+    _stage(cfg, deps, world.release)
+    _match_legacy_and_images(cfg, world, docker)
+
+    rec = _machine(cfg, deps).adopt(world.release["release"])
+
+    assert rec["state"] == "adoption_planned"
+    assert not cfg.state_dir.exists()
+    assert not (cfg.state_dir / ".lock").exists()
+
+
+def test_legacy_compare_streams_large_files(tmp_path, world, monkeypatch):
+    from pathlib import Path
+
+    cfg = _cfg(tmp_path, world)
+    docker = FakeDocker()
+    deps = _deps(world, docker)
+    _remove_external_images(world)
+    _stage(cfg, deps, world.release)
+    _match_legacy_and_images(cfg, world, docker)
+    relative = Path("docker/vision/docker-compose.yaml")
+    staged = cfg.releases_root / world.release["release"] / cfg.node / relative
+    legacy = cfg.legacy_root / relative
+    for path in (staged, legacy):
+        with path.open("r+b") as fh:
+            fh.truncate(8 * 1024 * 1024)
+    read_sizes = []
+    original_open = Path.open
+
+    class TrackingReader:
+        def __init__(self, fh):
+            self.fh = fh
+
+        def read(self, size=-1):
+            read_sizes.append(size)
+            return self.fh.read(size)
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            self.fh.close()
+
+    def tracked_open(self, *args, **kwargs):
+        mode = args[0] if args else kwargs.get("mode", "r")
+        fh = original_open(self, *args, **kwargs)
+        return TrackingReader(fh) if self in (staged, legacy) and mode == "rb" else fh
+
+    monkeypatch.setattr(Path, "open", tracked_open)
+    rec = _machine(cfg, deps).adopt(world.release["release"], apply=True)
+
+    assert rec["state"] == "adopted"
+    assert read_sizes
+    assert all(0 < size <= 1024 * 1024 for size in read_sizes)
+
+
+def test_legacy_read_oserror_is_structured_blocked(tmp_path, world, monkeypatch):
+    from pathlib import Path
+
+    cfg = _cfg(tmp_path, world)
+    docker = FakeDocker()
+    deps = _deps(world, docker)
+    _remove_external_images(world)
+    _stage(cfg, deps, world.release)
+    _match_legacy_and_images(cfg, world, docker)
+    legacy = cfg.legacy_root / "docker" / "vision" / "docker-compose.yaml"
+    original_open = Path.open
+
+    def failing_open(self, *args, **kwargs):
+        mode = args[0] if args else kwargs.get("mode", "r")
+        if self == legacy and mode == "rb":
+            raise OSError("simulated read failure")
+        return original_open(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "open", failing_open)
+    rec = _machine(cfg, deps).adopt(world.release["release"], apply=True)
+
+    assert rec["state"] == "blocked" and rec["reason"] == "legacy_read_failed"
+    assert rec["detail"]["path"] == "docker/vision/docker-compose.yaml"
+    assert "simulated read failure" in rec["detail"]["error"]
+    assert not cfg.state_file.exists()

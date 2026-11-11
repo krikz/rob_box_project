@@ -42,6 +42,24 @@ def _blocked(record: dict[str, Any], reason: str, detail: Any) -> dict[str, Any]
     return record
 
 
+class LegacyReadError(RuntimeError):
+    def __init__(self, path: str, error: str) -> None:
+        super().__init__(f"{path}: {error}")
+        self.path = path
+        self.error = error
+
+
+def _files_equal(first: Path, second: Path) -> bool:
+    with first.open("rb") as left, second.open("rb") as right:
+        while True:
+            left_chunk = left.read(1024 * 1024)
+            right_chunk = right.read(1024 * 1024)
+            if left_chunk != right_chunk:
+                return False
+            if not left_chunk:
+                return True
+
+
 def _legacy_mismatches(staged: Path, legacy_root: Path) -> list[dict[str, str]]:
     mismatches = []
     for path in sorted(staged.rglob("*")):
@@ -49,10 +67,13 @@ def _legacy_mismatches(staged: Path, legacy_root: Path) -> list[dict[str, str]]:
             continue
         relative = path.relative_to(staged)
         legacy = legacy_root / relative
-        if not legacy.is_file():
-            mismatches.append({"path": relative.as_posix(), "detail": "missing"})
-        elif path.read_bytes() != legacy.read_bytes():
-            mismatches.append({"path": relative.as_posix(), "detail": "content_differs"})
+        try:
+            if not legacy.is_file():
+                mismatches.append({"path": relative.as_posix(), "detail": "missing"})
+            elif not _files_equal(path, legacy):
+                mismatches.append({"path": relative.as_posix(), "detail": "content_differs"})
+        except OSError as exc:
+            raise LegacyReadError(relative.as_posix(), str(exc)) from exc
     return mismatches
 
 
@@ -113,6 +134,12 @@ class ActivationMachine:
     def adopt(self, release_name: str, apply: bool = False) -> dict[str, Any]:
         if apply and self.cfg.dry_run:
             raise ValueError("adopt(apply=True) несовместим с Config.dry_run")
+        if apply:
+            with st.write_lock(self.cfg.state_dir):
+                return self._adopt(release_name, apply=True)
+        return self._adopt(release_name, apply=False)
+
+    def _adopt(self, release_name: str, apply: bool) -> dict[str, Any]:
         record = self._record(dry_run=not apply)
         release = self._release(record, release_name)
         if release is None:
@@ -139,7 +166,10 @@ class ActivationMachine:
         )
         if overrides:
             return _blocked(record, "compose_override_present", overrides)
-        mismatches = _legacy_mismatches(staged, self.cfg.legacy_root)
+        try:
+            mismatches = _legacy_mismatches(staged, self.cfg.legacy_root)
+        except LegacyReadError as exc:
+            return _blocked(record, "legacy_read_failed", {"path": exc.path, "error": exc.error})
         if mismatches:
             return _blocked(record, "legacy_bundle_mismatch", mismatches)
 
@@ -149,7 +179,18 @@ class ActivationMachine:
         }
         if any(image_id is None for image_id in image_ids.values()):
             return _blocked(record, "release_image_id_unavailable", image_ids)
-        running = self.deps.docker.running_compose_image_ids()
+        try:
+            running = self.deps.docker.running_compose_image_ids()
+        except StageError as exc:
+            return _blocked(
+                record,
+                "compose_probe_failed",
+                {
+                    "service": exc.extra.get("service", "unknown"),
+                    "container": exc.extra.get("container", "unknown"),
+                    "error": exc.extra.get("error", exc.detail),
+                },
+            )
         if set(running) != set(image_ids) or any(
             running.get(service) != [image_id] for service, image_id in image_ids.items()
         ):

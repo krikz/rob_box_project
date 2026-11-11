@@ -193,6 +193,11 @@ def report(cfg: Config, deps: Deps, record: dict[str, Any]) -> dict[str, Any]:
 
 
 def tick(cfg: Config, deps: Deps) -> dict[str, Any]:
-    prev = st.load(cfg.state_file)
-    record = evaluate(cfg, deps, prev)
-    return report(cfg, deps, record)
+    if cfg.dry_run:
+        prev = st.load(cfg.state_file)
+        record = evaluate(cfg, deps, prev)
+        return report(cfg, deps, record)
+    with st.write_lock(cfg.state_dir):
+        prev = st.load(cfg.state_file)
+        record = evaluate(cfg, deps, prev)
+        return report(cfg, deps, record)

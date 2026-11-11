@@ -92,6 +92,7 @@ class FakeDocker:
         self.hotpatched = list(hotpatched)
         self.image_ids = {}
         self.compose_images = {}
+        self.compose_probe_errors = {}
 
     def image_present(self, ref):
         return ref in self.present
@@ -100,6 +101,12 @@ class FakeDocker:
         return self.image_ids.get(ref) if ref in self.present else None
 
     def running_compose_image_ids(self):
+        for service in self.compose_images:
+            if service in self.compose_probe_errors:
+                error = self.compose_probe_errors[service]
+                raise StageError(
+                    "compose_probe_failed", error, service=service, container=f"{service}-old", error=error
+                )
         return {service: sorted(ids) for service, ids in self.compose_images.items()}
 
     def pull(self, ref):

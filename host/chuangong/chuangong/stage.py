@@ -70,14 +70,31 @@ class DockerCli:
     def running_compose_image_ids(self) -> dict[str, list[str]]:
         res = self._run("ps", "--format", "{{.ID}}")
         if res.returncode != 0:
-            return {}
+            error = res.stderr.strip() or res.stdout.strip() or f"docker ps exited {res.returncode}"
+            raise StageError("compose_probe_failed", error, service="unknown", container="docker ps", error=error)
         services: dict[str, list[str]] = {}
         for container in (line.strip() for line in res.stdout.splitlines() if line.strip()):
             inspected = self._run(
                 "inspect", "--format", '{{index .Config.Labels "com.docker.compose.service"}} {{.Image}}', container
             )
-            service, separator, image_id = inspected.stdout.strip().rpartition(" ")
-            if inspected.returncode == 0 and separator and service != "<no value>" and image_id:
+            if inspected.returncode != 0:
+                error = (
+                    inspected.stderr.strip()
+                    or inspected.stdout.strip()
+                    or f"docker inspect exited {inspected.returncode}"
+                )
+                raise StageError("compose_probe_failed", error, service="unknown", container=container, error=error)
+            raw = inspected.stdout.strip()
+            service, separator, image_id = raw.rpartition(" ")
+            if not separator or not image_id:
+                raise StageError(
+                    "compose_probe_failed",
+                    f"unexpected docker inspect output: {raw!r}",
+                    service=service or "unknown",
+                    container=container,
+                    error=f"unexpected docker inspect output: {raw!r}",
+                )
+            if service != "<no value>":
                 services.setdefault(service, []).append(image_id)
         return {service: sorted(ids) for service, ids in services.items()}
 
