@@ -121,8 +121,10 @@ def _none_option(heard: str, heard_text: str, llm_theme: str) -> Option:
     return Option(NONE_ID, features, "без темы — сет по стилю")
 
 
-def _known_option(theme: KnownTheme, heard: str, llm_theme: str) -> Option:
-    asked = bool(heard) and names_known(theme, heard)
+def _known_option(theme: KnownTheme, heard: str, heard_text: str, llm_theme: str) -> Option:
+    """Совпадение с кэшем подтверждают только слова реплики с опорой: загрязнённая кэш-тема не делает огрызок STT
+    осмысленным (#4479)."""
+    asked = bool(heard) and theme_support(heard, heard_text) and names_known(theme, heard)
     features = {"asked": float(asked), "whole": float(asked and covers_all(theme, heard)),
                 "llm": float(bool(llm_theme) and names_known(theme, llm_theme)), "cached": float(theme.tracks > 0)}
     note = f", в кэше {theme.tracks}" if theme.tracks else ""
@@ -146,7 +148,7 @@ def theme_question(heard_text: Optional[str], llm_theme: Optional[str],
         options.append(Option(LLM_ID, texts[llm], f"тема LLM из слов человека «{llm}»"))
         themes[LLM_ID] = llm
     for theme in known:
-        option = _known_option(theme, heard, llm_theme)
+        option = _known_option(theme, heard, said, llm_theme)
         if option.id not in themes:
             options.append(option)
             themes[option.id] = theme.name
