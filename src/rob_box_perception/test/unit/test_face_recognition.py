@@ -1139,6 +1139,17 @@ def test_top_edge_face_with_eyes_above_frame_rejected_clipped_top_4544():
     assert s['crop_kept_by_landmarks'] == 0
 
 
+def test_top_edge_face_with_degenerate_landmarks_rejected_clipped_top_4544():
+    embedder = FakeEmbedder()
+    rec = FaceRecognizer(embedder=embedder, store=FakeStore())
+    rec.process([_edge_det([0.5, 0.1] * 5)], make_frame(), now=0.0)
+
+    assert embedder.embed_calls == [], 'совпадающие точки не доказывают наличие глаз в кропе'
+    s = rec.stats()
+    assert s['crop_rejected_by_reason']['clipped_top'] == 1
+    assert s['crop_kept_by_landmarks'] == 0
+
+
 def test_low_coverage_without_landmarks_rejected_clipped_coverage_4544():
     embedder = FakeEmbedder()
     rec = FaceRecognizer(embedder=embedder, store=FakeStore())
