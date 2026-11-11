@@ -110,7 +110,8 @@ def test_behaviors_take_pose_in_frame_of_their_costmap():
 def test_dwb_path_align_forward_point_is_g1_value():
     """PathAlign.forward_point_distance = 0.20 (Г1, решение Шифу 10.11): «нос» PathAlign
     уходит внутрь допуска цели 0.25 и барьер стоянки у черты 0.325 м исчезает
-    (HIL 10.11, research/2026-11-05 §12–13: двелл 65–158 с → 0 с, polygon 8/8 в r3).
+    (HIL 10.11, research/2026-11-05 §12–13: baseline 65/138/147/158 с — суммы по 59 подъездам
+    в полосах 0.33/0.34/0.35/0.36 м; с Г1 двелл 0 с, polygon 8/8 в r3).
 
     Trade-off носа (0.31 м): 0.15 (HIL 05.11, #4365) подводил корпус к проёму 0.8–0.9 м
     наискось до 21° — стоп защиты по косяку; 0.325 (дефолт Nav2) давал двелл.
