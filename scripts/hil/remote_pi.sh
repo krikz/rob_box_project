@@ -15,9 +15,13 @@
 #   remote_pi.sh maps-dump <контейнер> <БД>  SELECT * FROM maps ORDER BY id (строки a|b|c)
 #                                            из SQLite внутри контейнера, ТОЛЬКО чтение
 #                                            (mode=ro); нет таблицы/файла — код 7
+#   remote_pi.sh e2e-state <контейнер>       e2e_mode /speaker_id_node: true|false|unknown
+#                                            (только чтение; #4686 — hil.sh не сбрасывает
+#                                            e2e-режим марафона рекреацией контейнера)
 #
-# Боевые данные (/data, ./maps) скрипт не пишет. Читает одно: maps-dump — боевой реестр
-# карт Sound Pi для сверки «до on / после off» (#4392), открывается только на чтение.
+# Боевые данные (/data, ./maps) скрипт не пишет. Читает: maps-dump — боевой реестр
+# карт Sound Pi для сверки «до on / после off» (#4392), открывается только на чтение;
+# e2e-state — параметр ROS-узла, чтение.
 set -euo pipefail
 
 cmd="${1:-}"
@@ -101,6 +105,17 @@ for row in conn.execute("SELECT * FROM maps ORDER BY id"):
             echo "❌ maps-dump: не прочитал maps из $db в $name" >&2
             exit 7
         fi
+        ;;
+    e2e-state)
+        name="$1"
+        out=$(docker exec "$name" bash -lc \
+            'source /opt/ros/humble/setup.bash; source /ws/install/setup.bash; ros2 param get /speaker_id_node e2e_mode --no-daemon 2>/dev/null | grep -aoE "Boolean value is: (True|False)" | tail -1' \
+            2>/dev/null || true)
+        case "$out" in
+            *True*) echo true ;;
+            *False*) echo false ;;
+            *) echo unknown ;;
+        esac
         ;;
     *)
         sed -n '2,20p' "$0" >&2

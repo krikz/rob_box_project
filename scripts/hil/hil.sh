@@ -9,6 +9,8 @@
 #
 # on:
 #   1. проверки: ssh до четырёх машин, настройки, пути карт и реестра (не боевые), образ сима;
+#      e2e_mode робота (remote_pi.sh e2e-state) — при активном e2e-прогоне отказ: рекреация
+#      voice-assistant сбросила бы e2e_mode марафона (#4686);
 #   2. замок HIL_LOCK (/tmp/hil.lock) на Main Pi — деплой его видит и не идёт;
 #   3. Main: docker stop ros2-control lslidar — моторы (CAN → VESC) получают команды
 #      только от ros2-control; Vision: docker stop oak-d ceiling-camera;
@@ -24,6 +26,8 @@
 #      значит, единственный контроллер — Gazebo. Иначе сим гасится, робот остаётся без моторов.
 # off: сим гасится первым, затем на Main, Vision и Sound `docker compose up -d --no-deps` тех же
 #   сервисов с теми же образами (закреплены по работающим контейнерам), замок снимается;
+#   восстановление пересоздаёт voice-assistant — активный e2e_mode сбросится: громкое
+#   предупреждение в логе, сам off не блокируем (restore возвращает моторы, #4686);
 #   последним — сверка боевого `SELECT * FROM maps` со снапшотом on: изменился — выход 3.
 #   Состояние «до»: сразу после замка on пишет running|restarting|exited|absent каждого затрагиваемого
 #   сервиса в HIL_PRE_STATE (Main Pi). off сверяет с ним: сервис был нерабочим до on и таким остался —
@@ -76,6 +80,26 @@ rpi() {  # rpi <host> <подкоманда> <аргументы>...
     local args=() a
     for a in "$@"; do args+=("$(q "$a")"); done
     rsh "$host" "bash $REMOTE_PI ${args[*]}"
+}
+
+# e2e_guard: on/off пересоздают ${SOUND_SWITCH[@]} (docker compose up -d), а рекреация
+# контейнера поднимает speaker_id_node с e2e_mode=false по умолчанию — марафон/e2e-прогон
+# теряет режим посреди актов (#4686). abort (on) — отказ при e2e_mode=true; warn (off) —
+# restore возвращает робота с моторами, его не блокируем, но предупреждаем громко.
+e2e_guard() {  # $1 = abort|warn
+    local st
+    st=$(rpi "$HIL_SOUND_HOST" e2e-state "${SOUND_SWITCH[0]}" 2>/dev/null || echo unknown)
+    case "$st" in
+        true)
+            if [ "$1" = abort ]; then
+                die "на Sound Pi активен e2e-режим (${SOUND_SWITCH[0]}): пересоздание контейнера сбросит e2e_mode и сломает e2e-прогон; дождись его конца или сними режим вручную (issue #4686)"
+            fi
+            log "⚠️ на Sound Pi активен e2e-режим: restore ${SOUND_SWITCH[*]} всё равно сбросит e2e_mode (#4686) — чужой e2e-прогон придётся повторить"
+            ;;
+        unknown)
+            log "⚠️ e2e-состояние ${SOUND_SWITCH[0]} не определилось (стек поднимается?): убедись, что e2e-прогона нет (issue #4686)"
+            ;;
+    esac
 }
 
 # ── Состояние сервисов «до on» (решение «сломан до on → предупреждение» принимает код) ──
@@ -285,6 +309,7 @@ preflight() {
 cmd_on() {
     preflight
     push_helpers
+    e2e_guard abort
     local who
     who="HIL on since $(date -u +%FT%TZ) by ${USER:-${USERNAME:-?}}@$(hostname) sandbox=$HIL_SANDBOX_IP maps=$HIL_MAPS_DIR"
     rpi "$HIL_MAIN_HOST" lock-take "$HIL_LOCK" "$who" || die "HIL уже включён или замок остался: scripts/hil/hil.sh status / off"
@@ -409,6 +434,7 @@ cmd_off() {
     done
     resolve_robot_id
     push_helpers
+    e2e_guard warn
     # Сначала сим: иначе вернувшийся ros2-control встретит второй /controller_manager.
     sim_down
     local gz
