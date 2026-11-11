@@ -143,7 +143,7 @@ except ImportError:
 
 from rob_box_perception import face_voice_binding as fvb
 from rob_box_perception.face_epithet import NO_NAMER
-from rob_box_perception.face_frontality import encounter_gate
+from rob_box_perception.face_frontality import encounter_gate, estimate_pose
 from rob_box_perception.face_tracker import FaceObservation, FaceTracker
 
 #: Запас вокруг bbox'а лица при кропе (ADR-0123 §4.2: «40 % по краям,
@@ -1061,15 +1061,17 @@ def _iou_cxcywh(
     return float(inter / union) if union > 0.0 else 0.0
 
 
-def _landmarks_inside_frame(landmarks: Any) -> bool:
-    """Все 5 точек лица (10 чисел, normalized) внутри кадра (issue #4544)."""
+def _landmarks_inside_frame(landmarks: Any, frame_w: int, frame_h: int) -> bool:
+    """Невырожденные 5 точек лица внутри кадра (issue #4544)."""
     if landmarks is None:
         return False
     try:
         pts = [float(v) for v in landmarks]
     except (TypeError, ValueError):
         return False
-    return len(pts) == 10 and all(0.0 <= v <= 1.0 for v in pts)
+    if len(pts) != 10 or not all(0.0 <= v <= 1.0 for v in pts):
+        return False
+    return estimate_pose(pts, frame_w, frame_h) is not None
 
 
 def _geometry_verdict(
@@ -1085,8 +1087,8 @@ def _geometry_verdict(
 
     Смысл ворот — не эмбеддить кроп БЕЗ ГЛАЗ. Вход эмбеддера — выравнивание по 5 точкам,
     запас bbox нужен только снимку (``crop_face`` клампит сам). Поэтому, если все 5 точек
-    в кадре, обрубленный запас не повод для отказа. Нет точек или хоть одна вне кадра —
-    прежние пороги.
+    в кадре и складываются в невырожденное лицо, обрубленный запас не повод для отказа.
+    Нет точек, хоть одна вне кадра или точки вырождены — прежние пороги.
     """
     coverage, top_clip_frac = _crop_coverage(bbox, margin, frame_w, frame_h)
     if top_clip_frac > max_top_clip_frac:
@@ -1095,7 +1097,7 @@ def _geometry_verdict(
         reason = 'clipped_coverage'
     else:
         return 'ok'
-    if _landmarks_inside_frame(landmarks):
+    if _landmarks_inside_frame(landmarks, frame_w, frame_h):
         return 'kept_by_landmarks'
     return reason
 
