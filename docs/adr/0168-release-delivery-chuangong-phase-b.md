@@ -104,7 +104,7 @@ systemd-таймеру раз в 5 минут.
 
 1. Ключ подписи — **сделано** (#4375): пара сгенерирована `chuangong.minisign.generate_keypair()` (формат
    `minisign -G -W`, без пароля). Открытый ключ — в репо, `host/chuangong/keys/release.pub` (key id
-   `05D4D489635AC556`); на Pi он ляжет в `/etc/chuangong/release.pub` через `install.sh --pubkey
+   `957BB0BD59C31F21`); на Pi он ляжет в `/etc/chuangong/release.pub` через `install.sh --pubkey
    host/chuangong/keys/release.pub`. Секретный — только в секрете CI `CHUANGONG_SIGNING_KEY` (ставит координатор;
    в репо его нет; ADR-0003: приватный ключ в `miji/`).
 2. `L: Build All Services` — **сделано** (#4375, решение Шифу `d-20261109-release-in-build`): три последних шага
