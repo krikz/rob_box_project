@@ -20,7 +20,7 @@ trap 'rm -rf "$TMP"' EXIT
 cp "$FIXTURE" "$TMP/equasar_server.py"
 
 echo "== применение патча к копии =="
-"$APPLY" "$TMP/equasar_server.py"
+bash "$APPLY" "$TMP/equasar_server.py"
 
 echo "== sha256 результата =="
 sha256sum "$TMP/equasar_server.py"
@@ -34,10 +34,10 @@ grep -c 'threading.Thread(target=udp_answer, args=(udp, data, addr), daemon=True
     | grep -q '^1$' && echo "поток на UDP-запрос: OK"
 
 echo "== идемпотентность: повторное применение =="
-"$APPLY" "$TMP/equasar_server.py"
+bash "$APPLY" "$TMP/equasar_server.py"
 
 echo "== негатив: применение к чужому файлу отклоняется =="
-if "$APPLY" "$DIR/README.md" >/dev/null 2>&1; then
+if bash "$APPLY" "$DIR/README.md" >/dev/null 2>&1; then
     echo "FAIL: apply принял файл с неверным sha256" >&2
     exit 1
 else
