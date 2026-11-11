@@ -26,6 +26,10 @@ export MSYS_NO_PATHCONV=1 PYTHONIOENCODING=utf-8
 scene="$1"; speed="$2"; rep="$3"
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$HERE/../../.." && pwd)"
+# Пути для локального python: под MSYS абсолютный /tmp и /d/… для Windows-python — это C:\tmp / несуществующий диск.
+# cygpath -m чинит; на Linux-машине оператора cygpath нет — путь остаётся как есть.
+py_path() { cygpath -m "$1" 2>/dev/null || printf '%s' "$1"; }
+REPO_ROOT_M="$(py_path "$REPO_ROOT")"
 # Windows-python не понимает /d/… при MSYS_NO_PATHCONV=1
 PYHERE="$(cygpath -m "$HERE" 2>/dev/null || echo "$HERE")"
 : "${SPEED_OUT:?SPEED_OUT — каталог результатов на машине оператора}"
@@ -125,13 +129,13 @@ if [ "${SPEED_ZONES:-0}" = 1 ]; then
         esac
         case "$scene" in
             depot)
-                ( cd "$REPO_ROOT" && PYTHONPATH="$REPO_ROOT/src/rob_box_sim" python -m rob_box_sim.speed_zones map "$npz" \
-                    --map-pose $map_pose --out "$mask_dir/speed_mask" ) >>"$RES/run.log" 2>&1 ;;
+                ( cd "$REPO_ROOT" && PYTHONPATH="$REPO_ROOT_M/src/rob_box_sim" python -m rob_box_sim.speed_zones map "$(py_path "$npz")" \
+                    --map-pose $map_pose --out "$(py_path "$mask_dir/speed_mask")" ) >>"$RES/run.log" 2>&1 ;;
             *)
                 sdf="$REPO_ROOT/src/rob_box_sim/worlds/$world.sdf"
                 [ -f "$sdf" ] || { log "❌ нет sdf $sdf для маски зон"; exit 2; }
-                ( cd "$REPO_ROOT" && PYTHONPATH="$REPO_ROOT/src/rob_box_sim" python -m rob_box_sim.speed_zones world "$sdf" \
-                    --map-pose $map_pose --out "$mask_dir/speed_mask" ) >>"$RES/run.log" 2>&1 ;;
+                ( cd "$REPO_ROOT" && PYTHONPATH="$REPO_ROOT_M/src/rob_box_sim" python -m rob_box_sim.speed_zones world "$(py_path "$sdf")" \
+                    --map-pose $map_pose --out "$(py_path "$mask_dir/speed_mask")" ) >>"$RES/run.log" 2>&1 ;;
         esac
         [ -f "$mask_dir/speed_mask.yaml" ] || { log "❌ маска зон не создана (run.log)"; exit 2; }
     fi
@@ -187,13 +191,41 @@ fi
 # /robot_state_publisher робота (Main только что пересоздан) — тогда gazebo выходит, и пробуем ещё раз.
 # Оба контроллера сима активны. 09.11 в Depot joint_state_broadcaster падал «Switch controller timed out»:
 # odom→base_footprint на Main не появлялся, Nav2 не поднимался 7 мин — такой сим пересоздаём сразу.
+# Число активных контроллеров сима. В выводе list_controllers ANSI-краски:
+# активное состояние — «[92mactive», неактивное — «[96minactive» (подстрока active есть
+# и там), поэтому матч по подстроке active с исключением inactive.
+sim_active_count() {
+    sb "docker exec $G /entrypoint.sh bash -lc 'ros2 control list_controllers --controller-manager /controller_manager 2>/dev/null'" \
+        | awk '/active/ && !/inactive/ { n++ } END { print n + 0 }'
+}
+# У Depot joint_state_broadcaster часто не влезает в 5-с окно switch: меши грузятся,
+# controller_manager не отвечает (§11.4). Контроллер остаётся сконфигурированным —
+# добиваем его вручную. Не сразу после спавна: мир ещё грузится, switch не проходит —
+# терпеливо повторяем, пока оба не станут active.
+sim_activate_jsb() {
+    local n i
+    for i in $(seq 1 6); do
+        sb "docker exec $G /entrypoint.sh bash -lc 'ros2 control switch_controllers --controller-manager /controller_manager --activate joint_state_broadcaster >/dev/null 2>&1'" || true
+        sleep 7
+        n=$(sim_active_count)
+        [ "${n:-0}" -ge 2 ] && return 0
+    done
+    return 1
+}
 sim_controllers_ok() {
-    local ok bad
+    local n bad
     for _ in $(seq 1 12); do
-        ok=$(sb "docker logs $G 2>&1 | grep -c 'Configured and activated'")
+        n=$(sim_active_count)
+        [ "${n:-0}" -ge 2 ] && return 0
         bad=$(sb "docker logs $G 2>&1 | grep -cE 'Failed to activate controller|spawner.*process has died'")
-        [ "${bad:-0}" -gt 0 ] && { log "контроллер сима не активировался (spawner) — пересоздаю сим"; return 1; }
-        [ "${ok:-0}" -ge 2 ] && return 0
+        if [ "${bad:-0}" -gt 0 ]; then
+            log "spawner не активировал контроллер — пробую ручной switch joint_state_broadcaster"
+            sim_activate_jsb
+            n=$(sim_active_count)
+            [ "${n:-0}" -ge 2 ] && return 0
+            log "ручной switch не помог — пересоздаю сим"
+            return 1
+        fi
         sleep 5
     done
     log "контроллеры сима не активны за 60 с — пересоздаю сим"; return 1
@@ -252,13 +284,13 @@ mn "docker logs --since $T0 nav2 2>&1 | grep -vE 'missed its desired rate'" >"$R
 missed=$(mn "docker logs --since $T0 nav2 2>&1 | grep -cE 'missed its desired rate'")
 mn "docker logs --since $T0 rtabmap 2>&1 | tail -100" >"$RES/rtabmap.log"
 echo "$missed" >"$RES/nav2_missed.txt"
-python "$PYHERE/speed_verdict.py" cpu "$RES/cpu.log" >"$RES/cpu.json"
-python - "$RES/cpu.json" "$missed" "$RES/main.json" <<'EOF'
+python "$PYHERE/speed_verdict.py" cpu "$(py_path "$RES/cpu.log")" >"$RES/cpu.json"
+python - "$(py_path "$RES/cpu.json")" "$missed" "$(py_path "$RES/main.json")" <<'EOF'
 import json, sys
 d = json.load(open(sys.argv[1], encoding="utf-8"))
 d["nav2_missed"] = int(sys.argv[2] or 0)
 json.dump(d, open(sys.argv[3], "w", encoding="utf-8"), ensure_ascii=False)
 EOF
-python "$PYHERE/speed_verdict.py" run "$RES/result.json" "$RES/main.json" --speed "$([ "$speed" = base ] && echo 0.15 || echo "$speed")" \
-    --scene "$scene" --rep "$rep" --label "$label" --ledger "$SPEED_OUT/ledger${SPEED_LEDGER_SUFFIX:-}.jsonl" | tee "$RES/verdict.txt" | tee -a "$RES/run.log"
+python "$PYHERE/speed_verdict.py" run "$(py_path "$RES/result.json")" "$(py_path "$RES/main.json")" --speed "$([ "$speed" = base ] && echo 0.15 || echo "$speed")" \
+    --scene "$scene" --rep "$rep" --label "$label" --ledger "$(py_path "$SPEED_OUT/ledger${SPEED_LEDGER_SUFFIX:-}.jsonl")" | tee "$RES/verdict.txt" | tee -a "$RES/run.log"
 log "стопов защиты (→ stop): $(grep -c '→ stop' "$RES/guard.log"); missed rate: $missed"
