@@ -5,7 +5,7 @@
 # Автоматическая настройка Vision Pi с нуля
 #
 # Использование:
-#   curl -fsSL https://raw.githubusercontent.com/krikz/rob_box_project/develop/scripts/setup_vision_pi.sh | bash
+#   curl -fsSL https://raw.githubusercontent.com/krikz/rob_box_project/develop/scripts/setup/setup_vision_pi.sh | bash
 #
 # Что делает скрипт:
 #   1. Проверяет и устанавливает Docker + Docker Compose

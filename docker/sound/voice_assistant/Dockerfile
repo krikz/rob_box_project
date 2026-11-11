@@ -268,7 +268,7 @@ COPY docker/sound/voice_assistant/custom_synthdefs /ws/custom_synthdefs
 #     отрабатывает и на чистом чекауте без хука).
 #   - wheel в контексте есть → ставим его (сеть не нужна);
 #     нет → fallback на git+URL — ПРЕЖНЕЕ поведение (без этого фикса).
-ARG DIALOG_CORE_VERSION=0.7.2
+ARG DIALOG_CORE_VERSION=0.7.3
 COPY docker/sound/voice_assistant/wheels/ /tmp/core-wheels/
 RUN WHEEL="$(ls /tmp/core-wheels/rob_box_dialog_core-*.whl 2>/dev/null | head -n1 || true)" && \
     if [ -n "$WHEEL" ]; then \

@@ -11,8 +11,12 @@ host/
 │   ├── can-setup.service         # Systemd service для автозапуска CAN
 │   └── install_host_scripts.sh   # Установщик скриптов на Pi
 │
-└── vision/            # Скрипты для Vision Pi
-    └── (пусто пока)
+├── vision/            # Скрипты для Vision Pi
+│
+└── chuangong/         # Агент доставки релиза на каждой Pi (ADR-0168, фаза B: fetch + проверка подписи +
+    ├── chuangong/     #   stage + отчёт; ничего не переключает). Python 3 + PyYAML + cryptography, без pip.
+    ├── systemd/       # chuangong.service/.timer и пример /etc/chuangong/chuangong.env — в репо, НЕ установлены
+    └── tests/         # pytest без сети и Docker (фейки реестра, docker, zenoh)
 ```
 
 ## Различие: host/ vs docker/

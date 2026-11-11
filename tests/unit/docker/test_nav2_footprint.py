@@ -107,15 +107,18 @@ def test_behaviors_take_pose_in_frame_of_their_costmap():
     assert bs["global_frame"] == _costmap("local_costmap")["global_frame"]
 
 
-def test_dwb_path_align_looks_past_the_nose():
-    """Курс по пути считается в точке перед носом корпуса, а не у центра.
+def test_dwb_path_align_forward_point_is_g1_value():
+    """PathAlign.forward_point_distance = 0.20 (Г1, решение Шифу 10.11): «нос» PathAlign
+    уходит внутрь допуска цели 0.25 и барьер стоянки у черты 0.325 м исчезает
+    (HIL 10.11, research/2026-11-05 §12–13: baseline 65/138/147/158 с — суммы по 59 подъездам
+    в полосах 0.33/0.34/0.35/0.36 м; с Г1 двелл 0 с, polygon 8/8 в r3).
 
-    HIL 05.11 (#4365): при forward_point_distance 0.15 (нос — 0.31 м) DWB подводил корпус
-    к проёму 0.8–0.9 м наискось, до 21°, и защита стопила по косяку.
+    Trade-off носа (0.31 м): 0.15 (HIL 05.11, #4365) подводил корпус к проёму 0.8–0.9 м
+    наискось до 21° — стоп защиты по косяку; 0.325 (дефолт Nav2) давал двелл.
+    Регресс входа в проём по оси — HIL-сценарии polygon/dead_end (§13.1–13.2), не этот файл.
     """
     fp = _params()["controller_server"]["ros__parameters"]["FollowPath"]
-    nose = max(p[0] for p in _polygon("local_costmap"))
-    assert fp["PathAlign.forward_point_distance"] > nose
+    assert fp["PathAlign.forward_point_distance"] == pytest.approx(0.20)
     assert "PathAlign" in fp["critics"]
 
 
