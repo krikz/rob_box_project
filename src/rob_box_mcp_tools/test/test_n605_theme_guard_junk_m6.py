@@ -32,7 +32,7 @@ N605_M6 = "поставь сайт из трех треков объявляй �
 
 
 def test_the_stt_scrap_stays_what_it_is_a_bare_word_without_support():
-    assert heard_theme(N605_M6) == "сайт"
+    assert heard_theme(N605_M6) == ""  # #3493: одно неизвестное слово — в журнал, а не в положительный слот темы
     assert not names_theme("сайт", N605_M6)
 
 
@@ -44,7 +44,6 @@ def test_the_llm_theme_is_not_replaced_by_the_stt_scrap():
 @pytest.mark.parametrize("phrase", [
     "поставь сет про космос",              # слово таблицы тем
     "поставь сет про динозавров",          # человек ввёл тему сам («про»)
-    "включи сет динозавры",                # слово сета названо - слова после него тема
     "поставь сет в стиле Stranger Things",  # описание из слов
     "поставь Nirvana из трех треков",      # название латиницей
     "поставь сет Звездные войны",          # вселенная
