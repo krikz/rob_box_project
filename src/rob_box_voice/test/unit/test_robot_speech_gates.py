@@ -570,6 +570,19 @@ def test_4695_real_short_answer_without_wake_or_biometry_is_accepted(node_module
     node._maybe_speak_unclear.assert_not_called()
 
 
+def test_4695_rejected_after_confirmed_reply_asks_unclear(node_modules):
+    """REPLY_AFTER — подтверждённая окном попытка ответа: непонятную речь переспрашиваем, не публикуем как ход."""
+    from rob_box_voice.core import echo_window
+
+    clock = Clock()
+    node = _pipeline(node_modules[1], clock, "пу")
+    _greeting_4695(node, clock, reply_open=True, vad=((5.6, True), (6.0, False)))
+    _phrase(node, clock, at=8.6, seconds=3.6)
+    assert node._admission.verdict == echo_window.REPLY_AFTER
+    node.publish_result.assert_not_called()
+    node._maybe_speak_unclear.assert_called_once()
+
+
 def test_4695_explicit_wake_is_accepted_without_reply_window(node_modules):
     clock = Clock()
     node = _pipeline(node_modules[1], clock, "робот привет")
