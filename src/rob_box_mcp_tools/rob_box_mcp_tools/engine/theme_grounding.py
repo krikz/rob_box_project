@@ -73,13 +73,15 @@ def _registry_word(word: str) -> bool:
     """Слово названо в семени реестра произведений/понятий или совпадает по транслиту со строкой поиска архива."""
     word = word.lower().replace("ё", "е")
     latin = transliterate_ru(word)
-    for seed in theme_seeds():
+    seeds = theme_seeds()
+    compound_words = {part for seed in seeds for query in seed.queries if " " in query for part in query.lower().split()}
+    for seed in seeds:
         phrase = seed.phrase.replace("ё", "е")
         if phrase.endswith("*") and word.startswith(phrase[:-1]):
             return True
         if not phrase.endswith("*") and " " not in phrase and word == phrase:
             return True
-        if any(latin == query_word for query in seed.queries for query_word in query.lower().split()):
+        if latin not in compound_words and any(" " not in query and latin == query.lower() for query in seed.queries):
             return True
     return False
 
@@ -127,8 +129,8 @@ def _context_drop(words: List[str], i: int, candidates: List[int], known: set, s
 
 
 def _linked_theme_word(words: List[str], i: int, lead: set) -> bool:
-    """Неизвестное в явной теме, перечислении или перед «по» («путешествие по Хогвардсу»)."""
-    return i in lead or any(w in _AND for w in words) or any(w == "по" for w in words[i + 1:])
+    """Неизвестное в явной теме или перед «по» («путешествие по Хогвардсу»); союз сам по себе тему не доказывает."""
+    return i in lead or any(w == "по" for w in words[i + 1:])
 
 
 def _single_unknown(words: List[str], i: int, candidates: List[int], bare: bool, descriptor: bool,
@@ -152,12 +154,26 @@ def _drop_unknown(words: List[str], i: int, candidates: List[int], known: set, b
     return _single_unknown(words, i, candidates, bare, descriptor, direct_quality, lead)
 
 
-def _known_theme_indices(words: List[str], candidates: List[int]) -> set:
-    """Индексы опорных слов темы без style-alias; составные алиасы вселенных и точные фразы реестра — целыми span’ами."""
-    known = {i for i in candidates if words[i].isascii() or _registry_word(words[i])
-             or bool(genre_of(words[i]) or is_mood(words[i]) or match_row(words[i]) is not None)}
-    for first, last, _key in universe_spans(words):
-        known.update(range(first, last))
+def _query_span_indices(words: List[str]) -> set:
+    """Индексы полных составных queries реестра; одинокий токен такого query не считается совпадением."""
+    from ..core.rtttl_library import _alias_normalize
+
+    out = set()
+    for seed in theme_seeds():
+        for query in seed.queries:
+            parts = query.lower().split()
+            if len(parts) < 2:
+                continue
+            for first in range(len(words) - len(parts) + 1):
+                normalized = _alias_normalize(" ".join(words[first:first + len(parts)]))
+                if normalized.lower() == query.lower():
+                    out.update(range(first, first + len(parts)))
+    return out
+
+
+def _phrase_span_indices(words: List[str]) -> set:
+    """Индексы точных многословных названий из реестра."""
+    out = set()
     for seed in theme_seeds():
         phrase = seed.phrase.replace("ё", "е")
         if phrase.endswith("*") or " " not in phrase:
@@ -165,7 +181,20 @@ def _known_theme_indices(words: List[str], candidates: List[int]) -> set:
         parts = phrase.split()
         for first in range(len(words) - len(parts) + 1):
             if words[first:first + len(parts)] == parts:
-                known.update(range(first, first + len(parts)))
+                out.update(range(first, first + len(parts)))
+    return out
+
+
+def _known_theme_indices(words: List[str], candidates: List[int]) -> set:
+    """Индексы опорных слов темы без style-alias; составные алиасы вселенных и точные фразы реестра — целыми span’ами."""
+    known = {i for i in candidates if words[i].isascii() or _registry_word(words[i])
+             or bool(genre_of(words[i]) or is_mood(words[i]) or match_row(words[i]) is not None)}
+    for i in candidates:
+        if words[i] in kn.GENRE_FILLER and i > 0 and genre_of(words[i - 1]):
+            known.add(i)
+    known.update(_query_span_indices(words), _phrase_span_indices(words))
+    for first, last, _key in universe_spans(words):
+        known.update(range(first, last))
     return known
 
 

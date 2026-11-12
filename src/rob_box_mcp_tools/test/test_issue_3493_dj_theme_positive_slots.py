@@ -77,6 +77,13 @@ def test_llm_unknown_theme_is_positive_filtered_and_never_generated(tmp_path, mo
     ("поставь сет качало Марио", "марио", ["качало"]),
     ("поставь сет сайт Марио", "марио", ["сайт"]),
     ("включи сет динозавры", "", ["динозавры"]),  # одиночное неизвестное после SET — не положительный слот
+    ("поставь сет днюху и Марио", "марио", ["днюху"]),
+    ("поставь сет бабушки и Марио", "марио", ["бабушки"]),
+    ("поставь сет качало и Марио", "марио", ["качало"]),
+    ("поставь сет сайт и Марио", "марио", ["сайт"]),
+    ("поставь сет Марио и днюху", "марио", ["днюху"]),
+    ("поставь сет Марио и бабушки", "марио", ["бабушки"]),
+    ("поставь сет Марио и качало", "марио", ["качало"]),
 ])
 def test_unknown_words_cannot_precede_or_follow_a_positive_theme(phrase, theme, unknown):
     """Порядок обрамления не меняет решение: повод/публика/качество — в журнал, положительная тема — отдельно."""
@@ -99,3 +106,34 @@ def test_production_slots_log_unknown_next_to_positive_theme(tmp_path, monkeypat
     assert slots.theme == "кино"
     lines = [r.getMessage() for r in caplog.records if "непонятые слова" in r.getMessage()]
     assert len(lines) == 1 and "ламповое" in lines[0] and "кино" in lines[0]
+
+
+def test_conjunction_production_keeps_only_positive_theme(tmp_path, monkeypatch, caplog):
+    """Союз не делает повод частью перечисления: production тема только Mario, повод в журнале."""
+    from rob_box_mcp_tools.engine.theme_choice import dj_set_slots
+
+    from .test_n605_theme_guard_junk_m6 import _running_set
+
+    dj, _kie = _running_set(tmp_path, monkeypatch, cached=0)
+    with caplog.at_level(logging.INFO):
+        slots = dj_set_slots(dj, None, None, "поставь сет днюху и Марио")
+    assert slots.theme == "марио"
+    lines = [r.getMessage() for r in caplog.records if "непонятые слова" in r.getMessage()]
+    assert len(lines) == 1 and "днюху" in lines[0] and "марио" in lines[0]
+
+
+@pytest.mark.parametrize("phrase,theme,unknown", [
+    ("поставь сет гарри", "", ["гарри"]),
+    ("поставь сет поттер", "", ["поттер"]),
+    ("поставь сет гарри поттер", "гарри поттер", []),
+    ("поставь сет хан", "", ["хан"]),
+    ("поставь сет соло", "", ["соло"]),
+    ("поставь сет хан соло", "хан соло", []),
+])
+def test_compound_query_requires_the_whole_span(phrase, theme, unknown):
+    """Один токен составного query не является названием; полный alias остаётся."""
+    from rob_box_mcp_tools.engine.theme_grounding import _heard_slots
+
+    heard, dropped = _heard_slots(phrase)
+    assert heard == theme
+    assert dropped == unknown
