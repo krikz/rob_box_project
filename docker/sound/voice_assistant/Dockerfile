@@ -256,7 +256,7 @@ COPY docker/sound/voice_assistant/custom_synthdefs /ws/custom_synthdefs
 # Ставится ДО colcon: colcon собирает только ROS-хосты (rob_box_voice) и
 # полный ROS-пакет rob_box_mcp_tools, а ядро уже лежит в окружении.
 RUN pip3 install --no-cache-dir \
-    "rob-box-dialog-core @ git+https://github.com/krikz/rob_box_dialog_core@v0.7.3"
+    "rob-box-dialog-core @ git+https://github.com/krikz/rob_box_dialog_core@v0.7.4"
 
 # ============================================
 # 🚀 СБОРКА ROS2 ПАКЕТОВ
