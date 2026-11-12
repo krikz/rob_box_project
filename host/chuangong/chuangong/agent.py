@@ -113,14 +113,18 @@ def fetch_release(cfg: Config, registry: Registry, ref: str | None = None) -> di
 
 
 def probe_flags(cfg: Config, docker: Docker, record: dict[str, Any]) -> None:
-    """Входы будущих условий активации (фаза C): замок HIL и горячая заливка. Здесь — только в отчёт."""
+    """Замок HIL и hotpatch; ошибка hotpatch probe сохраняется как fail-closed dirty, а не пустой успех."""
     record["hil_locked"] = cfg.hil_lock.exists() if cfg.node == "main" else None
     sources = []
     if cfg.dirty_flag.exists():
         sources.append(str(cfg.dirty_flag))
+    record["dirty_probe_error"] = None
     if cfg.probe_hotpatch:
-        sources += [f"container:{name}" for name in docker.hotpatched_containers()]
-    record["dirty"] = bool(sources)
+        try:
+            sources += [f"container:{name}" for name in docker.hotpatched_containers()]
+        except StageError as exc:
+            record["dirty_probe_error"] = {"reason": exc.reason, "detail": exc.detail}
+    record["dirty"] = bool(sources) or record["dirty_probe_error"] is not None
     record["dirty_sources"] = sources
     record["legacy_running"] = docker.running_images()
 
