@@ -85,6 +85,24 @@ if [ "$VISIBLE" = "0" ]; then
     exit 0
 fi
 
+# Материал не должен утекать: в черновик попадает один факт, а остальные
+# собранные — кладутся в ожидание. Иначе метка last_session сдвинется, и
+# повторный сбор их уже не вернёт (фильтр merged:>=since): факт просто
+# исчезнет (разбор 11.11).
+python3 - "$FACTS" "$STUDIO_REPO/docker/studio/state.json" "$STUDIO_REPO/scripts/telegram" <<'PY'
+import json
+import sys
+
+sys.path.insert(0, sys.argv[3])
+import studio_state as st
+
+with open(sys.argv[1], encoding="utf-8") as handle:
+    facts = json.load(handle).get("visible_facts") or []
+with st.state_transaction(sys.argv[2]) as state:
+    st.keep_collected(state, facts)
+print(f"  собрано в ожидание: {len(facts)}")
+PY
+
 # Частота доставки: не чаще раза в 48 ч. Это ограничение сообщений Шифу,
 # а не подготовки: факты собраны, и если доставка сейчас не положена —
 # они остаются в pending и уйдут в следующий раз (черновик протухнет по TTL).

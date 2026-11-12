@@ -133,6 +133,34 @@ def pending_facts(state: dict) -> list:
     return list(state.get("pending", []))
 
 
+def keep_collected(state: dict, facts: list, closed: Optional[set] = None) -> None:
+    """Оставить собранные, но НЕ показанные факты в ожидании.
+
+    Разбор 11.11: сессия собирает факты, в черновик попадает один, а остальные
+    пропадали — метка `last_session` сдвигалась, и повторный сбор их уже не
+    возвращал (фильтр `merged:>=since`). Материал утекал.
+
+    Здесь факты кладутся в `pending` БЕЗ роста `attempts`: показ не было —
+    факт ещё никто не видел. `attempts` растёт в момент показа (save_pending
+    при регистрации черновика).
+    """
+    done = set(closed or set()) | covered_keys(state)
+    pending = {f.get("key"): f for f in state.get("pending", [])}
+    for fact in facts:
+        key = fact.get("key")
+        if not key or key in done:
+            continue
+        existing = pending.get(key)
+        if existing is None:
+            entry = dict(fact)
+            entry["attempts"] = int(fact.get("attempts", 0))
+            pending[key] = entry
+        else:
+            # Уже в ожидании: обновляем содержимое, но не трогаем счётчик показов.
+            existing.update({k: v for k, v in fact.items() if v not in (None, "")})
+    state["pending"] = list(pending.values())
+
+
 def save_pending(state: dict, facts: list, post_id: str = "") -> None:
     """Запомнить факты, которые ушли в идеи: их событие ещё не показано.
 

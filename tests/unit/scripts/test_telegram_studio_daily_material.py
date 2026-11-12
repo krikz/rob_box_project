@@ -271,3 +271,62 @@ def test_publisher_keeps_48h_gap():
     from channel_lib import MIN_GAP
 
     assert MIN_GAP == timedelta(hours=48)
+
+
+# ------------------------------------------------------------------ 6. Материал не утекает
+
+
+def test_collected_but_not_shown_fact_stays_pending(tmp_path):
+    """Собранный, но не показанный факт не теряется.
+
+    Сессия собирает факты, в черновик попадает один. Остальные кладутся в
+    ожидание — иначе метка `last_session` сдвинется, повторный сбор их не
+    вернёт (фильтр `merged:>=since`), и факт просто исчезнет.
+    """
+    state_path = tmp_path / "state.json"
+    facts = [_fact("pr:4555"), _fact("pr:4600")]
+
+    with st.state_transaction(state_path) as state:
+        st.keep_collected(state, facts)
+
+    state = st.load_state(state_path)
+    pending = {f["key"]: f for f in state["pending"]}
+    assert set(pending) == {"pr:4555", "pr:4600"}
+    # Никто не показан — счётчик показов не растёт.
+    assert pending["pr:4555"]["attempts"] == 0
+
+
+def test_showing_fact_counts_one_attempt_over_pending(tmp_path):
+    """Показ черновика — одна попытка, даже если факт уже лежал в ожидании."""
+    state_path = tmp_path / "state.json"
+
+    with st.state_transaction(state_path) as state:
+        st.keep_collected(state, [_fact("pr:4555")])
+
+    post = {
+        "id": "p1",
+        "title": "черновик",
+        "body_html": "<b>текст</b>",
+        "tags": ["#роббокс"],
+        "fact_keys": ["pr:4555"],
+        "fact_dicts": [_fact("pr:4555")],
+    }
+    studio.register_post(state_path, post)
+
+    state = st.load_state(state_path)
+    pending = {f["key"]: f for f in state["pending"]}
+    assert pending["pr:4555"]["attempts"] == 1
+
+
+def test_rejected_fact_not_reoffered_by_next_session(tmp_path):
+    """Явный отказ закрывает факт: следующая сессия его не предлагает."""
+    state_path = tmp_path / "state.json"
+
+    with st.state_transaction(state_path) as state:
+        st.keep_collected(state, [_fact("pr:4600")])
+        st.mark_rejected(state, {"pr:4600"}, _iso(datetime.now(timezone.utc)))
+
+    state = st.load_state(state_path)
+    covered = st.covered_keys(state)
+    reoffered = [f["key"] for f in st.pending_facts(state) if f["key"] not in covered]
+    assert "pr:4600" not in reoffered
