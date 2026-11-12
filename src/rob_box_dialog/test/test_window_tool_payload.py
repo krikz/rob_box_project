@@ -13,7 +13,9 @@ import json
 from types import MappingProxyType
 
 from rob_box_dialog import knowledge as kn
+from rob_box_dialog.context import build_context
 from rob_box_dialog.respond import ActionResult
+from rob_box_dialog.turn import RECENT_ACTIONS, recent_results
 from rob_box_dialog.turn_log import TurnLog
 
 
@@ -62,6 +64,17 @@ def test_big_tool_data_compressed_with_marker():
     assert results[0]["snippet"].endswith("…") and len(results[0]["snippet"]) == kn.WINDOW_TOOL_TEXT_CHARS + 1
     entry = next(e for e in log.window() if e.role == "tool")
     assert len(entry.text()) <= kn.WINDOW_TOOL_DATA_CHARS + 300, len(entry.text())
+
+
+def test_compressed_tool_data_is_json_safe_in_the_next_turn_snapshot_4688():
+    """Сжатый mappingproxy-результат прошлого хода сериализуется в ``recent_actions`` следующего хода."""
+    log = TurnLog()
+    _turn_with_search(log, "t1", "Игорёк, что ты видишь?", "Вижу мастерскую.")
+
+    recent = recent_results(log.window(exclude="t2"), (), owner=None)
+    snapshot = build_context({RECENT_ACTIONS: recent})
+
+    assert '"tool":"search_web"' in snapshot and '"truncated"' in snapshot
 
 
 def test_small_tool_data_kept_as_is():
