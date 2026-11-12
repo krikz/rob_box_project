@@ -110,8 +110,19 @@ class DockerCli:
     def hotpatched_containers(self) -> list[str]:
         """Контейнеры с меткой горячей заливки /ws/HOTPATCH (её пишет scripts/robot_dev/hotpatch.sh push)."""
         res = self._run("ps", "--format", "{{.Names}}")
-        names = [n.strip() for n in res.stdout.splitlines() if n.strip()] if res.returncode == 0 else []
-        return [n for n in names if self._run("exec", n, "test", "-f", "/ws/HOTPATCH").returncode == 0]
+        if res.returncode != 0:
+            error = res.stderr.strip() or res.stdout.strip() or f"docker ps exited {res.returncode}"
+            raise StageError("hotpatch_probe_failed", error)
+        names = [n.strip() for n in res.stdout.splitlines() if n.strip()]
+        hotpatched = []
+        for name in names:
+            probe = self._run("exec", name, "test", "-f", "/ws/HOTPATCH")
+            if probe.returncode == 0:
+                hotpatched.append(name)
+            elif probe.returncode != 1 or probe.stderr.strip():
+                error = probe.stderr.strip() or probe.stdout.strip() or f"docker exec exited {probe.returncode}"
+                raise StageError("hotpatch_probe_failed", f"{name}: {error}")
+        return hotpatched
 
 
 def _repo_of(ref: str) -> tuple[str, str]:

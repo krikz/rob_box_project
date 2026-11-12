@@ -121,6 +121,9 @@ class ActivationMachine:
         if record["hil_locked"]:
             _blocked(record, "hil_locked", str(self.cfg.hil_lock))
             return None
+        if record.get("dirty_probe_error") is not None:
+            _blocked(record, "dirty_probe_failed", record["dirty_probe_error"])
+            return None
         if record["dirty"]:
             _blocked(record, "dirty", record["dirty_sources"])
             return None

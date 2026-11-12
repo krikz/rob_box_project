@@ -686,3 +686,35 @@ def test_legacy_read_oserror_is_structured_blocked(tmp_path, world, monkeypatch)
     assert rec["detail"]["path"] == "docker/vision/docker-compose.yaml"
     assert "simulated read failure" in rec["detail"]["error"]
     assert not cfg.state_file.exists()
+
+
+def test_activation_hotpatch_probe_failure_is_blocked(tmp_path, world):
+    import subprocess
+
+    from chuangong.stage import DockerCli
+
+    cfg = _cfg(tmp_path, world)
+    docker = FakeDocker()
+    deps = _deps(world, docker)
+    _stage(cfg, deps, world.release)
+    _save_history(cfg, "2026.11.08-1")
+    cli = DockerCli()
+
+    def failed_hotpatch_probe(*args, timeout=30.0):
+        if args[:2] == ("image", "inspect"):
+            return subprocess.CompletedProcess(args, 0, "sha256:managed\n", "")
+        if args == ("ps", "--format", "{{.Names}}"):
+            return subprocess.CompletedProcess(args, 1, "", "permission denied")
+        if args == ("ps", "--format", "{{.Image}}"):
+            return subprocess.CompletedProcess(args, 1, "", "permission denied")
+        raise AssertionError(args)
+
+    cli._run = failed_hotpatch_probe
+    deps.docker = cli
+
+    rec = _machine(cfg, deps).activate(world.release["release"])
+
+    assert rec["state"] == "blocked" and rec["reason"] == "dirty_probe_failed"
+    assert rec["dirty"] is True
+    assert "permission denied" in str(rec["detail"])
+    assert json.loads(cfg.state_file.read_text(encoding="utf-8"))["current"] == "2026.11.08-1"
