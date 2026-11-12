@@ -330,3 +330,40 @@ def test_rejected_fact_not_reoffered_by_next_session(tmp_path):
     covered = st.covered_keys(state)
     reoffered = [f["key"] for f in st.pending_facts(state) if f["key"] not in covered]
     assert "pr:4600" not in reoffered
+
+
+# ------------------------------------------------------------------ 7. Версия Python
+
+
+def test_parse_iso_understands_z_suffix():
+    """Метки времени пишутся с суффиксом `Z` — разбор обязан их понимать.
+
+    `datetime.fromisoformat` до Python 3.11 такой суффикс не принимает: разбор
+    падал ValueError, и черновики НИКОГДА не протухали — TTL молча не работал.
+    CI поймал это на Python 3.10 («Offline Unit Tests»).
+    """
+    moment = st.parse_iso("2026-11-10T21:15:00Z")
+    assert moment is not None
+    assert moment.tzinfo is not None
+    assert moment.year == 2026 and moment.hour == 21
+
+
+def test_parse_iso_handles_offset_form():
+    """Метка со смещением (+00:00) разбирается так же."""
+    moment = st.parse_iso("2026-11-10T21:15:00+00:00")
+    assert moment is not None
+    assert moment.hour == 21
+
+
+def test_parse_iso_returns_none_on_garbage():
+    """Мусор в метке — не протухание, а тишина: черновик живёт дальше."""
+    assert st.parse_iso("") is None
+    assert st.parse_iso("не дата") is None
+
+
+def test_delivery_filter_understands_z_suffix():
+    """Фильтр доставки разбирает метку `Z` — иначе спам каждый день."""
+    script = (REPO / "scripts" / "telegram" / "studio_session.sh").read_text(
+        encoding="utf-8"
+    )
+    assert '.replace("Z", "+00:00")' in script

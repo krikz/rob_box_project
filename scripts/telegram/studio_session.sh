@@ -126,7 +126,10 @@ if len(sys.argv) < 2 or not sys.argv[1]:
     print("no")
     raise SystemExit(0)
 try:
-    last = datetime.fromisoformat(sys.argv[1])
+    # Метки времени пишутся с суффиксом "Z" (now_iso). Python до 3.11 такой
+    # суффикс не понимает — без замены фильтр молча считал бы, что доставка
+    # положена всегда, и Шифу получал бы черновик каждый день.
+    last = datetime.fromisoformat(sys.argv[1].replace("Z", "+00:00"))
 except ValueError:
     print("no")
     raise SystemExit(0)

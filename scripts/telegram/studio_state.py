@@ -34,6 +34,25 @@ DRAFT_TTL_HOURS = 48
 LIVE_DRAFT_STATUSES = ("proposed",)
 
 
+def parse_iso(value: str) -> Optional[datetime]:
+    """Разобрать ISO-метку времени. Понимает и `Z`, и `+00:00`.
+
+    `datetime.fromisoformat` до Python 3.11 не понимает суффикс `Z`, а метки
+    состояния пишутся именно так (`now_iso`). На Python 3.10 разбор падал
+    ValueError, и черновики НИКОГДА не протухали — TTL молча не работал
+    (CI поймал это на «Offline Unit Tests»).
+    """
+    if not value:
+        return None
+    try:
+        moment = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if moment.tzinfo is None:
+        moment = moment.replace(tzinfo=timezone.utc)
+    return moment
+
+
 def now_iso() -> str:
     """Текущее время в ISO — метки в состоянии сравниваются как строки."""
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
@@ -212,13 +231,10 @@ def expire_stale_drafts(state: dict, ttl_hours: int = DRAFT_TTL_HOURS, when: Opt
         created = record.get("created_at") or record.get("proposed_at")
         if not created:
             continue
-        try:
-            age = datetime.fromisoformat(str(created))
-        except ValueError:
+        age = parse_iso(created)
+        if age is None:
             continue
-        if age.tzinfo is None:
-            age = age.replace(tzinfo=timezone.utc)
-        hours = (datetime.fromisoformat(moment.replace("Z", "+00:00")) - age).total_seconds() / 3600.0
+        hours = (parse_iso(moment) - age).total_seconds() / 3600.0
         if hours < ttl_hours:
             continue
         record["status"] = "expired"
