@@ -88,6 +88,9 @@ rpi() {  # rpi <host> <подкоманда> <аргументы>...
 # не требует (в отличие от remote_pi.sh) — зовётся до push_helpers, чтобы отказ не
 # оставил следов на Pi (#4686).
 e2e_probe() {
+    # Одинарные кавычки в q('...') намеренны: этот скрипт раскрывается удалённым
+    # bash -lc на Sound Pi, локального раскрытия $( ) и $out здесь быть не должно.
+    # shellcheck disable=SC2016
     rsh "$HIL_SOUND_HOST" "docker exec $(q "${SOUND_SWITCH[0]}") bash -lc $(q 'out=$(ros2 param get /speaker_id_node e2e_mode --no-daemon 2>/dev/null | grep -aoE "Boolean value is: (True|False)" | tail -1); [ -n "$out" ] || exit 9; case "$out" in *True*) printf true ;; *) printf false ;; esac')"
 }
 
