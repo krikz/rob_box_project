@@ -29,9 +29,12 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_REPO = "krikz/rob_box_project"
 DEFAULT_STATE = REPO_ROOT / "docker" / "studio" / "state.json"
 
-# Сколько раз факт можно предложить, прежде чем он станет «отложенным».
-# Три попытки — достаточно, чтобы Шифу успел ответить, и достаточно мало,
-# чтобы непроизносимое событие не мусорило в ленте.
+# Сколько раз факт показывали. Счётчик для учёта и для отчёта сессии.
+#
+# Раньше по нему факт уходил в «отложенное» после трёх показов. Теперь отказ —
+# только явный («Мимо»); молчание снимает черновик по TTL (studio_state.
+# expire_stale_drafts) и возвращает факт в pending. Поэтому число показов
+# ограничивать нельзя: это не приговор факту, а счётчик внимания.
 MAX_ATTEMPTS = 3
 
 # Какие темы считаются «видимым изменением» — по ним есть что показать (бриф, шаг 2).
@@ -134,6 +137,104 @@ def fact_key(fact: dict) -> str:
     if kind == "decisions":
         return "decisions:shifu"
     return f"{kind}:{fact.get('source', fact.get('claim', ''))[:50]}"
+
+
+def lost_fact_keys(state: dict) -> set:
+    """Ключи фактов, потерянных вместе с черновиком.
+
+    Черновик протух (TTL) или был потерян, а его факт не вернулся в pending:
+    в записи поста остался только ключ (`pr:4555`, разбор 11.11). Такой факт
+    не закрыт (не показан, не отклонён) — значит событие ещё не рассказано
+    и должно вернуться в ленту.
+    """
+    pending = {f.get("key") for f in state.get("pending", [])}
+    closed = st.covered_keys(state)
+    lost = set()
+    for post_id, record in (state.get("posts") or {}).items():
+        if not isinstance(record, dict):
+            continue
+        status = record.get("status")
+        if status in ("approved", "rejected", "expired"):
+            continue
+        for key in record.get("fact_keys") or []:
+            if key and key not in pending and key not in closed:
+                lost.add(key)
+    return lost
+
+
+def refetch_fact_by_key(repo: str, key: str) -> dict:
+    """Восстановить факт по ключу из GitHub.
+
+    Нужен, когда событие потерялось: факт ушёл в черновик, а сам черновик
+    протух или был потерян (разбор 11.11: `pr:4555` остался только ключом в
+    записи поста — ни в pending, ни в covered, ни в rejected). По одному
+    ключу `pr:4555` пост не собрать: нужен заголовок PR и его тело.
+    """
+    match = re.match(r"^(pr|issue):(\d+)$", key or "")
+    if not match:
+        return {}
+    number = int(match.group(2))
+    if match.group(1) == "pr":
+        rows = run_gh(
+            ["pr", "view", str(number), "--repo", repo, "--json", "number,title,body,mergedAt,files,url"],
+            repo,
+        )
+        if not rows:
+            return {}
+        pr = rows[0] if isinstance(rows[0], dict) else {}
+        paths = [f.get("path", "") for f in (pr.get("files") or [])]
+        title = pr.get("title", "")
+        body = (pr.get("body") or "")[:600]
+        return {
+            "kind": "merged_pr",
+            "claim": f"PR #{pr.get('number')} влит в develop: {title}",
+            "source": f"PR #{pr.get('number')} ({pr.get('url', '')})",
+            "merged_at": pr.get("mergedAt"),
+            "paths": paths[:20],
+            "visible": (not is_boring(title)) and visible(title + " " + body + " " + " ".join(paths)),
+            "key": key,
+        }
+    rows = run_gh(
+        ["issue", "view", str(number), "--repo", repo, "--json", "number,title,body,closedAt,url,comments"],
+        repo,
+    )
+    if not rows:
+        return {}
+    issue = rows[0] if isinstance(rows[0], dict) else {}
+    comments = issue.get("comments") or []
+    evidence = []
+    for comment in comments:
+        text = comment.get("body") or ""
+        if "run_id" in text or "run " in text.lower() or any(ch.isdigit() for ch in text):
+            evidence.append(text[:300])
+    return {
+        "kind": "closed_issue",
+        "claim": f"Issue #{issue.get('number')} закрыт: {issue.get('title')}",
+        "source": f"issue #{issue.get('number')} ({issue.get('url', '')})",
+        "closed_at": issue.get("closedAt"),
+        "evidence": evidence[:3],
+        "visible": visible(issue.get("title", "")),
+        "key": key,
+    }
+
+
+def partition_facts(facts: list, closed: set) -> tuple:
+    """Разделить факты на показываемые и отложенные.
+
+    Отложенным раньше становился факт, который показали `MAX_ATTEMPTS` раз и
+    не взяли: молчание приравнивалось к отказу, и событие терялось (разбор
+    11.11, факт `pr:4555` ушёл в deferred после трёх показов).
+
+    Теперь отказ — только ЯВНЫЙ: товарищ Шифу нажал «Мимо», факт попал в
+    `rejected`, а `rejected` входит в `closed` и отсекается здесь. Показ без
+    ответа факт не наказывает: черновик протухает по TTL, факт возвращается
+    в `pending`, и следующая сессия берётся за него снова.
+
+    `deferred` остаётся в отчёте сессии для совместимости, но всегда пуст:
+    отложенных по счётчику показов быть не должно.
+    """
+    fresh = [f for f in facts if not (f.get("key") and f.get("key") in closed)]
+    return fresh, []
 
 
 def covered_from_posts(queue_dir: Path, facts: list) -> set:
@@ -509,15 +610,18 @@ def main() -> int:
         if key and key not in closed:
             facts.append(fact)
 
-    # Событие, которое предлагали три раза и не взяли, — помечаем как отложенное:
-    # дальше оно не мусорит в ленте, но и не пропадает из учёта.
-    fresh = []
-    deferred = []
-    for fact in facts:
-        if int(fact.get("attempts", 0)) >= MAX_ATTEMPTS and fact.get("key") not in closed:
-            deferred.append(fact.get("key"))
-            continue
-        fresh.append(fact)
+    # Факты, потерянные вместе с протухшим черновиком: в записи поста остался
+    # только ключ (`pr:4555`), а без заголовка и тела PR пост не собрать.
+    # Восстанавливаем такие факты из GitHub — событие возвращается в ленту.
+    lost = lost_fact_keys(state)
+    if lost:
+        for key in sorted(lost):
+            fact = refetch_fact_by_key(args.repo, key)
+            if fact:
+                facts.append(fact)
+        print(f"восстановлено потерянных фактов: {len(lost)}", file=sys.stderr)
+
+    fresh, deferred = partition_facts(facts, closed)
 
     if not args.no_save:
         state["deferred"] = sorted(set(state.get("deferred", [])) | set(deferred))

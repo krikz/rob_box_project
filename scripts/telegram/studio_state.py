@@ -22,6 +22,17 @@ from typing import Iterator, Optional
 # Сколько раз факт можно предлагать, прежде чем он станет отложенным.
 MAX_ATTEMPTS = 3
 
+# Сколько ждать ответа на черновик, прежде чем он протухнет (ADR-0170).
+#
+# Разбор 11.11: черновик p20261109-810 провисел в proposed с 09.11, товарищ Шифу
+# его проигнорировал — и пайплайн встал: факт pr:4555 потерялся между
+# «предложили» и «взяли», новый черновик по нему больше не собирался.
+# Протухание возвращает факт в pending, и следующая сессия берётся за него снова.
+DRAFT_TTL_HOURS = 48
+
+# Статусы черновика, которые ещё можно обсуждать.
+LIVE_DRAFT_STATUSES = ("proposed",)
+
 
 def now_iso() -> str:
     """Текущее время в ISO — метки в состоянии сравниваются как строки."""
@@ -122,8 +133,17 @@ def pending_facts(state: dict) -> list:
     return list(state.get("pending", []))
 
 
-def save_pending(state: dict, facts: list) -> None:
-    """Запомнить факты, которые ушли в идеи: их событие ещё не показано."""
+def save_pending(state: dict, facts: list, post_id: str = "") -> None:
+    """Запомнить факты, которые ушли в идеи: их событие ещё не показано.
+
+    Счётчик `attempts` растёт на КАЖДЫЙ показ. Раньше по нему же факт уходил
+    в `deferred` после трёх показов, то есть игнор товарища Шифа приравнивался
+    к отказу и событие терялось (разбор 11.11, факт pr:4555).
+
+    Теперь отказ — только явный: товарищ Шифу нажал «Мимо» (mark_rejected).
+    Показы считаем, но в `deferred` по ним не уводим — протухший черновик
+    возвращает факт в pending (expire_stale_drafts).
+    """
     pending = {f.get("key"): f for f in state.get("pending", [])}
     for fact in facts:
         key = fact.get("key")
@@ -131,9 +151,72 @@ def save_pending(state: dict, facts: list) -> None:
             continue
         old = pending.get(key) or {}
         fact = dict(fact)
-        fact["attempts"] = int(old.get("attempts", 0)) + 1
+        # Показ считаем один раз на пост: register_post вызывается дважды
+        # (до отправки и после), и без post_id один показ считался бы двумя.
+        same_post = bool(post_id) and old.get("post_id") == post_id
+        fact["attempts"] = int(old.get("attempts", 0)) + (0 if same_post else 1)
+        if post_id:
+            fact["post_id"] = post_id
         pending[key] = fact
     state["pending"] = list(pending.values())
+
+
+def expire_stale_drafts(state: dict, ttl_hours: int = DRAFT_TTL_HOURS, when: Optional[str] = None) -> list:
+    """Протухшие черновики → expired, их факты — обратно в pending.
+
+    Товарищ Шифу проигнорировал черновик — это не отказ. Отказ он нажимает
+    кнопкой. Поэтому молчание только снимает черновик с обсуждения, а событие
+    возвращается в очередь на материал: следующая сессия соберёт по нему новый.
+
+    Возвращает список протухших id — вызывающий пишет их в состояние.
+    """
+    moment = when or now_iso()
+    posts = state.get("posts") or {}
+    expired = []
+    for post_id, record in posts.items():
+        if not isinstance(record, dict):
+            continue
+        if record.get("status") not in LIVE_DRAFT_STATUSES:
+            continue
+        # В очереди пост уже не обсуждается: он ждёт своего слота.
+        if record.get("queue_file"):
+            continue
+        created = record.get("created_at") or record.get("proposed_at")
+        if not created:
+            continue
+        try:
+            age = datetime.fromisoformat(str(created))
+        except ValueError:
+            continue
+        if age.tzinfo is None:
+            age = age.replace(tzinfo=timezone.utc)
+        hours = (datetime.fromisoformat(moment.replace("Z", "+00:00")) - age).total_seconds() / 3600.0
+        if hours < ttl_hours:
+            continue
+        record["status"] = "expired"
+        record["expired_at"] = moment
+        expired.append(post_id)
+        # Факты черновика возвращаются в ожидание: событие не потеряно.
+        # Берём полный факт из fact_dicts записи поста — по одному ключу
+        # факт без claim нечем показать (он и не пригодился бы в посте).
+        by_key = {str(f.get("key")): f for f in (record.get("fact_dicts") or []) if f.get("key")}
+        keys = set(record.get("fact_keys") or []) | set(by_key)
+        if keys:
+            pending = {f.get("key"): f for f in state.get("pending", [])}
+            for key in keys:
+                was_pending = pending.pop(key, None) or {}
+                from_post = by_key.get(key) or {}
+                # Сливаем, а не выбираем одно: в pending может лежать только
+                # ключ, а в записи поста — полный факт с claim и source.
+                # Без merge факт терял заголовок и пост было не из чего собрать.
+                fact = {**from_post, **{k: v for k, v in was_pending.items() if v not in (None, "")}}
+                fact.setdefault("key", key)
+                # Показ не равен отказу: счётчик попыток не растёт.
+                fact["attempts"] = int(was_pending.get("attempts", from_post.get("attempts", 0)))
+                fact.pop("post_id", None)
+                pending[key] = fact
+            state["pending"] = list(pending.values())
+    return expired
 
 
 def drop_pending(state: dict, keys: set) -> None:

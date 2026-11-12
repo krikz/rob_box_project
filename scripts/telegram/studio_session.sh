@@ -34,86 +34,36 @@ fi
 cd "$STUDIO_REPO"
 mkdir -p "$WORK"
 
-# Лимит частоты: бриф требует не чаще одного поста в 2–3 дня. Публикатор держит
-# правило 48 часов для выхода в канал, но и предлагать новые идеи раньше бессмысленно:
-# они всё равно не выйдут, а Шифу получит лишние сообщения.
-LAST_POST=$(python3 - "$STUDIO_REPO/docs/channel/queue" <<'PY'
-import pathlib
-import re
+# Подготовка материала — каждый день, пока есть логи.
+#
+# Разбор 11.11: фильтр «не чаще 48 ч» стоял ПЕРЕД сбором фактов, и сессии
+# 10, 11 и 12.11 вышли с «молчу до окна в 48 ч», не собрав ни одного факта.
+# Правило 48 ч — это про ВЫХОД в канал, и его держит публикатор
+# (channel_lib.MIN_GAP / pick_next). Дублировать его перед подготовкой
+# значило запрещать готовить материал, а не публиковать его.
+#
+# Что осталось от ограничения: сообщение товарищу Шифу не должно сыпаться.
+# Поэтому частота ограничена на ДОСТАВКЕ готового черновика, а сбор фактов
+# идёт каждый день. Черновик, на который не ответили, протухает по TTL
+# (studio_state.expire_stale_drafts): молчание — не отказ, факт возвращается
+# в pending, и следующая сессия берётся за него снова.
+
+# 1) Протухшие черновики — в expired, их факты — обратно в pending.
+echo "[studio-session] 0/3 проверяю протухшие черновики"
+python3 - "$STUDIO_REPO/docker/studio/state.json" "$STUDIO_REPO/scripts/telegram" <<'PY'
 import sys
 
-queue = pathlib.Path(sys.argv[1])
-stamps = []
-for post in queue.glob("*.md"):
-    try:
-        text = post.read_text(encoding="utf-8")
-    except OSError:
-        continue
-    match = re.search(r"^posted_at:\s*(\S+)", text, re.M)
-    if match:
-        stamps.append(match.group(1))
-print(max(stamps) if stamps else "")
+sys.path.insert(0, sys.argv[2])
+import studio_state as st
+
+path = sys.argv[1]
+with st.state_transaction(path) as state:
+    expired = st.expire_stale_drafts(state)
+if expired:
+    print(f"  протухло черновиков: {len(expired)} → {', '.join(expired)}")
+else:
+    print("  протухших черновиков нет")
 PY
-)
-
-if [ -n "$LAST_POST" ]; then
-    TOO_SOON=$(python3 - "$LAST_POST" <<'PY'
-import sys
-from datetime import datetime, timedelta, timezone
-
-try:
-    last = datetime.fromisoformat(sys.argv[1])
-except ValueError:
-    print("no")
-    raise SystemExit(0)
-if last.tzinfo is None:
-    last = last.replace(tzinfo=timezone.utc)
-hours = (datetime.now(timezone.utc) - last).total_seconds() / 3600
-print("yes" if hours < 48 else "no")
-PY
-)
-    if [ "$TOO_SOON" = "yes" ]; then
-        echo "[studio-session] последний пост выходит совсем недавно — молчу до окна в 48 ч"
-        exit 0
-    fi
-fi
-
-# Лимит частоты по метке последней сессии. Раньше считали только по
-# последней публикации: без публикаций список уходил каждый день, и Шифу
-# получал сообщения чаще, чем договаривались.
-LAST_SESSION=$(python3 - "$STUDIO_REPO/docker/studio/state.json" "$STUDIO_REPO/scripts/telegram" <<'PY'
-import json
-import sys
-
-try:
-    with open(sys.argv[1], encoding="utf-8") as handle:
-        print(json.load(handle).get("last_session") or "")
-except (OSError, ValueError):
-    print("")
-PY
-)
-
-if [ -n "$LAST_SESSION" ]; then
-    SESSION_SOON=$(python3 - "$LAST_SESSION" <<'PY'
-import sys
-from datetime import datetime, timezone
-
-try:
-    last = datetime.fromisoformat(sys.argv[1])
-except ValueError:
-    print("no")
-    raise SystemExit(0)
-if last.tzinfo is None:
-    last = last.replace(tzinfo=timezone.utc)
-hours = (datetime.now(timezone.utc) - last).total_seconds() / 3600
-print("yes" if hours < 48 else "no")
-PY
-)
-    if [ "$SESSION_SOON" = "yes" ]; then
-        echo "[studio-session] с прошлой сессии не прошло 48 ч — молчу"
-        exit 0
-    fi
-fi
 
 FACTS="$WORK/facts.json"
 
@@ -135,7 +85,46 @@ if [ "$VISIBLE" = "0" ]; then
     exit 0
 fi
 
-echo "[studio-session] 2/2 готовый пост: текст (MiniMax) → проверка кодом → медиа → Шифу"
+# Частота доставки: не чаще раза в 48 ч. Это ограничение сообщений Шифу,
+# а не подготовки: факты собраны, и если доставка сейчас не положена —
+# они остаются в pending и уйдут в следующий раз (черновик протухнет по TTL).
+LAST_DELIVERY=$(python3 - "$STUDIO_REPO/docker/studio/state.json" <<'PY'
+import json
+import sys
+
+try:
+    with open(sys.argv[1], encoding="utf-8") as handle:
+        print(json.load(handle).get("last_delivery") or "")
+except (OSError, ValueError):
+    print("")
+PY
+)
+
+TOO_SOON=$(python3 - "$LAST_DELIVERY" <<'PY'
+import sys
+from datetime import datetime, timezone
+
+if len(sys.argv) < 2 or not sys.argv[1]:
+    print("no")
+    raise SystemExit(0)
+try:
+    last = datetime.fromisoformat(sys.argv[1])
+except ValueError:
+    print("no")
+    raise SystemExit(0)
+if last.tzinfo is None:
+    last = last.replace(tzinfo=timezone.utc)
+hours = (datetime.now(timezone.utc) - last).total_seconds() / 3600
+print("yes" if hours < 48 else "no")
+PY
+)
+
+if [ "$TOO_SOON" = "yes" ]; then
+    echo "[studio-session] факты собраны, но доставка черновика не положена раньше 48 ч — Шифу не спамим"
+    exit 0
+fi
+
+echo "[studio-session] 2/3 готовый пост: текст (MiniMax) → проверка кодом → медиа → Шифу"
 # Один шаг с индикатором: Шифу видит этапы в одном сообщении, черновик приходит с графикой.
 # Не собралось — индикатор показывает, на каком шаге и почему; сессия выходит с кодом 1.
 if ! python3 scripts/telegram/channel_studio.py --state "$STUDIO_REPO/docker/studio/state.json" \
@@ -156,7 +145,10 @@ sys.path.insert(0, sys.argv[2])
 import studio_state as st
 
 path = sys.argv[1]
+now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 with st.state_transaction(path) as state:
-    state["last_session"] = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    state["last_session"] = now
+    # Метка доставки: с неё считается лимит 48 ч на сообщения Шифу.
+    state["last_delivery"] = now
 print("  метка сессии обновлена")
 PY
