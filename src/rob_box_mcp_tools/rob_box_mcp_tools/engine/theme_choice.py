@@ -37,7 +37,7 @@ from rob_box_music.source import set_genres
 from rob_box_music.theme import match_style_text
 
 from .search import _PART_RE, content_stems
-from .theme_grounding import (confirmed_by_words, continued, grounded_theme, guessed_theme, heard_theme,
+from .theme_grounding import (_heard_slots, confirmed_by_words, continued, grounded_theme, guessed_theme, heard_theme,
                               named_by_human, names_theme, request_theme, set_slots, set_theme, theme_support)
 
 _LOG = logging.getLogger(__name__)
@@ -237,6 +237,13 @@ class SetSlots(NamedTuple):
     named: bool
 
 
+def _free_theme(theme: Optional[str], heard_text: Optional[str], slots: str) -> Tuple[bool, bool, List[str]]:
+    _heard, unknown = _heard_slots(heard_text or "")
+    guessed = (guessed_theme(grounded_theme(theme, heard_text)[0], theme, heard_text)
+               or bool(unknown and not slots and theme is None))
+    return guessed or bool(unknown and not slots), guessed, unknown
+
+
 def dj_set_slots(dj: Any, theme: Optional[str], persona: Optional[str], heard_text: Optional[str]) -> SetSlots:
     """Слоты сета для ``DjSetTool``: известные темы — из кэша его сета из генерации (``GenSetMaker.cached``) и знания,
     чойсер — тот же, что у пути музыки (``music_chooser``). Слова реплики — догадка кода из голого слова
@@ -246,10 +253,12 @@ def dj_set_slots(dj: Any, theme: Optional[str], persona: Optional[str], heard_te
     known = known_themes(maker.cached() if maker is not None else ())
     chooser = getattr(maker, "chooser", None) or DeterministicChooser()
     slots, persona, named = chosen_slots(theme, persona, heard_text, dj._last_dj, known, chooser, log)  # noqa: SLF001
-    free = guessed_theme(grounded_theme(theme, heard_text)[0], theme, heard_text)
-    if free:
+    free, guessed, unknown = _free_theme(theme, heard_text, slots)
+    if guessed:
         log.warning(f"🎛️ [dj_set] слова реплики {request_theme(heard_text)!r} - догадка кода, не названы: без платной "
                     f"генерации")
+    elif unknown and not slots:
+        log.info(f"🎛️ [dj_set] непонятые слова вне слотов: {unknown}; положительной темы нет — без платной генерации")
     if slots:
         log.info(f"🎛️ [dj_set] тема {slots!r}: {'названа человеком' if named else 'не названа человеком'} — если по "
                  f"ней в кэше ничего: {'заказ темы' if named else 'сначала кэш стиля'}")

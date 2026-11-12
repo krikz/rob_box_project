@@ -32,7 +32,7 @@ N605_M6 = "поставь сайт из трех треков объявляй �
 
 
 def test_the_stt_scrap_stays_what_it_is_a_bare_word_without_support():
-    assert heard_theme(N605_M6) == "сайт"
+    assert heard_theme(N605_M6) == ""  # #3493: одно неизвестное слово — в журнал, а не в положительный слот темы
     assert not names_theme("сайт", N605_M6)
 
 
