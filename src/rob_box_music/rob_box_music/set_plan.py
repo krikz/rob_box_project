@@ -15,7 +15,8 @@
   не меняется. Окно — не стиль (ADR-0153): стиль — набор таблиц, окно — подвыбор внутри него.
 * **Свинг сета** — в окне стиля, от сида; один на весь сет, как грув у диджея.
 * **Материал партитуры** (ADR-0154 §3.5, PR-5): ``TrackPlan.material`` — как ``kick``/``template``, решает план
-  (:func:`plan_materials`): тема нашла партитуры по названию — первые треки берут их по одной, трек 1 — материал №1.
+  (:func:`plan_materials`): тема нашла партитуры по названию — первые треки берут их по одной; очередь seeded-плана
+  зависит от сида и стиля (#3550), поверх неё действуют правила свежести и годности.
 * **Тоника сета** (PR-3d, ось «тоника» ``music_history``): тоника темы, если её не было в последних
   ``TONIC_MEMORY`` треках истории; иначе — выбор сидом (``diversity.weighted_pick``) среди тоник, которых там не
   было. Темп сета от истории не зависит.
@@ -254,14 +255,18 @@ class MaterialQueue:
     """Очередь материалов сета (:func:`plan_materials`), решаемая по требованию: :meth:`pick` трека ``no`` проверяет
     кандидатов по порядку треков 1..``no`` и запоминает решения — результат тот же, что у отбора всех треков сразу,
     но годность материалов треков 2+ считается при компоновке своего трека (в фоне), а не на пути запроса (M7,
-    #3542: 8 партитур на Pi — 315 мс). ``on_reject(material_id, причина)`` — строка лога отказа в момент решения."""
+    #3542: 8 партитур на Pi — 315 мс). ``salt`` seeded-плана перемешивает кандидаты до сортировки свежести (#3550);
+    без соли сохраняется порядок профиля. ``on_reject(material_id, причина)`` — строка лога отказа в момент решения."""
 
     def __init__(self, materials: Sequence[str], history: Sequence[Mapping] = (), set_id: Optional[str] = None,
                  fit: Optional[Callable[[str, int], Optional[str]]] = None,
                  rejected: Optional[Dict[str, str]] = None,
-                 on_reject: Optional[Callable[[str, str], None]] = None) -> None:
+                 on_reject: Optional[Callable[[str, str], None]] = None, salt: str = "") -> None:
         recent = recent_hooks(history, set_id, {m: m for m in materials})
-        self._queue = opening_order(list(dict.fromkeys(materials)), recent, last_opener(history, set_id))
+        ids = list(dict.fromkeys(materials))
+        if salt:
+            random.Random(f"material:{salt}").shuffle(ids)
+        self._queue = opening_order(ids, recent, last_opener(history, set_id))
         self._fit, self._rejected, self._on_reject = fit, rejected, on_reject
         self._picked: List[Optional[str]] = []
         self._lock = threading.Lock()
@@ -351,7 +356,8 @@ def seeded_plan(profile: ThemeProfile, seed: int, n_tracks: int = DEFAULT_TRACKS
     plans = [track_plan(no, n) for no in range(1, n + 1)]
     forms = plan_templates(window, seed, salt, [p.energy for p in plans], history)
     fit = None if materials is None else _material_fit(materials, window, bpm, profile, references)
-    queue = MaterialQueue(profile.materials, history, set_id, fit, rejected, on_reject) if profile.materials else None
+    queue = (MaterialQueue(profile.materials, history, set_id, fit, rejected, on_reject, salt=f"{profile.style}:{seed}")
+             if profile.materials else None)
     picked = [None] * n if queue is None else [queue.pick(no) if no == 1 or not lazy_materials else None
                                                for no in range(1, n + 1)]
     tracks = tuple(replace(p, kick=kicks[p.no - 1], template=forms[p.no - 1], material=picked[p.no - 1])
