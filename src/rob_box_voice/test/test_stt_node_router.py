@@ -370,11 +370,11 @@ class TestWakeRejectionLogging:
         _run_route(node, "wake", "не")
         node._maybe_speak_unclear.assert_not_called()
 
-    def test_respeaker_short_text_still_asks_again(self):
-        """Регресс-страховка: у ReSpeaker поведение не изменилось."""
+    def test_respeaker_short_text_is_silent_without_confirmed_address(self):
+        """#4695: непустой rejected ReSpeaker не доказывает адресованную речь и не вызывает TTS."""
         node, _infos, _warnings = self._node_with_log_capture()
         _run_route(node, "respeaker", "не")
-        node._maybe_speak_unclear.assert_called_once()
+        node._maybe_speak_unclear.assert_not_called()
 
 
 class TestHelpers:

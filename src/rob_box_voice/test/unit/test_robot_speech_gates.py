@@ -485,3 +485,118 @@ def test_robot_words_after_the_speech_outside_the_echo_window_go_on_as_before(no
         step()
     _phrase(node, clock, at=51.0, seconds=6.0)
     assert node.publish_result.call_args.args[0] == AGITATION_ECHO
+
+
+# --- #4695: rejected-результат после приветствия не подтверждает адресованную речь ---------------------------------
+
+GREETING_4695 = "О, Денчик! А я уж думал, ты про меня забыл. Добрый вечер."
+
+
+def _greeting_4695(node, clock, *, reply_open: bool, vad=()) -> None:
+    """Приветствие 0–5 с, событие существующего окна ответа и заданные фронты голоса."""
+    _, on_request = node.subscriptions_by_topic[speech_client.SPEECH_REQUEST_TOPIC]
+    clock.t = 4999.8
+    on_request(M.SpeechRequest(speech_id="greeting4695", text=GREETING_4695, commit=True, agent="personality"))
+    clock.t = 5000.0
+    _say(node, SpeechEvent.KIND_STARTED, "greeting4695")
+    clock.t = 5005.0
+    _say(node, SpeechEvent.KIND_FINISHED, "greeting4695")
+    if reply_open:
+        node._echo.on_reply_window(17.5)
+    for at, active in vad:
+        clock.t = 5000.0 + at
+        _vad(node, active)
+
+
+def _assert_no_turn_or_unclear(node) -> None:
+    """Нет Utterance для диалога (хода/LLM/tools) и нет прямого TTS из STT."""
+    node.publish_result.assert_not_called()
+    node._maybe_speak_unclear.assert_not_called()
+
+
+@pytest.mark.parametrize("reply_open", [False, True], ids=["without_window", "with_window"])
+def test_4695_silence_after_greeting_stays_silent(node_modules, reply_open):
+    clock = Clock()
+    node = _pipeline(node_modules[1], clock, None)
+    _greeting_4695(node, clock, reply_open=reply_open)
+    _phrase(node, clock, at=8.6, seconds=3.6)
+    _assert_no_turn_or_unclear(node)
+
+
+@pytest.mark.parametrize("reply_open", [False, True], ids=["without_window", "with_window"])
+def test_4695_nonempty_noise_rejection_stays_silent(node_modules, reply_open):
+    clock = Clock()
+    node = _pipeline(node_modules[1], clock, "ммм")
+    _greeting_4695(node, clock, reply_open=reply_open)
+    _phrase(node, clock, at=8.6, seconds=3.6)
+    _assert_no_turn_or_unclear(node)
+
+
+@pytest.mark.parametrize("reply_open", [False, True], ids=["without_window", "with_window"])
+def test_4695_nonempty_non_russian_rejection_stays_silent(node_modules, reply_open):
+    clock = Clock()
+    node = _pipeline(node_modules[1], clock, "係啊。")
+    _greeting_4695(node, clock, reply_open=reply_open)
+    _phrase(node, clock, at=8.6, seconds=3.6)
+    _assert_no_turn_or_unclear(node)
+
+
+@pytest.mark.parametrize("reply_open", [False, True], ids=["without_window", "with_window"])
+def test_4695_greeting_echo_stays_silent(node_modules, reply_open):
+    clock = Clock()
+    node = _pipeline(node_modules[1], clock, GREETING_4695)
+    _greeting_4695(node, clock, reply_open=reply_open, vad=((5.2, True), (5.6, False)))
+    _phrase(node, clock, at=8.6, seconds=3.6)
+    _assert_no_turn_or_unclear(node)
+
+
+@pytest.mark.parametrize("reply_open", [False, True], ids=["without_window", "with_window"])
+def test_4695_stale_segment_started_before_greeting_stays_silent(node_modules, reply_open):
+    """VAD начался до приветствия, а rejected доехал после открытия окна: это не новый ответ человека."""
+    clock = Clock()
+    node = _pipeline(node_modules[1], clock, "係啊。")
+    _greeting_4695(node, clock, reply_open=reply_open, vad=((-1.0, True), (5.4, False)))
+    _phrase(node, clock, at=8.6, seconds=3.6)
+    _assert_no_turn_or_unclear(node)
+
+
+def test_4695_real_short_answer_without_wake_or_biometry_is_accepted(node_modules):
+    """Правило 06.11 сохранено: открытого окна и голоса достаточно, именное опознание не требуется."""
+    clock = Clock()
+    node = _pipeline(node_modules[1], clock, "да")
+    _greeting_4695(node, clock, reply_open=True, vad=((5.6, True), (6.0, False)))
+    _phrase(node, clock, at=8.6, seconds=3.6)
+    assert node.publish_result.call_args.args[0] == "да"
+    node._maybe_speak_unclear.assert_not_called()
+
+
+def test_4695_rejected_after_confirmed_reply_asks_unclear(node_modules):
+    """REPLY_AFTER — подтверждённая окном попытка ответа: непонятную речь переспрашиваем, не публикуем как ход."""
+    from rob_box_voice.core import echo_window
+
+    clock = Clock()
+    node = _pipeline(node_modules[1], clock, "пу")
+    _greeting_4695(node, clock, reply_open=True, vad=((5.6, True), (6.0, False)))
+    _phrase(node, clock, at=8.6, seconds=3.6)
+    assert node._admission.verdict == echo_window.REPLY_AFTER
+    node.publish_result.assert_not_called()
+    node._maybe_speak_unclear.assert_called_once()
+
+
+def test_4695_explicit_wake_is_accepted_without_reply_window(node_modules):
+    clock = Clock()
+    node = _pipeline(node_modules[1], clock, "робот привет")
+    _phrase(node, clock, at=30.0, seconds=1.5)
+    assert node.publish_result.call_args.args[0] == "робот привет"
+    node._maybe_speak_unclear.assert_not_called()
+
+
+def test_4695_quiet_meaningful_answer_is_accepted(node_modules):
+    """Тихая осмысленная речь не отсекается новым общим порогом громкости."""
+    clock = Clock()
+    node = _pipeline(node_modules[1], clock, "привет")
+    _greeting_4695(node, clock, reply_open=True, vad=((5.6, True), (6.0, False)))
+    clock.t = 5008.6
+    node.speech_audio_callback(types.SimpleNamespace(data=[1, 1] * int(16000 * 3.6)))
+    assert node.publish_result.call_args.args[0] == "привет"
+    node._maybe_speak_unclear.assert_not_called()

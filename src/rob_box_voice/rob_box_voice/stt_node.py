@@ -319,6 +319,14 @@ except ImportError:
     print("⚠️  yandex-cloud-ml-sdk не установлен! Используем только Vosk.")
 
 
+def _handle_nonempty_rejected(node, admission: echo_window.Admission) -> None:
+    """Переспросить только подтверждённый окном человеческий ответ; остальной rejected оставить молчим."""
+    if admission.verdict == echo_window.REPLY_AFTER:
+        node._maybe_speak_unclear()
+    else:
+        node.get_logger().info("🔇 [issue 4695] Непустой rejected — не доказана адресованная речь, молчу")
+
+
 class STTNode(Node):
     """Нода для распознавания речи: Yandex STT gRPC v3 (primary) + Vosk (fallback)."""
 
@@ -972,9 +980,11 @@ class STTNode(Node):
                 self._route_wake_result(text)
             self._active_source = _SRC_RESPEAKER
         else:
-            self._handle_rejected_text(text, source, duration)
+            self._handle_rejected_text(text, source, duration, admission)
 
-    def _handle_rejected_text(self, text: str, source: str, duration: float) -> None:
+    def _handle_rejected_text(
+        self, text: str, source: str, duration: float, admission: echo_window.Admission
+    ) -> None:
         """Ветка «текста нет / текст слишком короткий»: лог + решение молчать.
 
         Issue 989 Fix A: различаем rejected(empty) и rejected(short).
@@ -982,7 +992,10 @@ class STTNode(Node):
         робота или шум: НЕ говорим «не расслышал», молчим. Иначе робот
         говорит фразу → её эхо снова ловится → снова empty → бесконечный цикл.
         rejected(short) — Vosk/Yandex вернули что-то (например «не»/«пути»),
-        т.е. был реальный речевой ввод, но слишком короткий — можно переспросить.
+        но rejected сам по себе не подтверждает адресованную попытку речи.
+        Переспрос разрешён только при verdict ``REPLY_AFTER``: существующее
+        окно уже подтвердило человеческий ответ после хвоста эха. Остальные
+        rejected/noise/echo/stale молчат.
         wake-поток: фон/ложное VAD-срабатывание — молчим, робот не должен
         «переспрашивать» на каждый сегмент без operator-вейка.
 
@@ -997,7 +1010,7 @@ class STTNode(Node):
         if source == _SRC_WAKE:
             self._log_wake_rejection(text, duration)
         elif text:
-            self._maybe_speak_unclear()
+            _handle_nonempty_rejected(self, admission)
         else:
             self.get_logger().info("🔇 [issue 989] Пустой STT (эхо/музыка) — молчу, без «не расслышал»")
         if source != _SRC_WAKE:
