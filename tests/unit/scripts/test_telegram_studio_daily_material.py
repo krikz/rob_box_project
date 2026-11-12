@@ -16,14 +16,12 @@ import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-import pytest
-
 REPO = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(REPO / "scripts" / "telegram"))
 
 import channel_studio as studio  # noqa: E402
-import studio_facts as facts_mod  # noqa: E402
 import studio_draft as draft_mod  # noqa: E402
+import studio_facts as facts_mod  # noqa: E402
 import studio_state as st  # noqa: E402
 
 
@@ -109,7 +107,9 @@ def test_approved_post_is_not_expired():
 
 def test_expired_draft_button_answers_not_crashes():
     """Нажатие на кнопку протухшего черновика даёт понятный ответ."""
-    state = {"posts": {"p1": {"id": "p1", "status": "expired", "fact_keys": ["pr:4555"]}}}
+    state = {
+        "posts": {"p1": {"id": "p1", "status": "expired", "fact_keys": ["pr:4555"]}}
+    }
 
     answer = studio.apply_post_action(state, "p1", studio.ACTION_PUBLISH)
 
@@ -257,7 +257,9 @@ def test_session_script_has_no_publish_window_before_facts():
     Фильтр переехал на ДОСТАВКУ черновика: готовим каждый день, а сообщение
     Шифу не сыпется чаще раза в 48 ч.
     """
-    script = (REPO / "scripts" / "telegram" / "studio_session.sh").read_text(encoding="utf-8")
+    script = (REPO / "scripts" / "telegram" / "studio_session.sh").read_text(
+        encoding="utf-8"
+    )
 
     facts_at = script.index("собираю факты")
     delivery_at = script.index("Частота доставки")
