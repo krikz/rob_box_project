@@ -23,8 +23,9 @@
 #      отказ до ssh; HIL_PROD_TOOLS_DB = rob_box_core.tools_db.TOOLS_DB_DEFAULT;
 #      шаг замка в деплое стоит до первой остановки контейнеров, update_and_restart.sh
 #      проверяет замок до `down`;
-#   9. e2e-режим робота (#4686): on читает e2e_mode /speaker_id_node до замка — true значит
-#      отказ (рекреация voice-assistant сбросит e2e_mode марафона), моторы не трогаются;
+#   9. e2e-режим робота (#4686): on читает e2e_mode /speaker_id_node read-only пробой
+#      до любых записей на Pi — продолжает ТОЛЬКО по достоверному false; true, пустой/
+#      битый ответ и ненулевая проба — отказ без lock/motor/compose и без «cat >» на Pi;
 #      off только предупреждает — restore возвращает моторы, его не блокируем.
 #
 # Запуск: bash scripts/hil/tests/test_hil.sh
@@ -96,7 +97,14 @@ case "$1" in
                 [ "$(last "$@")" = "${FAKE_PROD_DB:-/data/voice_memory.db}" ] || exit 1
                 [ -f "$S/prod_maps" ] || exit 1
                 cat "$S/prod_maps" ;;
-            *"e2e_mode"*) echo "${FAKE_E2E_MODE:-Boolean value is: False}" ;;  # remote_pi.sh e2e-state (#4686)
+            *"e2e_mode"*)  # эмулирует удалённый скрипт пробы (#4686): raw-вывод узла
+                # FAKE_E2E_MODE → true|false; пусто/бито — exit 9; __PROBE_FAIL__ — rc≠0.
+                raw="${FAKE_E2E_MODE-unset}"
+                [ "$raw" = unset ] && raw='Boolean value is: False'
+                [ "$raw" = "__PROBE_FAIL__" ] && exit 3
+                out=$(printf '%s\n' "$raw" | grep -aoE 'Boolean value is: (True|False)' | tail -1)
+                [ -n "$out" ] || exit 9
+                case "$out" in *True*) printf true ;; *) printf false ;; esac ;;
             *) [ -n "${FAKE_ZENOH_LOG:-}" ] && echo "INFO zenoh::net::runtime: Using ZID: 1a2b3c"; echo "${FAKE_CM:-1}"; echo /controller_manager ;;
         esac ;;
     ps)
@@ -519,14 +527,34 @@ check "update_and_restart.sh: замок проверяется до down" \
     '[ "$(line_of "/tmp/hil.lock" "$U")" -lt "$(line_of "docker-compose down" "$U")" ]'
 
 # ── 9. e2e-режим робота: рекреация voice-assistant сбросит e2e_mode (#4686) ──
-# on читает e2e_mode /speaker_id_node (remote_pi.sh e2e-state) до замка: true — отказ,
-# моторы и сим не тронуты; false — штатно. off только предупреждает: restore — возврат
-# робота с моторами, его не блокируем (иначе робот на кирпичах всю ночь марафона).
+# Fail-closed: продолжать on можно ТОЛЬКО по достоверному false. true, пустой/битый
+# вывод и ненулевой probe — отказ ДО любых записей на Pi (helpers/замок) и до
+# остановки моторов/сима. Проба — read-only и идёт до push_helpers. off только
+# предупреждает: restore — возврат робота с моторами, его не блокируем.
+no_side_effects() {  # ни lock/motor/compose, ни записей на Pi (rput пишет через «cat >»)
+    [ ! -f "$WORK/tmp/hil.lock" ] \
+        && ! grep -q "docker stop" "$WORK/docker.log" \
+        && ! grep -q "compose" "$WORK/docker.log" \
+        && ! grep -q "lock-take" "$WORK/ssh.log" \
+        && ! grep -q "cat >" "$WORK/ssh.log"
+}
 reset_state
 run_hil on FAKE_E2E_MODE='Boolean value is: True'; rc=$?
-check "on при e2e_mode=true: отказ (rc=$rc), замок не взят, моторы и сим не тронуты" \
-    '[ "$rc" -ne 0 ] && [ ! -f "$WORK/tmp/hil.lock" ] && ! grep -q "docker stop" "$WORK/docker.log" && ! grep -q "compose" "$WORK/docker.log"'
+check "on при e2e_mode=true: отказ (rc=$rc), ни lock/motors/compose, ни записей на Pi" \
+    '[ "$rc" -ne 0 ] && no_side_effects'
 check "on при e2e_mode=true: причина в сообщении (#4686)" 'grep -q "#4686" "$WORK/out.log"'
+reset_state
+run_hil on FAKE_E2E_MODE='это не ответ узла'; rc=$?
+check "on при битом ответе пробы: отказ (rc=$rc), side effects нет" \
+    '[ "$rc" -ne 0 ] && no_side_effects'
+reset_state
+run_hil on FAKE_E2E_MODE=''; rc=$?
+check "on при пустом ответе пробы: отказ (rc=$rc), side effects нет" \
+    '[ "$rc" -ne 0 ] && no_side_effects'
+reset_state
+run_hil on FAKE_E2E_MODE='__PROBE_FAIL__'; rc=$?
+check "on при ненулевой пробе (rc=$rc): отказ, side effects нет" \
+    '[ "$rc" -ne 0 ] && no_side_effects'
 reset_state
 run_hil on FAKE_E2E_MODE='Boolean value is: False'; rc=$?
 check "on при e2e_mode=false: штатно, выход 0 (rc=$rc)" '[ "$rc" -eq 0 ]'
@@ -535,6 +563,12 @@ run_hil on >/dev/null
 : > "$WORK/docker.log"; : > "$WORK/ssh.log"
 run_hil off FAKE_E2E_MODE='Boolean value is: True'; rc=$?
 check "off при e2e_mode=true: предупреждение в логе, restore проходит (rc=$rc)" \
+    '[ "$rc" -eq 0 ] && grep -q "#4686" "$WORK/out.log" && grep -q "up -d --no-deps --pull never voice-assistant" "$WORK/docker.log"'
+reset_state
+run_hil on >/dev/null
+: > "$WORK/docker.log"; : > "$WORK/ssh.log"
+run_hil off FAKE_E2E_MODE='__PROBE_FAIL__'; rc=$?
+check "off при ненулевой пробе: предупреждение, restore проходит (rc=$rc)" \
     '[ "$rc" -eq 0 ] && grep -q "#4686" "$WORK/out.log" && grep -q "up -d --no-deps --pull never voice-assistant" "$WORK/docker.log"'
 
 echo

@@ -9,8 +9,8 @@
 #
 # on:
 #   1. проверки: ssh до четырёх машин, настройки, пути карт и реестра (не боевые), образ сима;
-#      e2e_mode робота (remote_pi.sh e2e-state) — при активном e2e-прогоне отказ: рекреация
-#      voice-assistant сбросила бы e2e_mode марафона (#4686);
+#      read-only проба e2e_mode робота (e2e_probe) до любых записей на Pi — продолжает ТОЛЬКО
+#      по достоверному false: рекреация voice-assistant сбросила бы e2e_mode марафона (#4686);
 #   2. замок HIL_LOCK (/tmp/hil.lock) на Main Pi — деплой его видит и не идёт;
 #   3. Main: docker stop ros2-control lslidar — моторы (CAN → VESC) получают команды
 #      только от ros2-control; Vision: docker stop oak-d ceiling-camera;
@@ -82,24 +82,28 @@ rpi() {  # rpi <host> <подкоманда> <аргументы>...
     rsh "$host" "bash $REMOTE_PI ${args[*]}"
 }
 
+# e2e_probe: read-only проба e2e_mode /speaker_id_node внутри ${SOUND_SWITCH[0]}.
+# stdout — «true|false» только по подтверждённому ответу узла; rc≠0 — пробы не было
+# (нет контейнера/ros, пустой или битый вывод). Ничего на Pi не пишет и от Pi ничего
+# не требует (в отличие от remote_pi.sh) — зовётся до push_helpers, чтобы отказ не
+# оставил следов на Pi (#4686).
+e2e_probe() {
+    rsh "$HIL_SOUND_HOST" "docker exec $(q "${SOUND_SWITCH[0]}") bash -lc $(q 'out=$(ros2 param get /speaker_id_node e2e_mode --no-daemon 2>/dev/null | grep -aoE "Boolean value is: (True|False)" | tail -1); [ -n "$out" ] || exit 9; case "$out" in *True*) printf true ;; *) printf false ;; esac')"
+}
+
 # e2e_guard: on/off пересоздают ${SOUND_SWITCH[@]} (docker compose up -d), а рекреация
 # контейнера поднимает speaker_id_node с e2e_mode=false по умолчанию — марафон/e2e-прогон
-# теряет режим посреди актов (#4686). abort (on) — отказ при e2e_mode=true; warn (off) —
-# restore возвращает робота с моторами, его не блокируем, но предупреждаем громко.
+# теряет режим посреди актов (#4686). Fail-closed: продолжать можно только по достоверному
+# false; true, пустой/битый вывод и ненулевой probe — отказ/предупреждение.
 e2e_guard() {  # $1 = abort|warn
-    local st
-    st=$(rpi "$HIL_SOUND_HOST" e2e-state "${SOUND_SWITCH[0]}" 2>/dev/null || echo unknown)
-    case "$st" in
-        true)
-            if [ "$1" = abort ]; then
-                die "на Sound Pi активен e2e-режим (${SOUND_SWITCH[0]}): пересоздание контейнера сбросит e2e_mode и сломает e2e-прогон; дождись его конца или сними режим вручную (issue #4686)"
-            fi
-            log "⚠️ на Sound Pi активен e2e-режим: restore ${SOUND_SWITCH[*]} всё равно сбросит e2e_mode (#4686) — чужой e2e-прогон придётся повторить"
-            ;;
-        unknown)
-            log "⚠️ e2e-состояние ${SOUND_SWITCH[0]} не определилось (стек поднимается?): убедись, что e2e-прогона нет (issue #4686)"
-            ;;
-    esac
+    local st rc=0
+    st=$(e2e_probe 2>/dev/null) || rc=$?
+    if [ "$rc" -ne 0 ] || [ "$st" != false ]; then
+        if [ "$1" = abort ]; then
+            die "на Sound Pi не подтверждён выключенный e2e-режим (${SOUND_SWITCH[0]}: probe rc=$rc, ответ='${st:-пусто}'): пересоздание контейнера сбросит e2e_mode и сломает e2e-прогон; дождись его конца или сними режим вручную (issue #4686)"
+        fi
+        log "⚠️ e2e-режим ${SOUND_SWITCH[0]} не подтверждён выключенным (probe rc=$rc, ответ='${st:-пусто}'): restore всё равно сбросит e2e_mode (#4686) — чужой e2e-прогон придётся повторить"
+    fi
 }
 
 # ── Состояние сервисов «до on» (решение «сломан до on → предупреждение» принимает код) ──
@@ -308,8 +312,8 @@ preflight() {
 
 cmd_on() {
     preflight
-    push_helpers
     e2e_guard abort
+    push_helpers
     local who
     who="HIL on since $(date -u +%FT%TZ) by ${USER:-${USERNAME:-?}}@$(hostname) sandbox=$HIL_SANDBOX_IP maps=$HIL_MAPS_DIR"
     rpi "$HIL_MAIN_HOST" lock-take "$HIL_LOCK" "$who" || die "HIL уже включён или замок остался: scripts/hil/hil.sh status / off"
@@ -433,8 +437,8 @@ cmd_off() {
         rsh "$host" true || die "нет ssh до $host"
     done
     resolve_robot_id
-    push_helpers
     e2e_guard warn
+    push_helpers
     # Сначала сим: иначе вернувшийся ros2-control встретит второй /controller_manager.
     sim_down
     local gz
