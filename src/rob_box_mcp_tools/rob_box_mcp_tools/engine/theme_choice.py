@@ -237,11 +237,11 @@ class SetSlots(NamedTuple):
     named: bool
 
 
-def _free_theme(theme: Optional[str], heard_text: Optional[str], slots: str) -> Tuple[bool, bool, List[str]]:
+def _free_theme(theme: Optional[str], heard_text: Optional[str], slots: str) -> Tuple[bool, bool, List[str], str]:
     _heard, unknown = _heard_slots(heard_text or "")
     guessed = (guessed_theme(grounded_theme(theme, heard_text)[0], theme, heard_text)
                or bool(unknown and not slots and theme is None))
-    return guessed or bool(unknown and not slots), guessed, unknown
+    return guessed or bool(unknown and not _heard), guessed, unknown, _heard
 
 
 def dj_set_slots(dj: Any, theme: Optional[str], persona: Optional[str], heard_text: Optional[str]) -> SetSlots:
@@ -253,12 +253,14 @@ def dj_set_slots(dj: Any, theme: Optional[str], persona: Optional[str], heard_te
     known = known_themes(maker.cached() if maker is not None else ())
     chooser = getattr(maker, "chooser", None) or DeterministicChooser()
     slots, persona, named = chosen_slots(theme, persona, heard_text, dj._last_dj, known, chooser, log)  # noqa: SLF001
-    free, guessed, unknown = _free_theme(theme, heard_text, slots)
+    free, guessed, unknown, heard = _free_theme(theme, heard_text, slots)
+    if unknown and not heard:
+        slots = ""
     if guessed:
         log.warning(f"🎛️ [dj_set] слова реплики {request_theme(heard_text)!r} - догадка кода, не названы: без платной "
                     f"генерации")
-    elif unknown and not slots:
-        log.info(f"🎛️ [dj_set] непонятые слова вне слотов: {unknown}; положительной темы нет — без платной генерации")
+    elif unknown:
+        log.info(f"🎛️ [dj_set] непонятые слова вне слотов: {unknown}; тема={slots!r}")
     if slots:
         log.info(f"🎛️ [dj_set] тема {slots!r}: {'названа человеком' if named else 'не названа человеком'} — если по "
                  f"ней в кэше ничего: {'заказ темы' if named else 'сначала кэш стиля'}")

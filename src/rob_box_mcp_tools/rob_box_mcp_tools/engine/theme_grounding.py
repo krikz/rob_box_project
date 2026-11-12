@@ -77,7 +77,7 @@ def _registry_word(word: str) -> bool:
         phrase = seed.phrase.replace("ё", "е")
         if phrase.endswith("*") and word.startswith(phrase[:-1]):
             return True
-        if not phrase.endswith("*") and word in phrase.split():
+        if not phrase.endswith("*") and " " not in phrase and word == phrase:
             return True
         if any(latin == query_word for query in seed.queries for query_word in query.lower().split()):
             return True
@@ -126,11 +126,14 @@ def _context_drop(words: List[str], i: int, candidates: List[int], known: set, s
     return _tail_context(words, i, candidates, known) or _next_context(words, i, candidates, known, styled)
 
 
+def _linked_theme_word(words: List[str], i: int, lead: set) -> bool:
+    """Неизвестное в явной теме, перечислении или перед «по» («путешествие по Хогвардсу»)."""
+    return i in lead or any(w in _AND for w in words) or any(w == "по" for w in words[i + 1:])
+
+
 def _single_unknown(words: List[str], i: int, candidates: List[int], bare: bool, descriptor: bool,
-                    direct_quality: bool, lead: set, direct: set) -> bool:
-    quality = words[i].endswith(("ый", "ий", "ой", "ая", "яя", "ое", "ее"))
-    return (len(candidates) == 1 and not bare and not descriptor and not direct_quality
-            and i not in lead and (i not in direct or quality))
+                    direct_quality: bool, lead: set) -> bool:
+    return len(candidates) == 1 and not bare and not descriptor and not direct_quality and i not in lead
 
 
 def _drop_unknown(words: List[str], i: int, candidates: List[int], known: set, bare: bool, styled: bool,
@@ -144,7 +147,26 @@ def _drop_unknown(words: List[str], i: int, candidates: List[int], known: set, b
         return True
     if quality and known and i not in lead:
         return True
-    return _single_unknown(words, i, candidates, bare, descriptor, direct_quality, lead, direct)
+    if known and not _linked_theme_word(words, i, lead):
+        return True
+    return _single_unknown(words, i, candidates, bare, descriptor, direct_quality, lead)
+
+
+def _known_theme_indices(words: List[str], candidates: List[int]) -> set:
+    """Индексы опорных слов темы без style-alias; составные алиасы вселенных и точные фразы реестра — целыми span’ами."""
+    known = {i for i in candidates if words[i].isascii() or _registry_word(words[i])
+             or bool(genre_of(words[i]) or is_mood(words[i]) or match_row(words[i]) is not None)}
+    for first, last, _key in universe_spans(words):
+        known.update(range(first, last))
+    for seed in theme_seeds():
+        phrase = seed.phrase.replace("ё", "е")
+        if phrase.endswith("*") or " " not in phrase:
+            continue
+        parts = phrase.split()
+        for first in range(len(words) - len(parts) + 1):
+            if words[first:first + len(parts)] == parts:
+                known.update(range(first, first + len(parts)))
+    return known
 
 
 def _positive_kept(words: List[str], keep: List[bool], styled: bool = False) -> Tuple[List[bool], List[str]]:
@@ -153,7 +175,7 @@ def _positive_kept(words: List[str], keep: List[bool], styled: bool = False) -> 
     прилагательное и хвост повода/публики — не тема, а ``unknown`` для журнала."""
     lead, direct = _explicit_marks(words)
     candidates = [i for i, kept in enumerate(keep) if kept and words[i] not in _AND and words[i] != _NOT]
-    known = {i for i in candidates if _known_word(words[i])}
+    known = _known_theme_indices(words, candidates)
     bare = _bare_candidate(words, candidates)
     out, unknown = list(keep), []
     for i in candidates:
