@@ -957,7 +957,7 @@ wait_robot_quiet() {
     done
 }
 
-# barge_in шага: JSON {"after":"speech_started|llm_request|segment_started","n":N,"delay_sec":X}.
+# barge_in шага: JSON {"after":"speech_started|llm_request|segment_started|perform_started","n":N,"delay_sec":X}.
 _barge_field() {  # $1=json $2=поле
     BARGE_JSON="$1" python3 -c 'import json, os, sys
 try:
@@ -973,7 +973,7 @@ wait_barge_anchor() {
     local since="$1" spec="$2" after n t0 now out
     after="$(_barge_field "$spec" after)"; n="$(_barge_field "$spec" n)"
     case "$after" in
-        speech_started|llm_request|segment_started) ;;
+        speech_started|llm_request|segment_started|perform_started) ;;
         *) E2E_ANCHOR_ERROR="неизвестный barge_in.after='${after}'"; return 2 ;;
     esac
     t0="$(date +%s)"
