@@ -21,13 +21,25 @@ import subprocess
 import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from typing import Optional
 
 import studio_develop as develop
+import studio_material as material
+import studio_media as smedia
 import studio_state as st
+import studio_topic as topic
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_REPO = "krikz/rob_box_project"
 DEFAULT_STATE = REPO_ROOT / "docker" / "studio" / "state.json"
+
+# Каталог кэша материалов студии: сюда складываются файлы, забранные с
+# песочницы. Каталог внутри docker/studio/run — в git не попадает.
+CACHE_DIR = Path(os.environ.get("STUDIO_TMP", REPO_ROOT / "docker" / "studio" / "run")) / "media" / "facts"
+
+# Подпись прогона для читателя. Это же слово уходит в подвал инфографики
+# («Источник: …»), поэтому оно обязано быть публичным текстом (channel_lib).
+ROBOT_RUN_SOURCE = "журнал прогонов РОББОКС"
 
 # Сколько раз факт показывали. Счётчик для учёта и для отчёта сессии.
 #
@@ -69,6 +81,15 @@ VISIBLE_TOPICS = (
     "wake",
     "dialog)",
     "e2e)",
+    # Склад и движение по нему — то, что читатель видит глазами (13.11:
+    # «робот ездил по складу как пылесос» — а такие правки в фактах не было).
+    "склад",
+    "депо",
+    "локализац",
+    "карт",
+    "маршрут",
+    "заезд",
+    "проезд",
 )
 
 # Технические PR не показываем читателю канала: чистка зависимостей, CI, документация,
@@ -87,10 +108,23 @@ BORING_PREFIXES = (
     "style:",
 )
 
+# Незавершённая работа. Заголовок, начинающийся с «WIP », — это черновик:
+# работу ещё не доделали, и показывать её читателю нельзя (ADR-0171, раздел 2а).
+#
+# Раньше отсев технических правок смотрел на начало названия, а «WIP
+# refactor(e2e): …» начинается с «WIP », а не с «refactor(» — такая правка
+# проходила в ленту как видимая, и семь изменённых файлов давали ей больше
+# очков, чем содержательной правке о музыке в голосе. Отсев — здесь, на
+# границе «что показывать», рядом с остальными техническими. Само правило
+# живёт в studio_topic.is_draft: там же оно снимает очки черновику, чтобы
+# такой факт не стал темой даже из старой ленты.
+
 
 def is_boring(title: str) -> bool:
     """Техническая правка без видимого для читателя смысла."""
     low = (title or "").strip().lower()
+    if topic.is_draft(title):
+        return True
     return low.startswith(BORING_PREFIXES)
 
 
@@ -130,6 +164,10 @@ def fact_key(fact: dict) -> str:
     if kind == "run":
         match = re.search(r"run_id (\d+)", fact.get("source", ""))
         return f"run:{match.group(1)}" if match else f"run:{fact.get('source', '')[:40]}"
+    if kind == "robot_run":
+        # Префикс свой: «run:» уже занят прогонами Actions.
+        run_id = str(fact.get("run_id") or "").strip()
+        return f"robot_run:{run_id}" if run_id else f"robot_run:{fact.get('claim', '')[:40]}"
     if kind == "adr":
         return f"adr:{fact.get('source', '')[:60]}"
     if kind == "media":
@@ -394,6 +432,268 @@ def collect_runs(repo: str, since: str) -> list:
     return facts
 
 
+def _route_goals(text: str) -> int:
+    """Сколько целей маршрута прошёл робот: строки журнала с меткой GOAL_START.
+
+    Метка стоит вторым полем после времени: «08:24:17.873 GOAL_START M1 target=…».
+    """
+    goals = 0
+    for line in (text or "").splitlines():
+        parts = line.split()
+        if len(parts) >= 2 and parts[1] == "GOAL_START":
+            goals += 1
+    return goals
+
+
+def _read_json(path: Path) -> dict:
+    """Разбор json-файла. Нечитаемый файл — пустой словарь, а не исключение."""
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+# --- отладочные варианты одного замера ---------------------------------------
+# Песочница держит рядом обычный прогон и его отладочные повторы:
+# «depot4682_baseline_m1_20261111T224053Z» и «depot4682_baseline_m1_debug_…_r3».
+# Отладочный повтор — это ТОТ ЖЕ замер, а не новое событие: как отдельные факты
+# они дают шум (пять почти одинаковых тем «Робот прошёл склад: 1 цель…»).
+#
+# Поэтому событие — один замер: группируем прогоны по корню имени (без метки
+# времени, номера ревизии и отладочной метки) и берём одного представителя
+# группы. Настоящие прогоны depot4495 и depot4682 — разные корни, поэтому
+# остаются каждый своим фактом (ADR-0171, раздел 2а).
+DEBUG_MARKERS = ("debug", "diag", "recur")
+DEBUG_SEGMENT_RE = re.compile(r"^(?:debug|diag|recur\d*)$")
+RUN_TS_RE = re.compile(r"_\d{8}T\d{6}Z$")
+RUN_REV_RE = re.compile(r"_r\d+$")
+
+# Подпись события по типу прогона. Код знает, что за замер это
+# (studio_material.KNOWN_RUNS), а не модель: у складского прогона подпись
+# «Робот прошёл склад», у замера дрейфа локализации — своя. Жёсткое «склад»
+# для любого прогона было бы враньём, если на песочнице появится не-складский
+# замер (например shisyun_s1 — это дрейф, а не проход склада).
+RUN_LEADS = {"drift": "Замер локализации на складе"}
+RUN_LEAD_DEFAULT = "Робот прошёл склад"
+# Роль прогона в паре «до/после» — слово из подписи прогона.
+RUN_ROLE_WORDS = {"before": "до", "after": "после"}
+
+
+def _run_root(run_id: str) -> tuple:
+    """Корень замера прогона и признак отладочного повтора.
+
+    «depot4682_baseline_m1_debug_20261111T230136Z_r3» и
+    «depot4682_baseline_m1_20261111T224053Z» — один замер baseline_m1: разные
+    только метка времени, номер ревизии и слово «debug».
+    """
+    name = RUN_REV_RE.sub("", run_id)
+    name = RUN_TS_RE.sub("", name)
+    parts = name.split("_")
+    marked = False
+    if parts and DEBUG_SEGMENT_RE.match(parts[-1]):
+        parts.pop()
+        marked = True
+    return "_".join(parts), marked
+
+
+def _run_lead(item: dict) -> str:
+    """Подпись прогона для читателя — по типу замера, а не всегда «склад»."""
+    topic = str(item.get("topic") or "")
+    lead = RUN_LEADS.get(topic, RUN_LEAD_DEFAULT)
+    role = RUN_ROLE_WORDS.get(str(item.get("role") or ""))
+    if role:
+        lead += f" ({role})"
+    return lead
+
+
+def _run_claim(numbers: dict, lead: str) -> str:
+    """Утверждение о прогоне для читателя: только числа самого прогона.
+
+    Идентификатор прогона сюда НЕ попадает: в посте восемь цифр подряд —
+    это запрещённый идентификатор, модель перепишет его и проверка отбьёт текст.
+
+    Время симуляции пишем ДВАЖДЫ — в секундах и в минутах («1406 с симуляции
+    (23 минуты)»). Проверка чисел разрешает модели только числа из claim: без
+    минут модель всё равно напишет «23 минуты симуляции» (так человечнее), и
+    пост отклонится с «число 23 не найдено среди фактов», хотя по сути верен.
+    """
+    parts = []
+    goals = numbers.get("goals")
+    if goals:
+        parts.append(f"{goals} {_plural(goals, 'цель маршрута', 'цели маршрута', 'целей маршрута')}")
+    sim = numbers.get("sim_s")
+    if sim:
+        part = f"{int(sim)} с симуляции"
+        minutes = _sim_minutes(int(sim))
+        if minutes:
+            part += f" ({minutes} {_plural(minutes, 'минута', 'минуты', 'минут')})"
+        parts.append(part)
+    snapshots = numbers.get("map_snapshots")
+    if snapshots:
+        parts.append(f"{snapshots} {_plural(snapshots, 'снимок карты', 'снимка карты', 'снимков карты')}")
+    if not parts:
+        return ""
+    return f"{lead}: " + ", ".join(parts)
+
+
+def _sim_minutes(seconds: int) -> int:
+    """Секунды симуляции → минуты (округление до ближайшей минуты).
+
+    1406 с — это 23 минуты: столько же напишет и модель, и человек.
+    """
+    if seconds < 60:
+        return 0
+    return int(seconds / 60 + 0.5)
+
+
+def _plural(number: int, one: str, few: str, many: str) -> str:
+    """Русское склонение числительного: 1 цель, 2 цели, 5 целей."""
+    value = abs(int(number))
+    if value % 10 == 1 and value % 100 != 11:
+        return one
+    if 2 <= value % 10 <= 4 and not 12 <= value % 100 <= 14:
+        return few
+    return many
+
+
+def collect_robot_runs(gate=None, cache_dir: Optional[Path] = None) -> list:
+    """Прогоны робота с песочницы — как факты студии (issue #4702).
+
+    Разбор 13.11: за неделю робот ездил по складу, а в фактах прогонов не было
+    вовсе — сборщики знали только про PR и issue. Теперь прогон с песочницы
+    становится фактом: сколько целей маршрута пройдено, сколько секунд шла
+    симуляция, сколько снимков карты снято.
+
+    Песочница читается гейтом студии (решение Шифу 06.11: «студия сама берёт
+    данные с хостов, только на чтение»). Ключа нет или хост не отвечает —
+    это не поломка сессии: возвращаем пустой список и честно пишем причину.
+
+    Числа берутся из файлов САМОГО прогона: ``maprec/meta.json`` (снимки карты,
+    строки поз, секунды симуляции) и ``route.log`` (цели маршрута). Файлы
+    кэшируются на диске, чтобы сессия не качала одно и то же каждый день.
+    """
+    facts = []
+    source = ROBOT_RUN_SOURCE if smedia.is_public(ROBOT_RUN_SOURCE) else "журнал прогонов"
+    try:
+        catalog, reason = material.runs_catalog(gate or material.Gate())
+    except Exception as exc:  # noqa: BLE001 — песочница не должна ронять сессию
+        print(f"прогоны робота: каталог не прочитан ({type(exc).__name__}: {exc})", file=sys.stderr)
+        return []
+    if reason:
+        print(f"прогоны робота: {reason}", file=sys.stderr)
+        return []
+    cache = Path(cache_dir or CACHE_DIR)
+    gate_obj = gate or material.Gate()
+    # Отладочные повторы одного замера — это один факт, а не пять. Группируем
+    # прогоны по корню имени и оставляем по одному представителю на замер.
+    groups: dict = {}
+    for item in catalog:
+        run_id = str(item.get("id") or "")
+        kind = str(item.get("kind") or "")
+        if not run_id or kind != "poses":
+            # Каталог корня («depot») — это кадры камеры того же прогона, а не
+            # отдельное событие: вторым фактом он был бы тем же прогоном дважды.
+            continue
+        if not material.NAME_RE.match(run_id):
+            continue
+        root, marked = _run_root(run_id)
+        groups.setdefault(root, []).append((marked, run_id, item))
+    for root in sorted(groups):
+        members = groups[root]
+        # Отладочные повторы отбрасываем: событие — один замер, а не его
+        # повторы. Настоящий прогон (без меток debug/diag/recur) остаётся.
+        clean = [member for member in members if not member[0]]
+        if clean:
+            # Из одного корня остаётся один представитель: самый свежий по
+            # времени окончания, иначе порядок был бы случайным.
+            chosen = sorted(clean, key=lambda member: member[1])[-1]
+            facts.append(_robot_run_fact(chosen[2], gate_obj, cache, source))
+            continue
+        # Отладочных вариантов несколько: берём самый полный из них (по
+        # времени симуляции), чтобы факт не потерялся, если обычного прогона
+        # на песочнице уже нет.
+        best = None
+        for _marked, run_id, item in members:
+            fact = _robot_run_fact(item, gate_obj, cache, source)
+            if not fact:
+                continue
+            if best is None or _run_scale(fact) > _run_scale(best):
+                best = fact
+        if best:
+            facts.append(best)
+    return facts
+
+
+def _run_scale(fact: dict) -> tuple:
+    """Насколько прогон показателен: цели, секунды, снимки карты."""
+    numbers = fact.get("numbers") or {}
+    return (
+        int(numbers.get("goals") or 0),
+        int(numbers.get("sim_s") or 0),
+        int(numbers.get("map_snapshots") or 0),
+    )
+
+
+def _robot_run_fact(item: dict, gate_obj, cache: Path, source: str) -> Optional[dict]:
+    """Факт о прогоне с песочницы: числа САМОГО прогона, без его идентификатора.
+
+    Пустой результат — прогон не удалось прочитать (нет meta.json и т.п.):
+    сессия продолжает работать, причина уходит в stderr.
+    """
+    run_id = str(item.get("id") or "")
+    local = cache / run_id
+    meta_path = local / "meta.json"
+    route_path = local / "route.log"
+    end_path = local / "run_end.txt"
+    base = f"{material.HIL_OUT}/{run_id}"
+    try:
+        if gate_obj.fetch(f"{base}/maprec/meta.json", meta_path):
+            print(f"прогон {run_id}: meta.json не забрался", file=sys.stderr)
+            return None
+        meta = _read_json(meta_path)
+        if not meta:
+            print(f"прогон {run_id}: meta.json пустой или нечитаемый", file=sys.stderr)
+            return None
+        gate_obj.fetch(f"{base}/route.log", route_path)
+        gate_obj.fetch(f"{base}/run_end.txt", end_path)
+    except Exception as exc:  # noqa: BLE001 — один прогон не должен ронять сбор
+        print(f"прогон {run_id}: файлы не забраны ({type(exc).__name__}: {exc})", file=sys.stderr)
+        return None
+    goals = 0
+    if route_path.is_file():
+        goals = _route_goals(route_path.read_text(encoding="utf-8", errors="ignore"))
+    numbers = {
+        "goals": goals,
+        "map_snapshots": int(meta.get("map_snapshots") or 0),
+        "pose_rows": int(meta.get("pose_rows") or 0),
+        "sim_s": int(meta.get("sim_s") or 0),
+    }
+    claim = _run_claim(numbers, _run_lead(item))
+    if not claim:
+        return None
+    ended = ""
+    if end_path.is_file():
+        ended = end_path.read_text(encoding="utf-8", errors="ignore").strip()
+    fact = {
+        "kind": "robot_run",
+        "claim": claim,
+        "source": source,
+        # Идентификатор прогона и его числа живут ОТДЕЛЬНО от текста
+        # факта: extract_fact_text показывает модели только claim,
+        # source и evidence — идентификатор в пост не попадёт.
+        "run_id": run_id,
+        "run_label": str(item.get("label") or f"прогон {run_id}"),
+        "numbers": numbers,
+        "ended_at": ended,
+        "visible": True,
+    }
+    # Ключ — здесь же, а не только в общем проходе main(): факт о прогоне
+    # самодостаточен, и карточка цифр находит его по ключу поста.
+    fact["key"] = fact_key(fact)
+    return fact
+
+
 PR_RE = re.compile(r"#(\d+)")
 
 
@@ -585,6 +885,10 @@ def main() -> int:
     facts += collect_merged_prs(args.repo, since)
     facts += collect_closed_issues(args.repo, since)
     facts += collect_runs(args.repo, since[:10])
+    # Прогоны робота с песочницы (issue #4702): за неделю робот ездил по
+    # складу, а в фактах прогонов не было — тема выбиралась из одних PR.
+    # Без ключа или без песочницы сборщик молча отдаёт пустой список.
+    facts += collect_robot_runs()
     # Факты о файлах и медиа читаются из worktree на origin/develop: рабочая ветка
     # студии свежих материалов не содержит (требование координатора, 06.11).
     source_root = develop.ensure_develop_worktree(REPO_ROOT, out=lambda _m: None) or REPO_ROOT
@@ -605,10 +909,23 @@ def main() -> int:
     # Что уже рассказано в опубликованных постах — тоже не предлагаем.
     closed |= covered_from_posts(source_root / "docs" / "channel" / "queue", facts)
     # Что предлагали, но не показали — возвращаем: событие не должно потеряться.
+    #
+    # Прогоны робота собираются КАЖДЫЙ раз (список песочницы не меняется), поэтому
+    # один и тот же факт приходит и свежим, и из ожидания. Дубликат в ленте — это
+    # две одинаковые темы, а счётчик показов теряется: показанную тему студия
+    # предложила бы снова. Поэтому факт из ожидания не добавляется вторым, а его
+    # счётчик переносится на свежий.
+    fresh_by_key = {fact.get("key"): fact for fact in facts}
     for fact in st.pending_facts(state):
         key = fact.get("key")
-        if key and key not in closed:
+        if not key or key in closed:
+            continue
+        current = fresh_by_key.get(key)
+        if current is None:
             facts.append(fact)
+            fresh_by_key[key] = fact
+            continue
+        current["attempts"] = max(int(current.get("attempts") or 0), int(fact.get("attempts") or 0))
 
     # Факты, потерянные вместе с протухшим черновиком: в записи поста остался
     # только ключ (`pr:4555`), а без заголовка и тела PR пост не собрать.

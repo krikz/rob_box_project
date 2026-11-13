@@ -327,7 +327,7 @@ def _refine_media(bot, state_path: Path, record: dict, facts: list, progress, ch
         return False
     progress.note(f"Подбираю медиа: вариант {variants.index(choice) + 1} из {len(variants)}")
     if choice.startswith("infographic:"):
-        progress.step("Рисую инфографику: таймлайн влитых PR", "upload_photo")
+        progress.step(f"Рисую инфографику: {smedia.variant_label(choice)}", "upload_photo")
     path, reason = smedia.materialize(choice, record, facts, run_dir() / "media")
     if path is None:
         progress.fail(reason)
@@ -447,7 +447,7 @@ def _attach_media(post: dict, facts: list, progress) -> None:
         return
     choice = variants[0]
     if choice.startswith("infographic:"):
-        progress.step("Рисую инфографику: таймлайн влитых PR", "upload_photo")
+        progress.step(f"Рисую инфографику: {smedia.variant_label(choice)}", "upload_photo")
     path, reason = smedia.materialize(choice, post, facts, run_dir() / "media")
     if path is None:
         progress.note(f"Медиа не вышло: {reason} — черновик уйдёт без картинки")
@@ -455,7 +455,7 @@ def _attach_media(post: dict, facts: list, progress) -> None:
     post["media_path"] = str(path)
     post["media_choice"] = choice
     if choice.startswith("infographic:"):
-        progress.note(f"Рисую инфографику: таймлайн влитых PR → {path.name}")
+        progress.note(f"Рисую инфографику: {smedia.variant_label(choice)} → {path.name}")
     else:
         post["media_ref"] = choice
         progress.note(f"Подбираю медиа: {choice}")

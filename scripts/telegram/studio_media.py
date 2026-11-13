@@ -109,6 +109,22 @@ TIMELINE_SOURCE = "журнал изменений РОББОКС"
 TIMELINE_TITLE = "Что изменилось у РОББОКСа"
 TIMELINE_SUBTITLE = "по датам: что поменялось в роботе"
 
+# Подпись прогона робота. Она же уходит в подвал картинки («Источник: …»),
+# поэтому обязана быть публичным текстом (channel_lib.POST_FORBIDDEN).
+ROBOT_RUN_SOURCE = "журнал прогонов РОББОКС"
+
+# Названия вариантов инфографики — для строки прогресса в индикаторе.
+# Раньше там было всегда «таймлайн влитых PR», даже когда рисовалась карточка цифр.
+INFOGRAPHIC_LABELS = {
+    "infographic:numbers": "цифры темы",
+    "infographic:timeline": "таймлайн влитых PR",
+}
+
+
+def variant_label(choice: str) -> str:
+    """Человеческое название варианта медиа — для строки прогресса."""
+    return INFOGRAPHIC_LABELS.get(choice, "инфографика")
+
 
 def is_public(text: str) -> bool:
     """Текст можно показать в канале: без приватного и без внутренней кухни (channel_lib.POST_FORBIDDEN)."""
@@ -157,12 +173,98 @@ def timeline_spec(post: dict, facts: list) -> Optional[dict]:
     }
 
 
+# Числа темы: какое поле факта на картинку и как оно называется для читателя.
+# Порядок важен: первые четыре поля попадают на карточку (infographic.py: 2–4).
+NUMBER_FIELDS = (
+    ("goals", "цель маршрута", "цели маршрута", "целей маршрута"),
+    ("sim_s", "секунда симуляции", "секунды симуляции", "секунд симуляции"),
+    ("map_snapshots", "снимок карты", "снимка карты", "снимков карты"),
+)
+NUMBERS_MIN = 2  # infographic.py рисует шаблон numbers только с 2–4 числами
+
+# Заголовки карточки цифр — по виду факта, читательским языком.
+NUMBERS_TITLES = {
+    "robot_run": ("Что показал робот на складе", "цифры прогона: маршрут, время, карта"),
+}
+NUMBERS_TITLE_DEFAULT = ("Цифры темы", "по данным факта")
+
+
+def plural(number: int, one: str, few: str, many: str) -> str:
+    """Русское склонение числительного: 1 цель, 2 цели, 5 целей."""
+    value = abs(int(number))
+    if value % 10 == 1 and value % 100 != 11:
+        return one
+    if 2 <= value % 10 <= 4 and not 12 <= value % 100 <= 14:
+        return few
+    return many
+
+
+def chosen_fact(post: dict, facts: list) -> dict:
+    """Факт, на котором построен пост: по ключам поста, а не «первый в списке»."""
+    keys = set(post.get("fact_keys") or [])
+    if not keys:
+        return {}
+    for fact in post.get("fact_dicts") or []:
+        if fact.get("key") in keys:
+            return fact
+    for fact in facts or []:
+        if fact.get("key") in keys:
+            return fact
+    return {}
+
+
+def numbers_source(fact: dict) -> str:
+    """Подпись источника под карточкой цифр: публичный текст (в подвале её видно)."""
+    source = str(fact.get("source") or "")
+    if source and is_public(source):
+        return source
+    return "журнал РОББОКС"
+
+
+def numbers_spec(post: dict, facts: list) -> Optional[dict]:
+    """Данные для infographic.py (numbers) из чисел ВЫБРАННОЙ темы.
+
+    Разбор 13.11 (issue #4702): пост про голос получил картинку «последние 5
+    влитых PR» — тема и картинка разные. Теперь у темы есть свои числа, и
+    карточка строится именно из них.
+
+    None — если у темы нет своих чисел: тогда таймлайн остаётся последним
+    вариантом, а не первым.
+    """
+    fact = chosen_fact(post, facts)
+    if not fact:
+        return None
+    numbers = fact.get("numbers") or {}
+    source = numbers_source(fact)
+    items = []
+    for field, one, few, many in NUMBER_FIELDS:
+        value = numbers.get(field)
+        if not isinstance(value, int) or isinstance(value, bool) or value <= 0:
+            continue
+        items.append({"value": value, "label": plural(value, one, few, many), "source": source})
+    if len(items) < NUMBERS_MIN:
+        return None
+    title, subtitle = NUMBERS_TITLES.get(fact.get("kind") or "", NUMBERS_TITLE_DEFAULT)
+    tags = post.get("tags") or lib.extract_tags(post.get("body_html") or "")
+    slug = next((BG_BY_TAG[t] for t in tags if t in BG_BY_TAG), BG_DEFAULT)
+    return {
+        "template": "numbers",
+        "title": title,
+        "subtitle": subtitle,
+        "items": items,
+        "background": {"slug": slug, "prompt": "cached studio background"},
+    }
+
+
 def visible_text(spec: dict) -> list:
     """Всё, что infographic.py напечатает на картинке: заголовки, строки событий, подвал."""
     events = spec.get("events") or []
-    return [spec.get("title") or "", spec.get("subtitle") or ""] + [
-        str(ev.get(k) or "") for ev in events for k in ("date", "text", "source")
-    ]
+    items = spec.get("items") or []
+    return (
+        [spec.get("title") or "", spec.get("subtitle") or ""]
+        + [str(ev.get(k) or "") for ev in events for k in ("date", "text", "source")]
+        + [str(it.get(k) or "") for it in items for k in ("value", "label", "source")]
+    )
 
 
 def _cached_background(cfg: dict):
@@ -191,6 +293,32 @@ def render_timeline(post: dict, facts: list, out_dir: Path) -> tuple:
     out = out_dir / f"{post.get('id') or 'post'}-timeline.png"
     # make_channel_media.font() без шрифта делает SystemExit — это не повод ронять
     # работу студии: ловим и отдаём причину строкой в индикатор.
+    try:
+        try:
+            image = infographic.render(spec, "wide", bg_loader=_cached_background)
+        except Exception:  # noqa: BLE001 — фон не обязателен: без него рисуем на панели
+            spec.pop("background", None)
+            image = infographic.render(spec, "wide")
+        image.save(out, optimize=True)
+    except (Exception, SystemExit) as exc:  # noqa: BLE001
+        return None, f"инфографика не нарисовалась: {exc}"
+    return out, ""
+
+
+def render_numbers(post: dict, facts: list, out_dir: Path) -> tuple:
+    """Нарисовать карточку цифр ВЫБРАННОЙ темы. (путь или None, причина при неудаче)."""
+    spec = numbers_spec(post, facts)
+    if spec is None:
+        return None, "у выбранной темы нет своих чисел — карточку цифр рисовать не из чего"
+    hidden = [text for text in visible_text(spec) if not is_public(text)]
+    if hidden:
+        return None, f"на картинку попала бы внутренняя кухня: «{hidden[0][:60]}» — не рисую"
+    try:
+        import infographic
+    except ImportError as exc:  # нет Pillow — честно говорим, что именно сломалось
+        return None, f"инфографика недоступна: {exc}"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    out = out_dir / f"{post.get('id') or 'post'}-numbers.png"
     try:
         try:
             image = infographic.render(spec, "wide", bg_loader=_cached_background)
@@ -237,12 +365,15 @@ def own_media(post: dict, facts: list) -> list:
 
 
 def options(post: dict, facts: list, repo_root: Path = REPO) -> list:
-    """Варианты медиа по порядку: готовое медиа поста, его медиа из фактов, затем инфографика.
+    """Варианты медиа по порядку: своё медиа поста, карточка цифр темы, таймлайн — последним.
 
     Медиа из фактов — только своё (``own_media``): чужая картинка к посту не подходит.
     ``media_ref`` поста, который указывает на медиа-факт ДРУГОГО PR, — след старого выбора
     (у p20261109-810 в записи остался график дрейфа из #4508): он тоже отбрасывается.
-    Элемент — строка-ссылка на файл или ``"infographic:timeline"`` (рисуется по запросу).
+
+    Порядок (issue #4702): карточка цифр темы идёт ПЕРЕД общим таймлайном влитых PR.
+    Раньше таймлайн был единственным вариантом для поста без своего медиа — и пост
+    про голос получал картинку про несвязанные PR.
     """
     own = [f["source"] for f in own_media(post, facts)]
     foreign = {f.get("source") for f in facts if f.get("kind") == "media"} - set(own)
@@ -251,6 +382,8 @@ def options(post: dict, facts: list, repo_root: Path = REPO) -> list:
     for ref in ([ref] if ref not in foreign else []) + own:
         if ref and ref not in found and resolve(ref, repo_root) is not None and kind_of(Path(ref)):
             found.append(ref)
+    if numbers_spec(post, facts) is not None:
+        found.append("infographic:numbers")
     if timeline_spec(post, facts) is not None:
         found.append("infographic:timeline")
     return found
@@ -273,6 +406,8 @@ def materialize(choice: str, post: dict, facts: list, out_dir: Path, repo_root: 
     """Вариант → файл на диске. (путь или None, причина)."""
     if choice == "infographic:timeline":
         return render_timeline(post, facts, out_dir)
+    if choice == "infographic:numbers":
+        return render_numbers(post, facts, out_dir)
     path = resolve(choice, repo_root)
     if path is None:
         return None, f"файла {choice} нет ни в клоне, ни в worktree develop"
