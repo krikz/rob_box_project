@@ -769,7 +769,12 @@ def test_n402_names_the_voice_not_the_provider_4077():
     synth = "🗣️ SpeechEvent synthesized speech_id=e492c4cd agent=personality epoch=8 text_len=134 provider=minimax"
     wrong = "\n".join([_tts("Сейчас я говорю на MiniMax, голос Надёжный мужчина."), synth, DONE])
     assert not _verdict("n402_current_voice", wrong)["pass"]
-    for said in ("Я на MiniMax, мой голос Qingse.", "Сейчас голос male-qn-qingse.", "Это голос Цинсе."):
+    for said in (
+        "Я на MiniMax, мой голос Qingse.",
+        "Сейчас голос male-qn-qingse.",
+        "Это голос Цинсе.",
+        "Сейчас говорю через MiniMax, голос называется Цинсэ, это старый базовый голос, мужской.",
+    ):
         assert _verdict("n402_current_voice", "\n".join([_tts(said), synth, DONE]))["pass"], said
 
 
