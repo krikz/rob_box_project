@@ -278,7 +278,7 @@
       "voice": "anton",
       "text": "Робот, хватит читать, а музыку оставь.",
       "barge_in": {
-        "after": "speech_started",
+        "after": "perform_started",
         "n": 1,
         "delay_sec": 3.0
       },

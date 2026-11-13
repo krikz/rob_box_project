@@ -2553,7 +2553,7 @@ act(
         step(
             "n811_stop_speech_keep_music",
             "Робот, хватит читать, а музыку оставь.",
-            barge_in=BARGE_3S,
+            barge_in={"after": "perform_started", "n": 1, "delay_sec": 3.0},
             silent_ok=True,
             patterns=[SPEECH_CANCELLED, TIER1_STOP_SPEECH],
             must_not=["stop_music", MUSIC_STOP_ANY],

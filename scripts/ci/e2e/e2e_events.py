@@ -130,7 +130,7 @@ PERFORM_END_RE = re.compile(r"\[perform\] \S*: конец \((\w+)\)|PlanEvent bl
 PERFORM_CEILING_S = 240.0
 STALE_S = 60.0
 MAX_SKEW_S = 3600.0
-ANCHORS = ("speech_started", "llm_request", "segment_started")
+ANCHORS = ("speech_started", "llm_request", "segment_started", "perform_started")
 
 
 def _ts(line: str) -> Optional[float]:
@@ -349,14 +349,21 @@ def quiet(text: str) -> Dict[str, object]:
 
 def anchor(text: str, after: str, n: int) -> Dict[str, object]:
     """N-й ``SpeechEvent started`` (``speech_started``/``segment_started``) или N-я ``LLM REQUEST START``
-    (``llm_request``) ПОСЛЕ первой принятой фразы окна. Метка времени -- из лога робота (0, если нет)."""
+    (``llm_request``) ПОСЛЕ первой принятой фразы окна. ``perform_started`` -- N-й ``started`` после маркера
+    ``выступление старт kind=rap``: более ранняя waiting-фраза якорем не является. Метка -- из лога робота."""
     now, lines = split_input(text)
     accepted, count = False, 0
+    perform_marker = False
     for line in lines:
         if "ПРИНЯТО" in line:
             accepted = True
             continue
         if not accepted:
+            continue
+        if after == "perform_started" and not perform_marker:
+            started = PERFORM_START_RE.search(line)
+            if started and started.group(1) == "rap":
+                perform_marker = True
             continue
         hit, speech_id = _anchor_hit(line, after)
         if not hit:

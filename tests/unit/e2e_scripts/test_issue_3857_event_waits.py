@@ -8,7 +8,8 @@
   ``speech_id``); «робот ещё говорит» -- ``started`` без пары; тихо -- +2 с после последнего события;
 * v1: ``🔊 TTS: speech_id=X`` / ``Публикую TTS finished event: speech_id=X``;
 * потолок -- прежний ``E2E_REACTION_WINDOW``; ``E2E_EVENT_WAITS=0`` возвращает слепой sleep;
-* ``barge_in`` шага: ``{"after": "speech_started|llm_request|segment_started", "n": N, "delay_sec": X}``;
+* ``barge_in`` шага: ``{"after": "speech_started|llm_request|segment_started|perform_started", "n": N,
+  "delay_sec": X}``;
 * #3860: ``strip_llm_request_dump`` понимает launch-префикс ``[dialog_node-3]``.
 
 Время в фейк-логе задано меткой ``{NOW-3.5}`` (``fake_robot_ssh.sh``: «3.5 с назад» по часам робота).
@@ -148,6 +149,29 @@ class TestEventsParsing:
         log = accept() + llm("{NOW-9}") + llm("{NOW-5}")
         assert e2e_events.anchor(_feed(log), "llm_request", 2)["found"] == 1
         assert e2e_events.anchor(_feed(log), "llm_request", 3)["found"] == 0
+
+    def test_perform_started_returns_rap_speech_after_waiting_phrase(self):
+        marker = _l(
+            "dialog_node",
+            "{NOW-7}",
+            "🧭 [turn-v2] выступление старт kind=rap segments=1 → "
+            "{'status': 'pending', 'block_id': 'perform-rap'}",
+        )
+        log = (accept() + speech("started", "wait1111", "{NOW-9}") + marker
+               + speech("started", "rap22222", "{NOW-5}"))
+        found = e2e_events.anchor(_feed(log), "perform_started", 1)
+        assert found["found"] == 1
+        assert found["speech_id"] == "rap22222"
+
+    def test_perform_started_without_rap_speech_has_no_anchor(self):
+        marker = _l(
+            "dialog_node",
+            "{NOW-7}",
+            "🧭 [turn-v2] выступление старт kind=rap segments=1 → "
+            "{'status': 'pending', 'block_id': 'perform-rap'}",
+        )
+        log = accept() + speech("started", "wait1111", "{NOW-9}") + marker
+        assert e2e_events.anchor(_feed(log), "perform_started", 1)["found"] == 0
 
 
 # -- #3860: дамп LLM-запроса с launch-префиксом ------------------------------------------------------------
@@ -326,6 +350,7 @@ class TestScenariosUseBargeIn:
                     continue
                 total += 1
                 assert i > 0, "%s: barge_in на первом шаге -- перебивать некого" % rel
-                assert b["after"] in ("speech_started", "llm_request", "segment_started"), (rel, s["label"])
+                assert b["after"] in ("speech_started", "llm_request", "segment_started", "perform_started"), (
+                    rel, s["label"])
                 assert int(b.get("n", 1)) >= 1 and float(b.get("delay_sec", 0)) >= 0
         assert total == 7, "ожидали 7 шагов-перебиваний (act8 x4, 1280, 968, gp12), нашли %d" % total
