@@ -285,7 +285,7 @@ TURN_CLOSED_BY_CODE = r"📊 \[turn\] .*stage=done status=(finished|done)"
 
 #: Название ГОЛОСА по умолчанию в речи (n402, #4077/М8 29.10): голос звучал Qingse, а робот назвал «Надёжный мужчина» -- шаг
 #: был зелёным по слову «MiniMax» (это провайдер, а не голос). Провайдер в ключи не входит: голос называет `qingse`/`цинсе`.
-NAMES_DEFAULT_VOICE = "qingse|цинсе|цин се|цзинсэ|male-qn"
+NAMES_DEFAULT_VOICE = "qingse|цинсе|цинсэ|цин се|цзинсэ|male-qn"
 
 
 def spoken_by(provider: str) -> str:
