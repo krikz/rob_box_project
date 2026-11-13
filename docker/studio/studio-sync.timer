@@ -1,0 +1,21 @@
+# Таймер синхронизации клона студии с origin/develop (ADR-0172, #4703).
+#
+# Раз в 5 минут: компромисс. Реже — фикс из develop не доедет до боя до
+# вечера (прошлая неделя — 48 часов молчания). Чаще — сеть и git дёргаются
+# без нужды. Синхронизация идёт по сети в любом случае, но при отсутствии
+# изменений это один fetch раз в пять минут.
+#
+# Ставит scripts/telegram/studio_install.sh (рядом с studio-watch).
+# Журнал: journalctl --user -u studio-sync.timer -f
+
+[Unit]
+Description=Таймер: синхронизация клона студии с origin/develop (раз в 5 минут)
+
+[Timer]
+OnBootSec=3min
+OnUnitActiveSec=5min
+RandomizedDelaySec=30s
+Unit=studio-sync.service
+
+[Install]
+WantedBy=timers.target

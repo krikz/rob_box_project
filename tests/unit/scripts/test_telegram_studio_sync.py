@@ -113,10 +113,14 @@ def _commit_upstream(seed: Path, rel: str, content: str, message: str) -> str:
     return _git(seed, "rev-parse", "HEAD")
 
 
-def _run(env: dict) -> subprocess.CompletedProcess:
-    """Запуск скрипта синхронизации (без systemd и без сети)."""
+def _run(env: dict, script: Path | None = None) -> subprocess.CompletedProcess:
+    """Запуск скрипта синхронизации (без systemd и без сети).
+
+    По умолчанию — скрипт из репозитория. Для теста «обновление меняет сам
+    скрипт» нужен запуск ИЗ КЛОНА: именно его файл переписывает merge.
+    """
     return subprocess.run(
-        ["bash", str(SCRIPT)],
+        ["bash", str(script or SCRIPT)],
         capture_output=True,
         text=True,
         env=env,
@@ -225,7 +229,72 @@ def test_untracked_conflict_stops_update_without_deleting_file(studio: SimpleNam
     assert _restarts(studio) == 0
 
 
-# ------------------------------------------------------------------ 4. повторный запуск = no-op
+def test_stale_submodule_does_not_block_later_updates(studio: SimpleNamespace):
+    """Сдвинутый указатель сабмодуля не должен залипнуть синхронизацию.
+
+    merge обновляет указатель сабмодуля, но не его рабочее дерево: после
+    fast-forward `git status` показывает " M src/...". Если считать это
+    «изменённым tracked-файлом», то каждый следующий запуск видел бы грязь
+    и отказывался обновлять клон — синхронизация залипала бы навсегда.
+    У боевого клона студии сабмодули есть (src/ros2leds, src/vesc_nexus),
+    так что это не теория.
+    """
+    # Настоящий сабмодуль: отдельный bare-репозиторий и рабочее дерево.
+    sub_bare = studio.tmp_path / "suborigin.git"
+    _git(studio.tmp_path, "init", "--bare", "--initial-branch=develop", str(sub_bare))
+    sub_seed = studio.tmp_path / "subseed"
+    sub_seed.mkdir()
+    _git(sub_seed, "init", "--initial-branch=develop")
+    _git(sub_seed, "config", "user.email", "studio@rob-box.local")
+    _git(sub_seed, "config", "user.name", "Studio")
+    (sub_seed / "s.txt").write_text("v1\n", encoding="utf-8")
+    _git(sub_seed, "add", "s.txt")
+    _git(sub_seed, "commit", "--message=sub v1")
+    _git(sub_seed, "remote", "add", "origin", str(sub_bare))
+    _git(sub_seed, "push", "-u", "origin", "develop")
+    sub_sha_v1 = _git(sub_seed, "rev-parse", "HEAD")
+
+    # Сабмодуль в origin/develop.
+    _git(studio.seed, "-c", "protocol.file.allow=always", "submodule", "add", "-q", str(sub_bare), "vendor/sub")
+    _git(studio.seed, "commit", "--message=feat: vendor/sub")
+    _git(studio.seed, "push", "origin", "develop")
+    _git(studio.clone, "fetch", "origin", "develop")
+    _git(studio.clone, "merge", "--ff-only", "origin/develop")
+    _git(studio.clone, "-c", "protocol.file.allow=always", "submodule", "update", "--init", "-q", "vendor/sub")
+
+    # В develop указатель сабмодуля сдвинут — рабочее дерево в клоне остаётся
+    # на старом коммите, и status показывает " M vendor/sub".
+    (sub_seed / "s.txt").write_text("v2\n", encoding="utf-8")
+    _git(sub_seed, "add", "s.txt")
+    _git(sub_seed, "commit", "--message=sub v2")
+    _git(sub_seed, "push", "origin", "develop")
+    sub_sha_v2 = _git(sub_seed, "rev-parse", "HEAD")
+    # Указатель сабмодуля ставим явно (не через update --remote): так тест не
+    # зависит от того, как git выбирает ветку сабмодуля.
+    _git(studio.seed, "update-index", "--add", "--cacheinfo", f"160000,{sub_sha_v2},vendor/sub")
+    _git(studio.seed, "commit", "--message=feat: vendor/sub moved")
+    _git(studio.seed, "push", "origin", "develop")
+    _git(studio.clone, "fetch", "origin", "develop")
+    _git(studio.clone, "merge", "--ff-only", "origin/develop")
+
+    # Проверяем предпосылку: клон теперь «грязный» по мнению git.
+    # (вывод git status с ведущим пробелом — helper его срезает, поэтому
+    # сверяемся по имени и по признаку изменения)
+    assert sub_sha_v1 != sub_sha_v2
+    dirty_line = _git(studio.clone, "status", "--porcelain", "--untracked-files=no")
+    assert "vendor/sub" in dirty_line, "сабмодуль должен быть виден как изменённый"
+    assert dirty_line.startswith("M"), f"ожидался изменённый сабмодуль, получено: {dirty_line!r}"
+
+    # А теперь синхронизация: грязный сабмодуль не должен блокировать обновление.
+    _commit_upstream(studio.seed, "scripts/telegram/studio_facts.py", "код\n", "fix: facts")
+    done = _run(studio.env)
+
+    assert done.returncode == 0, "грязный сабмодуль не должен блокировать обновление:\n" + done.stdout
+    assert _state(studio)["behind_after"] == 0
+    assert _restarts(studio) == 1, "обновление должно было примениться"
+
+
+
 
 
 def test_second_run_on_current_clone_does_not_restart_service(studio: SimpleNamespace):
@@ -254,37 +323,72 @@ def test_update_that_changes_the_script_itself_does_not_corrupt_execution(
     """Главный регресс: merge меняет САМ studio_sync.sh — исполнение не портится.
 
     git при merge переписывает изменённые файлы НА МЕСТЕ (тот же inode), а bash
-    читает скрипт по мере исполнения. Без защиты обновление рушит само себя:
-    bash продолжает читать новый файл со старого смещения и выполняет мусор.
+    читает скрипт по мере исполнения, по смещению в файле. Если бы скрипт
+    исполнялся прямо из файла в репозитории, обновление рушило бы само себя:
+    bash продолжил бы читать переписанный файл со старого смещения и выполнил
+    бы мусор вместо своего хвоста.
 
-    Проверяем на живом поведении: новая версия скрипта лежит в origin/develop,
-    скрипт из клона тянет её и обязан доработать нормально.
+    Поэтому скрипт обязан работать из ПРИВАТНОЙ КОПИИ во временном каталоге:
+    её merge не касается. Проверяем это прямо по журналу — скрипт печатает
+    путь, из которого реально работает.
+
+    Версии скрипта лежат в истории origin:
+      A — та, что запускается из клона;
+      B — новая (с маркерной строкой), её приносит merge.
+    Запуск идёт ИЗ КЛОНА: именно его файл переписывает merge.
     """
-    script_in_repo = studio.clone / "scripts" / "telegram" / "studio_sync.sh"
-    script_in_repo.parent.mkdir(parents=True, exist_ok=True)
-    script_in_repo.write_text(SCRIPT.read_text(encoding="utf-8"), encoding="utf-8")
-    _git(studio.clone, "add", "scripts/telegram/studio_sync.sh")
-    _git(studio.clone, "commit", "--message=feat: studio_sync.sh")
+    version_a = SCRIPT.read_text(encoding="utf-8")
+    script_in_clone = studio.clone / "scripts" / "telegram" / "studio_sync.sh"
 
-    # Та же версия, но с новой строкой в конце: при чтении «по старому
-    # смещению» bash исполнил бы её вместо нормального завершения.
-    newer = SCRIPT.read_text(encoding="utf-8") + (
-        '\necho "[studio-sync] ' + NEW_VERSION_MARKER + '"\n'
+    # Версия A уезжает в origin/develop — клон её потом получит fast-forward'ом.
+    (studio.seed / "scripts" / "telegram").mkdir(parents=True, exist_ok=True)
+    (studio.seed / "scripts" / "telegram" / "studio_sync.sh").write_text(version_a, encoding="utf-8")
+    _git(studio.seed, "add", "scripts/telegram/studio_sync.sh")
+    _git(studio.seed, "commit", "--message=feat: studio_sync.sh (версия A)")
+    _git(studio.seed, "push", "origin", "develop")
+    _git(studio.clone, "fetch", "origin", "develop")
+    _git(studio.clone, "merge", "--ff-only", "origin/develop")
+    assert script_in_clone.read_text(encoding="utf-8") == version_a
+
+    # Версия B: маркерная строка в начало файла. Если бы bash читал файл в
+    # клоне со старого смещения, содержимое сдвинулось бы и исполнился мусор.
+    version_b = version_a.replace(
+        "set -euo pipefail",
+        'set -euo pipefail\necho "[studio-sync] ' + NEW_VERSION_MARKER + '"',
+        1,
     )
+    assert NEW_VERSION_MARKER in version_b
     expected = _commit_upstream(
         studio.seed,
         "scripts/telegram/studio_sync.sh",
-        newer,
-        "feat: studio_sync.sh (новее)",
+        version_b,
+        "feat: studio_sync.sh (версия B)",
     )
 
-    done = _run(studio.env)
+    done = _run(studio.env, script=script_in_clone)
 
     assert done.returncode == 0, done.stdout + done.stderr
     assert NEW_VERSION_MARKER not in done.stdout, "исполнение скрипта пошло по мусору"
     assert _git(studio.clone, "rev-parse", "HEAD") == expected, "обновление не применилось"
-    assert NEW_VERSION_MARKER in script_in_repo.read_text(encoding="utf-8"), "файл скрипта не обновлён"
+    assert NEW_VERSION_MARKER in script_in_clone.read_text(encoding="utf-8"), "файл скрипта не обновлён"
     assert _restarts(studio) == 1, "код изменился — сервис надо перезапустить"
+
+    # Работать — из приватной копии, а не из файла в репозитории: merge
+    # переписывает файл в клоне на месте, и bash, читающий его со старого
+    # смещения, исполнил бы чужой код.
+    working_from = _working_copy_path(done.stdout)
+    assert working_from is not None, "скрипт не сообщил, из чего он работает"
+    assert working_from != str(script_in_clone), "скрипт работает прямо из файла в репозитории"
+    assert not Path(working_from).exists(), "приватная копия должна быть удалена на выходе"
+
+
+def _working_copy_path(stdout: str) -> str | None:
+    """Путь, из которого скрипт реально работает (из его же журнала)."""
+    for line in stdout.splitlines():
+        marker = "работаю из копии: "
+        if marker in line:
+            return line.split(marker, 1)[1].strip()
+    return None
 
 
 # ------------------------------------------------------------------ 6. параллельный запуск
@@ -309,12 +413,22 @@ def test_second_instance_reports_already_running(studio: SimpleNamespace):
 
 
 def test_script_uses_neither_stash_nor_reset_hard(studio: SimpleNamespace):
-    """ADR-0172: без stash и без reset --hard поверх несохранённого."""
-    text = SCRIPT.read_text(encoding="utf-8")
+    """ADR-0172: без stash и без reset --hard поверх несохранённого.
 
-    assert "git stash" not in text
-    assert "reset --hard" not in text
-    assert "git clean" not in text
+    Проверяем КОМАНДЫ, а не весь текст: в комментариях скрипт эти слова
+    упоминает, объясняя, почему они запрещены.
+    """
+    commands = [
+        line.strip()
+        for line in SCRIPT.read_text(encoding="utf-8").splitlines()
+        if line.strip() and not line.strip().startswith("#")
+    ]
+    body = "\n".join(commands)
+
+    assert "stash" not in body
+    assert "reset --hard" not in body
+    assert "git clean" not in body
+    assert "--ff-only" in body, "обновление должно быть fast-forward'ом"
 
 
 # ------------------------------------------------------------------ 8. systemd-юниты
