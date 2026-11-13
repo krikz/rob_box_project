@@ -188,10 +188,29 @@ def first_voice_cycle_position(logs: str) -> int | None:
     Используется для assertion «discovery tool был вызван ДО первого
     голосового ответа» (issue #2406). Маркеры те же, что в soft-hint
     ``check_gate1_aggregate``: 'tts finished' / 'speak_text' в списке tools=
-    или TTS-запрос ``🔊 TTS:``.
+    или TTS-запрос ``🔊 TTS:``. Промежуточная фраза ``understand.progress``
+    содержательным ответом не считается.
     """
     low = logs.lower()
-    return _first_marker_position(low, list(VOICE_CYCLE_MARKERS))
+    progress_pending = False
+    filler_speech_ids: set[str] = set()
+    offset = 0
+    for line in low.splitlines(keepends=True):
+        if "🧭 [turn-v2] промежуточная фраза:" in line:
+            progress_pending = True
+        if progress_pending and "🔊 tts:" in line:
+            progress_pending = False
+            match = re.search(r"speech_id=([a-z0-9]+)", line)
+            if match:
+                filler_speech_ids.add(match.group(1))
+            offset += len(line)
+            continue
+        if not any(f"speech_id={speech_id}" in line for speech_id in filler_speech_ids):
+            positions = [line.find(marker) for marker in VOICE_CYCLE_MARKERS if line.find(marker) >= 0]
+            if positions:
+                return offset + min(positions)
+        offset += len(line)
+    return None
 
 
 # =============================================================================
