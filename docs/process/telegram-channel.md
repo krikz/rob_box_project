@@ -162,6 +162,9 @@
 
 - Влитые PR в `develop` (с меткой feat/fix, понятной читателю) и закрытые issue с доказательством.
 - HIL-ролики: `docs/assets/hil/`, `docs/research/*-hil-*.md`.
+- Прогоны робота на песочнице (`studio_material.runs_catalog`): цифры маршрута, симуляции и
+  карты становятся фактом и темой поста (ADR-0171). Студия берёт их сама, только на чтение
+  (решение Шифа 06.11).
 - Ночные марафоны и e2e: `docs/e2e/night-voice-marathon.md`, отчёты в issue. Красные прогоны тоже материал.
 - Решения Шифу: `docs/shifu-decisions.md`.
 - Анимации лица: `docs/assets/animations/`, библиотека `krikz/ros2leds`.
