@@ -294,7 +294,67 @@ def test_stale_submodule_does_not_block_later_updates(studio: SimpleNamespace):
     assert _restarts(studio) == 1, "обновление должно было примениться"
 
 
+def test_state_file_is_valid_json_when_dirty_file_name_has_quotes(
+    studio: SimpleNamespace,
+):
+    """Имя изменённого файла с кавычкой не должно ломать state-файл.
 
+    state-файл собирается подстановкой в шаблон — а в reason попадает имя
+    изменённого файла из `git status`. Имя с кавычкой (или переводом строки)
+    ломало JSON, и файл становился нечитаемым: «честный журнал» должен
+    читаться машинно в любом случае.
+    """
+    weird = 'we"ird.txt'
+    # Файл tracked (закоммичен), но рабочая копия изменена — ровно тот случай,
+    # из-за которого синхронизация обязана отказаться, а не затереть работу.
+    (studio.clone / weird).write_text("original\n", encoding="utf-8")
+    _git(studio.clone, "add", weird)
+    _git(studio.clone, "commit", "--message=feat: weird name")
+    (studio.clone / weird).write_text("changed by someone\n", encoding="utf-8")
+    _commit_upstream(studio.seed, "scripts/telegram/studio_facts.py", "код\n", "fix: facts")
+
+    done = _run(studio.env)
+
+    assert done.returncode != 0, "изменённый tracked-файл обязан давать ненулевой код"
+    assert (studio.clone / weird).read_text(encoding="utf-8") == "changed by someone\n"
+
+    state = _state(studio)  # json.loads — упадёт, если JSON битый
+    assert state["result"] == "refused-dirty"
+    assert "we" in state["reason"]
+
+
+def test_state_file_survives_newline_in_dirty_file_name(studio: SimpleNamespace):
+    """Перевод строки в имени файла тоже не должен ломать JSON."""
+    weird = "строк\nдве.txt"
+    (studio.clone / weird).write_text("original\n", encoding="utf-8")
+    _git(studio.clone, "add", weird)
+    _git(studio.clone, "commit", "--message=feat: newline in name")
+    (studio.clone / weird).write_text("правка\n", encoding="utf-8")
+    _commit_upstream(studio.seed, "scripts/telegram/studio_facts.py", "код\n", "fix: facts")
+
+    done = _run(studio.env)
+
+    assert done.returncode != 0
+    state = _state(studio)  # json.loads — упадёт, если JSON битый
+    assert state["result"] == "refused-dirty"
+
+
+def test_state_file_field_types_are_json_types(studio: SimpleNamespace):
+    """Счётчики отставания — числа, рестарт — булево, не строки."""
+    _commit_upstream(studio.seed, "scripts/telegram/studio_facts.py", "код\n", "fix: facts")
+    assert _run(studio.env).returncode == 0
+
+    state = _state(studio)
+
+    assert isinstance(state["behind_before"], int)
+    assert isinstance(state["behind_after"], int)
+    assert isinstance(state["restarted"], bool)
+    assert isinstance(state["result"], str)
+    assert isinstance(state["commit_before"], str)
+    assert isinstance(state["commit_after"], str)
+
+
+# ------------------------------------------------------------------ 4. повторный запуск = no-op
 
 
 def test_second_run_on_current_clone_does_not_restart_service(studio: SimpleNamespace):

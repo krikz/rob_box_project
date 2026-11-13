@@ -87,18 +87,33 @@ write_state() {
     local behind_before="$4" behind_after="$5" restarted="$6" reason="$7"
 
     mkdir -p "$STATE_DIR"
-    cat > "$STATE_FILE.tmp.$$" <<EOF
-{
-  "updated_at": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
-  "result": "$result",
-  "commit_before": "$commit_before",
-  "commit_after": "$commit_after",
-  "behind_before": $behind_before,
-  "behind_after": $behind_after,
-  "restarted": $restarted,
-  "reason": "$reason"
+    SYNC_RESULT="$result" \
+    SYNC_COMMIT_BEFORE="$commit_before" \
+    SYNC_COMMIT_AFTER="$commit_after" \
+    SYNC_BEHIND_BEFORE="$behind_before" \
+    SYNC_BEHIND_AFTER="$behind_after" \
+    SYNC_RESTARTED="$restarted" \
+    SYNC_REASON="$reason" \
+    SYNC_UPDATED_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+    python3 - "$STATE_FILE.tmp.$$" <<'PY'
+import json
+import os
+import sys
+
+state = {
+    "updated_at": os.environ["SYNC_UPDATED_AT"],
+    "result": os.environ["SYNC_RESULT"],
+    "commit_before": os.environ["SYNC_COMMIT_BEFORE"],
+    "commit_after": os.environ["SYNC_COMMIT_AFTER"],
+    "behind_before": int(os.environ["SYNC_BEHIND_BEFORE"]),
+    "behind_after": int(os.environ["SYNC_BEHIND_AFTER"]),
+    "restarted": os.environ["SYNC_RESTARTED"] == "true",
+    "reason": os.environ["SYNC_REASON"],
 }
-EOF
+with open(sys.argv[1], "w", encoding="utf-8") as handle:
+    json.dump(state, handle, ensure_ascii=False, indent=2)
+    handle.write("\n")
+PY
     mv -f "$STATE_FILE.tmp.$$" "$STATE_FILE"
 }
 
@@ -163,8 +178,10 @@ DIRTY="$(git status --porcelain --untracked-files=no --ignore-submodules=all)"
 if [ -n "$DIRTY" ]; then
     log "изменены tracked-файлы — обновление пропущено, чужую работу не трогаю:"
     printf '%s\n' "$DIRTY" | sed 's/^/[studio-sync]   /'
+    # В reason — только первая строка и не длиннее 200 символов: полный
+    # вывод status в state-файл не нужен, а раздувать его незачем.
     write_state "refused-dirty" "$COMMIT_BEFORE" "$COMMIT_BEFORE" "$BEHIND_BEFORE" "$BEHIND_BEFORE" false \
-        "изменены tracked-файлы: $(printf '%s' "$DIRTY" | head -n 1)"
+        "изменены tracked-файлы: $(printf '%s' "$DIRTY" | head -n 1 | cut -c1-200)"
     exit 2
 fi
 
