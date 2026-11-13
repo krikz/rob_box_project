@@ -107,6 +107,9 @@ def build_post(
         "tags": produced.get("tags") or [],
         "media_ref": idea["media_ref"],
         "fact_keys": idea["fact_keys"],
+        # Полный факт — чтобы черновик, на который не ответили, можно было
+        # вернуть в ожидание целиком (claim, source, kind), а не один ключ.
+        "fact_dicts": [fact],
         "show": claim,
         "source": fact.get("source", ""),
         "why": produced.get("why") or "",
