@@ -778,6 +778,19 @@ def test_n402_names_the_voice_not_the_provider_4077():
         assert _verdict("n402_current_voice", "\n".join([_tts(said), synth, DONE]))["pass"], said
 
 
+def test_n803_requires_finished_playback_of_the_new_answer():
+    """Act8 run 43206628264: synthesized «56» без playback — не ответ n803."""
+    cancelled = "🗣️ SpeechEvent cancelled speech_id=4a436e4b agent=personality epoch=9 reason=stopped"
+    said = _tts("Семь умножить на восемь — пятьдесят шесть.")
+    synthesized = "🗣️ SpeechEvent synthesized speech_id=8a5d332a agent=personality epoch=10 provider=minimax"
+    started = "🗣️ SpeechEvent started speech_id=8a5d332a agent=personality epoch=10"
+    finished = "🗣️ SpeechEvent finished speech_id=8a5d332a agent=personality epoch=10 spoken_chars=42"
+    assert not _verdict("n803_barge_in_new_topic", "\n".join([cancelled, said, synthesized, DONE]))["pass"]
+    assert _verdict(
+        "n803_barge_in_new_topic", "\n".join([cancelled, said, synthesized, started, finished, DONE])
+    )["pass"]
+
+
 def test_n709_conditional_offer_after_stop_is_not_a_false_action_4077():
     """#4077/М8 n709: «если хочешь, включу его потише» после стопа -- условное предложение, не ложь о действии."""
     stop = "🎵 [music] stop track_id=gen_b12d4ab5_1793298706 reason=user_stop"
