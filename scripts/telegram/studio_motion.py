@@ -109,9 +109,10 @@ def refine_motion(
     last = record.get("last_motion") or {}
     cached = last.get("path")
     force = "пересобер" in (request or "").lower()
-    path, build_seconds = None, 0.0
+    path, build_seconds, reused = None, 0.0, False
     if not force and last.get("fingerprint") == fingerprint and cached and Path(cached).exists():
         path = Path(cached)
+        reused = True
         progress.note("Ролик уже собран с тем же материалом — переиспользую, заново не монтирую")
     if path is None:
         ctx = video.Context(gate, jobs.run_dir() / "media" / "video", facts, record, progress)
@@ -127,9 +128,15 @@ def refine_motion(
     again = wants_resend(request)
     already = last.get("delivered") == fingerprint and last.get("path") == str(path)
     video_message_id = last.get("message_id") if already else None
-    if already and not again:
-        progress.note("Этот ролик уже присылан — второй раз не отправляю")
-    else:
+    # Под какой просьбой ролик уходил в чат в прошлый раз: новая просьба — Шифу
+    # ждёт ролик в чате (нажал «Видео» после вопроса), та же самая просьба — второй
+    # раз молчим, чтобы не сыпать одинаковыми роликами (разбор 14.11, issue #4713).
+    last_request = str(last.get("request") or "")
+    now_request = (request or "").strip()
+    same_intent = last_request == now_request
+    should_send = (not already) or again or (not same_intent)
+    sent_to_chat = False
+    if should_send:
         progress.step(f"Присылаю {kind} в чат: {path.name}, {render.mb(size)}", "upload_video")
         # Видео — отдельным сообщением, а не правкой старой картинки: Telegram
         # кэширует превью сообщения, и после editMessageMedia клиент продолжает
@@ -140,6 +147,9 @@ def refine_motion(
             return False
         # reply на ролик — это reply на черновик (studio_intent.message_ids).
         video_message_id = (sent.get("result") or {}).get("message_id")
+        sent_to_chat = True
+    else:
+        progress.note("Этот ролик уже присылан под эту же просьбу — второй раз не отправляю")
     # Черновик приводим к тому же виду: правка не обязательна — видео уже доставлено.
     updated = dict(record, media_path=str(path), media_choice=choice)
     ok, why = jobs.update_draft(bot, updated, chat_id, new_media=path)
@@ -162,10 +172,20 @@ def refine_motion(
                 "build_seconds": build_seconds,
                 "path": str(path),
                 "fingerprint": fingerprint,
-                "delivered": fingerprint if not (already and not again) else last.get("delivered"),
+                "delivered": fingerprint if sent_to_chat else last.get("delivered"),
                 "message_id": video_message_id,
+                # Под какой просьбой ролик ушёл в чат: по этому тексту студия
+                # понимает, что ролик по этой просьбе уже присылан (issue #4713).
+                "request": now_request,
             },
         },
     )
-    progress.finish(f"Готово: {kind} в чате, {render.mb(size)}, собрано за {build_seconds} с")
+    if not sent_to_chat:
+        # Индикатор не должен врать: в чат ничего не ушло — так и говорим.
+        progress.finish(f"Ролик по этой просьбе уже присылан, нового не слал: {path.name}, {render.mb(size)}")
+        return True
+    if reused:
+        progress.finish(f"Готово: {kind} в чате, {render.mb(size)}, готовый ролик — заново не монтировал")
+    else:
+        progress.finish(f"Готово: {kind} в чате, {render.mb(size)}, собрано за {build_seconds} с")
     return True
