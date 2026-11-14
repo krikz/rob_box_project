@@ -115,7 +115,7 @@ from rob_box_dialog.respond import (ActionResult, asks, audible, classed, failed
 from rob_box_dialog.session import Session, SessionSnapshot, SpeakerRef
 from rob_box_dialog.speaker_adapter import asks_recognized, known_voice_registers, recognition_reply, speaker_block
 from rob_box_dialog.window_reset import WindowGuard, reset_if_idle, reset_window
-from rob_box_dialog.words import asks_question, asks_to_listen, has_form, music_stop_claimed, same_stop_rest
+from rob_box_dialog.words import asks_question, asks_to_listen, has_form, has_word, music_stop_claimed, same_stop_rest
 from rob_box_dialog.tools_view import (available_tools, catalogs_asked, music_asked, needs_words, robot_asked,
                                        show_asked, voice_asked, voice_named)
 from rob_box_dialog.turn_log import (PERFORM_STARTED, TOOL, USER, TurnAggregate, TurnLog, phrase_label, results_of,
@@ -216,6 +216,10 @@ class Ports(Protocol):
         (её снимает само выступление, общий стоп музыки не нужен). ``keep_backing`` (необязательный: «а
         музыку оставь») — бит выступления доигрывает сам; порт без этого параметра зовётся прежним вызовом
         (:func:`stop_performance`)."""
+        ...
+
+    def answer_perform(self, yes: bool) -> bool:
+        """Ответ «да/нет» на вопрос выступления о замене играющей музыки; ``True`` — выступление ждало ответа."""
         ...
 
     def intent(self, turn_id: str, epoch: int, kind: str) -> None: ...
@@ -384,6 +388,17 @@ def stop_performance(ports: Any, how: str, keep_backing: bool = False) -> bool:
     if keep_backing and _accepts(stop, "keep_backing"):
         return bool(stop(how, keep_backing=True))
     return bool(stop(how))
+
+
+def answer_performance(engine: "TurnEngine", command: Tier1Command, snap: SessionSnapshot) -> None:
+    """Ответ на вопрос выступления — его владельцу; кадр и ``pending_ask`` снимаются вместе."""
+    if command.kind != "answer" or snap.top("PerformAsk") is None:
+        return
+    yes = command.args.get("value") == "yes"
+    taken = engine._ports.answer_perform(yes)
+    engine.session.pop_scene("PerformAsk")
+    engine.session.set_pending_ask(None)
+    engine._log.info(f"{LOG_MARK} answer {'да' if yes else 'нет'} → выступление: {taken}")
 
 
 def _accepts(fn: Callable[..., Any], name: str) -> bool:
@@ -1076,6 +1091,7 @@ def considered(engine: "TurnEngine", turn: "_Turn", cmd: Command, last: bool) ->
     cmd = unasked_aloud(log, turn, snapshot.agent, cmd)
     fresh = counted_in_full(log, turn, unreread(log, turn, unrepeated(log, turn, cmd)))
     fresh = switched_theme(log, snapshot, turn, fresh)  # просьба сменить тему сета - действием кода (#4347)
+    fresh = corrected_ambulance(log, turn, fresh)  # сирена/мигалка: ambulance → police_lights (#4694)
     names = foreign_keys(engine.log.window(exclude=turn.turn_id), turn, fresh, snapshot)
     fresh = unnamed_without_retry(log, turn, fresh, names, last)
     return unclaimed_without_retry(log, turn, fresh, snapshot.agent, last), names
@@ -1133,6 +1149,30 @@ def switched_theme(log: Any, snapshot: SessionSnapshot, turn: "_Turn", cmd: Comm
         log.warning(f"{LOG_MARK} смена темы сета без тула ({done}): слова модели не звучат, "
                     f"{[a.tool for a in fresh.actions]} turn={turn.turn_id}")
     return fresh
+
+
+def _remap_ambulance_for_siren(text: str, actions: Sequence[ToolCall]) -> Sequence[ToolCall]:
+    """``animation=ambulance`` → ``police_lights`` только когда в тексте есть ``сирен*``/``мигалк*``
+    и нет явной скорой помощи ``скорая/скорой/скорую/амбуланс*`` (#4694). Решает код, не модель."""
+    if not has_word(text, kn.POLICE_LIGHTS_STEMS) or has_word(text, kn.AMBULANCE_EXCLUDE_STEMS):
+        return actions
+    fixed: List[ToolCall] = []
+    changed = False
+    for call in actions:
+        if call.tool == kn.SHOW_TOOL and call.args.get("animation") == "ambulance":
+            call = replace(call, args=MappingProxyType({**call.args, "animation": "police_lights"}))
+            changed = True
+        fixed.append(call)
+    return tuple(fixed) if changed else actions
+
+
+def corrected_ambulance(log: Any, turn: "_Turn", cmd: Command) -> Command:
+    """Исправление ``ambulance`` на ``police_lights`` для сирены/мигалки перед исполнением (#4694)."""
+    actions = _remap_ambulance_for_siren(turn.text, cmd.actions)
+    if actions is cmd.actions:
+        return cmd
+    log.info(f"{LOG_MARK} сирена/мигалка: ambulance → police_lights turn={turn.turn_id}")
+    return replace(cmd, actions=actions)
 
 
 def owed_now(snapshot: SessionSnapshot, turn: "_Turn", cmd: Command, fresh: Command, names: Collection[str],
@@ -1671,15 +1711,16 @@ def foreign_keys(window: Sequence[Any], turn: "_Turn", cmd: Command, snapshot: S
     """Имена, которыми нельзя обращаться к собеседнику хода: собеседник неподтверждён
     (:func:`foreign_name.unconfirmed`), а имена, которые модель видела в разговоре, - авторы реплик окна, подхвата и
     фона, лица в кадре из прочитанного в ходе (:func:`foreign_name.face_names`, #4388); ключи -
-    :func:`foreign_name.name_keys`.
+    :func:`foreign_name.name_keys`. У подтверждённого собеседника чужие имена лиц тоже запрещены: его имя даёт профиль,
+    не камера.
     Не считаются названные самим человеком в этой реплике и им же в ``register_speaker`` команды: «меня зовут Гриша» -
     ответ «Понял, Гриша» честен.
     Лица в кадре берутся и без снимка собеседника (:func:`foreign_name.named`: фраза без биометрии - инъекция, первая
     после рестарта): лицо в кадре не говорящий, пока голос не подтвердил имя (#4388, живой 05.11)."""
     speaker = snapshot.speaker
-    if foreign_name.named(speaker):
-        return frozenset()
     seen = list(foreign_name.face_names((*turn.seen, *turn.queried)))
+    if foreign_name.named(speaker):
+        return foreign_name.name_keys(seen) - foreign_name.name_keys([speaker.name])
     if foreign_name.unconfirmed(speaker):
         seen += [e.speaker for e in window if e.role == USER] + [who for who, _ in turn.heard]
         seen += [str(p.get("who") or "") for p in (*turn.recent, *turn.background)]
@@ -2244,6 +2285,7 @@ class TurnEngine:
         Политика перебивания читает тот же текст, по которому сработал ``command`` (``parsed``, :func:`tier1_of`)."""
         self._log.info(f"{LOG_MARK} tier1 kind={command.kind} args={dict(command.args)} turn={turn.turn_id}")
         turn.stage = "done"
+        answer_performance(self, command, snap)
         actions = tier1_actions(command, snap)
         stop = interrupt_for(command, parsed, snap)
         if stop.interrupts:

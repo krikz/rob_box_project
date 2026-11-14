@@ -327,6 +327,11 @@ class V2Ports:
         speech_client.cancel(self._node, agent=self._agent, speech_id=speech_id or None, epoch=epoch, reason=reason,
                              boundary=boundary)
 
+    def answer_perform(self, yes: bool) -> bool:
+        """Ответ на «выключить и зачитать?» — владельцу выступления."""
+        host = self._performer()
+        return bool(host is not None and host.answer(yes))
+
     def stop_perform(self, how: str, keep_backing: bool = False) -> bool:
         """Перебивание выступления (``PerformHost.halt``/``stop``); ``True`` — играющая музыка — его бит, и его
         снимает само выступление. ``keep_backing`` («а музыку оставь», #3994) — бит доигрывает: выступление его не

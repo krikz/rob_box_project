@@ -37,7 +37,7 @@ from rob_box_music.source import set_genres
 from rob_box_music.theme import match_style_text
 
 from .search import _PART_RE, content_stems
-from .theme_grounding import (confirmed_by_words, continued, grounded_theme, guessed_theme, heard_theme,
+from .theme_grounding import (_heard_slots, confirmed_by_words, continued, grounded_theme, guessed_theme, heard_theme,
                               named_by_human, names_theme, request_theme, set_slots, set_theme, theme_support)
 
 _LOG = logging.getLogger(__name__)
@@ -121,8 +121,10 @@ def _none_option(heard: str, heard_text: str, llm_theme: str) -> Option:
     return Option(NONE_ID, features, "без темы — сет по стилю")
 
 
-def _known_option(theme: KnownTheme, heard: str, llm_theme: str) -> Option:
-    asked = bool(heard) and names_known(theme, heard)
+def _known_option(theme: KnownTheme, heard: str, heard_text: str, llm_theme: str) -> Option:
+    """Совпадение с кэшем подтверждают только слова реплики с опорой: загрязнённая кэш-тема не делает огрызок STT
+    осмысленным (#4479)."""
+    asked = bool(heard) and theme_support(heard, heard_text) and names_known(theme, heard)
     features = {"asked": float(asked), "whole": float(asked and covers_all(theme, heard)),
                 "llm": float(bool(llm_theme) and names_known(theme, llm_theme)), "cached": float(theme.tracks > 0)}
     note = f", в кэше {theme.tracks}" if theme.tracks else ""
@@ -146,7 +148,7 @@ def theme_question(heard_text: Optional[str], llm_theme: Optional[str],
         options.append(Option(LLM_ID, texts[llm], f"тема LLM из слов человека «{llm}»"))
         themes[LLM_ID] = llm
     for theme in known:
-        option = _known_option(theme, heard, llm_theme)
+        option = _known_option(theme, heard, said, llm_theme)
         if option.id not in themes:
             options.append(option)
             themes[option.id] = theme.name
@@ -235,6 +237,13 @@ class SetSlots(NamedTuple):
     named: bool
 
 
+def _free_theme(theme: Optional[str], heard_text: Optional[str], slots: str) -> Tuple[bool, bool, List[str], str]:
+    _heard, unknown = _heard_slots(heard_text or "")
+    guessed = (guessed_theme(grounded_theme(theme, heard_text)[0], theme, heard_text)
+               or bool(unknown and not slots and theme is None))
+    return guessed or bool(unknown and not _heard), guessed, unknown, _heard
+
+
 def dj_set_slots(dj: Any, theme: Optional[str], persona: Optional[str], heard_text: Optional[str]) -> SetSlots:
     """Слоты сета для ``DjSetTool``: известные темы — из кэша его сета из генерации (``GenSetMaker.cached``) и знания,
     чойсер — тот же, что у пути музыки (``music_chooser``). Слова реплики — догадка кода из голого слова
@@ -244,10 +253,14 @@ def dj_set_slots(dj: Any, theme: Optional[str], persona: Optional[str], heard_te
     known = known_themes(maker.cached() if maker is not None else ())
     chooser = getattr(maker, "chooser", None) or DeterministicChooser()
     slots, persona, named = chosen_slots(theme, persona, heard_text, dj._last_dj, known, chooser, log)  # noqa: SLF001
-    free = guessed_theme(grounded_theme(theme, heard_text)[0], theme, heard_text)
-    if free:
+    free, guessed, unknown, heard = _free_theme(theme, heard_text, slots)
+    if unknown and not heard:
+        slots = ""
+    if guessed:
         log.warning(f"🎛️ [dj_set] слова реплики {request_theme(heard_text)!r} - догадка кода, не названы: без платной "
                     f"генерации")
+    elif unknown:
+        log.info(f"🎛️ [dj_set] непонятые слова вне слотов: {unknown}; тема={slots!r}")
     if slots:
         log.info(f"🎛️ [dj_set] тема {slots!r}: {'названа человеком' if named else 'не названа человеком'} — если по "
                  f"ней в кэше ничего: {'заказ темы' if named else 'сначала кэш стиля'}")

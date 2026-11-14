@@ -100,3 +100,23 @@ if [ -f "$UNIT_SRC" ]; then
     fi
     echo "[studio-install] крон «studio: опрос кнопок» должен быть снят: hermes --profile studio cron list"
 fi
+
+# Синхронизация клона студии с origin/develop (ADR-0172, issue #4703).
+# Юниты берём из репо, @REPO_ROOT@ заменяется на корень клона — так же,
+# как у studio-watch. Таймер раз в 5 минут: фикс из develop доезжает до
+# боевой студии без ручного git pull.
+for unit in studio-sync.service studio-sync.timer; do
+    UNIT_SRC="$REPO_ROOT/docker/studio/$unit"
+    [ -f "$UNIT_SRC" ] || { echo "[studio-install] нет юнита: $UNIT_SRC" >&2; continue; }
+    mkdir -p "$UNIT_DIR"
+    sed "s#@REPO_ROOT@#$REPO_ROOT#g" "$UNIT_SRC" > "$UNIT_DIR/$unit.tmp.$$"
+    mv -f "$UNIT_DIR/$unit.tmp.$$" "$UNIT_DIR/$unit"
+    echo "[studio-install] юнит: $UNIT_DIR/$unit"
+done
+if [ "${STUDIO_ENABLE_SERVICE:-0}" = "1" ]; then
+    systemctl --user daemon-reload
+    systemctl --user enable --now studio-sync.timer
+    echo "[studio-install] таймер studio-sync включён (синхронизация клона раз в 5 минут)"
+else
+    echo "[studio-install] включить: systemctl --user daemon-reload && systemctl --user enable --now studio-sync.timer"
+fi

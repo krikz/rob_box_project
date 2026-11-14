@@ -264,7 +264,7 @@ def _tool_content(result: Any) -> Mapping[str, Any]:
     if getattr(result, "reason", None):
         out["reason"] = result.reason
     if data:
-        out["data"] = _bounded_data(data, kn.WINDOW_TOOL_DATA_CHARS)
+        out["data"] = dict(_bounded_data(data, kn.WINDOW_TOOL_DATA_CHARS))
     return MappingProxyType(out)
 
 

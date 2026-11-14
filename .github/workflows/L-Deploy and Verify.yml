@@ -399,6 +399,9 @@ jobs:
           # Reinstall нужен, если source-файлы отличаются от develop ИЛИ
           # установленный unit/timer ещё не соответствует текущему контракту.
           # Последнее условие закрывает миграцию старых Pi после #2635/#2683.
+          # Ретро run 43035890763: после #4533 старый unit матчит Restart=/ExecStart=
+          # (они не менялись), поэтому stale `ExecStartPre compose pull` требует
+          # явного отрицания — иначе reinstall skip-нулся бы навсегда.
           if sshpass -p 'open' ssh $SSH_OPTS ros2@${{ env.vision_pi_ip }} \
               "cd ~/rob_box_project && \
                diff -q scripts/setup/setup_vision_pi.sh <(git show origin/develop:scripts/setup/setup_vision_pi.sh) >/dev/null 2>&1 && \
@@ -406,6 +409,7 @@ jobs:
                systemctl cat robbox-vision.service >/dev/null 2>&1 && \
                systemctl cat robbox-vision.service | grep -q '^Restart=on-failure$' && \
                systemctl cat robbox-vision.service | grep -q '^ExecStart=/usr/bin/docker compose up -d --pull never$' && \
+               ! systemctl cat robbox-vision.service | grep -q '^ExecStartPre=.*compose pull' && \
                test -f /etc/systemd/system/robbox-vision-health.timer && \
                systemctl is-enabled --quiet robbox-vision-health.timer && \
                diff -q /usr/local/bin/robbox_vision_health_check.sh scripts/monitoring/robbox_vision_health_check.sh >/dev/null 2>&1"; then

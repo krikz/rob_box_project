@@ -96,18 +96,22 @@ VOICE_CYCLE_MARKERS = (
 # Issue #3860: дамп LLM-запроса (``deepseek.py::_dump_llm_request``) печатает промпт, историю и
 # ``recent_actions`` прошлых ходов -- там имена тулов в кавычках, то есть маркеры вызова.
 # В выводе launch у строки дампа есть префикс ``[dialog_node-3]``. Зеркало bash-функции
-# ``strip_llm_request_dump`` из e2e_voice_lib.sh (одна форма строки в обоих местах).
+# ``strip_llm_request_dump`` из e2e_voice_lib.sh, НО с дополнительным альтернативой ``LLM RESPONSE``
+# (#4694): дамп ответа отклонённой попытки несёт имена тулов в JSON actions (``"stop_music"``), и
+# must_not считал НЕисполненный вызов исполненным. Bash-зеркало не режет RESPONSE: оно питает
+# только pattern-check шага, а паттерны сценариев не опираются на имена тулов из ответов.
 _DUMP_PREFIX = r"^(?:\[[A-Za-z0-9_]+-[0-9]+\])?\s*"
 _DUMP_LINE_RE = re.compile(
     r"LLM REQUEST (?:START|END)"
+    r"|LLM RESPONSE"
     r"|" + _DUMP_PREFIX + r"\[[0-9]+\] [A-Za-z_]+: "
     r"|" + _DUMP_PREFIX + r"tools\([0-9]+\): "
 )
 
 
 def strip_llm_request_dump(logs: str) -> str:
-    """Лог без строк дампа LLM-запроса. Режем по форме строки, не блоком START..END: при обрезке
-    ``--since`` END может отсутствовать, и блочный фильтр съел бы остаток лога."""
+    """Лог без строк дампа LLM-запроса и ответа. Режем по форме строки, не блоком START..END:
+    при обрезке ``--since`` END может отсутствовать, и блочный фильтр съел бы остаток лога."""
     return "\n".join(line for line in logs.split("\n") if not _DUMP_LINE_RE.search(line))
 
 
@@ -188,10 +192,29 @@ def first_voice_cycle_position(logs: str) -> int | None:
     Используется для assertion «discovery tool был вызван ДО первого
     голосового ответа» (issue #2406). Маркеры те же, что в soft-hint
     ``check_gate1_aggregate``: 'tts finished' / 'speak_text' в списке tools=
-    или TTS-запрос ``🔊 TTS:``.
+    или TTS-запрос ``🔊 TTS:``. Промежуточная фраза ``understand.progress``
+    содержательным ответом не считается.
     """
     low = logs.lower()
-    return _first_marker_position(low, list(VOICE_CYCLE_MARKERS))
+    progress_pending = False
+    filler_speech_ids: set[str] = set()
+    offset = 0
+    for line in low.splitlines(keepends=True):
+        if "🧭 [turn-v2] промежуточная фраза:" in line:
+            progress_pending = True
+        if progress_pending and "🔊 tts:" in line:
+            progress_pending = False
+            match = re.search(r"speech_id=([a-z0-9]+)", line)
+            if match:
+                filler_speech_ids.add(match.group(1))
+            offset += len(line)
+            continue
+        if not any(f"speech_id={speech_id}" in line for speech_id in filler_speech_ids):
+            positions = [line.find(marker) for marker in VOICE_CYCLE_MARKERS if line.find(marker) >= 0]
+            if positions:
+                return offset + min(positions)
+        offset += len(line)
+    return None
 
 
 # =============================================================================
@@ -702,7 +725,8 @@ def count_continuation_failures(logs: str) -> list:
 def step_verdict(acc: dict, logs: str, *, label: str = "", timing_path: str = "") -> dict:
     """Вердикт ``acceptance`` шага по логу шага: те же правила, что исполняет ``check_acceptance`` на роботе.
 
-    ``acc`` — блок ``acceptance`` шага сценария, ``logs`` — лог шага (дамп LLM-запроса режется здесь, #3860),
+    ``acc`` — блок ``acceptance`` шага сценария, ``logs`` — лог шага (дампы LLM-запроса и ответа режутся
+    здесь, #3860, #4694),
     ``timing_path`` — ``timing.json`` харнесса для ``response_max_ms`` (пусто — не проверяется). Результат — словарь
     ``acceptance.json`` (``pass``, ``reason``, поля диагностики).
     """

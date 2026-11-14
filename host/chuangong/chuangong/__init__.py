@@ -1,4 +1,4 @@
-"""chuangong (传功) — агент доставки релиза на Pi робота (ADR-0168, фаза B: наблюдать и скачивать заранее).
+"""chuangong (传功) — агент доставки релиза на Pi робота (ADR-0168 и безопасный срез C1).
 
 Модули:
   minisign       — формат ключей и подписей minisign (Ed25519 через `cryptography`), один на CI и агента;
@@ -8,9 +8,10 @@
   state          — запись состояния агента, ключи zenoh, метрика rbx_release_info;
   stage          — stage роли: место на диске, бандл, образы по digest;
   agent          — один тик агента (fetch → verify → stage → report);
+  activation     — adoption доказанного current и dry-run activation/rollback (C1);
   status         — наблюдатель для workflow «F: Update Robot» (action: status).
 
-Переключения `current`, `compose down/up` и миграций в этой фазе НЕТ (фаза C).
+Переключения symlink `current`, `compose down/up` и миграций по-прежнему НЕТ.
 """
 
-AGENT_VERSION = "0.1.0"
+AGENT_VERSION = "0.2.2"

@@ -769,8 +769,47 @@ def test_n402_names_the_voice_not_the_provider_4077():
     synth = "🗣️ SpeechEvent synthesized speech_id=e492c4cd agent=personality epoch=8 text_len=134 provider=minimax"
     wrong = "\n".join([_tts("Сейчас я говорю на MiniMax, голос Надёжный мужчина."), synth, DONE])
     assert not _verdict("n402_current_voice", wrong)["pass"]
-    for said in ("Я на MiniMax, мой голос Qingse.", "Сейчас голос male-qn-qingse.", "Это голос Цинсе."):
+    for said in (
+        "Я на MiniMax, мой голос Qingse.",
+        "Сейчас голос male-qn-qingse.",
+        "Это голос Цинсе.",
+        "Сейчас говорю через MiniMax, голос называется Цинсэ, это старый базовый голос, мужской.",
+    ):
         assert _verdict("n402_current_voice", "\n".join([_tts(said), synth, DONE]))["pass"], said
+
+
+def test_n402_accepts_qingse_alias_kvingse_and_keeps_provider_minimax_4694():
+    """#4694: live n402 ответил «Квингсе»; alias должен матчиться при provider=minimax и оставаться FAIL при yandex/anton."""
+    minimax = "🗣️ SpeechEvent synthesized speech_id=e492c4cd agent=personality epoch=8 text_len=134 provider=minimax"
+    yandex = "🗣️ SpeechEvent synthesized speech_id=e492c4cd agent=personality epoch=8 text_len=134 provider=yandex"
+    # RED -> GREEN: «Квингсе» с MiniMax должен быть PASS.
+    kvingse_minimax = "\n".join([
+        _tts("Сейчас мой голос называется Квингсе, из старой линейки MiniMax, мужской."),
+        minimax, DONE,
+    ])
+    assert _verdict("n402_current_voice", kvingse_minimax)["pass"]
+    # negative: «Квингсе» + Yandex -- голос не дефолтный MiniMax, FAIL.
+    kvingse_yandex = "\n".join([
+        _tts("Сейчас мой голос называется Квингсе, из старой линейки MiniMax, мужской."),
+        yandex, DONE,
+    ])
+    assert not _verdict("n402_current_voice", kvingse_yandex)["pass"]
+    # negative: «Антон» + Yandex -- не дефолтный голос, FAIL.
+    anton_yandex = "\n".join([_tts("Голосом Антона."), yandex, DONE])
+    assert not _verdict("n402_current_voice", anton_yandex)["pass"]
+
+
+def test_n803_requires_finished_playback_of_the_new_answer():
+    """Act8 run 43206628264: synthesized «56» без playback — не ответ n803."""
+    cancelled = "🗣️ SpeechEvent cancelled speech_id=4a436e4b agent=personality epoch=9 reason=stopped"
+    said = _tts("Семь умножить на восемь — пятьдесят шесть.")
+    synthesized = "🗣️ SpeechEvent synthesized speech_id=8a5d332a agent=personality epoch=10 provider=minimax"
+    started = "🗣️ SpeechEvent started speech_id=8a5d332a agent=personality epoch=10"
+    finished = "🗣️ SpeechEvent finished speech_id=8a5d332a agent=personality epoch=10 spoken_chars=42"
+    assert not _verdict("n803_barge_in_new_topic", "\n".join([cancelled, said, synthesized, DONE]))["pass"]
+    assert _verdict(
+        "n803_barge_in_new_topic", "\n".join([cancelled, said, synthesized, started, finished, DONE])
+    )["pass"]
 
 
 def test_n709_conditional_offer_after_stop_is_not_a_false_action_4077():

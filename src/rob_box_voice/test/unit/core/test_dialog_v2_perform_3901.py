@@ -275,3 +275,43 @@ def test_3973_node_without_engine_ignores_block_end():
     from rob_box_dialog.plan.plan_events import PlanEvent  # noqa: PLC0415
 
     plan_host.note_perform_end(types.SimpleNamespace(), PlanEvent("block_end", "b1", reason="done"))  # v1: не падает
+
+
+def test_3849_wakeless_yes_in_mic_grace_confirms_performance_not_backlog(loop):
+    """#3849 на v2: «да» за 25 мс до конца грейса адресовано выступлению и меняет музыку на бит без LLM."""
+    from rob_box_dialog.address import decide_in_session
+    from rob_box_dialog.backlog import Backlog, Heard
+    from rob_box_dialog.command import Performance
+    from rob_box_voice.core import perform_ask
+
+    node, music = _Node(), _Music()
+    node._tool_executor = _Tools()
+    node._session = Session("personality", clock=lambda: node.now_s)
+    node._tool_executor.performer = PerformHost(
+        node, music.run, lambda: loop, lambda event: None, kn.SPEECH_OUTPUT_LATENCY_MS,
+        clock=lambda: node.now_s, playing=lambda: "RoBBox club",
+        on_ask=lambda title: perform_ask.open_window(node, title))
+    provider = _CountingDeepseek(_rap_reply())
+    ports = V2Ports(node, CommandModeLLM(provider, log=[].append), CallCounter(), node._tool_executor,
+                    performer=lambda: plan_host.performer(node))
+    engine = TurnEngine(node._session, ports, system_prompt="Ты робот.")
+    host = plan_host.performer(node)
+    host.start(Performance(kind="rap", segments=tuple(SEGMENTS), backing="beat"), "t1")
+    question = next(r for r in node.pubs[SPEECH].sent if r.commit)
+    asyncio.run_coroutine_threadsafe(asyncio.sleep(0.05), loop).result(timeout=2)
+    host.on_speech("started", question.speech_id, duration_ms=2500)
+    host.on_speech("finished", question.speech_id)
+
+    node.now_s += kn.IDENTITY_MIC_GRACE_S - 0.025
+    heard = Heard("да", node.now_s)
+    backlog = Backlog()
+    decision = decide_in_session(heard, backlog, ("робот",), node._session.snapshot)
+    assert isinstance(decision, Addressed) and decision.source == "perform_answer"
+    agg = asyncio.run(engine.run(decision))
+    asyncio.run_coroutine_threadsafe(asyncio.sleep(0.05), loop).result(timeout=2)
+
+    assert [c.name for c in music.calls] == ["stop_music", "request_music"]
+    assert agg.llm_calls == 0 and provider.asked == 0
+    assert backlog.background_phrases(node.now_s) == 0
+    assert node._session.snapshot.top("PerformAsk") is None
+    assert node._session.snapshot.pending_ask is None

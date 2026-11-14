@@ -45,17 +45,30 @@ python3 scripts/telegram/channel_post.py --transport direct || PUBLISH_RC=$?
 
 # Публикатор правит front matter очереди (posted_at, message_id). Без коммита
 # в репозитории остаётся грязное дерево, и правка теряется при следующем pull.
-# Коммитим только если дерево чистое кроме очереди: чужую работу не трогаем.
+#
+# Раньше коммит проходил только если дерево было чистое КРОМЕ очереди. Но у
+# студийного хоста в дереве всегда есть untracked-файлы студии
+# (docs/channel/infographics/loc-drift.json и т.п.), поэтому условие
+# "OTHER = 0" не выполнялось НИКОГДА: отметка posted никогда не попадала
+# в git (разбор 11.11, очередь 900-post.md осталась untracked).
+#
+# Теперь коммитим ТОЛЬКО путь очереди — `git commit -- docs/channel/queue`
+# не трогает чужие файлы даже если они есть в дереве. Отдельно проверяем,
+# что в индексе нет постороннего: иначе коммит утащил бы чужую работу.
 if [ "$PUBLISH_RC" = "0" ]; then
     DIRTY=$(git -C "$STUDIO_REPO" status --porcelain -- docs/channel/queue 2>/dev/null | wc -l)
-    OTHER=$(git -C "$STUDIO_REPO" status --porcelain 2>/dev/null | grep -v "docs/channel/queue" | wc -l)
-    if [ "$DIRTY" != "0" ] && [ "$OTHER" = "0" ]; then
-        git -C "$STUDIO_REPO" add docs/channel/queue
-        git -C "$STUDIO_REPO" commit -q -m "channel: опубликован пост" && \
-            echo "[studio-publish] правка очереди закоммичена" || \
-            echo "[studio-publish] не смог закоммитить правку очереди"
-    elif [ "$OTHER" != "0" ]; then
-        echo "[studio-publish] в дереве есть чужие изменения — коммит очереди пропущен"
+    if [ "$DIRTY" != "0" ]; then
+        STAGED_OTHER=$(git -C "$STUDIO_REPO" diff --cached --name-only 2>/dev/null | grep -v "^docs/channel/queue/" | wc -l)
+        if [ "$STAGED_OTHER" != "0" ]; then
+            echo "[studio-publish] в индексе чужое — коммит очереди пропущен, чтобы не утащить чужую работу"
+        else
+            git -C "$STUDIO_REPO" add -- docs/channel/queue
+            if git -C "$STUDIO_REPO" commit -q -m "channel: опубликован пост" -- docs/channel/queue; then
+                echo "[studio-publish] правка очереди закоммичена"
+            else
+                echo "[studio-publish] не смог закоммитить правку очереди"
+            fi
+        fi
     fi
 fi
 

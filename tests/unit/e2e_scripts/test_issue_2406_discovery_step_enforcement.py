@@ -341,6 +341,24 @@ class TestDiscoveryStepAcceptance:
         assert "#2406" in failures_str
         assert "AFTER verbal answer" in failures_str
 
+    def test_waiting_filler_before_tool_is_not_verbal_answer(self) -> None:
+        """Промежуточная фраза кода не сдвигает discovery-order (Act4 n401, run 43201271798)."""
+        log = (
+            TOOLS_CATALOG
+            + "[dialog_node-3] 🧭 [turn-v2] промежуточная фраза: ждём llm 6.0 с turn=3190900b0900\n"
+            + "[tts_node-4] 🔊 TTS: speech_id=93a62596, dialogue_id=None, text='Сейчас, соображаю.'\n"
+            + "[tts_node-4] 📢 Публикую TTS finished event: speech_id=93a62596..., success=True\n"
+            + "[dialog_node-3] 🔎 LLM RESPONSE: tool_calls=[('list_tts_voices', '{}')]\n"
+            + "[mcp_server-9] ✅ Инструмент list_tts_voices выполнен успешно\n"
+            + "[dialog_node-3] 🔎 LLM RESPONSE: speech='Три набора голосов.'\n"
+            + "[tts_node-4] 🔊 TTS: speech_id=cbb2838e, dialogue_id=None, text='Три набора голосов.'\n"
+        )
+        result = _per_step_validate(acc={"discovery_tools": ["list_tts_voices"]}, logs=log)
+        assert result["pass"] is True, result["failures"]
+        voice_pos = result["discovery_first_voice_pos"]
+        assert voice_pos is not None
+        assert log[voice_pos:].startswith("🔊 TTS: speech_id=cbb2838e")
+
     def test_discovery_field_optional(self) -> None:
         """Без discovery_tools — старый чек (только факт вызова).
 

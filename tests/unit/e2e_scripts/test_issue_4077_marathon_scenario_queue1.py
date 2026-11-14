@@ -355,9 +355,9 @@ def test_song_skip_does_not_swallow_other_refusals_of_the_act():
         ("n610_dj_state_honest", "Диджей-режим не включён, сет снят.", True),
         ("n610_dj_state_honest", "Да, диджей-режим включён и играет.", False),
         ("n610_dj_state_honest", "Режим включён, всё работает.", False),
-        ("n808_repeat_last", "Пятьдесят шесть.", True),
-        ("n808_repeat_last", "Семью восемь — 56.", True),
-        ("n808_repeat_last", "Конечно, повторяю: я не расслышал вопрос.", False),
+        ("n803_barge_in_new_topic", "Пятьдесят шесть.", True),
+        ("n803_barge_in_new_topic", "Семью восемь — 56.", True),
+        ("n803_barge_in_new_topic", "Конечно, повторяю: я не расслышал вопрос.", False),
         ("n909_foreign_language", "По-китайски: 晚安!", True),
         ("n909_foreign_language", "Всем спокойной ночи.", False),
         ("n1001_recall_night", "Ты пьёшь зелёный чай без сахара.", True),
@@ -375,7 +375,9 @@ def test_empty_steps_now_have_a_check_that_can_turn_red(label, said, ok):
     log = "\n".join(
         [
             _tts(said),
+            "🗣️ SpeechEvent cancelled speech_id=4a436e4b agent=personality epoch=9 reason=stopped",
             "🗣️ SpeechEvent started speech_id=ab12cd34 agent=main epoch=1 text_len=20",
+            "🗣️ SpeechEvent finished speech_id=ab12cd34 agent=main epoch=1 spoken_chars=20",
             DONE,
         ]
     )
@@ -389,7 +391,7 @@ def test_n808_repeats_the_answer_it_follows_n803_in_act8():
     )
     assert (
         "56|пятьдесят шесть"
-        in _steps()["n808_repeat_last"]["acceptance"]["expected_keywords"]
+        in _steps()["n803_barge_in_new_topic"]["acceptance"]["expected_keywords"]
     )
 
 

@@ -2048,10 +2048,15 @@ emit_step_fail_or_vad() {
     return 1
 }
 
-# eq_command_wav IN OUT — фильтр реплики перед колонкой: highpass + громкость + лимитер (клиппинг-фикс 514e7e87) и
+# eq_command_wav IN OUT [VOICE] — фильтр реплики перед колонкой: highpass + громкость + лимитер (клиппинг-фикс 514e7e87) и
 # 1.5 с тишины спереди (adelay; модель окна VAD -- test_e2e_scenario_playable.sh). Одно место на все реплики шага.
-eq_command_wav() {  # $1=синтезированный wav $2=wav для колонки
-    ffmpeg -nostdin -y -i "$1" -af "highpass=f=100,volume=3.0,alimiter=limit=0.98,adelay=1500|all=1" -ac 1 -ar 16000 "$2" 2>/dev/null
+eq_command_wav() {  # $1=синтезированный wav $2=wav для колонки $3=голос сценария (необязательный)
+    local filter="highpass=f=100,volume=3.0,alimiter=limit=0.98,adelay=1500|all=1"
+    case "${3:-}" in
+        # #4693: живой A/B/C — только шёпот Валеры получает измеренные +12 dB перед limiter; другие голоса не меняются.
+        filipp|kostya) filter="highpass=f=100,volume=3.0,volume=12dB,alimiter=limit=0.98,adelay=1500|all=1" ;;
+    esac
+    ffmpeg -nostdin -y -i "$1" -af "$filter" -ac 1 -ar 16000 "$2" 2>/dev/null
 }
 
 # play_eq_wav WAV — громкость динамика 100% (по умолчанию; явный >100% доступен через inputs.volume в workflow,
@@ -2096,7 +2101,7 @@ step_stand_play_failed() {  # $1=label
 phrase_eq_wav() {  # $1=text $2=voice $3=base (без .wav)
     ensure_outdir
     synth_command "$1" "$2" "$3.wav" > "$3.log" 2>&1 || return 1
-    eq_command_wav "$3.wav" "$3_eq.wav"
+    eq_command_wav "$3.wav" "$3_eq.wav" "$2"
 }
 
 # --- issue #3989 — ОДНО восстановление шага ---------------------------------------------------------------
@@ -2346,7 +2351,7 @@ run_step() {  # $1=text $2=voice $3=step_label $4=expect_kind(cycle|wake-gated|b
         return 1
     fi
     ensure_outdir
-    eq_command_wav "$OUT_DIR/cmd_${safe}.wav" "$OUT_DIR/cmd_${safe}_eq.wav"
+    eq_command_wav "$OUT_DIR/cmd_${safe}.wav" "$OUT_DIR/cmd_${safe}_eq.wav" "$voice"
 
     # 1b. Реплика влезает в окно VAD робота?
     #
@@ -2567,7 +2572,7 @@ run_step() {  # $1=text $2=voice $3=step_label $4=expect_kind(cycle|wake-gated|b
                 synth_command "$text" "$voice" "$OUT_DIR/cmd_${safe}.wav" > "$OUT_DIR/synth_${safe}.log" 2>&1 \
                     || { synth_surface_log "$label" "$OUT_DIR/synth_${safe}.log"; log "STEP ${label}: FAIL — повторный синтез ${E2E_TTS_PROVIDER_RESOLVED:-$E2E_TTS_PROVIDER} упал ($(tail -1 "$OUT_DIR/synth_${safe}.log"))"; emit_step "${label} FAIL synth"; mark_fail_kind synth; return 1; }
                 ensure_outdir
-                eq_command_wav "$OUT_DIR/cmd_${safe}.wav" "$OUT_DIR/cmd_${safe}_eq.wav"
+                eq_command_wav "$OUT_DIR/cmd_${safe}.wav" "$OUT_DIR/cmd_${safe}_eq.wav" "$voice"
             fi
             play_eq_wav "$OUT_DIR/cmd_${safe}_eq.wav" || { step_stand_play_failed "$label"; return 1; }
         fi

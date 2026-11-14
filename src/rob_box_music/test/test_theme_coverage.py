@@ -172,6 +172,7 @@ def test_lazy_plan_decides_the_same_materials_and_checks_only_track_one_up_front
 
     lazy = seeded_plan(profile, 7, 4, materials=Counting(mats), references=[ref], lazy_materials=True)
     up_front = list(calls)
-    assert up_front == list(mats)[:up_front.index("local:arps") + 1]  # до годного трека 1, не все
+    assert up_front[-1] == eager.track(1).material  # остановились на годном треке 1 в порядке сида/стиля
+    assert len(up_front) < len(mats)  # кандидаты треков 2+ синхронно не проверялись
     assert [lazy.material(no) for no in range(1, 5)] == [t.material for t in eager.tracks]
     assert lazy.track(2).material is None and lazy.material(2) == eager.track(2).material

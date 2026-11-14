@@ -87,10 +87,41 @@ def test_deploy_pull_ignores_compose_pull_policy():
         assert "--policy always" in line, f"pull без --policy always: {line.strip()}"
 
 
-def test_vision_autostart_pull_ignores_compose_pull_policy():
+def test_vision_autostart_does_not_pull_from_registry():
+    """Issue #4533: автозапуск использует локальный кэш, обновление — через деплой."""
     setup = (Path(__file__).resolve().parents[2] / "scripts/setup/setup_vision_pi.sh").read_text(encoding="utf-8")
     exec_pre = [line for line in setup.splitlines() if line.startswith("ExecStartPre=") and "compose pull" in line]
-    assert exec_pre and all("--policy always" in line for line in exec_pre)
+    assert not exec_pre, f"autostart не должен ждать registry: {exec_pre}"
+
+
+# ── Vision Pi: reinstall systemd units (issue #3018, ретро run 43035890763) ──────
+
+VISION_UPDATE_CODE_STEP = "[Vision Pi] Update Code"
+VISION_REINSTALL_STEP = "[Vision Pi] Reinstall Systemd Units + Health Timer (issue #3018)"
+
+
+def test_vision_reinstall_systemd_units_runs_after_update_code():
+    """Инвариант порядка: reinstall применяет source на Pi, поэтому репозиторий
+    там обязан быть обновлён ДО проверки diff'ов против origin/develop. Если
+    reinstall встанет раньше Update Code, рабочая копия сравнится со старым
+    develop, skip сработает, а свежий setup_vision_pi.sh приедет без reinstall."""
+    names = [name for name, _ in _steps(WORKFLOW_PATH.read_text(encoding="utf-8"))]
+    assert names.index(VISION_UPDATE_CODE_STEP) < names.index(VISION_REINSTALL_STEP)
+
+
+def test_vision_reinstall_rejects_unit_with_stale_compose_pull_pre():
+    """Ретро run 43035890763 (после #4533 / PR #4667): unit на Vision Pi сохранил
+    `ExecStartPre=-/usr/bin/docker compose pull ...`, а шаг отрапортовал
+    «skip reinstall». Причина: Restart=on-failure и ExecStart=...--pull never
+    в #4533 не менялись, поэтому старый unit проходил все grep-проверки
+    контракта. Skip-условие обязано отвергать unit с `ExecStartPre=.*compose pull`,
+    иначе снятие pull из автозапуска не доходит до уже установленных Pi."""
+    steps = dict(_steps(WORKFLOW_PATH.read_text(encoding="utf-8")))
+    body = steps[VISION_REINSTALL_STEP]
+    assert re.search(
+        r"!\s*systemctl cat robbox-vision\.service \| grep -q '\^ExecStartPre=.*compose pull'",
+        body,
+    ), "skip-условие reinstall не отвергает unit со stale ExecStartPre compose pull"
 
 
 # ── ADR-0159: Sound Pi как третий узел деплоя ───────────────────────────────────

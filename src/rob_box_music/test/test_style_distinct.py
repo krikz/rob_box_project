@@ -122,3 +122,23 @@ def test_same_seed_and_theme_give_different_first_tracks_in_every_style():
     for a, b in PAIRS:
         assert seen[a][:3] != seen[b][:3] and seen[a][2] != seen[b][2], (a, b, seen[a], seen[b])
     assert len({v[3:] for v in seen.values()}) >= 5, seen
+
+
+def test_same_input_seed_salts_score_material_by_style():
+    """S7: club/breaks на одном сиде не берут один материал и его hook_fp, если тема нашла несколько партитур."""
+    from test_material import make_material
+
+    first = make_material()
+    shape = (67, 65, 64, 62, 60, 62, 64, 65)
+    second = make_material(material_id="local:ef56ab78",
+                           melody=tuple(dataclasses.replace(e, midi=shape[i % len(shape)])
+                                        for i, e in enumerate(first.melody)))
+    materials = {m.material_id: m for m in (first, second)}
+    seen = {}
+    for style in ("club", "breaks"):
+        profile = dataclasses.replace(seeded_profile("космос", style), materials=tuple(materials))
+        plan = seeded_plan(profile, 31476, n_tracks=1, set_id="s7", materials=materials)
+        track = compose(plan, 1, materials=materials)
+        seen[style] = (plan.material(1), track.history_key.hook_fingerprint)
+    assert seen["club"][0] != seen["breaks"][0], seen
+    assert seen["club"][1] != seen["breaks"][1], seen

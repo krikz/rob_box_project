@@ -9,11 +9,12 @@ import pytest
 from rob_box_dialog import action_chain
 from rob_box_dialog import knowledge as kn
 from rob_box_dialog.address import SOURCE_TELEGRAM, Addressed
-from rob_box_dialog.command import Command, ToolCall
+from rob_box_dialog.command import Command, Invalid, ToolCall, parse, unkept_done_claims, validate
 from rob_box_dialog.respond import ActionResult
 from rob_box_dialog.session import Session
 from rob_box_dialog.tools_view import available_tools, groups_for
 from rob_box_dialog.turn import Answer, TurnEngine, carried_groups, unasked_aloud
+from rob_box_dialog.words import done_claims
 
 FACES = {"people_list", "person_photo", "name_person"}
 LOG = logging.getLogger("t4505")
@@ -93,7 +94,24 @@ def test_photos_are_reads_and_never_a_chain():
 
 
 def test_the_model_may_send_ten_photos():
-    assert kn.ACTIONS_ACCEPT_MAX >= 10
+    assert kn.ACTIONS_ACCEPT_MAX == 10
+
+
+def test_ten_photos_all_reach_the_executor_in_one_turn():
+    ports = Ports([
+        Answer(Command(actions=_photos(10)), "deepseek"),
+        Answer(Command(speech="Снимки выше."), "deepseek"),
+    ])
+
+    _run(_engine(ports), "ну пришли их")
+
+    assert ports.executed == [("person_photo", {"id": f"{n:08x}"}) for n in range(10)]
+
+
+def test_the_eleventh_photo_is_rejected_by_the_existing_action_limit():
+    raw = {"actions": [{"tool": "person_photo", "args": {"id": f"{n:08x}"}} for n in range(11)]}
+    result = validate(parse(raw), [kn.PHOTO_TOOL], Session("telegram").snapshot)
+    assert isinstance(result, Invalid) and result.reason == "too_many_actions"
 
 
 # --- 3. перенос группы faces ----------------------------------------------------------------------------------
@@ -124,8 +142,9 @@ def test_voice_agent_never_gets_faces_through_carry():
     assert not FACES & names
 
 
-def test_carried_groups_come_from_called_tools_only():
-    assert carried_groups(["people_list"]) == (kn.FACES_GROUP,)
+@pytest.mark.parametrize("tool", ["people_list", "person_photo"])
+def test_carried_groups_come_from_called_tools_only(tool):
+    assert carried_groups([tool]) == (kn.FACES_GROUP,)
     assert carried_groups(["get_current_time"]) == ()
 
 
@@ -171,3 +190,40 @@ def test_other_agents_and_other_actions_are_untouched():
     other = Command(actions=(ToolCall("name_person", {"id": "fff371fe", "name": "К"}), *_aloud().actions))
     out = unasked_aloud(LOG, _Turn("привет"), "telegram", other)
     assert [a.tool for a in out.actions] == ["name_person"]
+
+
+# --- 6. обещание снимков без person_photo ----------------------------------------------------------------------
+
+
+PHOTO_SEND_PROMISE = "Сейчас пришлю снимки всех, кого видел сегодня."
+
+
+@pytest.mark.parametrize("text", [PHOTO_SEND_PROMISE, "Отправлю фото в чат."])
+def test_photo_send_promises_are_recognized(text):
+    assert done_claims(text) == ("photo_send",)
+
+
+@pytest.mark.parametrize("text", [
+    "Не пришлю фото без разрешения.",
+    "Пришлю ссылку в чат.",
+    "Китайский зонд прислал новые снимки Луны.",
+])
+def test_other_send_words_are_not_photo_claims(text):
+    assert done_claims(text) == ()
+
+
+def test_live_photo_promise_with_only_say_aloud_is_a_done_claim_violation():
+    raw = {
+        "speech": PHOTO_SEND_PROMISE,
+        "actions": [{"tool": kn.ALOUD_TOOL, "args": {"text": PHOTO_SEND_PROMISE}}],
+    }
+    result = validate(parse(raw), [kn.PHOTO_TOOL, kn.ALOUD_TOOL], Session("telegram").snapshot)
+    assert isinstance(result, Invalid) and result.reason == kn.VIOLATION_DONE_CLAIM
+    assert kn.PHOTO_TOOL in result.all[0].allowed
+
+
+def test_person_photo_backs_the_send_promise_but_say_aloud_does_not():
+    photo = Command(speech=PHOTO_SEND_PROMISE, actions=(ToolCall(kn.PHOTO_TOOL, {"id": "71cda108"}),))
+    aloud = Command(speech=PHOTO_SEND_PROMISE, actions=_aloud().actions)
+    assert unkept_done_claims(photo) == ()
+    assert unkept_done_claims(aloud) == ("photo_send",)

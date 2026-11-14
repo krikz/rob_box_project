@@ -770,20 +770,14 @@ class TestRecognizeWithFallback:
 
 
 # ---------------------------------------------------------------------------
-# Issue 989: rejected(empty) → МОЛЧИМ, rejected(short) → переспрашиваем
+# Issue 989/#4695: rejected(empty/short) → МОЛЧИМ
 # ---------------------------------------------------------------------------
 
 
 class TestSpeakUnclear:
-    """Issue #979 + #989: при неясном результате робот просит повторить
-    вслух (а не молчит), с cooldown против эхо-петли.
+    """Отдельный helper «не расслышал» сохраняет cooldown; rejected-ветка его больше не вызывает."""
 
-    Issue 989 Fix A: rejected(empty) — эхо собственной музыки/голоса → НЕ
-    говорим «не расслышал» (молчим). rejected(short) — был реальный ввод,
-    но слишком короткий → можно переспросить.
-    """
-
-    def test_speaks_unclear_phrase_on_reject(self, stt_node):
+    def test_unclear_helper_speaks_when_called(self, stt_node):
         stt_node._speech_client_pubs = {"request": MagicMock()}
         stt_node._last_unclear_at = 0.0  # сброс cooldown
 
@@ -830,9 +824,8 @@ class TestSpeakUnclear:
         assert stt_node.utterance_pub.publish.call_count == 0
         assert stt_node._speech_client_pubs["request"].publish.call_count == 0
 
-    def test_speech_audio_callback_short_rejected_still_speaks(self, stt_node):
-        """Issue 989 Fix A: STT вернул короткий текст (Vosk «не»/«пути»)
-        → это реальный речевой ввод, можно переспросить."""
+    def test_speech_audio_callback_short_rejected_stays_silent(self, stt_node):
+        """#4695: короткий rejected не подтверждает адресованную речь → ни Utterance, ни TTS."""
         stt_node._speech_client_pubs = {"request": MagicMock()}
         stt_node._last_unclear_at = 0.0
         # Короткий текст "не" (2 chars < min_text_chars=3) → rejected(short)
@@ -845,17 +838,10 @@ class TestSpeakUnclear:
         stt_node.speech_audio_callback(msg)
 
         assert stt_node.utterance_pub.publish.call_count == 0
-        assert stt_node._speech_client_pubs["request"].publish.call_count == 1
+        assert stt_node._speech_client_pubs["request"].publish.call_count == 0
 
-    def test_speech_audio_callback_vosk_garbage_speaks_unclear_real_path(self, stt_node):
-        """Issue #979 acceptance: реальный путь Yandex empty → Vosk «не»
-        (мусор) должен привести к «не расслышал», а НЕ к молчанию.
-
-        До фикса select_recognition возвращал None при low_confidence, и
-        speech_audio_callback классифицировал это как rejected(empty) →
-        робот молчал (именно баг из issue #979). После фикса возвращается
-        последний непустой текст («не») → rejected(short) → «не расслышал».
-        """
+    def test_speech_audio_callback_vosk_garbage_stays_silent_real_path(self, stt_node):
+        """#4695: реальный путь Yandex empty → Vosk «не» остаётся rejected и не запускает TTS."""
         stt_node.yandex_stub = MagicMock()
         stt_node.recognizer = MagicMock()
         stt_node._recognize_yandex = MagicMock(return_value=None)  # empty x2
@@ -869,12 +855,8 @@ class TestSpeakUnclear:
         msg.data = [0] * (16000 * 2)  # 1с PCM
         stt_node.speech_audio_callback(msg)
 
-        # Результат НЕ опубликован (слишком короткое), но робот просит
-        # повторить: «Не расслышал, скажи ещё раз» — вместо молчания.
         assert stt_node.utterance_pub.publish.call_count == 0
-        assert stt_node._speech_client_pubs["request"].publish.call_count == 1
-        payload = stt_node._speech_client_pubs["request"].publish.call_args[0][0].text
-        assert "Не расслышал" in payload
+        assert stt_node._speech_client_pubs["request"].publish.call_count == 0
 
 
 class TestTTSGracePeriod:
