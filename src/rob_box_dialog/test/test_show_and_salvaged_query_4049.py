@@ -38,6 +38,10 @@ SAD_CALL = ToolCall("play_animation", {"animation": "sad", "duration": 6,
 #: 00:45:45 «Робот, включи сирену» → ``play_animation{police_lights}`` без длительности.
 N_SIREN = "включи сирену"
 SIREN_CALL = ToolCall("play_animation", {"animation": "police_lights"})
+#: n903: LLM может выбрать ``ambulance`` на сирену/мигалку — код исправляет на ``police_lights`` (#4694).
+N_N903 = "Робот, а теперь сирену и мигалку покажи, напугаем Валеру."
+AMBULANCE_CALL = ToolCall("play_animation", {"animation": "ambulance"})
+ROBOT_ALERT_CALL = ToolCall("play_sound", {"sound": "robot_alert"})
 #: 00:44:50 «Робот, что у тебя в музыкальной библиотеке?» → спасённый ``music_library list``.
 N_LIBRARY = "что у тебя в музыкальной библиотеке"
 LIST_CALL = ToolCall("music_library", {"action": "list"})
@@ -120,14 +124,18 @@ def test_4049_play_animation_sad_is_the_done_scene_with_its_face_and_duration_no
     assert plan.earcon == reflex("done").earcon, "earcon итога — рефлекса"
 
 
-@pytest.mark.parametrize("scene", ["police_lights", "fire_truck", "ambulance"])
-def test_4049_siren_animations_reach_the_face_without_duration_by_the_show_default(scene):
+@pytest.mark.parametrize("scene,text", [
+    ("police_lights", N_SIREN),
+    ("fire_truck", N_SIREN),
+    ("ambulance", "покажи анимацию скорой помощи"),
+])
+def test_4049_siren_animations_reach_the_face_without_duration_by_the_show_default(scene, text):
     """00:45:45 «включи сирену»: мигалка — сцена ``face_node`` (``SCENES``, сверка ``KNOWN_ANIMATIONS`` —
     ``tests/unit/docker/test_animation_assets.py``); без ``duration`` время — по умолчанию показа
     (``FACE_SHOW_DEFAULT_S``, #4083: то же число, что по умолчанию у лица), а не 3 с рефлекса ``done``."""
     cmd = Command(speech="Включаю!", actions=(ToolCall("play_animation", {"animation": scene}),))
     ports = Ports([Answer(cmd, "deepseek")])
-    _run(ports, N_SIREN)
+    _run(ports, text)
     shown = Shown(emotion=scene, duration_s=kn.FACE_SHOW_DEFAULT_S)
     assert ports.said == [("Включаю!", None, "neutral")] and ports.faces == [("done", shown)]
     plan = _done_plan(ports.faces[0][1])
@@ -423,3 +431,26 @@ def test_4053_passed_with_speech_reaches_the_turn_as_speech_not_the_mumble():
     agg = _run(ports, "ты тут")
     assert [t for t, _, _ in ports.said] == ["Слышу, слышу."] and (agg.stage, agg.status) == ("done", "finished")
     assert not any(t in phrases.catalog()[kn.PASSED_ADDRESSED_PHRASE] for t, _, _ in ports.said)
+
+
+# -- #4694: n903 — ``ambulance`` на сирену/мигалку исправляется на ``police_lights`` -------------------------------
+
+
+def test_4694_n903_ambulance_becomes_police_lights_when_text_has_siren_or_flasher():
+    """n903: LLM выбрала ``ambulance`` на «сирену/мигалку», но код заменяет на ``police_lights`` до исполнения."""
+    ports = Ports([Answer(Command(actions=(AMBULANCE_CALL, ROBOT_ALERT_CALL)), "deepseek")])
+    _run(ports, N_N903)
+    assert ports.executed == [[("play_animation", {"animation": "police_lights"}),
+                               ("play_sound", {"sound": "robot_alert"})]]
+    assert ports.faces == [("done", Shown(emotion="police_lights", duration_s=kn.FACE_SHOW_DEFAULT_S))]
+
+
+@pytest.mark.parametrize("text", [
+    "покажи анимацию скорой помощи",
+    "включи сирену скорой помощи",
+])
+def test_4694_explicit_ambulance_stays_ambulance(text):
+    """Явная скорая помощь в тексте — ``ambulance`` не перекрашивается в ``police_lights``."""
+    ports = Ports([Answer(Command(actions=(AMBULANCE_CALL,)), "deepseek")])
+    _run(ports, text)
+    assert ports.executed == [[("play_animation", {"animation": "ambulance"})]]
