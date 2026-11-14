@@ -22,6 +22,7 @@ REPO = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(REPO / "scripts" / "telegram"))
 
 import studio_material as material  # noqa: E402
+import studio_motion as motion  # noqa: E402
 import studio_video as video  # noqa: E402
 
 # --- эталон с песочницы ------------------------------------------------------
@@ -159,6 +160,141 @@ def test_run_measure_rejects_empty():
     """Прогон без измерений — не материал."""
     assert material.measure_run(None) is None
     assert material.measure_run([]) is None
+
+
+# --- «самый длинный заезд» по данным фактов ----------------------------------
+
+
+def test_longest_run_from_facts():
+    """Самый длинный заезд — по числам фактов: дольше по времени и больше снимков карты."""
+    facts = [
+        fact(RUN_SHORT, SHORT),
+        fact(RUN_LONG, LONG),
+        fact(RUN_DEBUG, {"goals": 1, "sim_s": 222, "map_snapshots": 153, "pose_rows": 2197}),
+    ]
+    assert material.longest_run(facts) == RUN_LONG
+
+
+def test_longest_run_skips_debug_fact():
+    """Отладочный прогон (одна цель, 222 с) не выигрывает даже по времени."""
+    facts = [
+        fact(RUN_DEBUG, {"goals": 1, "sim_s": 222, "map_snapshots": 153, "pose_rows": 2197}),
+        fact(RUN_SHORT, SHORT),
+    ]
+    assert material.longest_run(facts) == RUN_SHORT
+
+
+def test_longest_run_empty_facts():
+    assert material.longest_run([]) == ""
+
+
+def test_longest_run_ignores_non_run_facts():
+    """Факты не о прогоне в выдачу не попадают."""
+    facts = [{"key": "merged_pr:1", "kind": "merged_pr", "numbers": {"sim_s": 9999}}]
+    assert material.longest_run(facts) == ""
+
+
+def test_longest_run_from_real_numbers():
+    """Эталон с песочницы: depot4682 длиннее depot4495 по времени и по карте."""
+    facts = [fact(RUN_SHORT, SHORT), fact(RUN_LONG, LONG)]
+    assert material.longest_run(facts) == RUN_LONG
+    assert LONG["sim_s"] > SHORT["sim_s"]
+    assert LONG["map_snapshots"] > SHORT["map_snapshots"]
+
+
+def test_request_for_longest_run_picks_longest_fact():
+    """Просьба «самый длинный заезд» — правило кода: выбирается прогон по данным."""
+    facts = [fact(RUN_SHORT, SHORT), fact(RUN_LONG, LONG)]
+    chosen = video.run_for_request("возьми самый длинный заезд с максимальным покрытием", facts, "")
+    assert chosen == RUN_LONG
+
+
+def test_request_without_longest_words_keeps_post_fact():
+    """Обычная просьба — прогон темы, а не «самый длинный»."""
+    facts = [fact(RUN_SHORT, SHORT), fact(RUN_LONG, LONG)]
+    chosen = video.run_for_request("сделай видео", facts, RUN_SHORT)
+    assert chosen == RUN_SHORT
+
+
+# --- материал, который уже уходил в канал, повторно не предлагается ------------
+
+
+def state_with_published(runs: list, status: str = "approved") -> dict:
+    """Состояние студии: один пост в статусе status с такими прогонами."""
+    return {"posts": {"i20261106-1-post": {"status": status, "last_motion": {"runs": runs}}}}
+
+
+def test_published_runs_collected():
+    """Прогоны из опубликованного поста — «использованные»."""
+    used = material.published_runs(state_with_published(["shisyun_s1", "shisyun_s2"]))
+    assert used == {"shisyun_s1", "shisyun_s2"}
+
+
+def test_proposed_post_does_not_count_as_published():
+    """Черновик (proposed) ещё не уходил в канал — его материал можно использовать."""
+    used = material.published_runs(state_with_published(["shisyun_s1"], status="proposed"))
+    assert used == set()
+
+
+def test_published_runs_empty_state():
+    assert material.published_runs({}) == set()
+
+
+def test_published_runs_ignores_rejected():
+    """Отклонённый пост в канал не уходил."""
+    used = material.published_runs(state_with_published(["shisyun_s1"], status="rejected"))
+    assert used == set()
+
+
+def test_catalog_excludes_published_runs():
+    """Прогоны, чей материал уже в канале, из каталога убираются.
+
+    Разбор 14.11 (issue #4711): пост 09.11 про PR #4555 получил ролик с
+    прогонами shisyun_s1/s2 — материал уже уходил в канал 06.11, и файл был
+    байт-идентичен тому, что опубликован. Студия брала первые два прогона из
+    каталога, не глядя ни на тему, ни на то, что это уже показывали.
+    """
+    catalog = [
+        {"id": "shisyun_s1", "kind": "poses"},
+        {"id": "shisyun_s2", "kind": "poses"},
+        {"id": RUN_LONG, "kind": "poses"},
+    ]
+    used = material.published_runs(state_with_published(["shisyun_s1", "shisyun_s2"]))
+    fresh = material.fresh_catalog(catalog, used)
+    assert [item["id"] for item in fresh] == [RUN_LONG]
+
+
+def test_fresh_catalog_keeps_all_when_nothing_published():
+    catalog = [{"id": "shisyun_s1", "kind": "poses"}, {"id": "shisyun_s2", "kind": "poses"}]
+    assert material.fresh_catalog(catalog, set()) == catalog
+
+
+# --- «ещё раз» — это не всегда «пришли то же самое» ----------------------------
+
+
+def test_resend_request_wants_same_file():
+    """Прямая просьба прислать ещё раз — тот же файл."""
+    assert motion.wants_resend("пришли ещё раз")
+    assert motion.wants_resend("покажи снова")
+    assert motion.wants_resend("пришли повторно")
+
+
+def test_repeated_search_is_not_resend():
+    """«Ещё раз говорю найти самый длинный» — это повтор ПОИСКА, а не просьба прислать то же.
+
+    Разбор 14.11 (issue #4711): Шифу написал «Это не самый длинный заезд, ещё раз
+    говорю найти самый длинный», и студия прочитала «ещё раз» как «пришли тот же
+    ролик» — и прислала старое видео. Слова поиска отменяют повторную отправку.
+    """
+    assert not motion.wants_resend("Это не самый длинный заезд, ещё раз говорю найти самый длинный")
+    assert not motion.wants_resend("сделай заново, найди самый длинный заезд")
+
+
+def test_resend_request_without_new_material_words():
+    """Чистая просьба «пришли ещё раз» — повторная отправка."""
+    assert motion.wants_resend("пришли ещё раз")
+    assert motion.wants_resend("пришли, ещё раз")
+    assert not motion.wants_resend("")
 
 
 # --- единый счёт целей --------------------------------------------------------

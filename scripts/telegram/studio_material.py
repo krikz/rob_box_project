@@ -145,6 +145,67 @@ def runs_catalog(gate: Gate) -> tuple:
     return found, ""
 
 
+def published_runs(state: dict) -> set:
+    """Прогоны, чей материал уже уходил в канал. Множество id.
+
+    Разбор 14.11 (issue #4711): пост 09.11 про PR #4555 получил ролик с
+    прогонами `shisyun_s1`/`shisyun_s2` — материал уже уходил в канал 06.11, и
+    файл был байт-идентичен опубликованному. Студия брала первые два прогона из
+    каталога, не глядя ни на тему, ни на то, что это уже показывали.
+
+    В канал ушёл только пост со статусом `approved` (нажатая кнопка Шифу).
+    Черновик (`proposed`) и отклонённый (`rejected`) в канал не уходили.
+    """
+    used = set()
+    for record in (state.get("posts") or {}).values():
+        if str(record.get("status") or "") != "approved":
+            continue
+        motion = record.get("last_motion") or {}
+        for run in motion.get("runs") or []:
+            used.add(str(run))
+    return used
+
+
+def fresh_catalog(catalog: list, used: set) -> list:
+    """Каталог без прогонов, чей материал уже публиковали.
+
+    Пустой результат — честный сигнал: материала, который ещё не показывали,
+    нет. Лучше пусто, чем повтор старого ролика.
+    """
+    if not used:
+        return list(catalog or [])
+    return [item for item in catalog or [] if str(item.get("id") or "") not in used]
+
+
+def longest_run(facts: list) -> str:
+    """Прогон с самым длинным заездом по фактам сессии. "" — если таких нет.
+
+    Правило кода, а не выбор модели: Шифу просил «самый длинный заезд робота с
+    максимальным покрытием» (14.11) — и получал тот же ролик, потому что правила
+    не было вовсе. Сравниваем по данным факта: длина по времени (sim_s), покрытие
+    по снимкам карты (map_snapshots) и число целей. Отладочные прогоны (одна
+    цель) в выдачу не попадают — см. MIN_GOALS.
+    """
+    best_id, best_key = "", None
+    for fact in facts or []:
+        if str(fact.get("kind") or "") != "robot_run":
+            continue
+        numbers = fact.get("numbers") or {}
+        goals = int(numbers.get("goals") or 0)
+        if goals < MIN_GOALS:
+            continue
+        key = (
+            float(numbers.get("sim_s") or 0.0),
+            int(numbers.get("map_snapshots") or 0),
+            int(numbers.get("pose_rows") or 0),
+            goals,
+        )
+        if best_key is None or key > best_key:
+            best_key = key
+            best_id = str(fact.get("run_id") or "")
+    return best_id
+
+
 def route_goals(route_text: str) -> int:
     """Сколько целей маршрута прошёл робот: все строки с меткой GOAL_START.
 

@@ -138,6 +138,23 @@ def run_of_post(record: dict, facts: list) -> str:
     return ""
 
 
+# Просьба Шифу о «самом длинном заезде» (14.11): «возьми самый длинный заезд робота
+# с максимальным покрытием». Раньше правила не было — студия отвечала тем же роликом.
+LONGEST_MARKERS = ("длинн", "максимальн", "покрыти", "больше всего", "дольше всего")
+
+
+def run_for_request(request: str, facts: list, own_run: str) -> str:
+    """Прогон для ролика по просьбе Шифу: «самый длинный заезд» — по данным фактов.
+
+    Без таких слов — прогон темы поста. С ними — прогон, который дольше всех и
+    покрывает больше всего (issue #4711).
+    """
+    low = (request or "").lower()
+    if any(marker in low for marker in LONGEST_MARKERS):
+        return material.longest_run(facts) or own_run
+    return own_run
+
+
 def plan_by_code(record: dict, request: str, catalog: list, options: list, facts: list = None) -> Optional[dict]:
     """Правило кода: тема поста + известный материал. None — правило не решает, нужен выбор модели."""
     text = _context(record, request)
@@ -150,7 +167,8 @@ def plan_by_code(record: dict, request: str, catalog: list, options: list, facts
     layout, orientation = remembered_layout(record, low, stacked, portrait)
     wants_compare = any(m in low for m in COMPARE_MARKERS) or bool(COMPARE_RE.search(low))
     # Прогон из факта поста — тот же заезд, о котором текст (issue #4711).
-    own_run = run_of_post(record, facts or [])
+    # Просьба Шифу «самый длинный заезд» перебивает тему: это явное указание.
+    own_run = run_for_request(request, facts or [], run_of_post(record, facts or []))
     kinds = {item.get("id"): item.get("kind") for item in catalog or []}
     if "compare" in options and (wants_compare or stacked or portrait):
         pair = material.pair_for(topic, catalog) if topic else []
