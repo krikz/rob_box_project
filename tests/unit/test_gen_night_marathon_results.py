@@ -278,6 +278,16 @@ def test_act8_unsilence_precedes_n806_and_n805_is_unchanged():
     assert steps["n806_long_count_again"]["patterns"] == [gen.SPEECH_STARTED]
 
 
+def test_n604_n805b_have_stt_keys_and_stt_replay():
+    """#4694: шаги с хрупким STT-входом получают `stt_keys` и `stt_replay`."""
+    steps = _steps()
+    for label in ("n604_dj_rock", "n805b_unsilence"):
+        step = steps[label]
+        assert eev.STT_KEYS_FIELD in step, label
+        assert "stt_replay" in step.get("recover", []), label
+        assert eev.stt_keys(step), label
+
+
 def test_patterns_are_valid_regex():
     import re
     for label, step in _steps().items():
