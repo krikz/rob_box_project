@@ -115,7 +115,7 @@ from rob_box_dialog.respond import (ActionResult, asks, audible, classed, failed
 from rob_box_dialog.session import Session, SessionSnapshot, SpeakerRef
 from rob_box_dialog.speaker_adapter import asks_recognized, known_voice_registers, recognition_reply, speaker_block
 from rob_box_dialog.window_reset import WindowGuard, reset_if_idle, reset_window
-from rob_box_dialog.words import asks_question, asks_to_listen, has_form, music_stop_claimed, same_stop_rest
+from rob_box_dialog.words import asks_question, asks_to_listen, has_form, has_word, music_stop_claimed, same_stop_rest
 from rob_box_dialog.tools_view import (available_tools, catalogs_asked, music_asked, needs_words, robot_asked,
                                        show_asked, voice_asked, voice_named)
 from rob_box_dialog.turn_log import (PERFORM_STARTED, TOOL, USER, TurnAggregate, TurnLog, phrase_label, results_of,
@@ -1091,6 +1091,7 @@ def considered(engine: "TurnEngine", turn: "_Turn", cmd: Command, last: bool) ->
     cmd = unasked_aloud(log, turn, snapshot.agent, cmd)
     fresh = counted_in_full(log, turn, unreread(log, turn, unrepeated(log, turn, cmd)))
     fresh = switched_theme(log, snapshot, turn, fresh)  # просьба сменить тему сета - действием кода (#4347)
+    fresh = corrected_ambulance(log, turn, fresh)  # сирена/мигалка: ambulance → police_lights (#4694)
     names = foreign_keys(engine.log.window(exclude=turn.turn_id), turn, fresh, snapshot)
     fresh = unnamed_without_retry(log, turn, fresh, names, last)
     return unclaimed_without_retry(log, turn, fresh, snapshot.agent, last), names
@@ -1148,6 +1149,30 @@ def switched_theme(log: Any, snapshot: SessionSnapshot, turn: "_Turn", cmd: Comm
         log.warning(f"{LOG_MARK} смена темы сета без тула ({done}): слова модели не звучат, "
                     f"{[a.tool for a in fresh.actions]} turn={turn.turn_id}")
     return fresh
+
+
+def _remap_ambulance_for_siren(text: str, actions: Sequence[ToolCall]) -> Sequence[ToolCall]:
+    """``animation=ambulance`` → ``police_lights`` только когда в тексте есть ``сирен*``/``мигалк*``
+    и нет явной скорой помощи ``скорая/скорой/скорую/амбуланс*`` (#4694). Решает код, не модель."""
+    if not has_word(text, kn.POLICE_LIGHTS_STEMS) or has_word(text, kn.AMBULANCE_EXCLUDE_STEMS):
+        return actions
+    fixed: List[ToolCall] = []
+    changed = False
+    for call in actions:
+        if call.tool == kn.SHOW_TOOL and call.args.get("animation") == "ambulance":
+            call = replace(call, args=MappingProxyType({**call.args, "animation": "police_lights"}))
+            changed = True
+        fixed.append(call)
+    return tuple(fixed) if changed else actions
+
+
+def corrected_ambulance(log: Any, turn: "_Turn", cmd: Command) -> Command:
+    """Исправление ``ambulance`` на ``police_lights`` для сирены/мигалки перед исполнением (#4694)."""
+    actions = _remap_ambulance_for_siren(turn.text, cmd.actions)
+    if actions is cmd.actions:
+        return cmd
+    log.info(f"{LOG_MARK} сирена/мигалка: ambulance → police_lights turn={turn.turn_id}")
+    return replace(cmd, actions=actions)
 
 
 def owed_now(snapshot: SessionSnapshot, turn: "_Turn", cmd: Command, fresh: Command, names: Collection[str],
