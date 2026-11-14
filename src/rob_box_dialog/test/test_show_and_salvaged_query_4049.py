@@ -447,10 +447,31 @@ def test_4694_n903_ambulance_becomes_police_lights_when_text_has_siren_or_flashe
 
 @pytest.mark.parametrize("text", [
     "покажи анимацию скорой помощи",
+    "покажи анимацию сирены скорой помощи",
     "включи сирену скорой помощи",
 ])
 def test_4694_explicit_ambulance_stays_ambulance(text):
     """Явная скорая помощь в тексте — ``ambulance`` не перекрашивается в ``police_lights``."""
-    ports = Ports([Answer(Command(actions=(AMBULANCE_CALL,)), "deepseek")])
+    ports = Ports([Answer(Command(speech="Скорая помощь.", actions=(AMBULANCE_CALL,)), "deepseek")])
     _run(ports, text)
     assert ports.executed == [[("play_animation", {"animation": "ambulance"})]]
+
+
+@pytest.mark.parametrize("text", [
+    "включи сирену и ускорься",
+    "мигалку, скорее",
+])
+def test_4694_speed_words_do_not_block_police_lights_remap(text):
+    """``скорость``/``скорее`` не содержат форм скорой помощи — remap в ``police_lights`` работает."""
+    ports = Ports([Answer(Command(speech="Включаю!", actions=(AMBULANCE_CALL,)), "deepseek")])
+    _run(ports, text)
+    assert ports.executed == [[("play_animation", {"animation": "police_lights"})]]
+
+
+def test_4694_n903_police_lights_sound_and_scene_stay_intact():
+    """n903: ``police_lights`` и ``robot_alert`` не трогаются resolver'ом."""
+    ports = Ports([Answer(Command(speech="Включаю!", actions=(SIREN_CALL, ROBOT_ALERT_CALL)), "deepseek")])
+    _run(ports, N_N903)
+    assert ports.executed == [[("play_animation", {"animation": "police_lights"}),
+                               ("play_sound", {"sound": "robot_alert"})]]
+    assert ports.faces == [("done", Shown(emotion="police_lights", duration_s=kn.FACE_SHOW_DEFAULT_S))]
