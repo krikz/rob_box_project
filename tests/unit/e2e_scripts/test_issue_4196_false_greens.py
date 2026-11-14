@@ -56,6 +56,7 @@ def _tts(text: str) -> str:
 
 
 def _steps() -> Dict[str, Dict[str, Any]]:
+    gen._apply_requires()
     return {s["label"]: s for act in gen.ACTS for s in act["steps"]}
 
 
@@ -314,6 +315,20 @@ def test_stt_verdict_n506_lost_tempo():
     assert eev.stt_verdict(step, "робот и ускорь темп а то мы тут засыпаем оба")["stt_ok"] == 1
 
 
+def test_stt_verdict_n604_dj_rock_rock_is_the_key():
+    """#4694: «уводи в сторону рока…» -> «уводи в сторону ока…» -- потеряно "рок", нужен повтор."""
+    step = _steps()["n604_dj_rock"]
+    assert eev.stt_verdict(step, "уводи в сторону ока тетя гриша подруг добрее") == {"keys": 1, "stt_ok": 0, "missing": "рок"}
+    assert eev.stt_verdict(step, "робот уводи в сторону рока тетя гриша под рок добреет") == {"keys": 1, "stt_ok": 1, "missing": "-"}
+
+
+def test_stt_verdict_n805b_unsilence_govori_is_the_key():
+    """#4694: «Робот, говори.» -> «робот колории» -- потеряно "говори", нужен повтор."""
+    step = _steps()["n805b_unsilence"]
+    assert eev.stt_verdict(step, "робот колории") == {"keys": 1, "stt_ok": 0, "missing": "говори"}
+    assert eev.stt_verdict(step, "робот говори") == {"keys": 1, "stt_ok": 1, "missing": "-"}
+
+
 @pytest.mark.parametrize(
     "label,heard,missing",
     [
@@ -382,9 +397,13 @@ def test_replay_without_keys_is_a_schema_error_before_the_first_step():
 def test_the_generator_gives_replay_to_the_distortion_prone_steps_with_all_standard_kinds():
     steps = _steps()
     asking = {label for label, s in steps.items() if "stt_replay" in (s.get("recover") or [])}
-    assert asking == {"n407_volume_up", "n408_volume_down", "n411_pitch_bass", "n506_faster"}
+    assert asking == {"n407_volume_up", "n408_volume_down", "n411_pitch_bass", "n506_faster",
+                      "n604_dj_rock", "n805b_unsilence"}
     for label in asking:
         assert eev.stt_keys(steps[label]), label
+    # n805b -- само восстановление тишины ("Робот, говори."), поэтому silenced ему не даётся.
+    assert eev.recover_kinds({}, steps["n805b_unsilence"]) == ("no_wake", "stt_replay")
+    for label in asking - {"n805b_unsilence"}:
         assert eev.recover_kinds({}, steps[label]) == ("no_wake", "silenced", "stt_replay"), "штатные виды не отняты"
     assert {label for label, s in steps.items() if eev.STT_KEYS_FIELD in s} == asking
 

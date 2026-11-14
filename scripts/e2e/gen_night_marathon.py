@@ -2147,6 +2147,7 @@ act(
             "Робот, уводи в сторону рока, тётя Гриша под рок добреет.",
             ["dj_set", "request_music"],
             result="changed",
+            stt_keys=["рок"],
             must_not=["stop_music"],
             why="#3971: смена стиля сета -- `dj_set` (start с новой темой) или request_music; успех тула обязателен.",
         ),
@@ -2477,6 +2478,7 @@ act(
             silent_ok=True,
             patterns=["tier1 kind=unsilence"],
             skip_when="NOT_SILENCED",
+            stt_keys=["говори"],
             why="Решение Шифу 23.10: «всё, хватит, замолчи» (n805, `tier1 kind=silence`) включает тишину "
             "(`SILENCE_TTL_S` = 600 с), и снимает её только явное «говори» (`UNSILENCE_WORDS`) -- вейк-слово "
             "тишину НЕ снимает. Без этого шага n806 «посчитай» уходит в молчащего робота (run 132908: робот "

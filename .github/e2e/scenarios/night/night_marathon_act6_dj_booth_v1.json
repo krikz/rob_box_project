@@ -114,6 +114,14 @@
         "expected_tool_calls": [],
         "_comment": "#3971: смена стиля сета -- `dj_set` (start с новой темой) или request_music; успех тула обязателен."
       },
+      "stt_keys": [
+        "рок"
+      ],
+      "recover": [
+        "no_wake",
+        "silenced",
+        "stt_replay"
+      ],
       "_result_markers": {
         "tools": [
           "dj_set",

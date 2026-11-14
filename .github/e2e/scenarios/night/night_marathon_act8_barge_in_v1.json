@@ -157,6 +157,14 @@
         "expected_tool_calls": [],
         "_comment": "Решение Шифу 23.10: «всё, хватит, замолчи» (n805, `tier1 kind=silence`) включает тишину (`SILENCE_TTL_S` = 600 с), и снимает её только явное «говори» (`UNSILENCE_WORDS`) -- вейк-слово тишину НЕ снимает. Без этого шага n806 «посчитай» уходит в молчащего робота (run 132908: робот считал в тишине без тулов). Снятие -- Tier-1 без речи (`tier1_phrase` для unsilence пуст), поэтому `silent_ok` + обязательный маркер `tier1 kind=unsilence`; что робот снова отвечает, доказывает следующий шаг (n806: `SpeechEvent started`). #3971 (27.10 09:56): n805 потерял вейк (STT услышал одно «замолчи», ушло в бэклог), тишины не было, и «говори» вне тишины -- не Tier-1 (`grammar._unsilence`), шаг краснел каскадом: теперь без `tier1 kind=silence` в логе акта он не играется (`skip_when` NOT_SILENCED, absent). Свой потерянный вейк шаг лечит «Робот!» (no_wake): подхват бэклога «говори» в тишине -- тот же Tier-1 unsilence (`address._woken` -> `tier1_of`); восстановление `silenced` («Робот, говори.» = фраза шага) ему запрещено кодом (`recover_kinds`)."
       },
+      "stt_keys": [
+        "говори"
+      ],
+      "recover": [
+        "no_wake",
+        "silenced",
+        "stt_replay"
+      ],
       "skip_when": {
         "reason": "NOT_SILENCED",
         "log": "tier1 kind=silence\\b",

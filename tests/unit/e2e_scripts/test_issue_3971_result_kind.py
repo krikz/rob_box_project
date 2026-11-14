@@ -348,7 +348,7 @@ def test_n805b_own_lost_wake_is_recovered_by_the_bare_wake_never_by_its_own_phra
     восстановления."""
     act8 = _act8()
     steps = {s["label"]: s for s in act8["steps"]}
-    assert eev.recover_kinds(act8, steps["n805b_unsilence"]) == ("no_wake",)
+    assert eev.recover_kinds(act8, steps["n805b_unsilence"]) == ("no_wake", "stt_replay")
     assert eev.recover_kinds(act8, steps["n805_hard_stop"]) == ()
     assert eev.RECOVERY["no_wake"].phrase == "Робот!" and not eev.RECOVERY["no_wake"].replay
 
