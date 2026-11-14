@@ -37,7 +37,9 @@ N311_LLM_RETRY = ("Сет заказал женский голос, я его у
                   "давит на уши.")
 
 
-@pytest.mark.parametrize("text", [N311_LLM, N311_LLM_RETRY, "Борис ворчал, мол, в мастерской тишина давит."])
+@pytest.mark.parametrize("text", [N311_LLM, N311_LLM_RETRY,
+                                  "Борис ворчал, мол, в мастерской тишина давит.",
+                                  "мол, тишина давит на уши."])
 def test_n311_silence_retold_mid_sentence_is_not_a_stop_claim(text):
     assert not music_stop_claimed(text), text
 
