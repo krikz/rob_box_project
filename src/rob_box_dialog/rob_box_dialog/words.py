@@ -36,6 +36,7 @@ from rob_box_dialog.knowledge import (
     MUSIC_PROMISES,
     MUSIC_SILENCE_CLAIM_HEADS,
     MUSIC_SILENCE_CLAIM_LEADS,
+    MUSIC_SILENCE_RETELL_LEADS,
     MUSIC_STOP_CLAIM,
     MUSIC_STOP_CLAIM_UNLESS,
     MUSIC_STOP_UNWOKEN_FORMS,
@@ -708,9 +709,28 @@ def music_stop_claimed(text: str) -> bool:
         tokens = name_tokens(sentence)
         if sentence.rstrip().endswith("?") or set(tokens) & set(MUSIC_STOP_CLAIM_UNLESS):
             continue
-        if _promises(tokens, MUSIC_STOP_CLAIM) or any(_silence_heads(part) for part in _CLAIM_PART.split(sentence)):
+        if _promises(tokens, MUSIC_STOP_CLAIM) or _silence_heads_parts(_CLAIM_PART.split(sentence)):
             return True
     return False
+
+
+def _silence_heads_parts(parts: Sequence[str]) -> bool:
+    """Есть ли часть предложения, начинающаяся с «тишины» как утверждение, а не как подлежащее пересказа.
+    Часть-вводитель прямой речи ``MUSIC_SILENCE_RETELL_LEADS`` («мол, тишина давит») отменяет claim в следующей
+    части, потому что «тишина» там - объект чужой речи, а не сообщение робота о плеере."""
+    retold = False
+    for part in parts:
+        if _silence_heads(part) and not retold:
+            return True
+        retold = _retelling_introducer(part)
+    return False
+
+
+def _retelling_introducer(part: str) -> bool:
+    """Часть предложения - вводитель прямой речи (``MUSIC_SILENCE_RETELL_LEADS``) в отдельной части:
+    «мол», «дескать»; служебные слова ``MUSIC_SILENCE_CLAIM_LEADS`` перед ним не в счёт."""
+    tokens = [t for t in name_tokens(part) if t not in MUSIC_SILENCE_CLAIM_LEADS]
+    return len(tokens) == 1 and tokens[0] in MUSIC_SILENCE_RETELL_LEADS
 
 
 def _silence_heads(part: str) -> bool:
