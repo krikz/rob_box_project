@@ -278,6 +278,17 @@ def test_act8_unsilence_precedes_n806_and_n805_is_unchanged():
     assert steps["n806_long_count_again"]["patterns"] == [gen.SPEECH_STARTED]
 
 
+def test_n806_n807_stay_cascade_if_n805b_fails():
+    """#4694: не добавляем n806/n807 искусственный skip_when/requires от n805b -- провал unsilence идёт каскадом."""
+    act8 = next(a for a in gen.ACTS if a["n"] == 8)
+    steps = {s["label"]: s for s in act8["steps"]}
+    for label in ("n806_long_count_again", "n807_merge_addition"):
+        assert "skip_when" not in steps[label], label
+        assert "requires" not in steps[label], label
+    # n806 без silent_ok: если робот остался молчать после провала n805b -- шаг красный.
+    assert steps["n806_long_count_again"].get("silent_ok") is not True
+
+
 def test_patterns_are_valid_regex():
     import re
     for label, step in _steps().items():
