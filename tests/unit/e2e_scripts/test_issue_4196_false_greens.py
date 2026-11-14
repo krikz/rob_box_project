@@ -314,6 +314,38 @@ def test_stt_verdict_n506_lost_tempo():
     assert eev.stt_verdict(step, "робот и ускорь темп а то мы тут засыпаем оба")["stt_ok"] == 1
 
 
+@pytest.mark.parametrize(
+    "label,heard,missing",
+    [
+        # run 43473608179 (Act4): «говори погромче, тётя Гриша глуховата» -> «сговоры покруче тети крыши глуховатые».
+        (
+            "n407_volume_up",
+            "робот сговоры покруче тети крыши глуховатые стоят в коридоре",
+            "погромче|громче",
+        ),
+        (
+            "n407_volume_up",
+            "робот говори погромче тетя гриша глуховата и стоит в коридоре",
+            "-",
+        ),
+        (
+            "n408_volume_down",
+            "робот нет все таки погромче а то разбудишь весь этаж",
+            "потише|тише",
+        ),
+        (
+            "n408_volume_down",
+            "робот нет все таки потише а то разбудишь весь этаж",
+            "-",
+        ),
+    ],
+)
+def test_stt_verdict_volume_steps_loudness_word_is_the_key(label, heard, missing):
+    """#4694 (run 43473608179, n407): потеряно слово громкости -- шаг просит повтор; на месте -- судится."""
+    step = _steps()[label]
+    assert eev.stt_verdict(step, heard)["missing"] == missing
+
+
 def test_stt_verdict_executed_command_is_not_replayed_n506_29_10():
     """n506 марафона-6: «темп» -> «там», но «ускорь» уже исполнено (134 -> 145 BPM): второй раз команда упирается в потолок."""
     step = _steps()["n506_faster"]
@@ -347,10 +379,10 @@ def test_replay_without_keys_is_a_schema_error_before_the_first_step():
         eev.recover_policy(scenario)
 
 
-def test_the_generator_gives_exactly_n411_and_n506_the_replay_with_all_standard_kinds():
+def test_the_generator_gives_replay_to_the_distortion_prone_steps_with_all_standard_kinds():
     steps = _steps()
     asking = {label for label, s in steps.items() if "stt_replay" in (s.get("recover") or [])}
-    assert asking == {"n411_pitch_bass", "n506_faster"}
+    assert asking == {"n407_volume_up", "n408_volume_down", "n411_pitch_bass", "n506_faster"}
     for label in asking:
         assert eev.stt_keys(steps[label]), label
         assert eev.recover_kinds({}, steps[label]) == ("no_wake", "silenced", "stt_replay"), "штатные виды не отняты"
