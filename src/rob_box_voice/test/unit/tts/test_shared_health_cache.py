@@ -429,7 +429,9 @@ class TestCloudTtsBudgetChainLevel:
         node.cloud_tts_budget_s = 0.02
 
         def _slow_minimax_failure(*args, **kwargs):
-            time.sleep(0.15)  # съедает весь 20мс бюджет с большим запасом
+            # #4694: бюджет = base + оценка озвучки («hello» ~0.2 с) -- сон должен
+            # съесть и его тоже, иначе yandex не будет пропущен.
+            time.sleep(0.35)  # съедает весь ~0.2с бюджет с большим запасом
             raise RuntimeError("MiniMax timeout (simulated)")
 
         node._synthesize_minimax = MagicMock(side_effect=_slow_minimax_failure)
@@ -472,6 +474,33 @@ class TestCloudTtsBudgetChainLevel:
         _run_and_play(node)  # не должно кинуть AttributeError
 
         node._yandex_tts.synthesize_np.assert_called_once()
+
+    def _deadline_margin_for(self, text: str) -> float:
+        """Маржа budget_deadline на момент вызова MiniMax (секунды)."""
+        node = _playback_node()
+        node.cloud_tts_budget_s = 8.0
+        margins: list = []
+
+        def _capture(*args, **kwargs):
+            margins.append(kwargs["budget_deadline"] - time.monotonic())
+            return {"audio_np": np.zeros(800, dtype=np.float32), "sample_rate": 32000}
+
+        node._synthesize_minimax = MagicMock(side_effect=_capture)
+        TTSNode._synthesize_and_play(node, text, None, None)
+        assert node._synthesize_minimax.call_count == 1
+        return margins[0]
+
+    def test_long_text_scales_cloud_budget_beyond_the_fixed_8s(self) -> None:
+        """#4694 (run 43473608179, n401 -> n402): длинная реплика (список голосов, ~15-20 с
+        озвучки) по построению длиннее фиксированных 8 с -- MiniMax обрывается по бюджету,
+        transient dead-mark, и snapshot следующего хода лжёт про провайдера/голос."""
+        long_text = "голос " * 90  # 540 символов ~ 18 с озвучки (калибровка 30 симв/с)
+        est_s = len(long_text) / 30.0
+        assert self._deadline_margin_for(long_text) >= est_s + 5.0 - 0.5
+
+    def test_short_text_keeps_the_base_budget_unchanged(self) -> None:
+        """Короткие реплики (типичный ответ) -- прежние 8 с, поведение не меняется."""
+        assert self._deadline_margin_for("привет") == pytest.approx(8.0, abs=0.5)
 
 
 class TestCloudTtsBudgetRetryLoopLevel:
