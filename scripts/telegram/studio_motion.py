@@ -18,6 +18,43 @@ import studio_video as video
 
 FORMATS = {cs.ACTION_ANIMATE: "gif", cs.ACTION_VIDEO: "mp4"}
 
+# Просьба прислать тот же файл ещё раз (Шифу: «так много видосов»).
+RESEND_MARKERS = ("пришли", "прислать", "покажи снова", "покажи ещё раз", "отправь ещё раз")
+# Слова, по которым видно, что Шифу просит ДРУГОЙ материал, а не повтор того же.
+# Разбор 14.11 (issue #4711): «Это не самый длинный заезд, ещё раз говорю найти
+# самый длинный» — студия прочитала «ещё раз» как «пришли тот же ролик» и прислала
+# старое видео. Повтор поиска — не повтор отправки.
+NEW_MATERIAL_MARKERS = (
+    "найди",
+    "найти",
+    "возьми",
+    "возьм",
+    "длинн",
+    "покрыти",
+    "максимальн",
+    "другой",
+    "другое",
+    "новый",
+    "новое",
+    "заново",
+    "пересобер",
+    "исправ",
+    "почини",
+    "замени",
+)
+
+
+def wants_resend(request: str) -> bool:
+    """Просит ли Шифу прислать тот же файл ещё раз.
+
+    Чистая просьба «пришли ещё раз» — да. Просьба с указанием, что нужен ДРУГОЙ
+    материал («найди самый длинный заезд») — нет: тогда ролик надо собрать заново.
+    """
+    low = (request or "").lower()
+    if not any(marker in low for marker in NEW_MATERIAL_MARKERS):
+        return any(marker in low for marker in RESEND_MARKERS) or "ещё раз" in low or "еще раз" in low
+    return False
+
 
 def refine_motion(
     bot, state_path: Path, record: dict, facts: list, action: str, progress, chat_id: int, request: str = "", gate=None
@@ -30,6 +67,15 @@ def refine_motion(
     if reason:
         progress.note(f"Материал песочницы недоступен: {reason}")
     else:
+        # Материал, который уже уходил в канал, повторно не предлагаем (issue #4711):
+        # 09.11 пост про PR #4555 получил ролик, байт-идентичный опубликованному
+        # 06.11. Шифу звал «найди самый длинный заезд» — а приходило старое видео.
+        used = material.published_runs(st.load_state(state_path))
+        if used:
+            fresh = material.fresh_catalog(catalog, used)
+            if len(fresh) != len(catalog):
+                progress.note(f"Убираю прогоны, чьё видео уже в канале: {', '.join(sorted(used))}")
+            catalog = fresh
         progress.note(f"Материал песочницы: прогонов {len(catalog)} ({', '.join(i['id'] for i in catalog)})")
     progress.step("Выбираю шаблон ролика")
     plan, why = video.choose_plan(record, request, facts, catalog, fmt)
@@ -76,7 +122,9 @@ def refine_motion(
         build_seconds = ctx.build_seconds
     size = path.stat().st_size
     # Тот же файл уже присылали — второй раз не шлём (Шифу: «так много видосов»).
-    again = any(m in (request or "").lower() for m in ("пришли", "ещё раз", "еще раз", "повторно", "покажи снова"))
+    # Но «ещё раз» в просьбе про поиск нового материала — это повтор ПОИСКА, а не
+    # повтор отправки (issue #4711).
+    again = wants_resend(request)
     already = last.get("delivered") == fingerprint and last.get("path") == str(path)
     video_message_id = last.get("message_id") if already else None
     if already and not again:
