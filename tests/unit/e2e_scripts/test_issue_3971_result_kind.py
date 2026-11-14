@@ -343,12 +343,12 @@ def test_n805b_is_not_played_without_the_silence_of_n805():
 
 
 def test_n805b_own_lost_wake_is_recovered_by_the_bare_wake_never_by_its_own_phrase():
-    """Сочетание с #3989: своя потеря вейка -- «Робот!» (подхват «говори» из бэклога -- Tier-1 unsilence в тишине);
-    «Робот, говори.» харнессом -- это и есть шаг, такое восстановление запрещено кодом. n805 -- перебиватель, без
-    восстановления."""
+    """Сочетание с #3989/#4694: своя потеря вейка -- «Робот!» (подхват «говори» из бэклога -- Tier-1 unsilence в
+    тишине); «Робот, говори.» харнессом -- это и есть шаг, такое восстановление запрещено кодом. n805 -- перебиватель,
+    без восстановления. stt_replay разрешён, потому что фраза шага проверяется по ключу «говори» в ПРИНЯТО."""
     act8 = _act8()
     steps = {s["label"]: s for s in act8["steps"]}
-    assert eev.recover_kinds(act8, steps["n805b_unsilence"]) == ("no_wake",)
+    assert eev.recover_kinds(act8, steps["n805b_unsilence"]) == ("no_wake", "stt_replay")
     assert eev.recover_kinds(act8, steps["n805_hard_stop"]) == ()
     assert eev.RECOVERY["no_wake"].phrase == "Робот!" and not eev.RECOVERY["no_wake"].replay
 
