@@ -35,7 +35,7 @@ import studio_media as smedia
 import studio_render as render
 
 REPO = Path(__file__).resolve().parents[2]
-TEMPLATES = ("compare", "top_view", "animated_card", "timeline")
+TEMPLATES = ("compare", "top_view", "run_view", "animated_card", "timeline")
 # Семейство «сравнение двух прогонов»: раскладка и ориентация — параметры,
 # а не отдельные шаблоны. Так студия сама собирает и «бок о бок», и
 # «до сверху, после снизу», и то же самое в вертикальном кадре (Шифу, 07.11).
@@ -45,6 +45,7 @@ TEMPLATE_HELP = {
     "compare": "два прогона: рядом (side_by_side) или стопкой (stacked — «до» сверху, «после» снизу); "
     "кадр горизонтальный (landscape) или вертикальный (portrait)",
     "top_view": "вид сверху на карту rtabmap с врезкой 3D-камеры (кадры прогона)",
+    "run_view": "вид сверху по позам одного прогона: робот и его след на карте",
     "animated_card": "карточка «было → стало» с цифрами ошибки позы, посчитанными по прогонам",
     "timeline": "таймлайн влитых PR сессии, строки появляются по очереди",
 }
@@ -78,6 +79,11 @@ def feasible(record: dict, facts: list, catalog: list) -> list:
         out.append("top_view")
     if poses:
         out.append("animated_card")
+    # Вид сверху по позам СВОЕГО прогона (issue #4711): материал есть у прогонов
+    # без кадров камер — ролик строится по maprec/poses.csv.
+    own = run_of_post(record, facts)
+    if own and any(item.get("id") == own and item.get("kind") == "poses" for item in catalog):
+        out.append("run_view")
     if smedia.timeline_spec(record, facts) is not None:
         out.append("timeline")
     return out
@@ -115,7 +121,24 @@ def remembered_layout(record: dict, low: str, stacked: bool, portrait: bool) -> 
     return layout, orientation
 
 
-def plan_by_code(record: dict, request: str, catalog: list, options: list) -> Optional[dict]:
+def run_of_post(record: dict, facts: list) -> str:
+    """Прогон, о котором говорит пост: из факта по теме. "" — такого факта нет.
+
+    Разбор 14.11 (issue #4711): ролик монтировался из `material.TOP_RUN` («depot»),
+    а текст поста рассказывал о прогоне `depot4682_20261111T191857Z`. Текст и
+    видео показывали разные заезды — Шифу: «это не самый длинный заезд, найди самый
+    длинный». Теперь прогон ролика берётся из факта поста.
+    """
+    keys = set(record.get("fact_keys") or [])
+    if not keys:
+        return ""
+    for fact in facts or []:
+        if str(fact.get("key") or "") in keys and str(fact.get("kind") or "") == "robot_run":
+            return str(fact.get("run_id") or "")
+    return ""
+
+
+def plan_by_code(record: dict, request: str, catalog: list, options: list, facts: list = None) -> Optional[dict]:
     """Правило кода: тема поста + известный материал. None — правило не решает, нужен выбор модели."""
     text = _context(record, request)
     topic = material.topic_of(text)
@@ -126,12 +149,23 @@ def plan_by_code(record: dict, request: str, catalog: list, options: list) -> Op
     portrait = any(m in low for m in VERTICAL_MARKERS)
     layout, orientation = remembered_layout(record, low, stacked, portrait)
     wants_compare = any(m in low for m in COMPARE_MARKERS) or bool(COMPARE_RE.search(low))
+    # Прогон из факта поста — тот же заезд, о котором текст (issue #4711).
+    own_run = run_of_post(record, facts or [])
+    kinds = {item.get("id"): item.get("kind") for item in catalog or []}
     if "compare" in options and (wants_compare or stacked or portrait):
         pair = material.pair_for(topic, catalog) if topic else []
         runs = pair or _default_runs("compare", catalog)
         if len(runs) >= 2:
             title = material.TOPICS[topic]["title"] if topic and topic in material.TOPICS else _title(record)
             return {"template": "compare", "runs": runs, "layout": layout, "orientation": orientation, "title": title}
+    # Свой прогон: ролик строится по ЕГО материалу. У прогона с кадрами камер —
+    # вид сверху с камерой (top_view), у прогона только с позами — вид сверху по
+    # позам (run_view). Чужой прогон не подставляем (issue #4711).
+    if own_run and own_run in kinds:
+        if kinds[own_run] == "frames" and "top_view" in options and not wants_compare:
+            return {"template": "top_view", "runs": [own_run], "title": _title(record)}
+        if kinds[own_run] == "poses" and "run_view" in options:
+            return {"template": "run_view", "runs": [own_run], "title": _title(record)}
     if (
         "top_view" in options
         and any(m in low for m in TOP_MARKERS)
@@ -139,7 +173,13 @@ def plan_by_code(record: dict, request: str, catalog: list, options: list) -> Op
         and not stacked
         and not portrait
     ):
-        return {"template": "top_view", "runs": [material.TOP_RUN], "title": "РОББОКС в Gazebo: склад Depot"}
+        # Факта о прогоне нет — текст не про конкретный заезд, берём складской вид
+        # из каталога (единственный прогон с кадрами камер). Если факт ЕСТЬ, ролик
+        # строится по нему выше — чужой прогон молча не подставляем (issue #4711).
+        runs = _default_runs("top_view", catalog)
+        if not runs:
+            return None
+        return {"template": "top_view", "runs": runs, "title": _title(record)}
     pair = material.pair_for(topic, catalog) if topic else []
     if pair and "compare" in options:
         return {
@@ -151,7 +191,9 @@ def plan_by_code(record: dict, request: str, catalog: list, options: list) -> Op
         }
     if len(options) == 1:
         only = options[0]
-        runs = _default_runs(only, catalog)
+        runs = [own_run] if own_run and own_run in kinds else _default_runs(only, catalog)
+        if not runs:
+            return None
         return {
             "template": only,
             "runs": runs,
@@ -163,8 +205,16 @@ def plan_by_code(record: dict, request: str, catalog: list, options: list) -> Op
 
 
 def _default_runs(template: str, catalog: list) -> list:
+    """Прогоны по умолчанию для шаблона.
+
+    Разбор 14.11 (issue #4711): `top_view` молча брал `material.TOP_RUN` («depot»),
+    и ролик в посте показывал чужой прогон. Теперь чужой прогон не подставляется
+    ТОЛЬКО когда у темы есть факт о прогоне (тогда ролик строится по нему). Если
+    факта нет, текст не про конкретный заезд — и остаётся единственный складской
+    вид из каталога, прогон с кадрами камер.
+    """
     if template == "top_view":
-        return [material.TOP_RUN]
+        return [item["id"] for item in catalog if item.get("kind") == "frames"][:1]
     if template in ("compare", "animated_card"):
         return [item["id"] for item in catalog if item.get("kind") == "poses"][:2]
     return []
@@ -210,6 +260,8 @@ def validate_plan(plan: dict, options: list, catalog: list) -> list:
         problems.append("compare: нужно ровно два разных прогона с позой")
     elif template == "animated_card" and not (1 <= len(runs) <= 2 and all(kinds[r] == "poses" for r in runs)):
         problems.append("animated_card: нужен один или два прогона с позой")
+    elif template == "run_view" and (len(runs) != 1 or kinds.get(runs[0]) != "poses"):
+        problems.append("run_view: нужен ровно один прогон с позой")
     elif template == "top_view" and [kinds.get(r) for r in runs] != ["frames"]:
         problems.append("top_view: нужен один прогон с кадрами камер")
     if template == "compare":
@@ -249,7 +301,7 @@ def choose_plan(record: dict, request: str, facts: list, catalog: list, fmt: str
     options = feasible(record, facts, catalog)
     if not options:
         return None, "материала нет: ни прогонов на песочнице, ни влитых PR для таймлайна"
-    planned = plan_by_code(record, request, catalog, options)
+    planned = plan_by_code(record, request, catalog, options, facts)
     if planned is not None:
         return planned, f"выбрал код: {TEMPLATE_HELP[planned['template']]}"
     if ask is None:
@@ -403,6 +455,44 @@ def build_card(plan: dict, fmt: str, ctx: Context, catalog: list) -> tuple:
     return _infographic(card_spec(plan, runs), fmt, ctx, f"{ctx.record['id']}-card")
 
 
+def build_run_view(plan: dict, fmt: str, ctx: Context, catalog: list) -> tuple:
+    """Ролик по позам ОДНОГО прогона: вид сверху, робот и его след на карте.
+
+    Разбор 14.11 (issue #4711): у прогонов `depot4495`/`depot4682` нет кадров
+    камер — на песочнице `frames/` есть только в корне `out/`. Единственный
+    СОБСТВЕННЫЙ материал такого прогона — `maprec/poses.csv`, и по нему строится
+    настоящий заезд: робот, след, подпись с прогоном и временем.
+    """
+    import pose_anim
+
+    plan = normalize_plan(plan)
+    run_id = (plan.get("runs") or [""])[0]
+    if not run_id:
+        return None, "не выбран прогон для ролика"
+    run, reason = _load_run(ctx, run_id, _labels(catalog).get(run_id, run_id))
+    if run is None:
+        return None, reason
+    portrait = plan.get("orientation") == "portrait"
+    if fmt == "mp4":
+        size = MP4_VERTICAL_SIZE if portrait else MP4_SIZE
+        fps, seconds = MP4_FPS, MP4_SECONDS
+    else:
+        size = GIF_VERTICAL_SIZE if portrait else GIF_SIZE
+        fps, seconds = GIF_FPS, GIF_SECONDS
+    hold = HOLD_SECONDS * fps
+    frames = seconds * fps + hold
+    title = plan.get("title") or _title(ctx.record)
+
+    def make():
+        return pose_anim.side_by_side_frames([run], title, frames, size=size, hold=hold)
+
+    stem = f"{ctx.record['id']}-run-{run_id}"
+    music = plan.get("music")
+    if music and not Path(str(music)).exists():
+        music = None
+    return _encode(make, fmt, size, fps, ctx, stem, music=music)
+
+
 def build_timeline(plan: dict, fmt: str, ctx: Context, catalog: list) -> tuple:
     spec = smedia.timeline_spec(ctx.record, ctx.facts)
     if spec is None:
@@ -456,9 +546,15 @@ def frame_fit(route_text: str) -> Optional[tuple]:
 
 
 def mapping_window(route_text: str) -> Optional[tuple]:
-    """Отрезок картографии по route.log: от первого GOAL_START до последнего GOAL_END целей M*."""
-    starts = [float(x) for x in re.findall(r"GOAL_START M\w* .*?sim=([\d.]+)", route_text)]
-    ends = [float(x) for x in re.findall(r"GOAL_END M\w* .*?sim=([\d.]+)", route_text)]
+    """Отрезок картографии по route.log: от первого GOAL_START до последнего GOAL_END.
+
+    Считаются ВСЕ цели (M* и R*), а не только M*: факт о прогоне считает все
+    GOAL_START, и число в тексте поста должно совпадать с тем, что видно в ролике
+    (issue #4711). Раньше здесь считались только M*, и на прогоне depot4682
+    читатель видел «10 целей», а ролик показывал пять.
+    """
+    starts = [float(x) for x in re.findall(r"GOAL_START \S+ .*?sim=([\d.]+)", route_text)]
+    ends = [float(x) for x in re.findall(r"GOAL_END \S+ .*?sim=([\d.]+)", route_text)]
     if not starts or not ends:
         return None
     return min(starts), max(ends)
@@ -540,6 +636,7 @@ BUILDERS = {
     "compare": build_compare,
     "side_by_side": build_compare,  # старое имя шаблона
     "top_view": build_top_view,
+    "run_view": build_run_view,
     "animated_card": build_card,
     "timeline": build_timeline,
 }
