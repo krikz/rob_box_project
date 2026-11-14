@@ -625,6 +625,26 @@ def _silero_role(node) -> str:
     return "основной" if chain and chain[0] == "silero" else "запасной"
 
 
+#: Калибровка скорости озвучки (символов/с) -- та же, что у тула ``estimate_tts_duration``
+#: (DEFAULT_CHARS_PER_SECOND, chipmunk 2x): оценка длительности реплики по длине текста.
+_SPEECH_CHARS_PER_SECOND = 30.0
+
+
+def _cloud_tts_budget_for_text(base_budget_s: float, text: str) -> float:
+    """Облачный бюджет под длину реплики (#4694, run 43473608179: n401 -> n402).
+
+    Фиксированные 8 с -- потолок для типичного короткого ответа, но длинная реплика
+    (перечень голосов, ~15-20 с озвучки) по построению длиннее бюджета: MiniMax обрывался
+    по ``cloud_tts_budget_s`` -> ``MiniMax stream: нет звука`` -> транзиентный dead-mark,
+    и snapshot следующего хода ловил provider_state=yandex/anton, хотя синтез вернулся
+    на MiniMax. Масштабируем: base (прежний потолок: первый звук, retry, сеть) ПЛЮС
+    оценка звучания самой реплики. Короткие реплики держат base почти без изменений
+    (оценка ~0.2 с), аварийный knob малого base сохраняет смысл.
+    """
+    est_s = len(text or "") / _SPEECH_CHARS_PER_SECOND
+    return base_budget_s + est_s
+
+
 def chain_for_requested(provider: str, current_chain: list[str]) -> list[str]:
     """Цепочка провайдеров после явного выбора (set_provider, выбор голоса) — #4240.
 
@@ -713,6 +733,10 @@ class TTSNode(Node):
         # Silero. НЕ прерывает уже начатый HTTP/gRPC-запрос (нет
         # cancellation-инфраструктуры, тот же честный компромисс, что в
         # stt_fallback._measure) — ограничивает число ДАЛЬНЕЙШИХ попыток.
+        # Базовое значение — потолок облачных накладных расходов (первый звук,
+        # retry, сеть); длинные реплики добавляют к нему оценку озвучки
+        # (#4694, см. _cloud_tts_budget_for_text): фиксированный потолок
+        # обрекает их по построению и провоцирует ложный transient dead-mark.
         self.declare_parameter("cloud_tts_budget_s", 8.0)
         # Issue #1229 — файл персистентного состояния фактического
         # провайдера TTS (переживает рестарт контейнера; пустая строка =
@@ -3600,7 +3624,9 @@ class TTSNode(Node):
         # (minimax + yandex, включая retries). Считается один раз ЗДЕСЬ
         # (не пересчитывается на каждого провайдера), чтобы бюджет
         # действительно был суммарным, а не «per-provider».
-        cloud_budget_s = getattr(self, "cloud_tts_budget_s", 8.0)
+        cloud_budget_s = _cloud_tts_budget_for_text(
+            getattr(self, "cloud_tts_budget_s", 8.0), text
+        )
         cloud_deadline = time.monotonic() + cloud_budget_s
         # #3728: фолбек не читает то, что отказался бы читать гард (иероглифы Yandex/Silero бормочут).
         provider_chain = _tts_guard_readable_chain(provider_chain, text)
