@@ -1,0 +1,67 @@
+# Оверлей docker/sim/compose.yaml для стенда локализации после перезапуска (#4346, вариант D).
+# Запускает его docker/sim/run_loc_bench.sh; руками:
+#
+#   SIM_MAPS_DIR=$PWD/maps SIM_RESULTS_DIR=$PWD/results SIM_LOC_SCENARIO=restart_same SIM_LOC_LABEL=a1 \
+#     docker compose -f docker/sim/compose.yaml -f docker/sim/compose.loc.yaml --profile bench run --rm locbench
+#
+# Отличия от стенда навигации:
+#   * /maps rtabmap и nav2 — каталог хоста SIM_MAPS_DIR: базу можно подложить перед стартом
+#     («своя», «чужая») и забрать после остановки (rtabmap пишет её при остановке);
+#   * locbench — rob_box_sim.loc_bench: пишет истину и оценку map → base_footprint, крутит робота пробой.
+# Сеть, sim time, конфиги и скрипты узлов — как у compose.yaml.
+
+services:
+  rtabmap:
+    volumes:
+      - ${SIM_MAPS_DIR:?SIM_MAPS_DIR — каталог хоста с rtabmap.db}:/maps
+    # rtabmap пишет базу при остановке: время на запись больше, чем 10 с по умолчанию.
+    stop_grace_period: 60s
+
+  nav2:
+    volumes:
+      - ${SIM_MAPS_DIR:?SIM_MAPS_DIR — каталог хоста с rtabmap.db}:/maps:ro
+
+  locbench:
+    extends:
+      file: compose.yaml
+      service: bench
+    container_name: ${SIM_PREFIX:-rob-box-sim}-locbench
+    profiles: ["bench"]
+    command:
+      - /ros_scripts/ros_with_namespace.sh
+      - python3
+      - -m
+      - rob_box_sim.loc_bench
+      - --scenario
+      - ${SIM_LOC_SCENARIO:-restart_same}
+      - --label
+      - ${SIM_LOC_LABEL:-loc}
+    depends_on: !reset []
+
+  # Прототип варианта B (#4346): тег с известной позой → /rtabmap/initialpose.
+  # Профиль reloc, на роботе не запускается. Позы тегов — лицевые грани тегов мира
+  # polygon_tags (rob_box_sim.apriltag_world.POLYGON_TAGS; сверяет tests/unit/docker/test_sim_compose_loc.py):
+  # id, x, y, z, куда смотрит лицо.
+  tagreloc:
+    extends:
+      file: compose.yaml
+      service: bench
+    container_name: ${SIM_PREFIX:-rob-box-sim}-tagreloc
+    profiles: ["reloc"]
+    environment:
+      PYTHONPATH: /perception_src
+    volumes:
+      - ../../src/rob_box_perception:/perception_src:ro
+    command:
+      - /ros_scripts/ros_with_namespace.sh
+      - python3
+      - -m
+      - rob_box_perception.tag_relocalization_node
+      - --ros-args
+      - -p
+      - enabled:=true
+      - -p
+      - use_sim_time:=true
+      - -p
+      - "tags:=[21.0, 1.948, 1.0, 0.55, 3.141593, 22.0, -1.448, -1.0, 0.55, 0.0, 23.0, 10.448, 1.0, 0.55, 3.141593]"
+    depends_on: !reset []

@@ -14,6 +14,8 @@
 
 from __future__ import annotations
 
+import math
+import os
 import shutil
 import subprocess
 import xml.etree.ElementTree as ET
@@ -150,3 +152,59 @@ def test_sim_wheel_friction_follows_wheel_axis(sim_urdf):
 def test_real_robot_urdf_ignores_sim_drive_arg():
     golden = _strip_banner(GOLDEN.read_text(encoding="utf-8"))
     assert _xacro("sim_drive_yaml:=/tmp/x.yaml") == golden
+
+
+# ── Камера OAK-D в симе (#4346, вариант D): только по флагу sim_camera / SIM_CAMERA ──
+
+
+def _xacro_env(env: dict[str, str], *args: str) -> str:
+    full = {k: v for k, v in os.environ.items() if not k.startswith("SIM_CAMERA")}
+    full.update(env)
+    out = subprocess.run(
+        ["xacro", str(XACRO_FILE), *args], check=True, capture_output=True, text=True, env=full
+    ).stdout
+    return _strip_banner(out)
+
+
+def _cameras(urdf: ET.Element) -> list[ET.Element]:
+    return [g for g in urdf.findall("gazebo") if g.find("sensor[@type='camera']") is not None]
+
+
+def test_sim_has_no_camera_by_default():
+    """Рендер камеры дорог: без флага сим остаётся прежним (RTF не трогаем)."""
+    assert _cameras(ET.fromstring(_xacro_env({}, "sim:=true"))) == []
+
+
+@pytest.mark.parametrize(
+    "env,args", [({}, ("sim:=true", "sim_camera:=true")), ({"SIM_CAMERA": "true"}, ("sim:=true",))]
+)
+def test_sim_camera_like_oak_d_in_low_resolution(env, args):
+    (gz,) = _cameras(ET.fromstring(_xacro_env(env, *args)))
+    assert gz.get("reference") == "camera_rgb_camera_frame"
+    sensor = gz.find("sensor")
+    # кадр сообщений тот же, что у OAK-D робота: TF base_link → camera_color_optical_frame из URDF
+    assert sensor.findtext("ignition_frame_id") == "camera_color_optical_frame"
+    assert sensor.findtext("topic") == "camera/color/image_raw"
+    assert float(sensor.findtext("update_rate")) == 5.0
+    assert (sensor.findtext("camera/image/width"), sensor.findtext("camera/image/height")) == ("640", "360")
+    assert abs(float(sensor.findtext("camera/horizontal_fov")) - 2 * math.atan(640 / 1007.2)) < 1e-3
+    assert sensor.findtext("pose").split() == ["0", "0", "0", "0", "0", "0"]
+
+
+def test_sim_camera_yaw_error_rotates_only_the_sensor():
+    """Гипотеза «камера↔лидар откалиброваны неточно»: ось камеры повёрнута, URDF-кадры прежние."""
+    urdf = ET.fromstring(_xacro_env({"SIM_CAMERA": "true", "SIM_CAMERA_YAW_ERROR": "0.0349"}, "sim:=true"))
+    (gz,) = _cameras(urdf)
+    assert gz.find("sensor").findtext("pose").split()[-1] == "0.0349"
+    plain = ET.fromstring(_xacro_env({"SIM_CAMERA": "true"}, "sim:=true"))
+
+    def joints(u):
+        return {j.get("name"): ET.tostring(j) for j in u.findall("joint")}
+
+    assert joints(urdf) == joints(plain)
+
+
+def test_real_robot_urdf_ignores_sim_camera():
+    golden = _strip_banner(GOLDEN.read_text(encoding="utf-8"))
+    assert _xacro_env({"SIM_CAMERA": "true"}) == golden
+    assert _xacro("sim_camera:=true") == golden

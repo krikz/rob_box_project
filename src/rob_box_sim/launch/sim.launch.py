@@ -126,6 +126,19 @@ def generate_launch_description():
         condition=UnlessCondition(hil),
     )
 
+    # Камера OAK-D (#4346): мост картинки и camera_info только при camera:=true и не в HIL
+    # (в HIL картинка шла бы на робота по Wi-Fi — это отдельный шаг 2b плана HIL).
+    bridge_camera = Node(
+        package="ros_gz_bridge",
+        executable="parameter_bridge",
+        name="camera_bridge",
+        output="screen",
+        parameters=[{"config_file": os.path.join(sim_share, "config", "bridge_camera.yaml"), "use_sim_time": True}],
+        condition=IfCondition(PythonExpression([
+            "'", LaunchConfiguration("camera"), "' == 'true' and '", hil, "' != 'true'",
+        ])),
+    )
+
     # HIL: сырой /clock Gazebo (1 кГц) уходит в /sim/clock_raw, а в /clock — только
     # прореженный clock_relay (по умолчанию 100 Гц sim). Мосту sim time не нужен: иначе его
     # собственные часы подписались бы на тот же сырой поток.
@@ -201,6 +214,11 @@ def generate_launch_description():
             default_value="100",
             description="HIL: частота /clock для робота по sim-времени, Гц (Gazebo даёт 1 кГц)",
         ),
+        DeclareLaunchArgument(
+            "camera",
+            default_value="false",
+            description="true — мост камеры OAK-D (сенсор в URDF включает SIM_CAMERA=true у RSP)",
+        ),
         DeclareLaunchArgument("x", default_value="0.0"),
         DeclareLaunchArgument("y", default_value="0.0"),
         DeclareLaunchArgument("yaw", default_value="0.0"),
@@ -209,6 +227,7 @@ def generate_launch_description():
         gz_headless_rendering,
         gz_plain,
         bridge,
+        bridge_camera,
         bridge_hil,
         clock_relay,
         sim_rsp,

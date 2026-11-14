@@ -40,6 +40,10 @@ setup(
             # #4002: /battery_state из joint battery/voltage ros2_control.
             'battery_state_publisher = '
             'rob_box_perception.battery_state_node:main',
+            # #4346 вариант B, прототип: тег с известной позой → /rtabmap/initialpose.
+            # Выключен по умолчанию (enabled=false); на роботе не запускается.
+            'tag_relocalization = '
+            'rob_box_perception.tag_relocalization_node:main',
             'perception_bridge = '
             'rob_box_perception.perception_bridge:main',
             # ADR-0089 Phase 1: AI HAT+ inference node. Stub publishes

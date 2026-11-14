@@ -67,6 +67,7 @@ wait() { :; }
 
 SIM_SWITCHES = (
     "USE_SIM_TIME", "URDF_SIM", "NAV2_PARAMS_OVERLAYS", "NAV2_SMOOTH_CMD_VEL", "RTABMAP_START_MODE",
+    "RTABMAP_SIM_TAG_LINEAR_VARIANCE",
 )
 
 RTABMAP_ARGS = ["ros2", "launch", "rtabmap_launch", "rtabmap.launch.py", "use_sim_time:=false"]
@@ -420,4 +421,42 @@ def test_rtabmap_bad_start_mode_fails_loudly():
     )
     assert r.returncode != 0
     assert "RTABMAP_START_MODE='slam'" in r.stdout
+    assert not any(line.startswith("EXEC: ") for line in r.stdout.splitlines())
+
+
+# ── Вес тега-ориентира (#4346, стенд локализации): только в симе ────────────
+
+
+def test_rtabmap_sim_tag_variance_becomes_launch_arg():
+    r = run_script(
+        "rtabmap/start_rtabmap.sh",
+        {"USE_SIM_TIME": "true", "RTABMAP_SIM_TAG_LINEAR_VARIANCE": "0.01"},
+        RTABMAP_ARGS,
+    )
+    assert r.returncode == 0, r.stdout
+    assert commands(r.stdout) == sorted(
+        [
+            "RUN: python3 /scripts/patch_rtabmap_launch.py",
+            "EXEC: ros2 launch rtabmap_launch rtabmap.launch.py use_sim_time:=false "
+            "imu_topic:=/camera/imu/data wait_imu_to_init:=false "
+            "localization:=true tag_linear_variance:=0.01 use_sim_time:=true",
+        ]
+    )
+
+
+def test_rtabmap_sim_tag_variance_refused_on_robot():
+    r = run_script("rtabmap/start_rtabmap.sh", {"RTABMAP_SIM_TAG_LINEAR_VARIANCE": "0.01"}, RTABMAP_ARGS)
+    assert r.returncode != 0
+    assert "RTABMAP_SIM_TAG_LINEAR_VARIANCE" in r.stdout
+    assert not any(line.startswith("EXEC: ") for line in r.stdout.splitlines())
+
+
+@pytest.mark.parametrize("value", ["abc", "0.01 x:=1", "-1"])
+def test_rtabmap_sim_tag_variance_must_be_a_number(value):
+    r = run_script(
+        "rtabmap/start_rtabmap.sh",
+        {"USE_SIM_TIME": "true", "RTABMAP_SIM_TAG_LINEAR_VARIANCE": value},
+        RTABMAP_ARGS,
+    )
+    assert r.returncode != 0
     assert not any(line.startswith("EXEC: ") for line in r.stdout.splitlines())
