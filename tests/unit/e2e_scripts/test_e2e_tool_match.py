@@ -24,7 +24,7 @@ REPO_ROOT = Path(__file__).resolve().parents[3]
 SCRIPTS_DIR = REPO_ROOT / "scripts" / "ci" / "e2e"
 sys.path.insert(0, str(SCRIPTS_DIR))
 
-from e2e_tool_match import tool_invoked  # noqa: E402
+from e2e_tool_match import step_verdict, tool_invoked  # noqa: E402
 
 
 # --- живые фрагменты лога ---------------------------------------------------
@@ -144,3 +144,45 @@ class TestEdges:
         log = "tools=['music_library']"
         assert tool_invoked(log, "music_library") is True
         assert tool_invoked(log, "save_track") is False
+
+
+# --- run 43475658766 (Act5 n506): отклонённая LLM-попытка — не вызов ------------------------
+
+#: Первая попытка модели — комбо edit_music+stop_music; валидатор её ОТКЛОНИЛ
+#: (verdict=invalid:single_action_class, actions=[] — ничего не исполнено), модель повторила
+#: чистым edit_music. Структура строк — как в живом логе run 43475658766.
+N506_REJECTED_COMBO = (
+    "[dialog_node-3] 🔎 LLM RESPONSE: content='' finish=tool_calls "
+    'tool_calls=[(\'command\', \'{"actions": [{"tool": "edit_music", "args": {"change": "faster"}}, '
+    '{"tool": "stop_music", "args": {"boundary": "bar"}}], '
+    '"speech": "Сначала подгоню темп, потом выключу — засыпай спокойно."}\')]\n'
+    "[dialog_node-3] 🧾 [command] provider=deepseek mode=tool_choice "
+    "verdict=invalid:single_action_class actions=[] speech_dropped=0 detail='action.media'\n"
+)
+N506_VALID_RETRY = (
+    "[dialog_node-3] 🔎 LLM RESPONSE: content='' finish=tool_calls tool_calls=[('command', "
+    '\'{"actions": [{"tool": "edit_music", "args": {"change": "faster"}}]}\')]\n'
+    "[dialog_node-3] 🧾 [command] provider=deepseek mode=tool_choice "
+    "verdict=command actions=['edit_music'] speech_dropped=0\n"
+    "[mcp_server-9] 📤 Отправлен запрос 4e1b5fba: edit_music\n"
+    "[mcp_server-9] ✅ Инструмент edit_music выполнен успешно\n"
+)
+
+
+class TestRejectedAttemptIsNotAForbiddenCall:
+    def test_rejected_combo_response_does_not_count_as_invocation(self):
+        """#4694 n506: must_not не должен считать вызовом имя тула в ОТКЛОНЁННОЙ попытке."""
+        acc = {"must_not_call": ["stop_music"], "expected_tool_calls": ["edit_music"]}
+        result = step_verdict(acc, N506_REJECTED_COMBO + N506_VALID_RETRY)
+        assert result["pass"] is True, result["reason"]
+
+    def test_real_forbidden_invocation_still_fails(self):
+        """Реальное исполнение запрещённого тула по-прежнему обязано краснеть."""
+        acc = {"must_not_call": ["stop_music"]}
+        executed = (
+            N506_VALID_RETRY
+            + "[mcp_server-9] ✅ Инструмент stop_music выполнен успешно\n"
+        )
+        result = step_verdict(acc, executed)
+        assert result["pass"] is False
+        assert "forbidden tool calls invoked: ['stop_music']" in result["reason"]
