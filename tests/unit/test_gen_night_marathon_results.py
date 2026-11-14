@@ -778,6 +778,27 @@ def test_n402_names_the_voice_not_the_provider_4077():
         assert _verdict("n402_current_voice", "\n".join([_tts(said), synth, DONE]))["pass"], said
 
 
+def test_n402_accepts_qingse_alias_kvingse_and_keeps_provider_minimax_4694():
+    """#4694: live n402 ответил «Квингсе»; alias должен матчиться при provider=minimax и оставаться FAIL при yandex/anton."""
+    minimax = "🗣️ SpeechEvent synthesized speech_id=e492c4cd agent=personality epoch=8 text_len=134 provider=minimax"
+    yandex = "🗣️ SpeechEvent synthesized speech_id=e492c4cd agent=personality epoch=8 text_len=134 provider=yandex"
+    # RED -> GREEN: «Квингсе» с MiniMax должен быть PASS.
+    kvingse_minimax = "\n".join([
+        _tts("Сейчас мой голос называется Квингсе, из старой линейки MiniMax, мужской."),
+        minimax, DONE,
+    ])
+    assert _verdict("n402_current_voice", kvingse_minimax)["pass"]
+    # negative: «Квингсе» + Yandex -- голос не дефолтный MiniMax, FAIL.
+    kvingse_yandex = "\n".join([
+        _tts("Сейчас мой голос называется Квингсе, из старой линейки MiniMax, мужской."),
+        yandex, DONE,
+    ])
+    assert not _verdict("n402_current_voice", kvingse_yandex)["pass"]
+    # negative: «Антон» + Yandex -- не дефолтный голос, FAIL.
+    anton_yandex = "\n".join([_tts("Голосом Антона."), yandex, DONE])
+    assert not _verdict("n402_current_voice", anton_yandex)["pass"]
+
+
 def test_n803_requires_finished_playback_of_the_new_answer():
     """Act8 run 43206628264: synthesized «56» без playback — не ответ n803."""
     cancelled = "🗣️ SpeechEvent cancelled speech_id=4a436e4b agent=personality epoch=9 reason=stopped"
