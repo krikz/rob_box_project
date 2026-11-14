@@ -115,7 +115,7 @@ from rob_box_dialog.respond import (ActionResult, asks, audible, classed, failed
 from rob_box_dialog.session import Session, SessionSnapshot, SpeakerRef
 from rob_box_dialog.speaker_adapter import asks_recognized, known_voice_registers, recognition_reply, speaker_block
 from rob_box_dialog.window_reset import WindowGuard, reset_if_idle, reset_window
-from rob_box_dialog.words import asks_question, asks_to_listen, has_form, music_stop_claimed, same_stop_rest
+from rob_box_dialog.words import asks_question, asks_to_listen, has_form, has_word, music_stop_claimed, same_stop_rest
 from rob_box_dialog.tools_view import (available_tools, catalogs_asked, music_asked, needs_words, robot_asked,
                                        show_asked, voice_asked, voice_named)
 from rob_box_dialog.turn_log import (PERFORM_STARTED, TOOL, USER, TurnAggregate, TurnLog, phrase_label, results_of,
@@ -1091,6 +1091,8 @@ def considered(engine: "TurnEngine", turn: "_Turn", cmd: Command, last: bool) ->
     cmd = unasked_aloud(log, turn, snapshot.agent, cmd)
     fresh = counted_in_full(log, turn, unreread(log, turn, unrepeated(log, turn, cmd)))
     fresh = switched_theme(log, snapshot, turn, fresh)  # просьба сменить тему сета - действием кода (#4347)
+    # n903: сирена/мигалка -> police_lights, explicit ambulance сохраняется
+    fresh = resolved_siren_scene(turn.text, fresh)
     names = foreign_keys(engine.log.window(exclude=turn.turn_id), turn, fresh, snapshot)
     fresh = unnamed_without_retry(log, turn, fresh, names, last)
     return unclaimed_without_retry(log, turn, fresh, snapshot.agent, last), names
@@ -1132,6 +1134,23 @@ def unasked_aloud(log: Any, turn: "_Turn", agent: str, cmd: Command) -> Command:
     log.info(f"{LOG_MARK} {kn.ALOUD_TOOL} отброшен: человек не просил озвучить (ответ - текстом в чат) "
              f"turn={turn.turn_id}")
     return replace(cmd, actions=tuple(a for a in cmd.actions if a not in dropped))
+
+
+def resolved_siren_scene(text: str, cmd: Command) -> Command:
+    """n903: «включи сирену/мигалку» — модель часто выбирает ``ambulance`` из-за сходства анимаций, но человек имел
+    в виду полицейскую мигалку. Меняем ``ambulance`` на ``police_lights``, только если реплика содержит сирену/мигалку
+    и не содержит явной скорой помощи/амбуланса."""
+    if not cmd.actions:
+        return cmd
+    changed = False
+    fixed: List[ToolCall] = []
+    for call in cmd.actions:
+        if call.tool == kn.SHOW_TOOL and call.args.get("animation") == "ambulance":
+            if has_word(text, kn.SIREN_SCENE_STEMS) and not has_word(text, kn.AMBULANCE_SCENE_STEMS):
+                call = replace(call, args=MappingProxyType({**call.args, "animation": "police_lights"}))
+                changed = True
+        fixed.append(call)
+    return replace(cmd, actions=tuple(fixed)) if changed else cmd
 
 
 def carried_groups(called: Sequence[str]) -> Tuple[str, ...]:

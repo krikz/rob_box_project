@@ -120,7 +120,7 @@ def test_4049_play_animation_sad_is_the_done_scene_with_its_face_and_duration_no
     assert plan.earcon == reflex("done").earcon, "earcon итога — рефлекса"
 
 
-@pytest.mark.parametrize("scene", ["police_lights", "fire_truck", "ambulance"])
+@pytest.mark.parametrize("scene", ["police_lights", "fire_truck"])
 def test_4049_siren_animations_reach_the_face_without_duration_by_the_show_default(scene):
     """00:45:45 «включи сирену»: мигалка — сцена ``face_node`` (``SCENES``, сверка ``KNOWN_ANIMATIONS`` —
     ``tests/unit/docker/test_animation_assets.py``); без ``duration`` время — по умолчанию показа
@@ -142,6 +142,26 @@ def test_4049_the_called_scene_beats_the_command_emotion_and_gesture():
     _run(ports, N_SIREN)
     assert ports.said == [("Сирена — включаю!", None, "happy")], "play_animation тихий: речь рядом с ним звучит"
     assert ports.faces == [("done", Shown(emotion="police_lights", duration_s=kn.FACE_SHOW_DEFAULT_S))]
+
+
+def test_n903_ambulance_resolves_to_police_lights_when_text_means_siren():
+    """n903: модель выбрала ``ambulance`` на «включи сирену», но сирена/мигалка — полицейская мигалка + звук."""
+    cmd = Command(speech="Включаю!", actions=(ToolCall("play_animation", {"animation": "ambulance"}),
+                                              ToolCall("play_sound", {"sound": "robot_alert"})))
+    ports = Ports([Answer(cmd, "deepseek")])
+    _run(ports, N_SIREN)
+    assert ports.executed == [[("play_animation", {"animation": "police_lights"}),
+                               ("play_sound", {"sound": "robot_alert"})]]
+    assert ports.faces == [("done", Shown(emotion="police_lights", duration_s=kn.FACE_SHOW_DEFAULT_S))]
+
+
+def test_n903_explicit_ambulance_stays_ambulance():
+    """n903: явная «скорая помощь/амбуланс» остаётся ``ambulance`` — resolver не трогает."""
+    cmd = Command(speech="Скорая помощь.", actions=(ToolCall("play_animation", {"animation": "ambulance"}),))
+    ports = Ports([Answer(cmd, "deepseek")])
+    _run(ports, "покажи скорую помощь")
+    assert ports.executed == [[("play_animation", {"animation": "ambulance"})]]
+    assert ports.faces == [("done", Shown(emotion="ambulance", duration_s=kn.FACE_SHOW_DEFAULT_S))]
 
 
 def test_4049_unknown_animation_is_an_honest_refusal_and_no_scene():
