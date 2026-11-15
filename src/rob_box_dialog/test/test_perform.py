@@ -37,6 +37,10 @@ def rap(backing="beat", segments=SEGS):
     return Performance(kind="rap", segments=segments, backing=backing)
 
 
+def song(backing="beat", segments=SEGS):
+    return Performance(kind="song", segments=segments, backing=backing)
+
+
 def on_bar(sim, t):
     k = (t - sim.track_started_at) / BAR_S
     return abs(k - round(k)) < 1e-6
@@ -77,6 +81,19 @@ def test_rap_with_beat_every_line_starts_on_a_bar_and_beat_outros():
     assert sim.block.summary()["spoken_chars"] == sum(len(s) for s in SEGS)
     segments = [e for _, e in sim.effects if isinstance(e, Say) and not e.key]
     assert {e.beat_s for e in segments} == {BAR_S}  # пред-синтез и звучание — с тактом подложки
+
+
+def test_rap_over_playing_music_does_not_replace_or_stop_it():
+    """#4694 n810: рэп с ``backing=beat`` поверх играющего трека — без ``AskReplace``, без своего бита и без остановки
+    чужой музыки."""
+    sim = Sim(rap())  # backing=beat
+    sim.start(playing="Existing Beat")
+    sim.run(300)
+    assert sim.asks == []
+    assert sim.backings() == []
+    assert sim.music_stops() == []
+    assert sim.block.end_reason == "done"
+    assert [h.text for h in sim.segments_heard()] == list(SEGS)
 
 
 def test_without_backing_reads_back_to_back_and_honestly_unsynced():
@@ -639,7 +656,7 @@ def _asked(sim):
 
 
 def test_yes_replaces_the_playing_music_with_the_beat():
-    sim = Sim(rap())
+    sim = Sim(song())  # песня с beat поверх чужой музыки — по-прежнему спрашивает (контроль #4694)
     _asked(sim)
     sim.apply(sim.block.answer(True, sim.t))
     (backing,) = sim.backings()
@@ -650,7 +667,7 @@ def test_yes_replaces_the_playing_music_with_the_beat():
 
 
 def test_no_reads_over_the_playing_music_without_a_beat():
-    sim = Sim(rap())
+    sim = Sim(song())  # песня с beat — отказ на AskReplace, читаем без своего бита поверх чужой музыки
     _asked(sim)
     sim.apply(sim.block.answer(False, sim.t))
     sim.run(300)
@@ -660,7 +677,7 @@ def test_no_reads_over_the_playing_music_without_a_beat():
 
 
 def test_silence_after_the_question_is_no():
-    sim = Sim(rap())
+    sim = Sim(song())  # песня с beat — молчание в окне ответа трактуется как «нет»
     t0 = sim.t
     _asked(sim)
     sim.run(300)

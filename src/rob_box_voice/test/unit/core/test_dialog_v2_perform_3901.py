@@ -296,7 +296,7 @@ def test_3849_wakeless_yes_in_mic_grace_confirms_performance_not_backlog(loop):
                     performer=lambda: plan_host.performer(node))
     engine = TurnEngine(node._session, ports, system_prompt="Ты робот.")
     host = plan_host.performer(node)
-    host.start(Performance(kind="rap", segments=tuple(SEGMENTS), backing="beat"), "t1")
+    host.start(Performance(kind="song", segments=tuple(SEGMENTS), backing="beat"), "t1")
     question = next(r for r in node.pubs[SPEECH].sent if r.commit)
     asyncio.run_coroutine_threadsafe(asyncio.sleep(0.05), loop).result(timeout=2)
     host.on_speech("started", question.speech_id, duration_ms=2500)

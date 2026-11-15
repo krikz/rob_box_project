@@ -306,11 +306,15 @@ class MusicSide:
         self._block = block
 
     def begin(self, now: float, playing: str) -> List[Effect]:
-        """Старт выступления: бит заказывается сразу; играет чужая музыка ``playing`` — сначала вопрос человеку."""
+        """Старт выступления: бит заказывается сразу; играет чужая музыка ``playing`` — сначала вопрос человеку.
+        Рэп с ``backing=beat`` поверх играющего трека (#4694 n810) — без вопроса и без остановки чужой музыки."""
         if not self.track.wanted:
             return []
         if not playing:
             return [self.track.request(now, self.need(now))]
+        if self._block.kind == "rap" and self.track.moods == kn.PERFORM_BACKING_MOODS["beat"]:
+            self.track = BackingTrack("none")
+            return self._block.pauses_off("рэп поверх играющего бита")
         self.track.ask(now)
         question = self._block.speech.phrase("perform.ask_replace_music", title=playing)
         return [question, AskReplace(question.speech_id, playing)]
