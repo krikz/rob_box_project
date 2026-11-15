@@ -9,7 +9,8 @@
 # Сброс позы: gazebo пересоздаётся со спавном сцены, на Main Pi пересоздаются сервисы с sim time
 # (свежая карта rtabmap в своём каталоге, свежие costmap, оверлей Nav2 со скоростью).
 # Пишет $SPEED_OUT/<метка>/: result.json, track.csv, pose_err.csv, bench.out, guard.log, nav2.log,
-# nav2_missed.txt, cpu.log, main.json, verdict.txt; строку вердикта — в $SPEED_OUT/ledger.jsonl.
+# nav2_missed.txt, cpu.log, main.json, verdict.txt; при неудачном подъёме — gazebo_attempt_N.log;
+# строку вердикта — в $SPEED_OUT/ledger.jsonl.
 # Только ключи (BatchMode), пароли не используются.
 set -uo pipefail
 export MSYS_NO_PATHCONV=1 PYTHONIOENCODING=utf-8
@@ -140,6 +141,7 @@ sleep 15
 up=0
 for attempt in 1 2 3 4; do
     if sim_up; then up=1; break; fi
+    sb "docker logs --timestamps $G" >"$RES/gazebo_attempt_${attempt}.log" 2>&1 || true
     log "повтор подъёма сима ($attempt)"; sb "$SIMDC rm -sf gazebo" >>"$RES/run.log" 2>&1; sleep 10
 done
 [ "$up" = 1 ] || { log "❌ сим не поднялся"; exit 6; }
