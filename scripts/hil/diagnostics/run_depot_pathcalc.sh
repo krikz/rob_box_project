@@ -24,7 +24,10 @@ ATTEMPT=0
 
 mkdir -p "$PATHCALC_OUT"
 : >"$SUMMARY"
+# $* намеренно собирается на клиенте в одну команду для удалённого bash.
+# shellcheck disable=SC2029
 main() { ssh "${SSHO[@]}" "$MAIN" "$*" </dev/null; }
+# shellcheck disable=SC2029
 sandbox() { ssh "${SSHO[@]}" "$SANDBOX" "$*" </dev/null; }
 stop_route() {
     sandbox "docker exec rob-box-hil-gazebo pkill -INT -f 'python3 -u /route.py' 2>/dev/null || true" >/dev/null 2>&1
@@ -93,6 +96,8 @@ cleanup_attempt() {
     return "$bad"
 }
 
+# Вызывается косвенно через trap EXIT.
+# shellcheck disable=SC2329
 on_exit() {
     local rc=$? cleanup_rc=0
     trap - EXIT INT TERM

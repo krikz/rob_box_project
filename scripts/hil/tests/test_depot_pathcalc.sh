@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Offline-тест diagnostic-сценария #4682: ssh/scp/hil.sh подменены, робот не вызывается.
-# check вычисляет выражение через eval: одинарные кавычки вокруг $VAR намеренные.
-# shellcheck disable=SC2016
+# check вычисляет выражение через eval: одинарные кавычки и косвенные обращения к ART намеренные.
+# shellcheck disable=SC2016,SC2034
 set -uo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
