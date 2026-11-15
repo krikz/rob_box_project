@@ -177,6 +177,42 @@ ssh ros2@10.1.1.250 'grep -E "PLAN|UNREACHABLE|GOAL_END|EM_ON|COVERAGE_" /home/r
   ≥ `turn_clearance`), `lanes_dropped_no_turn` (строки без места разворота), `clipped_m` (срезано с концов
   полос), `cross_lanes`.
 
+### 3b. Первая ошибка PathCalc в M1 (#4682) [код; живой HIL ещё не прогонялся]
+
+Это отдельное измерение глобального планирования, а не исправление Nav2 и не полный маршрут. Скорости,
+таймаут цели `route.py`, speed zones и DWB critics не меняются. Нужен тот же diagnostic NavFn 1.1.20
+(`a097086719c88f781aa59788eca29ac6ca5e56db`) с полями `best_pose/stc/potarr/reason`, собранный отдельно от
+production-образа. Путь к ARM64-библиотеке передаётся явно; baseline без `static_layer`.
+
+```bash
+# Только после выделения HIL-окна координатором. Сценарий сам делает on/off для каждой попытки.
+export PATHCALC_OUT="$PWD/.tmp/depot-route-4682/pathcalc_$(date -u +%Y%m%dT%H%M%SZ)"
+export PATHCALC_DIAG_LIB=/home/ros2/rob_box_hil/nav2_diag_4682/install/nav2_navfn_planner/lib/libnav2_navfn_planner.so
+bash scripts/hil/diagnostics/run_depot_pathcalc.sh
+```
+
+Сценарий делает **не более трёх** свежих M1. Перед каждой целью `ros2 lifecycle get` должен вернуть
+`active [3]` для `bt_navigator`, `planner_server`, `controller_server` и `smoother_server`; иначе M1 и bag не
+запускаются, сохраняются lifecycle/service raw, вердикт `LIFECYCLE_NOT_ACTIVE`, выход 33. Это отдельный
+startup/lifecycle класс. При повторном lifecycle abort сначала проверить доступность `change_state`; перезапускать
+можно только lifecycle manager, не отправляя цель неактивной ноде и не смешивая этот сбой с PathCalc.
+
+На первом `Failed to create a plan from potential` сценарий останавливает `route.py`, затем сохраняет Nav2 raw,
+`calcPath_error.log`, `/evaluation` и остальной bag, а также `get_costmap_error.log` с UTC/ROS timestamps запроса
+и ответа. Маршрут не продолжается. `EVIDENCE_CAPTURED` (выход 0) означает только полученную диагностику, не route
+PASS. Если ошибки нет в трёх попытках — `EVIDENCE_INSUFFICIENT recurrences=0/3`, выход 4; это не PASS и не
+доказательство исправления. Ошибка снятия costmap — выход 40, тоже не evidence PASS.
+
+Каждая попытка и любой выход после `on` проходят финальный gate: `hil.sh off`, отсутствие `/tmp/hil.lock` и
+Gazebo, удаление временного compose/start overlay, `NAV2_PARAMS_OVERLAYS` и `USE_SIM_TIME=true` отсутствуют в
+production `nav2`, а `hil_off.log` подтверждает неизменный боевой `SELECT * FROM maps`. Нарушение даёт
+`CLEANUP_FAILED`, выход 50, даже если PathCalc пойман. Существующий чужой lock до `on` — выход 20 без `pkill`,
+`off` или отправки цели. Артефакты каждой попытки лежат в `$PATHCALC_OUT/<run_id>_rN/`, общий вердикт — в
+`$PATHCALC_OUT/verdict.log`.
+
+R5 сюда не входит: финальный yaw разбирается отдельно по последним 20 с `/cmd_vel` и `Oscillation` scores, без
+смешивания с global-planning классом M1/M4/R3/R4.
+
 ## 4. Запись видов
 
 Камеры пишут PNG сами (`<save enabled="true">`) в `out/frames/video_top` и `video_chase`, по sim time.

@@ -1,0 +1,7 @@
+services:
+  nav2:
+    environment:
+      - RCUTILS_LOGGING_SEVERITY_THRESHOLD=DEBUG
+    volumes:
+      - /tmp/hil/start_nav2_pathcalc.sh:/scripts/start_nav2_direct.sh:ro
+      - ${PATHCALC_DIAG_LIB:?}:/opt/ros/humble/lib/libnav2_navfn_planner.so:ro
