@@ -156,7 +156,7 @@ class TestRecoverPolicy:
         rows = dict(line.split("\t") for line in out.stdout.splitlines())
         assert rows["n801_wake_open"] == "no_wake,silenced"
         assert rows["n803_barge_in_new_topic"] == "-"
-        assert rows["n805b_unsilence"] == "no_wake"
+        assert rows["n805b_unsilence"] == "no_wake,stt_replay"
 
     def test_cli_policy_bad_field_exits_2(self, tmp_path):
         scen = tmp_path / "s.json"
