@@ -207,11 +207,11 @@ class Session:
             self._commit("expire", scenes=tuple(f for f in self._snap.scenes if f not in gone), **asked)
         return gone
 
-    def reset(self, *, keep_speaker_memory: bool = False) -> None:
-        """Новая сессия разговора: эпоха + 1, стек, вопрос и автоматическая память в снимке очищены; голос,
-        собеседник, музыка, провайдеры и постоянные факты — не трогаются («забудь всё» ≠ «выключи музыку»).
-        Служебный сброс окна может сохранить автоматическую память через ``keep_speaker_memory``."""
-        visible = self._snap.speaker_memory_visible if keep_speaker_memory else False
+    def reset(self, *, speaker_memory_visible: Optional[bool] = None) -> None:
+        """Новая сессия разговора: эпоха + 1, стек и вопрос очищены; голос, собеседник, музыка, провайдеры
+        и постоянные факты — не трогаются («забудь всё» ≠ «выключи музыку»). ``speaker_memory_visible`` задаёт
+        автоматическую память в снимке новой эпохи; ``None`` сохраняет текущий режим для служебного сброса окна."""
+        visible = self._snap.speaker_memory_visible if speaker_memory_visible is None else speaker_memory_visible
         self._commit("reset", epoch=self._snap.epoch + 1, scenes=(), pending_ask=None, speaker_memory_visible=visible)
 
     def replace_epoch(self) -> int:

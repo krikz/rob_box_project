@@ -3,8 +3,7 @@
 Окно ``TurnLog`` режется по числу ходов и токенам, но не по времени: ходы вчерашней e2e-роли доживали до утра, и робот
 называл человека её именем. Окно сбрасывается кодом в двух случаях: долгая пауза между адресованными ходами
 (:class:`WindowGuard`) и смена режима e2e в любую сторону (``reason`` ``e2e_on``/``e2e_off``, зовёт хост).
-Сброс истории тот же, что у «новой сессии»: ``session.reset()`` + ``log.reset()``; журнал смены, память фактов
-и автоматический раздел ``speaker_memory`` не трогаются.
+Сброс тот же, что у «новой сессии»: ``session.reset()`` + ``log.reset()``; журнал смены и память фактов не трогаются.
 """
 from __future__ import annotations
 
@@ -45,7 +44,7 @@ def reset_window(session: Any, log: Any, guard: WindowGuard, reason: str, now: f
     """Сбросить окно: сессия + журнал ходов; пауза отсчитывается заново."""
     gap = guard.gap(now)
     logger.info(f"🧹 [window-reset] reason={reason} gap_s={'-' if gap is None else f'{gap:.0f}'}")
-    session.reset(keep_speaker_memory=True)
+    session.reset()
     log.reset()
     guard.clear()
 

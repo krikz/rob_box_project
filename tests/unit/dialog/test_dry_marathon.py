@@ -257,6 +257,7 @@ def test_4694_plain_recipe_does_not_read_or_write_memory(make_env):
 
 
 N1006 = step("n1006_session_reset", "Робот, новая сессия, забудь этот разговор.")
+N1007 = step("n1007_no_leak", "Робот, о чём мы с тобой только что говорили?")
 N1009 = step("n1009_memory_context_after_reset", "Робот, поищи в памяти, какой чай я пью.",
              expect_tools=["memory_search"], keywords=["зелёный чай без сахара"])
 
@@ -275,10 +276,12 @@ def test_4694_n1009_new_session_hides_snapshot_memory_but_preserves_facts(make_e
     facts_before = env.stand.memory.get_facts()
     env.run(N1006)
     assert env.stand.session.snapshot.epoch == 1
+    env.run(N1007)
+    calls_before = len(env.inner.calls)
 
     report = env.run(N1009)
 
-    assert "<speaker_memory>" not in user_text(env.inner.calls[0].messages)
+    assert "<speaker_memory>" not in user_text(env.inner.calls[calls_before].messages)
     assert report.verdict == dm.PASS, report.fail
     assert report.tools == ["memory_search"]
     assert env.stand.memory.get_facts() == facts_before
