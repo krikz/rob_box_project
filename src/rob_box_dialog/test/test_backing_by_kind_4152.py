@@ -206,6 +206,10 @@ def _tale(backing):
     return Performance(kind="tale", segments=tuple(SEGS), backing=backing)
 
 
+def _rap(backing):
+    return Performance(kind="rap", segments=tuple(SEGS), backing=backing)
+
+
 def test_tale_without_backing_over_playing_music_asks_nothing_and_stops_nothing():
     """«Расскажи сказку» поверх играющего трека: ни вопроса «выключить и зачитать?», ни нового бита, ни снятия."""
     sim = Sim(_tale("none"), bpm=120)
@@ -226,3 +230,27 @@ def test_the_models_calm_over_playing_music_asks_to_replace_it_unless_the_valida
     after = Sim(Performance(kind=perf.kind, segments=perf.segments, backing=perf.backing), bpm=120)
     after.start(playing="Калинка-Малинка")
     assert after.asks == [] and after.music_log == []
+
+
+def test_rap_with_beat_over_playing_music_does_not_ask_and_keeps_music():
+    """#4694 n810: рэп с ``backing=beat`` поверх играющего трека — без ``AskReplace`` и без остановки чужой музыки."""
+    sim = Sim(_rap("beat"), bpm=120)
+    sim.start(playing="Synth Beat")
+    sim.run(300)
+    assert sim.asks == []
+    assert sim.music_log == []
+    assert not [e for _, e in sim.effects if isinstance(e, (Backing, MusicStop, AskReplace))]
+    assert sim.block.end_reason == "done"
+    assert [h.text for h in sim.segments_heard()] == list(SEGS)
+
+
+@pytest.mark.parametrize("kind, backing", [
+    ("rap", "calm"),   # рэп не с битом — по-прежнему спрашивает
+    ("song", "beat"),  # песня с битом — по-прежнему спрашивает
+    ("song", "calm"),  # песня спокойная — по-прежнему спрашивает
+])
+def test_other_perform_kinds_still_ask_to_replace_playing_music(kind, backing):
+    """Контроль: только рэп с ``beat`` получает overlay; остальные виды и настроения спрашивают замену."""
+    sim = Sim(Performance(kind=kind, segments=tuple(SEGS), backing=backing), bpm=120)
+    sim.start(playing="Synth Beat")
+    assert len(sim.asks) == 1
