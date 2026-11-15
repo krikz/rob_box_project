@@ -216,6 +216,46 @@ def test_3881_speaker_changed_mid_turn_is_rejected_and_reported(make_env):
     assert env.stand.memory.get_facts() == []
 
 
+# ── #4694: память как условие другой просьбы ────────────────────────────────────────────────────────────────────────
+
+
+N908_TEXT = "Робот, а теперь найди мне рецепт борща, только учти то, что ты про меня знаешь."
+N908 = step("n908_search_borsch_memory", N908_TEXT, expect_tools=["memory_context"],
+            keywords=["свёкла", "не ем лук даже жареный"], must_not=["memory_save"])
+PLAIN_BORSCH = step("n908_plain_borsch", "Робот, найди мне рецепт борща.", keywords=["свёкла"],
+                    must_not=["memory_search", "memory_context", "memory_save"])
+
+
+def _borsch_rule(env, msgs, tools):
+    facts = [str(f.get("fact") or "") for f in query_data(msgs).get("facts", [])]
+    details = "; ".join(fact for fact in facts if fact)
+    return {"speech": f"Борщ: свёкла, капуста, картошка. {details}".strip()}
+
+
+def _with_food_facts(env):
+    person = env.stand.speakers.register("anton", "Саша")
+    env.stand.memory.save_fact("не ем лук даже жареный", category="preference", speaker_id=person)
+    env.stand.memory.save_fact("зелёный чай без сахара", category="preference", speaker_id=person)
+    return env
+
+
+def test_4694_n908_memory_condition_reads_real_speaker_facts_before_the_recipe(make_env):
+    env = _with_food_facts(make_env(_borsch_rule))
+    report = env.run(N908)
+    assert report.verdict == dm.PASS, report.fail
+    assert report.tools == ["memory_context"]
+    assert "не ем лук даже жареный" in report.said[-1]
+    data = query_data(env.inner.calls[0].messages)
+    assert any(f.get("fact") == "зелёный чай без сахара" for f in data["facts"])
+
+
+def test_4694_plain_recipe_does_not_read_or_write_memory(make_env):
+    env = _with_food_facts(make_env(_borsch_rule))
+    report = env.run(PLAIN_BORSCH)
+    assert report.verdict == dm.PASS, report.fail
+    assert not set(report.tools) & {"memory_search", "memory_context", "memory_save"}
+
+
 # ── #3892: бэклог с авторством каждой фразы ───────────────────────────────────────────────────────────────────────
 
 

@@ -115,7 +115,8 @@ from rob_box_dialog.respond import (ActionResult, asks, audible, classed, failed
 from rob_box_dialog.session import Session, SessionSnapshot, SpeakerRef
 from rob_box_dialog.speaker_adapter import asks_recognized, known_voice_registers, recognition_reply, speaker_block
 from rob_box_dialog.window_reset import WindowGuard, reset_if_idle, reset_window
-from rob_box_dialog.words import asks_question, asks_to_listen, has_form, has_word, music_stop_claimed, same_stop_rest
+from rob_box_dialog.words import (asks_own_memory_condition, asks_question, asks_to_listen, has_form, has_word,
+                                  music_stop_claimed, same_stop_rest)
 from rob_box_dialog.tools_view import (available_tools, catalogs_asked, music_asked, needs_words, robot_asked,
                                        show_asked, voice_asked, voice_named)
 from rob_box_dialog.turn_log import (PERFORM_STARTED, TOOL, USER, TurnAggregate, TurnLog, phrase_label, results_of,
@@ -871,6 +872,27 @@ async def understand(engine: "TurnEngine", turn: "_Turn", snap: SessionSnapshot)
                      f"{kinds} turn={turn.turn_id}")
     with turn_form(form):
         await engine._understand(turn, snap)
+
+
+async def read_memory_condition(engine: "TurnEngine", turn: "_Turn", snap: SessionSnapshot,
+                                messages: List[Any]) -> bool:
+    """Условие «учти, что знаешь про меня»: факты подтверждённого собеседника — в первый запрос LLM."""
+    if not asks_own_memory_condition(turn.text) or not memory.memory_owner(snap):
+        return False
+    results = await engine._execute(turn, (ToolCall("memory_context", {"query": turn.text}),), snap)
+    if engine._stale(turn, "memory_condition"):
+        return True
+    more = query_more(engine, turn, results)
+    if more is not None:
+        messages.extend(_follow_as_user(more))
+    return False
+
+
+async def act_on_result(engine: "TurnEngine", turn: "_Turn", result: Any, snap: SessionSnapshot,
+                        last: bool) -> Optional[str]:
+    if isinstance(result, Command):
+        return await engine._act(turn, result, snap, last=last)
+    return await _close_invalid(engine, turn, result, snap, last=last)
 
 
 def outcome_phrase(results: Sequence[ActionResult]) -> Optional[str]:
@@ -2338,6 +2360,8 @@ class TurnEngine:
                                   asked=tool_ask.asked_tools(self.session))
         tools = form_tools(offered, current_form(), snap.agent, snap.owners)
         messages: List[Any] = self._messages(turn, snap)
+        if await read_memory_condition(self, turn, snap, messages):
+            return
         for iteration in range(kn.LLM_QUERY_ITERATIONS_MAX + 1 + kn.SPEECH_PUSHES_MAX):  # + повторы за словами
             last = iteration >= kn.LLM_QUERY_ITERATIONS_MAX
             answer = await _ask_iteration(self, turn, messages, tools, last)
@@ -2348,10 +2372,7 @@ class TurnEngine:
             data = answer.result.reason if isinstance(answer.result, Invalid) else None
             self._event("command", turn, data={"provider": answer.provider, "valid": data is None, "reason": data})
             result = silence_insisted(answer.result)
-            if isinstance(result, Command):
-                more = await self._act(turn, result, snap, last=last)
-            else:
-                more = await _close_invalid(self, turn, result, snap, last=last)
+            more = await act_on_result(self, turn, result, snap, last)
             if more is None:
                 return
             messages.extend(answer.follow(more))

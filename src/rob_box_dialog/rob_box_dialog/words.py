@@ -511,6 +511,12 @@ def asks_to_listen(text: str) -> bool:
     return has_form(text, LISTEN_ONLY_FORMS) or has_word(text, SILENCE_WORDS)
 
 
+def asks_own_memory_condition(text: str) -> bool:
+    """Память о человеке — условие другой просьбы («учти то, что ты про меня знаешь»), а не её предмет."""
+    said = " ".join(name_tokens(text))
+    return has_word(said, SELF_MEMORY_ASK["condition"]) and has_form(said, SELF_MEMORY_ASK["self"])
+
+
 def asks_own_memory(text: str) -> bool:
     """Спрашивает ли человек о памяти о самом себе (таблица ``knowledge.SELF_MEMORY_ASK``): глагол
     памяти к роботу и слово о себе в одной реплике («что ты обо мне помнишь?», «помнишь, что я …») или вопрос целиком
