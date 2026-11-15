@@ -97,6 +97,21 @@ def test_reset_bumps_epoch_and_keeps_voice_speaker_music(session):
     assert snap.voice.applied == "ermil" and snap.speaker.name == "Саша"
 
 
+def test_reset_speaker_memory_visibility_modes(session):
+    """#4694 n1009: три режима сброса. Tier-1 «новая сессия» прячет автоматическую память на эпоху
+    (``speaker_memory_visible=False``), служебный сброс перед актом снова показывает её (``True``),
+    сброс окна (idle/e2e, голый ``reset()``) режим не трогает."""
+    assert session.snapshot.speaker_memory_visible is True
+    session.reset(speaker_memory_visible=False)
+    assert session.snapshot.speaker_memory_visible is False
+    session.reset()  # сброс окна: скрытая остаётся скрытой
+    assert session.snapshot.speaker_memory_visible is False
+    session.reset(speaker_memory_visible=True)  # сброс перед актом: память снова в снимке
+    assert session.snapshot.speaker_memory_visible is True
+    session.reset()  # сброс окна: показанная остаётся показанной
+    assert session.snapshot.speaker_memory_visible is True
+
+
 def test_voice_requested_and_applied_are_separate(session):
     session.set_voice(requested="alena")
     session.set_voice(applied="ermil", provider="silero")

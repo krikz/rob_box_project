@@ -150,7 +150,7 @@ def host_sections(snap: SessionSnapshot, music: Any, providers: Sequence[Any] = 
     person, block = noted
     again = bool(person) and person == memory.profiled_person(snap.speaker)
     sections = {"speaker": speaker_block(snap.speaker), "providers": list(providers), "music_state": music.section()}
-    return {**sections, "speaker_memory": block} if again and block else sections
+    return {**sections, "speaker_memory": block} if again and block and snap.speaker_memory_visible else sections
 
 
 def recent_results(past: Sequence[Any], own: Sequence[Any], owner: Optional[str]) -> List[Mapping[str, Any]]:
@@ -2318,7 +2318,7 @@ class TurnEngine:
         elif command.kind == "unsilence":
             self.session.pop_scene("Silence", "user")
         elif command.kind == "new_session":
-            self.session.reset()
+            self.session.reset(speaker_memory_visible=False)
             self.log.reset()
             turn.epoch = self.session.snapshot.epoch  # сам ход — в новой сессии: его подтверждение не «устарело»
         self.log.mark(turn.turn_id, kn.WINDOW_SILENCE_MARKS.get(command.kind, ""))  # тишина вкл/выкл без слов

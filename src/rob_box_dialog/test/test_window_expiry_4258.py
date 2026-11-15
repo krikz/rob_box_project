@@ -114,6 +114,25 @@ def test_e2e_switch_either_way_empties_the_window():
         assert _in_last_request(ports, NEW) and not _in_last_request(ports, OLD), reason
 
 
+def test_window_resets_keep_the_speaker_memory_mode():
+    """#4694 n1009: служебный сброс окна (idle и смена e2e) стирает окно ходов, но режим автоматической памяти
+    собеседника не трогает: спрятанная Tier-1 «новой сессией» — остаётся спрятанной, показанная служебным
+    сбросом перед актом — остаётся показанной."""
+    ports, clock, engine = _setup()
+    _say(engine, "Робот, новая сессия")
+    assert engine.session.snapshot.speaker_memory_visible is False
+    clock.now += kn.DIALOG_WINDOW_IDLE_RESET_S + 1  # ночь: следующий ход сбросит окно по idle
+    _say(engine, NEW)
+    assert engine.session.snapshot.speaker_memory_visible is False
+    engine.reset_window(REASON_E2E_ON)
+    _say(engine, "ещё")
+    assert engine.session.snapshot.speaker_memory_visible is False
+    engine.session.reset(speaker_memory_visible=True)  # служебный сброс перед актом, как apply_control
+    engine.reset_window(REASON_E2E_OFF)
+    _say(engine, NEW)
+    assert engine.session.snapshot.speaker_memory_visible is True
+
+
 def test_guard_without_turns_is_never_expired():
     guard = WindowGuard(10)
     assert guard.gap(5.0) is None and not guard.expired(1e9)

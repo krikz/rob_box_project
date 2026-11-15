@@ -91,7 +91,7 @@ def apply_control(session: Session, action: str, set_by: str, ttl_s: float = 0.0
     elif action == RESUME:
         session.pop_scene("OperatorHold", owner)
     else:
-        session.reset()
+        session.reset(speaker_memory_visible=True)
     return True
 
 

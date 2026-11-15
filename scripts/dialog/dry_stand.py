@@ -931,8 +931,10 @@ class DryStand:
         return "stopped"
 
     def reset_session(self) -> None:
-        """``/dialog/control reset`` перед актом (``reset_dialog_v2_session_for_act``): эпоха + 1, окно ходов пусто."""
-        self.session.reset()
+        """``/dialog/control reset`` перед актом (``reset_dialog_v2_session_for_act``): эпоха + 1, окно ходов пусто,
+        автоматическая память собеседника снова видна — как ``apply_control`` ядра: прошлую эпоху её могла скрыть
+        Tier-1 «новая сессия» (#4694 n1009), служебный сброс перед актом режим не наследует."""
+        self.session.reset(speaker_memory_visible=True)
         self.engine.log.reset()
 
     def close(self) -> None:
