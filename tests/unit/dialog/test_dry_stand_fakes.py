@@ -323,6 +323,35 @@ def test_regression_wiping_the_cast_per_act_loses_the_voice_by_act_10(make_env):
     assert "Саша" not in user_text(env.seen[-1])
 
 
+def acts_with_mid_act_new_session():
+    def act(key, lines, inherits, registers, memory):
+        steps = [{"label": f"n_{key}_{i}", "voice": v, "text": t} for i, (v, t) in enumerate(lines)]
+        return dm.Act(key, key, Path(f"act{key}.json"), steps, inherits, registers, memory)
+
+    return [act("2", [("anton", "Робот, привет, меня зовут Саша."),
+                      ("anton", "Робот, запомни: я пью зелёный чай."),
+                      # фраза n1006: Tier-1 «новая сессия» прячет автоматическую память на эпоху акта 2
+                      ("anton", "Робот, новая сессия, забудь этот разговор.")],
+                False, True, True),
+            act("2b", [("ermil", "Робот, привет, меня зовут Борис.")], False, True, False),
+            act("10", [("anton", "Робот, что ты обо мне помнишь?")], True, False, False)]
+
+
+def test_technical_reset_before_an_act_shows_speaker_memory_again(make_env):
+    """#4694 n1009, межактовый контракт: «новая сессия» акта 2 прячет автоматическую память на свою эпоху, а
+    служебный сброс сессии перед актом 2b (``/dialog/control reset`` харнесса = ``apply_control`` ядра) снова
+    её показывает. Скрытие «и забыл» (режим живёт вечно) этот тест ловит: без возврата в акте 10 нет
+    ``speaker_memory`` в снимке, хотя факт Саши в e2e-памяти цел."""
+    env = make_env(acquaintance_rule)
+    acts = acts_with_mid_act_new_session()
+    reports = [env.act(a, p) for a, p in zip(acts, dm.marathon_phases(acts))]
+    final = reports[-1][0]
+    assert "👤 Speaker: 'Саша' confidence=0.880" in final.log, final.log
+    assert re.search(r"🧠 \[speaker-memory\] person=\w+ dialog_count=\d+ facts=1 e2e=True", final.log), final.log
+    snapshot = user_text(env.seen[-1])
+    assert "Саша" in snapshot and "зелёный чай" in snapshot
+
+
 # ── Срок давности окна диалога: #4258 ────────────────────────────────────────────────────────────────────────────
 
 

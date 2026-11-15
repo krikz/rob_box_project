@@ -287,6 +287,21 @@ def test_4694_n1009_new_session_hides_snapshot_memory_but_preserves_facts(make_e
     assert env.stand.memory.get_facts() == facts_before
 
 
+def test_4694_n1007_no_snapshot_memory_right_after_new_session(make_env):
+    """Промежуточный контракт между n1006 и n1009: скрытая «новой сессией» автоматическая память не
+    возвращается на середине эпохи. «О чём мы говорили?» — не вопрос о «памяти» словами: фикс, подогнанный
+    под один шаг n1009 (спрятать снимок только на нём или только под «поищи в памяти»), здесь красный —
+    одноходового GREEN у n1009 не выходит."""
+    env = _with_food_facts(make_env(_tea_after_reset_rule))
+    env.run(N1006)
+    calls_before = len(env.inner.calls)
+
+    report = env.run(N1007)
+
+    assert "<speaker_memory>" not in user_text(env.inner.calls[calls_before].messages)
+    assert report.tools == ["memory_search"]  # факты достаёт тул, а не автоматический раздел снимка
+
+
 # ── #3892: бэклог с авторством каждой фразы ───────────────────────────────────────────────────────────────────────
 
 
