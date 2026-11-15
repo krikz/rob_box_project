@@ -558,6 +558,8 @@ check "on при ненулевой пробе (rc=$rc): отказ, side effect
 reset_state
 run_hil on FAKE_E2E_MODE='Boolean value is: False'; rc=$?
 check "on при e2e_mode=false: штатно, выход 0 (rc=$rc)" '[ "$rc" -eq 0 ]'
+check "e2e-проба поднимает ROS environment внутри docker exec" \
+    'grep -q "source /opt/ros/humble/setup.bash" "$WORK/ssh.log" && grep -q "source /ws/install/setup.bash" "$WORK/ssh.log"'
 reset_state
 run_hil on >/dev/null
 : > "$WORK/docker.log"; : > "$WORK/ssh.log"
