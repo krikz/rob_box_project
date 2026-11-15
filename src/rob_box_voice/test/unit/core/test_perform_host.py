@@ -31,6 +31,8 @@ def plain_text(text: str) -> str:
 
 RAP = Performance(kind="rap", segments=("Я комар, звеню всю ночь. Ты не спишь.", "Прячусь за шторой. Жду темноты."),
                   backing="beat")
+SONG = Performance(kind="song", segments=("Я комар, звеню всю ночь. Ты не спишь.", "Прячусь за шторой. Жду темноты."),
+                   backing="beat")
 
 
 class _Pub:
@@ -186,11 +188,12 @@ def test_busy_music_reads_over_it_without_a_second_try(loop):
 
 
 def _asking(loop: Any, backing: Dict[str, Any]) -> tuple:
-    """Играет чужая музыка: выступление спрашивает «выключить и зачитать?» — бит не заказан, окно — после вопроса."""
+    """Играет чужая музыка: песня с beat спрашивает «выключить и зачитать?» — бит не заказан, окно — после вопроса.
+    Рэп с beat поверх музыки больше не спрашивает (#4694), поэтому контроль AskReplace держим на песне."""
     node, tools, events, opened = _Node(), _Tools(backing), [], []
     host = PerformHost(node, tools.run, lambda: loop, events.append, kn.SPEECH_OUTPUT_LATENCY_MS,
                        clock=lambda: node.now_s, playing=lambda: "Still Dre", on_ask=opened.append)
-    host.start(RAP, "t1")
+    host.start(SONG, "t1")
     (question,) = [r for r in node.requests() if r.commit]
     assert plain_text(question.text) == phrases.text("perform.ask_replace_music", title="Still Dre")
     _settle(loop)
