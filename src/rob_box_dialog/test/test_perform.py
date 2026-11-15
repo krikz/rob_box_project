@@ -37,6 +37,10 @@ def rap(backing="beat", segments=SEGS):
     return Performance(kind="rap", segments=segments, backing=backing)
 
 
+def song(backing="beat", segments=SEGS):
+    return Performance(kind="song", segments=segments, backing=backing)
+
+
 def on_bar(sim, t):
     k = (t - sim.track_started_at) / BAR_S
     return abs(k - round(k)) < 1e-6
@@ -639,7 +643,8 @@ def _asked(sim):
 
 
 def test_yes_replaces_the_playing_music_with_the_beat():
-    sim = Sim(rap())
+    """AskReplace работает для песни (другой kind): «да» — снять играющую музыку и поставить бит."""
+    sim = Sim(song())
     _asked(sim)
     sim.apply(sim.block.answer(True, sim.t))
     (backing,) = sim.backings()
@@ -650,7 +655,8 @@ def test_yes_replaces_the_playing_music_with_the_beat():
 
 
 def test_no_reads_over_the_playing_music_without_a_beat():
-    sim = Sim(rap())
+    """AskReplace для песни: «нет» — читать без своего бита поверх играющей музыки, не трогать её."""
+    sim = Sim(song())
     _asked(sim)
     sim.apply(sim.block.answer(False, sim.t))
     sim.run(300)
@@ -660,7 +666,7 @@ def test_no_reads_over_the_playing_music_without_a_beat():
 
 
 def test_silence_after_the_question_is_no():
-    sim = Sim(rap())
+    sim = Sim(song())
     t0 = sim.t
     _asked(sim)
     sim.run(300)
@@ -668,6 +674,17 @@ def test_silence_after_the_question_is_no():
     first = sim.segments_heard()[0]
     assert first.start - t0 >= kn.PERFORM_ASK_WAIT_S - 1  # ждали окно ответа целиком
     assert [h.text for h in sim.segments_heard()] == list(SEGS)
+
+
+def test_rap_beat_over_playing_music_reads_without_asking_or_stopping():
+    """n810: рэп с ``backing=beat`` поверх играющей музыки — без AskReplace, без MusicStop, без своего бита."""
+    sim = Sim(rap())
+    sim.start(playing="Still Dre")
+    sim.run(300)
+    assert sim.asks == [] and sim.music_stops() == [] and sim.backings() == []
+    assert [h.text for h in sim.segments_heard()] == list(SEGS)
+    assert sim.block.end_reason == "done" and sim.block.backing.state == "none"
+    assert not any(e.synced for e in sim.events("segment_started"))
 
 
 @pytest.mark.parametrize("backing, segments, foreign, asks", [

@@ -226,3 +226,18 @@ def test_the_models_calm_over_playing_music_asks_to_replace_it_unless_the_valida
     after = Sim(Performance(kind=perf.kind, segments=perf.segments, backing=perf.backing), bpm=120)
     after.start(playing="Калинка-Малинка")
     assert after.asks == [] and after.music_log == []
+
+
+def _rap(backing="beat"):
+    return Performance(kind="rap", segments=tuple(SEGS), backing=backing)
+
+
+def test_rap_beat_over_playing_music_reads_without_asking_or_stopping():
+    """n810: рэп с ``backing=beat`` поверх играющего трека — без AskReplace, без MusicStop, без своего бита."""
+    sim = Sim(_rap("beat"), bpm=120)
+    sim.start(playing="Synth Beat")
+    sim.run(300)
+    assert sim.asks == [] and sim.music_stops() == [] and sim.backings() == []
+    assert [h.text for h in sim.segments_heard()] == list(SEGS)
+    assert sim.block.end_reason == "done" and sim.block.backing.state == "none"
+    assert not any(e.synced for e in sim.events("segment_started"))
