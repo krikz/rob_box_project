@@ -65,6 +65,7 @@ case "$cmd" in
         echo 'PATH=/x'
         [ "${FAKE_OVERLAY_LEFT:-0}" = 1 ] && echo 'NAV2_PARAMS_OVERLAYS=/nav2tune/debug.yaml'
         [ "${FAKE_SIM_TIME_LEFT:-0}" = 1 ] && echo 'USE_SIM_TIME=true' ;;
+    "test -f "*runvideo.log*) [ "${FAKE_MISSING_RUNVIDEO:-0}" = 1 ] && exit 1 || exit 0 ;;
     *"State.Status}}' rob-box-hil-gazebo"*) echo absent ;;
     *"State.Running}}' rob-box-hil-gazebo"*) echo true ;;
     *"ros2 bag info"*) echo 'Files: bag.db3'; echo 'Topics: /evaluation /rosout /plan /cmd_vel' ;;
@@ -75,6 +76,10 @@ EOF
 cat >"$WORK/bin/scp" <<'EOF'
 #!/usr/bin/env bash
 echo "scp $*" >>"$FAKE_SSH_LOG"
+if [ "${FAKE_MISSING_RUNVIDEO:-0}" = 1 ] && [[ " $* " == *runvideo.log* ]]; then
+    echo 'scp: runvideo.log: No such file or directory' >&2
+    exit 1
+fi
 exit 0
 EOF
 cat >"$WORK/bin/sleep" <<'EOF'
@@ -158,6 +163,13 @@ check "0/3: ровно 3 M1 и 3 on/off" \
     '[ "$(grep -c "runvideo.sh M1" "$WORK/ssh-none.log")" -eq 3 ] && [ "$(grep -c "hil on" "$WORK/hil-none.log")" -eq 3 ] && [ "$(grep -c "hil off" "$WORK/hil-none.log")" -eq 3 ]'
 check "0/3: нет ложного route PASS и R5 не запускается" \
     '! grep -Eq "ROUTE_PASS|VERDICT PASS|runvideo.sh.*R5" "$WORK/out-none/verdict.log" "$WORK/ssh-none.log"'
+
+# Отсутствующий optional runvideo.log не является ошибкой attempt/cleanup.
+run_diag norunvideo FAKE_MISSING_RUNVIDEO=1; rc=$?
+check "optional runvideo absent: все 3 попытки, cleanup без FAIL (rc=$rc)" \
+    '[ "$rc" -eq 4 ] && [ "$(grep -c "runvideo.sh M1" "$WORK/ssh-norunvideo.log")" -eq 3 ] && ! grep -q "CLEANUP_FAILED" "$WORK/out-norunvideo/verdict.log"'
+check "optional runvideo absent: нет ложной ошибки artifact_scp" \
+    '! grep -q "runvideo.log: No such file" "$WORK/out-norunvideo/depot4682_test_norunvideo_r1/artifact_scp.err"'
 
 # Ошибка на второй попытке: стоп до costmap, два timestamp, серия прекращается.
 run_diag captured FAKE_FAIL_AT=2; rc=$?
