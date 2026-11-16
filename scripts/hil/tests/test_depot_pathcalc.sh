@@ -48,6 +48,9 @@ case "$cmd" in
             exit 0
         fi
         exit 1 ;;
+    *"docker exec nav2 cat /tmp/nav2_pathcalc_snapshot.bin"*)
+        [ "${FAKE_MISSING_SNAPSHOT:-0}" = 1 ] && exit 1
+        printf 'NAVFSNAP\001fake-snapshot' ;;
     *"ros2 service call /global_costmap/get_costmap"*)
         echo 'REQUEST_UTC=2026-11-12T00:00:00Z'; echo 'REQUEST_ROS'; echo 'sec: 120'
         echo 'response: map_load_time={sec: 100} update_time={sec: 120}'
@@ -141,6 +144,13 @@ check "recurrence 2: request/response UTC и ROS timestamps сохранены" 
     'for marker in REQUEST_UTC REQUEST_ROS RESPONSE_UTC RESPONSE_ROS; do grep -q "$marker" "$ART/get_costmap_error.log" || exit 1; done'
 check "recurrence 2: calcPath reason и bag info сохранены" \
     'grep -q "best_pose=.*potarr=.*reason=" "$ART/calcPath_error.log" && grep -q "/evaluation" "$ART/bag_info.log"'
+check "recurrence 2: binary snapshot получен до GetCostmap" \
+    'snapshot=; cost=; test -s "$ART/pathcalc_snapshot.bin" && snapshot=$(grep -n -m1 "docker exec nav2 cat /tmp/nav2_pathcalc_snapshot.bin" "$WORK/ssh-captured.log" | cut -d: -f1); cost=$(grep -n -m1 "ros2 service call /global_costmap/get_costmap" "$WORK/ssh-captured.log" | cut -d: -f1); [ -n "$snapshot" ] && [ -n "$cost" ] && [ "$snapshot" -lt "$cost" ]'
+check "recurrence 2: stale snapshot удалён до отправки M1" \
+    'clear=; route=; clear=$(grep -n -m1 "rm -f /tmp/nav2_pathcalc_snapshot.bin" "$WORK/ssh-captured.log" | cut -d: -f1); route=$(grep -n -m1 "runvideo.sh M1" "$WORK/ssh-captured.log" | cut -d: -f1); [ -n "$clear" ] && [ -n "$route" ] && [ "$clear" -lt "$route" ]'
+run_diag missing FAKE_FAIL_AT=1 FAKE_MISSING_SNAPSHOT=1; rc=$?
+check "missing snapshot: fail-closed выход 41, GetCostmap не вызывается" \
+    '[ "$rc" -eq 41 ] && grep -q "PATHCALC_SNAPSHOT_CAPTURE_FAILED" "$WORK/out-missing/verdict.log" && ! grep -q "EVIDENCE_CAPTURED" "$WORK/out-missing/verdict.log" && ! grep -q "ros2 service call /global_costmap/get_costmap" "$WORK/ssh-missing.log"'
 run_diag incomplete FAKE_FAIL_AT=1 FAKE_MISSING_TIMESTAMP=1; rc=$?
 check "incomplete timestamps: нет EVIDENCE_CAPTURED, выход 40 (rc=$rc)" \
     '[ "$rc" -eq 40 ] && grep -q "COSTMAP_CAPTURE_FAILED" "$WORK/out-incomplete/verdict.log" && ! grep -q "EVIDENCE_CAPTURED" "$WORK/out-incomplete/verdict.log"'
