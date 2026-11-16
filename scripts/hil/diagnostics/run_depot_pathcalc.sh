@@ -94,7 +94,9 @@ cleanup_attempt() {
     if [ "$ON_ATTEMPTED" = 1 ]; then
         main "test ! -e /tmp/hil.lock" || bad=1
         gz=$(sandbox "docker inspect -f '{{.State.Status}}' rob-box-hil-gazebo 2>/dev/null || echo absent")
-        case "$gz" in absent* | exited*) ;; *) bad=1 ;; esac
+        gz="${gz#"${gz%%[!$'\r\n']*}"}"
+        gz="${gz%"${gz##*[!$'\r']}"}"
+        case "$gz" in absent | exited) ;; *) bad=1 ;; esac
         prod_env=$(main "docker inspect nav2 --format '{{range .Config.Env}}{{println .}}{{end}}'")
         printf '%s\n' "$prod_env" >"$ART/production_nav2_env.log"
         if grep -q '^NAV2_PARAMS_OVERLAYS=' <<<"$prod_env" || grep -q '^USE_SIM_TIME=true$' <<<"$prod_env"; then

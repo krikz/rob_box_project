@@ -66,7 +66,13 @@ case "$cmd" in
         [ "${FAKE_OVERLAY_LEFT:-0}" = 1 ] && echo 'NAV2_PARAMS_OVERLAYS=/nav2tune/debug.yaml'
         [ "${FAKE_SIM_TIME_LEFT:-0}" = 1 ] && echo 'USE_SIM_TIME=true' ;;
     "test -f "*runvideo.log*) [ "${FAKE_MISSING_RUNVIDEO:-0}" = 1 ] && exit 1 || exit 0 ;;
-    *"State.Status}}' rob-box-hil-gazebo"*) echo absent ;;
+    *"State.Status}}' rob-box-hil-gazebo"*)
+        case "${FAKE_GZ_STATUS:-absent}" in
+            leading-newline-absent) printf '\nabsent\n' ;;
+            crlf-exited) printf '\r\nexited\r\n' ;;
+            unexpected) printf '\nabsent\ndocker: unexpected error\n' ;;
+            *) echo "${FAKE_GZ_STATUS:-absent}" ;;
+        esac ;;
     *"State.Running}}' rob-box-hil-gazebo"*) echo true ;;
     *"ros2 bag info"*) echo 'Files: bag.db3'; echo 'Topics: /evaluation /rosout /plan /cmd_vel' ;;
     *) ;;
@@ -170,6 +176,20 @@ check "optional runvideo absent: все 3 попытки, cleanup без FAIL (r
     '[ "$rc" -eq 4 ] && [ "$(grep -c "runvideo.sh M1" "$WORK/ssh-norunvideo.log")" -eq 3 ] && ! grep -q "CLEANUP_FAILED" "$WORK/out-norunvideo/verdict.log"'
 check "optional runvideo absent: нет ложной ошибки artifact_scp" \
     '! grep -q "runvideo.log: No such file" "$WORK/out-norunvideo/depot4682_test_norunvideo_r1/artifact_scp.err"'
+
+# SSH/CRLF обрамление статуса не отменяет fail-closed проверку остальных состояний.
+run_diag gzleading FAKE_FAIL_AT=1 FAKE_GZ_STATUS=leading-newline-absent; rc=$?
+check "cleanup gz: leading-newline absent допустим (rc=$rc)" \
+    '[ "$rc" -eq 0 ] && grep -q "CLEANUP_OK" "$WORK/out-gzleading/verdict.log"'
+run_diag gzcrlf FAKE_FAIL_AT=1 FAKE_GZ_STATUS=crlf-exited; rc=$?
+check "cleanup gz: CRLF exited допустим (rc=$rc)" \
+    '[ "$rc" -eq 0 ] && grep -q "CLEANUP_OK" "$WORK/out-gzcrlf/verdict.log"'
+run_diag gzrunning FAKE_FAIL_AT=1 FAKE_GZ_STATUS=running; rc=$?
+check "cleanup gz: running остаётся fail-closed (rc=$rc)" \
+    '[ "$rc" -eq 50 ] && grep -q "CLEANUP_FAILED" "$WORK/out-gzrunning/verdict.log"'
+run_diag gzunexpected FAKE_FAIL_AT=1 FAKE_GZ_STATUS=unexpected; rc=$?
+check "cleanup gz: unexpected/docker error остаётся fail-closed (rc=$rc)" \
+    '[ "$rc" -eq 50 ] && grep -q "CLEANUP_FAILED" "$WORK/out-gzunexpected/verdict.log"'
 
 # Ошибка на второй попытке: стоп до costmap, два timestamp, серия прекращается.
 run_diag captured FAKE_FAIL_AT=2; rc=$?
