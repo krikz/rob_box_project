@@ -6,6 +6,7 @@ export MSYS_NO_PATHCONV=1
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+pypath() { if command -v cygpath >/dev/null 2>&1; then cygpath -m "$1"; else printf '%s' "$1"; fi; }
 HIL_CMD="${HIL_CMD:-$ROOT/scripts/hil/hil.sh}"
 : "${PATHCALC_OUT:?PATHCALC_OUT — локальный каталог артефактов}"
 RUN_ID="${PATHCALC_RUN_ID:-depot4682_pathcalc_$(date -u +%Y%m%dT%H%M%SZ)}"
@@ -42,8 +43,11 @@ copy_route_artifacts() {
 }
 
 capture_pathcalc_snapshot() {
-    main "docker exec nav2 cat $SNAPSHOT_PATH" >"$ART/pathcalc_snapshot.bin"
-    [ -s "$ART/pathcalc_snapshot.bin" ]
+    if ! main "docker exec nav2 cat $SNAPSHOT_PATH" >"$ART/pathcalc_snapshot.bin"; then
+        return 1
+    fi
+    python "$(pypath "$HERE/pathcalc_snapshot_validate.py")" "$(pypath "$ART/pathcalc_snapshot.bin")" \
+        >"$ART/pathcalc_snapshot_validation.log" 2>&1
 }
 
 capture_pathcalc() {

@@ -1,6 +1,7 @@
 #ifndef PATHCALC_SNAPSHOT_HPP_
 #define PATHCALC_SNAPSHOT_HPP_
 
+#include <algorithm>
 #include <cerrno>
 #include <cstdint>
 #include <cstdio>
@@ -12,6 +13,7 @@
 namespace pathcalc_snapshot
 {
 
+// Version 1 stores every scalar and array element in little-endian byte order.
 constexpr uint32_t kVersion = 1;
 
 struct Metadata
@@ -57,16 +59,33 @@ struct Snapshot
 namespace detail
 {
 
+inline bool isLittleEndian()
+{
+  const uint16_t marker = 1;
+  return *reinterpret_cast<const uint8_t *>(&marker) == 1;
+}
+
 template<typename T>
 void writePod(std::ofstream & output, const T & value)
 {
-  output.write(reinterpret_cast<const char *>(&value), sizeof(value));
+  uint8_t bytes[sizeof(T)];
+  std::memcpy(bytes, &value, sizeof(value));
+  if (!isLittleEndian()) {
+    std::reverse(bytes, bytes + sizeof(value));
+  }
+  output.write(reinterpret_cast<const char *>(bytes), sizeof(value));
 }
 
 template<typename T>
 void writeArray(std::ofstream & output, const T * values, size_t size)
 {
-  output.write(reinterpret_cast<const char *>(values), size * sizeof(T));
+  if (isLittleEndian()) {
+    output.write(reinterpret_cast<const char *>(values), size * sizeof(T));
+    return;
+  }
+  for (size_t i = 0; i < size; ++i) {
+    writePod(output, values[i]);
+  }
 }
 
 inline void validate(const Snapshot & snapshot)
@@ -132,6 +151,9 @@ inline void writeAtomic(const Snapshot & snapshot)
 {
   detail::validate(snapshot);
   const std::string & final_path = snapshot.metadata.output_path;
+  if (std::ifstream(final_path, std::ios::binary).good()) {
+    return;
+  }
   const std::string temporary_path = final_path + ".tmp";
   try {
     detail::writeFile(temporary_path, snapshot);

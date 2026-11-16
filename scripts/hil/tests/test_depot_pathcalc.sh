@@ -50,7 +50,8 @@ case "$cmd" in
         exit 1 ;;
     *"docker exec nav2 cat /tmp/nav2_pathcalc_snapshot.bin"*)
         [ "${FAKE_MISSING_SNAPSHOT:-0}" = 1 ] && exit 1
-        printf 'NAVFSNAP\001fake-snapshot' ;;
+        cat "${FAKE_SNAPSHOT_FILE:-$FAKE_STATE/../snapshot-valid.bin}"
+        exit "${FAKE_SNAPSHOT_RC:-0}" ;;
     *"ros2 service call /global_costmap/get_costmap"*)
         echo 'REQUEST_UTC=2026-11-12T00:00:00Z'; echo 'REQUEST_ROS'; echo 'sec: 120'
         echo 'response: map_load_time={sec: 100} update_time={sec: 120}'
@@ -95,6 +96,32 @@ case "${1:-}" in
 esac
 EOF
 chmod +x "$WORK/bin/ssh" "$WORK/bin/scp" "$WORK/bin/sleep" "$WORK/bin/hil"
+
+python -X utf8 - "$WORK" <<'PY'
+import struct
+import sys
+from pathlib import Path
+
+work = Path(sys.argv[1])
+valid = bytearray(b"NAVFSNAP")
+valid += struct.pack("<I", 1)
+valid += struct.pack("<ii", 1, 1)
+valid += struct.pack("<9d", *([0.0] * 9))
+valid += struct.pack("<4i", 0, 0, 0, 0)
+valid += struct.pack("<BBq", 1, 1, 123)
+valid += struct.pack("<4i", 0, 0, 0, 0)
+valid += struct.pack("<iffi", 0, 0.0, 0.0, 1)
+valid += b"\0" + struct.pack("<f", 0.0) + struct.pack("<ff", 0.0, 0.0)
+assert len(valid) == 163
+(work / "snapshot-valid.bin").write_bytes(valid)
+bad_magic = bytearray(valid)
+bad_magic[0] = ord("X")
+(work / "snapshot-magic.bin").write_bytes(bad_magic)
+bad_version = bytearray(valid)
+bad_version[8:12] = struct.pack("<I", 2)
+(work / "snapshot-version.bin").write_bytes(bad_version)
+(work / "snapshot-truncated.bin").write_bytes(valid[:-1])
+PY
 
 run_diag() {  # run_diag <case-name> [VAR=value ...]
     local name="$1"; shift
@@ -151,6 +178,14 @@ check "recurrence 2: stale snapshot удалён до отправки M1" \
 run_diag missing FAKE_FAIL_AT=1 FAKE_MISSING_SNAPSHOT=1; rc=$?
 check "missing snapshot: fail-closed выход 41, GetCostmap не вызывается" \
     '[ "$rc" -eq 41 ] && grep -q "PATHCALC_SNAPSHOT_CAPTURE_FAILED" "$WORK/out-missing/verdict.log" && ! grep -q "EVIDENCE_CAPTURED" "$WORK/out-missing/verdict.log" && ! grep -q "ros2 service call /global_costmap/get_costmap" "$WORK/ssh-missing.log"'
+run_diag partialrc FAKE_FAIL_AT=1 FAKE_SNAPSHOT_RC=1; rc=$?
+check "nonzero remote rc после полного output: нет EVIDENCE_CAPTURED" \
+    '[ "$rc" -eq 41 ] && grep -q "PATHCALC_SNAPSHOT_CAPTURE_FAILED" "$WORK/out-partialrc/verdict.log" && ! grep -q "EVIDENCE_CAPTURED" "$WORK/out-partialrc/verdict.log"'
+for corruption in magic version truncated; do
+    run_diag "corrupt-$corruption" FAKE_FAIL_AT=1 FAKE_SNAPSHOT_FILE="$WORK/snapshot-$corruption.bin"; rc=$?
+    check "corrupt $corruption: strict validator отклоняет snapshot" \
+        '[ "$rc" -eq 41 ] && ! grep -q "EVIDENCE_CAPTURED" "$WORK/out-corrupt-'"$corruption"'/verdict.log"'
+done
 run_diag incomplete FAKE_FAIL_AT=1 FAKE_MISSING_TIMESTAMP=1; rc=$?
 check "incomplete timestamps: нет EVIDENCE_CAPTURED, выход 40 (rc=$rc)" \
     '[ "$rc" -eq 40 ] && grep -q "COSTMAP_CAPTURE_FAILED" "$WORK/out-incomplete/verdict.log" && ! grep -q "EVIDENCE_CAPTURED" "$WORK/out-incomplete/verdict.log"'

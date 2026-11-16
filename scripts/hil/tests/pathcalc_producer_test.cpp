@@ -3,6 +3,7 @@
 #include <cstdio>
 #include <fstream>
 #include <iostream>
+#include <iterator>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -20,6 +21,12 @@ void require(bool condition, const char * message)
 bool exists(const std::string & path)
 {
   return std::ifstream(path, std::ios::binary).good();
+}
+
+std::string readFile(const std::string & path)
+{
+  std::ifstream input(path, std::ios::binary);
+  return std::string(std::istreambuf_iterator<char>(input), std::istreambuf_iterator<char>());
 }
 
 std::vector<unsigned char> freeMap(int nx, int ny)
@@ -64,5 +71,12 @@ int main(int argc, char ** argv)
   input.read(magic, sizeof(magic));
   require(std::string(magic, sizeof(magic)) == "NAVFSNAP", "producer snapshot has bad magic");
   std::cout << "PASS: terminal calcPath exhaustion atomically creates versioned snapshot\n";
+
+  const std::string first = readFile(output);
+  failure.snapshot_metadata.timestamp_ns = 99;
+  require(failure.calcPath(1) == 0, "second one-step calcPath unexpectedly succeeded");
+  require(readFile(output) == first, "second exhaustion overwrote first producer snapshot");
+  require(!exists(output + ".tmp"), "second exhaustion left a temporary snapshot");
+  std::cout << "PASS: repeated exhaustion preserves first snapshot\n";
   return 0;
 }

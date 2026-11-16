@@ -203,9 +203,11 @@ startup/lifecycle класс. При повторном lifecycle abort снач
 можно только lifecycle manager, не отправляя цель неактивной ноде и не смешивая этот сбой с PathCalc.
 
 На первом `Failed to create a plan from potential` сценарий останавливает `route.py`, затем до cleanup забирает
-`pathcalc_snapshot.bin`: versioned scalar header, внутренние `costarr/potarr` и полные `pathx/pathy`. Producer пишет
-только на исчерпании `calcPath`, через `.tmp` и atomic rename до следующего `setNavArr`; успешный путь файла не создаёт.
-Отсутствие snapshot — `PATHCALC_SNAPSHOT_CAPTURE_FAILED`, выход 41. Затем сохраняются Nav2 raw, `calcPath_error.log`,
+`pathcalc_snapshot.bin`: versioned little-endian scalar header, внутренние `costarr/potarr` и полные `pathx/pathy`.
+Producer пишет только на исчерпании `calcPath`, через `.tmp` и atomic rename до следующего `setNavArr`; успешный путь
+файла не создаёт. В пределах попытки действует first-write-wins, stale final удаляется перед следующей M1. Runner
+требует успешный remote rc и проверяет magic/version/точную длину по `nx/ny/npath`; отсутствующий или повреждённый
+snapshot — `PATHCALC_SNAPSHOT_CAPTURE_FAILED`, выход 41. Затем сохраняются Nav2 raw, `calcPath_error.log`,
 `/evaluation` и остальной bag, а также `get_costmap_error.log` с UTC/ROS timestamps запроса и ответа. Маршрут не
 продолжается. `EVIDENCE_CAPTURED` (выход 0) означает только полученную диагностику, не route PASS. Если ошибки нет в
 трёх попытках — `EVIDENCE_INSUFFICIENT recurrences=0/3`, выход 4; это не PASS и не доказательство исправления.

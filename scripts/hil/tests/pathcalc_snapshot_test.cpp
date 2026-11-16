@@ -93,6 +93,8 @@ void checkRoundTrip(const std::string & path, int64_t timestamp_ns)
   expected.pathx = path_x.data();
   expected.pathy = path_y.data();
   pathcalc_snapshot::writeAtomic(expected);
+  const std::string raw = readFile(path);
+  require(raw.compare(8, 4, std::string("\x01\x00\x00\x00", 4)) == 0, "version is not little-endian");
 
   std::ifstream input(path, std::ios::binary);
   require(static_cast<bool>(input), "snapshot was not created");
@@ -145,10 +147,24 @@ int main(int argc, char ** argv)
   const std::string final_path = work + "/snapshot.bin";
 
   checkRoundTrip(final_path, 1794757714671303835LL);
-  checkRoundTrip(final_path, 1794757714671303836LL);
-  std::cout << "PASS: versioned round-trip of every scalar and array; atomic replacement; temp absent\n";
+  std::cout << "PASS: versioned round-trip of every scalar and array; atomic rename; temp absent\n";
 
   const std::string before = readFile(final_path);
+  Snapshot second = makeSnapshot(final_path);
+  second.metadata.timestamp_ns = 1794757714671303836LL;
+  const std::vector<uint8_t> cost = {0, 1, 50, 252, 253, 255};
+  const std::vector<float> potential = {1.0F, 2.5F, 1.0e10F, 4.0F, 5.0F, 6.0F};
+  const std::vector<float> path_x = {446.0F, 446.5F, 447.0F, 499.0F};
+  const std::vector<float> path_y = {511.0F, 511.5F, 512.0F, 503.0F};
+  second.costarr = cost.data();
+  second.potarr = potential.data();
+  second.pathx = path_x.data();
+  second.pathy = path_y.data();
+  pathcalc_snapshot::writeAtomic(second);
+  require(readFile(final_path) == before, "second exhaustion overwrote first snapshot");
+  require(std::ifstream(final_path + ".tmp").good() == false, "second write left temporary file");
+  std::cout << "PASS: first-write-wins preserves the original snapshot\n";
+
   Snapshot invalid = makeSnapshot(final_path);
   bool rejected = false;
   try {
