@@ -16,6 +16,7 @@ curl -fsSL "https://github.com/ros-navigation/navigation2/archive/$COMMIT.tar.gz
 mv "$WORKSPACE/src/navigation2-$COMMIT" "$SOURCE"
 cp "$ROOT/scripts/hil/diagnostics/pathcalc_snapshot.hpp" "$PACKAGE/include/nav2_navfn_planner/"
 patch -d "$SOURCE" -p1 <"$ROOT/scripts/hil/diagnostics/nav2_pathcalc_snapshot.patch"
+patch -d "$SOURCE" -p1 <"$ROOT/docker/main/nav2/navfn_gradient_origin.patch"
 
 set +u
 # shellcheck source=/dev/null

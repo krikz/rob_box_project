@@ -67,10 +67,14 @@ RUN apt-get update && apt-get install -y \
 #   Humble SimpleActionServer otherwise restarts the pending goal on the same
 #   thread and the BT never sees FAILURE;
 # - NavFn refuses a path whose tail crosses lethal or unknown beyond a
-#   lidar-seen wall (#4694). allow_unknown stays true.
+#   lidar-seen wall (#4694). allow_unknown stays true;
+# - NavFn gradient origin normalization: negative dx/dy in the four-cell
+#   gradient loop underflowed the cell index, smearing the potential into
+#   the previous row/column (#4682).
 COPY controller_goal_tf_fail.patch /tmp/controller_goal_tf_fail.patch
 COPY controller_progress_abort.patch /tmp/controller_progress_abort.patch
 COPY navfn_refuse_unknown_tail.patch /tmp/navfn_refuse_unknown_tail.patch
+COPY navfn_gradient_origin.patch /tmp/navfn_gradient_origin.patch
 RUN apt-get update && apt-get install -y \
     build-essential \
     curl \
@@ -85,6 +89,7 @@ RUN apt-get update && apt-get install -y \
     && patch -d /tmp/nav2-fix/src/navigation2 -p1 </tmp/controller_goal_tf_fail.patch \
     && patch -d /tmp/nav2-fix/src/navigation2 -p1 </tmp/controller_progress_abort.patch \
     && patch -d /tmp/nav2-fix/src/navigation2 -p1 </tmp/navfn_refuse_unknown_tail.patch \
+    && patch -d /tmp/nav2-fix/src/navigation2 -p1 </tmp/navfn_gradient_origin.patch \
     && rm -rf /var/lib/apt/lists/*
 RUN /bin/bash -c "source /opt/ros/${ROS_DISTRO}/setup.bash && cd /tmp/nav2-fix && \
     colcon build --symlink-install --base-paths /tmp/nav2-fix/src/navigation2 \
@@ -94,7 +99,8 @@ RUN /bin/bash -c "source /opt/ros/${ROS_DISTRO}/setup.bash && cd /tmp/nav2-fix &
     && cp /tmp/nav2-fix/install/nav2_navfn_planner/lib/libnav2_navfn_planner.so \
         /opt/ros/${ROS_DISTRO}/lib/libnav2_navfn_planner.so \
     && rm -rf /tmp/nav2-fix /tmp/controller_goal_tf_fail.patch \
-        /tmp/controller_progress_abort.patch /tmp/navfn_refuse_unknown_tail.patch
+        /tmp/controller_progress_abort.patch /tmp/navfn_refuse_unknown_tail.patch \
+        /tmp/navfn_gradient_origin.patch
 # #4475: узел дерева WouldSpinOnStall. Угол считает rob_box_teleop.turn_in_place
 # (том compose, PYTHONPATH в start_nav2_direct.sh) — тот файл, что проверяет pytest.
 # doTransform<PoseStamped> в tf2_geometry_msgs.hpp зовёт KDL. Без -lorocos-kdl

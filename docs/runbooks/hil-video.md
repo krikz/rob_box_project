@@ -179,11 +179,12 @@ ssh ros2@10.1.1.250 'grep -E "PLAN|UNREACHABLE|GOAL_END|EM_ON|COVERAGE_" /home/r
 
 ### 3b. Первая ошибка PathCalc в M1 (#4682) [код; живой HIL ещё не прогонялся]
 
-Это отдельное измерение глобального планирования, а не исправление Nav2 и не полный маршрут. Скорости,
-таймаут цели `route.py`, speed zones и DWB critics не меняются. Нужен diagnostic NavFn 1.1.20
-(`a097086719c88f781aa59788eca29ac6ca5e56db`) с failure-only binary snapshot, собранный отдельно от
-production-образа. Patch и writer лежат в `scripts/hil/diagnostics/`; весь Nav2 в репозиторий не копируется.
-Путь к ARM64-библиотеке передаётся явно; baseline без `static_layer`.
+Это отдельное измерение глобального планирования, а не полный маршрут. Скорости, таймаут цели `route.py`,
+speed zones и DWB critics не меняются. Нужен diagnostic NavFn 1.1.20
+(`a097086719c88f781aa59788eca29ac6ca5e56db`) с failure-only binary snapshot и тем же gradient-origin patch,
+который собирается в production-образ; diagnostic библиотека собирается отдельно. Snapshot patch и writer лежат
+в `scripts/hil/diagnostics/`; весь Nav2 в репозиторий не копируется. Путь к ARM64-библиотеке передаётся явно;
+baseline без `static_layer`.
 
 ```bash
 # Один раз в свежем внешнем workspace на Main; каталог не должен существовать.
