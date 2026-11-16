@@ -38,7 +38,10 @@ stop_route() {
 copy_route_artifacts() {
     local remote_out="$SANDBOX_REPO/out/${RUN_ID}_r$ATTEMPT"
     sandbox "sleep 5; cp '$SANDBOX_REPO/out/route.log' '$remote_out/route.log'; cp '$SANDBOX_REPO/out/run_start.txt' '$SANDBOX_REPO/out/run_end.txt' '$remote_out/' 2>/dev/null || true; mkdir -p '$remote_out/maprec'; cp '$SANDBOX_REPO/out/maprec/poses.csv' '$SANDBOX_REPO/out/maprec/meta.json' '$remote_out/maprec/' 2>/dev/null || true" >"$ART/goals_raw.log" 2>&1
-    scp -q -o BatchMode=yes "$SANDBOX:$remote_out/route.log" "$SANDBOX:$remote_out/runvideo.log" "$ART/" 2>"$ART/artifact_scp.err" || true
+    scp -q -o BatchMode=yes "$SANDBOX:$remote_out/route.log" "$ART/" 2>"$ART/artifact_scp.err" || true
+    if sandbox "test -f '$remote_out/runvideo.log'"; then
+        scp -q -o BatchMode=yes "$SANDBOX:$remote_out/runvideo.log" "$ART/" 2>>"$ART/artifact_scp.err" || true
+    fi
     scp -q -o BatchMode=yes "$SANDBOX:$remote_out/maprec/poses.csv" "$SANDBOX:$remote_out/maprec/meta.json" "$ART/" 2>>"$ART/artifact_scp.err" || true
 }
 
