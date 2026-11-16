@@ -1,8 +1,10 @@
 from __future__ import annotations
 
-import sys
+import subprocess
 import types
 from pathlib import Path
+
+import pytest
 
 from rob_box_sim import controller_spawner as cs
 
@@ -14,87 +16,59 @@ LAUNCH = (
     / "sim.launch.py"
 )
 
+VALID_STATE = """stats {
+  iterations: 42
+}
+state {
+}
+"""
 
-def _fake_ros(monkeypatch, deliver_clock):
+
+def _result(stdout="", stderr="", returncode=0):
+    return types.SimpleNamespace(stdout=stdout, stderr=stderr, returncode=returncode)
+
+
+def _fake_ign(
+    monkeypatch, services="/world/depot/state\n", list_results=None, state_results=None
+):
     events = []
+    if list_results is None:
+        list_results = [_result(stdout=services)]
+    if state_results is None:
+        state_results = [_result(stdout=VALID_STATE)]
 
-    class Future:
-        def __init__(self):
-            self._done = False
+    def take(results):
+        result = results.pop(0) if len(results) > 1 else results[0]
+        if isinstance(result, BaseException):
+            raise result
+        return result
 
-        def done(self):
-            return self._done
+    def run(cmd, **kwargs):
+        if cmd[:3] == ["ign", "service", "-l"]:
+            events.append(("list",))
+            return take(list_results)
+        assert cmd[:4] == ["ign", "service", "-s", "/world/depot/state"]
+        events.append(("request", cmd[3]))
+        return take(state_results)
 
-        def set_result(self, result):
-            self._done = True
-
-    class Logger:
-        def error(self, message):
-            events.append(("error", message))
-
-    class Node:
-        def __init__(self):
-            self.callback = None
-
-        def create_subscription(self, msg_type, topic, callback, qos):
-            events.append(("subscribe", topic))
-            self.callback = callback
-
-        def get_logger(self):
-            return Logger()
-
-        def destroy_node(self):
-            events.append(("destroy",))
-
-    rclpy = types.ModuleType("rclpy")
-    node = Node()
-    rclpy.init = lambda: events.append(("init",))
-    rclpy.create_node = lambda name: node
-    rclpy.try_shutdown = lambda: events.append(("shutdown",))
-
-    def spin_until_future_complete(actual_node, future, timeout_sec):
-        events.append(("spin", timeout_sec))
-        if deliver_clock:
-            actual_node.callback(object())
-
-    rclpy.spin_until_future_complete = spin_until_future_complete
-    task = types.ModuleType("rclpy.task")
-    task.Future = Future
-    qos = types.ModuleType("rclpy.qos")
-    qos.HistoryPolicy = types.SimpleNamespace(KEEP_LAST=1)
-    qos.ReliabilityPolicy = types.SimpleNamespace(BEST_EFFORT=1)
-    qos.QoSProfile = lambda **kwargs: kwargs
-    rosgraph_msgs = types.ModuleType("rosgraph_msgs")
-    rosgraph_msg = types.ModuleType("rosgraph_msgs.msg")
-    rosgraph_msg.Clock = object
-    monkeypatch.setitem(sys.modules, "rclpy", rclpy)
-    monkeypatch.setitem(sys.modules, "rclpy.task", task)
-    monkeypatch.setitem(sys.modules, "rclpy.qos", qos)
-    monkeypatch.setitem(sys.modules, "rosgraph_msgs", rosgraph_msgs)
-    monkeypatch.setitem(sys.modules, "rosgraph_msgs.msg", rosgraph_msg)
+    monkeypatch.setattr(subprocess, "run", run)
     return events
 
 
-def test_launch_starts_jsb_only_after_gazebo_clock():
-    text = LAUNCH.read_text(encoding="utf-8")
-    assert "jsb = ExecuteProcess(" in text
-    assert '"rob_box_sim.controller_spawner"' in text
-    assert '"--clock-topic"' in text
-    assert "CLOCK_RAW_TOPIC" in text
-
-
-def test_spawner_execs_only_after_clock(monkeypatch):
-    events = _fake_ros(monkeypatch, deliver_clock=True)
-    execs = []
+def _capture_exec(monkeypatch, events):
     monkeypatch.setattr(
-        cs.os, "execvp", lambda executable, argv: execs.append((executable, argv))
+        cs.os,
+        "execvp",
+        lambda executable, argv: events.append(("exec", executable, argv)),
     )
 
-    cs.main(
+
+def _run_main():
+    return cs.main(
         [
             "joint_state_broadcaster",
-            "--clock-topic",
-            "/sim/clock_raw",
+            "--startup-timeout",
+            "1",
             "--controller-manager",
             "/controller_manager",
             "--controller-manager-timeout",
@@ -102,35 +76,116 @@ def test_spawner_execs_only_after_clock(monkeypatch):
         ]
     )
 
-    assert ("subscribe", "/sim/clock_raw") in events
-    assert events.index(("spin", 60.0)) < events.index(("shutdown",))
-    assert execs == [
-        (
+
+def test_launch_starts_jsb_only_after_gazebo_state():
+    text = LAUNCH.read_text(encoding="utf-8")
+    assert "jsb = ExecuteProcess(" in text
+    assert '"rob_box_sim.controller_spawner"' in text
+    assert '"--startup-timeout"' in text
+    assert '"--clock-topic"' not in text
+
+
+def test_spawner_execs_only_after_gazebo_state(monkeypatch):
+    events = _fake_ign(monkeypatch)
+    _capture_exec(monkeypatch, events)
+
+    assert _run_main() == 0
+
+    assert events[0] == ("list",)
+    assert ("request", "/world/depot/state") in events
+    assert events.index(("request", "/world/depot/state")) < next(
+        i for i, event in enumerate(events) if event[0] == "exec"
+    )
+    assert events[-1] == (
+        "exec",
+        "ros2",
+        [
             "ros2",
-            [
-                "ros2",
-                "run",
-                "controller_manager",
-                "spawner",
-                "joint_state_broadcaster",
-                "--controller-manager",
-                "/controller_manager",
-                "--controller-manager-timeout",
-                "60",
-            ],
-        )
-    ]
-
-
-def test_spawner_does_not_exec_without_clock(monkeypatch):
-    events = _fake_ros(monkeypatch, deliver_clock=False)
-    execs = []
-    monkeypatch.setattr(
-        cs.os, "execvp", lambda executable, argv: execs.append((executable, argv))
+            "run",
+            "controller_manager",
+            "spawner",
+            "joint_state_broadcaster",
+            "--controller-manager",
+            "/controller_manager",
+            "--controller-manager-timeout",
+            "60",
+        ],
     )
 
-    rc = cs.main(["joint_state_broadcaster", "--clock-timeout", "0.1"])
+
+@pytest.mark.parametrize(
+    "state_result",
+    [
+        _result(stdout="Service call failed\n"),
+        _result(stderr="Service call timed out\n"),
+    ],
+)
+def test_spawner_does_not_exec_on_failed_state_contract(monkeypatch, state_result):
+    events = _fake_ign(monkeypatch, state_results=[state_result])
+    monkeypatch.setattr(cs.os, "execvp", lambda *args: events.append(("exec",)))
+
+    rc = cs.main(["joint_state_broadcaster", "--startup-timeout", "0.01"])
 
     assert rc == 1
-    assert execs == []
-    assert any(event[0] == "error" and "0.1" in event[1] for event in events)
+    assert ("request", "/world/depot/state") in events
+    assert not any(event[0] == "exec" for event in events)
+
+
+def test_spawner_rejects_true_nested_in_state_without_stats(monkeypatch):
+    result = _result(stdout="state {\n  has_one_time_component_changes: true\n}\n")
+    events = _fake_ign(monkeypatch, state_results=[result])
+    monkeypatch.setattr(cs.os, "execvp", lambda *args: events.append(("exec",)))
+
+    rc = cs.main(["joint_state_broadcaster", "--startup-timeout", "0.01"])
+
+    assert rc == 1
+    assert not any(event[0] == "exec" for event in events)
+
+
+def test_spawner_does_not_exec_without_gazebo_state_service(monkeypatch):
+    events = _fake_ign(monkeypatch, services="/world/depot/scene/info\n")
+    monkeypatch.setattr(cs.os, "execvp", lambda *args: events.append(("exec",)))
+
+    rc = cs.main(["joint_state_broadcaster", "--startup-timeout", "0"])
+
+    assert rc == 1
+    assert not any(event[0] in ("request", "exec") for event in events)
+
+
+@pytest.mark.parametrize("command", ["list", "request"])
+@pytest.mark.parametrize(
+    "error",
+    [
+        subprocess.TimeoutExpired("ign", 1),
+        FileNotFoundError("ign"),
+        OSError("transport unavailable"),
+    ],
+)
+def test_spawner_retries_subprocess_errors_within_budget(monkeypatch, command, error):
+    kwargs = {}
+    if command == "list":
+        kwargs["list_results"] = [error, _result(stdout="/world/depot/state\n")]
+    else:
+        kwargs["state_results"] = [error, _result(stdout=VALID_STATE)]
+    events = _fake_ign(monkeypatch, **kwargs)
+    _capture_exec(monkeypatch, events)
+    monkeypatch.setattr(cs.time, "sleep", lambda seconds: None)
+
+    assert _run_main() == 0
+    assert any(event[0] == "exec" for event in events)
+
+
+def test_spawner_retries_nonzero_service_list_within_budget(monkeypatch):
+    events = _fake_ign(
+        monkeypatch,
+        list_results=[
+            _result(stderr="transport unavailable\n", returncode=1),
+            _result(stdout="/world/depot/state\n"),
+        ],
+    )
+    _capture_exec(monkeypatch, events)
+    monkeypatch.setattr(cs.time, "sleep", lambda seconds: None)
+
+    assert _run_main() == 0
+    assert events.count(("list",)) == 2
+    assert any(event[0] == "exec" for event in events)
