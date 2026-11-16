@@ -9,46 +9,65 @@ import sys
 import time
 
 
+def _state_response_ok(result) -> bool:
+    lines = result.stdout.splitlines()
+    return (
+        result.returncode == 0
+        and not result.stderr.strip()
+        and bool(lines)
+        and lines[0] == "stats {"
+        and "state {" in lines
+    )
+
+
 def _wait_for_gazebo_state(timeout_s: float) -> bool:
     deadline = time.monotonic() + timeout_s
     while time.monotonic() < deadline:
         remaining = deadline - time.monotonic()
-        listed = subprocess.run(
-            ["ign", "service", "-l"],
-            capture_output=True,
-            text=True,
-            timeout=max(0.1, min(5.0, remaining)),
-        )
-        service = next(
-            (
-                line
-                for line in listed.stdout.splitlines()
-                if line.startswith("/world/") and line.endswith("/state")
-            ),
-            None,
-        )
-        if service is not None:
-            remaining = deadline - time.monotonic()
-            state = subprocess.run(
-                [
-                    "ign",
-                    "service",
-                    "-s",
-                    service,
-                    "--reqtype",
-                    "ignition.msgs.Empty",
-                    "--reptype",
-                    "ignition.msgs.SerializedStepMap",
-                    "--timeout",
-                    str(max(1, int(remaining * 1000))),
-                    "--req",
-                    "",
-                ],
+        try:
+            listed = subprocess.run(
+                ["ign", "service", "-l"],
                 capture_output=True,
                 text=True,
-                timeout=max(0.1, remaining),
+                timeout=max(0.1, min(5.0, remaining)),
             )
-            if state.returncode == 0 and "true" in state.stdout:
+        except (OSError, subprocess.TimeoutExpired):
+            listed = None
+        service = None
+        if listed is not None and listed.returncode == 0:
+            service = next(
+                (
+                    line
+                    for line in listed.stdout.splitlines()
+                    if line.startswith("/world/") and line.endswith("/state")
+                ),
+                None,
+            )
+        if service is not None:
+            remaining = deadline - time.monotonic()
+            try:
+                state = subprocess.run(
+                    [
+                        "ign",
+                        "service",
+                        "-s",
+                        service,
+                        "--reqtype",
+                        "ignition.msgs.Empty",
+                        "--reptype",
+                        "ignition.msgs.SerializedStepMap",
+                        "--timeout",
+                        str(max(1, int(remaining * 1000))),
+                        "--req",
+                        "",
+                    ],
+                    capture_output=True,
+                    text=True,
+                    timeout=max(0.1, remaining),
+                )
+            except (OSError, subprocess.TimeoutExpired):
+                state = None
+            if state is not None and _state_response_ok(state):
                 return True
         time.sleep(min(0.2, max(0.0, deadline - time.monotonic())))
     return False
