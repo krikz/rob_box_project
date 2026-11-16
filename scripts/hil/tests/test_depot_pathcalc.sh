@@ -53,10 +53,23 @@ case "$cmd" in
         cat "${FAKE_SNAPSHOT_FILE:-$FAKE_STATE/../snapshot-valid.bin}"
         exit "${FAKE_SNAPSHOT_RC:-0}" ;;
     *"ros2 service call /global_costmap/get_costmap"*)
-        echo 'REQUEST_UTC=2026-11-12T00:00:00Z'; echo 'REQUEST_ROS'; echo 'sec: 120'
+        echo 'REQUEST_UTC=2026-11-12T00:00:00Z'; echo 'REQUEST_ROS'
+        if [ "${FAKE_INDENTED_TIMESTAMPS:-0}" = 1 ]; then
+            echo 'clock:'; echo '  sec: 120'; echo '  nanosec: 182000000'; echo '---'
+        elif [ "${FAKE_INVALID_TIMESTAMP:-0}" = 1 ]; then
+            echo 'sec: invalid'
+        else
+            echo 'sec: 120'
+        fi
         echo 'response: map_load_time={sec: 100} update_time={sec: 120}'
         echo 'RESPONSE_UTC=2026-11-12T00:00:01Z'; echo 'RESPONSE_ROS'
-        [ "${FAKE_MISSING_TIMESTAMP:-0}" = 1 ] || echo 'sec: 121' ;;
+        if [ "${FAKE_MISSING_TIMESTAMP:-0}" != 1 ]; then
+            if [ "${FAKE_INDENTED_TIMESTAMPS:-0}" = 1 ]; then
+                echo 'clock:'; echo '  sec: 121'; echo '  nanosec: 183000000'; echo '---'
+            else
+                echo 'sec: 121'
+            fi
+        fi ;;
     *"docker logs nav2"*)
         echo 'calcPath begin stc=579379 start=(379,579) goal=(499,499)'
         echo 'best_pose=(-6,4) potarr=23935.889 reason=potential'
@@ -221,6 +234,12 @@ done
 run_diag incomplete FAKE_FAIL_AT=1 FAKE_MISSING_TIMESTAMP=1; rc=$?
 check "incomplete timestamps: нет EVIDENCE_CAPTURED, выход 40 (rc=$rc)" \
     '[ "$rc" -eq 40 ] && grep -q "COSTMAP_CAPTURE_FAILED" "$WORK/out-incomplete/verdict.log" && ! grep -q "EVIDENCE_CAPTURED" "$WORK/out-incomplete/verdict.log"'
+run_diag indented FAKE_FAIL_AT=1 FAKE_INDENTED_TIMESTAMPS=1; rc=$?
+check "indented ROS YAML: оба timestamp приняты, evidence captured (rc=$rc)" \
+    '[ "$rc" -eq 0 ] && grep -q "EVIDENCE_CAPTURED" "$WORK/out-indented/verdict.log"'
+run_diag invalid FAKE_FAIL_AT=1 FAKE_INVALID_TIMESTAMP=1; rc=$?
+check "invalid timestamp: нет EVIDENCE_CAPTURED, выход 40 (rc=$rc)" \
+    '[ "$rc" -eq 40 ] && grep -q "COSTMAP_CAPTURE_FAILED" "$WORK/out-invalid/verdict.log" && ! grep -q "EVIDENCE_CAPTURED" "$WORK/out-invalid/verdict.log"'
 check "recurrence 2: обязательные lock/overlay/registry/sim-time проверки выполнены" \
     'grep -q "test ! -e /tmp/hil.lock" "$WORK/ssh-captured.log" && grep -q "Config.Env" "$WORK/ssh-captured.log" && grep -q "реестр карт.*не изменился" "$ART/hil_off.log" && grep -q "CLEANUP_OK" "$WORK/out-captured/verdict.log"'
 

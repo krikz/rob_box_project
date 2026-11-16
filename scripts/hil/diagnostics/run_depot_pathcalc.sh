@@ -64,7 +64,7 @@ capture_pathcalc() {
     for marker in REQUEST_UTC REQUEST_ROS RESPONSE_UTC RESPONSE_ROS; do
         grep -q "$marker" "$ART/get_costmap_error.log" || return 1
     done
-    [ "$(grep -c '^sec:' "$ART/get_costmap_error.log")" -ge 2 ] && grep -q '^response:' "$ART/get_costmap_error.log"
+    [ "$(grep -cE '^[[:space:]]*sec: [0-9]+$' "$ART/get_costmap_error.log")" -ge 2 ] && grep -q '^response:' "$ART/get_costmap_error.log"
 }
 
 cleanup_attempt() {
