@@ -6,13 +6,15 @@ export MSYS_NO_PATHCONV=1
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+pypath() { if command -v cygpath >/dev/null 2>&1; then cygpath -m "$1"; else printf '%s' "$1"; fi; }
 HIL_CMD="${HIL_CMD:-$ROOT/scripts/hil/hil.sh}"
 : "${PATHCALC_OUT:?PATHCALC_OUT — локальный каталог артефактов}"
 RUN_ID="${PATHCALC_RUN_ID:-depot4682_pathcalc_$(date -u +%Y%m%dT%H%M%SZ)}"
 MAIN="${HIL_MAIN_HOST:-ros2@10.1.1.10}"
 SANDBOX="${HIL_SANDBOX_HOST:-ros2@10.1.1.250}"
 SANDBOX_REPO="${HIL_SANDBOX_REPO:-/home/ros2/rob_box_hilvideo}"
-DIAG_LIB="${PATHCALC_DIAG_LIB:-/home/ros2/rob_box_hil/nav2_diag_4682/install/nav2_navfn_planner/lib/libnav2_navfn_planner.so}"
+DIAG_LIB="${PATHCALC_DIAG_LIB:-/home/ros2/rob_box_hil/nav2_diag_4682_snapshot/install/nav2_navfn_planner/lib/libnav2_navfn_planner.so}"
+SNAPSHOT_PATH=/tmp/nav2_pathcalc_snapshot.bin
 MONITOR_TIMEOUT="${PATHCALC_MONITOR_TIMEOUT:-150}"
 LIFECYCLE_ATTEMPTS="${PATHCALC_LIFECYCLE_ATTEMPTS:-60}"
 SSHO=(-o BatchMode=yes -o ConnectTimeout=10 -o ServerAliveInterval=5 -o ServerAliveCountMax=6)
@@ -38,6 +40,14 @@ copy_route_artifacts() {
     sandbox "sleep 5; cp '$SANDBOX_REPO/out/route.log' '$remote_out/route.log'; cp '$SANDBOX_REPO/out/run_start.txt' '$SANDBOX_REPO/out/run_end.txt' '$remote_out/' 2>/dev/null || true; mkdir -p '$remote_out/maprec'; cp '$SANDBOX_REPO/out/maprec/poses.csv' '$SANDBOX_REPO/out/maprec/meta.json' '$remote_out/maprec/' 2>/dev/null || true" >"$ART/goals_raw.log" 2>&1
     scp -q -o BatchMode=yes "$SANDBOX:$remote_out/route.log" "$SANDBOX:$remote_out/runvideo.log" "$ART/" 2>"$ART/artifact_scp.err" || true
     scp -q -o BatchMode=yes "$SANDBOX:$remote_out/maprec/poses.csv" "$SANDBOX:$remote_out/maprec/meta.json" "$ART/" 2>>"$ART/artifact_scp.err" || true
+}
+
+capture_pathcalc_snapshot() {
+    if ! main "docker exec nav2 cat $SNAPSHOT_PATH" >"$ART/pathcalc_snapshot.bin"; then
+        return 1
+    fi
+    python "$(pypath "$HERE/pathcalc_snapshot_validate.py")" "$(pypath "$ART/pathcalc_snapshot.bin")" \
+        >"$ART/pathcalc_snapshot_validation.log" 2>&1
 }
 
 capture_pathcalc() {
@@ -161,6 +171,7 @@ for ATTEMPT in 1 2 3; do
         echo "LIFECYCLE_NOT_ACTIVE attempt=$ATTEMPT/3; M1_NOT_SENT" | tee -a "$SUMMARY"
         exit 33
     fi
+    main "docker exec nav2 rm -f $SNAPSHOT_PATH $SNAPSHOT_PATH.tmp" || exit 34
     sandbox "mkdir -p '$REMOTE_OUT'; docker exec -d rob-box-hil-gazebo /entrypoint.sh bash -c 'echo \$\$ >$CONTAINER_OUT/recorder.pid; exec ros2 bag record -o $CONTAINER_OUT/bag /rosout /evaluation /scan /odom /diff_drive_controller/odom /tf /tf_static /rtabmap/info /rtabmap/odom_info /rtabmap/map /sim/ground_truth/odom /plan /cmd_vel /cmd_vel_emergency /global_costmap/costmap_raw /local_costmap/costmap_raw >$CONTAINER_OUT/bag.log 2>&1'" || exit 31
     sleep 8
     sandbox "test -d '$REMOTE_OUT/bag' && echo BAG_RECORDING_DIRECTORY_PRESENT; tail -20 '$REMOTE_OUT/bag.log'" >"$ART/bag_start.log" 2>&1 || exit 31
@@ -172,6 +183,10 @@ for ATTEMPT in 1 2 3; do
     stop_route
     wait "$ROUTE_SSH_PID" 2>/dev/null || true
     if [ "$MONITOR_RC" -eq 0 ]; then
+        capture_pathcalc_snapshot || {
+            echo "PATHCALC_SNAPSHOT_CAPTURE_FAILED attempt=$ATTEMPT/3" | tee -a "$SUMMARY"
+            exit 41
+        }
         capture_pathcalc || {
             echo "COSTMAP_CAPTURE_FAILED attempt=$ATTEMPT/3" | tee -a "$SUMMARY"
             exit 40

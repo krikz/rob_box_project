@@ -815,7 +815,9 @@ jobs:
         run: |
           bash scripts/hil/tests/test_hil.sh
           bash scripts/hil/tests/test_depot_pathcalc.sh
-          shellcheck scripts/hil/hil.sh scripts/hil/remote_pi.sh scripts/hil/hil.conf scripts/hil/tests/test_hil.sh scripts/hil/diagnostics/run_depot_pathcalc.sh scripts/hil/tests/test_depot_pathcalc.sh scripts/deploy/check_hil_lock.sh docker/sim/hil_run.sh
+          bash scripts/hil/tests/test_pathcalc_snapshot.sh
+          bash scripts/hil/tests/test_pathcalc_producer.sh
+          shellcheck scripts/hil/hil.sh scripts/hil/remote_pi.sh scripts/hil/hil.conf scripts/hil/tests/test_hil.sh scripts/hil/diagnostics/run_depot_pathcalc.sh scripts/hil/diagnostics/build_nav2_pathcalc_snapshot.sh scripts/hil/tests/test_depot_pathcalc.sh scripts/hil/tests/test_pathcalc_snapshot.sh scripts/hil/tests/test_pathcalc_producer.sh scripts/deploy/check_hil_lock.sh docker/sim/hil_run.sh
 
       # Issue #4492: ключ студии канала на хостах — только чтение через forced command.
       # Тест гоняет гейт с фейковыми docker/scp/git: разрешённое проходит, обходы
