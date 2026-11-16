@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import re
 import subprocess
 import sys
 import time
@@ -39,7 +40,7 @@ def _wait_for_gazebo_state(timeout_s: float) -> bool:
                 (
                     line
                     for line in listed.stdout.splitlines()
-                    if line.startswith("/world/") and line.endswith("/state")
+                    if re.fullmatch(r"/world/[^/]+/state", line)
                 ),
                 None,
             )

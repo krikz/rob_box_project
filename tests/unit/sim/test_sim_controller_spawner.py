@@ -113,6 +113,26 @@ def test_spawner_execs_only_after_gazebo_state(monkeypatch):
     )
 
 
+def test_spawner_selects_exact_world_state_service(monkeypatch):
+    events = _fake_ign(
+        monkeypatch,
+        services=(
+            "/world/depot/control/state\n"
+            "/world/depot/scene/state\n"
+            "/world//state\n"
+            "/world/depot/state\n"
+            "/world/depot/state/nested\n"
+        ),
+    )
+    _capture_exec(monkeypatch, events)
+
+    assert _run_main() == 0
+
+    assert [event for event in events if event[0] == "request"] == [
+        ("request", "/world/depot/state")
+    ]
+
+
 @pytest.mark.parametrize(
     "state_result",
     [
