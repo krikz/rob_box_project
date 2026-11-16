@@ -19,7 +19,9 @@ from typing import Any, Optional
 
 from rob_box_dialog import knowledge as kn
 from rob_box_dialog.address import GREETING_WAKE
+from rob_box_dialog.session import SceneFrame
 from rob_box_dialog.speaker_adapter import greeting_frame, greeting_open
+from rob_box_dialog.window_reset import reset_if_idle
 from rob_box_voice.core.identity_question import session
 
 KIND = "GreetingReply"
@@ -36,38 +38,62 @@ def _announce(node: Any, seconds: float) -> None:
         announce(float(seconds))
 
 
-def _arm(node: Any) -> None:
+def _arm(node: Any, spoken_text: Optional[str] = None) -> Optional[SceneFrame]:
     """Открыть окно ответа сейчас: кадр с ``asked_at`` после грейса микрофона и событие для ``stt_node``."""
     current = session(node)
-    current.arm_scene(KIND, _OPEN_TTL_S, {"asked_at": current.now() + kn.IDENTITY_MIC_GRACE_S})
-    _announce(node, _OPEN_TTL_S)
+    payload: dict[str, Any] = {"asked_at": current.now() + kn.IDENTITY_MIC_GRACE_S}
+    if spoken_text is not None:
+        payload["text"] = spoken_text
+    frame = current.arm_scene(KIND, _OPEN_TTL_S, payload)
+    if frame is not None:
+        _announce(node, _OPEN_TTL_S)
+    return frame
 
 
-def open_window(node: Any, person_ref: str, name: str, speech_id: str) -> None:
+def open_window(node: Any, person_ref: str, name: str, speech_id: str, text: str = "") -> None:
     """Приветствие отдано в речь (``speech_id``): кадр ждёт конца речи. Нет ``speech_id`` — окна нет."""
     if not speech_id:
         return
     current = session(node)
     current.pop_scene(KIND)
+    payload = greeting_frame(person_ref, name, speech_id)
+    payload["text"] = text
     current.push_scene(KIND, "code", ttl_s=float(kn.IDENTITY_WAIT_QUESTION_S),
-                       payload=greeting_frame(person_ref, name, speech_id))
+                       payload=payload)
     node.get_logger().info(f"💬 [reply-window] greeting {name}: кадр ждёт конца приветствия speech_id={speech_id[:8]}")
 
 
-def on_speech_event(node: Any, kind: int, speech_id: str, agent: str) -> None:
+def _record_spoken_greeting(node: Any, speech_id: str, text: str, epoch: int) -> None:
+    """Подтверждённая реплика робота занимает отдельный ход в обычной истории."""
+    engine = node._engine
+    if epoch != engine.session.snapshot.epoch:
+        return
+    engine.log.begin(speech_id, epoch, "")
+    engine.log.said(speech_id, speech_id, text, delivered=True)
+
+
+def on_speech_event(node: Any, kind: int, speech_id: str, agent: str, spoken_chars: int = 0) -> None:
     """Приветствие договорено — открыть окно; отменено/отклонено — снять кадр."""
     if agent != "personality" or not speech_id or kind not in (_FINISHED, _CANCELLED, _REJECTED):
         return
     current = session(node)
-    frame = current.snapshot.top(KIND)
+    snapshot = current.snapshot
+    frame = snapshot.top(KIND)
     if frame is None or frame.payload.get("speech_id") != speech_id or greeting_open(frame):
+        return
+    if frame.ttl_until is not None and frame.ttl_until <= current.now():
+        current.pop_scene(KIND)
         return
     name = frame.payload.get("name")
     if kind != _FINISHED:
         current.pop_scene(KIND)
         node.get_logger().info(f"💬 [reply-window] greeting {name}: кадр снят, приветствие не прозвучало (kind={kind})")
         return
-    _arm(node)
+    spoken_text = str(frame.payload.get("text") or "")[:max(0, spoken_chars)].strip()
+    if spoken_text:
+        # Запись добавляет ход, поэтому проходит в том же цикле, где LLM читает историю.
+        node._loop.call_soon_threadsafe(_record_spoken_greeting, node, speech_id, spoken_text, snapshot.epoch)
+    _arm(node, spoken_text)
     node.get_logger().info(
         f"💬 [reply-window] greeting {name}: окно открыто ttl={kn.REPLY_WINDOW_S}s "
         f"(микрофон после речи +{kn.IDENTITY_MIC_GRACE_S}s)")
@@ -81,23 +107,42 @@ def window(node: Any) -> Optional[Any]:
     return frame if greeting_open(frame) else None
 
 
-def take_reply(node: Any, source: str, heard: Any) -> None:
-    """Адресованная голосовая фраза при открытом окне снимает кадр (первая же фраза, как у вопроса об имени). Голое
-    «робот» (``GREETING_WAKE``, #4509) — нет: робот говорит «Слушаю.», окно открывается заново."""
+def take_reply(node: Any, source: str, heard: Any) -> Optional[SceneFrame]:
+    """Вернуть кадр адресованной голосовой фразе и снять его. Голое «робот» переоткрывает окно (#4509)."""
     frame = window(node)
     if frame is None or (getattr(heard, "source", "") or "respeaker") != "respeaker":
-        return
+        return None
     name = frame.payload.get("name")
     if source == GREETING_WAKE:
-        _arm(node)
+        rearmed = _arm(node)
         node.get_logger().info(f"💬 [reply-window] greeting {name}: голое «робот» → «слушаю», окно открыто заново "
                                f"ttl={kn.REPLY_WINDOW_S}s")
-        return
+        return rearmed
     session(node).pop_scene(KIND)
     _announce(node, 0.0)
     node.get_logger().info(
         f"💬 [reply-window] greeting {name}: принят source={source} "
         f"text={str(getattr(heard, 'text', ''))[:60]!r}")
+    return frame
+
+
+def keep_greeting_after_idle_reset(node: Any, frame: Optional[SceneFrame], epoch: Optional[int]) -> None:
+    """Перед принятым ответом сохранить только новое приветствие при сбросе устаревшей истории."""
+    if frame is None or epoch != session(node).snapshot.epoch:
+        return
+    spoken_text = str(frame.payload.get("text") or "")
+    if not spoken_text:
+        return
+    engine = node._engine
+    current = engine.session
+    now = engine._clock()
+    rearmed = current.snapshot.top(KIND) is frame
+    if reset_if_idle(current, engine.log, engine._window, now, engine._log):
+        _record_spoken_greeting(node, str(frame.payload["speech_id"]), spoken_text, current.snapshot.epoch)
+        remaining = (frame.ttl_until or 0.0) - current.now()
+        if rearmed and remaining > 0.0:
+            current.push_scene(KIND, frame.set_by, ttl_s=remaining, payload=frame.payload)
+    engine._window.touch(now)
 
 
 def not_a_reply(node: Any, heard: Any) -> None:
