@@ -71,7 +71,7 @@ from rob_box_dialog.prompts import personality_prompt, telegram_prompt
 from rob_box_dialog.voice_warmth import WarmVoices
 from rob_box_dialog.respond import ActionResult
 from rob_box_dialog.scenes import HOLD, RESET, RESUME, SceneDirector, apply_control
-from rob_box_dialog.session import MusicStateRef, Session
+from rob_box_dialog.session import MusicStateRef, SceneFrame, Session
 from rob_box_dialog.shift_log import ShiftLog
 from rob_box_dialog.speaker_adapter import confident_name, named_self, speaker_ref
 from rob_box_dialog.turn import TurnEngine, host_sections, outcome_phrase, say_late
@@ -484,9 +484,10 @@ class DialogNode(Node):
             self.get_logger().info(f"[backlog] accumulated reason={decision.reason} entries="
                                    f"{self._backlog.background_phrases(now)}")
             return
-        greeting_window.take_reply(self, decision.source, heard)  # окно после приветствия снимает первая фраза
+        greeting = greeting_window.take_reply(self, decision.source, heard)
         self._interrupt(decision.text, uid, "utterance")
-        turn = in_tool_turn(voice_turn_context(self._speakers, uid, decision.text, self._wake), self._turn(decision))
+        turn = in_tool_turn(voice_turn_context(self._speakers, uid, decision.text, self._wake),
+                            self._turn(decision, greeting, snap.epoch))
         self.last_turn = self._turns.add(asyncio.run_coroutine_threadsafe(turn, self._loop), uid)
 
     def _on_chat(self, chat_id: int, text: str, now: float) -> None:
@@ -496,12 +497,14 @@ class DialogNode(Node):
             turn = in_tool_turn({"heard_text": decision.text}, self._chats.run(chat_id, decision))
             self.last_chat_turn = asyncio.run_coroutine_threadsafe(turn, self._loop)
 
-    async def _turn(self, decision: Addressed) -> None:
+    async def _turn(self, decision: Addressed, greeting: Optional[SceneFrame] = None,
+                    greeting_epoch: Optional[int] = None) -> None:
         if self._turn_lock.locked():  # не стоп во время хода — APPEND: новый ждёт конца текущего, речь не рвётся
             self.get_logger().info("🧭 [turn-v2] ход уже идёт — новый ждёт его конца")
         async with self._turn_lock:
             try:
                 await self._note_speaker(decision)
+                greeting_window.keep_greeting_after_idle_reset(self, greeting, greeting_epoch)
                 await self._engine.run(decision)
             except Exception as exc:  # noqa: BLE001 — упавший ход не роняет ноду, но громко
                 self.get_logger().error(f"🧭 [turn-v2] ход упал: {type(exc).__name__}: {exc}")
@@ -537,7 +540,7 @@ class DialogNode(Node):
 
     def _on_speech_event(self, msg: Any) -> None:
         plan_host.on_speech(self, msg)
-        greeting_window.on_speech_event(self, int(msg.kind), msg.speech_id, msg.agent)  # окно ответа (#3776)
+        greeting_window.on_speech_event(self, int(msg.kind), msg.speech_id, msg.agent, int(msg.spoken_chars))
         if msg.kind == SpeechEvent.KIND_VOICE_CHANGED:  # голос хранит tts_node; сессия помнит, что он применил
             if robot_voice_changed(msg):
                 self._session.set_voice(msg.voice_requested or None, msg.voice_applied or None, msg.provider or None)

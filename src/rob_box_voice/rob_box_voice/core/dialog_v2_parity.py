@@ -114,7 +114,7 @@ def _greet(node: Any, marker: MeetingMarker) -> Optional[str]:
     phrase = greet_on_meeting(node._meeting_greeter, marker, idle=not quiet, allowed=lambda _m: True, speak=speak)
     if phrase:
         # #3776: после приветствия окно 15 с — «привет» в ответ без «робот» (кадр ждёт конца речи).
-        open_window(node, marker.person_id, marker.name.strip(), str(spoken.get("speech_id") or ""))
+        open_window(node, marker.person_id, marker.name.strip(), str(spoken.get("speech_id") or ""), text=phrase)
         node.get_logger().info(f"🗣 [встреча] {marker.name} (person={marker.person_id[:8]}): {phrase!r}")
     return phrase
 

@@ -7,6 +7,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import sys
 import types
@@ -31,7 +32,7 @@ except ImportError:
 from rob_box_llm.provider import LLMResponse  # noqa: E402
 from rob_box_voice import dialog_node as dn  # noqa: E402
 from rob_box_voice.core import dialog_v2_parity as parity  # noqa: E402
-from rob_box_dialog import phrases  # noqa: E402
+from rob_box_dialog import knowledge as kn, phrases  # noqa: E402
 from rob_box_dialog.startup import ReadinessWatch, assess  # noqa: E402
 
 TIME = type(M.TurnEvent().stamp)
@@ -40,9 +41,11 @@ TIME = type(M.TurnEvent().stamp)
 class _LLM:
     def __init__(self):
         self.calls = 0
+        self.messages = []
 
     async def complete(self, messages, tools=(), settings=None):
         self.calls += 1
+        self.messages.append(tuple(messages))
         return LLMResponse(content="И тебе привет.")
 
 
@@ -146,9 +149,30 @@ def test_turn_in_flight_mutes_greeting(node, monkeypatch):
     assert parity.on_vision_event(node, _face()) is None and _said(node) == []
 
 
-def test_reply_without_wake_after_greeting_is_a_turn(node):
+@pytest.mark.parametrize(
+    "after_idle,bare_wake",
+    [(False, False), (True, False), (True, True)],
+    ids=["recent", "after_idle", "after_idle_and_bare_wake"],
+)
+def test_reply_without_wake_includes_the_spoken_greeting_in_llm_history(node, after_idle, bare_wake):
+    engine = node._engine
+    old_text = "Давняя реплика пользователя."
+    if after_idle:
+        engine.log.begin("old-turn", node._session.snapshot.epoch, old_text)
+        engine._window.touch(engine._clock() - kn.DIALOG_WINDOW_IDLE_RESET_S - 1)
     parity.on_vision_event(node, _face())
-    node._on_speech_event(_finished(_said(node)[0].speech_id))
+    (greeting,) = _said(node)
+    assert all(entry.content != greeting.text for entry in engine.log.window())
+    finished = _finished(greeting.speech_id)
+    finished.spoken_chars = len(greeting.text)
+    node._on_speech_event(finished)
+    node._on_speech_event(finished)  # дубликат события не должен дублировать приветствие
+    if bare_wake:
+        wake = M.Utterance()
+        wake.text, wake.source, wake.utterance_id = "робот", "respeaker", "u1"
+        node._on_utterance(wake)
+        node.last_turn.result(timeout=10)
+        assert node.test_llm.calls == 0
     frame = node._session.snapshot.top("GreetingReply")
     assert frame is not None and frame.payload["asked_at"] is not None
     reply = M.Utterance()
@@ -159,6 +183,68 @@ def test_reply_without_wake_after_greeting_is_a_turn(node):
     node.last_turn.result(timeout=10)
     assert node.test_llm.calls == 1
     assert node._session.snapshot.top("GreetingReply") is None  # окно сняла первая адресованная фраза
+    (messages,) = node.test_llm.messages
+    assert [(message.role, message.content) for message in messages[:-1]].count(("assistant", greeting.text)) == 1
+    assert messages[-1].role == "user" and reply.text in messages[-1].content
+    assert all(old_text not in message.content for message in messages)
+
+
+@pytest.mark.parametrize("outcome", ["foreign", "cancelled", "rejected", "zero_chars", "expired"])
+def test_greeting_history_requires_confirmed_playback(node, outcome):
+    parity.on_vision_event(node, _face())
+    (greeting,) = _said(node)
+    event = _finished(greeting.speech_id if outcome != "foreign" else "other-speech")
+    event.spoken_chars = len(greeting.text) if outcome != "zero_chars" else 0
+    if outcome == "cancelled":
+        event.kind = M.SpeechEvent.KIND_CANCELLED
+    elif outcome == "rejected":
+        event.kind = M.SpeechEvent.KIND_REJECTED
+    elif outcome == "expired":
+        node._session.arm_scene("GreetingReply", 0.0)
+    node._on_speech_event(event)
+    asyncio.run_coroutine_threadsafe(asyncio.sleep(0), node._loop).result(timeout=10)
+    assert node._engine.log.window() == ()
+
+
+def test_greeting_finished_does_not_remove_operator_hold_after_idle(node):
+    engine = node._engine
+    engine._window.touch(engine._clock() - kn.DIALOG_WINDOW_IDLE_RESET_S - 1)
+    parity.on_vision_event(node, _face())
+    (greeting,) = _said(node)
+    hold = node._session.push_scene("OperatorHold", "operator", ttl_s=60.0)
+    epoch = node._session.snapshot.epoch
+    event = _finished(greeting.speech_id)
+    event.spoken_chars = len(greeting.text)
+
+    node._on_speech_event(event)
+
+    assert node._session.snapshot.top("OperatorHold") is hold
+    assert node._session.snapshot.epoch == epoch
+
+
+def test_admitted_reply_cannot_restore_a_greeting_after_explicit_reset(node, monkeypatch):
+    engine = node._engine
+    engine._window.touch(engine._clock() - kn.DIALOG_WINDOW_IDLE_RESET_S - 1)
+    parity.on_vision_event(node, _face())
+    (greeting,) = _said(node)
+    finished = _finished(greeting.speech_id)
+    finished.spoken_chars = len(greeting.text)
+    node._on_speech_event(finished)
+    frame = node._session.snapshot.top("GreetingReply")
+
+    async def reset_before_turn(_decision):
+        request = types.SimpleNamespace(action=dn.DialogControl.Request.ACTION_RESET, set_by="operator", ttl_s=0.0)
+        response = node._on_control(request, types.SimpleNamespace())
+        assert response.ok
+
+    monkeypatch.setattr(node, "_note_speaker", reset_before_turn)
+    reply = M.Utterance()
+    reply.text, reply.source, reply.utterance_id = "привет", "respeaker", "u2"
+    reply.ended_at = TIME(sec=int(frame.payload["asked_at"]) + 1, nanosec=0)
+    node._on_utterance(reply)
+    node.last_turn.result(timeout=10)
+    (messages,) = node.test_llm.messages
+    assert all(message.role != "assistant" for message in messages)
 
 
 def test_wakeless_phrase_without_greeting_stays_in_backlog(node):
