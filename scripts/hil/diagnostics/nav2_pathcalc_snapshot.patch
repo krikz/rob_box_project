@@ -1,0 +1,88 @@
+--- a/nav2_navfn_planner/include/nav2_navfn_planner/navfn.hpp
++++ b/nav2_navfn_planner/include/nav2_navfn_planner/navfn.hpp
+@@ -44,6 +44,8 @@
+ #include <string.h>
+ #include <stdio.h>
+
++#include "nav2_navfn_planner/pathcalc_snapshot.hpp"
++
+ namespace nav2_navfn_planner
+ {
+
+@@ -164,6 +166,8 @@
+    */
+   float getLastPathCost();
+
++  pathcalc_snapshot::Metadata snapshot_metadata;
++
+   /** cell arrays */
+   COSTTYPE * costarr;  /**< cost array in 2D configuration space */
+   float * potarr;  /**< potential array, navigation function potential */
+--- a/nav2_navfn_planner/src/navfn.cpp
++++ b/nav2_navfn_planner/src/navfn.cpp
+@@ -911,6 +911,30 @@
+     //      potarr[stc], x, y, pathx[npath-1], pathy[npath-1]);
+   }
+
++  if (!snapshot_metadata.output_path.empty()) {
++    try {
++      pathcalc_snapshot::Snapshot snapshot;
++      snapshot.metadata = snapshot_metadata;
++      snapshot.metadata.nx = nx;
++      snapshot.metadata.ny = ny;
++      snapshot.navfn_start_x = start[0];
++      snapshot.navfn_start_y = start[1];
++      snapshot.navfn_goal_x = goal[0];
++      snapshot.navfn_goal_y = goal[1];
++      snapshot.stc = stc;
++      snapshot.dx = dx;
++      snapshot.dy = dy;
++      snapshot.npath = npath;
++      snapshot.costarr = costarr;
++      snapshot.potarr = potarr;
++      snapshot.pathx = pathx;
++      snapshot.pathy = pathy;
++      pathcalc_snapshot::writeAtomic(snapshot);
++    } catch (const std::exception & e) {
++      RCLCPP_WARN(rclcpp::get_logger("rclcpp"), "PathCalc snapshot failed: %s", e.what());
++    }
++  }
++
+   //  return npath;  // out of cycles, return failure
+   RCLCPP_DEBUG(rclcpp::get_logger("rclcpp"), "[PathCalc] No path found, path too long");
+   // savemap("navfn_pathlong");
+--- a/nav2_navfn_planner/src/navfn_planner.cpp
++++ b/nav2_navfn_planner/src/navfn_planner.cpp
+@@ -303,6 +303,24 @@
+   }
+
+   if (found_legal) {
++    planner_->snapshot_metadata = pathcalc_snapshot::Metadata();
++    planner_->snapshot_metadata.output_path = "/tmp/nav2_pathcalc_snapshot.bin";
++    planner_->snapshot_metadata.resolution = resolution;
++    planner_->snapshot_metadata.origin_x = costmap_->getOriginX();
++    planner_->snapshot_metadata.origin_y = costmap_->getOriginY();
++    planner_->snapshot_metadata.start_world_x = start.position.x;
++    planner_->snapshot_metadata.start_world_y = start.position.y;
++    planner_->snapshot_metadata.goal_world_x = goal.position.x;
++    planner_->snapshot_metadata.goal_world_y = goal.position.y;
++    planner_->snapshot_metadata.best_pose_world_x = best_pose.position.x;
++    planner_->snapshot_metadata.best_pose_world_y = best_pose.position.y;
++    planner_->snapshot_metadata.map_start_x = map_start[0];
++    planner_->snapshot_metadata.map_start_y = map_start[1];
++    planner_->snapshot_metadata.map_goal_x = map_goal[0];
++    planner_->snapshot_metadata.map_goal_y = map_goal[1];
++    planner_->snapshot_metadata.use_astar = use_astar_;
++    planner_->snapshot_metadata.allow_unknown = allow_unknown_;
++
+     // extract the plan
+     if (getPlanFromPotential(best_pose, plan)) {
+       smoothApproachToGoal(best_pose, plan);
+@@ -398,6 +416,7 @@
+   const int & max_cycles = (costmap_->getSizeInCellsX() >= costmap_->getSizeInCellsY()) ?
+     (costmap_->getSizeInCellsX() * 4) : (costmap_->getSizeInCellsY() * 4);
+
++  planner_->snapshot_metadata.timestamp_ns = clock_->now().nanoseconds();
+   int path_len = planner_->calcPath(max_cycles);
+   if (path_len == 0) {
+     return false;

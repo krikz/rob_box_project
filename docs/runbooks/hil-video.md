@@ -180,14 +180,19 @@ ssh ros2@10.1.1.250 'grep -E "PLAN|UNREACHABLE|GOAL_END|EM_ON|COVERAGE_" /home/r
 ### 3b. Первая ошибка PathCalc в M1 (#4682) [код; живой HIL ещё не прогонялся]
 
 Это отдельное измерение глобального планирования, а не исправление Nav2 и не полный маршрут. Скорости,
-таймаут цели `route.py`, speed zones и DWB critics не меняются. Нужен тот же diagnostic NavFn 1.1.20
-(`a097086719c88f781aa59788eca29ac6ca5e56db`) с полями `best_pose/stc/potarr/reason`, собранный отдельно от
-production-образа. Путь к ARM64-библиотеке передаётся явно; baseline без `static_layer`.
+таймаут цели `route.py`, speed zones и DWB critics не меняются. Нужен diagnostic NavFn 1.1.20
+(`a097086719c88f781aa59788eca29ac6ca5e56db`) с failure-only binary snapshot, собранный отдельно от
+production-образа. Patch и writer лежат в `scripts/hil/diagnostics/`; весь Nav2 в репозиторий не копируется.
+Путь к ARM64-библиотеке передаётся явно; baseline без `static_layer`.
 
 ```bash
+# Один раз в свежем внешнем workspace на Main; каталог не должен существовать.
+export PATHCALC_DIAG_WS=/home/ros2/rob_box_hil/nav2_diag_4682_snapshot
+bash scripts/hil/diagnostics/build_nav2_pathcalc_snapshot.sh
+
 # Только после выделения HIL-окна координатором. Сценарий сам делает on/off для каждой попытки.
 export PATHCALC_OUT="$PWD/.tmp/depot-route-4682/pathcalc_$(date -u +%Y%m%dT%H%M%SZ)"
-export PATHCALC_DIAG_LIB=/home/ros2/rob_box_hil/nav2_diag_4682/install/nav2_navfn_planner/lib/libnav2_navfn_planner.so
+export PATHCALC_DIAG_LIB="$PATHCALC_DIAG_WS/install/nav2_navfn_planner/lib/libnav2_navfn_planner.so"
 bash scripts/hil/diagnostics/run_depot_pathcalc.sh
 ```
 
@@ -197,11 +202,16 @@ bash scripts/hil/diagnostics/run_depot_pathcalc.sh
 startup/lifecycle класс. При повторном lifecycle abort сначала проверить доступность `change_state`; перезапускать
 можно только lifecycle manager, не отправляя цель неактивной ноде и не смешивая этот сбой с PathCalc.
 
-На первом `Failed to create a plan from potential` сценарий останавливает `route.py`, затем сохраняет Nav2 raw,
-`calcPath_error.log`, `/evaluation` и остальной bag, а также `get_costmap_error.log` с UTC/ROS timestamps запроса
-и ответа. Маршрут не продолжается. `EVIDENCE_CAPTURED` (выход 0) означает только полученную диагностику, не route
-PASS. Если ошибки нет в трёх попытках — `EVIDENCE_INSUFFICIENT recurrences=0/3`, выход 4; это не PASS и не
-доказательство исправления. Ошибка снятия costmap — выход 40, тоже не evidence PASS.
+На первом `Failed to create a plan from potential` сценарий останавливает `route.py`, затем до cleanup забирает
+`pathcalc_snapshot.bin`: versioned little-endian scalar header, внутренние `costarr/potarr` и полные `pathx/pathy`.
+Producer пишет только на исчерпании `calcPath`, через `.tmp` и atomic rename до следующего `setNavArr`; успешный путь
+файла не создаёт. В пределах попытки действует first-write-wins, stale final удаляется перед следующей M1. Runner
+требует успешный remote rc и проверяет magic/version/точную длину по `nx/ny/npath`; отсутствующий или повреждённый
+snapshot — `PATHCALC_SNAPSHOT_CAPTURE_FAILED`, выход 41. Затем сохраняются Nav2 raw, `calcPath_error.log`,
+`/evaluation` и остальной bag, а также `get_costmap_error.log` с UTC/ROS timestamps запроса и ответа. Маршрут не
+продолжается. `EVIDENCE_CAPTURED` (выход 0) означает только полученную диагностику, не route PASS. Если ошибки нет в
+трёх попытках — `EVIDENCE_INSUFFICIENT recurrences=0/3`, выход 4; это не PASS и не доказательство исправления.
+Ошибка снятия costmap — выход 40, тоже не evidence PASS.
 
 Каждая попытка и любой выход после `on` проходят финальный gate: `hil.sh off`, отсутствие `/tmp/hil.lock` и
 Gazebo, удаление временного compose/start overlay, `NAV2_PARAMS_OVERLAYS` и `USE_SIM_TIME=true` отсутствуют в
