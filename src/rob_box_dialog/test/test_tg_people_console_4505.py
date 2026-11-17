@@ -10,11 +10,10 @@ from rob_box_dialog import action_chain
 from rob_box_dialog import knowledge as kn
 from rob_box_dialog.address import SOURCE_TELEGRAM, Addressed
 from rob_box_dialog.command import Command, Invalid, ToolCall, parse, unkept_done_claims, validate
-from rob_box_dialog.turn import query_answer
 from rob_box_dialog.respond import ActionResult
 from rob_box_dialog.session import Session
 from rob_box_dialog.tools_view import available_tools, groups_for
-from rob_box_dialog.turn import Answer, TurnEngine, carried_groups, unasked_aloud
+from rob_box_dialog.turn import Answer, TurnEngine, carried_groups, query_answer, unasked_aloud
 from rob_box_dialog.words import done_claims
 
 FACES = {"people_list", "person_photo", "name_person"}
@@ -99,12 +98,14 @@ def test_the_model_may_send_ten_photos():
 
 
 def test_ten_photos_all_reach_the_executor_in_one_turn():
-    ports = Ports([
-        Answer(Command(actions=_photos(10)), "deepseek"),
-        Answer(Command(speech="Снимки выше."), "deepseek"),
-    ])
+    ports = Ports(
+        [
+            Answer(Command(actions=_photos(10)), "deepseek"),
+            Answer(Command(speech="Снимки выше."), "deepseek"),
+        ]
+    )
 
-    _run(_engine(ports), "ну пришли их")
+    _run(_engine(ports), "пришли снимки")
 
     assert ports.executed == [("person_photo", {"id": f"{n:08x}"}) for n in range(10)]
 
@@ -204,11 +205,14 @@ def test_photo_send_promises_are_recognized(text):
     assert done_claims(text) == ("photo_send",)
 
 
-@pytest.mark.parametrize("text", [
-    "Не пришлю фото без разрешения.",
-    "Пришлю ссылку в чат.",
-    "Китайский зонд прислал новые снимки Луны.",
-])
+@pytest.mark.parametrize(
+    "text",
+    [
+        "Не пришлю фото без разрешения.",
+        "Пришлю ссылку в чат.",
+        "Китайский зонд прислал новые снимки Луны.",
+    ],
+)
 def test_other_send_words_are_not_photo_claims(text):
     assert done_claims(text) == ()
 
@@ -228,7 +232,13 @@ def test_a_promise_without_a_send_is_not_success():
     promise = Command(speech="Сейчас пришлю снимки.", actions=())
     assert unkept_done_claims(promise) == ("photo_send",)
     queued = ActionResult(
-        "t/0", 0, "telegram", kn.PHOTO_TOOL, "query", "done", None,
+        "t/0",
+        0,
+        "telegram",
+        kn.PHOTO_TOOL,
+        "query",
+        "done",
+        None,
         {kn.TOOL_MESSAGE_FIELD: "Снимок fff371fe (Кирилл) отправляю в чат.", "photo_id": "fff371fe"},
     )
     assert query_answer([queued]) is None
@@ -239,3 +249,85 @@ def test_person_photo_backs_the_send_promise_but_say_aloud_does_not():
     aloud = Command(speech=PHOTO_SEND_PROMISE, actions=_aloud().actions)
     assert unkept_done_claims(photo) == ()
     assert unkept_done_claims(aloud) == ("photo_send",)
+
+
+# --- 7. «их» без id: person_photo группы, не обещание -----------------------------------------------------
+
+
+PROMISE = "Сейчас пришлю снимки всех, кого видел сегодня."
+KNOWN = "71cda108"
+
+
+def _photo_answer(person_id, data):
+    return ActionResult(
+        "t/0",
+        0,
+        "telegram",
+        kn.PHOTO_TOOL,
+        "query",
+        "done",
+        None,
+        {"photo_id": person_id, "id": person_id, **data},
+    )
+
+
+class _RememberingPorts(Ports):
+    """Исполнитель кладёт id лица в исход: журнал помнит группу."""
+
+    async def execute(self, actions, snapshot, turn_id):
+        self.executed += [(c.tool, dict(c.args)) for c in actions]
+        return [
+            ActionResult(
+                f"{turn_id}/{n}",
+                snapshot.epoch,
+                snapshot.agent,
+                c.tool,
+                kn.TOOL_CLASSES[c.tool],
+                "done",
+                None,
+                {"id": c.args.get("id"), "photo_id": c.args.get("id"), "caption": c.args.get("id")},
+            )
+            for n, c in enumerate(actions)
+        ]
+
+
+def test_send_them_after_a_known_face_calls_person_photo_not_only_say_aloud():
+    """Реплика без id после снимка: код зовёт person_photo. say_aloud «пришлю»
+    не единственное действие и вслух не звучит (ход 06.11)."""
+    promise = Command(speech=PROMISE, actions=(ToolCall(kn.ALOUD_TOOL, {"text": PROMISE}),))
+    ports = _RememberingPorts(
+        [
+            Answer(Command(actions=(ToolCall(kn.PHOTO_TOOL, {"id": KNOWN}),)), "deepseek"),
+            Answer(Command(speech="Снимок выше."), "deepseek"),
+            Answer(promise, "deepseek"),
+        ]
+    )
+    engine = _engine(ports)
+
+    _run(engine, f"покажи {KNOWN}")
+    _run(engine, "ну пришли их")
+
+    assert ports.executed[-1] == (kn.PHOTO_TOOL, {"id": KNOWN})
+    assert kn.ALOUD_TOOL not in {tool for tool, _args in ports.executed}
+    assert not any("пришлю" in text.lower() for text in ports.said)
+    assert engine._faces.ids == (KNOWN,)
+
+
+def test_send_them_without_a_saved_group_refuses_instead_of_promising():
+    ports = Ports([Answer(Command(speech=PROMISE, actions=(ToolCall(kn.ALOUD_TOOL, {"text": PROMISE}),)), "deepseek")])
+
+    _run(_engine(ports), "ну пришли их")
+
+    assert ports.executed == []
+    refusal = "Не знаю, чьи снимки слать: в прошлом ходе не было лиц."
+    assert ports.said == [refusal]
+    assert not any("пришлю" in text.lower() for text in ports.said)
+
+
+def test_their_photos_are_the_saved_group_capped_at_the_action_limit():
+    from rob_box_dialog import face_group
+
+    ids = tuple(f"{n:08x}" for n in range(12))
+    cmd, done = face_group.with_their_photos("ну пришли их", Command(speech=PROMISE), ids)
+    assert done == "sent" and [call.args["id"] for call in cmd.actions] == list(ids[: kn.ACTIONS_ACCEPT_MAX])
+    assert cmd.speech is None
