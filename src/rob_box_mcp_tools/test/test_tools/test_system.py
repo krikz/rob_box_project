@@ -48,7 +48,6 @@ def _install_ros_mocks_if_needed():
 _install_ros_mocks_if_needed()
 
 from rob_box_mcp_tools.tools.system import (
-    HIL_WAYPOINT_DB_ENV,
     SIM_POSE_NOTE,
     SIM_TIME_ENV,
     STATUS_OK,
@@ -58,6 +57,8 @@ from rob_box_mcp_tools.tools.system import (
     sim_pose_active,
     status_phrase,
 )
+
+from rob_box_core.tools_db import WAYPOINT_DB_ENV  # noqa: E402  — после ROS-моков, как импорт system выше
 
 
 def _make_odom_msg(x=1.5, y=-2.25, qz=0.0, qw=1.0):
@@ -224,7 +225,7 @@ class TestGetRobotStatusTool:
     def test_combat_odom_keeps_pose_phrase_without_simulator(self, mock_node, monkeypatch):
         """Боевой робот без sim time: старая фраза про позу, слова «симулятор» нет. Порога «почти ровно» нет."""
         monkeypatch.delenv(SIM_TIME_ENV, raising=False)
-        monkeypatch.delenv(HIL_WAYPOINT_DB_ENV, raising=False)
+        monkeypatch.delenv(WAYPOINT_DB_ENV, raising=False)
         tool = GetRobotStatusTool(mock_node, wait_timeout_sec=0.0)
         mock_node.get_subscription("/odom").callback(_make_odom_msg(x=0.0, y=0.0))
         mock_node.get_subscription("/battery_state").callback(_make_battery_msg(percentage=0.9))
@@ -239,7 +240,7 @@ class TestGetRobotStatusTool:
     def test_sim_time_odom_says_simulator_pose_not_floor(self, mock_node, monkeypatch):
         """USE_SIM_TIME=true и пришедший /odom: фраза говорит, что это поза симулятора, не пол."""
         monkeypatch.setenv(SIM_TIME_ENV, "true")
-        monkeypatch.delenv(HIL_WAYPOINT_DB_ENV, raising=False)
+        monkeypatch.delenv(WAYPOINT_DB_ENV, raising=False)
         tool = GetRobotStatusTool(mock_node, wait_timeout_sec=0.0)
         mock_node.get_subscription("/odom").callback(_make_odom_msg(x=0.0, y=0.0))
 
@@ -253,7 +254,7 @@ class TestGetRobotStatusTool:
     def test_hil_waypoint_db_odom_says_simulator_pose(self, mock_node, monkeypatch):
         """HIL (WAYPOINT_DB_PATH, как compose.hil.yaml у voice-assistant) при /odom — та же фраза."""
         monkeypatch.delenv(SIM_TIME_ENV, raising=False)
-        monkeypatch.setenv(HIL_WAYPOINT_DB_ENV, "/data/hil/waypoints.db")
+        monkeypatch.setenv(WAYPOINT_DB_ENV, "/data/hil/waypoints.db")
         tool = GetRobotStatusTool(mock_node, wait_timeout_sec=0.0)
         mock_node.get_subscription("/odom").callback(_make_odom_msg(x=1.0, y=2.0))
         mock_node.get_subscription("/battery_state").callback(_make_battery_msg())
@@ -277,13 +278,13 @@ class TestGetRobotStatusTool:
 
     def test_use_sim_time_false_is_not_sim(self, monkeypatch):
         monkeypatch.setenv(SIM_TIME_ENV, "false")
-        monkeypatch.delenv(HIL_WAYPOINT_DB_ENV, raising=False)
+        monkeypatch.delenv(WAYPOINT_DB_ENV, raising=False)
         assert sim_pose_active() is False
         assert "симулятор" not in status_phrase({"x": 0.0}, [], False)
 
     def test_node_use_sim_time_parameter(self, monkeypatch):
         monkeypatch.delenv(SIM_TIME_ENV, raising=False)
-        monkeypatch.delenv(HIL_WAYPOINT_DB_ENV, raising=False)
+        monkeypatch.delenv(WAYPOINT_DB_ENV, raising=False)
         node = Mock()
         node.has_parameter.return_value = True
         node.get_parameter.return_value = Mock(value=True)

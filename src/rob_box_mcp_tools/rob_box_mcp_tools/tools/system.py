@@ -25,6 +25,7 @@ import os
 import threading
 from typing import Callable, List, NamedTuple, Optional, TYPE_CHECKING
 
+from rob_box_core.tools_db import hil_waypoint_registry
 from rob_box_dialog.knowledge import VOICE_STEP_AT_LIMIT
 
 # Ленивый импорт ROS 2 модулей для поддержки unit тестов
@@ -653,9 +654,6 @@ class GetCurrentTimeTool(MCPTool):
 
 #: Признак сима, как в ``use_sim_time.sh`` и ``proximity.hil_active``: только ``true``.
 SIM_TIME_ENV = "USE_SIM_TIME"
-#: HIL-реестр карт, который ``hil.sh`` уже кладёт в voice-assistant (``compose.hil.yaml``).
-#: ``USE_SIM_TIME`` туда не кладётся — без этого маркера фраза 17.11 снова промолчит про симулятор.
-HIL_WAYPOINT_DB_ENV = "WAYPOINT_DB_PATH"
 STATUS_OK = "Статус робота получен"
 SIM_POSE_NOTE = "Это поза симулятора, не пол."
 
@@ -664,13 +662,14 @@ def sim_pose_active(env=None, node=None) -> bool:
     """Поза из /odom — симулятор, если sim time или HIL. Боевой робот без этих признаков — нет.
 
     ``USE_SIM_TIME=true`` (только true/false, как в use_sim_time.sh), параметр ноды
-    ``use_sim_time`` или непустой ``WAYPOINT_DB_PATH`` (HIL-реестр voice-assistant).
+    ``use_sim_time`` или HIL-реестр карт (``tools_db.hil_waypoint_registry``: voice-assistant
+    с непустым ``WAYPOINT_DB_PATH``, имя env знает только ``tools_db``).
     Порога «почти в нуле» нет: ноль на полу и ноль в Gazebo числами не отличить.
     """
     source = os.environ if env is None else env
     if str(source.get(SIM_TIME_ENV, "false")).strip().lower() == "true":
         return True
-    if str(source.get(HIL_WAYPOINT_DB_ENV, "")).strip():
+    if hil_waypoint_registry(source):
         return True
     return _node_use_sim_time(node)
 
