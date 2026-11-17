@@ -3,14 +3,10 @@
 FROM ros:lyrical-ros-base
 
 # Build arguments
-#   APT_PROXY        — адрес apt-cacher-ng (опциональный)
-#   RMW_ZENOH_VENDOR — "true" (default) — брать rmw_zenoh 0.1.8 .deb из локального
-#                      build context (docker/base/vendor/), что устраняет
-#                      сетевую зависимость от HTTP-only зеркала snapshots.ros.org;
-#                      "false" — fallback на сетевой fetch (использовать, если
-#                      vendor-каталог по какой-то причине не в контексте сборки).
+#   APT_PROXY — адрес apt-cacher-ng (опциональный)
+# Humble pin rmw_zenoh 0.1.8 (jammy .deb) на lyrical-базу не переносится:
+# ставим ros-lyrical-rmw-zenoh-cpp из apt дистрибутива.
 ARG APT_PROXY=""
-ARG RMW_ZENOH_VENDOR=true
 
 # Настройка APT прокси если указан и доступен
 # Проверяем доступность прокси перед настройкой
