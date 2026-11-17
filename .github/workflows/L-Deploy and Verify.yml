@@ -156,11 +156,11 @@ jobs:
           # повторяет inputs каждой попытки (все 5 attempt'ов run'а имели
           # одинаковые env), а сам run был задиспатчен с
           # environment=production (default формы) вместе с
-          # registry_source=local. Дальше цепочка по коду: production →
-          # IMAGE_TAG=latest (case выше), а шаги pull/start грузят
-          # .image-versions.${IMAGE_TAG} лишь при registry_source != 'local'
-          # («[… Pi] Pull Docker Images», условие '[ 'local' != 'local' ]')
-          # → compose разрешает образы в голый ${IMAGE_TAG} = latest.
+          # registry_source=local. Дальше цепочка по коду (как было до
+          # #4763): production → IMAGE_TAG=latest (case выше), а шаги
+          # pull/start НЕ грузили .image-versions.${IMAGE_TAG} при
+          # registry_source=local (условие '[ 'local' != 'local' ]' = false)
+          # → compose разрешал образы в голый ${IMAGE_TAG} = latest.
           # Голый latest локальный registry обновляет только релизная
           # сборка с main; ежедневные develop-сборки пушат только dev-теги,
           # поэтому latest там месяцами старше свежей сборки. Комбинация
@@ -497,11 +497,16 @@ jobs:
           echo "🔖 .image-versions теперь в текущей ветке (РЕВЕРТ #1244 15.08)"
           echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
           # 🔴 РЕВЕРТ #1244 (15.08, decision #1316): per-service ветки
-          # ci/image-versions-{vision,main} НЕ работают — при registry_source=local
-          # деплой не грузит .image-versions (условие 'local' != 'local' = false),
-          # тянет голые dev-теги → роботы получают старые образы. SHA-теги
-          # коммитятся ПРЯМО в develop (как было до #1244, revert 51e041a1).
-          # Если файла нет — compose возьмёт голые теги (fallback).
+          # ci/image-versions-{vision,main} НЕ работают — деплой читает файл
+          # из текущей ветки (git reset --hard выше), отдельную ветку не
+          # чекаутит. SHA-теги коммитятся ПРЯМО в develop (как было до #1244,
+          # revert 51e041a1). Если файла нет — compose возьмёт голые теги
+          # (fallback ${IMAGE_TAG}).
+          # Issue #4763: файл грузится и при registry_source=local. Сборка
+          # пушит SHA-тег в local registry (L-Build Pi Services,
+          # tag_and_push → localhost:5000) и только потом пишет его в файл;
+          # исключение local (bdaf81847, «SHA-теги только для ghcr») оставляло
+          # робота на голом dev, который переписывает следующая сборка.
 
       - name: "[Vision Pi] Pull Docker Images"
         # Issue #2930: шаг — preflight перед Stop Containers. Pull без
@@ -523,7 +528,7 @@ jobs:
             "cd ~/rob_box_project/docker/vision && \
              export IMAGE_TAG=${{ env.IMAGE_TAG }} && \
              export SERVICE_IMAGE_PREFIX=${{ env.SERVICE_IMAGE_PREFIX }} && \
-             if [ '${{ inputs.registry_source }}' != 'local' ] && [ -f .image-versions.${{ env.IMAGE_TAG }} ]; then set -a && . .image-versions.${{ env.IMAGE_TAG }} && set +a; fi && \
+             if [ -f .image-versions.${{ env.IMAGE_TAG }} ]; then set -a && . .image-versions.${{ env.IMAGE_TAG }} && set +a; fi && \
              REGISTRY_SOURCE=${{ inputs.registry_source }} bash ~/rob_box_project/scripts/deploy/preflight_pull_images.sh"
 
       # ==================== TIME SYNC ====================
@@ -608,7 +613,7 @@ jobs:
             "cd ~/rob_box_project/docker/vision && \
              export IMAGE_TAG=${{ env.IMAGE_TAG }} && \
              export SERVICE_IMAGE_PREFIX=${{ env.SERVICE_IMAGE_PREFIX }} && \
-             if [ '${{ inputs.registry_source }}' != 'local' ] && [ -f .image-versions.${{ env.IMAGE_TAG }} ]; then set -a && . .image-versions.${{ env.IMAGE_TAG }} && set +a; fi && \
+             if [ -f .image-versions.${{ env.IMAGE_TAG }} ]; then set -a && . .image-versions.${{ env.IMAGE_TAG }} && set +a; fi && \
              echo '🔧 retro t_d01fe536+t_9d35468d+round-403: cleanup stale containers/networks'; \
              docker network rm vision_default 2>/dev/null || true; \
              docker container prune -f 2>/dev/null || true; \
@@ -806,7 +811,7 @@ jobs:
             "cd ~/rob_box_project/docker/sound && \
              export IMAGE_TAG=${{ env.IMAGE_TAG }} && \
              export SERVICE_IMAGE_PREFIX=${{ env.SERVICE_IMAGE_PREFIX }} && \
-             if [ '${{ inputs.registry_source }}' != 'local' ] && [ -f .image-versions.${{ env.IMAGE_TAG }} ]; then set -a && . .image-versions.${{ env.IMAGE_TAG }} && set +a; fi && \
+             if [ -f .image-versions.${{ env.IMAGE_TAG }} ]; then set -a && . .image-versions.${{ env.IMAGE_TAG }} && set +a; fi && \
              REGISTRY_SOURCE=${{ inputs.registry_source }} bash ~/rob_box_project/scripts/deploy/preflight_pull_images.sh"
 
       - name: "[Sound Pi] Sync System Time"
@@ -854,7 +859,7 @@ jobs:
           START_CMD="cd ~/rob_box_project/docker/sound && \
              export IMAGE_TAG=${{ env.IMAGE_TAG }} && \
              export SERVICE_IMAGE_PREFIX=${{ env.SERVICE_IMAGE_PREFIX }} && \
-             if [ '${{ inputs.registry_source }}' != 'local' ] && [ -f .image-versions.${{ env.IMAGE_TAG }} ]; then set -a && . .image-versions.${{ env.IMAGE_TAG }} && set +a; fi && \
+             if [ -f .image-versions.${{ env.IMAGE_TAG }} ]; then set -a && . .image-versions.${{ env.IMAGE_TAG }} && set +a; fi && \
              echo '🔧 cleanup stale containers/networks (sound)'; \
              docker network rm sound_default 2>/dev/null || true; \
              docker container prune -f 2>/dev/null || true; \
@@ -947,7 +952,8 @@ jobs:
           echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
           # 🔴 РЕВЕРТ #1244 (15.08, decision #1316): см. Vision-шаг выше.
           # SHA-теги коммитятся ПРЯМО в develop; если файла нет —
-          # compose возьмёт голые теги (fallback).
+          # compose возьмёт голые теги (fallback). Issue #4763: файл
+          # грузится и при registry_source=local (SHA-тег есть в local registry).
 
       - name: "[Main Pi] Pull Docker Images"
         # Issue #2930: шаг — preflight перед Stop Containers. Pull без
@@ -965,7 +971,7 @@ jobs:
             "cd ~/rob_box_project/docker/main && \
              export IMAGE_TAG=${{ env.IMAGE_TAG }} && \
              export SERVICE_IMAGE_PREFIX=${{ env.SERVICE_IMAGE_PREFIX }} && \
-             if [ '${{ inputs.registry_source }}' != 'local' ] && [ -f .image-versions.${{ env.IMAGE_TAG }} ]; then set -a && . .image-versions.${{ env.IMAGE_TAG }} && set +a; fi && \
+             if [ -f .image-versions.${{ env.IMAGE_TAG }} ]; then set -a && . .image-versions.${{ env.IMAGE_TAG }} && set +a; fi && \
              REGISTRY_SOURCE=${{ inputs.registry_source }} bash ~/rob_box_project/scripts/deploy/preflight_pull_images.sh"
 
       # ==================== TIME SYNC ====================
@@ -1032,7 +1038,7 @@ jobs:
             "cd ~/rob_box_project/docker/main && \
              export IMAGE_TAG=${{ env.IMAGE_TAG }} && \
              export SERVICE_IMAGE_PREFIX=${{ env.SERVICE_IMAGE_PREFIX }} && \
-             if [ '${{ inputs.registry_source }}' != 'local' ] && [ -f .image-versions.${{ env.IMAGE_TAG }} ]; then set -a && . .image-versions.${{ env.IMAGE_TAG }} && set +a; fi && \
+             if [ -f .image-versions.${{ env.IMAGE_TAG }} ]; then set -a && . .image-versions.${{ env.IMAGE_TAG }} && set +a; fi && \
              echo '🔧 retro t_9d35468d: prune stale containers + force-recreate'; \
              docker container prune -f 2>/dev/null || true; \
              echo '🔧 round-403 fix #2499: явный rm для всех compose-контейнеров (name-slot release)'; \
