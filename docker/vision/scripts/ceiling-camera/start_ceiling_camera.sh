@@ -1,4 +1,6 @@
 #!/bin/bash
+# setup.bash читает AMENT_TRACE_SETUP_FILES без дефолта и падает под nounset.
+set +u
 source /opt/ros/lyrical/setup.bash
 # usb_cam 0.8.1 собран в образ: бинарного ros-lyrical-usb-cam в apt нет.
 if [ -f /ws/install/setup.bash ]; then
