@@ -2,6 +2,13 @@
 # Download rmw_zenoh 0.1.8 .deb packages from snapshots.ros.org
 # HTTP-only mirror — пин 0.1.8 vs 0.1.9 (zenoh 1.6.2 vs 1.8.0)
 #
+# DEVELOP-ONLY (jammy / humble). На feature/lyrical этот скрипт не вызывается:
+# docker/base/Dockerfile.ros2-zenoh и docker/sim/Dockerfile ставят
+# ros-lyrical-rmw-zenoh-cpp из apt (0.10.6, zenoh-c 1.8.0). Jammy .deb на
+# Ubuntu 26.04 (resolute) не ставятся. Скрипт оставлен как есть, потому что
+# develop всё ещё пинит 0.1.8, а vendor/*.deb в этом дереве — те же jammy
+# архивы; переписывать его под lyrical нечего.
+#
 # Usage: download_rmw_debs.sh <dest-dir> [arch]
 #   arch default: arm64 (matches CI target). For local amd64 builds pass 'amd64'.
 set -euo pipefail
