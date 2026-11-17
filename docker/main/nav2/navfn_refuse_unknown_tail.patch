@@ -1,0 +1,76 @@
+--- a/nav2_navfn_planner/src/navfn_planner.cpp
++++ b/nav2_navfn_planner/src/navfn_planner.cpp
+@@ -31,6 +31,7 @@
+ #include <memory>
+ #include <string>
+ #include <vector>
++#include <stdexcept>
+ 
+ #include "builtin_interfaces/msg/duration.hpp"
+ #include "nav2_navfn_planner/navfn.hpp"
+@@ -184,6 +185,12 @@
+   std::cout << "It took " << time_span.count() * 1000 << std::endl;
+ #endif
+ 
++  // #4694: a path whose tail sits in unknown/lethal beyond a lidar-seen wall
++  // must not be handed to the controller. Empty plan → planner_server ABORT,
++  // and /plan is not published (Humble validatePath + publishPlan order).
++  if (!path.poses.empty() && pathTailBlocked(path)) {
++    throw std::runtime_error("refusing path whose tail is unknown or lethal beyond a seen wall");
++  }
+   return path;
+ }
+ 
+@@ -433,6 +440,35 @@
+   return !plan.poses.empty();
+ }
+ 
++bool
++NavfnPlanner::pathTailBlocked(const nav_msgs::msg::Path & path) const
++{
++  // 253 = inscribed (COST_OBS_ROS): the lidar already marked a wall. Unknown
++  // beyond that wall is not "not yet explored" — NavFn drew through it.
++  // Unknown with no seen lethal/inscribed on the path stays allowed, so a goal
++  // in unscanned space with a free path to the known frontier still starts.
++  constexpr unsigned char kSeenWall = 253;
++  bool seen_wall = false;
++  bool unknown_after_wall = false;
++  for (const auto & pose : path.poses) {
++    unsigned int mx = 0;
++    unsigned int my = 0;
++    if (!costmap_->worldToMap(pose.pose.position.x, pose.pose.position.y, mx, my)) {
++      continue;
++    }
++    const unsigned char cost = costmap_->getCost(mx, my);
++    if (cost == nav2_costmap_2d::LETHAL_OBSTACLE) {
++      return true;
++    }
++    if (cost >= kSeenWall && cost != nav2_costmap_2d::NO_INFORMATION) {
++      seen_wall = true;
++    } else if (seen_wall && cost == nav2_costmap_2d::NO_INFORMATION) {
++      unknown_after_wall = true;
++    }
++  }
++  return unknown_after_wall;
++}
++
+ double
+ NavfnPlanner::getPointPotential(const geometry_msgs::msg::Point & world_point)
+ {
+--- a/nav2_navfn_planner/include/nav2_navfn_planner/navfn_planner.hpp
++++ b/nav2_navfn_planner/include/nav2_navfn_planner/navfn_planner.hpp
+@@ -127,6 +127,14 @@
+     nav_msgs::msg::Path & plan);
+ 
+   /**
++   * @brief True when the path crosses lethal, or unknown after a lidar-seen wall.
++   *
++   * Seen wall is cost >= 253 and not NO_INFORMATION (inscribed/lethal). Unknown
++   * before any such cell is still explorable and is not a refusal.
++   */
++  bool pathTailBlocked(const nav_msgs::msg::Path & path) const;
++
++  /**
+    * @brief Compute the potential, or navigation cost, at a given point in the world
+    *        must call computePotential first
+    * @param world_point Point in world coordinate frame
