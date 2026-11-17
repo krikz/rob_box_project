@@ -468,6 +468,10 @@ dead-man 500 мс. Всё прочее, похожее на floor, — кэш.
 `orphan_timeout_s` (1.5 с) — отменяет его по `goal_id` и шлёт нулевой `cmd_vel` тем же путём, что `ControllerHalt`
 (имена — `rob_box_core/follow_path_halt.py`). Решение — чистая `rob_box_teleop/followpath_orphan.py`.
 
+**Замок руля** — `std_msgs/Bool` на `/joystick_lock` (priority 100) и `/teleop_lock` (priority 90) в twist_mux,
+timeout 0.0 (липкий). Любой True глушит источники строго меньшего приоритета, в том числе Nav2 `cmd_vel` (10).
+Голосовой `navigate_to_waypoint` цель не шлёт, пока замок True или сообщения ещё не было (#4694, #3789).
+
 **Сторож локализации** — проверка в тулах навигации по карте (#4495): пока едем, слушает ICP-одометрию rtabmap
 (`/odom`, потерянный кадр — ковариация 9999) и поправку карты `map → odom` (`/rtabmap/info`). Потеряли лидарную
 привязку или карта прыгнула — тул говорит «не уверен, что доехал», даже если Nav2 ответил `SUCCEEDED`.
