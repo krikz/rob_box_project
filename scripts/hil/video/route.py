@@ -14,7 +14,7 @@ import rclpy
 from action_msgs.msg import GoalStatus
 from geometry_msgs.msg import PoseStamped, Twist
 from nav2_msgs.action import NavigateThroughPoses, NavigateToPose
-from nav_msgs.msg import Odometry, Path
+from nav_msgs.msg import Odometry
 from rclpy.action import ActionClient
 from rclpy.node import Node
 from rclpy.parameter import Parameter
@@ -93,6 +93,8 @@ class Mon(Node):
         self.create_subscription(Odometry, "/sim/ground_truth/odom", self.on_gt, 10)
         self.create_subscription(Twist, "/cmd_vel_emergency", self.on_em, 10)
         self.create_subscription(Twist, YAW_TOPIC, self.on_yaw, 10)
+        from nav_msgs.msg import Path  # не на уровне модуля: офлайн-тесты импортируют route без Path
+
         self.create_subscription(Path, PLAN_TOPIC, self.on_plan, 10)
         self.create_timer(0.2, self.tick)
 
