@@ -95,7 +95,7 @@ export interface ConnectionOptions {
   // Watchdog: если нет ничего на сокете > timeoutMs → закрыть + reconnect.
   watchdogTimeoutMs?: number; // дефолт 600
   // Клиентский keepalive. Сервер закрывает сессию, если нет
-  // JSON_EVENT{type:ping} дольше WATCHDOG_TIMEOUT_S (session.py, 600 мс).
+  // JSON_CMD{cmd:ping} дольше WATCHDOG_TIMEOUT_S (session.py, 600 мс).
   // Интервал обязан быть строго меньше порога. setInterval первый кадр
   // не шлёт, поэтому startPing зовёт sendPing сразу (сокет уже OPEN).
   pingIntervalMs?: number; // дефолт 200 — меньше серверного порога 600 мс.
@@ -652,10 +652,10 @@ export class Connection {
 
   private sendPing(): void {
     if (!this.ws || this.ws.readyState !== 1) return;
-    // JSON_EVENT{type:"ping"}, не JSON_CMD: сервер кормит watchdog только
-    // из _on_json_event (ws_server.py). JSON_CMD{cmd:ping} сессию не держит.
-    const bytes = encodeJsonFrame(FrameType.JSON_EVENT, 0, {
-      type: "ping",
+    // JSON_CMD{cmd:"ping"}: _json_cmd_ping кормит session.feed_ping и
+    // bridge-watchdog и отвечает pong с эхом ts_ms.
+    const bytes = encodeJsonFrame(FrameType.JSON_CMD, 0, {
+      cmd: "ping",
       ts_ms: Date.now()
     });
     try {

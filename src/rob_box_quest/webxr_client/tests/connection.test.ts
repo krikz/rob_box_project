@@ -341,16 +341,16 @@ describe("Connection RTT (ping → pong)", () => {
   });
 });
 
-// Сервер закрывает сессию, если нет JSON_EVENT{type:ping} дольше
+// Сервер закрывает сессию, если нет JSON_CMD{cmd:ping} дольше
 // WATCHDOG_TIMEOUT_S (session.py = 600 мс). setInterval первый кадр не
 // шлёт — keepalive обязан уйти в том же тике, что WELCOME, и дальше
 // строго чаще порога.
-function pingFrames(frames: Uint8Array[]): Array<{ type?: string }> {
+function pingFrames(frames: Uint8Array[]): Array<{ cmd?: string }> {
   return frames
     .map((frame) => decodeFrame(frame))
-    .filter((dec) => dec.type === FrameType.JSON_EVENT)
-    .map((dec) => JSON.parse(new TextDecoder().decode(dec.payload)) as { type?: string })
-    .filter((ev) => ev.type === "ping");
+    .filter((dec) => dec.type === FrameType.JSON_CMD)
+    .map((dec) => JSON.parse(new TextDecoder().decode(dec.payload)) as { cmd?: string })
+    .filter((ev) => ev.cmd === "ping");
 }
 
 describe("Connection session keepalive (#4763)", () => {
@@ -391,7 +391,7 @@ describe("Connection session keepalive (#4763)", () => {
     return { conn, client };
   }
 
-  it("sends JSON_EVENT ping in the same turn as WELCOME", async () => {
+  it("sends JSON_CMD ping in the same turn as WELCOME", async () => {
     const { client } = await welcome();
     expect(pingFrames(client.sentFrames)).toHaveLength(1);
   });
