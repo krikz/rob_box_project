@@ -317,6 +317,7 @@ flowchart TD
 | `[backlog] accumulated …` | фраза ушла в бэклог (`dialog_node.py:479-480`) |
 | `🛑 [interrupt] …` | ясный стоп (`dialog_node.py:583-585`) |
 | `🎭 [turn-v2] лицо …` | лицо команды и очередь сцен (`dialog_v2_ports.py:271-273`) |
+| чойсер вайба | эксперимент, не ход: `vibe_chooser.choose` по куску контекста и списку слотов `bg`/`fx`; в бою не вызывается (Шифу 17.11, #3780). Боевой вайб — код, шар (#4799) |
 | Prometheus | порты нод на Sound Pi: `dialog_node` 9100, `tts_node` 9110, `stt_node` 9111, `speaker_id_node` 9112, `audio_node` 9113 (`dialog_node.py:114`, `tts_node.py:898`, `stt_node.py:399`, `speaker_id_node.py:750`, `audio_node.py:282`; сбор — `docker/monitoring/config/prometheus.yml:33-43`) |
 | метрики хода | `voice_llm_request_total`, `voice_llm_request_duration_seconds`, `voice_llm_fallback_total`, `voice_barge_in_total` (`src/rob_box_voice/rob_box_voice/core/dialog_metrics.py:1-7`) |
 | e2e-БД | текст ходов на диск — только в e2e-БД вне `/data`, если задан `e2e_db_path` (`dialog_node.py:31`, `:620-642`); разбор — `scripts/dialog/turn_metrics.py --db` |
