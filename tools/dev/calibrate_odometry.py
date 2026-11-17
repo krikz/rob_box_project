@@ -169,7 +169,7 @@ class OdometryCalibrator(Node):
             self.get_logger().info(f"  Начальный yaw: {math.degrees(self.start_yaw):.1f}°")
             self.get_logger().info(f"  Конечный yaw:  {total_yaw_deg:.1f}°")
             self.get_logger().info(f"  Поворот по одометрии: {odom_degrees:.1f}°")
-            self.get_logger().info(f"  Целевой поворот:      360.0°")
+            self.get_logger().info("  Целевой поворот:      360.0°")
             self.get_logger().info("")
 
             return odom_degrees
@@ -213,16 +213,16 @@ class OdometryCalibrator(Node):
 
             if error_pct > 300:
                 gear_est = odom_value / real_distance
-                print(f"  ⚠️  Ошибка >300%! Возможно gear_ratio не учтён.")
+                print("  ⚠️  Ошибка >300%! Возможно gear_ratio не учтён.")
                 print(f"  ⚠️  Оценка gear_ratio: {gear_est:.1f}")
                 print(f"  📝  Добавьте gear_ratio: {gear_est:.1f} в vesc_config.yaml")
             elif error_pct > 10:
-                print(f"  ⚠️  Ошибка >10%. Нужна корректировка wheel_radius")
-                print(f"  📝  Обновите два файла:")
-                print(f"       docker/main/config/vesc_nexus/robot_controller.yaml")
-                print(f"       src/rob_box_description/urdf/rob_box_ros2_control.xacro")
+                print("  ⚠️  Ошибка >10%. Нужна корректировка wheel_radius")
+                print("  📝  Обновите два файла:")
+                print("       docker/main/config/vesc_nexus/robot_controller.yaml")
+                print("       src/rob_box_description/urdf/rob_box_ros2_control.xacro")
             else:
-                print(f"  ✅ Ошибка <10%. Одометрия в пределах нормы!")
+                print("  ✅ Ошибка <10%. Одометрия в пределах нормы!")
 
         elif self.test_type == "angular":
             print("\n" + "=" * 60)
@@ -259,10 +259,10 @@ class OdometryCalibrator(Node):
             print()
 
             if error_pct > 10:
-                print(f"  ⚠️  Нужна корректировка wheel_separation")
-                print(f"  📝  Обновите: docker/main/config/vesc_nexus/robot_controller.yaml")
+                print("  ⚠️  Нужна корректировка wheel_separation")
+                print("  📝  Обновите: docker/main/config/vesc_nexus/robot_controller.yaml")
             else:
-                print(f"  ✅ Ошибка <10%. Wheel separation в пределах нормы!")
+                print("  ✅ Ошибка <10%. Wheel separation в пределах нормы!")
 
 
 def main():
@@ -309,7 +309,7 @@ def main():
             print(f"🚗 ЛИНЕЙНЫЙ ТЕСТ: робот проедет ~{args.distance} м вперёд")
             print(f"   Скорость: {args.speed} м/с, Время: {duration:.1f} сек")
         else:
-            print(f"🔄 УГЛОВОЙ ТЕСТ: робот повернётся на ~360°")
+            print("🔄 УГЛОВОЙ ТЕСТ: робот повернётся на ~360°")
             print(f"   Скорость: {args.speed} рад/с, Время: {duration:.1f} сек")
         print("=" * 60)
         print()
