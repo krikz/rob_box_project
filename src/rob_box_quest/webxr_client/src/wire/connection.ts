@@ -94,10 +94,11 @@ export interface ConnectionOptions {
   pin: string;
   // Watchdog: если нет ничего на сокете > timeoutMs → закрыть + reconnect.
   watchdogTimeoutMs?: number; // дефолт 600
-  // Heartbeat: клиент шлёт ping каждые intervalMs (api.md §7 рекомендует 5с;
-  // сервер ждёт 3 пропуска по 200мс heartbeat → trip). Здесь мы шлём ping
-  // каждые 1 с для надёжности (4 подряд пропуска точно триггернут watchdog).
-  pingIntervalMs?: number; // дефолт 250 — быстрее серверного WATCHDOG_TIMEOUT_S (600 мс) с большим запасом.
+  // Клиентский keepalive. Сервер закрывает сессию, если нет
+  // JSON_EVENT{type:ping} дольше WATCHDOG_TIMEOUT_S (session.py, 600 мс).
+  // Интервал обязан быть строго меньше порога. setInterval первый кадр
+  // не шлёт, поэтому startPing зовёт sendPing сразу (сокет уже OPEN).
+  pingIntervalMs?: number; // дефолт 200 — меньше серверного порога 600 мс.
   // Reconnect exponential backoff.
   reconnectInitialMs?: number; // 1000
   reconnectMaxMs?: number; // 30000
@@ -169,7 +170,7 @@ export class Connection {
       capabilities: opts.capabilities ?? ["webxr"],
       pin: opts.pin,
       watchdogTimeoutMs: opts.watchdogTimeoutMs ?? 600,
-      pingIntervalMs: opts.pingIntervalMs ?? 250,
+      pingIntervalMs: clampPingInterval(opts.pingIntervalMs),
       reconnectInitialMs: opts.reconnectInitialMs ?? 1000,
       reconnectMaxMs: opts.reconnectMaxMs ?? 30_000,
       autoReconnect: opts.autoReconnect ?? true
@@ -642,21 +643,26 @@ export class Connection {
   private startPing(): void {
     if (this.pingTimer) clearInterval(this.pingTimer);
     console.log("[quest] startPing: interval=", this.opts.pingIntervalMs, "ms");
-    this.pingTimer = setInterval(() => {
-      if (!this.ws || this.ws.readyState !== 1) return;
-      // Per docs/architecture/meta-quest-api.md §7 — клиент шлёт
-      // JSON_EVENT{type:"ping"} (раньше ошибочно было JSON_CMD{cmd:"ping"},
-      // сервер его игнорировал и рвал сессию по watchdog через 600 мс).
-      const bytes = encodeJsonFrame(FrameType.JSON_EVENT, 0, {
-        type: "ping",
-        ts_ms: Date.now()
-      });
-      try {
-        this.ws.send(bytes as unknown as ArrayBuffer);
-      } catch {
-        // ignore
-      }
-    }, this.opts.pingIntervalMs);
+    // Сразу, не ждя первый тик setInterval: сервер уже завёл
+    // last_ping_monotonic на HELLO и закроет сессию через 600 мс.
+    // sendPing молчит, пока readyState не OPEN — на WELCOME он уже OPEN.
+    this.sendPing();
+    this.pingTimer = setInterval(() => this.sendPing(), this.opts.pingIntervalMs);
+  }
+
+  private sendPing(): void {
+    if (!this.ws || this.ws.readyState !== 1) return;
+    // JSON_EVENT{type:"ping"}, не JSON_CMD: сервер кормит watchdog только
+    // из _on_json_event (ws_server.py). JSON_CMD{cmd:ping} сессию не держит.
+    const bytes = encodeJsonFrame(FrameType.JSON_EVENT, 0, {
+      type: "ping",
+      ts_ms: Date.now()
+    });
+    try {
+      this.ws.send(bytes as unknown as ArrayBuffer);
+    } catch {
+      // ignore
+    }
   }
 
   private startWatchdog(): void {
@@ -712,6 +718,19 @@ export class Connection {
   _peekNextClientStreamId(): number {
     return this.nextClientStreamId;
   }
+}
+
+// Сервер: session.py WATCHDOG_TIMEOUT_S = 0.6. Интервал ping обязан быть
+// строго меньше, иначе сессия закроется между кадрами.
+export const SESSION_WATCHDOG_MS = 600;
+const DEFAULT_PING_INTERVAL_MS = 200;
+
+export function clampPingInterval(requested?: number): number {
+  const interval = requested ?? DEFAULT_PING_INTERVAL_MS;
+  if (!Number.isFinite(interval) || interval <= 0 || interval >= SESSION_WATCHDOG_MS) {
+    return DEFAULT_PING_INTERVAL_MS;
+  }
+  return interval;
 }
 
 // Удобный парсер JSON в payload (используется в unit-тестах).

@@ -140,7 +140,9 @@ def server_client_id(session_id: str) -> str:
 # Heartbeat/watchdog тайминги (meta-quest-api.md §7 + ADR-0027 §3.3).
 HEARTBEAT_INTERVAL_S = 0.2  # server → client (200 ms)
 CLIENT_PING_INTERVAL_S = 5.0  # client → server ожидаемая частота
-WATCHDOG_TIMEOUT_S = 0.6  # 3× heartbeat = 600 ms нет ping → close
+# Нет JSON_EVENT{type:ping} дольше этого — close (ws_server._watchdog_loop).
+# Клиентский интервал (connection.ts, 200 мс) обязан быть строго меньше.
+WATCHDOG_TIMEOUT_S = 0.6
 
 
 @dataclass
