@@ -36,9 +36,17 @@
             <ClearEntireCostmap name="ClearLocalCostmap-Subtree" service_name="local_costmap/clear_entirely_local_costmap"/>
             <ClearEntireCostmap name="ClearGlobalCostmap-Subtree" service_name="global_costmap/clear_entirely_global_costmap"/>
           </Sequence>
-          <Spin spin_dist="1.57"/>
+          <!-- #4607: угол/тупик — впереди ближе backup_stop_m, сзади нет. Выбор делает
+               rob_box_sim.corner_backup.corner_escape (тот же порог, что proximity.stop_m);
+               Script ниже — её bt_script(). Иначе Spin, как раньше. -->
+          <Fallback name="CornerOrSpin">
+            <Sequence name="BackOutOfCorner">
+              <Script code="corner_escape := (obstacle_ahead &lt; backup_stop_m &amp;&amp; obstacle_behind &gt;= backup_stop_m) ? 'backup' : 'spin'"/>
+              <BackUp backup_dist="0.30" backup_speed="0.05" if="corner_escape == 'backup'"/>
+            </Sequence>
+            <Spin spin_dist="1.57" if="corner_escape != 'backup'"/>
+          </Fallback>
           <Wait wait_duration="5"/>
-          <BackUp backup_dist="0.30" backup_speed="0.05"/>
         </RoundRobin>
       </ReactiveFallback>
     </RecoveryNode>
