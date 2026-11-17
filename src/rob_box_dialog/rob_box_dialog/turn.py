@@ -128,6 +128,8 @@ _LOG = logging.getLogger(__name__)
 LOG_MARK = "🧭 [turn-v2]"
 _QUERY = "query"
 _FAILED = ("rejected", "timeout")
+#: Ход закрыт, но принятый тул не вызван (ADR-0148). Речь без старта судит отчёт e2e, не эта отметка.
+UNKEPT = "unkept"
 #: Строка лога подхвата бэклога голым «робот».
 PICKUP_MARK = "🗒️ [backlog] pickup"
 #: Метка строк лога окна вопроса тула: «открыт» после вопроса, «ответ» на реплику в окне.
@@ -268,6 +270,8 @@ class _Turn:
     seen: Tuple[Mapping[str, Any], ...] = ()  # ``recent_actions`` снимка хода: данные, что модель видела до хода
     read: Tuple[ToolCall, ...] = ()  # исполненные в ходе вызовы ``query``: повтор не исполняется (:func:`unreread`)
     called: Tuple[str, ...] = ()  # тулы, вызванные в ходе: ``faces`` переносится на следующий ход (#4505)
+    owed_tools: Tuple[str, ...] = ()  # тулы, принятые к исполнению
+    acted_tools: Tuple[str, ...] = ()  # тулы с событием action: принятый тул без события — не успех
     #: Подхват: собеседник хода по правам — автор фразы (``pickup_parties.pickup_speaker``); ``None`` — сессии.
     speaker: Optional[SpeakerRef] = None
     pickup_view: Mapping[str, Any] = field(default_factory=dict)  # раздел ``backlog_pickup``: кто и что сказал
@@ -678,6 +682,26 @@ def _without_repeat(kept: Sequence[Expression], fresh: Sequence[Expression]) -> 
         if have[-size:] == new[:size]:
             return list(fresh[size:])
     return list(fresh)
+
+
+def note_owed(turn: "_Turn", runnable: Sequence[ToolCall]) -> None:
+    """Тулы, которые ход принял к исполнению: без события ``action`` отметка успеха врёт."""
+    turn.owed_tools += tuple(a.tool for a in runnable)
+
+
+def turn_kept(status: str, owed_tools: Sequence[str], acted: Sequence[str], speech_owed: bool = False,
+              started: Sequence[str] = ()) -> str:
+    """Отметка хода из факта исполнения (ADR-0148), не из текста обещания модели.
+
+    Успех (``finished`` / ``done``) врёт, если принятый к исполнению тул не дал события ``action``. Провал, отмена
+    и таймаут не переписываются. Речь в динамики: ``speech_owed`` без ``SpeechEvent started`` — тоже не успех,
+    но агрегат хода это не ставит сам. Старт речи приходит после закрытия хода."""
+    if status not in ("finished", "done"):
+        return status
+    missing = [tool for tool in owed_tools if tool not in acted]
+    if missing or (speech_owed and not started):
+        return UNKEPT
+    return status
 
 
 def finish_stage(ports: Any, turn: "_Turn", snapshot: SessionSnapshot) -> Optional[Expression]:
@@ -2424,6 +2448,7 @@ class TurnEngine:
         if action_chain.runs_as_chain(runnable):  # два и больше шагов: план, ход закрыт, шаги - вереницей (ADR-0165)
             start_chain(self, turn, fresh, runnable, snap)
             return None
+        note_owed(turn, runnable)
         results = await self._execute(turn, runnable, snap)
         if self._stale(turn, "results"):
             return None
@@ -2483,6 +2508,7 @@ class TurnEngine:
         owner = memory.memory_owner(snap)  # чья память у хода при исполнении: исход - только ей в окне
         for result in results:
             self.log.result(turn.turn_id, result, owner)
+            turn.acted_tools += (result.tool,)
             self._event("action", turn, data={"tool": result.tool, "status": result.status, "reason": result.reason,
                                               "cls": result.cls})
         self._note_asked(turn, actions, results)
@@ -2530,14 +2556,16 @@ class TurnEngine:
         delivered = agent_spec(self.session.snapshot.agent).sink != Sink.SPEAKERS
         self.log.said(turn.turn_id, speech_id, text, delivered=delivered, filler=filler)
         turn.said.append(speech_id)
-        self._event("speech_requested", turn, text=text, data={"speech_id": speech_id, "voice": voice or ""})
+        self._event("speech_requested", turn, text=text,
+                    data={"speech_id": speech_id, "voice": voice or "", "awaits_start": not delivered})
 
     def _finish(self, turn: _Turn) -> TurnAggregate:
         latency = int(turn.deadline.elapsed() * 1000)
         face = finish_stage(self._ports, turn, self.session.snapshot)
         if face is not None:  # ответ одним лицом: без записи в окне реплика человека висит без ответа
             self.log.faced(turn.turn_id, face_label(face.emotion, face.gesture, face.face))
-        agg = TurnAggregate(turn.turn_id, turn.epoch, self.session.snapshot.agent, turn.stage, turn.status,
+        status = turn_kept(turn.status, turn.owed_tools, turn.acted_tools)
+        agg = TurnAggregate(turn.turn_id, turn.epoch, self.session.snapshot.agent, turn.stage, status,
                             latency, turn.llm_calls, turn.provider, turn.tokens, turn.reason)
         self._log.info(agg.log_line())
         self._event("turn", turn, data={**{k: v for k, v in vars(agg).items() if k != "turn_id"},
@@ -2568,4 +2596,4 @@ __all__ = ["ASK_MARK", "Answer", "ChainRun", "close_chain", "settle", "start_cha
            "foreign_keys", "invalid_emotion", "outcome_phrase", "over_ordered_music", "owed_reason", "query_answer",
            "music_promise_key", "query_fallback", "recent_results", "considered", "owed_now", "read_calls", "reread_reason", "unbacked_claims", "unclaimed_without_retry",
            "unnamed_without_retry", "unreread", "robot_owed", "show_queue_phrase", "stop_performance", "tier1_actions", "tier1_face", "tier1_for",
-           "tier1_phrase", "turn_work", "answer_tool", "unrepeated", "voices_passed", "words_owed"]
+           "tier1_phrase", "turn_kept", "turn_work", "answer_tool", "unrepeated", "voices_passed", "words_owed"]
