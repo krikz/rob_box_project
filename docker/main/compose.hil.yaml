@@ -58,3 +58,6 @@ services:
       - USE_SIM_TIME=true
     volumes:
       - ${HIL_MAPS_DIR:?HIL_MAPS_DIR не задан — каталог HIL-карты (scripts/hil/hil.sh)}:/maps:ro
+      # hil.sh копирует этот файл в /tmp/hil/main.hil.yaml. Относительный путь
+      # считался бы от /tmp/hil и не нашёл бы пакет. Абсолютный путь — репо на Main Pi.
+      - /home/ros2/rob_box_project/src/rob_box_teleop/rob_box_teleop:/opt/rob_box/teleop/rob_box_teleop:ro
