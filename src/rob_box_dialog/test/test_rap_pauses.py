@@ -43,9 +43,9 @@ def test_pause_fills_the_lines_bars_minus_speech_and_overhead():
     assert got.bars_per_line == (1, 1, 1, 1) and max(spans) <= rp.BAR_FILL * bar
     want = [round(bar - s - rp.PAUSE_OVERHEAD_S, 2) for s in spans]
     assert got.pauses == tuple(want) and pauses(got.text) == want
-    # каждая строка — с паузой, знак конца строки уступил паузе; последняя не кончается на слоге (#4508)
+    # каждая строка — с паузой, знак конца строки после паузы; последняя не кончается на слоге (#4508)
     assert got.text.startswith("Я робот Робби, я читаю под бит <#")
-    assert got.text.endswith(f"Каждая строчка в такт звучит {rp.pause_tag(want[-1])}")
+    assert got.text.endswith(f"Каждая строчка в такт звучит {rp.pause_tag(want[-1])}.")
     assert got.text.count("<#") == len(lines)
 
 
@@ -117,7 +117,7 @@ def test_quiet_beats_at_the_end_of_the_line_are_kept():
     assert len(got.pauses) == len(lines) == len(pauses(got.text))
     assert got.pauses[-1] == last == pauses(got.text)[-1]
     assert got.pauses[-1] > rp.MIN_PAUSE_S
-    assert got.text.endswith(rp.pause_tag(got.pauses[-1]))
+    assert got.text.endswith(f"{rp.pause_tag(got.pauses[-1])}.")
 
 
 # --- выступление ----------------------------------------------------------------------------------------------------

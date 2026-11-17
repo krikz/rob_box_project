@@ -129,8 +129,11 @@ def layout(spans: Sequence[float], bar_s: float, max_speed: float = 1.0, fix: Se
 
 
 def mark(lines: Sequence[str], pauses: Sequence[float]) -> str:
-    """Строки через пробел, после каждой — пауза её тактов; знак в конце строки уступает паузе."""
-    parts = [f"{ln.rstrip(_LINE_END)} {pause_tag(p)}" for ln, p in zip(lines, pauses)]
+    """Строки через пробел, после каждой — пауза её тактов; знак конца строки стоит после паузы."""
+    parts = []
+    for ln, p in zip(lines, pauses):
+        body = ln.rstrip(_LINE_END)
+        parts.append(f"{body} {pause_tag(p)}{ln[len(body):]}")
     return " ".join([*parts, *lines[len(pauses):]])
 
 
