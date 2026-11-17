@@ -589,6 +589,26 @@ def test_context_block_has_done_and_active_verbatim_and_first_pending_number():
     assert sim.block.active_segment is None
 
 
+def test_3930_stream_break_is_not_a_finished_segment():
+    """Обрыв потока после звука (#3930): сегмент не дочитан и не успешный.
+
+    ``rejected`` с долей сказанного закрывает строку сразу. Иначе ``overdue`` через ``PLAN_WAIT_SLACK_S``
+    ставит ``done`` на всю длину — хвост, которого не было, считается прозвучавшим."""
+    block = PerformBlock(rap(backing="none"), "b1", log=lambda _: None)
+    first = next(e for e in block.start(0.0) if isinstance(e, Say) and not e.key)
+    block.on_speech("synthesized", first.speech_id, 0.5, duration_ms=0)
+    block.on_speech("started", first.speech_id, 1.0, duration_ms=0)
+    spoken = 12
+    effects = block.on_speech("rejected", first.speech_id, 2.0, spoken_chars=spoken)
+    finished = [e for e in effects if getattr(e, "kind", "") == "segment_finished"]
+    assert len(finished) == 1 and finished[0].reason == "cancelled" and finished[0].spoken_chars == spoken
+    line = block.lines.find(first.speech_id)
+    assert line is not None and line.state == "cancelled"
+    assert block.summary()["segments_done"] == 0
+    assert block.tick(2.0 + kn.PLAN_WAIT_SLACK_S + 1) == []  # дочитанным задним числом не становится
+    assert block.summary()["spoken_chars"] == spoken
+
+
 def test_lost_events_end_the_block():
     """Сегмент звучит без длительности (поток, #3930), а ``finished`` не пришёл и событий больше нет: выступление не
     висит вечно — снимается по сроку ``RESOURCE_STALE_S``. Владелец, молчащий с самого начала (ни synthesized, ни

@@ -233,8 +233,8 @@ class SpeechSide:
             return self.over(line, "done" if done else "cancelled", len(line.text) if done else spoken_chars)
         if kind == "synthesized" and line.state == "pending":
             line.ready, line.duration_s = True, duration_ms / 1000.0 or line.duration_s
-        elif kind == "rejected":
-            self._rejected(line)
+        if kind == "rejected":
+            return self._rejected(line, spoken_chars)
         return []
 
     def over(self, line: Line, state: str, spoken: int) -> List[Effect]:
@@ -258,14 +258,20 @@ class SpeechSide:
                             offset_ms=beat_offset_ms(self._grid(), line.heard_at)),
                 self._event("prediction", line.no, eta_ms=eta_ms)]
 
-    def _rejected(self, line: Line) -> None:
-        """Отказ владельца речи: пред-синтеза — реплика пойдёт синтезом в пути; звучания — пропуск с WARNING."""
+    def _rejected(self, line: Line, spoken_chars: int) -> List[Effect]:
+        """Отказ владельца речи: пред-синтеза — реплика пойдёт синтезом в пути; звучания — не дочитана.
+
+        Обрыв потока после звука (#3930) приходит ``rejected`` с долей сказанного. Пометить строку
+        ``cancelled`` без ``segment_finished`` нельзя: ``overdue`` через ``PLAN_WAIT_SLACK_S`` закроет её
+        ``done`` на всю длину — ход успешный, хвост как будто прозвучал."""
         if line.state == "pending":
             line.ready = True
             self._log(f"{LOG_MARK} пред-синтез реплики {line.no} не вышел — синтез в пути")
-        elif line.state in ("committed", "active"):
-            _LOG.warning(f"{LOG_MARK} реплика {line.no} не прозвучала (rejected) — дальше")
-            line.state = "cancelled"
+            return []
+        if line.state in ("committed", "active"):
+            _LOG.warning(f"{LOG_MARK} реплика {line.no} оборвалась (rejected), сказано {spoken_chars} — не дочитана")
+            return self.over(line, "cancelled", spoken_chars)
+        return []
 
     def phrase(self, key: str, **slots: Any) -> Say:
         """Фраза кода сразу (не пред-синтез): встаёт в очередь владельца речи перед следующим сегментом."""
