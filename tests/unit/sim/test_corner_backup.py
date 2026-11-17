@@ -1,7 +1,9 @@
-"""Угол/тупик (#4607): впереди ближе порога защиты, сзади свободно — задний ход, не Spin.
+"""Угол/тупик (#4607): впереди ближе порога защиты, сзади свободно — ``backup``, иначе ``spin``.
 
 Порог не новый: ``corner_backup.STOP_M`` равен ``proximity.Thresholds.stop_m``
-и ``coverage_plan.GUARD_STOP_M``. Дерево NavigateToPose вызывает ту же функцию.
+и ``coverage_plan.GUARD_STOP_M``. В дерево NavigateToPose формула не вшита:
+Humble Nav2 1.1.20 / BehaviorTree.CPP v3 не знает узел Script (прогон 18:47Z),
+а без него ветка BackUp невыбираема. Recovery — прежний Spin, как до #4785.
 """
 
 from __future__ import annotations
@@ -11,13 +13,14 @@ from pathlib import Path
 
 import pytest
 import yaml
-from rob_box_sim.corner_backup import BACKUP, SPIN, STOP_M, bt_script, corner_escape
+from rob_box_sim.corner_backup import BACKUP, SPIN, STOP_M, corner_escape
 from rob_box_sim.coverage_plan import GUARD_STOP_M
 
 REPO = Path(__file__).resolve().parents[3]
-TREE = REPO / "docker/main/config/nav2/behavior_trees/navigate_to_pose_w_replanning.xml"
+BT_DIR = REPO / "docker/main/config/nav2/behavior_trees"
+TREE = BT_DIR / "navigate_to_pose_w_replanning.xml"
+THROUGH = BT_DIR / "navigate_through_poses.xml"
 PARAMS = REPO / "docker/main/config/nav2/nav2_params.yaml"
-CORNER_ESCAPE_SCRIPT = bt_script()
 
 
 def test_stop_m_is_the_existing_proximity_threshold_not_a_new_corner_constant():
@@ -48,38 +51,60 @@ def test_missing_range_does_not_invent_a_backup():
     assert corner_escape(ahead_m=None, behind_m=1.0) == SPIN  # type: ignore[arg-type]
 
 
-def test_navigate_recovery_backs_up_before_spin_when_ahead_is_closer_than_stop_m():
-    """Дерево вызывает ту же функцию: впереди < stop_m и сзади не ближе — BackUp, иначе Spin."""
+def _loaded_bt_paths() -> list[Path]:
+    """Деревья, которые bt_navigator реально грузит (default_*_bt_xml)."""
+    bt = yaml.safe_load(PARAMS.read_text(encoding="utf-8"))["bt_navigator"][
+        "ros__parameters"
+    ]
+    loaded = []
+    for key, path in (
+        ("default_nav_to_pose_bt_xml", TREE),
+        ("default_nav_through_poses_bt_xml", THROUGH),
+    ):
+        assert bt[key].endswith(path.name)
+        loaded.append(path)
+    return loaded
+
+
+def test_loaded_behavior_trees_have_no_script_node():
+    """Humble не знает Script. Узел под другим именем тоже не оставляем."""
+    for path in _loaded_bt_paths():
+        root = ET.parse(path).getroot()
+        tags = {el.tag for el in root.iter()}
+        assert "Script" not in tags, path.name
+        assert not any(tag.lower() == "script" for tag in tags), path.name
+        text = path.read_text(encoding="utf-8")
+        assert "<Script" not in text and "bt_script" not in text
+
+
+def test_navigate_recovery_is_the_pre_4785_spin_not_an_always_backup_stub():
+    """Без Script ветка BackUp невыбираема — в RoundRobin прежний Spin, не BackUp."""
     recovery = ET.parse(TREE).getroot().find("BehaviorTree/RecoveryNode")
     assert recovery is not None
     actions = recovery.find("./ReactiveFallback/RoundRobin")
     assert actions is not None and actions.get("name") == "RecoveryActions"
     names = [child.tag for child in list(actions)]
-    assert "Spin" not in names
-    gate = actions.find("Fallback")
-    assert gate is not None and names.index("Fallback") < names.index("Wait")
-    script = gate.find(".//Script")
-    assert script is not None and script.get("code") == CORNER_ESCAPE_SCRIPT
-    backup = gate.find(".//BackUp")
-    assert backup is not None
-    assert backup.get("backup_dist") == "0.30"
-    assert backup.get("backup_speed") == "0.05"
-    assert backup.get("if") == "corner_escape == 'backup'"
-    spin = gate.find("Spin")
-    assert spin is not None and spin.get("if") == "corner_escape != 'backup'"
+    assert names == ["Sequence", "Spin", "Wait"]
+    spin = actions.find("Spin")
+    assert spin is not None and spin.get("spin_dist") == "1.57"
+    assert spin.get("if") is None
     assert list(spin) == []
     assert actions.find("BackUp") is None
+    assert recovery.find(".//BackUp") is None
+    assert actions.find("Fallback") is None
 
 
-def test_script_is_the_function_and_threshold_is_stop_m():
+def test_backup_stop_m_stays_the_proximity_threshold():
+    """Порог формулы не выдуман и не сдвинут. В дерево он не вшит."""
     bt = yaml.safe_load(PARAMS.read_text(encoding="utf-8"))["bt_navigator"][
         "ros__parameters"
     ]
     assert float(bt["backup_stop_m"]) == STOP_M
     assert "nav2_back_up_action_bt_node" in bt["plugin_lib_names"]
-    assert "corner_escape" in CORNER_ESCAPE_SCRIPT
-    assert "'backup'" in CORNER_ESCAPE_SCRIPT and "'spin'" in CORNER_ESCAPE_SCRIPT
-    assert str(STOP_M) not in CORNER_ESCAPE_SCRIPT
+    body = "".join(
+        el.text or "" for el in ET.parse(TREE).getroot().iter()
+    )
+    assert "corner_escape" not in body
 
 
 @pytest.mark.parametrize(

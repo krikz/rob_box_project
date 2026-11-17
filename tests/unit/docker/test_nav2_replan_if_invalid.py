@@ -66,10 +66,12 @@ def test_stuck_recovery_stays():
     assert recovery is not None and recovery.get("number_of_retries") == "6"
     assert recovery.find(".//FollowPath") is not None
     assert recovery.find(".//Spin") is not None
-    assert recovery.find(".//BackUp") is not None
-    # #4607: BackUp в угле выбирается до Spin, не после Wait в RoundRobin.
+    # Прогон 18:47Z: Script (BT.CPP v4) Humble не грузит. BackUp без него
+    # невыбираем — в RoundRobin снова прямой Spin, как до #4785.
+    assert recovery.find(".//Script") is None
+    assert recovery.find(".//BackUp") is None
     actions = recovery.find("./ReactiveFallback/RoundRobin")
     assert actions is not None
-    assert actions.find("Spin") is None
-    assert actions.find("Fallback/Spin") is not None
+    assert actions.find("Spin") is not None
+    assert actions.find("Fallback") is None
     assert recovery.find(".//Wait") is not None
