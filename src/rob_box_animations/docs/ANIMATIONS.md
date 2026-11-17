@@ -38,7 +38,10 @@ python tools/led_face_lab/render_gifs.py docs/assets/animations --gallery src/ro
   `jaw`), запрос `play_animation`/`ExpressionRequest` — сцена на время,
   музыка — по темпу (`< 100` кайф, `100–125` грув, `≥ 125` очки), покой —
   `idle_stare`, раз в минуту `idle_bored`; нет голосового стека 7 с —
-  `sleep`, вернулся — `wakeup`. Порядок — `face_director.py`.
+  `sleep`, вернулся — `wakeup`. Никого в кадре и ни одной реплики 10 мин
+  (`knowledge.SOCIAL_SLEEP_AFTER_S`, #3780 C), и музыка не играет — тот же
+  `sleep`; лицо или голос — короткое `wakeup`, потом обычное лицо, без слов.
+  Порядок — `face_director.py`.
 
 ## Галерея
 

@@ -133,6 +133,8 @@ RUN mkdir -p src
 # его colcon не будет (нет в --packages-select), возьмёт из /ws/install.
 COPY --from=msgs /ws/install /ws/install
 COPY src/rob_box_dialog_msgs/package.xml /ws/src/rob_box_dialog_msgs/
+# #3780 C: лицо читает VisionEvent (кадр пуст / лицо в кадре). Пакет уже собран в образе msgs.
+COPY src/rob_box_perception_msgs/package.xml /ws/src/rob_box_perception_msgs/
 
 # ============================================================
 # ОПТИМИЗАЦИЯ КЭШИРОВАНИЯ: Копируем файлы от наименее к наиболее изменяемым
