@@ -97,6 +97,8 @@ RUN /bin/bash -c "source /opt/ros/${ROS_DISTRO}/setup.bash && cd /tmp/nav2-fix &
         /tmp/controller_progress_abort.patch /tmp/navfn_refuse_unknown_tail.patch
 # #4475: узел дерева WouldSpinOnStall. Угол считает rob_box_teleop.turn_in_place
 # (том compose, PYTHONPATH в start_nav2_direct.sh) — тот файл, что проверяет pytest.
+# doTransform<PoseStamped> в tf2_geometry_msgs.hpp зовёт KDL. Без -lorocos-kdl
+# dlopen падает на KDL::Rotation::Quaternion, хотя getTimestamp уже свой.
 COPY would_spin_on_stall.cpp turn_in_place_py.hpp /tmp/turn-bt/
 RUN /bin/bash -c "source /opt/ros/${ROS_DISTRO}/setup.bash && cd /tmp/turn-bt && \
     g++ -std=c++17 -fPIC -shared -DBT_PLUGIN_EXPORT \
@@ -107,7 +109,7 @@ RUN /bin/bash -c "source /opt/ros/${ROS_DISTRO}/setup.bash && cd /tmp/turn-bt &&
       would_spin_on_stall.cpp \
       -L/opt/ros/${ROS_DISTRO}/lib -Wl,-rpath,/opt/ros/${ROS_DISTRO}/lib \
       -Wl,--no-as-needed \
-      -lbehaviortree_cpp_v3 -lrclcpp -ltf2 -ltf2_ros -lpython3.10 \
+      -lbehaviortree_cpp_v3 -lrclcpp -ltf2 -ltf2_ros -lorocos-kdl -lpython3.10 \
       -lnav_msgs__rosidl_typesupport_cpp -lsensor_msgs__rosidl_typesupport_cpp \
       -lgeometry_msgs__rosidl_typesupport_cpp -ltf2_msgs__rosidl_typesupport_cpp" \
     && rm -rf /tmp/turn-bt

@@ -69,3 +69,6 @@ def test_plugin_is_loaded_and_calls_free_spin():
     assert "librob_box_would_spin_on_stall_bt_node.so" in dockerfile
     assert "nav_msgs__rosidl_typesupport_cpp" in dockerfile
     assert "-lpython3.10" in dockerfile
+    # Без специализации Humble .so грузится с undefined tf2::getTimestamp.
+    assert "tf2_geometry_msgs/tf2_geometry_msgs.hpp" in text
+    assert "-lorocos-kdl" in dockerfile

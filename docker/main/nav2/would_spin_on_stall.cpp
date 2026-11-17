@@ -23,6 +23,10 @@
 #include "nav_msgs/msg/path.hpp"
 #include "rclcpp/rclcpp.hpp"
 #include "sensor_msgs/msg/laser_scan.hpp"
+// Humble: Buffer::transform<PoseStamped> берёт tf2::getTimestamp / getFrameId /
+// doTransform. Без этой специализации g++ оставляет их undefined, и bt_navigator
+// не грузит .so (Could not load library … undefined symbol getTimestamp).
+#include "tf2_geometry_msgs/tf2_geometry_msgs.hpp"
 #include "tf2_ros/buffer.h"
 
 #include "turn_in_place_py.hpp"
