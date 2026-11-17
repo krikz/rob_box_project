@@ -319,4 +319,23 @@ class PerformHost:
         return bool(effects)
 
 
-__all__ = ["AGENT", "EffectRunner", "PerformHost", "TICK_S"]
+def heard(host: "PerformHost", speech_id: str, spoken_chars: int) -> Optional[tuple]:
+    """``(turn_id, текст, символы)`` реплики выступления, которая кончилась: сколько человек слышал.
+
+    ``finished`` (состояние ``done``) — текст целиком. ``cancelled`` — ``spoken_chars`` символов, не больше текста.
+    Пред-синтез без звука, фраза ещё не отдана и чужой ``speech_id`` — ``None``: в «повтори» не идут. Функция модуля,
+    не метод: класс хоста на пороге бюджета (ADR-0145).
+    """
+    with host._lock:
+        block = host.block
+        line = None if block is None else block.lines.find(speech_id)
+        if line is None or not line.speak:
+            return None
+        text = line.tts_text
+        chars = len(text) if line.state == "done" else min(max(0, int(spoken_chars or 0)), len(text))
+        if chars <= 0:
+            return None
+        return str(block._ids.get("turn_id") or ""), text, chars
+
+
+__all__ = ["AGENT", "EffectRunner", "PerformHost", "TICK_S", "heard"]

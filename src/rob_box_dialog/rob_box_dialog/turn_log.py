@@ -533,6 +533,24 @@ def results_of(log: TurnLog, turn_id: str) -> Tuple[WindowEntry, ...]:
     return tuple(e for e in turn.entries if e.role == TOOL) if turn is not None else ()
 
 
+def note_heard(log: TurnLog, turn_id: str, speech_id: str, text: str, spoken_chars: int) -> str:
+    """Прозвучавшая часть реплики выступления — в журнал хода (n808, ADR-0148).
+
+    Сегмент звучит у владельца выступления, мимо ``TurnEngine._say``. Без этой записи «повтори» берёт обещание
+    хода или «повторять нечего», хотя человек слышал куплет. ``spoken_chars`` — сколько символов назвал владелец
+    речи (``finished`` — длина текста, ``cancelled`` — оборванная часть). Пустой текст, ноль символов, чужой
+    ``speech_id`` или ход вне окна — ``""``, журнал не меняется. Тот же ``speech_id`` второй раз не пишется.
+    """
+    part = (text or "")[:max(0, int(spoken_chars or 0))].strip()
+    turn = log._turns.get(turn_id)
+    if not part or not speech_id or turn is None or log.speech(speech_id) is not None:
+        return ""
+    if any(e.role == ASSISTANT and e.voiced and e.content == part for e in turn.entries):
+        return ""
+    log.said(turn_id, speech_id, text)
+    return log.spoken(speech_id, spoken_chars) or ""
+
+
 __all__ = ["AGGREGATE_MARK", "ASSISTANT", "OnOutcome", "PERFORM_CLASS", "PERFORM_DONE", "PERFORM_INTERRUPTED",
            "PERFORM_STARTED", "PERFORM_STOPPED", "PERFORM_TOOL", "TOOL", "TurnAggregate", "TurnLog", "USER",
-           "WindowEntry", "perform_status", "phrase_label", "results_of", "speaker_label"]
+           "WindowEntry", "note_heard", "perform_status", "phrase_label", "results_of", "speaker_label"]
