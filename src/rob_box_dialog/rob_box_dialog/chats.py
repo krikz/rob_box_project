@@ -12,7 +12,9 @@
 роботе: «…»», «Показываю на роботе: радость.», отказ — «Не вышло.», лицо в тишине Личности — «Не показал…»), а не
 текст песни. «Спой» из чата решает тот же путь пения, что у голоса (хост даёт движку чата тот же
 ``SingRouteHost`` — тот же выбиратель и доска провайдеров, строка лога с меткой чата; музыку робота —
-:meth:`ChatTurns.set_music`); конец выступления закрывает его запись и в окне чата (:meth:`ChatTurns.performance_ended`).
+:meth:`ChatTurns.set_music`); конец выступления закрывает его запись и в окне чата
+(:meth:`ChatTurns.performance_ended`). Прозвучавший сегмент пишет :meth:`ChatTurns.note_heard`:
+«повтори» берёт куплет, не обещание (n808).
 
 Озвучка из чата (PR-12b, §9.2.3): ``say_aloud`` — действие класса ``action.speak_aloud``. Тул ждёт только начала
 реплики (``pending`` с ``event_ref=speech_id``), а «Озвучил (12 с)» приходит позже событием ``SpeechEvent finished``
@@ -357,6 +359,17 @@ class ChatTurns:
         одно за раз (``TurnLog.performance_ended`` закрывает все записи «идёт»). Закрыта хоть одна — ``True``."""
         closed = [engine.log.performance_ended(turn_id, end_reason, segments_done) for engine in self._engaged()]
         return any(closed)
+
+    def note_heard(self, turn_id: str, speech_id: str, text: str, spoken_chars: int) -> str:
+        """Прозвучавший на роботе сегмент — в журнал чата, чей это ход (n808): «повтори» в чате берёт куплет,
+        а не обещание «пою». Чужой ход — ``""``."""
+        from rob_box_dialog.turn_log import note_heard  # noqa: PLC0415
+
+        for engine in self._engaged():
+            said = note_heard(engine.log, turn_id, speech_id, text, spoken_chars)
+            if said:
+                return said
+        return ""
 
     def _engaged(self) -> list:
         """Движки чатов копией: ``set_music`` и ``performance_ended`` зовут ROS-колбэки музыки и ``block_end``, а

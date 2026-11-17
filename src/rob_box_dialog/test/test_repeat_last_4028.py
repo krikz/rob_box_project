@@ -294,6 +294,19 @@ def test_filler_flag_survives_a_superseded_phrase_and_a_reset():
     assert not log.window()[-1].filler
 
 
+def test_note_heard_writes_the_verse_and_skips_a_repeat_and_an_unknown_turn():
+    """Сегмент выступления, который человек слышал, входит в ``last_spoken``; повтор события и чужой ход — нет."""
+    from rob_box_dialog.turn_log import note_heard
+
+    log = TurnLog()
+    log.begin("t1", 0, "зачитай рэп")
+    assert note_heard(log, "t1", "s1", "Йо, енот.", 0) == ""
+    assert note_heard(log, "нет такого", "s1", "Йо, енот.", 9) == ""
+    assert note_heard(log, "t1", "s1", "Йо, енот.", 9) == "Йо, енот."
+    assert note_heard(log, "t1", "s1", "Йо, енот.", 9) == ""
+    assert log.last_spoken() == "Йо, енот."
+
+
 def test_phrase_keys_of_the_repeat_exist():
     assert kn.REPEAT_NOTHING_PHRASE in kn.PHRASE_KEYS and NOTHING
     assert all(" " not in word for word in kn.REPEAT.filler)
