@@ -226,6 +226,37 @@ def test_sound_pull_covers_supervisor_image_used_by_supervisor_and_avatar_arbite
     assert "docker compose config --images" in (root / "scripts/deploy/preflight_pull_images.sh").read_text(encoding="utf-8")
 
 
+# Шаги, которые резолвят тег образа: pull качает, start создаёт контейнер
+# (--pull never берёт то, что pull положил). Оба обязаны видеть один файл.
+_TAG_STEPS = (
+    "[Vision Pi] Pull Docker Images",
+    "[Vision Pi] Start Containers",
+    "[Sound Pi] Pull Docker Images",
+    "[Sound Pi] Start Containers",
+    "[Main Pi] Pull Docker Images",
+    "[Main Pi] Start Containers",
+)
+
+
+def test_deploy_sources_image_versions_for_local_registry():
+    """Issue #4763 (run 44078254848, staging+local): условие
+    `[ registry_source != 'local' ]` не давало source'ить .image-versions.*,
+    compose pull качал голый ${IMAGE_TAG} (twist-mux-humble-dev), а SHA-тег
+    из файла (TWIST_MUX_TAG=dev-f77ae33) на диск робота не попадал. Сборка
+    пушит SHA-тег в local registry до записи в файл (L-Build Pi Services,
+    tag_and_push), так что исключение local нечем оправдать. registry_source
+    выбирает только префикс реестра; skip по-прежнему не пулит (preflight)."""
+    steps = dict(_steps(WORKFLOW_PATH.read_text(encoding="utf-8")))
+    needle = (
+        "if [ -f .image-versions.${{ env.IMAGE_TAG }} ]; "
+        "then set -a && . .image-versions.${{ env.IMAGE_TAG }} && set +a; fi"
+    )
+    for name in _TAG_STEPS:
+        body = steps[name]
+        assert needle in body, f"{name}: .image-versions не source'ится"
+        assert "!= 'local'" not in body, f"{name}: registry_source=local всё ещё исключён"
+
+
 def test_wave2_services_are_expected_on_sound_and_gone_from_vision_checks():
     """quest, telegram-bot, avatar-arbiter — обязательные контейнеры Sound Pi (EXPECTED_CONTAINERS);
     в шагах Vision на них ничего не завязано."""
@@ -275,12 +306,13 @@ def _guard_snippet():
 
 def test_guard_rejects_undocumented_local_production_combo():
     """Инцидент 10.11 (run 42861316455): run задиспатчен с environment=production
-    (default формы) + registry_source=local. Шаги pull/start не грузят
-    .image-versions.* при registry_source=local (условие '[ ... != local ]'),
-    поэтому compose разрешил образы в голый ${IMAGE_TAG}=latest — а голый latest
-    локальный registry обновляет только релизной сборкой с main (образы от
-    28.09). Робот получил 6-недельной давности образы и деградировал. Докумен-
-    тированные комбинации (docs/deployment/DEPLOYMENT_WORKFLOW.md) не пострадают."""
+    (default формы) + registry_source=local. До #4763 шаги pull/start не грузили
+    .image-versions.* при registry_source=local, поэтому compose разрешил образы
+    в голый ${IMAGE_TAG}=latest — а голый latest локальный registry обновляет
+    только релизной сборкой с main (образы от 28.09). Робот получил 6-недельной
+    давности образы и деградировал. Документированные комбинации
+    (docs/deployment/DEPLOYMENT_WORKFLOW.md) не пострадают. Гард остаётся:
+    local+production по-прежнему недокументированная комбинация."""
     import subprocess
 
     snippet = _guard_snippet()
