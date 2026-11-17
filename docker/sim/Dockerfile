@@ -22,6 +22,16 @@ FROM ros:lyrical-ros-base
 
 SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 
+# packages.ros.org на этой машине отдал deb того же размера с чужим SHA256
+# (gz-msgs-vendor, gz-ogre-next-vendor, gz-gui-vendor, ros-gz-sim-demos,
+# сборка 17.11, exit 100). Прямой curl с хоста тот же URL отдал ожидаемый
+# SHA256. Без ретрая apt падает на первом Hash Sum mismatch.
+# Pipeline-Depth 0 — тот же приём, что в docker/base/Dockerfile.ros2-zenoh.
+RUN printf '%s\n' \
+        'Acquire::Retries "5";' \
+        'Acquire::http::Pipeline-Depth "0";' \
+        > /etc/apt/apt.conf.d/99retries
+
 # Gazebo Fortress + ros2_control (шаг 1). robot_state_publisher и xacro нужны
 # боевому скрипту start_robot_state_publisher.sh (сервис robot-state-publisher).
 RUN apt-get update && apt-get install -y --no-install-recommends \
