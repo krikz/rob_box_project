@@ -512,6 +512,34 @@ def test_presynth_in_streaming_mode_synthesizes_whole_without_stream(setup):
     assert owner.claim_presynth("sid-1")["audio_np"].size == 8000
 
 
+def test_3930_stream_break_reports_the_played_share_not_silence_or_the_whole_text(setup):
+    """Обрыв потока после звука (#3930): окно получает долю сказанного из факта буфера.
+
+    Ноль символов — реплики «не было» (окно молчит). Весь текст — ход успешный, хотя хвоста в буфере нет.
+    Доля — сколько плеер уже отдал из того, что поток положил, без оценки скорости речи."""
+    node, owner, clock = setup
+    text = "Раз. Два. Три четыре пять."
+    owner.admit(_chunk(text), "sid-1")
+    owner.started("sid-1", np.zeros(0, dtype=np.float32), 16000, 0.0)
+    owner.streamed("sid-1", np.full(16000, 0.2, dtype=np.float32), 16000, 0.0)  # 1 с в буфере
+    clock.t += 0.4  # плеер отдал 0.4 с из этой секунды
+    owner.streamed("sid-1", np.full(16000, 0.2, dtype=np.float32), 16000, 1.0)
+    owner.terminal("sid-1", False, "minimax_stream_broken", False)
+    event = dict(_events(node))["rejected"]
+    assert event.reason == "minimax_stream_broken"
+    assert 0 < event.spoken_chars < len(text)
+    assert event.spoken_chars == round(len(text) * 0.4 / 2.0)
+
+
+def test_3930_reject_without_sound_stays_unspoken(setup):
+    """Отказ до звука — по-прежнему ноль: окно такую реплику не берёт."""
+    node, owner, _clock = setup
+    owner.admit(_chunk("Привет."), "sid-1")
+    owner.terminal("sid-1", False, "quota", False)
+    event = dict(_events(node))["rejected"]
+    assert event.reason == "quota" and event.spoken_chars == 0
+
+
 def test_streamed_envelope_follows_first_sound_and_duration_arrives_late(setup):
     """#3930: ``started`` с неизвестной длительностью, огибающая куска - от t0 первого звука + смещение."""
     node, owner, _ = setup
