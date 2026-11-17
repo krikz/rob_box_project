@@ -2231,33 +2231,85 @@ step_heard() {
 }
 
 step_stt_replay() {  # $1=label $2=safe
-    local label="$1" safe="$2" heard out kept
-    recover_allowed stt_replay || return 0
+    local label="$1" safe="$2" heard out kept keys timeout=0 decision attempt reason
     [ -z "${E2E_STEP_STT_REPLAYED:-}" ] || return 0
-    [ -z "${E2E_STEP_RECOVERED:-}" ] || return 0
-    [ -n "${SCENARIO_FILE:-}" ] && [ -f "$SCENARIO_FILE" ] || return 0
+    [ "${_barge_mode:-0}" = "1" ] && return 0
     heard="$(step_heard)"
-    [ -n "$heard" ] || return 0
-    out="$(python3 "$(_events_py)" stt --scenario "$SCENARIO_FILE" --label "$label" --heard "$heard" 2>&1)" || {
-        log "STEP ${label}: ❌ сверка ПРИНЯТО со словами шага не разобрана: ${out}"
+    # #4196: opt-in stt_keys, ход был (rc=0). Не return 0 на «не этот путь» -- ниже общий промах без ключей.
+    if [ "${E2E_WAIT_RC:-0}" = "0" ] && recover_allowed stt_replay \
+        && [ -z "${E2E_STEP_RECOVERED:-}" ] \
+        && [ -n "${SCENARIO_FILE:-}" ] && [ -f "$SCENARIO_FILE" ] && [ -n "$heard" ]; then
+        out="$(python3 "$(_events_py)" stt --scenario "$SCENARIO_FILE" --label "$label" --heard "$heard" 2>&1)" || {
+            log "STEP ${label}: ❌ сверка ПРИНЯТО со словами шага не разобрана: ${out}"
+            return 0
+        }
+        if [ "$(printf '%s\n' "$out" | _ev_kv stt_ok)" = "0" ]; then
+            if _stt_step_executed "$label" "${STEP_BEFORE:-$BEFORE}" \
+                && kept="$(python3 "$(_events_py)" stt --scenario "$SCENARIO_FILE" --label "$label" --heard "$heard" --executed 1 2>&1)" \
+                && [ "$(printf '%s\n' "$kept" | _ev_kv kept)" = "executed" ]; then
+                log "STEP ${label}: STT исказил фразу (услышано «${heard}», нет слов: $(printf '%s\n' "$kept" | _ev_kv missing)), но исход шага в окне уже есть -- команда исполнена, повтора нет (stt_replay не нужен), шаг судится по первому исполнению"
+                return 0
+            fi
+            E2E_STEP_STT_REPLAYED=1
+            E2E_STEP_RECOVERED="stt_replay"
+            recover_mark stt_replay "$label" "heard=«${heard}» missing=$(printf '%s\n' "$out" | _ev_kv missing)"
+            BEFORE="$(${ROBOT_SSH} "date -u +%Y-%m-%dT%H:%M:%SZ" 2>/dev/null || date -u +%Y-%m-%dT%H:%M:%SZ)"
+            E2E_LAST_PLAY_SINCE="$BEFORE"
+            STEP_BEFORE="$BEFORE"
+            log "STEP ${label}: STT исказил фразу (услышано «${heard}», нет слов: $(printf '%s\n' "$out" | _ev_kv missing)) -- фраза шага ещё раз (stt_replay), окно шага с повтора"
+            play_eq_wav "$OUT_DIR/cmd_${safe}_eq.wav"
+            step_wait_after_play "$BEFORE" 0
+            return 0
+        fi
+    fi
+    # #4741/#4738: шаг без stt_keys, гипотеза не пустая, но не та фраза. rc=0 (ход на чужом входе) или rc=1
+    # (ПРИНЯТО есть, цикл не закрылся -- «Thank you.»). Один повтор; второй промах -- честный FAIL, не PASS.
+    # Таймаут без гипотезы / совпавшая фраза -- не этот класс. Словаря подмен нет.
+    case "${E2E_WAIT_RC:-0}" in 0|1) ;; *) return 0 ;; esac
+    if [ -n "${SCENARIO_FILE:-}" ] && [ -f "$SCENARIO_FILE" ]; then
+        keys="$(python3 "$(_events_py)" stt --scenario "$SCENARIO_FILE" --label "$label" --heard "${heard:--}" 2>/dev/null | _ev_kv keys)"
+        [ "${keys:-0}" = "0" ] || return 0
+    fi
+    [ "${E2E_WAIT_RC:-0}" = "1" ] && timeout=1
+    attempt="${E2E_STEP_STT_ATTEMPT:-1}"
+    decision="$(python3 "$(_events_py)" stt-miss --text "${text:-}" --heard "$heard" \
+        --attempt "$attempt" --timeout "$timeout" --barge-in "${_barge_mode:-0}" 2>&1)" || {
+        log "STEP ${label}: решение о промахе STT не разобрано: ${decision} -- повтора нет"
         return 0
     }
-    [ "$(printf '%s\n' "$out" | _ev_kv stt_ok)" = "0" ] || return 0
-    if _stt_step_executed "$label" "${STEP_BEFORE:-$BEFORE}" \
-        && kept="$(python3 "$(_events_py)" stt --scenario "$SCENARIO_FILE" --label "$label" --heard "$heard" --executed 1 2>&1)" \
-        && [ "$(printf '%s\n' "$kept" | _ev_kv kept)" = "executed" ]; then
-        log "STEP ${label}: STT исказил фразу (услышано «${heard}», нет слов: $(printf '%s\n' "$kept" | _ev_kv missing)), но исход шага в окне уже есть -- команда исполнена, повтора нет (stt_replay не нужен), шаг судится по первому исполнению"
+    reason="$(printf '%s\n' "$decision" | _ev_kv reason)"
+    if [ "$(printf '%s\n' "$decision" | _ev_kv retry)" != "1" ]; then
+        if [ "$reason" = "attempts_exhausted" ]; then
+            log "STEP ${label}: STT промах повторно (услышано «${heard}») -- второго повтора нет, честный FAIL"
+            emit_step "${label} FAIL stt_miss"
+            mark_fail_kind no_reaction
+            E2E_STT_MISS_FAIL=1
+        else
+            log "STEP ${label}: услышано «${heard:-}» -- повтора по промаху STT нет (${reason})"
+        fi
         return 0
     fi
+    E2E_STEP_STT_ATTEMPT=$((attempt + 1))
     E2E_STEP_STT_REPLAYED=1
     E2E_STEP_RECOVERED="stt_replay"
-    recover_mark stt_replay "$label" "heard=«${heard}» missing=$(printf '%s\n' "$out" | _ev_kv missing)"
+    recover_mark stt_replay "$label" "heard=«${heard}» stt_miss=1 stt_attempt=${E2E_STEP_STT_ATTEMPT}/$(printf '%s\n' "$decision" | _ev_kv max)"
     BEFORE="$(${ROBOT_SSH} "date -u +%Y-%m-%dT%H:%M:%SZ" 2>/dev/null || date -u +%Y-%m-%dT%H:%M:%SZ)"
     E2E_LAST_PLAY_SINCE="$BEFORE"
     STEP_BEFORE="$BEFORE"
-    log "STEP ${label}: STT исказил фразу (услышано «${heard}», нет слов: $(printf '%s\n' "$out" | _ev_kv missing)) -- фраза шага ещё раз (stt_replay), окно шага с повтора"
+    log "STEP ${label}: STT промах (услышано «${heard}», ждали «${text}») -- фраза шага ещё раз, окно шага с повтора"
     play_eq_wav "$OUT_DIR/cmd_${safe}_eq.wav"
     step_wait_after_play "$BEFORE" 0
+    heard="$(step_heard)"
+    timeout=0
+    [ "${E2E_WAIT_RC:-0}" = "1" ] && timeout=1
+    decision="$(python3 "$(_events_py)" stt-miss --text "${text:-}" --heard "$heard" \
+        --attempt "${E2E_STEP_STT_ATTEMPT}" --timeout "$timeout" --barge-in "${_barge_mode:-0}" 2>&1)" || return 0
+    if [ "$(printf '%s\n' "$decision" | _ev_kv reason)" = "attempts_exhausted" ]; then
+        log "STEP ${label}: STT промах повторно (услышано «${heard}») -- второго повтора нет, честный FAIL"
+        emit_step "${label} FAIL stt_miss"
+        mark_fail_kind no_reaction
+        E2E_STT_MISS_FAIL=1
+    fi
 }
 
 # step_stt_garbage_retry LABEL SAFE — #4694 (17.11): вердикт silenced, но ПРИНЯТО -- не команда шага, а мусор STT
@@ -2645,7 +2697,11 @@ run_step() {  # $1=text $2=voice $3=step_label $4=expect_kind(cycle|wake-gated|b
         # не FAIL с первой попытки. Команда узнана и второй мусор -- повтора нет, FAIL как раньше.
         [ "${E2E_WAIT_RC:-0}" = "4" ] && [ "${E2E_REPLY_VERDICT:-}" = "silenced" ] && step_stt_garbage_retry "$label" "$safe"
         # #4196: ход был, но STT исказил ключевое слово фразы шага (поле stt_keys) -- шаг с stt_replay играет фразу ещё раз.
-        [ "${E2E_WAIT_RC:-0}" = "0" ] && step_stt_replay "$label" "$safe"
+        # #4741/#4738: rc=0/1, гипотеза не пустая, но не та фраза, шага без stt_keys -- один повтор; второй промах -- FAIL.
+        case "${E2E_WAIT_RC:-0}" in
+            0|1) step_stt_replay "$label" "$safe" ;;
+        esac
+        [ "${E2E_STT_MISS_FAIL:-0}" = "1" ] && return 1
         # #4608: повтор/восстановление не удалось сыграть -- это сбой стенда, а не вердикт робота по шагу.
         [ "${E2E_PLAY_FAILED:-0}" = "1" ] && { step_stand_play_failed "$label"; return 1; }
 
@@ -3367,6 +3423,7 @@ elif [ -n "$SCENARIO_FILE" ]; then
         E2E_STEP_WAKE_ATTEMPT=""
         E2E_STEP_STT_REPLAYED=""
         E2E_STEP_STT_ATTEMPT=""
+        E2E_STT_MISS_FAIL=""
         # retry_acceptance = доп. попытки при FAIL patterns/acceptance.
         # Нужно для dj01: LLM недетерминирован — если renardo не запустился
         # (request_music не вызван), повторяем команду (e2e run 32595628905).
