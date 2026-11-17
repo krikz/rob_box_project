@@ -53,9 +53,9 @@ export interface ConnectionListeners {
   onStreamList?: (items: StreamMeta[]) => void;
   /**
    * WELCOME от сервера. AV-19 (issue #1911): ``teleopFloorHeldBy`` —
-   * client_id текущего держателя teleop_floor (``null`` если никто);
-   * клиент сверяет с ``sessionId`` (== own session_id), чтобы сразу
-   * определить hasFloor (см. teleop_fsm.setHasFloor).
+   * server_client_id держателя teleop_floor (``quest:<uuid>``, #2190;
+   * ``null`` если никто). Сверка с session_id — sameFloorClient,
+   * не равенство строк (см. teleop_fsm.setHasFloor).
    */
   onWelcome?: (
     sessionId: string,

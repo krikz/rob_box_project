@@ -10,7 +10,11 @@ import {
   floorLabel,
   floorIsFree,
   floorIsMine,
-  supervisorEffect
+  supervisorEffect,
+  questServerClientId,
+  sameFloorClient,
+  teleopFloorClaim,
+  armStickDecision
 } from "../src/state/supervisor_state";
 
 const flat = (over: Record<string, unknown> = {}) => ({
@@ -88,9 +92,14 @@ describe("floorLabel / floorIsMine / floorIsFree", () => {
     })
   )!;
 
-  it("наш floor → my", () => {
+  it("наш floor → my (в том числе голый session_id против quest:<uuid>)", () => {
     expect(floorLabel(st, "teleop", "quest-1")).toBe("my");
     expect(floorIsMine(st, "teleop", "quest-1")).toBe(true);
+    const prefixed = parseSupervisorState(
+      flat({ teleop_floor: { client_id: "quest:abc-123", since_ms: 1 } })
+    )!;
+    expect(floorLabel(prefixed, "teleop", "abc-123")).toBe("my");
+    expect(floorIsMine(prefixed, "teleop", "abc-123")).toBe(true);
   });
 
   it("чужой floor → other", () => {
@@ -107,6 +116,55 @@ describe("floorLabel / floorIsMine / floorIsFree", () => {
   it("myClientId неизвестен, floor занят → unknown, НЕ free и НЕ other", () => {
     expect(floorLabel(st, "teleop", null)).toBe("unknown");
     expect(floorIsMine(st, "teleop", null)).toBe(false);
+  });
+});
+
+describe("teleopFloorClaim / armStickDecision — клик ARM (#4694)", () => {
+  const sid = "abc-123";
+  const mine = "quest:abc-123";
+
+  it("session_id и quest:<uuid> — один клиент", () => {
+    expect(questServerClientId(sid)).toBe(mine);
+    expect(questServerClientId(mine)).toBe(mine);
+    expect(questServerClientId(null)).toBeNull();
+    expect(questServerClientId("")).toBeNull();
+    expect(sameFloorClient(mine, sid)).toBe(true);
+    expect(sameFloorClient(sid, sid)).toBe(true);
+    expect(sameFloorClient("quest:other", sid)).toBe(false);
+    expect(sameFloorClient(null, sid)).toBe(false);
+    expect(sameFloorClient(mine, null)).toBe(false);
+  });
+
+  it("руль свободен → acquire, потом ARM; повтор без hasFloor снова acquire", () => {
+    expect(teleopFloorClaim(null, sid, true)).toBe("free");
+    expect(armStickDecision("free", false)).toEqual({ action: "acquire_then_arm" });
+    // Подтверждённый floor (hasFloor) на свободной метке — уже тоггл, не вторая заявка.
+    expect(armStickDecision("free", true)).toEqual({ action: "toggle" });
+  });
+
+  it("руль наш (quest:<uuid> против голого session_id) → тоггл, acquire не нужен", () => {
+    expect(teleopFloorClaim(mine, sid, true)).toBe("my");
+    expect(armStickDecision("my", true)).toEqual({ action: "toggle" });
+    expect(armStickDecision("my", false)).toEqual({ action: "toggle" });
+  });
+
+  it("руль чужой → блок: тост, armed не ставить", () => {
+    expect(teleopFloorClaim("telegram", sid, true)).toBe("other");
+    expect(teleopFloorClaim("quest:other-session", sid, true)).toBe("other");
+    expect(armStickDecision("other", false)).toEqual({ action: "block" });
+    expect(armStickDecision("other", true)).toEqual({ action: "block" });
+  });
+
+  it("floor_lost без нового держателя — не «свободен», acquire не слать", () => {
+    expect(teleopFloorClaim("lost", sid, true)).toBe("unknown");
+    expect(armStickDecision("unknown", false)).toEqual({ action: "block" });
+  });
+
+  it("STATE_UPDATE ещё не приходил → unknown, не выдумываем «свободен»", () => {
+    expect(teleopFloorClaim(null, sid, false)).toBe("unknown");
+    expect(armStickDecision("unknown", false)).toEqual({ action: "block" });
+    // Оптимистичный hasFloor до WELCOME — как TeleopFSM default.
+    expect(armStickDecision("unknown", true)).toEqual({ action: "toggle" });
   });
 });
 
