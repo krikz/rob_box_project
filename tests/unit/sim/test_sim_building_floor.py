@@ -249,3 +249,33 @@ def test_route_py_reads_goals_file_in_degrees():
     assert by_name["aud_101"] == ("aud_101", 5.6, 2.6, 90.0)
     assert by_name["entrance"] == ("entrance", -7.0, 0.0, 180.0)
     assert [g[0] for g in goals] == [p.name for p in bf.named_points()]
+
+
+# Старые Depot-цели M1/M4/R3/R4 лежали западнее внешней грани map x=−4.8398 (issue #4694).
+_OLD_DEPOT_OUTSIDE = {
+    "M1": (-6.0, 4.0),
+    "M4": (-6.0, -4.5),
+    "R3": (-9.0, 4.0),
+    "R4": (-9.0, -4.5),
+}
+
+
+def _route_goals_tuples():
+    """Кортежи GOALS из scripts/hil/video/route.py без импорта ROS."""
+    import ast
+
+    src = (REPO / "scripts" / "hil" / "video" / "route.py").read_text(encoding="utf-8")
+    tree = ast.parse(src)
+    for node in tree.body:
+        if isinstance(node, ast.Assign) and any(getattr(t, "id", None) == "GOALS" for t in node.targets):
+            return ast.literal_eval(node.value)
+    raise AssertionError("GOALS не найден в route.py")
+
+
+def test_depot_goals_m1_m4_r3_r4_inside_west_wall():
+    """Четыре цели, что были снаружи Depot, стоят восточнее x=−4.0 и не на старых точках."""
+    goals = {name: (x, y, yaw) for name, x, y, yaw in _route_goals_tuples()}
+    for name, (old_x, old_y) in _OLD_DEPOT_OUTSIDE.items():
+        x, y, _yaw = goals[name]
+        assert x > -4.0, name
+        assert (x, y) != (old_x, old_y), name
