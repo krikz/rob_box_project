@@ -6,7 +6,7 @@
 |---|---|---|
 | #3789 | честные фразы тулов движения: по ABORTED и у `stop_navigation` («Я и так стою.» / «Останавливаюсь.») | `nav_aborted`, `stop_idle`, `stop_active` |
 | #4435, #4456 | после провала или отмены NavigateToPose FollowPath погашен и выход twist_mux = 0 | `nav_aborted`, `stop_active` (вердикт `tool_halt`), `orphan_natural` |
-| #4458 | сторож сирот гасит FollowPath, если цель NavigateToPose прислал не наш тул | `orphan` |
+| #4458 | сторож сирот гасит FollowPath, если родительскую цель (NavigateToPose или NavigateThroughPoses) прислал не наш тул | `orphan` |
 | #4365 | в движении у препятствия: стоп, писк, «Осторожно!», маячок вместе | `zone` |
 | #4470 | `HIL_GUARD_SOUND=on`: писк уходит на настоящего робота; `off`: только строка в журнале, стоп и маячок есть | `zone` (on), `guard_off` (off) |
 
