@@ -294,6 +294,24 @@ def test_filler_flag_survives_a_superseded_phrase_and_a_reset():
     assert not log.window()[-1].filler
 
 
+def test_note_proactive_waits_for_spoken_and_a_drop_leaves_no_history():
+    """#4751: приветствие — ``said`` → ``spoken``, не ``delivered``. Отмена не оставляет фразы в окне."""
+    from rob_box_dialog.turn_log import drop_proactive, note_proactive
+
+    log = TurnLog()
+    assert note_proactive(log, "g1", 3, "g1", "   ") is False
+    assert note_proactive(log, "g1", 3, "g1", "Привет, Денис.") is True
+    assert log.window() == ()
+    assert note_proactive(log, "g1", 3, "g1", "Привет, Денис.") is False
+    assert log.spoken("g1", len("Привет, Денис.")) == "Привет, Денис."
+    assert [(e.role, e.content) for e in log.window()] == [("assistant", "Привет, Денис.")]
+    assert note_proactive(log, "g1", 9, "g2", "ещё раз") is False
+    missed = TurnLog()
+    note_proactive(missed, "g3", 1, "g3", "Привет.")
+    assert drop_proactive(missed, "g3") is True and missed.window() == ()
+    assert drop_proactive(missed, "нет") is False
+
+
 def test_note_heard_writes_the_verse_and_skips_a_repeat_and_an_unknown_turn():
     """Сегмент выступления, который человек слышал, входит в ``last_spoken``; повтор события и чужой ход — нет."""
     from rob_box_dialog.turn_log import note_heard

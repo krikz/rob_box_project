@@ -540,7 +540,8 @@ class DialogNode(Node):
 
     def _on_speech_event(self, msg: Any) -> None:
         plan_host.on_speech(self, msg)
-        greeting_window.on_speech_event(self, int(msg.kind), msg.speech_id, msg.agent, int(msg.spoken_chars))
+        if not speech_client.is_speech_end(msg):  # конец — ниже, до ``spoken``
+            greeting_window.on_speech_event(self, int(msg.kind), msg.speech_id, msg.agent, int(msg.spoken_chars))
         if msg.kind == SpeechEvent.KIND_VOICE_CHANGED:  # голос хранит tts_node; сессия помнит, что он применил
             if robot_voice_changed(msg):
                 self._session.set_voice(msg.voice_requested or None, msg.voice_applied or None, msg.provider or None)
@@ -556,6 +557,7 @@ class DialogNode(Node):
         if msg.kind == SpeechEvent.KIND_STARTED:
             self._engine.speech_started(msg.speech_id)
         elif speech_client.is_speech_end(msg):  # finished / cancelled / rejected - одно знание о конце реплики
+            greeting_window.on_speech_event(self, int(msg.kind), msg.speech_id, msg.agent, int(msg.spoken_chars))
             self._engine.speech_ended(msg.speech_id, int(msg.spoken_chars))
 
     def _on_music_state(self, msg: Any) -> None:
