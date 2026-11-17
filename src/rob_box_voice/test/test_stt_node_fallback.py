@@ -824,8 +824,8 @@ class TestSpeakUnclear:
         assert stt_node.utterance_pub.publish.call_count == 0
         assert stt_node._speech_client_pubs["request"].publish.call_count == 0
 
-    def test_speech_audio_callback_short_rejected_stays_silent(self, stt_node):
-        """#4695: короткий rejected не подтверждает адресованную речь → ни Utterance, ни TTS."""
+    def test_speech_audio_callback_short_rejected_asks_once_outside_greeting(self, stt_node):
+        """#4501: короткий rejected вне окна приветствия — одна фраза кода, не Utterance."""
         stt_node._speech_client_pubs = {"request": MagicMock()}
         stt_node._last_unclear_at = 0.0
         # Короткий текст "не" (2 chars < min_text_chars=3) → rejected(short)
@@ -838,10 +838,10 @@ class TestSpeakUnclear:
         stt_node.speech_audio_callback(msg)
 
         assert stt_node.utterance_pub.publish.call_count == 0
-        assert stt_node._speech_client_pubs["request"].publish.call_count == 0
+        assert stt_node._speech_client_pubs["request"].publish.call_count == 1
 
-    def test_speech_audio_callback_vosk_garbage_stays_silent_real_path(self, stt_node):
-        """#4695: реальный путь Yandex empty → Vosk «не» остаётся rejected и не запускает TTS."""
+    def test_speech_audio_callback_vosk_garbage_asks_once_outside_greeting(self, stt_node):
+        """#4501: Yandex empty → Vosk «не» вне окна приветствия — одна фраза, не Utterance."""
         stt_node.yandex_stub = MagicMock()
         stt_node.recognizer = MagicMock()
         stt_node._recognize_yandex = MagicMock(return_value=None)  # empty x2
@@ -856,7 +856,7 @@ class TestSpeakUnclear:
         stt_node.speech_audio_callback(msg)
 
         assert stt_node.utterance_pub.publish.call_count == 0
-        assert stt_node._speech_client_pubs["request"].publish.call_count == 0
+        assert stt_node._speech_client_pubs["request"].publish.call_count == 1
 
 
 class TestTTSGracePeriod:

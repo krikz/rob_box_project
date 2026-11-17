@@ -365,9 +365,40 @@ except ImportError:
     print("⚠️  yandex-cloud-ml-sdk не установлен! Используем только Vosk.")
 
 
-def _handle_nonempty_rejected(node, admission: echo_window.Admission) -> None:
-    """Переспросить только подтверждённый окном человеческий ответ; остальной rejected оставить молчим."""
+def reask_for_rejected(admission: echo_window.Admission, reply_open: bool, text: str, min_chars: int) -> bool:
+    """Реплика не принята: одна фраза переспроса, если это не шум окна приветствия (#4695).
+
+    Факт строит код, не LLM (ADR-0148) и не регекс по тексту STT. Окно приветствия — то же
+    ``EchoWindow.reply_open`` (#4509). Голос в тишине вне окна и причина гейта ``short`` —
+    реплика не принята. ``filler`` / ``foreign`` и шум окна молчат; ``REPLY_AFTER``
+    переспрашивает как раньше.
+    """
     if admission.verdict == echo_window.REPLY_AFTER:
+        return True
+    if reply_open or admission.verdict != echo_window.PASS or not _heard_free(admission):
+        return False
+    return _rejected_as_utterance(text, min_chars) == "short"
+
+
+def _heard_free(admission: echo_window.Admission) -> bool:
+    """Голос фразы дошёл до тишины: эхо собственного голоса там не звучит (``EchoWindow.admit``)."""
+    heard = getattr(admission, "heard", None)
+    return heard is None or echo_window.FREE in heard
+
+
+def _rejected_as_utterance(text: str, min_chars: int) -> str:
+    """Причина гейта короткой фразы (:func:`short_phrase_reason`): обрывок, шум или «принято».
+
+    Переспрос — только ``short``. ``filler`` / ``foreign`` — шум распознавания, не реплика.
+    """
+    from .stt_fallback import short_phrase_reason  # noqa: PLC0415 — модуль уже загружен к вызову
+
+    return short_phrase_reason(text, min_chars) or ""
+
+
+def _handle_nonempty_rejected(node, admission: echo_window.Admission, text: str) -> None:
+    """Одна фраза «не расслышал» из факта «реплика не принята»; шум окна приветствия — молча (#4695)."""
+    if reask_for_rejected(admission, node._echo.reply_open(), text, int(node.min_text_chars)):
         node._maybe_speak_unclear()
     else:
         node.get_logger().info("🔇 [issue 4695] Непустой rejected — не доказана адресованная речь, молчу")
@@ -1048,10 +1079,10 @@ class STTNode(Node):
         робота или шум: НЕ говорим «не расслышал», молчим. Иначе робот
         говорит фразу → её эхо снова ловится → снова empty → бесконечный цикл.
         rejected(short) — Vosk/Yandex вернули что-то (например «не»/«пути»),
-        но rejected сам по себе не подтверждает адресованную попытку речи.
-        Переспрос разрешён только при verdict ``REPLY_AFTER``: существующее
-        окно уже подтвердило человеческий ответ после хвоста эха. Остальные
-        rejected/noise/echo/stale молчат.
+        но в диалог это не идёт: реплика не принята. Фразу переспроса строит код
+        (:func:`reask_for_rejected`): вне окна приветствия — одна фраза; шум в
+        окне (вердикт ``REPLY``) и эхо/stale — молча (#4695). ``REPLY_AFTER``
+        по-прежнему переспрашивает.
         wake-поток: фон/ложное VAD-срабатывание — молчим, робот не должен
         «переспрашивать» на каждый сегмент без operator-вейка.
 
@@ -1066,7 +1097,7 @@ class STTNode(Node):
         if source == _SRC_WAKE:
             self._log_wake_rejection(text, duration)
         elif text:
-            _handle_nonempty_rejected(self, admission)
+            _handle_nonempty_rejected(self, admission, text)
         else:
             self.get_logger().info("🔇 [issue 989] Пустой STT (эхо/музыка) — молчу, без «не расслышал»")
         if source != _SRC_WAKE:
