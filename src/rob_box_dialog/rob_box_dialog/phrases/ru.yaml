@@ -366,6 +366,7 @@ speak_aloud.timeout: ["Не знаю, прозвучало ли: итога от
 # снимок в Telegram: фразу строит бот из результата send_photo, не тул до отправки (ADR-0148, #4694 Л)
 chat.photo.sent: ["Отправил снимок {caption}."]
 chat.photo.not_sent: ["Снимок не ушёл: Telegram не принял файл."]
+chat.photo.no_group: ["Не знаю, чьи снимки слать: в прошлом ходе не было лиц."]
 
 # --- ход процесса в чате Telegram: подпись шага, чат правит одно сообщение (chats.ChatPorts, #4243) --------------
 chat.progress.thinking: ["Думаю…"]

@@ -86,6 +86,7 @@ from typing import (Any, Awaitable, Callable, Collection, Dict, FrozenSet, Itera
 from rob_box_core.tool_catalog import get_tool
 from rob_box_core.utterance import Sink, Utterance
 from rob_box_dialog import counting
+from rob_box_dialog import face_group
 from rob_box_dialog import face_scene
 from rob_box_dialog import foreign_name
 from rob_box_dialog import knowledge as kn
@@ -1113,6 +1114,7 @@ def considered(engine: "TurnEngine", turn: "_Turn", cmd: Command, last: bool) ->
     cmd = unasked_aloud(log, turn, snapshot.agent, cmd)
     fresh = counted_in_full(log, turn, unreread(log, turn, unrepeated(log, turn, cmd)))
     fresh = switched_theme(log, snapshot, turn, fresh)  # просьба сменить тему сета - действием кода (#4347)
+    fresh = their_photos(engine, log, turn, fresh)  # «пришли их» без id (#4505)
     fresh = corrected_ambulance(log, turn, fresh)  # сирена/мигалка: ambulance → police_lights (#4694)
     names = foreign_keys(engine.log.window(exclude=turn.turn_id), turn, fresh, snapshot)
     fresh = unnamed_without_retry(log, turn, fresh, names, last)
@@ -1161,6 +1163,18 @@ def carried_groups(called: Sequence[str]) -> Tuple[str, ...]:
     """Группы тулов, что переходят на следующий ход: ``faces`` - если в этом ходе звали её тулы. «Ну пришли их», «а
     ещё?» слов группы не содержат, а продолжают разговор про лица (#4505); решает код по вызванным тулам, не слова."""
     return (kn.FACES_GROUP,) if set(called) & set(kn.TOOL_GROUPS[kn.FACES_GROUP].tools) else ()
+
+
+def their_photos(engine: "TurnEngine", log: Any, turn: "_Turn", cmd: Command) -> Command:
+    """«Пришли их» без id - ``person_photo`` последней группы (:mod:`face_group`, #4505).
+
+    Слова модели не звучат. «Отправил» скажет бот после ``send_photo``.
+    Группы нет - честная фраза, не обещание."""
+    fresh, done = face_group.with_their_photos(turn.text, cmd, engine._faces.for_source(turn.source), turn.acted)
+    if done:
+        log.info(f"{LOG_MARK} «их» без id ({done}): слова модели не звучат, "
+                 f"{[a.tool for a in fresh.actions]} turn={turn.turn_id}")
+    return fresh
 
 
 def switched_theme(log: Any, snapshot: SessionSnapshot, turn: "_Turn", cmd: Command) -> Command:
@@ -2261,6 +2275,8 @@ class TurnEngine:
         self._count_edits: Dict[str, Tuple[Any, str, Optional[str], Optional[str]]] = {}
         #: Источник прошлого хода и группы, что переносятся на следующий ход того же источника (:func:`carried_groups`).
         self._carry: Tuple[str, Tuple[str, ...]] = ("", ())
+        #: Группа лиц этого источника для «их» без id (#4505).
+        self._faces = face_group.FaceGroup("", ())
         #: Идущие вереницы (:func:`run_chain`): задача живёт после закрытия своего хода, ссылка держит её от сборщика.
         self.chains: Dict[Any, ChainRun] = {}
 
@@ -2411,7 +2427,7 @@ class TurnEngine:
         results = await self._execute(turn, runnable, snap)
         if self._stale(turn, "results"):
             return None
-        if not last and any(r.cls == _QUERY for r in results):
+        if face_group.returns_to_model(turn.text, last, results):
             turn.expression = command_face(turn.expression, results, turn.text, earlier=turn.expression)
             return query_more(self, turn, results, cmd.expression.emotion)
         self._speak(turn, fresh, results, unread=unanswered(cmd, fresh, runnable))
@@ -2460,6 +2476,7 @@ class TurnEngine:
         run = execute_for_speaker(self._ports, actions, snap, now, request_ref(turn, ref), self._log)
         results = pickup_parties.intro_reasons(await turn.deadline.wait(run, "actions"), turn.pickup_view)
         self._generated.note(actions, results)
+        face_group._noted(self, turn, actions, results)  # «их» следующего хода (#4505)
         turn.music_stopped, results = reconcile_stops(turn.music_stopped, results)  # фраза стопа - правда о ходе
         turn.acted += acted_calls(actions, results)  # повтор в этом ходе не исполняется
         turn.read += read_calls(actions, results)  # повтор чтения в этом ходе не исполняется
@@ -2527,6 +2544,7 @@ class TurnEngine:
                                         "source": turn.source})
         self._window.touch(self._clock())  # долгий ход (выступление) пауза не считается
         self._carry = (turn.source, carried_groups(turn.called))
+        face_group._kept(self, turn)  # журнал помнит лица, ход их не звал (#4505)
         return agg
 
     def _event(self, kind: str, turn: _Turn, text: str = "", data: Optional[Mapping[str, Any]] = None) -> None:
