@@ -226,6 +226,8 @@ flowchart TD
   `src/rob_box_voice/rob_box_voice/led_node.py:169`).
 - Сессия латчем в `/dialog/session` (`dialog_node.py:383`, `src/rob_box_voice/rob_box_voice/core/identity_question.py:51`):
   тишину и сцены читают `led_node`, `face_node`, `sound_node` (`face_node.py:146`, `sound_node.py:73`).
+- Вайб (#3780 B) — состояние шара в `rob_box_dialog.vibe`, не рендер. Событие толкает, без событий шар за
+  `knowledge.VIBE_DECAY_S` (10 мин, середина окна Шифу 5–15) сам у нейтрали. К полотну этот модуль не подключён.
 
 ## 2. Бэклог, тишина, перебивание
 
