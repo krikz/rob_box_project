@@ -651,6 +651,54 @@ class GetCurrentTimeTool(MCPTool):
         return MCPToolResult(success=True, data=data, message=message)
 
 
+#: Признак сима, как в ``use_sim_time.sh`` и ``proximity.hil_active``: только ``true``.
+SIM_TIME_ENV = "USE_SIM_TIME"
+#: HIL-реестр карт, который ``hil.sh`` уже кладёт в voice-assistant (``compose.hil.yaml``).
+#: ``USE_SIM_TIME`` туда не кладётся — без этого маркера фраза 17.11 снова промолчит про симулятор.
+HIL_WAYPOINT_DB_ENV = "WAYPOINT_DB_PATH"
+STATUS_OK = "Статус робота получен"
+SIM_POSE_NOTE = "Это поза симулятора, не пол."
+
+
+def sim_pose_active(env=None, node=None) -> bool:
+    """Поза из /odom — симулятор, если sim time или HIL. Боевой робот без этих признаков — нет.
+
+    ``USE_SIM_TIME=true`` (только true/false, как в use_sim_time.sh), параметр ноды
+    ``use_sim_time`` или непустой ``WAYPOINT_DB_PATH`` (HIL-реестр voice-assistant).
+    Порога «почти в нуле» нет: ноль на полу и ноль в Gazebo числами не отличить.
+    """
+    source = os.environ if env is None else env
+    if str(source.get(SIM_TIME_ENV, "false")).strip().lower() == "true":
+        return True
+    if str(source.get(HIL_WAYPOINT_DB_ENV, "")).strip():
+        return True
+    return _node_use_sim_time(node)
+
+
+def _node_use_sim_time(node) -> bool:
+    """Параметр ноды ``use_sim_time``, если он уже объявлен. Не объявляем сами (#976)."""
+    if node is None or not hasattr(node, "has_parameter") or not hasattr(node, "get_parameter"):
+        return False
+    try:
+        if not node.has_parameter("use_sim_time"):
+            return False
+        return bool(node.get_parameter("use_sim_time").value)
+    except Exception:
+        return False
+
+
+def status_phrase(position, unavailable: List[str], sim_pose: bool) -> str:
+    """Фраза статуса. Код строит её из факта исполнения (ADR-0148), не из близости к нулю."""
+    if unavailable:
+        missing = ", ".join(unavailable)
+        phrase = f"{STATUS_OK} (недоступны топики: {missing})"
+    else:
+        phrase = STATUS_OK
+    if position is not None and sim_pose:
+        return f"{phrase} {SIM_POSE_NOTE}"
+    return phrase
+
+
 def battery_percent_from_state(percentage, present=True) -> Optional[float]:
     """``BatteryState.percentage`` (ROS-конвенция 0..1) -> проценты 0..100.
 
@@ -726,7 +774,11 @@ class GetRobotStatusTool(MCPTool):
 
     @property
     def description(self) -> str:
-        return "Получить текущий статус робота (позиция, батарея, состояние систем)."
+        return (
+            "Получить текущий статус робота (позиция, батарея, состояние систем). "
+            "Отвечай фразой из message: если там сказано, что это поза симулятора, "
+            "не называй её полом."
+        )
 
     @property
     def parameters(self) -> List[MCPToolParameter]:
@@ -764,22 +816,20 @@ class GetRobotStatusTool(MCPTool):
         }
 
         if unavailable:
-            missing = ", ".join(unavailable)
             status["unavailable_topics"] = unavailable
             # Частичные данные: хотя бы один топик жив — отдаём реальные данные с пометкой
-            if self._position is not None or self._battery_level is not None:
+            if self._position is None and self._battery_level is None:
                 return MCPToolResult(
-                    success=True,
+                    success=False,
                     data=status,
-                    message=f"Статус робота получен (недоступны топики: {missing})",
+                    error=(
+                        "Статус робота недоступен: топики /odom и /battery_state не публикуют данные "
+                        "(ROS-топики не запущены или данные ещё не получены)"
+                    ),
                 )
-            return MCPToolResult(
-                success=False,
-                data=status,
-                error=(
-                    "Статус робота недоступен: топики /odom и /battery_state не публикуют данные "
-                    "(ROS-топики не запущены или данные ещё не получены)"
-                ),
-            )
 
-        return MCPToolResult(success=True, data=status, message="Статус робота получен")
+        return MCPToolResult(
+            success=True,
+            data=status,
+            message=status_phrase(self._position, unavailable, sim_pose_active(node=self.node)),
+        )
