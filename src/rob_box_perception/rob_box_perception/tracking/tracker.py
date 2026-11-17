@@ -106,6 +106,9 @@ class TrackSnapshot:
     #: Было ли у трека тело (не только лицо). ``False`` — трек рождён лицом
     #: и примет одежды у него нет (ADR-0161 §2).
     has_body: bool = False
+    #: Уже записанное описание одежды. Пусто, пока его не положили.
+    #: Детектора одежды здесь нет: слот только помнит строку, пока трек жив.
+    clothing: str = ''
 
 
 @dataclass(frozen=True)
@@ -145,6 +148,8 @@ class _Track:
     last_body: Optional[float] = None
     #: Момент последнего лица (сопоставлено или прикреплено).
     last_attached: Optional[float] = None
+    #: Описание одежды, уже полученное снаружи. Кадр без лица его не стирает.
+    clothing: str = ''
 
     def snapshot(self) -> TrackSnapshot:
         """Неизменяемая копия для потребителя."""
@@ -155,7 +160,7 @@ class _Track:
             self.track_id, self.class_name, self.state, x, y, vx, vy,
             var_x, var_y, self.first_seen, self.last_seen, self.hits,
             self.candidate_id, self.sources, self.close_encounter_at,
-            self.last_body is not None)
+            self.last_body is not None, self.clothing)
 
 
 class Tracker:
@@ -180,6 +185,21 @@ class Tracker:
     def tracks(self) -> Tuple[TrackSnapshot, ...]:
         """Снимки всех живых треков в порядке рождения."""
         return tuple(t.snapshot() for t in self._tracks)
+
+    def remember_clothing(self, track_id: str, clothing: str) -> bool:
+        """Записать уже известное описание одежды. Пустая строка не стирает.
+
+        Детектора нет: строку приносит тот, у кого описание уже есть.
+        Пока трек жив, кадр без лица её не трогает. Нет трека — ``False``.
+        """
+        text = clothing.strip()
+        if not text:
+            return False
+        for track in self._tracks:
+            if track.track_id == track_id:
+                track.clothing = text
+                return True
+        return False
 
     def step(self, stamp: float,
              detections: Sequence[Detection]) -> StepResult:
