@@ -2267,6 +2267,10 @@ VIOLATION_SPEECH_TOO_LONG = "speech_too_long"
 #: оборвал посреди предложения, кончается этой фразой каталога - человек слышит, что названо не всё. Обрыв по границе
 #: предложения пометки не просит: оставленные предложения целые.
 SPEECH_CUT_PHRASE = "command.speech_cut"
+#: Обрыв TTS-потока после начала звука (``tts_stream.BROKEN``): хвост не прозвучал. Фразу строит код из
+#: факта исполнения, не из текста LLM (ADR-0148). Не путать с ``SPEECH_CUT_PHRASE`` — та помечает речь,
+#: которую код сам ужал посреди предложения.
+TTS_CUT_PHRASE = "tts.cut"
 #: Фраза по ПРИЧИНЕ нарушения вместо общей: «не понял» была бы неправдой, когда модель поняла, а ответ не влез. Речь
 #: одна длинная до хода сюда не доходит (её ужимает код) - только рядом с другим нарушением, которое не
 #: исправил и повтор; ``too_long`` - сегмент выступления, имя роли или голоса длиннее предела. Единственная таблица
@@ -2286,7 +2290,8 @@ CALM_VIOLATIONS: Tuple[str, ...] = (VIOLATION_KNOWN_VOICE_REGISTER, VIOLATION_SI
 PHRASE_KEYS: Tuple[str, ...] = (
     "understand.timeout", PASSED_ADDRESSED_PHRASE, NEW_SESSION_PHRASE, QUERY_FALLBACK_GENERIC, INVALID_COMMAND_PHRASE,
     LISTEN_ONLY_PHRASE,
-    SPEECH_CUT_PHRASE, *INVALID_COMMAND_PHRASES.values(), *MUSIC_PROMISE_PHRASES.values(), VOICE_PROMISE_PHRASE,
+    SPEECH_CUT_PHRASE, TTS_CUT_PHRASE, *INVALID_COMMAND_PHRASES.values(), *MUSIC_PROMISE_PHRASES.values(),
+    VOICE_PROMISE_PHRASE,
     SEARCH_PROMISE_PHRASE, COUNT_CAPPED_PHRASE, STATE_CLAIM_PHRASE,
     *(question.declined for question in TOOL_QUESTIONS.values()),
     *(key for entry in QUERY_FALLBACK_PHRASES.values() for key in phrase_keys(entry)), QUERY_NAMES_PHRASE,

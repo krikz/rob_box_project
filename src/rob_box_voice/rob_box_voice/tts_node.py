@@ -104,10 +104,10 @@ from .core.voice_owner import attach_voice_owner
 
 # ADR-0150 PR-3 (#3688) — tts_node владелец речи: SpeechRequest/Cancel/Event,
 # огибающая. Старых JSON-входов речи нет (PR-15 часть 15-core, #3711).
+from .core import tts_cut, tts_stream
 from .core.speech_owner import SpeechOwner, owner_of
 from .core.speech_timing import PREFETCH_PROVIDER
 from rob_box_dialog_host.tts_voice_registry import known_provider, unsupported_language_notice
-from .core import tts_stream
 
 # ADR-0145 §4 TTSNode step 1 — moved verbatim to ``utils/resample.py``
 # (no behaviour change). NOT ``utils/audio_utils.py``: that module does
@@ -4293,6 +4293,7 @@ class TTSNode(Node):
             self._publish_tts_finished(speech_id, success=False, error=outcome, batch_id=batch_id,
                                        batch_index=batch_index, batch_total=batch_total,
                                        batch_started_at=batch_started_at, dialogue_id=dialogue_id)
+            tts_cut.say(self, outcome, speech_id)  # одна фраза из факта обрыва, не из текста LLM
             return
         self.cleanup_playback_noise()
         self.stop_requested = self.stop_requested or outcome == "stopped"
