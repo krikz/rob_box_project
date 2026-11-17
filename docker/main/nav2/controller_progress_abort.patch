@@ -1,0 +1,24 @@
+--- a/nav2_controller/src/controller_server.cpp
++++ b/nav2_controller/src/controller_server.cpp
+@@ -419,15 +419,19 @@
+       }
+     }
+   } catch (nav2_core::PlannerException & e) {
++    // #4694: abort (Failed to make progress / no trajectory) must reach the BT.
++    // Humble SimpleActionServer::work() otherwise accepts a pending FollowPath
++    // on this same thread and resets the progress checker. NavigateToPose
++    // then stays active until the client timeout.
+     RCLCPP_ERROR(this->get_logger(), "%s", e.what());
+     publishZeroVelocity();
+-    action_server_->terminate_current();
++    action_server_->terminate_all();
+     return;
+   } catch (std::exception & e) {
+     RCLCPP_ERROR(this->get_logger(), "%s", e.what());
+     publishZeroVelocity();
+     std::shared_ptr<Action::Result> result = std::make_shared<Action::Result>();
+-    action_server_->terminate_current(result);
++    action_server_->terminate_all(result);
+     return;
+   }
+ 
