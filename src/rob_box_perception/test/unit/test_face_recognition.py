@@ -54,6 +54,7 @@
 from __future__ import annotations
 
 import importlib
+import json
 import sys
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -226,8 +227,14 @@ def make_detection(
     }
 
 
-def make_match(person_id: str = 'p1', name: str = '', is_new: bool = False, similarity: float = 0.9, encounter_count: int = 1) -> FaceMatch:
-    return FaceMatch(person_id=person_id, name=name, similarity=similarity, is_new=is_new, encounter_count=encounter_count)
+def make_match(
+    person_id: str = 'p1', name: str = '', is_new: bool = False,
+    similarity: float = 0.9, encounter_count: int = 1,
+) -> FaceMatch:
+    return FaceMatch(
+        person_id=person_id, name=name, similarity=similarity, is_new=is_new,
+        encounter_count=encounter_count,
+    )
 
 
 # ============================================================================
@@ -289,6 +296,7 @@ def test_per_frame_identification_calls_identify_not_record_encounter():
 
     assert out[0]['embedding_id'] == 'denis-1'
     assert out[0]['display_name'] == 'Денис'
+    assert json.loads(out[0]['attributes_json'])['track_id'] == 1
     assert len(store.identify_calls) == 1
     assert store.record_encounter_calls == [], (
         'запись в хранилище — событие уровня Встречи, а не кадра'
@@ -334,12 +342,12 @@ def test_encounter_promotion_records_once_and_marks_one_detection():
 
     assert len(store.record_encounter_calls) == 1
 
-    marked = [d for d in last_out if 'attributes_json' in d]
+    marked = [d for d in last_out if 'encounter' in d.get('attributes_json', '')]
     assert len(marked) == 1
-    import json
     payload = json.loads(marked[0]['attributes_json'])
     assert payload['encounter'] == 'start'
     assert payload['person_id'] == 'new-person-1'
+    assert payload['track_id'] == 1
     assert payload['is_new'] is True
 
     assert rec.stats()['encounters_total'] == 1
@@ -365,7 +373,9 @@ def test_holding_face_longer_does_not_produce_second_encounter_or_marker():
     # Держим лицо в кадре ещё много кадров.
     for t in (1.5, 2.0, 2.5, 3.0, 3.5, 4.0):
         out = rec.process([make_detection(w=0.5, h=0.5)], frame, now=t)
-        assert 'attributes_json' not in out[0], 'второй маркер encounter=start недопустим'
+        attrs = json.loads(out[0].get('attributes_json') or '{}')
+        assert attrs.get('encounter') != 'start', 'второй маркер encounter=start недопустим'
+        assert attrs.get('track_id') == 1
 
     assert len(store.record_encounter_calls) == 1, 'вторая запись Встречи недопустима'
     assert rec.stats()['encounters_total'] == 1
@@ -460,7 +470,10 @@ def test_encounter_without_embedding_does_not_record():
 # 8. Слияние с голосом (ADR-0123 §6)
 # ============================================================================
 
-def _prime_last_frame(rec: FaceRecognizer, store: FakeStore, person_ids: List[Optional[str]], now: float, frame=None) -> None:
+def _prime_last_frame(
+    rec: FaceRecognizer, store: FakeStore, person_ids: List[Optional[str]],
+    now: float, frame=None,
+) -> None:
     """Прогнать один кадр так, чтобы ``_last_frame_person_ids`` стал ``person_ids``.
 
     Каждой детекции соответствует один person_id (``None`` — не узнан).
@@ -1493,7 +1506,7 @@ def test_nonfrontal_stranger_creates_no_record(tmp_path):
     out = _run_to_encounter(rec, _landmarks(nose_dx=20.0))
 
     assert store.people() == []
-    assert all('attributes_json' not in d for d in out)
+    assert all('encounter' not in (d.get('attributes_json') or '') for d in out)
     assert rec.stats()['new_record_suppressed_total'] == 1
     assert rec.stats()['new_people_total'] == 0
 

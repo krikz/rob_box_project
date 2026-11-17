@@ -459,11 +459,13 @@ class FaceRecognizer:
             fvb.mouth_ratio(det.get('landmarks'), frame_w, frame_h) for det in detections
         ])
 
-        # 2. Кто появился — редко, по правилу Встречи.
+        # 2. Кто появился — редко, по правилу Встречи. update ставит track_id на наблюдение.
+        # Штамп после маркера: маркер переписывает attributes_json целиком.
         promoted = self._tracker.update(observations, ts)
         self._tracker.expire(ts)
         for encounter in promoted:
             self._on_encounter(encounter, detections, snapshot_crops)
+        _stamp_track_ids(detections, observations)
 
         return detections
 
@@ -952,8 +954,8 @@ class FaceRecognizer:
         лиц — слияния нет (ADR-0105 §3 п.4). Имя, которое у записи уже есть и отличается от голосового, голос не
         перетирает: его поставил человек (ручное переименование) или прошлое доказанное слияние.
 
-        Каждый отказ считается своим счётчиком ``voice_merge_skip_*`` в :meth:`stats` (issue #2748): сводка ноды говорит не
-        «слияний=0», а ПОЧЕМУ.
+        Каждый отказ — свой счётчик ``voice_merge_skip_*`` в :meth:`stats` (issue #2748):
+        сводка ноды говорит не «слияний=0», а ПОЧЕМУ.
 
         Args:
             speaker_id: стабильный биометрический id голоса.
@@ -968,8 +970,8 @@ class FaceRecognizer:
         ts = time.monotonic() if now is None else float(now)
 
         if not name or not speaker_id:
-            # Голос не опознан (is_known=false) — сюда такой payload не доходит (vision_face_node фильтрует по
-            # is_known и считает это VisionFaceNode._speaker_unknown_total): программная ошибка вызывающего.
+            # Голос не опознан (is_known=false) — сюда такой payload не доходит
+            # (vision_face_node фильтрует по is_known): ошибка вызывающего.
             return None
         verdict = self._binding.judge(speaker_id, ts, self_introduced=self_introduced)  # отказы вердикта он считает сам
         if verdict.kind != fvb.BIND:
@@ -1039,6 +1041,39 @@ class FaceRecognizer:
             # ADR-0164 этап 6: клички новых лиц — словарные, по внешности, отказы и пропуски.
             'epithet': self._namer.stats(),
         }
+
+
+def _json_with_track(raw: Any, track_id: int) -> Optional[str]:
+    """JSON-объект с ``track_id``. Не-объект и мусор — ``None``, поле не затирается."""
+    parsed: Dict[str, Any] = {}
+    if isinstance(raw, str) and raw:
+        try:
+            loaded = json.loads(raw)
+        except (TypeError, ValueError):
+            return None
+        if not isinstance(loaded, dict):
+            return None
+        parsed = loaded
+    elif raw not in (None, ''):
+        return None
+    parsed['track_id'] = track_id
+    return json.dumps(parsed, ensure_ascii=False)
+
+
+def _stamp_track_ids(detections: List[Dict[str, Any]], observations: List[Any]) -> None:
+    """Положить ``track_id`` трекера в ``attributes_json`` детекции (issue #4388).
+
+    ``VisionEvent.msg`` поля трека не имеет (ADR-0130 §2.14). ``attributes_json``
+    публикация везёт в ``vision_events_json`` как есть — контекст читает трек оттуда.
+    Маркер Встречи в том же объекте не затирается. ``0`` трекер не выдаёт.
+    Мусор в поле не трогаем.
+    """
+    for det, obs in zip(detections, observations):
+        track_id = getattr(obs, 'track_id', None)
+        if isinstance(track_id, int) and track_id > 0:
+            stamped = _json_with_track(det.get('attributes_json'), track_id)
+            if stamped is not None:
+                det['attributes_json'] = stamped
 
 
 def _iou_cxcywh(
