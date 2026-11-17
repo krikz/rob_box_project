@@ -3544,8 +3544,10 @@ CHAIN_TRIP_TOOLS: Tuple[str, ...] = MOTION_TOOLS
 class ChainTask:
     """Лимиты типа задачи (ADR-0165 §5, решение Шифу В3: у каждого типа свои). ``steps_max`` — шагов в веренице;
     ``trips_max`` — поездок (:data:`CHAIN_TRIP_TOOLS`), ``None`` — ограничены только ``steps_max``; ``term_s`` —
-    срок всей вереницы, ``None`` — сумма сроков классов шагов (своего числа нет до замеров HIL). Вышла за лимит —
-    вереница не начинается, код говорит :data:`CHAIN_TOO_LONG_PHRASE`."""
+    срок всей вереницы от фразы плана, ``None`` — сумма сроков классов шагов (своего числа нет до замеров HIL).
+    Оценка заранее длиннее срока — вереница не начинается (:data:`CHAIN_TOO_LONG_PHRASE`). На исполнении тот же
+    срок режет остаток (:func:`rob_box_dialog.action_chain.past_term`): шаг, что уже идёт, доживает, следующий не
+    начинается, итог — :data:`CHAIN_TIMEOUT_PHRASE`."""
 
     steps_max: int
     trips_max: Optional[int]
