@@ -1566,7 +1566,14 @@ TOOL_CATALOG_DATA: tuple[dict[str, Any], ...] = (   {   'llm_visible': True,
                                                                        'шутку; matrix '
                                                                        '- думаю, ищу, '
                                                                        'считаю, '
-                                                                       '«взламываю». '
+                                                                       '«взламываю»; '
+                                                                       'plasma - '
+                                                                       'спокойный '
+                                                                       'перелив, '
+                                                                       'эмбиент, без '
+                                                                       'повода; rain - '
+                                                                       'грусть, дождь, '
+                                                                       'тихая погода. '
                                                                        'fx (разовый '
                                                                        'импульс в '
                                                                        'начале сцены): '
@@ -1668,7 +1675,9 @@ TOOL_CATALOG_DATA: tuple[dict[str, Any], ...] = (   {   'llm_visible': True,
                                                                                     'enum': [   'none',
                                                                                                 'rainbow',
                                                                                                 'fire',
-                                                                                                'matrix']},
+                                                                                                'matrix',
+                                                                                                'plasma',
+                                                                                                'rain']},
                                                                           'fx': {   'type': 'string',
                                                                                     'description': 'Слот '
                                                                                                    'лица '

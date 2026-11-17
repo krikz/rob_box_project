@@ -121,6 +121,23 @@ def test_background_moves_and_reaches_the_rear_boards(bg):
     assert not (np.array_equal(first.eye_l, last.eye_l) and np.array_equal(first.mouth, last.mouth))
 
 
+def test_plasma_washes_slowly_and_rain_is_rare_blue_drops():
+    """Плазма — перелив (не один цвет, кадр через секунду другой), дождь — редкие синие капли, канал ≤ BG_LV."""
+    p0, p1 = E.bg_plasma(0.0), E.bg_plasma(1.0)
+    assert p0.mouth.max() <= E.BG_LV + 1e-9 and p1.eye_l.max() <= E.BG_LV + 1e-9
+    assert not np.array_equal(np.round(p0.mouth, 3), np.round(p1.mouth, 3))
+    hues = {tuple(np.round(px / max(px.max(), 1e-6), 1))
+            for arr in p0.panels().values() for px in arr.reshape(-1, 3)}
+    assert len(hues) > 4
+    rain = [E.bg_rain(i / 25.0) for i in range(25)]
+    lit = sum(int((level(f.mouth) >= 1.0).sum() + (level(f.eye_l) >= 1.0).sum()) for f in rain)
+    assert 0 < lit < 25 * (5 * 25 + 64) * 0.2
+    blue = np.concatenate([f.mouth.reshape(-1, 3) for f in rain])
+    blue = blue[blue.max(axis=1) >= 1.0]
+    assert blue.size and (blue[:, 2] >= blue[:, 0]).all() and (blue[:, 2] >= blue[:, 1]).all()
+    assert blue.max() <= E.BG_LV + 1e-9
+
+
 def test_rainbow_is_a_wave_not_one_colour_for_the_whole_face():
     f = E.bg_rainbow(1.0)
     hues = {tuple(np.round(px / max(px.max(), 1e-6), 1)) for arr in f.panels().values() for px in arr.reshape(-1, 3)}

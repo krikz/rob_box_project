@@ -2514,7 +2514,7 @@ FACE_SCENE_SLOTS: Mapping[str, Tuple[str, ...]] = MappingProxyType({
     "tint": ("warm", "cold", "red", "green", "blue", "purple", "rainbow"),
     "tempo": ("slow", "normal", "fast"),
     "rear": ("off", "markers", "hazard", "party", "new_year", "halloween", "heart", "rocket"),
-    "bg": ("none", "rainbow", "fire", "matrix"),
+    "bg": ("none", "rainbow", "fire", "matrix", "plasma", "rain"),
     "fx": ("slash", "glitch", "boot", "power_down"),
     "feat": ("loading_eyes",),
 })
@@ -2542,6 +2542,8 @@ FACE_EFFECT_WHEN: Mapping[str, Mapping[str, str]] = MappingProxyType({
         "rainbow": "праздник, дискотека, радость",
         "fire": "рок, азарт, злость в шутку",
         "matrix": "думаю, ищу, считаю, «взламываю»",
+        "plasma": "спокойный перелив, эмбиент, без повода",
+        "rain": "грусть, дождь, тихая погода",
     }),
     "fx": MappingProxyType({
         "slash": "резкое «отрезал», шутка-удар",

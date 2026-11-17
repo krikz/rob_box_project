@@ -23,6 +23,7 @@ from typing import Callable, Dict, Mapping, Optional, Tuple
 import numpy as np
 
 from led_matrix_effects import Boot, Canvas, Fire, Glitch, MatrixRain, PowerDown, Rainbow, Slash
+from led_matrix_effects import hue as _hue
 from led_matrix_effects import under as _under
 
 from .face import EYE, EYE_RIM_MASK, FPS, RAINBOW_PERIOD_S, Frame
@@ -46,17 +47,67 @@ UNDER_FEATURES = 0.25
 LIT_LV = 3.0
 #: Share of the background's hue a lit feature takes where the background is at full strength.
 THROUGH = 0.85
-#: Seed of the matrix rain and the glitch (#3780): the same face every run.
+#: Seed of the matrix rain, the rain and the glitch (#3780): the same face every run.
 SEED = 3780
+#: Plasma washes the canvas once in this many seconds (slow, not a pulse).
+PLASMA_PERIOD_S = 12.0
+#: A rain drop is this tall, in rows; one column in this many carries a drop.
+RAIN_TRAIL = 2.5
+RAIN_EVERY = 5
+RAIN_GAP = 6.0
+RAIN_BLUE = (0.15, 0.45, 1.0)
+
+
+def _drops(seed, every):
+    """Per LED: speed (rows/s), phase (rows), and whether its column carries a drop. Drawn once."""
+    rng = np.random.RandomState(seed)
+    width = CANVAS.width
+    speeds = rng.uniform(3.0, 6.0, width)
+    phases = rng.uniform(0.0, CANVAS.height + RAIN_GAP, width)
+    carries = np.zeros(width, dtype=bool)
+    carries[rng.permutation(width)[::every]] = True
+    column = CANVAS.X.astype(int)
+    return speeds[column], phases[column], carries[column]
+
+
+class _Plasma:
+    """Slow colour washes under the features. ``led_matrix_effects`` has no Plasma, so this is the binding."""
+
+    def __init__(self, level):
+        self.level = level
+
+    def __call__(self, t):
+        phase = t / PLASMA_PERIOD_S
+        w = (np.sin(CANVAS.X * 0.11 + phase * math.tau) + np.sin(CANVAS.Y * 0.37 - phase * math.tau * 0.6)
+             + np.sin((CANVAS.X + CANVAS.Y) * 0.07 + phase * math.tau * 0.35)) / 3.0
+        bright = (self.level * (0.45 + 0.55 * (0.5 + 0.5 * w)))[..., None]
+        return CANVAS.split(_hue(0.55 + 0.18 * w) * bright)
+
+
+class _Rain:
+    """Rare blue drops falling down. ``led_matrix_effects`` has no Rain, so this is the binding."""
+
+    def __init__(self, level):
+        self.level = level
+        self._speed, self._phase, self._carries = _drops(SEED, RAIN_EVERY)
+        self._cycle = float(CANVAS.height) + RAIN_GAP
+
+    def __call__(self, t):
+        d = (t * self._speed + self._phase) % self._cycle - CANVAS.Y
+        k = np.where(self._carries & (d >= 0.0) & (d < RAIN_TRAIL), 1.0 - d / RAIN_TRAIL, 0.0)
+        return CANVAS.split(k[..., None] * self.level * np.array(RAIN_BLUE))
 
 
 # ---------------------------------------------------------------- backgrounds
 bg_rainbow = Rainbow(CANVAS, period_s=RAINBOW_PERIOD_S, level=BG_LV)
 bg_fire = Fire(CANVAS, level=BG_LV)
 bg_matrix = MatrixRain(CANVAS, seed=SEED, level=BG_LV)
+bg_plasma = _Plasma(BG_LV)
+bg_rain = _Rain(BG_LV)
 
 #: Slot ``bg`` -> background. ``none`` — no background.
-BACKGROUNDS: Mapping[str, Callable[[float], Frame]] = {'rainbow': bg_rainbow, 'fire': bg_fire, 'matrix': bg_matrix}
+BACKGROUNDS: Mapping[str, Callable[[float], Frame]] = {
+    'rainbow': bg_rainbow, 'fire': bg_fire, 'matrix': bg_matrix, 'plasma': bg_plasma, 'rain': bg_rain}
 
 
 def under(f: Frame, bg: Frame) -> Frame:
