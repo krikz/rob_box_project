@@ -99,6 +99,24 @@ def test_unit_template_has_no_registry_pull_in_exec_start_pre() -> None:
     )
 
 
+def test_unit_template_does_not_order_after_network_online_without_wants() -> None:
+    """LED не стоит за network-online.target без Wants= (issue #4533)."""
+    body = _extract_unit_template()
+    unit_section = re.search(r"\[Unit\](.*?)(?=\n\[)", body, re.DOTALL)
+    assert unit_section is not None, "нет секции [Unit]"
+    unit_text = unit_section.group(1)
+    after = re.search(r"^After=(.*)$", unit_text, re.MULTILINE)
+    wants = re.search(r"^Wants=(.*)$", unit_text, re.MULTILINE)
+    assert after is not None, "After= отсутствует"
+    after_units = after.group(1).split()
+    wants_units = wants.group(1).split() if wants else []
+    assert "docker.service" in after_units
+    assert "network-online.target" not in after_units or "network-online.target" in wants_units, (
+        "After=network-online.target без Wants= задерживает LED до чужого "
+        f"wait-online (issue #4533). After={after_units!r} Wants={wants_units!r}"
+    )
+
+
 def test_unit_template_logs_ps_results_in_exec_start_post() -> None:
     """ExecStartPost обязан логировать ``docker compose ps`` для диагностики.
 

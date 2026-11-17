@@ -296,6 +296,8 @@ MOTDEOF
 #     * ExecStart: `docker compose up -d --pull never` — гарантированно работать
 #       на локальном кэше, даже если registry лежит. Образы обновляет деплой,
 #       автозапуск не делает pull и не ждёт registry.
+#     * After= только docker.service. network-online.target в After= без Wants=
+#       не поднимает сеть и не держит docker (issue #4533).
 #     * ExecStartPost: логировать `docker compose ps` (exit-codes) в journal для
 #       диагностики, какие именно сервисы не поднялись.
 #     * Restart=on-failure + RestartSec=30 + StartLimitBurst=5 за 600s:
@@ -312,7 +314,9 @@ setup_autostart() {
     sudo tee "$SERVICE_FILE" > /dev/null << SERVICEEOF
 [Unit]
 Description=ROBBOX Vision Pi Docker Containers
-After=docker.service network-online.target
+# LED не ждёт сеть (issue #4533): After=network-online без Wants=
+# не поднимает wait-online и не держит docker.service.
+After=docker.service
 Requires=docker.service
 
 # Rate limit: не более 5 стартов за 10 минут (см. Restart=on-failure ниже).
