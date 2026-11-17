@@ -122,6 +122,30 @@ def test_node_turns_m2_on_its_own_topic_and_does_not_touch_controller_cmd_vel(no
     assert abs(twists[0].angular.z) == pytest.approx(min(abs(yag.shortest_yaw(M2_POSE[2], 0.0)), 0.6))
 
 
+def test_tf_lookup_passes_time_objects_not_floats(node_params):
+    """#4788: to_time=lambda s: s → lookup_transform(float) → TypeError, /cmd_vel_yaw молчит."""
+    node_params["nav2_params_file"] = str(NAV2)
+    node = FollowPathWatchdogNode()
+    yaw = node._yaw
+    calls = []
+
+    def capture(target, source, time, timeout):
+        calls.append((time, timeout))
+        return _tf(M2_POSE)
+
+    yaw._lookup._buffer.lookup_transform = capture
+    yaw._now = lambda: 100.0
+    yaw._on_nav(types.SimpleNamespace(status_list=[_status(2)]))
+    yaw._on_plan(_plan(*M2_GOAL, stamp_s=100.0))
+    yaw._tick()
+    assert calls, "latest() должен звать lookup_transform"
+    time_arg, timeout_arg = calls[0]
+    assert not isinstance(time_arg, float)
+    assert not isinstance(timeout_arg, float)
+    published = {topic: pub.messages for topic, pub in node.publishers}
+    assert published[YAW_AT_GOAL_CMD_VEL_TOPIC]
+
+
 def test_node_is_silent_outside_the_xy_window_and_when_nav_is_not_live(node_params):
     node_params["nav2_params_file"] = str(NAV2)
     node = FollowPathWatchdogNode()
