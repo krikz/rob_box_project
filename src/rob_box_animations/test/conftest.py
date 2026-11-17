@@ -106,12 +106,17 @@ def _install_ros_stand_ins() -> None:
     dialog.ExpressionRequest = dialog.SpeechEnvelope = dialog.SessionState = _Msg
     dialog.ExpressionEvent = type('ExpressionEvent', (_Msg,), {'KIND_STARTED': 0, 'KIND_SKIPPED': 1})
     dialog.SpeechEvent = type('SpeechEvent', (_Msg,), {'KIND_STARTED': 2, 'KIND_FINISHED': 4, 'KIND_CANCELLED': 5})
+    dialog.Utterance = type('Utterance', (_Msg,), {'SOURCE_RESPEAKER': 'respeaker', 'SOURCE_TELEGRAM': 'telegram'})
+    perception = types.ModuleType('rob_box_perception_msgs.msg')
+    perception.VisionEvent = _Msg
     for name, mod in {
         'rclpy': rclpy, 'rclpy.node': node, 'rclpy.qos': qos,
         'sensor_msgs': types.ModuleType('sensor_msgs'), 'sensor_msgs.msg': sensor,
         'geometry_msgs': types.ModuleType('geometry_msgs'), 'geometry_msgs.msg': geometry,
         'std_msgs': types.ModuleType('std_msgs'), 'std_msgs.msg': std,
         'rob_box_dialog_msgs': types.ModuleType('rob_box_dialog_msgs'), 'rob_box_dialog_msgs.msg': dialog,
+        'rob_box_perception_msgs': types.ModuleType('rob_box_perception_msgs'),
+        'rob_box_perception_msgs.msg': perception,
     }.items():
         sys.modules.setdefault(name, mod)
 

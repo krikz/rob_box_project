@@ -123,7 +123,7 @@ def test_node_wires_inputs_and_timers():
     topics = {t for t, _ in node.subscriptions}
     assert {'/voice/speech/envelope', '/voice/speech/event', '/audio/direction',
             '/audio/vad', '/voice/music/state', '/voice/expression/request',
-            '~/scene'} <= topics
+            '~/scene', '/voice/stt/utterance', '/vision/hailo/events', '/vision/frame_clear'} <= topics
     assert '/voice/animation/request' not in topics     # ADR-0150 PR-3b: v1-топик снят, лицо слушает ExpressionRequest
     assert '/voice/tts/state' not in topics             # PR-15 15-0b: «говорит» — по SpeechEvent
     assert sorted(p for p, _ in node.timers) == [0.04, 1.0]
@@ -159,6 +159,29 @@ def _face_node():
         pytest.skip('real rclpy installed: node wiring needs a ROS context')
     from rob_box_animations.face_node import FaceNode
     return FaceNode()
+
+
+def test_an_utterance_or_a_face_wakes_and_waking_does_not_speak():
+    """#3780 C: реплика микрофона и лицо в кадре будят; чат и выдумка — нет. Проснувшись, молчит."""
+    import time
+
+    from rob_box_dialog.knowledge import SOCIAL_SLEEP_AFTER_S
+
+    node = _face_node()
+    subs = dict(node.subscriptions)
+    now = time.time()
+    node.director.voice_seen(now)
+    node.director._wake_until = now
+    subs['/vision/frame_clear'](types.SimpleNamespace(data='{}'))
+    assert node.director.choose(now + SOCIAL_SLEEP_AFTER_S)[0] == 'sleep'
+    subs['/voice/stt/utterance'](types.SimpleNamespace(source='telegram', text='проснись'))
+    assert node.director.choose(time.time() + SOCIAL_SLEEP_AFTER_S)[0] == 'sleep'
+    subs['/vision/hailo/events'](types.SimpleNamespace(event_type='stub', source_camera='stub'))
+    assert node.director._frame_clear is True
+    before = len(node._event_pub.sent)
+    subs['/voice/stt/utterance'](types.SimpleNamespace(source='respeaker', text='робот'))
+    assert node.director.choose(time.time())[0] == 'wakeup'
+    assert node._event_pub.sent[before:] == []
 
 
 def test_expression_request_is_answered_with_started_for_a_known_scene():

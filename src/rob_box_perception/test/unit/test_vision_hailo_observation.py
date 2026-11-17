@@ -27,6 +27,7 @@ shim, что в test_vision_face_log_stats.py; ноду собираем чер�
 from __future__ import annotations
 
 import importlib
+import json
 import math
 import sys
 import types
@@ -142,6 +143,7 @@ def _bare_node(loader=None, frame=None, real=True):
     node = node_mod.VisionHailoNode.__new__(node_mod.VisionHailoNode)
     node._publisher = _Publisher()
     node._observation_publisher = _Publisher()
+    node.output_topic = '/vision/hailo/events'
     node.get_clock = lambda: _Clock()
     node.get_logger = lambda: _Logger()
     node.publish_when_no_input = True
@@ -283,6 +285,26 @@ def test_tick_uses_same_frame_for_infer_and_observation(msgs):
     [obs] = node._observation_publisher.published
     assert obs.header.stamp.sec == int(frame.stamp)
     assert obs.distance_m == pytest.approx(3.0)
+
+
+def test_tick_of_a_real_empty_frame_publishes_empty_frame_and_no_observation(msgs):
+    """#3780 C: кадр прогнан, людей нет — факт empty_frame, не детекция и не наблюдение."""
+    frame = _frame()
+    node = _bare_node(loader=_FakeLoader([]), frame=frame, real=True)
+    node._frame_clear_pub = _Publisher()
+    node._tick()
+    [ve] = node._frame_clear_pub.published
+    payload = json.loads(ve.data)
+    assert payload['event_type'] == loader_mod.EMPTY_FRAME_EVENT_TYPE
+    assert payload['source_camera'] == frame.source_name
+    assert node._observation_publisher.published == []
+
+
+def test_tick_stub_mode_does_not_call_an_empty_room(msgs):
+    """Заглушка людей не видит: её пустой infer — не «никого нет»."""
+    node = _bare_node(loader=_FakeLoader([]), frame=_frame(), real=False)
+    node._tick()
+    assert node._publisher.published == []
 
 
 def test_tick_stub_mode_publishes_no_observations(msgs):

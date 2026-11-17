@@ -38,6 +38,9 @@ rob_box_animations/
 | `/voice/expression/request` | `ExpressionRequest` (эмоция/жест; `face_json` — PR-3c) |
 | `/voice/expression/event` (публикует) | `ExpressionEvent{executor=face}`: `started` или `skipped{unknown_scene}` на каждый запрос с эмоцией/жестом |
 | `~/scene` | отладка: `ros2 topic pub --once /face_node/scene std_msgs/msg/String "{data: 'happy:5'}"` |
+| `/voice/stt/utterance` | реплика с микрофона будит; чат — нет |
+| `/vision/hailo/events` | лицо или человек в кадре будит |
+| `/vision/frame_clear` | кадр прогнан и пуст (#3780 C); не детекция |
 
 Выход — `/panel_image` (`sensor_msgs/Image` rgb8, `frame_id` = логическая
 группа), только изменившиеся панели и все раз в секунду. Раз в 10 с в логе
