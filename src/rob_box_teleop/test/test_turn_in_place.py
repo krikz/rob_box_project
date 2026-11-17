@@ -136,6 +136,16 @@ def test_one_ghost_return_does_not_count_as_a_wall():
     assert free_spin(BODY, pose, ghost, [(0.2, 0.6)], CLEARANCE_M) is None
 
 
+def test_base_frame_scan_uses_zero_yaw_not_map_heading():
+    """Скан в base_footprint — поза (0,0,0). Map yaw π прячет стену за спину."""
+    scan = _ahead(WALL_AHEAD_M)
+    path = [(0.2, 0.6), (1.2, 0.6)]
+    assert facing_wall(BODY, (0.0, 0.0, 0.0), scan, CLEARANCE_M)
+    assert not facing_wall(BODY, (0.0, 0.0, math.pi), scan, CLEARANCE_M)
+    assert free_spin(BODY, (0.0, 0.0, 0.0), scan, path, CLEARANCE_M) is not None
+    assert free_spin(BODY, (0.0, 0.0, math.pi), scan, path, CLEARANCE_M) is None
+
+
 def test_clearance_is_the_guard_spin_stop_not_a_new_threshold():
     """Порог зазора — spin_stop_m защиты. Боевой yaml не ослабляет габарит и не трогает PathAlign."""
     from pathlib import Path

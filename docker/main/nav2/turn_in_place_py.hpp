@@ -2,8 +2,9 @@
 // и проверяется pytest; здесь только вызов. false — модуля нет или функция
 // отказала: Spin не слать, дерево идёт в FollowPath.
 //
-// Импорт пробуется снова, пока пакет не появился на PYTHONPATH (том образа
-// nav2). После первого успеха модуль не перечитывается.
+// points и path уже в base_footprint — поза (0,0,0), не map-yaw. Импорт
+// пробуется снова, пока пакет не появился на PYTHONPATH (том образа nav2).
+// После первого успеха модуль не перечитывается.
 
 #pragma once
 
@@ -19,7 +20,7 @@ namespace rob_box
 inline bool free_heading_spin_rad(
   const std::vector<std::pair<double, double>> & points,
   const std::vector<std::pair<double, double>> & path,
-  double yaw, double clearance_m, double & spin_rad)
+  double clearance_m, double & spin_rad)
 {
   static bool ready = false;
   if (!ready) {
@@ -41,7 +42,7 @@ inline bool free_heading_spin_rad(
     "import yaml\n"
     "with open('/config/nav2/nav2_params.yaml', encoding='utf-8') as fh:\n"
     "    body = body_from_nav2_params(yaml.safe_load(fh))\n"
-    "choice = free_spin(body, (0.0, 0.0, yaw), points, path, float(clearance_m))\n"
+    "choice = free_spin(body, (0.0, 0.0, 0.0), points, path, float(clearance_m))\n"
     "spin = None if choice is None else float(choice)\n";
 
   auto as_list = [](const std::vector<std::pair<double, double>> & src) {
@@ -60,7 +61,6 @@ inline bool free_heading_spin_rad(
   PyObject * path_list = as_list(path);
   PyDict_SetItemString(globals, "points", point_list);
   PyDict_SetItemString(globals, "path", path_list);
-  PyDict_SetItemString(globals, "yaw", PyFloat_FromDouble(yaw));
   PyDict_SetItemString(globals, "clearance_m", PyFloat_FromDouble(clearance_m));
   Py_DECREF(point_list);
   Py_DECREF(path_list);

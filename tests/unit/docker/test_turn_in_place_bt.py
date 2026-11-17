@@ -72,3 +72,9 @@ def test_plugin_is_loaded_and_calls_free_spin():
     # Без специализации Humble .so грузится с undefined tf2::getTimestamp.
     assert "tf2_geometry_msgs/tf2_geometry_msgs.hpp" in text
     assert "-lorocos-kdl" in dockerfile
+    # Скан и путь уже в base_footprint: map-yaw прячет стену за спину.
+    assert "free_heading_spin_rad(points, way, clearance, spin)" in text
+    assert "yaw_of(pose.pose.orientation)" not in text
+    assert "free_spin(body, (0.0, 0.0, 0.0), points, path, float(clearance_m))" in bridge
+    assert "start_valid_ = false" in text
+    assert "void halt() override" in text
