@@ -4,7 +4,7 @@ This module is the **catalog** of every tool that needs user
 confirmation before it is allowed to touch the hardware. It is
 intentionally **pure Python** — no ``rclpy``, no LLM, no ROS2
 transport. The :class:`ToolConfirmationPolicy` is consulted by
-:meth:`rob_box_harness.core.dialog_core.DialogCore` (or any other
+:meth:`rob_box_harness.core.agent_core.AgentCore` (or any other
 tool-call orchestrator) before a tool result is delivered to the
 executor.
 
@@ -18,7 +18,7 @@ Three policy classes, matching the §8.2 table of
   ``start_mapping``.
 * ``notify`` — reversible calls that warrant a spoken announcement
   but do **not** block execution. Examples: ``set_speed``,
-  ``set_dj_mode``, ``set_volume``.
+  ``set_volume``.
 * ``pass_through`` — read-only, safe, or emergency calls. The segment
   goes straight to ``PENDING → ACTIVE``. Examples: ``speak_text``,
   ``stop_navigation`` (🟢 аварийный, см. §8.2 golden rule),

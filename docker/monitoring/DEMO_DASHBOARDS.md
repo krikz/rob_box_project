@@ -51,7 +51,6 @@
   - oak, oakd, apriltag_node
 - **Ceiling Camera** — USB камера для обзора сверху
   - usb_cam, ceiling_camera
-- **micro-ROS Agent** — связь с ESP32 Sensor Hub (IMU, ToF, IR)
 - **Perception System** — система внутреннего восприятия
   - health_monitor — мониторинг состояния системы
   - context_aggregator — агрегация контекста (MPC lite)

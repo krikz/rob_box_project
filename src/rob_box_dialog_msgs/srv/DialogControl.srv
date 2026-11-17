@@ -1,0 +1,18 @@
+# Управление диалогом (ADR-0150 §10.1). Заменяет /dialogue/control + control_ack.
+
+uint8 ACTION_HOLD=0
+uint8 ACTION_RESUME=1
+uint8 ACTION_RESET=2
+# Действие.
+uint8 action
+# Кто просит (operator, tars).
+string set_by
+# Срок удержания, с; 0 - до явного resume.
+float32 ttl_s
+---
+# Принято ли.
+bool ok
+# Эпоха после действия.
+uint32 epoch
+# Стек сцен после действия.
+SceneFrame[] scenes

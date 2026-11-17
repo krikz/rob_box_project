@@ -1,0 +1,82 @@
+name: "G: Auto-close Issues on Develop Merge"
+
+# Issue #3013: GitHub учитывает closing-keywords (`Fixes #N` / `Closes #N` /
+# `Resolves #N` …) ТОЛЬКО при merge в default-ветку. Рабочие PR у нас
+# вливаются в `develop` (не default), поэтому issues оставались OPEN и
+# закрывались руками (PR #3092→#3089, #3055→#3049, #3040→#3024,
+# #3159→#3044/#3045/#3047/#3048; 18 случаев за 24.09.2026).
+#
+# Этот workflow после merge PR в develop парсит title + body PR
+# (scripts/ci/autoclose_issues.py — правила парсинга и тесты там же) и для
+# каждого OPEN issue этого репозитория оставляет комментарий со ссылкой на
+# PR и merge-sha и закрывает его с state_reason=completed. `Refs #N` не
+# закрывает.
+#
+# workflow_dispatch — backfill уже смерженных PR (например, 18 случаев из
+# #3013). По умолчанию dry_run=true: только печатает, что БЫЛО БЫ закрыто.
+on:
+  pull_request:
+    types: [closed]
+    branches: [develop]
+  workflow_dispatch:
+    inputs:
+      pr_numbers:
+        description: "Номера смерженных PR через пробел (backfill), например: 2927 2928"
+        required: true
+        type: string
+      dry_run:
+        description: "Только показать, что было бы закрыто"
+        required: false
+        default: true
+        type: boolean
+
+permissions:
+  contents: read
+  issues: write
+  pull-requests: read
+
+concurrency:
+  group: autoclose-issues-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: false
+
+jobs:
+  autoclose:
+    name: Close issues referenced by merged PR
+    if: github.event_name == 'workflow_dispatch' || github.event.pull_request.merged == true
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout script
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.pull_request.merge_commit_sha || github.sha }}
+          sparse-checkout: scripts/ci
+          persist-credentials: false
+
+      # Номер PR / входы dispatch передаются через env, а не ${{ }} внутри
+      # run: — title/body PR недоверенный ввод, скрипт читает их через API.
+      - name: Close referenced issues
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          EVENT_NAME: ${{ github.event_name }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          INPUT_PR_NUMBERS: ${{ inputs.pr_numbers }}
+          INPUT_DRY_RUN: ${{ inputs.dry_run }}
+        run: |
+          set -euo pipefail
+          args=(close --repo "$REPO")
+          if [ "$EVENT_NAME" = "workflow_dispatch" ]; then
+            for n in $INPUT_PR_NUMBERS; do
+              case "$n" in
+                ''|*[!0-9]*) echo "::error::bad PR number: $n"; exit 2 ;;
+              esac
+              args+=(--pr "$n")
+            done
+            if [ "$INPUT_DRY_RUN" = "true" ]; then
+              args+=(--dry-run)
+            fi
+          else
+            args+=(--pr "$PR_NUMBER")
+          fi
+          python3 scripts/ci/autoclose_issues.py "${args[@]}"

@@ -1,0 +1,56 @@
+# speaker_id_node.yaml — голосовая биометрия (issue #1077, resemblyzer d-vectors)
+#
+# ЖИВОЙ конфиг для docker-деплоя (см. audio_node.yaml).
+# Все ключи соответствуют declare_parameter() в speaker_id_node.py 1:1.
+
+speaker_id_node:
+  ros__parameters:
+    enabled: true
+    db_path: "/data/speakers.db"
+    # Issue #2348/#2440 — пороги калиброваны и должны совпадать с
+    # speaker_embeddings.IDENTIFY_THRESHOLD / REGISTER_MATCH_THRESHOLD.
+    identify_threshold: 0.72
+    # Issue #2809 -- называть имя вслух (LLM) можно уверенно
+    # (band_high) ИЛИ в полосе неопределённости при явном разрыве до
+    # конкурента с другим именем (min_gap) -- плоский порог 0.85
+    # (первая версия фикса) резал живых людей наравне с импостором,
+    # откачен по ревью координатора. is_known/эпитет работают уже от
+    # identify_threshold. См. speaker_id_node.py (is_name_confident,
+    # _gap_to_other_name, _publish_result) и
+    # dialogue_node._apply_speaker_identity.
+    name_confidence_band_high: 0.80
+    name_confidence_min_gap: 0.15
+    register_match_threshold: 0.75
+    # Issue #2747 — растущая галерея по непрерывности сессии (НЕ по
+    # акустическому порогу — отклонён на реальных данных робота, см.
+    # src/rob_box_voice/config/speaker_id_node.yaml, тот же смысл, этот
+    # файл — живой конфиг деплоя, держим в синхроне).
+    gallery_warmup_size: 5
+    gallery_growth_session_gap_sec: 30.0
+    # Issue #2829 (ADR-0131 PR-2) -- см. src/rob_box_voice/config/speaker_id_node.yaml
+    growth_owner_min_score: 0.65
+    # Issue #3858 (решение Шифу 22.10, «режим мастерской» для голоса) — незнакомому голосу заводится профиль без
+    # имени, с кличкой; когда человек представится, имя достаётся этому же профилю. Гейт — речь не короче
+    # MIN_REGISTER_AUDIO_DURATION_SEC (3 с); безымянных не больше unnamed_profiles_max, старейшие вытесняются (#2779).
+    unnamed_profiles_enabled: true
+    unnamed_profiles_max: 20
+    # Issue #2440 — harness-БД фактов для склейки профилей через шов
+    # идентичности (тот же файл, что sqlite_db_path у dialogue_node).
+    memory_db_path: "/data/harness_voice.db"
+    # Issue #2751 — второй писатель фактов (MCP memory_save, таблица
+    # voice_facts) — merge() переносит и их, см. docstring
+    # VoiceIdentitySeam.__init__ и ADR-0128. Путь здесь не задаётся:
+    # voice_facts_db_path по умолчанию — rob_box_core.tools_db, тот же файл,
+    # что у mcp_server (#4082); задаёт его только реплей/стенд.
+    # Issue #2750 — изолированная БД для E2E-акта «Знакомство»; узел
+    # переключается на неё только параметром e2e_mode ниже, боевую
+    # db_path выше это не трогает. См.
+    # speaker_id_node.py:parameters_callback / _apply_e2e_mode.
+    e2e_db_path: "/data/speakers.e2e.db"
+    # Issue #2750 — переключатель боевая/E2E БД (см. e2e_db_path выше).
+    # false — дефолт мастерской. Меняется на роботе ТОЛЬКО E2E-харнессом:
+    # ros2 param set /speaker_id_node e2e_mode true|false (тот же приём,
+    # что e2e_session_reset_token у dialogue_node). Ручной ssh cp+DELETE FROM по
+    # боевой speakers.db, который этот параметр заменяет, — issue #2750.
+    e2e_mode: false
+    sample_rate: 16000

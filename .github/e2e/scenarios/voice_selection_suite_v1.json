@@ -1,5 +1,7 @@
 {
   "name": "voice_selection_suite_v1",
+  "stability": "flaky-known",
+  "_stability_comment": "Multi-voice narrative (скazki / dialogs / poems) флаки стабильно с 21.08, особенно когда вызовы set_voice идут пачкой. Treated as 'flaky-known' for merge-gate (see CONTRIBUTING.md §E2E stability markers).",
   "steps": [
     {"label": "v01_skazka", "voice": "anton", "text": "Робот, расскажи сказку про Красную Шапочку разными голосами", "patterns": ["set_voice", "voice_used"]},
     {"label": "v02_10_fraz", "voice": "anton", "text": "Робот, произнеси десять умных фраз разными голосами", "patterns": ["set_voice", "voice_used"]},

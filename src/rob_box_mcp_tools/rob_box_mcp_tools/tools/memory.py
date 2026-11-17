@@ -10,13 +10,84 @@ Tools:
 The tools read `node.voice_memory` (a VoiceMemory instance set on MCPServer).
 If voice_memory is not initialised yet, all tools return an informative error
 instead of crashing.
+
+Память о людях - всегда чья-то (#1770, #4023): ``speaker_id`` вызова или «кто
+сейчас» (``EncounterSeam``, только подтверждённое имя). Нет ни того, ни другого -
+отказ ``rejected{no_person}`` (:func:`_no_person`): общих фактов не пишем, по
+памяти всех людей не ищем и контекст всех не отдаём.
 """
 
 from __future__ import annotations
 
-from typing import List
+import re
+from typing import Any, List, Mapping, Optional
+
+from rob_box_dialog import knowledge as kn
 
 from ..base import MCPTool, MCPToolParameter, MCPToolResult
+
+#: Отказ тула памяти без собеседника (#4023): ни ``speaker_id`` в вызове, ни «кто сейчас». Раньше запись шла в общие
+#: факты, а поиск и контекст - по памяти ВСЕХ людей (#1770: Telegram/оператор, v1 без id получали чужие факты).
+NO_PERSON_MESSAGE = "Не знаю, кто говорит: память о людях без собеседника не читаю и не пишу."
+
+
+def _current_encounter_speaker_id(node: object) -> Optional[str]:
+    """Issue #2442 — единственный путь к «кто сейчас», вместо трёх копий.
+
+    Раньше все три инструмента ниже независимо повторяли один и тот же
+    ``kwargs.get("speaker_id") or getattr(self.node, "current_speaker_id",
+    None)`` — фоллбэк на приватное поле mcp_server, синхронизированное
+    вручную в его ``_on_speaker_result``. Теперь mcp_server кормит тот же
+    сигнал в ``EncounterSeam`` (``rob_box_harness.encounter``, общий шов
+    «Встреча») и хранит его в ``node._encounter_seam``; эта функция — одна
+    точка чтения ``EncounterSeam.current()`` для всех трёх тулов ниже.
+
+    Не импортирует ``mcp_server`` напрямую (тот импортирует этот модуль —
+    цикл), поэтому читает ``_encounter_seam`` через ``getattr`` по
+    контракту, а не по типу. Отсутствие шва на узле (старый fake-node в
+    тестах, узел без speaker_id_enabled) — молчаливый ``None``, как и
+    раньше при отсутствии атрибута.
+    """
+    seam = getattr(node, "_encounter_seam", None)
+    if seam is None:
+        return None
+    encounter = seam.current()
+    if encounter is None or encounter.who is None:
+        return None
+    return encounter.who.id
+
+
+def _person(node: object, kwargs: Mapping[str, Any]) -> Optional[str]:
+    """Чья память: ``speaker_id`` вызова (диалог v2 кладёт собеседника снимка, #3705), иначе «кто сейчас»
+    (:func:`_current_encounter_speaker_id`: ``mcp_server`` ставит его только по подтверждённому имени, #4023).
+    ``None`` - собеседника нет: тул отвечает :func:`_no_person` и в память не идёт."""
+    return kwargs.get("speaker_id") or _current_encounter_speaker_id(node)
+
+
+def _no_person() -> MCPToolResult:
+    """Отказ без собеседника (#4023): «всем» не пишем и по всей памяти не ищем; причина - ключ диалога
+    ``knowledge.NO_PERSON_REASON`` (фраза отказа - у диалога, ``*.rejected.no_person``)."""
+    return MCPToolResult(success=False, data={"status": "rejected", "reason": kn.NO_PERSON_REASON},
+                         message=NO_PERSON_MESSAGE)
+
+
+#: Подсказка при пустом ответе на многословный запрос (#3890). Тул ничего не
+#: подгоняет под запрос: честно говорит «пусто» и называет общее правило.
+EMPTY_MULTIWORD_HINT = (
+    "Ничего не найдено по запросу из нескольких слов. Ищи 1–2 ключевыми "
+    "словами в начальной форме, без перечислений и описаний; пусто — "
+    "попробуй другое одно слово."
+)
+#: Слово короче этого — не «значимое» (предлоги, частицы), общее правило длины.
+_MIN_SIGNIFICANT_WORD_LEN = 3
+
+
+def _empty_result_hint(query: str, found: int) -> Optional[str]:
+    """Hint для пустой выдачи при запросе из >= 2 значимых слов, иначе None."""
+    if found:
+        return None
+    words = [w for w in re.findall(r"\w+", query) if len(w) >= _MIN_SIGNIFICANT_WORD_LEN]
+    return EMPTY_MULTIWORD_HINT if len(words) >= 2 else None
 
 
 class MemorySaveTool(MCPTool):
@@ -26,6 +97,9 @@ class MemorySaveTool(MCPTool):
     Используй, когда узнаёшь что-то важное о пользователе:
     предпочтения, привычки, имена близких, настройки.
     """
+
+    #: saved{fact_id} - ответ VoiceMemory.save_fact
+    event_source = "inproc:voice_memory"
 
     @property
     def name(self) -> str:
@@ -58,6 +132,17 @@ class MemorySaveTool(MCPTool):
                 required=False,
                 enum=["preference", "habit", "name", "general"],
             ),
+            MCPToolParameter(
+                name="speaker_id",
+                type="string",
+                description=(
+                    "Опционально: voice-biometric id текущего спикера (из "
+                    "<system_context>/<speaker_id>). Факт сохраняется ТОЛЬКО "
+                    "этому пользователю; без speaker_id и без узнанного "
+                    "собеседника факт не сохраняется (общих фактов нет)."
+                ),
+                required=False,
+            ),
         ]
 
     def execute(self, **kwargs) -> MCPToolResult:
@@ -71,16 +156,23 @@ class MemorySaveTool(MCPTool):
 
         fact = kwargs.get("fact", "").strip()
         category = kwargs.get("category", "general")
+        # Issue #1770/#4023 — факт только конкретному человеку (``_person``); некому - не пишем вовсе.
+        speaker_id = _person(self.node, kwargs)
 
         if not fact:
             return MCPToolResult(success=False, data=None, message="Параметр fact не может быть пустым.")
+        if speaker_id is None:
+            return _no_person()
 
         try:
-            fact_id = memory.save_fact(fact, category=category)
-            self.log_info(f"[memory_save] Saved fact #{fact_id}: {fact[:60]}...")
+            fact_id = memory.save_fact(fact, category=category, speaker_id=speaker_id)
+            if not fact_id:  # saved{fact_id} без id - не запись: «Запомнил» по нему не говорится (ADR-0148)
+                return MCPToolResult(success=False, data=None, message="Память не вернула id записи.")
+            self.log_info(f"[memory_save] Saved fact #{fact_id} speaker={speaker_id}: {fact[:60]}...")
             return MCPToolResult(
                 success=True,
-                data={"fact_id": fact_id, "fact": fact, "category": category},
+                data={"event": "saved", "fact_id": fact_id, "fact": fact, "category": category,
+                      "speaker_id": speaker_id},
                 message=f"Факт сохранён (id={fact_id}).",
             )
         except Exception as e:
@@ -103,10 +195,14 @@ class MemorySearchTool(MCPTool):
     @property
     def description(self) -> str:
         return (
-            "Поиск по долгосрочной памяти (история разговоров со всех сессий). "
-            "Используй когда нужно вспомнить: 'где мы остановились', 'что я просил раньше', "
-            "'какие были настройки'. "
-            "Возвращает релевантные фрагменты из прошлых разговоров."
+            "Поиск по долгосрочной памяти: сохранённые факты о пользователе "
+            "(memory_save) И история разговоров со всех сессий. "
+            "Используй когда нужно вспомнить что-то про пользователя "
+            "('что я говорил про...', 'что ты обо мне знаешь') или сверить "
+            "факт, который только что сохранил через memory_save — включая "
+            "в этом же разговоре, сразу после сохранения. "
+            "Возвращает и факты, и фрагменты прошлых разговоров, помечая "
+            "каждый результат полем kind: 'fact' | 'turn'."
         )
 
     @property
@@ -115,13 +211,27 @@ class MemorySearchTool(MCPTool):
             MCPToolParameter(
                 name="query",
                 type="string",
-                description="Поисковый запрос на русском или английском.",
+                description=(
+                    "Поисковый запрос на русском или английском: 1–2 ключевых "
+                    "слова в начальной форме, без перечислений и описаний."
+                ),
                 required=True,
             ),
             MCPToolParameter(
                 name="limit",
                 type="integer",
                 description="Максимальное количество результатов (по умолчанию 5, максимум 20).",
+                required=False,
+            ),
+            MCPToolParameter(
+                name="speaker_id",
+                type="string",
+                description=(
+                    "Опционально: voice-biometric id текущего спикера (из "
+                    "<system_context>/<speaker_id>). Ищется только память "
+                    "этого человека; без speaker_id и без узнанного "
+                    "собеседника поиск не идёт (по всей памяти не ищем)."
+                ),
                 required=False,
             ),
         ]
@@ -137,40 +247,57 @@ class MemorySearchTool(MCPTool):
 
         query = kwargs.get("query", "").strip()
         limit = min(int(kwargs.get("limit", 5)), 20)
+        # Issue #1770/#4023 — поиск только по памяти конкретного человека (``_person``); по всей памяти - никогда.
+        speaker_id = _person(self.node, kwargs)
 
         if not query:
             return MCPToolResult(success=False, data=None, message="Параметр query не может быть пустым.")
+        if speaker_id is None:
+            return _no_person()
 
         try:
-            results = memory.search(query, limit=limit)
+            results = memory.search(query, limit=limit, speaker_id=speaker_id)
             self.log_info(
-                f"[memory_search] query={query[:40]!r} → {len(results)} results "
+                f"[memory_search] query={query[:40]!r} speaker={speaker_id} "
+                f"→ {len(results)} results "
                 f"(vec={'yes' if memory.embedder.is_available() else 'no'})"
             )
 
-            # Format for LLM readability
+            # Format for LLM readability. Issue #2793 — ``kind`` tells the
+            # LLM (and any test) whether a hit is a saved fact
+            # (``memory_save``, source="fact") or a historical conversation
+            # line (source="fts"/"vec"/"hybrid"); ``.get`` defaults keep this
+            # compatible with any ``VoiceMemory`` stand-in that only ever
+            # returned turns (no "kind"/"category" keys).
             formatted = []
             for r in results:
-                formatted.append(
-                    {
-                        "role": r["role"],
-                        "content": r["content"],
-                        "session": r["session_id"],
-                        "score": round(r.get("score", 0), 4),
-                        "source": r.get("source", "fts"),
-                    }
-                )
+                entry = {
+                    "kind": r.get("kind", "turn"),
+                    "role": r["role"],
+                    "content": r["content"],
+                    "session": r.get("session_id"),
+                    "score": round(r.get("score", 0), 4),
+                    "source": r.get("source", "fts"),
+                }
+                if r.get("kind") == "fact":
+                    entry["category"] = r.get("category")
+                formatted.append(entry)
 
+            data = {
+                "results": formatted,
+                "total": len(formatted),
+                "query": query,
+                "limit": limit,
+                "speaker_id": speaker_id,
+                "has_more": len(formatted) == limit,
+                "next_offset": limit if len(formatted) == limit else None,
+            }
+            hint = _empty_result_hint(query, len(formatted))
+            if hint:
+                data["hint"] = hint
             return MCPToolResult(
                 success=True,
-                data={
-                    "results": formatted,
-                    "total": len(formatted),
-                    "query": query,
-                    "limit": limit,
-                    "has_more": len(formatted) == limit,
-                    "next_offset": limit if len(formatted) == limit else None,
-                },
+                data=data,
                 message=f"Найдено {len(formatted)} результатов.",
             )
         except Exception as e:
@@ -217,6 +344,17 @@ class MemoryContextTool(MCPTool):
                 ),
                 required=False,
             ),
+            MCPToolParameter(
+                name="speaker_id",
+                type="string",
+                description=(
+                    "Опционально: voice-biometric id текущего спикера (из "
+                    "<system_context>/<speaker_id>). Контекст только этого "
+                    "человека; без speaker_id и без узнанного собеседника "
+                    "контекста нет (реплики и факты всех не отдаём)."
+                ),
+                required=False,
+            ),
         ]
 
     def execute(self, **kwargs) -> MCPToolResult:
@@ -230,14 +368,19 @@ class MemoryContextTool(MCPTool):
 
         limit = min(int(kwargs.get("limit", 10)), 30)
         query = kwargs.get("query", "").strip() or None
+        # Issue #1770/#4023 — контекст только конкретного человека (``_person``): реплики и факты всех - никогда.
+        speaker_id = _person(self.node, kwargs)
+        if speaker_id is None:
+            return _no_person()
 
         try:
-            ctx = memory.get_context(limit=limit, query=query)
-            facts_block = memory.format_facts_for_prompt()
+            ctx = memory.get_context(limit=limit, query=query, speaker_id=speaker_id)
+            facts_block = memory.format_facts_for_prompt(speaker_id=speaker_id)
             stats = memory.get_stats()
 
             self.log_info(
                 f"[memory_context] turns={len(ctx['recent_turns'])} facts={len(ctx['facts'])} "
+                f"speaker={speaker_id} "
                 f"total_sessions={ctx['sessions']} vec={ctx['vec_enabled']}"
             )
 
@@ -245,7 +388,11 @@ class MemoryContextTool(MCPTool):
                 success=True,
                 data={
                     "recent_turns": [
-                        {"role": t["role"], "content": t["content"], "session": t["session_id"]}
+                        {
+                            "role": t["role"],
+                            "content": t["content"],
+                            "session": t["session_id"],
+                        }
                         for t in ctx["recent_turns"]
                     ],
                     "facts_block": facts_block,
@@ -257,6 +404,7 @@ class MemoryContextTool(MCPTool):
                         "db_size_kb": stats["db_size_kb"],
                     },
                     "current_session": ctx["current_session"],
+                    "speaker_id": speaker_id,
                 },
                 message=(
                     f"Контекст: {len(ctx['recent_turns'])} реплик из прошлых сессий, "

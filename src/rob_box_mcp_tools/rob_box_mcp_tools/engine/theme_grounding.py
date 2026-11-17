@@ -1,0 +1,486 @@
+"""Тема DJ-сета из СЛОВ ЧЕЛОВЕКА этого хода, а не из истории диалога (ADR-0148, живой лог 06.10 18:04–18:05).
+
+Человек повторил фразу «Ты диджей 8битный и нас сегодня вечеринка любителей денди и классической музыки, замути сэт на
+30 минут», а LLM вызвала ``dj_set(theme='Увертюра 1812, мегасет для геймеров: Марио, Аладдин, Тетрис …')`` — тему из
+СТАРОЙ реплики истории: классика пропала. Решает код: текст реплики хода едет скрытым аргументом ``heard_text``
+(``llm_adapter.TURN_CONTEXT_ARGS``; присланное LLM вырезается). Тема LLM остаётся, если делит со словами реплики
+хоть одну значимую основу (:func:`search.content_stems`: перефраз, сокращение, жанр); иначе тема — слова реплики без
+служебных («ты диджей X», «замути сэт», длина сета). Нет реплики или в ней нет значимых слов («да», «давай») —
+тема LLM как есть.
+
+:func:`heard_theme` — ЕДИНСТВЕННОЕ место, где тема выделяется из свободных слов реплики: путь LLM и путь команды
+роутера дают одну тему. Слоты персоны, стиля и длины снимает существующая грамматика; тема выделяется положительно
+из произведений/понятий реестра, ``GENRE_TAGS`` и ``THEMES`` (#3493), явно названная неизвестная фраза остаётся
+кандидатом для проверки каталогом #3503. Слова вне слотов попадают в журнал ``[dj_set]``, а не молча в тему.
+
+Слоты темы (#3581, ADR-0157 §2.1; живой сет 12.10 «ты диджей анакен скайвокер и у нас сегодня веселье на звезде
+смерте» играл Celebration/Happy): :func:`set_theme` — алиас вселенной (``knowledge.UNIVERSES``) в теме или имени
+персоны делает темой вселенную, слова настроения (``knowledge.THEME_MOOD_STEMS``) рядом со словами темы — не тема.
+:func:`continued` — «продолжай сэт» без новой темы: тема последнего сета, а не слово «продолжай».
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+from typing import Any, List, Optional, Tuple
+
+from rob_box_dialog.words import level_phrases, level_word
+from rob_box_music import knowledge as kn
+from rob_box_music.theme import match_row, match_style
+from rob_box_music.universes import is_mood, universe_of, universe_spans, words_of
+from rob_box_music.works import theme_seeds
+
+from .brief import split_brief
+from .search import _PART_RE, blank_style, content_stems, genre_of
+from ..core.translit_ru import transliterate_ru
+
+_AND = frozenset({"и", "and"})
+_NOT = "не"
+
+
+def _theme_word(words: List[str], i: int, request: frozenset) -> bool:
+    """Слово ``i`` реплики называет тему: не просьба, не стиль, значимое; «музыки» — при слове жанра."""
+    word = words[i].replace("ё", "е")
+    if genre_of(word):
+        return True
+    if word in kn.GENRE_FILLER:
+        return i > 0 and bool(genre_of(words[i - 1]))  # «классической музыки» — жанр словами человека
+    if word in request or match_style([word]) is not None or level_word(word):  # громкость — уровень заказа, не тема
+        return False
+    return word.isdigit() or bool(content_stems(word))  # цифра темы — слово («mambo nr 5»), длину уже вырезали
+
+
+def _kept(words: List[str], request: frozenset) -> List[bool]:
+    """Какие слова реплики остаются в теме: слова темы (:func:`_theme_word`); «и» - только между словами темы, «не» -
+    только перед словом темы (слово громкости уходит с «не», слово темы остаётся с ним). Фраза громкости целиком -
+    уровень заказа, не тема: «не слишком громко» уходит со степенью (``words.level_phrases``, #4159 п.2), иначе в теме
+    остались бы «не слишком»."""
+    level = {i for first, last, _kind in level_phrases(words) for i in range(first, last + 1)}
+    keep = [w not in _AND and i not in level and _theme_word(words, i, request) for i, w in enumerate(words)]
+    for i, word in enumerate(words):
+        if word in _AND:
+            keep[i] = any(keep[:i]) and any(keep[i + 1:])
+        elif word == _NOT:
+            keep[i] = i + 1 < len(words) and keep[i + 1]
+    return keep
+
+
+_CONTEXT_TAIL = frozenset({"для", "чтоб", "чтобы"})
+_CONTEXT_NEXT = frozenset({"на", "у"})
+
+
+def _registry_word(word: str) -> bool:
+    """Слово названо в семени реестра произведений/понятий или совпадает по транслиту со строкой поиска архива."""
+    word = word.lower().replace("ё", "е")
+    latin = transliterate_ru(word)
+    seeds = theme_seeds()
+    compound_words = {part for seed in seeds for query in seed.queries if " " in query for part in query.lower().split()}
+    for seed in seeds:
+        phrase = seed.phrase.replace("ё", "е")
+        if phrase.endswith("*") and word.startswith(phrase[:-1]):
+            return True
+        if not phrase.endswith("*") and " " not in phrase and word == phrase:
+            return True
+        if latin not in compound_words and any(" " not in query and latin == query.lower() for query in seed.queries):
+            return True
+    return False
+
+
+def _explicit_marks(words: List[str]) -> Tuple[set, set]:
+    from rob_box_voice.core.media_command_grammar import SET_WORDS, THEME_LEADS
+
+    lead, direct = set(), set()
+    for i, word in enumerate(words):
+        if word in THEME_LEADS:
+            seen = False
+            for j in range(i + 1, len(words)):
+                if seen and words[j] in _CONTEXT_TAIL | _CONTEXT_NEXT:
+                    break
+                lead.add(j)
+                seen = True
+        if word in SET_WORDS and i + 1 < len(words) and words[i + 1] not in _CONTEXT_TAIL | _CONTEXT_NEXT:
+            direct.add(i + 1)
+    return lead, direct
+
+
+def _bare_candidate(words: List[str], candidates: List[int]) -> bool:
+    from rob_box_voice.core.media_command_grammar import SET_REQUEST_WORDS, SET_WORDS
+
+    return len(candidates) == 1 and not any(
+        w in SET_REQUEST_WORDS or w in SET_WORDS or match_style([w]) is not None for w in words)
+
+
+def _tail_context(words: List[str], i: int, candidates: List[int], known: set) -> bool:
+    tail = max((j for j in range(i) if words[j] in _CONTEXT_TAIL), default=-1)
+    after_tail = [j for j in candidates if j > tail and j not in known]
+    return tail >= 0 and len(after_tail) == 1 and i == after_tail[0]
+
+
+def _next_context(words: List[str], i: int, candidates: List[int], known: set, styled: bool) -> bool:
+    from rob_box_voice.core.media_command_grammar import THEME_LEADS
+
+    after_next = [j for j in candidates if j >= i and j not in known]
+    return (not styled and i > 0 and words[i - 1] in _CONTEXT_NEXT and words[i - 1] not in THEME_LEADS
+            and len(after_next) == 1)
+
+
+def _context_drop(words: List[str], i: int, candidates: List[int], known: set, styled: bool) -> bool:
+    return _tail_context(words, i, candidates, known) or _next_context(words, i, candidates, known, styled)
+
+
+def _linked_theme_word(words: List[str], i: int, lead: set) -> bool:
+    """Неизвестное в явной теме или перед «по» («путешествие по Хогвардсу»); союз сам по себе тему не доказывает."""
+    return i in lead or any(w == "по" for w in words[i + 1:])
+
+
+def _single_unknown(words: List[str], i: int, candidates: List[int], bare: bool, descriptor: bool,
+                    direct_quality: bool, lead: set) -> bool:
+    return len(candidates) == 1 and not bare and not descriptor and not direct_quality and i not in lead
+
+
+def _drop_unknown(words: List[str], i: int, candidates: List[int], known: set, bare: bool, styled: bool,
+                  lead: set, direct: set) -> bool:
+    from rob_box_voice.core.media_command_grammar import SET_WORDS
+
+    quality = words[i].endswith(("ый", "ий", "ой", "ая", "яя", "ое", "ее"))
+    descriptor = quality and len(candidates) == 1 and styled
+    direct_quality = quality and len(candidates) == 1 and not any(w in SET_WORDS for w in words)
+    if _context_drop(words, i, candidates, known, descriptor or direct_quality):
+        return True
+    if quality and known and i not in lead:
+        return True
+    if known and not _linked_theme_word(words, i, lead):
+        return True
+    return _single_unknown(words, i, candidates, bare, descriptor, direct_quality, lead)
+
+
+def _query_span_indices(words: List[str]) -> set:
+    """Индексы полных составных queries реестра; одинокий токен такого query не считается совпадением."""
+    from ..core.rtttl_library import _alias_normalize
+
+    out = set()
+    for seed in theme_seeds():
+        for query in seed.queries:
+            parts = query.lower().split()
+            if len(parts) < 2:
+                continue
+            for first in range(len(words) - len(parts) + 1):
+                normalized = _alias_normalize(" ".join(words[first:first + len(parts)]))
+                if normalized.lower() == query.lower():
+                    out.update(range(first, first + len(parts)))
+    return out
+
+
+def _phrase_span_indices(words: List[str]) -> set:
+    """Индексы точных многословных названий из реестра."""
+    out = set()
+    for seed in theme_seeds():
+        phrase = seed.phrase.replace("ё", "е")
+        if phrase.endswith("*") or " " not in phrase:
+            continue
+        parts = phrase.split()
+        for first in range(len(words) - len(parts) + 1):
+            if words[first:first + len(parts)] == parts:
+                out.update(range(first, first + len(parts)))
+    return out
+
+
+def _known_theme_indices(words: List[str], candidates: List[int]) -> set:
+    """Индексы опорных слов темы без style-alias; составные алиасы вселенных и точные фразы реестра — целыми span’ами."""
+    known = {i for i in candidates if words[i].isascii() or _registry_word(words[i])
+             or bool(genre_of(words[i]) or is_mood(words[i]) or match_row(words[i]) is not None)}
+    for i in candidates:
+        if words[i] in kn.GENRE_FILLER and i > 0 and genre_of(words[i - 1]):
+            known.add(i)
+    known.update(_query_span_indices(words), _phrase_span_indices(words))
+    for first, last, _key in universe_spans(words):
+        known.update(range(first, last))
+    return known
+
+
+def _positive_kept(words: List[str], keep: List[bool], styled: bool = False) -> Tuple[List[bool], List[str]]:
+    """Оставить слоты темы положительно: опорные слова реестра/жанра/THEMES и явно названную тему. Многословная
+    неизвестная фраза сохраняется как кандидат для проверки каталогом #3503; одиночное неизвестное слово, качество-
+    прилагательное и хвост повода/публики — не тема, а ``unknown`` для журнала."""
+    lead, direct = _explicit_marks(words)
+    candidates = [i for i, kept in enumerate(keep) if kept and words[i] not in _AND and words[i] != _NOT]
+    known = _known_theme_indices(words, candidates)
+    bare = _bare_candidate(words, candidates)
+    out, unknown = list(keep), []
+    for i in candidates:
+        if i not in known and _drop_unknown(words, i, candidates, known, bare, styled, lead, direct):
+            out[i] = False
+            unknown.append(words[i])
+    for i, word in enumerate(words):
+        if word in _AND:
+            out[i] = any(out[:i]) and any(out[i + 1:])
+        elif word == _NOT:
+            out[i] = i + 1 < len(words) and out[i + 1]
+    return out, list(dict.fromkeys(unknown))
+
+
+def _heard_slots(text: str) -> Tuple[str, List[str]]:
+    """``(тема, непонятые слова)``: слоты персоны, стиля и длины снимаются существующей грамматикой; тема выделяется
+    положительно (:func:`_positive_kept`), а не всеми значимыми словами остатка."""
+    from rob_box_music.theme import match_style_text
+    from rob_box_voice.core.media_command_grammar import SET_REQUEST_WORDS, dj_persona_span
+    from rob_box_voice.core.set_length_words import split_set_length, tokens
+
+    _tracks, rest = split_set_length(split_brief(text).head)
+    persona = dj_persona_span(rest)
+    if persona:
+        rest = rest[:persona[0]] + " " * (persona[1] - persona[0]) + rest[persona[1]:]
+    styled = match_style_text(rest) is not None
+    rest = blank_style(rest)
+    toks = tokens(rest)
+    words = [t[0] for t in toks]
+    keep, unknown = _positive_kept(words, _kept(words, SET_REQUEST_WORDS), styled)
+    out = ""
+    last_end = 0
+    for (word, start, end), kept in zip(toks, keep):
+        if not kept:
+            continue
+        if out:
+            out += (", " if any(c in ",;:" for c in rest[last_end:start]) else " ")
+        out += word
+        last_end = end
+    return (out if content_stems(out) else ""), unknown
+
+
+def heard_theme(text: str) -> str:
+    """Тема из положительных слотов реплики; подробный промт разбирает ``brief.split_brief``, непонятые слова вне
+    слотов отдаёт отдельно :func:`_heard_slots` для журнала."""
+    return _heard_slots(text)[0]
+
+
+def order_theme(text: Optional[str], heard_text: Optional[str]) -> str:
+    """Тема заказа генерации (#3775): слова темы просьбы «сочини … про / на тему X» реплики хода (грамматика
+    ``GENERATE``, затем :func:`heard_theme` — без «ты», «сэт», предлогов); в реплике её нет, а ``text`` — не реплика
+    (тема ``generate_music(theme)``) — его значимые слова. Ничего — ``""``: заказ без темы."""
+    from rob_box_voice.core.media_command_grammar import MediaIntent, parse_media_command
+
+    command = parse_media_command(heard_text or "")
+    said = command.name if command.intent is MediaIntent.GENERATE else ""
+    if not said and text and text != heard_text:
+        said = text
+    return heard_theme(said) or (said if content_stems(said) else "")
+
+
+def _names_new_theme(heard_text: Optional[str]) -> bool:
+    """В реплике есть слова новой темы. «Тема та же» (``asks_same_theme``) — явная ссылка на прежнюю: остальные слова
+    («только техно») — стиль. Глагол смены стиля («переходим на рок», ``asks_to_keep_theme``) новой темы не называет,
+    пока в реплике нет значимых слов кроме жанра (#3593)."""
+    from rob_box_voice.core.media_command_grammar import SET_SAME_WORDS, asks_same_theme, asks_to_keep_theme
+
+    heard = heard_theme(heard_text or "")
+    if asks_same_theme(heard_text):
+        return False
+    if not asks_to_keep_theme(heard_text):
+        return bool(heard)
+    return any(content_stems(w) and not genre_of(w) and w not in SET_SAME_WORDS for w, _s, _e in words_of(heard))
+
+
+def _known_word(word: str) -> bool:
+    """Слово темы с опорой в знании: латиница/цифра, реестр произведений/понятий, ``GENRE_TAGS``, вселенная,
+    настроение, стиль-алиас или строка ``THEMES``."""
+    return (word.isascii() or _registry_word(word) or bool(genre_of(word) or universe_of(word) or is_mood(word))
+            or match_style([word]) is not None or match_row(word) is not None)
+
+
+def names_theme(heard: str, heard_text: Optional[str]) -> bool:
+    """Слова реплики НАЗЫВАЮТ тему (марафон-6 n605: «поставь сайт из трёх треков» - «сайт» это огрызок STT от «сет», и
+    guard подменил им тему LLM «рок»; сет заказал платную генерацию «по теме сайт»). Называют, если значимых слов
+    два и больше (описание, а не огрызок), или слово одно, но опорное (:func:`_known_word`), или человек ввёл его сам
+    («про X», «на тему X»: ``THEME_LEADS``), или в реплике названо слово сета («сет X»: ``SET_WORDS``; без него «сайт»
+    - слово сета, распознанное зря). Голое незнакомое слово на месте слова сета - не тема: у него нет опоры, кроме
+    звучания. Одно знание - те же таблицы, что у поиска и слотов темы."""
+    words = _content_words(heard)
+    if len(words) != 1:
+        return len(words) > 1
+    return theme_support(heard, heard_text)
+
+
+def _content_words(heard: str) -> List[str]:
+    return [w for w, _s, _e in words_of(heard) if w not in _AND and w != _NOT and content_stems(w)]
+
+
+def theme_support(heard: str, heard_text: Optional[str]) -> bool:
+    """У слов темы ``heard`` есть опора, кроме звучания: хоть одно слово опорное (:func:`_known_word`), человек ввёл
+    тему сам («про X», «на тему X»: ``THEME_LEADS`` перед первым словом темы) или назвал слово сета (``SET_WORDS``).
+    Без опоры — огрызок распознавания, даже из нескольких слов («уводи сторону тётя гриша подруг добреет», n605):
+    чойсер темы (``engine.theme_choice``) штрафует такой вариант (``THEME_CHOICE_WEIGHTS['bare']``)."""
+    from rob_box_voice.core.media_command_grammar import SET_WORDS, THEME_LEADS
+
+    words = _content_words(heard)
+    if not words:
+        return False
+    said = [w for w, _s, _e in words_of(heard_text or "")]
+    led = words[0] in said and any(w in THEME_LEADS for w in said[:said.index(words[0])])
+    return any(_known_word(w) for w in words) or led or bool(SET_WORDS.intersection(said))
+
+
+def confirmed_by_words(theme: Optional[str], heard_text: Optional[str]) -> bool:
+    """Слова реплики подтверждают тему ``theme`` (решение Шифу 05.11 «а», #4393): каждая значимая основа темы
+    (:func:`search.content_stems`, жанр - меткой) есть в реплике после снятия служебных слов просьбы
+    (``rob_box_dialog.knowledge.MUSIC_SERVICE_WORDS``: стоп, «вместо него», вейк, связки). «Поставь ночной рок» при теме
+    модели «ночной рок» - тема названа словами человека, хоть слова сета и нет (правило опоры :func:`theme_support`
+    его требует). Слово темы, которого человек не говорил («рок» при «уводи сторону тётя гриша…», n604), - не
+    подтверждение. Пустая тема - ``False``."""
+    from rob_box_dialog.knowledge import MUSIC_SERVICE_WORDS
+
+    stems = content_stems(theme or "")
+    if not stems:
+        return False
+    said = " ".join(w for w, _s, _e in words_of(heard_text or "") if w not in MUSIC_SERVICE_WORDS)
+    return stems <= content_stems(said)
+
+
+def request_theme(heard_text: Optional[str]) -> str:
+    """Слова темы реплики для сета: :func:`heard_theme` без названия движка («на синтезаторе» — путь, не тема)."""
+    from rob_box_music.source import blank_engine
+
+    return heard_theme(blank_engine(heard_text or ""))
+
+
+def named_by_human(heard_text: Optional[str]) -> bool:
+    """Тему сета человек назвал сам (решение Шифу 29.10 «давай В», PR #4231): в реплике есть слова темы
+    (:func:`request_theme`), они называют тему (:func:`names_theme`) и у них есть опора (:func:`theme_support`: «про X»,
+    «на тему X», «сет X», опорное слово). Такой теме при пустом кэше — заказ треков темы (решение 21.10, #3775);
+    тема-догадка кода или модели, жанр, «без темы», тема LLM без опоры в реплике — сначала кэш стиля
+    (``SourceRouter.route_slots(theme_named=False)``). Одно место этого признака."""
+    heard = request_theme(heard_text)
+    return bool(heard) and names_theme(heard, heard_text) and theme_support(heard, heard_text)
+
+
+def grounded_theme(theme: Optional[str], heard_text: Optional[str]) -> Tuple[str, bool]:
+    """``(тема, заменена ли)``: тема LLM, если она делит значимую основу с репликой хода, иначе тема реплики.
+    Смена стиля без новой темы («переходим на рок, тема та же») тему LLM не заменяет (#3593), как и огрызок
+    распознавания вместо слова темы (:func:`names_theme`, n605 М6)."""
+    theme = theme or ""
+    heard = heard_theme(heard_text or "")
+    if not heard or content_stems(theme) & content_stems(heard):
+        return theme, False
+    if theme and (not _names_new_theme(heard_text) or not names_theme(heard, heard_text)
+                  or not theme_support(heard, heard_text)):  # огрызок без опоры, даже длинный: n604 М8 (#4217)
+        return theme, False
+    return heard, True
+
+
+def guessed_theme(theme: str, llm_theme: Optional[str], heard_text: Optional[str]) -> bool:
+    """Тема сета - догадка кода: не тема LLM и не названа словами человека (:func:`names_theme`: голое слово реплики
+    без опоры). Платной генерации по такой теме нет (``DjSetTool._start(free=True)``: кэш или синтез) - деньги не
+    уходят на огрызок распознавания (n605 М6: две задачи Suno по 12 кредитов по теме «сайт»)."""
+    heard, unknown = _heard_slots(heard_text or "")
+    if theme == (llm_theme or ""):
+        return False
+    if unknown and (not theme or any(content_stems(theme) & content_stems(word) for word in unknown)):
+        return True
+    if not theme or not heard or not content_stems(theme) & content_stems(heard):
+        return False
+    return not names_theme(heard, heard_text)
+
+
+@dataclass(frozen=True)
+class SetTheme:
+    """Слоты темы сета (ADR-0157 §2.1): ``theme`` — что искать, ``mood`` — слова настроения, выпавшие из темы,
+    ``universe`` — ключ ``knowledge.UNIVERSES``, ставший темой (из темы или из имени персоны)."""
+
+    theme: str
+    mood: str = ""
+    universe: str = ""
+
+
+def _without_mood(text: str) -> Tuple[str, List[str]]:
+    """Текст без слов настроения (``universes.is_mood``; на их месте пробелы) и сами эти слова."""
+    out = text
+    mood = []
+    for word, start, end in words_of(text):
+        if is_mood(word):
+            out = out[:start] + " " * (end - start) + out[end:]
+            mood.append(word)
+    return out, mood
+
+
+def _universe_parts(text: str) -> Tuple[str, List[str], List[str]]:
+    """Части темы (``search._PART_RE``): часть с алиасом вселенной — фраза вселенной (повтор — один раз), иначе часть
+    без слов настроения. ``(тема, ключи вселенных, слова настроения)``; вселенных нет — ключей нет."""
+    keys: List[str] = []
+    mood: List[str] = []
+    out: List[str] = []
+    for part in (p for p in _PART_RE.split(text) if p and p.strip()):
+        rest, dropped = _without_mood(part)
+        mood += dropped
+        found = [key for _i, _j, key in universe_spans([w for w, _s, _e in words_of(part)])]
+        new = [key for key in dict.fromkeys(found) if key not in keys]
+        keys += new
+        if found:
+            out += [kn.UNIVERSES[key].theme for key in new]
+        elif content_stems(rest):
+            out.append(" ".join(rest.split()))
+    return ", ".join(out), keys, mood
+
+
+def set_theme(theme: Optional[str], persona: Optional[str] = None) -> SetTheme:
+    """Тема сета после выделения слотов (#3581): алиас вселенной в теме — тема-вселенная («веселье звезде смерте» →
+    «звёздные войны»); слова настроения рядом со словами темы — в ``mood``; в теме нет ничего, кроме настроения, а
+    имя персоны из вселенной («диджей Анакин») — тема её вселенной. Ничего из этого — тема как была, слово в слово."""
+    theme = theme or ""
+    text, keys, mood = _universe_parts(theme)
+    if keys:
+        return SetTheme(text, " ".join(mood), keys[0])
+    rest, mood = _without_mood(theme)
+    persona_key = universe_of(persona)
+    if not content_stems(rest):  # тема пуста или одно настроение: тема — вселенная персоны, иначе как была
+        if persona_key:
+            return SetTheme(kn.UNIVERSES[persona_key].theme, " ".join(mood), persona_key)
+        return SetTheme(theme)
+    return SetTheme(" ".join(rest.split()), " ".join(mood)) if mood else SetTheme(theme)
+
+
+def continued(heard_text: Optional[str],
+              last: Optional[Tuple[str, Optional[str]]]) -> Optional[Tuple[str, Optional[str]]]:
+    """``(тема, персона)`` последнего сета, если реплика просит продолжить сет («продолжай сэт», «ещё сет») или сменить
+    стиль при той же теме («переходим на рок, тема та же», #3593) и не называет новой темы; иначе ``None``. Слова —
+    ``media_command_grammar``: ``SET_CONTINUE_WORDS`` (#3581), ``SET_SWITCH_WORDS``, ``SET_SAME_WORDS``."""
+    from rob_box_voice.core.media_command_grammar import asks_to_continue_set
+
+    if last is None or not asks_to_continue_set(heard_text) or _names_new_theme(heard_text):
+        return None
+    return last
+
+
+def _grounded_logged(theme: Optional[str], heard_text: Optional[str], log: Any) -> str:
+    """Тема сета, опирающаяся на реплику хода (:func:`grounded_theme`); подмену и непонятые слова пишет код."""
+    heard, unknown = _heard_slots(heard_text or "")
+    if unknown:
+        log.info(f"🎛️ [dj_set] непонятые слова вне слотов: {unknown}; тема={heard!r}")
+    grounded, replaced = grounded_theme(theme, heard_text)
+    if not replaced:
+        return theme or ""
+    if not theme:  # команда роутера или LLM без темы: тему выделил код из слов реплики, подмены не было
+        log.info(f"🎛️ [dj_set] тема из слов реплики: {grounded!r}")
+        return grounded
+    log.warning(f"🎛️ [dj_set] тема LLM не из текущей реплики → из реплики: LLM={theme!r} → {grounded!r}")
+    return grounded
+
+
+def set_slots(theme: Optional[str], persona: Optional[str], heard_text: Optional[str],
+              last: Optional[Tuple[str, Optional[str]]], log: Any) -> Tuple[str, Optional[str]]:
+    """``(тема, персона)`` нового сета (``dj_set(start)``): «продолжай сэт» без новой темы — тема и персона последнего
+    сета ``last`` (:func:`continued`); иначе тема по реплике хода (:func:`grounded_theme`). Затем слоты темы
+    (:func:`set_theme`): вселенная из темы или персоны, настроение — не тема. Каждую замену код пишет в ``log``."""
+    resumed = continued(heard_text, last)
+    if resumed is not None:
+        log.info(f"🎛️ [dj_set] продолжить сет без новой темы → тема последнего сета: {resumed[0]!r} (LLM={theme!r})")
+        theme, persona = resumed[0], persona or resumed[1]
+    else:
+        theme = _grounded_logged(theme, heard_text, log)
+    slots = set_theme(theme, persona)
+    if slots.theme != theme:
+        log.info(f"🎛️ [dj_set] слоты темы: {theme!r} → тема={slots.theme!r} вселенная={slots.universe or '—'} "
+                 f"настроение={slots.mood or '—'} персона={persona!r}")
+    return slots.theme, persona
+
+
+__all__ = ["SetTheme", "confirmed_by_words", "continued", "grounded_theme", "guessed_theme", "heard_theme", "named_by_human", "names_theme",
+           "order_theme", "request_theme", "set_slots", "set_theme", "theme_support"]

@@ -1,0 +1,8 @@
+# Пример конфига гейта студии (scripts/studio/studio_ro_gate.sh); install_ro_key.sh кладёт его в ~/.config/studio_ro/.
+# Один элемент на строку, # — комментарий. Пути абсолютные; несуществующие гейт молча пропускает.
+# /data (лица, голоса, speakers.db) сюда НЕ включать: гейт всё равно отобьёт его жёстким запретом.
+# katana 10.1.1.249 (ros2): артефакты сборки, только чтение.
+# registry (docker/build/data/registry) и каталоги раннеров НЕ включать: там блобы образов и чекауты с .env.
+/home/ros2/rob_box_project/docs
+/opt/rob_box/vendor
+/opt/rob_box/models

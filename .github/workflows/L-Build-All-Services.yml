@@ -1,7 +1,23 @@
 name: "L: Build All Services"
 
 # Полная сборка всех образов на self-hosted runner с локальным registry
-# Собирает базовые образы, Main Pi и Vision Pi сервисы параллельно
+# Собирает базовые образы, затем сервисы Main, Sound и Vision Pi параллельно
+#
+# === Issue #1560: spam-runs protection (23.08.2026) ===
+# До этого фикса workflow запускался 30+ раз в день на develop с пустыми inputs.
+# Защита: job `validate-trigger` (для workflow_dispatch на protected branches
+# develop/main) проверяет что triggered_by_script != "manual" ИЛИ
+# triggered_by_card != "". Manual UI вызовы (например кем-то кликнувший
+# "Run workflow" в GitHub UI) будут иметь triggered_by_script="manual" и
+# triggered_by_card="" → job warning'ит с понятным логом. Это **источник
+# диагностики**: следующий спам-build оставит fingerprint в CI logs.
+#
+# Issue #1694 (26.08.2026): concurrency: group УДАЛЁН из этого workflow —
+# вешал новые runs в очередь без движения (cancel-in-progress=false → нет
+# активного run'а для cancel), что блокировало все builds. Защита от
+# spam осталась только через validate-trigger (см. блок ниже).
+# === Issue #1560 END ===
+
 on:
   workflow_dispatch:  # Ручной запуск
     inputs:
@@ -15,21 +31,57 @@ on:
         required: false
         default: 'true'
         type: boolean
+      # Issue #1527: трейсинг «кто дёрнул workflow». Все скрипты/воркеры
+      # используют твой GH_TOKEN, поэтому triggering_actor.login всегда = krikz.
+      # Эти опциональные поля заполняются самими скриптами (agent-flow-*),
+      # чтобы в CI job logs было видно кто реально стартанул build.
+      triggered_by_script:
+        description: 'Какой скрипт вызвал gh workflow run'
+        required: false
+        type: string
+        default: 'manual'
+      triggered_by_agent:
+        description: 'Какой worker профиль (devops/architect/backend/merge-gate/agent-flow)'
+        required: false
+        type: string
+        default: 'unknown'
+      triggered_by_card:
+        description: 'Kanban card id (t_xxx) если запуск из карточки'
+        required: false
+        type: string
+        default: ''
+      triggered_by_reason:
+        description: 'Краткая причина запуска (free-form)'
+        required: false
+        type: string
+        default: ''
   workflow_call:  # Reusable — вызывается из G-Auto-merge to Main
     inputs:
       build_base_images:
         description: 'Build base images first'
         required: false
-        default: 'false'
+        default: false
         type: boolean
       push_to_registry:
         description: 'Push to local registry (localhost:5000)'
         required: false
-        default: 'true'
+        default: true
         type: boolean
+
+# Issue #1694: concurrency block удалён (26.08.2026). concurrency:
+# group=l-build-all-services-<ref> вешал новые workflow_dispatch в очередь
+# БЕЗ движения (cancel-in-progress=false → нет активного run'а для cancel),
+# что блокировало все builds (Run #32985609438 завис 45+ мин в queued,
+# jobs=0, 9 self-hosted runners idle, 0 busy). Защита от spam-build'ов
+# (issue #1560) теперь только через job `validate-trigger` ниже — она
+# помечает spam-trigger вызовы fingerprint'ом в CI logs, но НЕ блокирует
+# build (continue-on-error: true). Spam-build'ы идут, но видны как spam,
+# и источник можно вычислить по fingerprint.
+# === Issue #1694 END ===
 
 permissions:
   contents: write  # Required for git push of .image-versions files
+  packages: write  # Required by called workflows (docker push to ghcr.io)
 
 env:
   LOCAL_REGISTRY: localhost:5000
@@ -37,6 +89,62 @@ env:
   ROS_DISTRO: lyrical
 
 jobs:
+  # Issue #1560: диагностический gate для workflow_dispatch на protected branches
+  # (develop/main) с пустыми/дефолтными triggered_by_*. Не блокирует build (==continue-on-error),
+  # но оставляет чёткий fingerprint в CI logs — следующий спам-build будет виден
+  # как ⚠️ spam-trigger warning, а не как обычный build. Не действует на workflow_call
+  # (G-Auto-merge to Main → L-Build-All-Services через uses:): там event_name !=
+  # workflow_dispatch. Не действует на round-ветки z-{e2e}/test-round-N.
+  #
+  # Issue #1694 (26.08.2026): это ЕДИНСТВЕННАЯ защита от spam после удаления
+  # concurrency block (он блокировал все builds, см. шапку workflow).
+  validate-trigger:
+    name: "🛡 Trigger source validation (issue #1560)"
+    runs-on: [self-hosted, rob-box]
+    if: ${{ github.event_name == 'workflow_dispatch' && (github.ref == 'refs/heads/develop' || github.ref == 'refs/heads/main') }}
+    continue-on-error: true  # Не блокируем build — это диагностика
+    steps:
+      - name: Detect spam-trigger (workflow_dispatch with empty triggered_by_* fields)
+        env:
+          TRIGGERED_BY_SCRIPT: ${{ inputs.triggered_by_script }}
+          TRIGGERED_BY_AGENT: ${{ inputs.triggered_by_agent }}
+          TRIGGERED_BY_CARD: ${{ inputs.triggered_by_card }}
+          TRIGGERED_BY_REASON: ${{ inputs.triggered_by_reason }}
+          GH_REF: ${{ github.ref }}
+          GH_ACTOR: ${{ github.actor }}
+          RUN_ID: ${{ github.run_id }}
+        run: |
+          echo "🔍 Issue #1560 spam-trigger detection (issue #1560)"
+          echo "  ref:            ${GH_REF}"
+          echo "  actor:          ${GH_ACTOR}"
+          echo "  run_id:         ${RUN_ID}"
+          echo "  triggered_by_script: '${TRIGGERED_BY_SCRIPT}'"
+          echo "  triggered_by_agent:  '${TRIGGERED_BY_AGENT}'"
+          echo "  triggered_by_card:   '${TRIGGERED_BY_CARD}'"
+          echo "  triggered_by_reason: '${TRIGGERED_BY_REASON}'"
+          # Manual UI click pattern: triggered_by_script = default "manual" И
+          # triggered_by_card пустое. Легитимные скрипты (agent-flow-post-merge-build,
+          # agent-flow-e2e-process) всегда передают triggered_by_script != "manual"
+          # и/или triggered_by_card с реальным t_<id>.
+          if [ "${TRIGGERED_BY_SCRIPT}" = "manual" ] && [ -z "${TRIGGERED_BY_CARD}" ]; then
+            echo ""
+            echo "�️  SPAM-TRIGGER WARNING (issue #1560)"
+            echo "=================================================="
+            echo "Этот build запущен с пустыми/дефолтными triggered_by_* полями."
+            echo "Возможные источники (по убыванию вероятности):"
+            echo "  A) Manual 'Run workflow' через GitHub UI"
+            echo "  B) Orphan loop leaked из чужого скрипта / tmux session"
+            echo "  C) Другой collaborator с push-правами"
+            echo ""
+            echo "До этого фикса такие runs шли 30+ раз в день на develop (issue #1560)."
+            echo "Теперь этот job оставляет fingerprint для диагностики."
+            echo "Если это легитимный ручной запуск — укажи -f triggered_by_card=t_<id>"
+            echo "или -f triggered_by_script=<имя_скрипта> при следующем запуске."
+            echo "=================================================="
+          else
+            echo "✅ Trigger OK (script=${TRIGGERED_BY_SCRIPT}, card=${TRIGGERED_BY_CARD})"
+          fi
+
   # Сборка базовых образов (если нужно).
   # NB: GitHub Actions по-разному типизирует boolean inputs в workflow_dispatch (string "true"/"false")
   # и workflow_call (boolean true/false). Условие должно работать в обоих режимах.
@@ -47,44 +155,153 @@ jobs:
       push_to_registry: true
     secrets: inherit
 
-  # Main Pi сервисы
+  # Общий образ ROS-сообщений — ОДИН раз на три Pi (иначе при правке .msg три
+  # одинаковые компиляции шли бы наперегонки; rosidl под qemu — минуты на
+  # пакет). Идёт ПАРАЛЛЕЛЬНО с Pi: needs на нём нет, его ждут в registry только
+  # сервисы с msgs_image: true, остальные собираются сразу. Pi-вызовы получают
+  # build_msgs_image=false и сами его не собирают.
+  build-msgs-image:
+    needs: build-base-images
+    if: always() && (needs.build-base-images.result == 'success' || needs.build-base-images.result == 'skipped')
+    uses: ./.github/workflows/L-Build Msgs Image.yml
+
+  # Сервисы трёх Pi — один workflow "L-Build Pi Services.yml" с входом `pi`
+  # (ADR-0159 PR-3, В4). Три вызова идут ПАРАЛЛЕЛЬНО: depends_on в манифесте
+  # допустим только внутри своего Pi (gen_build_matrix.load_manifest), цепочка
+  # voice-base → voice-assistant → supervisor целиком в pis.sound и
+  # упорядочена волнами внутри своего вызова. Job id прежние
+  # (build-main-services/build-vision-services) — на них смотрят скрипты.
   build-main-services:
     needs: build-base-images
     if: always() && (needs.build-base-images.result == 'success' || needs.build-base-images.result == 'skipped')
-    uses: ./.github/workflows/L-Build Main Pi Services.yml
+    uses: ./.github/workflows/L-Build Pi Services.yml
+    secrets: inherit  # CR_PAT нужен в update-image-versions для ghcr.io login
     with:
+      pi: main
       push_to_registry: true
+      build_msgs_image: false
 
-  # Vision Pi сервисы
+  build-sound-services:
+    needs: build-base-images
+    if: always() && (needs.build-base-images.result == 'success' || needs.build-base-images.result == 'skipped')
+    uses: ./.github/workflows/L-Build Pi Services.yml
+    secrets: inherit  # CR_PAT нужен в update-image-versions для ghcr.io login
+    with:
+      pi: sound
+      push_to_registry: true
+      build_msgs_image: false
+
   build-vision-services:
     needs: build-base-images
     if: always() && (needs.build-base-images.result == 'success' || needs.build-base-images.result == 'skipped')
-    uses: ./.github/workflows/L-Build Vision Pi Services.yml
+    uses: ./.github/workflows/L-Build Pi Services.yml
+    secrets: inherit  # CR_PAT нужен в update-image-versions для ghcr.io login
     with:
+      pi: vision
       push_to_registry: true
+      build_msgs_image: false
 
   # Итоговая сводка
   summary:
-    needs: [build-base-images, build-main-services, build-vision-services]
+    needs: [build-base-images, build-msgs-image, build-main-services, build-sound-services, build-vision-services]
     runs-on: [self-hosted, rob-box]
     if: always()
     steps:
+      - name: Trigger source (issue #1527)
+        # Трейсинг: видно в CI job log кто реально стартанул этот build
+        # (при ручном gh workflow run без -f triggered_by_* — defaults).
+        run: |
+          echo "🔧 Triggered by: ${{ inputs.triggered_by_script }} / agent=${{ inputs.triggered_by_agent }} / card=${{ inputs.triggered_by_card }} / reason=${{ inputs.triggered_by_reason }}"
       - name: Build Summary
         run: |
           echo "🎉 Local Build Complete!"
           echo ""
           echo "📊 Build Results:"
           echo "  Base Images: ${{ needs.build-base-images.result }}"
+          echo "  Msgs Image: ${{ needs.build-msgs-image.result }}"
           echo "  Main Services: ${{ needs.build-main-services.result }}"
+          echo "  Sound Services: ${{ needs.build-sound-services.result }}"
           echo "  Vision Services: ${{ needs.build-vision-services.result }}"
           echo ""
           echo "📦 Local Registry Contents:"
-          curl -s http://localhost:5000/v2/_catalog | jq -r '.repositories[]' | grep rob_box | while read repo; do
+          curl -s http://localhost:5000/v2/_catalog | jq -r '.repositories[]' | grep rob_box | while read -r repo; do
             echo "  📁 $repo"
-            curl -s "http://localhost:5000/v2/$repo/tags/list" | jq -r '.tags[]?' | while read tag; do
+            curl -s "http://localhost:5000/v2/$repo/tags/list" | jq -r '.tags[]?' | while read -r tag; do
               echo "    🏷️ $tag"
             done
           done
 
           echo ""
           echo "🚀 Next: On Raspberry Pi, set IMAGE_TAG=local and pull from 10.1.1.5:5000"
+
+      # === Подписанный релиз (ADR-0168 §5 п. 2, #4375; решение Шифу 09.11: «если это нам не сломает работу») ===
+      # Три шага ниже — ПОСЛЕДНИЕ в последнем job'е и все с continue-on-error: провал релиза не красит
+      # Build All и ничего не меняет для L: Deploy and Verify (деплой берёт .image-versions.* как раньше,
+      # release.py их не трогает). На робота ничего не ставится: релиз только кладётся в registry katana
+      # (`krikz/rob_box/release:<релиз>` и тег канала `dev`); агент chuangong на Pi не установлен.
+      # Откат — удалить эти три шага. Гард: scripts/ci/tests/test_build_all_release_step.py.
+      - name: "Release: gate (ADR-0168)"
+        id: release-gate
+        if: ${{ !cancelled() }}
+        continue-on-error: true
+        env:
+          HAS_SIGNING_KEY: ${{ secrets.CHUANGONG_SIGNING_KEY != '' }}
+          GH_REF: ${{ github.ref }}
+          MAIN_RESULT: ${{ needs.build-main-services.result }}
+          SOUND_RESULT: ${{ needs.build-sound-services.result }}
+          VISION_RESULT: ${{ needs.build-vision-services.result }}
+        run: |
+          echo "enabled=false" >> "$GITHUB_OUTPUT"
+          if [ "${GH_REF}" != "refs/heads/develop" ]; then
+            echo "Релиз собирается только с develop (канал dev); ref=${GH_REF} — пропуск."
+            exit 0
+          fi
+          if [ "${MAIN_RESULT}" != "success" ] || [ "${SOUND_RESULT}" != "success" ] || [ "${VISION_RESULT}" != "success" ]; then
+            echo "::warning::Релиз не собран: сборка Pi не вся зелёная (main=${MAIN_RESULT} sound=${SOUND_RESULT} vision=${VISION_RESULT})."
+            exit 0
+          fi
+          if [ "${HAS_SIGNING_KEY}" != "true" ]; then
+            echo "::warning::Релиз не собран: нет секрета CHUANGONG_SIGNING_KEY (ключ подписи minisign, ADR-0168 §5)."
+            exit 0
+          fi
+          echo "enabled=true" >> "$GITHUB_OUTPUT"
+
+      - name: "Release: checkout (ADR-0168)"
+        if: ${{ !cancelled() && steps.release-gate.outputs.enabled == 'true' }}
+        continue-on-error: true
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ github.sha }}
+          submodules: false
+          clean: true
+
+      - name: "Release: build, sign, publish (ADR-0168)"
+        if: ${{ !cancelled() && steps.release-gate.outputs.enabled == 'true' }}
+        continue-on-error: true
+        env:
+          CHUANGONG_SIGNING_KEY: ${{ secrets.CHUANGONG_SIGNING_KEY }}
+        run: |
+          set -euo pipefail
+          # Зависимости release.py: PyYAML и cryptography (minisign на Ed25519). Без них — честный провал шага.
+          python3 -c "import yaml, cryptography" 2>/dev/null \
+            || python3 -m pip install --quiet --no-cache-dir --user pyyaml cryptography \
+            || python3 -m pip install --quiet --no-cache-dir --user --break-system-packages pyyaml cryptography
+          SHORT_SHA="${GITHUB_SHA::7}"
+          IMAGE_TAG="dev-${SHORT_SHA}"
+          # Имя релиза — открытый вопрос Шифу В3 (ADR-0168 §8); пока «SHA-тег сборки + номер run'а».
+          RELEASE="${IMAGE_TAG}-${GITHUB_RUN_NUMBER}"
+          OUT="${RUNNER_TEMP}/release-${GITHUB_RUN_ID}"
+          rm -rf -- "${OUT}"
+          python3 scripts/build/release.py build --release "${RELEASE}" --channel dev \
+            --image-tag "${IMAGE_TAG}" --docker-tag dev --git "${SHORT_SHA}" \
+            --resolve-registry "http://${LOCAL_REGISTRY}" --out "${OUT}"
+          python3 scripts/build/release.py sign --dir "${OUT}"
+          python3 scripts/build/release.py verify --dir "${OUT}" --pubkey host/chuangong/keys/release.pub
+          DIGEST="$(python3 scripts/build/release.py publish --dir "${OUT}" --registry "http://${LOCAL_REGISTRY}")"
+          echo "Релиз ${RELEASE} опубликован: ${LOCAL_REGISTRY}/krikz/rob_box/release:${RELEASE} (и :dev), ${DIGEST}"
+          {
+            echo "### Release (ADR-0168)"
+            echo ""
+            echo "\`krikz/rob_box/release:${RELEASE}\` → \`:dev\`, \`${DIGEST}\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+          rm -rf -- "${OUT}"

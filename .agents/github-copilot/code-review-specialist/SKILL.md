@@ -9,8 +9,8 @@ Use this skill when:
 - Reviewing Python code in `src/rob_box_*/` before merge
 - Auditing Docker files in `docker/main/` or `docker/vision/`
 - Code reviewing MCP tools (`src/rob_box_mcp_tools/`)
-- Reviewing PRs on `feature/agent` → `develop` → `main`
-- Checking that TASK-035/036/037 acceptance criteria are met
+- Reviewing agent-flow PRs (`z-{agent}/*` → `develop` → `main`)
+- Checking that the linked GitHub issue's acceptance criteria are met
 
 ## Review Approach
 

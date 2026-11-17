@@ -1,8 +1,8 @@
 """Provider health-check / quota cache for LLM fallback chains (issue #1082).
 
-The reactive fallback chain (``[minimax, deepseek]``) wastes 15-19s when
+The reactive fallback chain (``[deepseek, minimax]``) wastes 15-19s when
 the primary provider's quota is exhausted: MiniMax returns
-``429 rate_limit_error Token Plan usage limit reached (2056)`` on every
+a quota-exhausted ``429 rate_limit_error`` on every
 call, the provider retries with backoff three times, and only then does
 the wrapper switch to DeepSeek.
 
@@ -20,7 +20,7 @@ This module fixes the class of problem, not one provider:
 * MiniMax has **no** public balance endpoint (quota is only visible in
   the console usage bar), so its health is detected reactively: the
   first request that comes back with a quota-exhaustion error
-  (``2056`` / ``1008`` / ``token plan ... limit``) marks the provider
+  (``QuotaExhaustedError``, raised by the adapter) marks the provider
   unavailable for the TTL. See :func:`is_quota_exhausted`.
 * :class:`HealthAwareFallbackLLM` — an :class:`LLMProvider` wrapper that
   orders the chain as ``[healthy] + [unchecked]``, skips ``unavailable``
@@ -57,6 +57,7 @@ import httpx
 from rob_box_llm.errors import (
     AuthError,
     ProviderError,
+    QuotaExhaustedError,
     RateLimitError,
     TimeoutError as LLMTimeoutError,
 )
@@ -141,17 +142,26 @@ DEFAULT_HEALTH_TTL_S: float = 300.0
 #: enough to escape the provider.
 TRANSIENT_TTL_S: float = 30.0
 
-#: Substrings in the MiniMax error message that identify a quota /
-#: balance exhaustion (a *long* usage window, NOT a one-minute burst).
-#: ``2056`` = Token Plan usage limit reached; ``1008`` = insufficient
-#: balance. These must NOT be retried with a seconds-scale backoff.
-QUOTA_EXHAUSTED_HINTS: tuple[str, ...] = (
-    "2056",
-    "1008",
-    "token plan",
-    "usage limit",
-    "insufficient balance",
-)
+#: Per-provider TTL escalation ladder for repeated *transient* failures
+#: (issue #2718). A single 30 s blow-off is too short when the provider
+#: is actually dead (no quota, hung upstream) but still responding to
+#: each individual request after 20-30 s — the fallback chain would
+#: re-probe it after 30 s, burn another full timeout, switch again, and
+#: the user pays 30-60 s of latency per turn. The ladder escalates the
+#: "skip window" after each consecutive transient failure: the Nth
+#: failure in a row (N = 1-based index into this tuple) uses the Nth
+#: value; once N exceeds ``len(STEPS)-1``, we cap at the last value.
+#: Streak resets on the first successful call OR when the failure
+#: classifies as quota/auth (different failure class — not the same
+#: "the network is flaky" story).
+#:
+#: Mirrors the TTS-side ladder from PR #2712 (``_transient_ttl_for_streak``):
+#: same shape, same semantics, just owned by the LLM ``HealthCache``.
+TRANSIENT_TTL_STEPS: tuple[float, ...] = (30.0, 120.0, 300.0)
+
+#: Вендор-нейтральные подстроки «кончились деньги» для провайдеров без своего классификатора. Коды и фразы
+#: конкретного вендора (MiniMax) живут в адаптере и приходят как ``QuotaExhaustedError``.
+QUOTA_EXHAUSTED_HINTS: tuple[str, ...] = ("usage limit", "insufficient balance")
 
 
 class ProviderStatus(str, Enum):
@@ -185,6 +195,9 @@ class HealthRecord:
     balance: float | None = None
     checked_at: float = 0.0
     ttl_s: float = DEFAULT_HEALTH_TTL_S
+    #: Класс причины (ADR-0150 §8; ``rob_box_dialog.knowledge.PROVIDER_HEALTH``) при ``UNAVAILABLE``:
+    #: ``quota``/``auth``/``timeout``/``degraded``/``down``. Вне ``UNAVAILABLE`` не значим.
+    health_class: str = "down"
 
     @property
     def expired(self) -> bool:
@@ -230,6 +243,14 @@ class HealthCache:
     ) -> None:
         self.ttl_s = ttl_s
         self._records: dict[str, HealthRecord] = {}
+        # Per-provider count of CONSECUTIVE transient failures. Issue #2718:
+        # a single 30 s skip is too short when a provider is *consistently*
+        # dead — we escalate the TTL on each additional blow-off so the
+        # fallback chain doesn't keep paying the full per-request timeout.
+        # Reset by ``reset_transient_streak`` on the first success / quota /
+        # auth classification. Never persisted to disk: a process restart
+        # already gives the provider a fresh shot.
+        self._transient_streak: dict[str, int] = {}
         self._lock = threading.Lock()
         self._persist_path = Path(persist_path) if persist_path else None
         self._clock = clock
@@ -283,16 +304,71 @@ class HealthCache:
         *,
         reason: str,
         ttl_s: float | None = None,
+        health_class: str = "down",
     ) -> HealthRecord:
-        """Record that the provider is dead for ``ttl_s`` seconds."""
+        """Record that the provider is dead for ``ttl_s`` seconds (``health_class`` - причина для ProviderState)."""
         rec = HealthRecord(
             provider=provider,
             status=ProviderStatus.UNAVAILABLE,
             reason=reason,
             checked_at=self._clock(),
             ttl_s=self.ttl_s if ttl_s is None else ttl_s,
+            health_class=health_class,
         )
         return self._store(rec)
+
+    # ---- transient-failure streak (issue #2718) -----------------------
+
+    def note_transient_failure(self, provider: str) -> int:
+        """Increment the consecutive-transient-failure counter.
+
+        Returns the NEW streak length (so callers can log / choose the
+        right TTL step). A first-time failure returns 1.
+
+        Called by :class:`HealthAwareFallbackLLM` every time a provider
+        blows up with a *transient* error (rate-limit / timeout). The
+        wrapper then asks :meth:`transient_ttl_for_streak` what TTL to
+        apply.
+        """
+        with self._lock:
+            n = self._transient_streak.get(provider, 0) + 1
+            self._transient_streak[provider] = n
+            return n
+
+    def reset_transient_streak(self, provider: str) -> None:
+        """Clear the consecutive-transient-failure counter.
+
+        Called on the first successful call after a streak, AND when a
+        failure classifies as quota / auth (different failure class —
+        the streak of "the network is flaky" doesn't apply to a hard
+        quota exhaustion).
+        """
+        with self._lock:
+            self._transient_streak.pop(provider, None)
+
+    def transient_streak(self, provider: str) -> int:
+        """Current consecutive-transient-failure count (0 if none)."""
+        with self._lock:
+            return self._transient_streak.get(provider, 0)
+
+    def transient_ttl_for_streak(
+        self, provider: str, *, base: float | None = None
+    ) -> float:
+        """Pick the right transient TTL based on the current streak.
+
+        ``base`` is the floor: the result is at least ``base`` (or
+        :data:`TRANSIENT_TTL_S` when ``base`` is ``None``). The ladder
+        in :data:`TRANSIENT_TTL_STEPS` escalates from there on
+        consecutive failures; once the streak exceeds the ladder length,
+        we cap at the last step (no further escalation — there's no
+        evidence a longer skip would help).
+        """
+        n = self.transient_streak(provider)
+        steps = TRANSIENT_TTL_STEPS
+        if n <= 0:
+            return base if base is not None else TRANSIENT_TTL_S
+        idx = min(n - 1, len(steps) - 1)
+        return steps[idx]
 
     # ---- persistence ---------------------------------------------------
 
@@ -323,6 +399,7 @@ class HealthCache:
                     balance=data.get("balance"),
                     checked_at=float(data.get("checked_at", 0.0)),
                     ttl_s=float(data.get("ttl_s", self.ttl_s)),
+                    health_class=str(data.get("health_class", "down")),
                 )
                 # An already-expired record is kept as UNKNOWN so the
                 # provider is re-checked on the next request.
@@ -342,6 +419,7 @@ class HealthCache:
                     "balance": rec.balance,
                     "checked_at": rec.checked_at,
                     "ttl_s": rec.ttl_s,
+                    "health_class": rec.health_class,
                 }
                 for name, rec in self._records.items()
             }
@@ -363,12 +441,14 @@ class HealthCache:
 def is_quota_exhausted(exc: BaseException) -> bool:
     """True when the error signals quota / balance exhaustion.
 
-    These errors describe a *long* usage window (MiniMax Token Plan is
-    a 5-hour window; ``2056`` / ``1008`` are documented as "do not
+    These errors describe a *long* usage window (тариф MiniMax is
+    a 5-hour window; the vendor documents them as "do not
     retry aggressively") — retrying them with a seconds-scale backoff
     only wastes the user's time. The fallback chain should switch
     immediately and mark the provider unavailable for the TTL.
     """
+    if isinstance(exc, QuotaExhaustedError):
+        return True
     text = str(exc).lower()
     return any(hint in text for hint in QUOTA_EXHAUSTED_HINTS)
 
@@ -378,11 +458,26 @@ def is_auth_failure(exc: BaseException) -> bool:
 
     Retrying it is pointless; the provider should go to the end of the
     chain (marked unavailable) so the robot uses a working provider.
+
+    Also matches gRPC's auth status codes (``PERMISSION_DENIED`` /
+    ``UNAUTHENTICATED``) by their string representation — issue #2702:
+    Yandex TTS wraps ``grpc.RpcError`` into a generic ``Exception`` whose
+    message embeds ``e.code()`` (e.g. ``"StatusCode.PERMISSION_DENIED"``),
+    so callers outside this module (``rob_box_voice.tts_node``) can reuse
+    this single classifier instead of re-implementing it. A permissions
+    error on a storage folder (see ADR-0124) is exactly as permanent as a
+    bad API key — both need the long TTL, not the transient one.
     """
     if isinstance(exc, AuthError):
         return True
     text = str(exc).lower()
-    return "401" in text or "403" in text or "invalid api key" in text
+    return (
+        "401" in text
+        or "403" in text
+        or "invalid api key" in text
+        or "permission_denied" in text
+        or "unauthenticated" in text
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -397,10 +492,12 @@ async def check_deepseek_balance(
 ) -> float | None:
     """Query DeepSeek's ``/user/balance`` endpoint.
 
-    Returns the total balance (sum of all ``balance_infos``) or ``None``
-    when the balance cannot be determined (endpoint down, network
-    error, non-JSON response). ``None`` means "assume healthy" — a
-    broken health-check must never block the provider.
+    Returns the sum of positive ``balance_infos`` (a provider is usable
+    as long as ANY account has a positive balance; negative accounts in
+    other currencies are ignored, not subtracted), or ``None`` when the
+    balance cannot be determined (endpoint down, network error,
+    non-JSON response). ``None`` means "assume healthy" — a broken
+    health-check must never block the provider.
 
     Reference: https://api-docs.deepseek.com/api/get-user-balance
     """
@@ -416,12 +513,21 @@ async def check_deepseek_balance(
         if not data.get("is_available", True):
             return 0.0
         infos = data.get("balance_infos") or []
+        # 🔴 FIX (live 08.09): /user/balance может вернуть НЕСКОЛЬКО валют
+        # (напр. CNY = -1.02, USD = +5.60). Складывать их как одну валюту
+        # нельзя: отрицательный CNY-«карман» занулял реальные USD → баланс
+        # ≤ 0 → провайдер ошибочно помечался unavailable (TTL 300s) →
+        # робот говорил «интернет недоступен», хотя на USD деньги были.
+        # Учитываем ТОЛЬКО положительные счета: если хоть на одном из них
+        # баланс > 0 — провайдер рабочий. Отрицательные не вычитаются.
         total = 0.0
         for info in infos:
             try:
-                total += float(info.get("total_balance") or 0.0)
+                balance = float(info.get("total_balance") or 0.0)
             except (TypeError, ValueError):
                 continue
+            if balance > 0:
+                total += balance
         return total
     except Exception as exc:  # noqa: BLE001 — any probe failure ⇒ unknown
         _log.warning("[health] deepseek balance check failed: %r", exc)
@@ -470,6 +576,7 @@ class HealthAwareFallbackLLM(LLMProvider):  # type: ignore[misc]
         cache: HealthCache | None = None,
         balance_checkers: Mapping[str, Any] | None = None,
         logger: Any = None,
+        settings_for: Mapping[str, LLMSettings] | None = None,
     ) -> None:
         self._providers: list[LLMProvider] = list(providers)
         if not self._providers:
@@ -477,6 +584,17 @@ class HealthAwareFallbackLLM(LLMProvider):  # type: ignore[misc]
         self._cache: HealthCache = cache or HealthCache()
         self._checkers: dict[str, Any] = dict(balance_checkers or {})
         self._log = _coerce_logger(logger)
+        # Per-provider settings lookup (issue #1883). When provided, each
+        # provider in the chain receives its own ``LLMSettings``; when the
+        # caller passes a single ``settings=`` arg, that arg is used for
+        # every provider in the chain EXCEPT the ones explicitly listed
+        # in this map (their mapped value wins). ``None`` (default) → use
+        # the ``settings=`` arg verbatim for every provider (legacy
+        # behaviour).
+        self._settings_for: dict[str, Any] = dict(settings_for or {})
+        #: Провайдер последнего обращения цепочки — тот, что ответил (метрики по провайдерам, ADR-0150 §14 A5):
+        #: ``name`` обёртки один на всех, а промпт и токены — у конкретного провайдера.
+        self.answered_by: str | None = None
 
     # ---- capability introspection --------------------------------------
 
@@ -488,10 +606,52 @@ class HealthAwareFallbackLLM(LLMProvider):  # type: ignore[misc]
     def capabilities_for(self, model: str | None) -> ProviderCapabilities:
         return self._providers[0].capabilities_for(model)
 
+    def snapshot(self) -> list[dict[str, Any]]:
+        """Состояние каждого провайдера цепочки для ``ProviderState`` (ADR-0150 §8).
+
+        ``[{name, health, since, last_error_code}]``: ``health`` - класс из ``PROVIDER_HEALTH``
+        (``ok`` для здоровых и ещё не проверенных, класс причины для пропускаемых), ``since`` - wall-clock.
+        """
+        out: list[dict[str, Any]] = []
+        for provider in self._providers:
+            name = self._provider_name(provider)
+            rec = self._cache.get(name)
+            dead = self._cache.is_unavailable(name)
+            out.append({
+                "name": name,
+                "health": rec.health_class if dead else "ok",
+                "since": rec.checked_at if dead else 0.0,
+                "last_error_code": (rec.reason or "")[:80] if dead else "",
+            })
+        return out
+
     # ---- chain construction ---------------------------------------------
 
     def _provider_name(self, provider: LLMProvider) -> str:
         return getattr(provider, "name", type(provider).__name__)
+
+    def _resolve_settings_for(
+        self, name: str, default: LLMSettings | None
+    ) -> LLMSettings | None:
+        """Pick the right ``LLMSettings`` for ``name``.
+
+        Order (issue #1883, per-provider overrides):
+
+        1. Explicit per-provider entry in ``settings_for`` (the YAML
+           declared ``minimax.temperature=...`` etc.).
+        2. The ``settings`` passed by the caller to ``complete()`` /
+           ``stream()``.
+
+        The per-provider entry ALWAYS wins when present — that's the
+        only way an operator can set ``minimax.max_tokens`` to one
+        value and ``deepseek.max_tokens`` to another without writing
+        custom glue. A ``None`` value in the map means "use the
+        caller's settings verbatim" (no override for this provider).
+        """
+        override = self._settings_for.get(name)
+        if override is not None:
+            return override
+        return default
 
     def _build_chain(self) -> list[LLMProvider]:
         """Order the chain as ``[healthy] + [unchecked]``, skip dead."""
@@ -538,7 +698,7 @@ class HealthAwareFallbackLLM(LLMProvider):  # type: ignore[misc]
             return
         if balance <= 0:
             self._cache.mark_unavailable(
-                name, reason=f"balance={balance}", ttl_s=self._cache.ttl_s
+                name, reason=f"balance={balance}", ttl_s=self._cache.ttl_s, health_class="quota"
             )
             self._log.warning(
                 "[health] provider=%s balance=%s → unavailable (TTL %.0fs)",
@@ -577,8 +737,13 @@ class HealthAwareFallbackLLM(LLMProvider):  # type: ignore[misc]
     ) -> None:
         """Actual failure classification (split for try/except safety)."""
         if is_quota_exhausted(exc):
+            # Quota/auth are different failure CLASSES from a flaky
+            # network — a streak of "transient timeouts" does not
+            # apply. Reset the streak so the next genuine transient
+            # failure starts counting from zero.
+            self._cache.reset_transient_streak(name)
             self._cache.mark_unavailable(
-                name, reason=str(exc)[:300], ttl_s=self._cache.ttl_s
+                name, reason=str(exc)[:300], ttl_s=self._cache.ttl_s, health_class="quota"
             )
             self._log.warning(
                 "[health] provider=%s quota exhausted (%s) → unavailable (TTL %.0fs)",
@@ -587,8 +752,9 @@ class HealthAwareFallbackLLM(LLMProvider):  # type: ignore[misc]
                 self._cache.ttl_s,
             )
         elif is_auth_failure(exc):
+            self._cache.reset_transient_streak(name)
             self._cache.mark_unavailable(
-                name, reason=f"auth: {exc}"[:300], ttl_s=self._cache.ttl_s
+                name, reason=f"auth: {exc}"[:300], ttl_s=self._cache.ttl_s, health_class="auth"
             )
             self._log.warning(
                 "[health] provider=%s AUTH failure [%s: %s] → unavailable (TTL %.0fs)",
@@ -598,26 +764,43 @@ class HealthAwareFallbackLLM(LLMProvider):  # type: ignore[misc]
                 self._cache.ttl_s,
             )
         elif isinstance(exc, (RateLimitError, LLMTimeoutError)):
+            # Issue #2718: per-provider transient TTL escalation.
+            # The first blow-off uses TRANSIENT_TTL_S (30 s); consecutive
+            # blow-offs escalate through TRANSIENT_TTL_STEPS so we don't
+            # burn another full per-request timeout on a provider that's
+            # clearly dead (e.g. MiniMax hanging for 30 s on each chunk).
+            new_streak = self._cache.note_transient_failure(name)
+            ttl = self._cache.transient_ttl_for_streak(name)
+            # RateLimitError - лимит частоты (``degraded``, не озвучивается), таймаут - ``timeout``.
             self._cache.mark_unavailable(
-                name, reason=str(exc)[:300], ttl_s=TRANSIENT_TTL_S
+                name, reason=str(exc)[:300], ttl_s=ttl,
+                health_class="degraded" if isinstance(exc, RateLimitError) else "timeout",
             )
             self._log.warning(
-                "[health] provider=%s transient error (%s) → short unavailable (TTL %.0fs)",
+                "[health] provider=%s transient error (%s) → short unavailable "
+                "(streak=%d TTL %.0fs)",
                 name,
                 exc,
-                TRANSIENT_TTL_S,
+                new_streak,
+                ttl,
             )
             # 🔴 FIX (issue #1082 follow-up): метрика переключения на
             # fallback-провайдера из-за per-request 429 rate-limit (НЕ
             # quota) — по аналогии с [stt_attempt_metric] из #1083.
             # Single-string f-string: RcutilsLogger не принимает
-            # %s-аргументы.
+            # %s-аргументы. Streak+TTL добавлены (issue #2718) для
+            # диагностики «сколько уже раз обожглись на этом провайдере».
             self._log.info(
                 f"[llm_fallback_metric] provider={name} "
                 f"reason={'rate_limit' if isinstance(exc, RateLimitError) else 'timeout'} "
-                f"action=fallback ttl_s={TRANSIENT_TTL_S:.0f}"
+                f"action=fallback streak={new_streak} ttl_s={ttl:.0f}"
             )
         else:
+            # Unclassified failures don't bump the transient streak either
+            # — we don't know that they're "the network is flaky", and the
+            # next transient failure (if any) should still start counting
+            # from zero so we don't conflate error classes.
+            self._cache.reset_transient_streak(name)
             self._log.warning(
                 "[health] provider=%s UNCLASSIFIED failure [%s: %s] — пробуем следующий",
                 name,
@@ -654,10 +837,18 @@ class HealthAwareFallbackLLM(LLMProvider):  # type: ignore[misc]
             if self._cache.is_unavailable(name):
                 continue  # probe just marked it dead
             try:
+                provider_settings = self._resolve_settings_for(name, settings)
+                self.answered_by = name
                 self._log.info("[health] → calling provider=%s", name)
                 result = await provider.complete(
-                    messages, tools=tools, settings=settings
+                    messages, tools=tools, settings=provider_settings
                 )
+                # Issue #2718: a successful call cancels any in-flight
+                # transient-failure streak for this provider. (Quota /
+                # auth resets happen inside ``_handle_failure`` on a
+                # *different* failure class, so they don't touch the
+                # counter we're clearing here.)
+                self._cache.reset_transient_streak(name)
                 self._log.info("[health] ← answered by provider=%s", name)
                 return result
             except Exception as exc:  # noqa: BLE001 — any provider error ⇒ next
@@ -698,11 +889,17 @@ class HealthAwareFallbackLLM(LLMProvider):  # type: ignore[misc]
             if self._cache.is_unavailable(name):
                 continue
             try:
+                provider_settings = self._resolve_settings_for(name, settings)
+                self.answered_by = name
                 self._log.info("[health] → streaming from provider=%s", name)
                 async for chunk in provider.stream(
-                    messages, tools=tools, settings=settings
+                    messages, tools=tools, settings=provider_settings
                 ):
                     yield chunk
+                # Issue #2718: same as ``complete`` — the stream
+                # completed without an error, so any transient-failure
+                # streak for this provider is cleared.
+                self._cache.reset_transient_streak(name)
                 self._log.info("[health] ← stream finished by provider=%s", name)
                 return
             except Exception as exc:  # noqa: BLE001 — any provider error ⇒ next
@@ -754,5 +951,6 @@ __all__ = [
     "is_auth_failure",
     "DEFAULT_HEALTH_TTL_S",
     "TRANSIENT_TTL_S",
+    "TRANSIENT_TTL_STEPS",
     "QUOTA_EXHAUSTED_HINTS",
 ]

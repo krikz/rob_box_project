@@ -1,0 +1,75 @@
+{
+ "style": "rock",
+ "source": "style_critic/rock/rock.md, раздел «Ответ после того как дали посмотреть на код» (Qwen3.8 Omni Max, 08.10); утверждения переведены вручную в схему judge.py; confidence=0.5 — судья его не давал",
+ "tracks": [
+  {
+   "model": "set53575_01_A_af82e250.json",
+   "start_s": 0.0
+  },
+  {
+   "model": "set53575_02_B_40ab858f.json",
+   "start_s": 133.95
+  }
+ ],
+ "claims": [
+  {
+   "t0": 18,
+   "t1": 22,
+   "kind": "out_of_key",
+   "claim": "p3 saw: G4 (67) и D4 (62) вне C# minor — механическая транспозиция темы Грига",
+   "confidence": 0.5,
+   "args": {
+    "role": "lead",
+    "midi": [
+     67,
+     62
+    ]
+   }
+  },
+  {
+   "t0": 150,
+   "t1": 156,
+   "kind": "out_of_key",
+   "claim": "b3 arpy: D5 (74) и A4 (69) вне G# minor",
+   "confidence": 0.5,
+   "args": {
+    "role": "lead",
+    "midi": [
+     74,
+     69
+    ]
+   }
+  },
+  {
+   "t0": 0,
+   "t1": 134,
+   "kind": "param_reading",
+   "claim": "pshift: каждая вторая нота +12.5 цента — расстроенное пианино",
+   "confidence": 0.5,
+   "args": {
+    "param": "pshift",
+    "value": 0.125
+   }
+  },
+  {
+   "t0": 134,
+   "t1": 149,
+   "kind": "hole",
+   "claim": "15 с без мелодии: p3 трека 1 замолкает на 133.95 с, b3 вступает на 148.83 с",
+   "confidence": 0.5,
+   "args": {
+    "role": "lead"
+   }
+  },
+  {
+   "t0": 134,
+   "t1": 149,
+   "kind": "overlap",
+   "claim": "трек 2 на 133.95 с, форма трека 1 до 148.8 с — 14.9 с нахлёста",
+   "confidence": 0.5,
+   "args": {
+    "seconds": 14.9
+   }
+  }
+ ]
+}

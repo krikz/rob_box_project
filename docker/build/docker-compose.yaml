@@ -38,6 +38,7 @@ services:
     network_mode: host
     volumes:
       - ./data/apt-cache:/var/cache/apt-cacher-ng
+      - ./config/zz_robbox.conf:/etc/apt-cacher-ng/zz_robbox.conf:ro
       # ВРЕМЕННО закомментировано: проверим с дефолтным конфигом sameersbn
       # - ./config/acng.conf:/etc/apt-cacher-ng/acng.conf:ro
     restart: unless-stopped

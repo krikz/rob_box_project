@@ -16,18 +16,16 @@ import asyncio
 import os
 import tempfile
 
-import pytest
-
 from rob_box_harness.memory import (
     Fact,
     InMemoryStore,
     ensure_speaker_profile,
     get_speaker_profile,
+    merge_speaker_facts,
     speaker_scope,
     touch_speaker,
 )
 from rob_box_harness.memory.sqlite_voice import SQLiteVoiceMemory
-from rob_box_voice.speaker_profiles import SpeakerTracker, extract_speaker_name
 
 
 def _run(coro):
@@ -148,82 +146,68 @@ class TestSpeakerProfileSQLite:
         assert {f.key for f in facts} == {"a", "b"}
 
 
-class TestSpeakerFullPathAcceptance:
-    """Acceptance #1077: yandex speaker_analysis → профиль спикера в SQLite.
+class TestMergeSpeakerFacts:
+    """Issue W5-4 — merge_speaker_facts(): перенос фактов при склейке профилей.
 
-    Воспроизводит полный путь dialogue_node._handle_speaker_turn:
-    две фразы подряд с одним tag (x2 .ogg: «Робот, меня зовут Саша» ×2)
-    → SpeakerTracker подтверждает → touch_speaker создаёт профиль
-    → имя «Саша» сохраняется в scope=speaker:<tag>.
+    Пара к ``SpeakerDatabase.merge_speakers()`` (rob_box_voice) — тот
+    метод склеивает эмбеддинги голоса, эта функция — факты в слое
+    памяти. Проверяется на обоих бэкендах (InMemoryStore + SQLiteVoiceMemory),
+    как и остальные хелперы в этом файле.
     """
 
-    def test_two_phrases_confirm_profile_with_name(self):
-        store, db = _make_sqlite_store()
-        tracker = SpeakerTracker()  # min_phrases=2, min_duration_s=0.8
-
-        # 1-я фраза: streak=1, профиль ещё не создаётся.
-        assert tracker.note_phrase("0", 2.28) is False
-        assert tracker.is_confirmed("0") is False
-        assert _run(get_speaker_profile(store, "0")) is None
-
-        # 2-я фраза подряд: tag подтверждён (just_confirmed=True).
-        assert tracker.note_phrase("0", 2.31) is True
-        assert tracker.is_confirmed("0") is True
-
-        # touch_speaker — как в _handle_speaker_turn после подтверждения.
-        profile = _run(touch_speaker(store, "0", now=100.0))
-        assert profile["dialog_count"] == 1
-        assert profile["first_seen"] == 100.0
-
-        # Имя из «меня зовут Саша» → сохраняется в профиль.
-        name = extract_speaker_name("робот меня зовут Саша")
-        assert name == "Саша"
-        profile["name"] = name
+    def test_moves_facts_from_src_to_dst_in_memory(self):
+        store = InMemoryStore()
+        _run(store.init())
         _run(store.save_fact(
-            speaker_scope("0"),
-            Fact(key="profile", value=profile, tags=("speaker", "profile")),
+            speaker_scope("src"),
+            Fact(key="likes", value="джаз", tags=("speaker",)),
         ))
 
-        # Acceptance: профиль реально создан в SQLite (scope=speaker:0).
-        saved = _run(get_speaker_profile(store, "0"))
-        assert saved is not None
-        assert saved["name"] == "Саша"
-        assert saved["dialog_count"] == 1
-        facts = _run(store.list_facts(speaker_scope("0")))
-        assert any(f.key == "profile" for f in facts)
-        # Другие спикеры изолированы.
-        assert _run(get_speaker_profile(store, "1")) is None
+        moved = _run(merge_speaker_facts(store, "src", "dst"))
 
-    def test_vosk_fallback_no_profile_no_crash(self):
-        """Edge case #4: tag=None (Vosk fallback) — профиль не создаётся,
-        код не падает."""
+        assert moved == 1
+        dst_facts = {f.key: f.value for f in _run(store.list_facts(speaker_scope("dst")))}
+        assert dst_facts["likes"] == "джаз"
+        # src scope должен быть очищен — иначе факты "застрянут" под
+        # старым speaker_id, который никто больше не опознаёт.
+        assert _run(store.list_facts(speaker_scope("src"))) == []
+
+    def test_dst_fact_wins_on_key_conflict(self):
+        """Issue W5-4: dst — основной (уже подтверждённый) профиль, его
+        факты не должны перезаписываться данными временного/дублирующего src."""
+        store = InMemoryStore()
+        _run(store.init())
+        _run(store.save_fact(speaker_scope("dst"), Fact(key="name", value="Денчик")))
+        _run(store.save_fact(speaker_scope("src"), Fact(key="name", value="Эйджик")))
+
+        moved = _run(merge_speaker_facts(store, "src", "dst"))
+
+        assert moved == 0  # единственный факт src конфликтовал по ключу — не перенесён
+        dst_facts = {f.key: f.value for f in _run(store.list_facts(speaker_scope("dst")))}
+        assert dst_facts["name"] == "Денчик"  # dst выигрывает
+        assert _run(store.list_facts(speaker_scope("src"))) == []  # src всё равно очищен
+
+    def test_noop_when_src_equals_dst(self):
+        store = InMemoryStore()
+        _run(store.init())
+        _run(store.save_fact(speaker_scope("a"), Fact(key="k", value="v")))
+        assert _run(merge_speaker_facts(store, "a", "a")) == 0
+        assert len(_run(store.list_facts(speaker_scope("a")))) == 1
+
+    def test_noop_when_src_empty(self):
+        store = InMemoryStore()
+        _run(store.init())
+        assert _run(merge_speaker_facts(store, "empty-src", "dst")) == 0
+        assert _run(store.list_facts(speaker_scope("dst"))) == []
+
+    def test_moves_facts_sqlite(self):
         store, _ = _make_sqlite_store()
-        tracker = SpeakerTracker()
+        _run(touch_speaker(store, "src", now=100.0))  # создаёт profile-факт
+        _run(store.save_fact(speaker_scope("src"), Fact(key="likes", value="кофе")))
 
-        assert tracker.note_phrase(None, 2.0) is False
-        assert tracker.is_confirmed(None) is False
-        assert _run(get_speaker_profile(store, "0")) is None
-        assert _run(get_speaker_profile(store, "1")) is None
+        moved = _run(merge_speaker_facts(store, "src", "dst"))
 
-    def test_short_phrase_does_not_confirm(self):
-        """Edge case #1: короткая фраза (<0.8с) не создаёт профиль."""
-        store, _ = _make_sqlite_store()
-        tracker = SpeakerTracker()
-
-        assert tracker.note_phrase("0", 0.5) is False
-        assert tracker.note_phrase("0", 0.7) is False
-        assert tracker.is_confirmed("0") is False
-        assert _run(get_speaker_profile(store, "0")) is None
-
-    def test_unstable_tag_resets_streak(self):
-        """Edge case #1: смена tag сбрасывает streak — профили не смешиваются."""
-        store, _ = _make_sqlite_store()
-        tracker = SpeakerTracker()
-
-        assert tracker.note_phrase("0", 2.0) is False
-        assert tracker.note_phrase("1", 2.0) is False  # другой tag → streak сброс
-        assert tracker.note_phrase("0", 2.0) is False  # streak=1 снова
-        assert tracker.note_phrase("0", 2.0) is True   # streak=2 → подтверждён
-        assert tracker.is_confirmed("0") is True
-        assert tracker.is_confirmed("1") is False
-        assert _run(get_speaker_profile(store, "1")) is None
+        assert moved == 2  # profile + likes
+        dst_keys = {f.key for f in _run(store.list_facts(speaker_scope("dst")))}
+        assert dst_keys == {"profile", "likes"}
+        assert _run(store.list_facts(speaker_scope("src"))) == []

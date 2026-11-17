@@ -1,0 +1,70 @@
+# Единый конфиг сегментации речи для всех голосовых путей rob_box (issue #2199).
+#
+# Раньше параметры «конец фразы» были магическими числами в четырёх местах:
+#   - webxr_client/src/input/voice_capture.ts (RMS > 200, hangover 200 мс)
+#   - rob_box_quest/quest_node.py            (peak < 500, пауза 300 мс)
+#   - rob_box_quest/core/wake_segmenter.py   (gap 400 мс, min 0.25 с, max 15 с)
+#   - rob_box_voice/stt_node.py:572          (докстринг: «распознаём VAD-сегмент»)
+#
+# Теперь они живут здесь. Клиент TS берёт wake.vad.rms_threshold и
+# wake.vad.hangover_ms через tools/generate_ts_voice_constants.py (или
+# прямой fetch при сборке webxr_client); Python-вызывающие конструируют
+# SpeechSegmentationConfig.from_mapping(...) напрямую.
+#
+# statistic:
+#   rms  — RMS int16 PCM-кадра. Совместимо с voice_capture.ts:rmsInt16.
+#   peak — пиковый |int16|-сэмпл. Совместимо с quest_node._chunk_is_silent.
+#   none — клиент уже отфильтровал тишину (wake-канал). Кадр = речь.
+#
+# speech_threshold: порог в единицах int16. 0..32767.
+#
+# gap_timeout_s: пауза в потоке кадров, после которой буфер закрывается.
+#
+# min_phrase_s: фраза короче — блип, в STT не идёт.
+#
+# max_phrase_s: потолок буфера (защита от залипшего клиентского VAD).
+
+shared:
+  # Общие параметры кадра (int16 mono PCM 16 кГц, контракт WebXR-Voice-Capture).
+  sample_rate_hz: 16000
+  bytes_per_sample: 2
+
+profiles:
+
+  # wake-канал шлема (stream_id=2, rob_box_quest → /audio/quest_wake).
+  # Клиент уже гейтит wake-кадры RMS-VAD'ом до отправки. Сервер только
+  # накапливает и закрывает фразу по паузе в потоке кадров (issue #2135).
+  wake:
+    statistic: none
+    speech_threshold: 0
+    gap_timeout_s: 0.4
+    min_phrase_s: 0.25
+    max_phrase_s: 15.0
+    # Параметры клиентского VAD — клиент TS использует их в
+    # voice_capture.ts:createVoiceCapture({vad: ...}). Сервер их читает
+    # только как observability-зеркало, чтобы расхождение клиент/сервер
+    # было видно в логах.
+    client_vad:
+      rms_threshold: 200
+      hangover_ms: 200
+
+  # PTT robot_voice (stream_id=1, rob_box_quest → /audio/quest_in).
+  # Клиент НЕ фильтрует (VAD нет на ptt-канале) — сервер сам решает,
+  # где кончилась фраза, пока грип зажат (issue #1992 follow-up).
+  robot_voice:
+    statistic: peak
+    speech_threshold: 500
+    gap_timeout_s: 0.3
+    min_phrase_s: 0.25
+    max_phrase_s: 15.0
+
+  # PTT radio (stream_id=1, rob_box_quest → /avatar/voice_in). Рация
+  # не сегментируется: поток идёт в /avatar/voice_in «как есть»,
+  # тайминг держит echo-canceller. Профиль оставлен для будущих
+  # расширений (например, barge-in детекция).
+  radio:
+    statistic: none
+    speech_threshold: 0
+    gap_timeout_s: 60.0
+    min_phrase_s: 0.0
+    max_phrase_s: 60.0

@@ -1,0 +1,34 @@
+﻿m-en_Jovialman_p01           HIT     first | робот который сейчас час и сколько осталось до утра
+m-en_WiseScholar_p01         HIT     first | робот который сейчас час и сколько осталось до утра
+m-zh_GentleSenior_p01        HIT     first | робот который сейчас час и сколько осталось до утра
+m-en_WhisperingGirl_p01      HIT     first | робот который сейчас час и сколько осталось до утра
+m-en_Jovialman_p02           HIT     first | робот сколько у тебя осталось заряда до утра дотянешь
+m-en_WiseScholar_p02         HIT     first | робот сколько у тебя осталось заряда до утра дотянешь
+m-zh_GentleSenior_p02        HIT     first | робот сколько у тебя осталось заряда до утра дотянешь
+m-en_WhisperingGirl_p02      HIT     first | робот сколько у тебя осталось заряда до утра дотянешь
+m-en_Jovialman_p03           HIT     first | робот доложи статус все ли у тебя работает ничего не отвалилось
+m-en_WiseScholar_p03         HIT     first | робот доложи статус все ли у тебя работает ничего не отвалилось
+m-zh_GentleSenior_p03        HIT     first | робот доложи статус все ли у тебя работает ничего не отвалилось
+m-en_WhisperingGirl_p03      HIT     first | робот доложи статус все ли у тебя работает ничего не отвалилось
+m-en_Jovialman_p04           HIT     first | робот где ты сейчас находишься
+m-en_WiseScholar_p04         HIT     first | робот где ты сейчас находишься
+m-zh_GentleSenior_p04        HIT     first | робот где ты сейчас находишься
+m-en_WhisperingGirl_p04      HIT     first | робот где ты сейчас находишься
+m-en_Jovialman_p05           HIT     first | робот что ты видишь вокруг себя опишу в двух словах
+m-en_WiseScholar_p05         MISS          | что ты видишь вокруг себя опиши в двух словах
+m-zh_GentleSenior_p05        HIT     first | робот что ты видишь вокруг себя опиши в двух словах
+m-en_WhisperingGirl_p05      HIT     first | робот что ты видишь вокруг себя опиши в двух словах
+m-en_Jovialman_p06           HIT     first | робот какие звуки ты вообще умеешь издавать
+m-en_WiseScholar_p06         HIT     first | робот какие звуки ты вообще умеешь издавать
+m-zh_GentleSenior_p06        HIT     first | робот какие звуки ты вообще не умеешь издавать
+m-en_WhisperingGirl_p06      MISS          | могу только свои электронные сигналы эмоции
+m-en_Jovialman_p07           HIT     first | робот у тебя сейчас играет какая нибудь музыка
+m-en_WiseScholar_p07         HIT     first | робот у тебя сейчас играет какая нибудь музыка
+m-zh_GentleSenior_p07        HIT     first | робот у тебя сейчас играет какая нибудь музыка
+m-en_WhisperingGirl_p07      HIT     first | робот у тебя сейчас играет какаянибудь музыка
+
+CONFIG m-en_Jovialman               wake 7/7  (робот первым словом: 7; MISS=0 NO_STT=0 NO_CAP=0)
+CONFIG m-en_WiseScholar             wake 6/7  (робот первым словом: 6; MISS=1 NO_STT=0 NO_CAP=0)
+CONFIG m-zh_GentleSenior            wake 7/7  (робот первым словом: 7; MISS=0 NO_STT=0 NO_CAP=0)
+CONFIG m-en_WhisperingGirl          wake 6/7  (робот первым словом: 6; MISS=1 NO_STT=0 NO_CAP=0)
+ВСЕГО вейк 26/28

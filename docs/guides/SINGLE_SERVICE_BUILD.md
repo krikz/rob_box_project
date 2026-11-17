@@ -113,10 +113,31 @@ zenoh-router
 oak-d
 led-matrix              (led_matrix)
 ceiling-camera
-voice-assistant         (voice_assistant)
 apriltag
-zenoh-router
+vision-hailo            (vision_hailo)
 ```
+
+### Sound Pi Services (ADR-0159; `telegram-bot` и `quest` — с волны 2, PR-7)
+
+```
+voice-base              (voice_base)
+voice-assistant         (voice_assistant)
+supercollider
+supervisor
+telegram-bot            (telegram_bot)
+quest
+```
+
+> `quest` and `supervisor` build the same way `L: Build Pi Services`
+> does (job `build-quest` / `build-supervisor`) — same Dockerfile, same
+> `SOURCE_HASH` cache-busting inputs, same `quest-`/`supervisor-` image tag
+> component name. Keep this list in sync with the `service` choice options
+> in `.github/workflows/L-Build Single Service.yml` whenever a Vision Pi
+> service is added there — this doc has drifted before (this file didn't
+> even list `voice-base`/`telegram-bot`/`supercollider` until
+> `quest`/`supervisor` were added here). `voice-resources` was removed
+> entirely (image + build job) by ADR-0126 (2026-09-21) — Renardo samples
+> now arrive via the host-side Resource Pack, not a built image.
 
 ### Base Images
 
@@ -297,7 +318,7 @@ docker images localhost:5000/krikz/rob_box:voice-assistant-humble-dev
 A: When you only changed one service, building all services wastes 25-55 minutes. This workflow builds just what you need.
 
 **Q: Can I build multiple services at once?**
-A: No, this workflow is designed for single service builds. For multiple services, use `L-Build Main Pi Services`, `L-Build Vision Pi Services`, or `L-Build All Services`.
+A: No, this workflow is designed for single service builds. For multiple services, use `L-Build Pi Services` (input `pi`: main/sound/vision) or `L-Build All Services`.
 
 **Q: What happens to the old image?**
 A: Docker keeps the old image. You can clean up old images with `docker image prune` on the build machine.

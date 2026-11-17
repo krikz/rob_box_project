@@ -1,0 +1,6 @@
+
+# всего реплик с duration+identify: 13
+# из них со score (не unknown): 13
+# duration range: 4.3-10.7s
+# score range: 0.567-0.948
+# pearson r(duration, best_score) = 0.883 (n=13)

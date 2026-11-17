@@ -5,11 +5,11 @@
 # Полезные алиасы для работы с системой РОББОКС
 #
 # Установка:
-#   source ~/rob_box_project/scripts/robbox_aliases.sh
+#   source ~/rob_box_project/scripts/maintenance/robbox_aliases.sh
 #
 # Или добавить в ~/.bashrc:
-#   if [ -f ~/rob_box_project/scripts/robbox_aliases.sh ]; then
-#       source ~/rob_box_project/scripts/robbox_aliases.sh
+#   if [ -f ~/rob_box_project/scripts/maintenance/robbox_aliases.sh ]; then
+#       source ~/rob_box_project/scripts/maintenance/robbox_aliases.sh
 #   fi
 # ═══════════════════════════════════════════════════════════════════════════
 
@@ -28,36 +28,40 @@ alias rbstart='docker compose up -d'
 alias rbrestart='docker compose restart'
 alias rbstatus='docker compose ps'
 alias rblogs='docker compose logs -f'
-alias rbpull='docker compose pull'
+alias rbpull='docker compose pull --policy always'
 
 # Навигация
 alias rbvision='cd ~/rob_box_project/docker/vision'
 alias rbmain='cd ~/rob_box_project/docker/main'
+alias rbsound='cd ~/rob_box_project/docker/sound'
 
 # Логи сервисов Vision Pi
 alias rblog-oak='docker compose logs -f oak-d'
 alias rblog-lidar='docker compose logs -f lslidar'
 alias rblog-led='docker compose logs -f led-matrix'
-alias rblog-voice='docker compose logs -f voice-assistant'
 alias rblog-apriltag='docker compose logs -f apriltag'
 
+# Логи сервисов Sound Pi (ADR-0159: голосовой стек и ТАРС)
+alias rblog-voice='docker compose logs -f voice-assistant'
+alias rblog-sc='docker compose logs -f supercollider'
+alias rblog-supervisor='docker compose logs -f supervisor'
+
 # Логи сервисов Main Pi
-alias rblog-agent='docker compose logs -f micro-ros-agent'
 alias rblog-zenoh='docker compose logs -f zenoh-router'
 
 # Полное обновление
-alias rbupdate='rbstop && git pull origin develop && docker compose pull && rbstart'
+alias rbupdate='rbstop && git pull origin develop && docker compose pull --policy always && rbstart'
 
 # Остановка всех узлов
-alias rbstop-all='cd ~/rob_box_project/docker/vision && docker compose down; cd ~/rob_box_project/docker/main && docker compose down'
-alias rbstart-all='cd ~/rob_box_project/docker/vision && docker compose up -d; cd ~/rob_box_project/docker/main && docker compose up -d'
+alias rbstop-all='cd ~/rob_box_project/docker/vision && docker compose down; cd ~/rob_box_project/docker/sound && docker compose down; cd ~/rob_box_project/docker/main && docker compose down'
+alias rbstart-all='cd ~/rob_box_project/docker/vision && docker compose up -d; cd ~/rob_box_project/docker/sound && docker compose up -d; cd ~/rob_box_project/docker/main && docker compose up -d'
 
 # ═══════════════════════════════════════════════════════════════════════════
 # 🔍 МОНИТОРИНГ И ДИАГНОСТИКА
 # ═══════════════════════════════════════════════════════════════════════════
 
-alias rbcheck='~/rob_box_project/docker/diagnose_data_flow.sh'
-alias rbmonitor='~/rob_box_project/docker/monitor_system.sh'
+alias rbcheck='~/rob_box_project/scripts/diagnostics/diagnose_data_flow.sh'
+alias rbmonitor='~/rob_box_project/scripts/diagnostics/monitor_system.sh'
 alias rbfailing='docker ps -a --filter "status=restarting" --format "table {{.Names}}\t{{.Status}}"'
 alias rbresources='docker stats --no-stream'
 
@@ -118,7 +122,7 @@ rbsync() {
     echo -e "${ROBBOX_COLOR_CYAN}Обновляем код...${ROBBOX_COLOR_NC}"
     cd ~/rob_box_project && git pull origin develop
     echo -e "${ROBBOX_COLOR_CYAN}Обновляем образы...${ROBBOX_COLOR_NC}"
-    docker compose pull
+    docker compose pull --policy always
     echo -e "${ROBBOX_COLOR_CYAN}Запускаем контейнеры...${ROBBOX_COLOR_NC}"
     rbstart
     echo -e "${ROBBOX_COLOR_GREEN}✓ Готово!${ROBBOX_COLOR_NC}"
@@ -199,7 +203,7 @@ rbalias() {
     echo ""
     echo -e "${ROBBOX_COLOR_BLUE}Docker:${ROBBOX_COLOR_NC}"
     echo "  rbstart, rbstop, rbrestart, rbstatus, rblogs, rbpull"
-    echo "  rbvision, rbmain, rbupdate, rbsync"
+    echo "  rbvision, rbsound, rbmain, rbupdate, rbsync"
     echo ""
     echo -e "${ROBBOX_COLOR_BLUE}Мониторинг:${ROBBOX_COLOR_NC}"
     echo "  rbhealth, rbcheck, rbmonitor, rbfailing, rbdebug, rbresources"

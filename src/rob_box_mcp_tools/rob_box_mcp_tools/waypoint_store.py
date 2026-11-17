@@ -2,14 +2,34 @@
 """
 waypoint_store.py — SQLite-backed CRUD for named waypoints, scoped per map.
 
-Reuses the same database file as VoiceMemory (``VOICE_MEMORY_DB_PATH``).
+Reuses the same database file as VoiceMemory (the tools DB, path from
+``rob_box_core.tools_db.waypoint_db_path``: the tools DB unless ``WAYPOINT_DB_PATH``
+moves the map/waypoint registry to its own file — HIL, #4371/#4392).
 Migration ``003_waypoints.sql`` is applied idempotently on first init.
+
+Кадр точки (#4390): колонка ``waypoints.frame_id`` — в каком кадре TF записаны
+``x, y, theta`` (``save_waypoint`` пишет ``map`` из TF ``map ← base_footprint``).
+В DDL 003 её нет: на существующей БД её добавляет
+:meth:`WaypointStore._ensure_frame_id_column` (``ALTER TABLE ... ADD COLUMN``,
+идемпотентно). Строки, записанные до этого, получают ``NULL`` — кадр
+неизвестен (их писали из ``/odom``); данные не переписываются, трактовку
+выбирает потребитель (``navigation.NavigateToWaypointTool``).
+
+NOT on ``/data/harness_voice.db`` (issue #2000 / ADR-0055): the dialogue
+node's ``SQLiteVoiceMemory`` already creates its own ``waypoints`` table
+there with an incompatible schema (``name`` PRIMARY KEY, no ``map_id``).
+Pointing this class at that file would make ``CREATE TABLE IF NOT EXISTS``
+a no-op against the wrong schema and every insert here would then fail
+with "no such column: map_id". Deliberate, documented blocker — not an
+oversight. See the ``sqlite_db_path`` comment in
+``docker/sound/config/voice_assistant/dialogue_node.yaml`` and
+``docs/adr/0055-voice-memory-db-unify-with-harness.md``.
 
 Thread-safe: every public method acquires ``self._lock``.
 
 Usage (inside MCPServer)::
 
-    store = WaypointStore()                    # reads VOICE_MEMORY_DB_PATH
+    store = WaypointStore()                    # waypoint_db_path()
     map_id = store.create_map("квартира")      # new mapping session
     store.save_waypoint("кухня", 2.0, 1.0, 0.0)
     store.list_waypoints()                     # → [{"name": "кухня", ...}]
@@ -23,47 +43,30 @@ import sqlite3
 import threading
 import time
 import uuid
-from pathlib import Path
 from typing import Dict, List, Optional
 
+from rob_box_core import migrations as core_migrations
+from rob_box_core.tools_db import waypoint_db_path
 
-# Path to 003_waypoints.sql relative to the package root.
-# At runtime inside the Docker container the migrations folder may not exist,
-# so we embed the DDL as a fallback.
-_MIGRATION_DIR = Path(__file__).resolve().parents[4] / "migrations"
-_MIGRATION_FILE = _MIGRATION_DIR / "003_waypoints.sql"
+#: Схема карт и точек - шаг потока миграций ядра (данные пакета ``rob_box_core.migrations``, ADR-0167 Ш1а).
+#: Раньше файл искался в корне чекаута (``parents[4]``), а на роботе его там не было - шла копия DDL в коде.
+_MIGRATION_NAME = "003_waypoints.sql"
 
-_INLINE_DDL = """\
-CREATE TABLE IF NOT EXISTS maps (
-    id         INTEGER PRIMARY KEY AUTOINCREMENT,
-    map_id     TEXT    NOT NULL UNIQUE,
-    name       TEXT,
-    created_at REAL    NOT NULL,
-    is_active  INTEGER NOT NULL DEFAULT 0
-);
-CREATE INDEX IF NOT EXISTS idx_maps_active ON maps(is_active);
 
-CREATE TABLE IF NOT EXISTS waypoints (
-    id         INTEGER PRIMARY KEY AUTOINCREMENT,
-    map_id     TEXT    NOT NULL,
-    name       TEXT    NOT NULL,
-    x          REAL    NOT NULL,
-    y          REAL    NOT NULL,
-    theta      REAL    NOT NULL DEFAULT 0.0,
-    created_at REAL    NOT NULL,
-    updated_at REAL    NOT NULL,
-    UNIQUE(map_id, name),
-    FOREIGN KEY (map_id) REFERENCES maps(map_id) ON DELETE CASCADE
-);
-CREATE INDEX IF NOT EXISTS idx_wp_map ON waypoints(map_id);
-"""
+def map_name_key(name: Optional[str]) -> str:
+    """Ключ сравнения имён карт: без пробелов по краям и без регистра (``lower()`` SQLite кириллицу не понижает)."""
+    return (name or "").strip().casefold()
+
+
+#: Колонка кадра точки (#4390); NULL — точка записана до неё, кадр неизвестен.
+_FRAME_ID_COLUMN = "frame_id"
 
 
 class WaypointStore:
     """SQLite CRUD for maps and waypoints."""
 
     def __init__(self, db_path: Optional[str] = None) -> None:
-        self._db_path = db_path or os.getenv("VOICE_MEMORY_DB_PATH", "/data/voice_memory.db")
+        self._db_path = db_path or waypoint_db_path()
         self._lock = threading.Lock()
 
         # Ensure parent directory exists
@@ -82,14 +85,21 @@ class WaypointStore:
 
     def _apply_migration(self) -> None:
         """Run 003_waypoints DDL (idempotent thanks to IF NOT EXISTS)."""
-        ddl = _INLINE_DDL
-        if _MIGRATION_FILE.exists():
-            ddl = _MIGRATION_FILE.read_text(encoding="utf-8")
+        ddl = core_migrations.script(_MIGRATION_NAME)
 
         with self._lock:
             cur = self._conn.cursor()
             cur.executescript(ddl)
             self._conn.commit()
+        self._ensure_frame_id_column()
+
+    def _ensure_frame_id_column(self) -> None:
+        """Добавить ``waypoints.frame_id`` (TEXT NULL), если её нет; старые строки не трогает."""
+        with self._lock:
+            columns = {row["name"] for row in self._conn.execute("PRAGMA table_info(waypoints)")}
+            if _FRAME_ID_COLUMN not in columns:
+                self._conn.execute(f"ALTER TABLE waypoints ADD COLUMN {_FRAME_ID_COLUMN} TEXT")
+                self._conn.commit()
 
     # ------------------------------------------------------------------
     # Map management
@@ -148,31 +158,30 @@ class WaypointStore:
             map_id = self.create_map(name="default")
         return map_id
 
-    def set_active_map_by_name(self, name: str) -> bool:
-        """Find a map by name (case-insensitive) and make it active.
+    def delete_inactive_maps_by_name(self, name: str) -> int:
+        """Удалить строки карт с именем ``name`` (без учёта регистра), кроме активной; их точки - каскадом.
 
-        Returns True if found and activated, False if no map with that name.
+        Активную карту так не удалить (#4392): её геометрия - единственная база rtabmap, строку-описание без
+        базы оставить нельзя. Возвращает число удалённых строк (``0`` - таких неактивных карт нет).
         """
-        name_lower = name.strip().lower()
+        wanted = map_name_key(name)
+        if not wanted:
+            return 0
         with self._lock:
-            row = self._conn.execute(
-                "SELECT map_id FROM maps WHERE lower(name) = ? ORDER BY created_at DESC LIMIT 1",
-                (name_lower,),
-            ).fetchone()
-            if row is None:
-                return False
-            map_id = row["map_id"]
+            rows = self._conn.execute("SELECT map_id, name FROM maps WHERE is_active = 0").fetchall()
+            doomed = [r["map_id"] for r in rows if map_name_key(r["name"]) == wanted]
             cur = self._conn.cursor()
-            cur.execute("UPDATE maps SET is_active = 0 WHERE is_active = 1")
-            cur.execute("UPDATE maps SET is_active = 1 WHERE map_id = ?", (map_id,))
+            for map_id in doomed:
+                cur.execute("DELETE FROM waypoints WHERE map_id = ?", (map_id,))
+                cur.execute("DELETE FROM maps WHERE map_id = ?", (map_id,))
             self._conn.commit()
-        return True
+        return len(doomed)
 
     def list_maps(self) -> list:
         """Return all maps ordered by creation time (newest first)."""
         with self._lock:
             rows = self._conn.execute(
-                "SELECT map_id, name, created_at, is_active FROM maps ORDER BY created_at DESC"
+                "SELECT map_id, name, created_at, is_active FROM maps ORDER BY created_at DESC, id DESC"
             ).fetchall()
         return [
             {"map_id": r["map_id"], "name": r["name"], "created_at": r["created_at"], "is_active": bool(r["is_active"])}
@@ -183,9 +192,12 @@ class WaypointStore:
     # Waypoint CRUD
     # ------------------------------------------------------------------
 
-    def save_waypoint(self, name: str, x: float, y: float, theta: float = 0.0) -> bool:
+    def save_waypoint(
+        self, name: str, x: float, y: float, theta: float = 0.0, frame_id: Optional[str] = None,
+    ) -> bool:
         """Insert or update a waypoint on the active map.
 
+        ``frame_id`` — кадр TF координат (#4390); ``None`` — неизвестен.
         Creates a default map if none is active.  Returns True on success.
         """
         map_id = self.ensure_active_map()
@@ -195,21 +207,25 @@ class WaypointStore:
         with self._lock:
             self._conn.execute(
                 """
-                INSERT INTO waypoints (map_id, name, x, y, theta, created_at, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
+                INSERT INTO waypoints (map_id, name, x, y, theta, frame_id, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(map_id, name) DO UPDATE SET
                     x = excluded.x,
                     y = excluded.y,
                     theta = excluded.theta,
+                    frame_id = excluded.frame_id,
                     updated_at = excluded.updated_at
                 """,
-                (map_id, name_lower, x, y, theta, now, now),
+                (map_id, name_lower, x, y, theta, frame_id, now, now),
             )
             self._conn.commit()
         return True
 
     def get_waypoint(self, name: str) -> Optional[Dict]:
-        """Look up a single waypoint by name on the active map."""
+        """Look up a single waypoint by name on the active map.
+
+        ``frame_id`` в ответе — кадр координат, ``None`` у точек до #4390.
+        """
         map_id = self.get_active_map_id()
         if map_id is None:
             return None
@@ -217,13 +233,15 @@ class WaypointStore:
         name_lower = name.strip().lower()
         with self._lock:
             row = self._conn.execute(
-                "SELECT name, x, y, theta FROM waypoints WHERE map_id = ? AND name = ?",
+                "SELECT name, x, y, theta, frame_id FROM waypoints WHERE map_id = ? AND name = ?",
                 (map_id, name_lower),
             ).fetchone()
 
         if row is None:
             return None
-        return {"name": row["name"], "x": row["x"], "y": row["y"], "theta": row["theta"]}
+        return {
+            "name": row["name"], "x": row["x"], "y": row["y"], "theta": row["theta"], "frame_id": row["frame_id"],
+        }
 
     def list_waypoints(self) -> List[Dict]:
         """Return all waypoints for the active map, ordered by name."""

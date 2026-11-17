@@ -115,7 +115,7 @@ if [ ! -f ".env" ]; then
     cp .env.example .env
     echo ""
     echo "📝 Пожалуйста, отредактируйте .env файл:"
-    echo "   - Укажите IP адреса Raspberry Pi (MAIN_PI_IP, VISION_PI_IP)"
+    echo "   - Укажите IP адреса Raspberry Pi (MAIN_PI_IP, VISION_PI_IP, SOUND_PI_IP)"
     echo "   - Измените пароль Grafana (GRAFANA_PASSWORD)"
     echo ""
     echo "Затем запустите скрипт снова."
@@ -128,6 +128,7 @@ source .env
 echo "Конфигурация:"
 echo "  Main Pi:    ${MAIN_PI_IP}"
 echo "  Vision Pi:  ${VISION_PI_IP}"
+echo "  Sound Pi:   ${SOUND_PI_IP:-10.1.1.12}"
 echo "  Robot ID:   ${ROBOT_ID:-rob_box_01}"
 echo ""
 

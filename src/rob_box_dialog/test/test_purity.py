@@ -1,0 +1,44 @@
+"""Пакет чистый: без ROS, без сети, без LLM-клиентов (ADR-0150 §2.2, §4.5)."""
+
+import ast
+import pathlib
+import subprocess
+import sys
+
+import rob_box_dialog
+
+PKG = pathlib.Path(rob_box_dialog.__file__).parent
+FORBIDDEN = {"rclpy", "requests", "httpx", "aiohttp", "urllib3", "socket", "websockets", "openai", "anthropic",
+             "rob_box_llm", "rob_box_harness", "rob_box_voice", "rob_box_mcp_tools", "rob_box_perception",
+             "std_msgs", "ament_index_python"}
+
+
+def _imports(path):
+    for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
+        if isinstance(node, ast.Import):
+            yield from (a.name.split(".")[0] for a in node.names)
+        elif isinstance(node, ast.ImportFrom) and node.level == 0 and node.module:
+            yield node.module.split(".")[0]
+
+
+def test_no_forbidden_imports_in_sources():
+    bad = {str(p.relative_to(PKG)): sorted(set(_imports(p)) & FORBIDDEN) for p in PKG.rglob("*.py")}
+    assert {k: v for k, v in bad.items() if v} == {}
+
+
+def test_import_pulls_no_forbidden_modules_at_runtime():
+    code = (
+        "import sys, rob_box_dialog.knowledge, rob_box_dialog.words, rob_box_dialog.command, rob_box_dialog.session\n"
+        "import rob_box_dialog.phrases, rob_box_dialog.respond, rob_box_dialog.agents, rob_box_dialog.doa\n"
+        "import rob_box_dialog.address, rob_box_dialog.backlog, rob_box_dialog.grammar, rob_box_dialog.expression\n"
+        "import rob_box_dialog.context, rob_box_dialog.music_state, rob_box_dialog.execute\n"
+        "import rob_box_dialog.turn_log, rob_box_dialog.deadline, rob_box_dialog.e2e_events, rob_box_dialog.shift_log\n"
+        "import rob_box_dialog.turn, rob_box_dialog.meeting, rob_box_dialog.startup, rob_box_dialog.status_feed\n"
+        "import rob_box_dialog.plan.composition, rob_box_dialog.plan.resources, rob_box_dialog.plan.plan_events\n"
+        "import rob_box_dialog.plan.runner, rob_box_dialog.plan.sync, rob_box_dialog.plan.segments\n"
+        "import rob_box_dialog.plan.backing, rob_box_dialog.plan.perform\n"
+        f"bad = sorted(m for m in sys.modules if m.split('.')[0] in {sorted(FORBIDDEN)!r})\n"
+        "print(bad); sys.exit(1 if bad else 0)\n"
+    )
+    out = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, cwd=str(PKG.parent))
+    assert out.returncode == 0, out.stdout + out.stderr

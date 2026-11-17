@@ -1,0 +1,74 @@
+name: "F: Update Robot"
+
+# Пульт обновления робота до панели парка dianjiang (ADR-0168; rbt_infra ADR-0003 §4.4). Префикс F: — fleet.
+# Фаза B: единственное действие — status. Workflow только ЧИТАЕТ отчёты агентов chuangong трёх Pi через
+# zenoh REST роутера Main Pi (:8000): ни ssh, ни команд роботу, ни записи в репо. update/rollback/cancel — фаза C.
+#
+# Только ручной запуск: на push/PR/schedule не стартует (раннеры katana с ветки не поднимаются).
+
+on:
+  workflow_dispatch:
+    inputs:
+      robot_id:
+        description: "Робот (до реестра парка fleet.yaml — один)"
+        type: choice
+        options:
+          - RBXU100001
+        default: RBXU100001
+      release:
+        description: "Ожидаемый релиз (пусто — не сверять, показать что есть)"
+        type: string
+        default: ""
+      action:
+        description: "Действие (фаза B — только status)"
+        type: choice
+        options:
+          - status
+        default: status
+      timeout_min:
+        description: "Сколько ждать отчётов (агенты публикуют раз в 5 мин)"
+        type: number
+        default: 6
+      zenoh_url:
+        description: "REST zenoh-роутера Main Pi. Временно адрес; фаза A — имя main.<robot_id>.in.robbox.tech"
+        type: string
+        default: "http://10.1.1.10:8000"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: f-update-robot-${{ inputs.robot_id }}
+  cancel-in-progress: false
+
+jobs:
+  status:
+    name: "chuangong status: ${{ inputs.robot_id }}"
+    # Локальный раннер площадки (сегодня katana). Фаза A: [self-hosted, zongguan, deploy].
+    runs-on: [self-hosted, rob-box]
+    timeout-minutes: 30
+    steps:
+      - name: Checkout (только агент)
+        uses: actions/checkout@v7
+        with:
+          sparse-checkout: host/chuangong
+          sparse-checkout-cone-mode: true
+
+      - name: Status from zenoh (read-only)
+        env:
+          ROBOT_ID: ${{ inputs.robot_id }}
+          RELEASE: ${{ inputs.release }}
+          TIMEOUT_MIN: ${{ inputs.timeout_min }}
+          ZENOH_URL: ${{ inputs.zenoh_url }}
+        working-directory: host/chuangong
+        run: |
+          set -euo pipefail
+          export PYTHONIOENCODING=utf-8 PYTHONDONTWRITEBYTECODE=1
+          # timeout_min — number в dispatch: допускает дробное (0.5), bash-arithmetic с float упал бы.
+          WAIT_S="$(python3 -c 'import sys; print(int(float(sys.argv[1]) * 60))' "$TIMEOUT_MIN")"
+          python3 -m chuangong status \
+            --robot-id "$ROBOT_ID" \
+            --zenoh "$ZENOH_URL" \
+            --release "$RELEASE" \
+            --wait-s "$WAIT_S" \
+            --summary "$GITHUB_STEP_SUMMARY"

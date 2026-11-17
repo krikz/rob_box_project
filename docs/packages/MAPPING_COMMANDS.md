@@ -428,7 +428,7 @@ class ReflectionNode(Node):
 - [RTABMap Services Documentation](http://wiki.ros.org/rtabmap_ros#Services)
 - [RTABMap Database Format](https://github.com/introlab/rtabmap/wiki/Database-structure)
 - [Проект: docker/main/docker-compose.yaml](../../docker/main/docker-compose.yaml)
-- [Проект: docker/main/config/rtabmap/rtabmap.yaml](../../docker/main/config/rtabmap/rtabmap.yaml)
+- [Проект: параметры rtabmap — docker/main/scripts/rtabmap/patch_rtabmap_launch.py](../../docker/main/scripts/rtabmap/patch_rtabmap_launch.py)
 
 ---
 

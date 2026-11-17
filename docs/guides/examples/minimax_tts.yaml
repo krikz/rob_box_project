@@ -10,7 +10,7 @@
 #       config_file:=/abs/path/to/this.yaml provider:=minimax
 #
 # Секреты (MINIMAX_API_KEY, MINIMAX_GROUP_ID) сюда НЕ вставляйте —
-# они подтягиваются из ENV (см. docker/vision/.env.secrets.template).
+# они подтягиваются из ENV (см. docker/sound/.env.secrets.template).
 #
 # Подробнее:
 #   - docs/guides/MINIMAX_TTS.md — пользовательский гайд
@@ -128,7 +128,6 @@
       speaker: "aidar"          # Silero v5 voice
       sample_rate: 48000        # Silero v5 native
       prosody_pitch: "medium"
-      normalize_text: true
       chipmunk_mode: false
       pitch_shift: 1.0
       volume_db: -3.0

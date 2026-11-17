@@ -13,7 +13,7 @@ from unittest.mock import MagicMock, patch, Mock
 
 import rclpy
 from rclpy.node import Node
-from std_msgs.msg import String, Int32
+from std_msgs.msg import Int32
 from std_srvs.srv import SetBool
 
 from rob_box_voice.led_node import PixelRingLite, LEDNode
@@ -122,8 +122,28 @@ class TestLEDNode(unittest.TestCase):
         )
         sub_topics = [name for name, _ in subscriptions]
 
-        self.assertIn('/voice/state', sub_topics)
+        self.assertNotIn('/voice/dialogue/state', sub_topics)  # #4354 A2: издателя v1 нет
+        self.assertIn('/dialog/session', sub_topics)  # issue #3911: тишина на v2 - сцена Silence
         self.assertIn('/audio/direction', sub_topics)
+
+    def test_session_silence_scene_turns_ring_off_and_back(self):
+        """issue #3911: SessionState со сценой Silence гасит кольцо, без неё - возвращает покой."""
+        from rob_box_dialog_msgs.msg import SceneFrame, SessionState
+
+        self.node.reflex = MagicMock()
+        self.node.session_callback(SessionState(agent='personality', scenes=[SceneFrame(kind='Silence')]))
+        self.node.reflex.on_state.assert_called_once_with('silenced')
+
+        self.node.reflex.reset_mock()
+        self.node.session_callback(SessionState(agent='personality', scenes=[]))
+        self.node.reflex.on_state.assert_called_once_with('idle')
+
+    def test_session_of_other_agent_does_not_silence_ring(self):
+        from rob_box_dialog_msgs.msg import SceneFrame, SessionState
+
+        self.node.reflex = MagicMock()
+        self.node.session_callback(SessionState(agent='telegram', scenes=[SceneFrame(kind='Silence')]))
+        self.node.reflex.on_state.assert_not_called()
 
     def test_service_created(self):
         """Тест: сервис управления LED создан."""
@@ -137,41 +157,6 @@ class TestLEDNode(unittest.TestCase):
         """Тест: LED ring инициализируется при создании."""
         self.mock_ring_instance.connect.assert_called_once()
 
-    def test_voice_state_callback_listening(self):
-        """Тест: обработка состояния 'listening'."""
-        msg = String()
-        msg.data = 'listening'
-
-        self.node.state_callback(msg)
-
-        # Проверяем что current_mode установлен
-        self.assertEqual(self.node.current_mode, 'listening')
-
-    def test_voice_state_callback_speaking(self):
-        """Тест: обработка состояния 'speaking'."""
-        msg = String()
-        msg.data = 'speaking'
-
-        self.node.state_callback(msg)
-        self.assertEqual(self.node.current_mode, 'speaking')
-
-    def test_voice_state_callback_thinking(self):
-        """Тест: обработка состояния 'thinking'."""
-        msg = String()
-        msg.data = 'thinking'
-
-        self.node.state_callback(msg)
-        self.assertEqual(self.node.current_mode, 'thinking')
-
-    def test_voice_state_callback_idle(self):
-        """Тест: обработка состояния 'idle'."""
-        msg = String()
-        msg.data = 'idle'
-
-        self.node.state_callback(msg)
-        # off() вызывается при idle (и в конструкторе тоже)
-        self.assertGreaterEqual(self.mock_ring_instance.off.call_count, 1)
-
     def test_direction_callback(self):
         """Тест: обработка направления звука."""
         msg = Int32()
@@ -181,28 +166,6 @@ class TestLEDNode(unittest.TestCase):
 
         # Направление сохраняется в current_direction
         self.assertEqual(self.node.current_direction, 180)
-
-    def test_auto_mode_true(self):
-        """Тест: автоматический режим включен."""
-        self.node.auto_mode = True
-        msg = String()
-        msg.data = 'listening'
-
-        self.node.state_callback(msg)
-        # В auto_mode LED должен реагировать
-        self.assertEqual(self.node.current_mode, 'listening')
-
-    def test_auto_mode_false(self):
-        """Тест: автоматический режим выключен."""
-        self.node.auto_mode = False
-        previous_mode = self.node.current_mode
-
-        msg = String()
-        msg.data = 'listening'
-
-        self.node.state_callback(msg)
-        # В неавтоматическом режиме callback выходит рано
-        # current_mode может остаться прежним
 
     def test_service_enable_auto_mode(self):
         """Тест: сервис включения авто режима."""
@@ -226,10 +189,6 @@ class TestLEDNode(unittest.TestCase):
         self.assertTrue(response.success)
         self.assertFalse(self.node.auto_mode)
 
-    def test_current_mode_tracking(self):
-        """Тест: отслеживание текущего режима."""
-        self.assertTrue(hasattr(self.node, 'current_mode'))
-
     def test_auto_mode_parameter(self):
         """Тест: параметр auto_mode."""
         auto_mode = self.node.get_parameter('auto_mode').value
@@ -241,46 +200,6 @@ class TestLEDNode(unittest.TestCase):
         self.assertIsInstance(brightness, int)
         self.assertGreaterEqual(brightness, 0)
         self.assertLessEqual(brightness, 31)  # 0-31 по спецификации
-
-    def test_voice_state_callback_error(self):
-        """Тест: состояние 'error' отображается красным."""
-        msg = String()
-        msg.data = 'error'
-        self.node.state_callback(msg)
-
-        # Проверяем что mono был вызван с красным цветом
-        self.mock_ring_instance.mono.assert_called_once()
-        args = self.mock_ring_instance.mono.call_args[0]
-        self.assertEqual(args, tuple(self.node.colors['error']))
-
-    def test_voice_state_callback_trace(self):
-        """Тест: состояние 'trace' активирует trace режим."""
-        msg = String()
-        msg.data = 'trace'
-        self.node.state_callback(msg)
-
-        self.mock_ring_instance.trace.assert_called_once()
-
-    def test_voice_state_callback_generating(self):
-        """Тест: состояние 'generating' активирует think режим."""
-        msg = String()
-        msg.data = 'generating'
-        self.node.state_callback(msg)
-
-        self.mock_ring_instance.think.assert_called_once()
-
-    def test_voice_state_callback_case_insensitive(self):
-        """Тест: состояния обрабатываются без учёта регистра."""
-        test_cases = ['LISTENING', 'Listening', 'LiStEnInG']
-
-        for state in test_cases:
-            self.mock_ring_instance.reset_mock()
-            msg = String()
-            msg.data = state
-            self.node.state_callback(msg)
-
-            # Все варианты должны вызвать mono
-            self.mock_ring_instance.mono.assert_called_once()
 
     def test_initialize_hardware_success(self):
         """Тест: успешная инициализация оборудования."""
@@ -528,146 +447,6 @@ class TestLEDNode(unittest.TestCase):
         self.assertIn('thinking', self.node.colors)
         self.assertIn('speaking', self.node.colors)
         self.assertIn('error', self.node.colors)
-
-    def test_ring_sync_map_exists(self):
-        """Тест: маппинг синхронизации кольца определён."""
-        self.assertIsInstance(self.node.ring_sync_map, dict)
-        self.assertIn('police_lights', self.node.ring_sync_map)
-        self.assertIn('ambulance', self.node.ring_sync_map)
-        self.assertIn('fire_truck', self.node.ring_sync_map)
-        self.assertIn('road_service', self.node.ring_sync_map)
-
-    def test_animation_request_police(self):
-        """Тест: запрос police_lights активирует синхронизацию кольца."""
-        msg = String()
-        msg.data = 'police_lights:10'
-        self.node.animation_request_callback(msg)
-
-        self.assertTrue(self.node.animation_override)
-        self.assertIsNotNone(self.node.animation_timer)
-        self.assertIsNotNone(self.node.animation_return_timer)
-        # Первый цвет — синий
-        self.mock_ring_instance.mono.assert_called_with(0, 0, 255)
-
-    def test_animation_request_unknown_stops_override(self):
-        """Тест: неизвестная анимация не активирует override."""
-        # Сначала запускаем police
-        msg = String()
-        msg.data = 'police_lights'
-        self.node.animation_request_callback(msg)
-        self.assertTrue(self.node.animation_override)
-
-        # Затем запрашиваем неизвестную — override снимается
-        msg.data = 'happy'
-        self.node.animation_request_callback(msg)
-        self.assertFalse(self.node.animation_override)
-
-    def test_voice_state_blocked_during_animation(self):
-        """Тест: voice state не перебивает активную анимацию кольца."""
-        # Запускаем анимацию
-        msg = String()
-        msg.data = 'police_lights:5'
-        self.node.animation_request_callback(msg)
-        self.mock_ring_instance.reset_mock()
-
-        # Отправляем voice state — не должно сменить LED
-        state_msg = String()
-        state_msg.data = 'idle'
-        self.node.state_callback(state_msg)
-
-        # off() не должен быть вызван (override активен)
-        self.mock_ring_instance.off.assert_not_called()
-
-    def test_ring_animation_tick(self):
-        """Тест: тик анимации чередует цвета."""
-        self.node._ring_colors = [(0, 0, 255), (255, 0, 0)]
-        self.node.ring_animation_phase = 0
-        self.node.animation_override = True
-
-        self.node._ring_animation_tick()
-        self.assertEqual(self.node.ring_animation_phase, 1)
-        self.mock_ring_instance.mono.assert_called_with(255, 0, 0)
-
-        self.node._ring_animation_tick()
-        self.assertEqual(self.node.ring_animation_phase, 0)
-        self.mock_ring_instance.mono.assert_called_with(0, 0, 255)
-
-    def test_stop_ring_animation_restores_voice_state(self):
-        """Тест: остановка анимации возвращает к voice state."""
-        self.node.current_mode = 'listening'
-        self.node.animation_override = True
-        self.mock_ring_instance.reset_mock()
-
-        self.node._stop_ring_animation(restore=True)
-
-        self.assertFalse(self.node.animation_override)
-        # Должен быть вызван mono с цветом listening
-        r, g, b = self.node.colors['listening']
-        self.mock_ring_instance.mono.assert_called_with(r, g, b)
-
-    def test_animation_request_parses_duration(self):
-        """Тест: парсинг duration из запроса анимации."""
-        msg = String()
-        msg.data = 'police_lights:7.5'
-        self.node.animation_request_callback(msg)
-        # Должна быть создана анимация (таймеры активны)
-        self.assertTrue(self.node.animation_override)
-
-    def test_animation_subscriber_created(self):
-        """Тест: подписчик /voice/animation/request создан."""
-        subscriptions = self.node.get_subscriber_names_and_types_by_node(
-            self.node.get_name(),
-            self.node.get_namespace()
-        )
-        sub_topics = [name for name, _ in subscriptions]
-        self.assertIn('/voice/animation/request', sub_topics)
-
-
-class TestLEDNodeIntegration(unittest.TestCase):
-    """Интеграционные тесты LEDNode."""
-
-    @classmethod
-    def setUpClass(cls):
-        """Инициализация ROS 2."""
-        if not rclpy.ok():
-            rclpy.init()
-
-    def setUp(self):
-        """Создание ноды."""
-        with patch('usb.core.find'), \
-             patch('rob_box_voice.led_node.PixelRingLite'):
-            self.node = LEDNode()
-
-    def tearDown(self):
-        """Очистка."""
-        self.node.destroy_node()
-
-    def test_voice_state_integration(self):
-        """Тест: интеграция с voice state топиком."""
-        states_received = []
-
-        # Мокируем state_callback чтобы отследить вызовы
-        original_callback = self.node.state_callback
-        def track_state(msg):
-            states_received.append(msg.data)
-            original_callback(msg)
-
-        self.node.state_callback = track_state
-
-        # Публикуем состояния
-        test_node = rclpy.create_node('test_publisher')
-        pub = test_node.create_publisher(String, '/voice/state', 10)
-
-        msg = String()
-        msg.data = 'listening'
-        pub.publish(msg)
-
-        # Даем время на обработку
-        for _ in range(5):
-            rclpy.spin_once(self.node, timeout_sec=0.1)
-            rclpy.spin_once(test_node, timeout_sec=0.1)
-
-        test_node.destroy_node()
 
 
 if __name__ == '__main__':

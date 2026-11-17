@@ -1,0 +1,62 @@
+﻿m-en_WhisperingGirl_p01      HIT     first | робот который сейчас час и сколько осталось до утра
+m-zh_GentleSenior_p01        HIT     first | робот который сейчас час и сколько осталось до утра
+m-en_WiseScholar_p01         HIT     first | робот который сейчас час и сколько осталось до утра
+m-en_Jovialman_p01           HIT     first | робот который сейчас час и сколько осталось до утра
+m-en_WhisperingGirl_p02      HIT     first | робот сколько у тебя осталось заряда до утра дотянешь
+m-zh_GentleSenior_p02        HIT     first | робот сколько у тебя осталось заряда до утра дотянешь
+m-en_WiseScholar_p02         HIT     first | робот сколько у тебя осталось заряда до утра дотянешь
+m-en_Jovialman_p02           HIT     first | робот сколько у тебя осталось заряда до утра дотянешь
+m-en_WhisperingGirl_p03      MISS          | доложи статус все ли у тебя работает ничего не отвалилось
+m-zh_GentleSenior_p03        HIT     first | робот доложи статус все ли у тебя работает ничего не отвалилось
+m-en_WiseScholar_p03         HIT     first | робот доложи статус все ли у тебя работает ничего не отвалилось
+m-en_Jovialman_p03           HIT     first | робот доложи статус все ли у тебя работает ничего не отвалилось
+m-en_WhisperingGirl_p04      HIT     first | робот где ты сейчас находишься
+m-zh_GentleSenior_p04        HIT           | включи робот где ты сейчас находишься
+m-en_WiseScholar_p04         NO_STT        | 
+m-en_Jovialman_p04           HIT     first | робот где ты сейчас находишься
+m-en_WhisperingGirl_p05      HIT     first | робот что ты видишь вокруг себя опиши в двух словах
+m-zh_GentleSenior_p05        HIT     first | робот что ты видишь вокруг себя опиши в двух словах
+m-en_WiseScholar_p05         HIT     first | робот что ты видишь вокруг себя опиши в двух словах
+m-en_Jovialman_p05           HIT     first | робот что ты видишь вокруг себя опишу в двух словах
+m-en_WhisperingGirl_p06      HIT     first | робот какие звуки ты вообще умеешь издавать
+m-zh_GentleSenior_p06        HIT     first | робот какие звуки ты вообще не умеешь издавать
+m-en_WiseScholar_p06         HIT     first | робот какие звуки ты вообще умеешь издавать
+m-en_Jovialman_p06           HIT     first | робот какие звуки ты вообще умеешь издавать за нами радость
+m-en_WhisperingGirl_p07      MISS          | And then we're going to take the rest of this and just push it in.
+m-zh_GentleSenior_p07        HIT     first | робот у тебя сейчас играет какая нибудь музыка
+m-en_WiseScholar_p07         HIT     first | робот у тебя сейчас играет какая нибудь музыка
+m-en_Jovialman_p07           HIT     first | робот у тебя сейчас играет какая нибудь музыка
+m-en_WhisperingGirl_p08      HIT     first | робот ты меня слышишь ответь коротко
+m-zh_GentleSenior_p08        HIT     first | робот ты меня слышишь ответь коротко
+m-en_WiseScholar_p08         HIT     first | робот ты меня слышишь ответь коротко
+m-en_Jovialman_p08           HIT     first | робот ты меня слышишь ответь коротко
+m-en_WhisperingGirl_p09      HIT     first | робот посмотри пожалуйста не горит ли лампочка на зарядке
+m-zh_GentleSenior_p09        HIT     first | робот посмотри пожалуйста и уберет ли лампочка на зарядке
+m-en_WiseScholar_p09         HIT     first | робот посмотри пожалуйста не горит ли лампочка на зарядке
+m-en_Jovialman_p09           HIT     first | робот посмотри пожалуйста не горит ли лампочка на зарядке
+m-en_WhisperingGirl_p10      HIT     first | робот расскажи какая завтра погода за окном мастерской
+m-zh_GentleSenior_p10        NO_STT        | 
+m-en_WiseScholar_p10         NO_STT        | 
+m-en_Jovialman_p10           HIT     first | робот расскажи какая завтра погода за окном мастерской
+m-en_WhisperingGirl_p11      HIT     first | робот повтори пожалуйста что ты говорил про колеса
+m-zh_GentleSenior_p11        HIT     first | робот повтори пожалуйста что ты говорил про колеса
+m-en_WiseScholar_p11         HIT     first | робот повтори пожалуйста что ты говорил про колеса
+m-en_Jovialman_p11           HIT     first | робот повтори пожалуйста что ты говорил про колеса
+m-en_WhisperingGirl_p12      HIT     first | робот подскажи сколько будет семью восемь только без шуток
+m-zh_GentleSenior_p12        HIT     first | робот подскажи сколько будет семью восемь только без шуток
+m-en_WiseScholar_p12         HIT     first | робот подскажи сколько будет семью восемь только без шуток
+m-en_Jovialman_p12           HIT     first | робот подскажи сколько будет семью восемь только без шуток
+m-en_WhisperingGirl_p13      HIT     first | робот а какой сегодня день недели
+m-zh_GentleSenior_p13        HIT     first | робот а какой сегодня день недели
+m-en_WiseScholar_p13         HIT     first | робот а какой сегодня день недели
+m-en_Jovialman_p13           HIT     first | робот а какой сегодня день недели
+m-en_WhisperingGirl_p14      MISS          | назови три цвета которые ты лучше всего различаешь
+m-zh_GentleSenior_p14        HIT     first | робот назови три цвета которые ты лучше всего размечаешь
+m-en_WiseScholar_p14         HIT     first | робот назови три цвета которые ты лучше всего различаешь
+m-en_Jovialman_p14           HIT     first | робот назови три цвета которые ты лучше всего различаешь
+
+CONFIG m-en_WhisperingGirl          wake 11/14  (робот первым словом: 11; MISS=3 NO_STT=0 NO_CAP=0)
+CONFIG m-zh_GentleSenior            wake 13/14  (робот первым словом: 12; MISS=0 NO_STT=1 NO_CAP=0)
+CONFIG m-en_WiseScholar             wake 12/14  (робот первым словом: 12; MISS=0 NO_STT=2 NO_CAP=0)
+CONFIG m-en_Jovialman               wake 14/14  (робот первым словом: 14; MISS=0 NO_STT=0 NO_CAP=0)
+ВСЕГО вейк 50/56

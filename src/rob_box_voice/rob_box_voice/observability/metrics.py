@@ -37,6 +37,10 @@ TTS. Сейчас observability — только логи в Loki, и ответ
   (result ∈ success|fail — что произошло в конце диалога)
 * ``telegram_message_total{direction, type}`` — counter
 
+(Счётчик вердиктов ``quick_decide`` и задержка очереди отложенных фраз
+удалены вместе с классификатором перебивания — ADR-0150 PR-5 #3694;
+``voice_scheduler_task_updated_total`` — с планировщиком v1, PR-7b #3699.)
+
 Все метрики живут в ``prometheus_client.REGISTRY`` (process-global).
 Каждая ROS2-нода запускается в отдельном процессе, поэтому
 пересечения имён между нодами нет, но ВНУТРИ процесса (unit-тесты
@@ -49,6 +53,8 @@ import logging
 import threading
 import time
 from typing import Any, Dict, Optional, TYPE_CHECKING
+
+from rob_box_core.metrics_server import start_metrics_http_server
 
 if TYPE_CHECKING:
     from prometheus_client import Counter as _Counter  # noqa: F401
@@ -126,9 +132,10 @@ class MetricsDisabled:
     тот же объект (или self), не падает и не считает. Это позволяет
     прод-коду вызывать ``counter.labels(...).inc()`` без
     ``if prometheus_client is not None`` в каждом месте.
-    """
 
-    __slots__ = ()
+    ``labels`` — обычный атрибут экземпляра (не слот), чтобы unit-тесты
+    могли подменять его на spy и перехватывать вызовы ``.inc()``.
+    """
 
     def labels(self, *args: Any, **kwargs: Any) -> "MetricsDisabled":
         return self
@@ -246,28 +253,15 @@ def start_metrics_server(port: int) -> bool:
     if not is_metrics_enabled():
         return False
 
-    with _HTTP_SERVER_LOCK:
-        if port in _HTTP_SERVER_STARTED:
-            return True
-        try:
-            # type: ignore[call-arg]  # start_http_server гарантированно
-            # callable здесь (см. ``is_metrics_enabled``)
-            start_http_server(port)  # type: ignore[misc]
-        except OSError as exc:
-            # Порт уже занят (другая нода в этом процессе или коллизия).
-            # Не считаем это фатальной ошибкой: метрики всё равно
-            # доступны по /metrics на той ноде, которая заняла порт.
-            _log.warning(
-                "prometheus_client.start_http_server(%d) failed: %s",
-                port, exc,
-            )
-            # Не помечаем как started: возможно следующий вызов
-            # попадёт в нормальную ситуацию. Но для типичного
-            # сценария "порт занят коллегой" — просто лог.
-            return False
-        _HTTP_SERVER_STARTED.add(port)
-        _log.info("Prometheus metrics server started on :%d/metrics", port)
-        return True
+    # architecture audit 2026-09-29, ADR-0145: тело — в rob_box_core.metrics_server;
+    # состояние и start_http_server остаются в этом модуле (патчится тестами).
+    return start_metrics_http_server(
+        port,
+        start_http_server=start_http_server,  # type: ignore[arg-type]
+        started=_HTTP_SERVER_STARTED,
+        lock=_HTTP_SERVER_LOCK,
+        log=_log,
+    )
 
 
 # ── Помощники для прод-кода ─────────────────────────────────────────────
@@ -355,6 +349,55 @@ def record_voice_llm_request(
         labelnames=("provider",),
     )
     hist.labels(provider=provider).observe(duration_s)
+
+
+#: Бакеты для ``voice_llm_prompt_tokens``. Подобраны вокруг сегодняшнего
+#: фиксированного префикса (~27 100 токенов на 02.09.2026: 16 240 схемы
+#: инструментов + 10 838 мастер-промпт), чтобы сдвиг вниз от доменных
+#: скиллов был виден по перцентилям, а не тонул в одном бакете.
+PROMPT_TOKENS_BUCKETS: tuple[float, ...] = (
+    2000, 4000, 8000, 12000, 16000, 20000, 24000, 28000, 32000, 40000,
+    48000, 64000, float("inf"),
+)
+
+
+def record_llm_prompt_tokens(
+    provider: str,
+    *,
+    tokens: int,
+    skill: str = "none",
+    estimated: bool = True,
+) -> None:
+    """Учёт размера ОДНОГО запроса к LLM в токенах.
+
+    Зовётся на каждое обращение к провайдеру, включая каждую итерацию
+    тул-цикла: ход с восемью итерациями стоит восьми промптов.
+
+    :param provider: ``"minimax"`` / ``"deepseek"`` / ...
+    :param tokens: размер промпта. Неположительные значения игнорируются —
+        это признак того, что провайдер прислал мусор, и записывать его в
+        гистограмму значит испортить перцентили.
+    :param skill: имя активного доменного скилла (``"none"`` пока скиллы
+        не включены). Именно эта метка отвечает на вопрос «сколько стоит
+        ход композитора против хода плеера».
+    :param estimated: ``True`` — число получено клиентской эвристикой,
+        потому что провайдер не прислал usage. Метка позволяет не смешивать
+        точные и оценочные измерения в одной выборке.
+    """
+    if tokens <= 0:
+        return
+    hist = get_metric(
+        "histogram",
+        "voice_llm_prompt_tokens",
+        "Prompt size in tokens per LLM request, by provider, skill and source.",
+        labelnames=("provider", "skill", "estimated"),
+        buckets=PROMPT_TOKENS_BUCKETS,
+    )
+    hist.labels(
+        provider=provider,
+        skill=skill or "none",
+        estimated="true" if estimated else "false",
+    ).observe(tokens)
 
 
 def record_fallback(
@@ -501,3 +544,40 @@ def record_telegram_message(
         labelnames=("direction", "type"),
     )
     counter.labels(direction=direction, type=message_type).inc()
+
+
+# ── Issue #2554: audio_node paInputOverflow (status=2) ─────────────────
+# Раньше paInputOverflow виден только через rate-limited WARN в docker
+# logs (один раз в 60с, см. audio_node.py:_log_overflow). Это удобно
+# для немедленной диагностики, но не даёт тренда: «растёт/падает»
+# непонятно, пока не смотришь логи руками. Метрика позволяет
+# dashboard'у Grafana/Prometheus алертить по «overflow rate > N/мин» и
+# видеть, помог ли рост frames_per_buffer 1024 → 4096 (issue #1050)
+# против текущей пиковой нагрузки DJ-сетов.
+#
+# Имя: ``voice_audio_input_overflow_total`` — counter (по конвенции
+# #1160 «voice_*_total»). Лейбл: ``frames_per_buffer`` — диапазон
+# (chunk_size на момент события), потому что основной сценарий
+# регрессии = кто-то выставил слишком маленькое значение и надо быстро
+# понять, в каком окружении проблема.
+
+
+def record_audio_input_overflow(*, frames_per_buffer: int) -> None:
+    """Учёт одного paInputOverflow (status=2) в audio_node.
+
+    :param frames_per_buffer: текущее значение ``chunk_size`` (фреймы
+        на чанк). Зафиксировано как label, чтобы при смене параметра
+        в проде можно было отследить корреляцию «новый frames_per_buffer
+        → больше/меньше overflow» — а не гадать «у нас сейчас сколько».
+
+    Безопасен при отсутствии ``prometheus_client`` (no-op). См. общую
+    договорённость в :mod:`rob_box_voice.observability`.
+    """
+    counter = get_metric(
+        "counter",
+        "voice_audio_input_overflow_total",
+        "PyAudio paInputOverflow (status=2) events from audio_node, "
+        "labelled by frames_per_buffer (chunk_size) at the time of event.",
+        labelnames=("frames_per_buffer",),
+    )
+    counter.labels(frames_per_buffer=str(int(frames_per_buffer))).inc()

@@ -39,7 +39,7 @@ The system automatically detects your current git branch and selects appropriate
 
 ```bash
 # From any directory in the project
-source scripts/set-docker-tags.sh
+source scripts/build/set-docker-tags.sh
 ```
 
 This script will:
@@ -75,7 +75,7 @@ git checkout main
 git pull
 
 # Auto-configure tags
-source scripts/set-docker-tags.sh
+source scripts/build/set-docker-tags.sh
 
 # Deploy
 cd docker/vision
@@ -91,7 +91,7 @@ git checkout develop
 git pull
 
 # Auto-configure for dev images
-source scripts/set-docker-tags.sh
+source scripts/build/set-docker-tags.sh
 
 # Deploy dev images
 cd docker/vision
@@ -141,8 +141,8 @@ docker-compose up -d
 
 ### Scripts
 
-- `scripts/set-docker-tags.sh` - Automatic tag detection and configuration
-- `scripts/local-build.sh` - Local Docker image building
+- `scripts/build/set-docker-tags.sh` - Automatic tag detection and configuration
+- `scripts/build/local-build.sh` - Local Docker image building
 - `docker/vision/update_and_restart.sh` - Vision Pi deployment script
 - `docker/main/update_and_restart.sh` - Main Pi deployment script
 
@@ -150,7 +150,6 @@ docker-compose up -d
 
 - `scripts/README.md` - Detailed script documentation with examples
 - `docs/CI_CD_PIPELINE.md` - Updated CI/CD documentation
-- `.actrc` - Configuration for running GitHub Actions locally
 
 ## Troubleshooting
 
@@ -165,7 +164,7 @@ docker-compose pull
 **Solution:**
 ```bash
 # Re-run tag setup
-source scripts/set-docker-tags.sh
+source scripts/build/set-docker-tags.sh
 
 # Verify IMAGE_TAG
 echo $IMAGE_TAG
@@ -214,7 +213,7 @@ ERROR: manifest for ghcr.io/krikz/rob_box:voice-assistant-humble-test not found
 1. **Always run `set-docker-tags.sh` after switching branches**
    ```bash
    git checkout develop
-   source scripts/set-docker-tags.sh
+   source scripts/build/set-docker-tags.sh
    ```
 
 2. **Use local builds for rapid development**
@@ -229,7 +228,7 @@ ERROR: manifest for ghcr.io/krikz/rob_box:voice-assistant-humble-test not found
    ```bash
    # Test on develop first
    git checkout develop
-   source scripts/set-docker-tags.sh
+   source scripts/build/set-docker-tags.sh
    # Deploy and validate
    
    # Then promote to main
@@ -273,7 +272,7 @@ Both `docker/vision/update_and_restart.sh` and `docker/main/update_and_restart.s
 
 ```bash
 # Setup tags
-source scripts/set-docker-tags.sh
+source scripts/build/set-docker-tags.sh
 
 # Build locally
 ./scripts/local-build.sh <service|vision|main|all>
@@ -290,8 +289,10 @@ docker-compose config | grep image:
 # View active env
 cat docker/vision/.env
 
-# Run local workflow
-act -j build-oak-d  # Requires 'act' tool
+# Run local workflow (сервисы собираются одним matrix-job'ом `build`,
+# состав — docker/build-manifest.yaml; отдельного job'а на сервис,
+# вроде build-oak-d, в текущем пайплайне нет)
+act -j build  # Requires 'act' tool
 ```
 
 ## Summary

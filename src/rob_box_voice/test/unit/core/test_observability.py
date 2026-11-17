@@ -32,6 +32,7 @@ from rob_box_voice.observability import (
     MetricsDisabled,
     get_metric,
     is_metrics_enabled,
+    record_audio_input_overflow,
     record_barge_in,
     record_session_duration,
     record_speaker_recognize,
@@ -63,6 +64,8 @@ class TestNoopBehaviour:
         record_barge_in()
         record_session_duration(12.0, result="success")
         record_telegram_message("in", message_type="text")
+        # Issue #2554 — audio_node overflow counter.
+        record_audio_input_overflow(frames_per_buffer=4096)
 
     def test_start_server_disabled_returns_false(self):
         if is_metrics_enabled():
@@ -145,6 +148,36 @@ class TestMetricsWithPrometheusClient:
         record_session_duration(5.0, result="success")
         after = _hist_sum("voice_session_duration_seconds", {"result": "success"})
         assert after >= before + 5.0
+
+    # ── Issue #2554: audio_node paInputOverflow counter ────────────
+
+    def test_record_audio_input_overflow_increments(self):
+        """Issue #2554: voice_audio_input_overflow_total — counter
+        paInputOverflow, лейблованный frames_per_buffer (chunk_size
+        на момент события). Проверяем: метрика инкрементируется
+        ровно на 1 и лейбл сохраняется.
+        """
+        before_4096 = _counter_value(
+            "voice_audio_input_overflow_total",
+            {"frames_per_buffer": "4096"},
+        )
+        before_8192 = _counter_value(
+            "voice_audio_input_overflow_total",
+            {"frames_per_buffer": "8192"},
+        )
+        record_audio_input_overflow(frames_per_buffer=4096)
+        record_audio_input_overflow(frames_per_buffer=8192)
+        record_audio_input_overflow(frames_per_buffer=4096)
+        after_4096 = _counter_value(
+            "voice_audio_input_overflow_total",
+            {"frames_per_buffer": "4096"},
+        )
+        after_8192 = _counter_value(
+            "voice_audio_input_overflow_total",
+            {"frames_per_buffer": "8192"},
+        )
+        assert after_4096 == before_4096 + 2
+        assert after_8192 == before_8192 + 1
 
 
 def _counter_value(name: str, labels: dict) -> int:

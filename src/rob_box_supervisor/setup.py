@@ -1,0 +1,32 @@
+from setuptools import setup, find_packages
+
+package_name = "rob_box_supervisor"
+
+setup(
+    name=package_name,
+    version="0.1.0",
+    packages=find_packages(exclude=["test"]),
+    data_files=[
+        ("share/ament_index/resource_index/packages", ["resource/" + package_name]),
+        ("share/" + package_name, ["package.xml"]),
+        # Промпта оператора (ТАРС) в пакете больше нет: основа - данные ядра rob_box_dialog/prompts/operator.txt,
+        # персона - профиль робота docker/sound/config/operator_persona.txt (ADR-0167 Ш1б-4).
+    ],
+    install_requires=["setuptools", "msgpack>=1.0"],
+    zip_safe=True,
+    maintainer="krikz",
+    maintainer_email="kukoreken@rob-box.local",
+    description=(
+        "Avatar Supervisor per ADR-0028. Phase 1: monitor-only "
+        "publishes /avatar/state. Full FSM/lock-manager is Phase 2 (AV-6)."
+    ),
+    license="MIT",
+    tests_require=["pytest"],
+    entry_points={
+        "console_scripts": [
+            "supervisor_node = rob_box_supervisor.supervisor_node:main",
+            # ADR-0051 §2.2 / issue #1987 — арбитр floor/FSM без LLM.
+            "avatar_arbiter = rob_box_supervisor.arbiter_node:main",
+        ],
+    },
+)

@@ -1,0 +1,111 @@
+{
+  "provider": "silero",
+  "identify_threshold": 0.72,
+  "register_match_threshold": 0.75,
+  "voices": [
+    "aidar",
+    "eugene",
+    "baya",
+    "xenia",
+    "kseniya"
+  ],
+  "intra_voice_min_cos": {
+    "aidar": 0.9781972765922546,
+    "eugene": 0.9545912742614746,
+    "baya": 0.9742200970649719,
+    "xenia": 0.9626817107200623,
+    "kseniya": 0.9668856263160706
+  },
+  "inter_voice_max_cos": {
+    "aidar|eugene": 0.6783202886581421,
+    "aidar|baya": 0.5126665234565735,
+    "aidar|xenia": 0.5601075887680054,
+    "aidar|kseniya": 0.6109830141067505,
+    "eugene|baya": 0.48014968633651733,
+    "eugene|xenia": 0.546718418598175,
+    "eugene|kseniya": 0.5587836503982544,
+    "baya|xenia": 0.7216858863830566,
+    "baya|kseniya": 0.7880699634552002,
+    "xenia|kseniya": 0.6311616897583008
+  },
+  "scenario_pairs": [
+    {
+      "scenario_voices": [
+        "anton",
+        "ermil"
+      ],
+      "provider_voices": [
+        "aidar",
+        "eugene"
+      ],
+      "cos": 0.6783202886581421,
+      "merges_on_register": false,
+      "identified_as_same": false
+    },
+    {
+      "scenario_voices": [
+        "anton",
+        "zahar"
+      ],
+      "provider_voices": [
+        "aidar",
+        "baya"
+      ],
+      "cos": 0.5126665234565735,
+      "merges_on_register": false,
+      "identified_as_same": false
+    },
+    {
+      "scenario_voices": [
+        "anton",
+        "filipp"
+      ],
+      "provider_voices": [
+        "aidar",
+        "xenia"
+      ],
+      "cos": 0.5601075887680054,
+      "merges_on_register": false,
+      "identified_as_same": false
+    },
+    {
+      "scenario_voices": [
+        "ermil",
+        "zahar"
+      ],
+      "provider_voices": [
+        "eugene",
+        "baya"
+      ],
+      "cos": 0.48014968633651733,
+      "merges_on_register": false,
+      "identified_as_same": false
+    },
+    {
+      "scenario_voices": [
+        "ermil",
+        "filipp"
+      ],
+      "provider_voices": [
+        "eugene",
+        "xenia"
+      ],
+      "cos": 0.546718418598175,
+      "merges_on_register": false,
+      "identified_as_same": false
+    },
+    {
+      "scenario_voices": [
+        "zahar",
+        "filipp"
+      ],
+      "provider_voices": [
+        "baya",
+        "xenia"
+      ],
+      "cos": 0.7216858863830566,
+      "merges_on_register": false,
+      "identified_as_same": true
+    }
+  ]
+}

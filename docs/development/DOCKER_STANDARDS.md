@@ -17,7 +17,6 @@ docker/
 │   │   ├── zenoh_session_config.json5       # Общий для всех
 │   │   ├── cyclonedds.xml                   # Общий для всех
 │   │   ├── rtabmap/                         # Специфичные для rtabmap
-│   │   │   ├── rtabmap.yaml
 │   │   │   └── rtabmap_config.yaml
 │   │   └── robot_state_publisher/           # Специфичные для RSP
 │   │       └── (будущие конфиги)
@@ -111,8 +110,6 @@ docker/
     ├── voice_assistant/         # ✅ ТОЛЬКО Dockerfile
     │   └── Dockerfile
     ├── voice_base/              # ✅ Base image, не compose-сервис
-    │   └── Dockerfile
-    ├── voice_resources/         # ✅ Resource image для one-shot инициализации volume
     │   └── Dockerfile
     ├── telegram_bot/            # ✅ ТОЛЬКО Dockerfile
     │   └── Dockerfile
@@ -254,7 +251,7 @@ docker/<env>/
 
 - `../../src/rob_box_description:/workspace/src/rob_box_description:ro` в `robot-state-publisher` — это source bind для URDF package, а не runtime-config и не runtime-script.
 - `config/monitoring/...` — это shared subsystem config для monitoring-стека, а не нарушение правила `config/<service>/...`.
-- Общие helper scripts вроде `ros_with_namespace.sh` и `patch_rtabmap_launch.py` могут оставаться в корне `scripts/`, потому что используются несколькими сервисами.
+- Общие для всех Pi скрипты и шаблоны Zenoh (`ros_with_namespace.sh`, `zenoh-router/start_zenoh_router.sh`, `zenoh_{router,session}_config.json5`) лежат в `docker/common/{scripts,config}` и монтируются `../common/scripts:/ros_scripts:ro` и `../common/config:/common_config:ro` (ADR-0159 В4); узловые адреса — `ZENOH_LISTEN_IP`/`ZENOH_CONNECT_ENDPOINTS` в compose узла. `patch_rtabmap_launch.py` — скрипт одного сервиса, лежит в `docker/main/scripts/rtabmap/`.
 
 ### 2. Правила volumes
 
@@ -263,7 +260,8 @@ docker/<env>/
 ```yaml
 volumes:
   - ./config:/config  # ВСЕГДА монтируем общую папку config
-  - ./scripts:/ros_scripts  # Shared helper scripts для нескольких сервисов
+  - ../common/scripts:/ros_scripts:ro  # ros_with_namespace.sh, общий для всех Pi
+  - ../common/config:/common_config:ro  # шаблон zenoh_session_config.json5
   - ./scripts/<service>:/scripts  # Service-local startup script, если нужен runtime script
 ```
 
@@ -290,7 +288,7 @@ volumes:
 ```dockerfile
 # ❌ НЕПРАВИЛЬНО: runtime-файлы не должны запекаться в образ
 COPY config/lslidar/lsx10_custom.yaml /config/lsx10_custom.yaml
-COPY scripts/lslidar/start_lslidar.sh /start_lslidar.sh
+COPY docker/main/scripts/lslidar/start_lslidar.sh /start_lslidar.sh
 COPY config/oak-d/launch/oakd_with_apriltag.launch.py /launch/oakd_with_apriltag.launch.py
 ```
 
@@ -425,6 +423,16 @@ mem_limit: 6g          # Оставляем 2GB для системы
 memswap_limit: 7g      # 6GB RAM + 1GB swap max
 ```
 
+**ADR-0111 (issue #2621):** каждый контейнер **обязан** иметь `mem_limit`.
+Если контейнер лёгкий (Zenoh router, voice-action-server) — лимит
+всё равно ставится (например, 128 MB), чтобы при OOM-killer сначала
+пострадал виновник, а не случайный сосед.
+
+**Vision Pi с 2026-09-15 использует zram-swap (4 GB, zstd)** — см.
+`docs/adr/0111-vision-pi-zram-swap-and-container-limits.md` и
+`host/vision/README.md`. Без zram `memswap_limit` бесполезен — нет
+устройства для свопа.
+
 ### 8. Network Mode
 
 Всегда `network_mode: host` для ROS 2 + Zenoh:
@@ -481,12 +489,14 @@ depends_on:
        - ROS_DOMAIN_ID=0
        - RMW_IMPLEMENTATION=rmw_zenoh_cpp
        - ZENOH_SESSION_CONFIG_URI=/tmp/zenoh_session_config.json5
+       - *zenoh_listen_ip  # x-zenoh-listen-ip в начале compose узла (ADR-0159 В4)
        - ROS_AUTOMATIC_DISCOVERY_RANGE=LOCALHOST
        - ZENOH_ROUTER_CHECK_ATTEMPTS=10
        - RUST_LOG=zenoh=info
      volumes:
        - ./config:/config:ro
-       - ./scripts:/ros_scripts:ro
+       - ../common/scripts:/ros_scripts:ro
+       - ../common/config:/common_config:ro
        - ./scripts/my-service:/scripts:ro
        - /dev/shm:/dev/shm
      depends_on:
@@ -517,9 +527,9 @@ depends_on:
 - `rtabmap/` - только Dockerfile
 
 ### Startup script в `scripts/<service>/`:
-- `scripts/robot_state_publisher/start_robot_state_publisher.sh`
-- `scripts/rtabmap/start_rtabmap.sh`
-- `scripts/lslidar/start_lslidar.sh`
+- `docker/main/scripts/robot_state_publisher/start_robot_state_publisher.sh`
+- `docker/main/scripts/rtabmap/start_rtabmap.sh`
+- `docker/main/scripts/lslidar/start_lslidar.sh`
 
 ### Service-specific config в `config/<service>/`:
 - `config/rtabmap/`

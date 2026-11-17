@@ -1,0 +1,42 @@
+== общее
+ходов уникальных 748 с итогом 📊 748
+stage/status Counter({('done', 'finished'): 740, ('done', 'done'): 5, ('silenced', 'finished'): 3})
+llm_calls [(0, 99), (1, 390), (2, 235), (3, 23), (4, 1)]
+tier1 92 Counter({'stop_all': 22, 'new_session': 19, 'voice_step': 11, 'music_off': 9, 'prosody_normal': 7, 'repeat': 6, 'silence': 6, 'unsilence': 6, 'stop_speech': 6})
+provider Counter({'deepseek': 649, '-': 99})
+LLM-ходов 649 tokens median 10341 sum 8397248 latency median 2825 p90 4859
+0-LLM ходов 99 latency median 28
+verdicts Counter({'command': 488, 'speech': 408, 'invalid:speech_with_actions': 14, 'invalid:single_action_class': 5, 'invalid:bad_cast': 4, 'invalid:bad_json': 2, 'invalid:music_promise': 2, 'invalid:bad_segments': 2, 'passed:unclear': 1, 'invalid:several_commands': 1, 'invalid:speech_too_long': 1, 'invalid:unknown_field': 1})
+signals Counter({'invalid': 28, 'echo': 4})
+slice size [(6, 16), (7, 6), (8, 162), (9, 8), (10, 221), (11, 1), (12, 234)]
+
+== шаги, сопоставленные ходам: 674 Counter({'OK': 632, 'FAIL': 42})
+
+== (б) срез тулов: шаги с ожидаемым тулом
+     2  status FAIL | tier1 (кодом) + тул исполнен
+     1  status FAIL | в срезе, НЕ исполнен (промах модели)
+     4  status FAIL | в срезе, исполнен
+     9  status OK | tier1 (кодом) + тул исполнен
+     1  status OK | в срезе, НЕ исполнен (промах модели)
+   172  status OK | в срезе, исполнен
+     1  status OK | нет LLM-запроса
+    11  tier1 (кодом) + тул исполнен
+     2  в срезе, НЕ исполнен (промах модели)
+   176  в срезе, исполнен
+     1  нет LLM-запроса
+  промахи правил: []
+
+== (а) звать ли LLM
+LLM-ходы, где все ответы passed: 0
+LLM-ходы только с тулами из набора Tier-1 и без речи: 69
+шаги по пути и вердикту [(('0llm/нет итога', 'FAIL'), 2), (('0llm/нет итога', 'OK'), 21), (('llm', 'FAIL'), 37), (('llm', 'OK'), 535), (('tier1', 'FAIL'), 3), (('tier1', 'OK'), 76)]
+
+== (в) норма или сбой: шаги FAIL и сигналы кода
+     8  ('FAIL', '-', 'сигнал кода')
+    32  ('FAIL', '-', 'тихо')
+     1  ('FAIL', 'cycle_unconfirmed_after_accept', 'тихо')
+     1  ('FAIL', 'turn_nospeech', 'тихо')
+    18  ('OK', '-', 'сигнал кода')
+   610  ('OK', '-', 'тихо')
+     3  ('OK', 'after_retry=1', 'тихо')
+     1  ('OK', 'recovered_silenced', 'тихо')

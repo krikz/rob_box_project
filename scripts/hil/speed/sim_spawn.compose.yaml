@@ -1,0 +1,12 @@
+# Набор «предельная скорость» (scripts/hil/speed): gazebo HIL с заданным миром и позой спавна.
+# Пересоздание gazebo с этим оверлеем = сброс позы. SPEED_SIM_CMD собирает run_scene.sh:
+#   polygon/turn90 — exec /hil_run.sh world:=/sim_worlds/<мир>.sdf x:= y:= yaw:=
+#   depot          — python3 /mkdepot.py && exec /hil_run.sh world:=/sim_video/world.sdf x:= y:= yaw:=
+#                    (копия песочницы после scripts/hil/video/sandbox_prep.sh: тома /mkdepot.py, /fuel, /sim_video)
+services:
+  gazebo:
+    command:
+      - /ros_scripts/ros_with_namespace.sh
+      - bash
+      - -c
+      - ${SPEED_SIM_CMD:?SPEED_SIM_CMD не задан (run_scene.sh)}

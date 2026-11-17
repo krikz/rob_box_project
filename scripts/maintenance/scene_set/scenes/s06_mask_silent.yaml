@@ -1,0 +1,18 @@
+scene: s06_mask_silent
+description: маску вносят молча — незнакомец, имя ей нельзя
+participants:
+  - {label: owner, truth: Дэнчик, kind: person, known_before: true}
+  - {label: mask, truth: Литвин, kind: mask, known_before: false, anchor_cx: [0.05, 0.40]}  # ПОДСТАВКА: сверить conductor.py --probe-anchor-s 10
+steps:
+  - say: "Начинаю сцену шесть. Возьмите маску."
+    wait_s: 5
+  - enter: owner
+    say: "Дэнчик, войдите в кадр с маской."
+    wait_s: 3
+  - enter: mask
+    say: "Поставьте маску на подставку."
+    wait_s: 5
+  - leave: owner
+    say: "Дэнчик, выйдите из кадра. Маска остаётся."
+  - say: "Тишина. Не говорите."
+    wait_s: 30

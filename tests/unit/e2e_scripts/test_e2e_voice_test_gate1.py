@@ -7,6 +7,10 @@ test_e2e_voice_test_gate1.py — юнит-тесты ADR-0022 GATE-1 acceptance.
   3. Python-валидатор: PASS при expected найденном в логах, FAIL при
      expected отсутствующем или forbidden вызванном
   4. Per-step acceptance.json формат (backwards-compat с issue #1396)
+  5. Issue #2300 (09.09.2026): harness НЕ имеет собственного auto-discovery
+     (regression guard). Раньше были тесты test_auto_discovery_* — теперь
+     они инвертированы: harness должен падать на GATE-1, если
+     ACCEPTANCE_FILE не передан (единственный резолвер — e2e-process).
 
 Run:
   python3 -m pytest tests/unit/e2e_scripts/test_e2e_voice_test_gate1.py -v --no-cov
@@ -25,7 +29,7 @@ from pathlib import Path
 import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
-E2E_SCRIPT = REPO_ROOT / ".github" / "workflows" / "scripts" / "e2e_voice_test.sh"
+E2E_SCRIPT = REPO_ROOT / "scripts" / "ci" / "e2e" / "e2e_voice_test.sh"
 
 
 # --- helpers ---------------------------------------------------------------
@@ -92,15 +96,51 @@ def gate1_validate(acc: dict, logs: str) -> dict:
     }
 
 
-def make_fake_ssh(tmp_path: Path, log_content: str):
-    """Создаёт stub для ROBOT_SSH_OVERRIDE — печатает log_content.
-    Возвращает (Path к fake_ssh.sh, Path к logs.txt)."""
-    fake = tmp_path / "fake_ssh.sh"
-    fake.write_text("#!/bin/bash\ncat \"$LOG_FILE\"\n")
-    fake.chmod(0o755)
-    log_file = tmp_path / "logs.txt"
+#: Подставной робот для ROBOT_SSH_OVERRIDE (ADR-0057 / PR #3211): исполняет
+#: команду харнесса локальным bash с фейковыми docker/ros2 и СОСТОЯНИЕМ
+#: параметров узлов в каталоге — включая протокол изоляции акта #2890
+#: (сброс сессии v2 сервисом /dialog/control).
+#: Семантика — та же, что у FAKE_ROBOT в test_issue_2890_act_isolation.py.
+FAKE_ROBOT_SSH = Path(__file__).resolve().parent / "fake_robot_ssh.sh"
+
+
+def use_fake_robot(monkeypatch, tmp_path: Path, log_content: str = "") -> Path:
+    """Направляет ВСЕ ssh-обращения e2e_voice_test.sh в fake_robot_ssh.sh.
+
+    Без этого харнесс идёт настоящим ssh к ${ROBOT_HOST} (на ubuntu-latest —
+    таймаут 15s, run 36684074181). ``log_content`` — то, что фейк отдаёт на
+    ``docker logs voice-assistant``. Возвращает каталог состояния робота
+    (``events`` — журнал WIPE/RESET/UNSUPPORTED, ``ssh_calls`` — все вызовы).
+    """
+    state = tmp_path / "fake_robot"
+    log_file = tmp_path / "fake_robot_docker_logs.txt"
     log_file.write_text(log_content)
-    return fake, log_file
+    monkeypatch.setenv("ROBOT_SSH_OVERRIDE", str(FAKE_ROBOT_SSH))
+    monkeypatch.setenv("FAKE_ROBOT_STATE", str(state))
+    monkeypatch.setenv("FAKE_ROBOT_LOG", str(log_file))
+    monkeypatch.delenv("FAKE_V2_RESET_REJECT", raising=False)
+    monkeypatch.setenv("E2E_ACT_WARMUP_SEC", "0")  # прогрев sink перед актом (15 с) тестам не нужен
+    return state
+
+
+def robot_events(state: Path) -> list:
+    events = state / "events"
+    return events.read_text().splitlines() if events.exists() else []
+
+
+def assert_act_isolated(state: Path, result) -> None:
+    """Харнесс прошёл gating и изоляцию акта #2890 на фейк-роботе: токен
+    сброса выставлен и прочитан обратно (иначе E2E_FATAL rc=2), и фейк не
+    получил ни одной команды, которую не умеет (иначе он тихо разошёлся бы
+    с настоящим роботом)."""
+    events = robot_events(state)
+    assert any(e == "RESET /dialog_node" for e in events), (
+        f"изоляция акта не дошла до dialog_node: events={events}\n"
+        f"STDOUT: {result.stdout}\nSTDERR: {result.stderr}"
+    )
+    assert "новая сессия перед актом" in result.stdout, result.stdout
+    assert "E2E_FATAL" not in result.stderr, result.stderr
+    assert not [e for e in events if e.startswith("UNSUPPORTED")], events
 
 
 # --- Tests: schema validation -----------------------------------------------
@@ -113,7 +153,7 @@ class TestGate1AcceptanceSchema:
         acc = tmp_path / "acceptance.json"
         acc.write_text(json.dumps({
             "expected_tool_calls": ["generate_music"],
-            "must_not_call": ["execute_music_code"],
+            "must_not_call": ["request_music"],
         }))
         parsed = parse_acceptance(acc)
         assert "expected_tool_calls" in parsed
@@ -151,7 +191,7 @@ class TestGate1Validator:
     def test_passes_when_expected_tool_called(self):
         acc = {
             "expected_tool_calls": ["generate_music"],
-            "must_not_call": ["execute_music_code"],
+            "must_not_call": ["request_music"],
         }
         logs = "2025-08-18 dialogue_node: Calling MCP tool: generate_music"
         result = gate1_validate(acc, logs)
@@ -164,7 +204,7 @@ class TestGate1Validator:
         """Главный кейс из acceptance: generate_music ожидался, но не вызван."""
         acc = {
             "expected_tool_calls": ["generate_music"],
-            "must_not_call": ["execute_music_code"],
+            "must_not_call": ["request_music"],
         }
         logs = "2025-08-18 dialogue_node: LLM ответил текстом без tools"
         result = gate1_validate(acc, logs)
@@ -173,31 +213,31 @@ class TestGate1Validator:
         assert "not invoked" in result["reason"]
 
     def test_fails_when_forbidden_tool_called(self):
-        """Главный кейс из acceptance: execute_music_code НЕ должен быть вызван."""
+        """Главный кейс из acceptance: request_music НЕ должен быть вызван."""
         acc = {
             "expected_tool_calls": ["generate_music"],
-            "must_not_call": ["execute_music_code"],
+            "must_not_call": ["request_music"],
         }
         logs = (
-            "2025-08-18 dialogue_node: Calling MCP tool: execute_music_code\n"
+            "2025-08-18 dialogue_node: Calling MCP tool: request_music\n"
             "2025-08-18 dialogue_node: Renardo запустил PTree.__init__()"
         )
         result = gate1_validate(acc, logs)
         assert result["pass"] is False
-        assert "execute_music_code" in result["forbidden_calls"]
+        assert "request_music" in result["forbidden_calls"]
         assert "forbidden" in result["reason"]
 
     def test_fails_with_both_missing_and_forbidden(self):
         """Оба условия одновременно → reasons joined."""
         acc = {
             "expected_tool_calls": ["generate_music"],
-            "must_not_call": ["execute_music_code"],
+            "must_not_call": ["request_music"],
         }
-        logs = "Calling MCP tool: execute_music_code"
+        logs = "Calling MCP tool: request_music"
         result = gate1_validate(acc, logs)
         assert result["pass"] is False
         assert "generate_music" in result["missing_expected_calls"]
-        assert "execute_music_code" in result["forbidden_calls"]
+        assert "request_music" in result["forbidden_calls"]
         assert "not invoked" in result["reason"]
         assert "forbidden" in result["reason"]
 
@@ -216,23 +256,23 @@ class TestGate1Validator:
         1 раз за прогон. Это контракт ADR-0022 GATE-1 для multi-tool фич
         (например, PR #1398: 7 MCP tools, ВСЕ должны быть вызваны)."""
         acc = {
-            "expected_tool_calls": ["generate_music", "gen_list_library"],
+            "expected_tool_calls": ["generate_music", "music_library"],
             "must_not_call": [],
         }
-        # Только generate_music вызван → FAIL (gen_list_library ожидался)
+        # Только generate_music вызван → FAIL (music_library ожидался)
         logs_partial = "Calling MCP tool: generate_music"
         result = gate1_validate(acc, logs_partial)
         assert result["pass"] is False
-        assert "gen_list_library" in result["missing_expected_calls"]
+        assert "music_library" in result["missing_expected_calls"]
 
         # Оба вызваны → PASS
         logs_full = (
             "Calling MCP tool: generate_music\n"
-            "Calling MCP tool: gen_list_library\n"
+            "Calling MCP tool: music_library\n"
         )
         result = gate1_validate(acc, logs_full)
         assert result["pass"] is True
-        assert result["found_expected_calls"] == ["generate_music", "gen_list_library"]
+        assert result["found_expected_calls"] == ["generate_music", "music_library"]
         assert result["missing_expected_calls"] == []
 
 
@@ -246,6 +286,13 @@ class TestE2EVoiceTestScriptGating:
     def require_yandex_key(self, monkeypatch):
         """Скрипт требует YANDEX_API_KEY — подсовываем fake."""
         monkeypatch.setenv("YANDEX_API_KEY", "fake-key-for-test")
+        # #3875: тесты гейтов не про TTS -- пред-синтез акта (E2E_INFRA_FAIL при мёртвом TTS) отключён
+        monkeypatch.setenv("E2E_PRESYNTH", "0")
+
+    @pytest.fixture(autouse=True)
+    def fake_robot(self, monkeypatch, tmp_path):
+        """Ни один тест класса не ходит настоящим ssh к роботу."""
+        return use_fake_robot(monkeypatch, tmp_path)
 
     def test_gating_fail_when_scenario_without_acceptance(self, tmp_path):
         """--scenario задан, acceptance.json отсутствует → exit 1 + gating message."""
@@ -262,7 +309,7 @@ class TestE2EVoiceTestScriptGating:
         assert "E2E_GATE1_MISSING_ACCEPTANCE" in result.stdout
         assert "acceptance.json" in result.stdout
 
-    def test_gating_skip_with_flag(self, tmp_path):
+    def test_gating_skip_with_flag(self, tmp_path, fake_robot):
         """--acceptance-skip обходит gating, но скрипт всё равно упадёт
         на синтезе Yandex (fake-key). Главное — НЕ gating error."""
         scenario = tmp_path / "scenario.json"
@@ -275,10 +322,13 @@ class TestE2EVoiceTestScriptGating:
         )
         # Без acceptance.json НЕ должно быть gating error
         assert "E2E_GATE1_MISSING_ACCEPTANCE" not in result.stdout
+        # ...и харнесс действительно пошёл дальше gating: изоляция акта
+        # #2890 на фейк-роботе (а не упал раньше по любой другой причине).
+        assert_act_isolated(fake_robot, result)
         # Скрипт ушёл дальше и упал на synth Yandex (fake-key) — это OK
         # (мы НЕ проверяем итоговый verdict, только что gating не сработал)
 
-    def test_gating_pass_with_acceptance_file(self, tmp_path):
+    def test_gating_pass_with_acceptance_file(self, tmp_path, fake_robot):
         """--acceptance <path> явно задан → gating проходит, aggregate check FAIL
         (нет реального робота, expected tool не вызван)."""
         scenario = tmp_path / "scenario.json"
@@ -288,7 +338,7 @@ class TestE2EVoiceTestScriptGating:
         acc = tmp_path / "acceptance.json"
         acc.write_text(json.dumps({
             "expected_tool_calls": ["generate_music"],
-            "must_not_call": ["execute_music_code"],
+            "must_not_call": ["request_music"],
         }))
         result = subprocess.run(
             [str(E2E_SCRIPT),
@@ -301,9 +351,24 @@ class TestE2EVoiceTestScriptGating:
         assert "E2E_GATE1_MISSING_ACCEPTANCE" not in result.stdout
         # Aggregate check выполнился (даже если verdict FAIL — gating ОК)
         assert "E2E_GATE1" in result.stdout
+        assert_act_isolated(fake_robot, result)
 
-    def test_auto_discovery_of_acceptance_json(self, tmp_path):
-        """Если acceptance.json рядом с scenario.json — auto-discovery."""
+    def test_no_auto_discovery_of_acceptance_json(self, tmp_path):
+        """Issue #2300 (09.09.2026): harness НЕ имеет auto-discovery.
+
+        Если рядом со scenario.json лежит acceptance.json, harness НЕ должен
+        его подхватить сам — раньше test_auto_discovery_of_acceptance_json
+        это проверял (issue #1452 round-155). Теперь инвертировано: единственный
+        резолвер — agent-flow-e2e-process.sh:resolve_acceptance_candidate.
+        Если harness всё-таки подхватил файл — регресс (drift с deploy,
+        исторические false-FAIL #1452 / #1456 / #1551).
+
+        ВАЖНО: тест БЕЗ --acceptance-skip — gating должен сработать. С
+        --acceptance-skip gating пропускается (явный override), и дальше
+        скрипт падает на synth Yandex (fake-key) — это не то, что мы
+        проверяем. Контракт #2300: harness gating → auto-discovery → None.
+        Тест: scenario+acceptance.json лежат рядом, ни --acceptance, ни
+        --acceptance-skip не переданы → gating должен ругнуться."""
         scenario = tmp_path / "scenario.json"
         scenario.write_text(json.dumps({"steps": [
             {"label": "s1", "text": "test", "voice": "anton"}
@@ -313,119 +378,132 @@ class TestE2EVoiceTestScriptGating:
             "expected_tool_calls": ["foo"],
             "must_not_call": [],
         }))
-        result = subprocess.run(
-            [str(E2E_SCRIPT),
-             "--scenario", str(scenario),
-             "--acceptance-skip"],
-            capture_output=True, text=True, timeout=15,
-        )
-        assert "auto-discovered" in result.stdout
-        assert "E2E_GATE1_MISSING_ACCEPTANCE" not in result.stdout
-
-    def test_auto_discovery_per_scenario_fallback(self, tmp_path):
-        """Репродукция issue #1452: scenario=music_library_suite_v1.json,
-        acceptance=music_library_acceptance_v1.json (без acceptance.json)
-        → должно найтись через fallback кандидат (issue #1452 round-155)."""
-        scenario = tmp_path / "music_library_suite_v1.json"
-        scenario.write_text(json.dumps({"steps": [
-            {"label": "ml01", "text": "test", "voice": "anton"}
-        ]}))
-        # НЕТ acceptance.json рядом — есть только per-scenario версия.
-        acc = tmp_path / "music_library_acceptance_v1.json"
-        acc.write_text(json.dumps({
-            "expected_tool_calls": ["generate_music"],
-            "must_not_call": ["execute_music_code"],
-        }))
-        result = subprocess.run(
-            [str(E2E_SCRIPT),
-             "--scenario", str(scenario),
-             "--acceptance-skip"],
-            capture_output=True, text=True, timeout=15,
-        )
-        # Главный ассерт: GATE-1 НЕ должен падать с MISSING_ACCEPTANCE —
-        # это именно то, что ломалось в issue #1452 round-155.
-        assert "E2E_GATE1_MISSING_ACCEPTANCE" not in (
-            result.stdout + result.stderr
-        ), (
-            f"per-scenario acceptance должен найтись через fallback, "
-            f"но получили FAIL:\nSTDOUT: {result.stdout}\n"
-            f"STDERR: {result.stderr}"
-        )
-        # Дополнительно: лог auto-discover должен быть в выводе
-        # (если скрипт упал раньше из-за fake Yandex key, проверяю stderr)
-        combined = result.stdout + result.stderr
-        assert "music_library_acceptance_v1.json" in combined, (
-            f"auto-discovered path должен быть в логе:\n{combined}"
-        )
-
-    def test_auto_discovery_per_scenario_without_version(self, tmp_path):
-        """Fallback без _v1 суффикса тоже работает (общий паттерн)."""
-        scenario = tmp_path / "foo_suite.json"
-        scenario.write_text(json.dumps({"steps": [
-            {"label": "s1", "text": "test", "voice": "anton"}
-        ]}))
-        acc = tmp_path / "foo_suite_acceptance.json"
-        acc.write_text(json.dumps({
-            "expected_tool_calls": [],
-            "must_not_call": [],
-        }))
-        result = subprocess.run(
-            [str(E2E_SCRIPT),
-             "--scenario", str(scenario),
-             "--acceptance-skip"],
-            capture_output=True, text=True, timeout=15,
-        )
-        assert "E2E_GATE1_MISSING_ACCEPTANCE" not in result.stdout
-        assert "foo_suite_acceptance.json" in result.stdout
-
-    def test_auto_discovery_priority_acceptance_json_wins(self, tmp_path):
-        """Если оба acceptance.json И per-scenario существуют — acceptance.json
-        в приоритете (backwards-compat)."""
-        scenario = tmp_path / "music_library_suite_v1.json"
-        scenario.write_text(json.dumps({"steps": [
-            {"label": "s1", "text": "test", "voice": "anton"}
-        ]}))
-        acc_generic = tmp_path / "acceptance.json"
-        acc_generic.write_text(json.dumps({
-            "expected_tool_calls": ["generic_tool"],
-            "must_not_call": [],
-        }))
-        acc_specific = tmp_path / "music_library_acceptance_v1.json"
-        acc_specific.write_text(json.dumps({
-            "expected_tool_calls": ["specific_tool"],
-            "must_not_call": [],
-        }))
-        result = subprocess.run(
-            [str(E2E_SCRIPT),
-             "--scenario", str(scenario),
-             "--acceptance-skip"],
-            capture_output=True, text=True, timeout=15,
-        )
-        assert "E2E_GATE1_MISSING_ACCEPTANCE" not in result.stdout
-        # acceptance.json должен победить (per-scenario остаётся fallback)
-        assert "acceptance.json" in result.stdout
-        assert "music_library_acceptance_v1.json" not in result.stdout
-
-    def test_gating_message_lists_all_expected_paths(self, tmp_path):
-        """FAIL-сообщение должно перечислять все ожидаемые пути (issue #1452)."""
-        scenario = tmp_path / "scenario.json"
-        scenario.write_text(json.dumps({"steps": [
-            {"label": "s1", "text": "test", "voice": "anton"}
-        ]}))
+        # Без --acceptance и без --acceptance-skip — gating должен сработать.
         result = subprocess.run(
             [str(E2E_SCRIPT),
              "--scenario", str(scenario)],
             capture_output=True, text=True, timeout=15,
         )
+        # Gating ДОЛЖЕН сработать: harness не передал ACCEPTANCE_FILE,
+        # auto-discovery удалён → E2E_GATE1_MISSING_ACCEPTANCE.
+        combined = result.stdout + result.stderr
+        assert "E2E_GATE1_MISSING_ACCEPTANCE" in combined, (
+            f"harness больше НЕ должен auto-discover acceptance.json "
+            f"(issue #2300), но gating не сработал. STDOUT: {result.stdout}\n"
+            f"STDERR: {result.stderr}"
+        )
+        assert "auto-discovered" not in combined, (
+            f"harness выдал 'auto-discovered' — регресс issue #2300: "
+            f"auto-discovery снова в harness? STDOUT: {result.stdout}"
+        )
+
+    def test_no_per_scenario_fallback(self, tmp_path):
+        """Issue #2300: harness НЕ резолвит per-scenario (issue #1452 round-155).
+
+        Раньше test_auto_discovery_per_scenario_fallback проверял, что
+        harness находит music_library_acceptance_v1.json. Теперь это
+        инвертировано: harness не должен искать acceptance сам — путь
+        приходит из e2e-process через env ACCEPTANCE_FILE.
+
+        Без --acceptance и без --acceptance-skip — gating должен сработать,
+        даже если рядом лежит music_library_acceptance_v1.json (раньше
+        harness бы его подхватил)."""
+        scenario = tmp_path / "music_library_suite_v1.json"
+        scenario.write_text(json.dumps({"steps": [
+            {"label": "ml01", "text": "test", "voice": "anton"}
+        ]}))
+        acc = tmp_path / "music_library_acceptance_v1.json"
+        acc.write_text(json.dumps({
+            "expected_tool_calls": ["generate_music"],
+            "must_not_call": ["request_music"],
+        }))
+        result = subprocess.run(
+            [str(E2E_SCRIPT),
+             "--scenario", str(scenario)],
+            capture_output=True, text=True, timeout=15,
+        )
+        # Gating должен сработать — harness НЕ резолвит сам.
+        combined = result.stdout + result.stderr
+        assert "E2E_GATE1_MISSING_ACCEPTANCE" in combined, (
+            f"harness auto-discover'нул per-scenario acceptance — регресс "
+            f"issue #2300. STDOUT: {result.stdout}\nSTDERR: {result.stderr}"
+        )
+
+    def test_explicit_acceptance_bypasses_gating(self, tmp_path, fake_robot):
+        """Если --acceptance <path> задан явно — gating проходит, aggregate
+        check FAIL (нет робота). Это РАБОТАЕТ без auto-discovery.
+
+        Заменяет старые test_auto_discovery_* — суть та же (acceptance
+        найден → gating pass), но теперь это явный --acceptance, а не
+        harness-side fallback. Реальная цепочка в проде:
+        e2e-process резолвит → -f acceptance_file=... → env ACCEPTANCE_FILE
+        → харнесс использует как есть."""
+        scenario = tmp_path / "scenario.json"
+        scenario.write_text(json.dumps({"steps": [
+            {"label": "s1", "text": "test", "voice": "anton"}
+        ]}))
+        acc = tmp_path / "music_library_acceptance_v1.json"
+        acc.write_text(json.dumps({
+            "expected_tool_calls": ["generate_music"],
+            "must_not_call": [],
+        }))
+        result = subprocess.run(
+            [str(E2E_SCRIPT),
+             "--scenario", str(scenario),
+             "--acceptance", str(acc),
+             "--acceptance-skip"],
+            capture_output=True, text=True, timeout=15,
+        )
+        # Gating прошёл (явный --acceptance).
+        assert "E2E_GATE1_MISSING_ACCEPTANCE" not in (
+            result.stdout + result.stderr
+        )
+        assert_act_isolated(fake_robot, result)
+
+    def test_gating_message_points_to_e2e_process(self, tmp_path):
+        """Issue #2300: gating-message должен указывать на e2e-process как
+        источник пути, а не перечислять harness-side fallback (раньше
+        test_gating_message_lists_all_expected_paths проверял 4 локальных
+        кандидата). Теперь контракт: harness без auto-discovery, поэтому
+        в FAIL-сообщении либо рекомендация '--acceptance <path>',
+        либо указание на agent-flow-e2e-process.sh:resolve_acceptance_candidate.
+        """
+        scenario = tmp_path / "scenario.json"
+        scenario.write_text(json.dumps({"steps": [
+            {"label": "s1", "text": "test", "voice": "anton"}
+        ]}))
+        result = subprocess.run(
+            [str(E2E_SCRIPT), "--scenario", str(scenario)],
+            capture_output=True, text=True, timeout=15,
+        )
         assert result.returncode == 1
         combined = result.stdout + result.stderr
-        # Все 4 ожидаемых пути должны быть в FAIL-сообщении
-        assert "acceptance.json" in combined
-        assert "scenario_acceptance.json" in combined  # SCENARIO_BASE
-        # SCENARIO_PREFIX (scenario → "scenario") — оба варианта с одним base
-        assert "scenario_acceptance_v1.json" in combined
+        # Маркер gating сохранён (downstream-парсеры).
+        assert "E2E_GATE1_MISSING_ACCEPTANCE" in combined
+        # Контракт issue #2300: подсказка ведёт на e2e-process, а не на
+        # fallback-кандидатов в harness.
+        assert "resolve_acceptance_candidate" in combined, (
+            f"gating-message должен указывать на e2e-process как "
+            f"единственный резолвер. Получено:\n{combined}"
+        )
+        # 'acceptance.json' в combined допустим (упоминается как один из
+        # кандидатов в hint-логе), но в acceptance.json verdict должен
+        # быть новый reason.
+        verdict_path_glob = "/tmp/e2e_v2_*/acceptance.json"
+        import glob
+        verdict_files = sorted(
+            glob.glob(verdict_path_glob),
+            key=os.path.getmtime, reverse=True,
+        )
+        if verdict_files:
+            verdict = json.loads(Path(verdict_files[0]).read_text())
+            assert verdict["pass"] is False
+            assert "e2e-process-only" in verdict.get("reason", ""), (
+                f"verdict reason должен указывать на issue #2300: "
+                f"{verdict}"
+            )
 
-    def test_text_only_does_not_require_acceptance(self, tmp_path):
+    def test_text_only_does_not_require_acceptance(self, tmp_path, fake_robot):
         """--text (single-shot smoke) БЕЗ --scenario не требует acceptance.json
         (legitimate smoke-test use case)."""
         result = subprocess.run(
@@ -434,6 +512,13 @@ class TestE2EVoiceTestScriptGating:
         )
         # Не должно быть gating error даже без acceptance
         assert "E2E_GATE1_MISSING_ACCEPTANCE" not in result.stdout
+        # ...и харнесс дошёл до конца прогона (а не упал раньше gating).
+        assert "E2E_ARTIFACTS " in result.stdout, (
+            f"STDOUT: {result.stdout}\nSTDERR: {result.stderr}"
+        )
+        # Фейк-робот не получил команд, которых не умеет.
+        assert not [e for e in robot_events(fake_robot)
+                    if e.startswith("UNSUPPORTED")]
 
 
 # --- Tests: e2e_voice_test.sh aggregate check (full integration) -----------
@@ -452,16 +537,19 @@ class TestGate1AggregateIntegration:
         acc = tmp_path / "acceptance.json"
         acc.write_text(json.dumps({
             "expected_tool_calls": ["generate_music"],
-            "must_not_call": ["execute_music_code"],
+            "must_not_call": ["request_music"],
         }))
-        fake_ssh, log_file = make_fake_ssh(
-            tmp_path,
-            "2025-08-18 dialogue_node: Calling MCP tool: generate_music\n"
-            "2025-08-18 dialogue_node: MCP tool result: generate_music",
+        # Строки лога — в формате mcp_server, который матчит
+        # e2e_tool_match.tool_invoked (187c9a35: GATE-1 считает вызов, а не
+        # упоминание тула; старое «Calling MCP tool: X» им не матчится).
+        robot = use_fake_robot(
+            monkeypatch, tmp_path,
+            "[mcp_server-10] 📥 Запрос выполнения: generate_music с параметрами {}\n"
+            "[mcp_server-10] ✅ Инструмент generate_music выполнен успешно\n",
         )
         monkeypatch.setenv("YANDEX_API_KEY", "fake")
-        monkeypatch.setenv("ROBOT_SSH_OVERRIDE", str(fake_ssh))
-        monkeypatch.setenv("LOG_FILE", str(log_file))
+        # #3875: тесты гейтов не про TTS -- пред-синтез акта (E2E_INFRA_FAIL при мёртвом TTS) отключён
+        monkeypatch.setenv("E2E_PRESYNTH", "0")
         result = subprocess.run(
             [str(E2E_SCRIPT),
              "--scenario", str(scenario),
@@ -473,6 +561,7 @@ class TestGate1AggregateIntegration:
         assert "GATE-1: ✅" in result.stdout, (
             f"expected GATE-1 PASS in stdout:\n{result.stdout}"
         )
+        assert_act_isolated(robot, result)
         # $OUT_DIR/acceptance.json создаётся в /tmp/e2e_v2_<run_id>/
         import glob
         out_dirs = sorted(glob.glob("/tmp/e2e_v2_*"),
@@ -488,7 +577,7 @@ class TestGate1AggregateIntegration:
 
     def test_aggregate_fail_when_renardo_called(self, tmp_path, monkeypatch):
         """Ровно кейс из acceptance: expected=generate_music,
-        must_not_call=execute_music_code. Renardo вызван → GATE-1 FAIL."""
+        must_not_call=request_music. Renardo вызван → GATE-1 FAIL."""
         scenario = tmp_path / "scenario.json"
         scenario.write_text(json.dumps({"steps": [
             {"label": "s1", "text": "test", "voice": "anton"}
@@ -496,16 +585,18 @@ class TestGate1AggregateIntegration:
         acc = tmp_path / "acceptance.json"
         acc.write_text(json.dumps({
             "expected_tool_calls": ["generate_music"],
-            "must_not_call": ["execute_music_code"],
+            "must_not_call": ["request_music"],
         }))
-        fake_ssh, log_file = make_fake_ssh(
-            tmp_path,
-            "2025-08-18 dialogue_node: Calling MCP tool: execute_music_code\n"
-            "2025-08-18 dialogue_node: Renardo PTree.__init__()\n",
+        # Формат mcp_server (см. test_aggregate_pass_when_expected_called).
+        robot = use_fake_robot(
+            monkeypatch, tmp_path,
+            "[mcp_server-10] 📥 Запрос выполнения: request_music с параметрами {}\n"
+            "[mcp_server-10] ✅ Инструмент request_music выполнен успешно\n"
+            "[mcp_server-10] Renardo PTree.__init__()\n",
         )
         monkeypatch.setenv("YANDEX_API_KEY", "fake")
-        monkeypatch.setenv("ROBOT_SSH_OVERRIDE", str(fake_ssh))
-        monkeypatch.setenv("LOG_FILE", str(log_file))
+        # #3875: тесты гейтов не про TTS -- пред-синтез акта (E2E_INFRA_FAIL при мёртвом TTS) отключён
+        monkeypatch.setenv("E2E_PRESYNTH", "0")
         result = subprocess.run(
             [str(E2E_SCRIPT),
              "--scenario", str(scenario),
@@ -516,6 +607,7 @@ class TestGate1AggregateIntegration:
         assert "GATE-1: ❌" in result.stdout, (
             f"expected GATE-1 FAIL in stdout:\n{result.stdout}"
         )
+        assert_act_isolated(robot, result)
         # Проверяем acceptance.json артефакт
         import glob
         out_dirs = sorted(glob.glob("/tmp/e2e_v2_*"),
@@ -524,7 +616,7 @@ class TestGate1AggregateIntegration:
         if verdict_path.exists():
             verdict = json.loads(verdict_path.read_text())
             assert verdict["pass"] is False
-            assert "execute_music_code" in verdict["forbidden_calls"]
+            assert "request_music" in verdict["forbidden_calls"]
             assert "forbidden" in verdict["reason"]
 
 
@@ -547,17 +639,26 @@ class TestE2EScriptContract:
             "--acceptance-skip CLI флаг не найден"
         )
 
-    def test_script_has_auto_discovery(self):
+    def test_script_has_no_auto_discovery(self):
+        """Issue #2300 (09.09.2026): harness НЕ должен иметь auto-discovery.
+
+        Бывший test_script_has_auto_discovery проверял наличие 'auto-discovered'
+        и '_acceptance_v1.json' в скрипте. Теперь инвертировано: эти маркеры
+        НЕ должны присутствовать (иначе — регресс: harness снова делает
+        candidate-search и рассинхронизируется с e2e-process)."""
         text = E2E_SCRIPT.read_text()
-        assert "auto-discovered" in text, (
-            "auto-discovery блок не найден"
+        assert "auto-discovered" not in text, (
+            "в e2e_voice_test.sh снова появился 'auto-discovered' — регресс "
+            "issue #2300 (harness снова делает auto-discovery, единственный "
+            "резолвер — agent-flow-e2e-process.sh:resolve_acceptance_candidate)"
         )
-        # Issue #1452 fix: per-scenario fallback (issue #1452 round-155)
-        assert "_acceptance_v1.json" in text, (
-            "per-scenario fallback для *_acceptance_v1.json отсутствует"
-        )
-        assert "_acceptance.json" in text, (
-            "per-scenario fallback для *_acceptance.json отсутствует"
+        # PREFIX-стрип (_v[0-9]*/_suite) жил только в harness до #2300.
+        # Теперь — только в e2e-process. Если снова в harness — drift.
+        assert "_acceptance_v1.json" not in text or "_v1" not in text.replace(
+            "_v1_", ""
+        ).replace("_v2_", ""), (
+            "per-scenario fallback-кандидат *_acceptance_v1.json снова "
+            "в harness — регресс issue #2300"
         )
 
     def test_script_has_gating_message(self):

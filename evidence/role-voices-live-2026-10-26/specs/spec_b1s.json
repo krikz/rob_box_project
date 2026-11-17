@@ -1,0 +1,82 @@
+[
+{
+"id": "s-baya_p24",
+"provider": "silero",
+"voice": "baya",
+"pitch": 0,
+"speed": 1.0,
+"text": "Где ты сейчас находишься?"
+},
+{
+"id": "s-baya_p25",
+"provider": "silero",
+"voice": "baya",
+"pitch": 0,
+"speed": 1.0,
+"text": "Что ты видишь вокруг себя, опиши в двух словах."
+},
+{
+"id": "s-baya_p26",
+"provider": "silero",
+"voice": "baya",
+"pitch": 0,
+"speed": 1.0,
+"text": "Какие звуки ты вообще умеешь издавать?"
+},
+{
+"id": "s-baya_p27",
+"provider": "silero",
+"voice": "baya",
+"pitch": 0,
+"speed": 1.0,
+"text": "У тебя сейчас играет какая-нибудь музыка?"
+},
+{
+"id": "s-baya_p28",
+"provider": "silero",
+"voice": "baya",
+"pitch": 0,
+"speed": 1.0,
+"text": "Ты меня слышишь? Ответь коротко."
+},
+{
+"id": "s-aidar_p24",
+"provider": "silero",
+"voice": "aidar",
+"pitch": 0,
+"speed": 1.0,
+"text": "Где ты сейчас находишься?"
+},
+{
+"id": "s-aidar_p25",
+"provider": "silero",
+"voice": "aidar",
+"pitch": 0,
+"speed": 1.0,
+"text": "Что ты видишь вокруг себя, опиши в двух словах."
+},
+{
+"id": "s-aidar_p26",
+"provider": "silero",
+"voice": "aidar",
+"pitch": 0,
+"speed": 1.0,
+"text": "Какие звуки ты вообще умеешь издавать?"
+},
+{
+"id": "s-aidar_p27",
+"provider": "silero",
+"voice": "aidar",
+"pitch": 0,
+"speed": 1.0,
+"text": "У тебя сейчас играет какая-нибудь музыка?"
+},
+{
+"id": "s-aidar_p28",
+"provider": "silero",
+"voice": "aidar",
+"pitch": 0,
+"speed": 1.0,
+"text": "Ты меня слышишь? Ответь коротко."
+}
+]

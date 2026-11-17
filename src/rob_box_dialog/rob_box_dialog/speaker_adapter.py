@@ -1,0 +1,582 @@
+"""Собеседник через один адаптер — шов с ADR-0130 (ADR-0150 §7.5, ADR-0130 §2.5–2.6, ADR-0139).
+
+Диалог сам не гадает, кто говорит: всё знание «кто это и тот ли это человек» — здесь.
+
+* :func:`speaker_ref` — :class:`~rob_box_dialog.session.SpeakerRef` из результата голосовой биометрии (словарь
+  ``rob_box_core.speaker_wire``) и лиц из кадра: ``confirmed`` — только уверенное имя биометрии (отрыв от соседа
+  проверяет владелец биометрии) или голос-гипотеза, которую подтвердило лицо с тем же именем (два канала);
+  ``tentative`` — гипотеза голоса без второго канала; ``contested`` — голос похож на знакомого, но кто из похожих —
+  спорно: собеседник без профиля, как незнакомец, но и не «голос не узнан»; иначе ``unknown``.
+* :func:`same_interlocutor` — тот ли это собеседник (подхват бэклога голым «робот», В12/В12′): **ИЛИ** по каналам
+  ``knowledge.PICKUP_CHANNELS`` — голос длинной фразы узнан; человек, чей голос узнан в фразе бэклога, виден в кадре
+  (по имени — у лица и голоса разные id); (слабо) DOA ±60° при ком-то в кадре. Короткому «робот» по голосу не верим,
+  а просто «кто-то в кадре» — не признак того же человека (перед роботом сидят и под телевизор; Шифу 21.10).
+  Теперь не фильтр подхвата, а поле ``same_as_caller`` метки фразы.
+* :func:`voice_tag` / :func:`phrase_speaker` — кто сказал фразу бэклога (Шифу 21.10): узнан уверенно
+  (имя биометрии или гипотеза голоса, подтверждённая лицом с тем же именем) — конкретный спикер с id, каналами и
+  score; иначе ``неопознанный`` + что есть по голосу: ``bio``, гипотеза/лучший кандидат со score — не имя. Спорный голос
+  (``bio=contested``) — никому, ни ``person_ref`` кандидата, ни его имени (:func:`attributed_person`).
+* :func:`merge_plan` / :func:`merge_answer` / :func:`merge_phrase` — вопрос «вы разные люди или это ты?» после
+  регистрации (ADR-0127): что спрашиваем, склеивать ли по ответу (и тот ли человек ответил), что
+  робот говорит об исходе — кодом, без подсказки LLM (ADR-0148).
+* :func:`voice_certainty` / :class:`IdentityStep` — решение Шифу 21.10: один голос — одна личность
+  (:func:`same_voice_plan`), имя меняется фразой (:func:`rename_step`), неуверенный голос подтверждается шаблоном
+  нормальной длины (:func:`template_step`, :func:`voice_check_step`); что сделать и что сказать — кодом.
+* :func:`confident_name` / :func:`named_self` — контекст хода для гейта ``register_speaker``: кем голос
+  фразы УВЕРЕННО узнан и как человек назвал себя в реплике; гейт сверяет с ними имя, которое модель пишет в профиль.
+* :func:`recognition_reply` — ответ на «ты меня узнал?» строит код по голосу ЭТОЙ фразы (решение Шифу 26.10;
+  SpeakerResult по её ``utterance_id``, а не собеседник прошлой фразы): узнан с именем, голос знакомый без
+  подтверждения (без вопроса «ты Саша?»), профиль без имени, не узнан (и профиль, заведённый из этой же фразы,
+  ``SpeakerRef.first_heard``: голос слышен впервые), результат фразы не пришёл — «не уверен».
+* Короткая фраза без оценки биометрии (``inconclusive``) собеседника не сбрасывает: :func:`speaker_ref` оставляет
+  прежнего.
+
+Когда ADR-0130 этапы 2/3/5 дадут треки и реестр Знакомых, меняется только этот модуль. Чистый: время передают
+вызывающие, сообщения читаются утиной типизацией.
+"""
+
+from __future__ import annotations
+
+from collections import deque
+from dataclasses import dataclass
+from typing import Any, Deque, Dict, FrozenSet, Iterable, List, Mapping, Optional, Sequence, Tuple
+
+from rob_box_core.speaker_wire import (
+    NAME_CONFIRMED,
+    NAME_CONTESTED,
+    NAME_NAMELESS,
+    NAME_TENTATIVE,
+    NAME_UNCONFIRMED,
+    NAME_UNKNOWN,
+    first_heard,
+    name_state,
+)
+from rob_box_dialog import knowledge as kn
+from rob_box_dialog import phrases
+from rob_box_dialog.doa import angle_diff_deg
+from rob_box_dialog.greeting_reply import is_greeting_reply
+from rob_box_dialog.reply_grammar import NAME, NO, YES, Rename, Reply, classify_rename, classify_reply, classify_same
+from rob_box_dialog.session import SceneFrame, SpeakerRef
+from rob_box_dialog.words import name_tokens, same_name, self_intro_name
+
+
+@dataclass(frozen=True)
+class FaceSeen:
+    person_id: str
+    name: str
+    t: float
+
+
+class FaceSightings:
+    """Лица из кадра за последние :data:`~rob_box_dialog.knowledge.FACE_HISTORY_S` секунд."""
+
+    def __init__(self, history_s: float = kn.FACE_HISTORY_S) -> None:
+        self.history_s = history_s
+        self._seen: Deque[FaceSeen] = deque()
+
+    def note(self, person_id: str, name: str, t: float) -> None:
+        if person_id:
+            self._seen.append(FaceSeen(person_id, name or "", t))
+        while self._seen and t - self._seen[0].t > self.history_s:
+            self._seen.popleft()
+
+    def note_event(self, msg: Any, t: float) -> None:
+        """``VisionEvent`` с лицом (``event_type=face``, ``embedding_id`` из FaceStore) → наблюдение."""
+        if getattr(msg, "event_type", "") == "face":
+            self.note(str(getattr(msg, "embedding_id", "") or ""), str(getattr(msg, "display_name", "") or ""), t)
+
+    def during(self, start: float, end: float) -> FrozenSet[str]:
+        """Кто был в кадре в ``[start, end]``: имя в нижнем регистре, у безымянного — ``#<id FaceStore>``."""
+        return frozenset(f.name.lower() or f"#{f.person_id}" for f in self._seen if start <= f.t <= end)
+
+    def names_during(self, start: float, end: float) -> FrozenSet[str]:
+        return frozenset(f.name.lower() for f in self._seen if f.name and start <= f.t <= end)
+
+
+#: Состояние имени результата биометрии (``speaker_wire.name_state``) → ``(SpeakerRef.name_state, приписан ли голос
+#: профилю)``. ``contested`` (голос похож на знакомого, но в полосе сомнения конкурент с другим именем) — кто
+#: это, не знаем: собеседника-профиля нет, как у незнакомца (чужие факты не читаются и не пишутся), а снимок
+#: честно говорит «голос похож на знакомый, имя не подтверждено», а не «unknown». Профиль без имени —
+#: свой голос с кличкой: профиль есть, имени нет.
+_REF_STATE: Mapping[str, Tuple[str, bool]] = {
+    NAME_CONFIRMED: (NAME_CONFIRMED, True),
+    NAME_TENTATIVE: (NAME_TENTATIVE, True),
+    NAME_CONTESTED: (NAME_CONTESTED, False),
+    NAME_NAMELESS: (NAME_UNKNOWN, True),
+    NAME_UNKNOWN: (NAME_UNKNOWN, False),
+}
+
+
+def speaker_ref(result: Mapping[str, Any], *, now: float, face_names: Iterable[str] = (),
+                azimuth_deg: Optional[float] = None, prev: Optional[SpeakerRef] = None) -> SpeakerRef:
+    """Собеседник этой фразы по правилам ADR-0130 §2.6; пороги биометрии не здесь и не меняются.
+
+    Биометрия фразу не оценила (``inconclusive``: речи меньше ``identify_min_voiced_sec``, нет эмбеддинга) - это «не
+    знаю», а не «говорит другой»: собеседник - прежний ``prev`` (контракт
+    ``speaker_id_node._inconclusive_reason``: потребители не сбрасывают узнанного диктора). Раньше такая фраза делала
+    узнанного Сашу незнакомцем, и на короткое «ты меня узнал?» код говорил ему «По голосу пока не узнаю». Имени
+    сама фраза не получает: метка фразы бэклога - ``voice_tag`` (``inconclusive``)."""
+    if result.get("inconclusive") and prev is not None:
+        return prev
+    return _evaluated_ref(result, now, face_names, azimuth_deg, prev)
+
+
+def _evaluated_ref(result: Mapping[str, Any], now: float, face_names: Iterable[str], azimuth_deg: Optional[float],
+                   prev: Optional[SpeakerRef]) -> SpeakerRef:
+    """Собеседник фразы, которую биометрия оценила (или не оценила, а прежнего собеседника нет)."""
+    faces = {n.lower() for n in face_names if n}
+    state, name, attributed = _name_state(result)
+    person = attributed_person(result) or None
+    if attributed and person is None:  # узнан, а id нет (битый результат) — назвать некого
+        state, name = NAME_UNKNOWN, None
+    channels = ("voice", "face") if name and name.lower() in faces else ("voice",)
+    if state == NAME_TENTATIVE and len(channels) == 2:
+        state = NAME_CONFIRMED  # два канала согласны (ADR-0130 §2.6, ADR-0139)
+    since = prev.since if prev is not None and person and prev.person_ref == person else now
+    return SpeakerRef(person_ref=person, name=name, name_state=state, azimuth_deg=azimuth_deg,
+                      since=since, channels=channels, first_heard=bool(person) and first_heard(result))
+
+
+def _name_state(result: Mapping[str, Any]) -> Tuple[str, Optional[str], bool]:
+    """``(name_state, имя, приписан ли голос профилю)``: имя — уверенное (``name``, отрыв проверил владелец биометрии)
+    или гипотеза (``tentative_name``); у спора и профиля без имени его нет."""
+    state, attributed = _REF_STATE[name_state(result)]
+    name = {NAME_CONFIRMED: result.get("name"), NAME_TENTATIVE: result.get("tentative_name")}.get(state)
+    return state, (str(name) if name else None), attributed
+
+
+def attributed_person(result: Mapping[str, Any]) -> str:
+    """``speaker_id`` профиля, которому биометрия приписала голос фразы (таблица ``_REF_STATE``), иначе ``""``. Спор
+ — никому: ``speaker_id`` в нём лишь ближайший кандидат, и фраза бэклога (``VoiceTag``, ``Heard``) ему не
+    приписывается."""
+    _state, _name, attributed = _name_state(result)
+    return str(result.get("speaker_id") or "") if attributed else ""
+
+
+@dataclass(frozen=True)
+class VoiceTag:
+    """Что биометрия сказала о фразе: ``bio`` — ``known`` | ``contested`` | ``unknown_voice`` | ``inconclusive``;
+    ``name`` — только уверенное имя; ``tentative`` — гипотеза при ``known``; ``candidate`` — лучший кандидат без порога
+    у незнакомого. У ``contested`` нет ни ``person_ref``, ни имени, ни кандидата: голос похож на знакомого, а чей —
+    спорно."""
+
+    bio: str
+    person_ref: str = ""
+    name: str = ""
+    tentative: str = ""
+    score: Optional[float] = None
+    candidate: str = ""
+    candidate_score: Optional[float] = None
+    #: Внутренняя кличка узнанного профиля — различает тёзок; плейсхолдер «незнакомца» сюда не кладут.
+    epithet: str = ""
+
+
+def _score(value: Any) -> Optional[float]:
+    return None if value is None else round(float(value), 3)
+
+
+def voice_tag(result: Mapping[str, Any]) -> VoiceTag:
+    """Результат биометрии фразы (словарь ``rob_box_core.speaker_wire``) → :class:`VoiceTag`."""
+    candidate = str(result.get("candidate_name") or "")
+    cand_score = _score(result.get("candidate_score")) if candidate else None
+    if result.get("inconclusive"):
+        return VoiceTag("inconclusive", candidate=candidate, candidate_score=cand_score)
+    if not result.get("is_known"):
+        return VoiceTag("unknown_voice", candidate=candidate, candidate_score=cand_score)
+    state, name, _attributed = _name_state(result)
+    if state == NAME_CONTESTED:  # голос похож на знакомого, кто из похожих — не решено: фраза — никому
+        return VoiceTag("contested")
+    return VoiceTag("known", person_ref=attributed_person(result),
+                    name=name if state == NAME_CONFIRMED else "", tentative=name if state == NAME_TENTATIVE else "",
+                    score=_score(result.get("confidence")), epithet=str(result.get("epithet") or ""))
+
+
+def phrase_speaker(voice: Optional[VoiceTag], faces: Iterable[str] = ()) -> Dict[str, Any]:
+    """Кто сказал фразу: узнан — ``{identified, name, person_ref, channels, score}``; нет —
+    ``{identified: false, label: неопознанный, bio, candidate?, candidate_score?}``. ``faces`` — кто был в кадре во
+    время фразы (имена в нижнем регистре): одно лицо в кадре фразу не подписывает, только подтверждает гипотезу
+    голоса."""
+    in_frame = {f for f in faces if f and not f.startswith("#")}
+    if voice is not None and voice.name:
+        return _identified(voice, voice.name, ["voice"])
+    if voice is not None and voice.tentative and voice.tentative.lower() in in_frame:
+        return _identified(voice, voice.tentative, ["voice", "face"])
+    out: Dict[str, Any] = {"identified": False, "label": kn.UNIDENTIFIED_SPEAKER,
+                           "bio": voice.bio if voice is not None else "none"}
+    if voice is not None and (voice.tentative or voice.candidate):
+        out["candidate"] = voice.tentative or voice.candidate
+        out["candidate_score"] = voice.score if voice.tentative else voice.candidate_score
+    return out
+
+
+def _identified(voice: VoiceTag, name: str, channels: List[str]) -> Dict[str, Any]:
+    out = {"identified": True, "name": name, "person_ref": voice.person_ref, "channels": channels,
+           "score": voice.score}
+    if voice.epithet:
+        out["epithet"] = voice.epithet  # тёзки: два профиля «Дэнчик»; вслух не произносится
+    return out
+
+
+def speaker_block(ref: Optional[SpeakerRef]) -> Dict[str, Any]:
+    """Раздел ``speaker`` снимка хода (§7.3, §7.5): ``{name, name_state}``. Имя — только при ``confirmed``:
+    по гипотезе обращаться нельзя (эпизод Б 20.10 — «Литвин» к Дэнчику; A30). Вместо префиксов в тексте реплики."""
+    if ref is None:
+        return {"name": None, "name_state": NAME_UNKNOWN}
+    return {"name": ref.name if ref.name_state == NAME_CONFIRMED else None, "name_state": ref.name_state}
+
+
+def recognition_state(ref: Optional[SpeakerRef]) -> str:
+    """Что код знает о голосе фразы для ответа на «ты меня узнал?» (исход - ``speaker_wire.NAME_*`` или
+    ``knowledge.RECOGNIZED_UNHEARD``). ``ref`` - собеседник ЭТОЙ фразы (:func:`recognition_reply`); ``None`` - её
+    SpeakerResult к ответу не пришёл: ``RECOGNIZED_UNHEARD``, а не собеседник прошлой фразы. Спор и гипотеза
+    голоса - состояние имени; имя подтверждено - ``NAME_CONFIRMED``; свой профиль без имени (``person_ref`` есть,
+    имени нет; и битый «подтверждён» без имени) - ``NAME_NAMELESS``; иначе - не узнан. Профиль, заведённый из этой же
+    фразы (``SpeakerRef.first_heard``: голос слышен впервые), - тоже не узнан: «голос твой помню» ему - неправда (ревью
+    )."""
+    if ref is None:
+        return kn.RECOGNIZED_UNHEARD
+    if ref.name_state in NAME_UNCONFIRMED:
+        return ref.name_state
+    if ref.name_state == NAME_CONFIRMED and ref.name:
+        return NAME_CONFIRMED
+    return NAME_NAMELESS if ref.person_ref and not ref.first_heard else NAME_UNKNOWN
+
+
+def _without(words: Sequence[str], spans: Iterable[str]) -> List[str]:
+    """``words`` без вхождений фраз ``spans`` (каждая - слова через пробел, целиком и подряд; длинные первыми)."""
+    cut = sorted((tuple(s.split()) for s in spans), key=len, reverse=True)
+    out: List[str] = []
+    i = 0
+    while i < len(words):
+        hit = next((s for s in cut if tuple(words[i:i + len(s)]) == s), ())
+        out.extend(() if hit else (words[i],))
+        i += len(hit) or 1
+    return out
+
+
+def _untagged(words: Sequence[str], tags: Iterable[str]) -> List[str]:
+    """``words`` без переспроса ``tags`` в самом конце («…, да?», «…или нет?»); в другом месте он - не переспрос."""
+    for tag in sorted((tuple(t.split()) for t in tags), key=len, reverse=True):
+        if tag and tuple(words[-len(tag):]) == tag:
+            return list(words[:-len(tag)])
+    return list(words)
+
+
+def asks_recognized(text: str) -> bool:
+    """В реплике нет ничего, кроме вопроса «ты меня узнал?» (таблица ``knowledge.RECOGNIZED_ASK``): без переспроса в
+    конце (``tags``: «да?», «или нет?»), пояснений (``along``: «я тот же», «мы недавно уже говорили») и связок - одно
+    дополнение или больше («меня», «мой голос», «кто я такой») и глагол узнавания (``verbs``: «узнал», «не узнал»),
+    где угодно в реплике; или вопрос имени (``names``: «как меня зовут?», n723) - рядом с ним только слова таблицы и
+    ``name_filler``. Любое другое слово (другая просьба, «про меня», «же»/«да» утверждения, «что» придаточного,
+    «не знаешь») - нет: ход идёт модели."""
+    ask = kn.RECOGNIZED_ASK
+    words = _untagged(name_tokens(text), ask["tags"])
+    unnamed = _without(words, ask["names"])
+    if len(unnamed) < len(words):  # вопрос имени - сам вопрос узнавания: рядом только слова таблицы
+        skip = (*ask["filler"], *ask["name_filler"])
+        rest = _without([t for t in _without(unnamed, ask["along"]) if t not in skip], ask["objects"])
+        return not rest or " ".join(rest) in ask["verbs"]
+    said = [t for t in _without(words, ask["along"]) if t not in ask["filler"]]
+    verb = _without(said, ask["objects"])
+    return " ".join(verb) in ask["verbs"] and len(verb) < len(said)
+
+
+def recognition_reply(result: Optional[Mapping[str, Any]], prev: Optional[SpeakerRef], *,
+                      now: float) -> Tuple[str, str]:
+    """Ответ кода на «ты меня узнал?» (:func:`asks_recognized`, решение Шифу 26.10: без выдумки LLM) -
+    ``(исход, фраза)`` по голосу ЭТОЙ фразы: ``result`` - её SpeakerResult (по ``utterance_id``), ``None`` -
+    не пришёл за окно ``knowledge.RECOGNIZED_VOICE_WAIT_S`` («не уверен»); ``prev`` - собеседник сессии до неё. Кто
+    сказал фразу, решает :func:`speaker_ref` - то же правило, что у собеседника сессии: короткая фраза
+    (``inconclusive``) - прежний собеседник. Исход - :func:`recognition_state`, фраза -
+    ``knowledge.RECOGNIZED_PHRASE.<исход>``. Спорный голос и гипотеза - «знакомый, не уверен чей»: без вопроса «ты
+    Саша?» и без имени кандидата."""
+    ref = speaker_ref(result, now=now, prev=prev) if result is not None else None
+    state = recognition_state(ref)
+    name = ref.name if ref is not None and state == NAME_CONFIRMED else ""
+    return state, phrases.text(f"{kn.RECOGNIZED_PHRASE}.{state}", name=name)
+
+
+def voice_registration(sent: bool, outcome: Optional[Mapping[str, Any]]) -> Optional[Dict[str, Any]]:
+    """Исход регистрации голоса по самопредставлению этого хода для раздела ``speaker`` (ADR-0148).
+
+    Регистрацию делает код до LLM, исход ход ждёт (``identity_question.settle_identity``); модель тул
+    ``register_speaker`` в этом ходе не видит и без поля обещала «узнаю по голосу» при отказе ``too_short``.
+    ``None`` — регистрации в ходе не было; ``registered: None`` — ответа владельца не дождались (неизвестно)."""
+    if not sent:
+        return None
+    event = (outcome or {}).get("event")
+    if event == "registered":
+        return {"registered": True}
+    if event == "register_error":
+        return {"registered": False, "reason": str((outcome or {}).get("error") or "error")}
+    return {"registered": None, "reason": "no_answer"}
+
+
+def question_frame(person_ref: str, kind: str, name: Optional[str], azimuth_deg: Optional[float],
+                   asked_at: Optional[float], speech_id: str = "") -> Dict[str, Any]:
+    """Данные кадра ``Identity(ask)`` (§7.2, §7.5 п.2): кого спросили, о чём, с какой стороны и когда.
+
+    ``asked_at`` — когда микрофон снова слышит (конец вопроса + ``IDENTITY_MIC_GRACE_S``); ``None`` — вопрос ещё не договорён (кадр ждёт ``SpeechEvent finished`` речи ``speech_id``)."""
+    return {"person_ref": person_ref, "kind": kind, "name": name, "azimuth_deg": azimuth_deg, "asked_at": asked_at,
+            "speech_id": speech_id}
+
+
+def in_reply_window(asked_at: Any, t: Any, *, in_grace: bool = False) -> bool:
+    """Фраза, кончившаяся в ``t``, — в окне ответа на вопрос робота: от ``asked_at`` (конец вопроса + грейс микрофона
+    ``IDENTITY_MIC_GRACE_S`` против эха вопроса) до ``asked_at + REPLY_WINDOW_S``. ``asked_at`` ``None`` — вопрос
+    ещё звучит, окна нет.
+
+    ``in_grace`` — окно начинается с КОНЦА вопроса (``asked_at - IDENTITY_MIC_GRACE_S``): для ответа, который эхом
+    вопроса быть не может (целое «да»/«нет» из таблицы на «выключить и зачитать?»: «да» за 25 мс до
+    ``asked_at`` уходило в бэклог, окно истекало молчаливым «нет»). Окно имени и приветствия — без него (В17)."""
+    if asked_at is None:
+        return False
+    age = float(t or 0.0) - float(asked_at)
+    opens = -kn.IDENTITY_MIC_GRACE_S if in_grace else 0.0
+    return opens <= age <= kn.REPLY_WINDOW_S
+
+
+def question_open(frame: Optional[SceneFrame]) -> bool:
+    """Вопрос договорён и окно ответа идёт: кадр ``Identity`` с ``asked_at`` (до этого он «ждёт», ответа нет)."""
+    return frame is not None and frame.kind == "Identity" and frame.payload.get("asked_at") is not None
+
+
+def answer_to_question(frame: Optional[SceneFrame], heard: Any, *,
+                       wake_words: Optional[Sequence[str]] = None) -> Optional[Reply]:
+    """Фраза без вейка — ответ на вопрос робота (В17(б), решение Шифу 21.10): кадр ``Identity`` жив (TTL — у сессии),
+    фраза пришла после открытия окна (``asked_at`` = конец вопроса + грейс микрофона), не позже ``IDENTITY_TTL_S``,
+    и ПОХОЖА НА ОТВЕТ по грамматике (:func:`reply_grammar.classify_reply`: имя, да/нет, отказ). DOA и голос — не
+    условия (DOA в комнате прыгает), только признаки в логе. Не похоже — ``None`` (бэклог). Это не окно адресации
+    (§17 Ж): ответить можно только на свой вопрос."""
+    if not question_open(frame) or not kn.IDENTITY_ANSWER_WITHOUT_WAKE:
+        return None
+    if not in_reply_window(frame.payload["asked_at"], getattr(heard, "t", 0.0)):
+        return None
+    return question_reply(str(frame.payload.get("kind") or ""), str(getattr(heard, "text", "") or ""),
+                          wake_words=wake_words)
+
+
+def question_reply(kind: str, text: str, *, wake_words: Optional[Sequence[str]] = None) -> Optional[Reply]:
+    """Похожа ли фраза на ответ на вопрос вида ``kind`` (кадр ``Identity``): на вопрос склейки (``IDENTITY_MERGE_KINDS``)
+    — «это я»/«мы разные» (``YES``/``NO``) или да/нет; на вопрос об имени — имя/да/нет/отказ."""
+    rename = classify_rename(text, wake_words=wake_words)
+    if rename is not None:  # «меня зовут не X, а Y» — ответ-имя, а не «Не»
+        return Reply(NAME, rename.name)
+    if kind in kn.IDENTITY_MERGE_KINDS + (kn.IDENTITY_SAME_VOICE_KIND,):
+        same = classify_same(text, wake_words=wake_words)
+        if same is not None:
+            return Reply(YES if same else NO)
+    return classify_reply(text, asks_name=kind in kn.IDENTITY_ASKS_NAME, wake_words=wake_words)
+
+
+def merge_plan(ack: Mapping[str, Any], question: str) -> Dict[str, Any]:
+    """Данные вопроса склейки из ack регистрации: ``new_id`` — профиль этой регистрации, ``known_id`` — с кем его
+    можно спутать (тёзка или похожий голос). Склейка при «это я» — ``new_id`` → ``known_id``: у старого профиля больше
+    эмбеддингов и история, его имя и остаётся (``speaker_id_node._on_merge_request``)."""
+    other = ack.get("name_twin") or ack.get("voice_conflict") or {}
+    return {"kind": "twin" if ack.get("name_twin") else "conflict", "question": question,
+            "new_id": str(ack.get("speaker_id") or ""), "new_name": str(ack.get("name") or ""),
+            "known_id": str(other.get("speaker_id") or ""), "known_name": str(other.get("name") or "")}
+
+
+def said_same(plan: Mapping[str, Any], text: str, *, wake_words: Optional[Sequence[str]] = None) -> Optional[bool]:
+    """Что человек СКАЗАЛ на вопрос «один человек или двое?»: ``True`` — один, ``False`` — разные, ``None`` — не понять.
+    Голое да/нет — ответ только на ``twin`` («Ты тот самый X?») и ``same_voice``; на ``conflict`` вопрос двойной."""
+    same = classify_same(text, max_words=None, wake_words=wake_words)
+    if same is None and plan.get("kind") in ("twin", kn.IDENTITY_SAME_VOICE_KIND):
+        reply = classify_reply(text, asks_name=False, wake_words=wake_words)
+        same = {YES: True, NO: False}.get(reply.kind) if reply is not None else None
+    return same
+
+
+def merge_answer(plan: Mapping[str, Any], text: str, speaker: Mapping[str, Any], *,
+                 wake_words: Optional[Sequence[str]] = None) -> Tuple[Optional[bool], bool]:
+    """Решение по ответу на вопрос склейки: ``(same, speaker_ok)``. ``same`` — ``True`` склеить, ``False`` — разные,
+    ``None`` — не понять (:func:`said_same`).
+    «Да» засчитывается, только если ответил один из двух профилей (``speaker`` — результат биометрии ЭТОЙ фразы,
+    ): посторонний голос чужую склейку не подтверждает. Длина фразы не ограничена: её уже приняли как ответ."""
+    same = said_same(plan, text, wake_words=wake_words)
+    current = str(speaker.get("speaker_id") or "") if speaker.get("is_known") else ""
+    speaker_ok = bool(current) and current in (plan.get("new_id"), plan.get("known_id"))
+    return (None if same and not speaker_ok else same), speaker_ok
+
+
+def merge_phrase(plan: Mapping[str, Any], same: Optional[bool]) -> str:
+    """Что робот говорит об исходе (ADR-0148: фразу строит код, а не подсказка LLM)."""
+    if same is True:
+        return phrases.text("identity.merged", name=plan.get("known_name") or plan.get("new_name"))
+    return phrases.text("identity.kept_apart" if same is False else "identity.merge_unclear")
+
+
+# ── решение Шифу 21.10: один голос — одна личность, имя меняется фразой, подтверждение шаблоном ───────────
+#: :func:`voice_certainty`
+VOICE_SURE, VOICE_UNSURE, VOICE_STRANGER = "sure", "unsure", "stranger"
+
+
+def voice_certainty(speaker: Mapping[str, Any]) -> str:
+    """Годится ли голос ЭТОЙ фразы для действий с личностью. ``sure`` — у результата биометрии есть имя (порог 0.72 и
+    отрыв от соседа проверил ``speaker_id_node``; порогов здесь нет); ``unsure`` — узнан без имени (гипотеза, спор),
+    биометрия фразу не оценила (мало речи) или лучший кандидат не ниже ``IDENTITY_TEMPLATE_MIN_SCORE`` — тогда робот
+    просит шаблон; иначе ``stranger`` (чужой голос: чужую личность не трогает)."""
+    if speaker.get("is_known"):
+        return VOICE_SURE if speaker.get("name") and speaker.get("speaker_id") else VOICE_UNSURE
+    if speaker.get("inconclusive"):
+        return VOICE_UNSURE
+    score = speaker.get("candidate_score")
+    return VOICE_UNSURE if score is not None and float(score) >= kn.IDENTITY_TEMPLATE_MIN_SCORE else VOICE_STRANGER
+
+
+def confident_name(speaker: Optional[Mapping[str, Any]]) -> Optional[str]:
+    """Имя, под которым биометрия УВЕРЕННО узнала голос фразы (:func:`voice_certainty` = ``sure``: то же имя, что
+    публикуется вслух, и тот же уверенный исход, по которому ``speaker_id_node`` переименовывает профиль), иначе
+    ``None``: гипотеза, спор, профиль без имени, голос не узнан или результата ещё нет."""
+    if not isinstance(speaker, Mapping) or voice_certainty(speaker) != VOICE_SURE:
+        return None
+    return str(speaker["name"])
+
+
+def named_self(text: str, *, wake_words: Optional[Sequence[str]] = None) -> Optional[str]:
+    """Имя, которым человек назвал СЕБЯ в реплике, или ``None``: просьба звать иначе (``classify_rename``: «зови меня
+    Y», «запомни меня как Y», «меня зовут не X, а Y») или представление (``words.self_intro_name``: «меня зовут Y», «я
+    Y», «привет, я Y»). Новой грамматики нет - обе уже решают, что реплика называет говорящего."""
+    rename = classify_rename(text, wake_words=wake_words)
+    return rename.name if rename is not None else self_intro_name(text)
+
+
+def known_voice_registers(speaker: Optional[SpeakerRef], text: str, actions: Iterable[Any], *,
+                          wake_words: Optional[Sequence[str]] = None) -> Tuple[Any, ...]:
+    """Вызовы ``register_speaker`` команды, которым нечего записать (``knowledge.VIOLATION_KNOWN_VOICE_REGISTER``):
+    имя собеседника подтверждено (``confirmed``), модель регистрирует ЭТО ЖЕ имя, а себя человек в реплике не называл
+    (:func:`named_self`). М13 n211: «перечисли всех, кого ты сегодня запомнил по голосу» голосом Саши →
+    ``register_speaker(name="Саша")`` вместо ответа. Представился («я Саша, чиню технику», акт 2b n701) - вызов законен:
+    владелец голосов ответит «уже знаю»; другое имя - судит гейт регистрации (``not_self_introduction``)."""
+    if speaker is None or speaker.name_state != NAME_CONFIRMED or named_self(text, wake_words=wake_words):
+        return ()
+    return tuple(a for a in actions if a.tool == kn.NAME_OWNER_TOOL and same_name(a.args.get("name"), speaker.name))
+
+
+@dataclass(frozen=True)
+class IdentityStep:
+    """Что код делает с личностью в этом ходе: ``phrase`` — что робот говорит (0 LLM, ADR-0148); ``rename`` —
+    ``(speaker_id, новое имя)``; ``merge`` — ``(src, dst, имя dst)``; ``frame`` — кадр ``Identity(voice_check)`` после фразы."""
+
+    phrase: str
+    rename: Tuple[str, ...] = ()
+    merge: Tuple[str, ...] = ()
+    frame: Optional[Mapping[str, Any]] = None
+
+
+def same_voice_plan(speaker_id: str, known: str, name: str) -> Dict[str, Any]:
+    """Голос уверенно узнан как ``known``, а человек назвался ``name``: второй профиль не заводится, после ответа хода
+    робот говорит ``identity.same_voice``, ответ ждёт кадр ``Identity(same_voice)`` (окно ``REPLY_WINDOW_S``)."""
+    return {"kind": kn.IDENTITY_SAME_VOICE_KIND, "question": phrases.text("identity.same_voice", known=known, name=name),
+            "new_id": "", "new_name": name, "known_id": speaker_id, "known_name": known}
+
+
+def template_step(action: str, name: str, plan: Optional[Mapping[str, Any]] = None) -> IdentityStep:
+    """Попросить сказать шаблон ``identity.template``; кадр ``voice_check`` помнит, что сделать (``rename`` | ``merge``),
+    если голос шаблона уверенно совпадёт."""
+    frame = {"kind": kn.IDENTITY_VOICE_CHECK_KIND, "action": action, "name": name}
+    frame.update({k: str((plan or {}).get(k) or "") for k in ("new_id", "new_name", "known_id", "known_name")})
+    template = phrases.text("identity.template", name=name)
+    return IdentityStep(phrases.text("identity.say_template", template=template), frame=frame)
+
+
+def rename_step(rename: Optional[Rename], speaker: Mapping[str, Any]) -> Optional[IdentityStep]:
+    """«Зови меня Y» / «меня зовут не X, а Y»: уверенный голос — переименовать ЕГО профиль; неуверенный — просьба
+    шаблона; чужой голос или просьбы нет — ``None`` (ход обычный)."""
+    certainty = voice_certainty(speaker) if rename is not None else VOICE_STRANGER
+    if rename is None or certainty == VOICE_STRANGER:
+        return None
+    if certainty == VOICE_UNSURE:
+        return template_step("rename", rename.name)
+    if same_name(speaker.get("name"), rename.name):
+        return IdentityStep(phrases.text("identity.name_same", name=rename.name))
+    return IdentityStep(phrases.text("identity.renamed", name=rename.name),
+                        rename=(str(speaker["speaker_id"]), rename.name))
+
+
+def same_voice_step(plan: Mapping[str, Any], text: str, *, wake_words: Optional[Sequence[str]] = None) -> IdentityStep:
+    """Ответ на ``identity.same_voice``: «это я» — согласие; «мы разные» и прочее — голос один, второй записи нет."""
+    if said_same(plan, text, wake_words=wake_words):
+        return IdentityStep(phrases.text("identity.same_voice_ok", name=plan.get("known_name")))
+    return IdentityStep(phrases.text("identity.one_voice", name=plan.get("new_name")))
+
+
+def merge_step(plan: Mapping[str, Any], text: str, speaker: Mapping[str, Any], *,
+               wake_words: Optional[Sequence[str]] = None) -> IdentityStep:
+    """Ответ на вопрос склейки: «это я» тем же голосом — склейка ``new → known``; «это я», а голос неуверенный
+    (короткий ответ) — просьба шаблона вместо «Не понял ответ»; остальное — :func:`merge_answer`."""
+    same, _ = merge_answer(plan, text, speaker, wake_words=wake_words)
+    if same is None and said_same(plan, text, wake_words=wake_words) and voice_certainty(speaker) == VOICE_UNSURE:
+        return template_step("merge", str(plan.get("known_name") or plan.get("new_name") or ""), plan)
+    return IdentityStep(merge_phrase(plan, same), merge=_merge_ids(plan) if same is True else ())
+
+
+def _merge_ids(plan: Mapping[str, Any]) -> Tuple[str, ...]:
+    return tuple(str(plan.get(k) or "") for k in ("new_id", "known_id", "known_name"))
+
+
+def voice_check_step(frame: Mapping[str, Any], speaker: Mapping[str, Any]) -> IdentityStep:
+    """Ответ шаблоном: голос уверенно совпал — действие кадра (переименовать этот профиль / склеить, если голос — один из
+    двух профилей вопроса); нет — честная фраза, ничего не меняется."""
+    sid = str(speaker.get("speaker_id") or "") if voice_certainty(speaker) == VOICE_SURE else ""
+    if sid and frame.get("action") == "rename":
+        return IdentityStep(phrases.text("identity.renamed", name=frame.get("name")), rename=(sid, str(frame["name"])))
+    if sid and frame.get("action") == "merge" and sid in (frame.get("new_id"), frame.get("known_id")):
+        return IdentityStep(merge_phrase(frame, True), merge=_merge_ids(frame))
+    return IdentityStep(phrases.text("identity.voice_check_failed"))
+
+
+def greeting_frame(person_ref: str, name: str, speech_id: str) -> Dict[str, Any]:
+    """Данные кадра ``GreetingReply``: кого поприветствовали; ``asked_at`` ``None`` — приветствие ещё звучит
+    (кадр ждёт ``SpeechEvent finished`` речи ``speech_id``)."""
+    return {"person_ref": person_ref, "name": name, "asked_at": None, "speech_id": speech_id}
+
+
+def greeting_open(frame: Optional[SceneFrame]) -> bool:
+    return frame is not None and frame.kind == "GreetingReply" and frame.payload.get("asked_at") is not None
+
+
+def answer_to_greeting(frame: Optional[SceneFrame], heard: Any, *, wake_words: Optional[Sequence[str]] = None) -> str:
+    """Фраза без вейка после приветствия при встрече (решение Шифу 21.10, уточнено 06.11 в #4509): окно
+    ``REPLY_WINDOW_S`` открыто — ответ. Лицо в кадре не условие (человек отвечает, повернувшись к роботу не лицом),
+    DOA тоже; окно идёт с конца приветствия (``in_grace``): эхо приветствия отсеивает ``stt_node`` словами по событию
+    окна ответа (``echo_window.REPLY_WINDOW_TOPIC``). Признак для лога: ``"grammar"`` (похоже на ответ на
+    приветствие), ``"face"`` (приветствованный в кадре) или ``"voice"`` (только голос). Окно закрыто — ``""``
+    (бэклог)."""
+    if not greeting_open(frame) or not kn.GREETING_REPLY_WITHOUT_WAKE:
+        return ""
+    text = str(getattr(heard, "text", "") or "").strip()
+    if not text or not in_reply_window(frame.payload["asked_at"], getattr(heard, "t", 0.0), in_grace=True):
+        return ""
+    if is_greeting_reply(text, wake_words):
+        return "grammar"
+    name = str(frame.payload.get("name") or "").lower()
+    return "face" if name and name in (getattr(heard, "faces", ()) or ()) else "voice"
+
+
+def trusted_voice(heard: Any) -> str:
+    """``person_ref`` фразы, если она достаточно длинная, чтобы верить голосу; иначе ``""``."""
+    long_enough = float(getattr(heard, "voice_s", 0.0) or 0.0) >= kn.VOICE_MIN_PHRASE_S
+    return str(getattr(heard, "person_ref", "") or "") if long_enough else ""
+
+
+def same_interlocutor(entry: Any, heard: Any) -> Tuple[str, ...]:
+    """Каналы, по которым ``heard`` — тот же собеседник, что сказал ``entry``; ``()`` — не тот.
+
+    Узнанный длинный голос другого человека в ``heard`` — противоречие, остальные каналы его не перебивают.
+    """
+    voice_a, voice_b = trusted_voice(entry), trusted_voice(heard)
+    if voice_a and voice_b and voice_a != voice_b:
+        return ()
+    faces_now = frozenset(getattr(heard, "faces", ()) or ())
+    entry_name = str(getattr(entry, "speaker_name", "") or "").lower()
+    doa_a, doa_b = getattr(entry, "doa_deg", None), getattr(heard, "doa_deg", None)
+    votes = {
+        "voice": bool(voice_a),
+        "face": bool(entry_name) and entry_name in faces_now,
+        "doa": (doa_a is not None and doa_b is not None and angle_diff_deg(doa_a, doa_b) <= kn.PICKUP_DOA_SECTOR_DEG
+                and (bool(faces_now) or not kn.PICKUP_DOA_NEEDS_FACE)),
+    }
+    return tuple(ch for ch in kn.PICKUP_CHANNELS if votes.get(ch))

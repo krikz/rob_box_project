@@ -1,0 +1,1050 @@
+"""SQLite-хранилище RTTTL-мелодий: архив в репо → миграция в БД на диске.
+
+Мелодии лежат в ``data/rtttl_melodies.jsonl.gz`` (сжато, ~0.7 MB в репо).
+Мигратор (``RtttlLibrary.__init__``) при первом запуске читает архив и
+разворачивает его в таблицу ``rtttl_melodies`` (SQLite, на диске) одной
+транзакцией. Дальше поиск идёт SQL-запросами — в ОЗУ держится только
+результат запроса, а не все 10460 записей (на Raspberry Pi ОЗУ мало).
+
+Формат строки JSONL в архиве:
+    {"name": slug, "title": "...", "artist": "...", "source": "...",
+     "tags": [...], "rtttl": "Name:d=4,o=5,b=...:ноты"}
+"""
+
+from __future__ import annotations
+
+import functools
+import gzip
+import json
+import math
+import os
+import re
+import sqlite3
+import threading
+import unicodedata
+from datetime import datetime, timezone
+from importlib.resources import as_file, files
+from pathlib import Path
+from typing import Any, Dict, Iterator, List, Optional, TextIO, Tuple, Union
+
+from rob_box_core.tools_db import tools_db_path
+from rob_box_music import knowledge as kn
+from rob_box_music.works import alias_pairs, ru_phrase_by_query
+
+from .translit_ru import strip_version_tail, transliterate_ru
+
+__all__ = [
+    "RtttlLibrary", "covers_tokens", "display_title", "fix_mojibake", "human_track_title", "match_info",
+    "melody_quality", "spoken_title",
+]
+
+#: Имя архива внутри пакета ``rob_box_mcp_tools/data/``.
+_ARCHIVE_NAME = "rtttl_melodies.jsonl.gz"
+
+#: Размер батча INSERT при импорте архива — держит пик ОЗУ в узде.
+_BATCH = 400
+
+_SCHEMA = """
+CREATE TABLE IF NOT EXISTS rtttl_melodies (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    name        TEXT    NOT NULL,
+    title       TEXT    NOT NULL DEFAULT '',
+    artist      TEXT    NOT NULL DEFAULT '',
+    source      TEXT    NOT NULL DEFAULT '',
+    tags        TEXT    NOT NULL DEFAULT '[]',
+    rtttl       TEXT    NOT NULL UNIQUE,
+    rtttl_name  TEXT    NOT NULL DEFAULT '',
+    created_at  TEXT    NOT NULL,
+    updated_at  TEXT    NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_rtttl_melodies_name  ON rtttl_melodies(name);
+CREATE INDEX IF NOT EXISTS idx_rtttl_melodies_title ON rtttl_melodies(title);
+CREATE INDEX IF NOT EXISTS idx_rtttl_melodies_artist ON rtttl_melodies(artist);
+"""
+
+#: Русские/жаргонные названия → канонический англ. запрос (архив англоязычный) и обратная связка «канонический
+#: запрос → первая русская фраза на него» (issue #3178: назвать играющий трек по-русски, а не архивным ``title``
+#: «Hall Of The Mountain King (Alton Towers Theme) 2») — из реестра произведений ``rob_box_music.works`` (ADR-0155
+#: K-2): семена связей ``data/theme_link_seeds.json`` (#3493), они же — ``Work.aliases``.
+#: Нерусские ключи («russian» — обходной
+#: алиас архивного написания) в обратную связку не попадают.
+_ALIAS_SORTED = alias_pairs()
+_ALIAS_CANONICAL_TO_RU_PHRASE: Dict[str, str] = ru_phrase_by_query()
+
+#: issue #3178 — технические хвосты архивного ``title``, которые робот не
+#: должен произносить: номер повтора записи того же трека («… 2») и
+#: авторская ремарка в скобках («(Alton Towers Theme)»). Срезаются с конца
+#: title, по одному хвосту за проход (могут комбинироваться).
+#: Номер повтора записи в конце названия («… King 2»); номер после слова нумерации — часть названия
+#: («Brandenburg Concert No. 3», «Op. 27», «BWV 565», «#5»; прогон 12.10: голос говорил «… No.»).
+_TRAILING_DUPLICATE_NUM_RE = re.compile(r"(?<!\bno\.)(?<!\bno)(?<!\bop\.)(?<!\bop)(?<!\bnr\.)(?<!\bbwv)(?<!\bkv)"
+                                        r"(?<!\bopus)(?<!#)\s+\d+$", re.IGNORECASE)
+_TRAILING_PAREN_RE = re.compile(r"\s*\([^()]*\)$")
+
+#: Известные мусорные записи архива: под правдоподобным именем/тегами лежит
+#: вырожденная запись (короткий мотив, зациклённый N раз, «визжащая» октава).
+#: issue #2840: ``get('russian anthem')`` находил ``russiann`` — 10-нотный
+#: цикл ``2e,d,c,2d,c,d,2e,g,e,1d`` × 2 в o=7 — вместо настоящей темы
+#: Александрова (``national_2``). ``national`` — тот же мусор под другим
+#: слагом. Список не запрещает записи (прямой ``get('russiann')`` по имени
+#: их всё ещё честно найдёт), а только понижает их в ранжировании
+#: неточных/токенных совпадений внутри своего же bucket'а текстового скора
+#: — см. :meth:`RtttlLibrary._best_in_bucket`. Денилист НЕ может перевесить
+#: более высокий текстовый скор другой записи (issue #2840, живой прогон
+#: 23.09: «russian anthem» после первой версии фикса находил случайную
+#: «Irish National Anthem» — качество перебивало смысл названия).
+_GARBAGE_NAMES = frozenset({"russiann", "national"})
+
+#: Буква тона (без диеза/бемоля/октавы) → полутон в пределах октавы.
+_NOTE_PITCH_RE = re.compile(
+    r"^(?P<dur>\d*)(?P<pitch>[a-gp])(?P<mod>[#_]?)(?P<dot1>\.?)"
+    r"(?P<octave>\d?)(?P<dot2>\.?)$",
+    re.IGNORECASE,
+)
+
+
+def _parse_notes_for_quality(rtttl: str) -> tuple:
+    """RTTTL-строка → (список (буква, октава) без пауз, октава по умолчанию).
+
+    Упрощённый разбор для эвристики качества: не обязан быть побитово точным
+    (диезы/точки игнорируются) — важны только буква тона и октава, чтобы
+    оценить разнообразие высот и диапазон.
+    """
+    parts = (rtttl or "").split(":")
+    if len(parts) < 3:
+        return [], 5
+    defaults = parts[1]
+    notes_part = ":".join(parts[2:])
+    m = re.search(r"o\s*=\s*(\d)", defaults, re.IGNORECASE)
+    default_octave = int(m.group(1)) if m else 5
+    notes: List[tuple] = []
+    for tok in notes_part.split(","):
+        tok = tok.strip()
+        if not tok:
+            continue
+        match = _NOTE_PITCH_RE.match(tok)
+        if not match:
+            continue
+        pitch = match.group("pitch").lower()
+        if pitch == "p":
+            continue
+        octv_str = match.group("octave")
+        octv = int(octv_str) if octv_str else default_octave
+        notes.append((pitch, octv))
+    return notes, default_octave
+
+
+def _shortest_repeating_period(seq: List[tuple]) -> Optional[int]:
+    """Наименьший период ``p < len(seq)``, для которого ``seq`` = мотив × N.
+
+    ``None``, если запись не является целым числом повторов одного мотива.
+    """
+    n = len(seq)
+    for p in range(1, n // 2 + 1):
+        if n % p:
+            continue
+        if all(seq[i] == seq[i % p] for i in range(n)):
+            return p
+    return None
+
+
+def _row_rtttl(row: sqlite3.Row) -> str:
+    """``rtttl`` строки-кандидата, безопасно (не все SELECT его выбирают)."""
+    return row["rtttl"] if "rtttl" in row.keys() else ""
+
+
+@functools.lru_cache(maxsize=16384)  # чистая функция строки; поиск темы считает её для тысяч кандидатов (#3493)
+def _melody_quality(rtttl: str) -> float:
+    """Эвристическое качество мелодии: длина, разнообразие, повтор, октава.
+
+    Выше — лучше. Используется, чтобы среди кандидатов с близким текстовым
+    совпадением («russian anthem» матчит и мусорный ``russiann``, и
+    настоящую тему по токену «anthem») предпочесть содержательную запись, а
+    не короткий зацикленный мотив в визгливой октаве.
+    """
+    try:
+        notes, default_octave = _parse_notes_for_quality(rtttl)
+    except Exception:
+        return 0.0
+    n = len(notes)
+    if n == 0:
+        return -10.0
+    score = 0.0
+    # Длина: больше нот — содержательнее тема, но с убывающей отдачей.
+    score += min(n, 40) * 0.15
+    # Разнообразие высот: сколько разных ступеней и (ступень, октава) пар.
+    distinct_letters = len({p for p, _ in notes})
+    score += distinct_letters * 1.0
+    distinct_pairs = len({(p, o) for p, o in notes})
+    score += (distinct_pairs / n) * 5.0
+    # Штраф за N-кратный повтор одного короткого мотива (визитная карточка
+    # мусорных записей вроде RussianN — 10 нот × 2).
+    period = _shortest_repeating_period(notes)
+    if period is not None and period < n:
+        repeats = n // period
+        score -= (repeats - 1) * 3.0
+    # Разумность октавы по умолчанию: o=7+ или o<=2 — почти всегда брак
+    # записи (див «визжащий» регистр), а не осмысленный выбор.
+    if default_octave >= 7 or default_octave <= 2:
+        score -= abs(default_octave - 5) * 2.0
+    return score
+
+
+def db_path_of(library: Any) -> Optional[str]:
+    """Файл SQLite библиотеки: в нём же реестр произведений и связи тем (``rob_box_music.works``, #3493)."""
+    return getattr(library, "_db_path", None)
+
+
+def melody_quality(rtttl: str) -> float:
+    """Публичная обёртка :func:`_melody_quality` (issue #3225: отбор club-фрагментов)."""
+    return _melody_quality(rtttl)
+
+
+#: Английские стоп-слова, встречающиеся почти в каждом названии («of», «the»,
+#: «and»). Без их отсева LIKE-кандидаты раздуваются до всего архива, LIMIT-окно
+#: обрезает реальные совпадения — «National Anthem Of Soviet» находил «American
+#: National Anthem» (токен «of» матчил всё, и нужная строка не влезала в окно).
+_STOPWORDS = frozenset({
+    "of", "the", "a", "an", "and", "in", "on", "for", "to", "with",
+    "from", "at", "by", "it", "is", "are", "this", "that", "de", "la",
+})
+
+
+def _normalize(query: str) -> str:
+    """Алиасы → канонический англ. запрос; остальная кириллица — транслитом.
+
+    issue #3264: архив хранит русские песни латиницей («Калинка» →
+    ``kalinkav``), поэтому слово без алиаса не отбрасывается, а
+    транслитерируется (:mod:`.translit_ru`), хвост версии («v1.0») срезается.
+    """
+    return strip_version_tail(transliterate_ru(_alias_normalize(query)))
+
+
+def _alias_normalize(query: str) -> str:
+    """Нижний регистр + замена русских/жаргонных имён на канонический англ.
+
+    Замена — по границам СЛОВ (``\\b``), не голой подстрокой: латинские
+    алиасы вроде «russian» — обычные английские слова, и подстрочная
+    замена ломает прямую адресацию похожих записей архива (issue #2840,
+    живой прогон 23.09: ``get('russiann')`` после подстрочной замены
+    «russian»→«russia» превращался в ``get('russian')`` — искал ЧУЖУЮ
+    запись вместо честного прямого попадания по имени).
+    """
+    q = (query or "").strip().lower()
+    for key, value in _ALIAS_SORTED:
+        pattern = r"\b" + re.escape(key) + r"\b"
+        if re.search(pattern, q):
+            q = re.sub(pattern, value, q)
+    return q
+
+
+def _tokens(query: str) -> List[str]:
+    """Разбить запрос на значимые токены (кириллица отбрасывается после алиасов)."""
+    return [
+        t for t in re.split(r"[^a-z0-9]+", query) if t and t not in _STOPWORDS
+    ]
+
+
+#: Поля, которые опознают запись (НЕ ``tags`` — жанровые метки, а не
+#: опознавание; общее слово вроде «anthem»/«movie» в тегах даёт ложное
+#: покрытие — от этого уже страдал скоринг, см. :meth:`RtttlLibrary._score`).
+_IDENTITY_FIELDS: tuple = ("name", "title", "artist", "rtttl_name")
+
+
+def _identity_haystack(record: Dict[str, Any]) -> str:
+    return " ".join(str(record.get(f) or "").lower() for f in _IDENTITY_FIELDS)
+
+
+def covers_tokens(record: Dict[str, Any], query: str) -> bool:
+    """Все значимые токены *query* нашлись в опознавательных полях *record*?
+
+    Низкоуровневый строгий (не взвешенный) критерий — каждый токен ЛИБО
+    есть подстрокой в ``name``/``title``/``artist``/``rtttl_name``, ЛИБО
+    нет. :func:`match_info` строит на нём взвешенную (IDF) версию для
+    тулов — сам этот критерий тулами больше НЕ используется как вердикт
+    found/not-found (issue #2964, товарищ Шифу: «жёсткий порог … тоже не
+    делай», см. историю отката #2882→#2896 — единой эвристики отказа не
+    нашлось, «лишние слова» отличают и «другую песню», и просто длинное
+    название). Полезен как отдельная проверка и как строительный блок.
+    """
+    tokens = _tokens(_normalize(query))
+    if not tokens:
+        return False
+    haystack = _identity_haystack(record)
+    return all(token in haystack for token in tokens)
+
+
+#: Кэш IDF-веса токена — процесс живёт долго (нода), а вес токена не
+#: меняется, пока архив не переимпортирован. Кэш живёт на самом
+#: инстансе :class:`RtttlLibrary` (см. :meth:`RtttlLibrary.token_weights`),
+#: поэтому разные инстансы (например, в тестах — маленькие синтетические
+#: архивы с разными БД) не путают чужие веса.
+class _TokenWeights:
+    """IDF-подобный вес токена по корпусу архива — БЕЗ списка стоп-слов.
+
+    issue #2964 (правка товарища Шифу): раньше рассматривался хардкод-
+    список общих слов («theme», «main», «soundtrack», «song» — сотни
+    записей архива буквально называются «Theme»). Вместо списка — частота
+    самого токена В ЭТОМ ЖЕ корпусе: токен, который встречается в сотнях
+    записей, получает вес около нуля САМ, без переписывания под «Theme» —
+    то же правило одинаково понижает любое другое частое слово, которое
+    сегодня в архиве не бросилось в глаза.
+    """
+
+    def __init__(self, library: "RtttlLibrary") -> None:
+        self._library = library
+        self._cache: Dict[str, float] = {}
+
+    def __call__(self, token: str) -> float:
+        cached = self._cache.get(token)
+        if cached is not None:
+            return cached
+        total = self._library.total()
+        df = self._library.document_frequency(token)
+        weight = math.log((total + 1) / max(df, 1))
+        self._cache[token] = weight
+        return weight
+
+
+class _ArchiveWords:
+    """Слова опознавательных полей всех записей (``name/title/artist/rtttl_name``) — для разбора русских слов
+    запроса в токены архива (``engine.search``, #3399). Считаются один раз на инстанс библиотеки."""
+
+    def __init__(self, library: "RtttlLibrary") -> None:
+        self._library = library
+        self._words: Optional[frozenset] = None
+
+    def __call__(self) -> frozenset:
+        if self._words is None:
+            lib = self._library
+            with lib._lock:
+                rows = lib._conn.execute("SELECT name, title, artist, rtttl_name FROM rtttl_melodies").fetchall()
+            words = set()
+            for row in rows:
+                words.update(re.findall(r"[a-z0-9]{2,}", " ".join(str(v or "") for v in row).lower()))
+            self._words = frozenset(words)
+        return self._words
+
+
+def _is_informative_title(weights: "_TokenWeights", title: str) -> bool:
+    """Хотя бы один токен title достаточно редок в корпусе (не «Theme»)?
+
+    Порог — свойство корпуса (токен встречается меньше чем в ~1% архива),
+    а не список запрещённых слов: любое слово, ставшее таким же частым в
+    архиве, как «theme», получает тот же исход автоматически.
+    """
+    tokens = _tokens(title.lower())
+    if not tokens:
+        return False
+    threshold = math.log(100.0)  # df/total <= ~1%
+    return any(weights(t) >= threshold for t in tokens)
+
+
+def display_title(library: "RtttlLibrary", record: Dict[str, Any]) -> str:
+    """Название записи для показа модели — с исполнителем, если title общий.
+
+    issue #2964: сотни записей архива честно называются ``title='Theme'``,
+    настоящее название — в ``artist`` (``theme_178``: title «Theme»,
+    artist «Terminatorv v2.0» — правильная тема Терминатора, НЕ ошибка
+    записи). ``lookup_melody('terminator theme')`` не должен отвечать
+    голым «Нашёл «Theme»» — юзер не поймёт, что это Терминатор. Критерий
+    информативности title — тот же корпусный вес :class:`_TokenWeights`,
+    без разбора «title == 'Theme'»: любой другой такой же частый title
+    в архиве получит ту же добавку artist автоматически.
+    """
+    title = str(record.get("title") or "").strip()
+    artist = str(record.get("artist") or "").strip()
+    if not title:
+        return artist or str(record.get("rtttl_name") or record.get("name") or "")
+    try:
+        weights = library.token_weights()
+        informative = _is_informative_title(weights, title)
+    except Exception:  # noqa: BLE001 — вызывающая сторона мокает библиотеку
+        # в юнит-тестах (Mock() без token_weights()); без реального корпуса
+        # честнее не выдумывать доп. текст, чем упасть на служебном вызове.
+        informative = True
+    if artist and not informative:
+        return f"{title} — {artist}"
+    return title
+
+
+def _strip_technical_suffixes(title: str) -> str:
+    """Срезать технические хвосты архивного ``title`` (issue #3178).
+
+    «Hall Of The Mountain King (Alton Towers Theme) 2» → «Hall Of The
+    Mountain King»: номер повтора записи и авторская ремарка в скобках —
+    не то, что робот произносит вслух («что сейчас играет?»). Хвосты
+    срезаются по одному за проход (сначала номер, потом скобки), пока
+    что-то срезается — так снимается их комбинация в любом порядке.
+    """
+    cleaned = title
+    for _ in range(4):
+        next_cleaned = strip_version_tail(_TRAILING_DUPLICATE_NUM_RE.sub("", cleaned))
+        next_cleaned = _TRAILING_PAREN_RE.sub("", next_cleaned).strip()
+        if next_cleaned == cleaned or not next_cleaned:
+            break
+        cleaned = next_cleaned
+    return cleaned or title
+
+
+def human_track_title(library: "RtttlLibrary", record: Dict[str, Any]) -> str:
+    """Имя трека для голоса/``<music_state>`` (issue #3178) — не архивный ключ.
+
+    В отличие от :func:`display_title` (для СВЕРКИ найденной записи с
+    запросом модели, добавляет artist к неинформативному title), эта
+    функция — для того, что робот РЕАЛЬНО произносит про играющий трек
+    (``current_track_name`` → ``/voice/music/state`` → ``<music_state>``):
+    русский разговорный алиас записи (:data:`_ALIAS_CANONICAL_TO_RU_PHRASE`,
+    :meth:`RtttlLibrary.ru_alias_for`), если он есть в базе, иначе archив
+    ``title`` без технических хвостов (:func:`_strip_technical_suffixes`).
+    """
+    melody_key = str(record.get("name") or "")
+    alias: Optional[str] = None
+    if melody_key:
+        try:
+            found = library.ru_alias_for(melody_key)
+        except Exception:  # noqa: BLE001 — вызывающая сторона мокает библиотеку
+            # в юнит-тестах (``Mock()`` без ``ru_alias_for``, как и
+            # ``token_weights()`` у :func:`display_title` выше) — без
+            # реальной базы честнее отдать title, чем упасть.
+            found = None
+        alias = found if isinstance(found, str) and found else None
+    if alias:
+        return alias[:1].upper() + alias[1:]
+    title = str(record.get("title") or "").strip()
+    if not title:
+        return melody_key
+    return _strip_technical_suffixes(title)
+
+
+# ── Произносимое название пьесы (#3577): что робот говорит о партитуре PDMX ─────────────────────────────────────
+#: Пара «UTF-8, прочитанный как latin-1/cp1252» («Ã©» → «é»).
+_MOJIBAKE_RE = re.compile("[Â-ô][\u0080-¿ŒœŠšŸŽžƒ"
+                          "ˆ˜–-›€™]+")
+#: Ведущий байт UTF-8 без продолжения внутри слова: продолжение потеряно в самих данных PDMX (индекс робота 12.10:
+#: ``'Su\xcc\xdfmayr'`` — от «ü» остался только ``0xCC``, от «é» в «Bourrée» — ``0xC3``). Восстановить букву
+#: нельзя, честно — убрать обломок: «Sußmayr», «Bourre».
+_MOJIBAKE_LOST_RE = re.compile("(?<=[A-Za-z])[ÃÌ](?=[A-Za-zß]|\\b)")
+_SPOKEN_CATALOG_RE = re.compile(r"\(?\b(?:BWV|HWV|KV|K|Op|Opus|Hob|RV|WoO)\.?\s*(?:\d+[a-z]?|(?-i:[IVX]+)\b)"
+                                r"(?:\s*,?\s*(?:No|Nr)\.?\s*\d+)?\)?", re.I)
+_SPOKEN_TAIL_RE = re.compile(r"[\s,(-]+\b(?:arr|arranged|arrangement|transcribed|beginner|easy|simplified|"
+                             r"(?:piano|violin|guitar|flute|cello|organ)\s+(?:solo|duet))\b.*$", re.I)
+_SPOKEN_SEP_RE = re.compile(r"\s+[-–—]\s+|:\s+")
+_SPOKEN_PAREN_RE = re.compile(r"\(([^()]*)\)|\[([^\[\]]*)\]|\{[^{}]*\}")
+#: Слова имени, не называющие композитора: инициалы и частицы («J. S.», «van», «von»).
+_NAME_PARTICLES = frozenset({"van", "von", "de", "der", "di", "da", "le", "la"})
+
+
+def fix_mojibake(text: Any) -> str:
+    """Починка кракозябр PDMX без новой зависимости: пары UTF-8→latin-1/cp1252 декодируются обратно, обломки с
+    потерянным байтом продолжения убираются (:data:`_MOJIBAKE_LOST_RE`), итог — NFC."""
+    def back(match: "re.Match[str]") -> str:
+        for codec in ("latin-1", "cp1252"):
+            try:
+                return match.group().encode(codec).decode("utf-8")
+            except (UnicodeEncodeError, UnicodeDecodeError):
+                continue
+        return match.group()
+    fixed = _MOJIBAKE_LOST_RE.sub("", _MOJIBAKE_RE.sub(back, str(text or "")))
+    return unicodedata.normalize("NFC", fixed)
+
+
+def _name_words(text: str) -> List[str]:
+    return re.findall(r"[^\W\d_]+", text.lower())
+
+
+def _composer_ru(*texts: str) -> str:
+    """Русское имя первого композитора из таблицы ``knowledge.COMPOSER_RU``, найденного в текстах по порядку."""
+    for text in texts:
+        found = next((kn.COMPOSER_RU[w] for w in _name_words(text) if w in kn.COMPOSER_RU), "")
+        if found:
+            return found
+    return ""
+
+
+def _is_name(part: str, names: frozenset) -> bool:
+    """Кусок названия — только имя композитора («J. S. Bach», «Ludwig van Beethoven», «Mozart»)."""
+    words = [w for w in _name_words(part) if len(w) > 1 and w not in _NAME_PARTICLES]
+    return bool(words) and all(w in names for w in words)
+
+
+def _drop_names(title: str, names: frozenset) -> str:
+    """Срезать имя композитора: куски между « - »/«: » из одного имени, «By <имя>» в конце, имя первым словом."""
+    parts = [p for p in _SPOKEN_SEP_RE.split(title) if p.strip() and not _is_name(p, names)]
+    title = ": ".join(p.strip() for p in parts) if parts else title
+    by = re.search(r"\s+by\s+(.+)$", title, re.I)
+    if by and _is_name(by.group(1), names):
+        title = title[:by.start()]
+    words = title.split()
+    lead = next((k for k in range(min(4, len(words) - 1), 0, -1) if _is_name(" ".join(words[:k]), names)), 0)
+    return " ".join(words[lead:])
+
+
+def _drop_remarks(title: str, names: frozenset) -> str:
+    """Скобки-ремарки («(real audio)», «(Piano solo)», «{…}», «[First Book]», «(Bach/Gounod)») прочь; «(1st
+    Movement)» остаётся. Квадратные и фигурные — всегда: TTS читает их как разметку (прогон 13.10: «Clavier »)."""
+    def keep(match: "re.Match[str]") -> str:
+        inner = match.group(1)
+        if inner is None:
+            return " "
+        words = set(_name_words(inner))
+        return " " if not words or words & kn.SPOKEN_TITLE_JUNK or words & names else match.group()
+    return _SPOKEN_PAREN_RE.sub(keep, title)
+
+
+def _tidy(title: str) -> str:
+    title = re.sub(r"\(\s*\)", " ", title)
+    title = re.sub(r"\s+([,.:;])", r"\1", re.sub(r"\s+", " ", title))
+    return title.strip(" -–—:;,/")
+
+
+def _shorten(title: str, limit: int) -> str:
+    """Не длиннее ``limit``: сначала без скобок, затем по границе слова."""
+    if len(title) > limit:
+        title = _tidy(re.sub(r"\([^()]*\)", " ", title))
+    if len(title) > limit:
+        title = _tidy(title[:limit + 1].rsplit(" ", 1)[0])
+    return title
+
+
+def spoken_title(title: Any, composer: Any = "", limit: int = kn.SPOKEN_TITLE_MAX) -> Tuple[str, str]:
+    """``(название, композитор)``, как их говорит робот о пьесе (#3577; фразу строит ``media_phrases.piece_text``):
+    кракозябры починены (:func:`fix_mojibake`), служебные хвосты PDMX срезаны («(real audio)», «Arr. for 2 Pianos»,
+    «{Professional production score.}», «By W. A. Mozart», номера BWV/K/Op), имя композитора из названия убрано,
+    композитор — по-русски из ``knowledge.COMPOSER_RU`` (нет в таблице — как в каталоге, без кракозябр), название —
+    не длиннее ``limit``. Прогон 12.10: «Requiem in D Minor K. 626 III. Sequentia: Rex Tremendae By W. A. Mozart»,
+    «Wolfgang Amadeus Mozart Franz Xaver SuÌßmayr» → «Requiem in D Minor III. Sequentia: Rex Tremendae», «Моцарт».
+    Русский алиас RTTTL (:func:`human_track_title`) проходит как есть."""
+    raw, author = fix_mojibake(title).strip(), fix_mojibake(composer).strip()
+    names = frozenset(_name_words(author)) | frozenset(kn.COMPOSER_RU)
+    text = _drop_remarks(raw, names)
+    text = _SPOKEN_TAIL_RE.sub("", _SPOKEN_CATALOG_RE.sub(" ", text))
+    text = _shorten(_tidy(_drop_names(_tidy(text), names)), limit)
+    plain = _tidy(_SPOKEN_PAREN_RE.sub(" ", _SPOKEN_CATALOG_RE.sub(" ", author)))  # «Louis Vierne Op. 53»
+    return text or _shorten(_tidy(raw), limit), _composer_ru(author, raw) or plain
+
+
+def match_info(library: "RtttlLibrary", record: Dict[str, Any], query: str) -> Dict[str, Any]:
+    """Прозрачная (не вердиктная) сверка *record* с токенами *query*.
+
+    issue #2964: ``get()``/``search()`` осознанно всегда возвращают ЛУЧШЕГО
+    по тексту кандидата, даже при слабом совпадении (issue #2896/#2877 —
+    единой эвристики отказа не нашлось: «лишние слова» отличают и «другую
+    песню» от нужной, и просто длинное название той же песни). Раньше
+    единственной защитой было message «сверь title сама» — LLM (minimax)
+    это игнорировал и играл что дали (``lookup_melody('Gin and Juice')`` →
+    «Everybody's Changing», ``lookup_melody('Nuthin But A G Thang')`` →
+    «If I Can Poppin Them Thangs», ``compose_music(name='stranger
+    things')`` реально сыграл «Strangers In The Night»).
+
+    Эта функция НЕ выносит вердикт found/not-found (жёсткого порога нет —
+    история отката #2882→#2896: «stranger things» ломало «super mario»).
+    Она отдаёт ЧЕСТНУЮ структурированную сверку — решение, это та же песня
+    или нет, остаётся у модели (промпт скилла composer):
+
+    - ``matched``/``unmatched`` — какие значимые токены запроса нашлись в
+      опознавательных полях записи (:func:`covers_tokens`, потокенно), а
+      какие нет.
+    - ``coverage`` — доля ВЗВЕШЕННОГО (IDF, :class:`_TokenWeights`) веса
+      запроса, которая покрылась. Частый токен вроде «theme» весит около
+      нуля и почти не двигает coverage сам по себе — вес считается по
+      корпусу архива, а не по списку слов.
+    - ``ignored`` — issue #3176: слова запроса, которые до поиска не дошли
+      вовсе: кириллица, не ставшая английским запросом через алиасы
+      (:func:`_tokens` её отбрасывает). «гимн германии» → алиас «гимн» →
+      «soviet anthem», а «германии» поиск не видел — ``matched`` при этом
+      полный, и без ``ignored`` сверка выглядела бы идеальной.
+    """
+    normalized = _normalize(query)
+    cyrillic_words = _ignored_words(_alias_normalize(query))
+    tokens = _tokens(normalized)
+    if not tokens:
+        return {"matched": [], "unmatched": [], "coverage": 0.0, "ignored": cyrillic_words}
+    try:
+        weights = library.token_weights()
+    except Exception:  # noqa: BLE001 — вызывающая сторона мокает библиотеку
+        # в юнит-тестах (Mock() без token_weights()) — без реального корпуса
+        # честнее считать каждый токен равнозначным, чем упасть.
+        weights = None
+    haystack = _identity_haystack(record)
+    matched: List[str] = []
+    unmatched: List[str] = []
+    matched_weight = 0.0
+    total_weight = 0.0
+    for token in tokens:
+        try:
+            w = max(float(weights(token)), 0.0) if weights is not None else 1.0
+        except Exception:  # noqa: BLE001 — тот же мокнутый вызов
+            w = 1.0
+        total_weight += w
+        if token in haystack:
+            matched.append(token)
+            matched_weight += w
+        else:
+            unmatched.append(token)
+    coverage = (matched_weight / total_weight) if total_weight > 0 else 0.0
+    unmatched, ignored = _split_transliterated(cyrillic_words, unmatched)
+    return {
+        "matched": matched,
+        "unmatched": unmatched,
+        "coverage": round(coverage, 3),
+        "ignored": ignored,
+    }
+
+
+def _split_transliterated(cyrillic_words: List[str], unmatched: List[str]) -> tuple:
+    """Транслит-токены, не нашедшие записи, — в ``ignored`` (#3176), не в ``unmatched``.
+
+    «гимн германии»: «германии» → ``germanii`` в записи нет. Это по-прежнему
+    «слово, которого поиск не видел» (контракт ``ignored``), а не английский
+    токен, не нашедшийся в записи; русские слова, нашедшие запись («Калинка»),
+    в ``ignored`` не попадают.
+    """
+    unmatched_set = set(unmatched)
+    ignored = [
+        word for word in cyrillic_words
+        if unmatched_set & set(_tokens(transliterate_ru(word)))
+    ]
+    translit_tokens = {t for word in ignored for t in _tokens(transliterate_ru(word))}
+    return [t for t in unmatched if t not in translit_tokens], ignored
+
+
+def _ignored_words(normalized: str) -> List[str]:
+    """Слова нормализованного запроса с кириллицей — поиск их не видит."""
+    return [
+        word for word in normalized.split()
+        if any("а" <= ch <= "я" or ch == "ё" for ch in word)
+    ]
+
+
+def _default_archive() -> Union[Path, Any]:
+    """Bundled ресурс (importlib.resources) → fallback на дерево исходников."""
+    try:
+        res = files("rob_box_mcp_tools.data").joinpath(_ARCHIVE_NAME)
+        if res.is_file():
+            return res
+    except (ModuleNotFoundError, TypeError):
+        pass
+    return Path(__file__).resolve().parent.parent / "data" / _ARCHIVE_NAME
+
+
+def _iter_archive_rows(archive: Union[Path, Any]) -> Iterator[Dict[str, Any]]:
+    """Построчно отдавать записи из gzip-архива (не копируя всё в память)."""
+    if isinstance(archive, Path):
+        with gzip.open(archive, "rt", encoding="utf-8") as fh:
+            yield from _iter_json_lines(fh)
+    else:
+        with as_file(archive) as p:
+            with gzip.open(p, "rt", encoding="utf-8") as fh:
+                yield from _iter_json_lines(fh)
+
+
+def _iter_json_lines(fh: TextIO) -> Iterator[Dict[str, Any]]:
+    for line in fh:
+        line = line.strip()
+        if line:
+            yield json.loads(line)
+
+
+def tagged(library: "RtttlLibrary", tag: str) -> List[Dict[str, Any]]:
+    """Все записи архива с меткой ``tag`` (``tags`` записи, например ``classical``), с RTTTL, по имени."""
+    with library._lock:
+        rows = library._conn.execute(
+            "SELECT * FROM rtttl_melodies WHERE tags LIKE ? ORDER BY name", (f'%"{tag}"%',)).fetchall()
+    return [library._to_dict(r, include_rtttl=True) for r in rows]
+
+
+class RtttlLibrary:
+    """Мигратор архива RTTTL-мелодий + поиск через SQLite (без in-memory).
+
+    При первом ``__init__`` читает ``data/rtttl_melodies.jsonl.gz`` и
+    разворачивает его в таблицу ``rtttl_melodies`` той же БД, что и
+    WaypointStore/FAQStore (БД инструментов, путь — ``rob_box_core.tools_db``).
+    Импорт идемпотентен: если таблица уже заполнена — архив не читается.
+    """
+
+    def __init__(
+        self,
+        db_path: Optional[str] = None,
+        archive_path: Optional[str] = None,
+    ) -> None:
+        self._db_path = db_path or tools_db_path()
+        self._archive: Union[Path, Any] = (
+            Path(archive_path) if archive_path else _default_archive()
+        )
+        self._lock = threading.Lock()
+        # issue #2964 — IDF-вес токена по корпусу архива, см. _TokenWeights.
+        self._token_weights = _TokenWeights(self)
+        # issue #3178 — кэш :meth:`ru_alias_for` (melody_key → русская фраза
+        # или ``None``): голая функция резолвит до десятка алиасов через
+        # :meth:`get` на каждый вызов, кэш экономит это на повторных треках.
+        self._ru_alias_cache: Dict[str, Optional[str]] = {}
+        # #3399 — слова архива для разбора русских слов запроса (``engine.search``), см. _ArchiveWords.
+        self.vocabulary = _ArchiveWords(self)
+
+        os.makedirs(os.path.dirname(self._db_path) or ".", exist_ok=True)
+        self._conn = sqlite3.connect(self._db_path, check_same_thread=False)
+        self._conn.row_factory = sqlite3.Row
+        with self._lock:
+            self._conn.execute("PRAGMA journal_mode=WAL")
+            self._conn.executescript(_SCHEMA)
+            self._conn.commit()
+            self._migrate_from_archive()
+
+    # ------------------------------------------------------------------
+    # Миграция: архив → SQLite (одна транзакция, идемпотентно)
+    # ------------------------------------------------------------------
+
+    def _migrate_from_archive(self) -> None:
+        self._ensure_rtttl_name_column()
+        count = self._conn.execute("SELECT COUNT(*) FROM rtttl_melodies").fetchone()[0]
+        if count == 0:
+            now = datetime.now(timezone.utc).isoformat()
+            insert = (
+                "INSERT OR IGNORE INTO rtttl_melodies "
+                "(name, title, artist, source, tags, rtttl, created_at, updated_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?)"
+            )
+            with self._conn:  # одна транзакция — частичный импорт невозможен
+                batch: List[tuple] = []
+                for rec in _iter_archive_rows(self._archive):
+                    batch.append((
+                        rec.get("name", ""),
+                        rec.get("title", ""),
+                        rec.get("artist", ""),
+                        rec.get("source", ""),
+                        json.dumps(rec.get("tags") or [], ensure_ascii=False),
+                        rec.get("rtttl", ""),
+                        now,
+                        now,
+                    ))
+                    if len(batch) >= _BATCH:
+                        self._conn.executemany(insert, batch)
+                        batch = []
+                if batch:
+                    self._conn.executemany(insert, batch)
+        # Для уже существующих и свежесозданных БД: добить rtttl_name и
+        # восстановить потерянные имена (title='Unknown' → artist).
+        self._repair_missing_names()
+
+    def _ensure_rtttl_name_column(self) -> None:
+        """Добавить колонку ``rtttl_name`` в уже существующую БД (ALTER)."""
+        cols = {row[1] for row in self._conn.execute("PRAGMA table_info(rtttl_melodies)")}
+        if "rtttl_name" not in cols:
+            self._conn.execute(
+                "ALTER TABLE rtttl_melodies ADD COLUMN rtttl_name TEXT NOT NULL DEFAULT ''"
+            )
+            self._conn.commit()
+
+    def _repair_missing_names(self) -> None:
+        """Восстановить имя из двух источников, которые миграция потеряла.
+
+        Архив местами хранит ``name='unknown_NNN'``, ``title='Unknown'``, а
+        реальное имя — в ``artist`` («Batman V1.0»). Дополнительно в самом
+        формате RTTTL есть поле имени (префикс строки до первого ':'): его
+        кладём в ``rtttl_name``, чтобы поиск матчил и по нему.
+        """
+        with self._conn:
+            self._conn.execute(
+                "UPDATE rtttl_melodies "
+                "SET rtttl_name = substr(rtttl, 1, instr(rtttl, ':') - 1) "
+                "WHERE rtttl_name = '' AND instr(rtttl, ':') > 0"
+            )
+            self._conn.execute(
+                "UPDATE rtttl_melodies SET title = artist "
+                "WHERE (title IS NULL OR trim(title) = '' OR lower(trim(title)) = 'unknown') "
+                "AND artist IS NOT NULL AND trim(artist) != '' "
+                "AND lower(trim(artist)) != 'unknown'"
+            )
+
+    # ------------------------------------------------------------------
+    # Поиск (SQL, на диске)
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _to_dict(row: sqlite3.Row, include_rtttl: bool = False) -> Dict[str, Any]:
+        d = dict(row)
+        d["tags"] = json.loads(d.get("tags") or "[]")
+        for key in ("id", "created_at", "updated_at"):
+            d.pop(key, None)
+        if not include_rtttl:
+            d.pop("rtttl", None)
+        return d
+
+    def total(self) -> int:
+        with self._lock:
+            return self._conn.execute("SELECT COUNT(*) FROM rtttl_melodies").fetchone()[0]
+
+    def document_frequency(self, token: str) -> int:
+        """В скольких записях архива *token* встречается подстрокой.
+
+        Основа IDF-веса (issue #2964, :class:`_TokenWeights`) — без
+        отдельного индекса: колонки уже покрыты индексами по
+        name/title/artist (см. ``_SCHEMA``), а сам счёт по 10К строк на
+        ``LIKE`` укладывается в единицы миллисекунд.
+        """
+        like = f"%{token}%"
+        with self._lock:
+            return self._conn.execute(
+                "SELECT COUNT(*) FROM rtttl_melodies WHERE "
+                "lower(name) LIKE ? OR lower(title) LIKE ? "
+                "OR lower(artist) LIKE ? OR lower(rtttl_name) LIKE ?",
+                (like, like, like, like),
+            ).fetchone()[0]
+
+    def token_weights(self) -> "_TokenWeights":
+        """Взвешиватель токенов (issue #2964) — с кэшем на этом инстансе."""
+        return self._token_weights
+
+    @staticmethod
+    def _score(row: sqlite3.Row, tokens: List[str]) -> int:
+        """Скоринг: сколько токенов запроса попало в поля (name/rtttl_name весомее)."""
+        name_l = (row["name"] or "").lower()
+        title_l = (row["title"] or "").lower()
+        artist_l = (row["artist"] or "").lower()
+        tags_l = (row["tags"] or "").lower()
+        rtttl_name_l = (row["rtttl_name"] or "").lower()
+        score = 0
+        for token in tokens:
+            if token == name_l or token == rtttl_name_l:
+                score += 4
+            elif token in title_l:
+                # title несёт полное имя («Happy Birthday To You») — ценнее,
+                # чем подстрока slug'а. Иначе «happy birthday» выигрывает
+                # трек Ashanti «Happy» (token == name) у правильного.
+                score += 3
+            elif token in name_l or token in rtttl_name_l:
+                score += 2
+            elif token in artist_l or token in tags_l:
+                score += 1
+        return score
+
+    @staticmethod
+    def _is_garbage(row: sqlite3.Row) -> bool:
+        return (row["name"] or "").strip().lower() in _GARBAGE_NAMES
+
+    @classmethod
+    def _best_in_bucket(
+        cls, rows: List[sqlite3.Row], tokens: List[str]
+    ) -> Optional[sqlite3.Row]:
+        """Лучшая строка: сперва по ТЕКСТОВОМУ смыслу, потом по качеству.
+
+        🔴 FIX (live 23.09, issue #2840 регрессия): первая версия смешивала
+        текстовый скор и качество мелодии в одну непрерывную формулу
+        (``score * WEIGHT + quality``). Небольшой перевес качества у
+        случайной «Irish National Anthem» (raw=3, только токен «anthem»)
+        перебивал точный текстовый скор «National Anthem Of Russia»
+        (тоже raw=3) чисто по количеству нот — семантика («russia» в
+        запросе) при этом ни при чём не участвовала.
+
+        Правильный порядок: сначала находим МАКСИМАЛЬНЫЙ текстовый скор
+        среди кандидатов (bucket) — это решает совпадение по смыслу.
+        Качество и денилист работают только ВНУТРИ этого bucket, где
+        текстовое совпадение уже одинаково хорошее: денилист выкидывает
+        мусор, если в bucket'е есть не-мусорная запись, а качество
+        выбирает лучшую среди оставшихся.
+        """
+        scored = [(cls._score(row, tokens), row) for row in rows]
+        scored = [(s, row) for s, row in scored if s > 0]
+        if not scored:
+            return None
+        max_score = max(s for s, _row in scored)
+        bucket = [row for s, row in scored if s == max_score]
+        non_garbage = [row for row in bucket if not cls._is_garbage(row)]
+        pool = non_garbage or bucket
+        return max(pool, key=lambda row: _melody_quality(_row_rtttl(row)))
+
+    def _candidates(self, tokens: List[str], cap: int) -> List[sqlite3.Row]:
+        """Строки-кандидаты для скоринга: полные совпадения + capped-пул частичных.
+
+        🔴 FIX (issue #2941): раньше был один SQL-запрос — «хотя бы один
+        токен встречается в поле» (``OR`` по токенам) с ``LIMIT cap``
+        ПРИМЕНЁННЫМ В SQL, ДО скоринга в Python. На частых словах («dre»,
+        «anthem», «hot» — по полсотне-сотне совпадений каждое) запись,
+        реально совпадающая по ВСЕМ токенам запроса (``stilldre_2`` для
+        «still dre», ``national_2`` для «russia anthem»), могла просто не
+        попасть в первые ``cap`` строк, которые SQLite отдаёт без
+        ``ORDER BY`` (порядок физического хранения/id) — скоринг такую
+        запись никогда не видел, хотя :meth:`get` (``cap=2000``, почти
+        весь архив) её находил.
+
+        Фикс: запись, где встретились ВСЕ значимые токены запроса (AND по
+        токенам), гарантированно входит в выборку — без лимита, потому что
+        полное совпадение уже само по себе сильный фильтр (пересечение, не
+        объединение). Частичные совпадения (``OR`` хотя бы по одному
+        токену) остаются как раньше, но только как дополняющий пул —
+        capped, для случаев, когда полного совпадения нет вовсе, и для
+        участия в ранжировании тай-брейков. Лимит на итоговое число
+        результатов применяется в :meth:`search` уже ПОСЛЕ скоринга — эта
+        функция отдаёт весь пул кандидатов, а не финальный топ-N.
+        """
+        if not tokens:
+            return []
+
+        def _clause_params() -> tuple:
+            clauses: List[str] = []
+            params: List[str] = []
+            for token in tokens:
+                like = f"%{token}%"
+                clauses.append(
+                    "(lower(name) LIKE ? OR lower(title) LIKE ? "
+                    "OR lower(artist) LIKE ? OR lower(tags) LIKE ? "
+                    "OR lower(rtttl_name) LIKE ?)"
+                )
+                params += [like, like, like, like, like]
+            return clauses, params
+
+        clauses, params = _clause_params()
+        select = (
+            "SELECT id, name, title, artist, source, tags, rtttl_name, rtttl "
+            "FROM rtttl_melodies WHERE "
+        )
+
+        full_rows: List[sqlite3.Row] = []
+        if len(tokens) > 1:
+            # AND по всем токенам — без LIMIT: гарантированное включение
+            # полных совпадений в выборку для скоринга.
+            and_sql = select + " AND ".join(clauses)
+            full_rows = self._conn.execute(and_sql, params).fetchall()
+
+        or_sql = select + " OR ".join(clauses) + " LIMIT ?"
+        or_rows = self._conn.execute(or_sql, params + [cap]).fetchall()
+
+        if not full_rows:
+            return or_rows
+        seen = {row["id"] for row in full_rows}
+        merged = list(full_rows) + [row for row in or_rows if row["id"] not in seen]
+        return merged
+
+    def get(self, name: str) -> Optional[Dict[str, Any]]:
+        """Найти одну мелодию (точное имя → лучший по токенам запроса).
+
+        Точное совпадение имени обычно возвращается сразу (прямая
+        адресация: ``get('russiann')`` честно находит ``russiann``). Но
+        если точное имя само в денилисте (``_GARBAGE_NAMES``), оно не
+        побеждает автоматически — участвует в ранжировании наравне с
+        токен-кандидатами и уступает более качественной записи, если такая
+        нашлась (иначе остаётся честным fallback'ом, когда лучшего нет).
+
+        🔴 issue #2896 (регрессия #2882→#2877): раньше здесь был ещё один
+        фильтр — ``_is_weak_match``, честно отклонявший кандидата, если у
+        title было «слишком много лишних слов» относительно токенов
+        запроса. На практике это правило било по СИЛЬНЫМ совпадениям:
+        ``get('super mario')`` не находил «Super Mario Brothers 1»
+        (лишних слов в title больше, чем токенов в запросе), ``get('star
+        wars')`` не находил «Star Wars - Imperial March 1» ровно по той
+        же причине. Единой эвристики, которая отличает «лишние слова —
+        другая песня» (issue #2877, «stranger things» → «Strangers In
+        The Night») от «лишние слова — просто длинное название» (issue
+        #2896, «super mario» → «Super Mario Brothers 1»), не нашлось —
+        каждый фикс под один случай ломал другой.
+
+        Поэтому ``get()`` больше не решает это молчаливым отказом: он
+        всегда возвращает лучшего по тексту кандидата (как до #2882), а
+        ответственность «эта ли песня имелась в виду» переходит на
+        вызывающую сторону — ``ComposeMusicTool``/``LookupMelodyTool``
+        отдают модели ``title`` найденной записи и короткий список
+        альтернатив (:meth:`search`), а промпт скилла composer учит
+        модель сверять их с тем, что просил юзер, вместо того чтобы
+        молча доверять первому результату.
+        """
+        q = _normalize(name)
+        tokens = _tokens(q)
+        if not tokens:
+            return None
+        with self._lock:
+            exact = self._conn.execute(
+                "SELECT * FROM rtttl_melodies WHERE lower(name) = ? LIMIT 1", (q,)
+            ).fetchone()
+            if exact is not None and not self._is_garbage(exact):
+                return self._to_dict(exact, include_rtttl=True)
+            rows = self._candidates(tokens, cap=2000)
+        pool = list(rows)
+        if exact is not None and not any(row["id"] == exact["id"] for row in pool):
+            pool.append(exact)
+        best = self._best_in_bucket(pool, tokens)
+        if best is None:
+            return None
+        with self._lock:
+            full = self._conn.execute(
+                "SELECT * FROM rtttl_melodies WHERE id = ?", (best["id"],)
+            ).fetchone()
+        if full is None:
+            return None
+        return self._to_dict(full, include_rtttl=True)
+
+    def ru_alias_for(self, melody_key: str) -> Optional[str]:
+        """Русская разговорная фраза, если она в базе резолвится ИМЕННО в эту запись.
+
+        issue #3178 — для голоса/``<music_state>`` (:func:`human_track_title`):
+        перебирает канонические запросы :data:`_ALIAS_CANONICAL_TO_RU_PHRASE`
+        (уникальные, по одной русской фразе на каждый) и вызывает :meth:`get`
+        на каждый — тот же путь, что реальный поиск по имени, поэтому
+        совпадение честное (не текстовое сравнение канонического запроса с
+        ``melody_key``, оно решает то же самое, что ``compose_music`` увидел
+        бы при заказе этой фразой). Обратная таблица «запись → фраза» строится один раз на процесс (по одному
+        :meth:`get` на алиас, первый алиас побеждает — как прежний перебор): раньше каждый ключ перебирал все
+        алиасы заново, и названия 30 хуков сета на Pi не успевали к ``started`` трека 1 (живой прогон 06.10).
+        """
+        if not melody_key:
+            return None
+        if not self._ru_alias_cache:
+            for canonical, phrase in _ALIAS_CANONICAL_TO_RU_PHRASE.items():
+                rec = self.get(canonical)
+                name = str((rec or {}).get("name") or "")
+                if name:
+                    self._ru_alias_cache.setdefault(name, phrase)
+            self._ru_alias_cache.setdefault("", None)  # таблица построена (даже пустая)
+        return self._ru_alias_cache.get(melody_key)
+
+    def search(self, query: str, limit: int = 20, include_rtttl: bool = False) -> List[Dict[str, Any]]:
+        """Поиск по токенам запроса (SQL кандидаты → скоринг в Python), top-N.
+
+        Сортировка: текстовый скор (главный ключ — решает семантику
+        совпадения) → денилист (внутри одного скора мусор тонет под
+        не-мусором) → качество мелодии → title (алфавит, последний
+        тай-брейк, для истинных ничьих по скору, денилисту и качеству).
+        Качество и денилист НЕ могут перевесить разницу в текстовом скоре
+        — см. :meth:`_best_in_bucket`.
+
+        🔴 FIX (issue #2941): тай-брейк «качество → title» — тот же
+        порядок, что использует :meth:`_best_in_bucket` (через который
+        работает :meth:`get`). Раньше здесь было «title → качество»: для
+        одинакового скора несколько записей архива с разными title
+        (``«Super Mario Brothers 1»`` vs ``«Supermario Brothers»`` —
+        пробел сортируется раньше буквы) сортировались алфавитно ДО учёта
+        качества, и ``search('super mario')`` ставил первым не тот трек,
+        что находил ``get('super mario')`` — ``get``/``search`` расходились
+        при равном скоре, но разных title. ``LIMIT`` на итоговый размер
+        результата применяется ЗДЕСЬ, уже после скоринга и сортировки —
+        не в SQL (см. :meth:`_candidates`).
+        """
+        q = _normalize(query)
+        tokens = _tokens(q)
+        if not tokens:
+            return []
+        limit = max(1, min(50, int(limit)))
+        # cap для OR-пула частичных совпадений — тот же порог, что у
+        # get() (см. её вызов _candidates(..., cap=2000)): меньший cap,
+        # завязанный на limit (``limit * 10``), давал search()/get()
+        # расходиться на многословных запросах, где не все токены
+        # находят буквальную подстроку ни в одной записи («bros» не
+        # substring «Brothers») — тогда решает не AND-гарантия (см.
+        # _candidates), а сам OR-пул, и его размер обязан совпадать с
+        # тем, что видит get() (issue #2941, «search/get согласованы»).
+        with self._lock:
+            rows = self._candidates(tokens, cap=max(limit * 10, 2000))
+        scored = []
+        for row in rows:
+            match = self._score(row, tokens)
+            if match <= 0:
+                continue
+            quality = _melody_quality(_row_rtttl(row))
+            scored.append((match, self._is_garbage(row), row, quality))
+
+        def _sort_key(item: tuple) -> tuple:
+            match, garbage, row, quality = item
+            return (-match, garbage, -quality, (row["title"] or "").lower())
+
+        scored.sort(key=_sort_key)
+        return [self._to_dict(row, include_rtttl) for _m, _g, row, _q in scored[:limit]]

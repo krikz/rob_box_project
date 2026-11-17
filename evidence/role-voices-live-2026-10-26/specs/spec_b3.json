@@ -1,0 +1,194 @@
+[
+{
+"id": "m-en_WiseScholar_p23",
+"provider": "minimax",
+"voice": "English_WiseScholar",
+"pitch": 0,
+"speed": 1.0,
+"text": "Доложи статус: всё ли у тебя работает, ничего не отвалилось?"
+},
+{
+"id": "m-en_WiseScholar_p24",
+"provider": "minimax",
+"voice": "English_WiseScholar",
+"pitch": 0,
+"speed": 1.0,
+"text": "Где ты сейчас находишься?"
+},
+{
+"id": "m-en_WiseScholar_p25",
+"provider": "minimax",
+"voice": "English_WiseScholar",
+"pitch": 0,
+"speed": 1.0,
+"text": "Что ты видишь вокруг себя, опиши в двух словах."
+},
+{
+"id": "m-en_WiseScholar_p26",
+"provider": "minimax",
+"voice": "English_WiseScholar",
+"pitch": 0,
+"speed": 1.0,
+"text": "Какие звуки ты вообще умеешь издавать?"
+},
+{
+"id": "m-en_WiseScholar_p27",
+"provider": "minimax",
+"voice": "English_WiseScholar",
+"pitch": 0,
+"speed": 1.0,
+"text": "У тебя сейчас играет какая-нибудь музыка?"
+},
+{
+"id": "m-en_WiseScholar_p28",
+"provider": "minimax",
+"voice": "English_WiseScholar",
+"pitch": 0,
+"speed": 1.0,
+"text": "Ты меня слышишь? Ответь коротко."
+},
+{
+"id": "m-en_Jovialman_p23",
+"provider": "minimax",
+"voice": "English_Jovialman",
+"pitch": 0,
+"speed": 1.0,
+"text": "Доложи статус: всё ли у тебя работает, ничего не отвалилось?"
+},
+{
+"id": "m-en_Jovialman_p24",
+"provider": "minimax",
+"voice": "English_Jovialman",
+"pitch": 0,
+"speed": 1.0,
+"text": "Где ты сейчас находишься?"
+},
+{
+"id": "m-en_Jovialman_p25",
+"provider": "minimax",
+"voice": "English_Jovialman",
+"pitch": 0,
+"speed": 1.0,
+"text": "Что ты видишь вокруг себя, опиши в двух словах."
+},
+{
+"id": "m-en_Jovialman_p26",
+"provider": "minimax",
+"voice": "English_Jovialman",
+"pitch": 0,
+"speed": 1.0,
+"text": "Какие звуки ты вообще умеешь издавать?"
+},
+{
+"id": "m-en_Jovialman_p27",
+"provider": "minimax",
+"voice": "English_Jovialman",
+"pitch": 0,
+"speed": 1.0,
+"text": "У тебя сейчас играет какая-нибудь музыка?"
+},
+{
+"id": "m-en_Jovialman_p28",
+"provider": "minimax",
+"voice": "English_Jovialman",
+"pitch": 0,
+"speed": 1.0,
+"text": "Ты меня слышишь? Ответь коротко."
+},
+{
+"id": "m-es_HumorousElder_p23",
+"provider": "minimax",
+"voice": "Spanish_HumorousElder",
+"pitch": 0,
+"speed": 1.0,
+"text": "Доложи статус: всё ли у тебя работает, ничего не отвалилось?"
+},
+{
+"id": "m-es_HumorousElder_p24",
+"provider": "minimax",
+"voice": "Spanish_HumorousElder",
+"pitch": 0,
+"speed": 1.0,
+"text": "Где ты сейчас находишься?"
+},
+{
+"id": "m-es_HumorousElder_p25",
+"provider": "minimax",
+"voice": "Spanish_HumorousElder",
+"pitch": 0,
+"speed": 1.0,
+"text": "Что ты видишь вокруг себя, опиши в двух словах."
+},
+{
+"id": "m-es_HumorousElder_p26",
+"provider": "minimax",
+"voice": "Spanish_HumorousElder",
+"pitch": 0,
+"speed": 1.0,
+"text": "Какие звуки ты вообще умеешь издавать?"
+},
+{
+"id": "m-es_HumorousElder_p27",
+"provider": "minimax",
+"voice": "Spanish_HumorousElder",
+"pitch": 0,
+"speed": 1.0,
+"text": "У тебя сейчас играет какая-нибудь музыка?"
+},
+{
+"id": "m-es_HumorousElder_p28",
+"provider": "minimax",
+"voice": "Spanish_HumorousElder",
+"pitch": 0,
+"speed": 1.0,
+"text": "Ты меня слышишь? Ответь коротко."
+},
+{
+"id": "m-ko_ColdYoungMan_p23",
+"provider": "minimax",
+"voice": "Korean_ColdYoungMan",
+"pitch": 0,
+"speed": 1.0,
+"text": "Доложи статус: всё ли у тебя работает, ничего не отвалилось?"
+},
+{
+"id": "m-ko_ColdYoungMan_p24",
+"provider": "minimax",
+"voice": "Korean_ColdYoungMan",
+"pitch": 0,
+"speed": 1.0,
+"text": "Где ты сейчас находишься?"
+},
+{
+"id": "m-ko_ColdYoungMan_p25",
+"provider": "minimax",
+"voice": "Korean_ColdYoungMan",
+"pitch": 0,
+"speed": 1.0,
+"text": "Что ты видишь вокруг себя, опиши в двух словах."
+},
+{
+"id": "m-ko_ColdYoungMan_p26",
+"provider": "minimax",
+"voice": "Korean_ColdYoungMan",
+"pitch": 0,
+"speed": 1.0,
+"text": "Какие звуки ты вообще умеешь издавать?"
+},
+{
+"id": "m-ko_ColdYoungMan_p27",
+"provider": "minimax",
+"voice": "Korean_ColdYoungMan",
+"pitch": 0,
+"speed": 1.0,
+"text": "У тебя сейчас играет какая-нибудь музыка?"
+},
+{
+"id": "m-ko_ColdYoungMan_p28",
+"provider": "minimax",
+"voice": "Korean_ColdYoungMan",
+"pitch": 0,
+"speed": 1.0,
+"text": "Ты меня слышишь? Ответь коротко."
+}
+]

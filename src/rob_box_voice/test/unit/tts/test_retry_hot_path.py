@@ -14,7 +14,7 @@ from test.unit.tts.conftest import _install_all_mocks
 
 _install_all_mocks()
 
-from rob_box_voice.tts_node import TTSNode
+from rob_box_voice.tts_providers.silero import SileroTTSProvider
 
 
 class _Logger:
@@ -48,20 +48,11 @@ class _ThresholdSilero:
         return _FakeTensor([float(len(text))])
 
 
-def _build_silero_node(model: _ThresholdSilero) -> TTSNode:
-    node = TTSNode.__new__(TTSNode)
-    node.silero_model = model
-    node.silero_speaker = "baya"
-    node.silero_sample_rate = 48000
-    node.silero_put_accent = True
-    node.silero_put_yo = True
-    node.silero_put_stress_homo = True
-    node.silero_put_yo_homo = True
-    node.chunk_max_chars_silero = 800
-    node.chunk_max_retries = 3
-    node.chunk_min_chars = 50
-    node.get_logger = lambda: _Logger()
-    return node
+def _build_silero_node(model: _ThresholdSilero) -> SileroTTSProvider:
+    """Адаптер Silero (#4240) с фейковой моделью."""
+    adapter = SileroTTSProvider(logger=_Logger(), default_speaker="baya")
+    adapter.model = model
+    return adapter
 
 
 def test_silero_1005_chars_splits_at_configured_limit() -> None:
@@ -70,10 +61,10 @@ def test_silero_1005_chars_splits_at_configured_limit() -> None:
     text = "А. " * 335
     assert len(text) == 1005
 
-    audio = TTSNode._synthesize_silero(node, text)
+    audio = node.synthesize_np(text)
 
     assert len(model.calls) > 1
-    assert all(len(chunk) <= node.chunk_max_chars_silero for chunk in model.calls)
+    assert all(len(chunk) <= 800 for chunk in model.calls)
     assert audio.dtype == np.float32
 
 
@@ -81,9 +72,9 @@ def test_silero_retries_by_halving_provider_rejection() -> None:
     model = _ThresholdSilero(max_chars=220)
     node = _build_silero_node(model)
     text = ("Retry this Silero phrase. " * 20).strip()
-    assert 220 < len(text) < node.chunk_max_chars_silero
+    assert 220 < len(text) < 800
 
-    audio = TTSNode._synthesize_silero(node, text)
+    audio = node.synthesize_np(text)
 
     assert model.calls[0] == text
     assert len(model.calls) > 1

@@ -1,16 +1,23 @@
 #!/usr/bin/env python3
 """
 SoundNode - воспроизведение звуковых эффектов
-Подписывается: /voice/sound/trigger (String)
-Публикует: /voice/sound/state (String)
+Подписывается: /voice/sound/trigger (String JSON {sound, request_id}, тул play_sound), /voice/expression/request (earcon рефлексов)
+Публикует: /voice/sound/state (String), /voice/sound/event (SoundEvent), /voice/expression/event (ExpressionEvent)
+
+На каждый запрос звука - событие: started, затем finished, либо skipped{busy|voice_stream|not_found|error}.
+Молчаливого пропуска нет (ADR-0150 §5.5.2, V33, PR-3b #3690).
 """
 
 import rclpy
 from rclpy.node import Node
+from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
 from std_msgs.msg import String
 
+from audio_common_msgs.msg import AudioData
+from rob_box_dialog import expression
+from rob_box_dialog_msgs.msg import ExpressionEvent, ExpressionRequest, SessionState, SoundEvent
+
 import os
-import sys
 import json
 import random
 import threading
@@ -18,35 +25,20 @@ import time
 import numpy as np
 import sounddevice as sd
 from typing import Dict, List, Optional
-from contextlib import contextmanager
 from pydub import AudioSegment
 from .utils.audio_utils import find_respeaker_device_sounddevice
 from .audio_playback_manager import AudioPlaybackManager
+from .core.sound_requests import (  # noqa: F401 - EARCON_SOUNDS читают тесты и скрипты
+    EARCON_SOUNDS, SKIP_BUSY, SKIP_ERROR, SoundRequestsMixin, parse_trigger,
+)
 
 
-@contextmanager
-def ignore_stderr(enable=True):
-    """Подавить ALSA ошибки от PyAudio (как в audio_node)."""
-    if enable:
-        devnull = None
-        try:
-            devnull = os.open(os.devnull, os.O_WRONLY)
-            stderr = os.dup(2)
-            sys.stderr.flush()
-            os.dup2(devnull, 2)
-            try:
-                yield
-            finally:
-                os.dup2(stderr, 2)
-                os.close(stderr)
-        finally:
-            if devnull is not None:
-                os.close(devnull)
-    else:
-        yield
+# Рация (voice passthrough): тишина дольше этого порога (сек) закрывает
+# голосовой stream (план P1, Task 1.2, решение D7).
+VOICE_SILENCE_TIMEOUT = 0.3
 
 
-class SoundNode(Node):
+class SoundNode(SoundRequestsMixin, Node):
     """Нода для воспроизведения звуковых эффектов."""
 
     def __init__(self):
@@ -73,18 +65,40 @@ class SoundNode(Node):
 
         # Subscribers
         self.trigger_sub = self.create_subscription(String, "/voice/sound/trigger", self.trigger_callback, 10)
-        # Issue #1392 follow-up — воспроизведение сгенерированных MiniMax-треков
-        # по абсолютному пути (gen_play_from_library публикует путь сюда).
-        self.play_file_sub = self.create_subscription(String, "/voice/sound/play_file", self.play_file_callback, 10)
-        # Явный стоп mp3-трека (stop_music → /voice/sound/stop). Прерывание
-        # по wake word НЕ делаем — LLM сама решает стопить через stop_music,
-        # видя состояние «сейчас играет трек» в system_context.
+        # Earcon рефлексов хода (ADR-0150 §5.5.3): «услышал», «готово», «не вышло».
+        self.expression_sub = self.create_subscription(
+            ExpressionRequest, "/voice/expression/request", self.expression_callback, 10
+        )
+        # Тишина (#3984): сцена Silence в снимке сессии - «услышал» становится тихим muffled, «готово» молчит.
+        self.session_sub = self.create_subscription(
+            SessionState, "/dialog/session", self.session_callback,
+            QoSProfile(depth=1, reliability=ReliabilityPolicy.RELIABLE, durability=DurabilityPolicy.TRANSIENT_LOCAL),
+        )
+        # STOP закрывает голосовой стрим рации (PTT Quest/Telegram). mp3 из библиотеки генераций здесь больше не
+        # играет — он на деке движка (ADR-0158 PR-2), стоп — stop_music → PlayerOwner.
         self.sound_stop_sub = self.create_subscription(String, "/voice/sound/stop", self.sound_stop_callback, 10)
+        # Рация (voice passthrough): голос оператора из Quest (/avatar/voice_in).
+        # best-effort + volatile QoS, чтобы не доигрывать stale-чанки после
+        # потери соединения (план P1, Task 1.1).
+        voice_in_qos = QoSProfile(
+            reliability=ReliabilityPolicy.BEST_EFFORT,
+            durability=DurabilityPolicy.VOLATILE,
+            depth=10,
+        )
+        self.voice_in_sub = self.create_subscription(
+            AudioData, "/avatar/voice_in", self.voice_in_callback, voice_in_qos
+        )
+
+        # Состояние голосового стрима (Task 1.2)
+        self._voice_stream = None  # sd.OutputStream во время голоса оператора
+        self._voice_last_activity = 0.0  # monotonic timestamp последнего чанка
+        # Таймер: закрыть стрим при тишине (проверка каждый VOICE_SILENCE_TIMEOUT).
+        self.create_timer(VOICE_SILENCE_TIMEOUT, self._voice_stream_watchdog)
 
         # Publishers
         self.state_pub = self.create_publisher(String, "/voice/sound/state", 10)
-        # Состояние сгенерированной музыки (для dialogue_node → system_context).
-        self.generated_music_state_pub = self.create_publisher(String, "/voice/generated_music/state", 10)
+        self.sound_event_pub = self.create_publisher(SoundEvent, "/voice/sound/event", 10)
+        self.expression_event_pub = self.create_publisher(ExpressionEvent, "/voice/expression/event", 10)
 
         # Опционально: триггер анимаций
         if self.trigger_animations:
@@ -100,11 +114,6 @@ class SoundNode(Node):
         # Хранилище звуков
         self.sounds: Dict[str, AudioSegment] = {}  # filename (без .mp3) → AudioSegment
         self.trigger_map: Dict[str, str] = {}  # trigger → filename mapping из catalog.json
-        # Issue #1251 — ранний «бульк» (сигнал «услышал, wake word есть»).
-        # stt_node публикует триггер "boop" на /voice/sound/trigger, как
-        # только partial/final STT содержит wake word. Маппим его на короткий
-        # клик button_click (~0.23s) — не мешает речи и не перебивает TTS.
-        self.trigger_aliases: Dict[str, str] = {"boop": "button_click"}
         self.sound_groups: Dict[str, List[str]] = {
             # Random groups for variety
             "talk": ["talk_1", "talk_2", "talk_3", "talk_4"],
@@ -119,7 +128,10 @@ class SoundNode(Node):
         self.is_playing = False
         self.current_sound: Optional[str] = None
         self.play_thread: Optional[threading.Thread] = None
-        self._mp3_stop_requested = False
+        self._play_lock = threading.Lock()
+        # Очередь play_sound из одного места и конец текущего звука (core/sound_requests.py, #3698).
+        self._queued = None
+        self._busy_until: Optional[float] = None
 
         # Инициализация
         self.get_logger().info("SoundNode инициализирован")
@@ -211,77 +223,108 @@ class SoundNode(Node):
         else:
             self.publish_state("error_no_sounds")
 
+    def session_callback(self, msg: SessionState):
+        """Снимок сессии: есть ли сцена ``Silence`` у личности (чужой агент состояние не меняет)."""
+        silenced = expression.session_silence(msg)
+        if silenced is not None and silenced != self._silenced:
+            self._silenced = silenced
+            self.get_logger().info("🤫 Тишина: earcon'ы приглушены" if silenced else "🔔 Тишина снята: earcon'ы обычные")
+
     def trigger_callback(self, msg: String):
-        """Обработка триггера звукового эффекта."""
-        trigger = msg.data.strip()
-
-        self.get_logger().info(f"🔔 Триггер: {trigger}")
-
-        # Проверить, не играет ли уже звук
-        if self.is_playing:
-            self.get_logger().warn(f"⚠️ Звук уже играет ({self.current_sound}), пропускаю {trigger}")
-            return
-
-        # Выбрать звук
-        sound_name = self.select_sound(trigger)
-
-        if sound_name is None:
-            self.get_logger().warn(f'⚠️ Звук для триггера "{trigger}" не найден')
-            return
-
-        # Запустить воспроизведение в отдельном потоке
-        self.play_thread = threading.Thread(target=self.play_sound_thread, args=(sound_name, trigger), daemon=True)
-        self.play_thread.start()
-
-    def play_file_callback(self, msg: String):
-        """Воспроизведение произвольного mp3-файла по абсолютному пути.
-
-        Используется для сгенерированных MiniMax-треков
-        (``/data/music_library/<uuid>/track.mp3``): ``gen_play_from_library``
-        публикует путь на ``/voice/sound/play_file`` (issue #1392 follow-up).
-        """
-        file_path = msg.data.strip()
-        if not file_path:
-            self.get_logger().warn("⚠️ play_file: пустой путь")
-            return
-        if not os.path.exists(file_path):
-            self.get_logger().warn(f"⚠️ play_file: файл не найден: {file_path!r}")
-            return
-        if self.is_playing:
-            self.get_logger().warn(
-                f"⚠️ Звук уже играет ({self.current_sound}), пропускаю файл {file_path}"
-            )
-            return
-        self._mp3_stop_requested = False
-        self.play_thread = threading.Thread(
-            target=self.play_file_thread, args=(file_path,), daemon=True
-        )
-        self.play_thread.start()
+        """Триггер звукового эффекта: исход - ``SoundEvent`` с ``request_id`` запроса (его ждёт тул ``play_sound``)."""
+        trigger, request_id = parse_trigger(msg.data)
+        self.get_logger().info(f"🔔 Триггер: {trigger} (request {request_id[:8]})")
+        self.start_sound(trigger, request_id, queue=True)
 
     def sound_stop_callback(self, msg: String):
-        """Явная остановка mp3-трека (stop_music → /voice/sound/stop)."""
+        """STOP на ``/voice/sound/stop`` закрывает голосовой стрим рации (barge-in)."""
         if msg.data.strip().upper() == "STOP":
-            self._stop_mp3()
+            self._close_voice_stream()
 
-    def _stop_mp3(self) -> None:
-        """Остановить текущее mp3-воспроизведение (если идёт)."""
-        if not self.is_playing:
+    def voice_in_callback(self, msg):
+        """Голос оператора (/avatar/voice_in, AudioData int16 PCM 16 kHz).
+
+        Стриминговый вывод: первый чанк открывает sd.OutputStream
+        (16 kHz, stereo int16 — ReSpeaker требует 2 канала), последующие
+        пишутся в него. Один stream на весь PTT-сеанс, чтобы не было
+        кликов/лага от повторного открытия (план P1, Task 1.2, D7).
+        """
+        try:
+            # AudioData.data приходит как list[int] (tts_node/audio_node публикуют
+            # `list(bytes)`) — нормализуем через bytes() перед frombuffer.
+            chunk = np.frombuffer(bytes(msg.data), dtype=np.int16)
+        except Exception as e:  # noqa: BLE001
+            self.get_logger().error(f"❌ voice_in: невалидный AudioData: {e}")
             return
-        self.get_logger().info("🛑 Остановка mp3-воспроизведения")
-        self._mp3_stop_requested = True
-        try:
-            self.playback_manager.stop_playback("sound_node")
-        except Exception as exc:  # noqa: BLE001
-            self.get_logger().error(f"❌ Ошибка остановки mp3: {exc}")
+        if chunk.size == 0:
+            return
+        # Mono → stereo (ReSpeaker playback требует 2 канала, как в tts_node).
+        stereo = np.column_stack((chunk, chunk))
 
-    def _publish_generated_music_idle(self) -> None:
-        """Сообщить dialogue_node, что mp3-трек больше не играет."""
+        if self._voice_stream is None:
+            self._open_voice_stream()
+        stream = self._voice_stream
+        if stream is None:
+            return
+
         try:
-            msg = String()
-            msg.data = json.dumps({"status": "idle"})
-            self.generated_music_state_pub.publish(msg)
-        except Exception:  # noqa: BLE001
-            pass
+            stream.write(stereo)
+            self._voice_last_activity = time.monotonic()
+        except Exception as e:  # noqa: BLE001
+            self.get_logger().error(f"❌ voice_in: ошибка записи в stream: {e}")
+            self._close_voice_stream()
+
+    def _open_voice_stream(self):
+        """Открыть OutputStream для голоса (16 kHz, stereo int16)."""
+        try:
+            self._voice_stream = sd.OutputStream(
+                samplerate=16000,
+                channels=2,
+                dtype="int16",
+                device=self.device_index,
+            )
+            self._voice_stream.start()
+            self._voice_last_activity = time.monotonic()
+            self.get_logger().info("🎙️ Voice passthrough stream открыт (16k stereo int16)")
+        except Exception as e:  # noqa: BLE001
+            self.get_logger().error(f"❌ Не удалось открыть voice stream: {e}")
+            self._voice_stream = None
+
+    def _close_voice_stream(self):
+        """Закрыть голосовой stream (если открыт)."""
+        stream = self._voice_stream
+        if stream is None:
+            return
+        for op in ("stop", "close"):
+            try:
+                getattr(stream, op)()
+            except Exception:  # noqa: BLE001
+                pass
+        self._voice_stream = None
+
+    def _close_voice_stream_if_idle(self, now: Optional[float] = None) -> bool:
+        """Закрыть голосовой stream, если тишина дольше VOICE_SILENCE_TIMEOUT.
+
+        Args:
+            now: текущее время (time.monotonic). Для тестов можно передать
+                явно, чтобы детерминированно проверить порог.
+
+        Returns:
+            True, если stream закрыт; False иначе.
+        """
+        if self._voice_stream is None:
+            return False
+        if now is None:
+            now = time.monotonic()
+        if now - self._voice_last_activity >= VOICE_SILENCE_TIMEOUT:
+            self.get_logger().info("🎙️ Тишина — закрываю voice passthrough stream")
+            self._close_voice_stream()
+            return True
+        return False
+
+    def _voice_stream_watchdog(self):
+        """Таймер: закрыть стрим при тишине."""
+        self._close_voice_stream_if_idle()
 
     def select_sound(self, trigger: str) -> Optional[str]:
         """Выбрать звук по триггеру."""
@@ -301,12 +344,6 @@ class SoundNode(Node):
             if available:
                 return random.choice(available)
 
-        # 3.5. Issue #1251 — алиасы триггеров: "boop" → button_click (ранний «бульк»)
-        if trigger in self.trigger_aliases:
-            alias = self.trigger_aliases[trigger]
-            if alias in self.sounds:
-                return alias
-
         # 4. Попробовать найти похожий
         for sound_name in self.sounds.keys():
             if trigger.lower() in sound_name.lower():
@@ -314,11 +351,13 @@ class SoundNode(Node):
 
         return None
 
-    def play_sound_thread(self, sound_name: str, trigger: str):
-        """Воспроизведение звука в отдельном потоке."""
+    def play_sound_thread(self, sound_name: str, trigger: str, request_id: str = ""):
+        """Воспроизведение звука в отдельном потоке; ``started`` -> ``finished`` | ``skipped{busy|error}``."""
         self.is_playing = True
         self.current_sound = sound_name
         self.publish_state(f"playing_{sound_name}")
+        self.publish_sound_event(request_id, SoundEvent.KIND_STARTED, sound_name)
+        outcome, reason = SoundEvent.KIND_FINISHED, ""
 
         try:
             self.get_logger().info(f"▶️ Играю: {sound_name}")
@@ -360,6 +399,7 @@ class SoundNode(Node):
 
             if not success:
                 self.get_logger().warn(f"⚠️  Аудио устройство занято, пропуск {sound_name}")
+                outcome, reason = SoundEvent.KIND_SKIPPED, SKIP_BUSY
             else:
                 self.get_logger().info(f"✅ Завершено: {sound_name}")
 
@@ -368,63 +408,12 @@ class SoundNode(Node):
 
         except Exception as e:
             self.get_logger().error(f"❌ Ошибка воспроизведения {sound_name}: {e}")
+            outcome, reason = SoundEvent.KIND_SKIPPED, SKIP_ERROR
 
         finally:
-            self.is_playing = False
-            self.current_sound = None
+            self.publish_sound_event(request_id, outcome, sound_name, reason)
             self.publish_state("ready")
-
-    def play_file_thread(self, file_path: str):
-        """Воспроизведение mp3-файла из библиотеки сгенерированной музыки."""
-        self.is_playing = True
-        self.current_sound = os.path.basename(file_path)
-        self.publish_state(f"playing_{self.current_sound}")
-
-        try:
-            self.get_logger().info(f"▶️ Играю файл: {file_path}")
-            audio = AudioSegment.from_mp3(file_path)
-
-            # Применить регулировку громкости
-            if self.volume_db != 0:
-                audio = audio + self.volume_db
-
-            # ReSpeaker playback требует: 16kHz, stereo (2 channels)
-            if audio.frame_rate != 16000:
-                audio = audio.set_frame_rate(16000)
-
-            samples = np.array(audio.get_array_of_samples())
-            if audio.channels == 1:
-                samples = np.column_stack((samples, samples))
-            elif audio.channels == 2:
-                samples = samples.reshape((-1, 2))
-            samples = samples.astype(np.float32) / 32768.0
-
-            success = self.playback_manager.play_audio(
-                audio_data=samples,
-                sample_rate=16000,
-                device_index=self.device_index,
-                blocking=True,
-                timeout=3.0,
-                node_name="sound_node",
-            )
-
-            if not success:
-                self.get_logger().warn(f"⚠️ Аудио устройство занято, пропуск {file_path}")
-            elif self._mp3_stop_requested:
-                self.get_logger().info(f"🛑 Остановлено пользователем: {file_path}")
-            else:
-                self.get_logger().info(f"✅ Завершено: {file_path}")
-
-            self.cleanup_playback_noise()
-
-        except Exception as e:
-            self.get_logger().error(f"❌ Ошибка воспроизведения {file_path}: {e}")
-
-        finally:
-            self.is_playing = False
-            self.current_sound = None
-            self.publish_state("ready")
-            self._publish_generated_music_idle()
+            self.release_channel()
 
     def cleanup_playback_noise(self):
         """
@@ -509,9 +498,6 @@ class SoundNode(Node):
             "ui_radio_start": None,
             "ui_random": None,
             "ui_roger": None,
-
-            # Issue #1251 — ранний «бульк» (короткий клик) — без анимации
-            "boop": None,
 
             # Robot special effects
             "robot_glitch": "error",

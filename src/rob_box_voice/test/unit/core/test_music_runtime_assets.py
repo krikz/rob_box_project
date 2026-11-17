@@ -2,6 +2,8 @@
 
 from pathlib import Path
 
+from rob_box_dialog import prompts
+
 
 # Resolve repo root by walking up the tree until we find the ``docker/`` and
 # ``src/`` siblings. This avoids brittle parents[N] indexing that breaks when
@@ -16,11 +18,13 @@ def _resolve_repo_root(start: Path) -> Path:
 
 _THIS_FILE = Path(__file__).resolve()
 REPO_ROOT = _resolve_repo_root(_THIS_FILE)
-FOXDOT_INIT_PATH = REPO_ROOT / "docker" / "vision" / "voice_assistant" / "foxdot_init.sc"
-START_VOICE_ASSISTANT_PATH = REPO_ROOT / "docker" / "vision" / "scripts" / "voice_assistant" / "start_voice_assistant.sh"
-CUSTOM_SYNTHDEF_DIR = REPO_ROOT / "docker" / "vision" / "voice_assistant" / "custom_synthdefs"
-MASTER_PROMPT_PATH = REPO_ROOT / "src" / "rob_box_voice" / "prompts" / "master_prompt_compact.txt"
-MUSIC_SKILL_PROMPT_PATH = REPO_ROOT / "src" / "rob_box_voice" / "prompts" / "skills" / "music_skill_prompt.txt"
+FOXDOT_INIT_PATH = REPO_ROOT / "docker" / "sound" / "voice_assistant" / "foxdot_init.sc"
+START_VOICE_ASSISTANT_PATH = REPO_ROOT / "docker" / "sound" / "scripts" / "voice_assistant" / "start_voice_assistant.sh"
+CUSTOM_SYNTHDEF_DIR = REPO_ROOT / "docker" / "sound" / "voice_assistant" / "custom_synthdefs"
+#: Основа промпта Личности - данные ядра (ADR-0167 Ш1б-3); персона робота музыкальных правил не несёт.
+MASTER_PROMPT_PATH = Path(prompts.__file__).with_name(prompts.BASE_FILE)
+#: Музыкальные правила — в мастер-промпте (§5 MUSIC); фрагментов скиллов нет с ADR-0150 PR-6.
+COMPOSER_PROMPT_PATH = MASTER_PROMPT_PATH
 
 
 def test_foxdot_init_uses_distinct_placeholder_guard_and_no_pathname_exists() -> None:
@@ -87,6 +91,20 @@ def test_start_voice_assistant_validates_expanded_stranger_things_sc_only_custom
 
     assert "--critical-synth strangerpulsepad" in content
     assert "--critical-synth strangerarp" in content
+
+
+def test_start_voice_assistant_reports_honest_failure_not_degraded_but_usable() -> None:
+    """Issue #2716: a critical SynthDef that never confirmed into scsynth
+    means the preset built on it plays silently, not "a bit worse". Calling
+    that "non-critical errors (degraded but usable)" hid the failure behind
+    a reassuring label and let it ride along in deploy auto-reports for
+    weeks (#2693, #2707) instead of getting looked at.
+    """
+    content = START_VOICE_ASSISTANT_PATH.read_text(encoding="utf-8")
+
+    assert "degraded but usable" not in content
+    assert "non-critical errors" not in content
+    assert "Music stack validation FAILED" in content
     assert "--critical-synth strangerbrass" in content
 
 
@@ -107,141 +125,55 @@ def test_sc_only_custom_synthdef_files_exist_for_repo_owned_palette() -> None:
         assert f"SynthDef.new(\\{synth_name}" in content
 
 
-def test_master_prompt_contains_stranger_things_structure_guidance() -> None:
-    content = MASTER_PROMPT_PATH.read_text(encoding="utf-8")
+# ── issue #1810 — the music skill could not look anything up ─────────────
+#
+# The skill prompt told the model to research artists with
+# ``search_artist_style(...)`` and to pick samples with
+# ``renardo_search_samples(...)``. Neither tool has ever existed: the real
+# name for research is ``search_web``. ``_validate_tools_in_prompt``
+# did not catch it — it only warns about registered tools *missing* from the
+# prompt, never about invented ones present in it. So the model was told to
+# call a tool that would fail, and fell back to inventing a melody instead of
+# looking one up. These tests pin the real names down.
 
-    assert "Stranger Things" in content
-    assert "strangerpulsepad" in content
-    assert "strangerarp" in content
-    assert "strangerbrass" in content
-    assert "heartbeat" in content.lower()
-    assert "fixed bass ostinato" in content.lower() or "deterministic bass ostinato" in content.lower()
-    assert "same pitch sequence" in content.lower() or "reuse the same pitch sequence" in content.lower()
-    assert "one execute_music_code" in content.lower() or "single execute_music_code" in content.lower()
-    assert "do not add a second atmospheric pass" in content.lower() or "do not send a second atmospheric pass" in content.lower()
-    assert "stay within d1 and p1-p3" in content.lower() or "do not use p4 or d4" in content.lower()
-    assert "dur=0.25" in content.lower()
-
-
-def test_music_skill_prompt_contains_stranger_things_structure_guidance() -> None:
-    content = MUSIC_SKILL_PROMPT_PATH.read_text(encoding="utf-8")
-
-    assert "Stranger Things" in content
-    assert "strangerpulsepad" in content
-    assert "strangerarp" in content
-    assert "strangerbrass" in content
-    assert "heartbeat" in content.lower()
-    assert "fixed bass ostinato" in content.lower() or "deterministic bass ostinato" in content.lower()
-    assert "same pitch sequence" in content.lower() or "reuse the same pitch sequence" in content.lower()
-    assert "one execute_music_code" in content.lower() or "single execute_music_code" in content.lower()
-    assert "do not add a second atmospheric pass" in content.lower() or "do not send a second atmospheric pass" in content.lower()
-    assert "stay within d1 and p1-p3" in content.lower() or "do not use p4 or d4" in content.lower()
-    assert "dur=0.25" in content.lower()
+_PHANTOM_TOOL_NAMES = (
+    "search_artist_style",
+    "renardo_search_samples",
+    "renardo_list_tracks",
+    "renardo_save_track",
+    "renardo_load_track",
+    "renardo_delete_track",
+)
 
 
-def test_master_prompt_bans_extra_players_and_random_effect_samples() -> None:
-    content = MASTER_PROMPT_PATH.read_text(encoding="utf-8")
+def test_composer_prompt_names_no_unregistered_tools() -> None:
+    """#1810 — every tool the prompt orders must actually be registered."""
+    content = COMPOSER_PROMPT_PATH.read_text(encoding="utf-8")
 
-    assert "NEVER use d4, d5, p4, p5" in content
-    assert 'NEVER use `play("k"' in content or 'NEVER use "k"' in content
-    assert "spack=1" in content
-    assert 'NEVER invent sample letters like "A"' in content or 'NEVER invent sample letters like `A`' in content
-    assert 'search_samples("kick", case="upper")' in content or "search_samples('kick', case='upper')" in content
-
-
-def test_master_prompt_contains_tb303_safety_guidance() -> None:
-    content = MASTER_PROMPT_PATH.read_text(encoding="utf-8")
-
-    assert "tb303" in content.lower()
-    assert "attack=0.01" in content.lower()
-    assert "crack-prone" in content.lower() or "click-prone" in content.lower()
-    assert "do not combine tb303" in content.lower() or "never combine tb303" in content.lower()
-    assert "crush" in content.lower()
-    assert "bits" in content.lower()
-    assert "echo" in content.lower()
+    for phantom in _PHANTOM_TOOL_NAMES:
+        assert phantom not in content, (
+            f"master prompt orders '{phantom}', which is not a "
+            f"registered MCP tool (see _tool_catalog_data.py). The LLM will "
+            f"get a tool-not-found error and fall back to prose or to "
+            f"inventing music."
+        )
 
 
-def test_master_prompt_contains_imperial_march_sc_only_guidance() -> None:
-    content = MASTER_PROMPT_PATH.read_text(encoding="utf-8")
+def test_search_web_description_does_not_ban_music_research() -> None:
+    """#1810 — the tool's own description used to wave the music skill off.
 
-    assert "Imperial March" in content or "Star Wars march" in content
-    assert "imperialbrass" in content
-    assert "marchstrings" in content
-    assert "midinote" in content
-    assert "first phrase alone is incomplete" in content.lower() or "first phrase alone" in content.lower()
-    assert "bridge" in content.lower()
-    assert "answer phrase" in content.lower() or "b answer phrase" in content.lower()
-    assert "one execute_music_code" in content.lower() or "single execute_music_code" in content.lower()
-    assert "do not use clock.future" in content.lower()
-    assert "do not use p4 or d4" in content.lower() or "stay within d1 and p1-p3" in content.lower()
-    assert "76,75,74,70,66,63,70,67" in content.replace(" ", "")
-    assert "brass" in content.lower()
-    assert "avoid organ" in content.lower() or "prefer strings over organ" in content.lower()
-    assert "a -> a' -> bridge -> answer phrase" in content.lower() or "a -> a' -> bridge -> b answer" in content.lower()
-    assert "exact midinote contour" in content.lower() or "preserve the exact contour" in content.lower()
-    assert "do not use prand for the main melody" in content.lower() or "never use prand for the main melody" in content.lower()
-    assert "folk instruments" in content.lower() or "народн" in content.lower()
+    «НЕ используй для музыкального ресёрча» applied to sample picking, but
+    the model read it as "not for music", which is the opposite of what the
+    melody-lookup path needs.
+    """
+    catalog_path = (
+        REPO_ROOT / "src" / "rob_box_core" / "rob_box_core" / "_tool_catalog_data.py"
+    )
+    content = catalog_path.read_text(encoding="utf-8")
+    start = content.index("'name': 'search_web'")
+    entry = content[start:start + 2000]
 
-
-def test_music_skill_prompt_bans_extra_players_and_random_effect_samples() -> None:
-    content = MUSIC_SKILL_PROMPT_PATH.read_text(encoding="utf-8")
-
-    assert "NEVER use d4, d5, p4, p5" in content
-    assert 'NEVER use `play("k"' in content or 'NEVER use "k"' in content
-    assert "spack=1" in content
-    assert 'NEVER invent sample letters like "A"' in content or 'NEVER invent sample letters like `A`' in content
-    assert 'search_samples("kick", case="upper")' in content or "search_samples('kick', case='upper')" in content
-
-
-def test_music_skill_prompt_contains_tb303_safety_guidance() -> None:
-    content = MUSIC_SKILL_PROMPT_PATH.read_text(encoding="utf-8")
-
-    assert "tb303" in content.lower()
-    assert "attack=0.01" in content.lower()
-    assert "crack-prone" in content.lower() or "click-prone" in content.lower()
-    assert "do not combine tb303" in content.lower() or "never combine tb303" in content.lower()
-    assert "crush" in content.lower()
-    assert "bits" in content.lower()
-    assert "echo" in content.lower()
-    assert "retrobass" in content.lower() or "wobblebass" in content.lower()
-
-
-def test_music_skill_prompt_contains_imperial_march_sc_only_guidance() -> None:
-    content = MUSIC_SKILL_PROMPT_PATH.read_text(encoding="utf-8")
-
-    assert "Imperial March" in content or "Star Wars march" in content
-    assert "imperialbrass" in content
-    assert "marchstrings" in content
-    assert "midinote" in content
-    assert "first phrase alone is incomplete" in content.lower() or "do not use the opening motif alone" in content.lower()
-    assert "bridge" in content.lower()
-    assert "answer phrase" in content.lower() or "b answer phrase" in content.lower()
-    assert "one execute_music_code" in content.lower() or "single execute_music_code" in content.lower()
-    assert "do not use clock.future" in content.lower()
-    assert "do not use p4 or d4" in content.lower() or "stay within d1 and p1-p3" in content.lower()
-    assert "76,75,74,70,66,63,70,67" in content.replace(" ", "")
-    assert "brass" in content.lower()
-    assert "avoid organ" in content.lower() or "prefer strings over organ" in content.lower()
-    assert "a -> a' -> bridge -> answer phrase" in content.lower() or "a -> a' -> bridge -> b answer" in content.lower()
-    assert "exact midinote contour" in content.lower() or "preserve the exact contour" in content.lower()
-    assert "do not use prand for the main melody" in content.lower() or "never use prand for the main melody" in content.lower()
-    assert "folk instruments" in content.lower() or "народн" in content.lower()
-    assert "timbral remix example" in content.lower() or "folk-style remix example" in content.lower()
-    assert "marimba" in content.lower()
-    assert "karp" in content.lower()
-    assert "same melody contour" in content.lower() or "do not rewrite the tune" in content.lower()
-
-def test_master_prompt_mentions_estimate_tts_duration() -> None:
-    """#949 AC4 — the LLM must know estimate_tts_duration exists."""
-    content = MASTER_PROMPT_PATH.read_text(encoding="utf-8")
-
-    assert "estimate_tts_duration" in content
-    assert "segments" in content
-
-
-def test_music_skill_prompt_mentions_estimate_tts_duration() -> None:
-    """#949 AC4 — the music skill lists estimate_tts_duration as a tool."""
-    content = MUSIC_SKILL_PROMPT_PATH.read_text(encoding="utf-8")
-
-    assert "estimate_tts_duration(text)" in content
-    assert "30 симв/с" in content or "30 chars" in content
+    assert "музыкального ресёрча" not in entry, (
+        "search_web still tells the LLM not to use it for music research"
+    )
+    assert "ноты" in entry

@@ -14,7 +14,6 @@
 
 - [Quick Start](#quick-start)
 - [GitHub Actions (CI/CD)](#github-actions-cicd)
-- [Pre-commit Hooks (Local)](#pre-commit-hooks-local)
 - [Manual Linting](#manual-linting)
 - [Fixing Common Issues](#fixing-common-issues)
 - [Configuration Files](#configuration-files)
@@ -23,21 +22,8 @@
 
 ## ⚡ Quick Start
 
-### One-time setup (на dev машине):
-
-```bash
-# Install pre-commit
-pip install pre-commit
-
-# Install hooks в git repo
-cd /home/ros2/rob_box_project
-pre-commit install
-
-# Test hooks (опционально)
-pre-commit run --all-files
-```
-
-**That's it!** Теперь при каждом `git commit` будут запускаться проверки.
+Локальных git-хуков (pre-commit) в репо нет: проверки гоняет CI (G-Lint Code).
+Перед пушем запусти линтеры вручную, см. [Manual Linting](#manual-linting).
 
 ---
 
@@ -45,7 +31,7 @@ pre-commit run --all-files
 
 ### Когда запускается
 
-**Workflow:** `.github/workflows/lint.yml`
+**Workflow:** `.github/workflows/G-Lint Code.yml`
 
 **Triggers:**
 - Push в `feature/**`, `develop`, `main` (если изменились `.py`, `.yaml`, `.yml`, `Dockerfile`)
@@ -95,7 +81,7 @@ pre-commit run --all-files
 2. **Actions logs:**
    ```
    Python Linting → Black formatting check
-   └─ src/rob_box_voice/audio_node.py:42: Line too long (125 > 120)
+   └─ src/rob_box_voice/rob_box_voice/audio_node.py:42: Line too long (125 > 120)
    ```
 
 3. **Summary section:**
@@ -104,68 +90,9 @@ pre-commit run --all-files
 
 ---
 
-## 🪝 Pre-commit Hooks (Local)
-
-### Как работает
-
-**Автоматически:** При `git commit` запускаются проверки ПЕРЕД созданием коммита.
-
-**Если проблемы найдены:**
-1. Коммит НЕ создастся
-2. Некоторые hooks автоматически исправят (black, isort, trailing-whitespace)
-3. Другие покажут ошибки для ручного исправления
-
-**Example:**
-```bash
-$ git commit -m "Add new feature"
-
-Detect secrets...................Passed
-Format Python code with Black....Failed
-- hook id: black
-- files were modified by this hook
-
-reformatted src/rob_box_voice/audio_node.py
-1 file reformatted.
-
-# Black автоматически исправил форматирование
-# Теперь нужно добавить изменения и коммитнуть снова:
-
-$ git add src/rob_box_voice/audio_node.py
-$ git commit -m "Add new feature"
-
-Detect secrets...................Passed
-Format Python code with Black....Passed
-Sort Python imports..............Passed
-Lint Python with Flake8..........Passed
-✅ All checks passed!
-```
-
-### Manual run
-
-```bash
-# Запустить все hooks на всех файлах
-pre-commit run --all-files
-
-# Запустить конкретный hook
-pre-commit run black --all-files
-pre-commit run flake8 --all-files
-
-# Запустить на конкретном файле
-pre-commit run --files src/rob_box_voice/audio_node.py
-```
-
-### Bypass hooks (не рекомендуется)
-
-```bash
-# Skip all hooks (используй ТОЛЬКО для hotfix!)
-git commit --no-verify -m "Emergency fix"
-```
-
----
-
 ## 🛠️ Manual Linting
 
-Если pre-commit не установлен, можно запускать линтеры вручную.
+Линтеры можно запускать вручную (локальных git-хуков в репо нет, проверки гоняет CI).
 
 ### Python
 
@@ -209,7 +136,7 @@ chmod +x /tmp/hadolint
 sudo mv /tmp/hadolint /usr/local/bin/hadolint
 
 # Check Dockerfile
-hadolint docker/main/zenoh_router/Dockerfile
+hadolint docker/main/teleop/Dockerfile
 
 # Check all Dockerfiles
 find docker/ -name "Dockerfile" -exec hadolint {} +
@@ -222,7 +149,7 @@ find docker/ -name "Dockerfile" -exec hadolint {} +
 sudo apt-get install shellcheck
 
 # Check script
-shellcheck scripts/setup_vision_pi.sh
+shellcheck scripts/setup/setup_vision_pi.sh
 
 # Check all scripts
 find scripts/ -name "*.sh" -exec shellcheck {} +
@@ -236,12 +163,12 @@ find scripts/ -name "*.sh" -exec shellcheck {} +
 
 **Problem:**
 ```
-src/rob_box_voice/audio_node.py:42: Line too long (125 > 120)
+src/rob_box_voice/rob_box_voice/audio_node.py:42: Line too long (125 > 120)
 ```
 
 **Fix:**
 ```bash
-black src/rob_box_voice/audio_node.py
+black src/rob_box_voice/rob_box_voice/audio_node.py
 ```
 
 Black автоматически разобьёт длинные строки.
@@ -252,7 +179,7 @@ Black автоматически разобьёт длинные строки.
 
 **Problem:**
 ```
-src/rob_box_voice/audio_node.py:10:1: F401 'time' imported but unused
+src/rob_box_voice/rob_box_voice/audio_node.py:10:1: F401 'time' imported but unused
 ```
 
 **Fix:** Удали неиспользуемый import:
@@ -271,7 +198,7 @@ import numpy as np
 
 **Problem:**
 ```
-src/rob_box_voice/audio_node.py:25:1: E302 expected 2 blank lines, found 1
+src/rob_box_voice/rob_box_voice/audio_node.py:25:1: E302 expected 2 blank lines, found 1
 ```
 
 **Fix:** Добавь пустую строку перед определением класса/функции:
@@ -300,7 +227,7 @@ ERROR: Imports are incorrectly sorted and/or formatted.
 
 **Fix:**
 ```bash
-isort src/rob_box_voice/audio_node.py
+isort src/rob_box_voice/rob_box_voice/audio_node.py
 ```
 
 isort автоматически отсортирует imports в правильном порядке:
@@ -335,7 +262,7 @@ command: >
 
 **Problem:**
 ```
-docker/main/zenoh_router/Dockerfile:10 DL3059 Multiple consecutive RUN instructions. Consider consolidation.
+docker/main/teleop/Dockerfile:10 DL3059 Multiple consecutive RUN instructions. Consider consolidation.
 ```
 
 **Fix:** Объедини RUN commands:
@@ -358,7 +285,7 @@ RUN apt-get update && \
 
 **Problem:**
 ```
-scripts/setup_vision_pi.sh:15:10: SC2086 Double quote to prevent globbing and word splitting.
+scripts/setup/setup_vision_pi.sh:15:10: SC2086 Double quote to prevent globbing and word splitting.
 ```
 
 **Fix:** Добавь кавычки:
@@ -373,25 +300,6 @@ cp "$CONFIG_FILE" /etc/
 ---
 
 ## 📁 Configuration Files
-
-### `.pre-commit-config.yaml`
-**Location:** `/home/ros2/rob_box_project/.pre-commit-config.yaml`
-
-**Purpose:** Конфигурация pre-commit hooks
-
-**Modify:** Добавить/убрать hooks, изменить версии
-
-**Example:**
-```yaml
-repos:
-  - repo: https://github.com/psf/black
-    rev: 24.4.2  # ← версия hook
-    hooks:
-      - id: black
-        args: ['--line-length=120']  # ← аргументы
-```
-
----
 
 ### `.yamllint.yml`
 **Location:** `/home/ros2/rob_box_project/.yamllint.yml`
@@ -422,8 +330,8 @@ ignored:
 
 ---
 
-### `.github/workflows/lint.yml`
-**Location:** `/home/ros2/rob_box_project/.github/workflows/lint.yml`
+### `.github/workflows/G-Lint Code.yml`
+**Location:** `/home/ros2/rob_box_project/.github/workflows/G-Lint Code.yml`
 
 **Purpose:** GitHub Actions workflow для CI/CD линтинга
 
@@ -441,7 +349,7 @@ jobs:
 
 ## 📊 Metrics & Success Criteria
 
-**Phase 2 Goals (from AI_DEVELOPMENT_REVIEW.md):**
+**Phase 2 Goals:**
 
 | Metric | Before | Target | Current |
 |--------|--------|--------|---------|
@@ -449,52 +357,27 @@ jobs:
 | Code style consistency | 60% | 95% | TBD |
 | Time to fix lint issues | 30 min | 5 min | TBD |
 
-**How to measure:**
-```bash
-# Count lint issues in codebase
-pre-commit run --all-files 2>&1 | grep -c "Failed"
-
-# Track over time (add to CI)
-echo "LINT_ISSUES=$(pre-commit run --all-files 2>&1 | grep -c 'Failed')" >> metrics.log
-```
-
 ---
 
 ## 🎓 Best Practices
 
 ### ✅ DO:
 
-1. **Run pre-commit before pushing:**
-   ```bash
-   pre-commit run --all-files
-   ```
-
-2. **Fix lint issues in separate commits:**
+1. **Fix lint issues in separate commits:**
    ```bash
    git commit -m "style: format code with black"
    git commit -m "feat: add new feature"
    ```
 
-3. **Review lint warnings in PR:**
+2. **Review lint warnings in PR:**
    - Yellow ⚠️ in GitHub Actions → click → fix
-
-4. **Update hooks regularly:**
-   ```bash
-   pre-commit autoupdate
-   ```
 
 ### ❌ DON'T:
 
-1. **Don't bypass hooks without reason:**
-   ```bash
-   # BAD: bypassing without emergency
-   git commit --no-verify
-   ```
-
-2. **Don't ignore lint warnings in CI:**
+1. **Don't ignore lint warnings in CI:**
    - Even with `continue-on-error`, fix issues eventually
 
-3. **Don't commit formatting-only changes mixed with features:**
+2. **Don't commit formatting-only changes mixed with features:**
    ```bash
    # BAD: mixed commit
    git commit -m "Add feature + format all files"
@@ -509,40 +392,11 @@ echo "LINT_ISSUES=$(pre-commit run --all-files 2>&1 | grep -c 'Failed')" >> metr
 ## 🔗 Related Documentation
 
 - [AGENT_GUIDE.md](./AGENT_GUIDE.md) - AI development guide
-- [AI_TROUBLESHOOTING_CHECKLIST.md](./AI_TROUBLESHOOTING_CHECKLIST.md) - Debug checklist
-- [AI_DEVELOPMENT_REVIEW.md](./AI_DEVELOPMENT_REVIEW.md) - Phase 2 roadmap
 - [CI_CD_PIPELINE.md](../CI_CD_PIPELINE.md) - GitHub Actions workflows
 
 ---
 
 ## 🆘 Troubleshooting
-
-### pre-commit not found
-
-```bash
-pip install --user pre-commit
-# or
-pip3 install --user pre-commit
-```
-
-### Hooks not running on commit
-
-```bash
-# Reinstall hooks
-pre-commit uninstall
-pre-commit install
-
-# Check git hooks
-ls -la .git/hooks/pre-commit
-```
-
-### Hook fails with "command not found"
-
-```bash
-# Clean and reinstall
-pre-commit clean
-pre-commit install --install-hooks
-```
 
 ### Black/Flake8 conflicts
 

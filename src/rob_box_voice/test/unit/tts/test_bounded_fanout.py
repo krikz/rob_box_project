@@ -2,8 +2,8 @@
 
 Companion to :mod:`test_no_daemon_threads` (which proves the source has
 zero bare ``threading.Thread(daemon=True)`` calls). This module proves
-the **runtime** invariant: when the refactored ``tts_node`` and
-``dialogue_node`` fan out work, the resulting thread pool is bounded
+the **runtime** invariant: when the refactored ``tts_node`` fans
+out work, the resulting thread pool is bounded
 by the documented constants and never spawns unbounded workers under
 sustained load.
 
@@ -20,11 +20,9 @@ Acceptance criteria covered here:
     slot cap is sized for the burst, and every submitted future
     eventually completes.
   * On node shutdown (``shutdown_synthesis_executor`` / ``destroy_node``
-    for TTS; ``shutdown_asyncio_loop`` / ``destroy_node`` for dialogue)
+    for TTS)
     pending futures are awaited or cancelled, not abandoned. The
     captured executor's ``shutdown()`` is invoked exactly once.
-  * The asyncio-loop driver (dialogue_node) is constrained to a single
-    worker because the loop is single-threaded by asyncio contract.
 
 The tests use :mod:`unittest.mock.patch` on the underlying
 ``concurrent.futures.ThreadPoolExecutor`` (patched at *both* the
@@ -35,29 +33,27 @@ import time, which copies the binding into ``concurrent.futures``
 itself, so both targets must be patched).
 
 Test environment note:
-  The TTSNode / DialogueNode modules pull in heavy transitive imports
+  The TTSNode module pulls in heavy transitive imports
   (rclpy, asyncio-loop driver, audio_common_msgs, etc.). We don't
   import those here — we test the **executor dispatch primitive** in
   isolation (with its real semaphore + slot counter) and use the
   existing test fixtures to construct a TTSNode for the live-fan-out
-  test. The dialogue_node test is structural because the actual
-  loop driver hosts a single ``run_forever()`` coroutine that
-  cannot sensibly be "submitted 10 times" — we instead verify the
-  shutdown semantics on a stub node that mimics the production
-  attribute layout.
+  test.
+
+  PR-15 (#3711, part 15p): the v1 dialogue node asyncio-loop driver
+  tests were deleted together with the node.
 """
 
 from __future__ import annotations
 
 import ast
-import asyncio
 import concurrent.futures
 import re
 import threading
 import time
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import patch, MagicMock
+from unittest.mock import patch
 
 import pytest
 
@@ -65,7 +61,6 @@ import pytest
 # Resolve source files under test without needing a working rclpy.
 _PACKAGE_ROOT = Path(__file__).resolve().parents[3]  # rob_box_voice/
 _TTS_NODE_SRC = _PACKAGE_ROOT / "rob_box_voice" / "tts_node.py"
-_DIALOGUE_NODE_SRC = _PACKAGE_ROOT / "rob_box_voice" / "dialogue_node.py"
 
 
 # ── Source-text helpers (mirror the sibling test's approach) ────────────────
@@ -109,17 +104,40 @@ class _RecordingExecutor:
       * the ``max_workers`` argument actually used,
       * the executor instance actually returned,
       * how many times ``shutdown()`` was called,
-      * the live count of in-flight futures (via a wrapper callable).
+      * the live count of in-flight futures **scoped to THIS
+        executor** (via a wrapper callable).
 
     The wrapper is intentional: we want to verify the **pattern** the
     production code uses (bounded executor + per-task slot counter) is
     actually bounded at runtime, not just declared in source. Patching
     with a pure ``MagicMock`` would prove nothing about thread count.
+
+    IMPORTANT — per-executor in-flight scoping:
+
+        A ``TTSNode`` (and most real callers) constructs more than
+        one ``ThreadPoolExecutor`` over its lifetime — e.g. the
+        synthesis pool, an async-bridge pool, a silero warm-load
+        pool. Each is bounded by its own ``max_workers``. If a
+        shared ``in_flight`` counter increments across pools, the
+        peak in any one pool can trivially exceed its own limit
+        even when every pool is honestly bounded (e.g. synthesis
+        peak=2 + warm-load peak=1 → shared peak=3).
+
+        ``concurrent.futures.ThreadPoolExecutor.submit`` runs tasks
+        on its own internal pool of OS threads. Tasks dispatched to
+        *one* executor never run on *another* executor's threads, so
+        cross-executor in-flight counts are physically independent.
+        Therefore each recorder MUST own its in-flight counter and
+        the assertion MUST be made on the recorder that owns the
+        executor under test (filtered by ``max_workers`` or by
+        stored reference).
     """
 
-    def __init__(self, recordings: list, in_flight_counter: dict, lock: threading.Lock):
+    def __init__(self, recordings: list, lock: threading.Lock):
         self._recordings = recordings
-        self._in_flight = in_flight_counter
+        # Per-executor in-flight counter — see class docstring for why
+        # this MUST NOT be shared across recorders.
+        self._in_flight: dict = {"count": 0, "peak": 0}
         self._lock = lock
         # The real executor, sized exactly as the factory was called.
         self._real: concurrent.futures.ThreadPoolExecutor | None = None
@@ -157,7 +175,10 @@ class _RecordingExecutor:
         return self._real.shutdown(wait=wait, **kwargs)
 
     def _wrap(self, fn):
-        """Return a callable that increments ``in_flight`` around *fn*."""
+        """Return a callable that increments ``in_flight`` around *fn*.
+
+        The counter is the recorder's own — see class docstring.
+        """
 
         def _wrapped(*args, **kwargs):
             with self._lock:
@@ -176,7 +197,6 @@ class _RecordingExecutor:
 
 def _make_recording_executor_factory(
     recordings: list,
-    in_flight: dict,
     lock: threading.Lock,
 ):
     """Build a factory that records each construction call.
@@ -185,10 +205,16 @@ def _make_recording_executor_factory(
     :class:`_RecordingExecutor` so that
     ``patch('concurrent.futures.thread.ThreadPoolExecutor', factory)``
     transparently routes through it.
+
+    Note: each recorder constructed by this factory owns its own
+    in-flight counter (see ``_RecordingExecutor`` docstring). Callers
+    must locate the recorder for the executor-under-test (by
+    ``max_workers`` or by stored reference) and inspect ITS counter,
+    not any global one.
     """
 
     def _factory(max_workers: int = 1, **kwargs):
-        rec = _RecordingExecutor(recordings, in_flight, lock)
+        rec = _RecordingExecutor(recordings, lock)
         rec(max_workers=max_workers, **kwargs)
         return rec
 
@@ -224,11 +250,14 @@ def _make_tts_node_capture(
 ):
     """Construct a TTSNode with the executor patched to a recorder.
 
-    Returns ``(node, recordings, in_flight)`` where:
+    Returns ``(node, recordings)`` where:
       * ``recordings`` is a list that gets one SimpleNamespace per
-        ``ThreadPoolExecutor(...)`` call observed during the init,
-      * ``in_flight`` is a dict with ``count`` (current running) and
-        ``peak`` (max-ever running under the recorder).
+        ``ThreadPoolExecutor(...)`` call observed during the init.
+        Each entry's ``wrapper`` is the :class:`_RecordingExecutor`
+        that owns its own per-executor in-flight counter (see the
+        class docstring for why sharing is wrong); look up the
+        recorder for the executor-under-test by ``max_workers`` and
+        inspect its ``_in_flight`` dict directly.
 
     Note on patch location: ``concurrent.futures.__init__.py``
     does ``from .thread import ThreadPoolExecutor`` at module load
@@ -243,9 +272,8 @@ def _make_tts_node_capture(
     (some attribute-lookup styles go through the source module).
     """
     recordings: list = []
-    in_flight: dict = {"count": 0, "peak": 0}
     lock = threading.Lock()
-    factory = _make_recording_executor_factory(recordings, in_flight, lock)
+    factory = _make_recording_executor_factory(recordings, lock)
 
     with patch(
         "concurrent.futures.ThreadPoolExecutor", side_effect=factory
@@ -259,7 +287,7 @@ def _make_tts_node_capture(
         "TTSNode did not apply the configured synthesis_max_workers; "
         "default ROS param handling must accept the value."
     )
-    return node, recordings, in_flight
+    return node, recordings
 
 
 def test_tts_node_synthesis_executor_is_bounded_at_runtime(tts_node_module):
@@ -289,7 +317,7 @@ def test_tts_node_synthesis_executor_is_bounded_at_runtime(tts_node_module):
     max_queue = max(SYNTHESIS_MAX_QUEUE_DEFAULT, max_workers * 10 + 4)
     N = max_workers * 10
 
-    node, recordings, in_flight = _make_tts_node_capture(
+    node, recordings = _make_tts_node_capture(
         tts_node_module,
         max_workers=max_workers,
         max_queue=max_queue,
@@ -300,11 +328,25 @@ def test_tts_node_synthesis_executor_is_bounded_at_runtime(tts_node_module):
         "TTSNode did not create any ThreadPoolExecutor at init; "
         "the bounded-executor primitive is missing."
     )
-    captured = recordings[0]
-    assert captured.max_workers == SYNTHESIS_MAX_WORKERS_DEFAULT, (
-        f"Synth executor max_workers={captured.max_workers} "
-        f"!= documented constant {SYNTHESIS_MAX_WORKERS_DEFAULT}"
+    # Find the synthesis-pool recorder. The TTSNode may create several
+    # executors over its lifetime (synthesis, async-bridge, silero
+    # warm-load); only the synthesis pool has max_workers ==
+    # SYNTHESIS_MAX_WORKERS_DEFAULT (currently 2). Filter by that —
+    # NOT by ``recordings[0]`` — because construction order is not
+    # guaranteed when the silero warm-up is triggered before the
+    # synthesis pool is constructed (regression observed on PR
+    # #2016, run 34077288865).
+    synth_candidates = [
+        rec for rec in recordings
+        if rec.max_workers == SYNTHESIS_MAX_WORKERS_DEFAULT
+    ]
+    assert synth_candidates, (
+        f"No recorder with max_workers == "
+        f"{SYNTHESIS_MAX_WORKERS_DEFAULT} was created; "
+        f"observed max_workers values: "
+        f"{[r.max_workers for r in recordings]}"
     )
+    captured = synth_candidates[0]
 
     # The recorder is what the node actually uses (the patch made
     # ``concurrent.futures.ThreadPoolExecutor(...)`` return the recorder,
@@ -317,6 +359,20 @@ def test_tts_node_synthesis_executor_is_bounded_at_runtime(tts_node_module):
     # doing so would create a self-referential bind on the TpE.
     recorder = captured.wrapper
     real_executor = captured.executor  # the real ``ThreadPoolExecutor``
+
+    # ── Pre-flight invariant: nothing is running yet ────────────────
+    # The recorder owns its own per-executor in-flight counter (see
+    # ``_RecordingExecutor`` docstring). Before we drive N submissions
+    # through the synthesis pool, no task should be in flight on it.
+    with recorder._lock:  # noqa: SLF001
+        assert recorder._in_flight["count"] == 0, (
+            f"synthesis-pool recorder has unexpected pre-flight "
+            f"in-flight count={recorder._in_flight['count']}"
+        )
+        assert recorder._in_flight["peak"] == 0, (
+            f"synthesis-pool recorder has unexpected pre-flight "
+            f"peak={recorder._in_flight['peak']}"
+        )
 
     # Widen the slot cap so N = max_workers * 10 fits comfortably. The
     # default ``max_queue=16`` caps the queue at max_workers + max_queue
@@ -428,9 +484,8 @@ def test_tts_node_shutdown_synthesis_executor_invokes_shutdown(tts_node_module):
     Idempotency: a second call must be a no-op (already shut down).
     """
     recordings: list = []
-    in_flight: dict = {"count": 0, "peak": 0}
     lock = threading.Lock()
-    factory = _make_recording_executor_factory(recordings, in_flight, lock)
+    factory = _make_recording_executor_factory(recordings, lock)
 
     with patch(
         "concurrent.futures.ThreadPoolExecutor", side_effect=factory
@@ -455,194 +510,6 @@ def test_tts_node_shutdown_synthesis_executor_invokes_shutdown(tts_node_module):
     assert recorder.shutdown_count == 1, (
         f"shutdown_synthesis_executor is not idempotent: "
         f"second call incremented shutdown_count to {recorder.shutdown_count}"
-    )
-
-
-# ── DialogueNode asyncio-loop driver ────────────────────────────────────────
-
-
-def _build_stub_dialogue_node():
-    """Build a tiny DialogueNode-shaped stub for the shutdown test.
-
-    The real DialogueNode hosts a singleton ``loop.run_forever()`` on
-    a bounded executor; that single coroutine is the only "work"
-    the loop driver ever submits — so the "drive N times" pattern
-    doesn't apply (submitting 10 copies of run_forever would be a
-    programming error). What we CAN verify is the shutdown contract:
-    the loop is stopped, the future is awaited (with a bounded
-    timeout), and the executor is released. That contract is what
-    the production code defines on the real DialogueNode — we
-    re-implement the same surface here using the production code's
-    *literal* method body, captured via AST/inspect, so the test
-    verifies the **same code path** rather than a parallel re-write.
-
-    Why a stub node: the real DialogueNode requires rclpy init
-    (which can't be called twice in a test process). The stub exposes
-    the same attributes ``_loop``, ``_asyncio_loop_executor``,
-    ``_asyncio_loop_future`` plus the methods under test.
-    """
-
-    # Load the real shutdown method bodies and bind them to the stub.
-    # This keeps the test honest: we are testing the production code
-    # itself, not a re-implementation.
-    src = _DIALOGUE_NODE_SRC.read_text(encoding="utf-8")
-    tree = ast.parse(src)
-    cls = next(
-        n for n in tree.body
-        if isinstance(n, ast.ClassDef) and n.name == "DialogueNode"
-    )
-    method_names = {"shutdown_asyncio_loop", "destroy_node"}
-
-    # Build a real instance with the loop / executor / future attributes
-    # the production methods touch via ``getattr(self, ...)``. We
-    # compile the production methods inside a class definition so
-    # ``super()`` resolves correctly (the compiler injects the right
-    # ``__class__`` cell when methods are defined inside a class).
-    loop = asyncio.new_event_loop()
-    executor = concurrent.futures.ThreadPoolExecutor(
-        max_workers=1, thread_name_prefix="stub-test"
-    )
-    # Submit a long-running coroutine so the future isn't already done.
-    future = executor.submit(loop.run_forever)
-
-    methods_code = "\n".join(
-        ast.unparse(n)
-        for n in cls.body
-        if isinstance(n, ast.FunctionDef) and n.name in method_names
-    )
-
-    # Indent the methods so they sit inside the class body below.
-    methods_indented = "\n".join(
-        ("    " + line) if line else ""
-        for line in methods_code.splitlines()
-    )
-
-    # Build a stub class via exec() that contains the production
-    # methods. The class inherits from _FakeSuper which provides a
-    # no-op super.destroy_node() so chaining works.
-    class _FakeSuper:
-        def destroy_node(self_inner) -> None:  # noqa: N805
-            return None
-
-    class_src = (
-        "class _StubDialogueNode(_FakeSuper):\n"
-        + methods_indented + "\n"
-    )
-    # Use a fresh namespace so the method's references to
-    # concurrent.futures.TimeoutError (and similar) resolve to
-    # the real concurrent module, not to a local variable in
-    # this test function shadowing it.
-    import concurrent as _real_concurrent  # noqa: PLC0415
-    exec_globals = {
-        "__builtins__": __builtins__,
-        "_FakeSuper": _FakeSuper,
-        "concurrent": _real_concurrent,
-        "ASYNCIO_LOOP_DRIVER_SHUTDOWN_TIMEOUT_S": 2.0,
-    }
-    exec(compile(class_src, str(_DIALOGUE_NODE_SRC), "exec"), exec_globals)
-    node = exec_globals["_StubDialogueNode"]()
-
-    # Inject the loop / executor / future as instance attributes
-    # (the production methods access them via getattr(self, ...)).
-    node._loop = loop
-    node._asyncio_loop_executor = executor
-    node._asyncio_loop_future = future
-    node.get_logger = MagicMock()  # type: ignore[attr-defined]
-
-    return node, loop, executor, future
-
-
-def test_dialogue_node_shutdown_drains_loop_future():
-    """destroy_node() must invoke shutdown_asyncio_loop(), which joins.
-    the bounded loop-driver executor instead of abandoning it.
-
-    This test builds a stub DialogueNode with a real asyncio loop
-    hosted on a real ``ThreadPoolExecutor(max_workers=1)`` running
-    ``loop.run_forever()``. Calling ``destroy_node()`` must:
-
-      1. Stop the loop via ``loop.call_soon_threadsafe(loop.stop)``.
-      2. Await the worker's ``Future.result(...)`` to confirm exit.
-      3. Invoke ``executor.shutdown(wait=...)`` to release the OS thread.
-
-    Invariant: the executor's ``shutdown()`` is invoked exactly once
-    (idempotent), and the future is **not** abandoned — its done()
-    state must be True after destroy_node() returns.
-    """
-    node, loop, executor, future = _build_stub_dialogue_node()
-
-    # Sanity: the loop driver is actually running before we shut down.
-    # If run_forever exited immediately we'd be testing nothing.
-    time.sleep(0.05)
-    assert not future.done(), (
-        "loop.run_forever() exited before shutdown; test setup is broken"
-    )
-
-    # Track executor.shutdown() calls via a wrapper.
-    shutdown_calls: list[dict] = []
-    real_shutdown = executor.shutdown
-
-    def _tracking_shutdown(wait: bool = True, **kwargs):
-        shutdown_calls.append({"wait": wait, **kwargs})
-        return real_shutdown(wait=wait, **kwargs)
-
-    executor.shutdown = _tracking_shutdown  # type: ignore[assignment]
-
-    # ── Exercise the production destroy_node() method ───────────────
-    # destroy_node() calls shutdown_asyncio_loop(wait=False) then
-    # super().destroy_node(). The stub inherits from _FakeSuper which
-    # provides a no-op super.destroy_node() so the method completes.
-    node.destroy_node()
-
-    # ── Assertions ──────────────────────────────────────────────────
-    # Loop should be stopped; the future should be done.
-    assert future.done(), (
-        "loop.run_forever() future was abandoned (still running) after "
-        "destroy_node() — executor.shutdown() did not drain the driver."
-    )
-
-    # executor.shutdown() must have been invoked at least once.
-    assert len(shutdown_calls) >= 1, (
-        "executor.shutdown() was never invoked from destroy_node() — "
-        "the bounded executor's threads will leak at process exit."
-    )
-
-    # And shutdown must use wait=False (matches the documented contract
-    # for fast ROS teardown — don't hang on slow ALSA/playback cleanup).
-    assert all(c.get("wait") is False for c in shutdown_calls), (
-        f"destroy_node() did not use wait=False for executor.shutdown(); "
-        f"shutdown_calls={shutdown_calls}"
-    )
-
-    # After destroy_node, the loop should be stopped (not running).
-    # We can't check is_running() directly any more — the loop may
-    # already be closed if the executor join raced. Just confirm the
-    # call soon_threadsafe(loop.stop) was effective by checking the
-    # future is done (which is the loop driver's exit signal).
-
-    # Idempotency: a second destroy_node() must not raise.
-    node.destroy_node()
-
-
-def test_dialogue_node_loop_driver_max_workers_is_one():
-    """Structural: the asyncio loop driver is exactly 1 worker.
-
-    The asyncio loop is single-threaded by contract; a larger pool
-    would just create idle workers that never accept work. This test
-    freezes that invariant against accidental changes to the
-    module-level constant.
-    """
-    src = _DIALOGUE_NODE_SRC.read_text(encoding="utf-8")
-    m = re.search(
-        r"^ASYNCIO_LOOP_DRIVER_MAX_WORKERS\s*:\s*int\s*=\s*(\d+)\s*$",
-        src,
-        re.MULTILINE,
-    )
-    assert m is not None, (
-        "ASYNCIO_LOOP_DRIVER_MAX_WORKERS constant missing in dialogue_node.py"
-    )
-    assert m.group(1) == "1", (
-        f"ASYNCIO_LOOP_DRIVER_MAX_WORKERS must be 1 (asyncio loop is "
-        f"single-threaded by contract); got {m.group(1)}"
     )
 
 

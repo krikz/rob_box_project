@@ -358,7 +358,7 @@ ICP будет использовать wheel odometry guess пока не по�
 - [Обзор системы](SYSTEM_OVERVIEW.md) — общая архитектура
 - [Аппаратное обеспечение](HARDWARE.md) — LSLidar C16, VESC
 - [Программное обеспечение](SOFTWARE.md) — ROS 2, RTABMAP
-- [RTABMAP конфигурация](../../docker/main/config/rtabmap/rtabmap.yaml) — параметры
+- [RTABMAP параметры](../../docker/main/scripts/rtabmap/patch_rtabmap_launch.py) — единственный источник параметров rtabmap и icp_odometry (#4495)
 
 ---
 **Обновлено:** 15 декабря 2025  

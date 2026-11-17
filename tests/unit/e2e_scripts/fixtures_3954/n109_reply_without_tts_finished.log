@@ -1,0 +1,5 @@
+[stt_node-5] [INFO] [1792750747.100000000] [stt_node]: ✅ ПРИНЯТО (respeaker): робот какие звуки ты вообще умеешь издавать
+[dialog_node-3] [INFO] [1792750749.300000000] [dialog_node]: 🔎 LLM REQUEST START provider=deepseek mode=tool_choice
+[tts_node-7] [INFO] [1792750752.000000000] [tts_node]: 🗣️ SpeechEvent started speech_id=1a2b3c4d agent=personality epoch=2 text_len=120
+[dialog_node-3] [INFO] [1792750753.000000000] [dialog_node]: 📊 [turn] turn_id=aa11bb22cc33 epoch=2 agent=personality stage=done status=ok latency_ms=5900 llm_calls=1 llm_provider=deepseek tokens=5200
+[tts_node-7] [INFO] [1792750755.000000000] [tts_node]: 🗣️ SpeechEvent finished speech_id=1a2b3c4d agent=personality epoch=2 text_len=120 spoken_chars=120

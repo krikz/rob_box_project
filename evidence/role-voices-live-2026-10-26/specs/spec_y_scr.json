@@ -1,0 +1,514 @@
+[
+{
+"id": "y-anton_p01",
+"provider": "yandex",
+"voice": "anton",
+"pitch": 0,
+"speed": 1.0,
+"text": "Робот, который сейчас час, и сколько осталось до утра?"
+},
+{
+"id": "y-anton_p02",
+"provider": "yandex",
+"voice": "anton",
+"pitch": 0,
+"speed": 1.0,
+"text": "Робот, сколько у тебя осталось заряда, до утра дотянешь?"
+},
+{
+"id": "y-anton_p03",
+"provider": "yandex",
+"voice": "anton",
+"pitch": 0,
+"speed": 1.0,
+"text": "Робот, доложи статус: всё ли у тебя работает, ничего не отвалилось?"
+},
+{
+"id": "y-anton_p04",
+"provider": "yandex",
+"voice": "anton",
+"pitch": 0,
+"speed": 1.0,
+"text": "Робот, где ты сейчас находишься?"
+},
+{
+"id": "y-ermil_p01",
+"provider": "yandex",
+"voice": "ermil",
+"pitch": 0,
+"speed": 1.0,
+"text": "Робот, который сейчас час, и сколько осталось до утра?"
+},
+{
+"id": "y-ermil_p02",
+"provider": "yandex",
+"voice": "ermil",
+"pitch": 0,
+"speed": 1.0,
+"text": "Робот, сколько у тебя осталось заряда, до утра дотянешь?"
+},
+{
+"id": "y-ermil_p03",
+"provider": "yandex",
+"voice": "ermil",
+"pitch": 0,
+"speed": 1.0,
+"text": "Робот, доложи статус: всё ли у тебя работает, ничего не отвалилось?"
+},
+{
+"id": "y-ermil_p04",
+"provider": "yandex",
+"voice": "ermil",
+"pitch": 0,
+"speed": 1.0,
+"text": "Робот, где ты сейчас находишься?"
+},
+{
+"id": "y-zahar_p01",
+"provider": "yandex",
+"voice": "zahar",
+"pitch": 0,
+"speed": 1.0,
+"text": "Робот, который сейчас час, и сколько осталось до утра?"
+},
+{
+"id": "y-zahar_p02",
+"provider": "yandex",
+"voice": "zahar",
+"pitch": 0,
+"speed": 1.0,
+"text": "Робот, сколько у тебя осталось заряда, до утра дотянешь?"
+},
+{
+"id": "y-zahar_p03",
+"provider": "yandex",
+"voice": "zahar",
+"pitch": 0,
+"speed": 1.0,
+"text": "Робот, доложи статус: всё ли у тебя работает, ничего не отвалилось?"
+},
+{
+"id": "y-zahar_p04",
+"provider": "yandex",
+"voice": "zahar",
+"pitch": 0,
+"speed": 1.0,
+"text": "Робот, где ты сейчас находишься?"
+},
+{
+"id": "y-filipp_p01",
+"provider": "yandex",
+"voice": "filipp",
+"pitch": 0,
+"speed": 1.0,
+"text": "Робот, который сейчас час, и сколько осталось до утра?"
+},
+{
+"id": "y-filipp_p02",
+"provider": "yandex",
+"voice": "filipp",
+"pitch": 0,
+"speed": 1.0,
+"text": "Робот, сколько у тебя осталось заряда, до утра дотянешь?"
+},
+{
+"id": "y-filipp_p03",
+"provider": "yandex",
+"voice": "filipp",
+"pitch": 0,
+"speed": 1.0,
+"text": "Робот, доложи статус: всё ли у тебя работает, ничего не отвалилось?"
+},
+{
+"id": "y-filipp_p04",
+"provider": "yandex",
+"voice": "filipp",
+"pitch": 0,
+"speed": 1.0,
+"text": "Робот, где ты сейчас находишься?"
+},
+{
+"id": "y-madirus_p01",
+"provider": "yandex",
+"voice": "madirus",
+"pitch": 0,
+"speed": 1.0,
+"text": "Робот, который сейчас час, и сколько осталось до утра?"
+},
+{
+"id": "y-madirus_p02",
+"provider": "yandex",
+"voice": "madirus",
+"pitch": 0,
+"speed": 1.0,
+"text": "Робот, сколько у тебя осталось заряда, до утра дотянешь?"
+},
+{
+"id": "y-madirus_p03",
+"provider": "yandex",
+"voice": "madirus",
+"pitch": 0,
+"speed": 1.0,
+"text": "Робот, доложи статус: всё ли у тебя работает, ничего не отвалилось?"
+},
+{
+"id": "y-madirus_p04",
+"provider": "yandex",
+"voice": "madirus",
+"pitch": 0,
+"speed": 1.0,
+"text": "Робот, где ты сейчас находишься?"
+},
+{
+"id": "y-kirill_p01",
+"provider": "yandex",
+"voice": "kirill",
+"pitch": 0,
+"speed": 1.0,
+"text": "Робот, который сейчас час, и сколько осталось до утра?"
+},
+{
+"id": "y-kirill_p02",
+"provider": "yandex",
+"voice": "kirill",
+"pitch": 0,
+"speed": 1.0,
+"text": "Робот, сколько у тебя осталось заряда, до утра дотянешь?"
+},
+{
+"id": "y-kirill_p03",
+"provider": "yandex",
+"voice": "kirill",
+"pitch": 0,
+"speed": 1.0,
+"text": "Робот, доложи статус: всё ли у тебя работает, ничего не отвалилось?"
+},
+{
+"id": "y-kirill_p04",
+"provider": "yandex",
+"voice": "kirill",
+"pitch": 0,
+"speed": 1.0,
+"text": "Робот, где ты сейчас находишься?"
+},
+{
+"id": "y-alexander_p01",
+"provider": "yandex",
+"voice": "alexander",
+"pitch": 0,
+"speed": 1.0,
+"text": "Робот, который сейчас час, и сколько осталось до утра?"
+},
+{
+"id": "y-alexander_p02",
+"provider": "yandex",
+"voice": "alexander",
+"pitch": 0,
+"speed": 1.0,
+"text": "Робот, сколько у тебя осталось заряда, до утра дотянешь?"
+},
+{
+"id": "y-alexander_p03",
+"provider": "yandex",
+"voice": "alexander",
+"pitch": 0,
+"speed": 1.0,
+"text": "Робот, доложи статус: всё ли у тебя работает, ничего не отвалилось?"
+},
+{
+"id": "y-alexander_p04",
+"provider": "yandex",
+"voice": "alexander",
+"pitch": 0,
+"speed": 1.0,
+"text": "Робот, где ты сейчас находишься?"
+},
+{
+"id": "y-dasha_p01",
+"provider": "yandex",
+"voice": "dasha",
+"pitch": 0,
+"speed": 1.0,
+"text": "Робот, который сейчас час, и сколько осталось до утра?"
+},
+{
+"id": "y-dasha_p02",
+"provider": "yandex",
+"voice": "dasha",
+"pitch": 0,
+"speed": 1.0,
+"text": "Робот, сколько у тебя осталось заряда, до утра дотянешь?"
+},
+{
+"id": "y-dasha_p03",
+"provider": "yandex",
+"voice": "dasha",
+"pitch": 0,
+"speed": 1.0,
+"text": "Робот, доложи статус: всё ли у тебя работает, ничего не отвалилось?"
+},
+{
+"id": "y-dasha_p04",
+"provider": "yandex",
+"voice": "dasha",
+"pitch": 0,
+"speed": 1.0,
+"text": "Робот, где ты сейчас находишься?"
+},
+{
+"id": "y-julia_p01",
+"provider": "yandex",
+"voice": "julia",
+"pitch": 0,
+"speed": 1.0,
+"text": "Робот, который сейчас час, и сколько осталось до утра?"
+},
+{
+"id": "y-julia_p02",
+"provider": "yandex",
+"voice": "julia",
+"pitch": 0,
+"speed": 1.0,
+"text": "Робот, сколько у тебя осталось заряда, до утра дотянешь?"
+},
+{
+"id": "y-julia_p03",
+"provider": "yandex",
+"voice": "julia",
+"pitch": 0,
+"speed": 1.0,
+"text": "Робот, доложи статус: всё ли у тебя работает, ничего не отвалилось?"
+},
+{
+"id": "y-julia_p04",
+"provider": "yandex",
+"voice": "julia",
+"pitch": 0,
+"speed": 1.0,
+"text": "Робот, где ты сейчас находишься?"
+},
+{
+"id": "y-lera_p01",
+"provider": "yandex",
+"voice": "lera",
+"pitch": 0,
+"speed": 1.0,
+"text": "Робот, который сейчас час, и сколько осталось до утра?"
+},
+{
+"id": "y-lera_p02",
+"provider": "yandex",
+"voice": "lera",
+"pitch": 0,
+"speed": 1.0,
+"text": "Робот, сколько у тебя осталось заряда, до утра дотянешь?"
+},
+{
+"id": "y-lera_p03",
+"provider": "yandex",
+"voice": "lera",
+"pitch": 0,
+"speed": 1.0,
+"text": "Робот, доложи статус: всё ли у тебя работает, ничего не отвалилось?"
+},
+{
+"id": "y-lera_p04",
+"provider": "yandex",
+"voice": "lera",
+"pitch": 0,
+"speed": 1.0,
+"text": "Робот, где ты сейчас находишься?"
+},
+{
+"id": "y-masha_p01",
+"provider": "yandex",
+"voice": "masha",
+"pitch": 0,
+"speed": 1.0,
+"text": "Робот, который сейчас час, и сколько осталось до утра?"
+},
+{
+"id": "y-masha_p02",
+"provider": "yandex",
+"voice": "masha",
+"pitch": 0,
+"speed": 1.0,
+"text": "Робот, сколько у тебя осталось заряда, до утра дотянешь?"
+},
+{
+"id": "y-masha_p03",
+"provider": "yandex",
+"voice": "masha",
+"pitch": 0,
+"speed": 1.0,
+"text": "Робот, доложи статус: всё ли у тебя работает, ничего не отвалилось?"
+},
+{
+"id": "y-masha_p04",
+"provider": "yandex",
+"voice": "masha",
+"pitch": 0,
+"speed": 1.0,
+"text": "Робот, где ты сейчас находишься?"
+},
+{
+"id": "y-marina_p01",
+"provider": "yandex",
+"voice": "marina",
+"pitch": 0,
+"speed": 1.0,
+"text": "Робот, который сейчас час, и сколько осталось до утра?"
+},
+{
+"id": "y-marina_p02",
+"provider": "yandex",
+"voice": "marina",
+"pitch": 0,
+"speed": 1.0,
+"text": "Робот, сколько у тебя осталось заряда, до утра дотянешь?"
+},
+{
+"id": "y-marina_p03",
+"provider": "yandex",
+"voice": "marina",
+"pitch": 0,
+"speed": 1.0,
+"text": "Робот, доложи статус: всё ли у тебя работает, ничего не отвалилось?"
+},
+{
+"id": "y-marina_p04",
+"provider": "yandex",
+"voice": "marina",
+"pitch": 0,
+"speed": 1.0,
+"text": "Робот, где ты сейчас находишься?"
+},
+{
+"id": "y-madi_ru_p01",
+"provider": "yandex",
+"voice": "madi_ru",
+"pitch": 0,
+"speed": 1.0,
+"text": "Робот, который сейчас час, и сколько осталось до утра?"
+},
+{
+"id": "y-madi_ru_p02",
+"provider": "yandex",
+"voice": "madi_ru",
+"pitch": 0,
+"speed": 1.0,
+"text": "Робот, сколько у тебя осталось заряда, до утра дотянешь?"
+},
+{
+"id": "y-madi_ru_p03",
+"provider": "yandex",
+"voice": "madi_ru",
+"pitch": 0,
+"speed": 1.0,
+"text": "Робот, доложи статус: всё ли у тебя работает, ничего не отвалилось?"
+},
+{
+"id": "y-madi_ru_p04",
+"provider": "yandex",
+"voice": "madi_ru",
+"pitch": 0,
+"speed": 1.0,
+"text": "Робот, где ты сейчас находишься?"
+},
+{
+"id": "y-saule_ru_p01",
+"provider": "yandex",
+"voice": "saule_ru",
+"pitch": 0,
+"speed": 1.0,
+"text": "Робот, который сейчас час, и сколько осталось до утра?"
+},
+{
+"id": "y-saule_ru_p02",
+"provider": "yandex",
+"voice": "saule_ru",
+"pitch": 0,
+"speed": 1.0,
+"text": "Робот, сколько у тебя осталось заряда, до утра дотянешь?"
+},
+{
+"id": "y-saule_ru_p03",
+"provider": "yandex",
+"voice": "saule_ru",
+"pitch": 0,
+"speed": 1.0,
+"text": "Робот, доложи статус: всё ли у тебя работает, ничего не отвалилось?"
+},
+{
+"id": "y-saule_ru_p04",
+"provider": "yandex",
+"voice": "saule_ru",
+"pitch": 0,
+"speed": 1.0,
+"text": "Робот, где ты сейчас находишься?"
+},
+{
+"id": "y-zhanar_ru_p01",
+"provider": "yandex",
+"voice": "zhanar_ru",
+"pitch": 0,
+"speed": 1.0,
+"text": "Робот, который сейчас час, и сколько осталось до утра?"
+},
+{
+"id": "y-zhanar_ru_p02",
+"provider": "yandex",
+"voice": "zhanar_ru",
+"pitch": 0,
+"speed": 1.0,
+"text": "Робот, сколько у тебя осталось заряда, до утра дотянешь?"
+},
+{
+"id": "y-zhanar_ru_p03",
+"provider": "yandex",
+"voice": "zhanar_ru",
+"pitch": 0,
+"speed": 1.0,
+"text": "Робот, доложи статус: всё ли у тебя работает, ничего не отвалилось?"
+},
+{
+"id": "y-zhanar_ru_p04",
+"provider": "yandex",
+"voice": "zhanar_ru",
+"pitch": 0,
+"speed": 1.0,
+"text": "Робот, где ты сейчас находишься?"
+},
+{
+"id": "y-yulduz_ru_p01",
+"provider": "yandex",
+"voice": "yulduz_ru",
+"pitch": 0,
+"speed": 1.0,
+"text": "Робот, который сейчас час, и сколько осталось до утра?"
+},
+{
+"id": "y-yulduz_ru_p02",
+"provider": "yandex",
+"voice": "yulduz_ru",
+"pitch": 0,
+"speed": 1.0,
+"text": "Робот, сколько у тебя осталось заряда, до утра дотянешь?"
+},
+{
+"id": "y-yulduz_ru_p03",
+"provider": "yandex",
+"voice": "yulduz_ru",
+"pitch": 0,
+"speed": 1.0,
+"text": "Робот, доложи статус: всё ли у тебя работает, ничего не отвалилось?"
+},
+{
+"id": "y-yulduz_ru_p04",
+"provider": "yandex",
+"voice": "yulduz_ru",
+"pitch": 0,
+"speed": 1.0,
+"text": "Робот, где ты сейчас находишься?"
+}
+]

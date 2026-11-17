@@ -5,18 +5,16 @@ After W8 ``rob_box_telegram.telegram_node.TelegramNode`` is a thin ROS 2
 input bridge that forwards Telegram messages into the dialogue pipeline and
 keeps camera frames available to Telegram handlers:
 
-    Telegram user --text/voice--> /voice/stt/result         (dialogue in)
+    Telegram user --text/voice--> /voice/stt/utterance         (dialogue in)
     CompressedImage topics      -> in-memory CameraCache     (camera frames)
 
-The node subscribes to ``/voice/dialogue/response`` and duplicates every
-dialogue/TTS output into the active Telegram chat (issue #1195, echo path
-restored queue-based after 88cecc91 removed it because of the
-asyncio-loop bug t_aad8e224).
+The node subscribes to ``/dialog/output`` and sends the telegram agent's reply
+into its chat (PR-12a #3706; queue-based since t_aad8e224).
 
 These tests cover the W9 acceptance criteria from
-``.planning/phases/06-harness-p0-finalization/06-03-PLAN.md``:
+плана GSD 06-03 (каталог ``.planning/`` удалён, ADR-0163 — см. git-историю):
 
-    1. Telegram message -> published to /voice/stt/result (with [TG:chat_id] source marker)
+    1. Telegram message -> published to /voice/stt/utterance (with [TG:chat_id] source marker)
     2. Telegram node subscribes to the dialogue/TTS response topic and echoes to the chat
     3. Camera image -> forwarded to appropriate topic (CameraCache update)
     4. Telegram bot starts (mock Application builder)
@@ -84,6 +82,11 @@ def _install_fake_rclpy() -> None:
 
     class _Durability:
         TRANSIENT_LOCAL = "transient_local"
+        # AV-23 (issue #1915): _VOICE_IN_QOS у рации — volatile, чтобы
+        # sound_node не доигрывал stale-чанки после разрыва. Заглушка
+        # обязана знать оба значения, иначе импорт telegram_node падает
+        # здесь, а не в рации.
+        VOLATILE = "volatile"
 
     class QoSProfile:
         def __init__(self, reliability=None, history=None, depth=10, durability=None):
@@ -124,6 +127,13 @@ def _install_fake_rclpy() -> None:
             value = self._declared_parameters.get(name)
             return types.SimpleNamespace(value=value)
 
+        def get_clock(self):
+            # stamp SpeechRequest (speech_client.say): тип Time той сборки msgs, что под рукой.
+            from rob_box_dialog_msgs.msg import SpeechRequest
+
+            stamp = type(SpeechRequest().stamp)()
+            return types.SimpleNamespace(now=lambda: types.SimpleNamespace(to_msg=lambda: stamp))
+
         def create_publisher(self, msg_type, topic, qos_profile=None, **_):
             pub = MagicMock(name=f"Pub[{topic}]")
             pub.topic = topic
@@ -144,6 +154,15 @@ def _install_fake_rclpy() -> None:
             sub.callback_group = callback_group
             self._created_subscriptions.append(sub)
             return sub
+
+        def destroy_subscription(self, sub):
+            self._created_subscriptions.remove(sub)
+            return True
+
+        def create_timer(self, period, callback, callback_group=None, **_):
+            timer = MagicMock(name=f"Timer[{period}]")
+            timer.callback = callback
+            return timer
 
         def _record_publish(self, topic):
             calls: list = []
@@ -200,6 +219,11 @@ def _install_fake_rclpy() -> None:
     std_msgs.msg = std_msgs_msg
     sys.modules["std_msgs"] = std_msgs
     sys.modules["std_msgs.msg"] = std_msgs_msg
+
+    # ADR-0150 PR-2: telegram_node публикует типизированный Utterance;
+    # класс строится из настоящего rob_box_dialog_msgs/msg/Utterance.msg.
+    from rob_box_core.msg_stub import install_dialog_msgs_stub
+    install_dialog_msgs_stub()
 
     # Expose the stub String class at module scope so tests can build
     # ``std_msgs.msg.String`` messages without re-importing.
@@ -442,12 +466,13 @@ class TestTelegramBridge(unittest.IsolatedAsyncioTestCase):
                 return sub
         raise AssertionError(f"No subscription registered for {topic}")
 
-    # ── Test 1: Telegram message → /voice/stt/result ──────────────────
+    # ── Test 1: Telegram message → /voice/stt/utterance (Utterance) ───
 
     def test_telegram_message_published_to_stt_topic(self) -> None:
-        """``forward_to_stt`` must publish the raw text on /voice/stt/result."""
+        """Без chat_id ``forward_to_stt`` публикует Utterance с source=operator."""
+        from rob_box_dialog_msgs.msg import Utterance
 
-        pub = self._publisher_for("/voice/stt/result")
+        pub = self._publisher_for("/voice/stt/utterance")
         self.assertEqual(pub.publish.call_count, 0)
 
         self.node.forward_to_stt("Привет, робот!")
@@ -455,21 +480,72 @@ class TestTelegramBridge(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(pub.publish.call_count, 1)
         published = pub.publish.call_args.args[0]
-        self.assertIsInstance(published, _STD_STRING_CLS)
-        self.assertEqual(published.data, "Привет, робот!")
+        self.assertIsInstance(published, Utterance)
+        self.assertEqual(published.text, "Привет, робот!")
+        self.assertEqual(published.source, Utterance.SOURCE_OPERATOR)
+        self.assertEqual(published.chat_id, 0)
+        self.assertEqual(published.utterance_id, "")
 
     def test_forward_to_stt_with_chat_id_adds_source_marker(self) -> None:
-        """``forward_to_stt(text, chat_id=...)`` must add the [TG:chat_id]
-        source marker (issue #1195) and record the active chat."""
+        """``forward_to_stt(text, chat_id=...)`` кладёт источник и chat_id в
+        поля (issue #1195, ADR-0150 PR-2), текст остаётся без префикса
+        ``[TG:id]``, активный чат запоминается."""
+        from rob_box_dialog_msgs.msg import Utterance
 
-        pub = self._publisher_for("/voice/stt/result")
+        pub = self._publisher_for("/voice/stt/utterance")
         self.assertIsNone(self.node._active_chat_id)
 
         self.node.forward_to_stt("продолжай", chat_id=-5269346516)
 
         self.assertEqual(self.node._active_chat_id, -5269346516)
         published = pub.publish.call_args.args[0]
-        self.assertEqual(published.data, "[TG:-5269346516] продолжай")
+        self.assertEqual(published.text, "продолжай")
+        self.assertEqual(published.source, Utterance.SOURCE_TELEGRAM)
+        self.assertEqual(published.chat_id, -5269346516)
+
+    def test_publish_tts_goes_through_speech_client_as_telegram(self) -> None:
+        """ADR-0150 PR-3: реплика из Telegram - один SpeechRequest (агент telegram),
+        а не JSON в старые голосовые топики (``/voice/tts/*``, ``/voice/dialogue/*``)."""
+        topics = [p.topic for p in self.node._created_publishers]
+        self.assertEqual([t for t in topics if t.startswith(("/voice/tts/", "/voice/dialogue/"))], [])
+        pub = self._publisher_for("/voice/speech/request")
+
+        speech_id = self.node.publish_tts("Всем привет & пока")
+
+        req = pub.publish.call_args.args[0]
+        self.assertEqual(req.speech_id, speech_id)
+        self.assertEqual(req.agent, "telegram")
+        self.assertEqual(req.text, "Всем привет & пока")
+
+    def test_say_speaks_exactly_the_typed_text_once_and_receipt_follows_the_event(self) -> None:
+        """#3727: /say - ровно один SpeechRequest с введённым текстом (agent=telegram), никаких других реплик и
+        публикаций за ход; итог в чат приходит по SpeechEvent того же speech_id, а не «Озвучиваю» заранее."""
+        from unittest.mock import MagicMock
+
+        pub = self._publisher_for("/voice/speech/request")
+        others = [p for p in self.node._created_publishers if p.topic != "/voice/speech/request"]
+        before = [p.publish.call_count for p in others]
+        loop, queue = MagicMock(), MagicMock()
+        self.node._telegram_loop, self.node._response_queue = loop, queue
+
+        result = self.node.publish_tts_with_floor("Привет, мир & пока", receipt_chat_id=7)
+
+        self.assertTrue(result.granted)
+        self.assertEqual(pub.publish.call_count, 1)
+        req = pub.publish.call_args.args[0]
+        self.assertEqual(req.agent, "telegram")
+        self.assertEqual(req.text, "Привет, мир & пока")
+        self.assertEqual([p.publish.call_count for p in others], before)
+        loop.call_soon_threadsafe.assert_not_called()  # до итога чату ничего не говорим
+
+        sub = self._subscription_for("/voice/speech/event")
+        sub.callback(MagicMock(kind=2, speech_id=req.speech_id, reason="", seconds=0.0))  # started
+        loop.call_soon_threadsafe.assert_not_called()
+        sub.callback(MagicMock(kind=7, speech_id=req.speech_id, reason="unsupported_script", seconds=0.0))
+        args = loop.call_soon_threadsafe.call_args.args
+        self.assertEqual(args[0], queue.put_nowait)
+        self.assertEqual(args[1][0], 7)
+        self.assertIn("Не озвучил", args[1][1])
 
     def test_set_active_chat_records_chat(self) -> None:
         """``set_active_chat`` must store the chat for echo routing."""
@@ -478,58 +554,39 @@ class TestTelegramBridge(unittest.IsolatedAsyncioTestCase):
         self.node.set_active_chat(12345)
         self.assertEqual(self.node._active_chat_id, 12345)
 
-    def test_node_subscribes_to_dialogue_response(self) -> None:
-        """Telegram must consume dialogue/TTS output to echo it to the chat
-        (issue #1195 — echo path restored)."""
+    def test_replies_come_from_dialog_output_only(self) -> None:
+        """Эха v1 ``/voice/dialogue/response`` нет (#4354 A3), ответ в чат — ``/dialog/output``."""
+        topics = [s.topic for s in self.node._created_subscriptions]
+        self.assertNotIn("/voice/dialogue/response", topics)
+        self.assertIn("/dialog/output", topics)
 
-        sub = self._subscription_for("/voice/dialogue/response")
-        self.assertIsNotNone(sub.callback)
+    def test_say_is_still_verbatim_one_request_and_no_chat_agent_turn(self) -> None:
+        """#3727 (PR-12a): /say — ровно один SpeechRequest с введённым текстом, мимо телеграм-агента
+        (в /voice/stt/utterance ничего не уходит, LLM не зовётся)."""
+        node = self._node_mod.TelegramNode()
+        speech = next(p for p in node._created_publishers if p.topic == "/voice/speech/request")
+        stt = next(p for p in node._created_publishers if p.topic == "/voice/stt/utterance")
+        node.publish_tts_with_floor("Ровно этот текст", receipt_chat_id=7)
+        self.assertEqual(speech.publish.call_count, 1)
+        self.assertEqual(speech.publish.call_args.args[0].text, "Ровно этот текст")
+        stt.publish.assert_not_called()
 
-    async def test_response_echo_pushes_to_queue(self) -> None:
-        """``_on_response`` must parse the SSML payload and push
-        ``(chat_id, text)`` into the telegram loop's queue.
+    def test_dialog_output_goes_to_its_chat_only(self) -> None:
+        """PR-12a (#3706): ответ телеграм-агента (``DialogOutput``) уходит в чат своего ``channel_ref``;
+        чужой агент, чужой канал и пустой текст — мимо."""
+        from unittest.mock import MagicMock
 
-        The send itself happens on the telegram asyncio loop
-        (``_chat_echo_worker``), never via ``run_coroutine_threadsafe``
-        from the ROS thread (t_aad8e224).
-        """
-
-        self.node._telegram_loop = asyncio.get_running_loop()
-        self.node._response_queue = asyncio.Queue()
-        self.node._active_chat_id = 12345
-
-        msg = types.SimpleNamespace(
-            data=json.dumps(
-                {"ssml": "<speak>Привет!</speak>", "speech_id": "s1"},
-                ensure_ascii=False,
-            )
-        )
-        self.node._on_response(msg)
-
-        # Give the loop a chance to run the scheduled put_nowait.
-        await asyncio.sleep(0)
-        item = self.node._response_queue.get_nowait()
-        self.assertEqual(item, (12345, "Привет!"))
-
-    async def test_response_echo_uses_payload_tg_chat_id(self) -> None:
-        """When dialogue_node routes the reply explicitly (tg_chat_id in the
-        payload), that chat wins over the fallback active chat."""
-
-        self.node._telegram_loop = asyncio.get_running_loop()
-        self.node._response_queue = asyncio.Queue()
-        self.node._active_chat_id = 999
-
-        msg = types.SimpleNamespace(
-            data=json.dumps(
-                {"ssml": "<speak>Привет!</speak>", "tg_chat_id": 777},
-                ensure_ascii=False,
-            )
-        )
-        self.node._on_response(msg)
-
-        await asyncio.sleep(0)
-        item = self.node._response_queue.get_nowait()
-        self.assertEqual(item, (777, "Привет!"))
+        node = self._node_mod.TelegramNode()
+        loop, queue = MagicMock(), MagicMock()
+        node._telegram_loop, node._response_queue = loop, queue
+        sub = next(s for s in node._created_subscriptions if s.topic == "/dialog/output")
+        out = types.SimpleNamespace
+        sub.callback(out(agent="personality", channel_ref="telegram:7", text="мимо", speech_id=""))
+        sub.callback(out(agent="telegram", channel_ref="headset:1", text="мимо", speech_id=""))
+        sub.callback(out(agent="telegram", channel_ref="telegram:7", text="", speech_id=""))
+        loop.call_soon_threadsafe.assert_not_called()
+        sub.callback(out(agent="telegram", channel_ref="telegram:7", text="Сейчас 12:30.", speech_id="s1"))
+        loop.call_soon_threadsafe.assert_called_once_with(queue.put_nowait, (7, "Сейчас 12:30."))
 
     async def test_response_echo_worker_sends_message(self) -> None:
         """``_chat_echo_worker`` must consume the queue and call
@@ -559,8 +616,55 @@ class TestTelegramBridge(unittest.IsolatedAsyncioTestCase):
         except asyncio.CancelledError:
             pass
 
+        # #4243: ответ идёт через оформитель чата (HTML, ссылки без карточек), текст короткий - как есть.
         self.node._telegram_app.bot.send_message.assert_awaited_once_with(
-            chat_id=42, text="Привет!"
+            chat_id=42, text="Привет!", parse_mode="HTML", link_preview_options={"is_disabled": True}
+        )
+
+    async def test_dialog_output_with_role_and_kind_reaches_the_queue_as_four_items(self) -> None:
+        """#4243: реплика героя и подпись шага идут в чат с ``role``/``kind``; обычный ответ - прежней парой."""
+        node = self._node_mod.TelegramNode()
+        node._telegram_loop, node._response_queue = asyncio.get_running_loop(), asyncio.Queue()
+        sub = next(s for s in node._created_subscriptions if s.topic == "/dialog/output")
+        out = types.SimpleNamespace
+        sub.callback(out(agent="telegram", channel_ref="telegram:7", text="Ты делал бэкап?", speech_id="s", role="Ермил", kind=""))
+        sub.callback(out(agent="telegram", channel_ref="telegram:7", text="Думаю…", speech_id="", role="", kind="progress"))
+        sub.callback(out(agent="telegram", channel_ref="telegram:7", text="Привет", speech_id="s", role="", kind=""))
+        await asyncio.sleep(0)
+        got = [node._response_queue.get_nowait() for _ in range(3)]
+        self.assertEqual(got, [(7, "Ты делал бэкап?", "Ермил", ""), (7, "Думаю…", "", "progress"), (7, "Привет")])
+
+    async def test_worker_routes_begin_and_progress_to_the_indicator_and_hero_to_a_quote(self) -> None:
+        from rob_box_telegram import chat_sender
+
+        node = self.node
+        node._telegram_loop = asyncio.get_running_loop()
+        queue = asyncio.Queue()
+        node._response_queue = queue
+        node._telegram_app = MagicMock(name="Application")
+        bot = node._telegram_app.bot = MagicMock(name="Application.bot")
+        bot.send_message, bot.send_chat_action = AsyncMock(), AsyncMock()
+        done = asyncio.Event()
+
+        async def _sent(**kwargs) -> None:
+            done.set()
+
+        bot.send_message.side_effect = _sent
+        worker = asyncio.create_task(node._chat_echo_worker())
+        queue.put_nowait((42, "", "", chat_sender.KIND_BEGIN))
+        await asyncio.sleep(0.05)  # индикатор успел сказать «печатает» до ответа
+        queue.put_nowait((42, "Думаю…", "", "progress"))
+        queue.put_nowait((42, "Ты делал бэкап?", "Ермил", ""))
+        await asyncio.wait_for(done.wait(), timeout=2.0)
+        worker.cancel()
+        try:
+            await worker
+        except asyncio.CancelledError:
+            pass
+        bot.send_chat_action.assert_awaited()
+        bot.send_message.assert_awaited_once_with(
+            chat_id=42, text="<b>Ермил</b>\n<blockquote>Ты делал бэкап?</blockquote>", parse_mode="HTML",
+            link_preview_options={"is_disabled": True}
         )
 
     # ── Test 2: Camera image → forwarded to appropriate topic ─────────
@@ -570,6 +674,9 @@ class TestTelegramBridge(unittest.IsolatedAsyncioTestCase):
 
         cache = self.node.camera_cache
         self.assertEqual(cache.topics, [])
+        subs = self.node.camera_subscriptions
+        for topic in (self.node.camera_topic, self.node.camera_depth_topic, self.node.camera_up_topic):
+            subs.request(topic, timeout_s=0)
 
         front = self._subscription_for(self.node.camera_topic).callback
         depth = self._subscription_for(self.node.camera_depth_topic).callback
@@ -590,6 +697,24 @@ class TestTelegramBridge(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(cache.get(self.node.camera_topic), b"\xff\xd8front")
         self.assertEqual(cache.get(self.node.camera_depth_topic), b"\xff\xd8depth")
         self.assertEqual(cache.get(self.node.camera_up_topic), b"\xff\xd8up")
+
+    def test_no_camera_subscription_until_photo_requested(self) -> None:
+        """Постоянная подписка держала камеры включёнными (lazy publisher)."""
+        topics = {s.topic for s in self.node._created_subscriptions}
+        for topic in (self.node.camera_topic, self.node.camera_depth_topic, self.node.camera_up_topic):
+            self.assertNotIn(topic, topics)
+
+    async def test_fetch_camera_frame_subscribes_and_waits(self) -> None:
+        topic = self.node.camera_topic
+
+        async def _publish_later():
+            await asyncio.sleep(0.1)
+            self._subscription_for(topic).callback(_compressed_image(b"\xff\xd8late"))
+
+        publisher = asyncio.create_task(_publish_later())
+        frame = await self.node.fetch_camera_frame(topic)
+        await publisher
+        self.assertEqual(frame, b"\xff\xd8late")
 
     def test_map_grid_subscription_records_payload(self) -> None:
         """Map subscription stores the latest OccupancyGrid on the node."""
@@ -677,6 +802,15 @@ class TestMessageDebounce(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(args[0], "продолжай\nпродолжай")
         self.assertEqual(kwargs.get("chat_id"), 42)
 
+    async def test_every_message_is_logged_as_tg_in_line_before_debounce(self) -> None:
+        """PR-12a (#3706): канал координатора — строка ``[tg-in]`` в логе telegram-bot на каждое сообщение."""
+        update, context, node = self._make_update_and_context("Клод, проверь сборку")
+
+        await self.messages.text_message_handler(update, context)
+
+        node.get_logger.return_value.info.assert_any_call(
+            "📨 [tg-in] chat_id=42 coordinator=true text=Клод, проверь сборку")
+
     async def test_single_message_forwarded_with_chat_id(self) -> None:
         """A single message is forwarded with the [TG:] source chat_id."""
         update, context, node = self._make_update_and_context("робот привет")
@@ -755,6 +889,117 @@ class TestVPNConnectivity(unittest.TestCase):
     )
     def test_vpn_endpoint_reachable(self) -> None:
         pass
+
+
+class TestAvatarCommandResult(unittest.IsolatedAsyncioTestCase):
+    """issue #1988 (шаг 4а) — Telegram как consumer /avatar/command_result.
+
+    Ответ ТАРС (summary) уходит оператору в исходный чат тем же echo-путём,
+    что диалоговые ответы: ``_on_avatar_command_result`` → _response_queue →
+    _chat_echo_worker. Роут по ``request_id='telegram:<chat_id>:<ts_ms>'``.
+    """
+
+    def setUp(self) -> None:
+        self._node_mod = _load_telegram_node_module()
+        os.environ["TELEGRAM_BOT_TOKEN"] = "test-token-123456"
+        self._start_patch = patch.object(
+            self._node_mod.TelegramNode,
+            "_start_telegram_bot",
+            lambda self, token: None,
+        )
+        self._start_patch.start()
+        self.node = self._node_mod.TelegramNode()
+
+    def tearDown(self) -> None:
+        self._start_patch.stop()
+        os.environ.pop("TELEGRAM_BOT_TOKEN", None)
+
+    def _subscription_for(self, topic: str):
+        for sub in self.node._created_subscriptions:
+            if sub.topic == topic:
+                return sub
+        raise AssertionError(f"No subscription registered for {topic}")
+
+    def test_node_subscribes_to_avatar_command_result(self) -> None:
+        """Telegram слушает /avatar/command_result (DoD #1988)."""
+        sub = self._subscription_for("/avatar/command_result")
+        self.assertIsNotNone(sub.callback)
+
+    def test_resolve_result_chat_parses_telegram_prefix(self) -> None:
+        """'telegram:<chat_id>:<ts>' → chat_id; uuid/quest/битый → None."""
+        node = self.node
+        self.assertEqual(
+            node._resolve_avatar_result_chat("telegram:12345:999"), 12345
+        )
+        self.assertIsNone(node._resolve_avatar_result_chat("aabbccdd"))
+        self.assertIsNone(node._resolve_avatar_result_chat("quest:sid:1"))
+        self.assertIsNone(node._resolve_avatar_result_chat("telegram:abc:1"))
+        self.assertIsNone(node._resolve_avatar_result_chat(""))
+
+    async def test_result_relays_to_originating_chat(self) -> None:
+        """ok-результат → summary уходит в чат из request_id."""
+        self.node._telegram_loop = asyncio.get_running_loop()
+        self.node._response_queue = asyncio.Queue()
+        msg = types.SimpleNamespace(
+            data=json.dumps(
+                {
+                    "request_id": "telegram:777:11",
+                    "ok": True,
+                    "summary": "Выполнено",
+                },
+                ensure_ascii=False,
+            )
+        )
+        self.node._on_avatar_command_result(msg)
+        await asyncio.sleep(0)
+        item = self.node._response_queue.get_nowait()
+        self.assertEqual(item, (777, "Выполнено"))
+
+    async def test_error_result_prefixed(self) -> None:
+        """fail-результат → summary с префиксом ⚠️."""
+        self.node._telegram_loop = asyncio.get_running_loop()
+        self.node._response_queue = asyncio.Queue()
+        msg = types.SimpleNamespace(
+            data=json.dumps(
+                {
+                    "request_id": "telegram:777:12",
+                    "ok": False,
+                    "summary": "agent_unavailable",
+                }
+            )
+        )
+        self.node._on_avatar_command_result(msg)
+        await asyncio.sleep(0)
+        item = self.node._response_queue.get_nowait()
+        self.assertEqual(item, (777, "⚠️ agent_unavailable"))
+
+    async def test_unroutable_falls_back_to_active_chat(self) -> None:
+        """uuid4-request_id (malformed) → fallback на active-чат."""
+        self.node._telegram_loop = asyncio.get_running_loop()
+        self.node._response_queue = asyncio.Queue()
+        self.node._active_chat_id = 42
+        msg = types.SimpleNamespace(
+            data=json.dumps(
+                {"request_id": "aabbccdd", "ok": True, "summary": "ok"}
+            )
+        )
+        self.node._on_avatar_command_result(msg)
+        await asyncio.sleep(0)
+        item = self.node._response_queue.get_nowait()
+        self.assertEqual(item, (42, "ok"))
+
+    async def test_empty_summary_dropped(self) -> None:
+        """Пустой summary не уходит в чат."""
+        self.node._telegram_loop = asyncio.get_running_loop()
+        self.node._response_queue = asyncio.Queue()
+        msg = types.SimpleNamespace(
+            data=json.dumps(
+                {"request_id": "telegram:1:1", "ok": True, "summary": "   "}
+            )
+        )
+        self.node._on_avatar_command_result(msg)
+        await asyncio.sleep(0)
+        self.assertTrue(self.node._response_queue.empty())
 
 
 # ─────────────────────────────────────────────────────────────────────────

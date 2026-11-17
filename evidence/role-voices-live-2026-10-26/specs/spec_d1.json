@@ -1,0 +1,66 @@
+[
+{
+"id": "m-pt_StrictBoss_p23",
+"provider": "minimax",
+"voice": "Portuguese_StrictBoss",
+"pitch": 0,
+"speed": 1.0,
+"text": "Доложи статус: всё ли у тебя работает, ничего не отвалилось?"
+},
+{
+"id": "m-pt_StrictBoss_p24",
+"provider": "minimax",
+"voice": "Portuguese_StrictBoss",
+"pitch": 0,
+"speed": 1.0,
+"text": "Где ты сейчас находишься?"
+},
+{
+"id": "m-pt_StrictBoss_p25",
+"provider": "minimax",
+"voice": "Portuguese_StrictBoss",
+"pitch": 0,
+"speed": 1.0,
+"text": "Что ты видишь вокруг себя, опиши в двух словах."
+},
+{
+"id": "m-pt_StrictBoss_p26",
+"provider": "minimax",
+"voice": "Portuguese_StrictBoss",
+"pitch": 0,
+"speed": 1.0,
+"text": "Какие звуки ты вообще умеешь издавать?"
+},
+{
+"id": "m-ko_ConsiderateSenior_p23",
+"provider": "minimax",
+"voice": "Korean_ConsiderateSenior",
+"pitch": 0,
+"speed": 1.0,
+"text": "Доложи статус: всё ли у тебя работает, ничего не отвалилось?"
+},
+{
+"id": "m-ko_ConsiderateSenior_p24",
+"provider": "minimax",
+"voice": "Korean_ConsiderateSenior",
+"pitch": 0,
+"speed": 1.0,
+"text": "Где ты сейчас находишься?"
+},
+{
+"id": "m-ko_ConsiderateSenior_p25",
+"provider": "minimax",
+"voice": "Korean_ConsiderateSenior",
+"pitch": 0,
+"speed": 1.0,
+"text": "Что ты видишь вокруг себя, опиши в двух словах."
+},
+{
+"id": "m-ko_ConsiderateSenior_p26",
+"provider": "minimax",
+"voice": "Korean_ConsiderateSenior",
+"pitch": 0,
+"speed": 1.0,
+"text": "Какие звуки ты вообще умеешь издавать?"
+}
+]

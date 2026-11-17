@@ -1,0 +1,826 @@
+[
+{
+"id": "m-en_WhisperingGirl_p23",
+"provider": "minimax",
+"voice": "English_Whispering_girl",
+"pitch": 0,
+"speed": 1.0,
+"text": "Доложи статус: всё ли у тебя работает, ничего не отвалилось?"
+},
+{
+"id": "m-en_WhisperingGirl_p24",
+"provider": "minimax",
+"voice": "English_Whispering_girl",
+"pitch": 0,
+"speed": 1.0,
+"text": "Где ты сейчас находишься?"
+},
+{
+"id": "m-en_WhisperingGirl_p25",
+"provider": "minimax",
+"voice": "English_Whispering_girl",
+"pitch": 0,
+"speed": 1.0,
+"text": "Что ты видишь вокруг себя, опиши в двух словах."
+},
+{
+"id": "m-en_WhisperingGirl_p26",
+"provider": "minimax",
+"voice": "English_Whispering_girl",
+"pitch": 0,
+"speed": 1.0,
+"text": "Какие звуки ты вообще умеешь издавать?"
+},
+{
+"id": "m-en_WhisperingGirl_p27",
+"provider": "minimax",
+"voice": "English_Whispering_girl",
+"pitch": 0,
+"speed": 1.0,
+"text": "У тебя сейчас играет какая-нибудь музыка?"
+},
+{
+"id": "m-en_WhisperingGirl_p28",
+"provider": "minimax",
+"voice": "English_Whispering_girl",
+"pitch": 0,
+"speed": 1.0,
+"text": "Ты меня слышишь? Ответь коротко."
+},
+{
+"id": "m-en_WhisperingGirl_p29",
+"provider": "minimax",
+"voice": "English_Whispering_girl",
+"pitch": 0,
+"speed": 1.0,
+"text": "Посмотри, пожалуйста, не горит ли лампочка на зарядке."
+},
+{
+"id": "m-en_WhisperingGirl_p30",
+"provider": "minimax",
+"voice": "English_Whispering_girl",
+"pitch": 0,
+"speed": 1.0,
+"text": "Расскажи, какая завтра погода за окном мастерской."
+},
+{
+"id": "m-en_Storyteller_p23",
+"provider": "minimax",
+"voice": "English_CaptivatingStoryteller",
+"pitch": 0,
+"speed": 1.0,
+"text": "Доложи статус: всё ли у тебя работает, ничего не отвалилось?"
+},
+{
+"id": "m-en_Storyteller_p24",
+"provider": "minimax",
+"voice": "English_CaptivatingStoryteller",
+"pitch": 0,
+"speed": 1.0,
+"text": "Где ты сейчас находишься?"
+},
+{
+"id": "m-en_Storyteller_p25",
+"provider": "minimax",
+"voice": "English_CaptivatingStoryteller",
+"pitch": 0,
+"speed": 1.0,
+"text": "Что ты видишь вокруг себя, опиши в двух словах."
+},
+{
+"id": "m-en_Storyteller_p26",
+"provider": "minimax",
+"voice": "English_CaptivatingStoryteller",
+"pitch": 0,
+"speed": 1.0,
+"text": "Какие звуки ты вообще умеешь издавать?"
+},
+{
+"id": "m-en_Storyteller_p27",
+"provider": "minimax",
+"voice": "English_CaptivatingStoryteller",
+"pitch": 0,
+"speed": 1.0,
+"text": "У тебя сейчас играет какая-нибудь музыка?"
+},
+{
+"id": "m-en_Storyteller_p28",
+"provider": "minimax",
+"voice": "English_CaptivatingStoryteller",
+"pitch": 0,
+"speed": 1.0,
+"text": "Ты меня слышишь? Ответь коротко."
+},
+{
+"id": "m-en_Storyteller_p29",
+"provider": "minimax",
+"voice": "English_CaptivatingStoryteller",
+"pitch": 0,
+"speed": 1.0,
+"text": "Посмотри, пожалуйста, не горит ли лампочка на зарядке."
+},
+{
+"id": "m-en_Storyteller_p30",
+"provider": "minimax",
+"voice": "English_CaptivatingStoryteller",
+"pitch": 0,
+"speed": 1.0,
+"text": "Расскажи, какая завтра погода за окном мастерской."
+},
+{
+"id": "m-zh_GentleSenior_p23",
+"provider": "minimax",
+"voice": "Chinese (Mandarin)_Gentle_Senior",
+"pitch": 0,
+"speed": 1.0,
+"text": "Доложи статус: всё ли у тебя работает, ничего не отвалилось?"
+},
+{
+"id": "m-zh_GentleSenior_p24",
+"provider": "minimax",
+"voice": "Chinese (Mandarin)_Gentle_Senior",
+"pitch": 0,
+"speed": 1.0,
+"text": "Где ты сейчас находишься?"
+},
+{
+"id": "m-zh_GentleSenior_p25",
+"provider": "minimax",
+"voice": "Chinese (Mandarin)_Gentle_Senior",
+"pitch": 0,
+"speed": 1.0,
+"text": "Что ты видишь вокруг себя, опиши в двух словах."
+},
+{
+"id": "m-zh_GentleSenior_p26",
+"provider": "minimax",
+"voice": "Chinese (Mandarin)_Gentle_Senior",
+"pitch": 0,
+"speed": 1.0,
+"text": "Какие звуки ты вообще умеешь издавать?"
+},
+{
+"id": "m-zh_GentleSenior_p27",
+"provider": "minimax",
+"voice": "Chinese (Mandarin)_Gentle_Senior",
+"pitch": 0,
+"speed": 1.0,
+"text": "У тебя сейчас играет какая-нибудь музыка?"
+},
+{
+"id": "m-zh_GentleSenior_p28",
+"provider": "minimax",
+"voice": "Chinese (Mandarin)_Gentle_Senior",
+"pitch": 0,
+"speed": 1.0,
+"text": "Ты меня слышишь? Ответь коротко."
+},
+{
+"id": "m-zh_GentleSenior_p29",
+"provider": "minimax",
+"voice": "Chinese (Mandarin)_Gentle_Senior",
+"pitch": 0,
+"speed": 1.0,
+"text": "Посмотри, пожалуйста, не горит ли лампочка на зарядке."
+},
+{
+"id": "m-zh_GentleSenior_p30",
+"provider": "minimax",
+"voice": "Chinese (Mandarin)_Gentle_Senior",
+"pitch": 0,
+"speed": 1.0,
+"text": "Расскажи, какая завтра погода за окном мастерской."
+},
+{
+"id": "m-en_AussieBloke_p23",
+"provider": "minimax",
+"voice": "English_Aussie_Bloke",
+"pitch": 0,
+"speed": 1.0,
+"text": "Доложи статус: всё ли у тебя работает, ничего не отвалилось?"
+},
+{
+"id": "m-en_AussieBloke_p24",
+"provider": "minimax",
+"voice": "English_Aussie_Bloke",
+"pitch": 0,
+"speed": 1.0,
+"text": "Где ты сейчас находишься?"
+},
+{
+"id": "m-en_AussieBloke_p25",
+"provider": "minimax",
+"voice": "English_Aussie_Bloke",
+"pitch": 0,
+"speed": 1.0,
+"text": "Что ты видишь вокруг себя, опиши в двух словах."
+},
+{
+"id": "m-en_AussieBloke_p26",
+"provider": "minimax",
+"voice": "English_Aussie_Bloke",
+"pitch": 0,
+"speed": 1.0,
+"text": "Какие звуки ты вообще умеешь издавать?"
+},
+{
+"id": "m-en_AussieBloke_p27",
+"provider": "minimax",
+"voice": "English_Aussie_Bloke",
+"pitch": 0,
+"speed": 1.0,
+"text": "У тебя сейчас играет какая-нибудь музыка?"
+},
+{
+"id": "m-en_AussieBloke_p28",
+"provider": "minimax",
+"voice": "English_Aussie_Bloke",
+"pitch": 0,
+"speed": 1.0,
+"text": "Ты меня слышишь? Ответь коротко."
+},
+{
+"id": "m-en_AussieBloke_p29",
+"provider": "minimax",
+"voice": "English_Aussie_Bloke",
+"pitch": 0,
+"speed": 1.0,
+"text": "Посмотри, пожалуйста, не горит ли лампочка на зарядке."
+},
+{
+"id": "m-en_AussieBloke_p30",
+"provider": "minimax",
+"voice": "English_Aussie_Bloke",
+"pitch": 0,
+"speed": 1.0,
+"text": "Расскажи, какая завтра погода за окном мастерской."
+},
+{
+"id": "m-cute_boy_p23",
+"provider": "minimax",
+"voice": "cute_boy",
+"pitch": 0,
+"speed": 1.0,
+"text": "Доложи статус: всё ли у тебя работает, ничего не отвалилось?"
+},
+{
+"id": "m-cute_boy_p24",
+"provider": "minimax",
+"voice": "cute_boy",
+"pitch": 0,
+"speed": 1.0,
+"text": "Где ты сейчас находишься?"
+},
+{
+"id": "m-cute_boy_p25",
+"provider": "minimax",
+"voice": "cute_boy",
+"pitch": 0,
+"speed": 1.0,
+"text": "Что ты видишь вокруг себя, опиши в двух словах."
+},
+{
+"id": "m-cute_boy_p26",
+"provider": "minimax",
+"voice": "cute_boy",
+"pitch": 0,
+"speed": 1.0,
+"text": "Какие звуки ты вообще умеешь издавать?"
+},
+{
+"id": "m-cute_boy_p27",
+"provider": "minimax",
+"voice": "cute_boy",
+"pitch": 0,
+"speed": 1.0,
+"text": "У тебя сейчас играет какая-нибудь музыка?"
+},
+{
+"id": "m-cute_boy_p28",
+"provider": "minimax",
+"voice": "cute_boy",
+"pitch": 0,
+"speed": 1.0,
+"text": "Ты меня слышишь? Ответь коротко."
+},
+{
+"id": "m-cute_boy_p29",
+"provider": "minimax",
+"voice": "cute_boy",
+"pitch": 0,
+"speed": 1.0,
+"text": "Посмотри, пожалуйста, не горит ли лампочка на зарядке."
+},
+{
+"id": "m-cute_boy_p30",
+"provider": "minimax",
+"voice": "cute_boy",
+"pitch": 0,
+"speed": 1.0,
+"text": "Расскажи, какая завтра погода за окном мастерской."
+},
+{
+"id": "m-es_Arnold_p23",
+"provider": "minimax",
+"voice": "Spanish_Arnold",
+"pitch": 0,
+"speed": 1.0,
+"text": "Доложи статус: всё ли у тебя работает, ничего не отвалилось?"
+},
+{
+"id": "m-es_Arnold_p24",
+"provider": "minimax",
+"voice": "Spanish_Arnold",
+"pitch": 0,
+"speed": 1.0,
+"text": "Где ты сейчас находишься?"
+},
+{
+"id": "m-es_Arnold_p25",
+"provider": "minimax",
+"voice": "Spanish_Arnold",
+"pitch": 0,
+"speed": 1.0,
+"text": "Что ты видишь вокруг себя, опиши в двух словах."
+},
+{
+"id": "m-es_Arnold_p26",
+"provider": "minimax",
+"voice": "Spanish_Arnold",
+"pitch": 0,
+"speed": 1.0,
+"text": "Какие звуки ты вообще умеешь издавать?"
+},
+{
+"id": "m-es_Arnold_p27",
+"provider": "minimax",
+"voice": "Spanish_Arnold",
+"pitch": 0,
+"speed": 1.0,
+"text": "У тебя сейчас играет какая-нибудь музыка?"
+},
+{
+"id": "m-es_Arnold_p28",
+"provider": "minimax",
+"voice": "Spanish_Arnold",
+"pitch": 0,
+"speed": 1.0,
+"text": "Ты меня слышишь? Ответь коротко."
+},
+{
+"id": "m-es_Arnold_p29",
+"provider": "minimax",
+"voice": "Spanish_Arnold",
+"pitch": 0,
+"speed": 1.0,
+"text": "Посмотри, пожалуйста, не горит ли лампочка на зарядке."
+},
+{
+"id": "m-es_Arnold_p30",
+"provider": "minimax",
+"voice": "Spanish_Arnold",
+"pitch": 0,
+"speed": 1.0,
+"text": "Расскажи, какая завтра погода за окном мастерской."
+},
+{
+"id": "m-en_Comedian_p23",
+"provider": "minimax",
+"voice": "English_Comedian",
+"pitch": 0,
+"speed": 1.0,
+"text": "Доложи статус: всё ли у тебя работает, ничего не отвалилось?"
+},
+{
+"id": "m-en_Comedian_p24",
+"provider": "minimax",
+"voice": "English_Comedian",
+"pitch": 0,
+"speed": 1.0,
+"text": "Где ты сейчас находишься?"
+},
+{
+"id": "m-en_Comedian_p25",
+"provider": "minimax",
+"voice": "English_Comedian",
+"pitch": 0,
+"speed": 1.0,
+"text": "Что ты видишь вокруг себя, опиши в двух словах."
+},
+{
+"id": "m-en_Comedian_p26",
+"provider": "minimax",
+"voice": "English_Comedian",
+"pitch": 0,
+"speed": 1.0,
+"text": "Какие звуки ты вообще умеешь издавать?"
+},
+{
+"id": "m-en_Comedian_p27",
+"provider": "minimax",
+"voice": "English_Comedian",
+"pitch": 0,
+"speed": 1.0,
+"text": "У тебя сейчас играет какая-нибудь музыка?"
+},
+{
+"id": "m-en_Comedian_p28",
+"provider": "minimax",
+"voice": "English_Comedian",
+"pitch": 0,
+"speed": 1.0,
+"text": "Ты меня слышишь? Ответь коротко."
+},
+{
+"id": "m-en_Comedian_p29",
+"provider": "minimax",
+"voice": "English_Comedian",
+"pitch": 0,
+"speed": 1.0,
+"text": "Посмотри, пожалуйста, не горит ли лампочка на зарядке."
+},
+{
+"id": "m-en_Comedian_p30",
+"provider": "minimax",
+"voice": "English_Comedian",
+"pitch": 0,
+"speed": 1.0,
+"text": "Расскажи, какая завтра погода за окном мастерской."
+},
+{
+"id": "m-zh_ArrogantMiss_p23",
+"provider": "minimax",
+"voice": "Arrogant_Miss",
+"pitch": 0,
+"speed": 1.0,
+"text": "Доложи статус: всё ли у тебя работает, ничего не отвалилось?"
+},
+{
+"id": "m-zh_ArrogantMiss_p24",
+"provider": "minimax",
+"voice": "Arrogant_Miss",
+"pitch": 0,
+"speed": 1.0,
+"text": "Где ты сейчас находишься?"
+},
+{
+"id": "m-zh_ArrogantMiss_p25",
+"provider": "minimax",
+"voice": "Arrogant_Miss",
+"pitch": 0,
+"speed": 1.0,
+"text": "Что ты видишь вокруг себя, опиши в двух словах."
+},
+{
+"id": "m-zh_ArrogantMiss_p26",
+"provider": "minimax",
+"voice": "Arrogant_Miss",
+"pitch": 0,
+"speed": 1.0,
+"text": "Какие звуки ты вообще умеешь издавать?"
+},
+{
+"id": "m-zh_ArrogantMiss_p27",
+"provider": "minimax",
+"voice": "Arrogant_Miss",
+"pitch": 0,
+"speed": 1.0,
+"text": "У тебя сейчас играет какая-нибудь музыка?"
+},
+{
+"id": "m-zh_ArrogantMiss_p28",
+"provider": "minimax",
+"voice": "Arrogant_Miss",
+"pitch": 0,
+"speed": 1.0,
+"text": "Ты меня слышишь? Ответь коротко."
+},
+{
+"id": "m-zh_ArrogantMiss_p29",
+"provider": "minimax",
+"voice": "Arrogant_Miss",
+"pitch": 0,
+"speed": 1.0,
+"text": "Посмотри, пожалуйста, не горит ли лампочка на зарядке."
+},
+{
+"id": "m-zh_ArrogantMiss_p30",
+"provider": "minimax",
+"voice": "Arrogant_Miss",
+"pitch": 0,
+"speed": 1.0,
+"text": "Расскажи, какая завтра погода за окном мастерской."
+},
+{
+"id": "m-uk_WiseScholar_p23",
+"provider": "minimax",
+"voice": "Ukrainian_WiseScholar",
+"pitch": 0,
+"speed": 1.0,
+"text": "Доложи статус: всё ли у тебя работает, ничего не отвалилось?"
+},
+{
+"id": "m-uk_WiseScholar_p24",
+"provider": "minimax",
+"voice": "Ukrainian_WiseScholar",
+"pitch": 0,
+"speed": 1.0,
+"text": "Где ты сейчас находишься?"
+},
+{
+"id": "m-uk_WiseScholar_p25",
+"provider": "minimax",
+"voice": "Ukrainian_WiseScholar",
+"pitch": 0,
+"speed": 1.0,
+"text": "Что ты видишь вокруг себя, опиши в двух словах."
+},
+{
+"id": "m-uk_WiseScholar_p26",
+"provider": "minimax",
+"voice": "Ukrainian_WiseScholar",
+"pitch": 0,
+"speed": 1.0,
+"text": "Какие звуки ты вообще умеешь издавать?"
+},
+{
+"id": "m-uk_WiseScholar_p27",
+"provider": "minimax",
+"voice": "Ukrainian_WiseScholar",
+"pitch": 0,
+"speed": 1.0,
+"text": "У тебя сейчас играет какая-нибудь музыка?"
+},
+{
+"id": "m-uk_WiseScholar_p28",
+"provider": "minimax",
+"voice": "Ukrainian_WiseScholar",
+"pitch": 0,
+"speed": 1.0,
+"text": "Ты меня слышишь? Ответь коротко."
+},
+{
+"id": "m-uk_WiseScholar_p29",
+"provider": "minimax",
+"voice": "Ukrainian_WiseScholar",
+"pitch": 0,
+"speed": 1.0,
+"text": "Посмотри, пожалуйста, не горит ли лампочка на зарядке."
+},
+{
+"id": "m-uk_WiseScholar_p30",
+"provider": "minimax",
+"voice": "Ukrainian_WiseScholar",
+"pitch": 0,
+"speed": 1.0,
+"text": "Расскажи, какая завтра погода за окном мастерской."
+},
+{
+"id": "m-ko_ConfidentBoss_p23",
+"provider": "minimax",
+"voice": "Korean_ConfidentBoss",
+"pitch": 0,
+"speed": 1.0,
+"text": "Доложи статус: всё ли у тебя работает, ничего не отвалилось?"
+},
+{
+"id": "m-ko_ConfidentBoss_p24",
+"provider": "minimax",
+"voice": "Korean_ConfidentBoss",
+"pitch": 0,
+"speed": 1.0,
+"text": "Где ты сейчас находишься?"
+},
+{
+"id": "m-ko_ConfidentBoss_p25",
+"provider": "minimax",
+"voice": "Korean_ConfidentBoss",
+"pitch": 0,
+"speed": 1.0,
+"text": "Что ты видишь вокруг себя, опиши в двух словах."
+},
+{
+"id": "m-ko_ConfidentBoss_p26",
+"provider": "minimax",
+"voice": "Korean_ConfidentBoss",
+"pitch": 0,
+"speed": 1.0,
+"text": "Какие звуки ты вообще умеешь издавать?"
+},
+{
+"id": "m-ko_ConfidentBoss_p27",
+"provider": "minimax",
+"voice": "Korean_ConfidentBoss",
+"pitch": 0,
+"speed": 1.0,
+"text": "У тебя сейчас играет какая-нибудь музыка?"
+},
+{
+"id": "m-ko_ConfidentBoss_p28",
+"provider": "minimax",
+"voice": "Korean_ConfidentBoss",
+"pitch": 0,
+"speed": 1.0,
+"text": "Ты меня слышишь? Ответь коротко."
+},
+{
+"id": "m-ko_ConfidentBoss_p29",
+"provider": "minimax",
+"voice": "Korean_ConfidentBoss",
+"pitch": 0,
+"speed": 1.0,
+"text": "Посмотри, пожалуйста, не горит ли лампочка на зарядке."
+},
+{
+"id": "m-ko_ConfidentBoss_p30",
+"provider": "minimax",
+"voice": "Korean_ConfidentBoss",
+"pitch": 0,
+"speed": 1.0,
+"text": "Расскажи, какая завтра погода за окном мастерской."
+},
+{
+"id": "m-pl_MaleNarrator_p23",
+"provider": "minimax",
+"voice": "Polish_male_1_sample4",
+"pitch": 0,
+"speed": 1.0,
+"text": "Доложи статус: всё ли у тебя работает, ничего не отвалилось?"
+},
+{
+"id": "m-pl_MaleNarrator_p24",
+"provider": "minimax",
+"voice": "Polish_male_1_sample4",
+"pitch": 0,
+"speed": 1.0,
+"text": "Где ты сейчас находишься?"
+},
+{
+"id": "m-pl_MaleNarrator_p25",
+"provider": "minimax",
+"voice": "Polish_male_1_sample4",
+"pitch": 0,
+"speed": 1.0,
+"text": "Что ты видишь вокруг себя, опиши в двух словах."
+},
+{
+"id": "m-pl_MaleNarrator_p26",
+"provider": "minimax",
+"voice": "Polish_male_1_sample4",
+"pitch": 0,
+"speed": 1.0,
+"text": "Какие звуки ты вообще умеешь издавать?"
+},
+{
+"id": "m-pl_MaleNarrator_p27",
+"provider": "minimax",
+"voice": "Polish_male_1_sample4",
+"pitch": 0,
+"speed": 1.0,
+"text": "У тебя сейчас играет какая-нибудь музыка?"
+},
+{
+"id": "m-pl_MaleNarrator_p28",
+"provider": "minimax",
+"voice": "Polish_male_1_sample4",
+"pitch": 0,
+"speed": 1.0,
+"text": "Ты меня слышишь? Ответь коротко."
+},
+{
+"id": "m-pl_MaleNarrator_p29",
+"provider": "minimax",
+"voice": "Polish_male_1_sample4",
+"pitch": 0,
+"speed": 1.0,
+"text": "Посмотри, пожалуйста, не горит ли лампочка на зарядке."
+},
+{
+"id": "m-pl_MaleNarrator_p30",
+"provider": "minimax",
+"voice": "Polish_male_1_sample4",
+"pitch": 0,
+"speed": 1.0,
+"text": "Расскажи, какая завтра погода за окном мастерской."
+},
+{
+"id": "y-julia_p24",
+"provider": "yandex",
+"voice": "julia",
+"pitch": 0,
+"speed": 1.0,
+"text": "Где ты сейчас находишься?"
+},
+{
+"id": "y-julia_p25",
+"provider": "yandex",
+"voice": "julia",
+"pitch": 0,
+"speed": 1.0,
+"text": "Что ты видишь вокруг себя, опиши в двух словах."
+},
+{
+"id": "y-julia_p26",
+"provider": "yandex",
+"voice": "julia",
+"pitch": 0,
+"speed": 1.0,
+"text": "Какие звуки ты вообще умеешь издавать?"
+},
+{
+"id": "y-julia_p27",
+"provider": "yandex",
+"voice": "julia",
+"pitch": 0,
+"speed": 1.0,
+"text": "У тебя сейчас играет какая-нибудь музыка?"
+},
+{
+"id": "y-julia_p28",
+"provider": "yandex",
+"voice": "julia",
+"pitch": 0,
+"speed": 1.0,
+"text": "Ты меня слышишь? Ответь коротко."
+},
+{
+"id": "y-madirus_p24",
+"provider": "yandex",
+"voice": "madirus",
+"pitch": 0,
+"speed": 1.0,
+"text": "Где ты сейчас находишься?"
+},
+{
+"id": "y-madirus_p25",
+"provider": "yandex",
+"voice": "madirus",
+"pitch": 0,
+"speed": 1.0,
+"text": "Что ты видишь вокруг себя, опиши в двух словах."
+},
+{
+"id": "y-madirus_p26",
+"provider": "yandex",
+"voice": "madirus",
+"pitch": 0,
+"speed": 1.0,
+"text": "Какие звуки ты вообще умеешь издавать?"
+},
+{
+"id": "y-madirus_p27",
+"provider": "yandex",
+"voice": "madirus",
+"pitch": 0,
+"speed": 1.0,
+"text": "У тебя сейчас играет какая-нибудь музыка?"
+},
+{
+"id": "y-madirus_p28",
+"provider": "yandex",
+"voice": "madirus",
+"pitch": 0,
+"speed": 1.0,
+"text": "Ты меня слышишь? Ответь коротко."
+},
+{
+"id": "y-madi_ru_p24",
+"provider": "yandex",
+"voice": "madi_ru",
+"pitch": 0,
+"speed": 1.0,
+"text": "Где ты сейчас находишься?"
+},
+{
+"id": "y-madi_ru_p25",
+"provider": "yandex",
+"voice": "madi_ru",
+"pitch": 0,
+"speed": 1.0,
+"text": "Что ты видишь вокруг себя, опиши в двух словах."
+},
+{
+"id": "y-madi_ru_p26",
+"provider": "yandex",
+"voice": "madi_ru",
+"pitch": 0,
+"speed": 1.0,
+"text": "Какие звуки ты вообще умеешь издавать?"
+},
+{
+"id": "y-madi_ru_p27",
+"provider": "yandex",
+"voice": "madi_ru",
+"pitch": 0,
+"speed": 1.0,
+"text": "У тебя сейчас играет какая-нибудь музыка?"
+},
+{
+"id": "y-madi_ru_p28",
+"provider": "yandex",
+"voice": "madi_ru",
+"pitch": 0,
+"speed": 1.0,
+"text": "Ты меня слышишь? Ответь коротко."
+}
+]

@@ -9,10 +9,33 @@ conftest.py - Общие фикстуры и конфигурация для т�
 
 import json
 import os
+import sys
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 from unittest.mock import MagicMock, Mock
 
 import pytest
+
+# Соседние пакеты — из ЭТОГО чекаута, а не из того, куда смотрит
+# ``pip install -e``. На dev-машине editable-установка указывает на главный
+# чекаут; из git worktree тесты молча брали оттуда устаревший
+# ``rob_box_core`` и падали на свежем коде (test_tool_catalog_sync:
+# «registered tools absent from the catalog: ['add_music_material']» при
+# том, что в каталоге worktree тул есть). На colcon/CI рядом этих каталогов
+# может не быть — тогда ничего не трогаем.
+_SRC_DIR = Path(__file__).resolve().parents[2]
+_SIBLINGS = ("rob_box_llm", "rob_box_harness", "rob_box_voice", "rob_box_core", "rob_box_dialog", "rob_box_dialog_host")
+for _pkg in _SIBLINGS:
+    _pkg_root = str(_SRC_DIR / _pkg)
+    _present = Path(_pkg_root, _pkg, "__init__.py").is_file()
+    if _present and _pkg_root not in sys.path:
+        sys.path.insert(0, _pkg_root)
+
+# ADR-0150 PR-2: mcp_server импортирует rob_box_dialog_msgs (rosidl, в unit-CI
+# не собран). Заглушка строится из настоящих .msg одним общим механизмом.
+from rob_box_core.msg_stub import install_dialog_msgs_stub  # noqa: E402
+
+install_dialog_msgs_stub()
 
 
 # ============================================================
@@ -107,12 +130,23 @@ class MockNode:
     def get_logger(self) -> MockLogger:
         return self._logger
 
+    def get_clock(self):
+        """stamp ``SpeechRequest`` (rob_box_core.speech_client.say, ADR-0150 PR-3)."""
+        stamp_cls = type(install_dialog_msgs_stub().SpeechRequest().stamp)
+        return Mock(now=lambda: Mock(to_msg=lambda: stamp_cls()))
+
     def create_publisher(self, msg_type, topic: str, qos: int = 10) -> MockPublisher:
         pub = MockPublisher(msg_type, topic, qos)
         self._publishers[topic] = pub
         return pub
 
-    def create_subscription(self, msg_type, topic: str, callback, qos: int = 10) -> MockSubscription:
+    def create_subscription(
+        self, msg_type, topic: str, callback, qos: int = 10, callback_group=None
+    ) -> MockSubscription:
+        # callback_group принимается и игнорируется: реальные ноды передают
+        # его для реентерабельных подписок (см. ShowMetricsTool — он ждёт
+        # ответа супервизора в другом потоке), моку он не нужен, но без
+        # параметра вызов падал бы на TypeError.
         sub = MockSubscription(msg_type, topic, callback, qos)
         self._subscriptions[topic] = sub
         return sub
@@ -154,6 +188,21 @@ class MockNode:
 # ============================================================
 # Fixtures
 # ============================================================
+
+
+_ROBOT_PROFILE = Path(os.environ.get("ROB_BOX_REPO_ROOT") or _SRC_DIR.parent) / "docker/sound/config/assistant.yaml"
+
+
+@pytest.fixture(autouse=True)
+def _robot_tool_owners(monkeypatch):
+    """Срез тулов хода без переданных владельцев - на владельцах профиля робота, как у хостов робота, которые всегда
+    передают их из профиля (ядро без профиля - без тулов продукта, ADR-0167 Ш1в). Нет профиля в чекауте - не трогаем."""
+    if not _ROBOT_PROFILE.is_file():
+        return
+    from rob_box_dialog import owners as ow  # noqa: PLC0415
+    from rob_box_dialog.profile import load_profile  # noqa: PLC0415
+
+    monkeypatch.setattr(ow, "OWNERS_WITHOUT_PROFILE", load_profile(_ROBOT_PROFILE).owners)
 
 
 @pytest.fixture

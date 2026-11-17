@@ -87,17 +87,13 @@ topics:
 
 **Рот робота двигается синхронно с речью!**
 
-**Поток**:
+**Поток** (ADR-0150 §5.5.4, PR-3a #3689):
 ```
-TTS → Audio Output → PyAudio Loopback → RMS Volume → /audio/level → Frame Selection → LED Matrix
+tts_node → /voice/speech/envelope (RMS по окнам 40 мс, t0 старта) → face_node (Vision Pi) → /panel_image → LED Matrix
 ```
 
-**Механизм**:
-1. `audio_reactive_animation_node` захватывает аудио выход (loopback)
-2. Вычисляет RMS громкость (0.0-1.0)
-3. Публикует в `/audio/level`
-4. `animation_player_node` выбирает кадр: `frame_index = int(audio_level * 11)`
-5. LED матрица показывает соответствующий кадр (рот открыт/закрыт)
+**Механизм**: владелец речи публикует огибающую перед каждым чанком, `face_node` ведёт рот по
+`levels[(now - t0) / frame_ms]`; `SpeechEvent cancelled` закрывает рот сразу. См. `src/rob_box_animations/README.md`.
 
 **Конфигурация** (`animations/manifests/talking.yaml`):
 ```yaml

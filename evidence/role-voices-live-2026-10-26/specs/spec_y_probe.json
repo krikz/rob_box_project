@@ -1,0 +1,162 @@
+[
+{
+"id": "y-anton_p01",
+"provider": "yandex",
+"voice": "anton",
+"pitch": 0,
+"speed": 1.0,
+"text": "Робот, который сейчас час, и сколько осталось до утра?"
+},
+{
+"id": "y-ermil_p01",
+"provider": "yandex",
+"voice": "ermil",
+"pitch": 0,
+"speed": 1.0,
+"text": "Робот, который сейчас час, и сколько осталось до утра?"
+},
+{
+"id": "y-zahar_p01",
+"provider": "yandex",
+"voice": "zahar",
+"pitch": 0,
+"speed": 1.0,
+"text": "Робот, который сейчас час, и сколько осталось до утра?"
+},
+{
+"id": "y-filipp_p01",
+"provider": "yandex",
+"voice": "filipp",
+"pitch": 0,
+"speed": 1.0,
+"text": "Робот, который сейчас час, и сколько осталось до утра?"
+},
+{
+"id": "y-madirus_p01",
+"provider": "yandex",
+"voice": "madirus",
+"pitch": 0,
+"speed": 1.0,
+"text": "Робот, который сейчас час, и сколько осталось до утра?"
+},
+{
+"id": "y-kirill_p01",
+"provider": "yandex",
+"voice": "kirill",
+"pitch": 0,
+"speed": 1.0,
+"text": "Робот, который сейчас час, и сколько осталось до утра?"
+},
+{
+"id": "y-alexander_p01",
+"provider": "yandex",
+"voice": "alexander",
+"pitch": 0,
+"speed": 1.0,
+"text": "Робот, который сейчас час, и сколько осталось до утра?"
+},
+{
+"id": "y-kostya_p01",
+"provider": "yandex",
+"voice": "kostya",
+"pitch": 0,
+"speed": 1.0,
+"text": "Робот, который сейчас час, и сколько осталось до утра?"
+},
+{
+"id": "y-rush_p01",
+"provider": "yandex",
+"voice": "rush",
+"pitch": 0,
+"speed": 1.0,
+"text": "Робот, который сейчас час, и сколько осталось до утра?"
+},
+{
+"id": "y-dasha_p01",
+"provider": "yandex",
+"voice": "dasha",
+"pitch": 0,
+"speed": 1.0,
+"text": "Робот, который сейчас час, и сколько осталось до утра?"
+},
+{
+"id": "y-julia_p01",
+"provider": "yandex",
+"voice": "julia",
+"pitch": 0,
+"speed": 1.0,
+"text": "Робот, который сейчас час, и сколько осталось до утра?"
+},
+{
+"id": "y-lera_p01",
+"provider": "yandex",
+"voice": "lera",
+"pitch": 0,
+"speed": 1.0,
+"text": "Робот, который сейчас час, и сколько осталось до утра?"
+},
+{
+"id": "y-masha_p01",
+"provider": "yandex",
+"voice": "masha",
+"pitch": 0,
+"speed": 1.0,
+"text": "Робот, который сейчас час, и сколько осталось до утра?"
+},
+{
+"id": "y-marina_p01",
+"provider": "yandex",
+"voice": "marina",
+"pitch": 0,
+"speed": 1.0,
+"text": "Робот, который сейчас час, и сколько осталось до утра?"
+},
+{
+"id": "y-arina_p01",
+"provider": "yandex",
+"voice": "arina",
+"pitch": 0,
+"speed": 1.0,
+"text": "Робот, который сейчас час, и сколько осталось до утра?"
+},
+{
+"id": "y-madi_ru_p01",
+"provider": "yandex",
+"voice": "madi_ru",
+"pitch": 0,
+"speed": 1.0,
+"text": "Робот, который сейчас час, и сколько осталось до утра?"
+},
+{
+"id": "y-saule_ru_p01",
+"provider": "yandex",
+"voice": "saule_ru",
+"pitch": 0,
+"speed": 1.0,
+"text": "Робот, который сейчас час, и сколько осталось до утра?"
+},
+{
+"id": "y-zhanar_ru_p01",
+"provider": "yandex",
+"voice": "zhanar_ru",
+"pitch": 0,
+"speed": 1.0,
+"text": "Робот, который сейчас час, и сколько осталось до утра?"
+},
+{
+"id": "y-yulduz_ru_p01",
+"provider": "yandex",
+"voice": "yulduz_ru",
+"pitch": 0,
+"speed": 1.0,
+"text": "Робот, который сейчас час, и сколько осталось до утра?"
+},
+{
+"id": "y-nick_p01",
+"provider": "yandex",
+"voice": "nick",
+"pitch": 0,
+"speed": 1.0,
+"text": "Робот, который сейчас час, и сколько осталось до утра?"
+}
+]

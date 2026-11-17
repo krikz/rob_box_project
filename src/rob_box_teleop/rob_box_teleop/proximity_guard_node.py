@@ -1,0 +1,284 @@
+"""proximity_guard_node — зона безопасности вокруг корпуса (#4365): мигалка, писк, голос, аварийный стоп.
+
+Тонкая нода на Main Pi (контейнер ``proximity-guard`` на образе teleop). Решает всё ``rob_box_teleop.proximity``;
+нода подаёт туда скан и скорость и публикует решённое через готовые механизмы:
+
+* ``/scan`` (``LaserScan``) -> точки в ``base_footprint`` (поза лидара — из TF, статическая);
+* ``/diff_drive_controller/odom`` (``Odometry``, 50 Гц) -> «в движении» и куда едет корпус. Колёсная одометрия,
+  а не ``/odom``: тот публикует rtabmap icp_odometry (10 Гц, живёт вместе с rtabmap), см. controller_manager.yaml;
+* входы twist_mux (список и таймауты — из ``twist_mux.yaml``, кроме ``cmd_vel_emergency``) -> какая команда
+  сейчас прошла бы в mux: пока держится стоп и команда толкает корпус в препятствие, стоп не отпускается;
+* стоп: нулевой ``Twist`` в ``cmd_vel_emergency`` — вход twist_mux с priority 255 и timeout 0.1 с,
+  поэтому пока держится стоп, нода шлёт его таймером ``rate_hz`` (умолчание 20 Гц);
+* мигалка: ``ExpressionRequest.gesture`` в ``/voice/expression/request`` (``expression_client``) —
+  её показывает ``face_node`` на Vision Pi;
+* писк: имя триггера sound_pack в ``/voice/sound/trigger`` — его играет ``sound_node`` на Sound Pi;
+* в HIL (``USE_SIM_TIME=true``) при ``HIL_GUARD_SOUND=off`` (параметр ``hil_mute_alarm``) писк и голос не
+  уходят на настоящего робота (#4470; по умолчанию звучат):
+  вместо них одна строка в журнал на вход в зону; мигалка и стоп работают как всегда;
+* голос: фраза кода (``Utterance``) в ``SpeechRequest`` через ``speech_client``, автор ``system`` — как у
+  joystick_control_node; озвучивает владелец голоса на Sound Pi.
+
+Какие каналы, когда и на сколько — решает ``proximity.AlarmScheduler`` (одно событие тревоги на зону).
+
+Габарит корпуса — footprint local_costmap из того же ``nav2_params.yaml``, что у Nav2 (один источник).
+Сервис всегда в стеке main. Выход по SIGTERM (``docker stop``) — чистый: нода запускается без ``ros2 run``
+(он PID 1 и SIGTERM не пересылает) и сама ловит SIGTERM.
+"""
+
+from __future__ import annotations
+
+import json
+import math
+import os
+import signal
+from typing import Optional
+
+import numpy as np
+
+import rclpy
+from rclpy.node import Node
+
+from geometry_msgs.msg import Twist
+from nav_msgs.msg import Odometry
+from sensor_msgs.msg import LaserScan
+from std_msgs.msg import String
+
+from rob_box_core import expression_client, speech_client
+from rob_box_core.speech_client import SYSTEM_AGENT
+from rob_box_core.utterance import Utterance
+
+from rob_box_teleop import proximity as px
+
+EMERGENCY_TOPIC = "cmd_vel_emergency"
+SOUND_TRIGGER_TOPIC = "/voice/sound/trigger"
+#: Скан или колёсная одометрия старше этого — данных нет (угрозы не видно, это пишется в журнал).
+STALE_S = 0.5
+
+_DEFAULTS = {
+    "footprint_file": "/config/nav2/nav2_params.yaml",
+    "twist_mux_file": "/config/twist_mux/twist_mux.yaml",
+    "base_frame": "base_footprint",
+    "scan_topic": "/scan",
+    "odom_topic": "/diff_drive_controller/odom",
+    "rate_hz": 20.0,
+    "warn_m": px.Thresholds.warn_m,
+    "stop_m": px.Thresholds.stop_m,
+    "side_stop_m": px.Thresholds.side_stop_m,
+    "spin_stop_m": px.Thresholds.spin_stop_m,
+    "corridor_margin_m": px.Thresholds.corridor_margin_m,
+    "release_margin_m": px.Thresholds.release_margin_m,
+    "release_s": px.Thresholds.release_s,
+    "stop_hold_s": px.Thresholds.stop_hold_s,
+    "moving_v": px.Thresholds.moving_v,
+    "moving_w": px.Thresholds.moving_w,
+    "closing_mps": px.Thresholds.closing_mps,
+    "min_points": px.Thresholds.min_points,
+}
+_THRESHOLD_KEYS = ("warn_m", "stop_m", "side_stop_m", "spin_stop_m", "corridor_margin_m", "release_margin_m",
+                   "release_s", "stop_hold_s", "moving_v", "moving_w", "closing_mps")
+
+
+def _load_yaml(path: str):
+    import yaml  # noqa: PLC0415 - нужен только на старте ноды
+
+    with open(path, encoding="utf-8") as fh:
+        return yaml.safe_load(fh)
+
+
+def load_body(path: str) -> px.Body:
+    """Корпус из ``nav2_params.yaml``."""
+    return px.body_from_nav2_params(_load_yaml(path))
+
+
+class ProximityGuardNode(Node):
+    """Скан + одометрия -> зона -> стоп, мигалка, звук."""
+
+    def __init__(self) -> None:
+        super().__init__("proximity_guard")
+        for name, default in _DEFAULTS.items():
+            self.declare_parameter(name, default)
+        # HIL = USE_SIM_TIME=true (как у остального стека), глушит HIL_GUARD_SOUND=off; параметр — для переопределения.
+        self.declare_parameter("hil_mute_alarm", px.hil_mute_sound(os.environ))
+        self.hil_mute = bool(self._p("hil_mute_alarm"))
+        self._muted_logged_zone = px.ZONE_CLEAR
+        self.th = px.Thresholds(min_points=int(self._p("min_points")),
+                                **{k: float(self._p(k)) for k in _THRESHOLD_KEYS})
+        self.body = load_body(str(self._p("footprint_file")))
+        self.base_frame = str(self._p("base_frame"))
+        self.tracker = px.ZoneTracker(self.th)
+        self.alarms = px.AlarmScheduler()
+        self._mount: Optional[px.Mount] = None
+        self._points = np.empty((0, 2))
+        self._scan_at = -math.inf
+        self._vel = (0.0, 0.0)
+        self._odom_at = -math.inf
+        self._blind_logged = False
+
+        import tf2_ros  # noqa: PLC0415 - TF нужен только живой ноде
+
+        self._tf_buffer = tf2_ros.Buffer()
+        self._tf_listener = tf2_ros.TransformListener(self._tf_buffer, self)
+        self._stop_pub = self.create_publisher(Twist, EMERGENCY_TOPIC, 10)
+        self._sound_pub = self.create_publisher(String, SOUND_TRIGGER_TOPIC, 10)
+        expression_client.prepare(self, "request")
+        speech_client.prepare(self, "request")
+        self.create_subscription(LaserScan, str(self._p("scan_topic")), self._on_scan, 10)
+        self.create_subscription(Odometry, str(self._p("odom_topic")), self._on_odom, 10)
+        self.mux = px.CommandMux(self._mux_sources(str(self._p("twist_mux_file"))))
+        for src in self.mux.sources:
+            self.create_subscription(Twist, src.topic, lambda msg, topic=src.topic: self._on_cmd(topic, msg), 10)
+        self.create_timer(1.0 / float(self._p("rate_hz")), self._on_tick)
+        self.get_logger().info(
+            f"🛡️ зона корпуса: x[{self.body.x_min:.3f}, {self.body.x_max:.3f}] y[{self.body.y_min:.3f}, "
+            f"{self.body.y_max:.3f}]; внимание < {self.th.warn_m:.2f} м, стоп < {self.th.stop_m:.2f} м в коридоре хода "
+            f"(± {self.th.corridor_margin_m:.2f} м), < {self.th.side_stop_m:.2f} м сбоку, "
+            f"< {self.th.spin_stop_m:.2f} м на развороте; только в движении (|v| > {self.th.moving_v}, "
+            f"|w| > {self.th.moving_w}); стоп держится, пока толкает команда из "
+            f"{[s.topic for s in self.mux.sources]}")
+
+    def _p(self, name: str):
+        return self.get_parameter(name).value
+
+    def _mux_sources(self, path: str):
+        """Входы twist_mux; без файла удержание стопа по команде выключено (стоп как до #4365 HIL — по таймеру)."""
+        try:
+            return px.mux_sources(_load_yaml(path), EMERGENCY_TOPIC)
+        except Exception as exc:  # noqa: BLE001 - файл, YAML и структура дают разные ошибки
+            self.get_logger().error(f"🛡️ входы twist_mux не прочитаны из {path}: {exc!r} — стоп не держится "
+                                    "по команде, отпускается через stop_hold_s")
+            return []
+
+    def _now(self) -> float:
+        return self.get_clock().now().nanoseconds * 1e-9
+
+    # -- входы ------------------------------------------------------------------------------------
+    def _on_scan(self, msg) -> None:
+        mount = self._mount_for(msg.header.frame_id)
+        if mount is None:
+            return
+        self._points = px.scan_points(msg.ranges, msg.angle_min, msg.angle_increment, msg.range_min,
+                                      msg.range_max, mount)
+        self._scan_at = self._now()
+
+    def _on_odom(self, msg) -> None:
+        self._vel = (float(msg.twist.twist.linear.x), float(msg.twist.twist.angular.z))
+        self._odom_at = self._now()
+
+    def _on_cmd(self, topic: str, msg) -> None:
+        self.mux.update(topic, self._now(), float(msg.linear.x), float(msg.angular.z))
+
+    def _mount_for(self, frame: str) -> Optional[px.Mount]:
+        """Поза лидара в ``base_frame`` из TF (статическая — берётся один раз)."""
+        if self._mount is not None:
+            return self._mount
+        import rclpy.time  # noqa: PLC0415
+
+        try:
+            tf = self._tf_buffer.lookup_transform(self.base_frame, frame, rclpy.time.Time())
+        except Exception as exc:  # noqa: BLE001 - tf2 бросает несколько своих типов
+            self.get_logger().warn(f"нет TF {self.base_frame} ← {frame}: {exc}", throttle_duration_sec=5.0)
+            return None
+        t, q = tf.transform.translation, tf.transform.rotation
+        self._mount = px.Mount(t.x, t.y, px.yaw_from_quaternion(q.x, q.y, q.z, q.w))
+        self.get_logger().info(f"лидар {frame} в {self.base_frame}: x={t.x:.3f} y={t.y:.3f} "
+                               f"yaw={math.degrees(self._mount.yaw):.1f}°")
+        return self._mount
+
+    # -- решение и выходы ---------------------------------------------------------------------------
+    def _on_tick(self) -> None:
+        now = self._now()
+        threat = self._threat(now)
+        tr = self.tracker.update(now, threat)
+        if tr is not None:
+            self._log_transition(tr, threat)
+        if self.tracker.stopping:
+            self._stop_pub.publish(Twist())
+        kept, muted = px.split_hil_effects(self.alarms.tick(now, self.tracker.zone), self.hil_mute)
+        self._log_muted(muted)
+        for effect in kept:
+            self._apply(effect)
+
+    def _log_muted(self, muted) -> None:
+        """HIL: заглушённые звук и голос — одна строка на вход в зону, повторы писка молчат."""
+        zone = self.tracker.zone
+        if zone == self._muted_logged_zone:
+            return
+        if not muted and zone != px.ZONE_CLEAR:
+            return  # заглушать нечего (мигалка) — зону отметим, когда придёт заглушённое
+        self._muted_logged_zone = zone
+        if muted:
+            what = ", ".join(f"{e.kind}:{e.name!r}" for e in muted)
+            self.get_logger().info(f"🛡️ HIL: зона {zone}, на настоящий робот не уходит (HIL_GUARD_SOUND=off): {what}")
+
+    def _log_transition(self, tr: px.Transition, threat: px.Threat) -> None:
+        point = threat.stop_point if tr.zone == px.ZONE_STOP else threat.point
+        where = "" if point is None else f" в точке ({point[0]:+.2f}, {point[1]:+.2f})"
+        line = f"🛡️ {px.describe(tr)}{where}; v={self._vel[0]:+.2f} м/с w={self._vel[1]:+.2f} рад/с"
+        # Два вызова, а не выбор метода: rclpy запрещает менять уровень у одного места вызова
+        # («Logger severity cannot be changed between calls», поймано в симе).
+        if px.severity(tr.zone):
+            self.get_logger().warn(line)
+        else:
+            self.get_logger().info(line)
+
+    def _threat(self, now: float) -> px.Threat:
+        blind = now - self._scan_at > STALE_S or now - self._odom_at > STALE_S
+        if blind != self._blind_logged:
+            self._blind_logged = blind
+            if blind:
+                self.get_logger().error(f"🛡️ нет свежих скана или одометрии (> {STALE_S} с) — зона НЕ контролируется")
+            else:
+                self.get_logger().info("🛡️ скан и одометрия идут — зона под контролем")
+        if blind:
+            return px.NO_THREAT
+        return px.assess(self.body, self._points, self._vel, self.mux.current(now), self.tracker.stopping, self.th)
+
+    def _apply(self, effect: px.Effect) -> None:
+        if effect.kind == px.EFFECT_LIGHTS:
+            expression_client.express(self, turn_id="", epoch=0, agent=SYSTEM_AGENT, gesture=effect.name,
+                                      ttl_ms=effect.ttl_ms)
+        elif effect.kind == px.EFFECT_SOUND:
+            msg = String()
+            msg.data = json.dumps({"sound": effect.name, "request_id": ""}, ensure_ascii=False)
+            self._sound_pub.publish(msg)
+        else:
+            self._say(effect.name)
+
+    def _say(self, text: str) -> None:
+        """Фраза тревоги голосом; сбой отправки — в журнал, стоп и мигалку он не трогает (как у джойстика)."""
+        try:
+            speech_client.say(self, Utterance(text=text), agent=SYSTEM_AGENT)
+        except Exception as exc:  # noqa: BLE001 - речь — обратная связь, не управление
+            self.get_logger().error(f"🛡️ фраза тревоги не отправлена ({text!r}): {exc!r}")
+
+
+def _raise_keyboard_interrupt(signum, frame) -> None:
+    raise KeyboardInterrupt
+
+
+def exit_on_sigterm() -> None:
+    """SIGTERM (``docker stop``) — как Ctrl+C: spin прерывается, нода гасится в ``finally``.
+
+    Без этого контейнер жил 10 с и получал SIGKILL (Exited 137, HIL 05.11): Python-процесс PID 1 по умолчанию
+    SIGTERM не получает. Ставится после ``rclpy.init`` — поверх его обработчика.
+    """
+    signal.signal(signal.SIGTERM, _raise_keyboard_interrupt)
+
+
+def main(args=None) -> None:
+    rclpy.init(args=args)
+    exit_on_sigterm()
+    node = ProximityGuardNode()
+    try:
+        rclpy.spin(node)
+    except KeyboardInterrupt:
+        pass
+    finally:
+        node.destroy_node()
+        if rclpy.ok():
+            rclpy.shutdown()
+
+
+if __name__ == "__main__":
+    main()

@@ -2,7 +2,7 @@
 
 > **⚠️ ВНИМАНИЕ:** Эта документация устарела. Актуальная полная документация:
 > 
-> **[INTERNAL_DIALOGUE_VOICE_ASSISTANT.md](../architecture/INTERNAL_DIALOGUE_VOICE_ASSISTANT.md)**
+> **[dialog-v2-overview.md](../architecture/dialog-v2-overview.md)**
 >
 > Новый документ включает:
 > - Объединённое описание Internal Dialogue + Voice Assistant

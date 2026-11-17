@@ -30,6 +30,14 @@ class RateLimitError(ProviderError):
     """429 / quota exhausted. Caller should back off + retry."""
 
 
+class QuotaExhaustedError(RateLimitError):
+    """Квота/баланс провайдера кончились (длинное окно): не ретраить, переключаться на запасной (ADR-0150 §8).
+
+    Какие ответы вендора это значат, знает только его адаптер (``rob_box_harness.providers.minimax``): ядро и
+    health-кэш видят класс, а не подстроки вроде кодов MiniMax.
+    """
+
+
 class TimeoutError(ProviderError):  # noqa: A001 — intentional shadowing
     """Network or read timeout. Safe to retry with the same prompt."""
 
@@ -81,6 +89,14 @@ class TTSTimeoutError(TTSError):
     """Network or read timeout. Safe to retry with the same prompt."""
 
 
+class TTSConnectionError(TTSTimeoutError):
+    """Transport failure that is NOT a timeout (connect refused, reset, broken stream).
+
+    Subclasses :class:`TTSTimeoutError` only so the existing "transient → retry"
+    policies keep retrying it; the type itself tells the caller it was not a timeout.
+    """
+
+
 class TTSAuthError(TTSError):
     """401 / 403. Indicates bad API key or revoked token."""
 
@@ -101,6 +117,7 @@ __all__ = [
     "TTSError",
     "TTSRateLimitError",
     "TTSTimeoutError",
+    "TTSConnectionError",
     "TTSAuthError",
     "TTSBadRequestError",
 ]

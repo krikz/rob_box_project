@@ -32,6 +32,10 @@ RUN if [ -n "$APT_PROXY" ]; then \
             echo "Acquire::http::Proxy \"$APT_PROXY\";" > /etc/apt/apt.conf.d/02proxy; \
             echo "Acquire::http::Timeout \"10\";" >> /etc/apt/apt.conf.d/02proxy; \
             echo "Acquire::Retries \"3\";" >> /etc/apt/apt.conf.d/02proxy; \
+            # Pipeline-Depth 0 обязателен под qemu: с включённым
+            # конвейером (по умолчанию 10 и у apt, и у apt-cacher-ng)
+            # метод apt зависает намертво. Поймано 21.09.2026 на katana.
+            echo "Acquire::http::Pipeline-Depth \"0\";" >> /etc/apt/apt.conf.d/02proxy; \
             echo "Using APT proxy: $APT_PROXY"; \
         else \
             echo "APT proxy not accessible, using direct connection"; \
@@ -95,4 +99,3 @@ CMD ["bash"]
 LABEL maintainer="rob_box_project" \
       description="Base DepthAI image (depthai-ros built from source on Lyrical) with Zenoh for OAK-D camera" \
       version="1.0"
-

@@ -6,12 +6,13 @@
   <sub>Версия: 1.2.0 | Дата: 2026-05-15</sub>
 </div>
 
-> **📝 Последние обновления (24 октября 2025):**
-> - Perception и LSLIDAR перемещены с Vision Pi на Main Pi
-> - Добавлена система мониторинга (Grafana, Prometheus, Loki)
-> - Исправлены TF трансформации (robot-state-publisher с Zenoh wrapper)
-> - Голосовой ассистент получил time awareness и синхронизацию TTS
-> - Полная документация Zenoh namespace и облачного подключения
+> **📝 Последние обновления:**
+> - **24 августа 2026** — добавлена секция §5.4 Avatar Supervisor (см. [ADR-0028](adr/0028-avatar-supervisor.md)); Quest-аватар и Telegram-бот становятся клиентами единого координатора режимов (Phase 2, дизайн)
+> - 24 октября 2025 — Perception и LSLIDAR перемещены с Vision Pi на Main Pi
+> - 24 октября 2025 — Добавлена система мониторинга (Grafana, Prometheus, Loki)
+> - 24 октября 2025 — Исправлены TF трансформации (robot-state-publisher с Zenoh wrapper)
+> - 24 октября 2025 — Голосовой ассистент получил time awareness и синтенизацию TTS
+> - 24 октября 2025 — Полная документация Zenoh namespace и облачного подключения
 
 ---
 
@@ -22,6 +23,7 @@
 3. [Сетевая топология](#3-сетевая-топология)
 4. [Программная архитектура](#4-программная-архитектура)
 5. [ROS 2 граф](#5-ros-2-граф)
+   - 5.4. [Avatar Supervisor](#54-avatar-supervisor--координатор-режимов-аватара)
 6. [Docker инфраструктура](#6-docker-инфраструктура)
 7. [Потоки данных](#7-потоки-данных)
 8. [Принятые решения](#8-принятые-решения)
@@ -32,9 +34,10 @@
 
 ### 1.1. Концепция системы
 
-РОББОКС построен по принципу **распределённой обработки** с разделением вычислительной нагрузки между двумя Raspberry Pi:
+РОББОКС построен по принципу **распределённой обработки** с разделением вычислительной нагрузки между тремя Raspberry Pi (Sound Pi добавлен 19.10.2026, ADR-0159):
 
-- **Vision Pi** — специализируется на обработке изображений и голосовом взаимодействии
+- **Vision Pi** — специализируется на обработке изображений (камеры, Hailo, лица, LED-матрица)
+- **Sound Pi** — голос и оператор: ReSpeaker, голосовой ассистент, SuperCollider, ТАРС, Quest, Telegram-бот
 - **Main Pi** — отвечает за навигацию, планирование, SLAM и управление
 
 Такая архитектура позволяет:
@@ -65,13 +68,17 @@ graph TB
         subgraph VisionPi["Vision Pi 5 (8GB)"]
             OAK["OAK-D Lite<br/>(USB3)"]
             MJPEG["MJPEG Camera<br/>720p (USB)"]
-            ReSpeaker["ReSpeaker<br/>Mic v2 (USB)"]
             LED["381 LED<br/>NeoPixel (SPI)"]
             
             OAK -.USB.-> VisionPi
             MJPEG -.USB.-> VisionPi
-            ReSpeaker -.USB.-> VisionPi
             LED -.SPI.-> VisionPi
+        end
+        
+        subgraph SoundPi["Sound Pi 5 (8GB)"]
+            ReSpeaker["ReSpeaker<br/>Mic v2 (USB)"]
+            
+            ReSpeaker -.USB.-> SoundPi
         end
         
         subgraph MainPi["Main Pi 5 (16GB)"]
@@ -85,7 +92,7 @@ graph TB
             CAN --> VESC
         end
         
-        Battery["2×10S LiPo<br/>Battery"]
+        Battery["2× 10S2P Li-ion<br/>36/42V, параллельно"]
         Buck12V["12V Buck<br/>(Isolated)"]
         Buck5V["5V Buck<br/>(Isolated)"]
         
@@ -97,9 +104,12 @@ graph TB
         Buck12V --> VESC
         
         VisionPi <==GbE 10.1.1.x==> MainPi
+        SoundPi <==GbE 10.1.1.x==> MainPi
+        SoundPi <==GbE 10.1.1.x==> VisionPi
     end
     
     style VisionPi fill:#e8f4f8,stroke:#2c5282,stroke-width:2px
+    style SoundPi fill:#e8f4f8,stroke:#2c5282,stroke-width:2px
     style MainPi fill:#fff3cd,stroke:#856404,stroke-width:2px
     style Battery fill:#ffcccc,stroke:#cc0000,stroke-width:2px
     style Buck12V fill:#ccffcc,stroke:#00cc00,stroke-width:2px
@@ -113,7 +123,8 @@ graph TB
 | Компонент | Модель | CPU | RAM | Функции |
 |-----------|--------|-----|-----|---------|
 | **Main Pi** | Raspberry Pi 5 | 4-core ARM Cortex-A76 @ 2.4GHz | 16GB | SLAM, Nav2, Control, Perception, LSLIDAR |
-| **Vision Pi** | Raspberry Pi 5 | 4-core ARM Cortex-A76 @ 2.4GHz | 8GB | Vision, AprilTag, Voice Assistant |
+| **Vision Pi** | Raspberry Pi 5 | 4-core ARM Cortex-A76 @ 2.4GHz | 8GB | Vision, AprilTag, Hailo, LED |
+| **Sound Pi** | Raspberry Pi 5 | 4-core ARM Cortex-A76 @ 2.4GHz | 8GB | Voice Assistant, SuperCollider, ТАРС, Quest, Telegram-бот (ADR-0159) |
 
 #### Сенсоры
 
@@ -122,7 +133,7 @@ graph TB
 | **LS LiDAR N10** | USB (ACM) | 10 Hz | Main Pi | 2D картография (перемещён 24.10.2025) |
 | **OAK-D Lite** | USB 3.0 | 5-10 Hz | Vision Pi | RGB-D, AprilTag |
 | **MJPEG Camera** | USB 2.0 | 30 Hz | Vision Pi | Потолочная навигация (720p YUY2) |
-| **ReSpeaker Mic v2** | USB 2.0 | — | Vision Pi | Голосовое управление (6-mic array) |
+| **ReSpeaker Mic v2** | USB 2.0 | — | Sound Pi | Голосовое управление (6-mic array) |
 | **Temperature Sensors** | I2C | 1 Hz | ESP32 Hub | Мониторинг температуры компонентов |
 | **BMS** (planned) | UART | 1 Hz | ESP32 Hub | Мониторинг аккумулятора |
 
@@ -138,7 +149,7 @@ graph TB
 
 | Компонент | Напряжение | Источник | Описание |
 |-----------|-----------|----------|----------|
-| **Battery** | 37V (10S LiPo) × 2 | — | Основное питание |
+| **Battery** | 36V ном. / 42V заряд — 2× 10S2P Li-ion параллельно (10S4P), см. [HARDWARE.md §6.1](HARDWARE.md) | — | Основное питание |
 | **12V Buck** | 12V | Battery → isolated buck | Raspberry Pi 5, VESC |
 | **5V Buck** | 5V | Battery → isolated buck | NeoPixel LED (381×), сенсоры |
 | **CAN HAT** | 5V | Main Pi | Гальваническая развязка CAN |
@@ -157,17 +168,22 @@ graph TB
     subgraph Ethernet["📡 GIGABIT ETHERNET<br/>Передача данных между Pi (images, lidar, etc.)<br/>Скорость: 1000 Mbps"]
         VisionEth["Vision Pi (eth0)<br/>10.1.1.11"]
         MainEth["Main Pi (eth0)<br/>10.1.1.10"]
+        SoundEth["Sound Pi (eth0)<br/>10.1.1.12"]
         VisionEth <==ROS/Zenoh<br/>данные==> MainEth
+        SoundEth <==ROS/Zenoh==> MainEth
+        SoundEth <==ROS/Zenoh==> VisionEth
     end
     
     subgraph WiFi["📶 WIFI<br/>SSH доступ, управление, мониторинг<br/>Скорость: 100-300 Mbps"]
         VisionWlan["Vision Pi (wlan0)<br/>10.1.1.21"]
         MainWlan["Main Pi (wlan0)<br/>10.1.1.20"]
+        SoundWlan["Sound Pi (wlan0)<br/>10.1.1.22"]
         Router["Router<br/>DHCP"]
         HostPC["Host PC<br/>Foxglove<br/>10.1.1.5"]
         
         VisionWlan <-.SSH.-> Router
         MainWlan <-.SSH.-> Router
+        SoundWlan <-.SSH.-> Router
         Router <-.-> HostPC
     end
     
@@ -175,8 +191,10 @@ graph TB
     style WiFi fill:#fff3cd,stroke:#856404,stroke-width:3px
     style VisionEth fill:#cce5ff,stroke:#004085,stroke-width:2px
     style MainEth fill:#cce5ff,stroke:#004085,stroke-width:2px
+    style SoundEth fill:#cce5ff,stroke:#004085,stroke-width:2px
     style VisionWlan fill:#f8d7da,stroke:#721c24,stroke-width:2px
     style MainWlan fill:#f8d7da,stroke:#721c24,stroke-width:2px
+    style SoundWlan fill:#f8d7da,stroke:#721c24,stroke-width:2px
 ```
 
 ### 3.2. IP-адресация
@@ -185,6 +203,7 @@ graph TB
 |------------|-----------------|--------------|------------------------|
 | **Main Pi** | 10.1.1.10 | 10.1.1.20 | eth0: ROS/Zenoh, wlan0: SSH |
 | **Vision Pi** | 10.1.1.11 | 10.1.1.21 | eth0: ROS/Zenoh, wlan0: SSH |
+| **Sound Pi** | 10.1.1.12 | 10.1.1.22 | eth0: ROS/Zenoh, wlan0: SSH (ADR-0159) |
 | **Host PC** | — | 10.1.1.5 | Visualization, monitoring |
 
 **⚠️ ВАЖНО**: 
@@ -203,25 +222,35 @@ graph TB
     
     VisionRouter["Vision Pi Zenoh Router<br/>10.1.1.11:7447<br/>client mode"]
     
+    SoundRouter["Sound Pi Zenoh Router<br/>10.1.1.12:7447<br/>connect: Main + Vision"]
+    
     MainNodes["Local ROS2 Nodes<br/>via rmw_zenoh_cpp<br/>- rtabmap<br/>- twist_mux<br/>- nav2"]
     
-    VisionNodes["Local ROS2 Nodes<br/>via rmw_zenoh_cpp<br/>- oak-d<br/>- AprilTag<br/>- voice"]
+    VisionNodes["Local ROS2 Nodes<br/>via rmw_zenoh_cpp<br/>- oak-d<br/>- AprilTag<br/>- led-matrix"]
+    
+    SoundNodes["Local ROS2 Nodes<br/>via rmw_zenoh_cpp<br/>- voice-assistant<br/>- supercollider<br/>- supervisor"]
     
     Cloud <==TCP/TLS==> MainRouter
     MainRouter <==UDP/TCP==> VisionRouter
+    MainRouter <==UDP/TCP==> SoundRouter
+    VisionRouter <==UDP/TCP==> SoundRouter
     MainRouter --> MainNodes
     VisionRouter --> VisionNodes
+    SoundRouter --> SoundNodes
     
     style Cloud fill:#cce5ff,stroke:#004085,stroke-width:2px
     style MainRouter fill:#d4edda,stroke:#28a745,stroke-width:3px
     style VisionRouter fill:#fff3cd,stroke:#856404,stroke-width:2px
+    style SoundRouter fill:#fff3cd,stroke:#856404,stroke-width:2px
     style MainNodes fill:#e8f4f8,stroke:#2c5282,stroke-width:2px
     style VisionNodes fill:#e8f4f8,stroke:#2c5282,stroke-width:2px
+    style SoundNodes fill:#e8f4f8,stroke:#2c5282,stroke-width:2px
 ```
 
 **Режимы работы**:
 - **Main Pi**: `peer` — центральный узел, может работать автономно
 - **Vision Pi**: `client` — подключается к Main Pi, зависит от него
+- **Sound Pi**: `client` — подключается к Main Pi и напрямую к Vision Pi (ADR-0159 §2.2, вариант Б)
 - **Cloud**: `peer` — опциональное подключение для удалённого мониторинга
 
 ---
@@ -291,6 +320,7 @@ graph TD
 - **Nav2 Stack**: Глобальное и локальное планирование траектории
 - **Animation Manager**: Управление LED анимациями и эмоциями
 - **Behavior Trees** (future): Высокоуровневое управление поведением
+- **Avatar Supervisor** (Phase 2, [ADR-0028](adr/0028-avatar-supervisor.md)): координатор режимов аватара и единственная точка, через которую внешние клиенты (Quest WebXR, Telegram-бот) получают `teleop_floor` и `voice_floor`
 
 #### Middleware Layer
 - **Zenoh Router**: Маршрутизация сообщений между узлами
@@ -306,7 +336,7 @@ graph TD
 - **lslidar_driver**: Получение сканов от 2D LiDAR
 - **depthai_ros**: Обработка данных от OAK-D камеры
 - **vesc_driver**: CAN-интерфейс для управления моторами
-- **micro_ros_agent**: Связь с ESP32 сенсорным хабом
+- **perception_bridge** (Sound Pi, profile `sensors`): serial-связь с ESP32 сенсорным хабом (ADR-0159 §2.4)
 
 ---
 
@@ -333,12 +363,9 @@ Main Pi (10.1.1.10)
 │  ├─ /planner_server
 │  ├─ /behavior_server
 │  └─ /bt_navigator
-├─ /vesc_driver               # Motor control
-│  ├─ Subscribed: /cmd_vel
-│  └─ Published: /odom, /vesc/sensors/core
-└─ /micro_ros_agent           # ESP32 bridge
-   ├─ Subscribed: /device/command
-   └─ Published: /device/snapshot
+└─ /vesc_driver               # Motor control
+   ├─ Subscribed: /cmd_vel
+   └─ Published: /odom, /vesc/sensors/core
 ```
 
 ### 5.2. Vision Pi - ROS 2 Nodes
@@ -346,22 +373,46 @@ Main Pi (10.1.1.10)
 ```
 Vision Pi (10.1.1.11)
 ├─ /zenoh_router              # Zenoh bridge (client mode)
-├─ /oak_d_node                # Camera driver (with integrated AprilTag detection)
-│  ├─ Published: /camera/color/image_raw
-│  │             /camera/depth/image_rect_raw
-│  │             /camera/color/camera_info
-│  └─ /apriltag_node          # Marker detector (runs in same container)
-│     ├─ Subscribed: /camera/color/image_raw
-│     │              /camera/color/camera_info
-│     └─ Published: /apriltag/detections
-│                   /tf (tag transforms)
-└─ /voice_assistant           # Voice assistant (ReSpeaker)
-   ├─ Subscribed: /perception/events
-   └─ Published: /dialogue/text
-                 /audio/tts
+└─ /oak_d_node                # Camera driver (with integrated AprilTag detection)
+   ├─ Published: /camera/color/image_raw
+   │             /camera/depth/image_rect_raw
+   │             /camera/color/camera_info
+   └─ /apriltag_node          # Marker detector (runs in same container)
+      ├─ Subscribed: /camera/color/image_raw
+      │              /camera/color/camera_info
+      └─ Published: /apriltag/detections
+                    /tf (tag transforms)
 ```
 
 **Примечание:** LSLIDAR и Perception были перемещены на Main Pi (24 октября 2025) для оптимизации ресурсов Vision Pi.
+Голосовой стек (`/voice_assistant`, ReSpeaker) с 19.10.2026 живёт на Sound Pi (ADR-0159), а `avatar-arbiter`,
+`rob_box_quest` и `telegram-bot` переехали туда же с PR-7 (волна 2, решение Шифу 20.10) — п. 5.2a. На Vision Pi
+остаются также `vision-hailo`, `vision-face`, `ceiling-camera` и `led-matrix`.
+
+### 5.2a. Sound Pi - ROS 2 Nodes
+
+```
+Sound Pi (10.1.1.12)
+├─ /zenoh_router              # Zenoh router (connect: Main Pi + Vision Pi)
+├─ /voice_assistant           # Voice assistant (ReSpeaker: микрофоны, колонки, LED-кольцо)
+│  ├─ Subscribed: /perception/events
+│  └─ Published: /dialogue/text
+│                /audio/tts
+│                /voice/dialogue/state
+├─ /avatar_supervisor         # Avatar mode coordinator (Phase 2, ADR-0028): контейнер avatar-arbiter
+│  ├─ Published: /avatar/state
+│  ├─ Services: AcquireFloor, ReleaseFloor, SetAvatarMode, SetVoiceMode
+│  └─ Subscribes: client heartbeats, /odom, /device/snapshot
+├─ /rob_box_quest             # Meta Quest / WebXR telepresence (Phase 1+, ADR-0027)
+│  ├─ WSS: wss://10.1.1.12:8443/quest (Caddy + self-signed TLS)
+│  ├─ Publishes: cmd_vel_quest, cmd_vel_emergency
+│  └─ Subscribes: /camera/color/image_raw, /scan, /voice/dialogue/state
+├─ telegram-bot               # Telegram operator interface (контейнер, метрики :9101)
+├─ avatar-supervisor (ТАРС)   # Контейнер ТАРС: диалог оператора и ТАРС, общий /data/harness_voice.db с voice-assistant (ADR-0159 В8)
+├─ voice-action-server        # HTTP-sidecar для action/PASTE control plane (контейнер, не ROS-нода)
+├─ supercollider              # scsynth (музыкальный движок), не ROS-нода
+└─ perception_bridge          # profile `sensors`: serial с ESP32 через TTL-USB (/dev/sensor_hub); хаб пока не подключён
+```
 
 ### 5.3. Ключевые топики
 
@@ -374,7 +425,75 @@ Vision Pi (10.1.1.11)
 | `/odom` | nav_msgs/Odometry | vesc_driver | rtabmap, nav2 | 50 Hz | Одометрия |
 | `/map` | nav_msgs/OccupancyGrid | rtabmap | nav2, rviz | 1 Hz | 2D карта |
 | `/apriltag/detections` | apriltag_msgs/AprilTagDetectionArray | apriltag_node | nav2 | 5 Hz | Детекции маркеров |
-| `/device/snapshot` | robot_sensor_hub_msg/DeviceSnapshot | micro_ros_agent | monitoring | 1 Hz | Сенсоры ESP32 |
+| `/sensors/data` | std_msgs/String (JSON) | perception_bridge (Sound Pi) | — (потребитель решается при подключении хаба, ADR-0159 §2.4) | 1 Hz | Сенсоры ESP32; хаб пока не подключён |
+| `/avatar/state` | std_msgs/String (msgpack) | avatar_supervisor | rob_box_quest, rob_box_telegram, admin UI | 1 Hz (latched, transient_local) | FSM режимов аватара: `mode`, `teleop_floor`, `voice_floor`, `last_event`, `since_ms` (см. [ADR-0028 §4.3](adr/0028-avatar-supervisor.md#43-ros-2-api-супервизора)) |
+| `/voice/dialogue/state` | std_msgs/String | dialogue_node | rob_box_quest, avatar_supervisor | event | FSM голосового пайплайна (idle/listening/speaking) |
+
+---
+
+### 5.4. Avatar Supervisor — координатор режимов аватара
+
+> **Статус:** Proposed (дизайн-фаза, реализация отложена на Phase 2 #1576).
+> Полное решение — [ADR-0028](adr/0028-avatar-supervisor.md).
+
+Sound Pi (до ADR-0159 PR-7 — Vision Pi) обслуживает **внешних клиентов** аватара — Quest WebXR-оператор
+(см. [ADR-0027](adr/0027-meta-quest-ar-control.md)) и Telegram-бот
+(`rob_box_telegram`). Без общей state-машины эти клиенты публикуют
+`cmd_vel_*` и TTS-команды параллельно, что приводит к race conditions
+(см. ADR-0028 §1.2).
+
+Нода `/avatar_supervisor` (отдельный ROS 2 node, планируется в
+`src/rob_box_supervisor/`) решает это — становится единственным
+координатором режимов и владельцем прав (`floors`) между клиентами:
+
+```
+┌──────────────────────────────────────────────────────────────────────┐
+│            avatar_supervisor  (Sound Pi, Phase 2, ADR-0028)           │
+│                                                                      │
+│  Telegram ──►  ┌─────────────┐    ┌─────────────┐                    │
+│   (клиент)     │ ModeManager │    │ LockManager │  ──► /avatar/state │
+│                │ (FSM)       │    │ (floors)    │                    │
+│  Quest ─────►  └──────┬──────┘    └──────┬──────┘                    │
+│   (клиент)           │                  │                            │
+│                      ▼                  ▼                            │
+│              twist_mux input     dialogue_node                        │
+│              (quest/telegram)    voice_input_mode                    │
+└──────────────────────────────────────────────────────────────────────┘
+```
+
+**Что делает супервизор (см. ADR-0028 §3):**
+
+| Зона ответственности | Конкретно |
+|---|---|
+| FSM режимов | `off` / `telegram_active` / `avatar_present` / `teleop_only` / `voice_only` / `mixed` ([§4.1](adr/0028-avatar-supervisor.md#41-режимы-аватара-fsm)) |
+| Lock-менеджер | `teleop_floor` и `voice_floor` — только один клиент держит «право руля» и «право голоса» ([§4.2](adr/0028-avatar-supervisor.md#42-lock-менеджер-floors)) |
+| Голосовые режимы | Единственная точка, которая меняет параметр `voice_input_mode` на `dialogue_node` ([ADR-0027 §3.4](adr/0027-meta-quest-ar-control.md#34-voice-modes-phase-2)) |
+| Переживание рестарта клиента | Если Quest упал, `avatar_present` снимается, Telegram (если был активен) продолжает без ручного переключения (S8) |
+| Dead-man | Клиент без heartbeat > 500 мс → `teleop_floor` снимается (S10) |
+
+**Что НЕ делает супервизор** (см. [ADR-0021 R1](adr/0021-dialogue-node-discipline.md)):
+
+- ❌ Не обрабатывает голос (STT/LLM/TTS) — это `dialogue_node`
+- ❌ Не публикует `cmd_vel_*` напрямую — это делает `twist_mux` (через inputs `quest` и `telegram`)
+- ❌ Не рендерит UI — это клиент
+
+**Phase 1 — только monitor-режим.** Супервизор задеплоен, наблюдает и
+публикует `/avatar/state`, но **не** меняет `twist_mux` inputs и
+`dialogue_node` параметры. Это позволяет задеплоить ноду до рефакторинга
+клиентов и без blast radius. Phase 2 — `mode:=active`, полная маршрутизация.
+
+**ROS-контракт** (полный — [ADR-0028 §4.3](adr/0028-avatar-supervisor.md#43-ros-2-api-супервизора)):
+
+- Публикует: `/avatar/state` (latched, transient_local, msgpack в `std_msgs/String`)
+- Подписывается на heartbeat-топики клиентов, `/odom`, `/device/snapshot`
+- Сервисы: `AcquireFloor` / `ReleaseFloor` / `SetAvatarMode` / `SetVoiceMode`
+
+**Связанные документы:**
+
+- [ADR-0028](adr/0028-avatar-supervisor.md) — основное решение
+- [ADR-0027](adr/0027-meta-quest-ar-control.md) — Quest / WebXR, voice modes
+- [ADR-0021](adr/0021-dialogue-node-discipline.md) — граница владения голосом
+- [meta-quest-api.md](meta-quest-api.md) — wire-протокол Quest, расширяется frame-типами `0x30–0x33` для клиентского API супервизора
 
 ---
 
@@ -404,7 +523,6 @@ docker/
 │   ├── nav2/
 │   ├── ros2_control/
 │   ├── robot-state-publisher/
-│   ├── micro-ros-agent/
 │   └── teleop/
 └── vision/                      # Vision Pi сервисы
     ├── docker-compose.yaml
@@ -417,18 +535,16 @@ docker/
     ├── led-matrix/                  # 381 NeoPixel LEDs
     ├── ceiling-camera/              # USB ceiling camera
     ├── supercollider/               # Audio synthesis server
-    ├── voice-resources-init/        # One-shot sample loader
     ├── voice-assistant/
     └── telegram_bot/                # Telegram operator interface
 ```
 
-#### Main Pi — сервисы (12)
+#### Main Pi — сервисы (11)
 
 | Контейнер | Назначение | Зависит от |
 |-----------|-----------|------------|
 | `zenoh-router` | Zenoh Router (peer mode), мост к облаку | — |
 | `twist-mux` | Мультиплексирование cmd_vel с приоритетами | `zenoh-router` |
-| `micro-ros-agent` | UART↔ROS2 bridge для ESP32 Sensor Hub | `zenoh-router` |
 | `robot-state-publisher` | TF дерево из URDF | `zenoh-router` |
 | `rtabmap` | LiDAR-only SLAM + ICP odometry | `zenoh-router`, `lslidar` |
 | `ros2-control` | ros2_control manager + VESC CAN драйвер | `zenoh-router` |
@@ -439,7 +555,7 @@ docker/
 | `cadvisor` *(profile: monitoring)* | Container metrics → Prometheus | — |
 | `promtail` *(profile: monitoring)* | Log shipping → Loki | — |
 
-#### Vision Pi — сервисы (11)
+#### Vision Pi — сервисы (10 в этом срезе; актуальный полный список и их зависимости — `docker/vision/README.md`)
 
 | Контейнер | Назначение | Зависит от |
 |-----------|-----------|------------|
@@ -447,13 +563,13 @@ docker/
 | `oak-d` | OAK-D Lite driver + встроенный AprilTag detector | `zenoh-router-vision` |
 | `led-matrix` | LED matrix controller (381 NeoPixel LEDs) | `zenoh-router-vision` |
 | `ceiling-camera` | USB потолочная камера 720p, локализация | `zenoh-router-vision` |
-| `supercollider` | Audio synthesis server (JACK/ALSA) | — |
-| `voice-resources-init` | One-shot: загрузка renardo samples в volume | — |
-| `voice-assistant` | Vosk STT, TTS, LLM dialogue | `zenoh-router-vision`, `supercollider` |
-| `telegram-bot` | Telegram operator interface с LLM и голосом | `zenoh-router-vision` |
+| `supercollider` | Audio synthesis server (JACK/ALSA); renardo-сэмплы приходят bind-mount'ом с хоста (Ресурсный пак, ADR-0125/ADR-0126), не из отдельного образа/init-контейнера | — |
+| `voice-assistant` | Vosk STT, TTS, LLM dialogue; Vosk/Silero — bind-mount `/opt/rob_box/models` (ADR-0125), не запечены в образ | `zenoh-router-vision`, `supercollider` |
 | `ollama` *(profile: ai)* | Local LLM inference | — |
 | `cadvisor-vision` *(profile: monitoring)* | Container metrics → Prometheus | — |
 | `promtail-vision` *(profile: monitoring)* | Log shipping → Loki | — |
+
+> **Sound Pi (ADR-0159):** голосовой стек (`voice-assistant`, `supercollider`, `voice-action-server`), ТАРС (`supervisor`) и, с волны 2 (PR-7, решение Шифу 20.10), `avatar-arbiter`, `rob-box-quest`, `telegram-bot` живут в `docker/sound` (см. `docker/sound/README.md`). Строки `supercollider`/`voice-assistant` в таблице выше — прежнее место до PR-2b, будут переписаны вместе с остальным обзором.
 
 > **Примечание**: `docker/vision/apriltag/` — orphaned директория. AprilTag detection работает **внутри `oak-d` контейнера**. Отдельного `apriltag` сервиса нет.
 
@@ -480,7 +596,6 @@ Main Pi:
   ├─ nav2
   ├─ ros2-control
   ├─ robot-state-publisher
-  ├─ micro-ros-agent
   └─ teleop
 
 Vision Pi:
@@ -489,9 +604,8 @@ Vision Pi:
   ├─ oak-d (with integrated AprilTag detection)
   ├─ led-matrix
   ├─ ceiling-camera
-  ├─ supercollider
-  ├─ voice-resources-init (one-shot)
-  ├─ voice-assistant ──── depends: supercollider, voice-resources-init
+  ├─ supercollider (samples: bind-mount с хоста, ADR-0125/ADR-0126 — не init-контейнер)
+  ├─ voice-assistant ──── depends: supercollider
   ├─ telegram-bot
   └─ ollama [profile: ai]
 ```
@@ -503,7 +617,7 @@ Vision Pi:
 | Тип данных | Размещение | Монтирование | Причина |
 |------------|------------|--------------|---------|
 | **Config files** | `docker/*/config/` | `./config:/config:ro` | Изменение без пересборки |
-| **Shared helper scripts** | `docker/*/scripts/` | `./scripts:/ros_scripts:ro` | Общая runtime-логика для нескольких сервисов |
+| **Shared helper scripts** | `docker/common/scripts/` | `../common/scripts:/ros_scripts:ro` | Общая для всех Pi runtime-логика (`ros_with_namespace.sh`, старт Zenoh-роутера; ADR-0159 В4) |
 | **Service startup scripts** | `docker/*/scripts/<service>/` | `./scripts/<service>:/scripts:ro` | Быстрое обновление service-local startup logic |
 | **Launch files** | `docker/*/config/<service>/launch/` | доступны через `./config:/config:ro` | Гибкость в настройке без пересборки |
 | **Maps** | `docker/main/maps/` | `./maps:/maps` | Persistence данных и RTAB-Map database |
@@ -636,19 +750,19 @@ Vision Pi:
 │                             │                                    │
 │                    ┌────────▼────────┐                           │
 │                    │  ESP32 Firmware │                           │
-│                    │  (Micro-ROS)    │                           │
+│                    │  (serial UART)  │                           │
 │                    └────────┬────────┘                           │
 │                             │                                    │
 │                     USB Serial (115200)                          │
 └─────────────────────────────┼────────────────────────────────────┘
                               │
                     ┌─────────▼──────────┐
-                    │      Main Pi       │
-                    │  micro_ros_agent   │
+                    │      Sound Pi      │
+                    │ perception_bridge  │
                     └─────────┬──────────┘
                               │
-              /device/snapshot (1Hz) ──┬─► Monitoring
-                                       └─► Temperature control
+              /sensors/data (JSON, 1Hz) ──┬─► Monitoring
+                                          └─► Temperature control
 ```
 
 ---

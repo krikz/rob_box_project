@@ -19,10 +19,21 @@ from .perception import *
 from .mapping import *
 from .animation import *
 from .sound import *
+from .say import *  # AV-21: operator-agent minimal TTS (no emotion/animation)
 from .dialogue import *
 from .memory import *
-from .music import *
+from .ros_admin import *  # #4516: чтение ROS-графа и VESC для пульта TG и ТАРС (operator.admin)
+from .people import *  # #4469: пульт Telegram по лицам (people_list, person_photo, name_person)
+try:
+    # music.py тянет rob_box_music и движок v2 (engine/), которые доступны
+    # только в CI-сборке (colcon). В локальной dev-среде модуль может
+    # падать на импорте — тогда отдаём урезанный каталог без music-тулов.
+    from .music import *
+except (ImportError, ModuleNotFoundError):
+    pass
+from .music_material import *  # #3227: add_music_material (без зависимости от music.py)
 from .web_search import *
+from .operator_admin import *  # ADR-0051 §6: operator.admin slice (ТАРС diagnostics)
 
 __all__ = [
     # Navigation tools
@@ -50,6 +61,8 @@ __all__ = [
     "FinishMappingTool",
     "OptimizeMapTool",
     "LoadMapTool",
+    "ListMapsTool",
+    "DeleteMapTool",
     # Animation tools
     "PlayAnimationTool",
     # Sound tools
@@ -59,25 +72,40 @@ __all__ = [
     "SpeakTextTool",
     "ListenForResponseTool",
     "SetVoiceTool",
+    # AV-21: minimal operator-voice TTS (каркас; полная интеграция — AV-27)
+    "SayTool",
+    "SayAloudTool",  # PR-12b: озвучка из чата Telegram с итогом по SpeechEvent
+    # #4469: пульт Telegram по лицам (срез telegram)
+    "PeopleListTool",
+    "PersonPhotoTool",
+    "NamePersonTool",
+    "FindSimilarTool",
+    "MergePeopleTool",
     # Memory tools
     "MemorySaveTool",
     "MemorySearchTool",
     "MemoryContextTool",
     # Music tools
-    "MusicManager",
-    "ExecuteMusicCodeTool",
     "StopMusicTool",
-    "SetVibePresetTool",
     "GetMusicStateTool",
-    "SetDjModeTool",
-    "SearchSamplesTool",
-    # Track library tools
-    "SaveTrackTool",
-    "ListTracksTool",
-    "LoadTrackTool",
-    "DeleteTrackTool",
+    "SearchMelodyTool",
+    "AddMusicMaterialTool",
     # FAQ / Event tools
     "FaqSearchTool",
     # Web search tools (issue #1101)
     "SearchWebTool",
+    # Operator admin tools (ADR-0051 §6 — operator.admin slice)
+    "Ros2NodeStatusTool",
+    "ReadLogsTool",
+    "ContainerStatusTool",
+    # Issue #2113 — TARS 2 metrics panel (operator.admin). Публикует
+    # запрос в /avatar/tars/panel_request; URL собирает TarsPanelDispatcher
+    # в rob_box_supervisor и публикует в /avatar/tars/panel_url.
+    "ShowMetricsTool",
+    # #4516: чтение ROS-графа (ros_list, topic_echo, topic_stats) и VESC из ROS
+    "RosListTool",
+    "TopicEchoTool",
+    "TopicStatsTool",
+    "TopicPublishTool",  # #4516 шаг 2а: публикация с предохранителем
+    "VescTelemetryTool",
 ]

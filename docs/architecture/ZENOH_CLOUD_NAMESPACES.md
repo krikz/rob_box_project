@@ -83,7 +83,7 @@ ROBOT_ID=RBXU100001
 
 ### Скрипт-обёртка для Namespace
 
-**Расположение:** `docker/vision/scripts/ros_with_namespace.sh`
+**Расположение:** `docker/common/scripts/ros_with_namespace.sh` (общий для всех Pi, ADR-0159 В4; монтируется как `/ros_scripts`)
 
 Этот скрипт:
 1. Читает переменную окружения `ROBOT_ID`
@@ -181,7 +181,7 @@ lslidar:
 
 ### Конфигурация роутера Vision Pi
 
-**Расположение:** `docker/vision/config/zenoh_router_config.json5`
+**Расположение:** шаблон `docker/common/config/zenoh_router_config.json5`; адреса — `ZENOH_LISTEN_IP`/`ZENOH_CONNECT_ENDPOINTS` в `docker/vision/docker-compose.yaml`
 
 ```json5
 {
@@ -204,7 +204,7 @@ lslidar:
 
 ### Конфигурация роутера Main Pi
 
-**Расположение:** `docker/main/config/zenoh_router_config.json5`
+**Расположение:** шаблон `docker/common/config/zenoh_router_config.json5`; адреса — `ZENOH_LISTEN_IP`/`ZENOH_CONNECT_ENDPOINTS` в `docker/main/docker-compose.yaml`
 
 ```json5
 {
@@ -219,27 +219,28 @@ lslidar:
   },
   plugins: {
     rest: {
-      http_port: 8000,
+      http_port: 8000,  // healthcheck и диагностика (@/local/router, @/*/router/subscriber/**)
     },
-    storage_manager: {
-      storages: {
-        robot_data: {
-          key_expr: "robots/**",  // Хранение всех данных роботов
-          volume: {
-            id: "memory",
-          },
-        },
-      },
-    },
+    // storage_manager НЕТ намеренно (issue #3669), см. ниже.
   },
 }
 ```
 
-**Назначение:** Маршрутизация всех топиков робота в облако и локальное хранение
+**Назначение:** Маршрутизация топиков робота (в том числе в облако, когда оно подключено).
+
+> **Хранилища (`storage_manager`) на роутерах робота нет.** Раньше шаблон держал
+> `storages.robot_data` с ключом `robots/**` в памяти. Это подписывало каждый роутер
+> (Main, Vision, Sound) на весь трафик робота, и соседние роутеры начинали слать ему
+> всё подряд, включая сырые кадры камер (~24 МБ/с на каждый роутер), ради копии,
+> у которой не нашлось потребителей (issue #3669). На `transient_local` это не влияет: rmw_zenoh отдаёт
+> историю из кэша издателя (`AdvancedPublisher`) по ключу `<топик>/@adv/**`, а `**` не
+> матчит verbatim-чанк `@adv`. Если нужно хранилище для облака, оно живёт на
+> стороне облака; на роутере робота допустим только узкий ключ (без камер), и
+> только на Main.
 
 ### Конфигурация сессии (обе Pi)
 
-**Расположение:** `docker/*/config/zenoh_session_config.json5`
+**Расположение:** `docker/common/config/zenoh_session_config.json5` (адрес роутера `${ZENOH_LISTEN_IP}` подставляет `ros_with_namespace.sh`)
 
 Базовая конфигурация (namespace закомментирован по умолчанию):
 
@@ -410,7 +411,8 @@ z_sub -e "tcp/zenoh.robbox.online:7447" -k "robots/**"
 # Подписаться на конкретного робота
 z_sub -e "tcp/zenoh.robbox.online:7447" -k "robots/RBXU100001/**"
 
-# Запросить доступные топики
+# Запросить доступные топики. Отвечает хранилище на стороне облака (если оно
+# там настроено); роутеры робота хранилищ не держат (issue #3669)
 z_get -e "tcp/zenoh.robbox.online:7447" -s "robots/**"
 ```
 
@@ -644,9 +646,9 @@ Main Pi ──TCP (незашифрованный)──> zenoh.robbox.online:74
 
 ### Файлы проекта
 
-- `docker/vision/scripts/ros_with_namespace.sh` - Скрипт-обёртка для namespace
-- `docker/vision/config/zenoh_session_config.json5` - Конфигурация сессии Vision Pi
-- `docker/main/config/zenoh_router_config.json5` - Конфигурация роутера Main Pi (облачное подключение)
+- `docker/common/scripts/ros_with_namespace.sh` - Скрипт-обёртка для namespace
+- `docker/common/config/zenoh_session_config.json5` - Шаблон конфигурации сессии (все Pi)
+- `docker/common/config/zenoh_router_config.json5` - Шаблон конфигурации роутера (все Pi; облачное подключение Main Pi — `ZENOH_CONNECT_ENDPOINTS` в `docker/main/docker-compose.yaml`)
 - `docker/vision/.env` - Конфигурация ROBOT_ID
 - `docs/architecture/SOFTWARE.md` - Обзор архитектуры Zenoh
 - `docs/development/AGENT_GUIDE.md` - Руководство по разработке для AI агентов

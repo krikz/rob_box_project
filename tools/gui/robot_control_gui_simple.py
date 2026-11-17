@@ -37,6 +37,7 @@ class RobotControlGUI:
         import os
         import rclpy as rclpy_module
         from std_msgs.msg import String as StringMsg
+        from rob_box_dialog_msgs.msg import Utterance
         from rclpy.node import Node
         
         rclpy = rclpy_module
@@ -55,7 +56,7 @@ class RobotControlGUI:
         
         # Subscribers (топики с начальным / - абсолютные пути)
         self.subscriptions = [
-            self.node.create_subscription(String, "/voice/stt/result", self.stt_callback, 10),
+            self.node.create_subscription(Utterance, "/voice/stt/utterance", self.stt_callback, 10),
             self.node.create_subscription(String, "/voice/dialogue/response", self.dialogue_callback, 10),
             self.node.create_subscription(String, "/voice/tts/request", self.tts_callback, 10),
         ]
@@ -208,7 +209,7 @@ class RobotControlGUI:
         ts = datetime.now().strftime("%H:%M:%S")
         self.stt_log.configure(state=tk.NORMAL)
         self.stt_log.insert(tk.END, f"[{ts}] ", "time")
-        self.stt_log.insert(tk.END, f"{msg.data}\n", "text")
+        self.stt_log.insert(tk.END, f"{msg.text}\n", "text")
         self.stt_log.see(tk.END)
         self.stt_log.configure(state=tk.DISABLED)
     

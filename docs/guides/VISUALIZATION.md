@@ -74,7 +74,7 @@ ros2 launch rob_box_bringup display_simple.launch.py
 cd ~/rob_box_project
 source install/setup.bash
 ros2 run robot_state_publisher robot_state_publisher \
-  --ros-args -p robot_description:="$(xacro src/rob_box_description/urdf/rob_box_complete.xacro)"
+  --ros-args -p robot_description:="$(xacro src/rob_box_description/urdf/rob_box.xacro)"
 ```
 
 Терминал 2 - Joint State Publisher (для вращения колес):

@@ -21,7 +21,7 @@ and `docs/refactoring-plan.md`.
 
 | Provider | `name` | Default model | `base_url` | Vision | Use case |
 |----------|--------|---------------|------------|--------|----------|
-| `DeepSeekProvider` | `deepseek` | `deepseek-chat` | `https://api.deepseek.com/v1` | ❌ | Production default for dialogue / Telegram (P0) |
+| `DeepSeekProvider` | `deepseek` | `deepseek-v4-flash` | `https://api.deepseek.com/v1` | ❌ | Production default for dialogue / Telegram (P0) |
 | `MiMoProvider` | `mimo` | `MiMo-7B` | `https://api.xiaomimimo.com/v1` | ❌ | Xiaomi MiMo opt-in |
 | **`MiniMaxProvider`** | **`minimax`** | **`MiniMax-M3`** | **`https://api.minimax.io/v1`** | **✅** | **Opt-in: text + tools + vision (PR #907, M0+M1+M4)** |
 | `FakeLLMProvider` | `fake` | — | — | configurable | In-memory test stand-in |
@@ -145,7 +145,7 @@ asyncio.run(main())
 
 ROS2 wiring lives in `rob_box_voice/tts_node.py` (opt-in via
 `tts_node.provider = "minimax"`); see the user guide for launch args
-and a copy-pasteable `voice_assistant.yaml` snippet.
+and a copy-pasteable `dialogue_node.yaml` snippet.
 
 ## Testing
 

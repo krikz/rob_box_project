@@ -119,6 +119,7 @@ cp .env.example .env
 # IP addresses of the robot's Raspberry Pi computers
 MAIN_PI_IP=10.1.1.10
 VISION_PI_IP=10.1.1.11
+SOUND_PI_IP=10.1.1.12
 
 # Grafana admin password (change in production!)
 GRAFANA_PASSWORD=your_secure_password
@@ -207,7 +208,7 @@ http://<IP-адрес-машины-мониторинга>:3000
 2. **4 демонстрационных дашборда** (для стенда с 4 мониторами):
    - **1. Системный обзор и ошибки** - мониторы CPU/Memory, все ошибки
    - **2. Навигация и движение** - RTAB-Map, Nav2, ROS2 Control (~18 нод)
-   - **3. Восприятие и сенсоры** - OAK-D, камеры, micro-ROS (~10 нод)
+   - **3. Восприятие и сенсоры** - OAK-D, камеры, perception (~10 нод)
    - **4. Голос и интерфейс** - voice-assistant, LED-matrix (~10 нод)
    
    📖 **Подробнее:** [DEMO_DASHBOARDS.md](DEMO_DASHBOARDS.md)
@@ -226,6 +227,9 @@ http://<IP-адрес-машины-мониторинга>:3000
 
 # Логи с Vision Pi
 {host="vision-pi"}
+
+# Логи с Sound Pi (голосовой стек, ТАРС; ADR-0159)
+{host="sound-pi"}
 
 # Ошибки в контейнере
 {container="oak-d"} |= "error"

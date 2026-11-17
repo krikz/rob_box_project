@@ -1,0 +1,240 @@
+[INFO] [1793727199.883568068] [avatar_supervisor]: 🧭 [turn-v2] форма команды: закрыты=['passed', 'voice'] пение=- подложка=песня,рэп turn=d9e198ec4d5d
+🔎 LLM REQUEST START provider=deepseek mode=complete thinking={"type": "disabled"}
+  [0] system: 'Ты — ТАРС, агент-оператор робота. Ты действуешь от имени оператора,\nкоторый управляет роботом удалённо (через Quest-очки или текстом в\nTelegram).\n\nТы НЕ личность робота. Личность робота — отдельный агент, который\nотвечает обычным людям рядом с роботом. Когда оператор работает,\nличность молчит.\n\nТвоя задача — получить команду оператора и выполнить её через\nинструменты. Список инструментов — в конце этого промпта; его строит код\nиз реестра, другого списка нет.\n\nНа «что умеешь / что можешь показать'
+  [1] user: '<system_context>\n  <operator_journal>\n[журнал оператора]\n• сводка за сутки по 03.11.2026 (старше получаса, без исходов): ответил оператору\n  </operator_journal>\n</system_context>\n\nкакой у тебя сейчас статус'
+  tools(11): command, memory_save, memory_search, get_current_time, search_web, play_animation, say, get_robot_status, get_battery_level, get_perception_context, listen_for_response
+🔎 LLM REQUEST END
+🔎 LLM RESPONSE: content='' finish=tool_calls tool_calls=[('get_robot_status', '{}')]
+[INFO] [1793727201.686741248] [avatar_supervisor]: 🧾 [command] provider=deepseek mode=tool_choice verdict=command actions=['get_robot_status'] speech_dropped=0
+[INFO] [1793727201.688119815] [avatar_supervisor]: 🧮 [prompt] tokens=6922 estimated=False provider=deepseek view=v2 tools=11
+[INFO] [1793727201.690216101] [avatar_supervisor]: 📤 Отправлен запрос f6b6bc15: get_robot_status
+[INFO] [1793727201.697811544] [avatar_supervisor]: 📩 on_result вызван для request_id: f6b6bc15
+[INFO] [1793727201.698580207] [avatar_supervisor]: 💾 Результат сохранён в кэш для f6b6bc15
+🔎 LLM REQUEST START provider=deepseek mode=complete thinking={"type": "disabled"}
+  [0] system: 'Ты — ТАРС, агент-оператор робота. Ты действуешь от имени оператора,\nкоторый управляет роботом удалённо (через Quest-очки или текстом в\nTelegram).\n\nТы НЕ личность робота. Личность робота — отдельный агент, который\nотвечает обычным людям рядом с роботом. Когда оператор работает,\nличность молчит.\n\nТвоя задача — получить команду оператора и выполнить её через\nинструменты. Список инструментов — в конце этого промпта; его строит код\nиз реестра, другого списка нет.\n\nНа «что умеешь / что можешь показать'
+  [1] user: '<system_context>\n  <operator_journal>\n[журнал оператора]\n• сводка за сутки по 03.11.2026 (старше получаса, без исходов): ответил оператору\n  </operator_journal>\n</system_context>\n\nкакой у тебя сейчас статус'
+  [2] assistant: '' tool_calls=(ToolCall(id='cmd-7506d6c03d01', name='command', arguments=mappingproxy({'actions': [{'tool': 'get_robot_status', 'args': {}}], 'expression': {'emotion': 'neutral'}})),)
+  [3] tool: '{"query_results": [{"tool": "get_robot_status", "status": "done", "reason": null, "data": {"position": {"x": 0.0021262275986373425, "y": 0.0006777412490919232, "theta": 0.006905926322355146}, "battery_level": 90.04082679748535, "systems": {}, "tool_message": "Статус робота получен"}}]}'
+  tools(11): command, memory_save, memory_search, get_current_time, search_web, play_animation, say, get_robot_status, get_battery_level, get_perception_context, listen_for_response
+🔎 LLM REQUEST END
+[INFO] [1793727201.710257684] [avatar_supervisor]: ✅ Event установлен для f6b6bc15
+🔎 LLM RESPONSE: content='' finish=tool_calls tool_calls=[('command', '{"actions": [{"args": {}, "tool": "get_robot_status"}]}')]
+[INFO] [1793727203.065355732] [avatar_supervisor]: 🧾 [command] provider=deepseek mode=tool_choice verdict=command actions=['get_robot_status'] speech_dropped=0
+[INFO] [1793727203.066562151] [avatar_supervisor]: 🧮 [prompt] tokens=7113 estimated=False provider=deepseek view=v2 tools=11
+[INFO] [1793727203.068997769] [avatar_supervisor]: 📤 Отправлен запрос fe17f9f0: get_robot_status
+[INFO] [1793727203.076674174] [avatar_supervisor]: 📩 on_result вызван для request_id: fe17f9f0
+[INFO] [1793727203.079073181] [avatar_supervisor]: 💾 Результат сохранён в кэш для fe17f9f0
+🔎 LLM REQUEST START provider=deepseek mode=complete thinking={"type": "disabled"}
+  [0] system: 'Ты — ТАРС, агент-оператор робота. Ты действуешь от имени оператора,\nкоторый управляет роботом удалённо (через Quest-очки или текстом в\nTelegram).\n\nТы НЕ личность робота. Личность робота — отдельный агент, который\nотвечает обычным людям рядом с роботом. Когда оператор работает,\nличность молчит.\n\nТвоя задача — получить команду оператора и выполнить её через\nинструменты. Список инструментов — в конце этого промпта; его строит код\nиз реестра, другого списка нет.\n\nНа «что умеешь / что можешь показать'
+  [1] user: '<system_context>\n  <operator_journal>\n[журнал оператора]\n• сводка за сутки по 03.11.2026 (старше получаса, без исходов): ответил оператору\n  </operator_journal>\n</system_context>\n\nкакой у тебя сейчас статус'
+  [2] assistant: '' tool_calls=(ToolCall(id='cmd-7506d6c03d01', name='command', arguments=mappingproxy({'actions': [{'tool': 'get_robot_status', 'args': {}}], 'expression': {'emotion': 'neutral'}})),)
+  [3] tool: '{"query_results": [{"tool": "get_robot_status", "status": "done", "reason": null, "data": {"position": {"x": 0.0021262275986373425, "y": 0.0006777412490919232, "theta": 0.006905926322355146}, "battery_level": 90.04082679748535, "systems": {}, "tool_message": "Статус робота получен"}}]}'
+  [4] assistant: '' tool_calls=(ToolCall(id='cmd-3e1ccaa12f2c', name='command', arguments=mappingproxy({'actions': [{'tool': 'get_robot_status', 'args': {}}], 'expression': {'emotion': 'neutral'}})),)
+  [5] tool: '{"query_results": [{"tool": "get_robot_status", "status": "done", "reason": null, "data": {"position": {"x": -0.0004198795650154352, "y": 0.0010981467785313725, "theta": 0.004996712557311848}, "battery_level": 90.03993272781372, "systems": {}, "tool_message": "Статус робота получен"}}]}'
+  tools(11): command, memory_save, memory_search, get_current_time, search_web, play_animation, say, get_robot_status, get_battery_level, get_perception_context, listen_for_response
+🔎 LLM REQUEST END
+[INFO] [1793727203.090218143] [avatar_supervisor]: ✅ Event установлен для fe17f9f0
+🔎 LLM RESPONSE: content='' finish=tool_calls tool_calls=[('command', '{"speech": "Батарея 90%, стою почти в нулевой точке, по одометрии смещение в пределах пары миллиметров. Данные по системам пустые — если нужны детали, гляну контейнеры и ROS2-ноды.", "expression": {"e')]
+[INFO] [1793727204.644774214] [avatar_supervisor]: 🧾 [command] provider=deepseek mode=tool_choice verdict=speech actions=[] speech_dropped=0
+[INFO] [1793727204.645827413] [avatar_supervisor]: 🧮 [prompt] tokens=7304 estimated=False provider=deepseek view=v2 tools=11
+[INFO] [1793727204.647698440] [avatar_supervisor]: 🛰 [tars-v2] turn=d9e198ec4d5d stage=done status=finished reason=- llm_calls=3 provider=deepseek
+[INFO] [1793727204.648556121] [avatar_supervisor]: 📊 [turn] turn_id=d9e198ec4d5d epoch=0 agent=operator stage=done status=finished latency_ms=4773 llm_calls=3 llm_provider=deepseek tokens=21339
+[INFO] [1793727204.649526894] [avatar_supervisor]: 🛰 [tars-v2] request=telegram:1:1793727199778 status=finished latency_ms=4773 llm_calls=3 tools=['get_robot_status', 'get_robot_status']
+[INFO] [1793727776.532802373] [avatar_supervisor]: 🧭 [turn-v2] форма команды: закрыты=['passed', 'voice'] пение=- подложка=песня,рэп turn=710602d88400
+🔎 LLM REQUEST START provider=deepseek mode=complete thinking={"type": "disabled"}
+  [0] system: 'Ты — ТАРС, агент-оператор робота. Ты действуешь от имени оператора,\nкоторый управляет роботом удалённо (через Quest-очки или текстом в\nTelegram).\n\nТы НЕ личность робота. Личность робота — отдельный агент, который\nотвечает обычным людям рядом с роботом. Когда оператор работает,\nличность молчит.\n\nТвоя задача — получить команду оператора и выполнить её через\nинструменты. Список инструментов — в конце этого промпта; его строит код\nиз реестра, другого списка нет.\n\nНа «что умеешь / что можешь показать'
+  [1] user: '[говорит: незнакомый голос] какой у тебя сейчас статус'
+  [2] assistant: 'Батарея 90%, стою почти в нулевой точке, по одометрии смещение в пределах пары миллиметров. Данные по системам пустые — если нужны детали, гляну контейнеры и ROS2-ноды.'
+  [3] user: '[говорит: незнакомый голос] сколько заряда батареи'
+  [4] assistant: 'Заряд батареи — 90 процентов.'
+  [5] user: '[говорит: незнакомый голос] который сейчас час'
+  [6] assistant: 'Двадцать тридцать пять, вторник, третье ноября. Вечер.'
+  [7] user: '[говорит: незнакомый голос] что видит камера'
+  [8] assistant: 'В кадре сейчас никого и ничего не детектируется: детекций ноль. Система здорова, робот в движении. Свет — вечерний.'
+  [9] user: '[говорит: незнакомый голос] скажи вслух: проверка связи, двадцать команд'
+  [10] assistant: '[ответ действием: say — идёт]'
+  [11] user: '[говорит: незнакомый голос] какая сейчас громкость'
+  [12] assistant: 'Точного значения громкости в процентах у меня нет — в телеметрии уровень звука не отдаётся. Могу сделать громче, тише, на максимум или выставить конкретный процент — скажи какой.'
+  [13] user: '[говорит: незнакомый голос] покажи анимацию радуги'
+  [14] assistant: '[ответ действием: play_animation happy — сделано]'
+  [15] user: '[говорит: незнакомый голос] стоп'
+  [16] user: '<system_context>\n  <recent_actions>[{"tool":"get_robot_status","status":"done","data":{"position":{"x":0.0021262275986373425,"y":0.0006777412490919232,"theta":0.006905926322355146},"battery_level":90.04082679748535,"systems":{},"tool_message":"Статус робота получен"}},{"tool":"get_robot_status","status":"done","data":{"position":{"x":-0.0004198795650154352,"y":0.0010981467785313725,"theta":0.004996712557311848},"battery_level":90.03993272781372,"systems":{},"tool_message":"Статус робота получен"'
+  tools(11): command, memory_save, memory_search, get_current_time, search_web, play_animation, say, get_robot_status, get_battery_level, get_perception_context, listen_for_response
+🔎 LLM REQUEST END
+🔎 LLM RESPONSE: content='' finish=tool_calls tool_calls=[('get_perception_context', '{}')]
+[INFO] [1793727777.630433427] [avatar_supervisor]: 🧾 [command] provider=deepseek mode=tool_choice verdict=command actions=['get_perception_context'] speech_dropped=0
+[INFO] [1793727777.631535570] [avatar_supervisor]: 🧮 [prompt] tokens=8500 estimated=False provider=deepseek view=v2 tools=11
+[INFO] [1793727777.635881271] [avatar_supervisor]: 📤 Отправлен запрос f3ad5804: get_perception_context
+[INFO] [1793727777.643803973] [avatar_supervisor]: 📩 on_result вызван для request_id: f3ad5804
+[INFO] [1793727777.644577673] [avatar_supervisor]: 💾 Результат сохранён в кэш для f3ad5804
+[INFO] [1793727777.645403002] [avatar_supervisor]: ✅ Event установлен для f3ad5804
+🔎 LLM REQUEST START provider=deepseek mode=complete thinking={"type": "disabled"}
+  [0] system: 'Ты — ТАРС, агент-оператор робота. Ты действуешь от имени оператора,\nкоторый управляет роботом удалённо (через Quest-очки или текстом в\nTelegram).\n\nТы НЕ личность робота. Личность робота — отдельный агент, который\nотвечает обычным людям рядом с роботом. Когда оператор работает,\nличность молчит.\n\nТвоя задача — получить команду оператора и выполнить её через\nинструменты. Список инструментов — в конце этого промпта; его строит код\nиз реестра, другого списка нет.\n\nНа «что умеешь / что можешь показать'
+  [1] user: '[говорит: незнакомый голос] какой у тебя сейчас статус'
+  [2] assistant: 'Батарея 90%, стою почти в нулевой точке, по одометрии смещение в пределах пары миллиметров. Данные по системам пустые — если нужны детали, гляну контейнеры и ROS2-ноды.'
+  [3] user: '[говорит: незнакомый голос] сколько заряда батареи'
+  [4] assistant: 'Заряд батареи — 90 процентов.'
+  [5] user: '[говорит: незнакомый голос] который сейчас час'
+  [6] assistant: 'Двадцать тридцать пять, вторник, третье ноября. Вечер.'
+  [7] user: '[говорит: незнакомый голос] что видит камера'
+  [8] assistant: 'В кадре сейчас никого и ничего не детектируется: детекций ноль. Система здорова, робот в движении. Свет — вечерний.'
+  [9] user: '[говорит: незнакомый голос] скажи вслух: проверка связи, двадцать команд'
+  [10] assistant: '[ответ действием: say — идёт]'
+  [11] user: '[говорит: незнакомый голос] какая сейчас громкость'
+  [12] assistant: 'Точного значения громкости в процентах у меня нет — в телеметрии уровень звука не отдаётся. Могу сделать громче, тише, на максимум или выставить конкретный процент — скажи какой.'
+  [13] user: '[говорит: незнакомый голос] покажи анимацию радуги'
+  [14] assistant: '[ответ действием: play_animation happy — сделано]'
+  [15] user: '[говорит: незнакомый голос] стоп'
+  [16] user: '<system_context>\n  <recent_actions>[{"tool":"get_robot_status","status":"done","data":{"position":{"x":0.0021262275986373425,"y":0.0006777412490919232,"theta":0.006905926322355146},"battery_level":90.04082679748535,"systems":{},"tool_message":"Статус робота получен"}},{"tool":"get_robot_status","status":"done","data":{"position":{"x":-0.0004198795650154352,"y":0.0010981467785313725,"theta":0.004996712557311848},"battery_level":90.03993272781372,"systems":{},"tool_message":"Статус робота получен"'
+  [17] assistant: '' tool_calls=(ToolCall(id='cmd-d6d8db6dba18', name='command', arguments=mappingproxy({'actions': [{'tool': 'get_perception_context', 'args': {}}], 'expression': {'emotion': 'neutral'}})),)
+  [18] tool: '{"query_results": [{"tool": "get_perception_context", "status": "done", "reason": null, "data": {"timestamp": 1793727777.4659586, "vision_context": "", "is_moving": true, "battery_voltage": 41.0, "battery_percent": 90.0, "temperature": 0.0, "apriltag_ids": [], "system_health_status": "HEALTHY", "health_issues": [], "current_time_human": "2026-11-03 20:42:57", "time_period": "evening", "internet_available": true, "failed_nodes": [], "missing_nodes": [], "mapping_mode": "unknown", "memory_summary"'
+  tools(11): command, memory_save, memory_search, get_current_time, search_web, play_animation, say, get_robot_status, get_battery_level, get_perception_context, listen_for_response
+🔎 LLM REQUEST END
+🔎 LLM RESPONSE: content='' finish=tool_calls tool_calls=[('command', '{"speech": "Последнее в сводке: 73 секунды назад — команда stop. Детекций камеры нет, отказавших и отсутствующих нод нет, система здорова, связь с интернетом есть, заряд 90 процентов."}')]
+[INFO] [1793727779.170282273] [avatar_supervisor]: 🧾 [command] provider=deepseek mode=tool_choice verdict=speech actions=[] speech_dropped=0
+[INFO] [1793727779.171473508] [avatar_supervisor]: 🧮 [prompt] tokens=8797 estimated=False provider=deepseek view=v2 tools=11
+[INFO] [1793727779.175044990] [avatar_supervisor]: 🛰 [tars-v2] turn=710602d88400 stage=done status=finished reason=- llm_calls=2 provider=deepseek
+[INFO] [1793727779.175864412] [avatar_supervisor]: 📊 [turn] turn_id=710602d88400 epoch=1 agent=operator stage=done status=finished latency_ms=2644 llm_calls=2 llm_provider=deepseek tokens=17297
+[INFO] [1793727779.176706445] [avatar_supervisor]: 🛰 [tars-v2] request=telegram:1:1793727776514 status=finished latency_ms=2644 llm_calls=2 tools=['get_perception_context']
+[INFO] [1793728064.855769559] [avatar_supervisor]: 🧭 [turn-v2] форма команды: закрыты=['passed', 'voice'] пение=- turn=3ae3148669d2
+🔎 LLM REQUEST START provider=deepseek mode=complete thinking={"type": "disabled"}
+  [0] system: 'Ты — ТАРС, агент-оператор робота. Ты действуешь от имени оператора,\nкоторый управляет роботом удалённо (через Quest-очки или текстом в\nTelegram).\n\nТы НЕ личность робота. Личность робота — отдельный агент, который\nотвечает обычным людям рядом с роботом. Когда оператор работает,\nличность молчит.\n\nТвоя задача — получить команду оператора и выполнить её через\nинструменты. Список инструментов — в конце этого промпта; его строит код\nиз реестра, другого списка нет.\n\nНа «что умеешь / что можешь показать'
+  [1] user: '[говорит: незнакомый голос] скажи вслух: проверка связи, двадцать команд'
+  [2] assistant: '[ответ действием: say — идёт]'
+  [3] user: '[говорит: незнакомый голос] какая сейчас громкость'
+  [4] assistant: 'Точного значения громкости в процентах у меня нет — в телеметрии уровень звука не отдаётся. Могу сделать громче, тише, на максимум или выставить конкретный процент — скажи какой.'
+  [5] user: '[говорит: незнакомый голос] покажи анимацию радуги'
+  [6] assistant: '[ответ действием: play_animation happy — сделано]'
+  [7] user: '[говорит: незнакомый голос] стоп'
+  [8] user: '[говорит: незнакомый голос] покажи последние события'
+  [9] assistant: 'Последнее в сводке: 73 секунды назад — команда stop. Детекций камеры нет, отказавших и отсутствующих нод нет, система здорова, связь с интернетом есть, заряд 90 процентов.'
+  [10] user: '[говорит: незнакомый голос] статус нод'
+  [11] assistant: 'ROS2-ноды: отказавших и отсутствующих нет, система здорова. Сервисы по опросу up: живы cadvisor-main и cadvisor-vision, лежат otel-collector, voice-assistant, telegram-bot и supercollider.'
+  [12] user: '[говорит: незнакомый голос] статус контейнеров'
+  [13] assistant: '(«cpu» → 100 * rate(process_cpu_seconds_total[5m])) Вывел на TARS 2 — cadvisor-main:8080: 0.3684, cadvisor-vision:8080: 0.1228, prometheus:9090: 0.2982'
+  [14] user: '[говорит: незнакомый голос] какая температура процессоров'
+  [15] assistant: 'Температуру процессоров показать не могу: в помеченной телеметрии такой метрики нет, cAdvisor отдаёт только CPU, память и uptime. Внутренний датчик температуры тоже отдаёт ноль. Загрузка CPU сейчас: cadvisor-main 0.36, cadvisor-vision 0.12, prometheus 0.31.'
+  [16] user: '<system_context>\n  <recent_actions>[{"tool":"get_perception_context","status":"done","data":{"timestamp":1793727849.4659705,"vision_context":"","is_moving":true,"battery_voltage":41.0,"battery_percent":90.0,"temperature":0.0,"apriltag_ids":[],"system_health_status":"HEALTHY","health_issues":[],"current_time_human":"2026-11-03 20:44:09","time_period":"evening","internet_available":true,"failed_nodes":[],"missing_nodes":[],"mapping_mode":"unknown","memory_summary":"• [145s] command: Команда: stop"'
+  tools(12): command, memory_save, memory_search, get_current_time, search_web, play_animation, say, stop_music, get_music_state, request_music, dj_set, music_library
+🔎 LLM REQUEST END
+🔎 LLM RESPONSE: content='' finish=tool_calls tool_calls=[('command', '{"actions": [{"tool": "get_current_time", "args": {}}]}')]
+[INFO] [1793728066.932383736] [avatar_supervisor]: 🧾 [command] provider=deepseek mode=tool_choice verdict=command actions=['get_current_time'] speech_dropped=0
+[INFO] [1793728066.933308380] [avatar_supervisor]: 🧮 [prompt] tokens=13026 estimated=False provider=deepseek view=v2 tools=12
+[INFO] [1793728066.947961234] [avatar_supervisor]: 📤 Отправлен запрос f80ab5e8: get_current_time
+[INFO] [1793728066.954610182] [avatar_supervisor]: 📩 on_result вызван для request_id: f80ab5e8
+[INFO] [1793728066.955287531] [avatar_supervisor]: 💾 Результат сохранён в кэш для f80ab5e8
+[INFO] [1793728066.955980731] [avatar_supervisor]: ✅ Event установлен для f80ab5e8
+🔎 LLM REQUEST START provider=deepseek mode=complete thinking={"type": "disabled"}
+  [0] system: 'Ты — ТАРС, агент-оператор робота. Ты действуешь от имени оператора,\nкоторый управляет роботом удалённо (через Quest-очки или текстом в\nTelegram).\n\nТы НЕ личность робота. Личность робота — отдельный агент, который\nотвечает обычным людям рядом с роботом. Когда оператор работает,\nличность молчит.\n\nТвоя задача — получить команду оператора и выполнить её через\nинструменты. Список инструментов — в конце этого промпта; его строит код\nиз реестра, другого списка нет.\n\nНа «что умеешь / что можешь показать'
+  [1] user: '[говорит: незнакомый голос] скажи вслух: проверка связи, двадцать команд'
+  [2] assistant: '[ответ действием: say — идёт]'
+  [3] user: '[говорит: незнакомый голос] какая сейчас громкость'
+  [4] assistant: 'Точного значения громкости в процентах у меня нет — в телеметрии уровень звука не отдаётся. Могу сделать громче, тише, на максимум или выставить конкретный процент — скажи какой.'
+  [5] user: '[говорит: незнакомый голос] покажи анимацию радуги'
+  [6] assistant: '[ответ действием: play_animation happy — сделано]'
+  [7] user: '[говорит: незнакомый голос] стоп'
+  [8] user: '[говорит: незнакомый голос] покажи последние события'
+  [9] assistant: 'Последнее в сводке: 73 секунды назад — команда stop. Детекций камеры нет, отказавших и отсутствующих нод нет, система здорова, связь с интернетом есть, заряд 90 процентов.'
+  [10] user: '[говорит: незнакомый голос] статус нод'
+  [11] assistant: 'ROS2-ноды: отказавших и отсутствующих нет, система здорова. Сервисы по опросу up: живы cadvisor-main и cadvisor-vision, лежат otel-collector, voice-assistant, telegram-bot и supercollider.'
+  [12] user: '[говорит: незнакомый голос] статус контейнеров'
+  [13] assistant: '(«cpu» → 100 * rate(process_cpu_seconds_total[5m])) Вывел на TARS 2 — cadvisor-main:8080: 0.3684, cadvisor-vision:8080: 0.1228, prometheus:9090: 0.2982'
+  [14] user: '[говорит: незнакомый голос] какая температура процессоров'
+  [15] assistant: 'Температуру процессоров показать не могу: в помеченной телеметрии такой метрики нет, cAdvisor отдаёт только CPU, память и uptime. Внутренний датчик температуры тоже отдаёт ноль. Загрузка CPU сейчас: cadvisor-main 0.36, cadvisor-vision 0.12, prometheus 0.31.'
+  [16] user: '<system_context>\n  <recent_actions>[{"tool":"get_perception_context","status":"done","data":{"timestamp":1793727849.4659705,"vision_context":"","is_moving":true,"battery_voltage":41.0,"battery_percent":90.0,"temperature":0.0,"apriltag_ids":[],"system_health_status":"HEALTHY","health_issues":[],"current_time_human":"2026-11-03 20:44:09","time_period":"evening","internet_available":true,"failed_nodes":[],"missing_nodes":[],"mapping_mode":"unknown","memory_summary":"• [145s] command: Команда: stop"'
+  [17] assistant: '' tool_calls=(ToolCall(id='cmd-c9115761a2d5', name='command', arguments=mappingproxy({'actions': [{'tool': 'get_current_time', 'args': {}}], 'expression': {'emotion': 'neutral'}})),)
+  [18] tool: '{"query_results": [{"tool": "get_current_time", "status": "done", "reason": null, "data": {"time": "20:47", "date": "3 ноября 2026", "weekday": "вторник", "period": "вечер", "iso": "2026-11-03T20:47:46+03:00", "timezone": "Europe/Moscow", "formatted_time": "двадцать сорок семь", "tool_message": "Сейчас 20:47, вторник, 3 ноября 2026, вечер. По-русски: двадцать сорок семь."}}]}'
+  tools(12): command, memory_save, memory_search, get_current_time, search_web, play_animation, say, stop_music, get_music_state, request_music, dj_set, music_library
+🔎 LLM REQUEST END
+🔎 LLM RESPONSE: content='' finish=tool_calls tool_calls=[('command', '{"actions": [{"tool": "show_metrics", "args": {"query": "services_up"}}]}')]
+[INFO] [1793728068.235788890] [avatar_supervisor]: 🧾 [command] provider=deepseek mode=tool_choice verdict=invalid:tool_not_available actions=[] speech_dropped=0 detail='show_metrics'
+[INFO] [1793728068.237079809] [avatar_supervisor]: 🧾 [command] tool_not_available → в запрос добавлены тулы ['show_metrics', 'read_logs', 'ros2_node_status', 'container_status']
+🔎 LLM REQUEST START provider=deepseek mode=complete thinking={"type": "disabled"}
+  [0] system: 'Ты — ТАРС, агент-оператор робота. Ты действуешь от имени оператора,\nкоторый управляет роботом удалённо (через Quest-очки или текстом в\nTelegram).\n\nТы НЕ личность робота. Личность робота — отдельный агент, который\nотвечает обычным людям рядом с роботом. Когда оператор работает,\nличность молчит.\n\nТвоя задача — получить команду оператора и выполнить её через\nинструменты. Список инструментов — в конце этого промпта; его строит код\nиз реестра, другого списка нет.\n\nНа «что умеешь / что можешь показать'
+  [1] user: '[говорит: незнакомый голос] скажи вслух: проверка связи, двадцать команд'
+  [2] assistant: '[ответ действием: say — идёт]'
+  [3] user: '[говорит: незнакомый голос] какая сейчас громкость'
+  [4] assistant: 'Точного значения громкости в процентах у меня нет — в телеметрии уровень звука не отдаётся. Могу сделать громче, тише, на максимум или выставить конкретный процент — скажи какой.'
+  [5] user: '[говорит: незнакомый голос] покажи анимацию радуги'
+  [6] assistant: '[ответ действием: play_animation happy — сделано]'
+  [7] user: '[говорит: незнакомый голос] стоп'
+  [8] user: '[говорит: незнакомый голос] покажи последние события'
+  [9] assistant: 'Последнее в сводке: 73 секунды назад — команда stop. Детекций камеры нет, отказавших и отсутствующих нод нет, система здорова, связь с интернетом есть, заряд 90 процентов.'
+  [10] user: '[говорит: незнакомый голос] статус нод'
+  [11] assistant: 'ROS2-ноды: отказавших и отсутствующих нет, система здорова. Сервисы по опросу up: живы cadvisor-main и cadvisor-vision, лежат otel-collector, voice-assistant, telegram-bot и supercollider.'
+  [12] user: '[говорит: незнакомый голос] статус контейнеров'
+  [13] assistant: '(«cpu» → 100 * rate(process_cpu_seconds_total[5m])) Вывел на TARS 2 — cadvisor-main:8080: 0.3684, cadvisor-vision:8080: 0.1228, prometheus:9090: 0.2982'
+  [14] user: '[говорит: незнакомый голос] какая температура процессоров'
+  [15] assistant: 'Температуру процессоров показать не могу: в помеченной телеметрии такой метрики нет, cAdvisor отдаёт только CPU, память и uptime. Внутренний датчик температуры тоже отдаёт ноль. Загрузка CPU сейчас: cadvisor-main 0.36, cadvisor-vision 0.12, prometheus 0.31.'
+  [16] user: '<system_context>\n  <recent_actions>[{"tool":"get_perception_context","status":"done","data":{"timestamp":1793727849.4659705,"vision_context":"","is_moving":true,"battery_voltage":41.0,"battery_percent":90.0,"temperature":0.0,"apriltag_ids":[],"system_health_status":"HEALTHY","health_issues":[],"current_time_human":"2026-11-03 20:44:09","time_period":"evening","internet_available":true,"failed_nodes":[],"missing_nodes":[],"mapping_mode":"unknown","memory_summary":"• [145s] command: Команда: stop"'
+  [17] assistant: '' tool_calls=(ToolCall(id='cmd-c9115761a2d5', name='command', arguments=mappingproxy({'actions': [{'tool': 'get_current_time', 'args': {}}], 'expression': {'emotion': 'neutral'}})),)
+  [18] tool: '{"query_results": [{"tool": "get_current_time", "status": "done", "reason": null, "data": {"time": "20:47", "date": "3 ноября 2026", "weekday": "вторник", "period": "вечер", "iso": "2026-11-03T20:47:46+03:00", "timezone": "Europe/Moscow", "formatted_time": "двадцать сорок семь", "tool_message": "Сейчас 20:47, вторник, 3 ноября 2026, вечер. По-русски: двадцать сорок семь."}}]}'
+  tools(16): command, memory_save, memory_search, get_current_time, search_web, play_animation, say, stop_music, get_music_state, request_music, dj_set, music_library, show_metrics, read_logs, ros2_node_status, container_status
+🔎 LLM REQUEST END
+🔎 LLM RESPONSE: content='' finish=tool_calls tool_calls=[('command', '{"actions": [{"tool": "show_metrics", "args": {"query": "services_up", "datasource": "prometheus"}}], "expression": {"emotion": "neutral"}}')]
+[INFO] [1793728069.681266713] [avatar_supervisor]: 🧾 [command] provider=deepseek mode=tool_choice verdict=command actions=['show_metrics'] speech_dropped=0
+[INFO] [1793728069.682396300] [avatar_supervisor]: 🧮 [prompt] tokens=14181 estimated=False provider=deepseek view=v2 tools=12
+[INFO] [1793728069.699806159] [avatar_supervisor]: 📤 Отправлен запрос f836c0c4: show_metrics
+[INFO] [1793728069.717519849] [avatar_supervisor]: [tars_panel] panel_data published: request_id=16397f59, datasource=prometheus, status=ok, series=6
+[INFO] [1793728069.726006530] [avatar_supervisor]: 📩 on_result вызван для request_id: f836c0c4
+[INFO] [1793728069.727334671] [avatar_supervisor]: 💾 Результат сохранён в кэш для f836c0c4
+🔎 LLM REQUEST START provider=deepseek mode=complete thinking={"type": "disabled"}
+  [0] system: 'Ты — ТАРС, агент-оператор робота. Ты действуешь от имени оператора,\nкоторый управляет роботом удалённо (через Quest-очки или текстом в\nTelegram).\n\nТы НЕ личность робота. Личность робота — отдельный агент, который\nотвечает обычным людям рядом с роботом. Когда оператор работает,\nличность молчит.\n\nТвоя задача — получить команду оператора и выполнить её через\nинструменты. Список инструментов — в конце этого промпта; его строит код\nиз реестра, другого списка нет.\n\nНа «что умеешь / что можешь показать'
+[INFO] [1793728069.733094865] [avatar_supervisor]: ✅ Event установлен для f836c0c4
+  [1] user: '[говорит: незнакомый голос] скажи вслух: проверка связи, двадцать команд'
+  [2] assistant: '[ответ действием: say — идёт]'
+  [3] user: '[говорит: незнакомый голос] какая сейчас громкость'
+  [4] assistant: 'Точного значения громкости в процентах у меня нет — в телеметрии уровень звука не отдаётся. Могу сделать громче, тише, на максимум или выставить конкретный процент — скажи какой.'
+  [5] user: '[говорит: незнакомый голос] покажи анимацию радуги'
+  [6] assistant: '[ответ действием: play_animation happy — сделано]'
+  [7] user: '[говорит: незнакомый голос] стоп'
+  [8] user: '[говорит: незнакомый голос] покажи последние события'
+  [9] assistant: 'Последнее в сводке: 73 секунды назад — команда stop. Детекций камеры нет, отказавших и отсутствующих нод нет, система здорова, связь с интернетом есть, заряд 90 процентов.'
+  [10] user: '[говорит: незнакомый голос] статус нод'
+  [11] assistant: 'ROS2-ноды: отказавших и отсутствующих нет, система здорова. Сервисы по опросу up: живы cadvisor-main и cadvisor-vision, лежат otel-collector, voice-assistant, telegram-bot и supercollider.'
+  [12] user: '[говорит: незнакомый голос] статус контейнеров'
+  [13] assistant: '(«cpu» → 100 * rate(process_cpu_seconds_total[5m])) Вывел на TARS 2 — cadvisor-main:8080: 0.3684, cadvisor-vision:8080: 0.1228, prometheus:9090: 0.2982'
+  [14] user: '[говорит: незнакомый голос] какая температура процессоров'
+  [15] assistant: 'Температуру процессоров показать не могу: в помеченной телеметрии такой метрики нет, cAdvisor отдаёт только CPU, память и uptime. Внутренний датчик температуры тоже отдаёт ноль. Загрузка CPU сейчас: cadvisor-main 0.36, cadvisor-vision 0.12, prometheus 0.31.'
+  [16] user: '<system_context>\n  <recent_actions>[{"tool":"get_perception_context","status":"done","data":{"timestamp":1793727849.4659705,"vision_context":"","is_moving":true,"battery_voltage":41.0,"battery_percent":90.0,"temperature":0.0,"apriltag_ids":[],"system_health_status":"HEALTHY","health_issues":[],"current_time_human":"2026-11-03 20:44:09","time_period":"evening","internet_available":true,"failed_nodes":[],"missing_nodes":[],"mapping_mode":"unknown","memory_summary":"• [145s] command: Команда: stop"'
+  [17] assistant: '' tool_calls=(ToolCall(id='cmd-c9115761a2d5', name='command', arguments=mappingproxy({'actions': [{'tool': 'get_current_time', 'args': {}}], 'expression': {'emotion': 'neutral'}})),)
+  [18] tool: '{"query_results": [{"tool": "get_current_time", "status": "done", "reason": null, "data": {"time": "20:47", "date": "3 ноября 2026", "weekday": "вторник", "period": "вечер", "iso": "2026-11-03T20:47:46+03:00", "timezone": "Europe/Moscow", "formatted_time": "двадцать сорок семь", "tool_message": "Сейчас 20:47, вторник, 3 ноября 2026, вечер. По-русски: двадцать сорок семь."}}]}'
+  [19] assistant: '' tool_calls=(ToolCall(id='cmd-bddca153ebae', name='command', arguments=mappingproxy({'actions': [{'tool': 'show_metrics', 'args': {'query': 'services_up', 'datasource': 'prometheus'}}], 'expression': {'emotion': 'neutral'}})),)
+  [20] tool: '{"query_results": [{"tool": "show_metrics", "status": "done", "reason": null, "data": {"query": "up", "datasource": "prometheus", "request_id": "16397f59", "status": "ok", "series_count": 6, "url": "http://10.1.1.249:3000/explore?orgId=1&left=%7B%22datasource%22%3A%22Prometheus%22%2C%22queries%22%3A%5B%7B%22refId%22%3A%22A%22%2C%22expr%22%3A%22up%22%7D%5D%2C%22range%22%3A%7B%22from%22%3A%22now-15m%22%2C%22to%22%3A%22now%22%7D%7D", "note": "«services_up» → up", "available": [], "latest": {"cadvis'
+  tools(12): command, memory_save, memory_search, get_current_time, search_web, play_animation, say, stop_music, get_music_state, request_music, dj_set, music_library
+🔎 LLM REQUEST END
+🔎 LLM RESPONSE: content='' finish=tool_calls tool_calls=[('command', '{"expression": {"emotion": "neutral"}}')]
+[INFO] [1793728071.100345519] [avatar_supervisor]: 🧾 [command] provider=deepseek mode=tool_choice verdict=invalid:empty_command actions=[] speech_dropped=0 detail='нет speech, ask, actions, perform и passed'
+🔎 LLM REQUEST START provider=deepseek mode=complete thinking={"type": "disabled"}
+  [0] system: 'Ты — ТАРС, агент-оператор робота. Ты действуешь от имени оператора,\nкоторый управляет роботом удалённо (через Quest-очки или текстом в\nTelegram).\n\nТы НЕ личность робота. Личность робота — отдельный агент, который\nотвечает обычным людям рядом с роботом. Когда оператор работает,\nличность молчит.\n\nТвоя задача — получить команду оператора и выполнить её через\nинструменты. Список инструментов — в конце этого промпта; его строит код\nиз реестра, другого списка нет.\n\nНа «что умеешь / что можешь показать'
+  [1] user: '[говорит: незнакомый голос] скажи вслух: проверка связи, двадцать команд'
+  [2] assistant: '[ответ действием: say — идёт]'
+  [3] user: '[говорит: незнакомый голос] какая сейчас громкость'
+  [4] assistant: 'Точного значения громкости в процентах у меня нет — в телеметрии уровень звука не отдаётся. Могу сделать громче, тише, на максимум или выставить конкретный процент — скажи какой.'
+  [5] user: '[говорит: незнакомый голос] покажи анимацию радуги'
+  [6] assistant: '[ответ действием: play_animation happy — сделано]'
+  [7] user: '[говорит: незнакомый голос] стоп'
+  [8] user: '[говорит: незнакомый голос] покажи последние события'
+  [9] assistant: 'Последнее в сводке: 73 секунды назад — команда stop. Детекций камеры нет, отказавших и отсутствующих нод нет, система здорова, связь с интернетом есть, заряд 90 процентов.'
+  [10] user: '[говорит: незнакомый голос] статус нод'
+  [11] assistant: 'ROS2-ноды: отказавших и отсутствующих нет, система здорова. Сервисы по опросу up: живы cadvisor-main и cadvisor-vision, лежат otel-collector, voice-assistant, telegram-bot и supercollider.'
+  [12] user: '[говорит: незнакомый голос] статус контейнеров'
+  [13] assistant: '(«cpu» → 100 * rate(process_cpu_seconds_total[5m])) Вывел на TARS 2 — cadvisor-main:8080: 0.3684, cadvisor-vision:8080: 0.1228, prometheus:9090: 0.2982'
+  [14] user: '[говорит: незнакомый голос] какая температура процессоров'
+  [15] assistant: 'Температуру процессоров показать не могу: в помеченной телеметрии такой метрики нет, cAdvisor отдаёт только CPU, память и uptime. Внутренний датчик температуры тоже отдаёт ноль. Загрузка CPU сейчас: cadvisor-main 0.36, cadvisor-vision 0.12, prometheus 0.31.'
+  [16] user: '<system_context>\n  <recent_actions>[{"tool":"get_perception_context","status":"done","data":{"timestamp":1793727849.4659705,"vision_context":"","is_moving":true,"battery_voltage":41.0,"battery_percent":90.0,"temperature":0.0,"apriltag_ids":[],"system_health_status":"HEALTHY","health_issues":[],"current_time_human":"2026-11-03 20:44:09","time_period":"evening","internet_available":true,"failed_nodes":[],"missing_nodes":[],"mapping_mode":"unknown","memory_summary":"• [145s] command: Команда: stop"'
+  [17] assistant: '' tool_calls=(ToolCall(id='cmd-c9115761a2d5', name='command', arguments=mappingproxy({'actions': [{'tool': 'get_current_time', 'args': {}}], 'expression': {'emotion': 'neutral'}})),)
+  [18] tool: '{"query_results": [{"tool": "get_current_time", "status": "done", "reason": null, "data": {"time": "20:47", "date": "3 ноября 2026", "weekday": "вторник", "period": "вечер", "iso": "2026-11-03T20:47:46+03:00", "timezone": "Europe/Moscow", "formatted_time": "двадцать сорок семь", "tool_message": "Сейчас 20:47, вторник, 3 ноября 2026, вечер. По-русски: двадцать сорок семь."}}]}'
+  [19] assistant: '' tool_calls=(ToolCall(id='cmd-bddca153ebae', name='command', arguments=mappingproxy({'actions': [{'tool': 'show_metrics', 'args': {'query': 'services_up', 'datasource': 'prometheus'}}], 'expression': {'emotion': 'neutral'}})),)
+  [20] tool: '{"query_results": [{"tool": "show_metrics", "status": "done", "reason": null, "data": {"query": "up", "datasource": "prometheus", "request_id": "16397f59", "status": "ok", "series_count": 6, "url": "http://10.1.1.249:3000/explore?orgId=1&left=%7B%22datasource%22%3A%22Prometheus%22%2C%22queries%22%3A%5B%7B%22refId%22%3A%22A%22%2C%22expr%22%3A%22up%22%7D%5D%2C%22range%22%3A%7B%22from%22%3A%22now-15m%22%2C%22to%22%3A%22now%22%7D%7D", "note": "«services_up» → up", "available": [], "latest": {"cadvis'
+  [21] assistant: '' tool_calls=(ToolCall(id='call_00_yQZFdw1WBvacZ3hRuWDi2331', name='command', arguments=mappingproxy({'expression': {'emotion': 'neutral'}})),)
+  [22] tool: 'invalid arguments: данные запроса уже получены, запрос выполнен — повторять его не нужно. Пришли команду заново: ответ по этим данным в speech, не длиннее 280 символов, без actions.\n- empty_command: команда пустая: ответь речью (speech), вопросом (ask), действием (actions) или выступлением (perform); молчать — passed (нет speech, ask, actions, perform и passed)'
+  tools(12): command, memory_save, memory_search, get_current_time, search_web, play_animation, say, stop_music, get_music_state, request_music, dj_set, music_library
+🔎 LLM REQUEST END
+🔎 LLM RESPONSE: content='' finish=tool_calls tool_calls=[('command', '{"speech": "Связь с интернетом есть, Wi-Fi и роутер живы. По сервисам: живы cadvisor-main и cadvisor-vision, лежат otel-collector, voice-assistant, telegram-bot и supercollider. Время 20:47.", "expres')]
+[INFO] [1793728072.764291525] [avatar_supervisor]: 🧾 [command] provider=deepseek mode=tool_choice verdict=speech actions=[] speech_dropped=0
+[INFO] [1793728072.765338705] [avatar_supervisor]: 🧾 [command] retry=1 violations=['empty_command'] → verdict=speech (1664 мс)
+[INFO] [1793728072.766465552] [avatar_supervisor]: 🧮 [prompt] tokens=13879 estimated=False provider=deepseek view=v2 tools=12
+[INFO] [1793728072.785918437] [avatar_supervisor]: 🛰 [tars-v2] turn=3ae3148669d2 stage=done status=finished reason=- llm_calls=5 provider=deepseek
+[INFO] [1793728072.786741730] [avatar_supervisor]: 📊 [turn] turn_id=3ae3148669d2 epoch=1 agent=operator stage=done status=finished latency_ms=7931 llm_calls=5 llm_provider=deepseek tokens=41086
+[INFO] [1793728072.787504948] [avatar_supervisor]: 🛰 [tars-v2] request=telegram:1:1793728064845 status=finished latency_ms=7931 llm_calls=5 tools=['get_current_time', 'show_metrics']

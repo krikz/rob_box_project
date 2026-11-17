@@ -10,14 +10,14 @@
 - Ведение `CHANGELOG.md` и `progress.md`
 - Проверка битых ссылок и устаревших инструкций
 - Обновление `PRD.md` при изменении требований
-- Обновление `tasks.json` при добавлении новых задач
+- Обновление GitHub Issues при добавлении новых задач (`tasks.json` больше не используется как backlog)
 
 ---
 
-## Место в процессе (Context Engineering)
+## Место в процессе
 
 Этот файл — **сервисный агент**, работает после Implement.  
-Процесс: `.agents/skills/context-engineering/SKILL.md` | Бэклог: `tasks.json`
+Процесс: `docs/process/claude-coordinator-robot-flow.md` (ADR-0162) | Бэклог: GitHub Issues
 
 Вызывай после завершения фичи — обновить `docs/`, `CHANGELOG.md`, `PRD.md` если изменилась архитектура.
 
@@ -48,7 +48,6 @@ docs/
 │   ├── AGENT_GUIDE.md        # ⭐ гайд для AI агентов
 │   ├── DOCKER_STANDARDS.md   # правила Docker
 │   ├── PYTHON_STYLE_GUIDE.md # стиль Python кода
-│   ├── BUILD_OPTIMIZATION.md # оптимизация сборки
 │   ├── TESTING_GUIDE.md      # тестирование
 │   ├── LINTING_GUIDE.md      # линтинг
 │   └── agents/               # промпты саб-агентов
@@ -65,7 +64,7 @@ docs/
 **Ключевые файлы в корне:**
 - `README.md` — обзор проекта и индекс документации
 - `PRD.md` — Product Requirements Document
-- `tasks.json` — список задач для разработки
+- GitHub Issues — backlog задач (замена устаревшему `tasks.json`, который больше не существует в репо)
 - `progress.md` — лог выполнения задач агентами
 - `CHANGELOG.md` — история изменений
 
@@ -89,7 +88,7 @@ git diff --name-only HEAD~5 HEAD
 | Новый ROS 2 топик добавлен | `docs/architecture/SYSTEM_OVERVIEW.md`, `docs/architecture/SOFTWARE.md` |
 | Новый Docker сервис | `docs/architecture/SYSTEM_OVERVIEW.md`, `README.md` |
 | Новый ROS 2 пакет | `docs/packages/<package>/README.md`, `docs/architecture/SOFTWARE.md` |
-| Задача завершена | `progress.md`, `tasks.json` (status → done), `CHANGELOG.md` |
+| Задача завершена | `progress.md`, GitHub Issue закрыт (agent-flow / merge-gate, см. ADR-0014), `CHANGELOG.md` |
 | Изменился IP/порт/конфиг | `docs/architecture/NETWORK_TOPOLOGY.md`, `.github/copilot-instructions.md` |
 | Добавлена новая функциональность | `PRD.md` (раздел 3 — текущий статус), `README.md` |
 | Исправлен баг | `docs/fixes/FIX_SUMMARY.md`, `CHANGELOG.md` |
@@ -116,7 +115,7 @@ git diff --name-only HEAD~5 HEAD
 ### Проверка битых ссылок:
 ```bash
 # Проверь ссылки в markdown файлах
-bash scripts/check_broken_links.sh
+python scripts/diagnostics/check_links.py
 
 # Или вручную — ищи паттерны [text](path) где path не существует
 grep -r '\[.*\](.*\.md)' docs/ | grep -v 'http'

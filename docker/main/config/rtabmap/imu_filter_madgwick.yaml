@@ -1,0 +1,14 @@
+# imu_filter_madgwick для rtabmap (сервис imu-filter, docker/main/docker-compose.yaml).
+# Вход — сырой IMU OAK-D /camera/camera/imu (gyro + accel; orientation фиктивная),
+# выход — /imu/data с ориентацией. Замеры: docs/research/2026-11-04-imu-madgwick-rtabmap.md.
+imu_filter_madgwick:
+  ros__parameters:
+    use_mag: false              # магнитометра у OAK-D нет: курс — интеграл гироскопа
+    world_frame: enu            # REP-103; rtabmap ждёт ENU
+    publish_tf: false           # TF odom/map публикует rtabmap, не фильтр
+    remove_gravity_vector: false
+    gain: 0.1                   # дефолт пакета
+    zeta: 0.0
+    constant_dt: 0.0            # dt из штампов сообщений
+    stateless: false
+    publish_debug_topics: false

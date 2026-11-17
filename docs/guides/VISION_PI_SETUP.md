@@ -5,7 +5,7 @@
 ## 🚀 Быстрая установка (одна команда)
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/krikz/rob_box_project/develop/scripts/setup_vision_pi.sh | bash
+curl -fsSL https://raw.githubusercontent.com/krikz/rob_box_project/develop/scripts/setup/setup_vision_pi.sh | bash
 ```
 
 **Что делает скрипт:**
@@ -88,7 +88,7 @@ sudo systemctl restart NetworkManager
 
 ```bash
 # Одна команда - всё установит автоматически!
-curl -fsSL https://raw.githubusercontent.com/krikz/rob_box_project/develop/scripts/setup_vision_pi.sh | bash
+curl -fsSL https://raw.githubusercontent.com/krikz/rob_box_project/develop/scripts/setup/setup_vision_pi.sh | bash
 ```
 
 **Что будет происходить:**

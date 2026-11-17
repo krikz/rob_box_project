@@ -48,10 +48,10 @@ flowchart TD
   - Требует настроенный build machine
 
 **Примеры:**
-- `G-Build Base Images.yml` - сборка базовых образов на GitHub Actions
+- `L-Build Base Images.yml` - сборка базовых образов на GitHub Actions
 - `L-Build Base Images.yml` - сборка базовых образов на локальном runner
-- `G-Build All Services.yml` - полная сборка на GitHub Actions
-- `L-Build All Services.yml` - полная сборка на локальном runner
+- `L-Build-All-Services.yml` - полная сборка на GitHub Actions
+- `L-Build-All-Services.yml` - полная сборка на локальном runner
 
 ### 1. Create PR Feature to Develop
 
@@ -101,7 +101,7 @@ push:
 ```
 
 **Логика:**
-1. **Build All Services** - собирает ВСЕ сервисы через `G-Build All Services.yml`
+1. **Build All Services** - собирает ВСЕ сервисы через `L-Build-All-Services.yml`
    - Base images (ros2-zenoh)
    - Vision Pi (oak-d, lslidar, apriltag, led-matrix, voice-assistant)
    - Main Pi (micro-ros-agent, zenoh-router)
@@ -118,40 +118,23 @@ push:
 - PR готов для ревью и ручного мерджа
 - После мерджа в main будут созданы образы `*-humble-latest`
 
-### 3. Build Vision Services (GitHub Actions)
+### 3–4. Build Pi Services (один workflow на три Pi)
 
-**Файл:** `.github/workflows/G-Build Vision Pi Services.yml`
+**Файл:** `.github/workflows/L-Build Pi Services.yml` (ADR-0159 PR-3: заменил
+`L-Build Vision Pi Services.yml` и `L-Build Main Pi Services.yml`)
 
-**Сервисы:**
-- `oak-d` - OAK-D camera
-- `lslidar` - LSLIDAR N10
-- `led-matrix` - NeoPixel LED matrix driver
-- `voice-assistant` - Voice assistant + animations
-- `perception` - Perception nodes
-
-**Платформа:** `linux/arm64` (Raspberry Pi 5)
-**Runner:** `ubuntu-latest` (GitHub Actions)
-
-### 4. Build Main Services (GitHub Actions)
-
-**Файл:** `.github/workflows/G-Build Main Pi Services.yml`
-
-**Сервисы:**
-- `robot-state-publisher` - Robot state publisher
-- `rtabmap` - RTAB-Map SLAM
-- `twist-mux` - Twist multiplexer
-- `micro-ros-agent` - micro-ROS bridge
-- `ros2-control` - ROS 2 Control
-- `nav2` - Nav2 navigation stack
-- `lslidar` - LSLIDAR N10 driver
-- `perception` - Perception nodes
+**Вход `pi`:** `main` | `sound` | `vision`. Состав сборки, Dockerfile'ы и теги —
+`pis.<pi>` в `docker/build-manifest.yaml`; сервисы с `depends_on` собираются
+волнами (`build` → `build-wave-1` → `build-wave-2`), коммит тегов —
+`ci: <pi> SHA tags → <тег>` в `docker/<pi>/.image-versions.*` (поле, объявленное
+в нескольких Pi, например `PERCEPTION_TAG` в main и sound, пишется во все).
 
 **Платформа:** `linux/arm64` (Raspberry Pi 5)
-**Runner:** `ubuntu-latest` (GitHub Actions)
+**Runner:** `self-hosted` (локальный build machine)
 
 ### 5. Build Base Images (GitHub Actions)
 
-**Файл:** `.github/workflows/G-Build Base Images.yml`
+**Файл:** `.github/workflows/L-Build Base Images.yml`
 
 **Образы:**
 - `ros2-zenoh` - ROS 2 Humble + Zenoh middleware
@@ -165,14 +148,13 @@ push:
 
 ### 6. Build All Services (GitHub Actions)
 
-**Файл:** `.github/workflows/G-Build All Services.yml`
+**Файл:** `.github/workflows/L-Build-All-Services.yml`
 
 **Назначение:** Полная сборка всех образов проекта на GitHub Actions
 
 **Вызывает workflows:**
-- `G-Build Base Images.yml`
-- `G-Build Main Pi Services.yml`
-- `G-Build Vision Pi Services.yml`
+- `L-Build Base Images.yml`
+- `L-Build Pi Services.yml` ×3 (`pi: main`, `pi: sound`, `pi: vision`, параллельно)
 
 **Триггеры:**
 - `push` в ветку `main` (автоматически)
@@ -194,38 +176,25 @@ push:
 **Runner:** `self-hosted` (локальный build machine)
 **Registry:** `localhost:5000/krikz/rob_box_base` + `ghcr.io/krikz/rob_box_base`
 **Особенности:**
+- Состав/теги — `docker/build-manifest.yaml` (`base_images`), сборка — composite
+  `l-build-service` → `scripts/build/buildx_build.sh` (локально: `make build-base`)
 - Использует локальный APT cache (`http://host.docker.internal:3142`)
 - В 2-3x быстрее чем GitHub Actions
 - Публикует в локальный registry для быстрого pull на Raspberry Pi
 
-### 8. Build Vision Services (Local Runner)
+### 8–9. Build Pi Services (Local Runner)
 
-**Файл:** `.github/workflows/L-Build Vision Pi Services.yml`
-
-Аналог `G-Build Vision Pi Services.yml`, но:
-- Собирается на локальном build machine
-- Использует локальный APT cache
-- Публикует в `localhost:5000`
-
-### 9. Build Main Services (Local Runner)
-
-**Файл:** `.github/workflows/L-Build Main Pi Services.yml`
-
-Аналог `G-Build Main Pi Services.yml`, но:
-- Собирается на локальном build machine
-- Использует локальный APT cache
-- Публикует в `localhost:5000`
+См. п. 3–4: `L-Build Pi Services.yml` с входом `pi`.
 
 ### 10. Build All Services (Local Runner)
 
-**Файл:** `.github/workflows/L-Build All Services.yml`
+**Файл:** `.github/workflows/L-Build-All-Services.yml`
 
 **Назначение:** Полная сборка всех образов на локальном build machine
 
 **Вызывает workflows:**
 - `L-Build Base Images.yml` (опционально, если `build_base_images=true`)
-- `L-Build Main Pi Services.yml`
-- `L-Build Vision Pi Services.yml`
+- `L-Build Pi Services.yml` ×3 (`pi: main`, `pi: sound`, `pi: vision`, параллельно)
 
 **Триггеры:**
 - `workflow_dispatch` (только ручной запуск)
@@ -372,7 +341,7 @@ services:
 
 ```bash
 # Автоматически определить ветку и установить правильный IMAGE_TAG
-source scripts/set-docker-tags.sh
+source scripts/build/set-docker-tags.sh
 
 # Или вручную установить нужный тег
 export IMAGE_TAG=dev  # или latest, test, rc-1.0.0
@@ -506,10 +475,10 @@ on:
 
 ```bash
 # Через GitHub CLI
-gh workflow run "G-Build Vision Pi Services.yml" --ref develop
+gh workflow run "L-Build Pi Services.yml" --ref develop -f pi=vision
 
 # Или через web interface
-# GitHub → Actions → Build Vision Pi Services → Run workflow
+# GitHub → Actions → L: Build Pi Services → Run workflow (выбрать pi)
 ```
 
 ### Откат изменений
@@ -552,7 +521,7 @@ git push origin main
 Проверить статус сборки:
 ```bash
 # Через GitHub CLI
-gh run list --workflow="G-Build Vision Pi Services.yml"
+gh run list --workflow="L-Build Pi Services.yml"
 
 # Последний статус
 gh run view --log
@@ -588,7 +557,7 @@ gh pr create --base develop --head feature/my-feature \
 **Решение:**
 ```bash
 # Проверить что всё собирается
-gh workflow run "G-Build All Services.yml" --ref develop
+gh workflow run "L-Build-All-Services.yml" --ref develop
 
 # Проверить статус
 gh run list --workflow="G-Auto-merge to Main.yml"
@@ -635,7 +604,7 @@ gh secret list
 ```bash
 # Автоматическая настройка на основе текущей ветки
 cd /path/to/rob_box_project
-source scripts/set-docker-tags.sh
+source scripts/build/set-docker-tags.sh
 
 # Проверить что IMAGE_TAG установлен правильно
 echo $IMAGE_TAG
@@ -646,56 +615,69 @@ export IMAGE_TAG=dev
 
 ## Локальная разработка и сборка
 
+### Единый подход: CI и локально — один и тот же код
+
+С run [36351952819](https://github.com/krikz/rob_box_project/actions/runs/36351952819)
+(L-Build Base Images упал за 0 секунд: `host-gateway is not supported by the
+docker-container driver`) сборка и анализ устроены так, что у каждой операции
+ровно одна реализация, и её зовут и workflow, и человек/агент на своей машине:
+
+```
+docker/build-manifest.yaml            что собирать: сервисы (pis.*) + базы (base_images)
+  └─ scripts/ci/gen_build_matrix.py   теги / build-args / source_hash / pre_build
+       └─ scripts/build/buildx_build.sh   КАК собирать: buildx-билдер (--builder, без
+                                          `buildx use`), host-gateway → IP шлюза,
+                                          registry-кеш, --load + push только localhost:5000
+CI:      .github/actions/l-build-service  → buildx_build.sh   (все L-Build workflow)
+Локально: scripts/build/build.py          → buildx_build.sh
+```
+
+Проверки (lint/тесты/аудит) не копируются в скрипты: `scripts/ci/run_workflow_job.py`
+исполняет `run:`-шаги прямо из `.github/workflows/*.yml` в текущем чекауте.
+
 ### Локальная сборка Docker образов
 
-Для ускорения разработки можно собирать образы локально, не дожидаясь GitHub Actions:
-
 ```bash
-# Собрать один сервис
-./scripts/local-build.sh voice-assistant
+make build-list                        # что можно собрать (из манифеста)
+make build-base                        # 4 базы (pcl после ros2-zenoh); BASE=depthai — одну
+make build SERVICE=voice-assistant     # один сервис (Pi определяется сам)
+make build PI=vision                   # все сервисы Pi
+make build-all                         # базы + оба Pi
 
-# Собрать все Vision Pi сервисы
-./scripts/local-build.sh vision
-
-# Собрать все Main Pi сервисы
-./scripts/local-build.sh main
-
-# Собрать все сервисы
-./scripts/local-build.sh all
-
-# Собрать для конкретной платформы
-./scripts/local-build.sh voice-assistant linux/amd64
+# флаги — через BUILD_FLAGS (или напрямую scripts/build/build.py --help):
+make build SERVICE=oak-d BUILD_FLAGS="--dry-run"              # показать BUILD_*, не собирать
+make build SERVICE=oak-d BUILD_FLAGS="--platform linux/amd64 --no-push"
+make build-base BUILD_FLAGS="--no-cache"                      # = force_rebuild в CI
 ```
 
-**Примечание:** Локальная сборка создаёт образы с тегом `IMAGE_TAG=local`. Они будут использованы если запустить `docker-compose` с `IMAGE_TAG=local`.
+- Тег по умолчанию `local` (`--docker-tag dev|test|latest` — как в CI).
+- Сервисы собираются `FROM localhost:5000/krikz/rob_box_base:*`, а docker-container
+  билдер берёт `FROM` из registry, не из локального daemon. Поэтому, если
+  `localhost:5000` отвечает, push в него включён по умолчанию (`--push`/`--no-push` — явно).
+  Registry, если его нет: `docker run -d -p 5000:5000 --restart=always --name registry registry:2`.
+- Сборка `linux/arm64` на x86_64 требует binfmt:
+  `docker run --privileged --rm tonistiigi/binfmt --install arm64`.
+- `scripts/build/local-build.sh` оставлен как шим со старым интерфейсом → `build.py`.
 
-### Запуск GitHub Actions локально с act
-
-Установите [act](https://github.com/nektos/act) для запуска workflows локально:
+### Локальный запуск проверок CI
 
 ```bash
-# Установка
-brew install act  # macOS
-curl https://raw.githubusercontent.com/nektos/act/master/install.sh | sudo bash  # Linux
-
-# Список всех workflows
-act -l
-
-# Запуск конкретного workflow (dry run)
-act -W ".github/workflows/G-Build Vision Pi Services.yml" -n
-
-# Запуск конкретного job
-act -j build-oak-d
-
-# Запуск с секретами
-echo "GITHUB_TOKEN=ghp_xxx" > .secrets
-act --secret-file .secrets
+make ci-list                           # какие workflow/job'ы можно гонять локально (runs-on: ubuntu-*)
+make lint                              # G-Lint Code целиком
+make audit                             # G-Architecture Audit (статическая часть)
+make ci WF="G-Run Tests" JOB=unit-tests
+make lint CI_FLAGS="-j python-lint --step 'CC-budget'"
+make lint CI_FLAGS="--with-install"    # выполнить и шаги Install … (по умолчанию SKIP)
 ```
 
-**Важно:** 
-- Сборка ARM64 образов на x86_64 будет очень медленной через QEMU
-- Для разработки рекомендуется использовать `./scripts/local-build.sh` вместо act
-- act полезен для тестирования логики workflows, но не для реальной сборки образов
+Раннер печатает по каждому шагу PASS / FAIL / WARN (continue-on-error) / SKIP.
+SKIP — это не «прошло»: `uses:`-шаги, шаги с `${{ }}` и `Install …` не
+выполняются и так и помечаются. Self-hosted job'ы (сборка, деплой, робот)
+раннер не трогает — для сборки есть `build.py`.
+
+`act` по-прежнему можно запускать для проверки логики workflow (общий `.actrc`
+удалён по ADR-0166: он ссылался на несуществующий workflow), но для повседневной
+локальной проверки он не нужен.
 
 ### Быстрая итерация при разработке
 
@@ -703,13 +685,13 @@ act --secret-file .secrets
 
 ```bash
 # 1. Настроить теги для текущей ветки
-source scripts/set-docker-tags.sh
+source scripts/build/set-docker-tags.sh
 
 # 2. Собрать образ для x86_64 (быстрая разработка)
-IMAGE_TAG=local ./scripts/local-build.sh voice-assistant linux/amd64
+make build SERVICE=voice-assistant BUILD_FLAGS="--platform linux/amd64 --no-push"
 
 # 3. Протестировать локально
-cd docker/vision
+cd docker/sound   # голосовой стек на Sound Pi (ADR-0159)
 IMAGE_TAG=local docker-compose up voice-assistant
 
 # 4. Запушить изменения - GitHub Actions соберёт для ARM64
@@ -719,8 +701,8 @@ git push
 
 # 5. Через ~10 минут образ с правильным тегом будет на ghcr.io
 # 6. На Raspberry Pi выполнить:
-ssh ros2@10.1.1.21
-cd ~/rob_box_project/docker/vision
+ssh ros2@10.1.1.22   # Sound Pi
+cd ~/rob_box_project/docker/sound
 source ../../scripts/set-docker-tags.sh
 docker-compose pull voice-assistant
 docker-compose up -d voice-assistant
@@ -729,20 +711,20 @@ docker-compose up -d voice-assistant
 **Сценарий 2: Разработка непосредственно на Raspberry Pi**
 
 ```bash
-# 1. SSH на Raspberry Pi
-ssh ros2@10.1.1.21
+# 1. SSH на Raspberry Pi (Sound Pi — там voice-assistant)
+ssh ros2@10.1.1.22
 
 # 2. Перейти в проект
 cd ~/rob_box_project
 
 # 3. Настроить теги
-source scripts/set-docker-tags.sh
+source scripts/build/set-docker-tags.sh
 
 # 4. Собрать образ локально (нативный ARM64)
-IMAGE_TAG=local ./scripts/local-build.sh voice-assistant
+make build SERVICE=voice-assistant
 
 # 5. Запустить
-cd docker/vision
+cd docker/sound
 IMAGE_TAG=local docker-compose up -d voice-assistant
 
 # 6. Проверить логи
@@ -753,7 +735,7 @@ docker logs -f voice-assistant
 
 ```bash
 # Production (main branch images)
-source scripts/set-docker-tags.sh  # автоматически определит main
+source scripts/build/set-docker-tags.sh  # автоматически определит main
 cd docker/vision && docker-compose pull && docker-compose up -d
 
 # Development (develop branch images)
@@ -878,8 +860,13 @@ BUILD_MACHINE_IP=10.1.1.5 ./configure_raspberry_pi.sh
 Измените workflow для использования self-hosted runner:
 
 ```yaml
+# Актуальный пайплайн уже так и устроен: отдельного job'а на сервис
+# (вроде build-oak-d) нет, все сервисы Vision/Main Pi собираются одним
+# matrix-job'ом `build` через composite .github/actions/l-build-service,
+# состав задаёт docker/build-manifest.yaml. Ниже — принцип на примере
+# одного сервиса.
 jobs:
-  build-oak-d:
+  build-<service>:
     runs-on: self-hosted  # ← было: ubuntu-latest
     
     steps:
@@ -903,25 +890,25 @@ jobs:
 
 ```yaml
 jobs:
-  build-oak-d:
+  build-<service>:
     runs-on: ubuntu-latest  # Сборка на GitHub
-    
+
     steps:
       - name: Build and push to ghcr.io
         uses: docker/build-push-action@v5
         with:
           push: true
-          tags: ghcr.io/krikz/rob_box:oak-d-humble-latest
-      
+          tags: ghcr.io/krikz/rob_box:<service>-humble-latest
+
       # Дополнительно: копирование в локальный registry
       - name: Copy to local registry
         if: github.ref == 'refs/heads/main'
         run: |
           # Выполнится на build machine через self-hosted runner
-          docker pull ghcr.io/krikz/rob_box:oak-d-humble-latest
-          docker tag ghcr.io/krikz/rob_box:oak-d-humble-latest \
-                     10.1.1.5:5000/krikz/rob_box:oak-d-humble-latest
-          docker push 10.1.1.5:5000/krikz/rob_box:oak-d-humble-latest
+          docker pull ghcr.io/krikz/rob_box:<service>-humble-latest
+          docker tag ghcr.io/krikz/rob_box:<service>-humble-latest \
+                     10.1.1.5:5000/krikz/rob_box:<service>-humble-latest
+          docker push 10.1.1.5:5000/krikz/rob_box:<service>-humble-latest
 ```
 
 ### Мониторинг Build Machine
@@ -997,6 +984,6 @@ docker exec build-apt-cache rm -rf /var/cache/apt-cacher-ng/*
 ## Дополнительная информация
 
 - **Docker README:** `docker/vision/README.md`
-- **Deployment Guide:** `docker/vision/DEPLOYMENT.md`
+- **Deployment Guide:** `docs/deployment/VISION_PI_DEPLOYMENT.md`
 - **Architecture:** `docs/ARCHITECTURE.md`
 - **Build Machine:** `docker/build/README.md`, `docker/build/QUICKSTART.md`

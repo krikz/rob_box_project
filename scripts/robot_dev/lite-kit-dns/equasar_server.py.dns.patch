@@ -1,0 +1,42 @@
+--- a/scripts/equasar_server.py.bak-20261108
++++ b/scripts/equasar_server.py
+@@ -1093,7 +1093,8 @@
+     if primary and primary not in ips:
+         ips.insert(0, primary)
+     return ips or [LOCAL_IP]
+-DNS_UPSTREAMS = [("1.1.1.1", 53), ("8.8.8.8", 53), ("77.88.8.8", 53)]
++DNS_UPSTREAMS = [("77.88.8.8", 53), ("8.8.8.8", 53), ("1.1.1.1", 53)]
++DNS_UPSTREAM_TIMEOUT = 1.2  # короткий таймаут: мёртвый апстрим не должен съедать очередь
+ 
+ 
+ def _dns_qname(data):
+@@ -1143,7 +1144,7 @@
+     for host, port in DNS_UPSTREAMS:
+         try:
+             s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+-            s.settimeout(2)
++            s.settimeout(DNS_UPSTREAM_TIMEOUT)
+             s.sendto(query, (host, port))
+             data, _ = s.recvfrom(4096)
+             s.close()
+@@ -1190,12 +1191,19 @@
+         print(f"[*] DNS сервер слушает UDP {port} (quasar.* -> {_ips})")
+         sys.stdout.flush()
+ 
++        def udp_answer(sock, data, addr):
++            try:
++                sock.sendto(_dns_handle(data, addr[0]), addr)
++            except Exception as e:
++                print(f"[!] DNS UDP ответ: {e!r}")
++
+         def udp_loop():
+             while True:
+                 try:
+                     data, addr = udp.recvfrom(4096)
+                     if data:
+-                        udp.sendto(_dns_handle(data, addr[0]), addr)
++                        # отдельный поток на запрос: медленный FORWARD не блокирует quasar.*
++                        threading.Thread(target=udp_answer, args=(udp, data, addr), daemon=True).start()
+                 except Exception as e:
+                     print(f"[!] DNS UDP: {e!r}")
+ 

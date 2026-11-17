@@ -1,5 +1,7 @@
 # T4v2.1 — A43 voice-action-server aiohttp FIX VERIFIED
 
+> **05.11.2026 (ADR-0166):** `tests/e2e/live/snapshot.sh` удалён; скрипт — в истории git.
+
 **Date**: 2026-08-06 11:23 MSK (post-deploy)
 **Branch**: feature/harness-p0-foundation
 **Commits**: 2e6ab214 + 337548a3

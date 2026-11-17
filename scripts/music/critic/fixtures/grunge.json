@@ -1,0 +1,108 @@
+{
+ "style": "grunge",
+ "source": "style_critic/grunge/grunge.md, раздел «Ответ после того как дали посмотреть на код» (Qwen3.8 Omni Max, 08.10); утверждения переведены вручную в схему judge.py; confidence=0.5 — судья его не давал",
+ "tracks": [
+  {
+   "model": "set53789_01_A_8d1816e5.json",
+   "start_s": 0.0
+  },
+  {
+   "model": "set53789_02_B_60599ccd.json",
+   "start_s": 135.0
+  }
+ ],
+ "claims": [
+  {
+   "t0": 22,
+   "t1": 30,
+   "kind": "out_of_key",
+   "claim": "p1 jbass: нота 48 (C) вне C# major",
+   "confidence": 0.5,
+   "args": {
+    "role": "bass",
+    "midi": [
+     48
+    ]
+   }
+  },
+  {
+   "t0": 45,
+   "t1": 70,
+   "kind": "out_of_key",
+   "claim": "p3 pluck: 74 (D) и 76 (E) вне C# major — пониженные II и III",
+   "confidence": 0.5,
+   "args": {
+    "role": "lead",
+    "midi": [
+     74,
+     76
+    ]
+   }
+  },
+  {
+   "t0": 155,
+   "t1": 175,
+   "kind": "out_of_key",
+   "claim": "b3 saw: 76 (E) в F minor — режущий диссонанс",
+   "confidence": 0.5,
+   "args": {
+    "role": "lead",
+    "midi": [
+     76
+    ]
+   }
+  },
+  {
+   "t0": 135,
+   "t1": 150,
+   "kind": "overlap",
+   "claim": "трек 2 на 135 с без fade/crossfade — жёсткое наложение",
+   "confidence": 0.5,
+   "args": {
+    "seconds": 15
+   }
+  },
+  {
+   "t0": 142,
+   "t1": 150,
+   "kind": "hole",
+   "claim": "b1 jbass начинается с 64 None — бас молчит 4 такта (7.5 с)",
+   "confidence": 0.5,
+   "args": {
+    "role": "bass"
+   }
+  },
+  {
+   "t0": 0,
+   "t1": 135,
+   "kind": "masking",
+   "claim": "бочка d1 и бас p1 без сайдчейна, amp баса статичен",
+   "confidence": 0.5,
+   "args": {
+    "param": "sidechain",
+    "role": "bass"
+   }
+  },
+  {
+   "t0": 30,
+   "t1": 90,
+   "kind": "mix",
+   "claim": "p2 saw pan=((-0.3,0.3),) — почти моно, p3 без панорамы",
+   "confidence": 0.5
+  },
+  {
+   "t0": 135,
+   "t1": 160,
+   "kind": "mix",
+   "claim": "амплитуды двух мастер-шин 0.4–0.5 в сумме превышают 1.0 — клиппинг",
+   "confidence": 0.5
+  },
+  {
+   "t0": 0,
+   "t1": 135,
+   "kind": "mix",
+   "claim": "тарелки d2/c2 lpf 4000→300 на 304 такта: резкость в верхах в начале",
+   "confidence": 0.5
+  }
+ ]
+}

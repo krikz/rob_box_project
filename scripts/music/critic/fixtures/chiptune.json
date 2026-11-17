@@ -1,0 +1,58 @@
+{
+ "style": "chiptune",
+ "source": "style_critic/chiptune/chiptune.md, раздел «Ответ после того как дали посмотреть на код» (Qwen3.8 Omni Max, 08.10); утверждения переведены вручную в схему judge.py; confidence=0.5 — судья его не давал",
+ "tracks": [
+  {
+   "model": "set52716_01_A_ac22728a.json",
+   "start_s": 0.0
+  },
+  {
+   "model": "set52716_02_B_b36f24cf.json",
+   "start_s": 100.3
+  }
+ ],
+ "claims": [
+  {
+   "t0": 0,
+   "t1": 14,
+   "kind": "phrasing",
+   "claim": "p1 pulse: sus=0.25 — фразы обрываются слишком резко, немузыкально",
+   "confidence": 0.5,
+   "args": {
+    "role": "lead"
+   }
+  },
+  {
+   "t0": 14,
+   "t1": 29,
+   "kind": "mix",
+   "claim": "pulse p1 и square p2 в одном регистре: биения, расстроенность",
+   "confidence": 0.5
+  },
+  {
+   "t0": 0,
+   "t1": 56,
+   "kind": "masking",
+   "claim": "три синтеза p1/p2/p3 и шум e2 в узком диапазоне — каша в низах и серединах",
+   "confidence": 0.5
+  },
+  {
+   "t0": 0,
+   "t1": 56,
+   "kind": "param_reading",
+   "claim": "lpf=var([0,4000,...,300],[240,1,...]) выглядит подозрительно: фильтр закрыт/открыт не вовремя",
+   "confidence": 0.5,
+   "args": {
+    "param": "lpf",
+    "value": 0
+   }
+  },
+  {
+   "t0": 150,
+   "t1": 195,
+   "kind": "mix",
+   "claim": "e2 FX.wav (amp до 0.288) — широкополосный шум убивает читаемость быстрых пассажей",
+   "confidence": 0.5
+  }
+ ]
+}

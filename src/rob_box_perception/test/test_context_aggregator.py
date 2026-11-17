@@ -77,8 +77,18 @@ class _FakeNode:
         sub = MagicMock()
         sub.topic = topic
         sub.callback = callback
+        sub.msg_type = msg_type  # expose msg_type for assertion-only tests
+        sub._msg_type = msg_type
         self._subs[topic] = callback
         return sub
+
+    def create_client(self, srv_type, name, **kwargs) -> MagicMock:
+        client = MagicMock()
+        client.srv_type = srv_type
+        client.name = name
+        self._clients = getattr(self, '_clients', {})
+        self._clients[name] = client
+        return client
 
     def create_timer(self, period, callback, callback_group=None) -> MagicMock:
         timer = MagicMock()
@@ -103,11 +113,11 @@ _mock_rclpy = _types.ModuleType('rclpy')
 _mock_rclpy.init = lambda *a, **kw: None
 _mock_rclpy.shutdown = lambda *a, **kw: None
 _mock_rclpy.ok = lambda: True
-sys.modules.setdefault('rclpy', _mock_rclpy)
+sys.modules['rclpy'] = _mock_rclpy
 
 _mock_rclpy_node = _types.ModuleType('rclpy.node')
 _mock_rclpy_node.Node = _FakeNode
-sys.modules.setdefault('rclpy.node', _mock_rclpy_node)
+sys.modules['rclpy.node'] = _mock_rclpy_node
 
 _interfaces = _types.ModuleType('rcl_interfaces')
 
@@ -123,18 +133,46 @@ class _Log:
 
 _interfaces_msg = _types.ModuleType('rcl_interfaces.msg')
 _interfaces_msg.Log = _Log
-sys.modules.setdefault('rcl_interfaces', _interfaces)
-sys.modules.setdefault('rcl_interfaces.msg', _interfaces_msg)
+sys.modules['rcl_interfaces'] = _interfaces
+sys.modules['rcl_interfaces.msg'] = _interfaces_msg
+
+
+class _GetParameters:
+
+    class Request:
+
+        def __init__(self):
+            self.names: List[str] = []
+
+
+_interfaces_srv = _types.ModuleType('rcl_interfaces.srv')
+_interfaces_srv.GetParameters = _GetParameters
+sys.modules['rcl_interfaces.srv'] = _interfaces_srv
+
+# ── apriltag_msgs shim (issue #4352) ─────────────────────────────────────
+_apriltag = _types.ModuleType('apriltag_msgs')
+_apriltag_msg = _types.ModuleType('apriltag_msgs.msg')
+
+
+class _AprilTagDetectionArray:
+
+    def __init__(self, ids=()):
+        self.detections = [_types.SimpleNamespace(family='tag36h11', id=i) for i in ids]
+
+
+_apriltag_msg.AprilTagDetectionArray = _AprilTagDetectionArray
+sys.modules['apriltag_msgs'] = _apriltag
+sys.modules['apriltag_msgs.msg'] = _apriltag_msg
 
 _cb_mod = _types.ModuleType('rclpy.callback_groups')
 _cb_mod.ReentrantCallbackGroup = type('ReentrantCallbackGroup', (), {})
-sys.modules.setdefault('rclpy.callback_groups', _cb_mod)
+sys.modules['rclpy.callback_groups'] = _cb_mod
 
 _qos_mod = _types.ModuleType('rclpy.qos')
 _qos_mod.HistoryPolicy = _types.SimpleNamespace(KEEP_LAST='KEEP_LAST')
 _qos_mod.ReliabilityPolicy = _types.SimpleNamespace(RELIABLE='RELIABLE')
 _qos_mod.QoSProfile = lambda *a, **kw: MagicMock()
-sys.modules.setdefault('rclpy.qos', _qos_mod)
+sys.modules['rclpy.qos'] = _qos_mod
 
 _std_msgs = _types.ModuleType('std_msgs')
 _std_msgs_msg = _types.ModuleType('std_msgs.msg')
@@ -154,8 +192,8 @@ class _Bool:
 
 _std_msgs_msg.String = _String
 _std_msgs_msg.Bool = _Bool
-sys.modules.setdefault('std_msgs', _std_msgs)
-sys.modules.setdefault('std_msgs.msg', _std_msgs_msg)
+sys.modules['std_msgs'] = _std_msgs
+sys.modules['std_msgs.msg'] = _std_msgs_msg
 
 # ── geometry_msgs shim ───────────────────────────────────────────────────
 _geom = _types.ModuleType('geometry_msgs')
@@ -214,6 +252,20 @@ class _TwistWithCovariance:
         self.twist = _Twist()
 
 
+class _PoseWithCovariance:
+
+    def __init__(self):
+        self.pose = _Pose()
+        self.covariance = [0.0] * 36
+
+
+class _PoseWithCovarianceStamped:
+
+    def __init__(self):
+        self.pose = _PoseWithCovariance()
+        self.header = MagicMock()
+
+
 _geom_msg.Vector3 = _Vector3
 _geom_msg.Point = _Point
 _geom_msg.Quaternion = _Quaternion
@@ -221,8 +273,10 @@ _geom_msg.Pose = _Pose
 _geom_msg.PoseStamped = _PoseStamped
 _geom_msg.Twist = _Twist
 _geom_msg.TwistWithCovariance = _TwistWithCovariance
-sys.modules.setdefault('geometry_msgs', _geom)
-sys.modules.setdefault('geometry_msgs.msg', _geom_msg)
+_geom_msg.PoseWithCovariance = _PoseWithCovariance
+_geom_msg.PoseWithCovarianceStamped = _PoseWithCovarianceStamped
+sys.modules['geometry_msgs'] = _geom
+sys.modules['geometry_msgs.msg'] = _geom_msg
 
 # ── nav_msgs shim ────────────────────────────────────────────────────────
 _nav = _types.ModuleType('nav_msgs')
@@ -241,8 +295,8 @@ class _Odometry:
 
 
 _nav_msg.Odometry = _Odometry
-sys.modules.setdefault('nav_msgs', _nav)
-sys.modules.setdefault('nav_msgs.msg', _nav_msg)
+sys.modules['nav_msgs'] = _nav
+sys.modules['nav_msgs.msg'] = _nav_msg
 
 # ── control_msgs shim ────────────────────────────────────────────────────
 # context_aggregator_node.py imports DynamicJointState from control_msgs.msg
@@ -260,8 +314,8 @@ class _DynamicJointState:
 
 
 _control_msg.DynamicJointState = _DynamicJointState
-sys.modules.setdefault('control_msgs', _control)
-sys.modules.setdefault('control_msgs.msg', _control_msg)
+sys.modules['control_msgs'] = _control
+sys.modules['control_msgs.msg'] = _control_msg
 
 # ── rob_box_perception_msgs shim ─────────────────────────────────────────
 # context_aggregator_node.py tries to import ``PerceptionEvent`` from this
@@ -294,11 +348,41 @@ class _PerceptionEvent:
 
 
 _msgs_msg.PerceptionEvent = _PerceptionEvent
-sys.modules.setdefault('rob_box_perception_msgs', _msgs)
-sys.modules.setdefault('rob_box_perception_msgs.msg', _msgs_msg)
+sys.modules['rob_box_perception_msgs'] = _msgs
+sys.modules['rob_box_perception_msgs.msg'] = _msgs_msg
 
-# Import after the shim is registered.
-from geometry_msgs.msg import Point, PoseStamped, Quaternion  # noqa: E402
+# ADR-0150 PR-2: context_aggregator_node подписан на типизированный Utterance.
+_dialog_msgs = _types.ModuleType('rob_box_dialog_msgs')
+_dialog_msgs_msg = _types.ModuleType('rob_box_dialog_msgs.msg')
+
+
+class _Utterance:
+    def __init__(self, text: str = ''):
+        self.text = text
+
+
+class _SpeechRequest:
+    def __init__(self, agent: str = '', text: str = '', commit: bool = True):
+        self.agent = agent
+        self.text = text
+        self.commit = commit
+
+
+_dialog_msgs_msg.Utterance = _Utterance
+_dialog_msgs_msg.SpeechRequest = _SpeechRequest
+sys.modules['rob_box_dialog_msgs'] = _dialog_msgs
+sys.modules['rob_box_dialog_msgs.msg'] = _dialog_msgs_msg
+
+# Import after the shim is registered.  Fresh import: another test file may
+# have already imported the node against ITS stubs (conftest.py rolls the
+# stubs back after each module, but not the real module bound to them).
+sys.modules.pop('rob_box_perception.context_aggregator_node', None)
+from geometry_msgs.msg import (  # noqa: E402
+    Point,
+    PoseStamped,
+    PoseWithCovarianceStamped,
+    Quaternion,
+)
 from nav_msgs.msg import Odometry  # noqa: E402
 import rclpy  # noqa: E402  — resolves to the shim module registered above
 from rob_box_perception.context_aggregator_node import ContextAggregatorNode  # noqa: E402, E501
@@ -338,7 +422,6 @@ class TestContextAggregator(unittest.TestCase):
         self.assertTrue(self.node.has_parameter('timezone'))
 
         # Проверяем начальное состояние
-        self.assertIsNone(self.node.current_vision)
         self.assertIsNone(self.node.current_pose)
 
     def test_parameters(self):
@@ -351,37 +434,147 @@ class TestContextAggregator(unittest.TestCase):
         # Подтверждаем что LLM-параметр действительно отсутствует
         self.assertFalse(self.node.has_parameter('enable_summarization'))
 
-    def test_vision_context_subscription(self):
-        """Тест: Подписка на vision context."""
-        # Создаём vision сообщение
-        vision_msg = String()
-        vision_msg.data = '{"objects": ["table", "chair"], "scene": "kitchen"}'
+    def test_dead_vision_context_topic_is_not_subscribed(self):
+        """Issue #4352: у /perception/vision_context нет издателя - подписки нет."""
+        self.assertNotIn('/perception/vision_context', self.node._subs)
 
-        # Проверяем что есть callback для vision
-        self.assertTrue(hasattr(self.node, 'on_vision_context'))
+    def test_apriltags_subscribed_on_detections(self):
+        """Issue #4352: теги приходят в /detections (apriltag_node), подписка жива."""
+        self.assertIn('/detections', self.node._subs)
 
-        # Вызываем callback
-        self.node.on_vision_context(vision_msg)
+    def test_visible_apriltag_reaches_event(self):
+        """Issue #4352: тег 21 в кадре -> apriltag_ids == [21]."""
+        self.node.on_apriltags(_AprilTagDetectionArray(ids=[21]))
+        event = self._publish()
+        self.assertEqual(event.apriltag_ids, [21])
 
-        # Проверяем что vision сохранен
-        self.assertIsNotNone(self.node.current_vision)
+    def test_apriltag_expires_when_out_of_view(self):
+        """Тег ушёл из кадра: через APRILTAG_FRESH_S он не виден."""
+        self.node.on_apriltags(_AprilTagDetectionArray(ids=[21]))
+        self.assertEqual(self.node.tags.visible(time.time() + 10.0), [])
+
+    def test_standing_robot_with_odom_noise_is_not_moving(self):
+        """Issue #4352: шум icp_odometry стоящего робота (замер 04.11) - не движение."""
+        for vx, vy, wz in ((-0.044, -0.015, 0.006), (0.020, 0.002, 0.019), (-0.006, 0.000, -0.007),
+                           (0.039, 0.005, -0.021)):
+            self.node.on_odometry(self._odom(vx, vy, wz))
+        event = self._publish()
+        self.assertFalse(event.is_moving)
+
+    def test_driving_robot_is_moving(self):
+        """Езда 0.2 м/с - движение."""
+        for _ in range(4):
+            self.node.on_odometry(self._odom(0.2, 0.0, 0.0))
+        self.assertTrue(self._publish().is_moving)
+
+    def test_no_odometry_is_a_health_issue(self):
+        """Одометрии нет - is_moving False, но в health_issues честное «нет данных»."""
+        event = self._publish()
+        self.assertFalse(event.is_moving)
+        self.assertTrue(any('Одометрия' in i for i in event.health_issues))
+
+    def test_mapping_mode_from_rtabmap_parameter(self):
+        """Issue #4352: Mem/IncrementalMemory=false у rtabmap -> localization."""
+        self.assertIn('/rtabmap/rtabmap/get_parameters', self.node._clients)
+        value = _types.SimpleNamespace(type=4, string_value='false', bool_value=False)
+        future = MagicMock()
+        future.result.return_value = _types.SimpleNamespace(values=[value])
+        self.node.rtabmap.on_response(future)
+        self.assertEqual(self._publish().mapping_mode, 'localization')
+
+    def test_mapping_mode_unknown_without_rtabmap_answer(self):
+        """rtabmap не ответил - честное unknown."""
+        self.assertEqual(self._publish().mapping_mode, 'unknown')
+
+    def test_poll_rtabmap_mode_asks_incremental_memory(self):
+        """Опрос шлёт GetParameters с именем Mem/IncrementalMemory."""
+        client = self.node._clients['/rtabmap/rtabmap/get_parameters']
+        client.service_is_ready.return_value = True
+        self.node.rtabmap.poll()
+        request = client.call_async.call_args[0][0]
+        self.assertEqual(request.names, ['Mem/IncrementalMemory'])
+
+    def _odom(self, vx, vy, wz):
+        msg = Odometry()
+        msg.twist.twist.linear.x = vx
+        msg.twist.twist.linear.y = vy
+        msg.twist.twist.angular.z = wz
+        return msg
+
+    def _publish(self):
+        pub = self.node.event_pub
+        before = len(pub.published)
+        self.node.publish_event()
+        self.assertEqual(len(pub.published), before + 1)
+        return pub.published[-1]
 
     def test_pose_subscription(self):
-        """Тест: Подписка на позицию (localization_pose)."""
-        # Создаём pose сообщение
-        pose_msg = PoseStamped()
-        pose_msg.pose.position = Point(x=1.0, y=2.0, z=0.0)
-        pose_msg.pose.orientation = Quaternion(x=0.0, y=0.0, z=0.0, w=1.0)
+        """Тест: Подписка на позицию (localization_pose).
+
+        Issue #2826: rtabmap публикует ``PoseWithCovarianceStamped``,
+        поэтому callback должен принимать этот тип и нормализовывать
+        до ``Pose`` через ``msg.pose.pose``. Тест проверяет обе
+        стороны контракта: callback работает без падения на новом
+        типе и сохраняет координаты.
+        """
+        # Создаём PoseWithCovarianceStamped — это тот тип, который
+        # реально публикует rtabmap (см. issue #2826).
+        pose_msg = PoseWithCovarianceStamped()
+        pose_msg.pose.pose.position = Point(x=1.0, y=2.0, z=0.0)
+        pose_msg.pose.pose.orientation = Quaternion(x=0.0, y=0.0, z=0.0, w=1.0)
 
         # Проверяем callback
         self.assertTrue(hasattr(self.node, 'on_robot_pose'))
 
-        # Вызываем callback
+        # Вызываем callback — НЕ должно упасть на новом типе.
         self.node.on_robot_pose(pose_msg)
 
-        # Проверяем что позиция сохранена
+        # current_pose хранит нормализованный Pose (либо ссылку на
+        # вложенный Pose, либо сам msg). Допустимы оба варианта:
+        # важно, что координаты достижимы через ``.position.x``.
         self.assertIsNotNone(self.node.current_pose)
-        self.assertEqual(self.node.current_pose.pose.position.x, 1.0)
+        # Достаём .position.x либо через Pose, либо через .pose.pose.position
+        cur = self.node.current_pose
+        pos_x = getattr(getattr(cur, 'pose', cur), 'position').x
+        pos_y = getattr(getattr(cur, 'pose', cur), 'position').y
+        self.assertEqual(pos_x, 1.0)
+        self.assertEqual(pos_y, 2.0)
+
+    def test_pose_subscription_uses_pose_with_covariance_type(self):
+        """Регрессия issue #2826.
+
+        rtabmap публикует ``/rtabmap/localization_pose`` как
+        ``PoseWithCovarianceStamped``. DDS не матчит publisher и
+        subscription при разных msg-типах, и до фикса поза в
+        ``/perception/context_update`` никогда не обновлялась.
+
+        Этот тест ПРОВЕРЯЕТ контракт через сохранённый mock
+        ``_subs``: топик ``/rtabmap/localization_pose`` должен быть
+        подписан именно на ``PoseWithCovarianceStamped``.
+        """
+        sub = self.node._subs.get('/rtabmap/localization_pose')
+        self.assertIsNotNone(
+            sub,
+            'подписка на /rtabmap/localization_pose должна быть зарегистрирована',
+        )
+        # msg_type живёт в ``self.pose_sub`` (атрибут ноды). Доступ
+        # к нему идёт через ``pose_sub`` MagicMock — у реального
+        # rclpy.Node Subscription нет публичного .msg_type, но в
+        # нашем shim хранится msg_type в ``pose_sub.__class__``.
+        # Проще сравнить через атрибут, который shim ставит:
+        msg_type = getattr(self.node.pose_sub, 'msg_type', None)
+        if msg_type is None:
+            # fallback — на shim уровне мы подменили ``msg_type`` явно
+            msg_type = getattr(
+                self.node.pose_sub, '_msg_type', None
+            )
+        self.assertIs(
+            msg_type,
+            PoseWithCovarianceStamped,
+            'подписка на /rtabmap/localization_pose должна быть '
+            'geometry_msgs/PoseWithCovarianceStamped (issue #2826), '
+            f'получили {msg_type!r}',
+        )
 
     def test_odometry_subscription(self):
         """Тест: Подписка на одометрию."""
@@ -401,8 +594,7 @@ class TestContextAggregator(unittest.TestCase):
     def test_stt_result_subscription(self):
         """Тест: Подписка на результаты STT."""
         # Создаём STT сообщение
-        stt_msg = String()
-        stt_msg.data = 'Привет робот'
+        stt_msg = _Utterance('Привет робот')
 
         # Проверяем callback
         self.assertTrue(hasattr(self.node, 'on_user_speech'))
@@ -418,10 +610,59 @@ class TestContextAggregator(unittest.TestCase):
         # Проверяем callback
         self.assertTrue(hasattr(self.node, 'on_joint_states'))
 
-        # SKIP: Сложная структура DynamicJointState, нужны моки
-        # Просто проверяем что current_sensors существует
         self.assertIsNotNone(self.node.current_sensors)
         self.assertIsInstance(self.node.current_sensors, dict)
+
+    @staticmethod
+    def _joint_state(joints):
+        """DynamicJointState: joints = [(joint, [(interface, value), ...]), ...] (#4001)."""
+        return _types.SimpleNamespace(
+            joint_names=[name for name, _ in joints],
+            interface_values=[
+                _types.SimpleNamespace(
+                    interface_names=[i for i, _ in ifaces],
+                    values=[v for _, v in ifaces])
+                for _, ifaces in joints
+            ])
+
+    def test_joint_states_battery_voltage_read_from_battery_joint(self):
+        """#4001: joint 'battery' + интерфейс 'voltage' -> current_sensors['battery']."""
+        self.node.on_joint_states(self._joint_state([
+            ('left_front_wheel_joint', [('position', 1.0), ('velocity', 0.5)]),
+            ('battery', [('voltage', 41.0)]),
+        ]))
+        self.assertEqual(self.node.current_sensors['battery'], 41.0)
+
+    def test_joint_states_battery_first_joint_order(self):
+        """Порядок joints произвольный: battery может быть первым."""
+        self.node.on_joint_states(self._joint_state([
+            ('battery', [('voltage', 40.5)]),
+            ('left_front_wheel_joint', [('position', 1.0)]),
+        ]))
+        self.assertEqual(self.node.current_sensors['battery'], 40.5)
+
+    def test_joint_states_without_battery_keeps_sensors_untouched(self):
+        """Нет joint battery - current_sensors не меняется (не выдумываем напряжение)."""
+        self.node.current_sensors = {'battery': 39.0}
+        self.node.on_joint_states(self._joint_state([
+            ('left_front_wheel_joint', [('position', 1.0), ('velocity', 0.5)]),
+        ]))
+        self.assertEqual(self.node.current_sensors, {'battery': 39.0})
+
+    def test_joint_states_without_battery_does_not_create_key(self):
+        self.node.current_sensors = {}
+        self.node.on_joint_states(self._joint_state([
+            ('left_front_wheel_joint', [('position', 1.0)]),
+        ]))
+        self.assertNotIn('battery', self.node.current_sensors)
+
+    def test_joint_states_zero_voltage_is_not_data(self):
+        """0 В на 10S - «нет данных», ключ не перезаписывается нулём."""
+        self.node.current_sensors = {'battery': 41.0}
+        self.node.on_joint_states(self._joint_state([
+            ('battery', [('voltage', 0.0)]),
+        ]))
+        self.assertEqual(self.node.current_sensors['battery'], 41.0)
 
     def test_memory_window(self):
         """Тест: Ограничение окна памяти для истории."""
@@ -440,18 +681,13 @@ class TestContextAggregator(unittest.TestCase):
         """Тест: Агрегация данных из нескольких источников."""
         # Посылаем данные из разных источников
 
-        # Vision
-        vision_msg = String()
-        vision_msg.data = '{"objects": ["cup"]}'
-        self.node.on_vision_context(vision_msg)
-
         # Pose
-        pose_msg = PoseStamped()
-        pose_msg.pose.position = Point(x=5.0, y=6.0, z=0.0)
+        # Issue #2826: подписка на PoseWithCovarianceStamped.
+        pose_msg = PoseWithCovarianceStamped()
+        pose_msg.pose.pose.position = Point(x=5.0, y=6.0, z=0.0)
         self.node.on_robot_pose(pose_msg)
 
         # Проверяем что все данные сохранены
-        self.assertIsNotNone(self.node.current_vision)
         self.assertIsNotNone(self.node.current_pose)
         self.assertIsNotNone(self.node.current_sensors)
 
@@ -500,18 +736,28 @@ class TestCallbacks(unittest.TestCase):
     def tearDown(self):
         self.node.destroy_node()
 
-    def test_on_robot_response(self):
-        """Тест: callback robot_response."""
-        msg = String()
-        msg.data = '{"ssml": "<speak>Привет!</speak>"}'
+    def test_on_speech_request_robot_voice_becomes_robot_response(self):
+        """issue #3911: на dialog_engine=v2 ответ робота - SpeechRequest агента personality (голый текст, ADR-0160)."""
+        self.node.on_robot_response(_SpeechRequest('personality', 'Привет, я Робби!'))
 
-        self.node.on_robot_response(msg)
+        last = self.node.robot_response_events[-1]
+        self.assertEqual(last['type'], 'robot_response')
+        self.assertEqual(last['content'], 'Привет, я Робби!')
+        self.assertTrue(last['important'])
 
-        # Проверяем что добавлено в robot_response_events
-        self.assertGreater(len(self.node.robot_response_events), 0)
-        self.assertEqual(
-            self.node.robot_response_events[-1]['type'], 'robot_response'
-        )
+    def test_on_speech_request_ignores_other_agents_and_cache_warmup(self):
+        """ТАРС/Telegram/служебная речь и прогрев кэша (commit=False) - не «ответ робота»."""
+        for agent in ('operator', 'telegram', 'system'):
+            self.node.on_robot_response(_SpeechRequest(agent, 'не моё'))
+        self.node.on_robot_response(_SpeechRequest('personality', 'прогрев', commit=False))
+        self.node.on_robot_response(_SpeechRequest('personality', '   '))
+
+        self.assertEqual(self.node.robot_response_events, [])
+
+    def test_speech_request_subscription_registered_without_v1_response(self):
+        """Подписка на запрос речи создана; v1-топика ответа нет (#4354 A2)."""
+        self.assertEqual(self.node._subs['/voice/speech/request'], self.node.on_robot_response)
+        self.assertNotIn('/voice/dialogue/response', self.node._subs)
 
     def test_on_robot_thought(self):
         """Тест: callback robot_thought (удалён в W10 — пропускаем)."""
@@ -543,8 +789,7 @@ class TestCallbacks(unittest.TestCase):
 
     def test_on_user_speech_movement_command_filtered(self):
         """Тест: команды движения фильтруются."""
-        msg = String()
-        msg.data = 'вперёд'
+        msg = _Utterance('вперёд')
 
         initial_count = len(self.node.speech_events)
         self.node.on_user_speech(msg)
@@ -554,8 +799,7 @@ class TestCallbacks(unittest.TestCase):
 
     def test_on_user_speech_dialogue(self):
         """Тест: диалоговая речь добавляется."""
-        msg = String()
-        msg.data = 'Как дела?'
+        msg = _Utterance('Как дела?')
 
         self.node.on_user_speech(msg)
 
@@ -660,6 +904,7 @@ class TestPublishEvent(unittest.TestCase):
         """Тест: здоровье системы healthy."""
         self.node.current_sensors = {'battery': 40.0}
         self.node.recent_errors = []
+        self.node.motion.add(time.time(), 0.0, 0.0, 0.0)  # одометрия есть (issue #4352)
 
         status, issues = self.node.check_system_health()
 

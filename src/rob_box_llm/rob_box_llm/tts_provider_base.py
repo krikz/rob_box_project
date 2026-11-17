@@ -4,7 +4,7 @@ Landed in P0.5 / ADR-0008 (commit t_25b8e221 on the ``wt/t_25b8e221``
 branch, mirrored here as part of t_8cbf9995). Provides:
 
 * :class:`BaseTTSProvider` — abstract port
-* :class:`TTSCapabilities` — frozen dataclass of 8 boolean flags
+* :class:`TTSCapabilities` — frozen dataclass of 11 boolean flags
 * :class:`TTSVoice`        — normalized voice catalogue entry
 * :class:`TTSHealth`       — frozen pre-flight health snapshot
 * :class:`ProviderBuilder` — factory callback type
@@ -70,7 +70,7 @@ DEFAULT_MAX_KEEPALIVE_CONNECTIONS: int = 5
 """Maximum idle keep-alive connections retained per provider pool."""
 
 # ---------------------------------------------------------------------------
-# Capability metadata — frozen dataclass, 8 boolean flags
+# Capability metadata — frozen dataclass, 11 boolean flags
 # ---------------------------------------------------------------------------
 
 
@@ -92,6 +92,11 @@ class TTSCapabilities:
     audio_format_mp3: bool = False
     audio_format_ogg: bool = False
     custom_endpoint: bool = False  # for local / on-prem providers
+    # ADR-0160 §2.5 — что сервис делает с голым текстом реплики сам, а что
+    # адаптер доделывает в :meth:`BaseTTSProvider.prepare`:
+    reads_digits: bool = False  # сервис сам читает цифры и знаки («20%» → «двадцать процентов»)
+    sets_stress: bool = False  # сервис сам ставит ударения (адаптеру не нужна разметка «+»)
+    pause_markup: bool = False  # адаптер передаёт паузы такта меткой сервиса (иначе метки сняты)
 
 
 # ---------------------------------------------------------------------------
@@ -175,9 +180,10 @@ class BaseTTSProvider(TTSProvider):
 
     Inherits all behaviour from :class:`rob_box_llm.tts.TTSProvider`
     (``synthesize`` / ``stream`` / ``aclose`` contract — frozen at P0.5,
-    see ``tts.py``) and adds 5 override hooks:
+    see ``tts.py``) and adds 6 override hooks:
 
     * :meth:`capabilities`            — optional, default empty
+    * :meth:`prepare`                 — optional, default text as is (ADR-0160)
     * :meth:`list_voices`             — optional, default empty list
     * :meth:`healthcheck`             — optional, default always-ok
     * :meth:`_build_request_payload`  — mandatory, pure mapping
@@ -234,6 +240,17 @@ class BaseTTSProvider(TTSProvider):
         override and cache the result.
         """
         return TTSHealth(ok=True, provider=self.name)
+
+    def prepare(self, text: str, beat_s: float = 0.0) -> str:
+        """Голый текст реплики → текст для API этого сервиса (ADR-0160 §2.5).
+
+        Шаги — по флагам :meth:`capabilities`: нормализация, паузы такта своей
+        меткой, ударения, конверт. ``beat_s`` — такт подложки рэпа (с) или 0:
+        данные из реплики, паузы строк по нему ставит адаптер с ``pause_markup``.
+        Чистая функция: без сети и логов секретов.
+        Default: текст как есть (сервису ничего доделывать не нужно).
+        """
+        return text
 
     # ---- mandatory extension points (override required) ----
 

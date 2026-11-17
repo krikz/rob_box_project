@@ -1,19 +1,94 @@
 # Internal Dialogue Agent - Dockerfile для Main Pi
 # Использует базовый образ ros2-zenoh
+#
+# Сборочный шов (docs/plans/2026-09-15-builder-runtime-seam.md, этап 4):
+# builder-стадия держит rosidl-кодогенератор и ament_cmake — они нужны ТОЛЬКО
+# во время `colcon build`, чтобы превратить .msg пакета rob_box_perception_msgs
+# в C/C++/Python-исходники. Рантайм-стадия их не содержит: сгенерированный код
+# и его typesupport-библиотеки уже лежат в /ws/install, а подключается он через
+# rosidl-default-runtime (apt-пакет, ставится в рантайм-стадии явно — см. §2.2
+# плана: generators build-only, runtime обязателен).
+#
+# ЧЕСТНАЯ ОГОВОРКА (план §2.1): BASE_IMAGE наследует build-essential/cmake/
+# colcon/rosdep/git/vcstool от ros:lyrical-ros-base (апстрим OSRF). Обе стадии
+# стоят на одном и том же BASE_IMAGE, поэтому этот унаследованный тулчейн
+# остаётся и в рантайме. Шов убирает только то, что ДОБАВЛЯЕТ поверх базы сам
+# этот файл: rosidl-default-generators, ament-cmake, ament-cmake-python,
+# /ws/src, /ws/build, /ws/log и промежуточные артефакты pip. Писать здесь
+# "рантайм без компилятора" было бы неправдой (ADR-0018).
+#
+# Про pip и --prefix: раскладка зависит от версии pip. Debian-патч sysconfig
+# (python3-pip 22.0.2) кладёт файлы в /pyinstall/local/lib/pythonX.Y/dist-packages,
+# новый pip (после `pip install --upgrade pip` или пересборки базы) — в
+# /pyinstall/lib/pythonX.Y/site-packages. Рантайм-интерпретатор Debian видит только
+# /usr/local/lib/pythonX.Y/dist-packages. Поэтому builder после pip install
+# нормализует всё в /pyinstall/lib/pythonX.Y/dist-packages (local/ вливается,
+# site-packages переименовывается), проверяет import, а в рантайм идёт
+# `COPY --from=builder /pyinstall /usr/local` — независимо от поведения pip.
 
+ARG ROS_DISTRO=lyrical
 ARG BASE_IMAGE=ghcr.io/krikz/rob_box_base:ros2-zenoh
-FROM ${BASE_IMAGE}
 
-# Установка Python зависимостей и ROS 2 development packages для perception
+# Общий образ ROS-сообщений (docker/msgs/Dockerfile): src/rob_box_*_msgs
+# компилируются ОДИН раз за прогон, а не в каждом образе (rosidl под qemu —
+# 4-14 минут на пакет). Тег по хэшу пакетов вычисляет gen_build_matrix.py и
+# передаёт build-arg'ом; без него сборка падает сразу на имени образа.
+ARG MSGS_IMAGE=MSGS_IMAGE-build-arg-is-required
+FROM ${MSGS_IMAGE} AS msgs
+
+# ============================================================
+# Stage 1: builder — тулчейн кодогенерации + colcon build
+# ============================================================
+FROM ${BASE_IMAGE} AS builder
+
+ARG ROS_DISTRO
+ARG APT_PROXY=""
+
+# apt-cacher-ng на build-хосте. Раннер уже передаёт APT_PROXY этому сервису
+# ("L-Build Pi Services.yml", build-args джоба build-perception), но
+# Dockerfile его не объявлял — build-arg молча игнорировался, и apt ходил
+# напрямую в packages.ros.org. Та же дыра, что нашёл пилот led_matrix
+# (коммит dc7ed68a2): ARG APT_PROXY обязан быть в ОБЕИХ стадиях, иначе
+# multi-stage гоняет apt-get update дважды мимо кеша и удваивает шанс поймать
+# "Hash Sum mismatch" на рассинхронизированном edge CDN.
+# Паттерн 1:1 из docker/base/Dockerfile.ros2-zenoh — с проверкой доступности
+# прокси и тихим fallback на прямое соединение.
+RUN if [ -n "$APT_PROXY" ]; then \
+        PROXY_HOST=$(echo "$APT_PROXY" | sed 's|.*://\([^:/]*\).*|\1|'); \
+        PROXY_PORT=$(echo "$APT_PROXY" | sed 's|.*://[^:]*:\([0-9]*\).*|\1|'); \
+        if timeout 5 bash -c "cat < /dev/null > /dev/tcp/$PROXY_HOST/$PROXY_PORT" 2>/dev/null; then \
+            echo "Acquire::http::Proxy \"$APT_PROXY\";" > /etc/apt/apt.conf.d/02proxy; \
+            echo "Acquire::http::Timeout \"10\";" >> /etc/apt/apt.conf.d/02proxy; \
+            echo "Acquire::Retries \"3\";" >> /etc/apt/apt.conf.d/02proxy; \
+            # Pipeline-Depth 0 обязателен под qemu: с включённым
+            # конвейером (по умолчанию 10 и у apt, и у apt-cacher-ng)
+            # метод apt зависает намертво. Поймано 21.09.2026 на katana:
+            # apt-get висел 68 минут с НУЛЁМ секунд CPU, два сокета к
+            # прокси в CLOSE-WAIT с Recv-Q=1, процесс
+            # qemu-binfmt/aarch64 /usr/lib/apt/methods/store — живой, но
+            # ничего не делает.
+            echo "Acquire::http::Pipeline-Depth \"0\";" >> /etc/apt/apt.conf.d/02proxy; \
+            echo "OK: APT proxy $APT_PROXY"; \
+        else \
+            echo "WARN: APT proxy недоступен, идём напрямую"; \
+        fi \
+    fi
+
+# Build-time тулчейн для rosidl-кодогенерации ament_cmake-пакета
+# rob_box_perception_msgs. rosidl-default-generators / ament-cmake /
+# ament-cmake-python нужны только здесь — в рантайм они не попадут.
+# rosidl-default-runtime и msg-пакеты ставятся и тут (нужны как
+# find_package-зависимости при генерации), и в рантайм-стадии отдельно.
 RUN apt-get update && apt-get install -y \
     python3-pip \
     # ROS 2 development packages needed for building message packages
-    ros-lyrical-rosidl-default-generators \
-    ros-lyrical-rosidl-default-runtime \
-    ros-lyrical-ament-cmake \
-    ros-lyrical-ament-cmake-python \
+    ros-${ROS_DISTRO}-rosidl-default-generators \
+    ros-${ROS_DISTRO}-rosidl-default-runtime \
+    ros-${ROS_DISTRO}-ament-cmake \
+    ros-${ROS_DISTRO}-ament-cmake-python \
     # ROS 2 message packages
-    ros-lyrical-control-msgs \
+    ros-${ROS_DISTRO}-control-msgs \
+    ros-${ROS_DISTRO}-nav-msgs \
     && rm -rf /var/lib/apt/lists/*
 
 # Рабочая директория для ROS2 workspace
@@ -26,11 +101,27 @@ RUN mkdir -p src
 
 # 1. Копируем package.xml (метаданные зависимостей) - изменяются редко
 COPY src/rob_box_perception_msgs/package.xml /ws/src/rob_box_perception_msgs/
+# ADR-0150 PR-2 (#3687): rob_box_perception зависит от rob_box_dialog_msgs
+# (context_aggregator_node читает Utterance); package.xml нужен rosdep, чтобы
+# ключ резолвился из workspace, а не искался в apt.
+COPY src/rob_box_dialog_msgs/package.xml /ws/src/rob_box_dialog_msgs/
+# #4001/#4002: battery_state_node и context_aggregator берут кривую заряда из
+# rob_box_core.battery (единственное место знания, его же использует
+# rob_box_mcp_tools); package.xml нужен rosdep по той же причине, что выше.
+COPY src/rob_box_core/package.xml /ws/src/rob_box_core/
 COPY src/rob_box_perception/package.xml /ws/src/rob_box_perception/
 
 # 2. Устанавливаем ROS зависимости через rosdep (кэшируется если package.xml не изменился)
-ARG ROS_DISTRO=lyrical
+# apt-get update ОБЯЗАТЕЛЕН перед rosdep: apt-блок выше заканчивается
+# `rm -rf /var/lib/apt/lists/*`, а rosdep install внутри вызывает
+# `apt-get install` — без списков он падает с «Unable to locate package»
+# (реально поймано на katana, run 35617451547, build-ros2-control:
+# E: Unable to locate package ros-lyrical-xacro). До шва этого не было
+# видно: xacro ставился явным apt-блоком, и rosdep'у нечего было
+# доустанавливать. Там, где rosdep стоит с `|| true`, эта же дыра молча
+# превращала его в no-op.
 RUN . /opt/ros/${ROS_DISTRO}/setup.sh && \
+    apt-get update && \
     rosdep update && \
     rosdep install --from-paths src --ignore-src -r -y || true
 
@@ -38,25 +129,121 @@ RUN . /opt/ros/${ROS_DISTRO}/setup.sh && \
 COPY src/rob_box_perception/setup.py /ws/src/rob_box_perception/
 COPY docker/main/perception/requirements.txt /tmp/perception_requirements.txt
 
-# 4. Устанавливаем Python зависимости (кэшируется отдельно от кода)
+# 4. Устанавливаем Python зависимости (кэшируется отдельно от кода).
+# --prefix=/pyinstall: в рантайм уезжает только готовый результат (.py/.so),
+# без pip-кеша и промежуточных артефактов сборки. Нормализация раскладки
+# (см. шапку) + import-сторож: openai/pytz не должны пропасть уже на роботе,
+# а не в CI (класс регрессии из плана §10).
 RUN --mount=type=cache,target=/root/.cache/pip,sharing=locked \
-    pip3 install --break-system-packages --retries 5 --timeout 120 -r /tmp/perception_requirements.txt && \
-    rm /tmp/perception_requirements.txt
+    pip3 install --break-system-packages --retries 5 --timeout 120 --prefix=/pyinstall -r /tmp/perception_requirements.txt && \
+    rm /tmp/perception_requirements.txt && \
+    if [ -d /pyinstall/local ]; then \
+        cp -a /pyinstall/local/. /pyinstall/ && rm -r /pyinstall/local; \
+    fi && \
+    for d in /pyinstall/lib/python3*; do \
+        if [ -d "$d/site-packages" ]; then \
+            mkdir -p "$d/dist-packages" && \
+            cp -a "$d/site-packages/." "$d/dist-packages/" && \
+            rm -r "$d/site-packages"; \
+        fi; \
+    done && \
+    if [ -z "$(find /pyinstall/lib -maxdepth 2 -type d -name dist-packages 2>/dev/null)" ]; then \
+        echo "FATAL: после нормализации нет /pyinstall/lib/pythonX.Y/dist-packages"; \
+        find /pyinstall -maxdepth 4 -type d; \
+        exit 1; \
+    fi && \
+    PYTHONPATH="$(echo /pyinstall/lib/python3*/dist-packages)" python3 -c "import openai, pytz"
+
+# IDL-пакеты rob_box_perception_msgs и rob_box_dialog_msgs — готовые из общего
+# образа msgs (stage `msgs` в шапке), а не компиляцией здесь. Их package.xml
+# уже в src (для rosdep выше): colcon видит зависимость, но не собирает её
+# (нет в --packages-select) и берёт из /ws/install.
+COPY --from=msgs /ws/install /ws/install
 
 # 5. Копируем ресурсы (prompts) - изменяются иногда
 COPY src/rob_box_perception/prompts /ws/src/rob_box_perception/prompts
 
 # 6. Только ТЕПЕРЬ копируем весь исходный код (изменяется часто)
-COPY src/rob_box_perception_msgs /ws/src/rob_box_perception_msgs
+# rob_box_core - ВЕСЬ пакет, не отдельные файлы: setup.py тащит data_files
+# (config/, resource/), выборочный COPY ломает сборку (образец - docker/main/teleop).
+COPY src/rob_box_core /ws/src/rob_box_core
 COPY src/rob_box_perception /ws/src/rob_box_perception
 
-# 7. Сборка пакетов (сначала msgs, потом nodes)
+# 7. Сборка ноды (msgs уже собраны слоем выше)
+#
+# --symlink-install УБРАН (урок пилота led_matrix, план §2.2 уточнён коммитом
+# 037d982bf): с этим флагом colcon кладёт в /ws/install не копии, а symlink'и
+# и egg-link обратно в /ws/build и /ws/src. Интерфейс шва — только /ws/install,
+# поэтому /ws/install с symlink'ами в рантайме оказался бы битым
+# (ModuleNotFoundError rob_box_perception, отсутствующие launch/prompts).
+# В одностадийном образе это не проявлялось, потому что /ws/src и /ws/build
+# лежали в том же слое.
 RUN . /opt/ros/${ROS_DISTRO}/setup.sh && \
     colcon build \
-    --packages-select rob_box_perception_msgs rob_box_perception \
-    --symlink-install \
+    --packages-select rob_box_core rob_box_perception \
     --cmake-args \
     -DCMAKE_BUILD_TYPE=Release
+
+# ============================================================
+# Stage 2: runtime — та же база, БЕЗ rosidl-генераторов и ament-cmake
+# ============================================================
+FROM ${BASE_IMAGE}
+
+ARG ROS_DISTRO
+ARG APT_PROXY=""
+
+# См. комментарий про APT_PROXY в builder-стадии — обязан быть в обеих.
+RUN if [ -n "$APT_PROXY" ]; then \
+        PROXY_HOST=$(echo "$APT_PROXY" | sed 's|.*://\([^:/]*\).*|\1|'); \
+        PROXY_PORT=$(echo "$APT_PROXY" | sed 's|.*://[^:]*:\([0-9]*\).*|\1|'); \
+        if timeout 5 bash -c "cat < /dev/null > /dev/tcp/$PROXY_HOST/$PROXY_PORT" 2>/dev/null; then \
+            echo "Acquire::http::Proxy \"$APT_PROXY\";" > /etc/apt/apt.conf.d/02proxy; \
+            echo "Acquire::http::Timeout \"10\";" >> /etc/apt/apt.conf.d/02proxy; \
+            echo "Acquire::Retries \"3\";" >> /etc/apt/apt.conf.d/02proxy; \
+            # Pipeline-Depth 0 обязателен под qemu: с включённым
+            # конвейером (по умолчанию 10 и у apt, и у apt-cacher-ng)
+            # метод apt зависает намертво. Поймано 21.09.2026 на katana:
+            # apt-get висел 68 минут с НУЛЁМ секунд CPU, два сокета к
+            # прокси в CLOSE-WAIT с Recv-Q=1, процесс
+            # qemu-binfmt/aarch64 /usr/lib/apt/methods/store — живой, но
+            # ничего не делает.
+            echo "Acquire::http::Pipeline-Depth \"0\";" >> /etc/apt/apt.conf.d/02proxy; \
+            echo "OK: APT proxy $APT_PROXY"; \
+        else \
+            echo "WARN: APT proxy недоступен, идём напрямую"; \
+        fi \
+    fi
+
+# Runtime-зависимости. rosidl-default-runtime ОБЯЗАТЕЛЕН: сгенерированный код
+# rob_box_perception_msgs подключает typesupport-библиотеки из /opt/ros, и без
+# него `import rob_box_perception_msgs.msg` упадёт при старте ноды, а не при
+# сборке (план §2.2). nav-msgs/control-msgs не входят в метапакет ros-base и
+# перечислены явно: раньше их подтягивал `rosdep install` builder-стадии, через
+# шов этот побочный эффект не проходит.
+# rosidl-default-generators / ament-cmake / ament-cmake-python СОЗНАТЕЛЬНО
+# отсутствуют — это build-only инструменты.
+# apriltag-msgs (issue #4352): context_aggregator слушает /detections
+# (apriltag_msgs/AprilTagDetectionArray); без пакета подписки нет, теги не доходят до диалога.
+RUN apt-get update && apt-get install -y \
+    python3-pip \
+    ros-${ROS_DISTRO}-rosidl-default-runtime \
+    ros-${ROS_DISTRO}-control-msgs \
+    ros-${ROS_DISTRO}-nav-msgs \
+    ros-${ROS_DISTRO}-apriltag-msgs \
+    && rm -rf /var/lib/apt/lists/*
+
+# pip site-packages из builder-стадии (openai, pytz и их транзитивные зависимости).
+# ABI совпадает — обе стадии стоят на одном BASE_IMAGE, значит одна версия
+# Python/glibc. Копируем нормализованный /pyinstall — см. шапку файла.
+COPY --from=builder /pyinstall /usr/local
+
+# colcon workspace — единственный продукт сборки, который обязан пересечь шов.
+# Здесь же лежит python-часть сообщений
+# (/ws/install/rob_box_perception_msgs/lib/pythonX.Y/site-packages/...),
+# rosidl её в системные пути не ставит.
+COPY --from=builder /ws/install /ws/install
+
+WORKDIR /ws
 
 # Source workspace в bashrc
 RUN echo "source /opt/ros/${ROS_DISTRO}/setup.bash" >> /root/.bashrc && \

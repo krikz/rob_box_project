@@ -1,0 +1,473 @@
+[
+ [
+  "deepseek",
+  "field",
+  "tool_choice",
+  {
+   "calls": 174,
+   "errors": 0,
+   "error_reasons": {},
+   "expecting": 126,
+   "delivered": 121,
+   "leak": 0,
+   "double": 0,
+   "phantom": 44,
+   "invalid": 0,
+   "silence_runs": 48,
+   "llm_calls": 1.0,
+   "p50": 1118.118909012992,
+   "p95": 1534.9762596044454,
+   "served": {
+    "deepseek-flash": 174
+   },
+   "invalid_reasons": {},
+   "round2_errors": 0
+  }
+ ],
+ [
+  "deepseek",
+  "tool",
+  "tool_choice",
+  {
+   "calls": 174,
+   "errors": 0,
+   "error_reasons": {},
+   "expecting": 126,
+   "delivered": 114,
+   "leak": 29,
+   "double": 52,
+   "phantom": 35,
+   "invalid": 0,
+   "silence_runs": 48,
+   "llm_calls": 1.8103448275862069,
+   "p50": 1914.0629064932,
+   "p95": 2517.097209149506,
+   "served": {
+    "deepseek-flash": 174
+   },
+   "invalid_reasons": {},
+   "round2_errors": 0
+  }
+ ],
+ [
+  "deepseek-pro",
+  "field",
+  "tool_choice",
+  {
+   "calls": 174,
+   "errors": 0,
+   "error_reasons": {},
+   "expecting": 126,
+   "delivered": 115,
+   "leak": 1,
+   "double": 0,
+   "phantom": 54,
+   "invalid": 0,
+   "silence_runs": 48,
+   "llm_calls": 1.0,
+   "p50": 1491.4586694940226,
+   "p95": 2402.943163800228,
+   "served": {
+    "deepseek-v4-pro": 174
+   },
+   "invalid_reasons": {},
+   "round2_errors": 0
+  }
+ ],
+ [
+  "deepseek-pro",
+  "tool",
+  "tool_choice",
+  {
+   "calls": 174,
+   "errors": 0,
+   "error_reasons": {},
+   "expecting": 126,
+   "delivered": 106,
+   "leak": 1,
+   "double": 12,
+   "phantom": 33,
+   "invalid": 0,
+   "silence_runs": 48,
+   "llm_calls": 1.7988505747126438,
+   "p50": 2448.079614492599,
+   "p95": 3627.4579411023287,
+   "served": {
+    "deepseek-v4-pro": 174
+   },
+   "invalid_reasons": {},
+   "round2_errors": 0
+  }
+ ],
+ [
+  "mimo",
+  "field",
+  "json_in_text",
+  {
+   "calls": 174,
+   "not_run": "ProviderError: 402: {'code': '402', 'message': 'Insufficient account balance', 'type': 'insufficient_balance'} ×174"
+  }
+ ],
+ [
+  "mimo",
+  "field",
+  "tool_choice",
+  {
+   "calls": 174,
+   "not_run": "ProviderError: 402: {'code': '402', 'message': 'Insufficient account balance', 'type': 'insufficient_balance'} ×174"
+  }
+ ],
+ [
+  "mimo",
+  "tool",
+  "json_in_text",
+  {
+   "calls": 174,
+   "not_run": "ProviderError: 402: {'code': '402', 'message': 'Insufficient account balance', 'type': 'insufficient_balance'} ×174"
+  }
+ ],
+ [
+  "qwen-flash",
+  "field",
+  "json_in_text",
+  {
+   "calls": 174,
+   "errors": 0,
+   "error_reasons": {},
+   "expecting": 126,
+   "delivered": 100,
+   "leak": 0,
+   "double": 0,
+   "phantom": 16,
+   "invalid": 14,
+   "silence_runs": 48,
+   "llm_calls": 1.0,
+   "p50": 5940.958725506789,
+   "p95": 21985.28741970221,
+   "served": {
+    "qwen3.8-flash": 174
+   },
+   "invalid_reasons": {
+    "bad_type": 14
+   },
+   "round2_errors": 0
+  }
+ ],
+ [
+  "qwen-flash",
+  "field",
+  "tool_choice",
+  {
+   "calls": 174,
+   "errors": 0,
+   "error_reasons": {},
+   "expecting": 126,
+   "delivered": 91,
+   "leak": 10,
+   "double": 0,
+   "phantom": 14,
+   "invalid": 5,
+   "silence_runs": 48,
+   "llm_calls": 1.0,
+   "p50": 4575.77446650248,
+   "p95": 13927.70614359469,
+   "served": {
+    "qwen3.8-flash": 174
+   },
+   "invalid_reasons": {
+    "no_command": 5
+   },
+   "round2_errors": 0
+  }
+ ],
+ [
+  "qwen-flash",
+  "tool",
+  "json_in_text",
+  {
+   "calls": 174,
+   "errors": 0,
+   "error_reasons": {},
+   "expecting": 126,
+   "delivered": 110,
+   "leak": 23,
+   "double": 8,
+   "phantom": 20,
+   "invalid": 0,
+   "silence_runs": 48,
+   "llm_calls": 1.706896551724138,
+   "p50": 3953.2574545009993,
+   "p95": 11989.646778191669,
+   "served": {
+    "qwen3.8-flash": 174
+   },
+   "invalid_reasons": {},
+   "round2_errors": 0
+  }
+ ],
+ [
+  "qwen-max",
+  "field",
+  "json_in_text",
+  {
+   "calls": 174,
+   "errors": 0,
+   "error_reasons": {},
+   "expecting": 126,
+   "delivered": 105,
+   "leak": 0,
+   "double": 0,
+   "phantom": 13,
+   "invalid": 2,
+   "silence_runs": 48,
+   "llm_calls": 1.0,
+   "p50": 8096.452603494981,
+   "p95": 29202.292578799825,
+   "served": {
+    "qwen3.8-max": 174
+   },
+   "invalid_reasons": {
+    "bad_type": 2
+   },
+   "round2_errors": 0
+  }
+ ],
+ [
+  "qwen-max",
+  "field",
+  "tool_choice",
+  {
+   "calls": 174,
+   "errors": 0,
+   "error_reasons": {},
+   "expecting": 126,
+   "delivered": 92,
+   "leak": 17,
+   "double": 0,
+   "phantom": 19,
+   "invalid": 4,
+   "silence_runs": 48,
+   "llm_calls": 1.0,
+   "p50": 6374.592190506519,
+   "p95": 19070.37855223898,
+   "served": {
+    "qwen3.8-max": 174
+   },
+   "invalid_reasons": {
+    "no_command": 4
+   },
+   "round2_errors": 0
+  }
+ ],
+ [
+  "qwen-max",
+  "tool",
+  "json_in_text",
+  {
+   "calls": 174,
+   "errors": 0,
+   "error_reasons": {},
+   "expecting": 126,
+   "delivered": 111,
+   "leak": 18,
+   "double": 7,
+   "phantom": 12,
+   "invalid": 0,
+   "silence_runs": 48,
+   "llm_calls": 1.6896551724137931,
+   "p50": 6997.212269488955,
+   "p95": 16338.427937142827,
+   "served": {
+    "qwen3.8-max": 174
+   },
+   "invalid_reasons": {},
+   "round2_errors": 0
+  }
+ ],
+ [
+  "jev",
+  "—",
+  "—",
+  null
+ ],
+ [
+  "minimax",
+  "field",
+  "json_in_text",
+  {
+   "calls": 174,
+   "errors": 0,
+   "error_reasons": {},
+   "expecting": 126,
+   "delivered": 80,
+   "leak": 0,
+   "double": 0,
+   "phantom": 2,
+   "lost": 0,
+   "stray": 5,
+   "spurious": 28,
+   "invalid": 52,
+   "silence_runs": 48,
+   "llm_calls": 1.0,
+   "p50": 1458.7022435007384,
+   "p95": 5025.116108030488,
+   "served": {
+    "MiniMax-M3": 174
+   },
+   "invalid_reasons": {
+    "bad_type": 51,
+    "no_command": 1
+   },
+   "round2_errors": 0
+  }
+ ],
+ [
+  "minimax",
+  "field",
+  "tool_choice",
+  {
+   "calls": 174,
+   "errors": 0,
+   "error_reasons": {},
+   "expecting": 126,
+   "delivered": 105,
+   "leak": 0,
+   "double": 0,
+   "phantom": 0,
+   "lost": 0,
+   "stray": 8,
+   "spurious": 54,
+   "invalid": 23,
+   "silence_runs": 48,
+   "llm_calls": 1.0,
+   "p50": 2079.038367999601,
+   "p95": 5129.890642441749,
+   "served": {
+    "MiniMax-M3": 174
+   },
+   "invalid_reasons": {
+    "bad_type": 17,
+    "no_command": 6
+   },
+   "round2_errors": 0
+  }
+ ],
+ [
+  "minimax",
+  "tool",
+  "json_in_text",
+  {
+   "calls": 174,
+   "errors": 0,
+   "error_reasons": {},
+   "expecting": 126,
+   "delivered": 106,
+   "leak": 0,
+   "double": 17,
+   "phantom": 14,
+   "lost": 1,
+   "stray": 22,
+   "spurious": 33,
+   "invalid": 0,
+   "silence_runs": 48,
+   "llm_calls": 1.7758620689655173,
+   "p50": 3399.581388992374,
+   "p95": 10231.137543389916,
+   "served": {
+    "MiniMax-M3": 174
+   },
+   "invalid_reasons": {},
+   "round2_errors": 0
+  }
+ ],
+ [
+  "minimax-flash",
+  "field",
+  "json_in_text",
+  {
+   "calls": 174,
+   "errors": 0,
+   "error_reasons": {},
+   "expecting": 126,
+   "delivered": 82,
+   "leak": 1,
+   "double": 0,
+   "phantom": 3,
+   "lost": 0,
+   "stray": 0,
+   "spurious": 22,
+   "invalid": 38,
+   "silence_runs": 48,
+   "llm_calls": 1.0,
+   "p50": 1912.9445775033673,
+   "p95": 7641.768526304804,
+   "served": {
+    "MiniMax-M3.1-Flash": 174
+   },
+   "invalid_reasons": {
+    "bad_type": 29,
+    "unknown_field": 9
+   },
+   "round2_errors": 0
+  }
+ ],
+ [
+  "minimax-flash",
+  "field",
+  "tool_choice",
+  {
+   "calls": 174,
+   "errors": 0,
+   "error_reasons": {},
+   "expecting": 126,
+   "delivered": 115,
+   "leak": 0,
+   "double": 0,
+   "phantom": 10,
+   "lost": 0,
+   "stray": 1,
+   "spurious": 35,
+   "invalid": 6,
+   "silence_runs": 48,
+   "llm_calls": 1.0,
+   "p50": 2071.817090502009,
+   "p95": 6955.5572041019295,
+   "served": {
+    "MiniMax-M3.1-Flash": 174
+   },
+   "invalid_reasons": {
+    "bad_type": 5,
+    "no_command": 1
+   },
+   "round2_errors": 0
+  }
+ ],
+ [
+  "minimax-flash",
+  "tool",
+  "json_in_text",
+  {
+   "calls": 174,
+   "errors": 0,
+   "error_reasons": {},
+   "expecting": 126,
+   "delivered": 108,
+   "leak": 0,
+   "double": 4,
+   "phantom": 19,
+   "lost": 0,
+   "stray": 57,
+   "spurious": 36,
+   "invalid": 0,
+   "silence_runs": 48,
+   "llm_calls": 1.8160919540229885,
+   "p50": 3171.4326975052245,
+   "p95": 17911.249252468402,
+   "served": {
+    "MiniMax-M3.1-Flash": 174
+   },
+   "invalid_reasons": {},
+   "round2_errors": 0
+  }
+ ]
+]

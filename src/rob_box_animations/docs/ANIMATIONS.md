@@ -1,181 +1,133 @@
-# 🎨 Система LED Анимаций
+# Лицо Rob Box — сцены
 
-Документация системы анимаций для WS2812B LED матриц Rob Box.
+Лицо робота на 381 светодиоде WS2812B: две передние фары-глаза 8×8, рот 25×5
+(пять панелей 5×5) и две задние фары 8×8. Стиль — Бендер: тёплые глаза с
+квадратными зрачками и металлическими веками, рот-решётка из двух рядов по
+шесть зубов.
 
----
+## Откуда берутся кадры
 
-## 📊 Обзор
-
-Rob Box использует **381 адресуемый WS2812B LED** для визуального отображения состояний:
-
-- **4× матрицы 8×8** (256 LED) — колёса робота
-- **1× матрица 25×5** (125 LED) — центральный дисплей
-
-### Архитектура
-
-```
-ROS2 Compositor → Animation Manager → pi5neo Driver → SPI → WS2812B LEDs
-```
-
-**Пакет:** [ros2leds](https://github.com/nosknut/ros2leds) (git submodule)  
-**Драйвер:** pi5neo library (Raspberry Pi 5)  
-**Интерфейс:** SPI (GPIO10 — MOSI)  
-**Питание:** 5V/25A PSU (до 100% яркости)
-
----
-
-## 🎬 Галерея Анимаций
-
-### 🚨 Emergency (Экстренные службы)
-
-| Анимация | Описание | Превью |
-|----------|----------|--------|
-| **Police** | Синие/красные мигающие огни + статичный текст "ПОЛИЦИЯ" | [](../../../assets/animations/police.gif) |
-| **Ambulance** | Красно-белая комбинация + медицинский крест | [](../../../assets/animations/ambulance.gif) |
-| **Fire Truck** | Красно-оранжевые огни + текст "FIRE" | [](../../../assets/animations/fire_truck.gif) |
-| **Road Service** | Жёлтая пульсация на всех матрицах | [](../../../assets/animations/road_service.gif) |
-
-### 🧭 Navigation (Навигация)
-
-| Анимация | Описание | Превью |
-|----------|----------|--------|
-| **Turn Left** | Оранжевое мигание FL/RL + красный стоп-сигнал RR | [](../../../assets/animations/turn_left.gif) |
-| **Turn Right** | Оранжевое мигание FR/RR + красный стоп-сигнал RL | [](../../../assets/animations/turn_right.gif) |
-| **Braking** | Расширяющиеся белые фары + ярко-красная пульсация | [](../../../assets/animations/braking.gif) |
-| **Accelerating** | Нарастающие белые фары + оранжевое свечение | [](../../../assets/animations/accelerating.gif) |
-
-### 😊 Emotions (Эмоции)
-
-| Анимация | Описание | Превью |
-|----------|----------|--------|
-| **Idle** | Спокойное дыхание (пульсация 0.5→1.0) | [](../../../assets/animations/idle.gif) |
-| **Happy** | Радужные глаза + улыбка | [](../../../assets/animations/happy.gif) |
-| **Sad** | Синие грустные глаза + грустный рот | [](../../../assets/animations/sad.gif) |
-| **Angry** | Красная пульсация + сердитое лицо | [](../../../assets/animations/angry.gif) |
-| **Surprised** | Широко открытые глаза + O-образный рот | [](../../../assets/animations/surprised.gif) |
-| **Thinking** | Боковой взгляд + анимированные точки "..." | [](../../../assets/animations/thinking.gif) |
-| **Talking** | Моргание + анимированный рот с волнами | [](../../../assets/animations/talking.gif) |
-| **Victory** | Радужный цикл + галочка ✓ | [](../../../assets/animations/victory.gif) |
-
-### ⚙️ System (Системные)
-
-| Анимация | Описание | Превью |
-|----------|----------|--------|
-| **Sleep** | Закрытые глаза + тусклая синяя пульсация + ZZZ | [](../../../assets/animations/sleep.gif) |
-| **Wakeup** | Открывающиеся глаза + нарастающая яркость + зевок | [](../../../assets/animations/wakeup.gif) |
-| **Charging** | Нейтральные глаза + зелёная пульсация + анимация батареи | [](../../../assets/animations/charging.gif) |
-| **Low Battery** | Тусклое красное мигание + критическая батарея | [](../../../assets/animations/low_battery.gif) |
-| **Error** | X-глаза + красное мигание + текст "ERROR" | [](../../../assets/animations/error.gif) |
-
----
-
-## 📐 Технические детали
-
-### Структура проекта
-
-```
-src/rob_box_animations/
-├── animations/
-│   ├── frames/              # PNG кадры (8×8 и 25×5)
-│   │   ├── police/
-│   │   ├── navigation/
-│   │   ├── emotions/
-│   │   └── system/
-│   └── manifests/           # YAML манифесты v2.5
-│       ├── police_lights.yaml
-│       ├── turn_left.yaml
-│       ├── happy.yaml
-│       └── ...
-└── scripts/
-    ├── generate_animation_frames.py  # Генератор кадров
-    └── visualize_animations.py       # Превью анимаций
-```
-
-### Формат манифеста (v2.5)
-
-```yaml
-name: "animation_name"
-version: "2.5"
-duration_ms: 1000
-loop: true
-fps: 10
-
-panels:
-  - logical_group: "wheel_front_left"
-    offset_ms: 0
-    frames:
-      - image: "frames/category/frame_01.png"
-        duration_ms: 100
-
-metadata:
-  priority: "normal"
-  category: "navigation"
-  tags: ["navigation", "turn"]
-```
-
-### Кириллический шрифт
-
-Для текста используется custom **3×5 pixel font**:
-
-```python
-cyrillic_map = {
-    'П': [[1,1,1],[1,0,1],[1,0,1],[1,0,1],[1,0,1]],
-    'О': [[1,1,1],[1,0,1],[1,0,1],[1,0,1],[1,1,1]],
-    'Л': [[0,0,1],[0,1,0],[0,1,0],[1,0,0],[1,0,0]],
-    'И': [[1,0,1],[1,0,1],[1,1,1],[1,0,1],[1,0,1]],
-    'Ц': [[1,0,1],[1,0,1],[1,0,1],[1,0,1],[1,1,1]],
-    'Я': [[1,1,1],[1,0,1],[1,1,1],[0,1,0],[1,0,1]],
-}
-```
-
----
-
-## 🛠️ Разработка
-
-### Генерация кадров
+Кадров на диске нет: `face_node` рисует сцены
+`rob_box_animations/face/` в реальном времени, 25 к/с (ADR-0150 §5.5,
+PR-3a #3689). Сцена — генератор кадров; живые значения (направление на
+говорящего, раскрытие рта по огибающей TTS, темп и фаза трека) идут в
+`FaceContext`. Превью ниже рендерит тот же код:
 
 ```bash
-# Все анимации
-python3 scripts/generate_animation_frames.py --animation all
-
-# Конкретная анимация
-python3 scripts/generate_animation_frames.py --animation happy
+python tools/led_face_lab/render_gifs.py docs/assets/animations --gallery src/rob_box_animations/docs/ANIMATIONS.md
 ```
 
-### Превью
+- **Детерминизм:** первый проход сцены при seed по умолчанию — байт в байт
+  (дайджесты в `tests/unit/docker/test_animation_assets.py`); следующие
+  проходы берут новый seed, моргания не повторяются по кругу.
+- **Стороны:** лицо нарисовано для человека напротив робота, группы
+  `wheel_*` привязаны к бортам: левая фара робота (`wheel_front_left`) у
+  зрителя справа. Таблица — `face/face.py:GROUP_OF`; тест-кадр сторон —
+  параметр `test_pattern` (`face/sides.py`).
+- **Яркость и ток:** арт рисуется в уровнях 0..25, драйвер стоит на
+  `brightness: 25` и показывает ровно эти уровни. Светящаяся часть любой
+  сцены ≤ 1 А по модели драйвера (20 мА на канал при 255, тест); пик с
+  покоем ленты 381 мА — до ~1,25 А при ограничителе 4,5 А. `face_node` пишет
+  `face.peak_ma` в лог раз в 10 с.
+- **Эффекты полотна (#3780):** слоты сцены LLM `bg` (фон сквозь всё полотно:
+  `rainbow`, `fire`, `matrix`; ≤ 6 уровней, черты светят своим уровнем),
+  `fx` (импульс в начале сцены: `slash`, `glitch`, `boot`, `power_down`) и
+  `feat` (`loading_eyes`). Полотно — одна таблица `face/layout.py:CANVAS_AT`
+  рядом с `GROUP_OF`, рендер — ros2leds `led_matrix_effects` (привязка к лицу — `face/effects.py`).
+- **Какая сцена когда:** речь — `talk_<mouth_design>` (рот по голосу, В13:
+  `jaw`), запрос `play_animation`/`ExpressionRequest` — сцена на время,
+  музыка — по темпу (`< 100` кайф, `100–125` грув, `≥ 125` очки), покой —
+  `idle_stare`, раз в минуту `idle_bored`; нет голосового стека 7 с —
+  `sleep`, вернулся — `wakeup`. Порядок — `face_director.py`.
 
-```bash
-python3 scripts/visualize_animations.py
-```
+## Галерея
 
-Откроется интерактивное окно с превью всех 5 матриц в реальном времени.
+Превью при яркости 25: `wheel_front_right | рот | wheel_front_left`, справа
+задние фары со спины.
 
-### Создание новой анимации
+<!-- gallery: tools/led_face_lab/render_gifs.py --gallery -->
 
-1. Добавить метод в `generate_animation_frames.py`
-2. Создать YAML манифест
-3. Сгенерировать кадры и протестировать
+### Покой
 
----
+| Сцена | Что происходит | Превью |
+|---|---|---|
+| `idle_stare` | Покой · «взгляд»: моргания 2–6 с, двойные, саккады, осмотр, ухмылка; взгляд на говорящего по DOA | ![](../../../docs/assets/animations/idle_stare.gif) |
+| `idle_bored` | Покой · «скучно»: через минуту тишины: веки ниже, зевок | ![](../../../docs/assets/animations/idle_bored.gif) |
 
-## 📊 Статистика
+### Слушает
 
-- **Всего анимаций:** 21
-- **Всего кадров:** 600+
-- **Размер библиотеки:** ~50KB (PNG) + ~54MB (GIF превью)
-- **FPS:** 10 (стандарт)
-- **Средняя длительность:** 1-3 секунды
-- **Формат кадров:** RGB888 PNG (прозрачный фон)
+| Сцена | Что происходит | Превью |
+|---|---|---|
+| `listening` | Слушает: веки поднимаются, зрачки на говорящего (DOA), кивок | ![](../../../docs/assets/animations/listening.gif) |
 
----
+### Думает
 
-## 🔗 Связанная документация
+| Сцена | Что происходит | Превью |
+|---|---|---|
+| `thinking_teeth` | Думает · «зубы-загрузка»: огонёк бежит по зубам, прищур | ![](../../../docs/assets/animations/thinking_teeth.gif) |
+| `thinking_orbit` | Думает · «орбита»: зрачки по кругу, прикус наискось «хмм» | ![](../../../docs/assets/animations/thinking_orbit.gif) |
 
-- [ros2leds package](https://github.com/nosknut/ros2leds) — LED управление
-- [rob_box_animations README](../README.md) — детали пакета
-- [SOFTWARE.md](../../../docs/architecture/SOFTWARE.md) — архитектура программного обеспечения
+### Говорит
 
----
+| Сцена | Что происходит | Превью |
+|---|---|---|
+| `talk_jaw` | Говорит · «челюсть»: решётка на месте, проём линзой, челюсть падает сильнее губы, тёплая «глотка» | ![](../../../docs/assets/animations/talk_jaw.gif) |
+| `talk_rubber` | Говорит · «резина»: сжатие-растяжение: закрыт — широкая щель, открыт — уже и выше | ![](../../../docs/assets/animations/talk_rubber.gif) |
+| `talk_voicebox` | Говорит · «голос-решётка»: зубы светятся от центра наружу по громкости, как у KITT | ![](../../../docs/assets/animations/talk_voicebox.gif) |
+| `talk_happy` | Говорит · радостно: глаза ^^, улыбка в паузах | ![](../../../docs/assets/animations/talk_happy.gif) |
 
-**Версия:** 2.5  
-**Последнее обновление:** 12 октября 2025
+### Эмоции
+
+| Сцена | Что происходит | Превью |
+|---|---|---|
+| `happy` | Радость: глаза ^^, хихиканье | ![](../../../docs/assets/animations/happy.gif) |
+| `wink` | Подмигнул: одним глазом + ухмылка | ![](../../../docs/assets/animations/wink.gif) |
+| `sad` | Грусть: веки домиком, зрачки вниз, слеза | ![](../../../docs/assets/animations/sad.gif) |
+| `angry` | Злость: веки клином, краснеет, скрежет зубами | ![](../../../docs/assets/animations/angry.gif) |
+| `surprised` | Удивление: моргнул — глаза распахнуты, зрачок-точка, «О» | ![](../../../docs/assets/animations/surprised.gif) |
+| `victory` | Победа: глаза ^^ прыгают, радуга по зубам, салют и конфетти сзади | ![](../../../docs/assets/animations/victory.gif) |
+
+### Музыка
+
+Первую сцену трека выбирает темп (`knowledge.MUSIC_SCENE_BPM`), дальше сцены идут по кругу независимо от темпа: новый трек — шаг, каждые 30 с трека — шаг, сцена держится не меньше 16 с (#4010, `expression.music_scene`).
+
+| Сцена | Что происходит | Превью |
+|---|---|---|
+| `music_groove` | Музыка · «грув»: кивок на долю, эквалайзер в зубах, кольца-динамики | ![](../../../docs/assets/animations/music_groove.gif) |
+| `music_shades` | Музыка · «очки»: очки съезжают, блик раз в такт, диско | ![](../../../docs/assets/animations/music_shades.gif) |
+| `music_vibe` | Музыка · «кайф»: глаза ^^, тёплая волна по зубам, эквалайзер сзади | ![](../../../docs/assets/animations/music_vibe.gif) |
+
+### Экстренные
+
+| Сцена | Что происходит | Превью |
+|---|---|---|
+| `police_lights` | Полиция: Бендер-патрульный: строгие глаза в отсветах, рот — балка: двойные вспышки, разбег, чередование | ![](../../../docs/assets/animations/police_lights.gif) |
+| `fire_truck` | Пожарная: глаза — вращающиеся маяки, балка красно-белая, потом «огонь» во рту | ![](../../../docs/assets/animations/fire_truck.gif) |
+| `ambulance` | Скорая: красный крест бьётся в такт пульсу, во рту кардиограмма, синие вспышки | ![](../../../docs/assets/animations/ambulance.gif) |
+| `road_service` | Дорожная служба: жёлтые маяки, во рту табло со стрелками, сзади стрелки | ![](../../../docs/assets/animations/road_service.gif) |
+| `roadworks_beacon` | Дорожные работы: янтарные проблесковые маячки вместо глаз и сзади: двойная вспышка слева (оранжевая), потом справа (жёлтая), во рту жёлто-чёрная полосатая доска; тревога зоны безопасности (#4365) | ![](../../../docs/assets/animations/roadworks_beacon.gif) |
+
+### Езда
+
+| Сцена | Что происходит | Превью |
+|---|---|---|
+| `turn_left` | Поворот налево: глаз со стороны поворота мигает жёлтым, бегущая заливка сзади | ![](../../../docs/assets/animations/turn_left.gif) |
+| `turn_right` | Поворот направо: то же зеркально | ![](../../../docs/assets/animations/turn_right.gif) |
+| `brake` | Торможение: стоп-сигнал, прищур | ![](../../../docs/assets/animations/brake.gif) |
+| `accelerating` | Разгон: прищур, сжатые зубы, дрожь, сзади форсаж | ![](../../../docs/assets/animations/accelerating.gif) |
+
+### Системные
+
+| Сцена | Что происходит | Превью |
+|---|---|---|
+| `sleep` | Сон: веки «︶» дышат, z, похрапывает | ![](../../../docs/assets/animations/sleep.gif) |
+| `wakeup` | Пробуждение: ЭЛТ-включение, зубы загружаются, зевок | ![](../../../docs/assets/animations/wakeup.gif) |
+| `error` | Ошибка: глаза-крестики, глитч | ![](../../../docs/assets/animations/error.gif) |
+| `low_battery` | Батарея садится: сонные веки, батарейка во рту | ![](../../../docs/assets/animations/low_battery.gif) |
+| `charging` | Зарядка: довольные глаза, батарейка наполняется | ![](../../../docs/assets/animations/charging.gif) |
+
+### Праздники
+
+| Сцена | Что происходит | Превью |
+|---|---|---|
+| `new_year_eve` | Новогодняя полночь: салют сзади, «2027» во рту | ![](../../../docs/assets/animations/new_year_eve.gif) |

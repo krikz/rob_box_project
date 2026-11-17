@@ -1,0 +1,52 @@
+
+============================= test session starts ==============================
+platform linux -- Python 3.11.17, pytest-9.1.1, pluggy-1.7.0 -- /usr/local/bin/python
+rootdir: /repo
+configfile: ../dev/null
+collecting ... collected 43 items
+
+tests/unit/e2e_scripts/test_issue_3931_role_prosody.py::TestRoleProsodyReachesMinimax::test_role_pitch_and_speed_are_sent[anton-Russian_ReliableMan-0-1.0] PASSED [  2%]
+tests/unit/e2e_scripts/test_issue_3931_role_prosody.py::TestRoleProsodyReachesMinimax::test_role_pitch_and_speed_are_sent[ermil-Russian_Bad-temperedBoy-2-1.0] PASSED [  4%]
+tests/unit/e2e_scripts/test_issue_3931_role_prosody.py::TestRoleProsodyReachesMinimax::test_role_pitch_and_speed_are_sent[zahar-Russian_HandsomeChildhoodFriend-0-1.0] PASSED [  6%]
+tests/unit/e2e_scripts/test_issue_3931_role_prosody.py::TestRoleProsodyReachesMinimax::test_role_pitch_and_speed_are_sent[filipp-Russian_AttractiveGuy-0-1.0] PASSED [  9%]
+tests/unit/e2e_scripts/test_issue_3931_role_prosody.py::TestRoleProsodyReachesMinimax::test_role_pitch_and_speed_are_sent[arina-presenter_female-0-1.0] PASSED [ 11%]
+tests/unit/e2e_scripts/test_issue_3931_role_prosody.py::TestRoleProsodyReachesMinimax::test_role_pitch_and_speed_are_sent[rita-Russian_PessimisticGirl-0-1.0] PASSED [ 13%]
+tests/unit/e2e_scripts/test_issue_3931_role_prosody.py::TestRoleProsodyReachesMinimax::test_plain_native_voice_has_neutral_prosody PASSED [ 16%]
+tests/unit/e2e_scripts/test_issue_3931_role_prosody.py::TestRoleProsodyReachesMinimax::test_global_speed_multiplies_role_speed PASSED [ 18%]
+tests/unit/e2e_scripts/test_issue_3931_role_prosody.py::TestCacheKeyCoversProsody::test_pitch_and_speed_change_the_key PASSED [ 20%]
+tests/unit/e2e_scripts/test_tts_provider_selection.py::TestMapTtsVoice::test_yandex_is_identity PASSED [ 23%]
+tests/unit/e2e_scripts/test_tts_provider_selection.py::TestMapTtsVoice::test_silero_mapping[anton-aidar] PASSED [ 25%]
+tests/unit/e2e_scripts/test_tts_provider_selection.py::TestMapTtsVoice::test_silero_mapping[ermil-eugene] PASSED [ 27%]
+tests/unit/e2e_scripts/test_tts_provider_selection.py::TestMapTtsVoice::test_silero_mapping[zahar-kseniya] PASSED [ 30%]
+tests/unit/e2e_scripts/test_tts_provider_selection.py::TestMapTtsVoice::test_silero_mapping[filipp-xenia] PASSED [ 32%]
+tests/unit/e2e_scripts/test_tts_provider_selection.py::TestMapTtsVoice::test_minimax_mapping[anton-Russian_ReliableMan:0:1.0] PASSED [ 34%]
+tests/unit/e2e_scripts/test_tts_provider_selection.py::TestMapTtsVoice::test_minimax_mapping[ermil-Russian_Bad-temperedBoy:2:1.0] PASSED [ 37%]
+tests/unit/e2e_scripts/test_tts_provider_selection.py::TestMapTtsVoice::test_minimax_mapping[zahar-Russian_HandsomeChildhoodFriend:0:1.0] PASSED [ 39%]
+tests/unit/e2e_scripts/test_tts_provider_selection.py::TestMapTtsVoice::test_minimax_mapping[filipp-Russian_AttractiveGuy:0:1.0] PASSED [ 41%]
+tests/unit/e2e_scripts/test_tts_provider_selection.py::TestMapTtsVoice::test_minimax_roles_are_four_voices_with_mild_prosody PASSED [ 44%]
+tests/unit/e2e_scripts/test_tts_provider_selection.py::TestMapTtsVoice::test_scenario_voices_stay_distinct[silero] PASSED [ 46%]
+tests/unit/e2e_scripts/test_tts_provider_selection.py::TestMapTtsVoice::test_scenario_voices_stay_distinct[minimax] PASSED [ 48%]
+tests/unit/e2e_scripts/test_tts_provider_selection.py::TestMapTtsVoice::test_native_voice_passthrough[silero-aidar] PASSED [ 51%]
+tests/unit/e2e_scripts/test_tts_provider_selection.py::TestMapTtsVoice::test_native_voice_passthrough[silero-eugene] PASSED [ 53%]
+tests/unit/e2e_scripts/test_tts_provider_selection.py::TestMapTtsVoice::test_native_voice_passthrough[minimax-Russian_CrazyQueen] PASSED [ 55%]
+tests/unit/e2e_scripts/test_tts_provider_selection.py::TestMapTtsVoice::test_native_voice_passthrough[minimax-male-qn-qingse] PASSED [ 58%]
+tests/unit/e2e_scripts/test_tts_provider_selection.py::TestMapTtsVoice::test_empty_voice_falls_back_to_default[yandex-anton] PASSED [ 60%]
+tests/unit/e2e_scripts/test_tts_provider_selection.py::TestMapTtsVoice::test_empty_voice_falls_back_to_default[silero-aidar] PASSED [ 62%]
+tests/unit/e2e_scripts/test_tts_provider_selection.py::TestMapTtsVoice::test_empty_voice_falls_back_to_default[minimax-Russian_ReliableMan:0:1.0] PASSED [ 65%]
+tests/unit/e2e_scripts/test_tts_provider_selection.py::TestMapTtsVoice::test_mapped_voices_exist_in_registry PASSED [ 67%]
+tests/unit/e2e_scripts/test_tts_provider_selection.py::TestResolveTtsProvider::test_explicit_provider_is_not_probed PASSED [ 69%]
+tests/unit/e2e_scripts/test_tts_provider_selection.py::TestResolveTtsProvider::test_auto_takes_first_alive PASSED [ 72%]
+tests/unit/e2e_scripts/test_tts_provider_selection.py::TestResolveTtsProvider::test_auto_falls_through_to_silero PASSED [ 74%]
+tests/unit/e2e_scripts/test_tts_provider_selection.py::TestResolveTtsProvider::test_auto_reports_none_when_nothing_answers PASSED [ 76%]
+tests/unit/e2e_scripts/test_tts_provider_selection.py::TestResolveTtsProvider::test_custom_order_is_honoured PASSED [ 79%]
+tests/unit/e2e_scripts/test_tts_provider_selection.py::TestHarnessContract::test_run_step_uses_synth_command PASSED [ 81%]
+tests/unit/e2e_scripts/test_tts_provider_selection.py::TestHarnessContract::test_provider_functions_exist[synth_yandex] PASSED [ 83%]
+tests/unit/e2e_scripts/test_tts_provider_selection.py::TestHarnessContract::test_provider_functions_exist[synth_minimax] PASSED [ 86%]
+tests/unit/e2e_scripts/test_tts_provider_selection.py::TestHarnessContract::test_provider_functions_exist[synth_silero] PASSED [ 88%]
+tests/unit/e2e_scripts/test_tts_provider_selection.py::TestHarnessContract::test_provider_functions_exist[synth_command] PASSED [ 90%]
+tests/unit/e2e_scripts/test_tts_provider_selection.py::TestHarnessContract::test_tts_provider_flag_parsed PASSED [ 93%]
+tests/unit/e2e_scripts/test_tts_provider_selection.py::TestHarnessContract::test_yandex_key_no_longer_unconditional_fatal PASSED [ 95%]
+tests/unit/e2e_scripts/test_tts_provider_selection.py::TestHarnessContract::test_provider_recorded_as_artifact PASSED [ 97%]
+tests/unit/e2e_scripts/test_tts_provider_selection.py::TestHarnessContract::test_workflow_exposes_input_and_passes_it PASSED [100%]
+
+============================== 43 passed in 7.56s ==============================

@@ -1,0 +1,450 @@
+[
+{
+"id": "m-en_WhisperingGirl_p01",
+"provider": "minimax",
+"voice": "English_Whispering_girl",
+"pitch": 0,
+"speed": 1.0,
+"text": "Робот, который сейчас час, и сколько осталось до утра?"
+},
+{
+"id": "m-en_WhisperingGirl_p02",
+"provider": "minimax",
+"voice": "English_Whispering_girl",
+"pitch": 0,
+"speed": 1.0,
+"text": "Робот, сколько у тебя осталось заряда, до утра дотянешь?"
+},
+{
+"id": "m-en_WhisperingGirl_p03",
+"provider": "minimax",
+"voice": "English_Whispering_girl",
+"pitch": 0,
+"speed": 1.0,
+"text": "Робот, доложи статус: всё ли у тебя работает, ничего не отвалилось?"
+},
+{
+"id": "m-en_WhisperingGirl_p04",
+"provider": "minimax",
+"voice": "English_Whispering_girl",
+"pitch": 0,
+"speed": 1.0,
+"text": "Робот, где ты сейчас находишься?"
+},
+{
+"id": "m-en_WhisperingGirl_p05",
+"provider": "minimax",
+"voice": "English_Whispering_girl",
+"pitch": 0,
+"speed": 1.0,
+"text": "Робот, что ты видишь вокруг себя, опиши в двух словах."
+},
+{
+"id": "m-en_WhisperingGirl_p06",
+"provider": "minimax",
+"voice": "English_Whispering_girl",
+"pitch": 0,
+"speed": 1.0,
+"text": "Робот, какие звуки ты вообще умеешь издавать?"
+},
+{
+"id": "m-en_WhisperingGirl_p07",
+"provider": "minimax",
+"voice": "English_Whispering_girl",
+"pitch": 0,
+"speed": 1.0,
+"text": "Робот, у тебя сейчас играет какая-нибудь музыка?"
+},
+{
+"id": "m-en_WhisperingGirl_p08",
+"provider": "minimax",
+"voice": "English_Whispering_girl",
+"pitch": 0,
+"speed": 1.0,
+"text": "Робот, ты меня слышишь? Ответь коротко."
+},
+{
+"id": "m-en_WhisperingGirl_p09",
+"provider": "minimax",
+"voice": "English_Whispering_girl",
+"pitch": 0,
+"speed": 1.0,
+"text": "Робот, посмотри, пожалуйста, не горит ли лампочка на зарядке."
+},
+{
+"id": "m-en_WhisperingGirl_p10",
+"provider": "minimax",
+"voice": "English_Whispering_girl",
+"pitch": 0,
+"speed": 1.0,
+"text": "Робот, расскажи, какая завтра погода за окном мастерской."
+},
+{
+"id": "m-en_WhisperingGirl_p11",
+"provider": "minimax",
+"voice": "English_Whispering_girl",
+"pitch": 0,
+"speed": 1.0,
+"text": "Робот, повтори, пожалуйста, что ты говорил про колёса."
+},
+{
+"id": "m-en_WhisperingGirl_p12",
+"provider": "minimax",
+"voice": "English_Whispering_girl",
+"pitch": 0,
+"speed": 1.0,
+"text": "Робот, подскажи, сколько будет семью восемь, только без шуток."
+},
+{
+"id": "m-en_WhisperingGirl_p13",
+"provider": "minimax",
+"voice": "English_Whispering_girl",
+"pitch": 0,
+"speed": 1.0,
+"text": "Робот, а какой сегодня день недели?"
+},
+{
+"id": "m-en_WhisperingGirl_p14",
+"provider": "minimax",
+"voice": "English_Whispering_girl",
+"pitch": 0,
+"speed": 1.0,
+"text": "Робот, назови три цвета, которые ты лучше всего различаешь."
+},
+{
+"id": "m-zh_GentleSenior_p01",
+"provider": "minimax",
+"voice": "Chinese (Mandarin)_Gentle_Senior",
+"pitch": 0,
+"speed": 1.0,
+"text": "Робот, который сейчас час, и сколько осталось до утра?"
+},
+{
+"id": "m-zh_GentleSenior_p02",
+"provider": "minimax",
+"voice": "Chinese (Mandarin)_Gentle_Senior",
+"pitch": 0,
+"speed": 1.0,
+"text": "Робот, сколько у тебя осталось заряда, до утра дотянешь?"
+},
+{
+"id": "m-zh_GentleSenior_p03",
+"provider": "minimax",
+"voice": "Chinese (Mandarin)_Gentle_Senior",
+"pitch": 0,
+"speed": 1.0,
+"text": "Робот, доложи статус: всё ли у тебя работает, ничего не отвалилось?"
+},
+{
+"id": "m-zh_GentleSenior_p04",
+"provider": "minimax",
+"voice": "Chinese (Mandarin)_Gentle_Senior",
+"pitch": 0,
+"speed": 1.0,
+"text": "Робот, где ты сейчас находишься?"
+},
+{
+"id": "m-zh_GentleSenior_p05",
+"provider": "minimax",
+"voice": "Chinese (Mandarin)_Gentle_Senior",
+"pitch": 0,
+"speed": 1.0,
+"text": "Робот, что ты видишь вокруг себя, опиши в двух словах."
+},
+{
+"id": "m-zh_GentleSenior_p06",
+"provider": "minimax",
+"voice": "Chinese (Mandarin)_Gentle_Senior",
+"pitch": 0,
+"speed": 1.0,
+"text": "Робот, какие звуки ты вообще умеешь издавать?"
+},
+{
+"id": "m-zh_GentleSenior_p07",
+"provider": "minimax",
+"voice": "Chinese (Mandarin)_Gentle_Senior",
+"pitch": 0,
+"speed": 1.0,
+"text": "Робот, у тебя сейчас играет какая-нибудь музыка?"
+},
+{
+"id": "m-zh_GentleSenior_p08",
+"provider": "minimax",
+"voice": "Chinese (Mandarin)_Gentle_Senior",
+"pitch": 0,
+"speed": 1.0,
+"text": "Робот, ты меня слышишь? Ответь коротко."
+},
+{
+"id": "m-zh_GentleSenior_p09",
+"provider": "minimax",
+"voice": "Chinese (Mandarin)_Gentle_Senior",
+"pitch": 0,
+"speed": 1.0,
+"text": "Робот, посмотри, пожалуйста, не горит ли лампочка на зарядке."
+},
+{
+"id": "m-zh_GentleSenior_p10",
+"provider": "minimax",
+"voice": "Chinese (Mandarin)_Gentle_Senior",
+"pitch": 0,
+"speed": 1.0,
+"text": "Робот, расскажи, какая завтра погода за окном мастерской."
+},
+{
+"id": "m-zh_GentleSenior_p11",
+"provider": "minimax",
+"voice": "Chinese (Mandarin)_Gentle_Senior",
+"pitch": 0,
+"speed": 1.0,
+"text": "Робот, повтори, пожалуйста, что ты говорил про колёса."
+},
+{
+"id": "m-zh_GentleSenior_p12",
+"provider": "minimax",
+"voice": "Chinese (Mandarin)_Gentle_Senior",
+"pitch": 0,
+"speed": 1.0,
+"text": "Робот, подскажи, сколько будет семью восемь, только без шуток."
+},
+{
+"id": "m-zh_GentleSenior_p13",
+"provider": "minimax",
+"voice": "Chinese (Mandarin)_Gentle_Senior",
+"pitch": 0,
+"speed": 1.0,
+"text": "Робот, а какой сегодня день недели?"
+},
+{
+"id": "m-zh_GentleSenior_p14",
+"provider": "minimax",
+"voice": "Chinese (Mandarin)_Gentle_Senior",
+"pitch": 0,
+"speed": 1.0,
+"text": "Робот, назови три цвета, которые ты лучше всего различаешь."
+},
+{
+"id": "m-en_WiseScholar_p01",
+"provider": "minimax",
+"voice": "English_WiseScholar",
+"pitch": 0,
+"speed": 1.0,
+"text": "Робот, который сейчас час, и сколько осталось до утра?"
+},
+{
+"id": "m-en_WiseScholar_p02",
+"provider": "minimax",
+"voice": "English_WiseScholar",
+"pitch": 0,
+"speed": 1.0,
+"text": "Робот, сколько у тебя осталось заряда, до утра дотянешь?"
+},
+{
+"id": "m-en_WiseScholar_p03",
+"provider": "minimax",
+"voice": "English_WiseScholar",
+"pitch": 0,
+"speed": 1.0,
+"text": "Робот, доложи статус: всё ли у тебя работает, ничего не отвалилось?"
+},
+{
+"id": "m-en_WiseScholar_p04",
+"provider": "minimax",
+"voice": "English_WiseScholar",
+"pitch": 0,
+"speed": 1.0,
+"text": "Робот, где ты сейчас находишься?"
+},
+{
+"id": "m-en_WiseScholar_p05",
+"provider": "minimax",
+"voice": "English_WiseScholar",
+"pitch": 0,
+"speed": 1.0,
+"text": "Робот, что ты видишь вокруг себя, опиши в двух словах."
+},
+{
+"id": "m-en_WiseScholar_p06",
+"provider": "minimax",
+"voice": "English_WiseScholar",
+"pitch": 0,
+"speed": 1.0,
+"text": "Робот, какие звуки ты вообще умеешь издавать?"
+},
+{
+"id": "m-en_WiseScholar_p07",
+"provider": "minimax",
+"voice": "English_WiseScholar",
+"pitch": 0,
+"speed": 1.0,
+"text": "Робот, у тебя сейчас играет какая-нибудь музыка?"
+},
+{
+"id": "m-en_WiseScholar_p08",
+"provider": "minimax",
+"voice": "English_WiseScholar",
+"pitch": 0,
+"speed": 1.0,
+"text": "Робот, ты меня слышишь? Ответь коротко."
+},
+{
+"id": "m-en_WiseScholar_p09",
+"provider": "minimax",
+"voice": "English_WiseScholar",
+"pitch": 0,
+"speed": 1.0,
+"text": "Робот, посмотри, пожалуйста, не горит ли лампочка на зарядке."
+},
+{
+"id": "m-en_WiseScholar_p10",
+"provider": "minimax",
+"voice": "English_WiseScholar",
+"pitch": 0,
+"speed": 1.0,
+"text": "Робот, расскажи, какая завтра погода за окном мастерской."
+},
+{
+"id": "m-en_WiseScholar_p11",
+"provider": "minimax",
+"voice": "English_WiseScholar",
+"pitch": 0,
+"speed": 1.0,
+"text": "Робот, повтори, пожалуйста, что ты говорил про колёса."
+},
+{
+"id": "m-en_WiseScholar_p12",
+"provider": "minimax",
+"voice": "English_WiseScholar",
+"pitch": 0,
+"speed": 1.0,
+"text": "Робот, подскажи, сколько будет семью восемь, только без шуток."
+},
+{
+"id": "m-en_WiseScholar_p13",
+"provider": "minimax",
+"voice": "English_WiseScholar",
+"pitch": 0,
+"speed": 1.0,
+"text": "Робот, а какой сегодня день недели?"
+},
+{
+"id": "m-en_WiseScholar_p14",
+"provider": "minimax",
+"voice": "English_WiseScholar",
+"pitch": 0,
+"speed": 1.0,
+"text": "Робот, назови три цвета, которые ты лучше всего различаешь."
+},
+{
+"id": "m-en_Jovialman_p01",
+"provider": "minimax",
+"voice": "English_Jovialman",
+"pitch": 0,
+"speed": 1.0,
+"text": "Робот, который сейчас час, и сколько осталось до утра?"
+},
+{
+"id": "m-en_Jovialman_p02",
+"provider": "minimax",
+"voice": "English_Jovialman",
+"pitch": 0,
+"speed": 1.0,
+"text": "Робот, сколько у тебя осталось заряда, до утра дотянешь?"
+},
+{
+"id": "m-en_Jovialman_p03",
+"provider": "minimax",
+"voice": "English_Jovialman",
+"pitch": 0,
+"speed": 1.0,
+"text": "Робот, доложи статус: всё ли у тебя работает, ничего не отвалилось?"
+},
+{
+"id": "m-en_Jovialman_p04",
+"provider": "minimax",
+"voice": "English_Jovialman",
+"pitch": 0,
+"speed": 1.0,
+"text": "Робот, где ты сейчас находишься?"
+},
+{
+"id": "m-en_Jovialman_p05",
+"provider": "minimax",
+"voice": "English_Jovialman",
+"pitch": 0,
+"speed": 1.0,
+"text": "Робот, что ты видишь вокруг себя, опиши в двух словах."
+},
+{
+"id": "m-en_Jovialman_p06",
+"provider": "minimax",
+"voice": "English_Jovialman",
+"pitch": 0,
+"speed": 1.0,
+"text": "Робот, какие звуки ты вообще умеешь издавать?"
+},
+{
+"id": "m-en_Jovialman_p07",
+"provider": "minimax",
+"voice": "English_Jovialman",
+"pitch": 0,
+"speed": 1.0,
+"text": "Робот, у тебя сейчас играет какая-нибудь музыка?"
+},
+{
+"id": "m-en_Jovialman_p08",
+"provider": "minimax",
+"voice": "English_Jovialman",
+"pitch": 0,
+"speed": 1.0,
+"text": "Робот, ты меня слышишь? Ответь коротко."
+},
+{
+"id": "m-en_Jovialman_p09",
+"provider": "minimax",
+"voice": "English_Jovialman",
+"pitch": 0,
+"speed": 1.0,
+"text": "Робот, посмотри, пожалуйста, не горит ли лампочка на зарядке."
+},
+{
+"id": "m-en_Jovialman_p10",
+"provider": "minimax",
+"voice": "English_Jovialman",
+"pitch": 0,
+"speed": 1.0,
+"text": "Робот, расскажи, какая завтра погода за окном мастерской."
+},
+{
+"id": "m-en_Jovialman_p11",
+"provider": "minimax",
+"voice": "English_Jovialman",
+"pitch": 0,
+"speed": 1.0,
+"text": "Робот, повтори, пожалуйста, что ты говорил про колёса."
+},
+{
+"id": "m-en_Jovialman_p12",
+"provider": "minimax",
+"voice": "English_Jovialman",
+"pitch": 0,
+"speed": 1.0,
+"text": "Робот, подскажи, сколько будет семью восемь, только без шуток."
+},
+{
+"id": "m-en_Jovialman_p13",
+"provider": "minimax",
+"voice": "English_Jovialman",
+"pitch": 0,
+"speed": 1.0,
+"text": "Робот, а какой сегодня день недели?"
+},
+{
+"id": "m-en_Jovialman_p14",
+"provider": "minimax",
+"voice": "English_Jovialman",
+"pitch": 0,
+"speed": 1.0,
+"text": "Робот, назови три цвета, которые ты лучше всего различаешь."
+}
+]

@@ -153,3 +153,110 @@ def test_compute_twist_short_axes_does_not_crash():
                                         deadzone=0.1)
     assert linear_x == 0.0
     assert angular_z == 0.0
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# ArmAnnouncer (issue #4003): chatter of the ARM channel must not be spoken
+# ─────────────────────────────────────────────────────────────────────────────
+
+from rob_box_teleop.joystick_logic import (  # noqa: E402
+    ARM_ANNOUNCE_HOLD_S,
+    ARM_ANNOUNCE_MIN_INTERVAL_S,
+    ArmAnnouncer,
+)
+
+
+def _run(announcer, samples, start=0.0, step=0.05):
+    """Feed ``(armed, duration_s)`` segments as samples every ``step`` s; return [(t, announced)]."""
+    now = start
+    heard = []
+    for armed, duration in samples:
+        for _ in range(max(1, round(duration / step))):
+            said = announcer.update(armed, now)
+            if said is not None:
+                heard.append((round(now, 3), said))
+            now += step
+    return heard
+
+
+def test_defaults_cover_the_observed_chatter():
+    # robot log 2026-10-24: LOW glitches lasted 48..100 ms
+    assert ARM_ANNOUNCE_HOLD_S >= 0.1 * 2
+    assert ARM_ANNOUNCE_MIN_INTERVAL_S >= 4.0  # one phrase = ~4 s of tts_node queue
+
+
+def test_boot_with_switch_down_says_nothing():
+    assert _run(ArmAnnouncer(), [(False, 10.0)]) == []
+
+
+def test_real_arm_is_announced_once_after_the_hold():
+    heard = _run(ArmAnnouncer(hold_s=0.3), [(True, 5.0)])
+    assert [state for _, state in heard] == [True]
+    assert heard[0][0] == pytest.approx(0.3, abs=0.051)
+
+
+def test_real_arm_then_real_disarm_one_announcement_each():
+    heard = _run(ArmAnnouncer(), [(True, 3.0), (False, 8.0)])
+    assert [state for _, state in heard] == [True, False]
+
+
+def test_chatter_10_glitches_of_50ms_after_arming_is_silent():
+    announcer = ArmAnnouncer()
+    heard = _run(announcer, [(True, 2.0)] + [(False, 0.05), (True, 1.0)] * 10)
+    assert [state for _, state in heard] == [True]  # only the real arming
+    assert announcer.stable is True
+
+
+def test_chatter_10_glitches_of_50ms_while_disarmed_is_silent():
+    heard = _run(ArmAnnouncer(), [(True, 0.05), (False, 1.0)] * 10)
+    assert heard == []
+
+
+def test_continuous_50ms_flapping_is_silent():
+    heard = _run(ArmAnnouncer(), [(True, 0.05), (False, 0.05)] * 50)
+    assert heard == []
+
+
+def test_glitch_of_100ms_the_longest_observed_is_silent():
+    heard = _run(ArmAnnouncer(), [(True, 2.0), (False, 0.1), (True, 2.0)])
+    assert [state for _, state in heard] == [True]
+
+
+def test_fast_on_off_on_gives_only_the_final_state():
+    # ON settles and is spoken; OFF settles but waits for the interval; ON again
+    # before the interval ends -> the stable state equals the announced one -> silent.
+    announcer = ArmAnnouncer(hold_s=0.3, min_interval_s=5.0)
+    heard = _run(announcer, [(True, 0.5), (False, 0.5), (True, 3.0)])
+    assert [state for _, state in heard] == [True]
+    assert announcer.stable is True
+
+
+def test_fast_on_off_on_before_the_first_one_settles_is_one_announcement():
+    heard = _run(ArmAnnouncer(hold_s=0.3), [(True, 0.2), (False, 0.2), (True, 2.0)])
+    assert [state for _, state in heard] == [True]
+
+
+def test_on_off_that_ends_disarmed_is_announced_with_the_final_state_after_the_interval():
+    announcer = ArmAnnouncer(hold_s=0.3, min_interval_s=5.0)
+    heard = _run(announcer, [(True, 0.5), (False, 10.0)])
+    assert [state for _, state in heard] == [True, False]
+    # the OFF phrase is held back until 5 s after the ON phrase
+    assert heard[1][0] >= heard[0][0] + 5.0 - 1e-9
+
+
+def test_announcements_are_never_closer_than_the_interval():
+    # a person really flips the switch every 1 s for a minute
+    announcer = ArmAnnouncer(hold_s=0.3, min_interval_s=5.0)
+    heard = _run(announcer, [(i % 2 == 0, 1.0) for i in range(60)])
+    times = [t for t, _ in heard]
+    assert len(times) >= 2
+    assert all(b - a >= 5.0 - 1e-9 for a, b in zip(times, times[1:]))
+    # nothing queues up: at most one phrase per interval
+    assert len(times) <= 60 / 5.0 + 1
+
+
+def test_zero_hold_and_interval_degrade_to_every_change_and_negative_is_clamped():
+    announcer = ArmAnnouncer(hold_s=-1.0, min_interval_s=-1.0)
+    assert (announcer.hold_s, announcer.min_interval_s) == (0.0, 0.0)
+    heard = _run(announcer, [(True, 0.05), (False, 0.05), (True, 0.05)])
+    assert [state for _, state in heard] == [True, False, True]

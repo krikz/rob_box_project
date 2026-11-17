@@ -1,3 +1,7 @@
+# .claude/skills/ — локальные junction/symlink на .agents/skills/ (Windows/Linux),
+# в git не коммитим: единственный SOT скиллов — .agents/skills/.
+.claude/skills/
+
 # Python
 __pycache__/
 *.py[cod]
@@ -21,12 +25,20 @@ dist/
 downloads/
 eggs/
 .eggs/
-lib/
-lib64/
+# Якорь `/` обязателен: без него `lib/` матчит ЛЮБОЙ каталог с таким именем
+# на любой глубине. Из-за этого scripts/agent_flow/tests/lib/ был невидим для
+# git, и lib_eval_func.sh (без которого test_gh_label_filter_fallback.sh падал
+# первой строкой) не попадал в коммиты — тест не отработал ни разу. Здесь
+# имелись в виду python-артефакты сборки в корне репозитория.
+/lib/
+/lib64/
 parts/
 sdist/
 var/
 wheels/
+# Каталог колёс Hailo в git ради .gitkeep и своего .gitignore (колёса *.whl игнорирует он).
+# Файл из игнорируемого каталога git не возвращает — возвращаем каталог (ADR-0166 §8).
+!docker/vision/vision-hailo/wheels/
 *.egg-info/
 .installed.cfg
 *.egg
@@ -40,7 +52,11 @@ logs/
 *.db3
 
 # IDE
-.vscode/
+# .vscode/settings.json — общие настройки репо (URDF-визуализатор rob_box_description, пути ROS Humble
+# для анализатора Python, исключения build/log/cache из поиска и вотчеров); остальное в .vscode — личное
+# (ADR-0166 §8, решение Шифу 05.11). Каталог исключён через «/*», иначе файл не вернуть.
+.vscode/*
+!.vscode/settings.json
 .idea/
 *.swp
 *.swo
@@ -49,6 +65,9 @@ logs/
 
 # Docker
 .env
+# docker/{main,sound,vision}/.env — конфиг деплоя (ROS_DISTRO, IMAGE_TAG, REGISTRY, ROBOT_ID),
+# секретов в них нет; compose читает их на роботе. Секреты — в .env.secrets (ADR-0166 §8).
+!docker/*/.env
 docker-compose.override.yml
 
 # Secrets (API keys, credentials)
@@ -67,17 +86,15 @@ docker-compose.override.yml
 /frames_*.gv
 /frames_*.pdf
 /clog
+/coverage.json
+
+# Огрызки Windows в корне рабочей копии (ADR-0166 §8)
+/.tmp_*/
+/*;C
 
 # Local Debian packages and ROS .deb drops (test-bench env setup)
 /*.deb
 /*.rpm
-
-# TTS audio bench: artifacts and runtime logs are regenerable; fixtures and
-# scripts commit normally.
-tts_audio_bench/artifacts/
-tts_audio_bench/logs/
-tts_audio_bench/__pycache__/
-tts_audio_bench/**/__pycache__/
 
 # AI Agent Skills
 # .agents/github-copilot/ — Rob Box кастомные скилы, КОММИТИМ
@@ -85,13 +102,47 @@ tts_audio_bench/**/__pycache__/
 .continue/
 .qwen/
 
+# Local-only agent notes (NOT committed — machine-specific access docs)
+docs/guides/BUILD_MACHINE_ACCESS.md
+
 # System files
 .Trash-*/
 Thumbs.db
 
 .worktrees/
-docker/vision/config/voice_assistant/event_mode.yaml
+.claude/worktrees/
+docker/sound/config/voice_assistant/event_mode.yaml
 .colcon-bench/
 
 # e2e live test artefacts (regenerated each run)
 tests/e2e/_artifacts/
+
+# ADR-0076 §2.2: side-channel эмпирического сбора STT-семплов «ТАРС»
+# с шлема (issue #2158, follow-up #2135). Файл data/stt_tars_samples.jsonl
+# пишется, когда ``ROBBOX_STT_COLLECT=1``, и НЕ должен случайно утечь
+# в коммит. Сборщик ``core/tars_sample_logger.py`` сам делает mkdir
+# data/ при необходимости.
+/data/
+
+# Боевые данные на Pi (ADR-0159): docker/<pi>/data/ — живые БД людей
+# (speakers.db, voice_memory.db, faces), root-owned, монтируются в контейнеры.
+# В git отслеживаемых файлов под этими путями нет (git ls-files docker/*/data → пусто).
+docker/*/data/
+
+# frontend
+node_modules/
+# Vite root cache — artefact of `npx vite` when invoked from a directory
+# without local vite/node_modules (e.g. wrong cwd in PowerShell). Normal
+# vite cache for webxr_client is in src/rob_box_quest/webxr_client/.gitignore.
+/.vite/
+/artifacts_live*
+/live_check*
+# Сим: миры из карты робота (rob_box_sim.grid_to_sdf) — карта дома, в публичный репо не кладём
+src/rob_box_sim/worlds/local/
+docker/sim/results/
+docker/sim/video/
+# Карты rtabmap Main Pi (bind-mount ./maps:/maps, rtabmap.db) — данные робота, не репо (#4371)
+docker/main/maps/
+
+# Журнал промахов узнавания лиц (#4469): эмбеддинги людей, живёт только на роботе
+face_misses.jsonl

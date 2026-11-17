@@ -1,0 +1,33 @@
+# Точки-кабинеты мира building (rob_box_sim.building_floor). Сгенерирован:
+#   python3 -m rob_box_sim.worlds_catalog src/rob_box_sim/worlds  — руками не править.
+# Координаты — мир Gazebo, yaw в радианах. Спавн робота (0, 0, 0): на пустой карте
+# rtabmap кладёт начало map в спавн, поэтому map = мир. Из другой позы спавна:
+# building_floor.world_to_map(точка, spawn).
+world: building
+frame: world
+spawn: {x: 0.0, y: 0.0, yaw: 0.0}
+goals:
+  - {name: hall, label: "холл", x: 0, y: 0, yaw: 0}
+  - {name: entrance, label: "вход", x: -7, y: 0, yaw: 3.1416}
+  - {name: reception, label: "вахта", x: -2, y: -4.2, yaw: -1.5708}
+  - {name: aud_101, label: "аудитория 101", x: 5.6, y: 2.6, yaw: 1.5708}
+  - {name: canteen, label: "столовая", x: 6, y: -2.6, yaw: -1.5708}
+  - {name: aud_102, label: "аудитория 102", x: 13.35, y: 2.6, yaw: 1.5708}
+  - {name: dean, label: "деканат", x: 15.1, y: -2.6, yaw: -1.5708}
+  - {name: dept_103, label: "кафедра", x: 19.075, y: 2.6, yaw: 1.5708}
+  - {name: library, label: "библиотека", x: 20.15, y: -2.6, yaw: -1.5708}
+  - {name: wc, label: "санузел", x: 25.075, y: -2.6, yaw: -1.5708}
+  - {name: stairs, label: "лестница", x: 26, y: 2.6, yaw: 1.5708}
+  - {name: room_201, label: "аудитория 201", x: 29, y: 2.6, yaw: 1.5708}
+  - {name: room_207, label: "аудитория 207", x: 29, y: -2.6, yaw: -1.5708}
+  - {name: room_202, label: "аудитория 202", x: 33, y: 2.6, yaw: 1.5708}
+  - {name: room_208, label: "аудитория 208", x: 33, y: -2.6, yaw: -1.5708}
+  - {name: room_203, label: "аудитория 203", x: 37, y: 2.6, yaw: 1.5708}
+  - {name: room_209, label: "аудитория 209", x: 37, y: -2.6, yaw: -1.5708}
+  - {name: room_204, label: "аудитория 204", x: 41, y: 2.6, yaw: 1.5708}
+  - {name: room_210, label: "аудитория 210", x: 41, y: -2.6, yaw: -1.5708}
+  - {name: room_205, label: "аудитория 205", x: 45, y: 2.6, yaw: 1.5708}
+  - {name: room_211, label: "аудитория 211", x: 45, y: -2.6, yaw: -1.5708}
+  - {name: room_206, label: "аудитория 206", x: 49, y: 2.6, yaw: 1.5708}
+  - {name: room_212, label: "аудитория 212", x: 49, y: -2.6, yaw: -1.5708}
+  - {name: corridor_end, label: "конец коридора", x: 50.5, y: 0, yaw: 0}

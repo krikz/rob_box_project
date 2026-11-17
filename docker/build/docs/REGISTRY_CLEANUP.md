@@ -83,14 +83,12 @@ cd ~/rob_box_project
   - pi_type: `main` или `vision`
   - service: `имя-сервиса`
 
-**Вариант 3: Полная пересборка Main/Vision Pi**
+**Вариант 3: Полная пересборка одного Pi (main / sound / vision)**
 ```bash
-# Main Pi services
-cd ~/rob_box_project/docker/build
-gh workflow run "L-Build Main Pi Services.yml" --ref develop
-
-# Vision Pi services
-gh workflow run "L-Build Vision Pi Services.yml" --ref develop
+# Один workflow на все Pi, Pi — вход `pi` (ADR-0159 PR-3)
+gh workflow run "L-Build Pi Services.yml" --ref develop -f pi=main
+gh workflow run "L-Build Pi Services.yml" --ref develop -f pi=sound
+gh workflow run "L-Build Pi Services.yml" --ref develop -f pi=vision
 ```
 
 ## Ручная очистка (если скрипт не работает)

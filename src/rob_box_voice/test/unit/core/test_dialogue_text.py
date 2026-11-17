@@ -7,12 +7,12 @@ import pytest
 from rob_box_voice.core.dialogue_text import (
     DEFAULT_SILENCE_COMMANDS,
     DEFAULT_UNSILENCE_COMMANDS,
-    DEFAULT_WAKE_WORDS,
     has_wake_word,
     is_silence_command,
     is_unsilence_command,
     strip_wake_word,
 )
+from voice_robot_wake import ROBOT_WAKE  # noqa: E402 — тестовый профиль робота
 
 
 # ---------------------------------------------------------------------------
@@ -22,15 +22,15 @@ from rob_box_voice.core.dialogue_text import (
 
 class TestHasWakeWord:
     def test_default_wake_word_detected(self) -> None:
-        assert has_wake_word("привет робок", DEFAULT_WAKE_WORDS) is True
+        assert has_wake_word("привет робок", ROBOT_WAKE) is True
 
     def test_default_wake_word_case_insensitive(self) -> None:
         # Lowercase both sides — that's the contract.
         text = "Роббокс расскажи анекдот".lower()
-        assert has_wake_word(text, DEFAULT_WAKE_WORDS) is True
+        assert has_wake_word(text, ROBOT_WAKE) is True
 
     def test_missing_wake_word(self) -> None:
-        assert has_wake_word("просто текст без триггера", DEFAULT_WAKE_WORDS) is False
+        assert has_wake_word("просто текст без триггера", ROBOT_WAKE) is False
 
     def test_empty_wake_words_bypass(self) -> None:
         # Bypass mode — accept every input
@@ -44,7 +44,7 @@ class TestHasWakeWord:
         """Issue #1292: «бот» ∈ «работает» — ложный wake word на фоновую речь."""
         assert has_wake_word("он потом работает", ["бот"]) is False
         assert has_wake_word("работает", ["бот"]) is False
-        assert has_wake_word("он потом работает", DEFAULT_WAKE_WORDS) is False
+        assert has_wake_word("он потом работает", ROBOT_WAKE) is False
 
     def test_substring_words_do_not_trigger(self) -> None:
         """«работник», «заработок», «работа» содержат «бот», но не как слово."""
@@ -77,7 +77,7 @@ class TestHasWakeWord:
     def test_wake_word_in_middle_of_phrase(self) -> None:
         """Регресс-тест фикса 10.08: «робот» в середине фразы — wake word."""
         text = "денчик ой фу робот меня зовут саша".lower()
-        assert has_wake_word(text, DEFAULT_WAKE_WORDS) is True
+        assert has_wake_word(text, ROBOT_WAKE) is True
 
     def test_issue_1292_reported_phrase(self) -> None:
         """Точная фраза из docker logs 15.08 — фоновый шум без обращения."""
@@ -92,7 +92,7 @@ class TestHasWakeWord:
 
     def test_case_insensitive_pattern(self) -> None:
         """Паттерн с re.IGNORECASE — переживает не-нижний регистр."""
-        assert has_wake_word("РОБОТ расскажи", DEFAULT_WAKE_WORDS) is True
+        assert has_wake_word("РОБОТ расскажи", ROBOT_WAKE) is True
         assert has_wake_word("Он потом РАБОТАЕТ", ["бот"]) is False
 
 
@@ -138,7 +138,7 @@ class TestIsSilenceCommand:
             "помолчи",
             "робок помолчи пожалуйста",
             "замолчи уже",
-            "хватит разговаривать",
+            "замолчите, пожалуйста",
         ],
     )
     def test_default_silence_detected(self, text: str) -> None:
@@ -147,9 +147,20 @@ class TestIsSilenceCommand:
     def test_no_silence_command(self) -> None:
         assert is_silence_command("расскажи анекдот", DEFAULT_SILENCE_COMMANDS) is False
 
+    def test_enough_is_not_silence(self) -> None:
+        """Решение Шифу 22.10 (#3700): «хватит» останавливает звуки, режим тишины не включает."""
+        assert is_silence_command("хватит разговаривать") is False
+        assert is_silence_command("робот, хватит") is False
+
     def test_custom_commands(self) -> None:
         assert is_silence_command("тишина!", ["тиш"]) is True
         assert is_silence_command("помолчи", ["тиш"]) is False
+
+    def test_silence_matches_whole_word_not_substring(self) -> None:
+        """ADR-0150 PR-1: «замолчи» — по границе слова, а не подстрокой (было ``cmd in text``)."""
+        assert is_silence_command("робот, понял, замолчи, останавливай") is True
+        assert is_silence_command("нехватка денег") is False
+        assert is_silence_command("он захватит флаг") is False
 
 
 # ---------------------------------------------------------------------------
@@ -187,6 +198,78 @@ class TestIsUnsilenceCommand:
 
 def test_default_tuples_are_non_empty() -> None:
     """Triggers / wake words must not be empty (silent break)."""
-    assert len(DEFAULT_WAKE_WORDS) > 0
+    assert len(ROBOT_WAKE) > 0
     assert len(DEFAULT_SILENCE_COMMANDS) > 0
     assert len(DEFAULT_UNSILENCE_COMMANDS) > 0
+
+# ---------------------------------------------------------------------------
+# «Робота» — винительный падеж от STT (прогон 35734532425, шаг n209)
+# ---------------------------------------------------------------------------
+
+
+class TestAccusativeRobota:
+    """Регрессия: «Робота, про меня что помнишь?» обязана будить робота.
+
+    Живой прогон 35734532425 (акт 2 «Знакомство»): vosk трижды подряд
+    распознал обращение «Робот,» как «Робота,», has_wake_word вернул False
+    (``\b``-матчинг не видит «робот» внутри «робота»), робот промолчал, шаг
+    упал с ``FAIL no_accept``. Диктор при этом был опознан верно — потерян
+    был именно вейк, а не голос.
+    """
+
+    def test_accusative_wakes(self) -> None:
+        assert has_wake_word("робота, про меня что помнишь?", ROBOT_WAKE) is True
+
+    def test_accusative_stripped_cleanly(self) -> None:
+        assert (
+            strip_wake_word("Робота, про меня что помнишь?", ROBOT_WAKE)
+            == "про меня что помнишь?"
+        )
+
+    def test_nominative_still_wakes(self) -> None:
+        assert has_wake_word("робот, привет", ROBOT_WAKE) is True
+
+    def test_rabotaet_still_not_a_wake_word(self) -> None:
+        """Гард #1292 не должен пострадать: «работает» — не вейк."""
+        assert has_wake_word("он работает уже час", ROBOT_WAKE) is False
+
+
+# ---------------------------------------------------------------------------
+# Синхронность кодового списка и docker/sound/config/wake_words.yaml
+# ---------------------------------------------------------------------------
+
+
+def test_wake_words_yaml_matches_code_list() -> None:
+    """YAML на роботе и ROBOT_WAKE — один список, а не два.
+
+    Инвариант заявлен в шапке ``wake_words.yaml`` («байт-в-байт копия»), но
+    до сих пор держался только комментарием: автотеста не было, и правка в
+    одном месте молча расходилась со вторым. На роботе читается ИМЕННО
+    YAML (bind-mount), кодовый список — фолбек для dev-env и тестов, так
+    что расхождение означает «в тестах зелено, на роботе глухо».
+    """
+    from pathlib import Path
+
+    import yaml
+
+    repo_root = Path(__file__).resolve().parents[5]
+    cfg = repo_root / "docker" / "sound" / "config" / "wake_words.yaml"
+    assert cfg.exists(), f"конфиг вейк-слов не найден: {cfg}"
+
+    personality = [w for w in yaml.safe_load(cfg.read_text(encoding="utf-8"))["personality"] if isinstance(w, str)]
+    assert list(personality) == list(ROBOT_WAKE), (
+        "personality из wake_words.yaml разошёлся с ROBOT_WAKE — "
+        "это одна таблица профиля робота: тесты читают её же"
+    )
+
+
+def test_old_path_imports_the_one_knowledge_table() -> None:
+    """ADR-0150 PR-1: у старого пути нет своих списков — те же объекты, что в rob_box_dialog.knowledge."""
+    from rob_box_dialog import knowledge
+
+    from rob_box_voice.core import dialogue_text
+
+    # ADR-0167 Ш1б-2б: вейков робота у ядра нет - их нет и в прежних именах.
+    assert not hasattr(dialogue_text, "DEFAULT_WAKE_WORDS") and not hasattr(knowledge, "DEFAULT_WAKE_WORDS")
+    assert DEFAULT_SILENCE_COMMANDS is knowledge.SILENCE_WORDS
+    assert DEFAULT_UNSILENCE_COMMANDS is knowledge.UNSILENCE_WORDS

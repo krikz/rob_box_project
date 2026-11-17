@@ -5,12 +5,13 @@
 # Универсальный скрипт настройки узлов РОББОКС
 #
 # Использование:
-#   curl -fsSL https://raw.githubusercontent.com/krikz/rob_box_project/develop/scripts/setup_node.sh | bash
+#   curl -fsSL https://raw.githubusercontent.com/krikz/rob_box_project/develop/scripts/setup/setup_node.sh | bash
 #
 # Или с указанием типа узла:
-#   curl -fsSL https://raw.githubusercontent.com/krikz/rob_box_project/develop/scripts/setup_node.sh | bash -s vision
-#   curl -fsSL https://raw.githubusercontent.com/krikz/rob_box_project/develop/scripts/setup_node.sh | bash -s main
-#   curl -fsSL https://raw.githubusercontent.com/krikz/rob_box_project/develop/scripts/setup_node.sh | bash -s sensor-hub
+#   curl -fsSL https://raw.githubusercontent.com/krikz/rob_box_project/develop/scripts/setup/setup_node.sh | bash -s vision
+#   curl -fsSL https://raw.githubusercontent.com/krikz/rob_box_project/develop/scripts/setup/setup_node.sh | bash -s main
+#   curl -fsSL https://raw.githubusercontent.com/krikz/rob_box_project/develop/scripts/setup/setup_node.sh | bash -s sensor-hub
+#   curl -fsSL https://raw.githubusercontent.com/krikz/rob_box_project/develop/scripts/setup/setup_node.sh | bash -s sound
 #
 # Что делает скрипт:
 #   1. Определяет тип узла (интерактивно или через параметр)
@@ -97,13 +98,14 @@ show_node_menu() {
     echo ""
     echo -e "${BOLD}${CYAN}Выберите тип узла РОББОКС:${NC}"
     echo ""
-    echo -e "  ${GREEN}1)${NC} 🎥 Vision Pi      - Камера, лидар, LED матрица, голосовой ассистент"
+    echo -e "  ${GREEN}1)${NC} 🎥 Vision Pi      - Камера, лидар, LED матрица, Hailo, Quest, Telegram-бот (голос — на Sound Pi, ADR-0159)"
     echo -e "  ${GREEN}2)${NC} 🧠 Main Pi        - Главный узел, навигация, планирование"
-    echo -e "  ${GREEN}3)${NC} 📡 Sensor Hub     - Датчики (IMU, GPS, энкодеры, мотор-драйверы)"
+    echo -e "  ${GREEN}3)${NC} 📡 Sensor Hub     - Прошивка ESP32 (хост-сторона — роль 6 Sound Pi, perception_bridge)"
     echo -e "  ${GREEN}4)${NC} 🦾 Manipulator    - Манипулятор/рука (в разработке)"
     echo -e "  ${GREEN}5)${NC} 🛠️  Custom         - Пользовательская конфигурация"
+    echo -e "  ${GREEN}6)${NC} 🔊 Sound Pi       - ReSpeaker, голосовой стек, SuperCollider, perception_bridge для ESP32 (ADR-0159)"
     echo ""
-    echo -e "${YELLOW}Примечание:${NC} Для Sensor Hub используйте ESP32 с micro-ROS"
+    echo -e "${YELLOW}Примечание:${NC} Sensor Hub — прошивка ESP32; нода связи с ним (serial, без агента-моста) живёт на Sound Pi (ADR-0159)"
     echo ""
 }
 
@@ -138,6 +140,11 @@ detect_node_type() {
                 log_info "Тип узла задан через параметр: Custom"
                 return
                 ;;
+            sound|Sound|SOUND|audio)
+                NODE_TYPE="sound"
+                log_info "Тип узла задан через параметр: Sound Pi"
+                return
+                ;;
             *)
                 log_warning "Неизвестный тип узла: $1"
                 ;;
@@ -148,7 +155,7 @@ detect_node_type() {
     show_node_menu
     
     while true; do
-        read -p "Введите номер (1-5): " choice
+        read -p "Введите номер (1-6): " choice
         case $choice in
             1)
                 NODE_TYPE="vision"
@@ -168,6 +175,10 @@ detect_node_type() {
                 ;;
             5)
                 NODE_TYPE="custom"
+                break
+                ;;
+            6)
+                NODE_TYPE="sound"
                 break
                 ;;
             *)
@@ -215,6 +226,17 @@ configure_node_params() {
             NODE_EMOJI="🛠️"
             DOCKER_COMPOSE_DIR=""
             SERVICE_NAME=""
+            ;;
+        sound)
+            # ADR-0159: третий узел. Схема адресов та же, что у Main (.10/.20)
+            # и Vision (.11/.21): eth0 → .12, wlan0 → .22 (wlan0 уже получил
+            # 10.1.1.22 от роутера 19.10.2026; .12 для eth0 нужно закрепить
+            # в DHCP роутера по MAC — см. ADR-0159 §3.1).
+            NODE_NAME="Sound Pi"
+            NODE_IP="10.1.1.12"
+            NODE_EMOJI="🔊"
+            DOCKER_COMPOSE_DIR="$HOME/rob_box_project/docker/sound"
+            SERVICE_NAME="robbox-sound"
             ;;
     esac
     
@@ -346,7 +368,17 @@ clone_repository() {
     log_step "Клонирование репозитория rob_box_project"
     
     REPO_DIR="$HOME/rob_box_project"
-    
+
+    # ROBBOX_SETUP_NO_GIT=1 — взять уже лежащую копию как есть (прогон в чистой ОС, проверка ветки).
+    if [ "${ROBBOX_SETUP_NO_GIT:-0}" = 1 ]; then
+        if [ -d "$REPO_DIR/scripts/setup" ]; then
+            log_warning "ROBBOX_SETUP_NO_GIT=1: $REPO_DIR не обновляю из GitHub"
+            return 0
+        fi
+        log_error "ROBBOX_SETUP_NO_GIT=1, но в $REPO_DIR нет копии репозитория"
+        exit 1
+    fi
+
     if [ -d "$REPO_DIR" ]; then
         log_warning "Репозиторий уже существует в $REPO_DIR"
         log_info "Обновляем до последней версии..."
@@ -513,30 +545,39 @@ MOTDEOF
 install_robbox_aliases() {
     log_step "Установка РОББОКС Bash Aliases"
     
-    ALIASES_FILE="$HOME/rob_box_project/scripts/robbox_aliases.sh"
-    
+    # Файл переехал в scripts/maintenance/ — по старому пути scripts/robbox_aliases.sh шаг молча
+    # пропускался, и 09.11 ни на одной из трёх Pi строки алиасов в ~/.bashrc не было (замер #4375).
+    ALIASES_FILE="$HOME/rob_box_project/scripts/maintenance/robbox_aliases.sh"
+    touch "$HOME/.bashrc"
+
     # Проверка существования файла
     if [ ! -f "$ALIASES_FILE" ]; then
         log_warning "Файл алиасов не найден: $ALIASES_FILE"
         log_warning "Пропускаю установку алиасов..."
         return
     fi
-    
+
+    # Старая строка с несуществующим путём — переписать на новый.
+    if grep -q "rob_box_project/scripts/robbox_aliases.sh" "$HOME/.bashrc"; then
+        sed -i 's#rob_box_project/scripts/robbox_aliases.sh#rob_box_project/scripts/maintenance/robbox_aliases.sh#g' "$HOME/.bashrc"
+        log_info "Путь к алиасам в ~/.bashrc исправлен на scripts/maintenance/"
+    fi
+
     # Проверка, не установлены ли уже
-    if grep -q "robbox_aliases.sh" "$HOME/.bashrc"; then
+    if grep -q "scripts/maintenance/robbox_aliases.sh" "$HOME/.bashrc"; then
         log_success "РОББОКС aliases уже установлены!"
         return
     fi
-    
+
     log_info "Добавление РОББОКС aliases в .bashrc..."
-    
+
     cat >> "$HOME/.bashrc" << 'ALIASEOF'
 
 # ═══════════════════════════════════════════════════════════════════════════
 # 🤖 РОББОКС Bash Aliases
 # ═══════════════════════════════════════════════════════════════════════════
-if [ -f ~/rob_box_project/scripts/robbox_aliases.sh ]; then
-    source ~/rob_box_project/scripts/robbox_aliases.sh
+if [ -f ~/rob_box_project/scripts/maintenance/robbox_aliases.sh ]; then
+    source ~/rob_box_project/scripts/maintenance/robbox_aliases.sh
 fi
 ALIASEOF
     
@@ -557,8 +598,33 @@ setup_autostart() {
     log_step "Настройка автозапуска Docker контейнеров"
     
     SERVICE_FILE="/etc/systemd/system/$SERVICE_NAME.service"
-    
-    log_info "Создание systemd service..."
+    local repo="$HOME/rob_box_project"
+    local unit_src="$repo/host/$NODE_TYPE/$SERVICE_NAME.service"
+
+    # Откуда берётся юнит robbox-<роль>.service (#4375), один источник на роль:
+    #   vision — setup_vision_pi.sh (Restart, health-timer); его же переставляет L: Deploy and Verify
+    #            через reinstall_vision_pi_systemd.sh, поэтому зовём тот же скрипт, а не пишем свой;
+    #   <роль> с файлом host/<роль>/robbox-<роль>.service в репо — ставим файл как есть
+    #            (sound — #4531, main — host/main/robbox-main.service из develop); этот же каталог host/<роль>/ едет в бандле релиза (ADR-0168);
+    #   иначе — простой юнит ниже (запасной путь, если файла роли нет).
+    if [ "$NODE_TYPE" = vision ] && [ -f "$repo/scripts/setup/reinstall_vision_pi_systemd.sh" ]; then
+        log_info "Юнит Vision — из setup_vision_pi.sh (тот же, что ставит деплой)"
+        bash "$repo/scripts/setup/reinstall_vision_pi_systemd.sh"
+        log_success "Автозапуск настроен (robbox-vision.service + health-timer)"
+        return
+    fi
+    if [ -f "$unit_src" ]; then
+        log_info "Юнит из репо: host/$NODE_TYPE/$SERVICE_NAME.service"
+        grep -q "^User=$USER$" "$unit_src" \
+            || log_warning "в $unit_src пользователь не $USER — юнит ставится как есть, проверьте User= и пути"
+        sudo install -m 0644 "$unit_src" "$SERVICE_FILE"
+        sudo systemctl daemon-reload
+        sudo systemctl enable "$SERVICE_NAME.service"
+        log_success "Автозапуск настроен из $unit_src"
+        return
+    fi
+
+    log_info "Создание systemd service (в host/$NODE_TYPE/ своего юнита нет)..."
     sudo tee "$SERVICE_FILE" > /dev/null << SERVICEEOF
 [Unit]
 Description=ROBBOX $NODE_NAME Docker Containers
@@ -569,7 +635,9 @@ Requires=docker.service
 Type=oneshot
 RemainAfterExit=yes
 WorkingDirectory=$DOCKER_COMPOSE_DIR
-ExecStart=/usr/bin/docker compose up -d
+# --pull never: старт при загрузке не зависит от сети и registry (образы кладёт деплой),
+# как в robbox-vision.service из setup_vision_pi.sh (его сверяет L: Deploy and Verify).
+ExecStart=/usr/bin/docker compose up -d --pull never
 ExecStop=/usr/bin/docker compose down
 User=$USER
 
@@ -583,6 +651,83 @@ SERVICEEOF
     
     log_success "Автозапуск настроен!"
     log_info "Контейнеры будут автоматически запускаться при загрузке системы"
+}
+
+# ═══════════════════════════════════════════════════════════════════════════
+# ZRAM SWAP (issue #2621)
+# ═══════════════════════════════════════════════════════════════════════════
+# Vision Pi — 8 ГБ RAM и 13 контейнеров, свопа по умолчанию нет вообще.
+# Когда MemAvailable доходит до нуля, ядру некуда вытеснять анонимные
+# страницы: узел перестаёт отвечать по ssh, и единственный выход —
+# перезагрузка, которая стирает улики. Замер 15.09.2026: MemAvailable
+# падал 1206 → 416 МБ за 27 минут, page cache вытеснялся 1230 → 513 МБ.
+#
+# zram — сжатый своп в самой RAM (zstd, ~3:1). Он НЕ лечит причину
+# (см. #2609 — 1.6 ГБ мёртвого CUDA-torch в voice-assistant), но даёт
+# окно, в котором узел тормозит, а не умирает, и его можно
+# диагностировать живьём.
+#
+# PERCENT=25 → ~2 ГБ ёмкости свопа, реально занимающих ~700 МБ RAM
+# при типичном сжатии. Сознательно консервативно: сам zram тоже живёт
+# в памяти, и на узле, который уже у края, забирать больше опасно.
+#
+# swappiness=100 — для zram намеренно высокий (дефолт 60): вытеснение
+# идёт в RAM, а не на SD-карту, поэтому оно дёшево и предпочтительнее
+# выбрасывания page cache. page-cluster=0 отключает readahead свопа:
+# zram распаковывает постранично, батчинг только тратит такты.
+
+setup_zram_swap() {
+    log_step "Настройка zram-свопа (issue #2621)"
+
+    local sysctl_file="/etc/sysctl.d/99-robbox-zram.conf"
+
+    # Идемпотентность: zram-tools уже настроен — только досогласуем sysctl.
+    if systemctl is-enabled zramswap.service &> /dev/null; then
+        log_success "zram-tools уже включён"
+    else
+        log_info "Установка zram-tools..."
+        if ! sudo apt install -y zram-tools; then
+            log_error "Не удалось установить zram-tools — узел останется без свопа"
+            log_warning "Проверьте вручную: sudo apt install zram-tools"
+            return 0   # не валим всю установку узла из-за свопа
+        fi
+    fi
+
+    log_info "Конфигурация /etc/default/zramswap (zstd, 25% RAM)..."
+    sudo tee /etc/default/zramswap > /dev/null << 'ZRAMEOF'
+# Managed by rob_box setup_node.sh (issue #2621) — правки перетираются при
+# повторном прогоне скрипта. Менять здесь: scripts/setup/setup_node.sh
+ALGO=zstd
+PERCENT=25
+PRIORITY=100
+ZRAMEOF
+
+    log_info "Конфигурация sysctl ($sysctl_file)..."
+    sudo tee "$sysctl_file" > /dev/null << 'SYSCTLEOF'
+# Managed by rob_box setup_node.sh (issue #2621)
+# Своп живёт в RAM (zram), а не на SD-карте — вытеснять дёшево.
+vm.swappiness = 100
+# zram распаковывает постранично: readahead свопа бесполезен.
+vm.page-cluster = 0
+SYSCTLEOF
+
+    sudo sysctl -p "$sysctl_file" > /dev/null 2>&1 || log_warning "sysctl -p вернул ошибку"
+
+    log_info "Перезапуск zramswap..."
+    sudo systemctl enable zramswap.service &> /dev/null || true
+    sudo systemctl restart zramswap.service || log_warning "Не удалось перезапустить zramswap"
+
+    # Проверка результата — без неё молчаливый отказ выглядит как успех.
+    if grep -q zram /proc/swaps 2>/dev/null; then
+        local zram_size
+        zram_size=$(awk '/zram/ {printf "%.1f ГБ", $3/1048576}' /proc/swaps | head -1)
+        log_success "zram-своп активен: $zram_size"
+        log_info "Проверка: cat /proc/swaps; zramctl"
+    else
+        log_error "zram-своп НЕ активен — /proc/swaps пуст"
+        log_warning "Узел остался без свопа, см. issue #2621"
+        log_warning "Диагностика: systemctl status zramswap; journalctl -u zramswap"
+    fi
 }
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -608,7 +753,125 @@ setup_node_specific() {
         custom)
             setup_custom_node
             ;;
+        sound)
+            setup_sound_node
+            ;;
     esac
+}
+
+# ═══════════════════════════════════════════════════════════════════════════
+# HAILO AI HAT (PCIe, Hailo-8)
+# ═══════════════════════════════════════════════════════════════════════════
+# HailoRT 4.24.0. Драйвер ставится DKMS-пакетом `hailort-pcie-driver`
+# (firmware теперь внутри него — отдельного hailofw в 4.24 больше нет),
+# runtime — `hailort`. Оба .deb доступны только в Hailo Developer Zone
+# (нужен аккаунт), поэтому ожидаем их предзаложенными в /opt/rob_box/vendor/.
+# Python-биндинг (hailo_platform) на хост НЕ ставится — он нужен только
+# внутри контейнера vision-hailo (см. docker/vision/vision-hailo/Dockerfile,
+# ADR-0099 §2.2).
+#
+# Идемпотентность: скрипт можно запускать многократно. Каждый компонент
+# проверяется отдельно — если он уже стоит и версия совпадает, пропускаем;
+# доустанавливаем только недостающее. Железки нет — просто пропускаем.
+# ═══════════════════════════════════════════════════════════════════════════
+
+setup_hailo_ai_hat() {
+    local hailo_version="4.24.0"
+    local vendor="/opt/rob_box/vendor"
+    local hailo_driver_deb="${vendor}/hailort-pcie-driver_${hailo_version}_all.deb"
+    local hailo_rt_deb="${vendor}/hailort_${hailo_version}_arm64.deb"
+
+    log_step "Настройка Hailo AI HAT (v${hailo_version})"
+
+    # lspci нужен для проверки наличия железки
+    if ! command -v lspci &> /dev/null; then
+        log_info "Устанавливаем pciutils (lspci)..."
+        sudo apt-get install -y pciutils
+    fi
+
+    if ! lspci 2>/dev/null | grep -qi "Hailo"; then
+        log_info "Hailo AI HAT не обнаружен на PCIe — настройка не требуется"
+        return 0
+    fi
+
+    log_success "Hailo AI HAT обнаружен:"
+    lspci 2>/dev/null | grep -i "Hailo" | sed 's/^/  /'
+
+    # .deb HailoRT 4.24.0 — только в Developer Zone (аккаунт), публично их нет.
+    # Ожидаем предзаложенными в /opt/rob_box/vendor/.
+    if [ ! -f "$hailo_driver_deb" ] || [ ! -f "$hailo_rt_deb" ]; then
+        log_warning "Отсутствуют .deb HailoRT ${hailo_version} в ${vendor}/"
+        log_warning "Скачайте с Hailo Developer Zone (раздел Hailo-8/8L, версия ${hailo_version}):"
+        log_warning "  - hailort-pcie-driver_${hailo_version}_all.deb"
+        log_warning "  - hailort_${hailo_version}_arm64.deb"
+        log_warning "и положите их в ${vendor}/, затем перезапустите setup."
+        return 0
+    fi
+
+    # Сборочные инструменты + заголовки ядра (для DKMS-сборки драйвера)
+    local headers="/usr/src/linux-headers-$(uname -r)"
+    if [ ! -d "$headers" ]; then
+        log_info "Устанавливаем build-essential, dkms и linux-headers-$(uname -r)..."
+        sudo apt-get update
+        sudo apt-get install -y build-essential dkms "linux-headers-$(uname -r)"
+    elif ! command -v dkms &> /dev/null || ! command -v gcc &> /dev/null; then
+        log_info "Устанавливаем build-essential и dkms..."
+        sudo apt-get install -y build-essential dkms
+    fi
+
+    # #3090: без metapackage linux-headers-raspi unattended-upgrades ставит
+    # новый kernel без headers → DKMS не пересобирает hailo_pci → после ребута
+    # нет /dev/hailo0. С метапакетом headers едут вместе с каждым kernel.
+    # (Тот же шаг делает scripts/setup/ensure_hailo_driver.sh на каждом деплое.)
+    # shellcheck disable=SC2016  # ${Status} — формат dpkg-query
+    if dpkg-query -W -f='${Status}' linux-image-raspi 2>/dev/null | grep -q '^install ok installed$' \
+       && ! dpkg-query -W -f='${Status}' linux-headers-raspi 2>/dev/null | grep -q '^install ok installed$'; then
+        log_info "Устанавливаем linux-headers-raspi (headers для будущих kernel-апгрейдов, #3090)..."
+        sudo apt-get install -y linux-headers-raspi \
+            || log_warning "linux-headers-raspi не установился — следующий kernel-апгрейд может снова сломать Hailo-драйвер"
+    fi
+
+    # 1) Драйвер + firmware: hailort-pcie-driver (DKMS).
+    # В 4.24 firmware переехал внутрь драйвера; старый hailofw (4.20.x) владеет
+    # /etc/modprobe.d/hailo_pci.conf и конфликтует — снимаем перед установкой.
+    if dpkg -l hailofw 2>/dev/null | grep -q '^ii'; then
+        log_info "Снимаем старый hailofw (firmware теперь в hailort-pcie-driver)..."
+        sudo apt-get remove -y hailofw
+    fi
+    if modinfo hailo_pci 2>/dev/null | grep -q "version:.*${hailo_version}"; then
+        log_success "Драйвер hailo_pci ${hailo_version} уже установлен"
+    else
+        log_info "Устанавливаем hailort-pcie-driver ${hailo_version} (DKMS-сборка)..."
+        sudo apt-get install -y "$hailo_driver_deb"
+        log_success "Драйвер и firmware установлены"
+    fi
+
+    # 2) HailoRT (runtime + hailortcli)
+    if command -v hailortcli &> /dev/null && hailortcli --version 2>/dev/null | grep -q "${hailo_version}"; then
+        log_success "HailoRT ${hailo_version} уже установлен"
+    else
+        log_info "Устанавливаем HailoRT ${hailo_version}..."
+        sudo apt-get install -y "$hailo_rt_deb"
+        log_success "HailoRT установлен"
+    fi
+
+    # 3) Загружаем драйвер и проверяем связь с устройством
+    if [ ! -e /dev/hailo0 ]; then
+        log_info "Загружаем модуль hailo_pci..."
+        sudo modprobe hailo_pci || log_warning "Не удалось загрузить hailo_pci (см. dmesg | grep hailo)"
+    fi
+
+    if [ -e /dev/hailo0 ] && command -v hailortcli &> /dev/null; then
+        if hailortcli fw-control identify > /tmp/hailo_identify.txt 2>&1; then
+            log_success "Hailo-8 работает:"
+            grep -E "Firmware Version|Board Name|Device Architecture" /tmp/hailo_identify.txt | sed 's/^/  /'
+        else
+            log_warning "hailortcli не смог определить устройство:"
+            sed 's/^/  /' /tmp/hailo_identify.txt
+        fi
+    else
+        log_warning "Устройство /dev/hailo0 не появилось — проверьте: dmesg | grep hailo"
+    fi
 }
 
 setup_vision_node() {
@@ -629,12 +892,7 @@ setup_vision_node() {
         log_warning "! LSLidar не найден (подключите позже)"
     fi
     
-    # ReSpeaker
-    if lsusb | grep -q "2886"; then
-        log_success "✓ ReSpeaker Mic Array обнаружен"
-    else
-        log_warning "! ReSpeaker не найден (подключите позже)"
-    fi
+    # ReSpeaker с 19.10.2026 живёт на Sound Pi (ADR-0159) — здесь его не ждём.
     
     log_info "Проверка SPI для LED матрицы..."
     if grep -q "dtparam=spi=on" /boot/firmware/config.txt 2>/dev/null || grep -q "dtparam=spi=on" /boot/config.txt 2>/dev/null; then
@@ -642,24 +900,341 @@ setup_vision_node() {
     else
         log_warning "! SPI не включен, добавьте в config.txt: dtparam=spi=on"
     fi
+
+    # Hailo AI HAT (PCIe)
+    if [ "${ROBBOX_SETUP_SKIP_HW:-0}" = 1 ]; then
+        log_warning "ROBBOX_SETUP_SKIP_HW=1: Hailo AI HAT пропущен (нужно железо)"
+    else
+        setup_hailo_ai_hat
+    fi
+
+    setup_docker_registry
+    setup_chrony_role vision
+
+    # zram-своп: Vision Pi держит 13 контейнеров на 8 ГБ без свопа (#2621).
+    # Функция общая — её можно звать и из setup_main_node, если Main Pi
+    # упрётся в ту же стену.
+    setup_zram_swap
 }
 
 setup_main_node() {
-    log_info "Настройка Main Pi..."
-    log_info "Main Pi будет управлять:"
-    log_info "  - micro-ROS agent (связь с ESP32)"
-    log_info "  - Zenoh router (DDS мост)"
-    log_info "  - Navigation stack (в разработке)"
-    log_success "Базовая настройка завершена"
+    log_info "Настройка Main Pi: zenoh-роутер, навигация, ros2_control (CAN)..."
+    setup_docker_registry
+    # Main Pi — сервер времени для Vision и Sound (ADR-0137).
+    setup_chrony_role main
+    # CAN для VESC (host/main/install_host_scripts.sh → can-setup.service) ставится отдельно:
+    # без CAN-шилда юнит падает при каждой загрузке. На живом Main Pi он есть (замер 09.11).
+    log_info "CAN (VESC): sudo bash ~/rob_box_project/host/main/install_host_scripts.sh — только с CAN-шилдом"
+    log_success "Базовая настройка Main Pi завершена"
 }
 
 setup_sensor_hub() {
     log_info "Настройка Sensor Hub (ESP32)..."
-    log_warning "Sensor Hub использует micro-ROS на ESP32"
-    log_info "Для прошивки используйте:"
-    log_info "  cd ~/rob_box_project/src/sensor_hub"
-    log_info "  pio run -t upload"
+    log_info "Прошивка ESP32 живёт в отдельном репозитории:"
+    log_info "  https://github.com/krikz/robot_sensor_hub (ветка humble)"
+    log_info "Хост-сторона — perception_bridge на Sound Pi (serial через TTL-USB,"
+    log_info "profile sensors, сервис sensor-bridge в docker/sound/docker-compose.yaml):"
+    log_info "  bash setup_node.sh sound"
     log_success "Инструкции добавлены"
+}
+
+# ═══════════════════════════════════════════════════════════════════════════
+# SOUND PI (ADR-0159): ReSpeaker + голосовой стек + SuperCollider + сенсорный хаб
+# ═══════════════════════════════════════════════════════════════════════════
+# Третий узел робота. Сюда переезжают с Vision Pi контейнеры, привязанные к
+# ReSpeaker (voice-assistant, supercollider), и
+# perception_bridge (образ perception) — обычная ROS-нода, говорящая с ESP32 по serial через
+# TTL-USB конвертер (от агента-моста отказались, решение Шифу 19.10.2026). LED-матрица
+# остаётся на Vision Pi (SPI), общение с ней — по ROS-топикам через Zenoh.
+#
+# Что делает эта роль (всё идемпотентно, повторный запуск безопасен):
+#   1. netplan: eth0 metric 100 (основной) + wlan0 metric 600 (резерв) —
+#      тот же 01-netcfg.yaml, что реально лежит на Vision Pi (снят 19.10.2026).
+#      50-cloud-init.yaml (только wlan0, hidden SSID) не трогаем: netplan
+#      сливает файлы по имени интерфейса, а cloud-init свой файл перезаписывает.
+#   2. /boot/firmware/config.txt: usb_max_current_enable=1 (ReSpeaker + TTL
+#      конвертер на USB), enable_uart=1 (запасной путь к ESP32 по GPIO UART).
+#   3. udev: стабильное имя /dev/sensor_hub для TTL-USB конвертера, чтобы
+#      compose не зависел от номера ttyUSBN.
+#   4. alsa-utils на хост — для диагностики (aplay -l / arecord -l; на Vision
+#      Pi их нет, и каждый раз приходится лезть внутрь контейнера).
+#   5. zram-своп — та же функция, что для Vision Pi (#2621, ADR-0111):
+#      voice-assistant один держит mem_limit 5g на 8 ГБ узле.
+#   6. /etc/docker/daemon.json: insecure-registries 10.1.1.249:5000 — как на
+#      Vision Pi; без него деплой с registry_source=local не тянет образы.
+#      Ключ дописывается к существующему файлу, docker перезапускается только
+#      при изменении.
+#   7. chrony (--role sound): время ведёт Main Pi, как на Vision Pi (ADR-0137).
+
+# Пароль Wi-Fi бортовой сети (решение Шифу 09.11): не хранится ни в репо, ни в файле на хосте.
+# Его вводит человек в консоли (read -s, без эха, в лог не пишется). Без TTY (curl | bash) —
+# только через переменную окружения на один запуск: ROBBOX_WIFI_PSK=… bash setup_node.sh sound.
+# Пароль печатается в stdout (для подстановки), сообщения — в stderr.
+WIFI_SSID="${ROBBOX_WIFI_SSID:-ROS2}"
+
+read_wifi_psk() {
+    if [ -n "${ROBBOX_WIFI_PSK:-}" ]; then
+        printf '%s' "$ROBBOX_WIFI_PSK"
+        return 0
+    fi
+    if [ ! -t 0 ]; then
+        log_error "Нужен пароль Wi-Fi сети \"$WIFI_SSID\" для netplan, а терминала нет (curl | bash или без TTY)." >&2
+        log_error "Передайте его на один запуск, он нигде не сохранится:" >&2
+        log_error "  ROBBOX_WIFI_PSK='<пароль>' bash ~/rob_box_project/scripts/setup/setup_node.sh sound" >&2
+        log_error "(пробел перед командой не даст ей попасть в историю bash при HISTCONTROL=ignorespace)" >&2
+        return 1
+    fi
+    local psk=""
+    read -r -s -p "Пароль Wi-Fi сети \"$WIFI_SSID\" (ввод не отображается): " psk
+    echo "" >&2
+    if [ -z "$psk" ]; then
+        log_error "Пустой пароль — netplan не записан" >&2
+        return 1
+    fi
+    printf '%s' "$psk"
+}
+
+# Экранирование строки для YAML в двойных кавычках: \ и ".
+yaml_dq() {
+    local v="${1//\\/\\\\}"
+    printf '%s' "${v//\"/\\\"}"
+}
+
+setup_sound_network() {
+    log_step "Настройка сети Sound Pi: eth0 (metric 100) + wlan0 (metric 600)"
+
+    local netplan_file="${ROBBOX_NETPLAN_FILE:-/etc/netplan/01-netcfg.yaml}"
+    if [ -f "$netplan_file" ] && sudo grep -q "route-metric: 100" "$netplan_file"; then
+        log_info "$netplan_file уже содержит eth0 metric 100 — пропускаю"
+    else
+        local psk_yaml ssid_yaml
+        psk_yaml="$(read_wifi_psk)" || return 1
+        psk_yaml="$(yaml_dq "$psk_yaml")"
+        ssid_yaml="$(yaml_dq "$WIFI_SSID")"
+        # umask 077: файл с паролем ни на миг не читаем для всех (раньше tee создавал его 0644, потом chmod).
+        (umask 077; sudo tee "$netplan_file" > /dev/null) << NETPLANEOF
+# ROBBOX Sound Pi (ADR-0159). Копия схемы Vision Pi:
+# eth0 — основной канал данных (metric 100), wlan0 — резерв/SSH (metric 600).
+# При подключённом кабеле весь трафик идёт через eth0, без кабеля — через wlan0.
+network:
+  version: 2
+  ethernets:
+    eth0:
+      dhcp4: true
+      dhcp-identifier: mac
+      optional: true
+      dhcp4-overrides:
+        route-metric: 100
+      nameservers:
+        addresses: [8.8.8.8, 8.8.4.4]
+  wifis:
+    wlan0:
+      dhcp4: true
+      dhcp-identifier: mac
+      optional: true
+      access-points:
+        "${ssid_yaml}":
+          password: "${psk_yaml}"
+      dhcp4-overrides:
+        route-metric: 600
+      nameservers:
+        addresses: [8.8.8.8, 8.8.4.4]
+NETPLANEOF
+        unset psk_yaml
+        sudo chmod 600 "$netplan_file"
+        log_info "Применяю netplan (SSH по wlan0 не рвётся: адрес wlan0 не меняется)..."
+        if sudo netplan apply; then
+            log_success "netplan применён"
+        else
+            log_error "netplan apply завершился с ошибкой — проверьте: sudo netplan --debug generate"
+            return 1
+        fi
+    fi
+
+    echo ""
+    log_info "Маршруты по умолчанию (ожидаем eth0 metric 100, wlan0 metric 600):"
+    ip route show | grep default || log_warning "default-маршрутов нет"
+    if ip -br link show eth0 2>/dev/null | grep -q " UP "; then
+        log_success "eth0 поднят: $(ip -4 -br addr show eth0 | awk '{print $3}')"
+    else
+        log_warning "eth0 без линка — подключите кабель; адрес ${NODE_IP} закрепите в DHCP роутера по MAC eth0"
+    fi
+}
+
+setup_sound_boot_config() {
+    log_step "Настройка /boot/firmware/config.txt (USB power, UART)"
+    local cfg="/boot/firmware/config.txt"
+    [ -f "$cfg" ] || cfg="/boot/config.txt"
+    if [ ! -f "$cfg" ]; then
+        log_warning "config.txt не найден — пропускаю"
+        return 0
+    fi
+    local changed=0
+    if ! grep -q '^usb_max_current_enable=1' "$cfg"; then
+        echo 'usb_max_current_enable=1' | sudo tee -a "$cfg" > /dev/null
+        changed=1
+        log_info "Добавлено usb_max_current_enable=1 (ReSpeaker + TTL-USB на одном хабе)"
+    fi
+    if ! grep -q '^enable_uart=1' "$cfg"; then
+        echo 'enable_uart=1' | sudo tee -a "$cfg" > /dev/null
+        changed=1
+        log_info "Добавлено enable_uart=1 (запасной путь к ESP32 через GPIO UART /dev/ttyAMA0)"
+    fi
+    if [ "$changed" -eq 1 ]; then
+        log_warning "config.txt изменён — для применения нужна перезагрузка"
+    else
+        log_success "config.txt уже настроен"
+    fi
+}
+
+setup_sound_udev() {
+    log_step "udev: стабильное имя /dev/sensor_hub для TTL-USB конвертера"
+    local rule="/etc/udev/rules.d/99-robbox-sensor-hub.rules"
+    local tmp
+    tmp="$(mktemp)"
+    # Ходовые TTL-USB мосты: CP210x (10c4:ea60), CH340 (1a86:7523),
+    # CH343/CH9102 «USB Single Serial» (1a86:55d3 — реальный конвертер на
+    # SoundPi, ядро отдаёт /dev/ttyACM0, не ttyUSB), FTDI FT232 (0403:6001),
+    # PL2303 (067b:2303). Если конвертер другой — дописать строку по `lsusb`
+    # и `udevadm info -a -n /dev/ttyACM0` (или ttyUSB0).
+    cat > "$tmp" << 'UDEVEOF'
+# ROBBOX Sound Pi (ADR-0159): сенсорный хаб ESP32 через TTL-USB конвертер.
+# Compose монтирует /dev/sensor_hub, а не /dev/ttyUSBN — номер плавает.
+SUBSYSTEM=="tty", ATTRS{idVendor}=="10c4", ATTRS{idProduct}=="ea60", SYMLINK+="sensor_hub", MODE="0666"
+SUBSYSTEM=="tty", ATTRS{idVendor}=="1a86", ATTRS{idProduct}=="7523", SYMLINK+="sensor_hub", MODE="0666"
+SUBSYSTEM=="tty", ATTRS{idVendor}=="1a86", ATTRS{idProduct}=="55d3", SYMLINK+="sensor_hub", MODE="0666"
+SUBSYSTEM=="tty", ATTRS{idVendor}=="0403", ATTRS{idProduct}=="6001", SYMLINK+="sensor_hub", MODE="0666"
+SUBSYSTEM=="tty", ATTRS{idVendor}=="067b", ATTRS{idProduct}=="2303", SYMLINK+="sensor_hub", MODE="0666"
+UDEVEOF
+    # Сравниваем содержимое, а не наличие файла: правило из PR-1 знало только
+    # CH340 и на SoundPi уже стоит — «файл есть, пропускаю» не доставило бы 1a86:55d3.
+    if [ -f "$rule" ] && cmp -s "$tmp" "$rule"; then
+        log_info "$rule уже актуально — пропускаю"
+        rm -f "$tmp"
+        return 0
+    fi
+    sudo install -m 0644 "$tmp" "$rule"
+    rm -f "$tmp"
+    sudo udevadm control --reload-rules && sudo udevadm trigger
+    log_success "udev-правило установлено/обновлено: $rule"
+}
+
+# Локальный registry на katana — insecure-registries в daemon.json. Нужен всем трём
+# ролям: compose тянет ${SERVICE_IMAGE_PREFIX}=10.1.1.249:5000/krikz/rob_box (docker/<роль>/.env).
+# До #4375 шаг был только у Sound Pi, а другого установщика daemon.json в репо нет (замер 09.11:
+# на всех трёх Pi в daemon.json есть 10.1.1.249:5000). SOUND_* принимаются как старые имена.
+LOCAL_REGISTRY="${LOCAL_REGISTRY:-${SOUND_LOCAL_REGISTRY:-10.1.1.249:5000}}"
+DAEMON_JSON="${DAEMON_JSON:-${SOUND_DAEMON_JSON:-/etc/docker/daemon.json}}"
+
+setup_docker_registry() {
+    log_step "Docker: insecure-registry $LOCAL_REGISTRY (daemon.json)"
+    local tmp verdict
+    tmp="$(mktemp)"
+    # Python, а не sed: daemon.json может уже содержать чужие ключи
+    # (log-driver, mtu…) — их нельзя затирать. Битый JSON → rc!=0, файл не трогаем.
+    # python3 БЕЗ sudo: daemon.json читается всем (0644), а писать в $tmp надо от
+    # своего пользователя — root не открывает на запись чужой файл в /tmp
+    # (fs.protected_regular=2 на Sound Pi, замер 20.10.2026), sudo нужен только
+    # для install ниже.
+    if ! verdict="$(python3 - "$DAEMON_JSON" "$LOCAL_REGISTRY" "$tmp" << 'PYEOF'
+import json, os, sys
+path, registry, out = sys.argv[1:4]
+cfg = {}
+if os.path.exists(path):
+    raw = open(path, encoding="utf-8").read().strip()
+    if raw:
+        cfg = json.loads(raw)
+regs = cfg.get("insecure-registries", [])
+if registry in regs:
+    print("unchanged")
+else:
+    cfg["insecure-registries"] = list(regs) + [registry]
+    with open(out, "w", encoding="utf-8") as f:
+        json.dump(cfg, f, indent=2, ensure_ascii=False)
+        f.write("\n")
+    print("changed")
+PYEOF
+    )"; then
+        rm -f "$tmp"
+        log_error "$DAEMON_JSON не прочитан или не разобран как JSON — не трогаю, поправьте руками"
+        return 1
+    fi
+    if [ "$verdict" = "unchanged" ]; then
+        rm -f "$tmp"
+        log_success "$LOCAL_REGISTRY уже в $DAEMON_JSON — docker не перезапускаю"
+        return 0
+    fi
+    sudo mkdir -p "$(dirname "$DAEMON_JSON")"
+    sudo install -m 0644 "$tmp" "$DAEMON_JSON"
+    rm -f "$tmp"
+    log_info "Записан $DAEMON_JSON, перезапускаю docker (контейнеры на узле перезапустятся)..."
+    sudo systemctl restart docker
+    log_success "insecure-registries: $LOCAL_REGISTRY"
+}
+
+# chrony на хосте (ADR-0137): Main Pi — сервер времени, Vision и Sound — его клиенты.
+# До #4375 шаг был только у Sound Pi (замер 09.11: chrony стоит на всех трёх, ставили руками).
+# Скрипт сам идемпотентен; его код 2/3 (не синхронизировано / chronyd не
+# отвечает) не должен ронять остальную настройку узла — только предупреждаем.
+setup_chrony_role() {
+    local role="$1"
+    log_step "Синхронизация времени: chrony --role $role"
+    local script="$HOME/rob_box_project/scripts/maintenance/setup_chrony.sh"
+    if [ ! -f "$script" ]; then
+        log_warning "$script не найден — chrony не настроен"
+        return 0
+    fi
+    if sudo bash "$script" --role "$role"; then
+        log_success "chrony настроен (role=$role)"
+    else
+        log_warning "setup_chrony.sh --role $role завершился с ошибкой — проверьте: bash $script --check"
+    fi
+}
+
+setup_sound_node() {
+    log_info "Настройка Sound Pi (ADR-0159)..."
+
+    log_info "Проверка USB устройств..."
+    if lsusb | grep -q "2886:0018"; then
+        log_success "✓ ReSpeaker 4 Mic Array обнаружен"
+    else
+        log_warning "! ReSpeaker не найден — переткните его с Vision Pi (голосовой стек без него не стартует)"
+    fi
+    # CH340/CP210x/FTDI дают /dev/ttyUSBN, CH343 (1a86:55d3) — /dev/ttyACMN
+    if ls /dev/ttyUSB* /dev/ttyACM* >/dev/null 2>&1; then
+        log_success "✓ TTL-USB конвертер: $(ls /dev/ttyUSB* /dev/ttyACM* 2>/dev/null | tr '\n' ' ')"
+    else
+        log_warning "! /dev/ttyUSB*, /dev/ttyACM* нет — сенсорный хаб ESP32 подключите позже"
+    fi
+
+    log_info "Установка alsa-utils (aplay/arecord для диагностики на хосте)..."
+    if sudo apt install -y alsa-utils >/dev/null 2>&1; then
+        log_success "alsa-utils установлен"
+    else
+        log_warning "alsa-utils не установился — диагностика звука только из контейнера"
+    fi
+
+    if [ "${ROBBOX_SETUP_SKIP_HW:-0}" = 1 ]; then
+        log_warning "ROBBOX_SETUP_SKIP_HW=1: netplan, config.txt и udev Sound Pi пропущены (нужно железо)"
+    else
+        setup_sound_network
+        setup_sound_boot_config
+        setup_sound_udev
+    fi
+    setup_docker_registry
+    setup_chrony_role sound
+
+    # Каталоги ресурсного пака — те же пути, что на Vision Pi, чтобы
+    # docker/sound/docker-compose.yaml монтировал их без переименований
+    # (/opt/rob_box/{models,samples,scores}; содержимое кладёт
+    # apply_resource_pack.sh на шаге деплоя, не этот скрипт).
+    sudo mkdir -p /opt/rob_box/models /opt/rob_box/samples /opt/rob_box/scores
+    sudo chown -R "$USER:$USER" /opt/rob_box
+    log_success "Каталоги /opt/rob_box/{models,samples,scores} готовы (пустые — наполнит деплой)"
+
+    # 5 ГБ voice-assistant на 8 ГБ узле — без свопа будет то же, что на
+    # Vision Pi до #2621.
+    setup_zram_swap
 }
 
 setup_manipulator_node() {
@@ -671,6 +1246,39 @@ setup_custom_node() {
     log_info "Пользовательская настройка..."
     log_info "Вы можете настроить этот узел вручную"
     log_info "Репозиторий склонирован в ~/rob_box_project"
+}
+
+# ═══════════════════════════════════════════════════════════════════════════
+# АГЕНТ ДОСТАВКИ CHUANGONG (ADR-0168, фаза B)
+# ═══════════════════════════════════════════════════════════════════════════
+# Ставит host/chuangong/install.sh: python3-yaml, python3-cryptography, код агента,
+# /opt/rob_box/releases, /var/lib/chuangong, /etc/chuangong/chuangong.env (режим observe), юниты.
+# Внедрение постоянное (решение Шифу): install.sh всегда вызывается с --enable, таймер включается
+# на каждом узле main|vision|sound — оператор передаёт только тип узла. Агент в режиме observe
+# только смотрит релиз в реестре и докладывает; ничего не скачивает и не переключает. Ключ
+# проверки подписи всегда берём из репо — host/chuangong/keys/release.pub (без ключа агент
+# докладывал бы fetch_error: no_pubkey).
+
+setup_chuangong() {
+    case "$NODE_TYPE" in
+        main|vision|sound) ;;
+        *) return 0 ;;
+    esac
+    log_step "Агент доставки chuangong (ADR-0168, observe)"
+    local installer="$HOME/rob_box_project/host/chuangong/install.sh"
+    if [ ! -f "$installer" ]; then
+        log_warning "$installer не найден — агент не установлен"
+        return 0
+    fi
+    local robot_id
+    robot_id="$(sed -n 's/^ROBOT_ID=//p' "$DOCKER_COMPOSE_DIR/.env" 2>/dev/null | head -n 1)"
+    local pubkey="$HOME/rob_box_project/host/chuangong/keys/release.pub"
+    local args=(--node "$NODE_TYPE" --robot-id "${robot_id:-RBXU100001}" --enable --pubkey "$pubkey")
+    if sudo CHUANGONG_USER="$USER" bash "$installer" "${args[@]}"; then
+        log_success "chuangong установлен (таймер: включён, режим observe)"
+    else
+        log_warning "Установка chuangong завершилась с ошибкой — остальная настройка узла не затронута"
+    fi
 }
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -764,10 +1372,14 @@ main() {
     install_robbox_aliases
     setup_autostart
     setup_node_specific
+    setup_chuangong
     
     # Итоги
     print_summary
 }
 
 # Запуск главной функции с первым аргументом (тип узла)
-main "$1"
+# ROBBOX_SETUP_SOURCE_ONLY=1 — только определить функции (тесты: scripts/setup/tests/test_setup_node_wifi_psk.py).
+if [ "${ROBBOX_SETUP_SOURCE_ONLY:-0}" != 1 ]; then
+    main "$1"
+fi

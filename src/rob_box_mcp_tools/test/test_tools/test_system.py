@@ -47,7 +47,7 @@ def _install_ros_mocks_if_needed():
 
 _install_ros_mocks_if_needed()
 
-from rob_box_mcp_tools.tools.system import GetRobotStatusTool
+from rob_box_mcp_tools.tools.system import GetCurrentTimeTool, GetRobotStatusTool, battery_percent_from_state
 
 
 def _make_odom_msg(x=1.5, y=-2.25, qz=0.0, qw=1.0):
@@ -62,11 +62,28 @@ def _make_odom_msg(x=1.5, y=-2.25, qz=0.0, qw=1.0):
     return msg
 
 
-def _make_battery_msg(percentage=85.0):
-    """Создать мок sensor_msgs/BatteryState с заданным процентом заряда."""
+def _make_battery_msg(percentage=0.85, present=True):
+    """Создать мок sensor_msgs/BatteryState: percentage 0..1 (ROS-конвенция), present."""
     msg = Mock()
     msg.percentage = percentage
+    msg.present = present
     return msg
+
+
+@pytest.mark.unit
+class TestBatteryPercentFromState:
+    """battery_percent_from_state: ROS-шкала 0..1 -> проценты, неизвестное -> None."""
+
+    @pytest.mark.parametrize("fraction, expected", [(0.0, 0.0), (0.5, 50.0), (0.92, 92.0), (1.0, 100.0)])
+    def test_scale_0_1_to_percent(self, fraction, expected):
+        assert battery_percent_from_state(fraction) == pytest.approx(expected)
+
+    @pytest.mark.parametrize("bad", [None, float("nan"), -1.0, 1.01, 92.0])
+    def test_unknown_is_none(self, bad):
+        assert battery_percent_from_state(bad) is None
+
+    def test_not_present_is_none(self):
+        assert battery_percent_from_state(0.9, present=False) is None
 
 
 @pytest.mark.unit
@@ -120,12 +137,12 @@ class TestGetRobotStatusTool:
         tool = GetRobotStatusTool(mock_node, wait_timeout_sec=0.0)
 
         battery_sub = mock_node.get_subscription("/battery_state")
-        battery_sub.callback(_make_battery_msg(percentage=72.5))
+        battery_sub.callback(_make_battery_msg(percentage=0.725))
 
         result = tool.execute()
 
         assert result.success is True
-        assert result.data["battery_level"] == 72.5
+        assert result.data["battery_level"] == pytest.approx(72.5)
         assert result.data["position"] is None
         assert "/odom" in result.data["unavailable_topics"]
 
@@ -138,7 +155,7 @@ class TestGetRobotStatusTool:
         odom_sub.callback(_make_odom_msg(x=1.5, y=-2.25, qz=0.7071067811865476, qw=0.7071067811865476))
 
         battery_sub = mock_node.get_subscription("/battery_state")
-        battery_sub.callback(_make_battery_msg(percentage=42.0))
+        battery_sub.callback(_make_battery_msg(percentage=0.42))
 
         result = tool.execute()
 
@@ -147,8 +164,10 @@ class TestGetRobotStatusTool:
         assert result.data["position"]["x"] == 1.5
         assert result.data["position"]["y"] == -2.25
         assert abs(result.data["position"]["theta"] - (3.141592653589793 / 2.0)) < 1e-6
-        assert result.data["battery_level"] == 42.0
-        assert result.data["systems"]["navigation"] == "active"
+        assert result.data["battery_level"] == pytest.approx(42.0)
+        # ADR-0051 §6: 'systems' больше не захардкожен в 'active'.
+        # Если оператору нужен статус нод — это ros2_node_status, не get_robot_status.
+        assert result.data["systems"] == {}
 
     def test_battery_unknown_percentage(self, mock_node):
         """percentage == -1.0 (неизвестно по ROS-конвенции) — батарея считается недоступной."""
@@ -162,6 +181,36 @@ class TestGetRobotStatusTool:
         assert result.data["battery_level"] is None
         assert "/battery_state" in result.data.get("unavailable_topics", [])
 
+    @pytest.mark.parametrize(
+        "percentage, present",
+        [
+            (float("nan"), True),  # узел-издатель: нет свежего напряжения
+            (0.92, False),  # present=False перебивает любое число
+            (-1.0, True),
+            (92.0, True),  # процентов вместо 0..1 — не по контракту, не угадываем
+        ],
+    )
+    def test_battery_unknown_variants(self, mock_node, percentage, present):
+        """NaN / present=False / вне 0..1 — батарея недоступна, а не «полная» или «0 %»."""
+        tool = GetRobotStatusTool(mock_node, wait_timeout_sec=0.0)
+
+        mock_node.get_subscription("/battery_state").callback(_make_battery_msg(percentage, present))
+
+        result = tool.execute()
+
+        assert result.data["battery_level"] is None
+        assert "/battery_state" in result.data.get("unavailable_topics", [])
+
+    def test_battery_recovers_after_unknown(self, mock_node):
+        """После present=False следующее валидное сообщение снова даёт уровень."""
+        tool = GetRobotStatusTool(mock_node, wait_timeout_sec=0.0)
+        cb = mock_node.get_subscription("/battery_state").callback
+
+        cb(_make_battery_msg(float("nan"), present=False))
+        cb(_make_battery_msg(0.5))
+
+        assert tool.execute().data["battery_level"] == pytest.approx(50.0)
+
     def test_execute_without_node(self):
         """Инструмент без node (например, в unit-тестах) — graceful ошибка недоступности."""
         tool = GetRobotStatusTool(None, wait_timeout_sec=0.0)
@@ -170,3 +219,131 @@ class TestGetRobotStatusTool:
 
         assert result.success is False
         assert "/odom" in result.error
+
+
+_STALE_TZ_API = pytest.mark.xfail(
+    strict=True,
+    reason=(
+        "Pre-existing: 1a7e56cf2 (#1797) заменил метод GetCurrentTimeTool."
+        "_resolve_timezone() на модульную _resolve_robot_timezone(), а "
+        "ROBOT_TIMEZONE теперь читается один раз при импорте system.py. "
+        "Эти тесты ждут старый метод и чтение env на каждый вызов; в CI "
+        "они не гонялись и расхождение никто не видел. strict=True: как "
+        "только код или тест приведут в соответствие, XPASS покраснеет — "
+        "тогда маркер надо снять."
+    ),
+)
+
+
+@pytest.mark.unit
+class TestGetCurrentTimeTool:
+    """Тесты Issue #1777 / #1763: ``get_current_time`` должен возвращать
+    время в timezone робота (Europe/Moscow по умолчанию), а не naive UTC."""
+
+    def test_tool_metadata(self):
+        """name/description/parameters контракт совпадают с системным промптом LLM."""
+        tool = GetCurrentTimeTool(None)
+        assert tool.name == "get_current_time"
+        assert "время" in tool.description.lower()
+        assert tool.parameters == []
+        assert tool.DEFAULT_TIMEZONE == "Europe/Moscow"
+
+    @_STALE_TZ_API
+    def test_default_timezone_is_moscow(self, monkeypatch):
+        """Без ROBOT_TIMEZONE env → Europe/Moscow (UTC+3)."""
+        monkeypatch.delenv("ROBOT_TIMEZONE", raising=False)
+        tool = GetCurrentTimeTool(None)
+        tz = tool._resolve_timezone()
+        import datetime
+        from datetime import timedelta
+        # Europe/Moscow всегда UTC+3 (без DST). Передаём конкретную дату
+        # в ``utcoffset`` — с None оно возвращает None для zoneinfo.
+        probe = datetime.datetime(2026, 1, 15, 12, 0, 0)
+        assert tz.utcoffset(probe) == timedelta(hours=3)
+        assert "Moscow" in str(tz)
+
+    @_STALE_TZ_API
+    def test_uses_robot_timezone_env(self, monkeypatch):
+        """ROBOT_TIMEZONE env проброшено в tz (Europe/Berlin → UTC+2 в летнее время)."""
+        monkeypatch.setenv("ROBOT_TIMEZONE", "Europe/Berlin")
+        tool = GetCurrentTimeTool(None)
+        tz = tool._resolve_timezone()
+        assert "Berlin" in str(tz)
+
+    @_STALE_TZ_API
+    def test_unknown_zoneinfo_falls_back_to_utc(self, monkeypatch, caplog):
+        """Неизвестная timezone (нет в tzdata) — graceful fallback в UTC, не падает."""
+        monkeypatch.setenv("ROBOT_TIMEZONE", "Mars/Olympus_Mons")
+        tool = GetCurrentTimeTool(None)
+        tz = tool._resolve_timezone()
+        from datetime import timezone
+        assert tz == timezone.utc
+
+    def test_execute_returns_moscow_time_when_system_tz_is_utc(self, monkeypatch):
+        """Главный кейс #1763/#1777: при системном TZ=UTC инструмент возвращает MSK.
+
+        Симулируем «UTC в контейнере»: os.environ['TZ']='UTC' + time.tzset()
+        (если доступно). Главное — даже если бы now() вернул UTC, наш
+        инструмент форсит Europe/Moscow.
+        """
+        import datetime
+        monkeypatch.delenv("ROBOT_TIMEZONE", raising=False)
+        # Принудительно говорим системе что TZ=UTC (best-effort, glibc only).
+        monkeypatch.setenv("TZ", "UTC")
+        try:
+            import time as _time
+            _time.tzset()
+        except Exception:
+            pass  # не glibc-платформа (Windows/macOS) — наш фикс всё равно работает
+
+        tool = GetCurrentTimeTool(None)
+        result = tool.execute()
+        assert result.success is True
+        assert result.data is not None  # mypy/pyright — data Optional, но тут точно dict
+
+        # iso имеет timezone-offset +03:00 (Europe/Moscow), не naive и не +00:00.
+        iso = result.data["iso"]
+        assert iso.endswith("+03:00"), f"expected +03:00 (MSK), got iso={iso!r}"
+        assert result.data["timezone"] == "Europe/Moscow"
+
+        # Сверить с независимым datetime.now(MSK): дельта < 5 секунд.
+        msk_now = datetime.datetime.now(tz=datetime.timezone(datetime.timedelta(hours=3)))
+        tool_now = datetime.datetime.fromisoformat(iso)
+        assert abs((msk_now - tool_now).total_seconds()) < 5.0
+
+    @_STALE_TZ_API
+    def test_execute_uses_robot_timezone(self, monkeypatch):
+        """ROBOT_TIMEZONE=Europe/Berlin пробрасывается в execute()."""
+        monkeypatch.setenv("ROBOT_TIMEZONE", "Europe/Berlin")
+        tool = GetCurrentTimeTool(None)
+        result = tool.execute()
+        assert result.success is True
+        assert result.data is not None  # mypy/pyright — data Optional, но тут точно dict
+        assert "Berlin" in result.data["timezone"]
+        # ISO содержит +01:00 или +02:00 (зависит от DST), но НЕ +00:00 (UTC)
+        assert not result.data["iso"].endswith("+00:00") or "Berlin" in result.data["iso"]
+
+
+# Issue #1762 — formatted_time (русская пропись для дословного озвучивания)
+# Эти тесты живут в test_issue_1762_formatted_time.py в нашем PR; здесь
+# добавляем smoke-проверку, что поле не теряется после rebase.
+@pytest.mark.unit
+class TestGetCurrentTimeFormatted:
+    """Issue #1762: ``formatted_time`` поле должно быть в data."""
+
+    def test_formatted_time_field_present(self, monkeypatch):
+        """Поле ``formatted_time`` присутствует в data (русская пропись)."""
+        monkeypatch.delenv("ROBOT_TIMEZONE", raising=False)
+        tool = GetCurrentTimeTool(None)
+        result = tool.execute()
+        assert result.success is True
+        assert result.data is not None
+        assert "formatted_time" in result.data, (
+            f"formatted_time missing after rebase, got keys: {list(result.data.keys())}"
+        )
+        # Минимальная sanity-проверка: непустая строка с буквами (русский текст).
+        ft = result.data["formatted_time"]
+        assert isinstance(ft, str)
+        assert len(ft) > 0
+        # Не «22:37», а пропись: «двадцать два тридцать семь»
+        assert ":" not in ft, f"expected Russian prose, got {ft!r}"

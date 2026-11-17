@@ -15,8 +15,11 @@ def test_dwb_prefers_curved_motion_over_stop_turn_go_behavior():
     assert follow_path["min_speed_theta"] == 0.0
     assert follow_path["trans_stopped_velocity"] == 0.03
     assert follow_path["RotateToGoal.scale"] == 8.0
-    assert follow_path["PathAlign.scale"] == 24.0
+    # HIL 05.11 (#4365): 48 / 0.6 — корпус входит в узкий проём по оси, корму меньше
+    # заносит на косяк (docs/research/2026-11-05-nav2-hil-tuning.md).
+    assert follow_path["PathAlign.scale"] == 48.0
     assert follow_path["GoalAlign.scale"] == 12.0
-    assert follow_path["max_vel_theta"] == 0.8
-    assert smoother["max_velocity"][2] == 0.8
+    assert follow_path["max_vel_theta"] == 0.6
+    # smoother не режет угловую скорость DWB
+    assert smoother["max_velocity"][2] >= follow_path["max_vel_theta"]
     assert smoother["max_accel"][2] == 1.0

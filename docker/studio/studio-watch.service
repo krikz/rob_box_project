@@ -1,0 +1,32 @@
+# Студия канала: постоянный приёмник кнопок и сообщений Шифу (бот @robboxcontentbot).
+#
+# Почему сервис, а не крон: крон опроса раз в 1–5 минут значил, что нажатие ждёт следующего
+# тика («нажал кнопку — а оно уходит курить», Шифу 06.11). Здесь long-poll getUpdates
+# (timeout 50 с) идёт непрерывно, answerCallbackQuery — сразу, тяжёлая работа — в потоках.
+#
+# Ставит scripts/telegram/studio_install.sh: подставляет корень репо вместо @REPO_ROOT@,
+# кладёт файл в ~/.config/systemd/user/ и (STUDIO_ENABLE_SERVICE=1) включает сервис.
+# Нужен linger, чтобы сервис жил без входа в систему: loginctl enable-linger "$USER".
+# Журнал: journalctl --user -u studio-watch -f
+
+[Unit]
+Description=Студия канала: кнопки и сообщения Шифу (long-poll @robboxcontentbot)
+After=network-online.target
+Wants=network-online.target
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+WorkingDirectory=@REPO_ROOT@
+# Секреты — только из файла на машине (0600, в git не попадает).
+EnvironmentFile=@REPO_ROOT@/docker/studio/.env.secrets
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/usr/bin/python3 @REPO_ROOT@/scripts/telegram/channel_studio.py --state @REPO_ROOT@/docker/studio/state.json watch --timeout 50
+Restart=always
+RestartSec=5
+KillSignal=SIGTERM
+TimeoutStopSec=20
+MemoryMax=1G
+
+[Install]
+WantedBy=default.target

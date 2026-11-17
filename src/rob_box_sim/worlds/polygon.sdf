@@ -1,0 +1,147 @@
+<?xml version="1.0"?>
+<!--
+  Полигон проходимости РОББОКСА (план docs/research/2026-11-04-gazebo-sim-navigation.md §5).
+  Арена 12×6 м (x -1.5..10.5, y ±3.0), стены высотой 1.0 м, толщиной 0.1 м.
+  Поперечные перегородки с проёмом по центру (y=0):
+    x=2.0 — 0.9 м, x=4.0 — 0.95 м, x=6.0 — 1.0 м, x=8.0 — 1.1 м.
+  Робот спавнится в (0, 0), смотрит по +X — прямо в проёмы.
+
+  Файл сгенерирован: python3 -m rob_box_sim.worlds_catalog (или grid_to_sdf). Руками не править.
+  Системы мира: Sensors (ogre2) нужен gpu_lidar, Imu — IMU-сенсору робота.
+-->
+<sdf version="1.8">
+  <world name="polygon">
+    <physics name="1ms" type="ignored">
+      <max_step_size>0.001</max_step_size>
+      <real_time_factor>1.0</real_time_factor>
+    </physics>
+    <plugin filename="ignition-gazebo-physics-system" name="ignition::gazebo::systems::Physics"/>
+    <plugin filename="ignition-gazebo-user-commands-system" name="ignition::gazebo::systems::UserCommands"/>
+    <plugin filename="ignition-gazebo-scene-broadcaster-system" name="ignition::gazebo::systems::SceneBroadcaster"/>
+    <plugin filename="ignition-gazebo-sensors-system" name="ignition::gazebo::systems::Sensors">
+      <render_engine>ogre2</render_engine>
+    </plugin>
+    <plugin filename="ignition-gazebo-imu-system" name="ignition::gazebo::systems::Imu"/>
+
+    <light type="directional" name="sun">
+      <cast_shadows>false</cast_shadows>
+      <pose>0 0 10 0 0 0</pose>
+      <diffuse>0.8 0.8 0.8 1</diffuse>
+      <specular>0.2 0.2 0.2 1</specular>
+      <direction>-0.5 0.1 -0.9</direction>
+    </light>
+
+    <model name="ground_plane">
+      <static>true</static>
+      <link name="link">
+        <collision name="collision">
+          <geometry><plane><normal>0 0 1</normal><size>100 100</size></plane></geometry>
+        </collision>
+        <visual name="visual">
+          <geometry><plane><normal>0 0 1</normal><size>100 100</size></plane></geometry>
+          <material><ambient>0.8 0.8 0.8 1</ambient><diffuse>0.8 0.8 0.8 1</diffuse></material>
+        </visual>
+      </link>
+    </model>
+
+    <model name="polygon_walls">
+      <static>true</static>
+      <link name="wall_north">
+        <pose>4.500 3.000 0.500 0 0 0.000000</pose>
+        <collision name="collision"><geometry><box><size>12.100 0.100 1.000</size></box></geometry></collision>
+        <visual name="visual">
+          <geometry><box><size>12.100 0.100 1.000</size></box></geometry>
+          <material><ambient>0.7 0.7 0.7 1</ambient><diffuse>0.7 0.7 0.7 1</diffuse></material>
+        </visual>
+      </link>
+      <link name="wall_south">
+        <pose>4.500 -3.000 0.500 0 0 0.000000</pose>
+        <collision name="collision"><geometry><box><size>12.100 0.100 1.000</size></box></geometry></collision>
+        <visual name="visual">
+          <geometry><box><size>12.100 0.100 1.000</size></box></geometry>
+          <material><ambient>0.7 0.7 0.7 1</ambient><diffuse>0.7 0.7 0.7 1</diffuse></material>
+        </visual>
+      </link>
+      <link name="wall_west">
+        <pose>-1.500 0.000 0.500 0 0 0.000000</pose>
+        <collision name="collision"><geometry><box><size>0.100 6.000 1.000</size></box></geometry></collision>
+        <visual name="visual">
+          <geometry><box><size>0.100 6.000 1.000</size></box></geometry>
+          <material><ambient>0.7 0.7 0.7 1</ambient><diffuse>0.7 0.7 0.7 1</diffuse></material>
+        </visual>
+      </link>
+      <link name="wall_east">
+        <pose>10.500 0.000 0.500 0 0 0.000000</pose>
+        <collision name="collision"><geometry><box><size>0.100 6.000 1.000</size></box></geometry></collision>
+        <visual name="visual">
+          <geometry><box><size>0.100 6.000 1.000</size></box></geometry>
+          <material><ambient>0.7 0.7 0.7 1</ambient><diffuse>0.7 0.7 0.7 1</diffuse></material>
+        </visual>
+      </link>
+      <link name="gap_0_9_left">
+        <pose>2.000 1.725 0.500 0 0 0.000000</pose>
+        <collision name="collision"><geometry><box><size>0.100 2.550 1.000</size></box></geometry></collision>
+        <visual name="visual">
+          <geometry><box><size>0.100 2.550 1.000</size></box></geometry>
+          <material><ambient>0.7 0.7 0.7 1</ambient><diffuse>0.7 0.7 0.7 1</diffuse></material>
+        </visual>
+      </link>
+      <link name="gap_0_9_right">
+        <pose>2.000 -1.725 0.500 0 0 0.000000</pose>
+        <collision name="collision"><geometry><box><size>0.100 2.550 1.000</size></box></geometry></collision>
+        <visual name="visual">
+          <geometry><box><size>0.100 2.550 1.000</size></box></geometry>
+          <material><ambient>0.7 0.7 0.7 1</ambient><diffuse>0.7 0.7 0.7 1</diffuse></material>
+        </visual>
+      </link>
+      <link name="gap_0_95_left">
+        <pose>4.000 1.738 0.500 0 0 0.000000</pose>
+        <collision name="collision"><geometry><box><size>0.100 2.526 1.000</size></box></geometry></collision>
+        <visual name="visual">
+          <geometry><box><size>0.100 2.526 1.000</size></box></geometry>
+          <material><ambient>0.7 0.7 0.7 1</ambient><diffuse>0.7 0.7 0.7 1</diffuse></material>
+        </visual>
+      </link>
+      <link name="gap_0_95_right">
+        <pose>4.000 -1.738 0.500 0 0 0.000000</pose>
+        <collision name="collision"><geometry><box><size>0.100 2.526 1.000</size></box></geometry></collision>
+        <visual name="visual">
+          <geometry><box><size>0.100 2.526 1.000</size></box></geometry>
+          <material><ambient>0.7 0.7 0.7 1</ambient><diffuse>0.7 0.7 0.7 1</diffuse></material>
+        </visual>
+      </link>
+      <link name="gap_1_0_left">
+        <pose>6.000 1.750 0.500 0 0 0.000000</pose>
+        <collision name="collision"><geometry><box><size>0.100 2.500 1.000</size></box></geometry></collision>
+        <visual name="visual">
+          <geometry><box><size>0.100 2.500 1.000</size></box></geometry>
+          <material><ambient>0.7 0.7 0.7 1</ambient><diffuse>0.7 0.7 0.7 1</diffuse></material>
+        </visual>
+      </link>
+      <link name="gap_1_0_right">
+        <pose>6.000 -1.750 0.500 0 0 0.000000</pose>
+        <collision name="collision"><geometry><box><size>0.100 2.500 1.000</size></box></geometry></collision>
+        <visual name="visual">
+          <geometry><box><size>0.100 2.500 1.000</size></box></geometry>
+          <material><ambient>0.7 0.7 0.7 1</ambient><diffuse>0.7 0.7 0.7 1</diffuse></material>
+        </visual>
+      </link>
+      <link name="gap_1_1_left">
+        <pose>8.000 1.775 0.500 0 0 0.000000</pose>
+        <collision name="collision"><geometry><box><size>0.100 2.450 1.000</size></box></geometry></collision>
+        <visual name="visual">
+          <geometry><box><size>0.100 2.450 1.000</size></box></geometry>
+          <material><ambient>0.7 0.7 0.7 1</ambient><diffuse>0.7 0.7 0.7 1</diffuse></material>
+        </visual>
+      </link>
+      <link name="gap_1_1_right">
+        <pose>8.000 -1.775 0.500 0 0 0.000000</pose>
+        <collision name="collision"><geometry><box><size>0.100 2.450 1.000</size></box></geometry></collision>
+        <visual name="visual">
+          <geometry><box><size>0.100 2.450 1.000</size></box></geometry>
+          <material><ambient>0.7 0.7 0.7 1</ambient><diffuse>0.7 0.7 0.7 1</diffuse></material>
+        </visual>
+      </link>
+    </model>
+  </world>
+</sdf>

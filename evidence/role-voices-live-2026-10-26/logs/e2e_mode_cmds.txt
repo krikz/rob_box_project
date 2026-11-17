@@ -1,0 +1,24 @@
+2026-10-26T15:53:32Z get -> Boolean value is: False
+2026-10-26T15:53:35Z set true -> Set parameter successful
+2026-10-26T15:53:41Z set e2e_release_after_s=3600.0 -> Set parameter successful
+2026-10-26T15:53:41Z логи:
+[speaker_id_node-8] [WARN] [1793030014.952691535] [speaker_id_node]: 🧪 speaker_id_node: e2e_mode=ON — активная БД дикторов теперь '/data/speakers.e2e.db' (боевая speakers.db НЕ используется, пока режим включён)
+[mcp_server-9] [WARN] [1793030014.954823693] [mcp_server]: 🧹 mcp_server: e2e-память фактов сброшена перед актом — удалено 1 файл(ов) '/data/voice_memory.e2e.db'
+[mcp_server-9] [WARN] [1793030014.979863123] [mcp_server]: 🧪 mcp_server: e2e_mode (voice_memory)=ON — voice_facts (memory_save) теперь пишутся в '/data/voice_memory.e2e.db' (боевая voice_memory.db НЕ используется, пока режим включён)
+[speaker_id_node-8] [WARN] [1793030021.132181997] [speaker_id_node]: 🧪 e2e-режим: снимется через 3600 с, если следующий акт его не подхватит
+2026-10-26T18:05:39Z get -> Boolean value is: True
+2026-10-26T18:05:43Z set false (был True, перезапуск режима для свежей строки ON) -> Set parameter successful
+2026-10-26T18:05:49Z set true -> Set parameter successful
+2026-10-26T18:05:56Z set e2e_release_after_s=3600.0 -> Set parameter successful
+2026-10-26T18:05:56Z логи:
+[speaker_id_node-8] [WARN] [1793037796.145010956] [speaker_id_node]: 🧪 e2e-режим: снимется через 3600 с, если следующий акт его не подхватит
+[speaker_id_node-8] [WARN] [1793037942.748623966] [speaker_id_node]: 🧪 speaker_id_node: e2e_mode=OFF — активная БД дикторов теперь '/data/speakers.db' (вернулись на боевую)
+[mcp_server-9] [WARN] [1793037942.947296535] [mcp_server]: 🧪 mcp_server: e2e_mode (voice_memory)=OFF — voice_facts (memory_save) теперь пишутся в '/data/voice_memory.db' (вернулись на боевую)
+[speaker_id_node-8] [WARN] [1793037949.253481423] [speaker_id_node]: 🧪 speaker_id_node: e2e_mode=ON — активная БД дикторов теперь '/data/speakers.e2e.db' (боевая speakers.db НЕ используется, пока режим включён)
+[mcp_server-9] [WARN] [1793037949.256994518] [mcp_server]: 🧹 mcp_server: e2e-память фактов сброшена перед актом — удалено 1 файл(ов) '/data/voice_memory.e2e.db'
+[mcp_server-9] [WARN] [1793037949.295178187] [mcp_server]: 🧪 mcp_server: e2e_mode (voice_memory)=ON — voice_facts (memory_save) теперь пишутся в '/data/voice_memory.e2e.db' (боевая voice_memory.db НЕ используется, пока режим включён)
+[speaker_id_node-8] [WARN] [1793037955.820935077] [speaker_id_node]: 🧪 e2e-режим: снимется через 3600 с, если следующий акт его не подхватит
+2026-10-26T18:24:47Z set false -> Set parameter successful
+2026-10-26T18:24:51Z логи:
+[speaker_id_node-8] [WARN] [1793039087.375146163] [speaker_id_node]: 🧪 speaker_id_node: e2e_mode=OFF — активная БД дикторов теперь '/data/speakers.db' (вернулись на боевую)
+[mcp_server-9] [WARN] [1793039087.568546243] [mcp_server]: 🧪 mcp_server: e2e_mode (voice_memory)=OFF — voice_facts (memory_save) теперь пишутся в '/data/voice_memory.db' (вернулись на боевую)

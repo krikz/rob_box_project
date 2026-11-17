@@ -250,7 +250,7 @@ tts_node:
 
 - **Полный research:** `docs/development/STT_TTS_RESEARCH.md`
 - **ROS2 package:** `src/rob_box_voice/README.md`
-- **Конфигурация:** `docker/vision/config/voice_assistant/voice_assistant.yaml`
+- **Конфигурация:** `docker/sound/config/voice_assistant/voice_assistant.yaml`
 
 ---
 

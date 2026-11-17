@@ -29,7 +29,7 @@ dotted-имена (`dialogue_node.llm_provider`), которые ноды НЕ �
 
 ## Docker-деплой (Vision Pi)
 
-Операторские конфиги: `docker/vision/config/voice_assistant/<node>.yaml`
+Операторские конфиги: `docker/sound/config/voice_assistant/<node>.yaml`
 (монтируются в `/config/voice_assistant` внутри контейнера и читаются
 `voice_assistant_headless.launch.py` через `config_dir:=/config/voice_assistant`).
 Правки применяются при рестарте контейнера.

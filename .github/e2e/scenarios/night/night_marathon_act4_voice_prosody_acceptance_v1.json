@@ -1,0 +1,24 @@
+{
+  "name": "night_marathon_act4_voice_prosody_acceptance_v1",
+  "schema_version": 1,
+  "_comment": [
+    "Акт 4 — flaky-known: mv-шаги зависят от tool-choice LLM и состава",
+    "голосов провайдера, ломаются при каждой смене провайдера.",
+    "GATE-1 держит минимум: список голосов, факт смены, громкость, скорость.",
+    "set_pitch ВНЕ gate — тона нет у части TTS-провайдеров (#4039: честный отказ).",
+    "Скорость и тон шаги судят по эффекту (`<ось> изменён: <значение>` в tts_node), а не по вызову тула."
+  ],
+  "expected_tool_calls": [
+    "list_tts_voices",
+    "set_voice",
+    "set_volume",
+    "set_speed"
+  ],
+  "must_not_call": [],
+  "voice_provenance": {
+    "voice": "anton",
+    "tts": "minimax",
+    "volume": 100,
+    "llm": "minimax-m3"
+  }
+}

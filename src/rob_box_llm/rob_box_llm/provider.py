@@ -90,6 +90,14 @@ class ProviderCapabilities:
     tools: bool = False
     streaming_tools: bool = False
     image_input: bool = False
+    # ADR-0150 §4.5: how the dialog engine asks for a structured command.
+    # Honest declaration only — ``degrade.select_mode`` picks the mode from
+    # these flags, so a ``True`` that the wire does not honour is a bug.
+    tool_choice: bool = False  # ``tool_choice="required"`` is actually enforced
+    json_mode: bool = False  # ``response_format={"type": "json_object"}``
+    structured_output: bool = False  # ``response_format`` with a JSON schema
+    thinking: bool = False  # model always/optionally emits reasoning tokens
+    max_context_tokens: int = 0  # 0 = not declared
 
 
 # ---------------------------------------------------------------------------
@@ -124,11 +132,19 @@ class ToolCall:
 
 @dataclass(frozen=True)
 class ToolResult:
-    """Result of executing a tool; fed back to the model on the next turn."""
+    """Result of executing a tool; fed back to the model on the next turn.
+
+    ``data`` — структурное тело результата тула (``MCPToolResult.data``: ``status``/``reason`` события владельца), если
+    оно есть; модель видит только ``content``, ``data`` читает код (исполнитель команды, ADR-0150 PR-7 ч.7c).
+    ``message`` — фраза, которую тул построил из своего результата (``MCPToolResult.message``, ADR-0148), отдельно от
+    ``content``: по ней код отвечает за модель, если та промолчала (#4157).
+    """
 
     tool_call_id: str
     content: str
     is_error: bool = False
+    data: Mapping[str, Any] | None = field(default=None, compare=False)
+    message: str | None = field(default=None, compare=False)
 
 
 @dataclass(frozen=True)
@@ -177,6 +193,14 @@ class LLMResponse:
     finish_reason: str | None = None
     usage: Mapping[str, int] = field(default_factory=dict)
     raw: Any | None = None  # the original SDK response, kept for diagnostics
+    # Issue #1899: True when the model emitted tool-call arguments JSON that
+    # was cut off mid-stream (the wire chunk never closed the object — most
+    # often because ``finish_reason="length"`` triggered while still inside
+    # the arguments payload). When True, callers MUST treat ``tool_calls``
+    # as unreliable: the ``arguments`` dict may be empty or partial, and the
+    # tool would crash on validation. See ``_safe_json`` in
+    # ``rob_box_llm.providers.deepseek`` for the detection heuristic.
+    truncated_tool_args: bool = False
 
 
 @dataclass(frozen=True)
@@ -186,12 +210,28 @@ class LLMChunk:
     Providers MUST emit at least one final chunk with `finish_reason` set so
     callers can detect end-of-stream deterministically (instead of guessing
     based on empty content).
+
+    ``truncated_tool_args`` (issue #1899) is set on the final chunk ONLY when
+    at least one assembled tool-call had its arguments JSON cut off mid-stream
+    (most often because ``finish_reason="length"`` triggered while still
+    inside the arguments payload). Callers MUST then treat the
+    ``tool_call_delta`` for that index as unreliable — its ``arguments`` may
+    be ``{}`` or partial, and the tool would crash on validation. The
+    canonical use is for ``agent_core`` to retry the request once instead
+    of feeding a broken tool-call into the executor.
     """
 
     content_delta: str = ""
     tool_call_delta: ToolCall | None = None
     finish_reason: str | None = None
+    #: Token accounting, when the provider reports it. OpenAI-compatible
+    #: APIs attach it to the terminal chunk, and only when the request asked
+    #: for it (``stream_options={"include_usage": True}``) — so every chunk
+    #: before that carries ``None``. Consumers MUST treat ``None`` as
+    #: "unknown", never as "zero": the prompt-size metric falls back to a
+    #: client-side estimate instead of publishing a false 0.
     usage: Mapping[str, int] | None = None
+    truncated_tool_args: bool = False
 
 
 # ---------------------------------------------------------------------------

@@ -1,0 +1,25 @@
+# chuangong (传功) — агент доставки релиза, один тик (ADR-0168, фаза B).
+# Лежит в репо, НЕ установлен: установка на Pi — отдельный шаг после согласия Шифу (docs/adr/0168-release-delivery-chuangong-phase-b.md §5).
+# Режим по умолчанию observe: fetch + проверка подписи + отчёт; пишет только в /var/lib/chuangong.
+# Ничего не переключает: ни current, ни compose down/up, ни миграций (это фаза C).
+[Unit]
+Description=chuangong: release fetch/verify/stage report (no activation)
+Wants=network-online.target
+After=network-online.target docker.service
+
+[Service]
+Type=oneshot
+User=ros2
+SupplementaryGroups=docker
+EnvironmentFile=/etc/chuangong/chuangong.env
+WorkingDirectory=/opt/rob_box/chuangong
+Environment=PYTHONDONTWRITEBYTECODE=1
+ExecStart=/usr/bin/python3 -m chuangong run
+StateDirectory=chuangong
+TimeoutStartSec=45min
+Nice=10
+IOSchedulingClass=idle
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=/var/lib/chuangong -/opt/rob_box/releases
+NoNewPrivileges=yes

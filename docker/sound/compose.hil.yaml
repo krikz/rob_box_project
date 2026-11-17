@@ -1,0 +1,22 @@
+# Оверлей Sound Pi на время HIL: реестр карт и точек — отдельный файл (эпик #4371, #4392).
+#
+# Применяет ТОЛЬКО scripts/hil/hil.sh on (копирует файл на Sound Pi в /tmp/hil/ и
+# пересоздаёт voice-assistant с --no-deps). Деплой этот файл не читает: имя не
+# попадает под docker/*/docker-compose*.yaml. hil.sh off пересоздаёт voice-assistant
+# без оверлея — реестр снова боевой.
+#
+# Зачем. Таблицы maps/waypoints (владелец WaypointStore в mcp_server) лежат в боевой
+# БД инструментов /data/voice_memory.db. В HIL rtabmap пишет карту в HIL_MAPS_DIR
+# Main Pi, а «начни карту» переключала бы активную карту (maps.is_active, #4418) и
+# писала точки в БОЕВОЙ реестр. WAYPOINT_DB_PATH (rob_box_core.tools_db.waypoint_db_path)
+# уводит в отдельный файл ТОЛЬКО реестр карт и точек; факты, музыка, FAQ, история
+# диалога остаются на своих боевых файлах.
+#
+# Обязательная переменная (без неё compose падает, а не берёт боевой реестр):
+#   HIL_WAYPOINT_DB   путь ВНУТРИ контейнера, под /data/hil/ (hil.sh: /data/hil/waypoints.db;
+#                     на хосте — docker/sound/data/voice/hil/waypoints.db)
+
+services:
+  voice-assistant:
+    environment:
+      - WAYPOINT_DB_PATH=${HIL_WAYPOINT_DB:?HIL_WAYPOINT_DB не задан — файл HIL-реестра карт (scripts/hil/hil.sh)}
