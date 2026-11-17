@@ -24,7 +24,7 @@ defaults:
     local: localhost:5000/krikz/rob_box
     local_registry_host: localhost:5000
   base_registry: localhost:5000/krikz/rob_box_base
-  ros_distro: humble
+  ros_distro: lyrical
   platform: linux/arm64
   apt_proxy: http://host.docker.internal:3142
 

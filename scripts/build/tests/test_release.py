@@ -71,9 +71,9 @@ def test_roles_take_images_from_their_compose(built):
             assert re.match(rf"^{re.escape(PREFIX)}@sha256:[0-9a-f]{{64}}$", ref)
         assert "eclipse/zenoh:1.6.2" in release["roles"][role]["external_images"]
     # *_TAG-сервисы — по SHA-тегу, остальные — по тегу канала (как compose берёт сегодня)
-    assert "oak-d-humble-dev-b704404" in asked
-    assert "supercollider-dev" in asked and "teleop-humble-dev" in asked and "quest-humble-dev" in asked
-    assert release["roles"]["vision"]["images"]["oak-d"] == f"{PREFIX}@{_fake_digest('oak-d-humble-dev-b704404')}"
+    assert "oak-d-lyrical-dev-b704404" in asked
+    assert "supercollider-dev" in asked and "teleop-lyrical-dev" in asked and "quest-lyrical-dev" in asked
+    assert release["roles"]["vision"]["images"]["oak-d"] == f"{PREFIX}@{_fake_digest('oak-d-lyrical-dev-b704404')}"
 
 
 def test_resource_pack_and_migrations(built):
@@ -135,7 +135,7 @@ def test_image_versions_from_release_match_current_files(built):
         assert set(got) == want, role
         assert set(got.values()) == {"dev-b704404"}
     pinned = release_py.image_versions_text(release, "vision", manifest, pinned=True)
-    assert f"OAK_D_TAG=dev-b704404@{_fake_digest('oak-d-humble-dev-b704404')}" in pinned
+    assert f"OAK_D_TAG=dev-b704404@{_fake_digest('oak-d-lyrical-dev-b704404')}" in pinned
 
 
 def _signed_dir(tmp_path, built):
@@ -157,7 +157,7 @@ def test_verify_refuses_substituted_digest(tmp_path, built):
     out, public = _signed_dir(tmp_path, built)
     path = out / rf.RELEASE_FILE
     text = path.read_text(encoding="utf-8")
-    good = _fake_digest("nav2-humble-dev-b704404").split(":")[1]
+    good = _fake_digest("nav2-lyrical-dev-b704404").split(":")[1]
     path.write_text(text.replace(good, "0" * 64), encoding="utf-8")
     with pytest.raises(minisign.SignatureError):
         release_py.verify_release_dir(out, public)
@@ -173,7 +173,7 @@ def test_verify_refuses_substituted_bundle(tmp_path, built):
 
 def test_unpinned_image_cannot_be_released(built):
     bad = copy.deepcopy(built[0])
-    bad["roles"]["main"]["images"]["nav2"] = f"{PREFIX}:nav2-humble-dev"
+    bad["roles"]["main"]["images"]["nav2"] = f"{PREFIX}:nav2-lyrical-dev"
     with pytest.raises(rf.ReleaseError):
         rf.dumps(bad)
 
@@ -183,7 +183,7 @@ def test_cli_build_sign_verify(tmp_path):
     manifest = release_py.GBM.load_manifest(REPO_ROOT / release_py.BUILD_MANIFEST)
     for name, spec in release_py.all_services(manifest).items():
         for tag in ("dev-b704404", "dev"):
-            t = release_py.image_tag_for(name, spec, tag, tag, "humble")
+            t = release_py.image_tag_for(name, spec, tag, tag, "lyrical")
             digests[t] = _fake_digest(t)
     (tmp_path / "d.json").write_text(__import__("json").dumps(digests))
     secret, public = minisign.generate_keypair()

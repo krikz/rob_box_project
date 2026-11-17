@@ -93,12 +93,12 @@ def test_generator_reproduces_pre_migration_tags_and_build_args():
         assert entry["dockerfile"] == f"docker/base/Dockerfile.{name}"
         assert entry["build_context"] == "docker/base"
         assert entry["tags"].splitlines() == [
-            f"{ghcr}:{name}-humble-latest",
-            f"{local}:{name}-humble-latest",
-            f"{local}:{name}-humble",
+            f"{ghcr}:{name}-lyrical-latest",
+            f"{local}:{name}-lyrical-latest",
+            f"{local}:{name}-lyrical",
         ]
     assert bases["pcl"][0]["build_args"].splitlines() == [
-        f"BASE_IMAGE={local}:ros2-zenoh-humble-latest",
+        f"BASE_IMAGE={local}:ros2-zenoh-lyrical-latest",
         apt,
     ]
     for name in ("ros2-zenoh", "rtabmap", "depthai"):
@@ -120,5 +120,5 @@ def test_service_base_family_refs_point_at_built_base_tags():
             family = (svc.get("base") or {}).get("family")
             if family:
                 assert (
-                    f"localhost:5000/krikz/rob_box_base:{family}-humble" in built
+                    f"localhost:5000/krikz/rob_box_base:{family}-lyrical" in built
                 ), family

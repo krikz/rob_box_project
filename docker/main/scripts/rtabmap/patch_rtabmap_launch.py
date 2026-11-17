@@ -39,7 +39,7 @@ Usage:
 
 import sys
 
-LAUNCH_FILE = "/opt/ros/humble/share/rtabmap_launch/launch/rtabmap.launch.py"
+LAUNCH_FILE = "/opt/ros/lyrical/share/rtabmap_launch/launch/rtabmap.launch.py"
 SENTINEL = '"Mem/IncrementalMemory"'
 
 # ── Parameters (the only place; decisions per parameter — docs/research/2026-11-05-nav2-hil-tuning.md §9.6) ──

@@ -246,7 +246,7 @@ class BuildContext(NamedTuple):
     image_prefix: str  # env.IMAGE_PREFIX   (ghcr.io/krikz/rob_box)
     local_prefix: str  # env.LOCAL_PREFIX   (localhost:5000/krikz/rob_box)
     base_registry: str  # localhost:5000/krikz/rob_box_base
-    ros_distro: str  # env.ROS_DISTRO     (humble)
+    ros_distro: str  # env.ROS_DISTRO     (lyrical)
     apt_proxy: str  # http://host.docker.internal:3142
     docker_tag: str  # needs.prepare.outputs.docker_tag (dev|test|latest|local)
     msgs_image: str = ""  # msgs_image_ref(): общий образ ROS-сообщений

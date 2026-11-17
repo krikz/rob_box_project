@@ -392,8 +392,8 @@ def test_tag_formula_includes_ros_distro_by_default():
     services, ctx = _real("vision")
     entry = gen_build_matrix.matrix_entry("oak-d", services, ctx)
     assert entry["tags"].splitlines() == [
-        "ghcr.io/krikz/rob_box:oak-d-humble-dev",
-        "localhost:5000/krikz/rob_box:oak-d-humble-dev",
+        "ghcr.io/krikz/rob_box:oak-d-lyrical-dev",
+        "localhost:5000/krikz/rob_box:oak-d-lyrical-dev",
     ]
 
 
@@ -407,7 +407,7 @@ def test_tag_formula_omits_ros_distro_for_supercollider():
         "ghcr.io/krikz/rob_box:supercollider-dev",
         "localhost:5000/krikz/rob_box:supercollider-dev",
     ]
-    assert "humble" not in entry["tags"]
+    assert "lyrical" not in entry["tags"]
 
 
 # --- build-args ------------------------------------------------------------
@@ -417,7 +417,7 @@ def test_base_family_resolves_to_base_registry():
     services, ctx = _real("main")
     entry = gen_build_matrix.matrix_entry("lslidar", services, ctx)
     assert (
-        "BASE_IMAGE=localhost:5000/krikz/rob_box_base:pcl-humble"
+        "BASE_IMAGE=localhost:5000/krikz/rob_box_base:pcl-lyrical"
         in entry["build_args"].splitlines()
     )
 
@@ -429,7 +429,7 @@ def test_base_service_resolves_to_local_prefix_tag_of_that_service():
     services, ctx = _real("sound")
     entry = gen_build_matrix.matrix_entry("supervisor", services, ctx)
     assert (
-        "BASE_IMAGE=localhost:5000/krikz/rob_box:voice-assistant-humble-dev"
+        "BASE_IMAGE=localhost:5000/krikz/rob_box:voice-assistant-lyrical-dev"
         in entry["build_args"].splitlines()
     )
     assert entry["depends_on"] == "voice-assistant"
@@ -565,7 +565,7 @@ def test_cli_tags_shell_format_prints_var_and_tag(capsys):
     )
     assert rc == 0
     lines = capsys.readouterr().out.strip().splitlines()
-    assert "NAV2_TAG nav2-humble-dev" in lines
+    assert "NAV2_TAG nav2-lyrical-dev" in lines
     # 8 сервисов Main Pi минус teleop (image_versions: false).
     assert len(lines) == 7
     # phantom-поле MICRO_ROS_AGENT_TAG не принадлежит ни одному сервису —
@@ -604,7 +604,7 @@ def _msgs_repo(tmp_path: Path) -> tuple[dict, Path]:
         "defaults": {
             "registry": {"ghcr": "ghcr.io/x/r", "local": "localhost:5000/x/r"},
             "base_registry": "localhost:5000/x/r_base",
-            "ros_distro": "humble",
+            "ros_distro": "lyrical",
             "apt_proxy": "http://proxy:3142",
         },
         "msgs_image": {
@@ -619,14 +619,14 @@ def _msgs_repo(tmp_path: Path) -> tuple[dict, Path]:
 
 def _ref(manifest: dict, root: Path) -> str:
     return gen_build_matrix.msgs_image_ref(
-        manifest, local_prefix="localhost:5000/x/r", ros_distro="humble", repo_root=root
+        manifest, local_prefix="localhost:5000/x/r", ros_distro="lyrical", repo_root=root
     )
 
 
 def test_msgs_tag_is_stable_and_follows_msg_content(tmp_path):
     manifest, root = _msgs_repo(tmp_path)
     first = _ref(manifest, root)
-    assert first.startswith("localhost:5000/x/r:msgs-humble-")
+    assert first.startswith("localhost:5000/x/r:msgs-lyrical-")
     assert _ref(manifest, root) == first, "тег обязан быть детерминирован"
 
     (root / "src" / "demo_msgs" / "msg" / "Ping.msg").write_text("string text\nint32 n\n")
@@ -670,7 +670,7 @@ def test_msgs_image_flag_without_section_is_rejected(tmp_path):
 def test_services_with_msgs_image_get_the_build_arg_others_do_not():
     manifest = gen_build_matrix.load_manifest(REAL_MANIFEST)
     ctx = gen_build_matrix.build_context(manifest, docker_tag="dev")
-    assert ctx.msgs_image.startswith("localhost:5000/krikz/rob_box:msgs-humble-")
+    assert ctx.msgs_image.startswith("localhost:5000/krikz/rob_box:msgs-lyrical-")
     for pi in manifest["pis"]:
         services = gen_build_matrix.services_for_pi(manifest, pi)
         for name, svc in services.items():
@@ -717,6 +717,6 @@ def test_cli_msgs_mode_prints_build_entry(capsys):
     assert entry["name"] == "msgs"
     assert entry["tags"] == entry["image"]
     assert entry["dockerfile"] == "docker/msgs/Dockerfile"
-    assert "BASE_IMAGE=localhost:5000/krikz/rob_box_base:ros2-zenoh-humble" in (
+    assert "BASE_IMAGE=localhost:5000/krikz/rob_box_base:ros2-zenoh-lyrical" in (
         entry["build_args"].splitlines()
     )
