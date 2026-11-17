@@ -312,11 +312,13 @@ class SpeechJournal:
 class Admission:
     """Решение по доставленной фразе ReSpeaker: ``verdict`` и строка лога ``note`` (``""`` — молча); ``spoken`` —
     реплики робота, звучавшие рядом с фразой: с ними после распознавания сверяются её слова (#4145).
+    ``heard`` — где звучал голос (``SPEECH`` / ``GRACE`` / ``FREE``); пусто — места неизвестны (шлем, ``OPEN``).
     """
 
     verdict: str
     note: str = ""
     spoken: Tuple[Spoken, ...] = ()
+    heard: FrozenSet[str] = frozenset()
 
     @property
     def dropped(self) -> bool:
@@ -510,31 +512,36 @@ def decide(
     не молчит, а решается признаками звука (:func:`_reply`). ``began_s`` — через сколько секунд после конца речи робота
     начался голос фразы (``-inf`` — во время речи, ``None`` — неизвестно)."""
     software = aec_mode == "software"
+    places = frozenset(heard)
     if software and speaking:
         return Admission(
             DROP_SPEAKING,
             f"🔇 [software AEC] Игнор фразы {duration_s:.2f}с: робот говорит",
+            heard=places,
         )
     if reply_open and not speaking and heard and FREE not in heard:
-        return _reply(heard, duration_s, began_s)
+        return replace(_reply(heard, duration_s, began_s), heard=places)
     if heard and set(heard) <= {GRACE}:
         return Admission(
             STOP_ONLY,
             f"🔇 [issue 989/#4072] Фраза {duration_s:.2f}с звучала только в эхо-окне после речи робота — "
             "распознаю, пропущу только стоп с вейком",
+            heard=places,
         )
     if speaking and duration_s < SHORT_DURING_SPEECH_S:
         return Admission(
             SHORT_STOP_ONLY,
             f"🔇 [hardware AEC] Короткая фраза {duration_s:.2f}с при звучащем TTS — распознаю, пропущу только стоп "
             "с вейком",
+            heard=places,
         )
     if speaking:
         return Admission(
             PASS,
             f"🎤 [hardware AEC] Фраза {duration_s:.2f}с во время TTS — обрабатываем (возможно прерывание)",
+            heard=places,
         )
-    return Admission(PASS)
+    return Admission(PASS, heard=places)
 
 
 def _reply(heard: AbstractSet[str], duration_s: float, began_s: Optional[float]) -> Admission:

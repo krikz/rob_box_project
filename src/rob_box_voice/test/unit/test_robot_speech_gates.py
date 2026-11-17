@@ -72,6 +72,9 @@ def _forget_node_modules() -> None:
 def node_modules(monkeypatch):
     """``(audio_node, stt_node)`` поверх заглушек rclpy/std_msgs/PyAudio/Vosk; после теста модули выгружаются."""
     stubs = {
+        "usb": MagicMock(),
+        "usb.core": MagicMock(),
+        "usb.util": MagicMock(),
         "rclpy": types.SimpleNamespace(
             init=None, shutdown=None, spin=None, ok=lambda: False
         ),
@@ -568,6 +571,29 @@ def test_4695_real_short_answer_without_wake_or_biometry_is_accepted(node_module
     _phrase(node, clock, at=8.6, seconds=3.6)
     assert node.publish_result.call_args.args[0] == "да"
     node._maybe_speak_unclear.assert_not_called()
+
+
+def test_4501_rejected_outside_greeting_window_asks_once(node_modules):
+    """#4501: непринятая реплика вне окна приветствия — одна фраза кода, не молчание и не ход."""
+    from rob_box_voice.core import echo_window
+
+    clock = Clock()
+    node = _pipeline(node_modules[1], clock, "пу")
+    _phrase(node, clock, at=30.0, seconds=1.5)
+    assert node._admission.verdict == echo_window.PASS
+    assert echo_window.FREE in node._admission.heard
+    assert node._echo.reply_open() is False
+    node.publish_result.assert_not_called()
+    node._maybe_speak_unclear.assert_called_once()
+
+
+def test_4501_same_fragment_inside_greeting_window_stays_silent(node_modules):
+    """#4695 не сломан: тот же обрывок в окне приветствия — шум, не переспрос."""
+    clock = Clock()
+    node = _pipeline(node_modules[1], clock, "пу")
+    _greeting_4695(node, clock, reply_open=True)
+    _phrase(node, clock, at=8.6, seconds=1.5)
+    _assert_no_turn_or_unclear(node)
 
 
 def test_4695_rejected_after_confirmed_reply_asks_unclear(node_modules):

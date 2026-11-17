@@ -600,18 +600,32 @@ def is_short_phrase(text: Optional[str], min_chars: int = DEFAULT_MIN_TEXT_CHARS
 
     Принимаем None как короткую фразу.
     """
-    if text is None:
-        return True
-    from rob_box_dialog.knowledge import SHORT_ANSWERS  # noqa: PLC0415 - единственная таблица ответов да/нет
-    from .tts_text_guard import should_skip  # noqa: PLC0415 - модуль чистый, ленивый импорт не тянет граф
+    return short_phrase_reason(text, min_chars) is not None
 
-    if should_skip(text):
-        return True
+
+def short_phrase_reason(text: Optional[str], min_chars: int = DEFAULT_MIN_TEXT_CHARS) -> Optional[str]:
+    """Почему :func:`is_short_phrase` отверг текст: ``empty`` / ``foreign`` / ``filler`` / ``short``; иначе ``None``.
+
+    Одна таблица с гейтом принятия (ADR-0148): переспрос отличает обрывок реплики (``short``) от шума,
+    не заводя второй подсчёт букв.
+    """
+    if text is None:
+        return "empty"
+    from rob_box_dialog.knowledge import SHORT_ANSWERS  # noqa: PLC0415 - единственная таблица ответов да/нет
+    from .tts_text_guard import analyze  # noqa: PLC0415 - модуль чистый, ленивый импорт не тянет граф
+
+    report = analyze(text)
+    if report.total_letters and report.ratio > 0.10:
+        return "foreign"
     normalized = " ".join("".join(ch for ch in text.lower() if ch.isalnum() or ch.isspace()).split())
     if normalized in SHORT_ANSWERS:
-        return False
+        return None
     letters = normalized.replace(" ", "")
-    return len(letters) < min_chars or len(set(letters)) == 1  # «э», «ммм», «ааа» - междометия, не речь
+    if letters and len(set(letters)) == 1:  # «э», «ммм», «ааа» - междометия, не речь
+        return "filler"
+    if len(letters) < min_chars:
+        return "short"
+    return None
 
 
 def _has_script(text: str, letter_range: Callable[[str], bool]) -> bool:
