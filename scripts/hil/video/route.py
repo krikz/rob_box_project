@@ -2,6 +2,7 @@
 """Маршрут из целей NavigateToPose по одной; лог: sim time, номер кадра камеры, поза gt, стопы защиты.
 
 ``run_lane`` — несколько точек одной целью NavigateThroughPoses (полоса обхода покрытием, #4560).
+Тик ещё пишет YAW (/cmd_vel_yaw), PLAN (штамп /plan и now), MAP (map←base_footprint рядом с GT).
 """
 import datetime
 import math
@@ -13,7 +14,7 @@ import rclpy
 from action_msgs.msg import GoalStatus
 from geometry_msgs.msg import PoseStamped, Twist
 from nav2_msgs.action import NavigateThroughPoses, NavigateToPose
-from nav_msgs.msg import Odometry
+from nav_msgs.msg import Odometry, Path
 from rclpy.action import ActionClient
 from rclpy.node import Node
 from rclpy.parameter import Parameter
@@ -39,7 +40,10 @@ TIMEOUT = 200.0
 TF_BUFFER_S = 30.0
 NAV_NODE = "bt_navigator"
 ODOM_FRAME = "odom"  # local_costmap.global_frame: costmap ждёт global_frame ← robot_base_frame
+MAP_FRAME = "map"
 BASE_FRAME = "base_footprint"  # local_costmap.robot_base_frame
+YAW_TOPIC = "/cmd_vel_yaw"  # twist_mux yaw_at_goal, тот же вход что у YawAtGoal
+PLAN_TOPIC = "/plan"  # хвост пути Nav2; штамп vs now — видно, старше ли план 2 с
 
 
 def load_goals(path):
@@ -82,8 +86,14 @@ class Mon(Node):
         self.em_episodes = 0
         self.recoveries = 0
         self.poses_remaining = 0
+        self.yaw_wz = None
+        self.yaw_sim = None
+        self.plan_stamp = None
+        self.tf_buffer = None
         self.create_subscription(Odometry, "/sim/ground_truth/odom", self.on_gt, 10)
         self.create_subscription(Twist, "/cmd_vel_emergency", self.on_em, 10)
+        self.create_subscription(Twist, YAW_TOPIC, self.on_yaw, 10)
+        self.create_subscription(Path, PLAN_TOPIC, self.on_plan, 10)
         self.create_timer(0.2, self.tick)
 
     def simt(self):
@@ -100,15 +110,60 @@ class Mon(Node):
             self.em_episodes += 1
             print(f"{ts()} EM_ON sim={self.simt():.2f}", flush=True)
 
+    def on_yaw(self, m):
+        self.yaw_wz = float(m.angular.z)
+        self.yaw_sim = self.simt()
+
+    def on_plan(self, m):
+        stamp = m.header.stamp
+        self.plan_stamp = stamp.sec + stamp.nanosec * 1e-9
+
+    def map_pose(self):
+        """Поза map←base_footprint из того же TF-буфера, что ждёт wait_ready."""
+        buf = self.tf_buffer
+        if buf is None:
+            return None
+        try:
+            from rclpy.duration import Duration
+            from rclpy.time import Time
+
+            tf = buf.lookup_transform(MAP_FRAME, BASE_FRAME, Time(), timeout=Duration(seconds=0.0))
+        except Exception:
+            return None
+        t, q = tf.transform.translation, tf.transform.rotation
+        return (t.x, t.y, math.degrees(yaw_of(q)))
+
     def tick(self):
         if self.em_on and time.time() - self.em_last > 0.3:
             self.em_on = False
             print(f"{ts()} EM_OFF sim={self.simt():.2f}", flush=True)
+        sim = self.simt()
+        if self.yaw_wz is None or self.yaw_sim is None:
+            print(f"{ts()} YAW sim={sim:.2f} wz=none age=none", flush=True)
+        else:
+            print(f"{ts()} YAW sim={sim:.2f} wz={self.yaw_wz:.3f} age={sim - self.yaw_sim:.2f}", flush=True)
+        if self.plan_stamp is None:
+            print(f"{ts()} PLAN sim={sim:.2f} stamp=none now={sim:.3f}", flush=True)
+        else:
+            print(f"{ts()} PLAN sim={sim:.2f} stamp={self.plan_stamp:.3f} now={sim:.3f}", flush=True)
         if self.gt:
             print(
-                f"{ts()} TRACK sim={self.simt():.2f} x={self.gt[0]:.3f} y={self.gt[1]:.3f} yaw={self.gt[2]:.1f}",
+                f"{ts()} TRACK sim={sim:.2f} x={self.gt[0]:.3f} y={self.gt[1]:.3f} yaw={self.gt[2]:.1f}",
                 flush=True,
             )
+            pose = self.map_pose()
+            gt = self.gt
+            if pose is None:
+                print(
+                    f"{ts()} MAP sim={sim:.2f} x=none y=none yaw=none gt_x={gt[0]:.3f} gt_y={gt[1]:.3f} gt_yaw={gt[2]:.1f}",
+                    flush=True,
+                )
+            else:
+                print(
+                    f"{ts()} MAP sim={sim:.2f} x={pose[0]:.3f} y={pose[1]:.3f} yaw={pose[2]:.1f} "
+                    f"gt_x={gt[0]:.3f} gt_y={gt[1]:.3f} gt_yaw={gt[2]:.1f}",
+                    flush=True,
+                )
 
     def on_fb(self, fb):
         r = getattr(fb.feedback, "number_of_recoveries", None)
@@ -176,6 +231,7 @@ def wait_ready(n):
     cl = ActionClient(n, NavigateToPose, "/navigate_to_pose")
     assert cl.wait_for_server(timeout_sec=60), "нет /navigate_to_pose"
     tf = Buffer()
+    n.tf_buffer = tf
     n.tf_listener = TransformListener(tf, n, spin_thread=False)  # держим слушателя, пока жива нода
     get_state = n.create_client(GetState, f"/{NAV_NODE}/get_state")
     wait_nav_active(n, tf, get_state)
@@ -214,7 +270,7 @@ def _wait_result(n, gh, timeout, stop=None):
 def _pose(x, y, yaw):
     """Поза в map (yaw в градусах)."""
     p = PoseStamped()
-    p.header.frame_id = "map"
+    p.header.frame_id = MAP_FRAME
     p.pose.position.x, p.pose.position.y = x, y
     p.pose.orientation.z = math.sin(math.radians(yaw) / 2)
     p.pose.orientation.w = math.cos(math.radians(yaw) / 2)
