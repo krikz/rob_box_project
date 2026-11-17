@@ -268,7 +268,7 @@ jobs:
       - name: "Release: checkout (ADR-0168)"
         if: ${{ !cancelled() && steps.release-gate.outputs.enabled == 'true' }}
         continue-on-error: true
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           ref: ${{ github.sha }}
           submodules: false
