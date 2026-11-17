@@ -86,11 +86,10 @@ class YawAtGoal:
         import tf2_ros  # noqa: PLC0415 — TF нужен только живой ноде
 
         buffer = tf2_ros.Buffer()
-        # Конвертеры времени — заглушки: latest() зовёт lookup_transform, секунды ему не нужны.
-        # Без них Tf2Lookup лезет в rclpy.duration, которого в юнит-тесте нет.
-        self._lookup = Tf2Lookup(
-            buffer, exceptions=(LookupError, LookupError, TimeoutError), to_time=lambda s: s, to_duration=lambda s: s
-        )
+        # Боевой Tf2Lookup (Time/Duration), как map_pose/vision_hailo. Не lambda s: s:
+        # tf2_ros.Buffer.lookup_transform ждёт Time, не float — иначе TypeError каждый тик
+        # и /cmd_vel_yaw молчит (Depot 17.11 20:27Z, #4788 в образе, разворота нет).
+        self._lookup = Tf2Lookup(buffer)
         self._tf_listener = tf2_ros.TransformListener(buffer, node)
         qos = QoSProfile(depth=10, reliability=ReliabilityPolicy.RELIABLE, durability=DurabilityPolicy.TRANSIENT_LOCAL)
         from action_msgs.msg import GoalStatusArray  # noqa: PLC0415 — тип подписки, в тесте заглушка
