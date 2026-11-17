@@ -94,10 +94,11 @@ _FOREIGN_RANGES: Tuple[Tuple[int, int, str], ...] = (
 )
 
 #: Письменности, которые провайдер читает сам (#3728, ADR-0150 §8): решение гарда - по возможностям ВЫБРАННОГО
-#: провайдера, а не «для всех сразу». MiniMax T2A произносит китайский/японский/корейский; Yandex и Silero -
+#: провайдера, а не «для всех сразу». MiniMax T2A (language_boost, docs/guides/MINIMAX_TTS.md §5) произносит
+#: китайский/японский/корейский и хинди (деванагари; панель Quest, voice_presets.yaml). Yandex и Silero -
 #: только кириллицу и латиницу (остальное бормочут). Нет записи - провайдер читает только разрешённые диапазоны.
 PROVIDER_SCRIPTS = {
-    "minimax": frozenset({"cjk", "hiragana", "katakana", "hangul"}),
+    "minimax": frozenset({"cjk", "hiragana", "katakana", "hangul", "devanagari"}),
 }
 
 #: Сколько чужих символов показывать в диагностике (лог не должен пухнуть).

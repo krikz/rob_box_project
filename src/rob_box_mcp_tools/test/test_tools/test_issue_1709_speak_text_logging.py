@@ -200,13 +200,20 @@ class TestUnicodeScriptGuard:
 
     @requires_guard
     def test_devanagari_text_is_not_spoken(self, mock_node):
-        """«Хинди» из репорта юзера — тот же путь."""
+        """«Хинди» из репорта юзера — Yandex деванагари не читает."""
         tool = SpeakTextTool(mock_node)
         result = tool.execute(text="नमस्ते दुनिया", animation="idle")
 
         assert result.success is False
         assert result.error == "unsupported_script"
         assert mock_node.get_publisher("/voice/speech/request").published_messages == []
+
+    @requires_guard
+    def test_minimax_selected_speaks_hindi(self, mock_node):
+        """Панель Quest hi: MiniMax деванагари читает, speak_text не отказывает (#4763)."""
+        mock_node.actual_tts_provider = "minimax"
+        result = SpeakTextTool(mock_node).execute(text="नमस्ते दुनिया", animation="idle")
+        assert result.error != "unsupported_script"
 
     @requires_guard
     def test_rejected_text_is_logged_in_full_with_diagnostics(self, mock_node):
