@@ -7,6 +7,11 @@ echo "Starting Nav2 nodes directly..."
 
 # Source ROS2
 source /opt/ros/humble/setup.bash
+# #4475: WouldSpinOnStall зовёт rob_box_teleop.turn_in_place.free_spin — тот файл,
+# что проверяет pytest. Том compose кладёт пакет в /opt/rob_box/teleop.
+if [ -d /opt/rob_box/teleop/rob_box_teleop ]; then
+    export PYTHONPATH="/opt/rob_box/teleop${PYTHONPATH:+:}${PYTHONPATH}"
+fi
 
 # USE_SIM_TIME=true только в профиле docker/sim (Gazebo): тогда каждому узлу
 # добавляется -p use_sim_time:=true поверх nav2_params.yaml. На роботе пусто.

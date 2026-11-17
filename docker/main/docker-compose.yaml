@@ -388,6 +388,10 @@ services:
       - ../common/config:/common_config:ro
       - ./scripts/nav2:/scripts:ro
       - ./maps:/maps:ro  # Карты из RTAB-Map
+      # #4475: WouldSpinOnStall импортирует rob_box_teleop.turn_in_place — тот файл,
+      # что проверяет pytest. Только пакет, только чтение. Нет тома — узел FAILURE,
+      # дерево ставит Spin 0 и едет FollowPath как раньше.
+      - ../../src/rob_box_teleop/rob_box_teleop:/opt/rob_box/teleop/rob_box_teleop:ro
     command: ["/ros_scripts/ros_with_namespace.sh", "/scripts/start_nav2_direct.sh"]
     depends_on:
       - zenoh-router

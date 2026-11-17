@@ -30,6 +30,8 @@ bt_navigator:
     - nav2_smooth_path_action_bt_node
     - nav2_follow_path_action_bt_node
     - nav2_spin_action_bt_node
+    # #4475: WouldSpinOnStall — угол разворота до свободного курса (free_spin).
+    - rob_box_would_spin_on_stall_bt_node
     - nav2_wait_action_bt_node
     - nav2_back_up_action_bt_node
     - nav2_drive_on_heading_bt_node

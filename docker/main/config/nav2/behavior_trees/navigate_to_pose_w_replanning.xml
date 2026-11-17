@@ -24,8 +24,20 @@
             <ClearEntireCostmap name="ClearGlobalCostmap-Context" service_name="global_costmap/clear_entirely_global_costmap"/>
           </RecoveryNode>
         </RateController>
+        <!-- #4475: путь есть, нос упёрт в перегородку или торец, сдвига с начала
+             цели нет — FollowPath стоит (path=0). WouldSpinOnStall пишет угол
+             free_spin в {turn_spin_dist}; следом Spin, потом FollowPath.
+             Угла нет — узел FAILURE, доска получает 0: Humble Spin на 0 рад сразу
+             SUCCEEDED (spin.cpp, remaining_yaw < 1e-6) и колёс не трогает. -->
         <RecoveryNode number_of_retries="1" name="FollowPath">
-          <FollowPath path="{path}" controller_id="FollowPath"/>
+          <Sequence name="TurnThenFollow">
+            <Fallback name="PublishTurnAngle">
+              <WouldSpinOnStall path="{path}" turn_spin_dist="{turn_spin_dist}"/>
+              <SetBlackboard output_key="turn_spin_dist" value="0.0"/>
+            </Fallback>
+            <Spin spin_dist="{turn_spin_dist}"/>
+            <FollowPath path="{path}" controller_id="FollowPath"/>
+          </Sequence>
           <ClearEntireCostmap name="ClearLocalCostmap-Context" service_name="local_costmap/clear_entirely_local_costmap"/>
         </RecoveryNode>
       </PipelineSequence>

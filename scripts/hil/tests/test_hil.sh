@@ -204,6 +204,8 @@ check "on: Sound видит /data только как HIL-реестр и чте
 # Оверлей, который применяется на Main Pi, тоже не ссылается на боевые пути.
 check "compose.hil.yaml Main: /maps только из HIL_MAPS_DIR" \
     '! grep -E "^\s*- \./maps|/data" "$REPO_ROOT/docker/main/compose.hil.yaml" && [ "$(grep -c "HIL_MAPS_DIR:?" "$REPO_ROOT/docker/main/compose.hil.yaml")" -eq 2 ]'
+check "compose.hil.yaml Main: nav2 сохраняет том free_spin (#4475)" \
+    'grep -q "/home/ros2/rob_box_project/src/rob_box_teleop/rob_box_teleop:/opt/rob_box/teleop/rob_box_teleop:ro" "$REPO_ROOT/docker/main/compose.hil.yaml"'
 
 # ── 4. замок уже есть ─────────────────────────────────────────────────────
 reset_state
