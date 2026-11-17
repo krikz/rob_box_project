@@ -67,4 +67,9 @@ def test_stuck_recovery_stays():
     assert recovery.find(".//FollowPath") is not None
     assert recovery.find(".//Spin") is not None
     assert recovery.find(".//BackUp") is not None
+    # #4607: BackUp в угле выбирается до Spin, не после Wait в RoundRobin.
+    actions = recovery.find("./ReactiveFallback/RoundRobin")
+    assert actions is not None
+    assert actions.find("Spin") is None
+    assert actions.find("Fallback/Spin") is not None
     assert recovery.find(".//Wait") is not None
