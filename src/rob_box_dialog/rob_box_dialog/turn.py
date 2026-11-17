@@ -1542,6 +1542,8 @@ def _data_phrase(r: ActionResult) -> Optional[str]:
     slots = _QUERY_SLOTS[r.tool](r.data) if key is not None else None
     if slots is not None:
         return phrases.text(key, **slots)
+    if r.tool in kn.PHOTO_TOOLS:
+        return None  # файл ещё не ушёл: «отправил» строит бот из send_photo, не message тула
     said = " ".join(str(r.data.get(kn.TOOL_MESSAGE_FIELD) or "").split())
     if said:
         return said

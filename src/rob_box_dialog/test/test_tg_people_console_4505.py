@@ -10,6 +10,7 @@ from rob_box_dialog import action_chain
 from rob_box_dialog import knowledge as kn
 from rob_box_dialog.address import SOURCE_TELEGRAM, Addressed
 from rob_box_dialog.command import Command, Invalid, ToolCall, parse, unkept_done_claims, validate
+from rob_box_dialog.turn import query_answer
 from rob_box_dialog.respond import ActionResult
 from rob_box_dialog.session import Session
 from rob_box_dialog.tools_view import available_tools, groups_for
@@ -220,6 +221,17 @@ def test_live_photo_promise_with_only_say_aloud_is_a_done_claim_violation():
     result = validate(parse(raw), [kn.PHOTO_TOOL, kn.ALOUD_TOOL], Session("telegram").snapshot)
     assert isinstance(result, Invalid) and result.reason == kn.VIOLATION_DONE_CLAIM
     assert kn.PHOTO_TOOL in result.all[0].allowed
+
+
+def test_a_promise_without_a_send_is_not_success():
+    """«Пришлю снимки» без тула отправки — не успех. Вызов person_photo без факта send_photo фразы успеха не даёт."""
+    promise = Command(speech="Сейчас пришлю снимки.", actions=())
+    assert unkept_done_claims(promise) == ("photo_send",)
+    queued = ActionResult(
+        "t/0", 0, "telegram", kn.PHOTO_TOOL, "query", "done", None,
+        {kn.TOOL_MESSAGE_FIELD: "Снимок fff371fe (Кирилл) отправляю в чат.", "photo_id": "fff371fe"},
+    )
+    assert query_answer([queued]) is None
 
 
 def test_person_photo_backs_the_send_promise_but_say_aloud_does_not():

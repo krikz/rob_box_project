@@ -61,6 +61,26 @@ def payload_op(text: str) -> int:
     return OP_COLLAGE if isinstance(data, dict) and data.get("kind") == COLLAGE_KIND else OP_PHOTO
 
 
+def _photo_text(key: str, **slots: object) -> str:
+    from rob_box_dialog import phrases  # noqa: PLC0415 - диалог нужен только строке после send_photo
+
+    return phrases.text(key, **slots)
+
+
+def sent_phrase(caption: str) -> str:
+    """Фраза успеха после того, как ``send_photo`` вернул сообщение. До вызова её нет (ADR-0148)."""
+    from rob_box_dialog import knowledge as kn  # noqa: PLC0415
+
+    return _photo_text(kn.PHOTO_SEND_PHRASE, caption=caption or "без подписи")
+
+
+def failed_phrase() -> str:
+    """Файл в Telegram не ушёл: честный отказ, не обещание."""
+    from rob_box_dialog import knowledge as kn  # noqa: PLC0415
+
+    return _photo_text(kn.PHOTO_SEND_FAIL_PHRASE)
+
+
 def ros_fetch(node: Any) -> Fetch:
     """Запрос снимка у владельца по ROS: клиент один на ноду; нет сервиса или ответа - ``owner_unavailable``."""
 

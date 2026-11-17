@@ -363,6 +363,9 @@ speak_aloud.rejected.unsupported_script: ["Не озвучил: выбранны
 speak_aloud.rejected.operator_hold: ["Не озвучил: оператор занял робота."]
 speak_aloud.lost: ["Не знаю, договорил ли: нет события от динамиков."]
 speak_aloud.timeout: ["Не знаю, прозвучало ли: итога от динамиков нет."]
+# снимок в Telegram: фразу строит бот из результата send_photo, не тул до отправки (ADR-0148, #4694 Л)
+chat.photo.sent: ["Отправил снимок {caption}."]
+chat.photo.not_sent: ["Снимок не ушёл: Telegram не принял файл."]
 
 # --- ход процесса в чате Telegram: подпись шага, чат правит одно сообщение (chats.ChatPorts, #4243) --------------
 chat.progress.thinking: ["Думаю…"]

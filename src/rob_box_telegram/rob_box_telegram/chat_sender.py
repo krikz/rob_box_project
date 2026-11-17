@@ -149,7 +149,16 @@ class ChatSender:
             text = person_photo.REFUSALS.get(reason, person_photo.REFUSAL_DEFAULT)
             await self._retry("send_message(нет снимка)", lambda: self.bot.send_message(chat_id=chat_id, text=text))
             return
-        await self._retry("send_photo", lambda: self.bot.send_photo(chat_id=chat_id, photo=data, caption=parsed[1] or None))
+        try:
+            await self._retry(
+                "send_photo",
+                lambda: self.bot.send_photo(chat_id=chat_id, photo=data, caption=parsed[1] or None),
+            )
+        except Exception as exc:  # noqa: BLE001 - отказ Bot API не «отправил»
+            self._log.warning("send_photo chat=%s не ушёл: %r", chat_id, exc)
+            await self._say_plain(chat_id, person_photo.failed_phrase())
+            return
+        await self._say_plain(chat_id, person_photo.sent_phrase(parsed[1]))
 
     async def close(self) -> None:
         for chat_id in list(self._turns):
@@ -176,6 +185,13 @@ class ChatSender:
         if turn.steps and elapsed >= PROGRESS_AFTER_S and now - turn.last_progress >= due:
             turn.last_progress, turn.changed = now, False
             await self._show_progress(chat_id, turn, chat_render.progress(turn.steps, elapsed))
+
+    async def _say_plain(self, chat_id: int, text: str) -> None:
+        """Строка кода в чат без разметки. Сбой самой строки — в лог, ход не роняем."""
+        try:
+            await self._retry("send_message", lambda: self.bot.send_message(chat_id=chat_id, text=text))
+        except Exception as exc:  # noqa: BLE001
+            self._log.warning("фраза снимка не ушла chat=%s: %r", chat_id, exc)
 
     async def _retry(self, what: str, call: Callable[[], Awaitable[Any]]) -> Any:
         """Вызов Bot API с повтором при сетевом сбое; отказ по существу и последняя неудача уходят наверх."""
