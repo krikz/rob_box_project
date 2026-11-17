@@ -55,6 +55,13 @@ twist_mux:
     # timeout=0.0 → lock «липкий»: последнее значение сохраняется, если нода
     # умрёт/зависнет (вооружён → автономия заблокирована до восстановления).
     #
+    # priority=51, НЕ 100 (#4694): twist_mux глушит источники СТРОГО МЕНЬШЕГО
+    # приоритета (замер ADR-0081 §5.1). Lock на 100 глушил quest(90) — шлем
+    # ARM не доходил до моторов, пока пульт вооружён и молчит. 51 глушит
+    # web(50)/voice(25)/nav2(10) и оставляет живыми quest(90) и аппаратуру.
+    # cmd_vel_joy остаётся 100: пока пульт шлёт twist, он старше шлема.
+    # teleop_lock (90) и emergency (255) не трогаем.
+    #
     # teleop_lock (ADR-0081 R1/R3/R4, #2191): зеркалит /joystick_lock по
     # семантике «у меня руль» — avatar_arbiter (единственный владелец
     # LockManager, ADR-0028 §4.2) публикует True пока teleop_floor занят.
@@ -76,7 +83,7 @@ twist_mux:
       joystick_lock:
         topic: /joystick_lock
         timeout: 0.0
-        priority: 100
+        priority: 51
       teleop_lock:
         topic: /teleop_lock
         timeout: 0.0
