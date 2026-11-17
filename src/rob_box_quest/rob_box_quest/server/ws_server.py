@@ -2519,6 +2519,19 @@ SUPERVISOR_HANDLERS: dict[FrameType, Any] = {
 async def _json_cmd_ping(server, ws, session, payload):
     session.feed_ping()
     server.bridge.feed_client_alive()
+    # Тот же pong, что _on_json_event на JSON_EVENT{type:ping}: клиент
+    # считает RTT по эху своего ts_ms. Без ответа HUD теряет RTT, хотя
+    # сторож сессии уже накормлен.
+    await server._send(
+        ws,
+        FrameType.JSON_EVENT,
+        0,
+        {
+            "type": "pong",
+            "ts_ms": payload.get("ts_ms"),
+            "server_ts_ms": int(time.time() * 1000),
+        },
+    )
 
 
 async def _json_cmd_stream_list(server, ws, session, payload):
