@@ -463,3 +463,60 @@ def test_unnamed_face_elsewhere_in_frame_is_another_person():
     ctx = project_perception_event(_FakePerceptionEvent(vision_events_json=payload, apriltag_ids=[]))
     assert len(ctx['faces']) == 2
     assert ctx['vision_context'].startswith('в кадре: незнакомое лицо')
+
+
+def _face_track(sec, nanosec, track_id, name='', embedding_id='', distance=1.12, attrs=None):
+    """Как событие доезжает до контекста: ``track_id`` внутри ``attributes_json`` (не поле IDL)."""
+    event = _face_at(sec, nanosec, name, embedding_id, distance)
+    body = dict(attrs or {})
+    body['track_id'] = track_id
+    event['attributes_json'] = json.dumps(body, ensure_ascii=False)
+    return event
+
+
+def test_one_track_id_is_one_face_line():
+    """Один трек: кадр без имени и кадр «Литвин» — одна строка, не два человека (issue #4388)."""
+    payload = json.dumps([
+        _face_track(1_699_999_999, 600_000_000, 7, 'Литвин', '566331d3', distance=1.1198),
+        _face_track(1_700_000_000, 0, 7, distance=1.1148),
+    ], ensure_ascii=False)
+    ctx = project_perception_event(_FakePerceptionEvent(vision_events_json=payload, apriltag_ids=[]))
+    assert ctx['faces'] == [{'name': 'Литвин', 'distance_m': pytest.approx(1.1148), 'age_s': 0.5}]
+    assert ctx['vision_context'] == 'в кадре: лицо «Литвин» ~1.1 м'
+    assert 'незнакомое лицо' not in ctx['vision_context']
+
+
+def test_one_track_id_merges_even_in_the_same_frame_and_far_apart():
+    """Трек — улика сильнее кадра и места: тот же id не плодит вторую строку."""
+    payload = json.dumps([
+        _face_track(1_700_000_000, 0, 7, 'Литвин', '566331d3', distance=1.1),
+        _face_track(1_700_000_000, 0, '7', distance=3.4),
+    ], ensure_ascii=False)
+    ctx = project_perception_event(_FakePerceptionEvent(vision_events_json=payload, apriltag_ids=[]))
+    assert [f['name'] for f in ctx['faces']] == ['Литвин']
+
+
+def test_track_id_survives_encounter_marker():
+    """Маркер Встречи и трек живут в одном JSON: имя встречи не теряется, трек схлопывает."""
+    payload = json.dumps([
+        _face_track(
+            1_699_999_999, 600_000_000, 7, 'Литвин', '566331d3',
+            attrs={'encounter': 'start', 'person_id': '566331d3', 'name': 'Литвин'},
+        ),
+        _face_track(1_700_000_000, 0, 7, distance=1.1148),
+    ], ensure_ascii=False)
+    ctx = project_perception_event(_FakePerceptionEvent(vision_events_json=payload, apriltag_ids=[]))
+    assert [f['name'] for f in ctx['faces']] == ['Литвин']
+    assert 'незнакомое лицо' not in ctx['vision_context']
+
+
+def test_two_track_ids_stay_two_faces():
+    """Два трека — два человека, даже на одной дистанции."""
+    payload = json.dumps([
+        _face_track(1_700_000_000, 0, 7, 'Литвин', '566331d3', distance=1.12),
+        _face_track(1_700_000_000, 0, 8, distance=1.12),
+    ], ensure_ascii=False)
+    ctx = project_perception_event(_FakePerceptionEvent(vision_events_json=payload, apriltag_ids=[]))
+    assert sorted(str(f['name']) for f in ctx['faces']) == ['None', 'Литвин']
+    assert 'незнакомое лицо' in ctx['vision_context']
+    assert 'лицо «Литвин»' in ctx['vision_context']

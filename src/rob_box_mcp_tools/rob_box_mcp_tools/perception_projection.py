@@ -156,8 +156,9 @@ def _project_vision_events(events_json: str, now: float) -> List[Dict[str, Any]]
 
     Сырой JSON-строкой в контекст — плохо (шум, читать боту нечем). Агрегатор держит всё окно
     памяти: на роботе 04.11.2026 это 134 события на одно лицо и один силуэт (issue #4352). Здесь
-    они схлопываются по объекту: лицо - по ``embedding_id`` (или имени), силуэт человека и прочие
-    классы - по классу. Остаётся самая свежая детекция объекта.
+    они схлопываются по объекту: лицо - по ``track_id`` (один трек - одна строка, issue #4388),
+    иначе по ``embedding_id`` (или имени); силуэт человека и прочие классы - по классу.
+    Остаётся самая свежая детекция объекта.
 
     К моменту, когда PerceptionEvent долетает сюда, stub-события уже
     отфильтрованы на стороне продюсера (context_aggregator_node, ADR-0089
@@ -172,12 +173,57 @@ def _project_vision_events(events_json: str, now: float) -> List[Dict[str, Any]]
     where: Dict[Tuple[str, str], _Spot] = {}
     for item in _parse_events(events_json):
         entry = _vision_entry(item, now)
-        key = (entry['kind'], str(item.get('embedding_id') or entry['name'] or ''))
+        key = _object_key(item, entry)
         kept = newest.get(key)
         if kept is None or _fresher(entry, kept):
-            newest[key] = entry
+            newest[key] = _keep_name(entry, kept)
             where[key] = _spot(item, entry)
     return sorted(_one_entry_per_face(newest, where), key=_age_order)
+
+
+def _object_key(item: Dict[str, Any], entry: Dict[str, Any]) -> Tuple[str, str]:
+    """Ключ объекта в окне. Лицо с ``track_id`` - этот трек, даже если кадр то узнал его, то нет
+    (issue #4388: один трек не должен дать «незнакомое лицо» и «Литвин»). Без трека - ``embedding_id``
+    или имя, как раньше. Силуэт и прочие классы - по классу."""
+    if entry['kind'] == 'face':
+        track_id = _track_id(item)
+        if track_id:
+            return ('face', f'track:{track_id}')
+    return (entry['kind'], str(item.get('embedding_id') or entry['name'] or ''))
+
+
+def _keep_name(entry: Dict[str, Any], kept: Any) -> Dict[str, Any]:
+    """Свежая детекция того же объекта не стирает уже узнанное имя (issue #4388)."""
+    if kept is not None and entry['kind'] == 'face' and not entry['name'] and kept['name']:
+        return dict(entry, name=kept['name'])
+    return entry
+
+
+def _track_id(item: Dict[str, Any]) -> str:
+    """``track_id`` детекции: поле события или тот же ключ в ``attributes_json``.
+
+    В JSON контекста он едет внутри ``attributes_json``: ``VisionEvent.msg`` поля
+    трека не имеет (ADR-0130 §2.14). Пусто, ``0`` и мусор - трека нет.
+    """
+    raw = item.get('track_id')
+    if raw in (None, ''):
+        raw = _attr_track(item.get('attributes_json'))
+    if isinstance(raw, bool) or not isinstance(raw, (int, str)):
+        return ''
+    text = str(raw).strip()
+    return '' if text in ('', '0', 'None') else text
+
+
+def _attr_track(raw: Any) -> Any:
+    if not isinstance(raw, str) or not raw:
+        return None
+    try:
+        parsed = json.loads(raw)
+    except (TypeError, ValueError):
+        return None
+    if not isinstance(parsed, dict):
+        return None
+    return parsed.get('track_id')
 
 
 #: Безымянное лицо ближе этого (м) к именованному в другом кадре окна - то же лицо (issue #4388), когда bbox нет.
