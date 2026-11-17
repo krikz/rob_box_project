@@ -49,8 +49,9 @@ RESOURCE_PACK_MANIFEST = "docker/vision/scripts/resource_pack/manifest.yaml"
 DEFAULT_IMAGE_PREFIX = "10.1.1.249:5000/krikz/rob_box"
 
 # Что едет в бандл роли: каталог роли и всё, на что её compose ссылается через ../ (гард в тестах сверяет).
+# src/* — только пакеты, которые compose роли монтирует целиком (не весь src/).
 BUNDLE_PATHS: dict[str, tuple[str, ...]] = {
-    "main": ("docker/main", "docker/common", "host/main", "src/rob_box_description"),
+    "main": ("docker/main", "docker/common", "host/main", "src/rob_box_description", "src/rob_box_teleop"),
     "vision": ("docker/vision", "docker/common", "host/vision", "scripts/setup/ensure_hailo_driver.sh"),
     # Скрипт ресурсного пака живёт в docker/vision, но им пользуется и Sound Pi (L: Deploy and Verify).
     "sound": ("docker/sound", "docker/common", "sound_pack", "migrations", "docker/vision/scripts/resource_pack"),
