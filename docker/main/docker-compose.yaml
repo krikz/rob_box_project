@@ -437,7 +437,8 @@ services:
   # Promtail - сбор логов из Docker контейнеров и отправка на машину мониторинга
   # Teleoperation - джойстик управление роботом через SBUS
   teleop:
-    image: ${SERVICE_IMAGE_PREFIX:-ghcr.io/krikz/rob_box}:teleop-${ROS_DISTRO:-humble}-${IMAGE_TAG:-local}
+    # Tag tracked in docker/main/.image-versions.{env} — updated by CI after each build
+    image: ${SERVICE_IMAGE_PREFIX:-ghcr.io/krikz/rob_box}:teleop-${ROS_DISTRO:-humble}-${TELEOP_TAG:-${IMAGE_TAG}}
     container_name: teleop
     network_mode: host
     privileged: true  # Нужен для доступа к serial портам
@@ -482,7 +483,8 @@ services:
   # Образ — teleop (rob_box_teleop + сообщения диалога); footprint берётся из
   # ./config/nav2/nav2_params.yaml — тот же, что у Nav2.
   proximity-guard:
-    image: ${SERVICE_IMAGE_PREFIX:-ghcr.io/krikz/rob_box}:teleop-${ROS_DISTRO:-humble}-${IMAGE_TAG:-local}
+    # Tag tracked in docker/main/.image-versions.{env} — updated by CI after each build
+    image: ${SERVICE_IMAGE_PREFIX:-ghcr.io/krikz/rob_box}:teleop-${ROS_DISTRO:-humble}-${TELEOP_TAG:-${IMAGE_TAG}}
     container_name: proximity-guard
     network_mode: host
     environment:
@@ -519,7 +521,8 @@ services:
   # (1.5 с) — отмена цели follow_path (по goal_id) и нулевой cmd_vel. Защита от любого источника цели
   # (HIL-скрипты, Quest), не только наших тулов. Образ — teleop. Всегда в стеке (без профиля).
   followpath-watchdog:
-    image: ${SERVICE_IMAGE_PREFIX:-ghcr.io/krikz/rob_box}:teleop-${ROS_DISTRO:-humble}-${IMAGE_TAG:-local}
+    # Tag tracked in docker/main/.image-versions.{env} — updated by CI after each build
+    image: ${SERVICE_IMAGE_PREFIX:-ghcr.io/krikz/rob_box}:teleop-${ROS_DISTRO:-humble}-${TELEOP_TAG:-${IMAGE_TAG}}
     container_name: followpath-watchdog
     network_mode: host
     environment:
