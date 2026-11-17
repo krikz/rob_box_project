@@ -561,6 +561,43 @@ def _run_in_tts_loop(coro) -> Any:
     return future.result()
 
 
+def _text_if_script_unreadable(node, text: str, language: str = None, prebaked_audio=None) -> str:
+    """Текст для синтеза: честная фраза, если письменность некому читать (#4763).
+
+    Пред-синтез не трогаем: аудио уже готово, подмена текста его не озвучит.
+    """
+    if prebaked_audio is not None:
+        return text
+    notice = _spoken_script_notice(node, text, language)
+    if not notice:
+        return text
+    node.get_logger().warn(
+        f"🌐 [AV-28] письменность некому читать (lang={language!r}) — "
+        f"произношу отказ (текст был: {text[:60]!r})"
+    )
+    return notice
+
+
+def _spoken_script_notice(node, text: str, language: str = None) -> str | None:
+    """Фраза-отказ, если письменность ``text`` не читает ни один живой провайдер.
+
+    ``None`` — кто-то в цепочке текст прочитает (или цепочки нет: решают
+    вызывающие, как раньше). Язык реплики важнее угадывания по буквам:
+    деванагари без ``language`` — всё равно хинди панели Quest.
+    """
+    chain_of = getattr(node, "_effective_provider_chain", None)
+    chain = chain_of() if callable(chain_of) else getattr(node, "provider_chain", None)
+    if not chain:
+        return None
+    dead = getattr(node, "_provider_is_dead", lambda _name: False)
+    alive = [name for name in chain if not dead(name)]
+    if not alive or any(not _tts_guard_should_skip(text, provider=name) for name in alive):
+        return None
+    lang = language or ("hi" if _tts_guard_analyze(text).scripts == ("devanagari",) else None)
+    who = getattr(node, "_effective_provider", lambda: None)() or alive[0]
+    return unsupported_language_notice(who, lang)
+
+
 def _text_or_language_notice(
     logger, provider: str, text: str, language: str = None
 ) -> str:
@@ -668,6 +705,10 @@ def refuse_unsupported_script(node, text: str, speech_id: str, chunk_data: dict,
 
     Warning с ПОЛНЫМ текстом и ``finished(success=False, error="unsupported_script")``, чтобы ждущий не висел.
     ``True`` — реплика отклонена (вызывающий возвращается).
+
+    Язык панели Quest (#4763) здесь не решаем: французский латиницей гард
+    пропускает, а письменность без читателя (хинди на Yandex) договаривает
+    ``_spoken_script_notice`` уже в ``_synthesize_and_play``.
     """
     provider = node._effective_provider()
     if not _tts_guard_should_skip(text, provider=provider):
@@ -3397,6 +3438,7 @@ class TTSNode(Node):
                     f"(speech_id={(speech_id or '')[:8]}, sink={sink})"
                 )
                 raise _TTSEmptyTextError("empty_text")
+            text = _text_if_script_unreadable(self, text, language, prebaked_audio)
 
             # 1) Готовый пред-синтез (ADR-0150 PR-3).
             if self._sap_consume_presynth(prebaked_audio, voice, speech_id, ctx):
