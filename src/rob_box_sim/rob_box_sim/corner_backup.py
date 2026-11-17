@@ -7,7 +7,11 @@
 Порог — тот же, что у защиты ``rob_box_teleop.proximity.Thresholds.stop_m`` (0.20 м
 в коридоре хода) и у ``coverage_plan.GUARD_STOP_M``. Впереди ближе порога, сзади
 не ближе — ``backup``. Иначе ``spin``: открытое место и задний тупик не меняются.
-Длина и скорость BackUp — уже стоящие в дереве ``backup_dist`` / ``backup_speed``.
+
+В дерево NavigateToPose эта формула не вшивается. Humble Nav2 1.1.20 /
+BehaviorTree.CPP v3 не знает узел Script (прогон 18:47Z: «Node not recognized:
+Script», bt_navigator не активировался). Пока зазоры не приходят в дерево
+узлом, который Humble грузит, recovery остаётся прежним Spin.
 """
 
 from __future__ import annotations
@@ -18,18 +22,6 @@ SPIN = "spin"
 #: Зеркало ``proximity.Thresholds.stop_m`` и ``coverage_plan.GUARD_STOP_M``.
 #: Сим не импортирует teleop (песочница); равенство держит тест.
 STOP_M = 0.20
-
-
-def bt_script() -> str:
-    """Условие Script узла BackUp: то же сравнение, что ``corner_escape``.
-
-    Поля — порты BT (зазор впереди/сзади, порог ``backup_stop_m``). Имя результата
-    читает ``if`` у BackUp. Порог в формулу не зашит.
-    """
-    return (
-        "corner_escape := (obstacle_ahead < backup_stop_m "
-        "&& obstacle_behind >= backup_stop_m) ? 'backup' : 'spin'"
-    )
 
 
 def corner_escape(ahead_m: float, behind_m: float, stop_m: float = STOP_M) -> str:
