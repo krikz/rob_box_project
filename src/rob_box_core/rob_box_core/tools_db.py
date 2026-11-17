@@ -44,11 +44,21 @@ def waypoint_db_path() -> str:
     return os.environ.get(WAYPOINT_DB_ENV, "").strip() or tools_db_path()
 
 
+def hil_waypoint_registry(env=None) -> bool:
+    """HIL увёл реестр карт в свой файл: непустой :data:`WAYPOINT_DB_ENV`. Боевой робот без env — нет.
+
+    Имя env живёт только здесь (#4082). Статус спрашивает факт, а не читает ``WAYPOINT_DB_PATH`` сам.
+    """
+    source = os.environ if env is None else env
+    return bool(source.get(WAYPOINT_DB_ENV, "").strip())
+
+
 __all__ = [
     "TOOLS_DB_DEFAULT",
     "TOOLS_DB_ENV",
     "TOOLS_E2E_DB_DEFAULT",
     "WAYPOINT_DB_ENV",
+    "hil_waypoint_registry",
     "tools_db_path",
     "waypoint_db_path",
 ]
