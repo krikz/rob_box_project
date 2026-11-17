@@ -490,5 +490,69 @@ class TestGripPureHelpers(unittest.TestCase):
         self.assertEqual(self.node._extract_grip_ptt_text("{}"), "")
 
 
+class TestGripMissingLlmDoesNotKillNode(unittest.TestCase):
+    """Issue #4763: grip без LLM не валит ноду, говорит дословно (ADR-0148)."""
+
+    def setUp(self) -> None:
+        self.node = AvatarSupervisor()
+
+    def tearDown(self) -> None:
+        self.node.destroy_node()
+
+    def _styled_ptt(self, text: str = "всем здравствуйте ребята") -> None:
+        self.node._on_grip_voice_pipeline(_pipeline_config_msg(True, "technical", "ru"))
+        self.node._on_grip_ptt_result(_make_string_msg(text))
+
+    def test_missing_builder_falls_back_to_direct_tts(self) -> None:
+        """Метода нет (как на роботе 17.11) — AttributeError не выходит наружу.
+
+        ``del`` на инстансе метод класса не снимает, поэтому lookup
+        подменён: ``getattr`` кидает тот же AttributeError, что валил ноду.
+        """
+
+        def _missing(name: str, default: object = None) -> object:
+            if name == "_build_operator_llm":
+                raise AttributeError(
+                    "'AvatarSupervisor' object has no attribute '_build_operator_llm'"
+                )
+            return object.__getattribute__(self.node, name)
+
+        self.node.__getattribute__ = _missing  # type: ignore[method-assign]
+        self.assertIsNone(self.node._grip_llm)
+        self._styled_ptt()
+
+        pub = _published_voice_tts(self.node)
+        self.assertEqual(len(pub), 1)
+        self.assertEqual(pub[0]["text"], "всем здравствуйте ребята")
+        self.assertEqual(pub[0]["priority"], "operator")
+        self.assertNotIn("language", pub[0])
+        self.assertIsNone(self.node._grip_llm)
+
+    def test_builder_exception_falls_back_to_direct_tts(self) -> None:
+        """Сборщик бросает — тот же direct TTS, нода жива."""
+
+        def _boom() -> None:
+            raise RuntimeError("provider chain exploded")
+
+        self.node._build_operator_llm = _boom  # type: ignore[method-assign]
+        self._styled_ptt("исходная фраза")
+
+        pub = _published_voice_tts(self.node)
+        self.assertEqual(len(pub), 1)
+        self.assertEqual(pub[0]["text"], "исходная фраза")
+        self.assertNotIn("language", pub[0])
+
+    def test_builder_none_falls_back_to_direct_tts(self) -> None:
+        """Нет провайдера (контракт метода — None) — дословно, без LLM-вызова."""
+        self.node._build_operator_llm = lambda: None  # type: ignore[method-assign]
+        self._styled_ptt("без провайдера")
+
+        pub = _published_voice_tts(self.node)
+        self.assertEqual(len(pub), 1)
+        self.assertEqual(pub[0]["text"], "без провайдера")
+        self.assertNotIn("language", pub[0])
+        self.assertIsNone(self.node._grip_llm)
+
+
 if __name__ == "__main__":
     unittest.main()
