@@ -82,7 +82,7 @@ from rob_box_supervisor import headset_speech  # noqa: E402
 from rob_box_supervisor.spoken_text import to_spoken  # noqa: E402
 from rob_box_supervisor.tars_stage import TarsStagePublisher  # noqa: E402
 # ADR-0150 PR-13 (#3708) — ТАРС на общем движке rob_box_dialog (путь v1 AgentCore удалён, #4354 A3).
-from rob_box_supervisor.operator_turns import agent_path  # noqa: E402
+from rob_box_supervisor import operator_turns  # noqa: E402
 from rob_box_dialog.knowledge import COMMAND_PROVIDERS_DEFAULT  # noqa: E402
 # voice-vr 21 — единый белый список voice-пресетов и языков (AV-28 §P7).
 # Раньше жил в ``supervisor_node`` и ``ws_server`` двумя параллельными
@@ -602,7 +602,7 @@ class AvatarSupervisor(Node):
         self._agent_core: Any = None
         # ADR-0150 PR-13 (#3708): ТАРС — общий движок rob_box_dialog (operator_turns); путь v1 AgentCore удалён
         # (#4354 A3).
-        self._agent_builder, self._agent_runner = agent_path(self)
+        self._agent_builder, self._agent_runner = operator_turns.agent_path(self)
         # Журнал ТАРС (§5.4) — тоже лениво, персист по journal_path.
         self._operator_journal: Any = None
         # Метрики супервизор-агента (issue #2232). РАНЬШЕ здесь стояла
@@ -2477,7 +2477,7 @@ class AvatarSupervisor(Node):
         )
         llm = self._grip_llm
         if llm is None:
-            llm = self._build_operator_llm()
+            llm = operator_turns.build_operator_llm(self)
             if llm is None:
                 self._log.warning("GripPipeline: no LLM provider — direct TTS")
                 return None
