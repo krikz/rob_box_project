@@ -471,12 +471,17 @@ class MiniMaxSTTProvider:
             return None
         return response.text
 
-    def transcribe(self, audio_bytes: bytes) -> MiniMaxSTTResponse:
+    def transcribe(
+        self, audio_bytes: bytes, language: Optional[str] = None
+    ) -> MiniMaxSTTResponse:
         """POST ``audio_bytes`` to MiniMax and return the parsed response.
 
         Raises :class:`MiniMaxSTTError` subclasses on failure. The
         :meth:`recognize` wrapper downgrades these to ``None`` so the
         STT chain can keep flowing.
+
+        ``language`` — код этой фразы (грип). ``None`` оставляет язык,
+        с которым создан клиент (диалог).
         """
         if not audio_bytes:
             raise MiniMaxSTTError("audio_bytes is empty")
@@ -493,8 +498,9 @@ class MiniMaxSTTProvider:
             "model": self._model,
             "response_format": "json",
         }
-        if self._language:
-            data["language"] = self._language
+        call_language = self._language if language is None else language
+        if call_language:
+            data["language"] = call_language
 
         headers = {"Authorization": f"Bearer {self._api_key}"}
 

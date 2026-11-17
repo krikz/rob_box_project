@@ -99,7 +99,11 @@ def _ensure_rclpy_mock(monkeypatch):
             self.data = data
 
     class _Msg:
+        # stt_node импортирует Bool/Float32/Int32 вместе со String.
         String = _StringMsg
+        Bool = MagicMock()
+        Float32 = MagicMock()
+        Int32 = MagicMock()
 
     monkeypatch.setitem(sys.modules, "std_msgs", _Msg())
     monkeypatch.setitem(sys.modules, "std_msgs.msg", _Msg)
