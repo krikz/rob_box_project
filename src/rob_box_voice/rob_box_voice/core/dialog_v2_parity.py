@@ -108,7 +108,13 @@ def _greet(node: Any, marker: MeetingMarker) -> Optional[str]:
     spoken = {}
 
     def speak(text: str) -> None:
-        spoken["speech_id"] = node._ports.say("", node._session.snapshot.epoch, text, emotion="happy")
+        epoch = node._session.snapshot.epoch
+        speech_id = node._ports.say("", epoch, text, emotion="happy")
+        spoken["speech_id"] = speech_id
+        # Тот же журнал, что у реплики хода: ``said`` сейчас, в историю — по ``SpeechEvent`` через ``spoken``.
+        from rob_box_dialog.turn_log import note_proactive  # noqa: PLC0415
+
+        note_proactive(node._engine.log, speech_id, epoch, speech_id, text)
 
     quiet = unprompted_quiet(node._session.snapshot, turn_busy(node))
     phrase = greet_on_meeting(node._meeting_greeter, marker, idle=not quiet, allowed=lambda _m: True, speak=speak)

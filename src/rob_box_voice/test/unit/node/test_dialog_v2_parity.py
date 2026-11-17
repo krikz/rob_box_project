@@ -162,6 +162,7 @@ def test_reply_without_wake_includes_the_spoken_greeting_in_llm_history(node, af
         engine._window.touch(engine._clock() - kn.DIALOG_WINDOW_IDLE_RESET_S - 1)
     parity.on_vision_event(node, _face())
     (greeting,) = _said(node)
+    assert engine.log.speech(greeting.speech_id) == (greeting.speech_id, greeting.text)
     assert all(entry.content != greeting.text for entry in engine.log.window())
     finished = _finished(greeting.speech_id)
     finished.spoken_chars = len(greeting.text)
@@ -204,6 +205,8 @@ def test_greeting_history_requires_confirmed_playback(node, outcome):
     node._on_speech_event(event)
     asyncio.run_coroutine_threadsafe(asyncio.sleep(0), node._loop).result(timeout=10)
     assert node._engine.log.window() == ()
+    if outcome == "foreign":
+        assert node._engine.log.speech(greeting.speech_id) == (greeting.speech_id, greeting.text)
 
 
 def test_greeting_finished_does_not_remove_operator_hold_after_idle(node):
