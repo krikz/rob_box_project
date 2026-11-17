@@ -276,6 +276,8 @@ motion.not_reached.server_unavailable: ["Не доехал до точки {targ
 motion.not_reached.unknown_status: ["Не уверен, что доехал до точки {target}: навигация не подтвердила прибытие."]
 motion.not_reached.unknown_target: ["Не знаю точку {target}."]
 motion.not_reached.localization_lost: ["Не уверен, что доехал до точки {target}: потерял, где нахожусь на карте."]
+motion.not_reached.lock_held: ["Руль занят, не поеду к точке {target}."]
+motion.not_reached.lock_unknown: ["Не вижу замок, не поеду к точке {target}."]
 # Стоп навигации (#3789, knowledge.STOP_TOOL_PHRASES): по виду отмены из данных тула, а не «Приехал.» класса.
 motion.stop.confirmed: ["Останавливаюсь."]
 motion.stop.idle: ["Я и так стою."]

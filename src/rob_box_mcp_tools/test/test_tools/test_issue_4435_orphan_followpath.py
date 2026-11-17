@@ -252,6 +252,7 @@ def test_waypoint_tool_halts_on_abort(nav):
     store = MagicMock()
     store.get_waypoint.return_value = {"x": 1.0, "y": 2.0, "theta": 0.0, "frame_id": "map"}
     tool = nav.NavigateToWaypointTool(MagicMock(), store)
+    tool.twist_locks = types.SimpleNamespace(block=lambda: None)  # #4694: в CI нет std_msgs, замки свободны
     tool.nav_client = _status_client(ao.GOAL_STATUS_ABORTED)
     halt = _Halt()
     tool.controller_halt = halt

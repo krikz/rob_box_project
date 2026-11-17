@@ -1576,6 +1576,10 @@ NAV_FAILURE_OUTCOMES: Tuple[str, ...] = (
     # #4495: Nav2 ответил успехом, но поза на карте за поездку потеряла опору (лидарная одометрия потеряна или карта
     # прыгнула): не «приехал», а «не уверен, где я» (rob_box_mcp_tools.core.localization_check).
     "localization_lost",
+    # #4694 / #3789: twist_mux глушит cmd_vel, пока /joystick_lock или /teleop_lock = True
+    # (timeout 0.0, липкий). Нет сообщения — не «свободно» и не «занято».
+    "lock_held",
+    "lock_unknown",
 )
 NAV_DONE = ByData((NAV_ARRIVAL_FIELD,), {
     (NAV_ALREADY_THERE,): "motion.already_there", (NAV_ARRIVED,): "motion.arrived",
