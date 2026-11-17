@@ -41,12 +41,12 @@ def test_pause_fills_the_lines_bars_minus_speech_and_overhead():
     got = rp.markup(VERSES[0], bar)
     spans = [rp.syllables(ln) / rp.SYLLABLES_PER_S for ln in lines]
     assert got.bars_per_line == (1, 1, 1, 1) and max(spans) <= rp.BAR_FILL * bar
-    want = [round(bar - s - rp.PAUSE_OVERHEAD_S, 2) for s in spans[:-1]]
+    want = [round(bar - s - rp.PAUSE_OVERHEAD_S, 2) for s in spans]
     assert got.pauses == tuple(want) and pauses(got.text) == want
-    # каждая строка кроме последней — с паузой, знак конца строки уступил паузе; последняя — как была
+    # каждая строка — с паузой, знак конца строки уступил паузе; последняя не кончается на слоге (#4508)
     assert got.text.startswith("Я робот Робби, я читаю под бит <#")
-    assert got.text.endswith("Каждая строчка в такт звучит.")
-    assert got.text.count("<#") == len(lines) - 1
+    assert got.text.endswith(f"Каждая строчка в такт звучит {rp.pause_tag(want[-1])}")
+    assert got.text.count("<#") == len(lines)
 
 
 def test_line_longer_than_a_bar_takes_two_bars():
@@ -55,13 +55,13 @@ def test_line_longer_than_a_bar_takes_two_bars():
     spans = [rp.estimate_span(ln) for ln in rp.split_lines(VERSES[0])]
     assert got.bars_per_line == tuple(1 if s <= rp.BAR_FILL * bar else 2 for s in spans) and 2 in got.bars_per_line
     assert got.pauses == tuple(round(max(rp.MIN_PAUSE_S, k * bar - s - rp.PAUSE_OVERHEAD_S), 2)
-                               for k, s in zip(got.bars_per_line[:-1], spans[:-1]))
+                               for k, s in zip(got.bars_per_line, spans))
 
 
 def test_limits_clamp_the_pause_and_the_bars():
     long_line = "Очень длинная строка про енота и комара, которые ночью читают рэп у окна"
     fast = rp.markup(f"{long_line},\n{long_line}.", 240.0 / 200)  # такт 1.2 с: строке мало и двух тактов
-    assert fast.bars_per_line == (rp.MAX_BARS_PER_LINE,) * 2 and fast.pauses == (rp.MIN_PAUSE_S,)
+    assert fast.bars_per_line == (rp.MAX_BARS_PER_LINE,) * 2 and fast.pauses == (rp.MIN_PAUSE_S, rp.MIN_PAUSE_S)
     assert rp.pause_tag(500.0) == f"<#{rp.MAX_PAUSE_S:.2f}#>" and rp.pause_tag(-1.0) == "<#0.05#>"
 
 
@@ -79,7 +79,7 @@ def test_br_is_a_line_break_in_any_case_and_spacing():
         text = one.replace("\n", br)
         assert rp.split_lines(text) == rp.split_lines(one) and len(rp.split_lines(text)) == 2
         got = rp.markup(text, 2.0)
-        assert got is not None and "<br" not in got.text.lower() and len(got.pauses) == 1
+        assert got is not None and "<br" not in got.text.lower() and len(got.pauses) == 2
 
 
 def test_br_never_reaches_synthesis():
@@ -104,6 +104,20 @@ def test_every_line_gets_its_own_bars_and_a_short_line_pauses_at_most_a_bar():
     assert got.pauses[1] <= bar  # пауза короткой строки не длиннее такта
     for line, k, pause in zip(rp.split_lines(verse), got.bars_per_line, got.pauses):
         assert rp.estimate_span(line) + pause + rp.PAUSE_OVERHEAD_S <= k * bar + 1e-6 or pause == rp.MIN_PAUSE_S
+
+
+def test_quiet_beats_at_the_end_of_the_line_are_kept():
+    """#4508: тихие доли конца строки не выкидываются — пауза последней строки та же, что у остальных."""
+    bar = 4.0  # строка ~1.6 с влезает в такт, остаток слышен и не зажат в MIN_PAUSE_S
+    verse = "Я робот Робби, я читаю под бит,\nКаждая строчка в такт звучит."
+    lines = rp.split_lines(verse)
+    got = rp.markup(verse, bar)
+    spans = [rp.estimate_span(ln) for ln in lines]
+    last = round(max(rp.MIN_PAUSE_S, got.bars_per_line[-1] * bar - spans[-1] - rp.PAUSE_OVERHEAD_S), 2)
+    assert len(got.pauses) == len(lines) == len(pauses(got.text))
+    assert got.pauses[-1] == last == pauses(got.text)[-1]
+    assert got.pauses[-1] > rp.MIN_PAUSE_S
+    assert got.text.endswith(rp.pause_tag(got.pauses[-1]))
 
 
 # --- выступление ----------------------------------------------------------------------------------------------------

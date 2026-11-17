@@ -7,7 +7,9 @@
 ``k`` ≤ ``MAX_BARS_PER_LINE``, в которое она влезает с запасом ``BAR_FILL``), пауза после неё — ``k·такт − длина
 строки − PAUSE_OVERHEAD_S`` (короткая строка — короткая пауза, не пустота по самой длинной). Строки — переводы
 строк и ``<br/>``; без них — конец предложения, обрывки короче ``MIN_LINE_SYLLABLES`` слогов клеятся к
-соседу; запятая строку не режет. Последняя строка сегмента — без паузы: следующий сегмент ставит на такт :mod:`.sync`.
+соседу; запятая строку не режет. Тихие доли конца строки — та же пауза и у последней строки сегмента
+(#4508): без неё строка кончается на последнем слоге, а её такты не доигрываются. Следующий сегмент по-прежнему
+встаёт на такт :mod:`.sync` — пауза внутри реплики, не вместо границы сегмента.
 
 Единственное место знания о паузах: формула, лимиты, темп MiniMax и формат его метки. Диалог провайдера не знает
 (ADR-0160 §2.2, #4241): выступление отдаёт в реплике строки и такт подложки ``beat_s``, а разметку по ним ставит
@@ -107,11 +109,12 @@ def estimate_span(line: str) -> float:
 
 def layout(spans: Sequence[float], bar_s: float, max_speed: float = 1.0, fix: Sequence[float] = (),
            overhead_s: float = PAUSE_OVERHEAD_S) -> Tuple[List[float], float, Tuple[int, ...]]:
-    """Паузы после каждой строки, кроме последней, скорость и тактов НА КАЖДУЮ строку: каждая строка — с такта.
+    """Пауза после каждой строки, включая последнюю, скорость и тактов НА КАЖДУЮ строку: каждая строка — с такта.
 
     ``spans`` — длины строк (с) при скорости 1; скорость (≤ ``max_speed``, у выступления её нет — 1) подбирается
     по самой длинной строке; каждая строка берёт наименьшее ``k`` ≤ ``MAX_BARS_PER_LINE``, куда влезает;
-    ``fix`` — поправка пауз по замеру прошлого синтеза (спайк, второй проход)."""
+    ``fix`` — поправка пауз по замеру прошлого синтеза (спайк, второй проход). Последняя строка получает ту же
+    паузу, что и остальные (#4508): её тихие доли — остаток своих тактов, не отдельная длительность."""
     longest = max(spans)
     n = next((k for k in range(1, MAX_BARS_PER_LINE + 1) if longest / max_speed <= BAR_FILL * k * bar_s),
              MAX_BARS_PER_LINE)
@@ -119,14 +122,14 @@ def layout(spans: Sequence[float], bar_s: float, max_speed: float = 1.0, fix: Se
     bars = tuple(next((k for k in range(1, MAX_BARS_PER_LINE + 1) if dur / speed <= BAR_FILL * k * bar_s),
                       MAX_BARS_PER_LINE) for dur in spans)
     pauses = []
-    for j, dur in enumerate(spans[:-1]):
+    for j, dur in enumerate(spans):
         corr = fix[j] if j < len(fix) else 0.0
         pauses.append(bars[j] * bar_s - dur / speed - corr - overhead_s)
     return pauses, speed, bars
 
 
 def mark(lines: Sequence[str], pauses: Sequence[float]) -> str:
-    """Строки через пробел, после каждой (кроме последней) — пауза; знак в конце строки уступает паузе."""
+    """Строки через пробел, после каждой — пауза её тактов; знак в конце строки уступает паузе."""
     parts = [f"{ln.rstrip(_LINE_END)} {pause_tag(p)}" for ln, p in zip(lines, pauses)]
     return " ".join([*parts, *lines[len(pauses):]])
 
