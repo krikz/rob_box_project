@@ -2202,6 +2202,12 @@ step_wake_replay() {  # $1=label $2=safe
 # сверка music_compare) в окне первой попытки уже есть -- «ускорь» 134 -> 145 BPM исполнено; второй раз команда даёт
 # другой исход («потолок»), и шаг краснеет за харнесс, а не за робота. Тогда повтора нет, шаг судится по первому
 # исполнению (``stt --executed 1`` -> ``kept=executed``). Паттернов у шага нет -- исход не определён, повтор как раньше.
+#
+# #4694 (17.11, n805b run 43636148539): STT вернул не команду, а мусор («говори» -> «колории»), и судья сказал
+# silenced -- ход проглотила тишина, потому что команда до неё не дошла. Это не FAIL с первой попытки. Решает
+# e2e_events.stt_garbage_retry (``stt-retry``): слово шага потеряно и ПРИНЯТО не похоже на команду -- фраза ещё раз,
+# всего STT_GARBAGE_MAX_ATTEMPTS попыток (считая первую). Второй промах -- честный FAIL, не зелёный. Шагу без
+# stt_replay повтор не даётся: команда узнана, а робот её проглотил -- это настоящая тишина, FAIL как раньше.
 _stt_step_executed() {  # $1=label $2=начало окна первой попытки; rc 0 -- исход шага в окне уже есть
     local -a pats=()
     [ -n "${patterns_json:-}" ] && [ "$patterns_json" != "[]" ] || return 1
@@ -2215,15 +2221,22 @@ for p in json.load(sys.stdin):
     return 0
 }
 
+# step_heard -- последняя строка «✅ ПРИНЯТО» окна BEFORE (пустая строка -- фразу STT не принял).
+# Последняя, не первая: окно повтора начинается с нового PLAY (``--since``), и принятая там фраза --
+# ответ на повтор. Первая строка всего файла -- ПРИНЯТО прошлого хода, его судить уже нельзя.
+step_heard() {
+    ${ROBOT_SSH} "docker logs voice-assistant --since '${BEFORE}' 2>&1" 2>/dev/null \
+        | grep -oE '✅ ПРИНЯТО( \([^)]*\))?:[[:space:]]*[^[:space:]].*' | tail -1 \
+        | sed -E 's/^✅ ПРИНЯТО( \([^)]*\))?:[[:space:]]*//' | tr -d '\r'
+}
+
 step_stt_replay() {  # $1=label $2=safe
     local label="$1" safe="$2" heard out kept
     recover_allowed stt_replay || return 0
     [ -z "${E2E_STEP_STT_REPLAYED:-}" ] || return 0
     [ -z "${E2E_STEP_RECOVERED:-}" ] || return 0
     [ -n "${SCENARIO_FILE:-}" ] && [ -f "$SCENARIO_FILE" ] || return 0
-    heard="$(${ROBOT_SSH} "docker logs voice-assistant --since '${BEFORE}' 2>&1" 2>/dev/null \
-        | grep -oE '✅ ПРИНЯТО( \([^)]*\))?:[[:space:]]*[^[:space:]].*' | head -1 \
-        | sed -E 's/^✅ ПРИНЯТО( \([^)]*\))?:[[:space:]]*//' | tr -d '\r')"
+    heard="$(step_heard)"
     [ -n "$heard" ] || return 0
     out="$(python3 "$(_events_py)" stt --scenario "$SCENARIO_FILE" --label "$label" --heard "$heard" 2>&1)" || {
         log "STEP ${label}: ❌ сверка ПРИНЯТО со словами шага не разобрана: ${out}"
@@ -2245,6 +2258,53 @@ step_stt_replay() {  # $1=label $2=safe
     log "STEP ${label}: STT исказил фразу (услышано «${heard}», нет слов: $(printf '%s\n' "$out" | _ev_kv missing)) -- фраза шага ещё раз (stt_replay), окно шага с повтора"
     play_eq_wav "$OUT_DIR/cmd_${safe}_eq.wav"
     step_wait_after_play "$BEFORE" 0
+}
+
+# step_stt_garbage_retry LABEL SAFE — #4694 (17.11): вердикт silenced, но ПРИНЯТО -- не команда шага, а мусор STT
+# («говори» -> «колории», n805b run 43636148539). Харнесс не ставит FAIL с первой попытки: e2e_events.stt_garbage_retry
+# (``stt-retry``) разрешает ОДИН повтор фразы (всего STT_GARBAGE_MAX_ATTEMPTS, считая первую). Окно шага -- с повтора,
+# как у step_stt_replay; итог прошедшего повтора -- «OK recovered_stt_replay», не чистый OK. Второй промах (повтор тоже
+# мусор, либо команда узнана и тишина осталась) -- E2E_WAIT_RC=4, run_step пишет честный FAIL. Потолок -- константа
+# e2e_events.STT_GARBAGE_MAX_ATTEMPTS (``stt-retry``), не флаг «уже повторяли»: иначе второй мусор нечем назвать.
+# Шагу без stt_replay, пустому ПРИНЯТО и шагу, уже спасённому другим видом, -- повтора нет.
+step_stt_garbage_retry() {  # $1=label $2=safe
+    local label="$1" safe="$2" heard out missing decision attempt max
+    # Цикл, как у step_wake_replay: повтор сам ждёт ответ, и второй мусор судится здесь же,
+    # до того как run_step напишет FAIL по rc=4.
+    while [ "${E2E_WAIT_RC:-0}" = "4" ] && [ "${E2E_REPLY_VERDICT:-}" = "silenced" ]; do
+        recover_allowed stt_replay || return 0
+        [ -z "${E2E_STEP_RECOVERED:-}" ] || [ "${E2E_STEP_RECOVERED}" = "stt_replay" ] || return 0
+        [ -n "${SCENARIO_FILE:-}" ] && [ -f "$SCENARIO_FILE" ] || return 0
+        heard="$(step_heard)"
+        [ -n "$heard" ] || { log "STEP ${label}: silenced, ПРИНЯТО в окне нет -- повтора по мусору STT нет"; return 0; }
+        out="$(python3 "$(_events_py)" stt --scenario "$SCENARIO_FILE" --label "$label" --heard "$heard" 2>&1)" || {
+            log "STEP ${label}: сверка ПРИНЯТО со словами шага не разобрана: ${out} -- повтора по мусору STT нет"
+            return 0
+        }
+        missing="$(printf '%s\n' "$out" | _ev_kv missing)"
+        attempt="${E2E_STEP_STT_ATTEMPT:-1}"
+        decision="$(python3 "$(_events_py)" stt-retry --text "${text:-}" --heard "$heard" \
+            --attempt "$attempt" --missing "${missing:--}" --allowed 1 2>&1)" || {
+            log "STEP ${label}: решение о повторе мусора STT не разобрано: ${decision} -- повтора нет"
+            return 0
+        }
+        # Потолок -- поле max того же решения (STT_GARBAGE_MAX_ATTEMPTS). Числа в bash нет.
+        max="$(printf '%s\n' "$decision" | _ev_kv max)"
+        if [ "$(printf '%s\n' "$decision" | _ev_kv retry)" != "1" ]; then
+            log "STEP ${label}: silenced, услышано «${heard}» -- повтора нет ($(printf '%s\n' "$decision" | _ev_kv reason), stt_attempt=${attempt}/${max})"
+            return 0
+        fi
+        E2E_STEP_STT_ATTEMPT=$((attempt + 1))
+        E2E_STEP_STT_REPLAYED=1
+        E2E_STEP_RECOVERED="stt_replay"
+        recover_mark stt_replay "$label" "heard=«${heard}» missing=${missing:-?} stt_attempt=${E2E_STEP_STT_ATTEMPT}/${max}"
+        BEFORE="$(${ROBOT_SSH} "date -u +%Y-%m-%dT%H:%M:%SZ" 2>/dev/null || date -u +%Y-%m-%dT%H:%M:%SZ)"
+        E2E_LAST_PLAY_SINCE="$BEFORE"
+        STEP_BEFORE="$BEFORE"
+        log "STEP ${label}: STT вернул не команду, а мусор (услышано «${heard}», нет слов: ${missing:-?}) -- фраза шага ещё раз (stt_attempt=${E2E_STEP_STT_ATTEMPT}/${max})"
+        play_eq_wav "$OUT_DIR/cmd_${safe}_eq.wav"
+        step_wait_after_play "$BEFORE" 0
+    done
 }
 
 # presynth_recovery_phrases ROWS — #3989: фразы восстановления голосами акта -- в кэш синтеза до первого PLAY:
@@ -2581,6 +2641,9 @@ run_step() {  # $1=text $2=voice $3=step_label $4=expect_kind(cycle|wake-gated|b
         [ "${E2E_WAIT_RC:-0}" = "4" ] && step_recover "$label" "$text" "$voice" "$safe"
         # Решение Шифу 06.11: вейк так и не пробился -- фраза шага звучит ещё раз, всего до E2E_WAKE_MAX_ATTEMPTS попыток.
         [ "${E2E_WAIT_RC:-0}" = "4" ] && [ "${E2E_REPLY_VERDICT:-}" = "no_wake" ] && step_wake_replay "$label" "$safe"
+        # #4694 (17.11): silenced, но ПРИНЯТО -- мусор STT, а не команда («говори» -> «колории»). Один повтор фразы,
+        # не FAIL с первой попытки. Команда узнана и второй мусор -- повтора нет, FAIL как раньше.
+        [ "${E2E_WAIT_RC:-0}" = "4" ] && [ "${E2E_REPLY_VERDICT:-}" = "silenced" ] && step_stt_garbage_retry "$label" "$safe"
         # #4196: ход был, но STT исказил ключевое слово фразы шага (поле stt_keys) -- шаг с stt_replay играет фразу ещё раз.
         [ "${E2E_WAIT_RC:-0}" = "0" ] && step_stt_replay "$label" "$safe"
         # #4608: повтор/восстановление не удалось сыграть -- это сбой стенда, а не вердикт робота по шагу.
@@ -3303,6 +3366,7 @@ elif [ -n "$SCENARIO_FILE" ]; then
         E2E_STEP_WAKE_REPLAYED=""
         E2E_STEP_WAKE_ATTEMPT=""
         E2E_STEP_STT_REPLAYED=""
+        E2E_STEP_STT_ATTEMPT=""
         # retry_acceptance = доп. попытки при FAIL patterns/acceptance.
         # Нужно для dj01: LLM недетерминирован — если renardo не запустился
         # (request_music не вызван), повторяем команду (e2e run 32595628905).
