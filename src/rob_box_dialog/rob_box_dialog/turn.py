@@ -1963,13 +1963,13 @@ class ChainRun:
 
 def steer_chains(engine: "TurnEngine", kind: str, old: int, new: int) -> None:
     """Перебивание Tier-1 (``TurnEngine._interrupt``: эпоха ``old`` → ``new``) и идущие вереницы эпохи ``old``: стоп
-    (``CHAIN_STOP_KINDS``: «стой», «хватит») гасит вереницу - эпоха остаётся старой, остаток ``skipped``, итог
-    звучит в эпохе стопа; «замолчи» и «хватит говорить» - нет: вереница идёт дальше в новой эпохе (решение Шифу В4,
-    объезд идёт молча), её шаги и итог - в ней."""
+    (:func:`action_chain.stop_cuts`: «стой», «хватит») гасит вереницу - эпоха остаётся старой, остаток ``skipped``,
+    итог звучит в эпохе стопа; «замолчи» и «хватит говорить» - нет: вереница идёт дальше в новой эпохе (решение Шифу
+    В4, объезд идёт молча), её шаги и итог - в ней."""
     for chain_run in tuple(engine.chains.values()):
         if chain_run.stop_epoch is not None or chain_run.turn.epoch != old:
             continue
-        if kind in kn.CHAIN_STOP_KINDS:
+        if action_chain.stop_cuts(kind):
             chain_run.stop_epoch = new
         else:
             chain_run.turn.epoch = new
@@ -1982,32 +1982,41 @@ def _halted(engine: "TurnEngine", chain_run: ChainRun) -> bool:
     return engine.session.snapshot.epoch != chain_run.turn.epoch
 
 
+def _chain_overdue(engine: "TurnEngine", turn: _Turn, chain: action_chain.Chain) -> bool:
+    """Срок вереницы вышел (:func:`action_chain.past_term`): часы - часы хода, отсчёт - от его начала (фраза плана)."""
+    return action_chain.past_term(chain, engine._clock() - turn.deadline.started)
+
+
 async def run_chain(engine: "TurnEngine", chain_run: ChainRun, chain: action_chain.Chain,
                     snap: SessionSnapshot) -> None:
     """Шаги вереницы по одному в порядке модели (ADR-0165 §3, §6, §10): следующий уходит только после исхода
-    предыдущего; вереница погашена (:func:`_halted`) - новых шагов нет, остаток ``skipped``; провал поездки гасит
-    остаток. Шаг, что шёл при стопе, засчитан по исходу владельца (``action_chain.step_status``, ``StepOutcome.cut``).
-    Шаги уходят в эпохе вереницы: после «замолчи» - в новой (:func:`steer_chains`). Итог - :func:`close_chain`."""
+    предыдущего; вереница погашена (:func:`_halted`) или срок вышел (:func:`_chain_overdue`) - новых шагов нет,
+    остаток ``skipped``; провал поездки гасит остаток. Идущий шаг доживает. Шаг, что шёл при стопе, засчитан по
+    исходу владельца (``action_chain.step_status``, ``StepOutcome.cut``). Шаги уходят в эпохе вереницы: после
+    «замолчи» - в новой (:func:`steer_chains`). Итог - :func:`close_chain`."""
     turn = chain_run.turn
     outcomes: List[action_chain.StepOutcome] = []
-    gone = False
+    gone = timed_out = False
     for k, step in enumerate(chain.steps):
-        if gone or _halted(engine, chain_run):
+        overdue = _chain_overdue(engine, turn, chain)
+        if gone or _halted(engine, chain_run) or overdue:
+            timed_out = timed_out or overdue
             outcomes.append(action_chain.StepOutcome(step, kn.CHAIN_STEP_SKIPPED))
             continue
         outcome = await _chain_step(engine, turn, step, replace(snap, epoch=turn.epoch), f"{turn.turn_id}/c{k}")
         outcomes.append(replace(outcome, cut=_halted(engine, chain_run)))
         gone = outcome.status not in ("done", "pending") and kn.CHAIN_CLASSES[step.cls].stops_rest
-    close_chain(engine, chain_run, outcomes)
+    close_chain(engine, chain_run, outcomes, timed_out=timed_out)
 
 
-def close_chain(engine: "TurnEngine", chain_run: ChainRun, outcomes: Sequence[action_chain.StepOutcome]) -> None:
+def close_chain(engine: "TurnEngine", chain_run: ChainRun, outcomes: Sequence[action_chain.StepOutcome],
+                timed_out: bool = False) -> None:
     """Итог вереницы - одна фраза кода (``action_chain.summary``, ADR-0165 §7). После стопа Tier-1 - «Остановился. …»
-    в эпохе стопа (этап 4: ход вереницы переходит в неё, иначе владелец речи отбросил бы фразу старой эпохи); в
-    тишине (В4) или после новой сессии не звучит: строка журнала и метка ``CHAIN_UNVOICED_MARK`` в окне хода (после
-    новой сессии хода в окне нет - только журнал)."""
+    в эпохе стопа (этап 4: ход вереницы переходит в неё, иначе владелец речи отбросил бы фразу старой эпохи); срок
+    вышел - «Не успел за отведённое время.»; в тишине (В4) или после новой сессии не звучит: строка журнала и метка
+    ``CHAIN_UNVOICED_MARK`` в окне хода (после новой сессии хода в окне нет - только журнал)."""
     turn, now = chain_run.turn, engine.session.snapshot.epoch
-    said = action_chain.summary(outcomes, stopped=chain_run.stop_epoch is not None)
+    said = action_chain.summary(outcomes, stopped=chain_run.stop_epoch is not None, timed_out=timed_out)
     if chain_run.stop_epoch == now:
         turn.epoch = now
     quiet = turn.epoch != now or engine.session.snapshot.top("Silence") is not None

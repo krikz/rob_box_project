@@ -102,6 +102,38 @@ def test_term_limit_of_a_task(monkeypatch):
     assert ac.over_limit(chain(delete("а"), delete("б")))
 
 
+def test_fourth_step_is_over_a_ceiling_of_three(monkeypatch):
+    """Потолок исполнения - число типа задачи, не захардкоженные 3: при потолке 3 четвёртый шаг за лимитом."""
+    tasks = dict(kn.CHAIN_TASKS)
+    tasks[kn.CHAIN_ERRAND] = kn.ChainTask(steps_max=3, trips_max=1, term_s=None)
+    monkeypatch.setattr(kn, "CHAIN_TASKS", tasks)
+    three = chain(*(delete(f"т{i}") for i in range(3)))
+    four = chain(*(delete(f"т{i}") for i in range(4)))
+    assert not ac.over_limit(three) and ac.over_limit(four)
+    assert len(four.steps) == 4
+
+
+def test_past_term_uses_the_task_term_not_a_prompt(monkeypatch):
+    """Срок типа задачи режет вереницу на исполнении: до срока шаг можно начать, после - нет."""
+    tasks = dict(kn.CHAIN_TASKS)
+    tasks[kn.CHAIN_ERRAND] = kn.ChainTask(steps_max=10, trips_max=1, term_s=5.0)
+    monkeypatch.setattr(kn, "CHAIN_TASKS", tasks)
+    ch = chain(delete("а"), delete("б"))
+    assert ac.term_s(ch) == 5.0
+    assert not ac.past_term(ch, 5.0) and ac.past_term(ch, 5.1)
+
+
+def test_without_a_named_term_the_class_sum_is_the_ceiling():
+    """Своего числа до замеров HIL нет: срок - сумма сроков классов, и она же режет остаток."""
+    ch = chain(delete("а"), delete("б"))
+    assert ac.term_s(ch) == ch.estimate_s == 2 * kn.ACTION_CLASSES["action.local"].timeout_s
+    assert not ac.past_term(ch, ch.estimate_s) and ac.past_term(ch, ch.estimate_s + 0.1)
+
+
+def test_stop_cuts_only_the_chain_stop_kinds():
+    assert ac.stop_cuts("stop_all") and not ac.stop_cuts("silence") and not ac.stop_cuts(None)
+
+
 # --- §12 п. 2: фраза плана ---------------------------------------------------------------------------------------
 
 
