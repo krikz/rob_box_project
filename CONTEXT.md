@@ -480,6 +480,10 @@ FollowPath активен дольше `orphan_timeout_s` (1.5 с) — отме�
 путём, что `ControllerHalt` (имена — `rob_box_core/follow_path_halt.py`). Решение — чистая
 `rob_box_teleop/followpath_orphan.py`. #4770 это не закрывает: там abort самого FollowPath внутри контроллера.
 
+**Разворот у цели** — та же нода (#4694): xy уже внутри `xy_goal_tolerance`, а yaw вне `yaw_goal_tolerance`
+того же goal checker'а. Twist в `/cmd_vel_yaw` (twist_mux priority 15, выше Nav2, ниже замков руля).
+Допуск yaw не ослабляется. Решение — чистая `rob_box_teleop/yaw_at_goal.py`.
+
 **Замок руля** — `std_msgs/Bool` на `/joystick_lock` (priority 100) и `/teleop_lock` (priority 90) в twist_mux,
 timeout 0.0 (липкий). Любой True глушит источники строго меньшего приоритета, в том числе Nav2 `cmd_vel` (10).
 Голосовой `navigate_to_waypoint` цель не шлёт, пока замок True или сообщения ещё не было (#4694, #3789).
