@@ -57,6 +57,29 @@ RUN apt-get update && apt-get install -y \
     # Дополнительные зависимости
     ros-${ROS_DISTRO}-navigation2 \
     && rm -rf /var/lib/apt/lists/*
+
+# Pin Nav2 1.1.20 controller_server: fail closed when goal pose TF fails
+# (upstream ignored transformPose bool → default (0,0,0) → false "Reached the goal").
+COPY controller_goal_tf_fail.patch /tmp/controller_goal_tf_fail.patch
+RUN apt-get update && apt-get install -y \
+    build-essential \
+    curl \
+    patch \
+    python3-colcon-common-extensions \
+    && mkdir -p /tmp/controller-fix/src \
+    && curl -fsSL -o /tmp/controller-fix/navigation2.tar.gz \
+        "https://github.com/ros-navigation/navigation2/archive/a097086719c88f781aa59788eca29ac6ca5e56db.tar.gz" \
+    && tar -xzf /tmp/controller-fix/navigation2.tar.gz -C /tmp/controller-fix/src \
+    && mv /tmp/controller-fix/src/navigation2-a097086719c88f781aa59788eca29ac6ca5e56db \
+        /tmp/controller-fix/src/navigation2 \
+    && patch -d /tmp/controller-fix/src/navigation2 -p1 </tmp/controller_goal_tf_fail.patch \
+    && rm -rf /var/lib/apt/lists/*
+RUN /bin/bash -c "source /opt/ros/${ROS_DISTRO}/setup.bash && cd /tmp/controller-fix && \
+    colcon build --symlink-install --base-paths /tmp/controller-fix/src/navigation2/nav2_controller \
+        --packages-select nav2_controller --cmake-args -DCMAKE_BUILD_TYPE=Release" \
+    && cp /tmp/controller-fix/install/nav2_controller/lib/libcontroller_server_core.so \
+        /opt/ros/${ROS_DISTRO}/lib/libcontroller_server_core.so \
+    && rm -rf /tmp/controller-fix /tmp/controller_goal_tf_fail.patch
 RUN rm -f /etc/apt/apt.conf.d/02proxy
 
 # Создание рабочих директорий
