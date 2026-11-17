@@ -307,6 +307,52 @@ from rob_box_dialog import address  # noqa: E402 — как соседние и�
 from rob_box_dialog import knowledge as kn  # noqa: E402
 from rob_box_voice.core.dialogue_text import has_wake_word, strip_wake_word  # noqa: E402
 
+
+def _run_recognition(node, audio_bytes: bytes, *, yandex_language=None, minimax_language=None, only=None):
+    """Прогон цепочки. Язык подменяется на вызов и возвращается."""
+    providers = node._build_provider_chain()
+    if only is not None:
+        allowed = set(only)
+        providers = [item for item in providers if item.name in allowed]
+    if not providers:
+        node.get_logger().warning(
+            "⚠️  Нет ни одного STT-провайдера "
+            f"(цепочка {node.provider_chain}: MiniMax без ключа, "
+            "Yandex без стаба, Vosk без модели)"
+        )
+        return None, []
+    saved_yandex = node.yandex_language
+    if yandex_language:
+        node.yandex_language = yandex_language
+    node._grip_minimax_language = minimax_language
+    try:
+        text, attempts = select_recognition(
+            providers,
+            audio_bytes,
+            timeout_s=node.yandex_timeout_s,
+            max_retries=node.yandex_max_retries,
+            retry_backoff_s=node.retry_backoff_s,
+            min_text_chars=node.min_text_chars,
+            policies=node._provider_policies(),
+            dead_cache=node._provider_dead_cache,
+            max_total_s=node.stt_phrase_budget_s,
+            guard=node._hang_guard,
+        )
+    finally:
+        node.yandex_language = saved_yandex
+        node._grip_minimax_language = None
+    node._log_provider_state("recognize", attempts=attempts)
+    return text, attempts
+
+
+def _recognize_for_source(node, audio_bytes: bytes, source: str):
+    """Грип — язык панели на одну фразу. Wake и микрофон — метод диалога."""
+    grip = getattr(node, "_grip_stt", None)
+    if source == _SRC_PTT and grip is not None:
+        return grip.recognize(audio_bytes, source)
+    return node._recognize_with_fallback(audio_bytes)
+
+
 from rob_box_core.utterance import Utterance as SpokenUtterance
 
 # Yandex Cloud STT API v3 (gRPC)
@@ -462,6 +508,11 @@ class STTNode(Node):
         self.yandex_api_key = self.get_parameter("yandex_api_key").value or os.environ.get("YANDEX_API_KEY", "")
         self.yandex_language = self.get_parameter("yandex_language").value
         self.yandex_model = self.get_parameter("yandex_model").value
+        # Язык панели — только грип. yandex_language не трогаем: им кормятся
+        # ReSpeaker и wake (Refs #4694).
+        from rob_box_voice.core.grip_stt_language import GripSttLanguage  # noqa: PLC0415
+
+        self._grip_stt = GripSttLanguage(self)
         self.eou_profile = self.get_parameter("eou_profile").value
         self.aec_mode = self.get_parameter("aec_mode").value
         if self.aec_mode not in ("software", "hardware"):
@@ -562,6 +613,11 @@ class STTNode(Node):
         self.quest_wake_audio_sub = self.create_subscription(
             AudioData, "/audio/quest_wake", self.quest_wake_audio_callback, audio_qos
         )
+        # Язык панели уже едет в /avatar/voice_pipeline (quest). Здесь — только
+        # чтение для STT грипа; wake и ReSpeaker этот топик не читают.
+        from rob_box_voice.core.grip_stt_language import GRIP_STT_TOPIC  # noqa: PLC0415
+
+        self.create_subscription(String, GRIP_STT_TOPIC, self._grip_stt.on_pipeline, 10)
 
         # Речь робота (чтобы не слышать себя): SpeechEvent реплики любого агента, «звучит» решает SpeakingWatch
         # (PR-15 15-0b #3711). Эхо-окно после неё (#989, #4072) — по фронтам /audio/vad: фраза, чей голос звучал
@@ -886,7 +942,7 @@ class STTNode(Node):
         _stt_trace_start = time.monotonic()
         if _STT_FALLBACK_AVAILABLE:
             with start_span("stt.recognize") as _stt_span:
-                text, attempts = self._recognize_with_fallback(audio_bytes)
+                text, attempts = _recognize_for_source(self, audio_bytes, source)
                 # ADR-0076: сохраняем попытки для side-channel-сборщика
                 # wake-сегментов (вызывается ниже в _route_wake_result /
                 # _log_wake_rejection). Никуда больше не уходит.
@@ -1299,7 +1355,9 @@ class STTNode(Node):
         )
 
         try:
-            return provider.transcribe(audio_bytes).text
+            return provider.transcribe(
+                audio_bytes, language=getattr(self, "_grip_minimax_language", None)
+            ).text
         except MiniMaxSTTAuthError as exc:
             raise STTAuthError(str(exc)) from exc
         except MiniMaxSTTRateLimitError as exc:
@@ -1400,29 +1458,7 @@ class STTNode(Node):
 
         Возвращает ``(text, attempts)``.
         """
-        providers = self._build_provider_chain()
-        if not providers:
-            self.get_logger().warning(
-                "⚠️  Нет ни одного STT-провайдера "
-                f"(цепочка {self.provider_chain}: MiniMax без ключа, "
-                "Yandex без стаба, Vosk без модели)"
-            )
-            return None, []
-
-        text, attempts = select_recognition(
-            providers,
-            audio_bytes,
-            timeout_s=self.yandex_timeout_s,
-            max_retries=self.yandex_max_retries,
-            retry_backoff_s=self.retry_backoff_s,
-            min_text_chars=self.min_text_chars,
-            policies=self._provider_policies(),
-            dead_cache=self._provider_dead_cache,
-            max_total_s=self.stt_phrase_budget_s,
-            guard=self._hang_guard,
-        )
-        self._log_provider_state("recognize", attempts=attempts)
-        return text, attempts
+        return _run_recognition(self, audio_bytes)
 
     # ── Issue #2365 Phase 2: фактический провайдер + персистентный кэш ────
 
