@@ -58,9 +58,14 @@ RUN apt-get update && apt-get install -y \
     ros-${ROS_DISTRO}-navigation2 \
     && rm -rf /var/lib/apt/lists/*
 
-# Pin Nav2 1.1.20 controller_server: fail closed when goal pose TF fails
-# (upstream ignored transformPose bool → default (0,0,0) → false "Reached the goal").
+# Pin Nav2 1.1.20 controller_server:
+# - fail closed when goal pose TF fails (upstream ignored transformPose bool
+#   → default (0,0,0) → false "Reached the goal");
+# - on progress/controller abort, terminate pending FollowPath too (#4694).
+#   Humble SimpleActionServer otherwise restarts the pending goal on the same
+#   thread and the BT never sees FAILURE.
 COPY controller_goal_tf_fail.patch /tmp/controller_goal_tf_fail.patch
+COPY controller_progress_abort.patch /tmp/controller_progress_abort.patch
 RUN apt-get update && apt-get install -y \
     build-essential \
     curl \
@@ -73,13 +78,15 @@ RUN apt-get update && apt-get install -y \
     && mv /tmp/controller-fix/src/navigation2-a097086719c88f781aa59788eca29ac6ca5e56db \
         /tmp/controller-fix/src/navigation2 \
     && patch -d /tmp/controller-fix/src/navigation2 -p1 </tmp/controller_goal_tf_fail.patch \
+    && patch -d /tmp/controller-fix/src/navigation2 -p1 </tmp/controller_progress_abort.patch \
     && rm -rf /var/lib/apt/lists/*
 RUN /bin/bash -c "source /opt/ros/${ROS_DISTRO}/setup.bash && cd /tmp/controller-fix && \
     colcon build --symlink-install --base-paths /tmp/controller-fix/src/navigation2/nav2_controller \
         --packages-select nav2_controller --cmake-args -DCMAKE_BUILD_TYPE=Release" \
     && cp /tmp/controller-fix/install/nav2_controller/lib/libcontroller_server_core.so \
         /opt/ros/${ROS_DISTRO}/lib/libcontroller_server_core.so \
-    && rm -rf /tmp/controller-fix /tmp/controller_goal_tf_fail.patch
+    && rm -rf /tmp/controller-fix /tmp/controller_goal_tf_fail.patch \
+        /tmp/controller_progress_abort.patch
 RUN rm -f /etc/apt/apt.conf.d/02proxy
 
 # Создание рабочих директорий
