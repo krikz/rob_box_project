@@ -341,10 +341,12 @@ pis:
           family: ros2-zenoh
         tag:
           ros_distro: true
-        # Задокументировано в коде: "teleop excluded: still uses IMAGE_TAG
-        # in docker-compose" — единственное объяснённое исключение на
-        # Main Pi.
-        image_versions: false
+        # SHA-тег, как у nav2/twist-mux. Раньше image_versions: false
+        # («still uses IMAGE_TAG in docker-compose»): staging поднимал
+        # голый teleop-${ROS_DISTRO}-${IMAGE_TAG}, который сборка не
+        # обязана обновлять. Три сервиса compose (teleop,
+        # proximity-guard, followpath-watchdog) берут TELEOP_TAG.
+        image_versions: TELEOP_TAG
 
       ros2-control:
         dockerfile: docker/main/ros2_control/Dockerfile

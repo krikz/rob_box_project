@@ -566,8 +566,9 @@ def test_cli_tags_shell_format_prints_var_and_tag(capsys):
     assert rc == 0
     lines = capsys.readouterr().out.strip().splitlines()
     assert "NAV2_TAG nav2-humble-dev" in lines
-    # 8 сервисов Main Pi минус teleop (image_versions: false).
-    assert len(lines) == 7
+    # Все 8 сервисов Main Pi, включая teleop (TELEOP_TAG, как NAV2_TAG).
+    assert "TELEOP_TAG teleop-humble-dev" in lines
+    assert len(lines) == 8
     # phantom-поле MICRO_ROS_AGENT_TAG не принадлежит ни одному сервису —
     # генератор его не печатает, значит Phase 3 перестаёт его обновлять.
     assert not any(line.startswith("MICRO_ROS_AGENT_TAG") for line in lines)
