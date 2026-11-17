@@ -2,9 +2,10 @@
 
 Не боевой путь. Боевой путь — код по событиям (шар, инерция, решение Шифу 05.11).
 К ходу и к лицу не подключён. Здесь только проверка, что выбор по куску контекста
-осмыслен: код собирает факты, которые уже есть, промпт с критериями Шифу 21.10 и
-закрытый список имён из :data:`.knowledge.FACE_SCENE_SLOTS` (``bg`` и ``fx``).
-Новых эффектов нет.
+осмыслен: код собирает факты, которые уже есть (плеер, окно реплик, стейт,
+текущий и предыдущий вайб, момент включения текущего из события смены),
+промпт с критериями Шифу 21.10 и закрытый список имён из
+:data:`.knowledge.FACE_SCENE_SLOTS` (``bg`` и ``fx``). Новых эффектов нет.
 
 Выбор делает переданная функция. Сеть и LLM этот модуль не вызывает. Ответ не из
 списка код не применяет: наружу уходит ``neutral``.
@@ -12,6 +13,7 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import Any, Callable, Mapping, Optional, Sequence, Tuple
 
 from . import knowledge as kn
@@ -46,6 +48,33 @@ CRITERIA: Tuple[Tuple[str, str], ...] = (
 )
 #: Что сказать выбирающей функции. Критерии и варианты дописывает :func:`prompt`.
 PROMPT = "По контексту выбери один вайб лица. Суди только по критериям ниже, не по жанру музыки. Ответь одним именем."
+
+
+@dataclass(frozen=True)
+class VibeChange:
+    """Событие смены вайба: что включили, что было, когда включили текущий.
+
+    ``previous`` пустой — предыдущего не было: в контексте «нет данных», не догадка.
+    ``at`` — момент включения текущего, из этого события.
+    """
+
+    current: str
+    at: float
+    previous: str = ""
+
+
+def changed(last: Optional[VibeChange], name: str, at: float) -> Optional[VibeChange]:
+    """Событие смены: ``name`` включается в ``at``. Прежний current — previous; его не было — пусто.
+
+    Пустое имя и повтор того же имени — не смена: момент включения не сдвигается.
+    """
+    name = str(name or "").strip()
+    if not name:
+        return last
+    if last is not None and last.current == name:
+        return last
+    previous = last.current if last is not None and last.current else ""
+    return VibeChange(current=name, previous=previous, at=float(at))
 
 
 def slot_names(slots: Optional[Mapping[str, Sequence[str]]] = None) -> Tuple[str, ...]:
@@ -111,19 +140,57 @@ def vibe_context(
     *,
     now: Optional[float] = None,
     present_s: float = PRESENT_S,
+    vibe: Any = None,
 ) -> str:
     """Кусок контекста из уже существующих фактов. Поля нет — строка «нет данных», не догадка.
 
     ``music`` — плеер (:class:`.music_state.MusicStateMemory`): играет имя трека или «тишина».
     ``log`` — журнал ходов (:class:`.turn_log.TurnLog`): последние реплики окна, если оно есть.
     ``state`` — снимок сессии и, если передан, журнал смены: кадры, речь, люди по приходам.
+    Текущий вайб, предыдущий и момент включения — из события смены (:class:`VibeChange`):
+    аргумент ``vibe`` или ``state.vibe``. Предыдущего не было — «нет данных».
     """
+    change = _vibe_of(state, vibe)
     lines = (
         f"Музыка: {_music_line(music)}",
         f"Реплики: {_lines_of(log)}",
         f"Стейт: {_state_line(state, now, present_s)}",
+        f"Текущий вайб: {_current_of(change)}",
+        f"Предыдущий вайб: {_previous_of(change)}",
+        f"Включён: {_since_of(change, now)}",
     )
     return "\n".join(lines)
+
+
+def _vibe_of(state: Any, vibe: Any) -> Any:
+    """Событие смены: явный аргумент, иначе поле ``state.vibe``. Нет — ``None``, не выдумываем."""
+    if vibe is not None:
+        return vibe
+    return getattr(state, "vibe", None)
+
+
+def _current_of(change: Any) -> str:
+    """Текущий вайб из события смены. Имени нет — «нет данных»."""
+    name = str(getattr(change, "current", "") or "").strip()
+    return name or NO_DATA
+
+
+def _previous_of(change: Any) -> str:
+    """Предыдущий вайб из события смены. Смены или предыдущего не было — «нет данных»."""
+    if change is None or not hasattr(change, "previous"):
+        return NO_DATA
+    name = str(change.previous or "").strip()
+    return name or NO_DATA
+
+
+def _since_of(change: Any, now: Optional[float]) -> str:
+    """Момент включения текущего из ``at`` события смены. Поля нет — «нет данных»."""
+    at = getattr(change, "at", None)
+    if isinstance(at, bool) or not isinstance(at, (int, float)):
+        return NO_DATA
+    if now is None:
+        return str(at)
+    return f"{max(0, int(float(now) - float(at)))} с назад"
 
 
 def _music_line(music: Any) -> str:
@@ -159,9 +226,7 @@ def _reply_line(entry: Any) -> str:
 
 
 def _entry_text(entry: Any) -> str:
-    content = (
-        entry.for_llm() if hasattr(entry, "for_llm") else getattr(entry, "content", "")
-    )
+    content = entry.for_llm() if hasattr(entry, "for_llm") else getattr(entry, "content", "")
     return str(content or "").replace("\n", " ").strip()
 
 
@@ -170,15 +235,10 @@ def _state_line(state: Any, now: Optional[float], present_s: float) -> str:
     snap = getattr(state, "snapshot", state)
     if snap is None or not hasattr(snap, "scenes"):
         return NO_DATA
-    scenes = (
-        ", ".join(frame.kind for frame in getattr(snap, "scenes", ()) or ())
-        or "кадров нет"
-    )
+    scenes = ", ".join(frame.kind for frame in getattr(snap, "scenes", ()) or ()) or "кадров нет"
     speaking = "речь идёт" if getattr(snap, "speaking", None) else "речь молчит"
     people = _people_line(state, now, present_s)
-    return (
-        f"{scenes}; {speaking}; музыка сессии: {_session_music(snap)}; люди: {people}"
-    )
+    return f"{scenes}; {speaking}; музыка сессии: {_session_music(snap)}; люди: {people}"
 
 
 def _session_music(snap: Any) -> str:
@@ -211,10 +271,7 @@ def _who(events: Sequence[Any], now: float, present_s: float) -> str:
     """Кто пришёл недавно: имя или «лицо»/«голос». Никого — «пусто»."""
     seen = []
     for event in events:
-        if (
-            getattr(event, "kind", "") != "visit"
-            or now - float(event.until) > present_s
-        ):
+        if getattr(event, "kind", "") != "visit" or now - float(event.until) > present_s:
             continue
         seen.append(_who_label(event))
     return ", ".join(dict.fromkeys(seen)) if seen else "пусто"
@@ -223,11 +280,7 @@ def _who(events: Sequence[Any], now: float, present_s: float) -> str:
 def _who_label(event: Any) -> str:
     if getattr(event, "who", ""):
         return str(event.who)
-    return (
-        "лицо"
-        if FACE in str(event.detail).split(",")
-        else "голос" if VOICE in str(event.detail) else "кто-то"
-    )
+    return "лицо" if FACE in str(event.detail).split(",") else "голос" if VOICE in str(event.detail) else "кто-то"
 
 
 def _call(obj: Any, name: str) -> Any:
@@ -250,7 +303,9 @@ __all__ = [
     "PROMPT",
     "SILENCE",
     "VIBE_SLOTS",
+    "VibeChange",
     "accept",
+    "changed",
     "choose",
     "criteria_text",
     "prompt",
