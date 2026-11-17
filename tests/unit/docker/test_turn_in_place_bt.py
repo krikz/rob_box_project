@@ -41,11 +41,18 @@ def test_follow_path_is_preceded_by_a_computed_spin():
 
 
 def test_recovery_spin_stays_a_fixed_recovery():
-    """Отказ FollowPath по-прежнему крутит recovery 1.57, это не разворот до курса."""
+    """Отказ FollowPath по-прежнему крутит recovery 1.57, это не разворот до курса.
+
+    #4797 убрал Script и условие corner_escape: Humble BT.CPP v3 узел Script
+    не знает. Spin снова прямой ребёнок RoundRobin, без атрибута if.
+    """
     recovery = _root().find("BehaviorTree/RecoveryNode")
-    spin = recovery.find("ReactiveFallback/RoundRobin/Fallback/Spin")
+    actions = recovery.find("ReactiveFallback/RoundRobin")
+    spin = actions.find("Spin")
+    assert spin is not None
     assert spin.get("spin_dist") == "1.57"
-    assert spin.get("if") == "corner_escape != 'backup'"
+    assert spin.get("if") is None
+    assert recovery.find(".//Script") is None
 
 
 def test_plugin_is_loaded_and_calls_free_spin():
