@@ -34,6 +34,12 @@ GOALS = [  # Depot; M — картография (карта пуста), R — 
     ("R7", -10.5, 0.0, 180),
 ]
 TIMEOUT = 200.0
+# local_costmap.tf_buffer_duration (nav2_params.yaml): сколько costmap держит историю TF.
+# Тот же предел — ждать кадр odom→base_footprint и active навигатора до первой цели, не TIMEOUT цели.
+TF_BUFFER_S = 30.0
+NAV_NODE = "bt_navigator"
+ODOM_FRAME = "odom"  # local_costmap.global_frame: costmap ждёт global_frame ← robot_base_frame
+BASE_FRAME = "base_footprint"  # local_costmap.robot_base_frame
 
 
 def load_goals(path):
@@ -114,13 +120,65 @@ class Mon(Node):
             self.poses_remaining = left
 
 
+def _nav_active(n, cli, timeout_sec):
+    """GetState bt_navigator == active. Сервис ещё не поднят или ответ не пришёл — False, не исключение."""
+    from lifecycle_msgs.srv import GetState
+
+    if not cli.wait_for_service(timeout_sec=0.0):
+        return False
+    fut = cli.call_async(GetState.Request())
+    rclpy.spin_until_future_complete(n, fut, timeout_sec=timeout_sec)
+    res = fut.result() if fut.done() else None
+    return res is not None and res.current_state.label == "active"
+
+
+def _odom_tf(tf):
+    """Кадр, который ждёт Costmap2DROS::on_activate: canTransform(global_frame, robot_base_frame, TimePointZero)."""
+    from rclpy.duration import Duration
+    from rclpy.time import Time
+
+    return tf.can_transform(ODOM_FRAME, BASE_FRAME, Time(), timeout=Duration(seconds=0.0))
+
+
+def wait_nav_active(n, tf, get_state, timeout_s=TF_BUFFER_S):
+    """Навигатор active и есть TF odom→base_footprint. Иначе одна строка FAIL и SystemExit, без целей.
+
+    ``wait_for_server`` истинен, когда action-сервер создан (on_configure), даже если lifecycle ещё
+    activating: Humble simple_action_server отвергает цель без лога, пока сервер не active. controller_server
+    не выходит из on_activate, пока local costmap не увидит этот кадр — тогда bt_navigator тоже не active.
+    """
+    end = time.time() + timeout_s
+    while time.time() < end:
+        rclpy.spin_once(n, timeout_sec=0.05)
+        left = max(0.0, end - time.time())
+        if _nav_active(n, get_state, min(1.0, left)) and _odom_tf(tf):
+            print(f"{ts()} NAV_READY {NAV_NODE}=active tf={ODOM_FRAME}->{BASE_FRAME}", flush=True)
+            return
+    print(
+        f"{ts()} FAIL навигатор не включился: нет active {NAV_NODE} "
+        f"или TF {ODOM_FRAME}->{BASE_FRAME} за {timeout_s:.0f} с",
+        flush=True,
+    )
+    raise SystemExit(1)
+
+
 def wait_ready(n):
-    """Ждать истинную позу и /clock (до 15 с), затем сервер /navigate_to_pose (до 60 с)."""
+    """Ждать истинную позу и /clock (до 15 с), сервер /navigate_to_pose (до 60 с), затем active и TF odom.
+
+    Сервер создан — ещё не повод слать цель: пока навигатор не active или нет кадра costmap, цель не уходит.
+    """
+    from lifecycle_msgs.srv import GetState
+    from tf2_ros import Buffer, TransformListener
+
     t_end = time.time() + 15
     while (n.gt is None or n.simt() == 0) and time.time() < t_end:
         rclpy.spin_once(n, timeout_sec=0.1)
     cl = ActionClient(n, NavigateToPose, "/navigate_to_pose")
     assert cl.wait_for_server(timeout_sec=60), "нет /navigate_to_pose"
+    tf = Buffer()
+    n.tf_listener = TransformListener(tf, n, spin_thread=False)  # держим слушателя, пока жива нода
+    get_state = n.create_client(GetState, f"/{NAV_NODE}/get_state")
+    wait_nav_active(n, tf, get_state)
     return cl
 
 
