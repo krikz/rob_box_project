@@ -183,6 +183,36 @@ class OperatorHost:
         self._thread.join(timeout=5.0)
 
 
+def build_operator_llm(node: Any) -> Any:
+    """LLM грипа: та же цепочка, что у ТАРС (``build_llm_chain``).
+
+    Метод сняли в #2291, а грип продолжал его звать — AttributeError
+    валил ноду на первом grip (issue #4763, 17.11.2026).
+    Функция модуля, не метод ``AvatarSupervisor``: класс уже на потолке
+    WMC (ADR-0145). Провайдера не выдумываем. Любой сбой — ``None``,
+    вызывающий код говорит дословно, нода жива (ADR-0148).
+    """
+    try:
+        return _build_operator_llm(node)
+    except Exception as exc:  # noqa: BLE001 — нет LLM не валит ноду
+        node._log.warning(f"build_operator_llm: failed ({type(exc).__name__}: {exc})")
+        return None
+
+
+def _build_operator_llm(node: Any) -> Any:
+    """Собрать цепочку или бросить. Снаружи ловит :func:`build_operator_llm`."""
+    from rob_box_dialog.knowledge import COMMAND_PROVIDERS_DEFAULT  # noqa: PLC0415
+    from rob_box_harness.core.assembly import AgentSpec, build_llm_chain  # noqa: PLC0415
+
+    chain = node._parse_provider_chain(node._param_str("llm_providers", COMMAND_PROVIDERS_DEFAULT))
+    spec = AgentSpec(
+        name=OPERATOR,
+        provider_chain=chain,
+        settings=node._build_operator_llm_settings(),
+    )
+    return build_llm_chain(spec)
+
+
 def build_host(node: Any) -> Tuple[Any, Any]:
     """ТАРС v2 у супервизора — та же дорога, что у ``dialog_node``: цепочка ``build_llm_chain`` в режиме команд моста
     (валидатор знает агента ``operator``), MCP-тулы оператора, ``V2Ports`` с исполнителем. ``(хост, None)``; сбой

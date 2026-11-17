@@ -82,7 +82,7 @@ from rob_box_supervisor import headset_speech  # noqa: E402
 from rob_box_supervisor.spoken_text import to_spoken  # noqa: E402
 from rob_box_supervisor.tars_stage import TarsStagePublisher  # noqa: E402
 # ADR-0150 PR-13 (#3708) — ТАРС на общем движке rob_box_dialog (путь v1 AgentCore удалён, #4354 A3).
-from rob_box_supervisor.operator_turns import agent_path  # noqa: E402
+from rob_box_supervisor import operator_turns  # noqa: E402
 from rob_box_dialog.knowledge import COMMAND_PROVIDERS_DEFAULT  # noqa: E402
 # voice-vr 21 — единый белый список voice-пресетов и языков (AV-28 §P7).
 # Раньше жил в ``supervisor_node`` и ``ws_server`` двумя параллельными
@@ -602,7 +602,7 @@ class AvatarSupervisor(Node):
         self._agent_core: Any = None
         # ADR-0150 PR-13 (#3708): ТАРС — общий движок rob_box_dialog (operator_turns); путь v1 AgentCore удалён
         # (#4354 A3).
-        self._agent_builder, self._agent_runner = agent_path(self)
+        self._agent_builder, self._agent_runner = operator_turns.agent_path(self)
         # Журнал ТАРС (§5.4) — тоже лениво, персист по journal_path.
         self._operator_journal: Any = None
         # Метрики супервизор-агента (issue #2232). РАНЬШЕ здесь стояла
@@ -1922,38 +1922,6 @@ class AvatarSupervisor(Node):
             max_tokens=(max_tokens if max_tokens > 0 else None),
         )
 
-    def _build_operator_llm(self) -> Any:
-        """LLM грипа: та же цепочка, что у ТАРС (``build_llm_chain``).
-
-        Метод сняли в #2291, а ``_grip_transform_once`` продолжал его звать —
-        AttributeError валил ноду на первом grip (issue #4763, 17.11.2026).
-        Провайдера здесь не выдумываем: пустая цепочка, нет ключа, сбой
-        сборки → ``None``. Вызывающий код тогда говорит дословно.
-        """
-        try:
-            from rob_box_harness.core.assembly import (  # noqa: PLC0415
-                AgentSpec,
-                build_llm_chain,
-            )
-        except ImportError as exc:
-            self._log.warning(f"_build_operator_llm: import failed: {exc}")
-            return None
-        chain = self._parse_provider_chain(
-            self._param_str("llm_providers", COMMAND_PROVIDERS_DEFAULT)
-        )
-        spec = AgentSpec(
-            name="operator",
-            provider_chain=chain,
-            settings=self._build_operator_llm_settings(),
-        )
-        try:
-            return build_llm_chain(spec)
-        except Exception as exc:  # noqa: BLE001 — нет LLM не валит ноду (ADR-0148)
-            self._log.warning(
-                f"_build_operator_llm: no provider ({type(exc).__name__}: {exc})"
-            )
-            return None
-
     def _build_operator_tools(self) -> Any:
         """Реальный ToolProvider оператора (ROSMCPToolProvider поверх /mcp).
 
@@ -2509,13 +2477,7 @@ class AvatarSupervisor(Node):
         )
         llm = self._grip_llm
         if llm is None:
-            try:
-                llm = self._build_operator_llm()
-            except Exception as exc:  # noqa: BLE001 — сборка LLM не валит ноду
-                self._log.warning(
-                    f"GripPipeline: LLM build failed ({exc!r}) — direct TTS"
-                )
-                return None
+            llm = operator_turns.build_operator_llm(self)
             if llm is None:
                 self._log.warning("GripPipeline: no LLM provider — direct TTS")
                 return None
