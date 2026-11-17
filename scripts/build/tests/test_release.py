@@ -72,7 +72,7 @@ def test_roles_take_images_from_their_compose(built):
         assert "eclipse/zenoh:1.6.2" in release["roles"][role]["external_images"]
     # *_TAG-сервисы — по SHA-тегу, остальные — по тегу канала (как compose берёт сегодня)
     assert "oak-d-humble-dev-b704404" in asked
-    assert "supercollider-dev" in asked and "teleop-humble-dev-b704404" in asked and "quest-humble-dev" in asked
+    assert "supercollider-dev" in asked and "teleop-humble-dev-b704404" in asked and "quest-humble-dev-b704404" in asked
     assert release["roles"]["vision"]["images"]["oak-d"] == f"{PREFIX}@{_fake_digest('oak-d-humble-dev-b704404')}"
 
 

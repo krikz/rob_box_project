@@ -210,6 +210,7 @@ def test_image_versions_files_carry_tags_of_sound_services() -> None:
         assert re.search(r"^PERCEPTION_TAG=\S+$", text, re.M), env
         assert re.search(r"^TELEGRAM_BOT_TAG=\S+$", text, re.M), env
         assert re.search(r"^SUPERVISOR_TAG=\S+$", text, re.M), env
+        assert re.search(r"^QUEST_TAG=\S+$", text, re.M), env
         vision = (VISION / f".image-versions.{env}").read_text(encoding="utf-8")
         for var in ("VOICE_ASSISTANT_TAG", "TELEGRAM_BOT_TAG", "SUPERVISOR_TAG"):
             assert var not in vision, f"vision/.image-versions.{env}: дубль тега {var}"

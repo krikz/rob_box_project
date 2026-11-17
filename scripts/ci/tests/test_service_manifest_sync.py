@@ -435,6 +435,22 @@ def test_compose_tag_vars_of_manifest_images_are_declared_for_that_pi(compose_pi
         )
 
 
+def test_quest_is_sha_pinned_not_bare_humble_dev():
+    """registry_source=local берёт тег из compose. image_versions: false
+    оставляет голый quest-humble-dev (как teleop до TELEOP_TAG): сборка
+    SHA-тег не пишет, .image-versions его не несёт.
+    """
+    quest = _services("sound")["quest"]
+    assert quest.get("image_versions") == "QUEST_TAG"
+    compose = (REPO_ROOT / "docker" / "sound" / "docker-compose.yaml").read_text(encoding="utf-8")
+    image = next(line for line in compose.splitlines() if "quest-${ROS_DISTRO" in line)
+    assert "${QUEST_TAG:-${IMAGE_TAG}}" in image
+    assert "${IMAGE_TAG:-local}" not in image
+    for suffix in ("dev", "test", "latest"):
+        text = (REPO_ROOT / "docker" / "sound" / f".image-versions.{suffix}").read_text(encoding="utf-8")
+        assert re.search(r"^QUEST_TAG=\S+$", text, re.M), suffix
+
+
 # --- 9. соседние поля .image-versions.* пишет одна сборка ------------------
 
 
