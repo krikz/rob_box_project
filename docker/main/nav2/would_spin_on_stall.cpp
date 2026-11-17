@@ -8,8 +8,10 @@
 //
 // Сдвиг — не новый порог. Первый тик запоминает позу. Пока база не ушла дальше
 // клетки costmap (0.05 м, resolution в nav2_params), прогресс нулевой. Поехал —
-// FAILURE, FollowPath не перебивается. Точки скана переводятся в base_footprint
-// через TF: лидар стоит не в базе (lslidar_n10, x≈−0.17).
+// FAILURE, FollowPath не перебивается. halt() сбрасывает эту позу: дерево
+// одно на configure, без сброса вторая цель видит сдвиг от первой.
+// Точки скана и путь — в base_footprint (лидар не в базе, lslidar_n10 x≈−0.17).
+// free_spin поэтому с позой (0,0,0): map-yaw разворачивает стену за спину.
 
 #include <cmath>
 #include <memory>
@@ -70,6 +72,12 @@ public:
     };
   }
 
+  void halt() override
+  {
+    start_valid_ = false;
+    BT::ConditionNode::halt();
+  }
+
   BT::NodeStatus tick() override
   {
     nav_msgs::msg::Path path;
@@ -99,7 +107,7 @@ public:
     }
     const double clearance = getInput<double>("clearance_m").value_or(0.10);
     double spin = 0.0;
-    if (!free_heading_spin_rad(points, way, yaw_of(pose.pose.orientation), clearance, spin)) {
+    if (!free_heading_spin_rad(points, way, clearance, spin)) {
       return BT::NodeStatus::FAILURE;
     }
     setOutput("turn_spin_dist", spin);
