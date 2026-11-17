@@ -433,7 +433,10 @@ class EchoWindow:
         return bool(utterance_id) and self._voices.get(utterance_id, False)
 
     def where(self) -> str:
-        """Где мы сейчас: говорит робот, эхо-окно после его речи или тишина."""
+        """Где мы сейчас: говорит робот, эхо-окно после его речи или тишина.
+
+        ``ended_at`` до первой речи — ``-inf``, поэтому «робот ещё не говорил» тоже ``FREE``, не эхо.
+        """
         if self.speaking:
             return SPEECH
         return GRACE if self._clock() - self.ended_at < self.grace_s else FREE
