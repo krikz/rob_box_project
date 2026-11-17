@@ -10,6 +10,9 @@ source /ros_scripts/use_sim_time.sh
 
 echo "Starting followpath_watchdog_node (orphan_timeout_s=${ORPHAN_TIMEOUT_S:-1.5})..."
 # Без `ros2 run`: нода сама PID 1 и выходит по SIGTERM (как proximity_guard_node).
+# Разворот у цели (#4694) живёт в той же ноде, не вторым процессом.
+# Код — в образе teleop (colcon), не в томе: том пакета подменил бы и соседние
+# ноды, которым нужен speech_client. Деплой конфигов разворот не привозит.
 exec python3 -m rob_box_teleop.followpath_watchdog_node --ros-args \
     "${SIM_TIME_ROS_ARGS[@]}" \
     -p orphan_timeout_s:="${ORPHAN_TIMEOUT_S:-1.5}" \

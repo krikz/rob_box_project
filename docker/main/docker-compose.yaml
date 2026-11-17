@@ -537,6 +537,7 @@ services:
       - *zenoh_listen_ip  # адрес локального роутера для session config
       - LD_LIBRARY_PATH=/opt/ros/humble/opt/zenoh_cpp_vendor/lib:/opt/ros/humble/lib/aarch64-linux-gnu:/opt/ros/humble/lib
     volumes:
+      - ./config:/config:ro
       - ../common/scripts:/ros_scripts:ro
       - ../common/config:/common_config:ro
       - ./scripts/teleop:/scripts:ro

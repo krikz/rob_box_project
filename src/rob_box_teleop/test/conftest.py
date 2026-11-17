@@ -87,6 +87,7 @@ class FakeNode:
         return MagicMock()
 
     def create_timer(self, period, callback):
+        self.__dict__.setdefault("timers", []).append((period, callback))
         return MagicMock()
 
     def create_service(self, *args, **kwargs):
@@ -121,6 +122,7 @@ def _install_ros_mocks():
     mock_rclpy = MagicMock()
     mock_rclpy_node = MagicMock()
     mock_rclpy_node.Node = FakeNode
+    mock_rclpy.qos = MagicMock()
 
     mock_sensor_msgs = MagicMock()
     mock_sensor_msgs_msg = MagicMock()
@@ -137,6 +139,7 @@ def _install_ros_mocks():
     mocks = {
         "rclpy": mock_rclpy,
         "rclpy.node": mock_rclpy_node,
+        "rclpy.qos": mock_rclpy.qos,
         "sensor_msgs": mock_sensor_msgs,
         "sensor_msgs.msg": mock_sensor_msgs_msg,
         "geometry_msgs": mock_geometry_msgs,
@@ -147,6 +150,10 @@ def _install_ros_mocks():
         "nav_msgs": MagicMock(),
         "nav_msgs.msg": MagicMock(),
         "tf2_ros": MagicMock(),
+        # followpath_watchdog_node: статусы action. Числа статусов код не берёт из этого модуля.
+        "action_msgs": MagicMock(),
+        "action_msgs.msg": MagicMock(),
+        "action_msgs.srv": MagicMock(),
     }
     for name, mock in mocks.items():
         sys.modules.setdefault(name, mock)
