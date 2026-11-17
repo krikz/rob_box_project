@@ -1810,6 +1810,10 @@ OUTCOME_OWNER_TEXT: Mapping[str, OwnerText] = MappingProxyType({
 PHOTO_TOOL = "person_photo"
 COLLAGE_TOOL = "find_similar"
 PHOTO_TOOLS: Tuple[str, ...] = (PHOTO_TOOL, COLLAGE_TOOL)
+#: Снимок в чат ещё не ушёл: тул только подтвердил id у владельца. Фразу «отправил» строит бот из результата
+#: ``send_photo`` (``person_photo.sent_phrase``), а не message тула и не query_fallback (ADR-0148, #4694 Л).
+PHOTO_SEND_PHRASE = "chat.photo.sent"
+PHOTO_SEND_FAIL_PHRASE = "chat.photo.not_sent"
 #: Значение ``photo_kind`` у коллажа (и поле ``op`` в тексте ``DialogOutput(kind=photo)``).
 COLLAGE_KIND = "collage"
 #: Действия, чей успех - сам себе доказательство: фразы об исходе done нет (§4.1; Шифу 21.10: «включил щелчок и ещё
@@ -3771,7 +3775,8 @@ REMOTE_SILENCED = "silenced"
 REMOTE_SHOW_REFUSALS: Tuple[str, ...] = ("operator_hold", REMOTE_SILENCED)
 PERFORM_REJECTED_PHRASE = "perform.rejected"
 PHRASE_KEYS = PHRASE_KEYS + (*REMOTE_PERFORM_PHRASES.values(), REMOTE_PERFORM_EDIT_PHRASE,
-                             REMOTE_PERFORM_BACKING_PHRASE, REMOTE_SHOW_PHRASE,
+                             REMOTE_PERFORM_BACKING_PHRASE, REMOTE_SHOW_PHRASE, PHOTO_SEND_PHRASE,
+                             PHOTO_SEND_FAIL_PHRASE,
                              *(f"{REMOTE_SHOW_REJECTED_PHRASE}.{reason}" for reason in REMOTE_SHOW_REFUSALS),
                              f"{PERFORM_REJECTED_PHRASE}.operator_hold")
 

@@ -222,7 +222,9 @@ class PersonPhotoTool(_PeopleCalls, MCPTool):
         if not ok:
             return _rejected(reason or OWNER_UNAVAILABLE)
         who = _who(data)
-        return MCPToolResult(success=True, message=f"Снимок {data['id']} ({who}) отправляю в чат.",
+        # «Отправил» говорит бот после send_photo (person_photo.sent_phrase). message тула сюда не кладём:
+        # до Bot API файла ещё нет, а query_fallback иначе скажет «отправляю» как уже сделанное (ADR-0148).
+        return MCPToolResult(success=True, message="",
                              data={"status": "done", "id": data["id"], "photo_id": data["id"],
                                    "caption": f"{data['id']} - {who}"})
 

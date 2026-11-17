@@ -57,6 +57,7 @@ def test_collage_is_fetched_with_the_collage_op_and_sent_as_one_photo():
 
     assert owner.asked == [(PID, person_photo.OP_COLLAGE)]
     assert bot.photos == [{"chat_id": 7, "photo": b"collage-bytes", "caption": "Похожие на 71cda108"}]
+    assert bot.messages == [{"chat_id": 7, "text": person_photo.sent_phrase("Похожие на 71cda108")}]
 
 
 def test_plain_photo_is_still_fetched_by_id_only():
