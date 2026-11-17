@@ -490,8 +490,7 @@ services:
   # ветку ДО сборки образа. Если его нет — COPY в Dockerfile упадёт
   # (явная ошибка зависимости, не silent degradation).
   quest:
-    # Тег QUEST_TAG в .image-versions не пишется (манифест: image_versions: false),
-    # поэтому образ берётся по ${IMAGE_TAG} (dev/test/latest), как и на Vision Pi.
+    # Tag tracked in docker/sound/.image-versions.{env} — updated by CI after each build
     image: ${SERVICE_IMAGE_PREFIX:-ghcr.io/krikz/rob_box}:quest-${ROS_DISTRO:-humble}-${QUEST_TAG:-${IMAGE_TAG}}
     container_name: rob-box-quest
     pull_policy: if_not_present

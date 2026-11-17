@@ -260,10 +260,11 @@ pis:
               extensions: [".msg", ".srv", "CMakeLists.txt", "package.xml"]
         tag:
           ros_distro: true
-        # НЕ в tag_and_push/verify_in_registry/.image-versions.dev сегодня.
-        # Без комментария в коде, объясняющего исключение — причина не
-        # найдена (план §1.3, §11, открытый вопрос №1).
-        image_versions: false
+        # SHA-тег, как у voice-assistant/supervisor. Раньше image_versions:
+        # false («причина не найдена»): staging+local поднимал голый
+        # quest-${ROS_DISTRO}-${IMAGE_TAG}, который сборка не обязана
+        # обновлять. rob-box-quest берёт QUEST_TAG.
+        image_versions: QUEST_TAG
 
       supervisor:
         dockerfile: docker/sound/supervisor/Dockerfile

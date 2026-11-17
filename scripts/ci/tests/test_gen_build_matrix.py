@@ -574,6 +574,25 @@ def test_cli_tags_shell_format_prints_var_and_tag(capsys):
     assert not any(line.startswith("MICRO_ROS_AGENT_TAG") for line in lines)
 
 
+def test_sound_tags_include_quest_sha_not_bare_humble_dev(capsys):
+    """Голый quest-humble-dev, если манифест держит image_versions: false
+    (как teleop до TELEOP_TAG): сборка не пишет SHA-тег, deploy его не берёт.
+    """
+    rc = gen_build_matrix.main(
+        [
+            "--manifest", str(REAL_MANIFEST),
+            "--pi", "sound",
+            "--mode", "tags",
+            "--format", "shell",
+            "--docker-tag", "dev",
+        ]
+    )
+    assert rc == 0
+    lines = capsys.readouterr().out.strip().splitlines()
+    assert "QUEST_TAG quest-humble-dev" in lines
+    assert "VOICE_ASSISTANT_TAG voice-assistant-humble-dev" in lines
+
+
 def test_cli_services_shell_format(capsys):
     rc = gen_build_matrix.main(
         [
