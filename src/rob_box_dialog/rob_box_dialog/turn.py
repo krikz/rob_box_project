@@ -2307,13 +2307,15 @@ class TurnEngine:
     def reset_window(self, reason: str) -> None:
         """Сброс окна по смене режима e2e (#4258); хост зовёт в потоке цикла ходов."""
         reset_window(self.session, self.log, self._window, reason, self._clock(), self._log)
+        face_group.dropped(self)  # id лиц — часть окна, не память процесса (#4694)
 
     async def run(self, addressed: Addressed) -> TurnAggregate:
         """Один адресованный ход до конца; итог — агрегат без текста (строка лога ``📊 [turn]``). Отмена задачи хода
         (перебивание стопом) — итог ``cancelled`` и ``CancelledError`` дальше, как положено задаче asyncio."""
         import asyncio  # noqa: PLC0415 — asyncio тянет socket: импорт пакета чистый (test_purity)
 
-        reset_if_idle(self.session, self.log, self._window, self._clock(), self._log)  # окно без срока давности (#4258)
+        if reset_if_idle(self.session, self.log, self._window, self._clock(), self._log):  # #4258
+            face_group.dropped(self)  # ночь стирает и id лиц, не только журнал (#4694)
         self._window.touch(self._clock())
         speaker, snap, view = pickup_parts(addressed, self.session.snapshot, self._warm_voices())  # права - у автора
         turn = _Turn(self._new_id(), snap.epoch, addressed.text.strip(), addressed.source,
@@ -2371,6 +2373,7 @@ class TurnEngine:
         elif command.kind == "new_session":
             self.session.reset(speaker_memory_visible=False)
             self.log.reset()
+            face_group.dropped(self)  # «их» новой сессии — не лица прошлой (#4694)
             turn.epoch = self.session.snapshot.epoch  # сам ход — в новой сессии: его подтверждение не «устарело»
         self.log.mark(turn.turn_id, kn.WINDOW_SILENCE_MARKS.get(command.kind, ""))  # тишина вкл/выкл без слов
         results = await self._execute(turn, actions, snap)

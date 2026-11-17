@@ -70,9 +70,20 @@ class Ports:
         return None
 
 
-def _engine(ports):
+class _Clock:
+    def __init__(self):
+        self.now = 1000.0
+
+    def __call__(self):
+        return self.now
+
+
+def _engine(ports, clock=None):
     ids = iter(f"t{n}" for n in range(1, 100))
-    return TurnEngine(Session("telegram"), ports, system_prompt="Ты робот.", new_id=lambda: next(ids))
+    kwargs = {"system_prompt": "Ты робот.", "new_id": lambda: next(ids)}
+    if clock is not None:
+        kwargs["clock"] = clock
+    return TurnEngine(Session("telegram"), ports, **kwargs)
 
 
 def _run(engine, text):
@@ -311,6 +322,45 @@ def test_send_them_after_a_known_face_calls_person_photo_not_only_say_aloud():
     assert kn.ALOUD_TOOL not in {tool for tool, _args in ports.executed}
     assert not any("пришлю" in text.lower() for text in ports.said)
     assert engine._faces.ids == (KNOWN,)
+
+
+def test_send_them_after_window_reset_does_not_reuse_the_old_group():
+    """Ночь, смена e2e и «новая сессия» стирают окно. Id лиц вчерашнего хода не едут в «пришли их» (#4694)."""
+    refusal = "Не знаю, чьи снимки слать: в прошлом ходе не было лиц."
+    promise = Command(speech=PROMISE, actions=(ToolCall(kn.ALOUD_TOOL, {"text": PROMISE}),))
+
+    def shown():
+        ports = _RememberingPorts(
+            [
+                Answer(Command(actions=(ToolCall(kn.PHOTO_TOOL, {"id": KNOWN}),)), "deepseek"),
+                Answer(Command(speech="Снимок выше."), "deepseek"),
+                Answer(promise, "deepseek"),
+            ]
+        )
+        clock = _Clock()
+        engine = _engine(ports, clock)
+        _run(engine, f"покажи {KNOWN}")
+        assert engine._faces.ids == (KNOWN,)
+        return ports, clock, engine
+
+    ports, _clock, engine = shown()
+    engine.reset_window("e2e_off")
+    _run(engine, "ну пришли их")
+    assert ports.executed == [(kn.PHOTO_TOOL, {"id": KNOWN})]
+    assert ports.said[-1] == refusal
+    assert engine._faces.ids == ()
+
+    ports, clock, engine = shown()
+    clock.now += kn.DIALOG_WINDOW_IDLE_RESET_S + 1
+    _run(engine, "ну пришли их")
+    assert ports.executed == [(kn.PHOTO_TOOL, {"id": KNOWN})]
+    assert ports.said[-1] == refusal
+
+    ports, _clock, engine = shown()
+    _run(engine, "новая сессия")
+    _run(engine, "ну пришли их")
+    assert ports.executed == [(kn.PHOTO_TOOL, {"id": KNOWN})]
+    assert ports.said[-1] == refusal
 
 
 def test_send_them_without_a_saved_group_refuses_instead_of_promising():

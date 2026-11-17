@@ -106,6 +106,17 @@ def _kept(engine: Any, turn: Any) -> None:
         engine._faces = FaceGroup(turn.source, remembered)
 
 
+def dropped(engine: Any) -> None:
+    """Окно сброшено: id лиц прошлого разговора больше не «их» (#4694).
+
+    Журнал ходов уже пуст (``reset_window`` / «новая сессия»). Группа жила рядом с ним и
+    переживала сброс: «пришли их» слало вчерашние снимки. Перенос среза (``_carry``) — тот же
+    разговор, его тоже нет.
+    """
+    engine._faces = FaceGroup("", ())
+    engine._carry = ("", ())
+
+
 def ids_of(actions: Sequence[ToolCall], results: Sequence[Any]) -> Tuple[str, ...]:
     """Id лиц из успешных исходов тулов группы, в порядке появления. Провал и чужой тул id не добавляют."""
     found: list = []
@@ -170,4 +181,13 @@ def _one(data: Optional[Mapping[str, Any]]) -> str:
     return ""
 
 
-__all__ = ["FaceGroup", "asks_for_them", "ids_from_entries", "ids_of", "note", "photo_calls", "with_their_photos"]
+__all__ = [
+    "FaceGroup",
+    "asks_for_them",
+    "dropped",
+    "ids_from_entries",
+    "ids_of",
+    "note",
+    "photo_calls",
+    "with_their_photos",
+]
