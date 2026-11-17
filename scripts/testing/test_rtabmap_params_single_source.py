@@ -36,7 +36,8 @@ def test_rtabmap_and_odometry_params_do_not_overlap():
     module = load_module()
     assert not set(module.RTABMAP_PARAMS) & set(module.ICP_ODOMETRY_PARAMS)
     assert not [k for k in module.RTABMAP_PARAMS if k.startswith("Odom/")]
-    assert all(isinstance(v, str) for v in {**module.RTABMAP_PARAMS, **module.ICP_ODOMETRY_PARAMS}.values())
+    values = {**module.RTABMAP_PARAMS, **module.ICP_ODOMETRY_PARAMS}.values()
+    assert all(isinstance(v, (str, bool)) for v in values)
 
 
 def test_launch_sets_incremental_memory_itself():

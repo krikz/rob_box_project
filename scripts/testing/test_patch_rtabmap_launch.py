@@ -143,6 +143,30 @@ def test_icp_patch_is_idempotent(tmp_path):
     assert _icp_block(once).count('"Odom/ResetCountdown"') == 1
 
 
+def test_icp_odometry_deskewing_is_enabled_as_bool(tmp_path):
+    """#4617: humble icp_odometry defaults deskewing to false and the stock launch does not set it.
+
+    The flag must land in the icp_odometry Node dict as a bool. A quoted string is a type
+    mismatch, and the node would keep false. Odom/Deskewing is the core default and is not
+    this flag. deskewing_slerp stays off (node default).
+    """
+    module = load_module()
+    assert module.ICP_ODOMETRY_PARAMS["deskewing"] is True
+    assert "deskewing_slerp" not in module.ICP_ODOMETRY_PARAMS
+    assert "Odom/Deskewing" not in module.ICP_ODOMETRY_PARAMS
+    assert "deskewing" not in module.RTABMAP_PARAMS
+
+    launch_file = tmp_path / "rtabmap.launch.py"
+    launch_file.write_text(_ICP_AND_RTABMAP_NODES, encoding="utf-8")
+    module.LAUNCH_FILE = str(launch_file)
+    assert module.patch() is True
+
+    icp = _icp_block(launch_file.read_text(encoding="utf-8"))
+    assert '"deskewing": True' in icp
+    assert '"deskewing": "true"' not in icp
+    assert '"deskewing": "True"' not in icp
+
+
 def test_icp_patch_skips_launch_without_icp_node():
     module = load_module()
     content = 'Node(parameters=[{\n    "Mem/IncrementalMemory": LaunchConfiguration("Mem/IncrementalMemory"),\n}])\n'
@@ -162,6 +186,8 @@ def test_rendered_params_match_the_dicts(tmp_path):
     patched = launch_file.read_text(encoding="utf-8")
     icp, rtabmap = _icp_block(patched), patched[patched.index("executable='rtabmap'") :]
     for key, value in module.RTABMAP_PARAMS.items():
-        assert f'"{key}": "{value}"' in rtabmap and f'"{key}"' not in icp, key
+        literal = module.render_param_value(value)
+        assert f'"{key}": {literal}' in rtabmap and f'"{key}"' not in icp, key
     for key, value in module.ICP_ODOMETRY_PARAMS.items():
-        assert f'"{key}": "{value}"' in icp and f'"{key}"' not in rtabmap, key
+        literal = module.render_param_value(value)
+        assert f'"{key}": {literal}' in icp and f'"{key}"' not in rtabmap, key

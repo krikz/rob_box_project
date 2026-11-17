@@ -187,6 +187,8 @@ services:
       - use_sim_time:=false
       # Параметры RTAB-Map (Grid/*, Icp/*, Odom/* …) — только в scripts/rtabmap/patch_rtabmap_launch.py
       # (#4495). cfg:=rtabmap.ini удалён: rtabmap читает из ini лишь секцию [Core], файл не применялся.
+      # deskewing=true у icp_odometry — там же (#4617): stock launch его не задаёт, узел humble
+      # по умолчанию false. odom_guess_frame_id выше — кадр, по которому узел выпрямляет скан.
       # Вокселизация cloud_map: уменьшает размер сообщения в ~100-1000x.
       # Предотвращает переполнение Zenoh TCP буфера при loop closure.
       # 0.3 = 3x крупнее вокселей чем 0.1 → ~27x меньше точек → ~27x меньший publish.
