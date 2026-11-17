@@ -2,7 +2,7 @@
 
 > **⚠️ ВНИМАНИЕ:** Эта документация устарела. Актуальная полная документация:
 > 
-> **[INTERNAL_DIALOGUE_VOICE_ASSISTANT.md](INTERNAL_DIALOGUE_VOICE_ASSISTANT.md)**
+> **[dialog-v2-overview.md](dialog-v2-overview.md)**
 >
 > Новый документ включает:
 > - Event-driven архитектура с Context Aggregator (MPC lite)

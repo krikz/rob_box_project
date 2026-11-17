@@ -1,0 +1,8 @@
+e2e-voice-artifacts: 207 runs, created 2026-10-27T08:30:03Z .. 2026-11-06T01:18:44Z, expires 2026-11-10T08:30:15Z .. 2026-11-20T01:18:47Z
+e2e-voice-diff: 79 runs, created 2026-11-03T21:09:05Z .. 2026-11-06T01:18:50Z, expires 2026-11-10T21:09:34Z .. 2026-11-13T01:18:53Z
+e2e-voice-logs: 78 runs, created 2026-11-03T21:08:54Z .. 2026-11-06T01:18:39Z, expires 2026-11-10T21:09:23Z .. 2026-11-13T01:18:41Z
+e2e-voice-model: 280 runs, created 2026-10-22T18:20:09Z .. 2026-11-06T01:18:41Z, expires 2026-11-21T18:20:12Z .. 2026-12-06T01:18:44Z
+e2e-voice-timing: 77 runs, created 2026-11-03T21:09:02Z .. 2026-11-06T01:18:47Z, expires 2026-11-10T21:09:31Z .. 2026-11-13T01:18:50Z
+artifacts head_branch: [('develop', 207)]
+step runs: 205 steps: {'OK': 2271, 'FAIL': 182, 'SKIP': 7} total 2460
+act verdicts: {'PASS': 101, 'FAIL': 101} fail_kind: {None: 101, 'feature': 96, 'infra': 1, 'llm_error': 1, 'no_reaction': 3}

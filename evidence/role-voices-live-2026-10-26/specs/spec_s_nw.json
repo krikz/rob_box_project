@@ -1,0 +1,122 @@
+[
+{
+"id": "s-eugene_p21",
+"provider": "silero",
+"voice": "eugene",
+"pitch": 0,
+"speed": 1.0,
+"text": "Который сейчас час, и сколько осталось до утра?"
+},
+{
+"id": "s-eugene_p22",
+"provider": "silero",
+"voice": "eugene",
+"pitch": 0,
+"speed": 1.0,
+"text": "Сколько у тебя осталось заряда, до утра дотянешь?"
+},
+{
+"id": "s-eugene_p23",
+"provider": "silero",
+"voice": "eugene",
+"pitch": 0,
+"speed": 1.0,
+"text": "Доложи статус: всё ли у тебя работает, ничего не отвалилось?"
+},
+{
+"id": "s-aidar_p21",
+"provider": "silero",
+"voice": "aidar",
+"pitch": 0,
+"speed": 1.0,
+"text": "Который сейчас час, и сколько осталось до утра?"
+},
+{
+"id": "s-aidar_p22",
+"provider": "silero",
+"voice": "aidar",
+"pitch": 0,
+"speed": 1.0,
+"text": "Сколько у тебя осталось заряда, до утра дотянешь?"
+},
+{
+"id": "s-aidar_p23",
+"provider": "silero",
+"voice": "aidar",
+"pitch": 0,
+"speed": 1.0,
+"text": "Доложи статус: всё ли у тебя работает, ничего не отвалилось?"
+},
+{
+"id": "s-kseniya_p21",
+"provider": "silero",
+"voice": "kseniya",
+"pitch": 0,
+"speed": 1.0,
+"text": "Который сейчас час, и сколько осталось до утра?"
+},
+{
+"id": "s-kseniya_p22",
+"provider": "silero",
+"voice": "kseniya",
+"pitch": 0,
+"speed": 1.0,
+"text": "Сколько у тебя осталось заряда, до утра дотянешь?"
+},
+{
+"id": "s-kseniya_p23",
+"provider": "silero",
+"voice": "kseniya",
+"pitch": 0,
+"speed": 1.0,
+"text": "Доложи статус: всё ли у тебя работает, ничего не отвалилось?"
+},
+{
+"id": "s-xenia_p21",
+"provider": "silero",
+"voice": "xenia",
+"pitch": 0,
+"speed": 1.0,
+"text": "Который сейчас час, и сколько осталось до утра?"
+},
+{
+"id": "s-xenia_p22",
+"provider": "silero",
+"voice": "xenia",
+"pitch": 0,
+"speed": 1.0,
+"text": "Сколько у тебя осталось заряда, до утра дотянешь?"
+},
+{
+"id": "s-xenia_p23",
+"provider": "silero",
+"voice": "xenia",
+"pitch": 0,
+"speed": 1.0,
+"text": "Доложи статус: всё ли у тебя работает, ничего не отвалилось?"
+},
+{
+"id": "s-baya_p21",
+"provider": "silero",
+"voice": "baya",
+"pitch": 0,
+"speed": 1.0,
+"text": "Который сейчас час, и сколько осталось до утра?"
+},
+{
+"id": "s-baya_p22",
+"provider": "silero",
+"voice": "baya",
+"pitch": 0,
+"speed": 1.0,
+"text": "Сколько у тебя осталось заряда, до утра дотянешь?"
+},
+{
+"id": "s-baya_p23",
+"provider": "silero",
+"voice": "baya",
+"pitch": 0,
+"speed": 1.0,
+"text": "Доложи статус: всё ли у тебя работает, ничего не отвалилось?"
+}
+]

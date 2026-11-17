@@ -41,7 +41,7 @@ costmap proceeds.
 
 ### 2. Stale false-positive rule in the deploy detector
 
-`.github/scripts/deployment_issue_dedup.py` has an FP exclusion:
+`scripts/ci/deployment_issue_dedup.py` has an FP exclusion:
 
 ```python
 r"timed out waiting for transform from base_link to odom",
@@ -96,7 +96,7 @@ as a real critical error → a new deployment issue is created on every deploy.
 
 ## Verification
 
-- Unit: `pytest .github/scripts/tests/test_deployment_issue_dedup.py`.
+- Unit: `pytest scripts/ci/tests/test_deployment_issue_dedup.py`.
 - e2e (after merge): deploy to staging, check `docker logs nav2 --tail 50`
   after restart shows no `frame "odom" does not exist` critical line, and
   `ros2 run tf2_ros tf2_echo odom base_footprint` succeeds.

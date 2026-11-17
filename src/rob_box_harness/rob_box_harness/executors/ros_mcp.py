@@ -18,17 +18,6 @@ from rob_box_core.ports import (
 )
 
 
-#: Per-tool timeout overrides for tools whose natural execution time
-#: exceeds the default 10s window. ``generate_music`` calls the MiniMax
-#: Music API (40-160s) and the dialogue loop waits for its result
-#: (blocking tool) — a 10s MEDIUM timeout makes the client give up and
-#: re-dispatch while the first generation is still running (live bug
-#: 19.08.2026: "⏱️ Timeout ожидания результата для generate_music").
-_LONG_TOOL_TIMEOUTS: dict[str, float] = {
-    "generate_music": 300.0,
-}
-
-
 class ROSMCPBridge(Protocol):
     """Subset of ``LLMToolCallAdapter`` required by this adapter."""
 
@@ -59,9 +48,7 @@ class ROSMCPToolProvider(ToolProvider):
         self._bridge = bridge
         self._default_timeout = default_timeout
         self._tool_timeouts: dict[str, float] = (
-            dict(tool_timeouts)
-            if tool_timeouts is not None
-            else dict(_LONG_TOOL_TIMEOUTS)
+            dict(tool_timeouts) if tool_timeouts is not None else {}
         )
         self._tools: dict[str, ToolDescriptor] = {}
 
@@ -236,9 +223,25 @@ def _validate_json_schema(
 
 def _result(raw: Mapping[str, Any]) -> ToolResult:
     success = bool(raw.get("success", True))
-    value = raw.get("data", raw.get("message"))
-    error = raw.get("error") or (None if success else raw.get("message"))
-    return ToolResult(value=value, error=str(error) if error else None)
+    message = raw.get("message")
+    value = raw.get("data", message)
+    error = raw.get("error") or (None if success else message)
+    # Issue #2916 — tools that return BOTH ``data`` and ``message`` used to
+    # lose ``message`` entirely: ``value`` collapsed to ``data`` and the
+    # hint (next_transition_sec, repeat warnings, "нет развивающих
+    # паттернов" …) never reached the LLM. Stash it in ``metadata`` so
+    # ``core_adapter._result_content`` can render both. Only meaningful on
+    # the success path with ``data`` present — when there's no ``data``,
+    # ``value`` already IS the message (no loss, no metadata needed), and
+    # the error path is left untouched per the issue's acceptance criteria.
+    metadata: dict[str, Any] = {}
+    if success and message and "data" in raw:
+        metadata["message"] = message
+    return ToolResult(
+        value=value,
+        error=str(error) if error else None,
+        metadata=metadata,
+    )
 
 
 __all__ = ["ROSMCPBridge", "ROSMCPToolProvider", "descriptor_from_function_tool"]

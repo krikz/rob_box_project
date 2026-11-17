@@ -12,6 +12,118 @@ from typing import Dict, Any, Optional, List
 from dataclasses import dataclass, field
 from enum import Enum
 import json
+import threading
+import weakref
+
+
+# ---------------------------------------------------------------------------
+# Ожидание rclpy-future
+# ---------------------------------------------------------------------------
+
+
+def wait_future(future, timeout_sec: float) -> bool:
+    """Wait for an rclpy Future without touching the executor.
+
+    ``rclpy.spin_until_future_complete()`` is UNSAFE to call from within a
+    callback that is already executing under ``MultiThreadedExecutor`` — it
+    internally tries to add the node to a *new* executor, which corrupts the
+    existing one and silently breaks all subsequent subscription callbacks.
+
+    This helper attaches a ``done_callback`` to the future so that a plain
+    ``threading.Event`` is set when the future completes.  The calling thread
+    blocks on the event, leaving the ROS 2 executor completely undisturbed.
+
+    Returns True if the future completed within *timeout_sec*, False otherwise.
+
+    Живёт здесь, а не в ``tools/``: хелпер нужен трём модулям тулов
+    (``navigation``, ``system``, ``mapping``), а ``base`` — единственный
+    общий для них модуль, который при этом ROS-free. Тащить сюда
+    ``rclpy`` нельзя: каталог тулов собирается через AST именно потому,
+    что ``tools/navigation.py`` тянет ``rclpy.action`` на импорте
+    (``tools/gen_tool_catalog.py``). Раньше это были три дословные копии,
+    причём в ``mapping.py`` докстринг был ужат до одной строки и причина
+    запрета ``spin_until_future_complete`` там терялась (карточка W6-1).
+    """
+    event = threading.Event()
+    future.add_done_callback(lambda _: event.set())
+    return event.wait(timeout=timeout_sec)
+
+
+#: Срезы оператора (ТАРС) в ``slice_policy.yaml``: ``operator.speech``, ``operator.admin``. Тул такого среза виден
+#: оператору (:attr:`MCPTool.operator_visible`) — ADR-0150 §9.3.
+OPERATOR_SLICE_PREFIX = "operator."
+
+# ---------------------------------------------------------------------------
+# Общий publisher на (нода, тип, топик, QoS)
+# ---------------------------------------------------------------------------
+
+# node -> {(msg_type, topic): [(qos, publisher), ...]}. Weak — чтобы кэш не
+# держал уничтоженную ноду (в тестах их создаются сотни).
+_SHARED_PUBLISHERS: "weakref.WeakKeyDictionary" = weakref.WeakKeyDictionary()
+_SHARED_PUBLISHERS_LOCK = threading.Lock()
+
+
+def _normalize_qos(qos: Any) -> Any:
+    """``10`` -> ``QoSProfile(depth=10)``, как это делает сам rclpy.
+
+    ``create_publisher(String, topic, 10)`` и ``create_publisher(String,
+    topic, QoSProfile(RELIABLE, KEEP_LAST, depth=10))`` — один и тот же
+    профиль, но сравнить ``10`` с профилем напрямую нельзя. Без rclpy (или
+    с тестовой заглушкой, которая не умеет так строиться) оставляем как
+    есть: тогда совпадут только буквально равные значения.
+    """
+    if isinstance(qos, int) and not isinstance(qos, bool):
+        try:
+            from rclpy.qos import QoSProfile
+
+            if isinstance(QoSProfile, type):
+                return QoSProfile(depth=qos)
+        except Exception:  # noqa: BLE001 — нет rclpy / заглушка в тестах
+            pass
+    return qos
+
+
+def _qos_equal(a: Any, b: Any) -> bool:
+    if a is b:
+        return True
+    try:
+        return bool(_normalize_qos(a) == _normalize_qos(b))
+    except Exception:  # noqa: BLE001 — экзотические заглушки
+        return False
+
+
+def shared_publisher(node: Any, msg_type: Any, topic: str, qos: Any) -> Any:
+    """Вернуть единственный publisher ``(msg_type, topic, qos)`` на ``node``.
+
+    Issue #3108: несколько тулов (и сам ``mcp_server``) на одной ноде
+    звали ``create_publisher`` на один и тот же топик — в живом графе у
+    ``mcp_server`` было 3 publisher'а на ``/voice/generated_music/state``
+    и по 2 на ``/voice/animation/request``, ``/voice/sound/stop``,
+    ``/voice/tts/set_provider``. Каждый лишний publisher — отдельный
+    DDS/Zenoh writer и шум в графе. Этот хелпер отдаёт один и тот же
+    объект на повторный запрос.
+
+    Склеиваются только запросы с тем же типом сообщения и эквивалентным
+    QoS. Если QoS отличается — это другой контракт, и молча отдавать чужой
+    publisher нельзя: создаём отдельный (как было до хелпера).
+
+    Если ноду нельзя положить в weak-кэш — просто ``create_publisher``.
+    """
+    with _SHARED_PUBLISHERS_LOCK:
+        try:
+            per_node = _SHARED_PUBLISHERS.setdefault(node, {})
+            entries = per_node.setdefault((msg_type, topic), [])
+        except TypeError:
+            # Нода не hashable / не weakref-able — без кэша, как раньше.
+            entries = None
+        if entries is not None:
+            for cached_qos, pub in entries:
+                if _qos_equal(cached_qos, qos):
+                    return pub
+        pub = node.create_publisher(msg_type, topic, qos)
+        if entries is not None:
+            entries.append((qos, pub))
+        return pub
 
 
 class ToolExecutionType(Enum):
@@ -56,6 +168,15 @@ class MCPToolParameter:
     properties: Optional[Dict[str, "MCPToolParameter"]] = None  # Для type="object"
     items: Optional["MCPToolParameter"] = None  # Для type="array"
     default: Optional[Any] = None
+    #: Применять ли ``enum`` в ``validate_parameters``. ``False`` — список
+    #: остаётся в JSON Schema (ведёт LLM к правильным значениям), но
+    #: валидация его не навязывает. Нужно инструментам, которые сами
+    #: нормализуют вход: напр. ``speak_text(animation=...)`` принимает
+    #: русские названия и псевдонимы и приводит их к реальной анимации.
+    enum_strict: bool = True
+    #: Границы ``type="integer"|"number"`` в JSON Schema (узкая схема, ADR-0148); проверяет сам инструмент.
+    minimum: Optional[float] = None
+    maximum: Optional[float] = None
 
     def to_json_schema(self) -> Dict[str, Any]:
         """Конвертировать в JSON Schema для OpenAI-совместимого Tool Calls формата."""
@@ -69,6 +190,11 @@ class MCPToolParameter:
 
         if self.default is not None:
             schema["default"] = self.default
+
+        if self.minimum is not None:
+            schema["minimum"] = self.minimum
+        if self.maximum is not None:
+            schema["maximum"] = self.maximum
 
         if self.type == "object" and self.properties:
             schema["properties"] = {name: param.to_json_schema() for name, param in self.properties.items()}
@@ -119,6 +245,11 @@ class MCPTool(ABC):
     5. Реализовать метод execute() для выполнения
     """
 
+    #: Откуда приходит событие владельца об исходе действия (ADR-0150 §5.2): топик ``/…``, сервис ``srv:/…``,
+    #: действие ``action:/…`` или владелец в процессе mcp_server ``inproc:<владелец>`` (ответ - результат вызова).
+    #: Тул класса ``action.*`` без источника не проходит гард ``seam_without_consumer.py``; попадает в каталог.
+    event_source: str = ""
+
     def __init__(self, node: Optional[Any] = None):
         """
         Инициализация инструмента
@@ -147,6 +278,21 @@ class MCPTool(ABC):
         pass
 
     @property
+    def slice(self) -> str:
+        """Срез каталога, которому принадлежит инструмент (ADR-0052, issue #1998 §6.2).
+
+        Дефолт — ``"core"`` (узкий read-only срез: батарея, поза, время,
+        статус). Подклассы, доступные LLM-личности, обязаны переопределить
+        на ``"personality"`` (музыка, память, навигация, mapping). Тулы
+        оператора (ТАРС) — ``"operator.speech"`` / ``"operator.admin"``.
+
+        Проверяется на регистрации (``mcp_server._register_tools`` ловит
+        пустой/неизвестный ``slice`` и отказывает старту) и на каждом
+        запросе ``/mcp/execute`` через ``ToolSliceAuthority.is_allowed``.
+        """
+        return "core"
+
+    @property
     def execution_type(self) -> ToolExecutionType:
         """
         Тип выполнения инструмента (по умолчанию MEDIUM)
@@ -170,6 +316,18 @@ class MCPTool(ABC):
         return False
 
     @property
+    def starts_music(self) -> bool:
+        """Инструмент запускает слышимую музыку (Renardo или mp3).
+
+        Единственный источник для post-turn music guard'а: если в ходе был
+        вызван тул с ``starts_music=True``, гуард не должен ретраить LLM
+        «ты не вызвал музыкальный тул». Ранее это знание дублировалось в
+        ``dialogue_guards.RENARDO_MUSIC_TOOLS``/``GENERATED_MUSIC_TOOLS``
+        и каждый новый музыкальный тул про него забывал (lookup_melody).
+        """
+        return False
+
+    @property
     def destructive(self) -> bool:
         """
         Инструмент выполняет разрушительные операции (destructiveHint)
@@ -186,6 +344,42 @@ class MCPTool(ABC):
 
         - True: каждый вызов даёт одинаковый результат
         - False: повторные вызовы могут добавлять эффекты [DEFAULT]
+        """
+        return False
+
+    @property
+    def llm_visible(self) -> bool:
+        """Показывать ли инструмент LLM в списке доступных tool calls.
+
+        ``False`` — инструмент остаётся исполняемым через ``/mcp/execute``
+        (внутренние вызовы, тесты, ручная отладка), но не попадает в
+        каталог, который получает модель. Нужен ровно для инструментов,
+        чей внешний бэкенд умер: так было с ``generate_music`` (MiniMax Music
+        API отключён, 410 Gone) — LLM не должен видеть мёртвый тул.
+        """
+        return True
+
+    @property
+    def operator_visible(self) -> bool:
+        """Показывать ли инструмент оператору (ТАРС) сверх llm-видимых.
+
+        Реестр оператора = ``llm_visible`` ∪ ``operator_visible``. Нужен
+        инструментам «ТАРС-только» (``llm_visible=False``, но оператору
+        они нужны), например ``say``. Решает срез: тул среза
+        ``operator.*`` (``slice``) — оператору виден, иначе нет (ADR-0150
+        §9.3, PR-13b: одно знание — срез, а не второй флаг рядом с ним).
+        Каждый ``operator_visible`` инструмент обязан быть зарегистрирован в
+        ``mcp_server`` — иначе вызов вернёт «unknown tool».
+        """
+        return self.slice.startswith(OPERATOR_SLICE_PREFIX)
+
+    @property
+    def telegram_visible(self) -> bool:
+        """Показывать ли инструмент агенту чата Telegram сверх llm-видимых (ADR-0150 §9.2).
+
+        Нужен инструментам «чат-только» (``llm_visible=False``): ``say_aloud`` — озвучка из чата динамиками;
+        Личность и оператор его не видят. Тул обязан быть зарегистрирован в ``mcp_server`` и лежать в срезе
+        ``telegram`` (``slice_policy.yaml``).
         """
         return False
 
@@ -212,6 +406,12 @@ class MCPTool(ABC):
         Актуально только для LONG execution_type.
         """
         return self.execution_type == ToolExecutionType.LONG
+
+    def bind_arguments(self, parameters: Dict[str, Any]) -> Dict[str, Any]:
+        """Параметры вызова, какими тул их исполнит: код подставляет то, что модель угадывает (``music_library``:
+        ``track_id`` только что сочинённой песни, #4216). Чистая функция, без побочных эффектов: сервер зовёт её до
+        записи «Запрос выполнения» в лог, чтобы лог и исполнение показывали одни и те же аргументы. По умолчанию - как есть."""
+        return parameters
 
     @abstractmethod
     def execute(self, **kwargs) -> MCPToolResult:
@@ -294,7 +494,7 @@ class MCPTool(ABC):
 
         # Проверяем enum значения
         for param in self.parameters:
-            if param.name in kwargs and param.enum is not None:
+            if param.name in kwargs and param.enum is not None and param.enum_strict:
                 if kwargs[param.name] not in param.enum:
                     return (
                         False,

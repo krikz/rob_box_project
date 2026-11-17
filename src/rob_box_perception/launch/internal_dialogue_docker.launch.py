@@ -10,6 +10,7 @@ Launches:
 1. perception_bridge - UART sensor bridge -> /sensors/data + /perception/health
 2. context_aggregator - aggregates topics into /perception/context_update
 3. health_monitor - watches /rosout, publishes on /voice/sound/trigger
+4. battery_state_publisher - /dynamic_joint_states (battery/voltage) -> /battery_state
 
 UART port and baud come from SENSOR_UART_PORT / SENSOR_UART_BAUD env vars
 (falling back to /dev/ttyAMA0 @ 115200). Context aggregator params are
@@ -62,6 +63,19 @@ def generate_launch_description():
                 config_file,
                 env_overrides,
             ],
+        ),
+
+        # Battery state - sensor_msgs/BatteryState from ros2_control voltage (#4002)
+        Node(
+            package='rob_box_perception',
+            executable='battery_state_publisher',
+            name='battery_state_publisher',
+            output='screen',
+            parameters=[{
+                'publish_rate': 2.0,
+                'stale_timeout': 5.0,
+                'smoothing_tau': 45.0,
+            }],
         ),
 
         # Health Monitor - watches /rosout, publishes status

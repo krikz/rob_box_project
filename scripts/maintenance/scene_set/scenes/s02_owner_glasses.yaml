@@ -1,0 +1,12 @@
+scene: s02_owner_glasses
+description: владелец в очках входит, стоит, уходит
+participants:
+  - {label: owner, truth: Дэнчик, kind: person, known_before: true}
+steps:
+  - say: "Начинаю сцену два. Наденьте очки вне кадра."
+    wait_s: 8
+  - enter: owner
+    say: "Дэнчик, войдите в кадр в очках и встаньте на метку полтора метра."
+    wait_s: 20
+  - leave: owner
+    say: "Дэнчик, выйдите из кадра."

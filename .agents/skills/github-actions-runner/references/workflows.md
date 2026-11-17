@@ -141,38 +141,21 @@ gh workflow run "L-Build Base Images.yml" \
 
 ---
 
-## L-Build Main Pi Services.yml
+## L-Build Pi Services.yml
 
-**Название:** "L: Build Main Pi Services"  
-**Runner:** `self-hosted`  
-**Триггеры:** `workflow_dispatch`, `workflow_call`  
-**Сервисы:** `robot-state-publisher`, `rtabmap`, `twist-mux`, `micro-ros-agent`, `ros2-control`, `nav2`, `lslidar`, `perception`  
-
-| Параметр | Тип | По умолчанию | Описание |
-|----------|-----|--------------|----------|
-| `push_to_registry` | boolean | `true` | Пушить в localhost:5000 |
-
-```bash
-gh workflow run "L-Build Main Pi Services.yml" \
-  -f push_to_registry=true \
-  --repo krikz/rob_box_project
-```
-
----
-
-## L-Build Vision Pi Services.yml
-
-**Название:** "L: Build Vision Pi Services"  
-**Runner:** `self-hosted`  
-**Триггеры:** `workflow_dispatch`, `workflow_call`  
-**Сервисы:** `oak-d`, `led-matrix`, `ceiling-camera`, `voice-assistant`, `apriltag`, `zenoh-router`  
+**Название:** "L: Build Pi Services" (ADR-0159 PR-3: заменил L-Build Main/Vision Pi Services)
+**Runner:** `self-hosted`
+**Триггеры:** `workflow_dispatch`, `workflow_call`
+**Сервисы:** `pis.<pi>` в `docker/build-manifest.yaml`, сборка волнами по `depends_on`
 
 | Параметр | Тип | По умолчанию | Описание |
 |----------|-----|--------------|----------|
+| `pi` | choice | — | `main`, `sound` или `vision` |
 | `push_to_registry` | boolean | `true` | Пушить в localhost:5000 |
 
 ```bash
-gh workflow run "L-Build Vision Pi Services.yml" \
+gh workflow run "L-Build Pi Services.yml" \
+  -f pi=sound \
   -f push_to_registry=true \
   --repo krikz/rob_box_project
 ```

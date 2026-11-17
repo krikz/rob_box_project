@@ -4,9 +4,9 @@
 без mock'ов и без сети. Все файлы (test wav / log) — синтетические.
 
 Скрипты:
-  - .github/workflows/scripts/e2e_audio_metrics.py
-  - .github/workflows/scripts/e2e_baseline_diff.py
-  - .github/workflows/scripts/e2e_timing.py
+  - scripts/ci/e2e/e2e_audio_metrics.py
+  - scripts/ci/e2e/e2e_baseline_diff.py
+  - scripts/ci/e2e/e2e_timing.py
 """
 from __future__ import annotations
 
@@ -20,7 +20,7 @@ from pathlib import Path
 
 import pytest
 
-SCRIPTS_DIR = Path(__file__).resolve().parents[3] / ".github/workflows/scripts"
+SCRIPTS_DIR = Path(__file__).resolve().parents[3] / "scripts/ci/e2e"
 
 
 # ─────────────────────────── helpers ───────────────────────────

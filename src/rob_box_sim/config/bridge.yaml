@@ -1,0 +1,31 @@
+# ros_gz_bridge: какие топики Gazebo Fortress видны в ROS 2.
+# /tf и /odom в мост НЕ входят: их публикуют robot_state_publisher и
+# diff_drive_controller (gz_ros2_control) — так же, как на роботе.
+---
+- ros_topic_name: /clock
+  gz_topic_name: /clock
+  ros_type_name: rosgraph_msgs/msg/Clock
+  gz_type_name: ignition.msgs.Clock
+  direction: GZ_TO_ROS
+
+- ros_topic_name: /scan
+  gz_topic_name: /scan
+  ros_type_name: sensor_msgs/msg/LaserScan
+  gz_type_name: ignition.msgs.LaserScan
+  direction: GZ_TO_ROS
+
+# Сырой IMU — под тем же именем, что у OAK-D на роботе (/camera/camera/imu).
+# Дальше, как на роботе: imu-filter (madgwick) → /imu/data → rtabmap.
+- ros_topic_name: /camera/camera/imu
+  gz_topic_name: /imu
+  ros_type_name: sensor_msgs/msg/Imu
+  gz_type_name: ignition.msgs.IMU
+  direction: GZ_TO_ROS
+
+# Истинная поза из физики — только для проверок и метрик сима
+# (/odom у diff_drive_controller open_loop и считается из команд).
+- ros_topic_name: /sim/ground_truth/odom
+  gz_topic_name: /model/rob_box/ground_truth/odom
+  ros_type_name: nav_msgs/msg/Odometry
+  gz_type_name: ignition.msgs.Odometry
+  direction: GZ_TO_ROS

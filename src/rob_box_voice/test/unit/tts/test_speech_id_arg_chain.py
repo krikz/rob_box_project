@@ -20,7 +20,7 @@ shadowed by the earlier ``speech_id=None`` default in
 
 Issue #980 extended the chain with three new positional parameters
 (``batch_id``, ``batch_index``, ``batch_total``) so that ``tts_node``
-can publish ``/voice/tts/batch_complete`` after the last chunk of a
+can close the batch (``batch_complete`` marker) after the last chunk of a
 multi-chunk TTS batch.  This test still enforces:
 
 1. ``dialogue_callback`` invokes ``_submit_synthesis`` with ``speech_id``
@@ -30,7 +30,7 @@ multi-chunk TTS batch.  This test still enforces:
    what actually reaches the worker; without it every following argument
    shifts one slot left (``speech_id <- batch_id``,
    ``batch_id <- batch_index``, ...), breaking finished-event
-   correlation and music_cleanup timing (issue #980).
+   correlation and batch-end timing (issue #980).
 2. ``_run_synthesis_worker``'s signature still terminates in
    ``batch_total=None`` so that, if a caller ever forgets to pass
    it, the default kicks in instead of a TypeError.
@@ -127,9 +127,9 @@ def test_dialogue_callback_passes_speech_id_once() -> None:
         "speech_id's slot — that's the issue #980 arg-chain bug)"
     )
     # The trailing *args for the worker must match the worker signature.
+    # #4240: позиционные ``ssml`` и ``ssml_attributes`` убраны (на проводе голый текст, просодии нет).
     expected_tail = [
-        "ssml", "text", "dialogue_id", "ssml_attributes",
-        "speech_id", "batch_id", "batch_index", "batch_total",
+        "text", "dialogue_id", "speech_id", "batch_id", "batch_index", "batch_total",
     ]
     assert positional_names[2:] == expected_tail, (
         f"Trailing positional args must be {expected_tail} "
@@ -174,7 +174,7 @@ def test_run_synthesis_worker_signature_terminates_in_batch_total() -> None:
     assert isinstance(last_default, ast.Constant) and last_default.value is None, (
         "_run_synthesis_worker's batch_total default must be None (not 0) — "
         "otherwise legacy single-chunk turns would always look like "
-        "\"the last chunk\" and dialogue_node would fire music_cleanup "
+        "\"the last chunk\" and the batch would end "
         "after the first chunk."
     )
 
@@ -204,9 +204,9 @@ def test_submit_and_worker_arg_arities_agree() -> None:
 
     # _submit_synthesis(self, fn, speech_id, *args) — only the first two
     # are mandatory positional; *args is variadic.  The dialogue_callback
-    # call site must hand it (fn, speech_id, ssml, text, dialogue_id,
-    # ssml_attributes, speech_id, batch_id, batch_index, batch_total) —
-    # exactly 10 positional values (the first two being the function and
+    # call site must hand it (fn, speech_id, text, dialogue_id,
+    # speech_id, batch_id, batch_index, batch_total) —
+    # exactly 8 positional values (the first two being the function and
     # the speech_id kwarg; the rest become *args, with speech_id repeated
     # at the worker's expected position).
     submit_call = next(
@@ -217,22 +217,21 @@ def test_submit_and_worker_arg_arities_agree() -> None:
         and node.func.attr == "_submit_synthesis"
     )
     n_call_positional = len(submit_call.args)
-    assert n_call_positional == 10, (
-        f"dialogue_callback -> _submit_synthesis must pass exactly 10 "
-        f"positional args (fn, speech_id, ssml, text, dialogue_id, "
-        f"ssml_attributes, speech_id, batch_id, batch_index, "
-        f"batch_total); got {n_call_positional}"
+    assert n_call_positional == 8, (
+        f"dialogue_callback -> _submit_synthesis must pass exactly 8 "
+        f"positional args (fn, speech_id, text, dialogue_id, "
+        f"speech_id, batch_id, batch_index, batch_total); "
+        f"got {n_call_positional}"
     )
 
     # _run_synthesis_worker is a method — first positional is ``self``.
     worker_positional_names = [a.arg for a in worker.args.args if a.arg != "self"]
     assert worker_positional_names == [
-        "ssml", "text", "dialogue_id", "ssml_attributes",
-        "speech_id", "batch_id", "batch_index", "batch_total",
+        "text", "dialogue_id", "speech_id", "batch_id", "batch_index", "batch_total",
     ], (
         f"_run_synthesis_worker signature drifted from canonical "
-        f"(ssml, text, dialogue_id, ssml_attributes, speech_id, "
-        f"batch_id, batch_index, batch_total); got {worker_positional_names}"
+        f"(text, dialogue_id, speech_id, batch_id, batch_index, "
+        f"batch_total); got {worker_positional_names}"
     )
 
     # _submit_synthesis's own signature must accept at minimum (fn,

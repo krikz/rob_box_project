@@ -38,9 +38,8 @@ gh workflow run "<workflow-file>" -f param=value --repo krikz/rob_box_project
 | Собрать базовые образы (GitHub) | `G-Build Base Images.yml` |
 | Собрать базовые образы (локально) | `L-Build Base Images.yml` |
 | Собрать Main Pi сервисы (GitHub) | `G-Build Main Pi Services.yml` |
-| Собрать Main Pi сервисы (локально) | `L-Build Main Pi Services.yml` |
+| Собрать сервисы одного Pi (локально, `-f pi=main\|sound\|vision`) | `L-Build Pi Services.yml` |
 | Собрать Vision Pi сервисы (GitHub) | `G-Build Vision Pi Services.yml` |
-| Собрать Vision Pi сервисы (локально) | `L-Build Vision Pi Services.yml` |
 | Собрать один конкретный сервис | `L-Build Single Service.yml` |
 | Задеплоить на робота | `L-Deploy and Verify.yml` |
 | Прогнать линтер | `G-Lint Code.yml` |

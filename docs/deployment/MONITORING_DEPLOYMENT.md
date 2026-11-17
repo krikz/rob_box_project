@@ -173,7 +173,7 @@ curl http://10.1.1.10:9090/api/v1/targets | jq '.data.activeTargets[] | {job, he
 
 На Vision Pi:
 ```bash
-# Замените 10.1.1.10 на IP адрес вашего Main Pi (указан в docker/main/config/zenoh_router_config.json5)
+# Замените 10.1.1.10 на IP адрес вашего Main Pi (указан в docker/common/config/zenoh_router_config.json5)
 docker exec promtail-vision wget -qO- http://10.1.1.10:3100/ready
 ```
 

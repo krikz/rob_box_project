@@ -1,0 +1,308 @@
+# Dockerfile для Voice Assistant System
+# AI голосовой ассистент с интеграцией LED анимаций
+#
+# Компоненты:
+#   - rob_box_voice: голосовой ассистент (AudioNode, STTNode, TTSNode, DialogueNode, LEDNode, SoundNode)
+#
+# Hardware:
+#   - ReSpeaker Mic Array v2.0 (USB, 4 микрофона, 12× RGB LED)
+#   - Sound card WM8960 (3.5mm jack для TTS output)
+#   - NeoPixel LED матрицы (через led_matrix_compositor)
+ARG BASE_IMAGE=ghcr.io/krikz/rob_box:voice-base-lyrical-latest
+# Issue #2314 (devops, raw-evidence): после deploy z-{e2e}/test-round-387
+# quest_node падал с `ModuleNotFoundError: rob_box_core.avatar_command`.
+# Root cause: SOURCE_HASH в L-Build Pi Services.yml не покрывал
+# src/rob_box_core → слой `COPY src/rob_box_core/rob_box_core`
+# не инвалидировался при правках rob_box_core → avatar_command.py
+# не доезжал до image. Лечение SOURCE_HASH сделано в том же PR.
+# Этот ARG BUILD_VERSION — независимая страховка: bump'аем при изменениях
+# app-layer'а, чтобы buildx cache не переиспользовал старые слои при
+# изменениях базового образа или в случае любого другого непредвиденного
+# cache hit. Согласовано с supervisor/Dockerfile (там уже bump по дате).
+ARG BUILD_VERSION=2026-09-09-core-cache-fix
+
+# Общий образ ROS-сообщений (docker/msgs/Dockerfile): src/rob_box_*_msgs
+# компилируются ОДИН раз за прогон, а не в каждом образе (rosidl под qemu —
+# 4-14 минут на пакет). Тег по хэшу пакетов вычисляет gen_build_matrix.py и
+# передаёт build-arg'ом; без него сборка падает сразу на имени образа.
+ARG MSGS_IMAGE=MSGS_IMAGE-build-arg-is-required
+FROM ${MSGS_IMAGE} AS msgs
+
+FROM ${BASE_IMAGE}
+
+ARG ROS_DISTRO=lyrical
+
+# Метаданные
+LABEL org.opencontainers.image.title="Voice Assistant System for Vision Pi"
+LABEL org.opencontainers.image.description="AI voice assistant with ReSpeaker"
+LABEL org.opencontainers.image.source="https://github.com/krikz/rob_box_project"
+
+# Тяжёлые зависимости, Python runtime, STT/TTS модели, ReSpeaker drivers и
+# audio_common_msgs уже собраны в voice-base. Здесь остаётся только app-layer.
+
+# Renardo sample packs вынесены в отдельный voice-resources image.
+# Это не инвалидирует app-layer при изменениях исходников voice/animations.
+
+# Рабочая директория
+WORKDIR /ws
+RUN mkdir -p src/rob_box_voice src/rob_box_mcp_tools src/rob_box_perception_msgs src/rob_box_supervisor_msgs src/rob_box_dialog_msgs
+
+# ============================================================
+# ОПТИМИЗАЦИЯ СЛОЕВ ДЛЯ КЕШИРОВАНИЯ (dependencies → config → code)
+# ============================================================
+
+# Шаг 1: Копируем package.xml для rosdep (зависимости меняются редко)
+COPY src/rob_box_voice/package.xml /ws/src/rob_box_voice/
+COPY src/rob_box_mcp_tools/package.xml /ws/src/rob_box_mcp_tools/
+
+# Шаг 2: установка ROS зависимостей через rosdep — УДАЛЁН (issue #2378, devops).
+#
+# До этого PR здесь стояло:
+#     . /opt/ros/${ROS_DISTRO}/setup.sh && \
+#     . /ws/install/setup.sh && \
+#     rosdep update && \
+#     rosdep install --from-paths src/rob_box_core ... src/rob_box_supervisor_msgs \
+#                    --ignore-src -r -y || true
+#
+# Это был ЕДИНСТВЕННЫЙ `rosdep install` в проекте после PR #2286 (9414bb3,
+# issue #2279) — supervisor/quest перевели на «получай apt-зависимости из базы».
+# И он заканчивался на `|| true`: любая ошибка (сеть, отсутствующий ключ,
+# битый index) silently проглатывалась, build продолжался. В тёмной ситуации
+# (нет сети на runner, rosdep exit 1) это давало «image собрался, но
+# apt-зависимости не разрешены» → colcon build падает на `find_package`, или
+# ещё хуже — образ стартует без нужных rosidl-зависимостей и первый
+# `rclpy import` падает в `Restarting loop` (та же регрессия, что #2081 / #2089).
+# Плюс `rosdep update` — это сетевая зависимость каждый cold build, и единственная
+# в vision Dockerfiles после закрытия этой регрессии (в quest/Dockerfile
+# используется `apt-get install` через локальный apt-cacher-ng, без rosdep).
+#
+# Лечение: паттерн «build once, share with all» (как для rob_box_supervisor_msgs
+# после PR #2286). Все apt-зависимости voice-assistant (python3-httpx,
+# python3-aiohttp) добавлены в docker/sound/voice_base/Dockerfile apt-get
+# install — оттуда они доступны потребителю. python3-yaml/pil/numpy/action-msgs/
+# tf2-ros/nav2-msgs/rclpy уже стоят в rob_box_base:rtabmap (introlab3it/
+# rtabmap_ros:humble-latest). python3-openai НЕ существует в apt — rob_box_llm
+# ставит openai через pip в setup.py install_requires; <exec_depend>
+# python3-openai</exec_depend> в его package.xml — техдолг (другая зона),
+# но раньше rosdep его проглатывал через || true; теперь он просто не вызывается.
+#
+# Acceptance (issue #2378):
+#   - Build voice-assistant с пустым network даст exit code != 0 только если
+#     colcon build сам захочет сеть (он не захочет — все deps локальны).
+#   - `rosdep install` больше НИГДЕ в vision/ не вызывается (был единственный
+#     экземпляр — здесь). supervisor/quest уже без него после PR #2286.
+#   - voice-base apt-слой единственный, инвалидируется bump'ой BUILD_VERSION
+#     (см. docker/sound/voice_base/Dockerfile) — артефакт переиспользуется.
+
+# =============================================================================
+# Шаг 2.5: APP-LAYER PYTHON ЗАВИСИМОСТИ (issue #2277)
+# =============================================================================
+# ВАЖНО: Этот слой СТАВИТСЯ ДО COPY Python-исходников (Шаг 8). Все pip-пакеты
+# ниже не зависят от нашего кода — только от PyPI. Если перенести их ПОСЛЕ
+# `COPY src/rob_box_*/rob_box_*`, любая правка .py инвалидирует ~5 минут
+# компиляции resemblyzer/llvmlite на arm64 (run #34342854085 показал 8m25s
+# вместо ожидаемых ~1m при тёплом кеше).
+#
+# Раньше было 7 отдельных RUN pip3 install ... ПОСЛЕ Step 8 + 2 ДУБЛЯ
+# (resemblyzer x2, coverage+pyyaml x2). Дубли — артефакт параллельных
+# hotfix-коммитов (#1101, #1104, #1160), которые никто не чистил.
+# Все пакеты объединены в ОДИН RUN: один слой, одна транзакция pip,
+# один cache-key, никаких дублей.
+#
+# Почему НЕ voice_base: ~10 GB pytorch/vosk/yandex/renardo cache
+# инвалидируется для всех потребителей (voice_assistant, supervisor,
+# quest). aiohttp/prometheus/resemblyzer/coverage/pyyaml/ddgs/
+# duckduckgo-search — лёгкие, ставятся в app-layer точечно.
+#
+# Пакеты:
+#   - aiohttp — rob_box_quest ws-server
+#   - prometheus_client — metrics endpoint audio_node (issue #1160)
+#   - resemblyzer — speaker_id_node (issue #1077); на ARM64 компилирует
+#     llvmlite ~3 min, на x86 — pre-built wheel
+#   - coverage, pyyaml — runtime-pin для resemblyzer → librosa → numba
+#     (issue #1101: coverage.types.Tracer, pyyaml C-парсер)
+#   - ddgs — переименованный duckduckgo-search (issue #1104); search_web
+#     и music_skill (search_artist_style) пробуют импорт ddgs ПЕРВЫМ
+#   - duckduckgo-search — fallback в web_search.py (импорт-цепочка
+#     ddgs → duckduckgo_search), нельзя убирать
+RUN pip3 install --break-system-packages --no-cache-dir --retries 5 --timeout 300 \
+    "aiohttp>=3.9.1,<4.0" \
+    "prometheus_client>=0.20.0" \
+    "resemblyzer" \
+    "coverage>=7.0" \
+    "pyyaml>=6.0" \
+    "ddgs>=9.0.0" \
+    "duckduckgo-search>=8.0.0" && \
+    python3 -c "import numpy, scipy.signal; print('numpy', numpy.__version__, 'scipy', scipy.__version__)"
+
+# IDL-пакеты — готовые из общего образа msgs (stage `msgs` в шапке), а не
+# компиляцией здесь. Стоит ПОСЛЕ pip-слоя: новый MSGS_IMAGE не пересобирает
+# resemblyzer/llvmlite.
+#   - rob_box_supervisor_msgs: avatar_supervisor (AV-12 / AV-5). Issue #2279:
+#     voice-assistant публикует согласованный workspace, supervisor
+#     наследует его FROM и сам типы не пересобирает (#2081 / #2089).
+#   - rob_box_dialog_msgs: типы диалога v2 (ADR-0150 PR-2, #3687).
+#   - rob_box_perception_msgs: события восприятия.
+# Копируем ПО ПАКЕТУ, а не /ws/install целиком: в /ws/install уже лежит
+# audio_common_msgs из voice-base со своими setup-скриптами, их не затираем.
+# Скрипты colcon в /ws/install находят пакеты перебором каталогов.
+COPY --from=msgs /ws/install/rob_box_supervisor_msgs /ws/install/rob_box_supervisor_msgs
+COPY --from=msgs /ws/install/rob_box_dialog_msgs /ws/install/rob_box_dialog_msgs
+COPY --from=msgs /ws/install/rob_box_perception_msgs /ws/install/rob_box_perception_msgs
+
+# Шаг 3: Копируем setup.py и CMakeLists.txt (структура пакета меняется редко)
+COPY src/rob_box_voice/setup.py /ws/src/rob_box_voice/
+COPY src/rob_box_voice/setup.cfg /ws/src/rob_box_voice/
+COPY src/rob_box_mcp_tools/setup.py /ws/src/rob_box_mcp_tools/
+COPY src/rob_box_mcp_tools/setup.cfg /ws/src/rob_box_mcp_tools/
+
+# Шаг 4: Копируем конфигурационные файлы и ресурсы
+COPY src/rob_box_voice/resource /ws/src/rob_box_voice/resource
+COPY src/rob_box_mcp_tools/resource /ws/src/rob_box_mcp_tools/resource
+
+# Шаг 5: Копируем launch файлы и конфигурации
+COPY src/rob_box_voice/launch /ws/src/rob_box_voice/launch
+COPY src/rob_box_voice/config /ws/src/rob_box_voice/config
+COPY src/rob_box_voice/prompts /ws/src/rob_box_voice/prompts
+
+
+# ============================================================
+# ИНВАЛИДАЦИЯ КЕША ДЛЯ PYTHON КОДА
+# ============================================================
+# BuildKit кеширует COPY layers по content hash файлов.
+# Но на self-hosted runners кеш может быть stale.
+# SOURCE_HASH передаётся из workflow и инвалидирует кеш при изменении кода.
+ARG SOURCE_HASH=unknown
+RUN echo "Source hash: ${SOURCE_HASH}" > /tmp/.source_hash
+
+# Шаг 8: Копируем исходный код Python (меняется чаще всего - последний слой!)
+COPY src/rob_box_voice/rob_box_voice /ws/src/rob_box_voice/rob_box_voice
+COPY src/rob_box_mcp_tools/rob_box_mcp_tools /ws/src/rob_box_mcp_tools/rob_box_mcp_tools
+
+# После копирования Python исходников можно переиспользовать patch helper для
+# ремонта broken Renardo SynthDef-ов в установленном пакете.
+COPY docker/sound/voice_assistant/fix_brass_scd.py /tmp/fix_brass_scd.py
+RUN python3 /tmp/fix_brass_scd.py && rm /tmp/fix_brass_scd.py
+
+# Live 13.08 — тихие ворнинги renardo при каждом старте контейнера:
+#   "Could not read conf.json file..." (Settings/conf.py ищет свой conf.json
+#   ВНУТРИ pip-пакета и создаёт его в writable-слое при первом импорте) и
+#   ".../FoxDotEditor/themes/default.json color config file not found!"
+#   (headless-образ не содержит GUI-редактор FoxDotEditor, renardo падает в
+#   fallback-путь). Оба косметические, но замусоривают логи робота.
+#   Создаём оба файла заранее — импорт перестаёт ворнить.
+RUN python3 - <<'PY'
+import json, os
+conf = "/usr/local/lib/python3.10/dist-packages/renardo_lib/Settings/conf.json"
+if not os.path.exists(conf):
+    json.dump({
+        "ADDRESS": "localhost", "PORT": 57110, "PORT2": 57120,
+        "FONT": "Consolas", "SUPERCOLLIDER": "", "BOOT_ON_STARTUP": False,
+        "CHECK_FOR_UPDATE": True, "SC3_PLUGINS": False, "MAX_CHANNELS": 2,
+        "SAMPLES_DIR": "", "SAMPLES_PACK_NUMBER": 0, "GET_SC_INFO": True,
+        "USE_ALPHA": True, "ALPHA_VALUE": 0.8, "MENU_ON_STARTUP": True,
+        "CONSOLE_ON_STARTUP": True, "LINENUMBERS_ON_STARTUP": True,
+        "TREEVIEW_ON_STARTUP": False, "TRANSPARENT_ON_STARTUP": False,
+        "RECOVER_WORK": True, "LINE_NUMBER_MARKER_OFFSET": 0,
+        "AUTO_COMPLETE_BRACKETS": True, "CPU_USAGE": 2, "CLOCK_LATENCY": 0,
+        "FORWARD_ADDRESS": "", "FORWARD_PORT": 0, "COLOR_THEME": "cyborg",
+        "TEXT_COLORS": "default",
+    }, open(conf, "w"))
+themes = "/usr/local/lib/python3.10/FoxDotEditor/FoxDotEditor/themes"
+os.makedirs(themes, exist_ok=True)
+theme = os.path.join(themes, "default.json")
+if not os.path.exists(theme):
+    # ВАЖНО: conf.py делает json_object[TEXT_COLORS]['plaintext'] и т.д.
+    # Т.е. файл ДОЛЖЕН быть вложенным словарём {"default": {...}}.
+    # Плоская схема ломает импорт renardo_lib.runtime:
+    # KeyError: 'default' (live 13.08, round-2 hotfix).
+    json.dump({
+        "default": {
+            "plaintext": "#ffffff", "background": "#1a1a1a",
+            "functions": "#bf4acc", "key_types": "#29abe2",
+            "user_defn": "#29abe2", "other_kws": "#49db8b",
+            "comments": "#666666", "numbers": "#e89c18",
+            "strings": "#eae02a", "dollar": "#ec4e20",
+            "arrow": "#eae02a", "players": "#ec4e20",
+            "prompt_fg": "#ffffff", "prompt_bg": "#1a1a1a",
+            "console_text": "#ffffff", "console_bg": "#1a1a1a",
+        },
+    }, open(theme, "w"))
+print("renardo conf.json + FoxDotEditor theme stub created")
+PY
+
+# (Шаги pip install, ранее жившие здесь, перенесены в Шаг 2.5 выше —
+# до COPY Python-исходников, см. issue #2277. Дубли и комментарии к ним
+# удалены: aiohttp/prometheus_client/resemblyzer/coverage/pyyaml/ddgs/
+# duckduckgo-search теперь ставятся одним RUN.)
+
+# Шаг 9: Копируем scripts
+COPY src/rob_box_voice/scripts /ws/src/rob_box_voice/scripts
+
+# Шаг 10: Копируем FoxDot SC init скрипт для sclang
+# sclang читает этот файл при старте контейнера, регистрирует OSCdef /foxdot
+# на порту 57120 для получения запросов на компиляцию SynthDef-ов от renardo.
+COPY docker/sound/voice_assistant/foxdot_init.sc /ws/foxdot_init.sc
+COPY docker/sound/voice_assistant/custom_synthdefs /ws/custom_synthdefs
+
+# ============================================================
+# Шаг 10.5: ЯДРО ДИАЛОГА ИЗ ПУБЛИЧНОГО ПАКЕТА (ADR-0167 Ш3)
+# ============================================================
+# Ядро (rob_box_core, rob_box_llm, rob_box_harness, rob_box_dialog,
+# rob_box_dialog_host, rob_box_music + частичные rob_box_mcp_tools: owner_event,
+# voice_request, base) вынесено в krikz/rob_box_dialog_core и ставится pip'ом
+# по тегу, а НЕ colcon'ом из src/ (ADR-0167 §2.2 / §4 Ш3). Модули кладутся в
+# site-packages; rob_box_voice и rob_box_mcp_tools импортируют их оттуда.
+# Ставится ДО colcon: colcon собирает только ROS-хосты (rob_box_voice) и
+# полный ROS-пакет rob_box_mcp_tools, а ядро уже лежит в окружении.
+RUN pip3 install --break-system-packages --no-cache-dir \
+    "rob-box-dialog-core @ git+https://github.com/krikz/rob_box_dialog_core@v0.7.8"
+
+# ============================================
+# 🚀 СБОРКА ROS2 ПАКЕТОВ
+# ============================================
+
+# ИСПРАВЛЕНИЕ: Убираем проблемные CMAKE_LIBRARY_PATH и CMAKE_FIND_ROOT_PATH,
+# которые мешают правильному поиску библиотек через CMake package config.
+# Sourcing /opt/ros/lyrical/setup.sh достаточно для правильной настройки путей.
+# В production image не используем --symlink-install: для ament_python это ведет
+# к setup.py develop --editable, а поведение editable-режима зависит от версии setuptools.
+# ДОПОЛНИТЕЛЬНО: очищаем CMake кеш перед сборкой для избежания проблем с base image
+RUN . /opt/ros/${ROS_DISTRO}/setup.sh && \
+    . /ws/install/setup.sh && \
+    rm -rf /opt/ros/${ROS_DISTRO}/share/*/cmake/*.cmake~ && \
+    ldconfig && \
+    colcon build \
+    --packages-select rob_box_mcp_tools rob_box_voice \
+    --cmake-args \
+    -DCMAKE_BUILD_TYPE=Release \
+    -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
+
+# Source workspace
+RUN echo "source /opt/ros/${ROS_DISTRO}/setup.bash" >> /root/.bashrc && \
+    echo "source /ws/install/setup.bash" >> /root/.bashrc
+
+# ROS2 и Zenoh environment variables
+ENV ROS_DOMAIN_ID=0
+ENV RMW_IMPLEMENTATION=rmw_zenoh_cpp
+ENV RUST_LOG=zenoh=info
+ENV ROS_AUTOMATIC_DISCOVERY_RANGE=LOCALHOST
+ENV ZENOH_CONFIG=/config/shared/zenoh_session_config.json5
+
+# Аудио environment variables
+ENV AUDIODEV=hw:ArrayUAC10,0
+ENV ALSA_CARD=ArrayUAC10
+
+# Пути к данным
+ENV SOUND_PACK_DIR=/ws/sound_pack
+ENV TTS_CACHE_DIR=/config/voice_assistant/tts_cache
+
+# Проверка доступности нод
+HEALTHCHECK --interval=30s --timeout=10s --start-period=30s --retries=3 \
+    CMD ros2 node list | grep -q "audio_node" || exit 1
+
+# Точка входа
+ENTRYPOINT ["/bin/bash", "-c", "source /ws/install/setup.bash && exec \"$@\"", "--"]
+
+# По умолчанию запускаем через startup script
+CMD ["/scripts/start_voice_assistant.sh"]

@@ -4,7 +4,7 @@ These tests focus on the work covered by kanban task ``t_257dbfb9``:
 
 * transcode of MiniMax audio containers (PCM/WAV/MP3/OGG) into int16 LE PCM
 * retry classification per ADR-0003 §2.6
-* per-chunk publication when ``minimax_streaming=true``
+* per-chunk publication + playback buffer of the MiniMax stream (#3930)
 * mono→stereo for ReSpeaker (implicit, via shared downstream path)
 * the format / retry / streaming ROS-параметры
 
@@ -57,6 +57,8 @@ AudioTranscodeError = _mod.AudioTranscodeError
 
 # Import tts_node AFTER mocks are installed by conftest.
 from rob_box_voice import tts_node  # noqa: E402
+from rob_box_voice.tts_providers import YandexTTSProvider  # noqa: E402
+from rob_box_voice.core import tts_stream  # noqa: E402
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Helpers
@@ -110,6 +112,15 @@ def _make_fake_node():
     node.minimax_language = "ru"
     node.minimax_sample_rate = 32000
     node.minimax_format = TTSFormat.PCM
+    # Issue #1780 — emotion / pitch / volume / pronunciation_dict
+    # defaults wired through the stub so tests can override them.
+    node.minimax_emotion = "neutral"
+    node.minimax_pitch_raw = ""
+    node.minimax_volume_raw = ""
+    node.minimax_pronunciation_dict_raw = ""
+    # #4022 — живой тон (set_pitch) складывается со статическим minimax_pitch в _minimax_settings.
+    node.pitch_shift = 1.0
+    node.chipmunk_mode = False
     node.audio_output_sample_rate = 16000
     node.audio_pub = MagicMock()
     node.get_logger = MagicMock()
@@ -227,13 +238,10 @@ class TestDefaultProviderPath:
         """Non-MiniMax providers must not depend on MiniMax-only state."""
         node = _make_fake_node()
         node.provider = "yandex"
-        node.normalize_text = False
         node.stop_requested = False
-        node.processing_dialogue_id = None
-        node.current_dialogue_id = None
-        node.yandex_stub = object()
+        node._yandex_tts = YandexTTSProvider("fake-key", object(), logger=MagicMock())
         node.yandex_speed = 1.0
-        node._synthesize_yandex = MagicMock(
+        node._yandex_tts.synthesize_np = MagicMock(
             return_value=np.zeros(2205, dtype=np.float32)
         )
         node.publish_state = MagicMock()
@@ -247,14 +255,11 @@ class TestDefaultProviderPath:
         node.playback_manager = MagicMock()
         node.playback_manager.play_audio.return_value = True
         node.cleanup_playback_noise = MagicMock()
-        node.finished_pub = MagicMock()
 
         tts_node.TTSNode._synthesize_and_play(
             node,
-            "<speak>hello</speak>",
             "hello",
             None,
-            {},
             None,
         )
 
@@ -291,7 +296,7 @@ class TestRetryClassification:
         """2 timeout failures then success → 3 attempts, exp backoff."""
         call_count = [0]
 
-        async def fake_async(text, ssml_attributes, voice=None):
+        async def fake_async(text, voice=None, language=None):
             call_count[0] += 1
             if call_count[0] < 3:
                 raise TTSTimeoutError("net down")
@@ -306,7 +311,7 @@ class TestRetryClassification:
         """TTSAuthError → raised without retry."""
         call_count = [0]
 
-        async def fake_async(text, ssml_attributes, voice=None):
+        async def fake_async(text, voice=None, language=None):
             call_count[0] += 1
             raise TTSAuthError("bad key", provider="minimax")
 
@@ -320,7 +325,7 @@ class TestRetryClassification:
         """TTSBadRequestError → raised without retry."""
         call_count = [0]
 
-        async def fake_async(text, ssml_attributes, voice=None):
+        async def fake_async(text, voice=None, language=None):
             call_count[0] += 1
             raise TTSBadRequestError("invalid voice", provider="minimax")
 
@@ -333,7 +338,7 @@ class TestRetryClassification:
         """TTSRateLimitError → at most one retry, regardless of generic budget."""
         call_count = [0]
 
-        async def fake_async(text, ssml_attributes, voice=None):
+        async def fake_async(text, voice=None, language=None):
             call_count[0] += 1
             raise TTSRateLimitError("429", provider="minimax")
 
@@ -347,7 +352,7 @@ class TestRetryClassification:
         """After max_retries exhausted, propagate the last error."""
         call_count = [0]
 
-        async def fake_async(text, ssml_attributes, voice=None):
+        async def fake_async(text, voice=None, language=None):
             call_count[0] += 1
             raise TTSTimeoutError("timeout", provider="minimax")
 
@@ -392,145 +397,60 @@ class TestStreamingHook:
         samples = np.frombuffer(bytes(msg.data), dtype="<i2")
         assert samples.tolist() == [32767, -32767, 16383]
 
-    def test_streaming_publishes_one_msg_per_chunk(self):
-        """Streaming: per chunk we publish a separate AudioData msg."""
+    def _stream_node(self, chunks):
+        """Нода с провайдером, чей ``stream()`` отдаёт ``chunks`` (#3930)."""
         node = self._make_node()
-        pcm = _make_pcm_bytes([100, -100, 50, -50, 25])
+        node.minimax_timeout = 2.0
 
-        # Build a fake _stream_minimax_chunks that yields 3 chunks.
-        chunks = [
-            TTSChunk(samples=pcm[:4], sample_rate=32000, format=TTSFormat.PCM),
-            TTSChunk(samples=pcm[4:8], sample_rate=32000, format=TTSFormat.PCM),
-            TTSChunk(
-                samples=pcm[8:],
-                sample_rate=32000,
-                format=TTSFormat.PCM,
-                finish_reason="stop",
-            ),
-        ]
+        class _Provider:
+            async def stream(self, text, *, settings=None):
+                for chunk in chunks:
+                    if isinstance(chunk, Exception):
+                        raise chunk
+                    yield chunk
 
-        async def fake_stream(text, ssml_attrs, voice=None):
-            for c in chunks:
-                yield c
+        node._ensure_minimax_provider = lambda: _Provider()
+        return node
 
-        async def collect():
-            node._stream_minimax_chunks = fake_stream
-            return await asyncio.to_thread(
-                lambda: tts_node.TTSNode._synthesize_minimax_streaming_publish(node, "hello", {})
-            )
+    def test_stream_publishes_each_chunk_and_buffers_it_for_playback(self):
+        """#3930: каждый кусок — свой AudioData в топике и в буфере реплики."""
+        loud = _make_pcm_bytes([8000, -8000] * 8000)  # 1 с громкого PCM @ 16 кГц
+        node = self._stream_node([
+            TTSChunk(samples=loud, sample_rate=16000, format=TTSFormat.PCM),
+            TTSChunk(samples=loud, sample_rate=16000, format=TTSFormat.PCM),
+            TTSChunk(samples=b"", sample_rate=16000, format=TTSFormat.PCM, finish_reason="stop"),
+        ])
+        result = tts_stream.open_for_playback(node, "привет", object(), None)
+        stream = result["audio_np"]
+        assert result["already_published"] and result["stream"] is stream
+        stream.future.result(timeout=5)
+        assert stream.done and stream.error is None
+        assert len(stream) == 32000 and node.audio_pub.publish.call_count == 2
 
-        result = asyncio.run(collect())
-        # 3 AudioData msgs published (one per chunk).
-        assert node.audio_pub.publish.call_count == 3
-        # Final concatenated buffer has the same number of float32 samples as input.
-        assert len(result["audio_np"]) == 5
+    def test_stream_resamples_chunks_to_output_rate(self):
+        node = self._stream_node([
+            TTSChunk(samples=_make_pcm_bytes([9000] * 32000), sample_rate=32000, format=TTSFormat.PCM),
+        ])
+        stream = tts_stream.open_for_playback(node, "привет", object(), None)["audio_np"]
+        stream.future.result(timeout=5)
+        assert stream.sample_rate == 16000 and len(stream) == 16000
 
-    def test_streaming_publishes_each_chunk_before_requesting_the_next(self):
-        """The first AudioData message must be visible before the next chunk is pulled."""
-        node = self._make_node()
-        pcm = _make_pcm_bytes([100, -100, 50, -50])
-
-        async def fake_stream(text, ssml_attrs, voice=None):
-            yield TTSChunk(samples=pcm[:4], sample_rate=16000, format=TTSFormat.PCM)
-            assert node.audio_pub.publish.call_count == 1
-            yield TTSChunk(
-                samples=pcm[4:],
-                sample_rate=16000,
-                format=TTSFormat.PCM,
-                finish_reason="stop",
-            )
-
-        node._stream_minimax_chunks = fake_stream
-        result = tts_node.TTSNode._synthesize_minimax_streaming_publish(node, "hello", {})
-
-        assert node.audio_pub.publish.call_count == 2
-        assert len(result["audio_np"]) == 4
-
-    def test_streaming_resamples_chunk_to_declared_topic_rate(self):
-        node = self._make_node()
-        pcm = _make_pcm_bytes([100, -100, 50, -50])
-
-        async def fake_stream(text, ssml_attrs, voice=None):
-            yield TTSChunk(
-                samples=pcm,
-                sample_rate=32000,
-                format=TTSFormat.PCM,
-                finish_reason="stop",
-            )
-
-        node._stream_minimax_chunks = fake_stream
-        result = tts_node.TTSNode._synthesize_minimax_streaming_publish(
-            node,
-            "hello",
-            {},
-        )
-
-        assert result["sample_rate"] == 32000
-        msg = node.audio_pub.publish.call_args.args[0]
-        assert len(msg.data) == 4  # 4 samples @ 32 kHz -> 2 samples @ 16 kHz
-
-    def test_streaming_handles_finish_reason_error(self):
-        """Stream reports finish_reason='error' → exception propagated up."""
-        node = self._make_node()
-        bound_publish = tts_node.TTSNode._publish_audio.__get__(node, type(node))
-        node._publish_audio = bound_publish
-
-        async def fake_stream(text, ssml_attrs, voice=None):
-            yield TTSChunk(
-                samples=b"",
-                sample_rate=32000,
-                format=TTSFormat.PCM,
-                finish_reason="error",
-            )
-
-        async def collect():
-            node._stream_minimax_chunks = fake_stream
-            return await asyncio.to_thread(
-                lambda: tts_node.TTSNode._synthesize_minimax_streaming_publish(node, "hello", {})
-            )
-
-        with pytest.raises(Exception, match="error"):
-            asyncio.run(collect())
-
-    def test_streaming_handles_empty_chunks(self):
-        """Zero chunks → typed error (no AudioData publication)."""
-        node = self._make_node()
-        bound_publish = tts_node.TTSNode._publish_audio.__get__(node, type(node))
-        node._publish_audio = bound_publish
-
-        async def fake_stream(text, ssml_attrs, voice=None):
-            if False:
-                yield
-
-        async def collect():
-            node._stream_minimax_chunks = fake_stream
-            return await asyncio.to_thread(
-                lambda: tts_node.TTSNode._synthesize_minimax_streaming_publish(node, "hello", {})
-            )
-
-        with pytest.raises(Exception, match="no audio chunks"):
-            asyncio.run(collect())
+    def test_stream_error_before_audio_raises_for_fallback(self):
+        """Отказ до первого звука — исключение: цепочка уходит на Yandex/Silero, как у HTTP."""
+        node = self._stream_node([TTSRateLimitError("quota", provider="minimax")])
+        with pytest.raises(Exception, match="нет звука.*quota"):
+            tts_stream.open_for_playback(node, "привет", object(), None)
         assert node.audio_pub.publish.call_count == 0
 
-    def test_streaming_error_after_audio_is_not_published_as_silence(self):
-        """A mid-stream error must not make the bridge replay a partial buffer."""
-        node = self._make_node()
-        pcm = _make_pcm_bytes([100, -100])
-
-        async def fake_stream(text, ssml_attrs, voice=None):
-            yield TTSChunk(samples=pcm, sample_rate=16000, format=TTSFormat.PCM)
-            yield TTSChunk(
-                samples=b"",
-                sample_rate=16000,
-                format=TTSFormat.PCM,
-                finish_reason="error",
-            )
-
-        node._stream_minimax_chunks = fake_stream
-        with pytest.raises(Exception, match="finish_reason=error"):
-            tts_node.TTSNode._synthesize_minimax_streaming_publish(node, "hello", {})
-
-        assert node.audio_pub.publish.call_count == 1
+    def test_stream_error_after_audio_marks_stream_broken(self):
+        """Обрыв после звука — не «finished»: ``error`` = ``minimax_stream_broken``."""
+        node = self._stream_node([
+            TTSChunk(samples=_make_pcm_bytes([8000, -8000] * 8000), sample_rate=16000, format=TTSFormat.PCM),
+            TTSChunk(samples=b"", sample_rate=16000, format=TTSFormat.PCM, finish_reason="error"),
+        ])
+        stream = tts_stream.open_for_playback(node, "привет", object(), None)["audio_np"]
+        stream.future.result(timeout=5)
+        assert stream.done and stream.error == tts_stream.BROKEN and len(stream) == 16000
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -680,3 +600,180 @@ class TestProviderLifecycleSynchronization:
 
         assert provider.closed is True
         assert node.minimax_provider is None
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Issue #1780 — emotion / pitch / volume / pronunciation_dict are forwarded
+# from ROS-params (via the new _parse_* helpers) into TTSSettings. These
+# tests verify the contract without touching the network or the real ROS
+# stack — we capture the TTSSettings instance the stub provider sees.
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+class _CapturingProvider:
+    """In-process ``TTSProvider`` stand-in that records the settings it gets."""
+
+    name = "capturing"
+
+    def __init__(self, **kwargs):  # pragma: no cover - kwargs ignored
+        self.kwargs = kwargs
+
+    async def synthesize(self, text, *, settings=None):
+        self.last_settings = settings
+        # Return PCM samples so the caller can complete the happy-path.
+        from rob_box_llm.tts import TTSAudio, TTSFormat
+
+        return TTSAudio(samples=b"\x00\x00" * 16, sample_rate=16_000, format=TTSFormat.PCM)
+
+    async def stream(self, text, *, settings=None):
+        raise NotImplementedError
+
+    async def aclose(self) -> None:
+        return None
+
+
+class TestProsodyForwarding:
+    """Voice-prosody knobs reach the provider verbatim."""
+
+    def _wire_provider(self, node, monkeypatch):
+        provider = _CapturingProvider()
+        monkeypatch.setattr(tts_node, "MiniMaxTTSProvider", lambda **kw: provider)
+        node._minimax_provider_initialized = True
+        node.minimax_provider = provider
+
+        # ``_decode_minimax_audio`` is a regular (non-async) method in
+        # production; the production caller in ``_synthesize_minimax_async``
+        # assigns its return value directly (no ``await``). Match that
+        # shape so the call site stays in sync with the real code.
+        def _fake_decode(*_args, **_kwargs):
+            import numpy as np
+
+            return np.zeros(16, dtype=np.float32), 16_000
+
+        node._decode_minimax_audio = _fake_decode
+        return provider
+
+    def test_emotion_pitch_volume_populate_voice_setting(self, monkeypatch):
+        """Non-empty emotion/pitch/volume produce the ``voice_setting.*`` keys."""
+        node = _make_fake_node()
+        # Defaults from the stub match the YAML defaults; override to
+        # values that are NOT MiniMax's implicit defaults so we can
+        # observe the wire shape unambiguously.
+        node.minimax_emotion = "happy"
+        node.minimax_pitch_raw = "3"
+        node.minimax_volume_raw = "1.5"
+
+        provider = self._wire_provider(node, monkeypatch)
+
+        out = asyncio.run(
+            tts_node.TTSNode._synthesize_minimax_async(node, "hello")
+        )
+        assert "audio_np" in out  # happy-path reached
+        settings = provider.last_settings
+        assert settings.emotion == "happy"
+        assert settings.pitch == 3
+        assert settings.volume == 1.5
+
+    def test_empty_pitch_and_volume_default_to_none(self, monkeypatch):
+        """Empty ROS-params (string '') → field omitted from TTSSettings.
+
+        This is the pre-#1780 behaviour: nothing in voice_setting beyond
+        what the existing default produces.
+        """
+        node = _make_fake_node()
+        node.minimax_emotion = "neutral"
+        node.minimax_pitch_raw = ""
+        node.minimax_volume_raw = ""
+        node.minimax_pronunciation_dict_raw = ""
+
+        provider = self._wire_provider(node, monkeypatch)
+
+        asyncio.run(tts_node.TTSNode._synthesize_minimax_async(node, "hi"))
+
+        settings = provider.last_settings
+        assert settings.pitch is None
+        assert settings.volume is None
+        assert settings.pronunciation_dict is None
+        # Emotion has a default — "neutral" — so it IS in TTSSettings
+        # (matches API default, behaviour-equivalent).
+        assert settings.emotion == "neutral"
+
+    def test_pronunciation_dict_json_string_parsed(self, monkeypatch):
+        """``minimax_pronunciation_dict`` accepts a JSON-encoded dict."""
+        node = _make_fake_node()
+        node.minimax_pronunciation_dict_raw = (
+            '{"tone": ["Alice/ˈælɪs", "Bob/bɑb"]}'
+        )
+
+        provider = self._wire_provider(node, monkeypatch)
+
+        asyncio.run(tts_node.TTSNode._synthesize_minimax_async(node, "hi"))
+
+        settings = provider.last_settings
+        assert settings.pronunciation_dict == {
+            "tone": ["Alice/ˈælɪs", "Bob/bɑb"]
+        }
+
+    def test_pronunciation_dict_garbage_string_is_ignored(self, monkeypatch):
+        """Malformed JSON in the YAML doesn't crash the node — field is omitted."""
+        node = _make_fake_node()
+        node.minimax_pronunciation_dict_raw = "not a json"
+
+        provider = self._wire_provider(node, monkeypatch)
+
+        asyncio.run(tts_node.TTSNode._synthesize_minimax_async(node, "hi"))
+
+        settings = provider.last_settings
+        assert settings.pronunciation_dict is None
+
+
+class TestParseHelpers:
+    """Direct unit tests for the helper parsers (no ROS, no network)."""
+
+    @pytest.mark.parametrize(
+        "raw,expected",
+        [
+            (None, None),
+            ("", None),
+            ("  ", None),
+            ("3", 3),
+            ("-2", -2),
+            ("12.7", None),  # not int-parseable
+            (0, 0),
+            (5, 5),
+        ],
+    )
+    def test_parse_optional_int(self, raw, expected):
+        assert tts_node._parse_optional_int(raw) == expected
+
+    @pytest.mark.parametrize(
+        "raw,expected",
+        [
+            (None, None),
+            ("", None),
+            ("  ", None),
+            ("1.5", 1.5),
+            ("0.0", 0.0),
+            ("10", 10.0),
+            ("abc", None),  # not float-parseable
+            (1.0, 1.0),
+        ],
+    )
+    def test_parse_optional_float(self, raw, expected):
+        assert tts_node._parse_optional_float(raw) == expected
+
+    @pytest.mark.parametrize(
+        "raw,expected",
+        [
+            (None, None),
+            ("", None),
+            ("  ", None),
+            ('{"tone": ["a/ɑ"]}', {"tone": ["a/ɑ"]}),
+            ("not json", None),
+            ("[]", None),  # not a Mapping
+            ("42", None),  # not a Mapping
+            ({"tone": ["x"]}, {"tone": ["x"]}),  # already a Mapping
+        ],
+    )
+    def test_parse_pronunciation_dict(self, raw, expected):
+        assert tts_node._parse_pronunciation_dict(raw) == expected

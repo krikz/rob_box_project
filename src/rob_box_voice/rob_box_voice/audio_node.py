@@ -9,47 +9,25 @@ from rclpy.node import Node
 from rclpy.qos import QoSProfile, ReliabilityPolicy, DurabilityPolicy
 from std_msgs.msg import Bool, Int32, String
 from audio_common_msgs.msg import AudioData
+from rob_box_core.speech_client import watch_speaking
 import pyaudio
+import usb.core
 import threading
 import time
-import os
-import sys
-from contextlib import contextmanager
 from typing import Optional
 
+from rob_box_dialog_host.music_player_state import MUSIC_STATE_TOPIC, parse_music_state
+from .core.speech_split import publish_speech_chunks
 from .utils.audio_utils import find_respeaker_device, list_audio_devices, calculate_rms, calculate_db
 from .utils.respeaker_interface import ReSpeakerInterface
+from .utils.stderr_silence import ignore_stderr
 
 # Issue #1160 — Prometheus metrics (этап 1 observability).
 from rob_box_voice.observability import (
     is_metrics_enabled,
+    record_audio_input_overflow,
     start_metrics_server,
 )
-
-
-@contextmanager
-def ignore_stderr(enable=True):
-    """
-    Подавить ALSA ошибки от PyAudio (как в jsk-ros-pkg)
-    https://github.com/jsk-ros-pkg/jsk_3rdparty/blob/master/respeaker_ros/src/respeaker_ros/__init__.py
-    """
-    if enable:
-        devnull = None
-        try:
-            devnull = os.open(os.devnull, os.O_WRONLY)
-            stderr = os.dup(2)
-            sys.stderr.flush()
-            os.dup2(devnull, 2)
-            try:
-                yield
-            finally:
-                os.dup2(stderr, 2)
-                os.close(stderr)
-        finally:
-            if devnull is not None:
-                os.close(devnull)
-    else:
-        yield
 
 
 class AudioNode(Node):
@@ -82,18 +60,42 @@ class AudioNode(Node):
         self.declare_parameter('vad_threshold', 3.5)
         self.declare_parameter('publish_rate', 10)
         self.declare_parameter('device_index', -1)  # -1 = auto-detect
+        self.declare_parameter('audio_retry_period', 5.0)  # сек между попытками открыть захват
+        # Issue #2701: watchdog захвата. audio_retry_period (выше) чинит
+        # только «поток не открылся на старте» — здесь поток ОТКРЫТ, но
+        # PortAudio перестал звать audio_callback без исключения (ReSpeaker
+        # молча завис на ходу, 17.09.2026). audio_stall_timeout_s — сколько
+        # секунд без audio_callback считается зависанием.
+        self.declare_parameter('audio_stall_timeout_s', 5.0)
+        # Второй признак того же зависания: VAD видит речь по USB HID
+        # (отдельный канал, продолжает работать), а буфер захвата пуст —
+        # «Речь отклонена: 0.00с» K раз ПОДРЯД. Счётчик сбрасывается на
+        # первой успешно принятой фразе (см. check_vad_and_doa).
+        self.declare_parameter('audio_stall_empty_speech_count', 3)
+        # Heartbeat-файл для healthcheck контейнера (docker/vision/scripts/
+        # voice_assistant/healthcheck_audio.sh) — issue #2701 п.3. Пустая
+        # строка отключает запись (на случай окружений без /tmp, тесты).
+        self.declare_parameter('audio_heartbeat_file', '/tmp/rob_box_audio_heartbeat')
         self.declare_parameter('device_name', 'ReSpeaker 4 Mic Array')
 
-        # Issue 989 Fix B: grace period после окончания TTS — не начинать
-        # накопление речи (и не публиковать VAD=True) пока робот говорит
-        # или в течение tts_grace_s секунд после. Иначе эхо собственного
-        # голоса/музыки захватывается как «речь» и замыкает петлю.
-        self.declare_parameter('tts_grace_s', 2.5)
+        # Issue 989 Fix B (эхо-окно после речи робота) здесь больше не живёт (#4072): микрофон слышит всегда,
+        # а что звучало только в окне после реплики, решает stt_node (core/echo_window.py). Глухой VAD в паузе
+        # между сегментами выступления съедал «Робот, хватит».
         # Issue 989 Fix C: при активной музыке поднимаем порог VAD на
         # ReSpeaker (GAMMAVAD_SR) и дополнительно гейтим по уровню RMS —
         # музыка не должна триггерить VAD как речь.
         self.declare_parameter('music_vad_threshold', 6.0)
         self.declare_parameter('music_vad_min_db', -35.0)
+        # Issue #1764: TRACK (Renardo/SuperCollider) — barge-in через
+        # wake-gate не работал, потому что Fix C подавлял VAD даже когда
+        # TTS НЕ активен. С TRACK-музыкой пользователь не мог перебить
+        # трек командой «робот, выключи музыку» — wake-word отбрасывалось
+        # как no_wake_word. Если barge_in_with_music=True (дефолт),
+        # _vad_gated пропускает речь через AEC ReSpeaker (Ch1 в
+        # 6-канальном режиме), и wake-word проходит как обычно. Старый
+        # RMS-гейт остаётся fallback'ом (barge_in_with_music=False)
+        # для сценариев без AEC (микрофон сырой, музыка из динамика).
+        self.declare_parameter('barge_in_with_music', True)
 
         # Issue #1117 round-2: настройка DSP XVF-3000 при старте ноды
         # (через USB control transfer). Если устройство не найдено
@@ -114,10 +116,21 @@ class AudioNode(Node):
         self.publish_rate = self.get_parameter('publish_rate').value
         self.device_index = self.get_parameter('device_index').value
         self.device_name = self.get_parameter('device_name').value
-        # Issue 989: параметры анти-эхо.
-        self.tts_grace_s = float(self.get_parameter('tts_grace_s').value)
+        # Issue #2701: параметры watchdog'а захвата.
+        self.audio_stall_timeout_s = float(
+            self.get_parameter('audio_stall_timeout_s').value or 5.0
+        )
+        self.audio_stall_empty_speech_count = int(
+            self.get_parameter('audio_stall_empty_speech_count').value or 3
+        )
+        self.audio_heartbeat_file = str(
+            self.get_parameter('audio_heartbeat_file').value or ''
+        )
+        # Issue 989: параметры анти-эхо (музыка; эхо-окно речи — у stt_node, #4072).
         self.music_vad_threshold = float(self.get_parameter('music_vad_threshold').value)
         self.music_vad_min_db = float(self.get_parameter('music_vad_min_db').value)
+        # Issue #1764: см. declare_parameter ниже.
+        self.barge_in_with_music = bool(self.get_parameter('barge_in_with_music').value)
         # Issue #1117 round-2: DSP tuning при старте.
         self.dsp_apply_on_start = bool(self.get_parameter('dsp_apply_on_start').value)
         self.hpf_on = int(self.get_parameter('hpf_on').value)
@@ -135,15 +148,23 @@ class AudioNode(Node):
         self.vad_pub = self.create_publisher(Bool, '/audio/vad', 10)
         self.direction_pub = self.create_publisher(Int32, '/audio/direction', 10)
         self.state_pub = self.create_publisher(String, '/audio/state', 10)
-        self.tts_control_pub = self.create_publisher(String, '/voice/tts/control', 10)  # Для прерывания TTS
 
-        # Issue 989: подписки на состояние TTS и музыки для анти-эхо гейтов.
-        # /voice/tts/state — "synthesizing"/"playing" пока робот говорит,
-        # "ready"/"idle" после. Используем для grace period (Fix B).
-        self.create_subscription(String, '/voice/tts/state', self._on_tts_state, 10)
-        # /voice/music/state — "playing"/"idle" от mcp_server (Fix C): при
-        # активной музыке поднимаем порог VAD, чтобы бит не триггерил речь.
-        self.create_subscription(String, '/voice/music/state', self._on_music_state, 10)
+        # Issue 989: подписки на речь робота и музыку для анти-эхо гейтов.
+        # /voice/speech/event — речь робота (PR-15 15-0b #3711, раньше старый
+        # String-топик состояния TTS): «говорит», пока звучит реплика любого агента
+        # (SpeakingWatch: started ... finished|cancelled|rejected). На фронтах
+        # чистится pre-roll; эхо-окно после речи — у stt_node (#4072).
+        self._robot_speech = watch_speaking(self, self._on_robot_speech)
+        # /voice/music/state — снимок плеера от mcp_server (Fix C, с #3133 —
+        # JSON, ADR-0141): при активной музыке поднимаем порог VAD, чтобы бит
+        # не триггерил речь. Latched (TRANSIENT_LOCAL, depth 1) как у
+        # публикатора: после рестарта сразу знаем, играет ли музыка.
+        music_state_qos = QoSProfile(
+            depth=1,
+            reliability=ReliabilityPolicy.RELIABLE,
+            durability=DurabilityPolicy.TRANSIENT_LOCAL,
+        )
+        self.create_subscription(String, MUSIC_STATE_TOPIC, self._on_music_state, music_state_qos)
 
         # ReSpeaker interface
         self.respeaker = ReSpeakerInterface()
@@ -151,6 +172,28 @@ class AudioNode(Node):
         # PyAudio
         self.pyaudio_instance: Optional[pyaudio.PyAudio] = None
         self.stream: Optional[pyaudio.Stream] = None
+
+        # Ретрай открытия захвата (см. open_audio_stream). Исходный
+        # device_index держим отдельно: после неудачного open индекс
+        # сбрасывается к нему, чтобы авто-поиск прошёл заново.
+        self._device_index_param = self.device_index
+        self._audio_retry_count: int = 0
+        self._audio_retry_timer = None
+        self._audio_retry_period: float = float(
+            self.get_parameter('audio_retry_period').value or 5.0
+        )
+        # Раз в сколько попыток печатать ERROR после третьей неудачи.
+        self._audio_retry_quiet_every: int = max(
+            1, int(60.0 / self._audio_retry_period)
+        )
+
+        # Issue #2701: состояние watchdog'а захвата (поток открыт, но
+        # молчит) и empty-speech детектора (VAD=речь по HID, буфер пуст).
+        # Оба признака ведут к одному и тому же переоткрытию потока —
+        # см. _reopen_audio_stream.
+        self._last_audio_data_monotonic: Optional[float] = None
+        self._empty_speech_streak: int = 0
+        self._audio_stall_reopen_count: int = 0
 
         # Состояние
         self.is_running = False
@@ -170,7 +213,7 @@ class AudioNode(Node):
         # Yandex empty, на -26 dB OK — но VAD на ReSpeaker порогом 3.5dB режет
         # первые 100-200ms тихой речи). 1.5s = 2.5x запас к 600ms и покрывает
         # даже сценарий «пользователь говорит "робот" ровно в момент окончания
-        # TTS» (1.5s после tts_state=ready ещё не наполнилось тишиной).
+        # TTS» (1.5s после конца речи робота ещё не наполнилось тишиной).
         self.declare_parameter('speech_prefetch', 1.5)      # Буфер перед началом речи (issue #1117: 1.0 → 1.5s)
         self.declare_parameter('speech_min_duration', 0.3)  # Минимальная длительность
         self.declare_parameter('speech_max_duration', 15.0) # Максимальная длительность (секунды)
@@ -218,10 +261,8 @@ class AudioNode(Node):
         self._vad_doa_warn_period_ns: int = int(60.0 * 1e9)  # 60 секунд
 
         # Issue 989: анти-эхо состояние.
-        # TTS: True пока робот говорит (synthesizing/playing); после перехода
-        # в ready/idle запоминаем момент окончания для grace period.
+        # TTS: True пока звучит речь робота (SpeechEvent started ... finished/cancelled/rejected).
         self.tts_active: bool = False
-        self._tts_ended_at: float = 0.0  # монотонное время окончания TTS
         # Музыка: True когда mcp_server сообщил "playing" на /voice/music/state.
         self.music_active: bool = False
         # Текущий уровень сигнала (dB) для программного гейта VAD (Fix C).
@@ -230,6 +271,11 @@ class AudioNode(Node):
 
         # Таймер для VAD/DoA (после sleep(5) безопасно!)
         self.timer = self.create_timer(1.0 / self.publish_rate, self.check_vad_and_doa)
+
+        # Issue #2701: watchdog захвата — отдельный таймер 1Hz, не зависит
+        # от respeaker.is_connected() (в отличие от check_vad_and_doa),
+        # потому что зависание потока никак не связано с USB HID VAD/DoA.
+        self.audio_watchdog_timer = self.create_timer(1.0, self._check_audio_watchdog)
 
         # Issue #1160 — Prometheus metrics server (этап 1).
         # Порт 9113 — стандартный для audio_node (barge-in, session).
@@ -269,6 +315,11 @@ class AudioNode(Node):
             self.get_logger().info(f'  VAD threshold: {self.vad_threshold} dB (по умолчанию)')
         else:
             self.get_logger().warn('⚠ ReSpeaker USB не найден для VAD/DoA')
+
+        # Захват аудио запускаем ВСЕГДА и отдельно от DSP: раньше открытие
+        # потока лежало внутри _apply_dsp и пропадало при dsp_apply_on_start=
+        # False либо при неподключённом USB HID.
+        self.open_audio_stream()
 
     def _apply_dsp(self) -> None:
         """Применить настройки DSP XVF-3000 (issue #1117 round-2).
@@ -310,18 +361,43 @@ class AudioNode(Node):
                 f'  HPFONOFF: ошибка записи ({e!r}). Используется дефолт firmware.'
             )
 
-        # Инициализация PyAudio (теперь ReSpeaker должен быть виден как аудио устройство)
+    def open_audio_stream(self) -> None:
+        """Открыть PyAudio-поток захвата с ReSpeaker.
+
+        Вызывается при старте и повторно из _retry_audio_stream, пока
+        устройство не найдётся. Разовая попытка не годится: ReSpeaker
+        появляется в перечислении PortAudio позже остальных USB-карт, и
+        когда на шине есть вторая USB-аудио-карта (потолочная камера),
+        5-секундного ожидания стабилизации USB не хватает. Нода при этом
+        оставалась живой — VAD/DoA идут по USB HID и продолжали работать, —
+        но каждая фраза уходила в «Речь отклонена: 0.00с», потому что
+        буфер захвата не наполнялся.
+        """
+        if self.stream is not None:
+            return
+
+        # Перечисление устройств PortAudio делает в момент инициализации,
+        # поэтому на каждую попытку нужен свежий инстанс.
+        if self.pyaudio_instance is not None:
+            try:
+                self.pyaudio_instance.terminate()
+            except Exception:  # noqa: BLE001 — освобождение best-effort
+                pass
+            self.pyaudio_instance = None
+
         # Глушим ALSA ошибки как в jsk-ros-pkg
         with ignore_stderr(enable=True):
             self.pyaudio_instance = pyaudio.PyAudio()
 
         # Найти устройство
-        if self.device_index < 0:
+        if self.device_index is None or self.device_index < 0:
             self.device_index = find_respeaker_device(self.pyaudio_instance)
             if self.device_index is None:
-                self.get_logger().error('❌ ReSpeaker аудио устройство не найдено!')
-                self.list_available_devices()
+                self._log_stream_failure('❌ ReSpeaker аудио устройство не найдено!')
+                if self._audio_retry_count == 0:
+                    self.list_available_devices()
                 self.publish_state('error_no_device')
+                self._schedule_audio_retry()
                 return
 
         self.get_logger().info(f'✓ Используется аудио устройство index={self.device_index}')
@@ -342,21 +418,278 @@ class AudioNode(Node):
             if self.mix_channels:
                 self.get_logger().info(
                     f'✓ mix_channels={self.mix_channels} — каналы для моно-микса '
-                    f'(issue #1117 round-2: [0]=Ch1 DSP-processed ASR; ранее '
-                    f'использовался [0,1,2,3,4,5] = все 6 каналов, ошибка канала).'
+                    '(issue #1117 round-2: [0]=Ch1 DSP-processed ASR; ранее '
+                    'использовался [0,1,2,3,4,5] = все 6 каналов, ошибка канала).'
                 )
+            # Issue #2554: явно печатаем frames_per_buffer в обеих
+            # единицах (frames / байты / мс), чтобы в логах старта ноды
+            # было видно, какой размер чанка реально выставлен — и
+            # оператор не путал «49152 байт в overflow-логе» с
+            # «frames_per_buffer=49152». 4096 frames @ 16kHz mono =
+            # 256 мс; в 6-канальном режиме это 49152 байт.
+            bytes_per_chunk = self.chunk_size * self.channels * 2
+            chunk_ms = (self.chunk_size / float(self.sample_rate)) * 1000.0
+            self.get_logger().info(
+                f'✓ frames_per_buffer={self.chunk_size} frames '
+                f'({bytes_per_chunk} байт, ~{chunk_ms:.0f} мс @ {self.sample_rate}Hz '
+                f'× {self.channels} ch × 2 Б) — issue #1050/2554'
+            )
             self.publish_state('ready')
 
         except Exception as e:
-            self.get_logger().error(f'❌ Ошибка открытия аудио потока: {e}')
+            self.stream = None
+            # Индекс мог устареть (карта переехала) — ищем заново на ретрае.
+            self.device_index = self._device_index_param
+            self._log_stream_failure(f'❌ Ошибка открытия аудио потока: {e}')
             self.publish_state('error_stream')
+            self._schedule_audio_retry()
             return
 
         # Запустить поток
         self.is_running = True
         self.stream.start_stream()
-        self.get_logger().info('▶ Захват аудио запущен')
+        if self._audio_retry_count:
+            self.get_logger().info(
+                f'▶ Захват аудио запущен (устройство найдено с '
+                f'{self._audio_retry_count + 1}-й попытки)'
+            )
+        else:
+            self.get_logger().info('▶ Захват аудио запущен')
+        self._audio_retry_count = 0
+        if self._audio_retry_timer is not None:
+            self._audio_retry_timer.cancel()
+            self._audio_retry_timer = None
         self.publish_state('running')
+
+    def _log_stream_failure(self, message: str) -> None:
+        """Лог неудачи захвата: первые попытки громко, дальше раз в минуту.
+
+        Ретрай бесконечный (устройство могут воткнуть в любой момент), а
+        ERROR каждые 5с забил бы docker logs.
+        """
+        quiet = (
+            self._audio_retry_count >= 3
+            and self._audio_retry_count % self._audio_retry_quiet_every != 0
+        )
+        if quiet:
+            self.get_logger().debug(f'{message} (попытка {self._audio_retry_count + 1})')
+        elif self._audio_retry_count == 0:
+            self.get_logger().error(message)
+        else:
+            self.get_logger().error(
+                f'{message} (попытка {self._audio_retry_count + 1}, '
+                f'повтор каждые {self._audio_retry_period}с)'
+            )
+
+    def _schedule_audio_retry(self) -> None:
+        """Поставить одноразовый таймер на следующую попытку открыть поток."""
+        self._audio_retry_count += 1
+        if self._audio_retry_timer is not None:
+            self._audio_retry_timer.cancel()
+        self._audio_retry_timer = self.create_timer(
+            self._audio_retry_period, self._on_audio_retry
+        )
+
+    def _on_audio_retry(self) -> None:
+        """Callback одноразового retry-таймера."""
+        if self._audio_retry_timer is not None:
+            self._audio_retry_timer.cancel()
+            self._audio_retry_timer = None
+        self.open_audio_stream()
+
+    # ------------------------------------------------------------------
+    # Issue #2701: watchdog захвата — «поток открыт, но замолчал на ходу».
+    #
+    # _schedule_audio_retry/_on_audio_retry (выше) лечат только «поток не
+    # открылся на старте»: open_audio_stream() возвращается немедленно,
+    # если self.stream уже не None. Здесь ситуация другая — PortAudio
+    # перестаёт звать audio_callback БЕЗ исключения (17.09.2026, лог
+    # обрывается на «⚠️ ReSpeaker не принял threshold 3.5 dB», дальше
+    # тишина), контейнер остаётся Up (healthy), потому что процесс жив.
+    #
+    # Два независимых признака зависания ведут в один и тот же
+    # _reopen_audio_stream:
+    #   1) _check_audio_watchdog (таймер 1Hz) — возраст последнего
+    #      audio_callback с данными превысил audio_stall_timeout_s.
+    #   2) check_vad_and_doa — K подряд «Речь отклонена: 0.00с» при
+    #      VAD=речь (речь пришла по USB HID, а буфер захвата пуст).
+    # ------------------------------------------------------------------
+
+    def _check_audio_watchdog(self) -> None:
+        """Watchdog-тик: жив ли поток, зовёт ли PortAudio audio_callback.
+
+        Проверяем именно ФАКТ вызова callback (см. комментарий в
+        audio_callback), а не «была ли речь» — во время TTS-мута (issue
+        #993) VAD подавлен программно, но callback продолжает штатно
+        публиковать /audio/audio, поэтому ложных срабатываний тут быть
+        не должно.
+        """
+        if self.stream is None:
+            # Поток ещё не открыт — этим занимается обычный retry
+            # (_schedule_audio_retry), watchdog тут ни при чём.
+            return
+        if self._last_audio_data_monotonic is None:
+            # Поток только что открылся, ни одного callback ещё не было —
+            # рано делать выводы (даём шанс первому чанку прийти).
+            return
+
+        age = time.monotonic() - self._last_audio_data_monotonic
+        if age < self.audio_stall_timeout_s:
+            # Поток жив — обновляем heartbeat для healthcheck контейнера.
+            self._touch_audio_heartbeat()
+            return
+
+        self.get_logger().warning(
+            f'⚠️ [issue 2701] Захват завис: audio_callback молчит '
+            f'{age:.1f}с (таймаут {self.audio_stall_timeout_s}с). '
+            f'Переоткрываю поток.'
+        )
+        self._reopen_audio_stream()
+
+    def _touch_audio_heartbeat(self) -> None:
+        """Обновить heartbeat-файл для healthcheck контейнера (issue #2701 п.3).
+
+        docker/sound/scripts/voice_assistant/healthcheck_audio.sh
+        проверяет возраст этого файла; если захват завис дольше
+        audio_stall_timeout_s, файл не обновляется, и healthcheck
+        возвращает unhealthy вместо молчаливого «healthy». Полноценная
+        интеграция через /diagnostics — за рамками этого PR (issue #2701
+        п.3 оставлен открытым в части «через /diagnostics»).
+        """
+        if not self.audio_heartbeat_file:
+            return
+        try:
+            with open(self.audio_heartbeat_file, 'w', encoding='utf-8') as fh:
+                fh.write(str(time.time()))
+        except OSError as exc:  # noqa: BLE001 — heartbeat не должен ронять ноду
+            self.get_logger().debug(
+                f'[issue 2701] Не удалось обновить heartbeat-файл: {exc!r}'
+            )
+
+    def _reopen_audio_stream(self) -> None:
+        """Закрыть зависший stream/PyAudio и запланировать переоткрытие.
+
+        Общий путь для watchdog'а (audio_callback молчит) и empty-speech
+        детектора («Речь отклонена: 0.00с» K раз подряд). Переиспользует
+        _schedule_audio_retry — тот же путь ретрая, что и «устройство не
+        найдено на старте» (issue #2701 п.1/п.2).
+        """
+        self._audio_stall_reopen_count += 1
+        self.is_running = False
+        try:
+            if self.stream is not None:
+                self.stream.stop_stream()
+                self.stream.close()
+        except Exception as exc:  # noqa: BLE001 — переоткрытие не должно падать
+            self.get_logger().warning(
+                f'⚠️ [issue 2701] Не удалось корректно закрыть зависший '
+                f'поток: {exc!r}'
+            )
+        self.stream = None
+        # Индекс мог устареть (ReSpeaker отвалился и переехал на другой
+        # индекс при повторном перечислении PortAudio, ту же логику
+        # использует ветка "Ошибка открытия" в open_audio_stream) — ищем
+        # заново на ретрае, а не жёстко держимся за старый.
+        self.device_index = self._device_index_param
+        self._last_audio_data_monotonic = None
+        self._empty_speech_streak = 0
+        self.get_logger().warning(
+            f'🔁 [issue 2701] Переоткрытие захвата #{self._audio_stall_reopen_count} '
+            f'(watchdog/empty-speech детектор зависания ReSpeaker).'
+        )
+        self.publish_state('error_stall')
+        self._schedule_audio_retry()
+
+    def _note_speech_accepted(self) -> None:
+        """Issue #2701 п.2: успешная фраза сбрасывает empty-speech streak.
+
+        Захват точно живой — буфер только что реально наполнился и прошёл
+        проверку длительности. Вынесено из check_vad_and_doa как отдельный
+        метод (ADR-0021 R1 CC-budget guard, ``cc_budget_baseline.json``
+        грандфазерил check_vad_and_doa на CC=19): каждый вызов оттуда
+        безусловный, поэтому сам check_vad_and_doa не набирает лишний CC
+        за счёт ветвления, которое теперь живёт здесь.
+        """
+        self._empty_speech_streak = 0
+
+    def _note_empty_speech(self, buf_len: int) -> None:
+        """Issue #2701 п.2: детектор «речь по HID, буфер захвата пуст».
+
+        Вызывается безусловно из check_vad_and_doa на каждый отказ фразы
+        (см. комментарий в _note_speech_accepted про ADR-0021 R1) — вся
+        ветвящаяся логика (пустой ли буфер, дотянул ли счётчик до порога,
+        лог, переоткрытие) сосредоточена здесь.
+
+        VAD увидел речь по USB HID (иначе is_speeching не включился бы), а
+        буфер захвата пуст — audio_callback не наполнял его, значит поток
+        завис (тот же симптом, что и 17.09.2026: «Речь отклонена: 0.00с»
+        10 раз подряд, дальше от захвата ни одного сообщения). Длинные/
+        короткие-но-непустые фразы счётчик НЕ трогают — это штатные
+        срабатывания VAD, не признак зависания.
+        """
+        if buf_len != 0:
+            return
+        self._empty_speech_streak += 1
+        if self._empty_speech_streak < self.audio_stall_empty_speech_count:
+            return
+        self.get_logger().warning(
+            f'⚠️ [issue 2701] {self._empty_speech_streak} фраз(ы) '
+            f'подряд «0.00с» (VAD видит речь по HID, буфер '
+            f'захвата пуст) — похоже, захват завис. '
+            f'Переоткрываю поток.'
+        )
+        self._reopen_audio_stream()
+
+    def _vad_doa_warn_throttle_ready(self) -> bool:
+        """Троттлинг VAD/DoA WARN/ERROR (Issue #1125/t_1bbc233a), один раз
+        в ``self._vad_doa_warn_period_ns``.
+
+        Общий помощник для всех мест, где мы дросселируем логи вокруг
+        VAD/DoA чтения (``_read_and_publish_doa`` и общий except в
+        ``check_vad_and_doa``) — раньше условие дублировалось в каждом
+        except-блоке, что тоже поднимало CC. ``time.monotonic()`` (не
+        ``get_clock()``), чтобы внутри except-блока не зависеть от rclpy.
+        Побочный эффект: при True обновляет ``_vad_doa_last_warn_ns``, так
+        что вызывающий обязан звать это ровно один раз перед логированием.
+        """
+        now = int(time.monotonic() * 1e9)
+        if (
+            self._vad_doa_last_warn_ns is None
+            or (now - self._vad_doa_last_warn_ns) >= self._vad_doa_warn_period_ns
+        ):
+            self._vad_doa_last_warn_ns = now
+            return True
+        return False
+
+    def _read_and_publish_doa(self) -> None:
+        """Прочитать DoA с ReSpeaker и опубликовать /audio/direction.
+
+        Вынесено из check_vad_and_doa (ADR-0021 R1 CC-budget guard, см.
+        _note_speech_accepted про тот же приём) — весь try/except с двумя
+        типами ошибок жил прямо в check_vad_and_doa и поднял его CC с
+        баз-лайна 19 до 24 (issue DoA-баг: get_direction → get_doa).
+        """
+        try:
+            direction = self.respeaker.get_doa()
+            if direction is not None:
+                msg = Int32()
+                msg.data = direction
+                self.direction_pub.publish(msg)
+        except (AttributeError, TypeError) as e:
+            # Баг в коде (например неверное имя метода на
+            # ReSpeakerInterface), а не USB/pipe ошибка - молчать тут же
+            # означает НИКОГДА не публиковать /audio/direction без
+            # единого следа в логах.
+            if self._vad_doa_warn_throttle_ready():
+                self.get_logger().error(
+                    f'DoA: баг в коде respeaker-интерфейса: {e}',
+                    exc_info=True,
+                )
+        except (usb.core.USBError, OSError) as e:
+            # USB/pipe ошибка - как раньше пропускаем цикл, но с
+            # warn-троттлингом вместо полной тишины.
+            if self._vad_doa_warn_throttle_ready():
+                self.get_logger().warn(f'DoA USB/pipe ошибка: {e}')
 
     def audio_callback(self, in_data, frame_count, time_info, status):
         """Callback для PyAudio stream."""
@@ -364,6 +697,17 @@ class AudioNode(Node):
             # Issue 1050: status=2 (paInputOverflow) — входной буфер
             # переполнен, сэмплы потеряны. Rate-limited лог + диагностика.
             self._log_overflow(frame_count, in_data)
+
+        if in_data:
+            # Issue #2701: watchdog смотрит на ФАКТ вызова callback с
+            # данными, а не на то, была ли распознана речь — во время
+            # TTS-мута (issue #993) VAD подавлен, но PortAudio продолжает
+            # звать этот callback штатно, так что здесь ложных пропусков
+            # быть не должно. Пишем ДО проверки is_running: даже если
+            # нода в процессе остановки, факт «PortAudio жив» важен сам
+            # по себе (is_running гейтит только публикацию/буферизацию
+            # ниже).
+            self._last_audio_data_monotonic = time.monotonic()
 
         # Публиковать RAW аудио данные
         if in_data and self.is_running:
@@ -423,7 +767,7 @@ class AudioNode(Node):
         return (None, pyaudio.paContinue)
 
     def _log_overflow(self, frame_count: int, in_data) -> None:
-        """Rate-limited лог paInputOverflow (issue #1050).
+        """Rate-limited лог paInputOverflow (issue #1050, расширение #2554).
 
         Статус 2 (paInputOverflow) означает, что входной буфер переполнен
         и сэмплы потеряны — обычно Python-callback не успел за периодом
@@ -432,63 +776,92 @@ class AudioNode(Node):
         чаще раза в ``_overflow_log_window_s`` секунд: строка не спамит,
         а по числу случаев и размеру чанка видно динамику после фикса
         (увеличение frames_per_buffer 1024 → 4096).
+
+        Issue #2554 (DJ live 2026-09-15): оператор смотрел в лог
+        ``chunk 49152/49152 байт`` и думал, что ``frames_per_buffer=49152``
+        — но ``49152 = 4096 frames × 6 ch × 2 байт int16``. Это просто
+        размер буфера в байтах в 6-канальном режиме, а не «столько
+        фреймов на чанк». Чтобы таких ложных выводов не было, лог
+        теперь печатает ОБЕ величины — фреймы (то, что задано в
+        ``chunk_size``) и байты (то, что получает PortAudio). Также
+        инкрементируем Prometheus-метрику
+        ``voice_audio_input_overflow_total`` (issue #1160, этап 1+2) для
+        тренда, а не только для немедленной диагностики.
         """
+        # Каждый случай — это инкремент счётчика (даже если лог
+        # rate-limited). Метрика показывает РЕАЛЬНЫЙ rate, а не частоту
+        # лог-строк.
+        record_audio_input_overflow(frames_per_buffer=int(self.chunk_size))
         self._overflow_count += 1
         now = time.monotonic()
         if now - self._overflow_last_logged < self._overflow_log_window_s:
             return
         self._overflow_last_logged = now
-        expected = frame_count * self.channels * 2
-        got = len(in_data) if in_data else 0
-        lost = max(0, expected - got)
+        # Issue #2554: ожидаемое считаем от chunk_size (то, что PortAudio
+        # ДОЛЖЕН был прислать по контракту), а не от frame_count (то, что
+        # пришло в callback). Это две разные величины:
+        #   * ``chunk_size`` (= self.chunk_size) = frames_per_buffer,
+        #     заданный при open(). На overflow PortAudio занижает
+        #     frame_count, чтобы callback не висел вечно.
+        #   * ``frame_count`` (= переданный параметр) = сколько фреймов
+        #     PortAudio реально отдал в этот callback (может быть < chunk_size).
+        # Раньше лог писал expected = frame_count × ch × 2 — это
+        # маскировало факт потери: «получил 1024 фрейма, потерял 0»
+        # когда на самом деле должно было быть 4096. Теперь видно
+        # честную разницу.
+        expected_bytes = int(self.chunk_size) * self.channels * 2
+        got_bytes = len(in_data) if in_data else 0
+        lost_bytes = max(0, expected_bytes - got_bytes)
+        # Печатаем ОБЕ величины: frames_per_buffer (chunk_size, то, что
+        # задано в YAML/параметре) и размер буфера в байтах (то, что
+        # фактически проходит через PortAudio, = frames × ch × 2).
+        # Раньше печатался только байтовый размер — оператор видел
+        # «49152» и думал, что frames_per_buffer=49152 (issue #2554).
         self.get_logger().warning(
-            f"[issue 1050] PyAudio paInputOverflow (status=2): "
+            f"[issue 1050/2554] PyAudio paInputOverflow (status=2): "
             f"{self._overflow_count} случаев за окно "
             f"{self._overflow_log_window_s:.0f}с, "
-            f"chunk {got}/{expected} байт (потеряно ~{lost} байт)"
+            f"frames_per_buffer={self.chunk_size}, "
+            f"buffer={got_bytes}/{expected_bytes} байт "
+            f"({self.chunk_size} frames × {self.channels} ch × 2 Б), "
+            f"потеряно ~{lost_bytes} байт"
         )
 
     # ------------------------------------------------------------------
-    # Issue 989: анти-эхо гейты (Fix B — grace после TTS, Fix C — музыка)
+    # Issue 989: анти-эхо гейты (Fix C — музыка; эхо-окно речи — stt_node, #4072)
     # ------------------------------------------------------------------
-    def _on_tts_state(self, msg: String) -> None:
-        """Следим за состоянием TTS: пока робот говорит — не трогаем VAD.
+    def _on_robot_speech(self, speaking: bool) -> None:
+        """Фронт речи робота (``SpeechEvent``): VAD не трогаем ни во время речи, ни после неё.
 
-        Issue 989 Fix B: при переходе в speaking-состояние сбрасываем
-        накопленный буфер (это почти наверняка эхо предыдущей фразы) и
-        запоминаем момент окончания TTS для grace period (tts_grace_s).
+        «Звучит» решает ``SpeakingWatch`` (реплика любого агента от
+        ``started`` до ``finished|cancelled|rejected``, ``watch_speaking``);
+        здесь — только реакция на фронты: чистим pre-roll, чтобы хвост
+        прошлого звука не встал в начало следующего захвата (иначе STT
+        склеит «…роберт» из обрывка).
 
         Issue 993 barge-in: НЕ гейтим VAD пока робот говорит — wake-word
-        gate в dialogue_node отсекает эхо собственного голоса, а
-        пользователь может перебить рэп/ответ командой «робот, добавь
-        музыку».
+        gate в диалоге отсекает эхо собственного голоса, а пользователь
+        может перебить рэп/ответ командой «робот, добавь музыку».
+
+        #4072: после речи VAD тоже не гейтится, и начатая фраза на фронте
+        не сбрасывается. Выступление звучит сегментами с паузой 1–2 с:
+        глухой микрофон в паузе и сброс буфера на старте следующего
+        сегмента съедали «Робот, хватит» (до STT доезжало «замолчи»).
+        Эхо собственного голоса после реплики режет stt_node: фраза,
+        чей голос звучал только в эхо-окне, проходит лишь ясным стопом
+        с вейком (core/echo_window.py).
         """
-        state = (msg.data or "").strip()
-        if state in ("synthesizing", "playing"):
-            if not self.tts_active:
-                self.get_logger().info(
-                    "🔇 [issue 993] TTS активен — VAD пропускает речь "
-                    "(barge-in через wake-word gate)"
-                )
-                # Сбрасываем незавершённое накопление — это эхо, не речь.
-                self.speech_audio_buffer = b""
-                self.is_speeching = False
-                # Pre-roll тоже чистим: старый буфер мог содержать хвост
-                # предыдущей фразы, который не должен попасть в начало
-                # следующего захвата (иначе STT склеит «…роберт» из обрывка).
-                self.speech_prefetch_buffer = b""
-            self.tts_active = True
-        elif state in ("ready", "idle", "stopped"):
-            if self.tts_active:
-                self._tts_ended_at = time.monotonic()
-                self.get_logger().info(
-                    f"🔇 [issue 989] TTS закончился — grace {self.tts_grace_s}s"
-                )
-                # Pre-roll очищаем ПОСЛЕ TTS: если этого не сделать, первый
-                # захват после ответа робота получит pre-roll с хвостом
-                # собственного голоса → STT слышит «…роберт» вместо «робот».
-                self.speech_prefetch_buffer = b""
-            self.tts_active = False
+        if speaking:
+            self.get_logger().info(
+                "🔇 [issue 993] TTS активен — VAD пропускает речь "
+                "(barge-in через wake-word gate)"
+            )
+        else:
+            self.get_logger().info(
+                "🔇 [issue 989/#4072] TTS закончился — VAD слушает, эхо-окно решает stt_node"
+            )
+        self.speech_prefetch_buffer = b""
+        self.tts_active = bool(speaking)
 
     def _on_music_state(self, msg: String) -> None:
         """Состояние музыки от mcp_server (Fix C).
@@ -497,18 +870,39 @@ class AudioNode(Node):
         чтобы бит/мелодия не триггерили «речь». Порог применяется к железу
         best-effort (set_vad_threshold может не поддерживаться на всех
         прошивках ReSpeaker) и к программному гейту по RMS.
+
+        Issue #1764: если barge_in_with_music=True, при активной музыке
+        НЕ поднимаем порог VAD и НЕ гейтим RMS — пользователь должен
+        мочь перебить TRACK командой «робот, …» через AEC ReSpeaker
+        (Ch1 в 6-канальном режиме). Аппаратный VAD остаётся на дефолтном
+        уровне; музыкальный фон уже подавлен AEC.
         """
-        state = (msg.data or "").strip()
+        # Issue #3133: payload — JSON-снимок плеера (ADR-0141); парсер
+        # понимает и старую плоскую строку. Мусор состояние не трогает.
+        snapshot = parse_music_state(msg.data)
+        if snapshot is None:
+            return
         was_active = self.music_active
-        self.music_active = state == "playing"
+        self.music_active = snapshot.is_playing()
         if self.music_active == was_active:
             return
         if self.music_active:
-            self.get_logger().info(
-                f"🎵 [issue 989] Музыка активна — VAD threshold {self.vad_threshold} → "
-                f"{self.music_vad_threshold} dB (strict mode)"
-            )
-            self._apply_vad_threshold(self.music_vad_threshold)
+            if self.barge_in_with_music:
+                # Issue #1764: оставляем VAD на дефолтном пороге — wake-word
+                # должен проходить как без музыки. AEC на ReSpeaker Ch1 уже
+                # убирает музыкальный сигнал из ASR-канала.
+                self.get_logger().info(
+                    f"🎵 [issue 1764] Музыка активна + barge_in_with_music=True "
+                    f"— VAD threshold остаётся {self.vad_threshold} dB "
+                    f"(wake-gate пропускает «робот» поверх трека)"
+                )
+                # НЕ зовём _apply_vad_threshold → железный VAD на дефолте.
+            else:
+                self.get_logger().info(
+                    f"🎵 [issue 989] Музыка активна — VAD threshold {self.vad_threshold} → "
+                    f"{self.music_vad_threshold} dB (strict mode)"
+                )
+                self._apply_vad_threshold(self.music_vad_threshold)
         else:
             self.get_logger().info(
                 f"🎵 [issue 989] Музыка остановлена — VAD threshold → {self.vad_threshold} dB"
@@ -538,29 +932,33 @@ class AudioNode(Node):
     def _vad_gated(self, vad: bool) -> bool:
         """Применить анти-эхо гейты к аппаратному VAD.
 
-        Возвращает эффективное значение VAD с учётом:
-        - TTS grace period (issue 989 Fix B): в течение tts_grace_s после
-          окончания TTS — False (эхо собственного голоса).
-          НЕ гейтим VAD пока робот говорит (issue 993 barge-in): эхо
-          отсекается wake-word gate в dialogue_node._on_stt_result
-          (строка ~411 «has_wake_word»), поэтому во время рэпа/ответа
-          пользователь может перебить робот командой «робот, …» —
-          barge-in работает.
-        - активной музыки (Fix C): требуем программный порог по RMS
+        Возвращает эффективное значение VAD с учётом активной музыки
+        (Fix C): программный порог по RMS.
+
+        Речь робота VAD не гейтит — ни во время неё (issue 993 barge-in:
+        пользователь перебивает рэп/ответ командой «робот, …»), ни после
+        (#4072: в паузе между сегментами выступления микрофон был глух).
+        Эхо собственного голоса после реплики режет stt_node по тому, где
+        звучал голос фразы (core/echo_window.py), а не глухота здесь.
+
+        Issue #1764 (TRACK/Renardo barge-in): если barge_in_with_music=True
+        И музыка активна — НЕ гейтим VAD по RMS. AEC на ReSpeaker Ch1
+        (6-канальный режим) уже убирает музыкальный сигнал из
+        ASR-канала, поэтому wake-word «робот» проходит как обычно.
+        Иначе VAD подавляет тихое «Р» в «робот» поверх бита, STT получает
+        «обот» → dialogue отбрасывает как no_wake_word → робот «глохнет».
+        Legacy-поведение (barge_in_with_music=False) сохранено для
+        сценариев без AEC (микрофон сырой, e2e через стену).
         """
-        # Issue 993 barge-in: пока TTS активен — НЕ гейтим. Эхо
-        # отсекается wake-word gate в dialogue_node.
-        if self.tts_active:
-            # VAD дальше пройдёт проверки (если vad=True и музыка не
-            # слишком громкая). Это разрешает пользователю перебить рэп.
-            pass
-        elif time.monotonic() - self._tts_ended_at < self.tts_grace_s:
-            # После TTS в течение tts_grace_s — это эхо.
-            return False
         if not vad:
             return False
         if self.music_active:
-            # Музыка активна: аппаратный VAD может ловить бит как «речь».
+            # Issue #1764: barge-in через TRACK. AEC на ReSpeaker уже
+            # фильтрует музыку; пользователь должен мочь сказать «робот,
+            # выключи музыку» во время трека. Пропускаем VAD без RMS-гейта.
+            if self.barge_in_with_music:
+                return True
+            # Legacy Fix C: аппаратный VAD может ловить бит как «речь».
             # Программный гейт: RMS должен быть выше music_vad_min_db,
             # иначе это музыка/шум, а не голос поверх музыки.
             if self._current_db < self.music_vad_min_db:
@@ -591,7 +989,7 @@ class AudioNode(Node):
             if vad is None:
                 return  # Ошибка чтения, пропускаем
 
-            # Issue 989: анти-эхо гейты (TTS grace + музыка strict mode).
+            # Issue 989: анти-эхо гейт музыки (strict mode); эхо-окно речи — у stt_node (#4072).
             vad_eff = self._vad_gated(bool(vad))
 
             if vad_eff != self.prev_vad:
@@ -645,7 +1043,7 @@ class AudioNode(Node):
                 # Вычисляем длительность
                 duration = len(buf) / (self.sample_rate * 2)  # 16-bit = 2 bytes
 
-                if self.speech_min_duration <= duration <= self.speech_max_duration:
+                if duration >= self.speech_min_duration:
                     self.get_logger().info(f'✅ Речь распознана: {duration:.2f}с')
                     # Issue 1076 (телеметрия): честный «замолчал → фраза готова»
                     # = time_since_stop (>= speech_continuation), а НЕ 0. Раньше
@@ -656,23 +1054,30 @@ class AudioNode(Node):
                         f"📊 [telemetry] silence_to_phrase_s={time_since_stop:.2f} "
                         f"(speech_continuation={self.speech_continuation})"
                     )
-                    # Публикуем speech_audio
-                    msg = AudioData()
-                    msg.data = list(buf)
-                    self.speech_audio_pub.publish(msg)
+                    # Публикуем speech_audio; речь длиннее speech_max_duration
+                    # режется на куски, а не выбрасывается (issue #3762).
+                    publish_speech_chunks(
+                        buf, self.speech_audio_pub, AudioData, self.get_logger(),
+                        self.sample_rate, self.speech_max_duration, self.speech_min_duration)
+                    # Issue #2701: первая успешная фраза сбрасывает счётчик
+                    # empty-speech детектора — захват точно живой. Вынесено
+                    # в отдельный метод (ADR-0021 R1 CC-budget guard, см.
+                    # _note_speech_accepted).
+                    self._note_speech_accepted()
                 else:
                     self.get_logger().warn(f'❌ Речь отклонена: {duration:.2f}с (min={self.speech_min_duration}, max={self.speech_max_duration})')
+                    # Issue #2701 п.2: детектор «VAD видит речь по HID, буфер
+                    # захвата пуст» K раз подряд — вынесен в отдельный метод
+                    # (ADR-0021 R1 CC-budget guard: два новых `if` внутри
+                    # check_vad_and_doa подняли бы CC этого грандфазеренного
+                    # метода с 19 до 21; сам детектор со своей веточной
+                    # логикой живёт в _note_empty_speech, здесь — безусловный
+                    # вызов).
+                    self._note_empty_speech(len(buf))
 
-            # DoA - читаем с обработкой ошибок
-            try:
-                direction = self.respeaker.get_direction()
-                if direction is not None:
-                    msg = Int32()
-                    msg.data = direction
-                    self.direction_pub.publish(msg)
-            except Exception:
-                # Pipe error - пропускаем
-                pass
+            # DoA - читаем и публикуем (вынесено в _read_and_publish_doa,
+            # ADR-0021 R1 CC-budget guard).
+            self._read_and_publish_doa()
 
         except Exception as e:
             # Issue #1125 / t_1bbc233a: bare `pre` NameError регрессировал
@@ -688,16 +1093,7 @@ class AudioNode(Node):
             if 'Pipe error' in str(e):
                 # Известная шумная ошибка USB-стека — пропускаем без лога.
                 return
-            # Используем time.monotonic (не get_clock), чтобы внутри
-            # except-блока не зависеть от rclpy — исключение в самом
-            # get_clock() привело бы к рекурсивному except.
-            now = int(time.monotonic() * 1e9)
-            if (
-                self._vad_doa_last_warn_ns is None
-                or (now - self._vad_doa_last_warn_ns)
-                >= self._vad_doa_warn_period_ns
-            ):
-                self._vad_doa_last_warn_ns = now
+            if self._vad_doa_warn_throttle_ready():
                 self.get_logger().warn(
                     f'VAD/DoA ошибка: {e}', exc_info=True,
                 )

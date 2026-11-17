@@ -172,7 +172,7 @@ Update [docs/deployment/DEPLOYMENT_WORKFLOW.md](../../docs/deployment/DEPLOYMENT
 
 ## Implementation Notes
 
-Prefer moving the complex logic out of inline shell into a small helper script under `.github/scripts/` or similar, because:
+Prefer moving the complex logic out of inline shell into a small helper script under `scripts/ci/` or similar, because:
 
 - normalization and hashing are easier to test there
 - GitHub issue search/parsing is less error-prone than large inline shell pipelines

@@ -4,6 +4,10 @@ conftest.py — Mock ROS2/rclpy dependencies for rob_box_teleop unit tests.
 Loaded before any module that imports rclpy (mirrors the rob_box_voice
 pattern). FakeNode keeps a parameter registry and records published
 messages so tests can assert on topics without a ROS2 runtime.
+
+Speech goes through rob_box_core.speech_client, which builds a real
+``SpeechRequest``: the real rosidl package when it is built (CI), otherwise a
+stub assembled from the repository's ``.msg`` files (Windows, no ROS).
 """
 
 import sys
@@ -11,6 +15,13 @@ import types
 from unittest.mock import MagicMock
 
 import pytest
+
+from rob_box_core.msg_stub import install_dialog_msgs_stub
+
+DIALOG_MSGS = install_dialog_msgs_stub()
+#: ``builtin_interfaces/Time`` of whichever message build is at hand (the real
+#: one validates the type of ``SpeechRequest.stamp`` on assignment).
+_TIME = type(DIALOG_MSGS.SpeechRequest().stamp)
 
 
 # Per-test parameter overrides; a test sets them before instantiating the node.
@@ -37,6 +48,16 @@ class FakePublisher:
         self.messages.append(msg)
 
 
+class FakeClock:
+    """rclpy Clock stub: ``now().to_msg()`` is a real ``builtin_interfaces/Time``."""
+
+    def now(self):
+        return self
+
+    def to_msg(self):
+        return _TIME(sec=7, nanosec=5)
+
+
 class FakeNode:
     """Minimal rclpy.node.Node stub with a parameter registry."""
 
@@ -61,7 +82,8 @@ class FakeNode:
         self.publishers.append((topic, pub))
         return pub
 
-    def create_subscription(self, *args, **kwargs):
+    def create_subscription(self, msg_type, topic, callback, *args, **kwargs):
+        self.__dict__.setdefault("subscriptions", []).append((topic, callback))
         return MagicMock()
 
     def create_timer(self, period, callback):
@@ -77,9 +99,7 @@ class FakeNode:
         return self._name
 
     def get_clock(self):
-        clock = MagicMock()
-        clock.now.return_value.to_msg.return_value = MagicMock()
-        return clock
+        return FakeClock()
 
 
 class FakeTwist:
@@ -112,7 +132,6 @@ def _install_ros_mocks():
 
     mock_std_msgs = MagicMock()
     mock_std_msgs_msg = MagicMock()
-    mock_std_msgs_msg.String = MagicMock
     mock_std_msgs_msg.Bool = FakeBool
 
     mocks = {
@@ -124,6 +143,10 @@ def _install_ros_mocks():
         "geometry_msgs.msg": mock_geometry_msgs_msg,
         "std_msgs": mock_std_msgs,
         "std_msgs.msg": mock_std_msgs_msg,
+        # proximity_guard_node (#4365): одометрия и TF — только типы, сообщения в тестах — SimpleNamespace
+        "nav_msgs": MagicMock(),
+        "nav_msgs.msg": MagicMock(),
+        "tf2_ros": MagicMock(),
     }
     for name, mock in mocks.items():
         sys.modules.setdefault(name, mock)

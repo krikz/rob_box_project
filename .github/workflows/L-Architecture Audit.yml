@@ -1,0 +1,254 @@
+# checkov:skip=CKV_GHA_7: manual diagnostic workflow — workflow_dispatch inputs (robot SSH hosts) are intentional, not a build entry point
+name: "L: Architecture Audit"
+
+on:
+  workflow_dispatch:
+    inputs:
+      main_host:
+        description: "Main Pi SSH host"
+        required: false
+        default: "10.1.1.20"
+        type: string
+      main_container:
+        description: "Main Pi Docker container containing the ROS2 CLI"
+        required: false
+        default: "nav2"
+        type: string
+      vision_host:
+        description: "Vision Pi SSH host"
+        required: false
+        default: "10.1.1.21"
+        type: string
+      vision_container:
+        description: "Vision Pi Docker container containing the ROS2 CLI"
+        required: false
+        default: "oak-d"
+        type: string
+      sound_host:
+        description: "Sound Pi SSH host (ADR-0159: voice stack)"
+        required: false
+        default: "10.1.1.22"
+        type: string
+      sound_container:
+        description: "Sound Pi Docker container containing the ROS2 CLI"
+        required: false
+        default: "voice-assistant"
+        type: string
+      runtime_user:
+        description: "SSH user on the robot"
+        required: false
+        default: "ros2"
+        type: string
+      runtime_topics:
+        description: "Comma-separated ROS2 topics for verbose inspection; empty = all discovered topics"
+        required: false
+        default: ""
+        type: string
+      fail_on_new:
+        description: "Fail the run when runtime findings appear that are not in architecture/runtime-baseline.json"
+        required: false
+        default: false
+        type: boolean
+      capture_vision:
+        description: "Also capture from the Vision Pi. Both Pis see one shared Zenoh graph, so Main Pi alone is the default (~5 min saved)"
+        required: false
+        default: false
+        type: boolean
+      capture_sound:
+        description: "Also capture from the Sound Pi (same shared Zenoh graph, so opt-in like capture_vision)"
+        required: false
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+
+concurrency:
+  group: architecture-audit-local-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  runtime:
+    name: Runtime ROS2 graph (self-hosted)
+    runs-on: [self-hosted, Linux, X64, rob-box]
+    timeout-minutes: 15
+    # Inputs reach run: scripts only through env, never as expressions inside the script.
+    env:
+      MAIN_HOST: ${{ inputs.main_host }}
+      MAIN_CONTAINER: ${{ inputs.main_container }}
+      VISION_HOST: ${{ inputs.vision_host }}
+      VISION_CONTAINER: ${{ inputs.vision_container }}
+      SOUND_HOST: ${{ inputs.sound_host }}
+      SOUND_CONTAINER: ${{ inputs.sound_container }}
+      RUNTIME_USER: ${{ inputs.runtime_user }}
+      RUNTIME_TOPICS: ${{ inputs.runtime_topics }}
+      CAPTURE_VISION: ${{ inputs.capture_vision }}
+      CAPTURE_SOUND: ${{ inputs.capture_sound }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          clean: true
+
+      - name: Check Pi SSH access
+        shell: bash
+        env:
+          SSHPASS: ${{ secrets.ROBOT_SSH_PASS || format('{0}{1}', 'o', 'pen') }}
+        run: |
+          set -euo pipefail
+          if [ -z "${SSHPASS:-}" ]; then
+            echo "::error::Secret ROBOT_SSH_PASS is empty or not set. Add it in Settings -> Secrets and variables -> Actions (robot SSH password for $RUNTIME_USER)."
+            exit 1
+          fi
+          if ! command -v sshpass >/dev/null 2>&1; then
+            sudo apt-get update -qq
+            sudo apt-get install -y sshpass
+          fi
+          command -v sshpass
+          targets=("$RUNTIME_USER@$MAIN_HOST")
+          if [ "$CAPTURE_VISION" = "true" ]; then
+            targets+=("$RUNTIME_USER@$VISION_HOST")
+          fi
+          if [ "$CAPTURE_SOUND" = "true" ]; then
+            targets+=("$RUNTIME_USER@$SOUND_HOST")
+          fi
+          for target in "${targets[@]}"; do
+            sshpass -e ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=10 "$target" "hostname"
+          done
+          echo "Runner: $(hostname)"
+          echo "Main Pi: $RUNTIME_USER@$MAIN_HOST"
+          echo "Vision Pi: $RUNTIME_USER@$VISION_HOST (capture_vision=$CAPTURE_VISION)"
+          echo "Sound Pi: $RUNTIME_USER@$SOUND_HOST (capture_sound=$CAPTURE_SOUND)"
+
+      - name: Set up Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.11"
+
+      - name: Install scanner dependency
+        run: python -m pip install --disable-pip-version-check pyyaml
+
+      - name: Build static evidence locally
+        run: |
+          mkdir -p architecture
+          python tools/architecture_audit.py --output architecture/inventory.json --markdown architecture/inventory.md
+          python tools/architecture_findings.py architecture/inventory.json --json architecture/findings.json --markdown architecture/findings.md
+          python tools/architecture_catalog.py architecture/inventory.json
+          python tools/architecture_class_metrics.py
+
+      - name: Capture Pi ROS2 runtime graphs
+        shell: bash
+        env:
+          SSHPASS: ${{ secrets.ROBOT_SSH_PASS || format('{0}{1}', 'o', 'pen') }}
+        run: |
+          set -euo pipefail
+          capture() {
+            local host="$1"
+            local container="$2"
+            local output="$3"
+            local args=(--output "$output"
+                        --remote-host "$host"
+                        --remote-user "$RUNTIME_USER"
+                        --remote-container "$container"
+                        --budget "$budget")
+            if [ -n "$RUNTIME_TOPICS" ]; then
+              args+=(--topics "$RUNTIME_TOPICS")
+            fi
+            python tools/architecture_runtime_snapshot.py "${args[@]}"
+          }
+          # Both Pis see one shared Zenoh graph (run 36422274238: 52 == 52 == 52
+          # nodes), so the Vision Pi and Sound Pi captures are opt-in.
+          # Deep-inspection wall-clock budget per capture (batch <= 300 s + per-topic
+          # fallback), so the captures stay inside timeout-minutes: 15. Topics left
+          # when it runs out are recorded as skipped: "budget" with a ::warning::.
+          budget=480
+          if [ "$CAPTURE_VISION" = "true" ] || [ "$CAPTURE_SOUND" = "true" ]; then
+            budget=240
+          fi
+          capture "$MAIN_HOST" "$MAIN_CONTAINER" architecture/runtime-main.json
+          merge_args=(--capture "Main Pi|$MAIN_HOST|$MAIN_CONTAINER|architecture/runtime-main.json")
+          if [ "$CAPTURE_VISION" = "true" ]; then
+            capture "$VISION_HOST" "$VISION_CONTAINER" architecture/runtime-vision.json
+            merge_args+=(--capture "Vision Pi|$VISION_HOST|$VISION_CONTAINER|architecture/runtime-vision.json")
+          fi
+          if [ "$CAPTURE_SOUND" = "true" ]; then
+            capture "$SOUND_HOST" "$SOUND_CONTAINER" architecture/runtime-sound.json
+            merge_args+=(--capture "Sound Pi|$SOUND_HOST|$SOUND_CONTAINER|architecture/runtime-sound.json")
+          fi
+
+          python tools/architecture_runtime_merge.py --output architecture/runtime.json "${merge_args[@]}"
+
+      - name: Compare static and runtime
+        run: |
+          python tools/architecture_runtime_diff.py architecture/inventory.json architecture/runtime.json \
+            --json architecture/runtime-diff.json --markdown architecture/runtime-diff.md
+
+      - name: Runtime findings (dead topics, type/QoS mismatch, multiple writers)
+        run: |
+          python tools/architecture_runtime_findings.py architecture/runtime.json \
+            --inventory architecture/inventory.json \
+            --baseline architecture/runtime-baseline.json
+
+      - name: Render runtime architecture graph
+        run: |
+          python tools/architecture_runtime_graph.py \
+            --runtime architecture/runtime.json \
+            --inventory architecture/inventory.json \
+            --repo-root . \
+            --output-dir architecture
+
+      # runtime-vision.json / runtime-sound.json exist only with capture_vision / capture_sound. upload-artifact@v4 globs
+      # all paths together and skips a missing one silently (@actions/glob: ENOENT ->
+      # continue); if-no-files-found only fires when nothing matches at all. Every
+      # other file is produced by an earlier step that fails the job if it cannot.
+      - name: Upload local architecture evidence
+        uses: actions/upload-artifact@v7
+        with:
+          name: architecture-local-runtime
+          path: |
+            architecture/inventory.json
+            architecture/inventory.md
+            architecture/findings.json
+            architecture/findings.md
+            architecture/node-catalog.md
+            architecture/topic-catalog.md
+            architecture/class-metrics.json
+            architecture/class-metrics.md
+            architecture/runtime.json
+            architecture/runtime-main.json
+            architecture/runtime-vision.json
+            architecture/runtime-sound.json
+            architecture/runtime-diff.json
+            architecture/runtime-diff.md
+            architecture/runtime-findings.json
+            architecture/runtime-findings.md
+            architecture/runtime-overview.mmd
+            architecture/runtime-graph.mmd
+            architecture/runtime-graph.md
+
+      - name: Publish runtime summary
+        run: |
+          {
+            echo "## Robot runtime ROS2 graph"
+            python -c 'import json; d=json.load(open("architecture/runtime.json")); print("- Source: " + str(d.get("captured_from"))); print("- Nodes (union): " + str(len(d.get("nodes", [])))); [print("- " + c["pi"] + ": " + c["host"] + " / " + c["container"]) for c in d.get("captures", [])]; print("- Topics: " + str(len(d.get("topics", []))) + ", not inspected (budget): " + str(sum(1 for i in d.get("topic_info", {}).values() if i.get("skipped")))); print("- Services: " + str(len(d.get("services", [])))); print("- Actions: " + str(len(d.get("actions", []))))'
+            echo
+            cat architecture/runtime-diff.md
+            echo
+            cat architecture/runtime-findings.md
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          # Container map + one collapsible diagram per container + placement
+          # evidence (tools/architecture_runtime_graph.py).
+          {
+            echo
+            cat architecture/runtime-graph.md
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      # Last step, so the graph, artifacts and summary are published first.
+      - name: Fail on new runtime findings
+        if: inputs.fail_on_new
+        run: |
+          python tools/architecture_runtime_findings.py architecture/runtime.json \
+            --inventory architecture/inventory.json \
+            --baseline architecture/runtime-baseline.json \
+            --fail-on-new

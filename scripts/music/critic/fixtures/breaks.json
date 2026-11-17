@@ -1,0 +1,127 @@
+{
+ "style": "breaks",
+ "source": "style_critic/breaks/breaks.md, раздел «Ответ после того как дали посмотреть на код» (Qwen3.8 Omni Max, 08.10); утверждения переведены вручную в схему judge.py; confidence=0.5 — судья его не давал",
+ "tracks": [
+  {
+   "model": "set52930_01_A_fc73a59e.json",
+   "start_s": 0.0
+  },
+  {
+   "model": "set52930_02_B_d28b4099.json",
+   "start_s": 127.06
+  }
+ ],
+ "claims": [
+  {
+   "t0": 7,
+   "t1": 85,
+   "kind": "out_of_key",
+   "claim": "b2 sinepad играет C-E-G (60,64,67) — C major в заявленном G# major",
+   "confidence": 0.5,
+   "args": {
+    "role": "pad",
+    "midi": [
+     60,
+     64,
+     67
+    ]
+   }
+  },
+  {
+   "t0": 126,
+   "t1": 134,
+   "kind": "out_of_key",
+   "claim": "p3: 74 (D натуральная) не в G# major — съезд/грязный проходящий",
+   "confidence": 0.5,
+   "args": {
+    "role": "lead",
+    "midi": [
+     74
+    ]
+   }
+  },
+  {
+   "t0": 85,
+   "t1": 113,
+   "kind": "hole",
+   "claim": "мелодия гейтится amp=var(...) на 64 бита (28 с) — обрыв фразы, дыра",
+   "confidence": 0.5,
+   "args": {
+    "role": "lead"
+   }
+  },
+  {
+   "t0": 14,
+   "t1": 99,
+   "kind": "param_reading",
+   "claim": "c3 loop tempo=137 при 136 BPM — дрейф брейкбита от сетки",
+   "confidence": 0.5,
+   "args": {
+    "param": "tempo",
+    "value": 137
+   }
+  },
+  {
+   "t0": 141,
+   "t1": 195,
+   "kind": "param_reading",
+   "claim": "tempo=126 при 136 BPM — сэмпл отстаёт на 10 BPM",
+   "confidence": 0.5,
+   "args": {
+    "param": "tempo",
+    "value": 126
+   }
+  },
+  {
+   "t0": 85,
+   "t1": 99,
+   "kind": "hole",
+   "claim": "нет кика и хэтов 84.7–98.8 с, остаётся тихий брейкбит — грув разваливается",
+   "confidence": 0.5,
+   "args": {
+    "role": "kick"
+   }
+  },
+  {
+   "t0": 99,
+   "t1": 113,
+   "kind": "hole",
+   "claim": "хэты молчат до 112.9 с — неполный рисунок",
+   "confidence": 0.5,
+   "args": {
+    "role": "hats"
+   }
+  },
+  {
+   "t0": 127,
+   "t1": 141,
+   "kind": "overlap",
+   "claim": "трек B на 127.06 с, A кончается на 141.18 с — переход 14 с",
+   "confidence": 0.5,
+   "args": {
+    "seconds": 14.1
+   }
+  },
+  {
+   "t0": 127,
+   "t1": 141,
+   "kind": "hole",
+   "claim": "B начинается с нулевой ударной части, A теряет опору — ритмическая яма",
+   "confidence": 0.5,
+   "args": {
+    "role": "kick"
+   }
+  },
+  {
+   "t0": 14,
+   "t1": 99,
+   "kind": "level",
+   "claim": "хэты 0.85 слишком громкие относительно брейка 0.119",
+   "confidence": 0.5,
+   "args": {
+    "role": "hats",
+    "direction": "high"
+   }
+  }
+ ]
+}

@@ -39,7 +39,7 @@ black .
 black --check .
 
 # Format specific file
-black src/rob_box_voice/audio_node.py
+black src/rob_box_voice/rob_box_voice/audio_node.py
 ```
 
 ### Import sorting
@@ -725,18 +725,6 @@ flake8 src/rob_box_voice/
 mypy src/rob_box_voice/
 ```
 
-### Pre-commit hook
-
-Already configured in `.pre-commit-config.yaml`:
-
-```bash
-# Install pre-commit
-pip install pre-commit
-pre-commit install
-
-# Now black, isort, flake8 run automatically on git commit
-```
-
 ### IDE Integration
 
 **VS Code (settings.json):**
@@ -778,7 +766,6 @@ pre-commit install
 
 - [LINTING_GUIDE.md](./LINTING_GUIDE.md) - Linter setup and usage
 - [TESTING_GUIDE.md](./TESTING_GUIDE.md) - Testing best practices
-- [.pre-commit-config.yaml](../../.pre-commit-config.yaml) - Automated checks
 
 ---
 

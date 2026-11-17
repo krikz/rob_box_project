@@ -1,0 +1,20 @@
+# Телефон с фото владельца ставится на ту же подставку, что и маска
+# (маски в кадре нет) — коридор anchor_cx тот же.
+scene: s11_owner_photo_spoof
+description: фото владельца на экране телефона — подделка, считается отдельно
+participants:
+  - {label: owner, truth: Дэнчик, kind: person, known_before: true}
+  - {label: photo, truth: Дэнчик, kind: photo, known_before: false, anchor_cx: [0.05, 0.40]}  # ПОДСТАВКА
+steps:
+  - say: "Начинаю сцену одиннадцать. Откройте на телефоне своё фото анфас."
+    wait_s: 10
+  - enter: owner
+    say: "Дэнчик, войдите в кадр с телефоном."
+    wait_s: 3
+  - enter: photo
+    say: "Поставьте телефон экраном к камере на подставку."
+    wait_s: 3
+  - leave: owner
+    say: "Дэнчик, выйдите из кадра. Телефон остаётся."
+  - say: "Тишина."
+    wait_s: 30

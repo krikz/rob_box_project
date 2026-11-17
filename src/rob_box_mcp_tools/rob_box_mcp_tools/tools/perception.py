@@ -7,19 +7,24 @@ perception.py - Инструменты для запроса данных вос
 - GetBatteryLevelTool: Получить уровень заряда батареи
 """
 
-from typing import List, Optional
-import json
+from typing import Callable, List, Optional
+import time
 
 from ..base import MCPTool, MCPToolParameter, MCPToolResult, ToolExecutionType
+
+#: Агрегатор шлёт контекст 2 раза в секунду. Снимок старше этого - восприятие молчит (issue #4352).
+CONTEXT_STALE_S = 5.0
 
 
 class GetPerceptionContextTool(MCPTool):
     """Инструмент для получения контекста восприятия."""
 
-    def __init__(self, node):
+    def __init__(self, node, clock: Callable[[], float] = time.monotonic):
         super().__init__(node)
         # Кэш последнего контекста (будет обновляться из подписки)
         self.last_context: Optional[dict] = None
+        self._clock = clock
+        self._received_at: Optional[float] = None
 
     @property
     def name(self) -> str:
@@ -27,7 +32,20 @@ class GetPerceptionContextTool(MCPTool):
 
     @property
     def description(self) -> str:
-        return "Получить текущий контекст восприятия робота (vision, sensors, environment)."
+        # Честное описание (issue #2532): что реально лежит в контексте,
+        # задаётся PROJECTED_FIELDS в perception_projection.py. Зрительные
+        # события (vision_events_json) входят туда с PR #2583 — stub-детекции
+        # отсекает продюсер. Про камеру сказано первым: без этого на «что ты
+        # видишь» модель не находила тул и отвечала из головы (16.09.2026).
+        return (
+            "Что робот сейчас видит камерой и чувствует. vision_context — готовая фраза о кадре "
+            "(лица с именем, если узнаны, силуэты, метки AprilTag; «нет данных», если данных нет) — "
+            "говори о кадре только по ней. faces — лица в кадре (name=null — не узнан); лицо в кадре — "
+            "не обязательно тот, кто с тобой говорит: кто говорит — раздел speaker хода. Ещё: "
+            "время суток, заряд батареи, температура, движение (is_moving), здоровье системы, "
+            "режим картографирования, сводка недавних событий. Вызывай на «что ты видишь», "
+            "«кто перед тобой», «видишь меня»."
+        )
 
     @property
     def parameters(self) -> List[MCPToolParameter]:
@@ -47,11 +65,19 @@ class GetPerceptionContextTool(MCPTool):
                 success=False, error="Контекст восприятия недоступен", message="Данные восприятия ещё не получены"
             )
 
+        age = self._clock() - self._received_at
+        if age > CONTEXT_STALE_S:
+            # Старый снимок не выдаём за «сейчас»: кадр и метки обнуляются честной фразой.
+            data = dict(self.last_context, faces=[], apriltag_ids=[], perception_age_s=round(age, 1))
+            data["vision_context"] = f"камера: нет данных (восприятие молчит {age:.0f} с)"
+            return MCPToolResult(success=True, data=data, message="Контекст восприятия устарел")
+
         return MCPToolResult(success=True, data=self.last_context, message="Контекст восприятия получен")
 
     def update_context(self, context: dict):
         """Обновить кэш контекста (вызывается из MCP сервера при получении данных)."""
         self.last_context = context
+        self._received_at = self._clock()
 
 
 class GetBatteryLevelTool(MCPTool):

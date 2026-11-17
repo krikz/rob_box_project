@@ -1,0 +1,12 @@
+# Пример конфига гейта студии (scripts/studio/studio_ro_gate.sh); install_ro_key.sh кладёт его в ~/.config/studio_ro/.
+# Один элемент на строку, # — комментарий. Пути абсолютные; несуществующие гейт молча пропускает.
+# /data (лица, голоса, speakers.db) сюда НЕ включать: гейт всё равно отобьёт его жёстким запретом.
+# Sound Pi 10.1.1.12 / 10.1.1.22: звук.
+zenoh-router-sound
+supercollider
+sensor-bridge
+avatar-arbiter
+# Решение Шифу 06.11: открыть все логи (в логах — речь людей мастерской, диалог, переписка Telegram).
+voice-assistant
+avatar-supervisor
+telegram-bot

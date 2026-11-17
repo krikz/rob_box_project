@@ -281,7 +281,7 @@ jobs:
 
 ### Обновление workflows для локальной сборки
 
-Пример изменения в `.github/workflows/build-main-services.yml`:
+Пример изменения в `.github/workflows/L-Build-All-Services.yml`:
 
 ```yaml
 jobs:

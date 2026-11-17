@@ -9,6 +9,7 @@ This directory contains all automated workflows for the Rob Box project.
 | Workflow | Trigger | Purpose |
 |----------|---------|---------|
 | **L: Deploy and Verify** | Manual | Deploy and verify robot system on both Pis |
+| **F: Update Robot** | Manual | Fleet console (ADR-0168): phase B `status` only — reads chuangong agent reports via zenoh REST, no ssh |
 
 ### 🏗️ Build Workflows
 
@@ -20,9 +21,17 @@ This directory contains all automated workflows for the Rob Box project.
 | **G: Build Main Pi Services** | Called by other workflows | Build Main Pi services |
 | **L: Build All Services** | Manual | Build all services on local build machine |
 | **L: Build Base Images** | Called by local workflows | Build base images locally |
-| **L: Build Vision Pi Services** | Called by local workflows | Build Vision Pi services locally |
-| **L: Build Main Pi Services** | Called by local workflows | Build Main Pi services locally |
+| **L: Build Pi Services** | Manual / Called by L: Build All Services | Build one Pi's services locally (input `pi`: main / sound / vision) |
 | **L: Build Single Service** | Manual | Build a single service on local build machine |
+
+### 🏛️ Architecture Audit
+
+| Workflow | Runner | Purpose |
+|----------|--------|---------|
+| **G: Architecture Audit** | GitHub-hosted | Static architecture inventory and structural findings |
+| **L: Architecture Audit** | Self-hosted `rob-box` | Live ROS2 nodes/topics/services/actions and runtime diff |
+
+The `L:` audit is the one to use when collecting the real robot ROS2 graph. The robot network is intentionally not accessed from GitHub-hosted runners.
 
 ### 🔄 CI/CD Automation
 
@@ -41,8 +50,8 @@ This directory contains all automated workflows for the Rob Box project.
 
 ## Naming Convention
 
-- **G-** prefix = GitHub Actions runners (cloud-based)
-- **L-** prefix = Local self-hosted runners (build machine)
+- **G-** prefix = GitHub-hosted runners (cloud-based)
+- **L-** prefix = local self-hosted runners (build machine / robot network)
 
 ## Common Use Cases
 

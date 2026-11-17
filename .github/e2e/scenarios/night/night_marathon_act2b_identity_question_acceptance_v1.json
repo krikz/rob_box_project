@@ -1,0 +1,19 @@
+{
+  "name": "night_marathon_act2b_identity_question_acceptance_v1",
+  "schema_version": 1,
+  "_comment": [
+    "GATE-1 (ADR-0022 §4.1) агрегат акта «Узнавание без переспроса» (#3992, #3993; решение Шифу 26.10).",
+    "Обязательных на весь акт тулов нет: Саша и Борис записаны в акте 2, повторная регистрация",
+    "(склейка с их профилем или «уже знаю») допустима, но не нужна. Проверки — по шагам:",
+    "вердикт биометрии «👤 Speaker: '<имя>' confidence>=0.8» (= name_state confirmed), формы вопроса",
+    "личности в must_not_say, факты акта 2 из памяти, незнакомка не опознана как Саша/Борис."
+  ],
+  "expected_tool_calls": [],
+  "must_not_call": [],
+  "voice_provenance": {
+    "voice": "anton/ermil/zahar",
+    "tts": "minimax",
+    "volume": 100,
+    "llm": "minimax-m3"
+  }
+}

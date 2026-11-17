@@ -68,6 +68,110 @@ TB303_SYNTHDEF = """SynthDef.new(\\tb303, {
 }).add;
 """
 
+# Issue #3008: upstream renardo_lib fuzz.scd (a) used non-band-limited LFSaw
+# as the audible carrier and aliased badly on 16 kHz scsynth; (b) hard-coded
+# `curve:'step'` envelope ignored atk/rel arguments and clicked on every note;
+# (c) had no `lpf=` arg, so Renardo-side `lpf=` was a silent no-op. The patch
+# keeps the original LFSaw FM shape but switches the audible
+# carrier to SuperCollider's built-in band-limited Saw, then keeps the LPF as
+# the user's tonal cutoff / additional low-rate safety margin.
+#
+# Issue #3008 (regression 27.09): the FM modulator is audio-rate `LFSaw.ar`,
+# not `.kr`. scsynth runs with a 1024-sample block (start_supercollider.sh
+# `-z 1024`), so at 16 kHz the control rate is only ~15.6 Hz: a `.kr`
+# modulator sweeping at freq/2 = 20..40 Hz for bass notes is sampled below its
+# own frequency and the carrier pitch jumps every 64 ms — the audible
+# "burble/fart" that survived the first patch.
+FUZZ_SYNTHDEF = """SynthDef.new(\\fuzz, {
+        |amp=1, sus=1, pan=0, freq=0, vib=0, fmod=0, rate=0, bus=0, blur=1, beat_dur=1, atk=0.01, decay=0.01, rel=0.01, peak=1, level=0.8, lpf=4000|
+        var osc, env, nyquist, cutoff, baseFreq, bad;
+        sus = sus * blur;
+        baseFreq = Lag.kr(In.kr(bus, 1).max(20), 0.01);
+        freq = [baseFreq, baseFreq + fmod];
+        freq = (freq / 2);
+        amp = (amp / 6);
+        osc = Saw.ar(LFSaw.ar(freq, 0, freq, (freq * 2)));
+        bad = CheckBadValues.ar(osc, 0, 0);
+        osc = Select.ar(bad, [osc, DC.ar(0), DC.ar(0), DC.ar(0)]);
+        nyquist = SampleRate.ir * 0.5;
+        cutoff = min(lpf.max(80), nyquist * 0.45);
+        osc = LPF.ar(osc, Lag.kr(cutoff, 0.05));
+        env = EnvGen.ar(Env([0, amp, amp, 0], [atk.max(0.005), sus.max(0.05), rel.max(0.05)], curve: -4), doneAction: 0);
+        osc = (osc * env);
+        osc = Mix(osc) * 0.5;
+        osc = Pan2.ar(osc, pan);
+        ReplaceOut.ar(bus, osc)
+}).add;
+"""
+
+
+# Issue #3432: upstream renardo_lib 0.9.13 ``loop`` (LoopPygenSynthDef) has a
+# hard-coded ``Env([0,1,1,0],[0.05, sus-0.05, 0.05])``: a 50 ms fade-in that
+# swallows the transient of a short hit, and a 50 ms release AFTER ``sus`` —
+# every psr hit on a 16th (109 ms at 138 BPM) overlapped the next one by half a
+# step, every ``chop`` piece overlapped the next piece, and a file shorter than
+# ``sus`` + 50 ms restarted its head inside the release (``PlayBuf(loop: 1)``).
+# DJ_Dave's Strudel samples start on the first sample and ``legato(1)`` ends a
+# piece where the next begins. The patch keeps the upstream argument list and
+# playback; the envelope uses the ``atk``/``rel`` args (seconds, Renardo sends
+# the SynthDef defaults 0.01 when the player does not set them) and fits INSIDE
+# ``sus``: total length == ``sus``.
+#
+# ADR-0158 PR-8 tails (14.10): edges are a quarter sine (``\\wel``) — a fade-out
+# (cos) overlapping a fade-in (sin) sums to constant power, so a cached track
+# looping into itself (``render.audio``: the next pass starts one crossfade
+# before this note ends) has no dip (was −35.6 dB for ~2 s with linear edges
+# meeting at the boundary). ``fdeck`` (1 = deck A, 2 = deck B, 0 = not a deck
+# file) lets ``/n_set 1 fadeT <s> fadeA 0`` fade only deck A's file notes
+# (``render.audio.deck_fade_args``): a file note plays its whole ``sus`` after
+# its player stops, and ``/g_freeAll 1`` would also kill the incoming result.
+#
+# Deck file keep-alive (live 14.10, silent bridge): every Renardo note ends in
+# ``makeSound`` (``sceffects/makeSound.scd``) with ``DetectSilence.ar(osc,
+# amp: 0.0001, time: 0.1, doneAction: 14)`` — 0.1 s below −80 dBFS frees the
+# note's whole group. A deck file note fades in from 0 over the crossfade
+# (``atk`` = 16 s): a generated track's head (a click, then ~0.1 s at
+# −70 dBFS) times a near-zero edge is "silence", so the bridge's one note per
+# pass died 128 ms after ``/n_go`` (``/notify``) and the deck stayed silent
+# until the result came in. File notes of a deck (``fdeck > 0``) add a DC
+# floor ``LOOP_ALIVE_FLOOR`` (inaudible, −70 dBFS) for ``sus`` and under the
+# deck fade — the group lives exactly as long as the note sounds. Synthesis
+# notes (``fdeck = 0``) are untouched.
+MAKESOUND_SILENCE_AMP = 0.0001
+LOOP_ALIVE_FLOOR = 0.0003
+LOOP_SYNTHDEF = """SynthDef.new(\\loop,
+{|amp=1, sus=1, pan=0, freq=0, vib=0, fmod=0, rate=1.0, bus=0, blur=1, beat_dur=1,
+atk=0.01, decay=0.01, rel=0.01, peak=1, level=0.8, buf=0, pos=0, room=0.1, sample=0, spack=0, beat_stretch=0,
+fdeck=0, fadeA=1, fadeB=1, fadeT=0.01|
+var osc, edgeA, edgeR, deckGain, alive;
+sus = sus * blur;
+rate = In.kr(bus, 1);
+rate = (rate * (1-(beat_stretch>0))) + ((BufDur.kr(buf) / sus) * (beat_stretch>0));
+osc = PlayBuf.ar(2, buf, BufRateScale.kr(buf) * rate, startPos: BufSampleRate.kr(buf) * pos, loop: 1.0);
+edgeA = atk.clip(0.001, sus * 0.5);
+edgeR = rel.clip(0.001, sus * 0.5);
+osc = osc * EnvGen.ar(Env([0, 1, 1, 0], [edgeA, sus - edgeA - edgeR, edgeR], \\wel));
+deckGain = EnvGen.ar(Env([1, 1, 0], [0, 1], \\wel, 1), Select.kr(fdeck, [1, fadeA, fadeB]), timeScale: fadeT.max(0.01));
+osc = (osc * deckGain * amp);
+osc = Mix(osc) * 0.5;
+osc = Pan2.ar(osc, pan);
+alive = EnvGen.ar(Env([1, 1, 0], [sus, 0])) * deckGain * (fdeck > 0) * %(floor)s;
+osc = osc + alive;
+\tReplaceOut.ar(bus, osc)}).add;
+""" % {"floor": LOOP_ALIVE_FLOOR}
+
+
+# Issue #3008 (regression 27.09): some synths are NOT file-based in upstream
+# renardo_lib — they are Python-generated (``DefaultPygenSynthDef`` in
+# ``runtime/synthdefs_initialisation/python_defined_synthdefs.py``). Their
+# ``add()`` regenerates ``sclang_code/tmp_code/scsynth/<name>.scd`` from Python
+# on every music start and sends THAT path to sclang via ``/foxdot``, which
+# replaces our build-time patch of ``sclang_code/scsynth/<name>.scd`` in
+# scsynth. foxdot_init.sc therefore redirects ``/foxdot`` for these names to
+# the patched file. Keep in sync with ``pygenPatchedSynths`` in
+# docker/sound/voice_assistant/foxdot_init.sc (guarded by a unit test).
+PYGEN_PATCHED_SYNTHS: tuple[str, ...] = ("fuzz", "loop")
+
 
 def resolve_conflicted_scd_content(content: str) -> str:
     """Resolve all git conflict blocks by keeping the bottom/theirs variant."""
@@ -118,6 +222,33 @@ def patch_tb303_scd_content(content: str) -> str:
     return TB303_SYNTHDEF
 
 
+def patch_fuzz_scd_content(content: str) -> str:
+    """Replace fuzz.scd content with a 16 kHz-safe anti-aliasing variant.
+
+    See :doc:`docs/adr/0129-fuzz-synthdef-anti-aliasing-16khz` for the
+    root-cause analysis (issue #3008). The upstream ``renardo_lib`` synth
+    ships with ``LFSaw`` + ``curve:'step'`` envelope and **no** ``lpf``
+    argument, which aliases and clicks on the robot's 16 kHz scsynth.
+    """
+
+    if "\\fuzz" not in content and "fuzz" not in content:
+        return content
+
+    if content == FUZZ_SYNTHDEF:
+        return content
+
+    return FUZZ_SYNTHDEF
+
+
+def patch_loop_scd_content(content: str) -> str:
+    """Replace loop.scd with the edges-inside-``sus`` envelope (issue #3432)."""
+
+    if "\\loop" not in content:
+        return content
+
+    return LOOP_SYNTHDEF
+
+
 def apply_renardo_synthdef_patches(sclang_dir: Path) -> list[str]:
     """Patch broken Renardo .scd files in place and return modified file names."""
 
@@ -138,6 +269,12 @@ def apply_renardo_synthdef_patches(sclang_dir: Path) -> list[str]:
 
         if scd_file.name == "tb303.scd":
             updated = patch_tb303_scd_content(updated)
+
+        if scd_file.name == "fuzz.scd":
+            updated = patch_fuzz_scd_content(updated)
+
+        if scd_file.name == "loop.scd":
+            updated = patch_loop_scd_content(updated)
 
         if updated != original:
             scd_file.write_text(updated, encoding="utf-8")

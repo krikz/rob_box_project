@@ -20,12 +20,18 @@ rtabmap mode is switched via ROS2 services (set_mode_mapping /
 set_mode_localization) by the MCP tools — the actual source of truth
 is the running rtabmap node, not a file.
 
+Имя и id карты здесь НЕ хранятся (#4392): одно место правды об активной карте -
+строка ``maps.is_active`` в БД инструментов (``WaypointStore``), FSM читает её
+через ``active_map`` (вызываемое, обычно ``waypoint_store.get_active_map``).
+Раньше имя жило ещё и тут (с ``None`` после рестарта) и в ``/maps/mapping_state.json``
+на Main Pi (не читается с ``4f5baba18``) - три места, три разных ответа.
+
 Thread-safe: every public method acquires ``_lock``.
 """
 
 import threading
 import time
-from typing import Optional
+from typing import Callable, Dict, Optional
 
 
 # Tools that are allowed to execute even during active mapping
@@ -58,15 +64,13 @@ class MappingState:
     can issue a new "start mapping" command if needed.
     """
 
-    def __init__(self, path: Optional[str] = None) -> None:
+    def __init__(self, path: Optional[str] = None,
+                 active_map: Optional[Callable[[], Optional[Dict]]] = None) -> None:
         # path argument kept for backward compat with tests — ignored
         self._lock = threading.Lock()
-        self._state: dict = {
-            "mode": "localization",
-            "map_name": None,
-            "map_id": None,
-            "updated_at": time.time(),
-        }
+        self._active_map = active_map
+        self._mode = "localization"
+        self._updated_at = time.time()
 
     # ------------------------------------------------------------------
     # Public API
@@ -75,40 +79,48 @@ class MappingState:
     def is_mapping(self) -> bool:
         """Return True if the robot is currently in active mapping mode."""
         with self._lock:
-            return self._state["mode"] == "mapping"
+            return self._mode == "mapping"
 
     def is_localization(self) -> bool:
         """Return True if the robot is in localization/navigation mode."""
         with self._lock:
-            return self._state["mode"] != "mapping"
+            return self._mode != "mapping"
+
+    def _map_row(self) -> Dict:
+        """Строка активной карты владельца (``maps``); нет источника или он упал - пусто, имени не выдумываем."""
+        if self._active_map is None:
+            return {}
+        try:
+            return dict(self._active_map() or {})
+        except Exception:  # noqa: BLE001 - БД карт недоступна: имя неизвестно, режим FSM от этого не зависит
+            return {}
 
     def get(self) -> dict:
-        """Return a copy of the current state dict."""
+        """Режим FSM и активная карта (имя и id - из владельца карт, не копия)."""
         with self._lock:
-            return dict(self._state)
+            mode, updated_at = self._mode, self._updated_at
+        row = self._map_row()
+        return {"mode": mode, "map_name": row.get("name"), "map_id": row.get("map_id"), "updated_at": updated_at}
 
-    def set_mapping(self, map_name: Optional[str] = None, map_id: Optional[str] = None) -> None:
+    def set_mapping(self) -> None:
         """Transition to mapping mode (called by StartMappingTool)."""
         with self._lock:
-            self._state = {
-                "mode": "mapping",
-                "map_name": map_name,
-                "map_id": map_id,
-                "updated_at": time.time(),
-            }
+            self._mode, self._updated_at = "mapping", time.time()
 
-    def set_localization(self, map_name: Optional[str] = None, map_id: Optional[str] = None) -> None:
+    def set_localization(self) -> None:
         """Transition to localization mode (called by FinishMappingTool / LoadMapTool)."""
         with self._lock:
-            self._state = {
-                "mode": "localization",
-                "map_name": map_name or self._state.get("map_name"),
-                "map_id": map_id or self._state.get("map_id"),
-                "updated_at": time.time(),
-            }
+            self._mode, self._updated_at = "localization", time.time()
 
     def is_tool_allowed(self, tool_name: str) -> bool:
         """Return True if *tool_name* may execute in the current mode."""
         if not self.is_mapping():
             return True  # localization mode — everything allowed
         return tool_name in MAPPING_WHITELIST
+
+    def block_data(self) -> dict:
+        """Данные отказа FSM-гарда (#4363): структурная причина и имя пишущейся карты - фразу строит диалог
+        (``knowledge.MAP_FAILED``), а не парсинг текста ошибки."""
+        from rob_box_dialog import knowledge as kn
+
+        return {"reason": kn.MAP_ACTIVE_REASON, kn.MAP_ACTIVE_FIELD: self.get().get("map_name")}

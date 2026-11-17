@@ -23,7 +23,7 @@ source /opt/ros/humble/setup.bash
 
 # Zenoh env (adjust paths)
 export RMW_IMPLEMENTATION=rmw_zenoh_cpp
-export ZENOH_SESSION_CONFIG_URI=$(pwd)/local_test/zenoh_local_session.json5
+export ZENOH_SESSION_CONFIG_URI=$(pwd)/tools/dev/zenoh_local_session.json5
 export ROS_AUTOMATIC_DISCOVERY_RANGE=LOCALHOST
 
 # Verify topics
@@ -38,19 +38,19 @@ ros2 topic list | grep -E "odom|cmd_vel"
 ### 2. Run move_test.py
 
 ```bash
-# Usage: python3 local_test/move_test.py [speed_m/s] [duration_s]
+# Usage: python3 tools/dev/move_test.py [speed_m/s] [duration_s]
 
 # 10 cm test (default): 0.1 m/s × 1s
-python3 local_test/move_test.py
+python3 tools/dev/move_test.py
 
 # 50 cm test: 0.1 m/s × 5s
-python3 local_test/move_test.py 0.1 5.0
+python3 tools/dev/move_test.py 0.1 5.0
 
 # 1 meter test: 0.2 m/s × 5s
-python3 local_test/move_test.py 0.2 5.0
+python3 tools/dev/move_test.py 0.2 5.0
 
 # 2 meter test: 0.2 m/s × 10s
-python3 local_test/move_test.py 0.2 10.0
+python3 tools/dev/move_test.py 0.2 10.0
 ```
 
 ### 3. Read output
@@ -99,7 +99,7 @@ where `ratio = physical_distance / expected_distance`
 
 **Procedure:**
 1. Set `min_duty` to `0.0` temporarily (eliminates deadzone distortion)
-2. Run 1m test: `python3 local_test/move_test.py 0.2 5.0`
+2. Run 1m test: `python3 tools/dev/move_test.py 0.2 5.0`
 3. Measure physical distance with ruler
 4. Calculate ratio = ruler_distance / expected_distance
 5. New gear_ratio = current_gear_ratio / ratio
@@ -131,7 +131,7 @@ where `ratio = physical_distance / expected_distance`
 1. Set desired `min_duty` in xacro
 2. Rebuild and restart
 3. Test turning: set a nav2 goal that requires 90°+ rotation
-4. Test straight line: `python3 local_test/move_test.py 0.2 5.0` (1m)
+4. Test straight line: `python3 tools/dev/move_test.py 0.2 5.0` (1m)
 5. If robot can't turn → increase min_duty
 6. If straight line overshoots → decrease min_duty
 
@@ -175,7 +175,7 @@ Commands go through twist_mux. Only one source controls at a time:
 
 | File | Purpose |
 |------|---------|
-| `local_test/move_test.py` | Movement test script |
+| `tools/dev/move_test.py` | Movement test script |
 | `src/rob_box_description/urdf/rob_box_ros2_control.xacro` | gear_ratio, min_duty, wheel params |
 | `src/vesc_nexus/vesc_ackermann/src/vesc_handler.cpp` | Speed calculation, deadzone compensation |
 | `docker/main/config/controllers/controller_manager.yaml` | diff_drive_controller params |

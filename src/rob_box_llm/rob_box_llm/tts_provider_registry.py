@@ -25,6 +25,10 @@ Composition-root contract:
 * :meth:`TTSProviderFactory.create` is the only entry point for both
   ROS path (``tts_node._synthesize_and_play``) and CLI path (future).
 
+The harness-side sibling (``rob_box_harness.tts.registry`` with its
+MiniMax wrapper) was removed in #4240: it had no consumers, and the
+wrapper was a second ``minimax_tts`` («не держать две реализации»).
+
 See also:
 
 * ``docs/architecture/tts-extension-points.md`` — full design doc

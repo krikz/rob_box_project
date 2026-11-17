@@ -51,7 +51,7 @@ Vision Pi использует **dual-interface** конфигурацию с а
 
 ```bash
 # 1. Скопируйте скрипт на Vision Pi
-scp scripts/setup_vision_pi_network.sh ros2@VISION.local:~/
+scp scripts/setup/setup_vision_pi_network.sh ros2@VISION.local:~/
 
 # 2. Запустите на Vision Pi
 ssh ros2@VISION.local
@@ -81,7 +81,7 @@ network:
       optional: true
       access-points:
         "ROS2":
-          password: "1234567890"
+          password: "<пароль Wi-Fi — вводится при настройке, в репо не хранится>"
       dhcp4-overrides:
         route-metric: 600  # Низкий приоритет
       nameservers:
@@ -185,7 +185,7 @@ ssh ros2@10.1.1.21   # WiFi (резервный)
 
 ### Автоматизация
 
-Скрипт `scripts/setup_vision_pi_network.sh` автоматизирует всю настройку:
+Скрипт `scripts/setup/setup_vision_pi_network.sh` автоматизирует всю настройку:
 
 ```bash
 # Использование

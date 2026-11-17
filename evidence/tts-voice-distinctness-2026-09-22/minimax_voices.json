@@ -1,0 +1,135 @@
+{
+  "provider": "minimax",
+  "identify_threshold": 0.72,
+  "register_match_threshold": 0.75,
+  "voices": [
+    "Russian_ReliableMan",
+    "Russian_HandsomeChildhoodFriend",
+    "Russian_Bad-temperedBoy",
+    "Russian_AttractiveGuy",
+    "Russian_BrightHeroine",
+    "Russian_AmbitiousWoman",
+    "Russian_PessimisticGirl",
+    "Russian_CrazyQueen"
+  ],
+  "intra_voice_min_cos": {
+    "Russian_ReliableMan": 0.9660779237747192,
+    "Russian_HandsomeChildhoodFriend": 0.9630387425422668,
+    "Russian_Bad-temperedBoy": 0.9703965783119202,
+    "Russian_AttractiveGuy": 0.9535808563232422,
+    "Russian_BrightHeroine": 0.9630523324012756,
+    "Russian_AmbitiousWoman": 0.9515501856803894,
+    "Russian_PessimisticGirl": 0.9777201414108276,
+    "Russian_CrazyQueen": 0.9557609558105469
+  },
+  "inter_voice_max_cos": {
+    "Russian_ReliableMan|Russian_HandsomeChildhoodFriend": 0.7385525107383728,
+    "Russian_ReliableMan|Russian_Bad-temperedBoy": 0.6173436045646667,
+    "Russian_ReliableMan|Russian_AttractiveGuy": 0.7103283405303955,
+    "Russian_ReliableMan|Russian_BrightHeroine": 0.5994115471839905,
+    "Russian_ReliableMan|Russian_AmbitiousWoman": 0.6191754341125488,
+    "Russian_ReliableMan|Russian_PessimisticGirl": 0.5359381437301636,
+    "Russian_ReliableMan|Russian_CrazyQueen": 0.5633721351623535,
+    "Russian_HandsomeChildhoodFriend|Russian_Bad-temperedBoy": 0.518555760383606,
+    "Russian_HandsomeChildhoodFriend|Russian_AttractiveGuy": 0.8098640441894531,
+    "Russian_HandsomeChildhoodFriend|Russian_BrightHeroine": 0.5044190883636475,
+    "Russian_HandsomeChildhoodFriend|Russian_AmbitiousWoman": 0.5155333876609802,
+    "Russian_HandsomeChildhoodFriend|Russian_PessimisticGirl": 0.5274375081062317,
+    "Russian_HandsomeChildhoodFriend|Russian_CrazyQueen": 0.4701213538646698,
+    "Russian_Bad-temperedBoy|Russian_AttractiveGuy": 0.5037062168121338,
+    "Russian_Bad-temperedBoy|Russian_BrightHeroine": 0.7708402872085571,
+    "Russian_Bad-temperedBoy|Russian_AmbitiousWoman": 0.7765262722969055,
+    "Russian_Bad-temperedBoy|Russian_PessimisticGirl": 0.7577208280563354,
+    "Russian_Bad-temperedBoy|Russian_CrazyQueen": 0.7869417071342468,
+    "Russian_AttractiveGuy|Russian_BrightHeroine": 0.4955090284347534,
+    "Russian_AttractiveGuy|Russian_AmbitiousWoman": 0.47349902987480164,
+    "Russian_AttractiveGuy|Russian_PessimisticGirl": 0.46114420890808105,
+    "Russian_AttractiveGuy|Russian_CrazyQueen": 0.4664006531238556,
+    "Russian_BrightHeroine|Russian_AmbitiousWoman": 0.8638705015182495,
+    "Russian_BrightHeroine|Russian_PessimisticGirl": 0.7569179534912109,
+    "Russian_BrightHeroine|Russian_CrazyQueen": 0.8161699175834656,
+    "Russian_AmbitiousWoman|Russian_PessimisticGirl": 0.7670496702194214,
+    "Russian_AmbitiousWoman|Russian_CrazyQueen": 0.8156244158744812,
+    "Russian_PessimisticGirl|Russian_CrazyQueen": 0.6569730043411255
+  },
+  "scenario_pairs": [
+    {
+      "scenario_voices": [
+        "anton",
+        "ermil"
+      ],
+      "provider_voices": [
+        "Russian_ReliableMan",
+        "Russian_HandsomeChildhoodFriend"
+      ],
+      "cos": 0.7385525107383728,
+      "merges_on_register": false,
+      "identified_as_same": true
+    },
+    {
+      "scenario_voices": [
+        "anton",
+        "zahar"
+      ],
+      "provider_voices": [
+        "Russian_ReliableMan",
+        "Russian_Bad-temperedBoy"
+      ],
+      "cos": 0.6173436045646667,
+      "merges_on_register": false,
+      "identified_as_same": false
+    },
+    {
+      "scenario_voices": [
+        "anton",
+        "filipp"
+      ],
+      "provider_voices": [
+        "Russian_ReliableMan",
+        "Russian_AttractiveGuy"
+      ],
+      "cos": 0.7103283405303955,
+      "merges_on_register": false,
+      "identified_as_same": false
+    },
+    {
+      "scenario_voices": [
+        "ermil",
+        "zahar"
+      ],
+      "provider_voices": [
+        "Russian_HandsomeChildhoodFriend",
+        "Russian_Bad-temperedBoy"
+      ],
+      "cos": 0.518555760383606,
+      "merges_on_register": false,
+      "identified_as_same": false
+    },
+    {
+      "scenario_voices": [
+        "ermil",
+        "filipp"
+      ],
+      "provider_voices": [
+        "Russian_HandsomeChildhoodFriend",
+        "Russian_AttractiveGuy"
+      ],
+      "cos": 0.8098640441894531,
+      "merges_on_register": true,
+      "identified_as_same": true
+    },
+    {
+      "scenario_voices": [
+        "zahar",
+        "filipp"
+      ],
+      "provider_voices": [
+        "Russian_Bad-temperedBoy",
+        "Russian_AttractiveGuy"
+      ],
+      "cos": 0.5037062168121338,
+      "merges_on_register": false,
+      "identified_as_same": false
+    }
+  ]
+}

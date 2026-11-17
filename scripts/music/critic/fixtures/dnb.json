@@ -1,0 +1,145 @@
+{
+ "style": "dnb",
+ "source": "style_critic/dnb/dnb.md, раздел «Ответ после того как дали посмотреть на код» (Qwen3.8 Omni Max, 08.10); утверждения переведены вручную в схему judge.py; confidence=0.5 — судья его не давал",
+ "tracks": [
+  {
+   "model": "set53145_01_A_10ab726a.json",
+   "start_s": 0.0
+  },
+  {
+   "model": "set53145_02_B_2898ea34.json",
+   "start_s": 79.06
+  },
+  {
+   "model": "set53145_03_A_7f7ce730.json",
+   "start_s": 135.53
+  }
+ ],
+ "claims": [
+  {
+   "t0": 19,
+   "t1": 21,
+   "kind": "out_of_key",
+   "claim": "p3 pluck: 79 (G натуральное) и 82 (A#) вне A major, Scale.chromatic не защищает",
+   "confidence": 0.5,
+   "args": {
+    "role": "lead",
+    "midi": [
+     79,
+     82
+    ]
+   }
+  },
+  {
+   "t0": 56,
+   "t1": 75,
+   "kind": "out_of_key",
+   "claim": "p3: двойные ноты 79/82 — гармонические пятна",
+   "confidence": 0.5,
+   "args": {
+    "role": "lead",
+    "midi": [
+     79,
+     82
+    ]
+   }
+  },
+  {
+   "t0": 147,
+   "t1": 153,
+   "kind": "out_of_key",
+   "claim": "трек 3 p3 keys: 67, 79, 62, 74, 77 — натуральные ноты вне G# minor",
+   "confidence": 0.5,
+   "args": {
+    "role": "lead",
+    "midi": [
+     67,
+     79,
+     62,
+     74,
+     77
+    ]
+   }
+  },
+  {
+   "t0": 0,
+   "t1": 6,
+   "kind": "hole",
+   "claim": "d1 и p1: первые 16 долей нулевая амплитуда — нет бочки и суббаса",
+   "confidence": 0.5,
+   "args": {
+    "role": "kick"
+   }
+  },
+  {
+   "t0": 11,
+   "t1": 45,
+   "kind": "param_reading",
+   "claim": "c3 amen loop tempo=137 при 170 BPM — барабаны «не в сетке»",
+   "confidence": 0.5,
+   "args": {
+    "param": "tempo",
+    "value": 137
+   }
+  },
+  {
+   "t0": 90,
+   "t1": 100,
+   "kind": "hole",
+   "claim": "a3 elec_mid_snare: dur=25 — снейр исчезает на 8.8 с",
+   "confidence": 0.5,
+   "args": {
+    "role": "clap"
+   }
+  },
+  {
+   "t0": 135,
+   "t1": 147,
+   "kind": "overlap",
+   "claim": "трек 3 на 135.53 с, трек 2 играет до 146.82 с — перекрытие 8 тактов",
+   "confidence": 0.5,
+   "args": {
+    "seconds": 11.3
+   }
+  },
+  {
+   "t0": 147,
+   "t1": 155,
+   "kind": "hole",
+   "claim": "трек 3 d3 snare: нулевая амплитуда первых 56 долей — провал снейра",
+   "confidence": 0.5,
+   "args": {
+    "role": "clap"
+   }
+  },
+  {
+   "t0": 147,
+   "t1": 192,
+   "kind": "param_reading",
+   "claim": "c3 amen_full tempo=140 при 170 BPM — плавающий брейкбит",
+   "confidence": 0.5,
+   "args": {
+    "param": "tempo",
+    "value": 140
+   }
+  },
+  {
+   "t0": 11,
+   "t1": 45,
+   "kind": "mix",
+   "claim": "c2 crash amp=0.85 на фоне суббаса, бочки, pluck, strings — перегрузка верхом",
+   "confidence": 0.5
+  },
+  {
+   "t0": 85,
+   "t1": 113,
+   "kind": "masking",
+   "claim": "бочка a1 и wobblebass b1: низ без сайдчейна",
+   "confidence": 0.5,
+   "args": {
+    "param": "sidechain",
+    "role": "bass"
+   }
+  }
+ ]
+}

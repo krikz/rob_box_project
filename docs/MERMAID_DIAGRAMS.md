@@ -273,7 +273,7 @@ mmdc -i diagram.mmd -o diagram.png
 **Примеры в проекте:**
 - [CI/CD Pipeline](CI_CD_PIPELINE.md) - flowchart
 - [System Overview](architecture/SYSTEM_OVERVIEW.md) - graphs и subgraphs
-- [Internal Dialogue](architecture/INTERNAL_DIALOGUE_VOICE_ASSISTANT.md) - сложные потоки
+- [Internal Dialogue](architecture/dialog-v2-overview.md) - сложные потоки
 
 ---
 

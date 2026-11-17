@@ -180,7 +180,7 @@ docstring или `#` комментарии. **Никакого** `# FIX (live 0
 ## Связанные
 
 - `docs/reports/dialogue-node-review-2026-08-18.md` — полное ревью
-- `docs/adr/0013-incremental-delivery-over-big-bang.md` — большие рефакторы запрещены
+- `docs/adr/AF-0013-incremental-delivery-over-big-bang.md` — большие рефакторы запрещены (ссылка исправлена 29.09.2026: `0013-*` — это ReSpeaker DSP, см. ADR-0145 §2)
 - `docs/adr/0014-agent-flow-issue-closure.md` — процесс issue→card→PR
 - `docs/adr/0018-honest-fail-over-fake-pass.md` — culture rule
 - Issue #1389 (crash), #1395 (PR draft), #1403 (LLM не знает tool), #1363 (свист)

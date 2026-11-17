@@ -3,8 +3,8 @@
 handlers/messages.py — Handlers for text messages and voice messages.
 
 After Phase 6 v2 / W7 this module is a *thin transport*: every text and
-voice message is forwarded to ``/voice/stt/result`` so the unified
-DialogCore/harness pipeline (in ``dialogue_node``) can decide what to
+voice message is forwarded to ``/voice/stt/utterance`` so the unified
+AgentCore/harness pipeline (in ``dialogue_node``) can decide what to
 do with it. There is no LLM call here.
 
 Features:
@@ -20,6 +20,8 @@ from telegram.error import TimedOut, NetworkError
 from telegram.ext import ContextTypes
 
 from ..auth import authorized
+from ..inbox import SAVE_ATTACHMENTS_FOR, log_incoming, quote_of, save_attachment, stash_attachment
+from ..radio import get_radio_mode
 from ..voice_processor import transcribe_voice
 
 logger = logging.getLogger(__name__)
@@ -41,7 +43,20 @@ async def _react_eyes(update: Update) -> None:
         logger.debug("set_reaction(👀) not available or failed: %s", e)
 
 
-# ─── Text messages → forward to /voice/stt/result ─────────────────────────
+# ─── Photos / documents → строка [tg-in] с файлом для координатора ─────────────
+
+
+@authorized
+async def attachment_message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Фото и документы: файл владельца сохраняется в контейнере, в лог идёт строка ``[tg-in]`` с ``file=`` и цитатой
+    реплая. Диалогу робота вложение не уходит (картинок он не читает): это канал координатора."""
+    chat_id = update.effective_chat.id
+    file = await stash_attachment(context.bot, update.message, chat_id)
+    caption = (update.message.caption or "").strip()
+    log_incoming(_node(context), chat_id, caption or "[вложение]", reply_to=quote_of(update.message), file=file)
+
+
+# ─── Text messages → forward to /voice/stt/utterance ─────────────────────────
 
 
 @authorized
@@ -52,6 +67,15 @@ async def text_message_handler(update: Update, context: ContextTypes.DEFAULT_TYP
     (e.g. Telegram splits a long message), they are merged before
     forwarding. The dialogue_node (downstream) decides what to do with
     the text — chat with LLM, run a tool, or ignore.
+
+    AV-22 (Issue #1914) — ГЕЙТ ``/operator``:
+      * Если в этом чате включён «режим оператора»
+        (``context.user_data["operator_mode"]`` is True), свободный текст
+        идёт в ``/avatar/command`` (а не в личность). Это «консоль
+        оператора» — оператор сознательно перевёл чат в режим, в котором
+        все сообщения идут супервизор-агенту.
+      * Если НЕ включён (default) — стандартное поведение: текст
+        уходит в ``forward_to_stt`` → личность (как было до AV-22).
     """
     chat_id = update.effective_chat.id
     user_text = update.message.text.strip()
@@ -59,8 +83,30 @@ async def text_message_handler(update: Update, context: ContextTypes.DEFAULT_TYP
     if not user_text:
         return
 
+    # PR-12a (#3706): каждое сообщение — строкой [tg-in] в лог (канал координатора «Клод …»).
+    log_incoming(_node(context), chat_id, user_text, reply_to=quote_of(update.message))
+
     # React with 👀 to indicate we received the message
     await _react_eyes(update)
+
+    # ── AV-22: гейт «режим оператора» ──────────────────────────────────
+    # По умолчанию off (worker-brief §4 — все новые гейты по умолчанию
+    # выключены, чтобы не сломать существующий UX бота).
+    if context.user_data.get("operator_mode") is True:
+        node = _node(context)
+        # Прямая публикация в /avatar/command, минуя forward_to_stt,
+        # чтобы личность НЕ получила этот текст. Гейт «личность молчит»
+        # именно здесь — не через voice_input_mode=off.
+        request_id = node.publish_avatar_command(text=user_text, chat_id=chat_id)
+        if request_id:
+            logger.info(
+                "AV-22 operator-mode → /avatar/command request_id=%s chat_id=%s",
+                request_id, chat_id,
+            )
+        # Дальше debounce НЕ делаем: в режиме оператора каждое сообщение
+        # — отдельная команда. Если оператор шлёт абзац — пусть шлёт
+        # одним сообщением (или использует /cmd).
+        return
 
     # ── Debounce: buffer split messages ──
     # 🔴 FIX (issue #1195): раньше таймер создавался через
@@ -108,7 +154,7 @@ async def _flush_buffer(chat_id: int, context: ContextTypes.DEFAULT_TYPE) -> Non
         logger.info("Merged %d message parts for chat %d", len(buf["texts"]), chat_id)
 
     # Forward to the unified dialogue pipeline with the source marker
-    # (issue #1195): [TG:chat_id] lets dialogue_node skip the wake-word
+    # (issue #1195): source=telegram + chat_id lets dialogue_node skip the wake-word
     # gate (chat messages are explicit address) and route the LLM reply
     # back into this chat. The chat_id is also recorded as "active chat"
     # so voice-initiated replies echo here too.
@@ -120,11 +166,18 @@ async def _flush_buffer(chat_id: int, context: ContextTypes.DEFAULT_TYPE) -> Non
 
 @authorized
 async def voice_message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Handle voice messages — transcribe and forward.
+    """Handle voice messages — transcribe and forward, or radio passthrough.
 
-    Two modes:
-    1. Normal: transcribe → forward to /voice/stt/result (same as text)
-    2. Playvoice: transcribe → robot speaks the text (TTS)
+    Three modes (AV-23 / issue #1915, P8):
+      1. ``/radio on`` (per-chat sticky) — OGG → PCM → ``/avatar/voice_in``
+         (рация, STT НЕ запускается).
+      2. ``/playvoice`` (one-shot) — STT → TTS (робот произносит
+         распознанный текст).
+      3. default — STT → forward to ``/voice/stt/utterance`` (как раньше).
+
+    Разделение ``playvoice`` vs ``radio`` см. в ``commands.playvoice_handler``
+    (ADR-0021 говорит не плодить механизмы, но это РАЗНЫЕ задачи: STT→TTS
+    echo vs raw passthrough).
     """
     node = _node(context)
     voice = update.message.voice
@@ -157,9 +210,19 @@ async def voice_message_handler(update: Update, context: ContextTypes.DEFAULT_TY
         await update.message.reply_text("⚠️ Не удалось загрузить голосовое сообщение.")
         return
 
+    ogg_bytes = bytes(ogg_bytes)
+
+    # ─── Mode 1: /radio on — рация (AV-23) ────────────────────────────────
+    # Per-chat sticky state; не ломаем playvoice/STT-пути.
+    if get_radio_mode(context.user_data or {}):
+        result = await node.radio.publish_radio(chat_id, ogg_bytes)
+        await _reply_radio_result(update, chat_id, result)
+        return
+
+    # ─── Mode 2/3: STT → playvoice / dialogue forward ─────────────────────
     # Transcribe
     text = await transcribe_voice(
-        bytes(ogg_bytes),
+        ogg_bytes,
         method=node.voice_stt_method,
         language=node.voice_stt_language,
     )
@@ -172,8 +235,14 @@ async def voice_message_handler(update: Update, context: ContextTypes.DEFAULT_TY
     playvoice_mode = context.user_data.pop("playvoice_mode", False)
 
     if playvoice_mode:
-        # Mode B: Robot speaks the transcribed text
-        node.publish_tts(text)
+        # Mode B: Robot speaks the transcribed text.
+        # AV-10 (ADR-0028 §4.4): TTS идёт через supervisor voice_floor.
+        node.set_active_chat(chat_id)
+        result = node.publish_tts_with_floor(text)
+        if not result.granted:
+            held = result.held_by or "другим оператором"
+            await update.message.reply_text(f"🚫 Голос удерживает {held}. " "Дождитесь окончания текущего ответа.")
+            return
         await update.message.reply_text(
             f"🎤 Распознано: _{text}_\n\n🗣 Робот произносит текст.",
             parse_mode="Markdown",
@@ -183,4 +252,35 @@ async def voice_message_handler(update: Update, context: ContextTypes.DEFAULT_TY
         # source marker (issue #1195) — same as text messages, so the
         # LLM reply is routed back into this chat.
         await update.message.reply_text(f"🎤 Распознано: _{text}_", parse_mode="Markdown")
+        saved = save_attachment(ogg_bytes, update.message.message_id, "ogg") if chat_id in SAVE_ATTACHMENTS_FOR else ""
+        log_incoming(node, chat_id, text, reply_to=quote_of(update.message), file=saved or "")
         node.forward_to_stt(text, chat_id=chat_id)
+
+
+async def _reply_radio_result(update: Update, chat_id: int, result) -> None:
+    """Сформировать ответ оператору по результату рации (AV-23)."""
+    from ..radio import RadioResult
+
+    if result.ok:
+        # Успех: короткий ACK с числом чанков, чтобы оператор видел,
+        # что голос дошёл.
+        await update.message.reply_text(
+            f"📻 Рация: {result.chunks} чанков ({result.duration_ms} мс).",
+        )
+        return
+
+    reason = result.reason
+    if reason == RadioResult.REASON_TOO_BIG:
+        text = f"📻 Слишком большой файл ({result.bytes_ // 1024} КБ)."
+    elif reason == RadioResult.REASON_TOO_LONG:
+        text = f"📻 Слишком длинное сообщение ({result.duration_ms / 1000:.1f} с). " "Укоротите запись."
+    elif reason == RadioResult.REASON_FLOOR_BUSY:
+        held = result.held_by or "другим оператором"
+        text = f"🚫 Голос удерживает {held}. Рация сейчас недоступна."
+    elif reason == RadioResult.REASON_TRANSCODE:
+        text = "⚠️ Не удалось декодировать голосовое (битый файл?)."
+    elif reason == RadioResult.REASON_NO_SUPERVISOR:
+        text = "⚠️ Внутренняя ошибка: нет клиента супервизора."
+    else:
+        text = f"⚠️ Рация не сработала: {reason}"
+    await update.message.reply_text(text)

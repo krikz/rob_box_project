@@ -29,10 +29,10 @@ rbalias     # Список всех команд
 
 ```bash
 # Vision Pi
-curl -fsSL https://raw.githubusercontent.com/krikz/rob_box_project/develop/scripts/setup_node.sh | bash -s vision
+curl -fsSL https://raw.githubusercontent.com/krikz/rob_box_project/develop/scripts/setup/setup_node.sh | bash -s vision
 
 # Main Pi
-curl -fsSL https://raw.githubusercontent.com/krikz/rob_box_project/develop/scripts/setup_node.sh | bash -s main
+curl -fsSL https://raw.githubusercontent.com/krikz/rob_box_project/develop/scripts/setup/setup_node.sh | bash -s main
 ```
 
 ### Вручную
@@ -48,8 +48,8 @@ curl -fsSL https://raw.githubusercontent.com/krikz/rob_box_project/develop/scrip
 
 ```bash
 # Добавить РОББОКС алиасы
-if [ -f ~/rob_box_project/scripts/robbox_aliases.sh ]; then
-    source ~/rob_box_project/scripts/robbox_aliases.sh
+if [ -f ~/rob_box_project/scripts/maintenance/robbox_aliases.sh ]; then
+    source ~/rob_box_project/scripts/maintenance/robbox_aliases.sh
 fi
 ```
 
@@ -68,6 +68,7 @@ alias rbpull='docker compose pull'              # Обновить образы
 
 # Для конкретного узла
 alias rbvision='cd ~/rob_box_project/docker/vision'   # Перейти к Vision Pi
+alias rbsound='cd ~/rob_box_project/docker/sound'     # Перейти к Sound Pi (ADR-0159)
 alias rbmain='cd ~/rob_box_project/docker/main'       # Перейти к Main Pi
 ```
 
@@ -78,11 +79,14 @@ alias rbmain='cd ~/rob_box_project/docker/main'       # Перейти к Main P
 alias rblog-oak='docker compose logs -f oak-d'
 alias rblog-lidar='docker compose logs -f lslidar'
 alias rblog-led='docker compose logs -f led-matrix'
-alias rblog-voice='docker compose logs -f voice-assistant'
 alias rblog-apriltag='docker compose logs -f apriltag'
 
+# Sound Pi (ADR-0159: голосовой стек и ТАРС)
+alias rblog-voice='docker compose logs -f voice-assistant'
+alias rblog-sc='docker compose logs -f supercollider'
+alias rblog-supervisor='docker compose logs -f supervisor'
+
 # Main Pi
-alias rblog-agent='docker compose logs -f micro-ros-agent'
 alias rblog-zenoh='docker compose logs -f zenoh-router'
 ```
 
@@ -93,18 +97,18 @@ alias rblog-zenoh='docker compose logs -f zenoh-router'
 alias rbupdate='rbstop && git pull origin develop && rbpull && rbstart'
 
 # Поэтапное обновление
-alias rbstop-all='cd ~/rob_box_project/docker/vision && docker compose down && cd ~/rob_box_project/docker/main && docker compose down'
-alias rbstart-all='cd ~/rob_box_project/docker/vision && docker compose up -d && cd ~/rob_box_project/docker/main && docker compose up -d'
+alias rbstop-all='cd ~/rob_box_project/docker/vision && docker compose down; cd ~/rob_box_project/docker/sound && docker compose down; cd ~/rob_box_project/docker/main && docker compose down'
+alias rbstart-all='cd ~/rob_box_project/docker/vision && docker compose up -d; cd ~/rob_box_project/docker/sound && docker compose up -d; cd ~/rob_box_project/docker/main && docker compose up -d'
 ```
 
 ## 🔍 Мониторинг и диагностика
 
 ```bash
 # Проверка статуса с деталями
-alias rbcheck='~/rob_box_project/docker/diagnose_data_flow.sh'
+alias rbcheck='~/rob_box_project/scripts/diagnostics/diagnose_data_flow.sh'
 
 # Системный мониторинг
-alias rbmonitor='~/rob_box_project/docker/monitor_system.sh'
+alias rbmonitor='~/rob_box_project/scripts/diagnostics/monitor_system.sh'
 
 # Проверка проблемных контейнеров (постоянно рестартующихся)
 alias rbfailing='docker ps -a --filter "status=restarting" --format "table {{.Names}}\t{{.Status}}"'

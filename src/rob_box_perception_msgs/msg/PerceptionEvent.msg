@@ -51,3 +51,11 @@ string robot_response_summaries # Суммаризованные ответы р
 string robot_thought_summaries  # Суммаризованные внутренние мысли робота (JSON array)
 string vision_summaries         # Суммаризованные визуальные наблюдения (JSON array)
 string system_summaries         # Суммаризованные системные события (JSON array)
+
+# AI HAT+ structured events (ADR-0089).
+# JSON array of VisionEvent (see VisionEvent.msg). Aggregated by
+# context_aggregator_node from /vision/hailo/events.
+# vision_event_count is the length of vision_events_json (cache hint
+# for consumers that want to skip the parse when nothing changed).
+int32 vision_event_count
+string vision_events_json       # JSON array of VisionEvent, identical schema

@@ -1,98 +1,34 @@
 """Tests for the harness-side ``ToolRegistry``.
 
-The registry is a **manifest-only** ToolProvider — it owns the
-``ToolSpec`` for each of the 32 flat tools that ``dialogue_node``
-exposes. The actual handlers are registered separately by the
-``ROSMCPToolProvider`` which bridges ROS2 topics, so the registry stays
-ROS2-free and unit-testable.
+The registry is a **manifest-only** ToolProvider: it exposes one
+``ToolSpec`` per LLM-visible tool in :mod:`rob_box_core.tool_catalog`.
+Handlers are registered separately by ``ROSMCPToolProvider``, which bridges
+ROS2 topics, so the registry stays ROS2-free and unit-testable.
+
+These tests deliberately assert *against the catalog* rather than against a
+copied list of names. The copied list was itself part of the problem this
+module was cleaned up for: the inventory lived in four places (tool classes,
+harness manifests, this test, and the voice-side skills), and every addition
+had to be mirrored by hand — which is exactly what stopped happening.
 
 Coverage:
-* All 32 tools pre-registered with non-empty descriptions
-* list_tools() returns tuple of ToolSpec
-* ToolSpec names are unique (no duplicates)
-* get(name) / get_handler(name) work
-* register() adds a new tool; raises on duplicate name with override=False
-* Pre-defined list matches the spec from 06-01-PLAN.md §W2
+* Every LLM-visible catalog tool is pre-registered, and nothing else is
+* Hidden tools (``llm_visible=False``) never reach the LLM
+* Specs carry non-empty descriptions and JSON-Schema parameters
+* register() adds / rejects duplicates / honours override=True
 """
 
 from __future__ import annotations
 
 import pytest
 
+from rob_box_core.tool_catalog import (
+    TOOL_CATALOG,
+    llm_visible_tools,
+    operator_visible_tools,
+)
 from rob_box_harness.core.tool_registry import ToolRegistry
 from rob_box_harness.tools import ToolHandler, ToolSpec
-
-
-# ---------------------------------------------------------------------------
-# Expected tool inventory (from .planning/06-01-PLAN.md §W2)
-# ---------------------------------------------------------------------------
-
-FLAT_TOOL_NAMES: tuple[str, ...] = (
-    "speak_text",
-    "estimate_tts_duration",
-    "play_sound",
-    "play_animation",
-    "memory_context",
-    "memory_save",
-    "memory_search",
-    "faq_search",
-    "get_current_time",
-    "get_robot_status",
-    "get_battery_level",
-    "navigate_to_waypoint",
-    "navigate_to_coordinates",
-    "move_direction",
-    "list_waypoints",
-    "save_waypoint",
-    "delete_waypoint",
-    "clear_waypoints",
-    "get_current_pose",
-    "search_samples",
-    "execute_music_code",
-    "stop_music",
-    "set_vibe_preset",
-    "get_music_state",
-    "set_dj_mode",
-    "list_tracks",
-    "save_track",
-    "load_track",
-    "delete_track",
-    # Issue #1392 — MiniMax Music API generation + persistent library.
-    # MCP side registers these in ``mcp_server._register_minimax_music_tools``;
-    # the harness-side catalog must mirror them so the LLM sees the schemas.
-    "generate_music",
-    "gen_list_library",
-    "gen_search_library",
-    "gen_save_to_library",
-    "gen_play_from_library",
-    "gen_delete_from_library",
-    "gen_get_track_info",
-    # Issue #1101 — voice biometrics (resemblyzer d-vectors). The MCP-side
-    # ``RegisterSpeakerTool`` exists in ``rob_box_mcp_tools.tools.dialogue``
-    # since issue #1077, but was never added to this harness-side catalog,
-    # so LLM never saw the schema and could never call it. Adding the spec
-    # here exposes the tool to the LLM through ``provider.update_tools()``
-    # in ``dialogue_node._build_tool_provider``.
-    "register_speaker",
-    # Issue #1101 — DuckDuckGo web search. The voice-level
-    # ``WebSearchSkill`` existed before the harness migration but was never
-    # wired into the harness-side catalog; LLM responded «поиск в интернете
-    # пока недоступен». The MCP side ``SearchWebTool`` dispatches the real
-    # call.
-    "search_web",
-    # Issue #1219 — persistent TTS voice selection (LLM voice choice).
-    # The MCP-side ``SetVoiceTool`` validates the voice and stores
-    # current_voice in-memory; adding the spec here exposes the tool to
-    # the LLM through ``provider.update_tools()`` (same pattern as
-    # register_speaker).
-    "set_voice",
-)
-
-SKILL_TOOL_NAMES: tuple[str, ...] = ()
-
-EXPECTED_TOOL_NAMES: frozenset[str] = frozenset(FLAT_TOOL_NAMES) | frozenset(
-    SKILL_TOOL_NAMES
-)
 
 
 # ---------------------------------------------------------------------------
@@ -100,30 +36,37 @@ EXPECTED_TOOL_NAMES: frozenset[str] = frozenset(FLAT_TOOL_NAMES) | frozenset(
 # ---------------------------------------------------------------------------
 
 
-def test_default_registry_contains_all_known_tools() -> None:
-    """The default ToolRegistry must pre-register every known tool.
+def test_default_registry_matches_the_llm_visible_catalog() -> None:
+    """The registry must expose exactly the LLM-visible catalog tools.
 
-    Skill facades (``handle_music`` / ``handle_navigation`` / …) are NOT
-    registered here anymore: they have no executor (the local Compositor
-    skill path was retired during the harness migration), and exposing
-    them to the LLM made it call a phantom ``handle_music`` tool that the
-    MCP server reports as «не найден». Only flat tools (which ARE wired
-    to the MCP server) are pre-registered.
-
-    Bumped to 37 over time (was 34): estimate_tts_duration added in #949,
-    register_speaker added when fixing #1101 tool-catalog wiring,
-    voice_settings removed in #1229 (LLM must not call it — set_voice +
-    speak_text(voice=) cover the voice-selection path). The test
-    asserts membership against ``EXPECTED_TOOL_NAMES`` so missing tools
-    (the original bug) are caught with a clear diff.
+    Both directions matter. A *missing* tool is the original bug — 13 tools
+    that ``mcp_server`` registered were absent here, so the LLM could not
+    call them at all (``stop_navigation``, the whole mapping
+    FSM, the volume/pitch/speed controls). An *extra* tool is the mirror
+    failure: the LLM picks a tool the MCP server cannot execute and the user
+    hears «инструмент не найден» (this happened with the ``handle_*`` skill
+    facades).
     """
     registry = ToolRegistry()
     names = {spec.name for spec in registry.list_tools()}
-    missing = EXPECTED_TOOL_NAMES - names
-    extra = names - EXPECTED_TOOL_NAMES
-    assert not missing, f"missing tools in registry: {sorted(missing)}"
-    assert not extra, f"unexpected tools in registry: {sorted(extra)}"
-    assert names == EXPECTED_TOOL_NAMES
+    expected = {entry.name for entry in llm_visible_tools()}
+    assert not expected - names, f"missing tools in registry: {sorted(expected - names)}"
+    assert not names - expected, f"unexpected tools in registry: {sorted(names - expected)}"
+
+
+def test_hidden_tools_are_never_offered_to_the_llm() -> None:
+    """``llm_visible=False`` tools stay executable but out of ``tools=``.
+
+    ``generate_music`` is the live case: the MiniMax Music API returns 410
+    Gone for new users, and an LLM that can see the schema will keep
+    choosing it for «сыграй что-нибудь» instead of the library tools.
+    """
+    hidden = {entry.name for entry in TOOL_CATALOG if not entry.llm_visible}
+    registered = {spec.name for spec in ToolRegistry().list_tools()}
+    assert hidden, "expected at least one hidden tool to guard this contract"
+    assert not (hidden & registered), (
+        f"hidden tools leaked into the LLM catalog: {sorted(hidden & registered)}"
+    )
 
 
 def test_register_speaker_tool_is_exposed_to_llm() -> None:
@@ -291,4 +234,24 @@ def test_registry_adapts_to_fake_tool_provider() -> None:
 
     discovered = asyncio.run(provider.discover())
     names = {s.name for s in discovered}
-    assert EXPECTED_TOOL_NAMES.issubset(names)
+    assert {entry.name for entry in llm_visible_tools()}.issubset(names)
+
+# ---------------------------------------------------------------------------
+# Реестр оператора (ТАРС): llm-видимые ∪ operator_visible (issue #3305)
+# ---------------------------------------------------------------------------
+
+
+def test_operator_registry_is_llm_visible_union_operator_visible() -> None:
+    registry = ToolRegistry(for_operator=True)
+    names = {spec.name for spec in registry.list_tools()}
+    expected = {entry.name for entry in operator_visible_tools()}
+    assert names == expected
+    assert {entry.name for entry in llm_visible_tools()} <= names
+
+
+def test_say_is_in_operator_registry_but_not_in_personality_registry() -> None:
+    operator = ToolRegistry(for_operator=True)
+    operator_names = {s.name for s in operator.list_tools()}
+    personality_names = {s.name for s in ToolRegistry().list_tools()}
+    assert "say" in operator_names
+    assert "say" not in personality_names

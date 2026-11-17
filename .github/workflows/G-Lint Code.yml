@@ -14,17 +14,37 @@ on:
       - '**/Dockerfile'   # Dockerfiles
       - '.github/workflows/lint.yml'
   pull_request:
+    # #3922: PR-триггер только на develop. Вечный PR develop->main (#3713)
+    # получает synchronize на каждый push в develop, и проверка гонялась ещё
+    # раз на SHA, который уже прошёл push-прогон. Чеки push-прогона висят на
+    # head-коммите PR, merge-gate их видит.
+    # Без `paths`: гарды этого workflow проверяют docs/adr и docs/plans, так что
+    # docs-only PR здесь пропускать нельзя.
     branches:
       - develop
-      - main
   workflow_dispatch:  # Ручной запуск
 
 permissions:
   contents: read
 
+# #3922: новый push в PR отменяет устаревший прогон этого PR. На push и
+# workflow_dispatch группа уникальна (run_id), отмены нет - причина та же, что в
+# G-Run Tests.yml: промежуточные коммиты develop должны проверяться все.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   # ============================================================================
   # Python Linting
+  # #3938: прежняя цепочка из 45 шагов (4.6 мин) разрезана на три параллельные job'ы
+  # (python-lint / unit-offline-tests / repo-guards), каждая со своим setup.
+  # Здесь: linters + лёгкие guard-скрипты (не pytest/unittest, <= 3 с).
+  # Шаги перенесены дословно; порядок внутри job'ы тот же, что был в одной цепочке.
+  #
+  # Display name job'ов содержит слова из DRIFT-regex merge-gate и
+  # pr_contract_drift_bot.sh (unit|lint|code quality): упавший чек классифицируется
+  # как contract_drift, а не как rebase_candidate. Менять имена - с оглядкой на них.
   # ============================================================================
   python-lint:
     name: Python Code Quality
@@ -44,11 +64,41 @@ jobs:
       - name: Install linting tools
         run: |
           python -m pip install --upgrade pip
-          pip install black==24.4.2 flake8==7.0.0 isort==5.13.2
+          # numpy: tests/unit/docker/test_animation_assets.py рендерит сцены лица (PR-3a #3689)
+          pip install black==24.4.2 flake8==7.0.0 isort==5.13.2 pyyaml pytest numpy
 
-      - name: Validate dialogue skip-reason keys
+      # ADR-0148 / ADR-0150 A8 (#3684): метка TEMP(ADR-0148 = заплатка по тексту ответа LLM. Число меток в src вне
+      # тестов не растёт (scripts/lint/temp_adr0148_baseline.json), цель — 0. Hard gate.
+      - name: TEMP(ADR-0148) guard
         run: |
-          PYTHONPATH=src/rob_box_voice python scripts/lint/dialogue_skip_reasons.py
+          python scripts/lint/temp_adr0148_check.py
+
+      # ADR-0166: протухшие пути в живых документах. Пути scripts/ docker/ src/ .github/ в docs/**/*.md и README*.md
+      # обязаны существовать; docs/adr, docs/research, датированные планы и файлы с меткой stale-paths: ignore-file
+      # не проверяются. Hard gate.
+      - name: Doc paths guard
+        run: |
+          python -X utf8 scripts/lint/doc_paths_check.py
+
+      # issue #2232: сторож против повторения дыры «пакет с тестами есть,
+      # в CI не запускается». Сверяет, что каждый src/rob_box_*/test/
+      # реально упомянут в G-Run Tests.yml. Без этого шага сам сторож
+      # был швом без потребителя: скрипт лежал в репозитории и не
+      # вызывался ниоткуда, кроме собственного self-теста.
+      - name: Test-package coverage guard (issue #2232)
+        run: |
+          python scripts/ci/validate_test_packages.py
+
+      # ADR-0094 §3.2 завёл этот скрипт и честно написал «в этом PR только
+      # добавляется, подключение — follow-up вместе с чисткой phantom-тегов,
+      # чтобы не уронить CI до их удаления». Phantom-теги удалены
+      # (MICRO_ROS_AGENT_TAG — issue #2425, RTABMAP_SYNC_TAG — вместе с
+      # мёртвой веткой PI_TYPE=vision в Single Service), значит блокер снят
+      # и follow-up закрывается: docs/plans/2026-09-15-image-versions-seam.md §7.3.
+      # Hard gate: новое поле в .image-versions.*, которое никто не читает,
+      # обязано ронять lint, а не жить годами как phantom.
+      - name: Image-versions phantom guard (ADR-0094 §3.2)
+        run: bash scripts/ci/check_image_versions_usage.sh
 
       - name: Check code formatting with Black
         run: |
@@ -95,6 +145,540 @@ jobs:
         continue-on-error: true
 
   # ============================================================================
+  # Offline tests
+  # Всё, что запускает pytest/unittest/bash-тесты (в т.ч. self-tests гардов), кроме двух
+  # тяжёлых шагов, закреплённых за repo-guards (Docker/compose + resource-pack и
+  # self-tests ownership-гарда). Самая долгая job: tests/unit ~2 мин.
+  # ============================================================================
+  unit-offline-tests:
+    name: Offline Unit Tests
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+        with:
+          submodules: recursive
+
+      - name: Set up Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: '3.10'  # ROS Humble uses Python 3.10
+          cache: 'pip'
+
+      - name: Install linting tools
+        run: |
+          python -m pip install --upgrade pip
+          # numpy: tests/unit/docker/test_animation_assets.py рендерит сцены лица (PR-3a #3689)
+          # pillow: tests/unit/sim/test_sim_coverage_anim.py (без неё модуль молча не собирался)
+          pip install black==24.4.2 flake8==7.0.0 isort==5.13.2 pyyaml pytest numpy pillow
+
+      # Self-tests for cc_budget_refs (issue #2186): the guard's own
+      # correctness must be protected the same way as seam_without_consumer
+      # (see issue #2118 convention). If a future refactor breaks detection
+      # of one of the historical "silent baseline growth" patterns, this
+      # test must fail loudly here, not three days after the next real
+      # regression.
+      - name: CC-budget ref-card guard self-tests
+        run: |
+          python -m unittest scripts.lint.test_cc_budget_refs -v
+
+      # Self-tests for cc_budget.py itself: ratchet on over-limit methods
+      # (recovered below baseline must refresh it), --update-baseline keeps
+      # _refactor_cards/_legacy_acknowledged, subset runs give no false phantoms.
+      - name: CC-budget guard self-tests
+        run: |
+          python -m unittest scripts.lint.test_cc_budget -v
+
+      - name: TEMP(ADR-0148) guard self-tests
+        run: |
+          python -m unittest scripts.lint.test_temp_adr0148_check -v
+
+      # ADR-0150 PR-0 (#3684): скрипты метрик/аудита честности по логу робота и эталонный набор фраз.
+      - name: Dialog metrics scripts self-tests
+        run: |
+          python -m pytest -q -o addopts= tests/unit/dialog
+
+      # ADR-0150 PR-1b (#3686): контракт адаптеров LLM. Тесты тянут rob_box_llm (openai/httpx/respx), поэтому лежат в
+      # tests/dialog_adapters (отдельный каталог: ни TTS-job rob_box_llm, ни G-Run Tests его не собирают; зависимостей pyyaml/rob_box_llm в лёгком tests/unit/dialog быть не должно). Чистые тесты пакета rob_box_dialog (в т.ч. test_degrade)
+      # гоняет G-Run Tests (шаг pytest: rob_box_dialog) — здесь их нет, чтобы не дублировать.
+      - name: Dialog adapter contract tests (ADR-0150)
+        run: |
+          pip install httpx openai respx pytest-asyncio
+          PYTHONPATH="src/rob_box_dialog:src/rob_box_llm:src/rob_box_core" \
+          python -m pytest -v -o addopts= -p no:cacheprovider \
+            tests/dialog_adapters/test_llm_adapter_contract.py \
+            tests/dialog_adapters/test_adapter_benchmark.py \
+            src/rob_box_llm/test/test_provider_capabilities_3686.py
+
+      - name: Class-size budget self-tests
+        run: |
+          python -m unittest scripts.lint.test_class_budget -v
+
+      - name: Test-package coverage guard self-tests
+        run: |
+          bash scripts/ci/tests/test_validate_test_packages.sh
+
+      # docs/plans/2026-09-15-service-manifest.md, Phase 1 / §6: guard,
+      # который сверяет docker/build-manifest.yaml с реальными
+      # ".github/workflows/L-Build {Vision,Main} Pi Services.yml" —
+      # needs:-графом зависимых сервисов, множеством сервисов в
+      # tag_and_push/verify_in_registry, множеством *_TAG-полей в sed
+      # (ловит phantom-поля вроде RTABMAP_SYNC_TAG/MICRO_ROS_AGENT_TAG) и
+      # форматом тега (ros_distro). Hard gate (no continue-on-error) —
+      # тот же паттерн, что ADR-0057 §2.1 применил для
+      # validate_adr_namespace.sh: "рядом с уже существующим guard'ом
+      # того же класса" (здесь — рядом с Test-package coverage guard).
+      # -o addopts="" отключает --cov=rob_box_harness из корневого
+      # pytest.ini — этот guard не про rob_box_harness и coverage-гейт
+      # к нему не относится (тот же приём, что в
+      # G-Quest-Caddyfile-Contract.yml).
+      - name: Service manifest sync guard (docs/plans/2026-09-15-service-manifest.md)
+        run: |
+          python -m pytest scripts/ci/tests/test_service_manifest_sync.py \
+            -v \
+            -o addopts="" \
+            -p no:cacheprovider
+
+      # Библиотечные функции scripts/ci/gen_build_matrix.py (читатель
+      # манифеста) — покрыты отдельно от guard'а выше: guard сверяет
+      # манифест с workflow, эти тесты проверяют сам генератор
+      # (load_manifest/topo_layers/wave_entries/
+      # image_versions_map) на синтетических мини-манифестах. План §4.3.
+      - name: Build-manifest generator self-tests (docs/plans/2026-09-15-service-manifest.md)
+        run: |
+          python -m pytest scripts/ci/tests/test_gen_build_matrix.py \
+            -v \
+            -o addopts="" \
+            -p no:cacheprovider
+
+      # ADR-0168 (#4375): релиз как артефакт (scripts/build/release.py) и агент chuangong (host/chuangong), фаза B.
+      # Без сети и Docker: реестр, docker и zenoh — фейки. minisign из apt нужен только тесту совместимости
+      # подписи с настоящей утилитой; не поставился — тест пропускается с причиной в выводе -v.
+      - name: Release delivery self-tests (ADR-0168, #4375)
+        run: |
+          sudo apt-get update -qq && sudo apt-get install -y -qq --no-install-recommends minisign \
+            || echo "::warning::minisign не поставился — тест совместимости подписи пропущен"
+          pip install cryptography
+          python -m pytest scripts/build/tests/test_release.py host/chuangong/tests \
+            scripts/setup/tests/test_setup_node_wifi_psk.py \
+            scripts/ci/tests/test_build_all_release_step.py \
+            -v \
+            -o addopts="" \
+            -p no:cacheprovider
+
+      # issue #2280 acceptance / docs/plans/2026-09-15-service-manifest.md
+      # §1.7: этот regression-guard уже существовал (393 строки, 10
+      # тестов на build-job), но НИ РАЗУ не был подключён к CI — ровно
+      # тот класс дефекта, который описывает ADR-0057 ("скрипт написан,
+      # но не в CI"). До Phase 1 манифеста EXPECTED_VISION_JOBS в этом
+      # файле был жёстко вшитым множеством и не содержал
+      # build-vision-hailo — тест был бы красным. Теперь
+      # EXPECTED_{MAIN,VISION}_JOBS выводятся из docker/build-manifest.yaml,
+      # так что этот шаг заодно повторно проверяет манифест ⇔ workflow
+      # (план §6 п.1) без дублирования логики guard'а выше.
+      # #3937: run-блок с `${{` длиннее 21000 байт UTF-8 -> workflow не парсится
+      # (0 джоб, тесты на develop не идут). Гард: tests/unit/test_workflow_run_expression_limit.py.
+      - name: Workflow run-block size guard (#3937)
+        run: |
+          python -m pytest tests/unit/test_workflow_run_expression_limit.py \
+            -v \
+            -o addopts="" \
+            -p no:cacheprovider
+
+      - name: Workflow refactor acceptance guard (issue #2280)
+        run: |
+          python -m pytest tests/unit/test_workflow_refactor_acceptance.py \
+            -v \
+            -o addopts="" \
+            -p no:cacheprovider
+
+      # Тот же класс дефекта, что у guard'а выше (ADR-0057 "скрипт написан,
+      # но не в CI"): tests/unit/test_l_build_service_composite.py лежал в
+      # репозитории с момента issue #2280 и не запускался ни одним workflow.
+      # Он парсит bash-шаг .github/actions/l-build-service/action.yml и
+      # прогоняет его с фейковым docker — то есть это единственная проверка,
+      # что composite собирает корректную командную строку buildx: --load +
+      # docker push ТОЛЬКО localhost:5000 (issue #1503) и registry-кеш
+      # (--cache-from/--cache-to type=registry,mode=max,ignore-error=true,
+      # docs/plans/2026-09-15-builder-runtime-seam.md §6, Этап 0).
+      # Нужен bash (ubuntu-latest его имеет) и НЕ нужен docker: docker в тесте
+      # подменяется shell-шимом.
+      - name: L-Build composite action guard (issue #2280, план §6)
+        run: |
+          python -m pytest tests/unit/test_l_build_service_composite.py \
+            -v \
+            -o addopts="" \
+            -p no:cacheprovider
+
+      # Хендофф 2026-09-21 §8 (Phase 4, docs/plans/2026-09-15-service-manifest.md):
+      # "L-Build Single Service.yml" не использовал composite ВООБЩЕ — свой
+      # `docker buildx build`, мимо registry-кеша/docker-container билдера/
+      # host-gateway. Guard паркует ровно этот факт: build-service job обязан
+      # звать ./.github/actions/l-build-service, иначе кто-то откатит одиночную
+      # сборку назад на inline buildx (тот же класс дрейфа, что уже случился с
+      # verify_in_registry — три копии разъехались на строку сообщения).
+      # run 36351952819: L-Build Base Images жил на своём inline buildx с
+      # host-gateway и упал на docker-container билдере, заведённом
+      # композитом. Guard: базы собираются только через композит (→
+      # scripts/build/buildx_build.sh), состав — из docker/build-manifest.yaml.
+      # Второй файл — локальный раннер workflow-шагов (scripts/ci/run_workflow_job.py).
+      - name: L-Build Base Images + local-run guards (run 36351952819)
+        run: |
+          python -m pytest tests/unit/test_l_build_base_images.py tests/unit/test_run_workflow_job.py \
+            -v \
+            -o addopts="" \
+            -p no:cacheprovider
+
+      - name: L-Build Single Service composite guard (хендофф 2026-09-21 §8)
+        run: |
+          python -m pytest tests/unit/test_l_build_single_service_composite.py \
+            -v \
+            -o addopts="" \
+            -p no:cacheprovider
+
+      # scripts/ci/verify-image-in-registry.sh — вынесен из ТРЁХ копий функции
+      # verify_in_registry (оба L-Build + Single Service), которые уже успели
+      # разъехаться на строку сообщения (docs/plans/2026-09-15-image-versions-seam.md
+      # §7.4). Последний тест файла — guard: он падает, если workflow снова
+      # начнёт сам ходить в Registry API вместо общего скрипта.
+      # Реестр в тестах поднимается настоящим http.server на 127.0.0.1,
+      # нужен только curl (на ubuntu-latest есть).
+      - name: Registry-verify script guard (план image-versions §7.4)
+        run: |
+          python -m pytest scripts/ci/tests/test_verify_image_in_registry.py \
+            -v \
+            -o addopts="" \
+            -p no:cacheprovider
+
+      # issue #3013: парсер closing-keywords и логика авто-закрытия issues
+      # после merge в develop ("G-Auto-close Issues on Develop Merge.yml").
+      # gh подменён в тестах — сеть не нужна.
+      - name: Auto-close-on-develop-merge self-tests (issue 3013)
+        run: |
+          python -m pytest scripts/ci/tests/test_autoclose_issues.py \
+            -v \
+            -o addopts="" \
+            -p no:cacheprovider
+
+      # Сабмодуль ros2leds (драйвер и композитор LED-матриц) исключён из
+      # G-Run Tests и из линта как вендорный, а своего CI у него нет — его
+      # тесты не гонял никто. Здесь они идут на заглушках ROS и pi5neo,
+      # из зависимостей нужен только pyyaml.
+      - name: ros2leds driver/compositor logic tests
+        run: |
+          python -m pytest src/ros2leds/tests \
+            -v \
+            -o addopts="" \
+            -p no:cacheprovider
+
+      # Issue #2846: вердикт шага E2E-харнесса по исходу register_speaker.
+      # Тот же класс дефекта (ADR-0057 "тест написан, но не в CI"):
+      # tests/unit/e2e_scripts/ не гоняется ни одним workflow, а этот тест
+      # исполняет НАСТОЯЩИЕ check_acceptance и scenario-цикл из
+      # e2e_voice_test.sh на фикстурах лога робота (прогон 35875477264 —
+      # шаг OK при отклонённой регистрации). Нужны только bash + python3,
+      # ни ssh, ни робота. Каталог целиком сюда НЕ подключён: в контейнере
+      # python:3.11-slim в нём 29 тестов красные уже на develop f9b826d
+      # (test_e2e_voice_test_gate1, test_wake_gate_preflight) — подключать
+      # каталог надо отдельной задачей, разобрав их.
+      - name: E2E harness registration verdict (issue #2846)
+        run: |
+          python -m pytest tests/unit/e2e_scripts/test_issue_2846_registration_verdict.py \
+            -v \
+            -o addopts="" \
+            -p no:cacheprovider
+
+      # Issue #2902: речь робота = только озвученное (spoken= хода, заменённого
+      # переспросом #2828, не речь) и запрет ретрая шага, изменившего
+      # состояние робота. Фикстуры — лог акта 2c n722 (run 35912751803);
+      # исполняются НАСТОЯЩИЕ check_acceptance и scenario-цикл. bash + python3.
+      - name: E2E harness speech channel + state-changing retry (issue #2902)
+        run: |
+          python -m pytest tests/unit/e2e_scripts/test_issue_2902_speech_and_retry.py \
+            -v \
+            -o addopts="" \
+            -p no:cacheprovider
+
+      # Issue #2933 (run 35941885025, n704 ×3): check_cycle() не отличал
+      # «ПРИНЯТО есть, цикл ещё не закрылся в окне (ретрай гарда / SSH-сбой)»
+      # от «робот не услышал» — обе ветки отдавали rc=1, и run_step()
+      # переигрывал paplay вслепую, хотя робот уже отработал полный цикл
+      # (робот получал дубли команды). Тест исполняет НАСТОЯЩИЕ check_cycle
+      # и run_step из e2e_voice_test.sh на фикстурах лога робота этого run.
+      - name: E2E harness false no_accept on accepted-but-unconfirmed cycle (issue #2933)
+        run: |
+          python -m pytest tests/unit/e2e_scripts/test_issue_2933_false_no_accept.py \
+            -v \
+            -o addopts="" \
+            -p no:cacheprovider
+
+      # Issue #3090: тот же дефект ADR-0057 («тест написан, но не в CI»).
+      # test_robbox_vision_health_check.py не гонялся ни одним workflow, поэтому
+      # PR #3092 (проверка /dev/hailo0 в health-check) сделал 10 из 17 тестов
+      # красными на любой машине без Hailo — и никто не заметил. Теперь путь
+      # устройства подменяется через ROBBOX_VISION_HAILO_DEVICE, тесты
+      # герметичны. Второй файл — ensure_hailo_driver.sh (prevention #3090:
+      # linux-headers-raspi) на shell-фейках apt/dpkg. Нужен только bash.
+      - name: Vision health-check + Hailo driver preflight (issue #3090)
+        run: |
+          python -m pytest tests/unit/scripts/test_robbox_vision_health_check.py \
+            tests/unit/scripts/test_ensure_hailo_driver.py \
+            -v \
+            -o addopts="" \
+            -p no:cacheprovider
+
+      # ADR-0057 («тест написан, но не в CI»), закрытие класса целиком для
+      # tests/unit/: 34 из 57 файлов не гонял ни один workflow (pytest.ini
+      # сужает testpaths до src/rob_box_harness/test, а шаги выше и
+      # G-Architecture Audit подключают файлы поштучно). Незамеченными
+      # покраснели test_post_merge_build.py (#1625), test_image_versions_sha_contract.py
+      # (#2726), test_e2e_process_worktree_cleanup.py (#2329) — исправлены
+      # в этом же PR. Гоняем КАТАЛОГ: новый test_*.py подключается сам;
+      # исключения — только явно, с причиной. Файлы, уже подключённые
+      # поштучными шагами выше, здесь прогоняются повторно (секунды) —
+      # поштучные шаги можно убрать отдельным PR.
+      # tests/unit/core/test_tool_provider.py: async-тесты + импорт
+      # rob_box_core → pytest-asyncio и PYTHONPATH (только на этот шаг).
+      - name: tests/unit offline tests (ADR-0057 class)
+        run: |
+          pip install pytest-asyncio
+          EXCLUDE=(
+            # Исключения — только явно, с причиной (--deselect=<nodeid>).
+            # gate1-тесты харнесса герметичны на фейк-роботе
+            # tests/unit/e2e_scripts/fake_robot_ssh.sh (PR #3214).
+          )
+          PYTHONPATH="src/rob_box_core" \
+          python -m pytest tests/unit \
+            -v \
+            -o addopts="" \
+            -p no:cacheprovider \
+            ${EXCLUDE[@]+"${EXCLUDE[@]}"}  # пустой массив безопасен и под set -u
+
+      # ADR-0144: набор размеченных сцен — разбор scene.yaml, атрибуция и
+      # метрики «2.0 лучше 1.1». Каталог tests/unit/maintenance/ не гонялся
+      # ни одним workflow (тот же дефект ADR-0057); подключены ТОЛЬКО файлы
+      # scene_set: остальные тесты каталога (setup_chrony, measure_load,
+      # measure_doa) на ubuntu-latest не проверялись — подключать отдельно.
+      # Нужны pytest + PyYAML (ставятся выше), ни ROS, ни робота.
+      - name: Scene set parser, metrics, conductor, replay isolation (ADR-0144)
+        run: |
+          python -m pytest tests/unit/maintenance/test_scene_set_spec_metrics.py \
+            tests/unit/maintenance/test_scene_set_replay_conductor.py \
+            -v \
+            -o addopts="" \
+            -p no:cacheprovider
+
+      # Issue #2865: проверка #2793 (memory_search по voice_facts) в акте 2
+      # марафона не должна снова стать тавтологией — вопрос только после
+      # сброса сессии, ключ не из вопроса, паттерн «поиск вернул хиты»
+      # сверяется с НАСТОЯЩЕЙ строкой лога MemorySearchTool. Только stdlib.
+      - name: E2E act 2 memory_search after reset (issue #2865)
+        run: |
+          python -m pytest tests/unit/e2e_scripts/test_issue_2865_memory_search_after_reset.py \
+            -v \
+            -o addopts="" \
+            -p no:cacheprovider
+
+      # Issue #2890: изоляция акта E2E — сброс окна диалога dialog_node и
+      # e2e-памяти фактов в начале каждого акта. Тест исполняет НАСТОЯЩИЙ
+      # isolate_act_start из e2e_voice_test.sh против фейкового робота
+      # (состояние параметров узлов — файлы). Нужны только bash + python3.
+      - name: E2E act isolation (issue #2890)
+        run: |
+          python -m pytest tests/unit/e2e_scripts/test_issue_2890_act_isolation.py \
+            -v \
+            -o addopts="" \
+            -p no:cacheprovider
+
+      # Issue #2890: e2e-изоляция voice_memory у mcp_server (#2781) + защита
+      # боевой /data/voice_memory.db от стирания. Весь src/rob_box_mcp_tools/test/
+      # теперь гоняет G-Run Tests (job «Unit Tests (rob_box_mcp_tools)»); здесь
+      # файл оставлен как ранний гейт линта. rclpy — стабы внутри теста, VoiceMemory
+      # — настоящий (stdlib sqlite3). httpx/openai нужны импорту rob_box_harness.
+      - name: mcp_server voice_memory e2e isolation (issue #2781/#2890)
+        run: |
+          pip install httpx openai
+          PYTHONPATH="src/rob_box_harness:src/rob_box_llm:src/rob_box_core:src/rob_box_voice:src/rob_box_mcp_tools:src/rob_box_music:src/rob_box_dialog:src/rob_box_dialog_host" \
+          python -m pytest src/rob_box_mcp_tools/test/test_issue_2781_voice_memory_e2e_isolation.py \
+            -v \
+            -o addopts="" \
+            -p no:cacheprovider
+
+      # scripts/testing/*.py не гонял ни один workflow (тот же дефект, что
+      # ADR-0057: «скрипт/тест написан, но не в CI»): G-Run Tests упоминает
+      # каталог только в paths:, а pytest.ini сужает testpaths до
+      # src/rob_box_harness/test. Незамеченными покраснели
+      # test_nav2_current_depth_obstacles.py (с марта), test_deploy_workflow_cleanup.py,
+      # test_rtabmap_main_pi_has_no_camera_inputs.py, test_e2e_expected_keywords.py.
+      # Гоняем КАТАЛОГ (новый test_*.py подключается сам), исключения — явно.
+      # Нужны pytest + PyYAML (ставятся выше), ни ROS, ни робота.
+      - name: scripts/testing offline tests (ADR-0057 class)
+        run: |
+          EXCLUDE=(
+            # Ручные ROS-утилиты (rclpy + robot_sensor_hub_msg / живая
+            # LED-панель), не pytest — нужен ROS и железо:
+            --ignore=scripts/testing/test_sensor_hub.py
+            --ignore=scripts/testing/test_snake_alignment.py
+            # Интерактивный (input()) мониторинг Vision Pi по ssh — нужен робот:
+            --ignore=scripts/testing/test_echo_cancellation.py
+            # Standalone-скрипт (main(), аргументы вместо фикстур) — запускается ниже:
+            --ignore=scripts/testing/test_monitoring_config.py
+          )
+          python -m pytest scripts/testing/ \
+            -v \
+            -o addopts="" \
+            -p no:cacheprovider \
+            "${EXCLUDE[@]}"
+          # Standalone-проверки с main() → exit code: pytest их не собирает
+          # (0 тестов), поэтому зовём напрямую.
+          python scripts/testing/test_monitoring_config.py
+          python scripts/testing/test_e2e_expected_keywords.py
+          python scripts/testing/test_vision_camera_pipeline.py
+
+      # ADR-0166 §5.2: тесты офлайн-инструментов музыки и рэп-синхрона лежали
+      # в репо, но их не звал ни один workflow. Все офлайновые (numpy/scipy/
+      # soundfile/librosa/music21, без ROS, сети и робота). music21 и librosa
+      # ставим явно: без них часть тестов ушла бы в importorskip — тихий SKIP.
+      - name: scripts/music + scripts/dialog/rap_sync offline tests (ADR-0166)
+        run: |
+          pip install scipy soundfile librosa music21
+          PYTHONPATH="src/rob_box_music:src/rob_box_core:src/rob_box_dialog:src/rob_box_mcp_tools" \
+          python -m pytest \
+            scripts/music/test_loudness_nrt_v2.py \
+            scripts/music/test_pdmx_batch.py \
+            scripts/music/test_score_corpus_stats.py \
+            scripts/music/test_score_import.py \
+            scripts/music/critic/test_judge.py \
+            scripts/music/critic/test_verify.py \
+            scripts/music/live_dj/test_v2log.py \
+            scripts/music/live_dj/test_diversity.py \
+            scripts/dialog/rap_sync/test_rap_sync.py \
+            -v \
+            -rs \
+            -o addopts="" \
+            -p no:cacheprovider
+
+      - name: Seam-without-consumer guard self-tests (issue #2118)
+        run: |
+          python -m unittest scripts.lint.test_seam_without_consumer -v
+
+  # ============================================================================
+  # Repo guards
+  # Тяжёлые гарды репозитория: CC-budget, class-size, seam-without-consumer,
+  # Docker/compose + resource-pack, Dialog topic ownership (+ self-tests), ADR-namespace.
+  # ADR-namespace guard сам делает `git fetch origin develop` внутри шага
+  # (он последний в job'е), отдельный fetch не нужен.
+  # ============================================================================
+  repo-guards:
+    name: Repo Guards (lint)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+        with:
+          submodules: recursive
+
+      - name: Set up Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: '3.10'  # ROS Humble uses Python 3.10
+          cache: 'pip'
+
+      - name: Install linting tools
+        run: |
+          python -m pip install --upgrade pip
+          # numpy: tests/unit/docker/test_animation_assets.py рендерит сцены лица (PR-3a #3689)
+          pip install black==24.4.2 flake8==7.0.0 isort==5.13.2 pyyaml pytest numpy
+
+      # ADR-0021 R1 / issue #1984, #2077, #2186: CC-budget guard across the nine
+      # active packages (rob_box_voice, rob_box_supervisor, rob_box_harness,
+      # rob_box_mcp_tools, rob_box_quest, rob_box_perception, rob_box_telegram,
+      # rob_box_llm, rob_box_core; see _PACKAGE_ROOTS in cc_budget.py). Hard gate (no continue-on-error) —
+      # new code with CC>15 (CC>20 for __init__) must fail the lint. Existing
+      # over-limit methods are grandfathered in scripts/lint/cc_budget_baseline.json
+      # (refactor cards track their removal).
+      - name: CC-budget guard (ADR-0021)
+        run: |
+          python scripts/lint/cc_budget.py
+
+      # ADR-0021 R1 / issue #2186: каждый новый exemption в
+      # cc_budget_baseline.json обязан иметь запись в _refactor_cards с
+      # ссылкой на type:tech-debt issue, иначе refactor-карточка не
+      # заведена — а значит гард не сработает и сложность будет расти
+      # молча (issue #2186, WSSServer._on_json_cmd дожил до CC=107).
+      # Hard gate (no continue-on-error): без ref-card PR падает.
+      # Полная сетевая проверка (--verify-remote) делается отдельным
+      # шагом ниже; локальная — дешёвая структурная валидация.
+      - name: CC-budget ref-card guard (ADR-0021 R1)
+        run: |
+          python scripts/lint/cc_budget_refs.py
+
+      # ADR-0145: class-size budget. ADR-0021 bounds only per-method CC, so code
+      # was "extracted" into more private methods of the SAME class (DialogueNode:
+      # 4062 LOC/74 methods on 18.08 -> 9872 LOC/218 methods, WMC 1184). A class is
+      # big if WMC>80 or methods>40; existing big classes are grandfathered in
+      # scripts/lint/class_budget_baseline.json and may only shrink (with a
+      # baseline refresh in the same PR). Hard gate (no continue-on-error).
+      - name: Class-size budget (ADR-0145)
+        run: |
+          python scripts/lint/class_budget.py
+
+      # ADR-0021 policy / issue #2118: "seam without consumer" guard — a ROS
+      # topic published with no subscriber (or vice versa) anywhere in src/,
+      # or a private _publish_*/_on_* method called only from tests. Hard
+      # gate (no continue-on-error) — same two-tier scheme as CC-budget:
+      # scripts/lint/seam_baseline.json grandfathers everything already on
+      # develop, scripts/lint/seam_allowlist.json documents legal external
+      # consumers/producers (WS bridge to the Quest headset, twist_mux,
+      # hardware drivers, ...). Only a genuinely NEW seam fails the build.
+      # Self-tests: scripts/lint/test_seam_without_consumer.py.
+      - name: Seam-without-consumer guard (issue #2118)
+        run: |
+          python scripts/lint/seam_without_consumer.py
+
+      # Третий случай того же дефекта: каталог tests/unit/docker/ не гонялся
+      # НИ ОДНИМ workflow. Там живут проверки compose (mem_limit, issue #2621)
+      # и Ресурсного пака (docs/plans/2026-09-15-resource-pack.md) — последние
+      # прогоняют настоящий apply_resource_pack.sh на фикстуре через локальный
+      # HTTP-сервер на 127.0.0.1, боевые URL Hailo/Vosk/Silero не дёргаются.
+      # Нужны bash + curl + unzip (на ubuntu-latest всё есть), docker НЕ нужен.
+      # Отдельным шагом, а не через G-Run Tests: тот поднимает ROS-контейнер и
+      # coverage-гейт rob_box_harness, к этим тестам отношения не имеющий.
+      - name: Docker/compose + resource-pack guards
+        run: |
+          python -m pytest tests/unit/docker \
+            -v \
+            -o addopts="" \
+            -p no:cacheprovider
+
+      # ADR-0150 §10.3 / PR-2 (#3687): владельцы топиков диалога. Каждый топик
+      # /dialog/*, /voice/speech|expression|providers|stt|speaker|music/*,
+      # /telegram/*, /avatar/session, который код публикует, объявлен в
+      # architecture/ownership.yml; писателей не больше writers_allowed;
+      # multiple_writers в runtime-baseline.json несут debt с номером PR.
+      # Hard gate (no continue-on-error). Блок отдельный от шагов cc_budget/PR-0.
+      - name: Dialog topic ownership guard (ADR-0150 §10.3)
+        run: |
+          python scripts/lint/ownership_check.py
+
+      - name: Dialog topic ownership guard self-tests
+        run: |
+          python -m unittest scripts.lint.test_ownership_check -v
+
+      # ADR-AF-0030 §2.4 / issue #2076 Phase 2: ADR-namespace collision guard
+      # с поддержкой двух доменов (AF для agent-flow, RT для рантайма).
+      # Hard gate (no continue-on-error) — PR с новым docs/adr/(AF-)?NNNN-*.md
+      # на занятом в своём домене номере должен фейлить lint ещё до merge-gate.
+      # Скрипт локальный, 13/13 регресс-тестов зелёные
+      # (scripts/lint/tests/test_validate_adr_namespace.sh, +3 для AF).
+      # Сам скрипт ждёт git fetch origin develop (на runner checkout
+      # без push контекста — нужна явная выборка ref'а).
+      - name: ADR-namespace collision guard (ADR-AF-0030)
+        run: |
+          git fetch --no-tags origin develop
+          bash scripts/lint/validate_adr_namespace.sh --ref origin/develop
+
+  # ============================================================================
   # YAML Linting
   # ============================================================================
   yaml-lint:
@@ -111,29 +695,10 @@ jobs:
           python -m pip install --upgrade pip
           pip install yamllint==1.35.1
 
-      - name: Create yamllint config
-        run: |
-          cat > .yamllint.yml << 'EOF'
-          extends: default
-          rules:
-            line-length:
-              max: 120
-              level: warning
-            indentation:
-              spaces: 2
-              indent-sequences: consistent
-            comments:
-              min-spaces-from-content: 1
-            document-start: disable
-            truthy:
-              allowed-values: ['true', 'false', 'yes', 'no', 'on', 'off']
-          ignore: |
-            build/
-            install/
-            log/
-            .git/
-          EOF
-
+      # Конфиг — закоммиченный .yamllint.yml (тот же у
+      # локального прогона scripts/ci/run_workflow_job.py). Раньше здесь был
+      # шаг, перезаписывавший его heredoc'ом с ДРУГИМИ правилами — CI и
+      # локальная проверка линтили по-разному.
       - name: Lint YAML files
         run: |
           echo "::group::yamllint check"
@@ -146,6 +711,46 @@ jobs:
             || echo "::warning::YAML lint issues found. Review output above."
           echo "::endgroup::"
         continue-on-error: true
+
+      # docs/plans/2026-09-15-service-manifest.md §8 (acceptance Phase 2):
+      # actionlint над build-workflow, которые Phase 2/Phase 4 перевели на
+      # composite/динамическую matrix (`strategy.matrix.include: fromJSON(...)`).
+      # Это новый для репозитория механизм (прецедента не было — план §3.2), и
+      # опечатка в нём — ссылка на несуществующий job/output, кривое
+      # выражение — проявилась бы только на реальном прогоне, а build-стенд
+      # один и медленный. actionlint ловит это статически.
+      #
+      # Hard gate (без continue-on-error), но ОБЛАСТЬ — только эти три файла:
+      # репозиторий целиком actionlint сегодня не проходит (на 21.09.2026 —
+      # ~190 замечаний, из них 75 в "L-Deploy and Verify.yml"; почти всё —
+      # shellcheck внутри run:). Расширять область имеет смысл отдельной
+      # задачей, разгребая файлы по одному. Делать шаг warn-only смысла нет:
+      # ADR-0057 §1.2 прямо фиксирует, что soft-warning в этом репозитории
+      # уже пробовали и он не работает.
+      # "L-Build Single Service.yml" добавлен в область хендоффом 2026-09-21
+      # §8 (Phase 4) вместе с переводом сборки на composite — до этого файл
+      # actionlint не проходил (9 замечаний shellcheck SC2086/SC2129 в
+      # job'е prepare, не связанных с этим PR, но раз файл уже трогается —
+      # почищены заодно, чтобы не заводить гейт на заведомо красном файле).
+      #
+      # Метки self-hosted раннеров (rob-box, e2e) объявлены в
+      # .github/actionlint.yaml — без этого файла actionlint считает ошибкой
+      # каждый `runs-on: [self-hosted, rob-box]`.
+      # "G-Auto-close Issues on Develop Merge.yml" (issue 3013) добавлен в
+      # область сразу — новый файл, проходит actionlint+shellcheck чисто.
+      # ADR-0159 PR-3: два per-Pi workflow стали одним "L-Build Pi Services.yml"
+      # (вход `pi`); в область добавлен его вызывающий "L-Build-All-Services.yml" —
+      # actionlint сверяет `with:` трёх вызовов с inputs вызываемого workflow.
+      - name: actionlint (build workflows, hard gate)
+        run: |
+          echo "::group::actionlint"
+          docker run --rm -v "${PWD}:/repo" -w /repo rhysd/actionlint:1.7.7 -color \
+            ".github/workflows/L-Build Pi Services.yml" \
+            ".github/workflows/L-Build-All-Services.yml" \
+            ".github/workflows/L-Build Single Service.yml" \
+            ".github/workflows/L-Build Base Images.yml" \
+            ".github/workflows/G-Auto-close Issues on Develop Merge.yml"
+          echo "::endgroup::"
 
   # ============================================================================
   # Dockerfile Linting
@@ -165,19 +770,7 @@ jobs:
           chmod +x /tmp/hadolint
           sudo mv /tmp/hadolint /usr/local/bin/hadolint
 
-      - name: Create hadolint config
-        run: |
-          cat > .hadolint.yaml << 'EOF'
-          ignored:
-            - DL3008  # Pin versions in apt-get (too strict for ROS)
-            - DL3009  # Delete apt cache (handled by base images)
-            - DL3015  # Avoid additional packages (yq needed)
-            - SC2086  # Double quote to prevent globbing
-          trustedRegistries:
-            - docker.io
-            - ghcr.io
-          EOF
-
+      # Конфиг — закоммиченный .hadolint.yaml (см. комментарий у yamllint).
       - name: Lint Dockerfiles
         run: |
           echo "::group::Hadolint Dockerfile check"
@@ -208,6 +801,33 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y shellcheck
 
+      # Issue #2930: деплой не должен делать `compose down`, пока не
+      # подтверждено, что все образы стека скачаны/лежат локально.
+      - name: Deploy preflight pull-before-stop (issue #2930)
+        run: |
+          bash scripts/deploy/tests/test_preflight_pull_images.sh
+
+      # Эпик #4371: HIL. hil.sh не трогает боевые пути (./maps, /data), порядок
+      # «замок → стоп моторов → sim time → сим», off гасит сим до возврата
+      # ros2-control; деплой падает при замке /tmp/hil.lock. Фейковые ssh/docker.
+      # #4682: fail-closed lifecycle, первый PathCalc и 0/3 EVIDENCE_INSUFFICIENT.
+      - name: HIL switch + deploy lock (epic #4371)
+        run: |
+          bash scripts/hil/tests/test_hil.sh
+          bash scripts/hil/tests/test_depot_pathcalc.sh
+          bash scripts/hil/tests/test_pathcalc_snapshot.sh
+          bash scripts/hil/tests/test_pathcalc_producer.sh
+          shellcheck scripts/hil/hil.sh scripts/hil/remote_pi.sh scripts/hil/hil.conf scripts/hil/tests/test_hil.sh scripts/hil/diagnostics/run_depot_pathcalc.sh scripts/hil/diagnostics/build_nav2_pathcalc_snapshot.sh scripts/hil/tests/test_depot_pathcalc.sh scripts/hil/tests/test_pathcalc_snapshot.sh scripts/hil/tests/test_pathcalc_producer.sh scripts/deploy/check_hil_lock.sh docker/sim/hil_run.sh
+
+      # Issue #4492: ключ студии канала на хостах — только чтение через forced command.
+      # Тест гоняет гейт с фейковыми docker/scp/git: разрешённое проходит, обходы
+      # (../, симлинк, ; && | $() кавычки, scp -t, docker exec, длинный N, /data) отбиваются.
+      - name: Studio read-only gate (issue #4492)
+        run: |
+          bash scripts/studio/tests/test_studio_ro_gate.sh
+          shellcheck scripts/studio/studio_ro_gate.sh scripts/studio/install_ro_key.sh \
+            scripts/studio/tests/test_studio_ro_gate.sh
+
       - name: Lint shell scripts
         run: |
           echo "::group::ShellCheck"
@@ -228,7 +848,7 @@ jobs:
   lint-summary:
     name: Lint Summary
     runs-on: ubuntu-latest
-    needs: [python-lint, yaml-lint, dockerfile-lint, shellcheck-lint]
+    needs: [python-lint, unit-offline-tests, repo-guards, yaml-lint, dockerfile-lint, shellcheck-lint]
     if: always()
     steps:
       - name: Report Status
@@ -238,6 +858,8 @@ jobs:
           echo "| Check | Status |" >> $GITHUB_STEP_SUMMARY
           echo "|-------|--------|" >> $GITHUB_STEP_SUMMARY
           echo "| Python Linting | ${{ needs.python-lint.result }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Offline Unit Tests | ${{ needs.unit-offline-tests.result }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Repo Guards | ${{ needs.repo-guards.result }} |" >> $GITHUB_STEP_SUMMARY
           echo "| YAML Linting | ${{ needs.yaml-lint.result }} |" >> $GITHUB_STEP_SUMMARY
           echo "| Dockerfile Linting | ${{ needs.dockerfile-lint.result }} |" >> $GITHUB_STEP_SUMMARY
           echo "| Shell Scripts | ${{ needs.shellcheck-lint.result }} |" >> $GITHUB_STEP_SUMMARY
@@ -251,7 +873,4 @@ jobs:
           echo "# Format Python code" >> $GITHUB_STEP_SUMMARY
           echo "black ." >> $GITHUB_STEP_SUMMARY
           echo "isort ." >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "# Check before commit" >> $GITHUB_STEP_SUMMARY
-          echo "pre-commit run --all-files" >> $GITHUB_STEP_SUMMARY
           echo "\`\`\`" >> $GITHUB_STEP_SUMMARY

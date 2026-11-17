@@ -61,7 +61,7 @@
 ### Интерактивная установка
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/krikz/rob_box_project/develop/scripts/setup_node.sh | bash
+curl -fsSL https://raw.githubusercontent.com/krikz/rob_box_project/develop/scripts/setup/setup_node.sh | bash
 ```
 
 Скрипт спросит какой тип узла настроить и проведет через весь процесс.
@@ -70,23 +70,23 @@ curl -fsSL https://raw.githubusercontent.com/krikz/rob_box_project/develop/scrip
 
 ```bash
 # Vision Pi
-curl -fsSL https://raw.githubusercontent.com/krikz/rob_box_project/develop/scripts/setup_node.sh | bash -s vision
+curl -fsSL https://raw.githubusercontent.com/krikz/rob_box_project/develop/scripts/setup/setup_node.sh | bash -s vision
 
 # Main Pi
-curl -fsSL https://raw.githubusercontent.com/krikz/rob_box_project/develop/scripts/setup_node.sh | bash -s main
+curl -fsSL https://raw.githubusercontent.com/krikz/rob_box_project/develop/scripts/setup/setup_node.sh | bash -s main
 
 # Sensor Hub
-curl -fsSL https://raw.githubusercontent.com/krikz/rob_box_project/develop/scripts/setup_node.sh | bash -s sensor-hub
+curl -fsSL https://raw.githubusercontent.com/krikz/rob_box_project/develop/scripts/setup/setup_node.sh | bash -s sensor-hub
 ```
 
 ### Специализированные скрипты
 
 ```bash
 # Vision Pi (прямой вызов)
-curl -fsSL https://raw.githubusercontent.com/krikz/rob_box_project/develop/scripts/setup_vision_pi.sh | bash
+curl -fsSL https://raw.githubusercontent.com/krikz/rob_box_project/develop/scripts/setup/setup_vision_pi.sh | bash
 
 # Main Pi (прямой вызов)
-curl -fsSL https://raw.githubusercontent.com/krikz/rob_box_project/develop/scripts/setup_main_pi.sh | bash
+curl -fsSL https://raw.githubusercontent.com/krikz/rob_box_project/develop/scripts/setup/setup_main_pi.sh | bash
 ```
 
 ## 📋 Что делает скрипт
@@ -97,6 +97,8 @@ curl -fsSL https://raw.githubusercontent.com/krikz/rob_box_project/develop/scrip
 4. **Настраивает MOTD** - красивое приветствие с логотипом РОББОКС
 5. **Настраивает автозапуск** - Docker контейнеры запускаются при загрузке
 6. **Специфичная настройка** - проверка устройств, конфигурация
+7. **zram-своп** (Vision Pi) - сжатый своп в RAM, чтобы узел под нагрузкой
+   тормозил, а не уходил в недоступность ([#2621](https://github.com/krikz/rob_box_project/issues/2621))
 
 ## 🔧 После установки
 

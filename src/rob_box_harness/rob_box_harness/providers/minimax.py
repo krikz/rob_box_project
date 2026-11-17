@@ -29,7 +29,7 @@ the upstream provider:
 
 The class is async-end-to-end (``asyncio``) and exposes the canonical
 ``name = "minimax"`` so the harness registry's fallback chain
-(``[minimax, deepseek, mimo]``) can pick it by name.
+(``[deepseek, minimax, mimo]``) can pick it by name.
 
 The actual HTTP transport is delegated to the OpenAI SDK that
 :class:`rob_box_llm.providers.minimax.MiniMaxProvider` wraps, so a
@@ -45,15 +45,26 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
-import random
-from dataclasses import dataclass, asdict
+from dataclasses import asdict
 from typing import Any, AsyncIterator, Iterable, Mapping
 
+import httpx
 from openai import AsyncOpenAI
 
 from rob_box_harness.config import LLMConfig
 from rob_box_harness.errors import ConfigError
 from rob_box_harness.health import is_quota_exhausted
+from rob_box_harness.providers.first_chunk import await_with_deadline
+from rob_box_harness.providers.reasoning import (
+    REASONING_COMPLETE_TIMEOUT_S,
+    is_reasoning_call,
+    reasoning_settings,
+)
+# Ретрай-политика — одна на харнес (providers/retry.py). Раньше здесь
+# лежала своя копия класса, дословно совпадавшая с копией в deepseek.py,
+# но БУДУЧИ другим объектом (карточка W6-1). Имя оставлено в модуле:
+# по нему ходят тесты.
+from rob_box_harness.providers.retry import RetryPolicy
 
 # Re-export the upstream provider + helpers so callers can ``from
 # rob_box_harness.providers.minimax import MiniMaxProvider`` exactly
@@ -65,6 +76,7 @@ from rob_box_llm.errors import (
     CapabilityUnavailableError,
     ContentFilterError,
     ProviderError,
+    QuotaExhaustedError,
     RateLimitError,
     TimeoutError,
 )
@@ -96,6 +108,7 @@ __all__ = [
     "HarnessMiniMaxProvider",
     "build_minimax_provider",
     "RetryPolicy",
+    "FirstChunkTimeoutError",
     "MINIMAX_API_KEY_ENV",
     # Re-exports from rob_box_llm so callers have a single import path.
     "DEFAULT_BASE_URL",
@@ -120,65 +133,6 @@ MINIMAX_API_KEY_ENV: str = "MINIMAX_API_KEY"
 
 
 # ---------------------------------------------------------------------------
-# Retry policy
-# ---------------------------------------------------------------------------
-
-
-@dataclass(frozen=True)
-class RetryPolicy:
-    """Retry behaviour for transient MiniMax failures.
-
-    Only transient errors (``RateLimitError`` / ``TimeoutError``) are
-    retried. ``AuthError`` / ``ContentFilterError`` /
-    ``CapabilityUnavailableError`` always propagate immediately —
-    retrying them only hides a real bug.
-
-    ``max_attempts`` is the upper bound including the initial call.
-    ``max_attempts=1`` disables retries (the initial call still
-    happens). ``backoff_base`` is the first retry delay in seconds;
-    each subsequent delay is ``backoff_base * 2 ** (attempt - 1)``
-    plus a uniform random jitter in ``[0, backoff_jitter)`` to avoid
-    thundering herds. Wait times are therefore bounded by
-    ``sum(backoff_base * 2 ** i for i in range(max_attempts - 1))``
-    plus jitter.
-    """
-
-    max_attempts: int = 3
-    backoff_base: float = 0.5
-    backoff_jitter: float = 0.25
-
-    def __post_init__(self) -> None:
-        if self.max_attempts < 1:
-            raise ValueError(
-                f"RetryPolicy.max_attempts must be >= 1; got {self.max_attempts}"
-            )
-        if self.backoff_base < 0:
-            raise ValueError(
-                f"RetryPolicy.backoff_base must be >= 0; got {self.backoff_base}"
-            )
-        if self.backoff_jitter < 0:
-            raise ValueError(
-                f"RetryPolicy.backoff_jitter must be >= 0; got {self.backoff_jitter}"
-            )
-
-    def delay_for(self, attempt: int) -> float:
-        """Return the sleep duration before retry ``attempt`` (1-based).
-
-        ``attempt=1`` is the first retry (after the initial call).
-        Returns 0.0 when ``attempt`` is out of range — callers should
-        never invoke ``delay_for`` past ``max_attempts - 1``.
-        """
-        if attempt < 1:
-            return 0.0
-        base: float = self.backoff_base * (2 ** (attempt - 1))
-        jitter: float = 0.0
-        if self.backoff_jitter:
-            jitter = float(random.uniform(0.0, self.backoff_jitter))
-        return base + jitter
-
-
-
-# ---------------------------------------------------------------------------
 # Consecutive-429 fallback policy
 # ---------------------------------------------------------------------------
 
@@ -191,6 +145,84 @@ class RetryPolicy:
 #: ~11с на 3 попытках × 3 SDK-ретрая (инцидент 10.08.2026).
 CONSECUTIVE_429_LIMIT: int = 3
 
+#: Таймаут на ПОЛУЧЕНИЕ ПЕРВОГО БАЙТА / ПЕРВОГО ЧАНКА от провайдера
+#: (issue #2718). Зачем отдельный от общего request-timeout:
+#: ``httpx.Timeout(read=20.0, write=10.0)`` ограничивает весь стрим
+#: (свойство read действует на чтение между событиями, а не до первого
+#: байта HTTP-ответа). При мёртвом MiniMax (Token Plan исчерпан, API
+#: просто молча висит) робот ждёт ~30с три попытки подряд — суммарно
+#: ~90с до честного 429 и переключения на deepseek. Это слишком
+#: долго: первая реплика «извините, подождите» нужна за ≤5-10с, иначе
+#: оператор решает, что робот завис.
+#:
+#: 10 с — компромисс: достаточно для обычного холодного старта
+#: upstream SDK / TLS handshake на первой реплике дня (3-7 с в наших
+#: логах), но слишком мало чтобы провайдер, который реально генерит
+#: ответ (TTFT ~3-5 с для наших моделей), мог «успеть» — если за 10 с
+#: ни одного чанка нет, провайдер с высокой вероятностью висит.
+DEFAULT_FIRST_CHUNK_TIMEOUT_S: float = 10.0
+
+#: Ретраи внутри ``AsyncOpenAI`` (issue #2939). SDK по умолчанию делает
+#: ``max_retries=2`` и логирует их только как «Retrying request» — живой
+#: ход #2939 висел 3 попытки × 90 с, фолбек-цепочка ``minimax→deepseek``
+#: исключения так и не получила. Ретраи остаются одни — harness-овые
+#: (:class:`RetryPolicy`): они видны в логе и учитывают first-chunk-гуард.
+DEFAULT_SDK_MAX_RETRIES: int = 0
+
+#: Потолок фазы connect (TCP+TLS), issue #2939. ``timeout_s`` из
+#: каталога (90 с) — бюджет на ВСЮ генерацию ``complete()``; httpx
+#: применял его и к соединению, так что мёртвый хост выяснялся за 90 с.
+#: 5 с — как ``connect`` в ``rob_box_llm.providers.minimax.DEFAULT_TIMEOUT``.
+DEFAULT_CONNECT_TIMEOUT_S: float = 5.0
+
+
+class FirstChunkTimeoutError(TimeoutError):
+    """Провайдер молчит дольше first-chunk-гуарда (issue #2939).
+
+    Подкласс :class:`TimeoutError`, чтобы health-цепочка по-прежнему
+    считала его транзиентным, — но СВОИ ретраи на нём не делаем:
+    молчащий провайдер за следующие 10 с не оживёт, а бюджет хода
+    (сравним с бюджетом фразы STT #2767 — 20 с) уйдёт на ожидание
+    вместо фолбека на следующий провайдер.
+    """
+
+
+#: Подстроки ответа MiniMax «кончилась квота/баланс» (длинное окно, НЕ секундный burst): ``2056`` - Token Plan
+#: usage limit, ``1008`` - insufficient balance. Единственное место, где эти коды известны (ADR-0150 §8): наружу
+#: уходит класс ``QuotaExhaustedError``.
+MINIMAX_QUOTA_HINTS: tuple[str, ...] = ("2056", "1008", "token plan")
+
+
+def _classify_quota(exc: BaseException) -> BaseException:
+    """429 MiniMax с кодом квоты -> ``QuotaExhaustedError`` (остальное - как есть)."""
+    if isinstance(exc, RateLimitError) and not isinstance(exc, QuotaExhaustedError):
+        text = str(exc).lower()
+        if any(hint in text for hint in MINIMAX_QUOTA_HINTS):
+            return QuotaExhaustedError(str(exc), provider=getattr(exc, "provider", None) or "minimax")
+    return exc
+
+
+def _not_worth_retrying(exc: BaseException) -> bool:
+    """Квота (#1082) или молчащий провайдер (#2939) — сразу в фолбек."""
+    return is_quota_exhausted(exc) or isinstance(exc, FirstChunkTimeoutError)
+
+
+async def _aclose_quietly(stream: Any) -> None:
+    """Best-effort ``aclose()`` внутреннего стрима (#1280, #2939).
+
+    Ошибка закрытия не должна маскировать настоящую: генератор может ещё
+    крутиться в брошенной first-chunk-гуардом задаче.
+    """
+    aclose = getattr(stream, "aclose", None)
+    if aclose is None:
+        return
+    try:
+        await aclose()
+    except Exception as close_exc:  # noqa: BLE001
+        _log.debug(
+            "minimax.stream: aclose() raised %r; ignoring (best-effort cleanup)",
+            close_exc,
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -224,8 +256,8 @@ class HarnessMiniMaxProvider(LLMProvider):  # type: ignore[misc]
         ``MINIMAX_API_KEY`` from ``os.environ``. The key is never
         logged.
     model:
-        Default model name. Defaults to ``"MiniMax-M3"`` (the
-        upstream default; vision-capable).
+        Default model name. Defaults to :data:`DEFAULT_MODEL` (the
+        upstream default, ``MiniMax-M3``; vision-capable).
     base_url:
         Endpoint URL. Defaults to ``https://api.minimax.io/v1``.
     timeout:
@@ -233,6 +265,13 @@ class HarnessMiniMaxProvider(LLMProvider):  # type: ignore[misc]
     retry:
         :class:`RetryPolicy` for transient failures. Pass
         ``RetryPolicy(max_attempts=1)`` to disable retries.
+    first_chunk_timeout_s:
+        Maximum wait for the FIRST byte of a non-streaming response /
+        the FIRST chunk of a streaming response (issue #2718). When
+        exceeded, the call raises :class:`TimeoutError` immediately
+        so the health-aware fallback chain can switch provider
+        without burning the full ``timeout`` budget. ``None`` (default)
+        uses :data:`DEFAULT_FIRST_CHUNK_TIMEOUT_S` (10 s).
     client:
         Optional pre-built ``AsyncOpenAI`` client. Useful for tests
         that need to inject a mock transport.
@@ -252,6 +291,7 @@ class HarnessMiniMaxProvider(LLMProvider):  # type: ignore[misc]
         base_url: str = DEFAULT_BASE_URL,
         timeout: float = 30.0,
         retry: RetryPolicy | None = None,
+        first_chunk_timeout_s: float | None = DEFAULT_FIRST_CHUNK_TIMEOUT_S,
         client: AsyncOpenAI | None = None,
         thinking: Mapping[str, str] | None = DEFAULT_THINKING_POLICY,
     ) -> None:
@@ -269,13 +309,17 @@ class HarnessMiniMaxProvider(LLMProvider):  # type: ignore[misc]
         # Build the upstream provider. We pass through every constructor
         # knob so callers get the full surface of M1-M10 without
         # re-implementing it here.
+        # Issue #2939: connect ограничен отдельно, ретраи SDK выключены.
         self._inner: _UpstreamMiniMaxProvider = _UpstreamMiniMaxProvider(
             base_url=base_url,
             api_key=resolved_key,
             model=model,
-            timeout=timeout,
+            timeout=httpx.Timeout(
+                timeout, connect=min(DEFAULT_CONNECT_TIMEOUT_S, timeout)
+            ),
             client=client,
             thinking=thinking,
+            max_retries=DEFAULT_SDK_MAX_RETRIES,
         )
         self._retry: RetryPolicy = retry or RetryPolicy()
         # 🔴 FIX (issue #1082 follow-up): счётчик подряд идущих 429
@@ -284,6 +328,12 @@ class HarnessMiniMaxProvider(LLMProvider):  # type: ignore[misc]
         # этот turn (по аналогии с TTS-цепочкой minimax→yandex→silero
         # из #1083). Сбрасывается на успешном ответе.
         self._consecutive_429s: int = 0
+        # 🔴 FIX (issue #2718): таймаут до первого байта/чанка. Когда
+        # провайдер висит (Token Plan исчерпан, upstream молчит) —
+        # upstream httpx-таймаут тратится целиком, и пользователь ждёт
+        # ~30с × N попыток. Первый-чанк-таймаут даёт быстрый выход в
+        # fallback-цепочку БЕЗ полного request-таймаута.
+        self._first_chunk_timeout_s: float | None = first_chunk_timeout_s
         # Track a close flag so ``aclose`` is idempotent. The inner
         # provider closes its own client; we just memoize here.
         self._closed: bool = False
@@ -359,19 +409,101 @@ class HarnessMiniMaxProvider(LLMProvider):  # type: ignore[misc]
         """
         # 🔴 FIX (live 06.08): MiniMax API режет ответ на своём дефолте
         # 256 токенов, когда max_tokens не задан — робот отвечал
-        # обрывками («[INSTR», пустота). dialog_core зовёт
+        # обрывками («[INSTR», пустота). agent_core зовёт
         # complete(messages, tools=...) без settings → здесь ставим
         # разумный дефолт 4096 для голоса (промпт 39K символов,
         # музыкальный код + речь не влезают в 256).
         if settings is None:
-            settings = LLMSettings(model=DEFAULT_MODEL, max_tokens=4096)
+            # model=None → иннер-провайдер берёт СВОЙ default model.
+            # Не хардкодим DEFAULT_MODEL: для инстанса, созданного с
+            # не-vision моделью (напр. MiniMax-M2.7), capability-check
+            # должен отсекать image_input ДО сети.
+            settings = LLMSettings(max_tokens=4096)
         elif settings.max_tokens is None:
             settings = LLMSettings(
                 **{**asdict(settings), "max_tokens": 4096}
             )
+        messages = tuple(messages)
+        settings, reasoning = self._turn_settings(messages, settings)
         return await self._call_with_retry(
-            self._inner.complete, messages, tools=tools, settings=settings
+            self._inner.complete, messages, tools=tools, settings=settings,
+            deadline_s=self._complete_deadline_s(reasoning),
         )
+
+    def _turn_settings(
+        self, messages: tuple[LLMMessage, ...], settings: LLMSettings
+    ) -> tuple[LLMSettings, bool]:
+        """Issue #3220 — настройки вызова с учётом thinking хода.
+
+        ``(settings, reasoning)``: вызов с thinking получает настройки из
+        :func:`reasoning_settings` и строку в лог (по ней на живом прогоне
+        видно, какие ходы думали).
+        """
+        if not is_reasoning_call(messages):
+            return settings, False
+        settings = reasoning_settings(settings)
+        _log.info(
+            "🧠 [#3220] minimax: thinking=on (поле thinking не шлём — дефолт "
+            "модели), max_tokens=%s",
+            settings.max_tokens,
+        )
+        return settings, True
+
+    def _complete_deadline_s(self, reasoning: bool) -> float | None:
+        """Дедлайн first-chunk-гуарда для ``complete()`` (#2718, #3220)."""
+        base = self._first_chunk_timeout_s
+        if base is None or not reasoning:
+            return base
+        return max(base, REASONING_COMPLETE_TIMEOUT_S)
+
+    async def _wrap_first_chunk(
+        self, awaitable: Any, *, op: str, timeout_s: float | None = None
+    ) -> Any:
+        """Race the FIRST byte/chunk against ``first_chunk_timeout_s``.
+
+        Issue #2718: ``httpx.Timeout(read=20.0)`` — это таймаут между
+        чтениями, он НЕ срабатывает когда upstream молча висит без
+        единого байта. На мёртвом MiniMax робот ждёт ~30с × N попыток,
+        и пользователь видит «зависло». ``asyncio.wait_for`` здесь
+        ограничивает именно ожидание первого байта, после чего мы
+        бросаем :class:`TimeoutError` и идём в fallback.
+
+        ``op`` — метка для лога (``complete`` / ``stream.peek``), чтобы
+        можно было отличить «не дождались тела» от «стрим висит».
+        ``timeout_s`` — дедлайн этого вызова (issue #3220: ``complete()``
+        хода с thinking ждёт дольше); ``None`` — ``first_chunk_timeout_s``.
+        """
+        deadline_s = timeout_s if timeout_s is not None else self._first_chunk_timeout_s
+        if deadline_s is None:
+            return await awaitable
+        try:
+            # Issue #2939: НЕ asyncio.wait_for — тот ждёт, пока SDK
+            # признает отмену, и живой ход провисел 3 мин вместо 10 с.
+            return await await_with_deadline(
+                awaitable, deadline_s
+            )
+        except asyncio.TimeoutError as exc:
+            _log.warning(
+                "minimax: %s: no first byte within %.1fs — считаем провайдера "
+                "мёртвым и передаём в fallback-цепочку",
+                op,
+                deadline_s,
+            )
+            # Та же метрика, что в _handle_failure / _note_429:
+            # [llm_fallback_metric] — RcutilsLogger-friendly single-string.
+            _log.info(
+                f"[llm_fallback_metric] provider=minimax "
+                f"reason=first_chunk_timeout op={op} "
+                f"timeout_s={deadline_s:.0f} action=fallback"
+            )
+            # Raise as our domain TimeoutError so the health-aware
+            # fallback chain classifies this as a transient failure
+            # (TTL escalation from issue #2718 then kicks in).
+            raise FirstChunkTimeoutError(
+                f"minimax: {op} first-byte timeout "
+                f"after {deadline_s:.1f}s",
+                provider="minimax",
+            ) from exc
 
     async def stream(
         self,
@@ -393,11 +525,14 @@ class HarnessMiniMaxProvider(LLMProvider):  # type: ignore[misc]
         # 🔴 FIX (live 06.08): тот же max_tokens-дефолт, что в complete —
         # MiniMax режет на 256 токенах без max_tokens (обрывки «[INSTR»).
         if settings is None:
-            settings = LLMSettings(model=DEFAULT_MODEL, max_tokens=4096)
+            # model=None → иннер-провайдер берёт СВОЙ default model.
+            settings = LLMSettings(max_tokens=4096)
         elif settings.max_tokens is None:
             settings = LLMSettings(
                 **{**asdict(settings), "max_tokens": 4096}
             )
+        messages = tuple(messages)
+        settings, _reasoning = self._turn_settings(messages, settings)
         # We can't decorate an async generator with the retry loop
         # without buffering chunks, so we isolate the initial request
         # call in a retryable wrapper. The upstream AsyncOpenAI stream
@@ -418,7 +553,15 @@ class HarnessMiniMaxProvider(LLMProvider):  # type: ignore[misc]
                 # Validate the initial request by peeking at the first
                 # chunk. We do this by attempting ``__anext__`` and
                 # then re-inserting the chunk via a queue.
-                first_chunk = await inner_stream.__anext__()
+                #
+                # Issue #2718: race that peek against
+                # ``first_chunk_timeout_s`` — a hung provider would
+                # otherwise burn the full per-request ``timeout``
+                # (default 30 s) on the first attempt, multiplied by
+                # ``max_attempts`` retries.
+                first_chunk = await self._wrap_first_chunk(
+                    inner_stream.__anext__(), op="stream.peek"
+                )
                 queue: asyncio.Queue[LLMChunk | BaseException | None] = asyncio.Queue()
 
                 async def _replay() -> AsyncIterator[LLMChunk]:
@@ -475,6 +618,12 @@ class HarnessMiniMaxProvider(LLMProvider):  # type: ignore[misc]
                             pass
                 self._reset_429_counter()
                 return
+            except asyncio.CancelledError:
+                # Issue #2939: barge-in во время ожидания ПЕРВОГО чанка —
+                # до очереди/раннера дело не дошло, их finally не закроет
+                # HTTP-стрим (#1280). Закрываем сами, best-effort.
+                await _aclose_quietly(inner_stream)
+                raise
             except (RateLimitError, TimeoutError) as exc:
                 last_exc = exc
                 # Best-effort release of the failed inner stream's
@@ -487,25 +636,18 @@ class HarnessMiniMaxProvider(LLMProvider):  # type: ignore[misc]
                 # the declared return type, and not every test double
                 # implements ``aclose``. Same best-effort pattern as
                 # ``Harness.teardown`` (ADR-0001 §2.6.1 M10).
-                aclose = getattr(inner_stream, "aclose", None)
-                if aclose is not None:
-                    try:
-                        await aclose()
-                    except Exception as close_exc:  # noqa: BLE001
-                        _log.debug(
-                            "minimax.stream: aclose() on failed attempt raised %r; "
-                            "ignoring (best-effort cleanup)",
-                            close_exc,
-                        )
+                await _aclose_quietly(inner_stream)
                 # 🔴 FIX (issue #1082): quota-ошибка MiniMax (2056/1008) — не
                 # транзиент, ретраить бессмысленно; сразу в fallback-цепочку.
-                if is_quota_exhausted(exc):
+                # Issue #2939: молчащий провайдер — тоже.
+                exc = _classify_quota(exc)
+                if _not_worth_retrying(exc):
                     _log.warning(
-                        "minimax: quota exhausted on stream (%s) — не ретраим, "
+                        "%s (stream) — не ретраим, "
                         "передаём в fallback-цепочку",
                         exc,
                     )
-                    raise
+                    raise exc
                 # 🔴 FIX (issue #1082 follow-up): per-request 429 rate-limit
                 # (НЕ quota) — N×429 подряд (N≥3) → сдаёмся и передаём
                 # управление fallback-цепочке на этот turn (по аналогии с
@@ -572,13 +714,22 @@ class HarnessMiniMaxProvider(LLMProvider):  # type: ignore[misc]
         *,
         tools: Iterable[Mapping[str, Any]],
         settings: LLMSettings | None,
+        deadline_s: float | None = None,
     ) -> LLMResponse:
         attempts = 0
         last_exc: BaseException | None = None
         while attempts < self._retry.max_attempts:
             attempts += 1
             try:
-                response = await fn(messages, tools=tools, settings=settings)
+                # Issue #2718: race the FIRST byte against
+                # ``first_chunk_timeout_s`` so a hung provider does not
+                # burn the full ``timeout`` budget (default 30 s) on a
+                # single attempt. ``_wrap_first_chunk`` re-raises
+                # ``TimeoutError`` (our domain error) on deadline.
+                response = await self._wrap_first_chunk(
+                    fn(messages, tools=tools, settings=settings), op="complete",
+                    timeout_s=deadline_s,
+                )
                 self._reset_429_counter()
                 return response
             except (RateLimitError, TimeoutError) as exc:
@@ -588,13 +739,14 @@ class HarnessMiniMaxProvider(LLMProvider):  # type: ignore[misc]
                 # робот ждал 15-19с на трёх попытках, потом всё равно
                 # падал на deepseek. Quota-ошибка → сразу наружу, чтобы
                 # health-aware fallback переключил провайдера.
-                if is_quota_exhausted(exc):
+                exc = _classify_quota(exc)
+                if _not_worth_retrying(exc):
                     _log.warning(
-                        "minimax: quota exhausted (%s) — не ретраим, "
+                        "%s — не ретраим, "
                         "передаём в fallback-цепочку",
                         exc,
                     )
-                    raise
+                    raise exc
                 # 🔴 FIX (issue #1082 follow-up): per-request 429 rate-limit
                 # (НЕ quota) — N×429 подряд (N≥3) значит, что MiniMax
                 # залимитил нас на этом окне; ретраить дальше бессмысленно
@@ -668,6 +820,7 @@ def build_minimax_provider(
     *,
     env: Mapping[str, str] | None = None,
     retry: RetryPolicy | None = None,
+    first_chunk_timeout_s: float | None = None,
     client: AsyncOpenAI | None = None,
 ) -> MiniMaxProvider:
     """Build a :class:`MiniMaxProvider` from a :class:`LLMConfig`.
@@ -737,6 +890,12 @@ def build_minimax_provider(
         base_url=DEFAULT_BASE_URL,
         timeout=timeout,
         retry=retry,
+        # Issue #2718: значение уходит в конструктор как есть, и
+        # ``None`` (дефолт фабрики) ВЫКЛЮЧАЕТ гуард — дефолт конструктора
+        # (10 с) сюда не подставляется. Так задумано для пакетных вызовов
+        # со своим дедлайном (reasoner, текст песни: ответ дольше 10 с);
+        # агентские цепочки включают гуард явно в ``catalog.build_provider``.
+        first_chunk_timeout_s=first_chunk_timeout_s,
         client=client,
         # 🔴 FIX (live 06.08): вернули DEFAULT_THINKING_POLICY — вчера (b5879b79)
         # thinking={"type":"disabled"} падал TypeError, т.к. шёл в kwargs →

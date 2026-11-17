@@ -56,6 +56,11 @@ class TTSSettings:
     Field semantics follow MiniMax's T2A v2 schema where applicable so we
     can map straight to the HTTP request body. For providers that don't
     support a given field the value is silently dropped.
+
+    ``pronunciation_dict`` is typed (not only via ``extra``) so the field
+    is discoverable from the value object and can carry the same
+    MiniMax-shaped payload: ``{"tone": [...], "phoneme": [...], "contextual": [...]}``
+    (issue #1780). Providers that don't support it ignore it.
     """
 
     model: Optional[str] = None  # e.g. "speech-02-hd", "speech-02-turbo"
@@ -70,9 +75,20 @@ class TTSSettings:
     sample_rate: Optional[int] = None  # Hz — provider default if None
     format: TTSFormat = TTSFormat.PCM  # desired output container
     text_normalization: Optional[bool] = None
+    # MiniMax ``pronunciation_dict`` typed field — dict of {tone/phoneme/contextual:
+    # list[str]} per T2A v2 spec. ``None``/empty → omit. We keep it as
+    # ``Mapping[str, Any]`` so callers can mix shapes if they need to
+    # forward the dict verbatim; the provider validates the contents.
+    pronunciation_dict: Optional[Mapping[str, Any]] = None
     extra: Mapping[str, Any] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
+        # ``pronunciation_dict`` is wrapped in a MappingProxyType so callers
+        # can't mutate it after construction (mirrors ``extra`` semantics).
+        if isinstance(self.pronunciation_dict, dict):
+            object.__setattr__(
+                self, "pronunciation_dict", MappingProxyType(self.pronunciation_dict)
+            )
         if isinstance(self.extra, dict):
             object.__setattr__(self, "extra", MappingProxyType(self.extra))
 

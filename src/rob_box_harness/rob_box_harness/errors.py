@@ -51,10 +51,11 @@ class ConfigError(HarnessError):
 class HarnessNotFoundError(HarnessError):
     """The requested harness name is not registered.
 
-    Raised by :func:`rob_box_harness.runner.run_harness` and
-    :class:`rob_box_harness.registry.HarnessRegistry.resolve` when the
-    caller asks for a harness that hasn't been registered. Tests use
-    this to detect typos in service factories.
+    Historically raised by ``run_harness`` and ``HarnessRegistry.resolve``;
+    both were removed with the Harness-каркас (ADR-0051 §3.2, issue
+    #1985), so nothing raises this today. Kept exported for backward
+    compatibility of the public error hierarchy — кандидат на удаление
+    отдельной карточкой.
     """
 
 

@@ -1,5 +1,7 @@
 # ROBBOX TTS Training
 
+> **09.11.2026:** скрипты `generate_dataset.sh`, `generate_phrases_deepseek.py`, `silero_tts_gui.py` и чат `robbox_chat*.py` удалены (решение Шифу 09.11, ADR-0145 §4): их никто не вызывал (чат и генератор фраз к тому же читали давно удалённые промпты). Шаги с ними ниже не выполнимы; запись (`record_yandex_voice.py`) и обучение остались.
+
 Обучение кастомной TTS модели для ROBBOX на Dell Precision 5540.
 
 ## Быстрый старт
@@ -284,7 +286,7 @@ cp ~/robbox_tts_training/models/robbox_piper/checkpoints/best_model.pt \
    /path/to/rob_box_project/models/robbox_custom.pt
 
 # 2. Обновляем конфигурацию
-nano /path/to/rob_box_project/src/rob_box_voice/config/voice_assistant.yaml
+nano /path/to/rob_box_project/src/rob_box_voice/config/tts_node.yaml
 
 # Измените:
 # silero:
@@ -293,7 +295,7 @@ nano /path/to/rob_box_project/src/rob_box_voice/config/voice_assistant.yaml
 
 # 3. Пересоберите Docker
 cd /path/to/rob_box_project
-docker build -f docker/vision/voice_assistant/Dockerfile -t robbox-voice .
+docker build -f docker/sound/voice_assistant/Dockerfile -t robbox-voice .
 
 # 4. Тестируйте
 docker run -it robbox-voice python3 test_voice.py

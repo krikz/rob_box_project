@@ -30,7 +30,10 @@ controller_manager:
     # Diff Drive Controller
     # ═══════════════════════════════════════════════════════════════
     # Преобразует команды /cmd_vel (Twist) в команды для колес
-    # Вычисляет одометрию и публикует /odom и TF odom→base_link
+    # Вычисляет колёсную одометрию и публикует её в /diff_drive_controller/odom
+    # (frame_id=odom) и TF odom→base_footprint. Топик /odom НЕ отсюда: его
+    # публикует только /rtabmap/icp_odometry (frame_id=icp_odom, 10 Гц).
+    # Цепочка TF: map → icp_odom → odom → base_footprint
 
     diff_drive_controller:
       type: diff_drive_controller/DiffDriveController
@@ -75,7 +78,8 @@ diff_drive_controller:
     # Odometry Configuration
     # ───────────────────────────────────────────────────────────────
     # Wheel odometry публикует TF odom → base_footprint
-    # ICP odometry использует это как guess и публикует icp_odom → base_footprint
+    # ICP odometry использует это как guess и публикует поправку icp_odom → odom
+    # (замер /tf на Main Pi 04.11: odom→base_footprint — только diff_drive_controller)
     # RTABMAP использует icp_odom (скорректированную лидаром одометрию)
     enable_odom_tf: true
 
@@ -83,8 +87,11 @@ diff_drive_controller:
     odom_frame_id: odom
     base_frame_id: base_footprint
 
-    # Для duty-cycle привода без position feedback одометрия должна идти от команд,
-    # иначе odom→base_footprint залипает на нуле и ломает guess для ICP.
+    # true — одометрия интегрирует КОМАНДЫ cmd_vel (так с 2026-03-09, 95375a19b).
+    # false — интегрирует state velocity колёс: vesc_nexus ≥ 2.1.0 считает её из eRPM
+    # холлов (ERPM / pole_pairs / gear_ratio, рад/с колеса). На роботе переключается
+    # без правки файла: DIFF_DRIVE_OPEN_LOOP=false в .env Main Pi
+    # (scripts/ros2_control/render_controller_config.py). TF-издатель тот же.
     open_loop: true
 
     # Публиковать одометрию
@@ -166,9 +173,12 @@ joint_state_broadcaster:
 #
 # 4. Topics:
 #    - Входящие: /cmd_vel (geometry_msgs/Twist)
-#    - Исходящие: /odom (nav_msgs/Odometry), /tf, /joint_states
+#    - Исходящие: /diff_drive_controller/odom (nav_msgs/Odometry, frame odom),
+#      TF odom→base_footprint, /joint_states
+#      (/odom публикует не этот контроллер, а rtabmap icp_odometry)
 #
 # 5. Testing:
 #    - Проверка контроллеров: ros2 control list_controllers
 #    - Телеоп: ros2 run teleop_twist_keyboard teleop_twist_keyboard
-#    - Одометрия: ros2 topic echo /odom
+#    - Колёсная одометрия: ros2 topic echo /diff_drive_controller/odom
+#      (итоговая /odom от ICP: ros2 topic echo /odom)

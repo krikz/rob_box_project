@@ -1,0 +1,138 @@
+{
+ "style": "synthwave",
+ "source": "style_critic/synthwave/synthwave.md, раздел «Ответ после того как дали посмотреть на код» (Qwen3.8 Omni Max, 08.10); утверждения переведены вручную в схему judge.py; confidence=0.5 — судья его не давал",
+ "tracks": [
+  {
+   "model": "set52501_01_A_09e60480.json",
+   "start_s": 0.0
+  },
+  {
+   "model": "set52501_02_B_c06441cf.json",
+   "start_s": 124.44
+  }
+ ],
+ "claims": [
+  {
+   "t0": 0,
+   "t1": 124,
+   "kind": "phrasing",
+   "claim": "p2 pulse: сплошной поток 16-х без единого None на протяжении всего трека",
+   "confidence": 0.5,
+   "args": {
+    "role": "pad"
+   }
+  },
+  {
+   "t0": 124,
+   "t1": 190,
+   "kind": "phrasing",
+   "claim": "b3 brass: 16-е без пауз — у духовых нет времени на вдох",
+   "confidence": 0.5,
+   "args": {
+    "role": "lead"
+   }
+  },
+  {
+   "t0": 124,
+   "t1": 190,
+   "kind": "out_of_key",
+   "claim": "b3 brass: 72 (C) и 70 (A#) в C# minor — случайные проезды мимо тона",
+   "confidence": 0.5,
+   "args": {
+    "role": "lead",
+    "midi": [
+     72,
+     70
+    ]
+   }
+  },
+  {
+   "t0": 0,
+   "t1": 9,
+   "kind": "hole",
+   "claim": "d1 kick: dur[0]=16 — 4 такта без бочки на старте",
+   "confidence": 0.5,
+   "args": {
+    "role": "kick"
+   }
+  },
+  {
+   "t0": 65,
+   "t1": 83,
+   "kind": "hole",
+   "claim": "d1 kick: dur=33 — бочка пропадает на 18 с",
+   "confidence": 0.5,
+   "args": {
+    "role": "kick"
+   }
+  },
+  {
+   "t0": 124,
+   "t1": 142,
+   "kind": "hole",
+   "claim": "a3 snare: dur=33 — снейр бьёт раз и исчезает на 18 с",
+   "confidence": 0.5,
+   "args": {
+    "role": "clap"
+   }
+  },
+  {
+   "t0": 142,
+   "t1": 160,
+   "kind": "hole",
+   "claim": "a1 kick: блок двоек — бочка играет раз в такт без филла (half-time)",
+   "confidence": 0.5,
+   "args": {
+    "role": "kick"
+   }
+  },
+  {
+   "t0": 124,
+   "t1": 142,
+   "kind": "overlap",
+   "claim": "трек 2 на 124.44 с, форма трека 1 до 142.2 с — 18 с две ритм-секции, два баса",
+   "confidence": 0.5,
+   "args": {
+    "seconds": 18
+   }
+  },
+  {
+   "t0": 45,
+   "t1": 90,
+   "kind": "sustain",
+   "claim": "p3 keys: sus=40 — аккорды висят по 22 с",
+   "confidence": 0.5,
+   "args": {
+    "role": "lead"
+   }
+  },
+  {
+   "t0": 150,
+   "t1": 180,
+   "kind": "sustain",
+   "claim": "b2 pad: sus=44 — стена звука в нижней середине",
+   "confidence": 0.5,
+   "args": {
+    "role": "pad"
+   }
+  },
+  {
+   "t0": 0,
+   "t1": 142,
+   "kind": "masking",
+   "claim": "сайдчейна от бочки нет, бас p1/b1 и пады конфликтуют с бочкой",
+   "confidence": 0.5,
+   "args": {
+    "param": "sidechain",
+    "role": "bass"
+   }
+  },
+  {
+   "t0": 124,
+   "t1": 142,
+   "kind": "mix",
+   "claim": "суммарный amplify 1.0+1.0 при наложении — клиппинг мастера",
+   "confidence": 0.5
+  }
+ ]
+}

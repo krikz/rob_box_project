@@ -1,0 +1,298 @@
+{
+  "version": 1,
+  "created": "2026-11-04",
+  "base_sha": "21f8b0d7caa085e68023aaa24e7ef42b8eba13d6",
+  "limits": {
+    "method": 15,
+    "init": 20
+  },
+  "exemptions": {
+    "src/rob_box_voice/rob_box_voice/audio_node.py": {
+      "AudioNode.check_vad_and_doa": 16
+    },
+    "src/rob_box_voice/rob_box_voice/core/music_stack_validation.py": {
+      "classify_sclang_log": 19
+    },
+    "src/rob_box_voice/rob_box_voice/stt_node.py": {
+      "STTNode._process_audio": 18,
+      "STTNode._recognize_yandex_phase": 22
+    },
+    "src/rob_box_voice/rob_box_voice/tts_chunking.py": {
+      "split_text": 20
+    },
+    "src/rob_box_voice/rob_box_voice/tts_node.py": {
+      "TTSNode.__init__": 28,
+      "TTSNode._synthesize_and_play": 17
+    },
+    "src/rob_box_supervisor/rob_box_supervisor/supervisor_node.py": {
+      "AvatarSupervisor._on_avatar_command": 17
+    },
+    "src/rob_box_harness/rob_box_harness/config.py": {
+      "_parse_tts": 17
+    },
+    "src/rob_box_harness/rob_box_harness/core/confirmation_policy.py": {
+      "ToolConfirmationPolicy.from_mapping": 16
+    },
+    "src/rob_box_harness/rob_box_harness/providers/minimax.py": {
+      "HarnessMiniMaxProvider.stream": 21
+    },
+    "src/rob_box_mcp_tools/rob_box_mcp_tools/async_executor.py": {
+      "AsyncToolExecutor.execute_tools_parallel": 22
+    },
+    "src/rob_box_mcp_tools/rob_box_mcp_tools/slice_authority.py": {
+      "ToolSliceAuthority.extended_with": 16,
+      "ToolSliceAuthority.from_mapping": 21
+    },
+    "src/rob_box_mcp_tools/rob_box_mcp_tools/tools/dialogue.py": {
+      "SpeakTextTool._split_sentences": 18
+    },
+    "src/rob_box_mcp_tools/rob_box_mcp_tools/tools/sound.py": {
+      "GetSoundInfoTool.execute": 19
+    },
+    "src/rob_box_supervisor/rob_box_supervisor/metrics_source.py": {
+      "MetricsSource.query_logs": 16
+    },
+    "src/rob_box_mcp_tools/rob_box_mcp_tools/tools/operator_admin.py": {
+      "ShowMetricsTool.execute": 18
+    },
+    "src/rob_box_llm/rob_box_llm/providers/deepseek.py": {
+      "_OpenAICompatibleProvider.complete": 21,
+      "_OpenAICompatibleProvider.stream": 21
+    },
+    "src/rob_box_llm/rob_box_llm/providers/minimax_tts.py": {
+      "MiniMaxTTSProvider._post": 16,
+      "MiniMaxTTSProvider.stream": 37,
+      "_build_payload": 21
+    },
+    "src/rob_box_perception/rob_box_perception/context_aggregator_node.py": {
+      "ContextAggregatorNode.add_to_memory": 18
+    },
+    "src/rob_box_perception/rob_box_perception/health_monitor.py": {
+      "HealthMonitor.print_report": 18
+    },
+    "src/rob_box_perception/rob_box_perception/observation_geometry.py": {
+      "estimate_position": 16
+    },
+    "src/rob_box_perception/rob_box_perception/vision_face_loader.py": {
+      "_post_process_faces": 17
+    },
+    "src/rob_box_perception/rob_box_perception/vision_hailo_loader.py": {
+      "_post_process_detections": 16
+    },
+    "src/rob_box_telegram/rob_box_telegram/face_card.py": {
+      "load_detail": 18
+    },
+    "src/rob_box_telegram/rob_box_telegram/handlers/callbacks.py": {
+      "_handle_floor": 16,
+      "_handle_quick": 16
+    },
+    "src/rob_box_telegram/rob_box_telegram/supervisor_client.py": {
+      "SupervisorClient._on_state_msg": 16,
+      "SupervisorClient._parse_execute_response": 22
+    }
+  },
+  "_refactor_cards": {},
+  "_adr_reference": {
+    "src/rob_box_llm/rob_box_llm/providers/minimax_tts.py:MiniMaxTTSProvider.stream": "docs/adr/0145-class-budget-and-cc-scope.md"
+  },
+  "_legacy_acknowledged": [
+    {
+      "path": "src/rob_box_voice/rob_box_voice/audio_node.py",
+      "method": "AudioNode.check_vad_and_doa",
+      "cc": 16,
+      "since": "cc_budget_baseline.json created 2026-09-08; legacy grandfather — parent gate #1984 / #2077 covers decomp backlog"
+    },
+    {
+      "path": "src/rob_box_voice/rob_box_voice/core/music_stack_validation.py",
+      "method": "classify_sclang_log",
+      "cc": 19,
+      "since": "cc_budget_baseline.json created 2026-09-08; legacy grandfather — parent gate #1984 / #2077 covers decomp backlog"
+    },
+    {
+      "path": "src/rob_box_voice/rob_box_voice/stt_node.py",
+      "method": "STTNode._process_audio",
+      "cc": 18,
+      "since": "cc_budget_baseline.json created 2026-09-08; legacy grandfather — parent gate #1984 / #2077 covers decomp backlog"
+    },
+    {
+      "path": "src/rob_box_voice/rob_box_voice/stt_node.py",
+      "method": "STTNode._recognize_yandex_phase",
+      "cc": 22,
+      "since": "cc_budget_baseline.json created 2026-09-08; legacy grandfather — parent gate #1984 / #2077 covers decomp backlog"
+    },
+    {
+      "path": "src/rob_box_voice/rob_box_voice/tts_chunking.py",
+      "method": "split_text",
+      "cc": 20,
+      "since": "cc_budget_baseline.json created 2026-09-08; legacy grandfather — parent gate #1984 / #2077 covers decomp backlog"
+    },
+    {
+      "path": "src/rob_box_voice/rob_box_voice/tts_node.py",
+      "method": "TTSNode.__init__",
+      "cc": 28,
+      "since": "cc_budget_baseline.json created 2026-09-08; legacy grandfather — parent gate #1984 / #2077 covers decomp backlog"
+    },
+    {
+      "path": "src/rob_box_voice/rob_box_voice/tts_node.py",
+      "method": "TTSNode._synthesize_and_play",
+      "cc": 17,
+      "since": "cc_budget_baseline.json created 2026-09-08; legacy grandfather — parent gate #1984 / #2077 covers decomp backlog"
+    },
+    {
+      "path": "src/rob_box_supervisor/rob_box_supervisor/supervisor_node.py",
+      "method": "AvatarSupervisor._on_avatar_command",
+      "cc": 17,
+      "since": "cc_budget_baseline.json created 2026-09-08; legacy grandfather — parent gate #1984 / #2077 covers decomp backlog"
+    },
+    {
+      "path": "src/rob_box_harness/rob_box_harness/config.py",
+      "method": "_parse_tts",
+      "cc": 17,
+      "since": "cc_budget_baseline.json created 2026-09-08; legacy grandfather — parent gate #1984 / #2077 covers decomp backlog"
+    },
+    {
+      "path": "src/rob_box_harness/rob_box_harness/core/confirmation_policy.py",
+      "method": "ToolConfirmationPolicy.from_mapping",
+      "cc": 16,
+      "since": "cc_budget_baseline.json created 2026-09-08; legacy grandfather — parent gate #1984 / #2077 covers decomp backlog"
+    },
+    {
+      "path": "src/rob_box_harness/rob_box_harness/providers/minimax.py",
+      "method": "HarnessMiniMaxProvider.stream",
+      "cc": 21,
+      "since": "cc_budget_baseline.json created 2026-09-08; legacy grandfather — parent gate #1984 / #2077 covers decomp backlog"
+    },
+    {
+      "path": "src/rob_box_mcp_tools/rob_box_mcp_tools/async_executor.py",
+      "method": "AsyncToolExecutor.execute_tools_parallel",
+      "cc": 22,
+      "since": "cc_budget_baseline.json created 2026-09-08; legacy grandfather — parent gate #1984 / #2077 covers decomp backlog"
+    },
+    {
+      "path": "src/rob_box_mcp_tools/rob_box_mcp_tools/slice_authority.py",
+      "method": "ToolSliceAuthority.extended_with",
+      "cc": 16,
+      "since": "cc_budget_baseline.json created 2026-09-08; legacy grandfather — parent gate #1984 / #2077 covers decomp backlog"
+    },
+    {
+      "path": "src/rob_box_mcp_tools/rob_box_mcp_tools/slice_authority.py",
+      "method": "ToolSliceAuthority.from_mapping",
+      "cc": 21,
+      "since": "cc_budget_baseline.json created 2026-09-08; legacy grandfather — parent gate #1984 / #2077 covers decomp backlog"
+    },
+    {
+      "path": "src/rob_box_mcp_tools/rob_box_mcp_tools/tools/dialogue.py",
+      "method": "SpeakTextTool._split_sentences",
+      "cc": 18,
+      "since": "cc_budget_baseline.json created 2026-09-08; legacy grandfather — parent gate #1984 / #2077 covers decomp backlog"
+    },
+    {
+      "path": "src/rob_box_mcp_tools/rob_box_mcp_tools/tools/sound.py",
+      "method": "GetSoundInfoTool.execute",
+      "cc": 19,
+      "since": "cc_budget_baseline.json created 2026-09-08; legacy grandfather — parent gate #1984 / #2077 covers decomp backlog"
+    },
+    {
+      "path": "src/rob_box_supervisor/rob_box_supervisor/metrics_source.py",
+      "method": "MetricsSource.query_logs",
+      "cc": 16,
+      "since": "cc_budget_baseline.json created 2026-09-08; legacy grandfather — parent gate #1984 / #2077 covers decomp backlog"
+    },
+    {
+      "path": "src/rob_box_mcp_tools/rob_box_mcp_tools/tools/operator_admin.py",
+      "method": "ShowMetricsTool.execute",
+      "cc": 18,
+      "since": "cc_budget_baseline.json created 2026-09-08; legacy grandfather — parent gate #1984 / #2077 covers decomp backlog"
+    },
+    {
+      "path": "src/rob_box_llm/rob_box_llm/providers/deepseek.py",
+      "method": "_OpenAICompatibleProvider.complete",
+      "cc": 21,
+      "since": "scope extension 2026-09-29 (architecture audit, G run 36577898577); legacy grandfather"
+    },
+    {
+      "path": "src/rob_box_llm/rob_box_llm/providers/deepseek.py",
+      "method": "_OpenAICompatibleProvider.stream",
+      "cc": 21,
+      "since": "scope extension 2026-09-29 (architecture audit, G run 36577898577); legacy grandfather"
+    },
+    {
+      "path": "src/rob_box_llm/rob_box_llm/providers/minimax_tts.py",
+      "method": "MiniMaxTTSProvider._post",
+      "cc": 16,
+      "since": "scope extension 2026-09-29 (architecture audit, G run 36577898577); legacy grandfather"
+    },
+    {
+      "path": "src/rob_box_llm/rob_box_llm/providers/minimax_tts.py",
+      "method": "MiniMaxTTSProvider.stream",
+      "cc": 37,
+      "since": "scope extension 2026-09-29 (architecture audit, G run 36577898577); legacy grandfather"
+    },
+    {
+      "path": "src/rob_box_llm/rob_box_llm/providers/minimax_tts.py",
+      "method": "_build_payload",
+      "cc": 21,
+      "since": "scope extension 2026-09-29 (architecture audit, G run 36577898577); legacy grandfather"
+    },
+    {
+      "path": "src/rob_box_perception/rob_box_perception/context_aggregator_node.py",
+      "method": "ContextAggregatorNode.add_to_memory",
+      "cc": 18,
+      "since": "scope extension 2026-09-29 (architecture audit, G run 36577898577); legacy grandfather"
+    },
+    {
+      "path": "src/rob_box_perception/rob_box_perception/health_monitor.py",
+      "method": "HealthMonitor.print_report",
+      "cc": 18,
+      "since": "scope extension 2026-09-29 (architecture audit, G run 36577898577); legacy grandfather"
+    },
+    {
+      "path": "src/rob_box_perception/rob_box_perception/observation_geometry.py",
+      "method": "estimate_position",
+      "cc": 16,
+      "since": "scope extension 2026-09-29 (architecture audit, G run 36577898577); legacy grandfather"
+    },
+    {
+      "path": "src/rob_box_perception/rob_box_perception/vision_face_loader.py",
+      "method": "_post_process_faces",
+      "cc": 17,
+      "since": "scope extension 2026-09-29 (architecture audit, G run 36577898577); legacy grandfather"
+    },
+    {
+      "path": "src/rob_box_perception/rob_box_perception/vision_hailo_loader.py",
+      "method": "_post_process_detections",
+      "cc": 16,
+      "since": "scope extension 2026-09-29 (architecture audit, G run 36577898577); legacy grandfather"
+    },
+    {
+      "path": "src/rob_box_telegram/rob_box_telegram/face_card.py",
+      "method": "load_detail",
+      "cc": 18,
+      "since": "scope extension 2026-09-29 (architecture audit, G run 36577898577); legacy grandfather"
+    },
+    {
+      "path": "src/rob_box_telegram/rob_box_telegram/handlers/callbacks.py",
+      "method": "_handle_floor",
+      "cc": 16,
+      "since": "scope extension 2026-09-29 (architecture audit, G run 36577898577); legacy grandfather"
+    },
+    {
+      "path": "src/rob_box_telegram/rob_box_telegram/handlers/callbacks.py",
+      "method": "_handle_quick",
+      "cc": 16,
+      "since": "scope extension 2026-09-29 (architecture audit, G run 36577898577); legacy grandfather"
+    },
+    {
+      "path": "src/rob_box_telegram/rob_box_telegram/supervisor_client.py",
+      "method": "SupervisorClient._on_state_msg",
+      "cc": 16,
+      "since": "scope extension 2026-09-29 (architecture audit, G run 36577898577); legacy grandfather"
+    },
+    {
+      "path": "src/rob_box_telegram/rob_box_telegram/supervisor_client.py",
+      "method": "SupervisorClient._parse_execute_response",
+      "cc": 22,
+      "since": "scope extension 2026-09-29 (architecture audit, G run 36577898577); legacy grandfather"
+    }
+  ]
+}

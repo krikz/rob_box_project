@@ -576,7 +576,7 @@ Bearer eyJhbG...`.
 * [`src/rob_box_llm/rob_box_llm/tts.py`](../../src/rob_box_llm/rob_box_llm/tts.py) — ABC и value-objects.
 * [`src/rob_box_llm/rob_box_llm/errors.py`](../../src/rob_box_llm/rob_box_llm/errors.py) — иерархия `TTSError`.
 * [`src/rob_box_voice/rob_box_voice/tts_node.py`](../../src/rob_box_voice/rob_box_voice/tts_node.py) — ROS2 wire-in (`tts_node.py:34-47, 158-202, 293-305, 608-622, 924-977`).
-* [`src/rob_box_voice/config/voice_assistant.yaml`](../../src/rob_box_voice/config/voice_assistant.yaml) — основной конфиг voice-ассистента (секция `tts_node`).
+* [`docker/sound/config/voice_assistant/tts_node.yaml`](../../docker/sound/config/voice_assistant/tts_node.yaml) — основной конфиг voice-ассистента (секция `tts_node`).
 * [`src/rob_box_voice/launch/voice_assistant.launch.py`](../../src/rob_box_voice/launch/voice_assistant.launch.py) — launch с `provider:=minimax`.
 * [`docker/vision/.env.secrets.template`](../../docker/vision/.env.secrets.template) — шаблон секретов.
 

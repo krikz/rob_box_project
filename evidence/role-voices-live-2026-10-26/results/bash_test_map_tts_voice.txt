@@ -1,0 +1,37 @@
+== yandex: исходный каталог сценариев, перевод не нужен ==
+OK   yandex   anton    -> anton
+OK   yandex   ermil    -> ermil
+OK   yandex            -> anton
+OK   yandex   четыре голоса сценария → четыре разных голоса
+
+== minimax: каст 26.10.2026 (#3992), voice:pitch:speed, замер на ЖИВОМ канале (колонка -> ReSpeaker -> speaker_id) ==
+OK   minimax  anton    -> English_Jovialman:0:1.0
+OK   minimax  ermil    -> English_WiseScholar:0:1.0
+OK   minimax  madirus  -> English_WiseScholar:0:1.0
+OK   minimax  zahar    -> Chinese (Mandarin)_Gentle_Senior:0:1.0
+OK   minimax  filipp   -> English_Whispering_girl:0:1.0
+OK   minimax  kostya   -> English_Whispering_girl:0:1.0
+OK   minimax  arina    -> Portuguese_StrictBoss:0:1.0
+OK   minimax           -> English_Jovialman:0:1.0
+OK   minimax  rita     -> Russian_ReliableMan
+OK   minimax  Russian_CrazyQueen -> Russian_CrazyQueen
+OK   minimax  Russian_ReliableMan:-2:0.9 -> Russian_ReliableMan:-2:0.9
+OK   minimax  четыре голоса сценария → четыре разных голоса
+OK   minimax anton  просодия 0/1.0
+OK   minimax ermil  просодия 0/1.0
+OK   minimax zahar  просодия 0/1.0
+OK   minimax filipp просодия 0/1.0
+OK   minimax arina  не совпадает с ролью (Portuguese_StrictBoss:0:1.0)
+OK   minimax rita   не совпадает с ролью (Russian_ReliableMan)
+OK   minimax zahar    имя голоса с пробелом и скобками цело (первое поле до «:»)
+== silero: zahar переехал с baya на kseniya, худшая пара 0.678 ==
+OK   silero   anton    -> aidar
+OK   silero   ermil    -> eugene
+OK   silero   zahar    -> kseniya
+OK   silero   filipp   -> xenia
+OK   silero   alena    -> baya
+OK   silero   aidar    -> aidar
+OK   silero            -> aidar
+OK   silero   четыре голоса сценария → четыре разных голоса
+
+PASS=31 FAIL=0

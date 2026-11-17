@@ -111,6 +111,19 @@ fi
 
 **Когда принять:** после PR #1399 (user-reopen guard) staged-rollout — двушаговая логика только на NEW e2e-done's, не retroactively.
 
+#### 4.2.1 Force-triage для high-priority voice/operator-bugs (дополнение, kanban-card t_25a2b395)
+
+GATE-2 закрывает «не доделано» через 24ч stale-timer. **Force-triage** — зеркальная защита с другой стороны: чтобы high-priority voice/operator-bugs **не пропадали** до того, как GATE-2 их закроет.
+
+Phase 3 (`bug-orphans`, ретро t_a733c3d2) ловит только issues с меткой `bug` + priority:* без process-меток. **Второй класс orphan'ов** — voice/operator-bugs с `priority:high` БЕЗ `agent:*` метки: они проваливаются через Phase 1 (нет `hermes`), Phase 2 (нет `source:gsd`), Phase 3 (нет `bug`), висят до GATE-2 → close. Phase 4 (`force-triage`, ретро `orphan-stale-no-agent-assign`) добавляет отдельную ветку логики в `agent-flow-triage.sh`:
+- Фильтр: `priority:high` AND (`bug` OR `voice` OR `operator`) AND НЕТ process-меток AND НЕТ `agent:*`.
+- По умолчанию `FORCE_TRIAGE_APPLY=false` — только логирует кандидатов с префиксом `[FORCE-TRIAGE]` (наблюдение без side-effect).
+- С `FORCE_TRIAGE_APPLY=true` (или `--apply-force`): реально ставит `needs-triage` + `agent:backend` (дефолт) + пишет комментарий с маркером `agent-flow-triage:force-triage` для дедупа в окне 60 мин (cron every 1m не спамит).
+
+Дефолтный assignee `agent:backend` — потому что для voice/operator-bugs это натуральный выбор; Phase 3 использует `agent:architect`, что для этого scope не подходит (голосовые/операторские баги требуют code-fix, а не архитектурного решения).
+
+Safety: apply-toggle по умолчанию выключен → первый rollout это **наблюдение** (видим кандидатов в логе cron), и только потом — apply=true. Это зеркальный паттерн к «GATE-2 staged-rollout на NEW events» (см. §7.2 ниже).
+
 ### 4.3 GATE-3: CI-blocking completion
 
 **Что:** новый `agent-flow-completion-check.sh` (тик в воркере при `kanban complete` — это **не** блок для `kanban complete`, а **soft-blocker** до того, как worker вызовет):
@@ -162,6 +175,265 @@ fi
 3. **Backwards compatibility** — для уже-merged PR старый gate не отменяет `< 24h stale-candidate`. Только новые events.
 4. **EXCLUDED PRs** — lint/ci-only (только `.github/`, `scripts/agent_flow/`, `docs/`) — не требуют acceptance.json (ADR-0014 + retro 10.08 #2).
 5. **CI visibility** — результат `agent-flow-completion-check.sh` должен логироваться в `cron/output/agent-flow-merge-gate/<timestamp>.md`, чтобы timeline была reconstructable.
+
+### 4.6 Window semantics & per-step vs aggregate (addendum, 2026-08-22)
+
+**Мотивация.** Без явного pinning'а `--since` windows три параллельные
+проверки (`check_patterns`, per-step `check_acceptance`, aggregate
+`check_gate1_aggregate`) исторически расходились: per-step мог дать PASS
+(маленькое окно «до этого шага»), aggregate — FAIL (пустое окно «now»),
+либо наоборот. Корень эпизода round-178 (run 32573773556, fail-streak
+5/7) — переменная `E2E_RUN_BEFORE` была неинициализирована, и
+`check_gate1_aggregate` фоллбэчился на `$(date -u +%Y-%m-%dT%H:%M:%SZ)`
+(«сейчас»), отчего `docker logs voice-assistant --since '<now>'`
+возвращал пустоту и GATE-1 ложно фейлил. Фикс-коммит
+`db84ff590c18c2649b700efe2ef88755108628e0` (2026-08-22T13:30:47Z,
+Шифу) — добавил capture robot-clock'а до первого шага в harness
+(`scripts/ci/e2e/e2e_voice_test.sh:87` в коммите-фиксе),
+trim'нул `alena` из suite и убрал `generate_music`. **Архитектурный
+долг** — отсутствие в этом ADR явного описания, **какое** окно
+использует какая проверка; без этого следующий воркер может сломать
+фикс снова. Архитектурный вердикт t_fb037ed1 §W2 + §S4 зафиксировал
+эту дыру; настоящий addendum её закрывает.
+
+#### 4.6.1 Sequence: три windows per-step vs aggregate
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant W as L-E2E Voice Test.yml<br/>(env)
+    participant H as e2e_voice_test.sh<br/>(harness)
+    participant R as voice-assistant<br/>(docker на 249)
+
+    W->>H: export E2E_RUN_BEFORE=$(date -u +%Y-%m-%dT%H:%M:%SZ)<br/>(до любого step)
+    Note over W,H: WINDOW 0 = run-start<br/>используется aggregate
+
+    loop для каждого step [s1, s2, ..., sN]
+        H->>H: STEP_BEFORE = $(date -u -d 'now')<br/>(L963, до PLAY этого шага)
+        Note over H: WINDOW 1 = step-start<br/>используется per-step acceptance
+        H->>R: docker logs --since '$STEP_BEFORE'
+        R-->>H: logs этого шага
+        opt если step.acceptance непустой
+            H->>H: check_acceptance(label, acc, $STEP_BEFORE)
+            Note over H: L851, L990<br/>WINDOW 1, case-insensitive
+        end
+        opt если step.patterns непустой
+            H->>R: docker logs --since '-6 minutes'
+            Note over H: WINDOW 2 = fixed 6-min<br/>L977 — НЕ step-relative!
+        end
+    end
+
+    H->>R: docker logs --since '$E2E_RUN_BEFORE'
+    Note over H: WINDOW 0, aggregate<br/>L1009, case-insensitive
+    H->>H: check_gate1_aggregate($ACCEPTANCE_FILE, $E2E_RUN_BEFORE)
+```
+
+**Наблюдения из диаграммы:**
+
+1. **Aggregate (WINDOW 0) = весь прогон** — должен ловить cross-step
+   инварианты (например, `set_voice` вызывается хотя бы раз за весь suite,
+   даже если в шаге mv01 LLM ответил нестандартно и не зафиксировался в
+   маленьком окне).
+2. **Per-step acceptance (WINDOW 1) = только этот шаг** — должен ловить
+   step-local инварианты (например, dj02 `stop_music` вызывается
+   именно в ответ на команду «стоп музыку», а не из предыдущего шага).
+3. **Patterns (WINDOW 2) = фиксированные 6 минут от старта PLAY этого
+   шага** — НЕ step-relative; специально для команд, у которых
+   ожидаемый side-effect (TTS-запись, диалоговая реплика) появляется
+   чуть позже моментальной отметки.
+4. **Triple-check на одну сущность — намеренный**, но требует, чтобы
+   **все три окна давали PASS**, иначе прогон считается FAILed. Это
+   объясняет эпизод round-178, где `mv01` PASSed per-step acceptance
+   (WINDOW 1 содержал set_voice), но GATE-1 aggregate FAILed (WINDOW 0
+   был пустым из-за неинициализированного `E2E_RUN_BEFORE`).
+
+#### 4.6.2 Field-mapping: suite step field → where it is checked
+
+| Suite step field              | Проверяется в                       | Окно (`--since`)                  | Case-sensitivity | Файл:строка                  |
+|-------------------------------|-------------------------------------|-----------------------------------|------------------|-------------------------------|
+| `step.patterns[i]`            | `check_patterns`                     | `-6 minutes` от старта PLAY       | **case-sensitive** (`grep -qE`) | `e2e_voice_test.sh:546-562`, вызов `:977` |
+| `step.acceptance.expected_tool_calls` | `check_acceptance` (per-step) | `STEP_BEFORE` (до PLAY этого шага)| case-insensitive (`lower() in lower()`) | `e2e_voice_test.sh:851-907`, вызов `:990` |
+| `step.acceptance.must_not_call` | `check_acceptance` (per-step)      | `STEP_BEFORE`                     | case-insensitive | `e2e_voice_test.sh:862-863`  |
+| `step.acceptance.expected_keywords` | `check_acceptance` (per-step)  | `STEP_BEFORE`                     | case-insensitive (через `recognized.lower()`) | `e2e_voice_test.sh:870-873, 883` |
+| `step.acceptance.response_max_ms` | `check_acceptance` (per-step)    | n/a (читает `timing.json`)        | n/a              | `e2e_voice_test.sh:886-894, 903` |
+| Suite-level (НЕ step, в файле `.github/e2e/scenarios/<name>_acceptance_v1.json`): `expected_tool_calls` | `check_gate1_aggregate` | `E2E_RUN_BEFORE` (до первого шага) | case-insensitive | `e2e_voice_test.sh:350-407`, вызов `:1009` |
+| Suite-level: `must_not_call`  | `check_gate1_aggregate`             | `E2E_RUN_BEFORE`                  | case-insensitive | `e2e_voice_test.sh:380-406`  |
+
+**Из таблицы следуют три неочевидных свойства** (раньше были implicit,
+теперь pinned):
+
+- **Patterns ≠ acceptance.** Suite может содержать pattern `set_voice`
+  (case-sensitive) и одновременно `acceptance.expected_tool_calls:
+  ["set_voice"]` (case-insensitive). Для токенов, состоящих из латиницы
+  в одном регистре (например, `set_voice`), это эквивалентно. Для
+  смешанных или кириллических токенов (`Алёна` vs `alena`,
+  `setVoice` vs `set_voice`) проверки расходятся — фикс `db84ff59`
+  trim'нул `alena` именно из-за этого.
+- **Step `acceptance` И suite-level `expected_tool_calls` проверяют
+  одну и ту же вещь на разных окнах.** Когда шаг имеет оба блока
+  (как `mv01_set_voice_alena`: step.patterns=`["set_voice","alena"]` +
+  step.acceptance.expected=`["set_voice"]`), плюс suite-level
+  `expected_tool_calls=["set_voice", "execute_music_code", "stop_music"]`,
+  токен `set_voice` теоретически проверяется **три раза** (per-step
+  patterns, per-step acceptance, aggregate). Это намеренно: aggregate
+  ловит cross-step кросс-инварианты, которые per-step может пропустить,
+  если шаг провалился по patterns, но acceptance считался через другой
+  канал. Дедупликация НЕ требуется — это defense-in-depth.
+- **Patterns используют фиксированное окно `-6 minutes`**, а не
+  `STEP_BEFORE`. Это сознательное решение: для команд вроде
+  `set_voice` ожидаемый side-effect (TTS-лог) появляется через ~1-3с
+  после PLAY, и фиксированное окно надёжнее, чем «относительно
+  step-start», потому что step-start захватывается ДО PLAY, а
+  реальный voice-assistant reaction log появляется ПОСЛЕ wake-gate
+  accept (потенциально 2-5с в худшем случае).
+
+#### 4.6.3 Pin: `E2E_RUN_BEFORE` semantics (canonical)
+
+```bash
+# В .github/workflows/L-E2E Voice Test.yml, env блок для шага "Run e2e voice test"
+env:
+  E2E_RUN_BEFORE: ${{ steps.robot_clock.outputs.run_started_at }}
+```
+
+где `robot_clock` — отдельный step **до** checkout тестовой ветки,
+который заходит на 249 по SSH и снимает `date -u +%Y-%m-%dT%H:%M:%SZ`
+**ровно перед** тем, как workflow начнёт setup тестовой ветки. Это
+гарантирует, что `E2E_RUN_BEFORE` охватывает все логи voice-assistant
+за весь прогон, включая pre-suite sanity-checks.
+
+**Fallback (anti-pattern, pinned here so reviewers reject it):**
+
+```bash
+# ❌ НЕ делать: aggregate fallback на 'now' — это баг db84ff59-фиксa
+check_gate1_aggregate() {  # до фикса
+    local before="${2:-$(date -u +%Y-%m-%dT%H:%M:%SZ)}"   # ← BUG
+    docker logs voice-assistant --since "$before"          # ← всегда пусто
+}
+```
+
+**Test-side contract:** `e2e-process.sh` должен проверять, что env
+`E2E_RUN_BEFORE` непустой перед запуском harness (assertion), иначе —
+fail-fast с понятным сообщением: «E2E_RUN_BEFORE не задан — GATE-1
+логически обречён; настрой L-E2E Voice Test.yml:env». Этот assert —
+**новый requirement**, отдельный devops follow-up, не часть настоящего
+ADR (потому что это код, а не архитектурный документ).
+
+#### 4.6.4 Pin: case-sensitivity
+
+- **`check_patterns` — case-sensitive (`grep -qE "$pat"`)**. Это
+  исторический default; suite authors должны писать patterns с тем
+  регистром, в котором их печатает voice-assistant (snake_case для
+  tool names, lowercase для wake-word variants, mixed case только
+  для русских терминов в нижнем регистре).
+- **`check_acceptance` и `check_gate1_aggregate` — case-insensitive
+  (`frag.lower() in logs.lower()`)**. Это сознательное решение:
+  tool names в логах иногда появляются в разном регистре (например,
+  `Set_Voice` vs `set_voice` в зависимости от того, какой layer их
+  печатает — dialogue_node vs harness-printable). Case-insensitivity
+  ловит оба варианта.
+
+**Implication:** если suite author хочет «точное» соответствие
+(например, для токена, который может случайно совпасть с шумовым
+substring'ом в логах), ему нужно использовать `step.acceptance` (с явным
+`expected_keywords` блоком на уровне фразы) или — лучше — добавить
+prefix в pattern (например, `Calling MCP tool: set_voice` вместо
+`set_voice`). ADR-0022 не вводит нового синтаксиса для case-sensitive
+acceptance; это сознательное самоограничение (KISS).
+
+#### 4.7 Retro-card completion protocol (addendum, 2026-08-24)
+
+**Мотивация.** Ретро-карточка — это канбан-таск архитектора, который
+диагностировал failure-mode и **передал рекомендации** правильному
+профилю (devops / backend), а сам **ждёт** внешнего события: merge PR от
+юзера, fix от Шифу, прогон следующего e2e-раунда. До t_d9e70587
+(23.08.2026) и t_4ab74fb7 (24.08.2026) ретро-карточки имели два
+ошибочных финиша:
+
+1. **`kanban_complete` с невыполненными accept-criteria** — карточка
+   формально закрывается через секунды после создания, accept-criteria
+   вроде «merge PR #1547 + 3 dj02 round PASS» остаются неисполненными,
+   `t_d9e70587` закрылась за **4 секунды** (23.08 23:14→23:18, разница
+   видна в `completed_at - started_at` в events timeline).
+2. **`running` без `kanban_block`** — карточка висит вечно в
+   `running`, heartbeat гоняется, профиль считает её «in progress», а
+   по факту это ожидание внешнего действия. Это «маскирующий» статус:
+   архитектор сделал свою часть, но карточка не даёт сигнал, что ждёт
+   юзера.
+
+**Наблюдение.** Каждый раз, когда архитектор сам себе блокирует
+ретро-карточку через `kanban_block(kind=transient, reason="…")`, это
+**правильный** сигнал: «своя часть сделана, жду внешнего». На
+24.08.2026 это уже применено в `t_73b0b4b8` (e2e-fail #1576, blocked by
+`(no_wake_word)` — ждёт merge fix от Шифу). Этот addendum фиксирует
+протокол как норму, а не как workaround.
+
+**Протокол (норма).** При создании ретро-карточки архитектор **обязан**
+указать в `Accept criteria` блоке **какие события** переведут её в
+archive/complete. Если хотя бы одно из этих событий — **внешнее**
+(merge от юзера, fix от Шифу, прохождение следующего e2e-раунда по
+крону), карточка **обязана** использовать один из двух финишей:
+
+```text
+A) kanban_block(kind=dependency, reason="<какое событие ждём>")
+   — карточка переходит в todo и auto-resume когда parent done
+   — применимо, если parent-card чётко определён
+   — пример: «жду archive t_9d229634 от devops после merge #1547»
+
+B) kanban_block(kind=transient, reason="<какое событие ждём>")
+   — карточка в blocked, dispatcher НЕ реклеймит
+   — применимо, если ожидание не привязано к конкретной карточке
+   — пример: «жду merge PR #1547 от Шифу» (PR не = карточка)
+   — пример: «жду следующий e2e-round с dj02_stop_music PASS»
+```
+
+**Запрещено** (для ретро-карточек с внешним acceptance):
+
+```text
+- kanban_complete с «Acceptance deferred to merge #1547»
+  → ЗАПРЕЩЕНО: знание теряется, parent-card t_7dbd1bd1 не имеет
+    upstream-связи, и dispatcher считает ретро «сделанным».
+
+- running без явного блока > 1 час
+  → НЕ желательно: dispatcher видит heartbeat, считает живой, но
+    карточка по факту не делает прогресса. Если > 1 час — явно
+    kanban_block.
+```
+
+**Pin для воркера-architect.** Перед `kanban_complete` ретро-карточки
+прогонять self-check:
+
+```bash
+# Self-check: есть ли в Accept criteria внешние события?
+grep -iE '(merge|wait|external|next round|Шифу|user)' body.md
+# Если найдено и НЕ kanban_block(kind=*) → DO NOT complete, use kanban_block
+```
+
+Этот self-check — **не enforcement** (не скрипт в merge-gate), а
+**нормы**, которые архитектор-воркер проверяет на self-review перед
+`kanban_complete`. Документ-норма достаточно для текущего масштаба
+(архитектор — один профиль, воркеры читают протокол перед каждым
+ретро).
+
+**Trade-off analysis:**
+
+| Альтернатива | Benefit | Cost | Вердикт |
+|---|---|---|---|
+| **A. Просто норма в ADR** (этот addendum) | Минимальный diff, читается при следующем ретро | Без enforcement — следующий архитектор может нарушить | **Выбрано** |
+| B. Скрипт `agent-flow-architect-self-check.sh` в merge-gate | Автоматический enforcement | +1 скрипт, отдельный профиль, over-engineering для одного профиля | Отклонено |
+| C. Изменить `kanban_complete` API принимать флаг `deferred=true` | API-уровневое enforcement | Ломает существующих воркеров | Отклонено |
+| D. Отдельный label `retro-deferred` + cron, который ищет такие карточки | Cron-based enforcement | +1 cron tick, новый label namespace | Отложено до M3 |
+
+**Если НЕ делать сейчас.** Следующая ретро-карточка (с вероятностью
+~100% в ближайшую неделю) повторит паттерн t_d9e70587: закроется в
+`done` за секунды, знание о fail-streak потеряется, dispatcher
+посчитает «обработано», а wake-gate cold-start blocker никуда не денется.
+
+**Связанные:**
+
+- Kanban t_d9e70587 (done 23.08 23:18) — родительский пример нарушения.
+- Kanban t_4ab74fb7 (running 24.08) — текущая ретро, источник этого addendum.
+- Kanban t_73b0b4b8 (blocked 24.08 01:46, `kind=transient`) — пример правильного применения протокола.
+- ADR-0029 (proposed) — wake-gate cold-start known-state (продолжение по wake-gate конкретике).
 
 ## 5. Порядок событий и race conditions
 
@@ -273,11 +545,15 @@ GATE-3 (CI-blocking):
 - ADR-0015 (e2e verdict SOT) — GATE-1 усиливает.
 - ADR-0018 (честный FAIL лучше красивого PASS) — GATE-3 + GATE-1 = enforcement.
 - ADR-0021 (dialogue_node decomposition) — GATE-1 влияет на `dialogue_node` diagrams (отдельный follow-up).
+- **§4.6 Window semantics & per-step vs aggregate (addendum, 2026-08-22)** — pin трёх окон (`-6 minutes` для patterns, `STEP_BEFORE` для per-step acceptance, `E2E_RUN_BEFORE` для aggregate GATE-1), case-sensitivity (patterns case-sensitive, acceptance case-insensitive), field-mapping таблица suite field → where it is checked. Мотивация: архитектурный вердикт kanban t_fb037ed1 (round-178 fail-streak 5/7, run 32573773556) — без addendum'а будущие воркеры могут сломать fix коммита `db84ff590c18c2649b700efe2ef88755108628e0` (robot-clock capture в harness), как сломали pre-db84ff59.
+- **§4.7 Retro-card completion protocol (addendum, 2026-08-24)** — ретро-карточка, у которой accept-criteria отложены (ждёт merge от юзера / внешний фикс / следующий e2e-round), **обязана** уйти в `kanban_block(kind=transient)` или `kanban_block(kind=dependency)`, а **не** в `kanban_complete`. Без этого протокола ретро формально закрывается, и знание теряется до следующего инцидента. Мотивация: kanban t_4ab74fb7 (fail-streak rounds 215–221) — родительская ретро-карточка t_d9e70587 закрылась в `done` через 4 сек после создания с невыполненными accept-criteria; протокол уже применён в t_73b0b4b8 (заблокирован по `kind=transient`, ждёт фикса wake-gate блокера).
 - Issue #1420 (P0-2 triage-cron) — GATE-D (issue decompose) отложен до этого.
 - Issue #1422 (PR #1418 CI red) — этот ADR GATE-3 его бы поймал.
 - PR #1398 (MiniMax music, OPEN) — пример проблемы R1/R6.
 - PR #1406 (music prompt, merged по Q22) — пример R6 (partial fix).
 - PR #1399 (user-reopen guard) — этот ADR GATE-2 его усиливает.
+- **Kanban t_4ab74fb7 (running 2026-08-24)** — источник §4.7, см. ADR-0029.
+- **ADR-0029 (proposed)** — wake-gate cold-start known-state (2–3 cold rounds после merge voice-pipeline фиксов — **известное** поведение, не flaky acceptance).
 
 ## 10. Не блокер, но критично
 

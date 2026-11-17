@@ -4,7 +4,7 @@
 
 set -e
 
-REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "$REPO_ROOT"
 
 RED='\033[0;31m'
@@ -28,7 +28,7 @@ check_dockerfile() {
     # 1. Проверка существования файла
     if [ ! -f "$dockerfile" ]; then
         echo -e "${RED}❌ File not found${NC}"
-        ((ERRORS++))
+        ERRORS=$((ERRORS + 1))
         return
     fi
     
@@ -36,34 +36,34 @@ check_dockerfile() {
     if command -v hadolint &> /dev/null; then
         if hadolint "$dockerfile" 2>&1 | grep -v "DL3008\|DL3009"; then
             echo -e "${YELLOW}⚠️  Hadolint warnings${NC}"
-            ((WARNINGS++))
+            WARNINGS=$((WARNINGS + 1))
         fi
     fi
     
     # 3. Проверка COPY путей (не должно быть ../)
     if grep -n "COPY \.\./\.\." "$dockerfile" 2>/dev/null; then
         echo -e "${RED}❌ Found invalid COPY path with ../../${NC}"
-        ((ERRORS++))
+        ERRORS=$((ERRORS + 1))
     fi
     
     # 4. Проверка устаревших пакетов
     if grep -n "nav2-recoveries" "$dockerfile" 2>/dev/null; then
         echo -e "${RED}❌ Found deprecated package: nav2-recoveries${NC}"
-        ((ERRORS++))
+        ERRORS=$((ERRORS + 1))
     fi
     
     # 5. Проверка --break-system-packages без upgrade pip
     if grep "pip.*--break-system-packages" "$dockerfile" 2>/dev/null; then
         if ! grep -B5 "pip.*--break-system-packages" "$dockerfile" | grep -q "upgrade pip"; then
             echo -e "${YELLOW}⚠️  Using --break-system-packages without upgrading pip first${NC}"
-            ((WARNINGS++))
+            WARNINGS=$((WARNINGS + 1))
         fi
     fi
     
     # 6. Проверка FROM с переменными
     if ! grep -q "^FROM.*\${" "$dockerfile" && ! grep -q "^FROM [a-z]" "$dockerfile"; then
         echo -e "${YELLOW}⚠️  FROM instruction might be missing${NC}"
-        ((WARNINGS++))
+        WARNINGS=$((WARNINGS + 1))
     fi
     
     echo -e "${GREEN}✅ Basic checks passed${NC}"
@@ -72,9 +72,7 @@ check_dockerfile() {
 
 # Проверяем проблемные Dockerfiles
 echo "=== Main Services ==="
-check_dockerfile "docker/main/micro_ros_agent/Dockerfile"
 check_dockerfile "docker/main/nav2/Dockerfile"
-check_dockerfile "docker/main/vesc_nexus/Dockerfile"
 check_dockerfile "docker/main/robot_state_publisher/Dockerfile"
 
 echo "=== Vision Services ==="

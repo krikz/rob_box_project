@@ -17,7 +17,7 @@ llm_adapter.py - Адаптер для интеграции MCP tools с LLM API
 import json
 import uuid
 import asyncio
-from typing import Dict, Any, List, Optional, Callable
+from typing import Dict, Any, List, Mapping, Optional, Callable, Tuple
 import time
 import threading
 
@@ -26,8 +26,73 @@ from rclpy.node import Node
 from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy
 from std_msgs.msg import String
 
-from .async_executor import AsyncToolExecutor, ToolCallAccumulator
-from .base import ToolExecutionType
+from .async_executor import AsyncToolExecutor
+# Накопитель стриминговых tool_calls — из core/. До карточки W6-1 он
+# импортировался из async_executor, где лежала вторая, более бедная
+# копия того же класса (без get_count()/has_tool_calls()).
+from .core.tool_call_accumulator import ToolCallAccumulator
+from .base import ToolExecutionType, shared_publisher
+from .mcp_auth import RequestAuthenticator
+
+
+#: Issue #2842 — аргументы тулов, которые подставляет ХОД диалога, а не LLM.
+#: При ``tool_provider=ros_mcp`` тул исполняется в процессе ``mcp_server``,
+#: где нет ``dialogue_node._current_turn_utterance_id`` — поэтому контекст
+#: хода едет в подписанном запросе ``/mcp/execute`` как обычный аргумент.
+#: В LLM-схеме тула этих параметров НЕТ; присланное LLM значение
+#: вырезается и заменяется значением хода (см. :func:`apply_turn_context`).
+#: Issue #2925 — для ``register_speaker`` ещё и то, что человек сказал о
+#: себе в реплике хода, и кем она уверенно узнана по голосу
+#: (``tools.dialogue.register_speaker_gate``).
+TURN_CONTEXT_ARGS: Mapping[str, Tuple[str, ...]] = {
+    "register_speaker": (
+        "utterance_id",
+        "self_intro_name",
+        "intro_registered",
+        "known_speaker_name",
+    ),
+    # 06.10: длина сета, которую назвал человек («сэт на 30 минут» → 24 трека,
+    # ``rob_box_voice.core.set_length_words``) — LLM вызвала dj_set без tracks,
+    # и сет шёл 10 треков «по умолчанию».
+    # ``turn_id`` — ход LLM: ``request_music`` не снимает сет, заигравший в этом
+    # же ходе (06.10 set98207: dj_set → request_music → тишина).
+    # ``heard_text`` — реплика хода: тема сета не из неё (из истории диалога, 06.10 18:04) заменяется темой реплики.
+    "dj_set": ("heard_tracks", "turn_id", "heard_text"),
+    # ADR-0157 §2.4: инструмент («на балалайке») — из реплики хода, а не из пересказа LLM в ``text``.
+    "request_music": ("turn_id", "heard_text"),
+    # ADR-0158 PR-3: путь (синтез / кэш / генерация / отказ) решает код по словам реплики, не по пересказу LLM.
+    "generate_music": ("turn_id", "heard_text"),
+    # #4029: виды правки играющего («потяжелее», «ускорь») решает код по словам реплики, слот LLM — запасной.
+    "edit_music": ("turn_id", "heard_text"),
+}
+
+TurnContextProvider = Callable[[], Mapping[str, Any]]
+
+
+def apply_turn_context(
+    tool_name: str,
+    parameters: Mapping[str, Any],
+    turn_context: Optional[TurnContextProvider],
+) -> Dict[str, Any]:
+    """Подставить в аргументы тула скрытый контекст хода (issue #2842).
+
+    Для тулов из :data:`TURN_CONTEXT_ARGS` ключи контекста сначала
+    вырезаются из ``parameters`` (LLM не может их подделать), затем
+    подставляются из ``turn_context()``, если там не ``None``. Остальные
+    тулы проходят без изменений (копия ``parameters``).
+    """
+    params = dict(parameters)
+    keys = TURN_CONTEXT_ARGS.get(tool_name)
+    if not keys:
+        return params
+    for key in keys:
+        params.pop(key, None)
+    context = turn_context() if turn_context is not None else {}
+    for key in keys:
+        value = context.get(key)
+        if value is not None:
+            params[key] = value
+    return params
 
 
 class LLMToolCallAdapter:
@@ -40,14 +105,36 @@ class LLMToolCallAdapter:
     Версия 2.0: Поддержка async execution, параллельное выполнение, прерывания
     """
 
-    def __init__(self, node: Node):
+    def __init__(
+        self,
+        node: Node,
+        *,
+        sender: Optional[str] = None,
+        turn_context: Optional[TurnContextProvider] = None,
+    ):
         """
         Инициализация адаптера
 
         Args:
-            node: ROS 2 Node для доступа к publishers/subscribers
+            node: ROS 2 Node для доступа к publishers/subscribers.
+                Имя ноды (``node.get_name()``) используется как ``sender``
+                по умолчанию — это имя попадает в HMAC-подпись и
+                сверяется с ``DEFAULT_ALLOWED_SENDERS`` на стороне
+                ``mcp_server``. До #2132 здесь был жёсткий литерал
+                ``sender="dialogue_node"``, что ломалось для
+                ``avatar_supervisor`` (ТАРС): все его tool-call-ы шли
+                под чужим identity и резались срез-гардом по правам
+                личности.
+            sender: Явное имя отправителя, если нужно подписать запросы
+                от имени, отличного от имени ROS-ноды (например, для
+                тестов). По умолчанию — ``node.get_name()``.
+            turn_context: Issue #2842 — источник контекста текущего хода
+                (``{"utterance_id": ...}``), который подставляется в
+                аргументы тулов из :data:`TURN_CONTEXT_ARGS`. ``None`` —
+                контекста нет: скрытые аргументы только вырезаются.
         """
         self.node = node
+        self._turn_context = turn_context
 
         # Создаём ReentrantCallbackGroup для обработки результатов в отдельном потоке
         # Это позволяет on_result() вызываться даже когда execute_tool_call_sync() блокирует основной поток
@@ -62,8 +149,22 @@ class LLMToolCallAdapter:
             depth=10
         )
 
-        # Publisher для запросов выполнения инструментов
-        self.execute_pub = node.create_publisher(String, "/mcp/execute", qos_profile)
+        # Publisher для запросов выполнения инструментов - один на ноду, общий у всех её адаптеров (#4081): тот же
+        # ``base.shared_publisher`` (#3108), на который рассчитан tools/architecture_audit.py (ROS_HELPER_CALLS); своего
+        # кэша издателя у адаптера нет. Подпись (``sender``), срез тулов и ожидание ответов остаются за адаптером.
+        self.execute_pub = shared_publisher(node, String, "/mcp/execute", qos_profile)
+
+        # Подпись запросов общим секретом — mcp_server отклоняет
+        # неподписанные tool-call-ы (см. mcp_auth.py). ``sender`` берём
+        # из имени ROS-ноды, чтобы ``dialogue_node`` подписывался как
+        # ``dialogue_node``, а ``avatar_supervisor`` — как
+        # ``avatar_supervisor`` (это требование slice-гарда: у каждого
+        # свой набор срезов, см. ``slice_policy.yaml``). Тесты и
+        # редкие форы могут передать явный ``sender`` через kwarg.
+        effective_sender = sender if sender is not None else node.get_name()
+        self.authenticator = RequestAuthenticator.from_env(
+            sender=effective_sender, logger=node.get_logger()
+        )
 
         # Subscriber для результатов (используем отдельную callback_group!)
         self.result_sub = node.create_subscription(
@@ -87,7 +188,9 @@ class LLMToolCallAdapter:
         self.async_executor = AsyncToolExecutor(
             execute_pub=self.execute_pub,
             result_callback=self._on_async_result,
-            logger=node.get_logger()
+            logger=node.get_logger(),
+            authenticator=self.authenticator,
+            prepare_parameters=self._prepare_parameters,
         )
 
         # Tool Call Accumulator для streaming
@@ -101,19 +204,26 @@ class LLMToolCallAdapter:
             result = json.loads(msg.data)
             request_id = result.get("request_id", "")
 
-            self.node.get_logger().info(f"📩 on_result вызван для request_id: {request_id[:8] if request_id else 'empty'}")
-
             if not request_id:
                 self.node.get_logger().warn("⚠️ Получен результат без request_id")
                 return
 
-            # Сохраняем результат в кэш
-            self.results_cache[request_id] = result
-            self.node.get_logger().info(f"💾 Результат сохранён в кэш для {request_id[:8]}")
+            # /mcp/result слышат все адаптеры ноды и другие ноды (#4081): в ответе нет отправителя, хозяин запроса -
+            # тот, кто его выпустил и ждёт (событие, колбэк или async-исполнитель). Чужой ответ молча пропускаем:
+            # иначе он оседал бы в кэшах навсегда, а строки лога шли бы дважды.
+            if not (request_id in self.result_events or request_id in self.pending_requests
+                    or self.async_executor.expects(request_id)):
+                return
 
-            # Уведомляем ждущий поток через Event
-            if request_id in self.result_events:
-                self.result_events[request_id].set()
+            self.node.get_logger().info(f"📩 on_result вызван для request_id: {request_id[:8]}")
+
+            # Синхронный вызов забирает ответ из кэша и ждёт Event (``execute_tool_call_sync``); запросу с колбэком кэш
+            # не нужен: его никто не заберёт
+            event = self.result_events.get(request_id)
+            if event is not None:
+                self.results_cache[request_id] = result
+                self.node.get_logger().info(f"💾 Результат сохранён в кэш для {request_id[:8]}")
+                event.set()
                 self.node.get_logger().info(f"✅ Event установлен для {request_id[:8]}")
 
             # Уведомляем async executor
@@ -129,6 +239,12 @@ class LLMToolCallAdapter:
             self.node.get_logger().error(f"❌ Ошибка парсинга результата: {e}")
         except Exception as e:
             self.node.get_logger().error(f"❌ Ошибка обработки результата: {e}")
+
+    def _prepare_parameters(
+        self, tool_name: str, parameters: Mapping[str, Any]
+    ) -> Dict[str, Any]:
+        """Аргументы запроса ``/mcp/execute`` с контекстом хода (issue #2842)."""
+        return apply_turn_context(tool_name, parameters, self._turn_context)
 
     def _on_async_result(self, request_id: str, result: Dict[str, Any]) -> None:
         """
@@ -159,7 +275,11 @@ class LLMToolCallAdapter:
         request_id = str(uuid.uuid4())
 
         # Формируем запрос
-        request = {"tool_name": tool_name, "parameters": parameters, "request_id": request_id}
+        request = {
+            "tool_name": tool_name,
+            "parameters": self._prepare_parameters(tool_name, parameters),
+            "request_id": request_id,
+        }
 
         # Регистрируем callback если передан
         if callback:
@@ -167,7 +287,7 @@ class LLMToolCallAdapter:
 
         # Отправляем запрос
         msg = String()
-        msg.data = json.dumps(request, ensure_ascii=False)
+        msg.data = json.dumps(self.authenticator.sign(request), ensure_ascii=False)
         self.execute_pub.publish(msg)
 
         self.node.get_logger().info(f"📤 Отправлен запрос {request_id[:8]}: {tool_name}")
@@ -197,11 +317,17 @@ class LLMToolCallAdapter:
         self.result_events[request_id] = result_event
 
         # Формируем запрос
-        request = {"tool_name": tool_name, "parameters": parameters, "request_id": request_id}
+        request = {
+            "tool_name": tool_name,
+            "parameters": self._prepare_parameters(tool_name, parameters),
+            "request_id": request_id,
+        }
 
         # Публикуем запрос
         request_msg = String()
-        request_msg.data = json.dumps(request, ensure_ascii=False)
+        request_msg.data = json.dumps(
+            self.authenticator.sign(request), ensure_ascii=False
+        )
         self.execute_pub.publish(request_msg)
 
         self.node.get_logger().info(f"📤 Отправлен запрос {request_id[:8]}: {tool_name}")

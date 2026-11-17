@@ -100,6 +100,9 @@
     cmd_vel_topic: "/cmd_vel"
 
     # Исходящие топики
+    # ВНИМАНИЕ: на Main Pi vesc_nexus не запущен. Если включить, получится
+    # ВТОРОЙ издатель /odom (сейчас единственный — rtabmap icp_odometry)
+    # и второй издатель TF (см. publish_tf ниже) — конфликт с diff_drive_controller.
     odom_topic: "/odom"
     odom_frame_id: "odom"
     base_frame_id: "base_link"
@@ -111,6 +114,8 @@
     # Advanced Settings
     # ═══════════════════════════════════════════════════════════════
     # Публикация TF трансформации odom → base_link
+    # ВНИМАНИЕ: см. предупреждение у odom_topic — на Main Pi не включать,
+    # TF odom→base_footprint уже издаёт diff_drive_controller.
     publish_tf: true
 
     # Режим управления моторами (rpm, current, duty, position)

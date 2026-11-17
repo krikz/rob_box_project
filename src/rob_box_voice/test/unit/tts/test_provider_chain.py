@@ -31,12 +31,13 @@ import pytest
 _PACKAGE_ROOT = Path(__file__).resolve().parents[3]  # rob_box_voice/
 sys.path.insert(0, str(_PACKAGE_ROOT))
 
-from test.unit.tts.conftest import _install_all_mocks  # noqa: E402
+from test.unit.tts.conftest import FinalsSpy, _install_all_mocks  # noqa: E402
 
 _install_all_mocks()
 
 from rob_box_voice import tts_node  # noqa: E402
 from rob_box_voice.tts_node import TTSNode  # noqa: E402
+from rob_box_voice.tts_providers import SileroTTSProvider, YandexTTSProvider  # noqa: E402
 
 # Real MiniMax error classes (imported by tts_node when rob_box_llm is
 # available). Used to verify long-TTL classification for quota errors.
@@ -141,10 +142,18 @@ def test_dead_cache_quota_error_uses_long_ttl() -> None:
 
 
 def test_dead_cache_expires_after_ttl() -> None:
+    """A deadline in the past means the provider is live again.
+
+    Was `ttl_s=0.01` plus `time.sleep(0.02)`. `time.monotonic()` ticks about
+    every 15.6 ms on Windows, which is longer than both, so either assertion
+    could land on the wrong side of the deadline — the test failed roughly
+    one run in five with nothing to show for it. Expiry is a comparison, so
+    move the deadline instead of waiting for it.
+    """
     node = _bind_dead_cache(_bare_node())
-    TTSNode._mark_provider_dead(node, "minimax", RuntimeError("boom"), ttl_s=0.01)
+    TTSNode._mark_provider_dead(node, "minimax", RuntimeError("boom"), ttl_s=60.0)
     assert TTSNode._provider_is_dead(node, "minimax") is True
-    time.sleep(0.02)
+    node._provider_dead_until["minimax"] = time.monotonic() - 1.0
     assert TTSNode._provider_is_dead(node, "minimax") is False
 
 
@@ -162,10 +171,7 @@ def _playback_node() -> _Bare:
     """Node stub with everything _synthesize_and_play touches after synth."""
     node = _bare_node()
     node.provider = "minimax"
-    node.normalize_text = False
     node.stop_requested = False
-    node.processing_dialogue_id = None
-    node.current_dialogue_id = None
     node.minimax_streaming = False
     node.minimax_model = "speech-02-hd"
     node.minimax_voice = "male-qn-qingse"
@@ -186,7 +192,7 @@ def _playback_node() -> _Bare:
     node.playback_manager = MagicMock()
     node.playback_manager.play_audio.return_value = True
     node.cleanup_playback_noise = MagicMock()
-    node.finished_pub = MagicMock()
+    node._speech = FinalsSpy()  # #4252 ч.2: финал реплики — у владельца речи
     node.audio_output_sample_rate = 16000
     node._prepare_audio_for_topic = TTSNode._prepare_audio_for_topic.__get__(node, type(node))  # type: ignore[attr-defined]
 
@@ -194,10 +200,11 @@ def _playback_node() -> _Bare:
     # model, and a stub _synthesize_silero returning real float32 audio.
     node._silero_loaded = threading.Event()
     node._silero_loaded.set()
-    node.silero_model = MagicMock(name="FakeSileroModel")
+    node._silero_tts = SileroTTSProvider(logger=MagicMock())
+    node._silero_tts.model = MagicMock(name="FakeSileroModel")
     node.silero_sample_rate = 48000
     node.silero_put_stress_homo = True
-    node._synthesize_silero = MagicMock(
+    node._silero_tts.synthesize_np = MagicMock(
         return_value=np.zeros(4800, dtype=np.float32)
     )
     return node
@@ -206,10 +213,8 @@ def _playback_node() -> _Bare:
 def _run_and_play(node) -> None:
     TTSNode._synthesize_and_play(
         node,
-        "<speak>hello</speak>",
         "hello",
         None,
-        {},
         None,
     )
 
@@ -217,8 +222,8 @@ def _run_and_play(node) -> None:
 def test_chain_minimax_alive_first_priority() -> None:
     """All three alive → MiniMax is used (first priority)."""
     node = _playback_node()
-    node.yandex_stub = object()
-    node._synthesize_yandex = MagicMock(return_value=np.zeros(2205, dtype=np.float32))
+    node._yandex_tts = YandexTTSProvider("fake-key", object(), logger=MagicMock())
+    node._yandex_tts.synthesize_np = MagicMock(return_value=np.zeros(2205, dtype=np.float32))
     node.minimax_streaming = False
     node._synthesize_minimax = MagicMock(
         return_value={"audio_np": np.zeros(800, dtype=np.float32), "sample_rate": 32000}
@@ -227,16 +232,16 @@ def test_chain_minimax_alive_first_priority() -> None:
     _run_and_play(node)
 
     node._synthesize_minimax.assert_called_once()
-    node._synthesize_yandex.assert_not_called()
-    node._synthesize_silero.assert_not_called()
+    node._yandex_tts.synthesize_np.assert_not_called()
+    node._silero_tts.synthesize_np.assert_not_called()
     node._publish_audio.assert_called_once()
 
 
 def test_chain_minimax_quota_2056_goes_to_yandex_not_silero() -> None:
     """Acceptance: MiniMax 2056 quota → Yandex (NOT Silero)."""
     node = _playback_node()
-    node.yandex_stub = object()
-    node._synthesize_yandex = MagicMock(return_value=np.zeros(2205, dtype=np.float32))
+    node._yandex_tts = YandexTTSProvider("fake-key", object(), logger=MagicMock())
+    node._yandex_tts.synthesize_np = MagicMock(return_value=np.zeros(2205, dtype=np.float32))
     node.minimax_streaming = False
     node._synthesize_minimax = MagicMock(
         side_effect=RuntimeError("MiniMax auth error, NO retry: 2056 Token Plan usage limit reached")
@@ -245,8 +250,8 @@ def test_chain_minimax_quota_2056_goes_to_yandex_not_silero() -> None:
     _run_and_play(node)
 
     node._synthesize_minimax.assert_called_once()
-    node._synthesize_yandex.assert_called_once()
-    node._synthesize_silero.assert_not_called()
+    node._yandex_tts.synthesize_np.assert_called_once()
+    node._silero_tts.synthesize_np.assert_not_called()
     node._publish_audio.assert_called_once()
     # Honest log: the switch to Yandex is visible in docker logs.
     warn_msgs = " ".join(str(c) for c in node.logger.warn.call_args_list)
@@ -256,8 +261,8 @@ def test_chain_minimax_quota_2056_goes_to_yandex_not_silero() -> None:
 def test_chain_minimax_and_yandex_dead_goes_to_silero() -> None:
     """Acceptance: MiniMax+Yandex dead → Silero, robot still answers."""
     node = _playback_node()
-    node.yandex_stub = object()
-    node._synthesize_yandex = MagicMock(
+    node._yandex_tts = YandexTTSProvider("fake-key", object(), logger=MagicMock())
+    node._yandex_tts.synthesize_np = MagicMock(
         side_effect=RuntimeError("Yandex gRPC отвалился: simulated")
     )
     node.minimax_streaming = False
@@ -268,8 +273,8 @@ def test_chain_minimax_and_yandex_dead_goes_to_silero() -> None:
     _run_and_play(node)
 
     node._synthesize_minimax.assert_called_once()
-    node._synthesize_yandex.assert_called_once()
-    node._synthesize_silero.assert_called_once()
+    node._yandex_tts.synthesize_np.assert_called_once()
+    node._silero_tts.synthesize_np.assert_called_once()
     node._publish_audio.assert_called_once()
 
 
@@ -277,8 +282,8 @@ def test_chain_dead_cache_skips_minimax() -> None:
     """Dead cache: MiniMax marked dead → skipped on the next turn."""
     node = _playback_node()
     _bind_dead_cache(node)
-    node.yandex_stub = object()
-    node._synthesize_yandex = MagicMock(return_value=np.zeros(2205, dtype=np.float32))
+    node._yandex_tts = YandexTTSProvider("fake-key", object(), logger=MagicMock())
+    node._yandex_tts.synthesize_np = MagicMock(return_value=np.zeros(2205, dtype=np.float32))
     node.minimax_streaming = False
     node._synthesize_minimax = MagicMock(
         side_effect=RuntimeError("MiniMax auth error, NO retry: 2056 Token Plan usage limit reached")
@@ -295,15 +300,15 @@ def test_chain_dead_cache_skips_minimax() -> None:
     assert node._synthesize_minimax.call_count == calls_after_first, (
         "dead-cached MiniMax must not be called again until TTL expiry"
     )
-    assert node._synthesize_yandex.call_count == 2
+    assert node._yandex_tts.synthesize_np.call_count == 2
 
 
 def test_chain_provider_yandex_backcompat_skips_minimax() -> None:
     """provider=yandex → chain [yandex, silero]; MiniMax never called."""
     node = _playback_node()
     node.provider = "yandex"
-    node.yandex_stub = object()
-    node._synthesize_yandex = MagicMock(return_value=np.zeros(2205, dtype=np.float32))
+    node._yandex_tts = YandexTTSProvider("fake-key", object(), logger=MagicMock())
+    node._yandex_tts.synthesize_np = MagicMock(return_value=np.zeros(2205, dtype=np.float32))
     node.minimax_streaming = False
     node._synthesize_minimax = MagicMock(
         return_value={"audio_np": np.zeros(800, dtype=np.float32), "sample_rate": 32000}
@@ -312,28 +317,188 @@ def test_chain_provider_yandex_backcompat_skips_minimax() -> None:
     _run_and_play(node)
 
     node._synthesize_minimax.assert_not_called()
-    node._synthesize_yandex.assert_called_once()
+    node._yandex_tts.synthesize_np.assert_called_once()
     node._publish_audio.assert_called_once()
 
 
 def test_chain_ttl_expiry_retries_minimax_first() -> None:
-    """Edge: MiniMax recovers (TTL expired) → tried first again."""
+    """Edge: MiniMax recovers (TTL expired) → tried first again.
+
+    Same flake as `test_dead_cache_expires_after_ttl`, missed when that one
+    was fixed: `ttl_s=0.01` plus `time.sleep(0.02)` against a
+    `time.monotonic()` that ticks every 15.6 ms on Windows
+    (`GetTickCount64`). If the tick landed between the mark and the check
+    below, the deadline was already in the past and the freshly-killed
+    provider read back as live — `assert ... is True` failed about one run
+    in twenty, in a full suite run and standalone alike. Expiry is a
+    comparison, so move the deadline instead of waiting for it.
+    """
     node = _playback_node()
     _bind_dead_cache(node)
-    node.yandex_stub = object()
-    node._synthesize_yandex = MagicMock(return_value=np.zeros(2205, dtype=np.float32))
+    node._yandex_tts = YandexTTSProvider("fake-key", object(), logger=MagicMock())
+    node._yandex_tts.synthesize_np = MagicMock(return_value=np.zeros(2205, dtype=np.float32))
     node.minimax_streaming = False
     node._synthesize_minimax = MagicMock(
         return_value={"audio_np": np.zeros(800, dtype=np.float32), "sample_rate": 32000}
     )
 
-    # Mark MiniMax dead with a very short TTL, then let it expire.
-    TTSNode._mark_provider_dead(node, "minimax", RuntimeError("quota"), ttl_s=0.01)
+    # Mark MiniMax dead with a real TTL, then expire it by moving the
+    # deadline into the past — no wall-clock waiting.
+    TTSNode._mark_provider_dead(node, "minimax", RuntimeError("quota"), ttl_s=60.0)
     assert TTSNode._provider_is_dead(node, "minimax") is True
-    time.sleep(0.02)
+    node._provider_dead_until["minimax"] = time.monotonic() - 1.0
+    assert TTSNode._provider_is_dead(node, "minimax") is False
 
     _run_and_play(node)
 
     # MiniMax is tried first again (and succeeds).
     node._synthesize_minimax.assert_called_once()
-    node._synthesize_yandex.assert_not_called()
+    node._yandex_tts.synthesize_np.assert_not_called()
+
+
+# ── Issue #2096 — empty text must never mark a provider dead ─────────────────
+#
+# Live incident (voice-assistant, 2026-09-07): ``_on_avatar_tts_request``
+# passed ``chunk_data.get("text", "")`` (always empty for payloads built by
+# ``supervisor_node._publish_grip_tts``/``_publish_avatar_tts``, which only
+# send ``ssml``) straight into the synthesis chain. MiniMax raised
+# ``TTSBadRequestError("text is empty")`` — a defect of the *caller*, not the
+# provider — but ``_sap_synthesize_minimax`` marked MiniMax dead for 30s
+# regardless, cascading the same fate onto Yandex (and exhausting Silero),
+# so the NEXT (non-empty!) TTS request from ANY caller — including TARS's
+# own personality voice — went silent for 30 seconds. These tests pin the
+# fix at the single choke-point ``_synthesize_and_play`` uses for every
+# caller (dialogue_callback, speaker and headset alike):
+# an empty/whitespace ``text`` must short-circuit BEFORE any provider is
+# touched, and must never populate ``_provider_dead_until``.
+
+
+def test_chain_empty_text_never_calls_a_provider_or_marks_dead() -> None:
+    node = _playback_node()
+    _bind_dead_cache(node)
+    node._yandex_tts = YandexTTSProvider("fake-key", object(), logger=MagicMock())
+    node._yandex_tts.synthesize_np = MagicMock(return_value=np.zeros(2205, dtype=np.float32))
+    # Canary: if the guard regresses, calling ANY provider fails the test
+    # loudly instead of quietly cascading into a 30s dead-mark.
+    node._synthesize_minimax = MagicMock(
+        side_effect=AssertionError("minimax MUST NOT be called for empty text (#2096)")
+    )
+    # ``_publish_tts_finished`` no-ops on a falsy speech_id — bind the real
+    # method and give it one so we can assert the caller-visible signal.
+    node._publish_tts_finished = TTSNode._publish_tts_finished.__get__(node, type(node))  # type: ignore[attr-defined]
+
+    TTSNode._synthesize_and_play(
+        node, "", None, "sid-empty-1"
+    )
+
+    node._synthesize_minimax.assert_not_called()
+    node._yandex_tts.synthesize_np.assert_not_called()
+    node._silero_tts.synthesize_np.assert_not_called()
+    assert node._provider_dead_until == {}, (
+        f"empty text must not mark any provider dead: {node._provider_dead_until}"
+    )
+    # Caller still gets a finished(success=False) — it must not hang.
+    (final,) = node._speech.finals
+    assert (final["speech_id"], final["success"], final["error"]) == ("sid-empty-1", False, "empty_text")
+
+
+def test_chain_whitespace_only_text_never_calls_a_provider_or_marks_dead() -> None:
+    node = _playback_node()
+    _bind_dead_cache(node)
+    node._yandex_tts = YandexTTSProvider("fake-key", object(), logger=MagicMock())
+    node._yandex_tts.synthesize_np = MagicMock(
+        side_effect=AssertionError("yandex MUST NOT be called for whitespace-only text (#2096)")
+    )
+    node._synthesize_minimax = MagicMock(
+        side_effect=AssertionError("minimax MUST NOT be called for whitespace-only text (#2096)")
+    )
+
+    TTSNode._synthesize_and_play(
+        node, "   \n\t  ", None, None
+    )
+
+    node._synthesize_minimax.assert_not_called()
+    node._yandex_tts.synthesize_np.assert_not_called()
+    node._silero_tts.synthesize_np.assert_not_called()
+    assert node._provider_dead_until == {}
+
+
+def test_chain_nonempty_text_after_empty_guard_still_uses_minimax() -> None:
+    """Sanity: the empty-text guard must not swallow real requests."""
+    node = _playback_node()
+    _bind_dead_cache(node)
+    node._yandex_tts = YandexTTSProvider("fake-key", object(), logger=MagicMock())
+    node._yandex_tts.synthesize_np = MagicMock(return_value=np.zeros(2205, dtype=np.float32))
+
+    _run_and_play(node)  # text="hello" — non-empty
+
+    node._synthesize_minimax.assert_called_once()
+    node._yandex_tts.synthesize_np.assert_not_called()
+    assert node._provider_dead_until == {}
+
+
+# ── #3930: поток MiniMax в динамик ───────────────────────────────────────────
+
+
+def _stream_node(monkeypatch, outcome="done"):
+    from rob_box_voice.core import tts_stream
+
+    node = _playback_node()
+    node.minimax_streaming = True
+    node.minimax_timeout = 2.0
+    # всё, что читает ``TTSNode._minimax_settings`` (настройки одни для HTTP и потока)
+    node.minimax_speed, node.minimax_language = 1.0, "ru"
+    node.minimax_sample_rate, node.minimax_format = 32000, tts_node.TTSFormat.PCM
+    node.minimax_emotion = node.minimax_pitch_raw = node.minimax_volume_raw = ""
+    node.minimax_pronunciation_dict_raw = ""
+    node._publish_tts_finished = MagicMock()
+    node._release_play_seq = MagicMock()
+    stream = tts_stream.PcmStream(16000)
+    stream.put(np.full(8000, 0.3, dtype=np.float32))
+    stream.finish(tts_stream.BROKEN if outcome == tts_stream.BROKEN else None)
+    opened = MagicMock(return_value={"audio_np": stream, "sample_rate": 16000,
+                                     "already_published": True, "stream": stream})
+    monkeypatch.setattr(tts_stream, "open_for_playback", opened)
+    node.playback_manager.play_stream.return_value = ("done" if outcome == tts_stream.BROKEN else outcome, 0)
+    return node, opened
+
+
+def test_stream_speaker_reply_plays_through_play_stream_not_play_audio(monkeypatch) -> None:
+    node, opened = _stream_node(monkeypatch)
+    _run_and_play(node)
+    opened.assert_called_once()
+    node._synthesize_minimax.assert_not_called()  # HTTP целиком не ждём
+    node.playback_manager.play_audio.assert_not_called()
+    node.playback_manager.play_stream.assert_called_once()
+    kwargs = node._publish_tts_finished.call_args.kwargs
+    assert kwargs["success"] is True and kwargs["duration_sec"] == 0.5
+
+
+def test_stream_broken_after_sound_closes_reply_with_error(monkeypatch) -> None:
+    from rob_box_voice.core import tts_stream
+
+    node, _ = _stream_node(monkeypatch, outcome=tts_stream.BROKEN)
+    _run_and_play(node)
+    kwargs = node._publish_tts_finished.call_args.kwargs
+    assert kwargs["success"] is False and kwargs["error"] == tts_stream.BROKEN
+
+
+def test_stream_failure_before_sound_falls_back_to_yandex(monkeypatch) -> None:
+    from rob_box_voice.core import tts_stream
+
+    node = _playback_node()
+    node.minimax_streaming = True
+    node._yandex_tts = YandexTTSProvider("fake-key", object(), logger=MagicMock())
+    node._yandex_tts.synthesize_np = MagicMock(return_value=np.zeros(2205, dtype=np.float32))
+    monkeypatch.setattr(tts_stream, "open_for_playback", MagicMock(side_effect=RuntimeError("нет звука")))
+    _run_and_play(node)
+    node._yandex_tts.synthesize_np.assert_called_once()
+    node.playback_manager.play_audio.assert_called_once()
+
+
+def test_headset_sink_never_streams(monkeypatch) -> None:
+    node, opened = _stream_node(monkeypatch)
+    node._publish_headset_audio = MagicMock()
+    TTSNode._synthesize_and_play(node, "hello", None, None, sink="headset")
+    opened.assert_not_called()
+    node._synthesize_minimax.assert_called_once()

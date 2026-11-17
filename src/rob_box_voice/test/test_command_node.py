@@ -50,6 +50,11 @@ class TestCommandNode(unittest.TestCase):
         """Тест: Подписка на STT результаты существует."""
         self.assertTrue(hasattr(self.node, 'stt_sub'))
 
+    def test_does_not_listen_to_dialogue_state(self):
+        """issue #3911: состояние диалога читал, но не использовал, а при v2 топик пуст - подписки нет."""
+        self.assertFalse(hasattr(self.node, 'dialogue_state_sub'))
+        self.assertFalse(hasattr(self.node, 'dialogue_state'))
+
     def test_intent_publisher_exists(self):
         """Тест: Publisher интентов существует."""
         self.assertTrue(hasattr(self.node, 'intent_pub'))

@@ -1,0 +1,33 @@
+# Автозапуск стека Sound Pi (issue #4531).
+#
+# Холодный старт без RTC: часы на загрузке стоят на дате последней остановки и
+# прыгают вперёд, когда приходит NTP; eth0 тоже может подняться позже docker.
+# Раньше `compose up -d` один раз ждал healthy у zenoh-router-sound, не дождался,
+# вышел с 1, и юнит остался в failed. Теперь юнит ждёт сеть и синхронизацию
+# времени и сам повторяет запуск; compose ждёт роутер дольше (docker/sound).
+#
+# Установка: sudo cp host/sound/robbox-sound.service /etc/systemd/system/ &&
+#            sudo systemctl daemon-reload && sudo systemctl enable robbox-sound
+[Unit]
+Description=ROBBOX Sound Pi Docker Containers
+After=docker.service network-online.target time-sync.target
+Wants=network-online.target time-sync.target
+Requires=docker.service
+# Повторы без лимита: узел без голоса хуже узла, который долбится раз в 15 с.
+StartLimitIntervalSec=0
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+WorkingDirectory=/home/ros2/rob_box_project/docker/sound
+# --pull never: pull_policy: if_not_present, без сети образы не рефетчим.
+ExecStart=/usr/bin/docker compose up -d --pull never
+ExecStop=/usr/bin/docker compose down
+User=ros2
+# Restart= у oneshot — systemd >= 244 (Debian 12 / Pi OS bookworm: 252).
+Restart=on-failure
+RestartSec=15
+TimeoutStartSec=900
+
+[Install]
+WantedBy=multi-user.target

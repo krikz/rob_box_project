@@ -1,3 +1,4 @@
+<!-- stale-paths: ignore-file (описывает удалённое или старую раскладку; кандидат в архив или переписывание, ADR-0163) -->
 # Исследование практик картографирования для проекта Rob Box
 
 > **Дата создания**: 24 октября 2025  
@@ -49,7 +50,7 @@ Rob Box - это автономный мобильный робот с расп�
 
 ### 2.1. Текущая конфигурация RTABMAP
 
-**Местоположение**: `docker/main/config/rtabmap/rtabmap.yaml`
+**Местоположение**: `docker/main/config/rtabmap/rtabmap.yaml` (удалён в #4495; параметры — `docker/main/scripts/rtabmap/patch_rtabmap_launch.py`)
 
 ```yaml
 rtabmap:
@@ -116,7 +117,7 @@ apriltag:
       refine: true
 ```
 
-**Генерация тегов**: `scripts/generate_apriltags.py` - скрипт для печати тегов с ID
+**Генерация тегов**: `scripts/maintenance/generate_apriltags.py` - скрипт для печати тегов с ID
 
 ---
 
@@ -499,7 +500,7 @@ def execute_mapping_mission(waypoints):
 1. **Генерация тегов**:
 ```bash
 cd ~/rob_box_project
-python3 scripts/generate_apriltags.py
+python3 scripts/maintenance/generate_apriltags.py
 
 # Создает: apriltags_printable/tag36h11_id000.png ... id586.png
 ```

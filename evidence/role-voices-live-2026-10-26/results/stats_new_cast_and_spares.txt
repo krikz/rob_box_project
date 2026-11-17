@@ -1,0 +1,47 @@
+исключено чисткой ошибочных привязок (cos к своему центроиду < 0.6): [('m-en_WhisperingGirl', 'm-en_WhisperingGirl_p06', 0.499)]
+
+СВОЯ К СВОЕЙ, все пары записей одного голоса: мин / медиана (записей)
+  m-en_Jovialman               0.851 / 0.936  (22)
+  m-en_WiseScholar             0.668 / 0.828  (22)
+  m-zh_GentleSenior            0.632 / 0.838  (24)
+  m-en_WhisperingGirl          0.786 / 0.899  (23)
+  m-pt_StrictBoss              0.779 / 0.862  (6)
+  m-ko_ConsiderateSenior       0.707 / 0.793  (6)
+  m-presenter_female           0.755 / 0.869  (13)
+  m-PessimisticGirl            0.731 / 0.872  (8)
+
+К ЧУЖИМ, все пары записей: макс / p95 / медиана / доля >0.72 / n пар
+  m-en_Jovialman             x m-en_WiseScholar           0.758 / 0.702 / 0.623 /   2.7% / 484
+  m-en_Jovialman             x m-zh_GentleSenior          0.656 / 0.605 / 0.522 /   0.0% / 528
+  m-en_Jovialman             x m-en_WhisperingGirl        0.709 / 0.649 / 0.587 /   0.0% / 506
+  m-en_WiseScholar           x m-zh_GentleSenior          0.737 / 0.684 / 0.620 /   0.8% / 528
+  m-en_WiseScholar           x m-en_WhisperingGirl        0.663 / 0.630 / 0.570 /   0.0% / 506
+  m-zh_GentleSenior          x m-en_WhisperingGirl        0.738 / 0.686 / 0.596 /   0.4% / 552
+
+ЗАПАСНЫЕ против основных:
+  m-pt_StrictBoss
+     x m-en_Jovialman             0.685 / 0.655 / 0.596 /   0.0% / 132
+     x m-en_WiseScholar           0.724 / 0.700 / 0.634 /   2.3% / 132
+     x m-zh_GentleSenior          0.732 / 0.703 / 0.626 /   2.1% / 144
+     x m-en_WhisperingGirl        0.733 / 0.707 / 0.656 /   0.7% / 138
+  m-ko_ConsiderateSenior
+     x m-en_Jovialman             0.721 / 0.692 / 0.614 /   0.8% / 132
+     x m-en_WiseScholar           0.828 / 0.790 / 0.671 /  28.8% / 132
+     x m-zh_GentleSenior          0.716 / 0.691 / 0.595 /   0.0% / 144
+     x m-en_WhisperingGirl        0.684 / 0.664 / 0.618 /   0.0% / 138
+     x m-pt_StrictBoss            0.682 / 0.676 / 0.615 /   0.0% / 36  (запасной с запасным)
+     x m-presenter_female         0.752 / 0.688 / 0.595 /   1.3% / 78  (запасной с запасным)
+  m-presenter_female
+     x m-en_Jovialman             0.721 / 0.689 / 0.610 /   0.7% / 286
+     x m-en_WiseScholar           0.765 / 0.727 / 0.655 /   8.4% / 286
+     x m-zh_GentleSenior          0.820 / 0.786 / 0.716 /  46.2% / 312
+     x m-en_WhisperingGirl        0.728 / 0.675 / 0.580 /   0.3% / 299
+     x m-pt_StrictBoss            0.792 / 0.750 / 0.691 /  25.6% / 78  (запасной с запасным)
+  m-PessimisticGirl
+     x m-en_Jovialman             0.709 / 0.672 / 0.598 /   0.0% / 176
+     x m-en_WiseScholar           0.766 / 0.747 / 0.686 /  17.6% / 176
+     x m-zh_GentleSenior          0.842 / 0.824 / 0.743 /  59.9% / 192
+     x m-en_WhisperingGirl        0.766 / 0.731 / 0.657 /   7.1% / 184
+     x m-pt_StrictBoss            0.746 / 0.735 / 0.648 /   8.3% / 48  (запасной с запасным)
+     x m-ko_ConsiderateSenior     0.736 / 0.724 / 0.650 /   6.2% / 48  (запасной с запасным)
+     x m-presenter_female         0.791 / 0.759 / 0.696 /  25.0% / 104  (запасной с запасным)

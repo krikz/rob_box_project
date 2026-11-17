@@ -4,15 +4,6 @@
 
 ## 📄 Документы
 
-### [READY_FOR_DEPLOY.md](READY_FOR_DEPLOY.md)
-**Чеклист готовности к развёртыванию**
-
-- Проверка Docker образов
-- Проверка конфигураций
-- Проверка сети и Zenoh
-- Тестирование перед деплоем
-- Процедура развёртывания
-
 ### [VOICE_ASSISTANT_DOCKER.md](VOICE_ASSISTANT_DOCKER.md)
 **Voice Assistant в Docker**
 

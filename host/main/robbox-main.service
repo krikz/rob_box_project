@@ -1,0 +1,33 @@
+# Автозапуск стека Main Pi (issue #4531, по образцу host/sound/robbox-sound.service).
+#
+# Холодный старт без сети/времени: eth0 может подняться позже docker, а часы
+# прыгают вперёд, когда приходит NTP. Раньше юнит ждал только docker.service и
+# network-online.target (без Wants=) и не повторял запуск: один сбой `compose up`
+# оставлял узел в failed до ручного рестарта. Теперь юнит ждёт сеть, время и CAN
+# (ros2-control открывает can0/can1) и сам повторяет запуск.
+#
+# Установка: sudo cp host/main/robbox-main.service /etc/systemd/system/ &&
+#            sudo systemctl daemon-reload && sudo systemctl enable robbox-main
+[Unit]
+Description=ROBBOX Main Pi Docker Containers
+After=docker.service network-online.target time-sync.target can-setup.service
+Wants=network-online.target time-sync.target can-setup.service
+Requires=docker.service
+# Повторы без лимита: узел без навигации хуже узла, который долбится раз в 15 с.
+StartLimitIntervalSec=0
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+WorkingDirectory=/home/ros2/rob_box_project/docker/main
+# --pull never: образы приходят деплоем, без сети на загрузке не рефетчим.
+ExecStart=/usr/bin/docker compose up -d --pull never
+ExecStop=/usr/bin/docker compose down
+User=ros2
+# Restart= у oneshot — systemd >= 244 (на Main Pi 257).
+Restart=on-failure
+RestartSec=15
+TimeoutStartSec=900
+
+[Install]
+WantedBy=multi-user.target

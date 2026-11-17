@@ -1,5 +1,5 @@
 # yamllint configuration for rob_box_project
-# Used by both pre-commit and GitHub Actions
+# Used by GitHub Actions (G-Lint Code)
 
 extends: default
 

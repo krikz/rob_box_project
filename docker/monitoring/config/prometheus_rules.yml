@@ -12,8 +12,9 @@ groups:
   - name: zenoh-router
     rules:
       # Zenoh Router Main Pi (10.1.1.10:7447) — SPOF всей ROS2-связности
-      # (ADR-0017, issue #835 SL-2). Все ноды Main Pi и Vision Pi идут
-      # через него; облако теряет робота при его падении.
+      # (ADR-0017, issue #835 SL-2). Все ноды Main Pi, Vision Pi и Sound Pi
+      # идут через него (Sound Pi — ещё и напрямую через Vision, ADR-0159 §2.2);
+      # облако теряет робота при его падении.
       - alert: ZenohRouterMainDown
         expr: |
           (time() - container_last_seen{name="zenoh-router", job="cadvisor-main"} > 90)
@@ -47,3 +48,24 @@ groups:
             обновляется более 90с или метрика отсутствует. Ноды Vision Pi
             потеряли локальную ROS2-связность. Runbook:
             docs/adr/0017-zenoh-router-spof-redundancy.md
+
+      # Zenoh Router Sound Pi (10.1.1.12:7447) — локальный роутер голосового
+      # стека (ADR-0159). cadvisor-sound живёт в profile `monitoring` на
+      # Sound Pi: без него метрики нет, и алерт сработает по absent() —
+      # это сигнал «Sound Pi не виден мониторингу», а не обязательно «роутер упал».
+      - alert: ZenohRouterSoundDown
+        expr: |
+          (time() - container_last_seen{name="zenoh-router-sound", job="cadvisor-sound"} > 90)
+          or
+          absent(container_last_seen{name="zenoh-router-sound", job="cadvisor-sound"})
+        for: 2m
+        labels:
+          severity: warning
+          host: sound-pi
+        annotations:
+          summary: "Zenoh router (Sound Pi) недоступен"
+          description: >-
+            container_last_seen для zenoh-router-sound (Sound Pi) не
+            обновляется более 90с или метрика отсутствует. Голосовой стек
+            (voice-assistant, supercollider, ТАРС) потерял локальную
+            ROS2-связность. Runbook: docs/adr/0017-zenoh-router-spof-redundancy.md

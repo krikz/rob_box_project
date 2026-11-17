@@ -11,6 +11,7 @@
       "text": "Робот, сколько будет дважды два",
       "voice": "anton",
       "label": "s2_barge_in_b",
+      "barge_in": {"after": "speech_started", "n": 1, "delay_sec": 3.0},
       "patterns": [
         "Cancel: new STT input",
         "STOP command received",

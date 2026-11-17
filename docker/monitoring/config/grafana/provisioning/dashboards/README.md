@@ -86,7 +86,6 @@ http://10.1.1.10:3000/d/rob_box_demo_4?kiosk
 ### Dashboard 3: Perception & Sensors
 - **OAK-D Camera** - RGB-D + AprilTag detection
 - **Ceiling Camera** - USB overhead view
-- **micro-ROS Agent** - ESP32 sensor hub
 - **Perception System** - Health, context, reflection (5 nodes)
 
 ### Dashboard 4: Voice & Interface

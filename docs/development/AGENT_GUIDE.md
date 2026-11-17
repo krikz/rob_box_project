@@ -1,5 +1,9 @@
 # Руководство для AI агентов - Rob Box Project
 
+> **Правила работы агентов — только в [AGENTS.md](../../AGENTS.md)** (одна точка входа, ADR-0163 §3).
+> Этот файл — старый справочник по системе, Docker и CI; правил здесь не заводить. Где он расходится
+> с `AGENTS.md`, `docs/architecture/` или `docs/process/claude-coordinator-robot-flow.md` — прав не он.
+
 ## 📋 Оглавление
 - [🎯 Примеры эффективных запросов к AI](#-примеры-эффективных-запросов-к-ai)
 - [Обзор системы](#обзор-системы)
@@ -29,9 +33,9 @@
 
 ### ✅ ХОРОШО (specific + context + expected outcome):
 
-"Voice assistant на Vision Pi падает с ошибкой `ModuleNotFoundError: No module named 'nav2_msgs'` в command_node. 
+"Voice assistant на Sound Pi падает с ошибкой `ModuleNotFoundError: No module named 'nav2_msgs'` в command_node. 
 
-Проверь `docker/vision/voice_assistant/Dockerfile` - добавлен ли пакет `ros-humble-nav2-msgs` в секцию `RUN apt-get install`. Если нет - добавь его в список пакетов вместе с другими `ros-humble-*` зависимостями."
+Проверь `docker/sound/voice_assistant/Dockerfile` - добавлен ли пакет `ros-humble-nav2-msgs` в секцию `RUN apt-get install`. Если нет - добавь его в список пакетов вместе с другими `ros-humble-*` зависимостями."
 
 **Почему хорошо:**
 - ✅ Конкретная ошибка с текстом
@@ -146,9 +150,8 @@ Node(
    - "Проверил что контейнер запущен - `docker ps` показывает voice-assistant"
    - "Посмотрел логи - `docker logs voice-assistant` показывает RuntimeError"
 
-5. **Используй AI Context Map:**
-   - Открой 1-2 релевантных файла ПЕРЕД запросом
-   - Смотри `docs/development/AI_CONTEXT_MAP.md` для подсказок
+5. **Давай контекст:**
+   - Открой 1-2 релевантных файла ПЕРЕД запросом; карта документов — `docs/README.md`
 
 6. **Разбивай на шаги если сложно:**
    ```
@@ -196,7 +199,7 @@ Node(
 
 ## Обзор системы
 
-**Rob Box Project** - автономный робот на базе двух Raspberry Pi 5 с OAK-D Lite камерой и RTAB-Map SLAM.
+**Rob Box Project** - автономный робот на базе трёх Raspberry Pi 5 (Main, Vision, Sound — ADR-0159) с OAK-D Lite камерой и RTAB-Map SLAM.
 
 ### Компоненты системы
 
@@ -204,8 +207,14 @@ Node(
 - OAK-D Lite камера (Intel Movidius MyriadX)
 - AprilTag детекция
 - LED Matrix контроллер
-- Voice Assistant (ReSpeaker)
 - Zenoh router для маршрутизации данных
+
+**Sound Pi (10.1.1.12 eth0 / 10.1.1.22 wlan0)** — с 19.10.2026, ADR-0159
+- Voice Assistant (ReSpeaker: микрофоны и колонки)
+- SuperCollider (музыкальный движок), voice-action-server
+- ТАРС (avatar-supervisor), avatar-arbiter
+- Quest (WebXR), Telegram-бот — с PR-7 (волна 2)
+- Zenoh router (линки на Main Pi и Vision Pi)
 
 **Main Pi (10.1.1.10 eth0 / 10.1.1.20 wlan0)**
 - RTAB-Map SLAM система
@@ -219,10 +228,10 @@ Node(
 ### Сетевая топология
 
 ```
-Vision Pi (eth0: 10.1.1.11)  ←→  Main Pi (eth0: 10.1.1.10)
-     ↓                                    ↓
-WiFi (wlan0: 10.1.1.21)         WiFi (wlan0: 10.1.1.20)
-   (управление)                        (управление)
+Vision Pi (eth0: 10.1.1.11)  ←→  Main Pi (eth0: 10.1.1.10)  ←→  Sound Pi (eth0: 10.1.1.12)
+     ↓                                    ↓                              ↓
+WiFi (wlan0: 10.1.1.21)         WiFi (wlan0: 10.1.1.20)         WiFi (wlan0: 10.1.1.22)
+   (управление)                        (управление)                   (управление)
                                          ↓
                                zenoh.robbox.online:7447
 ```
@@ -230,7 +239,7 @@ WiFi (wlan0: 10.1.1.21)         WiFi (wlan0: 10.1.1.20)
 **⚠️ ВАЖНО**: 
 - **Gigabit Ethernet (eth0)**: ТОЛЬКО для передачи данных между Pi
 - **WiFi (wlan0)**: ТОЛЬКО для SSH доступа и управления
-- В конфигурациях Zenoh router используются ТОЛЬКО Ethernet IP (10.1.1.10, 10.1.1.11)
+- В конфигурациях Zenoh router используются ТОЛЬКО Ethernet IP (10.1.1.10, 10.1.1.11, 10.1.1.12)
 
 ---
 
@@ -253,10 +262,15 @@ docker/
 │       ├── Dockerfile
 │       ├── entrypoint.sh        (опционально)
 │       └── config/              (опционально - специфичные конфиги)
-└── vision/                      # Vision Pi (10.1.1.21)
+├── vision/                      # Vision Pi (10.1.1.21)
+│   ├── docker-compose.yaml
+│   ├── config/                  # Общие конфиги
+│   ├── scripts/                 # Утилитарные скрипты
+│   └── <service_name>/
+└── sound/                       # Sound Pi (10.1.1.22): голосовой стек, ADR-0159
     ├── docker-compose.yaml
-    ├── config/                  # Общие конфиги
-    ├── scripts/                 # Утилитарные скрипты
+    ├── config/
+    ├── scripts/
     └── <service_name>/
 ```
 
@@ -289,13 +303,12 @@ docker/
 - Restart контейнера занимает 2-5 секунд
 - Volumes позволяют применять изменения мгновенно
 
-**См. подробности:** `BUILD_OPTIMIZATION.md`
+**См. подробности:** `DOCKER_STANDARDS.md`
 
 ### 📖 Полная документация
 
 **Перед любыми изменениями Docker конфигурации читай:**
 - `DOCKER_STANDARDS.md` - детальные стандарты, примеры, workflow
-- `BUILD_OPTIMIZATION.md` - правила оптимизации сборки образов
 - `CI_CD_PIPELINE.md` - автоматизация сборки через GitHub Actions
 
 ---
@@ -325,13 +338,11 @@ Feature Branch (feature/*)
 
 ### Workflow файлы
 
-| Workflow | Файл | Назначение |
-|----------|------|------------|
-| **Feature → Develop** | `.github/workflows/auto-merge-feature-to-develop.yml` | Собирает изменённые сервисы, автомерджит в develop |
-| **Develop → Main** | `.github/workflows/auto-merge-to-main.yml` | Собирает ВСЕ сервисы, автомерджит в main |
-| **Vision Services** | `.github/workflows/build-vision-services.yml` | Сборка oak-d, apriltag, led-matrix, voice-assistant |
-| **Main Services** | `.github/workflows/build-main-services.yml` | Сборка rtabmap, nav2, ros2-control, lslidar, perception |
-| **Base Images** | `.github/workflows/build-base-images.yml` | Сборка базовых образов (ros2-zenoh) |
+> ⚠️ Актуальный список workflow-файлов и naming convention (`G-`/`L-` префиксы)
+> см. **`docs/CI_CD_PIPELINE.md`** — это SOT. Здесь раньше был дублирующий
+> список со старыми именами файлов (`auto-merge-feature-to-develop.yml` и
+> т.п.), которые были переименованы; таблицу убрали, чтобы не расходилась
+> с реальностью повторно.
 
 ### Docker Image Tagging
 
@@ -353,8 +364,8 @@ Feature Branch (feature/*)
 git checkout -b feature/fix-voice-assistant
 
 # 2. Делаешь изменения (например, в Dockerfile или docker-compose.yaml)
-vim docker/vision/voice_assistant/Dockerfile
-vim docker/vision/docker-compose.yaml
+vim docker/sound/voice_assistant/Dockerfile
+vim docker/sound/docker-compose.yaml
 
 # 3. Коммитишь и пушишь
 git add .
@@ -362,16 +373,16 @@ git commit -m "fix: добавить nav2-msgs для command_node"
 git push origin feature/fix-voice-assistant
 
 # 4. GitHub Actions автоматически:
-#    - Определяет что изменился Vision Pi
-#    - Запускает build-vision-services.yml
+#    - Определяет что изменился Sound Pi
+#    - Запускает "L-Build Pi Services.yml" (-f pi=...) (см. docs/CI_CD_PIPELINE.md)
 #    - Собирает voice-assistant-humble-test
 #    - Пушит образ в ghcr.io
 #    - Мерджит в develop (если сборка успешна)
 #    - Удаляет feature ветку
 
-# 5. На Vision Pi - обновляешь код и подтягиваешь новый образ
-sshpass -p 'open' ssh ros2@10.1.1.21 \
-  'cd ~/rob_box_project/docker/vision && \
+# 5. На Sound Pi - обновляешь код и подтягиваешь новый образ
+sshpass -p 'open' ssh ros2@10.1.1.22 \
+  'cd ~/rob_box_project/docker/sound && \
    git pull && \
    docker compose pull voice-assistant && \
    docker compose up -d voice-assistant'
@@ -393,8 +404,8 @@ gh run view <run-id> --log
 
 **Проверка образов:**
 ```bash
-# На Vision Pi - проверить какой образ используется
-sshpass -p 'open' ssh ros2@10.1.1.21 'docker images | grep voice-assistant'
+# На Sound Pi - проверить какой образ используется
+sshpass -p 'open' ssh ros2@10.1.1.22 'docker images | grep voice-assistant'
 
 # Должен показать: ghcr.io/krikz/rob_box  voice-assistant-humble-test
 ```
@@ -404,7 +415,7 @@ sshpass -p 'open' ssh ros2@10.1.1.21 'docker images | grep voice-assistant'
 **Изменения БЕЗ rebuild** (применяются мгновенно через volumes):
 - Конфиги: `docker/vision/config/**`
 - Скрипты: `docker/vision/scripts/**`
-- Launch файлы: `docker/vision/config/voice_assistant/voice_assistant_headless.launch.py`
+- Launch файлы: `docker/sound/config/voice_assistant/voice_assistant_headless.launch.py`
 
 **Изменения С rebuild** (требуют GitHub Actions):
 - `Dockerfile` (установка пакетов, зависимостей)
@@ -609,8 +620,8 @@ cat ~/rob_box_project/docker/vision/.env.secrets
 ### Проверка секретов
 
 ```bash
-# На Vision Pi - проверить что ключи загружены в контейнер
-sshpass -p 'open' ssh ros2@10.1.1.21 \
+# На Sound Pi - проверить что ключи загружены в контейнер
+sshpass -p 'open' ssh ros2@10.1.1.22 \
   'docker exec voice-assistant printenv | grep -E "DEEPSEEK|YANDEX"'
 
 # Должен вернуть:
@@ -623,10 +634,22 @@ sshpass -p 'open' ssh ros2@10.1.1.21 \
 
 ## Инструментарий мониторинга и диагностики
 
-### 📊 Скрипты мониторинга
+> ⚠️ **Устарело (проверено 2026-08-28):** почти все скрипты, перечисленные
+> ниже (`scripts/diagnostics/monitor_system.sh`, `docker/vision/scripts/realtime_monitor.sh`,
+> `scripts/diagnostics/diagnose_data_flow.sh`, `docker/vision/scripts/diagnose.sh`,
+> `docker/vision/scripts/force_publish.sh`, `scripts/diagnostics/tune.sh`,
+> `docker/vision/config/start_*.sh`) в репозитории больше **не существуют**.
+> Актуальные стартовые скрипты сервисов — в `docker/main/scripts/<svc>/` и
+> `docker/vision/scripts/<svc>/`; в `docker/scripts/` — утилиты питания и CAN (`check_power_status.sh`,
+> `check_usb_devices.sh`, `monitor_power_live.sh` и др.) — эта секция описывает
+> снапшот на 2025-10-09 и оставлена как историческая справка, не как текущий
+> инвентарь. Из перечисленного ниже актуальны только
+> `docker/vision/update_and_restart.sh` и `docker/main/update_and_restart.sh`.
 
-#### 1. `docker/monitor_system.sh` - Общий системный мониторинг
-**Местоположение**: `docker/monitor_system.sh`  
+### 📊 Скрипты мониторинга (исторический снапшот, см. предупреждение выше)
+
+#### 1. `scripts/diagnostics/monitor_system.sh` - Общий системный мониторинг
+**Местоположение**: `scripts/diagnostics/monitor_system.sh`  
 **Назначение**: Универсальный мониторинг CPU, памяти, сети, температуры для обоих Pi  
 **Использование**:
 ```bash
@@ -652,8 +675,8 @@ cd ~/rob_box_project/docker
 
 ---
 
-#### 2. `docker/vision/realtime_monitor.sh` - Real-time мониторинг камеры
-**Местоположение**: `docker/vision/realtime_monitor.sh`  
+#### 2. `docker/vision/scripts/realtime_monitor.sh` - Real-time мониторинг камеры
+**Местоположение**: `docker/vision/scripts/realtime_monitor.sh`  
 **Назначение**: Детальный мониторинг работы OAK-D камеры в реальном времени  
 **Использование**:
 ```bash
@@ -704,8 +727,8 @@ cd ~/rob_box_project/docker/vision
 
 ### 🔍 Скрипты диагностики
 
-#### 4. `docker/diagnose_data_flow.sh` - Диагностика связи между Pi
-**Местоположение**: `docker/diagnose_data_flow.sh`  
+#### 4. `scripts/diagnostics/diagnose_data_flow.sh` - Диагностика связи между Pi
+**Местоположение**: `scripts/diagnostics/diagnose_data_flow.sh`  
 **Назначение**: Проверка всего пути передачи данных: Vision Pi → Main Pi  
 **Использование**:
 ```bash
@@ -728,8 +751,8 @@ wsl bash ./diagnose_data_flow.sh
 
 ---
 
-#### 5. `docker/vision/diagnose.sh` - Диагностика камеры на Vision Pi
-**Местоположение**: `docker/vision/diagnose.sh`  
+#### 5. `docker/vision/scripts/diagnose.sh` - Диагностика камеры на Vision Pi
+**Местоположение**: `docker/vision/scripts/diagnose.sh`  
 **Назначение**: Быстрая проверка статуса камеры и топиков  
 **Использование**:
 ```bash
@@ -752,8 +775,8 @@ cd ~/rob_box_project/docker/vision
 
 ---
 
-#### 6. `docker/vision/force_publish.sh` - Принудительная публикация топиков
-**Местоположение**: `docker/vision/force_publish.sh`  
+#### 6. `docker/vision/scripts/force_publish.sh` - Принудительная публикация топиков
+**Местоположение**: `docker/vision/scripts/force_publish.sh`  
 **Назначение**: Отключение lazy publisher для OAK-D  
 **Использование**:
 ```bash
@@ -775,8 +798,8 @@ cd ~/rob_box_project/docker/vision
 
 ### 🔧 Скрипты настройки
 
-#### 7. `docker/tune.sh` - Настройка сетевых буферов (CycloneDDS)
-**Местоположение**: `docker/tune.sh`  
+#### 7. `scripts/diagnostics/tune.sh` - Настройка сетевых буферов (CycloneDDS)
+**Местоположение**: `scripts/diagnostics/tune.sh`  
 **Назначение**: Увеличение сетевых буферов для CycloneDDS  
 **Использование**:
 ```bash
@@ -840,14 +863,14 @@ cd ~/rob_box_project/docker/main
 
 ### 📝 Вспомогательные скрипты (в config/)
 
-#### 10. `docker/vision/config/start_oak_d.sh` - Старт камеры OAK-D
-**Местоположение**: `docker/vision/config/start_oak_d.sh`  
+#### 10. `docker/vision/scripts/oak-d/start_oak_d.sh` - Старт камеры OAK-D
+**Местоположение**: `docker/vision/scripts/oak-d/start_oak_d.sh`  
 **Назначение**: Запуск ноды OAK-D внутри контейнера  
 **Рекомендации**:
 - ✅ **ОСТАВИТЬ** - используется Dockerfile для запуска камеры
 
-#### 11. `docker/vision/config/start_apriltag.sh` - Старт AprilTag детекции
-**Местоположение**: `docker/vision/config/start_apriltag.sh`  
+#### 11. `docker/vision/scripts/apriltag/start_apriltag.sh` - Старт AprilTag детекции
+**Местоположение**: `docker/vision/scripts/apriltag/start_apriltag.sh`  
 **Назначение**: Запуск AprilTag детектора внутри контейнера  
 **Рекомендации**:
 - ✅ **ОСТАВИТЬ** - используется Dockerfile для запуска AprilTag
@@ -861,7 +884,7 @@ cd ~/rob_box_project/docker/main
 #### 1. `abd2629 - fixes`
 **Дата**: Последний коммит  
 **Изменения**:
-- Удален `docker/main/discovery/Dockerfile` (FastDDS discovery сервер больше не нужен)
+- Удален `docker/main/discovery/Dockerfile` (FastDDS discovery сервер больше не нужен) <!-- stale-paths: ignore -->
 - Обновлены `zenoh_router_config.json5` для Vision и Main Pi
 - Обновлены `docker-compose.yaml` для Vision и Main Pi
 
@@ -981,8 +1004,8 @@ services:
 
 #### Router конфигурация (для обоих Pi)
 **Файлы**: 
-- `docker/vision/config/zenoh_router_config.json5`
-- `docker/main/config/zenoh_router_config.json5`
+- `docker/common/config/zenoh_router_config.json5`
+- `docker/common/config/zenoh_router_config.json5`
 
 **Ключевые параметры**:
 ```json5
@@ -1000,8 +1023,8 @@ services:
 
 #### Session конфигурация (для ROS 2 нод)
 **Файлы**:
-- `docker/vision/config/zenoh_session_config.json5`
-- `docker/main/config/zenoh_session_config.json5`
+- `docker/common/config/zenoh_session_config.json5`
+- `docker/common/config/zenoh_session_config.json5`
 
 **Ключевые параметры**:
 ```json5
@@ -1067,28 +1090,27 @@ wsl sshpass -p 'open' ssh -o StrictHostKeyChecking=no ros2@10.1.1.20 'docker ps'
 ## Рекомендации по скриптам
 
 ### ✅ ОСТАВИТЬ (критичные)
-1. **docker/monitor_system.sh** - универсальный мониторинг
-2. **docker/vision/realtime_monitor.sh** - детальный мониторинг камеры
-3. **docker/diagnose_data_flow.sh** - диагностика межплатной связи
-4. **docker/vision/diagnose.sh** - быстрая диагностика камеры
+1. **scripts/diagnostics/monitor_system.sh** - универсальный мониторинг
+2. **docker/vision/scripts/realtime_monitor.sh** - детальный мониторинг камеры
+3. **scripts/diagnostics/diagnose_data_flow.sh** - диагностика межплатной связи
+4. **docker/vision/scripts/diagnose.sh** - быстрая диагностика камеры
 5. **docker/vision/update_and_restart.sh** - deployment Vision Pi
 6. **docker/main/update_and_restart.sh** - deployment Main Pi
-7. **docker/vision/config/start_oak_d.sh** - запуск камеры (используется Dockerfile)
-8. **docker/vision/config/start_apriltag.sh** - запуск AprilTag (используется Dockerfile)
+7. **docker/vision/scripts/oak-d/start_oak_d.sh** - запуск камеры (используется Dockerfile)
+8. **docker/vision/scripts/apriltag/start_apriltag.sh** - запуск AprilTag (используется Dockerfile)
 
 ### ⚠️ УСТАРЕЛИ / ТРЕБУЮТ ПЕРЕСМОТРА
 1. **docker/vision/monitor_camera_startup.sh** - дублирует realtime_monitor.sh
    - Рекомендация: удалить или объединить с realtime_monitor.sh
-2. **docker/vision/force_publish.sh** - логика в update_and_restart.sh
+2. **docker/vision/scripts/force_publish.sh** - логика в update_and_restart.sh
    - Рекомендация: удалить, оставить как справочник
-3. **docker/tune.sh** - для CycloneDDS (больше не используется)
+3. **scripts/diagnostics/tune.sh** - для CycloneDDS (больше не используется)
    - Рекомендация: удалить, оставить в TROUBLESHOOTING.md как историю
 
 ### 📚 Документация
 Текущая документация актуальна и хорошо структурирована:
 - **SYSTEM_OVERVIEW.md** - архитектура системы
 - **TROUBLESHOOTING.md** - решение проблем
-- **BUILD_OPTIMIZATION.md** - оптимизация системы
 - **QUICK_START.md** - быстрый старт
 
 ---

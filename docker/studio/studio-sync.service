@@ -1,0 +1,31 @@
+# Студия канала: синхронизация живого клона с origin/develop (ADR-0172, #4703).
+#
+# Зачем: факты и медиа студия читает из worktree origin/develop (он
+# обновляется сам), а исполняемый код — из живого клона, который до сих пор
+# обновлялся только вручную. 13.11 сессия в 03:00 UTC отработала кодом от
+# 11.11, хотя merge #4701 был в 08:58 того же дня: материал свежий, логика
+# старая, ошибок нет — просто считает по старому коду.
+#
+# Скрипт: fetch → сравнить с HEAD → fast-forward (без stash и без
+# reset --hard) → перезапуск studio-watch, только если код изменился.
+# Если в клоне изменён tracked-файл — обновления нет, код возврата ненулевой.
+#
+# Ставит scripts/telegram/studio_install.sh: подставляет корень клона вместо
+# @REPO_ROOT@, кладёт файл в ~/.config/systemd/user/ и включает таймер
+# studio-sync.timer (раз в 5 минут).
+# Журнал: journalctl --user -u studio-sync.service -f
+
+[Unit]
+Description=Студия канала: подтянуть код клона до origin/develop
+After=network-online.target
+Wants=network-online.target
+StartLimitIntervalSec=0
+
+[Service]
+Type=oneshot
+WorkingDirectory=@REPO_ROOT@
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/usr/bin/bash @REPO_ROOT@/scripts/telegram/studio_sync.sh
+# Fetch и fast-forward: сеть может подвиснуть — ограничиваем время,
+# чтобы таймер не копил зависшие процессы.
+TimeoutStartSec=300

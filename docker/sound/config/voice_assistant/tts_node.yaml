@@ -1,0 +1,96 @@
+# tts_node.yaml — per-node ROS2 config (issue #1004 fix, ADR-0004)
+#
+# ЖИВОЙ конфиг для docker-деплоя (см. audio_node.yaml).
+# Все ключи соответствуют declare_parameter() в tts_node.py 1:1.
+# Секреты (minimax_api_key/minimax_group_id/yandex_api_key) — пусто →
+# fallback на ENV; в YAML секреты не хранятся.
+
+tts_node:
+  ros__parameters:
+    provider: minimax
+    # Issue #2609 — Silero только аварийный fallback; без этого ключа
+    # срабатывал дефолт кода (true) и tts_node грузил torch + модель на
+    # каждом старте, хотя в src/rob_box_voice/config он давно выключен.
+    silero_warm_load: false
+    silero_speaker: aidar
+    silero_sample_rate: 48000
+    synthesis_max_workers: 2
+    synthesis_max_queue: 16
+    minimax_api_key: ''
+    minimax_group_id: ''
+    # Issue #1780 / issue #1004 — emotion / pitch / volume /
+    # pronunciation_dict для MiniMax T2A v2 передаются в voice_setting
+    # (см. minimax_tts.py: ``emotion``, ``pitch`` int semitones, ``vol``
+    # float [0.0, 10.0], ``pronunciation_dict`` str). Нейтральные дефолты
+    # сохраняют текущее поведение (поля НЕ передаются в API, если явно
+    # не заданы). Канонический блок задаётся ниже (после
+    # ``yandex_speed``); первый блок с int/float ``pitch=0`` /
+    # ``volume=0.0`` был legacy и порождал дубликат ключа в YAML →
+    # rclpy set_parameters валился на типе (InvalidParameterTypeException
+    # → tts_node crash-loop на Vision Pi, issue #1830). Убран.
+    # Допустимые значения emotion (MiniMax T2A v2 voice_setting.emotion):
+    #   happy | neutral | sad | angry | fearful | disgusted | surprised
+    # Прокидывание значений в ``TTSSettings`` — в карточке t_4e98182a.
+    # #4022 — set_pitch двигает pitch_shift (1.0 = норма) и читает его назад. Без chipmunk_mode тон слышен только у
+    # MiniMax: pitch_shift -> voice_setting.pitch полутонами (12*log2, +-12) к minimax_pitch; у Yandex/Silero тона
+    # нет, тул отвечает отказом. С chipmunk_mode: true коэффициент съедает передискретизация (любой провайдер).
+    chipmunk_mode: false
+    pitch_shift: 1.0
+    volume_db: -3.0
+    silero_put_accent: true
+    silero_put_yo: true
+    silero_put_stress_homo: true
+    silero_put_yo_homo: true
+    yandex_api_key: ''
+    yandex_voice: anton
+    yandex_speed: 1.0
+    chunk_max_chars_yandex: 250
+    chunk_max_chars_silero: 800
+    chunk_max_chars_minimax: 5000
+    chunk_max_retries: 3
+    chunk_min_chars: 50
+    minimax_voice: male-qn-qingse
+    minimax_model: speech-02-hd
+    minimax_language: ru
+    # #4022 — живой: set_speed при звучащем MiniMax двигает именно его (0.5-2.0), yandex_speed он не читает.
+    minimax_speed: 1.0
+    minimax_sample_rate: 32000
+    minimax_format: pcm
+    minimax_timeout: 30.0
+    minimax_max_retries: 2
+    minimax_retry_backoff_ms: 500
+    # #3930 — реплика в динамик SSE-потоком (первый звук ~1 с вместо 2.2–3.6 с HTTP)
+    minimax_streaming: true
+    # ADR-0150 PR-3 (#3688) — задержка «SpeechEvent started (перед play_audio)
+    # → первый звук в колонке» (замер 20.10.2026 микрофоном katana: 560 / 570 /
+    # 520 мс) — одно место: rob_box_dialog.knowledge.SPEECH_OUTPUT_LATENCY_MS
+    # (PR-7c: по ней же выступление ставит реплику на такт). Здесь не задаётся.
+    # Issue #1780 / issue #1004 / issue #1830 — единственный канонический
+    # блок MiniMax emotion / pitch / volume / pronunciation_dict. В
+    # tts_node.py declare_parameter() ожидает STRING ("" → «не задан»);
+    # при чтении приводится через _parse_optional_int/_parse_optional_float
+    # → нейтральное поведение до явной настройки (поля опускаются из
+    # API payload).
+    #   emotion              ∈ {happy, neutral, sad, angry, fearful, disgusted, surprised}
+    #   pitch                — int semitones (-12..+12 typical); "" → None
+    #   volume               — float [0.0, 10.0]; "" → None
+    #   pronunciation_dict   — JSON-строка MiniMax-словаря; "" → None
+    # Допустимые значения emotion (MiniMax T2A v2 voice_setting.emotion):
+    #   happy | neutral | sad | angry | fearful | disgusted | surprised
+    # Прокидывание значений в ``TTSSettings`` — в карточке t_4e98182a.
+    minimax_emotion: neutral
+    minimax_pitch: ''
+    minimax_volume: ''
+    minimax_pronunciation_dict: ''
+    # Issue #1229 — файл персистентного состояния фактического провайдера
+    # TTS (после фолбека minimax→yandex). tts_node пишет сюда {provider,
+    # dead_providers} при смене провайдера; при рестарте контейнера кэш
+    # «мёртвых» восстанавливается, и LLM-контекст [TTS] сразу показывает
+    # реального провайдера (не номинального minimax). Пустая строка —
+    # отключить персистентность.
+    provider_state_file: /data/tts_provider_state.json
+    voice_state_file: /data/tts_voice_state.json  # выбранный голос переживает рестарт (ADR-0150 PR-4 ч.3)
+    audio_topic: /voice/audio/speech
+    audio_output_sample_rate: 16000
+    audio_qos_reliability: best_effort
+    audio_qos_depth: 10

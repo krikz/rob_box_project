@@ -5,7 +5,7 @@
 
 ## DOCKER_TAG mapping (issue #1041)
 
-`L-Build Vision Pi Services.yml` и `L-Build Main Pi Services.yml` определяют
+`L-Build Pi Services.yml` (вход `pi`) определяют
 `DOCKER_TAG` по `GITHUB_REF_TYPE` + `GITHUB_REF_NAME`:
 
 | Source ref                        | DOCKER_TAG |
@@ -29,9 +29,14 @@ runtime-скиптами).
 `IMAGE_TAG=latest` для production. Поэтому `v*` → `latest` — это одна точка
 истины, а не новая "release-ветка".
 
-**SHA-теги в отдельной ветке:** после c873f479 (`#1142`) SHA-теги
-`.image-versions.*` коммитятся в `ci/image-versions`, не в `develop`/`main`.
-Это устраняет класс конфликтов, который был источником шума до #1142.
+**SHA-теги в текущей ветке:** SHA-теги `.image-versions.*` коммитятся напрямую
+в ветку, на которой запущен build (`develop` для разработки, `feature/*` для
+тестов, `main` для production) через job `update-image-versions` в
+`L-Build Pi Services.yml` →
+`scripts/ci/push-image-versions.sh` (retry+rebase+timeout). Per-service ветки
+`ci/image-visions-main/-vision` НЕ используются (был реверт в #1244, см. §ADR-0094).
+Это устраняет класс конфликтов при local-деплое, но создаёт риск phantom
+env-переменных — см. ADR-0094 §1.4 и `scripts/ci/check_image_versions_usage.sh`.
 
 ## Backfill для уже-прошедших релиз-тегов
 
@@ -42,7 +47,7 @@ vision-сервисов в `ci/image-versions` тоже не были заком
 
 ### Как восстановить SHA-теги после-фактум
 
-1. По артефактам workflow run `L-Build Vision Pi Services` для тега
+1. По артефактам workflow run `L-Build Pi Services` для тега
    `v1.0.0-1-2ce5de92-humble-rc1` (run_id из #1041, например 31152997328)
    достать SHA каждого сервиса из собранных docker images:
 
@@ -64,15 +69,15 @@ vision-сервисов в `ci/image-versions` тоже не были заком
    git push origin ci/image-versions
    ```
 
-3. Прогнать `L-Build Vision Pi Services` с `--ref v1.0.0-1-2ce5de92-humble-rc1`
+3. Прогнать `L-Build Pi Services` (`-f pi=vision`, `sound`, `main`) с `--ref v1.0.0-1-2ce5de92-humble-rc1`
    повторно — теперь workflow корректно определит `DOCKER_TAG=latest`, найдёт
    `.image-versions.latest` и сам обновит SHA-теги.
 
 ### После фикса
 
 Следующий релиз (`v1.0.0-2-<build>-humble-rc1`) этим мануалом пользоваться
-не должен — фикс `GITHUB_REF_TYPE=tag` уже в `L-Build Vision Pi Services.yml`
-и `L-Build Main Pi Services.yml` (merged в develop).
+не должен — фикс `GITHUB_REF_TYPE=tag` уже в `L-Build Pi Services.yml`
+(ранее L-Build Vision/Main Pi Services, merged в develop).
 
 ## Preventative checklist для CI-workflow изменений
 
@@ -82,7 +87,12 @@ vision-сервисов в `ci/image-versions` тоже не были заком
 - [ ] Если добавлен новый branch-prefix в `DOCKER_TAG=test` — добавить его
       в ОБА файла (Vision Pi и Main Pi), иначе асимметрия
 - [ ] Если меняется `.image-versions.*` flow — учитывать, что SHA-теги идут
-      в `ci/image-versions`, а не в `develop`/`main` (c873f479)
+      в **текущую ветку build'а** (develop / feature/* / main), а НЕ в
+      `ci/image-visions-*` (отменено в #1244, см. ADR-0094 §1.2)
+- [ ] При удалении сервиса `docker/<component>/<service>/` — **удалить
+      соответствующий `*_TAG`** из `.image-versions.{dev,test,latest}`
+      (полуавтомат: `scripts/ci/check_image_versions_usage.sh` подсвечивает
+      phantom-теги в CI, удаление — ручное, ADR-0094 §3.3)
 - [ ] Прогон workflow в `workflow_dispatch` с реальным release-тегом
       (`v*`) для smoke-test, прежде чем закрывать задачу
 
@@ -90,10 +100,14 @@ vision-сервисов в `ci/image-versions` тоже не были заком
 
 - ADR-0014 — merge-gate требует e2e-доклад в issue перед `kanban complete`
 - ADR-0015 — naming convention веток (z-{agent}/*, z-{e2e}/*, copilot/*)
-- c873f479 (#1142) — SHA-теги в отдельную ветку ci/image-versions
-- 98de836a (#1244) — реверт, SHA-теги снова в текущей ветке (per-service ci/image-versions-* не работают при local-деплое)
+- **ADR-0094** — фиксация текущего `.image-versions.*` flow (SHA-теги в текущую
+  ветку через `update-image-versions` job build-workflow) + lint-чекер phantom
+  env-переменных (`scripts/ci/check_image_versions_usage.sh`). Заменяет
+  утерянный при renumber ADR-0031 (PR #1662).
+- c873f479 (#1142) — SHA-теги в отдельную ветку ci/image-visions (отменено в #1244)
+- 98de836a (#1244) — реверт, SHA-теги снова в текущей ветке (per-service ci/image-visions-* не работают при local-деплое)
 - d417b722 (#1139) — retry+rebase push в текущую ветку (race main↔vision на одном develop)
 - `scripts/ci/push-image-versions.sh` (issue #1388) — выделенный helper для race-safe push:
   `pull --rebase origin <branch>` перед push, retry-loop, **exit≠0** при невосстановимой ошибке
   (раньше job завершался `success` даже когда push терялся). Используется в
-  `L-Build Vision Pi Services.yml` и `L-Build Main Pi Services.yml`.
+  `L-Build Pi Services.yml` (вход `pi`).

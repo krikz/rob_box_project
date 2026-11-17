@@ -100,12 +100,39 @@ def test_validate_rejects_bad_footer():
     assert validate_packet(make_frame([992] * 16, footer=0xFF)) is False
 
 
+def test_validate_accepts_zero_unused_channels():
+    # ELRS receivers report unused channels (12-15) as 0, not center.
+    # A real frame captured from the robot (2026-08-24) has ch12..15 = 0.
+    channels = [SBUS_CHANNEL_CENTER] * 16
+    for i in (12, 13, 14, 15):
+        channels[i] = 0
+    assert validate_packet(make_frame(channels)) is True
+
+
 def test_validate_rejects_out_of_range_channels():
     channels = [SBUS_CHANNEL_CENTER] * 16
-    channels[3] = 0
-    assert validate_packet(make_frame(channels)) is False
     channels[3] = 2047
     assert validate_packet(make_frame(channels)) is False
+
+
+def test_validate_accepts_real_captured_frame():
+    # Exact 25-byte frame captured from the robot's ELRS receiver on
+    # 2026-08-24 (ARM ch4=1792, gas ch1=1811, unused ch12-15=0). It must
+    # pass validation or the node reads zero packets (wheels never move).
+    frame = bytes.fromhex("0f1a9bb82bc0077080031ce000ff05f8280800000000000000")
+    assert validate_packet(frame) is True
+    assert decode_channels(frame)[1] == 1811  # gas held
+    assert decode_channels(frame)[4] == 1792  # armed
+
+
+def test_read_frame_real_captured_zero_channels():
+    # Regression: a real ELRS frame with unused channels = 0 must be
+    # returned by read_frame (validate_packet must not reject it).
+    frame = bytes.fromhex("0f1a9bb82bc0077080031ce000ff05f8280800000000000000")
+    ser = FakeSerial(frame + frame)
+    assert read_frame(ser.read) == frame
+    assert read_frame(ser.read) == frame
+    assert read_frame(ser.read) is None
 
 
 def test_validate_accepts_flag_bytes():

@@ -1,5 +1,8 @@
 # E2E Testing Design — привязка acceptance-критериев scheduler'а и dialog_node к e2e-прогонам
 
+> **05.11.2026 (ADR-0166):** каталог `tests/e2e/live/` (`run_live_e2e.sh`, `snapshot.sh`) удалён — e2e идёт
+> через `L: E2E Voice Test` и марафон; старые скрипты остались в истории git.
+
 | Поле | Значение |
 |------|----------|
 | Документ | `docs/design/E2E_TESTING_DESIGN.md` |

@@ -4,48 +4,135 @@
 # Архитектура:
 #   - led_matrix_driver: низкоуровневый драйвер (SPI → LED через pi5neo)
 #   - led_matrix_compositor: композитор панелей (sensor_msgs/Image → driver)
+#   - face_node (rob_box_animations): процедурное лицо 25 к/с → /panel_image
+#     (ADR-0150 §5.5, решение В14: кадры не ходят через Zenoh)
 #
 # Физическая конфигурация:
 #   - 4× панели 8×8 (фары передние/задние)
 #   - 5× панели 5×5 (main_display 5×25)
 #   - Общая цепочка: 381 LED (256 + 125)
+#
+# Сборочный шов (docs/plans/2026-09-15-builder-runtime-seam.md, пилот, §5):
+# builder-стадия ставит build-essential/python3-dev/libffi-dev — нужны ТОЛЬКО
+# для компиляции C-расширения pip-пакета spidev (под arm64 на PyPI нет
+# prebuilt wheel, собирается из исходников) — и гоняет colcon build.
+# Runtime-стадия компилятор и dev-заголовки не содержит: только то, что нужно
+# ноде для запуска — apt runtime-пакеты ROS, готовые pip site-packages
+# (скопированы как собранные .so/.py; ABI гарантированно совпадает, т.к. обе
+# стадии используют один и тот же BASE_IMAGE → одна версия Python/glibc) и
+# сам colcon workspace /ws/install.
+#
+# ВНИМАНИЕ (план §2.1): BASE_IMAGE сам наследует build-essential/colcon/rosdep
+# от ros:lyrical-ros-base (апстрим OSRF) — эта стадия НЕ убирает унаследованный
+# тулчейн, только то, что этот файл добавляет поверх базы (build-essential,
+# python3-dev, libffi-dev, pip build-артефакты). Полное устранение тулчейна
+# требует отдельной облегчённой runtime-базы — вне скоупа этого пилота.
+#
+# Про pip и --prefix: раскладка зависит от версии pip. Debian-патч sysconfig
+# (python3-pip 22.0.2) кладёт файлы в /pyinstall/local/lib/pythonX.Y/dist-packages,
+# новый pip (после `pip install --upgrade pip` или пересборки базы) — в
+# /pyinstall/lib/pythonX.Y/site-packages. Рантайм-интерпретатор Debian видит только
+# /usr/local/lib/pythonX.Y/dist-packages. Поэтому builder после pip install
+# нормализует всё в /pyinstall/lib/pythonX.Y/dist-packages (local/ вливается,
+# site-packages переименовывается), проверяет import, а в рантайм идёт
+# `COPY --from=builder /pyinstall /usr/local` — независимо от поведения pip.
 
 ARG ROS_DISTRO=lyrical
 ARG BASE_IMAGE=ghcr.io/krikz/rob_box_base:ros2-zenoh
 ARG ROS2LEDS_SHA=unknown
 
-FROM ${BASE_IMAGE}
+# Общий образ ROS-сообщений (docker/msgs/Dockerfile): src/rob_box_*_msgs
+# компилируются ОДИН раз за прогон, а не в каждом образе (rosidl под qemu —
+# 4-14 минут на пакет). Тег по хэшу пакетов вычисляет gen_build_matrix.py и
+# передаёт build-arg'ом; без него сборка падает сразу на имени образа.
+ARG MSGS_IMAGE=MSGS_IMAGE-build-arg-is-required
+FROM ${MSGS_IMAGE} AS msgs
 
-# Метаданные
-LABEL org.opencontainers.image.title="LED Matrix System for Vision Pi"
-LABEL org.opencontainers.image.description="ROS2 LED matrix driver and compositor with pi5neo"
-LABEL org.opencontainers.image.source="https://github.com/krikz/ros2leds"
+# ============================================================
+# Stage 1: builder — тулчейн + компиляция colcon workspace
+# ============================================================
+FROM ${BASE_IMAGE} AS builder
 
-# Установка системных зависимостей для SPI и LED
+ARG ROS_DISTRO
+ARG ROS2LEDS_SHA
+ARG APT_PROXY=""
+
+# apt-cacher-ng на build-хосте. Раннер уже передаёт APT_PROXY этому сервису
+# (build-args в "L-Build Pi Services.yml" / "L-Build Single Service.yml"),
+# но Dockerfile его не объявлял — build-arg молча игнорировался, и обе стадии
+# ходили напрямую в packages.ros.org. Это уронило сборку run 35027911983
+# ("Hash Sum mismatch" на Packages.gz): multi-stage гоняет apt-get update в двух
+# стадиях параллельно, и шанс поймать рассинхронизированный edge CDN удваивается.
+# Паттерн 1:1 из docker/base/Dockerfile.ros2-zenoh:17-29 — с проверкой
+# доступности прокси и тихим fallback на прямое соединение.
+RUN if [ -n "$APT_PROXY" ]; then \
+        PROXY_HOST=$(echo "$APT_PROXY" | sed 's|.*://\([^:/]*\).*|\1|'); \
+        PROXY_PORT=$(echo "$APT_PROXY" | sed 's|.*://[^:]*:\([0-9]*\).*|\1|'); \
+        if timeout 5 bash -c "cat < /dev/null > /dev/tcp/$PROXY_HOST/$PROXY_PORT" 2>/dev/null; then \
+            echo "Acquire::http::Proxy \"$APT_PROXY\";" > /etc/apt/apt.conf.d/02proxy; \
+            echo "Acquire::http::Timeout \"10\";" >> /etc/apt/apt.conf.d/02proxy; \
+            echo "Acquire::Retries \"3\";" >> /etc/apt/apt.conf.d/02proxy; \
+            # Pipeline-Depth 0 обязателен под qemu: с включённым
+            # конвейером (по умолчанию 10 и у apt, и у apt-cacher-ng)
+            # метод apt зависает намертво. Поймано 21.09.2026 на katana:
+            # apt-get висел 68 минут с НУЛЁМ секунд CPU, два сокета к
+            # прокси в CLOSE-WAIT с Recv-Q=1, процесс
+            # qemu-binfmt/aarch64 /usr/lib/apt/methods/store — живой, но
+            # ничего не делает.
+            echo "Acquire::http::Pipeline-Depth \"0\";" >> /etc/apt/apt.conf.d/02proxy; \
+            echo "OK: APT proxy $APT_PROXY"; \
+        else \
+            echo "WARN: APT proxy недоступен, идём напрямую"; \
+        fi \
+    fi
+
+# Тулчейн для сборки C-расширения spidev (нет prebuilt wheel под arm64 на
+# PyPI, собирается из исходников) и для colcon build. build-essential/
+# python3-dev/libffi-dev ставятся ТОЛЬКО в этой стадии — в рантайм не попадут.
 RUN apt-get update && apt-get install -y \
-    # SPI и GPIO инструменты
     python3-pip \
     python3-dev \
-    python3-spidev \
     build-essential \
     libffi-dev \
-    # ROS2 зависимости для Image messages
-    ros-${ROS_DISTRO}-sensor-msgs \
-    ros-${ROS_DISTRO}-std-msgs \
     && rm -rf /var/lib/apt/lists/*
 
-# Установка Python библиотек для LED
-# pi5neo - библиотека для управления WS2812B через SPI на Raspberry Pi 5
-# spidev ставится через apt (python3-spidev) — pip-версия конфликтует с apt-пакетом
-# и падает с error: uninstall-no-record-file на Ubuntu 24.04+.
-# pip НЕ апгрейдим: на Ubuntu 24.04+ --upgrade pip ломается (uninstall-no-record-file).
-RUN pip3 install --break-system-packages --no-cache-dir \
+# Python-библиотеки для LED. pi5neo - библиотека для управления WS2812B через
+# SPI на Raspberry Pi 5. Ставим с --prefix=/pyinstall, чтобы потом скопировать
+# только готовый результат в runtime-стадию (без компилятора, без pip-кеша,
+# без промежуточных .c/.o файлов сборки spidev). См. предупреждение о layout
+# в шапке файла — после pip ниже раскладка нормализуется в /pyinstall/lib/....
+RUN pip3 install --break-system-packages --no-cache-dir --upgrade pip && \
+    pip3 install --break-system-packages --no-cache-dir --prefix=/pyinstall \
     pi5neo \
-    numpy
+    spidev \
+    numpy && \
+    if [ -d /pyinstall/local ]; then \
+        cp -a /pyinstall/local/. /pyinstall/ && rm -r /pyinstall/local; \
+    fi && \
+    for d in /pyinstall/lib/python3*; do \
+        if [ -d "$d/site-packages" ]; then \
+            mkdir -p "$d/dist-packages" && \
+            cp -a "$d/site-packages/." "$d/dist-packages/" && \
+            rm -r "$d/site-packages"; \
+        fi; \
+    done && \
+    if [ -z "$(find /pyinstall/lib -maxdepth 2 -type d -name dist-packages 2>/dev/null)" ]; then \
+        echo "FATAL: после нормализации нет /pyinstall/lib/pythonX.Y/dist-packages"; \
+        find /pyinstall -maxdepth 4 -type d; \
+        exit 1; \
+    fi && \
+    PYTHONPATH="$(echo /pyinstall/lib/python3*/dist-packages)" python3 -c "import pi5neo, spidev, numpy"
 
 # Рабочая директория
 WORKDIR /ws
 RUN mkdir -p src
+
+# rob_box_dialog_msgs — готовый из общего образа msgs (stage `msgs` в шапке),
+# а не компиляцией здесь. Стоит ДО кэш-брейкера ros2leds. package.xml в src —
+# для rosdep ниже и чтобы colcon видел зависимость rob_box_dialog; собирать
+# его colcon не будет (нет в --packages-select), возьмёт из /ws/install.
+COPY --from=msgs /ws/install /ws/install
+COPY src/rob_box_dialog_msgs/package.xml /ws/src/rob_box_dialog_msgs/
 
 # ============================================================
 # ОПТИМИЗАЦИЯ КЭШИРОВАНИЯ: Копируем файлы от наименее к наиболее изменяемым
@@ -59,38 +146,145 @@ RUN echo "Building with ros2leds SHA: ${ROS2LEDS_SHA}" && \
     echo "Cache breaker created: $(cat /tmp/ros2leds_build_sha)"
 
 # 1. Копируем package.xml (метаданные зависимостей) - изменяются редко
+# ADR-0150 PR-2 (#3687) / PR-3a (#3689): типы диалога v2 и лицо (face_node).
+# PR-15 15-0b (#3711): rob_box_core (чистый Python, только stdlib) — лицо берёт «говорит» по SpeechEvent
+# у SpeakingWatch (rob_box_core.speech_client) вместо старого String-топика состояния TTS; образец —
+# docker/sound/quest/Dockerfile (rob_box_core рядом с rob_box_dialog_msgs в сборке).
+COPY src/rob_box_core/package.xml /ws/src/rob_box_core/
+COPY src/rob_box_dialog/package.xml /ws/src/rob_box_dialog/
+COPY src/rob_box_animations/package.xml /ws/src/rob_box_animations/
 COPY src/ros2leds/led_matrix_driver/package.xml /ws/src/led_matrix_driver/
 COPY src/ros2leds/led_matrix_compositor/package.xml /ws/src/led_matrix_compositor/
+# Общие LED-эффекты лица (холст, фоны, импульсы, спецсигналы, фары) — пакет ros2leds, чистый numpy.
+COPY src/ros2leds/led_matrix_effects/package.xml /ws/src/led_matrix_effects/
 
 # 2. Установка ROS зависимостей через rosdep (кэшируется если package.xml не изменился)
+# apt-get update ОБЯЗАТЕЛЕН перед rosdep: apt-блок выше заканчивается
+# `rm -rf /var/lib/apt/lists/*`, а rosdep install внутри вызывает
+# `apt-get install` — без списков он падает с «Unable to locate package»
+# (реально поймано на katana, run 35617451547, build-ros2-control:
+# E: Unable to locate package ros-lyrical-xacro). До шва этого не было
+# видно: xacro ставился явным apt-блоком, и rosdep'у нечего было
+# доустанавливать. Там, где rosdep стоит с `|| true`, эта же дыра молча
+# превращала его в no-op.
 RUN . /opt/ros/${ROS_DISTRO}/setup.sh && \
+    apt-get update && \
     rosdep update && \
     rosdep install --from-paths src --ignore-src -r -y || true
 
 # 3. Копируем setup.py - изменяются реже чем код
 COPY src/ros2leds/led_matrix_driver/setup.py /ws/src/led_matrix_driver/
 COPY src/ros2leds/led_matrix_compositor/setup.py /ws/src/led_matrix_compositor/
+COPY src/ros2leds/led_matrix_effects/setup.py /ws/src/led_matrix_effects/
 
 # 4. Только ТЕПЕРЬ копируем весь исходный код (изменяется часто)
+COPY src/rob_box_core /ws/src/rob_box_core
+COPY src/rob_box_dialog /ws/src/rob_box_dialog
+COPY src/rob_box_animations /ws/src/rob_box_animations
 COPY src/ros2leds/led_matrix_driver /ws/src/led_matrix_driver
 COPY src/ros2leds/led_matrix_compositor /ws/src/led_matrix_compositor
+COPY src/ros2leds/led_matrix_effects /ws/src/led_matrix_effects
 
 # 5. Сборка пакетов
+#
+# ВТОРОЕ ОТКЛОНЕНИЕ ОТ ЧЕРНОВИКА ПЛАНА (§5.2 предлагал сохранить
+# --symlink-install "как есть"): убран флаг --symlink-install. Проверено
+# локальной сборкой (amd64, тот же BASE_IMAGE): с --symlink-install colcon
+# для ament_python создаёт в /ws/install НЕ копии файлов, а symlink'и/egg-link
+# обратно в /ws/build и /ws/src (например,
+# install/led_matrix_driver/lib/python3.10/site-packages/led-matrix-driver.egg-link
+# указывает на /ws/src/led_matrix_driver; launch/config/package.xml в
+# install/.../share — тоже symlink'и на /ws/build/...). План §2.2 утверждает,
+# что интерфейс шва — это только /ws/install; при --symlink-install это
+# НЕВЕРНО для ament_python: /ws/install без /ws/src и /ws/build оказывается
+# битым (`import led_matrix_driver` падает ModuleNotFoundError, launch-файл
+# отсутствует). В текущем одностадийном образе это не проявляется, потому
+# что /ws/src и /ws/build остаются в том же слое. Без --symlink-install
+# colcon кладёт в /ws/install настоящие копии — подтверждено локальной
+# сборкой: source setup.bash без ошибок, `import led_matrix_driver`/
+# `led_matrix_compositor` работает, launch-файл на месте, /ws/src в рантайме
+# не нужен.
 RUN . /opt/ros/${ROS_DISTRO}/setup.sh && \
     colcon build \
-    --packages-select led_matrix_driver led_matrix_compositor \
-    --symlink-install \
+    --packages-select rob_box_core rob_box_dialog led_matrix_driver led_matrix_compositor led_matrix_effects \
+      rob_box_animations \
     --cmake-args \
       -DCMAKE_BUILD_TYPE=Release \
       -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
 
-# Source workspace
+# ============================================================
+# Stage 2: runtime — та же база, БЕЗ build-essential/python3-dev/libffi-dev
+# ============================================================
+FROM ${BASE_IMAGE}
+
+ARG ROS_DISTRO
+ARG APT_PROXY=""
+
+# apt-cacher-ng на build-хосте. Раннер уже передаёт APT_PROXY этому сервису
+# (build-args в "L-Build Pi Services.yml" / "L-Build Single Service.yml"),
+# но Dockerfile его не объявлял — build-arg молча игнорировался, и обе стадии
+# ходили напрямую в packages.ros.org. Это уронило сборку run 35027911983
+# ("Hash Sum mismatch" на Packages.gz): multi-stage гоняет apt-get update в двух
+# стадиях параллельно, и шанс поймать рассинхронизированный edge CDN удваивается.
+# Паттерн 1:1 из docker/base/Dockerfile.ros2-zenoh:17-29 — с проверкой
+# доступности прокси и тихим fallback на прямое соединение.
+RUN if [ -n "$APT_PROXY" ]; then \
+        PROXY_HOST=$(echo "$APT_PROXY" | sed 's|.*://\([^:/]*\).*|\1|'); \
+        PROXY_PORT=$(echo "$APT_PROXY" | sed 's|.*://[^:]*:\([0-9]*\).*|\1|'); \
+        if timeout 5 bash -c "cat < /dev/null > /dev/tcp/$PROXY_HOST/$PROXY_PORT" 2>/dev/null; then \
+            echo "Acquire::http::Proxy \"$APT_PROXY\";" > /etc/apt/apt.conf.d/02proxy; \
+            echo "Acquire::http::Timeout \"10\";" >> /etc/apt/apt.conf.d/02proxy; \
+            echo "Acquire::Retries \"3\";" >> /etc/apt/apt.conf.d/02proxy; \
+            # Pipeline-Depth 0 обязателен под qemu: с включённым
+            # конвейером (по умолчанию 10 и у apt, и у apt-cacher-ng)
+            # метод apt зависает намертво. Поймано 21.09.2026 на katana:
+            # apt-get висел 68 минут с НУЛЁМ секунд CPU, два сокета к
+            # прокси в CLOSE-WAIT с Recv-Q=1, процесс
+            # qemu-binfmt/aarch64 /usr/lib/apt/methods/store — живой, но
+            # ничего не делает.
+            echo "Acquire::http::Pipeline-Depth \"0\";" >> /etc/apt/apt.conf.d/02proxy; \
+            echo "OK: APT proxy $APT_PROXY"; \
+        else \
+            echo "WARN: APT proxy недоступен, идём напрямую"; \
+        fi \
+    fi
+
+# Метаданные
+LABEL org.opencontainers.image.title="LED Matrix System for Vision Pi"
+LABEL org.opencontainers.image.description="ROS2 LED matrix driver and compositor with pi5neo"
+LABEL org.opencontainers.image.source="https://github.com/krikz/ros2leds"
+
+# Установка runtime-зависимостей: SPI/GPIO инструменты и ROS2-пакеты для
+# Image messages. БЕЗ python3-dev/build-essential/libffi-dev — компилятор
+# в рантайме не нужен, C-расширение spidev уже собрано в builder-стадии.
+RUN apt-get update && apt-get install -y \
+    python3-pip \
+    python3-spidev \
+    ros-${ROS_DISTRO}-sensor-msgs \
+    ros-${ROS_DISTRO}-std-msgs \
+    && rm -rf /var/lib/apt/lists/*
+
+# pip site-packages из builder-стадии — уже собранные .so/.py (pi5neo, spidev,
+# numpy), ABI совпадает (обе стадии — один и тот же BASE_IMAGE, одна версия
+# Python/glibc). Копируем нормализованный /pyinstall — см. предупреждение
+# в шапке файла про раскладку pip.
+COPY --from=builder /pyinstall /usr/local
+
+# colcon workspace из builder-стадии — единственный продукт сборки, который
+# обязан пересечь шов (план §2.2).
+COPY --from=builder /ws/install /ws/install
+
+# Рабочая директория
+WORKDIR /ws
 RUN echo "source /opt/ros/${ROS_DISTRO}/setup.bash" >> /root/.bashrc && \
     echo "source /ws/install/setup.bash" >> /root/.bashrc
 
 # ROS2 и Zenoh environment variables
+ENV ROS_DOMAIN_ID=0
 ENV RMW_IMPLEMENTATION=rmw_zenoh_cpp
 ENV RUST_LOG=zenoh=info
+ENV ROS_AUTOMATIC_DISCOVERY_RANGE=LOCALHOST
+ENV ZENOH_CONFIG=/config/shared/zenoh_session_config.json5
 
 # Проверка доступности SPI устройства
 HEALTHCHECK --interval=15s --timeout=5s --start-period=10s --retries=3 \
@@ -99,5 +293,5 @@ HEALTHCHECK --interval=15s --timeout=5s --start-period=10s --retries=3 \
 # Точка входа - source ROS и запуск через startup script
 ENTRYPOINT ["/bin/bash", "-c", "source /ws/install/setup.bash && exec \"$@\"", "--"]
 
-# По умолчанию запускаем оба компонента через launch file
-CMD ["bash", "-c", "source /ws/install/setup.bash && ros2 launch led_matrix_compositor led_matrix_compositor_launch.py"]
+# По умолчанию — драйвер, композитор и лицо одним launch-файлом
+CMD ["bash", "-c", "source /ws/install/setup.bash && ros2 launch rob_box_animations face_led_matrix.launch.py"]

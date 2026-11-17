@@ -115,7 +115,7 @@ docker logs zenoh-router --tail 50
 
 **Ожидаемый вывод (успешный запуск):**
 ```
-INFO zenoh::api::loader: Successfully started plugin storage_manager
+INFO zenoh::api::loader: Successfully started plugin rest from "/libzenoh_plugin_rest.so"
 INFO zenoh::net::runtime::orchestrator: Listener tcp/[::]:7447#iface=eth0 started
 INFO zenoh::api::session: Session opened
 ```
@@ -257,4 +257,4 @@ fi
 **Дата:** 2025-11-10  
 **Связанные документы:** 
 - `ZENOH_ROUTER_PORT_CONFLICT_FIX_2025-11-10.md`
-- `scripts/diagnose_zenoh_port_conflict.sh`
+- `scripts/diagnostics/diagnose_zenoh_port_conflict.sh`

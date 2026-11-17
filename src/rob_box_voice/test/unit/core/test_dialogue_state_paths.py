@@ -1,0 +1,220 @@
+"""The dialogue's own state must outlive its container.
+
+Live on vision 29.08: `sqlite_db_path` was `~/.rob_box/voice.db`, which
+inside the voice-assistant container is `/root/.rob_box/voice.db`. Nothing
+is mounted there, so the file was created at 15:29 together with the
+container and held 69 turns, none older — every restart threw the whole
+conversation away while `/data/voice_memory.db` (5288 turns, on the
+volume) sat there being a different store that the LLM never reads.
+
+These are static config checks: no ROS 2, no container, no robot.
+"""
+
+from __future__ import annotations
+
+from pathlib import Path
+
+import pytest
+import yaml
+
+
+def _repo_root(start: Path) -> Path:
+    for parent in [start, *start.parents]:
+        if (parent / "docker").is_dir() and (parent / "src").is_dir():
+            return parent
+    return start.parents[5]
+
+
+REPO_ROOT = _repo_root(Path(__file__).resolve())
+COMPOSE = REPO_ROOT / "docker" / "sound" / "docker-compose.yaml"
+
+# Every config that sets the parameter — a fix in one and not the others is
+# how it drifted in the first place. PR-15 (#3711, part 15p): the dialogue
+# node is `dialog_node` (v2); the v1 node and its two YAML copies are gone.
+CONFIGS = (
+    REPO_ROOT / "docker" / "sound" / "config" / "voice_assistant" / "dialog_node.yaml",
+    REPO_ROOT / "src" / "rob_box_voice" / "config" / "dialog_node.yaml",
+)
+
+# Per ADR-0004 (issue #1004) every node reads its own `<node>.yaml`.
+PACKAGE_CONFIG_DIR = REPO_ROOT / "src" / "rob_box_voice" / "config"
+DEPLOYED_CONFIG_DIR = (
+    REPO_ROOT / "docker" / "sound" / "config" / "voice_assistant"
+)
+
+# `docker-compose.yaml` mounts `./data/voice` here for the voice-assistant.
+MOUNTED = "/data/"
+
+# VoiceMemory (mcp_server) owns this file. The harness must NOT share it:
+# both declare `waypoints` and `faq_items` with incompatible schemas
+# (harness: `waypoints.name` PRIMARY KEY; VoiceMemory: `map_id NOT NULL`
+# plus a foreign key to `maps`). `CREATE TABLE IF NOT EXISTS` would accept
+# the existing table silently and every insert would then fail at runtime.
+VOICE_MEMORY_DB = "/data/voice_memory.db"
+
+
+def _param(config: Path, name: str):
+    with config.open(encoding="utf-8") as fh:
+        loaded = yaml.safe_load(fh)
+    return loaded["dialog_node"]["ros__parameters"][name]
+
+
+@pytest.mark.parametrize("config", CONFIGS, ids=lambda p: p.name)
+def test_dialogue_db_lives_on_a_mounted_volume(config: Path) -> None:
+    path = _param(config, "sqlite_db_path")
+    assert path.startswith(MOUNTED), (
+        f"{config.name}: sqlite_db_path={path!r} is not under {MOUNTED} — "
+        "the container has no volume there, so the dialogue history dies "
+        "with the container"
+    )
+
+
+@pytest.mark.parametrize("config", CONFIGS, ids=lambda p: p.name)
+def test_dialogue_db_is_not_the_voice_memory_file(config: Path) -> None:
+    path = _param(config, "sqlite_db_path")
+    assert path != VOICE_MEMORY_DB, (
+        f"{config.name}: the harness store cannot share {VOICE_MEMORY_DB} "
+        "with VoiceMemory — `waypoints` and `faq_items` have incompatible "
+        "schemas in the two, and CREATE TABLE IF NOT EXISTS hides it until "
+        "the first insert fails"
+    )
+
+
+def test_compose_mounts_the_data_volume() -> None:
+    """`/data` has to actually be a volume, or the checks above prove nothing."""
+    content = COMPOSE.read_text(encoding="utf-8")
+    assert ":/data\n" in content, (
+        "docker-compose.yaml no longer mounts anything at /data — "
+        "sqlite_db_path=/data/... would be container-local again"
+    )
+
+
+# ---------------------------------------------------------------------------
+# ADR-0004: one YAML per node, and no monolith to drift against it
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "config_dir",
+    (PACKAGE_CONFIG_DIR, DEPLOYED_CONFIG_DIR),
+    ids=("package", "deployed"),
+)
+def test_no_multi_node_yaml_in_the_config_dir(config_dir: Path) -> None:
+    """No config file may configure more than one node.
+
+    ADR-0004 / issue #1004 replaced the monolithic `voice_assistant.yaml`
+    with per-node files, because nested `<node>:` sections in a shared file
+    become dotted parameters (`dialogue_node.llm_provider`) that
+    `get_parameter("llm_provider")` never finds — the node runs on defaults
+    and looks configured.
+
+    The deployment dropped it and three files say so in as many words
+    (`docker/vision/README.md`, `start_voice_assistant.sh`,
+    `voice_assistant_headless.launch.py`). The package kept shipping it
+    anyway, with a `wake_words` list eight spellings short of the live one —
+    the same drift that issue #1252 produced and #1734 paid for — while
+    `src/rob_box_voice/README.md` still told operators to edit it.
+    """
+    offenders = {}
+    for path in sorted(config_dir.glob("*.yaml")):
+        with path.open(encoding="utf-8") as fh:
+            loaded = yaml.safe_load(fh) or {}
+        if not isinstance(loaded, dict):
+            continue
+        nodes = [
+            key
+            for key, value in loaded.items()
+            if isinstance(value, dict) and "ros__parameters" in value
+        ]
+        if len(nodes) > 1:
+            offenders[path.name] = nodes
+    assert not offenders, (
+        "config files declaring more than one node (ADR-0004 forbids the "
+        f"monolith — split them per node): {offenders}"
+    )
+
+
+def test_every_package_config_matches_a_node_name() -> None:
+    """`<node>.yaml` must configure the node it is named after.
+
+    A file whose only section is a *different* node is loaded for nobody:
+    the launch file passes `config_dir/<node>.yaml` to that node alone.
+    """
+    mismatched = {}
+    for path in sorted(PACKAGE_CONFIG_DIR.glob("*_node.yaml")):
+        with path.open(encoding="utf-8") as fh:
+            loaded = yaml.safe_load(fh) or {}
+        nodes = [
+            key.lstrip("/")
+            for key, value in loaded.items()
+            if isinstance(value, dict) and "ros__parameters" in value
+        ]
+        if nodes and path.stem not in nodes:
+            mismatched[path.name] = nodes
+    assert not mismatched, (
+        f"config files that configure a node they are not named for: {mismatched}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# wake_words: one declaration
+# ---------------------------------------------------------------------------
+
+ALL_CONFIG_DIRS = (PACKAGE_CONFIG_DIR, DEPLOYED_CONFIG_DIR)
+
+
+def _node_params(path: Path):
+    with path.open(encoding="utf-8") as fh:
+        loaded = yaml.safe_load(fh) or {}
+    for key, value in loaded.items():
+        if isinstance(value, dict) and "ros__parameters" in value:
+            yield key.lstrip("/"), (value["ros__parameters"] or {})
+
+
+def test_wake_words_are_declared_exactly_once() -> None:
+    """No YAML may carry its own copy of the wake-word list.
+
+    There were seven declarations and three different lists:
+    `dialogue_node.py` and `stt_node.py` defaulted to 13 spellings, four
+    YAMLs carried 21, the e2e config carried the same stale 13 — so the
+    test rig could not hear eight spellings the robot could. The comment
+    at `dialogue_node.py` on the barge-in topic already names this exact
+    failure: «Дублирование параметра — ровно тот класс ошибки, который уже
+    случился с wake_words (issue #1252, два YAML, разъехались) и который и
+    породил issue #1734».
+
+    The robot profile's wake table (`docker/sound/config/wake_words.yaml`, ADR-0167 Ш1б) is the one list,
+    and its order matters — `strip_wake_word` alternates leftmost-first, so
+    «роб» must come after «роб бокс».
+    """
+    offenders = {}
+    for config_dir in ALL_CONFIG_DIRS:
+        for path in sorted(config_dir.glob("*.yaml")):
+            for node, params in _node_params(path):
+                if "wake_words" in params:
+                    offenders[f"{path.name}:{node}"] = params["wake_words"]
+    assert not offenders, (
+        "wake_words re-declared in YAML — the list lives in "
+        "the robot profile (docker/sound/config/wake_words.yaml) and nowhere "
+        f"else: {sorted(offenders)}"
+    )
+
+
+def test_node_defaults_use_the_canonical_wake_words() -> None:
+    """The node must default to the shared list, not a copy of it.
+
+    PR-15 (#3711, part 15p): the v1 dialogue node is gone; `dialog_node` (v2)
+    reads the wake words from `wake_words.yaml` through `rob_box_dialog.address`.
+    """
+    from voice_robot_wake import ROBOT_WAKE
+
+    assert ROBOT_WAKE, "the canonical list is empty"
+    # ADR-0167 Ш1б: stt_node берёт таблицу из профиля робота (своего списка нет).
+    for module, decl in (("stt_node.py", 'declare_parameter("profile_path", robot_profile.path())'),):
+        source = (
+            REPO_ROOT / "src" / "rob_box_voice" / "rob_box_voice" / module
+        ).read_text(encoding="utf-8")
+        assert decl in source, (
+            f"{module} declares wake_words with its own literal instead of "
+            "the shared table"
+        )

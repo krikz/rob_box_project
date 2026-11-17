@@ -1,0 +1,599 @@
+# Каталог фраз робота (ADR-0150 §5.4, ADR-0148): фразу об исполнении строит код по событию владельца.
+#
+# Ключ: {класс}.{статус}[.{причина}] (классы — rob_box_dialog.knowledge.ACTION_CLASSES) или особый ключ.
+# Значение — 1–3 варианта; слоты {name} заполняет код из данных события. Фигурные скобки — только слоты.
+# Один и тот же текст двух ключей — якорь YAML (&имя / *имя), а не копия.
+# Покрытие всех (класс, статус) держит test/test_phrases.py.
+
+# --- понимание и ход ---------------------------------------------------------------------------------------
+understand.timeout: ["Что-то я долго думаю — повтори, пожалуйста."]
+# В31 (решение Шифу 23.10): ход ждёт живого провайдера; ~6 с тишины — одна промежуточная фраза за ход.
+understand.progress: ["Секунду, думаю.", "Сейчас, соображаю.", "Дай подумать.", "Минутку, обдумываю."]
+media.progress: ["Секунду, музыка запускается."]
+# смена под играющую музыку (#4313): прежняя звучит, новая собирается
+media.progress_replace: ["Перестраиваю музыку, сейчас сменю."]
+media.timeout_replace: ["Новая музыка ещё собирается, пока играет прежняя."]
+# Потолок хода истёк, провайдер ещё молчит / цепочка провайдеров отказала: имя провайдера называет код.
+understand.ceiling: ["{provider} так и не ответил — я перестал ждать. Повтори, пожалуйста."]
+understand.provider_failed: ["{provider} не ответил — повтори, пожалуйста."]
+# Модель выбрала «промолчать» на адресованную реплику (решение Шифу 22.10): роботу не молчать, а промычать.
+understand.nothing_to_say: ["Хм… не знаю, что сказать.", "Не расслышал, повтори?", "Эээ… даже не знаю, что ответить.",
+                            "Хм, я задумался и ничего не придумал. Повтори?"]
+# Модель и после повтора ответила только анимацией (её не слышно) на адресованную реплику: анимация
+# исполнена, а код говорит коротко — не молчание. Выбор кодом, без повтора подряд.
+understand.silent_answer: ["Угу, я тут.", "Слышу, я здесь.", "Ага, я на связи."]
+# Голое «робот» подхватило из бэклога просьбу слушать и не встревать (knowledge.LISTEN_ONLY_FORMS): код
+# подтверждает коротко, LLM не зовётся.
+understand.listening: ["Слушаю."]
+# Tier-1 «новая сессия» подтверждается вслух (решение Шифу 22.10); выбор кодом, без повтора подряд.
+tier1.new_session: ["Ок, забыл всё — начинаем сначала!", "Память чиста, как свежий лист. Поехали!",
+                    "Стёр всё подчистую. Привет, незнакомец!", "Был разговор — и нет разговора. Начнём заново!",
+                    "Всё забыл, хоть режь. Слушаю!", "Ctrl+Z на всю беседу. Что дальше?",
+                    "Перезагрузил голову. Давай по новой!", "Ничего не помню, и это прекрасно. Начинаем!"]
+# Tier-1 «повтори»: повторять нечего - в этой сессии робот ещё ничего не сказал вслух.
+tier1.repeat_nothing: ["Я пока ничего не говорил — повторять нечего."]
+
+# --- провайдеры (§8): одна фраза на смену состояния ----------------------------------------------------------
+provider.exhausted.quota: ["Всё, братан, приплыли — у {subject} кончились деньги. {next}"]
+provider.exhausted.network: ["У {subject} пропала сеть. {next}"]
+provider.exhausted.timeout: ["{subject} не отвечает. {next}"]
+provider.exhausted.auth: ["{subject} меня не пускает — ключ не подходит. {next}"]
+provider.exhausted.error: ["У {subject} ошибка. {next}"]
+provider.switched: ["Переключаюсь на {provider}."]
+provider.switched.stt: ["Перехожу на {provider} для распознавания речи."]
+# Кто именно сломался: вид называется, чтобы отказ распознавания не звучал как отказ мозга.
+provider.subject.llm: ["{provider}"]
+provider.subject.stt: ["{provider} (распознавание речи)"]
+provider.subject.tts: ["{provider} (озвучка)"]
+provider.subject.music_gen: ["{provider} (генерация музыки)"]
+# Смена голоса (knowledge.VOICE_DONE / VOICE_FAILED): слоты строит тул из каталога голосов - название вслух, не id
+voice.applied: ["Говорю голосом {voice_name}."]
+voice.applied_default: ["Говорю своим обычным голосом."]
+voice.unavailable: ["Голос {requested_name} недоступен, остаюсь на {voice_name}."]
+voice.unavailable_default: ["Голос {requested_name} недоступен, остаюсь на обычном."]
+voice.rejected: ["Не получилось сменить голос: провайдер {provider_label} не подходит."]
+voice.already_default: ["Я и так говорю своим обычным голосом."]
+voice.provider_same: ["Я уже говорю через {provider_label}."]
+voice.timeout: ["Не дождался подтверждения смены голоса, не знаю, какой сейчас."]
+provider.no_fallback: ["Запасного нет — потерпи, пока вернётся."]
+
+# --- классы действий (§5.1) ----------------------------------------------------------------------------------
+query.rejected: ["Не нашёл ответа."]
+# отказ ЧТЕНИЯ памяти кодом до владельца (memory_search/memory_context, knowledge.UNBOUND_REASONS): на
+# «что ты обо мне помнишь?» - не «запоминать не буду» записи и не «не нашёл ответа»
+query.rejected.no_person: ["Не узнаю твой голос, поэтому не знаю, что о тебе помню."]
+query.rejected.voice_unconfirmed: ["Голос знакомый, но не уверен чей — не буду гадать, что помню."]
+# подхват: автор фразы не узнан, а с голосом без имени беседа идёт давно (voice_warmth, решение Шифу 05.11)
+query.rejected.ask_intro: ["Не узнал, кто это спросил. Представься — и я поищу."]
+# ...у чата Telegram и ТАРС (knowledge.NO_PERSON_UNVOICED_REASON): их голос никто не узнаёт - без «голоса»
+query.rejected.no_person_unvoiced: ["Не знаю, кто ты, поэтому не знаю, что о тебе помню."]
+# отказ ЧТЕНИЯ по причине тула: поиск в интернете не ответил - это не «ничего не нашёл»; info по
+# выдуманному id трека (update/delete того же - music.library_fail.unknown_track, один текст)
+query.rejected.search_unavailable: ["Не смог проверить в интернете: поиск сейчас не ответил."]
+query.rejected.unknown_track: &unknown_track ["Не знаю такого трека в библиотеке. Попроси показать список или найти по названию."]
+# пульт по лицам (people_list, person_photo, #4469): отказ владельца лиц с причиной, не «не нашёл ответа»
+query.rejected.person_not_found: ["Лица с таким id в базе нет."]
+query.rejected.ambiguous_id: ["Такому id отвечает больше одного лица. Нужны все 8 знаков из списка."]
+query.rejected.bad_id: ["id лица — ровно 8 знаков 0-9a-f из списка лиц."]
+query.rejected.bad_filter: ["Такого фильтра нет: бывает все, без имени или за сегодня."]
+query.rejected.exhibition_mode: ["В режиме выставки снимки лиц не отдаю."]
+query.rejected.no_snapshot: ["У этого лица нет снимка."]
+query.rejected.owner_unavailable: ["База лиц на Vision Pi не отвечает."]
+query.timeout: ["Не дождался ответа — поиск не успел."]
+# Страховка от молчания: запрос выполнен, речь модели не прошла проверку и после повтора — говорит код.
+query.voices_summary: ["Голосов у меня так: {summary}. Назвать какие-нибудь?"]
+# ...по данным списка библиотеки (music_library list): число и 2–3 названия, а не общая фраза
+query.library_summary: ["Треков в библиотеке: {total}. Например: {names}."]
+# ...по данным поиска в библиотеке (music_library search, n707): сколько нашлось и 2–3 названия; ничего - так и сказать
+query.library_found: ["По запросу «{query}» нашёл треков: {total}. Например: {names}."]
+query.library_none: ["По запросу «{query}» в библиотеке ничего нет."]
+# ...по карточке трека (music_library info, n707): название и что о нём известно
+query.library_info: ["Это «{title}»: {details}."]
+# ...любой другой query: названия из данных (title/name), когда ни своей фразы, ни фразы тула нет
+query.data_names: ["Вот что нашлось: {names}."]
+# ...по данным памяти (memory_search/memory_context): 2–3 факта как есть, а не общая фраза
+query.memory_facts: ["Вот что нашёл в памяти: {facts}."]
+# ...по данным каталога звуков (get_sound_info без аргументов): сколько звуков и по каким категориям
+query.sounds_summary: ["Звуков у меня {total}: {names}. Назвать какие-нибудь?"]
+# ...по данным поиска в сети (search_web n908): текст первой строки выдачи как есть (ужимает fit_speech)
+query.web_found: ["Вот что нашёл в сети: {text}."]
+# ...по данным container_status (#4295, ТАРС): сколько контейнеров в отчёте и сколько они работают (рестартов и нагрузки
+# в данных может не быть - их фраза не называет)
+query.containers_summary: ["Контейнеров в отчёте — {total}, работают от {shortest} до {longest}."]
+# Данные получены, слов по ним нет: причины фраза не называет («слишком длинно» - только command.too_long)
+query.fallback_generic: ["Данные получил, а ответ у меня не сложился. Спроси ещё раз?"]
+# Команда модели невалидна и после повтора: исполнять нечего - честная фраза, а не тишина на адресованное.
+command.invalid_generic: ["Не понял, как это сделать. Скажи ещё раз?"]
+# ...по причине: модель поняла, но ответ длиннее предела - «не понял» было бы неправдой. Одну длинную речь
+# сюда не доводят: ход компактнее, потом её ужимает код; здесь - сегмент выступления или речь рядом с другим
+# нарушением.
+command.too_long: ["Ответ вышел слишком длинным — спроси покороче, пожалуйста."]
+# ...модель пообещала действие с музыкой или громкостью без тула и после повтора: обещание не звучит, код
+# говорит правду по состоянию (turn.music_promise_key): ход сам выключил музыку / музыка не играет / играет, а обещание
+# не исполнено.
+command.music_promise.stopped: ["Музыку я уже выключил."]
+command.music_promise.silent: ["Сейчас музыка не играет."]
+command.music_promise.playing: ["Сделать с музыкой ничего не получилось — скажи ещё раз, что нужно."]
+# ...то же про голос, темп и тон речи: тула не было, говорю прежним голосом и темпом.
+command.voice_promise: ["Голос и темп я не менял — скажи ещё раз, что нужно."]
+# ...то же про поиск, а поиска в этом ходе не было (был - код говорит по его данным).
+command.search_promise: ["Поиск я не запускал — скажи ещё раз, что найти."]
+# ...то же про сделанное: речь говорит «удалил», «сохранил точку», «поехал», а тула в команде нет
+# (knowledge.DONE_CLAIMS, #4391: «Готово, хил-окно удалена.» без delete_waypoint) - ничего не сделано, так и говорим.
+command.done_claim: ["Этого я не сделал — скажи ещё раз, что нужно."]
+
+# --- вереница действий (ADR-0165, knowledge.CHAIN_*): план до шагов и итог по исходам — фразы кода (turn.run_chain) -
+# План кода — до первого шага: что робот сейчас сделает, без слов о сделанном (тест done_claims). {items} — имена
+# шагов словами аргументов вызова.
+chain.plan.generic: ["Делаю: {items}."]
+chain.plan.delete: ["Удаляю: {items}."]
+chain.plan.save: ["Запоминаю: {items}."]
+chain.plan.trip: ["Еду: {items}."]
+chain.plan.music: ["Включаю: {items}."]
+# Итог — по исходам шагов: сделано / не сделано (причину говорит фраза владельца) / не начинал.
+chain.did.generic: ["Сделал: {items}."]
+chain.did.delete: ["Удалил: {items}."]
+chain.did.save: ["Запомнил: {items}."]
+chain.did.trip: ["Доехал: {items}."]
+chain.did.music: ["Включил: {items}."]
+chain.missed.generic: ["Не вышло: {items}."]
+chain.missed.delete: ["Не удалил: {items}."]
+chain.missed.save: ["Не запомнил: {items}."]
+chain.missed.trip: ["Не доехал: {items}."]
+chain.missed.music: ["Не включил: {items}."]
+chain.skipped: ["Не стал: {items}."]
+# поездка не удалась — где робот, неизвестно, остаток отменён (ADR-0165 §10)
+chain.motion_failed: ["Дальше не еду: {items}."]
+chain.done: ["Готово."]
+chain.stopped: ["Остановился."]
+chain.timeout: ["Не успел за отведённое время."]
+# вереница длиннее лимита своего типа (поручение, маршрут) — не начинается
+chain.too_long: ["Это слишком долго за один раз — давай по частям."]
+# Под играющим сетом человек просит сменить тему, а стиль не назван и тула смены нет (#4347): тему код не угадывает.
+command.theme_switch_failed: ["Тему сета я не сменил — скажи ещё раз, в какой стиль свернуть."]
+# Счёт до N, урезанный моделью, строит код (counting.full_count); дальше COUNT_MAX не считает и говорит об этом.
+count.capped: ["Досчитаю до {top} — дальше слишком долго."]
+command.state_claim: ["Про {subjects} данных у меня нет — утверждать не буду."]
+# Речь, оборванную кодом посреди предложения (перечень голосов), кончает эта пометка: названо не всё.
+command.speech_cut: ["и так далее."]
+
+local.done: &done ["Готово."]
+local.rejected: ["Не вышло."]
+local.timeout: ["Не дождался подтверждения — не знаю, вышло ли."]
+# память о людях (knowledge.PERSON_SCOPED_TOOLS / DONE_EVIDENCE): отказ без собеседника и успех без saved
+local.rejected.no_person: ["Не узнаю твой голос, поэтому не запомню."]
+# ...у чата Telegram и ТАРС (knowledge.NO_PERSON_UNVOICED_REASON): их голос никто не узнаёт - без «голоса»
+local.rejected.no_person_unvoiced: ["Не знаю, кто ты, поэтому не запомню."]
+# голос узнан, а чей - не подтверждено (спор/гипотеза, speaker_wire.NAME_UNCONFIRMED): без вопроса «ты Саша?»
+# (решение Шифу 26.10) и без неправды «не узнаю голос»
+local.rejected.voice_unconfirmed: ["Голос знакомый, но не уверен чей — запоминать не буду."]
+local.rejected.ask_intro: ["Не узнал, кто это сказал. Представься — и я запомню."]
+local.rejected.speaker_changed: ["Говорил другой человек, поэтому не запомню."]
+local.rejected.no_evidence: ["Память не подтвердила запись, так что не запомнил."]
+# пульт по лицам (name_person, #4469): успех по данным владельца лиц (id, stored_name из базы, previous_name)
+people.named: ["Готово: лицо {id} теперь {stored_name}."]
+people.renamed: ["Готово: лицо {id} (было «{previous_name}») теперь {stored_name}."]
+# пульт по лицам (name_person, #4469): причину говорит владелец лиц (people_service), фразу - код
+local.rejected.person_not_found: ["Лица с таким id в базе нет — имя не записал."]
+local.rejected.ambiguous_id: ["Такому id отвечает больше одного лица — имя не записал. Нужны все 8 знаков из списка."]
+local.rejected.bad_id: ["id лица — ровно 8 знаков 0-9a-f из списка лиц. Имя не записал."]
+local.rejected.bad_name: ["Такое имя не записываю: до 40 знаков, буквы, цифры, пробел, точка, дефис, апостроф."]
+local.rejected.owner_unavailable: ["База лиц на Vision Pi не отвечает — имя не записал."]
+# пульт по лицам (find_similar, merge_people, #4469): коллаж и склейка; текст «готово» и вопроса строит код тула
+# из данных владельца лиц (поля summary, question), здесь только оболочка и отказы с причиной
+people.similar: ["{summary}"]
+people.merged: ["{summary}"]
+people.merge_kept: ["Не склеиваю, записи остались как были."]
+local.rejected.needs_merge_confirmation: ["{question}"]
+# публикация в топик (#4516, шаг 2а): «Опубликовал ...» и причину отказа строит код тула (поля summary, question)
+publish.done: ["{summary}"]
+publish.kept: ["Не публикую, ничего не отправлено."]
+local.rejected.needs_publish_confirmation: ["{question}"]
+local.rejected.topic_forbidden: ["{summary}"]
+local.rejected.type_forbidden: ["{summary}"]
+local.rejected.no_such_topic: ["{summary}"]
+local.rejected.no_endpoints: ["{summary}"]
+local.rejected.ambiguous_type: ["{summary}"]
+local.rejected.bad_fields: ["{summary}"]
+local.rejected.bad_count: ["{summary}"]
+local.rejected.bad_topic: ["{summary}"]
+local.rejected.publish_failed: ["{summary}"]
+local.rejected.ros_unavailable: ["{summary}"]
+local.rejected.type_unavailable: ["{summary}"]
+local.rejected.exhibition_mode: ["В режиме выставки снимки лиц не отдаю, коллаж не собрать."]
+local.rejected.collage_failed: ["Коллаж собрать не удалось — склеивать не из чего."]
+local.rejected.no_collage: ["Коллажа нет: сначала скажи «найди похожих» про нужное лицо, потом выбери номера."]
+local.rejected.collage_mismatch: ["Последний коллаж был про другое лицо. Сделай «найди похожих» для этого лица заново."]
+local.rejected.bad_number: ["Такого номера на коллаже нет. Назови номера с картинки."]
+local.rejected.bad_selection: ["Не понял выбор: назови номера с коллажа («1, 3, 5») или «все, кроме 2»."]
+local.rejected.bad_ids: ["Нечего склеивать: нужны от одной до двенадцати записей."]
+local.rejected.same_person: ["Запись нельзя склеить саму с собой."]
+local.rejected.merge_failed: ["Склеить не вышло, записи остались как были."]
+local.rejected.merge_unconfirmed: ["База не подтвердила склейку, так что склеенным не считаю."]
+# set_speed / set_pitch: у активного провайдера нет такой регулировки - тул отказал с причиной
+# {speed,pitch}_unsupported, голос не менялся; без этих ключей говорилось общее «Не вышло.»
+local.rejected.speed_unsupported: ["У этого голоса скорость не регулируется — речь не изменилась."]
+local.rejected.pitch_unsupported: ["У этого голоса тон не регулируется — голос не изменился."]
+# «Говори нормально» (Tier-1 prosody_normal, knowledge.PROSODY_NORMAL_KIND): оба сброса удались - одна фраза; один
+# отказал - фразы исходов тулов (speed.normal / pitch.normal для удавшегося, local.rejected.* для отказавшего)
+prosody.normal: ["Говорю как обычно."]
+speed.normal: ["Скорость речи обычная."]
+pitch.normal: ["Тон голоса обычный."]
+# Шаг темпа и тона (Tier-1 voice_step и тот же тул из LLM): фраза по действию из результата тула; ось уже на
+# границе (причина at_limit, записи не было) - так и говорим, а не «Говорю быстрее» без перемены
+speed.faster: ["Говорю быстрее."]
+speed.slower: ["Говорю медленнее."]
+pitch.lower: ["Говорю ниже."]
+pitch.higher: ["Говорю выше."]
+speed.faster.at_limit: ["Быстрее уже некуда — скорость на пределе."]
+speed.slower.at_limit: ["Медленнее уже некуда — скорость на пределе."]
+pitch.lower.at_limit: ["Ниже уже некуда — голос и так самый низкий."]
+pitch.higher.at_limit: ["Выше уже некуда — голос и так самый высокий."]
+
+media.done: &request_ok ["Включаю музыку."]
+media.rejected: &request_fail ["Не получилось включить музыку."]
+media.timeout: &not_started ["Музыка пока не заиграла."]
+# play_sound (knowledge.TOOL_PHRASES): исход - SoundEvent владельца звука (sound_node), причина - SoundEvent.reason.
+# Успех молчит (knowledge.SILENT_DONE_TOOLS): звук сам себе доказательство - кроме звукоподражания (ниже).
+sound.skipped: ["Звук {sound} не сыграл."]
+sound.skipped.busy: ["Звук {sound} не сыграл: другой звук ещё играет."]
+sound.skipped.voice_stream: ["Звук {sound} не сыграл: сейчас идёт голос оператора."]
+sound.skipped.not_found: ["Звука {sound} нет в звуковом пакете."]
+sound.skipped.error: ["Звук {sound} не сыграл: ошибка воспроизведения."]
+sound.skipped.superseded: ["Звук {sound} не сыграл: следом попросили другой."]
+sound.timeout: ["Не дождался ответа от звука {sound} — не знаю, сыграл ли."]
+# Звукоподражание к тихому звуку (идея Шифу 26.10): knowledge.SOUND_IMITATIONS - звук каталога -> ключ; успех
+# звука без записи в таблице тихий. Говорит код фразой исхода play_sound, а не LLM.
+sound.imitation.siren: ["Виу-виу!"]
+sound.imitation.bell: ["Дзынь-дзынь!"]
+sound.imitation.chime: ["Динь-дон!"]
+sound.imitation.bubbles: ["Буль-буль-буль!"]
+sound.imitation.whoosh: ["Вжух!"]
+sound.imitation.impact: ["Бабах!"]
+
+motion.started: ["Еду к {target}."]
+motion.done: ["Приехал."]
+motion.rejected: ["Не могу поехать."]
+motion.rejected.mapping_active: ["Идёт картографирование. Сначала скажи «заверши картографирование»."]
+motion.rejected.no_motors: ["Не могу поехать — моторы выключены."]
+motion.rejected.not_asked: ["Ты не просил ехать, остаюсь на месте. Если надо поехать, скажи «поезжай»."]
+motion.timeout: ["Не доехал — время вышло."]
+motion.cancelled: ["Остановился."]
+# move_direction: причина отказа - вид исхода Nav2 (``outcome`` тула, #4344); точки у него нет
+motion.rejected.aborted: ["Не доехал: навигация прервалась."]
+motion.rejected.canceled: ["Не доехал: движение отменили."]
+motion.rejected.timeout: ["Не доехал — время вышло."]
+motion.rejected.unknown_status: ["Не уверен, что доехал: навигация не подтвердила прибытие."]
+# Итог поездки к точке (#4344, knowledge.NAV_TOOL_PHRASES): по данным исхода тула, {target} - точка словами.
+motion.already_there: ["Я уже на точке {target}."]
+motion.arrived: ["Приехал на точку {target}."]
+motion.not_reached.aborted: ["Не доехал до точки {target}: навигация прервалась."]
+motion.not_reached.canceled: ["Не доехал до точки {target}: движение отменили."]
+motion.not_reached.timeout: ["Не доехал до точки {target}: время вышло."]
+motion.not_reached.rejected: ["Не доехал до точки {target}: навигация не приняла цель."]
+motion.not_reached.no_response: ["Не доехал до точки {target}: навигация не ответила."]
+motion.not_reached.server_unavailable: ["Не доехал до точки {target}: навигация недоступна."]
+motion.not_reached.unknown_status: ["Не уверен, что доехал до точки {target}: навигация не подтвердила прибытие."]
+motion.not_reached.unknown_target: ["Не знаю точку {target}."]
+motion.not_reached.localization_lost: ["Не уверен, что доехал до точки {target}: потерял, где нахожусь на карте."]
+motion.not_reached.lock_held: ["Руль занят, не поеду к точке {target}."]
+motion.not_reached.lock_unknown: ["Не вижу замок, не поеду к точке {target}."]
+# Стоп навигации (#3789, knowledge.STOP_TOOL_PHRASES): по виду отмены из данных тула, а не «Приехал.» класса.
+motion.stop.confirmed: ["Останавливаюсь."]
+motion.stop.idle: ["Я и так стою."]
+motion.stop.failed: ["Не уверен, что остановился: навигация не подтвердила отмену."]
+# Картография (#4363, knowledge.MAP_TOOL_PHRASES): по данным исхода тула, {map_name} - имя карты, {active_map} - карта, что пишется.
+mapping.start: ["Начал новую карту «{map_name}». Води меня по комнатам, потом скажи «заверши картографирование»."]
+mapping.start_unnamed: ["Начал новую карту. Води меня по комнатам, потом скажи «заверши картографирование»."]
+mapping.start_existing: ["Продолжаю писать существующую карту. Когда объедем, скажи «заверши картографирование»."]
+mapping.continued: ["Продолжаю картографирование. Когда объедем, скажи «заверши картографирование»."]
+mapping.finished: ["Карта «{map_name}» сохранена."]
+mapping.finished_unnamed: ["Карта сохранена."]
+mapping.loaded: ["Загрузил карту «{map_name}»."]
+mapping.loaded_unnamed: ["Загрузил карту."]
+mapping.optimized: ["Карта оптимизирована."]
+mapping.optimize_partial: ["Карту оптимизировал не полностью: часть шагов не удалась."]
+mapping.failed: ["С картой не получилось."]
+mapping.failed.mapping_active: ["Карта «{active_map}» уже пишется. Когда объедем, скажи «заверши картографирование»."]
+mapping.failed.mapping_active_unnamed: ["Карта уже пишется. Когда объедем, скажи «заверши картографирование»."]
+mapping.failed.service_error: ["С картой не получилось: сервис карт отказал."]
+mapping.failed.unavailable: ["С картой не получилось: сервис карт недоступен."]
+mapping.failed.timeout: ["С картой не получилось: сервис карт не ответил вовремя."]
+mapping.failed.no_response: ["С картой не получилось: сервис карт не ответил."]
+mapping.failed.map_not_found: ["Карты «{map_name}» нет, ничего не загружал."]
+mapping.failed.map_lookup_failed: ["Не смог проверить карту «{map_name}», ничего не загружал."]
+# #4392: база карт одна - карту с другим именем загрузить нельзя, {active_map} - карта, что в базе.
+mapping.failed.map_not_stored: ["Карту «{map_name}» не храню: база карт у меня одна — «{active_map}». Ничего не загружал."]
+mapping.failed.map_not_stored_unnamed: ["Карту «{map_name}» не храню: база карт у меня одна, и это не она. Ничего не загружал."]
+mapping.deleted: ["Забыл карту «{map_name}»."]
+mapping.delete.in_db: ["Карту «{map_name}» удалить не могу: она у меня в базе одна, её можно только перезаписать новой картой."]
+mapping.delete.not_found: ["Карты «{map_name}» у меня нет, удалять нечего."]
+mapping.delete.failed: ["Не смог удалить карту «{map_name}»."]
+
+identity.done: ["Запомнил тебя, {name}."]
+# исход register_speaker по SpeakerResult владельца — причина в ключе, нет ключа — общая фраза.
+identity.done.already_known: ["Я тебя и так знаю, {name}."]
+# Решение Шифу 27.10: голос уверенно узнан, человек назвался другим именем — второго профиля нет, профиль
+# переименован (register_speaker done{renamed}). Мы знакомы; тон по настроению — вариант выбирает код. Старое имя не
+# звучит: похожий голос может быть чужим, а чужое имя вслух - утечка.
+identity.done.renamed: ["Мы знакомы — я тебя узнал по голосу. Буду звать тебя {name}.",
+                        "А мы ведь уже знакомы: голос твой я помню. Теперь зову тебя {name}.",
+                        "Голос-то знакомый — мы уже встречались. Хорошо, теперь ты у меня {name}.",
+                        "Новое имя, а голос знакомый — меня не проведёшь! Ладно, буду звать тебя {name}.",
+                        "Узнал по голосу — мы знакомы. Имя поправил: теперь ты {name}."]
+identity.rejected: ["Не смог запомнить голос."]
+identity.rejected.too_short: ["Голос не запомнил: фраза слишком короткая."]
+# Гейт register_speaker - голос уверенно узнан, а имя в реплике человек себе не давал («запомни, что Саша
+# любит чай» голосом Нины). Профиль не тронут. Чьим голосом сказано, вслух не называем (как у renamed).
+identity.rejected.not_self_introduction: ["Имя {received} к твоему голосу не записываю: себя ты так не называл, а голос твой я уже знаю."]
+# переименование по old_name (register_speaker(old_name=…)) - голос уверенно узнан, а просят переименовать ДРУГУЮ
+# запись («зови меня Тамара» голосом Нины + old_name=Саша). Профиль не тронут; имена вслух не звучат: чужое имя - утечка.
+identity.rejected.not_own_profile: ["Чужую запись не переименовываю: по голосу ты другой человек."]
+identity.timeout: ["Не дождался, пока голос запишется."]
+identity.merged: ["Понял, это ты. Объединил записи — в памяти ты {name}."]
+identity.kept_apart: ["Понял, вы разные люди. Запомню обоих."]
+identity.merge_unclear: ["Не понял ответ — пока оставлю записи раздельно."]
+identity.retry_voice: ["Только голос твой я запомнить не успел — скажи, пожалуйста, ещё пару слов."]
+# Решение Шифу 26.10: на «ты меня узнал?» отвечает код по голосу ЭТОЙ фразы (knowledge.RECOGNIZED_PHRASE,
+# ): ключ — speaker.recognized.<состояние имени speaker_wire.NAME_*> или .unheard (SpeakerResult фразы не пришёл).
+# Спорный голос и гипотеза — без вопроса «ты Саша?» и без имени кандидата.
+# Без «да»/«нет» в начале: на «ты меня НЕ узнал?» они двусмысленны.
+speaker.recognized.confirmed: ["Узнал — ты {name}."]
+speaker.recognized.tentative: &recognized_unconfirmed ["Голос знакомый, но не уверен, чей."]
+speaker.recognized.contested: *recognized_unconfirmed
+speaker.recognized.nameless: ["Голос твой помню, а имени не знаю."]
+speaker.recognized.unknown: ["По голосу пока не узнаю."]
+speaker.recognized.unheard: ["Пока не уверен, кто ты: голос этой фразы не успел разобрать."]
+# Решение Шифу 21.10: один голос — одна личность; имя меняется фразой; подтверждение — шаблоном нормальной длины.
+identity.same_voice: ["Не обманывай — по голосу ты {known}. Хочешь, чтобы я звал тебя иначе, скажи: «зови меня {name}»."]
+identity.one_voice: ["Голос-то один и тот же — значит, и человек один, второй записи не будет. Хочешь другое имя — скажи: «зови меня {name}»."]
+identity.same_voice_ok: ["Так я и думал, {name}."]
+identity.renamed: ["Хорошо, теперь зову тебя {name}."]
+identity.name_same: ["Я и так зову тебя {name}."]
+identity.template: ["Меня зовут {name}, и это мой голос, запомни его."]
+identity.say_template: ["По короткой фразе голос не узнаю. Скажи целиком: «{template}»"]
+identity.voice_check_failed: ["Голос не совпал с записью — ничего не меняю."]
+
+memory.saved: ["Запомнил: {fact}."]
+
+speak_aloud.done: ["Озвучил ({seconds} с)."]
+speak_aloud.rejected: ["Не озвучил: динамики заняты."]
+speak_aloud.cancelled: ["Не озвучил: перебили."]
+speak_aloud.rejected.unsupported_script: ["Не озвучил: выбранный голос не читает эти буквы."]
+speak_aloud.rejected.operator_hold: ["Не озвучил: оператор занял робота."]
+speak_aloud.lost: ["Не знаю, договорил ли: нет события от динамиков."]
+speak_aloud.timeout: ["Не знаю, прозвучало ли: итога от динамиков нет."]
+
+# --- ход процесса в чате Telegram: подпись шага, чат правит одно сообщение (chats.ChatPorts, #4243) --------------
+chat.progress.thinking: ["Думаю…"]
+chat.progress.executing: ["Делаю…"]
+# Шаги хода по тулу (стрим в индикатор чата, #4243): подпись тула, иначе подпись его класса; параметры тула сюда не идут.
+chat.tool.search_web: ["Ищу в интернете…"]
+chat.tool.faq_search: ["Ищу в справке…"]
+chat.tool.memory_search: ["Вспоминаю…"]
+chat.tool.memory_save: ["Запоминаю…"]
+chat.tool.get_battery_level: ["Смотрю заряд…"]
+chat.tool.get_current_time: ["Смотрю время…"]
+chat.tool.read_logs: ["Читаю журнал…"]
+chat.tool.play_animation: ["Показываю лицом…"]
+chat.tool.people_list: ["Смотрю лица…"]
+chat.tool.person_photo: ["Достаю снимок…"]
+chat.tool.name_person: ["Записываю имя…"]
+chat.tool.find_similar: ["Ищу похожих и собираю коллаж…"]
+chat.tool.merge_people: ["Склеиваю записи…"]
+chat.tool.topic_publish: ["Публикую в топик…"]
+chat.step.query: ["Смотрю данные…"]
+chat.step.action.local: ["Настраиваю…"]
+chat.step.action.media: ["Занимаюсь музыкой…"]
+chat.step.action.motion: ["Еду…"]
+chat.step.action.identity: ["Запоминаю человека…"]
+chat.step.action.speak_aloud: ["Говорю вслух…"]
+chat.step.outcome.done: ["{step} - готово"]
+chat.step.outcome.failed: ["{step} - не вышло"]
+
+# --- пульт робота из чата Telegram (chats.ChatPorts): что робот сделал — фраза кода в чат ---------------
+remote.perform.song: ["Пою на роботе: «{line}»"]
+remote.perform.rap: ["Читаю рэп на роботе: «{line}»"]
+remote.perform.tale: ["Рассказываю на роботе: «{line}»"]
+remote.perform.poem: ["Читаю стихи на роботе: «{line}»"]
+remote.perform.edit: ["Добавил к выступлению робота: «{line}»"]
+remote.perform.backing: ["Добавил бит к выступлению робота."]
+remote.show: ["Показываю на роботе: {face}."]
+# лицо не показано (knowledge.REMOTE_SHOW_REFUSALS): фраза по причине, а не «Показываю»
+remote.show.rejected.operator_hold: &remote_held ["Не сделал на роботе: оператор занял робота."]
+remote.show.rejected.silenced: ["Не показал на роботе: у него тишина, рот заклеен. Снять — «Робот, говори»."]
+# просили сделать роботом, а команда и после повтора ничего на нём не сделала (knowledge.VIOLATION_REMOTE_OWED):
+# факт кода рядом со словами модели, а не вместо них (справку не подменяем)
+remote.nothing_done: ["На роботе ничего не сделал."]
+# отказ хоста выступления по причине (turn.hand_perform); причины без ключа — local.rejected «Не вышло.»
+perform.rejected.operator_hold: *remote_held
+
+perform.backing_started: ["Поехали!"]
+perform.finished: *done
+perform.no_backing: ["Бит не завёлся — читаю без него."]
+perform.no_backing.quota: ["Всё, братан, приплыли — бит сегодня без денег, читаю так."]
+perform.no_backing.network: ["Бит не скачался — сети нет, читаю без него."]
+perform.no_backing.timeout: ["Бит не успел — читаю без него."]
+perform.no_backing.error: ["С битом ошибка — читаю без него."]
+perform.ask_replace_music: ["Сейчас играет {title}, выключить и зачитать?"]
+# правка выступления опоздала: куплет, с которого просили менять, уже звучит (ADR §16, риск MERGE в PENDING)
+perform.edit_rejected: ["Этот куплет уже пошёл — дочитаю как было."]
+# сторож выступления: чтение не началось или встало, речи нет дольше knowledge.PERFORM_SILENCE_MAX_S — снято
+perform.stalled: ["Чтение встало — выступление снимаю."]
+
+# --- план (§5.6.4): «в очереди» по PlanEvent queued{after, eta} — фразу строит код (plan.plan_events) -----------
+plan.queued: ["{verb} после {after}."]
+plan.queued.eta: ["{verb} после {after} — примерно через {eta} с."]
+# Действие ждало своей очереди дольше потолка (knowledge.PLAN_WAIT_MAX_S) и не исполнено — говорит код, не молчит.
+plan.timeout: ["Не дождался своей очереди — это не сделал."]
+plan.verb.speech: ["Отвечу"]
+plan.verb.perform: ["Начну"]
+plan.verb.expression: ["Покажу"]
+plan.verb.sfx: ["Сыграю звук"]
+plan.verb.music: ["Поставлю"]
+plan.verb.motion: ["Поеду"]
+plan.verb.query: ["Посмотрю"]
+plan.after.speech: ["того, как договорю"]
+plan.after.perform: ["выступления"]
+plan.after.sfx: ["этого звука"]
+plan.after.backing: ["этого бита"]
+plan.after.track: ["этого трека"]
+plan.after.motion: ["того, как доеду"]
+
+# --- музыка (тексты rob_box_dialog_host.media_phrases и media_router — по ссылке, как есть) -------------------
+music.dj_started: ["Включаю диджей-сет."]
+music.dj_started_persona: ["Я {persona}, включаю сет."]
+music.theme: ["Тема — {theme}."]
+music.request_ok: *request_ok
+music.request_ok_named: ["Включаю {name}."]
+music.play_ok: ["Ставлю «{title}»."]
+music.piece: ["Ставлю {title}."]
+music.piece_melody: ["Ставлю {title} — мелодией, нот для полной аранжировки нет."]
+music.piece_replacement: ["«{asked}» не нашёл. Ставлю ближайшее: {title}."]
+music.instrument_played: ["Играю на {played}."]
+music.instrument_no_pack: ["Для {asked} у меня нет пака — играю своим звуком."]
+music.instrument_neighbors: ["Для {asked} у меня нет пака, могу сыграть {others} — играю на {played}."]
+music.nothing_playing: ["Сейчас ничего не играет."]
+music.pending: ["Музыку поставил, она ещё не заиграла."]
+music.source.piece: ["пьеса по нотам партитуры"]
+music.source.melody: ["мелодия из архива, без полной аранжировки"]
+music.source.generated: ["сгенерированный трек из библиотеки"]
+music.now_playing: ["Сейчас играет музыка"]
+music.now_playing_named: ["Сейчас играет «{name}»"]
+music.playing_for: ["Играет уже {elapsed}"]
+music.remaining: [", осталось {remaining}."]
+music.repeats: [" и повторяется, пока не скажешь «стоп»."]
+music.library_empty: ["В библиотеке сгенерированной музыки пока пусто."]
+music.library_no_track: ["Не знаю, о каком треке речь: ничего из библиотеки ещё не играло."]
+music.library_fail: ["С библиотекой музыки не вышло."]
+# отказы тула по ПРИЧИНЕ (reason в данных): удаление необратимо и идёт в два вызова - первый только спрашивает
+# («Удалить {name}?», название из data.title); track_id берётся только из list/search - выдуманный id тул отвергает.
+# Текст вопроса один: его же берёт тул (media_phrases.library_delete_question_text); ответ ждёт окно сессии
+# (knowledge.TOOL_QUESTIONS): «да» исполняет код, «нет» - music.library_delete_kept
+music.library_fail.needs_confirmation: ["Удалить {name}? Скажи «да, удаляй»."]
+music.library_delete_kept: ["Не удаляю."]
+music.library_fail.unknown_track: *unknown_track
+music.library_list: ["В библиотеке {total} {tracks}"]
+music.library_examples: [", например: {names}."]
+music.library_liked: ["Запомнил: {name} нравится."]
+music.library_disliked: ["Запомнил: {name} не нравится, больше не включу."]
+music.library_deleted: ["Удалил {name} из библиотеки."]
+music.library_updated: ["Обновил данные трека {name}."]
+music.library_play: ["Включаю {name} из библиотеки — {duration}."]
+music.dj_fail: ["Не получилось включить диджей-сет — музыка не заиграла."]
+music.request_fail: *request_fail
+music.set_kept: ["Другую музыку поверх сета не ставлю."]
+music.no_more: ["По запросу «{asked}» новых пьес больше нет, всё уже играло."]
+music.no_more_repeat: ["Могу повторить «{repeat}» или сыграть что-то другое."]
+music.no_more_other: ["Могу сыграть что-то другое."]
+music.composer_missing: ["Пьес {who} у меня не нашлось, чужое вместо него не ставлю. Могу сыграть что-то другое."]
+music.author_named: ["автора «{name}»"]
+music.author_unnamed: ["названного автора"]
+music.not_launched: ["Новый сет я не начинал. Скажи: включи диджей сет на тему, и назови тему."]
+music.not_played: ["Ничего не заиграло — я мелодию не запускал. Назови, что сыграть, ещё раз."]
+music.volume_fail: ["Не получилось поменять громкость музыки."]
+music.volume.louder: ["Сделал музыку громче."]
+music.volume.quieter: ["Сделал музыку тише."]
+music.volume.max: ["Музыка на максимуме."]
+music.volume.normal: ["Музыка на обычной громкости."]
+voice.volume_fail: ["Не получилось поменять громкость голоса."]
+voice.volume.louder: ["Говорю громче."]
+voice.volume.quieter: ["Говорю тише."]
+voice.volume.max: ["Говорю на максимальной громкости."]
+voice.volume.normal: ["Говорю на обычной громкости."]
+# Стоп музыки (решение Шифу 05.11: «всегда что-то говорить, разные вариации»): Tier-1 стоп выбирает вариант кодом
+# без повтора подряд (turn.music_stop_phrase): music.stop_said; музыки не было - music.stop_quiet. Стоп тулом модели -
+# music.stop_ok (фраза исхода тула, knowledge.TOOL_PHRASES).
+music.stop_ok: ["Выключил музыку."]
+music.stop_said: ["Выключил музыку.", "Всё, музыку выключил.", "Готово, музыка выключена.",
+                  "Музыку выключил, отдыхаем.", "Выключил, больше не играет."]
+music.stop_quiet: ["И так тихо — музыка не играет.", "Музыка и не играла.", "Тут и так тихо, ничего не играет."]
+music.stop_idle: ["Сейчас ничего не играет — на всякий случай всё остановил."]
+music.stop_fail: ["Не получилось выключить музыку."]
+# Старт сета с объявлением (knowledge.DJ_DONE): название трека 1 и длину сета кладёт в данные исхода dj_set,
+# фраза - вместо общего «Включаю музыку.». Название в кавычках - слово из данных, не от LLM.
+music.set_opening: ["Ставлю сет на {tracks_text}. Первый трек — «{opening}».",
+                    "Поехали: сет на {tracks_text}, начинаем с «{opening}».",
+                    "Сет на {tracks_text} пошёл. Открывает «{opening}»."]
+# Платная генерация началась, трек ещё пишется (knowledge.GEN_WAIT): «подожди, скоро будет, а пока послушай» (Шифу
+# 27.10). С мостом (играет своё или сочинённое раньше) - «а пока послушай», без моста - только «подожди».
+music.gen_wait.song.bridge: ["Сочиняю песню — будет через пару минут, а пока послушай вот это.",
+                             "Подожди немного: песня будет через пару минут. А пока послушай, что играет.",
+                             "Песня пишется, это пара минут. А пока послушай вот это."]
+music.gen_wait.song: ["Сочиняю песню — будет через пару минут.",
+                      "Подожди немного: песня будет через пару минут.",
+                      "Песня пишется, это пара минут."]
+music.gen_wait.track.bridge: ["Сочиняю трек — будет через пару минут, а пока послушай вот это.",
+                              "Подожди немного: трек будет через пару минут. А пока послушай, что играет.",
+                              "Трек пишется, это пара минут. А пока послушай вот это."]
+music.gen_wait.track: ["Сочиняю трек — будет через пару минут.",
+                       "Подожди немного: трек будет через пару минут.",
+                       "Трек пишется, это пара минут."]
+# Правка играющего (knowledge.TOOL_PHRASES edit_music): фразу исхода строит код музыки из исхода
+# (rob_box_music.track_edit.edit_text: сделано, предел, честный отказ с предложением) - слот {message} результата.
+# edit_heard - тот же текст, когда исход слышен сам (правка встала целиком, без предела и отказа): во время выступления
+# он молчит (knowledge.QUIET_IN_PERFORMANCE_KEYS), чей бы ни был трек - бит выступления или музыка человека под рэпом;
+# вне выступления говорится.
+music.edit_said: &edit_said ["{message}"]
+music.edit_heard: *edit_said
+music.edit_fail: ["Не получилось поменять музыку — играет как было."]
+music.edit_timeout: ["Не дождался такта — не знаю, поменялась ли музыка."]
+music.not_started: *not_started
+
+# --- встреча лицом и старт (перенос v1: core/meeting.py, startup_greeting.py — тексты как есть; стартовые теперь по готовности) ----------
+# Знакомый, которого давно не было (rob_box_dialog.meeting): «обычного» приветствия нет — не повод заговорить.
+meeting.long_absence: ["{tod}, {name}! Сколько лет, сколько зим.", "{name}! Давно тебя не видел. {tod}.",
+                       "О, {name}! А я уж думал, ты про меня забыл. {tod}."]
+meeting.tod.morning: ["Доброе утро"]
+meeting.tod.day: ["Добрый день"]
+meeting.tod.evening: ["Добрый вечер"]
+meeting.tod.night: ["Доброй ночи"]
+# Стартовая фраза: ВЫБИРАЕТ КОД ПО ГОТОВНОСТИ узлов (``rob_box_dialog.startup``), тон - дружелюбный кот-робот.
+# ready - поднялось всё, что должно (голос, остальные узлы, LLM): «готов к работе» (10 вариантов, требование «6-10»).
+startup.ready: ["Мяу! Все системы запущены — готов к работе!",
+                "Загрузка завершена, все узлы на месте. Готов к работе!",
+                "Я на связи: все узлы поднялись. Готов к работе!",
+                "Привет-привет! Только что проснулся, готов к приключениям!",
+                "Я вернулся! Датчики заряжены, мурчание включено.",
+                "Здравствуйте! Загрузка завершена — скучать было некогда.",
+                "Онлайн! Усы на месте, ушки на макушке.",
+                "Готов помогать! Только не обижайте мои сенсоры.",
+                "Рад вас слышать! Все модули мурлычут.",
+                "Мяу! Я на связи! Все системы в норме, можно играть!"]
+# voice_only - голос поднялся, а остального за время ожидания нет; partial - поднялось не всё (и не только голос).
+# {down} - части, которые не поднялись, перечисляет код (``startup.part.*``), модель их не называет.
+startup.voice_only: ["Поднялся только голос. Не поднялось: {down}.",
+                     "Я на связи, но пока только голосом. Не поднялось: {down}."]
+startup.partial: ["Я на связи, но поднялось не всё. Не поднялось: {down}.",
+                  "Готов не полностью — не поднялось: {down}."]
+# unknown - сведений о готовности узлов к концу ожидания нет совсем: честно «не знаю», а не «все системы в норме».
+startup.unknown: ["Я на связи, но что из остальных систем поднялось, проверить не удалось.",
+                  "Голос у меня работает, а про остальные системы сведений нет — не знаю, что поднялось."]
+# Части робота словами для {down}; ключ - из ``knowledge.STARTUP_NODE_PARTS`` (узел) или ``llm`` (цепочка LLM).
+startup.part.audio: ["микрофон и звук"]
+startup.part.stt: ["распознавание речи"]
+startup.part.tts: ["синтез речи"]
+startup.part.context: ["сбор контекста"]
+startup.part.camera: ["камера"]
+startup.part.lidar: ["лидар"]
+startup.part.slam: ["карта и навигация"]
+startup.part.llm: ["языковая модель"]
+startup.part.other: ["другие системы"]
+startup.and: ["и"]
+# Журнал смены: фразу-итог строит код из записей журнала (``shift_log.summary``), модель её пересказывает.
+# Пустой журнал - честное «ничего не записано» за то время, что журнал ведётся (после рестарта - с рестарта).
+shift.empty: ["В журнале смены за последние {span} ничего не записано."]
+shift.summary: ["Журнал смены за последние {span}: {events}."]
+shift.people: ["узнал: {names}"]
+# Появления голоса или лица без подтверждённого имени (A30), а не число незнакомцев: такие голоса одного канала в
+# пределах ``knowledge.SHIFT_VISIT_GAP_S`` - одно появление.
+shift.unnamed: ["появлений без подтверждённого имени (не число людей): {count}"]
+shift.music: ["звучало треков: {count}, последний — «{last}»"]
+shift.performances: ["выступления: {kinds}"]
+# Действия: каждый записанный исход - в своей части; провал и вопрос тула - по правилу ``respond.failed``/``asks``.
+shift.actions: ["действия — {counts}"]
+shift.action.done: ["выполнено: {count}"]
+shift.action.failed: ["не вышло: {count}"]
+shift.action.asked: ["спросил подтверждения: {count}"]
+shift.action.other: ["{status}: {count}"]
+shift.silence: ["тишину просили: {count}"]

@@ -8,9 +8,13 @@ node_monitor.py - ROS2 Node Availability Monitor.
 
 import subprocess
 import time
-from typing import Dict, List
+from typing import Dict, List, Optional, TYPE_CHECKING
 
-from rclpy.node import Node
+if TYPE_CHECKING:  # rclpy нужен только для аннотаций: монитор тестируется без ROS
+    from rclpy.node import Node
+
+#: Нода диалога: после PR-15 (#3711, v1 удалён) и #4354 A5 она одна, ``/dialog_node``.
+DIALOG_NODE = '/dialog_node'
 
 
 class NodeAvailabilityMonitor:
@@ -31,7 +35,7 @@ class NodeAvailabilityMonitor:
 
     """
 
-    def __init__(self, node: Node, expected_nodes: List[str] = None):
+    def __init__(self, node: 'Node', expected_nodes: Optional[List[str]] = None):
         """
         Инициализация монитора.
 
@@ -44,13 +48,14 @@ class NodeAvailabilityMonitor:
 
         """
         self.node = node
-        self.expected_nodes = [
+        self.expected_nodes = list(expected_nodes) if expected_nodes is not None else [
             '/audio_node',
             '/stt_node',
             '/tts_node',
-            '/dialogue_node',
+            DIALOG_NODE,
             '/context_aggregator',
-            '/camera',               # OAK-D camera node (oak-d container)
+            # OAK-D camera node (oak-d container, namespace /camera)
+            '/camera/camera',
             '/lslidar_driver_node',  # LS LiDAR driver node (lslidar container)
             # RTAB-Map SLAM node (rtabmap container, namespaced)
             '/rtabmap/rtabmap',
