@@ -518,10 +518,10 @@ services:
     labels:
       logging: "promtail"
 
-  # Сторож «сирот» FollowPath (#4458, после #4456): если последняя цель NavigateToPose завершена
-  # (ABORTED/CANCELED/SUCCEEDED), а FollowPath controller_server ещё активен дольше orphan_timeout_s
-  # (1.5 с) — отмена цели follow_path (по goal_id) и нулевой cmd_vel. Защита от любого источника цели
-  # (HIL-скрипты, Quest), не только наших тулов. Образ — teleop. Всегда в стеке (без профиля).
+  # Сторож «сирот» FollowPath (#4458, после #4456): если последняя родительская цель
+  # (NavigateToPose или NavigateThroughPoses) завершена (ABORTED/CANCELED/SUCCEEDED), а FollowPath
+  # controller_server ещё активен дольше orphan_timeout_s (1.5 с) — отмена цели follow_path (по goal_id)
+  # и нулевой cmd_vel. Одно правило на голос, Quest и HIL. Образ — teleop. Всегда в стеке (без профиля).
   followpath-watchdog:
     # Tag tracked in docker/main/.image-versions.{env} — updated by CI after each build
     image: ${SERVICE_IMAGE_PREFIX:-ghcr.io/krikz/rob_box}:teleop-${ROS_DISTRO:-humble}-${TELEOP_TAG:-${IMAGE_TAG}}

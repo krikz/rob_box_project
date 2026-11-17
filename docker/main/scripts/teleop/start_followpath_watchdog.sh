@@ -1,5 +1,5 @@
 #!/bin/bash
-# Сторож «сирот» FollowPath (#4458): гасит цель controller_server, если NavigateToPose уже завершён.
+# Сторож «сирот» FollowPath (#4458): гасит цель controller_server, если родительская цель уже завершена.
 # Логика — rob_box_teleop.followpath_orphan. Сервис followpath-watchdog всегда в стеке main.
 set -e
 

@@ -473,10 +473,12 @@ dead-man 500 мс. Всё прочее, похожее на floor, — кэш.
 отменена (#4435): bt_navigator не дождался подтверждения цели и не может её отменить. Гасит `ControllerHalt`
 в тулах навигации — отмена всех целей `follow_path` и нулевой `cmd_vel`.
 
-**Сторож сирот** — нода `followpath_watchdog_node` (контейнер `followpath-watchdog`, #4458): для цели NavigateToPose
-от любого клиента (HIL-скрипт, Quest). Если последняя цель NavigateToPose терминальна, а FollowPath активен дольше
-`orphan_timeout_s` (1.5 с) — отменяет его по `goal_id` и шлёт нулевой `cmd_vel` тем же путём, что `ControllerHalt`
-(имена — `rob_box_core/follow_path_halt.py`). Решение — чистая `rob_box_teleop/followpath_orphan.py`.
+**Сторож сирот** — нода `followpath_watchdog_node` (контейнер `followpath-watchdog`, #4458): для родительской цели,
+из которой дерево зовёт FollowPath, от любого клиента. Родители — `NavigateToPose` (голос, Quest, HIL-скрипт) и
+`NavigateThroughPoses` (полоса HIL). Правило одно: если последняя родительская цель терминальна и живой нет, а
+FollowPath активен дольше `orphan_timeout_s` (1.5 с) — отменяет его по `goal_id` и шлёт нулевой `cmd_vel` тем же
+путём, что `ControllerHalt` (имена — `rob_box_core/follow_path_halt.py`). Решение — чистая
+`rob_box_teleop/followpath_orphan.py`. #4770 это не закрывает: там abort самого FollowPath внутри контроллера.
 
 **Замок руля** — `std_msgs/Bool` на `/joystick_lock` (priority 100) и `/teleop_lock` (priority 90) в twist_mux,
 timeout 0.0 (липкий). Любой True глушит источники строго меньшего приоритета, в том числе Nav2 `cmd_vel` (10).
