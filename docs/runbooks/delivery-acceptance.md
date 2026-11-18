@@ -248,7 +248,7 @@ python scripts/testing/delivery_acceptance_checklist.py
 
 1. Замок стенда, HIL off если нужен update, backup previous staged.
 2. Baseline status — три узла.
-3. Исправный релиз — update — raw docker/state.
+3. Исправный релиз — update — raw `docker ps` и state.json.
 4. Сломанный релиз (или inject unhealthy) — факт авто-отката или ручной rollback.
 5. Повторить §2.2–2.5 точечно на железе.
 6. biguan/chuguan — по выбранному Шифу варианту A/B/C; иначе `NOT_IMPLEMENTED`.
