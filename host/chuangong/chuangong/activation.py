@@ -13,6 +13,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Protocol
 
+from . import cancel
 from . import state as st
 from .agent import Config, Deps, FetchError, fetch_release, probe_flags, report
 from .stage import MARKER, RoleStager, StageError
@@ -113,6 +114,14 @@ class ActivationMachine:
         return release
 
     def _preflight(self, record: dict[str, Any], release: dict[str, Any]) -> tuple[RoleStager, dict[str, Any]] | None:
+        name = release["release"]
+        if cancel.is_cancelled(self.cfg.releases_root, name, self.cfg.node):
+            _blocked(
+                record,
+                "release_cancelled",
+                {"release": name, "marker": str(cancel.cancel_path(self.cfg.releases_root, name, self.cfg.node))},
+            )
+            return None
         stager = self._stager()
         plan = stager.plan(release, self.cfg.node)
         if not plan["bundle_done"] or plan["images_missing"]:

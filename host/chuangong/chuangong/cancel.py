@@ -1,7 +1,7 @@
 """Локальная отмена staged-релиза (ADR-0168 фаза C): пометить отменённым, current не трогать.
 
 Сети нет. Compose symlink не переключает. Указатели читает через `pointers.load`, не вызывает
-`pointers.advance`/`commit`. Тик агента маркер ещё не читает.
+`pointers.advance`/`commit`. Тик и preflight читают `CANCEL_MARKER` и не re-stage / не activate.
 """
 
 from __future__ import annotations
@@ -23,6 +23,19 @@ class CancelError(RuntimeError):
         self.detail = detail
 
 
+def cancel_path(releases_root: Path, name: str, node: str) -> Path:
+    return releases_root / name / node / CANCEL_MARKER
+
+
+def is_cancelled(releases_root: Path, name: str, node: str) -> bool:
+    """True, если на диске маркер отмены с тем же именем релиза. Сети нет."""
+    try:
+        raw = cancel_path(releases_root, name, node).read_text(encoding="utf-8").strip()
+    except OSError:
+        return False
+    return raw == name
+
+
 def cancel_staged(state_dir: Path, releases_root: Path, node: str) -> dict[str, Any]:
     """Пометить staged-релиз отменённым. current/previous не меняет."""
     if node not in st.NODES:
@@ -40,7 +53,7 @@ def _cancel_staged(state_dir: Path, releases_root: Path, node: str) -> dict[str,
     dest = releases_root / name / node
     if not (dest / MARKER).is_file():
         raise CancelError("release_not_staged", str(dest))
-    (dest / CANCEL_MARKER).write_text(name + "\n", encoding="utf-8")
+    cancel_path(releases_root, name, node).write_text(name + "\n", encoding="utf-8")
     mode_raw = prev.get("mode") or st.Mode.OBSERVE.value
     record = st.new_record(
         prev.get("robot_id") or "",

@@ -12,7 +12,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
 
-from . import minisign
+from . import cancel, minisign
 from . import release_format as rf
 from . import state as st
 from .registry import Registry, RegistryError
@@ -172,6 +172,12 @@ def evaluate(cfg: Config, deps: Deps, prev: dict[str, Any] | None) -> dict[str, 
         return record
     record["available"] = release["release"]
     record["release_git"] = release.get("git")
+    if cancel.is_cancelled(cfg.releases_root, release["release"], cfg.node):
+        # Маркер отмены на диске: не re-stage и не считаем staged (cancel.py).
+        record["cancelled"] = release["release"]
+        record["staged"] = None
+        record["state"] = st.State.CANCELLED.value
+        return record
     if cfg.mode is st.Mode.STAGE:
         _stage(cfg, deps, release, record)
     elif record["staged"] == release["release"]:
