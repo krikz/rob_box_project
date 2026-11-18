@@ -139,6 +139,22 @@ def test_recovery_hits_name_the_marker_not_invent_a_type():
     assert "spin" not in topics.recovery_hits(log)
 
 
+def test_short_circuit_overlay_is_opt_in():
+    """false добавляет строку; true и default — нет. Боевой yaml не открывается."""
+    full = topics.dwb_publish_overlay_yaml(short_circuit=False)
+    assert "short_circuit_trajectory_evaluation: false" in full
+    assert "publish_evaluation: true" in full
+    assert "max_vel_x" not in full
+    combat = topics.dwb_publish_overlay_yaml(short_circuit=True)
+    assert "short_circuit_trajectory_evaluation" not in combat
+    assert "short_circuit_trajectory_evaluation" not in topics.dwb_publish_overlay_yaml()
+    assert topics.short_circuit_from_env(None) is True
+    assert topics.short_circuit_from_env("true") is True
+    assert topics.short_circuit_from_env("false") is False
+    with pytest.raises(ValueError, match="M1_REPEAT_SHORT_CIRCUIT"):
+        topics.short_circuit_from_env("maybe")
+
+
 def test_rotate_latch_markers_and_dwb_overlay_do_not_touch_speed():
     log = "IllegalTrajectoryException: Nonrotation command near goal\nNot slowing down near goal\n"
     hits = topics.recovery_hits(log)
@@ -172,6 +188,8 @@ def test_script_uses_world_gate_and_pulls_before_off():
     assert "dwb_publish.yaml" in script
     assert "nav2tune.compose.yaml" in script
     assert "publish_evaluation" in script
+    assert "M1_REPEAT_SHORT_CIRCUIT" in script
+    assert "short_circuit_from_env" in script
     code = "\n".join(line for line in script.splitlines() if not line.lstrip().startswith("#"))
     assert "nav2_params.yaml" not in code
     # OpenSSH 9 SFTP отвергает filename «.» — прошлый прогон, exit 50.
