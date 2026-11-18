@@ -25,7 +25,7 @@ import os
 import threading
 from typing import Callable, List, NamedTuple, Optional, TYPE_CHECKING
 
-from rob_box_core.tools_db import hil_waypoint_registry
+from rob_box_core.tools_db import WAYPOINT_DB_ENV
 from rob_box_dialog.knowledge import VOICE_STEP_AT_LIMIT
 
 # Ленивый импорт ROS 2 модулей для поддержки unit тестов
@@ -662,14 +662,18 @@ def sim_pose_active(env=None, node=None) -> bool:
     """Поза из /odom — симулятор, если sim time или HIL. Боевой робот без этих признаков — нет.
 
     ``USE_SIM_TIME=true`` (только true/false, как в use_sim_time.sh), параметр ноды
-    ``use_sim_time`` или HIL-реестр карт (``tools_db.hil_waypoint_registry``: voice-assistant
-    с непустым ``WAYPOINT_DB_PATH``, имя env знает только ``tools_db``).
+    ``use_sim_time`` или HIL-реестр карт (непустой ``tools_db.WAYPOINT_DB_ENV``:
+    voice-assistant с HIL-файлом, имя env знает только ``tools_db``).
     Порога «почти в нуле» нет: ноль на полу и ноль в Gazebo числами не отличить.
+
+    Не импортируем ``hil_waypoint_registry``: образ voice-assistant ставит
+    ``rob-box-dialog-core@v0.7.8``, в нём этого имени нет, mcp_server падал
+    ImportError на старте (#4819). Константа env в пине есть.
     """
     source = os.environ if env is None else env
     if str(source.get(SIM_TIME_ENV, "false")).strip().lower() == "true":
         return True
-    if hil_waypoint_registry(source):
+    if bool(source.get(WAYPOINT_DB_ENV, "").strip()):
         return True
     return _node_use_sim_time(node)
 

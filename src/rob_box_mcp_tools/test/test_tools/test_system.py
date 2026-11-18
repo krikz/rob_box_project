@@ -10,8 +10,10 @@ test_system.py - Unit тесты для системных инструмент�
 (rob-box-ci:humble), где ROS 2 доступен.
 """
 
+import ast
 import importlib.util
 import sys
+from pathlib import Path
 from unittest.mock import Mock
 
 import pytest
@@ -47,6 +49,7 @@ def _install_ros_mocks_if_needed():
 
 _install_ros_mocks_if_needed()
 
+from rob_box_core.tools_db import WAYPOINT_DB_ENV  # noqa: E402  — после ROS-моков, как импорт system выше
 from rob_box_mcp_tools.tools.system import (
     SIM_POSE_NOTE,
     SIM_TIME_ENV,
@@ -58,7 +61,29 @@ from rob_box_mcp_tools.tools.system import (
     status_phrase,
 )
 
-from rob_box_core.tools_db import WAYPOINT_DB_ENV  # noqa: E402  — после ROS-моков, как импорт system выше
+# voice-assistant ставит rob-box-dialog-core@v0.7.8 (Dockerfile шаг 10.5).
+# hil_waypoint_registry в дереве есть (b0203aa11), в пине нет — импорт ронял mcp_server (#4819).
+_DIALOG_CORE_V078_TOOLS_DB = {
+    "TOOLS_DB_DEFAULT",
+    "TOOLS_DB_ENV",
+    "TOOLS_E2E_DB_DEFAULT",
+    "WAYPOINT_DB_ENV",
+    "tools_db_path",
+    "waypoint_db_path",
+}
+
+
+@pytest.mark.unit
+def test_system_tools_db_imports_exist_in_voice_assistant_dialog_core_pin():
+    """Верхние импорты tools_db в system.py должны быть в пине образа, иначе mcp_server exit 1."""
+    src = Path(__file__).resolve().parents[2] / "rob_box_mcp_tools" / "tools" / "system.py"
+    tree = ast.parse(src.read_text(encoding="utf-8"))
+    imported = set()
+    for node in tree.body:
+        if isinstance(node, ast.ImportFrom) and node.module == "rob_box_core.tools_db":
+            imported.update(alias.name for alias in node.names)
+    assert imported, "system.py must import tools_db names at module top"
+    assert imported - _DIALOG_CORE_V078_TOOLS_DB == set()
 
 
 def _make_odom_msg(x=1.5, y=-2.25, qz=0.0, qw=1.0):
@@ -337,6 +362,7 @@ class TestGetCurrentTimeTool:
         tz = tool._resolve_timezone()
         import datetime
         from datetime import timedelta
+
         # Europe/Moscow всегда UTC+3 (без DST). Передаём конкретную дату
         # в ``utcoffset`` — с None оно возвращает None для zoneinfo.
         probe = datetime.datetime(2026, 1, 15, 12, 0, 0)
@@ -358,6 +384,7 @@ class TestGetCurrentTimeTool:
         tool = GetCurrentTimeTool(None)
         tz = tool._resolve_timezone()
         from datetime import timezone
+
         assert tz == timezone.utc
 
     def test_execute_returns_moscow_time_when_system_tz_is_utc(self, monkeypatch):
@@ -368,11 +395,13 @@ class TestGetCurrentTimeTool:
         инструмент форсит Europe/Moscow.
         """
         import datetime
+
         monkeypatch.delenv("ROBOT_TIMEZONE", raising=False)
         # Принудительно говорим системе что TZ=UTC (best-effort, glibc only).
         monkeypatch.setenv("TZ", "UTC")
         try:
             import time as _time
+
             _time.tzset()
         except Exception:
             pass  # не glibc-платформа (Windows/macOS) — наш фикс всё равно работает
@@ -419,9 +448,9 @@ class TestGetCurrentTimeFormatted:
         result = tool.execute()
         assert result.success is True
         assert result.data is not None
-        assert "formatted_time" in result.data, (
-            f"formatted_time missing after rebase, got keys: {list(result.data.keys())}"
-        )
+        assert (
+            "formatted_time" in result.data
+        ), f"formatted_time missing after rebase, got keys: {list(result.data.keys())}"
         # Минимальная sanity-проверка: непустая строка с буквами (русский текст).
         ft = result.data["formatted_time"]
         assert isinstance(ft, str)
