@@ -76,6 +76,7 @@ __all__ = ["TOOL_NAME_RE", "invocation_markers", "tool_invoked", "strip_llm_requ
            "registration_failures", "registration_pending",
            "identify_failures", "robot_speech", "keyword_hit", "REGEX_PREFIX",
            "drop_unspoken_cancels", "repeated_numerals", "count_continuation_failures",
+           "count_reach", "count_end_failures",
            "retry_block_reason", "step_verdict", "patterns_missing"]
 
 # Маркеры голосового ответа (любой из них обозначает «робот начал говорить»).
@@ -722,6 +723,46 @@ def count_continuation_failures(logs: str) -> list:
     return failures
 
 
+# ── #4077 / М9: n802 ложный PASS по SpeechEvent started при урезанном счёте ─────────
+#
+# «посчитай до сорока» → модель «Считаю… Один… Десять.» (80 симв.) -- шаг зелёный: ждал только
+# ``SpeechEvent started``. Конец речи окно не видит (n803 barge-in). Длину плана судим по TTS и по
+# старту выступления: ``full_count`` на «до сорока» → poem ``segments=4`` (десяток, COUNT_PER_SEGMENT).
+
+#: Десяток чисел на сегмент выступления-счёта (``knowledge.COUNT_PER_SEGMENT``): ``segments=N`` → до N×10.
+_COUNT_PER_SEGMENT = 10
+_PERFORM_SEGS_RE = re.compile(r"выступление старт kind=\w+\b[^\n]*\bsegments=(\d+)")
+_HIGH_NUMERALS = (("пятьдесят", 50), ("сорок", 40), ("тридцать", 30), ("двадцать", 20))
+
+
+def count_reach(logs: str) -> int:
+    """До какого числа доходит план счёта в окне шага.
+
+    Берёт максимум из числительных в ``🔊 TTS`` (:func:`robot_speech` -- весь план, не только звучавшее) и из
+    ``выступление старт … segments=N`` × :data:`_COUNT_PER_SEGMENT` (счёт кодом на «до сорока» -- poem из 4 сегментов,
+    а barge-in режет окно на первом; без segments урезание до десяти и полный poem неразличимы)."""
+    speech = robot_speech(logs).lower().replace("ё", "е")
+    reach = 0
+    for word in _NUMERAL_RE.findall(speech):
+        reach = max(reach, _NUMERALS.index(word) + 1)
+    for word, value in _HIGH_NUMERALS:
+        if re.search(r"(?<![а-яё])%s(?![а-яё])" % word, speech):
+            reach = max(reach, value)
+    for found in _PERFORM_SEGS_RE.findall(logs):
+        reach = max(reach, int(found) * _COUNT_PER_SEGMENT)
+    return reach
+
+
+def count_end_failures(logs: str, min_end: int) -> list:
+    """Счёт короче ``min_end`` (М9 n802: урезание до десяти при ``SpeechEvent started``). Пусто -- длина достаточна."""
+    if not min_end:
+        return []
+    reach = count_reach(logs)
+    if reach >= int(min_end):
+        return []
+    return ["count reaches %d, need at least %d (#4077 n802: silent cut)" % (reach, int(min_end))]
+
+
 def step_verdict(acc: dict, logs: str, *, label: str = "", timing_path: str = "") -> dict:
     """Вердикт ``acceptance`` шага по логу шага: те же правила, что исполняет ``check_acceptance`` на роботе.
 
@@ -768,6 +809,8 @@ def step_verdict(acc: dict, logs: str, *, label: str = "", timing_path: str = ""
     forbidden_called = [c for c in must_not if tool_invoked(kept_logs, c)]
     repeated_numbers = repeated_numerals(logs) if acc.get("no_repeat_numbers") else []
     count_failures = count_continuation_failures(logs) if acc.get("count_continues") else []
+    min_count_end = int(acc.get("min_count_end") or 0)
+    count_end_fail = count_end_failures(logs, min_count_end) if min_count_end else []
     found_keywords = [k for k in expected_kw if keyword_hit(logs, k)]
     missing_keywords = [k for k in expected_kw if not keyword_hit(logs, k)]
     forbidden_said = [k for k in must_not_say if keyword_hit(logs, k)]
@@ -829,6 +872,8 @@ def step_verdict(acc: dict, logs: str, *, label: str = "", timing_path: str = ""
         failures.append(f"numbers spoken more than once (#4207: count restarted after edit): {repeated_numbers}")
     if count_failures:
         failures.append(f"count not continued after the edit (#4207): {count_failures}")
+    if count_end_fail:
+        failures.append(f"count too short (#4077): {count_end_fail}")
     if identification_failures:
         failures.extend(identification_failures)
     if discovery_tool_errors:
@@ -859,6 +904,9 @@ def step_verdict(acc: dict, logs: str, *, label: str = "", timing_path: str = ""
         "repeated_numbers": repeated_numbers,
         "count_continues": bool(acc.get("count_continues")),
         "count_failures": count_failures,
+        "min_count_end": min_count_end,
+        "count_reach": count_reach(logs) if min_count_end else 0,
+        "count_end_failures": count_end_fail,
         "must_not_identify_as": acc.get("must_not_identify_as", []) or [],
         "identify_failures": identification_failures,
         "discovery_tools": discovery_tools,
