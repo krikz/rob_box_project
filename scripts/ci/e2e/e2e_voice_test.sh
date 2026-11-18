@@ -2287,8 +2287,11 @@ step_wake_replay() {  # $1=label $2=safe
 # #4694 (17.11, n805b run 43636148539): STT вернул не команду, а мусор («говори» -> «колории»), и судья сказал
 # silenced -- ход проглотила тишина, потому что команда до неё не дошла. Это не FAIL с первой попытки. Решает
 # e2e_events.stt_garbage_retry (``stt-retry``): слово шага потеряно и ПРИНЯТО не похоже на команду -- фраза ещё раз,
-# всего STT_GARBAGE_MAX_ATTEMPTS попыток (считая первую). Второй промах -- честный FAIL, не зелёный. Шагу без
+# пока попытка меньше STT_GARBAGE_MAX_ATTEMPTS (считая первую). Исчерпание -- честный FAIL, не зелёный. Шагу без
 # stt_replay повтор не даётся: команда узнана, а робот её проглотил -- это настоящая тишина, FAIL как раньше.
+#
+# #4741/#4738 + Шифу 17.11: heard≠expected без stt_keys (ниже, цикл step_stt_replay) -- тот же потолок, не один повтор.
+# Каждая попытка пишет stt_attempt=N/max; в вердикте шага счётчик тот же. Падение тула и отказ действия не повторяются.
 _stt_step_executed() {  # $1=label $2=начало окна первой попытки; rc 0 -- исход шага в окне уже есть
     local -a pats=()
     [ -n "${patterns_json:-}" ] && [ "$patterns_json" != "[]" ] || return 1
@@ -2343,63 +2346,61 @@ step_stt_replay() {  # $1=label $2=safe
             return 0
         fi
     fi
-    # #4741/#4738: шаг без stt_keys, гипотеза не пустая, но не та фраза. rc=0 (ход на чужом входе) или rc=1
-    # (ПРИНЯТО есть, цикл не закрылся -- «Thank you.»). Один повтор; второй промах -- честный FAIL, не PASS.
-    # Таймаут без гипотезы / совпавшая фраза -- не этот класс. Словаря подмен нет.
+    # #4741/#4738 + Шифу 17.11: шаг без stt_keys, гипотеза не пустая, но не та фраза. rc=0 (ход на чужом
+    # входе) или rc=1 (ПРИНЯТО есть, цикл не закрылся -- «Thank you.»). Повтор, пока попытка меньше потолка
+    # stt-miss (STT_GARBAGE_MAX_ATTEMPTS, считая первую). Каждая попытка логируется. Исчерпание -- честный
+    # FAIL со счётчиком stt_attempt, не PASS. Таймаут без гипотезы / совпавшая фраза / падение -- не этот
+    # класс. Словаря подмен нет. Числа потолка в bash нет: его отдаёт stt-miss.
     case "${E2E_WAIT_RC:-0}" in 0|1) ;; *) return 0 ;; esac
     if [ -n "${SCENARIO_FILE:-}" ] && [ -f "$SCENARIO_FILE" ]; then
         keys="$(python3 "$(_events_py)" stt --scenario "$SCENARIO_FILE" --label "$label" --heard "${heard:--}" 2>/dev/null | _ev_kv keys)"
         [ "${keys:-0}" = "0" ] || return 0
     fi
-    [ "${E2E_WAIT_RC:-0}" = "1" ] && timeout=1
-    attempt="${E2E_STEP_STT_ATTEMPT:-1}"
-    decision="$(python3 "$(_events_py)" stt-miss --text "${text:-}" --heard "$heard" \
-        --attempt "$attempt" --timeout "$timeout" --barge-in "${_barge_mode:-0}" 2>&1)" || {
-        log "STEP ${label}: решение о промахе STT не разобрано: ${decision} -- повтора нет"
-        return 0
-    }
-    reason="$(printf '%s\n' "$decision" | _ev_kv reason)"
-    if [ "$(printf '%s\n' "$decision" | _ev_kv retry)" != "1" ]; then
-        if [ "$reason" = "attempts_exhausted" ]; then
-            log "STEP ${label}: STT промах повторно (услышано «${heard}») -- второго повтора нет, честный FAIL"
-            emit_step "${label} FAIL stt_miss"
-            mark_fail_kind no_reaction
-            E2E_STT_MISS_FAIL=1
-        else
-            log "STEP ${label}: услышано «${heard:-}» -- повтора по промаху STT нет (${reason})"
+    while :; do
+        case "${E2E_WAIT_RC:-0}" in 0|1) ;; *) return 0 ;; esac
+        timeout=0
+        [ "${E2E_WAIT_RC:-0}" = "1" ] && timeout=1
+        attempt="${E2E_STEP_STT_ATTEMPT:-1}"
+        decision="$(python3 "$(_events_py)" stt-miss --text "${text:-}" --heard "$heard" \
+            --attempt "$attempt" --timeout "$timeout" --barge-in "${_barge_mode:-0}" 2>&1)" || {
+            log "STEP ${label}: решение о промахе STT не разобрано: ${decision} -- повтора нет"
+            return 0
+        }
+        reason="$(printf '%s\n' "$decision" | _ev_kv reason)"
+        max="$(printf '%s\n' "$decision" | _ev_kv max)"
+        if [ "$(printf '%s\n' "$decision" | _ev_kv retry)" != "1" ]; then
+            if [ "$reason" = "attempts_exhausted" ]; then
+                log "STEP ${label}: STT промах на всех попытках (услышано «${heard}», stt_attempt=${attempt}/${max}) -- повтора нет, честный FAIL"
+                emit_step "${label} FAIL stt_miss stt_attempt=${attempt}/${max}"
+                mark_fail_kind no_reaction
+                E2E_STT_MISS_FAIL=1
+            else
+                log "STEP ${label}: услышано «${heard:-}» -- повтора по промаху STT нет (${reason}, stt_attempt=${attempt}/${max})"
+            fi
+            return 0
         fi
-        return 0
-    fi
-    E2E_STEP_STT_ATTEMPT=$((attempt + 1))
-    E2E_STEP_STT_REPLAYED=1
-    E2E_STEP_RECOVERED="stt_replay"
-    recover_mark stt_replay "$label" "heard=«${heard}» stt_miss=1 stt_attempt=${E2E_STEP_STT_ATTEMPT}/$(printf '%s\n' "$decision" | _ev_kv max)"
-    BEFORE="$(${ROBOT_SSH} "date -u +%Y-%m-%dT%H:%M:%SZ" 2>/dev/null || date -u +%Y-%m-%dT%H:%M:%SZ)"
-    E2E_LAST_PLAY_SINCE="$BEFORE"
-    STEP_BEFORE="$BEFORE"
-    log "STEP ${label}: STT промах (услышано «${heard}», ждали «${text}») -- фраза шага ещё раз, окно шага с повтора"
-    play_eq_wav "$OUT_DIR/cmd_${safe}_eq.wav"
-    step_wait_after_play "$BEFORE" 0
-    heard="$(step_heard)"
-    timeout=0
-    [ "${E2E_WAIT_RC:-0}" = "1" ] && timeout=1
-    decision="$(python3 "$(_events_py)" stt-miss --text "${text:-}" --heard "$heard" \
-        --attempt "${E2E_STEP_STT_ATTEMPT}" --timeout "$timeout" --barge-in "${_barge_mode:-0}" 2>&1)" || return 0
-    if [ "$(printf '%s\n' "$decision" | _ev_kv reason)" = "attempts_exhausted" ]; then
-        log "STEP ${label}: STT промах повторно (услышано «${heard}») -- второго повтора нет, честный FAIL"
-        emit_step "${label} FAIL stt_miss"
-        mark_fail_kind no_reaction
-        E2E_STT_MISS_FAIL=1
-    fi
+        E2E_STEP_STT_ATTEMPT=$((attempt + 1))
+        E2E_STEP_STT_REPLAYED=1
+        E2E_STEP_RECOVERED="stt_replay"
+        recover_mark stt_replay "$label" "heard=«${heard}» stt_miss=1 stt_attempt=${E2E_STEP_STT_ATTEMPT}/${max}"
+        BEFORE="$(${ROBOT_SSH} "date -u +%Y-%m-%dT%H:%M:%SZ" 2>/dev/null || date -u +%Y-%m-%dT%H:%M:%SZ)"
+        E2E_LAST_PLAY_SINCE="$BEFORE"
+        STEP_BEFORE="$BEFORE"
+        log "STEP ${label}: STT промах (услышано «${heard}», ждали «${text}») -- фраза шага ещё раз (stt_attempt=${E2E_STEP_STT_ATTEMPT}/${max}), окно шага с повтора"
+        play_eq_wav "$OUT_DIR/cmd_${safe}_eq.wav" || return 0
+        step_wait_after_play "$BEFORE" 0
+        heard="$(step_heard)"
+    done
 }
 
 # step_stt_garbage_retry LABEL SAFE — #4694 (17.11): вердикт silenced, но ПРИНЯТО -- не команда шага, а мусор STT
 # («говори» -> «колории», n805b run 43636148539). Харнесс не ставит FAIL с первой попытки: e2e_events.stt_garbage_retry
-# (``stt-retry``) разрешает ОДИН повтор фразы (всего STT_GARBAGE_MAX_ATTEMPTS, считая первую). Окно шага -- с повтора,
-# как у step_stt_replay; итог прошедшего повтора -- «OK recovered_stt_replay», не чистый OK. Второй промах (повтор тоже
-# мусор, либо команда узнана и тишина осталась) -- E2E_WAIT_RC=4, run_step пишет честный FAIL. Потолок -- константа
-# e2e_events.STT_GARBAGE_MAX_ATTEMPTS (``stt-retry``), не флаг «уже повторяли»: иначе второй мусор нечем назвать.
-# Шагу без stt_replay, пустому ПРИНЯТО и шагу, уже спасённому другим видом, -- повтора нет.
+# (``stt-retry``) разрешает повтор, пока попытка меньше STT_GARBAGE_MAX_ATTEMPTS (считая первую). Каждая попытка
+# логируется (stt_attempt=N/max). Окно шага -- с повтора, как у step_stt_replay; итог прошедшего повтора --
+# «OK recovered_stt_replay», не чистый OK. Исчерпание (повтор тоже мусор) оставляет E2E_WAIT_RC=4, и run_step пишет
+# честный FAIL со счётчиком stt_attempt. Потолок -- константа e2e_events (поле max ответа ``stt-retry``), не флаг
+# «уже повторяли». Шагу без stt_replay, пустому ПРИНЯТО и шагу, уже спасённому другим видом, -- повтора нет.
+# Команда узнана, а тишина осталась -- не этот класс (command_heard): отказ действия, FAIL сразу.
 step_stt_garbage_retry() {  # $1=label $2=safe
     local label="$1" safe="$2" heard out missing decision attempt max
     # Цикл, как у step_wake_replay: повтор сам ждёт ответ, и второй мусор судится здесь же,
@@ -2686,8 +2687,10 @@ run_step() {  # $1=text $2=voice $3=step_label $4=expect_kind(cycle|wake-gated|b
     local attempt reaction rc accepted_before=""
     E2E_PLAY_FAILED=0   # #4608: провал воспроизведения -- отдельный вердикт шага stand_play_failed
     : "${E2E_STEP_WAKE_ATTEMPT:=1}"   # wake_attempt шага (06.11); сброс -- на старте шага в scenario-цикле
-    # Потолок попыток -- одна константа e2e_events.WAKE_MAX_ATTEMPTS (не копия числа в bash).
+    # Потолок попыток -- одна константа e2e_events (не копия числа в bash): вейк -- WAKE_MAX_ATTEMPTS,
+    # флак STT -- STT_GARBAGE_MAX_ATTEMPTS (поле max ответа stt-retry на заведомый мусор).
     [ -n "${E2E_WAKE_MAX_ATTEMPTS:-}" ] || E2E_WAKE_MAX_ATTEMPTS="$(python3 "$(_events_py)" wake-retry --verdict "" | _ev_kv max)"
+    [ -n "${E2E_STT_MAX_ATTEMPTS:-}" ] || E2E_STT_MAX_ATTEMPTS="$(python3 "$(_events_py)" stt-retry --text "говори" --heard "колории" --attempt 1 --missing "говори" --allowed 1 | _ev_kv max)"
     reaction=0
     for attempt in $(seq 1 "$E2E_MAX_ATTEMPTS"); do
         if [ -n "$accepted_before" ]; then
@@ -2723,11 +2726,11 @@ run_step() {  # $1=text $2=voice $3=step_label $4=expect_kind(cycle|wake-gated|b
         [ "${E2E_WAIT_RC:-0}" = "4" ] && step_recover "$label" "$text" "$voice" "$safe"
         # Решение Шифу 06.11: вейк так и не пробился -- фраза шага звучит ещё раз, всего до E2E_WAKE_MAX_ATTEMPTS попыток.
         [ "${E2E_WAIT_RC:-0}" = "4" ] && [ "${E2E_REPLY_VERDICT:-}" = "no_wake" ] && step_wake_replay "$label" "$safe"
-        # #4694 (17.11): silenced, но ПРИНЯТО -- мусор STT, а не команда («говори» -> «колории»). Один повтор фразы,
-        # не FAIL с первой попытки. Команда узнана и второй мусор -- повтора нет, FAIL как раньше.
+        # #4694 (17.11): silenced, но ПРИНЯТО -- мусор STT, а не команда («говори» -> «колории»). Повтор фразы
+        # до STT_GARBAGE_MAX_ATTEMPTS, не FAIL с первой попытки. Команда узнана -- повтора нет, FAIL как раньше.
         [ "${E2E_WAIT_RC:-0}" = "4" ] && [ "${E2E_REPLY_VERDICT:-}" = "silenced" ] && step_stt_garbage_retry "$label" "$safe"
         # #4196: ход был, но STT исказил ключевое слово фразы шага (поле stt_keys) -- шаг с stt_replay играет фразу ещё раз.
-        # #4741/#4738: rc=0/1, гипотеза не пустая, но не та фраза, шага без stt_keys -- один повтор; второй промах -- FAIL.
+        # #4741/#4738 + 17.11: rc=0/1, гипотеза не пустая, но не та фраза -- повтор до потолка; исчерпание -- FAIL.
         case "${E2E_WAIT_RC:-0}" in
             0|1) step_stt_replay "$label" "$safe" ;;
         esac
@@ -2749,7 +2752,7 @@ run_step() {  # $1=text $2=voice $3=step_label $4=expect_kind(cycle|wake-gated|b
                     else
                         log "STEP ${label}: ❌ ход проглотила тишина (stage=silenced): робот в тишине с прошлого шага/акта -- повторов нет"
                     fi
-                    emit_step "${label} FAIL turn_${E2E_REPLY_VERDICT}${E2E_STEP_RECOVERED:+ after_recover_${E2E_STEP_RECOVERED}}${E2E_STEP_WAKE_ATTEMPT:+ wake_attempt=${E2E_STEP_WAKE_ATTEMPT}/${E2E_WAKE_MAX_ATTEMPTS}} (${E2E_REPLY_REASON:--})"
+                    emit_step "${label} FAIL turn_${E2E_REPLY_VERDICT}${E2E_STEP_RECOVERED:+ after_recover_${E2E_STEP_RECOVERED}}${E2E_STEP_WAKE_ATTEMPT:+ wake_attempt=${E2E_STEP_WAKE_ATTEMPT}/${E2E_WAKE_MAX_ATTEMPTS}}${E2E_STEP_STT_ATTEMPT:+ stt_attempt=${E2E_STEP_STT_ATTEMPT}/${E2E_STT_MAX_ATTEMPTS}} (${E2E_REPLY_REASON:--})"
                     mark_fail_kind no_reaction
                     return 1 ;;
                 *)
@@ -3680,12 +3683,13 @@ sys.stdout.write(robot_speech(sys.stdin.read()))
             # сводка считает такие шаги отдельно (recovered=N).
             _recovered="${E2E_STEP_RECOVERED:+recovered_${E2E_STEP_RECOVERED}}"
             _wake_att="${E2E_STEP_WAKE_ATTEMPT:+ wake_attempt=${E2E_STEP_WAKE_ATTEMPT}/${E2E_WAKE_MAX_ATTEMPTS}}"
+            _stt_att="${E2E_STEP_STT_ATTEMPT:+ stt_attempt=${E2E_STEP_STT_ATTEMPT}/${E2E_STT_MAX_ATTEMPTS}}"
             [ -n "$_recovered" ] && log "STEP ${label}: итог — ✅ OK после восстановления харнессом (${E2E_STEP_RECOVERED}, см. E2E_RECOVER выше) — не чистый PASS (#3989)"
             if [ "$attempt_n" -gt 0 ]; then
                 log "STEP ${label}: итог — ✅ OK с попытки $((attempt_n + 1))/$((retry_acceptance + 1)); прежние попытки провалились: ${acc_fail_history:-паттерны шага}"
-                emit_step "${label} OK ${_recovered:+${_recovered} }after_retry=${attempt_n}${_wake_att}"
+                emit_step "${label} OK ${_recovered:+${_recovered} }after_retry=${attempt_n}${_wake_att}${_stt_att}"
             else
-                emit_step "${label} OK${_recovered:+ ${_recovered}}${_wake_att}"
+                emit_step "${label} OK${_recovered:+ ${_recovered}}${_wake_att}${_stt_att}"
             fi
         else
             PASS=0

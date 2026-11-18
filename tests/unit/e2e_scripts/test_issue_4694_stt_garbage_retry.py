@@ -3,9 +3,10 @@
 
 n805b run 43636148539: ждали «Робот, говори.», STT принял «робот колории», судья сказал silenced, харнесс
 написал ``E2E_STEP n805b_unsilence FAIL turn_silenced`` с первой попытки (``recover: no_wake``, ``stt_replay``
-тогда звался только при ``E2E_WAIT_RC=0``). Решение Шифу: такой случай -- повтор хода, не FAIL. Повтор один
-(всего ``STT_GARBAGE_MAX_ATTEMPTS``, считая первую). Второй промах -- честный FAIL, не зелёный. Словарь
-диалога не правится.
+тогда звался только при ``E2E_WAIT_RC=0``). Решение Шифу 17.11: такой флак -- пробовать ещё, не FAIL с первой
+попытки. Потолок -- ``STT_GARBAGE_MAX_ATTEMPTS`` (3, считая первую): вторая и третья попытки логируются,
+в вердикте виден ``stt_attempt=N/3``. Исчерпание -- честный FAIL, не зелёный. Словарь диалога не правится.
+Падение тула и отказ действия -- не этот класс, повтора нет.
 
 Run:
     /home/ros2/rob_box_project/.venv-core/bin/pytest -v tests/unit/e2e_scripts/test_issue_4694_stt_garbage_retry.py
@@ -67,20 +68,22 @@ def _names(played):
     return [p.rsplit("/", 1)[-1] for p in played]
 
 
-def test_attempt_budget_is_one_replay_and_the_only_constant():
-    """Всего две попытки фразы, считая первую: один повтор, не бесконечный ретрай. Число -- одна константа."""
-    assert eev.STT_GARBAGE_MAX_ATTEMPTS == 2
+def test_attempt_budget_is_three_and_the_only_constant():
+    """Три попытки фразы, считая первую: флак STT пробуем ещё, не бесконечно. Число -- одна константа."""
+    assert eev.STT_GARBAGE_MAX_ATTEMPTS == 3
     src = (EVENTS).read_text(encoding="utf-8")
     assert src.count("STT_GARBAGE_MAX_ATTEMPTS = ") == 1
 
 
-def test_kolorii_is_garbage_and_asks_for_exactly_one_replay():
-    """«робот колории» -- не команда «говори»: первая попытка просит повтор, вторая -- нет."""
+def test_kolorii_retries_until_the_budget_then_fails_honestly():
+    """«робот колории» -- не команда «говори»: попытки 1 и 2 просят повтор, 3-я -- честный FAIL."""
     first = eev.stt_garbage_retry("Робот, говори.", "робот колории", 1, missing="говори")
-    assert first == {"retry": 1, "reason": "retry", "attempt": 1, "max": 2}
+    assert first == {"retry": 1, "reason": "retry", "attempt": 1, "max": 3}
     second = eev.stt_garbage_retry("Робот, говори.", "робот колории", 2, missing="говори")
-    assert second["retry"] == 0 and second["reason"] == "attempts_exhausted"
-    assert second["max"] == eev.STT_GARBAGE_MAX_ATTEMPTS
+    assert second == {"retry": 1, "reason": "retry", "attempt": 2, "max": 3}
+    third = eev.stt_garbage_retry("Робот, говори.", "робот колории", 3, missing="говори")
+    assert third["retry"] == 0 and third["reason"] == "attempts_exhausted"
+    assert third["max"] == eev.STT_GARBAGE_MAX_ATTEMPTS
 
 
 def test_the_command_itself_is_not_garbage_and_is_not_replayed():
@@ -150,22 +153,40 @@ class TestRunStepSttGarbage:
         assert "STEP_BEFORE=initial" not in out
         assert _names(played) == ["cmd_a_eq.wav", "cmd_a_eq.wav"]
 
-    def test_garbage_again_is_an_honest_fail_without_a_third_play(self, tmp_path):
-        """Повтор тоже мусор: второго повтора нет, шаг красный. Зелёным без повтора не помечается."""
+    def test_garbage_until_the_budget_is_an_honest_fail_with_the_counter(self, tmp_path):
+        """Мусор на всех попытках: PLAY ровно по потолку, не больше. Вердикт красный и несёт stt_attempt."""
         out, err, _, played = _run_step(
             tmp_path,
             GARBAGE,
-            [GARBAGE_AGAIN],
+            [GARBAGE_AGAIN, GARBAGE_AGAIN],
             STEP,
             _scenario(tmp_path) + KINDS,
             replace=True,
         )
         assert "RC=1" in out, (out, err)
-        assert "PLAY_COUNT=2" in out
-        assert out.count("E2E_RECOVER stt_replay a ") == 1
+        assert "PLAY_COUNT=%d" % eev.STT_GARBAGE_MAX_ATTEMPTS in out
+        assert out.count("E2E_RECOVER stt_replay a ") == eev.STT_GARBAGE_MAX_ATTEMPTS - 1
         assert "E2E_STEP a FAIL turn_silenced after_recover_stt_replay" in out
+        assert "stt_attempt=%d/%d" % (eev.STT_GARBAGE_MAX_ATTEMPTS, eev.STT_GARBAGE_MAX_ATTEMPTS) in out
         assert "повтора нет (attempts_exhausted" in out
-        assert _names(played) == ["cmd_a_eq.wav", "cmd_a_eq.wav"]
+        assert _names(played) == ["cmd_a_eq.wav"] * eev.STT_GARBAGE_MAX_ATTEMPTS
+
+    def test_second_garbage_then_the_command_recovers_with_the_counter(self, tmp_path):
+        """Первый повтор снова мусор, второй услышан: не FAIL, в вердикте счётчик recovered-попыток."""
+        out, err, _, played = _run_step(
+            tmp_path,
+            GARBAGE,
+            [GARBAGE_AGAIN, COMMAND],
+            STEP,
+            _scenario(tmp_path) + KINDS,
+            replace=True,
+        )
+        assert "RC=0" in out, (out, err)
+        assert "PLAY_COUNT=3" in out
+        assert out.count("E2E_RECOVER stt_replay a ") == 2
+        assert "stt_attempt=2/3" in out and "stt_attempt=3/3" in out
+        assert "FAIL turn_silenced" not in out
+        assert _names(played) == ["cmd_a_eq.wav", "cmd_a_eq.wav", "cmd_a_eq.wav"]
 
     def test_a_real_silence_of_the_command_is_still_a_fail_without_replay(self, tmp_path):
         """Команда узнана («говори»), а тишина её проглотила: это не мусор STT, повтора нет, FAIL сразу."""
