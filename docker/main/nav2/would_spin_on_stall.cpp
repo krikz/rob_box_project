@@ -8,8 +8,10 @@
 //
 // Сдвиг — не новый порог. Первый тик запоминает позу. Пока база не ушла дальше
 // клетки costmap (0.05 м, resolution в nav2_params), прогресс нулевой. Поехал —
-// FAILURE, FollowPath не перебивается. halt() сбрасывает эту позу: дерево
-// одно на configure, без сброса вторая цель видит сдвиг от первой.
+// FAILURE, FollowPath не перебивается. Дерево одно на configure: без сброса
+// вторая цель видит сдвиг от первой. Humble ConditionNode::halt() final и
+// пустой, onHalted() только у StatefulActionNode — start_ сбрасывается в tick
+// при IDLE (parent resetStatus) или новом пути.
 // Точки скана и путь — в base_footprint (лидар не в базе, lslidar_n10 x≈−0.17).
 // free_spin поэтому с позой (0,0,0): map-yaw разворачивает стену за спину.
 
@@ -72,18 +74,23 @@ public:
     };
   }
 
-  void halt() override
-  {
-    start_valid_ = false;
-    BT::ConditionNode::halt();
-  }
-
   BT::NodeStatus tick() override
   {
     nav_msgs::msg::Path path;
     if (!getInput("path", path) || path.poses.empty() || !scan_ || tf_ == nullptr) {
       return BT::NodeStatus::FAILURE;
     }
+    const auto & goal = path.poses.back().pose.position;
+    const bool new_path = !goal_valid_ ||
+      std::hypot(goal.x - goal_x_, goal.y - goal_y_) > kNoProgressM;
+    // executeTick в 3.8 не ставит RUNNING до tick(); halt() сюда не зовут
+    // (ConditionNode не RUNNING). IDLE = новая попытка после resetStatus.
+    if (status() == BT::NodeStatus::IDLE || new_path) {
+      start_valid_ = false;
+    }
+    goal_x_ = goal.x;
+    goal_y_ = goal.y;
+    goal_valid_ = true;
     geometry_msgs::msg::PoseStamped pose;
     if (!current_pose(pose)) {
       return BT::NodeStatus::FAILURE;
@@ -190,6 +197,9 @@ private:
   sensor_msgs::msg::LaserScan::ConstSharedPtr scan_;
   geometry_msgs::msg::PoseStamped start_;
   bool start_valid_{false};
+  double goal_x_{0.0};
+  double goal_y_{0.0};
+  bool goal_valid_{false};
   std::string global_frame_{"map"};
   std::string base_frame_{"base_footprint"};
 };
