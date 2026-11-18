@@ -131,6 +131,8 @@ def render_db(turns: Sequence[e2e_db.DbTurn]) -> str:
         "",
         f"- A13 служебный текст в начатой речи: {len(hits)} "
         f"({'; '.join(f'{tid}: {text[:60]!r}' for tid, text in hits) or '-'}).",
+        "- неуспех по факту (речь без старта или статус не finished/done): "
+        f"{sum(1 for t in turns if not t.kept())}.",
     ]
     for provider, (total, invalid) in sorted(e2e_db.per_provider(turns).items()):
         share = f"{100.0 * invalid / total:.0f} %" if total else "n/a"

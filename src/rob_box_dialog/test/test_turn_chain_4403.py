@@ -78,9 +78,12 @@ class Ports:
         return None
 
 
-def engine_for(ports, session=None):
+def engine_for(ports, session=None, clock=None):
     ids = iter(f"t{n}" for n in range(1, 100))
-    return TurnEngine(session or Session("personality"), ports, system_prompt="Ты робот.", new_id=lambda: next(ids))
+    kwargs = {"new_id": lambda: next(ids)}
+    if clock is not None:
+        kwargs["clock"] = clock
+    return TurnEngine(session or Session("personality"), ports, system_prompt="Ты робот.", **kwargs)
 
 
 def run(engine, text="Робот, удали четыре точки"):
@@ -182,6 +185,39 @@ def test_chain_over_its_task_limit_does_not_start(monkeypatch):
     ports = Ports([answer(deletes())])
     run(engine_for(ports))
     assert ports.batches == [] and ports.said == [phrases.text(kn.CHAIN_TOO_LONG_PHRASE)]
+
+
+class Clock:
+    def __init__(self):
+        self.now = 1000.0
+
+    def __call__(self):
+        return self.now
+
+
+def test_fourth_step_does_not_start_when_the_ceiling_is_three(monkeypatch):
+    """Потолок 3: четыре удаления не стартуют вереницей, четвёртое действие владельцу не уходит."""
+    tasks = dict(kn.CHAIN_TASKS)
+    tasks[kn.CHAIN_ERRAND] = kn.ChainTask(steps_max=3, trips_max=1, term_s=None)
+    monkeypatch.setattr(kn, "CHAIN_TASKS", tasks)
+    ports = Ports([answer(deletes())])
+    run(engine_for(ports))
+    assert ports.batches == []
+    assert all(len(batch) < 4 for batch in ports.batches)
+
+
+def test_elapsed_term_skips_the_rest_and_the_running_step_finishes(monkeypatch):
+    """Срок вышел, пока шёл второй шаг: он доживает, третий и четвёртый не начинаются, итог - «не успел».
+    Срок длиннее оценки (4×3 с): иначе вереница не началась бы вовсе (``over_limit``)."""
+    tasks = dict(kn.CHAIN_TASKS)
+    tasks[kn.CHAIN_ERRAND] = kn.ChainTask(steps_max=10, trips_max=1, term_s=20.0)
+    monkeypatch.setattr(kn, "CHAIN_TASKS", tasks)
+    clock = Clock()
+    ports = Ports([answer(deletes())], on_step=lambda n: clock.__setattr__("now", clock.now + 12.0))
+    run(engine_for(ports, clock=clock))
+    assert ports.batches == [["хил-вход"], ["хил-кухня"]]
+    assert ports.said[-1].startswith(phrases.text(kn.CHAIN_TIMEOUT_PHRASE))
+    assert "Не стал: хил-диван, хил-окно." in ports.said[-1]
 
 
 def test_survived_step_after_a_stop_is_counted_by_the_owners_outcome():

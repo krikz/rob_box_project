@@ -37,8 +37,14 @@ def wall_scan(x):
         a = -math.pi + i * 2 * math.pi / N
         r = (x - LIDAR.x) / math.cos(a) if math.cos(a) > 1e-6 else math.inf
         ranges.append(r if abs(r * math.sin(a)) <= 1.0 else math.inf)
-    return types.SimpleNamespace(header=types.SimpleNamespace(frame_id="laser"), ranges=ranges, angle_min=-math.pi,
-                                 angle_increment=2 * math.pi / N, range_min=0.15, range_max=12.0)
+    return types.SimpleNamespace(
+        header=types.SimpleNamespace(frame_id="laser"),
+        ranges=ranges,
+        angle_min=-math.pi,
+        angle_increment=2 * math.pi / N,
+        range_min=0.15,
+        range_max=12.0,
+    )
 
 
 def odom(v):
@@ -76,15 +82,15 @@ def test_node_listens_to_every_twist_mux_input_but_its_own_emergency_output(node
 
 
 def test_stop_is_held_while_nav2_keeps_pushing_and_released_when_it_backs_off(node):
-    drive(node, 0.1, 0.10, 0.10)                          # въехал в 0.18 м — стоп
+    drive(node, 0.1, 0.10, 0.10)  # въехал в 0.18 м — стоп
     assert node.tracker.stopping
-    drive(node, 5.0, 0.0, 0.10)                           # встал, Nav2 толкает 5 с
+    drive(node, 5.0, 0.0, 0.10)  # встал, Nav2 толкает 5 с
     assert node.tracker.stopping
     sent = len(stops(node))
-    assert sent >= 100                                    # нулевой Twist шёл все 5 с на 20 Гц
-    drive(node, 1.0, 0.0, -0.05)                          # Nav2 сдаёт назад
+    assert sent >= 100  # нулевой Twist шёл все 5 с на 20 Гц
+    drive(node, 1.0, 0.0, -0.05)  # Nav2 сдаёт назад
     assert not node.tracker.stopping
-    assert len(stops(node)) - sent <= 12                  # отпустил за release_s (+ такт)
+    assert len(stops(node)) - sent <= 12  # отпустил за release_s (+ такт)
 
 
 def test_without_a_command_the_stop_releases_after_stop_hold_like_before(node):
@@ -94,16 +100,21 @@ def test_without_a_command_the_stop_releases_after_stop_hold_like_before(node):
 
 
 def test_new_thresholds_are_node_parameters(node_params):
-    node_params.update(footprint_file=str(CONFIG / "nav2" / "nav2_params.yaml"), side_stop_m=0.05,
-                       spin_stop_m=0.07, corridor_margin_m=0.03)
+    node_params.update(
+        footprint_file=str(CONFIG / "nav2" / "nav2_params.yaml"),
+        side_stop_m=0.05,
+        spin_stop_m=0.07,
+        corridor_margin_m=0.03,
+    )
     n = guard.ProximityGuardNode()
     assert (n.th.side_stop_m, n.th.spin_stop_m, n.th.corridor_margin_m) == (0.05, 0.07, 0.03)
     assert guard._DEFAULTS["side_stop_m"] == px.Thresholds.side_stop_m  # умолчания — из одного места
 
 
 def test_missing_twist_mux_file_disables_only_the_hold(node_params, tmp_path):
-    node_params.update(footprint_file=str(CONFIG / "nav2" / "nav2_params.yaml"),
-                       twist_mux_file=str(tmp_path / "nope.yaml"))
+    node_params.update(
+        footprint_file=str(CONFIG / "nav2" / "nav2_params.yaml"), twist_mux_file=str(tmp_path / "nope.yaml")
+    )
     n = guard.ProximityGuardNode()
     assert list(n.mux.sources) == []
     assert "twist_mux" in str(n.get_logger().error.call_args)
@@ -132,8 +143,11 @@ def _sound_msgs(n):
 
 
 def _hil_node(node_params, hil):
-    node_params.update(footprint_file=str(CONFIG / "nav2" / "nav2_params.yaml"),
-                       twist_mux_file=str(CONFIG / "twist_mux" / "twist_mux.yaml"), hil_mute_alarm=hil)
+    node_params.update(
+        footprint_file=str(CONFIG / "nav2" / "nav2_params.yaml"),
+        twist_mux_file=str(CONFIG / "twist_mux" / "twist_mux.yaml"),
+        hil_mute_alarm=hil,
+    )
     n = guard.ProximityGuardNode()
     n._mount = LIDAR
     n.clock = 0.0
@@ -153,11 +167,11 @@ def test_hil_mutes_sound_and_speech_but_keeps_lights_and_emergency_stop(node_par
     lights = []
     monkeypatch.setattr(guard.expression_client, "express", lambda *a, **kw: lights.append(kw["gesture"]))
     drive(n, 3.0, 0.10, 0.10)
-    assert n.tracker.stopping and len(stops(n)) > 0       # безопасность не тронута
-    assert lights                                          # мигалка осталась
-    assert _sound_msgs(n) == [] and spoken == []           # писка и «Осторожно!» нет
+    assert n.tracker.stopping and len(stops(n)) > 0  # безопасность не тронута
+    assert lights  # мигалка осталась
+    assert _sound_msgs(n) == [] and spoken == []  # писка и «Осторожно!» нет
     muted = [c for c in n.get_logger().info.call_args_list if "HIL" in str(c)]
-    assert len(muted) == 1                                 # одна строка на вход в зону, без спама
+    assert len(muted) == 1  # одна строка на вход в зону, без спама
 
 
 def test_live_mode_still_beeps_and_speaks(node_params, spoken, monkeypatch):
@@ -173,14 +187,17 @@ def _node_from_env(node_params):
     return guard.ProximityGuardNode()
 
 
-@pytest.mark.parametrize("sim, guard_sound, muted", [
-    ("true", "off", True),        # HIL + флаг off -> глушим
-    ("true", "on", False),        # HIL, звук включён
-    ("true", None, False),        # HIL, флага нет -> умолчание: звучит
-    ("false", "off", False),      # боевой режим: флаг не действует
-    (None, "off", False),
-    (None, None, False),
-])
+@pytest.mark.parametrize(
+    "sim, guard_sound, muted",
+    [
+        ("true", "off", True),  # HIL + флаг off -> глушим
+        ("true", "on", False),  # HIL, явно on -> звук есть
+        ("true", None, True),  # HIL, флага нет -> умолчание off: глушим
+        ("false", "off", False),  # боевой режим: флаг не действует
+        (None, "off", False),
+        (None, None, False),
+    ],
+)
 def test_mute_only_in_hil_with_guard_sound_off(node_params, monkeypatch, sim, guard_sound, muted):
     for name, val in ((px.SIM_TIME_ENV, sim), (px.GUARD_SOUND_ENV, guard_sound)):
         monkeypatch.delenv(name, raising=False)
@@ -189,11 +206,33 @@ def test_mute_only_in_hil_with_guard_sound_off(node_params, monkeypatch, sim, gu
     assert _node_from_env(node_params).hil_mute is muted
 
 
-def test_hil_default_keeps_sound_and_speech(node_params, spoken, monkeypatch):
-    n = _hil_node(node_params, False)  # HIL с HIL_GUARD_SOUND=on: hil_mute_alarm=False
+def test_hil_explicit_on_keeps_sound_and_speech(node_params, spoken, monkeypatch):
+    n = _hil_node(node_params, False)  # явно HIL_GUARD_SOUND=on: hil_mute_alarm=False
     monkeypatch.setattr(guard.expression_client, "express", lambda *a, **kw: None)
     drive(n, 3.0, 0.10, 0.10)
     assert _sound_msgs(n) and spoken
+
+
+def test_hil_default_mutes_sound_and_speech(node_params, spoken, monkeypatch):
+    # HIL без явного флага: hil_mute_sound читает умолчание off
+    monkeypatch.delenv(px.GUARD_SOUND_ENV, raising=False)
+    monkeypatch.setenv(px.SIM_TIME_ENV, "true")
+    node_params.update(
+        footprint_file=str(CONFIG / "nav2" / "nav2_params.yaml"),
+        twist_mux_file=str(CONFIG / "twist_mux" / "twist_mux.yaml"),
+    )
+    # hil_mute_alarm не передаём — нода берёт px.hil_mute_sound(os.environ)
+    n = guard.ProximityGuardNode()
+    n._mount = LIDAR
+    n.clock = 0.0
+    n._now = lambda: n.clock
+    assert n.hil_mute is True
+    lights = []
+    monkeypatch.setattr(guard.expression_client, "express", lambda *a, **kw: lights.append(kw["gesture"]))
+    drive(n, 3.0, 0.10, 0.10)
+    assert n.tracker.stopping and len(stops(n)) > 0
+    assert lights
+    assert _sound_msgs(n) == [] and spoken == []
 
 
 def test_split_hil_effects_filters_only_in_hil():
@@ -206,6 +245,8 @@ def test_split_hil_effects_filters_only_in_hil():
 
 def test_hil_overlay_and_script_pass_the_same_flag_to_proximity_guard():
     overlay = (REPO / "docker" / "main" / "compose.hil.yaml").read_text(encoding="utf-8")
+    conf = (REPO / "scripts" / "hil" / "hil.conf").read_text(encoding="utf-8")
     assert "proximity-guard:\n    environment:\n      - USE_SIM_TIME=true" in overlay
-    assert "HIL_GUARD_SOUND=${HIL_GUARD_SOUND:-on}" in overlay
+    assert "HIL_GUARD_SOUND=${HIL_GUARD_SOUND:-off}" in overlay
+    assert "HIL_GUARD_SOUND:=off}" in conf
     assert "proximity-guard" in (REPO / "scripts" / "hil" / "hil.sh").read_text(encoding="utf-8")

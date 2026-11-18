@@ -13,7 +13,9 @@ tempo),
 ``/cmd_vel`` (turn signals / brake light; topic = parameter ``cmd_vel_topic``), ``/battery_state``
 (low battery / charging), ``~/scene`` (debug: ``name`` or ``name:seconds``). No voice owner for
 ``voice_timeout_s`` (no messages, no voice publishers in
-the graph) -> ``sleep``; it is back -> ``wakeup`` -> idle.
+the graph) -> ``sleep``; it is back -> ``wakeup`` -> idle. Nobody in a real frame and no utterance for
+``SOCIAL_SLEEP_AFTER_S`` (10 min, #3780 C), and the music is off -> the same ``sleep``; a face or an
+utterance -> a short ``wakeup``, then the ordinary face. Waking does not speak.
 """
 from __future__ import annotations
 
@@ -24,7 +26,13 @@ from typing import Optional
 import rclpy
 from rclpy.node import Node
 from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
-from rob_box_dialog_msgs.msg import ExpressionEvent, ExpressionRequest, SessionState, SpeechEnvelope, SpeechEvent
+from rob_box_dialog_msgs.msg import (
+    ExpressionEvent, ExpressionRequest, SessionState, SpeechEnvelope, SpeechEvent, Utterance,
+)
+try:
+    from rob_box_perception_msgs.msg import VisionEvent
+except ImportError:  # образ без сообщений зрения: лицо в кадре не будит, пустой кадр (String) всё ещё спит
+    VisionEvent = None
 from geometry_msgs.msg import Twist
 from sensor_msgs.msg import BatteryState, Image
 from std_msgs.msg import Bool, Int32, String
@@ -38,6 +46,13 @@ from .outside import battery_percent
 from .face_director import FaceDirector, GazeTrack, parse_animation_request
 
 VOICE_OWNER_TOPIC = '/voice/speech/event'
+#: Реплика человека (не чат): «кто-то обратился». Чат робота не будит.
+UTTERANCE_TOPIC = '/voice/stt/utterance'
+#: Кадр зрения (#3780 C). Детекции будят; «пусто» — отдельный топик, не контекст Личности.
+FRAME_TOPIC = '/vision/hailo/events'
+FRAME_CLEAR_TOPIC = '/vision/frame_clear'
+#: Кто в кадре считается человеком. Выдумка заглушки (``stub``) — не человек.
+PRESENCE_TYPES = ('person', 'face')
 #: Publishers in the graph that mean «voice-assistant is up» (tts_node, audio_node).
 VOICE_PRESENCE_TOPICS = (VOICE_OWNER_TOPIC, '/audio/direction')
 #: Азимут собеседника из ``/dialog/session`` (ADR-0150 §7.5, #3695) держит взгляд столько секунд: сырой DOA
@@ -150,6 +165,10 @@ class FaceNode(Node):
         self.create_subscription(String, '~/scene', self._on_scene_debug, 10)
         self.create_subscription(Twist, cmd_vel_topic, self._on_cmd_vel, 10)
         self.create_subscription(BatteryState, battery_topic, self._on_battery, 10)
+        self.create_subscription(Utterance, UTTERANCE_TOPIC, self._on_utterance, 10)
+        self.create_subscription(String, FRAME_CLEAR_TOPIC, self._on_frame_clear, 10)
+        if VisionEvent is not None:
+            self.create_subscription(VisionEvent, FRAME_TOPIC, self._on_frame_event, 10)
 
     # -- inputs ---------------------------------------------------------------
     def _on_envelope(self, msg) -> None:
@@ -178,6 +197,20 @@ class FaceNode(Node):
 
     def _on_vad(self, msg) -> None:
         self.director.gaze.on_vad(bool(msg.data), time.time())
+
+    def _on_utterance(self, msg) -> None:
+        """Реплика с микрофона — кто-то обратился. Чат и пустой текст не будят."""
+        if msg.source == Utterance.SOURCE_RESPEAKER and (msg.text or '').strip():
+            self.director.note_someone(time.time())
+
+    def _on_frame_clear(self, msg) -> None:
+        """Факт «кадр пуст» (/vision/frame_clear). Не детекция и не выдумка."""
+        self.director.note_frame(True, time.time())
+
+    def _on_frame_event(self, msg) -> None:
+        """Лицо или человек в кадре будит. Выдумка заглушки кадр не заполняет."""
+        if msg.event_type in PRESENCE_TYPES and msg.source_camera != 'stub' and msg.event_type != 'stub':
+            self.director.note_frame(False, time.time())
 
     def _on_music_state(self, msg) -> None:
         if not self.director.on_music_state(msg.data, time.time()):

@@ -84,7 +84,16 @@ class FakeTransport:
 
 
 class FakeDocker:
-    def __init__(self, present=(), fail=(), running=(), hotpatched=()) -> None:
+    def __init__(
+        self,
+        present=(),
+        fail=(),
+        running=(),
+        hotpatched=(),
+        *,
+        check_errors=None,
+        topics=None,
+    ) -> None:
         self.present = set(present)
         self.fail = set(fail)
         self.pulled: list[str] = []
@@ -93,6 +102,13 @@ class FakeDocker:
         self.image_ids = {}
         self.compose_images = {}
         self.compose_probe_errors = {}
+        self.commands: list[tuple] = []
+        # digest-окружение последнего compose_up (service → ref); пустой/None → {}
+        self.compose_up_images: dict = {}
+        # ROLE_CHECKS: заранее заданный fail detail по имени проверки; topics — список,
+        # который фейк «видит» (без ros2). Пустой topics + non-empty expected → fail.
+        self.check_errors = dict(check_errors or {})
+        self.topics = list(topics or [])
 
     def image_present(self, ref):
         return ref in self.present
@@ -105,7 +121,11 @@ class FakeDocker:
             if service in self.compose_probe_errors:
                 error = self.compose_probe_errors[service]
                 raise StageError(
-                    "compose_probe_failed", error, service=service, container=f"{service}-old", error=error
+                    "compose_probe_failed",
+                    error,
+                    service=service,
+                    container=f"{service}-old",
+                    error=error,
                 )
         return {service: sorted(ids) for service, ids in self.compose_images.items()}
 
@@ -120,6 +140,37 @@ class FakeDocker:
 
     def hotpatched_containers(self):
         return self.hotpatched
+
+    def compose_down(self, project_dir):
+        self.commands.append(("compose_down", str(project_dir)))
+
+    def compose_up(self, project_dir, images=None):
+        # Применяем digest-окружение как есть: не подставляем теги канала/сборки.
+        applied = dict(images or {})
+        self.compose_up_images = applied
+        self.commands.append(("compose_up", str(project_dir), applied))
+
+    def check_container_status(self, project_dir):
+        """Запись вызова ROLE_CHECKS; None = ok, str = fail detail. Без сети."""
+        self.commands.append(("check_container_status", str(project_dir)))
+        return self.check_errors.get("check_container_status")
+
+    def check_container_logs(self, project_dir):
+        """Запись вызова ROLE_CHECKS; None = ok, str = fail detail. Без сети."""
+        self.commands.append(("check_container_logs", str(project_dir)))
+        return self.check_errors.get("check_container_logs")
+
+    def check_ros2_topics(self, expected_topics):
+        """Сверка expected_topics с self.topics (заранее заданный список, не ros2)."""
+        expected = list(expected_topics)
+        self.commands.append(("check_ros2_topics", expected))
+        forced = self.check_errors.get("check_ros2_topics")
+        if forced is not None:
+            return forced
+        missing = [t for t in expected if t not in self.topics]
+        if missing:
+            return f"missing topics: {missing}"
+        return None
 
 
 class FakeZenoh:

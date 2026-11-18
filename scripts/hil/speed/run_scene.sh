@@ -9,7 +9,7 @@
 # Сброс позы: gazebo пересоздаётся со спавном сцены, на Main Pi пересоздаются сервисы с sim time
 # (свежая карта rtabmap в своём каталоге, свежие costmap, оверлей Nav2 со скоростью).
 # Пишет $SPEED_OUT/<метка>/: result.json, track.csv, pose_err.csv, bench.out, guard.log, nav2.log,
-# nav2_missed.txt, cpu.log, main.json, verdict.txt; при неудачном подъёме — gazebo_attempt_N.log;
+# nav2_missed.txt, nav2_loop_skips.txt, nav2_skips.log, cpu.log, main.json, verdict.txt; при неудачном подъёме — gazebo_attempt_N.log;
 # строку вердикта — в $SPEED_OUT/ledger.jsonl.
 # Только ключи (BatchMode), пароли не используются.
 set -uo pipefail
@@ -104,7 +104,7 @@ case "$st" in running*) log "❌ ros2-control работает ($st) — сто�
 extra=""
 [ -n "$overlay" ] && extra="-f /tmp/hil/nav2tune.compose.yaml"
 T0=$(mn "date -u +%Y-%m-%dT%H:%M:%SZ")
-mn "mkdir -p $maps && cd ~/rob_box_project/docker/main && HIL_MAPS_DIR=$maps HIL_RTABMAP_MODE=mapping HIL_GUARD_SOUND=\${HIL_GUARD_SOUND:-on} NAV2TUNE_OVERLAYS='$overlay' docker compose -f docker-compose.yaml -f /tmp/hil/main.images.yaml -f /tmp/hil/main.hil.yaml $extra up -d --no-deps --pull never --force-recreate $MAINSVC" >>"$RES/run.log" 2>&1 \
+mn "mkdir -p $maps && cd ~/rob_box_project/docker/main && HIL_MAPS_DIR=$maps HIL_RTABMAP_MODE=mapping HIL_GUARD_SOUND=\${HIL_GUARD_SOUND:-off} NAV2TUNE_OVERLAYS='$overlay' docker compose -f docker-compose.yaml -f /tmp/hil/main.images.yaml -f /tmp/hil/main.hil.yaml $extra up -d --no-deps --pull never --force-recreate $MAINSVC" >>"$RES/run.log" 2>&1 \
     || { log "❌ Main: пересоздание не прошло"; exit 4; }
 mn "docker inspect -f '{{range .Config.Env}}{{println .}}{{end}}' nav2 | grep -E 'NAV2_PARAMS_OVERLAYS|USE_SIM_TIME'" >>"$RES/run.log" 2>&1
 # 3–4. сим вверх со спавном сцены, ровно один /controller_manager. Сторож gazebo отказывает, пока не видит
@@ -173,17 +173,36 @@ fi
 sleep 3
 mn "cat /tmp/hil/speed_cpu_$label.log" >"$RES/cpu.log"
 mn "docker logs --since $T0 proximity-guard 2>&1" >"$RES/guard.log"
-mn "docker logs --since $T0 nav2 2>&1 | grep -vE 'missed its desired rate'" >"$RES/nav2.log"
-missed=$(mn "docker logs --since $T0 nav2 2>&1 | grep -cE 'missed its desired rate'")
+# Пропуски такта — уже существующие WARN Nav2; period 20 Hz / bt 10 мс не меняем.
+# Расклад: scripts/hil/nav2_loop_skips.py (controller / BT / planner). Порог вердикта не вводим.
+mn "docker logs --since $T0 nav2 2>&1 | grep -E 'missed its desired rate|missed desired rate|Behavior Tree tick rate'" >"$RES/nav2_skips.log" || true
+mn "docker logs --since $T0 nav2 2>&1 | grep -vE 'missed its desired rate|missed desired rate|Behavior Tree tick rate'" >"$RES/nav2.log"
 mn "docker logs --since $T0 rtabmap 2>&1 | tail -100" >"$RES/rtabmap.log"
+SKIP_PY="$(cygpath -m "$HERE/../nav2_loop_skips.py" 2>/dev/null || echo "$HERE/../nav2_loop_skips.py")"
+python "$SKIP_PY" "$RES/nav2_skips.log" | tee "$RES/nav2_loop_skips.txt" | tee -a "$RES/run.log"
+# nav2_missed = rate_missed (controller+planner), как прежний grep -cE 'missed its desired rate'
+missed=$(sed -n 's/.*rate_missed=\([0-9][0-9]*\).*/\1/p' "$RES/nav2_loop_skips.txt" | tail -1)
+missed=${missed:-0}
 echo "$missed" >"$RES/nav2_missed.txt"
 python "$PYHERE/speed_verdict.py" cpu "$RES/cpu.log" >"$RES/cpu.json"
-python - "$RES/cpu.json" "$missed" "$RES/main.json" <<'EOF'
-import json, sys
+python - "$RES/cpu.json" "$missed" "$RES/nav2_loop_skips.txt" "$RES/main.json" <<'EOF'
+import json, sys, re
 d = json.load(open(sys.argv[1], encoding="utf-8"))
 d["nav2_missed"] = int(sys.argv[2] or 0)
-json.dump(d, open(sys.argv[3], "w", encoding="utf-8"), ensure_ascii=False)
+line = open(sys.argv[3], encoding="utf-8").read().strip() if sys.argv[3] else ""
+m = re.search(
+    r"LOOP_SKIPS controller=(\d+) bt=(\d+) planner=(\d+) rate_missed=(\d+)",
+    line,
+)
+if m:
+    d["nav2_loop_skips"] = {
+        "controller": int(m.group(1)),
+        "bt": int(m.group(2)),
+        "planner": int(m.group(3)),
+        "rate_missed": int(m.group(4)),
+    }
+json.dump(d, open(sys.argv[4], "w", encoding="utf-8"), ensure_ascii=False)
 EOF
 python "$PYHERE/speed_verdict.py" run "$RES/result.json" "$RES/main.json" --speed "$([ "$speed" = base ] && echo 0.15 || echo "$speed")" \
     --scene "$scene" --rep "$rep" --label "$label" --ledger "$SPEED_OUT/ledger${SPEED_LEDGER_SUFFIX:-}.jsonl" | tee "$RES/verdict.txt" | tee -a "$RES/run.log"
-log "стопов защиты (→ stop): $(grep -c '→ stop' "$RES/guard.log"); missed rate: $missed"
+log "стопов защиты (→ stop): $(grep -c '→ stop' "$RES/guard.log"); $(tr -d '\n' <"$RES/nav2_loop_skips.txt" 2>/dev/null || echo "missed rate: $missed")"

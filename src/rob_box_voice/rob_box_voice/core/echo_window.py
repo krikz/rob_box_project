@@ -65,27 +65,11 @@ from __future__ import annotations
 import threading
 import time
 from dataclasses import dataclass, replace
-from typing import (
-    AbstractSet,
-    Any,
-    Callable,
-    Dict,
-    FrozenSet,
-    Optional,
-    Sequence,
-    Set,
-    Tuple,
-)
+from typing import AbstractSet, Any, Callable, Dict, FrozenSet, Optional, Sequence, Set, Tuple
 
 from rob_box_core import speech_client
 from rob_box_dialog import knowledge as kn
-from rob_box_dialog.words import (
-    STOP_CLEAR,
-    has_wake_word,
-    name_tokens,
-    stop_verdict,
-    words_in_order,
-)
+from rob_box_dialog.words import STOP_CLEAR, has_wake_word, name_tokens, stop_verdict, words_in_order
 
 #: Где звучал голос: во время речи робота, в эхо-окне после её конца (робот молчит), в тишине.
 SPEECH, GRACE, FREE = "speech", "grace", "free"
@@ -178,9 +162,7 @@ def stop_passes(text: str, wake_words: Sequence[str]) -> bool:
     Правило то же, по которому диалог рвёт речь по ``/dialog/interrupt_request``: вейк (``has_wake_word``) и
     ``stop_verdict == clear`` — «Робот, хватит», «Робот, всё, хватит, замолчи». Эхо собственной речи без вейка
     и стоп-слова первым словом команды не проходит."""
-    return (
-        has_wake_word(text, wake_words) and stop_verdict(text, wake_words) == STOP_CLEAR
-    )
+    return has_wake_word(text, wake_words) and stop_verdict(text, wake_words) == STOP_CLEAR
 
 
 @dataclass(frozen=True)
@@ -312,11 +294,13 @@ class SpeechJournal:
 class Admission:
     """Решение по доставленной фразе ReSpeaker: ``verdict`` и строка лога ``note`` (``""`` — молча); ``spoken`` —
     реплики робота, звучавшие рядом с фразой: с ними после распознавания сверяются её слова (#4145).
+    ``heard`` — где звучал голос (``SPEECH`` / ``GRACE`` / ``FREE``); пусто — места неизвестны (шлем, ``OPEN``).
     """
 
     verdict: str
     note: str = ""
     spoken: Tuple[Spoken, ...] = ()
+    heard: FrozenSet[str] = frozenset()
 
     @property
     def dropped(self) -> bool:
@@ -327,9 +311,7 @@ class Admission:
         """После распознавания (и на каждом промежуточном результате STT): фраза идёт дальше? Из эхо-окна и короткая при
         звучащей речи — только ясный стоп с вейком. Пока фраза не пропущена, диалог о ней не знает: ни результата,
         ни ``/dialog/interrupt_request`` (``stt_node._offer_interrupt``)."""
-        return self.verdict not in STOP_ONLY_VERDICTS or stop_passes(
-            text or "", wake_words
-        )
+        return self.verdict not in STOP_ONLY_VERDICTS or stop_passes(text or "", wake_words)
 
     def echo_note(self, text: Optional[str], duration_s: float) -> str:
         """Строка лога отброшенной после распознавания фразы: эхо-окно или короткий обрывок при речи робота."""
@@ -431,7 +413,10 @@ class EchoWindow:
         return bool(utterance_id) and self._voices.get(utterance_id, False)
 
     def where(self) -> str:
-        """Где мы сейчас: говорит робот, эхо-окно после его речи или тишина."""
+        """Где мы сейчас: говорит робот, эхо-окно после его речи или тишина.
+
+        ``ended_at`` до первой речи — ``-inf``, поэтому «робот ещё не говорил» тоже ``FREE``, не эхо.
+        """
         if self.speaking:
             return SPEECH
         return GRACE if self._clock() - self.ended_at < self.grace_s else FREE
@@ -495,6 +480,19 @@ class EchoWindow:
 OPEN = Admission(PASS)
 
 
+def empty_reject_reason(admission: Admission) -> str:
+    """Причина пустого STT из факта эхо-окна (SpeechEvent + VAD), без порога громкости (#4030).
+
+    Голос фразы звучал во время речи робота (:data:`SPEECH`) — ``rejected_while_speaking``.
+    Иначе пустой итог в тишине или без мест голоса — ``rejected_empty``. Музыку окно не знает
+    (снимок плеера у ``audio_node``): отдельного reason нет.
+    """
+    heard = admission.heard or frozenset()
+    if SPEECH in heard:
+        return "rejected_while_speaking"
+    return "rejected_empty"
+
+
 def decide(
     heard: AbstractSet[str],
     *,
@@ -510,31 +508,36 @@ def decide(
     не молчит, а решается признаками звука (:func:`_reply`). ``began_s`` — через сколько секунд после конца речи робота
     начался голос фразы (``-inf`` — во время речи, ``None`` — неизвестно)."""
     software = aec_mode == "software"
+    places = frozenset(heard)
     if software and speaking:
         return Admission(
             DROP_SPEAKING,
             f"🔇 [software AEC] Игнор фразы {duration_s:.2f}с: робот говорит",
+            heard=places,
         )
     if reply_open and not speaking and heard and FREE not in heard:
-        return _reply(heard, duration_s, began_s)
+        return replace(_reply(heard, duration_s, began_s), heard=places)
     if heard and set(heard) <= {GRACE}:
         return Admission(
             STOP_ONLY,
             f"🔇 [issue 989/#4072] Фраза {duration_s:.2f}с звучала только в эхо-окне после речи робота — "
             "распознаю, пропущу только стоп с вейком",
+            heard=places,
         )
     if speaking and duration_s < SHORT_DURING_SPEECH_S:
         return Admission(
             SHORT_STOP_ONLY,
             f"🔇 [hardware AEC] Короткая фраза {duration_s:.2f}с при звучащем TTS — распознаю, пропущу только стоп "
             "с вейком",
+            heard=places,
         )
     if speaking:
         return Admission(
             PASS,
             f"🎤 [hardware AEC] Фраза {duration_s:.2f}с во время TTS — обрабатываем (возможно прерывание)",
+            heard=places,
         )
-    return Admission(PASS)
+    return Admission(PASS, heard=places)
 
 
 def _reply(heard: AbstractSet[str], duration_s: float, began_s: Optional[float]) -> Admission:
@@ -597,9 +600,7 @@ def watch(
         if aec_mode == "software":
             node.get_logger().info(_SOFTWARE_EDGE_LOG[speaking])
         else:
-            node.get_logger().debug(
-                _HARDWARE_EDGE_LOG[speaking].format(grace_s=window.grace_s)
-            )
+            node.get_logger().debug(_HARDWARE_EDGE_LOG[speaking].format(grace_s=window.grace_s))
 
     speech_client.watch_speaking(node, on_speech, watch=window.journal)
     node.create_subscription(
@@ -608,9 +609,7 @@ def watch(
         window.journal.on_request,
         _QOS_DEPTH,
     )
-    node.create_subscription(
-        vad_type, VAD_TOPIC, lambda msg: window.on_vad(bool(msg.data)), _QOS_DEPTH
-    )
+    node.create_subscription(vad_type, VAD_TOPIC, lambda msg: window.on_vad(bool(msg.data)), _QOS_DEPTH)
     if reply_type is not None:
         node.create_subscription(
             reply_type,
@@ -695,9 +694,7 @@ class EchoVerdicts:
                 held.changes = changes
                 return
             self._held.pop(utterance_id, None)
-        self._finish(
-            utterance_id, HUMAN if held is None else held.verdict, changes, _call
-        )
+        self._finish(utterance_id, HUMAN if held is None else held.verdict, changes, _call)
 
     def on_verdict(self, utterance_id: str, echo: bool) -> None:
         """Вердикт ``stt_node`` по фразе: человек — профили как раньше, эхо — не трогать."""
@@ -722,11 +719,7 @@ class EchoVerdicts:
         """
         now = self._clock()
         with self._lock:
-            due = [
-                (u, h, h.changes)
-                for u, h in self._held.items()
-                if h.verdict is None and h.deadline <= now
-            ]
+            due = [(u, h, h.changes) for u, h in self._held.items() if h.verdict is None and h.deadline <= now]
             for _utterance_id, held, _changes in due:
                 held.verdict, held.changes = NO_VERDICT, None
         for utterance_id, _held, changes in due:

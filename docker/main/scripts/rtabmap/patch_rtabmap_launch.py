@@ -65,8 +65,15 @@ RTABMAP_PARAMS = {
 #   Odom/ResetCountdown=1 (#4495, HIL Depot 06.11): without it, after one failed registration
 #   (fast in-place turn, far walls) ICP odometry stayed `lost` for the rest of the run (8309 of
 #   8946 frames). With 1 it resets after one lost frame and resumes from the last good pose.
+#   deskewing (#4617): ROS parameter of the node, default false in humble
+#   (rtabmap_odom icp_odometry.cpp, constructor deskewing_(false)). Not Odom/Deskewing:
+#   that core flag is already true and only deskews a cloud that already has per-point
+#   times. With deskewing true and guess_frame_id set (compose odom_guess_frame_id:=odom),
+#   callbackScan projects the LaserScan through TF over scan.time_increment. slerp and
+#   IMU deskew stay off: no new algorithm, and RTABMAP_IMU_TOPIC is empty on the robot.
 ICP_ODOMETRY_PARAMS = {
     "Odom/ResetCountdown": "1",
+    "deskewing": True,
 }
 
 # Patch 2: legacy remap -> current remap (AprilTag detections)
@@ -78,9 +85,22 @@ ICP_PARAMS_OPEN = "parameters=[{"
 ICP_SENTINEL = f'"{next(iter(ICP_ODOMETRY_PARAMS))}"'
 
 
+def render_param_value(value) -> str:
+    """Launch-dict literal. Bool stays a bool: ``icp_odometry`` declares ``deskewing`` as bool.
+
+    A quoted ``"true"`` is a string and ROS 2 refuses the override (type mismatch), so the
+    node would keep its default ``false``. RTAB-Map ``Odom/*`` keys are strings and stay quoted.
+    """
+    if isinstance(value, bool):
+        return "True" if value else "False"
+    if not isinstance(value, str):
+        raise TypeError(f"launch param must be str or bool, got {type(value).__name__}")
+    return f'"{value}"'
+
+
 def render_params(params: dict) -> str:
     """``{"A/B": "1"}`` → lines ``"A/B": "1",`` indented as the launch file dicts."""
-    return "".join(f'\n                "{key}": "{value}",' for key, value in params.items())
+    return "".join(f'\n                "{key}": {render_param_value(value)},' for key, value in params.items())
 
 
 INJECTED_PARAMS = render_params(RTABMAP_PARAMS).lstrip("\n") + "\n"

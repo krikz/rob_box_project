@@ -35,8 +35,12 @@ runtime-скиптами).
 `L-Build Pi Services.yml` →
 `scripts/ci/push-image-versions.sh` (retry+rebase+timeout). Per-service ветки
 `ci/image-visions-main/-vision` НЕ используются (был реверт в #1244, см. §ADR-0094).
-Это устраняет класс конфликтов при local-деплое, но создаёт риск phantom
-env-переменных — см. ADR-0094 §1.4 и `scripts/ci/check_image_versions_usage.sh`.
+Это устраняет класс конфликтов при local-деплое (деплой читает файл из
+текущей ветки, отдельную `ci/image-versions-*` не чекаутит), но создаёт риск
+phantom env-переменных — см. ADR-0094 §1.4 и
+`scripts/ci/check_image_versions_usage.sh`. С 17.11.2026 (issue #4763) деплой
+source'ит этот файл и при `registry_source=local`: SHA-тег сборка пушит в
+local registry до записи в файл.
 
 ## Backfill для уже-прошедших релиз-тегов
 

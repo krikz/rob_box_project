@@ -1,0 +1,16 @@
+# Манифест приёмки (#4694). Пять полей раздельно:
+# source_sha ≠ core_package_version ≠ image_tag ≠ scenario_id ≠ proven_runtime.
+#
+# Это не docker/build-manifest.yaml (состав сборки) и не
+# night_marathon_manifest.json (порядок актов). Сборка, новый ref сценария
+# или git SHA сами по себе runtime не доказывают.
+#
+# proven_runtime пуст, пока живой прогон не записал raw
+# (run_id + image_digest / started_at / installed_core).
+
+schema: 1
+source_sha: ""
+core_package_version: ""
+image_tag: ""
+scenario_id: ""
+proven_runtime: null

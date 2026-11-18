@@ -148,6 +148,27 @@ def test_minimax_language_none_keeps_ros_param_behaviour() -> None:
     assert kwargs.get("language") is None
 
 
+def test_minimax_chain_speaks_hindi_not_a_refusal() -> None:
+    """hi доходит до MiniMax: деванагари не подменяется фразой-отказом."""
+    node = _playback_node()
+    node.provider_chain = ["minimax", "yandex", "silero"]
+    hindi = "नमस्ते दुनिया"
+    _run(node, language="hi", text=hindi)
+    spoken = node._synthesize_minimax.call_args[0][0]
+    assert spoken == hindi
+    assert node._synthesize_minimax.call_args.kwargs.get("language") == "hi"
+
+
+def test_yandex_only_chain_speaks_hindi_refusal() -> None:
+    """Yandex деванагари не читает: честная фраза, а не тишина (#4763)."""
+    node = _yandex_node()
+    node.provider_chain = ["yandex", "silero"]
+    _run(node, language="hi", text="नमस्ते दुनिया")
+    spoken = node._yandex_tts.synthesize_np.call_args[0][0]
+    assert "नमस्ते" not in spoken
+    assert "хинди" in spoken
+
+
 def test_silero_speaks_notice_instead_of_foreign_text() -> None:
     """Silero (модель v5_ru) не должен читать французский русской фонетикой.
 

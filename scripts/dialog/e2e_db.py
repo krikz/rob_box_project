@@ -31,6 +31,8 @@ class DbTurn:
     spoken: List[str] = field(default_factory=list)
     actions: List[Dict[str, Any]] = field(default_factory=list)
     commands: List[Dict[str, Any]] = field(default_factory=list)
+    requested: List[str] = field(default_factory=list)  # speech_id реплик, отданных владельцу речи
+    awaits_start: bool = False  # реплика в динамики: без SpeechEvent started отчёт хода не успех
     aggregate: Dict[str, Any] = field(default_factory=dict)
 
     @property
@@ -47,6 +49,20 @@ class DbTurn:
     @property
     def tools_attempted(self) -> Tuple[str, ...]:
         return tuple(a.get("tool", "") for a in self.actions)
+
+    def kept(self, owed_tools: Sequence[str] = ()) -> bool:
+        """Успех хода по фактам e2e, не по тексту обещания (ADR-0148).
+
+        Речь в динамики запрошена (``speech_requested`` с ``awaits_start``) и ``SpeechEvent started`` нет — не успех.
+        Принятый тул без события ``action`` — не успех. Чат и шлем ``awaits_start`` не ставят. Агрегат со статусом
+        вне ``finished``/``done`` уже не успех."""
+        status = str(self.aggregate.get("status") or "")
+        if status and status not in ("finished", "done"):
+            return False
+        if self.awaits_start and not self.started:
+            return False
+        acted = {a.get("tool") for a in self.actions}
+        return all(tool in acted for tool in owed_tools)
 
 
 def load(path: Path) -> List[DbTurn]:
@@ -66,6 +82,9 @@ def load(path: Path) -> List[DbTurn]:
 def _apply(turn: DbTurn, ts: float, kind: str, text: str, data: Dict[str, Any]) -> None:
     if kind == "user":
         turn.user_ts, turn.user_text = ts, text
+    elif kind == "speech_requested":
+        turn.requested.append(str(data.get("speech_id") or text))
+        turn.awaits_start = turn.awaits_start or bool(data.get("awaits_start"))
     elif kind == "speech_started":
         turn.started.append((ts, text))
     elif kind == "speech_spoken":

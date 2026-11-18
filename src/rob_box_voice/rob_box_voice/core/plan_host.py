@@ -72,6 +72,30 @@ def make_tool_executor(node: Any, provider_adapter: Any, on_tool: Any) -> PlanTo
     return executor
 
 
+def note_perform_speech(node: Any, host: Any, kind: str, speech_id: str, spoken_chars: int) -> str:
+    """Конец реплики выступления — в журнал хода (n808): «повтори» берёт то, что человек слышал.
+
+    ``SpeechEvent`` текста не несёт, его знает хост (:func:`perform_host.heard`). Пред-синтез и старт не пишутся:
+    звука ещё не было. Реплики чата и ноды без движка — ``""``.
+    """
+    if kind not in ("finished", "cancelled"):
+        return ""
+    from .perform_host import heard as heard_line  # noqa: PLC0415
+
+    line = heard_line(host, speech_id, spoken_chars)
+    if line is None:
+        return ""
+    turn_id, text, chars = line
+    from rob_box_dialog.turn_log import note_heard  # noqa: PLC0415 — журнал хода, не планировщик
+
+    engine = getattr(node, "_engine", None)
+    said = note_heard(engine.log, turn_id, speech_id, text, chars) if engine is not None else ""
+    chats = getattr(node, "_chats", None)
+    if chats is not None:
+        chats.note_heard(turn_id, speech_id, text, chars)
+    return said
+
+
 def note_perform_end(node: Any, event: PlanEvent) -> None:
     """Конец выступления - журналу ходов движка dialog v2 (#3973): просьба «расскажи сказку» закрыта исходом, и LLM не
     исполняет её заново на чужую реплику. Выступление на роботе одно - и у Личности, и у пульта чата Telegram
@@ -137,6 +161,7 @@ def on_speech(node: Any, msg: SpeechEvent) -> None:
     host = performer(node)
     if host is not None and host.owns(msg.speech_id):
         host.on_speech(kind, msg.speech_id, int(msg.duration_ms), int(msg.spoken_chars))
+        note_perform_speech(node, host, kind, msg.speech_id, int(msg.spoken_chars))
         return
     planner = _planner(node)
     if planner is None:
@@ -213,6 +238,6 @@ def perform_busy(node: Any) -> Busy:
                 cast=tuple((getattr(host, "cast", None) or {}).items()))
 
 
-__all__ = ["PLAN_EVENT_TOPIC", "TTS_PROVIDER_STATE_TOPIC", "begin_turn", "make_tool_executor", "note_perform_end",
-           "on_music", "on_music_event", "on_sound", "on_speech", "on_tts_provider_state", "perform_busy", "performer",
-           "robot_voice", "tts_context"]
+__all__ = ["PLAN_EVENT_TOPIC", "TTS_PROVIDER_STATE_TOPIC", "begin_turn", "make_tool_executor",
+           "note_perform_end", "note_perform_speech", "on_music", "on_music_event", "on_sound", "on_speech",
+           "on_tts_provider_state", "perform_busy", "performer", "robot_voice", "tts_context"]

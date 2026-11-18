@@ -26,8 +26,19 @@ def test_yandex_and_silero_do_not_read_cjk():
             assert not provider_reads(text, provider), (provider, text)
 
 
+def test_minimax_reads_hindi_devanagari():
+    """Панель Quest: hi. MiniMax T2A language_boost=Hindi читает деванагари (#4763)."""
+    assert provider_reads(HINDI, "minimax")
+    assert readable_chain(["minimax", "yandex", "silero"], HINDI) == ["minimax"]
+
+
+def test_yandex_and_silero_do_not_read_devanagari():
+    for provider in ("yandex", "silero"):
+        assert not provider_reads(HINDI, provider)
+
+
 def test_minimax_still_refuses_scripts_it_does_not_read():
-    assert not provider_reads(HINDI, "minimax")
+    assert not provider_reads("مرحبا بالعالم", "minimax")
 
 
 def test_cyrillic_and_latin_are_read_by_everyone():

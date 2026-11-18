@@ -317,8 +317,9 @@ def _material_fit(materials: Mapping[str, object], window: kn.Style, bpm: int,
     эталона уступает трек следующему годному, а не RTTTL-хуку). Материал не читается (``materials`` не отдал) — это
     тоже причина."""
     from .arrange.compose import hook_register  # compose импортирует set_plan — импорт здесь, не наверху
-    from .arrange.hook import material_unfit
+    from .arrange.hook import material_unfit, motif_references
     register = hook_register(window)
+    refs = motif_references(profile.theme, references)
 
     def fit(material_id: str, no: int) -> Optional[str]:
         try:
@@ -326,7 +327,7 @@ def _material_fit(materials: Mapping[str, object], window: kn.Style, bpm: int,
         except (KeyError, OSError, ValueError) as exc:
             return f"не читается: {type(exc).__name__}: {exc}"
         root = (profile.root + root_shift(no)) % 12
-        return material_unfit(material, bpm, root, profile.mode, register, references)  # type: ignore[arg-type]
+        return material_unfit(material, bpm, root, profile.mode, register, refs)  # type: ignore[arg-type]
 
     return fit
 

@@ -61,3 +61,12 @@ def test_waypoint_env_moves_only_the_registry(monkeypatch, tmp_path):
     monkeypatch.setenv(tools_db.WAYPOINT_DB_ENV, str(tmp_path / "hil.db"))
     assert tools_db.waypoint_db_path() == str(tmp_path / "hil.db")
     assert tools_db.tools_db_path() == tools_db.TOOLS_DB_DEFAULT
+    assert tools_db.hil_waypoint_registry() is True
+
+
+def test_hil_waypoint_registry_is_false_without_the_env(monkeypatch):
+    """Боевой робот без env не считается HIL: пустая строка и пробелы — тоже нет."""
+    monkeypatch.delenv(tools_db.WAYPOINT_DB_ENV, raising=False)
+    assert tools_db.hil_waypoint_registry() is False
+    assert tools_db.hil_waypoint_registry({tools_db.WAYPOINT_DB_ENV: "   "}) is False
+    assert tools_db.hil_waypoint_registry({tools_db.WAYPOINT_DB_ENV: "/data/hil/waypoints.db"}) is True

@@ -91,10 +91,12 @@ def test_reset_bumps_epoch_and_keeps_voice_speaker_music(session):
     session.set_speaker(SpeakerRef(person_ref="spk_1", name="Саша", name_state="confirmed"))
     session.push_scene("Silence", "user")
     session.set_pending_ask(Ask(expects="name", text="Как тебя зовут?"))
+    session.identity_asked["spk_1"] = 1
     session.reset()
     snap = session.snapshot
     assert snap.epoch == 1 and snap.scenes == () and snap.pending_ask is None
     assert snap.voice.applied == "ermil" and snap.speaker.name == "Саша"
+    assert session.identity_asked == {}
 
 
 def test_reset_speaker_memory_visibility_modes(session):

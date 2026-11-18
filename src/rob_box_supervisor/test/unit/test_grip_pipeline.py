@@ -26,6 +26,8 @@ from __future__ import annotations
 import json
 import unittest
 from types import SimpleNamespace
+from typing import Any
+from unittest import mock
 from unittest.mock import MagicMock
 
 from rob_box_core.speech_client import SPEECH_REQUEST_TOPIC
@@ -488,6 +490,73 @@ class TestGripPureHelpers(unittest.TestCase):
         self.assertEqual(self.node._extract_grip_ptt_text(""), "")
         # JSON без text → пусто.
         self.assertEqual(self.node._extract_grip_ptt_text("{}"), "")
+
+
+class TestGripMissingLlmDoesNotKillNode(unittest.TestCase):
+    """Issue #4763: grip без LLM не валит ноду, говорит дословно (ADR-0148)."""
+
+    def setUp(self) -> None:
+        self.node = AvatarSupervisor()
+
+    def tearDown(self) -> None:
+        self.node.destroy_node()
+
+    def _styled_ptt(self, text: str = "всем здравствуйте ребята") -> None:
+        self.node._on_grip_voice_pipeline(_pipeline_config_msg(True, "technical", "ru"))
+        self.node._on_grip_ptt_result(_make_string_msg(text))
+
+    def test_missing_builder_falls_back_to_direct_tts(self) -> None:
+        """Сборщика нет (как на роботе 17.11) — AttributeError не выходит наружу.
+
+        Публичная ``build_operator_llm`` ловит сбой и возвращает None.
+        Патч бьёт во внутреннюю сборку, не в обёртку.
+        """
+        self.assertIsNone(self.node._grip_llm)
+        with mock.patch(
+            "rob_box_supervisor.operator_turns._build_operator_llm",
+            side_effect=AttributeError(
+                "module 'rob_box_supervisor.operator_turns' has no attribute '_build_operator_llm'"
+            ),
+        ):
+            self._styled_ptt()
+
+        pub = _published_voice_tts(self.node)
+        self.assertEqual(len(pub), 1)
+        self.assertEqual(pub[0]["text"], "всем здравствуйте ребята")
+        self.assertEqual(pub[0]["priority"], "operator")
+        self.assertNotIn("language", pub[0])
+        self.assertIsNone(self.node._grip_llm)
+
+    def test_builder_exception_falls_back_to_direct_tts(self) -> None:
+        """Сборщик бросает — тот же direct TTS, нода жива."""
+
+        def _boom(_node: object) -> None:
+            raise RuntimeError("provider chain exploded")
+
+        with mock.patch(
+            "rob_box_supervisor.operator_turns._build_operator_llm",
+            _boom,
+        ):
+            self._styled_ptt("исходная фраза")
+
+        pub = _published_voice_tts(self.node)
+        self.assertEqual(len(pub), 1)
+        self.assertEqual(pub[0]["text"], "исходная фраза")
+        self.assertNotIn("language", pub[0])
+
+    def test_builder_none_falls_back_to_direct_tts(self) -> None:
+        """Нет провайдера (контракт сборщика — None) — дословно, без LLM-вызова."""
+        with mock.patch(
+            "rob_box_supervisor.operator_turns._build_operator_llm",
+            lambda _node: None,
+        ):
+            self._styled_ptt("без провайдера")
+
+        pub = _published_voice_tts(self.node)
+        self.assertEqual(len(pub), 1)
+        self.assertEqual(pub[0]["text"], "без провайдера")
+        self.assertNotIn("language", pub[0])
+        self.assertIsNone(self.node._grip_llm)
 
 
 if __name__ == "__main__":

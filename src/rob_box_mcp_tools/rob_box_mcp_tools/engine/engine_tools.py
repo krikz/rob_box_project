@@ -202,10 +202,11 @@ def spec_noted(result: Dict[str, Any], note: str) -> Dict[str, Any]:
 
 
 def set_style(style: Optional[str], theme: str, heard_text: Optional[str] = None) -> str:
-    """Стиль сета решает код (ADR-0148): слова стиля в реплике человека этого хода (``heard_text``: «синтвейв»,
-    «8-битный» — ADR-0153 S2) важнее ключа от LLM; иначе названный ключ ``STYLES``; ``auto``/пусто — слова стиля темы,
-    затем стиль строки таблицы тем (``theme.style_for``: киберпанк → synthwave), иначе ``DEFAULT_STYLE``. Ключ не из
-    перечня — ``ValueError``."""
+    """Стиль сета решает код (ADR-0148): слово стиля в реплике этого хода (``heard_text``: «синтвейв»,
+    «8-битный» — ADR-0153 S2) важнее ключа; ключ ``STYLES`` из аргумента вызова важнее мусора реплики без слова
+    стиля (#4479: STT «подруг добреет» вместо «под рок», модель вызвала ``style=rock`` — мусор не роняет ключ в
+    ``club``); ``auto``/пусто и без слов стиля — слова стиля темы, затем стиль строки таблицы тем
+    (``theme.style_for``: киберпанк → synthwave), иначе ``DEFAULT_STYLE``. Ключ не из перечня — ``ValueError``."""
     heard = match_style_text(heard_text or "")
     if heard:
         return heard

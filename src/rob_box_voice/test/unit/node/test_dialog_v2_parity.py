@@ -162,6 +162,7 @@ def test_reply_without_wake_includes_the_spoken_greeting_in_llm_history(node, af
         engine._window.touch(engine._clock() - kn.DIALOG_WINDOW_IDLE_RESET_S - 1)
     parity.on_vision_event(node, _face())
     (greeting,) = _said(node)
+    assert engine.log.speech(greeting.speech_id) == (greeting.speech_id, greeting.text)
     assert all(entry.content != greeting.text for entry in engine.log.window())
     finished = _finished(greeting.speech_id)
     finished.spoken_chars = len(greeting.text)
@@ -204,6 +205,8 @@ def test_greeting_history_requires_confirmed_playback(node, outcome):
     node._on_speech_event(event)
     asyncio.run_coroutine_threadsafe(asyncio.sleep(0), node._loop).result(timeout=10)
     assert node._engine.log.window() == ()
+    if outcome == "foreign":
+        assert node._engine.log.speech(greeting.speech_id) == (greeting.speech_id, greeting.text)
 
 
 def test_greeting_finished_does_not_remove_operator_hold_after_idle(node):
@@ -252,6 +255,45 @@ def test_wakeless_phrase_without_greeting_stays_in_backlog(node):
     msg.text, msg.source, msg.utterance_id = "привет", "respeaker", "u3"
     node._on_utterance(msg)
     assert node.last_turn is None and node.test_llm.calls == 0
+
+
+def _sighting(name="Денис", person_id="p1", camera="oak_d"):
+    return types.SimpleNamespace(event_type="face", embedding_id=person_id, display_name=name,
+                                 attributes_json="", source_camera=camera)
+
+
+def test_face_events_feed_sightings_and_backlog(node, monkeypatch):
+    monkeypatch.setattr(parity.time, "time", lambda: 11.0)
+    assert parity.on_vision_event(node, _sighting()) is None
+    assert node._faces.during(10.0, 12.0) == {"денис"}
+    person = types.SimpleNamespace(event_type="person", embedding_id="x", display_name="силуэт",
+                                   attributes_json="", source_camera="oak_d")
+    assert parity.on_vision_event(node, person) is None
+    assert parity.on_vision_event(node, _sighting(camera="stub")) is None
+    assert node._faces.during(10.0, 12.0) == {"денис"}
+    msg = M.Utterance()
+    msg.text, msg.source, msg.utterance_id = "включи свет", "respeaker", "u-face"
+    msg.started_at = TIME(sec=10, nanosec=0)
+    msg.ended_at = TIME(sec=12, nanosec=0)
+    node._on_utterance(msg)
+    assert node.last_turn is None and node.test_llm.calls == 0
+    assert [e.faces for e in node._backlog._entries] == [{"денис"}]
+
+
+def test_greeting_window_reads_faces_from_sightings(node, monkeypatch):
+    from rob_box_dialog.address import heard_from
+    from rob_box_dialog.speaker_adapter import answer_to_greeting, greeting_frame
+
+    monkeypatch.setattr(parity.time, "time", lambda: 11.0)
+    parity.on_vision_event(node, _sighting())
+    msg = types.SimpleNamespace(text="я тут работаю", source="respeaker",
+                                started_at=TIME(sec=10, nanosec=0), ended_at=TIME(sec=12, nanosec=0))
+    heard = heard_from(msg, now=12.0, faces=node._faces)
+    node._session.push_scene("GreetingReply", "code", ttl_s=180.0, payload=greeting_frame("p1", "Денис", "g1"))
+    node._session.arm_scene("GreetingReply", 20.0, {"asked_at": 8.0})
+    frame = node._session.snapshot.top("GreetingReply")
+    assert heard.faces == {"денис"}
+    assert answer_to_greeting(frame, heard) == "face"
 
 
 # -- стартовая фраза по готовности узлов (#3913) -----------------------------------------------------------------

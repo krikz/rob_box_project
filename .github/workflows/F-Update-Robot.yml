@@ -1,32 +1,37 @@
 name: "F: Update Robot"
 
 # Пульт обновления робота до панели парка dianjiang (ADR-0168; rbt_infra ADR-0003 §4.4). Префикс F: — fleet.
-# Фаза B: единственное действие — status. Workflow только ЧИТАЕТ отчёты агентов chuangong трёх Pi через
-# zenoh REST роутера Main Pi (:8000): ни ssh, ни команд роботу, ни записи в репо. update/rollback/cancel — фаза C.
-#
-# Только ручной запуск: на push/PR/schedule не стартует (раннеры katana с ветки не поднимаются).
+# Входы: robot_id, release, action (status|update|rollback|cancel). Пустой robot_id — отказ;
+# пустой release — отказ для update/rollback (status может не сверять; cancel — локальный staged).
+# update/rollback/cancel при валидных полях — not_wired (job exit != 0), не зелёный «успех без дела».
+# Команда и отчёт — один operation_id (= github.run_id). Ни ssh, ни cron/push/PR.
+# status — чтение отчётов chuangong через zenoh REST. Cancel на Pi — host/chuangong cancel.
+# Живой прогон update не делался.
 
 on:
   workflow_dispatch:
     inputs:
       robot_id:
-        description: "Робот (до реестра парка fleet.yaml — один)"
+        description: "Робот (до реестра парка fleet.yaml — один). Пустой — отказ."
         type: choice
         options:
           - RBXU100001
         default: RBXU100001
       release:
-        description: "Ожидаемый релиз (пусто — не сверять, показать что есть)"
+        description: "Имя релиза. Обязательно для update/rollback; status — ожидаемый (пусто = не сверять); cancel не требует"
         type: string
         default: ""
       action:
-        description: "Действие (фаза B — только status)"
+        description: "status (wired) | update/rollback/cancel → not_wired exit≠0 (cancel на Pi — chuangong cancel)"
         type: choice
         options:
           - status
+          - update
+          - rollback
+          - cancel
         default: status
       timeout_min:
-        description: "Сколько ждать отчётов (агенты публикуют раз в 5 мин)"
+        description: "Сколько ждать отчётов status (агенты публикуют раз в 5 мин)"
         type: number
         default: 6
       zenoh_url:
@@ -42,8 +47,42 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  validate:
+    name: "inputs: ${{ inputs.action }} ${{ inputs.robot_id }}"
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      operation_id: ${{ steps.validate.outputs.operation_id }}
+    steps:
+      - name: Checkout (только агент)
+        uses: actions/checkout@v7
+        with:
+          sparse-checkout: host/chuangong
+          sparse-checkout-cone-mode: true
+
+      - name: Reject empty robot_id / release
+        id: validate
+        env:
+          ACTION: ${{ inputs.action }}
+          ROBOT_ID: ${{ inputs.robot_id }}
+          RELEASE: ${{ inputs.release }}
+          OPERATION_ID: ${{ github.run_id }}
+        working-directory: host/chuangong
+        run: |
+          set -euo pipefail
+          export PYTHONIOENCODING=utf-8 PYTHONDONTWRITEBYTECODE=1
+          python3 -m chuangong validate-inputs \
+            --action "$ACTION" \
+            --robot-id "$ROBOT_ID" \
+            --release "$RELEASE" \
+            --operation-id "$OPERATION_ID" \
+            --github-output "$GITHUB_OUTPUT" \
+            --summary "$GITHUB_STEP_SUMMARY"
+
   status:
     name: "chuangong status: ${{ inputs.robot_id }}"
+    needs: validate
+    if: ${{ inputs.action == 'status' }}
     # Локальный раннер площадки (сегодня katana). Фаза A: [self-hosted, zongguan, deploy].
     runs-on: [self-hosted, rob-box]
     timeout-minutes: 30
@@ -60,12 +99,19 @@ jobs:
           RELEASE: ${{ inputs.release }}
           TIMEOUT_MIN: ${{ inputs.timeout_min }}
           ZENOH_URL: ${{ inputs.zenoh_url }}
+          OPERATION_ID: ${{ needs.validate.outputs.operation_id }}
         working-directory: host/chuangong
         run: |
           set -euo pipefail
           export PYTHONIOENCODING=utf-8 PYTHONDONTWRITEBYTECODE=1
           # timeout_min — number в dispatch: допускает дробное (0.5), bash-arithmetic с float упал бы.
           WAIT_S="$(python3 -c 'import sys; print(int(float(sys.argv[1]) * 60))' "$TIMEOUT_MIN")"
+          {
+            echo "### operation_id"
+            echo ""
+            echo "\`${OPERATION_ID}\`"
+            echo ""
+          } >> "$GITHUB_STEP_SUMMARY"
           python3 -m chuangong status \
             --robot-id "$ROBOT_ID" \
             --zenoh "$ZENOH_URL" \

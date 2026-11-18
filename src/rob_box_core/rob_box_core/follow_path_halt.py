@@ -8,5 +8,7 @@
 
 FOLLOW_PATH_CANCEL_SRV = "/follow_path/_action/cancel_goal"
 NAV_CMD_VEL_TOPIC = "/cmd_vel"
+#: Разворот у цели (#4694): вход twist_mux priority 15, выше Nav2 (10), ниже замков руля.
+YAW_AT_GOAL_CMD_VEL_TOPIC = "/cmd_vel_yaw"
 #: Сколько нулевых ``Twist`` подряд публикуется при остановке (с запасом на потерю одного кадра).
 ZERO_TWIST_REPEATS = 3

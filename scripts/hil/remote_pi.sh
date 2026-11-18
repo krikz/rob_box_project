@@ -51,11 +51,16 @@ case "$cmd" in
         echo "замок $1 снят"
         ;;
     pin)
+        # Один ключ на сервис: docker ps -a может отдать несколько контейнеров
+        # с одним com.docker.compose.service (осиротевший recreate, hash-префикс
+        # в имени) — повтор ключа ломает compose («mapping key already defined»)
+        # и оставляет замок HIL (#4371). Первый выигрывает (ps: newest first).
         dir="$1"; out="$2"
         mkdir -p "$(dirname "$out")"
         docker ps -a --filter "label=com.docker.compose.project.working_dir=$dir" \
             --format '{{.Label "com.docker.compose.service"}} {{.Image}}' \
-            | awk 'BEGIN { print "services:" } NF == 2 { printf "  %s:\n    image: \"%s\"\n", $1, $2 }' \
+            | awk 'BEGIN { print "services:" }
+                   NF == 2 && !seen[$1]++ { printf "  %s:\n    image: \"%s\"\n", $1, $2 }' \
             > "$out"
         n=$(grep -c 'image:' "$out" || true)
         if [ "$n" -eq 0 ]; then

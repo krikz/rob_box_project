@@ -423,7 +423,12 @@ def test_n902_n903_silent_sound_is_judged_by_tool_result():
     assert steps["n902_sound_doorbell"]["silent_ok"] is True and steps["n903_sound_siren_anim"]["silent_ok"] is True
     sound = "✅ Инструмент play_sound выполнен успешно"
     anim = "✅ Инструмент play_animation выполнен успешно"
-    assert _verdict("n902_sound_doorbell", "\n".join([sound, DONE]))["pass"]
+    # #4077 П6: doorbell -- именно ui_bell (параметр в строке запроса тула)
+    bell = "📥 Запрос выполнения: play_sound с параметрами {'sound': 'ui_bell'}"
+    wrong_bell = "📥 Запрос выполнения: play_sound с параметрами {'sound': 'robot_happy'}"
+    assert _verdict("n902_sound_doorbell", "\n".join([bell, sound, DONE]))["pass"]
+    assert not _verdict("n902_sound_doorbell", "\n".join([sound, DONE]))["pass"], "не ui_bell"
+    assert not _verdict("n902_sound_doorbell", "\n".join([wrong_bell, sound, DONE]))["pass"], "не doorbell"
     assert not _verdict("n902_sound_doorbell", "\n".join(["📤 Отправлен запрос ab: play_sound", DONE]))["pass"]
     # #4077 П6: анимация -- именно police_lights (параметр в строке запроса тула)
     req = "📥 Запрос выполнения: play_animation с параметрами {'animation': 'police_lights', 'duration': 4}"
@@ -611,12 +616,12 @@ def test_n1002_and_n1007_judge_honesty_not_narrow_words():
     assert _acc("n1007_no_leak")["must_not_call"] == [gen.TURN_FALLBACK], "подстрока по всему логу ловила факты памяти"
 
 
-def test_no_song_rule_marks_the_steps_about_this_runs_song_and_nothing_destructive_is_left():
-    """#4077 П1: песни прогона нет (баланс KIE 0 / провал заказа / отказ пути) -- n707-n709 SKIP NO_SONG; удаления нет."""
+def test_no_song_rule_marks_the_steps_about_this_runs_song_and_n710_ask_binds_track_id():
+    """#4077: песни нет -- n707-n710 SKIP NO_SONG; n710 вопрос delete с track_ref; n710b confirm нет."""
     import re
 
     steps = _steps()
-    for label in ("n707_gen_track_info", "n708_gen_play", "n709_stop_generated"):
+    for label in ("n707_gen_track_info", "n708_gen_play", "n709_stop_generated", "n710_gen_delete"):
         # ревью #4046: харнесс поле читает (e2e_events.skip_rule) -- без «_», как остальные поля для харнесса
         assert steps[label]["skip_when"] == {"reason": "NO_SONG", "log": gen.NO_SONG_LOG}, label
         assert eev.skip_rule(steps[label]).reason == "NO_SONG", label
@@ -627,10 +632,15 @@ def test_no_song_rule_marks_the_steps_about_this_runs_song_and_nothing_destructi
     # KIE_QUOTA влит в NO_SONG: одна таблица, без второго ключа на ту же беду; NOT_SILENCED (#3971, n805b) -- другая беда
     assert set(gen.SKIP_WHEN) == {"NO_SONG", "NOT_SILENCED", "NO_MUSIC_N310", "NO_MUSIC_N506", "NO_STOP_N511"}  # #4196: дека пуста (каскад)
     assert [label for label, s in steps.items() if s.get("skip_when", {}).get("reason") == "NO_SONG"] == [
-        "n707_gen_track_info", "n708_gen_play", "n709_stop_generated"]
-    for label in ("n703_merge_komar", "n706_gen_save_for_boris", "n710_gen_delete", "n710b_gen_delete_confirm"):
+        "n707_gen_track_info", "n708_gen_play", "n709_stop_generated", "n710_gen_delete"]
+    for label in ("n703_merge_komar", "n706_gen_save_for_boris", "n710b_gen_delete_confirm"):
         assert label not in steps, label
-    assert "'action': 'delete'" not in json.dumps([s["patterns"] for s in steps.values()], ensure_ascii=False)
+    n710 = steps["n710_gen_delete"]
+    assert n710["track_ref"] == {
+        "reason": "CASCADE_N702", "log": gen.SONG_TRACK_LOG, "tool": "music_library", "action": "delete"}
+    assert gen.LIBRARY_DELETE_CALL in n710["patterns"] and gen.LIBRARY_DELETE_ASKED in n710["patterns"]
+    assert gen.LIBRARY_DELETE_CONFIRMED not in json.dumps(
+        [s["patterns"] for s in steps.values()], ensure_ascii=False)
     for line in ("[mcp_server]: 🎼 [cover] баланс KIE: 0.0", "🎼 [cover] баланс KIE: 0",
                  "[voice_assistant]: 🎤 [song] не вышло: задача t1 без сохранённых треков",
                  "🎤 [song] сбой: TimeoutError: ", "🎤 [song] не заиграла: not_started",
@@ -662,9 +672,8 @@ def test_n702_asks_the_generate_robot_song_cell_of_the_fork_not_a_live_performan
 
 
 # ── #4025 (PR #4056): удаление трека в два шага - вопрос, затем «да» ─────────────────────────────────────────
-# #4077 П1: шаги n710/n710b сняты из марафона (удаление бьёт по живой библиотеке, а к треку ЭТОГО прогона шаг не
-# привязан -- нужен track_id песни, П5). Маркеры результата удаления остаются в генераторе для их возврата, и их
-# контракт с логом контейнера держит тест ниже.
+# #4077 П5: n710 (вопрос) возвращён с track_ref CASCADE_N702 action=delete; n710b (confirm/стереть) не возвращён
+# (необратимо). Маркеры LIBRARY_DELETE_* и их контракт с логом контейнера держит тест ниже.
 
 QUESTION = "Удалить «Енот-мастер»? Скажи «да, удаляй»."
 #: Что тул отдал в лог контейнера, когда спросил вместо удаления: ``mcp_server.py`` (ROS-логгер, WARNING).

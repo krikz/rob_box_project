@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import getpass
 import os
+import re
 import shutil
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -13,10 +15,21 @@ import pytest
 HERE = Path(__file__).resolve().parents[1]
 INSTALL = HERE / "install.sh"
 
+# Команды CLI из chuangong/__main__.py — установщик обязан положить пакет, где они все есть.
+EXPECTED_CLI_COMMANDS = (
+    "run",
+    "status",
+    "adopt",
+    "preflight",
+    "activate",
+    "rollback",
+    "cancel",
+)
+
 pytestmark = pytest.mark.skipif(os.name != "posix" or shutil.which("bash") is None, reason="нужен bash и POSIX")
 
 
-def _run(root: Path, *args: str) -> subprocess.CompletedProcess:
+def _run(root: Path, *args: str, install: Path = INSTALL) -> subprocess.CompletedProcess:
     env = dict(
         os.environ,
         CHUANGONG_ROOT=str(root),
@@ -24,7 +37,27 @@ def _run(root: Path, *args: str) -> subprocess.CompletedProcess:
         CHUANGONG_USER=getpass.getuser(),
         CHUANGONG_SYSTEMCTL="false",  # с подменённым корнем systemctl звать нельзя — false уронил бы установку
     )
-    return subprocess.run(["bash", str(INSTALL), *args], capture_output=True, text=True, env=env, timeout=60)
+    return subprocess.run(
+        ["bash", str(install), *args],
+        capture_output=True,
+        text=True,
+        env=env,
+        timeout=60,
+    )
+
+
+def _cli_help_from_install_root(root: Path) -> subprocess.CompletedProcess:
+    """Запуск установленного пакета через python -m (обёртка жёстко смотрит в /opt, не в CHUANGONG_ROOT)."""
+    pkg_root = root / "opt/rob_box/chuangong"
+    env = dict(os.environ, PYTHONPATH=str(pkg_root), PYTHONDONTWRITEBYTECODE="1")
+    return subprocess.run(
+        [sys.executable, "-m", "chuangong", "--help"],
+        capture_output=True,
+        text=True,
+        env=env,
+        cwd=str(pkg_root),
+        timeout=30,
+    )
 
 
 def test_install_layout_and_observe_mode(tmp_path):
@@ -69,3 +102,33 @@ def test_pubkey_and_enable_flag(tmp_path):
 @pytest.mark.parametrize("args", [["--node", "kitchen"], [], ["--node", "main", "--robot-id", "bad id"]])
 def test_bad_arguments(tmp_path, args):
     assert _run(tmp_path, *args).returncode == 2
+
+
+def test_install_places_cli_with_all_commands(tmp_path):
+    """Установщик кладёт бинарь и пакет CLI: run/status/adopt/preflight/activate/rollback/cancel."""
+    res = _run(tmp_path, "--node", "main")
+    assert res.returncode == 0, res.stdout + res.stderr
+
+    binary = tmp_path / "usr/local/bin/chuangong"
+    assert binary.is_file() and os.access(binary, os.X_OK), "нет CLI-бинаря после install"
+    assert (tmp_path / "opt/rob_box/chuangong/chuangong/__main__.py").is_file()
+
+    help_res = _cli_help_from_install_root(tmp_path)
+    assert help_res.returncode == 0, help_res.stdout + help_res.stderr
+    # argparse: `{run,status,...}` в usage и строки `{cmd}  help` в списке подкоманд
+    missing = [cmd for cmd in EXPECTED_CLI_COMMANDS if not re.search(rf"\b{cmd}\b", help_res.stdout)]
+    assert not missing, f"CLI без команд {missing}:\n{help_res.stdout}"
+
+
+def test_install_fails_when_bundle_has_no_agent_code(tmp_path):
+    """Пустой бандл (нет chuangong/*.py) — install падает и не кладёт бинарь."""
+    bundle = tmp_path / "bundle"
+    (bundle / "chuangong").mkdir(parents=True)
+    shutil.copytree(HERE / "systemd", bundle / "systemd")
+    shutil.copy(INSTALL, bundle / "install.sh")
+
+    root = tmp_path / "root"
+    res = _run(root, "--node", "vision", install=bundle / "install.sh")
+    assert res.returncode != 0, res.stdout + res.stderr
+    assert not (root / "usr/local/bin/chuangong").exists()
+    assert not (root / "opt/rob_box/chuangong/chuangong").exists()

@@ -52,11 +52,13 @@ Hailo model zoo:    https://github.com/hailo-ai/hailo_model_zoo
 
 from __future__ import annotations
 
+import json
 import math
 from typing import Any, Dict, List, Optional
 
 import rclpy
 from rclpy.node import Node
+from std_msgs.msg import String
 
 from rob_box_perception.gaze import (
     DEFAULT_DEPTH_SYNC_TOLERANCE_SEC,
@@ -79,7 +81,9 @@ from rob_box_perception.utils.heartbeat import (
 from rob_box_perception.vision_hailo_loader import (
     HEFLoader,
     VISION_EVENT_FIELDS,
+    empty_frame_event,
     filter_by_confidence,
+    frame_clear,
     is_stub_event,
     make_loader,
     normalize_event_dict,
@@ -114,6 +118,8 @@ DEFAULT_FRAME_STALE_SEC = 30.0
 # Этот параметр общий для всех event_type — HEF-specific tuning
 # делается через `hailo_models.yaml` в Phase 2/3.
 DEFAULT_CONFIDENCE_THRESHOLD = 0.5
+#: Факт «кадр пуст» (#3780 C). Не `/vision/hailo/events`: тот идёт в контекст Личности.
+FRAME_CLEAR_TOPIC = '/vision/frame_clear'
 
 # Допустимые имена gaze source (ADR-0104, см. gaze.make_source).
 KNOWN_GAZE_SOURCES = ('oak_d', 'ceiling_camera', 'stub')
@@ -303,6 +309,8 @@ class VisionHailoNode(Node):
             self._publisher = self.create_publisher(
                 VisionEventMsg, self.output_topic, 10
             )
+            # Пустой кадр — не детекция: свой топик, агрегатор не отдаст его Личности.
+            self._frame_clear_pub = self.create_publisher(String, FRAME_CLEAR_TOPIC, 10)
         else:
             # Сборка пакета не завершена — не падаем, просто логируем
             # warning. Узел всё равно полезен: можно дёргать public API
@@ -312,6 +320,7 @@ class VisionHailoNode(Node):
                 'сборки rob_box_perception_msgs через colcon.'
             )
             self._publisher = None
+            self._frame_clear_pub = None
 
         if ObservationMsg is not None:
             self._observation_publisher = self.create_publisher(
@@ -528,9 +537,19 @@ class VisionHailoNode(Node):
         # регресс issue #2703.
         self._heartbeat.beat()
 
+        self._publish_frame_clear(raw_events, frame)
         filtered = filter_by_confidence(raw_events, self.confidence_threshold)
         for event_dict in filtered:
             self._publish_event(event_dict, frame)
+
+    def _publish_frame_clear(self, raw_events: List[Dict[str, Any]], frame: Optional[Any]) -> None:
+        """Реальный пустой кадр — факт «никого нет» (#3780 C). Заглушка кадр не очищает."""
+        pub = getattr(self, '_frame_clear_pub', None)
+        if frame is None or pub is None or not frame_clear(raw_events):
+            return
+        msg = String()
+        msg.data = json.dumps(empty_frame_event(frame.source_name))
+        pub.publish(msg)
 
     # ----------------------------------------------------------------
     # Helpers

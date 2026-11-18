@@ -559,8 +559,9 @@ Vision Pi ROS не установлен. Форма `ssh <robot> 'ros2 param set
 - замеры обновляет `py -3 scripts/e2e/gen_night_marathon.py --learn <actN_<run>.log ...>` (логи актов из артефакта
   прогона; берутся шаги, у которых текст и голос в логе те же, что в сценарии).
 
-Печать `PRESYNTH <label>: eq=…` и `E2E_INFRA_FAIL scenario_too_long` до первого PLAY в `presynth_scenario` — правка
-харнесса (`scripts/ci/e2e/e2e_voice_test.sh`), в #4077 очереди 1 не сделана.
+Печать `PRESYNTH <label>: eq=…` и `E2E_INFRA_FAIL scenario_too_long|eq|eq_duration` до первого PLAY — в `presynth_scenario`
+(`scripts/ci/e2e/e2e_voice_test.sh`, `check_eq_vad_budget`, порог `E2E_VAD_MAX_DURATION`−`E2E_VAD_OVERHEAD` = 12.5 с =
+`phrase_budget.VAD_BUDGET_S`). Сбой eq WAV или пустой ffprobe — тоже отказ, не silent skip. Акт с длинной/битой репликой не начинается; робот не тронут.
 
 ---
 
