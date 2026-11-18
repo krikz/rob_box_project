@@ -501,6 +501,8 @@ FollowPath активен дольше `orphan_timeout_s` (1.5 с) — отме�
 **Разворот у цели** — та же нода (#4694): xy уже внутри `xy_goal_tolerance`, а yaw вне `yaw_goal_tolerance`
 того же goal checker'а. Twist в `/cmd_vel_yaw` (twist_mux priority 15, выше Nav2, ниже замков руля).
 Допуск yaw не ослабляется. Решение — чистая `rob_box_teleop/yaw_at_goal.py`.
+Хвост `/plan` старше 2 с (`PLAN_STALE_S`) не цель, кроме позы уже внутри xy-допуска: у цели planner замирает,
+порог не поднимаем. Далеко от старого хвоста путь не выдумываем.
 
 **Замок руля** — `std_msgs/Bool` на `/joystick_lock` (priority 100) и `/teleop_lock` (priority 90) в twist_mux,
 timeout 0.0 (липкий). Любой True глушит источники строго меньшего приоритета, в том числе Nav2 `cmd_vel` (10).

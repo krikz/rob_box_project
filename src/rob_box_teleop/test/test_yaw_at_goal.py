@@ -20,6 +20,12 @@ M2_GOAL = (-1.0, 4.5, 0.0)
 M2_POSE = (-1.188, 4.366, math.radians(28.5))
 R3_GOAL = (-3.7, 2.34, math.radians(90.0))
 R3_POSE = (-3.546, 2.159, math.radians(147.1))
+# Depot M1 18.11 00:24Z: план stamp=42.792, now=209.60, map внутри 0.25 м, yaw ~113°.
+M1_GOAL = (-3.7, 4.0, 0.0)
+M1_POSE = (-3.484, 3.951, math.radians(113.4))
+M1_FAR = (-3.7 + 0.5, 4.0, math.radians(113.4))
+M1_PLAN_STAMP_S = 42.792
+M1_NOW_S = 209.60
 
 
 def _params():
@@ -102,8 +108,11 @@ def _status(code: int):
 def test_goal_from_plan_is_the_tail_the_checker_compares():
     path = _plan(-1.0, 4.5, 0.0, stamp_s=10.0)
     assert goal_from_plan(path, 10.5) == pytest.approx((-1.0, 4.5, 0.0))
-    assert goal_from_plan(path, 13.0) is None  # план старше 2 с — цели уже нет
+    assert goal_from_plan(path, 13.0) is None  # старше 2 с, позы нет — не цель
     assert goal_from_plan(_plan(0.0, 0.0, 0.0, frame="odom"), 1.0) is None
+    m1 = _plan(*M1_GOAL, stamp_s=M1_PLAN_STAMP_S)
+    assert goal_from_plan(m1, M1_NOW_S, pose=M1_POSE, xy_tolerance_m=0.25) == pytest.approx(M1_GOAL)
+    assert goal_from_plan(m1, M1_NOW_S, pose=M1_FAR, xy_tolerance_m=0.25) is None
 
 
 def test_node_turns_m2_on_its_own_topic_and_does_not_touch_controller_cmd_vel(node_params):
@@ -144,6 +153,37 @@ def test_tf_lookup_passes_time_objects_not_floats(node_params):
     assert not isinstance(timeout_arg, float)
     published = {topic: pub.messages for topic, pub in node.publishers}
     assert published[YAW_AT_GOAL_CMD_VEL_TOPIC]
+
+
+def test_node_turns_at_goal_when_plan_is_older_than_two_seconds(node_params):
+    """M1: xy внутри 0.25 м, yaw вне 0.20 рад, /plan старше 2 с — крутим, порог не поднимаем."""
+    node_params["nav2_params_file"] = str(NAV2)
+    node = FollowPathWatchdogNode()
+    yaw = node._yaw
+    yaw._lookup._buffer.lookup_transform = lambda *args: _tf(M1_POSE)
+    yaw._now = lambda: M1_NOW_S
+    yaw._on_nav(types.SimpleNamespace(status_list=[_status(2)]))
+    yaw._on_plan(_plan(*M1_GOAL, stamp_s=M1_PLAN_STAMP_S))
+    yaw._tick()
+    published = {topic: pub.messages for topic, pub in node.publishers}
+    assert published[NAV_CMD_VEL_TOPIC] == []
+    twists = published[YAW_AT_GOAL_CMD_VEL_TOPIC]
+    assert len(twists) == 1 and twists[0].linear.x == 0.0
+    assert twists[0].angular.z < 0.0
+    assert abs(twists[0].angular.z) == pytest.approx(min(abs(yag.shortest_yaw(M1_POSE[2], 0.0)), 0.6))
+
+
+def test_node_does_not_invent_path_from_stale_plan_when_far(node_params):
+    """Далеко от хвоста старый /plan не цель: FollowPath, не выдуманный разворот."""
+    node_params["nav2_params_file"] = str(NAV2)
+    node = FollowPathWatchdogNode()
+    yaw = node._yaw
+    yaw._lookup._buffer.lookup_transform = lambda *args: _tf(M1_FAR)
+    yaw._now = lambda: M1_NOW_S
+    yaw._on_nav(types.SimpleNamespace(status_list=[_status(2)]))
+    yaw._on_plan(_plan(*M1_GOAL, stamp_s=M1_PLAN_STAMP_S))
+    yaw._tick()
+    assert all(pub.messages == [] for _, pub in node.publishers)
 
 
 def test_node_is_silent_outside_the_xy_window_and_when_nav_is_not_live(node_params):
