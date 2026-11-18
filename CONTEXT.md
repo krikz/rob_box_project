@@ -740,6 +740,11 @@ digest. Ничего не переключает. _Не путать_ с акт�
 adoption `previous=null`. Mutable `external_images`, compose override, ошибка Docker probe и лишний/старый управляемый
 контейнер делают adoption `blocked` с машинной причиной. Запись current сериализована с тиком агента общим lock-файлом.
 
+**Указатели current/previous** — файлы `/var/lib/chuangong/current` и `/var/lib/chuangong/previous` с именем релиза.
+После проверки подписи staged-релиза модуль `chuangong/pointers.py` пишет previous=старый current, current=новый
+атомарно (rename) на локальной ФС. _Не путать_ с полями `current`/`previous` в `state.json` (adoption) и с симлинком
+`/opt/rob_box/current` живого compose — этот шаг его не переключает.
+
 **biguan / chuguan** (闭关 / 出关, «затвор» / «выход из затвора») — состояние робота во время ритуала обновления и
 выход из него (фаза C, rbt_infra ADR-0003 §4.3). Имена зарезервированы, кода нет.
 
