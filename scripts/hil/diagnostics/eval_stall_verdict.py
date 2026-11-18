@@ -40,6 +40,11 @@ def rotate_raw(tick: dict) -> Optional[float]:
     found = critic(tick, ROTATE)
     if not found or "raw_score" not in found:
         return None
+    # scale 0: критик вернул управление до оценки (RotateToGoal молчит вне
+    # окна, PathAlign зануляет вес у цели). raw_score тогда 0 и оценкой не
+    # является. Образец, оборванный short_circuit, записи критика не имеет.
+    if float(found.get("scale", 0.0)) == 0.0:
+        return None
     return float(found["raw_score"])
 
 
