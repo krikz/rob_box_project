@@ -275,23 +275,46 @@ RECOVERY_MARKERS: Tuple[Tuple[str, str], ...] = (
 )
 
 
-def dwb_publish_overlay_yaml() -> str:
+def dwb_publish_overlay_yaml(short_circuit: bool = True) -> str:
     """Оверлей Nav2 только для HIL-повтора. Боевой файл не меняет, скорости не задаёт.
 
-    Публикация ``/evaluation`` и маркеров ``/trajectories`` не входит в выбор траектории:
-    DWB считает score до ``publishEvaluation``. Сопоставимость по vx/wz от этого не ломается;
-    сопоставимость по наличию подписчика — нет, её и фиксирует повтор.
+    Публикация ``/evaluation`` не входит в выбор траектории. ``short_circuit=False``
+    добавляет ``FollowPath.short_circuit_trajectory_evaluation: false`` — DWB дописывает
+    оценки всех критиков, лучшую траекторию не перевыбирает (обрыв только прячет хвост
+    scores). Боевое поведение — ``True``: строку не пишем, остаётся yaml (true).
     """
-    return (
-        "# HIL M1-repeat only. Не боевой nav2_params.yaml.\n"
-        "# Включает публикацию оценок DWB. Скорость, critics, lookahead не трогает.\n"
-        "controller_server:\n"
-        "  ros__parameters:\n"
-        "    FollowPath:\n"
-        "      publish_evaluation: true\n"
-        "      publish_trajectories: true\n"
-        "      publish_local_plan: true\n"
+    lines = [
+        "# HIL M1-repeat only. Не боевой nav2_params.yaml.",
+        "# Публикация оценок DWB. Скорость, critics, lookahead не трогает.",
+    ]
+    if not short_circuit:
+        lines.append("# short_circuit false: полный список оценок, выбор траектории тот же.")
+    lines.extend(
+        [
+            "controller_server:",
+            "  ros__parameters:",
+            "    FollowPath:",
+            "      publish_evaluation: true",
+            "      publish_trajectories: true",
+            "      publish_local_plan: true",
+        ]
     )
+    if not short_circuit:
+        lines.append("      short_circuit_trajectory_evaluation: false")
+    return "\n".join(lines) + "\n"
+
+
+def short_circuit_from_env(value: str | None) -> bool:
+    """``M1_REPEAT_SHORT_CIRCUIT``: пусто и true — боевой обрыв; false — полный список оценок.
+
+    Иное значение — ошибка, не молчаливый true: диагностический прогон нельзя перепутать.
+    """
+    text = (value if value is not None else "true").strip().lower()
+    if text in ("", "true", "1", "yes"):
+        return True
+    if text in ("false", "0", "no"):
+        return False
+    raise ValueError(f"M1_REPEAT_SHORT_CIRCUIT={value!r} — только true или false")
 
 
 def recovery_hits(log_text: str) -> List[str]:

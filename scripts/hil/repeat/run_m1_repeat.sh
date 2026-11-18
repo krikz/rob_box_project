@@ -272,9 +272,13 @@ fi
 bash "$HIL_CMD" status >"$ART/hil_status_before.log" 2>&1 || { log "STATUS_BEFORE_FAIL"; exit 23; }
 
 # Оверлей публикации DWB кладём ДО on: hil.sh on поднимает nav2, и контроллер читает
-# параметры на старте. Скорости нет — только publish_evaluation/trajectories/local_plan.
-python3 -X utf8 -c 'import sys; sys.path.insert(0, sys.argv[1]); from m1_topics import dwb_publish_overlay_yaml; open(sys.argv[2], "w", encoding="utf-8").write(dwb_publish_overlay_yaml())' \
-    "$HERE" "$ART/dwb_publish.yaml"
+# параметры на старте. Скорости нет. M1_REPEAT_SHORT_CIRCUIT=false добавляет только
+# short_circuit_trajectory_evaluation: false (полный /evaluation, выбор траектории тот же).
+# default true — строку не пишем, остаётся боевой true.
+export M1_REPEAT_SHORT_CIRCUIT="${M1_REPEAT_SHORT_CIRCUIT:-true}"
+python3 -X utf8 -c 'import os, sys; sys.path.insert(0, sys.argv[1]); from m1_topics import dwb_publish_overlay_yaml, short_circuit_from_env; open(sys.argv[2], "w", encoding="utf-8").write(dwb_publish_overlay_yaml(short_circuit_from_env(os.environ.get("M1_REPEAT_SHORT_CIRCUIT"))))' \
+    "$HERE" "$ART/dwb_publish.yaml" || { log "SHORT_CIRCUIT_ENV_BAD value=${M1_REPEAT_SHORT_CIRCUIT}"; exit 2; }
+log "DWB_OVERLAY short_circuit=${M1_REPEAT_SHORT_CIRCUIT}"
 main "mkdir -p /tmp/hil/nav2tune" || { log "NAV2TUNE_DIR_FAIL"; exit 30; }
 scp -q -o BatchMode=yes "$ART/dwb_publish.yaml" "$MAIN:/tmp/hil/nav2tune/dwb_publish.yaml" || { log "OVERLAY_SCP_FAIL"; exit 30; }
 main "tr -d '\r' > /tmp/hil/nav2tune.compose.yaml" <"$ROOT/scripts/hil/speed/nav2tune.compose.yaml" || { log "COMPOSE_SCP_FAIL"; exit 30; }
