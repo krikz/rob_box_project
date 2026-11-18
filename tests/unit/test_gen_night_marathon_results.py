@@ -423,7 +423,12 @@ def test_n902_n903_silent_sound_is_judged_by_tool_result():
     assert steps["n902_sound_doorbell"]["silent_ok"] is True and steps["n903_sound_siren_anim"]["silent_ok"] is True
     sound = "✅ Инструмент play_sound выполнен успешно"
     anim = "✅ Инструмент play_animation выполнен успешно"
-    assert _verdict("n902_sound_doorbell", "\n".join([sound, DONE]))["pass"]
+    # #4077 П6: doorbell -- именно ui_bell (параметр в строке запроса тула)
+    bell = "📥 Запрос выполнения: play_sound с параметрами {'sound': 'ui_bell'}"
+    wrong_bell = "📥 Запрос выполнения: play_sound с параметрами {'sound': 'robot_happy'}"
+    assert _verdict("n902_sound_doorbell", "\n".join([bell, sound, DONE]))["pass"]
+    assert not _verdict("n902_sound_doorbell", "\n".join([sound, DONE]))["pass"], "не ui_bell"
+    assert not _verdict("n902_sound_doorbell", "\n".join([wrong_bell, sound, DONE]))["pass"], "не doorbell"
     assert not _verdict("n902_sound_doorbell", "\n".join(["📤 Отправлен запрос ab: play_sound", DONE]))["pass"]
     # #4077 П6: анимация -- именно police_lights (параметр в строке запроса тула)
     req = "📥 Запрос выполнения: play_animation с параметрами {'animation': 'police_lights', 'duration': 4}"
