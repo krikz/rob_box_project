@@ -3,7 +3,8 @@
 Только явный `adopt(apply=True)` меняет state.json: current/previous после сравнения legacy-файлов
 и compose-матрицы service → container → image ID с подписанным релизом. Activation/rollback —
 dry-run: ``plan_role`` кладёт шаги в план (`execute=false`), список actions/images не дублируется
-здесь. health в dry-run — `not_verified`; unhealthy → план отката роли, не «успех».
+здесь. health в dry-run — `not_verified`; unhealthy → blocked/health_check_failed без плана
+отката (авто health→rollback — фаза C / execute_role, не dry-run activate).
 """
 
 from __future__ import annotations
@@ -312,15 +313,9 @@ class ActivationMachine:
         record["health"] = asdict(health)
 
         if health.status == "unhealthy":
-            # plan_role: unhealthy + previous → откат роли, не «успех» / не activation_planned.
-            role_rec = plan_role(release, self.cfg.node, previous=origin, health=health)
-            record["plan"] = role_rec["plan"]
-            record["state"] = role_rec["state"]
-            record["reason"] = role_rec.get("reason")
-            record["detail"] = role_rec.get("detail", health.detail)
-            if "failed_release" in role_rec:
-                record["failed_release"] = role_rec["failed_release"]
-            return record
+            # Dry-run activate: отказ, не авто-план отката. Ручной rollback() — отдельно;
+            # авто health→rollback — execute_role / фаза C, не этот путь.
+            return _blocked(record, "health_check_failed", health.detail)
 
         if health.status != "not_verified":
             return _blocked(record, "health_check_not_verified", asdict(health))

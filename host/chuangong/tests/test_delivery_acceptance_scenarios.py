@@ -117,7 +117,7 @@ def test_healthy_release_activation_planned(tmp_path, world):
     assert rec["state"] == "activation_planned"
     assert rec["would"] == {"current": world.release["release"], "previous": "2026.11.08-1"}
     assert all(step["execute"] is False for step in rec["plan"])
-    assert [step["node"] for step in rec["plan"]] == ["vision", "sound", "main"]
+    assert [step["role"] for step in rec["plan"]] == ["vision", "sound", "main"]
     saved = json.loads(cfg.state_file.read_text(encoding="utf-8"))
     assert saved["current"] == "2026.11.08-1"
 
@@ -224,7 +224,7 @@ def test_manual_rollback_plan(tmp_path, world):
     assert rec["would"] == {"current": previous, "previous": "2026.11.10-1"}
     assert rec["current"] == "2026.11.10-1" and rec["previous"] == previous
     assert all(step["execute"] is False for step in rec["plan"])
-    assert [step["node"] for step in rec["plan"]] == ["vision", "sound", "main"]
+    assert [step["role"] for step in rec["plan"]] == ["vision", "sound", "main"]
     # История на диске не swap — только план.
     saved = json.loads(cfg.state_file.read_text(encoding="utf-8"))
     assert saved["current"] == "2026.11.10-1"
