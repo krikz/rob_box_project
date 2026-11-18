@@ -71,6 +71,13 @@ done
 host="$1"; shift
 echo "$host|$*" >> "$FAKE_SSH_LOG"
 [ -n "${FAKE_SSH_DOWN:-}" ] && [ "$host" = "$FAKE_SSH_DOWN" ] && exit 255
+# hil.sh on читает копию Compose до подъёма Gazebo (гейт Depot, #4694).
+case "$*" in
+    *"cat '"*"compose.hil.yaml'"*)
+        [ -f "$HIL_SANDBOX_REPO/docker/sim/compose.hil.yaml" ] || exit 1
+        cat "$HIL_SANDBOX_REPO/docker/sim/compose.hil.yaml"
+        exit 0 ;;
+esac
 exec bash -c "$*"
 EOF
 cat > "$WORK/bin/docker" <<'EOF'
@@ -91,6 +98,9 @@ case "$1" in
             *"State.Running"*) [ "$(st "$name")" = running ] && echo true || echo false ;;
             *"Config.Env"*) [ -f "$S/$name.simt" ] && echo "USE_SIM_TIME=$(cat "$S/$name.simt")"
                             [ -f "$S/$name.wpdb" ] && echo "WAYPOINT_DB_PATH=$(cat "$S/$name.wpdb")"; echo PATH=/x ;;
+            *"join .Args"*) [ -f "$S/$name.args" ] && cat "$S/$name.args" || true ;;
+            *".Mounts"*) [ -f "$S/$name.mounts" ] && cat "$S/$name.mounts" || true ;;
+            *".Image"*) [ -f "$S/$name.image" ] && cat "$S/$name.image" || echo sha256:fake ;;
         esac ;;
     image) exit 0 ;;
     logs) echo "fake logs" ;;
@@ -108,6 +118,7 @@ case "$1" in
                 out=$(printf '%s\n' "$raw" | grep -aoE 'Boolean value is: (True|False)' | tail -1)
                 [ -n "$out" ] || exit 9
                 case "$out" in *True*) printf true ;; *) printf false ;; esac ;;
+            *"cat "*) [ -f "${FAKE_GAZEBO_SDF:-}" ] && cat "$FAKE_GAZEBO_SDF" || true ;;
             *"topic info"*)  # §5.1: Subscription count cmd_vel_unstamped (FAKE_CMD_VEL_SUBS, умолч. 1)
                 [ -n "${FAKE_ZENOH_LOG:-}" ] && echo "INFO zenoh::net::runtime: Using ZID: 1a2b3c"
                 echo "Type: geometry_msgs/msg/Twist"
@@ -720,6 +731,43 @@ env HIL_WORLD_CHECK_DIR="$ART" RUNVIDEO="$WORK/bin/fake_route" FAKE_GOAL_LOG="$W
 rc=$?
 check "Depot goals после PASS: первая цель ушла (rc=$rc)" \
     '[ "$rc" -eq 0 ] && grep -q "^GOAL$" "$WORK/fake_goal.log"'
+
+# Голый hil.sh on — точка входа runvideo и одиночных M1/R7 (#4694).
+# Без env копия Compose сама решает, обязателен ли гейт.
+# Потеря overlay: обычный Polygon вместо Depot — WORLD_MISMATCH до цели.
+SDF="$WORK/gazebo.sdf"
+printf '%s\n' "<?xml version='1.0'?><sdf><world name='polygon'><model name='polygon_walls'/></world></sdf>" > "$SDF"
+printf '%s\n' "world:=/sim_worlds/polygon.sdf" > "$WORK/state/t-hil-gazebo.args"
+printf '%s\n' "/sim_worlds" > "$WORK/state/t-hil-gazebo.mounts"
+printf '%s\n' "sha256:polygon" > "$WORK/state/t-hil-gazebo.image"
+ARTP="$WORK/art-poly"
+rm -rf "$ARTP"
+run_hil on HIL_WORLD_CHECK_DIR="$ARTP" FAKE_GAZEBO_SDF="$SDF"; rc=$?
+check "голый hil.sh on, обычный Polygon без env: гейт молчит, выход 0 (rc=$rc)" \
+    '[ "$rc" -eq 0 ] && ! grep -q WORLD_MISMATCH "$WORK/out.log"'
+check "голый hil.sh on, Polygon: вердикта мира нет" \
+    '[ ! -f "$ARTP/verdict.txt" ]'
+
+# Копия Compose — штатный Depot (mkdepot + /sim_video, как живые M1/R7),
+# контейнер поднялся с polygon.sdf. Env не выставлен. Гейт обязателен.
+# reset_state снимает замок прошлого on; факты gazebo пишем заново.
+reset_state
+printf '%s\n' "world:=/sim_worlds/polygon.sdf" > "$WORK/state/t-hil-gazebo.args"
+printf '%s\n' "/sim_worlds" > "$WORK/state/t-hil-gazebo.mounts"
+printf '%s\n' "sha256:polygon" > "$WORK/state/t-hil-gazebo.image"
+cp "$DEPOT_SBX/docker/sim/compose.hil.yaml" "$WORK/sbx/docker/sim/compose.hil.yaml"
+ARTD="$WORK/art-depot"
+rm -rf "$ARTD"
+run_hil on HIL_WORLD_CHECK_DIR="$ARTD" FAKE_GAZEBO_SDF="$SDF"; rc=$?
+check "голый hil.sh on, Depot-копия без env, args polygon: WORLD_MISMATCH (rc=$rc)" \
+    '[ "$rc" -ne 0 ] && grep -q WORLD_MISMATCH "$WORK/out.log"'
+check "голый hil.sh on, Depot-копия: сим погашен, цель не логировалась" \
+    '[ ! -f "$WORK/state/t-hil-gazebo" ] && ! grep -q "HIL включён" "$WORK/out.log"'
+check "голый hil.sh on, Depot-копия: артефакты compose/args/image" \
+    '[ -f "$ARTD/compose_dir.txt" ] && [ -f "$ARTD/gazebo_command.txt" ] && [ -f "$ARTD/sdf.sha256" ]'
+# вернуть обычную копию, чтобы хвост файла не зависел от Depot
+cp "$REPO_ROOT/docker/sim/compose.hil.yaml" "$WORK/sbx/docker/sim/compose.hil.yaml"
+rm -f "$WORK/state/t-hil-gazebo.args" "$WORK/state/t-hil-gazebo.mounts"
 
 echo
 echo "итог: $pass PASS, $failures FAIL"

@@ -249,3 +249,12 @@ def test_compose_depot_vid_only_in_comment_is_not_depot():
     assert "Depot_vid" in POLYGON_COMPOSE
     assert wc.compose_is_depot(POLYGON_COMPOSE) is False
     assert wc.gate_required("", "world:=/sim_worlds/polygon.sdf") is False
+
+
+def test_bare_hil_on_depot_copy_requires_gate_without_env():
+    """Голый hil.sh on: Depot-копия без env проверяет мир. Polygon — нет."""
+    assert wc.on_must_check_depot("", DEPOT_COMPOSE) is True
+    assert wc.on_must_check_depot("", POLYGON_COMPOSE) is False
+    assert wc.on_must_check_depot("", WORLD_SDF_OLD_COMPOSE) is False
+    assert wc.on_must_check_depot("depot", POLYGON_COMPOSE) is True
+    assert wc.on_must_check_depot("polygon", POLYGON_COMPOSE) is False
