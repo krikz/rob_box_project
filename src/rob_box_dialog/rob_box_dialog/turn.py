@@ -89,6 +89,7 @@ from rob_box_dialog import counting
 from rob_box_dialog import face_group
 from rob_box_dialog import face_scene
 from rob_box_dialog import foreign_name
+from rob_box_dialog import identity_ask
 from rob_box_dialog import knowledge as kn
 from rob_box_dialog import memory
 from rob_box_dialog import pickup_parties
@@ -1132,7 +1133,8 @@ def considered(engine: "TurnEngine", turn: "_Turn", cmd: Command, last: bool) ->
     исполненного (:func:`unrepeated`) и прочитанного (:func:`unreread`) в ходе; счёт, урезанный моделью, - числами
     кода (:func:`counted_in_full`); без чужого имени и без утверждения о
     состоянии без данных, когда вернуть команду модели уже нельзя (:func:`unnamed_without_retry`,
-    :func:`unclaimed_without_retry`)."""
+    :func:`unclaimed_without_retry`); без второго вопроса об имени и без него в ходе с действием
+    (:func:`identity_ask.limited`, A29)."""
     log, snapshot = engine._log, pickup_parties.own_snapshot(engine.session.snapshot, turn.speaker)
     cmd = unconfirmed_by_model(log, turn, cmd)
     cmd = unasked_aloud(log, turn, snapshot.agent, cmd)
@@ -1142,7 +1144,8 @@ def considered(engine: "TurnEngine", turn: "_Turn", cmd: Command, last: bool) ->
     fresh = corrected_ambulance(log, turn, fresh)  # сирена/мигалка: ambulance → police_lights (#4694)
     names = foreign_keys(engine.log.window(exclude=turn.turn_id), turn, fresh, snapshot)
     fresh = unnamed_without_retry(log, turn, fresh, names, last)
-    return unclaimed_without_retry(log, turn, fresh, snapshot.agent, last), names
+    fresh = unclaimed_without_retry(log, turn, fresh, snapshot.agent, last)
+    return identity_ask.limited(fresh, engine.session.identity_asked, snapshot.speaker), names
 
 
 def unconfirmed_by_model(log: Any, turn: "_Turn", cmd: Command) -> Command:
@@ -2473,6 +2476,9 @@ class TurnEngine:
         if outcome:  # провал - грустно, вопрос тула («Удалить «X»?») - эмоцией вопроса, иначе лицом модели
             self._say(turn, outcome, None, outcome_emotion(results, cmd.expression.emotion))
         cmd = count_edit(self, turn, cmd)  # правка звучащего счёта: продолжение, а не счёт с начала (#4207)
+        speaker = turn_speaker(self.session.snapshot, turn)
+        cmd = identity_ask.limited(cmd, self.session.identity_asked, speaker)
+        identity_ask.note(cmd, self.session.identity_asked, speaker)
         asked = over_ordered_music(asked_voice(cmd), results)  # голос и подложка, о которых просил человек
         owned, refusal = hand_perform(self._ports, turn.turn_id, turn.epoch, asked, self._log)
         note_perform_start(self.log, turn.turn_id, cmd, owned and not refusal)
