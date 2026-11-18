@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# HIL-проверки группы А (#3789, #4435/#4458, #4470, #4365): один запуск → raw-файлы и строки вердикта кода.
+# HIL-проверки группы А (#3789, #4435/#4458, #4470, #4365, #4770): один запуск → raw-файлы и строки вердикта кода.
 # Runbook: docs/runbooks/hil-checks.md. HIL включает и выключает не этот скрипт, а scripts/hil/hil.sh.
 #
 #   HIL_CHECKS_OWNER=<первое слово stand.lock> scripts/hil/checks/run_checks.sh [сценарий ...]   (без аргументов — all)
@@ -13,6 +13,9 @@
 #   stop_active     #3789 + #4435  то же во время поездки из скрипта → «Останавливаюсь.»; после отмены mux = 0
 #   orphan_natural  #4435  цель NavigateToPose из скрипта (3b из #4365): нужен ORPHAN_GOAL="x,y,yaw°" (карта мира);
 #                   ORPHAN_LOAD_S=120 — нагрузка Main Pi (4 пустых цикла с timeout). Без ORPHAN_GOAL — пропуск
+#   controller_abort #4770  цель в свободную сторону, FollowPath принят, корпус удержан нулём на /cmd_vel_web
+#                   (priority 50 > Nav2). Progress checker абортит за movement_time_allowance (30 с, не крутим).
+#                   Не nav_aborted: без принятого FollowPath вердикт NOT_TRIGGERED.
 #
 # Предусловия проверяет сам и честно отказывает (выход 3): stand.lock начинается с HIL_CHECKS_OWNER (замок берёт тот,
 # кто запускает, скрипт его не трогает), hil.sh status = HIL on и один /controller_manager, нужные контейнеры running,
@@ -47,12 +50,15 @@ fi
 # sim-секунд после провала цели, за которые FollowPath должен погаснуть и mux обнулиться (orphan_timeout_s 1.5 + такт).
 : "${ORPHAN_GRACE_S:=2.0}"
 : "${WALL_SPEED:=0.1}"
+# #4770: боевой movement_time_allowance (nav2_params.yaml). Сценарий его не укорачивает.
+: "${PROGRESS_ALLOWANCE_S:=30}"
+: "${HOLD_AHEAD_M:=1.5}"
 
 OUT="$HIL_CHECKS_OUT"
 GZ="$HIL_SIM_PREFIX-gazebo"
 REMOTE_PROBE=/tmp/hil_checks/hil_probe.py
 SSH_OPTS=(-o BatchMode=yes -o ConnectTimeout=10 -o ServerAliveInterval=5 -o ServerAliveCountMax=3)
-ALL=(orphan zone guard_off nav_aborted stop_idle stop_active orphan_natural)
+ALL=(orphan zone guard_off nav_aborted stop_idle stop_active orphan_natural controller_abort)
 NAV_TOOLS_RX='navigate_to_coordinates|navigate_to_waypoint|move_direction'
 GUARD_SOUND_CHANGED=0
 
@@ -112,7 +118,7 @@ needs_for() {  # контейнеры, без которых выбранные 
     local sc need=(nav2 twist-mux proximity-guard "$GZ")
     for sc in "$@"; do
         case "$sc" in
-            orphan | orphan_natural | nav_aborted | stop_active) need+=(followpath-watchdog) ;;
+            orphan | orphan_natural | nav_aborted | stop_active | controller_abort) need+=(followpath-watchdog) ;;
         esac
         case "$sc" in
             zone | guard_off | nav_aborted | stop_idle | stop_active) need+=(voice-assistant) ;;
@@ -291,6 +297,17 @@ sc_orphan() {
     dlogs "$HIL_MAIN_HOST" followpath-watchdog "$t0" "$d/watchdog.log"
     dlogs "$HIL_MAIN_HOST" nav2 "$t0" "$d/nav2.log"
     verdict orphan "$d" --grace "$ORPHAN_GRACE_S"
+}
+sc_controller_abort() {
+    # #4770: FollowPath уже принят, корпус удержан — abort progress checker, не «план не построен».
+    local d="$OUT/controller_abort" t0
+    mkdir -p "$d"
+    t0=$(iso_now)
+    probe "$d/probe.log" hold --ahead "$HOLD_AHEAD_M" --allowance "$PROGRESS_ALLOWANCE_S" --grace "$ORPHAN_GRACE_S"
+    sleep 2
+    dlogs "$HIL_MAIN_HOST" nav2 "$t0" "$d/nav2.log"
+    dlogs "$HIL_MAIN_HOST" followpath-watchdog "$t0" "$d/watchdog.log"
+    verdict controller_abort "$d" --grace "$ORPHAN_GRACE_S" --allowance "$PROGRESS_ALLOWANCE_S"
 }
 sc_orphan_natural() {
     local d="$OUT/orphan_natural" t0
