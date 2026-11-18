@@ -1,10 +1,10 @@
 # -*- coding: utf-8 -*-
-"""#4741 / #4738: харнесс один раз повторяет шаг, если STT принял непустую чужую фразу.
+"""#4741 / #4738: харнесс повторяет шаг, если STT принял непустую чужую фразу.
 
 n1009: «какой чай» -> «какой человек». n709: стоп -> «Thank you.». Это флаки STT, не баг диалога:
 словаря подмен нет, шаг без stt_keys. Решение в коде (``stt_miss_retry``, ADR-0148): гипотеза не пустая
-и не та фраза -- ровно одна повторная попытка; второй промах -- честный FAIL; таймаут / падение /
-совпавшая фраза -- повтора нет.
+и не та фраза -- повтор до ``STT_GARBAGE_MAX_ATTEMPTS`` (3, считая первую); исчерпание -- честный FAIL
+со счётчиком ``stt_attempt`` в вердикте; таймаут / падение / совпавшая фраза / отказ тула -- повтора нет.
 
 Run:
     python3 -m pytest tests/unit/e2e_scripts/test_issue_4741_stt_miss_retry.py -v -o addopts=""
@@ -55,12 +55,14 @@ def test_n1009_and_n709_have_no_stt_keys_and_no_substitution_dictionary():
     assert not eev.heard_matches_command(N709, THANK_YOU)
 
 
-def test_first_miss_asks_for_one_replay_second_is_exhausted():
+def test_miss_retries_until_the_budget_then_is_exhausted():
     first = eev.stt_miss_retry(N1009, TEA_MISS, 1)
-    assert first == {"retry": 1, "reason": "retry", "attempt": 1, "max": 2}
+    assert first == {"retry": 1, "reason": "retry", "attempt": 1, "max": 3}
     second = eev.stt_miss_retry(N1009, TEA_MISS, 2)
-    assert second["retry"] == 0 and second["reason"] == "attempts_exhausted"
-    assert second["max"] == eev.STT_GARBAGE_MAX_ATTEMPTS == 2
+    assert second == {"retry": 1, "reason": "retry", "attempt": 2, "max": 3}
+    third = eev.stt_miss_retry(N1009, TEA_MISS, 3)
+    assert third["retry"] == 0 and third["reason"] == "attempts_exhausted"
+    assert third["max"] == eev.STT_GARBAGE_MAX_ATTEMPTS == 3
 
 
 def test_matching_phrase_and_empty_hypothesis_are_not_retried():
@@ -124,17 +126,32 @@ class TestRunStepSttMiss:
         assert "какой человек" in out
         assert _names(played) == ["cmd_a_eq.wav", "cmd_a_eq.wav"]
 
-    def test_two_misses_are_honest_fail_without_a_third_play(self, tmp_path):
-        """Второй промах -- честный FAIL, третьего PLAY нет, первый промах не PASS."""
+    def test_misses_until_the_budget_are_an_honest_fail_with_the_counter(self, tmp_path):
+        """Промах на всех попытках -- честный FAIL, PLAY ровно по потолку, в вердикте stt_attempt."""
         bad = heard(TEA_MISS, "{NOW-30}") + REPLY
         again = heard(TEA_MISS, "{NOW-11}") + REPLY
-        out, err, _, played = _run_step(tmp_path, bad, [again], STEP, replace=True)
+        out, err, _, played = _run_step(
+            tmp_path, bad, [again, again], STEP, replace=True)
         assert "RC=1" in out, (out, err)
-        assert "PLAY_COUNT=2" in out
-        assert out.count("E2E_RECOVER stt_replay a ") == 1
-        assert "E2E_STEP a FAIL stt_miss" in out
+        assert "PLAY_COUNT=%d" % eev.STT_GARBAGE_MAX_ATTEMPTS in out
+        assert out.count("E2E_RECOVER stt_replay a ") == eev.STT_GARBAGE_MAX_ATTEMPTS - 1
+        assert "E2E_STEP a FAIL stt_miss stt_attempt=%d/%d" % (
+            eev.STT_GARBAGE_MAX_ATTEMPTS, eev.STT_GARBAGE_MAX_ATTEMPTS) in out
         assert "честный FAIL" in out
-        assert _names(played) == ["cmd_a_eq.wav", "cmd_a_eq.wav"]
+        assert _names(played) == ["cmd_a_eq.wav"] * eev.STT_GARBAGE_MAX_ATTEMPTS
+
+    def test_second_miss_then_the_phrase_recovers_with_the_counter(self, tmp_path):
+        """Второй промах ещё пробует: третья попытка услышана -- не FAIL, счётчик в логе повторов."""
+        bad = heard(TEA_MISS, "{NOW-30}") + REPLY
+        again = heard(TEA_MISS, "{NOW-11}") + REPLY
+        ok = heard(TEA_OK, "{NOW-8}") + REPLY
+        out, err, _, played = _run_step(tmp_path, bad, [again, ok], STEP, replace=True)
+        assert "RC=0" in out, (out, err)
+        assert "PLAY_COUNT=3" in out
+        assert out.count("E2E_RECOVER stt_replay a ") == 2
+        assert "stt_attempt=2/3" in out and "stt_attempt=3/3" in out
+        assert "FAIL stt_miss" not in out
+        assert _names(played) == ["cmd_a_eq.wav", "cmd_a_eq.wav", "cmd_a_eq.wav"]
 
     def test_thank_you_instead_of_stop_replays_once_even_if_cycle_did_not_finish(self, tmp_path):
         """#4738: ПРИНЯТО «Thank you.», цикл не закрылся -- это промах STT, не таймаут без гипотезы."""
@@ -155,5 +172,5 @@ class TestRunStepSttMiss:
         out, err, _, played = _run_step(tmp_path, stuck, [], STEP, env)
         assert "PLAY_COUNT=1" in out, (out, err)
         assert "E2E_RECOVER stt_replay" not in out
-        assert "повтора по промаху STT нет (timeout)" in out or "повтора по промаху STT нет (command_heard)" in out
+        assert "повтора по промаху STT нет (timeout" in out or "повтора по промаху STT нет (command_heard" in out
         assert _names(played) == ["cmd_a_eq.wav"]
