@@ -34,14 +34,36 @@ BASE_BAG_TOPICS: Tuple[str, ...] = (
     "/tf_static",
 )
 
-# Чего не хватило разбору срыва у цели (#4694, комментарий Тигра #4682).
-# /rosout — строки controller_server «Failed to make progress» и тип recovery.
+# Чего не хватило разбору срыва у цели (#4694, комментарии Тигра #4682).
+# /rosout — «Failed to make progress», тип recovery, защёлка RotateToGoal.
+# /evaluation — dwb_msgs/LocalPlanEvaluation (внутри CriticScore[]), не голый CriticScore.
+# /trajectories — MarkerArray образцов DWB (create_publisher "marker" → /trajectories).
+# /local_plan уже в базе; писать каждый тик, не прореживать.
 REPEAT_EXTRA_TOPICS: Tuple[str, ...] = (
     "/cmd_vel_yaw",
     "/cmd_vel_nav",
     "/global_costmap/costmap",
     "/global_costmap/costmap_raw",
     "/rosout",
+    "/evaluation",
+    "/trajectories",
+)
+
+# Типы — из dwb_core 1.1.20 publisher.cpp и dwb_msgs. Не выдумка.
+EVALUATION_TOPIC = "/evaluation"
+EVALUATION_TYPE = "dwb_msgs/msg/LocalPlanEvaluation"
+TRAJECTORIES_TOPIC = "/trajectories"
+TRAJECTORIES_TYPE = "visualization_msgs/msg/MarkerArray"
+LOCAL_PLAN_TOPIC = "/local_plan"
+
+# HIL-оверлей только включает публикацию оценок. Скорости, critics, lookahead не трогает.
+# Боевой nav2_params.yaml этих ключей не задаёт; дефолт DWB 1.1.20 — true, но повтор
+# фиксирует факт параметра, а не надеется на дефолт. Публикация оценок выбор траектории
+# не меняет: scoreTrajectory считается до publishEvaluation.
+DWB_PUBLISH_OVERLAY_KEYS: Tuple[str, ...] = (
+    "FollowPath.publish_evaluation",
+    "FollowPath.publish_trajectories",
+    "FollowPath.publish_local_plan",
 )
 
 # Выход контроллера до mux: cmd_vel_nav (до smoother), не /cmd_vel (вход mux).
@@ -247,7 +269,29 @@ RECOVERY_MARKERS: Tuple[Tuple[str, str], ...] = (
     ("wait", "wait"),
     ("back_up", "Backing up"),
     ("backup", "backup"),
+    # Защёлка RotateToGoal (rotate_to_goal.cpp:116 и :109). Момент — по /rosout, не по догадке.
+    ("rotate_nonrotation", "Nonrotation command near goal"),
+    ("rotate_not_slowing", "Not slowing down near goal"),
 )
+
+
+def dwb_publish_overlay_yaml() -> str:
+    """Оверлей Nav2 только для HIL-повтора. Боевой файл не меняет, скорости не задаёт.
+
+    Публикация ``/evaluation`` и маркеров ``/trajectories`` не входит в выбор траектории:
+    DWB считает score до ``publishEvaluation``. Сопоставимость по vx/wz от этого не ломается;
+    сопоставимость по наличию подписчика — нет, её и фиксирует повтор.
+    """
+    return (
+        "# HIL M1-repeat only. Не боевой nav2_params.yaml.\n"
+        "# Включает публикацию оценок DWB. Скорость, critics, lookahead не трогает.\n"
+        "controller_server:\n"
+        "  ros__parameters:\n"
+        "    FollowPath:\n"
+        "      publish_evaluation: true\n"
+        "      publish_trajectories: true\n"
+        "      publish_local_plan: true\n"
+    )
 
 
 def recovery_hits(log_text: str) -> List[str]:
