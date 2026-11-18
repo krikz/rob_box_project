@@ -27,6 +27,9 @@ REQUIRED = (
     "/global_costmap/costmap",
     "/global_costmap/costmap_raw",
     "/rosout",
+    "/evaluation",
+    "/trajectories",
+    "/local_plan",
 )
 
 
@@ -136,6 +139,22 @@ def test_recovery_hits_name_the_marker_not_invent_a_type():
     assert "spin" not in topics.recovery_hits(log)
 
 
+def test_rotate_latch_markers_and_dwb_overlay_do_not_touch_speed():
+    log = "IllegalTrajectoryException: Nonrotation command near goal\nNot slowing down near goal\n"
+    hits = topics.recovery_hits(log)
+    assert hits == ["rotate_nonrotation", "rotate_not_slowing"]
+    overlay = topics.dwb_publish_overlay_yaml()
+    assert "publish_evaluation: true" in overlay
+    assert "publish_trajectories: true" in overlay
+    assert "publish_local_plan: true" in overlay
+    assert "max_vel_x" not in overlay
+    assert "lookahead_time" not in overlay
+    assert topics.EVALUATION_TYPE == "dwb_msgs/msg/LocalPlanEvaluation"
+    assert topics.TRAJECTORIES_TYPE == "visualization_msgs/msg/MarkerArray"
+    assert "/evaluation" in topics.repeat_bag_topics()
+    assert "/local_plan" in topics.repeat_bag_topics()
+
+
 def test_script_uses_world_gate_and_pulls_before_off():
     script = (REPEAT / "run_m1_repeat.sh").read_text(encoding="utf-8")
     assert "HIL_EXPECT_WORLD=depot" in script
@@ -150,6 +169,11 @@ def test_script_uses_world_gate_and_pulls_before_off():
     assert "movement_time_allowance" in script
     assert "nav2.log" in script
     assert "recovery.txt" in script
+    assert "dwb_publish.yaml" in script
+    assert "nav2tune.compose.yaml" in script
+    assert "publish_evaluation" in script
+    code = "\n".join(line for line in script.splitlines() if not line.lstrip().startswith("#"))
+    assert "nav2_params.yaml" not in code
     assert "CAMERAS=0 ./runvideo.sh M1" in script
     assert "/tmp/hil.lock" in script
     assert "NAV2_PARAMS_OVERLAYS" in script

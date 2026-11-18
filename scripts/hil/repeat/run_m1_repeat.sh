@@ -5,6 +5,8 @@
 #   Depot (HIL_EXPECT_WORLD=depot, гейт scripts/hil/hil.sh как есть),
 #   спавн (0, 0, 0), цель M1 (-3.7, 4, 0°), max_vel_x 0.15,
 #   PathAlign.forward_point_distance 0.20 (боевой nav2_params.yaml, оверлей скорости не кладём).
+#   Оверлей repeat только включает publish_evaluation/publish_trajectories/publish_local_plan:
+#   DWB считает score до публикации, выбор vx/wz от этого не меняется. Боевой yaml не правится.
 #
 # До отправки цели на хост: sha SDF, ID образов, фактические параметры, старт map+GT,
 # вердикт мира. Bag (в т.ч. /cmd_vel_yaw, global costmap, /cmd_vel_nav) и route.log
@@ -93,6 +95,9 @@ cleanup() {
     stop_route
     if [ "$ON_ATTEMPTED" = 1 ]; then
         pull_before_off || bad=1
+        # hil off пересоздаёт nav2 без nav2tune.compose.yaml — оверлей публикации уходит
+        # вместе с HIL. Файл на Main удаляем, чтобы следующий on его не подхватил.
+        main "rm -f /tmp/hil/nav2tune/dwb_publish.yaml /tmp/hil/nav2tune.compose.yaml" || true
         bash "$HIL_CMD" off >"$ART/hil_off.log" 2>&1 || bad=1
     fi
     if [ "$bad" -eq 0 ]; then
@@ -153,7 +158,10 @@ capture_before_goal() {
         FollowPath.max_vel_x \
         FollowPath.PathAlign.forward_point_distance \
         progress_checker.movement_time_allowance \
-        FollowPath.min_speed_xy
+        FollowPath.min_speed_xy \
+        FollowPath.publish_evaluation \
+        FollowPath.publish_trajectories \
+        FollowPath.publish_local_plan
     do
         raw=$(main "docker exec $(printf '%q' "$NAV2_CONTAINER") /ros_scripts/ros_with_namespace.sh bash -c 'source /opt/ros/humble/setup.bash; ros2 param get /controller_server $(printf '%q' "$pname")'" 2>/dev/null || true)
         printf 'PARAM %s\n%s\n' "$pname" "$raw" >>"$ART/params_raw.txt"
@@ -225,9 +233,23 @@ if ! main "test ! -e '$MAPS_DIR'"; then
 fi
 
 bash "$HIL_CMD" status >"$ART/hil_status_before.log" 2>&1 || { log "STATUS_BEFORE_FAIL"; exit 23; }
+
+# Оверлей публикации DWB кладём ДО on: hil.sh on поднимает nav2, и контроллер читает
+# параметры на старте. Скорости нет — только publish_evaluation/trajectories/local_plan.
+python3 -X utf8 -c 'import sys; sys.path.insert(0, sys.argv[1]); from m1_topics import dwb_publish_overlay_yaml; open(sys.argv[2], "w", encoding="utf-8").write(dwb_publish_overlay_yaml())' \
+    "$HERE" "$ART/dwb_publish.yaml"
+main "mkdir -p /tmp/hil/nav2tune" || { log "NAV2TUNE_DIR_FAIL"; exit 30; }
+scp -q -o BatchMode=yes "$ART/dwb_publish.yaml" "$MAIN:/tmp/hil/nav2tune/dwb_publish.yaml" || { log "OVERLAY_SCP_FAIL"; exit 30; }
+main "tr -d '\r' > /tmp/hil/nav2tune.compose.yaml" <"$ROOT/scripts/hil/speed/nav2tune.compose.yaml" || { log "COMPOSE_SCP_FAIL"; exit 30; }
+# После on hil.sh пересоздаёт nav2 без этого файла — оверлей не останется в бою.
+# Здесь on ещё не взят: кладём compose-оверлей, on его не знает. Поэтому после on
+# пересоздаём только nav2 с тем же HIL_MAPS_DIR, что возьмёт замок.
 ON_ATTEMPTED=1
 CLEANED=0
 bash "$HIL_CMD" on >"$ART/hil_on.log" 2>&1 || { log "HIL_ON_FAIL"; exit 24; }
+main "cd /home/ros2/rob_box_project/docker/main && HIL_MAPS_DIR='$MAPS_DIR' HIL_RTABMAP_MODE='${HIL_RTABMAP_MODE:-mapping}' NAV2TUNE_OVERLAYS='/nav2tune/dwb_publish.yaml' docker compose -f docker-compose.yaml -f /tmp/hil/main.images.yaml -f /tmp/hil/main.hil.yaml -f /tmp/hil/nav2tune.compose.yaml up -d --no-deps --pull never --force-recreate nav2" \
+    >"$ART/dwb_overlay_up.log" 2>&1 || { log "DWB_OVERLAY_UP_FAIL"; exit 30; }
+log "DWB_PUBLISH_OVERLAY on (publish_evaluation/trajectories/local_plan only)"
 
 # Боевые 0.15 / PathAlign 0.20: оверлей скорости не кладём. Проверяем факт параметра до цели.
 capture_before_goal || { log "CAPTURE_BEFORE_GOAL_FAIL"; exit 32; }
