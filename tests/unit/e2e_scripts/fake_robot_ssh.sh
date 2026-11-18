@@ -22,6 +22,11 @@
 #   * ``ros2 param get`` печатает то, что печатает ros2cli:
 #     «Boolean value is: True|False» / «String value is: <v>».
 #
+# Часы робота — одни на ``date`` и на метки ``{NOW-x}`` в логе. Раньше ``date +%s.%N``
+# отдавал часы хоста, а ``{NOW-x}`` считался от ``date`` внутри awk: два источника, и
+# харнесс, который честно спит по разнице часов робота и метки лога (``barge_hold``),
+# в тесте видел разницу ноль. Смещение — $FAKE_ROBOT_SKEW_S (секунды, по умолчанию 0).
+#
 # Логи контейнера voice-assistant (``docker logs voice-assistant ...``) —
 # содержимое $FAKE_ROBOT_LOG (если задан). ``echo X > /proc/1/fd/1`` внутри
 # ``docker exec voice-assistant`` дописывается в $FAKE_ROBOT_STATE/pid1_stdout
@@ -48,6 +53,21 @@ set -u
 : "${FAKE_ROBOT_STATE:?fake_robot_ssh.sh: FAKE_ROBOT_STATE не задан}"
 mkdir -p "$FAKE_ROBOT_STATE"
 printf '%s\n' "$*" >> "$FAKE_ROBOT_STATE/ssh_calls"
+
+# date робота: тот же now, от которого awk ниже разворачивает ``{NOW-x}``. Хостовый date
+# остаётся для всего, что фейк зовёт сам (timeout, awk -v now).
+_robot_date() {
+    local fmt="${1:-}" off="${FAKE_ROBOT_SKEW_S:-0}"
+    # LC_ALL=C: ru_RU печатает десятичную запятую, и barge_hold отбрасывает часы робота
+    # как «не число» (case *[!0-9.]*), засыпая по E2E_ANCHOR_NOW -- то есть не засыпая.
+    case "$fmt" in
+        "+%s.%N") LC_ALL=C awk -v off="$off" 'BEGIN{printf "%.9f\n", systime() + off}' ;;
+        "+%s") LC_ALL=C awk -v off="$off" 'BEGIN{printf "%d\n", systime() + off}' ;;
+        "-u +%Y-%m-%dT%H:%M:%SZ" | "+%Y-%m-%dT%H:%M:%SZ")
+            LC_ALL=C awk -v off="$off" 'BEGIN{print strftime("%Y-%m-%dT%H:%M:%SZ", systime() + off, 1)}' ;;
+        *) return 1 ;;
+    esac
+}
 
 _HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 _STUBS="$_HERE/ros_stubs"
@@ -139,7 +159,7 @@ docker() {
             # #3857: события v2 (``📊 [turn] ... stage=done``, ``🗣️ SpeechEvent started|finished
             # speech_id=...``). Метка ``{NOW-3.5}`` в логе -- «3.5 с назад» по часам фейк-робота:
             # харнесс сравнивает ROS-время строки с ``date +%s.%N`` робота.
-            [ -n "${FAKE_ROBOT_LOG:-}" ] && awk -v now="$(date +%s.%N)" '
+            [ -n "${FAKE_ROBOT_LOG:-}" ] && LC_ALL=C awk -v now="$(_robot_date "+%s.%N")" '
                 { while (match($0, /\{NOW-[0-9.]+\}/)) {
                       d = substr($0, RSTART + 5, RLENGTH - 6)
                       $0 = substr($0, 1, RSTART - 1) sprintf("%.2f", now - d) substr($0, RSTART + RLENGTH) }
@@ -176,4 +196,10 @@ docker() {
     esac
 }
 
+# ``date ...`` робота — его часы, не хоста (см. _robot_date). Не наш формат — настоящий date.
+case "$1" in
+    "date +%s.%N" | "date +%s" | "date -u +%Y-%m-%dT%H:%M:%SZ" | "date +%Y-%m-%dT%H:%M:%SZ")
+        _robot_date "${1#date }"
+        exit $? ;;
+esac
 eval "$1"
