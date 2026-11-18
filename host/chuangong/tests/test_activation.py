@@ -407,7 +407,8 @@ def test_rollback_uses_signed_previous_release_and_does_not_swap_history(tmp_pat
     ]
 
 
-def test_unhealthy_result_plans_role_rollback_not_success(tmp_path, world):
+def test_unhealthy_result_blocks_without_auto_rollback_plan(tmp_path, world):
+    """Dry-run activate: unhealthy → blocked, не rollback_planned (авто-откат — фаза C)."""
     cfg = _cfg(tmp_path, world)
     docker = FakeDocker()
     deps = _deps(world, docker)
@@ -416,19 +417,16 @@ def test_unhealthy_result_plans_role_rollback_not_success(tmp_path, world):
 
     rec = _machine(cfg, deps, Health("unhealthy", "nav2: exited (127)")).activate(world.release["release"])
 
-    assert rec["state"] == "rollback_planned"
+    assert rec["state"] == "blocked"
     assert rec["state"] != "activation_planned"
+    assert rec["state"] != "rollback_planned"
     assert rec["reason"] == "health_check_failed"
     assert rec["detail"] == "nav2: exited (127)"
-    assert rec["failed_release"] == world.release["release"]
-    assert len(rec["plan"]) == 1
-    step = rec["plan"][0]
-    assert step["op"] == "rollback"
-    assert step["role"] == "vision"
-    assert step["release"] == "2026.11.08-1"
-    assert step["from_release"] == world.release["release"]
-    assert step["execute"] is False
-    assert all(s["op"] != "switch_role" for s in rec["plan"])
+    assert "plan" not in rec or rec.get("plan") in (None, [])
+    assert "would" not in rec or rec.get("would") is None
+    assert "failed_release" not in rec
+    saved = json.loads(cfg.state_file.read_text(encoding="utf-8"))
+    assert saved["current"] == "2026.11.08-1"
 
 
 def test_dry_run_rejects_health_success_claim(tmp_path, world):
