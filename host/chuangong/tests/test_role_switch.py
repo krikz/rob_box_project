@@ -204,6 +204,52 @@ def test_execute_role_records_compose_by_digest_and_marks_switched(tmp_path):
         assert "@sha256:" in ref
 
 
+def test_compose_up_applies_digest_images_env_not_tags(tmp_path):
+    """FakeDocker.compose_up запоминает service→digest; пустой images не становится тегом."""
+    release = _release_fixture()
+    docker = FakeDocker()
+    project = tmp_path / "docker" / "vision"
+    project.mkdir(parents=True)
+    # фиктивный digest (формат is_pinned_ref / _PINNED_REF), не боевой sha
+    zero_digest = "sha256:" + ("0" * 64)
+    pinned = {
+        "vision-svc0": f"registry.example/krikz/rob_box@{zero_digest}",
+        "vision-svc1": f"registry.example/krikz/rob_box@sha256:{'1' * 64}",
+    }
+    release["roles"]["vision"]["images"] = pinned
+    rf.validate(release)
+
+    result = execute_role(
+        release,
+        "vision",
+        docker=docker,
+        project_dir=project,
+        previous="2026.11.08-1",
+        health_after=HealthResult("healthy", "ok"),
+    )
+
+    assert result["state"] == "role_switched"
+    # один и тот же словарь: журнал commands и атрибут фейка
+    up = next(c for c in result["commands"] if c["action"] == "compose_up")
+    assert up["images"] == pinned
+    assert docker.compose_up_images == pinned
+    assert ("compose_up", str(project), pinned) in docker.commands
+    for ref in docker.compose_up_images.values():
+        assert "@sha256:" in ref
+        # формат name@sha256:64hex (как _PINNED_REF / is_pinned_ref)
+        _name, dig = ref.split("@", 1)
+        assert dig.startswith("sha256:") and len(dig) == 7 + 64
+        hexpart = dig.removeprefix("sha256:")
+        assert len(hexpart) == 64 and all(c in "0123456789abcdef" for c in hexpart)
+    # пустой/None — пустой dict, без подстановки тегов канала
+    docker.compose_up(project, images=None)
+    assert docker.compose_up_images == {}
+    docker.compose_up(project, images={})
+    assert docker.compose_up_images == {}
+    assert "dev" not in str(docker.compose_up_images)
+    assert "latest" not in str(docker.compose_up_images)
+
+
 def test_execute_role_unhealthy_after_up_runs_rollback_not_success(tmp_path):
     release = _release_fixture("2026.11.10-1")
     previous = "2026.11.09-1"

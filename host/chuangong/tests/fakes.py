@@ -94,6 +94,8 @@ class FakeDocker:
         self.compose_images = {}
         self.compose_probe_errors = {}
         self.commands: list[tuple] = []
+        # digest-окружение последнего compose_up (service → ref); пустой/None → {}
+        self.compose_up_images: dict = {}
 
     def image_present(self, ref):
         return ref in self.present
@@ -130,7 +132,10 @@ class FakeDocker:
         self.commands.append(("compose_down", str(project_dir)))
 
     def compose_up(self, project_dir, images=None):
-        self.commands.append(("compose_up", str(project_dir), dict(images or {})))
+        # Применяем digest-окружение как есть: не подставляем теги канала/сборки.
+        applied = dict(images or {})
+        self.compose_up_images = applied
+        self.commands.append(("compose_up", str(project_dir), applied))
 
 
 class FakeZenoh:

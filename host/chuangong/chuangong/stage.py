@@ -145,7 +145,7 @@ class DockerCli:
             raise StageError("compose_down_failed", error, dir=str(project_dir))
 
     def compose_up(self, project_dir: Path, images: dict[str, str] | None = None) -> None:
-        """``docker compose up -d``; ``images`` — digest-пин (журнал исполнителя; env — следующий шаг)."""
+        """``docker compose up -d``; ``images`` — service→digest (FakeDocker запоминает; live env — следующий шаг)."""
         res = self._compose(project_dir, "up", "-d", "--force-recreate", "--pull", "never")
         if res.returncode != 0:
             error = res.stderr.strip() or res.stdout.strip() or f"compose up exited {res.returncode}"
