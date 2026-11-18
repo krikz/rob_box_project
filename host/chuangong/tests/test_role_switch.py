@@ -14,8 +14,10 @@ from chuangong.role_switch import (
     ROLE_CHECKS,
     HealthResult,
     RoleSwitchError,
+    execute_role,
     plan_role,
 )
+from fakes import FakeDocker
 
 
 def _release_fixture(name: str = "2026.11.09-1") -> dict:
@@ -43,9 +45,7 @@ def _release_fixture(name: str = "2026.11.09-1") -> dict:
             },
             "external_images": [],
             "resource_pack": None,
-            "migrations": (
-                [f"scripts/setup/ensure_{role}.sh"] if role == "vision" else []
-            ),
+            "migrations": ([f"scripts/setup/ensure_{role}.sh"] if role == "vision" else []),
         }
     release = {
         "schema": 1,
@@ -153,9 +153,7 @@ def test_unhealthy_without_previous_is_blocked_not_success():
 def test_tag_image_rejected_even_if_schema_bypassed():
     release = _release_fixture()
     broken = copy.deepcopy(release)
-    broken["roles"]["vision"]["images"][
-        "vision-svc0"
-    ] = "registry.example/krikz/rob_box:dev-abc1234"
+    broken["roles"]["vision"]["images"]["vision-svc0"] = "registry.example/krikz/rob_box:dev-abc1234"
     # validate не пропустит — обходим через подмену после validate в plan_role:
     # plan_role сам валидирует, поэтому ловим bad_release/image_not_digest.
     with pytest.raises(RoleSwitchError) as exc:
@@ -167,3 +165,134 @@ def test_unknown_role_rejected():
     release = _release_fixture()
     with pytest.raises(RoleSwitchError, match="bad_role"):
         plan_role(release, "katana")
+
+
+def test_execute_role_records_compose_by_digest_and_marks_switched(tmp_path):
+    release = _release_fixture()
+    docker = FakeDocker()
+    project = tmp_path / "docker" / "vision"
+    project.mkdir(parents=True)
+
+    result = execute_role(
+        release,
+        "vision",
+        docker=docker,
+        project_dir=project,
+        previous="2026.11.08-1",
+        health_after=HealthResult("healthy", "check_container_status: ok"),
+    )
+
+    assert result["state"] == "role_switched"
+    assert result["execute"] is True
+    assert result["health"]["status"] == "healthy"
+    assert result["plan"][0]["op"] == "switch_role"
+    assert result["plan"][0]["execute"] is True
+    images = release["roles"]["vision"]["images"]
+    assert ("compose_down", str(project)) in docker.commands
+    assert ("compose_up", str(project), images) in docker.commands
+    actions = [c["action"] for c in result["commands"]]
+    assert actions == [
+        "compose_down",
+        "switch_current",
+        "host_migrations",
+        "compose_up",
+    ]
+    assert result["commands"][2]["migrations"] == ["scripts/setup/ensure_vision.sh"]
+    # digest, не тег канала
+    up = next(c for c in result["commands"] if c["action"] == "compose_up")
+    for ref in up["images"].values():
+        assert "@sha256:" in ref
+
+
+def test_execute_role_unhealthy_after_up_runs_rollback_not_success(tmp_path):
+    release = _release_fixture("2026.11.10-1")
+    previous = "2026.11.09-1"
+    docker = FakeDocker()
+    project = tmp_path / "docker" / "vision"
+    project.mkdir(parents=True)
+    health = HealthResult("unhealthy", "check_container_status: vision-svc0 restarting")
+
+    result = execute_role(
+        release,
+        "vision",
+        docker=docker,
+        project_dir=project,
+        previous=previous,
+        health_after=health,
+    )
+
+    assert result["state"] == "rollback_planned"
+    assert result["state"] != "role_switched"
+    assert result["state"] != "role_switch_planned"
+    assert result["reason"] == "health_check_failed"
+    assert result["release"] == previous
+    assert result["failed_release"] == "2026.11.10-1"
+    assert result["execute"] is True
+    assert len(result["plan"]) == 1
+    assert result["plan"][0]["op"] == "rollback"
+    assert result["plan"][0]["release"] == previous
+    assert all(s["op"] != "switch_role" for s in result["plan"])
+    # switch attempt + rollback: compose_down/up twice
+    downs = [c for c in docker.commands if c[0] == "compose_down"]
+    ups = [c for c in docker.commands if c[0] == "compose_up"]
+    assert len(downs) == 2 and len(ups) == 2
+    actions = [c["action"] for c in result["commands"]]
+    assert actions.count("compose_down") == 2
+    assert actions.count("compose_up") == 2
+    assert "switch_current" in actions
+
+
+def test_activate_dry_run_uses_plan_role_steps(tmp_path, world):
+    """Штатный activate dry-run зовёт plan_role — шаги switch_role с digest, не второй список."""
+    import json
+
+    from chuangong import state as st
+    from chuangong.agent import Config, Deps
+    from chuangong.stage import RoleStager
+    from chuangong.state import Mode
+    from fakes import FakeZenoh
+
+    cfg = Config(
+        robot_id="RBXU100001",
+        node="vision",
+        pubkey=world.pubkey,
+        state_dir=tmp_path / "var" / "chuangong",
+        releases_root=tmp_path / "opt" / "releases",
+        legacy_root=tmp_path / "legacy",
+        docker_root=tmp_path,
+        hil_lock=tmp_path / "hil.lock",
+        reserve_bytes=0,
+    )
+    docker = FakeDocker()
+    deps = Deps(world.registry, docker, FakeZenoh(), disk_free=lambda p: 1 << 40)
+    RoleStager(
+        deps.registry,
+        deps.docker,
+        cfg.releases_root,
+        cfg.docker_root,
+        cfg.reserve_bytes,
+        deps.disk_free,
+    ).run(world.release, cfg.node)
+    rec = st.new_record(cfg.robot_id, cfg.node, cfg.channel, Mode.OBSERVE, None)
+    rec["current"] = "2026.11.08-1"
+    st.save(cfg.state_file, rec)
+
+    from chuangong.activation import ActivationMachine
+
+    out = ActivationMachine(cfg, deps).activate(world.release["release"])
+
+    assert out["state"] == "activation_planned"
+    assert [s["op"] for s in out["plan"]] == [
+        "switch_role",
+        "switch_role",
+        "switch_role",
+    ]
+    assert [s["role"] for s in out["plan"]] == ["vision", "sound", "main"]
+    # actions/images пришли из plan_role, не из локальной копии в activation
+    from chuangong.role_switch import ROLE_ACTIONS, plan_role
+
+    direct = plan_role(world.release, "vision", previous="2026.11.08-1")
+    assert out["plan"][0]["actions"] == list(ROLE_ACTIONS) == direct["plan"][0]["actions"]
+    assert out["plan"][0]["images"] == direct["plan"][0]["images"]
+    assert out["plan"][0]["checks"] == direct["plan"][0]["checks"]
+    assert json.loads(cfg.state_file.read_text(encoding="utf-8"))["current"] == "2026.11.08-1"

@@ -1,21 +1,24 @@
-"""План переключения одной роли по digest, без compose up.
+"""План и исполнитель переключения одной роли по digest.
 
-Слот 3 фазы C (ADR-0168): локальный исполнитель одной роли строит план шагов
-compose (digest, не тег) и проверок из L: Deploy and Verify. Живой стек,
-symlink и docker не трогает — только чистая функция плана.
+Слот 3 фазы C (ADR-0168): ``plan_role`` строит шаги compose (digest, не тег) и
+проверок из L: Deploy and Verify; ``execute_role`` прогоняет actions через
+``docker.compose_*`` (реальный DockerCli или фейк, который пишет команды).
+Штатный activate dry-run зовёт ``plan_role`` и кладёт шаги в план — список
+сервисов/actions здесь один, не дублируется в activation.
 
-Имена actions согласованы с activation._planned; имена checks — со скриптами
-deploy: check_container_status, check_container_logs, check_ros2_topics.
+Симлинк current и хостовые миграции в этом срезе только записываются в журнал
+команд; живой compose на роботе — следующий шаг.
 """
 
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass
-from typing import Any
+from pathlib import Path
+from typing import Any, Callable
 
 from . import release_format as rf
 
-# Как в activation._planned (vision/sound/main → actions).
+# Единственный список actions роли (activation._planned берёт шаги из plan_role).
 ROLE_ACTIONS = ("compose_down", "switch_current", "host_migrations", "compose_up")
 
 # Имена из L: Deploy and Verify (scripts/ci + шаги топиков).
@@ -58,18 +61,14 @@ def _digest_images(role: str, entry: dict[str, Any]) -> dict[str, str]:
     pinned: dict[str, str] = {}
     for service, ref in images.items():
         if not isinstance(ref, str) or "@sha256:" not in ref:
-            raise RoleSwitchError(
-                "image_not_digest", f"roles.{role}.images.{service}: {ref!r}"
-            )
+            raise RoleSwitchError("image_not_digest", f"roles.{role}.images.{service}: {ref!r}")
         pinned[str(service)] = ref
     return pinned
 
 
 def _role_entry(release: dict[str, Any], role: str) -> dict[str, Any]:
     if role not in rf.ROLES:
-        raise RoleSwitchError(
-            "bad_role", f"{role!r}: ожидалось одно из {list(rf.ROLES)}"
-        )
+        raise RoleSwitchError("bad_role", f"{role!r}: ожидалось одно из {list(rf.ROLES)}")
     try:
         rf.validate(release)
     except rf.ReleaseError as exc:
@@ -133,9 +132,7 @@ def plan_role(
     target = release["release"]
     images = _digest_images(role, entry)
     migrations = list(entry.get("migrations") or [])
-    health = health or HealthResult(
-        "not_verified", f"health not executed: {role}/{target}"
-    )
+    health = health or HealthResult("not_verified", f"health not executed: {role}/{target}")
     health_rec = asdict(health)
 
     base: dict[str, Any] = {
@@ -209,3 +206,80 @@ def plan_role(
         }
     )
     return base
+
+
+def _apply_step(docker: Any, project_dir: Path, step: dict[str, Any], commands: list[dict[str, Any]]) -> None:
+    """Прогнать actions шага. compose_* — через docker; symlink/миграции — журнал (следующий шаг)."""
+    images = dict(step.get("images") or {})
+    migrations = list(step.get("migrations") or [])
+    for action in step["actions"]:
+        if action == "compose_down":
+            docker.compose_down(project_dir)
+            commands.append({"action": "compose_down", "dir": str(project_dir)})
+        elif action == "compose_up":
+            docker.compose_up(project_dir, images=images)
+            commands.append({"action": "compose_up", "dir": str(project_dir), "images": images})
+        elif action == "switch_current":
+            commands.append({"action": "switch_current", "release": step["release"]})
+        elif action == "host_migrations":
+            commands.append({"action": "host_migrations", "migrations": migrations})
+        else:
+            raise RoleSwitchError("unknown_action", action)
+
+
+def execute_role(
+    release: dict[str, Any],
+    role: str,
+    *,
+    docker: Any,
+    project_dir: Path | str,
+    previous: str | None = None,
+    health_after: Callable[[], HealthResult] | HealthResult | None = None,
+) -> dict[str, Any]:
+    """Исполнить plan_role через docker.compose_*.
+
+    ``health_after`` — проверка после compose_up (callable или готовый HealthResult).
+    unhealthy → план отката роли и его actions (не «успех»). Живой compose на
+    роботе этим PR не гоняем: тесты подставляют FakeDocker, пишущий команды.
+    """
+    project_dir = Path(project_dir)
+    planned = plan_role(release, role, previous=previous)
+    if planned["state"] != "role_switch_planned":
+        return planned
+
+    commands: list[dict[str, Any]] = []
+    for step in planned["plan"]:
+        _apply_step(docker, project_dir, step, commands)
+        step["execute"] = True
+
+    result = dict(planned)
+    result["execute"] = True
+    result["commands"] = commands
+    result["plan"] = [dict(step) for step in planned["plan"]]
+
+    if health_after is None:
+        return result
+
+    checked = health_after() if callable(health_after) else health_after
+    if not isinstance(checked, HealthResult):
+        raise RoleSwitchError("bad_health_after", type(checked).__name__)
+    result["health"] = asdict(checked)
+
+    if checked.status != "unhealthy":
+        if checked.status not in ("not_verified", "healthy"):
+            result["state"] = "blocked"
+            result["reason"] = "health_check_not_verified"
+            result["detail"] = asdict(checked)
+            return result
+        result["state"] = "role_switched"
+        return result
+
+    rollback = plan_role(release, role, previous=previous, health=checked)
+    for step in rollback["plan"]:
+        _apply_step(docker, project_dir, step, commands)
+        step["execute"] = True
+    out = dict(rollback)
+    out["execute"] = True
+    out["commands"] = commands
+    out["plan"] = [dict(step) for step in rollback["plan"]]
+    return out
