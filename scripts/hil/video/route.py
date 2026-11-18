@@ -2,7 +2,7 @@
 """Маршрут из целей NavigateToPose по одной; лог: sim time, номер кадра камеры, поза gt, стопы защиты.
 
 ``run_lane`` — несколько точек одной целью NavigateThroughPoses (полоса обхода покрытием, #4560).
-Тик ещё пишет YAW (/cmd_vel_yaw), PLAN (штамп /plan, now и хвост path.poses[-1]), MAP (map←base_footprint рядом с GT).
+Тик ещё пишет YAW (/cmd_vel_yaw), CMD (/cmd_vel Nav2), PLAN (штамп /plan, now и хвост path.poses[-1]), MAP (map←base_footprint рядом с GT).
 """
 import datetime
 import math
@@ -46,6 +46,7 @@ ODOM_FRAME = "odom"  # local_costmap.global_frame: costmap ждёт global_frame
 MAP_FRAME = "map"
 BASE_FRAME = "base_footprint"  # local_costmap.robot_base_frame
 YAW_TOPIC = "/cmd_vel_yaw"  # twist_mux yaw_at_goal, тот же вход что у YawAtGoal
+CMD_TOPIC = "/cmd_vel"  # выход Nav2/smoother → twist_mux nav (приоритет 10); не выдумывать 0
 PLAN_TOPIC = "/plan"  # тот же /plan: штамп vs now и хвост path.poses[-1]; пустой — none, не выдумка
 
 
@@ -133,12 +134,16 @@ class Mon(Node):
         self.poses_remaining = 0
         self.yaw_wz = None
         self.yaw_sim = None
+        self.cmd_vx = None
+        self.cmd_wz = None
+        self.cmd_sim = None
         self.plan_stamp = None
         self.plan_tail = None
         self.tf_buffer = None
         self.create_subscription(Odometry, "/sim/ground_truth/odom", self.on_gt, 10)
         self.create_subscription(Twist, "/cmd_vel_emergency", self.on_em, 10)
         self.create_subscription(Twist, YAW_TOPIC, self.on_yaw, 10)
+        self.create_subscription(Twist, CMD_TOPIC, self.on_cmd, 10)
         from nav_msgs.msg import Path  # не на уровне модуля: офлайн-тесты импортируют route без Path
 
         self.create_subscription(Path, PLAN_TOPIC, self.on_plan, 10)
@@ -161,6 +166,11 @@ class Mon(Node):
     def on_yaw(self, m):
         self.yaw_wz = float(m.angular.z)
         self.yaw_sim = self.simt()
+
+    def on_cmd(self, m):
+        self.cmd_vx = float(m.linear.x)
+        self.cmd_wz = float(m.angular.z)
+        self.cmd_sim = self.simt()
 
     def on_plan(self, m):
         stamp = m.header.stamp
@@ -191,6 +201,13 @@ class Mon(Node):
             print(f"{ts()} YAW sim={sim:.2f} wz=none age=none", flush=True)
         else:
             print(f"{ts()} YAW sim={sim:.2f} wz={self.yaw_wz:.3f} age={sim - self.yaw_sim:.2f}", flush=True)
+        if self.cmd_vx is None or self.cmd_wz is None or self.cmd_sim is None:
+            print(f"{ts()} CMD sim={sim:.2f} vx=none wz=none age=none", flush=True)
+        else:
+            print(
+                f"{ts()} CMD sim={sim:.2f} vx={self.cmd_vx:.3f} wz={self.cmd_wz:.3f} age={sim - self.cmd_sim:.2f}",
+                flush=True,
+            )
         print(f"{ts()} PLAN sim={sim:.2f} {plan_log_tail(self.plan_stamp, self.plan_tail, sim)}", flush=True)
         if self.gt:
             print(
