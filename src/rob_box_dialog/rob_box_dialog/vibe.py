@@ -27,11 +27,15 @@ class Vibe:
     """Снимок шара: куда катится, насколько сдвинут от нейтрали, с какой скоростью.
 
     ``pull`` — 0 у нейтрали и 1 у стиля. ``speed`` — доля пути за секунду, со знаком к стилю.
+    ``previous`` — стиль до последней смены; ``None`` — смены ещё не было (нет данных).
+    ``since`` — монотонное время включения текущего; ``None`` — ещё не включали (нет данных).
     """
 
     style: str = NEUTRAL
     pull: float = 0.0
     speed: float = 0.0
+    previous: Optional[str] = None
+    since: Optional[float] = None
 
     def neutral(self) -> bool:
         """Шар у нейтрали: стиль обычный и сдвига нет."""
@@ -95,18 +99,28 @@ class VibeBall:
         self._clock = clock
         self._at = clock()
         self._vibe = Vibe()
+        #: Имя последнего принятого толчка (включая ``neutral``). Смена — только здесь.
+        self._chosen = NEUTRAL
+        #: Стиль до последней смены. ``None`` — смены ещё не было.
+        self._previous: Optional[str] = None
+        #: Монотонное время включения текущего. ``None`` — ещё не включали.
+        self._since: Optional[float] = None
 
     def at(self, now: Optional[float] = None) -> Vibe:
         """Где шар сейчас. Без новых событий за время затухания — нейтраль."""
         moment = self._clock() if now is None else now
         self._roll(max(0.0, moment - self._at))
         self._at = moment
-        return self._vibe
+        return self._snapshot()
 
-    def push(self, style: Optional[str], strength: float = 1.0, now: Optional[float] = None) -> Vibe:
+    def push(
+        self, style: Optional[str], strength: float = 1.0, now: Optional[float] = None
+    ) -> Vibe:
         """Событие толкает шар к стилю. Сила 0 — толчка нет. «neutral» — толчок обратно к обычному.
 
         Сила больше 1 режется до 1: явная просьба — сильный толчок, не сцена на несколько секунд.
+        Смена стиля (новое имя ≠ текущему chosen, не пустое) запоминает предыдущий и время включения.
+        «neutral» как толчок домой — тоже смена, если chosen был не neutral. Сила 0 и пустое — не смена.
         """
         landed = self.at(now)
         kick = _kick(strength)
@@ -115,17 +129,22 @@ class VibeBall:
         name = _style(style)
         if not name:
             return landed
+        self._note_change(name, self._at)
         if name == NEUTRAL:
             self._vibe = Vibe(landed.style, landed.pull, landed.speed - kick)
-            return self._vibe
+            return self._snapshot()
         if landed.style not in (NEUTRAL, name):
             landed = Vibe(name, 0.0, 0.0)
         speed = min(kn.VIBE_DRIFT_PER_S, landed.speed + kick)
         self._vibe = Vibe(name, landed.pull, speed)
-        return self._vibe
+        return self._snapshot()
 
-    def hint(self, style: Optional[str], now: Optional[float] = None, accepted: Optional[Mapping[str, float]] = None
-             ) -> Optional[Vibe]:
+    def hint(
+        self,
+        style: Optional[str],
+        now: Optional[float] = None,
+        accepted: Optional[Mapping[str, float]] = None,
+    ) -> Optional[Vibe]:
         """Подсказка модели. Редко: чаще :data:`.knowledge.VIBE_HINT_MIN_S` — код её не берёт.
 
         ``accepted`` — книга хоста «когда стиль уже принят» (монотонные секунды). Её ведёт хост, не модель:
@@ -144,7 +163,24 @@ class VibeBall:
     def _roll(self, dt: float) -> None:
         vibe = self._vibe
         pull, speed = _coast(vibe.pull, vibe.speed, dt)
-        self._vibe = Vibe() if pull == 0.0 and speed == 0.0 else Vibe(vibe.style, pull, speed)
+        self._vibe = (
+            Vibe() if pull == 0.0 and speed == 0.0 else Vibe(vibe.style, pull, speed)
+        )
+
+    def _note_change(self, name: str, moment: float) -> None:
+        """Если имя реально сменилось — запомнить предыдущий и время включения нового."""
+        if name == self._chosen:
+            return
+        # До первой смены предыдущего не было: не подставляем стартовый neutral.
+        if self._since is not None:
+            self._previous = self._chosen
+        self._chosen = name
+        self._since = moment
+
+    def _snapshot(self) -> Vibe:
+        """Снимок физики плюс предыдущий стиль и время включения текущего."""
+        vibe = self._vibe
+        return Vibe(vibe.style, vibe.pull, vibe.speed, self._previous, self._since)
 
 
 __all__ = ["NEUTRAL", "Vibe", "VibeBall"]

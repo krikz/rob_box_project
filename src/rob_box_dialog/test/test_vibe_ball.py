@@ -107,3 +107,29 @@ def test_hint_is_rare_and_does_not_push_without_a_book():
     clock.t = kn.VIBE_HINT_MIN_S
     again = ball.hint("matrix", accepted=book)
     assert again is not None and again.style == "matrix"
+
+
+def test_style_change_remembers_previous_and_since():
+    """Смена стиля: previous и since на снимке. До первой смены — нет данных (None)."""
+    clock = Clock()
+    ball = VibeBall(clock)
+    idle = ball.at()
+    assert idle.previous is None and idle.since is None
+    clock.t = 5.0
+    first = ball.push("fire")
+    assert first.style == "fire"
+    assert first.previous is None
+    assert first.since == 5.0
+    clock.t = 12.0
+    second = ball.push("matrix")
+    assert second.style == "matrix"
+    assert second.previous == "fire"
+    assert second.since == 12.0
+    clock.t = 20.0
+    same = ball.push("matrix")
+    assert same.previous == "fire" and same.since == 12.0
+    clock.t = 30.0
+    home = ball.push("neutral")
+    assert home.previous == "matrix" and home.since == 30.0
+    assert ball.push("shades", strength=0.0).since == 30.0
+    assert ball.push("", strength=1.0).since == 30.0
