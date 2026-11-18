@@ -172,12 +172,15 @@ def test_execute_role_records_compose_by_digest_and_marks_switched(tmp_path):
     docker = FakeDocker()
     project = tmp_path / "docker" / "vision"
     project.mkdir(parents=True)
+    state_dir = tmp_path / "var" / "chuangong"
+    state_dir.mkdir(parents=True)
 
     result = execute_role(
         release,
         "vision",
         docker=docker,
         project_dir=project,
+        state_dir=state_dir,
         previous="2026.11.08-1",
         health_after=HealthResult("healthy", "check_container_status: ok"),
     )
@@ -210,6 +213,8 @@ def test_execute_role_unhealthy_after_up_runs_rollback_not_success(tmp_path):
     docker = FakeDocker()
     project = tmp_path / "docker" / "vision"
     project.mkdir(parents=True)
+    state_dir = tmp_path / "var" / "chuangong"
+    state_dir.mkdir(parents=True)
     health = HealthResult("unhealthy", "check_container_status: vision-svc0 restarting")
 
     result = execute_role(
@@ -217,6 +222,7 @@ def test_execute_role_unhealthy_after_up_runs_rollback_not_success(tmp_path):
         "vision",
         docker=docker,
         project_dir=project,
+        state_dir=state_dir,
         previous=previous,
         health_after=health,
     )
@@ -296,3 +302,78 @@ def test_activate_dry_run_uses_plan_role_steps(tmp_path, world):
     assert out["plan"][0]["images"] == direct["plan"][0]["images"]
     assert out["plan"][0]["checks"] == direct["plan"][0]["checks"]
     assert json.loads(cfg.state_file.read_text(encoding="utf-8"))["current"] == "2026.11.08-1"
+
+
+def test_execute_role_switch_current_advances_pointers(tmp_path):
+    """switch_current реально двигает current/previous через pointers.advance."""
+    from chuangong import pointers
+
+    release = _release_fixture("2026.11.10-1")
+    previous = "2026.11.09-1"
+    state_dir = tmp_path / "var" / "chuangong"
+    state_dir.mkdir(parents=True)
+    (state_dir / "current").write_text(previous + "\n", encoding="utf-8")
+    docker = FakeDocker()
+    project = tmp_path / "docker" / "vision"
+    project.mkdir(parents=True)
+
+    result = execute_role(
+        release,
+        "vision",
+        docker=docker,
+        project_dir=project,
+        state_dir=state_dir,
+        previous=previous,
+        health_after=HealthResult("healthy", "ok"),
+    )
+
+    assert result["state"] == "role_switched"
+    assert pointers.load(state_dir) == ("2026.11.10-1", previous)
+    switch = next(c for c in result["commands"] if c["action"] == "switch_current")
+    assert switch["release"] == "2026.11.10-1"
+    assert switch["current"] == "2026.11.10-1"
+    assert switch["previous"] == previous
+
+
+def test_plan_role_does_not_advance_pointers(tmp_path):
+    """dry-run plan_role не трогает указатели на диске."""
+    from chuangong import pointers
+
+    release = _release_fixture("2026.11.10-1")
+    previous = "2026.11.09-1"
+    state_dir = tmp_path / "var" / "chuangong"
+    state_dir.mkdir(parents=True)
+    (state_dir / "current").write_text(previous + "\n", encoding="utf-8")
+
+    plan = plan_role(release, "vision", previous=previous)
+
+    assert plan["execute"] is False
+    assert plan["state"] == "role_switch_planned"
+    assert pointers.load(state_dir) == (previous, None)
+    assert not (state_dir / "previous").exists()
+
+
+def test_execute_role_switch_current_advance_error_is_not_success(tmp_path):
+    """Падение advance — ошибка исполнителю, не «успех»."""
+    from chuangong.pointers import PointerError
+
+    release = _release_fixture("2026.11.10-1")
+    state_dir = tmp_path / "var" / "chuangong"
+    state_dir.mkdir(parents=True)
+    # symlink current → advance обязан упасть compose_symlink_untouched
+    (state_dir / "current").symlink_to(tmp_path / "elsewhere")
+    docker = FakeDocker()
+    project = tmp_path / "docker" / "vision"
+    project.mkdir(parents=True)
+
+    with pytest.raises(PointerError) as exc:
+        execute_role(
+            release,
+            "vision",
+            docker=docker,
+            project_dir=project,
+            state_dir=state_dir,
+            previous="2026.11.09-1",
+            health_after=HealthResult("healthy", "ok"),
+        )
+    assert exc.value.reason == "compose_symlink_untouched"

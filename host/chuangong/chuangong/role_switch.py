@@ -6,8 +6,8 @@
 Штатный activate dry-run зовёт ``plan_role`` и кладёт шаги в план — список
 сервисов/actions здесь один, не дублируется в activation.
 
-Симлинк current и хостовые миграции в этом срезе только записываются в журнал
-команд; живой compose на роботе — следующий шаг.
+switch_current двигает указатели через pointers.advance; host_migrations
+пока только в журнале. Живой compose на роботе — следующий шаг.
 """
 
 from __future__ import annotations
@@ -16,6 +16,7 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any, Callable
 
+from . import pointers
 from . import release_format as rf
 
 # Единственный список actions роли (activation._planned берёт шаги из plan_role).
@@ -208,8 +209,14 @@ def plan_role(
     return base
 
 
-def _apply_step(docker: Any, project_dir: Path, step: dict[str, Any], commands: list[dict[str, Any]]) -> None:
-    """Прогнать actions шага. compose_* — через docker; symlink/миграции — журнал (следующий шаг)."""
+def _apply_step(
+    docker: Any,
+    project_dir: Path,
+    step: dict[str, Any],
+    commands: list[dict[str, Any]],
+    state_dir: Path,
+) -> None:
+    """Прогнать actions шага. compose_* — docker; switch_current — pointers.advance."""
     images = dict(step.get("images") or {})
     migrations = list(step.get("migrations") or [])
     for action in step["actions"]:
@@ -220,7 +227,15 @@ def _apply_step(docker: Any, project_dir: Path, step: dict[str, Any], commands: 
             docker.compose_up(project_dir, images=images)
             commands.append({"action": "compose_up", "dir": str(project_dir), "images": images})
         elif action == "switch_current":
-            commands.append({"action": "switch_current", "release": step["release"]})
+            advanced = pointers.advance(state_dir, step["release"])
+            commands.append(
+                {
+                    "action": "switch_current",
+                    "release": step["release"],
+                    "current": advanced["current"],
+                    "previous": advanced["previous"],
+                }
+            )
         elif action == "host_migrations":
             commands.append({"action": "host_migrations", "migrations": migrations})
         else:
@@ -233,23 +248,27 @@ def execute_role(
     *,
     docker: Any,
     project_dir: Path | str,
+    state_dir: Path | str,
     previous: str | None = None,
     health_after: Callable[[], HealthResult] | HealthResult | None = None,
 ) -> dict[str, Any]:
-    """Исполнить plan_role через docker.compose_*.
+    """Исполнить plan_role через docker.compose_* и pointers.advance.
 
-    ``health_after`` — проверка после compose_up (callable или готовый HealthResult).
-    unhealthy → план отката роли и его actions (не «успех»). Живой compose на
-    роботе этим PR не гоняем: тесты подставляют FakeDocker, пишущий команды.
+    ``state_dir`` — каталог указателей current/previous (передаёт вызывающий;
+    путь /var/lib на хосте теста не подставляется). ``health_after`` — проверка
+    после compose_up (callable или готовый HealthResult). unhealthy → план
+    отката роли и его actions (не «успех»). Падение advance не глотается.
+    Живой compose на роботе этим PR не гоняем: тесты — FakeDocker.
     """
     project_dir = Path(project_dir)
+    state_dir = Path(state_dir)
     planned = plan_role(release, role, previous=previous)
     if planned["state"] != "role_switch_planned":
         return planned
 
     commands: list[dict[str, Any]] = []
     for step in planned["plan"]:
-        _apply_step(docker, project_dir, step, commands)
+        _apply_step(docker, project_dir, step, commands, state_dir)
         step["execute"] = True
 
     result = dict(planned)
@@ -276,7 +295,7 @@ def execute_role(
 
     rollback = plan_role(release, role, previous=previous, health=checked)
     for step in rollback["plan"]:
-        _apply_step(docker, project_dir, step, commands)
+        _apply_step(docker, project_dir, step, commands, state_dir)
         step["execute"] = True
     out = dict(rollback)
     out["execute"] = True
