@@ -12,6 +12,7 @@ polygon, но файл ``/sim_video/world.sdf`` и в нём ``Depot_vid``. Ре
 from __future__ import annotations
 
 import argparse
+import re
 import sys
 from pathlib import Path
 from typing import List, Sequence, Tuple
@@ -20,17 +21,36 @@ PASS, FAIL = "PASS", "FAIL"
 WORLD_MISMATCH = "WORLD_MISMATCH"
 
 DEPOT_WORLD_ARG = "world:=/sim_video/world.sdf"
+DEPOT_WORLD_PATH = "/sim_video/world.sdf"
 DEPOT_MOUNT = "/sim_video"
 DEPOT_MARKER = "Depot_vid"
+
+# XML-комментарии целиком; uri — только реальный include, не текст в <!-- … -->.
+_XML_COMMENT_RE = re.compile(r"<!--.*?-->", re.DOTALL)
+_URI_RE = re.compile(r"<uri\b[^>]*>\s*([^<]*?)\s*</uri>", re.IGNORECASE)
+
+
+def _has_exact_world_arg(args: str) -> bool:
+    """Точный токен ``world:=/sim_video/world.sdf``, не подстрока (world.sdf.old — нет)."""
+    return DEPOT_WORLD_ARG in (args or "").split()
+
+
+def _sdf_has_depot_uri(sdf_text: str) -> bool:
+    """``Depot_vid`` в значении ``<uri>…</uri>`` вне XML-комментариев."""
+    bare = _XML_COMMENT_RE.sub("", sdf_text or "")
+    for m in _URI_RE.finditer(bare):
+        if DEPOT_MARKER in m.group(1):
+            return True
+    return False
 
 
 def check_world(expect: str, args: str, mounts: Sequence[str], sdf_text: str) -> Tuple[str, str]:
     """Вердикт по ожидаемому миру.
 
     Для ``expect == "depot"`` — PASS только если одновременно:
-      1. ``args`` содержат ``world:=/sim_video/world.sdf``;
+      1. среди whitespace-токенов args есть ровно ``world:=/sim_video/world.sdf``;
       2. среди mount destination есть ``/sim_video``;
-      3. текст SDF содержит ``Depot_vid``.
+      3. в SDF есть ``<uri>…Depot_vid…</uri>`` вне XML-комментариев.
     Иначе FAIL с ``WORLD_MISMATCH`` и перечнем того, что не сошлось.
     Имя ``polygon.sdf`` само по себе ни PASS, ни FAIL.
     """
@@ -38,15 +58,15 @@ def check_world(expect: str, args: str, mounts: Sequence[str], sdf_text: str) ->
         return FAIL, f"{WORLD_MISMATCH}: unknown expect={expect!r} (only depot)"
 
     missing: List[str] = []
-    if DEPOT_WORLD_ARG not in (args or ""):
+    if not _has_exact_world_arg(args):
         missing.append(f"args missing {DEPOT_WORLD_ARG}")
 
     dests = {(m or "").rstrip("/") for m in mounts}
     if DEPOT_MOUNT not in dests:
         missing.append(f"mounts missing {DEPOT_MOUNT}")
 
-    if DEPOT_MARKER not in (sdf_text or ""):
-        missing.append(f"sdf missing {DEPOT_MARKER}")
+    if not _sdf_has_depot_uri(sdf_text):
+        missing.append(f"sdf missing <uri>…{DEPOT_MARKER}…</uri>")
 
     if missing:
         return FAIL, f"{WORLD_MISMATCH}: {'; '.join(missing)}"
