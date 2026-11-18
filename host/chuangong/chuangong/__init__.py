@@ -11,7 +11,7 @@
   agent          — один тик агента (fetch → verify → stage → report);
   activation     — adoption доказанного current и dry-run activation/rollback (C1);
   pointers       — файлы current/previous в state_dir после проверки подписи staged-релиза;
-  fleet_op       — координация Vision→Sound→Main: ход операции и откат в state.json без сети;
+  fleet_op       — координация Vision→Sound→Main: ход операции и откат в fleet_op.json без сети;
   status         — наблюдатель для workflow «F: Update Robot» (action: status).
 
 Переключения symlink `current`, `compose down/up` и миграций по-прежнему НЕТ.

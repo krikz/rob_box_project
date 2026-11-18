@@ -1,7 +1,8 @@
 """Координация Vision → Sound → Main: детерминированный ход операции без сети.
 
-Слот 4 (фаза C, ADR-0003): Main-координатор пишет ход операции и исходный релиз в state.json,
-при сбое помечает failed и строит откат уже затронутых ролей. Compose/zenoh/сеть не трогает.
+Слот 4 (фаза C, ADR-0003): Main-координатор пишет ход операции и исходный релиз
+в отдельный журнал `fleet_op.json` (не в `state.json` агента), при сбое помечает
+failed и строит откат уже затронутых ролей. Compose/zenoh/сеть не трогает.
 
 Протокол role_switch (слот 3; если `role_switch.py` ещё нет — контракт здесь минимально):
   ROLE_ORDER = ("vision", "sound", "main")
@@ -23,9 +24,14 @@ STATUS_RUNNING = "running"
 STATUS_FAILED = "failed"
 STATUS_COMPLETED = "completed"
 
+# Исход роли: уже переключилась (или неизвестно) — роль входит в откат вместе с completed.
+OUTCOME_SWITCHED = "switched"
+OUTCOME_UNCERTAIN = "uncertain"
+_TOUCHED_OUTCOMES = frozenset({OUTCOME_SWITCHED, OUTCOME_UNCERTAIN})
+
 _SCHEMA = 1
 _KIND = "fleet_op"
-_STATE_NAME = "state.json"
+_JOURNAL_NAME = "fleet_op.json"
 
 
 class FleetOpError(RuntimeError):
@@ -35,17 +41,22 @@ class FleetOpError(RuntimeError):
         self.detail = detail
 
 
-def state_path(state_dir: Path) -> Path:
-    return state_dir / _STATE_NAME
+def journal_path(state_dir: Path) -> Path:
+    """Путь журнала операции. Не state.json агента."""
+    return state_dir / _JOURNAL_NAME
+
+
+# Совместимое имя для вызывающих, что ждали state_path.
+state_path = journal_path
 
 
 def load(state_dir: Path) -> dict[str, Any] | None:
-    """Прочитать ход операции из state.json. Сети нет."""
-    raw = st.load(state_path(state_dir))
+    """Прочитать ход операции из fleet_op.json. Сети нет."""
+    raw = st.load(journal_path(state_dir))
     if raw is None:
         return None
     if raw.get("kind") != _KIND:
-        raise FleetOpError("not_fleet_op", str(state_path(state_dir)))
+        raise FleetOpError("not_fleet_op", str(journal_path(state_dir)))
     return raw
 
 
@@ -57,6 +68,7 @@ def start(
 ) -> dict[str, Any]:
     """Старт операции: исходный релиз и порядок vision, sound, main.
 
+    Журнал — ``fleet_op.json`` рядом с ``state.json`` агента; агентский state не трогает.
     Повтор с тем же operation_id не начинает вторую операцию — возвращает текущий ход.
     """
     if not operation_id:
@@ -89,16 +101,22 @@ def start(
             "current_role": ROLE_ORDER[0],
             "failed_role": None,
             "fail_detail": None,
+            "fail_outcome": None,
             "rollback": [],
         }
-        st.save(state_path(state_dir), record)
+        st.save(journal_path(state_dir), record)
         return record
 
 
-def report_role_ok(state_dir: Path, role: str) -> dict[str, Any]:
-    """Роль переключена на target. Двигает курсор; все три — status=completed."""
+def report_role_ok(state_dir: Path, role: str, operation_id: str) -> dict[str, Any]:
+    """Роль переключена на target. Двигает курсор; все три — status=completed.
+
+    ``operation_id`` обязан совпасть с текущей операцией: поздний ответ чужой
+    операции новую не подтверждает.
+    """
     with st.write_lock(state_dir):
         record = _require_running(state_dir)
+        _expect_operation(record, operation_id)
         _expect_current(record, role)
         completed = list(record["completed_roles"])
         completed.append(role)
@@ -107,32 +125,61 @@ def report_role_ok(state_dir: Path, role: str) -> dict[str, Any]:
         record["current_role"] = nxt
         if nxt is None:
             record["status"] = STATUS_COMPLETED
-        st.save(state_path(state_dir), record)
+        st.save(journal_path(state_dir), record)
         return record
 
 
-def report_role_failed(state_dir: Path, role: str, detail: str = "") -> dict[str, Any]:
-    """Сбой роли: status=failed, откат уже завершённых ролей к origin_release (обратный порядок)."""
+def report_role_failed(
+    state_dir: Path,
+    role: str,
+    operation_id: str,
+    detail: str = "",
+    *,
+    outcome: str | None = None,
+) -> dict[str, Any]:
+    """Сбой роли: status=failed, откат затронутых ролей к origin_release.
+
+    ``operation_id`` обязан совпасть с текущей операцией.
+    Если ``outcome`` — ``switched`` или ``uncertain`` (роль уже переключилась /
+    исход неизвестен), failed-роль тоже входит в откат, не только completed.
+    """
+    if outcome is not None and outcome not in _TOUCHED_OUTCOMES:
+        raise FleetOpError("bad_outcome", outcome)
     with st.write_lock(state_dir):
         record = _require_running(state_dir)
+        _expect_operation(record, operation_id)
         _expect_current(record, role)
         completed = list(record["completed_roles"])
         record["status"] = STATUS_FAILED
         record["failed_role"] = role
         record["fail_detail"] = detail
+        record["fail_outcome"] = outcome
         record["current_role"] = None
-        record["rollback"] = _build_rollback(completed, record["origin_release"])
-        st.save(state_path(state_dir), record)
+        record["rollback"] = _build_rollback(
+            completed, record["origin_release"], failed_role=role, outcome=outcome
+        )
+        st.save(journal_path(state_dir), record)
         return record
 
 
 def _build_rollback(
-    completed_roles: list[str], origin_release: str
+    completed_roles: list[str],
+    origin_release: str,
+    *,
+    failed_role: str | None = None,
+    outcome: str | None = None,
 ) -> list[dict[str, str]]:
-    """Откат затронутых ролей: reverse completed → origin_release. Незатронутые не входят."""
+    """Откат затронутых ролей: reverse → origin_release. Незатронутые не входят.
+
+    При outcome switched/uncertain failed_role считается затронутой и тоже откатывается.
+    """
+    touched = list(completed_roles)
+    if outcome in _TOUCHED_OUTCOMES and failed_role is not None:
+        if failed_role not in touched:
+            touched.append(failed_role)
     return [
         {"op": "rollback", "role": role, "release": origin_release}
-        for role in reversed(completed_roles)
+        for role in reversed(touched)
     ]
 
 
@@ -145,7 +192,7 @@ def _next_role(completed: list[str]) -> str | None:
 
 
 def _load_unlocked(state_dir: Path) -> dict[str, Any] | None:
-    path = state_path(state_dir)
+    path = journal_path(state_dir)
     raw = st.load(path)
     if raw is None:
         return None
@@ -157,10 +204,19 @@ def _load_unlocked(state_dir: Path) -> dict[str, Any] | None:
 def _require_running(state_dir: Path) -> dict[str, Any]:
     record = _load_unlocked(state_dir)
     if record is None:
-        raise FleetOpError("no_operation", str(state_path(state_dir)))
+        raise FleetOpError("no_operation", str(journal_path(state_dir)))
     if record.get("status") != STATUS_RUNNING:
         raise FleetOpError("not_running", f"status={record.get('status')}")
     return record
+
+
+def _expect_operation(record: dict[str, Any], operation_id: str) -> None:
+    current = record.get("operation_id")
+    if not operation_id or operation_id != current:
+        raise FleetOpError(
+            "operation_id_mismatch",
+            f"expected={current!r} got={operation_id!r}",
+        )
 
 
 def _expect_current(record: dict[str, Any], role: str) -> None:
