@@ -15,6 +15,8 @@
 #      из .env Main Pi; Zenoh-endpoint'ы с #iface;
 #   4. on при существующем замке — отказ, моторы не трогаются;
 #   5. on, если в графе два /controller_manager — сим гасится, выход 1;
+#   5b. on, если у /diff_drive_controller/cmd_vel_unstamped два подписчика (§5.1) —
+#      сим гасится, выход 1;
 #   6. off: сим гаснет ДО возврата ros2-control; замок снимается последним;
 #   7. scripts/deploy/check_hil_lock.sh: свободно / замок / нет ответа;
 #   8. реестр карт и точек (#4392): on снимает снапшот боевого maps и пересоздаёт
@@ -105,6 +107,11 @@ case "$1" in
                 out=$(printf '%s\n' "$raw" | grep -aoE 'Boolean value is: (True|False)' | tail -1)
                 [ -n "$out" ] || exit 9
                 case "$out" in *True*) printf true ;; *) printf false ;; esac ;;
+            *"topic info"*)  # §5.1: Subscription count cmd_vel_unstamped (FAKE_CMD_VEL_SUBS, умолч. 1)
+                [ -n "${FAKE_ZENOH_LOG:-}" ] && echo "INFO zenoh::net::runtime: Using ZID: 1a2b3c"
+                echo "Type: geometry_msgs/msg/Twist"
+                echo "Publisher count: 1"
+                echo "Subscription count: ${FAKE_CMD_VEL_SUBS:-1}" ;;
             *) [ -n "${FAKE_ZENOH_LOG:-}" ] && echo "INFO zenoh::net::runtime: Using ZID: 1a2b3c"; echo "${FAKE_CM:-1}"; echo /controller_manager ;;
         esac ;;
     ps)
@@ -204,6 +211,8 @@ check "on: Sound видит /data только как HIL-реестр и чте
 # Оверлей, который применяется на Main Pi, тоже не ссылается на боевые пути.
 check "compose.hil.yaml Main: /maps только из HIL_MAPS_DIR" \
     '! grep -E "^\s*- \./maps|/data" "$REPO_ROOT/docker/main/compose.hil.yaml" && [ "$(grep -c "HIL_MAPS_DIR:?" "$REPO_ROOT/docker/main/compose.hil.yaml")" -eq 2 ]'
+check "compose.hil.yaml Main: nav2 сохраняет том free_spin (#4475)" \
+    'grep -q "/home/ros2/rob_box_project/src/rob_box_teleop/rob_box_teleop:/opt/rob_box/teleop/rob_box_teleop:ro" "$REPO_ROOT/docker/main/compose.hil.yaml"'
 
 # ── 4. замок уже есть ─────────────────────────────────────────────────────
 reset_state
@@ -217,6 +226,21 @@ reset_state
 run_hil on FAKE_CM=2; rc=$?
 check "on при двух /controller_manager: выход 1, сим погашен" \
     '[ "$rc" -eq 1 ] && grep -q "compose.hil.yaml down" "$WORK/docker.log" && [ ! -f "$WORK/state/t-hil-gazebo" ]'
+
+# ── 5b. два подписчика cmd_vel_unstamped (§5.1) ───────────────────────────
+reset_state
+run_hil on FAKE_CMD_VEL_SUBS=2; rc=$?
+check "on при двух подписчиках cmd_vel_unstamped: выход 1, сим погашен" \
+    '[ "$rc" -eq 1 ] && grep -q "compose.hil.yaml down" "$WORK/docker.log" && [ ! -f "$WORK/state/t-hil-gazebo" ] && grep -q "cmd_vel_unstamped подписчиков: 2" "$WORK/out.log"'
+reset_state
+run_hil on >/dev/null
+run_hil status; rc=$?
+check "status: один подписчик cmd_vel_unstamped (rc=$rc)" \
+    'grep -qE "cmd_vel_unstamped подписчиков: 1 \(норма" "$WORK/out.log"'
+reset_state
+run_hil on FAKE_ZENOH_LOG=1 FAKE_CMD_VEL_SUBS=2 >/dev/null; rc=$?
+check "on: два подписчика cmd_vel_unstamped ловятся и при zenoh-логе (rc=$rc)" \
+    '[ "$rc" -eq 1 ] && grep -q "cmd_vel_unstamped подписчиков: 2" "$WORK/out.log"'
 
 # ── 6. off ────────────────────────────────────────────────────────────────
 reset_state
@@ -572,6 +596,46 @@ run_hil on >/dev/null
 run_hil off FAKE_E2E_MODE='__PROBE_FAIL__'; rc=$?
 check "off при ненулевой пробе: предупреждение, restore проходит (rc=$rc)" \
     '[ "$rc" -eq 0 ] && grep -q "#4686" "$WORK/out.log" && grep -q "up -d --no-deps --pull never voice-assistant" "$WORK/docker.log"'
+
+# ── pin: один ключ на сервис (дубль docker ps / повторный pin) ────────────
+# Живой баг 2026-11-18: recreate оставил abe6c83d1f0a_imu-filter; pin писал
+# nav2 дважды → compose «mapping key "nav2" already defined», off exit 1, замок.
+PINWORK="$(mktemp -d)"
+mkdir -p "$PINWORK/bin" "$PINWORK/compose"
+cat > "$PINWORK/bin/docker" <<'EOF'
+#!/usr/bin/env bash
+# Фикстура docker ps: nav2 дважды (склейка/осиротевший recreate), образ разный.
+case "$1" in
+    ps)
+        echo "nav2 ghcr.io/krikz/rob_box:nav2-first"
+        echo "imu-filter ghcr.io/krikz/rob_box:imu-v1"
+        echo "nav2 ghcr.io/krikz/rob_box:nav2-dup"
+        ;;
+esac
+exit 0
+EOF
+chmod +x "$PINWORK/bin/docker"
+PIN_PATH="$PINWORK/bin:$PATH"
+PIN_OUT="$PINWORK/main.images.yaml"
+PATH="$PIN_PATH" bash "$REPO_ROOT/scripts/hil/remote_pi.sh" pin "$PINWORK/compose" "$PIN_OUT" \
+    >"$PINWORK/pin1.log" 2>&1
+pin_rc=$?
+check "pin: выход 0 при дубле nav2 в docker ps (rc=$pin_rc)" '[ "$pin_rc" -eq 0 ]'
+check "pin: ключ nav2 ровно один" \
+    '[ "$(grep -c "^  nav2:" "$PIN_OUT")" -eq 1 ]'
+check "pin: первый образ nav2 (newest first), не dup" \
+    'grep -A1 "^  nav2:" "$PIN_OUT" | grep -q "nav2-first" && ! grep -q "nav2-dup" "$PIN_OUT"'
+check "pin: imu-filter на месте, image: ровно два" \
+    '[ "$(grep -c "^  imu-filter:" "$PIN_OUT")" -eq 1 ] && [ "$(grep -c "image:" "$PIN_OUT")" -eq 2 ]'
+# compose отклоняет дубли ключей; сверка через python (без silent overwrite).
+check "pin: уникальные ключи services (как compose)" \
+    'python3 -c "import re,sys; t=open(sys.argv[1]).read(); ks=re.findall(r\"(?m)^  ([^ :]+):\", t); assert len(ks)==len(set(ks))==2 and ks[0]==\"nav2\" and \"nav2-first\" in t" "$PIN_OUT"'
+# Повторный pin перезаписывает out — снова один nav2, не дописывает.
+PATH="$PIN_PATH" bash "$REPO_ROOT/scripts/hil/remote_pi.sh" pin "$PINWORK/compose" "$PIN_OUT" \
+    >"$PINWORK/pin2.log" 2>&1
+check "повторный pin: nav2 по-прежнему один ключ" \
+    '[ "$(grep -c "^  nav2:" "$PIN_OUT")" -eq 1 ] && [ "$(grep -c "image:" "$PIN_OUT")" -eq 2 ]'
+rm -rf "$PINWORK"
 
 echo
 echo "итог: $pass PASS, $failures FAIL"

@@ -203,9 +203,13 @@ def test_phrase_after_the_window_passes_silently(window, clock):
 
 
 def test_robot_never_spoke_is_free(window, clock):
+    """Робот не говорил — не эхо: PASS, реплик рядом нет. Голос в тишине — ``FREE``, не пусто:
+    пусто — места неизвестны (шлем, ``OPEN``), а здесь фронт VAD место назвал (#4501)."""
     _script(window, clock, [(0.0, "vad", True), (1.0, "vad", False)])
     clock.at(4.0)
-    assert window.admit(duration_s=5.5) == ew.Admission(ew.PASS)
+    admission = window.admit(duration_s=5.5)
+    assert admission.verdict == ew.PASS and admission.note == "" and not admission.spoken
+    assert admission.heard == frozenset({ew.FREE})
 
 
 # --- речь сейчас и AEC: как было до #4072 ---------------------------------------------------------------------------

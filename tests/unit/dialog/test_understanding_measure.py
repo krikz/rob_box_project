@@ -37,7 +37,7 @@ def corpus():
 
 
 def test_corpus_counts_and_labels_follow_classify_step(corpus):
-    assert corpus["counts"] == {"steps": 132, "scored_text": 90, "acoustic_context": 42, "unique_phrases": 130}
+    assert corpus["counts"] == {"steps": 133, "scored_text": 91, "acoustic_context": 42, "unique_phrases": 131}
     for item in corpus_steps(corpus):
         kind, reasons = dm.classify_step(item["step"])
         assert item["kind"] == kind and item["scored"] == (kind == dm.TEXT) and item["acoustic_reasons"] == reasons

@@ -74,7 +74,11 @@ def test_percentile_linear_interpolation():
 def test_render_contains_a1_a2_a5_rows(turns):
     lines = logparse.read_lines(FIXTURE)
     text = turn_metrics.render(turns, lines)
-    assert "A1 `llm_calls`" in text and "A2 `stt_to_first_tts_ms`" in text and "A5 `prompt_tokens`" in text
+    assert (
+        "A1 `llm_calls`" in text
+        and "A2 `stt_to_first_tts_ms`" in text
+        and "A5 `prompt_tokens`" in text
+    )
     assert "A5 `tools_visible`" in text
     assert "`identity_questions`" in text and "`backlog_entries`" in text
 
@@ -118,13 +122,17 @@ def test_tier1_and_disputed_stop_share(tmp_path):
         encoding="utf-8",
     )
     line = turn_metrics._tier1_line(logparse.read_lines(log))
-    assert "команды кодом, 0 LLM): 2" in line and "спорных стопов (В19): 1 (50 %)" in line
+    assert (
+        "команды кодом, 0 LLM): 2" in line and "спорных стопов (В19): 1 (50 %)" in line
+    )
     assert "Chooser" not in line
 
 
 def _prompt_line(ts, tokens, over):
-    return (f"[dialogue_node-4] [INFO] [{ts}] [dialogue_node]: 🧮 [prompt] tokens={tokens} estimated=False "
-            f"provider=deepseek view=status system=3100 facts=0 window=400 snapshot=300 turn=20 tools=3500 over={over}")
+    return (
+        f"[dialogue_node-4] [INFO] [{ts}] [dialogue_node]: 🧮 [prompt] tokens={tokens} estimated=False "
+        f"provider=deepseek view=status system=3100 facts=0 window=400 snapshot=300 turn=20 tools=3500 over={over}"
+    )
 
 
 def test_prompt_tokens_per_llm_call_a5(tmp_path):
@@ -152,7 +160,10 @@ def test_prompt_tokens_per_llm_call_a5(tmp_path):
     assert [t.prompt_tokens for t in turns] == [[9000, 13000], [11000]]
     assert [t.prompt_over for t in turns] == [["system", "tools"], ["tools"]]
     text = turn_metrics.render(turns, lines)
-    assert "| A5 `prompt_tokens` на вызов LLM (порог p50 ≤ 12000, max ≤ 20000) | 3 | 11000 | 12800 | 13000 |" in text
+    assert (
+        "| A5 `prompt_tokens` на вызов LLM (порог p50 ≤ 12000, max ≤ 20000) | 3 | 11000 | 12800 | 13000 |"
+        in text
+    )
     assert "блоки сверх бюджета (`over=`, вызовов): system 1, tools 2." in text
     assert "9000,13000" in turn_metrics.render_per_turn(turns)
 
@@ -161,3 +172,72 @@ def test_prompt_mark_is_the_runtime_mark():
     """Маркер в скрипте — тот же, что пишет рантайм (``rob_box_dialog.context``): две копии строки сверены."""
     context = pytest.importorskip("rob_box_dialog.context")
     assert logparse.PROMPT_TOKENS_MARK == context.PROMPT_TOKENS_MARK
+
+
+# -- v2-агрегат 📊 [turn] (#4354 / #4694): split_turns режет живой dialog_node без process_input -----------------
+
+_V2_AGG = (
+    "📊 [turn] turn_id=aa11bb22cc33 epoch=2 agent=personality stage=done status=ok "
+    "latency_ms=5900 llm_calls=1 llm_provider=deepseek tokens=5200 reason=-"
+)
+
+
+def test_v2_aggregate_single_line_is_one_turn(tmp_path):
+    """Одна строка ``📊 [turn]`` (формат turn_log.TurnAggregate) — один ход; process_input не нужен."""
+    log = tmp_path / "v2_one.log"
+    log.write_text(
+        f"[dialog_node-3] [INFO] [1792750753.000000000] [dialog_node]: {_V2_AGG}\n",
+        encoding="utf-8",
+    )
+    turns = logparse.split_turns(logparse.read_lines(log))
+    assert len(turns) == 1
+    assert turns[0].llm_calls == 1
+    assert turns[0].agent == "personality"
+    assert turns[0].start_line == turns[0].end_line == 1
+
+
+def test_v2_aggregate_window_includes_stt_and_llm(tmp_path):
+    """Окно v2: STT и LLM REQUEST до агрегата входят в ход; llm_calls берётся из строки 📊."""
+    log = tmp_path / "v2_window.log"
+    log.write_text(
+        "\n".join(
+            [
+                "[stt_node-5] [INFO] [100.0] [stt_node]: 🎤 STT: робот который час",
+                "[dialog_node-3] [INFO] [100.1] [dialog_node]: 🔎 LLM REQUEST START provider=deepseek",
+                "[dialog_node-3] tools(12): get_current_time, say",
+                "[dialog_node-3] [INFO] [100.2] [dialog_node]: Инструмент get_current_time выполнен успешно",
+                f"[dialog_node-3] [INFO] [101.0] [dialog_node]: {_V2_AGG}",
+                "[stt_node-5] [INFO] [110.0] [stt_node]: 🎤 STT: робот пока",
+                "[dialog_node-3] [INFO] [110.1] [dialog_node]: 🔎 LLM REQUEST START provider=deepseek",
+                (
+                    "[dialog_node-3] [INFO] [111.0] [dialog_node]: 📊 [turn] turn_id=bb22cc33dd44 "
+                    "epoch=2 agent=personality stage=done status=finished latency_ms=10 "
+                    "llm_calls=2 llm_provider=deepseek tokens=100 reason=-"
+                ),
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    turns = logparse.split_turns(logparse.read_lines(log))
+    assert len(turns) == 2
+    assert turns[0].stt_text == "робот который час"
+    assert (
+        turns[0].llm_calls == 1
+    )  # из агрегата, не «сколько REQUEST в окне после end-mark»
+    assert turns[0].tools_visible == 12
+    assert turns[0].tools_executed == ["get_current_time"]
+    assert turns[1].stt_text == "робот пока"
+    assert turns[1].llm_calls == 2
+
+
+def test_v1_process_input_fixture_still_splits(turns):
+    """Старая фикстура process_input по-прежнему даёт ходы (регрессия v1-пути)."""
+    assert len(turns) == 3
+    assert all(t.stt_text for t in turns)
+
+
+def test_aggregate_mark_matches_runtime():
+    """Копия маркера в logparse — та же строка, что turn_log.AGGREGATE_MARK."""
+    turn_log = pytest.importorskip("rob_box_dialog.turn_log")
+    assert logparse.TURN_AGGREGATE_MARK == turn_log.AGGREGATE_MARK

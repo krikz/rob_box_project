@@ -153,6 +153,8 @@ class SpeechRecord:
     stop_at: Optional[float] = None
     stop_chars: Optional[int] = None
     t0_ns: Optional[int] = None  # момент первого звука (огибающая кусков потока, #3930)
+    heard_s: float = 0.0  # сколько звука поток уже положил в буфер (#3930); 0 — не поток
+    played_s: float = 0.0  # сколько из этого буфера плеер уже отдал в динамик
     wake: threading.Event = field(default_factory=threading.Event)
 
 
@@ -229,6 +231,18 @@ class SpeechLedger:
             return 0
         spoken = int(round(rec.text_len * min(1.0, self.elapsed_s(rec) / rec.duration_s)))
         return spoken if rec.stop_chars is None else min(spoken, rec.stop_chars)
+
+    def heard_chars(self, rec: SpeechRecord) -> int:
+        """Сколько символов потока уже прозвучало (#3930) — из факта буфера, без оценки скорости речи.
+
+        Длительность до конца синтеза неизвестна (``duration_s=0``): доля времени дала бы ноль, и окно
+        молчало бы, будто реплики не было. Факт — две длины одного буфера: сколько плеер уже отдал
+        (``played_s``) и сколько продюсер положил (``heard_s``). Весь текст — только когда отдано всё
+        положенное: хвоста, которого в буфере нет, в доле нет."""
+        if rec.text_len <= 0 or rec.heard_s <= 0 or rec.played_s <= 0:
+            return 0
+        share = min(1.0, rec.played_s / rec.heard_s)
+        return int(round(rec.text_len * share))
 
     def set_duration(self, rec: SpeechRecord, duration_s: float) -> None:
         """Длительность потоковой реплики стала известна (поток кончился) - старт не сдвигается (#3930)."""
@@ -394,6 +408,8 @@ class SpeechOwner:
             return
         if audio is not None and len(audio):
             self._publish_envelope(rec, audio, sample_rate, rec.t0_ns + int(offset_s * 1e9))
+            rec.heard_s = max(rec.heard_s, offset_s + len(audio) / sample_rate)
+            rec.played_s = max(rec.played_s, min(rec.heard_s, self.ledger.elapsed_s(rec)))
         if total_s is not None:
             self.ledger.set_duration(rec, total_s)
 
@@ -408,7 +424,9 @@ class SpeechOwner:
         elif error in _CANCEL_ERRORS or rec.cancelled:
             self._emit("cancelled", rec, spoken_chars=self.ledger.spoken_chars(rec), reason=error or "cancelled")
         else:
-            self._emit("rejected", rec, reason=error or "error")
+            # Обрыв потока после звука (#3930): доля — по факту буфера (``heard_s``), не ноль и не весь текст.
+            spoken = self.ledger.heard_chars(rec) if error == "minimax_stream_broken" else 0
+            self._emit("rejected", rec, spoken_chars=spoken, reason=error or "error")
 
     def is_cancelled(self, speech_id: Optional[str]) -> bool:
         return self.ledger.is_cancelled(speech_id)

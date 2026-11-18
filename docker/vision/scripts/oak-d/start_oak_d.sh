@@ -14,7 +14,9 @@ cd /config/oak-d/launch
 # завис на мёртвом XLink (X_LINK_ERROR, процесс жив, кадров нет), сторож выходит,
 # мы гасим launch и выходим с 1: `restart: unless-stopped` поднимает контейнер
 # на свежем устройстве. Тот же сторож отвечает за healthcheck в compose.
-ros2 launch oakd_with_apriltag.launch.py &
+# Лог драйвера — файл, не pipe: сторож читает оттуда X_LINK_ERROR сам (ADR-0148).
+: > /tmp/oak_driver.log
+ros2 launch oakd_with_apriltag.launch.py >> /tmp/oak_driver.log 2>&1 &
 LAUNCH_PID=$!
 python3 /scripts/oak_frame_watchdog.py run &
 WATCHDOG_PID=$!

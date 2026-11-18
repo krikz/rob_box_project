@@ -31,14 +31,15 @@ LIB = SCRIPTS_DIR / "e2e_voice_lib.sh"
 SCRIPT_LINES = E2E_SCRIPT.read_text(encoding="utf-8").replace("\r\n", "\n").split("\n")
 
 needs_bash = pytest.mark.skipif(
-    shutil.which("bash") is None or shutil.which("python3") is None, reason="нужны bash и python3"
+    shutil.which("bash") is None or shutil.which("python3") is None,
+    reason="нужны bash и python3",
 )
 
 NET_ERR = (
     '{"provider": "minimax", "voice": "Russian_ReliableMan", "result": "fail", "error_class": "NetworkError", '
     '"detail": "ConnectionError: HTTPSConnectionPool(host=\'api.minimax.io\', port=443): Max retries exceeded '
-    "with url: /v1/t2a_v2 (Caused by NameResolutionError(\\\"<urllib3.connection.HTTPSConnection object>: "
-    'Failed to resolve api.minimax.io\\\"))", "latency_ms": 12}'
+    'with url: /v1/t2a_v2 (Caused by NameResolutionError(\\"<urllib3.connection.HTTPSConnection object>: '
+    'Failed to resolve api.minimax.io\\"))", "latency_ms": 12}'
 )
 AUTH_ERR = (
     '{"provider": "minimax", "voice": "Russian_ReliableMan", "result": "fail", "error_class": "AuthError", '
@@ -75,6 +76,8 @@ SYNTH_FUNCS = [
     "synth_cache_prune",
     "synth_command",
     "synth_surface_log",
+    "eq_command_wav",
+    "check_eq_vad_budget",
     "presynth_scenario",
 ]
 HARNESS_FUNCS = ["ensure_outdir", "emit_step", "mark_fail_kind"]
@@ -99,6 +102,9 @@ synth_minimax() {  # $1=text $2=voice $3=out
     echo "MINIMAX_SYNTH_OK voice=$2"
     echo '{"provider": "minimax", "result": "ok"}' >&2
 }
+eq_command_wav() {  # без ffmpeg: сырой wav → eq (тесты про ретраи/кэш, не про eq)
+    cp -f "$1" "$2" 2>/dev/null || printf 'RIFF' > "$2"
+}
 """
 
 
@@ -106,9 +112,15 @@ def run_bash(tmp_path, body, fail_first=0, fail_json=NET_ERR, env_extra=""):
     out = tmp_path / "out"
     out.mkdir(exist_ok=True)
     cache = tmp_path / "cache"
+    bindir = tmp_path / "bin"
+    bindir.mkdir(exist_ok=True)
+    # #4077: PRESYNTH требует измеримую длительность; иначе E2E_INFRA_FAIL eq_duration.
+    (bindir / "ffprobe").write_text("#!/bin/bash\necho 8.0\n", encoding="utf-8")
+    (bindir / "ffprobe").chmod(0o755)
     script = "\n".join(
         [
             "set -u",
+            'export PATH="%s:$PATH"' % bindir.as_posix(),
             'log() { echo ">>> $*"; }',
             'OUT_DIR="%s"' % out.as_posix(),
             'CALLS="%s/calls"' % tmp_path.as_posix(),
@@ -118,6 +130,7 @@ def run_bash(tmp_path, body, fail_first=0, fail_json=NET_ERR, env_extra=""):
             'E2E_SYNTH_CACHE=1; E2E_SYNTH_CACHE_DIR="%s"' % cache.as_posix(),
             "E2E_TTS_PROVIDER=minimax; E2E_TTS_PROVIDER_RESOLVED=minimax",
             "MINIMAX_TTS_MODEL=speech-02-hd; YANDEX_SPEED=1.0",
+            "E2E_VAD_MAX_DURATION=15.0; E2E_VAD_OVERHEAD=2.5",
             env_extra,
             LIB.read_text(encoding="utf-8").replace("\r\n", "\n"),
             "\n".join(extract_function(n) for n in HARNESS_FUNCS),
@@ -126,14 +139,19 @@ def run_bash(tmp_path, body, fail_first=0, fail_json=NET_ERR, env_extra=""):
             'echo "CALLS=$(cat "$CALLS" 2>/dev/null || echo 0)"',
         ]
     )
-    p = subprocess.run(["bash", "-s"], input=script.encode("utf-8"), capture_output=True, timeout=120)
+    p = subprocess.run(
+        ["bash", "-s"], input=script.encode("utf-8"), capture_output=True, timeout=120
+    )
     return p.stdout.decode("utf-8", "replace"), p.stderr.decode("utf-8", "replace")
 
 
 def write_scenario(tmp_path, steps):
     path = tmp_path / "scenario.json"
     path.write_text(
-        json.dumps({"steps": [dict(label=lbl, text=t, voice=v) for lbl, t, v in steps]}, ensure_ascii=False),
+        json.dumps(
+            {"steps": [dict(label=lbl, text=t, voice=v) for lbl, t, v in steps]},
+            ensure_ascii=False,
+        ),
         encoding="utf-8",
     )
     return path
@@ -194,13 +212,16 @@ class TestRetry:
         pytest.importorskip("requests")
         out, err = run_bash(
             tmp_path,
-            "unset -f synth_minimax; source /dev/stdin <<'EOF_FN'\n%s\nEOF_FN\n" % extract_function("synth_minimax")
-            + 'MINIMAX_API_KEY=x MINIMAX_TTS_BASE_URL=http://tts-host.invalid '
+            "unset -f synth_minimax; source /dev/stdin <<'EOF_FN'\n%s\nEOF_FN\n"
+            % extract_function("synth_minimax")
+            + "MINIMAX_API_KEY=x MINIMAX_TTS_BASE_URL=http://tts-host.invalid "
             'synth_command "Робот, привет" anton "$OUT_DIR/cmd_a.wav" > "$OUT_DIR/s.log" 2>&1; echo "RC=$?";'
             'cat "$OUT_DIR/s.log"',
         )
         assert "RC=1" in out, (out, err)
-        assert re.search(r"synth retry 1/3 \((NameResolutionError|ConnectionError)\)", out), out
+        assert re.search(
+            r"synth retry 1/3 \((NameResolutionError|ConnectionError)\)", out
+        ), out
         assert "synth retry 3/3" in out
 
 
@@ -244,7 +265,9 @@ class TestCache:
     def test_key_covers_voice_text_and_params(self, tmp_path, second):
         out, err = run_bash(
             tmp_path,
-            'synth_command "Робот, играй" anton "$OUT_DIR/a.wav" > /dev/null 2>&1;' + second + " > /dev/null 2>&1",
+            'synth_command "Робот, играй" anton "$OUT_DIR/a.wav" > /dev/null 2>&1;'
+            + second
+            + " > /dev/null 2>&1",
         )
         assert "CALLS=2" in out, (out, err)
 
@@ -268,11 +291,13 @@ class TestCache:
             env_extra="E2E_SYNTH_CACHE=0",
         )
         assert "CALLS=1" in out, (out, err)
-        assert not (tmp_path / "cache").exists() or not list((tmp_path / "cache").iterdir())
+        assert not (tmp_path / "cache").exists() or not list(
+            (tmp_path / "cache").iterdir()
+        )
 
     def test_cache_dir_default_is_outside_run_tmp(self):
         text = "\n".join(SCRIPT_LINES)
-        assert '${HOME:-/tmp}/.cache/rob_box_e2e/synth' in text
+        assert "${HOME:-/tmp}/.cache/rob_box_e2e/synth" in text
         # cleanup прогона чистит /tmp/e2e_v2_<run_id>; кэш в домашнем каталоге ros2, а не там
         assert 'OUT_DIR="/tmp/e2e_v2_${RUN_ID}"' in text
 
@@ -282,7 +307,11 @@ class TestCache:
 # --------------------------------------------------------------------------------------
 @needs_bash
 class TestPresynth:
-    STEPS = [("n101", "Робот, привет", "anton"), ("n102", "Робот, как дела", "ermil"), ("n103", "Робот, пока", "anton")]
+    STEPS = [
+        ("n101", "Робот, привет", "anton"),
+        ("n102", "Робот, как дела", "ermil"),
+        ("n103", "Робот, пока", "anton"),
+    ]
 
     def test_flaky_network_during_presynth_is_absorbed_by_retries(self, tmp_path):
         sc = write_scenario(tmp_path, self.STEPS)
@@ -293,10 +322,14 @@ class TestPresynth:
             fail_first=2,
         )
         assert "RC=0" in out, (out, err)
-        assert "STEP n101: synth retry 1/3 (NameResolutionError)" in out  # в основном логе, с меткой шага
+        assert (
+            "STEP n101: synth retry 1/3 (NameResolutionError)" in out
+        )  # в основном логе, с меткой шага
         assert "PRESYNTH: готово 3 фраз" in out
         assert "E2E_INFRA_FAIL" not in out
-        assert re.search(r"^KIND=$", out, re.M), out  # пред-синтез прошёл: причина FAIL не помечена
+        assert re.search(
+            r"^KIND=$", out, re.M
+        ), out  # пред-синтез прошёл: причина FAIL не помечена
 
     def test_network_down_fails_before_any_play_with_infra_fail(self, tmp_path):
         sc = write_scenario(tmp_path, self.STEPS)
@@ -309,8 +342,12 @@ class TestPresynth:
         assert "RC=1" in out, (out, err)
         assert "E2E_INFRA_FAIL synth" in out
         assert "KIND=synth" in out
-        assert "n101 FAIL synth" in out  # E2E_STEP/steps.jsonl: отказ на первой же фразе
-        assert "CALLS=4" in out  # дальше первой фразы не идём: "сразу", а не 3 x 4 попытки
+        assert (
+            "n101 FAIL synth" in out
+        )  # E2E_STEP/steps.jsonl: отказ на первой же фразе
+        assert (
+            "CALLS=4" in out
+        )  # дальше первой фразы не идём: "сразу", а не 3 x 4 попытки
         assert "n102" not in out and "n103" not in out
 
     def test_cache_hits_make_presynth_offline(self, tmp_path):
@@ -331,7 +368,9 @@ class TestPresynth:
         assert call < text.index("start_recording\n\n# Advisory health probe")
         assert call < text.index('    isolate_act_start "$SCENARIO_FILE"')
         assert call < text.index('    apply_node_params "$SCENARIO_FILE"')
-        assert call < text.index("    while IFS=$'\\x1f' eval \"$E2E_SCENARIO_ROW_READ\"; do\n        [ -z \"$idx\" ] && continue\n        case \"$retry_acceptance\"")
+        assert call < text.index(
+            '    while IFS=$\'\\x1f\' eval "$E2E_SCENARIO_ROW_READ"; do\n        [ -z "$idx" ] && continue\n        case "$retry_acceptance"'
+        )
         # провал пред-синтеза: акт не играется, роботу не звонят
         assert '[ "$E2E_PRESYNTH_FAILED" != "1" ]' in text
         assert 'if [ "$E2E_PRESYNTH_FAILED" = "1" ]; then\n    # Issue #3875' in text
@@ -339,6 +378,9 @@ class TestPresynth:
     def test_infra_fail_marker_is_printed_for_synth_kind(self):
         text = "\n".join(SCRIPT_LINES)
         assert 'synth)      fail_marker="E2E_INFRA_FAIL"' in text
+        assert (
+            'infra)      fail_marker="E2E_INFRA_FAIL"' in text
+        )  # #4077 scenario_too_long
 
 
 # --------------------------------------------------------------------------------------
@@ -347,7 +389,9 @@ class TestPresynth:
 @needs_bash
 class TestRunStep:
     def _body(self, tmp_path, fail_first):
-        funcs = "\n".join(extract_function(n) for n in SYNTH_FUNCS) + "\n" + FAKE_PROVIDER
+        funcs = (
+            "\n".join(extract_function(n) for n in SYNTH_FUNCS) + "\n" + FAKE_PROVIDER
+        )
         calls = (tmp_path / "calls").as_posix()
         return "\n".join(
             [
@@ -369,7 +413,9 @@ class TestRunStep:
         assert "STEP a: synth retry 1/3 (NameResolutionError)" in out
         assert "STEP a: synth retry 2/3 (NameResolutionError)" in out
 
-    def test_step_fails_as_synth_when_network_stays_down_and_never_plays(self, tmp_path):
+    def test_step_fails_as_synth_when_network_stays_down_and_never_plays(
+        self, tmp_path
+    ):
         out, err, _ = run_step_harness(tmp_path, self._body(tmp_path, 99))
         assert "RC=1" in out, (out, err)
         assert "E2E_STEP a FAIL synth" in out
@@ -385,26 +431,40 @@ def test_whole_harness_with_dead_network_fails_infra_before_first_play(tmp_path)
     bindir = tmp_path / "bin"
     bindir.mkdir()
     play_log = tmp_path / "play.log"
-    (bindir / "paplay").write_text('#!/bin/bash\necho PAPLAY "$@" >> "%s"\n' % play_log.as_posix(), encoding="utf-8")
+    (bindir / "paplay").write_text(
+        '#!/bin/bash\necho PAPLAY "$@" >> "%s"\n' % play_log.as_posix(),
+        encoding="utf-8",
+    )
     for name in ("ffmpeg", "ffprobe", "pactl"):
         (bindir / name).write_text("#!/bin/bash\nexit 0\n", encoding="utf-8")
     (tmp_path / "robot.sh").write_text("#!/bin/bash\nexit 0\n", encoding="utf-8")
     for p in bindir.iterdir():
         p.chmod(0o755)
-    scenario = write_scenario(tmp_path, [("n101", "Робот, привет", "anton"), ("n102", "Робот, как дела", "ermil")])
+    scenario = write_scenario(
+        tmp_path,
+        [("n101", "Робот, привет", "anton"), ("n102", "Робот, как дела", "ermil")],
+    )
     run_id = "t3875_%d" % abs(hash(str(tmp_path)) % 10**8)
     script = "\n".join(
         [
-            'export PATH="%s:$PATH" HOME="%s"' % (bindir.as_posix(), (tmp_path / "home").as_posix()),
-            'export ROBOT_SSH_OVERRIDE="bash %s/robot.sh" GITHUB_RUN_ID=%s' % (tmp_path.as_posix(), run_id),
+            'export PATH="%s:$PATH" HOME="%s"'
+            % (bindir.as_posix(), (tmp_path / "home").as_posix()),
+            'export ROBOT_SSH_OVERRIDE="bash %s/robot.sh" GITHUB_RUN_ID=%s'
+            % (tmp_path.as_posix(), run_id),
             "export MINIMAX_API_KEY=x MINIMAX_TTS_BASE_URL=http://tts-host.invalid E2E_SYNTH_RETRY_DELAYS='0 0 0'",
             'export SCRIPT_DIR_E2E="%s"' % SCRIPTS_DIR.as_posix(),
-            'bash "%s" --scenario "%s" --tts-provider minimax --acceptance-skip' % (E2E_SCRIPT.as_posix(), scenario.as_posix()),
+            'bash "%s" --scenario "%s" --tts-provider minimax --acceptance-skip'
+            % (E2E_SCRIPT.as_posix(), scenario.as_posix()),
             'echo "HARNESS_RC=$?"',
         ]
     )
     try:
-        p = subprocess.run(["bash", "-s"], input=script.encode("utf-8"), capture_output=True, timeout=170)
+        p = subprocess.run(
+            ["bash", "-s"],
+            input=script.encode("utf-8"),
+            capture_output=True,
+            timeout=170,
+        )
         out = p.stdout.decode("utf-8", "replace")
         assert "E2E_INFRA_FAIL synth" in out, out[-3000:]  # сразу, из пред-синтеза
         assert "E2E_VERDICT FAIL" in out
@@ -412,6 +472,8 @@ def test_whole_harness_with_dead_network_fails_infra_before_first_play(tmp_path)
         assert "E2E_STEP n101 FAIL synth" in out
         assert "STEP n102" not in out  # дальше первой фразы не идём
         assert "PLAY attempt" not in out
-        assert not play_log.exists(), "paplay не должен вызываться до успешного пред-синтеза"
+        assert (
+            not play_log.exists()
+        ), "paplay не должен вызываться до успешного пред-синтеза"
     finally:
         shutil.rmtree("/tmp/e2e_v2_%s" % run_id, ignore_errors=True)

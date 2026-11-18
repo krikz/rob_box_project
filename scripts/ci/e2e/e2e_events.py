@@ -59,6 +59,23 @@
 первой попытки уже есть -- команда исполнена, повторять нельзя (n506 марафона-6: «ускорь» 134 -> 145 BPM исполнено,
 повтор упёрся в потолок и покраснел шаг), и шаг судится по первому исполнению (``stt --executed 1`` -> ``kept=executed``).
 
+Промах STT без ключевых слов (#4741, #4738)
+==========================================
+Гипотеза не пустая, но это не фраза шага («какой чай» -> «какой человек», стоп -> «Thank you.»). Шагу без
+``stt_keys`` нечем звать :data:`STT_REPLAY`, и судить робота по чужому входу нельзя. Решает :func:`stt_miss_retry`:
+ровно один повтор фразы, потолок тот же :data:`STT_GARBAGE_MAX_ATTEMPTS`. Второй промах -- честный FAIL. Таймаут
+без гипотезы, падение робота, совпавшая фраза при отсутствии TTS/тула -- не этот класс, повтора нет. Словаря
+подмен («человек»→«чай», «Thank you»→«стой») нет.
+
+Мусор STT вместо команды (#4694, 17.11)
+========================================
+Тот же один повтор, когда ход не дошёл до команды, потому что STT вернул не её, а мусор («говори» -> «колории»,
+n805b run 43636148539: судья сказал ``silenced``, харнесс писал ``FAIL turn_silenced`` с первой попытки). Решает
+:func:`stt_garbage_retry`: распознанный текст не содержит ключевых слов шага и не похож на ожидаемую команду
+(:func:`heard_matches_command`) -- повтор, всего :data:`STT_GARBAGE_MAX_ATTEMPTS` попыток фразы. Второй промах --
+честный FAIL, не зелёный. Бесконечного ретрая нет. Словарь диалога и грамматика не правятся: «колории» командой
+не становится.
+
 Предусловие шага (#3971 R21)
 ============================
 Поле шага ``skip_when: {"reason": "KIE_QUOTA", "log": <regex>}`` -- без чего шаг теряет смысл: строка ``log`` в логе
@@ -74,9 +91,10 @@ n312 28.10). С ``"deck": "playing"`` (#4196, n512) -- наоборот: муз�
 
 Ссылка шага на трек песни акта (#3710, #4077)
 =============================================
-Поле шага ``track_ref`` -- шаг про «эту песню» (n707 «расскажи», n708 «включи»), а не про любой трек библиотеки:
-``{"reason": "CASCADE_N702", "log": <regex с одной группой -- id>, "tool": "music_library", "action": "info",
-"wait_sec": N}``. Id берётся из лога робота за акт, где его пишет сам заказ песни (``🎤 [song] … track=<id>``,
+Поле шага ``track_ref`` -- шаг про «эту песню» (n707 «расскажи», n708 «включи», n710 «удали»), а не
+про любой трек библиотеки:
+``{"reason": "CASCADE_N702", "log": <regex с одной группой -- id>, "tool": "music_library",
+"action": "info|play|delete", "wait_sec": N}``. Id берётся из лога робота за акт, где его пишет сам заказ песни (``🎤 [song] … track=<id>``,
 :func:`track_ref_bind`; последняя такая строка); строки нет за ``wait_sec`` -- заказ n702 песни не дал, шаг не
 играется: ``SKIP <reason>``, а не PASS. Шаг сыгран -- его вызов тула в окне шага (``📥 Запрос выполнения: <tool> с
 параметрами {…}``) обязан нести ЭТОТ id при этом ``action`` (:func:`track_ref_verdict`): вызов на чужой трек или
@@ -431,6 +449,9 @@ BARE_WAKE_WORDS: Tuple[str, ...] = ("робот", "робби", "роббокс"
 #: Решение Шифу 06.11 («чтобы избежать глухости вейка, давать на вейк больше попыток для всех шагов, где у нас есть
 #: вейк, например три вейка по очереди»): ВСЕГО попыток фразы шага при ``no_wake``, считая первую. Единственная константа.
 WAKE_MAX_ATTEMPTS = 3
+#: Решение Шифу 17.11 (#4694, Telegram 15:45 UTC): STT вернул не команду, а мусор («говори» -> «колории») -- не FAIL
+#: с первой попытки, а повтор хода. ВСЕГО попыток фразы шага, считая первую. Одна константа; второго повтора нет.
+STT_GARBAGE_MAX_ATTEMPTS = 2
 #: ``expect`` шага, который проверяет САМ вейк (фраза без вейка должна уйти в бэклог): ему вейк не повторяют.
 WAKE_RETRY_EXEMPT_EXPECT: Tuple[str, ...] = ("backlog",)
 
@@ -561,6 +582,81 @@ def stt_verdict(step: Mapping[str, Any], heard: str, executed: bool = False) -> 
     if executed and judged and missing:
         verdict.update(stt_ok=1, kept="executed")
     return verdict
+
+
+def content_words(text: str) -> Tuple[str, ...]:
+    """Слова фразы без вейка и без пунктуации: «Робот, говори.» -> ``("говори",)``."""
+    return tuple(w for w in _norm(text).split() if w not in BARE_WAKE_WORDS)
+
+
+def heard_matches_command(text: str, heard: str) -> bool:
+    """Распознанный текст -- та же команда, что играл харнесс, а не мусор STT.
+
+    Совпадает, если каждое содержательное слово фразы нашлось в ПРИНЯТО подстрокой (как :func:`stt_verdict`:
+    «говори» ловит «говори», не «колории»). Пустая фраза или пустое ПРИНЯТО -- не команда: сверять нечего."""
+    words, folded = content_words(text), _fold_ru(heard)
+    return bool(words and folded) and all(_fold_ru(word) in folded for word in words)
+
+
+def stt_miss_retry(text: str, heard: str, attempt: int, timeout: bool = False,
+                   crash: bool = False, barge_in: bool = False) -> Dict[str, Any]:
+    """Один повтор шага, если STT принял непустую чужую фразу (#4741 n1009, #4738 n709).
+
+    Повтор (``retry=1``), когда гипотеза не пустая и :func:`heard_matches_command` ложь. Потолок -- тот же
+    :data:`STT_GARBAGE_MAX_ATTEMPTS` (считая первую): второй промах ``reason=attempts_exhausted``, не PASS.
+    Повтора нет: пустое ПРИНЯТО (таймаут/нет гипотезы), голое вейк-слово (подхват бэклога после ``no_wake``),
+    падение робота, перебивание, совпавшая фраза (в том числе таймаут цикла после правильного ПРИНЯТО).
+    Словарь подмен не нужен.
+    Возвращает ``retry``, ``reason``, ``attempt``, ``max``."""
+    if crash:
+        reason = "crash"
+    elif barge_in:
+        reason = "barge_in"
+    elif not _fold_ru(heard):
+        reason = "timeout" if timeout else "nothing_heard"
+    elif is_bare_wake(heard):
+        reason = "bare_wake"
+    elif heard_matches_command(text, heard):
+        reason = "timeout" if timeout else "command_heard"
+    elif attempt >= STT_GARBAGE_MAX_ATTEMPTS:
+        reason = "attempts_exhausted"
+    else:
+        reason = "retry"
+    return {
+        "retry": int(reason == "retry"),
+        "reason": reason,
+        "attempt": attempt,
+        "max": STT_GARBAGE_MAX_ATTEMPTS,
+    }
+
+
+def stt_garbage_retry(text: str, heard: str, attempt: int, missing: str = "",
+                      allowed: bool = True) -> Dict[str, Any]:
+    """Один повтор хода, если STT вернул не команду, а мусор (#4694, 17.11).
+
+    Повтор (``retry=1``), когда шаг его разрешает (``stt_replay``), распознанный текст не совпал с командой
+    (:func:`heard_matches_command`) и ключевое слово шага в нём потеряно (``missing`` из :func:`stt_verdict`,
+    не ``-``). Попытки -- всего :data:`STT_GARBAGE_MAX_ATTEMPTS`, считая первую: на второй промах ``retry=0``,
+    ``reason=attempts_exhausted``. Не мусор (команда узнана, слова на месте, ПРИНЯТО пусто) повтора не просит.
+    Возвращает ``retry``, ``reason``, ``attempt``, ``max``."""
+    if not allowed:
+        reason = "not_allowed"
+    elif not _fold_ru(heard):
+        reason = "nothing_heard"
+    elif heard_matches_command(text, heard):
+        reason = "command_heard"
+    elif not missing or missing == "-":
+        reason = "keys_present"
+    elif attempt >= STT_GARBAGE_MAX_ATTEMPTS:
+        reason = "attempts_exhausted"
+    else:
+        reason = "retry"
+    return {
+        "retry": int(reason == "retry"),
+        "reason": reason,
+        "attempt": attempt,
+        "max": STT_GARBAGE_MAX_ATTEMPTS,
+    }
 
 
 # -- тишина в снимке сессии (#3989 п.5) -------------------------------------------------------------------
@@ -1163,6 +1259,35 @@ def _cmd_stt(opts: Dict[str, str], flags: List[str]) -> int:
     return 0
 
 
+def _cmd_stt_retry(opts: Dict[str, str], flags: List[str]) -> int:
+    """``--text ФРАЗА --heard ПРИНЯТО --attempt N --missing СЛОВА [--allowed 0|1]`` -> ``retry=`` / ``reason=`` /
+    ``attempt=`` / ``max=``. ``--attempt`` не число -- rc 2. Решает :func:`stt_garbage_retry`, не bash."""
+    try:
+        attempt = int(opts["--attempt"] or "1")
+    except ValueError:
+        sys.stderr.write(f"--attempt: не число: {opts['--attempt']}\n")
+        return 2
+    _emit(stt_garbage_retry(
+        opts["--text"], opts["--heard"], attempt, opts["--missing"], allowed=opts["--allowed"] != "0",
+    ))
+    return 0
+
+
+def _cmd_stt_miss(opts: Dict[str, str], flags: List[str]) -> int:
+    """``--text ФРАЗА --heard ПРИНЯТО --attempt N [--timeout 0|1] [--crash 0|1] [--barge-in 0|1]`` -> ``retry=`` /
+    ``reason=`` / ``attempt=`` / ``max=``. ``--attempt`` не число -- rc 2. Решает :func:`stt_miss_retry`, не bash."""
+    try:
+        attempt = int(opts["--attempt"] or "1")
+    except ValueError:
+        sys.stderr.write(f"--attempt: не число: {opts['--attempt']}\n")
+        return 2
+    _emit(stt_miss_retry(
+        opts["--text"], opts["--heard"], attempt, timeout=opts["--timeout"] == "1",
+        crash=opts["--crash"] == "1", barge_in=opts["--barge-in"] == "1",
+    ))
+    return 0
+
+
 def _cmd_compare(opts: Dict[str, str], flags: List[str]) -> int:
     """``--scenario F --label L`` -> ``compare=<сверка|->``; с ``--since S`` (начало окна шага) и логом деки за акт на
     stdin -- ещё ``fetch=`` / ``ok=`` / ``detail=``. Кривое поле или ``--since`` -- rc 2 и причина в stderr."""
@@ -1258,6 +1383,7 @@ COMMANDS: Mapping[str, Callable[[Dict[str, str], List[str]], int]] = MappingProx
     "state": _cmd_state, "quiet": _cmd_quiet, "anchor": _cmd_anchor,
     "policy": _cmd_policy, "recovery": _cmd_recovery, "wake-retry": _cmd_wake_retry, "session": _cmd_session,
     "mark": _cmd_mark, "skips": _cmd_skips, "skip": _cmd_skip, "compare": _cmd_compare, "stt": _cmd_stt,
+    "stt-retry": _cmd_stt_retry, "stt-miss": _cmd_stt_miss,
     "requires": _cmd_requires, "require": _cmd_require, "barewake": _cmd_barewake,
     "trackrefs": _cmd_trackrefs, "trackbind": _cmd_trackbind, "trackcheck": _cmd_trackcheck,
 })
@@ -1265,6 +1391,8 @@ USAGE = ("usage: e2e_events.py state|quiet|anchor [--silent-ok] [--barge] [--wai
          " [--perform-ceiling S] [--after A --n N] | policy --scenario FILE | recovery [--kind K] | session < report.json"
          " | wake-retry --expect E --verdict V --attempt N --text T [--barge-in 1] | mark --kind K --where W [--detail D] | skips --scenario FILE | skip --scenario FILE --label L < log"
          " | compare --scenario FILE --label L [--since S < log] | stt --scenario FILE --label L --heard TEXT [--executed 0|1]"
+         " | stt-retry --text ФРАЗА --heard ПРИНЯТО --attempt N --missing СЛОВА [--allowed 0|1]"
+         " | stt-miss --text ФРАЗА --heard ПРИНЯТО --attempt N [--timeout 0|1] [--crash 0|1] [--barge-in 0|1]"
          " | requires --scenario FILE | require --labels A,B [--steps FILE] [--prior L=S,…]"
          " | barewake --heard TEXT | trackrefs --scenario FILE | trackbind --scenario FILE --label L < log"
          " | trackcheck --scenario FILE --label L --track ID < log\n")
@@ -1282,7 +1410,8 @@ def main(argv: List[str]) -> int:
     opts = {"--after": "speech_started", "--n": "1", "--waited": "0", "--accept-window": "0",
             "--scenario": "", "--kind": "", "--perform-ceiling": "", "--where": "", "--detail": "", "--label": "",
             "--since": "", "--heard": "", "--track": "", "--executed": "0", "--labels": "", "--steps": "",
-            "--prior": "", "--expect": "", "--verdict": "", "--attempt": "", "--text": "", "--barge-in": "0"}
+            "--prior": "", "--expect": "", "--verdict": "", "--attempt": "", "--text": "", "--barge-in": "0",
+            "--missing": "", "--allowed": "1", "--timeout": "0", "--crash": "0"}
     flags = argv[2:]
     for i, tok in enumerate(flags):
         if tok in opts and i + 1 < len(flags):

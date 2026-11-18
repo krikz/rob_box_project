@@ -400,12 +400,8 @@ services:
       # (``operator`` / ``personality``, миграция 011_agent_namespace.sql).
       # Тот же host-path, что у voice-assistant (./data/voice → /data) — теперь и тот же УЗЕЛ.
       - ./data/voice:/data
-      # issue #3299 — инструмент ТАРС ``list_faces`` читает лицевую базу.
-      # Только чтение: пишет её vision-face на Vision Pi, supervisor не должен менять
-      # базу даже случайно (ADR-0123). На Sound Pi каталог наполняет cutover-rsync;
-      # синхронизации Vision→Sound в PR-2b НЕТ, пока он пуст, list_faces честно
-      # отвечает «пуста на этом узле», а не «лиц нет».
-      - ./data/faces:/data/faces:ro
+      # issue #3655 — ``list_faces`` зовёт ``/perception/people`` (владелец на
+      # Vision Pi). Каталог ``/data/faces`` в supervisor не монтируем.
     command: ["/ros_scripts/ros_with_namespace.sh", "/bin/bash", "/scripts/start_supervisor.sh"]
     depends_on:
       zenoh-router:
@@ -490,8 +486,7 @@ services:
   # ветку ДО сборки образа. Если его нет — COPY в Dockerfile упадёт
   # (явная ошибка зависимости, не silent degradation).
   quest:
-    # Тег QUEST_TAG в .image-versions не пишется (манифест: image_versions: false),
-    # поэтому образ берётся по ${IMAGE_TAG} (dev/test/latest), как и на Vision Pi.
+    # Tag tracked in docker/sound/.image-versions.{env} — updated by CI after each build
     image: ${SERVICE_IMAGE_PREFIX:-ghcr.io/krikz/rob_box}:quest-${ROS_DISTRO:-lyrical}-${QUEST_TAG:-${IMAGE_TAG}}
     container_name: rob-box-quest
     pull_policy: if_not_present

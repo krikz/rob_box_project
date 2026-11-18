@@ -60,6 +60,7 @@ class State(str, Enum):
     NO_RELEASE = "no_release"  # указателя канала в реестре нет
     AVAILABLE = "available"  # релиз найден и подпись верна, на диск не скачан (режим observe)
     STAGED = "staged"  # бандл и образы роли лежат на диске заранее
+    CANCELLED = "cancelled"  # staged помечен отменённым; current/previous не менялись
     ADOPTION_PLANNED = "adoption_planned"  # C1 dry-run: доказательства current найдены, состояние не записано
     ADOPTED = "adopted"  # установленный legacy-стек доказанно соответствует подписанному релизу
     PREFLIGHT_PASSED = "preflight_passed"  # C1 dry-run: staged/signature, HIL, dirty, место и current проверены

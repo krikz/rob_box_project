@@ -44,7 +44,7 @@ def test_screen_puts_the_dash_by_the_role_voice_not_by_the_text():
 @pytest.mark.parametrize("name, tag", [("minimax", "<#"), ("yandex", "sil<["), ("silero", '<break time="')])
 def test_each_provider_writes_the_beat_pause_in_its_own_markup(name, tag):
     out = voiced(name, VERSE, bar_s=2.0).text
-    assert out.count(tag) == 2  # три строки - две паузы
+    assert out.count(tag) == 3  # три строки — пауза и у последней (#4508)
     assert "<#" not in out or name == "minimax"
 
 

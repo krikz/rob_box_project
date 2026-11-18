@@ -49,21 +49,97 @@ RESOURCE_PACK_MANIFEST = "docker/vision/scripts/resource_pack/manifest.yaml"
 DEFAULT_IMAGE_PREFIX = "10.1.1.249:5000/krikz/rob_box"
 
 # Что едет в бандл роли: каталог роли и всё, на что её compose ссылается через ../ (гард в тестах сверяет).
+# src/* — только пакеты, которые compose роли монтирует целиком (не весь src/).
 BUNDLE_PATHS: dict[str, tuple[str, ...]] = {
-    "main": ("docker/main", "docker/common", "host/main", "src/rob_box_description"),
-    "vision": ("docker/vision", "docker/common", "host/vision", "scripts/setup/ensure_hailo_driver.sh"),
+    "main": (
+        "docker/main",
+        "docker/common",
+        "host/main",
+        "src/rob_box_description",
+        "src/rob_box_teleop",
+    ),
+    "vision": (
+        "docker/vision",
+        "docker/common",
+        "host/vision",
+        "scripts/setup/ensure_hailo_driver.sh",
+    ),
     # Скрипт ресурсного пака живёт в docker/vision, но им пользуется и Sound Pi (L: Deploy and Verify).
-    "sound": ("docker/sound", "docker/common", "sound_pack", "migrations", "docker/vision/scripts/resource_pack"),
+    "sound": (
+        "docker/sound",
+        "docker/common",
+        "sound_pack",
+        "migrations",
+        "docker/vision/scripts/resource_pack",
+    ),
 }
 # Хостовые шаги, которые деплой сегодня делает до compose up (фаза C исполнит их из бандла).
-MIGRATIONS: dict[str, list[str]] = {"main": [], "vision": ["scripts/setup/ensure_hailo_driver.sh"], "sound": []}
+MIGRATIONS: dict[str, list[str]] = {
+    "main": [],
+    "vision": ["scripts/setup/ensure_hailo_driver.sh"],
+    "sound": [],
+}
 RESOURCE_PACK_ROLES = ("vision", "sound")
 _SECRET_NAMES = re.compile(r"(^|/)\.env\.(secrets|local)$|\.secrets$|\.key$")
-_OWN_IMAGE = re.compile(r"^\$\{SERVICE_IMAGE_PREFIX:-[^}]+\}:(?P<svc>[a-z0-9-]+?)-\$\{(ROS_DISTRO|IMAGE_TAG)")
+_OWN_IMAGE = re.compile(
+    r"^\$\{SERVICE_IMAGE_PREFIX:-[^}]+\}:(?P<svc>[a-z0-9-]+?)-\$\{(ROS_DISTRO|IMAGE_TAG)"
+)
+# digest образа: плавающий тег и пустая строка сюда не проходят (сборка отказывает).
+_DIGEST_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
 
 
 class BuildError(RuntimeError):
     pass
+
+
+def require_digest(tag: str, resolve: Callable[[str], str]) -> str:
+    """`resolve(тег) → sha256:…`. Нет образа / плавающий тег / пусто — BuildError, не тихое ``."""
+    try:
+        digest = resolve(tag)
+    except KeyError as exc:
+        raise BuildError(f"образ {tag!r}: нет digest в таблице/реестре") from exc
+    except (
+        Exception
+    ) as exc:  # RegistryError и прочие сбои резолва — тот же отказ сборки
+        if isinstance(exc, BuildError):
+            raise
+        raise BuildError(
+            f"образ {tag!r}: нет digest в таблице/реестре ({exc})"
+        ) from exc
+    if not isinstance(digest, str) or not _DIGEST_RE.match(digest):
+        raise BuildError(
+            f"образ {tag!r}: нужен digest sha256:…, получено {digest!r} (плавающий тег нельзя)"
+        )
+    return digest
+
+
+def pin_external_image(image: str, resolve: Callable[[str], str]) -> str:
+    """Сторонний compose-образ → `name[:tag]@sha256:…`. Плавающий тег без digest — BuildError.
+
+    `resolve` ключ — полный ref из compose (например ``eclipse/zenoh:1.6.2``). Digest
+    не выдумываем: нет в таблице/реестре → отказ сборки (adopt иначе blocked).
+    """
+    if rf.is_pinned_ref(image):
+        return image
+    digest = require_digest(image, resolve)
+    return f"{image}@{digest}"
+
+
+def tag_digest_map(
+    release: dict[str, Any], role: str, manifest: dict[str, Any]
+) -> dict[str, str]:
+    """`{TAG_VAR: sha256:…}` для сервисов роли с image_versions — сверка бандла сервис→digest."""
+    services = all_services(manifest)
+    out: dict[str, str] = {}
+    for name, ref in release["roles"][role]["images"].items():
+        var = services.get(name, {}).get("image_versions", False)
+        if not var:
+            continue
+        ref_s = str(ref)
+        if "@" not in ref_s:
+            raise rf.ReleaseError(f"{role}: images.{name} без digest: {ref_s!r}")
+        out[str(var)] = ref_s.split("@", 1)[1]
+    return out
 
 
 def _load_gen_build_matrix():
@@ -92,7 +168,9 @@ def compose_images(compose: dict[str, Any]) -> tuple[list[str], list[str]]:
         if m:
             own.add(m.group("svc"))
         elif "${" in image:
-            raise BuildError(f"образ {image!r}: не наш шаблон и не литерал — не знаю, как закрепить")
+            raise BuildError(
+                f"образ {image!r}: не наш шаблон и не литерал — не знаю, как закрепить"
+            )
         else:
             external.add(image)
     return sorted(own), sorted(external)
@@ -105,7 +183,9 @@ def all_services(manifest: dict[str, Any]) -> dict[str, dict[str, Any]]:
     return out
 
 
-def image_tag_for(name: str, spec: dict[str, Any], image_tag: str, docker_tag: str, ros_distro: str) -> str:
+def image_tag_for(
+    name: str, spec: dict[str, Any], image_tag: str, docker_tag: str, ros_distro: str
+) -> str:
     """Тег, который compose возьмёт сегодня: `*_TAG` из .image-versions (SHA-тег) или голый тег канала."""
     tag = image_tag if spec.get("image_versions", False) is not False else docker_tag
     ctx = GBM.BuildContext("", "", "", ros_distro, "", tag)
@@ -119,7 +199,9 @@ def tracked_files(repo_root: Path, paths: Iterable[str]) -> list[tuple[str, str,
     """[(путь, sha блоба в индексе, исполняемый)] — только обычные файлы git (ни ссылок, ни сабмодулей)."""
     paths = list(paths)
     out = subprocess.run(
-        ["git", "-C", str(repo_root), "ls-files", "-s", "-z", "--", *paths], capture_output=True, check=True
+        ["git", "-C", str(repo_root), "ls-files", "-s", "-z", "--", *paths],
+        capture_output=True,
+        check=True,
     ).stdout.decode()
     files = []
     for rec in filter(None, out.split("\0")):
@@ -167,35 +249,161 @@ def build_bundle(files: Iterable[tuple[str, bytes, bool]]) -> bytes:
     return buf.getvalue()
 
 
-def role_bundle(repo_root: Path, role: str) -> bytes:
+def role_bundle(
+    repo_root: Path, role: str, overrides: dict[str, bytes] | None = None
+) -> bytes:
+    """Бандл роли из git; `overrides` подменяет/добавляет файлы (байты уже готовые)."""
     files = tracked_files(repo_root, BUNDLE_PATHS[role])
     blobs = git_blobs(repo_root, sorted({blob for _, blob, _ in files}))
-    return build_bundle((path, blobs[blob], exe) for path, blob, exe in files)
+    overrides = overrides or {}
+    items: list[tuple[str, bytes, bool]] = []
+    seen: set[str] = set()
+    for path, blob, exe in files:
+        items.append((path, overrides[path] if path in overrides else blobs[blob], exe))
+        seen.add(path)
+    for path, data in overrides.items():
+        if path not in seen:
+            items.append((path, data, False))
+    return build_bundle(items)
+
+
+def bundle_member(data: bytes, path: str) -> bytes | None:
+    """Содержимое файла из tar.gz бандла или None, если файла нет."""
+    with tarfile.open(fileobj=io.BytesIO(data), mode="r:gz") as tf:
+        try:
+            member = tf.getmember(path)
+        except KeyError:
+            return None
+        if not member.isfile():
+            return None
+        extracted = tf.extractfile(member)
+        return extracted.read() if extracted is not None else None
+
+
+def image_versions_bundle_path(role: str, docker_tag: str) -> str:
+    return f"docker/{role}/.image-versions.{docker_tag}"
+
+
+def check_bundle_image_versions(
+    release: dict[str, Any],
+    role: str,
+    data: bytes,
+    tag_digests: dict[str, str],
+) -> None:
+    """`.image-versions.<docker_tag>`: каждая `*_TAG` = image_tag@sha256 сервиса, не «файл не пустой».
+
+    Отказы: нет переменных *_TAG; значение без @sha256; digest от другого сервиса (NAV2≠teleop).
+    """
+    path = image_versions_bundle_path(role, release["docker_tag"])
+    raw = bundle_member(data, path)
+    if raw is None:
+        raise rf.ReleaseError(f"{role}: в бандле нет {path}")
+    image_tag = release["image_tag"]
+    try:
+        text = raw.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise rf.ReleaseError(f"{role}: {path}: не UTF-8") from exc
+    found: dict[str, str] = {}
+    for line in text.splitlines():
+        s = line.strip()
+        if not s or s.startswith("#") or "=" not in s:
+            continue
+        key, val = s.split("=", 1)
+        key, val = key.strip(), val.strip()
+        if "@" not in val:
+            raise rf.ReleaseError(
+                f"{role}: {path}: {key}={val}: нет @sha256 (плавающий тег)"
+            )
+        tag_part, digest = val.split("@", 1)
+        if tag_part != image_tag:
+            raise rf.ReleaseError(
+                f"{role}: {path}: {key}={val} не совпадает с image_tag релиза {image_tag!r}"
+            )
+        if not _DIGEST_RE.match(digest):
+            raise rf.ReleaseError(f"{role}: {path}: {key}={val}: не digest")
+        want = tag_digests.get(key)
+        if want is None:
+            raise rf.ReleaseError(
+                f"{role}: {path}: {key} нет среди сервисов роли (unknown TAG)"
+            )
+        if digest != want:
+            raise rf.ReleaseError(
+                f"{role}: {path}: {key} digest другого сервиса "
+                f"(ожидался {want}, получен {digest})"
+            )
+        found[key] = digest
+    if not found:
+        raise rf.ReleaseError(f"{role}: {path}: нет переменных *_TAG")
+    missing = sorted(set(tag_digests) - set(found))
+    if missing:
+        raise rf.ReleaseError(f"{role}: {path}: нет переменных {missing}")
 
 
 # --- релиз ----------------------------------------------------------------------------------------------------
 
 
-def _role_entry(repo_root, role, release, services, resolve, args) -> tuple[dict[str, Any], bytes]:
-    compose = yaml.safe_load((repo_root / "docker" / role / "docker-compose.yaml").read_text(encoding="utf-8"))
-    own, external = compose_images(compose)
+def _role_entry(
+    repo_root, role, release, services, resolve, args, manifest, git_sha
+) -> tuple[dict[str, Any], bytes]:
+    compose = yaml.safe_load(
+        (repo_root / "docker" / role / "docker-compose.yaml").read_text(
+            encoding="utf-8"
+        )
+    )
+    own, external_raw = compose_images(compose)
     images = {}
     for name in own:
         if name not in services:
-            raise BuildError(f"{role}: сервис {name} есть в compose, но нет в {BUILD_MANIFEST}")
-        tag = image_tag_for(name, services[name], args["image_tag"], args["docker_tag"], args["ros_distro"])
-        images[name] = f"{args['image_prefix']}@{resolve(tag)}"
-    bundle = role_bundle(repo_root, role)
+            raise BuildError(
+                f"{role}: сервис {name} есть в compose, но нет в {BUILD_MANIFEST}"
+            )
+        tag = image_tag_for(
+            name,
+            services[name],
+            args["image_tag"],
+            args["docker_tag"],
+            args["ros_distro"],
+        )
+        images[name] = f"{args['image_prefix']}@{require_digest(tag, resolve)}"
+    # Сторонние образы — только digest; плавающий тег без записи в таблице → BuildError.
+    external = [pin_external_image(img, resolve) for img in external_raw]
+    # Бандл не должен врать: .image-versions.<docker_tag> = тег/digest релиза, не устаревший файл из git.
+    iv_stub = {
+        "release": release,
+        "git": git_sha,
+        "image_tag": args["image_tag"],
+        "roles": {role: {"images": images}},
+    }
+    iv_path = image_versions_bundle_path(role, args["docker_tag"])
+    iv_text = image_versions_text(iv_stub, role, manifest, pinned=True)
+    bundle = role_bundle(repo_root, role, overrides={iv_path: iv_text.encode("utf-8")})
     entry = {
-        "bundle": {"file": rf.bundle_file_name(role, release), "sha256": rf.sha256_hex(bundle), "size": len(bundle)},
+        "bundle": {
+            "file": rf.bundle_file_name(role, release),
+            "sha256": rf.sha256_hex(bundle),
+            "size": len(bundle),
+        },
         "images": images,
         "external_images": external,
         "resource_pack": None,
         "migrations": list(MIGRATIONS[role]),
     }
     if role in RESOURCE_PACK_ROLES:
-        data = git_blobs(repo_root, [f":{RESOURCE_PACK_MANIFEST}"])[f":{RESOURCE_PACK_MANIFEST}"]
-        entry["resource_pack"] = {"manifest": RESOURCE_PACK_MANIFEST, "sha256": rf.sha256_hex(data)}
+        data = git_blobs(repo_root, [f":{RESOURCE_PACK_MANIFEST}"])[
+            f":{RESOURCE_PACK_MANIFEST}"
+        ]
+        entry["resource_pack"] = {
+            "manifest": RESOURCE_PACK_MANIFEST,
+            "sha256": rf.sha256_hex(data),
+        }
+    release_stub = {
+        "image_tag": args["image_tag"],
+        "docker_tag": args["docker_tag"],
+        "roles": {role: entry},
+    }
+    check_bundle_image_versions(
+        release_stub, role, bundle, tag_digest_map(release_stub, role, manifest)
+    )
     return entry, bundle
 
 
@@ -223,7 +431,9 @@ def build_release(
     }
     roles, bundles = {}, {}
     for role in rf.ROLES:
-        roles[role], bundles[role] = _role_entry(repo_root, role, release, services, resolve, args)
+        roles[role], bundles[role] = _role_entry(
+            repo_root, role, release, services, resolve, args, manifest, git_sha
+        )
     doc = {
         "schema": rf.SCHEMA,
         "release": release,
@@ -239,7 +449,9 @@ def build_release(
     return doc, bundles
 
 
-def write_release_dir(out: Path, release: dict[str, Any], bundles: dict[str, bytes]) -> None:
+def write_release_dir(
+    out: Path, release: dict[str, Any], bundles: dict[str, bytes]
+) -> None:
     out.mkdir(parents=True, exist_ok=True)
     (out / rf.RELEASE_FILE).write_bytes(rf.dumps(release))
     for role, data in bundles.items():
@@ -250,21 +462,37 @@ def sign_release_dir(out: Path, secret_text: str) -> None:
     data = (out / rf.RELEASE_FILE).read_bytes()
     release = rf.loads(data)
     trusted = f"release:{release['release']} channel:{release['channel']} git:{release['git']}"
-    sig = minisign.sign(data, minisign.load_secret_key(secret_text), trusted, "rob_box release signature")
+    sig = minisign.sign(
+        data,
+        minisign.load_secret_key(secret_text),
+        trusted,
+        "rob_box release signature",
+    )
     (out / rf.SIGNATURE_FILE).write_text(sig, encoding="utf-8")
 
 
 def verify_release_dir(out: Path, public_text: str) -> dict[str, Any]:
-    """Подпись, схема и sha256 каждого бандла. Любое расхождение — исключение (ReleaseError/SignatureError)."""
+    """Подпись, схема, sha256 бандлов и .image-versions бандла = image_tag@digest сервиса."""
     data = (out / rf.RELEASE_FILE).read_bytes()
-    minisign.verify(data, (out / rf.SIGNATURE_FILE).read_text(encoding="utf-8"), minisign.load_public_key(public_text))
+    minisign.verify(
+        data,
+        (out / rf.SIGNATURE_FILE).read_text(encoding="utf-8"),
+        minisign.load_public_key(public_text),
+    )
     release = rf.loads(data)
+    manifest = GBM.load_manifest(REPO_ROOT / BUILD_MANIFEST)
     for role in rf.ROLES:
-        rf.check_bundle(release, role, (out / release["roles"][role]["bundle"]["file"]).read_bytes())
+        bundle = (out / release["roles"][role]["bundle"]["file"]).read_bytes()
+        rf.check_bundle(release, role, bundle)
+        check_bundle_image_versions(
+            release, role, bundle, tag_digest_map(release, role, manifest)
+        )
     return release
 
 
-def image_versions_text(release: dict[str, Any], role: str, manifest: dict[str, Any], pinned: bool = False) -> str:
+def image_versions_text(
+    release: dict[str, Any], role: str, manifest: dict[str, Any], pinned: bool = False
+) -> str:
     """Текст `.image-versions.<tag>` роли из релиза (переходный период: compose читает *_TAG как сегодня).
 
     pinned=True даёт `X_TAG=<тег>@sha256:…` — compose тогда тянет ровно образ релиза.
@@ -297,7 +525,9 @@ def publish_release_dir(out: Path, registry: Registry, channel_tag: bool = True)
     manifest = rf.artifact_manifest(data, sig, release)
     registry.put_manifest(rf.RELEASE_REPO, release["release"], manifest, rf.MT_MANIFEST)
     if channel_tag:
-        registry.put_manifest(rf.RELEASE_REPO, release["channel"], manifest, rf.MT_MANIFEST)
+        registry.put_manifest(
+            rf.RELEASE_REPO, release["channel"], manifest, rf.MT_MANIFEST
+        )
     return rf.oci_digest(manifest)
 
 
@@ -307,7 +537,13 @@ def publish_release_dir(out: Path, registry: Registry, channel_tag: bool = True)
 def _resolver(args: argparse.Namespace) -> Callable[[str], str]:
     if args.digests:
         table = json.loads(Path(args.digests).read_text(encoding="utf-8"))
-        return lambda tag: table[tag]
+
+        def from_table(tag: str) -> str:
+            if tag not in table:
+                raise KeyError(tag)
+            return table[tag]
+
+        return from_table
     if not args.resolve_registry:
         raise BuildError("нужен --digests или --resolve-registry")
     reg = Registry(args.resolve_registry)
@@ -326,7 +562,10 @@ def _secret(args: argparse.Namespace) -> str:
 
 def _git_sha(repo_root: Path) -> str:
     return subprocess.run(
-        ["git", "-C", str(repo_root), "rev-parse", "--short=7", "HEAD"], capture_output=True, text=True, check=True
+        ["git", "-C", str(repo_root), "rev-parse", "--short=7", "HEAD"],
+        capture_output=True,
+        text=True,
+        check=True,
     ).stdout.strip()
 
 
@@ -348,15 +587,21 @@ def cmd_build(args: argparse.Namespace) -> int:
 
 
 def cmd_verify(args: argparse.Namespace) -> int:
-    release = verify_release_dir(Path(args.dir), Path(args.pubkey).read_text(encoding="utf-8"))
-    print(f"OK: {release['release']} ({release['channel']}, git {release['git']}) — подпись и бандлы сошлись")
+    release = verify_release_dir(
+        Path(args.dir), Path(args.pubkey).read_text(encoding="utf-8")
+    )
+    print(
+        f"OK: {release['release']} ({release['channel']}, git {release['git']}) — подпись и бандлы сошлись"
+    )
     return 0
 
 
 def cmd_image_versions(args: argparse.Namespace) -> int:
     release = rf.loads((Path(args.dir) / rf.RELEASE_FILE).read_bytes())
     manifest = GBM.load_manifest(REPO_ROOT / BUILD_MANIFEST)
-    sys.stdout.write(image_versions_text(release, args.role, manifest, pinned=args.pinned))
+    sys.stdout.write(
+        image_versions_text(release, args.role, manifest, pinned=args.pinned)
+    )
     return 0
 
 
@@ -366,11 +611,27 @@ def _parser() -> argparse.ArgumentParser:
     b = sub.add_parser("build")
     b.add_argument("--release", required=True)
     b.add_argument("--channel", default="dev")
-    b.add_argument("--image-tag", required=True, help="SHA-тег сборки, например dev-b704404")
-    b.add_argument("--docker-tag", default="dev", help="изменяемый тег канала для сервисов без *_TAG")
-    b.add_argument("--image-prefix", default=DEFAULT_IMAGE_PREFIX, help="имя репозитория образов, как его видит робот")
-    b.add_argument("--resolve-registry", default="", help="откуда брать digest (например http://localhost:5000)")
-    b.add_argument("--digests", default="", help="JSON {тег: sha256:…} вместо запроса к реестру")
+    b.add_argument(
+        "--image-tag", required=True, help="SHA-тег сборки, например dev-b704404"
+    )
+    b.add_argument(
+        "--docker-tag",
+        default="dev",
+        help="изменяемый тег канала для сервисов без *_TAG",
+    )
+    b.add_argument(
+        "--image-prefix",
+        default=DEFAULT_IMAGE_PREFIX,
+        help="имя репозитория образов, как его видит робот",
+    )
+    b.add_argument(
+        "--resolve-registry",
+        default="",
+        help="откуда брать digest (например http://localhost:5000)",
+    )
+    b.add_argument(
+        "--digests", default="", help="JSON {тег: sha256:…} вместо запроса к реестру"
+    )
     b.add_argument("--git", default="")
     b.add_argument("--min-previous", default="")
     b.add_argument("--out", required=True)
@@ -403,7 +664,13 @@ def main(argv: list[str] | None = None) -> int:
             return cmd_verify(args)
         if args.cmd == "image-versions":
             return cmd_image_versions(args)
-        print(publish_release_dir(Path(args.dir), Registry(args.registry), channel_tag=not args.no_channel_tag))
+        print(
+            publish_release_dir(
+                Path(args.dir),
+                Registry(args.registry),
+                channel_tag=not args.no_channel_tag,
+            )
+        )
         return 0
     except (BuildError, rf.ReleaseError, minisign.SignatureError) as exc:
         print(f"ERROR: {exc}", file=sys.stderr)

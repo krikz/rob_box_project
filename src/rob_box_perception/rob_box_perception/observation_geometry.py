@@ -31,6 +31,7 @@ import math
 from dataclasses import dataclass
 from typing import Any, Dict, Optional, Sequence, Tuple
 
+from rob_box_core.object_classes import STATIC_INANIMATE_CLASSES
 from rob_box_perception.observation_frames import FRAME_FIELDS
 
 # ============================================================================
@@ -57,9 +58,9 @@ STATUS_BBOX_OUTSIDE_FRAME = 'bbox_outside_frame'
 #: В центральной части бокса нет (почти) валидных глубин.
 STATUS_DEPTH_INVALID = 'depth_invalid'
 
-#: Классы детекций, для которых публикуется Observation (ADR-0130 §2.2:
-#: реализуется только профиль person; «face» — детекция части человека).
-OBSERVATION_CLASSES = ('person', 'face')
+#: Классы детекций, для которых публикуется Observation.
+#: person/face — ADR-0130 §2.2; мебель — ADR-0169 §1.3 (названные классы).
+OBSERVATION_CLASSES = ('person', 'face') + STATIC_INANIMATE_CLASSES
 
 #: Поля Observation.msg, которые считает :func:`build_observation` (всё,
 #: что видно из кадра: детекция и точка в optical frame).

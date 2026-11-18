@@ -30,15 +30,19 @@ python tools/led_face_lab/render_gifs.py docs/assets/animations --gallery src/ro
   покоем ленты 381 мА — до ~1,25 А при ограничителе 4,5 А. `face_node` пишет
   `face.peak_ma` в лог раз в 10 с.
 - **Эффекты полотна (#3780):** слоты сцены LLM `bg` (фон сквозь всё полотно:
-  `rainbow`, `fire`, `matrix`; ≤ 6 уровней, черты светят своим уровнем),
+  `rainbow`, `fire`, `matrix`, `plasma`, `rain`; ≤ 6 уровней, черты светят своим уровнем),
   `fx` (импульс в начале сцены: `slash`, `glitch`, `boot`, `power_down`) и
   `feat` (`loading_eyes`). Полотно — одна таблица `face/layout.py:CANVAS_AT`
-  рядом с `GROUP_OF`, рендер — ros2leds `led_matrix_effects` (привязка к лицу — `face/effects.py`).
+  рядом с `GROUP_OF`, рендер — ros2leds `led_matrix_effects` (привязка к лицу — `face/effects.py`;
+  `plasma` и `rain` живут там же: класса в пакете нет).
 - **Какая сцена когда:** речь — `talk_<mouth_design>` (рот по голосу, В13:
   `jaw`), запрос `play_animation`/`ExpressionRequest` — сцена на время,
   музыка — по темпу (`< 100` кайф, `100–125` грув, `≥ 125` очки), покой —
   `idle_stare`, раз в минуту `idle_bored`; нет голосового стека 7 с —
-  `sleep`, вернулся — `wakeup`. Порядок — `face_director.py`.
+  `sleep`, вернулся — `wakeup`. Никого в кадре и ни одной реплики 10 мин
+  (`knowledge.SOCIAL_SLEEP_AFTER_S`, #3780 C), и музыка не играет — тот же
+  `sleep`; лицо или голос — короткое `wakeup`, потом обычное лицо, без слов.
+  Порядок — `face_director.py`.
 
 ## Галерея
 

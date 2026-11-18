@@ -80,8 +80,8 @@ def test_supervisor_shares_state_dir_with_voice_assistant_on_one_node() -> None:
     sup, va = services["supervisor"], services["voice-assistant"]
     assert "./data/voice:/data" in sup["volumes"]
     assert "./data/voice:/data" in va["volumes"]
-    # лицевую базу ТАРС читает только на чтение; пишет её vision-face на Vision Pi
-    assert "./data/faces:/data/faces:ro" in sup["volumes"]
+    # #3655: list_faces зовёт /perception/people; диск лиц в supervisor не монтируем
+    assert all("data/faces" not in str(vol) for vol in sup["volumes"])
     assert sup["container_name"] == "avatar-supervisor"
     # арбитр переехал следом (PR-7), образ и каталог скриптов — те же, что у supervisor;
     # за файлами голосового стека он не ходит
@@ -210,6 +210,7 @@ def test_image_versions_files_carry_tags_of_sound_services() -> None:
         assert re.search(r"^PERCEPTION_TAG=\S+$", text, re.M), env
         assert re.search(r"^TELEGRAM_BOT_TAG=\S+$", text, re.M), env
         assert re.search(r"^SUPERVISOR_TAG=\S+$", text, re.M), env
+        assert re.search(r"^QUEST_TAG=\S+$", text, re.M), env
         vision = (VISION / f".image-versions.{env}").read_text(encoding="utf-8")
         for var in ("VOICE_ASSISTANT_TAG", "TELEGRAM_BOT_TAG", "SUPERVISOR_TAG"):
             assert var not in vision, f"vision/.image-versions.{env}: дубль тега {var}"

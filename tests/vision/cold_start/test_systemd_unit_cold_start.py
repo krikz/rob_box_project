@@ -124,6 +124,30 @@ def test_exec_start_pre_does_not_pull_images() -> None:
     )
 
 
+def test_unit_does_not_order_after_network_online_without_wants() -> None:
+    """LED-лицо не стоит в очереди за network-online.target (issue #4533).
+
+    ``After=network-online.target`` без ``Wants=`` не заказывает сеть и не
+    держит docker.service. Юнит ждёт, пока цель отпустит чужой заказчик
+    (cloud-init / NetworkManager-wait-online), хотя контейнерам лица сеть
+    не нужна. Если сеть снова понадобится юниту — только вместе с ``Wants=``.
+    """
+    body = _extract_unit_template()
+    unit_section = re.search(r"\[Unit\](.*?)(?=\n\[)", body, re.DOTALL)
+    assert unit_section is not None, "нет секции [Unit]"
+    unit_text = unit_section.group(1)
+    after = re.search(r"^After=(.*)$", unit_text, re.MULTILINE)
+    wants = re.search(r"^Wants=(.*)$", unit_text, re.MULTILINE)
+    assert after is not None, "After= отсутствует"
+    after_units = after.group(1).split()
+    wants_units = wants.group(1).split() if wants else []
+    assert "docker.service" in after_units, f"юнит должен идти после docker.service: {after_units!r}"
+    assert "network-online.target" not in after_units or "network-online.target" in wants_units, (
+        "After=network-online.target без Wants= не поднимает сеть и задерживает "
+        f"LED до чужого wait-online (issue #4533). After={after_units!r} Wants={wants_units!r}"
+    )
+
+
 # --------------------------------------------------------------------------- #
 # 3. ExecStartPost: docker compose ps (диагностика) с ignore-error
 # --------------------------------------------------------------------------- #

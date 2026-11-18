@@ -130,7 +130,7 @@ def test_main_overlay_touches_only_nav_loop():
         allowed = {"USE_SIM_TIME"} | ({"RTABMAP_START_MODE"} if name == "rtabmap" else set())
         allowed |= {"HIL_GUARD_SOUND"} if name == "proximity-guard" else set()
         if name == "proximity-guard":
-            assert _env(svc)["HIL_GUARD_SOUND"] == "${HIL_GUARD_SOUND:-on}"
+            assert _env(svc)["HIL_GUARD_SOUND"] == "${HIL_GUARD_SOUND:-off}"
         assert set(_env(svc)) == allowed, name
 
 

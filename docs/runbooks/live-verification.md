@@ -25,10 +25,16 @@
 
 ## 3. Доказательства
 
-Для каждой проверки приложите к issue или PR:
+Для каждой проверки приложите к issue или PR пять раздельных полей
+манифеста приёмки (`scripts/ci/e2e/acceptance_manifest.yaml`), не одну строку:
 
-- commit и тег релиза;
-- `run_id` сборки и деплоя;
+- `source_sha` — git SHA монорепо;
+- `core_package_version` — установленный `rob-box-dialog-core`;
+- `image_tag` — тег образа;
+- `scenario_id` — сценарий;
+- `proven_runtime` — живой контейнер (digest, StartedAt, установленный core, run_id).
+  Пусто, пока прогон не записал raw. Сборка, новый ref сценария или git SHA
+  сами по себе runtime не доказывают;
 - дату и время в GMT+1;
 - имя робота, колонки или площадки;
 - точную команду;
@@ -149,11 +155,18 @@ REF=develop TTS_PROVIDER=minimax bash scripts/e2e/run_night_marathon.sh
 - журнал `/var/lib/chuangong/`;
 - `run_id` команды обновления;
 - список контейнеров до и после;
-- видео или наблюдение анимации `biguan`;
-- результат `chuguan` или rollback.
+- индикацию biguan/chuguan — только если Шифу уже выбрал вариант из
+  `docs/runbooks/delivery-acceptance.md` §3 (SpeechEvent / ExpressionEvent / только state);
+  иначе пункт = `NOT_IMPLEMENTED`, не FAIL из‑за отсутствия фразы;
+- результат rollback (ручной или авто — по фазе C).
 
-`PASS`: новый релиз работает на трёх Pi. Анимация видна весь период переключения. Отдельный сломанный релиз возвращается на предыдущий релиз.
-`FAIL`: любой узел не обновился, анимации нет или rollback не сработал. Заведите issue с raw-журналом.
+Офлайн-матрица сценариев (подпись, HIL, hotpatch, одна роль) —
+`docs/runbooks/delivery-acceptance.md` и
+`host/chuangong/tests/test_delivery_acceptance_scenarios.py`.
+
+`PASS`: новый релиз работает на трёх Pi. Выбранная Шифу индикация ритуала подтверждена raw
+(или явно `NOT_IMPLEMENTED`). Отдельный сломанный релиз возвращается на предыдущий релиз.
+`FAIL`: любой узел не обновился или rollback не сработал. Заведите issue с raw-журналом.
 
 ## 9. Колонка
 

@@ -54,30 +54,33 @@ RUN apt-get update && apt-get install -y \
     ros-${ROS_DISTRO}-nav2-msgs \
     # Behavior Tree плагины (в lyrical пакет переименован из behaviortree-cpp-v3)
     ros-${ROS_DISTRO}-behaviortree-cpp \
+    python3-dev \
+    python3-yaml \
+    # Дополнительные зависимости
+    ros-${ROS_DISTRO}-navigation2 \
     && rm -rf /var/lib/apt/lists/*
 
-# Pin Nav2 1.1.20 controller_server: fail closed when goal pose TF fails
-# (upstream ignored transformPose bool → default (0,0,0) → false "Reached the goal").
-COPY controller_goal_tf_fail.patch /tmp/controller_goal_tf_fail.patch
-RUN apt-get update && apt-get install -y \
-    build-essential \
-    curl \
-    patch \
-    python3-colcon-common-extensions \
-    && mkdir -p /tmp/controller-fix/src \
-    && curl -fsSL -o /tmp/controller-fix/navigation2.tar.gz \
-        "https://github.com/ros-navigation/navigation2/archive/a097086719c88f781aa59788eca29ac6ca5e56db.tar.gz" \
-    && tar -xzf /tmp/controller-fix/navigation2.tar.gz -C /tmp/controller-fix/src \
-    && mv /tmp/controller-fix/src/navigation2-a097086719c88f781aa59788eca29ac6ca5e56db \
-        /tmp/controller-fix/src/navigation2 \
-    && patch -d /tmp/controller-fix/src/navigation2 -p1 </tmp/controller_goal_tf_fail.patch \
-    && rm -rf /var/lib/apt/lists/*
-RUN /bin/bash -c "source /opt/ros/${ROS_DISTRO}/setup.bash && cd /tmp/controller-fix && \
-    colcon build --symlink-install --base-paths /tmp/controller-fix/src/navigation2/nav2_controller \
-        --packages-select nav2_controller --cmake-args -DCMAKE_BUILD_TYPE=Release" \
-    && cp /tmp/controller-fix/install/nav2_controller/lib/libcontroller_server_core.so \
-        /opt/ros/${ROS_DISTRO}/lib/libcontroller_server_core.so \
-    && rm -rf /tmp/controller-fix /tmp/controller_goal_tf_fail.patch
+# Nav2 1.1.20 pin from develop does not compile against lyrical Nav2 1.5.2
+# (packages.ros.org resolute, 2026-11-18). The humble patches stay in-tree;
+# they are not applied on this distro. Porting them is a separate task.
+# #4475: узел дерева WouldSpinOnStall. Угол считает rob_box_teleop.turn_in_place
+# (том compose, PYTHONPATH в start_nav2_direct.sh) — тот файл, что проверяет pytest.
+# doTransform<PoseStamped> в tf2_geometry_msgs.hpp зовёт KDL. Без -lorocos-kdl
+# dlopen падает на KDL::Rotation::Quaternion, хотя getTimestamp уже свой.
+COPY would_spin_on_stall.cpp turn_in_place_py.hpp /tmp/turn-bt/
+RUN /bin/bash -c "source /opt/ros/${ROS_DISTRO}/setup.bash && cd /tmp/turn-bt && \
+    g++ -std=c++17 -fPIC -shared -DBT_PLUGIN_EXPORT \
+      -I/opt/ros/${ROS_DISTRO}/include \
+      \$(for d in /opt/ros/${ROS_DISTRO}/include/*/; do printf ' -I%s' \"\$d\"; done) \
+      -I/tmp/turn-bt -I/usr/include/python3.14 \
+      -o /opt/ros/${ROS_DISTRO}/lib/librob_box_would_spin_on_stall_bt_node.so \
+      would_spin_on_stall.cpp \
+      -L/opt/ros/${ROS_DISTRO}/lib -Wl,-rpath,/opt/ros/${ROS_DISTRO}/lib \
+      -Wl,--no-as-needed \
+      -lbehaviortree_cpp -lrclcpp -ltf2 -ltf2_ros -lorocos-kdl -lpython3.14 \
+      -lnav_msgs__rosidl_typesupport_cpp -lsensor_msgs__rosidl_typesupport_cpp \
+      -lgeometry_msgs__rosidl_typesupport_cpp -ltf2_msgs__rosidl_typesupport_cpp" \
+    && rm -rf /tmp/turn-bt
 RUN rm -f /etc/apt/apt.conf.d/02proxy
 
 # Создание рабочих директорий

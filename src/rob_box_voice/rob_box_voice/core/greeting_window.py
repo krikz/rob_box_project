@@ -64,12 +64,22 @@ def open_window(node: Any, person_ref: str, name: str, speech_id: str, text: str
 
 
 def _record_spoken_greeting(node: Any, speech_id: str, text: str, epoch: int) -> None:
-    """Подтверждённая реплика робота занимает отдельный ход в обычной истории."""
+    """``finished`` обогнал отдачу: дописать тем же ``said`` и закрыть тем же ``spoken``, что реплику хода."""
+    from rob_box_dialog.turn_log import note_proactive  # noqa: PLC0415
+
     engine = node._engine
-    if epoch != engine.session.snapshot.epoch:
+    if epoch != engine.session.snapshot.epoch or not note_proactive(engine.log, speech_id, epoch, speech_id, text):
         return
-    engine.log.begin(speech_id, epoch, "")
-    engine.log.said(speech_id, speech_id, text, delivered=True)
+    engine.speech_ended(speech_id, len(text))
+
+
+def _drop_unspoken(node: Any, speech_id: str) -> None:
+    """Отмена, отказ или истёкший кадр: реплика не прозвучала. Нода без движка журнала не ведёт."""
+    from rob_box_dialog.turn_log import drop_proactive  # noqa: PLC0415
+
+    log = getattr(getattr(node, "_engine", None), "log", None)
+    if log is not None:
+        drop_proactive(log, speech_id)
 
 
 def on_speech_event(node: Any, kind: int, speech_id: str, agent: str, spoken_chars: int = 0) -> None:
@@ -83,16 +93,18 @@ def on_speech_event(node: Any, kind: int, speech_id: str, agent: str, spoken_cha
         return
     if frame.ttl_until is not None and frame.ttl_until <= current.now():
         current.pop_scene(KIND)
+        _drop_unspoken(node, speech_id)
         return
     name = frame.payload.get("name")
     if kind != _FINISHED:
         current.pop_scene(KIND)
+        _drop_unspoken(node, speech_id)  # до ``speech_ended``: оборванная часть в историю не входит
         node.get_logger().info(f"💬 [reply-window] greeting {name}: кадр снят, приветствие не прозвучало (kind={kind})")
         return
     spoken_text = str(frame.payload.get("text") or "")[:max(0, spoken_chars)].strip()
-    if spoken_text:
-        # Запись добавляет ход, поэтому проходит в том же цикле, где LLM читает историю.
-        node._loop.call_soon_threadsafe(_record_spoken_greeting, node, speech_id, spoken_text, snapshot.epoch)
+    log = getattr(getattr(node, "_engine", None), "log", None)
+    if spoken_text and (log is None or log.speech(speech_id) is None):
+        _record_spoken_greeting(node, speech_id, spoken_text, snapshot.epoch)
     _arm(node, spoken_text)
     node.get_logger().info(
         f"💬 [reply-window] greeting {name}: окно открыто ttl={kn.REPLY_WINDOW_S}s "

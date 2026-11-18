@@ -99,7 +99,11 @@ def _ensure_rclpy_mock(monkeypatch):
             self.data = data
 
     class _Msg:
+        # stt_node импортирует Bool/Float32/Int32 вместе со String.
         String = _StringMsg
+        Bool = MagicMock()
+        Float32 = MagicMock()
+        Int32 = MagicMock()
 
     monkeypatch.setitem(sys.modules, "std_msgs", _Msg())
     monkeypatch.setitem(sys.modules, "std_msgs.msg", _Msg)
@@ -370,11 +374,13 @@ class TestWakeRejectionLogging:
         _run_route(node, "wake", "не")
         node._maybe_speak_unclear.assert_not_called()
 
-    def test_respeaker_short_text_is_silent_without_confirmed_address(self):
-        """#4695: непустой rejected ReSpeaker не доказывает адресованную речь и не вызывает TTS."""
+    def test_respeaker_short_text_outside_greeting_asks_once(self):
+        """#4501: непринятая реплика вне окна приветствия — одна фраза переспроса, не ход."""
         node, _infos, _warnings = self._node_with_log_capture()
-        _run_route(node, "respeaker", "не")
-        node._maybe_speak_unclear.assert_not_called()
+        node.min_text_chars = 3
+        _run_route(node, "respeaker", "пу")
+        node.publish_result.assert_not_called()
+        node._maybe_speak_unclear.assert_called_once()
 
 
 class TestHelpers:

@@ -41,6 +41,16 @@ twist_mux:
         timeout: 1.0
         priority: 25
 
+      # 4.5 Разворот у цели (#4694): yaw_at_goal_node крутит на месте, когда xy уже
+      # внутри допуска, а yaw нет. Выше Nav2 (10), чтобы FollowPath не затирал
+      # разворот в том же /cmd_vel. Ниже голоса (25) и обоих замков (51 и 90):
+      # руль и шлем глушат его так же, как Nav2. timeout 0.2 — тик ноды 10 Гц,
+      # два пропуска и mux отдаёт пол контроллеру.
+      yaw_at_goal:
+        topic: cmd_vel_yaw
+        timeout: 0.2
+        priority: 15
+
       # 5. Nav2 Navigation (самый низкий приоритет - автономия)
       navigation:
         topic: cmd_vel

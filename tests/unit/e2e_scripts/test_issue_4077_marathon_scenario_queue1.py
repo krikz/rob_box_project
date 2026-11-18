@@ -197,6 +197,22 @@ def test_shipped_measures_belong_to_the_current_texts_and_none_is_over_the_ceili
     ), "тугой может быть только замер: оценка выше порога -- красная"
 
 
+
+def test_n806_long_count_fits_existing_vad_budget_and_is_longer_than_twenty():
+    """#4077/#4163: n806→n807 нужен длинный счёт; фраза до сорока, влезает в VAD_BUDGET_S=12.5 без нового порога.
+
+    Замер eq снят (текст сменился) — вердикт по оценке символов; живая запись не нужна, пока оценка OK.
+    """
+    assert pb.VAD_BUDGET_S == 12.5
+    voice, text = gen.phrases()["n806_long_count_again"]
+    assert "до сорока" in text and "до двадцати" not in text, text
+    found = pb.verdict("n806_long_count_again", voice, text, gen.PHRASE_STORE)
+    assert found.level == pb.OK, found.describe()
+    assert found.source == pb.ESTIMATE, "после смены текста замер обнулён, пока нет --learn"
+    assert found.eq_s <= pb.EQ_TIGHT_S
+    assert "n806_long_count_again" not in pb.load_store(gen.PHRASE_STORE_PATH)
+
+
 def test_edited_phrases_of_the_audit_are_short_and_no_longer_over_the_window():
     """П2: n302, n602, n605, n607, n711 (+ n702 и 2b n701) -- были 74-91 символ, теперь влезают без замера."""
     phrases = gen.phrases()
@@ -280,7 +296,8 @@ def test_learn_keeps_only_measures_of_the_current_text(tmp_path, monkeypatch):
 # ── П1: песня этого прогона и зависимые шаги ───────────────────────────────────────────────────────────────────
 
 
-def test_act7_chain_is_rebuilt_under_the_fork_and_has_no_destructive_step():
+def test_act7_chain_is_rebuilt_under_the_fork_with_n710_ask_only():
+    """#4077 П5: n710 вопрос удаления с track_ref; n710b confirm не возвращён (необратимо)."""
     act7 = next(a for a in gen.ACTS if a["n"] == 7)
     assert [s["label"] for s in act7["steps"]] == [
         "n701_silence_check",
@@ -290,21 +307,25 @@ def test_act7_chain_is_rebuilt_under_the_fork_and_has_no_destructive_step():
         "n707_gen_track_info",
         "n708_gen_play",
         "n709_stop_generated",
+        "n710_gen_delete",
         "n711_renardo_not_broken",
         "n712_stop_all",
     ]
     manifest = gen.build()["night_marathon_manifest.json"]
-    assert next(a for a in manifest["acts"] if a["act"] == 7)["steps"] == 9
-    assert manifest["total_steps"] == 132  # +n1010_five_facts (#4157)
+    assert next(a for a in manifest["acts"] if a["act"] == 7)["steps"] == 10
+    assert manifest["total_steps"] == 133  # +n710_gen_delete (#4077 П5)
     assert "n910_estimate_duration" not in _steps()
     for step in act7["steps"]:
         assert len(step["text"]) <= 66, step["label"]
-    # удаления в акте нет: ни шагов, ни паттернов, ни слов в тексте
-    assert not [
-        s
-        for s in act7["steps"]
-        if "удали" in s["text"].lower() or "delete" in json.dumps(s["patterns"])
-    ]
+    n710 = next(s for s in act7["steps"] if s["label"] == "n710_gen_delete")
+    assert "удали" in n710["text"].lower()
+    assert gen.LIBRARY_DELETE_CALL in n710["patterns"]
+    assert gen.LIBRARY_DELETE_ASKED in n710["patterns"]
+    assert "удалил" in " ".join(n710["acceptance"].get("must_not_say") or []).lower()
+    assert "n710b_gen_delete_confirm" not in [s["label"] for s in act7["steps"]]
+    assert gen.LIBRARY_DELETE_CONFIRMED not in json.dumps(
+        [s["patterns"] for s in act7["steps"]], ensure_ascii=False
+    )
 
 
 def test_song_followups_wait_for_the_song_and_skip_without_it():
@@ -312,7 +333,7 @@ def test_song_followups_wait_for_the_song_and_skip_without_it():
     assert (
         steps["n707_gen_track_info"]["sleep_before_sec"] == 60
     ), "песня пишется ~90-150 с"
-    for label in ("n708_gen_play", "n709_stop_generated"):
+    for label in ("n708_gen_play", "n709_stop_generated", "n710_gen_delete"):
         assert "sleep_before_sec" not in steps[label], label
     # харнесс читает ровно то, что пишет генератор: skip_rule разбирает поле без ошибок
     import e2e_events as eev
@@ -323,6 +344,7 @@ def test_song_followups_wait_for_the_song_and_skip_without_it():
         "n707_gen_track_info": "NO_SONG",
         "n708_gen_play": "NO_SONG",
         "n709_stop_generated": "NO_SONG",
+        "n710_gen_delete": "NO_SONG",
         "n805b_unsilence": "NOT_SILENCED",  # #3971: «говори» без тишины от n805 не играется
         "n312_stop_music": "NO_MUSIC_N310",  # #4176/#4196: дека пуста -- «выключи» нечего выключать (каскад от n310)
         "n507_wake_under_music": "NO_MUSIC_N506",  # #4196: «вейк под музыкой» без музыки -- не PASS

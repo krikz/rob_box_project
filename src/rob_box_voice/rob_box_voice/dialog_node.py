@@ -9,7 +9,7 @@ Executor → respond``, :class:`rob_box_dialog.turn.TurnEngine`); транспо
   ``/voice/speech/event`` (окно озвученного, план, «говорю»), ``/voice/sound/event`` (план), ``/voice/music/state`` и
   ``/voice/music/event`` (снимок плеера, подложка выступления), ``/voice/providers/state`` (доска провайдеров),
   ``/dialog/interrupt_request`` (ясный стоп рвёт речь эпохи и ход в полёте), сервис ``/dialog/control``
-  (hold/resume/reset), ``/vision/hailo/events`` (встреча лицом, ``core.dialog_v2_parity``, #3912);
+  (hold/resume/reset), ``/vision/hailo/events`` (встреча лицом и ``FaceSightings``, ``core.dialog_v2_parity``, #3912);
 * публикации: latched ``/dialog/session``, ``/dialog/turn_event`` и рефлексы, ``/dialog/intent``, ``/dialog/plan_event``
   (через ``plan_host``), речь — ``speech_client``; ``ActionRequest`` не публикуется (подписчика нет, см. ports);
 * latched ``/voice/llm_status`` и ``/voice/wake_words`` (экран ТАРС, #3912);
@@ -469,7 +469,7 @@ class DialogNode(Node):
             self._on_chat(int(msg.chat_id), msg.text, now)
             return
         uid = str(getattr(msg, "utterance_id", "") or "")
-        heard = heard_from(msg, now=now, person_ref=person_ref_from(self._speakers, uid))
+        heard = heard_from(msg, now=now, person_ref=person_ref_from(self._speakers, uid), faces=self._faces)
         snap = self._session.snapshot
         decision = decide_in_session(heard, self._backlog, self._wake, snap, greeting=greeting_window.window(self))
         if isinstance(decision, NotAddressed) and decision.reason == HELD:
@@ -540,7 +540,8 @@ class DialogNode(Node):
 
     def _on_speech_event(self, msg: Any) -> None:
         plan_host.on_speech(self, msg)
-        greeting_window.on_speech_event(self, int(msg.kind), msg.speech_id, msg.agent, int(msg.spoken_chars))
+        if not speech_client.is_speech_end(msg):  # конец — ниже, до ``spoken``
+            greeting_window.on_speech_event(self, int(msg.kind), msg.speech_id, msg.agent, int(msg.spoken_chars))
         if msg.kind == SpeechEvent.KIND_VOICE_CHANGED:  # голос хранит tts_node; сессия помнит, что он применил
             if robot_voice_changed(msg):
                 self._session.set_voice(msg.voice_requested or None, msg.voice_applied or None, msg.provider or None)
@@ -556,6 +557,7 @@ class DialogNode(Node):
         if msg.kind == SpeechEvent.KIND_STARTED:
             self._engine.speech_started(msg.speech_id)
         elif speech_client.is_speech_end(msg):  # finished / cancelled / rejected - одно знание о конце реплики
+            greeting_window.on_speech_event(self, int(msg.kind), msg.speech_id, msg.agent, int(msg.spoken_chars))
             self._engine.speech_ended(msg.speech_id, int(msg.spoken_chars))
 
     def _on_music_state(self, msg: Any) -> None:

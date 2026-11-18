@@ -181,6 +181,8 @@ services:
     volumes:
       - sim-maps:/maps:ro
       - ../../src/rob_box_sim/config/nav2:/sim_nav2:ro
+      # extends заменяет volumes целиком: том #4475 из main сюда не переезжает.
+      - ../../src/rob_box_teleop/rob_box_teleop:/opt/rob_box/teleop/rob_box_teleop:ro
     # У робота nav2 ждёт ещё ros2-control и lslidar; в симе их заменяет gazebo.
     depends_on: !override
       - zenoh-router

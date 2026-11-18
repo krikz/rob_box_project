@@ -533,8 +533,8 @@ jobs:
           if ! git diff --cached --quiet; then
             # 🔴 РЕВЕРТ #1244 (15.08, decision #1316): SHA-теги коммитим
             # ПРЯМО в текущую ветку (develop) — ci/image-versions-* ветки
-            # НЕ работают (деплой при local не грузит .image-versions,
-            # тянет голые dev-теги → роботы получают старые образы).
+            # НЕ работают: деплой читает .image-versions из текущей ветки
+            # (git reset --hard), отдельную ветку не чекаутит.
             #
             # Issue #1388: race между Pi — сборки коммитят в одну ветку.
             # scripts/ci/push-image-versions.sh делает pull --rebase перед push

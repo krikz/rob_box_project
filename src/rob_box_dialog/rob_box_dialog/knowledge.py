@@ -1810,6 +1810,12 @@ OUTCOME_OWNER_TEXT: Mapping[str, OwnerText] = MappingProxyType({
 PHOTO_TOOL = "person_photo"
 COLLAGE_TOOL = "find_similar"
 PHOTO_TOOLS: Tuple[str, ...] = (PHOTO_TOOL, COLLAGE_TOOL)
+#: Снимок в чат ещё не ушёл: тул только подтвердил id у владельца. Фразу «отправил» строит бот из результата
+#: ``send_photo`` (``person_photo.sent_phrase``), а не message тула и не query_fallback (ADR-0148, #4694 Л).
+PHOTO_SEND_PHRASE = "chat.photo.sent"
+PHOTO_SEND_FAIL_PHRASE = "chat.photo.not_sent"
+#: «Пришли их» без id и без группы: не обещать отправку (#4505).
+PHOTO_GROUP_MISSING_PHRASE = "chat.photo.no_group"
 #: Значение ``photo_kind`` у коллажа (и поле ``op`` в тексте ``DialogOutput(kind=photo)``).
 COLLAGE_KIND = "collage"
 #: Действия, чей успех - сам себе доказательство: фразы об исходе done нет (§4.1; Шифу 21.10: «включил щелчок и ещё
@@ -2261,6 +2267,10 @@ VIOLATION_SPEECH_TOO_LONG = "speech_too_long"
 #: оборвал посреди предложения, кончается этой фразой каталога - человек слышит, что названо не всё. Обрыв по границе
 #: предложения пометки не просит: оставленные предложения целые.
 SPEECH_CUT_PHRASE = "command.speech_cut"
+#: Обрыв TTS-потока после начала звука (``tts_stream.BROKEN``): хвост не прозвучал. Фразу строит код из
+#: факта исполнения, не из текста LLM (ADR-0148). Не путать с ``SPEECH_CUT_PHRASE`` — та помечает речь,
+#: которую код сам ужал посреди предложения.
+TTS_CUT_PHRASE = "tts.cut"
 #: Фраза по ПРИЧИНЕ нарушения вместо общей: «не понял» была бы неправдой, когда модель поняла, а ответ не влез. Речь
 #: одна длинная до хода сюда не доходит (её ужимает код) - только рядом с другим нарушением, которое не
 #: исправил и повтор; ``too_long`` - сегмент выступления, имя роли или голоса длиннее предела. Единственная таблица
@@ -2280,7 +2290,8 @@ CALM_VIOLATIONS: Tuple[str, ...] = (VIOLATION_KNOWN_VOICE_REGISTER, VIOLATION_SI
 PHRASE_KEYS: Tuple[str, ...] = (
     "understand.timeout", PASSED_ADDRESSED_PHRASE, NEW_SESSION_PHRASE, QUERY_FALLBACK_GENERIC, INVALID_COMMAND_PHRASE,
     LISTEN_ONLY_PHRASE,
-    SPEECH_CUT_PHRASE, *INVALID_COMMAND_PHRASES.values(), *MUSIC_PROMISE_PHRASES.values(), VOICE_PROMISE_PHRASE,
+    SPEECH_CUT_PHRASE, TTS_CUT_PHRASE, *INVALID_COMMAND_PHRASES.values(), *MUSIC_PROMISE_PHRASES.values(),
+    VOICE_PROMISE_PHRASE,
     SEARCH_PROMISE_PHRASE, COUNT_CAPPED_PHRASE, STATE_CLAIM_PHRASE,
     *(question.declined for question in TOOL_QUESTIONS.values()),
     *(key for entry in QUERY_FALLBACK_PHRASES.values() for key in phrase_keys(entry)), QUERY_NAMES_PHRASE,
@@ -2503,7 +2514,7 @@ FACE_SCENE_SLOTS: Mapping[str, Tuple[str, ...]] = MappingProxyType({
     "tint": ("warm", "cold", "red", "green", "blue", "purple", "rainbow"),
     "tempo": ("slow", "normal", "fast"),
     "rear": ("off", "markers", "hazard", "party", "new_year", "halloween", "heart", "rocket"),
-    "bg": ("none", "rainbow", "fire", "matrix"),
+    "bg": ("none", "rainbow", "fire", "matrix", "plasma", "rain"),
     "fx": ("slash", "glitch", "boot", "power_down"),
     "feat": ("loading_eyes",),
 })
@@ -2531,6 +2542,8 @@ FACE_EFFECT_WHEN: Mapping[str, Mapping[str, str]] = MappingProxyType({
         "rainbow": "праздник, дискотека, радость",
         "fire": "рок, азарт, злость в шутку",
         "matrix": "думаю, ищу, считаю, «взламываю»",
+        "plasma": "спокойный перелив, эмбиент, без повода",
+        "rain": "грусть, дождь, тихая погода",
     }),
     "fx": MappingProxyType({
         "slash": "резкое «отрезал», шутка-удар",
@@ -2546,6 +2559,26 @@ FACE_EFFECT_WHEN: Mapping[str, Mapping[str, str]] = MappingProxyType({
 
 def _effects_when(slot: str) -> str:
     return "; ".join(f"{value} - {when}" for value, when in FACE_EFFECT_WHEN[slot].items())
+
+
+#: Вайб — катящийся шар (``vibe.VibeBall``, #3780 B). Числа кривой — только здесь, модуль их читает.
+#: Окно Шифу 05.11 — 5–15 минут без новых событий, потом лицо само к обычному. Середина окна — 10 минут.
+#: Это не порог сна (часть C той же карточки): сон сюда не входит.
+VIBE_DECAY_S = 600.0
+#: Инерция, 1/с: как быстро скорость толчка садится. За несколько секунд шар доезжает и начинает возврат.
+VIBE_INERTIA_PER_S = 1.0
+#: Ниже этого шар уже не едет наружу: толчок сел, дальше только возврат к нейтрали.
+VIBE_SPEED_REST = 1e-4
+#: Ниже этой доли пути шар у нейтрали. Полный толчок за время затухания оставляет ``1/e``
+#: набранного пути (~0.018); порог чуть выше, чтобы середина окна Шифу уже была обычным лицом,
+#: а не хвостом в третьем знаке.
+VIBE_PULL_REST = 0.02
+#: Потолок дрейфа, доля пути к стилю за секунду. Полный толчок (сила 1) даёт эту скорость.
+VIBE_DRIFT_PER_S = 0.05
+#: Подсказка модели, не событие окружения (Шифу 05.11: «изредка»). Сила слабее явной просьбы.
+VIBE_HINT_STRENGTH = 0.25
+#: Как часто код принимает подсказку одного стиля. Реже этого — подсказка не толкает шар.
+VIBE_HINT_MIN_S = 600.0
 
 
 #: Описание схемы сцены для LLM (идёт в схему, не в промпт). ``left``/``right`` - со стороны человека напротив робота.
@@ -2594,6 +2627,11 @@ MUSIC_DEFAULT_BPM = 118.0
 #: короче, даже когда ротация по времени и смена трека выпали рядом (без мерцания); два цикла сцены.
 MUSIC_SCENE_HOLD_S = 30.0
 MUSIC_SCENE_MIN_S = 16.0
+#: Сон лица, когда робота никто не теребит (#3780 C, карточка: «по умолчанию 10»).
+#: Не путать с ``voice_timeout_s``: тот гасит лицо, когда пропал голосовой стек (секунды).
+#: Здесь — никого нет в кадре и никто не обратился столько секунд, и музыка не играет.
+#: Будит лицо в кадре или голос; проснувшись, молчит.
+SOCIAL_SLEEP_AFTER_S = 10 * 60.0
 
 #: Стадия хода / состояние → рефлекс. ``thinking``: зубы или орбита — выбор Шифу (В13), старт с зубов.
 REFLEXES: Mapping[str, Reflex] = MappingProxyType({
@@ -3540,8 +3578,10 @@ CHAIN_TRIP_TOOLS: Tuple[str, ...] = MOTION_TOOLS
 class ChainTask:
     """Лимиты типа задачи (ADR-0165 §5, решение Шифу В3: у каждого типа свои). ``steps_max`` — шагов в веренице;
     ``trips_max`` — поездок (:data:`CHAIN_TRIP_TOOLS`), ``None`` — ограничены только ``steps_max``; ``term_s`` —
-    срок всей вереницы, ``None`` — сумма сроков классов шагов (своего числа нет до замеров HIL). Вышла за лимит —
-    вереница не начинается, код говорит :data:`CHAIN_TOO_LONG_PHRASE`."""
+    срок всей вереницы от фразы плана, ``None`` — сумма сроков классов шагов (своего числа нет до замеров HIL).
+    Оценка заранее длиннее срока — вереница не начинается (:data:`CHAIN_TOO_LONG_PHRASE`). На исполнении тот же
+    срок режет остаток (:func:`rob_box_dialog.action_chain.past_term`): шаг, что уже идёт, доживает, следующий не
+    начинается, итог — :data:`CHAIN_TIMEOUT_PHRASE`."""
 
     steps_max: int
     trips_max: Optional[int]
@@ -3771,7 +3811,8 @@ REMOTE_SILENCED = "silenced"
 REMOTE_SHOW_REFUSALS: Tuple[str, ...] = ("operator_hold", REMOTE_SILENCED)
 PERFORM_REJECTED_PHRASE = "perform.rejected"
 PHRASE_KEYS = PHRASE_KEYS + (*REMOTE_PERFORM_PHRASES.values(), REMOTE_PERFORM_EDIT_PHRASE,
-                             REMOTE_PERFORM_BACKING_PHRASE, REMOTE_SHOW_PHRASE,
+                             REMOTE_PERFORM_BACKING_PHRASE, REMOTE_SHOW_PHRASE, PHOTO_SEND_PHRASE,
+                             PHOTO_SEND_FAIL_PHRASE, PHOTO_GROUP_MISSING_PHRASE,
                              *(f"{REMOTE_SHOW_REJECTED_PHRASE}.{reason}" for reason in REMOTE_SHOW_REFUSALS),
                              f"{PERFORM_REJECTED_PHRASE}.operator_hold")
 

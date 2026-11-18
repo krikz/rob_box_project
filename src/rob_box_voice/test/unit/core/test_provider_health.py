@@ -5,22 +5,47 @@ from __future__ import annotations
 from types import SimpleNamespace
 
 from rob_box_core.provider_publisher import ProviderStatePublisher
-from rob_box_dialog.degrade import ProviderBoard, ProviderState
+from rob_box_dialog.degrade import ProviderBoard, ProviderState, phrase_on_change
+from rob_box_dialog.phrases import text as phrase_text
 from rob_box_llm.errors import TTSAuthError, TTSConnectionError, TTSRateLimitError, TTSTimeoutError
 from rob_box_voice.core.provider_health import (
-    record_tts_death, stt_provider_states, tts_failure_class, tts_provider_states,
+    record_tts_death,
+    stt_provider_states,
+    tts_failure_class,
+    tts_provider_states,
 )
 from rob_box_voice.core.provider_reporter import ProviderStateReporter, providers_context, reporter_context
 from rob_box_voice.stt_fallback import ProviderDeadCache, STTAuthError, STTQuotaError, STTTimeoutError, failure_class
 
 
 def test_tts_failure_classes():
-    assert tts_failure_class(TTSRateLimitError("429"), permanent=True) == "quota"
+    # HTTP 429 без признака пустого счёта — не quota (#4694).
+    assert tts_failure_class(TTSRateLimitError("429"), permanent=True) == "degraded"
+    assert tts_failure_class(TTSRateLimitError("minimax rate-limited (HTTP 429)"), permanent=False) == "degraded"
+    # 402 / 2056 / QUOTA_HINTS — по-прежнему quota.
+    assert tts_failure_class(TTSRateLimitError("402 Payment Required"), permanent=False) == "quota"
+    assert (
+        tts_failure_class(TTSRateLimitError("minimax API error 2056: Token Plan usage limit reached"), permanent=False)
+        == "quota"
+    )
+    assert tts_failure_class(TTSRateLimitError("insufficient balance"), permanent=False) == "quota"
     assert tts_failure_class(TTSAuthError("401"), permanent=True) == "auth"
     assert tts_failure_class(RuntimeError("PERMISSION_DENIED"), permanent=True) == "auth"
     assert tts_failure_class(TTSConnectionError("dns"), permanent=False) == "network"
     assert tts_failure_class(TTSTimeoutError("t"), permanent=False) == "timeout"
     assert tts_failure_class(RuntimeError("boom"), permanent=False) == "down"
+
+
+def test_tts_http_429_does_not_say_out_of_money():
+    """TTS HTTP 429 без признака пустого счёта не говорит «кончились деньги» (#4694)."""
+    assert tts_failure_class(TTSRateLimitError("429: slow down"), permanent=True) != "quota"
+    assert phrase_on_change(None, ProviderState("minimax", "tts", "quota")) == "provider.exhausted.quota"
+    assert "кончились деньги" in phrase_text("provider.exhausted.quota", subject="minimax (озвучка)", next="x")
+    # 429 → degraded: нет ключа rate-limit в phrases, в exhausted.quota не попадает.
+    assert phrase_on_change(None, ProviderState("minimax", "tts", "degraded")) is None
+    node = _tts_node({"minimax"})
+    record_tts_death(node, "minimax", TTSRateLimitError("HTTP 429 rate-limited"), True)
+    assert {s.name: s.health for s in tts_provider_states(node)}["minimax"] == "degraded"
 
 
 def _tts_node(dead):
@@ -29,7 +54,7 @@ def _tts_node(dead):
 
 def test_tts_states_report_class_of_dead_provider():
     node = _tts_node({"minimax"})
-    record_tts_death(node, "minimax", TTSRateLimitError("429"), True)
+    record_tts_death(node, "minimax", TTSRateLimitError("2056 Token Plan usage limit reached"), True)
     got = {s.name: s.health for s in tts_provider_states(node)}
     assert got == {"minimax": "quota", "yandex": "ok", "silero": "ok"}
     assert all(s.kind == "tts" for s in tts_provider_states(node))
@@ -62,13 +87,18 @@ def test_reporter_announces_tts_failure_from_board_once_and_adds_context():
     rep.tick()
     rep.tick()
     assert published == [] and len(spoken) == 1 and "minimax" in spoken[0] and "yandex" in spoken[0]
-    assert reporter_context(rep) == providers_context(rep.all_states()) == [
-        {"kind": "tts", "name": "minimax", "health": "quota"}]
+    assert (
+        reporter_context(rep)
+        == providers_context(rep.all_states())
+        == [{"kind": "tts", "name": "minimax", "health": "quota"}]
+    )
     assert reporter_context(None) == []
 
 
 def test_context_is_empty_when_everything_is_fine():
-    assert providers_context([ProviderState("minimax", "tts", "ok"), ProviderState("kie", "music_gen", "unknown")]) == []
+    assert (
+        providers_context([ProviderState("minimax", "tts", "ok"), ProviderState("kie", "music_gen", "unknown")]) == []
+    )
 
 
 def test_publisher_republishes_every_tick_and_skips_empty(monkeypatch):

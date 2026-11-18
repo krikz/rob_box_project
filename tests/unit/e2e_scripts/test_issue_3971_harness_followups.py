@@ -191,7 +191,12 @@ class TestSkipRule:
     def test_act7_rules_come_from_the_generator(self):
         scenario = json.loads(ACT7.read_text(encoding="utf-8"))
         rules = dict(e2e_events.skip_rules(scenario))
-        assert sorted(rules) == ["n707_gen_track_info", "n708_gen_play", "n709_stop_generated"]
+        assert sorted(rules) == [
+            "n707_gen_track_info",
+            "n708_gen_play",
+            "n709_stop_generated",
+            "n710_gen_delete",
+        ]
         assert {r.reason for r in rules.values()} == {"NO_SONG"}
         assert "_skip_when" not in ACT7.read_text(encoding="utf-8")
 

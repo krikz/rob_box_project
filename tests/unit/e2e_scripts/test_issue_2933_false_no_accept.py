@@ -63,6 +63,7 @@ SCRIPT_LINES = E2E_SCRIPT.read_text(encoding="utf-8").split("\n")
 
 # ── фикстуры лога voice-assistant (issue #2933, n704) ─────────────────────
 
+
 def _l(node: str, level: str, ts: str, msg: str) -> str:
     return f"[{node}-9] [{level}] [{ts}] [{node}]: {msg}\n"
 
@@ -80,7 +81,9 @@ def _llm_input(ts: str, text: str) -> str:
 def _turn(ts: str, spoken: str) -> str:
     # dialogue_node.py:4804 — f"✅ [turn] process_input returned: spoken=…"
     return _l(
-        "dialogue_node", "INFO", ts,
+        "dialogue_node",
+        "INFO",
+        ts,
         f"✅ [turn] process_input returned: spoken={spoken!r}[:60] "
         "tools=[] finish_reason='stop' truncated_tool_args=False error=None",
     )
@@ -89,7 +92,9 @@ def _turn(ts: str, spoken: str) -> str:
 def _tts_start(ts: str, text: str) -> str:
     # tts_node.py:2759 — f"🔊 TTS: speech_id=…, …, text={text!r}"
     return _l(
-        "tts_node", "INFO", ts,
+        "tts_node",
+        "INFO",
+        ts,
         f"🔊 TTS: speech_id=5e1c2a9b, dialogue_id=None, batch=None None/None, "
         f"voice=default, lang=default, text={text!r}",
     )
@@ -98,13 +103,12 @@ def _tts_start(ts: str, text: str) -> str:
 def _tts_finished(ts: str) -> str:
     # tts_node.py:5780-5784 — "✅ Воспроизведение завершено" +
     # "📢 Публикую TTS finished event: …, success=True, …"
-    return (
-        _l("tts_node", "INFO", ts, "✅ Воспроизведение завершено")
-        + _l(
-            "tts_node", "INFO", ts,
-            "📢 Публикую TTS finished event: speech_id=5e1c2a9b..., "
-            "success=True, duration=3.1s, batch=1/1",
-        )
+    return _l("tts_node", "INFO", ts, "✅ Воспроизведение завершено") + _l(
+        "tts_node",
+        "INFO",
+        ts,
+        "📢 Публикую TTS finished event: speech_id=5e1c2a9b..., "
+        "success=True, duration=3.1s, batch=1/1",
     )
 
 
@@ -131,7 +135,9 @@ LOG_ACCEPTED_CYCLE_NOT_YET_CLOSED = (
 # То же окно, перечитанное чуть позже: второй TTS (после ретрая гарда)
 # успел закрыться — "TTS finished" пришёл. Ход с 2 process_input / 2 TTS —
 # это ПОЛНЫЙ цикл (issue #2933, п.3), не регресс.
-LOG_ACCEPTED_CYCLE_CLOSED = LOG_ACCEPTED_CYCLE_NOT_YET_CLOSED + _tts_finished("1790212642.30")
+LOG_ACCEPTED_CYCLE_CLOSED = LOG_ACCEPTED_CYCLE_NOT_YET_CLOSED + _tts_finished(
+    "1790212642.30"
+)
 
 
 def extract_function(name: str) -> str:
@@ -155,6 +161,28 @@ def extract_function(name: str) -> str:
             return "\n".join(SCRIPT_LINES[start : i + 1])
         i += 1
     raise AssertionError(f"не найден конец функции {name}")
+
+
+def extract_function_if_present(name: str) -> str:
+    """Зависимость run_step, которой может ещё не быть на develop (например check_eq_vad_budget из #4077/#4842)."""
+    if not any(ln.startswith(name + "() {") for ln in SCRIPT_LINES):
+        return ""
+    return extract_function(name)
+
+
+# run_step всегда зовёт synth_surface_log; после #4077/#4842 — ещё check_eq_vad_budget
+# (иначе set -u рвётся на E2E_EQ_DUR, Offline Unit Tests / issue #2933).
+_RUN_STEP_DEPS = (
+    "ensure_outdir",
+    "emit_step",
+    "mark_fail_kind",
+    "vad_reject_reason",
+    "emit_step_fail_or_vad",
+    "check_cycle",
+    "eq_command_wav",
+    "play_eq_wav",
+    "synth_surface_log",
+)
 
 
 def run_bash(script: str) -> tuple:
@@ -260,7 +288,12 @@ class TestCheckCycleAcceptedButUnconfirmed:
     def test_genuinely_no_accept_is_still_rc1(self, tmp_path):
         """Не ослаблено: если ПРИНЯТО в логах правда нет — всё ещё rc=1
         (реплику можно переигрывать)."""
-        fake_ssh = _fake_ssh(tmp_path, ["[stt_node-9] [INFO] [1790212630.78] [stt_node]: обычный лог без акцепта\n"])
+        fake_ssh = _fake_ssh(
+            tmp_path,
+            [
+                "[stt_node-9] [INFO] [1790212630.78] [stt_node]: обычный лог без акцепта\n"
+            ],
+        )
         rc, out, err = run_check_cycle(tmp_path, "2026-09-24T01:17:01Z", fake_ssh)
         assert rc == 1, (out, err)
 
@@ -309,13 +342,20 @@ class TestRunStepDoesNotReplayAfterAccept:
         bindir.mkdir()
         play_counter = tmp_path / "play_count"
         _paplay_stub(bindir, play_counter)
-        cmd_wav = tmp_path / "out" / "cmd_n704_sasha_no_repeat_question_eq.wav"
-        cmd_wav.parent.mkdir(parents=True, exist_ok=True)
-        cmd_wav.write_bytes(b"RIFF....WAVEfmt ")
+        out_dir = tmp_path / "out"
+        out_dir.mkdir(parents=True, exist_ok=True)
+        # base + eq: run_step всегда идёт в synth/eq; eq нужен play_eq_wav.
+        (out_dir / "cmd_n704_sasha_no_repeat_question.wav").write_bytes(
+            b"RIFF....WAVEfmt "
+        )
+        (out_dir / "cmd_n704_sasha_no_repeat_question_eq.wav").write_bytes(
+            b"RIFF....WAVEfmt "
+        )
 
         script = "\n".join(
             [
                 "set -u",
+                "export LC_ALL=C",
                 f'export PATH="{bindir.as_posix()}:$PATH"',
                 f'STUB="{tmp_path.as_posix()}"; export STUB',
                 f'OUT_DIR="{tmp_path.as_posix()}/out"; mkdir -p "$OUT_DIR"',
@@ -330,18 +370,13 @@ class TestRunStepDoesNotReplayAfterAccept:
                 "E2E_EVENT_WAITS=0",
                 'log() { echo ">>> $*"; }',
                 LIB.read_text(encoding="utf-8"),
-                extract_function("ensure_outdir"),
-                extract_function("emit_step"),
-                extract_function("mark_fail_kind"),
-                extract_function("vad_reject_reason"),
-                extract_function("emit_step_fail_or_vad"),
-                extract_function("check_cycle"),
-                extract_function("eq_command_wav"),
-                extract_function("play_eq_wav"),
+                *(extract_function(n) for n in _RUN_STEP_DEPS),
+                # #4077/#4842: run_step зовёт check_eq_vad_budget; на develop функции ещё нет.
+                extract_function_if_present("check_eq_vad_budget"),
                 extract_function("run_step"),
-                'synth_command() { : ; }',
+                "synth_command() { : ; }",
                 'run_step "робот а что ты обо мне запомнил из того что я говорил" '
-                'anton n704_sasha_no_repeat_question cycle',
+                "anton n704_sasha_no_repeat_question cycle",
                 'echo "RUN_STEP_RC=$?"',
                 f'echo "PLAY_COUNT=$(cat "{play_counter.as_posix()}" 2>/dev/null || echo 0)"',
                 "",

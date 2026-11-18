@@ -72,9 +72,10 @@ def _forget_node_modules() -> None:
 def node_modules(monkeypatch):
     """``(audio_node, stt_node)`` поверх заглушек rclpy/std_msgs/PyAudio/Vosk; после теста модули выгружаются."""
     stubs = {
-        "rclpy": types.SimpleNamespace(
-            init=None, shutdown=None, spin=None, ok=lambda: False
-        ),
+        "usb": MagicMock(),
+        "usb.core": MagicMock(),
+        "usb.util": MagicMock(),
+        "rclpy": types.SimpleNamespace(init=None, shutdown=None, spin=None, ok=lambda: False),
         "rclpy.node": types.SimpleNamespace(Node=_Node),
         "rclpy.qos": MagicMock(),
         "std_msgs": MagicMock(),
@@ -161,9 +162,7 @@ def test_audio_node_keeps_listening_through_robot_speech_and_after_it(node_modul
     node.speech_prefetch_buffer = b"robot voice"
     _say(node, SpeechEvent.KIND_FINISHED)
     assert node.tts_active is False
-    assert (
-        node.speech_prefetch_buffer == b""
-    )  # хвост собственного голоса не станет pre-roll'ом
+    assert node.speech_prefetch_buffer == b""  # хвост собственного голоса не станет pre-roll'ом
     assert node._vad_gated(True) is True  # микрофон не глохнет после речи (#4072)
     assert node._vad_gated(False) is False
     assert not hasattr(node, "tts_grace_s")
@@ -235,9 +234,7 @@ def _pipeline(module, clock, recognized):
 
 def _phrase(node, clock, at: float, seconds: float) -> None:
     clock.t = 5000.0 + at
-    node.speech_audio_callback(
-        types.SimpleNamespace(data=list(b"\x00\x00" * int(16000 * seconds)))
-    )
+    node.speech_audio_callback(types.SimpleNamespace(data=list(b"\x00\x00" * int(16000 * seconds))))
 
 
 def _segments_with_voice_in_the_pause(node, clock) -> None:
@@ -408,8 +405,9 @@ def _agitation(node, clock, voice: bool = True) -> None:
     """``SpeechRequest`` агитации и ``started``; ``voice`` — голос в микрофоне с 0,42 до 5,4 с (робот говорит)."""
     _, on_request = node.subscriptions_by_topic[speech_client.SPEECH_REQUEST_TOPIC]
     clock.t = 4999.8
-    on_request(M.SpeechRequest(speech_id="46fd3b27", text=AGITATION_SSML, agent="telegram", sink="speakers",
-                               commit=True))
+    on_request(
+        M.SpeechRequest(speech_id="46fd3b27", text=AGITATION_SSML, agent="telegram", sink="speakers", commit=True)
+    )
     steps = [(0.0, lambda: _say(node, SpeechEvent.KIND_STARTED, "46fd3b27", agent="telegram"))]
     if voice:
         steps += [(0.42, lambda: _vad(node, True)), (5.4, lambda: _vad(node, False))]
@@ -433,7 +431,10 @@ def test_agitation_echo_does_not_reach_the_dialog_and_goes_to_biometry_as_echo(n
     node.publish_state.assert_called_with("ready")
     (published,) = [c.args[0] for c in node.publishers_by_topic[echo_window.ECHO_TOPIC].publish.call_args_list]
     assert (published.utterance_id, published.text, published.source) == (
-        node._active_utterance_id, AGITATION_ECHO, "respeaker")
+        node._active_utterance_id,
+        AGITATION_ECHO,
+        "respeaker",
+    )
     assert published.utterance_id
 
 
@@ -570,6 +571,29 @@ def test_4695_real_short_answer_without_wake_or_biometry_is_accepted(node_module
     node._maybe_speak_unclear.assert_not_called()
 
 
+def test_4501_rejected_outside_greeting_window_asks_once(node_modules):
+    """#4501: непринятая реплика вне окна приветствия — одна фраза кода, не молчание и не ход."""
+    from rob_box_voice.core import echo_window
+
+    clock = Clock()
+    node = _pipeline(node_modules[1], clock, "пу")
+    _phrase(node, clock, at=30.0, seconds=1.5)
+    assert node._admission.verdict == echo_window.PASS
+    assert echo_window.FREE in node._admission.heard
+    assert node._echo.reply_open() is False
+    node.publish_result.assert_not_called()
+    node._maybe_speak_unclear.assert_called_once()
+
+
+def test_4501_same_fragment_inside_greeting_window_stays_silent(node_modules):
+    """#4695 не сломан: тот же обрывок в окне приветствия — шум, не переспрос."""
+    clock = Clock()
+    node = _pipeline(node_modules[1], clock, "пу")
+    _greeting_4695(node, clock, reply_open=True)
+    _phrase(node, clock, at=8.6, seconds=1.5)
+    _assert_no_turn_or_unclear(node)
+
+
 def test_4695_rejected_after_confirmed_reply_asks_unclear(node_modules):
     """REPLY_AFTER — подтверждённая окном попытка ответа: непонятную речь переспрашиваем, не публикуем как ход."""
     from rob_box_voice.core import echo_window
@@ -600,3 +624,66 @@ def test_4695_quiet_meaningful_answer_is_accepted(node_modules):
     node.speech_audio_callback(types.SimpleNamespace(data=[1, 1] * int(16000 * 3.6)))
     assert node.publish_result.call_args.args[0] == "привет"
     node._maybe_speak_unclear.assert_not_called()
+
+
+# --- #4030: пустой STT различает «робот говорит» и тишину по admission.heard -----------------
+
+
+def test_empty_reject_reason_is_while_speaking_only_when_voice_was_in_speech():
+    """SPEECH в heard → rejected_while_speaking; FREE/пусто → rejected_empty. Без порога громкости."""
+    from rob_box_voice.core import echo_window
+
+    speaking = echo_window.Admission(echo_window.PASS, heard=frozenset({echo_window.SPEECH}))
+    mixed = echo_window.Admission(echo_window.PASS, heard=frozenset({echo_window.SPEECH, echo_window.FREE}))
+    silence = echo_window.Admission(echo_window.PASS, heard=frozenset({echo_window.FREE}))
+    grace = echo_window.Admission(echo_window.STOP_ONLY, heard=frozenset({echo_window.GRACE}))
+    unknown = echo_window.OPEN
+
+    assert echo_window.empty_reject_reason(speaking) == "rejected_while_speaking"
+    assert echo_window.empty_reject_reason(mixed) == "rejected_while_speaking"
+    assert echo_window.empty_reject_reason(silence) == "rejected_empty"
+    assert echo_window.empty_reject_reason(grace) == "rejected_empty"
+    assert echo_window.empty_reject_reason(unknown) == "rejected_empty"
+
+
+def _stable_logger(node):
+    """Один MagicMock на get_logger: иначе lambda: MagicMock() теряет вызовы между строками."""
+    log = MagicMock()
+    node.get_logger = lambda: log
+    return log
+
+
+def test_empty_stt_while_robot_speaks_logs_rejected_while_speaking(node_modules):
+    """Длинная фраза во время TTS, STT пуст: reason=rejected_while_speaking (SpeechEvent), не «эхо/музыка»."""
+    clock = Clock()
+    node = _pipeline(node_modules[1], clock, None)
+    log = _stable_logger(node)
+    _say(node, SpeechEvent.KIND_STARTED)
+    clock.t = 5001.0
+    _vad(node, True)
+    clock.t = 5003.0
+    _vad(node, False)
+    _phrase(node, clock, at=3.2, seconds=2.0)
+    node.publish_result.assert_not_called()
+    node._maybe_speak_unclear.assert_not_called()
+    warn_text = " ".join(str(c.args[0]) for c in log.warning.call_args_list if c.args)
+    info_text = " ".join(str(c.args[0]) for c in log.info.call_args_list if c.args)
+    assert "reason=rejected_while_speaking" in warn_text
+    assert "reason=rejected_while_speaking" in info_text
+    assert "эхо/музыка" not in info_text
+
+
+def test_empty_stt_in_silence_logs_rejected_empty(node_modules):
+    """Пустой STT в тишине: reason=rejected_empty — не while_speaking."""
+    clock = Clock()
+    node = _pipeline(node_modules[1], clock, None)
+    log = _stable_logger(node)
+    _phrase(node, clock, at=30.0, seconds=1.5)
+    node.publish_result.assert_not_called()
+    node._maybe_speak_unclear.assert_not_called()
+    warn_text = " ".join(str(c.args[0]) for c in log.warning.call_args_list if c.args)
+    info_text = " ".join(str(c.args[0]) for c in log.info.call_args_list if c.args)
+    assert "reason=rejected_empty" in warn_text
+    assert "reason=rejected_empty" in info_text
+    assert "rejected_while_speaking" not in warn_text
+    assert "rejected_while_speaking" not in info_text

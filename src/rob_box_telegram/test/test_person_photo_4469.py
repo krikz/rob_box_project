@@ -61,13 +61,44 @@ def _send(bot, owner, payload):
     asyncio.run(ChatSender(bot, rich=False).send_person_photo(7, payload, owner))
 
 
+def test_a_sent_photo_speaks_from_the_send_photo_result():
+    """Успешная отправка (мок send_photo) даёт фразу из результата, не обещание «пришлю»."""
+    bot = Bot()
+    called = []
+
+    async def send_photo(**kw):
+        called.append(kw)
+        return SimpleNamespace(message_id=9)
+
+    bot.send_photo = send_photo
+    _send(bot, Owner((True, "", b"jpeg")), json.dumps({"id": PID, "caption": "fff371fe - Кирилл"}))
+
+    assert called and bot.messages == [{"chat_id": 7, "text": person_photo.sent_phrase("fff371fe - Кирилл")}]
+    assert "Отправил" in bot.messages[0]["text"] and "пришлю" not in bot.messages[0]["text"]
+
+
+class _DeadBot(Bot):
+    async def send_photo(self, **kw):
+        raise RuntimeError("telegram refused")
+
+
+def test_failed_send_photo_does_not_say_sent():
+    bot = _DeadBot()
+
+    _send(bot, Owner((True, "", b"jpeg")), json.dumps({"id": PID, "caption": "x"}))
+
+    assert bot.photos == [] and bot.messages == [{"chat_id": 7, "text": person_photo.failed_phrase()}]
+    assert "Отправил" not in bot.messages[0]["text"]
+
+
 def test_sender_sends_the_bytes_from_the_owner_with_caption():
     bot, owner = Bot(), Owner((True, "", b"jpeg-bytes"))
 
     _send(bot, owner, json.dumps({"id": PID, "caption": "fff371fe - Кирилл"}, ensure_ascii=False))
 
     assert owner.asked == [PID]
-    assert bot.photos == [{"chat_id": 7, "photo": b"jpeg-bytes", "caption": "fff371fe - Кирилл"}] and bot.messages == []
+    assert bot.photos == [{"chat_id": 7, "photo": b"jpeg-bytes", "caption": "fff371fe - Кирилл"}]
+    assert bot.messages == [{"chat_id": 7, "text": "Отправил снимок fff371fe - Кирилл."}]
 
 
 @pytest.mark.parametrize("reason, fragment", [

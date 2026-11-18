@@ -285,6 +285,7 @@ def _make_stt_node_stub(**param_overrides):
     )
     node.create_publisher = lambda *a, **kw: MagicMock()
     node.create_subscription = lambda *a, **kw: MagicMock()
+    node.create_timer = lambda *a, **kw: MagicMock()
 
     # Теперь запускаем настоящий __init__
     stt_node_module.STTNode.__init__(node)
@@ -824,8 +825,8 @@ class TestSpeakUnclear:
         assert stt_node.utterance_pub.publish.call_count == 0
         assert stt_node._speech_client_pubs["request"].publish.call_count == 0
 
-    def test_speech_audio_callback_short_rejected_stays_silent(self, stt_node):
-        """#4695: короткий rejected не подтверждает адресованную речь → ни Utterance, ни TTS."""
+    def test_speech_audio_callback_short_rejected_asks_once_outside_greeting(self, stt_node):
+        """#4501: короткий rejected вне окна приветствия — одна фраза кода, не Utterance."""
         stt_node._speech_client_pubs = {"request": MagicMock()}
         stt_node._last_unclear_at = 0.0
         # Короткий текст "не" (2 chars < min_text_chars=3) → rejected(short)
@@ -838,10 +839,10 @@ class TestSpeakUnclear:
         stt_node.speech_audio_callback(msg)
 
         assert stt_node.utterance_pub.publish.call_count == 0
-        assert stt_node._speech_client_pubs["request"].publish.call_count == 0
+        assert stt_node._speech_client_pubs["request"].publish.call_count == 1
 
-    def test_speech_audio_callback_vosk_garbage_stays_silent_real_path(self, stt_node):
-        """#4695: реальный путь Yandex empty → Vosk «не» остаётся rejected и не запускает TTS."""
+    def test_speech_audio_callback_vosk_garbage_asks_once_outside_greeting(self, stt_node):
+        """#4501: Yandex empty → Vosk «не» вне окна приветствия — одна фраза, не Utterance."""
         stt_node.yandex_stub = MagicMock()
         stt_node.recognizer = MagicMock()
         stt_node._recognize_yandex = MagicMock(return_value=None)  # empty x2
@@ -856,7 +857,7 @@ class TestSpeakUnclear:
         stt_node.speech_audio_callback(msg)
 
         assert stt_node.utterance_pub.publish.call_count == 0
-        assert stt_node._speech_client_pubs["request"].publish.call_count == 0
+        assert stt_node._speech_client_pubs["request"].publish.call_count == 1
 
 
 class TestTTSGracePeriod:
@@ -1715,7 +1716,9 @@ class TestMiniMaxErrorMapping:
         with pytest.raises(STTAuthError):
             node._recognize_minimax(b"\x00" * 100)
 
-    def test_rate_limit_becomes_quota_error(self, stt_node):
+    def test_rate_limit_is_not_quota_error(self, stt_node):
+        """HTTP 429 — лимит частоты, не «кончились деньги» (#4694)."""
+        from rob_box_voice.stt_fallback import failure_class, is_permanent_failure
         from rob_box_voice.stt_providers.minimax_provider import (
             MiniMaxSTTRateLimitError,
         )
@@ -1723,8 +1726,25 @@ class TestMiniMaxErrorMapping:
         node = self._node_with_provider(
             stt_node, MiniMaxSTTRateLimitError("HTTP 429")
         )
-        with pytest.raises(STTQuotaError):
+        with pytest.raises(MiniMaxSTTRateLimitError) as caught:
             node._recognize_minimax(b"\x00" * 100)
+        assert not isinstance(caught.value, STTQuotaError)
+        assert is_permanent_failure(caught.value) is False
+        assert failure_class(None, caught.value) != "quota"
+
+    def test_quota_error_stays_quota_error(self, stt_node):
+        """2056 / QUOTA_HINTS — по-прежнему STTQuotaError и класс quota."""
+        from rob_box_voice.stt_fallback import failure_class, is_permanent_failure
+        from rob_box_voice.stt_providers.minimax_provider import MiniMaxSTTQuotaError
+
+        node = self._node_with_provider(
+            stt_node,
+            MiniMaxSTTQuotaError("minimax STT: Token Plan usage limit reached (2056)"),
+        )
+        with pytest.raises(STTQuotaError) as caught:
+            node._recognize_minimax(b"\x00" * 100)
+        assert is_permanent_failure(caught.value) is True
+        assert failure_class(None, caught.value) == "quota"
 
     def test_timeout_becomes_stt_timeout_error(self, stt_node):
         from rob_box_voice.stt_providers.minimax_provider import (
@@ -1770,14 +1790,12 @@ class TestDeadCacheTtlOnRealRobotErrors:
 
     def test_minimax_plan_error_gets_long_ttl_and_no_retry(self, stt_node):
         """HTTP 500 + код 2061 = план, а не «сервер моргнул»."""
-        from rob_box_voice.stt_providers.minimax_provider import (
-            MiniMaxSTTRateLimitError,
-        )
+        from rob_box_voice.stt_providers.minimax_provider import MiniMaxSTTQuotaError
 
         node = self._chain(stt_node)
         node.minimax_stt_max_retries = 1
         provider = MagicMock()
-        provider.transcribe.side_effect = MiniMaxSTTRateLimitError(
+        provider.transcribe.side_effect = MiniMaxSTTQuotaError(
             "minimax STT: minimax API error: your current token plan "
             "not support model, asr-1.0 (2061)"
         )
@@ -1790,6 +1808,45 @@ class TestDeadCacheTtlOnRealRobotErrors:
         assert provider.transcribe.call_count == 1
         # И TTL длинный: через 30с (транзиентный порог) всё ещё мёртв.
         assert node._provider_dead_cache.remaining_s("minimax") > 100
+        assert node._provider_dead_cache.health_class("minimax") == "quota"
+
+    def test_rate_limit_429_falls_through_with_short_ttl(self, stt_node):
+        """HTTP 429: цепочка дальше, transient TTL, не quota (#4694)."""
+        from rob_box_dialog import phrases
+        from rob_box_dialog.degrade import ProviderState, phrase_on_change
+        from rob_box_voice.stt_providers.minimax_provider import (
+            MiniMaxSTTRateLimitError,
+        )
+
+        node = self._chain(stt_node)
+        node.minimax_stt_max_retries = 0
+        provider = MagicMock()
+        provider.transcribe.side_effect = MiniMaxSTTRateLimitError(
+            "minimax STT: rate-limited (HTTP 429)"
+        )
+        node._ensure_minimax_provider = lambda: provider
+        node._recognize_yandex = MagicMock(return_value=None)
+
+        text, attempts = node._recognize_with_fallback(b"\x00" * 1000)
+
+        assert text == "робот как дела"
+        assert [a.provider for a in attempts] == ["minimax", "yandex", "vosk"]
+        assert attempts[0].reason == "error"
+        remaining = node._provider_dead_cache.remaining_s("minimax")
+        assert 0 < remaining <= 30
+        assert node._provider_dead_cache.health_class("minimax") != "quota"
+        assert phrase_on_change(None, ProviderState("minimax", "stt", "quota")) == (
+            "provider.exhausted.quota"
+        )
+        assert "кончились деньги" in phrases.text(
+            "provider.exhausted.quota",
+            subject="minimax (распознавание речи)",
+            next="x",
+        )
+        assert (
+            phrase_on_change(None, ProviderState("minimax", "stt", "down"))
+            != "provider.exhausted.quota"
+        )
 
     def test_yandex_network_error_gets_short_ttl(self, stt_node):
         """UNAVAILABLE (на роботе — нет IPv6-маршрута) = транзиентный."""
