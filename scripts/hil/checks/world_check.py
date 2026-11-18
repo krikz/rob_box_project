@@ -82,6 +82,19 @@ def compose_is_depot(compose_text: str) -> bool:
     return "/sim_video" in (compose_text or "")
 
 
+def on_must_check_depot(expect_world: str, compose_text: str) -> bool:
+    """``hil.sh on`` обязан проверить мир до первой цели.
+
+    Да, если сценарий уже выставил depot или копия Compose — штатный Depot
+    (полный маршрут runvideo, одиночные M1/R7, pathcalc). Обычный Polygon
+    и building без переменной — нет. ``world.sdf.old`` и ``Depot_vid`` в
+    комментарии копию Depot не делают.
+    """
+    if (expect_world or "").strip() == DEPOT_SCENARIO:
+        return True
+    return compose_is_depot(compose_text)
+
+
 def _sdf_has_depot_uri(sdf_text: str) -> bool:
     """``Depot_vid`` в значении ``<uri>…</uri>`` вне XML-комментариев."""
     bare = _XML_COMMENT_RE.sub("", sdf_text or "")
@@ -143,13 +156,22 @@ def main(argv: Sequence[str] | None = None) -> int:
         type=Path,
         help="копия compose.hil.yaml: печатает depot|polygon (штатный сценарий Depot?)",
     )
+    p.add_argument(
+        "--on-must-check",
+        action="store_true",
+        help="с --compose-file: печатает required|skip (hil.sh on обязан проверить мир?)",
+    )
     ns = p.parse_args(list(argv) if argv is not None else None)
 
     if ns.scenario:
         print(expect_world_for_scenario(ns.scenario))
         return 0
     if ns.compose_file is not None:
-        kind = DEPOT_SCENARIO if compose_is_depot(ns.compose_file.read_text(encoding="utf-8")) else POLYGON_SCENARIO
+        text = ns.compose_file.read_text(encoding="utf-8")
+        if ns.on_must_check:
+            print("required" if on_must_check_depot(ns.expect, text) else "skip")
+            return 0
+        kind = DEPOT_SCENARIO if compose_is_depot(text) else POLYGON_SCENARIO
         print(kind)
         return 0
     if ns.gate_required:

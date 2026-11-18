@@ -306,6 +306,13 @@ sim_world_gate_required() {  # sim_world_gate_required <expect> <args>
     ans=$(python3 -X utf8 "$HERE/checks/world_check.py" --gate-required "$1" --args "$2" 2>/dev/null || true)
     [ "$ans" = required ]
 }
+# Копия Compose на песочнице — штатный Depot? (полный маршрут, M1, R7).
+# Код печатает required|skip. Пустой ответ — не «skip»: файл не прочитан.
+sim_on_must_check_depot() {  # sim_on_must_check_depot <expect> <локальный файл compose>
+    local ans
+    ans=$(python3 -X utf8 "$HERE/checks/world_check.py" --on-must-check "$1" --compose-file "$2" 2>/dev/null || true)
+    [ "$ans" = required ]
+}
 sim_check_expect_world() {
     local expect="$1" gz="$HIL_SIM_PREFIX-gazebo" args mounts wpath sdf image line rc=0 tmp
     args=$(rsh "$HIL_SANDBOX_HOST" "docker inspect -f '{{join .Args \" \"}}' $(q "$gz")" 2>/dev/null || true)
@@ -467,6 +474,27 @@ cmd_on() {
     case "$st" in
         *" running "*) die "ros2-control снова работает ($st) — Gazebo не поднимаю; hil.sh off" ;;
     esac
+
+    # До compose up: копия — штатный Depot (runvideo, M1, R7) или expect=depot.
+    # Гейт обязателен и при потере overlay (#4694). Polygon без env — молчит.
+    _depot_compose=$(mktemp)
+    if ! rsh "$HIL_SANDBOX_HOST" "cat $(q "$HIL_SANDBOX_REPO/docker/sim/compose.hil.yaml")" >"$_depot_compose"; then
+        rm -f "$_depot_compose"
+        die "WORLD_MISMATCH: compose.hil.yaml не прочитан, Gazebo не поднимаю"
+    fi
+    if sim_on_must_check_depot "${HIL_EXPECT_WORLD:-}" "$_depot_compose"; then
+        export HIL_EXPECT_WORLD=depot
+        log "мир: копия Compose — Depot, проверка обязательна до первой цели"
+    elif [ -n "${HIL_EXPECT_WORLD:-}" ] && [ "${HIL_EXPECT_WORLD}" != depot ]; then
+        rm -f "$_depot_compose"
+        die "WORLD_MISMATCH: HIL_EXPECT_WORLD=${HIL_EXPECT_WORLD} (только depot или пусто)"
+    fi
+    if [ -n "${HIL_WORLD_CHECK_DIR:-}" ]; then
+        mkdir -p "$HIL_WORLD_CHECK_DIR"
+        cp "$_depot_compose" "$HIL_WORLD_CHECK_DIR/compose.hil.yaml"
+        printf '%s\n' "$HIL_SANDBOX_REPO" >"$HIL_WORLD_CHECK_DIR/compose_dir.txt"
+    fi
+    rm -f "$_depot_compose"
 
     log "песочница: поднимаю ${SIM_SERVICES[*]} (мир $HIL_SIM_WORLD)"
     sim_compose up -d --no-build "${SIM_SERVICES[@]}" || { sim_down; die "песочница: compose up не прошёл; робот без моторов, hil.sh off"; }
