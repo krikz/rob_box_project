@@ -16,6 +16,7 @@ REPO = Path(__file__).resolve().parents[3]
 TREE = REPO / "docker" / "main" / "config" / "nav2" / "behavior_trees" / "navigate_to_pose_w_replanning.xml"
 PARAMS = REPO / "docker" / "main" / "config" / "nav2" / "nav2_params.yaml"
 DOCKERFILE = REPO / "docker" / "main" / "nav2" / "Dockerfile"
+SIM_DOCKERFILE = REPO / "docker" / "sim" / "Dockerfile"
 PLUGIN = REPO / "docker" / "main" / "nav2" / "would_spin_on_stall.cpp"
 BRIDGE = REPO / "docker" / "main" / "nav2" / "turn_in_place_py.hpp"
 
@@ -75,6 +76,10 @@ def test_plugin_is_loaded_and_calls_free_spin():
     assert "librob_box_would_spin_on_stall_bt_node.so" in dockerfile
     assert "nav_msgs__rosidl_typesupport_cpp" in dockerfile
     assert "-lpython3.10" in dockerfile
+    # Сим крутит тот же bt_navigator + plugin_lib_names — .so обязан быть в образе.
+    sim_df = SIM_DOCKERFILE.read_text(encoding="utf-8")
+    assert "librob_box_would_spin_on_stall_bt_node.so" in sim_df
+    assert "would_spin_on_stall.cpp" in sim_df
     # Без специализации Humble .so грузится с undefined tf2::getTimestamp.
     assert "tf2_geometry_msgs/tf2_geometry_msgs.hpp" in text
     assert "-lorocos-kdl" in dockerfile
