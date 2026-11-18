@@ -37,6 +37,18 @@ POLYGON_SDF = """<?xml version='1.0'?>
   </world>
 </sdf>
 """
+# Ложный PASS на подстроку world.sdf / комментарий Depot_vid — дыры ревью #4877.
+WORLD_SDF_OLD_ARGS = (
+    "ros2 launch rob_box_sim sim.launch.py world:=/sim_video/world.sdf.old x:=0.0 y:=0.0 yaw:=0.0"
+)
+DEPOT_VID_COMMENT_ONLY_SDF = """<?xml version='1.0'?>
+<sdf version='1.8'>
+  <world name='polygon'>
+    <!-- Depot_vid -->
+    <model name='polygon_walls'/>
+  </world>
+</sdf>
+"""
 
 
 def test_depot_fail_args_without_sim_video_world():
@@ -82,7 +94,7 @@ def test_polygon_sdf_name_alone_is_neither_pass_nor_fail():
         "depot",
         DEPOT_ARGS,
         DEPOT_MOUNTS,
-        named.replace("</world>", '  <uri>file:///fuel/Depot_vid</uri>\n  </world>'),
+        named.replace("</world>", "  <uri>file:///fuel/Depot_vid</uri>\n  </world>"),
     )
     assert st_ok == wc.PASS
 
@@ -131,3 +143,28 @@ def test_cli_exit_codes(tmp_path):
     )
     assert bad.returncode == 1
     assert "WORLD_MISMATCH" in bad.stdout
+
+
+def test_depot_fail_world_sdf_old_substring():
+    """Красный: world:=/sim_video/world.sdf.old — не точный токен world.sdf."""
+    status, detail = wc.check_world("depot", WORLD_SDF_OLD_ARGS, DEPOT_MOUNTS, DEPOT_SDF)
+    assert status == wc.FAIL
+    assert wc.WORLD_MISMATCH in detail
+    assert "args missing" in detail
+    assert wc.DEPOT_WORLD_ARG in detail
+
+
+def test_depot_fail_depot_vid_only_in_xml_comment():
+    """Красный: Depot_vid только в <!-- … --> — без <uri>…Depot_vid…</uri>."""
+    status, detail = wc.check_world("depot", DEPOT_ARGS, DEPOT_MOUNTS, DEPOT_VID_COMMENT_ONLY_SDF)
+    assert status == wc.FAIL
+    assert wc.WORLD_MISMATCH in detail
+    assert "sdf missing" in detail
+    assert "Depot_vid" in detail
+
+
+def test_depot_pass_exact_token_uri_outside_comment_and_mount():
+    """Зелёный: точный world:=/sim_video/world.sdf + mount + <uri> с Depot_vid вне комментария."""
+    status, detail = wc.check_world("depot", DEPOT_ARGS, DEPOT_MOUNTS, DEPOT_SDF)
+    assert status == wc.PASS, detail
+    assert "Depot_vid" in detail

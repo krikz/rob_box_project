@@ -298,7 +298,8 @@ sim_down() {
     sim_compose down --timeout 20 || log "⚠️  compose down на песочнице вернул ошибку"
 }
 # Мир до первой цели Depot (#4694): PASS только по трём фактам (args/mount/SDF).
-# Без HIL_EXPECT_WORLD — молчит (building и обычный polygon не трогает).
+# Штатный Depot (точный world:=/sim_video/world.sdf) и HIL_EXPECT_WORLD=depot — всегда;
+# обычный polygon без HIL_EXPECT_WORLD — молчит.
 sim_check_expect_world() {
     local expect="$1" gz="$HIL_SIM_PREFIX-gazebo" args mounts wpath sdf image line rc=0 tmp
     args=$(rsh "$HIL_SANDBOX_HOST" "docker inspect -f '{{join .Args \" \"}}' $(q "$gz")" 2>/dev/null || true)
@@ -498,8 +499,14 @@ cmd_on() {
         fi
         sleep 5
     done
-    # Depot fullN: HIL_EXPECT_WORLD=depot — иначе цели Depot уедут в polygon (#4694).
-    if [ "${HIL_EXPECT_WORLD:-}" = depot ]; then
+    # Depot: точный world:=/sim_video/world.sdf — всегда; HIL_EXPECT_WORLD=depot — всегда
+    # (нет mount/uri → WORLD_MISMATCH). Обычный polygon без переменной — молчит (#4694).
+    _depot_args=$(rsh "$HIL_SANDBOX_HOST" "docker inspect -f '{{join .Args \" \"}}' $(q "$HIL_SIM_PREFIX-gazebo")" 2>/dev/null || true)
+    _depot_wpath=""
+    case "$_depot_args" in
+        *world:=*) _depot_wpath="${_depot_args#*world:=}"; _depot_wpath="${_depot_wpath%% *}" ;;
+    esac
+    if [ "${HIL_EXPECT_WORLD:-}" = depot ] || [ "$_depot_wpath" = "/sim_video/world.sdf" ]; then
         sim_check_expect_world depot
     fi
     log "HIL включён. Сторож в gazebo следит дальше (docker logs $HIL_SIM_PREFIX-gazebo | grep hil-guard)."
