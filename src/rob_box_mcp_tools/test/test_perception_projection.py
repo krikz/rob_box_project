@@ -520,3 +520,26 @@ def test_two_track_ids_stay_two_faces():
     assert sorted(str(f['name']) for f in ctx['faces']) == ['None', 'Литвин']
     assert 'незнакомое лицо' in ctx['vision_context']
     assert 'лицо «Литвин»' in ctx['vision_context']
+
+
+def test_new_track_id_replaces_previous_face_at_the_same_distance():
+    """Новый человек в следующем кадре — группа сбрасывается по track_id, не по метрам."""
+    payload = json.dumps([
+        _face_track(1_699_999_999, 0, 7, 'Литвин', '566331d3', distance=1.12),
+        _face_track(1_700_000_000, 0, 8, distance=1.12),
+    ], ensure_ascii=False)
+    ctx = project_perception_event(_FakePerceptionEvent(vision_events_json=payload, apriltag_ids=[]))
+    assert ctx['faces'] == [{'name': None, 'distance_m': pytest.approx(1.12), 'age_s': 0.5}]
+    assert ctx['vision_context'] == 'в кадре: незнакомое лицо ~1.1 м'
+    assert 'Литвин' not in ctx['vision_context']
+
+
+def test_new_track_id_does_not_keep_the_previous_person_in_view():
+    """Ушедший трек не копится рядом с новым, даже если дистанции не близки."""
+    payload = json.dumps([
+        _face_track(1_699_999_999, 0, 7, 'Литвин', '566331d3', distance=1.12),
+        _face_track(1_700_000_000, 0, 8, distance=2.40),
+    ], ensure_ascii=False)
+    ctx = project_perception_event(_FakePerceptionEvent(vision_events_json=payload, apriltag_ids=[]))
+    assert ctx['faces'] == [{'name': None, 'distance_m': pytest.approx(2.40), 'age_s': 0.5}]
+    assert 'Литвин' not in ctx['vision_context']

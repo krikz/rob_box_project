@@ -178,6 +178,7 @@ def _project_vision_events(events_json: str, now: float) -> List[Dict[str, Any]]
         if kept is None or _fresher(entry, kept):
             newest[key] = _keep_name(entry, kept)
             where[key] = _spot(item, entry)
+    newest = _faces_of_latest_tracks(newest, where)
     return sorted(_one_entry_per_face(newest, where), key=_age_order)
 
 
@@ -249,6 +250,30 @@ def _spot(item: Dict[str, Any], entry: Dict[str, Any]) -> _Spot:
     if side is not None and side <= 0:
         cx = cy = side = None
     return at, cx, cy, side, entry['distance_m']
+
+
+def _faces_of_latest_tracks(
+    newest: Dict[Tuple[str, str], Dict[str, Any]],
+    where: Dict[Tuple[str, str], _Spot],
+) -> Dict[Tuple[str, str], Dict[str, Any]]:
+    """Состав группы лиц — треки самого свежего кадра, не накопление окна.
+
+    Новый ``track_id`` в более позднем stamp сбрасывает старые треки: они не остаются
+    через ``IN_VIEW_S`` и не вливаются в нового по метрам. Два трека одного stamp —
+    оба на месте (два человека в кадре). Без ``track_id`` — как было.
+    """
+    tracked = [
+        (key, where[key][0])
+        for key, entry in newest.items()
+        if entry['kind'] == 'face' and str(key[1]).startswith('track:') and where[key][0] is not None
+    ]
+    if not tracked:
+        return newest
+    latest = max(stamp for _key, stamp in tracked)
+    stale = {key for key, stamp in tracked if stamp != latest}
+    if not stale:
+        return newest
+    return {key: entry for key, entry in newest.items() if key not in stale}
 
 
 def _same_place(a: _Spot, b: _Spot) -> bool:
