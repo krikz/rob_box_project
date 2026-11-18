@@ -597,6 +597,46 @@ run_hil off FAKE_E2E_MODE='__PROBE_FAIL__'; rc=$?
 check "off при ненулевой пробе: предупреждение, restore проходит (rc=$rc)" \
     '[ "$rc" -eq 0 ] && grep -q "#4686" "$WORK/out.log" && grep -q "up -d --no-deps --pull never voice-assistant" "$WORK/docker.log"'
 
+# ── pin: один ключ на сервис (дубль docker ps / повторный pin) ────────────
+# Живой баг 2026-11-18: recreate оставил abe6c83d1f0a_imu-filter; pin писал
+# nav2 дважды → compose «mapping key "nav2" already defined», off exit 1, замок.
+PINWORK="$(mktemp -d)"
+mkdir -p "$PINWORK/bin" "$PINWORK/compose"
+cat > "$PINWORK/bin/docker" <<'EOF'
+#!/usr/bin/env bash
+# Фикстура docker ps: nav2 дважды (склейка/осиротевший recreate), образ разный.
+case "$1" in
+    ps)
+        echo "nav2 ghcr.io/krikz/rob_box:nav2-first"
+        echo "imu-filter ghcr.io/krikz/rob_box:imu-v1"
+        echo "nav2 ghcr.io/krikz/rob_box:nav2-dup"
+        ;;
+esac
+exit 0
+EOF
+chmod +x "$PINWORK/bin/docker"
+PIN_PATH="$PINWORK/bin:$PATH"
+PIN_OUT="$PINWORK/main.images.yaml"
+PATH="$PIN_PATH" bash "$REPO_ROOT/scripts/hil/remote_pi.sh" pin "$PINWORK/compose" "$PIN_OUT" \
+    >"$PINWORK/pin1.log" 2>&1
+pin_rc=$?
+check "pin: выход 0 при дубле nav2 в docker ps (rc=$pin_rc)" '[ "$pin_rc" -eq 0 ]'
+check "pin: ключ nav2 ровно один" \
+    '[ "$(grep -c "^  nav2:" "$PIN_OUT")" -eq 1 ]'
+check "pin: первый образ nav2 (newest first), не dup" \
+    'grep -A1 "^  nav2:" "$PIN_OUT" | grep -q "nav2-first" && ! grep -q "nav2-dup" "$PIN_OUT"'
+check "pin: imu-filter на месте, image: ровно два" \
+    '[ "$(grep -c "^  imu-filter:" "$PIN_OUT")" -eq 1 ] && [ "$(grep -c "image:" "$PIN_OUT")" -eq 2 ]'
+# compose отклоняет дубли ключей; сверка через python (без silent overwrite).
+check "pin: уникальные ключи services (как compose)" \
+    'python3 -c "import re,sys; t=open(sys.argv[1]).read(); ks=re.findall(r\"(?m)^  ([^ :]+):\", t); assert len(ks)==len(set(ks))==2 and ks[0]==\"nav2\" and \"nav2-first\" in t" "$PIN_OUT"'
+# Повторный pin перезаписывает out — снова один nav2, не дописывает.
+PATH="$PIN_PATH" bash "$REPO_ROOT/scripts/hil/remote_pi.sh" pin "$PINWORK/compose" "$PIN_OUT" \
+    >"$PINWORK/pin2.log" 2>&1
+check "повторный pin: nav2 по-прежнему один ключ" \
+    '[ "$(grep -c "^  nav2:" "$PIN_OUT")" -eq 1 ] && [ "$(grep -c "image:" "$PIN_OUT")" -eq 2 ]'
+rm -rf "$PINWORK"
+
 echo
 echo "итог: $pass PASS, $failures FAIL"
 [ "$failures" -eq 0 ]
