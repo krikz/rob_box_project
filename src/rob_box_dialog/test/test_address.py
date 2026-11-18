@@ -13,7 +13,7 @@ from rob_box_dialog.backlog import Backlog, Heard
 from rob_box_dialog.doa import DoaTrack
 from rob_box_dialog.knowledge import BACKGROUND_WINDOW_S, BACKLOG_PICKUP_S, BACKLOG_TTL_S
 from rob_box_dialog.session import MusicStateRef, Session
-from rob_box_dialog.speaker_adapter import VoiceTag
+from rob_box_dialog.speaker_adapter import FaceSightings, VoiceTag
 from rob_box_dialog.turn import background_section
 from robot_wake_fixture import ROBOT_RISKY, ROBOT_WAKE  # noqa: E402 — тестовый профиль робота
 
@@ -239,6 +239,17 @@ def test_heard_from_utterance_takes_direction_from_the_phrase_window():
     assert (heard.text, heard.t, heard.doa_deg, heard.person_ref) == ("робот", 12.0, pytest.approx(45.0), "p1")
     unknown = types.SimpleNamespace(text="x", source="telegram", started_at=_stamp(0), ended_at=_stamp(0))
     assert heard_from(unknown, now=50.0, doa=track).t == 50.0 and heard_from(unknown, now=50.0, doa=track).doa_deg is None
+
+
+def test_heard_from_utterance_takes_faces_from_the_phrase_window():
+    faces = FaceSightings(history_s=60.0)
+    faces.note("f1", "Литвин", 10.5)
+    faces.note("f2", "", 11.0)
+    msg = types.SimpleNamespace(text="привет", source="respeaker", started_at=_stamp(10.0), ended_at=_stamp(12.0))
+    heard = heard_from(msg, now=50.0, faces=faces)
+    assert heard.faces == {"литвин", "#f2"}
+    unknown = types.SimpleNamespace(text="x", source="telegram", started_at=_stamp(0), ended_at=_stamp(0))
+    assert heard_from(unknown, now=50.0, faces=faces).faces == frozenset()
 
 
 def test_person_ref_only_for_known_speaker():

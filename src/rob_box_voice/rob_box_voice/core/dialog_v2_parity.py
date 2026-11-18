@@ -18,6 +18,7 @@ from rob_box_dialog import knowledge as kn
 from rob_box_dialog.meeting import MeetingGreeter, MeetingMarker, greet_on_meeting, parse_meeting_marker
 from rob_box_dialog.meeting import unprompted_quiet
 from rob_box_dialog.shift_log import FACE
+from rob_box_dialog.speaker_adapter import FaceSightings
 from rob_box_dialog.startup import NodeReport, Readiness, ReadinessWatch, assess, llm_usable, pick_startup_phrase
 from rob_box_dialog.status_feed import StatusFeed, describe_chain, describe_wake
 
@@ -73,9 +74,10 @@ def turn_busy(node: Any) -> bool:
 
 
 def subscribe_meeting(node: Any) -> bool:
-    """Подписка на ``/vision/hailo/events`` — источник Встречи. Импорт сообщения защищён, как в v1: без лицевых
-    сообщений в образе диалог работает, робот просто не здоровается первым."""
+    """Подписка на ``/vision/hailo/events`` — источник Встречи и журнал лиц в кадре (``FaceSightings``). Импорт
+    сообщения защищён, как в v1: без лицевых сообщений в образе диалог работает, робот просто не здоровается первым."""
     node._meeting_greeter = MeetingGreeter()
+    node._faces = FaceSightings()
     try:
         from rob_box_perception_msgs.msg import VisionEvent  # noqa: PLC0415
 
@@ -88,12 +90,14 @@ def subscribe_meeting(node: Any) -> bool:
 
 
 def on_vision_event(node: Any, msg: Any) -> Optional[str]:
-    """Маркер начала Встречи → приход в журнал смены (#4076: имя лица или незнакомое) и не больше одной фразы (правила
-    — ``rob_box_dialog.meeting``). Колбэк горячий (~5 событий в секунду на человека): всё, кроме маркера, отсеивается
-    разбором. Ошибка не роняет колбэк."""
+    """Лица из кадра — в ``FaceSightings``; маркер начала Встречи → приход в журнал смены и не больше одной фразы.
+    Колбэк горячий (~5 событий в секунду на человека): приветствие только по маркеру. Ошибка не роняет колбэк."""
+    camera = str(getattr(msg, "source_camera", "") or "")
+    if camera not in ("stub", "unknown"):
+        node._faces.note_event(msg, time.time())
     marker = parse_meeting_marker(event_type=getattr(msg, "event_type", "") or "",
                                   attributes_json=getattr(msg, "attributes_json", "") or "",
-                                  source_camera=getattr(msg, "source_camera", "") or "")
+                                  source_camera=camera)
     if marker is None:
         return None
     node._shift.seen(marker.name if marker.is_named else None, FACE)
