@@ -132,7 +132,7 @@ E2E_SYNTH_CACHE="${E2E_SYNTH_CACHE:-1}"
 E2E_SYNTH_CACHE_DIR="${E2E_SYNTH_CACHE_DIR:-${HOME:-/tmp}/.cache/rob_box_e2e/synth}"
 E2E_SYNTH_CACHE_TTL_DAYS="${E2E_SYNTH_CACHE_TTL_DAYS:-30}"
 #   E2E_PRESYNTH             0 — не пред-синтезировать акт (отладка; тесты гейтов без TTS).
-# 1 — пред-синтез акта не удался: акт не начинается (E2E_INFRA_FAIL synth).
+# 1 — пред-синтез акта не удался: акт не начинается (E2E_INFRA_FAIL synth|scenario_too_long).
 E2E_PRESYNTH="${E2E_PRESYNTH:-1}"
 E2E_PRESYNTH_FAILED=0
 # MiniMax T2A v2 — те же дефолты, что у tts_node (config/tts_node.yaml).
@@ -1721,11 +1721,13 @@ synth_surface_log() {
     return 0
 }
 
-# presynth_scenario() — пред-синтез ВСЕХ фраз акта до первого PLAY (#3875). Сеть
-# мигнула — узнаём это на старте с ретраями, а не на n108 посреди акта, когда
-# робот уже получил половину сценария. Не вышло — `E2E_INFRA_FAIL synth` сразу.
-# Готовые wav лежат в OUT_DIR (и в кэше), run_step берёт их из кэша без сети.
-# $1=scenario_file; rc 0 — все фразы готовы, 1 — отказ (kind=synth уже помечен).
+# presynth_scenario() — пред-синтез ВСЕХ фраз акта до первого PLAY (#3875, #4077 П2).
+# Сеть мигнула — узнаём на старте с ретраями, а не на n108 посреди акта.
+# Не вышло — `E2E_INFRA_FAIL synth` сразу. Реплика длиннее окна VAD (бюджет
+# speech_max_duration - VAD_OVERHEAD = 12.5 с, phrase_budget.VAD_BUDGET_S) —
+# `E2E_INFRA_FAIL scenario_too_long` до первого PLAY (раньше run_step валил
+# посреди акта: 27.10 n302/n702). Готовые wav в OUT_DIR (и в кэше).
+# $1=scenario_file; rc 0 — все фразы готовы, 1 — отказ (kind уже помечен).
 presynth_scenario() {
     local scenario="$1" rows="$OUT_DIR/scenario_presynth.txt" n=0 hits=0 safe slog cdir
     local idx label text voice patterns_json acceptance_json expect_raw retry_acceptance when_robot_asked
@@ -1745,6 +1747,15 @@ presynth_scenario() {
         if synth_command "$text" "$voice" "$OUT_DIR/cmd_${safe}.wav" > "$slog" 2>&1 < /dev/null; then
             synth_surface_log "$label" "$slog"
             grep -qa '^>>> synth cache hit' "$slog" && hits=$((hits + 1))
+            # #4077 П2: eq + замер окна VAD до PLAY — scenario_too_long не посреди акта.
+            eq_command_wav "$OUT_DIR/cmd_${safe}.wav" "$OUT_DIR/cmd_${safe}_eq.wav" "$voice"
+            if ! check_eq_vad_budget "$label" "$OUT_DIR/cmd_${safe}_eq.wav" "PRESYNTH" "$voice"; then
+                emit_step "${label} FAIL scenario_too_long (${E2E_EQ_DUR}s > ${E2E_VAD_BUDGET}s)"
+                mark_fail_kind infra
+                echo "E2E_INFRA_FAIL scenario_too_long"
+                log "PRESYNTH: акт не начат — реплика не влезает в окно VAD (баг сценария), робот ни разу не вызывался"
+                return 1
+            fi
         else
             synth_surface_log "$label" "$slog"
             log "PRESYNTH ${label}: FAIL — синтез ${E2E_TTS_PROVIDER_RESOLVED:-$E2E_TTS_PROVIDER} упал ($(tail -1 "$slog"))"
@@ -2057,6 +2068,49 @@ eq_command_wav() {  # $1=синтезированный wav $2=wav для кол
         filipp|kostya) filter="highpass=f=100,volume=3.0,volume=12dB,alimiter=limit=0.98,adelay=1500|all=1" ;;
     esac
     ffmpeg -nostdin -y -i "$1" -af "$filter" -ac 1 -ar 16000 "$2" 2>/dev/null
+}
+
+# check_eq_vad_budget LABEL EQ_WAV [PREFIX=STEP] [VOICE]
+# Бюджет eq-файла = E2E_VAD_MAX_DURATION - E2E_VAD_OVERHEAD (дефолт 15.0-2.5=12.5 =
+# phrase_budget.VAD_BUDGET_S; рассинхрон ловит test_e2e_scenario_playable.sh).
+# Печатает "${prefix} ${label}: eq=…s …". Пишет E2E_EQ_DUR / E2E_VAD_BUDGET.
+# rc 0 — влезает или ffprobe недоступен (advisory); 1 — scenario_too_long (caller
+# пишет FAIL / E2E_INFRA_FAIL). Один код для presynth_scenario и run_step (#4077 П2).
+check_eq_vad_budget() {  # $1=label $2=eq.wav $3=log_prefix $4=voice
+    local label="$1" eq_wav="$2" prefix="${3:-STEP}" voice="${4:-}"
+    E2E_VAD_MAX_DURATION="${E2E_VAD_MAX_DURATION:-15.0}"
+    E2E_VAD_OVERHEAD="${E2E_VAD_OVERHEAD:-2.5}"
+    local cmd_dur vad_budget
+    cmd_dur="$(ffprobe -v error -show_entries format=duration -of csv=p=0 \
+        "$eq_wav" 2>/dev/null | head -1)"
+    # LC_ALL=C: иначе awk printf даёт "12,50" и сравнение d>b ломается (ru_RU).
+    vad_budget="$(LC_ALL=C awk -v m="$E2E_VAD_MAX_DURATION" -v o="$E2E_VAD_OVERHEAD" 'BEGIN{printf "%.2f", m-o}')"
+    E2E_EQ_DUR="$cmd_dur"
+    E2E_VAD_BUDGET="$vad_budget"
+    case "$cmd_dur" in
+        ''|*[!0-9.]*)
+            # ffprobe нет или ответил мусором — не валим прогон (advisory).
+            log "${prefix} ${label}: длительность реплики не измерена (ffprobe недоступен) — проверка окна VAD пропущена"
+            return 0 ;;
+    esac
+    # #4077 П2: явный eq=… в логе (presynth и run_step) — для --learn и разбора.
+    log "${prefix} ${label}: eq=${cmd_dur}s budget=${vad_budget}s"
+    if LC_ALL=C awk -v d="$cmd_dur" -v b="$vad_budget" 'BEGIN{exit !(d>b)}'; then
+        log "${prefix} ${label}: ❌ реплика ${cmd_dur}s не влезает в окно VAD робота (бюджет ${vad_budget}s = speech_max_duration ${E2E_VAD_MAX_DURATION}s - VAD-накладка ${E2E_VAD_OVERHEAD}s)"
+        if [ "$prefix" = "STEP" ]; then
+            log "STEP ${label}: audio_node отбросит её до STT — играть бессмысленно. Это баг СЦЕНАРИЯ (реплику надо разбить), не робота."
+        fi
+        printf '%s %s: eq=%ss > budget %ss (speech_max_duration=%s, overhead=%s, provider=%s voice=%s)\n' \
+            "$prefix" "$label" "$cmd_dur" "$vad_budget" "$E2E_VAD_MAX_DURATION" "$E2E_VAD_OVERHEAD" \
+            "${E2E_TTS_PROVIDER_RESOLVED:-$E2E_TTS_PROVIDER}" "$voice" \
+            >> "$OUT_DIR/vad_rejects.log" 2>/dev/null || true
+        return 1
+    fi
+    # Меньше секунды запаса — шаг-лотерея (n305 набрал 12.41s при бюджете 12.50s).
+    if LC_ALL=C awk -v d="$cmd_dur" -v b="$vad_budget" 'BEGIN{exit !(b-d<1.0)}'; then
+        log "${prefix} ${label}: ⚠️ реплика ${cmd_dur}s при бюджете ${vad_budget}s — запас < 1s, шаг на грани отказа"
+    fi
+    return 0
 }
 
 # play_eq_wav WAV — громкость динамика 100% (по умолчанию; явный >100% доступен через inputs.volume в workflow,
@@ -2465,65 +2519,14 @@ run_step() {  # $1=text $2=voice $3=step_label $4=expect_kind(cycle|wake-gated|b
     ensure_outdir
     eq_command_wav "$OUT_DIR/cmd_${safe}.wav" "$OUT_DIR/cmd_${safe}_eq.wav" "$voice"
 
-    # 1b. Реплика влезает в окно VAD робота?
-    #
-    # bug(run 35658231116, 22.09.2026). Реплика n303_bg_boris в синтезе
-    # minimax звучит 17.37с, окно audio_node — speech_max_duration=15.0.
-    # audio_node выбрасывал фразу ДО STT, а харнесс тратил на неё две
-    # попытки по react_window и отчитывался `FAIL backlog_miss`, то есть
-    # обвинял dialog_node. Соседний n305 прошёл на 14.81с — зазор 0.19с,
-    # так что «зелёный» шаг был лотереей на скорости речи провайдера.
-    #
-    # Здесь wav уже синтезирован — мерим ФАКТ, а не оцениваем по символам.
-    # Отдаём вердикт сразу: это дешевле (не жжём retry-окна) и честнее
-    # (называем настоящую причину, а не симптом на конце цепочки).
-    #
-    # Мерим ИМЕННО _eq.wav — это файл, который реально уходит в paplay.
-    # И сравниваем НЕ с speech_max_duration напрямую: audio_node мерит не
-    # длину файла, а окно от первой речи до последней, с VAD-hangover'ом.
-    # Замеры на прогоне 35658231116 (eq-длительность → что насчитал VAD):
-    #     n301  6.23 → 9.95    n302  9.81 → 12.51   n303 14.84 → 17.37 ❌
-    #     n304 13.39 → 16.09❌  n305 12.41 → 15.07❌ n306  9.13 → 13.28
-    #     n307  6.27 →  8.67   n308  7.42 →  9.95
-    # Накладка стабильна и лежит в 2.4-4.2s. Берём минимум наблюдённого
-    # (2.5s) — это самый мягкий порог, который всё ещё правильно
-    # классифицирует все восемь шагов выше (n303/n304/n305 ловятся,
-    # n302/n306 не ловятся). Порог по файлу = speech_max_duration - 2.5.
-    #
-    # Дефолты синхронизированы с docker/sound/config/voice_assistant/
-    # audio_node.yaml → audio_node → ros__parameters → speech_max_duration.
-    # Рассинхрон дефолта и конфига ловит
-    # scripts/testing/test_e2e_scenario_playable.sh.
-    E2E_VAD_MAX_DURATION="${E2E_VAD_MAX_DURATION:-15.0}"
-    E2E_VAD_OVERHEAD="${E2E_VAD_OVERHEAD:-2.5}"
-    local cmd_dur vad_budget
-    cmd_dur="$(ffprobe -v error -show_entries format=duration -of csv=p=0 \
-        "$OUT_DIR/cmd_${safe}_eq.wav" 2>/dev/null | head -1)"
-    vad_budget="$(awk -v m="$E2E_VAD_MAX_DURATION" -v o="$E2E_VAD_OVERHEAD" 'BEGIN{printf "%.2f", m-o}')"
-    case "$cmd_dur" in
-        ''|*[!0-9.]*)
-            # ffprobe нет или ответил мусором — молча пропускаем проверку.
-            # Это advisory-гейт: он не имеет права сам ронять прогон.
-            log "STEP ${label}: длительность реплики не измерена (ffprobe недоступен) — проверка окна VAD пропущена" ;;
-        *)
-            if awk -v d="$cmd_dur" -v b="$vad_budget" 'BEGIN{exit !(d>b)}'; then
-                log "STEP ${label}: ❌ реплика ${cmd_dur}s не влезает в окно VAD робота (бюджет ${vad_budget}s = speech_max_duration ${E2E_VAD_MAX_DURATION}s - VAD-накладка ${E2E_VAD_OVERHEAD}s)"
-                log "STEP ${label}: audio_node отбросит её до STT — играть бессмысленно. Это баг СЦЕНАРИЯ (реплику надо разбить), не робота."
-                emit_step "${label} FAIL scenario_too_long (${cmd_dur}s > ${vad_budget}s)"
-                printf 'STEP %s: eq=%ss > budget %ss (speech_max_duration=%s, overhead=%s, provider=%s voice=%s)\n' \
-                    "$label" "$cmd_dur" "$vad_budget" "$E2E_VAD_MAX_DURATION" "$E2E_VAD_OVERHEAD" \
-                    "${E2E_TTS_PROVIDER_RESOLVED:-$E2E_TTS_PROVIDER}" "$voice" \
-                    >> "$OUT_DIR/vad_rejects.log" 2>/dev/null || true
-                mark_fail_kind infra
-                return 1
-            fi
-            # Меньше секунды запаса — шаг лотерея: пройдёт или нет, зависит от
-            # скорости речи провайдера. Молчать об этом нельзя: n305 набрал
-            # 12.41s при бюджете 12.50s и в первой попытке всё равно отвалился.
-            if awk -v d="$cmd_dur" -v b="$vad_budget" 'BEGIN{exit !(b-d<1.0)}'; then
-                log "STEP ${label}: ⚠️ реплика ${cmd_dur}s при бюджете ${vad_budget}s — запас < 1s, шаг на грани отказа"
-            fi ;;
-    esac
+    # 1b. Реплика влезает в окно VAD робота? (#4077 П2: тот же check_eq_vad_budget,
+    # что и presynth_scenario; порог E2E_VAD_MAX_DURATION-E2E_VAD_OVERHEAD=12.5 с).
+    # bug(run 35658231116): длинная реплика → audio_node до STT → ложный backlog_miss.
+    if ! check_eq_vad_budget "$label" "$OUT_DIR/cmd_${safe}_eq.wav" "STEP" "$voice"; then
+        emit_step "${label} FAIL scenario_too_long (${E2E_EQ_DUR}s > ${E2E_VAD_BUDGET}s)"
+        mark_fail_kind infra
+        return 1
+    fi
 
     # 2. Ждём тишины: робот не должен говорить перед командой (greeting/
     #    приветствие идёт через 12s после старта и может перебить команду).
@@ -3828,13 +3831,14 @@ else
     #   E2E_FEATURE_FAIL — робот ответил, но фича-ассерт (patterns/
     #                      acceptance/GATE-1) не выполнен → баг кода
     #   E2E_LLM_ERROR    — LLM/TTS вернул ошибку (не квота/fallback)
-    #   E2E_INFRA_FAIL   — синтез упал на билд-машине
+    #   E2E_INFRA_FAIL   — синтез упал / реплика scenario_too_long (инфра/сценарий, не робот)
     #   E2E_STAND_FAIL   — PulseAudio стенда: фраза не сыграна / сервер звука недоступен (#4608)
     #   E2E_NO_REACTION  — робот не ответил (дефолт, самый слабый сигнал)
     fail_marker=""
     case "${E2E_FAIL_KIND:-no_reaction}" in
         feature)    fail_marker="E2E_FEATURE_FAIL" ;;
         llm_error)  fail_marker="E2E_LLM_ERROR" ;;
+        infra)      fail_marker="E2E_INFRA_FAIL" ;;   # #4077: scenario_too_long / vad_rejected
         synth)      fail_marker="E2E_INFRA_FAIL" ;;
         stand)      fail_marker="E2E_STAND_FAIL" ;;   # #4608: PulseAudio стенда, робот не судился
         *)          fail_marker="E2E_NO_REACTION" ;;
