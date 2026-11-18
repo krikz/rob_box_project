@@ -1,4 +1,4 @@
-"""CLI агента: тик run, локальный cancel, read-only status и C1 adoption/dry-run activation/rollback.
+"""CLI агента: тик run, локальный cancel, validate-inputs пульта, status и C1 dry-run.
 
 Конфиг — аргументы или переменные окружения CHUANGONG_* (systemd берёт их из /etc/chuangong/chuangong.env).
 """
@@ -72,6 +72,19 @@ def _status_parser(sub: argparse._SubParsersAction) -> None:
     p.add_argument("--release", default="", help="ожидаемый релиз (пусто — не сверять)")
     p.add_argument("--wait-s", type=float, default=360.0)
     p.add_argument("--summary", default="", help="файл для markdown-итога (GITHUB_STEP_SUMMARY)")
+
+
+def _validate_inputs_parser(sub: argparse._SubParsersAction) -> None:
+    p = sub.add_parser(
+        "validate-inputs",
+        help="F: Update Robot: отказать при пустом robot_id или release (update/rollback)",
+    )
+    p.add_argument("--action", required=True, help="status|update|rollback|cancel")
+    p.add_argument("--robot-id", default="")
+    p.add_argument("--release", default="")
+    p.add_argument("--operation-id", default="", help="общий id команды и отчёта (github.run_id)")
+    p.add_argument("--github-output", default="", help="GITHUB_OUTPUT: operation_id=...")
+    p.add_argument("--summary", default="", help="GITHUB_STEP_SUMMARY")
 
 
 def _config(args: argparse.Namespace):
@@ -176,6 +189,47 @@ def cmd_status(args: argparse.Namespace) -> int:
     return 0 if ok else 1
 
 
+def cmd_validate_inputs(args: argparse.Namespace) -> int:
+    """Пульт F: Update Robot — проверка входов; update/rollback/cancel → not_wired (exit 2)."""
+    from .fleet_inputs import FleetInputError, render_error_summary, render_summary, validate_inputs
+
+    try:
+        record = validate_inputs(
+            action=args.action,
+            robot_id=args.robot_id,
+            release=args.release,
+            operation_id=args.operation_id,
+        )
+    except FleetInputError as exc:
+        print(json.dumps({"ok": False, "reason": exc.reason, "detail": exc.detail}, ensure_ascii=False, sort_keys=True))
+        if args.summary:
+            with open(args.summary, "a", encoding="utf-8") as fh:
+                fh.write(
+                    render_error_summary(
+                        reason=exc.reason,
+                        detail=exc.detail,
+                        action=(args.action or "").strip(),
+                        robot_id=(args.robot_id or "").strip(),
+                        release=(args.release or "").strip(),
+                        operation_id=(args.operation_id or "").strip(),
+                    )
+                )
+        return 2
+    print(json.dumps({"ok": True, **record}, ensure_ascii=False, sort_keys=True))
+    if args.github_output:
+        with open(args.github_output, "a", encoding="utf-8") as fh:
+            op = record.get("operation_id") or ""
+            fh.write(f"operation_id={op}\n")
+            fh.write(f"action={record['action']}\n")
+            fh.write(f"robot_id={record['robot_id']}\n")
+            rel = record.get("release") or ""
+            fh.write(f"release={rel}\n")
+    if args.summary:
+        with open(args.summary, "a", encoding="utf-8") as fh:
+            fh.write(render_summary(record))
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
     parser = argparse.ArgumentParser(prog="chuangong")
@@ -184,6 +238,7 @@ def main(argv: list[str] | None = None) -> int:
     _cancel_parser(sub)
     _c1_parsers(sub)
     _status_parser(sub)
+    _validate_inputs_parser(sub)
     args = parser.parse_args(argv)
     if args.cmd == "run":
         return cmd_run(args)
@@ -191,6 +246,8 @@ def main(argv: list[str] | None = None) -> int:
         return cmd_cancel(args)
     if args.cmd == "status":
         return cmd_status(args)
+    if args.cmd == "validate-inputs":
+        return cmd_validate_inputs(args)
     return cmd_c1(args)
 
 
