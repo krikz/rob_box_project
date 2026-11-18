@@ -610,7 +610,6 @@ def theme_match(material: ScoreMaterial, refs: Sequence[Tuple[int, ...]]) -> Opt
     return score, name, voices(material)[name][index].beat
 
 
-
 #: Слова-связки в теме из нескольких фамилий («Bach and Mozart», «Бах и Моцарт») — не название пьесы.
 _COMPOSER_FILLER = frozenset({"and", "und", "the", "von", "van", "der", "de", "la", "le", "di", "da", "del"})
 
