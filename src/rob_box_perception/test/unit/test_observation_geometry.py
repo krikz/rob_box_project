@@ -5,8 +5,8 @@
   2. Честные статусы: нет глубины / нет K / все нули / бокс вне кадра /
      статус шва «Взгляд» пробрасывается как есть.
   3. Устойчивость: выбросы (фон в боксе) не сдвигают медиану.
-  4. build_observation: нормированный bbox → пиксели, только person/face,
-     без имени (ADR-0130 §5.1 п.1), candidate_* без собственного id.
+  4. build_observation: нормированный bbox → пиксели, person/face и
+     названные классы ADR-0169 §1.3, без имени (ADR-0130 §5.1 п.1).
 
 Запуск:
     python -m pytest src/rob_box_perception/test/unit/test_observation_geometry.py -q --no-cov
@@ -26,8 +26,10 @@ np = pytest.importorskip('numpy')
 
 _HERE = Path(__file__).resolve()
 _PKG_ROOT = _HERE.parents[2]
-if str(_PKG_ROOT) not in sys.path:
-    sys.path.insert(0, str(_PKG_ROOT))
+_CORE_ROOT = _HERE.parents[3] / 'rob_box_core'
+for _root in (_PKG_ROOT, _CORE_ROOT):
+    if str(_root) not in sys.path:
+        sys.path.insert(0, str(_root))
 
 geo = importlib.import_module('rob_box_perception.observation_geometry')
 
@@ -204,13 +206,22 @@ def test_build_observation_without_depth_is_honest():
     assert all(math.isnan(v) for v in obs['position'])
 
 
-@pytest.mark.parametrize('class_name', ['cup', 'chair', '', 'stub'])
+@pytest.mark.parametrize('class_name', ['cup', 'bottle', 'wardrobe', '', 'stub'])
 def test_build_observation_skips_other_classes(class_name):
-    """ADR-0130 §2.2: профили кроме person не пишутся."""
+    """Не названные в ADR-0169 §1.3 и не person/face — наблюдения нет."""
     ev = _person_event(class_name=class_name, event_type='object')
     assert geo.build_observation(
         ev, source='oak_d', image_width=W, image_height=H,
     ) is None
+
+
+def test_build_observation_named_furniture_class():
+    """Детектор видит chair — Observation есть (ADR-0169 §8 PR 1)."""
+    ev = _person_event(class_name='chair', event_type='object')
+    obs = geo.build_observation(ev, source='oak_d', image_width=W, image_height=H)
+    assert obs is not None
+    assert obs['class_name'] == 'chair'
+    assert 'display_name' not in obs
 
 
 def test_build_observation_requires_frame_size():
