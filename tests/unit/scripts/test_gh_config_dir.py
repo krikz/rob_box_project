@@ -19,7 +19,9 @@ SCRIPTS = (
 
 
 def _bash(script: str, env: dict) -> subprocess.CompletedProcess:
-    merged = {k: v for k, v in os.environ.items() if k != "GH_CONFIG_DIR"}
+    # XDG раннера не должен протекать: тест задаёт его сам, если проверяет XDG.
+    drop = {"GH_CONFIG_DIR", "XDG_CONFIG_HOME"}
+    merged = {k: v for k, v in os.environ.items() if k not in drop}
     merged.update(env)
     return subprocess.run(
         ["bash", "-c", script],
@@ -56,6 +58,20 @@ def test_user_config_when_env_unset(tmp_path):
     got = _bash(
         f'source "{RESOLVE}"; gh_config_dir_resolve',
         {"HOME": str(home)},
+    )
+    assert got.returncode == 0, got.stderr
+    assert got.stdout.strip() == str(home / ".config" / "gh")
+
+
+def test_xdg_without_gh_falls_through_to_home(tmp_path):
+    """CI задаёт XDG_CONFIG_HOME без подкаталога gh — домашний конфиг всё равно находится."""
+    home = tmp_path / "home"
+    (home / ".config" / "gh").mkdir(parents=True)
+    xdg = tmp_path / "xdg-without-gh"
+    xdg.mkdir()
+    got = _bash(
+        f'source "{RESOLVE}"; gh_config_dir_resolve',
+        {"HOME": str(home), "XDG_CONFIG_HOME": str(xdg)},
     )
     assert got.returncode == 0, got.stderr
     assert got.stdout.strip() == str(home / ".config" / "gh")

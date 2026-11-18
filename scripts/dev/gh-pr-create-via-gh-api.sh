@@ -48,8 +48,8 @@
 # Env:
 #   GH_REPO              — owner/repo (default: "krikz/rob_box_project").
 #   GH_CONFIG_DIR        — для gh auth token. Пусто — резолв в gh_config_dir.sh:
-#                          конфиг текущего пользователя, затем /home/builder/.config/gh;
-#                          нет каталога — gh берёт свой конфиг сам.
+#                          $XDG_CONFIG_HOME/gh (если каталог есть), затем $HOME/.config/gh,
+#                          затем /home/builder/.config/gh; нет каталога — gh берёт свой конфиг сам.
 #   HERMES_AGENT_ROLE    — для логов (default: "agent:devops").
 #   PR_VIA_GH_API_CONFIRM — bypass --apply при значении "yes" (CI hook).
 #
