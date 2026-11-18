@@ -8,25 +8,28 @@
  
  #include "builtin_interfaces/msg/duration.hpp"
  #include "nav2_navfn_planner/navfn.hpp"
-@@ -184,6 +185,12 @@
+@@ -184,6 +185,14 @@
    std::cout << "It took " << time_span.count() * 1000 << std::endl;
  #endif
  
 +  // #4694: a path whose tail sits in unknown/lethal beyond a lidar-seen wall
 +  // must not be handed to the controller. Empty plan → planner_server ABORT,
 +  // and /plan is not published (Humble validatePath + publishPlan order).
-+  if (!path.poses.empty() && pathTailBlocked(path)) {
-+    throw std::runtime_error("refusing path whose tail is unknown or lethal beyond a seen wall");
++  // Refusal text names the first blocking cell (world x,y / mx,my / cost).
++  std::string tail_refusal;
++  if (!path.poses.empty() && pathTailBlocked(path, &tail_refusal)) {
++    throw std::runtime_error(tail_refusal);
 +  }
    return path;
  }
  
-@@ -433,6 +440,35 @@
+@@ -433,6 +442,70 @@
    return !plan.poses.empty();
  }
  
 +bool
-+NavfnPlanner::pathTailBlocked(const nav_msgs::msg::Path & path) const
++NavfnPlanner::pathTailBlocked(
++  const nav_msgs::msg::Path & path, std::string * reason) const
 +{
 +  // 253 = inscribed (COST_OBS_ROS): the lidar already marked a wall. Unknown
 +  // beyond that wall is not "not yet explored" — NavFn drew through it.
@@ -35,21 +38,55 @@
 +  constexpr unsigned char kSeenWall = 253;
 +  bool seen_wall = false;
 +  bool unknown_after_wall = false;
++  double block_x = 0.0;
++  double block_y = 0.0;
++  unsigned int block_mx = 0;
++  unsigned int block_my = 0;
++  unsigned char block_cost = 0;
++  bool have_block = false;
 +  for (const auto & pose : path.poses) {
 +    unsigned int mx = 0;
 +    unsigned int my = 0;
-+    if (!costmap_->worldToMap(pose.pose.position.x, pose.pose.position.y, mx, my)) {
++    const double wx = pose.pose.position.x;
++    const double wy = pose.pose.position.y;
++    if (!costmap_->worldToMap(wx, wy, mx, my)) {
 +      continue;
 +    }
 +    const unsigned char cost = costmap_->getCost(mx, my);
 +    if (cost == nav2_costmap_2d::LETHAL_OBSTACLE) {
++      if (reason != nullptr) {
++        *reason =
++          std::string("refusing path whose tail is unknown or lethal beyond a seen wall")
++          + " world_x=" + std::to_string(wx)
++          + " world_y=" + std::to_string(wy)
++          + " mx=" + std::to_string(mx)
++          + " my=" + std::to_string(my)
++          + " cost=" + std::to_string(static_cast<int>(cost));
++      }
 +      return true;
 +    }
 +    if (cost >= kSeenWall && cost != nav2_costmap_2d::NO_INFORMATION) {
 +      seen_wall = true;
 +    } else if (seen_wall && cost == nav2_costmap_2d::NO_INFORMATION) {
++      if (!have_block) {
++        block_x = wx;
++        block_y = wy;
++        block_mx = mx;
++        block_my = my;
++        block_cost = cost;
++        have_block = true;
++      }
 +      unknown_after_wall = true;
 +    }
++  }
++  if (unknown_after_wall && have_block && reason != nullptr) {
++    *reason =
++      std::string("refusing path whose tail is unknown or lethal beyond a seen wall")
++      + " world_x=" + std::to_string(block_x)
++      + " world_y=" + std::to_string(block_y)
++      + " mx=" + std::to_string(block_mx)
++      + " my=" + std::to_string(block_my)
++      + " cost=" + std::to_string(static_cast<int>(block_cost));
 +  }
 +  return unknown_after_wall;
 +}
@@ -59,7 +96,7 @@
  {
 --- a/nav2_navfn_planner/include/nav2_navfn_planner/navfn_planner.hpp
 +++ b/nav2_navfn_planner/include/nav2_navfn_planner/navfn_planner.hpp
-@@ -127,6 +127,14 @@
+@@ -127,6 +127,16 @@
      nav_msgs::msg::Path & plan);
  
    /**
@@ -67,8 +104,10 @@
 +   *
 +   * Seen wall is cost >= 253 and not NO_INFORMATION (inscribed/lethal). Unknown
 +   * before any such cell is still explorable and is not a refusal.
++   * On true, *reason names the first blocking cell (world x,y / mx,my / cost).
 +   */
-+  bool pathTailBlocked(const nav_msgs::msg::Path & path) const;
++  bool pathTailBlocked(
++    const nav_msgs::msg::Path & path, std::string * reason) const;
 +
 +  /**
     * @brief Compute the potential, or navigation cost, at a given point in the world

@@ -112,6 +112,12 @@ def test_patch_refuses_tail_and_does_not_flip_allow_unknown():
     assert "allow_unknown" not in text
     assert "kSeenWall = 253" in text
     assert "LETHAL_OBSTACLE" in text
+    # Bag recovery needs the first blocking cell in the throw text (#4682).
+    assert ' + " world_x=" + std::to_string(' in text
+    assert ' + " world_y=" + std::to_string(' in text
+    assert ' + " mx=" + std::to_string(' in text
+    assert ' + " my=" + std::to_string(' in text
+    assert ' + " cost=" + std::to_string(static_cast<int>(' in text
 
 
 def test_dockerfile_builds_pinned_navfn_with_both_patches():
@@ -160,7 +166,13 @@ def test_patch_applies_to_pinned_upstream_navfn(tmp_path: Path):
     )
     assert "bool pathTailBlocked" in header
     assert REFUSAL in after
+    assert "world_x=" in after
+    assert "world_y=" in after
+    assert "mx=" in after
+    assert "my=" in after
+    assert "cost=" in after
     # Refusal sits in createPlan, before the path is returned to planner_server.
     create = after.split("NavfnPlanner::isPlannerOutOfDate", 1)[0]
-    assert "pathTailBlocked(path)" in create
-    assert create.rfind("pathTailBlocked(path)") < create.rfind("return path;")
+    assert "pathTailBlocked(path" in create
+    assert create.rfind("pathTailBlocked(path") < create.rfind("return path;")
+    assert "throw std::runtime_error(tail_refusal)" in create
