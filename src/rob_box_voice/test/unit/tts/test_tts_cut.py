@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import importlib
 import sys
 from pathlib import Path
 from unittest.mock import MagicMock
@@ -20,6 +21,8 @@ from rob_box_dialog import knowledge as kn  # noqa: E402
 from rob_box_dialog import phrases  # noqa: E402
 from rob_box_voice.core import tts_cut, tts_stream  # noqa: E402
 
+_CUT_TEXT = "Речь оборвалась, хвост не прозвучал."
+
 
 @pytest.fixture(autouse=True)
 def _fresh_said():
@@ -29,9 +32,33 @@ def _fresh_said():
 
 
 def test_phrase_is_the_catalog_line_not_an_llm_string():
-    assert tts_cut.phrase() == phrases.text(kn.TTS_CUT_PHRASE)
-    assert kn.TTS_CUT_PHRASE in kn.PHRASE_KEYS
+    assert tts_cut.phrase() == _CUT_TEXT
+    assert tts_cut.phrase() != phrases.text(kn.SPEECH_CUT_PHRASE)
     assert "хвост не прозвучал" in tts_cut.phrase()
+
+
+def test_import_survives_core_without_tts_cut_phrase(monkeypatch):
+    """Пин v0.7.8: имени TTS_CUT_PHRASE нет — старт tts_node не ImportError."""
+    monkeypatch.delattr(kn, "TTS_CUT_PHRASE", raising=False)
+    reloaded = importlib.reload(tts_cut)
+    try:
+        source = Path(reloaded.__file__).read_text(encoding="utf-8")
+        assert "from rob_box_dialog.knowledge import TTS_CUT_PHRASE" not in source
+        assert "from rob_box_dialog.knowledge import SPEECH_CUT_PHRASE" not in source
+        assert reloaded.phrase() == _CUT_TEXT
+        assert reloaded.phrase() != phrases.text(kn.SPEECH_CUT_PHRASE)
+    finally:
+        importlib.reload(tts_cut)
+
+
+def test_phrase_when_catalog_has_no_tts_cut_key(monkeypatch):
+    def missing_key(key, *a, **k):
+        raise KeyError(key)
+
+    monkeypatch.delattr(kn, "TTS_CUT_PHRASE", raising=False)
+    monkeypatch.setattr(phrases, "text", missing_key)
+    assert tts_cut.phrase() == _CUT_TEXT
+    assert tts_cut.phrase() != "и так далее."
 
 
 def test_only_a_broken_stream_after_sound_is_named():

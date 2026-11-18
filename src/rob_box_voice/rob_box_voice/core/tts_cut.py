@@ -11,10 +11,13 @@ from typing import Any, Optional
 
 from rob_box_core.speech_client import SYSTEM_AGENT
 from rob_box_core.utterance import Utterance
-from rob_box_dialog import phrases
-from rob_box_dialog.knowledge import TTS_CUT_PHRASE
 
 from .tts_stream import BROKEN
+
+#: Свой ключ: пин ядра v0.7.8 не отдаёт ``knowledge.TTS_CUT_PHRASE`` (#4819).
+TTS_CUT_PHRASE = "tts.cut"
+#: Ровно ``phrases/ru.yaml``. Не ``SPEECH_CUT_PHRASE`` («и так далее.»).
+TTS_CUT_TEXT = "Речь оборвалась, хвост не прозвучал."
 
 #: Одна фраза на оборванную реплику: повтор того же ``speech_id`` молчит.
 _said: set = set()
@@ -22,7 +25,14 @@ _said: set = set()
 
 def phrase() -> str:
     """Текст каталога. Ключ один, вариант не выбирает LLM."""
-    return phrases.text(TTS_CUT_PHRASE)
+    try:
+        from rob_box_dialog import knowledge as kn  # noqa: PLC0415
+        from rob_box_dialog import phrases  # noqa: PLC0415
+
+        key = getattr(kn, "TTS_CUT_PHRASE", TTS_CUT_PHRASE)
+        return phrases.text(key)
+    except (ImportError, KeyError):
+        return TTS_CUT_TEXT
 
 
 def notice(error: Optional[str], speech_id: Optional[str]) -> Optional[str]:
