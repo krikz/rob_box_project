@@ -731,6 +731,7 @@ def step(
     why: str = "",
     no_repeat_numbers: bool = False,
     count_continues: bool = False,
+    min_count_end: int = 0,
     discovery_tools: Optional[List[str]] = None,
     barge_in: Optional[Dict[str, Any]] = None,
     silent_ok: bool = False,
@@ -764,7 +765,7 @@ def step(
         raise ValueError(f"{label}: шаг ждёт выступление ({PERFORM_STARTED_MARK}…) -- retry запрещён (#3971 R4)")
     acc = _acceptance(
         expect_tools, discovery_tools, must_not, must_not_say, must_not_identify_as, keywords, voice_changed, why,
-        no_repeat_numbers, code_closes, count_continues,
+        no_repeat_numbers, code_closes, count_continues, min_count_end,
     )
     if acc:
         s["acceptance"] = acc
@@ -827,6 +828,7 @@ def _acceptance(
     no_repeat_numbers: bool = False,
     code_closes: bool = False,
     count_continues: bool = False,
+    min_count_end: int = 0,
 ) -> Dict[str, Any]:
     """Блок ``acceptance`` шага (пустой -- шаг без него). Порядок ключей -- как в JSON актов (сверяет ``--check``).
 
@@ -851,6 +853,8 @@ def _acceptance(
         ("no_repeat_numbers", True if no_repeat_numbers else None),
         # #4207: правка звучащего счёта продолжает его (не с единицы, подряд, со словом «шаг»), а не стартует заново.
         ("count_continues", True if count_continues else None),
+        # #4077 М9 n802: длина плана счёта (не только SpeechEvent started): урезание до десяти -- FAIL.
+        ("min_count_end", min_count_end if min_count_end else None),
     )
     acc: Dict[str, Any] = {key: value for key, value in fields if value}
     if not acc:
@@ -2446,10 +2450,14 @@ act(
             "n802_long_count",
             "Робот, посчитай вслух от одного до сорока, не торопясь и с выражением.",
             patterns=[SPEECH_STARTED],
+            min_count_end=20,
             why="Заряжаем длинный ответ, который есть что перебивать. Без "
             "этого шага n803 проверял бы перебивание тишины. v2 (#3880): вместо "
             "тула `speak_text` -- `SpeechEvent started` (конца речи не ждём: "
-            "следующий шаг перебивает, `finished` в окно шага не попадёт).",
+            "следующий шаг перебивает, `finished` в окно шага не попадёт). "
+            "#4077 М9: «до сорока» → модель урезала до десяти, шаг был зелёным по started -- "
+            "`min_count_end=20` судит длину плана (TTS и/или `выступление старт … segments=N` × 10); "
+            "урезание до десяти -- FAIL, poem кода на 4 сегмента -- PASS.",
         ),
         step(
             "n803_barge_in_new_topic",
@@ -2520,11 +2528,12 @@ act(
             "Робот, посчитай вслух от одного до сорока, спокойно.",
             patterns=[SPEECH_STARTED],
             must_not_say=[PERFORM_ASKS_TO_REPLACE],
+            min_count_end=20,
             why="v2: `SpeechEvent started` вместо `speak_text` (см. n802); вопрос выступления -- не счёт (см. n804). "
             "#4077 (М8 29.10, n807): счёт «до двадцати» кончался раньше правки n807 (правка на 10,5 с, оставался "
             "один сегмент) -- середину проверять нечем. Счёт удлинён до сорока (как n802); корпус #4163 пересобран "
             "детерминированно (`build_marathon` + `--repoint-from` частей 2-4, без живой записи и без смены "
-            "VAD_BUDGET_S).",
+            "VAD_BUDGET_S). #4077 М9: тот же `min_count_end=20`, что у n802 -- урезание до десяти не PASS.",
         ),
         step(
             "n807_merge_addition",
