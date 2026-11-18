@@ -1,4 +1,4 @@
-"""CLI агента: тик run, read-only status и C1 adoption/dry-run activation/rollback.
+"""CLI агента: тик run, локальный cancel, read-only status и C1 adoption/dry-run activation/rollback.
 
 Конфиг — аргументы или переменные окружения CHUANGONG_* (systemd берёт их из /etc/chuangong/chuangong.env).
 """
@@ -56,6 +56,13 @@ def _c1_parsers(sub: argparse._SubParsersAction) -> None:
 
     p = sub.add_parser("rollback", help="C1 dry-run: проверить signed previous и построить план отката")
     _runtime_args(p)
+
+
+def _cancel_parser(sub: argparse._SubParsersAction) -> None:
+    p = sub.add_parser("cancel", help="локально отменить staged; current/previous не трогать")
+    p.add_argument("--node", default=_env("NODE", ""), choices=st.NODES)
+    p.add_argument("--state-dir", default=_env("STATE_DIR", "/var/lib/chuangong"))
+    p.add_argument("--releases-root", default=_env("RELEASES_ROOT", "/opt/rob_box/releases"))
 
 
 def _status_parser(sub: argparse._SubParsersAction) -> None:
@@ -133,6 +140,28 @@ def cmd_c1(args: argparse.Namespace) -> int:
     return 1 if record["state"] in {s.value for s in st.ERROR_STATES} else 0
 
 
+def cmd_cancel(args: argparse.Namespace) -> int:
+    """Локальная отмена staged: сеть и compose не трогаются."""
+    from . import cancel
+
+    if not args.node:
+        print("нужен --node (или CHUANGONG_NODE)", file=sys.stderr)
+        return 2
+    try:
+        record = cancel.cancel_staged(Path(args.state_dir), Path(args.releases_root), args.node)
+    except cancel.CancelError as exc:
+        print(
+            json.dumps(
+                {"state": "error", "reason": exc.reason, "detail": exc.detail},
+                ensure_ascii=False,
+                sort_keys=True,
+            )
+        )
+        return 1
+    print(json.dumps(record, ensure_ascii=False, sort_keys=True))
+    return 0
+
+
 def cmd_status(args: argparse.Namespace) -> int:
     from .status import collect, render, verdict
     from .zenoh_rest import ZenohRest
@@ -152,11 +181,14 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="chuangong")
     sub = parser.add_subparsers(dest="cmd", required=True)
     _run_parser(sub)
+    _cancel_parser(sub)
     _c1_parsers(sub)
     _status_parser(sub)
     args = parser.parse_args(argv)
     if args.cmd == "run":
         return cmd_run(args)
+    if args.cmd == "cancel":
+        return cmd_cancel(args)
     if args.cmd == "status":
         return cmd_status(args)
     return cmd_c1(args)

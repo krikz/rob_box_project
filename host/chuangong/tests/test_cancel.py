@@ -240,3 +240,100 @@ def test_activation_blocks_cancelled_release(tmp_path, world):
     assert saved["current"] == "2026.11.08-1"
     assert saved["state"] == "cancelled"
     assert pointers.load(state_dir) == (None, None)
+
+
+def test_cli_cancel_marks_staged_and_keeps_current(tmp_path, capsys):
+    from chuangong.__main__ import main
+
+    state_dir, releases_root, compose_root = _paths(tmp_path)
+    dest = _plant_staged(releases_root, "2026.11.09-1")
+    _save_staged(state_dir)
+    pointers.advance(state_dir, "2026.11.08-1")
+    before = pointers.load(state_dir)
+
+    code = main(
+        [
+            "cancel",
+            "--node",
+            "vision",
+            "--state-dir",
+            str(state_dir),
+            "--releases-root",
+            str(releases_root),
+        ]
+    )
+    out = capsys.readouterr().out
+    record = json.loads(out)
+
+    assert code == 0
+    assert record["state"] == "cancelled"
+    assert record["cancelled"] == "2026.11.09-1"
+    assert record["staged"] is None
+    assert record["current"] == "2026.11.08-1"
+    assert pointers.load(state_dir) == before == ("2026.11.08-1", None)
+    assert (dest / cancel.CANCEL_MARKER).read_text(encoding="utf-8").strip() == "2026.11.09-1"
+    assert not (compose_root / "current").exists()
+
+
+def test_cli_cancel_nothing_staged_exits_error(tmp_path, capsys):
+    from chuangong.__main__ import main
+
+    state_dir, releases_root, _ = _paths(tmp_path)
+    pointers.advance(state_dir, "2026.11.08-1")
+    before = pointers.load(state_dir)
+
+    code = main(
+        [
+            "cancel",
+            "--node",
+            "vision",
+            "--state-dir",
+            str(state_dir),
+            "--releases-root",
+            str(releases_root),
+        ]
+    )
+    out = json.loads(capsys.readouterr().out)
+
+    assert code == 1
+    assert out["state"] == "error" and out["reason"] == "nothing_staged"
+    assert pointers.load(state_dir) == before == ("2026.11.08-1", None)
+    assert not (state_dir / "state.json").exists()
+
+
+def test_cli_cancel_does_not_open_network(tmp_path, monkeypatch, capsys):
+    from chuangong.__main__ import main
+
+    def boom(*_a, **_k):
+        raise AssertionError("сеть")
+
+    monkeypatch.setattr("urllib.request.urlopen", boom)
+    monkeypatch.setattr("socket.create_connection", boom)
+    state_dir, releases_root, _ = _paths(tmp_path)
+    _plant_staged(releases_root, "2026.11.09-1")
+    _save_staged(state_dir)
+    pointers.advance(state_dir, "2026.11.08-1")
+
+    code = main(
+        [
+            "cancel",
+            "--node",
+            "vision",
+            "--state-dir",
+            str(state_dir),
+            "--releases-root",
+            str(releases_root),
+        ]
+    )
+    record = json.loads(capsys.readouterr().out)
+    assert code == 0
+    assert record["state"] == "cancelled"
+    assert pointers.load(state_dir) == ("2026.11.08-1", None)
+
+
+def test_cli_exposes_cancel_help():
+    from chuangong.__main__ import main
+
+    with pytest.raises(SystemExit) as exc:
+        main(["cancel", "--help"])
+    assert exc.value.code == 0

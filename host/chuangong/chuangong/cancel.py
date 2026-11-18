@@ -2,6 +2,7 @@
 
 Сети нет. Compose symlink не переключает. Указатели читает через `pointers.load`, не вызывает
 `pointers.advance`/`commit`. Тик и preflight читают `CANCEL_MARKER` и не re-stage / не activate.
+CLI: `python -m chuangong cancel --node <роль>` (см. `__main__.cmd_cancel`).
 """
 
 from __future__ import annotations
