@@ -7,7 +7,7 @@
   zenoh_rest     — REST-плагин zenoh (:8000): put / get / подписка SSE;
   state          — запись состояния агента, ключи zenoh, метрика rbx_release_info;
   stage          — stage роли: место на диске, бандл, образы по digest;
-  cancel         — локальная отмена staged и чтение маркера тиком/preflight; current не трогать;
+  cancel         — локальная отмена staged (CLI cancel) и чтение маркера тиком/preflight; current не трогать;
   agent          — один тик агента (fetch → verify → stage → report);
   activation     — adoption доказанного current и dry-run activation/rollback (C1);
   pointers       — файлы current/previous в state_dir после проверки подписи staged-релиза;
@@ -16,4 +16,4 @@
 Переключения symlink `current`, `compose down/up` и миграций по-прежнему НЕТ.
 """
 
-AGENT_VERSION = "0.2.2"
+AGENT_VERSION = "0.2.3"
