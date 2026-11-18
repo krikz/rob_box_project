@@ -109,7 +109,12 @@ def test_patch_refuses_tail_and_does_not_flip_allow_unknown():
     assert REFUSAL in text
     assert "pathTailBlocked" in text
     assert "nav2_navfn_planner/src/navfn_planner.cpp" in text
-    assert "allow_unknown" not in text
+    # Snapshot hunk may cite setCostmap(..., allow_unknown_) as context only —
+    # must not assign or flip the parameter (#4694 stays allow_unknown: true).
+    allow_lines = [ln for ln in text.splitlines() if "allow_unknown" in ln]
+    assert allow_lines, "expected setCostmap context mentioning allow_unknown_"
+    assert all("setCostmap" in ln for ln in allow_lines)
+    assert "allow_unknown_ =" not in text
     assert "kSeenWall = 253" in text
     assert "LETHAL_OBSTACLE" in text
     # Bag recovery needs the first blocking cell in the throw text (#4682).
@@ -118,6 +123,17 @@ def test_patch_refuses_tail_and_does_not_flip_allow_unknown():
     assert ' + " mx=" + std::to_string(' in text
     assert ' + " my=" + std::to_string(' in text
     assert ' + " cost=" + std::to_string(static_cast<int>(' in text
+    # #4771: branch + cost_navfn/cost_live + path samples so M1 proves one fix.
+    assert "branch=lethal_on_path" in text or '"lethal_on_path"' in text
+    assert "branch=unknown_after_seen_wall" in text or '"unknown_after_seen_wall"' in text
+    assert "lethal_on_path" in text
+    assert "unknown_after_seen_wall" in text
+    assert "cost_navfn=" in text
+    assert "cost_live=" in text
+    assert "path_n=" in text
+    assert "head_xy=" in text
+    assert "navfn_cost_snap_" in text
+    assert "std::memcpy" in text
 
 
 def test_dockerfile_builds_pinned_navfn_with_both_patches():
@@ -171,6 +187,16 @@ def test_patch_applies_to_pinned_upstream_navfn(tmp_path: Path):
     assert "mx=" in after
     assert "my=" in after
     assert "cost=" in after
+    assert "lethal_on_path" in after
+    assert "unknown_after_seen_wall" in after
+    assert "cost_navfn=" in after
+    assert "cost_live=" in after
+    assert "path_n=" in after
+    assert "head_xy=" in after
+    assert "navfn_cost_snap_" in after
+    # Snapshot is taken under the same lock window as setCostmap, then unlocked.
+    assert "std::memcpy(navfn_cost_snap_.get(), costmap_->getCharMap()" in after
+    assert "lock.unlock();" in after
     # Refusal sits in createPlan, before the path is returned to planner_server.
     create = after.split("NavfnPlanner::isPlannerOutOfDate", 1)[0]
     assert "pathTailBlocked(path" in create
