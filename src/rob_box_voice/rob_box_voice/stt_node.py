@@ -1326,7 +1326,7 @@ class STTNode(Node):
             return None
         from rob_box_voice.stt_providers.minimax_provider import (
             MiniMaxSTTAuthError,
-            MiniMaxSTTRateLimitError,
+            MiniMaxSTTQuotaError,
             MiniMaxSTTUnavailableError,
         )
 
@@ -1334,7 +1334,10 @@ class STTNode(Node):
             return provider.transcribe(audio_bytes, language=getattr(self, "_grip_minimax_language", None)).text
         except MiniMaxSTTAuthError as exc:
             raise STTAuthError(str(exc)) from exc
-        except MiniMaxSTTRateLimitError as exc:
+        except MiniMaxSTTQuotaError as exc:
+            # 2056 / QUOTA_HINTS / план — «кончились деньги», длинный TTL.
+            # HTTP 429 (MiniMaxSTTRateLimitError) сюда НЕ входит: лимит частоты,
+            # транзиентный отказ, цепочка дальше без фразы про баланс (#4694).
             raise STTQuotaError(str(exc)) from exc
         except MiniMaxSTTUnavailableError as exc:
             if str(exc).startswith("timeout"):
