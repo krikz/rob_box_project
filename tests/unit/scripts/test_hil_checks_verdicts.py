@@ -223,6 +223,47 @@ def test_tool_halt_observed_failure_after_replay_still_fails_on_orphan():
     assert vd.v_orphan_natural(probe, [], 2.0).status == vd.FAIL
 
 
+def test_halt_counts_both_failures_when_the_same_goal_runs_twice():
+    """Проба шлёт переход статуса один раз (probe.py on_status). Та же цель наблюдалась активной,
+    ушла в ABORTED, снова стала EXECUTING и снова ABORTED. Оба провала — в этой пробе: первый,
+    после которого робот ехал, не должен потеряться из-за повторной активации."""
+    probe = vd.parse_probe(
+        [
+            pr(0, "NAV_STATUS", goal="n1", status="EXECUTING"),
+            pr(0.2, "FP_STATUS", goal="f1", status="EXECUTING"),
+            pr(5, "NAV_STATUS", goal="n1", status="ABORTED"),
+            pr(5.2, "FP_STATUS", goal="f1", status="CANCELED"),
+            pr(8, "MUX", v="+0.15", w="+0.0"),
+            pr(9, "NAV_STATUS", goal="n1", status="EXECUTING"),
+            pr(9.2, "FP_STATUS", goal="f2", status="EXECUTING"),
+            pr(12, "NAV_STATUS", goal="n1", status="ABORTED"),
+            pr(12.2, "FP_STATUS", goal="f2", status="CANCELED"),
+            pr(15, "MUX", v="+0.000", w="+0.000"),
+        ]
+    )
+    bad, checked = vd.halt_violations(probe, 2.0)
+    assert [round(vd._sim(e), 1) for e in checked] == [5.0, 12.0]
+    assert any("sim=5.00" in line and "twist_mux" in line for line in bad)
+    assert not any("sim=12.00" in line for line in bad)
+
+
+def test_halt_counts_a_goal_seen_only_as_accepted():
+    """ACTIVE — это ACCEPTED и EXECUTING (verdicts.py). Цель, которую проба видела только принятой,
+    а не исполняемой, всё равно наблюдалась: её ABORTED считается, а не отбрасывается как повтор чужой цели."""
+    probe = vd.parse_probe(
+        [
+            pr(0, "NAV_STATUS", goal="n1", status="ACCEPTED"),
+            pr(0.5, "FP_STATUS", goal="f1", status="ACCEPTED"),
+            pr(3, "NAV_STATUS", goal="n1", status="ABORTED"),
+            pr(6, "MUX", v="+0.0", w="+0.2"),
+        ]
+    )
+    bad, checked = vd.halt_violations(probe, 2.0)
+    assert [e.fields.get("goal") for e in checked] == ["n1"]
+    assert any("FollowPath ещё активен: f1" in line for line in bad)
+    assert any("twist_mux" in line for line in bad)
+
+
 GOAL = "0123456789abcdef0123456789abcdef"
 
 
