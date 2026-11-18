@@ -1,7 +1,9 @@
 """Входы пульта F: Update Robot: robot_id, release, action; пустые — отказ (ADR-0168, #4375).
 
-Команда и отчёт делят один operation_id (run_id workflow). Сети, ssh и compose здесь нет:
-только проверка полей до status/update/rollback/cancel. Cancel на Pi — host/chuangong cancel.
+Команда и отчёт делят один operation_id (run_id workflow). Сети, ssh и compose здесь нет.
+status — единственный wired remote-action (zenoh read-only). update/rollback/cancel после
+валидных полей — явный not_wired (exit != 0), не зелёный «успех без дела».
+Cancel на Pi — host/chuangong cancel (локальный staged).
 """
 
 from __future__ import annotations
@@ -9,12 +11,14 @@ from __future__ import annotations
 from typing import Any
 
 ACTIONS = ("status", "update", "rollback", "cancel")
+# Единственный remote-путь, реально выполняемый workflow (status job → zenoh).
+WIRED_ACTIONS = frozenset({"status"})
 # update/rollback — по имени релиза; status может сверять опционально; cancel — локальный staged.
 RELEASE_REQUIRED = frozenset({"update", "rollback"})
 
 
 class FleetInputError(ValueError):
-    """Пустой или неизвестный вход пульта. reason — стабильный код для CI и Job Summary."""
+    """Пустой, неизвестный или ещё не wired вход пульта. reason — стабильный код для CI."""
 
     def __init__(self, reason: str, detail: str = "") -> None:
         super().__init__(f"{reason}: {detail}" if detail else reason)
@@ -31,6 +35,7 @@ def validate_inputs(
 ) -> dict[str, Any]:
     """Вернуть нормализованные входы или FleetInputError.
 
+    Порядок отказов: empty/bad поля → not_wired для update/rollback/cancel.
     robot_id пустой — всегда отказ. release пустой — отказ для update и rollback.
     """
     act = (action or "").strip()
@@ -46,6 +51,11 @@ def validate_inputs(
         raise FleetInputError("empty_robot_id")
     if act in RELEASE_REQUIRED and not rel:
         raise FleetInputError("empty_release", act)
+    if act not in WIRED_ACTIONS:
+        raise FleetInputError(
+            "not_wired",
+            f"{act}: remote path not connected yet (no ssh; cancel on Pi — chuangong cancel)",
+        )
 
     return {
         "action": act,
@@ -53,11 +63,12 @@ def validate_inputs(
         "release": rel if rel else None,
         "operation_id": op if op else None,
         "release_required": act in RELEASE_REQUIRED,
+        "wired": True,
     }
 
 
 def render_summary(record: dict[str, Any]) -> str:
-    """Markdown для GITHUB_STEP_SUMMARY: одни поля, без «успеха обновления»."""
+    """Markdown для GITHUB_STEP_SUMMARY при принятых (wired) входах."""
     rel = record.get("release") or "—"
     op = record.get("operation_id") or "—"
     lines = [
@@ -69,10 +80,39 @@ def render_summary(record: dict[str, Any]) -> str:
         f"- operation_id: `{op}`",
         "",
     ]
-    if record["action"] != "status":
+    return "\n".join(lines)
+
+
+def render_error_summary(
+    *,
+    reason: str,
+    detail: str = "",
+    action: str = "",
+    robot_id: str = "",
+    release: str = "",
+    operation_id: str = "",
+) -> str:
+    """Markdown отказа: пустые поля или not_wired — job не зелёный."""
+    lines = [
+        "### F: Update Robot — отказ",
+        "",
+        f"- reason: `{reason}`",
+    ]
+    if detail:
+        lines.append(f"- detail: `{detail}`")
+    if action:
+        lines.append(f"- action: `{action}`")
+    if robot_id:
+        lines.append(f"- robot_id: `{robot_id}`")
+    if release:
+        lines.append(f"- release: `{release}`")
+    if operation_id:
+        lines.append(f"- operation_id: `{operation_id}`")
+    lines.append("")
+    if reason == "not_wired":
         lines.append(
-            "Входы приняты. Удалённый путь update/rollback/cancel в этом workflow не выполняется "
-            "(без ssh; cancel на Pi — `chuangong cancel`)."
+            "Удалённый update/rollback/cancel ещё не подключен. "
+            "SSH нет. Cancel на Pi — `chuangong cancel`. Job exit ≠ 0 (не тихий успех)."
         )
         lines.append("")
     return "\n".join(lines)

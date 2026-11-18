@@ -190,8 +190,8 @@ def cmd_status(args: argparse.Namespace) -> int:
 
 
 def cmd_validate_inputs(args: argparse.Namespace) -> int:
-    """Пульт F: Update Robot — только проверка входов; сети и ssh нет."""
-    from .fleet_inputs import FleetInputError, render_summary, validate_inputs
+    """Пульт F: Update Robot — проверка входов; update/rollback/cancel → not_wired (exit 2)."""
+    from .fleet_inputs import FleetInputError, render_error_summary, render_summary, validate_inputs
 
     try:
         record = validate_inputs(
@@ -202,6 +202,18 @@ def cmd_validate_inputs(args: argparse.Namespace) -> int:
         )
     except FleetInputError as exc:
         print(json.dumps({"ok": False, "reason": exc.reason, "detail": exc.detail}, ensure_ascii=False, sort_keys=True))
+        if args.summary:
+            with open(args.summary, "a", encoding="utf-8") as fh:
+                fh.write(
+                    render_error_summary(
+                        reason=exc.reason,
+                        detail=exc.detail,
+                        action=(args.action or "").strip(),
+                        robot_id=(args.robot_id or "").strip(),
+                        release=(args.release or "").strip(),
+                        operation_id=(args.operation_id or "").strip(),
+                    )
+                )
         return 2
     print(json.dumps({"ok": True, **record}, ensure_ascii=False, sort_keys=True))
     if args.github_output:

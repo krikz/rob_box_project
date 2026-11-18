@@ -3,9 +3,10 @@ name: "F: Update Robot"
 # Пульт обновления робота до панели парка dianjiang (ADR-0168; rbt_infra ADR-0003 §4.4). Префикс F: — fleet.
 # Входы: robot_id, release, action (status|update|rollback|cancel). Пустой robot_id — отказ;
 # пустой release — отказ для update/rollback (status может не сверять; cancel — локальный staged).
+# update/rollback/cancel при валидных полях — not_wired (job exit != 0), не зелёный «успех без дела».
 # Команда и отчёт — один operation_id (= github.run_id). Ни ssh, ни cron/push/PR.
-# status — чтение отчётов chuangong через zenoh REST. Удалённый update/rollback/cancel в этом
-# workflow не выполняется (cancel на Pi — host/chuangong cancel). Живой прогон update не делался.
+# status — чтение отчётов chuangong через zenoh REST. Cancel на Pi — host/chuangong cancel.
+# Живой прогон update не делался.
 
 on:
   workflow_dispatch:
@@ -21,7 +22,7 @@ on:
         type: string
         default: ""
       action:
-        description: "status | update | rollback | cancel (удалённый mutate-путь не wired; cancel локально — chuangong cancel)"
+        description: "status (wired) | update/rollback/cancel → not_wired exit≠0 (cancel на Pi — chuangong cancel)"
         type: choice
         options:
           - status

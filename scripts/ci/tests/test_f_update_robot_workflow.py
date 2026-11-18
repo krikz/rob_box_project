@@ -1,4 +1,4 @@
-"""Гард F: Update Robot — robot_id/release/action update|rollback, пустые режет скрипт, без ssh."""
+"""Гард F: Update Robot — status wired; update/rollback/cancel → not_wired; без ssh."""
 
 from __future__ import annotations
 
@@ -31,6 +31,9 @@ def test_inputs_include_robot_release_update_rollback_cancel():
     actions = inputs["action"]["options"]
     assert actions == ["status", "update", "rollback", "cancel"]
     assert "RBXU100001" in inputs["robot_id"]["options"]
+    # Меню хранит mutate-actions, но job не зелёный: not_wired в validate.
+    desc = inputs["action"]["description"].lower()
+    assert "not_wired" in desc or "not wired" in desc
 
 
 def test_validate_job_calls_chuangong_validate_inputs_and_no_ssh():
@@ -48,3 +51,10 @@ def test_validate_job_calls_chuangong_validate_inputs_and_no_ssh():
     assert "status" in jobs
     needs = jobs["status"].get("needs")
     assert needs == "validate" or "validate" in (needs or [])
+    # status — единственный job к роботу; mutate-actions не имеют success-path job.
+    assert list(jobs) == ["validate", "status"]
+    assert jobs["status"].get("if") == "${{ inputs.action == 'status' }}"
+    # Комментарий/описание: not_wired, не «успех validate = зелёный update».
+    full = WF.read_text(encoding="utf-8").lower()
+    assert "not_wired" in full
+    assert "ssh" not in jobs_body or "no ssh" in full or "ни ssh" in full

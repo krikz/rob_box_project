@@ -14,7 +14,7 @@
   pointers       — файлы current/previous в state_dir после проверки подписи staged-релиза;
   fleet_op       — координация Vision→Sound→Main: ход операции и откат в fleet_op.json без сети;
   status         — наблюдатель для workflow «F: Update Robot» (action: status);
-  fleet_inputs   — проверка robot_id/release/action пульта (пустые — отказ; operation_id).
+  fleet_inputs   — проверка robot_id/release/action пульта (пустые/not_wired — отказ; operation_id).
 
 Живой symlink `current` и хостовые миграции — следующий шаг; compose в тестах через FakeDocker.
 """
