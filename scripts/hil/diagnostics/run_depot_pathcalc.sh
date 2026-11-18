@@ -144,6 +144,13 @@ check_lifecycle() {
 
 export HIL_SANDBOX_REPO="$SANDBOX_REPO"
 export HIL_RTABMAP_MODE=mapping
+# Штатный Depot: код сам выставляет обязательную проверку мира (#4694).
+export HIL_EXPECT_WORLD
+HIL_EXPECT_WORLD=$(python3 -X utf8 "$ROOT/scripts/hil/checks/world_check.py" --scenario depot)
+[ "$HIL_EXPECT_WORLD" = depot ] || {
+    echo "WORLD_MISMATCH: HIL_EXPECT_WORLD='${HIL_EXPECT_WORLD:-пусто}'" | tee -a "$SUMMARY"
+    exit 25
+}
 for ATTEMPT in 1 2 3; do
     ART="$PATHCALC_OUT/${RUN_ID}_r$ATTEMPT"
     REMOTE_OUT="$SANDBOX_REPO/out/${RUN_ID}_r$ATTEMPT"

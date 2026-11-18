@@ -24,8 +24,11 @@ DEPOT_WORLD_ARG = "world:=/sim_video/world.sdf"
 DEPOT_WORLD_PATH = "/sim_video/world.sdf"
 DEPOT_MOUNT = "/sim_video"
 DEPOT_MARKER = "Depot_vid"
+# Штатный сценарий Depot: копия после patch_compose.py (не имя мира polygon).
+DEPOT_SCENARIO = "depot"
+POLYGON_SCENARIO = "polygon"
 
-# XML-комментарии целиком; uri — только реальный include, не текст в <!-- … -->.
+# XML-комментарии целиком; uri — только include, не текст в <!-- … -->.
 _XML_COMMENT_RE = re.compile(r"<!--.*?-->", re.DOTALL)
 _URI_RE = re.compile(r"<uri\b[^>]*>\s*([^<]*?)\s*</uri>", re.IGNORECASE)
 
@@ -33,6 +36,50 @@ _URI_RE = re.compile(r"<uri\b[^>]*>\s*([^<]*?)\s*</uri>", re.IGNORECASE)
 def _has_exact_world_arg(args: str) -> bool:
     """Точный токен ``world:=/sim_video/world.sdf``, не подстрока (world.sdf.old — нет)."""
     return DEPOT_WORLD_ARG in (args or "").split()
+
+
+def world_arg_path(args: str) -> str:
+    """Путь из первого токена ``world:=…`` (пусто, если токена нет)."""
+    for tok in (args or "").split():
+        if tok.startswith("world:="):
+            return tok[len("world:=") :]
+    return ""
+
+
+def scenario_expects_depot(scenario: str) -> bool:
+    """Штатный сценарий Depot обязан проверять мир. Polygon/building — нет."""
+    return (scenario or "").strip() == DEPOT_SCENARIO
+
+
+def expect_world_for_scenario(scenario: str) -> str:
+    """``HIL_EXPECT_WORLD`` для сценария: depot — всегда ``depot``, иначе пусто.
+
+    Пустое значение гейт само по себе не включает.
+    """
+    if scenario_expects_depot(scenario):
+        return DEPOT_SCENARIO
+    return ""
+
+
+def gate_required(expect_world: str, args: str) -> bool:
+    """Гейт обязателен, если сценарий выставил depot или args уже Depot-мир.
+
+    ``world.sdf.old`` и обычный polygon без переменной гейт не включают.
+    """
+    if (expect_world or "").strip() == DEPOT_SCENARIO:
+        return True
+    return world_arg_path(args) == DEPOT_WORLD_PATH
+
+
+def compose_is_depot(compose_text: str) -> bool:
+    """Копия Compose после ``patch_compose.py``: точный токен мира и том ``/sim_video``.
+
+    Обычный ``compose.hil.yaml`` (``world:=/sim_worlds/${SIM_WORLD:-polygon}.sdf``, без тома)
+    — не Depot, даже если в комментарии есть ``Depot_vid``.
+    """
+    if not _has_exact_world_arg(compose_text or ""):
+        return False
+    return "/sim_video" in (compose_text or "")
 
 
 def _sdf_has_depot_uri(sdf_text: str) -> bool:
@@ -75,13 +122,41 @@ def check_world(expect: str, args: str, mounts: Sequence[str], sdf_text: str) ->
 
 def main(argv: Sequence[str] | None = None) -> int:
     p = argparse.ArgumentParser(description=__doc__.split("\n\n", 1)[0])
-    p.add_argument("expect", help="ожидаемый мир: depot")
+    p.add_argument("expect", nargs="?", default="", help="ожидаемый мир: depot")
     p.add_argument("--args", default="", help="строка Args контейнера gazebo")
     p.add_argument("--mount", action="append", default=[], dest="mounts", help="destination тома (повтор)")
     p.add_argument("--mounts-file", type=Path, help="файл: destination по строке")
     p.add_argument("--sdf", default="", help="текст SDF")
     p.add_argument("--sdf-file", type=Path, help="файл SDF")
+    p.add_argument(
+        "--scenario",
+        default="",
+        help="штатный сценарий: depot печатает HIL_EXPECT_WORLD=depot, иначе пусто",
+    )
+    p.add_argument(
+        "--gate-required",
+        action="store_true",
+        help="с --args: печатает required|skip (гейт обязателен?)",
+    )
+    p.add_argument(
+        "--compose-file",
+        type=Path,
+        help="копия compose.hil.yaml: печатает depot|polygon (штатный сценарий Depot?)",
+    )
     ns = p.parse_args(list(argv) if argv is not None else None)
+
+    if ns.scenario:
+        print(expect_world_for_scenario(ns.scenario))
+        return 0
+    if ns.compose_file is not None:
+        kind = DEPOT_SCENARIO if compose_is_depot(ns.compose_file.read_text(encoding="utf-8")) else POLYGON_SCENARIO
+        print(kind)
+        return 0
+    if ns.gate_required:
+        print("required" if gate_required(ns.expect, ns.args) else "skip")
+        return 0
+    if not ns.expect:
+        p.error("expect обязателен (либо --scenario / --gate-required)")
 
     mounts: List[str] = list(ns.mounts)
     if ns.mounts_file is not None:

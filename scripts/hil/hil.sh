@@ -298,8 +298,14 @@ sim_down() {
     sim_compose down --timeout 20 || log "⚠️  compose down на песочнице вернул ошибку"
 }
 # Мир до первой цели Depot (#4694): PASS только по трём фактам (args/mount/SDF).
-# Штатный Depot (точный world:=/sim_video/world.sdf) и HIL_EXPECT_WORLD=depot — всегда;
-# обычный polygon без HIL_EXPECT_WORLD — молчит.
+# Обязательность решает код (world_check.py --gate-required): HIL_EXPECT_WORLD=depot
+# или точный world:=/sim_video/world.sdf. Обычный polygon без переменной — молчит.
+# world.sdf.old гейт не включает.
+sim_world_gate_required() {  # sim_world_gate_required <expect> <args>
+    local ans
+    ans=$(python3 -X utf8 "$HERE/checks/world_check.py" --gate-required "$1" --args "$2" 2>/dev/null || true)
+    [ "$ans" = required ]
+}
 sim_check_expect_world() {
     local expect="$1" gz="$HIL_SIM_PREFIX-gazebo" args mounts wpath sdf image line rc=0 tmp
     args=$(rsh "$HIL_SANDBOX_HOST" "docker inspect -f '{{join .Args \" \"}}' $(q "$gz")" 2>/dev/null || true)
@@ -315,7 +321,10 @@ sim_check_expect_world() {
     fi
     if [ -n "${HIL_WORLD_CHECK_DIR:-}" ]; then
         mkdir -p "$HIL_WORLD_CHECK_DIR"
+        # Бриф 15:44 UTC: каталог Compose, команда Gazebo, SHA SDF, ID образа.
+        printf '%s\n' "$HIL_SANDBOX_REPO" >"$HIL_WORLD_CHECK_DIR/compose_dir.txt"
         printf '%s\n' "$args" >"$HIL_WORLD_CHECK_DIR/gazebo_args.txt"
+        printf '%s\n' "$args" >"$HIL_WORLD_CHECK_DIR/gazebo_command.txt"
         printf '%s\n' "$mounts" >"$HIL_WORLD_CHECK_DIR/gazebo_mounts.txt"
         printf '%s\n' "$image" >"$HIL_WORLD_CHECK_DIR/gazebo_image_id.txt"
         if [ -n "$sdf" ]; then
@@ -330,6 +339,9 @@ sim_check_expect_world() {
     line=$(python3 -X utf8 "$HERE/checks/world_check.py" "$expect" \
         --args "$args" --mounts-file "$tmp/mounts" --sdf-file "$tmp/sdf") || rc=$?
     rm -rf "$tmp"
+    if [ -n "${HIL_WORLD_CHECK_DIR:-}" ]; then
+        printf '%s\n' "$line" >"$HIL_WORLD_CHECK_DIR/verdict.txt"
+    fi
     if [ "$rc" -ne 0 ]; then
         sim_down
         die "$line; hil.sh off"
@@ -499,14 +511,11 @@ cmd_on() {
         fi
         sleep 5
     done
-    # Depot: точный world:=/sim_video/world.sdf — всегда; HIL_EXPECT_WORLD=depot — всегда
-    # (нет mount/uri → WORLD_MISMATCH). Обычный polygon без переменной — молчит (#4694).
+    # Гейт до «HIL включён» / первой цели. Обязательность решает код, не case в shell:
+    # HIL_EXPECT_WORLD=depot (штатный сценарий сам его выставляет) или точный
+    # world:=/sim_video/world.sdf. Обычный polygon без переменной и world.sdf.old — молчит (#4694).
     _depot_args=$(rsh "$HIL_SANDBOX_HOST" "docker inspect -f '{{join .Args \" \"}}' $(q "$HIL_SIM_PREFIX-gazebo")" 2>/dev/null || true)
-    _depot_wpath=""
-    case "$_depot_args" in
-        *world:=*) _depot_wpath="${_depot_args#*world:=}"; _depot_wpath="${_depot_wpath%% *}" ;;
-    esac
-    if [ "${HIL_EXPECT_WORLD:-}" = depot ] || [ "$_depot_wpath" = "/sim_video/world.sdf" ]; then
+    if sim_world_gate_required "${HIL_EXPECT_WORLD:-}" "$_depot_args"; then
         sim_check_expect_world depot
     fi
     log "HIL включён. Сторож в gazebo следит дальше (docker logs $HIL_SIM_PREFIX-gazebo | grep hil-guard)."

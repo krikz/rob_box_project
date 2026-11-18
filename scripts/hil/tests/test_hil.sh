@@ -53,7 +53,8 @@ check() { if eval "$2"; then ok "$1"; else ko "$1"; fi; }
 
 # ── 1. синтаксис ──────────────────────────────────────────────────────────
 for f in scripts/hil/hil.sh scripts/hil/remote_pi.sh scripts/hil/hil.conf \
-         scripts/hil/video/fix_crlf.sh scripts/hil/video/runvideo.sh scripts/hil/video/runcoverage.sh scripts/hil/video/sandbox_prep.sh \
+         scripts/hil/video/fix_crlf.sh scripts/hil/video/runvideo.sh scripts/hil/video/runcoverage.sh \
+         scripts/hil/video/sandbox_prep.sh scripts/hil/video/run_depot.sh \
          scripts/hil/building/run_building.sh scripts/hil/building/building_remote.sh \
          scripts/deploy/check_hil_lock.sh docker/sim/hil_run.sh docker/main/update_and_restart.sh; do
     if bash -n "$REPO_ROOT/$f"; then ok "bash -n $f"; else ko "bash -n $f"; fi
@@ -636,6 +637,89 @@ PATH="$PIN_PATH" bash "$REPO_ROOT/scripts/hil/remote_pi.sh" pin "$PINWORK/compos
 check "повторный pin: nav2 по-прежнему один ключ" \
     '[ "$(grep -c "^  nav2:" "$PIN_OUT")" -eq 1 ] && [ "$(grep -c "image:" "$PIN_OUT")" -eq 2 ]'
 rm -rf "$PINWORK"
+
+# ── 12. штатный Depot сам выставляет HIL_EXPECT_WORLD; Polygon без env молчит (#4694) ──
+# run_depot.sh on без заранее выставленного env: копия Compose — обычный Polygon →
+# WORLD_MISMATCH до hil.sh (фейковый HIL_CMD не должен вызваться, цель не уходит).
+DEPOT="$REPO_ROOT/scripts/hil/video/run_depot.sh"
+POLY="$WORK/poly-sbx"
+mkdir -p "$POLY/docker/sim"
+cp "$REPO_ROOT/docker/sim/compose.hil.yaml" "$POLY/docker/sim/compose.hil.yaml"
+printf '#!/bin/sh\necho HIL_ON >> "$FAKE_HIL_LOG"\n' > "$WORK/bin/fake_hil"
+chmod +x "$WORK/bin/fake_hil"
+: > "$WORK/fake_hil.log"
+env -u HIL_EXPECT_WORLD HIL_CMD="$WORK/bin/fake_hil" HIL_SANDBOX_REPO="$POLY" \
+    FAKE_HIL_LOG="$WORK/fake_hil.log" \
+    bash "$DEPOT" on > "$WORK/depot-poly.log" 2>&1
+rc=$?
+check "Depot-сценарий без env на обычном Polygon: WORLD_MISMATCH до hil.sh (rc=$rc)" \
+    '[ "$rc" -ne 0 ] && grep -q WORLD_MISMATCH "$WORK/depot-poly.log" && [ ! -s "$WORK/fake_hil.log" ]'
+check "Depot-сценарий без env: цель не отправлена" \
+    '! grep -q "runvideo\\|GOAL" "$WORK/depot-poly.log"'
+
+# Та же команда на Depot-копии (точный world:= и том /sim_video): env выставлен, hil.sh вызван.
+DEPOT_SBX="$WORK/depot-sbx"
+mkdir -p "$DEPOT_SBX/docker/sim"
+python3 - "$REPO_ROOT/docker/sim/compose.hil.yaml" "$DEPOT_SBX/docker/sim/compose.hil.yaml" <<'PY'
+import pathlib, sys
+src, dst = sys.argv[1:]
+text = pathlib.Path(src).read_text(encoding="utf-8")
+old = """    volumes:
+      - ./hil_run.sh:/hil_run.sh:ro
+    command:
+      - /ros_scripts/ros_with_namespace.sh
+      - /hil_run.sh
+      - world:=/sim_worlds/${SIM_WORLD:-polygon}.sdf
+"""
+new = """    volumes:
+      - ./hil_run.sh:/hil_run.sh:ro
+      - /home/ros2/rob_box_hilvideo/out:/sim_video
+    command:
+      - /ros_scripts/ros_with_namespace.sh
+      - bash
+      - -c
+      - python3 /mkdepot.py && exec /hil_run.sh world:=/sim_video/world.sdf x:=0.0 y:=0.0 yaw:=0.0
+"""
+if old not in text:
+    raise SystemExit("compose block not found")
+pathlib.Path(dst).write_text(text.replace(old, new, 1), encoding="utf-8")
+PY
+ART="$WORK/depot-art"
+rm -rf "$ART"
+: > "$WORK/fake_hil.log"
+env -u HIL_EXPECT_WORLD HIL_CMD="$WORK/bin/fake_hil" HIL_SANDBOX_REPO="$DEPOT_SBX" \
+    HIL_WORLD_CHECK_DIR="$ART" FAKE_HIL_LOG="$WORK/fake_hil.log" \
+    bash "$DEPOT" on > "$WORK/depot-on.log" 2>&1
+rc=$?
+check "Depot-сценарий без env на Depot-копии: сам выставил depot и позвал hil.sh (rc=$rc)" \
+    '[ "$rc" -eq 0 ] && grep -q "^HIL_ON$" "$WORK/fake_hil.log" && grep -qx "HIL_EXPECT_WORLD=depot" "$ART/expect_world.txt"'
+check "Depot-сценарий: каталог Compose записан до hil.sh" \
+    '[ "$(cat "$ART/compose_dir.txt")" = "$DEPOT_SBX" ]'
+
+# goals без PASS мира — цель не уходит (фейковый runvideo не вызывается).
+printf '#!/bin/sh\necho GOAL >> "$FAKE_GOAL_LOG"\n' > "$WORK/bin/fake_route"
+chmod +x "$WORK/bin/fake_route"
+: > "$WORK/fake_goal.log"
+env -u HIL_EXPECT_WORLD HIL_WORLD_CHECK_DIR="$WORK/no-such-world" RUNVIDEO="$WORK/bin/fake_route" \
+    FAKE_GOAL_LOG="$WORK/fake_goal.log" \
+    bash "$DEPOT" goals M1 > "$WORK/depot-goals.log" 2>&1
+rc=$?
+check "Depot goals без проверки мира: WORLD_MISMATCH, цель не отправлена (rc=$rc)" \
+    '[ "$rc" -ne 0 ] && grep -q WORLD_MISMATCH "$WORK/depot-goals.log" && [ ! -s "$WORK/fake_goal.log" ]'
+
+# goals после FAIL-вердикта — тоже не шлёт. После PASS — шлёт.
+printf 'FAIL: WORLD_MISMATCH: args missing\n' > "$ART/verdict.txt"
+env HIL_WORLD_CHECK_DIR="$ART" RUNVIDEO="$WORK/bin/fake_route" FAKE_GOAL_LOG="$WORK/fake_goal.log" \
+    bash "$DEPOT" goals M1 > "$WORK/depot-goals-fail.log" 2>&1
+rc=$?
+check "Depot goals при WORLD_MISMATCH: цель не отправлена (rc=$rc)" \
+    '[ "$rc" -ne 0 ] && [ ! -s "$WORK/fake_goal.log" ]'
+printf 'PASS: depot: args world.sdf, mount /sim_video, sdf Depot_vid\n' > "$ART/verdict.txt"
+env HIL_WORLD_CHECK_DIR="$ART" RUNVIDEO="$WORK/bin/fake_route" FAKE_GOAL_LOG="$WORK/fake_goal.log" \
+    bash "$DEPOT" goals M1 > "$WORK/depot-goals-pass.log" 2>&1
+rc=$?
+check "Depot goals после PASS: первая цель ушла (rc=$rc)" \
+    '[ "$rc" -eq 0 ] && grep -q "^GOAL$" "$WORK/fake_goal.log"'
 
 echo
 echo "итог: $pass PASS, $failures FAIL"
