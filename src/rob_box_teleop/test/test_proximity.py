@@ -388,6 +388,34 @@ def test_wall_in_front_of_one_corner_stops_at_stop_m_straight_and_on_an_arc(w):
         assert zone_at(corner_wall, (0.0, 0.0, 0.0), 0.15, w) == zone
 
 
+@pytest.mark.parametrize("w", [0.0, 0.6, -0.6])
+def test_corner_wall_at_0162_inside_the_corridor_stops_even_at_max_yaw(w):
+    """#4631: грань стенки в 0.162 м впереди левого угла и внутри коридора хода (|y| ≤ 0.3525) — корпус на неё
+    наедет. Стоп с порога ``stop_m`` 0.20, не с ``side_stop_m``: зазор 0.162 даёт запас −0.038. На дуге с потолком
+    угловой 0.6 рад/с (``max_vel_theta``) коридор прямого хода не отменяется — защита не слабее прямого хода."""
+    gap = 0.162
+    corner_wall = wall(BODY.x_max + gap, BODY.x_max + gap + 0.1, 0.20, 2.0)
+    inside = corner_wall[
+        (corner_wall[:, 1] >= BODY.y_min - TH.corridor_margin_m)
+        & (corner_wall[:, 1] <= BODY.y_max + TH.corridor_margin_m)
+    ]
+    assert len(inside) >= TH.min_points  # грань заходит в коридор, иначе это торец сбоку, а не угол на пути
+    threat = px.nearest_threat(BODY, corner_wall, 0.15, w, TH)
+    assert px.classify(threat, TH) == px.ZONE_STOP
+    assert threat.stop_gap == pytest.approx(gap)
+    assert threat.slack == pytest.approx(gap - TH.stop_m)
+
+
+@pytest.mark.parametrize("dx,dy", [(0.15, 0.06), (0.16, 0.08), (0.17, 0.10)])
+def test_point_beside_the_corner_outside_the_corridor_is_a_jamb_not_a_stop(dx, dy):
+    """Решение Шифу 10.11 (#4438): точка впереди-сбоку вне коридора хода с зазором 0.16–0.19 м — тот же косяк,
+    что торец стенки в #4631. Порог такой точки ``side_stop_m`` 0.08, а не ``stop_m``: стопа нет."""
+    point = (BODY.x_max + dx, BODY.y_max + dy)
+    assert point[1] > BODY.y_max + TH.corridor_margin_m  # вне коридора (|y| > 0.3525)
+    assert TH.side_stop_m < BODY.gap(*point) < TH.stop_m
+    assert px.classify(px.nearest_threat(BODY, [point, point], 0.15, 0.0, TH), TH) == px.ZONE_WARN
+
+
 @pytest.mark.parametrize("w", [0.0, 0.05, -0.05])
 @pytest.mark.parametrize("yaw_deg", [0.0, 2.0, -2.0])
 def test_wall_alongside_at_the_coverage_perimeter_offset_never_stops(w, yaw_deg):
