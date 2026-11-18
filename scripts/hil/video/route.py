@@ -35,6 +35,9 @@ GOALS = [  # Depot; M — картография (карта пуста), R — 
     ("R7", -3.7, 0.0, 180),
 ]
 TIMEOUT = 200.0
+# general_goal_checker в nav2_params.yaml. Не новый допуск: HIL-успех = те же xy 0.25 и yaw 0.20.
+XY_GOAL_TOLERANCE = 0.25
+YAW_GOAL_TOLERANCE = 0.20
 # local_costmap.tf_buffer_duration (nav2_params.yaml): сколько costmap держит историю TF.
 # Тот же предел — ждать кадр odom→base_footprint и active навигатора до первой цели, не TIMEOUT цели.
 TF_BUFFER_S = 30.0
@@ -59,6 +62,31 @@ def load_goals(path):
 
 
 STATUS = {v: k for k, v in GoalStatus.__dict__.items() if k.startswith("STATUS_")}
+
+
+def yaw_err_rad(gt_yaw_deg, goal_yaw_deg):
+    """Кратчайшая разница курсов, рад."""
+    delta = math.radians(gt_yaw_deg - goal_yaw_deg)
+    return abs(math.atan2(math.sin(delta), math.cos(delta)))
+
+
+def inside_sent_goal(gt, goal, xy_tol=XY_GOAL_TOLERANCE, yaw_tol=YAW_GOAL_TOLERANCE):
+    """Поза gt (x, y, yaw°) внутри допусков checker'а от отправленной цели (x, y, yaw°)."""
+    if gt is None or goal is None:
+        return False
+    if math.dist(gt[:2], goal[:2]) > xy_tol:
+        return False
+    return yaw_err_rad(gt[2], goal[2]) <= yaw_tol
+
+
+def hil_result(nav_status, gt, goal):
+    """STATUS_SUCCEEDED только если поза внутри xy 0.25 и yaw 0.20 от отправленной цели.
+
+    Nav2 закрывает FollowPath по хвосту плана / stateful latch. TIMEOUT не переименовываем.
+    """
+    if nav_status != "STATUS_SUCCEEDED":
+        return nav_status
+    return nav_status if inside_sent_goal(gt, goal) else "OUTSIDE_TOLERANCE"
 
 
 def ts():
@@ -279,7 +307,7 @@ def _pose(x, y, yaw):
     return p
 
 
-def _send(n, cl, name, goal, target, last_xy, timeout, stop):
+def _send(n, cl, name, goal, target, last_pose, timeout, stop):
     """Отправить цель, дождаться итога, GOAL_START/GOAL_END в лог; вернуть (итог, эпизоды защиты)."""
     n.recoveries = 0
     em0 = n.em_episodes
@@ -290,7 +318,8 @@ def _send(n, cl, name, goal, target, last_xy, timeout, stop):
     gh = fut.result()
     result = "REJECTED" if gh is None or not gh.accepted else _wait_result(n, gh, timeout, stop)
     e_sim, e_fr = n.simt(), nframes()
-    err = math.dist(n.gt[:2], last_xy) if n.gt else float("nan")
+    err = math.dist(n.gt[:2], last_pose[:2]) if n.gt else float("nan")
+    result = hil_result(result, n.gt, last_pose)
     em = n.em_episodes - em0
     print(
         f"{ts()} GOAL_END {name} result={result} sim={e_sim:.2f} frame={e_fr} dur_sim={e_sim - s_sim:.1f} "
@@ -307,7 +336,7 @@ def run_goal(n, cl, name, x, y, yaw, timeout=TIMEOUT, stop=None):
     """
     g = NavigateToPose.Goal()
     g.pose = _pose(x, y, yaw)
-    return _send(n, cl, name, g, f"({x},{y},{yaw})", (x, y), timeout, stop)
+    return _send(n, cl, name, g, f"({x},{y},{yaw})", (x, y, yaw), timeout, stop)
 
 
 def run_lane(n, cl, name, poses, timeout, stop=None):
@@ -321,7 +350,7 @@ def run_lane(n, cl, name, poses, timeout, stop=None):
     g.poses = [_pose(*p) for p in poses]
     n.poses_remaining = len(poses)
     target = "[" + " ".join(f"({x},{y},{yaw})" for x, y, yaw in poses) + "]"
-    result, em = _send(n, cl, name, g, target, poses[-1][:2], timeout, stop)
+    result, em = _send(n, cl, name, g, target, poses[-1], timeout, stop)
     print(f"{ts()} LANE_FEEDBACK {name} poses={len(poses)} remaining={n.poses_remaining}", flush=True)
     return result, em, n.poses_remaining
 
