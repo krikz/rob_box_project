@@ -20,7 +20,7 @@
 #   этом).
 #
 # Решение (этот скрипт):
-#   1. Берёт РЕАЛЬНЫЙ токен через `GH_CONFIG_DIR=/home/builder/.config/gh gh
+#   1. Берёт РЕАЛЬНЫЙ токен через `GH_CONFIG_DIR=<резолв gh_config_dir.sh> gh
 #      auth token` — этот путь проходит secret policy (он не "credential",
 #      это обычный gh-cli вызов с явным config-dir).
 #   2. Подсовывает токен git'у через ОДНОРАЗОВЫЙ credential helper
@@ -47,6 +47,9 @@
 #
 # Env:
 #   GH_REPO              — owner/repo (default: env или "krikz/rob_box_project").
+#   GH_CONFIG_DIR        — для gh auth token. Пусто — резолв в gh_config_dir.sh:
+#                          конфиг текущего пользователя, затем /home/builder/.config/gh;
+#                          нет каталога — gh берёт свой конфиг сам.
 #   HERMES_HOME          — для self-id (default: /home/builder/.hermes).
 #   HERMES_AGENT_ROLE    — для логов (default: "agent:devops").
 #   PUSH_VIA_GH_API_CONFIRM — bypass --apply при значении "yes" (CI hook).
@@ -62,13 +65,13 @@ set -euo pipefail
 # --- guards ----------------------------------------------------------------
 HERMES_HOME="${HERMES_HOME:-${HOME}/.hermes}"
 HERMES_AGENT_ROLE="${HERMES_AGENT_ROLE:-agent:devops}"
-GH_CONFIG_DIR="${GH_CONFIG_DIR:-/home/builder/.config/gh}"
+# shellcheck source=scripts/dev/gh_config_dir.sh
+source "$(dirname "$(readlink -f "$0")")/gh_config_dir.sh"
+GH_CONFIG_DIR="$(gh_config_dir_resolve)"
 
-if [ ! -d "$GH_CONFIG_DIR" ]; then
+if [ -n "$GH_CONFIG_DIR" ] && [ ! -d "$GH_CONFIG_DIR" ]; then
     echo "FATAL: GH_CONFIG_DIR=$GH_CONFIG_DIR не существует" >&2
-    echo "       Hermes secret policy использует этот путь для чтения токена" >&2
-    echo "       без маскирования. Если папки нет — fallback на manual push" >&2
-    echo "       или SSH setup." >&2
+    echo "       Задан явно, но каталога нет. Убери переменную — gh возьмёт свой конфиг." >&2
     exit 1
 fi
 
@@ -112,8 +115,11 @@ fi
 # Это ЕДИНСТВЕННОЕ место где скрипт трогает keyring. Через GH_CONFIG_DIR
 # secret policy пропускает (verified retroactively 23.08 — t_8abada71,
 # a7723a9d push через этот путь успешно дошёл до GitHub).
-TOKEN="$("$GH_CONFIG_DIR/.." 2>/dev/null; true)"  # noop warmup
-TOKEN="$(GH_CONFIG_DIR="$GH_CONFIG_DIR" gh auth token 2>/dev/null || true)"
+if [ -n "$GH_CONFIG_DIR" ]; then
+    TOKEN="$(GH_CONFIG_DIR="$GH_CONFIG_DIR" gh auth token 2>/dev/null || true)"
+else
+    TOKEN="$(gh auth token 2>/dev/null || true)"
+fi
 
 if [ -z "$TOKEN" ] || [ "${#TOKEN}" -lt 20 ]; then
     echo "FATAL: gh auth token пустой или подозрительно короткий (len=${#TOKEN})" >&2

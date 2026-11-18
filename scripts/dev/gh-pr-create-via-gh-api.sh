@@ -47,7 +47,9 @@
 #
 # Env:
 #   GH_REPO              — owner/repo (default: "krikz/rob_box_project").
-#   GH_CONFIG_DIR        — для gh auth token (default: /home/builder/.config/gh).
+#   GH_CONFIG_DIR        — для gh auth token. Пусто — резолв в gh_config_dir.sh:
+#                          конфиг текущего пользователя, затем /home/builder/.config/gh;
+#                          нет каталога — gh берёт свой конфиг сам.
 #   HERMES_AGENT_ROLE    — для логов (default: "agent:devops").
 #   PR_VIA_GH_API_CONFIRM — bypass --apply при значении "yes" (CI hook).
 #
@@ -62,13 +64,14 @@ set -euo pipefail
 # --- guards ----------------------------------------------------------------
 HERMES_HOME="${HERMES_HOME:-${HOME}/.hermes}"
 HERMES_AGENT_ROLE="${HERMES_AGENT_ROLE:-agent:devops}"
-GH_CONFIG_DIR="${GH_CONFIG_DIR:-/home/builder/.config/gh}"
+# shellcheck source=scripts/dev/gh_config_dir.sh
+source "$(dirname "$(readlink -f "$0")")/gh_config_dir.sh"
+GH_CONFIG_DIR="$(gh_config_dir_resolve)"
 GH_REPO="${GH_REPO:-krikz/rob_box_project}"
 
-if [ ! -d "$GH_CONFIG_DIR" ]; then
+if [ -n "$GH_CONFIG_DIR" ] && [ ! -d "$GH_CONFIG_DIR" ]; then
     echo "FATAL: GH_CONFIG_DIR=$GH_CONFIG_DIR не существует" >&2
-    echo "       Hermes secret policy использует этот путь для чтения токена" >&2
-    echo "       без маскирования. Если папки нет — fallback на manual PR." >&2
+    echo "       Задан явно, но каталога нет. Убери переменную — gh возьмёт свой конфиг." >&2
     exit 1
 fi
 
@@ -113,7 +116,11 @@ if [ -n "$BODY_FILE" ] && [ ! -r "$BODY_FILE" ]; then
 fi
 
 # --- resolve token (тот же путь что и в push-via-gh-api.sh) ---------------
-TOKEN="$(GH_CONFIG_DIR="$GH_CONFIG_DIR" gh auth token 2>/dev/null || true)"
+if [ -n "$GH_CONFIG_DIR" ]; then
+    TOKEN="$(GH_CONFIG_DIR="$GH_CONFIG_DIR" gh auth token 2>/dev/null || true)"
+else
+    TOKEN="$(gh auth token 2>/dev/null || true)"
+fi
 
 if [ -z "$TOKEN" ] || [ "${#TOKEN}" -lt 20 ]; then
     echo "FATAL: gh auth token пустой или подозрительно короткий (len=${#TOKEN})" >&2
