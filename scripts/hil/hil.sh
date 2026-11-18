@@ -25,8 +25,10 @@
 #   6. ждём: в графе ровно один /controller_manager, контейнер ros2-control не работает —
 #      значит, единственный контроллер — Gazebo; у /diff_drive_controller/cmd_vel_unstamped
 #      ровно один подписчик (§5.1). Иначе сим гасится, робот остаётся без моторов.
-# off: сим гасится первым, затем на Main, Vision и Sound `docker compose up -d --no-deps` тех же
-#   сервисов с теми же образами (закреплены по работающим контейнерам), замок снимается;
+# off: сим гасится первым, затем на Main — Created-контейнеры MAIN_SIM_TIME (в т.ч. с
+#   hash-префиксом вроде abe6c83d1f0a_imu-filter) docker rm, иначе следующий recreate
+#   Conflict; дальше Vision и Sound `docker compose up -d --no-deps` тех же сервисов с
+#   теми же образами (закреплены по работающим контейнерам), замок снимается;
 #   восстановление пересоздаёт voice-assistant — активный e2e_mode сбросится: громкое
 #   предупреждение в логе, сам off не блокируем (restore возвращает моторы, #4686);
 #   последним — сверка боевого `SELECT * FROM maps` со снапшотом on: изменился — выход 3.
@@ -298,8 +300,54 @@ sim_down() {
 
 # ── Main Pi: контур навигации в HIL ───────────────────────────────────────
 
+# created_containers_to_rm: stdin «ID NAMES STATUS…» (как docker ps --format),
+# аргументы — имена сервисов. stdout — ID со статусом Created, чьё имя равно
+# сервису или оканчивается на _сервис / -сервис (hash-префикс compose v1,
+# project-svc[-N] v2). Up/Exited/Paused не трогаем — только Created.
+created_containers_to_rm() {
+    local id name status cand tail svc
+    while read -r id name status _; do
+        [ -n "${id:-}" ] && [ -n "${name:-}" ] || continue
+        case "$status" in
+            Created | created) ;;
+            *) continue ;;
+        esac
+        cand="$name"
+        tail="${name##*-}"
+        case "$tail" in
+            "" | *[!0-9]*) ;;
+            *) cand="${name%-*}" ;;
+        esac
+        for svc in "$@"; do
+            case "$name" in
+                "$svc" | *_"$svc" | *-"$svc") printf '%s\n' "$id"; continue 2 ;;
+            esac
+            if [ "$cand" != "$name" ]; then
+                case "$cand" in
+                    "$svc" | *_"$svc" | *-"$svc") printf '%s\n' "$id"; continue 2 ;;
+                esac
+            fi
+        done
+    done
+}
+
+# Убрать Created-контейнеры MAIN_SIM_TIME на Main до recreate: осиротевший
+# abe6c83d1f0a_imu-filter (и аналоги) иначе даёт Conflict на следующем up.
+main_rm_created_sim() {
+    local list ids line
+    list=$(rsh "$HIL_MAIN_HOST" "docker ps -a --format '{{.ID}} {{.Names}} {{.Status}}'") || true
+    ids=$(printf '%s\n' "$list" | created_containers_to_rm "${MAIN_SIM_TIME[@]}")
+    [ -n "$ids" ] || return 0
+    line=$(printf '%s\n' "$ids" | tr '\n' ' ')
+    line=${line% }
+    log "Main: docker rm Created контура HIL: $line"
+    # shellcheck disable=SC2086
+    rsh "$HIL_MAIN_HOST" "docker rm $line" || log "⚠️  docker rm Created не полностью ($line)"
+}
+
 # compose up сервисов контура (on и restart): sim time, карта HIL_MAPS_DIR, режим rtabmap HIL_RTABMAP_MODE.
 main_sim_up() {  # main_sim_up [флаги compose up] <сервисы>...
+    main_rm_created_sim
     rsh "$HIL_MAIN_HOST" "cd $(q "$HIL_MAIN_DIR") && HIL_MAPS_DIR=$(q "$HIL_MAPS_DIR") HIL_RTABMAP_MODE=$(q "$HIL_RTABMAP_MODE") HIL_GUARD_SOUND=$(q "$HIL_GUARD_SOUND") docker compose -f docker-compose.yaml -f $(q "$HIL_REMOTE_DIR/main.images.yaml") -f $(q "$HIL_REMOTE_DIR/main.hil.yaml") up -d --no-deps --pull never $*"
 }
 
@@ -473,6 +521,7 @@ cmd_off() {
 
     log "Main: возвращаю ${MAIN_SIM_TIME[*]} ${MAIN_STOP[*]} (боевое окружение, те же образы)"
     rpi "$HIL_MAIN_HOST" pin "$HIL_MAIN_DIR" "$HIL_REMOTE_DIR/main.images.yaml"
+    main_rm_created_sim
     rpi "$HIL_MAIN_HOST" compose "$HIL_MAIN_DIR" -f docker-compose.yaml -f "$HIL_REMOTE_DIR/main.images.yaml" \
         up -d --no-deps --pull never "${MAIN_SIM_TIME[@]}" "${MAIN_STOP[@]}"
     log "Vision: возвращаю ${VISION_STOP[*]}"
