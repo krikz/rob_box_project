@@ -23,7 +23,8 @@
 #      В контейнере gazebo сторож (docker/sim/hil_run.sh): при живом /controller_manager
 #      робота Gazebo не стартует, второй контроллер позже — Gazebo гасится;
 #   6. ждём: в графе ровно один /controller_manager, контейнер ros2-control не работает —
-#      значит, единственный контроллер — Gazebo. Иначе сим гасится, робот остаётся без моторов.
+#      значит, единственный контроллер — Gazebo; у /diff_drive_controller/cmd_vel_unstamped
+#      ровно один подписчик (§5.1). Иначе сим гасится, робот остаётся без моторов.
 # off: сим гасится первым, затем на Main, Vision и Sound `docker compose up -d --no-deps` тех же
 #   сервисов с теми же образами (закреплены по работающим контейнерам), замок снимается;
 #   восстановление пересоздаёт voice-assistant — активный e2e_mode сбросится: громкое
@@ -284,6 +285,12 @@ sim_gazebo_state() {
 sim_cm_count() {
     rsh "$HIL_SANDBOX_HOST" "docker exec $(q "$HIL_SIM_PREFIX-gazebo") /entrypoint.sh python3 -m rob_box_sim.hil count --settle 3 2>/dev/null | grep -E '^[0-9]+$' | tail -n 1 | grep . || echo -" || echo -
 }
+# Подписчики /diff_drive_controller/cmd_vel_unstamped (§5.1): норма HIL — 1 (только Gazebo).
+# «-» — gazebo не работает или topic info не ответил.
+CMD_VEL_UNSTAMPED="/diff_drive_controller/cmd_vel_unstamped"
+sim_cmd_vel_subs() {
+    rsh "$HIL_SANDBOX_HOST" "docker exec $(q "$HIL_SIM_PREFIX-gazebo") /entrypoint.sh ros2 topic info $(q "$CMD_VEL_UNSTAMPED") 2>/dev/null | sed -n 's/^Subscription count: *//p' | tail -n 1 | grep -E '^[0-9]+$' || echo -" || echo -
+}
 sim_down() {
     log "песочница: гашу zenoh-router и gazebo ($HIL_SIM_PROJECT)"
     sim_compose down --timeout 20 || log "⚠️  compose down на песочнице вернул ошибку"
@@ -365,8 +372,8 @@ cmd_on() {
     log "песочница: поднимаю ${SIM_SERVICES[*]} (мир $HIL_SIM_WORLD)"
     sim_compose up -d --no-build "${SIM_SERVICES[@]}" || { sim_down; die "песочница: compose up не прошёл; робот без моторов, hil.sh off"; }
 
-    log "жду ровно один /controller_manager (Gazebo), до $HIL_WAIT_CM_S с"
-    local deadline=$(( $(date +%s) + HIL_WAIT_CM_S )) cm gz
+    log "жду ровно один /controller_manager и одного подписчика $CMD_VEL_UNSTAMPED (§5.1), до $HIL_WAIT_CM_S с"
+    local deadline=$(( $(date +%s) + HIL_WAIT_CM_S )) cm gz subs
     while :; do
         gz=$(sim_gazebo_state)
         case "$gz" in
@@ -382,14 +389,27 @@ cmd_on() {
             *" running "*) sim_down; die "ros2-control робота работает ($st) — Gazebo погашен; hil.sh off" ;;
         esac
         if [ "$cm" = 1 ]; then
-            log "✅ /controller_manager ровно один, ros2-control робота: ${st#ros2-control }"
-            break
-        fi
-        if [ "$cm" != 0 ] && [ "$cm" != - ]; then
+            # §5.1: один подписчик cmd_vel_unstamped (Gazebo); два — ещё слушает ros2-control.
+            subs=$(sim_cmd_vel_subs)
+            if [ "$subs" = 1 ]; then
+                log "✅ /controller_manager ровно один, $CMD_VEL_UNSTAMPED подписчиков: 1, ros2-control робота: ${st#ros2-control }"
+                break
+            fi
+            if [ "$subs" != 0 ] && [ "$subs" != - ]; then
+                sim_down
+                die "$CMD_VEL_UNSTAMPED подписчиков: $subs (ждали 1) — Gazebo погашен; hil.sh off"
+            fi
+        elif [ "$cm" != 0 ] && [ "$cm" != - ]; then
             sim_down
             die "/controller_manager в графе: $cm (ждали 1) — Gazebo погашен; hil.sh off"
         fi
-        [ "$(date +%s)" -lt "$deadline" ] || { sim_down; die "за $HIL_WAIT_CM_S с контроллер Gazebo не появился; hil.sh off"; }
+        if [ "$(date +%s)" -ge "$deadline" ]; then
+            sim_down
+            if [ "$cm" = 1 ]; then
+                die "за $HIL_WAIT_CM_S с у $CMD_VEL_UNSTAMPED не ровно 1 подписчик (сейчас ${subs:--}); hil.sh off"
+            fi
+            die "за $HIL_WAIT_CM_S с контроллер Gazebo не появился; hil.sh off"
+        fi
         sleep 5
     done
     log "HIL включён. Сторож в gazebo следит дальше (docker logs $HIL_SIM_PREFIX-gazebo | grep hil-guard)."
@@ -564,7 +584,9 @@ cmd_status() {
     local gz
     gz=$(sim_gazebo_state)
     case "$gz" in
-        running*) echo "── /controller_manager в графе (сторож в gazebo): $(sim_cm_count) (норма HIL — 1)" ;;
+        running*)
+            echo "── /controller_manager в графе (сторож в gazebo): $(sim_cm_count) (норма HIL — 1)"
+            echo "── $CMD_VEL_UNSTAMPED подписчиков: $(sim_cmd_vel_subs) (норма HIL — 1)" ;;
         *) echo "── gazebo: $gz" ;;
     esac
 }
