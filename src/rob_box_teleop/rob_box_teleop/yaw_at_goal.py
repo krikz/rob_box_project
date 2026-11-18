@@ -38,6 +38,15 @@ def yaw_outside(current: float, goal: float, tolerance: float) -> bool:
     return abs(shortest_yaw(current, goal)) > tolerance
 
 
+def xy_inside(pose: Optional[Pose], goal: Pose, xy_tolerance_m: float) -> bool:
+    """Поза внутри xy-допуска цели. Нет позы или допуск ≤ 0 — нет."""
+    if pose is None or xy_tolerance_m <= 0.0:
+        return False
+    dx = float(pose[0]) - float(goal[0])
+    dy = float(pose[1]) - float(goal[1])
+    return dx * dx + dy * dy <= xy_tolerance_m * xy_tolerance_m
+
+
 def _plugin(section: Mapping, name: str) -> Mapping:
     block = section.get(name)
     return block if isinstance(block, Mapping) else {}
@@ -96,11 +105,7 @@ def turn_at_goal(
     внутри допуска yaw — стоп (``done``): цель принял бы goal checker. Иначе крутим
     к цели со знаком кратчайшего угла, не быстрее ``max_omega``.
     """
-    if xy_tolerance_m <= 0.0 or max_omega <= 0.0:
-        return None
-    dx = float(pose[0]) - float(goal[0])
-    dy = float(pose[1]) - float(goal[1])
-    if dx * dx + dy * dy > xy_tolerance_m * xy_tolerance_m:
+    if max_omega <= 0.0 or not xy_inside(pose, goal, xy_tolerance_m):
         return None
     dyaw = shortest_yaw(float(pose[2]), float(goal[2]))
     if not yaw_outside(float(pose[2]), float(goal[2]), yaw_tolerance_rad):

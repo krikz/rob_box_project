@@ -39,7 +39,7 @@ _STATUS_ACCEPTED = 1
 _STATUS_EXECUTING = 2
 # Живая родительская цель (NavigateToPose или NavigateThroughPoses). Отмена и успех — уже не наша забота.
 _NAV_LIVE = frozenset({_STATUS_ACCEPTED, _STATUS_EXECUTING})
-# План старше этого — цель уже не едет (planner молчит без цели). Не крутим по старому хвосту.
+# План старше этого далеко от хвоста — не цель. У цели planner замирает; порог не поднимаем.
 PLAN_STALE_S = 2.0
 
 
@@ -56,18 +56,31 @@ def _atan2(y: float, x: float) -> float:
     return math.atan2(y, x)
 
 
-def goal_from_plan(path, now_s: float, stale_s: float = PLAN_STALE_S) -> Optional[tuple]:
-    """Конец ``/plan`` как цель checker'а. Пустой, чужой кадр или старый план — не цель."""
+def goal_from_plan(
+    path,
+    now_s: float,
+    stale_s: float = PLAN_STALE_S,
+    pose: Optional[tuple] = None,
+    xy_tolerance_m: float = 0.0,
+) -> Optional[tuple]:
+    """Конец ``/plan`` как цель checker'а.
+
+    Пустой или чужой кадр — не цель. План старше ``stale_s`` — не цель, кроме
+    позы уже внутри xy-допуска хвоста: у цели planner замирает, разворот ещё нужен.
+    Далеко от старого хвоста путь не выдумываем.
+    """
     poses = getattr(path, "poses", None) or []
     header = getattr(path, "header", None)
     frame = getattr(header, "frame_id", "")
     if not poses or frame != MAP_FRAME:
         return None
+    last = poses[-1].pose
+    tail = (float(last.position.x), float(last.position.y), _yaw_quat(last.orientation))
     stamp = getattr(header, "stamp", None)
     if stamp is not None and now_s - (stamp.sec + stamp.nanosec * 1e-9) > stale_s:
-        return None
-    last = poses[-1].pose
-    return (float(last.position.x), float(last.position.y), _yaw_quat(last.orientation))
+        if not yag.xy_inside(pose, tail, xy_tolerance_m):
+            return None
+    return tail
 
 
 class YawAtGoal:
@@ -128,9 +141,17 @@ class YawAtGoal:
         return (tf.translation[0], tf.translation[1], tf.yaw)
 
     def _tick(self) -> None:
-        goal = goal_from_plan(self._plan, self._now()) if self._nav_live else None
-        pose = self._pose() if goal is not None else None
-        turn = yag.turn_at_goal(pose, goal, self._xy, self._yaw, self._omega) if pose is not None else None
+        pose = self._pose() if self._nav_live else None
+        goal = (
+            goal_from_plan(self._plan, self._now(), pose=pose, xy_tolerance_m=self._xy)
+            if self._nav_live
+            else None
+        )
+        turn = (
+            yag.turn_at_goal(pose, goal, self._xy, self._yaw, self._omega)
+            if pose is not None and goal is not None
+            else None
+        )
         if turn is None:
             self._turning = False
             return
