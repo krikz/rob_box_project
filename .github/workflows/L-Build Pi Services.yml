@@ -540,7 +540,9 @@ jobs:
             # scripts/ci/push-image-versions.sh делает pull --rebase перед push
             # и ФЕЙЛИТ job при невосстановимой ошибке (раньше job молча терял
             # коммит). Main и Sound правят один файл docker/sound/.image-versions.*
-            # (разные строки, между ними строка-разделитель — rebase без конфликта).
+            # Разделитель соседних строк rebase не спасает (run 44404978409):
+            # пуш получает список своих *_TAG и переписывает только их поверх
+            # свежей ветки. Чужие строки и разделитель не трогает.
             #
             # Issue #1826: round-ветки (z-{e2e}/test-round-*) — transient
             # branches для e2e-прогонов. SHA-tag push в round → agent-flow
@@ -556,7 +558,10 @@ jobs:
               echo "   SHA-tag ${NEW_TAG} already pushed to local registry; deploy on round uses IMAGE_TAG directly"
             else
               git commit -m "ci: ${PI} SHA tags → ${NEW_TAG} [skip ci]"
-              bash scripts/ci/push-image-versions.sh "$CURRENT_BRANCH" "$PI"
+              # VAR-список нужен пушу: при конфликте rebase в общем
+              # .image-versions.* переписываются только строки этого билда
+              # (run 44404978409 — разделитель соседних строк не спасает).
+              bash scripts/ci/push-image-versions.sh "$CURRENT_BRANCH" "$PI" "${VERSION_VARS[@]}"
             fi
           fi
 
