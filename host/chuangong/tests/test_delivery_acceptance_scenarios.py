@@ -1,6 +1,8 @@
 """Слот 6: офлайн-сценарии приёмки доставки (runbook docs/runbooks/delivery-acceptance.md).
 
 Фикстуры World + существующий minisign.verify / ActivationMachine.
+S2 (авто-путь) = отказ health; S3 (ручной) = rollback_planned. Стек не восстанавливают:
+восстановление стека доказывает тест исполнителя, не эта фикстура.
 Не execute compose, не робот, не biguan в коде. Пилот не утверждается.
 """
 
@@ -163,44 +165,71 @@ def test_healthy_passes_bad_signature_fails_contrast(tmp_path, world):
         minisign.verify(data.replace(b"abc1234", b"evil999"), sig, public)
 
 
-# --- S2 failing release / health ---
+# --- S2 auto-rollback path: refusal only (health fail does not call rollback) ---
 
 
 def test_failing_release_health_blocks(tmp_path, world):
-    """S2: unhealthy health → blocked; задел под авто-откат фазы C, execute нет."""
+    """S2 авто-откат (офлайн): unhealthy → blocked/health_check_failed, не rollback_planned.
+
+    Критерий §1.4 до фазы C: отказ activate, авто-связь health→rollback не сработала.
+    Восстановление стека доказывает тест исполнителя, не эта фикстура.
+    """
     cfg = _cfg(tmp_path, world)
-    deps = _deps(world, FakeDocker())
+    docker = FakeDocker()
+    deps = _deps(world, docker)
     _stage(cfg, deps, world.release)
-    _save_history(cfg, "2026.11.08-1")
+    _save_history(cfg, "2026.11.08-1", previous=None)
+    pulled_after_stage = list(docker.pulled)
 
     rec = _machine(cfg, deps, Health("unhealthy", "vision-svc0: exited (127)")).activate(
         world.release["release"]
     )
 
+    # Отказ — не план отката и не ручной rollback_planned (§2.1 / S3).
     assert rec["state"] == "blocked"
     assert rec["reason"] == "health_check_failed"
     assert rec["detail"] == "vision-svc0: exited (127)"
-    assert json.loads(cfg.state_file.read_text(encoding="utf-8"))["current"] == "2026.11.08-1"
+    assert rec["state"] != "rollback_planned"
+    assert "plan" not in rec or rec.get("plan") in (None, [])
+    assert "would" not in rec or rec.get("would") is None
+    saved = json.loads(cfg.state_file.read_text(encoding="utf-8"))
+    assert saved["current"] == "2026.11.08-1"
+    assert saved.get("previous") in (None, "null", "")
+    # Стек не восстановлен и не переключён: compose/pull после stage не трогали.
+    assert docker.pulled == pulled_after_stage
 
 
-# --- S3 manual rollback ---
+# --- S3 manual rollback: plan only (operator), not auto, not stack restore ---
 
 
 def test_manual_rollback_plan(tmp_path, world):
-    """S3: ручной rollback на signed previous → rollback_planned, история не swap."""
+    """S3 ручной откат (офлайн): явный rollback() → rollback_planned, история не swap.
+
+    Критерий §2.1 — другой, чем S2/§1.4: оператор вызывает rollback, не health-автомат.
+    Восстановление стека доказывает тест исполнителя, не эта фикстура.
+    """
     cfg = _cfg(tmp_path, world)
-    deps = _deps(world, FakeDocker())
+    docker = FakeDocker()
+    deps = _deps(world, docker)
     previous = world.release["release"]
     _stage(cfg, deps, world.release)
     world.publish("2026.11.10-1")
     _save_history(cfg, "2026.11.10-1", previous)
+    pulled_after_stage = list(docker.pulled)
 
     rec = _machine(cfg, deps, Health()).rollback()
 
     assert rec["state"] == "rollback_planned", rec.get("detail")
+    assert rec["reason"] != "health_check_failed"
     assert rec["would"] == {"current": previous, "previous": "2026.11.10-1"}
     assert rec["current"] == "2026.11.10-1" and rec["previous"] == previous
     assert all(step["execute"] is False for step in rec["plan"])
+    assert [step["node"] for step in rec["plan"]] == ["vision", "sound", "main"]
+    # История на диске не swap — только план.
+    saved = json.loads(cfg.state_file.read_text(encoding="utf-8"))
+    assert saved["current"] == "2026.11.10-1"
+    assert saved["previous"] == previous
+    assert docker.pulled == pulled_after_stage
 
 
 # --- S5 HIL-lock ---

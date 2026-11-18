@@ -68,47 +68,60 @@ rbt_infra ADR-0003. Карточки: #4375, #4694.
 
 **PASS (офлайн сейчас):** activate с `Health(status=unhealthy, …)` → `state=blocked`,
 `reason=health_check_failed`, detail = сырая строка. История не переписана.
+Состояние **не** `rollback_planned` (авто-откат из health ещё не вызван — см. §1.4).
 
 **PASS (живо, фаза C):** переключение не остаётся на сломанном релизе; см. §1.4.
 
-### 1.4 Автоматический возврат **[фаза C]**
+### 1.4 Автоматический откат **[фаза C]** — критерии отдельно от §2.1
 
-Задумка ADR-0003 / ADR-0168: после fail health агент сам активирует `previous`
-(порядок ролей тот же, без ручного workflow).
+Задумка ADR-0003 / ADR-0168: после fail health агент **сам** активирует `previous`
+(порядок ролей тот же, **без** ручного `chuangong rollback` / workflow).
 
-**Сейчас [код]:** `rollback()` строит план на signed `previous` (`rollback_planned`),
-но **не** вызывается автоматически из health fail и **не** execute-ит compose.
-Авто-связь health→rollback — событие/код фазы C, не промпт.
+| Критерий | Авто-откат (§1.4) | Ручной откат (§2.1) |
+|---|---|---|
+| Кто инициирует | health fail → код агента | оператор CLI / workflow |
+| Офлайн сейчас | `blocked` / `health_check_failed`; **нет** `rollback_planned` из одного activate | явный `rollback()` → `rollback_planned`, план `execute=false` |
+| История current/previous | не меняется (отказ) | не меняется (только план) |
+| Стек compose/symlink | не тронут | не тронут |
+| Живо, фаза C | robot на previous **без** ручного входа | robot на previous **после** ручного rollback |
 
-**PASS (офлайн до фазы C):** отдельный вызов `rollback()` при `current=A, previous=B`,
-B staged и подписан → `rollback_planned`, `would.current=B`. Это **не** доказательство
-авто-отката.
+**Сейчас [код]:** health fail только блокирует activate. `rollback()` **не** вызывается
+из health и **не** execute-ит compose. Авто-связь health→rollback — код фазы C, не промпт.
+
+**PASS (офлайн до фазы C):** S2 — activate + unhealthy → `blocked`/`health_check_failed`,
+не `rollback_planned`, история прежняя. Это доказательство **отказа**, не авто-отката
+и не восстановления стека.
 
 **PASS (живо, фаза C):** сломанный релиз → без ручного `F: Update Robot` robot снова на
-previous; raw: state.json, docker ps, journal chuangong. Пока execute нет — сценарий
-в чеклисте помечайте `NOT_IMPLEMENTED`, не PASS.
+previous; raw: state.json, docker ps, journal chuangong. Пока execute нет — в чеклисте
+`NOT_IMPLEMENTED`, не PASS.
+
+Восстановление стека доказывает тест исполнителя, не эта фикстура.
 
 ---
 
 ## 2. Отдельные сценарии
 
-### 2.1 Ручной откат **[код] dry-run; [фаза C] execute**
+### 2.1 Ручной откат **[код] dry-run; [фаза C] execute** — не путать с §1.4
 
-Оператор (workflow / CLI), не health-автомат.
+Оператор (workflow / CLI) явно вызывает rollback. Это **не** health-автомат §1.4:
+ожидаемый офлайн-результат другой (`rollback_planned`, а не `health_check_failed`).
 
 ```text
 chuangong rollback          # C1: план, execute=false
 # фаза C: тот же вход, но compose/symlink
 ```
 
-| Условие | Ожидание |
+| Условие | Ожидание (ручной) |
 |---|---|
 | `current` null | `blocked` / `current_unproven` |
 | `previous` null | `blocked` / `no_previous` |
 | previous не staged | `blocked` / `release_not_staged` |
-| previous подписан и staged | `rollback_planned`, план Vision→Sound→Main |
+| previous подписан и staged | `rollback_planned`, план Vision→Sound→Main, `execute=false` |
 
-**PASS (офлайн):** `test_delivery_acceptance_scenarios.py::test_manual_rollback_plan`.
+**PASS (офлайн):** S3 `test_manual_rollback_plan` — план и `would.current=previous`;
+история current/previous **не** swap; compose не вызывался.
+Восстановление стека доказывает тест исполнителя, не эта фикстура.
 
 ### 2.2 Плохая подпись **[код]**
 
@@ -249,9 +262,12 @@ python scripts/testing/delivery_acceptance_checklist.py
 1. Замок стенда, HIL off если нужен update, backup previous staged.
 2. Baseline status — три узла.
 3. Исправный релиз — update — raw `docker ps` и state.json.
-4. Сломанный релиз (или inject unhealthy) — факт авто-отката или ручной rollback.
+4. Сломанный релиз (inject unhealthy) — **авто-откат** §1.4: previous без ручного входа;
+   отдельно — **ручной** rollback §2.1: после явного `chuangong rollback` / workflow.
+   Офлайн-фикстуры S2/S3 это не заменяют (отказ и план, не стек).
 5. Повторить §2.2–2.5 точечно на железе.
 6. biguan/chuguan — по выбранному Шифу варианту A/B/C; иначе `NOT_IMPLEMENTED`.
+   В робота из этого runbook biguan **не** включать.
 
 Доказательства: как в `live-verification.md` (команда, полный вывод, PASS/FAIL, GMT+1).
 
@@ -263,12 +279,16 @@ python scripts/testing/delivery_acceptance_checklist.py
 |---|---|---|---|
 | S0 | baseline observe | `available`, подпись ok | `test_baseline_observe_signed_release` |
 | S1 | исправный релиз (stage+activate dry-run) | `staged` → `activation_planned` | `test_healthy_release_activation_planned` |
-| S2 | health unhealthy | `blocked`/`health_check_failed` | `test_failing_release_health_blocks` |
-| S3 | rollback plan (ручной / задел авто) | `rollback_planned` | `test_manual_rollback_plan` |
+| S2 | health unhealthy → **отказ** (авто-откат ещё не вызван) | `blocked`/`health_check_failed`; **не** `rollback_planned` | `test_failing_release_health_blocks` |
+| S3 | **ручной** rollback plan (оператор) | `rollback_planned`, `execute=false`; история не swap | `test_manual_rollback_plan` |
 | S4 | bad signature | `fetch_error`/`bad_signature`, диск пуст | `test_bad_signature_rejected` |
 | S5 | HIL-lock | `blocked`/`hil_locked` | `test_hil_lock_blocks_activation` |
 | S6 | hotpatch dirty | `blocked`/`dirty` | `test_hotpatch_dirty_blocks_activation` |
 | S7 | отказ одной роли | одна `fetch_error`, другая ok | `test_single_role_fetch_failure` |
+
+S2 и S3 — **разные** критерии: S2 = отказ activate (задел авто §1.4, без вызова rollback);
+S3 = явный ручной `rollback()` (§2.1). Ни S2, ни S3 не доказывают восстановление стека:
+восстановление стека доказывает тест исполнителя, не эта фикстура.
 
 Контраст S1 vs S4 обязан использовать **один** API: `chuangong.minisign.verify`
 (прямо или через `fetch_release` / `tick`).
