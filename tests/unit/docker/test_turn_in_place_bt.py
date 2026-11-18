@@ -76,5 +76,10 @@ def test_plugin_is_loaded_and_calls_free_spin():
     assert "free_heading_spin_rad(points, way, clearance, spin)" in text
     assert "yaw_of(pose.pose.orientation)" not in text
     assert "free_spin(body, (0.0, 0.0, 0.0), points, path, float(clearance_m))" in bridge
+    # Humble ConditionNode::halt() final — сброс start_ в tick, иначе вторая
+    # цель видит сдвиг от первой. Угол по-прежнему в base_footprint, не map-yaw.
+    assert "void halt() override" not in text
+    assert "void onHalted" not in text
     assert "start_valid_ = false" in text
-    assert "void halt() override" in text
+    assert "status() == BT::NodeStatus::IDLE" in text
+    assert "new_path" in text
