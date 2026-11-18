@@ -576,7 +576,7 @@ def v_guard_sound(run: ZoneRun, px, mode: str, env_text: str) -> Verdict:
         f"env proximity-guard: HIL_GUARD_SOUND={env.get(px.GUARD_SOUND_ENV, 'unset')} "
         f"USE_SIM_TIME={env.get(px.SIM_TIME_ENV, 'unset')}"
     ]
-    if env.get(px.GUARD_SOUND_ENV, "on") != mode or env.get(px.SIM_TIME_ENV) != "true":
+    if env.get(px.GUARD_SOUND_ENV, "off") != mode or env.get(px.SIM_TIME_ENV) != "true":
         return Verdict(*sc, FAIL, tuple(facts + [f"контейнер не в режиме {mode} или не в HIL"]))
     stops = run.stops()
     if not stops:

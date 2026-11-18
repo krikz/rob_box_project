@@ -104,7 +104,7 @@ case "$st" in running*) log "❌ ros2-control работает ($st) — сто�
 extra=""
 [ -n "$overlay" ] && extra="-f /tmp/hil/nav2tune.compose.yaml"
 T0=$(mn "date -u +%Y-%m-%dT%H:%M:%SZ")
-mn "mkdir -p $maps && cd ~/rob_box_project/docker/main && HIL_MAPS_DIR=$maps HIL_RTABMAP_MODE=mapping HIL_GUARD_SOUND=\${HIL_GUARD_SOUND:-on} NAV2TUNE_OVERLAYS='$overlay' docker compose -f docker-compose.yaml -f /tmp/hil/main.images.yaml -f /tmp/hil/main.hil.yaml $extra up -d --no-deps --pull never --force-recreate $MAINSVC" >>"$RES/run.log" 2>&1 \
+mn "mkdir -p $maps && cd ~/rob_box_project/docker/main && HIL_MAPS_DIR=$maps HIL_RTABMAP_MODE=mapping HIL_GUARD_SOUND=\${HIL_GUARD_SOUND:-off} NAV2TUNE_OVERLAYS='$overlay' docker compose -f docker-compose.yaml -f /tmp/hil/main.images.yaml -f /tmp/hil/main.hil.yaml $extra up -d --no-deps --pull never --force-recreate $MAINSVC" >>"$RES/run.log" 2>&1 \
     || { log "❌ Main: пересоздание не прошло"; exit 4; }
 mn "docker inspect -f '{{range .Config.Env}}{{println .}}{{end}}' nav2 | grep -E 'NAV2_PARAMS_OVERLAYS|USE_SIM_TIME'" >>"$RES/run.log" 2>&1
 # 3–4. сим вверх со спавном сцены, ровно один /controller_manager. Сторож gazebo отказывает, пока не видит
