@@ -80,8 +80,8 @@ def test_supervisor_shares_state_dir_with_voice_assistant_on_one_node() -> None:
     sup, va = services["supervisor"], services["voice-assistant"]
     assert "./data/voice:/data" in sup["volumes"]
     assert "./data/voice:/data" in va["volumes"]
-    # лицевую базу ТАРС читает только на чтение; пишет её vision-face на Vision Pi
-    assert "./data/faces:/data/faces:ro" in sup["volumes"]
+    # #3655: list_faces зовёт /perception/people; диск лиц в supervisor не монтируем
+    assert all("data/faces" not in str(vol) for vol in sup["volumes"])
     assert sup["container_name"] == "avatar-supervisor"
     # арбитр переехал следом (PR-7), образ и каталог скриптов — те же, что у supervisor;
     # за файлами голосового стека он не ходит
