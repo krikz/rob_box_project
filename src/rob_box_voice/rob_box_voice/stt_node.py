@@ -26,15 +26,17 @@ import rclpy
 from audio_common_msgs.msg import AudioData
 from rclpy.node import Node
 from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
-from rob_box_dialog_msgs.msg import InterruptRequest, Utterance
-from rob_box_dialog.doa import DoaTrack
-from rob_box_core import speech_client
-from rob_box_core.provider_publisher import ProviderStatePublisher
-from .core.provider_health import stt_provider_states
-from .core.interrupt_request import InterruptOffer
-from .stt_hang_guard import HangGuard
 from std_msgs.msg import Bool, Float32, Int32, String
 from vosk import KaldiRecognizer, Model
+
+from rob_box_core import speech_client
+from rob_box_core.provider_publisher import ProviderStatePublisher
+from rob_box_dialog.doa import DoaTrack
+from rob_box_dialog_msgs.msg import InterruptRequest, Utterance
+
+from .core.interrupt_request import InterruptOffer
+from .core.provider_health import stt_provider_states
+from .stt_hang_guard import HangGuard
 
 # Pure-Python fallback/retry/short-phrase логика (issue #979).
 # Держим rclpy-зависимости подальше от чистой логики, чтобы её можно
@@ -279,21 +281,18 @@ def _normalize_provider_chain(chain, logger=None) -> list:
     return deduped
 
 
+from rob_box_core.stt_hypotheses import NO_HYPOTHESES  # noqa: E402 — как соседние импорты
+from rob_box_voice import robot_profile  # noqa: E402 — как соседние импорты
+from rob_box_voice.core import echo_window  # noqa: E402 — как соседние импорты после блока try/except
+
 # ADR-0101 §3.3.5 / Issue #2536 / PR-E: «unclear cooldown» живёт в
 # едином OccasionGate (см. core/occasion.py). Импортируем типы на
 # уровне модуля: ``OccasionGate`` создаётся в ``__init__`` (default, если
 # kwarg не передан), а ``Occasion`` / ``VerdictKind`` нужны в
 # ``_maybe_speak_unclear`` напрямую.
-from rob_box_voice.core.occasion import (
-    Occasion,
-    OccasionGate,
-    VerdictKind,
-)
-from rob_box_voice.core import echo_window  # noqa: E402 — как соседние импорты после блока try/except
+from rob_box_voice.core.occasion import Occasion, OccasionGate, VerdictKind
 from rob_box_voice.core.stt_utterance import fill_respeaker_utterance, final_provider, phrase_hypotheses
-from rob_box_core.stt_hypotheses import NO_HYPOTHESES  # noqa: E402 — как соседние импорты
 from rob_box_voice.core.utterance_id import compute_utterance_id
-from rob_box_voice import robot_profile  # noqa: E402 — как соседние импорты
 from rob_box_voice.core.yandex_stt_segments import YandexSegmentCollector, text_kept_on_deadline
 
 # #1990 (оператор-agent 05) — источники аудио для wake-роутера (_process_audio).
@@ -502,9 +501,7 @@ class STTNode(Node):
         # Те же имена и дефолты, что в tts_node (issue #1083/#1229), чтобы
         # оператор не держал в голове две разные модели одного поведения.
         self.declare_parameter("provider_dead_ttl_s", DEFAULT_DEAD_TTL_S)
-        self.declare_parameter(
-            "provider_dead_ttl_transient_s", DEFAULT_DEAD_TTL_TRANSIENT_S
-        )
+        self.declare_parameter("provider_dead_ttl_transient_s", DEFAULT_DEAD_TTL_TRANSIENT_S)
         # Issue #2767 — общий бюджет времени на цепочку одной фразы. Живой
         # инцидент 23.09: без него фраза тонула в каскаде на 9-10с (empty
         # ретраился, Yandex auth гонялся заново) — этот параметр ставит
@@ -512,9 +509,7 @@ class STTNode(Node):
         # однопроходный сценарий (~18с холодным стартом) и не отбирая
         # попытку у последнего провайдера в цепочке (обычно Vosk).
         # 0 или отрицательное значение отключает бюджет (legacy).
-        self.declare_parameter(
-            "stt_phrase_budget_s", DEFAULT_MAX_TOTAL_BUDGET_S
-        )
+        self.declare_parameter("stt_phrase_budget_s", DEFAULT_MAX_TOTAL_BUDGET_S)
         # Персистентность кэша: рестарт ноды (а их много — см. #2676 OOM)
         # не должен снова слать фразу в облако, про которое мы уже знаем,
         # что оно лежит. Пустая строка отключает файл.
@@ -668,7 +663,9 @@ class STTNode(Node):
         self._active_utterance_id = ""
         self.interrupt_pub = self.create_publisher(InterruptRequest, "/dialog/interrupt_request", 10)
         self._interrupts = InterruptOffer(
-            self.interrupt_pub.publish, InterruptRequest, lambda: self.wake_words,
+            self.interrupt_pub.publish,
+            InterruptRequest,
+            lambda: self.wake_words,
             lambda: self._doa.during(*self._phrase_window),
         )
 
@@ -710,19 +707,14 @@ class STTNode(Node):
 
         # Issue #1160 — Prometheus metrics server (этап 1).
         # Порт 9111 — стандартный для stt_node (см. observability/__init__.py).
-        self._metrics_port: int = int(
-            self.get_parameter("metrics_port").value or 0
-        )
+        self._metrics_port: int = int(self.get_parameter("metrics_port").value or 0)
         if self._metrics_port > 0 and is_metrics_enabled():
             started = start_metrics_server(self._metrics_port)
             if started:
-                self.get_logger().info(
-                    f"📊 STT metrics server listening on :{self._metrics_port}/metrics"
-                )
+                self.get_logger().info(f"📊 STT metrics server listening on :{self._metrics_port}/metrics")
             else:
                 self.get_logger().warning(
-                    f"📊 STT metrics port {self._metrics_port} not bound "
-                    "(busy or prometheus_client missing)"
+                    f"📊 STT metrics port {self._metrics_port} not bound " "(busy or prometheus_client missing)"
                 )
 
         # Инициализация
@@ -773,9 +765,7 @@ class STTNode(Node):
         #4175: если по дедлайну сервер уже закрыл фразу (непустой final + EOU, :func:`text_kept_on_deadline`),
         возвращается :class:`STTDeadlineFinal` с её текстом, а не голый таймаут - готовый результат не выбрасываем.
         """
-        self.get_logger().warning(
-            f"⚠️ [issue 1477] stream error: {exc.code()} {exc.details()} [#2924 {context}]"
-        )
+        self.get_logger().warning(f"⚠️ [issue 1477] stream error: {exc.code()} {exc.details()} [#2924 {context}]")
         if exc.code() == grpc.StatusCode.DEADLINE_EXCEEDED:
             self._reset_yandex_channel()
         mapped = _map_grpc_error(exc, self.yandex_timeout_s, segments)
@@ -841,9 +831,7 @@ class STTNode(Node):
 
         self._vosk_available = True
         if not self.vosk_preload:
-            self.get_logger().info(
-                "🪶 Vosk загрузится при первом fallback " "(issue #2609: vosk_preload=false)"
-            )
+            self.get_logger().info("🪶 Vosk загрузится при первом fallback " "(issue #2609: vosk_preload=false)")
             self.publish_state("ready")
             return
         if self._ensure_vosk_loaded():
@@ -868,9 +856,7 @@ class STTNode(Node):
             recognizer = KaldiRecognizer(self.model, self.sample_rate)
             recognizer.SetWords(True)  # Получать разметку по словам
             self.recognizer = recognizer
-            self.get_logger().info(
-                f"✅ Vosk модель загружена (fallback, {time.monotonic() - t0:.1f} с)"
-            )
+            self.get_logger().info(f"✅ Vosk модель загружена (fallback, {time.monotonic() - t0:.1f} с)")
             return True
         except Exception as e:
             # Defensive: even after the isdir() check above, the model files
@@ -985,14 +971,10 @@ class STTNode(Node):
                 log_attempts(self.get_logger(), attempts, final_text=text if _accepted else None)
                 # Финальный провайдер — последняя попытка (или "yandex" по
                 # умолчанию; при пустом списке попыток — "unknown").
-                _stt_provider = (
-                    attempts[-1].provider if attempts else "unknown"
-                )
+                _stt_provider = attempts[-1].provider if attempts else "unknown"
                 _stt_span.set_attribute("provider", _stt_provider)
                 _stt_span.set_attribute("success", _accepted)
-                _stt_span.set_attribute(
-                    "duration_s", time.monotonic() - _stt_trace_start
-                )
+                _stt_span.set_attribute("duration_s", time.monotonic() - _stt_trace_start)
             # Issue #1160 — Prometheus metrics: учитываем каждую попытку
             # (включая retry и fallback на Vosk). ``result``:
             # success = финальный непустой текст; empty = итоговый отказ.
@@ -1005,14 +987,16 @@ class STTNode(Node):
                 for attempt in attempts:
                     if attempt.reason == "ok":
                         record_stt_recognize(
-                            attempt.provider, success=True,
+                            attempt.provider,
+                            success=True,
                             duration_s=attempt.latency_ms / 1000.0,
                         )
                     else:
                         # timeout / empty / error / low_confidence →
                         # попытка провалилась (на этой попытке текста нет).
                         record_stt_recognize(
-                            attempt.provider, success=False,
+                            attempt.provider,
+                            success=False,
                             duration_s=attempt.latency_ms / 1000.0,
                         )
         else:
@@ -1040,10 +1024,7 @@ class STTNode(Node):
         if text and not is_short_phrase(text, min_chars=self.min_text_chars):
             # Issue 1076 (телеметрия): честный «фраза → ПРИНЯТО» (STT-часть).
             _accept_ms = int((time.monotonic() - _phrase_received_at) * 1000)
-            self.get_logger().info(
-                f"📊 [telemetry] phrase_to_accept_ms={_accept_ms} "
-                f"(text={text!r})"
-            )
+            self.get_logger().info(f"📊 [telemetry] phrase_to_accept_ms={_accept_ms} " f"(text={text!r})")
             self.get_logger().info(f"✅ ПРИНЯТО ({source}): {text}")
             if source == _SRC_RESPEAKER:
                 # Issue #2829 (ADR-0131) — utterance_id фразы: speaker_id_node
@@ -1069,15 +1050,14 @@ class STTNode(Node):
         else:
             self._handle_rejected_text(text, source, duration, admission)
 
-    def _handle_rejected_text(
-        self, text: str, source: str, duration: float, admission: echo_window.Admission
-    ) -> None:
+    def _handle_rejected_text(self, text: str, source: str, duration: float, admission: echo_window.Admission) -> None:
         """Ветка «текста нет / текст слишком короткий»: лог + решение молчать.
 
         Issue 989 Fix A: различаем rejected(empty) и rejected(short).
-        rejected(empty) — это почти наверняка эхо собственной музыки/голоса
-        робота или шум: НЕ говорим «не расслышал», молчим. Иначе робот
-        говорит фразу → её эхо снова ловится → снова empty → бесконечный цикл.
+        rejected(empty) — пустой итог STT: НЕ говорим «не расслышал», молчим
+        (иначе эхо собственной речи → empty → петля). Причину строит код
+        (:func:`echo_window.empty_reject_reason`): голос во время речи робота —
+        ``rejected_while_speaking`` (#4030); иначе ``rejected_empty``.
         rejected(short) — Vosk/Yandex вернули что-то (например «не»/«пути»),
         но в диалог это не идёт: реплика не принята. Фразу переспроса строит код
         (:func:`reask_for_rejected`): вне окна приветствия — одна фраза; шум в
@@ -1093,13 +1073,15 @@ class STTNode(Node):
         if text:
             self.get_logger().warning(f'❌ ОТКЛОНЕНО (короткое <{self.min_text_chars} букв или не по-русски): "{text}"')
         else:
-            self.get_logger().warning("❌ ОТКЛОНЕНО (пустое)")
+            reason = echo_window.empty_reject_reason(admission)
+            self.get_logger().warning(f"❌ ОТКЛОНЕНО (пустое) reason={reason}")
         if source == _SRC_WAKE:
             self._log_wake_rejection(text, duration)
         elif text:
             _handle_nonempty_rejected(self, admission, text)
         else:
-            self.get_logger().info("🔇 [issue 989] Пустой STT (эхо/музыка) — молчу, без «не расслышал»")
+            reason = echo_window.empty_reject_reason(admission)
+            self.get_logger().info(f"🔇 [issue 989/#4030] Пустой STT reason={reason} — молчу, без «не расслышал»")
         if source != _SRC_WAKE:
             self.publish_state("ready")
         self._active_source = _SRC_RESPEAKER
@@ -1129,14 +1111,11 @@ class STTNode(Node):
         )
         if text:
             self.get_logger().info(
-                f'🔇 [wake] Сегмент {duration:.2f}с: STT вернул короткое '
+                f"🔇 [wake] Сегмент {duration:.2f}с: STT вернул короткое "
                 f'"{text}" (<{self.min_text_chars} chars) — вейк не искали, молчу'
             )
         else:
-            self.get_logger().info(
-                f"🔇 [wake] Сегмент {duration:.2f}с: STT вернул пусто — "
-                "вейк не искали, молчу"
-            )
+            self.get_logger().info(f"🔇 [wake] Сегмент {duration:.2f}с: STT вернул пусто — " "вейк не искали, молчу")
 
     def _publish_ptt_result(self, text: str) -> None:
         """Опубликовать распознанную PTT-фразу в ``/avatar/ptt/result``.
@@ -1176,9 +1155,7 @@ class STTNode(Node):
                 attempts=getattr(self, "_last_attempts", None),
                 operator_wake_words=self.operator_wake_words,
             )
-            self.get_logger().info(
-                f"🔇 [wake] Нет operator-вейка в {text[:40]!r} — не маршрутизирую"
-            )
+            self.get_logger().info(f"🔇 [wake] Нет operator-вейка в {text[:40]!r} — не маршрутизирую")
             return
         # Вейк найден — это НЕ семпл «не сработало», а нормальная публикация.
         # В ADR §2.2 нет требования писать и успешные wake: для текущей задачи
@@ -1196,10 +1173,7 @@ class STTNode(Node):
         msg = String()
         msg.data = payload
         self.avatar_stt_result_pub.publish(msg)
-        self.get_logger().info(
-            f"🎯 [wake] Operator wake → /avatar/stt/result: {stripped!r}"
-            f" (was {text[:40]!r})"
-        )
+        self.get_logger().info(f"🎯 [wake] Operator wake → /avatar/stt/result: {stripped!r}" f" (was {text[:40]!r})")
 
     def _maybe_speak_unclear(self) -> None:
         """Проговорить «Не расслышал, скажи ещё раз» при неясном результате.
@@ -1226,21 +1200,15 @@ class STTNode(Node):
         )
         verdict = self._occasion_gate.may_speak(occasion)
         if verdict.kind is not VerdictKind.ALLOW:
-            self.get_logger().info(
-                f"unclear ack deferred: {verdict.reason}"
-            )
+            self.get_logger().info(f"unclear ack deferred: {verdict.reason}")
             return
 
         # ALLOW → публикуем и фиксируем факт отправки.
         now = time.monotonic()
         self._last_unclear_at = now  # метрика (PR-F выпилит)
         self._occasion_gate.mark_consumed(occasion)
-        speech_client.say(
-            self, SpokenUtterance(text=self.unclear_phrase, emotion="confused"), agent="personality"
-        )
-        self.get_logger().info(
-            f"🗣️ Неясный результат → говорю: {self.unclear_phrase!r}"
-        )
+        speech_client.say(self, SpokenUtterance(text=self.unclear_phrase, emotion="confused"), agent="personality")
+        self.get_logger().info(f"🗣️ Неясный результат → говорю: {self.unclear_phrase!r}")
 
     # ── Issue #2365 Phase 2: цепочка minimax → yandex → vosk (ADR-0124) ────
 
@@ -1267,47 +1235,28 @@ class STTNode(Node):
             [str(p) for p in (self.get_parameter("stt_provider_chain").value or [])],
             logger=self.get_logger(),
         )
-        self.minimax_stt_enabled: bool = bool(
-            self.get_parameter("minimax_stt_enabled").value
-        )
+        self.minimax_stt_enabled: bool = bool(self.get_parameter("minimax_stt_enabled").value)
         self.minimax_stt_api_key_env: str = str(
             self.get_parameter("minimax_stt_api_key_env").value or "MINIMAX_API_KEY"
         )
         # ENV имеет приоритет над YAML: ключи приезжают из docker/vision/.env,
         # а не лежат в репозитории.
         self.minimax_stt_api_key: str = str(
-            os.environ.get(self.minimax_stt_api_key_env, "")
-            or self.get_parameter("minimax_stt_api_key").value
-            or ""
+            os.environ.get(self.minimax_stt_api_key_env, "") or self.get_parameter("minimax_stt_api_key").value or ""
         ).strip()
         self.minimax_stt_base_url: str = str(
             self.get_parameter("minimax_stt_base_url").value or "https://api.minimax.io"
         )
-        self.minimax_stt_model: str = str(
-            self.get_parameter("minimax_stt_model").value or "asr-1.0"
-        )
-        self.minimax_stt_language: str = str(
-            self.get_parameter("minimax_stt_language").value or "ru"
-        )
-        self.minimax_stt_timeout_s: float = float(
-            self.get_parameter("minimax_stt_timeout_s").value or 5.0
-        )
-        self.minimax_stt_max_retries: int = int(
-            self.get_parameter("minimax_stt_max_retries").value or 0
-        )
-        self.provider_dead_ttl_s: float = float(
-            self.get_parameter("provider_dead_ttl_s").value or DEFAULT_DEAD_TTL_S
-        )
+        self.minimax_stt_model: str = str(self.get_parameter("minimax_stt_model").value or "asr-1.0")
+        self.minimax_stt_language: str = str(self.get_parameter("minimax_stt_language").value or "ru")
+        self.minimax_stt_timeout_s: float = float(self.get_parameter("minimax_stt_timeout_s").value or 5.0)
+        self.minimax_stt_max_retries: int = int(self.get_parameter("minimax_stt_max_retries").value or 0)
+        self.provider_dead_ttl_s: float = float(self.get_parameter("provider_dead_ttl_s").value or DEFAULT_DEAD_TTL_S)
         self.provider_dead_ttl_transient_s: float = float(
-            self.get_parameter("provider_dead_ttl_transient_s").value
-            or DEFAULT_DEAD_TTL_TRANSIENT_S
+            self.get_parameter("provider_dead_ttl_transient_s").value or DEFAULT_DEAD_TTL_TRANSIENT_S
         )
-        self.stt_phrase_budget_s: Optional[float] = (
-            self._resolve_phrase_budget_s()
-        )
-        self.provider_state_file: str = str(
-            self.get_parameter("provider_state_file").value or ""
-        )
+        self.stt_phrase_budget_s: Optional[float] = self._resolve_phrase_budget_s()
+        self.provider_state_file: str = str(self.get_parameter("provider_state_file").value or "")
         self._provider_dead_cache = (
             ProviderDeadCache(
                 ttl_s=self.provider_dead_ttl_s,
@@ -1343,9 +1292,7 @@ class STTNode(Node):
             if not self.minimax_stt_enabled or not self.minimax_stt_api_key:
                 return None
             try:
-                from rob_box_voice.stt_providers.minimax_provider import (
-                    MiniMaxSTTProvider,
-                )
+                from rob_box_voice.stt_providers.minimax_provider import MiniMaxSTTProvider
 
                 self._minimax_stt_provider = MiniMaxSTTProvider(
                     base_url=self.minimax_stt_base_url,
@@ -1361,9 +1308,7 @@ class STTNode(Node):
                     f"language={self.minimax_stt_language})"
                 )
             except Exception as exc:  # noqa: BLE001 — провайдер опционален
-                self.get_logger().warning(
-                    f"⚠️ MiniMax STT недоступен ({exc!r}) — цепочка пойдёт дальше"
-                )
+                self.get_logger().warning(f"⚠️ MiniMax STT недоступен ({exc!r}) — цепочка пойдёт дальше")
                 self._minimax_stt_provider = None
         return self._minimax_stt_provider
 
@@ -1386,9 +1331,7 @@ class STTNode(Node):
         )
 
         try:
-            return provider.transcribe(
-                audio_bytes, language=getattr(self, "_grip_minimax_language", None)
-            ).text
+            return provider.transcribe(audio_bytes, language=getattr(self, "_grip_minimax_language", None)).text
         except MiniMaxSTTAuthError as exc:
             raise STTAuthError(str(exc)) from exc
         except MiniMaxSTTRateLimitError as exc:
@@ -1441,9 +1384,7 @@ class STTNode(Node):
         """
         if self.recognizer is None and not self._vosk_available:
             return None
-        return _NodeSTTAdapter(
-            "vosk", self._recognize_vosk, prepare=self._ensure_vosk_loaded
-        )
+        return _NodeSTTAdapter("vosk", self._recognize_vosk, prepare=self._ensure_vosk_loaded)
 
     def _provider_policies(self) -> dict:
         """Per-provider бюджет таймаута/повторов (issue #2365 Phase 2).
@@ -1500,9 +1441,7 @@ class STTNode(Node):
         порядок из параметра и фактический после фолбека — разные вещи, и
         оператору нужен второй.
         """
-        chain = getattr(self, "provider_chain", None) or list(
-            DEFAULT_STT_PROVIDER_CHAIN
-        )
+        chain = getattr(self, "provider_chain", None) or list(DEFAULT_STT_PROVIDER_CHAIN)
         # Провайдер, чей брошенный вызов ещё висит, цепочка не зовёт (``_skip_hung``) - слушает не он, даже когда
         # TTL его отметки в кэше «мёртвых» истёк (ревью PR #4140, #4135).
         return effective_provider(
@@ -1532,10 +1471,7 @@ class STTNode(Node):
             return
         restored = cache.restore_wall(dead)
         if restored:
-            self.get_logger().info(
-                f"💾 Восстановлен кэш мёртвых STT-провайдеров из {path}: "
-                f"{restored}"
-            )
+            self.get_logger().info(f"💾 Восстановлен кэш мёртвых STT-провайдеров из {path}: " f"{restored}")
 
     def _persist_provider_state(self, payload: dict) -> None:
         """Записать состояние провайдеров в файл (best-effort)."""
@@ -1546,9 +1482,7 @@ class STTNode(Node):
             with open(path, "w", encoding="utf-8") as fh:
                 json.dump(payload, fh, ensure_ascii=False)
         except OSError as exc:  # noqa: BLE001 — файл не критичен для STT
-            self.get_logger().debug(
-                f"⚠️ Не удалось записать stt provider_state {path}: {exc}"
-            )
+            self.get_logger().debug(f"⚠️ Не удалось записать stt provider_state {path}: {exc}")
 
     def _log_provider_state(self, reason: str, attempts=None) -> None:
         """Зафиксировать смену фактического провайдера: лог + файл состояния.
@@ -1585,9 +1519,7 @@ class STTNode(Node):
         self._persist_provider_state(
             {
                 "provider": effective,
-                "dead_providers": (
-                    cache.snapshot_wall() if cache is not None else {}
-                ),
+                "dead_providers": (cache.snapshot_wall() if cache is not None else {}),
             }
         )
 
@@ -1622,8 +1554,8 @@ class STTNode(Node):
         # Issue #1477 — телеметрия фразы ДО отправки в Yandex: RMS/duration,
         # чтобы в следующий раз не гадать, почему Yandex вернул empty. Дешёвая
         # операция (<1ms) — гоняется всегда.
-        import struct as _struct
         import math as _math
+        import struct as _struct
 
         n_samples = len(audio_bytes) // 2
         if n_samples == 0:
@@ -1676,9 +1608,7 @@ class STTNode(Node):
         # требует, а speaker_analysis для FULL_DATA не даёт полезных
         # дополнительных событий). speaker_tag сбрасывается (Vosk-fallback
         # ниже тоже без tag).
-        self.get_logger().info(
-            "📊 [issue 1477] phase1=empty → фаза 2 (FULL_DATA без speech_analysis)"
-        )
+        self.get_logger().info("📊 [issue 1477] phase1=empty → фаза 2 (FULL_DATA без speech_analysis)")
         text_phase2 = self._recognize_yandex_phase(
             audio_bytes,
             phase="FULL_DATA",
@@ -1708,6 +1638,7 @@ class STTNode(Node):
         - FULL_DATA + speech_analysis=False: fallback (issue #1477). Устойчив
           к EOU race, но без speaker_tag и partials.
         """
+
         # Генератор для streaming запроса
         def gen():
             # audio_processing_type зависит от фазы.
@@ -1743,9 +1674,7 @@ class STTNode(Node):
             eou_classifier = stt_pb2.EouClassifierOptions(
                 default_classifier=stt_pb2.DefaultEouClassifier(
                     type=self.eou_profiles[self.eou_profile]["type"],
-                    max_pause_between_words_hint_ms=self.eou_profiles[
-                        self.eou_profile
-                    ]["max_pause_ms"],
+                    max_pause_between_words_hint_ms=self.eou_profiles[self.eou_profile]["max_pause_ms"],
                 )
             )
 
@@ -1780,9 +1709,7 @@ class STTNode(Node):
                 timeout=self.yandex_timeout_s,
             )
         except grpc.RpcError as e:
-            self.get_logger().warning(
-                f"⚠️ [issue 1477] phase={phase} grpc error: {e.code()} {e.details()}"
-            )
+            self.get_logger().warning(f"⚠️ [issue 1477] phase={phase} grpc error: {e.code()} {e.details()}")
             # Issue #2365 Phase 2 — типизируем код gRPC, чтобы кэш «мёртвых»
             # отличил кончившуюся квоту от моргнувшей сети (_map_grpc_error).
             raise _map_grpc_error(e, self.yandex_timeout_s)
