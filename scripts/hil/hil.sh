@@ -297,6 +297,44 @@ sim_down() {
     log "песочница: гашу zenoh-router и gazebo ($HIL_SIM_PROJECT)"
     sim_compose down --timeout 20 || log "⚠️  compose down на песочнице вернул ошибку"
 }
+# Мир до первой цели Depot (#4694): PASS только по трём фактам (args/mount/SDF).
+# Без HIL_EXPECT_WORLD — молчит (building и обычный polygon не трогает).
+sim_check_expect_world() {
+    local expect="$1" gz="$HIL_SIM_PREFIX-gazebo" args mounts wpath sdf image line rc=0 tmp
+    args=$(rsh "$HIL_SANDBOX_HOST" "docker inspect -f '{{join .Args \" \"}}' $(q "$gz")" 2>/dev/null || true)
+    mounts=$(rsh "$HIL_SANDBOX_HOST" "docker inspect -f '{{range .Mounts}}{{println .Destination}}{{end}}' $(q "$gz")" 2>/dev/null || true)
+    image=$(rsh "$HIL_SANDBOX_HOST" "docker inspect -f '{{.Image}}' $(q "$gz")" 2>/dev/null || true)
+    wpath=""
+    case "$args" in
+        *world:=*) wpath="${args#*world:=}"; wpath="${wpath%% *}" ;;
+    esac
+    sdf=""
+    if [ -n "$wpath" ]; then
+        sdf=$(rsh "$HIL_SANDBOX_HOST" "docker exec $(q "$gz") cat $(q "$wpath") 2>/dev/null" || true)
+    fi
+    if [ -n "${HIL_WORLD_CHECK_DIR:-}" ]; then
+        mkdir -p "$HIL_WORLD_CHECK_DIR"
+        printf '%s\n' "$args" >"$HIL_WORLD_CHECK_DIR/gazebo_args.txt"
+        printf '%s\n' "$mounts" >"$HIL_WORLD_CHECK_DIR/gazebo_mounts.txt"
+        printf '%s\n' "$image" >"$HIL_WORLD_CHECK_DIR/gazebo_image_id.txt"
+        if [ -n "$sdf" ]; then
+            printf '%s' "$sdf" | sha256sum | awk '{print $1}' >"$HIL_WORLD_CHECK_DIR/sdf.sha256"
+        else
+            printf 'missing\n' >"$HIL_WORLD_CHECK_DIR/sdf.sha256"
+        fi
+    fi
+    tmp=$(mktemp -d)
+    printf '%s\n' "$mounts" >"$tmp/mounts"
+    printf '%s' "$sdf" >"$tmp/sdf"
+    line=$(python3 -X utf8 "$HERE/checks/world_check.py" "$expect" \
+        --args "$args" --mounts-file "$tmp/mounts" --sdf-file "$tmp/sdf") || rc=$?
+    rm -rf "$tmp"
+    if [ "$rc" -ne 0 ]; then
+        sim_down
+        die "$line; hil.sh off"
+    fi
+    log "мир: $line"
+}
 
 # ── Main Pi: контур навигации в HIL ───────────────────────────────────────
 
@@ -460,6 +498,10 @@ cmd_on() {
         fi
         sleep 5
     done
+    # Depot fullN: HIL_EXPECT_WORLD=depot — иначе цели Depot уедут в polygon (#4694).
+    if [ "${HIL_EXPECT_WORLD:-}" = depot ]; then
+        sim_check_expect_world depot
+    fi
     log "HIL включён. Сторож в gazebo следит дальше (docker logs $HIL_SIM_PREFIX-gazebo | grep hil-guard)."
     cmd_status
 }
