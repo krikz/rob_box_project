@@ -32,7 +32,11 @@ def test_follow_path_is_preceded_by_a_computed_spin():
     stall = sequence.find("Fallback/WouldSpinOnStall")
     assert stall.get("path") == "{path}"
     assert stall.get("turn_spin_dist") == "{turn_spin_dist}"
-    assert sequence.find("Spin").get("spin_dist") == "{turn_spin_dist}"
+    turn_spin = sequence.find("Spin")
+    assert turn_spin.get("spin_dist") == "{turn_spin_dist}"
+    # Humble Spin default is_recovery=true → increment_recovery_count на каждом
+    # старте TurnThenFollow (в т.ч. Spin 0) при годном пути. Разворот — не recovery.
+    assert turn_spin.get("is_recovery") == "false"
     # Нет угла — 0, а не фиксированные 1.57 рад recovery.
     blackboard = sequence.find("Fallback/SetBlackboard")
     assert blackboard.get("output_key") == "turn_spin_dist"
@@ -51,6 +55,8 @@ def test_recovery_spin_stays_a_fixed_recovery():
     spin = actions.find("Spin")
     assert spin is not None
     assert spin.get("spin_dist") == "1.57"
+    # Recovery Spin остаётся recovery (default true); false только у разворота.
+    assert spin.get("is_recovery") in (None, "true")
     assert spin.get("if") is None
     assert recovery.find(".//Script") is None
 

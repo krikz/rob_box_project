@@ -75,3 +75,22 @@ def test_stuck_recovery_stays():
     assert actions.find("Spin") is not None
     assert actions.find("Fallback") is None
     assert recovery.find(".//Wait") is not None
+
+
+def test_turn_spin_is_not_recovery_while_path_valid():
+    """Разворот до курса не считает recovery при годном пути (#4682).
+
+    Humble Spin default is_recovery=true → on_tick increment_recovery_count.
+    TurnThenFollow крутится на старте Sequence и после retry FollowPath, пока
+    PLAN tail ещё в цели. Счётчик recovery — только context clear / RoundRobin
+    после провала progress или ComputePath.
+    """
+    recovery = _root().find("BehaviorTree/RecoveryNode")
+    follow = recovery.find("PipelineSequence/RecoveryNode[@name='FollowPath']")
+    turn_spin = follow.find("Sequence[@name='TurnThenFollow']/Spin")
+    assert turn_spin is not None
+    assert turn_spin.get("spin_dist") == "{turn_spin_dist}"
+    assert turn_spin.get("is_recovery") == "false"
+    stuck_spin = recovery.find("./ReactiveFallback/RoundRobin/Spin")
+    assert stuck_spin is not None and stuck_spin.get("spin_dist") == "1.57"
+    assert stuck_spin.get("is_recovery") in (None, "true")
