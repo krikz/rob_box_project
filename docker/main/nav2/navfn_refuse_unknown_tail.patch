@@ -1,65 +1,6 @@
---- a/nav2_navfn_planner/src/navfn_planner.cpp
-+++ b/nav2_navfn_planner/src/navfn_planner.cpp
-@@ -31,6 +31,7 @@
- #include <memory>
- #include <string>
- #include <vector>
-+#include <stdexcept>
- 
- #include "builtin_interfaces/msg/duration.hpp"
- #include "nav2_navfn_planner/navfn.hpp"
-@@ -184,6 +185,12 @@
-   std::cout << "It took " << time_span.count() * 1000 << std::endl;
- #endif
- 
-+  // #4694: a path whose tail sits in unknown/lethal beyond a lidar-seen wall
-+  // must not be handed to the controller. Empty plan → planner_server ABORT,
-+  // and /plan is not published (Humble validatePath + publishPlan order).
-+  if (!path.poses.empty() && pathTailBlocked(path)) {
-+    throw std::runtime_error("refusing path whose tail is unknown or lethal beyond a seen wall");
-+  }
-   return path;
- }
- 
-@@ -433,6 +440,35 @@
-   return !plan.poses.empty();
- }
- 
-+bool
-+NavfnPlanner::pathTailBlocked(const nav_msgs::msg::Path & path) const
-+{
-+  // 253 = inscribed (COST_OBS_ROS): the lidar already marked a wall. Unknown
-+  // beyond that wall is not "not yet explored" — NavFn drew through it.
-+  // Unknown with no seen lethal/inscribed on the path stays allowed, so a goal
-+  // in unscanned space with a free path to the known frontier still starts.
-+  constexpr unsigned char kSeenWall = 253;
-+  bool seen_wall = false;
-+  bool unknown_after_wall = false;
-+  for (const auto & pose : path.poses) {
-+    unsigned int mx = 0;
-+    unsigned int my = 0;
-+    if (!costmap_->worldToMap(pose.pose.position.x, pose.pose.position.y, mx, my)) {
-+      continue;
-+    }
-+    const unsigned char cost = costmap_->getCost(mx, my);
-+    if (cost == nav2_costmap_2d::LETHAL_OBSTACLE) {
-+      return true;
-+    }
-+    if (cost >= kSeenWall && cost != nav2_costmap_2d::NO_INFORMATION) {
-+      seen_wall = true;
-+    } else if (seen_wall && cost == nav2_costmap_2d::NO_INFORMATION) {
-+      unknown_after_wall = true;
-+    }
-+  }
-+  return unknown_after_wall;
-+}
-+
- double
- NavfnPlanner::getPointPotential(const geometry_msgs::msg::Point & world_point)
- {
 --- a/nav2_navfn_planner/include/nav2_navfn_planner/navfn_planner.hpp
 +++ b/nav2_navfn_planner/include/nav2_navfn_planner/navfn_planner.hpp
-@@ -127,6 +127,14 @@
+@@ -127,6 +127,17 @@
      nav_msgs::msg::Path & plan);
  
    /**
@@ -67,10 +8,231 @@
 +   *
 +   * Seen wall is cost >= 253 and not NO_INFORMATION (inscribed/lethal). Unknown
 +   * before any such cell is still explorable and is not a refusal.
++   * On true, *reason names branch, cell, cost_navfn/cost_live, path_n/index,
++   * and head/tail path xy samples (#4771).
 +   */
-+  bool pathTailBlocked(const nav_msgs::msg::Path & path) const;
++  bool pathTailBlocked(
++    const nav_msgs::msg::Path & path, std::string * reason) const;
 +
 +  /**
     * @brief Compute the potential, or navigation cost, at a given point in the world
     *        must call computePotential first
     * @param world_point Point in world coordinate frame
+@@ -202,6 +213,13 @@
+   // Global Costmap
+   nav2_costmap_2d::Costmap2D * costmap_;
+ 
++  // #4771: ROS char-map bytes NavFn copied at setCostmap (pre-transform).
++  // pathTailBlocked compares cost_navfn from here with cost_live getCost.
++  std::unique_ptr<unsigned char[]> navfn_cost_snap_;
++  size_t navfn_cost_snap_size_{0};
++  unsigned int navfn_cost_snap_nx_{0};
++  bool have_navfn_cost_snap_{false};
++
+   // The global frame of the costmap
+   std::string global_frame_, name_;
+ 
+--- a/nav2_navfn_planner/src/navfn_planner.cpp
++++ b/nav2_navfn_planner/src/navfn_planner.cpp
+@@ -31,6 +31,8 @@
+ #include <memory>
+ #include <string>
+ #include <vector>
++#include <stdexcept>
++#include <cstring>
+ 
+ #include "builtin_interfaces/msg/duration.hpp"
+ #include "nav2_navfn_planner/navfn.hpp"
+@@ -184,6 +186,14 @@
+   std::cout << "It took " << time_span.count() * 1000 << std::endl;
+ #endif
+ 
++  // #4694/#4771: a path whose tail sits in unknown/lethal beyond a lidar-seen wall
++  // must not be handed to the controller. Empty plan → planner_server ABORT,
++  // and /plan is not published (Humble validatePath + publishPlan order).
++  // Refusal text names branch, cell, cost_navfn/cost_live, path_n/index, head/tail xy.
++  std::string tail_refusal;
++  if (!path.poses.empty() && pathTailBlocked(path, &tail_refusal)) {
++    throw std::runtime_error(tail_refusal);
++  }
+   return path;
+ }
+ 
+@@ -240,6 +250,27 @@
+ 
+   planner_->setCostmap(costmap_->getCharMap(), true, allow_unknown_);
+ 
++  // #4771 diagnostics: keep the ROS char-map NavFn just copied (not costarr,
++  // which is transformed). pathTailBlocked reads cost_navfn from this snapshot
++  // after unlock; cost_live is a fresh getCost. Mutex is not held across plan.
++  {
++    const unsigned int sx = costmap_->getSizeInCellsX();
++    const unsigned int sy = costmap_->getSizeInCellsY();
++    const size_t ns = static_cast<size_t>(sx) * static_cast<size_t>(sy);
++    if (navfn_cost_snap_size_ != ns) {
++      navfn_cost_snap_.reset(ns ? new unsigned char[ns] : nullptr);
++      navfn_cost_snap_size_ = ns;
++    }
++    if (ns > 0 && navfn_cost_snap_) {
++      std::memcpy(navfn_cost_snap_.get(), costmap_->getCharMap(), ns);
++      navfn_cost_snap_nx_ = sx;
++      have_navfn_cost_snap_ = true;
++    } else {
++      have_navfn_cost_snap_ = false;
++      navfn_cost_snap_nx_ = 0;
++    }
++  }
++
+   lock.unlock();
+ 
+   int map_start[2];
+@@ -433,6 +464,149 @@
+   return !plan.poses.empty();
+ }
+ 
++bool
++NavfnPlanner::pathTailBlocked(
++  const nav_msgs::msg::Path & path, std::string * reason) const
++{
++  // 253 = inscribed (COST_OBS_ROS): the lidar already marked a wall. Unknown
++  // beyond that wall is not "not yet explored" — NavFn drew through it.
++  // Unknown with no seen lethal/inscribed on the path stays allowed, so a goal
++  // in unscanned space with a free path to the known frontier still starts.
++  // Decision uses live getCost (rule unchanged). cost_navfn is the same cell on
++  // the char-map snapshot taken under lock at setCostmap (#4771 proof).
++  constexpr unsigned char kSeenWall = 253;
++  bool seen_wall = false;
++  bool unknown_after_wall = false;
++  double block_x = 0.0;
++  double block_y = 0.0;
++  unsigned int block_mx = 0;
++  unsigned int block_my = 0;
++  unsigned char block_cost_live = 0;
++  unsigned char block_cost_navfn = 0;
++  size_t block_index = 0;
++  bool have_block = false;
++  const char * block_branch = nullptr;
++  const size_t path_n = path.poses.size();
++
++  auto cost_navfn_at = [this](unsigned int mx, unsigned int my, unsigned char fallback)
++    -> unsigned char
++  {
++    if (!have_navfn_cost_snap_ || !navfn_cost_snap_ || navfn_cost_snap_nx_ == 0) {
++      return fallback;
++    }
++    if (mx >= navfn_cost_snap_nx_) {
++      return fallback;
++    }
++    const size_t idx =
++      static_cast<size_t>(my) * static_cast<size_t>(navfn_cost_snap_nx_) +
++      static_cast<size_t>(mx);
++    if (idx >= navfn_cost_snap_size_) {
++      return fallback;
++    }
++    return navfn_cost_snap_[idx];
++  };
++
++  auto path_xy_samples = [&path, path_n]() -> std::string
++  {
++    auto one = [](const geometry_msgs::msg::PoseStamped & ps) {
++      return std::to_string(ps.pose.position.x) + "," +
++             std::to_string(ps.pose.position.y);
++    };
++    std::string head;
++    std::string tail;
++    if (path_n <= 6) {
++      for (size_t i = 0; i < path_n; ++i) {
++        if (!head.empty()) {
++          head += ";";
++        }
++        head += one(path.poses[i]);
++      }
++    } else {
++      for (size_t i = 0; i < 3; ++i) {
++        if (!head.empty()) {
++          head += ";";
++        }
++        head += one(path.poses[i]);
++      }
++      for (size_t i = path_n - 3; i < path_n; ++i) {
++        if (!tail.empty()) {
++          tail += ";";
++        }
++        tail += one(path.poses[i]);
++      }
++    }
++    std::string out = " head_xy=" + head;
++    if (!tail.empty()) {
++      out += " tail_xy=" + tail;
++    }
++    return out;
++  };
++
++  auto fill_reason = [&](
++      const char * branch, double wx, double wy,
++      unsigned int mx, unsigned int my,
++      unsigned char cost_live, unsigned char cost_navfn, size_t index)
++  {
++    if (reason == nullptr) {
++      return;
++    }
++    *reason =
++      std::string("refusing path whose tail is unknown or lethal beyond a seen wall")
++      + " branch=" + branch
++      + " world_x=" + std::to_string(wx)
++      + " world_y=" + std::to_string(wy)
++      + " mx=" + std::to_string(mx)
++      + " my=" + std::to_string(my)
++      + " cost=" + std::to_string(static_cast<int>(cost_live))
++      + " cost_navfn=" + std::to_string(static_cast<int>(cost_navfn))
++      + " cost_live=" + std::to_string(static_cast<int>(cost_live))
++      + " path_n=" + std::to_string(path_n)
++      + " index=" + std::to_string(index)
++      + path_xy_samples();
++  };
++
++  for (size_t i = 0; i < path_n; ++i) {
++    const auto & pose = path.poses[i];
++    unsigned int mx = 0;
++    unsigned int my = 0;
++    const double wx = pose.pose.position.x;
++    const double wy = pose.pose.position.y;
++    if (!costmap_->worldToMap(wx, wy, mx, my)) {
++      continue;
++    }
++    // cost_live: what the refusal check reads after unlock (may race with layers).
++    const unsigned char cost_live = costmap_->getCost(mx, my);
++    const unsigned char cost_navfn = cost_navfn_at(mx, my, cost_live);
++    if (cost_live == nav2_costmap_2d::LETHAL_OBSTACLE) {
++      fill_reason(
++        "lethal_on_path", wx, wy, mx, my, cost_live, cost_navfn, i);
++      return true;
++    }
++    if (cost_live >= kSeenWall && cost_live != nav2_costmap_2d::NO_INFORMATION) {
++      seen_wall = true;
++    } else if (seen_wall && cost_live == nav2_costmap_2d::NO_INFORMATION) {
++      if (!have_block) {
++        block_x = wx;
++        block_y = wy;
++        block_mx = mx;
++        block_my = my;
++        block_cost_live = cost_live;
++        block_cost_navfn = cost_navfn;
++        block_index = i;
++        block_branch = "unknown_after_seen_wall";
++        have_block = true;
++      }
++      unknown_after_wall = true;
++    }
++  }
++  if (unknown_after_wall && have_block) {
++    fill_reason(
++      block_branch, block_x, block_y, block_mx, block_my,
++      block_cost_live, block_cost_navfn, block_index);
++  }
++  return unknown_after_wall;
++}
++
+ double
+ NavfnPlanner::getPointPotential(const geometry_msgs::msg::Point & world_point)
+ {
