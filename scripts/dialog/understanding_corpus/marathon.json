@@ -5,7 +5,7 @@
  "generator": "scripts/dialog/understanding_corpus/build_marathon.py",
  "scenarios": {
   "dir": ".github/e2e/scenarios/night",
-  "last_commit": "179cbcffb10b56b380a4542ac63582e11b3a419e",
+  "last_commit": "8f0868ec6b6c9c2a51332f711e36f9bf4ee330f2",
   "sha256": {
    "night_marathon_act10_finale_memory_v1.json": "913b6556dbe92558e9b5e73eb096349f3cc388e8acac3f150994690c0ffbb87a",
    "night_marathon_act1_wakeup_v1.json": "dca2a9a053955a99df64c13b4a074d9387b76c5ff891193eb79086d8e024022e",
@@ -16,18 +16,18 @@
    "night_marathon_act4_voice_prosody_v1.json": "1d03c47a44d3c3fa677e5a908fb7416e239f0cb08bd55024f42879c2acaf20d1",
    "night_marathon_act5_renardo_live_v1.json": "218a87c4feafd5e0b36366c47470167e80c15af67fe780335177542eb9ed1e8e",
    "night_marathon_act6_dj_booth_v1.json": "1b1724d7c6f2a9cec80ac1003283137ff7acbcdc5f79adb80a425fe76586b56a",
-   "night_marathon_act7_neuro_composer_v1.json": "05df09b130250b83faf55176acec831ee2a420e63d30d3e6057285b5f39ad35b",
+   "night_marathon_act7_neuro_composer_v1.json": "a9710062254fd558af5d200a889b0374622373ff3f9cb42f4a2bd36590ff082c",
    "night_marathon_act8_barge_in_v1.json": "b14268b5d7d25097ddb0905c0ba3fb08aeffa0be62d4cd8bb028c3d63865f0b7",
-   "night_marathon_act9_world_outside_v1.json": "57867241f42a029a7121d9e6ca72049c6f7526e1f66922d331e8e8d6129e5343"
+   "night_marathon_act9_world_outside_v1.json": "643546a1ca22a3c0de10f2e2693998dd8404f2bc65b28cd92d02f2edd51c528a"
   }
  },
  "counts": {
-  "steps": 132,
-  "scored_text": 90,
+  "steps": 133,
+  "scored_text": 91,
   "acoustic_context": 42,
-  "unique_phrases": 130
+  "unique_phrases": 131
  },
- "corpus_sha256": "321368e1d52301402cc3f03b77fb1fe3a098c311e4a80db38d275f09f77585f8",
+ "corpus_sha256": "f8671b5bd9ad2e36371e640ea445c82e0ea1e7d611253a4c1f03448f8fb19f9c",
  "acts": [
   {
    "act": "1",
@@ -2815,6 +2815,47 @@
      }
     },
     {
+     "id": "7/n710_gen_delete",
+     "kind": "text",
+     "scored": true,
+     "acoustic_reasons": [],
+     "step": {
+      "label": "n710_gen_delete",
+      "voice": "anton",
+      "text": "Робот, удали эту песню про енота из библиотеки.",
+      "patterns": [
+       "music_library с параметрами \\{.*'action': 'delete'",
+       "❌ Инструмент music_library завершился с ошибкой: Удалить"
+      ],
+      "acceptance": {
+       "expected_tool_calls": [
+        "music_library"
+       ],
+       "must_not_call": [
+        "stage=done status=done"
+       ],
+       "must_not_say": [
+        "удалил",
+        "Данные получил, а ответ у меня не сложился. Спроси ещё раз?|Не понял, как это сделать. Скажи ещё раз?|Ответ вышел слишком длинным — спроси покороче, пожалуйста.|Не вышло.|Хм… не знаю, что сказать.|Не расслышал, повтори?|Эээ… даже не знаю, что ответить.|Хм, я задумался и ничего не придумал. Повтори?|Что-то я долго думаю — повтори, пожалуйста.|так и не ответил — я перестал ждать. Повтори, пожалуйста.|не ответил — повтори, пожалуйста."
+       ],
+       "expected_keywords": [
+        "удалить",
+        "да, удаляй"
+       ]
+      },
+      "skip_when": {
+       "reason": "NO_SONG",
+       "log": "\\[cover\\] баланс KIE: 0(\\.0+)?(\\s|$)|\\[song\\] (не вышло|сбой|не заиграла)|\\[source\\] asked=\\[generated[^\\]]*\\] .*→ decline:"
+      },
+      "track_ref": {
+       "reason": "CASCADE_N702",
+       "log": "\\[song\\] .*\\btrack=(\\S+) за \\d+ с",
+       "tool": "music_library",
+       "action": "delete"
+      }
+     }
+    },
+    {
      "id": "7/n711_renardo_not_broken",
      "kind": "acoustic",
      "scored": false,
@@ -3358,6 +3399,7 @@
       "text": "Робот, включи звук дверного звонка, тётя Гриша опять идёт с обходом.",
       "silent_ok": true,
       "patterns": [
+       "play_sound с параметрами \\{[^}]*ui_bell",
        "✅ Инструмент play_sound выполнен успешно",
        "📊 \\[turn\\] .*stage=done status=finished"
       ],

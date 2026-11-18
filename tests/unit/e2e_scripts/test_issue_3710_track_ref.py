@@ -1,8 +1,9 @@
 # -*- coding: utf-8 -*-
-"""#3710 (эпик #3683, П5 #4077): n707 и n708 судят «эту песню» акта по id, а не по факту вызова ``music_library``.
+"""#3710 (эпик #3683, П5 #4077): n707, n708 и n710 судят «эту песню» акта по id, а не по факту вызова ``music_library``.
 
-Ложный PASS марафона-4: оба шага проверяли только ``Инструмент music_library выполнен успешно``. Робот мог рассказать
-или включить ЛЮБОЙ трек библиотеки, и шаг зеленел. Теперь поле шага ``track_ref``:
+Ложный PASS марафона-4: info/play проверяли только ``Инструмент music_library выполнен успешно``. Робот мог рассказать
+или включить ЛЮБОЙ трек библиотеки, и шаг зеленел; delete без id бил по чужому (n710 23.10). Теперь поле шага
+``track_ref``:
 
 * id песни акта называет сам заказ (``🎤 [song] … track=<id>``, ``engine/gen/song.py``); строки нет -- ``SKIP``, не PASS;
 * вызов тула в окне шага (``📥 Запрос выполнения: music_library с параметрами {…}``) обязан нести ЭТОТ id при нужном
@@ -62,14 +63,16 @@ def rule_of(label):
 # -- генератор: поле у n707 и n708 и только у них ----------------------------------------------------------------
 
 
-def test_n707_and_n708_carry_track_ref_from_the_generator():
+def test_n707_n708_and_n710_carry_track_ref_from_the_generator():
     scenario = json.loads(ACT7.read_text(encoding="utf-8"))
     refs = {s["label"]: s["track_ref"] for s in scenario["steps"] if "track_ref" in s}
-    assert sorted(refs) == ["n707_gen_track_info", "n708_gen_play"]
+    assert sorted(refs) == ["n707_gen_track_info", "n708_gen_play", "n710_gen_delete"]
     assert refs["n707_gen_track_info"] == {
         "reason": "CASCADE_N702", "log": gen.SONG_TRACK_LOG, "tool": "music_library", "action": "info", "wait_sec": 240}
     assert refs["n708_gen_play"] == {
         "reason": "CASCADE_N702", "log": gen.SONG_TRACK_LOG, "tool": "music_library", "action": "play"}
+    assert refs["n710_gen_delete"] == {
+        "reason": "CASCADE_N702", "log": gen.SONG_TRACK_LOG, "tool": "music_library", "action": "delete"}
 
 
 def test_rule_is_a_step_field_not_a_label_match():
@@ -87,7 +90,7 @@ def test_no_other_generated_step_has_track_ref():
         if path.name.endswith("_acceptance_v1.json"):
             continue
         labels = [label for label, _ in eev.track_ref_rules(json.loads(path.read_text(encoding="utf-8")))]
-        assert labels == ([] if "act7" not in path.name else ["n707_gen_track_info", "n708_gen_play"]), path.name
+        assert labels == ([] if "act7" not in path.name else ["n707_gen_track_info", "n708_gen_play", "n710_gen_delete"]), path.name
 
 
 def test_song_track_log_reads_the_real_song_line():
@@ -120,7 +123,7 @@ class TestBind:
 
 
 class TestVerdict:
-    @pytest.mark.parametrize("label,action", [("n707_gen_track_info", "info"), ("n708_gen_play", "play")])
+    @pytest.mark.parametrize("label,action", [("n707_gen_track_info", "info"), ("n708_gen_play", "play"), ("n710_gen_delete", "delete")])
     def test_call_with_the_acts_track_passes(self, label, action):
         rule = rule_of(label)
         log = call("music_library", "{'action': '%s', 'track_id': '%s'}" % (action, SONG_ID))
