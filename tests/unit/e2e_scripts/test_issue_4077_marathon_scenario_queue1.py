@@ -197,6 +197,22 @@ def test_shipped_measures_belong_to_the_current_texts_and_none_is_over_the_ceili
     ), "тугой может быть только замер: оценка выше порога -- красная"
 
 
+
+def test_n806_long_count_fits_existing_vad_budget_and_is_longer_than_twenty():
+    """#4077/#4163: n806→n807 нужен длинный счёт; фраза до сорока, влезает в VAD_BUDGET_S=12.5 без нового порога.
+
+    Замер eq снят (текст сменился) — вердикт по оценке символов; живая запись не нужна, пока оценка OK.
+    """
+    assert pb.VAD_BUDGET_S == 12.5
+    voice, text = gen.phrases()["n806_long_count_again"]
+    assert "до сорока" in text and "до двадцати" not in text, text
+    found = pb.verdict("n806_long_count_again", voice, text, gen.PHRASE_STORE)
+    assert found.level == pb.OK, found.describe()
+    assert found.source == pb.ESTIMATE, "после смены текста замер обнулён, пока нет --learn"
+    assert found.eq_s <= pb.EQ_TIGHT_S
+    assert "n806_long_count_again" not in pb.load_store(gen.PHRASE_STORE_PATH)
+
+
 def test_edited_phrases_of_the_audit_are_short_and_no_longer_over_the_window():
     """П2: n302, n602, n605, n607, n711 (+ n702 и 2b n701) -- были 74-91 символ, теперь влезают без замера."""
     phrases = gen.phrases()

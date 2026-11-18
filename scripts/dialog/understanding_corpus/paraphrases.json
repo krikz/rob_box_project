@@ -4,7 +4,7 @@
  "part": 2,
  "base": {
   "name": "understanding_marathon_part1",
-  "corpus_sha256": "f71596f88c68588d577d26878fc0bed3f6bbbb5a677d12dce5c0280894b3c1bb"
+  "corpus_sha256": "321368e1d52301402cc3f03b77fb1fe3a098c311e4a80db38d275f09f77585f8"
  },
  "generator": "scripts/dialog/understanding_corpus/build_paraphrases.py",
  "method": {
@@ -96,12 +96,13 @@
   "repointed": {
    "measured_sha256": "56f5836f701cd79180e804d451088a386735984b5f85eb621758389265416601",
    "from_base": "cf0a67043a479dbe8911875404707257b81edbdf7261293c3b4a9ba0cf5456da",
-   "to_base": "f71596f88c68588d577d26878fc0bed3f6bbbb5a677d12dce5c0280894b3c1bb",
+   "to_base": "321368e1d52301402cc3f03b77fb1fe3a098c311e4a80db38d275f09f77585f8",
    "dropped_steps": [
     "3/n309_bg_command_valera",
     "7/n707_gen_track_info",
     "8/n813_silence_final",
-    "5/n512_silence_after_stop"
+    "5/n512_silence_after_stop",
+    "8/n806_long_count_again"
    ]
   },
   "dropped_rows": [
@@ -115,10 +116,10 @@
   ]
  },
  "counts": {
-  "steps": 84,
-  "alternatives": 251,
-  "excluded": 6,
-  "steps_with_3": 83,
+  "steps": 83,
+  "alternatives": 248,
+  "excluded": 7,
+  "steps_with_3": 82,
   "steps_with_2": 1,
   "steps_with_1": 0,
   "steps_below_min": 0
@@ -153,9 +154,14 @@
    "id": "5/n512_silence_after_stop",
    "alternatives_dropped": 3,
    "reason": "часть 1 пересобрана (0640ef3e6cca → d7b7adbec4dd): текст шага сменился «Робот, теперь тишина?» → «Робот, теперь что-нибудь играет?», альтернативы старого текста к новому шагу не относятся"
+  },
+  {
+   "id": "8/n806_long_count_again",
+   "alternatives_dropped": 3,
+   "reason": "часть 1 пересобрана (f71596f88c68 → 321368e1d523): текст шага сменился «Робот, посчитай вслух от одного до двадцати, спокойно.» → «Робот, посчитай вслух от одного до сорока, спокойно.», альтернативы старого текста к новому шагу не относятся"
   }
  ],
- "corpus_sha256": "6d777b3c0a9b3a8cd252a8acbd6e3080496b84fe7e836125e324956442aa15e7",
+ "corpus_sha256": "22636e1d73bcf506bcdd540485d2832c6a9845cc7b4123e626216f2b73216722",
  "alternatives": {
   "1/n101_wake_cold_start": [
    {
@@ -867,17 +873,6 @@
    },
    {
     "text": "Робот, давай говори."
-   }
-  ],
-  "8/n806_long_count_again": [
-   {
-    "text": "Робот, от одного до двадцати вслух сосчитай, спокойно."
-   },
-   {
-    "text": "Робот, спокойно посчитай вслух от одного до двадцати."
-   },
-   {
-    "text": "Робот, вслух от одного до двадцати посчитай, спокойненько."
    }
   ],
   "8/n810_rap_over_music": [
