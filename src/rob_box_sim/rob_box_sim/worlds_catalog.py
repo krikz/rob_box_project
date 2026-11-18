@@ -13,13 +13,15 @@
 
 from __future__ import annotations
 
+import math
 import sys
 from dataclasses import dataclass
 from pathlib import Path
 
-from rob_box_sim import building_floor
-from rob_box_sim.geometry2d import ROBOT_FOOTPRINT, Box
+from rob_box_sim.geometry2d import ROBOT_FOOTPRINT, Box, Pose2D, clearance
 from rob_box_sim.world_sdf import render_world
+
+from rob_box_sim import building_floor
 
 WALL_T = 0.1
 WALL_H = 1.0
@@ -180,13 +182,55 @@ def low_obstacle() -> World:
 
 
 # Тупик: разворот на месте у стены. Коридор DEAD_END_WIDTH в свету, робот спавнится
-# лицом в торец с зазором DEAD_END_FRONT. Углы габарита 0.61×0.605 заметают круг
-# радиусом 0.43 м (geometry2d.ROBOT_FOOTPRINT): до стен тупика ~0.12 м — по корпусу
-# разворот возможен, а footprint_padding (Spin «Collision Ahead», DWB ObstacleFootprint)
-# раздувает этот круг на padding·√2 — так видно, при каком запасе разворот отказывает.
+# лицом в торец с зазором DEAD_END_FRONT.
+#
+# Центр вращения — задняя ось, не base_footprint. HIL 09.11 замерил (−0.144, 0.000)
+# (docs/research/2026-11-05-nav2-hil-tuning.md §10); то же число ждёт
+# tests/unit/sim/test_sim_turn_calibration.py. Круг углов вокруг base_footprint —
+# 0.4306 м и до стены тупика даёт ~0.12 м; это не тот круг. Нос (x +0.3064) вокруг
+# оси заметает 0.5426 м: до стены 1.1 м остаётся 7.5 мм по корпусу. footprint_padding
+# (Spin «Collision Ahead», DWB ObstacleFootprint) раздувает углы наружу на padding,
+# и при 0.03 этот круг стену уже пересекает. Padding и порог защиты здесь не задаются:
+# их держит nav2_params.yaml и proximity, решение Шифу 05.11.
+#: Задняя ось в системе base_footprint, м (x вперёд). Не порог и не запас.
+TURN_CENTER_X = -0.144
 DEAD_END_WIDTH = 1.1
 DEAD_END_FRONT = 0.25
 DEAD_END_LENGTH = 4.5  # от торца назад, до задней стены
+
+
+def turn_swept_radius(
+    center_x: float = TURN_CENTER_X, footprint=ROBOT_FOOTPRINT
+) -> float:
+    """Радиус круга, который заметают углы корпуса вокруг центра вращения, м.
+
+    Вокруг base_footprint (center_x=0) это 0.4306 м. Вокруг задней оси — 0.5426 м:
+    дальний угол — нос. Padding сюда не входит.
+    """
+    return max(
+        math.hypot(x - center_x, y)
+        for x in (footprint.x_min, footprint.x_max)
+        for y in (footprint.y_min, footprint.y_max)
+    )
+
+
+def turn_body_clearance(
+    boxes, center_x: float = TURN_CENTER_X, footprint=ROBOT_FOOTPRINT
+) -> float:
+    """Наименьший зазор корпуса за полный оборот вокруг оси, стоящей на месте.
+
+    На спавне yaw=0 ось в мире — (center_x, 0), base_footprint ходит по кругу
+    радиуса |center_x|. Это не clearance(Pose2D(0, 0, yaw)): та считает, что
+    крутится base_footprint, и в тупике врёт на дециметр.
+    """
+    best = math.inf
+    for step in range(72):
+        yaw = step * math.tau / 72
+        pose = Pose2D(
+            center_x + -center_x * math.cos(yaw), -center_x * math.sin(yaw), yaw
+        )
+        best = min(best, clearance(pose, boxes, footprint))
+    return best
 
 
 def dead_end() -> World:
