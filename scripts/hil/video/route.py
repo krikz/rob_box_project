@@ -2,7 +2,7 @@
 """Маршрут из целей NavigateToPose по одной; лог: sim time, номер кадра камеры, поза gt, стопы защиты.
 
 ``run_lane`` — несколько точек одной целью NavigateThroughPoses (полоса обхода покрытием, #4560).
-Тик ещё пишет YAW (/cmd_vel_yaw), PLAN (штамп /plan и now), MAP (map←base_footprint рядом с GT).
+Тик ещё пишет YAW (/cmd_vel_yaw), PLAN (штамп /plan, now и хвост path.poses[-1]), MAP (map←base_footprint рядом с GT).
 """
 import datetime
 import math
@@ -46,7 +46,7 @@ ODOM_FRAME = "odom"  # local_costmap.global_frame: costmap ждёт global_frame
 MAP_FRAME = "map"
 BASE_FRAME = "base_footprint"  # local_costmap.robot_base_frame
 YAW_TOPIC = "/cmd_vel_yaw"  # twist_mux yaw_at_goal, тот же вход что у YawAtGoal
-PLAN_TOPIC = "/plan"  # хвост пути Nav2; штамп vs now — видно, старше ли план 2 с
+PLAN_TOPIC = "/plan"  # тот же /plan: штамп vs now и хвост path.poses[-1]; пустой — none, не выдумка
 
 
 def load_goals(path):
@@ -105,6 +105,23 @@ def yaw_of(q):
     return math.atan2(2 * (q.w * q.z + q.x * q.y), 1 - 2 * (q.y * q.y + q.z * q.z))
 
 
+def plan_tail_xy_yaw(path):
+    """Хвост path.poses[-1] как (x, y, yaw°). Пустой path — None, не выдуманная точка."""
+    poses = getattr(path, "poses", None) or []
+    if not poses:
+        return None
+    last = poses[-1].pose
+    return (float(last.position.x), float(last.position.y), math.degrees(yaw_of(last.orientation)))
+
+
+def plan_log_tail(stamp, tail, now):
+    """Поля строки PLAN. Нет /plan или пустой path — x/y/yaw=none."""
+    stamp_s = "none" if stamp is None else f"{stamp:.3f}"
+    if tail is None:
+        return f"stamp={stamp_s} now={now:.3f} x=none y=none yaw=none"
+    return f"stamp={stamp_s} now={now:.3f} x={tail[0]:.3f} y={tail[1]:.3f} yaw={tail[2]:.1f}"
+
+
 class Mon(Node):
     def __init__(self, name="shidi_route"):
         super().__init__(name, parameter_overrides=[Parameter("use_sim_time", Parameter.Type.BOOL, True)])
@@ -117,6 +134,7 @@ class Mon(Node):
         self.yaw_wz = None
         self.yaw_sim = None
         self.plan_stamp = None
+        self.plan_tail = None
         self.tf_buffer = None
         self.create_subscription(Odometry, "/sim/ground_truth/odom", self.on_gt, 10)
         self.create_subscription(Twist, "/cmd_vel_emergency", self.on_em, 10)
@@ -147,6 +165,7 @@ class Mon(Node):
     def on_plan(self, m):
         stamp = m.header.stamp
         self.plan_stamp = stamp.sec + stamp.nanosec * 1e-9
+        self.plan_tail = plan_tail_xy_yaw(m)
 
     def map_pose(self):
         """Поза map←base_footprint из того же TF-буфера, что ждёт wait_ready."""
@@ -172,10 +191,7 @@ class Mon(Node):
             print(f"{ts()} YAW sim={sim:.2f} wz=none age=none", flush=True)
         else:
             print(f"{ts()} YAW sim={sim:.2f} wz={self.yaw_wz:.3f} age={sim - self.yaw_sim:.2f}", flush=True)
-        if self.plan_stamp is None:
-            print(f"{ts()} PLAN sim={sim:.2f} stamp=none now={sim:.3f}", flush=True)
-        else:
-            print(f"{ts()} PLAN sim={sim:.2f} stamp={self.plan_stamp:.3f} now={sim:.3f}", flush=True)
+        print(f"{ts()} PLAN sim={sim:.2f} {plan_log_tail(self.plan_stamp, self.plan_tail, sim)}", flush=True)
         if self.gt:
             print(
                 f"{ts()} TRACK sim={sim:.2f} x={self.gt[0]:.3f} y={self.gt[1]:.3f} yaw={self.gt[2]:.1f}",
@@ -185,7 +201,8 @@ class Mon(Node):
             gt = self.gt
             if pose is None:
                 print(
-                    f"{ts()} MAP sim={sim:.2f} x=none y=none yaw=none gt_x={gt[0]:.3f} gt_y={gt[1]:.3f} gt_yaw={gt[2]:.1f}",
+                    f"{ts()} MAP sim={sim:.2f} x=none y=none yaw=none "
+                    f"gt_x={gt[0]:.3f} gt_y={gt[1]:.3f} gt_yaw={gt[2]:.1f}",
                     flush=True,
                 )
             else:

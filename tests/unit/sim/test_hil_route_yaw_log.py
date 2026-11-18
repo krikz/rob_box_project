@@ -62,6 +62,20 @@ def _tf(x, y, yaw_deg):
     )
 
 
+def _pose(x, y, yaw_deg):
+    yaw = math.radians(yaw_deg)
+    return types.SimpleNamespace(
+        pose=types.SimpleNamespace(
+            position=types.SimpleNamespace(x=x, y=y),
+            orientation=types.SimpleNamespace(x=0.0, y=0.0, z=math.sin(yaw / 2), w=math.cos(yaw / 2)),
+        )
+    )
+
+
+def _plan_line(out):
+    return next(line for line in out.splitlines() if " PLAN " in line)
+
+
 @pytest.fixture
 def route_mod(monkeypatch):
     for name in ROS_MODULES:
@@ -106,10 +120,37 @@ def test_tick_writes_yaw_plan_map_when_subscriptions_have_messages(route_mod, ca
     n.tick()
     out = capsys.readouterr().out
     assert "YAW " in out and "wz=-0.420" in out and "age=2.20" in out
-    assert "PLAN " in out and "stamp=10.250" in out and "now=14.700" in out
+    plan_line = _plan_line(out)
+    assert "stamp=10.250" in plan_line and "now=14.700" in plan_line
+    assert "x=none" in plan_line and "y=none" in plan_line and "yaw=none" in plan_line
     assert "MAP " in out and "x=-3.700" in out and "y=2.340" in out and "yaw=90.0" in out
     assert "gt_x=-3.546" in out and "gt_y=2.159" in out and "gt_yaw=147.1" in out
     assert "TRACK " in out
+
+
+def test_plan_line_contains_single_pose_xy(route_mod, capsys):
+    """Одна поза в /plan — строка PLAN несёт её x,y; без новой подписки."""
+    n = route_mod.Mon()
+    n.on_plan(
+        types.SimpleNamespace(
+            header=types.SimpleNamespace(stamp=types.SimpleNamespace(sec=10, nanosec=0)),
+            poses=[_pose(-3.214, 3.501, 12.0)],
+        )
+    )
+    n.tick()
+    line = _plan_line(capsys.readouterr().out)
+    assert "x=-3.214" in line and "y=3.501" in line
+    assert "yaw=12.0" in line
+    assert "stamp=10.000" in line
+
+
+def test_plan_line_none_when_no_path(route_mod, capsys):
+    """Нет /plan — none, не выдуманная точка."""
+    n = route_mod.Mon()
+    n.tick()
+    line = _plan_line(capsys.readouterr().out)
+    assert "stamp=none" in line
+    assert "x=none" in line and "y=none" in line and "yaw=none" in line
 
 
 def test_goals_and_timeout_unchanged(route_mod):
