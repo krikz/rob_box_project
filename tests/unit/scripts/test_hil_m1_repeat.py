@@ -160,7 +160,7 @@ def test_script_uses_world_gate_and_pulls_before_off():
     assert "HIL_EXPECT_WORLD=depot" in script
     assert "world_check.py" in script or "WORLD_CHECK" in script
     # Артефакты на хост до off: pull вызывается из cleanup раньше hil off.
-    pull_at = script.index("pull_before_off || bad=1")
+    pull_at = script.index("pull_before_off || art_rc=1")
     off_at = script.index('bash "$HIL_CMD" off', pull_at)
     assert pull_at < off_at
     assert "ros2 bag record" in script
@@ -174,6 +174,15 @@ def test_script_uses_world_gate_and_pulls_before_off():
     assert "publish_evaluation" in script
     code = "\n".join(line for line in script.splitlines() if not line.lstrip().startswith("#"))
     assert "nav2_params.yaml" not in code
+    # OpenSSH 9 SFTP отвергает filename «.» — прошлый прогон, exit 50.
+    scp_lines = [line for line in code.splitlines() if "scp " in line]
+    assert scp_lines
+    assert all("bag/." not in line for line in scp_lines)
+    assert "pull_host_is_local" in code
+    assert "OFF_OK" in code
+    assert "OFF_FAILED" in code
+    assert "return 51" in code
+    assert "return 52" in code
     assert "CAMERAS=0 ./runvideo.sh M1" in script
     assert "/tmp/hil.lock" in script
     assert "NAV2_PARAMS_OVERLAYS" in script
@@ -184,3 +193,94 @@ def test_script_uses_world_gate_and_pulls_before_off():
 @pytest.mark.skipif(subprocess.call(["bash", "-n", str(REPEAT / "run_m1_repeat.sh")]) != 0, reason="bash -n")
 def test_shell_syntax_ok():
     subprocess.run(["bash", "-n", str(REPEAT / "run_m1_repeat.sh")], check=True)
+
+
+def _fn_body(name: str) -> str:
+    text = (REPEAT / "run_m1_repeat.sh").read_text(encoding="utf-8")
+    start = text.index(f"{name}() {{")
+    rest = text[start:]
+    # следующая функция верхнего уровня — строка без отступа, оканчивающаяся на ().
+    lines = rest.splitlines(keepends=True)
+    out = [lines[0]]
+    for line in lines[1:]:
+        if line and not line.startswith((" ", "\t", "\n")) and line.endswith("() {\n"):
+            break
+        out.append(line)
+    return "".join(out)
+
+
+def test_local_pull_copies_bag_without_scp_dot(tmp_path):
+    """Локальная песочница: cp, не scp. bag/. в scp нет — OpenSSH 9 отвергает «.»."""
+    remote = tmp_path / "remote" / "bag"
+    remote.mkdir(parents=True)
+    (remote / "metadata.yaml").write_text("rosbag2\n", encoding="utf-8")
+    (remote / "bag_0.db3").write_bytes(b"bag")
+    (tmp_path / "remote" / "route.log").write_text("GOAL_END\n", encoding="utf-8")
+    art = tmp_path / "art"
+    art.mkdir()
+    harness = tmp_path / "copy.sh"
+    harness.write_text(
+        "set -uo pipefail\n"
+        f"ART={art}\n"
+        f"REMOTE_OUT={tmp_path / 'remote'}\n"
+        "SANDBOX=ros2@127.0.0.1\n"
+        + _fn_body("copy_bag_to_host")
+        + _fn_body("pull_host_is_local")
+        + "\ncopy_bag_to_host\nexit $?\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+    result = subprocess.run(["bash", str(harness)], capture_output=True, text=True, cwd=tmp_path)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert (art / "bag" / "metadata.yaml").read_text(encoding="utf-8") == "rosbag2\n"
+    assert (art / "bag" / "bag_0.db3").read_bytes() == b"bag"
+    assert "GOAL_END" in (art / "route.log").read_text(encoding="utf-8")
+    assert "unexpected filename" not in (result.stderr + result.stdout)
+    assert not (art / "artifact_scp.err").exists() or (art / "artifact_scp.err").stat().st_size == 0
+
+
+def _cleanup_harness(tmp_path: Path, pull_rc: int, off_rc: int) -> subprocess.CompletedProcess:
+    """cleanup с подменой pull и hil off. Живой HIL не нужен."""
+    art = tmp_path / "art"
+    art.mkdir()
+    off_stub = art / "off_stub.sh"
+    off_stub.write_text(f"#!/bin/sh\nexit {off_rc}\n", encoding="utf-8")
+    off_stub.chmod(0o755)
+    harness = tmp_path / "cleanup.sh"
+    harness.write_text(
+        "set -uo pipefail\n"
+        f"ART={art}\n"
+        f"HIL_CMD={off_stub}\n"
+        "SUMMARY=$ART/verdict.log\n"
+        ": >\"$SUMMARY\"\n"
+        "log() { printf '%s\\n' \"$*\" | tee -a \"$SUMMARY\"; }\n"
+        "main() { return 0; }\n"
+        "stop_route() { :; }\n"
+        f"pull_before_off() {{ return {pull_rc}; }}\n"
+        "CLEANED=0\n"
+        "ON_ATTEMPTED=1\n"
+        + _fn_body("cleanup")
+        + "\ncleanup\nexit $?\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+    return subprocess.run(["bash", str(harness)], capture_output=True, text=True, cwd=tmp_path)
+
+
+def test_off_ok_and_missing_bag_are_different_codes(tmp_path):
+    """off прошёл, bag не доехал — 52, не 50 и не маскарад CLEANUP_FAILED."""
+    result = _cleanup_harness(tmp_path, pull_rc=1, off_rc=0)
+    assert result.returncode == 52, result.stdout + result.stderr
+    verdict = (tmp_path / "art" / "verdict.log").read_text(encoding="utf-8")
+    assert "OFF_OK" in verdict
+    assert "ARTIFACTS_INCOMPLETE" in verdict
+    assert "OFF_FAILED" not in verdict
+    assert "CLEANUP_FAILED" not in verdict
+
+
+def test_off_failed_is_not_artifacts_code(tmp_path):
+    result = _cleanup_harness(tmp_path, pull_rc=0, off_rc=1)
+    assert result.returncode == 51, result.stdout + result.stderr
+    verdict = (tmp_path / "art" / "verdict.log").read_text(encoding="utf-8")
+    assert "OFF_FAILED rc=1" in verdict
+    assert "ARTIFACTS_OK" in verdict

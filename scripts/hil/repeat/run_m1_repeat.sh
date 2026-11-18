@@ -50,6 +50,31 @@ main() { ssh "${SSHO[@]}" "$MAIN" "$*" </dev/null; }
 sandbox() { ssh "${SSHO[@]}" "$SANDBOX" "$*" </dev/null; }
 log() { printf '%s %s\n' "$(date -u +%FT%TZ)" "$*" | tee -a "$SUMMARY"; }
 
+# bag/ без trailing «/.»: OpenSSH 9 scp (SFTP) отвергает filename «.» (прогон 18.11, exit 50).
+# Песочница = эта машина — cp, не scp. Удалённый хост: scp -r host:bag каталог, не bag/.
+copy_bag_to_host() {
+    local err="${ART}/artifact_scp.err"
+    mkdir -p "$ART/bag"
+    if pull_host_is_local "$SANDBOX"; then
+        cp "$REMOTE_OUT/route.log" "$ART/route.log" 2>>"$err" || return 1
+        cp -a "$REMOTE_OUT/bag/." "$ART/bag/" 2>>"$err" || return 1
+        return 0
+    fi
+    scp -q -o BatchMode=yes "$SANDBOX:$REMOTE_OUT/route.log" "$ART/route.log" 2>>"$err" || return 1
+    scp -q -o BatchMode=yes -r "$SANDBOX:$REMOTE_OUT/bag" "$ART/" 2>>"$err" || return 1
+}
+
+# Песочница на этой же машине: scp user@10.1.1.250 сам себе ловит тот же SFTP-отказ на «.».
+pull_host_is_local() {
+    case "$1" in
+        "" | localhost | 127.0.0.1 | "::1") return 0 ;;
+    esac
+    local host="${1#*@}"
+    host="${host%%:*}"
+    [ "$host" = "localhost" ] || [ "$host" = "127.0.0.1" ] && return 0
+    hostname -I 2>/dev/null | tr ' ' '\n' | grep -qx "$host"
+}
+
 topics_line() {
     python3 -X utf8 -c 'import sys; sys.path.insert(0, sys.argv[1]); from m1_topics import repeat_bag_topics; print(" ".join(repeat_bag_topics()))' "$HERE"
 }
@@ -66,9 +91,7 @@ pull_before_off() {
     sandbox "for i in \$(seq 1 $BAG_CLOSE_WAIT); do test -f '$REMOTE_OUT/bag/metadata.yaml' && break; sleep 1; done; docker exec $(printf '%q' "$G") /entrypoint.sh ros2 bag info '$CONTAINER_OUT/bag'" \
         >"$ART/bag_info.txt" 2>&1 || rc=1
     sandbox "mkdir -p '$REMOTE_OUT'; cp '$SANDBOX_REPO/out/route.log' '$REMOTE_OUT/route.log' 2>/dev/null || true" || true
-    scp -q -o BatchMode=yes "$SANDBOX:$REMOTE_OUT/route.log" "$ART/route.log" 2>>"$ART/artifact_scp.err" || rc=1
-    mkdir -p "$ART/bag"
-    scp -q -o BatchMode=yes -r "$SANDBOX:$REMOTE_OUT/bag/." "$ART/bag/" 2>>"$ART/artifact_scp.err" || rc=1
+    copy_bag_to_host || rc=1
     # Лог nav2 до off: «Failed to make progress» и какой recovery (clear/spin/wait/back_up).
     main "docker logs $(printf '%q' "$NAV2_CONTAINER") 2>&1" >"$ART/nav2.log" 2>&1 || true
     python3 -X utf8 -c '
@@ -91,28 +114,42 @@ pathlib.Path(sys.argv[3]).write_text(
 cleanup() {
     [ "$CLEANED" = 0 ] || return 0
     CLEANED=1
-    local bad=0
+    local art_rc=0 off_rc=0
     stop_route
     if [ "$ON_ATTEMPTED" = 1 ]; then
-        pull_before_off || bad=1
+        pull_before_off || art_rc=1
         # hil off пересоздаёт nav2 без nav2tune.compose.yaml — оверлей публикации уходит
         # вместе с HIL. Файл на Main удаляем, чтобы следующий on его не подхватил.
         main "rm -f /tmp/hil/nav2tune/dwb_publish.yaml /tmp/hil/nav2tune.compose.yaml" || true
-        bash "$HIL_CMD" off >"$ART/hil_off.log" 2>&1 || bad=1
+        bash "$HIL_CMD" off >"$ART/hil_off.log" 2>&1 || off_rc=$?
     fi
-    if [ "$bad" -eq 0 ]; then
-        log "CLEANUP_OK"
+    # off — безопасность стенда. Неполный bag её не маскирует и наоборот.
+    if [ "$off_rc" -eq 0 ]; then
+        log "OFF_OK"
     else
-        log "CLEANUP_FAILED"
-        return 1
+        log "OFF_FAILED rc=$off_rc"
     fi
+    if [ "$art_rc" -eq 0 ]; then
+        log "ARTIFACTS_OK"
+    else
+        log "ARTIFACTS_INCOMPLETE"
+    fi
+    if [ "$off_rc" -ne 0 ]; then
+        return 51
+    fi
+    if [ "$art_rc" -ne 0 ]; then
+        return 52
+    fi
+    log "CLEANUP_OK"
+    return 0
 }
 
 on_exit() {
     local rc=$? cleanup_rc=0
     trap - EXIT INT TERM
     cleanup || cleanup_rc=$?
-    if [ "$rc" -eq 0 ] && [ "$cleanup_rc" -ne 0 ]; then rc=50; fi
+    # Прогон дошёл, off прошёл, не доехали только артефакты — не 50 (это был маскарад).
+    if [ "$rc" -eq 0 ] && [ "$cleanup_rc" -ne 0 ]; then rc=$cleanup_rc; fi
     exit "$rc"
 }
 trap on_exit EXIT
