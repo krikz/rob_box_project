@@ -102,6 +102,9 @@ synth_minimax() {  # $1=text $2=voice $3=out
     echo "MINIMAX_SYNTH_OK voice=$2"
     echo '{"provider": "minimax", "result": "ok"}' >&2
 }
+eq_command_wav() {  # без ffmpeg: сырой wav → eq (тесты про ретраи/кэш, не про eq)
+    cp -f "$1" "$2" 2>/dev/null || printf 'RIFF' > "$2"
+}
 """
 
 
@@ -109,9 +112,15 @@ def run_bash(tmp_path, body, fail_first=0, fail_json=NET_ERR, env_extra=""):
     out = tmp_path / "out"
     out.mkdir(exist_ok=True)
     cache = tmp_path / "cache"
+    bindir = tmp_path / "bin"
+    bindir.mkdir(exist_ok=True)
+    # #4077: PRESYNTH требует измеримую длительность; иначе E2E_INFRA_FAIL eq_duration.
+    (bindir / "ffprobe").write_text("#!/bin/bash\necho 8.0\n", encoding="utf-8")
+    (bindir / "ffprobe").chmod(0o755)
     script = "\n".join(
         [
             "set -u",
+            'export PATH="%s:$PATH"' % bindir.as_posix(),
             'log() { echo ">>> $*"; }',
             'OUT_DIR="%s"' % out.as_posix(),
             'CALLS="%s/calls"' % tmp_path.as_posix(),
@@ -121,6 +130,7 @@ def run_bash(tmp_path, body, fail_first=0, fail_json=NET_ERR, env_extra=""):
             'E2E_SYNTH_CACHE=1; E2E_SYNTH_CACHE_DIR="%s"' % cache.as_posix(),
             "E2E_TTS_PROVIDER=minimax; E2E_TTS_PROVIDER_RESOLVED=minimax",
             "MINIMAX_TTS_MODEL=speech-02-hd; YANDEX_SPEED=1.0",
+            "E2E_VAD_MAX_DURATION=15.0; E2E_VAD_OVERHEAD=2.5",
             env_extra,
             LIB.read_text(encoding="utf-8").replace("\r\n", "\n"),
             "\n".join(extract_function(n) for n in HARNESS_FUNCS),

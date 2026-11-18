@@ -78,7 +78,7 @@ DNS на билд-машине мигает (`NameResolutionError` → `MINIMAX_
   2/5/10 с (`E2E_SYNTH_RETRY_DELAYS`), в логе `STEP <label>: synth retry k/3 (<класс>)`. Auth/Quota/BadRequest не
   повторяются. Тот же ретрай у пробы провайдера.
 - **Пред-синтез.** Все фразы акта синтезируются до записи, изоляции и первого PLAY; сразу же eq и замер окна VAD
-  (#4077 П2, бюджет 12.5 с). Не вышло — `E2E_INFRA_FAIL synth` или `E2E_INFRA_FAIL scenario_too_long`, робот не тронут.
+  (#4077 П2, бюджет 12.5 с). Не вышло — `E2E_INFRA_FAIL synth` / `scenario_too_long` / `eq` / `eq_duration`, робот не тронут.
   `E2E_PRESYNTH=0` выключает (отладка).
 - **Кэш между прогонами.** `$HOME/.cache/rob_box_e2e/synth/` (`E2E_SYNTH_CACHE_DIR`), вне `/tmp/e2e_v2_*`,
   cleanup прогона его не трогает. Ключ: sha256(провайдер, голос провайдера, текст, модель/скорость/формат),

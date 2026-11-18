@@ -1,8 +1,9 @@
 # -*- coding: utf-8 -*-
-"""#4077 П2 остаток: замер eq в ``presynth_scenario`` → ``E2E_INFRA_FAIL scenario_too_long`` до PLAY.
+"""#4077 П2 остаток: замер eq в ``presynth_scenario`` → ``E2E_INFRA_FAIL`` до PLAY.
 
 Порог — тот же, что у ``run_step`` и ``phrase_budget.VAD_BUDGET_S``: ``E2E_VAD_MAX_DURATION`` (15.0) минус
 ``E2E_VAD_OVERHEAD`` (2.5) = 12.5 с. Число не выдумываем: его держит ``test_e2e_scenario_playable.sh``.
+Сбой eq WAV или пустой ffprobe — тоже ``E2E_INFRA_FAIL`` (eq / eq_duration), не silent skip до PLAY.
 
 Run:
     /home/ros2/rob_box_project/.venv-core/bin/pytest -v -o addopts= \\
@@ -92,19 +93,36 @@ def write_scenario(tmp_path: Path, steps):
     return path
 
 
-def run_presynth(tmp_path: Path, body: str, ffprobe_dur: str | None = None):
-    """ffprobe_dur — если задан, PATH-обёртка ffprobe отвечает этой длительностью."""
+def run_presynth(
+    tmp_path: Path,
+    body: str,
+    ffprobe_dur: str | None = None,
+    *,
+    eq_fail: bool = False,
+    ffprobe_empty: bool = False,
+    extra_bash: str = "",
+):
+    """ffprobe_dur — PATH-обёртка ffprobe с этой длительностью.
+
+    eq_fail — подмена eq_command_wav на отказ; ffprobe_empty — ffprobe без числа.
+    """
     out = tmp_path / "out"
     out.mkdir(exist_ok=True)
     cache = tmp_path / "cache"
     bindir = tmp_path / "bin"
     bindir.mkdir(exist_ok=True)
-    if ffprobe_dur is not None:
+    if ffprobe_empty:
+        (bindir / "ffprobe").write_text("#!/bin/bash\nexit 0\n", encoding="utf-8")
+        (bindir / "ffprobe").chmod(0o755)
+    elif ffprobe_dur is not None:
         (bindir / "ffprobe").write_text(
             "#!/bin/bash\necho '%s'\n" % ffprobe_dur,
             encoding="utf-8",
         )
         (bindir / "ffprobe").chmod(0o755)
+    overrides = []
+    if eq_fail:
+        overrides.append('eq_command_wav() { rm -f "$2"; echo "FAKE_EQ_FAIL" >&2; return 1; }')
     script = "\n".join(
         [
             "set -u",
@@ -120,12 +138,12 @@ def run_presynth(tmp_path: Path, body: str, ffprobe_dur: str | None = None):
             LIB.read_text(encoding="utf-8").replace("\r\n", "\n"),
             "\n".join(extract_function(n) for n in FUNCS),
             FAKE_PROVIDER,
+            *overrides,
+            extra_bash,
             body,
         ]
     )
-    p = subprocess.run(
-        ["bash", "-s"], input=script.encode("utf-8"), capture_output=True, timeout=60
-    )
+    p = subprocess.run(["bash", "-s"], input=script.encode("utf-8"), capture_output=True, timeout=60)
     return (
         p.stdout.decode("utf-8", "replace"),
         p.stderr.decode("utf-8", "replace"),
@@ -164,8 +182,7 @@ def test_presynth_prints_eq_and_passes_under_budget(tmp_path):
     sc = write_scenario(tmp_path, STEPS)
     out, err, _ = run_presynth(
         tmp_path,
-        'presynth_scenario "%s"; echo "RC=$?"; echo "KIND=${E2E_FAIL_KIND:-}"'
-        % sc.as_posix(),
+        'presynth_scenario "%s"; echo "RC=$?"; echo "KIND=${E2E_FAIL_KIND:-}"' % sc.as_posix(),
         ffprobe_dur="8.25",
     )
     assert "RC=0" in out, (out, err)
@@ -224,6 +241,48 @@ def test_presynth_just_over_budget_is_infra_fail(tmp_path):
 
 
 @needs_bash
+def test_presynth_eq_prep_fail_is_infra_before_play(tmp_path):
+    """eq_command_wav упал / eq WAV пуст → E2E_INFRA_FAIL eq, акт не начат, n102 не трогаем."""
+    sc = write_scenario(tmp_path, STEPS)
+    out, err, _ = run_presynth(
+        tmp_path,
+        'presynth_scenario "%s"; echo "RC=$?"; echo "KIND=$E2E_FAIL_KIND";'
+        'cat "$OUT_DIR/steps.jsonl"' % sc.as_posix(),
+        ffprobe_dur="8.0",
+        eq_fail=True,
+    )
+    assert "RC=1" in out, (out, err)
+    assert "E2E_INFRA_FAIL eq" in out
+    assert "KIND=infra" in out
+    assert "n101 FAIL eq" in out
+    assert "сбой подготовки WAV до PLAY" in out
+    assert "PRESYNTH n102:" not in out
+    assert "PRESYNTH: готово" not in out
+
+
+@needs_bash
+def test_presynth_unmeasured_duration_is_infra_before_play(tmp_path):
+    """Пустой/битый ffprobe в PRESYNTH → E2E_INFRA_FAIL eq_duration, не silent skip."""
+    sc = write_scenario(tmp_path, STEPS)
+    out, err, _ = run_presynth(
+        tmp_path,
+        'presynth_scenario "%s"; echo "RC=$?"; echo "KIND=$E2E_FAIL_KIND";'
+        'cat "$OUT_DIR/steps.jsonl"' % sc.as_posix(),
+        ffprobe_empty=True,
+    )
+    assert "RC=1" in out, (out, err)
+    assert "E2E_INFRA_FAIL eq_duration" in out
+    assert "KIND=infra" in out
+    assert "n101 FAIL eq_duration" in out
+    assert "длительность eq не измерена" in out
+    assert "PRESYNTH n102:" not in out
+    assert "PRESYNTH: готово" not in out
+    # не путать с scenario_too_long и не advisory-skip
+    assert "scenario_too_long" not in out
+    assert "проверка окна VAD пропущена" not in out
+
+
+@needs_bash
 def test_final_fail_marker_maps_infra_to_e2e_infra_fail():
     text = "\n".join(SCRIPT_LINES)
     assert 'infra)      fail_marker="E2E_INFRA_FAIL"' in text
@@ -232,6 +291,12 @@ def test_final_fail_marker_maps_infra_to_e2e_infra_fail():
     body = extract_function("presynth_scenario")
     assert "check_eq_vad_budget" in body
     assert "eq_command_wav" in body
+    assert "E2E_INFRA_FAIL eq" in body
+    assert "E2E_INFRA_FAIL eq_duration" in body
+    assert '! -s "$eq_wav"' in body
+    chk = extract_function("check_eq_vad_budget")
+    assert "E2E_EQ_FAIL_REASON=eq_duration" in chk
+    assert '[ "$prefix" = "PRESYNTH" ]' in chk
 
 
 @needs_bash

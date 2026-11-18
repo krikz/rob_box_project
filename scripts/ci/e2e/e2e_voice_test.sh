@@ -132,7 +132,7 @@ E2E_SYNTH_CACHE="${E2E_SYNTH_CACHE:-1}"
 E2E_SYNTH_CACHE_DIR="${E2E_SYNTH_CACHE_DIR:-${HOME:-/tmp}/.cache/rob_box_e2e/synth}"
 E2E_SYNTH_CACHE_TTL_DAYS="${E2E_SYNTH_CACHE_TTL_DAYS:-30}"
 #   E2E_PRESYNTH             0 — не пред-синтезировать акт (отладка; тесты гейтов без TTS).
-# 1 — пред-синтез акта не удался: акт не начинается (E2E_INFRA_FAIL synth|scenario_too_long).
+# 1 — пред-синтез акта не удался: акт не начинается (E2E_INFRA_FAIL synth|scenario_too_long|eq|eq_duration).
 E2E_PRESYNTH="${E2E_PRESYNTH:-1}"
 E2E_PRESYNTH_FAILED=0
 # MiniMax T2A v2 — те же дефолты, что у tts_node (config/tts_node.yaml).
@@ -1726,10 +1726,11 @@ synth_surface_log() {
 # Не вышло — `E2E_INFRA_FAIL synth` сразу. Реплика длиннее окна VAD (бюджет
 # speech_max_duration - VAD_OVERHEAD = 12.5 с, phrase_budget.VAD_BUDGET_S) —
 # `E2E_INFRA_FAIL scenario_too_long` до первого PLAY (раньше run_step валил
-# посреди акта: 27.10 n302/n702). Готовые wav в OUT_DIR (и в кэше).
+# посреди акта: 27.10 n302/n702). Сбой eq WAV или пустой ffprobe —
+# `E2E_INFRA_FAIL eq|eq_duration` до PLAY (не молчаливый skip). Готовые wav в OUT_DIR (и в кэше).
 # $1=scenario_file; rc 0 — все фразы готовы, 1 — отказ (kind уже помечен).
 presynth_scenario() {
-    local scenario="$1" rows="$OUT_DIR/scenario_presynth.txt" n=0 hits=0 safe slog cdir
+    local scenario="$1" rows="$OUT_DIR/scenario_presynth.txt" n=0 hits=0 safe slog cdir eq_wav
     local idx label text voice patterns_json acceptance_json expect_raw retry_acceptance when_robot_asked
     local required_question sleep_before_sec next_when_robot_asked barge_in_json next_barge_in_json silent_ok
     local row_read="$E2E_SCENARIO_ROW_READ"
@@ -1747,13 +1748,29 @@ presynth_scenario() {
         if synth_command "$text" "$voice" "$OUT_DIR/cmd_${safe}.wav" > "$slog" 2>&1 < /dev/null; then
             synth_surface_log "$label" "$slog"
             grep -qa '^>>> synth cache hit' "$slog" && hits=$((hits + 1))
-            # #4077 П2: eq + замер окна VAD до PLAY — scenario_too_long не посреди акта.
-            eq_command_wav "$OUT_DIR/cmd_${safe}.wav" "$OUT_DIR/cmd_${safe}_eq.wav" "$voice"
-            if ! check_eq_vad_budget "$label" "$OUT_DIR/cmd_${safe}_eq.wav" "PRESYNTH" "$voice"; then
-                emit_step "${label} FAIL scenario_too_long (${E2E_EQ_DUR}s > ${E2E_VAD_BUDGET}s)"
+            # #4077 П2: eq + замер окна VAD до PLAY — scenario_too_long / eq-сбой не посреди акта.
+            eq_wav="$OUT_DIR/cmd_${safe}_eq.wav"
+            if ! eq_command_wav "$OUT_DIR/cmd_${safe}.wav" "$eq_wav" "$voice" || [ ! -s "$eq_wav" ]; then
+                log "PRESYNTH ${label}: FAIL — eq WAV не подготовлен (ffmpeg/eq_command_wav)"
+                emit_step "${label} FAIL eq"
                 mark_fail_kind infra
-                echo "E2E_INFRA_FAIL scenario_too_long"
-                log "PRESYNTH: акт не начат — реплика не влезает в окно VAD (баг сценария), робот ни разу не вызывался"
+                echo "E2E_INFRA_FAIL eq"
+                log "PRESYNTH: акт не начат — сбой подготовки WAV до PLAY, робот ни разу не вызывался"
+                return 1
+            fi
+            if ! check_eq_vad_budget "$label" "$eq_wav" "PRESYNTH" "$voice"; then
+                local reason="${E2E_EQ_FAIL_REASON:-scenario_too_long}"
+                if [ "$reason" = "eq_duration" ]; then
+                    emit_step "${label} FAIL eq_duration"
+                    mark_fail_kind infra
+                    echo "E2E_INFRA_FAIL eq_duration"
+                    log "PRESYNTH: акт не начат — длительность eq не измерена (ffprobe), робот ни разу не вызывался"
+                else
+                    emit_step "${label} FAIL scenario_too_long (${E2E_EQ_DUR}s > ${E2E_VAD_BUDGET}s)"
+                    mark_fail_kind infra
+                    echo "E2E_INFRA_FAIL scenario_too_long"
+                    log "PRESYNTH: акт не начат — реплика не влезает в окно VAD (баг сценария), робот ни разу не вызывался"
+                fi
                 return 1
             fi
         else
@@ -2073,13 +2090,16 @@ eq_command_wav() {  # $1=синтезированный wav $2=wav для кол
 # check_eq_vad_budget LABEL EQ_WAV [PREFIX=STEP] [VOICE]
 # Бюджет eq-файла = E2E_VAD_MAX_DURATION - E2E_VAD_OVERHEAD (дефолт 15.0-2.5=12.5 =
 # phrase_budget.VAD_BUDGET_S; рассинхрон ловит test_e2e_scenario_playable.sh).
-# Печатает "${prefix} ${label}: eq=…s …". Пишет E2E_EQ_DUR / E2E_VAD_BUDGET.
-# rc 0 — влезает или ffprobe недоступен (advisory); 1 — scenario_too_long (caller
-# пишет FAIL / E2E_INFRA_FAIL). Один код для presynth_scenario и run_step (#4077 П2).
+# Печатает "${prefix} ${label}: eq=…s …". Пишет E2E_EQ_DUR / E2E_VAD_BUDGET /
+# E2E_EQ_FAIL_REASON (scenario_too_long | eq_duration).
+# rc 0 — влезает; 1 — отказ. PREFIX=PRESYNTH: пустой/битый ffprobe = отказ (eq_duration),
+# иначе до PLAY не дойдём честно. PREFIX=STEP: ffprobe-сбой advisory (как раньше).
+# Один код для presynth_scenario и run_step (#4077 П2).
 check_eq_vad_budget() {  # $1=label $2=eq.wav $3=log_prefix $4=voice
     local label="$1" eq_wav="$2" prefix="${3:-STEP}" voice="${4:-}"
     E2E_VAD_MAX_DURATION="${E2E_VAD_MAX_DURATION:-15.0}"
     E2E_VAD_OVERHEAD="${E2E_VAD_OVERHEAD:-2.5}"
+    E2E_EQ_FAIL_REASON=""
     local cmd_dur vad_budget
     cmd_dur="$(ffprobe -v error -show_entries format=duration -of csv=p=0 \
         "$eq_wav" 2>/dev/null | head -1)"
@@ -2089,7 +2109,13 @@ check_eq_vad_budget() {  # $1=label $2=eq.wav $3=log_prefix $4=voice
     E2E_VAD_BUDGET="$vad_budget"
     case "$cmd_dur" in
         ''|*[!0-9.]*)
-            # ffprobe нет или ответил мусором — не валим прогон (advisory).
+            if [ "$prefix" = "PRESYNTH" ]; then
+                # До PLAY нельзя молча пропустить: eq мог быть битый/ffprobe мёртв.
+                log "PRESYNTH ${label}: длительность реплики не измерена (ffprobe) — акт не начинаем"
+                E2E_EQ_FAIL_REASON=eq_duration
+                return 1
+            fi
+            # STEP: ffprobe нет или ответил мусором — не валим прогон (advisory).
             log "${prefix} ${label}: длительность реплики не измерена (ffprobe недоступен) — проверка окна VAD пропущена"
             return 0 ;;
     esac
@@ -2104,6 +2130,7 @@ check_eq_vad_budget() {  # $1=label $2=eq.wav $3=log_prefix $4=voice
             "$prefix" "$label" "$cmd_dur" "$vad_budget" "$E2E_VAD_MAX_DURATION" "$E2E_VAD_OVERHEAD" \
             "${E2E_TTS_PROVIDER_RESOLVED:-$E2E_TTS_PROVIDER}" "$voice" \
             >> "$OUT_DIR/vad_rejects.log" 2>/dev/null || true
+        E2E_EQ_FAIL_REASON=scenario_too_long
         return 1
     fi
     # Меньше секунды запаса — шаг-лотерея (n305 набрал 12.41s при бюджете 12.50s).
