@@ -737,7 +737,8 @@ digest. Ничего не переключает. _Не путать_ с акт�
 
 **Отмена staged** — пометить заранее скачанный релиз отменённым (`chuangong.cancel.cancel_staged`). Читает
 указатели через `pointers.load`, не вызывает `pointers.advance`/`commit`, compose не трогает. Файлы бандла на
-диске остаются; prune — отдельный срез. _Не путать_ с откатом (rollback) уже переключённого стека.
+диске остаются; prune — отдельный срез. Тик и preflight читают маркер `.chuangong-cancelled` и не re-stage /
+не activate этот релиз. _Не путать_ с откатом (rollback) уже переключённого стека.
 
 **chuangong** (传功, «передача мастерства») — агент доставки на каждой Pi (`host/chuangong/`): fetch указателя,
 проверка подписи minisign, stage, отчёт в `robots/<id>/ops/chuangong/state/<узел>`. Реального переключения стеков нет.
