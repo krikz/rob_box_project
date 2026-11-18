@@ -251,6 +251,15 @@ jobs:
             -o addopts="" \
             -p no:cacheprovider
 
+      # #4694: манифест приёмки держит source, core, образ, сценарий и proven
+      # runtime раздельно. Сборка не заполняет proven_runtime.
+      - name: Acceptance manifest fields (#4694)
+        run: |
+          python -m pytest scripts/ci/tests/test_acceptance_manifest.py \
+            -v \
+            -o addopts="" \
+            -p no:cacheprovider
+
       # ADR-0168 (#4375): релиз как артефакт (scripts/build/release.py) и агент chuangong (host/chuangong), фаза B.
       # Без сети и Docker: реестр, docker и zenoh — фейки. minisign из apt нужен только тесту совместимости
       # подписи с настоящей утилитой; не поставился — тест пропускается с причиной в выводе -v.
