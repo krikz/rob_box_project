@@ -154,6 +154,27 @@ def test_adoption_blocks_unpinned_external_images(tmp_path, world):
     assert not cfg.state_file.exists()
 
 
+def test_stage_then_adopt_with_pinned_external_images_is_not_blocked(tmp_path, world):
+    """stage → adopt на подписанном релизе: external_images с фиктивным digest — adopted, не blocked."""
+    cfg = _cfg(tmp_path, world)
+    docker = FakeDocker()
+    deps = _deps(world, docker)
+    pinned = "eclipse/zenoh:1.6.2@sha256:" + ("0" * 64)
+    _republish(world, external_images=[pinned])
+    _stage(cfg, deps, world.release)
+    _match_legacy_and_images(cfg, world, docker)
+
+    rec = _machine(cfg, deps).adopt(world.release["release"], apply=True)
+
+    assert rec["state"] == "adopted", rec.get("detail")
+    assert rec.get("reason") != "external_images_unpinned"
+    assert rec["current"] == world.release["release"]
+    assert rec["previous"] is None
+    assert world.release["roles"][cfg.node]["external_images"] == [pinned]
+    saved = json.loads(cfg.state_file.read_text(encoding="utf-8"))
+    assert saved["current"] == world.release["release"] and saved["previous"] is None
+
+
 def test_adoption_rejects_legacy_file_or_running_image_mismatch(tmp_path, world):
     cfg = _cfg(tmp_path, world)
     docker = FakeDocker()
