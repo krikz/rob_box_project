@@ -10,6 +10,7 @@
   cancel         — локальная отмена staged (CLI cancel) и чтение маркера тиком/preflight; current не трогать;
   agent          — один тик агента (fetch → verify → stage → report);
   activation     — adoption доказанного current и dry-run activation/rollback (C1);
+  role_switch    — план переключения одной роли по digest (checks deploy), без compose up;
   pointers       — файлы current/previous в state_dir после проверки подписи staged-релиза;
   status         — наблюдатель для workflow «F: Update Robot» (action: status).
 
