@@ -195,3 +195,44 @@ def test_n810_rap_needs_performance_and_no_deck_stop():
     assert not _verdict("n810_rap_over_music", speech, start, DONE)["missing"]
     stopped = _verdict("n810_rap_over_music", speech, start, "🎵 [music] stop track_id=x reason=user_stop", DONE)
     assert not stopped["pass"]
+
+
+# ── n806 длиннее для n807 (М8): пересборка корпуса #4163 ─────────────────────────────────────────────────────
+
+
+def test_n806_counts_to_forty_like_n802():
+    """#4077 М8: счёт n806 до сорока (как n802), чтобы правка n807 успевала на середину."""
+    steps = _steps()
+    n806 = steps["n806_long_count_again"]["text"]
+    n802 = steps["n802_long_count"]["text"]
+    assert "до сорока" in n806, n806
+    assert "до двадцати" not in n806, n806
+    assert "до сорока" in n802, n802
+    assert n806 != n802
+
+
+def test_n806_phrase_fits_vad_without_live_measure():
+    """Длина реплики n806 после удлинения счёта — в окне VAD по оценке (живой замер не нужен)."""
+    import phrase_budget as pb  # noqa: E402
+
+    step = _steps()["n806_long_count_again"]
+    got = pb.verdict(step["label"], step["voice"], step["text"], gen.PHRASE_STORE)
+    assert got.level != pb.TOO_LONG, got.describe()
+    assert got.source == pb.ESTIMATE, got.describe()
+
+
+def test_n806_corpus_phrase_matches_scenario_and_generator():
+    """Корпус #4163 и JSON акта 8 держат ту же фразу n806, что генератор (после пересборки)."""
+    corpus_dir = ROOT / "scripts" / "dialog" / "understanding_corpus"
+    if str(corpus_dir) not in sys.path:
+        sys.path.insert(0, str(corpus_dir))
+    import build_marathon as bm  # noqa: E402
+
+    gen_text = _steps()["n806_long_count_again"]["text"]
+    act8 = json.loads((NIGHT / "night_marathon_act8_barge_in_v1.json").read_text(encoding="utf-8"))
+    disk = next(s["text"] for s in act8["steps"] if s["label"] == "n806_long_count_again")
+    corpus = json.loads((corpus_dir / "marathon.json").read_text(encoding="utf-8"))
+    entry = next(s for a in corpus["acts"] for s in a["steps"] if s["id"] == "8/n806_long_count_again")
+    assert entry["step"]["text"] == gen_text == disk
+    assert "до сорока" in entry["step"]["text"]
+    assert bm.digest(corpus["acts"]) == corpus["corpus_sha256"]
