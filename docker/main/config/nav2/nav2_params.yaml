@@ -89,7 +89,12 @@ controller_server:
       required_movement_radius: 0.08  # Increased from 0.05 - more relaxed progress check
       movement_time_allowance: 30.0  # Increased from 20.0 - more time for smoother motion
     general_goal_checker:
-      stateful: true
+      # Humble 1.1.20 SimpleGoalChecker: stateful защёлкивает check_xy_ и не
+      # сбрасывает при уходе за xy (isGoalReached). reset() только на новый path.
+      # Depot M1 18.11: заход в 0.25 м ~0.6 с, уход до 0.486 м, yaw 10.7° внутри
+      # 0.20 рад → STATUS_SUCCEEDED. xy_goal_tolerance_buffer в Humble нет.
+      # false = xy и yaw одновременно (компромисс: осцилляция у цели, Nav2 #5166).
+      stateful: false
       plugin: "nav2_controller::SimpleGoalChecker"
       xy_goal_tolerance: 0.25  # Increased from 0.15 - don't overshoot trying to be too precise
       yaw_goal_tolerance: 0.20  # Increased from 0.15 (~11 deg) - smoother final rotation
