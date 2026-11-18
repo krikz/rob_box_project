@@ -8,14 +8,13 @@ from rob_box_dialog.music_state import MusicStateMemory
 from rob_box_dialog.session import MusicStateRef, Session
 from rob_box_dialog.shift_log import ShiftLog
 from rob_box_dialog.turn_log import TurnLog
+from rob_box_dialog.vibe import VibeBall
 from rob_box_dialog.vibe_chooser import (
     CRITERIA,
     NEUTRAL,
     NO_DATA,
     SILENCE,
-    VibeChange,
     accept,
-    changed,
     choose,
     prompt,
     slot_names,
@@ -35,6 +34,14 @@ LIVE = (
     "boot",
     "power_down",
 )
+
+
+class _Clock:
+    def __init__(self) -> None:
+        self.t = 0.0
+
+    def __call__(self) -> float:
+        return self.t
 
 
 def test_slot_names_are_the_live_bg_and_fx_values():
@@ -77,10 +84,9 @@ def test_empty_context_does_not_raise():
 class _Facts:
     """Снимок сессии плюс журнал смены: поля, которые уже есть, без выдуманного «сейчас в кадре»."""
 
-    def __init__(self, snap, shift, vibe=None):
+    def __init__(self, snap, shift):
         self.snapshot = snap
         self.shift = shift
-        self.vibe = vibe
 
 
 def _playing(title: str) -> MusicStateMemory:
@@ -96,7 +102,10 @@ def test_playing_title_lands_in_the_context():
     assert "Музыка: играет X" in text
     assert "X" in text
     seen = []
-    assert choose(text, LIVE, lambda prompt_text: seen.append(prompt_text) or "matrix") == "matrix"
+    assert (
+        choose(text, LIVE, lambda prompt_text: seen.append(prompt_text) or "matrix")
+        == "matrix"
+    )
     assert "играет X" in seen[0]
 
 
@@ -112,11 +121,45 @@ def test_missing_facts_are_named_not_invented():
     text = vibe_context()
     assert text.count(NO_DATA) == 6
     assert "люди: пусто" not in text
-    assert f"Текущий вайб: {NO_DATA}" in text
-    assert f"Предыдущий вайб: {NO_DATA}" in text
-    assert f"Включён: {NO_DATA}" in text
+    assert "Предыдущий вайб: нет данных" in text
+    assert "Текущий вайб: нет данных" in text
+    assert "Текущий включён: нет данных" in text
     bare = vibe_context(state=Session("personality").snapshot)
     assert "люди: нет данных" in bare and "люди: пусто" not in bare
+
+
+def test_ball_snapshot_names_previous_current_and_since():
+    """push fire, затем matrix: предыдущий fire, текущий matrix, время второй смены."""
+    clock = _Clock()
+    ball = VibeBall(clock)
+    clock.t = 10.0
+    ball.push("fire")
+    clock.t = 25.0
+    snap = ball.push("matrix")
+    text = vibe_context(ball=snap)
+    assert "Предыдущий вайб: fire" in text
+    assert "Текущий вайб: matrix" in text
+    assert "Текущий включён: 25.0" in text
+    since_value = text.split("Текущий включён:")[1].split("\n")[0].strip()
+    assert since_value == "25.0"
+    assert "10.0" not in since_value
+
+
+def test_without_ball_vibe_lines_are_no_data_not_invented_style():
+    text = vibe_context()
+    assert "Предыдущий вайб: нет данных" in text
+    assert "Текущий вайб: нет данных" in text
+    assert "Текущий включён: нет данных" in text
+    assert "Текущий вайб: fire" not in text
+    assert "Текущий вайб: matrix" not in text
+    assert "Текущий вайб: rainbow" not in text
+
+
+def test_prompt_keeps_shifu_criteria_and_has_no_rock():
+    text = prompt("что угодно", LIVE)
+    assert all(name in text for name, _when in CRITERIA)
+    assert "разогрев" in text and "думаю, ищу, считаю" in text
+    assert "рок" not in text.split("Контекст:")[0]
 
 
 def test_log_fragment_and_people_come_from_existing_facts():
@@ -129,41 +172,12 @@ def test_log_fragment_and_people_come_from_existing_facts():
     shift.seen("Саша", "face")
     text = vibe_context(_playing("X"), log, _Facts(session.snapshot, shift), now=100.0)
     assert "давай ещё" in text and "робот: уже грею" in text
-    assert "кадров нет" in text and "речь молчит" in text and "музыка сессии: играет X" in text
+    assert (
+        "кадров нет" in text
+        and "речь молчит" in text
+        and "музыка сессии: играет X" in text
+    )
     assert "люди: Саша" in text
-    assert all(name in prompt("x", LIVE) for name, _when in CRITERIA)
-
-
-def test_current_previous_and_since_come_from_the_change_event():
-    first = changed(None, "fire", 90.0)
-    text = vibe_context(vibe=first, now=100.0)
-    assert "Текущий вайб: fire" in text
-    assert f"Предыдущий вайб: {NO_DATA}" in text
-    assert "Включён: 10 с назад" in text
-    assert "Музыка: нет данных" in text
-    second = changed(first, "rainbow", 95.0)
-    later = vibe_context(vibe=second, now=100.0)
-    assert "Текущий вайб: rainbow" in later
-    assert "Предыдущий вайб: fire" in later
-    assert "Включён: 5 с назад" in later
-    assert changed(second, "rainbow", 99.0) == second
-    assert changed(second, "", 99.0) == second
-
-
-def test_vibe_on_state_does_not_drop_music_log_or_criteria():
-    log = TurnLog()
-    log.begin("t1", 0, "давай ещё", "Саша")
-    session = Session("personality", clock=lambda: 100.0)
-    session.set_music(MusicStateRef("playing", track_id="t-1", title="X"))
-    shift = ShiftLog(clock=lambda: 100.0)
-    shift.seen("Саша", "face")
-    vibe = VibeChange(current="matrix", previous="plasma", at=40.0)
-    text = vibe_context(_playing("X"), log, _Facts(session.snapshot, shift, vibe), now=100.0)
-    assert "Музыка: играет X" in text and "давай ещё" in text
-    assert "люди: Саша" in text
-    assert "Текущий вайб: matrix" in text
-    assert "Предыдущий вайб: plasma" in text
-    assert "Включён: 60 с назад" in text
     assert all(name in prompt("x", LIVE) for name, _when in CRITERIA)
 
 
