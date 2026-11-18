@@ -1,4 +1,4 @@
-"""Лог route.py: YAW/PLAN/MAP появляются из подписок; GOALS и TIMEOUT не менялись."""
+"""Лог route.py: YAW/CMD/PLAN/MAP появляются из подписок; GOALS и TIMEOUT не менялись."""
 
 import importlib
 import math
@@ -76,6 +76,10 @@ def _plan_line(out):
     return next(line for line in out.splitlines() if " PLAN " in line)
 
 
+def _cmd_line(out):
+    return next(line for line in out.splitlines() if " CMD " in line)
+
+
 @pytest.fixture
 def route_mod(monkeypatch):
     for name in ROS_MODULES:
@@ -103,14 +107,22 @@ def test_mon_subscribes_cmd_vel_yaw_and_plan(route_mod):
     n = route_mod.Mon()
     topics = [topic for topic, _cb in n._subs]
     assert route_mod.YAW_TOPIC == "/cmd_vel_yaw"
+    assert route_mod.CMD_TOPIC == "/cmd_vel"
     assert route_mod.PLAN_TOPIC == "/plan"
     assert "/cmd_vel_yaw" in topics
+    assert "/cmd_vel" in topics
     assert "/plan" in topics
 
 
 def test_tick_writes_yaw_plan_map_when_subscriptions_have_messages(route_mod, capsys):
     n = route_mod.Mon()
     n.on_yaw(types.SimpleNamespace(angular=types.SimpleNamespace(z=-0.42)))
+    n.on_cmd(
+        types.SimpleNamespace(
+            linear=types.SimpleNamespace(x=0.15),
+            angular=types.SimpleNamespace(z=-0.08),
+        )
+    )
     n.on_plan(
         types.SimpleNamespace(header=types.SimpleNamespace(stamp=types.SimpleNamespace(sec=10, nanosec=250_000_000)))
     )
@@ -120,12 +132,38 @@ def test_tick_writes_yaw_plan_map_when_subscriptions_have_messages(route_mod, ca
     n.tick()
     out = capsys.readouterr().out
     assert "YAW " in out and "wz=-0.420" in out and "age=2.20" in out
+    cmd_line = _cmd_line(out)
+    assert "vx=0.150" in cmd_line and "wz=-0.080" in cmd_line and "age=2.20" in cmd_line
     plan_line = _plan_line(out)
     assert "stamp=10.250" in plan_line and "now=14.700" in plan_line
     assert "x=none" in plan_line and "y=none" in plan_line and "yaw=none" in plan_line
     assert "MAP " in out and "x=-3.700" in out and "y=2.340" in out and "yaw=90.0" in out
     assert "gt_x=-3.546" in out and "gt_y=2.159" in out and "gt_yaw=147.1" in out
     assert "TRACK " in out
+
+
+def test_cmd_line_none_when_no_cmd_vel(route_mod, capsys):
+    """Нет /cmd_vel - vx=none wz=none, не выдуманный ноль."""
+    n = route_mod.Mon()
+    n.tick()
+    line = _cmd_line(capsys.readouterr().out)
+    assert "vx=none" in line and "wz=none" in line and "age=none" in line
+
+
+def test_cmd_line_format_when_message(route_mod, capsys):
+    """Строка CMD: linear.x, angular.z и age по образцу YAW."""
+    n = route_mod.Mon()
+    n.on_cmd(
+        types.SimpleNamespace(
+            linear=types.SimpleNamespace(x=0.0),
+            angular=types.SimpleNamespace(z=0.31),
+        )
+    )
+    n._clock_ns = 13_000_000_000
+    n.tick()
+    line = _cmd_line(capsys.readouterr().out)
+    assert "CMD " in line
+    assert "vx=0.000" in line and "wz=0.310" in line and "age=0.50" in line
 
 
 def test_plan_line_contains_single_pose_xy(route_mod, capsys):
