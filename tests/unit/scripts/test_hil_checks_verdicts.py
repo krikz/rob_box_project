@@ -294,6 +294,106 @@ def test_orphan_natural_pass_when_watchdog_cleans_up():
     assert v.status == vd.PASS and "сирот (FollowPath активен после провала цели): 1" in v.line()
 
 
+# ── abort контроллера: FollowPath уже принят, progress checker абортит (#4770) ──────────────
+
+
+def _abort_probe(nav_end="ABORTED", fp_end="ABORTED", arrived=False, extra=()):
+    """Цель принята, FollowPath ехал, корпус удержан, контроллер абортил."""
+    rows = [
+        pr(0.0, "HOLD_START", ahead="1.50"),
+        pr(1.0, "NAV_STATUS", goal="n1", status="EXECUTING"),
+        pr(1.2, "FP_STATUS", goal="f1", status="EXECUTING"),
+        pr(1.5, "MUX", v="+0.080", w="+0.000"),
+        pr(2.0, "FP_HELD", goal="f1"),
+        pr(2.0, "HOLD", v="+0.00", w="+0.00"),
+        pr(32.0, "NAV_PROGRESS", n="1"),
+        pr(32.0, "FP_STATUS", goal="f1", status=fp_end),
+        pr(32.1, "NAV_STATUS", goal="n1", status=nav_end),
+        pr(32.2, "NAV_RESULT", status=nav_end),
+        pr(33.0, "MUX", v="+0.000", w="+0.000"),
+        pr(34.0, "HOLD_END"),
+    ]
+    if arrived:
+        rows.append(pr(32.3, "NAV_RESULT", status="SUCCEEDED"))
+    rows += list(extra)
+    return vd.parse_probe(rows)
+
+
+ABORT_NAV2 = [
+    dk(32.0, "[ERROR] [32.0] [controller_server]: Failed to make progress"),
+    dk(32.0, "[WARN] [32.0] [follow_path]: Aborting handle"),
+]
+
+
+def test_controller_abort_pass_when_accepted_follow_aborts_and_stops():
+    v = vd.v_controller_abort(_abort_probe(), vd.parse_docker(ABORT_NAV2), 2.0, 30.0)
+    assert v.status == vd.PASS, v.line()
+    assert "наблюдавшихся целей FollowPath: 1" in v.line()
+    assert "проверок abort: 1" in v.line()
+
+
+def test_controller_abort_not_triggered_without_accepted_follow():
+    """План не построен — это nav_aborted, не abort контроллера. Не PASS."""
+    probe = vd.parse_probe(
+        [
+            pr(0.0, "HOLD_START", ahead="1.50"),
+            pr(1.0, "NAV_STATUS", goal="n1", status="EXECUTING"),
+            pr(40.0, "NAV_STATUS", goal="n1", status="ABORTED"),
+            pr(40.1, "NAV_RESULT", status="ABORTED"),
+        ]
+    )
+    v = vd.v_controller_abort(probe, [], 2.0, 30.0)
+    assert v.status == vd.NOT_TRIGGERED, v.line()
+    assert "FollowPath не был принят" in v.line()
+
+
+def test_controller_abort_fail_when_still_driving_after_grace():
+    extra = [pr(35.0, "MUX", v="+0.080", w="+0.000"), pr(35.0, "FP_STATUS", goal="f2", status="EXECUTING")]
+    v = vd.v_controller_abort(_abort_probe(extra=extra), vd.parse_docker(ABORT_NAV2), 2.0, 30.0)
+    assert v.status == vd.FAIL, v.line()
+
+
+def test_controller_abort_fail_on_false_arrived():
+    v = vd.v_controller_abort(_abort_probe(arrived=True), vd.parse_docker(ABORT_NAV2), 2.0, 30.0)
+    assert v.status == vd.FAIL and "ложный" in v.line()
+
+
+def test_controller_abort_fail_when_allowance_restarted():
+    """Без terminate_all progress checker снова даёт 30 с: второй Aborting handle — FAIL."""
+    nav2 = ABORT_NAV2 + [dk(62.0, "[WARN] [62.0] [follow_path]: Aborting handle")]
+    v = vd.v_controller_abort(_abort_probe(), vd.parse_docker(nav2), 2.0, 30.0)
+    assert v.status == vd.FAIL and "Aborting handle: 2" in v.line()
+
+
+def test_controller_abort_counts_only_observed_follow_goals():
+    """#4647: терминал без ACTIVE в этой пробе в счётчик не входит."""
+    rows = [
+        pr(0.0, "FP_STATUS", goal="replayed", status="ABORTED"),
+        pr(1.0, "NAV_STATUS", goal="n1", status="EXECUTING"),
+        pr(1.2, "FP_STATUS", goal="f1", status="EXECUTING"),
+        pr(2.0, "FP_HELD", goal="f1"),
+        pr(2.0, "HOLD", v="+0.00", w="+0.00"),
+        pr(32.0, "NAV_PROGRESS", n="1"),
+        pr(32.0, "FP_STATUS", goal="f1", status="ABORTED"),
+        pr(32.1, "NAV_STATUS", goal="n1", status="ABORTED"),
+        pr(32.2, "NAV_RESULT", status="ABORTED"),
+        pr(33.0, "MUX", v="+0.000", w="+0.000"),
+    ]
+    v = vd.v_controller_abort(vd.parse_probe(rows), vd.parse_docker(ABORT_NAV2), 2.0, 30.0)
+    assert v.status == vd.PASS, v.line()
+    assert "наблюдавшихся целей FollowPath: 1" in v.line()
+    assert "replayed" not in v.line()
+
+
+def test_controller_abort_not_triggered_when_goal_succeeds_despite_hold():
+    v = vd.v_controller_abort(_abort_probe(nav_end="SUCCEEDED", fp_end="SUCCEEDED"), [], 2.0, 30.0)
+    assert v.status == vd.NOT_TRIGGERED
+
+
+def test_controller_abort_no_data_without_probe():
+    assert vd.v_controller_abort([], [], 2.0, 30.0).status == vd.NO_DATA
+
+
 # ── фразы тулов движения (#3789) ─────────────────────────────────────────────────────────────
 
 ABORT_RAW = [

@@ -8,6 +8,8 @@
     watch   --secs N                          только слушать
     orphan  [--len 1.5] [--timeout 10]        сирота нарочно (#4458): цель NavigateToPose → отмена → своя FollowPath
     nav     (--goal x,y,yaw° | --ahead M) [--timeout 180]  цель NavigateToPose из скрипта (3b из #4365, #4435)
+    hold    [--ahead 1.5] [--allowance 30] [--grace 2]  #4770: цель в свободную сторону; после принятия FollowPath
+            нулевой Twist на /cmd_vel_web (priority 50 > Nav2) до abort progress checker. Allowance не крутим.
     wall    [--speed 0.1] [--max-s 40] [--push 4]  телеоп /cmd_vel_web к ближайшему препятствию (#4365, #4470)
     backoff [--speed 0.1] [--secs 4]          отъехать назад
 
@@ -332,6 +334,77 @@ def cmd_orphan(n, a):
     spin_for(n, 3)
 
 
+def _follow_live(n):
+    return any(
+        kind == "FP_STATUS" and name in ("ACCEPTED", "EXECUTING") for (kind, _gid), name in n.last_status.items()
+    )
+
+
+def _mark_held(n, held):
+    if held:
+        return
+    for (kind, gid), name in list(n.last_status.items()):
+        if kind == "FP_STATUS" and name in ("ACCEPTED", "EXECUTING"):
+            held.append(gid)
+            out("FP_HELD", n, goal=gid)
+            out("HOLD", n, v="+0.00", w="+0.00")
+            return
+
+
+def _finish_nav(n, gh, res):
+    if not res.done():
+        out("NAV_SELF_CANCEL", n, why="abort_не_пришёл")
+        wait_future(n, gh.cancel_goal_async(), 5)
+        spin_for(n, 5, until=res.done)
+    for _ in range(5):
+        n.send_cmd(0.0, 0.0)
+    status = STATUS.get(res.result().status, "?") if res.done() else "NO_RESULT"
+    out("NAV_RESULT", n, status=status)
+
+
+def cmd_hold(n, a):
+    """#4770: цель достижима планировщику, корпус удержан — abort progress checker.
+
+    Не «план не построен». Точка — ``ahead`` м в свободном направлении. FollowPath принят —
+    нулевой Twist в ``/cmd_vel_web`` (priority 50 > Nav2 10) до итога. ``allowance`` — боевой
+    ``movement_time_allowance`` (30 с), не укорачиваем. Мало места или FollowPath не принят — SKIP.
+    """
+    client = ActionClient(n, NavigateToPose, "/navigate_to_pose")
+    if not wait_ready(n, need_tf=True) or not client.wait_for_server(timeout_sec=30):
+        out("ERROR", n, what="нет_/navigate_to_pose")
+        return
+    x, y, heading, d = ahead(n, a.ahead)
+    if d < 0.8:
+        out("HOLD_SKIP", n, why="мало_места", free=f"{d:.2f}")
+        return
+    gx, gy = x + d * math.cos(heading), y + d * math.sin(heading)
+    out("HOLD_START", n, ahead=f"{d:.2f}")
+    out("NAV_SENT", n, x=f"{gx:.2f}", y=f"{gy:.2f}", yaw=f"{math.degrees(heading):.0f}")
+    goal = NavigateToPose.Goal()
+    goal.pose = n.pose_stamped(gx, gy, heading)
+    gh = wait_future(n, client.send_goal_async(goal), 10)
+    if gh is None or not gh.accepted:
+        out("NAV_RESULT", n, status="REJECTED")
+        return
+    res = gh.get_result_async()
+    if not spin_for(n, 20, until=lambda: _follow_live(n)) or res.done():
+        status = STATUS.get(res.result().status, "?") if res.done() else "NO_FOLLOW"
+        out("HOLD_SKIP", n, why="FollowPath_не_принят", status=status)
+        if not res.done():
+            wait_future(n, gh.cancel_goal_async(), 5)
+        return
+    held = []
+
+    def hold_zero():
+        n.send_cmd(0.0, 0.0)
+        _mark_held(n, held)
+
+    spin_for(n, a.allowance + a.grace + 15.0, 1.0 / CMD_HZ, hold_zero, until=res.done)
+    _finish_nav(n, gh, res)
+    out("HOLD_END", n)
+    spin_for(n, 2)
+
+
 def cmd_wall(n, a):
     """Повернуться к ближайшему препятствию и ехать на него ``speed``; после EM_ON толкать ещё ``push`` с."""
     if not wait_ready(n, need_tf=False):
@@ -400,6 +473,10 @@ def parse_args(argv):
     g.add_argument("--goal", help="x,y,yaw° в map")
     g.add_argument("--ahead", type=float)
     p.add_argument("--timeout", type=float, default=180)
+    p = sub.add_parser("hold")
+    p.add_argument("--ahead", type=float, default=1.5)
+    p.add_argument("--allowance", type=float, default=30.0)
+    p.add_argument("--grace", type=float, default=2.0)
     p = sub.add_parser("wall")
     p.add_argument("--speed", type=float, default=0.1)
     p.add_argument("--max-s", dest="max_s", type=float, default=40)
@@ -411,7 +488,14 @@ def parse_args(argv):
     return ap.parse_args(argv)
 
 
-COMMANDS = {"watch": cmd_watch, "nav": cmd_nav, "orphan": cmd_orphan, "wall": cmd_wall, "backoff": cmd_backoff}
+COMMANDS = {
+    "watch": cmd_watch,
+    "nav": cmd_nav,
+    "orphan": cmd_orphan,
+    "hold": cmd_hold,
+    "wall": cmd_wall,
+    "backoff": cmd_backoff,
+}
 
 
 def main(argv=None):

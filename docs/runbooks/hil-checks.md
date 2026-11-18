@@ -7,6 +7,7 @@
 | #3789 | честные фразы тулов движения: по ABORTED и у `stop_navigation` («Я и так стою.» / «Останавливаюсь.») | `nav_aborted`, `stop_idle`, `stop_active` |
 | #4435, #4456 | после провала или отмены NavigateToPose FollowPath погашен и выход twist_mux = 0 | `nav_aborted`, `stop_active` (вердикт `tool_halt`), `orphan_natural` |
 | #4458 | сторож сирот гасит FollowPath, если родительскую цель (NavigateToPose или NavigateThroughPoses) прислал не наш тул | `orphan` |
+| #4770 | abort контроллера: FollowPath уже принят, progress checker абортит (`terminate_all`), mux = 0, нет ложного «приехал» | `controller_abort` |
 | #4365 | в движении у препятствия: стоп, писк, «Осторожно!», маячок вместе | `zone` |
 | #4470 | умолчание `HIL_GUARD_SOUND=off`: только строка в журнале, стоп и маячок; явно `on`: писк на настоящего робота | `zone` (on), `guard_off` (off) |
 
@@ -34,7 +35,7 @@ HIL_CHECKS_OWNER=hil-checks scripts/hil/checks/run_checks.sh            # все
 HIL_CHECKS_OWNER=hil-checks scripts/hil/checks/run_checks.sh zone orphan   # выборочно
 ```
 
-Сценарии по умолчанию идут так: `orphan zone guard_off nav_aborted stop_idle stop_active orphan_natural`.
+Сценарии по умолчанию идут так: `orphan zone guard_off nav_aborted stop_idle stop_active orphan_natural controller_abort`.
 `orphan_natural` без `ORPHAN_GOAL` пропускается со строкой `NOT_TRIGGERED`: цель зависит от мира.
 
 Переменные (умолчания — в шапке `run_checks.sh`):
@@ -48,6 +49,8 @@ HIL_CHECKS_OWNER=hil-checks scripts/hil/checks/run_checks.sh zone orphan   # в�
 | `ORPHAN_GOAL` | `x,y,yaw°` в `map` для сценария 3b. Мир `polygon`: подход наискось к проёму 1.2 м с востока на запад, например `0.5,0.0,180` |
 | `ORPHAN_LOAD_S` | нагрузить Main Pi на столько секунд (4 пустых цикла под `timeout`), как в 3b при load 10–18 |
 | `ORPHAN_GRACE_S` | за сколько секунд sim после провала цели FollowPath должен погаснуть (2.0 = `orphan_timeout_s` 1.5 + такт) |
+| `PROGRESS_ALLOWANCE_S` | боевой `movement_time_allowance` FollowPath (30 с). `controller_abort` его не укорачивает |
+| `HOLD_AHEAD_M` | длина свободного отрезка для цели `controller_abort` (1.5 м) |
 
 После прогона: `scripts/hil/hil.sh off` и снять свой замок.
 
@@ -63,6 +66,14 @@ HIL_CHECKS_OWNER=hil-checks scripts/hil/checks/run_checks.sh zone orphan   # в�
   отменяет цель сама (`FP_SELF_CANCEL`), и это FAIL.
 - **`orphan_natural`** (#4435, 3b). Цель `ORPHAN_GOAL` из скрипта, по желанию под нагрузкой. Сироту здесь нельзя
   заказать: если BT сам погасил FollowPath, вердикт будет `NOT_TRIGGERED` («сироты не было»), а не PASS.
+- **`controller_abort`** (#4770). Не `nav_aborted`: точка x=40 план не строит, FollowPath не стартует, проверка
+  слабая. Проба шлёт NavigateToPose на `HOLD_AHEAD_M` в самом свободном направлении. Когда FollowPath принят,
+  держит корпус нулевым Twist на `/cmd_vel_web` (priority 50, выше Nav2 10) до итога. Progress checker
+  (`movement_time_allowance` 30 с, параметр не крутим) должен абортить. PASS: в `nav2.log` ровно один
+  `Aborting handle` и есть `Failed to make progress`; NavigateToPose и принятый FollowPath — ABORTED не позже
+  allowance + grace; через `ORPHAN_GRACE_S` нет активного FollowPath и mux = 0; SUCCEEDED нет. Счётчик — только
+  цели FollowPath, которые в этой пробе были ACTIVE. FollowPath не принят или мало места — `NOT_TRIGGERED`, не PASS.
+  Второй `Aborting handle` (pending снова дал 30 с) — FAIL: `terminate_all` не сработал.
 - **`zone`** (#4365, #4470 on). Сначала `proximity-guard` пересоздаётся с явным `HIL_GUARD_SOUND=on` (умолчание HIL —
   off). Проба поворачивается по правде Gazebo к ближайшему препятствию (до 3.5 м) и едет на него телеопом
   `/cmd_vel_web` 0.1 м/с. После `EM_ON` она толкает ещё 4 с. PASS для #4365: защита вошла в `stop`, робот за
@@ -86,7 +97,8 @@ HIL_CHECKS_OWNER=hil-checks scripts/hil/checks/run_checks.sh zone orphan   # в�
 
 Предусловия ~0.5 мин, `orphan` ~1 мин, `zone` ~1.5 мин, `guard_off` ~3–4 мин (пересоздание защиты ×2),
 `nav_aborted` до 4.5 мин (ждёт исход тула до 180 с), `stop_idle` до 2 мин, `stop_active` до 2.5 мин,
-`orphan_natural` до 4 мин. Всего ~15–20 мин, плюс `hil.sh on/off` 2–3 мин каждый. На стенде ещё не мерено.
+`orphan_natural` до 4 мин, `controller_abort` ~1 мин (30 с allowance + запас, на стенде ещё не мерено).
+Всего ~16–21 мин, плюс `hil.sh on/off` 2–3 мин каждый. На стенде ещё не мерено.
 
 ## 4. Что приложить в карточку
 
@@ -96,6 +108,7 @@ HIL_CHECKS_OWNER=hil-checks scripts/hil/checks/run_checks.sh zone orphan   # в�
 verdicts.txt                       строки VERDICT <карточка> <сценарий> <статус>: <факты> — по одной на вердикт
 preflight/{hil_status,inspect,clock,stand_lock}.txt
 orphan/{probe.log,watchdog.log,nav2.log}
+controller_abort/{probe.log,nav2.log,watchdog.log}
 zone/{probe.log,guard.log,voice.log,expr.log,env.txt}          guard_off/ — то же + recreate_*.txt
 nav_aborted/{probe.log,voice.log,nav2.log,inject.txt}          stop_*/{voice.log,inject.txt[,probe.log]}
 ```

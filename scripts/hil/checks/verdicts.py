@@ -14,6 +14,7 @@
 ``rob_box_teleop/proximity.py`` (``ALARMS``), формат строки зоны — ``proximity.describe``.
 
     python verdicts.py <сценарий> <каталог> [--mode on|off] [--owner ИМЯ] [--need "к1 к2"] [--grace S]
+        [--allowance S]
 Код выхода: 0 PASS, 1 FAIL, 2 NOT_TRIGGERED/NO_DATA. Строка вердикта дописывается в ``<каталог>/../verdicts.txt``.
 """
 
@@ -385,6 +386,111 @@ def v_orphan_natural(probe: Sequence[Event], watchdog: Sequence[Event], grace_s:
     return Verdict(*sc, PASS, tuple(facts + [f"через {grace_s} с после провала FollowPath нет и mux = 0"]))
 
 
+def observed_follow_goals(probe: Sequence[Event]) -> List[str]:
+    """#4647: цели FollowPath, которые в этой пробе реально были ACTIVE.
+
+    Терминал без ACTIVE не считается.
+    """
+    seen: List[str] = []
+    for e in kinds(probe, "FP_STATUS"):
+        goal = e.fields.get("goal")
+        if not goal or goal in seen:
+            continue
+        if e.fields.get("status") in ACTIVE:
+            seen.append(goal)
+    return seen
+
+
+def _abort_window_bad(window: float, allowance_s: float, grace_s: float) -> List[str]:
+    if window > allowance_s + grace_s:
+        return [f"abort позже allowance {allowance_s:.0f} с + grace {grace_s:.0f} с: {window:.1f} с"]
+    return []
+
+
+def _abort_log_bad(nav2: Sequence[Event], allowance_s: float) -> Tuple[List[str], List[Event], List[Event]]:
+    """Один Aborting handle и строка progress checker.
+
+    Второй цикл allowance — terminate_all не сработал.
+    """
+    aborts = grep(nav2, r"Aborting handle")
+    progress = grep(nav2, r"Failed to make progress")
+    bad: List[str] = []
+    if len(aborts) != 1:
+        bad.append(
+            f"Aborting handle: {len(aborts)} "
+            f"(ждали 1: terminate_all не должен дать второй цикл {allowance_s:.0f} с)"
+        )
+    if not progress:
+        bad.append("в nav2.log нет «Failed to make progress» — abort не от progress checker")
+    return bad, aborts, progress
+
+
+def _after_abort_bad(probe: Sequence[Event], abort_at: float, grace_s: float) -> List[str]:
+    """После abort: нет активного FollowPath, mux = 0, нет ложного SUCCEEDED."""
+    bad: List[str] = []
+    if any(e.fields.get("status") == "SUCCEEDED" for e in kinds(probe, "NAV_RESULT", "FP_STATUS")):
+        bad.append("ложный «приехал»: в пробе есть SUCCEEDED")
+    still = follow_active_at(probe, abort_at + grace_s)
+    if still:
+        bad.append(f"через {grace_s} с FollowPath ещё активен: {','.join(g[:8] for g in still)}")
+    moving = moving_mux(probe, abort_at + grace_s, math.inf)
+    if moving:
+        m = moving[0]
+        bad.append(
+            f"после abort выход twist_mux ≠ 0: sim={_sim(m):.2f} v={m.fields.get('v')} w={m.fields.get('w')}"
+        )
+    return bad
+
+
+def v_controller_abort(
+    probe: Sequence[Event], nav2: Sequence[Event], grace_s: float, allowance_s: float
+) -> Verdict:
+    """#4770: FollowPath уже принят, progress checker абортит, terminate_all гасит и pending.
+
+    Не ``nav_aborted``: без принятого FollowPath вердикт NOT_TRIGGERED
+    (план не построен — проверка слабая).
+    Счётчик — только цели, которые в этой пробе были ACTIVE (#4647).
+    """
+    sc = ("#4770", "controller_abort")
+    if not probe:
+        return Verdict(*sc, NO_DATA, (NO_PROBE,))
+    observed = observed_follow_goals(probe)
+    held = [e for e in kinds(probe, "FP_HELD") if e.fields.get("goal") in observed]
+    if not observed or not held:
+        return Verdict(
+            *sc,
+            NOT_TRIGGERED,
+            (
+                "FollowPath не был принят и удержан — это не abort контроллера (план мог не построиться)",
+            ),
+        )
+    facts = [f"наблюдавшихся целей FollowPath: {len(observed)}"]
+    nav_end = [e for e in kinds(probe, "NAV_RESULT") if e.fields.get("status") in ("ABORTED", "SUCCEEDED", "CANCELED")]
+    aborted = [e for e in nav_end if e.fields.get("status") == "ABORTED"]
+    if not aborted:
+        status = nav_end[-1].fields.get("status") if nav_end else "нет"
+        return Verdict(*sc, NOT_TRIGGERED, tuple(facts + [f"NavigateToPose не ABORTED (итог {status})"]))
+    abort_at = _sim(aborted[0])
+    log_bad, aborts, progress = _abort_log_bad(nav2, allowance_s)
+    facts += [f"Aborting handle: {len(aborts)}", f"Failed to make progress: {len(progress)}"]
+    fp_abort = [
+        e
+        for e in kinds(probe, "FP_STATUS")
+        if e.fields.get("goal") in observed and e.fields.get("status") == "ABORTED" and _sim(e) <= abort_at + 1.0
+    ]
+    bad = list(log_bad)
+    if not fp_abort:
+        bad.append("принятый FollowPath не ушёл в ABORTED вместе с целью")
+    window = abort_at - _sim(held[0])
+    facts.append(f"от удержания до ABORTED: {window:.1f} с sim")
+    bad += _abort_window_bad(window, allowance_s, grace_s)
+    bad += _after_abort_bad(probe, abort_at, grace_s)
+    facts.append(f"проверок abort: {len(aborted)}")
+    if bad:
+        return Verdict(*sc, FAIL, tuple(bad + facts))
+    return Verdict(*sc, PASS, tuple(facts + [f"через {grace_s} с FollowPath нет и mux = 0"]))
+
+
 def v_tool_halt(probe: Sequence[Event], grace_s: float) -> Verdict:
     """#4435/#4456: после провала цели тула навигации (из диалога) через ``grace_s`` нет FollowPath и mux = 0."""
     sc = ("#4435", "tool_halt")
@@ -650,6 +756,8 @@ def evaluate(scenario: str, d: Path, args) -> Verdict:
         return v_orphan_natural(probe, parse_docker(_read(d, "watchdog.log")), args.grace)
     if scenario == "tool_halt":
         return v_tool_halt(probe, args.grace)
+    if scenario == "controller_abort":
+        return v_controller_abort(probe, parse_docker(_read(d, "nav2.log")), args.grace, args.allowance)
     voice = parse_docker(_read(d, "voice.log"))
     if scenario == "nav_aborted":
         return v_nav_aborted(voice, load_phrases())
@@ -673,6 +781,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     ap.add_argument("--owner", default="")
     ap.add_argument("--need", default="")
     ap.add_argument("--grace", type=float, default=DEFAULT_GRACE_S)
+    # movement_time_allowance боевого FollowPath (nav2_params.yaml). Не крутим ради PASS.
+    ap.add_argument("--allowance", type=float, default=30.0)
     args = ap.parse_args(argv)
     verdict = evaluate(args.scenario, args.dir, args)
     print(verdict.line())
