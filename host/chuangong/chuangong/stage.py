@@ -124,6 +124,38 @@ class DockerCli:
                 raise StageError("hotpatch_probe_failed", f"{name}: {error}")
         return hotpatched
 
+    def _compose(self, project_dir: Path, *args: str) -> subprocess.CompletedProcess:
+        try:
+            return subprocess.run(
+                ["docker", "compose", *args],
+                cwd=str(project_dir),
+                capture_output=True,
+                text=True,
+                timeout=self.timeout_s,
+                stdin=subprocess.DEVNULL,
+            )
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            return subprocess.CompletedProcess(["docker", "compose", *args], 127, "", f"docker compose: {exc}")
+
+    def compose_down(self, project_dir: Path) -> None:
+        """``docker compose down`` в каталоге роли. Тесты подставляют FakeDocker."""
+        res = self._compose(project_dir, "down", "--remove-orphans", "--timeout", "20")
+        if res.returncode != 0:
+            error = res.stderr.strip() or res.stdout.strip() or f"compose down exited {res.returncode}"
+            raise StageError("compose_down_failed", error, dir=str(project_dir))
+
+    def compose_up(self, project_dir: Path, images: dict[str, str] | None = None) -> None:
+        """``docker compose up -d``; ``images`` — digest-пин (журнал исполнителя; env — следующий шаг)."""
+        res = self._compose(project_dir, "up", "-d", "--force-recreate", "--pull", "never")
+        if res.returncode != 0:
+            error = res.stderr.strip() or res.stdout.strip() or f"compose up exited {res.returncode}"
+            raise StageError(
+                "compose_up_failed",
+                error,
+                dir=str(project_dir),
+                images=dict(images or {}),
+            )
+
 
 def _repo_of(ref: str) -> tuple[str, str]:
     """`host:5000/krikz/rob_box@sha256:…` → ("krikz/rob_box", "sha256:…")."""

@@ -1,14 +1,14 @@
 """C1: adoption доказанного current и детерминированный dry-run activation/rollback.
 
-Здесь нет compose down/up, смены symlink, миграций или анимации. Только явный `adopt(apply=True)` меняет
-state.json: он записывает current/previous после сравнения legacy-файлов и точной compose-матрицы
-service → container → image ID с подписанным релизом. Activation и rollback возвращают план с `execute=false`,
-health остаётся `not_verified`, история не меняется.
+Только явный `adopt(apply=True)` меняет state.json: current/previous после сравнения legacy-файлов
+и compose-матрицы service → container → image ID с подписанным релизом. Activation/rollback —
+dry-run: ``plan_role`` кладёт шаги в план (`execute=false`), список actions/images не дублируется
+здесь. health в dry-run — `not_verified`; unhealthy → план отката роли, не «успех».
 """
 
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass
+from dataclasses import asdict
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Protocol
@@ -16,15 +16,10 @@ from typing import Any, Protocol
 from . import cancel
 from . import state as st
 from .agent import Config, Deps, FetchError, fetch_release, probe_flags, report
+from .role_switch import HealthResult, plan_role
 from .stage import MARKER, RoleStager, StageError
 
 ACTIVATION_ORDER = ("vision", "sound", "main")
-
-
-@dataclass(frozen=True)
-class HealthResult:
-    status: str
-    detail: str
 
 
 class HealthCheck(Protocol):
@@ -312,23 +307,35 @@ class ActivationMachine:
 
     def _planned(self, record: dict[str, Any], release: dict[str, Any], state: st.State) -> dict[str, Any]:
         target = release["release"]
+        origin = record["current"]
         health = self.health.check(self.cfg.node, target, dry_run=True)
         record["health"] = asdict(health)
+
         if health.status == "unhealthy":
-            return _blocked(record, "health_check_failed", health.detail)
+            # plan_role: unhealthy + previous → откат роли, не «успех» / не activation_planned.
+            role_rec = plan_role(release, self.cfg.node, previous=origin, health=health)
+            record["plan"] = role_rec["plan"]
+            record["state"] = role_rec["state"]
+            record["reason"] = role_rec.get("reason")
+            record["detail"] = role_rec.get("detail", health.detail)
+            if "failed_release" in role_rec:
+                record["failed_release"] = role_rec["failed_release"]
+            return record
+
         if health.status != "not_verified":
             return _blocked(record, "health_check_not_verified", asdict(health))
-        record["plan"] = [
-            {
-                "op": "activate",
-                "node": node,
-                "release": target,
-                "execute": False,
-                "actions": ["compose_down", "switch_current", "host_migrations", "compose_up"],
-                "migrations": release["roles"][node]["migrations"],
-            }
-            for node in ACTIVATION_ORDER
-        ]
-        record["would"] = {"current": target, "previous": record["current"]}
+
+        # Шаги только из plan_role — ROLE_ACTIONS/images/checks не копируем вторым списком.
+        plan: list[dict[str, Any]] = []
+        for node in ACTIVATION_ORDER:
+            node_health = (
+                health
+                if node == self.cfg.node
+                else HealthResult("not_verified", f"health not executed in dry-run: {node}/{target}")
+            )
+            role_rec = plan_role(release, node, previous=origin, health=node_health)
+            plan.extend(role_rec["plan"])
+        record["plan"] = plan
+        record["would"] = {"current": target, "previous": origin}
         record["state"] = state.value
         return record

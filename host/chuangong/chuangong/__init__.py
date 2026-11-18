@@ -10,11 +10,12 @@
   cancel         — локальная отмена staged (CLI cancel) и чтение маркера тиком/preflight; current не трогать;
   agent          — один тик агента (fetch → verify → stage → report);
   activation     — adoption доказанного current и dry-run activation/rollback (C1);
+  role_switch    — план/исполнитель одной роли по digest (checks deploy); activate зовёт plan_role;
   pointers       — файлы current/previous в state_dir после проверки подписи staged-релиза;
   fleet_op       — координация Vision→Sound→Main: ход операции и откат в fleet_op.json без сети;
   status         — наблюдатель для workflow «F: Update Robot» (action: status).
 
-Переключения symlink `current`, `compose down/up` и миграций по-прежнему НЕТ.
+Живой symlink `current` и хостовые миграции — следующий шаг; compose в тестах через FakeDocker.
 """
 
 AGENT_VERSION = "0.2.3"

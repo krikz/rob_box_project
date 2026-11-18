@@ -93,6 +93,7 @@ class FakeDocker:
         self.image_ids = {}
         self.compose_images = {}
         self.compose_probe_errors = {}
+        self.commands: list[tuple] = []
 
     def image_present(self, ref):
         return ref in self.present
@@ -105,7 +106,11 @@ class FakeDocker:
             if service in self.compose_probe_errors:
                 error = self.compose_probe_errors[service]
                 raise StageError(
-                    "compose_probe_failed", error, service=service, container=f"{service}-old", error=error
+                    "compose_probe_failed",
+                    error,
+                    service=service,
+                    container=f"{service}-old",
+                    error=error,
                 )
         return {service: sorted(ids) for service, ids in self.compose_images.items()}
 
@@ -120,6 +125,12 @@ class FakeDocker:
 
     def hotpatched_containers(self):
         return self.hotpatched
+
+    def compose_down(self, project_dir):
+        self.commands.append(("compose_down", str(project_dir)))
+
+    def compose_up(self, project_dir, images=None):
+        self.commands.append(("compose_up", str(project_dir), dict(images or {})))
 
 
 class FakeZenoh:

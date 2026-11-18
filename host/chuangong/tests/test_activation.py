@@ -42,7 +42,12 @@ def _machine(cfg, deps, health=None):
 
 def _stage(cfg, deps, release):
     return RoleStager(
-        deps.registry, deps.docker, cfg.releases_root, cfg.docker_root, cfg.reserve_bytes, deps.disk_free
+        deps.registry,
+        deps.docker,
+        cfg.releases_root,
+        cfg.docker_root,
+        cfg.reserve_bytes,
+        deps.disk_free,
     ).run(release, cfg.node)
 
 
@@ -142,7 +147,10 @@ def test_adoption_blocks_unpinned_external_images(tmp_path, world):
     rec = _machine(cfg, deps).adopt(world.release["release"], apply=True)
 
     assert rec["state"] == "blocked" and rec["reason"] == "external_images_unpinned"
-    assert rec["detail"] == {"node": "vision", "external_images": ["eclipse/zenoh:1.6.2"]}
+    assert rec["detail"] == {
+        "node": "vision",
+        "external_images": ["eclipse/zenoh:1.6.2"],
+    }
     assert not cfg.state_file.exists()
 
 
@@ -264,11 +272,25 @@ def test_activation_dry_run_has_fleet_order_health_and_would_transition(tmp_path
     assert rec["state"] == "activation_planned"
     assert rec["dry_run"] is True
     assert rec["current"] == "2026.11.08-1" and rec["previous"] is None
-    assert rec["would"] == {"current": world.release["release"], "previous": "2026.11.08-1"}
-    assert [step["node"] for step in rec["plan"] if step["op"] == "activate"] == ["vision", "sound", "main"]
+    assert rec["would"] == {
+        "current": world.release["release"],
+        "previous": "2026.11.08-1",
+    }
+    assert [step["role"] for step in rec["plan"] if step["op"] == "switch_role"] == [
+        "vision",
+        "sound",
+        "main",
+    ]
     assert all(step["execute"] is False for step in rec["plan"])
+    assert all(
+        step["actions"] == ["compose_down", "switch_current", "host_migrations", "compose_up"] for step in rec["plan"]
+    )
+    assert all("@sha256:" in ref for step in rec["plan"] for ref in step["images"].values())
     assert health.calls == [("vision", world.release["release"], True)]
-    assert rec["health"] == {"status": "not_verified", "detail": "health not executed in dry-run"}
+    assert rec["health"] == {
+        "status": "not_verified",
+        "detail": "health not executed in dry-run",
+    }
     assert json.loads(cfg.state_file.read_text(encoding="utf-8"))["current"] == "2026.11.08-1"
 
 
@@ -378,10 +400,14 @@ def test_rollback_uses_signed_previous_release_and_does_not_swap_history(tmp_pat
     assert rec["would"] == {"current": previous, "previous": "2026.11.10-1"}
     assert rec["current"] == "2026.11.10-1" and rec["previous"] == previous
     assert health.calls == [("vision", previous, True)]
-    assert [step["node"] for step in rec["plan"] if step["op"] == "activate"] == ["vision", "sound", "main"]
+    assert [step["role"] for step in rec["plan"] if step["op"] == "switch_role"] == [
+        "vision",
+        "sound",
+        "main",
+    ]
 
 
-def test_unhealthy_result_is_blocked_with_raw_detail(tmp_path, world):
+def test_unhealthy_result_plans_role_rollback_not_success(tmp_path, world):
     cfg = _cfg(tmp_path, world)
     docker = FakeDocker()
     deps = _deps(world, docker)
@@ -390,8 +416,19 @@ def test_unhealthy_result_is_blocked_with_raw_detail(tmp_path, world):
 
     rec = _machine(cfg, deps, Health("unhealthy", "nav2: exited (127)")).activate(world.release["release"])
 
-    assert rec["state"] == "blocked" and rec["reason"] == "health_check_failed"
+    assert rec["state"] == "rollback_planned"
+    assert rec["state"] != "activation_planned"
+    assert rec["reason"] == "health_check_failed"
     assert rec["detail"] == "nav2: exited (127)"
+    assert rec["failed_release"] == world.release["release"]
+    assert len(rec["plan"]) == 1
+    step = rec["plan"][0]
+    assert step["op"] == "rollback"
+    assert step["role"] == "vision"
+    assert step["release"] == "2026.11.08-1"
+    assert step["from_release"] == world.release["release"]
+    assert step["execute"] is False
+    assert all(s["op"] != "switch_role" for s in rec["plan"])
 
 
 def test_dry_run_rejects_health_success_claim(tmp_path, world):
@@ -496,7 +533,11 @@ def test_docker_cli_compose_probe_failure_has_raw_detail():
     with pytest.raises(StageError) as exc:
         docker.running_compose_image_ids()
     assert exc.value.reason == "compose_probe_failed"
-    assert exc.value.extra == {"service": "unknown", "container": "c-old", "error": "permission denied"}
+    assert exc.value.extra == {
+        "service": "unknown",
+        "container": "c-old",
+        "error": "permission denied",
+    }
 
 
 def test_adoption_and_tick_are_serialized(tmp_path, world, monkeypatch):
