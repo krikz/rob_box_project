@@ -16,7 +16,7 @@ release.yaml (подписан minisign, подпись — соседний ф�
       vision:
         bundle: {file: bundle-vision-<release>.tar.gz, sha256: <hex>, size: <байт>}
         images: {oak-d: <registry>/krikz/rob_box@sha256:<hex>, ...}
-        external_images: [eclipse/zenoh:1.6.2, ...]   # сторонние образы compose, пока по тегу (не закреплены)
+        external_images: [eclipse/zenoh:1.6.2@sha256:<hex>, ...]  # сторонние образы compose, digest
         resource_pack: {manifest: docker/vision/scripts/resource_pack/manifest.yaml, sha256: <hex>}
         migrations: [scripts/setup/ensure_hailo_driver.sh]
     compat: {min_previous: null}
@@ -60,6 +60,11 @@ _SERVICE = re.compile(r"^[a-z0-9][a-z0-9-]*$")
 
 class ReleaseError(ValueError):
     """release.yaml не соответствует схеме или не сошлась целостность."""
+
+
+def is_pinned_ref(ref: str) -> bool:
+    """Образ закреплён по digest (`name[:tag]@sha256:64hex`), а не плавающий тег."""
+    return isinstance(ref, str) and _PINNED_REF.match(ref) is not None
 
 
 def sha256_hex(data: bytes) -> str:

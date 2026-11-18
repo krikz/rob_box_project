@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Any, Protocol
 
 from . import cancel
+from . import release_format as rf
 from . import state as st
 from .agent import Config, Deps, FetchError, fetch_release, probe_flags, report
 from .role_switch import HealthResult, plan_role
@@ -154,8 +155,13 @@ class ActivationMachine:
         if self._preflight(record, release) is None:
             return record
         external = release["roles"][self.cfg.node]["external_images"]
-        if external:
-            return _blocked(record, "external_images_unpinned", {"node": self.cfg.node, "external_images": external})
+        unpinned = [img for img in external if not rf.is_pinned_ref(str(img))]
+        if unpinned:
+            return _blocked(
+                record,
+                "external_images_unpinned",
+                {"node": self.cfg.node, "external_images": unpinned},
+            )
         current = record["current"]
         if current not in (None, release_name):
             return _blocked(
