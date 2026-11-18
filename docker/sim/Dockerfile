@@ -56,6 +56,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         ros-lyrical-nav2-simple-commander \
         ros-lyrical-rtabmap-ros \
         ros-lyrical-twist-mux \
+        ros-lyrical-behaviortree-cpp \
         ros-lyrical-rmw-zenoh-cpp \
         procps \
         curl \

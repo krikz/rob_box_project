@@ -60,41 +60,9 @@ RUN apt-get update && apt-get install -y \
     ros-${ROS_DISTRO}-navigation2 \
     && rm -rf /var/lib/apt/lists/*
 
-# Pin Nav2 1.1.20:
-# - controller_server fails closed when goal pose TF fails (upstream ignored
-#   transformPose bool → default (0,0,0) → false "Reached the goal");
-# - on progress/controller abort, terminate pending FollowPath too (#4694).
-#   Humble SimpleActionServer otherwise restarts the pending goal on the same
-#   thread and the BT never sees FAILURE;
-# - NavFn refuses a path whose tail crosses lethal or unknown beyond a
-#   lidar-seen wall (#4694). allow_unknown stays true.
-COPY controller_goal_tf_fail.patch /tmp/controller_goal_tf_fail.patch
-COPY controller_progress_abort.patch /tmp/controller_progress_abort.patch
-COPY navfn_refuse_unknown_tail.patch /tmp/navfn_refuse_unknown_tail.patch
-RUN apt-get update && apt-get install -y \
-    build-essential \
-    curl \
-    patch \
-    python3-colcon-common-extensions \
-    && mkdir -p /tmp/nav2-fix/src \
-    && curl -fsSL -o /tmp/nav2-fix/navigation2.tar.gz \
-        "https://github.com/ros-navigation/navigation2/archive/a097086719c88f781aa59788eca29ac6ca5e56db.tar.gz" \
-    && tar -xzf /tmp/nav2-fix/navigation2.tar.gz -C /tmp/nav2-fix/src \
-    && mv /tmp/nav2-fix/src/navigation2-a097086719c88f781aa59788eca29ac6ca5e56db \
-        /tmp/nav2-fix/src/navigation2 \
-    && patch -d /tmp/nav2-fix/src/navigation2 -p1 </tmp/controller_goal_tf_fail.patch \
-    && patch -d /tmp/nav2-fix/src/navigation2 -p1 </tmp/controller_progress_abort.patch \
-    && patch -d /tmp/nav2-fix/src/navigation2 -p1 </tmp/navfn_refuse_unknown_tail.patch \
-    && rm -rf /var/lib/apt/lists/*
-RUN /bin/bash -c "source /opt/ros/${ROS_DISTRO}/setup.bash && cd /tmp/nav2-fix && \
-    colcon build --symlink-install --base-paths /tmp/nav2-fix/src/navigation2 \
-        --packages-select nav2_controller nav2_navfn_planner --cmake-args -DCMAKE_BUILD_TYPE=Release" \
-    && cp /tmp/nav2-fix/install/nav2_controller/lib/libcontroller_server_core.so \
-        /opt/ros/${ROS_DISTRO}/lib/libcontroller_server_core.so \
-    && cp /tmp/nav2-fix/install/nav2_navfn_planner/lib/libnav2_navfn_planner.so \
-        /opt/ros/${ROS_DISTRO}/lib/libnav2_navfn_planner.so \
-    && rm -rf /tmp/nav2-fix /tmp/controller_goal_tf_fail.patch \
-        /tmp/controller_progress_abort.patch /tmp/navfn_refuse_unknown_tail.patch
+# Nav2 1.1.20 pin from develop does not compile against lyrical Nav2 1.5.2
+# (packages.ros.org resolute, 2026-11-18). The humble patches stay in-tree;
+# they are not applied on this distro. Porting them is a separate task.
 # #4475: узел дерева WouldSpinOnStall. Угол считает rob_box_teleop.turn_in_place
 # (том compose, PYTHONPATH в start_nav2_direct.sh) — тот файл, что проверяет pytest.
 # doTransform<PoseStamped> в tf2_geometry_msgs.hpp зовёт KDL. Без -lorocos-kdl

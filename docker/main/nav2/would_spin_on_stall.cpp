@@ -21,8 +21,11 @@
 #include <utility>
 #include <vector>
 
-#include "behaviortree_cpp_v3/bt_factory.h"
-#include "behaviortree_cpp_v3/condition_node.h"
+// lyrical ships BehaviorTree.CPP 4 (behaviortree_cpp), not v3.
+// NodeConfig is a typedef of the old NodeConfiguration; status()/PortsList
+// and BT_REGISTER_NODES keep the v3 names.
+#include "behaviortree_cpp/bt_factory.h"
+#include "behaviortree_cpp/condition_node.h"
 #include "geometry_msgs/msg/pose_stamped.hpp"
 #include "nav_msgs/msg/path.hpp"
 #include "rclcpp/rclcpp.hpp"
