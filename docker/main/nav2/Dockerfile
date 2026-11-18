@@ -72,12 +72,12 @@ RUN /bin/bash -c "source /opt/ros/${ROS_DISTRO}/setup.bash && cd /tmp/turn-bt &&
     g++ -std=c++17 -fPIC -shared -DBT_PLUGIN_EXPORT \
       -I/opt/ros/${ROS_DISTRO}/include \
       \$(for d in /opt/ros/${ROS_DISTRO}/include/*/; do printf ' -I%s' \"\$d\"; done) \
-      -I/tmp/turn-bt -I/usr/include/python3.12 \
+      -I/tmp/turn-bt -I/usr/include/python3.14 \
       -o /opt/ros/${ROS_DISTRO}/lib/librob_box_would_spin_on_stall_bt_node.so \
       would_spin_on_stall.cpp \
       -L/opt/ros/${ROS_DISTRO}/lib -Wl,-rpath,/opt/ros/${ROS_DISTRO}/lib \
       -Wl,--no-as-needed \
-      -lbehaviortree_cpp -lrclcpp -ltf2 -ltf2_ros -lorocos-kdl -lpython3.12 \
+      -lbehaviortree_cpp -lrclcpp -ltf2 -ltf2_ros -lorocos-kdl -lpython3.14 \
       -lnav_msgs__rosidl_typesupport_cpp -lsensor_msgs__rosidl_typesupport_cpp \
       -lgeometry_msgs__rosidl_typesupport_cpp -ltf2_msgs__rosidl_typesupport_cpp" \
     && rm -rf /tmp/turn-bt

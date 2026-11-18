@@ -81,23 +81,25 @@ ENV RMW_IMPLEMENTATION=rmw_zenoh_cpp
 # (боевой nav2_params.yaml). Без .so configure падает: cannot open shared object.
 # Угол считает rob_box_teleop.turn_in_place (том compose, PYTHONPATH в start_nav2_direct.sh).
 # doTransform<PoseStamped> зовёт KDL — без -lorocos-kdl dlopen падает на Quaternion.
+# ros:lyrical-ros-base — Ubuntu 26.04, Python 3.14 (заголовки уже в базе).
+# python3.12 в resolute нет (сборка 18.11: libpython3.12-dev not found,
+# -I/usr/include/python3.12 → Python.h: No such file).
 RUN apt-get update && apt-get install -y --no-install-recommends \
         build-essential \
-        python3-dev \
     && rm -rf /var/lib/apt/lists/*
 COPY docker/main/nav2/would_spin_on_stall.cpp docker/main/nav2/turn_in_place_py.hpp /tmp/turn-bt/
-# ros:lyrical-ros-base — Ubuntu 26.04, Python 3.12, не 3.10 humble.
+# ros:lyrical-ros-base — Ubuntu 26.04, Python 3.14, не 3.10 humble.
 # behaviortree_cpp_v3 в lyrical переименован в behaviortree_cpp (см. docker/main/nav2/Dockerfile).
 RUN /bin/bash -c "source /opt/ros/lyrical/setup.bash && cd /tmp/turn-bt && \
     g++ -std=c++17 -fPIC -shared -DBT_PLUGIN_EXPORT \
       -I/opt/ros/lyrical/include \
       \$(for d in /opt/ros/lyrical/include/*/; do printf ' -I%s' \"\$d\"; done) \
-      -I/tmp/turn-bt -I/usr/include/python3.12 \
+      -I/tmp/turn-bt -I/usr/include/python3.14 \
       -o /opt/ros/lyrical/lib/librob_box_would_spin_on_stall_bt_node.so \
       would_spin_on_stall.cpp \
       -L/opt/ros/lyrical/lib -Wl,-rpath,/opt/ros/lyrical/lib \
       -Wl,--no-as-needed \
-      -lbehaviortree_cpp -lrclcpp -ltf2 -ltf2_ros -lorocos-kdl -lpython3.12 \
+      -lbehaviortree_cpp -lrclcpp -ltf2 -ltf2_ros -lorocos-kdl -lpython3.14 \
       -lnav_msgs__rosidl_typesupport_cpp -lsensor_msgs__rosidl_typesupport_cpp \
       -lgeometry_msgs__rosidl_typesupport_cpp -ltf2_msgs__rosidl_typesupport_cpp" \
     && rm -rf /tmp/turn-bt
