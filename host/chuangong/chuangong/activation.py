@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Any, Protocol
 
 from . import cancel
+from . import release_format as rf
 from . import state as st
 from .agent import Config, Deps, FetchError, fetch_release, probe_flags, report
 from .role_switch import HealthResult, plan_role
@@ -29,7 +30,9 @@ class HealthCheck(Protocol):
 
 class DryRunHealthCheck:
     def check(self, role: str, release: str, dry_run: bool) -> HealthResult:
-        return HealthResult("not_verified", f"health not executed in dry-run: {role}/{release}")
+        return HealthResult(
+            "not_verified", f"health not executed in dry-run: {role}/{release}"
+        )
 
 
 def _blocked(record: dict[str, Any], reason: str, detail: Any) -> dict[str, Any]:
@@ -68,21 +71,27 @@ def _legacy_mismatches(staged: Path, legacy_root: Path) -> list[dict[str, str]]:
             if not legacy.is_file():
                 mismatches.append({"path": relative.as_posix(), "detail": "missing"})
             elif not _files_equal(path, legacy):
-                mismatches.append({"path": relative.as_posix(), "detail": "content_differs"})
+                mismatches.append(
+                    {"path": relative.as_posix(), "detail": "content_differs"}
+                )
         except OSError as exc:
             raise LegacyReadError(relative.as_posix(), str(exc)) from exc
     return mismatches
 
 
 class ActivationMachine:
-    def __init__(self, cfg: Config, deps: Deps, health: HealthCheck | None = None) -> None:
+    def __init__(
+        self, cfg: Config, deps: Deps, health: HealthCheck | None = None
+    ) -> None:
         self.cfg = cfg
         self.deps = deps
         self.health = health or DryRunHealthCheck()
 
     def _record(self, dry_run: bool = True) -> dict[str, Any]:
         prev = st.load(self.cfg.state_file)
-        record = st.new_record(self.cfg.robot_id, self.cfg.node, self.cfg.channel, self.cfg.mode, prev)
+        record = st.new_record(
+            self.cfg.robot_id, self.cfg.node, self.cfg.channel, self.cfg.mode, prev
+        )
         record["dry_run"] = dry_run
         probe_flags(self.cfg, self.deps.docker, record)
         return record
@@ -109,13 +118,20 @@ class ActivationMachine:
         record["release_git"] = release.get("git")
         return release
 
-    def _preflight(self, record: dict[str, Any], release: dict[str, Any]) -> tuple[RoleStager, dict[str, Any]] | None:
+    def _preflight(
+        self, record: dict[str, Any], release: dict[str, Any]
+    ) -> tuple[RoleStager, dict[str, Any]] | None:
         name = release["release"]
         if cancel.is_cancelled(self.cfg.releases_root, name, self.cfg.node):
             _blocked(
                 record,
                 "release_cancelled",
-                {"release": name, "marker": str(cancel.cancel_path(self.cfg.releases_root, name, self.cfg.node))},
+                {
+                    "release": name,
+                    "marker": str(
+                        cancel.cancel_path(self.cfg.releases_root, name, self.cfg.node)
+                    ),
+                },
             )
             return None
         stager = self._stager()
@@ -155,14 +171,23 @@ class ActivationMachine:
         if self._preflight(record, release) is None:
             return record
         external = release["roles"][self.cfg.node]["external_images"]
-        if external:
-            return _blocked(record, "external_images_unpinned", {"node": self.cfg.node, "external_images": external})
+        unpinned = [img for img in external if not rf.is_pinned_ref(str(img))]
+        if unpinned:
+            return _blocked(
+                record,
+                "external_images_unpinned",
+                {"node": self.cfg.node, "external_images": unpinned},
+            )
         current = record["current"]
         if current not in (None, release_name):
             return _blocked(
                 record,
                 "current_conflict",
-                {"current": current, "previous": record["previous"], "requested": release_name},
+                {
+                    "current": current,
+                    "previous": record["previous"],
+                    "requested": release_name,
+                },
             )
         staged = self.cfg.releases_root / release_name / self.cfg.node
         compose_dir = self.cfg.legacy_root / "docker" / self.cfg.node
@@ -177,7 +202,9 @@ class ActivationMachine:
         try:
             mismatches = _legacy_mismatches(staged, self.cfg.legacy_root)
         except LegacyReadError as exc:
-            return _blocked(record, "legacy_read_failed", {"path": exc.path, "error": exc.error})
+            return _blocked(
+                record, "legacy_read_failed", {"path": exc.path, "error": exc.error}
+            )
         if mismatches:
             return _blocked(record, "legacy_bundle_mismatch", mismatches)
 
@@ -200,7 +227,8 @@ class ActivationMachine:
                 },
             )
         if set(running) != set(image_ids) or any(
-            running.get(service) != [image_id] for service, image_id in image_ids.items()
+            running.get(service) != [image_id]
+            for service, image_id in image_ids.items()
         ):
             return _blocked(
                 record,
@@ -214,7 +242,11 @@ class ActivationMachine:
             "image_ids": image_ids,
             "compose_services": running,
         }
-        record["adoption"] = {"release": release_name, "git": release.get("git"), "evidence": evidence}
+        record["adoption"] = {
+            "release": release_name,
+            "git": release.get("git"),
+            "evidence": evidence,
+        }
         previous = record["previous"] if current == release_name else None
         if not apply:
             record["state"] = st.State.ADOPTION_PLANNED.value
@@ -235,7 +267,9 @@ class ActivationMachine:
             raise ValueError(f"created без часового пояса: {raw}")
         return created
 
-    def _compat_block(self, record: dict[str, Any], release: dict[str, Any]) -> dict[str, Any] | None:
+    def _compat_block(
+        self, record: dict[str, Any], release: dict[str, Any]
+    ) -> dict[str, Any] | None:
         minimum = release["compat"]["min_previous"]
         current = record["current"]
         if minimum is None or current == minimum:
@@ -254,7 +288,9 @@ class ActivationMachine:
             return _blocked(record, "compat_min_previous", detail)
         return None
 
-    def _prepare_activation(self, release_name: str) -> tuple[dict[str, Any], dict[str, Any] | None]:
+    def _prepare_activation(
+        self, release_name: str
+    ) -> tuple[dict[str, Any], dict[str, Any] | None]:
         record = self._record()
         release = self._release(record, release_name)
         if release is None:
@@ -306,7 +342,9 @@ class ActivationMachine:
             return record
         return self._planned(record, release, st.State.ROLLBACK_PLANNED)
 
-    def _planned(self, record: dict[str, Any], release: dict[str, Any], state: st.State) -> dict[str, Any]:
+    def _planned(
+        self, record: dict[str, Any], release: dict[str, Any], state: st.State
+    ) -> dict[str, Any]:
         target = release["release"]
         origin = record["current"]
         health = self.health.check(self.cfg.node, target, dry_run=True)
