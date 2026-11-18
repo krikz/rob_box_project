@@ -6,8 +6,9 @@
 Штатный activate dry-run зовёт ``plan_role`` и кладёт шаги в план — список
 сервисов/actions здесь один, не дублируется в activation.
 
-switch_current двигает указатели через pointers.advance; host_migrations
-пока только в журнале. Живой compose на роботе — следующий шаг.
+switch_current двигает указатели через pointers.advance; после compose_up —
+ROLE_CHECKS на docker; host_migrations пока только в журнале. Живой compose
+на роботе — следующий шаг.
 """
 
 from __future__ import annotations
@@ -242,6 +243,40 @@ def _apply_step(
             raise RoleSwitchError("unknown_action", action)
 
 
+def _run_role_checks(
+    docker: Any,
+    project_dir: Path,
+    step: dict[str, Any],
+    commands: list[dict[str, Any]],
+) -> str | None:
+    """ROLE_CHECKS после compose_up: узкий протокол docker.check_* (фейк пишет вызов, без сети).
+
+    ``check_ros2_topics`` сравнивает expected_topics шага с заранее заданным списком
+    на фейке — живой ``ros2 topic`` не вызывается. None = ok; иначе detail fail.
+    """
+    expected = list(step.get("expected_topics") or [])
+    for name in list(step.get("checks") or ROLE_CHECKS):
+        if name == CHECK_CONTAINER_STATUS:
+            err = docker.check_container_status(project_dir)
+            entry: dict[str, Any] = {"action": name, "dir": str(project_dir)}
+        elif name == CHECK_CONTAINER_LOGS:
+            err = docker.check_container_logs(project_dir)
+            entry = {"action": name, "dir": str(project_dir)}
+        elif name == CHECK_ROS2_TOPICS:
+            err = docker.check_ros2_topics(expected)
+            entry = {"action": name, "expected_topics": list(expected)}
+        else:
+            raise RoleSwitchError("unknown_check", name)
+        if err:
+            entry["ok"] = False
+            entry["detail"] = err
+            commands.append(entry)
+            return f"{name}: {err}"
+        entry["ok"] = True
+        commands.append(entry)
+    return None
+
+
 def execute_role(
     release: dict[str, Any],
     role: str,
@@ -252,11 +287,13 @@ def execute_role(
     previous: str | None = None,
     health_after: Callable[[], HealthResult] | HealthResult | None = None,
 ) -> dict[str, Any]:
-    """Исполнить plan_role через docker.compose_* и pointers.advance.
+    """Исполнить plan_role: compose_*, pointers.advance, ROLE_CHECKS.
 
     ``state_dir`` — каталог указателей current/previous (передаёт вызывающий;
-    путь /var/lib на хосте теста не подставляется). ``health_after`` — проверка
-    после compose_up (callable или готовый HealthResult). unhealthy → план
+    путь /var/lib на хосте теста не подставляется). После actions шага —
+    ``docker.check_*`` из ROLE_CHECKS (FakeDocker пишет вызов). Fail проверки →
+    ``blocked`` / ``role_check_failed``, не state успеха. ``health_after`` —
+    доп. проверка после checks (callable или HealthResult). unhealthy → план
     отката роли и его actions (не «успех»). Падение advance не глотается.
     Живой compose на роботе этим PR не гоняем: тесты — FakeDocker.
     """
@@ -270,6 +307,16 @@ def execute_role(
     for step in planned["plan"]:
         _apply_step(docker, project_dir, step, commands, state_dir)
         step["execute"] = True
+        check_fail = _run_role_checks(docker, project_dir, step, commands)
+        if check_fail is not None:
+            result = dict(planned)
+            result["execute"] = True
+            result["commands"] = commands
+            result["plan"] = [dict(s) for s in planned["plan"]]
+            result["state"] = "blocked"
+            result["reason"] = "role_check_failed"
+            result["detail"] = check_fail
+            return result
 
     result = dict(planned)
     result["execute"] = True
@@ -297,6 +344,17 @@ def execute_role(
     for step in rollback["plan"]:
         _apply_step(docker, project_dir, step, commands, state_dir)
         step["execute"] = True
+        # Откат: checks шага тоже гоняем; fail → blocked, не «успех на previous».
+        check_fail = _run_role_checks(docker, project_dir, step, commands)
+        if check_fail is not None:
+            out = dict(rollback)
+            out["execute"] = True
+            out["commands"] = commands
+            out["plan"] = [dict(s) for s in rollback["plan"]]
+            out["state"] = "blocked"
+            out["reason"] = "role_check_failed"
+            out["detail"] = check_fail
+            return out
     out = dict(rollback)
     out["execute"] = True
     out["commands"] = commands
