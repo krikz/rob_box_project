@@ -9,7 +9,7 @@ This directory contains all automated workflows for the Rob Box project.
 | Workflow | Trigger | Purpose |
 |----------|---------|---------|
 | **L: Deploy and Verify** | Manual | Deploy and verify robot system on both Pis |
-| **F: Update Robot** | Manual | Fleet console (ADR-0168): phase B `status` only — reads chuangong agent reports via zenoh REST, no ssh |
+| **F: Update Robot** | Manual | Fleet console (ADR-0168): `robot_id`+`release`; empty reject for update/rollback; status via zenoh REST; no ssh |
 
 ### 🏗️ Build Workflows
 
