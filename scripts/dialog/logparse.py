@@ -8,8 +8,12 @@ ADR-0150 PR-0 (#3684). Только чтение лога: рантайм роб
 
 Строки без метки времени (дамп ``🔎 LLM REQUEST``, ``tools(48): ...``) тоже читаются: ts = None.
 
-Ход = строка ``🚀 [turn] calling process_input``. Окно хода начинается с последней фразы ``🎤 STT:`` перед ним
+Ход v1 = строка ``🚀 [turn] calling process_input``. Окно хода начинается с последней фразы ``🎤 STT:`` перед ним
 (якорь) и кончается перед якорем следующего хода; без STT окно начинается со строки ``🚀``.
+
+Ход v2 = строка-агрегат ``📊 [turn]`` (:data:`rob_box_dialog.turn_log.AGGREGATE_MARK`). Окно — от строки после
+прошлого агрегата (якорь — последняя ``🎤 STT:`` в окне) до агрегата включительно; поля ``agent``/``llm_calls`` —
+из самой строки. Лог супервизора с ``🛰 [tars-v2] request=`` режет :func:`split_supervisor_turns`, не этот путь.
 
 Лог ``avatar-supervisor`` (ТАРС, оператор на движке v2) - другой формат (#4286): ход кончается строкой
 ``🛰 [tars-v2] request=… tools=[…]``, речь модели - поле ``speech`` в ``🔎 LLM RESPONSE``, реплика оператора - последний
@@ -24,12 +28,18 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Dict, List, Optional, Sequence, Tuple
 
-_TS_LINE = re.compile(r"^\[(?P<node>[^\]]+)\] \[(?P<level>[A-Z]+)\] \[(?P<ts>\d+\.\d+)\] \[[^\]]*\]: (?P<msg>.*)$")
+_TS_LINE = re.compile(
+    r"^\[(?P<node>[^\]]+)\] \[(?P<level>[A-Z]+)\] \[(?P<ts>\d+\.\d+)\] \[[^\]]*\]: (?P<msg>.*)$"
+)
 _RAW_LINE = re.compile(r"^\[(?P<node>[^\]]+)\] (?P<msg>.*)$")
 
 STT_MARK = "🎤 STT:"
 TURN_START_MARK = "🚀 [turn] calling process_input"
 TURN_END_MARK = "✅ [turn] process_input returned"
+#: Итог хода v2 — тот же маркер, что ``rob_box_dialog.turn_log.AGGREGATE_MARK`` (копия строки, без импорта пакета).
+TURN_AGGREGATE_MARK = "📊 [turn]"
+#: Лог ``avatar-supervisor`` (ТАРС v2, #4286): конец хода; при наличии — :func:`split_turns` не режет по ``📊``.
+SUPERVISOR_END_MARK = "🛰 [tars-v2] request="
 LLM_REQUEST_MARK = "🔎 LLM REQUEST START"
 TTS_MARK = "🔊 TTS: speech_id="
 LLM_OUTPUT_MARK = "📤 LLM OUTPUT:"
@@ -52,6 +62,8 @@ _BACKLOG_ENTRIES = re.compile(r"entries=(\d+)")
 _PROMPT_OVER = re.compile(r" over=(\S+)")
 _TTS_TEXT = re.compile(r"text='(?P<text>.*)$")
 _QUOTED_TAIL = re.compile(r"'(?P<text>.*)$")
+_LLM_CALLS = re.compile(r"llm_calls=(\d+)")
+_TURN_AGENT = re.compile(r"\bagent=(\S+)")
 
 
 @dataclass(frozen=True)
@@ -82,18 +94,30 @@ class Turn:
     stt_text: str = ""
     llm_calls: int = 0
     tools_visible: Optional[int] = None
-    prompt_tokens: List[int] = field(default_factory=list)  # 🧮 [prompt] tokens=N — по вызову LLM (A5)
-    prompt_over: List[str] = field(default_factory=list)  # блоки сверх бюджета (over=system,tools) по всем вызовам
-    tools_requested: List[str] = field(default_factory=list)  # из ✅ [turn] ... tools=[...]
-    tools_executed: List[str] = field(default_factory=list)  # «Инструмент X выполнен успешно» в окне
+    prompt_tokens: List[int] = field(
+        default_factory=list
+    )  # 🧮 [prompt] tokens=N — по вызову LLM (A5)
+    prompt_over: List[str] = field(
+        default_factory=list
+    )  # блоки сверх бюджета (over=system,tools) по всем вызовам
+    tools_requested: List[str] = field(
+        default_factory=list
+    )  # из ✅ [turn] ... tools=[...]
+    tools_executed: List[str] = field(
+        default_factory=list
+    )  # «Инструмент X выполнен успешно» в окне
     tools_failed: List[str] = field(default_factory=list)
     first_tts_ts: Optional[float] = None
     first_tts_line: Optional[int] = None
     tts_texts: List[Tuple[int, str]] = field(default_factory=list)
     backlog_entries: int = 0
     speeches: List[Speech] = field(default_factory=list)
-    retry: bool = False  # ход без своей фразы STT (синтетический ретрай): STT-якорь унаследован от предыдущего
-    agent: str = ""  # агент хода, если его называет формат лога (супервизор - ``operator``)
+    retry: bool = (
+        False  # ход без своей фразы STT (синтетический ретрай): STT-якорь унаследован от предыдущего
+    )
+    agent: str = (
+        ""  # агент хода, если его называет формат лога (супервизор - ``operator``)
+    )
 
     @property
     def stt_to_first_tts_ms(self) -> Optional[float]:
@@ -112,7 +136,9 @@ def read_lines(path: Path) -> List[LogLine]:
                 out.append(LogLine(lineno, m["node"], float(m["ts"]), m["msg"]))
                 continue
             m = _RAW_LINE.match(raw)
-            out.append(LogLine(lineno, m["node"] if m else "", None, m["msg"] if m else raw))
+            out.append(
+                LogLine(lineno, m["node"] if m else "", None, m["msg"] if m else raw)
+            )
     return out
 
 
@@ -149,7 +175,9 @@ def _group_speeches(items: Sequence[Tuple[int, str, str]]) -> List[Speech]:
     for key in order:
         rows = grouped[key]
         full = max((r[2] for r in rows), key=len)
-        result.append(Speech(full, tuple(r[0] for r in rows), tuple(r[1] for r in rows)))
+        result.append(
+            Speech(full, tuple(r[0] for r in rows), tuple(r[1] for r in rows))
+        )
     return result
 
 
@@ -168,8 +196,9 @@ def _fill_window(turn: Turn, window: Sequence[LogLine]) -> None:
                 turn.tools_visible = max(turn.tools_visible or 0, int(m[1]))
             if PROMPT_TOKENS_MARK in msg:
                 _note_prompt(turn, msg)
-        if TURN_END_MARK in msg:
-            in_turn = False  # запросы к LLM после «returned» — уже следующий ход (ретрай), не этот
+        # v1 «returned» и v2-агрегат — конец учёта LLM этого хода (после — ретрай/следующий)
+        if TURN_END_MARK in msg or TURN_AGGREGATE_MARK in msg:
+            in_turn = False
             m = _TURN_TOOLS.search(msg)
             if m:
                 turn.tools_requested = [str(t) for t in ast.literal_eval(m[1])]
@@ -200,18 +229,20 @@ def _note_prompt(turn: Turn, msg: str) -> None:
         turn.prompt_over.extend(m[1].split(","))
 
 
-def split_turns(lines: Sequence[LogLine]) -> List[Turn]:
-    """Режет лог на ходы. Окно хода: от якоря (STT) до якоря следующего хода."""
-    starts = [i for i, ln in enumerate(lines) if TURN_START_MARK in ln.msg]
+def _stt_anchor(lines: Sequence[LogLine], start: int, stop: int) -> int:
+    """Индекс последней ``🎤 STT:`` в ``[start, stop)``; иначе ``stop`` (сама граница хода)."""
+    for j in range(stop - 1, start - 1, -1):
+        if STT_MARK in lines[j].msg:
+            return j
+    return stop
+
+
+def _split_v1_turns(lines: Sequence[LogLine], starts: Sequence[int]) -> List[Turn]:
+    """Ходы v1: граница — ``🚀 [turn] calling process_input``; окно от якоря STT до якоря следующего."""
     anchors: List[int] = []
     prev = -1
     for s in starts:
-        a = s
-        for j in range(s - 1, prev, -1):
-            if STT_MARK in lines[j].msg:
-                a = j
-                break
-        anchors.append(a)
+        anchors.append(_stt_anchor(lines, prev + 1, s))
         prev = s
     turns: List[Turn] = []
     for n, (s, a) in enumerate(zip(starts, anchors)):
@@ -227,22 +258,78 @@ def split_turns(lines: Sequence[LogLine]) -> List[Turn]:
             stt_text=stt.msg.split(STT_MARK, 1)[1].strip() if stt else "",
         )
         if stt is None and turns:
-            turn.retry, turn.stt_ts, turn.stt_text = True, turns[-1].stt_ts, turns[-1].stt_text
+            turn.retry, turn.stt_ts, turn.stt_text = (
+                True,
+                turns[-1].stt_ts,
+                turns[-1].stt_text,
+            )
         _fill_window(turn, lines[a : end + 1])
         turns.append(turn)
     return turns
+
+
+def _apply_aggregate(turn: Turn, msg: str) -> None:
+    """Поля агрегата v2 (``turn_log.TurnAggregate.log_line``) — источник llm_calls/agent, не эвристика окна."""
+    m = _LLM_CALLS.search(msg)
+    if m:
+        turn.llm_calls = int(m[1])
+    m = _TURN_AGENT.search(msg)
+    if m:
+        turn.agent = m[1]
+
+
+def _split_v2_turns(lines: Sequence[LogLine], ends: Sequence[int]) -> List[Turn]:
+    """Ходы v2: граница — ``📊 [turn]``; окно от строки после прошлого агрегата до него включительно."""
+    turns: List[Turn] = []
+    prev = -1
+    for n, e in enumerate(ends):
+        lo = prev + 1
+        a = _stt_anchor(lines, lo, e)
+        stt = lines[a] if a != e and STT_MARK in lines[a].msg else None
+        # start_line — начало окна (не агрегат): _fill_window считает LLM/тулы до 📊
+        start_idx = lo if lo <= e else e
+        turn = Turn(
+            index=n + 1,
+            anchor_line=lines[a].lineno if stt else lines[e].lineno,
+            start_line=lines[start_idx].lineno,
+            end_line=lines[e].lineno,
+            stt_ts=stt.ts if stt else None,
+            start_ts=lines[e].ts,
+            stt_text=stt.msg.split(STT_MARK, 1)[1].strip() if stt else "",
+        )
+        if stt is None and turns:
+            turn.retry, turn.stt_ts, turn.stt_text = (
+                True,
+                turns[-1].stt_ts,
+                turns[-1].stt_text,
+            )
+        _fill_window(turn, lines[start_idx : e + 1])
+        _apply_aggregate(turn, lines[e].msg)
+        turns.append(turn)
+        prev = e
+    return turns
+
+
+def split_turns(lines: Sequence[LogLine]) -> List[Turn]:
+    """Режет лог на ходы v1 (``🚀 process_input``) или v2 (``📊 [turn]``). Супервизор ТАРС — не здесь."""
+    starts = [i for i, ln in enumerate(lines) if TURN_START_MARK in ln.msg]
+    if starts:
+        return _split_v1_turns(lines, starts)
+    # Супервизор пишет и 📊, и 🛰: 📊 без tools/speech супервизора — ложный ход; его режет split_supervisor_turns.
+    if any(SUPERVISOR_END_MARK in ln.msg for ln in lines):
+        return []
+    ends = [i for i, ln in enumerate(lines) if TURN_AGGREGATE_MARK in ln.msg]
+    return _split_v2_turns(lines, ends) if ends else []
 
 
 def load_turns(path: Path) -> List[Turn]:
     return split_turns(read_lines(path))
 
 
-#: Лог ``avatar-supervisor`` (ТАРС v2, #4286): конец хода, ответ модели, история запроса, число вызовов LLM.
-SUPERVISOR_END_MARK = "🛰 [tars-v2] request="
+#: Лог ``avatar-supervisor`` (ТАРС v2, #4286): ответ модели, история запроса (конец хода — SUPERVISOR_END_MARK).
 LLM_RESPONSE_MARK = "🔎 LLM RESPONSE:"
 _RESPONSE_SPEECH = re.compile(r'"speech": "(?P<text>(?:[^"\\]|\\.)*)')
 _HISTORY = re.compile(r"^\s*\[\d+\] (?P<role>user|assistant): '(?P<text>.*?)'?$")
-_LLM_CALLS = re.compile(r"llm_calls=(\d+)")
 _SPEAKER_TAG = re.compile(r"^\[говорит: [^\]]*\]\s*")
 CONTEXT_OPEN = "<system_context>"
 
@@ -272,7 +359,12 @@ def _asked_before(history: Sequence[Tuple[str, str]], answer: str) -> str:
     """Реплика, на которую в истории ответ ``answer`` (его начало), - пусто, если такого ответа в истории нет."""
     head = answer[:30]
     for (role, text), (next_role, reply) in zip(history, history[1:]):
-        if role == "user" and next_role == "assistant" and head and reply.startswith(head):
+        if (
+            role == "user"
+            and next_role == "assistant"
+            and head
+            and reply.startswith(head)
+        ):
             return _user_text(text)
     return ""
 
@@ -287,14 +379,20 @@ def _user_text(raw: str) -> str:
 
 def _supervisor_speech(window: Sequence[LogLine]) -> List[Speech]:
     """Речь модели хода: ``speech`` последнего ответа LLM с речью (строка лога обрезана - текст может быть неполным)."""
-    found = [(ln.lineno, m["text"]) for ln in window if LLM_RESPONSE_MARK in ln.msg
-             for m in [_RESPONSE_SPEECH.search(ln.msg)] if m]
+    found = [
+        (ln.lineno, m["text"])
+        for ln in window
+        if LLM_RESPONSE_MARK in ln.msg
+        for m in [_RESPONSE_SPEECH.search(ln.msg)]
+        if m
+    ]
     return [Speech(found[-1][1], (found[-1][0],), ("llm_response",))] if found else []
 
 
 def split_supervisor_turns(lines: Sequence[LogLine]) -> List[Turn]:
     """Режет лог супервизора на ходы ТАРС: окно хода - от строки после конца прошлого хода до ``🛰 [tars-v2] request=``
-    включительно. Тулы - список ``tools=[…]`` этой строки (их вызвал ход; статус по тулу супервизор не пишет)."""
+    включительно. Тулы - список ``tools=[…]`` этой строки (их вызвал ход; статус по тулу супервизор не пишет).
+    """
     ends = [i for i, ln in enumerate(lines) if SUPERVISOR_END_MARK in ln.msg]
     turns: List[Turn] = []
     prev = -1
@@ -302,11 +400,19 @@ def split_supervisor_turns(lines: Sequence[LogLine]) -> List[Turn]:
         window = lines[prev + 1 : e + 1]
         prev = e
         history = _first_request(window)
-        if turns and not turns[-1].stt_text and turns[-1].speeches:  # снимок обрезал реплику: она - в истории
+        if (
+            turns and not turns[-1].stt_text and turns[-1].speeches
+        ):  # снимок обрезал реплику: она - в истории
             turns[-1].stt_text = _asked_before(history, turns[-1].speeches[0].text)
         own = [text for role, text in history if role == "user"][-1:]
-        turn = Turn(index=n + 1, anchor_line=window[0].lineno, start_line=window[0].lineno, end_line=lines[e].lineno,
-                    stt_text=_user_text(own[0]) if own else "", agent="operator")
+        turn = Turn(
+            index=n + 1,
+            anchor_line=window[0].lineno,
+            start_line=window[0].lineno,
+            end_line=lines[e].lineno,
+            stt_text=_user_text(own[0]) if own else "",
+            agent="operator",
+        )
         m = _TURN_TOOLS.search(lines[e].msg)
         try:
             tools = [str(t) for t in ast.literal_eval(m[1])] if m else []
