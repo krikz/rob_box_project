@@ -14,14 +14,32 @@ from rob_box_dialog.degrade import ProviderState
 from rob_box_llm.errors import TTSAuthError, TTSConnectionError, TTSRateLimitError, TTSTimeoutError
 from rob_box_voice.stt_fallback import provider_health_class
 
+#: Признаки пустого счёта/плана в тексте TTS-отказа (402 / 2056 / QUOTA_HINTS).
+#: HTTP 429 без них — лимит частоты, не «кончились деньги» (#4694). Числа не меняем.
+_TTS_QUOTA_HINTS: tuple[str, ...] = (
+    "402",
+    "2056",
+    "1008",
+    "token plan",
+    "usage limit",
+    "insufficient balance",
+)
+
 
 def tts_failure_class(error: BaseException, permanent: bool) -> str:
-    """Класс отказа синтеза: quota (429 MiniMax) / auth / network / timeout / down.
+    """Класс отказа синтеза: quota (баланс/план) / auth / network / timeout / down.
+
+    ``TTSRateLimitError`` сам по себе не «кончились деньги»: HTTP 429 без признака
+    пустого счёта → ``degraded`` (нет ключа rate-limit в phrases, не ``provider.exhausted.quota``).
+    402 / 2056 / QUOTA_HINTS в тексте → ``quota`` (#4694).
 
     ``permanent`` - решение ``_mark_provider_dead`` (ключ, права на папку Yandex): долгий TTL = ключ не подошёл.
     """
     if isinstance(error, TTSRateLimitError):
-        return "quota"
+        text = str(error).lower()
+        if any(hint in text for hint in _TTS_QUOTA_HINTS):
+            return "quota"
+        return "degraded"
     if isinstance(error, TTSAuthError) or permanent:
         return "auth"
     if isinstance(error, TTSConnectionError):
