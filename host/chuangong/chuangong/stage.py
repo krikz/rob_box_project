@@ -8,11 +8,15 @@
 
 from __future__ import annotations
 
+import os
+import re
 import shutil
 import subprocess
 import tarfile
 from pathlib import Path, PurePosixPath
 from typing import Any, Callable, Protocol
+
+import yaml
 
 from . import release_format as rf
 from .registry import Registry, RegistryError
@@ -21,6 +25,9 @@ MARKER = ".chuangong-staged"
 MAX_BUNDLE_UNPACKED = 512 * 1024 * 1024
 # Сжатые слои в реестре → распакованный образ в /var/lib/docker: на наших образах 2–4× (docker images vs registry).
 IMAGE_UNPACK_FACTOR = 3
+# digest в ref образа (как release_format / image_versions_text): только sha256:64hex.
+_DIGEST_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
+_BUILD_MANIFEST_NAME = "build-manifest.yaml"
 
 
 class StageError(RuntimeError):
@@ -45,11 +52,89 @@ class Docker(Protocol):
     def hotpatched_containers(self) -> list[str]: ...
 
 
-class DockerCli:
-    """docker CLI хоста. Только чтение и `docker pull`; никаких stop/rm/up."""
+def _service_tag_vars(manifest: dict[str, Any]) -> dict[str, str]:
+    """service → *_TAG из docker/build-manifest.yaml (image_versions != false).
 
-    def __init__(self, timeout_s: float = 1800.0) -> None:
+    То же соответствие, что gen_build_matrix.image_versions_map / release.all_services:
+    nav2 → NAV2_TAG. Сервисы с image_versions: false сюда не попадают.
+    """
+    out: dict[str, str] = {}
+    for pi in (manifest.get("pis") or {}).values():
+        for name, spec in ((pi or {}).get("services") or {}).items():
+            iv = (spec or {}).get("image_versions", False)
+            if iv is not False:
+                out[str(name)] = str(iv)
+    return out
+
+
+def _load_service_tag_vars(manifest_path: Path) -> dict[str, str]:
+    try:
+        raw = yaml.safe_load(manifest_path.read_text(encoding="utf-8"))
+    except (OSError, yaml.YAMLError) as exc:
+        raise StageError("compose_up_manifest", f"{manifest_path}: {exc}") from exc
+    if not isinstance(raw, dict):
+        raise StageError("compose_up_manifest", f"{manifest_path}: ожидался mapping")
+    return _service_tag_vars(raw)
+
+
+def _resolve_build_manifest(project_dir: Path, manifest_path: Path | None) -> Path:
+    """Манифест рядом с compose: ``docker/<role>`` → ``docker/build-manifest.yaml``."""
+    if manifest_path is not None:
+        path = Path(manifest_path)
+        if not path.is_file():
+            raise StageError("compose_up_manifest", f"нет файла {path}")
+        return path
+    candidate = Path(project_dir).resolve().parent / _BUILD_MANIFEST_NAME
+    if candidate.is_file():
+        return candidate
+    raise StageError(
+        "compose_up_manifest",
+        f"нет {_BUILD_MANIFEST_NAME} рядом с {project_dir} (ожидался {candidate})",
+    )
+
+
+def _pinned_tag_value(service: str, ref: str, image_tag: str) -> str:
+    """Значение *_TAG как image_versions_text(pinned=True): ``<image_tag>@sha256:…``.
+
+    Digest — часть ref после ``@`` (тот же split, что в release.py). Тег сборки —
+    ``image_tag`` релиза, не «dev»/«latest» из воздуха. Полный ref
+    ``prefix:name-humble-TAG@sha256:…`` разбирается так же: в env идёт image_tag + digest.
+    """
+    if not isinstance(ref, str) or "@" not in ref:
+        raise StageError("compose_up_bad_ref", f"{service}: нет @digest в {ref!r}")
+    digest = ref.split("@", 1)[1]
+    if not _DIGEST_RE.match(digest):
+        raise StageError("compose_up_bad_ref", f"{service}: digest не sha256:64hex в {ref!r}")
+    if not isinstance(image_tag, str) or not image_tag.strip():
+        raise StageError("compose_up_unpinned", f"{service}: пустой image_tag, digests без тега сборки")
+    return f"{image_tag.strip()}@{digest}"
+
+
+def compose_digest_env(
+    images: dict[str, str],
+    *,
+    image_tag: str,
+    service_vars: dict[str, str],
+) -> dict[str, str]:
+    """service→digest-ref + манифест → env ``{NAV2_TAG: image_tag@sha256:…, …}``.
+
+    Сервис без image_versions в манифесте в env не попадает (compose берёт IMAGE_TAG/docker_tag).
+    """
+    env: dict[str, str] = {}
+    for service, ref in images.items():
+        var = service_vars.get(str(service))
+        if not var:
+            continue
+        env[var] = _pinned_tag_value(str(service), ref, image_tag)
+    return env
+
+
+class DockerCli:
+    """docker CLI хоста. Только чтение, `docker pull` и compose up/down по digest-env."""
+
+    def __init__(self, timeout_s: float = 1800.0, *, manifest_path: Path | None = None) -> None:
         self.timeout_s = timeout_s
+        self.manifest_path = Path(manifest_path) if manifest_path is not None else None
 
     def _run(self, *args: str, timeout: float = 30.0) -> subprocess.CompletedProcess:
         try:
@@ -124,7 +209,10 @@ class DockerCli:
                 raise StageError("hotpatch_probe_failed", f"{name}: {error}")
         return hotpatched
 
-    def _compose(self, project_dir: Path, *args: str) -> subprocess.CompletedProcess:
+    def _compose(
+        self, project_dir: Path, *args: str, env: dict[str, str] | None = None
+    ) -> subprocess.CompletedProcess:
+        run_env = None if env is None else {**os.environ, **env}
         try:
             return subprocess.run(
                 ["docker", "compose", *args],
@@ -133,6 +221,7 @@ class DockerCli:
                 text=True,
                 timeout=self.timeout_s,
                 stdin=subprocess.DEVNULL,
+                env=run_env,
             )
         except (OSError, subprocess.TimeoutExpired) as exc:
             return subprocess.CompletedProcess(["docker", "compose", *args], 127, "", f"docker compose: {exc}")
@@ -144,16 +233,54 @@ class DockerCli:
             error = res.stderr.strip() or res.stdout.strip() or f"compose down exited {res.returncode}"
             raise StageError("compose_down_failed", error, dir=str(project_dir))
 
-    def compose_up(self, project_dir: Path, images: dict[str, str] | None = None) -> None:
-        """``docker compose up -d``; ``images`` — service→digest (FakeDocker запоминает; live env — следующий шаг)."""
-        res = self._compose(project_dir, "up", "-d", "--force-recreate", "--pull", "never")
+    def compose_up(
+        self,
+        project_dir: Path,
+        images: dict[str, str] | None = None,
+        *,
+        image_tag: str | None = None,
+        manifest_path: Path | None = None,
+    ) -> None:
+        """``docker compose up -d`` с digest-env из ``images`` (service → ref@sha256).
+
+        Env — ``{NAV2_TAG: <image_tag>@sha256:…, …}`` как ``image_versions_text(pinned=True)``:
+        имя переменной из ``docker/build-manifest.yaml`` (image_versions), значение —
+        тег сборки релиза + digest из ref. Пустой ``images``/``None`` — отказ (не dev/latest).
+        """
+        pinned = dict(images or {})
+        if not pinned:
+            raise StageError(
+                "compose_up_unpinned",
+                "images пуст: compose up без digest-pin (dev/latest не подставляем)",
+                dir=str(project_dir),
+                images={},
+            )
+        if not isinstance(image_tag, str) or not image_tag.strip():
+            raise StageError(
+                "compose_up_unpinned",
+                "нужен image_tag релиза для *_TAG=<image_tag>@sha256 (как image_versions_text pinned)",
+                dir=str(project_dir),
+                images=pinned,
+            )
+        manifest = _resolve_build_manifest(project_dir, manifest_path or self.manifest_path)
+        service_vars = _load_service_tag_vars(manifest)
+        env = compose_digest_env(pinned, image_tag=image_tag.strip(), service_vars=service_vars)
+        if not env:
+            raise StageError(
+                "compose_up_unpinned",
+                "ни один сервис images не имеет image_versions в манифесте — pin пуст",
+                dir=str(project_dir),
+                images=pinned,
+            )
+        res = self._compose(project_dir, "up", "-d", "--force-recreate", "--pull", "never", env=env)
         if res.returncode != 0:
             error = res.stderr.strip() or res.stdout.strip() or f"compose up exited {res.returncode}"
             raise StageError(
                 "compose_up_failed",
                 error,
                 dir=str(project_dir),
-                images=dict(images or {}),
+                images=pinned,
+                env=dict(env),
             )
 
 

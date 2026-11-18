@@ -86,8 +86,9 @@ def _switch_step(
     release_name: str,
     images: dict[str, str],
     migrations: list[Any],
+    image_tag: str | None = None,
 ) -> dict[str, Any]:
-    return {
+    step = {
         "op": "switch_role",
         "role": role,
         "release": release_name,
@@ -98,6 +99,9 @@ def _switch_step(
         "checks": list(ROLE_CHECKS),
         "expected_topics": list(ROLE_EXPECTED_TOPICS[role]),
     }
+    if image_tag is not None:
+        step["image_tag"] = image_tag
+    return step
 
 
 def _rollback_step(role: str, previous: str, failed_release: str) -> dict[str, Any]:
@@ -201,13 +205,26 @@ def plan_role(
         )
         return base
 
+    image_tag = release.get("image_tag")
+    image_tag_s = image_tag.strip() if isinstance(image_tag, str) else None
     base.update(
         {
             "state": "role_switch_planned",
-            "plan": [_switch_step(role, target, images, migrations)],
+            "plan": [_switch_step(role, target, images, migrations, image_tag=image_tag_s)],
         }
     )
     return base
+
+
+def _compose_up(docker: Any, project_dir: Path, images: dict[str, str], image_tag: str | None) -> None:
+    """DockerCli принимает image_tag (digest-env); FakeDocker — только images (TypeError → fallback)."""
+    if image_tag is not None:
+        try:
+            docker.compose_up(project_dir, images=images, image_tag=image_tag)
+            return
+        except TypeError:
+            pass
+    docker.compose_up(project_dir, images=images)
 
 
 def _apply_step(
@@ -220,12 +237,13 @@ def _apply_step(
     """Прогнать actions шага. compose_* — docker; switch_current — pointers.advance."""
     images = dict(step.get("images") or {})
     migrations = list(step.get("migrations") or [])
+    image_tag = step.get("image_tag") if isinstance(step.get("image_tag"), str) else None
     for action in step["actions"]:
         if action == "compose_down":
             docker.compose_down(project_dir)
             commands.append({"action": "compose_down", "dir": str(project_dir)})
         elif action == "compose_up":
-            docker.compose_up(project_dir, images=images)
+            _compose_up(docker, project_dir, images, image_tag)
             commands.append({"action": "compose_up", "dir": str(project_dir), "images": images})
         elif action == "switch_current":
             advanced = pointers.advance(state_dir, step["release"])
