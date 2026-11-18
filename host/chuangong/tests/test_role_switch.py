@@ -167,7 +167,8 @@ def test_unknown_role_rejected():
         plan_role(release, "katana")
 
 
-def test_execute_role_records_compose_by_digest_and_marks_switched(tmp_path):
+def test_execute_role_records_compose_by_digest_without_false_success(tmp_path):
+    """Compose по digest пишется; без реального ROLE_CHECKS — не role_switched."""
     release = _release_fixture()
     docker = FakeDocker()
     project = tmp_path / "docker" / "vision"
@@ -182,7 +183,11 @@ def test_execute_role_records_compose_by_digest_and_marks_switched(tmp_path):
         health_after=HealthResult("healthy", "check_container_status: ok"),
     )
 
-    assert result["state"] == "role_switched"
+    # ROLE_CHECKS ещё не вызываются — успех переключения врать нельзя.
+    assert result["state"] in ("not_wired", "blocked")
+    assert result["state"] != "role_switched"
+    assert result["reason"] == "checks_not_run"
+    assert result.get("checks_run", []) == []
     assert result["execute"] is True
     assert result["health"]["status"] == "healthy"
     assert result["plan"][0]["op"] == "switch_role"
@@ -202,6 +207,32 @@ def test_execute_role_records_compose_by_digest_and_marks_switched(tmp_path):
     up = next(c for c in result["commands"] if c["action"] == "compose_up")
     for ref in up["images"].values():
         assert "@sha256:" in ref
+
+
+def test_execute_role_without_checks_run_is_not_success(tmp_path):
+    """Журнал честен: без вызова ROLE_CHECKS нет успеха, checks_run пуст, reason явный."""
+    release = _release_fixture()
+    docker = FakeDocker()
+    project = tmp_path / "docker" / "sound"
+    project.mkdir(parents=True)
+
+    result = execute_role(
+        release,
+        "sound",
+        docker=docker,
+        project_dir=project,
+        previous="2026.11.08-1",
+        # health_after отсутствует — checks тоже не вызывались
+    )
+
+    assert result["state"] in ("not_wired", "blocked")
+    assert result["state"] not in ("role_switched", "healthy", "success")
+    assert result["reason"] == "checks_not_run"
+    assert result.get("checks_run", []) == []
+    assert result["execute"] is True
+    # compose actions всё же записаны (исполнение actions ≠ успех checks)
+    actions = [c["action"] for c in result["commands"]]
+    assert "compose_up" in actions
 
 
 def test_execute_role_unhealthy_after_up_runs_rollback_not_success(tmp_path):
@@ -225,6 +256,8 @@ def test_execute_role_unhealthy_after_up_runs_rollback_not_success(tmp_path):
     assert result["state"] != "role_switched"
     assert result["state"] != "role_switch_planned"
     assert result["reason"] == "health_check_failed"
+    # ROLE_CHECKS не вызывались — журнал не имитирует прогон
+    assert result.get("checks_run", []) == []
     assert result["release"] == previous
     assert result["failed_release"] == "2026.11.10-1"
     assert result["execute"] is True

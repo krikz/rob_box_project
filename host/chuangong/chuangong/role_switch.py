@@ -239,8 +239,14 @@ def execute_role(
     """Исполнить plan_role через docker.compose_*.
 
     ``health_after`` — проверка после compose_up (callable или готовый HealthResult).
-    unhealthy → план отката роли и его actions (не «успех»). Живой compose на
-    роботе этим PR не гоняем: тесты подставляют FakeDocker, пишущий команды.
+    unhealthy → план отката роли и его actions (не «успех»).
+
+    ``checks_run`` — только реально вызванные ROLE_CHECKS ``{name, ok, detail}``.
+    Пока checks не подключены, список пуст и state не ``role_switched``
+    (``not_wired`` / ``checks_not_run``), а не ложный успех.
+
+    Живой compose на роботе этим PR не гоняем: тесты подставляют FakeDocker,
+    пишущий команды.
     """
     project_dir = Path(project_dir)
     planned = plan_role(release, role, previous=previous)
@@ -256,8 +262,12 @@ def execute_role(
     result["execute"] = True
     result["commands"] = commands
     result["plan"] = [dict(step) for step in planned["plan"]]
+    # ROLE_CHECKS пока только в плане — реально не вызываются; журнал не врёт.
+    result["checks_run"] = []
 
     if health_after is None:
+        result["state"] = "not_wired"
+        result["reason"] = "checks_not_run"
         return result
 
     checked = health_after() if callable(health_after) else health_after
@@ -265,21 +275,25 @@ def execute_role(
         raise RoleSwitchError("bad_health_after", type(checked).__name__)
     result["health"] = asdict(checked)
 
-    if checked.status != "unhealthy":
-        if checked.status not in ("not_verified", "healthy"):
-            result["state"] = "blocked"
-            result["reason"] = "health_check_not_verified"
-            result["detail"] = asdict(checked)
-            return result
-        result["state"] = "role_switched"
+    if checked.status == "unhealthy":
+        rollback = plan_role(release, role, previous=previous, health=checked)
+        for step in rollback["plan"]:
+            _apply_step(docker, project_dir, step, commands)
+            step["execute"] = True
+        out = dict(rollback)
+        out["execute"] = True
+        out["commands"] = commands
+        out["plan"] = [dict(step) for step in rollback["plan"]]
+        out["checks_run"] = []
+        return out
+
+    if checked.status not in ("not_verified", "healthy"):
+        result["state"] = "blocked"
+        result["reason"] = "health_check_not_verified"
+        result["detail"] = asdict(checked)
         return result
 
-    rollback = plan_role(release, role, previous=previous, health=checked)
-    for step in rollback["plan"]:
-        _apply_step(docker, project_dir, step, commands)
-        step["execute"] = True
-    out = dict(rollback)
-    out["execute"] = True
-    out["commands"] = commands
-    out["plan"] = [dict(step) for step in rollback["plan"]]
-    return out
+    # health_after сам по себе ≠ ROLE_CHECKS; без их прогона — не role_switched.
+    result["state"] = "not_wired"
+    result["reason"] = "checks_not_run"
+    return result
