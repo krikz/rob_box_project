@@ -3,25 +3,37 @@
 * шаг B — однозначные искажения команд чинит код по закрытой таблице до Tier-1 и до модели (``heard.repair``,
   ``knowledge.HEARD_FIXES``): n712 «Робот, всё, глуши.» → STT «робот всох в глуши» — модель «залипала на бите», стопа не
   было; n511 «Робот, всё, глуши музыку, у меня уши в трубочку.» → «робот все глушу музыку …»; «глуши» — стоп-слово;
-* шаг A — строка о шуме STT в промпте формы ответа (``knowledge.STT_NOISE_NOTE``), временная до шага C.
+* шаг A — строка о шуме STT в промпте формы ответа (``knowledge.STT_NOISE_NOTE``), временная до снятия #4127;
+* шаг C2 — переспрос стопа кодом при расхождении ``alternatives`` со стоп-смыслом (детектор ``words.stop_verdict``);
+  порог confidence не вводится; STT_NOISE_NOTE этим шагом не снимается.
 """
 
 import asyncio
 import logging
 
 import pytest
+from robot_wake_fixture import ROBOT_WAKE  # noqa: E402 — тестовый профиль робота
 
+from rob_box_core.stt_hypotheses import SttHypotheses
 from rob_box_dialog import command as cm
 from rob_box_dialog import knowledge as kn
 from rob_box_dialog.address import VOICE, Addressed, decide
 from rob_box_dialog.backlog import Backlog, Heard
 from rob_box_dialog.command import Command, Form
 from rob_box_dialog.grammar import match
-from rob_box_dialog.heard import HEARD_MARK, Repaired, repair
+from rob_box_dialog.heard import (
+    HEARD_MARK,
+    STOP_REASK_REASON,
+    Repaired,
+    is_clear_stop,
+    repair,
+    should_reask_stop,
+    stop_hypotheses_diverge,
+    stop_reask_phrase,
+)
 from rob_box_dialog.session import MusicStateRef, Session
 from rob_box_dialog.turn import Answer, TurnEngine
 from rob_box_dialog.words import STOP_CLEAR, STOP_DISPUTED, STOP_NONE, stop_verdict
-from robot_wake_fixture import ROBOT_WAKE  # noqa: E402 — тестовый профиль робота
 
 WAKES = list(ROBOT_WAKE)
 #: Живые строки STT марафона 23.10 (va_marathon.log) и что было сказано.
@@ -36,20 +48,39 @@ def _heard(text, source="respeaker"):
 # -- heard.repair: только начало команды, только формы таблицы ---------------------------------------------------
 
 
-@pytest.mark.parametrize("text, said, fix", [
-    ("всох в глуши", "всё, глуши", "«всох в глуши» → «всё, глуши»"),
-    ("все глушу музыку у меня уши в трубочку", "всё, глуши музыку у меня уши в трубочку", "«все глушу» → «всё, глуши»"),
-    ("Всох, в глуши!", "всё, глуши!", "«Всох, в глуши» → «всё, глуши»"),
-    ("всё глушу", "всё, глуши", "«всё глушу» → «всё, глуши»"),
-])
+@pytest.mark.parametrize(
+    "text, said, fix",
+    [
+        ("всох в глуши", "всё, глуши", "«всох в глуши» → «всё, глуши»"),
+        (
+            "все глушу музыку у меня уши в трубочку",
+            "всё, глуши музыку у меня уши в трубочку",
+            "«все глушу» → «всё, глуши»",
+        ),
+        ("Всох, в глуши!", "всё, глуши!", "«Всох, в глуши» → «всё, глуши»"),
+        ("всё глушу", "всё, глуши", "«всё глушу» → «всё, глуши»"),
+    ],
+)
 def test_live_distortion_at_the_head_is_repaired_and_the_rest_kept(text, said, fix):
     assert repair(text) == Repaired(said, (fix,))
 
 
-@pytest.mark.parametrize("text", [
-    "мы живём в глуши", "расскажи как всох в глуши", "все глушат моторы", "всох", "глушу", "в глуши",
-    "все глуши", "всё, глуши", "хватит", "", "   ",
-])
+@pytest.mark.parametrize(
+    "text",
+    [
+        "мы живём в глуши",
+        "расскажи как всох в глуши",
+        "все глушат моторы",
+        "всох",
+        "глушу",
+        "в глуши",
+        "все глуши",
+        "всё, глуши",
+        "хватит",
+        "",
+        "   ",
+    ],
+)
 def test_no_guessing_outside_the_table_or_away_from_the_head(text):
     assert repair(text) == Repaired(text)
 
@@ -76,11 +107,14 @@ def test_mute_is_a_clear_stop_of_all_sounds(text):
     assert command is not None and command.kind == "stop_all" and not command.disputed
 
 
-@pytest.mark.parametrize("text, verdict", [
-    ("Робот, мы живём в глуши", STOP_DISPUTED),
-    ("Робот, не глуши музыку", STOP_DISPUTED),
-    ("Робот, где глушитель", STOP_NONE),
-])
+@pytest.mark.parametrize(
+    "text, verdict",
+    [
+        ("Робот, мы живём в глуши", STOP_DISPUTED),
+        ("Робот, не глуши музыку", STOP_DISPUTED),
+        ("Робот, где глушитель", STOP_NONE),
+    ],
+)
 def test_mute_inside_other_words_is_not_a_clear_stop(text, verdict):
     assert stop_verdict(text) == verdict
 
@@ -96,7 +130,8 @@ def test_music_keep_clause_with_mute_still_keeps_music():
 
 def test_n712_addressed_text_is_repaired_with_a_log_note():
     assert decide(_heard(N712), Backlog(), WAKES) == Addressed(
-        "всё, глуши", VOICE, stt_fixes=("«всох в глуши» → «всё, глуши»",))
+        "всё, глуши", VOICE, stt_fixes=("«всох в глуши» → «всё, глуши»",)
+    )
 
 
 def test_slipped_wake_is_repaired_too():
@@ -138,8 +173,12 @@ class Ports:
         from rob_box_dialog.respond import ActionResult
 
         self.executed.append([a.tool for a in actions])
-        return [ActionResult(f"{turn_id}/{n}", snapshot.epoch, snapshot.agent, a.tool, kn.TOOL_CLASSES[a.tool],
-                             "done", None, {}) for n, a in enumerate(actions)]
+        return [
+            ActionResult(
+                f"{turn_id}/{n}", snapshot.epoch, snapshot.agent, a.tool, kn.TOOL_CLASSES[a.tool], "done", None, {}
+            )
+            for n, a in enumerate(actions)
+        ]
 
     def say(self, turn_id, epoch, text, voice=None, emotion=None):
         self.said.append(text)
@@ -164,7 +203,8 @@ class Ports:
 def _engine(ports, log):
     engine = TurnEngine(Session("personality"), ports, system_prompt="Ты робот.", log=log)
     engine.session._snap = engine.session.snapshot.__class__(
-        **{**vars(engine.session.snapshot), "music": MusicStateRef("playing")})
+        **{**vars(engine.session.snapshot), "music": MusicStateRef("playing")}
+    )
     return engine
 
 
@@ -177,8 +217,9 @@ def test_n712_under_music_is_a_code_stop_with_zero_llm_calls(caplog):
         agg = asyncio.run(_engine(ports, log).run(decide(_heard(N712), Backlog(), WAKES)))
     assert ports.asked == [] and agg.llm_calls == 0
     assert ports.cancels == ["tier1 stop_all"] and ports.executed == [["stop_music"]]
-    assert any(HEARD_MARK in r.getMessage() and "«всох в глуши» → «всё, глуши»" in r.getMessage()
-               for r in caplog.records)
+    assert any(
+        HEARD_MARK in r.getMessage() and "«всох в глуши» → «всё, глуши»" in r.getMessage() for r in caplog.records
+    )
 
 
 def test_n511_stop_by_code_then_the_rest_goes_to_the_model():
@@ -193,10 +234,121 @@ def test_n511_stop_by_code_then_the_rest_goes_to_the_model():
 # -- шаг A: строка о шуме STT не зависит от формы хода ----------------------------------------------------------
 
 
-@pytest.mark.parametrize("schema", [
-    None,
-    cm.form_schema(kn.command_schema("json"), Form(passed=False, voice=False)),
-    kn.with_sing(kn.command_schema("json"), "live:song"),
-])
+@pytest.mark.parametrize(
+    "schema",
+    [
+        None,
+        cm.form_schema(kn.command_schema("json"), Form(passed=False, voice=False)),
+        kn.with_sing(kn.command_schema("json"), "live:song"),
+    ],
+)
 def test_stt_noise_note_opens_the_prompt_fragment_for_every_turn_form(schema):
     assert kn.prompt_fragment(schema).splitlines()[0] == kn.STT_NOISE_NOTE
+
+
+# -- шаг C2: переспрос стопа при расхождении гипотез STT (без порога confidence) --------------------------------
+
+
+def test_clear_stop_detector_is_stop_verdict():
+    """Детектор стопа C2 — тот же ``stop_verdict``, что Tier-1 / HEARD_FIXES."""
+    assert is_clear_stop("робот стоп") and is_clear_stop("хватит") and is_clear_stop("глуши")
+    assert not is_clear_stop("робот спой песню") and not is_clear_stop("мы живём в глуши")
+
+
+@pytest.mark.parametrize(
+    "text, alts, diverge",
+    [
+        ("стоп", (), False),
+        ("стоп", ("хватит", "стой"), False),
+        ("стоп", ("спой песню",), True),
+        ("стоп", ("хватит", "включи рок"), True),
+        ("спой", ("стоп",), True),
+        ("хватит", ("робот хватит",), False),
+        ("", ("стоп",), True),  # primary не стоп, alt — стоп
+    ],
+)
+def test_stop_hypotheses_diverge_without_confidence_threshold(text, alts, diverge):
+    assert stop_hypotheses_diverge(text, alts) is diverge
+
+
+def test_should_reask_stop_only_for_stop_tier1_kinds():
+    assert should_reask_stop("stop_all", "стоп", ("спой",))
+    assert should_reask_stop("stop_speech", "хватит читать", ("расскажи сказку",))
+    assert should_reask_stop("silence", "замолчи", ("продолжай",))
+    assert not should_reask_stop("volume", "тише", ("громче",))
+    assert not should_reask_stop("stop_all", "стоп", ())
+    assert not should_reask_stop("stop_all", "стоп", ("хватит",))
+
+
+def test_stop_reask_phrase_is_built_by_code_from_heard_text():
+    assert stop_reask_phrase("всё, глуши") == "Я услышал «всё, глуши» — ты про стоп?"
+    assert stop_reask_phrase("  стоп  ") == "Я услышал «стоп» — ты про стоп?"
+    assert stop_reask_phrase("") == "Я услышал «…» — ты про стоп?"
+
+
+def _heard_hyp(text, alts, conf=0.4):
+    return Heard(
+        text=text,
+        t=100.0,
+        source="respeaker",
+        doa_deg=None,
+        person_ref="",
+        voice_s=0.0,
+        faces=frozenset(),
+        hypotheses=SttHypotheses(conf, tuple(alts)),
+    )
+
+
+def test_c2_diverging_alternatives_reask_and_do_not_stop():
+    """Один вариант — стоп, другой — нет: код не гасит музыку и не говорит «выполнил», а переспрашивает."""
+    ports = Ports()
+    log = logging.getLogger("test_heard_4017_c2")
+    addressed = decide(_heard_hyp("робот стоп", ("робот спой песню",)), Backlog(), WAKES)
+    assert addressed.hypotheses.alternatives == ("робот спой песню",)
+    agg = asyncio.run(_engine(ports, log).run(addressed))
+    assert ports.asked == [] and agg.llm_calls == 0
+    assert ports.cancels == [] and ports.executed == []
+    assert ports.said == [stop_reask_phrase("стоп")]
+    assert agg.reason == STOP_REASK_REASON
+
+
+def test_c2_agreeing_alternatives_still_code_stop():
+    """Все гипотезы — ясный стоп: стоп как раньше, переспроса нет."""
+    ports = Ports()
+    addressed = decide(_heard_hyp("робот стоп", ("робот хватит", "стой")), Backlog(), WAKES)
+    asyncio.run(_engine(ports, logging.getLogger("test_heard_4017_c2")).run(addressed))
+    assert ports.cancels == ["tier1 stop_all"] and ports.executed == [["stop_music"]]
+    assert ports.asked == []
+    assert all("ты про стоп?" not in s for s in ports.said)
+
+
+def test_c2_no_alternatives_stops_as_before_even_with_low_confidence():
+    """Нет alternatives — поведение как до C2; confidence порогом не режем (0.1 не отсечка)."""
+    ports = Ports()
+    heard = Heard(
+        text="робот стоп",
+        t=100.0,
+        source="respeaker",
+        doa_deg=None,
+        person_ref="",
+        voice_s=0.0,
+        faces=frozenset(),
+        hypotheses=SttHypotheses(0.1, ()),
+    )
+    asyncio.run(_engine(ports, logging.getLogger("test_heard_4017_c2")).run(decide(heard, Backlog(), WAKES)))
+    assert ports.cancels == ["tier1 stop_all"] and ports.executed == [["stop_music"]]
+    assert all("ты про стоп?" not in s for s in ports.said)
+
+
+def test_c2_repaired_n712_with_agreeing_alt_still_stops():
+    """n712 после repair — clear stop; alt «робот всё глуши» тоже clear — стоп кодом, не переспрос."""
+    ports = Ports()
+    heard = _heard_hyp(N712, ("робот всё глуши",))
+    asyncio.run(_engine(ports, logging.getLogger("test_heard_4017_c2")).run(decide(heard, Backlog(), WAKES)))
+    assert ports.cancels == ["tier1 stop_all"] and ports.executed == [["stop_music"]]
+    assert all("ты про стоп?" not in s for s in ports.said)
+
+
+def test_stt_noise_note_still_in_prompt_after_c2():
+    """STT_NOISE_NOTE не снят этим шагом (снимет #4127, когда C2 принят)."""
+    assert kn.prompt_fragment(None).splitlines()[0] == kn.STT_NOISE_NOTE

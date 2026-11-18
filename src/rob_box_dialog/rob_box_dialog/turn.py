@@ -109,7 +109,8 @@ from rob_box_dialog.deadline import TIMEOUT_PHRASE, DeadlineExpired, ProviderFai
 from rob_box_dialog.execute import deadline_s
 from rob_box_dialog.expression import face_label, show_seconds, shown_scene, shows
 from rob_box_dialog.grammar import Tier1Command, Voices, match
-from rob_box_dialog.heard import HEARD_MARK
+from rob_box_dialog.heard import (HEARD_MARK, STOP_REASK_REASON, should_reask_stop,
+                                  stop_reask_phrase)
 from rob_box_dialog.interrupt import Interrupt, interrupt_for, stop_music_calls, stops_music
 from rob_box_dialog.music_state import after_stop
 from rob_box_dialog.respond import (ActionResult, asks, audible, classed, failed, join, outcome_emotion,
@@ -265,6 +266,8 @@ class _Turn:
     acted: Tuple[ToolCall, ...] = ()  # исполненные в ходе вызовы (не ``query``): повтор не исполняется
     sad: bool = False  # прозвучала грустная фраза (провал, отказ): лицо итога без лица команды - грусть
     utterance_id: str = ""  # фраза STT хода (``Addressed.utterance_id``): по ней - её SpeakerResult
+    #: Гипотезы STT фразы хода (``Addressed.hypotheses``, #4017 C2): переспрос стопа при расхождении.
+    hypotheses_alternatives: Tuple[str, ...] = ()
     music_stopped: bool = False  # ход уже выключил музыку (стоп-тул ``done``): второй стоп не «ничего не играет»
     stop_said: bool = False  # Tier-1 уже сказал о стопе музыки (:func:`music_stop_phrase`): второй стоп хода молчит
     unvoiced: Tuple[ActionResult, ...] = ()  # исходы действий хода, о которых код ещё не сказал (Tier-1 стоп молчит)
@@ -2140,14 +2143,30 @@ def turn_work(engine: "TurnEngine", turn: _Turn, snap: SessionSnapshot) -> Await
     """Чем ответить на адресованную реплику: ответ на открытый вопрос тула (``tool_ask.reply``) и Tier-1 -
     кодом, без LLM; иначе - ход к LLM. На вопрос тула отвечает только реплика из ``tool_ask.ANSWER_SOURCES`` (вейк,
     Telegram, оператор): «да» без вейка на другой вопрос робота и подхват бэклога необратимое не подтверждают; новый
-    вопрос робота или модели, тишина и стоп окно снимают (``Session``, ``knowledge.TOOL_ASK_CLOSED_BY``)."""
+    вопрос робота или модели, тишина и стоп окно снимают (``Session``, ``knowledge.TOOL_ASK_CLOSED_BY``).
+
+    Ясный стоп Tier-1 при расхождении гипотез STT (#4017 C2, :func:`should_reask_stop`) — структурный переспрос
+    кодом, без исполнения стопа и без «выполнил»."""
     reply = tool_ask.reply(engine.session, turn.text, turn.source)
     if reply is not None:
         return answer_tool(engine, turn, reply, snap)
     tier1, parsed = tier1_of(turn.text, turn.command, snap, engine._voices())
     if tier1 is not None and not tier1.disputed:
+        if should_reask_stop(tier1.kind, parsed, turn.hypotheses_alternatives, turn.wake_words):
+            return _reask_stop(engine, turn, parsed)
         return _tier1_then_rest(engine, turn, tier1, snap, parsed)
     return understand(engine, turn, snap)
+
+
+async def _reask_stop(engine: "TurnEngine", turn: _Turn, parsed: str) -> None:
+    """Стоп не исполняем: гипотезы STT расходятся со стоп-смыслом. Фразу переспроса строит код, модель не зовётся."""
+    said = stop_reask_phrase(turn.text or parsed)
+    turn.stage, turn.reason = "done", STOP_REASK_REASON
+    engine._log.info(
+        f"{LOG_MARK} {HEARD_MARK} {STOP_REASK_REASON}: parsed={parsed[:80]!r} "
+        f"alts={turn.hypotheses_alternatives!r} said={said!r} turn={turn.turn_id}")
+    if engine.session.snapshot.top("Silence") is None:
+        engine._say(turn, said)
 
 
 async def answer_tool(engine: "TurnEngine", turn: _Turn, reply: tool_ask.Reply, snap: SessionSnapshot) -> None:
@@ -2326,7 +2345,8 @@ class TurnEngine:
                      heard=picked_heard(addressed), recent=recent_section(addressed),
                      background=background_section(addressed), background_summary=addressed.background_summary,
                      command=addressed.command, speaker=speaker, pickup_view=view, wake_words=snap.wake_words,
-                     utterance_id=addressed.utterance_id)
+                     utterance_id=addressed.utterance_id,
+                     hypotheses_alternatives=addressed.hypotheses.alternatives)
         self.log.begin(turn.turn_id, turn.epoch, turn.text, speaker_label(snap.speaker), turn.heard)
         log_pickup(self._log, addressed, turn)
         log_stt_fixes(self._log, addressed, turn)
