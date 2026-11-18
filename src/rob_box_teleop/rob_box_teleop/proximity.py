@@ -106,8 +106,9 @@ def yaw_from_quaternion(qx: float, qy: float, qz: float, qw: float) -> float:
     return math.atan2(2.0 * (qw * qz + qx * qy), 1.0 - 2.0 * (qy * qy + qz * qz))
 
 
-def scan_points(ranges: Iterable[float], angle_min: float, angle_increment: float, range_min: float,
-                range_max: float, mount: Mount) -> np.ndarray:
+def scan_points(
+    ranges: Iterable[float], angle_min: float, angle_increment: float, range_min: float, range_max: float, mount: Mount
+) -> np.ndarray:
     """Точки ``LaserScan`` в ``base_footprint`` массивом ``N×2``; бесконечные, ближе ``range_min`` и дальше
     ``range_max`` — мимо. Векторно (numpy): нода считает скан 10 раз в секунду на Main Pi (CPU, HIL 05.11)."""
     r = np.asarray(ranges, dtype=float).reshape(-1)
@@ -179,8 +180,9 @@ class Thresholds:
             raise ValueError(f"нужно 0 < stop_m < warn_m, получено stop_m={self.stop_m}, warn_m={self.warn_m}")
         for name in ("side_stop_m", "spin_stop_m"):
             if not 0.0 < getattr(self, name) <= self.stop_m:
-                raise ValueError(f"нужно 0 < {name} ≤ stop_m, получено {name}={getattr(self, name)}, "
-                                 f"stop_m={self.stop_m}")
+                raise ValueError(
+                    f"нужно 0 < {name} ≤ stop_m, получено {name}={getattr(self, name)}, " f"stop_m={self.stop_m}"
+                )
         if self.corridor_margin_m < 0.0:
             raise ValueError(f"corridor_margin_m ≥ 0, получено {self.corridor_margin_m}")
         if self.min_points < 1:
@@ -263,12 +265,18 @@ def nearest_threat(body: Body, points, vx: float, wz: float, th: Thresholds) -> 
     slack = gap - stop_limits(body, p, vx, th)
     k = th.min_points - 1
     i_near, i_tight = _kth(gap, k), _kth(slack, k)
-    return Threat(float(gap[i_near]), (float(p[i_near, 0]), float(p[i_near, 1])),
-                  float(slack[i_tight]), (float(p[i_tight, 0]), float(p[i_tight, 1])), float(gap[i_tight]))
+    return Threat(
+        float(gap[i_near]),
+        (float(p[i_near, 0]), float(p[i_near, 1])),
+        float(slack[i_tight]),
+        (float(p[i_tight, 0]), float(p[i_tight, 1])),
+        float(gap[i_tight]),
+    )
 
 
-def assess(body: Body, points, vel: Tuple[float, float], cmd: Optional[Tuple[float, float]], holding: bool,
-           th: Thresholds) -> Threat:
+def assess(
+    body: Body, points, vel: Tuple[float, float], cmd: Optional[Tuple[float, float]], holding: bool, th: Thresholds
+) -> Threat:
     """Угроза на такт: по скорости из одометрии, а пока держится стоп — ещё и по команде, что идёт в twist_mux.
 
     Стоящий в стопе робот по одометрии никуда не едет, и без команды стоп отпускался через ``stop_hold_s``:
@@ -352,8 +360,11 @@ def mux_sources(doc: Mapping, skip_topic: str) -> List[MuxSource]:
     """Входы twist_mux из его ``twist_mux.yaml`` (единственный источник приоритетов), кроме ``skip_topic`` —
     аварийного входа, куда пишет сама нода (петли нет)."""
     topics = doc["twist_mux"]["ros__parameters"]["topics"]
-    return [MuxSource(str(t["topic"]), float(t["timeout"]), int(t["priority"]))
-            for t in topics.values() if str(t["topic"]) != skip_topic]
+    return [
+        MuxSource(str(t["topic"]), float(t["timeout"]), int(t["priority"]))
+        for t in topics.values()
+        if str(t["topic"]) != skip_topic
+    ]
 
 
 @dataclass
@@ -478,7 +489,8 @@ class AlarmScheduler:
 #: ``docker/common/scripts/use_sim_time.sh``. Один источник признака HIL для защиты.
 SIM_TIME_ENV = "USE_SIM_TIME"
 
-#: ``HIL_GUARD_SOUND=off`` (hil.conf -> compose.hil.yaml) глушит звук и голос защиты в HIL; по умолчанию они звучат.
+#: ``HIL_GUARD_SOUND`` (hil.conf -> compose.hil.yaml): off (умолчание) глушит звук и голос защиты в HIL;
+#: on — звучат на настоящем роботе. Боевой режим (без USE_SIM_TIME) не глушится.
 GUARD_SOUND_ENV = "HIL_GUARD_SOUND"
 
 #: Эффекты, которые при выключенном звуке HIL не уходят на настоящего робота: звук и голос слышны в мастерской (#4470).
@@ -488,7 +500,7 @@ HIL_MUTED_KINDS = frozenset({EFFECT_SOUND, EFFECT_SPEECH})
 
 def hil_mute_sound(env: Mapping[str, str]) -> bool:
     """Глушить звук и голос: только в HIL и только при ``HIL_GUARD_SOUND=off``. Боевой режим не глушится никогда."""
-    return hil_active(env) and env.get(GUARD_SOUND_ENV, "on").strip().lower() == "off"
+    return hil_active(env) and env.get(GUARD_SOUND_ENV, "off").strip().lower() == "off"
 
 
 def hil_active(env: Mapping[str, str]) -> bool:
@@ -511,12 +523,52 @@ def describe(tr: Transition) -> str:
 
 
 __all__ = [
-    "ALARMS", "ALARM_LIGHTS", "Alarm", "AlarmScheduler", "Body", "CommandMux", "EFFECT_LIGHTS", "EFFECT_SOUND",
-    "EFFECT_SPEECH", "Effect", "GUARD_SOUND_ENV", "HIL_MUTED_KINDS", "LIGHTS_EVERY_S", "LIGHTS_TTL_MS", "MuxSource",
-    "PHRASE_COOLDOWN_S", "Mount", "SIM_TIME_ENV",
-    "NAV2_FOOTPRINT_PATH", "NO_THREAT", "STOP_BEEP", "STOP_BEEP_EVERY_S", "Threat", "Thresholds", "Transition",
-    "WARN_BEEP", "WARN_BEEP_EVERY_S", "ZONES", "ZONE_CLEAR", "ZONE_STOP", "ZONE_WARN", "ZoneTracker", "assess",
-    "body_from_nav2_params", "classify", "closing_speed", "describe", "hil_active", "hil_mute_sound",
-    "is_moving", "mux_sources", "nearest_threat",
-    "parse_footprint", "scan_points", "severity", "split_hil_effects", "stop_limits", "yaw_from_quaternion",
+    "ALARMS",
+    "ALARM_LIGHTS",
+    "Alarm",
+    "AlarmScheduler",
+    "Body",
+    "CommandMux",
+    "EFFECT_LIGHTS",
+    "EFFECT_SOUND",
+    "EFFECT_SPEECH",
+    "Effect",
+    "GUARD_SOUND_ENV",
+    "HIL_MUTED_KINDS",
+    "LIGHTS_EVERY_S",
+    "LIGHTS_TTL_MS",
+    "MuxSource",
+    "PHRASE_COOLDOWN_S",
+    "Mount",
+    "SIM_TIME_ENV",
+    "NAV2_FOOTPRINT_PATH",
+    "NO_THREAT",
+    "STOP_BEEP",
+    "STOP_BEEP_EVERY_S",
+    "Threat",
+    "Thresholds",
+    "Transition",
+    "WARN_BEEP",
+    "WARN_BEEP_EVERY_S",
+    "ZONES",
+    "ZONE_CLEAR",
+    "ZONE_STOP",
+    "ZONE_WARN",
+    "ZoneTracker",
+    "assess",
+    "body_from_nav2_params",
+    "classify",
+    "closing_speed",
+    "describe",
+    "hil_active",
+    "hil_mute_sound",
+    "is_moving",
+    "mux_sources",
+    "nearest_threat",
+    "parse_footprint",
+    "scan_points",
+    "severity",
+    "split_hil_effects",
+    "stop_limits",
+    "yaw_from_quaternion",
 ]

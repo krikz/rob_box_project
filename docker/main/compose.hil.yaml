@@ -17,7 +17,7 @@
 # Обязательные переменные (без них compose падает, а не берёт боевой путь):
 #   HIL_MAPS_DIR       абсолютный каталог HIL-карты на Main Pi (hil.sh: /home/ros2/rob_box_hil/maps)
 # Необязательные:
-#   HIL_GUARD_SOUND    on | off — звук и голос proximity-guard в HIL (on)
+#   HIL_GUARD_SOUND    on | off — звук и голос proximity-guard в HIL (off)
 #   HIL_RTABMAP_MODE   mapping | localization   (mapping)
 
 services:
@@ -29,12 +29,12 @@ services:
     environment:
       - USE_SIM_TIME=true
 
-  # Защита по лидару на сканах Gazebo. Писк и голос звучат на настоящем роботе; HIL_GUARD_SOUND=off
-  # (hil.conf) переводит их в журнал (#4470). Мигалка и аварийный стоп — как в бою.
+  # Защита по лидару на сканах Gazebo. По умолчанию писк и голос в журнал (#4470, HIL_GUARD_SOUND=off);
+  # HIL_GUARD_SOUND=on — звучат на настоящем роботе. Мигалка и аварийный стоп — как в бою.
   proximity-guard:
     environment:
       - USE_SIM_TIME=true
-      - HIL_GUARD_SOUND=${HIL_GUARD_SOUND:-on}
+      - HIL_GUARD_SOUND=${HIL_GUARD_SOUND:-off}
 
   # Сторож «сирот» FollowPath (#4458): время sim, чтобы orphan_timeout_s шёл по /clock Gazebo.
   followpath-watchdog:

@@ -6,8 +6,8 @@
 #
 # Сценарии (all — по порядку):
 #   orphan          #4458  сирота нарочно: своя цель FollowPath после отменённой NavigateToPose — гасит сторож
-#   zone            #4365 + #4470(on)  телеоп в препятствие: стоп, писк, «Осторожно!», маячок; звук уходит на робота
-#   guard_off       #4470(off)  proximity-guard пересоздаётся с HIL_GUARD_SOUND=off, тот же наезд, затем назад on
+#   zone            #4365 + #4470(on)  явно HIL_GUARD_SOUND=on, телеоп в препятствие: стоп, писк, «Осторожно!», маячок
+#   guard_off       #4470(off)  умолчание/явный off: тот же наезд без писка, затем назад off (умолчание HIL)
 #   nav_aborted     #3789 + #4435  «поезжай на …» в недостижимую точку → фраза по ABORTED; после провала mux = 0
 #   stop_idle       #3789  «отмени навигацию» без цели → «Я и так стою.»
 #   stop_active     #3789 + #4435  то же во время поездки из скрипта → «Останавливаюсь.»; после отмены mux = 0
@@ -54,7 +54,7 @@ REMOTE_PROBE=/tmp/hil_checks/hil_probe.py
 SSH_OPTS=(-o BatchMode=yes -o ConnectTimeout=10 -o ServerAliveInterval=5 -o ServerAliveCountMax=3)
 ALL=(orphan zone guard_off nav_aborted stop_idle stop_active orphan_natural)
 NAV_TOOLS_RX='navigate_to_coordinates|navigate_to_waypoint|move_direction'
-GUARD_OFF_ACTIVE=0
+GUARD_SOUND_CHANGED=0
 
 log() { printf '[checks %s] %s\n' "$(date -u +%H:%M:%SZ)" "$*"; }
 die() { printf '❌ %s\n' "$*" >&2; exit 3; }
@@ -181,32 +181,42 @@ guard_recreate() {  # guard_recreate on|off: proximity-guard в HIL с HIL_GUARD
     wait_log "$HIL_MAIN_HOST" proximity-guard "$since" 'зона под контролем' 90
 }
 restore_guard() {
-    if [ "$GUARD_OFF_ACTIVE" = 1 ]; then
-        log "возвращаю proximity-guard в HIL_GUARD_SOUND=on"
-        guard_recreate on >>"$OUT/guard_off/recreate_on.txt" 2>&1 || log "❌ proximity-guard не вернулся в on — hil.sh status"
-        GUARD_OFF_ACTIVE=0
+    # Умолчание HIL — off (#4470). После явного on (сценарий zone) возвращаем off.
+    if [ "${GUARD_SOUND_CHANGED:-0}" = 1 ]; then
+        log "возвращаю proximity-guard в HIL_GUARD_SOUND=off (умолчание HIL)"
+        mkdir -p "$OUT/zone"
+        guard_recreate off >>"$OUT/zone/recreate_off.txt" 2>&1 || log "❌ proximity-guard не вернулся в off — hil.sh status"
+        GUARD_SOUND_CHANGED=0
     fi
 }
 
 sc_zone() {
-    zone_run "$OUT/zone"
-    verdict zone "$OUT/zone"
-    verdict guard_sound "$OUT/zone" --mode on
+    # #4365 и #4470(on) требуют писк — явно on, умолчание HIL теперь off.
+    local d="$OUT/zone"
+    mkdir -p "$d"
+    GUARD_SOUND_CHANGED=1
+    if ! guard_recreate on >"$d/recreate_on.txt" 2>&1; then
+        skip "#4470" guard_sound_on "proximity-guard с HIL_GUARD_SOUND=on не поднялся (recreate_on.txt)"
+        restore_guard
+        return 0
+    fi
+    zone_run "$d"
+    verdict zone "$d"
+    verdict guard_sound "$d" --mode on
+    restore_guard
 }
 sc_guard_off() {
     local d="$OUT/guard_off"
     mkdir -p "$d"
     probe "$d/backoff_before.log" backoff --secs 5
-    GUARD_OFF_ACTIVE=1
+    # Умолчание уже off; recreate фиксирует off на случай, если до этого zone оставил on.
     if ! guard_recreate off >"$d/recreate_off.txt" 2>&1; then
         skip "#4470" guard_sound_off "proximity-guard с HIL_GUARD_SOUND=off не поднялся (recreate_off.txt)"
-        restore_guard
         return 0
     fi
     zone_run "$d"
     verdict guard_sound "$d" --mode off
     probe "$d/backoff_after.log" backoff --secs 5
-    restore_guard
 }
 
 # ── фразы тулов движения ────────────────────────────────────────────────────────────────
