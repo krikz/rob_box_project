@@ -169,7 +169,8 @@ def test_unknown_role_rejected():
 
 def test_execute_role_records_compose_by_digest_and_marks_switched(tmp_path):
     release = _release_fixture()
-    docker = FakeDocker()
+    # topics = ROLE_EXPECTED_TOPICS["vision"]; фейк «видит» список, не ros2.
+    docker = FakeDocker(topics=["/camera/camera/color/image_raw/compressed"])
     project = tmp_path / "docker" / "vision"
     project.mkdir(parents=True)
     state_dir = tmp_path / "var" / "chuangong"
@@ -199,20 +200,33 @@ def test_execute_role_records_compose_by_digest_and_marks_switched(tmp_path):
         "switch_current",
         "host_migrations",
         "compose_up",
+        CHECK_CONTAINER_STATUS,
+        CHECK_CONTAINER_LOGS,
+        CHECK_ROS2_TOPICS,
     ]
     assert result["commands"][2]["migrations"] == ["scripts/setup/ensure_vision.sh"]
     # digest, не тег канала
     up = next(c for c in result["commands"] if c["action"] == "compose_up")
     for ref in up["images"].values():
         assert "@sha256:" in ref
+    # ROLE_CHECKS реально вызваны на FakeDocker после compose_up
+    assert ("check_container_status", str(project)) in docker.commands
+    assert ("check_container_logs", str(project)) in docker.commands
+    assert (
+        "check_ros2_topics",
+        ["/camera/camera/color/image_raw/compressed"],
+    ) in docker.commands
 
 
 def test_compose_up_applies_digest_images_env_not_tags(tmp_path):
     """FakeDocker.compose_up запоминает service→digest; пустой images не становится тегом."""
     release = _release_fixture()
-    docker = FakeDocker()
+    # topics — ROLE_CHECKS после up; иначе check fail, не role_switched
+    docker = FakeDocker(topics=["/camera/camera/color/image_raw/compressed"])
     project = tmp_path / "docker" / "vision"
     project.mkdir(parents=True)
+    state_dir = tmp_path / "var" / "chuangong"
+    state_dir.mkdir(parents=True)
     # фиктивный digest (формат is_pinned_ref / _PINNED_REF), не боевой sha
     zero_digest = "sha256:" + ("0" * 64)
     pinned = {
@@ -227,6 +241,7 @@ def test_compose_up_applies_digest_images_env_not_tags(tmp_path):
         "vision",
         docker=docker,
         project_dir=project,
+        state_dir=state_dir,
         previous="2026.11.08-1",
         health_after=HealthResult("healthy", "ok"),
     )
@@ -256,7 +271,8 @@ def test_compose_up_applies_digest_images_env_not_tags(tmp_path):
 def test_execute_role_unhealthy_after_up_runs_rollback_not_success(tmp_path):
     release = _release_fixture("2026.11.10-1")
     previous = "2026.11.09-1"
-    docker = FakeDocker()
+    # checks forward pass (topics ok), health_after unhealthy → rollback + checks again
+    docker = FakeDocker(topics=["/camera/camera/color/image_raw/compressed"])
     project = tmp_path / "docker" / "vision"
     project.mkdir(parents=True)
     state_dir = tmp_path / "var" / "chuangong"
@@ -292,6 +308,120 @@ def test_execute_role_unhealthy_after_up_runs_rollback_not_success(tmp_path):
     assert actions.count("compose_down") == 2
     assert actions.count("compose_up") == 2
     assert "switch_current" in actions
+    # ROLE_CHECKS на forward и на rollback
+    assert actions.count(CHECK_CONTAINER_STATUS) == 2
+    assert actions.count(CHECK_CONTAINER_LOGS) == 2
+    assert actions.count(CHECK_ROS2_TOPICS) == 2
+
+
+def test_execute_role_role_checks_pass_all_called(tmp_path):
+    """PASS: после compose_up все ROLE_CHECKS вызваны на FakeDocker → role_switched."""
+    release = _release_fixture()
+    docker = FakeDocker(topics=["/camera/camera/color/image_raw/compressed"])
+    project = tmp_path / "docker" / "vision"
+    project.mkdir(parents=True)
+    state_dir = tmp_path / "var" / "chuangong"
+    state_dir.mkdir(parents=True)
+
+    result = execute_role(
+        release,
+        "vision",
+        docker=docker,
+        project_dir=project,
+        state_dir=state_dir,
+        previous="2026.11.08-1",
+        health_after=HealthResult("healthy", "ok"),
+    )
+
+    assert result["state"] == "role_switched"
+    assert result["state"] != "blocked"
+    assert result.get("reason") != "role_check_failed"
+    check_actions = [c["action"] for c in result["commands"] if c["action"] in ROLE_CHECKS]
+    assert check_actions == list(ROLE_CHECKS)
+    assert all(c.get("ok") is True for c in result["commands"] if c["action"] in ROLE_CHECKS)
+    # запись на docker-фейке (не только в plan.checks)
+    assert ("check_container_status", str(project)) in docker.commands
+    assert ("check_container_logs", str(project)) in docker.commands
+    assert (
+        "check_ros2_topics",
+        ["/camera/camera/color/image_raw/compressed"],
+    ) in docker.commands
+    # compose_up images по-прежнему digest
+    up = next(c for c in result["commands"] if c["action"] == "compose_up")
+    for ref in up["images"].values():
+        assert "@sha256:" in ref
+
+
+def test_execute_role_role_check_fail_is_blocked_not_success(tmp_path):
+    """FAIL path: check_container_status fail → blocked, не role_switched."""
+    release = _release_fixture()
+    docker = FakeDocker(
+        topics=["/camera/camera/color/image_raw/compressed"],
+        check_errors={CHECK_CONTAINER_STATUS: "vision-svc0 restarting"},
+    )
+    project = tmp_path / "docker" / "vision"
+    project.mkdir(parents=True)
+    state_dir = tmp_path / "var" / "chuangong"
+    state_dir.mkdir(parents=True)
+
+    result = execute_role(
+        release,
+        "vision",
+        docker=docker,
+        project_dir=project,
+        state_dir=state_dir,
+        previous="2026.11.08-1",
+        health_after=HealthResult("healthy", "would-be-ok"),
+    )
+
+    assert result["state"] == "blocked"
+    assert result["state"] != "role_switched"
+    assert result["reason"] == "role_check_failed"
+    assert CHECK_CONTAINER_STATUS in result["detail"]
+    assert "vision-svc0 restarting" in result["detail"]
+    assert result["execute"] is True
+    # status вызван и упал; logs/topics после fail не идут
+    actions = [c["action"] for c in result["commands"]]
+    assert CHECK_CONTAINER_STATUS in actions
+    assert CHECK_CONTAINER_LOGS not in actions
+    assert CHECK_ROS2_TOPICS not in actions
+    status_cmd = next(c for c in result["commands"] if c["action"] == CHECK_CONTAINER_STATUS)
+    assert status_cmd["ok"] is False
+    assert ("check_container_status", str(project)) in docker.commands
+    # health_after не применялся: fail checks раньше; health из plan (not_verified)
+    assert result["health"]["status"] != "healthy"
+
+
+def test_execute_role_topics_check_reads_fake_list_not_ros2(tmp_path):
+    """topics-check: фейк читает заранее заданный список; mismatch → FAIL (не живой ros2)."""
+    release = _release_fixture()
+    # expected vision topic есть в ROLE_EXPECTED_TOPICS; фейк «видит» другой набор
+    docker = FakeDocker(topics=["/other/topic"])
+    project = tmp_path / "docker" / "vision"
+    project.mkdir(parents=True)
+    state_dir = tmp_path / "var" / "chuangong"
+    state_dir.mkdir(parents=True)
+
+    result = execute_role(
+        release,
+        "vision",
+        docker=docker,
+        project_dir=project,
+        state_dir=state_dir,
+        health_after=HealthResult("healthy", "ok"),
+    )
+
+    assert result["state"] == "blocked"
+    assert result["reason"] == "role_check_failed"
+    assert CHECK_ROS2_TOPICS in result["detail"]
+    assert "/camera/camera/color/image_raw/compressed" in result["detail"]
+    topics_cmd = next(c for c in result["commands"] if c["action"] == CHECK_ROS2_TOPICS)
+    assert topics_cmd["ok"] is False
+    assert topics_cmd["expected_topics"] == ["/camera/camera/color/image_raw/compressed"]
+    assert (
+        "check_ros2_topics",
+        ["/camera/camera/color/image_raw/compressed"],
+    ) in docker.commands
 
 
 def test_activate_dry_run_uses_plan_role_steps(tmp_path, world):
@@ -359,7 +489,8 @@ def test_execute_role_switch_current_advances_pointers(tmp_path):
     state_dir = tmp_path / "var" / "chuangong"
     state_dir.mkdir(parents=True)
     (state_dir / "current").write_text(previous + "\n", encoding="utf-8")
-    docker = FakeDocker()
+    # topics — ROLE_CHECKS после up; advance сам по switch_current, checks не мешают
+    docker = FakeDocker(topics=["/camera/camera/color/image_raw/compressed"])
     project = tmp_path / "docker" / "vision"
     project.mkdir(parents=True)
 
