@@ -8,8 +8,6 @@ import subprocess
 import sys
 from pathlib import Path
 
-import pytest
-
 ROOT = Path(__file__).resolve().parents[3]
 CHECKS = ROOT / "scripts" / "hil" / "checks"
 _spec = importlib.util.spec_from_file_location("hil_checks_world_check", CHECKS / "world_check.py")
@@ -164,7 +162,90 @@ def test_depot_fail_depot_vid_only_in_xml_comment():
 
 
 def test_depot_pass_exact_token_uri_outside_comment_and_mount():
-    """Зелёный: точный world:=/sim_video/world.sdf + mount + <uri> с Depot_vid вне комментария."""
+    """Зелёный: точный world.sdf + mount + uri Depot_vid вне комментария."""
     status, detail = wc.check_world("depot", DEPOT_ARGS, DEPOT_MOUNTS, DEPOT_SDF)
     assert status == wc.PASS, detail
     assert "Depot_vid" in detail
+
+
+# Копия compose.hil.yaml после patch_compose.py — штатный Depot.
+DEPOT_COMPOSE = """
+    volumes:
+      - ./hil_run.sh:/hil_run.sh:ro
+      - /home/ros2/rob_box_hilvideo/mkdepot.py:/mkdepot.py:ro
+      - /home/ros2/rob_box_hilvideo/fuel:/fuel:ro
+      - /home/ros2/rob_box_hilvideo/out:/sim_video
+    command:
+      - /ros_scripts/ros_with_namespace.sh
+      - bash
+      - -c
+      - python3 /mkdepot.py && exec /hil_run.sh world:=/sim_video/world.sdf x:=0.0 y:=0.0 yaw:=0.0
+"""
+# Обычный Compose: мир из SIM_WORLD, тома /sim_video нет. Depot_vid в комментарии.
+POLYGON_COMPOSE = """
+    # Depot_vid в комментарии — не маркер Depot-копии.
+    volumes:
+      - ./hil_run.sh:/hil_run.sh:ro
+    command:
+      - /ros_scripts/ros_with_namespace.sh
+      - /hil_run.sh
+      - world:=/sim_worlds/${SIM_WORLD:-polygon}.sdf
+"""
+WORLD_SDF_OLD_COMPOSE = DEPOT_COMPOSE.replace(
+    "world:=/sim_video/world.sdf", "world:=/sim_video/world.sdf.old", 1
+)
+
+
+def test_depot_scenario_sets_expect_world_without_env():
+    """Штатный Depot без env сам получает HIL_EXPECT_WORLD=depot."""
+    assert wc.expect_world_for_scenario("depot") == "depot"
+    assert wc.scenario_expects_depot("depot") is True
+    # HIL_EXPECT_WORLD не передан: значение печатает код.
+    got = subprocess.run(
+        [sys.executable, "-X", "utf8", str(CHECKS / "world_check.py"), "--scenario", "depot"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert got.returncode == 0, got.stderr
+    assert got.stdout.strip() == "depot"
+
+
+def test_polygon_scenario_does_not_set_expect_world():
+    """Обычный Polygon без env гейт не включает: код не печатает depot."""
+    assert wc.expect_world_for_scenario("polygon") == ""
+    assert wc.expect_world_for_scenario("building") == ""
+    assert wc.expect_world_for_scenario("") == ""
+    assert wc.gate_required("", POLYGON_ARGS) is False
+    got = subprocess.run(
+        [sys.executable, "-X", "utf8", str(CHECKS / "world_check.py"), "--scenario", "polygon"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert got.returncode == 0, got.stderr
+    assert got.stdout.strip() == ""
+
+
+def test_gate_required_only_for_depot_expect_or_exact_world_path():
+    """Гейт: depot-env или точный /sim_video/world.sdf. Polygon и world.sdf.old — skip."""
+    assert wc.gate_required("depot", POLYGON_ARGS) is True
+    assert wc.gate_required("depot", "") is True
+    assert wc.gate_required("", DEPOT_ARGS) is True
+    assert wc.gate_required("", POLYGON_ARGS) is False
+    assert wc.gate_required("", WORLD_SDF_OLD_ARGS) is False
+    assert wc.gate_required("polygon", POLYGON_ARGS) is False
+
+
+def test_compose_world_sdf_old_is_not_depot():
+    """world.sdf.old в копии Compose — не штатный Depot."""
+    assert wc.compose_is_depot(DEPOT_COMPOSE) is True
+    assert wc.compose_is_depot(WORLD_SDF_OLD_COMPOSE) is False
+    assert wc.compose_is_depot(POLYGON_COMPOSE) is False
+
+
+def test_compose_depot_vid_only_in_comment_is_not_depot():
+    """Depot_vid только в комментарии Compose — не Depot."""
+    assert "Depot_vid" in POLYGON_COMPOSE
+    assert wc.compose_is_depot(POLYGON_COMPOSE) is False
+    assert wc.gate_required("", "world:=/sim_worlds/polygon.sdf") is False
