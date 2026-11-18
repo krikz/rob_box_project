@@ -599,6 +599,27 @@ class TestCatalogDrivenChecks:
         # sanity: должно быть много v1-команд (голос/твист/стоп/списки)
         assert len(v1_only_names) >= 10
 
+    def test_admin_logs_service_is_dialog_node_v2(self):
+        """#4354: admin_logs.service — имя живой ноды v2, не удалённой v1.
+
+        admin_logs ещё Phase 2 (server_dispatched=False), но литерал в каталоге
+        и в protocol_generated.ts был ``dialogue_node``. Живых писателей/
+        читателей поля service нет; нода диалога — ``dialog_node``.
+        """
+        expected = ["dialog_node", "rob_box_quest", "all"]
+        for name, getter in (
+            ("admin_logs", get_command),
+            ("admin_logs_chunk", get_event),
+        ):
+            spec = getter(name)
+            assert spec is not None, f"{name} отсутствует в каталоге"
+            service = spec.payload["service"]
+            assert service == {"type": "literal", "values": expected}, (
+                f"{name}.service={service!r}, ожидалось dialog_node (v2), "
+                f"не dialogue_node (v1)"
+            )
+            assert "dialogue_node" not in service["values"]
+
 
 # --- 8. Мок-робот шлема зеркалит каталог стримов (#3711, 15-0a') -------------
 #

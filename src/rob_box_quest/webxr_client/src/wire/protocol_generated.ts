@@ -156,7 +156,7 @@
   export interface AdminLogsCmd {
     cmd: "admin_logs";
     ts_ms: number;
-    service: "dialogue_node" | "rob_box_quest" | "all";
+    service: "dialog_node" | "rob_box_quest" | "all";
     tail?: number;
     follow?: boolean;
   }
@@ -313,7 +313,7 @@
   }
   export interface AdminLogsChunkEvent {
     type: "admin_logs_chunk";
-    service: "dialogue_node" | "rob_box_quest" | "all";
+    service: "dialog_node" | "rob_box_quest" | "all";
     lines: Array<string>;
     ts_ms: number;
   }
