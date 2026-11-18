@@ -91,9 +91,17 @@ def test_roles_take_images_from_their_compose(built):
     for role in rf.ROLES:
         for ref in release["roles"][role]["images"].values():
             assert re.match(rf"^{re.escape(PREFIX)}@sha256:[0-9a-f]{{64}}$", ref)
-        assert "eclipse/zenoh:1.6.2" in release["roles"][role]["external_images"]
+        # сторонние — digest, не плавающий тег (иначе adopt → external_images_unpinned)
+        assert release["roles"][role]["external_images"], role
+        for ext in release["roles"][role]["external_images"]:
+            assert rf.is_pinned_ref(ext), ext
+        assert any(
+            ext.startswith("eclipse/zenoh:1.6.2@sha256:")
+            for ext in release["roles"][role]["external_images"]
+        )
     # *_TAG-сервисы — по SHA-тегу, остальные — по тегу канала (как compose берёт сегодня)
     assert "oak-d-humble-dev-b704404" in asked
+    assert "eclipse/zenoh:1.6.2" in asked  # resolve ключ — полный ref compose
     assert (
         "supercollider-dev" in asked
         and "teleop-humble-dev-b704404" in asked
@@ -278,21 +286,30 @@ def test_missing_digest_refuses_build():
         )
 
 
+def _tag_digests(release, role):
+    manifest = release_py.GBM.load_manifest(REPO_ROOT / release_py.BUILD_MANIFEST)
+    return release_py.tag_digest_map(release, role, manifest)
+
+
 def test_bundle_image_versions_match_release_tags(built):
-    """В бандле .image-versions.<docker_tag> = image_tag релиза (@digest), не устаревший git."""
+    """В бандле .image-versions.<docker_tag> = image_tag@digest сервиса, не устаревший git."""
     release, bundles, _ = built
     for role in rf.ROLES:
-        release_py.check_bundle_image_versions(release, role, bundles[role])
+        digests = _tag_digests(release, role)
+        release_py.check_bundle_image_versions(release, role, bundles[role], digests)
         path = release_py.image_versions_bundle_path(role, release["docker_tag"])
         raw = release_py.bundle_member(bundles[role], path)
         assert raw is not None, path
         text = raw.decode()
         assert f"сгенерировано из релиза {release['release']}" in text
+        got = {}
         for line in text.splitlines():
             if not line.strip() or line.startswith("#") or "=" not in line:
                 continue
-            _, val = line.split("=", 1)
-            assert val.startswith(release["image_tag"] + "@sha256:"), val
+            key, val = line.split("=", 1)
+            assert val == f"{release['image_tag']}@{digests[key]}", (key, val)
+            got[key] = val
+        assert set(got) == set(digests)
 
 
 def test_bundle_image_versions_mismatch_refused(built):
@@ -305,10 +322,88 @@ def test_bundle_image_versions_mismatch_refused(built):
         role,
         overrides={path: b"# lie\nOAK_D_TAG=dev-d368fcb\nLED_MATRIX_TAG=dev-d368fcb\n"},
     )
-    with pytest.raises(rf.ReleaseError, match="не совпадает"):
-        release_py.check_bundle_image_versions(release, role, lying)
-    # verify_release_dir тоже ловит: подменим бандл после подписи — check_bundle (sha) сработает первым;
-    # прямая проверка check_bundle_image_versions покрывает смысловую дыру.
+    with pytest.raises(rf.ReleaseError, match="нет @sha256|плавающий"):
+        release_py.check_bundle_image_versions(
+            release, role, lying, _tag_digests(release, role)
+        )
+
+
+def test_bundle_image_versions_empty_file_refused(built):
+    """Файл без переменных *_TAG — отказ (не «файл есть → ок»)."""
+    release, _, _ = built
+    role = "main"
+    path = release_py.image_versions_bundle_path(role, release["docker_tag"])
+    empty = release_py.role_bundle(
+        REPO_ROOT, role, overrides={path: b"# only comment\n\n"}
+    )
+    with pytest.raises(rf.ReleaseError, match="нет переменных"):
+        release_py.check_bundle_image_versions(
+            release, role, empty, _tag_digests(release, role)
+        )
+
+
+def test_bundle_image_versions_tag_without_digest_refused(built):
+    """Тег без @sha256 — отказ."""
+    release, _, _ = built
+    role = "main"
+    path = release_py.image_versions_bundle_path(role, release["docker_tag"])
+    floating = release_py.role_bundle(
+        REPO_ROOT,
+        role,
+        overrides={
+            path: (
+                f"NAV2_TAG={release['image_tag']}\n"
+                f"TELEOP_TAG={release['image_tag']}\n"
+            ).encode()
+        },
+    )
+    with pytest.raises(rf.ReleaseError, match="нет @sha256|плавающий"):
+        release_py.check_bundle_image_versions(
+            release, role, floating, _tag_digests(release, role)
+        )
+
+
+def test_bundle_image_versions_wrong_service_digest_refused(built):
+    """NAV2_TAG с digest teleop — отказ: сверка сервис→digest, не «digest есть в релизе»."""
+    release, _, _ = built
+    role = "main"
+    digests = _tag_digests(release, role)
+    assert "NAV2_TAG" in digests and "TELEOP_TAG" in digests
+    assert digests["NAV2_TAG"] != digests["TELEOP_TAG"]
+    path = release_py.image_versions_bundle_path(role, release["docker_tag"])
+    # все TAG верные, кроме NAV2_TAG ← digest teleop
+    lines = [
+        f"{key}={release['image_tag']}@"
+        f"{digests['TELEOP_TAG'] if key == 'NAV2_TAG' else digest}"
+        for key, digest in sorted(digests.items())
+    ]
+    swapped = release_py.role_bundle(
+        REPO_ROOT, role, overrides={path: ("\n".join(lines) + "\n").encode()}
+    )
+    with pytest.raises(rf.ReleaseError, match="другого сервиса"):
+        release_py.check_bundle_image_versions(release, role, swapped, digests)
+
+
+def test_external_image_tag_without_digest_refuses_build():
+    """Плавающий сторонний образ без digest в таблице — build_release отказывает."""
+
+    def resolve(tag: str) -> str:
+        # сервис-теги без «/»; compose external (eclipse/zenoh:1.6.2, …) — KeyError
+        if "/" in tag:
+            raise KeyError(tag)
+        return _fake_digest(tag)
+
+    with pytest.raises(release_py.BuildError, match="нет digest"):
+        release_py.build_release(
+            REPO_ROOT,
+            "2026.11.09-ext",
+            "dev",
+            "b704404",
+            "dev-b704404",
+            "dev",
+            resolve,
+            created="2026-11-09T00:00:00Z",
+        )
 
 
 def test_cli_build_sign_verify(tmp_path):
@@ -318,6 +413,16 @@ def test_cli_build_sign_verify(tmp_path):
         for tag in ("dev-b704404", "dev"):
             t = release_py.image_tag_for(name, spec, tag, tag, "humble")
             digests[t] = _fake_digest(t)
+    # сторонние compose-образы — ключ = полный ref (как pin_external_image зовёт resolve)
+    for role in rf.ROLES:
+        compose = yaml.safe_load(
+            (REPO_ROOT / "docker" / role / "docker-compose.yaml").read_text(
+                encoding="utf-8"
+            )
+        )
+        _, external = release_py.compose_images(compose)
+        for img in external:
+            digests[img] = _fake_digest(img)
     (tmp_path / "d.json").write_text(__import__("json").dumps(digests))
     secret, public = minisign.generate_keypair()
     (tmp_path / "k").write_text(secret)
