@@ -349,7 +349,13 @@ class DockerCli:
         expected = list(expected_topics)
         if not container:
             return "check_ros2_topics: не задан контейнер роли"
-        res = self._run("exec", container, "ros2", "topic", "list", timeout=60.0)
+        # ros2 в контейнере роли появляется в PATH только после setup.bash.
+        # Прямой exec ros2 падает "executable file not found", хотя ros2 есть.
+        res = self._run(
+            "exec", container, "bash", "-lc",
+            "source /opt/ros/humble/setup.bash && ros2 topic list",
+            timeout=60.0,
+        )
         if res.returncode != 0:
             return res.stderr.strip() or res.stdout.strip() or f"ros2 topic list exited {res.returncode}"
         present = {line.strip() for line in res.stdout.splitlines() if line.strip()}
