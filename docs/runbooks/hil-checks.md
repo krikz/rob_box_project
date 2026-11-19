@@ -34,7 +34,12 @@
 export MSYS_NO_PATHCONV=1
 HIL_CHECKS_OWNER=hil-checks scripts/hil/checks/run_checks.sh            # все сценарии по порядку
 HIL_CHECKS_OWNER=hil-checks scripts/hil/checks/run_checks.sh zone orphan   # выборочно
+HIL_CHECKS_OWNER=hil-checks scripts/hil/checks/run_cancel_matrix.sh        # матрица отмен, один замок
 ```
+
+Матрица отмен (`run_cancel_matrix.sh`): `orphan orphan_natural nav_aborted stop_idle stop_active controller_abort client_kill host_cancel`.
+Сам берёт `hil.sh on` (замок `/tmp/hil.lock`) и в конце `hil.sh off`. Занятый `stand.lock` или уже включённый HIL — выход 3, `hil.sh on` не вызывается.
+`NOT_TRIGGERED` — не PASS. Робот на кирпичах. Живьём ещё не гонял.
 
 Сценарии по умолчанию идут так: `orphan zone guard_off nav_aborted stop_idle stop_active orphan_natural controller_abort client_kill host_cancel`.
 `orphan_natural` без `ORPHAN_GOAL` пропускается со строкой `NOT_TRIGGERED`: цель зависит от мира.
