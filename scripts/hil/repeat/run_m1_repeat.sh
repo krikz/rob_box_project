@@ -53,7 +53,8 @@ log() { printf '%s %s\n' "$(date -u +%FT%TZ)" "$*" | tee -a "$SUMMARY"; }
 # Один ros2 param get. Баннер ros_with_namespace.sh без «value is:» — пусто, зовём ещё раз.
 param_get_once() {
     local pname="$1" raw value
-    raw=$(main "docker exec $(printf '%q' "$NAV2_CONTAINER") /ros_scripts/ros_with_namespace.sh bash -c 'source /opt/ros/humble/setup.bash; ros2 param get /controller_server $(printf '%q' "$pname")'" 2>/dev/null || true)
+    # timeout 15: run2 (0.005b) висел 30 мин, ros2 param get не вернулся. Нет числа — missing, не ждём.
+    raw=$(main "docker exec $(printf '%q' "$NAV2_CONTAINER") /ros_scripts/ros_with_namespace.sh bash -c 'source /opt/ros/humble/setup.bash; timeout 15 ros2 param get /controller_server $(printf '%q' "$pname")'" 2>/dev/null || true)
     printf 'PARAM %s\n%s\n' "$pname" "$raw" >>"$ART/params_raw.txt"
     value=$(python3 -X utf8 -c 'import sys; sys.path.insert(0, sys.argv[1]); from m1_topics import parse_param_value; v = parse_param_value(sys.stdin.read()); print("" if v is None else v)' "$HERE" <<<"$raw")
     printf '%s' "$value"

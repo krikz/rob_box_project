@@ -119,6 +119,16 @@ def test_write_start_and_assert_ready(tmp_path):
         topics.assert_ready(tmp_path, "before_goal")
 
 
+def test_param_get_timeout_is_missing_not_a_hang():
+    """Пустой ответ за таймаут — missing. Скрипт не вызывает param get без timeout 15."""
+    assert topics.parse_param_value("") is None
+    assert topics.format_named_param("FollowPath.max_vel_x", "") == "FollowPath.max_vel_x=missing"
+    script = (REPEAT / "run_m1_repeat.sh").read_text(encoding="utf-8")
+    assert script.count("timeout 15 ros2 param get") == 1
+    # Две попытки, не цикл до бесконечности.
+    assert "for attempt in 1 2" in script
+
+
 def test_banner_without_value_is_missing_not_equals_signs():
     """Ночной прогон 19.11: баннер ros_with_namespace.sh без «value is» стал значением."""
     banner = (
@@ -247,6 +257,7 @@ def test_script_uses_world_gate_and_pulls_before_off():
     assert "M1_REPEAT_SHORT_CIRCUIT" in script
     assert "M1_REPEAT_TRANS_STOPPED" in script
     assert "capture_params_after_ready" in script
+    assert "timeout 15 ros2 param get" in script
     assert "start_resource_samplers" in script
     assert "sandbox_resources.log" in script
     assert "main_resources.log" in script
