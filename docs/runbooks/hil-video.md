@@ -223,6 +223,42 @@ production `nav2`, а `hil_off.log` подтверждает неизменны�
 R5 сюда не входит: финальный yaw разбирается отдельно по последним 20 с `/cmd_vel` и `Oscillation` scores, без
 смешивания с global-planning классом M1/M4/R3/R4.
 
+### 3c. Такт принятия M1 контроллером Nav2 (#4682)
+
+Для повтора с отсоединённым входом yaw можно записать оба аргумента фактического вызова
+`goal_checker` при успехе. Патч добавляет журнал в `controller_server` и сохраняет результат
+проверки позы. Дедлайн M1 остаётся 200 с симуляции.
+
+```bash
+# На хосте с тем же образом и архитектурой, что у Nav2 на Main. Заполнить новый внешний каталог.
+M1_GOAL_PROBE_IMAGE="$(docker inspect -f '{{.Image}}' nav2)" \
+M1_GOAL_PROBE_DIR="$HOME/rob_box_hil/m1-goal-probe" bash scripts/hil/diagnostics/build_nav2_goal_check.sh
+
+# На хосте запуска HIL нужны libcontroller_server_core.so, nav2_image_id и probe.sha256.
+# Запускаем только в согласованное HIL-окно.
+export M1_REPEAT_OUT="$HOME/rob_box_hil/m1-$(date -u +%Y%m%dT%H%M%SZ)"
+M1_GOAL_PROBE_DIR="$HOME/rob_box_hil/m1-goal-probe" M1_YAWATGOAL_ISOLATE=1 \
+M1_REPEAT_SHORT_CIRCUIT=false M1_REPEAT_TRANS_STOPPED=0.03 \
+    bash scripts/hil/repeat/run_m1_repeat.sh
+
+# В окружении ROS2 Humble с сообщениями, после off. /run содержит артефакты попытки.
+docker run --rm --network none --entrypoint /bin/bash \
+    -v "$M1_REPEAT_OUT:/run:ro" -v "$PWD/scripts/hil/diagnostics:/diag:ro" rob_box_sim:hil \
+    -c 'source /opt/ros/humble/setup.bash && python3 /diag/compare_goal_check.py /run' \
+    >"$M1_REPEAT_OUT/goal_check_comparison.json"
+```
+
+До цели runner проверяет активный `controller_server`, образ, SHA библиотеки внутри контейнера,
+маркер активации и граф `/cmd_vel_yaw`. Библиотека монтируется только в HIL под своим замком.
+`goal_check_reached.log` содержит входные позы, TF-кадры, их метки и скорости. `params_values.txt`
+хранит живые допуски и `stateful`. Если контроллер нигде не принял цель, runner пишет
+`GOAL_CHECK_TRACE_NO_REACH`, а исход маршрута берётся из `route.log`.
+
+Разбор сопоставляет GT по заголовкам симуляции с двумя моментами, тактом решения и меткой
+позы, которую получил Nav2. Пустой отсчёт означает, что среди записей в пределах ±4 с по
+времени получения нет метки симуляции ближе 100 мс. Ошибка GT считается до исходной цели в
+`route.log`. Команды привода показываются по времени получения в bag.
+
 ## 4. Запись видов
 
 Камеры пишут PNG сами (`<save enabled="true">`) в `out/frames/video_top` и `video_chase`, по sim time.

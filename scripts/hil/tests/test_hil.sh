@@ -233,6 +233,26 @@ run_hil on; rc=$?
 check "on при замке: отказ (rc=$rc), моторы и сим не тронуты" \
     '[ "$rc" -ne 0 ] && ! grep -q "stop" "$WORK/docker.log" && ! grep -q "compose" "$WORK/docker.log"'
 
+# ── 4a. два запуска с одной картой ────────────────────────────────────────
+reset_state
+token_a=0123456789abcdef0123456789abcdef
+token_b=abcdef0123456789abcdef0123456789
+run_hil on HIL_RUN_TOKEN="invalid token"; rc=$?
+check "on: некорректный токен отклонён до ssh" '[ "$rc" -ne 0 ] && [ ! -s "$WORK/ssh.log" ]'
+run_hil on HIL_RUN_TOKEN="$token_a"; rc=$?
+check "on: токен записан в полученный замок перед maps" \
+    '[ "$rc" -eq 0 ] && grep -qF " token=$token_a maps=$WORK/hilmaps" "$WORK/tmp/hil.lock"'
+: > "$WORK/docker.log"
+run_hil on HIL_RUN_TOKEN="$token_b"; rc=$?
+check "on: второй запуск с той же картой не меняет замок и сервисы" \
+    '[ "$rc" -ne 0 ] && grep -qF " token=$token_a maps=$WORK/hilmaps" "$WORK/tmp/hil.lock" && ! grep -Eq "^(stop|compose)" "$WORK/docker.log"'
+: > "$WORK/docker.log"
+run_hil off HIL_RUN_TOKEN="$token_b"; rc=$?
+check "off: чужой токен отклонён при той же карте до Docker" \
+    '[ "$rc" -ne 0 ] && grep -qF " token=$token_a maps=$WORK/hilmaps" "$WORK/tmp/hil.lock" && [ ! -s "$WORK/docker.log" ]'
+run_hil off HIL_RUN_TOKEN="$token_a"; rc=$?
+check "off: владелец освобождает замок" '[ "$rc" -eq 0 ] && [ ! -e "$WORK/tmp/hil.lock" ]'
+
 # ── 5. два контроллера ────────────────────────────────────────────────────
 reset_state
 run_hil on FAKE_CM=2; rc=$?

@@ -426,12 +426,32 @@ preflight() {
     log "ROBOT_ID=$HIL_ROBOT_ID, песочница $HIL_SANDBOX_IP (iface=${HIL_SANDBOX_IFACE:-—}), роутеры робота: $HIL_ROBOT_ROUTERS"
 }
 
+validate_hil_run_token() {
+    if [ -n "${HIL_RUN_TOKEN:-}" ] && ! [[ "$HIL_RUN_TOKEN" =~ ^[0-9a-f]{32}$ ]]; then
+        die "HIL_RUN_TOKEN: ожидались 32 строчных шестнадцатеричных цифры"
+    fi
+}
+
+check_hil_off_owner() {
+    validate_hil_run_token
+    [ -n "${HIL_RUN_TOKEN:-}" ] || return 0
+    local lock
+    lock=$(rsh "$HIL_MAIN_HOST" "cat $(q "$HIL_LOCK") 2>/dev/null") || die "off: замок HIL не прочитан"
+    [[ "$lock" == "HIL on since "*" token=$HIL_RUN_TOKEN maps=$HIL_MAPS_DIR" ]] \
+        || die "off: замок HIL принадлежит другому запуску"
+}
+
 cmd_on() {
+    validate_hil_run_token
     preflight
     e2e_guard abort
     push_helpers
     local who
-    who="HIL on since $(date -u +%FT%TZ) by ${USER:-${USERNAME:-?}}@$(hostname) sandbox=$HIL_SANDBOX_IP maps=$HIL_MAPS_DIR"
+    who="HIL on since $(date -u +%FT%TZ) by ${USER:-${USERNAME:-?}}@$(hostname) sandbox=$HIL_SANDBOX_IP"
+    if [ -n "${HIL_RUN_TOKEN:-}" ]; then
+        who+=" token=$HIL_RUN_TOKEN"
+    fi
+    who+=" maps=$HIL_MAPS_DIR"
     rpi "$HIL_MAIN_HOST" lock-take "$HIL_LOCK" "$who" || die "HIL уже включён или замок остался: scripts/hil/hil.sh status / off"
 
     log "состояние сервисов до on → $HIL_MAIN_HOST:$HIL_PRE_STATE"
@@ -587,6 +607,7 @@ cmd_restart() {
 }
 
 cmd_off() {
+    check_hil_off_owner
     check_net
     check_hil_registry
     local host
@@ -675,6 +696,7 @@ cmd_off() {
     if [ "$bad" != 0 ]; then
         die "не всё вернулось (см. выше: ❌) — замок $HIL_LOCK оставлен"
     fi
+    check_hil_off_owner
     rsh "$HIL_MAIN_HOST" "rm -f -- $(q "$HIL_PRE_STATE")" || true
     rpi "$HIL_MAIN_HOST" lock-release "$HIL_LOCK"
     local tail_note=""
