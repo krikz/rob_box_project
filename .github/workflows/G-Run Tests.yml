@@ -600,6 +600,11 @@ jobs:
           apt-get install -y -qq --no-install-recommends ros-humble-xacro
           source /opt/ros/humble/setup.bash
           command -v xacro
+          # apt launch_testing собран под pytest 6 и падает на pytest 9
+          # (run 44480562216: unknown hook pytest_launch_collect_makemodule).
+          # -p no:launch_testing его не глушит — только удаление, как в unit-tests.
+          pip uninstall -y launch_testing launch_testing_ros 2>/dev/null || true
+          python3 -m pip uninstall -y launch_testing launch_testing_ros 2>/dev/null || true
           export PYTHONPATH="/usr/local/lib/python3.10/dist-packages:$PYTHONPATH"
           timeout 120 python3 -m pytest -v -p no:cacheprovider -p no:launch_testing -o addopts= \
             src/rob_box_description/test/
