@@ -106,22 +106,24 @@ RUN pip3 install --no-cache-dir \
 WORKDIR /ws
 COPY --from=msgs /ws/install /ws/install
 
+# Ядро диалога из публичного пакета (ADR-0167 Ш3, #4932): rob_box_core и
+# rob_box_dialog ставятся pip'ом по тегу, а не colcon'ом из src/. Модули ложатся
+# в site-packages; telegram_node импортирует их оттуда (avatar_command, phrases).
+# Тот же тег, что у voice-assistant. Ставится ДО colcon, чтобы сборка хоста
+# rob_box_telegram не затёрла ядро копией из src/.
+RUN pip3 install --no-cache-dir \
+    "rob-box-dialog-core @ git+https://github.com/krikz/rob_box_dialog_core@v0.7.9"
+
 WORKDIR /ws/src
-# rob_box_core — AV-13/AV-28 (avatar_command): telegram_node импортирует
-# rob_box_core.avatar_command, без сборки пакета в образе падает
-# ModuleNotFoundError на старте контейнера.
-COPY src/rob_box_core /ws/src/rob_box_core
 # ADR-0150 PR-2 (#3687): telegram_node публикует типизированный Utterance
 # (rob_box_dialog_msgs) — пакет пришёл из общего образа msgs выше.
-# #3727: квитанция /say берёт тексты из phrases/ru.yaml (rob_box_dialog, python3-yaml есть в ros-base).
-COPY src/rob_box_dialog /ws/src/rob_box_dialog
 COPY src/rob_box_telegram /ws/src/rob_box_telegram
 
-# Собираем ROS 2 пакеты
+# Собираем только ROS-хост. Ядро уже в site-packages.
 WORKDIR /ws
 RUN . /opt/ros/${ROS_DISTRO}/setup.sh && \
     . /ws/install/setup.sh && \
-    colcon build --packages-select rob_box_core rob_box_dialog rob_box_telegram && \
+    colcon build --packages-select rob_box_telegram && \
     rm -rf /ws/log
 
 WORKDIR /ws
