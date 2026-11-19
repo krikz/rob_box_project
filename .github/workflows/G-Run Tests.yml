@@ -543,23 +543,6 @@ jobs:
             --pytest-args ' -m' 'not linter' \
             || { echo "❌ rob_box_perception FAILED (rc=$?)"; exit 1; }
 
-      # Шаг 1 сима (docs/research/2026-11-04-gazebo-sim-navigation.md §6):
-      # rob_box.xacro получил аргумент sim. Тест сверяет URDF робота (sim:=false)
-      # с эталоном src/rob_box_description/test/golden/rob_box_real.urdf и
-      # проверяет сим-ветку. В образе rob-box-ci нет xacro — ставим здесь;
-      # без xacro тест молча скипнулся бы (skipif), отсюда проверка which.
-      - name: URDF sim-arg test (rob_box_description)
-        run: |
-          set -eo pipefail
-          apt-get update -qq
-          apt-get install -y -qq --no-install-recommends ros-humble-xacro
-          source /opt/ros/humble/setup.bash
-          command -v xacro
-          export PYTHONPATH="/usr/local/lib/python3.10/dist-packages:$PYTHONPATH"
-          echo "=== pytest: rob_box_description (xacro sim arg) ==="
-          timeout 120 python3 -m pytest -v -p no:cacheprovider -p no:launch_testing -o addopts= \
-            src/rob_box_description/test/
-
       - name: Display test results
         if: always()
         run: |
@@ -593,6 +576,33 @@ jobs:
             ${{ github.workspace }}/test_ws/build/*/coverage.xml
             ${{ github.workspace }}/test_ws/build/*/htmlcov/
           retention-days: 30
+
+  # URDF sim-arg (docs/research/2026-11-04-gazebo-sim-navigation.md §6).
+  # Отдельный job: apt-get ros-humble-xacro внутри unit-tests съел остаток
+  # timeout-minutes 15 и убил job после зелёных тестов (run 44476445101).
+  urdf-sim-arg:
+    name: URDF sim-arg (rob_box_description)
+    runs-on: ubuntu-22.04
+    timeout-minutes: 15
+    container:
+      image: ghcr.io/krikz/rob-box-ci:humble
+      options: --user root
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+      - name: Install xacro and run golden URDF test
+        run: |
+          set -eo pipefail
+          apt-get update -qq
+          apt-get install -y -qq --no-install-recommends ros-humble-xacro
+          source /opt/ros/humble/setup.bash
+          command -v xacro
+          export PYTHONPATH="/usr/local/lib/python3.10/dist-packages:$PYTHONPATH"
+          timeout 120 python3 -m pytest -v -p no:cacheprovider -p no:launch_testing -o addopts= \
+            src/rob_box_description/test/
 
   # ============================================================================
   # Integration Tests (optional, only on develop/main)
@@ -864,7 +874,7 @@ jobs:
   test-summary:
     name: Test Summary
     runs-on: ubuntu-latest
-    needs: [unit-tests, mcp-tools-unit-tests, e2e-contract-guards]
+    needs: [unit-tests, mcp-tools-unit-tests, e2e-contract-guards, urdf-sim-arg]
     if: always()
 
     steps:
@@ -877,11 +887,13 @@ jobs:
           echo "| Unit Tests | ${{ needs.unit-tests.result }} |" >> $GITHUB_STEP_SUMMARY
           echo "| Unit Tests (rob_box_mcp_tools) | ${{ needs.mcp-tools-unit-tests.result }} |" >> $GITHUB_STEP_SUMMARY
           echo "| E2E Contract Guards | ${{ needs.e2e-contract-guards.result }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| URDF sim-arg | ${{ needs.urdf-sim-arg.result }} |" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
 
           if [ "${{ needs.unit-tests.result }}" != "success" ] \
              || [ "${{ needs.mcp-tools-unit-tests.result }}" != "success" ] \
-             || [ "${{ needs.e2e-contract-guards.result }}" != "success" ]; then
+             || [ "${{ needs.e2e-contract-guards.result }}" != "success" ] \
+             || [ "${{ needs.urdf-sim-arg.result }}" != "success" ]; then
             echo "⚠️ **Tests failed!** Check logs above for details." >> $GITHUB_STEP_SUMMARY
             echo "" >> $GITHUB_STEP_SUMMARY
             echo "### 🔧 Quick Debug" >> $GITHUB_STEP_SUMMARY
