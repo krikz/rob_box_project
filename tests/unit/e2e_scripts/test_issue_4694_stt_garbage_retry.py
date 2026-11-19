@@ -154,13 +154,17 @@ class TestRunStepSttGarbage:
         assert _names(played) == ["cmd_a_eq.wav", "cmd_a_eq.wav"]
 
     def test_garbage_until_the_budget_is_an_honest_fail_with_the_counter(self, tmp_path):
-        """Мусор на всех попытках: PLAY ровно по потолку, не больше. Вердикт красный и несёт stt_attempt."""
+        """Мусор на всех попытках: PLAY ровно по потолку, не больше. Вердикт красный и несёт stt_attempt.
+
+        #4951 (решение Шифу 19.11) на потолке мусора пробует инъекцию в /voice/stt/utterance; она проверяется
+        своим файлом test_issue_4951_stt_inject_fallback.py. Здесь инъекция ВЫКЛЮЧЕНА
+        (``E2E_STT_INJECT_FALLBACK=0``): контракт #4694 -- прежний честный FAIL ``attempts_exhausted``."""
         out, err, _, played = _run_step(
             tmp_path,
             GARBAGE,
             [GARBAGE_AGAIN, GARBAGE_AGAIN],
             STEP,
-            _scenario(tmp_path) + KINDS,
+            _scenario(tmp_path) + KINDS + "; E2E_STT_INJECT_FALLBACK=0",
             replace=True,
         )
         assert "RC=1" in out, (out, err)
