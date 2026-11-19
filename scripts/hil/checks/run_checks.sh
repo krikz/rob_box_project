@@ -8,6 +8,7 @@
 #   orphan          #4458  сирота нарочно: своя цель FollowPath после отменённой NavigateToPose — гасит сторож
 #   zone            #4365 + #4470(on)  явно HIL_GUARD_SOUND=on, телеоп в препятствие: стоп, писк, «Осторожно!», маячок
 #   guard_off       #4470(off)  умолчание/явный off: тот же наезд без писка, затем назад off (умолчание HIL)
+#   corner          #4631  угол корпуса на пути: стенка перекрывает только левый угол; стоп до 0.20 м внутри коридора
 #   nav_aborted     #3789 + #4435  «поезжай на …» в недостижимую точку → фраза по ABORTED; после провала mux = 0
 #   stop_idle       #3789  «отмени навигацию» без цели → «Я и так стою.»
 #   stop_active     #3789 + #4435  то же во время поездки из скрипта → «Останавливаюсь.»; после отмены mux = 0
@@ -58,7 +59,7 @@ OUT="$HIL_CHECKS_OUT"
 GZ="$HIL_SIM_PREFIX-gazebo"
 REMOTE_PROBE=/tmp/hil_checks/hil_probe.py
 SSH_OPTS=(-o BatchMode=yes -o ConnectTimeout=10 -o ServerAliveInterval=5 -o ServerAliveCountMax=3)
-ALL=(orphan zone guard_off nav_aborted stop_idle stop_active orphan_natural controller_abort)
+ALL=(orphan zone guard_off corner nav_aborted stop_idle stop_active orphan_natural controller_abort)
 NAV_TOOLS_RX='navigate_to_coordinates|navigate_to_waypoint|move_direction'
 GUARD_SOUND_CHANGED=0
 
@@ -223,6 +224,17 @@ sc_guard_off() {
     zone_run "$d"
     verdict guard_sound "$d" --mode off
     probe "$d/backoff_after.log" backoff --secs 5
+}
+sc_corner() {
+    # #4631: стенка в 1.5 м от носа, сдвинутая влево на 0.25 м — перекрывает только левый угол.
+    # Вердикт читает зазор и точку из строки стопа: внутри коридора не меньше 0.19, вне коридора стопа быть не должно.
+    local d="$OUT/corner" t0
+    mkdir -p "$d"
+    t0=$(iso_now)
+    probe "$d/probe.log" corner --speed "$WALL_SPEED" --shift 0.25 --ahead 1.5
+    sleep 5
+    dlogs "$HIL_MAIN_HOST" proximity-guard "$t0" "$d/guard.log"
+    verdict corner "$d"
 }
 
 # ── фразы тулов движения ────────────────────────────────────────────────────────────────

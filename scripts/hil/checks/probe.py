@@ -20,6 +20,7 @@
 import argparse
 import math
 import os
+import subprocess
 import sys
 import time
 
@@ -434,6 +435,58 @@ def cmd_wall(n, a):
     out("SCAN_END", n, front=f"{n.sector(0.0, FRONT_HALF):.3f}")
 
 
+def _gz_world():
+    """Имя мира Gazebo: единственный сервис ``/world/<имя>/create``."""
+    out = subprocess.run(["ign", "service", "-l"], capture_output=True, text=True, timeout=20).stdout
+    for line in out.splitlines():
+        if line.startswith("/world/") and line.endswith("/create"):
+            return line.split("/")[2]
+    return None
+
+
+def _spawn_wall(world, name, cx, cy, yaw, sx=0.2, sy=3.0, height=1.0):
+    """Статическая стенка. True — сервис ответил ``true``."""
+    size = f"{sx} {sy} {height}"
+    geom = f"<geometry><box><size>{size}</size></box></geometry>"
+    sdf = (
+        f"<sdf version='1.8'><model name='{name}'><static>true</static>"
+        f"<pose>{cx:.4f} {cy:.4f} {height / 2:.3f} 0 0 {yaw:.4f}</pose><link name='l'>"
+        f"<collision name='c'>{geom}</collision><visual name='v'>{geom}"
+        "<material><ambient>0.8 0.2 0.2 1</ambient></material></visual></link></model></sdf>"
+    )
+    r = subprocess.run(
+        ["ign", "service", "-s", f"/world/{world}/create", "--reqtype", "ignition.msgs.EntityFactory",
+         "--reptype", "ignition.msgs.Boolean", "--timeout", "5000", "--req", f'sdf: "{sdf}"'],
+        capture_output=True, text=True, timeout=15,
+    )
+    return "true" in r.stdout
+
+
+def cmd_corner(n, a):
+    """#4631: стенка поперёк хода, сдвинутая влево на ``shift`` м, чтобы перекрыть только левый угол.
+
+    Ставится в ``ahead`` м от носа по правде Gazebo и удаляется в конце. Дальше — тот же наезд, что ``wall``.
+    """
+    if not wait_ready(n, need_tf=False):
+        return
+    world = _gz_world()
+    if world is None or n.gt is None:
+        out("WALL_NOT_FOUND", n, nearest="?", max="0")
+        return
+    x, y, yaw = n.gt[0], n.gt[1], n.gt[2]
+    cx = x + (0.3064 + a.ahead + 0.1) * math.cos(yaw) - a.shift * math.sin(yaw)
+    cy = y + (0.3064 + a.ahead + 0.1) * math.sin(yaw) + a.shift * math.cos(yaw)
+    spawned = _spawn_wall(world, "corner_wall", cx, cy, yaw)
+    out("CORNER_WALL", n, spawned="yes" if spawned else "no", shift=f"{a.shift:.2f}", ahead=f"{a.ahead:.2f}")
+    if spawned:
+        cmd_wall(n, a)
+        subprocess.run(
+            ["ign", "service", "-s", f"/world/{world}/remove", "--reqtype", "ignition.msgs.Entity",
+             "--reptype", "ignition.msgs.Boolean", "--timeout", "5000", "--req", 'name: "corner_wall"'],
+            capture_output=True, text=True, timeout=15,
+        )
+
+
 def rotate(n, target_yaw, w=0.4, tol=math.radians(4), secs=30):
     """Разворот на месте по правде Gazebo (скид-стир в симе проскальзывает — по команде не считаем)."""
 
@@ -485,6 +538,13 @@ def parse_args(argv):
     p = sub.add_parser("backoff")
     p.add_argument("--speed", type=float, default=0.1)
     p.add_argument("--secs", type=float, default=4)
+    p = sub.add_parser("corner")
+    p.add_argument("--speed", type=float, default=0.1)
+    p.add_argument("--max-s", dest="max_s", type=float, default=40)
+    p.add_argument("--max-dist", dest="max_dist", type=float, default=3.5)
+    p.add_argument("--push", type=float, default=4.0)
+    p.add_argument("--ahead", type=float, default=1.5)
+    p.add_argument("--shift", type=float, default=0.25)
     return ap.parse_args(argv)
 
 
@@ -495,6 +555,7 @@ COMMANDS = {
     "hold": cmd_hold,
     "wall": cmd_wall,
     "backoff": cmd_backoff,
+    "corner": cmd_corner,
 }
 
 

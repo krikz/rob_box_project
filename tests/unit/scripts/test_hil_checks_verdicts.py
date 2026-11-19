@@ -606,6 +606,44 @@ def test_guard_sound_env_mismatch_is_fail():
     assert v.status == vd.FAIL and "не в режиме off" in v.line()
 
 
+def _corner_guard(gap, y):
+    """Строка стопа защиты: зазор и точка, как их печатает нода (proximity_guard_node._log_transition)."""
+    return [
+        dk(
+            8.95,
+            f"[WARN] [1.0] [proximity_guard]: 🛡️ зона warn → stop (до корпуса {gap:.2f} м) "
+            f"в точке (+0.47, {y:+.2f}); v=+0.10 м/с w=+0.00 рад/с",
+        )
+    ]
+
+
+def test_zone_stop_inside_the_corridor_below_stop_m_is_fail():
+    """#4365: стоп должен случиться до 0.20 м. Зазор 0.16 м при точке внутри коридора хода
+    (|y| ≤ 0.3525) значит, защита пропустила порог — это FAIL, а не PASS."""
+    v = vd.v_zone(_run(guard=_corner_guard(0.16, 0.30)), PX)
+    assert v.status == vd.FAIL and "0.16" in v.line()
+
+
+def test_corner_stop_at_019_inside_the_corridor_passes():
+    """Сценарий C (#4631): стенка перекрывает левый угол и лежит в коридоре хода. Стоп с зазором
+    0.19 м — защита сработала не позже порога 0.20 (допуск на такт)."""
+    v = vd.v_corner_stop(vd.parse_docker(_corner_guard(0.19, 0.30)))
+    assert v.status == vd.PASS, v.line()
+
+
+def test_corner_stop_at_016_inside_the_corridor_fails():
+    """Сценарий C: зазор 0.16 м при точке внутри коридора (|y| ≤ 0.3525) — защита пропустила порог."""
+    v = vd.v_corner_stop(vd.parse_docker(_corner_guard(0.16, 0.30)))
+    assert v.status == vd.FAIL and "0.16" in v.line()
+
+
+def test_corner_point_outside_the_corridor_is_not_a_stop():
+    """Решение Шифу 10.11 (#4438): точка вне коридора хода с зазором 0.16–0.19 м — торец сбоку,
+    не стоп. Стоп по такой точке — FAIL: защита затормозила там, где Шифу велел проехать."""
+    v = vd.v_corner_stop(vd.parse_docker(_corner_guard(0.17, 0.40)))
+    assert v.status == vd.FAIL and "вне коридора" in v.line()
+
+
 # ── CLI и обвязка ───────────────────────────────────────────────────────────────────────────
 
 
