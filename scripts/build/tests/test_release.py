@@ -15,6 +15,8 @@ import re
 import sys
 import tarfile
 from pathlib import Path, PurePosixPath
+from subprocess import CompletedProcess
+from unittest.mock import Mock
 
 import pytest
 import yaml
@@ -33,6 +35,7 @@ from chuangong import minisign  # noqa: E402
 from chuangong import release_format as rf  # noqa: E402
 from chuangong.agent import Config, Deps, tick  # noqa: E402
 from chuangong.registry import Registry  # noqa: E402
+from chuangong.stage import DockerCli, extract_bundle  # noqa: E402
 from fakes import FakeDocker, FakeTransport, FakeZenoh  # noqa: E402
 
 PREFIX = "10.1.1.249:5000/krikz/rob_box"
@@ -165,6 +168,34 @@ def test_bundles_are_deterministic_and_have_no_secrets(built):
 def test_secret_like_file_is_refused():
     with pytest.raises(release_py.BuildError, match="секрет"):
         release_py.build_bundle([("docker/sound/.env.secrets", b"TOKEN=1", False)])
+
+
+@pytest.mark.parametrize(
+    ("role", "service", "tag_var"),
+    [
+        ("main", "nav2", "NAV2_TAG"),
+        ("vision", "oak-d", "OAK_D_TAG"),
+        ("sound", "voice-assistant", "VOICE_ASSISTANT_TAG"),
+    ],
+)
+def test_compose_up_reads_staged_bundle_manifest(tmp_path, monkeypatch, built, role, service, tag_var):
+    release, bundles, _ = built
+    archive = tmp_path / "bundle.tar.gz"
+    archive.write_bytes(bundles[role])
+    staged = tmp_path / "staged"
+    extract_bundle(archive, staged)
+
+    docker = DockerCli()
+    compose = Mock(return_value=CompletedProcess([], 0, "", ""))
+    monkeypatch.setattr(docker, "_compose", compose)
+    project_dir = staged / "docker" / role
+    images = release["roles"][role]["images"]
+    docker.compose_up(project_dir, images=images, image_tag=release["image_tag"])
+
+    compose.assert_called_once()
+    assert compose.call_args.args[0] == project_dir
+    digest = images[service].split("@", 1)[1]
+    assert compose.call_args.kwargs["env"][tag_var] == f"{release['image_tag']}@{digest}"
 
 
 def test_compose_relative_paths_are_inside_role_bundle():
