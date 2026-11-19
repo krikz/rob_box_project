@@ -150,20 +150,20 @@ class FakeDocker:
         self.compose_up_images = applied
         self.commands.append(("compose_up", str(project_dir), applied))
 
-    def check_container_status(self, project_dir):
+    def check_container_status(self, container):
         """Запись вызова ROLE_CHECKS; None = ok, str = fail detail. Без сети."""
-        self.commands.append(("check_container_status", str(project_dir)))
+        self.commands.append(("check_container_status", container))
         return self.check_errors.get("check_container_status")
 
-    def check_container_logs(self, project_dir):
+    def check_container_logs(self, container):
         """Запись вызова ROLE_CHECKS; None = ok, str = fail detail. Без сети."""
-        self.commands.append(("check_container_logs", str(project_dir)))
+        self.commands.append(("check_container_logs", container))
         return self.check_errors.get("check_container_logs")
 
-    def check_ros2_topics(self, expected_topics):
+    def check_ros2_topics(self, expected_topics, container=None):
         """Сверка expected_topics с self.topics (заранее заданный список, не ros2)."""
         expected = list(expected_topics)
-        self.commands.append(("check_ros2_topics", expected))
+        self.commands.append(("check_ros2_topics", expected, container))
         forced = self.check_errors.get("check_ros2_topics")
         if forced is not None:
             return forced
