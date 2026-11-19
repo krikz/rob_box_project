@@ -1,14 +1,8 @@
-"""План и исполнитель переключения одной роли по digest.
+"""План и офлайн-исполнитель переключения одной роли по digest.
 
-Слот 3 фазы C (ADR-0168): ``plan_role`` строит шаги compose (digest, не тег) и
-проверок из L: Deploy and Verify; ``execute_role`` прогоняет actions через
-``docker.compose_*`` (реальный DockerCli или фейк, который пишет команды).
-Штатный activate dry-run зовёт ``plan_role`` и кладёт шаги в план — список
-сервисов/actions здесь один, не дублируется в activation.
-
-switch_current двигает указатели через pointers.advance; после compose_up —
-ROLE_CHECKS на docker; host_migrations пока только в журнале. Живой compose
-на роботе — следующий шаг.
+plan_role остаётся источником шагов для dry-run. execute_role принимает два
+проверенных подписанных манифеста и работает через внедрённый адаптер Compose
+и проверок. Штатный пульт пока не вызывает исполнитель.
 """
 
 from __future__ import annotations
@@ -17,8 +11,10 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any, Callable
 
-from . import pointers
+from . import cancel
 from . import release_format as rf
+from . import state as st
+from .stage import StageError, bundle_staged
 
 # Единственный список actions роли (activation._planned берёт шаги из plan_role).
 ROLE_ACTIONS = ("compose_down", "switch_current", "host_migrations", "compose_up")
@@ -216,51 +212,6 @@ def plan_role(
     return base
 
 
-def _compose_up(docker: Any, project_dir: Path, images: dict[str, str], image_tag: str | None) -> None:
-    """DockerCli принимает image_tag (digest-env); FakeDocker — только images (TypeError → fallback)."""
-    if image_tag is not None:
-        try:
-            docker.compose_up(project_dir, images=images, image_tag=image_tag)
-            return
-        except TypeError:
-            pass
-    docker.compose_up(project_dir, images=images)
-
-
-def _apply_step(
-    docker: Any,
-    project_dir: Path,
-    step: dict[str, Any],
-    commands: list[dict[str, Any]],
-    state_dir: Path,
-) -> None:
-    """Прогнать actions шага. compose_* — docker; switch_current — pointers.advance."""
-    images = dict(step.get("images") or {})
-    migrations = list(step.get("migrations") or [])
-    image_tag = step.get("image_tag") if isinstance(step.get("image_tag"), str) else None
-    for action in step["actions"]:
-        if action == "compose_down":
-            docker.compose_down(project_dir)
-            commands.append({"action": "compose_down", "dir": str(project_dir)})
-        elif action == "compose_up":
-            _compose_up(docker, project_dir, images, image_tag)
-            commands.append({"action": "compose_up", "dir": str(project_dir), "images": images})
-        elif action == "switch_current":
-            advanced = pointers.advance(state_dir, step["release"])
-            commands.append(
-                {
-                    "action": "switch_current",
-                    "release": step["release"],
-                    "current": advanced["current"],
-                    "previous": advanced["previous"],
-                }
-            )
-        elif action == "host_migrations":
-            commands.append({"action": "host_migrations", "migrations": migrations})
-        else:
-            raise RoleSwitchError("unknown_action", action)
-
-
 def _run_role_checks(
     docker: Any,
     project_dir: Path,
@@ -295,86 +246,211 @@ def _run_role_checks(
     return None
 
 
+def _ready_project(release: dict[str, Any], role: str, releases_root: Path, docker: Any) -> Path:
+    entry = _role_entry(release, role)
+    if not isinstance(release.get("image_tag"), str) or not release["image_tag"].strip():
+        raise RoleSwitchError("image_tag_missing", release["release"])
+    bundle = releases_root / release["release"] / role
+    project = bundle / "docker" / role
+    if not bundle_staged(bundle, entry["bundle"]["sha256"]) or not (project / "docker-compose.yaml").is_file():
+        raise RoleSwitchError("release_not_staged", str(project))
+    if not (project.parent / "build-manifest.yaml").is_file():
+        raise RoleSwitchError("build_manifest_missing", str(project.parent / "build-manifest.yaml"))
+    external = entry.get("external_images", [])
+    if any(not rf.is_pinned_ref(ref) for ref in external):
+        raise RoleSwitchError("external_images_unpinned", release["release"])
+    missing = [ref for ref in [*entry["images"].values(), *external] if not docker.image_present(ref)]
+    if missing:
+        raise RoleSwitchError("release_images_missing", f"{release['release']}: {missing}")
+    return project
+
+
+def _verify_running_images(docker: Any, images: dict[str, str]) -> None:
+    """Сверить image IDs сервисов сборки из подписанного манифеста роли."""
+    running = docker.running_compose_image_ids()
+    for service, ref in images.items():
+        expected = docker.image_id(ref)
+        actual = running.get(service)
+        if not expected or actual != [expected]:
+            raise RoleSwitchError("running_image_mismatch", f"{service}: {actual!r}, expected {ref} ({expected})")
+
+
+def _require_switch_ready(
+    release: dict[str, Any],
+    current_release: dict[str, Any],
+    role: str,
+    *,
+    history: dict[str, Any] | None,
+    releases_root: Path,
+    state_dir: Path,
+    hil_lock: Path,
+    docker: Any,
+) -> tuple[Path, Path]:
+    current = current_release.get("release")
+    target = release["release"]
+    if not current or not history or history.get("current") != current:
+        raise RoleSwitchError("current_unproven", str(current))
+    if history.get("node") != role or history.get("channel") != release["channel"]:
+        raise RoleSwitchError("role_scope_mismatch", role)
+    if current_release.get("channel") != release["channel"]:
+        raise RoleSwitchError("release_channel_mismatch", str(current))
+    if current == target:
+        raise RoleSwitchError("already_current", target)
+    if cancel.is_cancelled(releases_root, target, role):
+        raise RoleSwitchError("release_cancelled", target)
+    unsupported = [name for name in ROLE_CHECKS if not callable(getattr(docker, name, None))]
+    if unsupported:
+        raise RoleSwitchError("role_checks_unavailable", ", ".join(unsupported))
+    if release["roles"][role].get("migrations"):
+        raise RoleSwitchError("host_migrations_unavailable", target)
+    current_dir = _ready_project(current_release, role, releases_root, docker)
+    target_dir = _ready_project(release, role, releases_root, docker)
+    if hil_lock.exists():
+        raise RoleSwitchError("hil_locked", str(hil_lock))
+    if (state_dir / "dirty").exists() or docker.hotpatched_containers():
+        raise RoleSwitchError("dirty", role)
+    _verify_running_images(docker, current_release["roles"][role]["images"])
+    return current_dir, target_dir
+
+
+def _apply(
+    docker: Any,
+    inactive_dir: Path,
+    step: dict[str, Any],
+    commands: list[dict[str, Any]],
+    *,
+    stop_dir: Path | None,
+) -> None:
+    if stop_dir is not None:
+        down = {"action": "compose_down", "dir": str(stop_dir), "ok": False}
+        commands.append(down)
+        docker.compose_down(stop_dir)
+        down["ok"] = True
+    up = {"action": "compose_up", "dir": str(inactive_dir), "images": step["images"], "ok": False}
+    commands.append(up)
+    docker.compose_up(inactive_dir, images=step["images"], image_tag=step["image_tag"])
+    up["ok"] = True
+    _verify_running_images(docker, step["images"])
+    error = _run_role_checks(docker, inactive_dir, step, commands)
+    if error:
+        raise RoleSwitchError("role_check_failed", error)
+
+
+def _check_health(result: dict[str, Any], field: str, check: Callable[[Path], HealthResult], project_dir: Path) -> None:
+    health = check(project_dir)
+    if not isinstance(health, HealthResult):
+        raise RoleSwitchError("bad_health_result", type(health).__name__)
+    result[field] = asdict(health)
+    if health.status != "healthy":
+        raise RoleSwitchError("health_check_failed", health.detail or health.status)
+
+
+def _applied_actions(commands: list[dict[str, Any]]) -> list[str]:
+    return [cmd["action"] for cmd in commands if cmd["action"] in ROLE_ACTIONS and cmd.get("ok", True)]
+
+
+def _execute_switch(
+    result: dict[str, Any],
+    restore: dict[str, Any],
+    current_dir: Path,
+    target_dir: Path,
+    *,
+    docker: Any,
+    history: dict[str, Any],
+    state_file: Path,
+    health_check: Callable[[Path], HealthResult],
+) -> dict[str, Any]:
+    target = result["plan"][0]
+    commands: list[dict[str, Any]] = []
+    result.update(execute=True, commands=commands)
+    target["execute"] = True
+    try:
+        _apply(docker, target_dir, target, commands, stop_dir=current_dir)
+        _check_health(result, "health", health_check, target_dir)
+        activated = {**history, "current": target["release"], "previous": history["current"]}
+        if activated.get("staged") == target["release"]:
+            activated["staged"] = None
+        st.save(state_file, activated)
+    except Exception as exc:
+        # Ошибка адаптера, проверки или записи состояния требует восстановления.
+        result.update(reason=getattr(exc, "reason", "switch_failed"), detail=str(exc), failed_release=result["release"])
+    else:
+        commands.append({"action": "switch_current", "current": target["release"], "previous": history["current"]})
+        target["actions"] = _applied_actions(commands)
+        return {**result, "state": "role_switched"}
+
+    target["actions"] = _applied_actions(commands)
+    started = any(command["action"] == "compose_up" for command in commands)
+    rollback_start = len(commands)
+    restore.update(op="rollback", execute=True, from_release=result["release"])
+    result["plan"].append(restore)
+    result["restore_release"] = restore["release"]
+    try:
+        _apply(docker, current_dir, restore, commands, stop_dir=target_dir if started else None)
+        _check_health(result, "rollback_health", health_check, current_dir)
+    except Exception as exc:
+        result.update(state="rollback_failed", rollback_error=str(exc))
+    else:
+        result.update(state="role_rolled_back", release=restore["release"], images=restore["images"])
+    restore["actions"] = _applied_actions(commands[rollback_start:])
+    return result
+
+
 def execute_role(
     release: dict[str, Any],
     role: str,
     *,
     docker: Any,
-    project_dir: Path | str,
-    state_dir: Path | str,
-    previous: str | None = None,
-    health_after: Callable[[], HealthResult] | HealthResult | None = None,
+    releases_root: Path,
+    state_dir: Path,
+    current_release: dict[str, Any],
+    hil_lock: Path,
+    health_check: Callable[[Path], HealthResult] | None = None,
 ) -> dict[str, Any]:
-    """Исполнить plan_role: compose_*, pointers.advance, ROLE_CHECKS.
+    """Переключить одну роль и обновить state.json после успешной проверки.
 
-    ``state_dir`` — каталог указателей current/previous (передаёт вызывающий;
-    путь /var/lib на хосте теста не подставляется). После actions шага —
-    ``docker.check_*`` из ROLE_CHECKS (FakeDocker пишет вызов). Fail проверки →
-    ``blocked`` / ``role_check_failed``, не state успеха. ``health_after`` —
-    доп. проверка после checks (callable или HealthResult). unhealthy → план
-    отката роли и его actions (не «успех»). Падение advance не глотается.
-    Живой compose на роботе этим PR не гоняем: тесты — FakeDocker.
+    Вызывающий проверяет подпись обоих манифестов и выполняет штатный preflight,
+    включая блокировки всего робота. Локальный lock общий с тиком и отменой.
+    При срыве бандл и digest текущего релиза уже проверены и готовы к откату.
+    Проверка health вызывается с каталогом действительно поднятого Compose.
+    Адаптер проверяет весь состав проекта Compose, включая внешние сервисы.
+    Штатный пульт вызов не делает. Восстановление после остановки процесса
+    посреди операции требует отдельного наблюдения и восстановления состояния.
     """
-    project_dir = Path(project_dir)
-    state_dir = Path(state_dir)
-    planned = plan_role(release, role, previous=previous)
-    if planned["state"] != "role_switch_planned":
-        return planned
+    planned = plan_role(release, role, previous=current_release.get("release"))
+    if not callable(health_check):
+        return {**planned, "state": "blocked", "reason": "health_check_unavailable"}
+    state_file = state_dir / "state.json"
+    with st.write_lock(state_dir):
+        history = st.load(state_file)
+        try:
+            current_dir, target_dir = _require_switch_ready(
+                release,
+                current_release,
+                role,
+                history=history,
+                releases_root=releases_root,
+                state_dir=state_dir,
+                hil_lock=hil_lock,
+                docker=docker,
+            )
+        except (OSError, RoleSwitchError, StageError) as exc:
+            return {
+                **planned,
+                "state": "blocked",
+                "reason": getattr(exc, "reason", "preflight_failed"),
+                "detail": str(exc),
+            }
 
-    commands: list[dict[str, Any]] = []
-    for step in planned["plan"]:
-        _apply_step(docker, project_dir, step, commands, state_dir)
-        step["execute"] = True
-        check_fail = _run_role_checks(docker, project_dir, step, commands)
-        if check_fail is not None:
-            result = dict(planned)
-            result["execute"] = True
-            result["commands"] = commands
-            result["plan"] = [dict(s) for s in planned["plan"]]
-            result["state"] = "blocked"
-            result["reason"] = "role_check_failed"
-            result["detail"] = check_fail
-            return result
-
-    result = dict(planned)
-    result["execute"] = True
-    result["commands"] = commands
-    result["plan"] = [dict(step) for step in planned["plan"]]
-
-    if health_after is None:
-        return result
-
-    checked = health_after() if callable(health_after) else health_after
-    if not isinstance(checked, HealthResult):
-        raise RoleSwitchError("bad_health_after", type(checked).__name__)
-    result["health"] = asdict(checked)
-
-    if checked.status != "unhealthy":
-        if checked.status not in ("not_verified", "healthy"):
-            result["state"] = "blocked"
-            result["reason"] = "health_check_not_verified"
-            result["detail"] = asdict(checked)
-            return result
-        result["state"] = "role_switched"
-        return result
-
-    rollback = plan_role(release, role, previous=previous, health=checked)
-    for step in rollback["plan"]:
-        _apply_step(docker, project_dir, step, commands, state_dir)
-        step["execute"] = True
-        # Откат: checks шага тоже гоняем; fail → blocked, не «успех на previous».
-        check_fail = _run_role_checks(docker, project_dir, step, commands)
-        if check_fail is not None:
-            out = dict(rollback)
-            out["execute"] = True
-            out["commands"] = commands
-            out["plan"] = [dict(s) for s in rollback["plan"]]
-            out["state"] = "blocked"
-            out["reason"] = "role_check_failed"
-            out["detail"] = check_fail
-            return out
-    out = dict(rollback)
-    out["execute"] = True
-    out["commands"] = commands
-    out["plan"] = [dict(step) for step in rollback["plan"]]
-    return out
+        restore = plan_role(current_release, role)["plan"][0]
+        assert history is not None  # подтверждён в _require_switch_ready
+        return _execute_switch(
+            planned,
+            restore,
+            current_dir,
+            target_dir,
+            docker=docker,
+            history=history,
+            state_file=state_file,
+            health_check=health_check,
+        )

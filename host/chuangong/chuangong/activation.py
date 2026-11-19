@@ -372,7 +372,7 @@ class ActivationMachine:
                     previous=origin,
                 )
             )
-            if results[-1].get("state") == "blocked":
+            if results[-1].get("state") != "role_switched":
                 record["executed"] = results
                 return _blocked(record, "role_switch_failed", results[-1])
         record["executed"] = results

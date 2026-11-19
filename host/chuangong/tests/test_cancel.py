@@ -68,6 +68,23 @@ def test_cancel_marks_staged_and_keeps_current(tmp_path):
     assert not (releases_root / "current").exists()
 
 
+@pytest.mark.parametrize("legacy_only", (False, True))
+def test_cancel_rejects_current_release_even_if_staged(tmp_path, legacy_only):
+    state_dir, releases_root, _ = _paths(tmp_path)
+    name = "2026.11.09-1"
+    dest = _plant_staged(releases_root, name)
+    previous = "2026.11.08-1"
+    initial = _save_staged(state_dir, staged=name, current=previous if legacy_only else name, previous=previous)
+    if legacy_only:
+        pointers.advance(state_dir, name)
+
+    with pytest.raises(cancel.CancelError, match="release_is_current"):
+        cancel.cancel_staged(state_dir, releases_root, "vision")
+
+    assert not (dest / cancel.CANCEL_MARKER).exists()
+    assert st.load(state_dir / "state.json") == initial
+
+
 def test_cancel_leaves_existing_pointers_untouched(tmp_path):
     state_dir, releases_root, compose_root = _paths(tmp_path)
     _plant_staged(releases_root, "2026.11.09-1")
