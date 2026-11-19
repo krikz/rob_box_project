@@ -119,21 +119,26 @@ def test_write_start_and_assert_ready(tmp_path):
         topics.assert_ready(tmp_path, "before_goal")
 
 
-def test_yaw_isolate_lowers_priority_and_keeps_locks():
-    assert topics.yaw_isolate_from_env(None) is False
-    assert topics.yaw_isolate_from_env("1") is True
-    text = topics.twist_mux_isolate_yaml()
-    assert "priority: 5" in text
-    assert "cmd_vel_yaw" in text
-    assert "joystick_lock" not in text
-    assert "emergency" not in text
+def test_yaw_isolate_detach_drops_input_priority_keeps_it():
+    combat = (ROOT / "docker/main/config/twist_mux/twist_mux.yaml").read_text(encoding="utf-8")
+    assert topics.yaw_isolate_from_env(None) == "off"
+    assert topics.yaw_isolate_from_env("1") == "detach"
+    assert topics.yaw_isolate_from_env("priority") == "priority"
+    detached = topics.twist_mux_config_for_isolate(combat, "detach")
+    assert "cmd_vel_yaw" not in detached
+    assert "joystick_lock" in detached
+    assert "cmd_vel_emergency" in detached
+    assert "topic: cmd_vel\n" in detached
+    lowered = topics.twist_mux_config_for_isolate(combat, "priority")
+    assert "topic: cmd_vel_yaw" in lowered
+    assert "priority: 5" in lowered
+    assert "priority: 15" not in lowered.split("yaw_at_goal:")[1].split("navigation:")[0]
+    assert topics.twist_mux_config_for_isolate(combat, "off") == combat
     with pytest.raises(ValueError, match="M1_YAWATGOAL_ISOLATE"):
         topics.yaw_isolate_from_env("2")
     script = (REPEAT / "run_m1_repeat.sh").read_text(encoding="utf-8")
-    assert "M1_YAWATGOAL_ISOLATE" in script
-    assert "twist_mux.yaml" not in "\n".join(
-        line for line in script.splitlines() if not line.lstrip().startswith("#")
-    )
+    assert "YAW_MUX_STILL_SUBSCRIBED" in script
+    assert "TWIST_MUX_CONFIG" in script
 
 
 def test_compose_transfer_does_not_use_main_stdin(tmp_path):

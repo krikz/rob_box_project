@@ -374,23 +374,28 @@ fi
 log "DWB_PUBLISH_OVERLAY on (file in container, publish flags)"
 # Изоляция YawAtGoal: HIL-оверлей mux, боевой twist_mux.yaml не трогаем.
 # Замки остаются. Применяется до цели, файл удаляется до off.
-if [ "${M1_YAWATGOAL_ISOLATE:-0}" = 1 ]; then
-    python3 -X utf8 -c 'import sys; sys.path.insert(0, sys.argv[1]); from m1_topics import twist_mux_isolate_yaml; open(sys.argv[2], "w", encoding="utf-8").write(twist_mux_isolate_yaml())' \
-        "$HERE" "$ART/twist_mux_isolate.yaml" || { log "YAW_ISOLATE_YAML_FAIL"; exit 2; }
-    scp -q -o BatchMode=yes "$ART/twist_mux_isolate.yaml" "$MAIN:/tmp/hil/twist_mux_isolate.yaml" || { log "YAW_ISOLATE_SCP_FAIL"; exit 30; }
-    main "test -s /tmp/hil/twist_mux_isolate.yaml" || { log "YAW_ISOLATE_NOT_ON_MAIN"; exit 30; }
-    # start_twist_mux.sh: TWIST_MUX_OVERLAY вторым --params-file. Боевой yaml не трогаем.
+YAW_MODE=$(python3 -X utf8 -c 'import os,sys; sys.path.insert(0, sys.argv[1]); from m1_topics import yaw_isolate_from_env; print(yaw_isolate_from_env(os.environ.get("M1_YAWATGOAL_ISOLATE")))' "$HERE") \
+    || { log "YAW_ISOLATE_ENV_BAD value=${M1_YAWATGOAL_ISOLATE:-}"; exit 2; }
+if [ "$YAW_MODE" != off ]; then
+    # Полный боевой yaml с одним изменением. Второй --params-file не умеет
+    # удалить вход, поэтому mux читает ЭТОТ файл вместо боевого (TWIST_MUX_CONFIG).
+    # Боевой twist_mux.yaml на диске не правится. YawAtGoal публикует как раньше.
+    python3 -X utf8 -c 'import sys; sys.path.insert(0, sys.argv[1]); from m1_topics import twist_mux_config_for_isolate; open(sys.argv[3], "w", encoding="utf-8").write(twist_mux_config_for_isolate(open(sys.argv[2], encoding="utf-8").read(), sys.argv[4]))' \
+        "$HERE" "$ROOT/docker/main/config/twist_mux/twist_mux.yaml" "$ART/twist_mux_hil.yaml" "$YAW_MODE" \
+        || { log "YAW_ISOLATE_YAML_FAIL"; exit 2; }
+    scp -q -o BatchMode=yes "$ART/twist_mux_hil.yaml" "$MAIN:/tmp/hil/twist_mux_hil.yaml" || { log "YAW_ISOLATE_SCP_FAIL"; exit 30; }
+    main "test -s /tmp/hil/twist_mux_hil.yaml" || { log "YAW_ISOLATE_NOT_ON_MAIN"; exit 30; }
     main "mkdir -p /tmp/hil && cat > /tmp/hil/twist_mux.hil.yaml << 'EOF'
 services:
   twist-mux:
     environment:
-      - TWIST_MUX_OVERLAY=/tmp/hil/twist_mux_isolate.yaml
+      - TWIST_MUX_CONFIG=/tmp/hil/twist_mux_hil.yaml
     volumes:
-      - /tmp/hil/twist_mux_isolate.yaml:/tmp/hil/twist_mux_isolate.yaml:ro
+      - /tmp/hil/twist_mux_hil.yaml:/tmp/hil/twist_mux_hil.yaml:ro
 EOF
 cd /home/ros2/rob_box_project/docker/main && HIL_MAPS_DIR='$MAPS_DIR' docker compose -f docker-compose.yaml -f /tmp/hil/main.images.yaml -f /tmp/hil/main.hil.yaml -f /tmp/hil/twist_mux.hil.yaml up -d --no-deps --pull never --force-recreate twist-mux" \
         >"$ART/yaw_isolate_up.log" 2>&1 || { log "YAW_ISOLATE_RECREATE_FAIL"; exit 30; }
-    log "YAW_ISOLATE_RECREATED priority 5 via TWIST_MUX_OVERLAY"
+    log "YAW_ISOLATE_RECREATED mode=$YAW_MODE config=/tmp/hil/twist_mux_hil.yaml"
 fi
 
 # Боевые 0.15 / PathAlign 0.20: оверлей скорости не кладём. Проверяем факт параметра до цели.
@@ -437,7 +442,17 @@ fi
 # раньше SAMPLERS_STARTED, логи остались пустыми. Старт не зависит от param get.
 start_resource_samplers || log "SAMPLERS_START_FAILED"
 capture_params_after_ready || { log "PARAMS_INCOMPLETE M1_NOT_SENT"; exit 35; }
-log "GOAL_SEND M1 target=(-3.7,4.0,0) after BEFORE_GOAL_OK and PARAMS_NUMERIC"
+# Граф до цели. detach: twist_mux не в подписчиках /cmd_vel_yaw. Иначе — есть.
+if [ "${YAW_MODE:-off}" = detach ]; then
+    main "docker exec $(printf '%q' "$NAV2_CONTAINER") /ros_scripts/ros_with_namespace.sh bash -c 'source /opt/ros/humble/setup.bash; timeout 20 ros2 topic info /cmd_vel_yaw --verbose'" \
+        >"$ART/cmd_vel_yaw_info.txt" 2>&1 || true
+    if grep -q twist_mux "$ART/cmd_vel_yaw_info.txt"; then
+        log "YAW_MUX_STILL_SUBSCRIBED M1_NOT_SENT"
+        exit 36
+    fi
+    log "YAW_MUX_DETACHED topic info has no twist_mux"
+fi
+log "GOAL_SEND run_id=$RUN_ID M1 target=(-3.7,4.0,0) after BEFORE_GOAL_OK and PARAMS_NUMERIC"
 sandbox "cd '$SANDBOX_REPO' && CAMERAS=0 ./runvideo.sh M1" >"$ART/runvideo.log" 2>&1 || true
 log "ROUTE_DONE"
 # pull_before_off — в cleanup, до hil off.

@@ -370,18 +370,51 @@ def dwb_publish_overlay_yaml(short_circuit: bool = True, trans_stopped: float | 
     return "\n".join(lines) + "\n"
 
 
-def yaw_isolate_from_env(value: str | None) -> bool:
-    """``M1_YAWATGOAL_ISOLATE=1`` — priority /cmd_vel_yaw ниже DWB.
+def yaw_isolate_from_env(value: str | None) -> str:
+    """``M1_YAWATGOAL_ISOLATE``.
 
-    Пусто и 0 — штатный priority 15 (выше Nav2). 1 — HIL-оверлей mux, priority 5.
-    Замки (51, 90, 255) оверлей не трогает. Иное значение — ошибка.
+    пусто/0 — штатный mux, подписка на /cmd_vel_yaw есть.
+    1 — зачётная пара: вход yaw_at_goal убран из yaml, который читает mux.
+    priority — отдельный опыт: priority 5, подписка остаётся.
+    YawAtGoal в обоих случаях публикует /cmd_vel_yaw (для bag). Замки не трогаем.
     """
     text = (value if value is not None else "0").strip().lower()
     if text in ("", "0", "false", "no"):
-        return False
-    if text in ("1", "true", "yes"):
-        return True
-    raise ValueError(f"M1_YAWATGOAL_ISOLATE={value!r} — только 0 или 1")
+        return "off"
+    if text in ("1", "true", "yes", "detach"):
+        return "detach"
+    if text == "priority":
+        return "priority"
+    raise ValueError(f"M1_YAWATGOAL_ISOLATE={value!r} — 0, 1 или priority")
+
+
+_YAW_BLOCK = (
+    "      yaw_at_goal:\n"
+    "        topic: cmd_vel_yaw\n"
+    "        timeout: 0.2\n"
+    "        priority: 15\n"
+)
+
+
+def twist_mux_config_for_isolate(combat_text: str, mode: str) -> str:
+    """Боевой yaml mux с одним изменением. mode off — текст как есть.
+
+    detach убирает блок yaw_at_goal: mux не подписывается на /cmd_vel_yaw.
+    priority меняет 15 на 5, подписка остаётся. Замки и остальные входы те же.
+    """
+    if mode == "off":
+        return combat_text
+    if _YAW_BLOCK not in combat_text:
+        raise ValueError("yaw_at_goal block not in combat twist_mux.yaml")
+    if mode == "detach":
+        return combat_text.replace(_YAW_BLOCK, "", 1)
+    if mode == "priority":
+        return combat_text.replace(
+            _YAW_BLOCK,
+            _YAW_BLOCK.replace("priority: 15", "priority: 5"),
+            1,
+        )
+    raise ValueError(f"unknown isolate mode {mode!r}")
 
 
 def twist_mux_isolate_yaml() -> str:
