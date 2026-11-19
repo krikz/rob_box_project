@@ -185,6 +185,22 @@ def test_recovery_hits_name_the_marker_not_invent_a_type():
     assert "spin" not in topics.recovery_hits(log)
 
 
+def test_xy_goal_tol_is_nested_and_does_not_touch_checker():
+    """Число пишет FollowPath.xy_goal_tolerance вложенно. Checker и пустой env — нет."""
+    diag = topics.dwb_publish_overlay_yaml(xy_goal_tolerance=0.10)
+    assert "        xy_goal_tolerance: 0.1" in diag
+    assert "FollowPath:\n      ros__parameters:" in diag
+    assert "general_goal_checker" not in diag
+    assert "xy_goal_tolerance" not in topics.dwb_publish_overlay_yaml()
+    assert topics.xy_goal_tol_from_env(None) is None
+    assert topics.xy_goal_tol_from_env("0.10") == 0.10
+    with pytest.raises(ValueError, match="M1_REPEAT_XY_GOAL_TOL"):
+        topics.xy_goal_tol_from_env("0")
+    script = (REPEAT / "run_m1_repeat.sh").read_text(encoding="utf-8")
+    assert "XY_GOAL_TOL_NOT_APPLIED" in script
+    assert "general_goal_checker" not in diag
+
+
 def test_trans_stopped_overlay_is_opt_in():
     """0.005 пишет строку; пусто — нет (боевой 0.03); 0 и нечисло — ошибка."""
     diag = topics.dwb_publish_overlay_yaml(short_circuit=False, trans_stopped=0.005)
