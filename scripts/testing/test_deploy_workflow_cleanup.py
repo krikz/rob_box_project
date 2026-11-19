@@ -152,7 +152,7 @@ def test_every_node_compose_dir_has_a_deploy_pipeline():
         assert f"docker/{short}" in steps[f"[{pi}] Check Container Status"]
         assert f"SCOPE={short}" in steps[f"[{pi}] Check Container Status"]
         assert f"SCOPE={short}" in steps[f"[{pi}] Check Container Logs"]
-        assert "sound_pi_ip=10.1.1.12" in workflow
+        assert "ROBBOX_SOUND_HOST:-10.1.1.12" in workflow
 
 
 def test_node_order_is_vision_then_sound_then_main():
@@ -164,9 +164,10 @@ def test_node_order_is_vision_then_sound_then_main():
 
 def test_sound_pi_ip_is_set_in_every_environment():
     workflow = WORKFLOW_PATH.read_text(encoding="utf-8")
-    assert workflow.count('echo "sound_pi_ip=10.1.1.12" >> $GITHUB_ENV') == workflow.count(
-        'echo "vision_pi_ip=10.1.1.11" >> $GITHUB_ENV'
-    ) == 4
+    # Адрес задаётся один раз дефолтом переменной и действует на все ветки (#4375).
+    assert workflow.count("ROBBOX_SOUND_HOST:-10.1.1.12") == 1
+    assert workflow.count("ROBBOX_VISION_HOST:-10.1.1.11") == 1
+    assert workflow.count("ROBBOX_MAIN_HOST:-10.1.1.10") == 1
 
 
 def test_voice_resource_pack_goes_to_sound_and_hef_stays_on_vision():

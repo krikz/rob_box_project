@@ -95,25 +95,21 @@ jobs:
         run: |
           echo "Setting up deployment environment..."
 
-          # Настройка переменных окружения
+          # Настройка переменных окружения.
+          # Адреса — из переменных раннера (смена топологии без правки workflow, #4375);
+          # без них остаются нынешние, байт в байт.
+          echo "vision_pi_ip=${ROBBOX_VISION_HOST:-10.1.1.11}" >> $GITHUB_ENV
+          echo "sound_pi_ip=${ROBBOX_SOUND_HOST:-10.1.1.12}" >> $GITHUB_ENV
+          echo "main_pi_ip=${ROBBOX_MAIN_HOST:-10.1.1.10}" >> $GITHUB_ENV
           case "${{ inputs.environment }}" in
             production)
               echo "IMAGE_TAG=latest" >> $GITHUB_ENV
-              echo "vision_pi_ip=10.1.1.11" >> $GITHUB_ENV
-              echo "sound_pi_ip=10.1.1.12" >> $GITHUB_ENV
-              echo "main_pi_ip=10.1.1.10" >> $GITHUB_ENV
               ;;
             staging)
               echo "IMAGE_TAG=dev" >> $GITHUB_ENV
-              echo "vision_pi_ip=10.1.1.11" >> $GITHUB_ENV
-              echo "sound_pi_ip=10.1.1.12" >> $GITHUB_ENV
-              echo "main_pi_ip=10.1.1.10" >> $GITHUB_ENV
               ;;
             test)
               echo "IMAGE_TAG=test" >> $GITHUB_ENV
-              echo "vision_pi_ip=10.1.1.11" >> $GITHUB_ENV
-              echo "sound_pi_ip=10.1.1.12" >> $GITHUB_ENV
-              echo "main_pi_ip=10.1.1.10" >> $GITHUB_ENV
               ;;
             # Ретро 18.08 (t_544e4aa5 / issue #1379): environment=local —
             # алиас для staging (IMAGE_TAG=dev). Тег "local" в registry
@@ -126,9 +122,6 @@ jobs:
             local)
               echo "⚠️  WARNING: environment=local — алиас для staging (IMAGE_TAG=dev). Тег 'local' в registry не публикуется (L-Build Vision/Main Pi Services используют dev/test/latest). Для develop/main/z-{e2e}-веток используй environment=staging/test явно." >&2
               echo "IMAGE_TAG=dev" >> $GITHUB_ENV
-              echo "vision_pi_ip=10.1.1.11" >> $GITHUB_ENV
-              echo "sound_pi_ip=10.1.1.12" >> $GITHUB_ENV
-              echo "main_pi_ip=10.1.1.10" >> $GITHUB_ENV
               ;;
           esac
 
@@ -139,8 +132,8 @@ jobs:
               echo "registry_display=GitHub Container Registry (ghcr.io)" >> $GITHUB_ENV
               ;;
             local)
-              echo "SERVICE_IMAGE_PREFIX=10.1.1.249:5000/krikz/rob_box" >> $GITHUB_ENV
-              echo "registry_display=Local Build Machine Registry (10.1.1.249:5000)" >> $GITHUB_ENV
+              echo "SERVICE_IMAGE_PREFIX=${ROBBOX_REGISTRY_HOST:-10.1.1.249:5000}/krikz/rob_box" >> $GITHUB_ENV
+              echo "registry_display=Local Build Machine Registry (${ROBBOX_REGISTRY_HOST:-10.1.1.249:5000})" >> $GITHUB_ENV
               ;;
             skip)
               echo "SERVICE_IMAGE_PREFIX=ghcr.io/krikz/rob_box" >> $GITHUB_ENV

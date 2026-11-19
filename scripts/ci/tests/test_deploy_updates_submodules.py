@@ -11,7 +11,7 @@ ROOT = Path(__file__).resolve().parents[3]
 WORKFLOW = ROOT / ".github" / "workflows" / "L-Deploy and Verify.yml"
 UPDATE_SH = ROOT / "docker" / "main" / "update_and_restart.sh"
 
-RESET = re.compile(r"git reset --hard")
+RESET = re.compile(r"^\s*git reset --hard", re.M)
 UPDATE = "git submodule update --init --recursive"
 SYNC = "git submodule sync"
 
