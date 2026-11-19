@@ -11,8 +11,8 @@
 Что в релизе (формат — host/chuangong/chuangong/release_format.py, единственный источник):
   * образы роли по digest — список сервисов берётся из docker/<роль>/docker-compose.yaml (то, что роль реально
     запускает), имя тега — из docker/build-manifest.yaml (`*_TAG` → SHA-тег, без поля → изменяемый тег канала);
-  * бандл роли — tar.gz из ОТСЛЕЖИВАЕМЫХ git файлов `BUNDLE_PATHS[роль]`, детерминированный (mtime 0, uid 0,
-    сортировка), без секретов (`.env.secrets` не отслеживается и ещё раз отсекается здесь);
+  * бандл роли — детерминированный tar.gz (mtime 0, uid 0, сортировка) из git-файлов `BUNDLE_PATHS[роль]`
+    и build-манифеста, без секретов (`.env.secrets` не отслеживается и ещё раз отсекается здесь);
   * манифест ресурсного пака (sha256), хостовые миграции, compat.min_previous.
 
 Ничего не меняет в текущем деплое: `.image-versions.*` в репо не трогает. В L: Build All Services зовётся
@@ -254,7 +254,7 @@ def role_bundle(
     repo_root: Path, role: str, overrides: dict[str, bytes] | None = None
 ) -> bytes:
     """Бандл роли из git; `overrides` подменяет/добавляет файлы (байты уже готовые)."""
-    files = tracked_files(repo_root, BUNDLE_PATHS[role])
+    files = tracked_files(repo_root, (BUILD_MANIFEST, *BUNDLE_PATHS[role]))
     blobs = git_blobs(repo_root, sorted({blob for _, blob, _ in files}))
     overrides = overrides or {}
     items: list[tuple[str, bytes, bool]] = []
