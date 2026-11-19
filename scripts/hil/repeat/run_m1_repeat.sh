@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
-# Повторный одиночный M1 с расширенной записью (#4694).
+# Повторный одиночный прогон точки маршрута с расширенной записью (#4694).
+# M1_REPEAT_GOAL — имя точки route.py (M1..M6, R1..R7), по умолчанию M1.
 #
 # Условия сопоставимости с прогоном 18.11 16:26Z (/tmp/hil_m1_stall):
 #   Depot (HIL_EXPECT_WORLD=depot, гейт scripts/hil/hil.sh как есть),
-#   спавн (0, 0, 0), цель M1 (-3.7, 4, 0°), max_vel_x 0.15,
+#   спавн (0, 0, 0), цель M1 (-3.7, 4, 0°) по умолчанию, max_vel_x 0.15,
 #   PathAlign.forward_point_distance 0.20 (боевой nav2_params.yaml, оверлей скорости не кладём).
 #   Оверлей repeat только включает publish_evaluation/publish_trajectories/publish_local_plan:
 #   DWB считает score до публикации, выбор vx/wz от этого не меняется. Боевой yaml не правится.
@@ -13,6 +14,7 @@
 # копируются на хост ДО hil off. Живой прогон этим файлом не запускался в PR.
 #
 #   M1_REPEAT_OUT=/tmp/hil_m1_repeat bash scripts/hil/repeat/run_m1_repeat.sh
+#   M1_REPEAT_OUT=/tmp/hil_r7 M1_REPEAT_GOAL=R7 bash scripts/hil/repeat/run_m1_repeat.sh
 #
 # Не берёт /tmp/hil.lock сам: замок берёт hil.sh on. Если замок уже есть — выход 20, стенд не трогаем.
 set -uo pipefail
@@ -50,6 +52,13 @@ BAG_CLOSE_WAIT="${M1_BAG_CLOSE_WAIT:-40}"
 GOAL_PROBE_DIR="${M1_GOAL_PROBE_DIR:-}"
 GOAL_PROBE_TARGET=/opt/ros/humble/lib/libcontroller_server_core.so
 GOAL_PROBE_MOUNT="/tmp/hil/goal_check_${RUN_ID}.so"
+# Цель прогона: имя точки route.py. То же имя уходит в runvideo.sh и в grep GOAL_END —
+# вердикт чужой цели не пройдёт. Полный список имён проверяет route.py на песочнице.
+GOAL="${M1_REPEAT_GOAL:-M1}"
+[[ "$GOAL" =~ ^[MR][0-9]{1,2}$ ]] || {
+    printf 'M1_REPEAT_GOAL=%s: ждали имя точки route.py (M1..M6, R1..R7)\n' "$GOAL" >&2
+    exit 2
+}
 
 SSHO=(-o BatchMode=yes -o ConnectTimeout=10 -o ServerAliveInterval=5 -o ServerAliveCountMax=6)
 ART="$M1_REPEAT_OUT"
@@ -171,7 +180,7 @@ pull_before_off() {
         if grep -F 'HIL_GOAL_CHECK_REACHED ' "$ART/nav2.log" >"$ART/goal_check_reached.log"; then
             log "GOAL_CHECK_TRACE_CAPTURED"
         elif grep -Fq "Reached the goal!" "$ART/nav2.log" || \
-            grep -Eq 'GOAL_END M1 result=(STATUS_SUCCEEDED|OUTSIDE_TOLERANCE)([[:space:]]|$)' "$ART/route.log"; then
+            grep -Eq "GOAL_END $GOAL result=(STATUS_SUCCEEDED|OUTSIDE_TOLERANCE)([[:space:]]|\$)" "$ART/route.log"; then
             log "GOAL_CHECK_TRACE_MISSING"
             return 1
         else
@@ -652,11 +661,26 @@ if [ -n "$GOAL_PROBE_DIR" ]; then
     verify_goal_probe_loaded || { log "GOAL_PROBE_NOT_LOADED M1_NOT_SENT"; exit 37; }
     log "GOAL_PROBE_LOADED sha=$GOAL_PROBE_SHA"
 fi
-log "GOAL_SEND run_id=$RUN_ID M1 target=(-3.7,4.0,0) after BEFORE_GOAL_OK and PARAMS_NUMERIC"
+log "GOAL_SEND run_id=$RUN_ID goal=$GOAL after BEFORE_GOAL_OK and PARAMS_NUMERIC"
 # route.py читает ROUTE_LOG. Путь — файл этого run_id, не общий out/route.log.
-# Старый общий лог с GOAL_START рядом не трогаем и не копируем.
+# Общий out/route.log трогаем только после runvideo и только если он не старше старта:
+# runvideo.sh игнорирует ROUTE_LOG и пишет $D/out/route.log (raw m1repeat_20261119T185434Z:
+# cp: cannot stat '.../out/m1repeat_20261119T185434Z/route.log' → ARTIFACTS_INCOMPLETE rc=1).
 sandbox "mkdir -p '$REMOTE_OUT'; rm -f '$REMOTE_OUT/route.log'"
-sandbox "cd '$SANDBOX_REPO' && CAMERAS=0 ROUTE_LOG='$REMOTE_OUT/route.log' ./runvideo.sh M1" >"$ART/runvideo.log" 2>&1 || true
+SANDBOX_T0=$(sandbox "date +%s" 2>/dev/null) || SANDBOX_T0=0
+sandbox "cd '$SANDBOX_REPO' && CAMERAS=0 ROUTE_LOG='$REMOTE_OUT/route.log' ./runvideo.sh '$GOAL'" >"$ART/runvideo.log" 2>&1 || true
+# Старый общий лог (прошлый заезд, yaw_std утащил GOAL 07:28 от clean_003) не копируем:
+# mtime не раньше старта runvideo — значит, файл перезаписан этим прогоном.
+ROUTE_COPIED=0
+if [ "$SANDBOX_T0" -gt 0 ] && \
+    sandbox "test -f '$SANDBOX_REPO/out/route.log' && [ \$(stat -c %Y '$SANDBOX_REPO/out/route.log') -ge $SANDBOX_T0 ]"; then
+    sandbox "cp -f '$SANDBOX_REPO/out/route.log' '$REMOTE_OUT/route.log'" && ROUTE_COPIED=1
+fi
+if [ "$ROUTE_COPIED" = 1 ]; then
+    log "ROUTE_LOG_COPIED goal=$GOAL"
+else
+    log "ROUTE_LOG_NOT_COPIED goal=$GOAL sandbox_t0=$SANDBOX_T0"
+fi
 log "ROUTE_DONE"
 # pull_before_off — в cleanup, до hil off.
 exit 0
