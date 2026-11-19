@@ -50,12 +50,14 @@ def _c1_parsers(sub: argparse._SubParsersAction) -> None:
     _runtime_args(p)
     p.add_argument("release")
 
-    p = sub.add_parser("activate", help="C1 dry-run: preflight и план Vision → Sound → Main")
+    p = sub.add_parser("activate", help="план Vision → Sound → Main; --execute зовёт исполнителя роли")
     _runtime_args(p)
     p.add_argument("release")
+    p.add_argument("--execute", action="store_true", help="исполнить план (по умолчанию только план, execute=false)")
 
-    p = sub.add_parser("rollback", help="C1 dry-run: проверить signed previous и построить план отката")
+    p = sub.add_parser("rollback", help="план отката на signed previous; --execute зовёт исполнителя роли")
     _runtime_args(p)
+    p.add_argument("--execute", action="store_true", help="исполнить план отката (по умолчанию только план)")
 
 
 def _cancel_parser(sub: argparse._SubParsersAction) -> None:
@@ -137,15 +139,17 @@ def cmd_c1(args: argparse.Namespace) -> int:
 
     try:
         cfg = _config(args)
-        machine = ActivationMachine(cfg, _deps(cfg))
+        from .role_switch import execute_role
+
+        machine = ActivationMachine(cfg, _deps(cfg), executor=execute_role)
         if args.cmd == "adopt":
             record = machine.adopt(args.release, apply=args.apply)
         elif args.cmd == "preflight":
             record = machine.preflight(args.release)
         elif args.cmd == "activate":
-            record = machine.activate(args.release)
+            record = machine.activate(args.release, execute=args.execute)
         else:
-            record = machine.rollback()
+            record = machine.rollback(execute=args.execute)
     except ValueError as exc:
         print(str(exc), file=sys.stderr)
         return 2

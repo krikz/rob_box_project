@@ -65,7 +65,9 @@ class State(str, Enum):
     ADOPTED = "adopted"  # установленный legacy-стек доказанно соответствует подписанному релизу
     PREFLIGHT_PASSED = "preflight_passed"  # C1 dry-run: staged/signature, HIL, dirty, место и current проверены
     ACTIVATION_PLANNED = "activation_planned"  # C1 dry-run: preflight пройден, переключение не выполнялось
+    ACTIVATION_EXECUTED = "activation_executed"  # фаза C: план прогнан исполнителем роли
     ROLLBACK_PLANNED = "rollback_planned"  # C1 dry-run: previous проверен, переключение не выполнялось
+    ROLLBACK_EXECUTED = "rollback_executed"  # фаза C: план отката прогнан исполнителем роли
     BLOCKED = "blocked"  # машинная причина в reason, сырые факты в detail
     FETCH_ERROR = "fetch_error"  # реестр недоступен, подпись не прошла, release.yaml битый
     STAGE_ERROR = "stage_error"  # нет места, обрыв скачивания, бандл не сошёлся, pull упал — повтор на следующем тике
