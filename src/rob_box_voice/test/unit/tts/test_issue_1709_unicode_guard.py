@@ -9,7 +9,7 @@ Issue #1709 (live 28.08): юзер услышал «бормотание на х
 
 ``TTSNode.dialogue_callback`` — ЕДИНСТВЕННЫЙ чокпоинт, через который
 проходят ВСЕ TTS-запросы (и ``/voice/dialogue/response`` от
-dialogue_node, и ``/voice/tts/request`` от MCP ``speak_text``) — тот же
+dialog_node, и ``/voice/tts/request`` от MCP ``speak_text``) — тот же
 чокпоинт, где живёт markdown-санитизация issue #988. Эти тесты
 проверяют, что guard стоит именно там:
 
@@ -17,7 +17,7 @@ dialogue_node, и ``/voice/tts/request`` от MCP ``speak_text``) — тот ж�
   не вызывается) — робот молчит, а не бормочет;
 * финал реплики ``success=False`` (SpeechEvent ``rejected``) с
   ``error="unsupported_script"``, чтобы MCP ``speak_text`` /
-  dialogue_node не висели в ожидании навсегда (батч закрывается);
+  dialog_node не висели в ожидании навсегда (батч закрывается);
 * нормальная русская речь проходит без изменений (back-compat);
 * лог несёт ПОЛНЫЙ текст (acceptance issue #1709), а не префикс.
 

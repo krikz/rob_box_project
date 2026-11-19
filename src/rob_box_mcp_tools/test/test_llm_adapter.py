@@ -16,7 +16,7 @@ timeout. Root cause is a deadlock between the executor and the subscriber:
   returns with a timeout — exactly the 1.3–1.7 s post-timeout arrival.
 
 The fix in ADR-0072 switches ``avatar_supervisor`` to
-``rclpy.executors.MultiThreadedExecutor`` (mirroring ``dialogue_node``).
+``rclpy.executors.MultiThreadedExecutor`` (mirroring ``dialog_node``).
 These tests pin that contract so the deadlock can't sneak back.
 
 Two-layer regression

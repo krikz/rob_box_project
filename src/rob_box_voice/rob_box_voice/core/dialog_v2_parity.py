@@ -2,7 +2,7 @@
 
 Логика — в ``rob_box_dialog`` (чистый Python): ``meeting`` (приветствие по встрече лицом), ``startup`` (стартовая
 фраза), ``status_feed`` (статус LLM/вейков для ТАРС). Здесь — только ROS: подписка, таймеры, latched-паблишеры,
-речь через владельца речи (``V2Ports.say`` → ``SpeechRequest``). v1 ``dialogue_node`` берёт отсюда же
+речь через владельца речи (``V2Ports.say`` → ``SpeechRequest``). v1 ``dialog_node`` берёт отсюда же
 ``start_status_feeds`` и ``catalog_model`` — реализация одна. Функции, а не методы: ``DialogNode`` — тонкий хост.
 
 Окно ответа на приветствие (#3776) — тот же ``core.greeting_window``, что у v1: кадр ``GreetingReply`` сессии.

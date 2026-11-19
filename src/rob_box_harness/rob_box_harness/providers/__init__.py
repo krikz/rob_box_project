@@ -70,7 +70,7 @@ from rob_box_harness.providers.minimax import (
 
 __all__ = [
     "DummyLLMProvider",
-    # Well-known provider table (shared with dialogue_node)
+    # Well-known provider table (shared with dialog_node)
     "LLM_PROVIDER_REGISTRY",
     "build_provider",
     "known_provider_names",

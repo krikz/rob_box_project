@@ -13,7 +13,7 @@ Contract after the fix:
 
 1. ``utterance_id`` present + matching embedding already in the ring
    buffer -- register immediately (happy path, the common case: by the
-   time the LLM calls register_speaker, dialogue_node's
+   time the LLM calls register_speaker, dialog_node's
    UtteranceSpeakerRegistry.resolve() has already waited for the FULL
    /voice/speaker/result of this same utterance, so the embedding is
    already there).

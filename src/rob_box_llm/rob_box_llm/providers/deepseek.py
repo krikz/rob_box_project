@@ -198,7 +198,7 @@ def _trace_llm_request(
     library code does not reach ``docker logs`` in this image.
 
     Extracted from :meth:`_OpenAICompatibleProvider.complete` (live 01.09):
-    the dump existed ONLY on the ``complete()`` path, while dialogue_node
+    the dump existed ONLY on the ``complete()`` path, while dialog_node
     always streams (see ``[health] -> streaming from provider=...``). Every
     production turn was therefore invisible: the music guard logged
     ``tools=[]`` but nothing showed WHAT history and WHICH tool surface the

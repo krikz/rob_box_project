@@ -199,7 +199,7 @@ class SpeakTextTool(MCPTool):
     @property
     def slice(self) -> str:
         # ADR-0052 / issue #1998 §6.2: голосовая реплика от ЛИЧНОСТИ
-        # робота (TTS). Срез ``personality`` — dialogue_node и
+        # робота (TTS). Срез ``personality`` — dialog_node и
         # avatar_supervisor оба имеют его; оператор (ТАРС) зовёт
         # ``say`` (slice=operator.speech) вместо ``speak_text``.
         return "personality"
@@ -445,7 +445,7 @@ class ListenForResponseTool(MCPTool):
     # Issue #3107: the tool used to publish ``listen:<timeout>`` on
     # ``/voice/stt/request``, which no node has ever subscribed to (stt_node
     # listens continuously). The real effect lives in the caller:
-    # dialogue_node leaves the agent loop when it sees a
+    # dialog_node leaves the agent loop when it sees a
     # ``listen_for_response`` tool result and keeps the dialogue open.
 
     @property
@@ -617,7 +617,7 @@ class RegisterSpeakerTool(MCPTool):
             String, "/voice/speaker/rename", 10
         )
         # #3793: подписка сразу — исход регистрации по представлению
-        # (её шлёт dialogue_node до вызова LLM) приходит раньше вызова тула.
+        # (её шлёт dialog_node до вызова LLM) приходит раньше вызова тула.
         register_events(node)
 
     @property
@@ -711,7 +711,7 @@ class RegisterSpeakerTool(MCPTool):
 
         ``utterance_id`` — СКРЫТЫЙ аргумент (issue #2842): его нет в
         :attr:`parameters` (LLM его не видит), его подставляет
-        ``LLMToolCallAdapter`` из контекста хода dialogue_node
+        ``LLMToolCallAdapter`` из контекста хода dialog_node
         (``llm_adapter.TURN_CONTEXT_ARGS``), вырезая то, что прислала LLM.
 
         Issue #2925 — ещё три скрытых аргумента того же хода:
@@ -798,12 +798,12 @@ class RegisterSpeakerTool(MCPTool):
         # представился, а не "следующую фразу кого угодно" (см.
         # speaker_id_node._on_register_request).
         # Issue #2842 — при tool_provider=ros_mcp тул исполняется в
-        # процессе mcp_server, ``self.node`` — НЕ dialogue_node, и
+        # процессе mcp_server, ``self.node`` — НЕ dialog_node, и
         # атрибута хода у него нет. Поэтому источник правды — скрытый
         # аргумент ``utterance_id`` из подписанного запроса /mcp/execute
-        # (его подставляет dialogue_node через LLMToolCallAdapter).
+        # (его подставляет dialog_node через LLMToolCallAdapter).
         # getattr — только фолбек для in-process исполнения на самом
-        # dialogue_node.
+        # dialog_node.
         if utterance_id is None:
             utterance_id = getattr(self.node, "_current_turn_utterance_id", None)
         # Issue #2925 — регистрация согласуется с тем, что человек сказал
@@ -1035,7 +1035,7 @@ def register_speaker_gate(
 
 def register_events(node) -> OwnerEvents:
     """Ожидания ack регистрации на ноду (#3793): ``SpeakerResult`` registered/register_error по ``utterance_id``;
-    последние исходы помнятся — регистрацию по представлению шлёт ``dialogue_node`` раньше вызова тула."""
+    последние исходы помнятся — регистрацию по представлению шлёт ``dialog_node`` раньше вызова тула."""
     from rob_box_dialog_msgs.msg import SpeakerResult
 
     acks = (SpeakerResult.EVENT_REGISTERED, SpeakerResult.EVENT_REGISTER_ERROR)
@@ -1127,7 +1127,7 @@ class SetVoiceTool(MCPTool):
     был minimax». После успеха tool публикует ``/voice/tts/set_provider``
     (JSON {"provider", "voice"}); tts_node подписан и обновляет свой
     provider_chain + provider_dead_until, перепубликовывает
-    ``/voice/tts/provider_state`` — dialogue_node/mcp_server увидят
+    ``/voice/tts/provider_state`` — dialog_node/mcp_server увидят
     нового провайдера в ``[TTS]`` строке LLM-контекста.
 
     Контракт (docs/design/LLM_VOICE_SELECTION_PROPOSAL.md, issue #1765):

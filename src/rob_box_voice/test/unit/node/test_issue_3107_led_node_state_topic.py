@@ -8,7 +8,7 @@ name per ADR-0027 #2 and ``arbiter_node.VOICE_DIALOGUE_STATE_TOPIC``.
 
 ADR-0150 PR-3b (#3690): the ring lives by the turn stages (``/dialog/turn_event``,
 ``core/ring_reflex.py``); silence comes from the ``Silence`` scene in ``/dialog/session`` (#3911, #3984).
-#4354 A2: ``/voice/dialogue/state`` lost its only publisher with ``dialogue_node``; led_node no longer
+#4354 A2: ``/voice/dialogue/state`` lost its only publisher with ``dialog_node``; led_node no longer
 subscribes to it.
 
 ROS2 stubs come from this directory's conftest; ``usb`` (pyusb) is stubbed

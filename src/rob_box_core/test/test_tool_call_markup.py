@@ -3,7 +3,7 @@
 Живой прогон 35704637846 (акт 2, шаги n204/n206 — оба про сохранение факта):
 MiniMax-M3 вернула вызов тулов ТЕКСТОМ при ``tools=[]``, и он прошёл весь тракт::
 
-    [dialogue_node] 📤 LLM OUTPUT: '<functioncalls>\\n<invoke name="registerspeaker">…'
+    [dialog_node] 📤 LLM OUTPUT: '<functioncalls>\\n<invoke name="registerspeaker">…'
     [tts_node] 🔊 TTS: batch=9b15b85e 1/2, text='<functioncalls>…'
 
 Восстановление намерения в цикле тулов v1 (``tool_loop.markup_recovery``) удалено вместе с циклом (#4354 A3b).

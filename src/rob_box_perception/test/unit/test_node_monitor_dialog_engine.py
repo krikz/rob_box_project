@@ -1,6 +1,6 @@
 """Тесты ожидаемой ноды диалога в ``NodeAvailabilityMonitor`` (issue #3865, ADR-0150 PR-8).
 
-Нода диалога одна, ``/dialog_node`` (v1 ``/dialogue_node`` удалён, #4354 A5). Без ROS: ``rclpy`` монитору нужен только для
+Нода диалога одна, ``/dialog_node`` (v1 ``/dialog_node`` удалён, #4354 A5). Без ROS: ``rclpy`` монитору нужен только для
 аннотаций.
 
 Запуск:
@@ -50,7 +50,7 @@ def test_dialog_node_is_the_expected_one():
 
 
 def test_dialogue_node_is_not_expected_anywhere():
-    """#4354 A5: ``/dialogue_node`` (v1) удалён, монитор его не ждёт и не помнит."""
+    """#4354 A5: ``/dialog_node`` (v1) удалён, монитор его не ждёт и не помнит."""
     monitor = _monitor()
     _check(monitor, _OTHERS + ['/dialog_node'])
 

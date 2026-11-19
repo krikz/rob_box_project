@@ -697,7 +697,7 @@ async def test_stream_skips_premarked_unavailable_primary() -> None:
 # ---------------------------------------------------------------------------
 # RcutilsLogger compatibility (regression 13.08.2026)
 # ---------------------------------------------------------------------------
-# dialogue_node passes ``logger=self.get_logger()`` (rclpy RcutilsLogger),
+# dialog_node passes ``logger=self.get_logger()`` (rclpy RcutilsLogger),
 # whose info/warning/error/debug accept exactly ONE message positional arg.
 # health.py used std-logging ``%s``-style calls like
 # ``self._log.info("[health] stream: chain=%s active=%s", a, b)`` and the

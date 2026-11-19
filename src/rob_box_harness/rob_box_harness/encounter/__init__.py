@@ -9,7 +9,7 @@
 
 Размещение — тот же принцип, что и у шва идентичности
 (``rob_box_harness.identity``, issue #2440): оба потребителя,
-``dialogue_node`` (``rob_box_voice``) и ``mcp_server``
+``dialog_node`` (``rob_box_voice``) и ``mcp_server``
 (``rob_box_mcp_tools``), уже зависят от ``rob_box_harness`` (memory,
 identity) — общий шов присутствия живёт там же, а не в одном из
 потребителей, иначе второй был бы вынужден зависеть от первого либо

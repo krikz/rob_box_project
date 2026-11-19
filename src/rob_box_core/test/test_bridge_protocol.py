@@ -603,7 +603,7 @@ class TestCatalogDrivenChecks:
         """#4354: admin_logs.service — имя живой ноды v2, не удалённой v1.
 
         admin_logs ещё Phase 2 (server_dispatched=False), но литерал в каталоге
-        и в protocol_generated.ts был ``dialogue_node``. Живых писателей/
+        и в protocol_generated.ts был ``dialog_node``. Живых писателей/
         читателей поля service нет; нода диалога — ``dialog_node``.
         """
         expected = ["dialog_node", "rob_box_quest", "all"]

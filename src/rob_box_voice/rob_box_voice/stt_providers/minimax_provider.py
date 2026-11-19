@@ -214,7 +214,7 @@ def _httpx_timeout_exc() -> type:
     Returns the real class under a normal ``httpx`` install. Falls back to
     :class:`MiniMaxSTTUnavailableError` when ``httpx`` is monkey-patched to
     a ``types.SimpleNamespace`` (see ``test/unit/node/conftest.py:97`` —
-    used to skip real network in the dialogue_node suite). Without the
+    used to skip real network in the dialog_node suite). Without the
     fallback ``except httpx.TimeoutException`` raises
     ``AttributeError`` at the call site instead of catching the test
     stub exception, which broke PR #2369's Unit Tests (ROS2 Humble) job.

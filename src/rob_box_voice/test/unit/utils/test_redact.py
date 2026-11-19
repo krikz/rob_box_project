@@ -1,7 +1,7 @@
 """Unit tests for :mod:`rob_box_voice.utils.redact`.
 
 These cover BLK-1 (PR #907 review, OWASP A09): upstream response bodies echoed
-into ``dialogue_node`` logs MUST NOT leak ``Authorization`` headers, cookie
+into ``dialog_node`` logs MUST NOT leak ``Authorization`` headers, cookie
 values, or any other credential-shaped substring. The redactor must be a pure
 function, deterministic, and safe to call on any string (including the empty
 string and non-strings).
@@ -143,7 +143,7 @@ class TestRedactUpstreamBody:
 # ``dialogue_node._run_agent_with_retry``'s ``APIStatusError`` branch masks
 # the bearer token before the log line is emitted.
 #
-# We don't import ``dialogue_node`` here (pulls in rclpy + openai-agents
+# We don't import ``dialog_node`` here (pulls in rclpy + openai-agents
 # SDK and ties the test to a heavy stack). Instead we replicate the
 # two-line code path that pre-fix used to leak the token:
 #
@@ -163,7 +163,7 @@ class _StubResponse:
 
 
 class _FakeAPIStatusError(Exception):
-    """Stand-in for ``openai.APIStatusError`` with the attributes dialogue_node reads."""
+    """Stand-in for ``openai.APIStatusError`` with the attributes dialog_node reads."""
 
     def __init__(self, status_code: int, body: str, request_id: str):
         super().__init__(f"status={status_code}")
@@ -182,7 +182,7 @@ def _format_api_status_log(exc: _FakeAPIStatusError) -> str:
 
 
 def test_api_status_error_log_masks_bearer_token(caplog):
-    """BLK-1: the dialogue_node APIStatusError branch MUST mask.
+    """BLK-1: the dialog_node APIStatusError branch MUST mask.
     ``Authorization: Bearer <tok>`` in the error log line."""
     bearer = "Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.payload.signature"
     body = (
@@ -214,7 +214,7 @@ def test_api_status_error_log_masks_bearer_token(caplog):
 
 def test_api_status_error_log_masks_token_in_short_200_char_window(caplog):
     """The first 200 chars of the body MUST be redacted — that is what.
-    dialogue_node ships to the logger."""
+    dialog_node ships to the logger."""
     # Construct a body > 200 chars so the slice actually does something.
     padding = "x" * 300
     body = (

@@ -389,7 +389,7 @@ class TelegramNode(Node):
     def forward_to_stt(self, text: str, chat_id: Optional[int] = None) -> None:
         if not text:
             return
-        # Issue #1195 — источник реплики: source=telegram + chat_id. v1: dialogue_node
+        # Issue #1195 — источник реплики: source=telegram + chat_id. v1: dialog_node
         # по ним пропускает wake-word gate (сообщение в чат - явное обращение),
         # запоминает чат для эхо-маршрута и НЕ цепляет метку голосовой биометрии.
         # v2 (PR-12a #3706): dialog_node отдаёт реплику не Личности, а телеграм-агенту этого чата.

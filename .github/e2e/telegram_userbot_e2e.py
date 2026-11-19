@@ -5,7 +5,7 @@
 голосового e2e (e2e_voice_test.sh): здесь сообщение уходит через реальный
 Telegram Bot API от лица ТЕСТОВОГО USER-аккаунта (MTProto/Telethon), а не
 инъекцией в /voice/stt/utterance. Ловит разрывы на всём пути:
-Telegram → telegram-bot → dialogue_node → LLM → send_message → чат.
+Telegram → telegram-bot → dialog_node → LLM → send_message → чат.
 
 Ограничения (проверено 13.08, issue #1196):
   * бот не может сам себе слать сообщения (User_bot_to_bot_disabled);

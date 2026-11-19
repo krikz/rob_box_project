@@ -481,7 +481,7 @@ class VisionFaceNode(VisionHailoNode):
             return
         # ADR-0150 PR-2: типизированный SpeakerResult. Любое служебное событие
         # (registered/register_error/renamed/merged) - не сигнал присутствия
-        # (тот же контракт, что у dialogue_node/voice_adapter). Не считаем его
+        # (тот же контракт, что у dialog_node/voice_adapter). Не считаем его
         # как «голос не опознан» - это отдельный, третий случай. EVENT_MATCH == 0.
         if int(getattr(msg, 'event', 0)) != 0:
             return

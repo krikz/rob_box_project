@@ -6,7 +6,7 @@
 ====================
 ``check_acceptance`` и ``check_gate1_aggregate`` в ``e2e_voice_test.sh``
 искали имя тула ПОДСТРОКОЙ по ``docker logs voice-assistant``. Это не
-работает: ``dialogue_node`` на каждом ходе печатает в лог весь запрос к
+работает: ``dialog_node`` на каждом ходе печатает в лог весь запрос к
 LLM, включая строку
 
     tools(56): clear_waypoints, compose_music, ..., stop_music, ...
@@ -41,9 +41,9 @@ LLM, включая строку
 Реальный вызов оставляет в логе имя тула В КАВЫЧКАХ или после явного
 маркера исполнения:
 
-    dialogue_node: ✅ [turn] process_input returned: ... tools=['get_current_time', 'speak_text']
-    dialogue_node:   [3] assistant: '' tool_calls=(ToolCall(id='...', name='get_current_time', ...),)
-    dialogue_node: 📤 Отправлен запрос b5119339: get_current_time
+    dialog_node: ✅ [turn] process_input returned: ... tools=['get_current_time', 'speak_text']
+    dialog_node:   [3] assistant: '' tool_calls=(ToolCall(id='...', name='get_current_time', ...),)
+    dialog_node: 📤 Отправлен запрос b5119339: get_current_time
     mcp_server:    📥 Запрос выполнения: get_current_time с параметрами {}
     mcp_server:    ✅ Инструмент get_current_time выполнен успешно
 
@@ -131,7 +131,7 @@ def invocation_markers(tool: str) -> list:
         # tools=['x', 'y'] в итоговой строке хода + ToolCall(name='x')
         "'%s'" % t,
         '"%s"' % t,
-        # dialogue_node → mcp_server и обратно
+        # dialog_node → mcp_server и обратно
         "запрос выполнения: %s" % t,
         "инструмент %s выполнен" % t,
         "публикую результат для %s" % t,
@@ -227,8 +227,8 @@ def first_voice_cycle_position(logs: str) -> int | None:
 # реплика САМОГО ГОВОРЯЩЕГО, и подпись диктора, которую ставит
 # speaker_id_node:
 #
-#   dialogue_node: user_input='[Spkr:Саша] привет, давай знакомиться...'
-#   dialogue_node: 👤 [issue 1077] Speaker: 'Саша' conf=0.81
+#   dialog_node: user_input='[Spkr:Саша] привет, давай знакомиться...'
+#   dialog_node: 👤 [issue 1077] Speaker: 'Саша' conf=0.81
 #
 # Из-за этого три из четырёх keyword-проверок акта 2 были тавтологиями —
 # зелёными независимо от поведения робота (замер 22.09.2026):
@@ -310,13 +310,13 @@ def keyword_hit(logs: str, kw: str) -> bool:
 #
 #   [speaker_id_node] ⚠️ [issue #2829] register_request for 'Саша' has no
 #       utterance_id -- honest refusal instead of registering whoever speaks next
-#   [dialogue_node]   ⚠️ [issue #2829] Регистрация 'Саша' отклонена:
+#   [dialog_node]   ⚠️ [issue #2829] Регистрация 'Саша' отклонена:
 #       no_utterance_context (utterance_id=None)
 #
 # ``expected_tool_calls``/``discovery_tools`` доказывают только, что LLM
 # ДЁРНУЛА тул. register_speaker — fire-and-forget публикация в топик: тул
 # «выполнен успешно» и тогда, когда нода биометрии профиль не завела.
-# Исход регистрации виден ТОЛЬКО по логу speaker_id_node / dialogue_node.
+# Исход регистрации виден ТОЛЬКО по логу speaker_id_node / dialog_node.
 #
 # Регэкспы ниже — копии f-строк из кода робота, а не «похожий вид»
 # (src/rob_box_voice/rob_box_voice/speaker_id_node.py):
@@ -330,7 +330,7 @@ def keyword_hit(logs: str, kw: str) -> bool:
 # и dialogue_node.py (_on_speaker_result):
 #   Регистрация '{name}' отклонена: {error} (utterance_id=…)
 #   Регистрация '{name}' отклонена — реплика …с короче …   (too_short)
-# Отказ ищется по ОБЕИМ нодам: dialogue_node параллельно правят (#2842), и
+# Отказ ищется по ОБЕИМ нодам: dialog_node параллельно правят (#2842), и
 # если его строка поменяется, строка speaker_id_node всё равно поймает отказ.
 
 REGISTER_TOOL = "register_speaker"
@@ -356,7 +356,7 @@ _REG_REJECTED_RES = (
      "utterance_not_found"),
     (re.compile(r"Registration of '([^']*)' rejected"), "too_short"),
 )
-# Причину dialogue_node печатает явно после двоеточия; у too_short вместо
+# Причину dialog_node печатает явно после двоеточия; у too_short вместо
 # двоеточия тире — тогда причины в строке нет, и это too_short.
 _REG_REJECTED_DIALOGUE_RE = re.compile(
     r"Регистрация '([^']*)' отклонена(?::\s*([A-Za-z_]+))?"

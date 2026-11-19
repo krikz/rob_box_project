@@ -232,7 +232,7 @@ class TestTTSGraceGate:
     """Fix B (989) + Fix 993 barge-in + #4072:
 
     - Во время самого TTS VAD НЕ гейтится (issue 993): barge-in должен
-      работать. Wake-word gate в dialogue_node отсекает эхо без
+      работать. Wake-word gate в dialog_node отсекает эхо без
       помощи VAD-гейта.
     - После TTS VAD тоже не гейтится (#4072): глухой микрофон в паузе
       между сегментами выступления съедал «Робот, хватит». Эхо после
@@ -254,7 +254,7 @@ class TestTTSGraceGate:
 
         Раньше (Fix B из 989) VAD гейтился пока робот говорит, поэтому
         пользователь не мог перебить рэп командой. Теперь гейт снят —
-        wake-word в dialogue_node сам отсекает эхо собственного голоса.
+        wake-word в dialog_node сам отсекает эхо собственного голоса.
         Симулируем «TTS сейчас играет» через SpeechEvent started:
         он выставляет tts_active=True, и _vad_gated пропускает VAD
         (issue 993 barge-in).

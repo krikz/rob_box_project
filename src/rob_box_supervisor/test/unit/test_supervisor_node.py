@@ -6,7 +6,7 @@
 что осталось в этой ноде:
 
 - Нода создаётся с name="avatar_supervisor" и параметром mode="monitor".
-- Voice-управление dialogue_node (ADR-0028 S5 / ADR-0066 §6.7): после
+- Voice-управление dialog_node (ADR-0028 S5 / ADR-0066 §6.7): после
   удаления ``voice_input_mode`` супервизор управляет личностью через
   сервис ``/dialog/control`` (pause/resume). ``/avatar/set_voice_mode`` остался для
   legacy-контракта (UI Quest, web-admin) — маппится на pause/resume.
@@ -158,7 +158,7 @@ class TestAvatarSupervisorVoiceMode(unittest.TestCase):
     """ADR-0066 §6.7 — супервизор управляет личностью через ``/dialogue/control``.
 
     После удаления ``voice_input_mode`` (ADR-0066 §6) параметр
-    ``voice_input_mode`` на dialogue_node больше не существует, и супервизор
+    ``voice_input_mode`` на dialog_node больше не существует, и супервизор
     вместо ``_set_dialogue_param`` публикует JSON в ``/dialogue/control``.
     Тесты проверяют:
       * Legacy-контракт ``/avatar/set_voice_mode`` маппится на
@@ -444,14 +444,14 @@ class TestAvatarSupervisorVoicePresetsAndLanguage(unittest.TestCase):
         """voice-vr 21 / ADR-0080 §2.7 — DoD-критерий: в исходниках
         ``AvatarSupervisor`` не должно быть НИ ОДНОГО живого
         клиента записи в чужие ROS-параметры на
-        ``/dialogue_node/set_parameters`` или
+        ``/dialog_node/set_parameters`` или
         ``/tts_node/set_parameters``.
 
         Это регрессия на регрессию: до #2243 (голос-vr 21) были
         ``_set_dialogue_param`` + ``_set_tts_voice_param`` с ленивыми
         клиентами к этим сервисам, которые слали ``voice_preset``/
         ``voice_output_language`` (мёртвая запись — ADR-0066 §6.3,
-        dialogue_node только логировал) и ``yandex_voice``/
+        dialog_node только логировал) и ``yandex_voice``/
         ``minimax_voice``/``silero_speaker`` (живая запись, но
         сцеплённая с внутренней схемой имён tts_node).
         «Мёртвый»/«знание-схемы» write-side — кандидат на повторную
@@ -490,7 +490,7 @@ class TestAvatarSupervisorVoicePresetsAndLanguage(unittest.TestCase):
         live = "\n".join(live_lines)
         # DoD: write-side в чужие ROS-параметры не должен встречаться
         # как живой код. Конкретно:
-        # * нет /dialogue_node/set_parameters (был _set_dialogue_param);
+        # * нет /dialog_node/set_parameters (был _set_dialogue_param);
         # * нет /tts_node/set_parameters (был _set_tts_voice_param);
         # * нет create_client(.../set_parameters) вообще.
         for forbidden in (

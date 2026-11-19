@@ -956,7 +956,7 @@ class TestWakeWordInterruptRequest:
         req = stt_node.interrupt_pub.publish.call_args[0][0]
         assert (req.utterance_id, req.text_partial) == ("u-993", "робот, добавь бит")
         stt_node._speech_client_pubs["cancel"].publish.assert_not_called()
-        # Результат всё равно публикуется (dialogue_node обработает)
+        # Результат всё равно публикуется (dialog_node обработает)
         assert stt_node.utterance_pub.publish.call_count == 1
 
     def test_publish_result_without_wake_word_no_request(self, stt_node):

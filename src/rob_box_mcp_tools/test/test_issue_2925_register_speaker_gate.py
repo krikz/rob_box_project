@@ -6,10 +6,10 @@
     [stt_node]        ✅ ПРИНЯТО: Робот, запомни про меня: Дарья болит за Спартак …
     [mcp_server]      register_speaker с параметрами {'name': 'Дарья', 'utterance_id': 'ed597ace38e7'}
     [speaker_id_node] ⚠️ Speaker 'Дарья' — голос похож на уже известного 'Борис' (score=0.796 …)
-    [dialogue_node]   spoken='Сегодня по голосу запомнил троих: Саша, Борис и Дарья.'
+    [dialog_node]   spoken='Сегодня по голосу запомнил троих: Саша, Борис и Дарья.'
 
 Путь тот же, что на роботе (``tool_provider: ros_mcp``): контекст хода
-dialogue_node → ``LLMToolCallAdapter`` (скрытые аргументы, подписанный
+dialog_node → ``LLMToolCallAdapter`` (скрытые аргументы, подписанный
 ``/mcp/execute``) → ``MCPToolRegistry`` на узле mcp_server → настоящий
 ``RegisterSpeakerTool`` → ``/voice/speaker/register``. Харнесс — из
 ``test_register_speaker_ros_mcp_utterance.py`` (#2842).
@@ -47,7 +47,7 @@ UTT = "ed597ace38e7"  # из лога issue #2925
 
 
 class _DialogueNode2925(_h._Node):
-    """dialogue_node с контекстом хода #2925 (зеркало
+    """dialog_node с контекстом хода #2925 (зеркало
     ``DialogueNode._mcp_turn_context``)."""
 
     def __init__(self, bus, context: Dict[str, Any]) -> None:
@@ -143,7 +143,7 @@ def test_known_speaker_same_name_goes_to_2863_path():
 
 
 def test_no_turn_context_keeps_old_behaviour():
-    """Telegram/синтетика/старый dialogue_node — гейт молчит."""
+    """Telegram/синтетика/старый dialog_node — гейт молчит."""
     _result, registered, _server = _register(
         {"utterance_id": UTT}, {"name": "Дарья"}
     )

@@ -8,7 +8,7 @@
 3. ``_publish_result`` кладёт эпитет в результат биометрии.
 
 Темы речи (``/voice/speaker/observe``) и кличка от LLM
-(``/voice/speaker/{epithet_request,epithet}``) были только у ``dialogue_node``
+(``/voice/speaker/{epithet_request,epithet}``) были только у ``dialog_node``
 v1 — цепочка удалена (#4354 A2).
 
 ``SpeakerIdNode.__init__`` не вызывается (там ROS-параметры, ThreadPool и

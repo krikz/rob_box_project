@@ -33,7 +33,7 @@ Data flow (target — Phase 7+, после готовности sensor board fir
                                                                           |
                                                                           v
                                               /perception/context_update
-                                              -> dialogue_node
+                                              -> dialog_node
 
 Config file is loaded from /config/perception/context_aggregator.yaml if
 present, otherwise inline defaults are used.

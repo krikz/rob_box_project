@@ -189,7 +189,7 @@ def test_do_register_publishes_ack_and_speaker_match(node):
 
 
 def test_do_register_ack_message_unchanged_shape(node):
-    """dialogue_node/mcp_server/voice_adapter завязаны на форму ack —
+    """dialog_node/mcp_server/voice_adapter завязаны на форму ack —
     регрессия здесь тихо сломает их обработку 'event'=='registered'."""
     emb = _embedding(2)
     node._do_register("Саша", emb, speaker_id=None)

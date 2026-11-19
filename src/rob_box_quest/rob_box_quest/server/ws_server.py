@@ -473,7 +473,7 @@ class Bridge(Protocol):
         """Шаг 4б (issue #1989): опубликовать конфиг пайплайна грипа в /avatar/voice_pipeline.
 
         Отдельный канал от AV-28 set_voice_preset/language: те меняют
-        voice_preset на dialogue_node (личность), а этот меняет _pipeline_*
+        voice_preset на dialog_node (личность), а этот меняет _pipeline_*
         на СУПЕРВИЗОРЕ (грип-трансформация, см. supervisor_node.py:2634).
         Если ``llm_enabled=False`` или ``preset=""`` — грип произносит
         дословно (0 вызовов LLM). Сервер уже провалидировал whitelist (см.
