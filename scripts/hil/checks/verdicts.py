@@ -165,7 +165,13 @@ def load_proximity(path: Path = PROXIMITY_FILE):
 
 _TTS = re.compile(r"TTS: .*?text=(['\"])(.*)\1\s*$")
 _TRIGGER = re.compile(r"Триггер: (\S+)")
-_ZONE = re.compile(r"зона (\w+) → (\w+) \(до корпуса ([0-9.]+|—)")
+_ZONE = re.compile(r"зона (\w+) → (\w+) \(до корпуса ([0-9.]+|—) м\)(?: в точке \(([+-][0-9.]+), ([+-][0-9.]+)\))?")
+#: Коридор хода защиты (#4438): полоса корпуса ± corridor_margin_m. Габарит — footprint Nav2
+#: (nav2_params.yaml: y ±0.3025), запас коридора — proximity.Thresholds.corridor_margin_m (0.05).
+#: Точка стопа с |y| больше этого — вне коридора: по решению Шифу 10.11 стопа по ней быть не должно.
+CORRIDOR_HALF_M = 0.3525
+#: Стоп внутри коридора не позже этого зазора (proximity.Thresholds.stop_m). Ниже — защита пропустила порог.
+STOP_GAP_MIN_M = 0.19
 
 
 def tts(events: Sequence[Event]) -> List[Tuple[float, str]]:
@@ -188,14 +194,15 @@ def triggers(events: Sequence[Event], names: Sequence[str], since: float, until:
     return out
 
 
-def zone_transitions(events: Sequence[Event]) -> List[Tuple[float, str, str, float]]:
-    """Смены зоны защиты: (время, было, стало, зазор до корпуса или nan)."""
+def zone_transitions(events: Sequence[Event]) -> List[Tuple[float, str, str, float, Optional[Tuple[float, float]]]]:
+    """Смены зоны защиты: (время, было, стало, зазор до корпуса или nan, точка в base_footprint или None)."""
     out = []
     for e in events:
         m = _ZONE.search(e.text)
         if m:
             gap = math.nan if m.group(3) == "—" else float(m.group(3))
-            out.append((e.t, m.group(1), m.group(2), gap))
+            point = (float(m.group(4)), float(m.group(5))) if m.group(4) else None
+            out.append((e.t, m.group(1), m.group(2), gap, point))
     return out
 
 
@@ -611,6 +618,21 @@ class ZoneRun:
         return [z for z in zone_transitions(self.guard) if z[2] == "stop" and lo <= z[0] <= hi]
 
 
+def _stop_gap_fault(gap: float, point: Optional[Tuple[float, float]]) -> Optional[str]:
+    """Почему стоп нарушает порог; None — зазор честный.
+
+    Внутри коридора хода зазор меньше ``STOP_GAP_MIN_M`` — защита пропустила порог 0.20 м (#4365).
+    Вне коридора зазор 0.16–0.19 м — торец сбоку, стопа быть не должно (решение Шифу 10.11, #4438).
+    """
+    if point is None or math.isnan(gap):
+        return None
+    if abs(point[1]) <= CORRIDOR_HALF_M and gap < STOP_GAP_MIN_M:
+        return f"зазор {gap:.2f} м внутри коридора (|y|={abs(point[1]):.2f} ≤ {CORRIDOR_HALF_M}) — порог 0.20 пропущен"
+    if abs(point[1]) > CORRIDOR_HALF_M and gap < 0.20:
+        return f"стоп по точке вне коридора (|y|={abs(point[1]):.2f} > {CORRIDOR_HALF_M}) при зазоре {gap:.2f} м"
+    return None
+
+
 def _hold_drift(probe: Sequence[Event]) -> Optional[float]:
     """Сдвиг правды Gazebo от EM_ON + 0.5 с до конца толкания (м): стоп держит, пока команда толкает."""
     em = kinds(probe, "EM_ON")
@@ -644,7 +666,7 @@ def v_zone(run: ZoneRun, px) -> Verdict:
                 f"зазор впереди в конце: {end[0].text if end else '?'}",
             ),
         )
-    t_stop, prev, _, gap = stops[0]
+    t_stop, prev, _, gap, point = stops[0]
     alarm = px.ALARMS[px.ZONE_STOP]
     lo, hi = run.window()
     beeps = triggers(run.voice, (alarm.sound,), lo, hi)
@@ -658,8 +680,12 @@ def v_zone(run: ZoneRun, px) -> Verdict:
         f"«{alarm.phrase}»: {len(said)}" + (f", через {said[0][0] - t_stop:+.2f} с" if said else ""),
         f"маячок {alarm.animation}: {run.lights} запросов",
     ]
+    fault = _stop_gap_fault(gap, point)
+    if fault:
+        facts.append(fault)
     bad = (
         not (gap > 0.0)
+        or fault is not None
         or drift is None
         or drift > HOLD_DRIFT_M
         or not beeps
@@ -669,6 +695,28 @@ def v_zone(run: ZoneRun, px) -> Verdict:
         or said[0][0] - t_stop > SPEECH_LAG_S
     )
     return Verdict(*sc, FAIL if bad else PASS, tuple(facts))
+
+
+def v_corner_stop(guard: Sequence[Event]) -> Verdict:
+    """#4631: стоп у угла корпуса на пути. Строка стопа несёт зазор и точку в ``base_footprint``.
+
+    PASS — точка внутри коридора хода и зазор не меньше ``STOP_GAP_MIN_M`` (защита встала не позже 0.20 м).
+    FAIL — зазор меньше порога внутри коридора, либо стоп по точке вне коридора (решение Шифу 10.11, #4438).
+    NOT_TRIGGERED — входа в stop не было: угол на пути не проверен.
+    """
+    sc = ("#4631", "corner")
+    stops = [z for z in zone_transitions(guard) if z[2] == "stop"]
+    if not stops:
+        return Verdict(*sc, NOT_TRIGGERED, ("в журнале защиты нет входа в stop — угол на пути не проверен",))
+    _, prev, _, gap, point = stops[0]
+    where = "точка не напечатана" if point is None else f"точка ({point[0]:+.2f}, {point[1]:+.2f})"
+    facts = [f"зона {prev} → stop, до корпуса {gap:.2f} м, {where}"]
+    fault = _stop_gap_fault(gap, point)
+    if point is None:
+        fault = "строка стопа без точки — коридор хода не проверить"
+    if fault:
+        return Verdict(*sc, FAIL, tuple(facts + [fault]))
+    return Verdict(*sc, PASS, tuple(facts + [f"зазор {gap:.2f} м ≥ {STOP_GAP_MIN_M} внутри коридора хода"]))
 
 
 def v_guard_sound(run: ZoneRun, px, mode: str, env_text: str) -> Verdict:
@@ -768,6 +816,8 @@ def evaluate(scenario: str, d: Path, args) -> Verdict:
     px = load_proximity()
     if scenario == "zone":
         return v_zone(_zone_run(d, px), px)
+    if scenario == "corner":
+        return v_corner_stop(parse_docker(_read(d, "guard.log")))
     if scenario == "guard_sound":
         return v_guard_sound(_zone_run(d, px), px, args.mode, "\n".join(_read(d, "env.txt")))
     raise SystemExit(f"неизвестный сценарий {scenario}")
