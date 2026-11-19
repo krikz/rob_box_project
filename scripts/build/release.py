@@ -32,6 +32,7 @@ import subprocess
 import sys
 import tarfile
 from datetime import datetime, timezone
+from functools import cache
 from pathlib import Path
 from typing import Any, Callable, Iterable
 
@@ -343,7 +344,7 @@ def check_bundle_image_versions(
 
 
 def _role_entry(
-    repo_root, role, release, services, resolve, args, manifest, git_sha
+    repo_root, role, release, services, resolve, args, manifest, git_sha, resolve_external
 ) -> tuple[dict[str, Any], bytes]:
     compose = yaml.safe_load(
         (repo_root / "docker" / role / "docker-compose.yaml").read_text(
@@ -366,7 +367,7 @@ def _role_entry(
         )
         images[name] = f"{args['image_prefix']}@{require_digest(tag, resolve)}"
     # Сторонние образы — только digest; плавающий тег без записи в таблице → BuildError.
-    external = [pin_external_image(img, resolve) for img in external_raw]
+    external = [pin_external_image(img, resolve_external) for img in external_raw]
     # Бандл не должен врать: .image-versions.<docker_tag> = тег/digest релиза, не устаревший файл из git.
     iv_stub = {
         "release": release,
@@ -418,8 +419,10 @@ def build_release(
     image_prefix: str = DEFAULT_IMAGE_PREFIX,
     min_previous: str | None = None,
     created: str | None = None,
+    *,
+    resolve_external: Callable[[str], str] | None = None,
 ) -> tuple[dict[str, Any], dict[str, bytes]]:
-    """(release dict, {роль: байты бандла}). `resolve(тег) -> sha256:…` — digest образа `<repo>:<тег>`."""
+    """Собрать release и бандлы. Сторонний резолвер принимает полный ref образа."""
     rf.check_release_name(release)
     manifest = GBM.load_manifest(repo_root / BUILD_MANIFEST)
     services = all_services(manifest)
@@ -430,9 +433,10 @@ def build_release(
         "ros_distro": manifest["defaults"]["ros_distro"],
     }
     roles, bundles = {}, {}
+    external_resolver = resolve if resolve_external is None else resolve_external
     for role in rf.ROLES:
         roles[role], bundles[role] = _role_entry(
-            repo_root, role, release, services, resolve, args, manifest, git_sha
+            repo_root, role, release, services, resolve, args, manifest, git_sha, external_resolver
         )
     doc = {
         "schema": rf.SCHEMA,
@@ -534,7 +538,22 @@ def publish_release_dir(out: Path, registry: Registry, channel_tag: bool = True)
 # --- CLI ------------------------------------------------------------------------------------------------------
 
 
-def _resolver(args: argparse.Namespace) -> Callable[[str], str]:
+def _external_manifest_digest(image: str) -> str:
+    result = subprocess.run(
+        ["docker", "buildx", "imagetools", "inspect", "--format", "{{.Manifest.Digest}}", "--", image],
+        capture_output=True,
+        text=True,
+        stdin=subprocess.DEVNULL,
+        timeout=30,
+    )
+    if result.returncode:
+        raise BuildError(
+            f"образ {image!r}: buildx imagetools inspect (exit {result.returncode}): {result.stderr.strip()}"
+        )
+    return result.stdout.strip()
+
+
+def _resolver(args: argparse.Namespace) -> tuple[Callable[[str], str], Callable[[str], str]]:
     if args.digests:
         table = json.loads(Path(args.digests).read_text(encoding="utf-8"))
 
@@ -543,12 +562,17 @@ def _resolver(args: argparse.Namespace) -> Callable[[str], str]:
                 raise KeyError(tag)
             return table[tag]
 
-        return from_table
+        return from_table, from_table
     if not args.resolve_registry:
         raise BuildError("нужен --digests или --resolve-registry")
     reg = Registry(args.resolve_registry)
     repo = args.image_prefix.split("/", 1)[1]
-    return lambda tag: reg.manifest_digest(repo, tag)
+
+    def from_local_registry(tag: str) -> str:
+        return reg.manifest_digest(repo, tag)
+
+    # Один сторонний тег должен иметь одинаковый digest во всех ролях этого релиза.
+    return from_local_registry, cache(_external_manifest_digest)
 
 
 def _secret(args: argparse.Namespace) -> str:
@@ -570,6 +594,7 @@ def _git_sha(repo_root: Path) -> str:
 
 
 def cmd_build(args: argparse.Namespace) -> int:
+    resolve, resolve_external = _resolver(args)
     release, bundles = build_release(
         REPO_ROOT,
         args.release,
@@ -577,9 +602,10 @@ def cmd_build(args: argparse.Namespace) -> int:
         args.git or _git_sha(REPO_ROOT),
         args.image_tag,
         args.docker_tag,
-        _resolver(args),
+        resolve,
         image_prefix=args.image_prefix,
         min_previous=args.min_previous or None,
+        resolve_external=resolve_external,
     )
     write_release_dir(Path(args.out), release, bundles)
     print(f"release {release['release']}: {args.out}/{rf.RELEASE_FILE}")
@@ -627,7 +653,7 @@ def _parser() -> argparse.ArgumentParser:
     b.add_argument(
         "--resolve-registry",
         default="",
-        help="откуда брать digest (например http://localhost:5000)",
+        help="реестр своих образов (например http://localhost:5000); сторонние через Docker Buildx",
     )
     b.add_argument(
         "--digests", default="", help="JSON {тег: sha256:…} вместо запроса к реестру"
