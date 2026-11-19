@@ -17,6 +17,8 @@
 #   controller_abort #4770  цель в свободную сторону, FollowPath принят, корпус удержан нулём на /cmd_vel_web
 #                   (priority 50 > Nav2). Progress checker абортит за movement_time_allowance (30 с, не крутим).
 #                   Не nav_aborted: без принятого FollowPath вердикт NOT_TRIGGERED.
+#   client_kill     #4435  цель принята, процесс пробы убит (SIGTERM) без cancel_goal. Робот должен встать.
+#   host_cancel     #4435  ros2 action cancel /navigate_to_pose с хоста (нулевой GoalInfo), не наш тул.
 #
 # Предусловия проверяет сам и честно отказывает (выход 3): stand.lock начинается с HIL_CHECKS_OWNER (замок берёт тот,
 # кто запускает, скрипт его не трогает), hil.sh status = HIL on и один /controller_manager, нужные контейнеры running,
@@ -59,7 +61,7 @@ OUT="$HIL_CHECKS_OUT"
 GZ="$HIL_SIM_PREFIX-gazebo"
 REMOTE_PROBE=/tmp/hil_checks/hil_probe.py
 SSH_OPTS=(-o BatchMode=yes -o ConnectTimeout=10 -o ServerAliveInterval=5 -o ServerAliveCountMax=3)
-ALL=(orphan zone guard_off corner nav_aborted stop_idle stop_active orphan_natural controller_abort)
+ALL=(orphan zone guard_off corner nav_aborted stop_idle stop_active orphan_natural controller_abort client_kill host_cancel)
 NAV_TOOLS_RX='navigate_to_coordinates|navigate_to_waypoint|move_direction'
 GUARD_SOUND_CHANGED=0
 
@@ -119,7 +121,8 @@ needs_for() {  # контейнеры, без которых выбранные 
     local sc need=(nav2 twist-mux proximity-guard "$GZ")
     for sc in "$@"; do
         case "$sc" in
-            orphan | orphan_natural | nav_aborted | stop_active | controller_abort) need+=(followpath-watchdog) ;;
+            orphan | orphan_natural | nav_aborted | stop_active | controller_abort | client_kill | host_cancel) \
+                need+=(followpath-watchdog) ;;
         esac
         case "$sc" in
             zone | guard_off | nav_aborted | stop_idle | stop_active) need+=(voice-assistant) ;;
@@ -320,6 +323,59 @@ sc_controller_abort() {
     dlogs "$HIL_MAIN_HOST" nav2 "$t0" "$d/nav2.log"
     dlogs "$HIL_MAIN_HOST" followpath-watchdog "$t0" "$d/watchdog.log"
     verdict controller_abort "$d" --grace "$ORPHAN_GRACE_S" --allowance "$PROGRESS_ALLOWANCE_S"
+}
+sc_client_kill() {
+    # #4435: клиент цели убит без cancel_goal. Слушатель — отдельная проба watch.
+    local d="$OUT/client_kill" t0 ppid pid
+    mkdir -p "$d"
+    t0=$(iso_now)
+    probe "$d/watch.log" watch --secs 90 &
+    ppid=$!
+    sleep 3
+    rsh "$HIL_SANDBOX_HOST" "docker exec $GZ rm -f /tmp/hil_probe.killed /tmp/hil_probe.host_cancel" || true
+    rsh "$HIL_SANDBOX_HOST" "docker exec -d $GZ /entrypoint.sh python3 -u /hil_probe.py leave --ahead $HOLD_AHEAD_M --after 30" \
+        >"$d/leave_start.txt" 2>&1 || true
+    if ! wait_file "$d/watch.log" "CLIENT_PID" 40; then
+        skip "#4435" client_kill "CLIENT_PID нет за 40 с (FollowPath не принят или проба не стартовала)"
+        probe_stop
+        wait "$ppid" || true
+        return 0
+    fi
+    pid=$(grep -o -E "pid=[0-9]+" "$d/watch.log" | head -1 | cut -d= -f2)
+    rsh "$HIL_SANDBOX_HOST" "docker exec $GZ sh -c \"printf %s $pid > /tmp/hil_probe.killed; kill -TERM $pid\"" \
+        >"$d/kill.txt" 2>&1 || true
+    sleep $((ORPHAN_GRACE_S + 8))
+    probe_stop
+    wait "$ppid" || true
+    cat "$d/watch.log" >"$d/probe.log"
+    dlogs "$HIL_MAIN_HOST" nav2 "$t0" "$d/nav2.log"
+    verdict client_kill "$d" --grace "$ORPHAN_GRACE_S"
+}
+sc_host_cancel() {
+    # #4435: ros2 action cancel с хоста (все цели, нулевой GoalInfo). Не наш тул.
+    local d="$OUT/host_cancel" t0 ppid
+    mkdir -p "$d"
+    t0=$(iso_now)
+    probe "$d/watch.log" watch --secs 90 &
+    ppid=$!
+    sleep 3
+    rsh "$HIL_SANDBOX_HOST" "docker exec $GZ rm -f /tmp/hil_probe.killed /tmp/hil_probe.host_cancel" || true
+    rsh "$HIL_SANDBOX_HOST" "docker exec -d $GZ /entrypoint.sh python3 -u /hil_probe.py leave --ahead $HOLD_AHEAD_M --after 30" \
+        >"$d/leave_start.txt" 2>&1 || true
+    if ! wait_file "$d/watch.log" "FP_STATUS .*status=EXECUTING" 40; then
+        skip "#4435" host_cancel "FollowPath не принят за 40 с — отмена с хоста не проверена"
+        probe_stop
+        wait "$ppid" || true
+        return 0
+    fi
+    rsh "$HIL_SANDBOX_HOST" "docker exec $GZ /entrypoint.sh bash -lc \"source /opt/ros/humble/setup.bash; ros2 action cancel /navigate_to_pose; touch /tmp/hil_probe.host_cancel\"" \
+        >"$d/cancel.txt" 2>&1 || true
+    sleep $((ORPHAN_GRACE_S + 8))
+    probe_stop
+    wait "$ppid" || true
+    cat "$d/watch.log" >"$d/probe.log"
+    dlogs "$HIL_MAIN_HOST" nav2 "$t0" "$d/nav2.log"
+    verdict host_cancel "$d" --grace "$ORPHAN_GRACE_S"
 }
 sc_orphan_natural() {
     local d="$OUT/orphan_natural" t0

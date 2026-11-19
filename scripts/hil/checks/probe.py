@@ -12,6 +12,8 @@
             нулевой Twist на /cmd_vel_web (priority 50 > Nav2) до abort progress checker. Allowance не крутим.
     wall    [--speed 0.1] [--max-s 40] [--push 4]  телеоп /cmd_vel_web к ближайшему препятствию (#4365, #4470)
     backoff [--speed 0.1] [--secs 4]          отъехать назад
+    leave   [--ahead 1.5] [--after 2]         #4435: цель, дождаться FollowPath, записать CLIENT_PID и выйти
+                                              без cancel_goal. Дальше клиента убивает run_checks.sh.
 
 Направление выбирает скан (свободное — для orphan/nav --ahead, ближайшее препятствие — для wall), поза в ``map`` —
 из TF. Моторов в HIL нет: всё едет в Gazebo.
@@ -56,6 +58,9 @@ STATUS = {
 CMD_HZ = 10.0
 #: Файл-сигнал «хватит слушать» для ``watch`` (в контейнере; старый удаляется на старте пробы).
 STOP_FILE = "/tmp/hil_probe.stop"
+#: Маркеры оркестра: kill клиента и ros2 action cancel с хоста. Проба пишет KIND со своим sim.
+KILL_MARK = "/tmp/hil_probe.killed"
+HOST_CANCEL_MARK = "/tmp/hil_probe.host_cancel"
 #: Сектор «впереди» и окно сглаживания скана, рад.
 FRONT_HALF = math.radians(10)
 WINDOW_HALF = math.radians(5)
@@ -272,8 +277,24 @@ def ahead(n, dist_m, margin=0.9):
 
 
 def cmd_watch(n, a):
-    """Слушать ``secs`` с или до файла ``STOP_FILE`` (его создаёт run_checks.sh, когда сценарий кончился)."""
-    spin_for(n, a.secs, until=lambda: os.path.exists(STOP_FILE))
+    """Слушать ``secs`` с или до файла ``STOP_FILE`` (его создаёт run_checks.sh, когда сценарий кончился).
+
+    Файлы ``/tmp/hil_probe.killed`` и ``/tmp/hil_probe.host_cancel`` (их кладёт оркестр) — маркеры
+    kill клиента и ``ros2 action cancel`` с хоста. Строка пишется с sim-временем пробы, не с эпохи хоста.
+    """
+    seen = {"killed": False, "host": False}
+
+    def note_marks():
+        if not seen["killed"] and os.path.exists(KILL_MARK):
+            seen["killed"] = True
+            pid = open(KILL_MARK).read().strip() or "?"
+            out("CLIENT_KILLED", n, pid=pid, signal="TERM")
+        if not seen["host"] and os.path.exists(HOST_CANCEL_MARK):
+            seen["host"] = True
+            out("HOST_CANCEL", n, action="navigate_to_pose")
+
+    spin_for(n, a.secs, 0.2, note_marks, until=lambda: os.path.exists(STOP_FILE))
+    note_marks()
 
 
 def cmd_nav(n, a):
@@ -503,6 +524,38 @@ def rotate(n, target_yaw, w=0.4, tol=math.radians(4), secs=30):
     return done
 
 
+def cmd_leave(n, a):
+    """#4435: цель ушла, FollowPath принят — записать pid и выйти, не вызывая cancel_goal.
+
+    Отмену или kill делает оркестр снаружи. Если FollowPath не принят — SKIP, не молчаливый успех.
+    """
+    client = ActionClient(n, NavigateToPose, "/navigate_to_pose")
+    if not wait_ready(n, need_tf=True) or not client.wait_for_server(timeout_sec=30):
+        out("ERROR", n, what="нет_/navigate_to_pose")
+        return
+    x, y, heading, d = ahead(n, a.ahead)
+    if d < 0.5:
+        out("LEAVE_SKIP", n, why="мало_места", free=f"{d:.2f}")
+        return
+    gx, gy = x + d * math.cos(heading), y + d * math.sin(heading)
+    out("NAV_SENT", n, x=f"{gx:.2f}", y=f"{gy:.2f}", yaw=f"{math.degrees(heading):.0f}")
+    goal = NavigateToPose.Goal()
+    goal.pose = n.pose_stamped(gx, gy, heading)
+    gh = wait_future(n, client.send_goal_async(goal), 10)
+    if gh is None or not gh.accepted:
+        out("NAV_RESULT", n, status="REJECTED")
+        out("LEAVE_SKIP", n, why="цель_не_принята")
+        return
+    res = gh.get_result_async()
+    if not spin_for(n, 20, until=lambda: _follow_live(n)) or res.done():
+        status = STATUS.get(res.result().status, "?") if res.done() else "NO_FOLLOW"
+        out("LEAVE_SKIP", n, why="FollowPath_не_принят", status=status)
+        return
+    out("CLIENT_PID", n, pid=str(os.getpid()))
+    spin_for(n, a.after)
+    out("CLIENT_LEFT", n, pid=str(os.getpid()))
+
+
 def cmd_backoff(n, a):
     if not wait_ready(n, need_tf=False):
         return
@@ -535,6 +588,9 @@ def parse_args(argv):
     p.add_argument("--max-s", dest="max_s", type=float, default=40)
     p.add_argument("--max-dist", dest="max_dist", type=float, default=3.5)
     p.add_argument("--push", type=float, default=4.0)
+    p = sub.add_parser("leave")
+    p.add_argument("--ahead", type=float, default=1.5)
+    p.add_argument("--after", type=float, default=2.0)
     p = sub.add_parser("backoff")
     p.add_argument("--speed", type=float, default=0.1)
     p.add_argument("--secs", type=float, default=4)
@@ -556,6 +612,7 @@ COMMANDS = {
     "wall": cmd_wall,
     "backoff": cmd_backoff,
     "corner": cmd_corner,
+    "leave": cmd_leave,
 }
 
 

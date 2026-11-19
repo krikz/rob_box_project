@@ -435,6 +435,68 @@ def test_controller_abort_no_data_without_probe():
     assert vd.v_controller_abort([], [], 2.0, 30.0).status == vd.NO_DATA
 
 
+# ── kill клиента и отмена с хоста (#4435, матрица) ──────────────────────────────────────────
+
+
+def _drop_rows(killed=True, canceled=True, fp_end="CANCELED", mux_late=False, arrived=False):
+    rows = [
+        pr(1.0, "NAV_STATUS", goal="n1", status="EXECUTING"),
+        pr(1.2, "FP_STATUS", goal="f1", status="EXECUTING"),
+        pr(1.5, "CLIENT_PID", pid="4242"),
+        pr(2.0, "MUX", v="+0.080", w="+0.000"),
+    ]
+    if killed:
+        rows.append(pr(3.0, "CLIENT_KILLED", pid="4242", signal="TERM"))
+    if canceled:
+        rows.append(pr(3.0, "HOST_CANCEL", action="navigate_to_pose"))
+    rows += [
+        pr(3.4, "FP_STATUS", goal="f1", status=fp_end),
+        pr(3.5, "NAV_STATUS", goal="n1", status="CANCELED" if canceled or killed else "EXECUTING"),
+        pr(4.0, "MUX", v="+0.000", w="+0.000"),
+    ]
+    if mux_late:
+        rows.append(pr(6.5, "MUX", v="+0.050", w="+0.000"))
+    if arrived:
+        rows.append(pr(3.6, "NAV_RESULT", status="SUCCEEDED"))
+    return rows
+
+
+def test_client_kill_pass_when_follow_stops_without_cancel_goal():
+    rows = _drop_rows(canceled=False)
+    v = vd.v_client_kill(vd.parse_probe(rows), 2.0)
+    assert v.status == vd.PASS, v.line()
+    assert "наблюдавшихся целей FollowPath: 1" in v.line()
+
+
+def test_client_kill_not_triggered_without_kill_or_follow():
+    assert vd.v_client_kill(vd.parse_probe(_drop_rows(killed=False, canceled=False)), 2.0).status == vd.NOT_TRIGGERED
+    bare = [pr(1.0, "CLIENT_KILLED", pid="1", signal="TERM"), pr(2.0, "NAV_STATUS", goal="n1", status="CANCELED")]
+    assert vd.v_client_kill(vd.parse_probe(bare), 2.0).status == vd.NOT_TRIGGERED
+
+
+def test_client_kill_fail_when_still_driving_or_arrived():
+    assert vd.v_client_kill(vd.parse_probe(_drop_rows(canceled=False, mux_late=True)), 2.0).status == vd.FAIL
+    assert vd.v_client_kill(vd.parse_probe(_drop_rows(canceled=False, arrived=True)), 2.0).status == vd.FAIL
+
+
+def test_host_cancel_pass_and_not_triggered_without_cancel():
+    v = vd.v_host_cancel(vd.parse_probe(_drop_rows(killed=False)), 2.0)
+    assert v.status == vd.PASS, v.line()
+    assert vd.v_host_cancel(vd.parse_probe(_drop_rows(killed=False, canceled=False)), 2.0).status == vd.NOT_TRIGGERED
+
+
+def test_host_cancel_counts_only_observed_follow():
+    rows = [pr(0.0, "FP_STATUS", goal="replayed", status="ABORTED")] + _drop_rows(killed=False)
+    v = vd.v_host_cancel(vd.parse_probe(rows), 2.0)
+    assert v.status == vd.PASS and "replayed" not in v.line()
+    assert "наблюдавшихся целей FollowPath: 1" in v.line()
+
+
+def test_drop_no_data():
+    assert vd.v_client_kill([], 2.0).status == vd.NO_DATA
+    assert vd.v_host_cancel([], 2.0).status == vd.NO_DATA
+
+
 # ── фразы тулов движения (#3789) ─────────────────────────────────────────────────────────────
 
 ABORT_RAW = [
