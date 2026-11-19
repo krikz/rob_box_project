@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import argparse
 import datetime
+import time
 from pathlib import Path
 from typing import List, Optional, Sequence
 
@@ -144,8 +145,6 @@ def sample_host(root: Path, host: str, disk_dev: str, gpu_path: Optional[Path]) 
 
 def _loop(argv: Sequence[str]) -> int:
     """Писать одну строку в --out каждую секунду, пока процесс жив. 1 Гц, без docker."""
-    import time
-
     p = argparse.ArgumentParser()
     p.add_argument("--host", required=True)
     p.add_argument("--out", type=Path, required=True)
@@ -162,8 +161,12 @@ def _loop(argv: Sequence[str]) -> int:
 
 def main(argv: Sequence[str] | None = None) -> int:
     args = list(argv) if argv is not None else None
-    if args and args[0] == "--loop":
-        return _loop(args[1:])
+    # Скрипт зовёт ``resource_sample.py --loop --host … --out …``.
+    # Раньше --loop принимался только первым аргументом — argparse отвечал
+    # unrecognized arguments, и лог ресурсов был пуст (пара run1).
+    if args and "--loop" in args:
+        rest = [a for a in args if a != "--loop"]
+        return _loop(rest)
     p = argparse.ArgumentParser(description=__doc__.split("\n\n", 1)[0])
     p.add_argument("--host", required=True)
     p.add_argument("--root", type=Path, default=Path("/"))

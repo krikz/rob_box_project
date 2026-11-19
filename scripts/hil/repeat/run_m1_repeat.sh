@@ -53,7 +53,8 @@ log() { printf '%s %s\n' "$(date -u +%FT%TZ)" "$*" | tee -a "$SUMMARY"; }
 # Один ros2 param get. Баннер ros_with_namespace.sh без «value is:» — пусто, зовём ещё раз.
 param_get_once() {
     local pname="$1" raw value
-    raw=$(main "docker exec $(printf '%q' "$NAV2_CONTAINER") /ros_scripts/ros_with_namespace.sh bash -c 'source /opt/ros/humble/setup.bash; ros2 param get /controller_server $(printf '%q' "$pname")'" 2>/dev/null || true)
+    # timeout 15: run2 (0.005b) висел 30 мин, ros2 param get не вернулся. Нет числа — missing, не ждём.
+    raw=$(main "docker exec $(printf '%q' "$NAV2_CONTAINER") /ros_scripts/ros_with_namespace.sh bash -c 'source /opt/ros/humble/setup.bash; timeout 15 ros2 param get /controller_server $(printf '%q' "$pname")'" 2>/dev/null || true)
     printf 'PARAM %s\n%s\n' "$pname" "$raw" >>"$ART/params_raw.txt"
     value=$(python3 -X utf8 -c 'import sys; sys.path.insert(0, sys.argv[1]); from m1_topics import parse_param_value; v = parse_param_value(sys.stdin.read()); print("" if v is None else v)' "$HERE" <<<"$raw")
     printf '%s' "$value"
@@ -246,6 +247,15 @@ capture_params_after_ready() {
     if grep -q '=missing$' "$ART/params_values.txt"; then
         return 1
     fi
+    # Оверлей читается на configure. Если просили false, а узел ответил не false —
+    # yaml лёг мимо (пара run1: True при файле false). Цель не шлём.
+    if [ "${M1_REPEAT_SHORT_CIRCUIT:-true}" = false ]; then
+        if ! grep -qx 'FollowPath.short_circuit_trajectory_evaluation=[Ff]alse' "$ART/params_values.txt"; then
+            log "SHORT_CIRCUIT_NOT_APPLIED $(grep short_circuit "$ART/params_values.txt" || true)"
+            return 1
+        fi
+        log "SHORT_CIRCUIT_APPLIED false"
+    fi
     log "PARAMS_NUMERIC $(wc -l <"$ART/params_values.txt") values"
 }
 
@@ -359,7 +369,10 @@ TOPICS="$(topics_line)"
 log "BAG_TOPICS $TOPICS"
 sandbox "mkdir -p '$REMOTE_OUT'" || { log "REMOTE_OUT_FAIL"; exit 31; }
 # shellcheck disable=SC2086
-sandbox "docker exec -d $(printf '%q' "$G") /entrypoint.sh bash -c 'echo \$\$ >$(printf '%q' "$CONTAINER_OUT")/recorder.pid; exec ros2 bag record -o $(printf '%q' "$CONTAINER_OUT")/bag $TOPICS >$(printf '%q' "$CONTAINER_OUT")/bag.log 2>&1'" \
+python3 -X utf8 -c 'import sys; sys.path.insert(0, sys.argv[1]); from m1_topics import bag_qos_overrides_yaml; open(sys.argv[2], "w", encoding="utf-8").write(bag_qos_overrides_yaml())' \
+    "$HERE" "$ART/bag_qos.yaml"
+scp -q -o BatchMode=yes "$ART/bag_qos.yaml" "$SANDBOX:$REMOTE_OUT/bag_qos.yaml" || { log "BAG_QOS_SCP_FAIL"; exit 31; }
+sandbox "docker exec -d $(printf '%q' "$G") /entrypoint.sh bash -c 'echo \$\$ >$(printf '%q' "$CONTAINER_OUT")/recorder.pid; exec ros2 bag record --qos-profile-overrides-path $(printf '%q' "$CONTAINER_OUT")/bag_qos.yaml -o $(printf '%q' "$CONTAINER_OUT")/bag $TOPICS >$(printf '%q' "$CONTAINER_OUT")/bag.log 2>&1'" \
     || { log "BAG_RECORD_FAIL"; exit 31; }
 sleep 5
 sandbox "test -d '$REMOTE_OUT/bag' && echo BAG_RECORDING_DIRECTORY_PRESENT" >"$ART/bag_start.log" 2>&1 \
