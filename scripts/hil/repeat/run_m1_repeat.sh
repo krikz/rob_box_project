@@ -439,9 +439,16 @@ for _ in $(seq 1 $((NAV_READY_TIMEOUT / 5))); do
     sleep 5
 done
 if [ "$ready" != 1 ]; then
-    # Half1 100054Z: bt_navigator inactive, local_costmap ждал odom→base_footprint.
-    # Кадр не появился за окно — это не «мало ждали», а нет TF. Пишем факт и выходим.
+    # Half1 100054Z: bag /tf = только map→icp_odom, /odom пуст. local_costmap
+    # ждала odom→base_footprint. Первая дыра цепочки — нет кадра odom.
+    # Пишем, кто должен его дать, и выходим. Таймаут не растягиваем.
     main "docker logs --tail 40 $(printf '%q' "$NAV2_CONTAINER") 2>&1" >"$ART/nav_not_ready_tail.log" 2>&1 || true
+    {
+        echo "FIRST_MISSING odom->base_footprint"
+        echo "publisher diff_drive_controller in gazebo (controller_manager.yaml odom_frame_id=odom base_frame_id=base_footprint)"
+        echo "bag_half1 /tf had map->icp_odom only; /odom message_count 0"
+        echo "icp_odom->odom publisher rtabmap icp_odometry; needs guess frame odom"
+    } >"$ART/tf_break.txt"
     if grep -q 'frame does not exist' "$ART/nav_not_ready_tail.log"; then
         log "NAV_NOT_READY tf_odom_missing M1_NOT_SENT"
     else
@@ -461,10 +468,8 @@ if [ "$cs_ready" != 1 ]; then
     log "CONTROLLER_NOT_READY M1_NOT_SENT"
     exit 34
 fi
-# Сэмплеры до проверки параметров: чистая пара остановилась на SHORT_CIRCUIT
-# раньше SAMPLERS_STARTED, логи остались пустыми. Старт не зависит от param get.
+# Сэмплеры до ожидания ready: half1 умер на TF, логи остались 0 байт.
 start_resource_samplers || log "SAMPLERS_START_FAILED"
-capture_params_after_ready || { log "PARAMS_INCOMPLETE M1_NOT_SENT"; exit 35; }
 # Граф до цели. detach: twist_mux не в подписчиках /cmd_vel_yaw. Иначе — есть.
 if [ "${YAW_MODE:-off}" = detach ]; then
     main "docker exec $(printf '%q' "$NAV2_CONTAINER") /ros_scripts/ros_with_namespace.sh bash -c 'source /opt/ros/humble/setup.bash; timeout 20 ros2 topic info /cmd_vel_yaw --verbose'" \
@@ -475,6 +480,7 @@ if [ "${YAW_MODE:-off}" = detach ]; then
     fi
     log "YAW_MUX_DETACHED topic info has no twist_mux"
 fi
+capture_params_after_ready || { log "PARAMS_INCOMPLETE M1_NOT_SENT"; exit 35; }
 log "GOAL_SEND run_id=$RUN_ID M1 target=(-3.7,4.0,0) after BEFORE_GOAL_OK and PARAMS_NUMERIC"
 # route.py пишет в общий out/route.log. Перед целью очищаем, после — копируем
 # в каталог этого run_id. Иначе pull забирает GOAL прошлого прогона.
