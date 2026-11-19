@@ -147,6 +147,57 @@ def test_hil_lock_and_hotpatch_block_before_any_role(tmp_path):
     assert mock.calls == []
 
 
+SOUND_OLD = "sha256:sound-previous"
+SOUND_NEW = "sha256:sound-target"
+
+
+class HealthMock:
+    """Роль переключается по digest. Sound на новом digest отвечает unhealthy."""
+
+    def __init__(self):
+        self.calls = []
+        self.running = {}
+
+    def switch(self, role, release, digest):
+        self.calls.append((role, release, digest))
+        self.running[role] = digest
+        if role == "sound" and digest == SOUND_NEW:
+            return "unhealthy"
+        return "switched"
+
+
+def test_sound_health_failure_restores_previous_digest_and_does_not_start_main(tmp_path):
+    state_dir = _dir(tmp_path)
+    mock = HealthMock()
+    digests = {
+        "vision": {"2026.11.09-1": "sha256:vision-previous", "2026.11.10-1": "sha256:vision-target"},
+        "sound": {"2026.11.09-1": SOUND_OLD, "2026.11.10-1": SOUND_NEW},
+        "main": {"2026.11.09-1": "sha256:main-previous", "2026.11.10-1": "sha256:main-target"},
+    }
+
+    rec = fleet_op.run(
+        state_dir,
+        "op-health",
+        target_release="2026.11.10-1",
+        origin_release="2026.11.09-1",
+        switch=mock.switch,
+        digests=digests,
+    )
+
+    assert rec["status"] == fleet_op.STATUS_FAILED
+    assert rec["failed_role"] == "sound"
+    assert rec["pult"]["result"] == "error"
+    assert rec["pult"]["verified"] is True
+    assert rec["pult"]["result"] != "updated"
+    assert mock.running == {
+        "vision": "sha256:vision-previous",
+        "sound": SOUND_OLD,
+    }
+    assert "main" not in mock.running
+    assert ("main", "2026.11.10-1", "sha256:main-target") not in mock.calls
+    assert ("sound", "2026.11.09-1", SOUND_OLD) in mock.calls
+
+
 def test_rollback_check_failure_is_not_reported_as_success(tmp_path):
     state_dir = _dir(tmp_path)
     mock = RoleMock(["switched", "boom", "check-failed"])
