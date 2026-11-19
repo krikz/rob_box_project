@@ -1900,15 +1900,25 @@ _BREAKBEAT_FIELDS = dict(
 #: дропе), свой кит (``heavy``/``fat``,
 #: малый ``drum_snare_hard``/``sn_dolf`` и на build, хэты ``hat_noiz``/``hat_zap``), фанковые каркасы с 16-ми на «а»,
 #: сцена шире клуба хэтами, середина (бас ``wobblebass``/``jbass``, лид громче клубного).
+#: Свип (#3550): не клубный слайдер. У клуба build 400→4000 и брейк 1200 на басе, пэде и лиде; у breaks брейк
+#: пака держит верх, а тональные роли прикрыты (build 800→2200, брейк 700, дроп 2200) — иначе трек 1 breaks и клуба
+#: на одной теме делят одну кривую среза (пробник 19.11: ``mix.lpf`` bass/pad/lead совпал побайтно).
 _BREAKS_KITS: Mapping[str, Mapping[str, str]] = {
     "funk": {"hats": "x.Xxx.X.x.Xxx.Xx", "perc": _NO_PERC},
     "skip": {"hats": "x.X..xX.x.X..xXx", "perc": _NO_PERC},
+}
+_BREAKS_SECTION_LPF: Mapping[str, Tuple[float, float]] = {
+    **{name: (2200.0, 2200.0) for name in ("intro", "intro_low", "drop", "drop2", "outro")},
+    "build": (800.0, 2200.0), "build2": (800.0, 2200.0), "break": (700.0, 700.0), "break2": (700.0, 700.0),
+    "outro_tail": (2200.0, 300.0),
 }
 _BREAKS_FIELDS = dict(
     _BREAKBEAT_FIELDS, kits=_BREAKS_KITS, timbres=_BREAKBEAT_TIMBRES,
     # уровни — как у breaks до #3550 (робот 08.10: громче малый/лид/хэты → низ 0.29, середина 0.70)
     role_level_db=_BREAKBEAT_ROLE_LEVEL_DB,
-    section_lpf=_CLUB_SECTION_LPF, lpf_roles=_CLUB_LPF_ROLES,
+    section_lpf=_BREAKS_SECTION_LPF, lpf_roles=_CLUB_LPF_ROLES,
+    # свинг шаффла, не гоуст-16-х клуба: качаются оффбит-восьмые (2/6/10/14), как у джаза, но величина — окно стиля
+    swing_steps=(2, 6, 10, 14),
     stereo={"hats": {"pan": 0.6, "first": 1}, "clap": {"pan": 0.2, "first": -1},
             "pad": {"pan": 0.6, "detune": PAD_DETUNE, "haas_ms": PAD_HAAS_MS}},
     drum_files={"clap": ("sonicpi_drum_snare_hard", "sonicpi_sn_dolf"), "hats": ("sonicpi_hat_noiz", "sonicpi_hat_zap")},
