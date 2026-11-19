@@ -222,9 +222,11 @@ class TestKnowledgeDrift:
 
 # -- bash: run_step с восстановлением на фейковом роботе ---------------------------------------------------
 
-def _run_step(tmp_path, log_text, plays, body, env="", replace=False):
+def _run_step(tmp_path, log_text, plays, body, env="", replace=False, extra=()):
     """``plays[i]`` -- куски лога, которые робот «скажет» после (i+2)-го PLAY (первый PLAY -- фраза шага).
-    ``replace`` -- кусок ЗАМЕНЯЕТ лог (окно нового PLAY начинается с чистого листа: фейк не режет ``--since``)."""
+    ``replace`` -- кусок ЗАМЕНЯЕТ лог (окно нового PLAY начинается с чистого листа: фейк не режет ``--since``).
+    ``extra`` -- имена функций, которые вынуть из e2e_voice_test.sh поверх LIB (например ``robot_ros`` и
+    ``step_stt_inject`` для #4951: инъекция живёт в основном скрипте, а ``stt_inject_command`` -- в LIB)."""
     bindir = tmp_path / "bin"
     bindir.mkdir()
     log = tmp_path / "robot.log"
@@ -259,7 +261,7 @@ def _run_step(tmp_path, log_text, plays, body, env="", replace=False):
             "ensure_outdir", "emit_step", "mark_fail_kind", "vad_reject_reason", "emit_step_fail_or_vad",
             "check_cycle", "eq_command_wav", "play_eq_wav", "phrase_eq_wav", "step_recover", "step_wake_replay",
             "check_patterns", "check_music_compare", "_stt_step_executed", "step_heard", "step_stt_replay",
-            "step_stt_garbage_retry", "synth_surface_log", "check_eq_vad_budget", "run_step")),
+            "step_stt_garbage_retry", "synth_surface_log", "check_eq_vad_budget", "run_step") + tuple(extra)),
         # синтез: фраза восстановления -- файл с её текстом (по нему видно, ЧТО сыграно)
         'synth_command() { printf "%s" "$1" > "$3"; }',
         env,

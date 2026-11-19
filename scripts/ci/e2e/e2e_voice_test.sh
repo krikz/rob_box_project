@@ -2362,14 +2362,20 @@ step_stt_replay() {  # $1=label $2=safe
         [ "${E2E_WAIT_RC:-0}" = "1" ] && timeout=1
         attempt="${E2E_STEP_STT_ATTEMPT:-1}"
         decision="$(python3 "$(_events_py)" stt-miss --text "${text:-}" --heard "$heard" \
-            --attempt "$attempt" --timeout "$timeout" --barge-in "${_barge_mode:-0}" 2>&1)" || {
+            --attempt "$attempt" --timeout "$timeout" --barge-in "${_barge_mode:-0}" \
+            --fallback "${E2E_STT_INJECT_FALLBACK:-1}" --injected "${E2E_STEP_STT_INJECTED:-0}" 2>&1)" || {
             log "STEP ${label}: решение о промахе STT не разобрано: ${decision} -- повтора нет"
             return 0
         }
         reason="$(printf '%s\n' "$decision" | _ev_kv reason)"
         max="$(printf '%s\n' "$decision" | _ev_kv max)"
         if [ "$(printf '%s\n' "$decision" | _ev_kv retry)" != "1" ]; then
-            if [ "$reason" = "attempts_exhausted" ]; then
+            # #4951: честные повторы кончились -- последняя попытка топиком (#4951, решение Шифу 19.11).
+            # Инъекции не было (rc 2/3) -- ниже прежний честный FAIL stt_miss.
+            if [ "$reason" = "inject" ] && step_stt_inject "$label" "${text:-}"; then
+                return 0
+            fi
+            if [ "$reason" = "attempts_exhausted" ] || [ "$reason" = "inject" ]; then
                 log "STEP ${label}: STT промах на всех попытках (услышано «${heard}», stt_attempt=${attempt}/${max}) -- повтора нет, честный FAIL"
                 emit_step "${label} FAIL stt_miss stt_attempt=${attempt}/${max}"
                 mark_fail_kind no_reaction
@@ -2402,7 +2408,7 @@ step_stt_replay() {  # $1=label $2=safe
 # «уже повторяли». Шагу без stt_replay, пустому ПРИНЯТО и шагу, уже спасённому другим видом, -- повтора нет.
 # Команда узнана, а тишина осталась -- не этот класс (command_heard): отказ действия, FAIL сразу.
 step_stt_garbage_retry() {  # $1=label $2=safe
-    local label="$1" safe="$2" heard out missing decision attempt max
+    local label="$1" safe="$2" heard out missing decision attempt max reason
     # Цикл, как у step_wake_replay: повтор сам ждёт ответ, и второй мусор судится здесь же,
     # до того как run_step напишет FAIL по rc=4.
     while [ "${E2E_WAIT_RC:-0}" = "4" ] && [ "${E2E_REPLY_VERDICT:-}" = "silenced" ]; do
@@ -2418,14 +2424,21 @@ step_stt_garbage_retry() {  # $1=label $2=safe
         missing="$(printf '%s\n' "$out" | _ev_kv missing)"
         attempt="${E2E_STEP_STT_ATTEMPT:-1}"
         decision="$(python3 "$(_events_py)" stt-retry --text "${text:-}" --heard "$heard" \
-            --attempt "$attempt" --missing "${missing:--}" --allowed 1 2>&1)" || {
+            --attempt "$attempt" --missing "${missing:--}" --allowed 1 \
+            --fallback "${E2E_STT_INJECT_FALLBACK:-1}" --injected "${E2E_STEP_STT_INJECTED:-0}" 2>&1)" || {
             log "STEP ${label}: решение о повторе мусора STT не разобрано: ${decision} -- повтора нет"
             return 0
         }
         # Потолок -- поле max того же решения (STT_GARBAGE_MAX_ATTEMPTS). Числа в bash нет.
         max="$(printf '%s\n' "$decision" | _ev_kv max)"
+        reason="$(printf '%s\n' "$decision" | _ev_kv reason)"
         if [ "$(printf '%s\n' "$decision" | _ev_kv retry)" != "1" ]; then
-            log "STEP ${label}: silenced, услышано «${heard}» -- повтора нет ($(printf '%s\n' "$decision" | _ev_kv reason), stt_attempt=${attempt}/${max})"
+            # #4951: повторы мусора кончились -- последняя попытка топиком, а не звуком (решение Шифу 19.11).
+            # Инъекции не было (rc 2/3) -- тишина остаётся, прежний честный FAIL по rc=4.
+            if [ "$reason" = "inject" ] && step_stt_inject "$label" "${text:-}"; then
+                return 0
+            fi
+            log "STEP ${label}: silenced, услышано «${heard}» -- повтора нет (${reason}, stt_attempt=${attempt}/${max})"
             return 0
         fi
         E2E_STEP_STT_ATTEMPT=$((attempt + 1))
@@ -2439,6 +2452,85 @@ step_stt_garbage_retry() {  # $1=label $2=safe
         play_eq_wav "$OUT_DIR/cmd_${safe}_eq.wav"
         step_wait_after_play "$BEFORE" 0
     done
+}
+
+# step_stt_inject LABEL TEXT — #4951 (решение Шифу 19.11): STT не донёс оригинальную команду шага, и честные повторы
+# харнесса кончились (no_accept после всех попыток, мусор до потолка, тишина после повтора). Последняя попытка -- не
+# звуком, а топиком: харнесс публикует ОРИГИНАЛЬНУЮ фразу шага в /voice/stt/utterance (source=respeaker,
+# provider=e2e_harness) ОДИН раз за шаг, только при живом подписчике (stt_inject_command; публикация в пустоту --
+# не инъекция). Судья окна шага ищет в логе «✅ ПРИНЯТО», а пишет его только stt_node, поэтому харнесс пишет честную
+# строку приёма сам -- «✅ ПРИНЯТО (e2e_harness): <фраза>». Ход после инъекции судится как обычный, но итог шага --
+# «OK recovered_stt_inject» (маркер E2E_RECOVER stt_inject), не чистый PASS: команду вёз харнесс, а не микрофон.
+# Ход не состоялся -- «FAIL no_accept_after_inject»: «робот не реагирует» теперь доказано (команда у него была).
+# Ход принят, но цикл не подтверждён -- честный cycle_unconfirmed; ошибка LLM/TTS -- llm_error.
+# rc: 0 -- вердикт уже поставлен (шаг прошёл или FAIL записан), вызывающему судить больше нечего; 2 -- не применимо
+# (пустой текст, barge_in, E2E_STT_INJECT_FALLBACK=0, инъекция в шаге уже была или пыталась); 3 -- инъекции не было
+# (нет подписчика / рабочий процесс не ответил) -- вызывающий пишет свой прежний честный FAIL.
+step_stt_inject() {  # $1=label $2=text
+    local label="$1" text="${2:-}" new_before ij_rc
+    if [ -z "$text" ]; then
+        log "STEP ${label}: инъекция команды в топик не применима: текста шага нет"
+        return 2
+    fi
+    if [ "${E2E_STT_INJECT_FALLBACK:-1}" != "1" ]; then
+        log "STEP ${label}: инъекция команды в топик выключена (E2E_STT_INJECT_FALLBACK=0)"
+        return 2
+    fi
+    if [ -n "${E2E_STEP_STT_INJECTED:-}" ] || [ -n "${E2E_STEP_STT_INJECT_TRIED:-}" ]; then
+        log "STEP ${label}: инъекция в этом шаге уже была -- второго захода нет (#4951)"
+        return 2
+    fi
+    if [ "${_barge_mode:-0}" = "1" ]; then
+        log "STEP ${label}: barge_in -- инъекции команды в топик нет (#4951)"
+        return 2
+    fi
+    E2E_STEP_STT_INJECT_TRIED=1
+    new_before="$(${ROBOT_SSH} "date -u +%Y-%m-%dT%H:%M:%SZ" 2>/dev/null || date -u +%Y-%m-%dT%H:%M:%SZ)"
+    log "STEP ${label}: STT не донёс команду -- последняя попытка через топик: «${text}» в /voice/stt/utterance (#4951)"
+    stt_inject_command "$text"
+    ij_rc=$?
+    if [ "$ij_rc" = "1" ]; then
+        log "STEP ${label}: инъекции не было -- шаг судится как раньше (честный FAIL)"
+        return 3
+    fi
+    if [ "$ij_rc" = "2" ]; then
+        log "STEP ${label}: ❌ реплика ушла, но приём в лог не записан -- ход не проверяем (injection_unverified)"
+        emit_step "${label} FAIL injection_unverified"
+        mark_fail_kind infra
+        E2E_STT_MISS_FAIL=1
+        return 0
+    fi
+    E2E_STEP_STT_INJECTED=1
+    E2E_STEP_RECOVERED="stt_inject"
+    recover_mark stt_inject "$label" "text=«${text}»"
+    BEFORE="$new_before"
+    E2E_LAST_PLAY_SINCE="$new_before"
+    STEP_BEFORE="$new_before"
+    log "STEP ${label}: инъекция удалась -- сужу ход как обычный; окно шага с инъекции, итог не чистый PASS (#4951)"
+    step_wait_after_play "$BEFORE" 0
+    case "${E2E_WAIT_RC:-0}" in
+        0) return 0 ;;   # ход состоялся -- вызывающий продолжает обычное судейство/итог
+        1) log "STEP ${label}: ❌ ПРИНЯТО после инъекции есть, но цикл LLM/TTS не подтверждён за потолок -- честный FAIL"
+           emit_step "${label} FAIL cycle_unconfirmed_after_accept after_recover_stt_inject"
+           mark_fail_kind no_reaction
+           E2E_STT_MISS_FAIL=1
+           return 0 ;;
+        2) log "STEP ${label}: ❌ после инъекции ход закончен без ответа: ${E2E_REPLY_REASON:--}"
+           emit_step "${label} FAIL turn_${E2E_REPLY_VERDICT:--} after_recover_stt_inject (${E2E_REPLY_REASON:--})"
+           mark_fail_kind llm_error
+           E2E_STT_MISS_FAIL=1
+           return 0 ;;
+        3) log "STEP ${label}: ❌ команда доставлена в топик, робот её не принял -- «робот не реагирует» теперь доказано"
+           emit_step "${label} FAIL no_accept_after_inject"
+           mark_fail_kind no_reaction
+           E2E_STT_MISS_FAIL=1
+           return 0 ;;
+        *) log "STEP ${label}: ❌ после инъекции хода нет (verdict=${E2E_REPLY_VERDICT:--}, ${E2E_REPLY_REASON:--})"
+           emit_step "${label} FAIL turn_${E2E_REPLY_VERDICT:--} after_recover_stt_inject"
+           mark_fail_kind no_reaction
+           E2E_STT_MISS_FAIL=1
+           return 0 ;;
+    esac
 }
 
 # presynth_recovery_phrases ROWS — #3989: фразы восстановления голосами акта -- в кэш синтеза до первого PLAY:
@@ -2734,6 +2826,9 @@ run_step() {  # $1=text $2=voice $3=step_label $4=expect_kind(cycle|wake-gated|b
         case "${E2E_WAIT_RC:-0}" in
             0|1) step_stt_replay "$label" "$safe" ;;
         esac
+        # #4951: повтор stt_replay сам мог кончиться тишиной с мусором в ПРИНЯТО -- этот класс судит мусорный
+        # цикл (его потолок ведёт к инъекции). Гейт while внутри: не silenced -- no-op.
+        [ "${E2E_WAIT_RC:-0}" = "4" ] && [ "${E2E_REPLY_VERDICT:-}" = "silenced" ] && step_stt_garbage_retry "$label" "$safe"
         [ "${E2E_STT_MISS_FAIL:-0}" = "1" ] && return 1
         # #4608: повтор/восстановление не удалось сыграть -- это сбой стенда, а не вердикт робота по шагу.
         [ "${E2E_PLAY_FAILED:-0}" = "1" ] && { step_stand_play_failed "$label"; return 1; }
@@ -2807,6 +2902,16 @@ run_step() {  # $1=text $2=voice $3=step_label $4=expect_kind(cycle|wake-gated|b
             emit_step "${label} FAIL cycle_unconfirmed_after_accept"
             mark_fail_kind no_reaction
             return 1
+        fi
+        # #4951 (решение Шифу 19.11): команду не приняли ни в одной попытке -- последняя попытка не звуком,
+        # а топиком: оригинальная фраза шага в /voice/stt/utterance. Инъекция состоялась и ход после неё есть --
+        # шаг проходит как обычный, но с маркером recovered_stt_inject (не чистый PASS: команду вёз харнесс).
+        # step_stt_inject вернул 0 -- вердикт после инъекции уже поставлен (FAIL с E2E_STT_MISS_FAIL или ход OK).
+        step_stt_inject "$label" "${text:-}"
+        if [ "$?" = "0" ]; then
+            [ "${E2E_STT_MISS_FAIL:-0}" = "1" ] && return 1
+            log "STEP ${label}: ход после инъекции состоялся -- шаг судится по обычным правилам, итог recovered_stt_inject, не чистый PASS"
+            return 0
         fi
         # Та же развилка, что и в backlog-ветке: «робот не ответил» и «робот
         # не услышал, потому что audio_node отбросил звук до STT» — разные
@@ -3456,6 +3561,8 @@ elif [ -n "$SCENARIO_FILE" ]; then
         E2E_STEP_WAKE_ATTEMPT=""
         E2E_STEP_STT_REPLAYED=""
         E2E_STEP_STT_ATTEMPT=""
+        E2E_STEP_STT_INJECTED=""
+        E2E_STEP_STT_INJECT_TRIED=""
         E2E_STT_MISS_FAIL=""
         # retry_acceptance = доп. попытки при FAIL patterns/acceptance.
         # Нужно для dj01: LLM недетерминирован — если renardo не запустился

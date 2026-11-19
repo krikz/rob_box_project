@@ -11,6 +11,11 @@
 Сессия диалога (issue #3989): ``session_state.json`` -- последний latched-снимок /dialog/session (нет файла -- нода
 ничего не публиковала); реплика в /voice/stt/utterance пишется строкой в ``utterances``, «говори» снимает кадры
 ``Silence`` (как Tier-1 unsilence у dialog_node); FAKE_UNSILENCE_STUCK=1 -- тишина не снимается.
+
+Инъекция харнесса (#4951, решение Шифу 19.11): реплика с ``provider="e2e_harness"`` -- не микрофон, а харнесс;
+робот на неё отвечает как на обычную команду. Шаблон ``inject_reaction`` (строки лога с метками ``{NOW-x}``)
+дописывается в ``reaction_log``, fake_robot_ssh.sh отдаёт его в ``docker logs`` ПОСЛЕ строки приёма -- так
+проверяется, что харнесс судит ход после инъекции, а не только факт публикации.
 """
 
 import json
@@ -22,6 +27,8 @@ _STATE_FILE = os.path.join(_STATE, "music_state.json")
 _CALLS_FILE = os.path.join(_STATE, "mcp_calls")
 _SESSION_FILE = os.path.join(_STATE, "session_state.json")
 _UTTERANCES_FILE = os.path.join(_STATE, "utterances")
+_REACTION_FILE = os.path.join(_STATE, "inject_reaction")
+_REACTION_LOG = os.path.join(_STATE, "reaction_log")
 
 _pending_stops = []  # (due, tool)
 _queued_results = []  # (due, json_text)
@@ -41,6 +48,8 @@ def _on_utterance(msg):
     with open(_UTTERANCES_FILE, "a", encoding="utf-8") as fh:
         fh.write(json.dumps({"text": msg.text, "source": msg.source, "provider": msg.provider},
                             ensure_ascii=False) + "\n")
+    if getattr(msg, "provider", "") == "e2e_harness":
+        _reaction_to_injection()
     session = _read_state(_SESSION_FILE)
     if session is None or "говори" not in msg.text.lower() or os.environ.get("FAKE_UNSILENCE_STUCK") == "1":
         return
@@ -48,6 +57,19 @@ def _on_utterance(msg):
     data["scenes"] = [s for s in data.get("scenes", []) if s.get("kind") != "Silence"]
     with open(_SESSION_FILE, "w", encoding="utf-8") as fh:
         json.dump(data, fh)
+
+
+def _reaction_to_injection():
+    """#4951: ход робота после инъекции харнесса. Шаблон ``inject_reaction`` (строки лога с метками ``{NOW-x}``)
+    дописывается в ``reaction_log``; fake_robot_ssh.sh отдаёт его в ``docker logs`` после строки приёма.
+    Шаблона нет -- робот на инъекцию не реагирует (это и проверяет честный FAIL)."""
+    try:
+        with open(_REACTION_FILE, encoding="utf-8") as fh:
+            text = fh.read()
+    except OSError:
+        return
+    with open(_REACTION_LOG, "a", encoding="utf-8") as fh:
+        fh.write(text if text.endswith("\n") else text + "\n")
 
 
 def _write_idle():

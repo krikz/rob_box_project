@@ -432,8 +432,13 @@ WAKE_REPLAY = "wake_replay"
 #: слова не нашлись в ПРИНЯТО -- фраза звучит ещё раз, ОДИН раз за шаг, окно шага начинается с повтора (:func:`stt_verdict`).
 STT_REPLAY = "stt_replay"
 OPT_IN_RECOVERY: Tuple[str, ...] = (WAKE_REPLAY, STT_REPLAY)
+#: ``stt_inject`` (решение Шифу 19.11, #4951) -- STT не донёс фразу шага (``no_accept`` / мусор / потолок повторов):
+#: харнесс сам публикует ОРИГИНАЛЬНУЮ команду шага в ``/voice/stt/utterance`` -- один раз за шаг, только если у топика
+#: есть подписчик. Ход после инъекции судится как обычный, но шаг помечается ``OK recovered_stt_inject``, а не чистым
+#: PASS. Своей фразы у вида нет (это не реплика роботу), поэтому он вне :data:`RECOVERY`/:data:`OPT_IN_RECOVERY`.
+STT_INJECT = "stt_inject"
 #: Все виды, которые шаг может записать в ``recover`` и которые ставят маркер ``E2E_RECOVER <вид> <шаг>``.
-STEP_RECOVERY_KINDS: Tuple[str, ...] = RECOVERABLE + OPT_IN_RECOVERY
+STEP_RECOVERY_KINDS: Tuple[str, ...] = RECOVERABLE + OPT_IN_RECOVERY + (STT_INJECT,)
 #: Утечки прошлого акта, которые харнесс убирает на старте акта (#3989 п.5, #4027): тишина -- тем же видом и той же
 #: репликой, что у шага (:data:`RECOVERY`), играющая музыка -- стопом через ``/mcp/execute``.
 ACT_RECOVERY: Tuple[str, ...] = (SILENCED, "music")
@@ -600,7 +605,8 @@ def heard_matches_command(text: str, heard: str) -> bool:
 
 
 def stt_miss_retry(text: str, heard: str, attempt: int, timeout: bool = False,
-                   crash: bool = False, barge_in: bool = False) -> Dict[str, Any]:
+                   crash: bool = False, barge_in: bool = False,
+                   fallback: bool = False, injected: bool = False) -> Dict[str, Any]:
     """Повтор шага, если STT принял непустую чужую фразу (#4741 n1009, #4738 n709; потолок -- 17.11).
 
     Повтор (``retry=1``), когда гипотеза не пустая и :func:`heard_matches_command` ложь, пока попытка меньше
@@ -608,6 +614,9 @@ def stt_miss_retry(text: str, heard: str, attempt: int, timeout: bool = False,
     Повтора нет: пустое ПРИНЯТО (таймаут/нет гипотезы), голое вейк-слово (подхват бэклога после ``no_wake``),
     падение робота, перебивание, совпавшая фраза (в том числе таймаут цикла после правильного ПРИНЯТО --
     нет TTS/тула этим повтором не маскируется). Словарь подмен не нужен.
+    ``fallback`` (решение Шифу 19.11, #4951): на потолке -- исход ``inject`` вместо ``attempts_exhausted``:
+    харнесс отправляет оригинальную команду шага в /voice/stt/utterance, шаг судится по реакции робота.
+    ``injected`` -- инъекция в этом шаге уже была: тогда ``attempts_exhausted`` остаётся честным.
     Возвращает ``retry``, ``reason``, ``attempt``, ``max``."""
     if crash:
         reason = "crash"
@@ -620,7 +629,7 @@ def stt_miss_retry(text: str, heard: str, attempt: int, timeout: bool = False,
     elif heard_matches_command(text, heard):
         reason = "timeout" if timeout else "command_heard"
     elif attempt >= STT_GARBAGE_MAX_ATTEMPTS:
-        reason = "attempts_exhausted"
+        reason = "attempts_exhausted" if injected or not fallback else "inject"
     else:
         reason = "retry"
     return {
@@ -632,7 +641,8 @@ def stt_miss_retry(text: str, heard: str, attempt: int, timeout: bool = False,
 
 
 def stt_garbage_retry(text: str, heard: str, attempt: int, missing: str = "",
-                      allowed: bool = True) -> Dict[str, Any]:
+                      allowed: bool = True, fallback: bool = False,
+                      injected: bool = False) -> Dict[str, Any]:
     """Повтор хода, если STT вернул не команду, а мусор (#4694, 17.11).
 
     Повтор (``retry=1``), когда шаг его разрешает (``stt_replay``), распознанный текст не совпал с командой
@@ -640,6 +650,8 @@ def stt_garbage_retry(text: str, heard: str, attempt: int, missing: str = "",
     не ``-``), пока попытка меньше :data:`STT_GARBAGE_MAX_ATTEMPTS` (считая первую). На потолке ``retry=0``,
     ``reason=attempts_exhausted`` -- честный FAIL, не зелёный. Не мусор (команда узнана, слова на месте,
     ПРИНЯТО пусто) повтора не просит: тишина на узнанной команде -- отказ действия, не флак STT.
+    ``fallback``/``injected`` -- как у :func:`stt_miss_retry`: на потолке ``reason=inject``, пока инъекции
+    оригинальной команды в /voice/stt/utterance не было (решение Шифу 19.11, #4951).
     Возвращает ``retry``, ``reason``, ``attempt``, ``max``."""
     if not allowed:
         reason = "not_allowed"
@@ -650,7 +662,7 @@ def stt_garbage_retry(text: str, heard: str, attempt: int, missing: str = "",
     elif not missing or missing == "-":
         reason = "keys_present"
     elif attempt >= STT_GARBAGE_MAX_ATTEMPTS:
-        reason = "attempts_exhausted"
+        reason = "attempts_exhausted" if injected or not fallback else "inject"
     else:
         reason = "retry"
     return {
@@ -697,6 +709,21 @@ def session_report(report: Any) -> Dict[str, object]:
         after = int(silence_frame(after, now) is not None)
     detail = _describe(frame, now) if report.get("snapshot") else "снимка нет (сессию с запуска ноды не меняли)"
     return {"fetch": 1, "silenced": int(frame is not None), "after": after, "detail": detail}
+
+
+def inject_report(report: Any) -> Dict[str, object]:
+    """Ответ рабочего процесса инъекции (``injected``, ``subscribers``) -> ``injected`` (1 -- реплика ушла в
+    /voice/stt/utterance, у топика был подписчик на момент публикации) и ``subscribers``.
+
+    Публикация в пустоту -- не инъекция: без подписчика сообщение теряется, и шаг остаётся честным FAIL, а не
+    «восстановлен инъекцией» (issue #4951, решение Шифу 19.11)."""
+    if not isinstance(report, Mapping) or "injected" not in report:
+        return {"injected": 0, "subscribers": 0}
+    try:
+        subscribers = int(report.get("subscribers") or 0)
+    except (TypeError, ValueError):
+        subscribers = 0
+    return {"injected": int(bool(report.get("injected")) and subscribers > 0), "subscribers": subscribers}
 
 
 # -- предусловие шага: skip_when (#3971 R21) --------------------------------------------------------------------
@@ -1205,6 +1232,16 @@ def _cmd_session(opts: Dict[str, str], flags: List[str]) -> int:
     return 0
 
 
+def _cmd_inject(opts: Dict[str, str], flags: List[str]) -> int:
+    """``inject < report.json`` -> ``injected=`` / ``subscribers=`` (см. :func:`inject_report`)."""
+    try:
+        report = json.loads(sys.stdin.read())
+    except ValueError:
+        report = None
+    _emit(inject_report(report))
+    return 0
+
+
 def _cmd_mark(opts: Dict[str, str], flags: List[str]) -> int:
     """``--kind K --where W [--detail D]`` -> строка маркера ``E2E_RECOVER``; чужой вид -- rc 2 и причина в stderr."""
     try:
@@ -1262,8 +1299,9 @@ def _cmd_stt(opts: Dict[str, str], flags: List[str]) -> int:
 
 
 def _cmd_stt_retry(opts: Dict[str, str], flags: List[str]) -> int:
-    """``--text ФРАЗА --heard ПРИНЯТО --attempt N --missing СЛОВА [--allowed 0|1]`` -> ``retry=`` / ``reason=`` /
-    ``attempt=`` / ``max=``. ``--attempt`` не число -- rc 2. Решает :func:`stt_garbage_retry`, не bash."""
+    """``--text ФРАЗА --heard ПРИНЯТО --attempt N --missing СЛОВА [--allowed 0|1] [--fallback 0|1] [--injected 0|1]``
+    -> ``retry=`` / ``reason=`` / ``attempt=`` / ``max=``. ``--attempt`` не число -- rc 2. Решает
+    :func:`stt_garbage_retry`, не bash."""
     try:
         attempt = int(opts["--attempt"] or "1")
     except ValueError:
@@ -1271,13 +1309,15 @@ def _cmd_stt_retry(opts: Dict[str, str], flags: List[str]) -> int:
         return 2
     _emit(stt_garbage_retry(
         opts["--text"], opts["--heard"], attempt, opts["--missing"], allowed=opts["--allowed"] != "0",
+        fallback=opts["--fallback"] == "1", injected=opts["--injected"] == "1",
     ))
     return 0
 
 
 def _cmd_stt_miss(opts: Dict[str, str], flags: List[str]) -> int:
-    """``--text ФРАЗА --heard ПРИНЯТО --attempt N [--timeout 0|1] [--crash 0|1] [--barge-in 0|1]`` -> ``retry=`` /
-    ``reason=`` / ``attempt=`` / ``max=``. ``--attempt`` не число -- rc 2. Решает :func:`stt_miss_retry`, не bash."""
+    """``--text ФРАЗА --heard ПРИНЯТО --attempt N [--timeout 0|1] [--crash 0|1] [--barge-in 0|1]
+    [--fallback 0|1] [--injected 0|1]`` -> ``retry=`` / ``reason=`` / ``attempt=`` / ``max=``. ``--attempt``
+    не число -- rc 2. Решает :func:`stt_miss_retry`, не bash."""
     try:
         attempt = int(opts["--attempt"] or "1")
     except ValueError:
@@ -1286,6 +1326,7 @@ def _cmd_stt_miss(opts: Dict[str, str], flags: List[str]) -> int:
     _emit(stt_miss_retry(
         opts["--text"], opts["--heard"], attempt, timeout=opts["--timeout"] == "1",
         crash=opts["--crash"] == "1", barge_in=opts["--barge-in"] == "1",
+        fallback=opts["--fallback"] == "1", injected=opts["--injected"] == "1",
     ))
     return 0
 
@@ -1384,6 +1425,7 @@ def _cmd_require(opts: Dict[str, str], flags: List[str]) -> int:
 COMMANDS: Mapping[str, Callable[[Dict[str, str], List[str]], int]] = MappingProxyType({
     "state": _cmd_state, "quiet": _cmd_quiet, "anchor": _cmd_anchor,
     "policy": _cmd_policy, "recovery": _cmd_recovery, "wake-retry": _cmd_wake_retry, "session": _cmd_session,
+    "inject": _cmd_inject,
     "mark": _cmd_mark, "skips": _cmd_skips, "skip": _cmd_skip, "compare": _cmd_compare, "stt": _cmd_stt,
     "stt-retry": _cmd_stt_retry, "stt-miss": _cmd_stt_miss,
     "requires": _cmd_requires, "require": _cmd_require, "barewake": _cmd_barewake,
@@ -1391,10 +1433,11 @@ COMMANDS: Mapping[str, Callable[[Dict[str, str], List[str]], int]] = MappingProx
 })
 USAGE = ("usage: e2e_events.py state|quiet|anchor [--silent-ok] [--barge] [--waited S --accept-window S]"
          " [--perform-ceiling S] [--after A --n N] | policy --scenario FILE | recovery [--kind K] | session < report.json"
+         " | inject < report.json"
          " | wake-retry --expect E --verdict V --attempt N --text T [--barge-in 1] | mark --kind K --where W [--detail D] | skips --scenario FILE | skip --scenario FILE --label L < log"
          " | compare --scenario FILE --label L [--since S < log] | stt --scenario FILE --label L --heard TEXT [--executed 0|1]"
-         " | stt-retry --text ФРАЗА --heard ПРИНЯТО --attempt N --missing СЛОВА [--allowed 0|1]"
-         " | stt-miss --text ФРАЗА --heard ПРИНЯТО --attempt N [--timeout 0|1] [--crash 0|1] [--barge-in 0|1]"
+         " | stt-retry --text ФРАЗА --heard ПРИНЯТО --attempt N --missing СЛОВА [--allowed 0|1] [--fallback 0|1] [--injected 0|1]"
+         " | stt-miss --text ФРАЗА --heard ПРИНЯТО --attempt N [--timeout 0|1] [--crash 0|1] [--barge-in 0|1] [--fallback 0|1] [--injected 0|1]"
          " | requires --scenario FILE | require --labels A,B [--steps FILE] [--prior L=S,…]"
          " | barewake --heard TEXT | trackrefs --scenario FILE | trackbind --scenario FILE --label L < log"
          " | trackcheck --scenario FILE --label L --track ID < log\n")
@@ -1413,7 +1456,8 @@ def main(argv: List[str]) -> int:
             "--scenario": "", "--kind": "", "--perform-ceiling": "", "--where": "", "--detail": "", "--label": "",
             "--since": "", "--heard": "", "--track": "", "--executed": "0", "--labels": "", "--steps": "",
             "--prior": "", "--expect": "", "--verdict": "", "--attempt": "", "--text": "", "--barge-in": "0",
-            "--missing": "", "--allowed": "1", "--timeout": "0", "--crash": "0"}
+            "--missing": "", "--allowed": "1", "--timeout": "0", "--crash": "0",
+            "--fallback": "0", "--injected": "0"}
     flags = argv[2:]
     for i, tok in enumerate(flags):
         if tok in opts and i + 1 < len(flags):
