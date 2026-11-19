@@ -137,13 +137,23 @@ def cmd_run(args: argparse.Namespace) -> int:
 def cmd_c1(args: argparse.Namespace) -> int:
     from .activation import ActivationMachine
 
+    # --execute без проверенного адаптера останавливается до config, registry и docker.
+    # Иначе пульт читает реестр и список контейнеров и только потом отказывает (19.11).
+    wants_execute = bool(getattr(args, "execute", False))
+    if wants_execute and os.environ.get("CHUANGONG_COMPOSE_ADAPTER_VERIFIED") != "1":
+        print(
+            json.dumps(
+                {"state": "blocked", "reason": "executor_not_wired", "detail": "compose adapter not verified"},
+                ensure_ascii=False,
+                sort_keys=True,
+            )
+        )
+        return 1
+
     try:
         cfg = _config(args)
         from .role_switch import execute_role
 
-        # Исполнитель роли подключён (#4911), но пульт зовёт его только с проверенным
-        # адаптером Compose. Без подтверждения --execute останавливается до машины,
-        # не доходя до compose_down (Шифу, #4375).
         verified = os.environ.get("CHUANGONG_COMPOSE_ADAPTER_VERIFIED") == "1"
         machine = ActivationMachine(cfg, _deps(cfg), executor=execute_role if verified else None)
         if args.cmd == "adopt":
