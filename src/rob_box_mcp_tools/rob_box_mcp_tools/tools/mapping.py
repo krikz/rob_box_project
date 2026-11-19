@@ -503,6 +503,8 @@ class OptimizeMapTool(MCPTool):
         """Запустить постобработку карты и дождаться завершения сервисов."""
         completed = []
         failed = []
+        reasons = []
+        details = []
 
         for client, request, svc_name, ok_msg, step_label, timeout_sec in [
             (
@@ -546,30 +548,28 @@ class OptimizeMapTool(MCPTool):
                 15.0,
             ),
         ]:
-            if client is None or request is None:
-                self.log_warning(f"⚠️ {svc_name} service недоступен в текущей сборке")
+            # Успех шага — только по ответу сервиса (#3789, ADR-0148): непустой ответ с
+            # success=false — отказ, а не «оптимизировал». Исход разбирает _call_service.
+            step = _call_service(client, request, timeout_sec, f"RTABMap {svc_name}")
+            if not step.success:
+                self.log_warning(f"⚠️ {step.error}")
                 failed.append(svc_name)
-                continue
-
-            if not client.service_is_ready():
-                self.log_warning(f"⚠️ {svc_name} service не готов")
-                failed.append(svc_name)
-                continue
-
-            future = client.call_async(request)
-            if not wait_future(future, timeout_sec=timeout_sec) or future.result() is None:
-                self.log_warning(f"⚠️ {svc_name} не завершился успешно")
-                failed.append(svc_name)
+                reasons.append(step.kind)
+                details.append(step.error)
                 continue
 
             self.log_info(ok_msg)
             completed.append(step_label)
 
         if not completed:
+            # Причина для фразы кода — одна, из MAP_FAILURE_REASONS, по худшему шагу.
+            rank = ("service_error", "timeout", "no_response", "unavailable")
+            reason = next((k for k in rank if k in reasons), "unavailable")
+            detail = "; ".join(d for d in details if d)
             return MCPToolResult(
                 success=False,
-                error=f"RTABMap оптимизация не выполнена. Проблемные сервисы: {', '.join(failed)}.",
-                data={"reason": "unavailable", "failed": failed},
+                error=f"RTABMap оптимизация не выполнена. Проблемные сервисы: {', '.join(failed)}. {detail}",
+                data={"outcome": reason, "reason": reason, "failed": failed},
             )
 
         result_msg = f"Оптимизация карты завершена: {', '.join(completed)}."
