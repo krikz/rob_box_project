@@ -1028,8 +1028,10 @@ barge_hold() {
     case "$robot_now" in ''|*[!0-9.]*) robot_now="$E2E_ANCHOR_NOW" ;; esac
     # LC_ALL=C: ru_RU печатает «1,00», и sleep такую строку не принимает -- задержка якоря
     # молча схлопывалась в ноль (тест #3857: took=0.08 вместо ~1 с по часам робота).
-    remaining="$(LC_ALL=C awk -v d="${delay:-0}" -v n="$robot_now" -v a="$E2E_ANCHOR_TS" 'BEGIN{r=d-(n-a); printf "%.2f", (r>0?r:0)}')"
-    LC_ALL=C awk "BEGIN{exit !($remaining > 0)}" 2>/dev/null && sleep "$remaining"
+    # Целые секунды: дробный sleep на CI (GNU sleep без локали, busybox) дробь не
+    # принимает и молча выходит 0 -- задержка якоря схлопывается (тест #3857: 0.16 с в CI).
+    remaining="$(LC_ALL=C awk -v d="${delay:-0}" -v n="$robot_now" -v a="$E2E_ANCHOR_TS" 'BEGIN{r=d-(n-a); printf "%d", (r>0?int(r+0.999):0)}')"
+    if [ "${remaining:-0}" -gt 0 ] 2>/dev/null; then sleep "$remaining"; fi
     LC_ALL=C awk -v n="$robot_now" -v a="$E2E_ANCHOR_TS" -v r="$remaining" 'BEGIN{printf "%.1f", (n-a)+r}'
 }
 

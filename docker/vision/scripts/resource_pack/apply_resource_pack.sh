@@ -587,7 +587,9 @@ SCORE_LIBRARY_LOCK="score_library.lock.json"
 hook_marker_expect() {  # $1 = имя хука
     case "$1" in
         fetch_score_library)
-            sed -n 's/.*"sha256": *"\([0-9a-f]\{64\}\)".*/\1/p' "${SCRIPT_DIR}/${SCORE_LIBRARY_LOCK}" 2>/dev/null | head -1 ;;
+            # sed -n '1{...;q}': первый хеш и выход. Пайп в head -1 под set -o pipefail
+            # даёт SIGPIPE (rc 141), когда sed пишет дальше закрытого head (CI, --dry-run).
+            sed -n '1s/.*"sha256": *"\([0-9a-f]\{64\}\)".*/\1/p; t done; b; :done; q' "${SCRIPT_DIR}/${SCORE_LIBRARY_LOCK}" 2>/dev/null ;;
     esac
 }
 
