@@ -102,6 +102,19 @@ def test_release_validation(world):
         rf.dumps(bad)
 
     bad = copy.deepcopy(good)
+    bad["roles"]["main"]["external_images"] = ["eclipse/zenoh:1.6.2"]
+    with pytest.raises(rf.ReleaseError, match="external_images: не закреплён по digest"):
+        rf.dumps(bad)
+
+    bad = copy.deepcopy(good)
+    bad["roles"]["sound"]["external_images"] = [
+        "eclipse/zenoh:1.6.2@sha256:" + "cd" * 32,
+        "ghcr.io/krikz/rob_box:nav2-humble-dev",
+    ]
+    with pytest.raises(rf.ReleaseError, match="external_images: не закреплён по digest"):
+        rf.dumps(bad)
+
+    bad = copy.deepcopy(good)
     bad["release"] = "../../etc"
     with pytest.raises(rf.ReleaseError, match="имя релиза"):
         rf.dumps(bad)
