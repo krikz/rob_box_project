@@ -85,11 +85,29 @@ def _cfg(tmp_path):
 
 
 class _Docker:
+    def __init__(self):
+        self.compose_calls = []
+
     def hotpatched_containers(self):
         return []
 
     def running_images(self):
         return []
+
+    def compose_down(self, project_dir):
+        self.compose_calls.append("compose_down")
+
+    def compose_up(self, project_dir, images=None, image_tag=None):
+        self.compose_calls.append("compose_up")
+
+    def check_container_status(self, project_dir):
+        return None
+
+    def check_container_logs(self, project_dir):
+        return None
+
+    def check_ros2_topics(self, expected):
+        return None
 
 
 def _machine(cfg, executor):
@@ -106,9 +124,7 @@ def test_activate_dry_run_plans_without_touching_files_or_executor(tmp_path, mon
     )
     before = (cfg.state_dir / "state.json").read_bytes()
     executor = _Executor()
-    monkeypatch.setattr(
-        "chuangong.activation.fetch_release", lambda *args, **kwargs: _release("2026.11.09-1")
-    )
+    monkeypatch.setattr("chuangong.activation.fetch_release", lambda *args, **kwargs: _release("2026.11.09-1"))
     monkeypatch.setattr(
         "chuangong.activation.ActivationMachine._preflight",
         lambda self, record, release: (object(), {}),
@@ -125,9 +141,7 @@ def test_activate_dry_run_plans_without_touching_files_or_executor(tmp_path, mon
 def test_activate_execute_calls_executor_for_each_role(tmp_path, monkeypatch):
     cfg = _cfg(tmp_path)
     executor = _Executor()
-    monkeypatch.setattr(
-        "chuangong.activation.fetch_release", lambda *args, **kwargs: _release("2026.11.09-1")
-    )
+    monkeypatch.setattr("chuangong.activation.fetch_release", lambda *args, **kwargs: _release("2026.11.09-1"))
     monkeypatch.setattr(
         "chuangong.activation.ActivationMachine._preflight",
         lambda self, record, release: (object(), {}),
@@ -152,9 +166,7 @@ def test_rollback_execute_calls_executor_with_previous(tmp_path, monkeypatch):
     (cfg.state_dir / "state.json").write_text(
         json.dumps({"current": "2026.11.10-1", "previous": "2026.11.09-1"}), encoding="utf-8"
     )
-    monkeypatch.setattr(
-        "chuangong.activation.fetch_release", lambda *args, **kwargs: _release("2026.11.09-1")
-    )
+    monkeypatch.setattr("chuangong.activation.fetch_release", lambda *args, **kwargs: _release("2026.11.09-1"))
     monkeypatch.setattr(
         "chuangong.activation.ActivationMachine._preflight",
         lambda self, record, release: (object(), {}),
@@ -198,3 +210,88 @@ def test_cli_execute_flag_reaches_activate(monkeypatch):
 
     assert rc == 0
     assert seen["release"] == "2026.11.09-1" and seen["execute"] is True
+
+
+def test_cli_execute_stops_before_compose_without_a_verified_adapter(tmp_path, monkeypatch, capsys):
+    """--execute без проверенного адаптера — ошибка до вызова Compose (Refs #4375).
+
+    Влитый #4911 передаёт в CLI исполнителя роли всегда, и --execute доходит до
+    compose_down. Пока адаптер не проверен, пульт обязан остановиться раньше.
+    """
+    from chuangong.__main__ import main
+
+    cfg = _cfg(tmp_path)
+    cfg.state_dir.mkdir()
+    (cfg.state_dir / "state.json").write_text(
+        json.dumps({"current": "2026.11.08-1", "previous": None}), encoding="utf-8"
+    )
+    monkeypatch.setattr("chuangong.activation.fetch_release", lambda *args, **kwargs: _release("2026.11.09-1"))
+    monkeypatch.setattr(
+        "chuangong.activation.ActivationMachine._preflight",
+        lambda self, record, release: (object(), {}),
+    )
+
+    docker = _Docker()
+    monkeypatch.setattr("chuangong.__main__._deps", lambda cfg: Deps(registry=None, docker=docker, zenoh=None))
+
+    rc = main(
+        [
+            "activate",
+            "--robot-id",
+            "RBXU100001",
+            "--node",
+            "vision",
+            "--state-dir",
+            str(cfg.state_dir),
+            "--releases-root",
+            str(cfg.releases_root),
+            "--legacy-root",
+            str(cfg.legacy_root),
+            "--execute",
+            "2026.11.09-1",
+        ]
+    )
+
+    assert docker.compose_calls == [], docker.compose_calls
+    assert rc != 0
+    printed = json.loads(capsys.readouterr().out)
+    assert printed["state"] == "blocked" and printed["reason"] == "executor_not_wired"
+
+
+def test_cli_execute_reaches_compose_once_the_adapter_is_verified(tmp_path, monkeypatch):
+    """С подтверждённым адаптером исполнитель #4911 остаётся подключённым и зовёт Compose."""
+    from chuangong.__main__ import main
+
+    cfg = _cfg(tmp_path)
+    cfg.state_dir.mkdir()
+    (cfg.state_dir / "state.json").write_text(
+        json.dumps({"current": "2026.11.08-1", "previous": None}), encoding="utf-8"
+    )
+    monkeypatch.setenv("CHUANGONG_COMPOSE_ADAPTER_VERIFIED", "1")
+    monkeypatch.setattr("chuangong.activation.fetch_release", lambda *args, **kwargs: _release("2026.11.09-1"))
+    monkeypatch.setattr(
+        "chuangong.activation.ActivationMachine._preflight",
+        lambda self, record, release: (object(), {}),
+    )
+    docker = _Docker()
+    monkeypatch.setattr("chuangong.__main__._deps", lambda cfg: Deps(registry=None, docker=docker, zenoh=None))
+
+    main(
+        [
+            "activate",
+            "--robot-id",
+            "RBXU100001",
+            "--node",
+            "vision",
+            "--state-dir",
+            str(cfg.state_dir),
+            "--releases-root",
+            str(cfg.releases_root),
+            "--legacy-root",
+            str(cfg.legacy_root),
+            "--execute",
+            "2026.11.09-1",
+        ]
+    )
+
+    assert "compose_down" in docker.compose_calls and "compose_up" in docker.compose_calls

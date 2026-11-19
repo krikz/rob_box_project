@@ -141,7 +141,11 @@ def cmd_c1(args: argparse.Namespace) -> int:
         cfg = _config(args)
         from .role_switch import execute_role
 
-        machine = ActivationMachine(cfg, _deps(cfg), executor=execute_role)
+        # Исполнитель роли подключён (#4911), но пульт зовёт его только с проверенным
+        # адаптером Compose. Без подтверждения --execute останавливается до машины,
+        # не доходя до compose_down (Шифу, #4375).
+        verified = os.environ.get("CHUANGONG_COMPOSE_ADAPTER_VERIFIED") == "1"
+        machine = ActivationMachine(cfg, _deps(cfg), executor=execute_role if verified else None)
         if args.cmd == "adopt":
             record = machine.adopt(args.release, apply=args.apply)
         elif args.cmd == "preflight":
