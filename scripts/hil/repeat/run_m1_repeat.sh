@@ -355,6 +355,15 @@ capture_params_after_ready() {
         fi
         log "SHORT_CIRCUIT_APPLIED false"
     fi
+    # Только FollowPath.xy_goal_tolerance. general_goal_checker не сверяем и не меняем.
+    if [ -n "${M1_REPEAT_XY_GOAL_TOL:-}" ]; then
+        got=$(grep -x 'FollowPath.xy_goal_tolerance=.*' "$ART/params_values.txt" | head -1 | cut -d= -f2-)
+        if ! python3 -X utf8 -c 'import sys; raise SystemExit(0 if abs(float(sys.argv[1]) - float(sys.argv[2])) < 1e-6 else 1)' "$got" "$M1_REPEAT_XY_GOAL_TOL"; then
+            log "XY_GOAL_TOL_NOT_APPLIED got=${got:-missing} want=$M1_REPEAT_XY_GOAL_TOL"
+            return 1
+        fi
+        log "XY_GOAL_TOL_APPLIED $got"
+    fi
     log "PARAMS_NUMERIC $(wc -l <"$ART/params_values.txt") values"
 }
 
@@ -457,9 +466,9 @@ fi
 # default true — строку не пишем, остаётся боевой true.
 export M1_REPEAT_SHORT_CIRCUIT="${M1_REPEAT_SHORT_CIRCUIT:-true}"
 # Пусто — боевой trans_stopped_velocity 0.03, строку не пишем. Число > 0 — в тот же оверлей.
-python3 -X utf8 -c 'import os, sys; sys.path.insert(0, sys.argv[1]); from m1_topics import dwb_publish_overlay_yaml, short_circuit_from_env, trans_stopped_from_env; open(sys.argv[2], "w", encoding="utf-8").write(dwb_publish_overlay_yaml(short_circuit_from_env(os.environ.get("M1_REPEAT_SHORT_CIRCUIT")), trans_stopped_from_env(os.environ.get("M1_REPEAT_TRANS_STOPPED"))))' \
+python3 -X utf8 -c 'import os, sys; sys.path.insert(0, sys.argv[1]); from m1_topics import dwb_publish_overlay_yaml, short_circuit_from_env, trans_stopped_from_env, xy_goal_tol_from_env; open(sys.argv[2], "w", encoding="utf-8").write(dwb_publish_overlay_yaml(short_circuit_from_env(os.environ.get("M1_REPEAT_SHORT_CIRCUIT")), trans_stopped_from_env(os.environ.get("M1_REPEAT_TRANS_STOPPED")), xy_goal_tol_from_env(os.environ.get("M1_REPEAT_XY_GOAL_TOL"))))' \
     "$HERE" "$ART/dwb_publish.yaml" || { log "OVERLAY_ENV_BAD short_circuit=${M1_REPEAT_SHORT_CIRCUIT} trans_stopped=${M1_REPEAT_TRANS_STOPPED:-}"; exit 2; }
-log "DWB_OVERLAY short_circuit=${M1_REPEAT_SHORT_CIRCUIT} trans_stopped=${M1_REPEAT_TRANS_STOPPED:-combat}"
+log "DWB_OVERLAY short_circuit=${M1_REPEAT_SHORT_CIRCUIT} trans_stopped=${M1_REPEAT_TRANS_STOPPED:-combat} xy_goal_tol=${M1_REPEAT_XY_GOAL_TOL:-combat}"
 main "mkdir -p /tmp/hil/nav2tune" || { log "NAV2TUNE_DIR_FAIL"; exit 30; }
 # Не через main(): она делает ssh </dev/null и выбрасывает переданный файл.
 # Чистая пара m1repeat_20261119T084941Z: compose на Main 0 байт, overlays=none,

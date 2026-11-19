@@ -389,26 +389,33 @@ RECOVERY_MARKERS: Tuple[Tuple[str, str], ...] = (
 
 
 def trans_stopped_from_env(value: str | None) -> float | None:
-    """``M1_REPEAT_TRANS_STOPPED``: пусто — боевой 0.03, строку не пишем.
+    """``M1_REPEAT_TRANS_STOPPED``: пусто — боевой 0.03, строку не пишем."""
+    return positive_float_from_env("M1_REPEAT_TRANS_STOPPED", value)
 
-    Число > 0 — порог защёлки ``rotating_`` для диагностического прогона.
-    0, отрицательное и нечисло — ошибка, не молчаливый боевой порог.
+
+def xy_goal_tol_from_env(value: str | None) -> float | None:
+    """``M1_REPEAT_XY_GOAL_TOL``: пусто — боевой 0.25, строку не пишем.
+
+    Число > 0 — только ``FollowPath.xy_goal_tolerance`` (окно DWB), не checker.
     """
+    return positive_float_from_env("M1_REPEAT_XY_GOAL_TOL", value)
+
+
+def positive_float_from_env(name: str, value: str | None) -> float | None:
+    """Пусто — параметр не трогаем. Число > 0 — в оверлей. Иначе ошибка, не боевой дефолт."""
     if value is None or not str(value).strip():
         return None
     try:
         number = float(str(value).strip())
     except ValueError as exc:
-        raise ValueError(
-            f"M1_REPEAT_TRANS_STOPPED={value!r} — нужно число > 0"
-        ) from exc
+        raise ValueError(f"{name}={value!r} — нужно число > 0") from exc
     if not number > 0:
-        raise ValueError(f"M1_REPEAT_TRANS_STOPPED={value!r} — нужно число > 0")
+        raise ValueError(f"{name}={value!r} — нужно число > 0")
     return number
 
 
 def dwb_publish_overlay_yaml(
-    short_circuit: bool = True, trans_stopped: float | None = None
+    short_circuit: bool = True, trans_stopped: float | None = None, xy_goal_tolerance: float | None = None
 ) -> str:
     """Оверлей Nav2 только для HIL-повтора. Боевой файл не меняет, скорости не задаёт.
 
@@ -444,6 +451,10 @@ def dwb_publish_overlay_yaml(
     if trans_stopped is not None:
         # Не боевой 0.03: порог, ниже которого RotateToGoal считает корпус стоящим.
         lines.append(f"      trans_stopped_velocity: {trans_stopped}")
+    if xy_goal_tolerance is not None:
+        # Только внутреннее окно DWB (RotateToGoal.in_window_). general_goal_checker
+        # и GT-приёмка route.py остаются 0.25.
+        lines.append(f"      xy_goal_tolerance: {xy_goal_tolerance}")
     return "\n".join(lines) + "\n"
 
 
