@@ -706,6 +706,40 @@ def test_corner_point_outside_the_corridor_is_not_a_stop():
     assert v.status == vd.FAIL and "вне коридора" in v.line()
 
 
+def _door_probe(result="SUCCEEDED", xs=(0.5, 1.5, 2.5, 3.0)):
+    """Подъезд по оси к проёму x=2 и исход цели."""
+    rows = [pr(i, "TRACK", x=f"{x:.3f}", y="0.000", yaw="0.0", v="+0.150", w="+0.000") for i, x in enumerate(xs)]
+    rows.append(pr(len(xs), "NAV_RESULT", status=result))
+    return vd.parse_probe(rows)
+
+
+def _door_guard(when, x):
+    return dk(
+        when,
+        "[WARN] [1.0] [proximity_guard]: 🛡️ зона warn → stop (до корпуса 0.19 м) в точке (+0.50, +0.10); "
+        "v=+0.15 м/с w=+0.00 рад/с",
+    )
+
+
+def test_doorway_pass_when_goal_succeeded_and_no_stop_in_the_opening():
+    """Регресс проёма 0.90 м (#4365): цель доехала, а в проёме x∈[1.2, 2.8] защита не входила в stop."""
+    guard = vd.parse_docker([_door_guard(0.2, 0.5)])
+    v = vd.v_doorway(_door_probe(), guard, (1.2, 2.8))
+    assert v.status == vd.PASS, v.line()
+
+
+def test_doorway_fail_when_guard_stops_inside_the_opening():
+    """Стоп, пока корпус в проёме 0.90 м, — FAIL: косяк вне коридора хода не должен тормозить."""
+    guard = vd.parse_docker([_door_guard(1.0, 1.5)])
+    v = vd.v_doorway(_door_probe(), guard, (1.2, 2.8))
+    assert v.status == vd.FAIL and "stop" in v.line()
+
+
+def test_doorway_fail_when_the_goal_did_not_succeed():
+    v = vd.v_doorway(_door_probe(result="ABORTED"), vd.parse_docker([]), (1.2, 2.8))
+    assert v.status == vd.FAIL and "ABORTED" in v.line()
+
+
 # ── CLI и обвязка ───────────────────────────────────────────────────────────────────────────
 
 

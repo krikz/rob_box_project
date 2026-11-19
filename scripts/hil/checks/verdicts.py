@@ -449,6 +449,34 @@ def _after_abort_bad(probe: Sequence[Event], abort_at: float, grace_s: float) ->
     return bad
 
 
+def v_doorway(probe: Sequence[Event], guard: Sequence[Event], opening: Tuple[float, float]) -> Verdict:
+    """Регресс проёма 0.90 м: цель доехала, и в проёме защита не входила в stop.
+
+    ``opening`` — участок проёма по x правды Gazebo. Стоп, пока корпус внутри него, — FAIL: косяк
+    проёма 0.90 м вне коридора хода, тормозить по нему защита не должна (решение Шифу 05.11 и 10.11).
+    Стоп вне участка не считается. Не доехала — тоже FAIL.
+    """
+    sc = ("#4365", "doorway")
+    if not probe:
+        return Verdict(*sc, NO_DATA, (NO_PROBE,))
+    result = kinds(probe, "NAV_RESULT")
+    status = result[-1].fields.get("status") if result else "нет"
+    lo, hi = opening
+    inside = [e for e in kinds(probe, "TRACK") if lo <= e.num("x") <= hi]
+    stops = [z for z in zone_transitions(guard) if z[2] == "stop"]
+    stopped_inside = [z for z in stops if any(abs(z[0] - e.t) <= 0.3 for e in inside)]
+    facts = [
+        f"итог цели: {status}",
+        f"точек правды в проёме x∈[{lo:.1f}, {hi:.1f}]: {len(inside)}",
+        f"входов в stop, пока корпус в проёме: {len(stopped_inside)}",
+    ]
+    if status != "SUCCEEDED" or stopped_inside:
+        return Verdict(*sc, FAIL, tuple(facts))
+    if not inside:
+        return Verdict(*sc, NOT_TRIGGERED, tuple(facts + ["правда Gazebo проём не пересекала — не проверено"]))
+    return Verdict(*sc, PASS, tuple(facts))
+
+
 def v_controller_abort(
     probe: Sequence[Event], nav2: Sequence[Event], grace_s: float, allowance_s: float
 ) -> Verdict:
@@ -874,6 +902,8 @@ def evaluate(scenario: str, d: Path, args) -> Verdict:
         return v_client_kill(probe, args.grace)
     if scenario == "host_cancel":
         return v_host_cancel(probe, args.grace)
+    if scenario == "doorway":
+        return v_doorway(probe, parse_docker(_read(d, "guard.log")), (args.opening_lo, args.opening_hi))
     voice = parse_docker(_read(d, "voice.log"))
     if scenario == "nav_aborted":
         return v_nav_aborted(voice, load_phrases())
@@ -901,6 +931,9 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     ap.add_argument("--grace", type=float, default=DEFAULT_GRACE_S)
     # movement_time_allowance боевого FollowPath (nav2_params.yaml). Не крутим ради PASS.
     ap.add_argument("--allowance", type=float, default=30.0)
+    # Участок проёма по x правды Gazebo (сценарий doorway, мир polygon, проём 0.90 м на x=2).
+    ap.add_argument("--opening-lo", dest="opening_lo", type=float, default=1.2)
+    ap.add_argument("--opening-hi", dest="opening_hi", type=float, default=2.8)
     args = ap.parse_args(argv)
     verdict = evaluate(args.scenario, args.dir, args)
     print(verdict.line())
