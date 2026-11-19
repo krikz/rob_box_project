@@ -8,14 +8,32 @@ from __future__ import annotations
 
 from rob_box_sim import hil
 
-ROBOT_GRAPH = ["/robot_state_publisher", "/twist_mux", "/rtabmap/rtabmap", "/bt_navigator"]
-GAZEBO_GRAPH = ["/controller_manager", "/diff_drive_controller", "/gz_ros2_control",
-                "/sim/robot_state_publisher", "/sim/hil_guard"]
+ROBOT_GRAPH = [
+    "/robot_state_publisher",
+    "/twist_mux",
+    "/rtabmap/rtabmap",
+    "/bt_navigator",
+]
+GAZEBO_GRAPH = [
+    "/controller_manager",
+    "/diff_drive_controller",
+    "/gz_ros2_control",
+    "/sim/robot_state_publisher",
+    "/sim/hil_guard",
+]
 
 
 def test_full_names_like_ros2_node_list():
-    pairs = [("controller_manager", "/"), ("robot_state_publisher", "/sim"), ("rtabmap", "/rtabmap/")]
-    assert hil.full_names(pairs) == ["/controller_manager", "/rtabmap/rtabmap", "/sim/robot_state_publisher"]
+    pairs = [
+        ("controller_manager", "/"),
+        ("robot_state_publisher", "/sim"),
+        ("rtabmap", "/rtabmap/"),
+    ]
+    assert hil.full_names(pairs) == [
+        "/controller_manager",
+        "/rtabmap/rtabmap",
+        "/sim/robot_state_publisher",
+    ]
 
 
 def test_precheck_passes_when_robot_visible_and_no_controller():
@@ -76,4 +94,9 @@ def test_watch_violation_when_robot_controller_returns():
 
 
 def test_namespaced_controller_manager_is_not_counted():
-    assert hil.count_controller_managers(["/sim/controller_manager", "/controller_manager_x"]) == 0
+    assert (
+        hil.count_controller_managers(
+            ["/sim/controller_manager", "/controller_manager_x"]
+        )
+        == 0
+    )

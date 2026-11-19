@@ -37,7 +37,10 @@ from typing import Iterable
 SIM_NAMESPACE = "sim"
 SIM_RSP_NODE = f"/{SIM_NAMESPACE}/robot_state_publisher"
 SIM_ROBOT_DESCRIPTION_TOPIC = f"/{SIM_NAMESPACE}/robot_description"
-SIM_TF_REMAPS = (("/tf", f"/{SIM_NAMESPACE}/tf"), ("/tf_static", f"/{SIM_NAMESPACE}/tf_static"))
+SIM_TF_REMAPS = (
+    ("/tf", f"/{SIM_NAMESPACE}/tf"),
+    ("/tf_static", f"/{SIM_NAMESPACE}/tf_static"),
+)
 
 CONTROLLER_MANAGER = "/controller_manager"
 # RSP Main Pi. Виден в графе — линк песочница ↔ робот поднят и ID совпадает.
@@ -68,7 +71,9 @@ def count_controller_managers(names: Iterable[str]) -> int:
     return sum(1 for n in names if n == CONTROLLER_MANAGER)
 
 
-def wait_precheck(snapshots: Iterable[Iterable[str]], *, require_link: bool = True) -> Verdict:
+def wait_precheck(
+    snapshots: Iterable[Iterable[str]], *, require_link: bool = True
+) -> Verdict:
     """Первый успешный снимок или последний отказ.
 
     Линк router-to-router встаёт после подъёма роутера песочницы. Один снимок
@@ -76,7 +81,9 @@ def wait_precheck(snapshots: Iterable[Iterable[str]], *, require_link: bool = Tr
     на Main уже жив. Ждём несколько снимков. Нет RSP и в последнем — отказ,
     гард не ослаблен.
     """
-    last = Verdict(False, f"не видно {ROBOT_LINK_PROBE} робота: нет снимка графа — отказ")
+    last = Verdict(
+        False, f"не видно {ROBOT_LINK_PROBE} робота: нет снимка графа — отказ"
+    )
     for names in snapshots:
         last = precheck(names, require_link=require_link)
         if last.ok:
@@ -90,12 +97,18 @@ def precheck(names: Iterable[str], *, require_link: bool = True) -> Verdict:
     """Можно ли поднимать Gazebo: робот виден, а контроллеров в графе нет ни одного."""
     names = list(names)
     if require_link and ROBOT_LINK_PROBE not in names:
-        return Verdict(False, f"не видно {ROBOT_LINK_PROBE} робота: нет линка Zenoh "
-                              "с Main Pi или ROBOT_ID не совпадает — отказ")
+        return Verdict(
+            False,
+            f"не видно {ROBOT_LINK_PROBE} робота: нет линка Zenoh "
+            "с Main Pi или ROBOT_ID не совпадает — отказ",
+        )
     cm = count_controller_managers(names)
     if cm:
-        return Verdict(False, f"в графе уже {cm} × {CONTROLLER_MANAGER} до старта Gazebo: "
-                              "ros2-control робота не остановлен — отказ")
+        return Verdict(
+            False,
+            f"в графе уже {cm} × {CONTROLLER_MANAGER} до старта Gazebo: "
+            "ros2-control робота не остановлен — отказ",
+        )
     return Verdict(True, f"{CONTROLLER_MANAGER} в графе нет, Gazebo можно поднимать")
 
 
@@ -103,8 +116,11 @@ def watch_verdict(names: Iterable[str]) -> Verdict:
     """Работа HIL: больше одного контроллера — нарушение (второй — робот)."""
     cm = count_controller_managers(names)
     if cm > 1:
-        return Verdict(False, f"в графе {cm} × {CONTROLLER_MANAGER}: поднялся контроллер "
-                              "робота (деплой? перезагрузка Main Pi?) — Gazebo гасится")
+        return Verdict(
+            False,
+            f"в графе {cm} × {CONTROLLER_MANAGER}: поднялся контроллер "
+            "робота (деплой? перезагрузка Main Pi?) — Gazebo гасится",
+        )
     return Verdict(True, f"{CONTROLLER_MANAGER}: {cm}")
 
 
@@ -127,11 +143,18 @@ def _log(msg: str) -> None:
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description="Сторож графа HIL: /controller_manager")
     ap.add_argument("mode", choices=("precheck", "watch", "count"))
-    ap.add_argument("--settle", type=float, default=5.0,
-                    help="секунд на сбор графа перед решением (Zenoh liveliness)")
+    ap.add_argument(
+        "--settle",
+        type=float,
+        default=5.0,
+        help="секунд на сбор графа перед решением (Zenoh liveliness)",
+    )
     ap.add_argument("--interval", type=float, default=5.0, help="период watch, с")
-    ap.add_argument("--no-link-check", action="store_true",
-                    help=f"precheck без проверки {ROBOT_LINK_PROBE} (только песочница без робота)")
+    ap.add_argument(
+        "--no-link-check",
+        action="store_true",
+        help=f"precheck без проверки {ROBOT_LINK_PROBE} (только песочница без робота)",
+    )
     args = ap.parse_args(argv)
 
     import rclpy
