@@ -22,6 +22,18 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 HIL_CMD="${HIL_CMD:-$ROOT/scripts/hil/hil.sh}"
 WORLD_CHECK="${WORLD_CHECK:-$ROOT/scripts/hil/checks/world_check.py}"
 TOPICS_PY="${TOPICS_PY:-$HERE/m1_topics.py}"
+HIL_LOCK=$(
+    if [ -n "${HIL_CONF:-}" ]; then
+        # shellcheck source=/dev/null
+        . "$HIL_CONF" >/dev/null || exit 2
+    fi
+    # shellcheck source=scripts/hil/hil.conf
+    . "$ROOT/scripts/hil/hil.conf" || exit 2
+    printf '%s' "$HIL_LOCK"
+) || exit 2
+# Одинаковые run_id или пути карты не дают второму запуску права на чужой замок.
+HIL_RUN_TOKEN=$(python3 -c 'import uuid; print(uuid.uuid4().hex)') || exit 2
+export HIL_RUN_TOKEN
 
 : "${M1_REPEAT_OUT:?M1_REPEAT_OUT — каталог артефактов на хосте}"
 MAIN="${HIL_MAIN_HOST:-ros2@10.1.1.10}"
@@ -35,13 +47,16 @@ CONTAINER_OUT="/sim_video/${RUN_ID}"
 REMOTE_OUT="$SANDBOX_REPO/out/${RUN_ID}"
 NAV_READY_TIMEOUT="${M1_NAV_READY_TIMEOUT:-180}"
 BAG_CLOSE_WAIT="${M1_BAG_CLOSE_WAIT:-40}"
+GOAL_PROBE_DIR="${M1_GOAL_PROBE_DIR:-}"
+GOAL_PROBE_TARGET=/opt/ros/humble/lib/libcontroller_server_core.so
+GOAL_PROBE_MOUNT="/tmp/hil/goal_check_${RUN_ID}.so"
 
 SSHO=(-o BatchMode=yes -o ConnectTimeout=10 -o ServerAliveInterval=5 -o ServerAliveCountMax=6)
 ART="$M1_REPEAT_OUT"
 mkdir -p "$ART"
 SUMMARY="$ART/verdict.log"
 : >"$SUMMARY"
-ON_ATTEMPTED=0
+LOCK_OWNED=0
 CLEANED=1
 
 # shellcheck disable=SC2029
@@ -49,6 +64,32 @@ main() { ssh "${SSHO[@]}" "$MAIN" "$*" </dev/null; }
 # shellcheck disable=SC2029
 sandbox() { ssh "${SSHO[@]}" "$SANDBOX" "$*" </dev/null; }
 log() { printf '%s %s\n' "$(date -u +%FT%TZ)" "$*" | tee -a "$SUMMARY"; }
+
+lock_is_ours() {
+    local lock
+    lock=$(main "cat $(printf '%q' "$HIL_LOCK") 2>/dev/null") || return 1
+    [[ "$lock" == "HIL on since "*" token=$HIL_RUN_TOKEN maps=$MAPS_DIR" ]]
+}
+
+validate_goal_probe() {
+    local name unused
+    [ "$YAW_MODE" = detach ] || { log "GOAL_PROBE_REQUIRES_DETACH"; return 1; }
+    GOAL_PROBE_IMAGE=$(cat "$GOAL_PROBE_DIR/nav2_image_id") || return 1
+    read -r GOAL_PROBE_SHA name unused <"$GOAL_PROBE_DIR/probe.sha256" || return 1
+    [[ "$GOAL_PROBE_IMAGE" =~ ^sha256:[0-9a-f]{64}$ ]] || return 1
+    [[ "$GOAL_PROBE_SHA" =~ ^[0-9a-f]{64}$ && "$name" = libcontroller_server_core.so && -z "$unused" ]] || return 1
+    (cd "$GOAL_PROBE_DIR" && sha256sum --check --status probe.sha256)
+}
+
+verify_goal_probe_loaded() {
+    local nav_image container
+    container=$(printf '%q' "$NAV2_CONTAINER")
+    nav_image=$(main "docker inspect -f '{{.Image}}' $container") || return 1
+    [ "$nav_image" = "$GOAL_PROBE_IMAGE" ] || { log "GOAL_PROBE_IMAGE_MISMATCH $nav_image"; return 1; }
+    main "docker exec $container sha256sum '$GOAL_PROBE_TARGET'" >"$ART/probe_loaded.sha256" || return 1
+    grep -Fxq "$GOAL_PROBE_SHA  $GOAL_PROBE_TARGET" "$ART/probe_loaded.sha256" || return 1
+    main "docker logs $container 2>&1" | grep -F 'HIL_GOAL_PROBE_READY v1' >"$ART/probe_ready.log"
+}
 
 # Один ros2 param get. Баннер ros_with_namespace.sh без «value is:» — пусто, зовём ещё раз.
 param_get_once() {
@@ -95,7 +136,7 @@ stop_route() {
 
 # Закрыть bag и забрать артефакты на хост. Вызывается до hil off.
 pull_before_off() {
-    local rc=0
+    local rc=0 nav_log_rc=0
     sandbox "docker exec $(printf '%q' "$G") bash -c 'if test -f $(printf '%q' "$CONTAINER_OUT")/recorder.pid; then kill -INT \$(cat $(printf '%q' "$CONTAINER_OUT")/recorder.pid) 2>/dev/null || true; fi'" \
         >>"$ART/bag_stop.log" 2>&1 || true
     sandbox "for i in \$(seq 1 $BAG_CLOSE_WAIT); do test -f '$REMOTE_OUT/bag/metadata.yaml' && break; sleep 1; done; docker exec $(printf '%q' "$G") /entrypoint.sh ros2 bag info '$CONTAINER_OUT/bag'" \
@@ -105,7 +146,22 @@ pull_before_off() {
     :
     copy_bag_to_host || rc=1
     # Лог nav2 до off: «Failed to make progress» и какой recovery (clear/spin/wait/back_up).
-    main "docker logs $(printf '%q' "$NAV2_CONTAINER") 2>&1" >"$ART/nav2.log" 2>&1 || true
+    main "docker logs $(printf '%q' "$NAV2_CONTAINER") 2>&1" >"$ART/nav2.log" 2>&1 || nav_log_rc=$?
+    if [ -n "$GOAL_PROBE_DIR" ]; then
+        if [ "$nav_log_rc" -ne 0 ]; then
+            log "GOAL_CHECK_LOGS_UNREADABLE rc=$nav_log_rc"
+            return 1
+        fi
+        if grep -F 'HIL_GOAL_CHECK_REACHED ' "$ART/nav2.log" >"$ART/goal_check_reached.log"; then
+            log "GOAL_CHECK_TRACE_CAPTURED"
+        elif grep -Fq "Reached the goal!" "$ART/nav2.log" || \
+            grep -Eq 'GOAL_END M1 result=(STATUS_SUCCEEDED|OUTSIDE_TOLERANCE)([[:space:]]|$)' "$ART/route.log"; then
+            log "GOAL_CHECK_TRACE_MISSING"
+            return 1
+        else
+            log "GOAL_CHECK_TRACE_NO_REACH"
+        fi
+    fi
     python3 -X utf8 -c '
 import pathlib, sys
 sys.path.insert(0, sys.argv[1])
@@ -127,14 +183,26 @@ cleanup() {
     [ "$CLEANED" = 0 ] || return 0
     CLEANED=1
     local art_rc=0 off_rc=0
+    if ! lock_is_ours; then
+        log "OFF_SKIPPED_LOCK_NOT_OWNED"
+        [ "$LOCK_OWNED" = 0 ] && return 0
+        return 51
+    fi
     stop_route
     stop_resource_samplers
-    if [ "$LOCK_OWNED" = 1 ]; then
-        pull_before_off || art_rc=1
-        # hil off пересоздаёт nav2 без nav2tune.compose.yaml — оверлей публикации уходит
-        # вместе с HIL. Файл на Main удаляем, чтобы следующий on его не подхватил.
-        main "rm -f /tmp/hil/nav2tune/dwb_publish.yaml /tmp/hil/nav2tune.compose.yaml /tmp/hil/twist_mux_hil.yaml /tmp/hil/twist_mux_isolate.yaml" || true
+    pull_before_off || art_rc=1
+    if lock_is_ours; then
+        # hil off пересоздаёт nav2 без временных оверлеев.
+        main "rm -f /tmp/hil/nav2tune/dwb_publish.yaml /tmp/hil/nav2tune.compose.yaml /tmp/hil/twist_mux_hil.yaml /tmp/hil/twist_mux.hil.yaml" || true
+        if [ -n "${GOAL_PROBE_DIR:-}" ]; then
+            main "rm -f -- $(printf '%q' "$GOAL_PROBE_MOUNT") /tmp/hil/goal_check_probe.compose.yaml" || true
+        fi
         bash "$HIL_CMD" off >"$ART/hil_off.log" 2>&1 || off_rc=$?
+        if [ "$off_rc" = 0 ]; then
+            main "test ! -e $(printf '%q' "$HIL_LOCK")" || off_rc=1
+        fi
+    else
+        off_rc=1
     fi
     # off — безопасность стенда. Неполный bag её не маскирует и наоборот.
     if [ "$off_rc" -eq 0 ]; then
@@ -186,7 +254,7 @@ start_resource_samplers() {
         log "MAIN_SAMPLER_SCP_FAIL"
         return 0
     }
-    main "nohup python3 -X utf8 /tmp/hil/resource_sample.py --loop --host main --out /tmp/hil/main_resources.log --disk mmcblk0 >/tmp/hil/main_sampler.err 2>&1 & echo \$! > /tmp/hil/main_sampler.pid" \
+    main "nohup python3 -X utf8 /tmp/hil/resource_sample.py --loop --host main --out '/tmp/hil/$RUN_ID.main_resources.log' --disk mmcblk0 >'/tmp/hil/$RUN_ID.main_sampler.err' 2>&1 & echo \$! > '/tmp/hil/$RUN_ID.main_sampler.pid'" \
         || log "MAIN_SAMPLER_START_FAIL"
     log "SAMPLERS_STARTED"
 }
@@ -195,7 +263,7 @@ stop_resource_samplers() {
     if [ -f "$ART/sandbox_sampler.pid" ]; then
         kill "$(cat "$ART/sandbox_sampler.pid")" 2>/dev/null || true
     fi
-    main "if test -f /tmp/hil/main_sampler.pid; then kill \$(cat /tmp/hil/main_sampler.pid) 2>/dev/null || true; fi; cat /tmp/hil/main_resources.log" \
+    main "if test -f '/tmp/hil/$RUN_ID.main_sampler.pid'; then kill \$(cat '/tmp/hil/$RUN_ID.main_sampler.pid') 2>/dev/null || true; fi; cat '/tmp/hil/$RUN_ID.main_resources.log'" \
         >"$ART/main_resources.log" 2>/dev/null || true
     log "SAMPLERS_STOPPED"
 }
@@ -203,6 +271,10 @@ stop_resource_samplers() {
 # После active controller_server. Нет числа после двух попыток — name=missing, не баннер.
 capture_params_after_ready() {
     local pname value attempt overlays
+    local -a goal_probe_params=()
+    if [ -n "$GOAL_PROBE_DIR" ]; then
+        goal_probe_params=(general_goal_checker.yaw_goal_tolerance general_goal_checker.stateful)
+    fi
     : >"$ART/params_raw.txt"
     : >"$ART/params_values.txt"
     for pname in \
@@ -222,7 +294,7 @@ capture_params_after_ready() {
         FollowPath.publish_evaluation \
         FollowPath.publish_trajectories \
         FollowPath.publish_local_plan \
-        FollowPath.short_circuit_trajectory_evaluation
+        FollowPath.short_circuit_trajectory_evaluation "${goal_probe_params[@]}"
     do
         value=""
         for attempt in 1 2; do
@@ -331,7 +403,7 @@ export HIL_EXPECT_WORLD=depot
 export HIL_WORLD_CHECK_DIR="$ART/hil_on_world"
 
 log "START run_id=$RUN_ID out=$ART"
-if main "test -e /tmp/hil.lock"; then
+if ! main "test ! -e $(printf '%q' "$HIL_LOCK")"; then
     log "PREEXISTING_HIL_LOCK"
     exit 20
 fi
@@ -342,8 +414,16 @@ fi
 
 bash "$HIL_CMD" status >"$ART/hil_status_before.log" 2>&1 || { log "STATUS_BEFORE_FAIL"; exit 23; }
 
-# Оверлей публикации DWB кладём ДО on: hil.sh on поднимает nav2, и контроллер читает
-# параметры на старте. Скорости нет. M1_REPEAT_SHORT_CIRCUIT=false добавляет только
+YAW_MODE=$(python3 -X utf8 -c 'import os,sys; sys.path.insert(0, sys.argv[1]); from m1_topics import yaw_isolate_from_env; print(yaw_isolate_from_env(os.environ.get("M1_YAWATGOAL_ISOLATE")))' "$HERE") \
+    || { log "YAW_ISOLATE_ENV_BAD value=${M1_YAWATGOAL_ISOLATE:-}"; exit 2; }
+if [ -n "$GOAL_PROBE_DIR" ]; then
+    validate_goal_probe || { log "GOAL_PROBE_INPUT_INVALID"; exit 2; }
+    current_nav_image=$(main "docker inspect -f '{{.Image}}' $(printf '%q' "$NAV2_CONTAINER")") \
+        || { log "GOAL_PROBE_IMAGE_UNREADABLE"; exit 2; }
+    [ "$current_nav_image" = "$GOAL_PROBE_IMAGE" ] || { log "GOAL_PROBE_IMAGE_MISMATCH $current_nav_image"; exit 2; }
+fi
+
+# Оверлей публикации DWB сначала генерируем локально. Nav2 прочитает его при пересоздании. Скорости нет. M1_REPEAT_SHORT_CIRCUIT=false добавляет только
 # short_circuit_trajectory_evaluation: false (полный /evaluation, выбор траектории тот же).
 # default true — строку не пишем, остаётся боевой true.
 export M1_REPEAT_SHORT_CIRCUIT="${M1_REPEAT_SHORT_CIRCUIT:-true}"
@@ -351,20 +431,6 @@ export M1_REPEAT_SHORT_CIRCUIT="${M1_REPEAT_SHORT_CIRCUIT:-true}"
 python3 -X utf8 -c 'import os, sys; sys.path.insert(0, sys.argv[1]); from m1_topics import dwb_publish_overlay_yaml, short_circuit_from_env, trans_stopped_from_env; open(sys.argv[2], "w", encoding="utf-8").write(dwb_publish_overlay_yaml(short_circuit_from_env(os.environ.get("M1_REPEAT_SHORT_CIRCUIT")), trans_stopped_from_env(os.environ.get("M1_REPEAT_TRANS_STOPPED"))))' \
     "$HERE" "$ART/dwb_publish.yaml" || { log "OVERLAY_ENV_BAD short_circuit=${M1_REPEAT_SHORT_CIRCUIT} trans_stopped=${M1_REPEAT_TRANS_STOPPED:-}"; exit 2; }
 log "DWB_OVERLAY short_circuit=${M1_REPEAT_SHORT_CIRCUIT} trans_stopped=${M1_REPEAT_TRANS_STOPPED:-combat}"
-main "mkdir -p /tmp/hil/nav2tune" || { log "NAV2TUNE_DIR_FAIL"; exit 30; }
-# Не через main(): она делает ssh </dev/null и выбрасывает переданный файл.
-# Чистая пара m1repeat_20261119T084941Z: compose на Main 0 байт, overlays=none,
-# param get True при yaml false. Шифу, 19.11.
-tr -d '\r' <"$ROOT/scripts/hil/speed/nav2tune.compose.yaml" >"$ART/nav2tune.compose.yaml"
-scp -q -o BatchMode=yes "$ART/dwb_publish.yaml" "$MAIN:/tmp/hil/nav2tune/dwb_publish.yaml" || { log "OVERLAY_SCP_FAIL"; exit 30; }
-scp -q -o BatchMode=yes "$ART/nav2tune.compose.yaml" "$MAIN:/tmp/hil/nav2tune.compose.yaml" || { log "OVERLAY_SCP_FAIL"; exit 30; }
-main "test -s /tmp/hil/nav2tune/dwb_publish.yaml && test -s /tmp/hil/nav2tune.compose.yaml && wc -c /tmp/hil/nav2tune/dwb_publish.yaml /tmp/hil/nav2tune.compose.yaml" \
-    >"$ART/overlay_sizes.txt" || { log "OVERLAY_EMPTY_ON_MAIN"; exit 30; }
-# После on hil.sh пересоздаёт nav2 без этого файла — оверлей не останется в бою.
-# Здесь on ещё не взят: кладём compose-оверлей, on его не знает. Поэтому после on
-# пересоздаём только nav2 с тем же HIL_MAPS_DIR, что возьмёт замок.
-ON_ATTEMPTED=1
-LOCK_OWNED=0
 CLEANED=0
 # Один retry только если ЭТОТ запуск взял замок и отказ — «не видно RSP»,
 # и hil off этого запуска завершился 0. Отказ до замка: ни retry, ни off.
@@ -373,21 +439,19 @@ on_rc=$?
 cp "$ART/hil_on_attempt1.log" "$ART/hil_on.log"
 if [ "$on_rc" != 0 ]; then
     log "HIL_ON_TRY_1 FAIL rc=$on_rc"
-    if grep -q 'HIL уже включён\|замок' "$ART/hil_on_attempt1.log"; then
+    if ! lock_is_ours; then
         log "HIL_ON_FAIL before_lock"
-        LOCK_OWNED=0
         exit 24
     fi
+    LOCK_OWNED=1
     if ! grep -q 'robot_state_publisher' "$ART/hil_on_attempt1.log"; then
         log "HIL_ON_FAIL not_rsp"
-        LOCK_OWNED=1
         exit 24
     fi
     bash "$HIL_CMD" off >"$ART/hil_on_retry_off.log" 2>&1
     off_retry=$?
     if [ "$off_retry" != 0 ]; then
         log "HIL_ON_FAIL retry_off_rc=$off_retry"
-        LOCK_OWNED=1
         exit 24
     fi
     LOCK_OWNED=0
@@ -397,13 +461,33 @@ if [ "$on_rc" != 0 ]; then
     cat "$ART/hil_on_attempt2.log" >>"$ART/hil_on.log"
     if [ "$on_rc" != 0 ]; then
         log "HIL_ON_FAIL attempt2 rc=$on_rc"
-        LOCK_OWNED=1
         exit 24
     fi
 fi
+lock_is_ours || { log "HIL_ON_LOCK_NOT_OWNED"; exit 24; }
 LOCK_OWNED=1
 log "HIL_ON_OK"
-main "cd /home/ros2/rob_box_project/docker/main && HIL_MAPS_DIR='$MAPS_DIR' HIL_RTABMAP_MODE='${HIL_RTABMAP_MODE:-mapping}' NAV2TUNE_OVERLAYS='/nav2tune/dwb_publish.yaml' docker compose -f docker-compose.yaml -f /tmp/hil/main.images.yaml -f /tmp/hil/main.hil.yaml -f /tmp/hil/nav2tune.compose.yaml up -d --no-deps --pull never --force-recreate nav2" \
+# Upload overlays only after verifying ownership of the HIL lock.
+main "mkdir -p /tmp/hil/nav2tune" || { log "NAV2TUNE_DIR_FAIL"; exit 30; }
+# Не через main(): она делает ssh </dev/null и выбрасывает переданный файл.
+# Чистая пара m1repeat_20261119T084941Z: compose на Main 0 байт, overlays=none,
+# param get True при yaml false. Шифу, 19.11.
+tr -d '\r' <"$ROOT/scripts/hil/speed/nav2tune.compose.yaml" >"$ART/nav2tune.compose.yaml"
+scp -q -o BatchMode=yes "$ART/dwb_publish.yaml" "$MAIN:/tmp/hil/nav2tune/dwb_publish.yaml" || { log "OVERLAY_SCP_FAIL"; exit 30; }
+scp -q -o BatchMode=yes "$ART/nav2tune.compose.yaml" "$MAIN:/tmp/hil/nav2tune.compose.yaml" || { log "OVERLAY_SCP_FAIL"; exit 30; }
+main "test -s /tmp/hil/nav2tune/dwb_publish.yaml && test -s /tmp/hil/nav2tune.compose.yaml && wc -c /tmp/hil/nav2tune/dwb_publish.yaml /tmp/hil/nav2tune.compose.yaml" \
+    >"$ART/overlay_sizes.txt" || { log "OVERLAY_EMPTY_ON_MAIN"; exit 30; }
+probe_env=""
+probe_compose=""
+if [ -n "$GOAL_PROBE_DIR" ]; then
+    scp -q -o BatchMode=yes "$GOAL_PROBE_DIR/libcontroller_server_core.so" "$MAIN:$GOAL_PROBE_MOUNT" \
+        || { log "GOAL_PROBE_SCP_FAIL"; exit 30; }
+    scp -q -o BatchMode=yes "$ROOT/scripts/hil/diagnostics/nav2_goal_check.compose.yaml" \
+        "$MAIN:/tmp/hil/goal_check_probe.compose.yaml" || { log "GOAL_PROBE_COMPOSE_SCP_FAIL"; exit 30; }
+    probe_env="M1_GOAL_PROBE_MOUNT=$(printf '%q' "$GOAL_PROBE_MOUNT")"
+    probe_compose="-f /tmp/hil/goal_check_probe.compose.yaml"
+fi
+main "cd /home/ros2/rob_box_project/docker/main && HIL_MAPS_DIR='$MAPS_DIR' HIL_RTABMAP_MODE='${HIL_RTABMAP_MODE:-mapping}' NAV2TUNE_OVERLAYS='/nav2tune/dwb_publish.yaml' $probe_env docker compose -f docker-compose.yaml -f /tmp/hil/main.images.yaml -f /tmp/hil/main.hil.yaml -f /tmp/hil/nav2tune.compose.yaml $probe_compose up -d --no-deps --pull never --force-recreate nav2" \
     >"$ART/dwb_overlay_up.log" 2>&1 || { log "DWB_OVERLAY_UP_FAIL"; exit 30; }
 # Оверлей должен быть внутри контейнера, не только на хосте Main.
 if ! main "docker exec $(printf '%q' "$NAV2_CONTAINER") test -s /nav2tune/dwb_publish.yaml && docker exec $(printf '%q' "$NAV2_CONTAINER") grep -q short_circuit_trajectory_evaluation /nav2tune/dwb_publish.yaml"; then
@@ -413,8 +497,6 @@ fi
 log "DWB_PUBLISH_OVERLAY on (file in container, publish flags)"
 # Изоляция YawAtGoal: HIL-оверлей mux, боевой twist_mux.yaml не трогаем.
 # Замки остаются. Применяется до цели, файл удаляется до off.
-YAW_MODE=$(python3 -X utf8 -c 'import os,sys; sys.path.insert(0, sys.argv[1]); from m1_topics import yaw_isolate_from_env; print(yaw_isolate_from_env(os.environ.get("M1_YAWATGOAL_ISOLATE")))' "$HERE") \
-    || { log "YAW_ISOLATE_ENV_BAD value=${M1_YAWATGOAL_ISOLATE:-}"; exit 2; }
 if [ "$YAW_MODE" != off ]; then
     # Полный боевой yaml с одним изменением. Второй --params-file не умеет
     # удалить вход, поэтому mux читает ЭТОТ файл вместо боевого (TWIST_MUX_CONFIG).
@@ -428,9 +510,9 @@ if [ "$YAW_MODE" != off ]; then
 services:
   twist-mux:
     environment:
-      - TWIST_MUX_CONFIG=/tmp/hil/twist_mux_hil.yaml
+      - TWIST_MUX_CONFIG=/config/twist_mux/twist_mux.yaml
     volumes:
-      - /tmp/hil/twist_mux_hil.yaml:/tmp/hil/twist_mux_hil.yaml:ro
+      - /tmp/hil/twist_mux_hil.yaml:/config/twist_mux/twist_mux.yaml:ro
 EOF
 cd /home/ros2/rob_box_project/docker/main && HIL_MAPS_DIR='$MAPS_DIR' docker compose -f docker-compose.yaml -f /tmp/hil/main.images.yaml -f /tmp/hil/main.hil.yaml -f /tmp/hil/twist_mux.hil.yaml up -d --no-deps --pull never --force-recreate twist-mux" \
         >"$ART/yaw_isolate_up.log" 2>&1 || { log "YAW_ISOLATE_RECREATE_FAIL"; exit 30; }
@@ -458,7 +540,7 @@ start_resource_samplers || log "SAMPLERS_START_FAILED"
 # Готовность навигатора — как route.py: не шлём цель, пока bt_navigator не active.
 ready=0
 for _ in $(seq 1 $((NAV_READY_TIMEOUT / 5))); do
-    state=$(main "docker exec $(printf '%q' "$NAV2_CONTAINER") /ros_scripts/ros_with_namespace.sh bash -c 'source /opt/ros/humble/setup.bash; ros2 lifecycle get /bt_navigator'" 2>/dev/null || true)
+    state=$(main "docker exec $(printf '%q' "$NAV2_CONTAINER") /ros_scripts/ros_with_namespace.sh bash -c 'source /opt/ros/humble/setup.bash; timeout 15 ros2 lifecycle get /bt_navigator'" 2>/dev/null || true)
     printf '%s %s\n' "$(date -u +%FT%TZ)" "$state" >>"$ART/nav_ready.log"
     if grep -q 'active \[3\]' <<<"$state"; then ready=1; break; fi
     sleep 5
@@ -484,7 +566,7 @@ fi
 # controller_server active — иначе param get снова баннер, как в ночном прогоне 19.11.
 cs_ready=0
 for _ in $(seq 1 12); do
-    cs=$(main "docker exec $(printf '%q' "$NAV2_CONTAINER") /ros_scripts/ros_with_namespace.sh bash -c 'source /opt/ros/humble/setup.bash; ros2 lifecycle get /controller_server'" 2>/dev/null || true)
+    cs=$(main "docker exec $(printf '%q' "$NAV2_CONTAINER") /ros_scripts/ros_with_namespace.sh bash -c 'source /opt/ros/humble/setup.bash; timeout 15 ros2 lifecycle get /controller_server'" 2>/dev/null || true)
     printf '%s %s\n' "$(date -u +%FT%TZ)" "$cs" >>"$ART/nav_ready.log"
     if grep -q 'active \[3\]' <<<"$cs"; then cs_ready=1; break; fi
     sleep 5
@@ -495,15 +577,27 @@ if [ "$cs_ready" != 1 ]; then
 fi
 # Граф до цели. detach: twist_mux не в подписчиках /cmd_vel_yaw. Иначе — есть.
 if [ "${YAW_MODE:-off}" = detach ]; then
-    main "docker exec $(printf '%q' "$NAV2_CONTAINER") /ros_scripts/ros_with_namespace.sh bash -c 'source /opt/ros/humble/setup.bash; timeout 20 ros2 topic info /cmd_vel_yaw --verbose'" \
-        >"$ART/cmd_vel_yaw_info.txt" 2>&1 || true
-    if grep -q twist_mux "$ART/cmd_vel_yaw_info.txt"; then
+    main "docker exec $(printf '%q' "$NAV2_CONTAINER") /ros_scripts/ros_with_namespace.sh bash -c 'source /opt/ros/humble/setup.bash; timeout 20 ros2 topic info /cmd_vel_yaw --verbose --no-daemon'" \
+        >"$ART/cmd_vel_yaw_info.txt" 2>&1 || { log "YAW_GRAPH_UNREADABLE M1_NOT_SENT"; exit 36; }
+    if grep -qx 'Node name: twist_mux' "$ART/cmd_vel_yaw_info.txt"; then
         log "YAW_MUX_STILL_SUBSCRIBED M1_NOT_SENT"
         exit 36
     fi
-    log "YAW_MUX_DETACHED topic info has no twist_mux"
+    awk '/^Publisher count:/ {publisher=1}
+         /^Subscription count:/ {publisher=0; subscriptions=1}
+         publisher && /^Node name: followpath_watchdog$/ {yaw=1}
+         END {exit !(yaw && subscriptions)}' "$ART/cmd_vel_yaw_info.txt" \
+        || { log "YAW_PUBLISHER_MISSING M1_NOT_SENT"; exit 36; }
+    main "docker exec $(printf '%q' "$NAV2_CONTAINER") /ros_scripts/ros_with_namespace.sh bash -c 'source /opt/ros/humble/setup.bash; timeout 20 ros2 node list --no-daemon'" \
+        >"$ART/mux_nodes.txt" 2>&1 || { log "YAW_GRAPH_UNREADABLE M1_NOT_SENT"; exit 36; }
+    grep -Eq '(^|/)twist_mux$' "$ART/mux_nodes.txt" || { log "YAW_MUX_MISSING M1_NOT_SENT"; exit 36; }
+    log "YAW_MUX_DETACHED publisher=followpath_watchdog"
 fi
 capture_params_after_ready || { log "PARAMS_INCOMPLETE M1_NOT_SENT"; exit 35; }
+if [ -n "$GOAL_PROBE_DIR" ]; then
+    verify_goal_probe_loaded || { log "GOAL_PROBE_NOT_LOADED M1_NOT_SENT"; exit 37; }
+    log "GOAL_PROBE_LOADED sha=$GOAL_PROBE_SHA"
+fi
 log "GOAL_SEND run_id=$RUN_ID M1 target=(-3.7,4.0,0) after BEFORE_GOAL_OK and PARAMS_NUMERIC"
 # route.py читает ROUTE_LOG. Путь — файл этого run_id, не общий out/route.log.
 # Старый общий лог с GOAL_START рядом не трогаем и не копируем.

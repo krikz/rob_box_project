@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import argparse
 import datetime
+import sys
 import time
 from pathlib import Path
 from typing import List, Optional, Sequence
@@ -160,11 +161,11 @@ def _loop(argv: Sequence[str]) -> int:
 
 
 def main(argv: Sequence[str] | None = None) -> int:
-    args = list(argv) if argv is not None else None
+    args = list(sys.argv[1:] if argv is None else argv)
     # Скрипт зовёт ``resource_sample.py --loop --host … --out …``.
     # Раньше --loop принимался только первым аргументом — argparse отвечал
     # unrecognized arguments, и лог ресурсов был пуст (пара run1).
-    if args and "--loop" in args:
+    if "--loop" in args:
         rest = [a for a in args if a != "--loop"]
         return _loop(rest)
     p = argparse.ArgumentParser(description=__doc__.split("\n\n", 1)[0])
@@ -172,7 +173,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     p.add_argument("--root", type=Path, default=Path("/"))
     p.add_argument("--disk", default="sda")
     p.add_argument("--gpu", type=Path, default=None)
-    ns = p.parse_args(list(argv) if argv is not None else None)
+    ns = p.parse_args(args)
     print(sample_host(ns.root, ns.host, ns.disk, ns.gpu))
     return 0
 
