@@ -110,6 +110,46 @@ def _pinned_tag_value(service: str, ref: str, image_tag: str) -> str:
     return f"{image_tag.strip()}@{digest}"
 
 
+def external_override(release: dict[str, Any], role: str) -> str:
+    """Compose-override: каждый сторонний образ роли закреплён своим digest из релиза.
+
+    stage подставляет digest только в переменные ``*_TAG`` наших сервисов, а сторонние
+    образы (eclipse/zenoh и т.п.) в compose остаются плавающим тегом. Релиз их уже
+    закрепил (``external_images``), и adopt отказывает, если они не закреплены, но в
+    итоговый ``docker compose config`` digest сам не попадал. Override закрывает это:
+    сервис, чей образ в compose равен ref до ``@``, получает образ с digest.
+    """
+    pinned_by_ref = {
+        ref.split("@", 1)[0]: ref
+        for ref in release["roles"][role]["external_images"]
+        if "@" in ref
+    }
+    # Сервис без image_versions (supercollider) compose берёт голым тегом канала:
+    # переменной *_TAG для него нет, поэтому digest из релиза подставляем здесь же.
+    pinned_by_service = {
+        name: ref for name, ref in release["roles"][role]["images"].items() if "@" in str(ref)
+    }
+    compose = yaml.safe_load(
+        (Path("docker") / role / "docker-compose.yaml").read_text(encoding="utf-8")
+    )
+    services = {}
+    matched = set()
+    for name, svc in (compose.get("services") or {}).items():
+        image = (svc or {}).get("image")
+        if image in pinned_by_ref:
+            services[name] = {"image": pinned_by_ref[image]}
+            matched.add(image)
+        elif name in pinned_by_service and "${" in str(image):
+            services[name] = {"image": pinned_by_service[name]}
+    missing = set(pinned_by_ref) - matched
+    if missing:
+        raise StageError(
+            "external_override_unmatched",
+            f"{role}: в compose нет сервиса для {sorted(missing)}",
+        )
+    return yaml.safe_dump({"services": services}, sort_keys=True)
+
+
 def compose_digest_env(
     images: dict[str, str],
     *,
