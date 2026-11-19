@@ -336,7 +336,7 @@ def test_script_uses_world_gate_and_pulls_before_off():
     assert "OFF_FAILED" in code
     assert "return 51" in code
     assert "return 52" in code
-    assert "CAMERAS=0 ./runvideo.sh M1" in script
+    assert "CAMERAS=0 VIDEO_DIR=" in script and "./runvideo.sh M1" in script
     assert "/tmp/hil.lock" in script
     assert "NAV2_PARAMS_OVERLAYS" in script
     # Гейт не переписываем: сценарий только вызывает существующий world_check.
@@ -397,6 +397,16 @@ def test_loop_flag_writes_a_line(tmp_path, monkeypatch):
     assert caught.value.code == 0
     assert "host=sandbox" in out.read_text(encoding="utf-8")
     assert "unrecognized arguments" not in out.read_text(encoding="utf-8")
+
+
+def test_stale_route_is_not_the_shared_out_log():
+    """route.log прогона — файл run_id, не общий out/route.log прошлого заезда."""
+    script = (REPEAT / "run_m1_repeat.sh").read_text(encoding="utf-8")
+    code = "\n".join(line for line in script.splitlines() if not line.lstrip().startswith("#"))
+    assert "cp '$SANDBOX_REPO/out/route.log' '$REMOTE_OUT/route.log'" not in code.split("GOAL_SEND")[0]
+    assert "rm -f '$SANDBOX_REPO/out/route.log'" in code
+    assert "NAV_NOT_READY tf_odom_missing" in code
+    assert "HIL_ON_TRY_" in code
 
 
 def test_shell_syntax_ok():

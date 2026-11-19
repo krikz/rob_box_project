@@ -100,7 +100,9 @@ pull_before_off() {
         >>"$ART/bag_stop.log" 2>&1 || true
     sandbox "for i in \$(seq 1 $BAG_CLOSE_WAIT); do test -f '$REMOTE_OUT/bag/metadata.yaml' && break; sleep 1; done; docker exec $(printf '%q' "$G") /entrypoint.sh ros2 bag info '$CONTAINER_OUT/bag'" \
         >"$ART/bag_info.txt" 2>&1 || rc=1
-    sandbox "mkdir -p '$REMOTE_OUT'; cp '$SANDBOX_REPO/out/route.log' '$REMOTE_OUT/route.log' 2>/dev/null || true" || true
+    # Только route этого run_id. Общий out/route.log — прошлый прогон
+    # (yaw_std утащил GOAL 07:28 от clean_003). Нет своего файла — не копируем чужой.
+    :
     copy_bag_to_host || rc=1
     # Лог nav2 до off: «Failed to make progress» и какой recovery (clear/spin/wait/back_up).
     main "docker logs $(printf '%q' "$NAV2_CONTAINER") 2>&1" >"$ART/nav2.log" 2>&1 || true
@@ -113,7 +115,7 @@ hits = recovery_hits(text)
 pathlib.Path(sys.argv[3]).write_text(
     ("hits=" + " ".join(hits) if hits else "hits=none") + "\n", encoding="utf-8")
 ' "$HERE" "$ART/nav2.log" "$ART/recovery.txt" || true
-    if [ -s "$ART/route.log" ] && [ -s "$ART/bag_info.txt" ] && [ -f "$ART/bag/metadata.yaml" ] && [ -s "$ART/nav2.log" ]; then
+    if [ -s "$ART/route.log" ] && grep -q "GOAL_START" "$ART/route.log" && [ -s "$ART/bag_info.txt" ] && [ -f "$ART/bag/metadata.yaml" ] && [ -s "$ART/nav2.log" ]; then
         log "ARTIFACTS_ON_HOST route.log bag_info.txt bag/ nav2.log recovery.txt"
         return 0
     fi
@@ -363,7 +365,21 @@ main "test -s /tmp/hil/nav2tune/dwb_publish.yaml && test -s /tmp/hil/nav2tune.co
 # пересоздаём только nav2 с тем же HIL_MAPS_DIR, что возьмёт замок.
 ON_ATTEMPTED=1
 CLEANED=0
-bash "$HIL_CMD" on >"$ART/hil_on.log" 2>&1 || { log "HIL_ON_FAIL"; exit 24; }
+# Half2 101529Z: сторож отказал «не видно /robot_state_publisher» через 5 с
+# после off предыдущей половины. Одна повторная попытка, не бесконечный on.
+on_rc=1
+for on_try in 1 2; do
+    bash "$HIL_CMD" on >"$ART/hil_on.log" 2>&1 && { on_rc=0; break; }
+    log "HIL_ON_TRY_$on_try FAIL"
+    if [ "$on_try" = 1 ]; then
+        bash "$HIL_CMD" off >"$ART/hil_on_retry_off.log" 2>&1 || true
+        sleep 20
+    fi
+done
+if [ "$on_rc" != 0 ]; then
+    log "HIL_ON_FAIL"
+    exit 24
+fi
 main "cd /home/ros2/rob_box_project/docker/main && HIL_MAPS_DIR='$MAPS_DIR' HIL_RTABMAP_MODE='${HIL_RTABMAP_MODE:-mapping}' NAV2TUNE_OVERLAYS='/nav2tune/dwb_publish.yaml' docker compose -f docker-compose.yaml -f /tmp/hil/main.images.yaml -f /tmp/hil/main.hil.yaml -f /tmp/hil/nav2tune.compose.yaml up -d --no-deps --pull never --force-recreate nav2" \
     >"$ART/dwb_overlay_up.log" 2>&1 || { log "DWB_OVERLAY_UP_FAIL"; exit 30; }
 # Оверлей должен быть внутри контейнера, не только на хосте Main.
@@ -423,7 +439,14 @@ for _ in $(seq 1 $((NAV_READY_TIMEOUT / 5))); do
     sleep 5
 done
 if [ "$ready" != 1 ]; then
-    log "NAV_NOT_READY M1_NOT_SENT"
+    # Half1 100054Z: bt_navigator inactive, local_costmap ждал odom→base_footprint.
+    # Кадр не появился за окно — это не «мало ждали», а нет TF. Пишем факт и выходим.
+    main "docker logs --tail 40 $(printf '%q' "$NAV2_CONTAINER") 2>&1" >"$ART/nav_not_ready_tail.log" 2>&1 || true
+    if grep -q 'frame does not exist' "$ART/nav_not_ready_tail.log"; then
+        log "NAV_NOT_READY tf_odom_missing M1_NOT_SENT"
+    else
+        log "NAV_NOT_READY M1_NOT_SENT"
+    fi
     exit 33
 fi
 # controller_server active — иначе param get снова баннер, как в ночном прогоне 19.11.
@@ -453,7 +476,11 @@ if [ "${YAW_MODE:-off}" = detach ]; then
     log "YAW_MUX_DETACHED topic info has no twist_mux"
 fi
 log "GOAL_SEND run_id=$RUN_ID M1 target=(-3.7,4.0,0) after BEFORE_GOAL_OK and PARAMS_NUMERIC"
-sandbox "cd '$SANDBOX_REPO' && CAMERAS=0 ./runvideo.sh M1" >"$ART/runvideo.log" 2>&1 || true
+# route.py пишет в общий out/route.log. Перед целью очищаем, после — копируем
+# в каталог этого run_id. Иначе pull забирает GOAL прошлого прогона.
+sandbox "rm -f '$SANDBOX_REPO/out/route.log'; mkdir -p '$REMOTE_OUT'"
+sandbox "cd '$SANDBOX_REPO' && CAMERAS=0 VIDEO_DIR='$SANDBOX_REPO' ./runvideo.sh M1" >"$ART/runvideo.log" 2>&1 || true
+sandbox "cp '$SANDBOX_REPO/out/route.log' '$REMOTE_OUT/route.log'" || log "ROUTE_COPY_TO_RUN_FAIL"
 log "ROUTE_DONE"
 # pull_before_off — в cleanup, до hil off.
 exit 0
