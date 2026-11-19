@@ -367,6 +367,12 @@ ExecStop=/usr/bin/docker compose down
 # = одно падение и навсегда, а с Restart=on-failure + rate-limit — устойчиво).
 Restart=on-failure
 RestartSec=30
+# issue #4533: дефолт TimeoutStartSec=90s короче ожидания service_healthy
+# (vision-hailo / vision-face ждут zenoh-router). На холодном старте
+# systemd убивает ExecStart, лимит повторов сжигает попытки, лицо не зажигается.
+# 900 с — тот же потолок, что у robbox-sound.service / robbox-main.service.
+# Происхождение: незакоммиченная правка worktree agent-a7c8ca1138b8d0728.
+TimeoutStartSec=900
 
 [Install]
 WantedBy=multi-user.target

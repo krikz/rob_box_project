@@ -99,6 +99,23 @@ def test_unit_template_has_no_registry_pull_in_exec_start_pre() -> None:
     )
 
 
+def test_unit_template_start_timeout_covers_healthy_wait() -> None:
+    """TimeoutStartSec покрывает ожидание service_healthy (#4533).
+
+    Дефолт systemd 90 с. vision-hailo/vision-face ждут healthy у zenoh-router
+    (до ~130 с на healthcheck), ``compose up -d`` не укладывается, systemd
+    убивает oneshot.
+    """
+    body = _extract_unit_template()
+    service = re.search(r"\[Service\](.*?)(?=\n\[)", body, re.DOTALL)
+    assert service is not None, "нет секции [Service]"
+    match = re.search(r"^TimeoutStartSec=(\d+)", service.group(1), re.MULTILINE)
+    assert match is not None, "TimeoutStartSec отсутствует (дефолт 90 с, issue #4533)"
+    assert int(match.group(1)) >= 300, (
+        f"TimeoutStartSec={match.group(1)} < 300 с — не покрывает холодный старт"
+    )
+
+
 def test_unit_template_does_not_order_after_network_online_without_wants() -> None:
     """LED не стоит за network-online.target без Wants= (issue #4533)."""
     body = _extract_unit_template()

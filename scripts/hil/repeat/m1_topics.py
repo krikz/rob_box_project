@@ -141,17 +141,76 @@ def repeat_bag_topics(extra: Sequence[str] | None = None) -> List[str]:
 def bag_qos_overrides_yaml(topics: Sequence[str] | None = None) -> str:
     """QoS подписки bag. DWB публикует /evaluation depth 1, reliable.
 
-    ``ros2 bag record`` без оверлея подписывается best-effort и теряет тики
-    (пара run1: 6 с дыры, защёлка встала в дырке). reliability 1 = reliable.
+    Humble ``ros2 bag record`` принимает неполный YAML (reliability/history/depth)
+    и дописывает дефолты rclpy. Полный профиль всё равно пишем: C++ decode
+    (qos.cpp) требует все поля, а запись идёт через zenoh между Main и песочницей.
+    depth 10 у подписчика не лечит publisher depth 1 — это только совместимость.
     """
     names = list(topics) if topics is not None else repeat_bag_topics()
     lines = []
     for name in names:
         lines.append(f"{name}:")
-        lines.append("  reliability: reliable")
         lines.append("  history: keep_last")
         lines.append("  depth: 10")
+        lines.append("  reliability: reliable")
+        lines.append("  durability: volatile")
+        lines.append("  deadline:")
+        lines.append("    sec: 0")
+        lines.append("    nsec: 0")
+        lines.append("  lifespan:")
+        lines.append("    sec: 0")
+        lines.append("    nsec: 0")
+        lines.append("  liveliness: system_default")
+        lines.append("  liveliness_lease_duration:")
+        lines.append("    sec: 0")
+        lines.append("    nsec: 0")
+        lines.append("  avoid_ros_namespace_conventions: false")
     return "\n".join(lines) + "\n"
+
+
+# Дыра записи — тик контроллера есть (/local_plan или /cmd_vel), а /evaluation нет.
+# Молчание контроллера (recovery, throw до DWB) дырой записи не является.
+EVAL_HOLE_LIMIT_S = 1.0
+
+
+def classify_evaluation_gap(
+    gap_s: float,
+    cmd_vel_inside: int,
+    local_plan_inside: int,
+    recovery_in_window: bool,
+) -> str:
+    """Класс дыры /evaluation. Не утверждает, что тик был опубликован.
+
+    ``controller_silent`` — recovery или нет ни /local_plan, ни потока /cmd_vel:
+    DWB не звали (throw до computeVelocityCommands, spin/wait).
+    ``recording_drop`` — /local_plan внутри окна есть, /evaluation нет дольше
+    ``EVAL_HOLE_LIMIT_S``: контроллер тикал, оценка в bag не попала.
+    ``boundary_burst`` — /cmd_vel есть, но /local_plan нет и recovery нет:
+    пачка на краю (pair_003, 2.9 с), не доказанный дроп.
+    ``ok`` — короче порога.
+    """
+    if gap_s <= EVAL_HOLE_LIMIT_S:
+        return "ok"
+    if recovery_in_window or (local_plan_inside == 0 and cmd_vel_inside == 0):
+        return "controller_silent"
+    if local_plan_inside > 0:
+        return "recording_drop"
+    return "boundary_burst"
+
+
+def recording_drops(gaps: Sequence[Mapping[str, object]]) -> List[Mapping[str, object]]:
+    """Дыры класса recording_drop. Остальные — не потеря bag."""
+    out: List[Mapping[str, object]] = []
+    for gap in gaps:
+        kind = classify_evaluation_gap(
+            float(gap["gap_s"]),
+            int(gap.get("cmd_vel_inside", 0)),
+            int(gap.get("local_plan_inside", 0)),
+            bool(gap.get("recovery_in_window", False)),
+        )
+        if kind == "recording_drop":
+            out.append({**gap, "kind": kind})
+    return out
 
 
 def record_argv(out_dir: str, topics: Sequence[str] | None = None) -> List[str]:
@@ -177,7 +236,9 @@ def _pose_line(label: str, pose: Mapping[str, float] | None) -> str:
         return f"{label} none"
 
 
-def format_start_map_gt(map_pose: Mapping[str, float] | None, gt_pose: Mapping[str, float] | None) -> str:
+def format_start_map_gt(
+    map_pose: Mapping[str, float] | None, gt_pose: Mapping[str, float] | None
+) -> str:
     """Две строки старта map+GT до цели. Нет измерения — ``none``, не выдуманный ноль."""
     return _pose_line("map", map_pose) + "\n" + _pose_line("gt", gt_pose) + "\n"
 
@@ -199,7 +260,11 @@ def parse_tf2_echo(text: str) -> dict | None:
     )
     if not tr or not rpy:
         return None
-    return {"x": float(tr.group(1)), "y": float(tr.group(2)), "yaw": float(rpy.group(1))}
+    return {
+        "x": float(tr.group(1)),
+        "y": float(tr.group(2)),
+        "yaw": float(rpy.group(1)),
+    }
 
 
 def parse_ground_truth_echo(text: str) -> dict | None:
@@ -212,7 +277,9 @@ def parse_ground_truth_echo(text: str) -> dict | None:
         text or "",
     )
     quat = {}
-    block = re.search(r"orientation:\s*\n((?:\s*[xyzw]:\s*" + _FLOAT_RE + r"\s*\n){4})", text or "")
+    block = re.search(
+        r"orientation:\s*\n((?:\s*[xyzw]:\s*" + _FLOAT_RE + r"\s*\n){4})", text or ""
+    )
     if pos is None or block is None:
         return None
     for key, value in re.findall(rf"([xyzw]):\s*({_FLOAT_RE})", block.group(1)):
@@ -228,7 +295,9 @@ def parse_ground_truth_echo(text: str) -> dict | None:
 
 def write_start_map_gt(directory: str | Path, map_text: str, gt_text: str) -> str:
     """Разобрать сырьё tf2_echo и GT echo в ``start_map_gt.txt``. Возвращает текст файла."""
-    body = format_start_map_gt(parse_tf2_echo(map_text), parse_ground_truth_echo(gt_text))
+    body = format_start_map_gt(
+        parse_tf2_echo(map_text), parse_ground_truth_echo(gt_text)
+    )
     path = Path(directory) / "start_map_gt.txt"
     path.write_text(body, encoding="utf-8")
     return body
@@ -253,7 +322,7 @@ def parse_param_value(raw: str) -> str | None:
         text = line.strip()
         for prefix in _VALUE_PREFIXES:
             if text.startswith(prefix):
-                value = text[len(prefix):].strip()
+                value = text[len(prefix) :].strip()
                 return value or None
     return None
 
@@ -266,7 +335,9 @@ def format_named_param(name: str, raw: str) -> str:
     return f"{name}={value}"
 
 
-def format_params_file(named: Sequence[Tuple[str, str]], overlays: Iterable[str] = ()) -> str:
+def format_params_file(
+    named: Sequence[Tuple[str, str]], overlays: Iterable[str] = ()
+) -> str:
     """params.txt: каждая строка с именем параметра. Нет ответа — ``name=missing``."""
     lines = [format_named_param(name, raw) for name, raw in named]
     for required in NAMED_PARAMS:
@@ -344,9 +415,7 @@ def positive_float_from_env(name: str, value: str | None) -> float | None:
 
 
 def dwb_publish_overlay_yaml(
-    short_circuit: bool = True,
-    trans_stopped: float | None = None,
-    xy_goal_tolerance: float | None = None,
+    short_circuit: bool = True, trans_stopped: float | None = None, xy_goal_tolerance: float | None = None
 ) -> str:
     """Оверлей Nav2 только для HIL-повтора. Боевой файл не меняет, скорости не задаёт.
 
@@ -360,31 +429,99 @@ def dwb_publish_overlay_yaml(
         "# Публикация оценок DWB. Скорость, critics, lookahead не трогает.",
     ]
     if not short_circuit:
-        lines.append("# short_circuit false: полный список оценок, выбор траектории тот же.")
+        lines.append(
+            "# short_circuit false: полный список оценок, выбор траектории тот же."
+        )
     lines.extend(
         [
-            # Вложенность как в nav2_params.yaml: controller_server.ros__parameters.FollowPath.
-            # Плоский FollowPath: под controller_server не перебивает вложенный ключ
-            # (пара run1: yaml false, param get True).
+            # Ключи плагина — прямо под FollowPath, как nav2_params.yaml:102
+            # (max_vel_x, short_circuit_trajectory_evaluation). Лишний
+            # FollowPath.ros__parameters узел не читает: чистая пара
+            # m1repeat_20261119T084941Z, yaml false, param get True.
             "controller_server:",
             "  ros__parameters:",
             "    FollowPath:",
-            "      ros__parameters:",
-            "        publish_evaluation: true",
-            "        publish_trajectories: true",
-            "        publish_local_plan: true",
+            "      publish_evaluation: true",
+            "      publish_trajectories: true",
+            "      publish_local_plan: true",
         ]
     )
     if not short_circuit:
-        lines.append("        short_circuit_trajectory_evaluation: false")
+        lines.append("      short_circuit_trajectory_evaluation: false")
     if trans_stopped is not None:
         # Не боевой 0.03: порог, ниже которого RotateToGoal считает корпус стоящим.
-        lines.append(f"        trans_stopped_velocity: {trans_stopped}")
+        lines.append(f"      trans_stopped_velocity: {trans_stopped}")
     if xy_goal_tolerance is not None:
         # Только внутреннее окно DWB (RotateToGoal.in_window_). general_goal_checker
         # и GT-приёмка route.py остаются 0.25.
-        lines.append(f"        xy_goal_tolerance: {xy_goal_tolerance}")
+        lines.append(f"      xy_goal_tolerance: {xy_goal_tolerance}")
     return "\n".join(lines) + "\n"
+
+
+def yaw_isolate_from_env(value: str | None) -> str:
+    """``M1_YAWATGOAL_ISOLATE``.
+
+    пусто/0 — штатный mux, подписка на /cmd_vel_yaw есть.
+    1 — зачётная пара: вход yaw_at_goal убран из yaml, который читает mux.
+    priority — отдельный опыт: priority 5, подписка остаётся.
+    YawAtGoal в обоих случаях публикует /cmd_vel_yaw (для bag). Замки не трогаем.
+    """
+    text = (value if value is not None else "0").strip().lower()
+    if text in ("", "0", "false", "no"):
+        return "off"
+    if text in ("1", "true", "yes", "detach"):
+        return "detach"
+    if text == "priority":
+        return "priority"
+    raise ValueError(f"M1_YAWATGOAL_ISOLATE={value!r} — 0, 1 или priority")
+
+
+_YAW_BLOCK = (
+    "      yaw_at_goal:\n"
+    "        topic: cmd_vel_yaw\n"
+    "        timeout: 0.2\n"
+    "        priority: 15\n"
+)
+
+
+def twist_mux_config_for_isolate(combat_text: str, mode: str) -> str:
+    """Боевой yaml mux с одним изменением. mode off — текст как есть.
+
+    detach убирает блок yaw_at_goal: mux не подписывается на /cmd_vel_yaw.
+    priority меняет 15 на 5, подписка остаётся. Замки и остальные входы те же.
+    """
+    if mode == "off":
+        return combat_text
+    if _YAW_BLOCK not in combat_text:
+        raise ValueError("yaw_at_goal block not in combat twist_mux.yaml")
+    if mode == "detach":
+        return combat_text.replace(_YAW_BLOCK, "", 1)
+    if mode == "priority":
+        return combat_text.replace(
+            _YAW_BLOCK,
+            _YAW_BLOCK.replace("priority: 15", "priority: 5"),
+            1,
+        )
+    raise ValueError(f"unknown isolate mode {mode!r}")
+
+
+def twist_mux_isolate_yaml() -> str:
+    """Оверлей twist_mux: YawAtGoal ниже /cmd_vel. Боевой файл не меняет.
+
+    twist_mux глушит источники строго меньшего приоритета. 5 < 10: пока DWB
+    публикует /cmd_vel, /cmd_vel_yaw до привода не доходит. Замки не в этом файле.
+    """
+    return (
+        "# HIL only. Не боевой twist_mux.yaml.\n"
+        "# YawAtGoal ниже DWB: финальный доворот делает контроллер, не yaw.\n"
+        "twist_mux:\n"
+        "  ros__parameters:\n"
+        "    topics:\n"
+        "      yaw_at_goal:\n"
+        "        topic: cmd_vel_yaw\n"
+        "        timeout: 0.2\n"
+        "        priority: 5\n"
+    )
 
 
 def short_circuit_from_env(value: str | None) -> bool:
@@ -424,7 +561,9 @@ def missing_artifacts(directory: str | Path, required: Sequence[str]) -> List[st
 
 def assert_ready(directory: str | Path, phase: str) -> None:
     """Бросить, если фиксация фазы неполная. phase: before_goal | before_off."""
-    required = {"before_goal": BEFORE_GOAL_FILES, "before_off": BEFORE_OFF_FILES}.get(phase)
+    required = {"before_goal": BEFORE_GOAL_FILES, "before_off": BEFORE_OFF_FILES}.get(
+        phase
+    )
     if required is None:
         raise ValueError(f"unknown phase {phase!r}")
     missing = missing_artifacts(directory, required)

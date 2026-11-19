@@ -68,6 +68,20 @@ def test_cancel_marks_staged_and_keeps_current(tmp_path):
     assert not (releases_root / "current").exists()
 
 
+def test_cancel_refuses_the_current_release(tmp_path):
+    """Отмена не трогает релиз, который уже current (#4917)."""
+    state_dir, releases_root, _compose = _paths(tmp_path)
+    _plant_staged(releases_root, "2026.11.09-1")
+    _save_staged(state_dir)
+    pointers.advance(state_dir, "2026.11.09-1")
+
+    with pytest.raises(cancel.CancelError) as caught:
+        cancel.cancel_staged(state_dir, releases_root, "vision")
+
+    assert caught.value.reason == "release_is_current"
+    assert pointers.load(state_dir) == ("2026.11.09-1", None)
+
+
 def test_cancel_leaves_existing_pointers_untouched(tmp_path):
     state_dir, releases_root, compose_root = _paths(tmp_path)
     _plant_staged(releases_root, "2026.11.09-1")

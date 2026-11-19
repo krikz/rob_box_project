@@ -4,6 +4,7 @@
 """
 
 import importlib.util
+import os
 import py_compile
 import shutil
 import subprocess
@@ -769,6 +770,53 @@ def _bash_works() -> bool:
 @pytest.mark.skipif(not _bash_works(), reason="нет рабочего bash")
 def test_runner_syntax():
     subprocess.run(["bash", "-n", "run_checks.sh"], check=True, cwd=CHECKS)
+    subprocess.run(["bash", "-n", "run_cancel_matrix.sh"], check=True, cwd=CHECKS)
+
+
+def test_cancel_matrix_order_and_not_triggered_is_not_pass():
+    """Порядок матрицы отмен. zone/corner сюда не входят. NOT_TRIGGERED — не PASS."""
+    text = (CHECKS / "run_cancel_matrix.sh").read_text(encoding="utf-8")
+    order = (
+        "orphan",
+        "orphan_natural",
+        "nav_aborted",
+        "stop_idle",
+        "stop_active",
+        "controller_abort",
+        "client_kill",
+        "host_cancel",
+    )
+    body = text.split("MATRIX=", 1)[-1].split(")", 1)[0]
+    positions = [body.index(name) for name in order]
+    assert positions == sorted(positions), positions
+    assert "zone" not in body and "corner" not in body
+    assert "hil.sh on" in text and "hil.sh off" in text
+    assert "HIL_LOCK" in text
+    assert "NOT_TRIGGERED" in text and "не PASS" in text
+    assert text.index("preflight_matrix") < text.index("take_lock")
+
+
+@pytest.mark.skipif(not _bash_works(), reason="нет рабочего bash")
+def test_cancel_matrix_busy_lock_exits_without_hil_on(tmp_path):
+    """Занятый stand.lock — выход 3, hil.sh on не вызывается."""
+    lock = tmp_path / "stand.lock"
+    lock.write_text("other-slot 2026-11-19T00:00:00Z\n", encoding="utf-8")
+    env = {
+        **os.environ,
+        "HIL_CHECKS_OWNER": "cancel-matrix",
+        "STAND_LOCK": str(lock),
+        "HIL_CHECKS_OUT": str(tmp_path / "out"),
+    }
+    proc = subprocess.run(
+        ["bash", str(CHECKS / "run_cancel_matrix.sh")],
+        capture_output=True,
+        text=True,
+        env=env,
+        timeout=30,
+    )
+    assert proc.returncode == 3, proc.stdout + proc.stderr
+    assert "hil.sh on" not in proc.stdout
+    assert "занят" in proc.stderr
 
 
 def test_runbook_linked_from_docs_readme():

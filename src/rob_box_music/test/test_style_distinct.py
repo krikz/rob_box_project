@@ -67,6 +67,24 @@ def test_mix_of_two_styles_differs_in_scene_sweep_and_levels(a, b):
     assert sum(diff) >= 2, (a, b, diff)
 
 
+def test_breaks_sweep_is_not_the_club_slider_and_reaches_the_track():
+    """#3550: breaks больше не алиас ``_CLUB_SECTION_LPF``. Дроп прикрыт, брейк не 1200, шаги свинга — шаффл,
+    и собранный трек несёт эту кривую в ``mix.lpf`` (не только в таблице)."""
+    club, breaks = kn.STYLES["club"], kn.STYLES["breaks"]
+    assert breaks.section_lpf is not club.section_lpf
+    assert dict(breaks.section_lpf) != dict(club.section_lpf)
+    assert breaks.section_lpf["drop"] == (2200.0, 2200.0)
+    assert breaks.section_lpf["break"] != club.section_lpf["break"]
+    assert breaks.swing_steps == (2, 6, 10, 14)
+    assert breaks.swing_steps != club.swing_steps
+    track = compose(seeded_plan(seeded_profile("космос", "breaks"), 31476, set_id="s7"), 1)
+    names = [sec.name for sec in track.form.sections]
+    assert track.mix.lpf["bass"][names.index("drop")] == (2200.0, 2200.0)
+    assert track.mix.lpf["pad"][names.index("break")] == breaks.section_lpf["break"]
+    club_track = compose(seeded_plan(seeded_profile("космос", "club"), 31476, set_id="s7"), 1)
+    assert track.mix.lpf["bass"] != club_track.mix.lpf["bass"]
+
+
 def test_dj_dave_psr_layer_is_the_face_of_the_club_only():
     """psr-слой DJ_Dave (``layer_sections["sample"]``) звучит только в клубе."""
     assert [s for s in ELECTRONIC if "sample" in kn.STYLES[s].layer_sections] == ["club"]

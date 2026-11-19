@@ -69,6 +69,15 @@ echo "════════════════════════�
 echo ""
 
 # Launch twist_mux
+# HIL: TWIST_MUX_CONFIG подменяет боевой файл целиком (отсоединить вход yaw).
+# Пусто — боевой /config/twist_mux/twist_mux.yaml, команда как была.
+if [ -n "${TWIST_MUX_CONFIG:-}" ]; then
+    if [ ! -f "$TWIST_MUX_CONFIG" ]; then
+        echo "TWIST_MUX_CONFIG=$TWIST_MUX_CONFIG не найден" >&2
+        exit 1
+    fi
+    CONFIG_FILE="$TWIST_MUX_CONFIG"
+fi
 exec ros2 run twist_mux twist_mux \
     --ros-args \
     --params-file $CONFIG_FILE \

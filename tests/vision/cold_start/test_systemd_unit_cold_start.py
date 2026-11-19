@@ -124,6 +124,29 @@ def test_exec_start_pre_does_not_pull_images() -> None:
     )
 
 
+def test_unit_start_timeout_covers_healthy_wait() -> None:
+    """``compose up -d`` с ``condition: service_healthy`` не должен упереться в дефолт 90 с.
+
+    vision-hailo и vision-face ждут healthy у zenoh-router (start_period 30 с,
+    interval 5 с, retries 20 — до ~130 с только на healthcheck). Дефолт
+    TimeoutStartSec=90 с убивает ExecStart, Type=oneshot с StartLimitBurst=5
+    сжигает попытки и оставляет юнит failed — лицо не зажигается. Sound/Main
+    уже держат TimeoutStartSec=900 (issue #4533).
+    """
+    body = _extract_unit_template()
+    service = re.search(r"\[Service\](.*?)(?=\n\[)", body, re.DOTALL)
+    assert service is not None, "нет секции [Service]"
+    match = re.search(r"^TimeoutStartSec=(\d+)", service.group(1), re.MULTILINE)
+    assert match is not None, (
+        "TimeoutStartSec отсутствует: дефолт systemd 90 с короче ожидания "
+        "service_healthy у zenoh-router (issue #4533)"
+    )
+    assert int(match.group(1)) >= 300, (
+        f"TimeoutStartSec={match.group(1)} меньше 300 с — не покрывает "
+        "ожидание service_healthy на холодном старте (issue #4533)"
+    )
+
+
 def test_unit_does_not_order_after_network_online_without_wants() -> None:
     """LED-лицо не стоит в очереди за network-online.target (issue #4533).
 

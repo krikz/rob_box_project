@@ -51,6 +51,9 @@ def _cancel_staged(state_dir: Path, releases_root: Path, node: str) -> dict[str,
     name = prev.get("staged")
     if not name:
         raise CancelError("nothing_staged", str(state_dir / "state.json"))
+    # Текущий релиз не отменяется: это откат работающего, а не отмена staged (#4917).
+    if name in (before[0], prev.get("current")):
+        raise CancelError("release_is_current", name)
     dest = releases_root / name / node
     if not (dest / MARKER).is_file():
         raise CancelError("release_not_staged", str(dest))

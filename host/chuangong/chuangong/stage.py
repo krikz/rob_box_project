@@ -110,6 +110,46 @@ def _pinned_tag_value(service: str, ref: str, image_tag: str) -> str:
     return f"{image_tag.strip()}@{digest}"
 
 
+def external_override(release: dict[str, Any], role: str) -> str:
+    """Compose-override: каждый сторонний образ роли закреплён своим digest из релиза.
+
+    stage подставляет digest только в переменные ``*_TAG`` наших сервисов, а сторонние
+    образы (eclipse/zenoh и т.п.) в compose остаются плавающим тегом. Релиз их уже
+    закрепил (``external_images``), и adopt отказывает, если они не закреплены, но в
+    итоговый ``docker compose config`` digest сам не попадал. Override закрывает это:
+    сервис, чей образ в compose равен ref до ``@``, получает образ с digest.
+    """
+    pinned_by_ref = {
+        ref.split("@", 1)[0]: ref
+        for ref in release["roles"][role]["external_images"]
+        if "@" in ref
+    }
+    # Сервис без image_versions (supercollider) compose берёт голым тегом канала:
+    # переменной *_TAG для него нет, поэтому digest из релиза подставляем здесь же.
+    pinned_by_service = {
+        name: ref for name, ref in release["roles"][role]["images"].items() if "@" in str(ref)
+    }
+    compose = yaml.safe_load(
+        (Path("docker") / role / "docker-compose.yaml").read_text(encoding="utf-8")
+    )
+    services = {}
+    matched = set()
+    for name, svc in (compose.get("services") or {}).items():
+        image = (svc or {}).get("image")
+        if image in pinned_by_ref:
+            services[name] = {"image": pinned_by_ref[image]}
+            matched.add(image)
+        elif name in pinned_by_service and "${" in str(image):
+            services[name] = {"image": pinned_by_service[name]}
+    missing = set(pinned_by_ref) - matched
+    if missing:
+        raise StageError(
+            "external_override_unmatched",
+            f"{role}: в compose нет сервиса для {sorted(missing)}",
+        )
+    return yaml.safe_dump({"services": services}, sort_keys=True)
+
+
 def compose_digest_env(
     images: dict[str, str],
     *,
@@ -282,6 +322,47 @@ class DockerCli:
                 images=pinned,
                 env=dict(env),
             )
+
+    def check_container_status(self, container: str) -> str | None:
+        """None = контейнер running, иначе деталь. Тот же контракт, что у FakeDocker."""
+        res = self._run("inspect", "--format", "{{.State.Status}}", container)
+        if res.returncode != 0:
+            return res.stderr.strip() or res.stdout.strip() or f"docker inspect exited {res.returncode}"
+        status = res.stdout.strip()
+        if status != "running":
+            return f"container {container} status {status or 'unknown'}, expected running"
+        return None
+
+    def check_container_logs(self, container: str) -> str | None:
+        """None = логи читаются, иначе деталь. Содержимое не толкует — это проверка доступности."""
+        res = self._run("logs", "--tail", "50", container)
+        if res.returncode != 0:
+            return res.stderr.strip() or f"docker logs exited {res.returncode}"
+        return None
+
+    def check_ros2_topics(self, expected_topics, container: str | None = None) -> str | None:
+        """Сверка expected_topics с ros2 topic list внутри контейнера роли.
+
+        None = все на месте. Нет контейнера, нет ros2 или темы не нашлось — деталь,
+        не исключение: execute_role отличает сбой проверки от падения адаптера.
+        """
+        expected = list(expected_topics)
+        if not container:
+            return "check_ros2_topics: не задан контейнер роли"
+        # ros2 в контейнере роли появляется в PATH только после setup.bash.
+        # Прямой exec ros2 падает "executable file not found", хотя ros2 есть.
+        res = self._run(
+            "exec", container, "bash", "-lc",
+            "source /opt/ros/humble/setup.bash && ros2 topic list",
+            timeout=60.0,
+        )
+        if res.returncode != 0:
+            return res.stderr.strip() or res.stdout.strip() or f"ros2 topic list exited {res.returncode}"
+        present = {line.strip() for line in res.stdout.splitlines() if line.strip()}
+        missing = [topic for topic in expected if topic not in present]
+        if missing:
+            return f"missing topics: {missing}"
+        return None
 
 
 def _repo_of(ref: str) -> tuple[str, str]:

@@ -30,9 +30,7 @@ class HealthCheck(Protocol):
 
 class DryRunHealthCheck:
     def check(self, role: str, release: str, dry_run: bool) -> HealthResult:
-        return HealthResult(
-            "not_verified", f"health not executed in dry-run: {role}/{release}"
-        )
+        return HealthResult("not_verified", f"health not executed in dry-run: {role}/{release}")
 
 
 def _blocked(record: dict[str, Any], reason: str, detail: Any) -> dict[str, Any]:
@@ -71,9 +69,7 @@ def _legacy_mismatches(staged: Path, legacy_root: Path) -> list[dict[str, str]]:
             if not legacy.is_file():
                 mismatches.append({"path": relative.as_posix(), "detail": "missing"})
             elif not _files_equal(path, legacy):
-                mismatches.append(
-                    {"path": relative.as_posix(), "detail": "content_differs"}
-                )
+                mismatches.append({"path": relative.as_posix(), "detail": "content_differs"})
         except OSError as exc:
             raise LegacyReadError(relative.as_posix(), str(exc)) from exc
     return mismatches
@@ -94,9 +90,7 @@ class ActivationMachine:
 
     def _record(self, dry_run: bool = True) -> dict[str, Any]:
         prev = st.load(self.cfg.state_file)
-        record = st.new_record(
-            self.cfg.robot_id, self.cfg.node, self.cfg.channel, self.cfg.mode, prev
-        )
+        record = st.new_record(self.cfg.robot_id, self.cfg.node, self.cfg.channel, self.cfg.mode, prev)
         record["dry_run"] = dry_run
         probe_flags(self.cfg, self.deps.docker, record)
         return record
@@ -123,9 +117,7 @@ class ActivationMachine:
         record["release_git"] = release.get("git")
         return release
 
-    def _preflight(
-        self, record: dict[str, Any], release: dict[str, Any]
-    ) -> tuple[RoleStager, dict[str, Any]] | None:
+    def _preflight(self, record: dict[str, Any], release: dict[str, Any]) -> tuple[RoleStager, dict[str, Any]] | None:
         name = release["release"]
         if cancel.is_cancelled(self.cfg.releases_root, name, self.cfg.node):
             _blocked(
@@ -133,9 +125,7 @@ class ActivationMachine:
                 "release_cancelled",
                 {
                     "release": name,
-                    "marker": str(
-                        cancel.cancel_path(self.cfg.releases_root, name, self.cfg.node)
-                    ),
+                    "marker": str(cancel.cancel_path(self.cfg.releases_root, name, self.cfg.node)),
                 },
             )
             return None
@@ -207,9 +197,7 @@ class ActivationMachine:
         try:
             mismatches = _legacy_mismatches(staged, self.cfg.legacy_root)
         except LegacyReadError as exc:
-            return _blocked(
-                record, "legacy_read_failed", {"path": exc.path, "error": exc.error}
-            )
+            return _blocked(record, "legacy_read_failed", {"path": exc.path, "error": exc.error})
         if mismatches:
             return _blocked(record, "legacy_bundle_mismatch", mismatches)
 
@@ -232,8 +220,7 @@ class ActivationMachine:
                 },
             )
         if set(running) != set(image_ids) or any(
-            running.get(service) != [image_id]
-            for service, image_id in image_ids.items()
+            running.get(service) != [image_id] for service, image_id in image_ids.items()
         ):
             return _blocked(
                 record,
@@ -272,9 +259,7 @@ class ActivationMachine:
             raise ValueError(f"created без часового пояса: {raw}")
         return created
 
-    def _compat_block(
-        self, record: dict[str, Any], release: dict[str, Any]
-    ) -> dict[str, Any] | None:
+    def _compat_block(self, record: dict[str, Any], release: dict[str, Any]) -> dict[str, Any] | None:
         minimum = release["compat"]["min_previous"]
         current = record["current"]
         if minimum is None or current == minimum:
@@ -293,9 +278,7 @@ class ActivationMachine:
             return _blocked(record, "compat_min_previous", detail)
         return None
 
-    def _prepare_activation(
-        self, release_name: str
-    ) -> tuple[dict[str, Any], dict[str, Any] | None]:
+    def _prepare_activation(self, release_name: str) -> tuple[dict[str, Any], dict[str, Any] | None]:
         record = self._record()
         release = self._release(record, release_name)
         if release is None:
@@ -353,13 +336,17 @@ class ActivationMachine:
             return planned
         return self._executed(planned, release, st.State.ROLLBACK_EXECUTED)
 
-    def _executed(
-        self, record: dict[str, Any], release: dict[str, Any], state: st.State
-    ) -> dict[str, Any]:
+    def _executed(self, record: dict[str, Any], release: dict[str, Any], state: st.State) -> dict[str, Any]:
         """Прогнать план через исполнителя роли. Без исполнителя — честный отказ, не ложный успех."""
         if self.executor is None:
             return _blocked(record, "executor_not_wired", "execute=True без исполнителя роли")
         origin = record["current"]
+        # Прежний релиз нужен откату: без него исполнитель поднимет бандл упавшего (#4926).
+        previous_release = None
+        if origin and origin != release["release"]:
+            previous_release = self._release(record, origin)
+            if previous_release is None:
+                return record
         results = []
         for node in ACTIVATION_ORDER:
             results.append(
@@ -370,6 +357,7 @@ class ActivationMachine:
                     project_dir=self.cfg.legacy_root / "docker" / node,
                     state_dir=self.cfg.state_dir,
                     previous=origin,
+                    previous_release=previous_release,
                 )
             )
             if results[-1].get("state") == "blocked":
@@ -379,9 +367,7 @@ class ActivationMachine:
         record["state"] = state.value
         return record
 
-    def _planned(
-        self, record: dict[str, Any], release: dict[str, Any], state: st.State
-    ) -> dict[str, Any]:
+    def _planned(self, record: dict[str, Any], release: dict[str, Any], state: st.State) -> dict[str, Any]:
         target = release["release"]
         origin = record["current"]
         health = self.health.check(self.cfg.node, target, dry_run=True)

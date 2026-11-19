@@ -587,7 +587,9 @@ SCORE_LIBRARY_LOCK="score_library.lock.json"
 hook_marker_expect() {  # $1 = имя хука
     case "$1" in
         fetch_score_library)
-            sed -n 's/.*"sha256": *"\([0-9a-f]\{64\}\)".*/\1/p' "${SCRIPT_DIR}/${SCORE_LIBRARY_LOCK}" 2>/dev/null | head -1 ;;
+            # grep -m 1 -o, не sed | head: пайп под set -o pipefail даёт SIGPIPE (rc 141).
+            # -m 1 закрывает вход сам, хеш печатается как раньше.
+            grep -m 1 -o "[0-9a-f]\{64\}" "${SCRIPT_DIR}/${SCORE_LIBRARY_LOCK}" 2>/dev/null ;;
     esac
 }
 

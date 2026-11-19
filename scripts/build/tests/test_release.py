@@ -15,6 +15,8 @@ import re
 import sys
 import tarfile
 from pathlib import Path, PurePosixPath
+from subprocess import CompletedProcess
+from unittest.mock import Mock
 
 import pytest
 import yaml
@@ -30,9 +32,11 @@ release_py = importlib.util.module_from_spec(_SPEC)
 _SPEC.loader.exec_module(release_py)
 
 from chuangong import minisign  # noqa: E402
+from chuangong import registry as registry_module  # noqa: E402
 from chuangong import release_format as rf  # noqa: E402
 from chuangong.agent import Config, Deps, tick  # noqa: E402
 from chuangong.registry import Registry  # noqa: E402
+from chuangong.stage import DockerCli, extract_bundle  # noqa: E402
 from fakes import FakeDocker, FakeTransport, FakeZenoh  # noqa: E402
 
 PREFIX = "10.1.1.249:5000/krikz/rob_box"
@@ -165,6 +169,34 @@ def test_bundles_are_deterministic_and_have_no_secrets(built):
 def test_secret_like_file_is_refused():
     with pytest.raises(release_py.BuildError, match="секрет"):
         release_py.build_bundle([("docker/sound/.env.secrets", b"TOKEN=1", False)])
+
+
+@pytest.mark.parametrize(
+    ("role", "service", "tag_var"),
+    [
+        ("main", "nav2", "NAV2_TAG"),
+        ("vision", "oak-d", "OAK_D_TAG"),
+        ("sound", "voice-assistant", "VOICE_ASSISTANT_TAG"),
+    ],
+)
+def test_compose_up_reads_staged_bundle_manifest(tmp_path, monkeypatch, built, role, service, tag_var):
+    release, bundles, _ = built
+    archive = tmp_path / "bundle.tar.gz"
+    archive.write_bytes(bundles[role])
+    staged = tmp_path / "staged"
+    extract_bundle(archive, staged)
+
+    docker = DockerCli()
+    compose = Mock(return_value=CompletedProcess([], 0, "", ""))
+    monkeypatch.setattr(docker, "_compose", compose)
+    project_dir = staged / "docker" / role
+    images = release["roles"][role]["images"]
+    docker.compose_up(project_dir, images=images, image_tag=release["image_tag"])
+
+    compose.assert_called_once()
+    assert compose.call_args.args[0] == project_dir
+    digest = images[service].split("@", 1)[1]
+    assert compose.call_args.kwargs["env"][tag_var] == f"{release['image_tag']}@{digest}"
 
 
 def test_compose_relative_paths_are_inside_role_bundle():
@@ -453,6 +485,83 @@ def test_cli_build_sign_verify(tmp_path):
         )
         == 1
     )
+
+
+@pytest.mark.parametrize(
+    ("external_failure", "expected_error"),
+    [
+        (None, None),
+        ("registry unavailable", "registry unavailable"),
+        ("invalid digest", "invalid digest"),
+        ("missing root digest", "Digest верхнего уровня: 0"),
+        ("ambiguous root digest", "Digest верхнего уровня: 2"),
+    ],
+)
+def test_cli_resolves_local_tags_and_external_refs(tmp_path, monkeypatch, capsys, external_failure, expected_error):
+    registry = "http://localhost:5000"
+    repo = PREFIX.split("/", 1)[1]
+    transport = FakeTransport()
+    manifest = release_py.GBM.load_manifest(REPO_ROOT / release_py.BUILD_MANIFEST)
+    for name, spec in release_py.all_services(manifest).items():
+        tag = release_py.image_tag_for(name, spec, "dev-b704404", "dev", "humble")
+        transport.manifests[(repo, tag)] = f'{{"tag":"{tag}"}}'.encode()
+    monkeypatch.setattr(registry_module.UrllibTransport, "open", lambda self, *args: transport.open(*args))
+
+    external_commands = []
+    run = release_py.subprocess.run
+
+    def inspect_manifest(command, *args, **kwargs):
+        if command[0] != "docker":
+            return run(command, *args, **kwargs)
+        external_commands.append(command)
+        ref = command[-1]
+        if external_failure == "registry unavailable":
+            return release_py.subprocess.CompletedProcess(command, 1, "", external_failure)
+        child_digest = _fake_digest("linux/arm64")
+        root_digest = external_failure if external_failure == "invalid digest" else _fake_digest(ref)
+        root_lines = {
+            "missing root digest": [],
+            "ambiguous root digest": [f"Digest:      {root_digest}", f"Digest:      {child_digest}"],
+        }.get(external_failure, [f"Digest:      {root_digest}"])
+        stdout = "\n".join(
+            [
+                f"Name:       docker.io/{ref}",
+                "MediaType:  application/vnd.oci.image.index.v1+json",
+                *root_lines,
+                "",
+                "Manifests:",
+                f"  Name:       docker.io/{ref}@{child_digest}",
+                f"  Digest:     {child_digest}",
+                "  Platform:   linux/arm64",
+            ]
+        )
+        return release_py.subprocess.CompletedProcess(command, 0, stdout, "")
+
+    monkeypatch.setattr(release_py.subprocess, "run", inspect_manifest)
+    result = release_py.main(
+        [
+            "build", "--release", "r1", "--image-tag", "dev-b704404", "--git", "b704404",
+            "--out", str(tmp_path), "--resolve-registry", registry,
+        ]
+    )
+    ref = "eclipse/zenoh:1.6.2"
+    assert [command[-1] for command in external_commands].count(ref) == 1
+    assert all(url.startswith(f"{registry}/v2/{repo}/manifests/") for _, url, _ in transport.calls)
+    assert all(":" not in url.rsplit("/", 1)[1] for _, url, _ in transport.calls)
+    output = tmp_path / rf.RELEASE_FILE
+    if expected_error is not None:
+        assert result == 1
+        assert expected_error in capsys.readouterr().err
+        assert not output.exists()
+        return
+
+    assert result == 0
+    assert all(command[:-1] == ["docker", "buildx", "imagetools", "inspect", "--"] for command in external_commands)
+    release = rf.loads(output.read_bytes())
+    assert f"{ref}@{_fake_digest(ref)}" in release["roles"]["main"]["external_images"]
+    tag = "nav2-humble-dev-b704404"
+    digest = hashlib.sha256(transport.manifests[(repo, tag)]).hexdigest()
+    assert release["roles"]["main"]["images"]["nav2"] == f"{PREFIX}@sha256:{digest}"
 
 
 def test_publish_then_agent_sees_release(tmp_path, built):

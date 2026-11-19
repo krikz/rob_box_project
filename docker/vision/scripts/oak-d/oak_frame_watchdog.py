@@ -122,6 +122,26 @@ def _touch(path: str) -> None:
         os.utime(path, None)
 
 
+def recovery_step(
+    now: float,
+    last_frame: Optional[float],
+    started: Optional[float],
+    stale_sec: float = DEFAULT_STALE_SEC,
+    grace_sec: float = DEFAULT_GRACE_SEC,
+    xlink_error_at: Optional[float] = None,
+    restarts: int = 0,
+) -> tuple[str, int]:
+    """Один шаг хода unplug/replug: вердикт и счётчик рестартов (ADR-0148).
+
+    ``stale`` — кадр старше порога или отметка ``X_LINK_ERROR`` этого запуска:
+    сторож выходит, ``restart: unless-stopped`` поднимает контейнер, счётчик растёт.
+    ``starting`` — льготный срок после рестарта, кадров ещё нет, счётчик не растёт.
+    ``ok`` — кадр свежий и XLink жив: рестарты прекратились, счётчик не растёт.
+    """
+    state = verdict(now, last_frame, started, stale_sec, grace_sec, xlink_error_at)
+    return state, restarts + (1 if state == STALE else 0)
+
+
 def note_xlink_error(log_path: str, offset: int, marker_path: str) -> int:
     """Прочитать новый хвост лога драйвера. Если там ``X_LINK_ERROR`` — поставить отметку.
 

@@ -1,0 +1,62 @@
+--- a/nav2_controller/src/controller_server.cpp
++++ b/nav2_controller/src/controller_server.cpp
+@@ -26,6 +26,7 @@
+ #include "nav2_util/node_utils.hpp"
+ #include "nav2_util/geometry_utils.hpp"
+ #include "nav2_controller/controller_server.hpp"
++#include "tf2/utils.h"
+
+ using namespace std::chrono_literals;
+ using rcl_interfaces::msg::ParameterType;
+@@ -217,6 +218,7 @@
+ nav2_util::CallbackReturn
+ ControllerServer::on_activate(const rclcpp_lifecycle::State & /*state*/)
+ {
++  RCLCPP_INFO(get_logger(), "HIL_GOAL_PROBE_READY v1");
+   RCLCPP_INFO(get_logger(), "Activating");
+
+   costmap_ros_->activate();
+@@ -597,7 +599,8 @@
+     return false;
+   }
+
+-  nav_2d_msgs::msg::Twist2D twist = getThresholdedTwist(odom_sub_->getTwist());
++  const auto measured_twist = odom_sub_->getTwist();
++  nav_2d_msgs::msg::Twist2D twist = getThresholdedTwist(measured_twist);
+   geometry_msgs::msg::Twist velocity = nav_2d_utils::twist2Dto3D(twist);
+
+   geometry_msgs::msg::PoseStamped transformed_end_pose;
+@@ -610,9 +613,30 @@
+     return false;
+   }
+
+-  return goal_checkers_[current_goal_checker_]->isGoalReached(
+-    pose.pose, transformed_end_pose.pose,
+-    velocity);
++  const bool reached = goal_checkers_[current_goal_checker_]->isGoalReached(
++    pose.pose, transformed_end_pose.pose, velocity);
++  if (reached) {
++    const auto sim_ns = static_cast<long long>(now().nanoseconds());
++    const auto pose_ns = static_cast<long long>(rclcpp::Time(pose.header.stamp).nanoseconds());
++    const auto goal_ns =
++      static_cast<long long>(rclcpp::Time(transformed_end_pose.header.stamp).nanoseconds());
++    const auto path_ns = static_cast<long long>(rclcpp::Time(end_pose_.header.stamp).nanoseconds());
++    RCLCPP_INFO(
++      get_logger(), "HIL_GOAL_CHECK_REACHED checker=%s sim_ns=%lld "
++      "robot_frame=%s robot_ns=%lld robot_x=%.9f robot_y=%.9f robot_yaw=%.9f "
++      "goal_frame=%s goal_ns=%lld goal_x=%.9f goal_y=%.9f goal_yaw=%.9f "
++      "path_frame=%s path_ns=%lld path_x=%.9f path_y=%.9f path_yaw=%.9f "
++      "odom_vx=%.9f odom_vy=%.9f odom_wz=%.9f "
++      "checker_vx=%.9f checker_vy=%.9f checker_wz=%.9f",
++      current_goal_checker_.c_str(), sim_ns, pose.header.frame_id.c_str(), pose_ns,
++      pose.pose.position.x, pose.pose.position.y, tf2::getYaw(pose.pose.orientation),
++      transformed_end_pose.header.frame_id.c_str(), goal_ns, transformed_end_pose.pose.position.x,
++      transformed_end_pose.pose.position.y, tf2::getYaw(transformed_end_pose.pose.orientation),
++      end_pose_.header.frame_id.c_str(), path_ns, end_pose_.pose.position.x, end_pose_.pose.position.y,
++      tf2::getYaw(end_pose_.pose.orientation), measured_twist.x, measured_twist.y,
++      measured_twist.theta, velocity.linear.x, velocity.linear.y, velocity.angular.z);
++  }
++  return reached;
+ }
+
+ bool ControllerServer::getRobotPose(geometry_msgs::msg::PoseStamped & pose)

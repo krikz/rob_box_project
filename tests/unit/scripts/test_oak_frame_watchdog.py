@@ -138,3 +138,47 @@ def test_compose_healthcheck_uses_frames_and_covers_grace() -> None:
     # Выход сторожа обязан ронять контейнер, иначе restart policy не сработает.
     start = (OAK / "start_oak_d.sh").read_text(encoding="utf-8")
     assert "oak_frame_watchdog.py run" in start and "wait -n" in start
+
+
+def test_unplug_replug_recovery_course() -> None:
+    """Ход #4532: кадры идут → кабель вынут (X_LINK_ERROR) → рестарт → кадры вернулись → рестарты встали.
+
+    Архивный эпизод 07.11: health оставался зелёным, restarts=0, hailo/face крутились
+    (restarts=30/28), пока оператор не сделал docker restart руками. Код должен сам:
+    стать stale в момент потери XLink, посчитать рестарт, а после возврата кадров
+    остановиться на ok и больше рестартов не набирать.
+    """
+    restarts = 0
+
+    # 1. Кадры идут — здоров, рестартов нет.
+    state, restarts = wd.recovery_step(T0 + 200, last_frame=T0 + 199, started=T0, restarts=restarts)
+    assert state == wd.OK and restarts == 0
+
+    # 2. Кабель вынут: драйвер записал X_LINK_ERROR, кадр ещё свежий — всё равно stale,
+    #    и это рестарт, а не «healthy, restarts=0».
+    state, restarts = wd.recovery_step(
+        T0 + 210, last_frame=T0 + 209, started=T0, xlink_error_at=T0 + 205, restarts=restarts
+    )
+    assert state == wd.STALE and restarts == 1
+
+    # 3. Кадры пропали и без отметки XLink (лог не дочитан) — тоже stale и рестарт.
+    state, restarts = wd.recovery_step(
+        T0 + 300, last_frame=T0 + 300 - STALE - 1, started=T0, restarts=restarts
+    )
+    assert state == wd.STALE and restarts == 2
+
+    # 4. Контейнер поднялся заново: старые отметки не считаются, идёт льготный срок.
+    state, restarts = wd.recovery_step(T0 + 1005, last_frame=None, started=T0 + 1000, restarts=restarts)
+    assert state == wd.STARTING and restarts == 2, "льгота после рестарта рестарт не добавляет"
+
+    # 5. Кабель воткнут, кадры вернулись — ok, рестарты прекратились.
+    state, restarts = wd.recovery_step(
+        T0 + 1100, last_frame=T0 + 1099, started=T0 + 1000, restarts=restarts
+    )
+    assert state == wd.OK and restarts == 2
+
+    # 6. Кадры идут дальше — счётчик рестартов стоит.
+    state, restarts = wd.recovery_step(
+        T0 + 1200, last_frame=T0 + 1199, started=T0 + 1000, restarts=restarts
+    )
+    assert state == wd.OK and restarts == 2, "после возврата кадров рестарты не растут"

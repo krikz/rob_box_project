@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import argparse
 import datetime
+import sys
 import time
 from pathlib import Path
 from typing import List, Optional, Sequence
@@ -66,7 +67,7 @@ def parse_pressure_cpu(text: str) -> str:
         return "psi_cpu=missing"
     for line in text.splitlines():
         if line.startswith("some "):
-            return "psi_cpu=" + line[len("some "):].replace(" ", ",")
+            return "psi_cpu=" + line[len("some ") :].replace(" ", ",")
     return "psi_cpu=missing"
 
 
@@ -113,7 +114,11 @@ def format_sample(
         parse_proc_stat(stat),
         parse_meminfo(mem),
         parse_pressure_cpu(pressure),
-        parse_diskstats(disk, "sda") if "\n" in (disk or "") or (disk or "").startswith(" ") else disk,
+        (
+            parse_diskstats(disk, "sda")
+            if "\n" in (disk or "") or (disk or "").startswith(" ")
+            else disk
+        ),
         gpu if gpu.startswith("gpu") else parse_gpu(gpu),
     ]
     if docker:
@@ -160,11 +165,12 @@ def _loop(argv: Sequence[str]) -> int:
 
 
 def main(argv: Sequence[str] | None = None) -> int:
-    args = list(argv) if argv is not None else None
-    # Скрипт зовёт ``resource_sample.py --loop --host … --out …``.
+    # None — живой CLI (sys.argv). Пустой список — не CLI, а вызов без флагов.
+    args = list(sys.argv[1:]) if argv is None else list(argv)
+    # Скрипт зовёт ``resource_sample.py --host … --loop --out …``.
     # Раньше --loop принимался только первым аргументом — argparse отвечал
     # unrecognized arguments, и лог ресурсов был пуст (пара run1).
-    if args and "--loop" in args:
+    if "--loop" in args:
         rest = [a for a in args if a != "--loop"]
         return _loop(rest)
     p = argparse.ArgumentParser(description=__doc__.split("\n\n", 1)[0])
@@ -172,7 +178,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     p.add_argument("--root", type=Path, default=Path("/"))
     p.add_argument("--disk", default="sda")
     p.add_argument("--gpu", type=Path, default=None)
-    ns = p.parse_args(list(argv) if argv is not None else None)
+    ns = p.parse_args(args)
     print(sample_host(ns.root, ns.host, ns.disk, ns.gpu))
     return 0
 
