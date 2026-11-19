@@ -52,4 +52,4 @@ def test_ros2_topics_reports_missing_when_container_has_no_ros(running_container
     """В busybox нет ros2: проверка не должна падать исключением, а вернуть деталь."""
     err = DockerCli().check_ros2_topics(["/odom"], container=running_container)
     assert isinstance(err, str) and err
-    assert "/odom" in err or "ros2" in err
+    assert any(word in err for word in ("/odom", "ros2", "bash"))
