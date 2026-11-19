@@ -12,7 +12,7 @@ from __future__ import annotations
 from dataclasses import asdict
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Protocol
+from typing import Any, Callable, Protocol
 
 from . import cancel
 from . import release_format as rf
@@ -81,11 +81,16 @@ def _legacy_mismatches(staged: Path, legacy_root: Path) -> list[dict[str, str]]:
 
 class ActivationMachine:
     def __init__(
-        self, cfg: Config, deps: Deps, health: HealthCheck | None = None
+        self,
+        cfg: Config,
+        deps: Deps,
+        health: HealthCheck | None = None,
+        executor: Callable[..., dict[str, Any]] | None = None,
     ) -> None:
         self.cfg = cfg
         self.deps = deps
         self.health = health or DryRunHealthCheck()
+        self.executor = executor
 
     def _record(self, dry_run: bool = True) -> dict[str, Any]:
         prev = st.load(self.cfg.state_file)
@@ -322,13 +327,16 @@ class ActivationMachine:
         record["state"] = st.State.PREFLIGHT_PASSED.value
         return record
 
-    def activate(self, release_name: str) -> dict[str, Any]:
+    def activate(self, release_name: str, execute: bool = False) -> dict[str, Any]:
         record, release = self._prepare_activation(release_name)
         if release is None:
             return record
-        return self._planned(record, release, st.State.ACTIVATION_PLANNED)
+        planned = self._planned(record, release, st.State.ACTIVATION_PLANNED)
+        if not execute or planned["state"] != st.State.ACTIVATION_PLANNED.value:
+            return planned
+        return self._executed(planned, release, st.State.ACTIVATION_EXECUTED)
 
-    def rollback(self) -> dict[str, Any]:
+    def rollback(self, execute: bool = False) -> dict[str, Any]:
         record = self._record()
         history = {"current": record["current"], "previous": record["previous"]}
         if record["current"] is None:
@@ -340,7 +348,36 @@ class ActivationMachine:
             return record
         if self._preflight(record, release) is None:
             return record
-        return self._planned(record, release, st.State.ROLLBACK_PLANNED)
+        planned = self._planned(record, release, st.State.ROLLBACK_PLANNED)
+        if not execute or planned["state"] != st.State.ROLLBACK_PLANNED.value:
+            return planned
+        return self._executed(planned, release, st.State.ROLLBACK_EXECUTED)
+
+    def _executed(
+        self, record: dict[str, Any], release: dict[str, Any], state: st.State
+    ) -> dict[str, Any]:
+        """Прогнать план через исполнителя роли. Без исполнителя — честный отказ, не ложный успех."""
+        if self.executor is None:
+            return _blocked(record, "executor_not_wired", "execute=True без исполнителя роли")
+        origin = record["current"]
+        results = []
+        for node in ACTIVATION_ORDER:
+            results.append(
+                self.executor(
+                    release,
+                    node,
+                    docker=self.deps.docker,
+                    project_dir=self.cfg.legacy_root / "docker" / node,
+                    state_dir=self.cfg.state_dir,
+                    previous=origin,
+                )
+            )
+            if results[-1].get("state") == "blocked":
+                record["executed"] = results
+                return _blocked(record, "role_switch_failed", results[-1])
+        record["executed"] = results
+        record["state"] = state.value
+        return record
 
     def _planned(
         self, record: dict[str, Any], release: dict[str, Any], state: st.State
