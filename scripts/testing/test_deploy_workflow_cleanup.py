@@ -126,6 +126,10 @@ def test_vision_reinstall_rejects_unit_with_stale_compose_pull_pre():
         r"!\s*systemctl cat robbox-vision\.service \| grep -q '\^After=.*network-online\.target'",
         body,
     ), "skip-условие reinstall не отвергает unit с After=network-online.target (#4533)"
+    assert re.search(
+        r"systemctl cat robbox-vision\.service \| grep -q '\^TimeoutStartSec=900\$'",
+        body,
+    ), "skip-условие reinstall не отвергает unit без TimeoutStartSec=900 (#4533)"
 
 
 # ── ADR-0159: Sound Pi как третий узел деплоя ───────────────────────────────────
