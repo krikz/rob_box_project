@@ -562,7 +562,8 @@ def test_script_uses_world_gate_and_pulls_before_off():
     assert "return 51" in code
     assert "return 52" in code
     assert "CAMERAS=0 ROUTE_LOG=" in script and "./runvideo.sh M1" in script
-    assert "/tmp/hil.lock" in script
+    assert "hil.conf" in script
+    assert 'printf \'%q\' "$HIL_LOCK"' in script
     assert "NAV2_PARAMS_OVERLAYS" in script
     # Гейт не переписываем: сценарий только вызывает существующий world_check.
     assert "Depot_vid" not in script
@@ -645,6 +646,26 @@ def test_loop_flag_writes_a_line(tmp_path, monkeypatch):
     assert caught.value.code == 0
     assert "host=sandbox" in out.read_text(encoding="utf-8")
     assert "unrecognized arguments" not in out.read_text(encoding="utf-8")
+
+
+def test_loop_flag_writes_from_command_line(tmp_path):
+    log = tmp_path / "sampler.log"
+    with subprocess.Popen(
+        [sys.executable, str(REPEAT / "resource_sample.py"), "--loop", "--host", "test", "--out", str(log)],
+        stderr=subprocess.PIPE,
+        text=True,
+    ) as process:
+        try:
+            for _ in range(40):
+                if log.is_file() or process.poll() is not None:
+                    break
+                time.sleep(0.05)
+        finally:
+            if process.poll() is None:
+                process.terminate()
+            _, error = process.communicate(timeout=5)
+    assert log.is_file(), error
+    assert "host=test" in log.read_text(encoding="utf-8")
 
 
 def test_early_exit_does_not_keep_foreign_goal_start(tmp_path):
@@ -753,10 +774,12 @@ def _cleanup_harness(
         ': >"$SUMMARY"\n'
         'log() { printf \'%s\\n\' "$*" | tee -a "$SUMMARY"; }\n'
         "main() { return 0; }\n"
+        "lock_is_ours() { return 0; }\n"
         "stop_route() { :; }\n"
         "stop_resource_samplers() { :; }\n"
         f"pull_before_off() {{ return {pull_rc}; }}\n"
         "CLEANED=0\n"
+        "HIL_LOCK=/tmp/hil.lock\n"
         "ON_ATTEMPTED=1\n"
         "LOCK_OWNED=1\n" + _fn_body("cleanup") + "\ncleanup\nexit $?\n",
         encoding="utf-8",
@@ -765,6 +788,53 @@ def _cleanup_harness(
     return subprocess.run(
         ["bash", str(harness)], capture_output=True, text=True, cwd=tmp_path
     )
+
+
+@pytest.mark.parametrize(
+    ("found", "expected"),
+    [
+        ("HIL on since now token=0123456789abcdef0123456789abcdef maps=/tmp/run", 0),
+        ("HIL on since now token=abcdef0123456789abcdef0123456789 maps=/tmp/run", 1),
+        ("HIL on since now token=0123456789abcdef0123456789abcdef maps=/tmp/run_other", 1),
+        ("HIL on since now maps=/tmp/run", 1),
+        ("unrelated log mentions maps=/tmp/run", 1),
+    ],
+)
+def test_hil_lock_ownership_requires_exact_token_and_map_path(found, expected):
+    harness = (
+        "set -uo pipefail\nMAPS_DIR=/tmp/run\n"
+        "HIL_LOCK='/tmp/custom lock'\nHIL_RUN_TOKEN=0123456789abcdef0123456789abcdef\n"
+        "main() { [[ \"$1\" == 'cat /tmp/custom\\ lock 2>/dev/null' ]] || return 9; printf '%s\\n' \"$LOCK_TEXT\"; }\n"
+        + _fn_body("lock_is_ours")
+        + "\nlock_is_ours\n"
+    )
+    result = subprocess.run(["bash", "-c", f'LOCK_TEXT="{found}"\n' + harness], capture_output=True, text=True)
+    assert result.returncode == expected, result.stderr
+
+
+@pytest.mark.parametrize(
+    ("logging_status", "route_status", "expected"),
+    [
+        (1, "TIMEOUT", "GOAL_CHECK_LOGS_UNREADABLE"),
+        (0, "STATUS_SUCCEEDED", "GOAL_CHECK_TRACE_MISSING"),
+        (0, "OUTSIDE_TOLERANCE", "GOAL_CHECK_TRACE_MISSING"),
+    ],
+)
+def test_goal_probe_incomplete_without_readable_trace(logging_status, route_status, expected, tmp_path):
+    (tmp_path / "route.log").write_text(f"GOAL_END M1 result={route_status} sim=2.0\n", encoding="utf-8")
+    harness = (
+        "set -uo pipefail\n"
+        'ART="$PWD"\nBAG_CLOSE_WAIT=1\nREMOTE_OUT=/test\nCONTAINER_OUT=/test\n'
+        "G=gazebo\nNAV2_CONTAINER=nav2\nGOAL_PROBE_DIR=/test\n"
+        "sandbox() { return 0; }\ncopy_bag_to_host() { return 0; }\n"
+        f'main() {{ printf "%s\\n" "controller log"; return {logging_status}; }}\n'
+        'log() { printf "%s\\n" "$*"; }\n'
+        + _fn_body("pull_before_off")
+        + "\npull_before_off\n"
+    )
+    result = subprocess.run(["bash", "-c", harness], capture_output=True, text=True, cwd=tmp_path)
+    assert result.returncode == 1, result.stderr
+    assert expected in result.stdout
 
 
 def test_off_ok_and_missing_bag_are_different_codes(tmp_path):
