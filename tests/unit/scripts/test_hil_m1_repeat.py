@@ -38,8 +38,10 @@ def test_repeat_topics_add_yaw_costmap_and_controller_before_mux():
     for name in REQUIRED:
         assert name in names, name
     # База прошлого bag (/tmp/hil_m1_stall) не выкинута.
-    for name in ("/cmd_vel", "/plan", "/sim/ground_truth/odom", "/local_costmap/costmap_raw"):
+    for name in ("/cmd_vel", "/plan", "/sim/ground_truth/odom", "/odom", "/local_costmap/costmap_raw"):
         assert name in names
+    assert topics.DWB_ODOM_TOPIC == "/odom"
+    assert topics.DWB_ODOM_TOPIC != "/sim/ground_truth/odom"
     assert names.count("/cmd_vel_yaw") == 1
     assert topics.CONTROLLER_BEFORE_MUX == "/cmd_vel_nav"
     assert "/cmd_vel_nav" != "/cmd_vel"
@@ -108,6 +110,22 @@ def test_write_start_and_assert_ready(tmp_path):
         topics.assert_ready(tmp_path, "before_goal")
 
 
+def test_banner_without_value_is_missing_not_equals_signs():
+    """Ночной прогон 19.11: баннер ros_with_namespace.sh без «value is» стал значением."""
+    banner = (
+        "==================================================\n"
+        "  ROS Node с Zenoh namespace\n"
+        "🚀 Запуск: ros2 param get /controller_server FollowPath.max_vel_x\n"
+        "==================================================\n"
+    )
+    assert topics.parse_param_value(banner) is None
+    assert topics.format_named_param("FollowPath.max_vel_x", banner) == "FollowPath.max_vel_x=missing"
+    mixed = banner + "Double value is: 0.15\n"
+    assert topics.parse_param_value(mixed) == "0.15"
+    # Повтор: первый ответ баннер, второй — число. Берётся число, баннер не приклеивается.
+    assert topics.parse_param_value("Boolean value is: True") == "True"
+
+
 def test_params_file_names_each_value():
     text = topics.format_params_file(
         [
@@ -115,6 +133,15 @@ def test_params_file_names_each_value():
             ("FollowPath.PathAlign.forward_point_distance", "Double value is: 0.2"),
             ("progress_checker.movement_time_allowance", "Double value is: 30.0"),
             ("FollowPath.min_speed_xy", "Double value is: 0.05"),
+            ("FollowPath.trans_stopped_velocity", "Double value is: 0.03"),
+            ("general_goal_checker.xy_goal_tolerance", "Double value is: 0.25"),
+            ("FollowPath.xy_goal_tolerance", "Double value is: 0.25"),
+            ("FollowPath.RotateToGoal.scale", "Double value is: 8.0"),
+            ("FollowPath.RotateToGoal.lookahead_time", "Double value is: 1.0"),
+            ("FollowPath.Oscillation.scale", "Double value is: 0.5"),
+            ("FollowPath.Oscillation.oscillation_reset_dist", "Double value is: 0.05"),
+            ("FollowPath.Oscillation.oscillation_reset_angle", "Double value is: 0.2"),
+            ("FollowPath.Oscillation.oscillation_reset_time", "Double value is: -1.0"),
         ]
     )
     assert "FollowPath.max_vel_x=0.15" in text
@@ -207,6 +234,16 @@ def test_script_uses_world_gate_and_pulls_before_off():
     assert "publish_evaluation" in script
     assert "M1_REPEAT_SHORT_CIRCUIT" in script
     assert "M1_REPEAT_TRANS_STOPPED" in script
+    assert "capture_params_after_ready" in script
+    assert "start_resource_samplers" in script
+    assert "sandbox_resources.log" in script
+    assert "main_resources.log" in script
+    code_only = "\n".join(line for line in script.splitlines() if not line.lstrip().startswith("#"))
+    assert "nvidia-smi" not in code_only
+    assert "CONTROLLER_NOT_READY" in script
+    assert "/odom" in script or "DWB_ODOM_TOPIC" in "\n".join(
+        (REPEAT / "m1_topics.py").read_text(encoding="utf-8").splitlines()
+    )
     assert "trans_stopped_from_env" in script
     assert "short_circuit_from_env" in script
     code = "\n".join(line for line in script.splitlines() if not line.lstrip().startswith("#"))
@@ -228,6 +265,37 @@ def test_script_uses_world_gate_and_pulls_before_off():
 
 
 @pytest.mark.skipif(subprocess.call(["bash", "-n", str(REPEAT / "run_m1_repeat.sh")]) != 0, reason="bash -n")
+def test_resource_sample_parses_synthetic_proc(tmp_path):
+    spec = importlib.util.spec_from_file_location("hil_resource_sample", REPEAT / "resource_sample.py")
+    rs = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(rs)
+    root = tmp_path / "root"
+    (root / "proc/pressure").mkdir(parents=True)
+    (root / "proc/stat").write_text(
+        "cpu  10 0 5 80 1 0 0 0 0 0\ncpu0 5 0 2 40 0 0 0\ncpu1 5 0 3 40 1 0 0\n",
+        encoding="utf-8",
+    )
+    (root / "proc/meminfo").write_text("MemTotal:       8000000 kB\nMemAvailable:   1000000 kB\n", encoding="utf-8")
+    (root / "proc/pressure/cpu").write_text("some avg10=1.00 avg60=51.21 avg300=2.00 total=9\n", encoding="utf-8")
+    (root / "proc/diskstats").write_text(
+        "   8       0 sda 1 0 2 3 4 0 5 0 0 6 7 8 0 0 0 0\n",
+        encoding="utf-8",
+    )
+    line = rs.sample_host(root, "sandbox", "sda", None)
+    assert line.startswith("utc=")
+    assert "host=sandbox" in line
+    assert "cpu=cpu:10,0,5,80,1,0,0;cpu0:" in line
+    assert "mem_available_kb=1000000" in line
+    assert "psi_cpu=avg10=1.00,avg60=51.21,avg300=2.00,total=9" in line
+    assert "disk=sda:r=1" in line
+    assert "gpu=missing" in line
+    empty = rs.sample_host(tmp_path / "no", "main", "mmcblk0", None)
+    assert "cpu=missing" in empty
+    assert "mem_total_kb=missing" in empty
+    assert "psi_cpu=missing" in empty
+    assert "disk=missing" in empty
+
+
 def test_shell_syntax_ok():
     subprocess.run(["bash", "-n", str(REPEAT / "run_m1_repeat.sh")], check=True)
 
