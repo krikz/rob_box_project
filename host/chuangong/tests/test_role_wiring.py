@@ -102,13 +102,13 @@ class _Docker:
     def compose_up(self, project_dir, images=None, image_tag=None):
         self.compose_calls.append("compose_up")
 
-    def check_container_status(self, project_dir):
+    def check_container_status(self, container):
         return None
 
-    def check_container_logs(self, project_dir):
+    def check_container_logs(self, container):
         return None
 
-    def check_ros2_topics(self, expected):
+    def check_ros2_topics(self, expected, container=None):
         return None
 
 

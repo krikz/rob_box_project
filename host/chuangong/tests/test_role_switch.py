@@ -212,11 +212,12 @@ def test_execute_role_records_compose_by_digest_and_marks_switched(tmp_path):
     for ref in up["images"].values():
         assert "@sha256:" in ref
     # ROLE_CHECKS реально вызваны на FakeDocker после compose_up
-    assert ("check_container_status", str(project)) in docker.commands
-    assert ("check_container_logs", str(project)) in docker.commands
+    assert ("check_container_status", "vision-svc0") in docker.commands
+    assert ("check_container_logs", "vision-svc0") in docker.commands
     assert (
         "check_ros2_topics",
         ["/camera/camera/color/image_raw/compressed"],
+        "vision-svc0",
     ) in docker.commands
 
 
@@ -348,16 +349,44 @@ def test_execute_role_role_checks_pass_all_called(tmp_path):
     assert check_actions == list(ROLE_CHECKS)
     assert all(c.get("ok") is True for c in result["commands"] if c["action"] in ROLE_CHECKS)
     # запись на docker-фейке (не только в plan.checks)
-    assert ("check_container_status", str(project)) in docker.commands
-    assert ("check_container_logs", str(project)) in docker.commands
+    assert ("check_container_status", "vision-svc0") in docker.commands
+    assert ("check_container_logs", "vision-svc0") in docker.commands
     assert (
         "check_ros2_topics",
         ["/camera/camera/color/image_raw/compressed"],
+        "vision-svc0",
     ) in docker.commands
     # compose_up images по-прежнему digest
     up = next(c for c in result["commands"] if c["action"] == "compose_up")
     for ref in up["images"].values():
         assert "@sha256:" in ref
+
+
+def test_execute_role_asks_real_docker_for_the_container_not_the_directory(tmp_path):
+    """Реальный DockerCli проверяет контейнер по имени. Каталог — не health.
+
+    #4930: check_container_status(container) читает docker inspect. execute_role
+    передавал project_dir, и на живом docker проверка падала до всякого health.
+    """
+    from chuangong.role_switch import execute_role
+    from chuangong.stage import DockerCli
+
+    project = tmp_path / "proj"
+    project.mkdir()
+    seen = []
+    docker = DockerCli()
+    docker.check_container_status = lambda container: seen.append(("status", container)) or None
+    docker.check_container_logs = lambda container: seen.append(("logs", container)) or None
+    docker.check_ros2_topics = lambda topics, container=None: seen.append(("topics", container)) or None
+    docker.compose_down = lambda project_dir: None
+    docker.compose_up = lambda project_dir, images=None, image_tag=None: None
+
+    execute_role(
+        _release_fixture(), "vision", docker=docker, project_dir=project, state_dir=tmp_path / "state"
+    )
+
+    assert seen, "проверок не было"
+    assert all(isinstance(arg, str) and arg != str(project) for _, arg in seen), seen
 
 
 def test_execute_role_role_check_fail_is_blocked_not_success(tmp_path):
@@ -395,7 +424,7 @@ def test_execute_role_role_check_fail_is_blocked_not_success(tmp_path):
     assert CHECK_ROS2_TOPICS not in actions
     status_cmd = next(c for c in result["commands"] if c["action"] == CHECK_CONTAINER_STATUS)
     assert status_cmd["ok"] is False
-    assert ("check_container_status", str(project)) in docker.commands
+    assert ("check_container_status", "vision-svc0") in docker.commands
     # health_after не применялся: fail checks раньше; health из plan (not_verified)
     assert result["health"]["status"] != "healthy"
 
@@ -429,6 +458,7 @@ def test_execute_role_topics_check_reads_fake_list_not_ros2(tmp_path):
     assert (
         "check_ros2_topics",
         ["/camera/camera/color/image_raw/compressed"],
+        "vision-svc0",
     ) in docker.commands
 
 

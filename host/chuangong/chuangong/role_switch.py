@@ -273,16 +273,17 @@ def _run_role_checks(
     на фейке — живой ``ros2 topic`` не вызывается. None = ok; иначе detail fail.
     """
     expected = list(step.get("expected_topics") or [])
+    container = next(iter(step.get("images") or {}), None)
     for name in list(step.get("checks") or ROLE_CHECKS):
         if name == CHECK_CONTAINER_STATUS:
-            err = docker.check_container_status(project_dir)
-            entry: dict[str, Any] = {"action": name, "dir": str(project_dir)}
+            err = docker.check_container_status(container)
+            entry: dict[str, Any] = {"action": name, "container": container}
         elif name == CHECK_CONTAINER_LOGS:
-            err = docker.check_container_logs(project_dir)
-            entry = {"action": name, "dir": str(project_dir)}
+            err = docker.check_container_logs(container)
+            entry = {"action": name, "container": container}
         elif name == CHECK_ROS2_TOPICS:
-            err = docker.check_ros2_topics(expected)
-            entry = {"action": name, "expected_topics": list(expected)}
+            err = docker.check_ros2_topics(expected, container)
+            entry = {"action": name, "expected_topics": list(expected), "container": container}
         else:
             raise RoleSwitchError("unknown_check", name)
         if err:
