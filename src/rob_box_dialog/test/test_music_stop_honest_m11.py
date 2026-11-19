@@ -37,6 +37,10 @@ N712_STT = "робот заглушил"  # STT М11 n712, 02:22:46
 N712_LLM = "Тишина. Борису больше не мешаем."  # ответ LLM М11 n712 без тула
 N608_STT = "робот хватит диджей выключай"
 N511_STT = "врубай все глуши музыку у меня уши в трубочку"  # STT М11 n511, вейк потерян
+#: Прогон 12.11, run 43203031370, акт 5: та же фраза, STT услышал «глуше», не «глуши»
+#: (e2e_verdict.log TRANSCRIPT n511). Вейк потерян, восстановление «Робот!» подхватило бэклог,
+#: stop_music не вызвался. Форма «глуше» — то же повелительное, что «глуши».
+N511_STT_1211 = "врубай все глуше музыку меня уши в трубочку"
 
 
 def _snap(**kw):
@@ -235,6 +239,19 @@ def test_without_music_wake_word_only_still_holds(text):
 def test_unwoken_stop_text_parses_as_a_music_stop():
     assert music_stop_unwoken(N511_STT) == "глуши музыку"
     assert music_stop_unwoken("музыку стоп") == "стоп музыку"
+
+
+def test_n511_run_43203031370_hears_glushe_as_the_same_stop():
+    """12.11: «глуше» рядом с «музыку» — тот же стоп, что «глуши». Без музыки вейк по-прежнему обязателен."""
+    assert music_stop_unwoken(N511_STT_1211) == "глуше музыку"
+    decision = _decide(N511_STT_1211, True)
+    assert decision == Addressed("глуше музыку", MUSIC_STOP_UNWOKEN)
+    assert _decide(N511_STT_1211, False) == NotAddressed(NO_WAKE)
+    ports = Ports([_say("Уши в трубочку - бывает.")])
+    agg = _run(ports, _decide(N511_STT_1211, True))
+    assert ports.executed == [("stop_music", {})]
+    assert ports.asked == 0
+    assert (agg.stage, agg.status) == ("done", "finished")
 
 
 def test_n511_turn_stops_music_by_code_and_nothing_else_reaches_the_llm():
