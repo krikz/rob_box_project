@@ -29,6 +29,7 @@ BASE_BAG_TOPICS: Tuple[str, ...] = (
     "/local_plan",
     "/plan",
     "/scan",
+    "/odom",
     "/sim/ground_truth/odom",
     "/tf",
     "/tf_static",
@@ -86,7 +87,7 @@ WORLD_ARG = "world:=/sim_video/world.sdf"
 BEFORE_GOAL_FILES: Tuple[str, ...] = (
     "sdf.sha256",
     "images.txt",
-    "params.txt",
+    "params_overlays.txt",
     "start_map_gt.txt",
     "gazebo_args.txt",
     "gazebo_mounts.txt",
@@ -100,7 +101,20 @@ NAMED_PARAMS: Tuple[str, ...] = (
     "FollowPath.PathAlign.forward_point_distance",
     "progress_checker.movement_time_allowance",
     "FollowPath.min_speed_xy",
+    "FollowPath.trans_stopped_velocity",
+    "general_goal_checker.xy_goal_tolerance",
+    "FollowPath.xy_goal_tolerance",
+    "FollowPath.RotateToGoal.scale",
+    "FollowPath.RotateToGoal.lookahead_time",
+    "FollowPath.Oscillation.scale",
+    "FollowPath.Oscillation.oscillation_reset_dist",
+    "FollowPath.Oscillation.oscillation_reset_angle",
+    "FollowPath.Oscillation.oscillation_reset_time",
 )
+
+# Вход twist DWB: controller_server своего odom_topic не задаёт, читает /odom
+# (bt_navigator.odom_topic: /odom, nav2_params.yaml:10). Не /sim/ground_truth/odom.
+DWB_ODOM_TOPIC = "/odom"
 
 # Файлы, которые должны быть на хосте ДО hil off (bag закрыт, route скопирован).
 BEFORE_OFF_FILES: Tuple[str, ...] = BEFORE_GOAL_FILES + (
@@ -204,24 +218,36 @@ def write_start_map_gt(directory: str | Path, map_text: str, gt_text: str) -> st
     return body
 
 
-def format_named_param(name: str, raw: str) -> str:
-    """Одна строка ``<имя>=<значение>``. Пустой ответ узла — ``missing``, не выдуманное число.
+_VALUE_PREFIXES = (
+    "Double value is: ",
+    "Integer value is: ",
+    "String value is: ",
+    "Boolean value is: ",
+)
 
-    ``ros2 param get`` печатает ``Double value is: 0.15`` — имя берётся из аргумента
-    вызова, не из текста ответа.
+
+def parse_param_value(raw: str) -> str | None:
+    """Число или bool из ответа ``ros2 param get``. Баннер без ``value is:`` — None.
+
+    Ночной прогон 19.11: stdout ``ros_with_namespace.sh`` (строки ``====``) попал в
+    значение, а ``Double value is`` следующего вызова приклеился к чужому имени.
+    Берём только строку ``value is:``, не последнюю строку баннера.
     """
-    text = (raw or "").strip()
-    if not text:
+    for line in (raw or "").splitlines():
+        text = line.strip()
+        for prefix in _VALUE_PREFIXES:
+            if text.startswith(prefix):
+                value = text[len(prefix):].strip()
+                return value or None
+    return None
+
+
+def format_named_param(name: str, raw: str) -> str:
+    """``<имя>=<значение>`` или ``<имя>=missing``. Баннер без числа — missing, не строка ``====``."""
+    value = parse_param_value(raw)
+    if value is None:
         return f"{name}=missing"
-    for prefix in ("Double value is: ", "Integer value is: ", "String value is: ", "Boolean value is: "):
-        if text.startswith(prefix):
-            return f"{name}={text[len(prefix):].strip()}"
-    # Многострочный вывод: берём последнюю непустую строку после префикса, имя всё равно своё.
-    last = text.splitlines()[-1].strip()
-    for prefix in ("Double value is: ", "Integer value is: ", "String value is: ", "Boolean value is: "):
-        if last.startswith(prefix):
-            return f"{name}={last[len(prefix):].strip()}"
-    return f"{name}={last}"
+    return f"{name}={value}"
 
 
 def format_params_file(named: Sequence[Tuple[str, str]], overlays: Iterable[str] = ()) -> str:

@@ -50,6 +50,15 @@ main() { ssh "${SSHO[@]}" "$MAIN" "$*" </dev/null; }
 sandbox() { ssh "${SSHO[@]}" "$SANDBOX" "$*" </dev/null; }
 log() { printf '%s %s\n' "$(date -u +%FT%TZ)" "$*" | tee -a "$SUMMARY"; }
 
+# Один ros2 param get. Баннер ros_with_namespace.sh без «value is:» — пусто, зовём ещё раз.
+param_get_once() {
+    local pname="$1" raw value
+    raw=$(main "docker exec $(printf '%q' "$NAV2_CONTAINER") /ros_scripts/ros_with_namespace.sh bash -c 'source /opt/ros/humble/setup.bash; ros2 param get /controller_server $(printf '%q' "$pname")'" 2>/dev/null || true)
+    printf 'PARAM %s\n%s\n' "$pname" "$raw" >>"$ART/params_raw.txt"
+    value=$(python3 -X utf8 -c 'import sys; sys.path.insert(0, sys.argv[1]); from m1_topics import parse_param_value; v = parse_param_value(sys.stdin.read()); print("" if v is None else v)' "$HERE" <<<"$raw")
+    printf '%s' "$value"
+}
+
 # bag/ без trailing «/.»: OpenSSH 9 scp (SFTP) отвергает filename «.» (прогон 18.11, exit 50).
 # Песочница = эта машина — cp, не scp. Удалённый хост: scp -r host:bag каталог, не bag/.
 copy_bag_to_host() {
@@ -116,6 +125,7 @@ cleanup() {
     CLEANED=1
     local art_rc=0 off_rc=0
     stop_route
+    stop_resource_samplers
     if [ "$ON_ATTEMPTED" = 1 ]; then
         pull_before_off || art_rc=1
         # hil off пересоздаёт nav2 без nav2tune.compose.yaml — оверлей публикации уходит
@@ -156,6 +166,89 @@ trap on_exit EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
 
+# 1 Гц, лёгкий разбор /proc. Нет intel_gpu_top и iostat — поле missing, не падаем.
+# cadvisor не читаем (даёт 0). nvidia-smi не зовём.
+start_resource_samplers() {
+    local gpu="" card
+    for card in /sys/class/drm/card*/gt_cur_freq_mhz /sys/class/drm/card*/gt_busy_percent; do
+        [ -r "$card" ] && { gpu="$card"; break; }
+    done
+    # Песочница — эта машина. Нет sysfs GPU — поле missing, не падаем.
+    python3 -X utf8 "$HERE/resource_sample.py" --loop --host sandbox --out "$ART/sandbox_resources.log" \
+        --disk sda ${gpu:+--gpu "$gpu"} >>"$ART/sandbox_sampler.err" 2>&1 &
+    echo $! >"$ART/sandbox_sampler.pid"
+    # Main: тот же разбор /proc, без docker stats (cadvisor врёт нулями, stats грузит демон).
+    main "mkdir -p /tmp/hil" || true
+    scp -q -o BatchMode=yes "$HERE/resource_sample.py" "$MAIN:/tmp/hil/resource_sample.py" || {
+        log "MAIN_SAMPLER_SCP_FAIL"
+        return 0
+    }
+    main "nohup python3 -X utf8 /tmp/hil/resource_sample.py --loop --host main --out /tmp/hil/main_resources.log --disk mmcblk0 >/tmp/hil/main_sampler.err 2>&1 & echo \$! > /tmp/hil/main_sampler.pid" \
+        || log "MAIN_SAMPLER_START_FAIL"
+    log "SAMPLERS_STARTED"
+}
+
+stop_resource_samplers() {
+    if [ -f "$ART/sandbox_sampler.pid" ]; then
+        kill "$(cat "$ART/sandbox_sampler.pid")" 2>/dev/null || true
+    fi
+    main "if test -f /tmp/hil/main_sampler.pid; then kill \$(cat /tmp/hil/main_sampler.pid) 2>/dev/null || true; fi; cat /tmp/hil/main_resources.log" \
+        >"$ART/main_resources.log" 2>/dev/null || true
+    log "SAMPLERS_STOPPED"
+}
+
+# После active controller_server. Нет числа после двух попыток — name=missing, не баннер.
+capture_params_after_ready() {
+    local pname value attempt overlays
+    : >"$ART/params_raw.txt"
+    : >"$ART/params_values.txt"
+    for pname in \
+        FollowPath.max_vel_x \
+        FollowPath.PathAlign.forward_point_distance \
+        progress_checker.movement_time_allowance \
+        FollowPath.min_speed_xy \
+        FollowPath.trans_stopped_velocity \
+        general_goal_checker.xy_goal_tolerance \
+        FollowPath.xy_goal_tolerance \
+        FollowPath.RotateToGoal.scale \
+        FollowPath.RotateToGoal.lookahead_time \
+        FollowPath.Oscillation.scale \
+        FollowPath.Oscillation.oscillation_reset_dist \
+        FollowPath.Oscillation.oscillation_reset_angle \
+        FollowPath.Oscillation.oscillation_reset_time \
+        FollowPath.publish_evaluation \
+        FollowPath.publish_trajectories \
+        FollowPath.publish_local_plan \
+        FollowPath.short_circuit_trajectory_evaluation
+    do
+        value=""
+        for attempt in 1 2; do
+            value=$(param_get_once "$pname")
+            [ -n "$value" ] && break
+            sleep 2
+        done
+        if [ -n "$value" ]; then
+            printf '%s=%s\n' "$pname" "$value" >>"$ART/params_values.txt"
+        else
+            printf '%s=missing\n' "$pname" >>"$ART/params_values.txt"
+            log "PARAM_MISSING $pname"
+        fi
+    done
+    overlays=$(cat "$ART/params_overlays.txt" 2>/dev/null || true)
+    {
+        cat "$ART/params_values.txt"
+        printf '%s\n' "$overlays"
+        printf 'goal=(-3.7,4.0,0)\n'
+        printf 'spawn=(0.0,0.0,0.0)\n'
+        printf 'expect_world=depot\n'
+        printf 'run_id=%s\n' "$RUN_ID"
+    } >"$ART/params.txt"
+    if grep -q '=missing$' "$ART/params_values.txt"; then
+        return 1
+    fi
+    log "PARAMS_NUMERIC $(wc -l <"$ART/params_values.txt") values"
+}
+
 # ── фиксация до цели (код, не текст промпта) ──
 capture_before_goal() {
     local args mounts sdf image_gz image_nav2 overlays max_vel pathalign line rc=0
@@ -188,44 +281,10 @@ capture_before_goal() {
     fi
 
     overlays=$(main "docker inspect $(printf '%q' "$NAV2_CONTAINER") --format '{{range .Config.Env}}{{println .}}{{end}}' | sed -n 's/^NAV2_PARAMS_OVERLAYS=//p'" || true)
-    # Имена — аргумент ros2 param get, не «Double value is» без подписи (разбор Тигра).
-    : >"$ART/params_raw.txt"
-    local pname raw
-    for pname in \
-        FollowPath.max_vel_x \
-        FollowPath.PathAlign.forward_point_distance \
-        progress_checker.movement_time_allowance \
-        FollowPath.min_speed_xy \
-        FollowPath.publish_evaluation \
-        FollowPath.publish_trajectories \
-        FollowPath.publish_local_plan
-    do
-        raw=$(main "docker exec $(printf '%q' "$NAV2_CONTAINER") /ros_scripts/ros_with_namespace.sh bash -c 'source /opt/ros/humble/setup.bash; ros2 param get /controller_server $(printf '%q' "$pname")'" 2>/dev/null || true)
-        printf 'PARAM %s\n%s\n' "$pname" "$raw" >>"$ART/params_raw.txt"
-    done
-    python3 -X utf8 -c '
-import pathlib, sys
-sys.path.insert(0, sys.argv[1])
-from m1_topics import format_params_file
-raw = pathlib.Path(sys.argv[2]).read_text(encoding="utf-8", errors="replace")
-pairs, name, buf = [], None, []
-for line in raw.splitlines():
-    if line.startswith("PARAM "):
-        if name is not None:
-            pairs.append((name, "\n".join(buf)))
-        name, buf = line[6:].strip(), []
-    else:
-        buf.append(line)
-if name is not None:
-    pairs.append((name, "\n".join(buf)))
-overlays = [o for o in sys.argv[3:] if o and o != "none"]
-pathlib.Path(sys.argv[2]).with_name("params.txt").write_text(
-    format_params_file(pairs, overlays), encoding="utf-8")
-' "$HERE" "$ART/params_raw.txt" ${overlays:-none}
-    {
-        printf 'run_id=%s\n' "$RUN_ID"
-        printf 'maps_dir=%s\n' "$MAPS_DIR"
-    } >>"$ART/params.txt"
+    # Параметры — после active controller_server (capture_params_after_ready), не здесь:
+    # до готовности ros2 param get отдаёт баннер ros_with_namespace.sh без числа.
+    printf 'overlays=%s\n' "${overlays:-none}" >"$ART/params_overlays.txt"
+    printf 'pending\n' >"$ART/params.txt"
 
     # Старт map←base_footprint и GT. Нет кадра — none, ноль не подставляем (m1_topics).
     main "docker exec $(printf '%q' "$NAV2_CONTAINER") /ros_scripts/ros_with_namespace.sh bash -c 'source /opt/ros/humble/setup.bash; timeout 15 ros2 run tf2_ros tf2_echo map base_footprint'" \
@@ -318,8 +377,22 @@ if [ "$ready" != 1 ]; then
     log "NAV_NOT_READY M1_NOT_SENT"
     exit 33
 fi
+# controller_server active — иначе param get снова баннер, как в ночном прогоне 19.11.
+cs_ready=0
+for _ in $(seq 1 12); do
+    cs=$(main "docker exec $(printf '%q' "$NAV2_CONTAINER") /ros_scripts/ros_with_namespace.sh bash -c 'source /opt/ros/humble/setup.bash; ros2 lifecycle get /controller_server'" 2>/dev/null || true)
+    printf '%s %s\n' "$(date -u +%FT%TZ)" "$cs" >>"$ART/nav_ready.log"
+    if grep -q 'active \[3\]' <<<"$cs"; then cs_ready=1; break; fi
+    sleep 5
+done
+if [ "$cs_ready" != 1 ]; then
+    log "CONTROLLER_NOT_READY M1_NOT_SENT"
+    exit 34
+fi
+capture_params_after_ready || { log "PARAMS_INCOMPLETE M1_NOT_SENT"; exit 35; }
 
-log "GOAL_SEND M1 target=(-3.7,4.0,0) after BEFORE_GOAL_OK"
+start_resource_samplers
+log "GOAL_SEND M1 target=(-3.7,4.0,0) after BEFORE_GOAL_OK and PARAMS_NUMERIC"
 sandbox "cd '$SANDBOX_REPO' && CAMERAS=0 ./runvideo.sh M1" >"$ART/runvideo.log" 2>&1 || true
 log "ROUTE_DONE"
 # pull_before_off — в cleanup, до hil off.
