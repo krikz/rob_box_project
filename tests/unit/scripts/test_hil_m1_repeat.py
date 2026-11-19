@@ -561,7 +561,7 @@ def test_script_uses_world_gate_and_pulls_before_off():
     assert "OFF_FAILED" in code
     assert "return 51" in code
     assert "return 52" in code
-    assert "CAMERAS=0 ROUTE_LOG=" in script and "./runvideo.sh M1" in script
+    assert "CAMERAS=0 ROUTE_LOG=" in script and "./runvideo.sh '$GOAL'" in script
     assert "hil.conf" in script
     assert 'printf \'%q\' "$HIL_LOCK"' in script
     assert "NAV2_PARAMS_OVERLAYS" in script
@@ -695,12 +695,27 @@ def test_stale_route_is_not_the_shared_out_log():
         "cp '$SANDBOX_REPO/out/route.log' '$REMOTE_OUT/route.log'"
         not in code.split("GOAL_SEND")[0]
     )
+    # После runvideo общий лог забираем, но только перезаписанный этим прогоном (mtime ≥ старта).
+    after = code.split("GOAL_SEND")[1]
+    assert "cp -f '$SANDBOX_REPO/out/route.log' '$REMOTE_OUT/route.log'" in after
+    assert "stat -c %Y" in after
+    assert "ROUTE_LOG_NOT_COPIED" in after
     assert "ROUTE_LOG=" in code
     assert "hil_on_attempt1.log" in code
     assert "hil_on_attempt2.log" in code
     assert "before_lock" in code
     assert "NAV_NOT_READY tf_odom_missing" in code
     assert "HIL_ON_TRY_" in code
+
+
+def test_goal_env_selects_route_point():
+    """M1_REPEAT_GOAL=R7: то же имя в runvideo.sh, GOAL_SEND и в grep GOAL_END."""
+    script = (REPEAT / "run_m1_repeat.sh").read_text(encoding="utf-8")
+    assert 'GOAL="${M1_REPEAT_GOAL:-M1}"' in script
+    assert "./runvideo.sh '$GOAL'" in script
+    assert 'log "GOAL_SEND run_id=$RUN_ID goal=$GOAL' in script
+    assert 'GOAL_END $GOAL result=' in script
+    assert "^[MR][0-9]{1,2}$" in script
 
 
 def test_shell_syntax_ok():
@@ -825,7 +840,7 @@ def test_goal_probe_incomplete_without_readable_trace(logging_status, route_stat
     harness = (
         "set -uo pipefail\n"
         'ART="$PWD"\nBAG_CLOSE_WAIT=1\nREMOTE_OUT=/test\nCONTAINER_OUT=/test\n'
-        "G=gazebo\nNAV2_CONTAINER=nav2\nGOAL_PROBE_DIR=/test\n"
+        "G=gazebo\nNAV2_CONTAINER=nav2\nGOAL_PROBE_DIR=/test\nGOAL=M1\n"
         "sandbox() { return 0; }\ncopy_bag_to_host() { return 0; }\n"
         f'main() {{ printf "%s\\n" "controller log"; return {logging_status}; }}\n'
         'log() { printf "%s\\n" "$*"; }\n'
@@ -835,6 +850,27 @@ def test_goal_probe_incomplete_without_readable_trace(logging_status, route_stat
     result = subprocess.run(["bash", "-c", harness], capture_output=True, text=True, cwd=tmp_path)
     assert result.returncode == 1, result.stderr
     assert expected in result.stdout
+
+
+def test_goal_end_of_other_point_is_not_this_goals_reach(tmp_path):
+    """GOAL=R7, а в route.log GOAL_END M1: чужой вердикт не выдаём за достижение цели."""
+    (tmp_path / "route.log").write_text(
+        "GOAL_END M1 result=STATUS_SUCCEEDED sim=2.0\n", encoding="utf-8"
+    )
+    harness = (
+        "set -uo pipefail\n"
+        'ART="$PWD"\nBAG_CLOSE_WAIT=1\nREMOTE_OUT=/test\nCONTAINER_OUT=/test\n'
+        "G=gazebo\nNAV2_CONTAINER=nav2\nGOAL_PROBE_DIR=/test\nGOAL=R7\nHERE=/test\n"
+        "sandbox() { return 0; }\ncopy_bag_to_host() { return 0; }\n"
+        'main() { printf "%s\\n" "controller log"; return 0; }\n'
+        'log() { printf "%s\\n" "$*"; }\n'
+        + _fn_body("pull_before_off")
+        + "\npull_before_off\n"
+    )
+    result = subprocess.run(["bash", "-c", harness], capture_output=True, text=True, cwd=tmp_path)
+    assert result.returncode == 1, result.stderr
+    assert "GOAL_CHECK_TRACE_NO_REACH" in result.stdout
+    assert "GOAL_CHECK_TRACE_MISSING" not in result.stdout
 
 
 def test_off_ok_and_missing_bag_are_different_codes(tmp_path):
