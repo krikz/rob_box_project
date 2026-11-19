@@ -323,6 +323,41 @@ class DockerCli:
                 env=dict(env),
             )
 
+    def check_container_status(self, container: str) -> str | None:
+        """None = контейнер running, иначе деталь. Тот же контракт, что у FakeDocker."""
+        res = self._run("inspect", "--format", "{{.State.Status}}", container)
+        if res.returncode != 0:
+            return res.stderr.strip() or res.stdout.strip() or f"docker inspect exited {res.returncode}"
+        status = res.stdout.strip()
+        if status != "running":
+            return f"container {container} status {status or 'unknown'}, expected running"
+        return None
+
+    def check_container_logs(self, container: str) -> str | None:
+        """None = логи читаются, иначе деталь. Содержимое не толкует — это проверка доступности."""
+        res = self._run("logs", "--tail", "50", container)
+        if res.returncode != 0:
+            return res.stderr.strip() or f"docker logs exited {res.returncode}"
+        return None
+
+    def check_ros2_topics(self, expected_topics, container: str | None = None) -> str | None:
+        """Сверка expected_topics с ros2 topic list внутри контейнера роли.
+
+        None = все на месте. Нет контейнера, нет ros2 или темы не нашлось — деталь,
+        не исключение: execute_role отличает сбой проверки от падения адаптера.
+        """
+        expected = list(expected_topics)
+        if not container:
+            return "check_ros2_topics: не задан контейнер роли"
+        res = self._run("exec", container, "ros2", "topic", "list", timeout=60.0)
+        if res.returncode != 0:
+            return res.stderr.strip() or res.stdout.strip() or f"ros2 topic list exited {res.returncode}"
+        present = {line.strip() for line in res.stdout.splitlines() if line.strip()}
+        missing = [topic for topic in expected if topic not in present]
+        if missing:
+            return f"missing topics: {missing}"
+        return None
+
 
 def _repo_of(ref: str) -> tuple[str, str]:
     """`host:5000/krikz/rob_box@sha256:…` → ("krikz/rob_box", "sha256:…")."""
