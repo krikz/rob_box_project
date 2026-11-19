@@ -212,6 +212,49 @@ def test_cli_execute_flag_reaches_activate(monkeypatch):
     assert seen["release"] == "2026.11.09-1" and seen["execute"] is True
 
 
+def test_cli_execute_stops_before_registry_and_docker_without_a_verified_adapter(tmp_path, monkeypatch, capsys):
+    """Без флага --execute не доходит ни до registry, ни до docker. Не только до compose_down.
+
+    Подмена fetch_release этого не доказывает: реальный вызов 19.11 прочитал registry
+    (HTTP 404) и список контейнеров локального docker до отказа.
+    """
+    from chuangong.__main__ import main
+
+    cfg = _cfg(tmp_path)
+    cfg.state_dir.mkdir()
+    touched = []
+    monkeypatch.setattr(
+        "chuangong.activation.fetch_release",
+        lambda *args, **kwargs: touched.append("registry") or (_ for _ in ()).throw(AssertionError("registry")),
+    )
+    docker = _Docker()
+    docker.running_images = lambda: touched.append("docker") or []
+    monkeypatch.setattr("chuangong.__main__._deps", lambda cfg: Deps(registry=None, docker=docker, zenoh=None))
+
+    rc = main(
+        [
+            "activate",
+            "--robot-id",
+            "RBXU100001",
+            "--node",
+            "vision",
+            "--state-dir",
+            str(cfg.state_dir),
+            "--releases-root",
+            str(cfg.releases_root),
+            "--legacy-root",
+            str(cfg.legacy_root),
+            "--execute",
+            "2026.11.10-1",
+        ]
+    )
+
+    assert rc != 0
+    assert touched == [], touched
+    printed = json.loads(capsys.readouterr().out)
+    assert printed["reason"] == "executor_not_wired"
+
+
 def test_cli_execute_stops_before_compose_without_a_verified_adapter(tmp_path, monkeypatch, capsys):
     """--execute без проверенного адаптера — ошибка до вызова Compose (Refs #4375).
 
