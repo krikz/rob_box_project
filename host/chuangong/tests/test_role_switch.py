@@ -24,15 +24,14 @@ def _release_fixture(name: str = "2026.11.09-1") -> dict:
     """Изолированная фикстура подписанного по схеме release.yaml (без сети/реестра)."""
     roles = {}
     for role in rf.ROLES:
-        digest0 = "a" * 64
-        digest1 = "b" * 64 if role != "vision" else "c" * 64
-        # разные digest на роль, чтобы план vision ≠ sound
+        # digest зависит от имени релиза: прежний бандл отличим от нового (#4917).
+        seed = format(abs(hash(name)) % 10**16, "016d")
         if role == "vision":
-            digest0, digest1 = "1" * 64, "2" * 64
+            digest0, digest1 = (seed + "1" * 48), (seed + "2" * 48)
         elif role == "sound":
-            digest0, digest1 = "3" * 64, "4" * 64
+            digest0, digest1 = (seed + "3" * 48), (seed + "4" * 48)
         else:
-            digest0, digest1 = "5" * 64, "6" * 64
+            digest0, digest1 = (seed + "5" * 48), (seed + "6" * 48)
         roles[role] = {
             "bundle": {
                 "file": rf.bundle_file_name(role, name),
@@ -105,9 +104,12 @@ def test_plan_role_sound_and_main_topic_expectations():
     main = plan_role(release, "main")
 
     assert sound["expected_topics"] == ["/voice/stt/utterance"]
-    assert sound["images"]["sound-svc0"].endswith("3" * 64)
+    assert (
+        sound["images"]["sound-svc0"].split("@sha256:")[1]
+        != plan_role(_release_fixture("2026.11.01-9"), "sound")["images"]["sound-svc0"].split("@sha256:")[1]
+    )
     assert main["expected_topics"] == []
-    assert main["images"]["main-svc0"].endswith("5" * 64)
+    assert "@sha256:" in main["images"]["main-svc0"]
     assert sound["plan"][0]["op"] == "switch_role"
     assert main["plan"][0]["op"] == "switch_role"
 
@@ -287,9 +289,10 @@ def test_execute_role_unhealthy_after_up_runs_rollback_not_success(tmp_path):
         state_dir=state_dir,
         previous=previous,
         health_after=health,
+        previous_release=_release_fixture(previous),
     )
 
-    assert result["state"] == "rollback_planned"
+    assert result["state"] == "rollback_planned", (result.get("reason"), result.get("detail"))
     assert result["state"] != "role_switched"
     assert result["state"] != "role_switch_planned"
     assert result["reason"] == "health_check_failed"
@@ -299,6 +302,11 @@ def test_execute_role_unhealthy_after_up_runs_rollback_not_success(tmp_path):
     assert len(result["plan"]) == 1
     assert result["plan"][0]["op"] == "rollback"
     assert result["plan"][0]["release"] == previous
+    # Откат поднимает прежний бандл по его digest, а не каталог нового релиза (#4917).
+    ups = [c for c in result["commands"] if c["action"] == "compose_up"]
+    assert len(ups) == 2
+    assert ups[1]["images"] != ups[0]["images"]
+    assert previous in ups[1]["dir"]
     assert all(s["op"] != "switch_role" for s in result["plan"])
     # switch attempt + rollback: compose_down/up twice
     downs = [c for c in docker.commands if c[0] == "compose_down"]
