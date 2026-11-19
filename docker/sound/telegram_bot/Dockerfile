@@ -111,6 +111,15 @@ COPY --from=msgs /ws/install /ws/install
 # в site-packages; telegram_node импортирует их оттуда (avatar_command, phrases).
 # Тот же тег, что у voice-assistant. Ставится ДО colcon, чтобы сборка хоста
 # rob_box_telegram не затёрла ядро копией из src/.
+#
+# apt python3-pip на базе ros2-zenoh (Ubuntu 22.04) — это pip 22.0.2. Он не
+# читает имя из PEP 621-метаданных ядра (pyproject [project], setuptools>=77)
+# и пишет PKG-INFO «Name: unknown», после чего сам отбрасывает direct-URL:
+# «filename has 'rob-box-dialog-core', but metadata has 'unknown'»
+# (run 44544845438, job 135636006910, #4940). voice-assistant не падает:
+# voice_base заранее делает `pip3 install --upgrade pip` (Dockerfile:113).
+# Тот же приём здесь, отдельным слоем — до установки ядра.
+RUN pip3 install --no-cache-dir --upgrade pip
 RUN pip3 install --no-cache-dir \
     "rob-box-dialog-core @ git+https://github.com/krikz/rob_box_dialog_core@v0.7.9"
 
