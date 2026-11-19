@@ -304,6 +304,7 @@ def execute_role(
     state_dir: Path | str,
     previous: str | None = None,
     health_after: Callable[[], HealthResult] | HealthResult | None = None,
+    previous_release: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Исполнить plan_role: compose_*, pointers.advance, ROLE_CHECKS.
 
@@ -358,9 +359,19 @@ def execute_role(
         result["state"] = "role_switched"
         return result
 
+    # Откат поднимает прежний бандл по его digest, не каталог упавшего релиза (#4917).
+    # План отката — от упавшего релиза (previous = его имя), а поднимается бандл
+    # прежнего релиза по его digest, не каталог упавшего (#4917).
     rollback = plan_role(release, role, previous=previous, health=checked)
+    rollback_dir = project_dir
+    rollback_images = None
+    if previous_release is not None:
+        rollback_dir = project_dir.parent.parent / previous_release["release"] / "docker" / role
+        rollback_images = _digest_images(role, _role_entry(previous_release, role))
     for step in rollback["plan"]:
-        _apply_step(docker, project_dir, step, commands, state_dir)
+        if rollback_images is not None:
+            step["images"] = rollback_images
+        _apply_step(docker, rollback_dir, step, commands, state_dir)
         step["execute"] = True
         # Откат: checks шага тоже гоняем; fail → blocked, не «успех на previous».
         check_fail = _run_role_checks(docker, project_dir, step, commands)
