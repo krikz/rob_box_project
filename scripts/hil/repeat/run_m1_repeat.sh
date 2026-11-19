@@ -276,9 +276,10 @@ bash "$HIL_CMD" status >"$ART/hil_status_before.log" 2>&1 || { log "STATUS_BEFOR
 # short_circuit_trajectory_evaluation: false (полный /evaluation, выбор траектории тот же).
 # default true — строку не пишем, остаётся боевой true.
 export M1_REPEAT_SHORT_CIRCUIT="${M1_REPEAT_SHORT_CIRCUIT:-true}"
-python3 -X utf8 -c 'import os, sys; sys.path.insert(0, sys.argv[1]); from m1_topics import dwb_publish_overlay_yaml, short_circuit_from_env; open(sys.argv[2], "w", encoding="utf-8").write(dwb_publish_overlay_yaml(short_circuit_from_env(os.environ.get("M1_REPEAT_SHORT_CIRCUIT"))))' \
-    "$HERE" "$ART/dwb_publish.yaml" || { log "SHORT_CIRCUIT_ENV_BAD value=${M1_REPEAT_SHORT_CIRCUIT}"; exit 2; }
-log "DWB_OVERLAY short_circuit=${M1_REPEAT_SHORT_CIRCUIT}"
+# Пусто — боевой trans_stopped_velocity 0.03, строку не пишем. Число > 0 — в тот же оверлей.
+python3 -X utf8 -c 'import os, sys; sys.path.insert(0, sys.argv[1]); from m1_topics import dwb_publish_overlay_yaml, short_circuit_from_env, trans_stopped_from_env; open(sys.argv[2], "w", encoding="utf-8").write(dwb_publish_overlay_yaml(short_circuit_from_env(os.environ.get("M1_REPEAT_SHORT_CIRCUIT")), trans_stopped_from_env(os.environ.get("M1_REPEAT_TRANS_STOPPED"))))' \
+    "$HERE" "$ART/dwb_publish.yaml" || { log "OVERLAY_ENV_BAD short_circuit=${M1_REPEAT_SHORT_CIRCUIT} trans_stopped=${M1_REPEAT_TRANS_STOPPED:-}"; exit 2; }
+log "DWB_OVERLAY short_circuit=${M1_REPEAT_SHORT_CIRCUIT} trans_stopped=${M1_REPEAT_TRANS_STOPPED:-combat}"
 main "mkdir -p /tmp/hil/nav2tune" || { log "NAV2TUNE_DIR_FAIL"; exit 30; }
 scp -q -o BatchMode=yes "$ART/dwb_publish.yaml" "$MAIN:/tmp/hil/nav2tune/dwb_publish.yaml" || { log "OVERLAY_SCP_FAIL"; exit 30; }
 main "tr -d '\r' > /tmp/hil/nav2tune.compose.yaml" <"$ROOT/scripts/hil/speed/nav2tune.compose.yaml" || { log "COMPOSE_SCP_FAIL"; exit 30; }
