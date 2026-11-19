@@ -10,11 +10,13 @@ import importlib.util
 import math
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 import pytest
 
 ROOT = Path(__file__).resolve().parents[3]
+REPO = ROOT
 REPEAT = ROOT / "scripts" / "hil" / "repeat"
 _spec = importlib.util.spec_from_file_location("hil_m1_topics", REPEAT / "m1_topics.py")
 topics = importlib.util.module_from_spec(_spec)
@@ -38,7 +40,13 @@ def test_repeat_topics_add_yaw_costmap_and_controller_before_mux():
     for name in REQUIRED:
         assert name in names, name
     # База прошлого bag (/tmp/hil_m1_stall) не выкинута.
-    for name in ("/cmd_vel", "/plan", "/sim/ground_truth/odom", "/odom", "/local_costmap/costmap_raw"):
+    for name in (
+        "/cmd_vel",
+        "/plan",
+        "/sim/ground_truth/odom",
+        "/odom",
+        "/local_costmap/costmap_raw",
+    ):
         assert name in names
     assert topics.DWB_ODOM_TOPIC == "/odom"
     assert topics.DWB_ODOM_TOPIC != "/sim/ground_truth/odom"
@@ -120,7 +128,9 @@ def test_write_start_and_assert_ready(tmp_path):
 
 
 def test_yaw_isolate_detach_drops_input_priority_keeps_it():
-    combat = (ROOT / "docker/main/config/twist_mux/twist_mux.yaml").read_text(encoding="utf-8")
+    combat = (ROOT / "docker/main/config/twist_mux/twist_mux.yaml").read_text(
+        encoding="utf-8"
+    )
     assert topics.yaw_isolate_from_env(None) == "off"
     assert topics.yaw_isolate_from_env("1") == "detach"
     assert topics.yaw_isolate_from_env("priority") == "priority"
@@ -132,7 +142,9 @@ def test_yaw_isolate_detach_drops_input_priority_keeps_it():
     lowered = topics.twist_mux_config_for_isolate(combat, "priority")
     assert "topic: cmd_vel_yaw" in lowered
     assert "priority: 5" in lowered
-    assert "priority: 15" not in lowered.split("yaw_at_goal:")[1].split("navigation:")[0]
+    assert (
+        "priority: 15" not in lowered.split("yaw_at_goal:")[1].split("navigation:")[0]
+    )
     assert topics.twist_mux_config_for_isolate(combat, "off") == combat
     with pytest.raises(ValueError, match="M1_YAWATGOAL_ISOLATE"):
         topics.yaw_isolate_from_env("2")
@@ -144,26 +156,32 @@ def test_yaw_isolate_detach_drops_input_priority_keeps_it():
 def test_compose_transfer_does_not_use_main_stdin(tmp_path):
     """main() делает ssh </dev/null. Передача compose через неё пишет 0 байт (Шифу, 19.11)."""
     script = (REPEAT / "run_m1_repeat.sh").read_text(encoding="utf-8")
-    code = "\n".join(line for line in script.splitlines() if not line.lstrip().startswith("#"))
+    code = "\n".join(
+        line for line in script.splitlines() if not line.lstrip().startswith("#")
+    )
     assert "main() { ssh" in code
     assert "</dev/null" in code
     assert 'main "tr -d' not in code
     assert 'scp -q -o BatchMode=yes "$ART/nav2tune.compose.yaml"' in code
     # Локальная модель: функция с </dev/null выбрасывает файл, scp-путь (cp) — нет.
     src = tmp_path / "compose.yaml"
-    src.write_text("services:\n  nav2:\n    environment:\n      - X=1\n", encoding="utf-8")
+    src.write_text(
+        "services:\n  nav2:\n    environment:\n      - X=1\n", encoding="utf-8"
+    )
     swallowed = tmp_path / "via_main.yaml"
     kept = tmp_path / "via_scp.yaml"
     harness = tmp_path / "t.sh"
     harness.write_text(
         "set -uo pipefail\n"
-        "main() { bash -c 'cat > \"$1\"' _ \"$1\" </dev/null; }\n"
+        'main() { bash -c \'cat > "$1"\' _ "$1" </dev/null; }\n'
         f"main {swallowed} < {src} || true\n"
         f"cp {src} {kept}\n"
         f"wc -c {swallowed} {kept}\n",
         encoding="utf-8",
     )
-    result = subprocess.run(["bash", str(harness)], capture_output=True, text=True, check=True)
+    result = subprocess.run(
+        ["bash", str(harness)], capture_output=True, text=True, check=True
+    )
     assert swallowed.stat().st_size == 0
     assert kept.read_text(encoding="utf-8") == src.read_text(encoding="utf-8")
     assert "0 " in result.stdout
@@ -172,11 +190,78 @@ def test_compose_transfer_does_not_use_main_stdin(tmp_path):
 def test_param_get_timeout_is_missing_not_a_hang():
     """Пустой ответ за таймаут — missing. Скрипт не вызывает param get без timeout 15."""
     assert topics.parse_param_value("") is None
-    assert topics.format_named_param("FollowPath.max_vel_x", "") == "FollowPath.max_vel_x=missing"
+    assert (
+        topics.format_named_param("FollowPath.max_vel_x", "")
+        == "FollowPath.max_vel_x=missing"
+    )
     script = (REPEAT / "run_m1_repeat.sh").read_text(encoding="utf-8")
-    assert script.count("timeout 15 ros2 param get") == 1
+    code = "\n".join(
+        line for line in script.splitlines() if not line.lstrip().startswith("#")
+    )
+    assert "timeout 15 ros2 param get" not in code or "ros2_in_nav2" in code
+    assert 'timeout "$ROS2_CLI_TIMEOUT"' in code
+    assert "ros2 param get" in code
     # Две попытки, не цикл до бесконечности.
     assert "for attempt in 1 2" in script
+
+
+def test_unreachable_ros2_cli_exits_37_not_hangs(tmp_path):
+    """run2 висел на ros2 lifecycle get без timeout. Недоступный CLI — код 37, не 30 минут.
+
+    Подмена ssh спит дольше таймаута. Функция готова вернуть 37, цикл не крутится.
+    """
+    art = tmp_path / "art"
+    art.mkdir()
+    sleeper = tmp_path / "ssh"
+    sleeper.write_text("#!/bin/sh\nexec sleep 30\n", encoding="utf-8")
+    sleeper.chmod(0o755)
+    text = (REPEAT / "run_m1_repeat.sh").read_text(encoding="utf-8")
+    start = text.index("ros2_in_nav2() {")
+    rest = text[start:]
+    lines = rest.splitlines(keepends=True)
+    fn = [lines[0]]
+    for line in lines[1:]:
+        if line and not line.startswith((" ", "\t", "\n")) and line.endswith("() {\n"):
+            break
+        fn.append(line)
+    harness = tmp_path / "ready.sh"
+    # Та же функция, что в скрипте: timeout вернул 124 → exit 37, sleep 5 не вызывается.
+    harness.write_text(
+        "set -uo pipefail\n"
+        f"PATH={tmp_path}:$PATH\n"
+        "ART=" + str(art) + "\n"
+        "SUMMARY=$ART/verdict.log\n"
+        ': >"$SUMMARY"\n'
+        'log() { printf \'%s\\n\' "$*" | tee -a "$SUMMARY"; }\n'
+        "ROS2_CLI_TIMEOUT=1\n"
+        "SSHO=()\n"
+        "MAIN=unused\n"
+        "NAV2_CONTAINER=nav2\n"
+        + "".join(fn)
+        + "\ncli_rc=0\n"
+        + "state=$(ros2_in_nav2 'ros2 lifecycle get /bt_navigator' 2>/dev/null) || cli_rc=$?\n"
+        + 'printf "rc=%s\\n" "$cli_rc"\n'
+        + 'if [ "$cli_rc" -eq 124 ]; then log "NAV_CLI_TIMEOUT ros2 lifecycle get /bt_navigator"; exit 37; fi\n'
+        + "exit 0\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+    started = time.monotonic()
+    result = subprocess.run(
+        ["bash", str(harness)], capture_output=True, text=True, cwd=tmp_path, timeout=8
+    )
+    elapsed = time.monotonic() - started
+    assert result.returncode == 37, result.stdout + result.stderr
+    assert elapsed < 8
+    assert "NAV_CLI_TIMEOUT" in (art / "verdict.log").read_text(encoding="utf-8")
+    script = (REPEAT / "run_m1_repeat.sh").read_text(encoding="utf-8")
+    code = "\n".join(
+        line for line in script.splitlines() if not line.lstrip().startswith("#")
+    )
+    assert "ros2 lifecycle get /bt_navigator" in code
+    assert code.count("exit 37") >= 2
+    # Голый вызов без ros2_in_nav2 больше не стоит в цикле готовности.
+    assert "ros2 lifecycle get /bt_navigator'" not in code or "ros2_in_nav2" in code
 
 
 def test_banner_without_value_is_missing_not_equals_signs():
@@ -188,7 +273,10 @@ def test_banner_without_value_is_missing_not_equals_signs():
         "==================================================\n"
     )
     assert topics.parse_param_value(banner) is None
-    assert topics.format_named_param("FollowPath.max_vel_x", banner) == "FollowPath.max_vel_x=missing"
+    assert (
+        topics.format_named_param("FollowPath.max_vel_x", banner)
+        == "FollowPath.max_vel_x=missing"
+    )
     mixed = banner + "Double value is: 0.15\n"
     assert topics.parse_param_value(mixed) == "0.15"
     # Повтор: первый ответ баннер, второй — число. Берётся число, баннер не приклеивается.
@@ -223,7 +311,10 @@ def test_params_file_names_each_value():
     bare = topics.format_params_file([])
     assert "FollowPath.max_vel_x=missing" in bare
     assert topics.params_missing_names(bare) == list(topics.NAMED_PARAMS)
-    assert topics.format_named_param("FollowPath.max_vel_x", "") == "FollowPath.max_vel_x=missing"
+    assert (
+        topics.format_named_param("FollowPath.max_vel_x", "")
+        == "FollowPath.max_vel_x=missing"
+    )
     assert math.isclose(topics.MAX_VEL_X, 0.15)
     assert math.isclose(topics.PATHALIGN_FORWARD_M, 0.20)
 
@@ -252,6 +343,131 @@ def test_trans_stopped_overlay_is_opt_in():
         topics.trans_stopped_from_env("nope")
 
 
+def test_overlay_compose_is_on_the_command_before_configure():
+    """Пара 19.11: recreate после on, param остался True. on должен видеть -f до старта nav2.
+
+    Пустой HIL_NAV2TUNE_COMPOSE — три файла, как боевой hil.sh on. Заданный — четвёртый -f
+    и NAV2TUNE_OVERLAYS в той же команде, до up. off этот -f не добавляет.
+    """
+    hil = (REPO / "scripts/hil/hil.sh").read_text(encoding="utf-8")
+    fn = hil[hil.index("main_sim_up() {") :]
+    body = fn[: fn.index("\n}\n") + 3]
+    assert "HIL_NAV2TUNE_COMPOSE" in body
+    assert "NAV2TUNE_OVERLAYS" in body
+    assert body.index("HIL_NAV2TUNE_COMPOSE") < body.index("docker compose")
+    repeat = (REPEAT / "run_m1_repeat.sh").read_text(encoding="utf-8")
+    code = "\n".join(
+        line for line in repeat.splitlines() if not line.lstrip().startswith("#")
+    )
+    on_at = code.index('bash "$HIL_CMD" on')
+    assert code.index("export HIL_NAV2TUNE_COMPOSE=") < on_at
+    assert code.index("export NAV2TUNE_OVERLAYS=") < on_at
+    assert "OVERLAY_BEFORE_ON" in code
+    # Recreate nav2 после HIL_ON_OK больше нет: второй старт не чинит уже прошедший configure.
+    after_on = code.split("HIL_ON_OK", 1)[1].split("capture_before_goal", 1)[0]
+    assert "--force-recreate nav2" not in after_on
+    assert "OVERLAY_ENV_MISSING" in after_on
+    off = hil[hil.index("cmd_off() {") : hil.index("cmd_status() {")]
+    assert "HIL_NAV2TUNE_COMPOSE" not in off
+
+    # Модель main_sim_up: пусто — три -f; задано — четвёртый до up, значение без лишних кавычек.
+    model = body
+    harness_src = (
+        "set -uo pipefail\n"
+        'q() { printf "\'%s\'" "$1"; }\n'
+        "rsh() { printf '%s\\n' \"$2\"; }\n"
+        "main_rm_created_sim() { :; }\n"
+        "HIL_MAIN_HOST=main\nHIL_MAIN_DIR=/d\nHIL_MAPS_DIR=/m\nHIL_RTABMAP_MODE=mapping\n"
+        "HIL_GUARD_SOUND=0\nHIL_REMOTE_DIR=/tmp/hil\n"
+        + model
+        + "\nunset HIL_NAV2TUNE_COMPOSE NAV2TUNE_OVERLAYS\n"
+        + "main_sim_up nav2 > /tmp/m1_plain.txt\n"
+        + "HIL_NAV2TUNE_COMPOSE=/tmp/hil/nav2tune.compose.yaml\n"
+        + "NAV2TUNE_OVERLAYS=/nav2tune/dwb_publish.yaml\n"
+        + "main_sim_up nav2 > /tmp/m1_overlay.txt\n"
+    )
+    # Пишем во временный файл рядом с тестом через subprocess и bash -c нельзя без файла:
+    # harness ниже собирается в tmp_path вызывающим тестом. Здесь — свой прогон.
+    import tempfile
+
+    with tempfile.TemporaryDirectory() as raw:
+        root = Path(raw)
+        script = root / "up.sh"
+        plain = root / "plain.txt"
+        over = root / "over.txt"
+        script.write_text(
+            harness_src.replace("/tmp/m1_plain.txt", str(plain)).replace(
+                "/tmp/m1_overlay.txt", str(over)
+            ),
+            encoding="utf-8",
+        )
+        subprocess.run(["bash", str(script)], check=True, cwd=root)
+        plain_txt = plain.read_text(encoding="utf-8")
+        over_txt = over.read_text(encoding="utf-8")
+    assert plain_txt.count("-f ") == 3
+    assert "nav2tune" not in plain_txt
+    assert "-f '/tmp/hil/nav2tune.compose.yaml'" in over_txt
+    assert "NAV2TUNE_OVERLAYS='/nav2tune/dwb_publish.yaml'" in over_txt
+    assert over_txt.index("-f '/tmp/hil/nav2tune.compose.yaml'") < over_txt.index(
+        " up "
+    )
+
+
+def test_evaluation_holes_split_recovery_from_recording_drop():
+    """Пара 19.11: 15.359 с — recovery (spin/wait), не дыра bag. 2.9 с — пачка cmd_vel на краю.
+
+    recording_drop только если /local_plan внутри окна есть, а /evaluation нет > 1 с.
+    На стенде этого не гоняли. Модель не должна звать такие окна потерей записи.
+    """
+    recovery = topics.classify_evaluation_gap(
+        15.359, cmd_vel_inside=104, local_plan_inside=0, recovery_in_window=True
+    )
+    assert recovery == "controller_silent"
+    burst = topics.classify_evaluation_gap(
+        2.903, cmd_vel_inside=17, local_plan_inside=0, recovery_in_window=False
+    )
+    assert burst == "boundary_burst"
+    diag = topics.classify_evaluation_gap(
+        3.09, cmd_vel_inside=33, local_plan_inside=0, recovery_in_window=False
+    )
+    assert diag == "boundary_burst"
+    short = topics.classify_evaluation_gap(
+        0.4, cmd_vel_inside=0, local_plan_inside=0, recovery_in_window=False
+    )
+    assert short == "ok"
+    drop = topics.classify_evaluation_gap(
+        1.2, cmd_vel_inside=4, local_plan_inside=3, recovery_in_window=False
+    )
+    assert drop == "recording_drop"
+    gaps = [
+        {
+            "gap_s": 15.359,
+            "cmd_vel_inside": 104,
+            "local_plan_inside": 0,
+            "recovery_in_window": True,
+        },
+        {
+            "gap_s": 2.903,
+            "cmd_vel_inside": 17,
+            "local_plan_inside": 0,
+            "recovery_in_window": False,
+        },
+        {
+            "gap_s": 1.2,
+            "cmd_vel_inside": 4,
+            "local_plan_inside": 3,
+            "recovery_in_window": False,
+        },
+    ]
+    found = topics.recording_drops(gaps)
+    assert len(found) == 1
+    assert found[0]["gap_s"] == 1.2
+    qos = topics.bag_qos_overrides_yaml(["/evaluation"])
+    assert "reliability: reliable" in qos
+    assert "durability: volatile" in qos
+    assert "deadline:" in qos
+
+
 def test_short_circuit_overlay_is_opt_in():
     """false добавляет строку; true и default — нет. Боевой yaml не открывается."""
     full = topics.dwb_publish_overlay_yaml(short_circuit=False)
@@ -265,7 +481,9 @@ def test_short_circuit_overlay_is_opt_in():
     assert "max_vel_x" not in full
     combat = topics.dwb_publish_overlay_yaml(short_circuit=True)
     assert "short_circuit_trajectory_evaluation" not in combat
-    assert "short_circuit_trajectory_evaluation" not in topics.dwb_publish_overlay_yaml()
+    assert (
+        "short_circuit_trajectory_evaluation" not in topics.dwb_publish_overlay_yaml()
+    )
     assert topics.short_circuit_from_env(None) is True
     assert topics.short_circuit_from_env("true") is True
     assert topics.short_circuit_from_env("false") is False
@@ -313,13 +531,16 @@ def test_script_uses_world_gate_and_pulls_before_off():
     assert "M1_REPEAT_SHORT_CIRCUIT" in script
     assert "M1_REPEAT_TRANS_STOPPED" in script
     assert "capture_params_after_ready" in script
-    assert "timeout 15 ros2 param get" in script
+    assert "ros2_in_nav2" in script
+    assert "ros2 param get" in script
     ready_at = script.index("for _ in $(seq 1 $((NAV_READY_TIMEOUT / 5)))")
     sampler_at = script.index("start_resource_samplers || log")
     assert sampler_at < ready_at
     assert "sandbox_resources.log" in script
     assert "main_resources.log" in script
-    code_only = "\n".join(line for line in script.splitlines() if not line.lstrip().startswith("#"))
+    code_only = "\n".join(
+        line for line in script.splitlines() if not line.lstrip().startswith("#")
+    )
     assert "nvidia-smi" not in code_only
     assert "CONTROLLER_NOT_READY" in script
     assert "/odom" in script or "DWB_ODOM_TOPIC" in "\n".join(
@@ -327,7 +548,9 @@ def test_script_uses_world_gate_and_pulls_before_off():
     )
     assert "trans_stopped_from_env" in script
     assert "short_circuit_from_env" in script
-    code = "\n".join(line for line in script.splitlines() if not line.lstrip().startswith("#"))
+    code = "\n".join(
+        line for line in script.splitlines() if not line.lstrip().startswith("#")
+    )
     assert "nav2_params.yaml" not in code
     # OpenSSH 9 SFTP отвергает filename «.» — прошлый прогон, exit 50.
     scp_lines = [line for line in code.splitlines() if "scp " in line]
@@ -345,9 +568,14 @@ def test_script_uses_world_gate_and_pulls_before_off():
     assert "Depot_vid" not in script
 
 
-@pytest.mark.skipif(subprocess.call(["bash", "-n", str(REPEAT / "run_m1_repeat.sh")]) != 0, reason="bash -n")
+@pytest.mark.skipif(
+    subprocess.call(["bash", "-n", str(REPEAT / "run_m1_repeat.sh")]) != 0,
+    reason="bash -n",
+)
 def test_resource_sample_parses_synthetic_proc(tmp_path):
-    spec = importlib.util.spec_from_file_location("hil_resource_sample", REPEAT / "resource_sample.py")
+    spec = importlib.util.spec_from_file_location(
+        "hil_resource_sample", REPEAT / "resource_sample.py"
+    )
     rs = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(rs)
     root = tmp_path / "root"
@@ -356,8 +584,12 @@ def test_resource_sample_parses_synthetic_proc(tmp_path):
         "cpu  10 0 5 80 1 0 0 0 0 0\ncpu0 5 0 2 40 0 0 0\ncpu1 5 0 3 40 1 0 0\n",
         encoding="utf-8",
     )
-    (root / "proc/meminfo").write_text("MemTotal:       8000000 kB\nMemAvailable:   1000000 kB\n", encoding="utf-8")
-    (root / "proc/pressure/cpu").write_text("some avg10=1.00 avg60=51.21 avg300=2.00 total=9\n", encoding="utf-8")
+    (root / "proc/meminfo").write_text(
+        "MemTotal:       8000000 kB\nMemAvailable:   1000000 kB\n", encoding="utf-8"
+    )
+    (root / "proc/pressure/cpu").write_text(
+        "some avg10=1.00 avg60=51.21 avg300=2.00 total=9\n", encoding="utf-8"
+    )
     (root / "proc/diskstats").write_text(
         "   8       0 sda 1 0 2 3 4 0 5 0 0 6 7 8 0 0 0 0\n",
         encoding="utf-8",
@@ -379,13 +611,17 @@ def test_resource_sample_parses_synthetic_proc(tmp_path):
 
 def test_loop_flag_writes_a_line(tmp_path, monkeypatch):
     """--loop не первым аргументом пишет строку. Пара run1: unrecognized arguments --loop."""
-    spec = importlib.util.spec_from_file_location("hil_resource_sample_loop", REPEAT / "resource_sample.py")
+    spec = importlib.util.spec_from_file_location(
+        "hil_resource_sample_loop", REPEAT / "resource_sample.py"
+    )
     rs = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(rs)
     root = tmp_path / "root"
     (root / "proc").mkdir(parents=True)
     (root / "proc/stat").write_text("cpu  1 0 0 1 0 0 0\n", encoding="utf-8")
-    (root / "proc/meminfo").write_text("MemTotal: 1 kB\nMemAvailable: 1 kB\n", encoding="utf-8")
+    (root / "proc/meminfo").write_text(
+        "MemTotal: 1 kB\nMemAvailable: 1 kB\n", encoding="utf-8"
+    )
     out = tmp_path / "sandbox_resources.log"
 
     def _once(*_a, **_k):
@@ -394,7 +630,17 @@ def test_loop_flag_writes_a_line(tmp_path, monkeypatch):
     monkeypatch.setattr(rs.time, "sleep", _once)
     with pytest.raises(SystemExit) as caught:
         rs.main(
-            ["--loop", "--host", "sandbox", "--out", str(out), "--root", str(root), "--disk", "sda"]
+            [
+                "--loop",
+                "--host",
+                "sandbox",
+                "--out",
+                str(out),
+                "--root",
+                str(root),
+                "--disk",
+                "sda",
+            ]
         )
     assert caught.value.code == 0
     assert "host=sandbox" in out.read_text(encoding="utf-8")
@@ -421,8 +667,13 @@ def test_early_exit_does_not_keep_foreign_goal_start(tmp_path):
 def test_stale_route_is_not_the_shared_out_log():
     """route.log прогона — файл run_id, не общий out/route.log прошлого заезда."""
     script = (REPEAT / "run_m1_repeat.sh").read_text(encoding="utf-8")
-    code = "\n".join(line for line in script.splitlines() if not line.lstrip().startswith("#"))
-    assert "cp '$SANDBOX_REPO/out/route.log' '$REMOTE_OUT/route.log'" not in code.split("GOAL_SEND")[0]
+    code = "\n".join(
+        line for line in script.splitlines() if not line.lstrip().startswith("#")
+    )
+    assert (
+        "cp '$SANDBOX_REPO/out/route.log' '$REMOTE_OUT/route.log'"
+        not in code.split("GOAL_SEND")[0]
+    )
     assert "ROUTE_LOG=" in code
     assert "hil_on_attempt1.log" in code
     assert "hil_on_attempt2.log" in code
@@ -470,16 +721,23 @@ def test_local_pull_copies_bag_without_scp_dot(tmp_path):
         encoding="utf-8",
         newline="\n",
     )
-    result = subprocess.run(["bash", str(harness)], capture_output=True, text=True, cwd=tmp_path)
+    result = subprocess.run(
+        ["bash", str(harness)], capture_output=True, text=True, cwd=tmp_path
+    )
     assert result.returncode == 0, result.stdout + result.stderr
     assert (art / "bag" / "metadata.yaml").read_text(encoding="utf-8") == "rosbag2\n"
     assert (art / "bag" / "bag_0.db3").read_bytes() == b"bag"
     assert "GOAL_END" in (art / "route.log").read_text(encoding="utf-8")
     assert "unexpected filename" not in (result.stderr + result.stdout)
-    assert not (art / "artifact_scp.err").exists() or (art / "artifact_scp.err").stat().st_size == 0
+    assert (
+        not (art / "artifact_scp.err").exists()
+        or (art / "artifact_scp.err").stat().st_size == 0
+    )
 
 
-def _cleanup_harness(tmp_path: Path, pull_rc: int, off_rc: int) -> subprocess.CompletedProcess:
+def _cleanup_harness(
+    tmp_path: Path, pull_rc: int, off_rc: int
+) -> subprocess.CompletedProcess:
     """cleanup с подменой pull и hil off. Живой HIL не нужен."""
     art = tmp_path / "art"
     art.mkdir()
@@ -492,21 +750,21 @@ def _cleanup_harness(tmp_path: Path, pull_rc: int, off_rc: int) -> subprocess.Co
         f"ART={art}\n"
         f"HIL_CMD={off_stub}\n"
         "SUMMARY=$ART/verdict.log\n"
-        ": >\"$SUMMARY\"\n"
-        "log() { printf '%s\\n' \"$*\" | tee -a \"$SUMMARY\"; }\n"
+        ': >"$SUMMARY"\n'
+        'log() { printf \'%s\\n\' "$*" | tee -a "$SUMMARY"; }\n'
         "main() { return 0; }\n"
         "stop_route() { :; }\n"
         "stop_resource_samplers() { :; }\n"
         f"pull_before_off() {{ return {pull_rc}; }}\n"
         "CLEANED=0\n"
         "ON_ATTEMPTED=1\n"
-        "LOCK_OWNED=1\n"
-        + _fn_body("cleanup")
-        + "\ncleanup\nexit $?\n",
+        "LOCK_OWNED=1\n" + _fn_body("cleanup") + "\ncleanup\nexit $?\n",
         encoding="utf-8",
         newline="\n",
     )
-    return subprocess.run(["bash", str(harness)], capture_output=True, text=True, cwd=tmp_path)
+    return subprocess.run(
+        ["bash", str(harness)], capture_output=True, text=True, cwd=tmp_path
+    )
 
 
 def test_off_ok_and_missing_bag_are_different_codes(tmp_path):
