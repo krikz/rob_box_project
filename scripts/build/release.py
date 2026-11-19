@@ -540,7 +540,7 @@ def publish_release_dir(out: Path, registry: Registry, channel_tag: bool = True)
 
 def _external_manifest_digest(image: str) -> str:
     result = subprocess.run(
-        ["docker", "buildx", "imagetools", "inspect", "--format", "{{.Manifest.Digest}}", "--", image],
+        ["docker", "buildx", "imagetools", "inspect", "--", image],
         capture_output=True,
         text=True,
         stdin=subprocess.DEVNULL,
@@ -550,7 +550,18 @@ def _external_manifest_digest(image: str) -> str:
         raise BuildError(
             f"образ {image!r}: buildx imagetools inspect (exit {result.returncode}): {result.stderr.strip()}"
         )
-    return result.stdout.strip()
+    # Buildx 0.21 печатает сводку даже с --format '{{.Manifest.Digest}}'.
+    # В сводке только корневой Digest стоит без отступа.
+    roots = [
+        line.removeprefix("Digest:").strip()
+        for line in result.stdout.splitlines()
+        if line.startswith("Digest:")
+    ]
+    if len(roots) != 1:
+        raise BuildError(
+            f"образ {image!r}: ожидалась одна строка Digest верхнего уровня: {len(roots)}"
+        )
+    return roots[0]
 
 
 def _resolver(args: argparse.Namespace) -> tuple[Callable[[str], str], Callable[[str], str]]:
