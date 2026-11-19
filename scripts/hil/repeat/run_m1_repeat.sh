@@ -100,7 +100,9 @@ pull_before_off() {
         >>"$ART/bag_stop.log" 2>&1 || true
     sandbox "for i in \$(seq 1 $BAG_CLOSE_WAIT); do test -f '$REMOTE_OUT/bag/metadata.yaml' && break; sleep 1; done; docker exec $(printf '%q' "$G") /entrypoint.sh ros2 bag info '$CONTAINER_OUT/bag'" \
         >"$ART/bag_info.txt" 2>&1 || rc=1
-    sandbox "mkdir -p '$REMOTE_OUT'; cp '$SANDBOX_REPO/out/route.log' '$REMOTE_OUT/route.log' 2>/dev/null || true" || true
+    # Только route этого run_id. Общий out/route.log — прошлый прогон
+    # (yaw_std утащил GOAL 07:28 от clean_003). Нет своего файла — не копируем чужой.
+    :
     copy_bag_to_host || rc=1
     # Лог nav2 до off: «Failed to make progress» и какой recovery (clear/spin/wait/back_up).
     main "docker logs $(printf '%q' "$NAV2_CONTAINER") 2>&1" >"$ART/nav2.log" 2>&1 || true
@@ -113,7 +115,7 @@ hits = recovery_hits(text)
 pathlib.Path(sys.argv[3]).write_text(
     ("hits=" + " ".join(hits) if hits else "hits=none") + "\n", encoding="utf-8")
 ' "$HERE" "$ART/nav2.log" "$ART/recovery.txt" || true
-    if [ -s "$ART/route.log" ] && [ -s "$ART/bag_info.txt" ] && [ -f "$ART/bag/metadata.yaml" ] && [ -s "$ART/nav2.log" ]; then
+    if [ -s "$ART/route.log" ] && grep -q "GOAL_START" "$ART/route.log" && [ -s "$ART/bag_info.txt" ] && [ -f "$ART/bag/metadata.yaml" ] && [ -s "$ART/nav2.log" ]; then
         log "ARTIFACTS_ON_HOST route.log bag_info.txt bag/ nav2.log recovery.txt"
         return 0
     fi
@@ -127,7 +129,7 @@ cleanup() {
     local art_rc=0 off_rc=0
     stop_route
     stop_resource_samplers
-    if [ "$ON_ATTEMPTED" = 1 ]; then
+    if [ "$LOCK_OWNED" = 1 ]; then
         pull_before_off || art_rc=1
         # hil off пересоздаёт nav2 без nav2tune.compose.yaml — оверлей публикации уходит
         # вместе с HIL. Файл на Main удаляем, чтобы следующий on его не подхватил.
@@ -362,8 +364,45 @@ main "test -s /tmp/hil/nav2tune/dwb_publish.yaml && test -s /tmp/hil/nav2tune.co
 # Здесь on ещё не взят: кладём compose-оверлей, on его не знает. Поэтому после on
 # пересоздаём только nav2 с тем же HIL_MAPS_DIR, что возьмёт замок.
 ON_ATTEMPTED=1
+LOCK_OWNED=0
 CLEANED=0
-bash "$HIL_CMD" on >"$ART/hil_on.log" 2>&1 || { log "HIL_ON_FAIL"; exit 24; }
+# Один retry только если ЭТОТ запуск взял замок и отказ — «не видно RSP»,
+# и hil off этого запуска завершился 0. Отказ до замка: ни retry, ни off.
+bash "$HIL_CMD" on >"$ART/hil_on_attempt1.log" 2>&1
+on_rc=$?
+cp "$ART/hil_on_attempt1.log" "$ART/hil_on.log"
+if [ "$on_rc" != 0 ]; then
+    log "HIL_ON_TRY_1 FAIL rc=$on_rc"
+    if grep -q 'HIL уже включён\|замок' "$ART/hil_on_attempt1.log"; then
+        log "HIL_ON_FAIL before_lock"
+        LOCK_OWNED=0
+        exit 24
+    fi
+    if ! grep -q 'robot_state_publisher' "$ART/hil_on_attempt1.log"; then
+        log "HIL_ON_FAIL not_rsp"
+        LOCK_OWNED=1
+        exit 24
+    fi
+    bash "$HIL_CMD" off >"$ART/hil_on_retry_off.log" 2>&1
+    off_retry=$?
+    if [ "$off_retry" != 0 ]; then
+        log "HIL_ON_FAIL retry_off_rc=$off_retry"
+        LOCK_OWNED=1
+        exit 24
+    fi
+    LOCK_OWNED=0
+    sleep 20
+    bash "$HIL_CMD" on >"$ART/hil_on_attempt2.log" 2>&1
+    on_rc=$?
+    cat "$ART/hil_on_attempt2.log" >>"$ART/hil_on.log"
+    if [ "$on_rc" != 0 ]; then
+        log "HIL_ON_FAIL attempt2 rc=$on_rc"
+        LOCK_OWNED=1
+        exit 24
+    fi
+fi
+LOCK_OWNED=1
+log "HIL_ON_OK"
 main "cd /home/ros2/rob_box_project/docker/main && HIL_MAPS_DIR='$MAPS_DIR' HIL_RTABMAP_MODE='${HIL_RTABMAP_MODE:-mapping}' NAV2TUNE_OVERLAYS='/nav2tune/dwb_publish.yaml' docker compose -f docker-compose.yaml -f /tmp/hil/main.images.yaml -f /tmp/hil/main.hil.yaml -f /tmp/hil/nav2tune.compose.yaml up -d --no-deps --pull never --force-recreate nav2" \
     >"$ART/dwb_overlay_up.log" 2>&1 || { log "DWB_OVERLAY_UP_FAIL"; exit 30; }
 # Оверлей должен быть внутри контейнера, не только на хосте Main.
@@ -414,6 +453,8 @@ sleep 5
 sandbox "test -d '$REMOTE_OUT/bag' && echo BAG_RECORDING_DIRECTORY_PRESENT" >"$ART/bag_start.log" 2>&1 \
     || { log "BAG_DIR_ABSENT"; exit 31; }
 
+# Сэмплеры до ожидания ready: сбой TF должен оставить метрики обоих хостов.
+start_resource_samplers || log "SAMPLERS_START_FAILED"
 # Готовность навигатора — как route.py: не шлём цель, пока bt_navigator не active.
 ready=0
 for _ in $(seq 1 $((NAV_READY_TIMEOUT / 5))); do
@@ -423,7 +464,21 @@ for _ in $(seq 1 $((NAV_READY_TIMEOUT / 5))); do
     sleep 5
 done
 if [ "$ready" != 1 ]; then
-    log "NAV_NOT_READY M1_NOT_SENT"
+    # Half1 100054Z: bag /tf = только map→icp_odom, /odom пуст. local_costmap
+    # ждала odom→base_footprint. Первая дыра цепочки — нет кадра odom.
+    # Пишем, кто должен его дать, и выходим. Таймаут не растягиваем.
+    main "docker logs --tail 40 $(printf '%q' "$NAV2_CONTAINER") 2>&1" >"$ART/nav_not_ready_tail.log" 2>&1 || true
+    {
+        echo "FIRST_MISSING odom->base_footprint"
+        echo "publisher diff_drive_controller in gazebo (controller_manager.yaml odom_frame_id=odom base_frame_id=base_footprint)"
+        echo "bag_half1 /tf had map->icp_odom only; /odom message_count 0"
+        echo "icp_odom->odom publisher rtabmap icp_odometry; needs guess frame odom"
+    } >"$ART/tf_break.txt"
+    if grep -q 'frame does not exist' "$ART/nav_not_ready_tail.log"; then
+        log "NAV_NOT_READY tf_odom_missing M1_NOT_SENT"
+    else
+        log "NAV_NOT_READY M1_NOT_SENT"
+    fi
     exit 33
 fi
 # controller_server active — иначе param get снова баннер, как в ночном прогоне 19.11.
@@ -438,10 +493,6 @@ if [ "$cs_ready" != 1 ]; then
     log "CONTROLLER_NOT_READY M1_NOT_SENT"
     exit 34
 fi
-# Сэмплеры до проверки параметров: чистая пара остановилась на SHORT_CIRCUIT
-# раньше SAMPLERS_STARTED, логи остались пустыми. Старт не зависит от param get.
-start_resource_samplers || log "SAMPLERS_START_FAILED"
-capture_params_after_ready || { log "PARAMS_INCOMPLETE M1_NOT_SENT"; exit 35; }
 # Граф до цели. detach: twist_mux не в подписчиках /cmd_vel_yaw. Иначе — есть.
 if [ "${YAW_MODE:-off}" = detach ]; then
     main "docker exec $(printf '%q' "$NAV2_CONTAINER") /ros_scripts/ros_with_namespace.sh bash -c 'source /opt/ros/humble/setup.bash; timeout 20 ros2 topic info /cmd_vel_yaw --verbose'" \
@@ -452,8 +503,12 @@ if [ "${YAW_MODE:-off}" = detach ]; then
     fi
     log "YAW_MUX_DETACHED topic info has no twist_mux"
 fi
+capture_params_after_ready || { log "PARAMS_INCOMPLETE M1_NOT_SENT"; exit 35; }
 log "GOAL_SEND run_id=$RUN_ID M1 target=(-3.7,4.0,0) after BEFORE_GOAL_OK and PARAMS_NUMERIC"
-sandbox "cd '$SANDBOX_REPO' && CAMERAS=0 ./runvideo.sh M1" >"$ART/runvideo.log" 2>&1 || true
+# route.py читает ROUTE_LOG. Путь — файл этого run_id, не общий out/route.log.
+# Старый общий лог с GOAL_START рядом не трогаем и не копируем.
+sandbox "mkdir -p '$REMOTE_OUT'; rm -f '$REMOTE_OUT/route.log'"
+sandbox "cd '$SANDBOX_REPO' && CAMERAS=0 ROUTE_LOG='$REMOTE_OUT/route.log' ./runvideo.sh M1" >"$ART/runvideo.log" 2>&1 || true
 log "ROUTE_DONE"
 # pull_before_off — в cleanup, до hil off.
 exit 0
