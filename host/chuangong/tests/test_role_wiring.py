@@ -193,6 +193,7 @@ def test_cli_execute_flag_reaches_activate(monkeypatch):
             seen["execute"] = execute
             return {"state": "activation_planned"}
 
+    monkeypatch.setenv("CHUANGONG_COMPOSE_ADAPTER_VERIFIED", "1")
     monkeypatch.setattr("chuangong.activation.ActivationMachine", _Machine)
     monkeypatch.setattr("chuangong.__main__._deps", lambda cfg: object())
 
