@@ -119,6 +119,51 @@ def test_write_start_and_assert_ready(tmp_path):
         topics.assert_ready(tmp_path, "before_goal")
 
 
+def test_yaw_isolate_lowers_priority_and_keeps_locks():
+    assert topics.yaw_isolate_from_env(None) is False
+    assert topics.yaw_isolate_from_env("1") is True
+    text = topics.twist_mux_isolate_yaml()
+    assert "priority: 5" in text
+    assert "cmd_vel_yaw" in text
+    assert "joystick_lock" not in text
+    assert "emergency" not in text
+    with pytest.raises(ValueError, match="M1_YAWATGOAL_ISOLATE"):
+        topics.yaw_isolate_from_env("2")
+    script = (REPEAT / "run_m1_repeat.sh").read_text(encoding="utf-8")
+    assert "M1_YAWATGOAL_ISOLATE" in script
+    assert "twist_mux.yaml" not in "\n".join(
+        line for line in script.splitlines() if not line.lstrip().startswith("#")
+    )
+
+
+def test_compose_transfer_does_not_use_main_stdin(tmp_path):
+    """main() делает ssh </dev/null. Передача compose через неё пишет 0 байт (Шифу, 19.11)."""
+    script = (REPEAT / "run_m1_repeat.sh").read_text(encoding="utf-8")
+    code = "\n".join(line for line in script.splitlines() if not line.lstrip().startswith("#"))
+    assert "main() { ssh" in code
+    assert "</dev/null" in code
+    assert 'main "tr -d' not in code
+    assert 'scp -q -o BatchMode=yes "$ART/nav2tune.compose.yaml"' in code
+    # Локальная модель: функция с </dev/null выбрасывает файл, scp-путь (cp) — нет.
+    src = tmp_path / "compose.yaml"
+    src.write_text("services:\n  nav2:\n    environment:\n      - X=1\n", encoding="utf-8")
+    swallowed = tmp_path / "via_main.yaml"
+    kept = tmp_path / "via_scp.yaml"
+    harness = tmp_path / "t.sh"
+    harness.write_text(
+        "set -uo pipefail\n"
+        "main() { bash -c 'cat > \"$1\"' _ \"$1\" </dev/null; }\n"
+        f"main {swallowed} < {src} || true\n"
+        f"cp {src} {kept}\n"
+        f"wc -c {swallowed} {kept}\n",
+        encoding="utf-8",
+    )
+    result = subprocess.run(["bash", str(harness)], capture_output=True, text=True, check=True)
+    assert swallowed.stat().st_size == 0
+    assert kept.read_text(encoding="utf-8") == src.read_text(encoding="utf-8")
+    assert "0 " in result.stdout
+
+
 def test_param_get_timeout_is_missing_not_a_hang():
     """Пустой ответ за таймаут — missing. Скрипт не вызывает param get без timeout 15."""
     assert topics.parse_param_value("") is None
@@ -207,8 +252,10 @@ def test_short_circuit_overlay_is_opt_in():
     full = topics.dwb_publish_overlay_yaml(short_circuit=False)
     assert "short_circuit_trajectory_evaluation: false" in full
     # Вложенность боевого yaml: FollowPath.ros__parameters, не плоский ключ.
-    assert "FollowPath:\n      ros__parameters:\n        publish_evaluation: true" in full
-    assert "        short_circuit_trajectory_evaluation: false" in full
+    # Ключи плагина прямо под FollowPath, без второго ros__parameters.
+    assert "    FollowPath:\n      publish_evaluation: true" in full
+    assert "      short_circuit_trajectory_evaluation: false" in full
+    assert "FollowPath:\n      ros__parameters:" not in full
     assert "publish_evaluation: true" in full
     assert "max_vel_x" not in full
     combat = topics.dwb_publish_overlay_yaml(short_circuit=True)
@@ -253,6 +300,10 @@ def test_script_uses_world_gate_and_pulls_before_off():
     assert "recovery.txt" in script
     assert "dwb_publish.yaml" in script
     assert "nav2tune.compose.yaml" in script
+    # main() глотает stdin (</dev/null). Compose передаётся scp, не main < файл.
+    assert 'main "tr -d' not in script
+    assert "OVERLAY_EMPTY_ON_MAIN" in script
+    assert "OVERLAY_NOT_IN_CONTAINER" in script
     assert "publish_evaluation" in script
     assert "M1_REPEAT_SHORT_CIRCUIT" in script
     assert "M1_REPEAT_TRANS_STOPPED" in script

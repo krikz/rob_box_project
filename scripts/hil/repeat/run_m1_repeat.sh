@@ -131,7 +131,7 @@ cleanup() {
         pull_before_off || art_rc=1
         # hil off пересоздаёт nav2 без nav2tune.compose.yaml — оверлей публикации уходит
         # вместе с HIL. Файл на Main удаляем, чтобы следующий on его не подхватил.
-        main "rm -f /tmp/hil/nav2tune/dwb_publish.yaml /tmp/hil/nav2tune.compose.yaml" || true
+        main "rm -f /tmp/hil/nav2tune/dwb_publish.yaml /tmp/hil/nav2tune.compose.yaml /tmp/hil/twist_mux_hil.yaml /tmp/hil/twist_mux_isolate.yaml" || true
         bash "$HIL_CMD" off >"$ART/hil_off.log" 2>&1 || off_rc=$?
     fi
     # off — безопасность стенда. Неполный bag её не маскирует и наоборот.
@@ -350,8 +350,14 @@ python3 -X utf8 -c 'import os, sys; sys.path.insert(0, sys.argv[1]); from m1_top
     "$HERE" "$ART/dwb_publish.yaml" || { log "OVERLAY_ENV_BAD short_circuit=${M1_REPEAT_SHORT_CIRCUIT} trans_stopped=${M1_REPEAT_TRANS_STOPPED:-}"; exit 2; }
 log "DWB_OVERLAY short_circuit=${M1_REPEAT_SHORT_CIRCUIT} trans_stopped=${M1_REPEAT_TRANS_STOPPED:-combat}"
 main "mkdir -p /tmp/hil/nav2tune" || { log "NAV2TUNE_DIR_FAIL"; exit 30; }
+# Не через main(): она делает ssh </dev/null и выбрасывает переданный файл.
+# Чистая пара m1repeat_20261119T084941Z: compose на Main 0 байт, overlays=none,
+# param get True при yaml false. Шифу, 19.11.
+tr -d '\r' <"$ROOT/scripts/hil/speed/nav2tune.compose.yaml" >"$ART/nav2tune.compose.yaml"
 scp -q -o BatchMode=yes "$ART/dwb_publish.yaml" "$MAIN:/tmp/hil/nav2tune/dwb_publish.yaml" || { log "OVERLAY_SCP_FAIL"; exit 30; }
-main "tr -d '\r' > /tmp/hil/nav2tune.compose.yaml" <"$ROOT/scripts/hil/speed/nav2tune.compose.yaml" || { log "COMPOSE_SCP_FAIL"; exit 30; }
+scp -q -o BatchMode=yes "$ART/nav2tune.compose.yaml" "$MAIN:/tmp/hil/nav2tune.compose.yaml" || { log "OVERLAY_SCP_FAIL"; exit 30; }
+main "test -s /tmp/hil/nav2tune/dwb_publish.yaml && test -s /tmp/hil/nav2tune.compose.yaml && wc -c /tmp/hil/nav2tune/dwb_publish.yaml /tmp/hil/nav2tune.compose.yaml" \
+    >"$ART/overlay_sizes.txt" || { log "OVERLAY_EMPTY_ON_MAIN"; exit 30; }
 # После on hil.sh пересоздаёт nav2 без этого файла — оверлей не останется в бою.
 # Здесь on ещё не взят: кладём compose-оверлей, on его не знает. Поэтому после on
 # пересоздаём только nav2 с тем же HIL_MAPS_DIR, что возьмёт замок.
@@ -360,7 +366,32 @@ CLEANED=0
 bash "$HIL_CMD" on >"$ART/hil_on.log" 2>&1 || { log "HIL_ON_FAIL"; exit 24; }
 main "cd /home/ros2/rob_box_project/docker/main && HIL_MAPS_DIR='$MAPS_DIR' HIL_RTABMAP_MODE='${HIL_RTABMAP_MODE:-mapping}' NAV2TUNE_OVERLAYS='/nav2tune/dwb_publish.yaml' docker compose -f docker-compose.yaml -f /tmp/hil/main.images.yaml -f /tmp/hil/main.hil.yaml -f /tmp/hil/nav2tune.compose.yaml up -d --no-deps --pull never --force-recreate nav2" \
     >"$ART/dwb_overlay_up.log" 2>&1 || { log "DWB_OVERLAY_UP_FAIL"; exit 30; }
-log "DWB_PUBLISH_OVERLAY on (publish_evaluation/trajectories/local_plan only)"
+# Оверлей должен быть внутри контейнера, не только на хосте Main.
+if ! main "docker exec $(printf '%q' "$NAV2_CONTAINER") test -s /nav2tune/dwb_publish.yaml && docker exec $(printf '%q' "$NAV2_CONTAINER") grep -q short_circuit_trajectory_evaluation /nav2tune/dwb_publish.yaml"; then
+    log "OVERLAY_NOT_IN_CONTAINER"
+    exit 30
+fi
+log "DWB_PUBLISH_OVERLAY on (file in container, publish flags)"
+# Изоляция YawAtGoal: HIL-оверлей mux, боевой twist_mux.yaml не трогаем.
+# Замки остаются. Применяется до цели, файл удаляется до off.
+if [ "${M1_YAWATGOAL_ISOLATE:-0}" = 1 ]; then
+    python3 -X utf8 -c 'import sys; sys.path.insert(0, sys.argv[1]); from m1_topics import twist_mux_isolate_yaml; open(sys.argv[2], "w", encoding="utf-8").write(twist_mux_isolate_yaml())' \
+        "$HERE" "$ART/twist_mux_isolate.yaml" || { log "YAW_ISOLATE_YAML_FAIL"; exit 2; }
+    scp -q -o BatchMode=yes "$ART/twist_mux_isolate.yaml" "$MAIN:/tmp/hil/twist_mux_isolate.yaml" || { log "YAW_ISOLATE_SCP_FAIL"; exit 30; }
+    main "test -s /tmp/hil/twist_mux_isolate.yaml" || { log "YAW_ISOLATE_NOT_ON_MAIN"; exit 30; }
+    # start_twist_mux.sh: TWIST_MUX_OVERLAY вторым --params-file. Боевой yaml не трогаем.
+    main "mkdir -p /tmp/hil && cat > /tmp/hil/twist_mux.hil.yaml << 'EOF'
+services:
+  twist-mux:
+    environment:
+      - TWIST_MUX_OVERLAY=/tmp/hil/twist_mux_isolate.yaml
+    volumes:
+      - /tmp/hil/twist_mux_isolate.yaml:/tmp/hil/twist_mux_isolate.yaml:ro
+EOF
+cd /home/ros2/rob_box_project/docker/main && HIL_MAPS_DIR='$MAPS_DIR' docker compose -f docker-compose.yaml -f /tmp/hil/main.images.yaml -f /tmp/hil/main.hil.yaml -f /tmp/hil/twist_mux.hil.yaml up -d --no-deps --pull never --force-recreate twist-mux" \
+        >"$ART/yaw_isolate_up.log" 2>&1 || { log "YAW_ISOLATE_RECREATE_FAIL"; exit 30; }
+    log "YAW_ISOLATE_RECREATED priority 5 via TWIST_MUX_OVERLAY"
+fi
 
 # Боевые 0.15 / PathAlign 0.20: оверлей скорости не кладём. Проверяем факт параметра до цели.
 capture_before_goal || { log "CAPTURE_BEFORE_GOAL_FAIL"; exit 32; }
@@ -402,9 +433,10 @@ if [ "$cs_ready" != 1 ]; then
     log "CONTROLLER_NOT_READY M1_NOT_SENT"
     exit 34
 fi
+# Сэмплеры до проверки параметров: чистая пара остановилась на SHORT_CIRCUIT
+# раньше SAMPLERS_STARTED, логи остались пустыми. Старт не зависит от param get.
+start_resource_samplers || log "SAMPLERS_START_FAILED"
 capture_params_after_ready || { log "PARAMS_INCOMPLETE M1_NOT_SENT"; exit 35; }
-
-start_resource_samplers
 log "GOAL_SEND M1 target=(-3.7,4.0,0) after BEFORE_GOAL_OK and PARAMS_NUMERIC"
 sandbox "cd '$SANDBOX_REPO' && CAMERAS=0 ./runvideo.sh M1" >"$ART/runvideo.log" 2>&1 || true
 log "ROUTE_DONE"

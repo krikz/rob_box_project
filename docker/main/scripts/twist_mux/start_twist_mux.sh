@@ -69,8 +69,18 @@ echo "════════════════════════�
 echo ""
 
 # Launch twist_mux
+# HIL: второй yaml поверх боевого (M1_YAWATGOAL_ISOLATE). Пусто — команда как была.
+MUX_EXTRA=()
+if [ -n "${TWIST_MUX_OVERLAY:-}" ]; then
+    if [ ! -f "$TWIST_MUX_OVERLAY" ]; then
+        echo "TWIST_MUX_OVERLAY=$TWIST_MUX_OVERLAY не найден" >&2
+        exit 1
+    fi
+    MUX_EXTRA=(--params-file "$TWIST_MUX_OVERLAY")
+fi
 exec ros2 run twist_mux twist_mux \
     --ros-args \
     --params-file $CONFIG_FILE \
+    "${MUX_EXTRA[@]}" \
     -r cmd_vel_out:=/diff_drive_controller/cmd_vel_unstamped \
     -p use_sim_time:="$USE_SIM_TIME"

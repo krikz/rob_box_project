@@ -350,24 +350,57 @@ def dwb_publish_overlay_yaml(short_circuit: bool = True, trans_stopped: float | 
         lines.append("# short_circuit false: полный список оценок, выбор траектории тот же.")
     lines.extend(
         [
-            # Вложенность как в nav2_params.yaml: controller_server.ros__parameters.FollowPath.
-            # Плоский FollowPath: под controller_server не перебивает вложенный ключ
-            # (пара run1: yaml false, param get True).
+            # Ключи плагина — прямо под FollowPath, как nav2_params.yaml:102
+            # (max_vel_x, short_circuit_trajectory_evaluation). Лишний
+            # FollowPath.ros__parameters узел не читает: чистая пара
+            # m1repeat_20261119T084941Z, yaml false, param get True.
             "controller_server:",
             "  ros__parameters:",
             "    FollowPath:",
-            "      ros__parameters:",
-            "        publish_evaluation: true",
-            "        publish_trajectories: true",
-            "        publish_local_plan: true",
+            "      publish_evaluation: true",
+            "      publish_trajectories: true",
+            "      publish_local_plan: true",
         ]
     )
     if not short_circuit:
-        lines.append("        short_circuit_trajectory_evaluation: false")
+        lines.append("      short_circuit_trajectory_evaluation: false")
     if trans_stopped is not None:
         # Не боевой 0.03: порог, ниже которого RotateToGoal считает корпус стоящим.
-        lines.append(f"        trans_stopped_velocity: {trans_stopped}")
+        lines.append(f"      trans_stopped_velocity: {trans_stopped}")
     return "\n".join(lines) + "\n"
+
+
+def yaw_isolate_from_env(value: str | None) -> bool:
+    """``M1_YAWATGOAL_ISOLATE=1`` — priority /cmd_vel_yaw ниже DWB.
+
+    Пусто и 0 — штатный priority 15 (выше Nav2). 1 — HIL-оверлей mux, priority 5.
+    Замки (51, 90, 255) оверлей не трогает. Иное значение — ошибка.
+    """
+    text = (value if value is not None else "0").strip().lower()
+    if text in ("", "0", "false", "no"):
+        return False
+    if text in ("1", "true", "yes"):
+        return True
+    raise ValueError(f"M1_YAWATGOAL_ISOLATE={value!r} — только 0 или 1")
+
+
+def twist_mux_isolate_yaml() -> str:
+    """Оверлей twist_mux: YawAtGoal ниже /cmd_vel. Боевой файл не меняет.
+
+    twist_mux глушит источники строго меньшего приоритета. 5 < 10: пока DWB
+    публикует /cmd_vel, /cmd_vel_yaw до привода не доходит. Замки не в этом файле.
+    """
+    return (
+        "# HIL only. Не боевой twist_mux.yaml.\n"
+        "# YawAtGoal ниже DWB: финальный доворот делает контроллер, не yaw.\n"
+        "twist_mux:\n"
+        "  ros__parameters:\n"
+        "    topics:\n"
+        "      yaw_at_goal:\n"
+        "        topic: cmd_vel_yaw\n"
+        "        timeout: 0.2\n"
+        "        priority: 5\n"
+    )
 
 
 def short_circuit_from_env(value: str | None) -> bool:
