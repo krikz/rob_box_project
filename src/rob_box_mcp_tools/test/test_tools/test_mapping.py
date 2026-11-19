@@ -254,6 +254,49 @@ class _Resp:
         self.message = message
 
 
+@pytest.mark.unit
+def test_optimize_map_service_refusal_is_not_optimized(monkeypatch):
+    """#3789: ответ сервиса success=false — не «Карта оптимизирована» (ADR-0148)."""
+    _install_fake_service_modules(monkeypatch)
+    OptimizeMapTool = _load_mapping_module(monkeypatch).OptimizeMapTool
+
+    node = _FakeNode()
+    tool = OptimizeMapTool(node)
+    for client in node.clients.values():
+        client.result_value = _Resp(success=False, message="не сошлось")
+
+    result = tool.execute()
+
+    assert result.success is False
+    assert result.data["outcome"] == "service_error"
+    assert result.data["reason"] == "service_error"
+    assert "publish_map" in result.data["failed"]
+    assert "не сошлось" in (result.error or "")
+    assert "Оптимизация карты завершена" not in (result.message or "")
+
+
+@pytest.mark.unit
+def test_optimize_map_full_failure_reports_worst_reason(monkeypatch):
+    """#3789: все шаги молчат — причина timeout, не выдуманный unavailable."""
+    _install_fake_service_modules(monkeypatch)
+    module = _load_mapping_module(monkeypatch)
+    monkeypatch.setattr(module, "wait_future", lambda future, timeout_sec: False)
+    tool = module.OptimizeMapTool(_FakeNode())
+
+    result = tool.execute()
+
+    assert result.success is False
+    assert result.data["reason"] == "timeout"
+    assert result.data["outcome"] == "timeout"
+    assert set(result.data["failed"]) == {
+        "detect_more_loop_closures",
+        "global_bundle_adjustment",
+        "cleanup_local_grids",
+        "publish_map",
+        "backup",
+    }
+
+
 class _NeverDoneFuture:
     def add_done_callback(self, callback):
         pass
