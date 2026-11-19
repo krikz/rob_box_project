@@ -67,7 +67,7 @@ def parse_pressure_cpu(text: str) -> str:
         return "psi_cpu=missing"
     for line in text.splitlines():
         if line.startswith("some "):
-            return "psi_cpu=" + line[len("some "):].replace(" ", ",")
+            return "psi_cpu=" + line[len("some ") :].replace(" ", ",")
     return "psi_cpu=missing"
 
 
@@ -114,7 +114,11 @@ def format_sample(
         parse_proc_stat(stat),
         parse_meminfo(mem),
         parse_pressure_cpu(pressure),
-        parse_diskstats(disk, "sda") if "\n" in (disk or "") or (disk or "").startswith(" ") else disk,
+        (
+            parse_diskstats(disk, "sda")
+            if "\n" in (disk or "") or (disk or "").startswith(" ")
+            else disk
+        ),
         gpu if gpu.startswith("gpu") else parse_gpu(gpu),
     ]
     if docker:
@@ -161,8 +165,9 @@ def _loop(argv: Sequence[str]) -> int:
 
 
 def main(argv: Sequence[str] | None = None) -> int:
-    args = list(sys.argv[1:] if argv is None else argv)
-    # Скрипт зовёт ``resource_sample.py --loop --host … --out …``.
+    # None — живой CLI (sys.argv). Пустой список — не CLI, а вызов без флагов.
+    args = list(sys.argv[1:]) if argv is None else list(argv)
+    # Скрипт зовёт ``resource_sample.py --host … --loop --out …``.
     # Раньше --loop принимался только первым аргументом — argparse отвечал
     # unrecognized arguments, и лог ресурсов был пуст (пара run1).
     if "--loop" in args:

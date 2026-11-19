@@ -65,6 +65,17 @@ main() { ssh "${SSHO[@]}" "$MAIN" "$*" </dev/null; }
 sandbox() { ssh "${SSHO[@]}" "$SANDBOX" "$*" </dev/null; }
 log() { printf '%s %s\n' "$(date -u +%FT%TZ)" "$*" | tee -a "$SUMMARY"; }
 
+# ros2 CLI без timeout висит на zenoh scout (run2, 30 мин, lifecycle get /bt_navigator).
+# 37 — CLI не вернулся за отведённые секунды. Не ждём NAV_READY_TIMEOUT по кругу.
+ROS2_CLI_TIMEOUT="${M1_ROS2_CLI_TIMEOUT:-15}"
+
+ros2_in_nav2() {
+    local inner="$1"
+    timeout "$ROS2_CLI_TIMEOUT" ssh "${SSHO[@]}" "$MAIN" \
+        "docker exec $(printf '%q' "$NAV2_CONTAINER") /ros_scripts/ros_with_namespace.sh bash -c 'source /opt/ros/humble/setup.bash; timeout $ROS2_CLI_TIMEOUT $inner'" \
+        </dev/null
+}
+
 lock_is_ours() {
     local lock
     lock=$(main "cat $(printf '%q' "$HIL_LOCK") 2>/dev/null") || return 1
@@ -93,9 +104,14 @@ verify_goal_probe_loaded() {
 
 # Один ros2 param get. Баннер ros_with_namespace.sh без «value is:» — пусто, зовём ещё раз.
 param_get_once() {
-    local pname="$1" raw value
+    local pname="$1" raw value rc=0
     # timeout 15: run2 (0.005b) висел 30 мин, ros2 param get не вернулся. Нет числа — missing, не ждём.
-    raw=$(main "docker exec $(printf '%q' "$NAV2_CONTAINER") /ros_scripts/ros_with_namespace.sh bash -c 'source /opt/ros/humble/setup.bash; timeout 15 ros2 param get /controller_server $(printf '%q' "$pname")'" 2>/dev/null || true)
+    raw=$(ros2_in_nav2 "ros2 param get /controller_server $(printf '%q' "$pname")" 2>/dev/null) || rc=$?
+    if [ "$rc" -eq 124 ]; then
+        log "PARAM_GET_TIMEOUT $pname"
+        printf '%s' ""
+        return 0
+    fi
     printf 'PARAM %s\n%s\n' "$pname" "$raw" >>"$ART/params_raw.txt"
     value=$(python3 -X utf8 -c 'import sys; sys.path.insert(0, sys.argv[1]); from m1_topics import parse_param_value; v = parse_param_value(sys.stdin.read()); print("" if v is None else v)' "$HERE" <<<"$raw")
     printf '%s' "$value"
@@ -423,7 +439,11 @@ if [ -n "$GOAL_PROBE_DIR" ]; then
     [ "$current_nav_image" = "$GOAL_PROBE_IMAGE" ] || { log "GOAL_PROBE_IMAGE_MISMATCH $current_nav_image"; exit 2; }
 fi
 
-# Оверлей публикации DWB сначала генерируем локально. Nav2 прочитает его при пересоздании. Скорости нет. M1_REPEAT_SHORT_CIRCUIT=false добавляет только
+# Оверлей публикации DWB и проба goal-checker кладём ДО on. hil.sh on читает
+# HIL_NAV2TUNE_COMPOSE / HIL_GOAL_PROBE_COMPOSE и поднимает nav2 уже с --params-file
+# и томом пробы. Recreate после on — второй старт: пара 19.11 видела файл в контейнере
+# и боевой short_circuit True (configure прошёл без оверлея).
+# Скорости нет. M1_REPEAT_SHORT_CIRCUIT=false добавляет только
 # short_circuit_trajectory_evaluation: false (полный /evaluation, выбор траектории тот же).
 # default true — строку не пишем, остаётся боевой true.
 export M1_REPEAT_SHORT_CIRCUIT="${M1_REPEAT_SHORT_CIRCUIT:-true}"
@@ -431,6 +451,32 @@ export M1_REPEAT_SHORT_CIRCUIT="${M1_REPEAT_SHORT_CIRCUIT:-true}"
 python3 -X utf8 -c 'import os, sys; sys.path.insert(0, sys.argv[1]); from m1_topics import dwb_publish_overlay_yaml, short_circuit_from_env, trans_stopped_from_env; open(sys.argv[2], "w", encoding="utf-8").write(dwb_publish_overlay_yaml(short_circuit_from_env(os.environ.get("M1_REPEAT_SHORT_CIRCUIT")), trans_stopped_from_env(os.environ.get("M1_REPEAT_TRANS_STOPPED"))))' \
     "$HERE" "$ART/dwb_publish.yaml" || { log "OVERLAY_ENV_BAD short_circuit=${M1_REPEAT_SHORT_CIRCUIT} trans_stopped=${M1_REPEAT_TRANS_STOPPED:-}"; exit 2; }
 log "DWB_OVERLAY short_circuit=${M1_REPEAT_SHORT_CIRCUIT} trans_stopped=${M1_REPEAT_TRANS_STOPPED:-combat}"
+main "mkdir -p /tmp/hil/nav2tune" || { log "NAV2TUNE_DIR_FAIL"; exit 30; }
+# Не через main(): она делает ssh </dev/null и выбрасывает переданный файл.
+# Чистая пара m1repeat_20261119T084941Z: compose на Main 0 байт, overlays=none,
+# param get True при yaml false. Шифу, 19.11.
+tr -d '\r' <"$ROOT/scripts/hil/speed/nav2tune.compose.yaml" >"$ART/nav2tune.compose.yaml"
+scp -q -o BatchMode=yes "$ART/dwb_publish.yaml" "$MAIN:/tmp/hil/nav2tune/dwb_publish.yaml" || { log "OVERLAY_SCP_FAIL"; exit 30; }
+scp -q -o BatchMode=yes "$ART/nav2tune.compose.yaml" "$MAIN:/tmp/hil/nav2tune.compose.yaml" || { log "OVERLAY_SCP_FAIL"; exit 30; }
+main "test -s /tmp/hil/nav2tune/dwb_publish.yaml && test -s /tmp/hil/nav2tune.compose.yaml && wc -c /tmp/hil/nav2tune/dwb_publish.yaml /tmp/hil/nav2tune.compose.yaml" \
+    >"$ART/overlay_sizes.txt" || { log "OVERLAY_EMPTY_ON_MAIN"; exit 30; }
+# on читает эти переменные: main_sim_up добавляет -f до первого старта controller_server.
+# off их не видит и поднимает боевой nav2 без оверлея.
+export HIL_NAV2TUNE_COMPOSE=/tmp/hil/nav2tune.compose.yaml
+export NAV2TUNE_OVERLAYS=/nav2tune/dwb_publish.yaml
+# Проба goal-checker (#4945) — тот же первый старт, не recreate после configure.
+if [ -n "$GOAL_PROBE_DIR" ]; then
+    scp -q -o BatchMode=yes "$GOAL_PROBE_DIR/libcontroller_server_core.so" "$MAIN:$GOAL_PROBE_MOUNT" \
+        || { log "GOAL_PROBE_SCP_FAIL"; exit 30; }
+    scp -q -o BatchMode=yes "$ROOT/scripts/hil/diagnostics/nav2_goal_check.compose.yaml" \
+        "$MAIN:/tmp/hil/goal_check_probe.compose.yaml" || { log "GOAL_PROBE_COMPOSE_SCP_FAIL"; exit 30; }
+    export HIL_GOAL_PROBE_COMPOSE=/tmp/hil/goal_check_probe.compose.yaml
+    export M1_GOAL_PROBE_MOUNT="$GOAL_PROBE_MOUNT"
+    log "GOAL_PROBE_BEFORE_ON compose=$HIL_GOAL_PROBE_COMPOSE mount=$M1_GOAL_PROBE_MOUNT"
+fi
+log "OVERLAY_BEFORE_ON compose=$HIL_NAV2TUNE_COMPOSE overlays=$NAV2TUNE_OVERLAYS"
+ON_ATTEMPTED=1
+LOCK_OWNED=0
 CLEANED=0
 # Один retry только если ЭТОТ запуск взял замок и отказ — «не видно RSP»,
 # и hil off этого запуска завершился 0. Отказ до замка: ни retry, ни off.
@@ -467,34 +513,30 @@ fi
 lock_is_ours || { log "HIL_ON_LOCK_NOT_OWNED"; exit 24; }
 LOCK_OWNED=1
 log "HIL_ON_OK"
-# Upload overlays only after verifying ownership of the HIL lock.
-main "mkdir -p /tmp/hil/nav2tune" || { log "NAV2TUNE_DIR_FAIL"; exit 30; }
-# Не через main(): она делает ssh </dev/null и выбрасывает переданный файл.
-# Чистая пара m1repeat_20261119T084941Z: compose на Main 0 байт, overlays=none,
-# param get True при yaml false. Шифу, 19.11.
-tr -d '\r' <"$ROOT/scripts/hil/speed/nav2tune.compose.yaml" >"$ART/nav2tune.compose.yaml"
-scp -q -o BatchMode=yes "$ART/dwb_publish.yaml" "$MAIN:/tmp/hil/nav2tune/dwb_publish.yaml" || { log "OVERLAY_SCP_FAIL"; exit 30; }
-scp -q -o BatchMode=yes "$ART/nav2tune.compose.yaml" "$MAIN:/tmp/hil/nav2tune.compose.yaml" || { log "OVERLAY_SCP_FAIL"; exit 30; }
-main "test -s /tmp/hil/nav2tune/dwb_publish.yaml && test -s /tmp/hil/nav2tune.compose.yaml && wc -c /tmp/hil/nav2tune/dwb_publish.yaml /tmp/hil/nav2tune.compose.yaml" \
-    >"$ART/overlay_sizes.txt" || { log "OVERLAY_EMPTY_ON_MAIN"; exit 30; }
-probe_env=""
-probe_compose=""
-if [ -n "$GOAL_PROBE_DIR" ]; then
-    scp -q -o BatchMode=yes "$GOAL_PROBE_DIR/libcontroller_server_core.so" "$MAIN:$GOAL_PROBE_MOUNT" \
-        || { log "GOAL_PROBE_SCP_FAIL"; exit 30; }
-    scp -q -o BatchMode=yes "$ROOT/scripts/hil/diagnostics/nav2_goal_check.compose.yaml" \
-        "$MAIN:/tmp/hil/goal_check_probe.compose.yaml" || { log "GOAL_PROBE_COMPOSE_SCP_FAIL"; exit 30; }
-    probe_env="M1_GOAL_PROBE_MOUNT=$(printf '%q' "$GOAL_PROBE_MOUNT")"
-    probe_compose="-f /tmp/hil/goal_check_probe.compose.yaml"
+# Второй старт не делаем: он опоздал бы к configure. Env должен уже быть в контейнере,
+# который поднял on. Нет NAV2_PARAMS_OVERLAYS — start_nav2_direct.sh не передаст --params-file.
+# Проба goal-checker едет тем же первым up (HIL_GOAL_PROBE_COMPOSE), не recreate.
+overlays_env=$(main "docker inspect $(printf '%q' "$NAV2_CONTAINER") --format '{{range .Config.Env}}{{println .}}{{end}}'" | sed -n 's/^NAV2_PARAMS_OVERLAYS=//p' || true)
+printf '%s\n' "${overlays_env:-none}" >"$ART/overlays_env.txt"
+if [ "$overlays_env" != "/nav2tune/dwb_publish.yaml" ]; then
+    log "OVERLAY_ENV_MISSING got=${overlays_env:-none}"
+    exit 30
 fi
-main "cd /home/ros2/rob_box_project/docker/main && HIL_MAPS_DIR='$MAPS_DIR' HIL_RTABMAP_MODE='${HIL_RTABMAP_MODE:-mapping}' NAV2TUNE_OVERLAYS='/nav2tune/dwb_publish.yaml' $probe_env docker compose -f docker-compose.yaml -f /tmp/hil/main.images.yaml -f /tmp/hil/main.hil.yaml -f /tmp/hil/nav2tune.compose.yaml $probe_compose up -d --no-deps --pull never --force-recreate nav2" \
-    >"$ART/dwb_overlay_up.log" 2>&1 || { log "DWB_OVERLAY_UP_FAIL"; exit 30; }
-# Оверлей должен быть внутри контейнера, не только на хосте Main.
-if ! main "docker exec $(printf '%q' "$NAV2_CONTAINER") test -s /nav2tune/dwb_publish.yaml && docker exec $(printf '%q' "$NAV2_CONTAINER") grep -q short_circuit_trajectory_evaluation /nav2tune/dwb_publish.yaml"; then
+# Файл внутри контейнера. Строку short_circuit требуем только когда просили false:
+# боевой true её не пишет, и grep по ней ложно валил default-прогон.
+overlay_in=$(main "docker exec $(printf '%q' "$NAV2_CONTAINER") cat /nav2tune/dwb_publish.yaml" || true)
+printf '%s\n' "$overlay_in" >"$ART/overlay_in_container.yaml"
+if ! grep -q 'publish_evaluation: true' "$ART/overlay_in_container.yaml"; then
     log "OVERLAY_NOT_IN_CONTAINER"
     exit 30
 fi
-log "DWB_PUBLISH_OVERLAY on (file in container, publish flags)"
+if [ "${M1_REPEAT_SHORT_CIRCUIT:-true}" = false ]; then
+    if ! grep -q 'short_circuit_trajectory_evaluation: false' "$ART/overlay_in_container.yaml"; then
+        log "OVERLAY_NOT_IN_CONTAINER short_circuit"
+        exit 30
+    fi
+fi
+log "DWB_PUBLISH_OVERLAY before configure (env set, file in container)"
 # Изоляция YawAtGoal: HIL-оверлей mux, боевой twist_mux.yaml не трогаем.
 # Замки остаются. Применяется до цели, файл удаляется до off.
 if [ "$YAW_MODE" != off ]; then
@@ -540,8 +582,14 @@ start_resource_samplers || log "SAMPLERS_START_FAILED"
 # Готовность навигатора — как route.py: не шлём цель, пока bt_navigator не active.
 ready=0
 for _ in $(seq 1 $((NAV_READY_TIMEOUT / 5))); do
-    state=$(main "docker exec $(printf '%q' "$NAV2_CONTAINER") /ros_scripts/ros_with_namespace.sh bash -c 'source /opt/ros/humble/setup.bash; timeout 15 ros2 lifecycle get /bt_navigator'" 2>/dev/null || true)
-    printf '%s %s\n' "$(date -u +%FT%TZ)" "$state" >>"$ART/nav_ready.log"
+    state=""
+    cli_rc=0
+    state=$(ros2_in_nav2 "ros2 lifecycle get /bt_navigator" 2>/dev/null) || cli_rc=$?
+    printf '%s rc=%s %s\n' "$(date -u +%FT%TZ)" "$cli_rc" "$state" >>"$ART/nav_ready.log"
+    if [ "$cli_rc" -eq 124 ]; then
+        log "NAV_CLI_TIMEOUT ros2 lifecycle get /bt_navigator"
+        exit 37
+    fi
     if grep -q 'active \[3\]' <<<"$state"; then ready=1; break; fi
     sleep 5
 done
@@ -566,8 +614,14 @@ fi
 # controller_server active — иначе param get снова баннер, как в ночном прогоне 19.11.
 cs_ready=0
 for _ in $(seq 1 12); do
-    cs=$(main "docker exec $(printf '%q' "$NAV2_CONTAINER") /ros_scripts/ros_with_namespace.sh bash -c 'source /opt/ros/humble/setup.bash; timeout 15 ros2 lifecycle get /controller_server'" 2>/dev/null || true)
-    printf '%s %s\n' "$(date -u +%FT%TZ)" "$cs" >>"$ART/nav_ready.log"
+    cs=""
+    cli_rc=0
+    cs=$(ros2_in_nav2 "ros2 lifecycle get /controller_server" 2>/dev/null) || cli_rc=$?
+    printf '%s rc=%s %s\n' "$(date -u +%FT%TZ)" "$cli_rc" "$cs" >>"$ART/nav_ready.log"
+    if [ "$cli_rc" -eq 124 ]; then
+        log "NAV_CLI_TIMEOUT ros2 lifecycle get /controller_server"
+        exit 37
+    fi
     if grep -q 'active \[3\]' <<<"$cs"; then cs_ready=1; break; fi
     sleep 5
 done

@@ -404,9 +404,23 @@ main_rm_created_sim() {
 }
 
 # compose up сервисов контура (on и restart): sim time, карта HIL_MAPS_DIR, режим rtabmap HIL_RTABMAP_MODE.
+# HIL_NAV2TUNE_COMPOSE — необязательный четвёртый -f (повтор M1, #4694). Пусто — три файла, как раньше.
+# HIL_GOAL_PROBE_COMPOSE — необязательный пятый -f (проба goal-checker, #4945), только вместе с
+# M1_GOAL_PROBE_MOUNT: compose пробы требует переменную (${M1_GOAL_PROBE_MOUNT:?}).
+# off эти файлы не читает: боевой nav2 поднимается без оверлея и без пробы.
 main_sim_up() {  # main_sim_up [флаги compose up] <сервисы>...
     main_rm_created_sim
-    rsh "$HIL_MAIN_HOST" "cd $(q "$HIL_MAIN_DIR") && HIL_MAPS_DIR=$(q "$HIL_MAPS_DIR") HIL_RTABMAP_MODE=$(q "$HIL_RTABMAP_MODE") HIL_GUARD_SOUND=$(q "$HIL_GUARD_SOUND") docker compose -f docker-compose.yaml -f $(q "$HIL_REMOTE_DIR/main.images.yaml") -f $(q "$HIL_REMOTE_DIR/main.hil.yaml") up -d --no-deps --pull never $*"
+    local extra=""
+    local probe_env=""
+    if [ -n "${HIL_NAV2TUNE_COMPOSE:-}" ]; then
+        extra="-f $(q "$HIL_NAV2TUNE_COMPOSE")"
+    fi
+    if [ -n "${HIL_GOAL_PROBE_COMPOSE:-}" ]; then
+        extra="$extra -f $(q "$HIL_GOAL_PROBE_COMPOSE")"
+        probe_env="M1_GOAL_PROBE_MOUNT=$(q "${M1_GOAL_PROBE_MOUNT:-}")"
+    fi
+    # shellcheck disable=SC2086
+    rsh "$HIL_MAIN_HOST" "cd $(q "$HIL_MAIN_DIR") && HIL_MAPS_DIR=$(q "$HIL_MAPS_DIR") HIL_RTABMAP_MODE=$(q "$HIL_RTABMAP_MODE") HIL_GUARD_SOUND=$(q "$HIL_GUARD_SOUND") NAV2TUNE_OVERLAYS=$(q "${NAV2TUNE_OVERLAYS:-}") $probe_env docker compose -f docker-compose.yaml -f $(q "$HIL_REMOTE_DIR/main.images.yaml") -f $(q "$HIL_REMOTE_DIR/main.hil.yaml") $extra up -d --no-deps --pull never $*"
 }
 
 # ── Команды ───────────────────────────────────────────────────────────────
