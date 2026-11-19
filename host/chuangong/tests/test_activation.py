@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 import json
 
 import pytest
@@ -137,12 +138,19 @@ def test_adoption_saves_proven_current_and_null_previous(tmp_path, world):
     assert saved["current"] == world.release["release"] and saved["previous"] is None
 
 
-def test_adoption_blocks_unpinned_external_images(tmp_path, world):
+def test_adoption_blocks_unpinned_external_images(tmp_path, world, monkeypatch):
+    """Подписанный релиз со старым плавающим тегом в external_images adopt не принимает:
+    validate его отвергает, а если такой релиз уже в state — blocked, не adopted."""
     cfg = _cfg(tmp_path, world)
     docker = FakeDocker()
     deps = _deps(world, docker)
     _stage(cfg, deps, world.release)
     _match_legacy_and_images(cfg, world, docker)
+    unpinned = copy.deepcopy(world.release)
+    unpinned["roles"][cfg.node]["external_images"] = ["eclipse/zenoh:1.6.2"]
+    monkeypatch.setattr(
+        "chuangong.activation.fetch_release", lambda *args, **kwargs: unpinned
+    )
 
     rec = _machine(cfg, deps).adopt(world.release["release"], apply=True)
 

@@ -70,7 +70,9 @@ class World:
                     "size": len(bundle),
                 },
                 "images": self.images[role],
-                "external_images": ["eclipse/zenoh:1.6.2"],
+                "external_images": [
+                    "eclipse/zenoh:1.6.2@sha256:" + "ab" * 32,
+                ],
                 "resource_pack": None,
                 "migrations": [],
             }

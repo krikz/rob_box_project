@@ -146,10 +146,16 @@ def _validate_role(role: str, entry: Any, release: str) -> None:
             _PINNED_REF.match(str(ref)) is not None,
             f"roles.{role}.images.{svc}: не закреплён по digest: {ref!r}",
         )
+    external = entry.get("external_images", [])
     _require(
-        isinstance(entry.get("external_images", []), list),
+        isinstance(external, list),
         f"roles.{role}.external_images: ожидался список",
     )
+    for ref in external:
+        _require(
+            _PINNED_REF.match(str(ref)) is not None,
+            f"roles.{role}.external_images: не закреплён по digest: {ref!r}",
+        )
     rp = entry.get("resource_pack")
     if rp is not None:
         _require(isinstance(rp, dict), f"roles.{role}.resource_pack: ожидался словарь")
