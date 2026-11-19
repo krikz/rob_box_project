@@ -50,14 +50,14 @@ def _c1_parsers(sub: argparse._SubParsersAction) -> None:
     _runtime_args(p)
     p.add_argument("release")
 
-    p = sub.add_parser("activate", help="план Vision → Sound → Main; --execute зовёт исполнителя роли")
+    p = sub.add_parser("activate", help="план Vision → Sound → Main")
     _runtime_args(p)
     p.add_argument("release")
-    p.add_argument("--execute", action="store_true", help="исполнить план (по умолчанию только план, execute=false)")
+    p.add_argument("--execute", action="store_true", help="исполнение пока не подключено")
 
-    p = sub.add_parser("rollback", help="план отката на signed previous; --execute зовёт исполнителя роли")
+    p = sub.add_parser("rollback", help="план отката на подписанный previous")
     _runtime_args(p)
-    p.add_argument("--execute", action="store_true", help="исполнить план отката (по умолчанию только план)")
+    p.add_argument("--execute", action="store_true", help="исполнение пока не подключено")
 
 
 def _cancel_parser(sub: argparse._SubParsersAction) -> None:
@@ -139,9 +139,7 @@ def cmd_c1(args: argparse.Namespace) -> int:
 
     try:
         cfg = _config(args)
-        from .role_switch import execute_role
-
-        machine = ActivationMachine(cfg, _deps(cfg), executor=execute_role)
+        machine = ActivationMachine(cfg, _deps(cfg))
         if args.cmd == "adopt":
             record = machine.adopt(args.release, apply=args.apply)
         elif args.cmd == "preflight":

@@ -6,6 +6,8 @@ from __future__ import annotations
 
 import json
 
+import pytest
+
 from chuangong.activation import ActivationMachine
 from chuangong.agent import Config, Deps
 from chuangong.state import Mode
@@ -25,8 +27,9 @@ class _Health:
 class _Executor:
     """Заглушка role_switch.execute_role: пишет вызов, файлы не трогает."""
 
-    def __init__(self):
+    def __init__(self, state="role_switched"):
         self.calls = []
+        self.state = state
 
     def __call__(self, release, role, *, docker, project_dir, state_dir, previous=None, health_after=None):
         self.calls.append(
@@ -38,7 +41,7 @@ class _Executor:
                 "state_dir": str(state_dir),
             }
         )
-        return {"state": "role_switched", "execute": True, "role": role, "release": release["release"]}
+        return {"state": self.state, "execute": True, "role": role, "release": release["release"]}
 
 
 def _release(name):
@@ -167,34 +170,57 @@ def test_rollback_execute_calls_executor_with_previous(tmp_path, monkeypatch):
     assert all(call["release"] == "2026.11.09-1" for call in executor.calls)
 
 
-def test_cli_execute_flag_reaches_activate(monkeypatch):
+@pytest.mark.parametrize(
+    "state", ("blocked", "role_rolled_back", "rollback_failed", "role_switch_planned", "rollback_planned")
+)
+def test_execute_requires_explicit_role_switched(tmp_path, monkeypatch, state):
+    cfg = _cfg(tmp_path)
+    executor = _Executor(state)
+    monkeypatch.setattr("chuangong.activation.fetch_release", lambda *args, **kwargs: _release("2026.11.09-1"))
+    monkeypatch.setattr(
+        "chuangong.activation.ActivationMachine._preflight",
+        lambda self, record, release: (object(), {}),
+    )
+    cfg.state_dir.mkdir()
+    cfg.state_file.write_text(json.dumps({"current": "2026.11.08-1", "previous": None}), encoding="utf-8")
+
+    rec = _machine(cfg, executor).activate("2026.11.09-1", execute=True)
+
+    assert rec["state"] == "blocked"
+    assert rec["reason"] == "role_switch_failed"
+    assert rec["executed"][-1]["state"] == state
+    assert [call["role"] for call in executor.calls] == ["vision"]
+
+
+@pytest.mark.parametrize("cmd", ("activate", "rollback"))
+def test_cli_execute_stays_blocked_without_safe_executor(tmp_path, monkeypatch, capsys, cmd):
     from chuangong.__main__ import main
 
-    seen = {}
+    cfg = _cfg(tmp_path)
+    cfg.state_dir.mkdir()
+    cfg.state_file.write_text(json.dumps({"current": "2026.11.10-1", "previous": "2026.11.09-1"}), encoding="utf-8")
+    original = cfg.state_file.read_bytes()
+    called = []
 
-    class _Machine:
-        def __init__(self, cfg, deps, executor=None):
-            seen["cfg"] = cfg
+    def execute(*args, **kwargs):
+        called.append((args, kwargs))
+        return {"state": "role_switched"}
 
-        def activate(self, release, execute=False):
-            seen["release"] = release
-            seen["execute"] = execute
-            return {"state": "activation_planned"}
-
-    monkeypatch.setattr("chuangong.activation.ActivationMachine", _Machine)
-    monkeypatch.setattr("chuangong.__main__._deps", lambda cfg: object())
-
-    rc = main(
-        [
-            "activate",
-            "--robot-id",
-            "RBXU100001",
-            "--node",
-            "vision",
-            "--execute",
-            "2026.11.09-1",
-        ]
+    monkeypatch.setattr("chuangong.__main__._config", lambda args: cfg)
+    monkeypatch.setattr("chuangong.__main__._deps", lambda cfg: Deps(registry=None, docker=_Docker(), zenoh=None))
+    monkeypatch.setattr("chuangong.role_switch.execute_role", execute)
+    monkeypatch.setattr("chuangong.activation.fetch_release", lambda *args, **kwargs: _release("2026.11.09-1"))
+    monkeypatch.setattr(
+        "chuangong.activation.ActivationMachine._preflight",
+        lambda self, record, release: (object(), {}),
     )
 
-    assert rc == 0
-    assert seen["release"] == "2026.11.09-1" and seen["execute"] is True
+    args = [cmd, "--robot-id", cfg.robot_id, "--node", cfg.node, "--execute"]
+    if cmd == "activate":
+        args.append("2026.11.09-1")
+    assert main(args) == 1
+    rec = json.loads(capsys.readouterr().out)
+    assert rec["state"] == "blocked"
+    assert rec["reason"] == "executor_not_wired"
+    assert called == []
+    assert cfg.state_file.read_bytes() == original
