@@ -28,6 +28,19 @@ def test_precheck_refuses_when_robot_controller_alive():
     assert not v.ok and "ros2-control" in v.reason
 
 
+def test_wait_precheck_accepts_rsp_on_later_snapshot():
+    """11:41:24Z: первый снимок без RSP, линк ещё не встал. Второй — PASS."""
+    late = hil.wait_precheck([["/some_node"], ["/robot_state_publisher"]])
+    assert late.ok
+    never = hil.wait_precheck([["/some_node"], ["/some_node"]])
+    assert not never.ok
+    assert "robot_state_publisher" in never.reason
+    # Контроллер робота — отказ сразу, не ждём следующий снимок.
+    early = hil.wait_precheck([["/controller_manager", "/robot_state_publisher"], []])
+    assert not early.ok
+    assert "controller_manager" in early.reason
+
+
 def test_precheck_refuses_without_link_to_robot():
     # «Контроллеров нет» без видимого робота ничего не доказывает.
     v = hil.precheck(["/some_node"])

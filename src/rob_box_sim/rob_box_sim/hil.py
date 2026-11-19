@@ -68,6 +68,24 @@ def count_controller_managers(names: Iterable[str]) -> int:
     return sum(1 for n in names if n == CONTROLLER_MANAGER)
 
 
+def wait_precheck(snapshots: Iterable[Iterable[str]], *, require_link: bool = True) -> Verdict:
+    """Первый успешный снимок или последний отказ.
+
+    Линк router-to-router встаёт после подъёма роутера песочницы. Один снимок
+    на 5 с (диагностика 11:41:24Z) не видит /robot_state_publisher, хотя узел
+    на Main уже жив. Ждём несколько снимков. Нет RSP и в последнем — отказ,
+    гард не ослаблен.
+    """
+    last = Verdict(False, f"не видно {ROBOT_LINK_PROBE} робота: нет снимка графа — отказ")
+    for names in snapshots:
+        last = precheck(names, require_link=require_link)
+        if last.ok:
+            return last
+        if "controller_manager" in last.reason and "до старта" in last.reason:
+            return last
+    return last
+
+
 def precheck(names: Iterable[str], *, require_link: bool = True) -> Verdict:
     """Можно ли поднимать Gazebo: робот виден, а контроллеров в графе нет ни одного."""
     names = list(names)
@@ -128,7 +146,15 @@ def main(argv: list[str] | None = None) -> int:
                 print(n)
             return EXIT_OK
         if args.mode == "precheck":
-            verdict = precheck(names, require_link=not args.no_link_check)
+            # Дальше — кадры, пока не виден RSP или не вышел срок.
+            # Контроллер робота отказывает сразу, гард не ослаблен.
+            def _more():
+                yield names
+                deadline = time.monotonic() + max(args.settle, 0.0)
+                while time.monotonic() < deadline:
+                    yield _snapshot(node, min(2.0, args.interval))
+
+            verdict = wait_precheck(_more(), require_link=not args.no_link_check)
             _log(("OK: " if verdict.ok else "ОТКАЗ: ") + verdict.reason)
             return EXIT_OK if verdict.ok else EXIT_REFUSED
         last = None
