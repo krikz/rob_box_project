@@ -10,8 +10,9 @@
 import <подмодуль>`` не ловится — пустой ``__init__.py`` подмодуль не реэкспортирует, а импорт
 подмодуля работает.
 
-Сеть нужна один раз на прогон (tarball тега, ~3 МБ); ``ROB_BOX_DIALOG_CORE_PIN_DIR`` подставляет
-уже распакованный ``src/`` тега. Без сети и без подмены тест пропускается, а не зеленеет.
+Сеть нужна один раз на прогон (tarball тега, ~3 МБ, публичный репо, без токена);
+``ROB_BOX_DIALOG_CORE_PIN_DIR`` подставляет уже распакованный ``src/`` тега. Без сети и без
+подмены тест падает, а не зеленеет и не пропускается.
 """
 
 from __future__ import annotations
@@ -23,8 +24,6 @@ import re
 import tarfile
 import urllib.request
 from pathlib import Path
-
-import pytest
 
 _REPO = Path(__file__).resolve().parents[5]
 _DOCKERFILE = _REPO / "docker" / "sound" / "voice_assistant" / "Dockerfile"
@@ -131,15 +130,11 @@ def _fetch_pin_src(tag: str) -> Path:
     return src
 
 
-@pytest.mark.unit
 def test_hosts_import_only_names_present_in_dialog_core_pin():
     """Имя, импортированное хостом из модуля ядра, есть в файле этого модуля на теге образа."""
     override = os.environ.get("ROB_BOX_DIALOG_CORE_PIN_DIR")
     src_root = Path(override) if override else None
     if src_root is None:
-        try:
-            src_root = _fetch_pin_src(_pin())
-        except OSError as error:
-            pytest.skip(f"тег ядра недоступен, сверка пина пропущена: {error}")
+        src_root = _fetch_pin_src(_pin())
     missing = _missing(_pin_sources(src_root))
     assert not missing, "хост импортирует имя, которого нет в пине образа:\n" + "\n".join(missing)
